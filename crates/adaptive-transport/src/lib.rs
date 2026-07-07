@@ -5,8 +5,9 @@
 //!
 //! **Kapsam:** transport-control codec (ACK / seq-wrap — §2), RTT/BW estimator'lar
 //! ([`rtt`], [`bw`] — §6/§7), SRC rate-control çekirdeği ([`rate`], [`pacer`] —
-//! §8.2/§13, INV-RATE-1) ve deterministik test altyapısı ([`clock`], [`sim`]).
-//! Fuzzy / FEC / ARQ (§8.4/§9/§10) sonraki adımda.
+//! §8.2/§13), loss detection ([`loss`] — §5, recovery sinyali) ve deterministik test
+//! altyapısı ([`clock`], [`sim`]). Hepsi INV-RATE-1 (loss ⟂ rate). Sıradaki: §8.4
+//! FEC↔ARQ füzyon + §11 forward-recovery (Tier-1 kazanma onlara bağlı, §4.4).
 //!
 //! **ADR-05 deferred not:** `ACK_FRAME` / `FEC_SHARD` hop-transport frame'leridir;
 //! byte-otoritesi transport engine spec §2 (ccr §35 DEĞİL — o yalnız SESSION_*
@@ -18,6 +19,7 @@ pub mod ack;
 pub mod bw;
 pub mod clock;
 pub mod error;
+pub mod loss;
 pub mod pacer;
 pub mod rate;
 pub mod rtt;
