@@ -145,3 +145,25 @@ pub fn evaluate(
         send_rate,
     }
 }
+
+/// Füzyon `send_rate_gain`'ini (per-mille) SRC pacing'e uygular (§5.4 composition):
+/// `send_rate = min(pacing_gain × gain × BtlBw, cwnd/srtt)`.
+///
+/// Tek `min()` — füzyon gain'i proaktif soft-drain, `cwnd/srtt` yapısal HARD ceiling
+/// (son söz). Dört girdi (pacing_gain, gain, BtlBw, cwnd/srtt) de loss-kör → INV-RATE-1
+/// uçtan uca (gain kaynağı fuzzy'de yalnız bw+queue_delay, §5.4).
+#[must_use]
+pub fn effective_send_rate(
+    cfg: &SrcConfig,
+    btlbw: u64,
+    rtprop: Duration,
+    srtt: Duration,
+    pacing_gain: Gain,
+    send_rate_gain_permille: u32,
+) -> u64 {
+    let bdp = bdp_bytes(btlbw, rtprop);
+    let cwnd = cfg.cwnd_gain.saturating_mul(bdp).max(cfg.min_cwnd);
+    let pacing = pacing_gain.apply(btlbw);
+    let throttled = (u128::from(pacing) * u128::from(send_rate_gain_permille) / 1000) as u64;
+    throttled.min(rate_from_window(cwnd, srtt))
+}
