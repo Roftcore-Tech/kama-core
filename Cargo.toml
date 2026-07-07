@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/crypto",
+    "crates/ccr-codec",
+    "crates/adaptive-transport",
+    "crates/hub-server",
+    "crates/client-core",
+    "crates/ra-ca",
+    "crates/discovery",
+    "crates/admin-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Proprietary"
+publish = false
