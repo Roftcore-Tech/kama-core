@@ -1,0 +1,41 @@
+name: core-ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all --all-features
+      - run: cargo build --release --all
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-audit cargo-deny --locked
+      - run: cargo audit
+      - run: cargo deny check
+
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@v2
+      # +nightly rust-toolchain.toml'daki 1.96.0 pin'ini ezer (rustup precedence #1);
+      # düz `cargo miri test` stable'a düşer ve miri stable'da olmadığından FAIL ederdi.
+      - run: cargo +nightly miri test -p crypto -p ccr-codec
