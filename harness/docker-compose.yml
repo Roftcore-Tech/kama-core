@@ -1,0 +1,28 @@
+# harness/docker-compose.yml — iki-uç quinn baseline (§4.4.9 reproducibility).
+# Konteynerler idle başlar; orkestratör (run-bench.sh) docker exec ile server/client'ı sürer.
+# results/ host ↔ /app/results (host'ta çıktı toplanır; .gitignore'da).
+services:
+  kama-bench-server:
+    build:
+      context: ..
+      dockerfile: harness/Dockerfile
+    cap_add: [NET_ADMIN] # container-içi tc netem
+    command: ["sleep", "infinity"]
+    volumes:
+      - ../results:/app/results
+    networks: [benchnet]
+
+  kama-bench-client:
+    build:
+      context: ..
+      dockerfile: harness/Dockerfile
+    cap_add: [NET_ADMIN]
+    depends_on: [kama-bench-server]
+    command: ["sleep", "infinity"]
+    volumes:
+      - ../results:/app/results
+    networks: [benchnet]
+
+networks:
+  benchnet:
+    driver: bridge
