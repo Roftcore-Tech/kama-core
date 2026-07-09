@@ -5,6 +5,10 @@
 //! için TEK OPAK BLOB'dur: transport ASLA parse/verify ETMEZ. RS-encode + per-shard AEAD
 //! EXECUTION güvenlik katmanında (Noise+kompakt); **bu crate kripto İÇERMEZ** (INV-ENGINE-SOC,
 //! INV-FEC-1). Fixed-width big-endian (ADR-05, varint yasak).
+//!
+//! AUDIT-FINDING METADATA-LEAK-01 (spec engine §10.1): framing metadata plaintext; k/r emergency-koşul
+//! sızıntısı → DPI/EW okuyabilir. Alpha KABUL, Beta+ minimize (k/r blok-başına, frame_type
+//! indistinguishability, cover traffic). Bu codec framing-açık; ct||tag zaten opak (leak ARTMIYOR).
 
 use crate::error::TransportError;
 use crate::read::Reader;
