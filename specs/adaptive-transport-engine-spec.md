@@ -505,6 +505,15 @@ Geri çekilme (NORMATİF):
      3× → 2× → ARQ'ya iniş (delivered-rate confidence yükseldikçe).
   → EMERGENCY kalıcı DEĞİL; fuzzy tarafından ölçümle geri alınır.
 duplication/parity yine available_redundancy_budget ile clamp (§8.5).
+
+Retreat hysteresis (NORMATİF — osilasyon önlemi; [CAL] marjlar netem'e):
+  Sürekli fuzzy girdi ↔ discrete emergency level + gürültülü ack_confidence (seyrek ACK,
+  %50–95 loss) eşik etrafında salınım → bandwidth israfı. Asimetrik çözüm:
+    escalate (redundancy ARTIR): ANINDA, dwell YOK (recovery-obsesif: "veri ulaşsın";
+      geç escalate = korumasız kayıp). health < escalate_threshold; Schmitt bandı gürültüyü soğurur.
+    de-escalate (redundancy AZALT): health > deescalate_threshold (> escalate_threshold) +
+      minimum de-escalate dwell (osilasyonun asıl kaynağı erken de-escalate).
+  escalate_threshold, deescalate_threshold, deescalate_dwell = [CAL] (netem baseline).
 ```
 
 ---
