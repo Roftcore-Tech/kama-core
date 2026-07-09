@@ -14,6 +14,7 @@
 //! disambiguate eder — u16 sarması epoch değişimi DEĞİLDİR.
 
 use crate::error::TransportError;
+use crate::read::Reader;
 
 /// Transport-control frame_type: ACK (engine spec §1.1).
 pub const FRAME_TYPE_ACK: u8 = 0x10;
@@ -168,41 +169,4 @@ impl AckFrame {
 /// Full-uzay blok uzunluğunu u16'ya clamp'ler (degenerate >2^16 blok savunması).
 fn block_len_u16(low: u64, high: u64) -> u16 {
     (high - low + 1).min(u64::from(u16::MAX)) as u16
-}
-
-/// Bounds-checked byte okuyucu (PARSER-02).
-struct Reader<'a> {
-    buf: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn new(buf: &'a [u8]) -> Self {
-        Reader { buf, pos: 0 }
-    }
-
-    fn remaining(&self) -> usize {
-        self.buf.len() - self.pos
-    }
-
-    fn take(&mut self, n: usize) -> Result<&'a [u8], TransportError> {
-        if self.remaining() < n {
-            return Err(TransportError::Truncated {
-                offset: self.pos,
-                needed: n - self.remaining(),
-            });
-        }
-        let s = &self.buf[self.pos..self.pos + n];
-        self.pos += n;
-        Ok(s)
-    }
-
-    fn u8(&mut self) -> Result<u8, TransportError> {
-        Ok(self.take(1)?[0])
-    }
-
-    fn u16_be(&mut self) -> Result<u16, TransportError> {
-        let b = self.take(2)?;
-        Ok(u16::from_be_bytes([b[0], b[1]]))
-    }
 }

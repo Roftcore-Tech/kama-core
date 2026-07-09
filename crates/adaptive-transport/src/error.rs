@@ -28,6 +28,15 @@ pub enum TransportError {
     #[error("bilinmeyen transport-control frame_type 0x{0:02x}")]
     UnknownFrameType(u8),
 
+    /// FEC shard: k+r GF(2^8) sınırını (255) aşıyor (spec §10.2).
+    #[error("geçersiz shard sayısı: k={k} + r={r} > 255")]
+    InvalidShardCount {
+        /// Data shard sayısı.
+        k: u8,
+        /// Parity shard sayısı.
+        r: u8,
+    },
+
     /// Bir özellik tanımlı ama henüz uygulanmadı (typed stub, asla panik değil).
     #[error("feature not implemented: {0}")]
     FeatureNotImplemented(&'static str),

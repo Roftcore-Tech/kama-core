@@ -6,9 +6,10 @@
 //! **Kapsam:** transport-control codec (ACK / seq-wrap — §2), RTT/BW estimator'lar
 //! ([`rtt`], [`bw`] — §6/§7), SRC rate-control çekirdeği ([`rate`], [`pacer`] —
 //! §8.2/§13), loss detection ([`loss`] — §5), fuzzy füzyon ([`fusion`] — §8.4/§15),
-//! budget clamp ([`budget`] — §8.5), emergency forward-recovery ([`emergency`] — §11) ve
-//! ARQ selective retransmit ([`arq`] — §9) + deterministik test altyapısı ([`clock`],
-//! [`sim`]). Hepsi INV-RATE-1 (loss ⟂ rate). Sıradaki: §10.1 FEC_SHARD codec → §4.4 benchmark.
+//! budget clamp ([`budget`] — §8.5), emergency forward-recovery ([`emergency`] — §11),
+//! ARQ selective retransmit ([`arq`] — §9), FEC_SHARD framing codec ([`fec`] — §10.1)
+//! ve deterministik test altyapısı ([`clock`], [`sim`]). Hepsi INV-RATE-1 (loss ⟂ rate).
+//! Sıradaki: engine loop wiring (§3/§4) → §4.4 benchmark.
 //!
 //! **ADR-05 deferred not:** `ACK_FRAME` / `FEC_SHARD` hop-transport frame'leridir;
 //! byte-otoritesi transport engine spec §2 (ccr §35 DEĞİL — o yalnız SESSION_*
@@ -23,6 +24,7 @@ pub mod bw;
 pub mod clock;
 pub mod emergency;
 pub mod error;
+pub mod fec;
 pub mod fusion;
 pub mod loss;
 pub mod pacer;
@@ -30,3 +32,6 @@ pub mod rate;
 pub mod rtt;
 pub mod seq;
 pub mod sim;
+
+// Internal: ack/fec ortak bounds-checked reader (ADR-05 → ccr-codec).
+mod read;
