@@ -47,7 +47,10 @@ Hub↔Hub mesh                 : Noise KK (datacenter; routing §6).
 ```
 1. SESSION_INIT
    - zero-RTT N-türevi authenticated one-way bootstrap; Bob online olmak zorunda DEĞİL
-   - recipient_dest_hash routing için YALNIZCA bu mesajda görünür; early_data taşıyabilir
+   - SESSION_INIT logical olarak recipient_dest_hash'e bağlıdır; fakat client→hub WIRE üzerinde
+     recipient_dest_hash CLEARTEXT taşınMAZ — routing hint şifreli ClientHint içinde (hub'a ECDH-encrypted,
+     §0.1) taşınır ve hub tarafından hub_handle/mailbox mapping'e çevrilir. Hot-path SESSION_DATA'da
+     dest_hash HİÇBİR biçimde taşınmaz. early_data taşıyabilir
    - konuşma/session başlatma mesajı; hub burada session + hub_handle atar, mailbox açar
 
 2. SESSION_INIT_RESPONSE
@@ -117,8 +120,13 @@ Kısıt: toplam plaintext <= path_mtu_payload_limit; decrypt sonrası trailing b
 Discovery Alice'e Bob'un static X25519 + Ed25519'unu verir → handshake round-trip YOK.
 ```
 N-TÜREVİ TEK-YÖN authenticated schedule (interaktif KK/IK DEĞİL — tek mesaj, Bob offline olabilir):
-  ss_e = DH(sender_ephemeral, recipient_static)   → forward secrecy
-  ss_s = DH(sender_static,    recipient_static)   → sender auth (possession; per-mesaj imza yok)
+  ss_e = DH(sender_ephemeral, recipient_static)   → per-INIT ephemeral confidentiality (taze sender ephemeral).
+                                                     TAM FS DEĞİL: recipient_static ileride ele geçer + kaydedilmiş
+                                                     epoch-0 INIT (sender_ephemeral_pub içerir) → ss_e yeniden
+                                                     hesaplanıp epoch-0 trafiği çözülebilir (0-RTT/one-way doğal sınırı).
+  ss_s = DH(sender_static,    recipient_static)   → sender auth (statik possession; per-mesaj imza yok). FS SAĞLAMAZ.
+  → TAM forward secrecy EPOCH-1'de başlar: SESSION_INIT_RESPONSE responder ephemeral'ini (ee DH) katıp
+    ephemeral'ler silindikten SONRA (aşağıdaki FS-upgrade notu). Epoch-0 tek-yön mesajı bu sınırı taşır.
   CANONICAL app-envelope byte'ları (ccr §35.3 — OTORİTER):
     SESSION_INIT_REF            = 121B + early_data   (UDP/IPv4 149B)
     SESSION_INIT_INLINE_COMPACT = 241B + early_data   (UDP/IPv4 269B)
@@ -202,16 +210,332 @@ Signal/WhatsApp:  TCP+TLS live-session. Yüksek loss'ta TCP çöker (HoL blockin
 
 ---
 
+## 4.4 QUIC Full-Scale Karşılaştırmalı Değerlendirme — Test Metodolojisi (NORMATİF)
+
+> §4.1'in tam açılımı. Amaç: DCP (Dufisson Capital Partners), ASELSAN, TÜBİTAK denetimi ve bağımsız bir transport mühendisinin itirazına karşı **savunulabilir, tekrar-üretilebilir kanıt** üretmek. Kazanma tanımı **kategoriktir (yetenek eşiği)**, marjinal değil: "QUIC'ten %X hızlı" değil, **"QUIC'in çalışamadığı koşulda haberleşmeyi tamamlamak."** Her değerlendirici sorusu → test → metrik → geçme ölçütü olarak eşlenir (checklist: §4.4.12).
+
+### 4.4.0 Değerlendirme Felsefesi — Kategorik vs Marjinal (NORMATİF çerçeve)
+
+```
+İDDİA TÜRÜ (kilitli):
+  RED  : marjinal üstünlük ("aynı işi %30 daha iyi") — BBR sürümüne kırılgan, operasyonel olarak anlamsız.
+  KABUL: yetenek eşiği ("QUIC=0% iken SafeRoom≥%90 bir koşul aralığı var").
+         QUIC orada FONKSİYON YOK (0); SafeRoom FONKSİYON VAR (1). Oran değil, ikili durum.
+
+KAZANMA (kategorik):
+  Öyle bir koşul bölgesi [X, Y] var ki:
+     quinn+BBR completion ≈ 0%   (handshake kuramıyor / oturum sürdüremiyor)
+     SafeRoom  completion ≥ %90
+  [X,Y] BOŞ DEĞİLSE → GO. Bölge GENİŞLİĞİ = value proposition'ın büyüklüğü (satılan şey bu).
+
+DÜŞÜRÜLEBİLİRLİK (dürüstlük şartı):
+  Nerede KAYBEDECEĞİMİZ ÖNCEDEN ilan edilir (§4.4.5): düşük-loss/düşük-jitter = BBR bölgesi.
+  Orada QUIC kazanabilir → KABUL → o bölgede quinn adopte (ADR-14). Bu başarısızlık DEĞİL.
+
+ÖLÇÜM > VARSAYIM:
+  Tüm eşikler netem ground-truth'a karşı ölçülür. Magic-number YOK:
+  birincil ölçüt kategorik VARLIK (aralık boş mu değil mi); ikincil metrik barları
+  ilk baseline run'dan KALİBRE edilir ve rapora ÖLÇÜLMÜŞ değerle yazılır (placeholder yasak).
+```
+
+### 4.4.1 Karşı Taraf Kurulumu — Adil Kıyas (methodology fairness)
+
+> **Değerlendirici sorusu:** *"QUIC'i dürüst mü kurdun, yoksa strawman mı yendin?"* (İlk sorulan soru; yanlış kurulum tüm benchmark'ı değersiz kılar.)
+
+```
+QUIC baseline — PRIMARY LAUNCH GATE (best-available; sakat kurulmaz):
+  - best-available production-grade QUIC implementation(s) (ör. quinn / quiche); versiyon PİNLİ + Cargo.lock.
+  - En güçlü mevcut congestion control: default CC + destekliyorsa BBR/BBRv2 profili
+    (Cubic/Reno'ya karşı kazanmak anlamsız — QUIC'in EN İYİ hâli ölçülür).
+  - Stream mode ve gerekiyorsa datagram mode AYRI ölçülür.
+  - Kullanılan QUIC impl + CC profile RAPORDA açıkça yazılır (reproduce + "strawman yendin" itirazına karşı).
+  NOT: tek bir library/CC varsayımına KİLİTLENME — mevcut en olgun profil seçilir ve belgelenir
+       (BBRv2 entegrasyonu bir stack'te olgun değilse benchmark kırılgan olmasın).
+
+Aynı fiziksel koşul (tek değişken = transport):
+  - Aynı netem/tc script, aynı MTU=1200, aynı payload dağılımı, aynı ölçüm penceresi,
+    aynı donanım/çekirdek/NIC, aynı container image digest. Confound YOK.
+
+SECONDARY EVIDENCE / APPENDIX (GO kapısını BLOKE ETMEZ — scope disiplini):
+  - TCP+TLS 1.3, ham KCP, Reticulum (RNS), Signal/WhatsApp sınıfı → ürün konumlandırma + appendix.
+  - Layer-matched (RNS disiplini §4.3); "yendik" iddiası yalnız ÖLÇÜLMÜŞ delta ile.
+  - PRIMARY launch gate = SafeRoom custom UDP adaptive transport vs best-available QUIC — YALNIZCA bu.
+  - Ek baseline'lar Alpha freeze'i GECİKTİRMEZ (destekleyici kanıt, gate değil).
+```
+
+### 4.4.2 Test Ekseni ve Profil Matrisi — Koşulu Kırılana Kadar Kötüleştir
+
+> **Değerlendirici sorusu:** *"Profilleri cherry-pick mi ettin? Sınır nerede?"* Cevap: koşul, her iki transport da kırılana kadar süpürülür; sabit "kolay" profil yok.
+
+```
+3-EKSEN SWEEP (ADR-18 + genişletme):
+  loss        : 0% → 2% → 5% → 20% → 50% → 80% → 95%
+  jitter      : düşük → orta → yüksek (+ burst-jitter)
+  bandwidth   : çok-düşük (~0.025 kbps) → düşük (~0.1) → orta (~0.2) → normal
+  blackout    : yok → 2s → 10s → 30s → intermittent (EW jamming profili)
+  reverse-path: sağlam → ACK-yolu bozuk (ARQ-only'nin İKİNCİ cehennemi)
+  queue-delay : nominal → bufferbloat inflation
+
+Kartezyen tam-matris pahalı → iki katman:
+  (a) FULL grid: loss × jitter (birincil eksen; completion eğrisi buradan çıkar).
+  (b) SPOT profiller: her köşe-senaryo (P_worst, P_high, P_bbr, blackout, reverse-path) derin ölçüm.
+
+ÖNCEDEN İLAN (hipotez — düşürülebilir):
+  P_worst {loss %80–95, jitter yüksek, bandwidth var} → SafeRoom NET üstün (ARQ-only cehennemi).
+  P_high  {loss %20–50}                                → SafeRoom üstün (FEC recovery, RTT-beklemeden).
+  P_blackout {intermittent kesinti}                    → SafeRoom üstün (session survival, QUIC re-handshake).
+  P_bbr   {loss %2, düşük bant, jitter normal}         → QUIC kazanabilir; KABUL (§4.4.5).
+```
+
+### 4.4.3 Birincil Metrikler — KATEGORİK ("kazandık mı?")
+
+> **Değerlendirici sorusu:** *"Hostile ağda hangi metrik anlamlı?"* Cevap: latency/goodput DEĞİL (onlar iyi-ağ metrikleri) — **completion + survival + floor** (operatörün umursadığı: "mesaj gitti mi?").
+
+```
+① DEADLINE-BOUNDED COMPLETION RATE (%) — birincil
+     VERİLEN DEADLINE İÇİNDE tam teslim edilen mesaj/dosya oranı. Bounded-delivery iddiası zaten zaman
+     sınırı içerir → completion deadline'sız ölçülMEZ (2 dk'da giden ile 15 sn'de giden AYNI "success"
+     kovasına düşmemeli; aksi halde SafeRoom'un gerçek avantajı ölçülemez).
+     QUIC handshake kuramıyorsa / deadline'ı aşıyorsa → o deadline'da completion = 0%.
+
+② BLACKOUT SURVIVAL (ikili) — birincil
+     N-sn TAM kesinti sonrası oturum YAŞIYOR mu (Noise session + link_id + hub route cache 7g, no-keepalive).
+     QUIC: idle-timeout → yeni handshake (hostile'da çoğu kez tamamlanamaz) → oturum ölür.
+     SafeRoom: aynı oturumdan devam (state korunur).
+
+③ OPERATIONAL FLOOR — birincil (asıl kanıt)
+     completion'ın %90 altına düştüğü koşul noktası.
+        quinn+BBR floor  : loss = X_quic
+        SafeRoom  floor  : loss = Y_sr    (hedef: Y_sr ≫ X_quic)
+     Kazanç bölgesi = [X_quic, Y_sr]: "QUIC'in öldüğü ama SafeRoom'un çalıştığı aralık." Value proposition = bu aralık.
+
+④ HANDSHAKE / FIRST-DELIVERY SUCCESS @ loss — birincil
+     QUIC 1-RTT+ handshake %X loss'ta KURULABİLİYOR mu (kurulamıyorsa hiçbir metrik anlamlı değil).
+     SafeRoom zero-RTT first-message delivery (§3) — handshake-round beklemez.
+
+SECONDARY-BUT-REQUIRED (Tier-2/Tier-3 kazanımını ölçer — §4.4.10; latency TAMAMEN dışlanMAZ):
+     time-to-first-delivery; deadline-altı p50/p95 delivery latency; bytes-per-delivered-message;
+     ACK/retransmit overhead; enerji/mesaj. Bunlar "completion=success" kovasını AYRIŞTIRIR
+     (15 sn vs 2 dk farkı) ve operasyonel/verim üstünlüğünü niceler. Birincil değil ama ZORUNLU.
+
+GO kararı birincil (kategorik) + secondary-but-required (deadline/verim) metriklerin ÜÇ-TIER kazanma
+modeline dayanır (§4.4.10) — yalnız Tier-1'e DEĞİL.
+```
+
+### 4.4.4 İkincil Metrikler — AÇIKLAYICI ("neden kazandık" — mekanizma kanıtı)
+
+> **Değerlendirici sorusu (mühendis, black-magic şüphesi):** *"Neden çalışıyor? Ölçümün doğru mu, yoksa şans mı?"* Bu metrikler "kazandık mı"yı DEĞİL, üstünlüğün **mekanizmasını** kanıtlar — iddianın temeli.
+
+```
+ESTIMATOR ACCURACY (netem ground-truth'a karşı — çekirdek tez kanıtı):
+  bandwidth error : |B_est − B_netem| / B_netem
+  RTT/jitter error: |X_est − X_netem| / X_netem
+  → Üstünlük "ölçüme dayalı FEC/ARQ kararına" bağlı; ölçüm YANLIŞSA karar da yanlış → QUIC'ten KÖTÜ olurdun.
+    Bu yüzden estimator doğruluğu GO'nun ön-şartı (§4.4.10). Bar baseline'dan kalibre, rapora ölçülmüş yazılır.
+
+LOSS ≠ CONGESTION CONFUSION MATRIX (senin tezinin doğrudan kanıtı):
+  gerçek-loss'u congestion sanma oranı (false-congestion) — QUIC'in yapısal hatası, senin çözdüğün.
+  gerçek-congestion'ı loss sanma oranı (false-loss).
+  → "loss ile bandwidth'i ayırıyoruz" iddiası bu matrisle YA DOĞRULANIR ya ÇÜRÜR.
+
+FEC EFFICIENCY (recovery bedava değil):
+  overhead ratio : gönderilen parity byte / kurtarılan payload byte
+  NET goodput    : parity DAHİL (brüt recovery değil).
+  → Recovery kazanımı FEC overhead'ini goodput'ta GERİ ÖDEMELİ. Ödemiyorsa o profilde FEC kapatmak
+    DOĞRU karardır (fuzzy bunu SEÇMELİ — §5.3). Bu, fuzzy controller'ın doğruluğunu da test eder.
+
+ARQ EFFICIENCY:
+  spurious/gereksiz retransmit oranı; reverse-path-impaired altında davranış (ACK-yolu bozukken çökmüyor mu).
+
+RECOVERY TIME (üstünlüğün fiziksel kaynağı):
+  kayıp → reconstruct süresi.
+  QUIC: kayıp paketi RTT-bekle + retransmit. SafeRoom: FEC ile RTT-BEKLEMEDEN reconstruct → fark buradan.
+
+FUZZY DETERMINISM (debuggability — ADR-17):
+  aynı input snapshot → aynı output (golden vector). Non-deterministik ise transport debug edilemez.
+```
+
+### 4.4.5 İyi-Ağ Dürüstlüğü — QUIC'in Kazandığı Bölge (graceful degradation)
+
+> **Değerlendirici sorusu:** *"Normal ağda ne kadar kötüsün? Nerede kaybediyorsun?"* Kaybettiğin yeri SEN gösterirsin — cherry-pick suçlamasının tek panzehiri.
+
+```
+P_bbr {loss ~%2, düşük bant, jitter normal}:
+  BBR yıllarca optimize + ML-tabanlı varyantlar → QUIC marjinal daha iyi olabilir. KABUL.
+  Ölçüt (magic-number DEĞİL — ölçülür ve rapora yazılır):
+    - SafeRoom "graceful": ÇÖKME YOK (completion yüksek kalır); QUIC'e göre fark ÖLÇÜLÜR, gizlenmez.
+    - O bölgede ADR-14 tetiklenir: quinn adopte (custom motor ısrarı YOK; doktrin "en iyiyi kullan").
+  Amaç: iki bölge farklı savaş — SafeRoom bölgesi [X,Y] (hostile), QUIC bölgesi [0,X] (iyi-ağ).
+        Değerlendiriciye "her yerde kazanıyoruz" YALANINI söylemeyiz; sınırı biz çizeriz → güven.
+```
+
+> **QUIC selected olduğunda semantik (NORMATİF — Option A):** Bir profilde QUIC adopte edilirse Session Model V3 **canonical semantics DEĞİŞMEZ**; değişen YALNIZCA substrate/reliability layer'dır. E2E envelope (Session V3 AEAD), replay/counter, hub_handle/session semantics **KORUNUR**. QUIC **FORK yapılmaz** — production QUIC library as-is kullanılır (ADR-14). SafeRoom kimlik/güven/rendezvous katmanı QUIC'ten bağımsız aynen çalışır; QUIC yalnız reliable taşımayı sağlar (adaptif custom motorun yerine geçer, semantiğin değil).
+
+### 4.4.6 Kaynak Maliyeti — CPU / Bellek / Batarya / ARM (mobil & UAV bütçesi)
+
+> **Değerlendirici sorusu (Baykar UAV, Android mobil):** *"Custom transport ARM'da pahalı mı? Bataryayı/CPU'yu yiyor mu?"* Savunma sahasında güç bütçesi operasyonel kısıt.
+
+```
+Ölçülen (QUIC/quinn ile AYNI eksende — adil):
+  - CPU cycles/byte : FEC encode/decode (reed-solomon-erasure, ADR-16), fuzzy eval, AEAD.
+  - Bellek          : peak/steady buffer pool, MAX_SKIP skipped-key store, jitter buffer.
+  - Enerji          : mobil profil (mJ/mesaj, mJ/MB) — Android ARM 8.0+ hedef.
+  - Throughput/core ve concurrent-session ölçeği (hub tarafı).
+Not: reed-solomon-erasure Alpha'da DOĞRULUK-öncelikli (ADR-16); reed-solomon-simd Beta.
+     Alpha maliyeti HEDEF değil ama ÖLÇÜLÜR ve rapora girer (regresyon izlenir).
+```
+
+### 4.4.7 Güvenlik Pariteliği — Transport Kriptoyu ZAYIFLATMAZ (defense audit)
+
+> **Değerlendirici sorusu (en sert, savunma):** *"Adaptif FEC/ARQ E2E garantilerini bozuyor mu? Yeni yan kanal açıyor mu?"* Transport, §0.1 kripto invariant'larını koruMAK zorunda.
+
+```
+CODE-THEN-ENCRYPT-AND-AUTHENTICATE-SHARDS (kilitli — §0.1, §7 Pipeline B, INV-FEC-1):
+  FEC (Reed-Solomon erasure) PLAINTEXT block üzerinde encode edilir → data+parity plaintext shard'lar →
+  HER shard AYRI AEAD encrypt+authenticate → wire'da yalnız CIPHERTEXT shard görünür (plaintext/parity görünmez).
+  Alıcı: shard al → ÖNCE AEAD verify/decrypt → YALNIZCA authenticated plaintext shard FEC decoder'a girer;
+         unauthenticated/tampered shard decoder'a ASLA girmez (authenticate-before-decode, SR-AUDIT-001).
+  Bu "ciphertext üstünde FEC" DEĞİLDİR. Güvenlik invariant'ı: wire confidentiality + authenticate-before-decode.
+  Test: (a) parity shard'lardan plaintext/uzunluk-ötesi bilgi çıkarılamaz (differential);
+        (b) unauthenticated/tampered shard'ın FEC decoder'a GİRMEDİĞİ fuzz ile kanıtlanır (INV-FEC-1).
+
+TRAFFIC-ANALYSIS YAN KANALI (adaptif davranışın riski):
+  Adaptif FEC ratio / send-rate içerik TÜRÜNÜ ele veriyor mu? (fuzzy çıktısı gözlemlenebilir mi.)
+  Test: FEC-on/off ve rate değişimi ile paket-boyut/zamanlama korelasyonu ölçülür; içerik-ayırt-edilebilirliği sınırı.
+  (Sealed-sender Alpha'da yok; hub metadata kabul — ama transport EK sızıntı yaratMAMALI.)
+  ⚠️ İSTİSNA (bilinçli, kayıtlı): FEC_SHARD framing metadata (frame_type/block_id/shard_index/k/r/shard_len)
+     wire'da PLAINTEXT → EK metadata sızıntısı (k/r = emergency-durumu; block_id = shard linkability).
+     Kısmen kaçınılmaz (hub reconstruction için framing bilmeli). ALPHA'DA KABUL; minimizasyon Beta/Beta+.
+     Tam analiz + Beta yönü: engine spec §10.1 AUDIT-FINDING METADATA-LEAK-01. Benchmark'ı geciktirmez.
+
+REPLAY / INJECTION @ transport:
+  seq + AEAD tag; malformed → sessiz drop (§15); replay window AEAD başarısından SONRA (INV-REPLAY-1).
+
+AMPLIFICATION / DoS:
+  Saldırgan FEC-on veya EMERGENCY_FORWARD_REDUNDANCY (§5.6) zorlayıp kaynak tüketebilir mi?
+  Test: budget clamp (§5.5) + emergency clamp saldırgan-tetikli inflation'ı sınırlıyor mu.
+```
+
+### 4.4.8 Gerçek-Dünya Geçerliliği — netem Ötesi (procurement: saha kanıtı)
+
+> **Değerlendirici sorusu:** *"Bu netem lab kurgusu mu, gerçek ağda çalışıyor mu?"* Savunma alımı saha kanıtı ister.
+
+```
+SIDE-BY-SIDE FIELD POC (1–2 gün, ölçülmüş rapor — satış metodolojisi):
+  Gerçek hostile ağ: kırsal LTE/kenar hücre, jammer-sim, sınır/dağ senaryosu.
+  Signal/WhatsApp + QUIC vs SafeRoom PARALEL, aynı anda, aynı mesaj seti → ölçülmüş completion raporu.
+
+MIDDLEBOX / DPI SURVIVAL:
+  SafeRoom throttle/blok yeniyor mu; QUIC-benzeri fingerprint mi (DPI kategorize edip kısabilir mi).
+
+NAT TRAVERSAL + MTU DISCOVERY hostile path (fragmentation davranışı, §11).
+
+MEDYA-TRANSPORT SEAM INTEROP (cross-repo):
+  Signaling (SDP offer/ICE candidate) SENİN transport'undan geçer → medya stack (WebRTC fork) devralır.
+  Test: signaling teslimi hostile'da tamamlanıyor → çağrı kurulabiliyor (seam kontratı çalışıyor).
+```
+
+### 4.4.9 İstatistiksel Sağlamlık + Tekrar-Üretilebilirlik (audit reproducibility)
+
+> **Değerlendirici sorusu:** *"Tek atış mı? Ben bağımsız tekrar koşabilir miyim?"* Denetim = bağımsız doğrulanabilirlik.
+
+```
+İSTATİSTİK:
+  Her hücre N ≥ 30 run; median + p95/p99 + %95 güven aralığı; variance raporu.
+  Fuzzy determinism variance'ı AYRI raporlanır (ADR-17: aynı input → aynı output; ağ variance'ından ayrık).
+
+TEKRAR-ÜRETİLEBİLİRLİK (tek komut):
+  Seeded RNG; versioned harness (git commit); netem/tc script commit; quinn/lib versiyon pin;
+  container image digest. `make bench PROFILE=...` bağımsız reproduce eder.
+
+CI (ADR-18 kalite kapısı):
+  Nightly full-matris; regresyon (bir profilde düşüş) build'i kırar.
+  Ham veri + script + grafik üretici YAYIMLANIR → denetçi (DCP/ASELSAN/TÜBİTAK) bağımsız doğrular.
+```
+
+### 4.4.10 GO / NO-GO Karar Kapısı (launch criteria — NORMATİF)
+
+```
+GO (custom transport TUTULUR) — (A) EN AZ BİR kazanma tier'ı + (B) TÜM guardrail'ler:
+
+  (A) KAZANMA — üç tier (en az biri; Tier-1 en güçlü):
+      Tier-1 CATEGORICAL WIN:
+        [X,Y] boş DEĞİL — QUIC completion≈0 iken SafeRoom deadline-bounded completion ≥%90
+        (P_worst / P_high / P_blackout). En güçlü iddia; killer-chart bölgesi (§4.4.11).
+      Tier-2 OPERATIONAL WIN:
+        QUIC completion >0 olsa bile deadline/SLA İÇİNDE başarısız (ör. 2 dk'da teslim = geç),
+        SafeRoom deadline içinde ≥%90. VEYA QUIC handshake kuruyor ama blackout-survival /
+        offline-recipient store-and-forward semantiğini SAĞLAMIYOR, SafeRoom sağlıyor.
+      Tier-3 EFFICIENCY WIN:
+        İkisi de deadline içinde teslim ediyor ama SafeRoom aynı bounded envelope'ta ÖLÇÜLEBİLİR
+        biçimde daha düşük byte/ACK/energy bütçesiyle.
+        NOT: Tier-3-ALONE custom motoru YALNIZCA verim OPERASYONEL olarak belirleyiciyse gerekçeler
+        (ör. tactical bandwidth/energy bütçesi QUIC overhead'iyle AŞILIYOR, düşük-güç UAV/mobil kısıt) —
+        aksi halde salt marjinal verim custom-motor karmaşasını haklı çıkarmaz → ADR-14 quinn
+        (marjinal-üstünlük tuzağı; §4.4.0 kategorik ilke). Tier-1 veya Tier-2 tek başına yeterli.
+
+  (B) GUARDRAIL'ler (kazanılan tier ne olursa olsun HEPSİ gerekli):
+      [G1] MEKANİZMA: estimator accuracy + loss/congestion confusion baseline barını tutar
+                      (üstünlük TEMELLENDİRİLMİŞ; şans değil).
+      [G2] GÜVENLİK : §4.4.7 tüm testler geçer (transport §0.1 kripto invariant'larını BOZMAZ; yeni yan kanal yok).
+      [G3] İYİ-AĞ   : §4.4.5 graceful (çökme yok); kaybedilen bölgede ADR-14 fallback tanımlı.
+
+NO-GO (bir koşul SINIFINDA):
+  O sınıfta quinn adopte (ADR-14). Başarısızlık DEĞİL — önceden kabul (§4.4.0 düşürülebilirlik).
+
+GLOBAL NO-GO (custom motor TÜMDEN):
+  [X,Y] BOŞSA (hiçbir hostile bölgede QUIC kategorik yenilemiyor) → tüm reliable transport quinn'e devredilir.
+  Doktrin dürüstlüğü: bu sonucu da KABUL ederiz. Custom motor bir inanç değil, ÖLÇÜLMÜŞ bir gerekçedir.
+```
+
+### 4.4.11 DCP / ASELSAN / TÜBİTAK Sunum Artefaktı — The Killer Chart
+
+```
+GRAFİK 1 — completion-vs-loss (iki eğri, İTİRAZ EDİLEMEZ):
+  x = loss% (0→95), y = completion%. quinn+BBR eğrisi bir noktada UÇURUMDAN düşer; SafeRoom eğrisi DEVAM eder.
+  İki eğri arasındaki ALAN = value proposition (görsel, tek slayt, biten tartışma).
+
+GRAFİK 2 — operational envelope map (2D):
+  x = loss, y = jitter; renk = hangi transport %90 completion'ı SÜRDÜRÜYOR.
+  SafeRoom zarfı QUIC zarfını KAPSAR; fark alanı = SafeRoom'un tek başına ayakta olduğu bölge.
+
+EKLER:
+  - per-profile sonuç tablosu (completion/survival/floor + estimator accuracy + FEC efficiency).
+  - reproducibility appendix (§4.4.9) + ham veri linki.
+  - güvenlik-paritelik özeti (§4.4.7) — savunma denetçisi için.
+```
+
+### 4.4.12 Değerlendirici Soru → Test Eşleme Tablosu (audit checklist)
+
+| Değerlendirici / Mühendis sorusu | Cevaplayan test | Metrik | Geçme ölçütü |
+|---|---|---|---|
+| QUIC'i dürüst mü kurdun? | §4.4.1 | quinn+BBRv2, versiyon pin, aynı netem/MTU/payload | Karşı-taraf spec'e uygun; confound yok |
+| Profilleri cherry-pick mi ettin? | §4.4.2 | tam sweep + önceden ilan hipotez | Kaybedilen bölge önceden ilan edilmiş |
+| Hostile'da hangi metrik önemli? | §4.4.3 | completion / survival / floor | Kategorik metrikler tanımlı |
+| Nerede QUIC'i yeniyorsun? | §4.4.3 ③ | operational floor [X,Y] | [X,Y] boş değil |
+| Neden çalışıyor (mekanizma)? | §4.4.4 | estimator accuracy + confusion matrix | Bar tutuyor (ölçülmüş) |
+| Ölçümün doğru mu? | §4.4.4 | estimator error vs netem ground-truth | Baseline bar altında |
+| FEC'i bedava mı sandın? | §4.4.4 | FEC efficiency (net goodput) | Recovery, overhead'i geri ödüyor |
+| Normal ağda ne kadar kötüsün? | §4.4.5 | P_bbr fark ölçümü | Graceful; ADR-14 fallback |
+| ARM'da pahalı mı (UAV/mobil)? | §4.4.6 | CPU/byte, bellek, enerji | quinn ekseninde ölçülmüş |
+| E2E'yi/kriptoyu bozuyor mu? | §4.4.7 | code-then-encrypt-auth-shards, authenticate-before-decode, yan kanal, replay, DoS | §0.1/INV-FEC-1 invariant korunur |
+| netem mi, gerçek ağ mı? | §4.4.8 | Side-by-Side field POC | Gerçek hostile ağda completion>0 |
+| Tek atış mı, reproduce edebilir miyim? | §4.4.9 | N≥30, CI, versioned harness | Bağımsız reproduce |
+| GO/NO-GO nasıl kararlaşır? | §4.4.10 | 4-şart launch criteria | Kategorik + mekanizma + güvenlik + iyi-ağ |
+
+---
+
 ## 5. Fuzzy Controller — FEC/ARQ/CC Karar Mekanizması (NORMATİF çekirdek)
 
 > Sert eşikli state machine yerine fuzzy controller: eşik uçurumu ve osilasyon yok, yumuşak geçiş.
 
 ### 5.1 Girdiler (fuzzified) — bandwidth ≠ loss
 ```
-loss_rate    ∈ {LOW, MED, HIGH}   (loss_pre_fec; residual_after_fec ayrıca)
-jitter       ∈ {LOW, MED, HIGH}   (rttvar / reordering_score)
-bandwidth    ∈ {LOW, MED, HIGH}   (delivered-rate sampling — OBSESİF ölçüm, loss'tan TÜRETİLMEZ)
-queue_delay  ∈ {LOW, MED, HIGH}   (srtt - rtprop_min; congestion sinyali)
+loss_rate      ∈ {LOW, MED, HIGH}   (loss_pre_fec; residual_after_fec ayrıca)
+jitter         ∈ {LOW, MED, HIGH}   (rttvar / reordering_score)
+bandwidth      ∈ {LOW, MED, HIGH}   (delivered-rate sampling — OBSESİF ölçüm, loss'tan TÜRETİLMEZ)
+queue_delay    ∈ {LOW, MED, HIGH}   (srtt - rtprop_min; congestion sinyali)
+ack_confidence ∈ {LOW, MED, HIGH}   (delivered-ACK / beklenen-ACK örneklemesi = dönüş yolu sağlığı; §5.6'da EMERGENCY karar girdisi)
 ```
 > **NORMATİF (delivered-rate sampling validity):** ACK compression / app-limited / reverse-path impaired sample'lar bw_est'i ŞİŞİREMEZ; bunlarda estimator_confidence düşer (Section 8). bandwidth daima delivered-bytes/time'dan, loss'tan DEĞİL.
 
@@ -266,8 +590,12 @@ IF loss HIGH  AND  bandwidth LOW  AND  ack_confidence LOW:
 
   controller (kapalı çevrim):
     → teslimi ölç; path düzelirse redundancy'yi AZALT (delivered-rate confidence yükselince 3×→2×→ARQ'ya iniş)
+    → GEÇİŞ KARARLILIĞI: asimetrik retreat-hysteresis ZORUNLU — Schmitt eşikleri (escalate health<X,
+      de-escalate health>Y, Y>X; bant gürültüyü soğurur) + ASİMETRİK dwell (escalate ANINDA —
+      geç koruma = kayıp; de-escalate min_dwell [CAL] — erken iniş→re-escalate osilasyonunu keser).
+      Gerekçe+detay: engine spec §11 (KİLİTLİ). Marjlar [CAL:netem].
 ```
-> Bu mod ne "hep ARQ" ne "hep FEC"dir; **ACK-bağımsız forward kurtarma**dır ve path iyileşince fuzzy tarafından geri çekilir. `parity/duplication` yine `available_redundancy_budget` ile clamp'lenir (§5.5).
+> Bu mod ne "hep ARQ" ne "hep FEC"dir; **ACK-bağımsız forward kurtarma**dır ve path iyileşince fuzzy tarafından geri çekilir — geri çekilme **asimetrik hysteresis'le** (yukarıda; tek-eşik salınımı yasak). `parity/duplication` yine `available_redundancy_budget` ile clamp'lenir (§5.5).
 
 ### 5.4 Loss-Decoupling YAPISAL (INV-RATE-1 fuzzy'ye gömülü)
 > **NORMATİF:** `send_rate` çıktısı YALNIZCA bandwidth + queue_delay membership'ine bağlıdır; **loss_rate, rate çıktısının girdisi DEĞİLDİR.** Böylece "loss alone MUST NOT reduce rate" fuzzy tasarımın içine gömülüdür (kanal kaybı FEC/ARQ'yu etkiler, rate'i değil). queue_delay/RTprop inflation/delivery collapse rate'i düşürür.
@@ -402,6 +730,8 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | INV-FEC-2 | FEC erasure coding (Reed-Solomon), XOR değil; on-demand (loss eşiği + ARQ kurtaramıyor/yavaş). |
 | INV-ARQ-1 | TEK custom adaptif transport motoru (Rust-native, C++/FFI yok); ARQ + FEC mekanizmalarını İÇERİR; fuzzy controller ölçülen bw/jitter/loss'a göre seçer (ne ARQ ne FEC default). Transport uygulama rolünü (hot-path/bulk) BİLMEZ (SoC). KCP çıkarıldı. |
 | INV-QUIC-1 | Her transport testi QUIC ile kıyaslanır; bir rejimde QUIC iyiyse QUIC seçilir; custom motor yalnız QUIC'in çöktüğü lowband/high-loss rejiminde (QUIC'ten düşük banta iner) gerekçelenir. QUIC fork NO-GO. |
+| INV-QBENCH-1 | QUIC kıyası ÜÇ-TIER kazanma modeli (Tier-1 categorical / Tier-2 operational-deadline / Tier-3 efficiency) ile karara bağlanır — GO yalnız Tier-1'e DEĞİL; salt marjinal verim (Tier-3-alone, operasyonel-belirleyici değilse) custom motoru haklı çıkarmaz; karşı taraf best-available QUIC (en güçlü mevcut CC) adil kurulur; kaybedilen bölge önceden ilan + ADR-14 fallback (QUIC selected'ta Session V3 semantics korunur). |
+| INV-QBENCH-2 | Üstünlük iddiası estimator-accuracy + loss/congestion confusion matrix ile mekanizma-kanıtlı olmadan yazılmaz (ölçüm > varsayım; magic-number placeholder YASAK; barlar baseline'dan kalibre). |
 | INV-CRYPTO-1 | Client↔Hub Noise IK/KK (setup: dest_hash ClientHint'te gizli + hub_handle atama); single-datagram outer Noise YOK (thin); outer AEAD yalnız block/shard framing + control; hub-mesh Noise KK. |
 | INV-NONCE-1 | Transport counter monoton; 2B seq wire'da; receiver reconstruct; wrap→rekey; reuse imkansız. |
 | INV-REPLAY-1 | Replay window AEAD başarısından ÖNCE güncellenmez. |
@@ -439,9 +769,18 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | AC-5 | Fuzzy controller: loss/jitter/bw/queue → fec/arq/rate/compress; rate loss'a bağlı DEĞİL. |
 | AC-6 | bandwidth obsesif sampling (validity-gated); ACK-compression/app-limited bw_est'i şişirmez. |
 | AC-7 | FEC on-demand Reed-Solomon erasure (XOR değil); yalnızca block/shard framing MEVCUTSA (framing-driven, app-role değil); AEAD-verify önce. |
-| AC-8 | En kötü senaryo (loss high+bw low+ack_confidence low): mode=EMERGENCY_FORWARD_REDUNDANCY (§5.6) — tiny→2×/3× duplication, block→minimal parity, sparse cumulative ACK; pure-ARQ DEĞİL; path düzelince fuzzy redundancy'yi geri çeker. compress=on, rate=minimal-reliable. |
+| AC-8 | En kötü senaryo (loss high+bw low+ack_confidence low): mode=EMERGENCY_FORWARD_REDUNDANCY (§5.6) — tiny→2×/3× duplication, block→minimal parity, sparse cumulative ACK; pure-ARQ DEĞİL; path düzelince fuzzy redundancy'yi ASİMETRİK HYSTERESIS ile geri çeker (Schmitt bant + de-escalate dwell; escalate anında; tek-eşik salınımı YASAK — §5.6, engine §11). compress=on, rate=minimal-reliable. |
 | AC-9 | KCP tamamen ÇIKARILDI; tek custom adaptif transport motoru (Rust-native, ARQ+FEC, fuzzy-seçili; uygulama rolüne kör); per-paket ACK yok (storm engeli). |
 | AC-QUIC | Her test QUIC ile yan yana ölçülür; QUIC daha iyiyse QUIC seçilir; custom transport QUIC'in çöktüğü lowband/high-loss'ta QUIC'ten düşük banta iner (kanıt = Side-by-Side). QUIC fork NO-GO. |
+| AC-QBENCH-1 | QUIC baseline best-available production-grade QUIC + en güçlü mevcut CC (destekliyorsa BBR/BBRv2; Cubic/Reno anlamsız), versiyon-pinli, kullanılan profil raporda; aynı netem/MTU/payload/donanım; tek değişken = transport (§4.4.1) |
+| AC-QBENCH-2 | Ek baselineler (TCP+TLS, KCP, RNS, Signal/WhatsApp) SECONDARY/appendix — GO kapısını bloke ETMEZ; primary gate = vs best-available QUIC; layer-matched, "yendik" yalnız ölçülmüş delta ile (§4.4.1, §4.3) |
+| AC-QBENCH-3 | Kazanma ÜÇ-TIER (Tier-1 categorical [X,Y] / Tier-2 operational-deadline+survival+offline / Tier-3 efficiency); GO yalnız Tier-1'e bağlı DEĞİL; birincil metrik deadline-bounded completion/floor/survival/first-delivery + secondary-but-required latency/bytes/ACK/energy (§4.4.3, §4.4.10) |
+| AC-QBENCH-4 | Estimator accuracy + loss/congestion confusion matrix netem ground-truth'a karşı ölçülür; üstünlük mekanizma-kanıtlı (§4.4.4) |
+| AC-QBENCH-5 | Kaynak maliyeti (CPU/byte, bellek, enerji, ARM) quinn ekseninde ölçülür (§4.4.6) |
+| AC-QBENCH-6 | Transport §0.1 kripto invariant'larını bozmaz: CODE-THEN-ENCRYPT-AUTHENTICATE-SHARDS (FEC plaintext-domain + per-shard AEAD + authenticate-before-decode, §7/INV-FEC-1); parity plaintext sızdırmaz; replay/injection dirençli (§4.4.7) |
+| AC-QBENCH-7 | Adaptif davranış yeni traffic-analysis yan kanalı yaratmaz; FEC-on zorlamalı DoS budget/emergency clamp ile sınırlı (§4.4.7, §5.5/5.6) |
+| AC-QBENCH-8 | N≥30 run + p95/p99 + CI + versioned harness + yayımlanan ham veri → bağımsız reproduce (§4.4.9) |
+| AC-QBENCH-9 | GO = (A) en az bir kazanma tier'ı [Tier-1/2/3] + (B) guardrail'ler [mekanizma+güvenlik+iyi-ağ]; Tier-3-alone yalnız operasyonel-belirleyici verimle; global NO-GO → quinn devri kabul; QUIC selected'ta Session V3 semantics değişmez (§4.4.5, §4.4.10) |
 | AC-CRYPTO | Kripto katmanlama §0.1: Noise IK/KK setup (dest_hash ClientHint gizli) + thin single-datagram (outer Noise yok) + outer AEAD yalnız block/shard framing + control + hub-mesh Noise KK. |
 | AC-10 | Sıkıştırma izinli (CRIME N/A); ses/video çift-sıkıştırma yok. |
 | AC-11 | MTU default 1200B; 1900B validation sonrası. |
@@ -464,6 +803,8 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | FEC on-demand Reed-Solomon, plaintext-domain, AEAD-önce, block/shard-framing-only | ✅ | 5, 7, INV-FEC-1/2 |
 | KCP çıkarıldı; tek adaptif transport motoru (ARQ+FEC, fuzzy-seçili, SoC: rolü bilmez) | ✅ | 4, 7, 12, INV-ARQ-1 |
 | QUIC benchmark zorunlu; QUIC iyiyse seçilir; lowband'de QUIC'ten iyi (fork NO-GO) | ✅ | 4.1, INV-QUIC-1, AC-QUIC |
+| QUIC full-scale eval: üç-tier kazanma (categorical/operational/efficiency); adil best-available QUIC; deadline-bounded completion; mekanizma-kanıtı (estimator/confusion); güvenlik-pariteliği (code-then-encrypt-auth-shards); reproduce | ✅ | 4.4, AC-QBENCH-*, INV-QBENCH-* |
+| Kaybedilen bölge (P_bbr) önceden ilan; global NO-GO ([X,Y] boş → quinn) kabul (doktrin dürüstlüğü) | ✅ | 4.4.5, 4.4.10 |
 | Kripto katmanlama kilitli (Noise IK/KK setup + thin single-datagram + outer-AEAD block/shard-only) | ✅ | 0.1, INV-CRYPTO-1 |
 | Paket kaybı → fuzzy-seçili recovery (ARQ/FEC/karma, koşula göre; ne ARQ ne FEC default) | ✅ | 5.3, 12 |
 | Sıkıştırma izinli (CRIME N/A) + uzunluk-leak notu | ✅ | 8 |
@@ -507,6 +848,7 @@ Frozen:
   - FEC/ARQ framing-driven selection (single adaptive engine; recovery = fuzzy-selected; no app-role awareness)
   - fuzzy controller architecture
   - QUIC benchmark mandate (§4.1: every test vs QUIC; QUIC if better; beat QUIC only in lowband; fork NO-GO)
+  - QUIC FULL-SCALE eval methodology (§4.4: kategorik yetenek eşiği [X,Y]; adil quinn+BBRv2 + TCP/KCP/RNS baselines; completion/blackout-survival/floor birincil; estimator-accuracy + loss/congestion confusion mekanizma-kanıtı; kaynak/güvenlik-pariteliği/reproduce; GO-NO/GO launch criteria; DCP/ASELSAN/TÜBİTAK killer-chart)
   - compression policy
   - MTU/ACK strategy
   - TLS comparison framing

@@ -473,7 +473,20 @@ FEC_SHARD {
 }
 # Kripto yapı (ct+tag) ccr §35/TDD §0.1'e aittir; bu belge onu transport-owned REDEFINE ETMEZ.
 # reed-solomon-erasure (ADR-16); ErasureCodec trait arkasında (SIMD Beta geçişi trait ile) — encode/decode güv. katmanında.
+# IMPL NOTU (INV-ENGINE-SOC tip-kilidi): transport kodunda ct+tag AYRI alan DEĞİL, TEK OPAK BLOB
+#   (opaque_secured = ct||tag) olarak taşınır. Ayrı `aead_tag` alanı transport struct'ında BULUNMAZ →
+#   tag'e dokunmak DERLENEMEZ; SoC yorum değil, TİP garantisi olur.
 ```
+
+> **⚠️ AUDIT-FINDING METADATA-LEAK-01 (Alpha'da KABUL, Beta/Beta+'ta MİNİMİZE — kayıtlı karar):**
+> FEC_SHARD framing metadata (`frame_type · block_id · shard_index · k · r · shard_len`) wire'da **PLAINTEXT** — yol üzerindeki gözlemciye (pratikte hub'a) açıktır. Kısmen kaçınılmaz (hub reconstruction/forward için framing'i bilmek zorunda; TCP seq'in açık olması gibi) ve **Alpha varsayımıyla tutarlı** (sealed sender Alpha'da YOK; hub metadata görür — federated model kabulü; cover traffic Beta+).
+> **Bilinen sızıntılar (Alpha'da bilinçli kabul):**
+> - `k, r` → **parity oranı = kayıp/emergency koşulunu sızdırır.** Global passive observer (DPI/EW) "bu bağlantı ne zaman EMERGENCY_FORWARD_REDUNDANCY'ye girdi"i r/k'dan okuyabilir. **En hassas alan.**
+> - `block_id` → aynı bloğun shard'ları **linkable** (bir mesajın parçaları gruplanır) → trafik analizi sinyali.
+> - `frame_type` (0x20) → trafik **sınıfı** sızar; tek-opak trafik indistinguishability hedefiyle (audio codec PT=96 kararı) gerilim yaratır.
+> - `shard_len` → uzunluk sızıntısı (E2E'de kısmen kaçınılmaz).
+>
+> **Beta/Beta+ minimizasyon yönü (BURADA ÇÖZÜLMEZ, unutulmasın diye kayıtlı):** (a) `k,r` her shard'da DEĞİL, **blok-başına bir kez** (hub ilk shard'da öğrenir + cache) → r/k sızıntı yüzeyi daralır; (b) `frame_type` ayrımını SESSION_DATA ile tek trafik sınıfında gizle (indistinguishability); (c) cover traffic + padding (Beta+). Alpha'da §10.1 framing-açık implemente edilir; benchmark geciktirilmez.
 
 ### 10.2 Parity seçimi (k, r) — fuzzy-driven
 ```
@@ -504,16 +517,23 @@ Geri çekilme (NORMATİF):
   path düzelirse (ack_confidence ↑ / residual_loss ↓) fuzzy redundancy'yi AZALTIR:
      3× → 2× → ARQ'ya iniş (delivered-rate confidence yükseldikçe).
   → EMERGENCY kalıcı DEĞİL; fuzzy tarafından ölçümle geri alınır.
-duplication/parity yine available_redundancy_budget ile clamp (§8.5).
 
-Retreat hysteresis (NORMATİF — osilasyon önlemi; [CAL] marjlar netem'e):
-  Sürekli fuzzy girdi ↔ discrete emergency level + gürültülü ack_confidence (seyrek ACK,
-  %50–95 loss) eşik etrafında salınım → bandwidth israfı. Asimetrik çözüm:
-    escalate (redundancy ARTIR): ANINDA, dwell YOK (recovery-obsesif: "veri ulaşsın";
-      geç escalate = korumasız kayıp). health < escalate_threshold; Schmitt bandı gürültüyü soğurur.
-    de-escalate (redundancy AZALT): health > deescalate_threshold (> escalate_threshold) +
-      minimum de-escalate dwell (osilasyonun asıl kaynağı erken de-escalate).
-  escalate_threshold, deescalate_threshold, deescalate_dwell = [CAL] (netem baseline).
+GEÇİŞ KARARLILIĞI — RETREAT HYSTERESIS (NORMATİF, KİLİTLİ — asimetrik):
+  Sorun: fuzzy girdiler SÜREKLİ (trapezoidal), emergency LEVEL DISCRETE (Dup3/Dup2/ARQ). Hostile
+  rejimde (%50-95 loss) ACK seyrek → ack_confidence örneklem varyansı YÜKSEK → tek-eşikli sistem
+  eşik etrafında 3×↔2× SALINIR → kıt bantta duplication israfı + duplication→ölçüm→mode pozitif
+  geri-besleme riski. Çözüm iki katman:
+  (1) ASİMETRİK Schmitt-trigger eşikleri: escalate (redundancy ARTIR) health < X;
+      de-escalate (AZALT) health > Y; Y > X. Bant [X,Y] gürültüyü soğurur (bant içinde geçiş YOK).
+      health = f(ack_confidence↑, residual_loss↓) per-mille.
+  (2) ASİMETRİK dwell (recovery-obsesif taban gereği — yönler eş maliyetli DEĞİL):
+      escalate dwell   = 0 / çok kısa → kötüleşmede ANINDA koru (geç escalate = korumasız kayıp =
+                          "veri ULAŞSIN" tezinin ihlali; Schmitt bandı escalate'i gürültüden zaten korur).
+      de-escalate dwell = min_dwell [CAL] → iyileşmede TEMKİNLİ (osilasyonun asıl kaynağı erken
+                          de-escalate→re-escalate döngüsü; dwell bunu zamanla ayırır, duplication'ın
+                          ölçüm etkisi sindirilene dek mode kilitli).
+  Marjlar (X, Y, min_dwell) = [CAL] fixture (netem baseline'da kalibre; mekanizma [STD:Schmitt/kontrol-teorisi]).
+duplication/parity yine available_redundancy_budget ile clamp (§8.5).
 ```
 
 ---
@@ -601,6 +621,9 @@ VEKTÖR SETLERİ:
   TV-LOSS:   (ack dizisi) → beklenen lost set (packet/time threshold, §5) + loss_pre_fec/residual.
   TV-FEC:    (block, k, r, silinen shard'lar) → reconstruct doğru; tampered shard → decoder RED (INV-FEC-1).
   TV-FUZZY:  (input snapshot) → beklenen (fec_ratio, arq_aggr, send_rate, compress) (ADR-17 determinizm).
+  TV-EMERGENCY: (health trace) → beklenen level geçişleri (§11 hysteresis): Schmitt bant-içi gürültüde
+             SIFIR flip; escalate ANINDA (dwell'siz); de-escalate geçişleri ≥ min_dwell aralıklı;
+             framing-ayrımlı RecoveryAction (Tiny→Duplication D×+spacing, SegmentBlock→MinimalParity).
   TV-SRC:    (senaryo trace) → beklenen send_rate/cwnd trajektorisi (loss send_rate'i düşürMEDİĞİ dahil).
 
 Format: ccr §30 tarzı gerçek byte / sayısal dosyalar; Rust referans ≡ değer.
