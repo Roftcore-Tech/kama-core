@@ -36,6 +36,10 @@ fn latency_ns(e: &RawEvent) -> Option<u64> {
 }
 
 /// completion oranı: teslim latency ≤ deadline olan mesaj oranı. Boş → 0.
+///
+/// GEÇERLİLİK: `deadline` ≤ client'ın `max_deadline`'ı olmalı — üstündeki bir deadline
+/// under-report eder (max'tan sonra gelecek mesaj `None` kaydedilir). run-bench.sh
+/// `MAX_DEADLINE_S` ≥ max(DEADLINES) tutar (default 120 ≥ {10,30,120}).
 #[must_use]
 pub fn completion(events: &[RawEvent], deadline: Duration) -> f64 {
     if events.is_empty() {

@@ -69,9 +69,11 @@ impl BenchTransport for QuinnTransport {
             // Her bağlantı ayrı task: bi-stream oku → 1-byte ack.
             tokio::spawn(async move {
                 while let Ok((mut send, mut recv)) = conn.accept_bi().await {
-                    let _ = recv.read_to_end(1 << 20).await; // mesajı tüket (≤1MB)
-                    let _ = send.write_all(&[1u8]).await; // ack
-                    let _ = send.finish();
+                    // Yalnız mesaj TAM okunursa ack (read hatası/aşımı → teslim SAYILMAZ).
+                    if recv.read_to_end(1 << 20).await.is_ok() {
+                        let _ = send.write_all(&[1u8]).await;
+                        let _ = send.finish();
+                    }
                 }
             });
         }
@@ -88,19 +90,35 @@ impl BenchTransport for QuinnTransport {
             .await
             .map_err(|e| BenchError::Quic(e.to_string()))?;
 
+        // Mesajlar EŞZAMANLI gönderilir: timeout'lu bir mesaj sonrakileri BLOKLAMAZ (aksi halde
+        // %80 loss'ta koşu saatlerce sürerdi + sent_ns şişerdi). sent_ns/delivered_ns MUTLAK (start).
         let start = Instant::now();
-        let payload = vec![0x5Au8; usize::try_from(cfg.payload_bytes).unwrap_or(usize::MAX)];
-        let mut events = Vec::with_capacity(usize::try_from(cfg.msg_count).unwrap_or(0));
+        let payload = Arc::new(vec![
+            0x5Au8;
+            usize::try_from(cfg.payload_bytes).unwrap_or(usize::MAX)
+        ]);
+        let mut handles = Vec::with_capacity(usize::try_from(cfg.msg_count).unwrap_or(0));
         for msg_id in 0..cfg.msg_count {
-            let sent_ns = start.elapsed().as_nanos() as u64;
-            let delivered = send_one(&conn, &payload, cfg.max_deadline).await;
-            events.push(RawEvent {
-                msg_id,
-                sent_ns,
-                delivered_ns: delivered.map(|d| d.as_nanos() as u64),
-                payload_bytes: cfg.payload_bytes,
-            });
+            let conn = conn.clone();
+            let payload = Arc::clone(&payload);
+            let deadline = cfg.max_deadline;
+            let payload_bytes = cfg.payload_bytes;
+            handles.push(tokio::spawn(async move {
+                let sent_ns = start.elapsed().as_nanos() as u64;
+                let delivered_ns = send_one(&conn, &payload, deadline, start).await;
+                RawEvent {
+                    msg_id,
+                    sent_ns,
+                    delivered_ns,
+                    payload_bytes,
+                }
+            }));
         }
+        let mut events = Vec::with_capacity(handles.len());
+        for h in handles {
+            events.push(h.await.map_err(|e| BenchError::Quic(e.to_string()))?);
+        }
+        events.sort_by_key(|e| e.msg_id);
 
         let stats = conn.stats();
         conn.close(0u32.into(), b"done");
@@ -125,21 +143,22 @@ impl BenchTransport for QuinnTransport {
     }
 }
 
-/// Tek mesaj: bi-stream aç, payload yaz + finish, ack'i `deadline` ile bekle. Teslim
-/// latency'si döner; timeout/hata → `None` (teslim edilmedi).
+/// Tek mesaj: bi-stream aç, payload yaz + finish, ack'i `deadline` ile bekle. Ack gelirse
+/// `start`'a göre **MUTLAK teslim anını** (ns) döner (sent_ns ile AYNI frame — metrics doğru
+/// latency hesaplar); timeout/hata → `None` (teslim edilmedi).
 async fn send_one(
     conn: &quinn::Connection,
     payload: &[u8],
     deadline: Duration,
-) -> Option<Duration> {
-    let t0 = Instant::now();
+    start: Instant,
+) -> Option<u64> {
     let attempt = async {
         let (mut send, mut recv) = conn.open_bi().await.ok()?;
         send.write_all(payload).await.ok()?;
         send.finish().ok()?;
         let mut ack = [0u8; 1];
         recv.read_exact(&mut ack).await.ok()?;
-        Some(t0.elapsed())
+        Some(start.elapsed().as_nanos() as u64)
     };
     timeout(deadline, attempt).await.ok().flatten()
 }
