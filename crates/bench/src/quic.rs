@@ -95,11 +95,20 @@ impl BenchTransport for QuinnTransport {
         let mut endpoint = Endpoint::client("[::]:0".parse().expect("valid addr"))
             .map_err(|e| BenchError::Quic(e.to_string()))?;
         endpoint.set_default_client_config(client_config(cfg.cc)?);
-        let conn = endpoint
+        // Handshake'i max_deadline ile BOUNDED yap. Severe loss'ta handshake dakikalarca sürebilir;
+        // tek sınır max_idle_timeout (300s) olurdu → koşu HANG eder (smoke'ta r1 %80 loss'ta 2m17s
+        // asılı kaldı). deadline içinde bağlanamıyorsa hiçbir mesaj o deadline'da teslim edilemezdi
+        // → koşu 0 completion. GEÇERLİ ölçüm sonucu (§4.4.3 "handshake success" metriği), HATA değil
+        // → agregaya dahil (dışlanırsa QUIC completion'ı şişer). connect() Result'ı (ConnectError,
+        // örn. bozuk adres) hâlâ gerçek hata → ? ile yayılır; yalnız handshake fail/timeout 0-completion.
+        let connecting = endpoint
             .connect(cfg.server, "localhost")
-            .map_err(|e| BenchError::Quic(e.to_string()))?
-            .await
             .map_err(|e| BenchError::Quic(e.to_string()))?;
+        let conn = match timeout(cfg.max_deadline, connecting).await {
+            Ok(Ok(c)) => c,
+            Ok(Err(_handshake_err)) => return Ok(handshake_failed_output(&cfg)),
+            Err(_timed_out) => return Ok(handshake_failed_output(&cfg)),
+        };
 
         // Mesajlar EŞZAMANLI gönderilir: timeout'lu bir mesaj sonrakileri BLOKLAMAZ (aksi halde
         // %80 loss'ta koşu saatlerce sürerdi + sent_ns şişerdi). sent_ns/delivered_ns MUTLAK (start).
@@ -140,7 +149,9 @@ impl BenchTransport for QuinnTransport {
 
         let stats = conn.stats();
         conn.close(0u32.into(), b"done");
-        endpoint.wait_idle().await;
+        // wait_idle'ı da BOUNDED yap: delivered_ns'leri zaten kaydettik; kayıp CONNECTION_CLOSE
+        // altında tam drain'i beklemek koşuyu 300s idle'a kadar asabilir. 3s temiz kapanışa yeter.
+        let _ = timeout(Duration::from_secs(3), endpoint.wait_idle()).await;
 
         Ok(RunOutput {
             meta: RunMeta {
@@ -158,6 +169,37 @@ impl BenchTransport for QuinnTransport {
             },
             events,
         })
+    }
+}
+
+/// Handshake başarısız/timeout → bağlanılamadı: `msg_count` mesajın TAMAMI teslim EDİLMEDİ
+/// (completion 0). Bağlantı kurulmadığı için wire bytes 0. §4.4.3'te bu bir ölçüm sonucudur
+/// (handshake fail), hata DEĞİL — koşu agregaya 0-completion olarak girer (QUIC'in gerçek
+/// zayıflığını yansıtır; severe loss'ta bağlanamamak Kama'nın kazandığı yer).
+fn handshake_failed_output(cfg: &ClientCfg) -> RunOutput {
+    let events = (0..cfg.msg_count)
+        .map(|msg_id| RawEvent {
+            msg_id,
+            sent_ns: 0,
+            delivered_ns: None,
+            payload_bytes: cfg.payload_bytes,
+        })
+        .collect();
+    RunOutput {
+        meta: RunMeta {
+            profile: cfg.profile.clone(),
+            cc: cfg.cc.label().to_string(),
+            transport: "quinn".to_string(),
+            quinn_version: QUINN_VERSION.to_string(),
+            seed: cfg.seed,
+            repeat: cfg.repeat,
+            msg_count: cfg.msg_count,
+            payload_bytes: cfg.payload_bytes,
+            max_deadline_ns: cfg.max_deadline.as_nanos() as u64,
+            udp_tx_bytes: 0,
+            udp_rx_bytes: 0,
+        },
+        events,
     }
 }
 
@@ -304,5 +346,43 @@ mod loopback_tests {
             "0ns: hiçbiri (latency>0)"
         );
         assert_eq!(m.per_deadline[1].completion, 1.0, "30s: hepsi");
+    }
+
+    // Handshake BOUNDED: ölü adrese (kimse QUIC konuşmuyor) bağlan → handshake tamamlanamaz.
+    // Bounded değilse max_idle_timeout'a (300s) kadar HANG (smoke'taki r1 %80 loss bug'ı).
+    // max_deadline=2s → run_client ~deadline'da dönmeli + 0 completion. Toplam run_client süresinin
+    // sınırlı olduğunu (300s idle'a asılmadığını) kanıtlar.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handshake_timeout_is_bounded() {
+        let dead: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap(); // discard portu; QUIC server YOK
+        let t0 = Instant::now();
+        let out = QuinnTransport
+            .run_client(ClientCfg {
+                server: dead,
+                msg_count: 5,
+                payload_bytes: 64,
+                max_deadline: Duration::from_secs(2),
+                cc: Cc::Cubic,
+                seed: 0,
+                repeat: 0,
+                profile: "deadaddr".to_string(),
+            })
+            .await
+            .expect("bounded return, HANG değil");
+        assert!(
+            t0.elapsed() < Duration::from_secs(20),
+            "handshake ~max_deadline ile bounded olmalı (300s HANG değil), süre: {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(out.events.len(), 5, "msg_count kadar undelivered event");
+        assert!(
+            out.events.iter().all(|e| e.delivered_ns.is_none()),
+            "ölü adres → hiçbiri teslim edilmedi"
+        );
+        let m = crate::metrics::run_metrics(&out, &[Duration::from_secs(2)]);
+        assert_eq!(
+            m.per_deadline[0].completion, 0.0,
+            "bağlanamadı → 0 completion (agregaya dahil)"
+        );
     }
 }
