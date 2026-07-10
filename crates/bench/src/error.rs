@@ -1,5 +1,4 @@
-//! Bench typed hataları (thiserror). reachable `todo!()` YOK — kama transport stub
-//! bile [`BenchError::FeatureNotImplemented`] döner, panik değil.
+//! Bench typed hataları (thiserror). reachable `todo!()` YOK — hatalar tipli, panik değil.
 
 use thiserror::Error;
 
@@ -18,9 +17,6 @@ pub enum BenchError {
     /// TLS / cert kurulumu.
     #[error("tls: {0}")]
     Tls(String),
-    /// Henüz uygulanmadı (kama transport stub) — typed, asla panik.
-    #[error("feature not implemented: {0}")]
-    FeatureNotImplemented(&'static str),
     /// Diğer.
     #[error("{0}")]
     Other(String),

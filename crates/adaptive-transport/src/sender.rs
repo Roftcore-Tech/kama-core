@@ -436,18 +436,21 @@ impl Sender {
         budget::send_rate_final(fuzzy_rate, self.budget_cfg.min_rate_bps, u64::MAX)
     }
 
-    /// ScheduleTransmit (§3): recovery + DATA'yı pacing bütçesinde emit et.
-    /// Öncelik (recovery-obsesif "veri ulaşsın"): RECOVER_ARQ retransmit / RECOVER_FWD dup-plan →
-    /// vadesi gelen duplicate'ler → yeni DATA. Hepsi tek pacer'ı (token bucket) paylaşır (§9/§13).
+    /// ScheduleTransmit (§3): pacing bütçesinde emit — sıra §3'e göre **DATA ÖNCE**, sonra recovery.
+    /// Recovery-obsesif "veri ULAŞSIN" AGGREGATE'te en çok teslim demektir: her birim en az bir kez
+    /// denensin (completion-optimal) → sonra kaybolanlar artakalan bütçeyle kurtarılsın. Recovery-first
+    /// birkaç eski birimi ısrarla retransmit ederken YENİ birimleri aç bırakırdı (loopback bottleneck-yok
+    /// flood'unda birimlerin yarısı hiç gönderilmez; rate-limited path'te de daha az distinct teslim).
+    /// Hepsi tek pacer'ı (token bucket) paylaşır (§9/§13): recovery fırtınası rate'i patlatamaz.
     fn schedule_transmit(&mut self, now_ns: u64) -> Vec<TransmitDecision> {
         let mut out = Vec::new();
+        self.drain_new_data(&mut out, now_ns);
         match self.state {
             SenderState::RecoverArq => self.plan_arq_retransmits(&mut out, now_ns),
             SenderState::RecoverFwd => self.plan_forward_duplication(now_ns),
             _ => {}
         }
         self.drain_due_duplicates(&mut out, now_ns);
-        self.drain_new_data(&mut out, now_ns);
         out
     }
 

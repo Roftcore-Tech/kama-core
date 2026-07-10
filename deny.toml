@@ -24,6 +24,9 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# workspace-içi path dep'ler (ör. bench → adaptive-transport) version'suzdur → wildcard sayılır;
+# path dep'leri istisna tut (dış crate wildcard'ları HÂLÂ deny — sürüm-pinleme disiplini korunur).
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
