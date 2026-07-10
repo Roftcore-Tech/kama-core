@@ -3,6 +3,7 @@
 # results/ host ↔ /app/results (host'ta çıktı toplanır; .gitignore'da).
 services:
   kama-bench-server:
+    container_name: kama-bench-server # run-bench.sh bare-name docker exec ile sürer (bulgu #5)
     build:
       context: ..
       dockerfile: harness/Dockerfile
@@ -13,6 +14,7 @@ services:
     networks: [benchnet]
 
   kama-bench-client:
+    container_name: kama-bench-client
     build:
       context: ..
       dockerfile: harness/Dockerfile

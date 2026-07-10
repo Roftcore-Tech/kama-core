@@ -55,7 +55,7 @@ for profile in $PROFILES; do
     # (profil×cc) özeti: A varyans + B eğri
     runs=""; for r in $(seq 0 $((REPEATS - 1))); do runs="$runs /app/results/${profile}_${cc}_r${r}.jsonl"; done
     docker exec "$CLIENT" "$BIN" metrics --runs $runs --deadlines-s "$DEADLINES" \
-      | tee "results/${profile}_${cc}_summary.txt"
+      | tee "results/${profile}_${cc}_summary.txt" || true
   done
 done
 echo "TÜM koşular bitti → results/ (özet: *_summary.txt)"

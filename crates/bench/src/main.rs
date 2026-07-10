@@ -136,10 +136,18 @@ async fn main() -> Result<(), BenchError> {
                 .iter()
                 .map(|&s| Duration::from_secs(s))
                 .collect();
-            let outputs = runs
+            // Eksik/bozuk koşu dosyasında ABORT etme (workflow bulgusu #4: harsh profilde bir
+            // handshake fail'i dosya yazmaz → tüm agregasyon ölmemeli). Atla + uyar.
+            let outputs: Vec<_> = runs
                 .iter()
-                .map(|p| event::RunOutput::read_jsonl(p))
-                .collect::<Result<Vec<_>, _>>()?;
+                .filter_map(|p| match event::RunOutput::read_jsonl(p) {
+                    Ok(o) => Some(o),
+                    Err(e) => {
+                        eprintln!("skip {}: {e}", p.display());
+                        None
+                    }
+                })
+                .collect();
             let per_run: Vec<_> = outputs
                 .iter()
                 .map(|o| metrics::run_metrics(o, &deadlines))
