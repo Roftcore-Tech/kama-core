@@ -14,11 +14,11 @@
 //! per-shard AEAD GÜVENLİK katmanında (code-then-encrypt-authenticate-shards). Transport parity BYTE'ı
 //! ÜRETMEZ — oranı verir, güvenlik katmanı encode eder, transport opak parity birimlerini pace eder.
 //!
-//! **TASARIM YORUMU (§3 tablosundan sapma, onaylı):** RECOVER_FWD *ve* RECOVER_ARQ her aktif fazdan
-//! erişilir (yalnız STEADY'den değil). ACK-yolu çökerse (p5_revpath — baseline'da QUIC c(10s)=0.00)
-//! STARTUP platoya ulaşamaz → STEADY erişilemez → recovery kilitlenirdi; ayrıca loss STARTUP'ta olsa
-//! da (yaygın) retransmit tıkanmamalı. Öncelik: ack_confidence LOW → RECOVER_FWD (ACK-bağımsız, §11);
-//! değilse pending loss → RECOVER_ARQ (§9). ack_confidence = ACK SESSİZLİĞİ (naif sent/recv oranı değil).
+//! **SPEC-UYUMLU (§3 AMENDMENT-1 + §5.1/AMENDMENT-2 — impl-driven, spec'e patch'lendi):** RECOVER_FWD
+//! *ve* RECOVER_ARQ her aktif fazdan erişilir (§3 AMENDMENT-1: ACK-yolu çökerse STARTUP platoya ulaşamaz
+//! → recovery kilitlenmesin; forward-recovery ACK-bağımsız). Öncelik: ackconf LOW → RECOVER_FWD (§11) >
+//! pending loss → RECOVER_ARQ (§9). ack_confidence = ACK SESSİZLİĞİ (§5.1/AMENDMENT-2: naif sent/recv
+//! oranı değil). Bu kararlar önce implementasyonda bulundu, gerekçeleriyle spec'e cerrahi eklendi (çelişki yok).
 //!
 //! **Kapsam (Artım 1+3):** state machine + ölçüm + karar pipeline + DATA pacing + recovery İCRA
 //! (ARQ retransmit / forward duplication). Receiver (§4) = sonraki artım.
@@ -372,11 +372,11 @@ impl Sender {
         self.state = if idle {
             SenderState::Idle
         } else if emergency_active {
-            // ack_confidence LOW → forward-recovery (ACK-bağımsız, §11), her aktif fazdan.
+            // ack_confidence LOW → forward-recovery (ACK-bağımsız, §11), her aktif fazdan (§3 AMENDMENT-1).
             SenderState::RecoverFwd
         } else if !self.pending_lost.is_empty() {
             // residual loss + ack_confidence OK → selective retransmit (§9), her aktif fazdan
-            // (RECOVER_FWD ile simetrik: loss STARTUP'ta olsa da recovery tıkanmamalı).
+            // (§3 AMENDMENT-1; RECOVER_FWD ile simetrik: loss STARTUP'ta olsa da recovery tıkanmamalı).
             SenderState::RecoverArq
         } else {
             match self.state {
@@ -611,7 +611,7 @@ impl Sender {
         seq
     }
 
-    /// ack_confidence (per-mille): reverse-path canlılığı = ACK SESSİZLİĞİ. Aktif iş varken son
+    /// ack_confidence (per-mille, §5.1): reverse-path canlılığı = ACK SESSİZLİĞİ. Aktif iş varken son
     /// ACK'ten (ya da ilk gönderimden) geçen süre srtt katını aşarsa güven düşer. Yeni paket "düşük
     /// güven" DEĞİL — yalnız SESSİZLİK reverse-path çöküşüdür.
     fn ack_confidence_permille(&self, now_ns: u64) -> u64 {

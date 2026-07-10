@@ -167,11 +167,21 @@ Durumlar:
 Geçişler (event-driven, deterministik):
   IDLE   --data-hazır-->                 STARTUP
   STARTUP--BtlBw plato (Δ<ε, N round)--> STEADY
-  STEADY --residual_loss>0 ∧ ackconf≥MED-> RECOVER_ARQ --temiz--> STEADY
-  STEADY --ack_confidence LOW----------->  RECOVER_FWD  --ackconf≥MED--> STEADY
+  ACTIVE --ack_confidence LOW----------->  RECOVER_FWD  --ackconf≥MED--> STEADY   [AMENDMENT-1]
+  ACTIVE --residual_loss>0 ∧ ackconf≥MED-> RECOVER_ARQ  --temiz-------> STEADY   [AMENDMENT-1]
   STEADY --rtprop_probe_due------------->  DRAIN_RTPROP --min-rtt ölçüldü--> STEADY
   (any)  --idle > IDLE_TIMEOUT---------->  IDLE
+  ── ACTIVE = {STARTUP,STEADY,RECOVER_ARQ,RECOVER_FWD,DRAIN_RTPROP} (IDLE hariç tüm aktif fazlar).
+     Değerlendirme önceliği (her event): IDLE(iş yok) > RECOVER_FWD(ackconf LOW) > RECOVER_ARQ(pending
+     loss) > faz-içi(STARTUP plato / STEADY / DRAIN_RTPROP).
 ```
+
+> **[AMENDMENT-1] (impl-driven, gerekçeli — kod-spec tutarlılığı):** Recovery (FWD/ARQ) yalnız STEADY'den
+> DEĞİL, her ACTIVE fazdan erişilir. **Gerekçe:** ACK-yolu çökerse (p5_revpath baseline — quinn c(10s)=0.00)
+> STARTUP BtlBw platosuna ULAŞAMAZ (ACK yok → btlbw büyümez) → STEADY erişilemez → RECOVER_FWD KİLİTLENİRDİ;
+> ayrıca loss STARTUP sırasında olabilir (yaygın) → retransmit tıkanmamalı. forward-recovery zaten
+> ACK-BAĞIMSIZ (§11) — faza bağlı olmaması, recovery-obsesif taban ("veri ULAŞSIN") ile tutarlı. Öncelik
+> RECOVER_FWD > RECOVER_ARQ: ackconf LOW iken ARQ futile (ACK dönmüyor), forward-recovery devralır.
 
 **Sender ana döngü (her event):**
 ```
@@ -259,6 +269,35 @@ residual_loss = unrecovered_units / sent_units                  (FEC/ARQ SONRASI
 ```
 
 **Reordering threshold (adaptif, §9.3):** `reorder_thresh = max(K, ρ × recent_max_reorder)` — yüksek jitter'da spurious retransmit önler.  ρ=[CAL].
+
+### 5.1 ack_confidence — reverse-path canlılık sinyali (NORMATİF)
+
+`ack_confidence` §3 (state geçişleri) · §8.4/§15 (fuzzy girdi) · §11 (forward-recovery tetiği) tarafından
+TÜKETİLİR ve §8.1 SrcState'te tutulur; bu alt-bölüm hesabını KİLİTLER (önceden tanımsızdı — [AMENDMENT-2]).
+
+```
+ANLAM: reverse (ACK/dönüş) yolunun canlılığı, per-mille. YÜKSEK = ACK'ler bekleneni sağlıyor;
+       DÜŞÜK = ACK SESSİZLİĞİ (dönüş yolu bozuk/çökmüş → ARQ'ya güvenilemez → forward-recovery).
+
+TANIM (sessizlik-tabanlı, NORMATİF):
+  active = (inflight ∨ pending_recovery ∨ tx_queue) boş DEĞİL      # bekleyen teyit var mı
+  active DEĞİLSE → ack_confidence = 1000 (FULL)                    # outstanding iş yok, sessizlik anlamsız
+  aksi:
+    silence   = now − max(last_ack_time, first_send_time)          # hiç ACK yoksa ilk gönderimden
+    threshold = ACK_SILENCE_MULT × srtt                            # [CAL: ACK_SILENCE_MULT ~3]
+    silence ≤ threshold → 1000
+    silence > threshold → clamp(threshold·1000 / silence, 0..1000) # monoton azalan
+```
+
+**NEDEN oran (sent/received) DEĞİL:** yeni gönderilmiş paket "düşük güven" DEĞİLDİR — henüz ACK'lenme
+zamanı gelmemiştir; yalnız SESSİZLİK reverse-path çöküşüdür. Naif sent/received oranı taze gönderimi
+yanlışlıkla LOW'a çeker → STARTUP'ta anında sahte-emergency. Sessizlik modeli bunu ayırır (last_ack
+gelince silence sıfırlanır). Somut `ACK_SILENCE_MULT` [CAL] netem baseline'dan; mekanizma [STD].
+
+> **[AMENDMENT-2] (impl-driven, gerekçeli — kod-spec tutarlılığı):** Sinyal §8.1 state alanı +
+> §3/§8.4/§11 tüketicisiydi ama HESABI hiçbir yerde tanımlı değildi. İmplementasyonda somutlaşınca
+> (naif oran → sessizlik modeli düzeltmesi) semantiğiyle spec'e eklendi. `residual_loss` ile birlikte
+> §11 `health = f(ack_confidence↑, residual_loss↓)`'i besler.
 
 ---
 
