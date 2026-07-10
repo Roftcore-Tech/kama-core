@@ -121,4 +121,8 @@ PARSER-02  alloc-before-check OOM → bounds-check before alloc, take(MAX 4096).
 PARSER-03  time overflow → checked_sub, not_after upper bound year 2100.
 KRITIK-02  identity_hash algorithm-prefix → PQC ikinci algoritma EKLENMEDEN önce (şimdi Ed25519 tek, güvenli).
 saferoom-contract  transport quinn/custom kararı (§4.4) + signaling API stabilleşince yazılır.
+BENCH-01   blackout survival İKİLİ metriği (oturum N-sn kesintiyi sağ atlattı mı) — ADIM-3 ÖNCESİ.
+           Şimdi p6_blackout completion PROXY (idle 300s sonrası gerçek recovery ölçülüyor, prematüre
+           ölüm değil). Ama §4.4 Tier-2 kazanma kriteri "QUIC handshake kurar, blackout sonrası session
+           survival KAYBEDER" iddiası ikili metrik olmadan yapılamaz — Kama karşılaştırmasında lazım.
 ```

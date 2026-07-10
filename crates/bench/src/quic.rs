@@ -103,6 +103,13 @@ impl BenchTransport for QuinnTransport {
 
         // Mesajlar EŞZAMANLI gönderilir: timeout'lu bir mesaj sonrakileri BLOKLAMAZ (aksi halde
         // %80 loss'ta koşu saatlerce sürerdi + sent_ns şişerdi). sent_ns/delivered_ns MUTLAK (start).
+        //
+        // TASARIM SAPMASI (bilinçli): sent_ns msg_id'ye göre MONOTON ARTMAZ. Task'lar yarışır →
+        // dispatch sırası ≠ id sırası. Monoton yapmak gönderimi SERİLEŞTİRMEyi gerektirirdi = bu
+        // eşzamanlılığı yok eder VE client-tarafı HoL'u geri getirir (server-tarafı #1/#3/#8'in
+        // ikizi). Frame doğruluğu invariant'ı monotonluk DEĞİL: delivered_ns > sent_ns (mutlak,
+        // aynı `start` saati) + tüm sent_ns'in dar eşzamanlı-dispatch penceresinde kalması. Loopback
+        // testi tam da bunu assert eder (monoton değil, pencere) — "neden monoton değil" cevabı budur.
         let start = Instant::now();
         let payload = Arc::new(vec![
             0x5Au8;
@@ -280,7 +287,9 @@ mod loopback_tests {
                 e.sent_ns
             );
         }
-        // sent_ns eşzamanlı-send penceresinde (buggy sıralı+timeout halde dakikalara şişerdi)
+        // sent_ns eşzamanlı-send penceresinde (buggy sıralı+timeout halde dakikalara şişerdi).
+        // NB: id'ye göre MONOTON assert ETMİYORUZ — eşzamanlı dispatch monotonluğu bozar (bkz.
+        // run_client "TASARIM SAPMASI"). Pencere = "hepsi ~aynı anda gönderildi" kanıtı, niyet bu.
         assert!(
             out.events
                 .iter()
