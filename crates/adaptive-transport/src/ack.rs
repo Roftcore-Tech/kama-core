@@ -106,6 +106,37 @@ impl AckFrame {
         })
     }
 
+    /// Acknowledge edilen full-counter seq kümesini rekonstrükte eder — [`Self::from_received`]'in
+    /// TERSİ (§2 descending). `expected` = beklenen bir sonraki full counter; `largest_seq` (u16 wire)
+    /// bununla [`crate::seq::resolve_seq`] üzerinden full'e kaldırılır, alt bloklar full-uzayda türetilir.
+    ///
+    /// Sender'ın `OnAckReceived` (§3.2) wire ACK'ten çözülmüş `acked_seqs`'i buradan alır. TAM'dır ancak
+    /// encode'da hiçbir gap/blok 2^16'yı aşmadıysa (`from_received` gap'i `as u16` truncate, len'i clamp
+    /// eder — normal çalışmada aşılmaz). `ranges` [`MAX_ACK_RANGES`] ile sınırlı → çok-eski bloklar bu
+    /// ACK'te olmayabilir (SACK kümülatif: sonraki ACK'ler en yüksek seq'leri tekrar kapsar).
+    #[must_use]
+    pub fn acked_full(&self, expected: u64) -> Vec<u64> {
+        let mut acked = Vec::new();
+        if self.block0_len == 0 {
+            return acked;
+        }
+        let largest_full = crate::seq::resolve_seq(expected, self.largest_seq);
+        // block0 = [largest_full − block0_len + 1 ..= largest_full]
+        let mut cursor = largest_full.saturating_sub(u64::from(self.block0_len) - 1);
+        push_inclusive(&mut acked, cursor, largest_full);
+        // alt bloklar (descending, §2): cursor −= gap; block = [cursor−len+1 .. cursor]; cursor −= len.
+        for r in &self.ranges {
+            cursor = cursor.saturating_sub(u64::from(r.gap));
+            if r.len == 0 {
+                continue;
+            }
+            let low = cursor.saturating_sub(u64::from(r.len) - 1);
+            push_inclusive(&mut acked, low, cursor);
+            cursor = cursor.saturating_sub(u64::from(r.len));
+        }
+        acked
+    }
+
     /// Canonical fixed-width big-endian byte'lara serialize eder.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
@@ -169,4 +200,50 @@ impl AckFrame {
 /// Full-uzay blok uzunluğunu u16'ya clamp'ler (degenerate >2^16 blok savunması).
 fn block_len_u16(low: u64, high: u64) -> u16 {
     (high - low + 1).min(u64::from(u16::MAX)) as u16
+}
+
+/// [low, high] kapsayıcı full-counter aralığını çıkışa ekler.
+fn push_inclusive(out: &mut Vec<u64>, low: u64, high: u64) {
+    for s in low..=high {
+        out.push(s);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acked_full_roundtrips_from_received() {
+        // Alınan set (gaps 8,9,11): from_received → encode → decode → acked_full == set.
+        let recv = [5u64, 6, 7, 10, 12, 13];
+        let f = AckFrame::from_received(&recv, 0, 100).expect("nonempty");
+        let bytes = f.encode();
+        let f2 = AckFrame::decode(&bytes).expect("decode");
+        let mut got = f2.acked_full(14); // expected = largest+1
+        got.sort_unstable();
+        assert_eq!(got, recv, "acked_full, from_received'in tersi olmalı (§2)");
+    }
+
+    #[test]
+    fn acked_full_single_contiguous_block() {
+        let recv = [100u64, 101, 102, 103];
+        let f = AckFrame::from_received(&recv, 0, 0).expect("nonempty");
+        assert!(f.ranges.is_empty(), "tek blok → range yok");
+        let mut got = f.acked_full(104);
+        got.sort_unstable();
+        assert_eq!(got, recv);
+    }
+
+    #[test]
+    fn acked_full_empty_on_zero_block0() {
+        let f = AckFrame {
+            ack_epoch: 0,
+            largest_seq: 0,
+            ack_delay: 0,
+            block0_len: 0,
+            ranges: Vec::new(),
+        };
+        assert!(f.acked_full(1).is_empty(), "block0_len 0 → boş");
+    }
 }

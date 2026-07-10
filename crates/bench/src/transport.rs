@@ -69,19 +69,6 @@ pub trait BenchTransport {
     ) -> impl Future<Output = Result<RunOutput, BenchError>> + Send;
 }
 
-/// Kama transport — ADIM 3+ engine loop'a bağlanacak; şimdi typed-error stub (todo!() YOK).
+/// Kama transport — adaptive-transport engine'i (§3/§4) gerçek UDP üstünde sürer.
+/// `BenchTransport` impl'i [`crate::kama`]'da (identity security-stub + UDP event pump, ADIM-5).
 pub struct KamaTransport;
-
-impl BenchTransport for KamaTransport {
-    async fn run_server(&self, _cfg: ServerCfg) -> Result<(), BenchError> {
-        Err(BenchError::FeatureNotImplemented(
-            "kama transport: engine loop ADIM 3+'da bağlanacak",
-        ))
-    }
-
-    async fn run_client(&self, _cfg: ClientCfg) -> Result<RunOutput, BenchError> {
-        Err(BenchError::FeatureNotImplemented(
-            "kama transport: engine loop ADIM 3+'da bağlanacak",
-        ))
-    }
-}
