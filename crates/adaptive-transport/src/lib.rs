@@ -9,7 +9,10 @@
 //! budget clamp ([`budget`] — §8.5), emergency forward-recovery ([`emergency`] — §11),
 //! ARQ selective retransmit ([`arq`] — §9), FEC_SHARD framing codec ([`fec`] — §10.1)
 //! ve deterministik test altyapısı ([`clock`], [`sim`]). Hepsi INV-RATE-1 (loss ⟂ rate).
-//! Sıradaki: engine loop wiring (§3/§4) → §4.4 benchmark.
+//!
+//! **Engine loop:** [`sender`] Sender State Machine (§3) bileşenleri tek olay-güdümlü döngüde
+//! birleştirir (Artım 1: state machine + ölçüm + karar pipeline + DATA pacing; recovery İCRA +
+//! Receiver §4 sıradaki artımlar). Sıradaki: §4.4 benchmark (bench `KamaTransport`).
 //!
 //! **ADR-05 deferred not:** `ACK_FRAME` / `FEC_SHARD` hop-transport frame'leridir;
 //! byte-otoritesi transport engine spec §2 (ccr §35 DEĞİL — o yalnız SESSION_*
@@ -30,6 +33,7 @@ pub mod loss;
 pub mod pacer;
 pub mod rate;
 pub mod rtt;
+pub mod sender;
 pub mod seq;
 pub mod sim;
 
