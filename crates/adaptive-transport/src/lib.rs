@@ -10,9 +10,10 @@
 //! ARQ selective retransmit ([`arq`] — §9), FEC_SHARD framing codec ([`fec`] — §10.1)
 //! ve deterministik test altyapısı ([`clock`], [`sim`]). Hepsi INV-RATE-1 (loss ⟂ rate).
 //!
-//! **Engine loop:** [`sender`] Sender State Machine (§3) bileşenleri tek olay-güdümlü döngüde
-//! birleştirir (Artım 1: state machine + ölçüm + karar pipeline + DATA pacing; recovery İCRA +
-//! Receiver §4 sıradaki artımlar). Sıradaki: §4.4 benchmark (bench `KamaTransport`).
+//! **Engine loop (iki yarı TAM):** [`sender`] Sender State Machine (§3) — state machine + ölçüm +
+//! karar pipeline + DATA pacing + recovery İCRA (ARQ retransmit §9 / forward duplication §11);
+//! [`receiver`] Receiver State Machine (§4) — dedup / reorder / FEC-buffer + SACK üretimi (§2).
+//! Sıradaki: bench `KamaTransport`'u motora bağla → §4.4 Kama vs quinn benchmark.
 //!
 //! **ADR-05 deferred not:** `ACK_FRAME` / `FEC_SHARD` hop-transport frame'leridir;
 //! byte-otoritesi transport engine spec §2 (ccr §35 DEĞİL — o yalnız SESSION_*
@@ -32,6 +33,7 @@ pub mod fusion;
 pub mod loss;
 pub mod pacer;
 pub mod rate;
+pub mod receiver;
 pub mod rtt;
 pub mod sender;
 pub mod seq;
