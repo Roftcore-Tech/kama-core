@@ -1,0 +1,400 @@
+<!DOCTYPE html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>quinn Baseline — Kama §4.4 Signal Readout</title>
+<style>
+  :root {
+    --ground:#eaeef2; --panel:#ffffff; --panel-2:#f4f7f9; --ink:#152029; --muted:#54636f;
+    --faint:#8496a2; --line:#d6dee5; --accent:#0c8175; --accent-soft:#0c817520;
+    --alive:#1a9e73; --degraded:#bd7d1a; --dead:#bd463d; --grid:rgba(20,45,60,.09);
+    --shadow:0 1px 2px rgba(20,40,55,.06),0 8px 24px rgba(20,40,55,.06);
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --ground:#080b0f; --panel:#101720; --panel-2:#0c1219; --ink:#e4ecf2; --muted:#8b9aa8;
+      --faint:#586876; --line:#1f2a35; --accent:#4dd6c7; --accent-soft:#4dd6c71c;
+      --alive:#41c793; --degraded:#e0a43b; --dead:#e2665c; --grid:rgba(120,165,195,.10);
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"]{
+    --ground:#eaeef2; --panel:#ffffff; --panel-2:#f4f7f9; --ink:#152029; --muted:#54636f;
+    --faint:#8496a2; --line:#d6dee5; --accent:#0c8175; --accent-soft:#0c817520;
+    --alive:#1a9e73; --degraded:#bd7d1a; --dead:#bd463d; --grid:rgba(20,45,60,.09);
+    --shadow:0 1px 2px rgba(20,40,55,.06),0 8px 24px rgba(20,40,55,.06);
+  }
+  :root[data-theme="dark"]{
+    --ground:#080b0f; --panel:#101720; --panel-2:#0c1219; --ink:#e4ecf2; --muted:#8b9aa8;
+    --faint:#586876; --line:#1f2a35; --accent:#4dd6c7; --accent-soft:#4dd6c71c;
+    --alive:#41c793; --degraded:#e0a43b; --dead:#e2665c; --grid:rgba(120,165,195,.10);
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+    line-height:1.55;-webkit-font-smoothing:antialiased;font-size:15px}
+  .wrap{max-width:1060px;margin:0 auto;padding:clamp(20px,4vw,46px) clamp(16px,4vw,40px) 64px}
+  .mono{font-family:var(--mono)}
+  h1,h2,h3{text-wrap:balance;margin:0}
+  .eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--accent);font-weight:600}
+  .tnum{font-variant-numeric:tabular-nums}
+
+  /* header */
+  header{border-bottom:1px solid var(--line);padding-bottom:26px;margin-bottom:34px}
+  .titleline{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin:14px 0 8px}
+  h1{font-size:clamp(28px,5vw,44px);letter-spacing:-.02em;font-weight:680}
+  h1 .q{color:var(--accent)}
+  .sub{color:var(--muted);max-width:64ch;font-size:16px}
+  .meta{display:flex;flex-wrap:wrap;gap:6px 22px;margin-top:18px;font-family:var(--mono);
+    font-size:11.5px;color:var(--faint)}
+  .meta b{color:var(--muted);font-weight:600}
+
+  /* section scaffolding */
+  section{margin-top:44px}
+  .sechead{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+  .sechead h2{font-size:20px;letter-spacing:-.01em;font-weight:640}
+  .sechead .n{font-family:var(--mono);font-size:12px;color:var(--faint)}
+  .lede{color:var(--muted);max-width:70ch;margin:2px 0 20px;font-size:14.5px}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    box-shadow:var(--shadow)}
+  .pad{padding:clamp(16px,3vw,26px)}
+
+  /* cliff chart */
+  .cliff figure{margin:0}
+  .cliff svg{width:100%;height:auto;display:block}
+  #cliff .cg{stroke:var(--grid);stroke-width:1}
+  #cliff .cax{fill:var(--faint);font-family:var(--mono);font-size:10px}
+  #cliff .c120a{fill:var(--muted);opacity:.13}
+  #cliff .c120l{fill:none;stroke:var(--muted);stroke-width:2;stroke-dasharray:5 4;opacity:.85}
+  #cliff .c10a{fill:var(--accent);opacity:.16}
+  #cliff .c10l{fill:none;stroke:var(--accent);stroke-width:2.6}
+  #cliff .p10{fill:var(--accent)} #cliff .p120{fill:var(--muted)}
+  .axhint{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;
+    color:var(--faint);margin-top:8px;letter-spacing:.03em}
+  .legendrow{display:flex;gap:20px;flex-wrap:wrap;margin-top:16px;font-size:12.5px;color:var(--muted)}
+  .lg{display:inline-flex;align-items:center;gap:7px}
+  .sw{width:11px;height:11px;border-radius:3px;flex:none}
+  .swl{width:16px;height:3px;border-radius:2px}
+
+  /* regime cards */
+  .regimes{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  @media(max-width:680px){.regimes{grid-template-columns:1fr}}
+  .rg{border-radius:12px;padding:16px 16px 15px;border:1px solid var(--line);background:var(--panel)}
+  .rg .tag{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    display:inline-flex;align-items:center;gap:7px;font-weight:600}
+  .rg .big{font-family:var(--mono);font-size:30px;font-weight:600;margin:10px 0 2px;letter-spacing:-.01em}
+  .rg .cap{font-size:13px;color:var(--muted)}
+  .rg.alive{box-shadow:inset 3px 0 0 var(--alive)} .rg.alive .tag,.rg.alive .big{color:var(--alive)}
+  .rg.degraded{box-shadow:inset 3px 0 0 var(--degraded)} .rg.degraded .tag,.rg.degraded .big{color:var(--degraded)}
+  .rg.dead{box-shadow:inset 3px 0 0 var(--dead)} .rg.dead .tag,.rg.dead .big{color:var(--dead)}
+
+  /* heatmap */
+  .hmwrap{overflow-x:auto}
+  table.hm{border-collapse:separate;border-spacing:0;width:100%;min-width:560px;font-family:var(--mono)}
+  table.hm th{font-weight:600;font-size:11.5px;color:var(--muted);text-align:center;padding:0 0 10px;
+    letter-spacing:.03em}
+  table.hm th.lbl{text-align:left}
+  table.hm td{padding:0}
+  .prow td{border-top:1px solid var(--line)}
+  .plabel{text-align:left;padding:9px 14px 9px 4px;white-space:nowrap}
+  .plabel .pp{font-size:13px;color:var(--ink);font-weight:600}
+  .plabel .cc{font-size:11px;color:var(--faint)}
+  .plabel .cond{font-family:var(--sans);font-size:11px;color:var(--muted)}
+  .cell{margin:3px;height:38px;border-radius:7px;display:flex;align-items:center;justify-content:center;
+    font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;position:relative}
+  .cell .hs{position:absolute;right:5px;bottom:3px;font-size:8.5px;opacity:.72;font-weight:500}
+  .colgrp{display:flex}
+  .colgrp .cc-h{font-size:9.5px;color:var(--faint);text-align:center;letter-spacing:.08em}
+
+  /* killer */
+  .killer{display:grid;grid-template-columns:1.1fr 1fr;gap:0}
+  @media(max-width:680px){.killer{grid-template-columns:1fr}}
+  .killer .l{padding:clamp(18px,3vw,28px);border-right:1px solid var(--line)}
+  @media(max-width:680px){.killer .l{border-right:none;border-bottom:1px solid var(--line)}}
+  .killer .r{padding:clamp(18px,3vw,28px);background:var(--panel-2);border-radius:0 14px 14px 0}
+  @media(max-width:680px){.killer .r{border-radius:0 0 14px 14px}}
+  .bignums{display:flex;gap:22px;flex-wrap:wrap;margin:6px 0 4px}
+  .bn{display:flex;flex-direction:column}
+  .bn .v{font-family:var(--mono);font-size:32px;font-weight:600;letter-spacing:-.02em;line-height:1.1}
+  .bn .v.zero{color:var(--dead)} .bn .v.part{color:var(--degraded)}
+  .bn .k{font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.04em;margin-top:3px}
+  .statline{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin-top:14px}
+  .statline b{color:var(--ink);font-weight:600}
+
+  /* bimodality */
+  .bimodal{display:flex;flex-direction:column;gap:14px}
+  .bi{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  .bi .name{font-family:var(--mono);font-size:12.5px;min-width:150px;color:var(--ink)}
+  .bi .name span{color:var(--faint)}
+  .dots{display:flex;gap:8px}
+  .dot{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-family:var(--mono);font-size:10px;font-weight:600;border:1.5px solid var(--line)}
+  .dot.full{background:var(--alive);color:#fff;border-color:transparent}
+  .dot.zero{background:transparent;color:var(--dead);border-color:var(--dead)}
+  .dot.mid{background:var(--degraded);color:#12181f;border-color:transparent}
+  .bi .verdict{font-size:12.5px;color:var(--muted)}
+
+  /* target table */
+  .tgt{width:100%;border-collapse:collapse;font-size:14px}
+  .tgt th,.tgt td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  .tgt th{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--faint);font-weight:600}
+  .tgt td.b{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .tgt .qv{color:var(--dead);font-weight:600}
+  .tgt .kv{color:var(--accent);font-weight:600}
+  .tgt tr:last-child td{border-bottom:none}
+  .win{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:20px;
+    background:var(--accent-soft);color:var(--accent);letter-spacing:.06em;white-space:nowrap}
+
+  /* footer */
+  footer{margin-top:48px;padding-top:22px;border-top:1px solid var(--line);color:var(--faint);
+    font-size:12.5px}
+  footer .cav{color:var(--muted);max-width:74ch;margin-bottom:14px}
+  footer code{font-family:var(--mono);font-size:11.5px;background:var(--panel-2);padding:1px 6px;
+    border-radius:5px;color:var(--muted)}
+  .bugs{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .bug{font-family:var(--mono);font-size:11px;color:var(--muted);background:var(--panel-2);
+    border:1px solid var(--line);border-radius:7px;padding:6px 10px}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head><body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Kama · Tactical Transport · §4.4 Ölçüm</div>
+    <div class="titleline">
+      <h1><span class="q">quinn</span> baseline</h1>
+    </div>
+    <p class="sub">"İyi ağın QUIC'i" 7 hostile profilde ne yapıyor? Kama'nın yeneceği referans —
+      ölçülmüş, uydurulmamış. 70 koşu · 5 tekrar/hücre · deadline-bounded completion.</p>
+    <div class="meta tnum">
+      <span><b>quinn</b> 0.11.11</span>
+      <span><b>koşu</b> 70/70</span>
+      <span><b>tekrar</b> 5×</span>
+      <span><b>deadline</b> 10/30/120s</span>
+      <span><b>yük</b> 100×256B</span>
+      <span><b>tarih</b> 2026-07-10</span>
+      <span><b>Faz D</b> temiz ✓</span>
+    </div>
+  </header>
+
+  <!-- THESIS: the cliff -->
+  <section class="cliff">
+    <div class="sechead"><span class="n">01</span><h2>Operasyonel uçurum</h2></div>
+    <p class="lede">Ağ bozuldukça QUIC'in teslim oranı üç rejimde çöküyor. Kısa deadline (10s)
+      uçurumu, uzun deadline (120s) kısmi toparlanmayı gösterir — ama ikisi de %50 kayıpta düşüyor,
+      ACK-yolu çöküşünde ve ≥%80 kayıpta sıfırlanıyor.</p>
+    <div class="panel pad">
+      <figure><svg id="cliff" viewBox="0 0 900 300" role="img"
+        aria-label="Completion severity boyunca çöküyor"></svg></figure>
+      <div class="axhint"><span>◀ İYİ AĞ</span><span>ARTAN DÜŞMANLIK</span><span>TAM BLACKOUT ▶</span></div>
+      <div class="legendrow">
+        <span class="lg"><span class="swl" style="background:var(--accent)"></span>completion(10s) — kısa deadline</span>
+        <span class="lg"><span class="swl" style="background:var(--muted)"></span>completion(120s) — uzun deadline</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- regimes -->
+  <section>
+    <div class="sechead"><span class="n">02</span><h2>Üç rejim</h2></div>
+    <div class="regimes">
+      <div class="rg alive">
+        <span class="tag"><span class="sw" style="background:var(--alive)"></span>Ayakta</span>
+        <div class="big tnum">1.00</div>
+        <div class="cap">%2 kayıp · jitter · aralıklı blackout. <b style="color:var(--ink)">Kama: eşit kal.</b></div>
+      </div>
+      <div class="rg degraded">
+        <span class="tag"><span class="sw" style="background:var(--degraded)"></span>Sallanıyor</span>
+        <div class="big tnum">0.15</div>
+        <div class="cap">%50 kayıp — kısmi + yüksek varyans. <b style="color:var(--ink)">Kama: kazan.</b></div>
+      </div>
+      <div class="rg dead">
+        <span class="tag"><span class="sw" style="background:var(--dead)"></span>Ölü</span>
+        <div class="big tnum">0.00</div>
+        <div class="cap">≥%80 kayıp · ACK-çöküşü @ kısa deadline. <b style="color:var(--ink)">Kama: kategorik kazan.</b></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- heatmap -->
+  <section>
+    <div class="sechead"><span class="n">03</span><h2>Completion ısı-haritası</h2></div>
+    <p class="lede">Her hücre = 5 tekrarın medyan completion'ı. Renk bantları rejimleri gösterir:
+      yeşil (ayakta) üstte, kırmızı (ölü) altta. Küçük rakam = handshake başarı oranı.</p>
+    <div class="panel pad hmwrap">
+      <table class="hm" id="heat"></table>
+    </div>
+  </section>
+
+  <!-- killer -->
+  <section>
+    <div class="sechead"><span class="n">04</span><h2>Killer bulgu — ACK-yolu çöküşü</h2></div>
+    <p class="lede">p5_revpath: forward yolu temiz (%5), dönüş/ACK yolu %80 bozuk. QUIC ACK-clocked —
+      ACK'ler kaybolunca aç kalıyor. Kama'nın ACK'e bağımsız forward-FEC tezinin doğrudan hedefi.</p>
+    <div class="panel killer">
+      <div class="l">
+        <div class="mono" style="font-size:12px;color:var(--faint);letter-spacing:.1em">p5_revpath · cubic</div>
+        <div class="bignums">
+          <div class="bn"><span class="v zero">0.00</span><span class="k">c(10s)</span></div>
+          <div class="bn"><span class="v zero">0.00</span><span class="k">c(30s)</span></div>
+          <div class="bn"><span class="v part">0.27</span><span class="k">c(120s)</span></div>
+        </div>
+        <div class="statline">handshake başarı <b>%60</b> · p95 latency <b>86 s</b></div>
+      </div>
+      <div class="r">
+        <p style="margin:0 0 10px;font-size:14px;color:var(--muted)">Kısa deadline'da <b style="color:var(--ink)">tam sıfır</b>.
+          Teslim olan mesajlar bile 86 saniyeye varan gecikmeyle geliyor. Bağlantı kurmak bile yazı-tura.</p>
+        <p style="margin:0;font-size:13px;color:var(--muted)">bbr daha kötü: c(120s) <b style="color:var(--dead)">0.00</b>,
+          handshake <b style="color:var(--dead)">%40</b>. Spec'teki <span class="mono" style="font-size:12px">ack_confidence
+          çöküşü → EMERGENCY_FORWARD_REDUNDANCY</span> senaryosunun ölçülmüş kanıtı.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- bimodality -->
+  <section>
+    <div class="sechead"><span class="n">05</span><h2>Yazı-tura — neden 5 tekrar şart</h2></div>
+    <p class="lede">Hostile rejimde QUIC per-koşu davranışı çoğu zaman "bağlan-ve-hepsini-ver YA DA
+      tümüyle-başarısız". Medyan bunu gizler; 5 tekrar açığa çıkarır. Her nokta bir koşunun c(120s)'i.</p>
+    <div class="panel pad bimodal" id="bimodal"></div>
+  </section>
+
+  <!-- targets -->
+  <section>
+    <div class="sechead"><span class="n">06</span><h2>ADIM-3 hedefleri</h2></div>
+    <p class="lede">Kama engine loop'unun yenmesi gereken sayılar. Ana metrik yalnız daha yüksek medyan
+      değil — <b>dar IQR</b>: QUIC'in yazı-turasını öngörülebilir teslime çevirmek.</p>
+    <div class="panel pad" style="overflow-x:auto">
+      <table class="tgt">
+        <thead><tr><th>Cephe</th><th>quinn baseline</th><th>Kama hedefi</th><th></th></tr></thead>
+        <tbody>
+          <tr><td>p5_revpath c(10s)</td><td class="b qv">0.00</td><td class="b kv">&gt; 0</td><td><span class="win">kategorik</span></td></tr>
+          <tr><td>p5_revpath c(120s)</td><td class="b qv">0.27</td><td class="b kv">&gt; 0.27</td><td><span class="win">kazanç</span></td></tr>
+          <tr><td>p1_loss50 c(10s)</td><td class="b qv">0.13</td><td class="b kv">&gt; 0.13 · dar IQR</td><td><span class="win">determinizm</span></td></tr>
+          <tr><td>p2_loss80 c(120s)</td><td class="b qv">0.00</td><td class="b kv">&gt; 0</td><td><span class="win">kazanç</span></td></tr>
+          <tr><td>p3_loss95 handshake</td><td class="b qv">%0</td><td class="b kv">bağlantı kur</td><td><span class="win">0-RTT+FEC</span></td></tr>
+          <tr><td>p7 / p4 / p6 (iyi ağ)</td><td class="b kv">1.00</td><td class="b kv">1.00 koru</td><td><span class="win">kaybetme</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <p class="cav"><b style="color:var(--muted)">Caveat:</b> p6_blackout=1.00 <i>aralıklı</i> kesinti (2s/8s);
+      idle-timeout 300s ≫ 2s → kolay hayatta kalınır. Sürekli blackout survival ölçülmedi (BENCH-01).
+      Mutlak sayılar bu makine + bu netem profillerine özgü; rejim yapısı taşınabilir.</p>
+    <div style="margin-bottom:10px">Ölçmeden önce araç doğrulandı — 3 ölçüm-bozucu bug bulunup düzeltildi (hiçbiri derlemede yakalanmaz):</div>
+    <div class="bugs">
+      <span class="bug">delivered_ns frame → düz eğri</span>
+      <span class="bug">server sıralı stream (HoL) + ALPN + idle 30s</span>
+      <span class="bug">handshake bounded değil → 2m17s hang</span>
+    </div>
+    <div style="margin-top:16px;font-family:var(--mono);font-size:11px">
+      image sha256:7a30f6… · netem sha256:293bb3… · <code>harness/run-bench.sh</code> → <code>report.py</code> · Faz D temiz ✓
+    </div>
+  </footer>
+</div>
+
+<script>
+  const DEAD=[10,30,120];
+  // profil sırası: iyi → kötü (severity). c = cubic medyan; b = bbr medyan; hs = handshake %; per = cubic per-repeat c120
+  const ROWS=[
+    {p:"p7_bbr",   cond:"%2 kayıp",        c:[1,1,1],       b:[1,1,1],       hsC:100,hsB:100},
+    {p:"p4_jitter",cond:"jitter 200±100ms",c:[1,1,1],       b:[1,1,1],       hsC:100,hsB:100},
+    {p:"p6_blackout",cond:"aralıklı 2s/8s",c:[1,1,1],       b:[1,1,1],       hsC:100,hsB:100},
+    {p:"p1_loss50",cond:"%50 kayıp",       c:[0.13,0.15,0.15],b:[0,0,0],     hsC:100,hsB:100},
+    {p:"p5_revpath",cond:"ACK-yolu %80",   c:[0,0,0.27],    b:[0,0,0],       hsC:60, hsB:40},
+    {p:"p2_loss80",cond:"%80 kayıp",       c:[0,0,0],       b:[0,0,0],       hsC:20, hsB:60},
+    {p:"p3_loss95",cond:"%95 kayıp",       c:[0,0,0],       b:[0,0,0],       hsC:0,  hsB:0},
+  ];
+  // completion → renk (0 kırmızı → .5 amber → 1 yeşil). Kendi bg'li chip, her iki temada okunur.
+  const STOPS=[[0,[178,59,50]],[0.15,[196,96,44]],[0.35,[201,132,38]],[0.6,[176,150,44]],[0.8,[95,150,60]],[1,[42,150,102]]];
+  function lerp(a,b,t){return a+(b-a)*t}
+  function ccol(v){
+    v=Math.max(0,Math.min(1,v));
+    for(let i=0;i<STOPS.length-1;i++){
+      const[a,ca]=STOPS[i],[d,cb]=STOPS[i+1];
+      if(v<=d){const t=(v-a)/(d-a);return[Math.round(lerp(ca[0],cb[0],t)),Math.round(lerp(ca[1],cb[1],t)),Math.round(lerp(ca[2],cb[2],t))]}
+    }
+    return STOPS[STOPS.length-1][1];
+  }
+  const lum=(r,g,b)=>(0.299*r+0.587*g+0.114*b)/255;
+  const txtOn=(rgb)=>lum(...rgb)>0.62?"#12181f":"#ffffff";
+
+  // ---- heatmap ----
+  function cellHTML(v,hs){
+    const rgb=ccol(v), fg=txtOn(rgb);
+    const hsTag = hs<100 ? `<span class="hs">hs ${hs}%</span>`:"";
+    return `<div class="cell" style="background:rgb(${rgb.join(',')});color:${fg}">${v.toFixed(2)}${hsTag}</div>`;
+  }
+  (function heat(){
+    const t=document.getElementById("heat");
+    const h=`<thead>
+        <tr><th class="lbl" rowspan="2">profil</th>
+            <th colspan="3">cubic (default)</th><th colspan="3">bbr (experimental)</th></tr>
+        <tr>`+DEAD.map(d=>`<th>${d}s</th>`).join("")+DEAD.map(d=>`<th>${d}s</th>`).join("")+`</tr></thead>`;
+    let body="<tbody>";
+    for(const r of ROWS){
+      body+=`<tr class="prow"><td class="plabel"><div class="pp">${r.p}</div><div class="cond">${r.cond}</div></td>`;
+      for(const v of r.c) body+=`<td>${cellHTML(v,r.hsC)}</td>`;
+      for(const v of r.b) body+=`<td>${cellHTML(v,r.hsB)}</td>`;
+      body+="</tr>";
+    }
+    body+="</tbody>";
+    t.innerHTML=h+body;
+  })();
+
+  // ---- cliff area chart ----
+  (function cliff(){
+    const svg=document.getElementById("cliff");
+    const W=900,H=300,mL=44,mR=16,mT=18,mB=44;
+    const iw=W-mL-mR, ih=H-mT-mB;
+    const n=ROWS.length;
+    const x=i=> mL + (n===1?0:iw*i/(n-1));
+    const y=v=> mT + ih*(1-v);
+    let s="";
+    for(const gv of [0,0.25,0.5,0.75,1]){
+      s+=`<line class="cg" x1="${mL}" y1="${y(gv)}" x2="${W-mR}" y2="${y(gv)}"/>`;
+      s+=`<text class="cax" x="${mL-8}" y="${y(gv)+3.5}" text-anchor="end">${gv.toFixed(2)}</text>`;
+    }
+    const c10=ROWS.map(r=>r.c[0]), c120=ROWS.map(r=>r.c[2]);
+    const path=(arr)=>arr.map((v,i)=>`${i?"L":"M"}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
+    const area=(arr)=>`M${x(0)} ${y(0)} `+arr.map((v,i)=>`L${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(" ")+` L${x(n-1)} ${y(0)} Z`;
+    s+=`<path class="c120a" d="${area(c120)}"/>`;
+    s+=`<path class="c120l" d="${path(c120)}"/>`;
+    s+=`<path class="c10a" d="${area(c10)}"/>`;
+    s+=`<path class="c10l" d="${path(c10)}"/>`;
+    ROWS.forEach((r,i)=>{
+      s+=`<circle class="p120" cx="${x(i)}" cy="${y(c120[i])}" r="3"/>`;
+      s+=`<circle class="p10" cx="${x(i)}" cy="${y(c10[i])}" r="3.6"/>`;
+      s+=`<text class="cax" x="${x(i)}" y="${H-mB+18}" text-anchor="middle">${r.p.replace('p','').replace('_','·')}</text>`;
+    });
+    svg.innerHTML=s;
+  })();
+
+  // ---- bimodality dots ----
+  (function bimodal(){
+    const el=document.getElementById("bimodal");
+    const CASES=[
+      {name:"p1_loss50 · bbr", per:[1,0,0,0,1], med:"0.00", verdict:"temiz yazı-tura — %40 tam, %60 sıfır"},
+      {name:"p5_revpath · bbr",per:[0,0,0,1,1], med:"0.00", verdict:"bağlanırsa hepsi, bağlanamazsa hiç"},
+      {name:"p1_loss50 · cubic",per:[1,0.04,0.18,0.15,0.01], med:"0.15", verdict:"dağınık kısmi, bir koşu tam"},
+      {name:"p5_revpath · cubic",per:[0,0.34,0.27,0,0.5], med:"0.27", verdict:"3/5 bağlandı, kısmi teslim"},
+    ];
+    let h="";
+    for(const c of CASES){
+      let dots="";
+      for(const v of c.per){
+        const cls = v>=0.99?"full": v<=0.01?"zero":"mid";
+        const lbl = v>=0.99?"1": v<=0.01?"0": v.toFixed(2).replace("0.",".");
+        dots+=`<span class="dot ${cls}">${lbl}</span>`;
+      }
+      h+=`<div class="bi"><div class="name">${c.name.split(" · ")[0]} <span>· ${c.name.split(" · ")[1]}</span></div>
+          <div class="dots">${dots}</div>
+          <div class="verdict">medyan <b class="mono" style="color:var(--ink)">${c.med}</b> — ${c.verdict}</div></div>`;
+    }
+    el.innerHTML=h;
+  })();
+</script>
+</body></html>
