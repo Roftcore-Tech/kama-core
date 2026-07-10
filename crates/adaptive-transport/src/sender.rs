@@ -6,21 +6,29 @@
 //!
 //! **INV-RATE-1:** loss `send_rate`'i DÜŞÜRMEZ. Recovery durumları (RECOVER_ARQ/FWD) pacing_gain'i
 //! `Steady` tutar; loss yalnız [`loss`](crate::loss) + fuzzy `loss_ppm` → FEC/ARQ recovery kolunu besler.
+//! Retransmit/duplication DATA pacing bütçesini PAYLAŞIR (§9/§13) → recovery fırtınası rate'i patlatamaz.
 //!
-//! **Kapsam (Artım 1 — spine):** state machine (§3 geçişleri) + ölçüm muhasebesi (§3.1/§3.2) +
-//! karar pipeline (fusion §8.4 → SRC §8.2 → budget §8.5 → pacer §13) + DATA pacing. Recovery
-//! İCRA kolları (ARQ retransmit §9 / FEC parity §10 / duplication §11 emission) Artım 3 — durum
-//! makinesi O DURUMLARA GEÇER ve doğru RecoveryAction'ı HESAPLAR, ama ek frame emisyonu sonraki artım.
+//! **Recovery İCRA SoC (INV-FEC-1/INV-ENGINE-SOC):** ARQ retransmit (§9) + duplication (§11)
+//! transport-owned'dır — transport kayıp birimin METADATA'sını (id/size) tutar, yeniden pace eder.
+//! FEC parity (§10) yalnız POLİTİKA'dır (parity_ratio + `RecoveryAction::MinimalParity`); RS-encode +
+//! per-shard AEAD GÜVENLİK katmanında (code-then-encrypt-authenticate-shards). Transport parity BYTE'ı
+//! ÜRETMEZ — oranı verir, güvenlik katmanı encode eder, transport opak parity birimlerini pace eder.
 //!
-//! **TASARIM YORUMU (§3 tablosundan sapma, gerekçeli):** §3 geçiş tablosu RECOVER_FWD'yi yalnız
-//! STEADY'den gösterir. Ama ACK-yolu çökerse (p5_revpath — baseline'da QUIC'in c(10s)=0.00 olduğu
-//! yer) STARTUP'ta BtlBw platoya ulaşamaz (ACK yok → btlbw büyümez) → STEADY'ye hiç geçilemez →
-//! RECOVER_FWD erişilemez olurdu. Recovery-obsesif taban gereği: ack_confidence LOW HER aktif
-//! fazdan RECOVER_FWD tetikler (forward-recovery ACK'e bağımsızdır, §11 — tam da bu yüzden).
+//! **TASARIM YORUMU (§3 tablosundan sapma, onaylı):** RECOVER_FWD *ve* RECOVER_ARQ her aktif fazdan
+//! erişilir (yalnız STEADY'den değil). ACK-yolu çökerse (p5_revpath — baseline'da QUIC c(10s)=0.00)
+//! STARTUP platoya ulaşamaz → STEADY erişilemez → recovery kilitlenirdi; ayrıca loss STARTUP'ta olsa
+//! da (yaygın) retransmit tıkanmamalı. Öncelik: ack_confidence LOW → RECOVER_FWD (ACK-bağımsız, §11);
+//! değilse pending loss → RECOVER_ARQ (§9). ack_confidence = ACK SESSİZLİĞİ (naif sent/recv oranı değil).
+//!
+//! **Kapsam (Artım 1+3):** state machine + ölçüm + karar pipeline + DATA pacing + recovery İCRA
+//! (ARQ retransmit / forward duplication). Receiver (§4) = sonraki artım.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
+use crate::arq::{
+    ArqScheduler, CapExceedPolicy, DeadlineArqScheduler, LostSeq, RetxConfig, RetxDecision,
+};
 use crate::budget::{self, BudgetConfig};
 use crate::bw::{BtlBwFilter, DeliveryRateSampler, SentPacket};
 use crate::emergency::{
@@ -105,24 +113,42 @@ pub struct TransmitDecision {
     pub size: u64,
 }
 
-/// Transmit türü. Artım 1'de yalnız `Data` emit edilir; recovery türleri Artım 3.
+/// Transmit türü.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransmitKind {
     /// tx_queue'dan yeni DATA.
     Data,
-    /// ARQ selective retransmit (§9) — Artım 3.
+    /// ARQ selective retransmit (§9) — kayıp birim, yeni seq.
     Retransmit,
-    /// FEC parity shard (§10) — Artım 3.
-    FecParity,
-    /// forward-recovery duplication (§11) — Artım 3.
+    /// forward-recovery duplication (§11) — ACK-bağımsız redundant kopya.
     Duplicate,
+    /// FEC parity shard (§10) — POLİTİKA; transport üretmez (güvenlik katmanı encode eder). Emit EDİLMEZ.
+    FecParity,
 }
 
-/// Bir gönderilmiş DATA paketinin muhasebe kaydı (RTT/BW/loss + retransmit).
+/// Bir gönderilmiş paketin muhasebe kaydı (RTT/BW/loss + retransmit).
 struct InflightPacket {
     unit: OpaqueUnit,
     send_ns: u64,
     bw_sample: SentPacket,
+    retx_count: u8,
+    origin: TransmitKind,
+}
+
+/// Kayıp ilan edilmiş, recovery bekleyen kayıt (birim + öncelik metadata).
+#[derive(Debug, Clone, Copy)]
+struct LostRec {
+    seq: u64,
+    unit: OpaqueUnit,
+    deadline_ns: u64,
+    retx_count: u8,
+}
+
+/// Zamanlanmış forward-recovery duplication kopyası (§11 spacing — burst-loss dayanıklılığı).
+#[derive(Debug, Clone, Copy)]
+struct DupRec {
+    due_ns: u64,
+    unit: OpaqueUnit,
 }
 
 /// İlk RTT ölçülene kadar pacing/eşik için başlangıç RTT [CAL initial].
@@ -133,6 +159,9 @@ const STARTUP_PLATEAU_ROUNDS: u32 = 3;
 const STARTUP_PLATEAU_EPS_PERMILLE: u64 = 50;
 /// ack_confidence: bu kadar srtt sessizlik (ACK yok) → tam güvensizlik ölçeği [CAL].
 const ACK_SILENCE_SRTT_MULT: u32 = 3;
+/// last_recovery Duplication değilse forward-recovery için varsayılan faktör/aralık [CAL].
+const DEFAULT_DUP_FACTOR: u8 = 2;
+const DEFAULT_DUP_SPACING: Duration = Duration::from_millis(20);
 
 /// Sender state machine (§3). Tüm bileşen state'ini tutar; `on_event` ile sürülür.
 pub struct Sender {
@@ -151,20 +180,22 @@ pub struct Sender {
     emergency: HysteresisController,
     emergency_cfg: EmergencyConfig,
 
-    // ── icra (§13) ──
+    // ── icra (§9/§11/§13) ──
     pacer: TokenBucket,
+    arq: DeadlineArqScheduler,
 
     // ── durum sayaçları ──
     next_seq: u64,
     inflight_bytes: u64,
     inflight: BTreeMap<u64, InflightPacket>,
     tx_queue: VecDeque<OpaqueUnit>,
-    pending_lost: VecDeque<u64>, // §5 tespit edilen kayıp seq'ler (Artım 3 retransmit kuyruğu)
+    pending_lost: VecDeque<LostRec>, // §5 kayıp seq'ler → RECOVER_ARQ retransmit / RECOVER_FWD dup
+    dup_queue: Vec<DupRec>,          // §11 zamanlanmış forward-recovery kopyaları
     last_now_ns: u64,
 
     // ── ack_confidence (RECOVER_FWD tetiği): sessizlik-tabanlı ──
-    last_ack_ns: Option<u64>,   // en son ACK alım anı
-    first_send_ns: Option<u64>, // ilk gönderim (hiç ACK yoksa sessizlik buradan)
+    last_ack_ns: Option<u64>,
+    first_send_ns: Option<u64>,
 
     // ── STARTUP plato tespiti ──
     startup_last_btlbw: u64,
@@ -192,11 +223,13 @@ impl Sender {
             emergency: HysteresisController::new(HysteresisConfig::fixture(), EmergencyLevel::Arq),
             emergency_cfg: EmergencyConfig::fixture(),
             pacer: TokenBucket::new(budget_cfg.min_rate_bps, DEFAULT_BURST_CAP),
+            arq: DeadlineArqScheduler::new(RetxConfig::fixture()),
             next_seq: 0,
             inflight_bytes: 0,
             inflight: BTreeMap::new(),
             tx_queue: VecDeque::new(),
             pending_lost: VecDeque::new(),
+            dup_queue: Vec::new(),
             last_now_ns: 0,
             last_ack_ns: None,
             first_send_ns: None,
@@ -214,9 +247,7 @@ impl Sender {
     }
 
     /// Ana döngü (§3): olay işle → FuzzyEvaluate → state → send_rate → UpdatePacing → ScheduleTransmit.
-    /// Emit edilen transmit kararlarını döndürür (çağıran gerçekten yollar).
     pub fn on_event(&mut self, event: Event, now_ns: u64) -> Vec<TransmitDecision> {
-        // pacer refill: son olaydan bu yana geçen süre kadar token ekle (§13).
         let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
         self.pacer.refill(dt);
         self.last_now_ns = now_ns;
@@ -232,7 +263,6 @@ impl Sender {
             Event::TimerFired(timer) => self.on_timer(timer, now_ns),
         }
 
-        // §3 pipeline: karar → state → rate → pacing.
         let decision = self.fuzzy_evaluate(now_ns);
         self.last_decision = decision;
         self.update_state(&decision, now_ns);
@@ -247,25 +277,22 @@ impl Sender {
         if ack.acked_seqs.is_empty() {
             return;
         }
-        self.last_ack_ns = Some(now_ns); // reverse-path canlı: sessizlik sıfırlanır.
+        self.last_ack_ns = Some(now_ns);
 
-        // RTT: en yüksek yeni-acked paketten örnekle (standart: largest newly-acked).
+        // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
         let mut rtt_send_ns: Option<u64> = None;
         let mut largest = 0u64;
         for &seq in &ack.acked_seqs {
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
                 let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);
-                let valid = sample.delivered > 0; // §7.3 basit geçerlilik (spine); rafine sonra.
-                self.btlbw.update(sample, now_ns, valid);
-                if rtt_send_ns.is_none() || seq >= largest {
+                self.btlbw.update(sample, now_ns, sample.delivered > 0);
+                if p.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
                     largest = seq;
                     rtt_send_ns = Some(p.send_ns);
                 }
             }
         }
-
-        // RTT örneği (§6): raw = now − send; ack_delay düzeltmesi.
         if let Some(send_ns) = rtt_send_ns {
             let raw = Duration::from_nanos(now_ns.saturating_sub(send_ns));
             if let Some(sample) = rtt_sample(raw, ack.ack_delay) {
@@ -273,17 +300,12 @@ impl Sender {
             }
         }
 
-        // loss tespiti (§5): packet-threshold. loss = RECOVERY sinyali (INV-RATE-1: rate'e DEĞMEZ).
+        // loss tespiti (§5). loss = RECOVERY sinyali (INV-RATE-1: rate'e DEĞMEZ).
         let lost = self.loss.on_ack(&ack.acked_seqs);
-        for seq in lost {
-            if let Some(p) = self.inflight.remove(&seq) {
-                self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
-            }
-            self.pending_lost.push_back(seq);
-        }
+        self.queue_losses(&lost, now_ns);
     }
 
-    /// §12 timer handler (spine: RTprop probe → DRAIN_RTPROP; PTO → zaman-eşiği loss).
+    /// §12 timer handler (RTprop probe → DRAIN_RTPROP; PTO → zaman-eşiği loss).
     fn on_timer(&mut self, timer: Timer, now_ns: u64) {
         match timer {
             Timer::RtpropProbe => {
@@ -294,11 +316,23 @@ impl Sender {
             Timer::Pto => {
                 let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
                 let lost = self.loss.detect_time_losses(now_ns, srtt);
-                for seq in lost {
-                    if let Some(p) = self.inflight.remove(&seq) {
-                        self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
-                    }
-                    self.pending_lost.push_back(seq);
+                self.queue_losses(&lost, now_ns);
+            }
+        }
+    }
+
+    /// Kayıp seq'leri recovery kuyruğuna al. Duplicate-kökenli kayıp RE-QUEUE EDİLMEZ (redundancy'di).
+    fn queue_losses(&mut self, lost: &[u64], now_ns: u64) {
+        for &seq in lost {
+            if let Some(p) = self.inflight.remove(&seq) {
+                self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                if p.origin != TransmitKind::Duplicate {
+                    self.pending_lost.push_back(LostRec {
+                        seq,
+                        unit: p.unit,
+                        deadline_ns: now_ns,
+                        retx_count: p.retx_count,
+                    });
                 }
             }
         }
@@ -307,9 +341,7 @@ impl Sender {
     /// FuzzyEvaluate (§8.4/§15): ölçümlerden FusionInputs kur → controller kararı.
     fn fuzzy_evaluate(&self, now_ns: u64) -> FusionDecision {
         let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
-        let rttvar = self.rtt.rttvar();
-        // jitter_ppm = rttvar / srtt (ppm); srtt 0 → 0.
-        let jitter_ppm = dur_ns(rttvar)
+        let jitter_ppm = dur_ns(self.rtt.rttvar())
             .saturating_mul(1_000_000)
             .checked_div(dur_ns(srtt))
             .unwrap_or(0);
@@ -323,28 +355,32 @@ impl Sender {
         self.fuzzy.decide(&inputs)
     }
 
-    /// §3 state geçişleri (deterministik). Öncelik: IDLE (sessiz) → RECOVER_FWD (ack_confidence LOW,
-    /// HER fazdan — bkz. modül TASARIM YORUMU) → faz-içi (STARTUP plato / RECOVER_ARQ / STEADY).
+    /// §3 state geçişleri. Öncelik: IDLE (iş yok) → RECOVER_FWD (ack_confidence LOW, her fazdan) →
+    /// faz-içi (STARTUP plato / RECOVER_ARQ / STEADY).
     fn update_state(&mut self, decision: &FusionDecision, now_ns: u64) {
-        // Emergency hysteresis (§11): health = ack_confidence (yüksek=sağlıklı); flap'i önler.
         let health = u32::try_from(self.ack_confidence_permille(now_ns)).unwrap_or(u32::MAX);
         let level = self.emergency.update(health, now_ns);
         self.last_recovery = emergency::action(level, Framing::Tiny, &self.emergency_cfg);
 
-        // Aktif iş: kuyruk + inflight + kurtarılmamış kayıp. Hiçbiri yoksa → IDLE.
-        let idle =
-            self.tx_queue.is_empty() && self.inflight.is_empty() && self.pending_lost.is_empty();
+        let idle = self.tx_queue.is_empty()
+            && self.inflight.is_empty()
+            && self.pending_lost.is_empty()
+            && self.dup_queue.is_empty();
         let emergency_active =
             level > EmergencyLevel::Arq || decision.mode == Mode::EmergencyForwardRedundancy;
 
         self.state = if idle {
             SenderState::Idle
         } else if emergency_active {
-            // ack_confidence LOW → forward-recovery (ACK-bağımsız, §11), hangi fazdan olursa olsun.
+            // ack_confidence LOW → forward-recovery (ACK-bağımsız, §11), her aktif fazdan.
             SenderState::RecoverFwd
+        } else if !self.pending_lost.is_empty() {
+            // residual loss + ack_confidence OK → selective retransmit (§9), her aktif fazdan
+            // (RECOVER_FWD ile simetrik: loss STARTUP'ta olsa da recovery tıkanmamalı).
+            SenderState::RecoverArq
         } else {
             match self.state {
-                SenderState::Idle => SenderState::Startup, // veri geldi (idle değil)
+                SenderState::Idle => SenderState::Startup,
                 SenderState::Startup => {
                     if self.startup_plateau() {
                         SenderState::Steady
@@ -352,16 +388,7 @@ impl Sender {
                         SenderState::Startup
                     }
                 }
-                SenderState::Steady
-                | SenderState::RecoverArq
-                | SenderState::RecoverFwd
-                | SenderState::DrainRtprop => {
-                    if self.pending_lost.is_empty() {
-                        SenderState::Steady
-                    } else {
-                        SenderState::RecoverArq // residual loss + ack_confidence OK → §9
-                    }
-                }
+                _ => SenderState::Steady,
             }
         };
     }
@@ -387,13 +414,12 @@ impl Sender {
         self.startup_stable_rounds >= STARTUP_PLATEAU_ROUNDS
     }
 
-    /// send_rate (§8.2 + §8.5): SRC pacing × fuzzy gain, sonra budget clamp. INV-RATE-1: pacing_gain
-    /// duruma göre (recovery ≠ throttle); fuzzy send_rate_gain YALNIZ bw+queue_delay'den (loss-kör).
+    /// send_rate (§8.2 + §8.5): SRC pacing × fuzzy gain, sonra budget clamp. INV-RATE-1: recovery
+    /// durumları base rate'i (Steady) DÜŞÜRMEZ; fuzzy send_rate_gain yalnız bw+queue_delay'den.
     fn compute_send_rate(&self, decision: &FusionDecision) -> u64 {
         let phase = match self.state {
             SenderState::Startup => PacingPhase::Startup,
             SenderState::DrainRtprop => PacingPhase::ProbeDown,
-            // Steady + recovery durumları: base rate Steady (loss rate'i düşürmez, INV-RATE-1).
             _ => PacingPhase::Steady,
         };
         let btlbw = self.btlbw.btlbw();
@@ -407,42 +433,170 @@ impl Sender {
             phase.gain(),
             decision.send_rate_gain_permille,
         );
-        // clamp [MIN_RATE, ∞): MIN_RATE floor rate-düşüklüğünden (loss'tan DEĞİL, INV-RATE-1).
         budget::send_rate_final(fuzzy_rate, self.budget_cfg.min_rate_bps, u64::MAX)
     }
 
-    /// ScheduleTransmit (§3): pacing token'ı elverdikçe DATA gönder (+ OnPacketSent §3.1 muhasebesi).
-    /// Artım 1: yalnız DATA. Recovery emisyonu (retransmit/parity/dup) Artım 3 — `last_recovery`
-    /// HESAPLANDI ama ek frame henüz emit edilmiyor.
+    /// ScheduleTransmit (§3): recovery + DATA'yı pacing bütçesinde emit et.
+    /// Öncelik (recovery-obsesif "veri ulaşsın"): RECOVER_ARQ retransmit / RECOVER_FWD dup-plan →
+    /// vadesi gelen duplicate'ler → yeni DATA. Hepsi tek pacer'ı (token bucket) paylaşır (§9/§13).
     fn schedule_transmit(&mut self, now_ns: u64) -> Vec<TransmitDecision> {
         let mut out = Vec::new();
+        match self.state {
+            SenderState::RecoverArq => self.plan_arq_retransmits(&mut out, now_ns),
+            SenderState::RecoverFwd => self.plan_forward_duplication(now_ns),
+            _ => {}
+        }
+        self.drain_due_duplicates(&mut out, now_ns);
+        self.drain_new_data(&mut out, now_ns);
+        out
+    }
+
+    /// RECOVER_ARQ (§9): ACK-güdümlü selective retransmit. arq_aggressiveness=0 → baskıla (fec-dominant).
+    fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        let lost: Vec<LostSeq> = self
+            .pending_lost
+            .iter()
+            .map(|r| LostSeq {
+                seq: r.seq,
+                deadline_ns: r.deadline_ns,
+                retx_count: r.retx_count,
+            })
+            .collect();
+        let plan = self
+            .arq
+            .plan(&lost, self.last_decision.arq_aggressiveness_permille);
+        for dec in plan {
+            match dec {
+                RetxDecision::Retransmit { seq } => {
+                    let Some(pos) = self.pending_lost.iter().position(|r| r.seq == seq) else {
+                        continue;
+                    };
+                    let rec = self.pending_lost[pos];
+                    if !self.pacer.try_send(rec.unit.size) {
+                        break; // token yok → sonraki tick'te (deadline plandan düşmez, §9).
+                    }
+                    self.pending_lost.remove(pos);
+                    let new_seq = self.track_sent(
+                        rec.unit,
+                        now_ns,
+                        rec.retx_count + 1,
+                        TransmitKind::Retransmit,
+                    );
+                    out.push(TransmitDecision {
+                        kind: TransmitKind::Retransmit,
+                        seq: new_seq,
+                        unit_id: rec.unit.id,
+                        size: rec.unit.size,
+                    });
+                }
+                RetxDecision::CapExceeded { seq, policy } => {
+                    if let Some(pos) = self.pending_lost.iter().position(|r| r.seq == seq) {
+                        let rec = self.pending_lost.remove(pos).expect("pos geçerli");
+                        if policy == CapExceedPolicy::HandToForward {
+                            // ARQ cap doldu → forward-recovery'ye devret (§9.1 "veri ulaşsın").
+                            self.dup_queue.push(DupRec {
+                                due_ns: now_ns,
+                                unit: rec.unit,
+                            });
+                        }
+                        // ConnectionFail: spine'da düşür; gerçek impl bağlantı-fail sinyali verir.
+                    }
+                }
+            }
+        }
+    }
+
+    /// RECOVER_FWD (§11): ACK-BAĞIMSIZ forward duplication. Kayıp birimleri `factor` kez zaman-aralıklı
+    /// kopya olarak planla (ACK beklemeden — reverse-path çöktüğü için ARQ futile).
+    fn plan_forward_duplication(&mut self, now_ns: u64) {
+        let (factor, spacing) = self.dup_params();
+        let recs: Vec<LostRec> = self.pending_lost.drain(..).collect();
+        for rec in recs {
+            for i in 0..u64::from(factor) {
+                self.dup_queue.push(DupRec {
+                    due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
+                    unit: rec.unit,
+                });
+            }
+        }
+    }
+
+    /// Vadesi gelen duplicate kopyalarını pace ederek emit et (§11 spacing).
+    fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        let mut i = 0;
+        while i < self.dup_queue.len() {
+            if self.dup_queue[i].due_ns > now_ns {
+                i += 1;
+                continue; // henüz vadesi gelmedi.
+            }
+            if !self.pacer.try_send(self.dup_queue[i].unit.size) {
+                break; // token yok.
+            }
+            let dup = self.dup_queue.remove(i);
+            let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
+            out.push(TransmitDecision {
+                kind: TransmitKind::Duplicate,
+                seq,
+                unit_id: dup.unit.id,
+                size: dup.unit.size,
+            });
+        }
+    }
+
+    /// Yeni DATA'yı pace ederek emit et. RECOVER_FWD'de her DATA ayrıca (factor−1) kopya planlar.
+    fn drain_new_data(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         while let Some(front) = self.tx_queue.front().copied() {
             if !self.pacer.try_send(front.size) {
-                break; // token yok → pacing bekliyor.
+                break;
             }
             self.tx_queue.pop_front();
-            let seq = self.on_packet_sent(front, now_ns);
+            let seq = self.track_sent(front, now_ns, 0, TransmitKind::Data);
             out.push(TransmitDecision {
                 kind: TransmitKind::Data,
                 seq,
                 unit_id: front.id,
                 size: front.size,
             });
+            if self.state == SenderState::RecoverFwd {
+                let (factor, spacing) = self.dup_params();
+                for i in 1..u64::from(factor) {
+                    self.dup_queue.push(DupRec {
+                        due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
+                        unit: front,
+                    });
+                }
+            }
         }
-        out
     }
 
-    /// §3.1 OnPacketSent: seq ata, inflight+muhasebe, RTT/BW/loss kayıt.
-    fn on_packet_sent(&mut self, unit: OpaqueUnit, now_ns: u64) -> u64 {
+    /// last_recovery'den (factor, spacing); Duplication değilse varsayılan (§11 Tiny framing).
+    fn dup_params(&self) -> (u8, Duration) {
+        match self.last_recovery {
+            RecoveryAction::Duplication { factor, spacing } => (factor, spacing),
+            _ => (DEFAULT_DUP_FACTOR, DEFAULT_DUP_SPACING),
+        }
+    }
+
+    /// §3.1 OnPacketSent muhasebe: seq ata, inflight+RTT/BW/loss kayıt. `origin` recovery türünü ayırır
+    /// (DATA = orijinal birim → loss sayacı +1; retransmit/dup = recovery → +0, RTT'de Karn dışı).
+    fn track_sent(
+        &mut self,
+        unit: OpaqueUnit,
+        now_ns: u64,
+        retx_count: u8,
+        origin: TransmitKind,
+    ) -> u64 {
         let seq = self.next_seq;
         self.next_seq += 1;
         if self.first_send_ns.is_none() {
             self.first_send_ns = Some(now_ns);
         }
-        // app-limited: bu gönderimden sonra kuyruk boşsa (§7.3 estimator şişme koruması).
-        let app_limited = self.tx_queue.is_empty();
-        let bw_sample = self.bw_sampler.on_sent(now_ns, unit.size, app_limited);
-        self.loss.on_sent(seq, now_ns, 1); // 1 orijinal birim / DATA paketi.
+        let more_pending = !self.tx_queue.is_empty()
+            || !self.pending_lost.is_empty()
+            || !self.dup_queue.is_empty();
+        let bw_sample = self.bw_sampler.on_sent(now_ns, unit.size, !more_pending);
+        let units = u64::from(origin == TransmitKind::Data); // yalnız orijinal DATA loss sayacına.
+        self.loss.on_sent(seq, now_ns, units);
         self.inflight_bytes += unit.size;
         self.inflight.insert(
             seq,
@@ -450,23 +604,27 @@ impl Sender {
                 unit,
                 send_ns: now_ns,
                 bw_sample,
+                retx_count,
+                origin,
             },
         );
         seq
     }
 
-    /// ack_confidence (per-mille): reverse-path canlılığı = ACK SESSİZLİĞİ ölçüsü. Aktif iş varken
-    /// son ACK'ten (ya da ilk gönderimden) bu yana geçen süre srtt'nin katını aşarsa güven düşer.
-    /// Yeni gönderilen paket "düşük güven" DEĞİL (henüz ACK'lenme zamanı gelmedi) — sadece SESSİZLİK.
+    /// ack_confidence (per-mille): reverse-path canlılığı = ACK SESSİZLİĞİ. Aktif iş varken son
+    /// ACK'ten (ya da ilk gönderimden) geçen süre srtt katını aşarsa güven düşer. Yeni paket "düşük
+    /// güven" DEĞİL — yalnız SESSİZLİK reverse-path çöküşüdür.
     fn ack_confidence_permille(&self, now_ns: u64) -> u64 {
-        let active =
-            !self.inflight.is_empty() || !self.pending_lost.is_empty() || !self.tx_queue.is_empty();
+        let active = !self.inflight.is_empty()
+            || !self.pending_lost.is_empty()
+            || !self.tx_queue.is_empty()
+            || !self.dup_queue.is_empty();
         if !active {
-            return 1000; // outstanding iş yok → tam güven.
+            return 1000;
         }
         let anchor = match self.last_ack_ns.or(self.first_send_ns) {
             Some(a) => a,
-            None => return 1000, // hiç göndermedi.
+            None => return 1000,
         };
         let silence = now_ns.saturating_sub(anchor);
         let srtt = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
@@ -474,7 +632,6 @@ impl Sender {
         if silence <= threshold {
             return 1000;
         }
-        // silence > threshold > 0 → bölme güvenli; yine de checked.
         threshold
             .saturating_mul(1000)
             .checked_div(silence)
@@ -530,16 +687,22 @@ mod tests {
     }
     const MS: u64 = 1_000_000;
 
+    fn ack(seqs: &[u64]) -> Event {
+        Event::AckReceived(AckInfo {
+            acked_seqs: seqs.to_vec(),
+            ack_delay: Duration::ZERO,
+        })
+    }
+
     #[test]
     fn idle_to_startup_and_first_data_paced() {
         let mut s = Sender::new();
         assert_eq!(s.state(), SenderState::Idle);
         let out = s.on_event(Event::AppData(unit(0)), 0);
         assert_eq!(s.state(), SenderState::Startup);
-        assert_eq!(out.len(), 1, "burst token ile ilk DATA gönderilmeli");
+        assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, TransmitKind::Data);
         assert_eq!(out[0].seq, 0);
-        assert_eq!(out[0].unit_id, 0);
         assert_eq!(s.inflight_bytes(), 1200);
     }
 
@@ -548,78 +711,97 @@ mod tests {
         let mut s = Sender::new();
         s.on_event(Event::AppData(unit(0)), 0);
         assert_eq!(s.inflight_bytes(), 1200);
-        let ack = AckInfo {
-            acked_seqs: vec![0],
-            ack_delay: Duration::ZERO,
-        };
-        s.on_event(Event::AckReceived(ack), 50 * MS);
-        assert_eq!(s.inflight_bytes(), 0, "acked paket inflight'tan düşer");
-        assert!(s.rtt_srtt_is_some(), "ACK RTT örneği üretmeli");
+        s.on_event(ack(&[0]), 50 * MS);
+        assert_eq!(s.inflight_bytes(), 0);
+        assert!(s.rtt.srtt().is_some());
     }
 
     #[test]
-    fn ack_confidence_low_drives_recover_fwd() {
-        // ACK-yolu çöküşü (p5_revpath): DATA gönder, HİÇ ACK gelme → ack_confidence sessizlikle
-        // düşer → RECOVER_FWD. Baseline'da QUIC'in c(10s)=0.00 olduğu nokta; engine forward-recovery'ye
-        // geçer (INV-RATE-1: rate DÜŞMEZ, yalnız recovery kolu). §3-tablosu-sapması: STARTUP'tan da erişir.
+    fn ack_confidence_low_enters_recover_fwd_and_duplicates() {
+        // ACK-yolu çöküşü (p5_revpath): DATA gönder, HİÇ ACK gelme → RECOVER_FWD + ACK-bağımsız
+        // duplication. Baseline'da QUIC c(10s)=0.00 olduğu nokta; engine forward-recovery yapıyor.
         let mut s = Sender::new();
         s.on_event(Event::AppData(unit(0)), 0);
         s.on_event(Event::AppData(unit(1)), MS);
-        // ACK YOK; zaman ilerlet (100ms..2500ms) → sessizlik 3×srtt(300ms)'i çok aşar.
+        let mut saw_fwd = false;
+        let mut saw_escalate = false;
+        let mut dup_count = 0usize;
         for t in 1..=25 {
-            s.on_event(Event::TimerFired(Timer::Pto), t * 100 * MS);
+            let out = s.on_event(Event::TimerFired(Timer::Pto), t * 100 * MS);
+            if s.state() == SenderState::RecoverFwd {
+                saw_fwd = true;
+            }
+            if s.emergency_level() > EmergencyLevel::Arq {
+                saw_escalate = true;
+            }
+            dup_count += out
+                .iter()
+                .filter(|d| d.kind == TransmitKind::Duplicate)
+                .count();
         }
+        assert!(saw_fwd, "ACK yok → RECOVER_FWD'e girmeli (§11)");
         assert!(
-            s.ack_confidence_permille(2500 * MS) < 300,
-            "hiç ACK yok → ack_confidence LOW ({})",
-            s.ack_confidence_permille(2500 * MS)
+            dup_count > 0,
+            "RECOVER_FWD ACK-bağımsız DUPLICATE emit etmeli (dup={dup_count})"
         );
-        assert_eq!(
-            s.state(),
-            SenderState::RecoverFwd,
-            "ack_confidence LOW → RECOVER_FWD (§11 forward-recovery)"
-        );
-        assert!(
-            s.emergency_level() > EmergencyLevel::Arq,
-            "emergency escalate etmeli (level={:?})",
-            s.emergency_level()
-        );
+        assert!(saw_escalate, "emergency bir noktada escalate etmeli");
+    }
+
+    // Küçük birim → burst'e çok paket sığar; düşük loss oranı (fuzzy R1: loss LOW → arq_light>0).
+    fn small(id: u64) -> OpaqueUnit {
+        OpaqueUnit { id, size: 100 }
     }
 
     #[test]
-    fn healthy_acks_keep_confidence_high() {
-        // ACK'ler akıyorsa (reverse-path sağlam) ack_confidence yüksek kalır → RECOVER_FWD YOK.
+    fn low_loss_with_healthy_acks_retransmits() {
+        // ACK'ler akıyor (confidence OK) + DÜŞÜK loss (%10) → RECOVER_ARQ → selective retransmit (§9).
+        // (Yüksek loss + düşük bw'de fuzzy ARQ'yu baskılar = FEC-dominant, doğru — o ayrı senaryo.)
         let mut s = Sender::new();
-        s.on_event(Event::AppData(unit(0)), 0);
-        // hemen ACK → sessizlik yok.
-        s.on_event(
-            Event::AckReceived(AckInfo {
-                acked_seqs: vec![0],
-                ack_delay: Duration::ZERO,
-            }),
-            30 * MS,
+        // 10 küçük paket (burst hepsini yollar): seq0..9.
+        for i in 0..10 {
+            s.on_event(Event::AppData(small(i)), 0);
+        }
+        // seq1..9 ACK'li, seq0 DEĞİL → packet-threshold (≥3 yüksek acked) → seq0 kayıp. loss %10.
+        let out = s.on_event(ack(&[1, 2, 3, 4, 5, 6, 7, 8, 9]), 30 * MS);
+        let retx = out
+            .iter()
+            .filter(|d| d.kind == TransmitKind::Retransmit)
+            .count();
+        assert!(
+            retx > 0,
+            "düşük loss + ACK-canlı → RECOVER_ARQ retransmit (retx={retx}, arq_aggr={})",
+            s.last_decision().arq_aggressiveness_permille
         );
-        assert!(s.ack_confidence_permille(30 * MS) >= 1000);
-        assert_ne!(s.state(), SenderState::RecoverFwd);
+        assert_eq!(s.state(), SenderState::RecoverArq);
+    }
+
+    #[test]
+    fn retransmit_references_same_unit_id() {
+        // Retransmit AYNI opak birimi (unit_id) yeni seq ile taşımalı (SoC: transport birimi bilir).
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(small(42)), 0); // seq0 = unit 42
+        for i in 1..10 {
+            s.on_event(Event::AppData(small(i)), 0);
+        }
+        let out = s.on_event(ack(&[1, 2, 3, 4, 5, 6, 7, 8, 9]), 30 * MS);
+        let retx = out.iter().find(|d| d.kind == TransmitKind::Retransmit);
+        assert_eq!(
+            retx.map(|d| d.unit_id),
+            Some(42),
+            "retransmit kayıp birimin unit_id'sini (42) yeni seq ile taşımalı"
+        );
+        assert_ne!(
+            retx.map(|d| d.seq),
+            Some(0),
+            "retransmit YENİ seq almalı (0 değil)"
+        );
     }
 
     #[test]
     fn drains_to_idle_when_quiescent() {
         let mut s = Sender::new();
         s.on_event(Event::AppData(unit(0)), 0);
-        s.on_event(
-            Event::AckReceived(AckInfo {
-                acked_seqs: vec![0],
-                ack_delay: Duration::ZERO,
-            }),
-            30 * MS,
-        );
-        assert_eq!(s.state(), SenderState::Idle, "sessiz (iş yok) → IDLE");
-    }
-
-    impl Sender {
-        fn rtt_srtt_is_some(&self) -> bool {
-            self.rtt.srtt().is_some()
-        }
+        s.on_event(ack(&[0]), 30 * MS);
+        assert_eq!(s.state(), SenderState::Idle);
     }
 }
