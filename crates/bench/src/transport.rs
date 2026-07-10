@@ -1,0 +1,87 @@
+//! Transport soyutlaması (SoC seam): quinn baseline ([`crate::quic`]) + kama stub. Kama
+//! ileride adaptive-transport engine loop'una bağlanacak (ADIM 3+); şimdi typed-error stub.
+
+use crate::error::BenchError;
+use crate::event::RunOutput;
+use std::future::Future;
+use std::net::SocketAddr;
+use std::time::Duration;
+
+/// Congestion control seçimi (§4.4.1: Cubic default vs Bbr experimental).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cc {
+    /// quinn default, production.
+    Cubic,
+    /// quinn `Experimental! Use at your own risk.` (kaynak notu).
+    Bbr,
+}
+
+impl Cc {
+    /// results/rapor etiketi.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Cc::Cubic => "cubic",
+            Cc::Bbr => "bbr",
+        }
+    }
+}
+
+/// Client koşu parametreleri.
+#[derive(Debug, Clone)]
+pub struct ClientCfg {
+    /// Server adresi.
+    pub server: SocketAddr,
+    /// Gönderilecek mesaj sayısı.
+    pub msg_count: u64,
+    /// Mesaj payload boyutu.
+    pub payload_bytes: u64,
+    /// Client'ın ack için bekleyeceği maksimum süre.
+    pub max_deadline: Duration,
+    /// CC.
+    pub cc: Cc,
+    /// Reproducibility seed / repeat kimliği.
+    pub seed: u64,
+    /// Tekrar indeksi (A varyans).
+    pub repeat: u32,
+    /// netem profil adı.
+    pub profile: String,
+}
+
+/// Server koşu parametreleri.
+#[derive(Debug, Clone)]
+pub struct ServerCfg {
+    /// Bind adresi.
+    pub bind: SocketAddr,
+    /// CC.
+    pub cc: Cc,
+}
+
+/// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).
+pub trait BenchTransport {
+    /// Server'ı çalıştırır (endpoint kapanana dek).
+    // RPITIT + Send (async fn in trait lint'inden kaçınır, clippy -D temiz).
+    fn run_server(&self, cfg: ServerCfg) -> impl Future<Output = Result<(), BenchError>> + Send;
+    /// Client'ı çalıştırır → ham event çıktısı (metric HESAPLAMAZ, SoC).
+    fn run_client(
+        &self,
+        cfg: ClientCfg,
+    ) -> impl Future<Output = Result<RunOutput, BenchError>> + Send;
+}
+
+/// Kama transport — ADIM 3+ engine loop'a bağlanacak; şimdi typed-error stub (todo!() YOK).
+pub struct KamaTransport;
+
+impl BenchTransport for KamaTransport {
+    async fn run_server(&self, _cfg: ServerCfg) -> Result<(), BenchError> {
+        Err(BenchError::FeatureNotImplemented(
+            "kama transport: engine loop ADIM 3+'da bağlanacak",
+        ))
+    }
+
+    async fn run_client(&self, _cfg: ClientCfg) -> Result<RunOutput, BenchError> {
+        Err(BenchError::FeatureNotImplemented(
+            "kama transport: engine loop ADIM 3+'da bağlanacak",
+        ))
+    }
+}

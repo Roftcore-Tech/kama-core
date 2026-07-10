@@ -1,0 +1,21 @@
+[package]
+name = "bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# best-available QUIC baseline (§4.4.1) — VERSİYON Cargo.lock ile pinli (quinn 0.11.11).
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"                                      # bench-içi self-signed cert
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "io-util", "sync", "time"] }
+thiserror.workspace = true
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "bench"
+path = "src/main.rs"

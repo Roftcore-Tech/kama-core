@@ -9,6 +9,7 @@ members = [
     "crates/ra-ca",
     "crates/discovery",
     "crates/admin-server",
+    "crates/bench",
 ]
 
 [workspace.package]
