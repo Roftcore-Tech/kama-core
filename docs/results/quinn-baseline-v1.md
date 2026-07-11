@@ -107,8 +107,11 @@ QUIC iyi ağda, saf jitter'da ve *aralıklı* blackout'ta her mesajı teslim edi
 
 ## 4. 🎯 Killer bulgu — p5_revpath (ACK-yolu %80 kayıp)
 
-Forward yolu neredeyse temiz (%5), ama **dönüş/ACK yolu %80 bozuk**. QUIC ACK-clocked: ACK'ler
-kaybolunca congestion control aç kalır, RTT tahmini bozulur.
+Forward yolu neredeyse temiz (%5), ama **dönüş/ACK yolu %80 bozuk**. İki mekanizma (ham veriden): (1)
+bidirectional handshake **%40 KURULAMIYOR** (hs=%60 — dönüş yolu handshake el sıkışmasını da vuruyor →
+hiç bağlanamayan koşularda udp_tx=0); (2) bağlananlarda ACK-clocked CC, ACK dönüşü olmadan RTT/pacing'i
+sürdüremez → teslim deadline'ı çok aşar (p95 86s). "CC aç kaldı" yalnız bağlanan koşular için; asıl kayıp
+handshake-establishment.
 
 ```
 cubic:  c(10s)=0.00   c(30s)=0.00   c(120s)=0.27    hs=60%   p95 latency=86s
