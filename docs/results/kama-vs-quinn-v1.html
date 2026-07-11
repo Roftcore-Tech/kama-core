@@ -1,0 +1,236 @@
+<!DOCTYPE html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kama vs quinn — §4.4 Killer Chart</title>
+<style>
+  :root{
+    --ground:#eaeef2;--panel:#fff;--panel-2:#f4f7f9;--ink:#152029;--muted:#54636f;--faint:#8496a2;
+    --line:#d6dee5;--kama:#0c8175;--kama-soft:#0c817522;--quinn:#8a6d3f;--quinn-soft:#8a6d3f26;
+    --alive:#1a9e73;--degraded:#bd7d1a;--dead:#bd463d;--grid:rgba(20,45,60,.09);
+    --shadow:0 1px 2px rgba(20,40,55,.06),0 8px 24px rgba(20,40,55,.06);
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){:root{
+    --ground:#080b0f;--panel:#101720;--panel-2:#0c1219;--ink:#e4ecf2;--muted:#8b9aa8;--faint:#586876;
+    --line:#1f2a35;--kama:#4dd6c7;--kama-soft:#4dd6c71e;--quinn:#c9a668;--quinn-soft:#c9a66822;
+    --alive:#41c793;--degraded:#e0a43b;--dead:#e2665c;--grid:rgba(120,165,195,.10);
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px rgba(0,0,0,.35);}}
+  :root[data-theme="light"]{--ground:#eaeef2;--panel:#fff;--panel-2:#f4f7f9;--ink:#152029;--muted:#54636f;--faint:#8496a2;--line:#d6dee5;--kama:#0c8175;--kama-soft:#0c817522;--quinn:#8a6d3f;--quinn-soft:#8a6d3f26;--alive:#1a9e73;--degraded:#bd7d1a;--dead:#bd463d;--grid:rgba(20,45,60,.09);--shadow:0 1px 2px rgba(20,40,55,.06),0 8px 24px rgba(20,40,55,.06)}
+  :root[data-theme="dark"]{--ground:#080b0f;--panel:#101720;--panel-2:#0c1219;--ink:#e4ecf2;--muted:#8b9aa8;--faint:#586876;--line:#1f2a35;--kama:#4dd6c7;--kama-soft:#4dd6c71e;--quinn:#c9a668;--quinn-soft:#c9a66822;--alive:#41c793;--degraded:#e0a43b;--dead:#e2665c;--grid:rgba(120,165,195,.10);--shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px rgba(0,0,0,.35)}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased;font-size:15px}
+  .wrap{max-width:1060px;margin:0 auto;padding:clamp(20px,4vw,46px) clamp(16px,4vw,40px) 64px}
+  .mono{font-family:var(--mono)} .tnum{font-variant-numeric:tabular-nums}
+  h1,h2{text-wrap:balance;margin:0}
+  .eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--kama);font-weight:600}
+  header{border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:18px}
+  h1{font-size:clamp(28px,5vw,44px);letter-spacing:-.02em;font-weight:680;margin:14px 0 8px}
+  h1 .k{color:var(--kama)} h1 .vs{color:var(--faint);font-weight:400;font-size:.62em}
+  .sub{color:var(--muted);max-width:66ch;font-size:16px}
+  .meta{display:flex;flex-wrap:wrap;gap:6px 22px;margin-top:16px;font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+  .meta b{color:var(--muted);font-weight:600}
+
+  /* hero headline */
+  .hero{display:grid;grid-template-columns:1fr auto;gap:20px;align-items:center;margin:26px 0 8px;
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);
+    padding:clamp(18px,3vw,26px);border-left:4px solid var(--dead)}
+  @media(max-width:640px){.hero{grid-template-columns:1fr}}
+  .hero .lead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+  .hero h2{font-size:clamp(18px,2.6vw,23px);letter-spacing:-.01em;margin:6px 0 4px;font-weight:640}
+  .hero p{margin:0;color:var(--muted);font-size:14px;max-width:56ch}
+  .hero .duel{display:flex;gap:20px;text-align:center;flex:none}
+  .hero .duel .n{font-family:var(--mono);font-size:clamp(30px,6vw,46px);font-weight:600;line-height:1;letter-spacing:-.02em}
+  .hero .duel .kv{color:var(--kama)} .hero .duel .qv{color:var(--dead)}
+  .hero .duel .lb{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:6px;letter-spacing:.06em}
+
+  section{margin-top:40px}
+  .sechead{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+  .sechead h2{font-size:20px;letter-spacing:-.01em;font-weight:640}
+  .sechead .n{font-family:var(--mono);font-size:12px;color:var(--faint)}
+  .lede{color:var(--muted);max-width:70ch;margin:2px 0 18px;font-size:14.5px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
+  .pad{padding:clamp(16px,3vw,24px)}
+
+  /* head-to-head bars */
+  .h2h{display:flex;flex-direction:column;gap:0}
+  .row{display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:center;padding:11px 0;border-top:1px solid var(--line)}
+  .row:first-child{border-top:none}
+  @media(max-width:560px){.row{grid-template-columns:1fr}}
+  .rl .p{font-family:var(--mono);font-size:12.5px;color:var(--ink);font-weight:600}
+  .rl .c{font-size:11px;color:var(--faint)}
+  .rl .rg{display:inline-block;font-size:9px;font-family:var(--mono);letter-spacing:.06em;padding:1px 6px;border-radius:20px;margin-top:3px}
+  .rg.alive{background:var(--kama-soft);color:var(--alive)} .rg.dead{background:var(--dead)16;color:var(--dead);background:color-mix(in srgb,var(--dead) 12%,transparent)}
+  .rg.degraded{color:var(--degraded);background:color-mix(in srgb,var(--degraded) 14%,transparent)}
+  .bars{display:flex;flex-direction:column;gap:6px}
+  .bar{display:grid;grid-template-columns:44px 1fr 48px;gap:8px;align-items:center}
+  .bar .who{font-family:var(--mono);font-size:10.5px;text-align:right}
+  .bar.k .who{color:var(--kama)} .bar.q .who{color:var(--quinn)}
+  .track{height:16px;background:var(--panel-2);border-radius:5px;position:relative;overflow:hidden;border:1px solid var(--line)}
+  .fill{height:100%;border-radius:4px 0 0 4px;position:relative}
+  .bar.k .fill{background:var(--kama)} .bar.q .fill{background:var(--quinn);opacity:.8}
+  .iqr{position:absolute;top:0;height:100%;background:rgba(255,255,255,.28);border-left:1px solid rgba(0,0,0,.25);border-right:1px solid rgba(0,0,0,.25)}
+  :root[data-theme="dark"] .iqr,@media (prefers-color-scheme:dark){.iqr{background:rgba(255,255,255,.16)}}
+  .bar .v{font-family:var(--mono);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+  .bar.k .v{color:var(--kama)} .bar.q .v{color:var(--quinn)}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:14px}
+  .lg{display:inline-flex;align-items:center;gap:7px} .sw{width:12px;height:12px;border-radius:3px}
+
+  /* determinism */
+  .det{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:640px){.det{grid-template-columns:1fr}}
+  .dcard{border:1px solid var(--line);border-radius:12px;padding:15px 16px;background:var(--panel)}
+  .dcard .t{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .dcard .iqrbar{height:26px;background:var(--panel-2);border:1px solid var(--line);border-radius:6px;position:relative;margin:10px 0 6px;overflow:hidden}
+  .dcard .band{position:absolute;top:0;height:100%}
+  .dcard .band.k{background:var(--kama-soft);border-left:2px solid var(--kama);border-right:2px solid var(--kama)}
+  .dcard .band.q{background:var(--quinn-soft);border-left:2px solid var(--quinn);border-right:2px solid var(--quinn)}
+  .dcard .cap{font-size:12px;color:var(--muted)}
+
+  /* cost */
+  .cost{width:100%;border-collapse:collapse;font-size:13.5px}
+  .cost th,.cost td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line)}
+  .cost th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  .cost td.b{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .cost tr:last-child td{border-bottom:none}
+  .barmini{display:inline-block;height:8px;background:var(--kama);border-radius:3px;vertical-align:middle;margin-left:8px}
+
+  footer{margin-top:44px;padding-top:22px;border-top:1px solid var(--line);color:var(--faint);font-size:12.5px}
+  footer .cav{color:var(--muted);max-width:76ch;margin-bottom:6px}
+  footer code{font-family:var(--mono);font-size:11.5px;background:var(--panel-2);padding:1px 6px;border-radius:5px;color:var(--muted)}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head><body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Kama · Tactical Transport · §4.4 Killer-Chart</div>
+    <h1><span class="k">Kama</span> <span class="vs">vs</span> quinn</h1>
+    <p class="sub">QUIC'le yarışmıyor — düştüğü yerde ayakta kalıyor. Aynı netem, aynı metrik, 5 repeat,
+      elmalar-elmalar. Ölçüm iki ultracode review'la sağlamlaştırıldı (bir sent_ns frame-bug'ı bulunup düzeltildi).</p>
+    <div class="meta tnum">
+      <span><b>Kama</b> 35/35</span><span><b>quinn</b> 35/35 (baseline v1)</span>
+      <span><b>repeat</b> 5×</span><span><b>deadline</b> 10/30/120s</span>
+      <span><b>Faz D</b> temiz ✓</span><span><b>tarih</b> 2026-07-11</span>
+    </div>
+  </header>
+
+  <div class="hero">
+    <div>
+      <div class="lead">Headline · p5_revpath · ACK-yolu %80 çöküşü · completion(10s)</div>
+      <h2>QUIC'in tamamen öldüğü yerde Kama her mesajı teslim ediyor.</h2>
+      <p>QUIC bidirectional handshake ister; %80 dönüş-yolu kaybında quinn'in 2/5 repeat'i hiç bağlanamaz
+        (handshake fail, udp_tx=0), 3'ü deadline'ı aşar. Kama connectionless — forward-blast + kümülatif
+        SACK, sparse dönüşü tolere eder → c(120s)'de 5/5 kusursuz.</p>
+    </div>
+    <div class="duel">
+      <div><div class="n kv tnum">1.00</div><div class="lb">KAMA</div></div>
+      <div><div class="n qv tnum">0.00</div><div class="lb">quinn</div></div>
+    </div>
+  </div>
+
+  <section>
+    <div class="sechead"><span class="n">01</span><h2>Head-to-head — completion(10s)</h2></div>
+    <p class="lede">Her profilde Kama (teal) vs quinn (amber), kısa-deadline completion. Açık şerit = 5-repeat
+      IQR (varyans). İyi ağda iki bar da dolu; QUIC'in çöktüğü hostile'da Kama ayakta, quinn sıfır.</p>
+    <div class="panel pad">
+      <div class="h2h" id="h2h"></div>
+      <div class="legend">
+        <span class="lg"><span class="sw" style="background:var(--kama)"></span>Kama</span>
+        <span class="lg"><span class="sw" style="background:var(--quinn);opacity:.8"></span>quinn</span>
+        <span class="lg"><span class="sw" style="background:rgba(150,150,150,.35)"></span>IQR (5-repeat varyans)</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sechead"><span class="n">02</span><h2>Determinizm — dar IQR vs yazı-tura</h2></div>
+    <p class="lede">Kama yalnız daha yüksek medyan değil, <b>öngörülebilir</b>. quinn'in %50 kayıptaki
+      "bağlan-ve-hepsini-ver YA DA sıfır" yazı-turasını Kama dar-IQR tutarlı teslime çeviriyor (ADIM-3 hedefi).</p>
+    <div class="det" id="det"></div>
+  </section>
+
+  <section>
+    <div class="sechead"><span class="n">03</span><h2>Bedel — dürüst</h2></div>
+    <p class="lede">Kama teslimi bant genişliğiyle takas ediyor ("veri ULAŞSIN" tabanı; latency-obsesif medya
+      ayrı repo). Teslim edilen mesaj başına wire byte — loss arttıkça forward-recovery maliyeti büyüyor.</p>
+    <div class="panel pad" style="overflow-x:auto">
+      <table class="cost"><thead><tr><th>profil</th><th>Kama B/msg</th><th>quinn B/msg</th><th>not</th></tr></thead>
+        <tbody id="cost"></tbody></table>
+    </div>
+  </section>
+
+  <footer>
+    <p class="cav"><b style="color:var(--muted)">Dürüst caveat'ler:</b> iyi ağda Kama quinn'i <i>yenmiyor</i>
+      (%0-3 geride — recovery overhead; tez bunu gerektirmez, §4.4.5). Tek CC (Kama cubic=bbr) vs quinn-cubic.
+      5 repeat (magnitude'lar kategorik, gürültü değil). Yüksek latency+bytes hostile'da (bilinçli takas).
+      Loopback temsili değil (bottleneck-yok flood); tüm ölçümler rate-limited netem'de. Identity security-stub
+      (kripto motorun dışında, INV-ENGINE-SOC); gerçek Noise+AEAD rejim yapısını değiştirmez.</p>
+    <div style="margin-top:12px;font-family:var(--mono);font-size:11px">
+      <code>bash harness/run-kama-matrix.sh</code> → <code>python3 harness/compare.py</code> · docs/results/kama-vs-quinn-v1.md · Faz D temiz ✓
+    </div>
+  </footer>
+</div>
+
+<script>
+  // K/Q completion [c10,c30,c120]; iqr120 = [q1,q3]; bytes; regime; label
+  const ROWS=[
+    {p:"p7_bbr",   label:"%2 kayıp",          K:[0.98,0.98,0.98], Q:[1,1,1],        Kiqr:[0.96,0.99], Qiqr:[1,1],       bytes:272,  qb:389,  rg:"alive"},
+    {p:"p4_jitter",label:"jitter 200±100ms",  K:[1,1,1],          Q:[1,1,1],        Kiqr:[1,1],       Qiqr:[1,1],       bytes:267,  qb:374,  rg:"alive"},
+    {p:"p6_blackout",label:"aralıklı 2s/8s",  K:[0.97,0.98,0.98], Q:[1,1,1],        Kiqr:[0.97,0.98], Qiqr:[1,1],       bytes:1283, qb:415,  rg:"alive"},
+    {p:"p1_loss50",label:"%50 kayıp",         K:[0.53,0.53,0.85], Q:[0.13,0.15,0.15],Kiqr:[0.78,0.89],Qiqr:[0.04,0.18], bytes:897,  qb:4299, rg:"degraded"},
+    {p:"p5_revpath",label:"ACK-yolu %80",     K:[1,1,1],          Q:[0,0,0.27],     Kiqr:[1,1],       Qiqr:[0,0.34],    bytes:558,  qb:1036, rg:"dead"},
+    {p:"p2_loss80",label:"%80 kayıp",         K:[0.44,0.48,0.48], Q:[0,0,0],        Kiqr:[0.44,0.52], Qiqr:[0,0],       bytes:1711, qb:5396, rg:"dead"},
+    {p:"p3_loss95",label:"%95 kayıp",         K:[0.15,0.15,0.15], Q:[0,0,0],        Kiqr:[0.14,0.16], Qiqr:[0,0],       bytes:7135, qb:0,    rg:"dead"},
+  ];
+  const pct=v=>(v*100).toFixed(0);
+  // head-to-head (c10)
+  (function(){
+    const el=document.getElementById("h2h");
+    let h="";
+    for(const r of ROWS){
+      const bar=(who,val,iqr,cls)=>{
+        const w=Math.max(0,Math.min(1,val))*100;
+        const il=Math.max(0,iqr[0])*100, iw=Math.max(0,(iqr[1]-iqr[0]))*100;
+        const band = iw>0.4 ? `<span class="iqr" style="left:${il}%;width:${iw}%"></span>`:"";
+        return `<div class="bar ${cls}"><span class="who">${who}</span>
+          <span class="track"><span class="fill" style="width:${w}%"></span>${band}</span>
+          <span class="v">${val.toFixed(2)}</span></div>`;
+      };
+      h+=`<div class="row">
+        <div class="rl"><div class="p">${r.p}</div><div class="c">${r.label}</div>
+          <span class="rg ${r.rg}">${r.rg==="alive"?"QUIC AYAKTA":r.rg==="dead"?"QUIC ÖLÜ":"QUIC ZAYIF"}</span></div>
+        <div class="bars">${bar("Kama",r.K[0],r.Kiqr,"k")}${bar("quinn",r.Q[0],r.Qiqr,"q")}</div>
+      </div>`;
+    }
+    el.innerHTML=h;
+  })();
+  // determinism (two most illustrative)
+  (function(){
+    const el=document.getElementById("det");
+    const CASES=[
+      {p:"p5_revpath · ACK çöküşü", K:[1,1], Q:[0,0.34], cap:"Kama 5/5 kusursuz [1.00,1.00]; quinn yazı-tura [0.00,0.34]."},
+      {p:"p1_loss50 · %50 kayıp",  K:[0.78,0.89], Q:[0.04,0.18], cap:"Kama dar+yüksek [0.78,0.89]; quinn düşük+değişken [0.04,0.18] (bimodal)."},
+    ];
+    let h="";
+    for(const c of CASES){
+      const band=(iqr,cls)=>{const l=iqr[0]*100,w=Math.max(1.5,(iqr[1]-iqr[0])*100);return `<span class="band ${cls}" style="left:${l}%;width:${w}%"></span>`;};
+      h+=`<div class="dcard"><div class="t">${c.p} · completion(120s) IQR</div>
+        <div class="iqrbar">${band(c.Q,"q")}${band(c.K,"k")}</div>
+        <div class="cap"><b style="color:var(--kama)">Kama</b> vs <b style="color:var(--quinn)">quinn</b> — ${c.cap}</div></div>`;
+    }
+    el.innerHTML=h;
+  })();
+  // cost
+  (function(){
+    const el=document.getElementById("cost");
+    const maxB=Math.max(...ROWS.map(r=>r.bytes));
+    el.innerHTML=ROWS.map(r=>{
+      let note;
+      if(r.qb===0) note="quinn 0 teslim";
+      else if(r.bytes < r.qb) note=`Kama ${(r.qb/r.bytes).toFixed(1)}× ucuz`;
+      else note=`Kama ${(r.bytes/r.qb).toFixed(1)}× pahalı`;
+      return `<tr><td class="mono">${r.p}</td>
+        <td class="b">${r.bytes}<span class="barmini" style="width:${Math.round(50*r.bytes/maxB)}px"></span></td>
+        <td class="b">${r.qb||'—'}</td><td style="color:var(--muted);font-size:12.5px">${note}</td></tr>`;
+    }).join("");
+  })();
+</script>
+</body></html>
