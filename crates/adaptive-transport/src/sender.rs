@@ -40,7 +40,7 @@ use crate::fusion::{
 };
 use crate::loss::{LossDetector, ThresholdLossDetector};
 use crate::pacer::{TokenBucket, DEFAULT_BURST_CAP};
-use crate::rate::{effective_send_rate, PacingPhase, SrcConfig};
+use crate::rate::{effective_send_rate, PacingPhase, SrcConfig, DEFAULT_MTU};
 use crate::rtt::{rtt_sample, RttEstimator};
 
 /// Sender durumları (§3). Geçişler event-driven + deterministik.
@@ -48,6 +48,9 @@ use crate::rtt::{rtt_sample, RttEstimator};
 pub enum SenderState {
     /// Gönderilecek yok; timer'lar pasif.
     Idle,
+    /// §3.3 cold-start: motor HİÇ ölçüm yokken. En-kötü-köşe önsel pacing (floor) + geometrik kopya;
+    /// loss-ilanı/PTO/emergency/ack_confidence DONDURULUR. İlk geçerli SACK'te → Startup. [K-KEYSTONE]
+    PreConverge,
     /// BtlBw hızlı keşif (pacing_gain yüksek), path doldur.
     Startup,
     /// pace = BtlBw; periyodik BW/RTprop probe.
@@ -149,6 +152,9 @@ struct LostRec {
 struct DupRec {
     due_ns: u64,
     unit: OpaqueUnit,
+    /// §3.3-B geometrik kopya reschedule aralığı (ns). 0 = emergency (fire-once, reschedule YOK);
+    /// >0 = PRE_CONVERGE geometrik kopya → ateşlenince due += interval, interval ×= COPY_MULTIPLIER.
+    interval_ns: u64,
 }
 
 /// İlk RTT ölçülene kadar pacing/eşik için başlangıç RTT [CAL initial].
@@ -162,6 +168,19 @@ const ACK_SILENCE_SRTT_MULT: u32 = 3;
 /// last_recovery Duplication değilse forward-recovery için varsayılan faktör/aralık [CAL].
 const DEFAULT_DUP_FACTOR: u8 = 2;
 const DEFAULT_DUP_SPACING: Duration = Duration::from_millis(20);
+/// §3.3-A en-kötü-köşe önsel pacing floor (B/s) — ürün floor'u ~0.25 kbps. min_rate fixture (Ek-B)
+/// PRE_CONVERGE'de UYGULANMAZ; bu taban kullanılır → 1 kbps kanalı floodlamaz. [CAL PLACEHOLDER]
+const PRE_CONVERGE_FLOOR_BW: u64 = 31;
+/// §3.3-B geometrik kopya: ilk kopya = k_base × RTT_floor; RTT_floor ≈ (unit+sack)/floor_bw.
+/// k_base = 3/2 (>1 → temiz kanalda ilk SACK kopyayı ateşlemeden iptal eder). [CAL PLACEHOLDER]
+const PC_SACK_WIRE: u64 = 65;
+const PC_KBASE_NUM: u64 = 3;
+const PC_KBASE_DEN: u64 = 2;
+const PC_COPY_MULTIPLIER: u64 = 2;
+/// [R3/ADIM-6] Kanal-türevli burst penceresi [CAL]: burst_cap = clamp(rate·BURST_WINDOW, 1 birim, ~2×MTU).
+/// Bant-kör 2×MTU=2400B sabitini (kbit-domain'i floodlayan) kanal-zamanı penceresine çevirir → sub-kbps'te
+/// 1-birim (backlog-spike yok), hızlı kanalda micro-burst. ~500kbps'te 40ms ≈ 2×MTU (§13 "1-2×MTU").
+const BURST_WINDOW_NS: u64 = 40_000_000;
 
 /// Sender state machine (§3). Tüm bileşen state'ini tutar; `on_event` ile sürülür.
 pub struct Sender {
@@ -256,7 +275,13 @@ impl Sender {
             Event::AppData(unit) => {
                 self.tx_queue.push_back(unit);
                 if self.state == SenderState::Idle {
-                    self.state = SenderState::Startup;
+                    // §3.3 cold-start YALNIZ ilk sefer (hiç ölçüm yok). Ölçüm varsa (rtt.srtt Some) önsel
+                    // zaten tahliye edilmiş → Idle→Startup (normal resume), PreConverge'e geri DÖNÜLMEZ.
+                    self.state = if self.rtt.srtt().is_none() {
+                        SenderState::PreConverge
+                    } else {
+                        SenderState::Startup
+                    };
                 }
             }
             Event::AckReceived(ack) => self.on_ack_received(&ack, now_ns),
@@ -265,9 +290,23 @@ impl Sender {
 
         let decision = self.fuzzy_evaluate(now_ns);
         self.last_decision = decision;
+        let prev_state = self.state;
         self.update_state(&decision, now_ns);
         let send_rate = self.compute_send_rate(&decision);
         self.pacer.set_rate(send_rate);
+        // [R3/ADIM-6] KANAL-TÜREVLİ burst cap: max(1 birim, rate·pencere), üstten ~2×MTU. Bant-kör 2400B
+        // sabiti yerine → PreConverge floor'da 1-birim (self-congestion/backlog-spike yok), Startup+'ta
+        // ölçülen bw'ye orantılı micro-burst. front yoksa MTU (güvenli 1-paket tabanı).
+        let front_size = self.tx_queue.front().map_or(DEFAULT_MTU, |u| u.size);
+        let window_bytes = send_rate.saturating_mul(BURST_WINDOW_NS) / 1_000_000_000;
+        let burst_hi = front_size.max(2 * DEFAULT_MTU);
+        self.pacer
+            .set_burst_cap(window_bytes.clamp(front_size, burst_hi));
+        if prev_state == SenderState::PreConverge && self.state != SenderState::PreConverge {
+            // §3.3-D cold-start çıkışı: kanal-türevli micro-burst grant (STARTUP probing; kuyruk kanal-uygun
+            // küçük burst'le boşalır — bu birimler STARTUP'ta emit → §3.3-B geometrik kopya ALMAZ).
+            self.pacer.fill_to_cap();
+        }
 
         self.schedule_transmit(now_ns)
     }
@@ -282,9 +321,11 @@ impl Sender {
         // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
         let mut rtt_send_ns: Option<u64> = None;
         let mut largest = 0u64;
+        let mut acked_units: Vec<u64> = Vec::new();
         for &seq in &ack.acked_seqs {
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                acked_units.push(p.unit.id); // §3.3-B stop koşulu: teyit edilen birimin kopyaları iptal
                 let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);
                 self.btlbw.update(sample, now_ns, sample.delivered > 0);
                 if p.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
@@ -300,9 +341,18 @@ impl Sender {
             }
         }
 
+        // §3.3-B stop koşulu: teyit edilen birimlerin bekleyen geometrik kopyalarını İPTAL et.
+        if !acked_units.is_empty() {
+            self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id));
+        }
+
         // loss tespiti (§5). loss = RECOVERY sinyali (INV-RATE-1: rate'e DEĞMEZ).
+        // §3.3-C/(1) yasak-1: PRE_CONVERGE'de loss İLANI YOK. §3.3-D: loss kilidi İLK GEÇERLİ SACK'le
+        // (rtt.srtt Some) AÇILIR → o SACK'ten itibaren loss işlenir. Detector her zaman sync kalır.
         let lost = self.loss.on_ack(&ack.acked_seqs);
-        self.queue_losses(&lost, now_ns);
+        if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {
+            self.queue_losses(&lost, now_ns);
+        }
     }
 
     /// §12 timer handler (RTprop probe → DRAIN_RTPROP; PTO → zaman-eşiği loss).
@@ -314,9 +364,13 @@ impl Sender {
                 }
             }
             Timer::Pto => {
-                let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
-                let lost = self.loss.detect_time_losses(now_ns, srtt);
-                self.queue_losses(&lost, now_ns);
+                // §3.3-C/(1,5) yasak: PRE_CONVERGE'de time-threshold loss-ilanı + PTO DONDURULUR
+                // (srtt BOŞ → tanımsız; geometrik kopya §3.3-B yerini alır). schedule_transmit yine çalışır.
+                if self.state != SenderState::PreConverge {
+                    let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+                    let lost = self.loss.detect_time_losses(now_ns, srtt);
+                    self.queue_losses(&lost, now_ns);
+                }
             }
         }
     }
@@ -371,6 +425,14 @@ impl Sender {
 
         self.state = if idle {
             SenderState::Idle
+        } else if self.state == SenderState::PreConverge {
+            // §3.3-D kademeli tahliye: ilk geçerli SACK (RTT kilidi açıldı) → Startup; yoksa PreConverge.
+            // emergency/ARQ/loss burada BYPASS edilir — recovery cold-start'ta DONDURULMUŞ (§3.3-C).
+            if self.rtt.srtt().is_some() {
+                SenderState::Startup
+            } else {
+                SenderState::PreConverge
+            }
         } else if emergency_active {
             // ack_confidence LOW → forward-recovery (ACK-bağımsız, §11), her aktif fazdan (§3 AMENDMENT-1).
             SenderState::RecoverFwd
@@ -417,6 +479,11 @@ impl Sender {
     /// send_rate (§8.2 + §8.5): SRC pacing × fuzzy gain, sonra budget clamp. INV-RATE-1: recovery
     /// durumları base rate'i (Steady) DÜŞÜRMEZ; fuzzy send_rate_gain yalnız bw+queue_delay'den.
     fn compute_send_rate(&self, decision: &FusionDecision) -> u64 {
+        // §3.3-A/[R8]: PRE_CONVERGE en-kötü-köşe önsel pacing = floor. min_rate fixture (Ek-B)
+        // UYGULANMAZ → 1 kbps kanalı floodlamaz (self-congestion). İlk ölçümle Startup'ta ramp başlar.
+        if self.state == SenderState::PreConverge {
+            return PRE_CONVERGE_FLOOR_BW;
+        }
         let phase = match self.state {
             SenderState::Startup => PacingPhase::Startup,
             SenderState::DrainRtprop => PacingPhase::ProbeDown,
@@ -500,6 +567,7 @@ impl Sender {
                             self.dup_queue.push(DupRec {
                                 due_ns: now_ns,
                                 unit: rec.unit,
+                                interval_ns: 0, // emergency: fire-once
                             });
                         }
                         // ConnectionFail: spine'da düşür; gerçek impl bağlantı-fail sinyali verir.
@@ -519,6 +587,7 @@ impl Sender {
                 self.dup_queue.push(DupRec {
                     due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
                     unit: rec.unit,
+                    interval_ns: 0, // emergency: fire-once, reschedule YOK
                 });
             }
         }
@@ -543,12 +612,24 @@ impl Sender {
                 unit_id: dup.unit.id,
                 size: dup.unit.size,
             });
+            // §3.3-B geometrik reschedule: interval_ns>0 (PRE_CONVERGE kopyası) → sonraki kopya
+            // ×COPY_MULTIPLIER (sayı-tavanı YOK, deadline'a dek; teyit gelince §3.3-B stop ile iptal).
+            if dup.interval_ns > 0 {
+                let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER);
+                self.dup_queue.push(DupRec {
+                    due_ns: now_ns.saturating_add(next_interval),
+                    unit: dup.unit,
+                    interval_ns: next_interval,
+                });
+            }
         }
     }
 
     /// Yeni DATA'yı pace ederek emit et. RECOVER_FWD'de her DATA ayrıca (factor−1) kopya planlar.
     fn drain_new_data(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         while let Some(front) = self.tx_queue.front().copied() {
+            // [R3/ADIM-6] Burst clamp artık pipeline'da kanal-türevli set_burst_cap ile (PreConverge floor
+            // rate → burst_cap = 1 birim). Ayrı PreConverge özel-durumu GEREKMEZ (tek kapı, tüm state'ler).
             if !self.pacer.try_send(front.size) {
                 break;
             }
@@ -566,8 +647,24 @@ impl Sender {
                     self.dup_queue.push(DupRec {
                         due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
                         unit: front,
+                        interval_ns: 0, // emergency: fire-once
                     });
                 }
+            } else if self.state == SenderState::PreConverge {
+                // §3.3-B geometrik kopya: ilk kopya k_base×RTT_floor sonra; ateşlenince ×COPY_MULTIPLIER.
+                // RTT_floor ≈ (unit+sack)/floor_bw. Temiz kanalda ilk SACK bunu ateşlemeden iptal eder.
+                // [K-D2] t₀ = wire-emit anı = buradaki `now_ns` (birim pacer.try_send'i geçti = WIRE'a çıktı),
+                // sunum/enqueue anı DEĞİL → burst kuyruğunun serialization gecikmesi otomatik hesaba girer.
+                let rtt_floor = (front.size + PC_SACK_WIRE)
+                    .saturating_mul(1_000_000_000)
+                    .checked_div(PRE_CONVERGE_FLOOR_BW)
+                    .unwrap_or(0);
+                let first_delay = rtt_floor.saturating_mul(PC_KBASE_NUM) / PC_KBASE_DEN;
+                self.dup_queue.push(DupRec {
+                    due_ns: now_ns.saturating_add(first_delay),
+                    unit: front,
+                    interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
+                });
             }
         }
     }
@@ -618,6 +715,11 @@ impl Sender {
     /// ACK'ten (ya da ilk gönderimden) geçen süre srtt katını aşarsa güven düşer. Yeni paket "düşük
     /// güven" DEĞİL — yalnız SESSİZLİK reverse-path çöküşüdür.
     fn ack_confidence_permille(&self, now_ns: u64) -> u64 {
+        // §3.3-C/(4) yasak-4: PRE_CONVERGE'de ack_confidence FULL sabit — sessizlik cold-start'ta
+        // reverse-path çöküşü DEĞİL taban-bw serialization gecikmesi (threshold≈300ms ≪ RTT_floor).
+        if self.state == SenderState::PreConverge {
+            return 1000;
+        }
         let active = !self.inflight.is_empty()
             || !self.pending_lost.is_empty()
             || !self.tx_queue.is_empty()
@@ -698,15 +800,47 @@ mod tests {
     }
 
     #[test]
-    fn idle_to_startup_and_first_data_paced() {
+    fn idle_to_preconverge_then_startup_on_first_ack() {
+        // §3.3: ilk data → PRE_CONVERGE (cold-start, ölçüm yok) — Startup DEĞİL. İlk geçerli SACK → Startup.
         let mut s = Sender::new();
         assert_eq!(s.state(), SenderState::Idle);
         let out = s.on_event(Event::AppData(unit(0)), 0);
-        assert_eq!(s.state(), SenderState::Startup);
+        assert_eq!(s.state(), SenderState::PreConverge);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, TransmitKind::Data);
         assert_eq!(out[0].seq, 0);
         assert_eq!(s.inflight_bytes(), 1200);
+        s.on_event(Event::AppData(unit(1)), MS); // ikinci birim inflight kalsın (ack sonrası iş var)
+                                                 // §3.3-D kademeli tahliye: ilk geçerli SACK (RTT kilidi) + iş var → Startup.
+        s.on_event(ack(&[0]), 50 * MS);
+        assert_eq!(s.state(), SenderState::Startup);
+    }
+
+    #[test]
+    fn preconverge_clean_no_spurious_recovery() {
+        // §3.3 yasaklar: temiz cold-start → dup YOK + retx YOK (BEFORE'daki dup=1820B'nin kök çözümü).
+        let mut s = Sender::new();
+        let o0 = s.on_event(Event::AppData(small(0)), 0);
+        assert_eq!(s.state(), SenderState::PreConverge);
+        assert!(
+            o0.iter().all(|d| d.kind == TransmitKind::Data),
+            "PRE_CONVERGE'de yalnız DATA emit"
+        );
+        // ilk geçerli SACK → cold-start biter (tek birim acked → Idle); hiç Duplicate/Retransmit YOK (yasak-1/2).
+        let o1 = s.on_event(ack(&[0]), 5 * MS);
+        assert_ne!(
+            s.state(),
+            SenderState::PreConverge,
+            "ilk SACK cold-start'ı bitirir"
+        );
+        let recov = o1
+            .iter()
+            .filter(|d| matches!(d.kind, TransmitKind::Duplicate | TransmitKind::Retransmit))
+            .count();
+        assert_eq!(
+            recov, 0,
+            "temiz cold-start'ta spurious recovery YOK (dup+retx={recov})"
+        );
     }
 
     #[test]
@@ -724,13 +858,22 @@ mod tests {
         // ACK-yolu çöküşü (p5_revpath): DATA gönder, HİÇ ACK gelme → RECOVER_FWD + ACK-bağımsız
         // duplication. Baseline'da QUIC c(10s)=0.00 olduğu nokta; engine forward-recovery yapıyor.
         let mut s = Sender::new();
+        // warm-up: PRE_CONVERGE'den çık (§3.3-D) — RECOVER_FWD/emergency POST-cold-start davranışı.
         s.on_event(Event::AppData(unit(0)), 0);
-        s.on_event(Event::AppData(unit(1)), MS);
+        s.on_event(ack(&[0]), 10 * MS);
+        assert_ne!(
+            s.state(),
+            SenderState::PreConverge,
+            "warm-up cold-start'ı bitirmeli"
+        );
+        // artık ACK gelmiyor → ack_confidence düşer → RECOVER_FWD (§11)
+        s.on_event(Event::AppData(unit(1)), 20 * MS);
+        s.on_event(Event::AppData(unit(2)), 21 * MS);
         let mut saw_fwd = false;
         let mut saw_escalate = false;
         let mut dup_count = 0usize;
         for t in 1..=25 {
-            let out = s.on_event(Event::TimerFired(Timer::Pto), t * 100 * MS);
+            let out = s.on_event(Event::TimerFired(Timer::Pto), (t * 100 + 21) * MS);
             if s.state() == SenderState::RecoverFwd {
                 saw_fwd = true;
             }
@@ -760,12 +903,15 @@ mod tests {
         // ACK'ler akıyor (confidence OK) + DÜŞÜK loss (%10) → RECOVER_ARQ → selective retransmit (§9).
         // (Yüksek loss + düşük bw'de fuzzy ARQ'yu baskılar = FEC-dominant, doğru — o ayrı senaryo.)
         let mut s = Sender::new();
-        // 10 küçük paket (burst hepsini yollar): seq0..9.
+        // warm-up: PRE_CONVERGE'den çık + BtlBw kur (MTU birim → burst kanal-türevli ≥10 küçük birime yeter).
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS);
+        // 10 küçük paket (burst): seq1..10 (warm-up seq0 tüketti).
         for i in 0..10 {
-            s.on_event(Event::AppData(small(i)), 0);
+            s.on_event(Event::AppData(small(i)), 20 * MS);
         }
-        // seq1..9 ACK'li, seq0 DEĞİL → packet-threshold (≥3 yüksek acked) → seq0 kayıp. loss %10.
-        let out = s.on_event(ack(&[1, 2, 3, 4, 5, 6, 7, 8, 9]), 30 * MS);
+        // seq2..10 ACK'li, seq1 DEĞİL → packet-threshold (≥3 yüksek acked) → seq1 kayıp. loss %10.
+        let out = s.on_event(ack(&[2, 3, 4, 5, 6, 7, 8, 9, 10]), 30 * MS);
         let retx = out
             .iter()
             .filter(|d| d.kind == TransmitKind::Retransmit)
@@ -782,11 +928,14 @@ mod tests {
     fn retransmit_references_same_unit_id() {
         // Retransmit AYNI opak birimi (unit_id) yeni seq ile taşımalı (SoC: transport birimi bilir).
         let mut s = Sender::new();
-        s.on_event(Event::AppData(small(42)), 0); // seq0 = unit 42
+        // warm-up: PRE_CONVERGE'den çık + BtlBw kur (MTU birim → burst 10 küçük birime yeter).
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS);
+        s.on_event(Event::AppData(small(42)), 20 * MS); // seq1 = unit 42
         for i in 1..10 {
-            s.on_event(Event::AppData(small(i)), 0);
+            s.on_event(Event::AppData(small(i)), 20 * MS); // seq2..10
         }
-        let out = s.on_event(ack(&[1, 2, 3, 4, 5, 6, 7, 8, 9]), 30 * MS);
+        let out = s.on_event(ack(&[2, 3, 4, 5, 6, 7, 8, 9, 10]), 30 * MS); // seq1 kayıp
         let retx = out.iter().find(|d| d.kind == TransmitKind::Retransmit);
         assert_eq!(
             retx.map(|d| d.unit_id),
@@ -795,8 +944,8 @@ mod tests {
         );
         assert_ne!(
             retx.map(|d| d.seq),
-            Some(0),
-            "retransmit YENİ seq almalı (0 değil)"
+            Some(1),
+            "retransmit YENİ seq almalı (kayıp seq1 değil)"
         );
     }
 

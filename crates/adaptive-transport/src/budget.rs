@@ -11,7 +11,10 @@
 pub struct BudgetConfig {
     /// Profil üst-sınırı (per-mille) — mutlak parity tavanı.
     pub profile_cap_permille: u32,
-    /// MIN_RATE (bytes/sec) — send_rate alt-sınırı (path'i boğmadan minimal-reliable).
+    /// MIN_RATE (bytes/sec) — send_rate alt-sınırı: rate→0 KİLİDİNİ önler ama kanalı OVERDRIVE ETMEZ.
+    /// [R2/ADIM-6] Kanal-hayatta-kalma floor'u = en-kötü-köşe ürün floor'u (0.25 kbps ≈ 31 B/s), MUTLAK
+    /// 80 kbps değil. Efektif rate BtlBw'yi izler (kanal-türevli); floor yalnız çöküşü engeller. Eski
+    /// 10_000 (80 kbps) mutlak sabiti <80 kbps kanalları 80× floodluyordu (Startup self-congestion çöküşü).
     pub min_rate_bps: u64,
     /// 1000‰ (tam) parity afford edilen referans BtlBw (budget_cap ölçeği).
     pub budget_ref_bps: u64,
@@ -23,7 +26,7 @@ impl BudgetConfig {
     pub fn fixture() -> Self {
         Self {
             profile_cap_permille: 900,
-            min_rate_bps: 10_000,
+            min_rate_bps: 31, // [R2] kanal-hayatta-kalma floor (0.25 kbps ürün floor'u); eski 10_000 CANCELLED
             budget_ref_bps: 125_000,
         }
     }

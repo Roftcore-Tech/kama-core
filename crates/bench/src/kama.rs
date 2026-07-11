@@ -20,19 +20,22 @@ use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK};
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
-use adaptive_transport::sender::{AckInfo, Event, OpaqueUnit, Sender, Timer};
+use adaptive_transport::sender::{AckInfo, Event, OpaqueUnit, Sender, Timer, TransmitKind};
 use adaptive_transport::seq::resolve_seq;
 use tokio::net::UdpSocket;
 use tokio::time::interval;
 
 use crate::error::BenchError;
-use crate::event::{RawEvent, RunMeta, RunOutput};
+use crate::event::{RawEvent, RunMeta, RunOutput, TxComponents};
 use crate::transport::{BenchTransport, ClientCfg, KamaTransport, ServerCfg};
 
 /// DATA frame_type (bench-local; ACK 0x10 ack.rs'te, FEC_SHARD 0x20 wire'da hiç görünmez).
 const FRAME_DATA: u8 = 0x00;
 /// DATA header: frame_type(1) + seq u16 (2) + unit_id u64 (8) = 11 B, sonra payload.
 const HDR_DATA: usize = 11;
+/// [C/D2] Security-stub AEAD-tag SİMÜLASYONU: her frame'e +16B (v-gerçek Noise/AEAD tag maliyeti) →
+/// byte ölçümleri gerçek katmanla DEĞİŞMEZ (revize-D0 §7-C; sent_ns/tag-dolgusu dersi). Sabit-16 pad.
+const TAG_STUB: usize = 16;
 /// transport-version (RunMeta.quinn_version alanına — alan donmuş, yeniden adlandırma YOK).
 const KAMA_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// pacing pump: her tick §13 token drain + §5 zaman-eşiği loss (idempotent, yüksek frekans güvenli).
@@ -48,11 +51,12 @@ const CLIENT_RECV_BUF: usize = 2048;
 
 /// DATA frame'i canonical fixed-width big-endian kodlar (ADR-05; varint YASAK).
 fn encode_data(seq: u16, unit_id: u64, payload: &[u8]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(HDR_DATA + payload.len());
+    let mut b = Vec::with_capacity(HDR_DATA + payload.len() + TAG_STUB);
     b.push(FRAME_DATA);
     b.extend_from_slice(&seq.to_be_bytes());
     b.extend_from_slice(&unit_id.to_be_bytes());
     b.extend_from_slice(payload);
+    b.resize(b.len() + TAG_STUB, 0); // [C] AEAD-tag simülasyonu — decode trailing'i yoksayar
     b
 }
 
@@ -80,6 +84,10 @@ struct ClientRun {
     delivered_count: u64,
     tx_bytes: u64,
     rx_bytes: u64,
+    // [D2] tx bileşen ayrımı (teşhis dekompozisyonu — d.kind'e göre)
+    tx_data: u64,
+    tx_retx: u64,
+    tx_dup: u64,
 }
 
 impl ClientRun {
@@ -93,6 +101,9 @@ impl ClientRun {
             delivered_count: 0,
             tx_bytes: 0,
             rx_bytes: 0,
+            tx_data: 0,
+            tx_retx: 0,
+            tx_dup: 0,
         }
     }
 
@@ -113,7 +124,14 @@ impl ClientRun {
             // client_loop notu). Wire-emit'te damgalamak kama'nın pacing dwell'ini latency'den dışlardı.
             let frame = encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload);
             if let Ok(n) = sock.send_to(&frame, server).await {
-                self.tx_bytes += n as u64;
+                let n = n as u64;
+                self.tx_bytes += n;
+                match d.kind {
+                    TransmitKind::Data => self.tx_data += n,
+                    TransmitKind::Retransmit => self.tx_retx += n,
+                    TransmitKind::Duplicate => self.tx_dup += n,
+                    TransmitKind::FecParity => {} // emit edilmez (§10 politika)
+                }
             }
         }
     }
@@ -228,6 +246,11 @@ async fn client_loop(
         payload_bytes: cfg.payload_bytes,
         max_deadline_ns: u64::try_from(cfg.max_deadline.as_nanos()).unwrap_or(u64::MAX),
         udp_tx_bytes: run.tx_bytes,
+        tx: TxComponents {
+            data: run.tx_data,
+            retx: run.tx_retx,
+            dup: run.tx_dup,
+        },
         udp_rx_bytes: run.rx_bytes,
     };
     Ok(RunOutput { meta, events })
@@ -302,7 +325,11 @@ mod tests {
     #[test]
     fn data_frame_roundtrips() {
         let f = encode_data(0x1234, 42, &[0x5A; 8]);
-        assert_eq!(f.len(), HDR_DATA + 8);
+        assert_eq!(
+            f.len(),
+            HDR_DATA + 8 + TAG_STUB,
+            "hdr + payload + [C] AEAD-tag stub"
+        );
         assert_eq!(decode_data(&f), Some((0x1234, 42)));
         assert_eq!(decode_data(&f[..5]), None, "truncated → None");
         assert_eq!(decode_data(&[0x10, 0, 0]), None, "yanlış frame_type → None");
