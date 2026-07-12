@@ -41,15 +41,22 @@ fn tv_loss_g2_time_threshold_and_min_delay() {
     assert!(!time_threshold_lost(dms(8), dms(4), dms(10), 9, 8)); // 8 < 10
     assert!(time_threshold_lost(dms(12), dms(4), dms(10), 9, 8)); // 12 > 10
 
-    // stateful: min_delay explicit parametre olarak geçilir.
+    // stateful: min_delay explicit parametre + [TUR-1a] later-ACK preconditionı.
     let cfg = LossConfig {
         min_delay: dms(10),
         ..LossConfig::default()
     };
     let mut d = ThresholdLossDetector::with_config(cfg);
     d.on_sent(10, 0, 1);
-    assert!(d.detect_time_losses(ns(100), dms(100)).is_empty()); // 100 < 112.5
-    assert_eq!(d.detect_time_losses(ns(120), dms(100)), vec![10]); // 120 > 112.5
+    // [TUR-1a / D-1/1] SAF SESSİZLİK (daha yüksek seq ACK'lenmemiş): time-threshold KESİN loss
+    // SINIFLANDIRAMAZ — eşik geçilse bile boş döner (tail-recovery liveness'ın işi, §5.1).
+    assert!(d.detect_time_losses(ns(120), dms(100)).is_empty()); // kanıt yok → loss yazılmaz
+    assert_eq!(d.lost_units(), 0, "saf sessizlik loss metriğini artırmaz");
+    // Kanıt gelsin: seq 11 gönderilip ACK'lenir → seq 10 için later-ACK kanıtı var.
+    d.on_sent(11, 0, 1);
+    d.on_ack(&[11]); // largest_acked=11 (packet-threshold: 11−10=1 < 3 → o yoldan kayıp değil)
+    assert!(d.detect_time_losses(ns(100), dms(100)).is_empty()); // 100 < 112.5 (eşik dolmadı)
+    assert_eq!(d.detect_time_losses(ns(120), dms(100)), vec![10]); // kanıt + eşik → kayıp
 }
 
 #[test]

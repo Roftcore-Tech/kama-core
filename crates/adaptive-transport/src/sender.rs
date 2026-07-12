@@ -219,6 +219,14 @@ pub struct Sender {
     // ── STARTUP plato tespiti ──
     startup_last_btlbw: u64,
     startup_stable_rounds: u32,
+    /// [TUR-A ölçüm-#1, TEK DEĞİŞKEN] Son plato-değerlendirmesinden bu yana YENİ bw örneği geldi mi.
+    /// Plato round'u yalnız yeni örnekte sayılır (pace-tick başına DEĞİL) — saat-sınıfı: event-count →
+    /// bw-sample. (Eski: her on_event çağrısı "round" sayılıyordu → 1ms tick'te 3 round = 3ms'de STEADY.)
+    bw_sampled_since_round: bool,
+
+    // ── [TUR-A teşhis] loss-atıflama sayaçları (SALT-GÖZLEM) ──
+    diag_loss_pkt: u64,
+    diag_loss_time: u64,
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
@@ -254,6 +262,9 @@ impl Sender {
             first_send_ns: None,
             startup_last_btlbw: 0,
             startup_stable_rounds: 0,
+            bw_sampled_since_round: false,
+            diag_loss_pkt: 0,
+            diag_loss_time: 0,
             last_decision: FusionDecision {
                 fec_parity_ratio_permille: 0,
                 arq_aggressiveness_permille: 0,
@@ -328,6 +339,7 @@ impl Sender {
                 acked_units.push(p.unit.id); // §3.3-B stop koşulu: teyit edilen birimin kopyaları iptal
                 let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);
                 self.btlbw.update(sample, now_ns, sample.delivered > 0);
+                self.bw_sampled_since_round = true; // [TUR-A ölçüm-#1] plato round'u bw-örneğiyle sayılır
                 if p.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
                     largest = seq;
                     rtt_send_ns = Some(p.send_ns);
@@ -351,7 +363,10 @@ impl Sender {
         // (rtt.srtt Some) AÇILIR → o SACK'ten itibaren loss işlenir. Detector her zaman sync kalır.
         let lost = self.loss.on_ack(&ack.acked_seqs);
         if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {
+            let before = self.pending_lost.len();
             self.queue_losses(&lost, now_ns);
+            // [TUR-A teşhis] loss-atıflama: packet-threshold (§5a) kaynaklı kuyruklanan kayıp sayısı.
+            self.diag_loss_pkt += (self.pending_lost.len() - before) as u64;
         }
     }
 
@@ -369,7 +384,10 @@ impl Sender {
                 if self.state != SenderState::PreConverge {
                     let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
                     let lost = self.loss.detect_time_losses(now_ns, srtt);
+                    let before = self.pending_lost.len();
                     self.queue_losses(&lost, now_ns);
+                    // [TUR-A teşhis] loss-atıflama: time-threshold (§5b) kaynaklı kuyruklanan kayıp.
+                    self.diag_loss_time += (self.pending_lost.len() - before) as u64;
                 }
             }
         }
@@ -456,7 +474,15 @@ impl Sender {
     }
 
     /// STARTUP plato: BtlBw N round Δ<ε ise stabil (§3 STARTUP→STEADY).
+    ///
+    /// [TUR-A ölçüm-#1, TEK DEĞİŞKEN] Round = YENİ bw-örneği (ACK'ten). Eski kod her on_event
+    /// çağrısını round sayıyordu → 1ms pace-tick'te 3 "round" = STARTUP 3ms'de biter, bant hiç
+    /// prob edilmez → motor kendi app-limited hızına kilitlenir (TUR-A trajektorisi, kök).
     fn startup_plateau(&mut self) -> bool {
+        if !self.bw_sampled_since_round {
+            return false; // yeni ölçüm yok → round İLERLEMEZ (pace-tick zaman-vekili DEĞİL)
+        }
+        self.bw_sampled_since_round = false;
         let bw = self.btlbw.btlbw();
         if bw == 0 {
             return false;
@@ -579,7 +605,31 @@ impl Sender {
 
     /// RECOVER_FWD (§11): ACK-BAĞIMSIZ forward duplication. Kayıp birimleri `factor` kez zaman-aralıklı
     /// kopya olarak planla (ACK beklemeden — reverse-path çöktüğü için ARQ futile).
+    ///
+    /// [TUR-1a / D-1/1 liveness kolu] pending_lost BOŞKEN (saf-sessizlik: later-ACK preconditionı loss
+    /// SINIFLANDIRMASINI blokladı ama tail cevapsız): unacked orijinal inflight birimlerine spekülatif
+    /// geometrik kopya (taban=srtt, ×2 backoff; ACK'le iptal §3.3-B-stop). Loss METRİĞİNE dokunmaz —
+    /// "saf sessizlik loss'u artırmaz; fakat liveness amacıyla probe/retransmit tetikleyebilir" (§5.1).
     fn plan_forward_duplication(&mut self, now_ns: u64) {
+        if self.pending_lost.is_empty() {
+            // Saf-sessizlik tail-liveness: kopyası zaten planlı olmayan orijinal-DATA inflight birimleri.
+            let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
+            let tail: Vec<OpaqueUnit> = self
+                .inflight
+                .values()
+                .filter(|p| p.origin == TransmitKind::Data)
+                .map(|p| p.unit)
+                .filter(|u| !self.dup_queue.iter().any(|d| d.unit.id == u.id))
+                .collect();
+            for unit in tail {
+                self.dup_queue.push(DupRec {
+                    due_ns: now_ns,
+                    unit,
+                    interval_ns: srtt_ns.max(1), // geometrik reschedule (drain'de ×COPY_MULTIPLIER)
+                });
+            }
+            return;
+        }
         let (factor, spacing) = self.dup_params();
         let recs: Vec<LostRec> = self.pending_lost.drain(..).collect();
         for rec in recs {
@@ -760,6 +810,33 @@ impl Sender {
     #[must_use]
     pub fn last_decision(&self) -> FusionDecision {
         self.last_decision
+    }
+    /// TUR-A teşhis rate-trajektori snapshot'ı (SALT-GÖZLEM; davranış DEĞİŞMEZ):
+    /// `(state, btlbw_bps, srtt_us, send_rate_bps, inflight_bytes)`. floor→btlbw ramp kilidini ölçmek için.
+    #[must_use]
+    pub fn diag_rate(&self) -> (SenderState, u64, u64, u64, u64) {
+        let srtt_us = self
+            .rtt
+            .srtt()
+            .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX));
+        (
+            self.state,
+            self.btlbw.btlbw(),
+            srtt_us,
+            self.pacer.rate(),
+            self.inflight_bytes,
+        )
+    }
+    /// [TUR-A teşhis, ölçüm-#2] loss-atıflama (SALT-GÖZLEM): `(packet_threshold_queued,
+    /// time_threshold_queued, pending_lost_now)`. Temiz kanalda hangi tetik spurious RecoverArq açıyor —
+    /// gerçek gap (packet) mi, cadence-gap (time) mi.
+    #[must_use]
+    pub fn diag_loss(&self) -> (u64, u64, u64) {
+        (
+            self.diag_loss_pkt,
+            self.diag_loss_time,
+            self.pending_lost.len() as u64,
+        )
     }
     /// Son hesaplanan forward-recovery eylemi (§11).
     #[must_use]
@@ -955,5 +1032,59 @@ mod tests {
         s.on_event(Event::AppData(unit(0)), 0);
         s.on_event(ack(&[0]), 30 * MS);
         assert_eq!(s.state(), SenderState::Idle);
+    }
+
+    #[test]
+    fn tail_loss_liveness_without_loss_classification() {
+        // [TUR-1a / D-1/1] Tail kaybı: daha yüksek seq ACK'i YOK → time-threshold loss SINIFLANDIRAMAZ
+        // (saf sessizlik loss metriğini ARTIRMAZ); recovery LIVENESS'tan gelir (silence → ack_confidence
+        // → RECOVER_FWD → spekülatif geometrik Duplicate; ACK'le iptal edilir, loss sayılmaz).
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(100)), 0); // warm-up seq0
+        s.on_event(ack(&[0]), 10 * MS); // srtt=10ms; PreConverge'den çık
+        s.on_event(Event::AppData(unit(42)), 20 * MS); // tail: seq1 = unit 42, ACK GELMEYECEK
+        let mut dup_seen = false;
+        for t in 1..=30 {
+            let out = s.on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS);
+            dup_seen |= out
+                .iter()
+                .any(|d| d.kind == TransmitKind::Duplicate && d.unit_id == 42);
+        }
+        let (lpkt, ltime, pend) = s.diag_loss();
+        assert_eq!(
+            (lpkt, ltime, pend),
+            (0, 0, 0),
+            "saf sessizlik loss metriğini artırmamalı (later-ACK preconditionı)"
+        );
+        assert_eq!(s.loss.loss_pre_fec_ppm(), 0, "loss_ppm da 0 kalmalı");
+        assert!(
+            dup_seen,
+            "tail liveness: RECOVER_FWD spekülatif kopyayı ateşlemeli (unit 42)"
+        );
+    }
+
+    #[test]
+    fn clean_pair_flow_no_time_threshold_loss() {
+        // [TUR-1a] Temiz akış, SACK'ler cadence gecikmesiyle: precondition sayesinde time-threshold
+        // ASLA ateşlemez (K-1 false-loss sınıfı yapısal ölür). ACK'ler her birimi kapsıyor.
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(100)), 0);
+        s.on_event(ack(&[0]), 10 * MS);
+        // 4 birim; SACK'ler GEÇ (cadence) ama tam — her ack'ten önce uzun PTO sessizliği.
+        for (i, send_ms) in [(1u64, 20u64), (2, 30), (3, 40), (4, 50)] {
+            s.on_event(Event::AppData(unit(i)), send_ms * MS);
+        }
+        // 3s boyunca PTO tick'leri (eski kod burada hepsini "kayıp" ilan ederdi: 9/8×10ms ≪ 3s).
+        for t in 1..=30 {
+            s.on_event(Event::TimerFired(Timer::Pto), (50 + t * 100) * MS);
+        }
+        // Geç ama TAM SACK.
+        s.on_event(ack(&[1, 2, 3, 4]), 3200 * MS);
+        let (lpkt, ltime, _) = s.diag_loss();
+        assert_eq!(
+            (lpkt, ltime),
+            (0, 0),
+            "temiz-ama-geç SACK akışında hiçbir loss sınıflandırılmamalı"
+        );
     }
 }

@@ -176,13 +176,23 @@ impl LossDetector for ThresholdLossDetector {
     }
 
     fn detect_time_losses(&mut self, now_ns: u64, srtt: Duration) -> Vec<u64> {
+        // [TUR-1a / D-1/1] LATER-ACK PRECONDITION (RFC 9002 §6.1'in atlanmış yarısı): time-threshold
+        // KESİN kayıp sınıflandırması YALNIZ "daha yüksek seq ACK'lendi" kanıtıyla (seq < largest_acked).
+        // Saf sessizlik loss metriğini ARTIRMAZ — sessizlikte tail-recovery liveness'ın işi (§5.1
+        // ack_confidence → RECOVER_FWD spekülatif kopya; loss-sınıflandırması DEĞİL). Bu olmadan
+        // SACK-cadence gecikmesi (K-1) temiz kanalda sistematik false-loss üretiyordu (ölçüldü: 27/27).
+        if !self.have_acked {
+            return Vec::new();
+        }
         let cfg = self.cfg;
+        let la = self.largest_acked;
         let lost: Vec<u64> = self
             .inflight
             .iter()
-            .filter(|(_, s)| {
+            .filter(|(&seq, s)| {
                 let elapsed = Duration::from_nanos(now_ns.saturating_sub(s.send_ns));
-                time_threshold_lost(elapsed, srtt, cfg.min_delay, cfg.time_num, cfg.time_den)
+                seq < la
+                    && time_threshold_lost(elapsed, srtt, cfg.min_delay, cfg.time_num, cfg.time_den)
             })
             .map(|(&seq, _)| seq)
             .collect();
