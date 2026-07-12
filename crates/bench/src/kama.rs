@@ -184,9 +184,23 @@ async fn client_loop(
     let deadline = tokio::time::sleep(cfg.max_deadline);
     tokio::pin!(deadline);
 
+    // [TUR-A teşhis] rate-trajektori tap'ı (SALT-GÖZLEM; kaldırılabilir). floor→btlbw ramp kilidini ölç.
+    let mut traj = interval(Duration::from_millis(500));
+    let unit_wire = HDR_DATA as u64 + cfg.payload_bytes + TAG_STUB as u64;
+
     while run.delivered_count < msg_count {
         tokio::select! {
             () = &mut deadline => break,
+            _ = traj.tick() => {
+                let now = elapsed_ns(start);
+                let (st, btlbw, srtt_us, rate, infl) = run.sender.diag_rate();
+                let (lpkt, ltime, lpend) = run.sender.diag_loss();
+                eprintln!(
+                    "TRAJ t={:.1} state={:?} btlbw={} rate={} srtt_us={} infl={} sent_u={} deliv={} loss_pkt={} loss_time={} pend={}",
+                    now as f64 / 1e9, st, btlbw, rate, srtt_us, infl,
+                    run.tx_data / unit_wire.max(1), run.delivered_count, lpkt, ltime, lpend
+                );
+            }
             _ = pace.tick() => {
                 let now = elapsed_ns(start);
                 run.drive(Event::TimerFired(Timer::Pto), now, &sock, cfg.server, &payload).await;

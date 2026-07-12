@@ -900,6 +900,58 @@ Tunable'lar [CAL] → baseline ölçümünden sonra vektörlere GERÇEK değerle
 | `MINI_BURST_COUNT` [R-mb] | min(TARGET, floor(Z·forward_bw·1s/probe_wire)) | tüm bw | fast:3-5; 0.25k:0 (amortize ~10-20s) |
 | `PROBE_RATE_LIMIT` | responder kaynak-başına echo/s (DoS taban) | responder | — |
 
+### 16.2 Zaman-modeli haritası — saat-sınıfı envanteri (NORMATİF) [TUR-A]
+
+> **Neden var:** Motor 50-200 kbit'te yazıldı; orada pace-tick ≈ RTT-round (ikisi ms mertebesi) →
+> saat-sınıfı karışıklıkları hiç patlamadı. Sub-kbps'te srtt 3-12 s, ACK cadence 2.1-8.4 s, birim
+> serialization 2.3-9.1 s iken tick 1 ms — sınıflar 1000× ayrışır ve her gizli karışıklık ayrı patlar.
+> Sınıfın ölçülmüş örnekleri: (1) INITIAL_RTT wall-clock [D2], (2) server ACK_TICK=20ms SACK-seli [D2],
+> (3) startup_plateau round'u pace-tick sayması → STARTUP 3 ms'de biter, motor app-limited hızına
+> kilitlenir [TUR-A trajektori], (4) W_BTLBW=10s wall-clock ("~10 RTT" yorumuna rağmen) → srtt=3s'te
+> ~3 RTT → btlbw 88→4 çöküşü [TUR-A ölçüm]. Envanter: 94 mekanizma tarandı (74 + 20 verify-avcısı eki):
+> **22 BREAKS / 35 SUSPECT / 17 SAFE**.
+
+**Normatif kurallar (yeni kod dahil, İHLAL EDİLEMEZ):**
+```
+ZM-1  Olay-sayısı (on_event/tick çağrı adedi) ASLA zaman-vekili olamaz. "Round" = RTT-round
+      (BBR delivered-anchoring) ya da açık bw-örneği; tick-frekansı değişince semantik DEĞİŞMEMELİ.
+ZM-2  Wall-clock mutlak sabit ancak 4-decade (0.25k/1k/100k/1M) doğrulamasıyla girer; RTT/kanal-zamanı
+      ölçen her eşik srtt/rtprop/serialization-türevi olmak ZORUNDA (ms sabiti değil).
+ZM-3  Zaman ölçen her YENİ mekanizma bu tabloya saat-sınıfıyla eklenir; sınıfsız eşik CI-red gerekçesidir.
+ZM-4  Karşılaştırmanın İKİ YANI aynı saati kullanmalı (örn. loss-threshold srtt-türevi iken elapsed'in
+      içindeki receiver ACK-hold'u threshold'un saati GÖRMÜYORSA karşılaştırma geçersiz — aşağıda K-1).
+```
+
+**Sınıf envanteri (BREAKS + kritik SUSPECT; tam liste denetim kaydında):**
+
+| mekanizma | kod | fiili sınıf | sub-kbps davranış | gereken sınıf |
+|---|---|---|---|---|
+| time-threshold loss 9/8·srtt | loss.rs + sender on_timer | rtt-türevi eşik ↔ ack-hold'lu wall-clock elapsed | temiz kanalda SİSTEMATİK false loss (K-1) | eşik ≥ beklenen-ACK-cadence + marj |
+| startup_plateau round | sender.rs | ~~event-count~~ → bw-örneği (TUR-A ölçüm değişikliği) | 3 ms'de STEADY → app-limited kilit (ölçüldü) | RTT-round (delivered-anchor); re-entry'de sayaç sıfırla |
+| W_BTLBW=10s | bw.rs:12 | wall-clock ("~10 RTT" değil) | 0.8-3.3 RTT → btlbw 88→4 çöküşü (ölçüldü); 0.25k'da pencere ACK arası boşalır → btlbw=0 | max(10s, k·srtt) veya örnek-sayısı |
+| W_RTPROP=10s | rtt.rs:16 | wall-clock | 1-4 örnek; 10s+ SACK boşluğunda tek örneğe düşer → rtprop=şişkin RTT | max(10s, k·srtt) |
+| ack_delay wire u16 µs (65.5ms tavan) | receiver.rs/ack.rs | wall-clock tavan | 8.4s ACK-hold 65.5ms'e doyar → RTT örneği ~8.3s şişer (§6 düzeltmesi çalışamaz) | SPEC-SEVİYE: saniye-yetenekli encoding (exponent) |
+| ACK_CADENCE_FLOOR (RETURN_BW_PRIOR=31 const) | receiver.rs:89 | derleme-zamanı prior (statik 8.39s) | 1kbps'te 4× fazla throttle (2.1s yeterli); K-1'i besler | ölçülen return_bw'den adaptif (§3.3-E FULL) |
+| DrainRtprop dwell | sender update_state `_=>Steady` | event-count(1) | probe 1 ms yaşar → rtprop HİÇ yenilenmez | ölçüm-kapılı çıkış (≥1 RTT / min-rtt örneği) |
+| emergency escalate adımı | emergency.rs update() | event-count (çağrı başına) | 1ms pompada Arq→Dup3 2 ms'de (merdiven fiilen binary) | adım-başına RTT-türevi dwell |
+| deescalate_dwell=1s | emergency.rs:95 | wall-clock | 1s < 1 srtt → tek ACK'te koruma tam iner (flap) | k·srtt veya ≥1 sağlıklı round |
+| dup_spacing=20ms | emergency/sender | wall-clock | 20ms ≪ serialization → kopyalar wire'da bitişik (dekorelasyon amacı ölür) | k·birim-serialization |
+| ack_confidence anchor `.or()` | sender.rs | — (semantik) | spec `max(last_ack, first_send)` DEĞİL → idle-resume'da bayat anchor → anında RecoverFwd | spec formülü + aktif-dönem re-base |
+| fuzzy qd üyelikleri 50-400ms | fusion.rs | wall-clock mutlak | sub-kbps'te qd doğal olarak saniyeler → qd.high≡1 → rate yarıya | rtprop-göreli üyelik |
+| fuzzy bw üyelikleri 50-200 kB/s | fusion.rs | mutlak | 31-125 B/s'te bw.low≡1; loss.low=0 ile TÜM kural ağırlıkları 0 → arq=0, pending_lost SONSUZA DEK drain edilmez (ölçüldü: retx=0, pend monoton) | log-ölçek/kanal-göreli kalibrasyon + sıfır-ağırlık fallback |
+| loss_pre_fec_ppm ömür-boyu | loss.rs | monoton ratchet (W_loss YOK) | false-loss kalıcı loss.high → fuzzy zehirlenir; UN-LOSS yolu YOK | §5 W_loss kayan pencere + geç-ACK'te loss geri al |
+| MIN_CWND=4800B | rate.rs:93 | byte-mutlak | BDP'nin 3-48× → inflight-cap kolu hiç seçilmez | k×BDP tabanı |
+| geometrik kopya deadline'sızlığı | sender dup_queue | deadline-türevi AMA tavansız | ölü kanalda sonsuz reschedule (COPY_MAX_INTERVAL/RETRY_BUDGET kodda yok) | §12 deadline tavanı DupRec'e |
+| SAFE (doğru sınıf, örnek): pacer refill+kalan [R1], BURST_WINDOW [R3], PC geometrik takvim (RTT_floor-türevi), ACK_SILENCE=3·srtt, K=3 packet-threshold, ilk-SACK cadence-exempt | — | — | — | — |
+
+**K-1 — Bilinen ölümcül KOMPOZİSYON (TUR-A ölçüm, atıflama sayaçlı):** temiz 1 kbps'te 27/27 loss-ilanı
+time-threshold (packet-threshold=0). Zincir: eşik=9/8·srtt≈3.38s < SACK-varış-fiziği (2·serialization+
+cadence-hold 4.6-8.4s) → her birim "kayıp" → `queue_losses` seq'i inflight'tan DÜŞÜRÜR → gerçek (geç)
+ACK artık RTT/BW örneği ÜRETEMEZ (censor) → srtt düşük-yanlı kalır + W_BTLBW boşalır (btlbw 88→4) +
+loss_ppm doyar → fuzzy arq=0 → pending_lost drain edilmez → state RecoverArq'a MIHLANIR (Startup
+re-entry yolu da yok). Tek false-loss tüm ölçüm katmanını zehirler. Fix-sınıfı: eşik ack-cadence-farkında
++ un-loss yolu + eviction yerine geç-ACK'e açık muhasebe.
+
 ---
 
 ## 17. QUIC Comparison Harness (NORMATİF — §4.4 TDD'ye bağlı)

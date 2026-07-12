@@ -84,4 +84,10 @@ impl TokenBucket {
     pub fn tokens(&self) -> u64 {
         self.tokens
     }
+
+    /// Güncel pacing rate (bytes/sec) — SALT-GÖZLEM (teşhis).
+    #[must_use]
+    pub fn rate(&self) -> u64 {
+        self.rate_bps
+    }
 }
