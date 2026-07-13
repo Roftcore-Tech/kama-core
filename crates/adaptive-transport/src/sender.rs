@@ -56,6 +56,8 @@ pub enum SenderState {
     Startup,
     /// [TUR-3b] Startup-exit drain (BBR-analog): 1/high_gain ile kuyruk → BDP; sonra Steady.
     Drain,
+    /// [TUR-3c] Bant-probe (1.25×): app-limited kilidin tek yukarı-yolu; sözleşme D-2/4.
+    ProbeUp,
     /// pace = BtlBw; periyodik BW/RTprop probe.
     Steady,
     /// residual loss + ack_confidence OK → selective retransmit (§9).
@@ -177,6 +179,13 @@ struct DupRec {
     interval_ns: u64,
 }
 
+/// [TUR-3c] ProbeUp başarısız-çıkış türleri (AYRI raporlanır — sözleşme).
+#[derive(Debug, Clone, Copy)]
+enum ProbeExit {
+    Abort,
+    Timeout,
+}
+
 /// İlk RTT ölçülene kadar pacing/eşik için başlangıç RTT [CAL initial].
 const INITIAL_RTT: Duration = Duration::from_millis(100);
 /// STARTUP→STEADY plato: BtlBw N ardışık round Δ<ε ise plato [CAL].
@@ -221,6 +230,15 @@ const DRAIN_RTPROP_MIN_DWELL_EPOCH: u32 = 1;
 const DRAIN_RTPROP_MAX_DWELL_EPOCH: u32 = 3;
 /// [TUR-3b] Startup-Drain max-dwell (ack_epoch biriminde; liveness-yedeği) [CAL {2,3,4}].
 const DRAIN_MAX_DWELL_EPOCH: u32 = 3;
+/// [TUR-3c D-2/4] ProbeUp sözleşme-sabitleri [CAL, golden'a girmez]. SAAT-SINIFI (ZM-3):
+/// periyot canlı-ack_epoch (Steady, gain=1 → kirlenmez); dwell/volume GİRİŞ-DONUK epoch/btlbw
+/// (öz-referans tuzağı workflow'la bulundu: canlı-epoch probe'un kendi gain'iyle kısalır,
+/// kuyruk-srtt'siyle UZAR — pozitif geri-besleme; srtt-clock-v1 §2.1 tuzağının kardeşi).
+const K_PROBE_PERIOD_EPOCH: u32 = 4; // [CAL {2,4,8}]
+const PROBE_MAX_DWELL_EPOCH: u32 = 4; // ×epoch_entry [onaylı placeholder]
+const PROBE_VOLUME_EPOCH: u32 = 2; // volume = btlbw_entry × 2×epoch_entry [onaylı]
+const PROBE_SUCCESS_EPS_PERMILLE: u64 = 25; // btlbw_entry×1.025 [CAL]
+const PROBE_QD_ABORT_PERMILLE: u64 = 500; // onaylı (giriş-histerezisi de bu eşik)
 /// [TUR-3b commit-C, 3a.5-devri] ack_confidence sessizlik-eşiği EAI-tabanı [CAL {1,2,3}]:
 /// eşik = max(3×srtt, K_CONF_EAI×EAI) — srtt_t hızlı-düşüşünün sahte-LOW-conf riski kapanır (ZM-4).
 /// Karar-a eşleşmesi: receiver tail-muafiyeti (K_TAIL) ile ÇİFT — liveness ağır-yol olmaktan çıkar.
@@ -280,6 +298,17 @@ pub struct Sender {
     drain_rtprop_entry_ns: Option<u64>,
     drain_rtprop_qualifying: bool, // girişten beri ≥1 rtt-örneği (qualifying_min_rtt)
     drain_entry_ns: Option<u64>,   // [TUR-3b] Startup-Drain giriş anı (max-dwell yedeği)
+    // ── [TUR-3c] ProbeUp sözleşme-durumu (giriş-DONUK snapshot'lar — öz-referans önlenir) ──
+    probe_entry_ns: Option<u64>,
+    probe_epoch_entry_ns: u64,
+    probe_btlbw_entry: u64,
+    probe_delivered_entry: u64,
+    probe_loss_attributed: bool, // probe-atıflı kayıp-ilanı (send_ns ≥ entry; queue_losses işaretler)
+    last_probe_end_ns: u64,
+    diag_probe_success: u64,
+    diag_probe_abort: u64,
+    diag_probe_timeout: u64,
+    diag_probe_preempt: u64, // 4. çıkış-türü (workflow bulgusu: preemption muhasebesiz kalamaz)
 
     // ── STARTUP plato tespiti ──
     startup_last_btlbw: u64,
@@ -345,6 +374,16 @@ impl Sender {
             drain_rtprop_entry_ns: None,
             drain_rtprop_qualifying: false,
             drain_entry_ns: None,
+            probe_entry_ns: None,
+            probe_epoch_entry_ns: 0,
+            probe_btlbw_entry: 0,
+            probe_delivered_entry: 0,
+            probe_loss_attributed: false,
+            last_probe_end_ns: 0,
+            diag_probe_success: 0,
+            diag_probe_abort: 0,
+            diag_probe_timeout: 0,
+            diag_probe_preempt: 0,
             startup_last_btlbw: 0,
             startup_stable_rounds: 0,
             bw_sampled_since_round: false,
@@ -655,6 +694,14 @@ impl Sender {
         for &seq in lost {
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                // [TUR-3c workflow-bulgusu (a)] loss-abort YALNIZ probe-ATIFLI kayıpla:
+                // send_ns ≥ probe-girişi (probe-öncesi trafiğin geç-Confirmed'i probe'u öldürmesin;
+                // rastgele-kayıp vetosu da böyle daralır — INV-RATE-1 gerilimi düşer).
+                if let Some(entry) = self.probe_entry_ns {
+                    if p.send_ns >= entry {
+                        self.probe_loss_attributed = true;
+                    }
+                }
                 if p.origin == TransmitKind::Duplicate {
                     // [commit-B §3.7] Dup-kökenli kayıp tombstonesuz düşer → uçuş-sayısı burada.
                     self.bw_sampler.forget_in_flight();
@@ -712,14 +759,11 @@ impl Sender {
         // [TUR-3a önalım, D-3/1] qd_ratio = qd×1000/rtprop; rtprop yoksa 0 (kanıt yok →
         // boğma yok) + sayaç. Dürüst-rtprop'un zorunlu ikizi: mutlak-ns eşikler sub-kbps'te
         // fiziksel-taban qd'yi (serialization çift-yönü, saniyeler) kalıcı-HIGH okuyordu.
-        let qd_ratio_permille = match self.rtt.rtprop() {
-            Some(rtp) if !rtp.is_zero() => {
-                dur_ns(self.rtt.queue_delay()).saturating_mul(1000) / dur_ns(rtp)
-            }
-            _ => {
-                self.diag_qd_no_evidence += 1;
-                0
-            }
+        let qd_ratio_permille = if self.rtt.rtprop().is_none_or(|r| r.is_zero()) {
+            self.diag_qd_no_evidence += 1;
+            0
+        } else {
+            self.qd_ratio_permille_now()
         };
         let inputs = FusionInputs {
             loss_ppm: self.loss.loss_windowed_ppm(),
@@ -734,6 +778,7 @@ impl Sender {
     /// §3 state geçişleri. Öncelik: IDLE (iş yok) → RECOVER_FWD (ack_confidence LOW, her fazdan) →
     /// faz-içi (STARTUP plato / RECOVER_ARQ / STEADY).
     fn update_state(&mut self, decision: &FusionDecision, now_ns: u64) {
+        let prev_state = self.state; // [TUR-3c] preemption-muhasebesi için
         let health = u32::try_from(self.ack_confidence_permille(now_ns)).unwrap_or(u32::MAX);
         let level = self.emergency.update(health, now_ns);
         self.last_recovery = emergency::action(level, Framing::Tiny, &self.emergency_cfg);
@@ -823,9 +868,107 @@ impl Sender {
                         SenderState::DrainRtprop
                     }
                 }
+                // [TUR-3c D-2/4] AÇIK ProbeUp kolu (`_`e BIRAKILMAZ — sözleşme).
+                SenderState::ProbeUp => {
+                    let elapsed = now_ns.saturating_sub(self.probe_entry_ns.unwrap_or(now_ns));
+                    let epoch_e = self.probe_epoch_entry_ns.max(1);
+                    let volume = (u128::from(self.probe_btlbw_entry)
+                        * u128::from(epoch_e)
+                        * u128::from(PROBE_VOLUME_EPOCH)
+                        / 1_000_000_000) as u64;
+                    let delivered = self
+                        .bw_sampler
+                        .delivered()
+                        .saturating_sub(self.probe_delivered_entry);
+                    let qd_now = self.qd_ratio_permille_now();
+                    let success = delivered >= volume
+                        && self.btlbw.btlbw()
+                            > self.probe_btlbw_entry
+                                + self.probe_btlbw_entry * PROBE_SUCCESS_EPS_PERMILLE / 1000;
+                    let abort = qd_now > PROBE_QD_ABORT_PERMILLE || self.probe_loss_attributed;
+                    let timeout =
+                        elapsed >= epoch_e.saturating_mul(u64::from(PROBE_MAX_DWELL_EPOCH));
+                    if success {
+                        self.probe_close_success(now_ns)
+                    } else if abort {
+                        self.probe_close(now_ns, ProbeExit::Abort)
+                    } else if timeout {
+                        self.probe_close(now_ns, ProbeExit::Timeout)
+                    } else {
+                        SenderState::ProbeUp
+                    }
+                }
+                // Steady: ProbeUp-giriş kontrolü (periyot CANLI-epoch'la — gain=1'de kirlenmez).
+                SenderState::Steady => {
+                    let epoch = dur_ns(
+                        self.rtt
+                            .srtt()
+                            .unwrap_or(INITIAL_RTT)
+                            .max(self.expected_ack_interval()),
+                    );
+                    let period_ok = now_ns.saturating_sub(self.last_probe_end_ns)
+                        >= epoch.saturating_mul(u64::from(K_PROBE_PERIOD_EPOCH));
+                    // Giriş-histerezisi (workflow N=0-bulgusu): qd zaten abort-eşiği üstündeyse GİRME.
+                    let qd_ok = self.qd_ratio_permille_now() <= PROBE_QD_ABORT_PERMILLE;
+                    // DrainRtprop-çakışması çözümü: tazelik-KAPISI YOK (min-örnek yaşı sürekli-akışta
+                    // bile büyür — kapı ProbeUp'ı yapısal bloklar, test+m1'de ölçüldü). DrainRtprop
+                    // yalnız Steady'den girer → probe-dwell'i kadar bekler (sınırlı ≤4×epoch_entry).
+                    let backlog = !self.tx_queue.is_empty();
+                    if period_ok && qd_ok && backlog {
+                        // GİRİŞ-SNAPSHOT'ları (donuk — öz-referans önlenir; ACK'ler işlendikten
+                        // sonra alınır: on_event sırası bunu doğal sağlar).
+                        self.probe_entry_ns = Some(now_ns);
+                        self.probe_epoch_entry_ns = epoch;
+                        self.probe_btlbw_entry = self.btlbw.btlbw();
+                        self.probe_delivered_entry = self.bw_sampler.delivered();
+                        self.probe_loss_attributed = false;
+                        SenderState::ProbeUp
+                    } else {
+                        SenderState::Steady
+                    }
+                }
                 _ => SenderState::Steady,
             }
         };
+        // [TUR-3c workflow-bulgusu] PREEMPTION-muhasebesi: emergency/pending dalları ProbeUp'ı
+        // yukarıda keserse çıkış-muhasebesi çalışmaz — burada yakala (4. ayrı-raporlu çıkış).
+        if prev_state == SenderState::ProbeUp
+            && self.state != SenderState::ProbeUp
+            && self.probe_entry_ns.is_some()
+        {
+            self.probe_entry_ns = None;
+            self.last_probe_end_ns = now_ns;
+            self.diag_probe_preempt += 1;
+        }
+    }
+
+    /// [TUR-3c] qd_ratio (per-mille) — giriş-histerezisi + abort için tek-kaynak.
+    fn qd_ratio_permille_now(&self) -> u64 {
+        match self.rtt.rtprop() {
+            Some(rtp) if !rtp.is_zero() => {
+                dur_ns(self.rtt.queue_delay()).saturating_mul(1000) / dur_ns(rtp)
+            }
+            _ => 0,
+        }
+    }
+
+    /// ProbeUp çıkış-muhasebesi (success): sayaç + periyot-sıfırlama; yeni btlbw zaten max-filter'da.
+    fn probe_close_success(&mut self, now_ns: u64) -> SenderState {
+        self.probe_entry_ns = None;
+        self.last_probe_end_ns = now_ns;
+        self.diag_probe_success += 1;
+        SenderState::Steady
+    }
+
+    /// ProbeUp çıkış-muhasebesi (abort/timeout — AYRI raporlanır: "başarısız ≠ kapasite-yok").
+    fn probe_close(&mut self, now_ns: u64, exit: ProbeExit) -> SenderState {
+        self.probe_entry_ns = None;
+        self.last_probe_end_ns = now_ns;
+        match exit {
+            ProbeExit::Abort => self.diag_probe_abort += 1,
+            ProbeExit::Timeout => self.diag_probe_timeout += 1,
+        }
+        SenderState::Steady
     }
 
     /// STARTUP plato: BtlBw N round Δ<ε ise stabil (§3 STARTUP→STEADY).
@@ -868,6 +1011,7 @@ impl Sender {
         let phase = match self.state {
             SenderState::Startup => PacingPhase::Startup,
             SenderState::Drain => PacingPhase::Drain, // [TUR-3b] 1/high_gain
+            SenderState::ProbeUp => PacingPhase::ProbeUp, // [TUR-3c] 1.25× — AÇIK kol (sözleşme)
             SenderState::DrainRtprop => PacingPhase::ProbeDown,
             _ => PacingPhase::Steady,
         };
@@ -1246,6 +1390,16 @@ impl Sender {
             self.rtt.queue_delay().as_micros() as u64,
         )
     }
+    /// [TUR-3c teşhis] ProbeUp çıkış-sayaçları (SALT-GÖZLEM): (success, abort, timeout, preempt).
+    #[must_use]
+    pub fn diag_probe(&self) -> (u64, u64, u64, u64) {
+        (
+            self.diag_probe_success,
+            self.diag_probe_abort,
+            self.diag_probe_timeout,
+            self.diag_probe_preempt,
+        )
+    }
     /// [TUR-2b/2c teşhis] tombstone (SALT-GÖZLEM):
     /// `(canlı, hit, bw_kurtarılan, evicted, ambiguous, credited_bytes)`.
     #[must_use]
@@ -1543,6 +1697,127 @@ mod tests {
         assert!(
             s.reorder.recent_max_reorder() >= 4,
             "note_spurious gözlenen reorder mesafesini kaydetmeli (la=5 − seq=1)"
+        );
+    }
+
+    #[test]
+    fn probe_up_contract_entry_success_and_gates() {
+        // [TUR-3c D-2/4] Giriş-kapıları (periyot+qd-histerezis+backlog) gerçek-akışla; success-dalı
+        // donuk-snapshot mekaniğiyle (fizik-entegrasyonu m1-netem ölçümünün işi).
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 500 * MS);
+        for i in 1..=6u64 {
+            s.on_event(Event::AppData(unit(i)), (500 + i) * MS);
+        }
+        s.state = SenderState::Steady;
+        let epoch = dur_ns(
+            s.rtt
+                .srtt()
+                .unwrap_or(INITIAL_RTT)
+                .max(s.expected_ack_interval()),
+        );
+        // Periyot dolmadan: giriş YOK (bu event token-birikimiyle kuyruğu da boşaltabilir).
+        s.on_event(Event::TimerFired(Timer::Pto), 4 * epoch - 100 * MS);
+        assert_ne!(
+            s.state(),
+            SenderState::ProbeUp,
+            "periyot dolmadan giriş yok"
+        );
+        // Backlog tazele (erken-Pto emisyonu kuyruğu boşaltmış olabilir); periyot hâlâ dolmadı.
+        s.state = SenderState::Steady;
+        for i in 7..=10u64 {
+            s.on_event(Event::AppData(unit(i)), 4 * epoch - 50 * MS + i);
+        }
+        assert_ne!(
+            s.state(),
+            SenderState::ProbeUp,
+            "backlog var ama periyot dolmadı"
+        );
+        // Periyot dolunca: GİRER ve aynı-event'te ÇIKMAZ (N=0-ölümü; qd=0 histerezis-içi).
+        s.state = SenderState::Steady;
+        // Periyot CANLI-epoch'la ölçülür; erken-Pto pertürbasyonu send_rate'i düşürüp EAI'yi
+        // büyütür (ölçüldü: 2.44s→3.10s) → t_e pertürbasyon-SONRASI canlı-epoch'tan türetilir.
+        let live_epoch = dur_ns(
+            s.rtt
+                .srtt()
+                .unwrap_or(INITIAL_RTT)
+                .max(s.expected_ack_interval()),
+        );
+        let t_e = 4 * live_epoch + 100 * MS;
+        s.on_event(Event::TimerFired(Timer::Pto), t_e);
+        assert_eq!(
+            s.state(),
+            SenderState::ProbeUp,
+            "kapılar açık → giriş; aynı-event çıkış YOK"
+        );
+        assert!(
+            s.probe_btlbw_entry > 0 && s.probe_epoch_entry_ns > 0,
+            "giriş-snapshot'ları donuk"
+        );
+        // SUCCESS-dal-mekaniği: snapshot'ları teste-uygun küçült → sıradaki ack hem volume'ü
+        // hem +ε-eşiğini sağlar. (Arm-sırası: success qd-abort'tan ÖNCE değerlendirilir —
+        // bayat-seq ack'inin dürüst-qd sıçraması success'i gölgeleyemez.)
+        s.probe_btlbw_entry = 10;
+        s.probe_epoch_entry_ns = 1_000_000;
+        s.probe_delivered_entry = 0;
+        s.on_event(ack(&[1]), t_e + 50 * MS);
+        assert_eq!(s.state(), SenderState::Steady, "success → Steady");
+        assert_eq!(s.diag_probe(), (1, 0, 0, 0), "SUCCESS ayrı-raporlanır");
+    }
+
+    #[test]
+    fn probe_up_timeout_and_preempt_bookkeeping() {
+        // [TUR-3c] timeout + preemption (4. tür) muhasebesi. Dwell-sürüyor kontrolleri
+        // rtt-örneksiz Pto'yla (bayat-seq ack'i test-zaman-çizgisinde sahte-qd üretir → abort).
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 500 * MS);
+        for i in 1..=6u64 {
+            s.on_event(Event::AppData(unit(i)), (500 + i) * MS);
+        }
+        s.state = SenderState::Steady;
+        let epoch = dur_ns(
+            s.rtt
+                .srtt()
+                .unwrap_or(INITIAL_RTT)
+                .max(s.expected_ack_interval()),
+        );
+        let t_e = 4 * epoch + 100 * MS;
+        s.on_event(Event::TimerFired(Timer::Pto), t_e);
+        assert_eq!(s.state(), SenderState::ProbeUp, "ilk giriş");
+        // TIMEOUT: volume erişilmez (btlbw_entry↑↑ → success imkânsız) + dwell kısa (0.8s).
+        s.probe_btlbw_entry = 1_000_000_000;
+        s.probe_epoch_entry_ns = 200 * MS;
+        s.on_event(Event::TimerFired(Timer::Pto), t_e + 100 * MS);
+        assert_eq!(s.state(), SenderState::ProbeUp, "dwell içinde sürer");
+        s.on_event(Event::TimerFired(Timer::Pto), t_e + 900 * MS);
+        assert_eq!(s.state(), SenderState::Steady, "timeout → Steady");
+        assert_eq!(s.diag_probe(), (0, 0, 1, 0), "timeout AYRI raporlanır");
+        // PREEMPT: pending doluşu (packet-threshold) ProbeUp-kolunu update_state-önceliğiyle
+        // KESER → muhasebe post-match yakalayıcıda (4. tür). Bu noktada 21s+ sessizlik var →
+        // kapı-girişi meşru-emergency'ye takılır (giriş zaten yukarıda test edildi) → probe
+        // İMAL edilir (donuk-snapshot yaklaşımıyla tutarlı; kesilme-mekaniği ölçülür).
+        let t2 = t_e + 900 * MS + 5 * epoch;
+        s.state = SenderState::ProbeUp;
+        s.probe_entry_ns = Some(t2);
+        s.probe_epoch_entry_ns = epoch;
+        s.probe_btlbw_entry = 1_000_000_000; // success erişilmez → tek çıkış preemption
+        s.probe_delivered_entry = s.bw_sampler.delivered();
+        s.probe_loss_attributed = false;
+        // seq2 (giriş-ÖNCESİ gönderim) atlanır; 3,4,5 ack → gap≥3 → pending → preemption.
+        // Ack conf'u tazeler (emergency değil); probe_loss_attributed KALIR-false
+        // (send_ns < entry_ns — Confirmed-lag koruması).
+        s.on_event(ack(&[3, 4, 5]), t2 + 50 * MS);
+        assert_eq!(s.state(), SenderState::RecoverArq, "pending → preemption");
+        assert!(
+            !s.probe_loss_attributed,
+            "giriş-öncesi kayıp probe'a YAZILMAZ"
+        );
+        assert_eq!(
+            s.diag_probe().3,
+            1,
+            "preemption 4. tür olarak muhasebeleşir"
         );
     }
 
