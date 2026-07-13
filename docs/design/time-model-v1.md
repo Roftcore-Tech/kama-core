@@ -664,6 +664,11 @@ payı; 12-koşu R=4-verisi yok); (γ) her ikisi + startup_plateau-fix'i ayrı-tu
 5. Ekleme-2 geri-çekilmesi KABUL; count=0-deliği DV-2 açık-riski olarak kalır.
 Sıra: β → (geçerse) PR → plateau-turu → bacak-3 D0-notu → DV-1.
 
+**β-SONUCU (karar-1 uygulandı):** ek-6 R=4: {100,14,100,100,100,99}; **12-koşu R=4 ilk-teslim
+medyanı 2.14s ≤ 8.4s → K-1a ✓ → R=4 SEÇİLDİ** (K-5 ✓ 20/20-özdeş; K-1b 12-koşu 2≤7 ✓; K-4 ✓).
+r4_8 = 115.54s-kuyruk-çekilişi deseninin 3. örneği (24 koşuda 3 ≈ binom). n=6-medyan-kapısının
+yanlış-eleme dersi (P≈%30-48) DOĞRULANDI: seri-1 medyanı 9.49 iken 12-koşu 2.14.
+
 **Süreç-kaydı:** Ekleme-2 (kota-yanış şartı) implementasyon-öncesi çelişki-tespitiyle GERİ-
 ÇEKİLDİ (K-1b retry-takvimini bloklardı — not §2 revizyonu; count=0-deliği DV-2 açık-riski
 aynen). Bacak-2 yapısal-gölgeleme dürüst-bulgusu: K_ARR=2'de accel-ritmi freq/tail'le örtüşük;
@@ -831,7 +836,7 @@ p5→TUR-4'te geri · p2/p3-tırmanış→TUR-4+B.
 | borç | doğuş | doğrulama/çürütme noktası | durum |
 |---|---|---|---|
 | **ŞANSLI-MOD-FREKANSI** | TUR-2b ölçümü: p5 şanslı-mod 0/9 çekiliş (P≈%3-5 kuyruk). Yapısal savunma ("2b sıcak-yolu hit=0 iken karar-yolu 2a-bit-özdeş → frekans değişemez → netem-varyansı") bir **ÇIKARIM, ölçüm değil** | **TUR-3a retest'i** spektrumu yeniden örnekler: şanslı-mod ~%30 bandına dönerse borç KAPANIR; yine seyrekse yapısal-savunma ÇÜRÜR → şanslı-mod-frekansı bağımsız sorun olarak açılır | AÇIK |
-| **Statik return-prior → ProbeUp-periyodu tüketicisi** | TUR-3c: giriş-periyodu 4×ack_epoch; EAI'nin statik önseli (31 B/s worst-corner) hızlı kanalda epoch'u ~2.1s'e mıhlar → probe-periyodu ≥8.4s'e sabitlenir (kanal-türevi değil, önsel-türevi) | §3.3-E-FULL (ölçülen return_bw) gelince EAI daralır → periyot kanal-zamanlı olur; E-FULL kampanya-öncesi borcun YENİ tüketicisi olarak kaydedildi | AÇIK |
+| **Statik return-prior → ProbeUp-periyodu tüketicisi** | TUR-3c: giriş-periyodu 4×ack_epoch; EAI'nin statik önseli (31 B/s worst-corner) hızlı kanalda epoch'u ~2.1s'e mıhlar → probe-periyodu ≥8.4s'e sabitlenir (kanal-türevi değil, önsel-türevi) | §3.3-E-FULL (ölçülen return_bw) gelince EAI daralır → periyot kanal-zamanlı olur; E-FULL kampanya-öncesi borcun YENİ tüketicisi olarak kaydedildi. **[TUR-5] İKİNCİ yeni-tüketici: T_SPACING** (kota-aralığı; sensing-ön-şartı §0.24-karar-2 — varış-türevli YAPILAMAZ, tek çözüm ölçülen-return_bw) | AÇIK |
 | **W_loss payda-çürümesi lppm-spike artefaktı** | TUR-4 fnr-keşfi: pencere-dışı decay paydayı olaylardan hızlı düşürüyor → pencereli-lppm anlık ≥300k spike (gerçek kayıp %30 DEĞİL) → fuzzy loss.low=0 bölgesine ~1s'lik sahte-giriş | Bugün zararsız (fallback + fnr-sayacı ile görünür; patlama-anı arq-tüketilmeyen state'te). DV-2 aralıklı-rejimde pend>0∧RecoverArq ile çakışırsa fallback davranışsal-canlı olur → orada yeniden oku; gerekirse payda-tabanı (min-sends) fix'i AYRI karar | AÇIK |
 | **17-data-emisyonu izi (loopback)** | commit-C teşhisi sırasında görüldü: 10 birim / 17 data-send (tx=1550B; retx=0 dup=0) — fazla-emisyonların kaynağı belirsiz | AYRI teşhis (muhtemelen PreConverge/emisyon-yolu); kampanya-metriklerine oran-etkisi olabilir | AÇIK |
 | **Little-kolu min_cwnd-maskesi** | 3a.5-α ölçümü: cwnd/srtt kolu fixture min_cwnd'i sayesinde BAĞLAMADI (yarı-2 öngörüm aşırı-temkin) — kol fiilen uykuda | MIN_CWND kalibrasyonu (sıra-SONU, D-4/2): kalibre min_cwnd küçülürse kol uyanır → srtt_t-paydalı davranış O ZAMAN ölçülür | AÇIK |
