@@ -505,7 +505,13 @@ srtt / rttvar (RFC 6298 türevi, EWMA):
               srtt   = (1−α)·srtt   + α·rtt_sample                α=[STD:1/8]
 
 RTprop (propagation, min-filter — BBR-türevi):
-  RTprop = min(rtt_sample) over window W_rtprop     W_rtprop=[STD:BBR 10s]
+  RTprop = min(rtt_sample) over window W_rtprop
+  [TUR-3a D-2/1, NORMATİF] W_rtprop = max(10s [STD taban], K_rtprop × corrected_srtt);
+  K_rtprop=8 [CAL matris {6,8,10}]. Saat-sınıfı: kanal-türevi (ZM-2 — 10s sabiti sub-kbps'te
+  1-4 örneğe düşüyordu). BtlBw penceresi simetrik: W_BTLBW = max(10s, K_bw × ack_epoch),
+  ack_epoch = max(corrected_srtt, EAI); K_bw=8 [CAL] (§7.2).
+  [TUR-3a D-2/2, NORMATİF] KEEP-LAST: max/min-filter SON örneği ASLA expire etmez —
+  budama filtreyi boşaltamaz (btlbw=0 flap'i yapısal biter; geçersiz-güncelleme yolunda ölçüldü).
   (pencere kayan; DRAIN_RTPROP probe ile tazelenir, §8.3)
 
 queue_delay (congestion sinyali — delay-based):
@@ -955,6 +961,7 @@ Tunable'lar [CAL] → baseline ölçümünden sonra vektörlere GERÇEK değerle
 | `LEDGER_MAX` [TUR-2a] | olay-ledger + pencere-paydası kayıt tavanı; en-eski-önce eviction + audit sayacı (SR-AUDIT-001; tombstone MAX ailesi) | tüm bw (bellek-tavanı sabit) | 4096 |
 | `K_TOMB` tombstone TTL çarpanı [TUR-2b] | TTL = K_tomb×T_loss(ilan-anı); T_loss = max(9/8·srtt, cadence-taban) — eşikle AYNI saat (ZM-4). Onaylı formülün `min(mesaj-deadline,…)` kolu motorda UYGULANAMAZ (per-unit deadline engine'e taşınmıyor; bench/app-katmanı) → TTL tek-kollu ZEYL | tüm bw (kanal-türevi) | 8 [CAL] |
 | `TOMBSTONE_MAX` [TUR-2b] | geç-ACK eşleştirme kayıt tavanı; en-eski-önce eviction + `tombstone_evicted` audit (evict edilenin geç-ACK'i Expired/Unknown — örneksiz) | tüm bw (4-decade doluş: 0.25k≈11, 1M-heavy≈450 ≪ 4096; bellek ≤~350KiB) | 4096 [CAL] |
+| `K_bw` / `K_rtprop` [TUR-3a] | W_BTLBW = max(10s, K_bw×ack_epoch); W_RTPROP = max(10s, K_rtprop×corrected_srtt); ack_epoch = max(srtt, EAI); + KEEP-LAST (D-2/2) | tüm bw (kanal-türevi; 10s [STD] taban hızlı kanalda korunur) | 8 / 8 [CAL matris {6,8,10}] |
 | `RTT_floor(unit)` | (unit_wire+sack_wire)/floor_bw + PROP_MARGIN | pace edilen taban | 256B@0.25k≈11.9s; 64B@1k≈1.43s |
 | `k_base` (COPY_BASE_FACTOR) [R1] | >1; ilk-SACK cadence-exempt → RTT_floor ilk-SACK modeli. Fallback (exempt değilse): ≥1+ACK_CADENCE/RTT_floor | tüm bw | 1.3-1.5 |
 | `COPY_MULTIPLIER` | geometrik backoff (RFC 6298 analoğu) | tüm bw | 2 [STD] |
@@ -1003,8 +1010,8 @@ ZM-4  Karşılaştırmanın İKİ YANI aynı saati kullanmalı (örn. loss-thres
 |---|---|---|---|---|
 | time-threshold loss 9/8·srtt | loss.rs + sender on_timer | ~~rtt-türevi eşik ↔ ack-hold'lu wall-clock elapsed~~ → **FIXED [TUR-1a+1b]**: later-ACK kanıt-şartı + cadence-farkında taban max(9/8·srtt, K_c×EAI) | (eski) temiz kanalda SİSTEMATİK false loss (K-1, 27/27 ölçüldü) | ✓ eşik ≥ beklenen-ACK-cadence (§5b; K_c=1.5 [CAL]) |
 | startup_plateau round | sender.rs | ~~event-count~~ → bw-örneği (TUR-A ölçüm değişikliği) | 3 ms'de STEADY → app-limited kilit (ölçüldü) | RTT-round (delivered-anchor); re-entry'de sayaç sıfırla |
-| W_BTLBW=10s | bw.rs:12 | wall-clock ("~10 RTT" değil) | 0.8-3.3 RTT → btlbw 88→4 çöküşü (ölçüldü); 0.25k'da pencere ACK arası boşalır → btlbw=0 | max(10s, k·srtt) veya örnek-sayısı |
-| W_RTPROP=10s | rtt.rs:16 | wall-clock | 1-4 örnek; 10s+ SACK boşluğunda tek örneğe düşer → rtprop=şişkin RTT | max(10s, k·srtt) |
+| W_BTLBW=10s | bw.rs | ~~wall-clock~~ → **FIXED [TUR-3a]**: max(10s, K_bw×ack_epoch) + KEEP-LAST | (eski) 0.8-3.3 RTT → btlbw 88→4 çöküşü; 0.25k tek-örnek-pencere (btlbw her örneği takip: 5 düşüş-adımı ölçüldü) | ✓ kanal-türevi (K_bw=8 [CAL]) |
+| W_RTPROP=10s | rtt.rs | ~~wall-clock~~ → **FIXED [TUR-3a]**: max(10s, K_rtprop×corrected_srtt) + KEEP-LAST | (eski) 1-4 örnek; 10s+ SACK boşluğunda tek örneğe düşer → rtprop=şişkin RTT | ✓ kanal-türevi (K_rtprop=8 [CAL]) |
 | ack_delay wire u16 µs (65.5ms tavan) | receiver.rs/ack.rs | ~~wall-clock tavan~~ → **FIXED [TUR-1x]**: V2 0x14 256µs-birim (tavan 16.78s), floor-encoding + satürasyon-sayacı + MIN_RTT_FLOOR guard | (eski) 8.4s ACK-hold 65.5ms'e doyardı → RTT örneği ~8.3s şişerdi; ölçüm-2: 1.43s hold decoded+subtracted, rtt_rej=0 | ✓ saniye-yetenekli encoding (D-4/1 Seçenek-A) |
 | ACK_CADENCE_FLOOR (RETURN_BW_PRIOR=31 const) | receiver.rs:89 | derleme-zamanı prior (statik 8.39s) | 1kbps'te 4× fazla throttle (2.1s yeterli); K-1'i besler | ölçülen return_bw'den adaptif (§3.3-E FULL) |
 | DrainRtprop dwell | sender update_state `_=>Steady` | event-count(1) | probe 1 ms yaşar → rtprop HİÇ yenilenmez | ölçüm-kapılı çıkış (≥1 RTT / min-rtt örneği) |

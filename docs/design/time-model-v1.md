@@ -202,6 +202,39 @@ başladıktan sonra işlenmişti), **1 borç-detayı** (§3.7 packets_in_flight:
 geri-alınabilir, kayıt-korumalı ve Karn-kurallı bir HİPOTEZ. Sırada D-2: TUR-3a (estimator
 pencereleri — §3.7 borçlarının ikisi de masasında).
 
+## 0.13 TUR-3a ölçüm kaydı (D-2/1+2: pencereler + keep-last; ÜÇ AYRI ölçüm — talimat şart-b)
+
+**Beklenti-kaydı önce** (scratchpad tur3a-prediction.md; şart-a ara-çerçevesi başta).
+
+**(i) Şanslı-mod frekansı büyük-n [BORÇ REVİZE-KAPANDI]:** taze n=12 (D-1-final kod) = 1/12; havuz
+post-2b 2/27 ≈ %7.4 vs pre-2b 4/11 ≈ %36 (Fisher p≈0.05, post-hoc). Beklenti-kaydının öngördüğü
+git-bisect-ölçüm dalı koşuldu: **AYRIŞTIRICI = 2a-binary'si (b68cd2d) BUGÜN p5×8 → 1/8 (%12.5)** —
+kendi tarihsel %33'üne değil bugünkü-era havuzuna oturdu. **SONUÇ: kod-nedeni DIŞLANDI (yapısal
+bit-özdeşlik savunması DOĞRULANDI); frekans ORTAM/ZAMAN-duyarlı** (bugünkü-era bandı 3/35 ≈ %8.6).
+Çıkarımlar: (1) şanslı-uç kapı-kıyasları AYNI-ERA çekilişleriyle yapılmalı; (2) P5-GATE kriteri
+etkilenmez (hedef spektrumun dar-IQR'a çöküşü — frekans değil).
+
+**(est) Pencereler + keep-last [KISMİ ✓ + KIRMIZI-SAPMA, dekompoze]:**
+- **0.25k süreklilik ✓ TAM İSABET:** baseline btlbw HER örneği izliyordu (tek-örnek-pencere;
+  5 düşüş-adımı, 18-27 salınım); commit-A sonrası **düşüş-adımı 0** (monoton 21→27) — gerçek
+  max-filter davranışı geldi. Keep-last vektörü: valid=false güncellemede btlbw→0 flap'i öldü.
+- **Temiz-1k ✗ 45→34/100 (tahmin-bandı 45±3 DIŞI) — DOĞRUDAN ATIFLI:** TRAJ+qd-diag: rtprop artık
+  DÜRÜST (3.056s'e sabit — propagation-sınıfı; eskiden 10s-pencere şişkin-RTT'ye tazeleniyordu) →
+  qd = srtt−rtprop GERÇEK kuyruğu gösteriyor (1.6→10.3→4.3s) → **mutlak-eşikli fuzzy qd (D-3'ün
+  BİLİNEN kırığı) her değeri maksimal-HIGH okuyor → send_rate_gain 0.5× KALICI** (rate=51=btlbw/2
+  mıhlı; kuyruk boşalıp qd 4.3s'e inse bile — 4.3s ≈ bu bantta FİZİKSEL-TABAN qd). Eski davranışta
+  İKİ kırık birbirini maskeliyordu (çöp-rtprop → qd≈0 → eşik hiç tetiklenmiyordu) — D-1'deki
+  parazit-iptali hikâyesinin D-2/D-3 tekrarı. Verim tersine İYİLEŞTİ: deliv/sent 34/36=%94
+  (eski 45/59=%76), oran 0.60→0.36×; ama kampanya-metriği (completion@deadline) geriledi:
+  kanal ~45 taşıyabilirken 36 sunuldu (0.5×-gaz kanal-altı).
+→ **KARAR NOKTASI (Abkarada; §3.8):** (a) belgeli-regresyon TUR-4'e dek · (b) D-3/1 qd_ratio
+minimal-önalım (önerim — 1x↔1b çiftlenmesinin birebir analoğu: dürüst-rtprop, oran-qd olmadan
+YAŞAYAMAZ) · (c) commit-A'yı btlbw-penceresi+keep-last'a daralt, W_RTPROP'u ertele.
+
+**(ii) packets_in_flight [commit-B, karar-sonrası]:** gözlemci eklendi (TRAJ pif=); temiz-1k'da
+pif inflight'ı dürüst izledi (0'a dönüyor — kayıpsız kanalda sızıntı yok, beklenen); sızıntı-kanıtı
+p5-kollarında commit-B ölçümünde alınacak.
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]

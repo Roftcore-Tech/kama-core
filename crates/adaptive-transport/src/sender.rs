@@ -206,6 +206,12 @@ const K_WL: u32 = 8;
 /// `min(mesaj-deadline, ...)` kolu motorda uygulanamaz (per-unit deadline engine'e taşınmıyor —
 /// bench/app katmanında) → TTL tek-kollu; spec §5 zeyli. Saat-sınıfı: T_loss-türevi (kanal, ZM-2).
 const K_TOMB: u32 = 8;
+/// [TUR-3a D-2/1] Estimator pencere çarpanları [CAL, matris {6,8,10}]:
+/// W_BTLBW = max(10s, K_BW×ack_epoch); W_RTPROP = max(10s, K_RTPROP×corrected_srtt);
+/// ack_epoch = max(corrected_srtt, EAI). Saat-sınıfı: kanal-türevi (ZM-2 — 10s wall-clock
+/// sub-kbps'te 0.8-3.3 RTT'ye düşüyordu: btlbw 88→4 çöküş sınıfı, §16.2).
+const K_BW: u32 = 8;
+const K_RTPROP: u32 = 8;
 /// [TUR-2b D-1/4] Tombstone kayıt tavanı [CAL] — SR-AUDIT-001 bounded; en-eski-önce eviction +
 /// audit. 4-decade doluş-doğrulaması not D-1/4 (0.25kbps ≈ 11 kayıt; ≲Gbps'te ~450 ≪ 4096).
 const TOMBSTONE_MAX: usize = 4096;
@@ -394,6 +400,15 @@ impl Sender {
             return;
         }
         self.last_ack_ns = Some(now_ns);
+
+        // [TUR-3a D-2/1] Kanal-türevi estimator pencereleri — örnekler işlenmeden ÖNCE, bir
+        // önceki srtt'yle yazılır (deterministik; 10s [STD] tabanı setter'larda).
+        {
+            let srtt_now = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+            let ack_epoch = srtt_now.max(self.expected_ack_interval());
+            self.btlbw.set_window(ack_epoch * K_BW);
+            self.rtt.set_rtprop_window(srtt_now * K_RTPROP);
+        }
 
         // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
         let mut rtt_send_ns: Option<u64> = None;
@@ -1097,6 +1112,19 @@ impl Sender {
             self.diag_unloss,
             self.loss.loss_windowed_ppm(),
             self.loss.spurious_units_total(),
+        )
+    }
+    /// [TUR-3a teşhis] sampler uçuş-sayısı (SALT-GÖZLEM — §3.7 sızıntı-borcu ölçümü).
+    #[must_use]
+    pub fn diag_pif(&self) -> u64 {
+        self.bw_sampler.packets_in_flight()
+    }
+    /// [TUR-3a teşhis] rtprop + queue_delay (SALT-GÖZLEM — qd-atıflaması, µs).
+    #[must_use]
+    pub fn diag_qd(&self) -> (u64, u64) {
+        (
+            self.rtt.rtprop().map_or(0, |d| d.as_micros() as u64),
+            self.rtt.queue_delay().as_micros() as u64,
         )
     }
     /// [TUR-2b/2c teşhis] tombstone (SALT-GÖZLEM):
