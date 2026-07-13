@@ -1,20 +1,23 @@
-# return-supply-v1 — Dönüş-Arz Sözleşmesi (bacak-1+2) + P5-GATE kabul-kriteri [TASLAK r2 — ONAY BEKLİYOR]
+# return-supply-v1 — Dönüş-Arz Sözleşmesi (bacak-1+2) + P5-GATE kabul-kriteri [TASLAK r3 — ONAY BEKLİYOR]
 
-> **Statü:** TASARIM-NOTU (D0-tarzı). Abkarada'ya döner; ONAYDAN SONRA bacak-1+2 kodu.
-> **Zemin:** ayrıştırma-kaydı time-model-v1 §0.23. **Kapsam-kilidi:** bacak-1+2 = YALNIZ
-> receiver-taraf (+bench ölçüm-kanalı); sender'a SIFIR dokunuş. Bacak-3 ayrılma-sınırı §5.
+> **Statü:** TASARIM-NOTU (D0-tarzı). r2 → r3: Abkarada revize-talimatı (iki review-turu,
+> CONDITIONAL GO) — PATCH-1 (K_EPISODE'lu robust-baseline dedektörü), PATCH-1b (K-4 üç-katman),
+> PATCH-2 (K-1a/K-1b ayrımı), PATCH-3 (K-5 iki-R-kolu), PATCH-4 (dal-B terminolojisi) + üç
+> açık-sorunun kararı işlendi. **Zorunlu-disiplin: iddia değil satır-satır aritmetik** (§1a.1-1a.2
+> tüm vektörler × tüm CAL-kolları; hesapsız-fix tuzağının üçüncü tekrarına yapısal engel).
+> Onaydan sonra bacak-1+2 kodu (ultracode); kapsam-sınırı MUTLAK: receiver.rs + RTRAJ-bench-kanalı
+> + testler dışına taşma = İHLAL. Bacak-3 ayrılığı §5; dal-B'de paket GENİŞLETİLMEZ.
 >
-> **r1→r2 (workflow wf_ddecb38d: 3 lens, 20 bulgu / 6 HIGH — hepsi işlendi):**
-> r1'in üç çekirdek-aritmetiği kırıktı: (1) epizot-eşiği=FLOOR(8.39s) açlık/0.25k varış-aralığının
-> (8.6-9.1s) ALTINDA → epizot-per-varış → 0.25k dönüş-kanalı KALICI taşma (32.8 > 31.25 B/s) →
-> **eşik akış-türevliye çevrildi (K_TAIL×last_gap)**; (2) K-1 medyanı kendi piyango-aritmetiğiyle
-> imkânsız + R'den bağımsızdı → kriter mekanizmadan yeniden türetildi; (3) tohum-ÇÜRÜMESİ
-> (m. denemede ≈127/m B/s) orta-tohum sınıfını iki dal arasında bırakıyordu → üç-katmanlı
-> kabul + ProbeUp-kurtarış köprü-hipotezi; (4) DV-2 çift-görev iddiası kayıtlı profillerde
-> tetiklenmiyordu → akış-türevli eşikle 2s VE 8s kopmaları kapsanır (aritmetik §1a).
-> Ayrıca: emisyon-saati birleştirildi (çift-emisyon/öncelik belirsizlikleri), T_SPACING dürüst
-> etiketlendi (statik-önsel-türevi), K_ARR {1} kolu elendi, K-4 ölçüm-kanalı eklendi, §16.2
-> satır-taslakları eklendi (ZM-3).
+> r2-mirası (korunan): akış-türevli epizot-fikri, birleşik emisyon-saati, R=toplam-kredi,
+> üç-katmanlı kabul, T_SPACING dürüst-etiketi, kapsam-kilidi. r1→r2 tarihi git-geçmişinde.
+>
+> **r3-İÇ-DOĞRULAMA (wf_1321a97d, 3 bağımsız verifier, 13 bulgu / 2 HIGH — hepsi işlendi):**
+> HIGH: "tetikleyen-gap yazılmaz" kuralı kalıcı-rejim-geçişinde LIVELOCK üretiyordu ve kendi
+> DV-3-satırımla çelişiyordu → **simetrik CLAMP'Lİ-YAZIM** kuralı (geometrik yakınsama, sınırlı
+> geçiş-epizotu). MED'ler: kota-yanış şartı (since_last_ack>0 — ölü-kanalda kredi korunur,
+> count=0-deliğinin pratik zararını sınırlar); çift-mikro-gap modu (V-5 + K=4-üstünlüğü);
+> 12-koşu-tanımı pinlendi (seçilen-R'nin 6+6'sı); kesin-binom değerleri; tx_ratio pin;
+> k=5 kompakt-tablolar; V-2/V-3 başlık-dizisi tamamlandı; yuvarlamalar.
 
 ## 0. Problem-cümlesi
 
@@ -23,137 +26,228 @@ tek-atımlık ve EMİSYONLA tükeniyor. %80 dönüş-kayıplı p5'te koşu-kader
 piyangosuna iniyor (kafes-kanıtı §0.23); kopma-sonrası yeniden-başlamada (DV-2) aynı mekanizma
 muafiyetsiz + ağırlaştırıcılı. Bu not arz-tabanını piyango-bağımsız hâle getirir.
 
-## 1. Bacak-1a — SESSİZLİK-EPİZODU tespiti ve muafiyetin yeniden-kurulması
+## 1. Bacak-1a — SESSİZLİK-EPİZODU tespiti [PATCH-1: robust-baseline + K_EPISODE]
 
-**Epizot-tanımı (akış-türevli — r2):** Varış-anında, `last_gap`/`last_arrival` GÜNCELLENMEDEN
-ÖNCE değerlendirilir:
+**r2-kusuru (iki-parçalı, Abkarada ikinci-review'u):** (i) tek-`last_gap` fazla hassas —
+burst/batch-içi mikro-gap sonrası normal-gap sahte-epizot üretir; (ii) K_TAIL=2 ORANI kendisi
+yetersiz — normal gap-varyansı (2-3×) ile gerçek-kopma ayrılamaz. K_TAIL yeniden-kullanımı
+SEMANTİK-HATAYDI: tail-emisyon-ritmi ≠ epizot-tespiti; farklı işler farklı sabit.
+
+**Sözleşme (r3):** Varış-anında, ritim-penceresi GÜNCELLENMEDEN ÖNCE değerlendirilir:
 ```
-yeni_epizot = !have_recv                                  # oturum-ilk (açık özel-durum)
-            ∨ (last_gap_ns > 0
-               ∧ now − last_arrival_ns ≥ K_TAIL × last_gap_ns)   # akış-ritmi kırıldı
+rhythm_baseline:
+    sample_count = 0   → baseline yok (yalnız oturum-ilk özel-durumu aktif)
+    sample_count < k   → baseline = max(gözlenen gap'ler)        # muhafazakâr başlangıç
+    sample_count ≥ k   → baseline = median(son k gap)
+new_episode = !have_recv
+            ∨ (baseline > 0 ∧ current_gap > K_EPISODE × baseline)
 ```
-- **Saat-sınıfı:** tam kanal-türevli (ZM-2) — eşik mevcut `K_TAIL=2`'nin YENİDEN-kullanımı
-  (tail-mantığıyla aynı anlam: "bu boşluk mevcut akış-ritmiyle açıklanamaz"); YENİ SABİT YOK,
-  statik-önsele bağımlılık YOK (r1'in FLOOR-eşiği çapraz-saat ZM-4 ihlaliydi — lens-2).
-- **Aritmetik-doğrulama (r1-HIGH'ların kapanışı):** temiz-0.25k: gap≈9.9-12.7s, eşik≈20-25s →
-  epizot OLUŞMAZ ✓; p5-açlık ritmik damlama: gap≈8.6s, eşik 17.2s → epizot oluşmaz (kota-spam
-  yok) ✓; DV-2 p6 2s-kesinti: pencere-içi gap(100kbit)≈25ms, eşik 50ms → 2s ≥ 50ms ✓ tetikler;
-  8s-kopma (3kbps pencere gap≈0.8s, eşik 1.6s) ✓ tetikler; E-FULL-sonrası doygun-simetrik kanal:
-  gap/eşik = 1/K_TAIL = 0.5 < 1, bant-BAĞIMSIZ → epizot-per-varış sınıfı YAPISAL ölür ✓.
-- **Değerlendirme-sırası:** kopma-sonrası ilk varışta eşik ESKİ (kopma-öncesi) gap'le hesaplanır →
-  last_gap-zehirlenmesi (§0.23 ağırlaştırıcı-c) epizot-tespitini etkileyemez.
-- **Kabul-edilen sınırlar (beyanlı):** (i) kopma-İÇİ tek başıboş-datagram/ağ-dup'u last_arrival'ı
-  ilerletir → dönüşteki epizot o straggler'a göre ölçülür (gecikmiş ama gap-oranlı — sınırlı);
-  ağ-dup'unun force-SACK'i cadence-saatini ilerletebilir (nadir; kota bunu telafi eder). (ii)
-  Oturum-ilk epizot HER profilde kota verir → 0.25k'da ilk ~6.3s'te +(R−1) SACK (bkz. K-5).
+- **Sınır-semantiği PİNLİ: kesin `>`** (tam-sınırda epizot AÇILMAZ — muhafazakâr taraf:
+  sahte-kota riski minimize; K_EPISODE=3 kolunu vektör-1 tam-sınırda geçirir → kol ölçülmeden
+  elenmez, kırılganlığı beyanlıdır: gerçek jitter'da 60ms+ε epizot açardı → K=4 default-öneri).
+- **K_EPISODE = YENİ ayrı [CAL {3, 4}]** — boyutsuz kanal-türevli çarpan (ZM'nin yasakladığı
+  sınıf mutlak-ZAMAN sabitleridir; boyutsuz oran izinli — beyan). K_TAIL YENİDEN-KULLANILMAZ.
+- **k (pencere-boyu) [CAL {3, 5}], öneri k=3** — küçük ring-buffer (k gap); tek straggler/
+  mikro-gap median'ı bozamaz (robust). k=5 kolu daha muhafazakâr (max-fazı uzar) — ölçümle.
+- **episode_abs_floor EKLENMEZ** (talimat): K_EPISODE tüm vektör+rejimleri sağlıyor (aşağıda);
+  ölçüm küçük-gap sızıntısı gösterirse floor T_SPACING'ten türetilir, yeni-süre-sabiti olmaz.
+- **Pencere-güncelleme kuralı [r3-doğrulama fix'i — SİMETRİK CLAMP'Lİ-YAZIM]:** her gap
+  (dup dahil, tetikleyen dahil) pencereye `clamp(gap, baseline/K_EPISODE, K_EPISODE×baseline)`
+  olarak yazılır (baseline mevcutken; count=0'da ham). Tek kuralla üç özellik: (i) zehirlenme-
+  koruması — izole kopma-gap'i en çok K×baseline olarak girer, median onu da yutar; (ii)
+  LIVELOCK yapısal ölür — kalıcı rejim-geçişinde baseline her epizotta ×K büyür → yakınsama
+  ~⌈log_K(yeni/eski)⌉ epizotta (verifier-HIGH: eski "tetikleyen-yazılmaz" kuralı pencereyi
+  donduruyordu → epizot-per-varış + kalıcı-kota); (iii) mikro-gap tabanı — batch-gap'leri
+  baseline/K'dan küçük giremez (çift-mikro-gap sahte-epizot modu K=4'te tamamen ölür,
+  K=3'te ≤3-epizotla sınırlı-geometrik — V-5). Epizot-sonrası pencere KORUNUR (sıfırlanmaz).
+- **Beyanlı-sınırlar:** (a) rejim-geçişi: ~⌈log_K(oran)⌉+1 meşru geçiş-epizodu (DV-3 400k→3k,
+  K=4: ~4; p5-ani-throttle 25ms→8.6s: ~5-6) — zararsız: kota RESET (birikim yok), T_SPACING
+  aralık-korur, tx_ratio-KAPISI sınırlar; episode_count→RAPOR kararının (PATCH-1b) ikinci
+  gerekçesi. (b) count=0-deliği: varış-2 gap'i sınıflandırılamaz (baseline yok) ve HAM yazılır —
+  "ilk-paket→kopma→dönüş" deseninde kopma-süresi max-fazı baseline'ını şişirir → dedektör
+  ≤k-varış kör + dönüşe epizot verilmez; pratik zarar KOTA-YANIŞ-ŞARTIYLA sınırlanır (§2:
+  ölü-kanal sessizliğinde kredi yanmaz → oturum-kotası dönüşte sağ) — beyanlı, birim-test
+  senaryosu §9'da.
+- Oturum-ilk (!have_recv) → epizot; varış-2'de sample_count=0 → baseline-yok → kontrol atlanır.
 
-**Muafiyet:** epizodun İLK emisyonu gecikmesiz (cadence-gate'siz). "İlk emisyon" HERHANGİ yoldan
-olabilir (freq dahil — aşağıdaki birleşik emisyon-saati): epizotu açan varış freq-SACK
-tetiklediyse O muafiyettir; timer ayrıca bitişik ikinci-kopya ATMAZ (r1-belirsizliği kapandı:
-bitişik-emisyon = tek piyango-bileti, dekorelasyon-gerekçesiyle tutarlı).
+### 1a.1 Adversarial vektörler — satır-satır (k=3; her CAL-kolu; semantik `>`; kota YENİLEMEMELİ)
 
-## 2. Bacak-1b — Epizot-başı SACK-TEKRAR kotası (R)
+Gösterim: her varışta `current_gap → baseline(kaynak) → K=3-eşiği / K=4-eşiği → hüküm`.
+Pencere değerlendirme-SONRASI güncellenir.
 
-**Sözleşme (r2 — birleşik emisyon-saati):** Yeni-epizot `kota = R` kurar (**R = epizot-başı
-TOPLAM emisyon-kredisi, muaf-ilk-emisyon DAHİL** — r1'in R+1 off-by-one'ı kapandı). Kota > 0
-iken timer-yolu aralığı `T_SPACING`'tir (cadence yerine); HER SACK-emisyonu (freq/timer/tail
-fark etmez) kotadan 1 düşer VE paylaşık emisyon-saatini (`last_emit_any = max(last_ack_ns,
-last_tail_ack_ns)`) ilerletir; emisyonlar-arası ≥ T_SPACING kota-modunda da korunur. Kota 0 →
-normal rejime dönüş (bacak-2 cadence'i). Epizot-yenilenmesi kotayı R'ye RESET'ler (birikim yok).
+**V-1 `20,20,60ms`** (burst-sonu normal-gap — r2'yi kıran vektör):
+| varış | current | baseline | 3×b | 4×b | K=3 | K=4 |
+|---|---|---|---|---|---|---|
+| 2 | 20 | yok (count=0) | — | — | yok | yok |
+| 3 | 20 | max[20]=20 | 60 | 80 | 20>60 F | 20>80 F |
+| 4 | 60 | max[20,20]=20 | 60 | 80 | **60>60 F (tam-sınır)** | 60>80 F |
+→ epizot YOK / kota yenilenmedi ✓✓ (K=3 tam-sınır beyanı yukarıda).
 
-- **T_SPACING = SACK_WIRE / RETURN_BW_PRIOR ≈ 65/31 ≈ 2.1s.** **Dürüst saat-sınıfı etiketi
-  (r2): STATİK-ÖNSEL-TÜREVİ** — bugün ölçüm içermez; E-FULL'de ölçülen return_bw'ye bağlanır
-  (§3.7 statik-prior borç-satırına YENİ TÜKETİCİ olarak işlenecek). Gerekçeler aynı: dar-dönüşte
-  doğal seyrekleşme, burst-kayıp dekorelasyonu, kota-penceresi ≈ 4×2.1 = 8.4s ≈ tam eski-slot.
-- **Bütçe-dürüstlüğü (r2):** kota-modunda ANLIK dönüş-tüketimi = 65B/2.1s = 31 B/s = önselin
-  %100'ü (bütçe-payının 4×'ü) — TASARIM GEREĞİ ve SINIRLI: epizot-başına ≤(R−1)×65B ek.
-  Akış-türevli eşik sayesinde epizotlar yalnız oturum-başı + gerçek-kopma-dönüşleri (temiz
-  akışta ve açlık-damlamasında YOK) → "sürekli kota-rejimi" sınıfı yapısal imkânsız.
-- **R'nin fiili anlamı (r2 — akış-türevli eşikle):** açlıkta epizot yenilenMEZ → kota tek-seferlik
-  ve R tam bağlar: R=4 → denemeler {0.05, 2.15, 4.25, 6.35}s (P(≥1 sağ)≈0.59, sonra 8.39s-kafes
-  devam); R=8 → ~14.7s'e dek 8 deneme (P≈0.83). r1'deki "R=4≡R=8 bit-eşdeğer" bulgusu eski-eşiğin
-  artefaktıydı; yeni-eşikle R-matrisi ayırt-edici ✓. **R [CAL {4, 8}]** — dar-IQR veren EN KÜÇÜK R.
+**V-2 `25,1,25,25ms`** (socket-batching mikro-gap'i; clamp'li-yazım: 1 → 25/K olarak girer):
+| varış | current | baseline | 3×b | 4×b | K=3 | K=4 | yazılan |
+|---|---|---|---|---|---|---|---|
+| 2 | 25 | yok | — | — | yok | yok | 25 (ham) |
+| 3 | 1 | max[25]=25 | 75 | 100 | F | F | clamp→8.3 (K=3) / 6.25 (K=4) |
+| 4 | 25 | max[25,8.3]=25 | 75 | 100 | F | F | 25 |
+| 5 | 25 | med[25,8.3,25]=25 | 75 | 100 | F | F | 25 |
+→ YOK ✓✓ (baseline-değerleri clamp'ten etkilenmez — hükümler r3-ilk-tablosuyla özdeş).
 
-## 3. Bacak-2 — §3.3-E MİNİMAL-TABAN: varış-oranı hızlanması
+**V-5 `25,25,1,1,25,25,25ms`** (çift-mikro-gap batch — r3-doğrulama vektörü; K-kolu ayrımı):
+Mikro-gap'ler clamp-tabanına (baseline/K) yazılır → med ≥ taban → sonraki normal-gap eşiği
+K×(baseline/K) = baseline = TAM-SINIR. Hüküm tamsayı-ns bölme-kalıntısına iner: **K=4** →
+25ms/4 = 6.25ms TAM → eşik 25.000000 → 25 > 25 F → **sahte-epizot SIFIR ✓**. **K=3** →
+25/3 = 8.333ms kesmeli → eşik 24.999999ms → 25 > eşik T → **~2 sınırlı sahte-epizot**
+(yazım ceil'e kırpılır → geometrik-yakınsar; kota-tavanlı, T_SPACING-aralıklı) → beyanlı-sınır,
+K=4-default-önerisinin ikinci gerekçesi. Birim-test iki kolu da tamsayı-ns semantiğiyle pinler.
 
-**Spec-donuk cümle (engine-spec §3.3-E, aynen):** "DATA arrival-rate'iyle hızlanır. İLK SACK
+**V-3 `25,50,25,50,25ms`** (bimodal jitter):
+| varış | current | baseline | 3×b | 4×b | K=3 | K=4 |
+|---|---|---|---|---|---|---|
+| 2 | 25 | yok | — | — | yok | yok |
+| 3 | 50 | max[25]=25 | 75 | 100 | F | F |
+| 4 | 25 | max[25,50]=50 | 150 | 200 | F | F |
+| 5 | 50 | med[25,50,25]=25 | 75 | 100 | F | F |
+| 6 | 25 | med[50,25,50]=50 | 150 | 200 | F | F |
+→ YOK ✓✓ (kararlı-durum medyanı iki modu da tolere eder).
+
+**V-4 `800ms, 1.7s, 800ms`** (yavaş-kanal doğal-varyansı — ilk-talimat-fix'ini kıran vektör):
+| varış | current | baseline | 3×b | 4×b | K=3 | K=4 |
+|---|---|---|---|---|---|---|
+| 2 | 800 | yok | — | — | yok | yok |
+| 3 | 1700 | max[800]=800 | 2400 | 3200 | 1700>2400 F | F |
+| 4 | 800 | max[800,1700]=1700 | 5100 | 6800 | F | F |
+→ YOK ✓✓. (K_TAIL=2 oranı burada 1700 ≥ 1600 ile epizot açardı — K_EPISODE'un varlık-sebebi.)
+
+**k=5 kolu (satır-satır — talimat: her CAL-kolu):** dört vektörde count<5 → tamamen max-fazı;
+k=3'ten farklılaşan TEK hücreler: V-2 varış-5 baseline max[25,8.3,25]=25 (aynı-değer, F aynen);
+V-3 varış-5 baseline max[25,50,25]=50 → eşik 150/200, 50 F ✓; varış-6 baseline max[25,50,25,50]=50
+→ 25 F ✓. V-1/V-4 zaten max-fazındaydı → tablolar BİREBİR aynı. Tüm hükümler F ✓ — k-kolu
+vektör-güvenli, ölçüm-ayrımı kararlı-durum medyanında.
+
+### 1a.2 r2-rejim-doğrulamaları K_EPISODE ile (dört aritmetik KORUNDU + DV-3 eki)
+
+| rejim | gap/baseline | K=3-eşiği | K=4-eşiği | hüküm |
+|---|---|---|---|---|
+| temiz-0.25k (sabit-gap 9.9-12.7s) | ≈9.9-12.7s | 29.7-38.1s | 39.6-50.8s | current≈baseline → epizot YOK ✓ |
+| p5-açlık damlaması (8.6s) | 8.6s | 25.8s | 34.4s | 8.6 F ✓; tek-forward-kayıp atlaması 17.2 F ✓; çift-kayıp 25.8: K=3 **tam-sınır F** ✓, K=4 F ✓ (forward %5 → çift-kayıp p=0.0025, nadir) |
+| DV-2 p6 2s-kesinti (pencere-gap ≈25ms @100kbit) | 25ms | 75ms | 100ms | 2000ms > eşik ✓✓ TETİKLER |
+| DV-2 8s-kopma (3kbps pencere-gap ≈0.8s) | 0.8s | 2.4s | 3.2s | 8000ms > eşik ✓✓ TETİKLER |
+| E-FULL-sonrası doygun-simetrik kanal | gap/eşik = 1/K_EPISODE ≤ 1/3 | <1 | <1 | bant-BAĞIMSIZ epizot-per-varış YAPISAL ölü ✓ |
+| DV-3 rejim-geçişi (400k→3k: 25ms-pencere → 0.8s-gap) | eski-baseline 25ms | 75ms | 100ms | clamp'li-yazımla geometrik yakınsama: K=4'te yazımlar 100→100→400 (med 25→100→400) → ~4 geçiş-epizodu, sonra 800 ≤ 4×400 F ✓ oturur (MEŞRU-sınıf, beyanlı; kota-reset+T_SPACING+tx-KAPI sınırlar) |
+
+**Muafiyet (r2'den aynen):** epizodun İLK emisyonu gecikmesiz; "ilk emisyon" HERHANGİ yoldan
+(freq dahil — birleşik emisyon-saati); bitişik ikinci-kopya atılmaz.
+
+## 2. Bacak-1b — Epizot-başı SACK-TEKRAR kotası (R) [r2'den; PATCH-1b bağları güncel]
+
+Yeni-epizot `kota = R` kurar (**R = epizot-başı TOPLAM emisyon-kredisi, muaf-ilk-emisyon
+DAHİL**). Kota > 0 iken timer-yolu aralığı `T_SPACING`; HER SACK-emisyonu (freq/timer/tail)
+kotadan 1 düşer VE paylaşık emisyon-saatini (`last_emit_any`) ilerletir; emisyonlar-arası ≥
+T_SPACING kota-modunda da korunur. Kota 0 → normal rejime dönüş (bacak-2). Epizot-yenilenmesi
+kotayı R'ye RESET'ler (birikim YOK → geçiş-epizotları kredi-şişiremez, §1a beyanlı-sınır).
+**KOTA-YANIŞ ŞARTI [r3-doğrulama]: kredi yalnız `since_last_ack > 0` iken yanar** — ack'lenmemiş
+yeni-bilgi yokken (ölü-kanal sessizliği) timer'ın cadence-tekrarları kotadan DÜŞMEZ → kopma
+boyunca kredi KORUNUR, dönüşte sağ (count=0-deliğinin pratik zararını sınırlar, §1a-b beyanı;
+bütçe-tutarlı: ölü-havaya kota harcanmaz).
+
+- **T_SPACING = SACK_WIRE / RETURN_BW_PRIOR ≈ 65/31 ≈ 2.1s — STATİK-ÖNSEL-TÜREVİ (dürüst
+  etiket);** E-FULL'de ölçülen return_bw'ye bağlanır (§3.7 statik-prior borcuna yeni-tüketici).
+- **Bütçe:** kota-modunda anlık dönüş-tüketimi = önselin %100'ü (bütçe-payının 4×'ü) — TASARIM
+  GEREĞİ ve SINIRLI: epizot-başına ≤(R−1)×65B; epizotlar oturum-başı + gerçek-kopma-dönüşleri
+  (+beyanlı geçiş-epizotları); kredi-aşımı K-4 invariantıyla YAPISAL imkânsız.
+- **R'nin fiili anlamı:** açlıkta epizot yenilenmez → R tam bağlar: R=4 → denemeler
+  {0.05, 2.15, 4.25, 6.35}s, P(≥1 sağ)≈1−0.8⁴≈0.59, sonrası 8.39s-kafes; R=8 → ~14.7s'e dek
+  8 deneme, P≈1−0.8⁸≈0.83. **R [CAL {4, 8}] — ONAYLI** (karar-1). **En-küçük-yeterli-R seçimi
+  ÇOK-KRİTERLİ (karar-1 şartı): YALNIZ IQR değil — K-1a ∧ K-2 ∧ K-4 birlikte; dar-IQR verip
+  kota-yükünü veya kuyruk-başarısızlığını artıran kol SEÇİLMEZ.**
+
+## 3. Bacak-2 — §3.3-E MİNİMAL-TABAN: varış-oranı hızlanması [r2'den aynen]
+
+**Spec-donuk cümle (engine-spec §3.3-E):** "DATA arrival-rate'iyle hızlanır. İLK SACK
 cadence-exempt. FULL adaptif decimation ADIM-6 ana gövdesi — burada yalnız minimal taban."
-
-**Sözleşme (r2 — clamp + 0-guard + birleşik-saat):** kota-dışı timer-yolu aralığı:
 ```
 cadence_eff = if since_last_ack > 0 ∧ last_gap_ns > 0:
                   clamp(K_ARR × last_gap_ns,  alt = T_SPACING,  üst = ACK_CADENCE_FLOOR_NS)
               else: ACK_CADENCE_FLOOR_NS
-referans-saat = last_emit_any  (tail-emisyonları DA sayılır — r1'in tail×accel 20ms-çift-emisyonu
-                                yapısal ölür; tail'in kendi-ritmi/cadence-bağımsızlığı DEĞİŞMEZ)
+referans-saat = last_emit_any   (tail-emisyonları DA sayılır; tail'in kendi-ritmi DEĞİŞMEZ)
 ```
-- **K_ARR [CAL {2, 4}]** — r1'in {1} kolu ELENDİ (yapısal paket-başı-ACK, lens-2). K_TAIL
-  değer-sınıfı (varış-aralığı çarpanı); saat-sınıfı kanal-türevli ✓.
-- **Alt-sınır T_SPACING:** burst/batch varışlarda (last_gap→µs) timer-selini keser (bütçe-tutarlı);
-  0-guard tail'deki mevcut guard'ın simetriği.
-- **Etki-bölgesi (dürüst):** açlık-havzasında K_ARR×8.6s ≥ FLOOR → etkisiz (taban korur); asıl
-  etki orta-rejim (gap 0.5-3s → cadence 1-6s): Faz-3 döngüsünün timer-bacağını gevşetir,
-  entegre-hayatta-kalmayı (r4-dersi) büyütür. Kader-penceresini bacak-1 çözer; TAMAMLAYICI.
-- 0.25k'da K_ARR×gap > FLOOR her CAL-kolunda → bu kol 0.25k'a DOKUNMAZ (r1-istisna-metni yanlış
-  kolu işaret ediyordu — düzeltildi; 0.25k'ın gerçek etkisi §4 K-5'te).
+- **K_ARR [CAL {2, 4}]** (kanal-türevli; {1} kolu elendi — yapısal paket-başı-ACK).
+- Bacak-2 hızlanma-girdisi `last_gap` (anlık akış-ritmi) KALIR — epizot-dedektörünün robust-
+  baseline'ı AYRI iş (tespit vs ritim-takibi; clamp alt-sınırı T_SPACING mikro-gap selini keser).
+- Etki-bölgesi: açlıkta etkisiz (taban korur); orta-rejimde (gap 0.5-3s → cadence 1-6s) Faz-3
+  döngüsünü gevşetir. 0.25k'da K_ARR×gap > FLOOR her kolda → dokunmaz.
 
-## 4. P5-GATE kabul-kriteri (r2 — mekanizmadan türetilmiş; onaya sunulan eşikler)
+## 4. P5-GATE kabul-kriteri [PATCH-2 + PATCH-1b + PATCH-4 işli]
 
-Ölçüm: p5×6 × R∈{4,8} (=12 koşu; piyango-ekseni p5'te — DV-2-profilinde DEĞİL, Abkarada-ayrımı)
-+ p4/temiz-1k/0.25k smoke. IQR-yöntemi SABİTLENDİ: tip-7 (lineer interpolasyon) — n=6'da
-yöntem-bağımlılık r1-bulgusuydu.
+Ölçüm: p5×6 × R∈{4,8} (=12 koşu; **piyango-ekseni p5'te — DV-2-profilinde DEĞİL**) +
+p4/temiz-1k/0.25k smoke. IQR-yöntemi: tip-7.
 
-**Tohum-çürümesi gerçeği (r2, kriterlerin zemini):** kurtuluş m. denemede gelirse tohum ≈
-267B/(m×2.1s) → m=0: ~10k, m=1: 127, m=2: 63, m=3: 42, m≥4: ≤32 B/s. Yani bacak-1 KAFESİ
-öldürür ama orta-tohum (42-127) sınıfını yaratır; bu sınıfın kaderi **ProbeUp-kurtarışına**
-kalır (köprü-hipotezi: erken-kurtuluş → ~110s koşu-payı → EAI(127 B/s)≈6.9s → periyot ~28s →
-1-2 prob → 3c-kanıtlı 7.6×-sınıfı rampa). Kriterler bu yüzden ÜÇ-KATMANLI:
+**Tohum-çürümesi zemini (r2'den):** kurtuluş m. denemede → tohum ≈ 267/(m×2.1) B/s:
+m=0: ~10k, m=1: 127, m=2: 64, m=3: 42, m≥4: ≤32. Orta-tohum sınıfının kaderi ProbeUp-köprüsüne
+kalır (erken-kurtuluş → ~110s koşu-payı → EAI(127)≈6.9s → periyot ~28s → 1-2 prob → 3c-kanıtlı
+7.6×-sınıfı rampa).
 
-| katman | eşik | anlam |
-|---|---|---|
-| **K-1 kafes-ölümü** (mekanik) | medyan-ilk-teslim ≤ 8.4s (bir eski-slot; mevcut ~25.5s) ∧ ilk-teslim > 16.8s olan koşu ≤ 1/6 | piyango-ekseni öldü; eski 8.39s-ızgara kümelenmesi RAPORLANIR (bilgi — yeni 2.1s-örgü eski ızgaranın 4×-incelmesi olduğundan ızgara-testi kapı OLAMAZ, r1-bulgusu) |
-| **K-2 taban** | 6-koşu teslim min ≥ 80 (R-seçim serisinde; mühür-serisiyle teyit) | açlık+orta-tohum sınıfları ProbeUp-köprüsüyle kapandı |
-| **K-3 dar-IQR (MÜHÜR)** | tip-7 IQR ≤ 20 ∧ min ≥ 80, İKİ bağımsız 6'lık seride (R-seçim + doğrulama) | P5-GATE |
-| K-4 yük | epizot/kota diag-sayaçları: kota-SACK ≤ R×epizot ∧ epizot-sayısı {p5: ≤2, temiz-akış: 1, 0.25k: 1} ∧ tx-oranı ≤ 1.25× | tekrar spam'e dönüşmedi (ölçüm-kanalı §6) |
-| K-5 smoke | p4 1.00× ∧ temiz-1k ≥45 ∧ 0.25k 20/20 + **beyanlı-istisna:** oturum-ilk kota → ilk ~6.3s'te +(R−1) SACK → 0.25k BİT-ÖZDEŞ DEĞİL (davranış-sınıfı, ayrı raporlanır; sonrası-özdeşlik beklenir) | regresyon-kapıları |
+| katman | tip | eşik | anlam |
+|---|---|---|---|
+| **K-1a kafes-ölümü** | **KAPI** | medyan-ilk-teslim ≤ 8.4s (mevcut ~25.5s) | piyango-ekseni öldü (mekanik; R'den bağımsız-sağlanabilir) |
+| **K-1b kuyruk** | **RAPOR** (6-koşuda) | >16.8s oranı raporlanır + teorik binomla karşılaştırılır: p(R=4)=0.8⁵≈0.328 (kota-4 + kafes@14.74s = 5 deneme ≤16.8s), p(R=8)=0.8⁸≈0.168; n=6 beklenen ≈2.0 / ≈1.0; kol-başı n=6 %95-üstleri (bilgi): R=4 → ≤4/6, R=8 → ≤3/6 | n=6'da kuyruk-kapısı piyango-bağımlı (P(≥2 aşım|R=4,mekanizma-doğru)≈%63.8 — kapı olamaz, PATCH-2 aritmetiği). **12-koşu-birleşiminde KAPIYA döner** — **12-koşu = SEÇİLEN-R'nin seçim-serisi-6 + doğrulama-serisi-6 (AYNI-p havuzu; karışık 6×R4+6×R8 havuzu DEĞİL** — karışıkta eşikler anlamsızlaşır, verifier-bulgusu): gözlenen >16.8s sayısı ≤ KESİN-binom-%95-üst: R=4 → ≤7/12 (μ=3.93, σ=1.63; P(X≥8)=%1.68), R=8 → ≤4/12 (μ=2.01, σ=1.29; P(X≥5)=%3.73) |
+| **K-2 taban** | KAPI | 6-koşu teslim min ≥ 80 | açlık+orta-tohum ProbeUp-köprüsüyle kapandı |
+| **K-3 dar-IQR** | KAPI (tam-mühür) | tip-7 IQR ≤ 20 ∧ min ≥ 80, İKİ bağımsız 6'lık seride | P5-GATE |
+| **K-4 yük** [PATCH-1b] | üç-katman | `episode_count` = DIAGNOSTIC (rapor; p5'te varış-incelmesi + geçiş-epizotları meşru-değişken) · `quota_emits ≤ R × episode_count` = **SERT YAPISAL INVARIANT** (kredi-aşımı imkânsız; birim-test + RTRAJ-denetimi) · `tx_ratio ≤ 1.25×` = **KAPI** — **pin [r3-doğrulama]:** tx_ratio = client `udp_tx_bytes / (msg_count × unit_wire)` (mevcut kampanya-metriği; p5-mevcut ≤1.18×) → İLERİ-yön koruması; DÖNÜŞ-yön yükü ayrıca RAPOR: RTRAJ `emit_total×65B/süre` (kapı değil — kredi-invariantı korur) | doğru-çalışan dedektör sahte-kırmızı veremez; spam yapısal imkânsız |
+| **K-5 smoke** [PATCH-3] | KAPI | p4 1.00× ∧ temiz-1k ≥45 ∧ 0.25k 20/20. **Beyanlı-istisna (iki-R-kolu):** oturum-ilk kota → +(R−1) SACK: **R=4 → +195B, pencere ~6.3s; R=8 → +455B, pencere ~14.7s** → 0.25k BİT-ÖZDEŞ DEĞİL (davranış-sınıfı, ayrı raporlanır; pencere-sonrası özdeşlik beklenir) | regresyon-kapıları |
 
-**İKİ-DALLI dürüst tahmin (r2 — beklenti-kaydına girecek):**
-- **dal-A:** K-1 ✓ + ProbeUp-köprüsü çalışır → K-2/K-3 ✓ → mühür + en-küçük-yeterli-R.
-- **dal-B (workflow-sonrası olasılığı YÜKSELDİ):** K-1 ✓ (kafes ölür — bacak-1'in kendi işi) AMA
-  orta-tohum sınıfı ProbeUp'a rağmen 30-79 bandında kalır (trajektori-kanıtı: tohum 42-127 +
-  teslim <80 + prob-girişi geç/yok) → **Faz-2 dairesel-ölçüm bağlayıcı = bacak-3 kanıtı doğdu** →
-  ayrı teşhis + bacak-3 turu; bu paket GENİŞLETİLMEZ (Abkarada-kuralı). K-1-başarısı yine de
-  kalıcı kazanım (kafes + DV-2-yolu).
+**İKİ-DALLI dürüst tahmin [PATCH-4 terminolojisi — "K-1-mühürü" İFADESİ YASAK]:**
+- **dal-A:** K-1a ✓ + ProbeUp-köprüsü çalışır → K-2/K-3 ✓ → **tam-mühür** + en-küçük-yeterli-R
+  (çok-kriterli, karar-1).
+- **dal-B:** K-1a ✓ ama orta-tohum sınıfı 30-79 bandında kalır (trajektori: tohum 42-127 +
+  teslim <80 + prob geç/yok) → raporlama AYNEN şöyle:
+  ```
+  Bacak-1 alt-kapısı: ACCEPTED        (kafes-ölümü bağımsız-kazanım olarak kaydedilir)
+  P5-GATE: DEFERRED — bacak-3 kanıtı gerekli
+  Tam mühür: yalnız K-2 ∧ K-3 sonrası
+  ```
+  P5-GATE mühürlenMEZ; paket GENİŞLETİLMEZ; bacak-3 ayrı teşhis+tur (karar-2: iki-aşamalı ONAY).
 
-## 5. Bacak-3 AYRILMA-SINIRI (bu pakete GİRMEZ)
+## 5. Bacak-3 AYRILMA-SINIRI (bu pakete GİRMEZ) [r2'den aynen]
 
 Sender-estimator tohum-hijyeni: (i) gap-sonrası ilk bw-örneği dairesel-ölçüm geçerlilik-kapısı,
-(ii) plato-yanılgısı, (iii) supersede-sansürü — ÜÇÜ DE `sender.rs`/`bw.rs`, srtt-KÖK sınıfı →
-KENDİ tasarım-notu + izolasyonu. **SINIR-TESTİ:** bu paketin diff'i `receiver.rs` + bench-ölçüm-
-kanalı + testler DIŞINA taşarsa kapsam İHLAL.
+(ii) plato-yanılgısı, (iii) supersede-sansürü — `sender.rs`/`bw.rs`, srtt-KÖK sınıfı → KENDİ
+tasarım-notu + izolasyonu. **SINIR-TESTİ:** diff `receiver.rs` + RTRAJ-bench-kanalı + testler
+DIŞINA taşarsa kapsam İHLAL → DUR.
 
 ## 6. Ölçüm-gözlemlenebilirliği (pakete girer, davranışsız)
 
 - Receiver diag: `diag_episode_count`, `diag_quota_emits`, `diag_accel_emits`.
-- **Bench ölçüm-kanalı (r2 — K-4 mevcut altyapıda ÖLÇÜLEMEZDİ, lens-3):** SACK'ler server-taraf
-  Receiver'da doğar; serve-loop'un özet-çıkışı YOK → serve-loop'a periyodik stderr diag-satırı
-  (`RTRAJ ep= quota= accel= emit_total=`) eklenir. Client-taraf `udp_rx_bytes` hayatta-kalan-bayt
-  vekilidir (emit-sayısı değil) — K-4 server-satırından okunur.
+- Bench: serve-loop'a periyodik `RTRAJ ep= quota= accel= emit_total=` stderr-satırı (K-4
+  invariant + diagnostic buradan; client `udp_rx_bytes` yalnız hayatta-kalan-bayt vekili).
+- K-4 invariantı birim-testte de: kota-kredisi aşımı = test-kırmızısı.
 
 ## 7. §16.2 satır-taslakları (ZM-3 — onayla spec'e girecek)
 
 | mekanizma | sınıf | satır-özü |
 |---|---|---|
-| epizot-eşiği | kanal-türevli ✓ | K_TAIL×last_gap (yeniden-kullanım; yeni sabit yok); last_gap-güncellemesinden ÖNCE değerlendirilir; oturum-ilk açık özel-durum |
-| T_SPACING | **statik-önsel-türevi** (dürüst-etiket) | SACK_WIRE/RETURN_BW_PRIOR ≈ 2.1s; E-FULL'de ölçülene bağlanır — §3.7 statik-prior borcuna yeni-tüketici satırı |
-| cadence_eff | kanal-türevli ✓ | clamp(K_ARR×last_gap, T_SPACING, FLOOR); yalnız since_last_ack>0 ∧ last_gap>0; referans = last_emit_any |
-| R kota | sayaç (saat değil) | epizot-başı toplam emisyon-kredisi (muaf dahil); [CAL {4,8}] placeholder-golden'a girmez |
+| epizot-dedektörü | kanal-türevli ✓ | robust-baseline (max→median(k), k [CAL {3,5}]) + `current_gap > K_EPISODE×baseline` (kesin >, pinli); K_EPISODE [CAL {3,4}] BOYUTSUZ kanal-türevli çarpan (ZM-yasağı mutlak-ZAMAN sabitleri — boyutsuz oran izinli, beyan); tetikleyen-gap pencereye yazılmaz; oturum-ilk açık özel-durum |
+| T_SPACING | **statik-önsel-türevi** | SACK_WIRE/RETURN_BW_PRIOR ≈ 2.1s; E-FULL'de ölçülene bağlanır — §3.7 borcuna yeni-tüketici |
+| cadence_eff | kanal-türevli ✓ | clamp(K_ARR×last_gap, T_SPACING, FLOOR); yalnız since_last_ack>0 ∧ last_gap>0; referans = last_emit_any; K_ARR [CAL {2,4}] |
+| R kota | sayaç (saat değil) | epizot-başı toplam emisyon-kredisi (muaf dahil); [CAL {4,8}]; `quota_emits ≤ R×episode_count` SERT-INVARIANT |
 
-## 8. Açık sorular (onayla birlikte)
+## 8. Kararlar (Abkarada — r2 §8'in kapanışı)
 
-1. R-matrisi {4,8} (öneri) — {2} kolu zayıf (P=0.36), {8}-üstü bütçe-ağır.
-2. K-2/K-3'ün dal-B'ye düşmesi hâlinde mühür-tanımı: "K-1-mühürü + bacak-3-sonrası tam-mühür"
-   iki-aşamalı kabul edilir mi? (Öneri: evet — kafes-ölümü bağımsız-değerli.)
-3. Oturum-ilk kota istisnası (K-5, 0.25k +3 SACK) kabul mü, yoksa oturum-ilk epizot kota-SIZ
-   (yalnız muafiyet) mi olsun? (Öneri: kota KALSIN — p5'in kader-penceresi tam oturum-başı;
-   0.25k maliyeti tek-seferlik 195B.)
+1. **R-matrisi {4,8} ONAY**; en-küçük-yeterli-R seçimi ÇOK-KRİTERLİ (K-1a ∧ K-2 ∧ K-4 ∧ IQR).
+2. **Dal-B iki-aşamalı ONAY** — PATCH-4 terminolojisiyle (alt-kapı-ACCEPTED / P5-GATE-DEFERRED /
+   tam-mühür-sonra).
+3. **Oturum-ilk kota KALIR** — p5 kader-penceresi tam oturum-başı; maliyet tek-seferlik ve
+   iki-R-kolu için beyanlı (K-5); bit-özdeşlik-bozulması davranış-sınıfı olarak ayrı-raporlanır.
+
+## 9. Beklenti-kaydına girecekler (kod-GO sonrası, ölçümden ÖNCE yazılacak)
+
+- K-1a kafes-kaybolması: medyan-ilk-teslim ~25.5s → ≤8.4s.
+- R=4-vs-8 AYRIK karşılaştırma; seçim çok-kriterli.
+- İki-dallı dürüst tahmin (dal-B'de paket genişletilmez; "bacak-3-kanıtı-doğdu" kaydı + ayrı teşhis).
+- Adversarial vektörler (V-1..V-5) birim-teste, CAL-kolu-başına (K_EPISODE×k çapraz), kota-
+  yenilememe assert'iyle; V-5 tamsayı-ns tam-sınır semantiği iki K-kolunda pinlenir.
+- count=0-deliği senaryosu ("ilk-paket→kopma→dönüş") birim-teste: dönüşte epizot YOK (beyanlı)
+  ama kota-yanış-şartı sayesinde oturum-kredisi sağ → dönüş-SACK'leri kredili assert'i.
+- Rejim-geçişi yakınsaması birim-teste: 25ms→800ms dizisinde epizot-sayısı ≤ ⌈log_K(oran)⌉+1.
+- Smoke: p4 1.00× ∧ temiz-1k ≥45 ∧ 0.25k 20/20 + beyanlı-istisna (K-5, iki-R-kolu).
+- P5-GATE kanıtı p5-profilinde (DV-2-profilinde değil).
