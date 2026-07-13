@@ -382,6 +382,24 @@ bandına, şanslı-frekans ↑ (%50-67 sınıfı kalır ya da artar); temiz-1k +
 Bu iyileşme BU turda ölçülür ki 3c'ye YANLIŞ atfedilmesin. Dönüş-bütçesi riski düşük (65B×birkaç
 ek SACK ≪ %25-bütçe).
 
+## 0.18 TUR-3b commit-C FİNAL (rev2) — teşhis-kollu ikinci-iterasyon + kapı GEÇİLDİ
+
+**İlk-C b3-matrisi KIRMIZI:** p5 {0,10,10,56,100-yavaş,100-yavaş} (açlık-uç 0 < 11 İHLAL).
+p5-kayma tahminim ("dağılım yukarı") bileşik-commit için YANLIŞTI. **İki tek-değişken teşhis-kolu**
+(working-tree toggle): yalnız-taban {12,100@c10=.99,100@.91} NORMAL; yalnız-tail {5,8,11} DÜŞÜK →
+birincil şüpheli TAIL-yolu: her tail-SACK record_ack_emit'le CADENCE-saatini sıfırlıyor →
+garantili-ritim kümülatif-SACK'ler erteleniyor → %80-kayıplı dönüşte hayatta-kalan SACK azalıyor
+(r5=0 bileşik-zincir). **rev2 (5ada7a8):** tail-SACK KENDİ ritim-sayacıyla (spam-korumalı) saf-EK
+emisyon; cadence/freq sayaçlarına DOKUNMAZ.
+
+**rev2 SONUÇ — kapı GEÇİLDİ:** p5×6 = **{11, 22, 92, 99, 100, 100}** (üst-uç 4/6; sıfır YOK;
+açlık {11,22} ≥ önceki ✓). TARİHİ koşu r4: **100 birim SAF-DATA (retx=0 dup=0, oran 1.00×) → 92
+teslim** — tail-SACK'lerin taşıdığı en temiz p5 akışı (recovery-trafiği olmadan). p4 da en-temiz
+hali: 100/100, c10=1.00, **oran 1.00×** (liveness-dup 283→0 — tail-SACK gereksizleştirdi).
+Temiz-1k 43 (B'nin belgeli-değeri; 3c-hipotezi duruyor). 0.25k korundu (monoton, 20/20).
+Not: c10-varyansı şanslı-koşularda büyüdü (başlangıç-SACK şansı; c120 teslimleri yüksek) —
+3c/ProbeUp sonrası yeniden okunur.
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
