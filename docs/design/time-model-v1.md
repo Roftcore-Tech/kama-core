@@ -469,6 +469,35 @@ boşalır → backlog-kapısı girişi doğru engelliyor: talep zaten karşılan
    aynen kayda: DV-2/DV-3 kapanana kadar "gerçek-dünyaya hazır" İDDİA EDİLMEZ (yalnız
    "sürekli-bant kanıtlı" denir).
 
+## 0.22 TUR-4 TASARIM+WORKFLOW KAYDI (fuzzy; ölçüm-bölümü ölçümden sonra eklenecek)
+
+**Kapsam (onaylı):** bw log-ölçek + sıfır-ağırlık fallback (arq_light) + membership-invariant.
+**Beklenti-kaydı:** scratchpad `tur4-prediction.md` — İKİ ölçüm-öncesi dürüst-revizyonla:
+
+**Ön-bulgu (kod-doğrulama, ölçümden önce):** arq.plan() yalnız arq==0'da baskılar; payda-0 tek
+arq=0 üreticisi; bugünkü p5 lppm'leri (0-77k) loss.low=1000 bölgesinde → R1 zaten ateşliyor →
+**ölçülmüş BREAKS-dejenerasyonu ESKİ-ERA'dandı** (lifetime-ratchet lppm; TUR-2a pencereleme onu
+seyrekleştirmiş). Fallback = yapısal-sigorta; dar-IQR bu kapsamdan BEKLENMEZ (dürüst hedef-revizyonu).
+
+**Workflow-doğrulaması (wf_04b67f3d, 3 lens, 17 bulgu / 5 HIGH) — tasarıma işlenenler:**
+1. HIGH: önerilen log-eşikler (1k/4k/50k/100k) bw.low bandını 37× daraltıp sr1-throttle/
+   emergency/compress'i BEYANSIZ yeniden yazıyordu → **RE-DOMAINING ONLY karara bağlandı:**
+   kesme-noktaları (50k/100k/150k/200k) korunur, decade-ayrıştırma kalibrasyonu DV-1'e (kanıtla).
+2. HIGH: naif mantissa (x−2^e)·256>>e, e≥56'da u64 taşırır (release non-monoton / debug panik =
+   ADR-17 ihlali) → taşmasız formül: e≥8: (x>>(e−8))&0xFF; e<8: (x<<(8−e))&0xFF (EXACT).
+   x=0 guard (ilog2(0) panik). Monotonluk kanıtlı; e>8'de strict-değil (~2-4‰ merdiven, dokümante).
+3. HIGH: fallback çıktısı R1-baskın çıktıyla BAYT-ÖZDEŞ → gözlemlenemez → no_rule bayrağı +
+   diag_fuzzy_no_rule + TRAJ fnr= eklendi (kanıt-sayacı ilkesi).
+4. MED: covers_domain KESİN > (trap kenarları dışlayıcı; ≥ dokunma-noktasında tek-nokta
+   zero-weight deliği bırakır) + eşikler AYNI const fn'den (offline-float hardcode yasak).
+5. Beyanlar: arq==0 fec-dominant baskılama-dalı (§9) yapısal-erişilmez (arq consequent'leri
+   ≥arq_light); fec_zero fallback'i kapsama-deliklerinin kalıcı-politikası (ARQ-ekseni muhafazakâr,
+   FEC-ekseni statüko — DV-2'de yeniden okunur).
+
+**Sonuç (implementasyon):** kapılar 30 suite ✓ clippy 0 ✓; **golden'lar BİT-ÖZDEŞ geçti** —
+kesme-noktası-koruma o kadar temiz ki davranış-sınıfı yeniden-üretim bile gerekmedi (175k
+rampa-değeri log-domain'de de tam 500). Commit 37f8a46.
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
