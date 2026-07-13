@@ -90,6 +90,12 @@ const RETURN_BW_PRIOR: u64 = 31;
 /// adaptif hızlanma D2 sonrası (§3.3-E). Sabit const → ADR-17 determinizm (RNG yok).
 const ACK_CADENCE_FLOOR_NS: u64 =
     SACK_WIRE_BYTES * 1_000_000_000 * 1000 / (RETURN_BUDGET_PERMIL * RETURN_BW_PRIOR);
+/// [TUR-3b commit-C, karar-a DAR-PARÇA] Tail-muafiyeti çarpanı [CAL {1,2,4}]: beklemede-veri varken
+/// sessizlik ≥ K_TAIL×son-varış-aralığı → timer-SACK cadence-MUAF (R1 ilk-SACK muafiyetinin
+/// tail-simetriği). Formül KANAL-ÖLÇÜLÜ (per-arrival aralık; yeni ms-sabiti YOK — ZM-2): fast'ta
+/// ms'ler-içinde tail-SACK (QUIC max_ack_delay-sınıfı davranış formülden doğar); sub-kbps'te
+/// aralık ≥ cadence → muafiyet fiilen devreye girmez (cadence-borcu §3.3-E-FULL'de, AYRI).
+const K_TAIL: u64 = 2;
 
 /// Receiver state machine (§4). rx-set + SACK üretimi; `on_datagram` / `on_ack_timer` ile sürülür.
 pub struct Receiver {
@@ -106,6 +112,8 @@ pub struct Receiver {
     first_ack_sent: bool, // [R1] ilk SACK cadence-exempt: henüz SACK yollanmadıysa timer hemen emit eder
     ack_delay_saturated: u64, // [TUR-1x] encoded==65535 sayısı (hold > 16.78s — audit; beklenen 0)
     seen_total: u32, // [§2.2 V2 ölçüm eki] görülen TÜM datagram (birim+kopya+shard; saturating)
+    last_arrival_ns: u64, // [3b-C] HERHANGİ datagram'ın son varışı (dup dahil — kanal-tempo kanıtı)
+    last_gap_ns: u64, // [3b-C] son varış-aralığı (serialization-vekili; 0 = henüz tek varış)
 }
 
 impl Receiver {
@@ -126,6 +134,8 @@ impl Receiver {
             first_ack_sent: false,
             ack_delay_saturated: 0,
             seen_total: 0,
+            last_arrival_ns: 0,
+            last_gap_ns: 0,
         }
     }
 
@@ -134,6 +144,11 @@ impl Receiver {
         // [§2.2 V2] seen_count: HER görülen datagram sayılır (dup/shard DAHİL) — sender'ın
         // "seen vs sent" yön-ayrımlı kayıp kıyası için (K3 cold-start).
         self.seen_total = self.seen_total.saturating_add(1);
+        // [3b-C] kanal-tempo ölçümü: varış-aralığı (dup dahil — wire'ı geçen her datagram kanıt).
+        if self.seen_total > 1 {
+            self.last_gap_ns = now_ns.saturating_sub(self.last_arrival_ns);
+        }
+        self.last_arrival_ns = now_ns;
         // Duplicate (zaten alınmış seq) → RX_DUP_SUPPRESS: teslim etme, yalnız ACK teyidi (§9.4).
         if self.received.contains(&d.seq) {
             self.state = RxState::DupSuppress;
@@ -180,7 +195,18 @@ impl Receiver {
         if !self.have_recv {
             return None;
         }
-        if self.first_ack_sent && now_ns.saturating_sub(self.last_ack_ns) < ACK_CADENCE_FLOOR_NS {
+        // [TUR-3b commit-C, karar-a] TAIL-MUAFİYETİ (R1 ilk-SACK muafiyetinin simetriği):
+        // beklemede-veri (freq'e ulaşmamış varış) VE sessizlik ≥ K_TAIL×son-varış-aralığı →
+        // bu bir TAIL'dir; cadence beklenmez (eski davranışta tek-kalan-paketin ACK'i 8.39s
+        // cadence'e takılıyor, teslim liveness-emergency gizli-yoluna dayanıyordu — MASKE #5).
+        let tail_due = self.since_last_ack > 0
+            && self.last_gap_ns > 0
+            && now_ns.saturating_sub(self.last_arrival_ns)
+                >= self.last_gap_ns.saturating_mul(K_TAIL);
+        if self.first_ack_sent
+            && !tail_due
+            && now_ns.saturating_sub(self.last_ack_ns) < ACK_CADENCE_FLOOR_NS
+        {
             return None;
         }
         self.since_last_ack = 0;
@@ -403,6 +429,32 @@ mod tests {
             .on_ack_timer(9_000 * MS)
             .expect("cadence sonrası timer-SACK yine emit");
         assert_eq!(a1.largest_seq, 0);
+    }
+
+    #[test]
+    fn tail_pending_data_gets_cadence_exempt_sack() {
+        // [TUR-3b commit-C, karar-a] TAIL-muafiyeti: freq'e ulaşmamış beklemede-veri +
+        // sessizlik ≥ K_TAIL×son-aralık → timer-SACK cadence-MUAF (formüllü; ms-sabiti YOK).
+        let mut r = Receiver::new();
+        r.on_datagram(data(0, 100), 0);
+        r.on_datagram(data(1, 101), 10 * MS); // freq=2 → SACK (cadence sıfırlanır); aralık=10ms
+                                              // Tek-kalan (tail) datagram: freq'e ulaşmaz.
+        r.on_datagram(data(2, 102), 20 * MS);
+        // Sessizlik < 2×aralık(20ms): henüz tail-değil → cadence bastırır.
+        assert!(
+            r.on_ack_timer(30 * MS).is_none(),
+            "sessizlik < K_TAIL×aralık → muafiyet yok (cadence bastırır)"
+        );
+        // Sessizlik ≥ 2×10ms: TAIL → cadence-muaf SACK (eski davranış: 8.39s bekletirdi).
+        let a = r
+            .on_ack_timer(41 * MS)
+            .expect("tail-muafiyeti: beklemedeki son-paket SACK'i ms'ler-içinde");
+        assert_eq!(a.largest_seq, 2);
+        // Beklemede-veri kalmadı → muafiyet kapanır, cadence yine hükmeder.
+        assert!(
+            r.on_ack_timer(60 * MS).is_none(),
+            "tail ACK'lendi → muafiyet biter, cadence döner"
+        );
     }
 
     #[test]

@@ -221,6 +221,10 @@ const DRAIN_RTPROP_MIN_DWELL_EPOCH: u32 = 1;
 const DRAIN_RTPROP_MAX_DWELL_EPOCH: u32 = 3;
 /// [TUR-3b] Startup-Drain max-dwell (ack_epoch biriminde; liveness-yedeği) [CAL {2,3,4}].
 const DRAIN_MAX_DWELL_EPOCH: u32 = 3;
+/// [TUR-3b commit-C, 3a.5-devri] ack_confidence sessizlik-eşiği EAI-tabanı [CAL {1,2,3}]:
+/// eşik = max(3×srtt, K_CONF_EAI×EAI) — srtt_t hızlı-düşüşünün sahte-LOW-conf riski kapanır (ZM-4).
+/// Karar-a eşleşmesi: receiver tail-muafiyeti (K_TAIL) ile ÇİFT — liveness ağır-yol olmaktan çıkar.
+const K_CONF_EAI: u32 = 2;
 /// [TUR-3a.5 commit-β] Kuantum-döngü yakınsama-böleni: T = rtprop / K_CONV [CAL matris {2,4,8}].
 /// T=rtprop = 3a-sonrası tek DÜRÜST saat (ack_epoch öz-referans tuzağı reddedildi — srtt-clock-v1 §2.1).
 const K_CONV: u32 = 4;
@@ -1154,7 +1158,10 @@ impl Sender {
         };
         let silence = now_ns.saturating_sub(anchor);
         let srtt = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
-        let threshold = srtt.saturating_mul(u64::from(ACK_SILENCE_SRTT_MULT));
+        // [TUR-3b commit-C] eşik = max(3×srtt, K_CONF_EAI×EAI) — tüketici-8 (srtt-clock-v1 §3).
+        let threshold = srtt
+            .saturating_mul(u64::from(ACK_SILENCE_SRTT_MULT))
+            .max(dur_ns(self.expected_ack_interval()).saturating_mul(u64::from(K_CONF_EAI)));
         if silence <= threshold {
             return 1000;
         }
@@ -1363,8 +1370,9 @@ mod tests {
         let mut saw_fwd = false;
         let mut saw_escalate = false;
         let mut dup_count = 0usize;
+        // [commit-C uyumu] eşik artık max(3×srtt, 2×EAI≈4.2s) → LOW için sessizlik ≈14s+ gerek.
         for t in 1..=25 {
-            let out = s.on_event(Event::TimerFired(Timer::Pto), (t * 100 + 21) * MS);
+            let out = s.on_event(Event::TimerFired(Timer::Pto), (t * 1_000 + 21) * MS);
             if s.state() == SenderState::RecoverFwd {
                 saw_fwd = true;
             }
@@ -1458,8 +1466,9 @@ mod tests {
         s.on_event(ack(&[0]), 10 * MS); // srtt=10ms; PreConverge'den çık
         s.on_event(Event::AppData(unit(42)), 20 * MS); // tail: seq1 = unit 42, ACK GELMEYECEK
         let mut dup_seen = false;
+        // [commit-C uyumu] EAI-tabanı conf-düşüşünü geciktirir → sessizlik-penceresi 30s'e uzatıldı.
         for t in 1..=30 {
-            let out = s.on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS);
+            let out = s.on_event(Event::TimerFired(Timer::Pto), (20 + t * 1_000) * MS);
             dup_seen |= out
                 .iter()
                 .any(|d| d.kind == TransmitKind::Duplicate && d.unit_id == 42);
@@ -1534,6 +1543,25 @@ mod tests {
         assert!(
             s.reorder.recent_max_reorder() >= 4,
             "note_spurious gözlenen reorder mesafesini kaydetmeli (la=5 − seq=1)"
+        );
+    }
+
+    #[test]
+    fn ack_confidence_eai_floor_prevents_false_low() {
+        // [TUR-3b commit-C] 3×srtt ≪ EAI iken sessizlik < K_CONF_EAI×EAI conf'u DÜŞÜRMEZ.
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(100)), 0);
+        s.on_event(ack(&[0]), 10 * MS); // srtt=10ms → 3×srtt=30ms ≪ EAI
+        s.on_event(Event::AppData(small(1)), 20 * MS); // aktif (seq1 uçuşta)
+        let eai = dur_ns(s.expected_ack_interval());
+        assert_eq!(
+            s.ack_confidence_permille(20 * MS + eai),
+            1000,
+            "EAI-tabanı içinde sessizlik conf düşürmez (eski: 30ms eşikte çoktan LOW)"
+        );
+        assert!(
+            s.ack_confidence_permille(20 * MS + 4 * eai) < 1000,
+            "taban aşılınca sessizlik yine sinyaldir"
         );
     }
 

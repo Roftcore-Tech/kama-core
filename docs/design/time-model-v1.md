@@ -369,6 +369,19 @@ kaynağı belirsiz, AYRI teşhis ister).
 (c) C'yi 3c-sonrasına ertele (liveness-sözleşmesi 3b'de eksik kaldı — dürüst kayıt).
 17-data izi: karar ne olursa olsun AYRI teşhis-maddesi (yeni borç-satırı §3.7'ye).
 
+**KARAR (Abkarada): (a) KAPSAM-KİLİTLİ** — yalnız tail/tek-paket timer-SACK muafiyeti (R1'in
+tail-simetriği); tam adaptif ACK-decimation §3.3-E-FULL'e (kampanya-öncesi borç). Adaptivite-şartı:
+muafiyet-gecikmesi MUTLAK-ms OLAMAZ → formül: sessizlik ≥ K_TAIL×son-varış-aralığı (kanal-ölçülü,
+boyutsuz K_TAIL=2 [CAL {1,2,4}]; fast'ta QUIC-max_ack_delay-sınıfı davranış formülden doğar;
+sub-kbps'te aralık≥cadence → devreye girmez). (b) RED (EAI-bölme+maske), (c) RED (3b yarım kalır).
+
+**p5-KAYMA TAHMİNİ (talimat; ölçümden ÖNCE):** tail-muafiyeti p5'te (100kbit; varış-aralığı
+23-45ms → tail-SACK ~46-90ms'de) SACK-EMİSYON sayısını artırır → %80-kayıplı dönüş-yolunda
+hayatta-kalma ÇEKİLİŞ-sayısı artar → **dağılım YUKARI kayar tahmini**: açlık-uç {11-24}→{15-35}
+bandına, şanslı-frekans ↑ (%50-67 sınıfı kalır ya da artar); temiz-1k +0/+1 (son-birim ACK'i erken).
+Bu iyileşme BU turda ölçülür ki 3c'ye YANLIŞ atfedilmesin. Dönüş-bütçesi riski düşük (65B×birkaç
+ek SACK ≪ %25-bütçe).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
