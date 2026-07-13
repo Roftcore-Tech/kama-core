@@ -114,6 +114,7 @@ pub struct Receiver {
     seen_total: u32, // [§2.2 V2 ölçüm eki] görülen TÜM datagram (birim+kopya+shard; saturating)
     last_arrival_ns: u64, // [3b-C] HERHANGİ datagram'ın son varışı (dup dahil — kanal-tempo kanıtı)
     last_gap_ns: u64, // [3b-C] son varış-aralığı (serialization-vekili; 0 = henüz tek varış)
+    last_tail_ack_ns: u64, // [3b-C rev2] tail-SACK'in KENDİ ritim-sayacı (cadence'ten bağımsız)
 }
 
 impl Receiver {
@@ -136,6 +137,7 @@ impl Receiver {
             seen_total: 0,
             last_arrival_ns: 0,
             last_gap_ns: 0,
+            last_tail_ack_ns: 0,
         }
     }
 
@@ -199,14 +201,23 @@ impl Receiver {
         // beklemede-veri (freq'e ulaşmamış varış) VE sessizlik ≥ K_TAIL×son-varış-aralığı →
         // bu bir TAIL'dir; cadence beklenmez (eski davranışta tek-kalan-paketin ACK'i 8.39s
         // cadence'e takılıyor, teslim liveness-emergency gizli-yoluna dayanıyordu — MASKE #5).
+        // [rev2 — teşhis-kollarıyla ölçüldü] Tail-SACK cadence-saatini SIFIRLAMAZ: b3-matrisi
+        // p5'te {0,10,10,56,100-yavaş,100-yavaş} verdi; kol-atıflaması tail-emisyonların
+        // record_ack_emit'le garantili-ritim (cadence) SACK'lerini ERTELEDİĞİNİ gösterdi
+        // (%80-kayıplı dönüşte hayatta-kalan SACK fiilen azaldı; r5=0 bileşik-zincir).
+        // Tail artık KENDİ ritim-sayacını tutar (spam-siz) ve cadence bağımsız akar —
+        // tail-SACK saf-EK emisyondur.
         let tail_due = self.since_last_ack > 0
             && self.last_gap_ns > 0
             && now_ns.saturating_sub(self.last_arrival_ns)
+                >= self.last_gap_ns.saturating_mul(K_TAIL)
+            && now_ns.saturating_sub(self.last_tail_ack_ns)
                 >= self.last_gap_ns.saturating_mul(K_TAIL);
-        if self.first_ack_sent
-            && !tail_due
-            && now_ns.saturating_sub(self.last_ack_ns) < ACK_CADENCE_FLOOR_NS
-        {
+        if tail_due {
+            self.last_tail_ack_ns = now_ns; // yalnız tail-ritmi; cadence/freq sayaçlarına DOKUNMA
+            return self.build_ack(now_ns);
+        }
+        if self.first_ack_sent && now_ns.saturating_sub(self.last_ack_ns) < ACK_CADENCE_FLOOR_NS {
             return None;
         }
         self.since_last_ack = 0;
@@ -450,10 +461,15 @@ mod tests {
             .on_ack_timer(41 * MS)
             .expect("tail-muafiyeti: beklemedeki son-paket SACK'i ms'ler-içinde");
         assert_eq!(a.largest_seq, 2);
-        // Beklemede-veri kalmadı → muafiyet kapanır, cadence yine hükmeder.
+        // [rev2] Tail-tekrarı KENDİ ritmiyle sınırlı (spam yok): hemen ardından tick → None.
         assert!(
-            r.on_ack_timer(60 * MS).is_none(),
-            "tail ACK'lendi → muafiyet biter, cadence döner"
+            r.on_ack_timer(45 * MS).is_none(),
+            "tail-ritmi dolmadan tekrar-tail yok (spam-koruması)"
+        );
+        // [rev2] Ritim dolunca beklemede-veri hâlâ varsa tekrar tail-SACK (cadence'e dokunulmadı).
+        assert!(
+            r.on_ack_timer(65 * MS).is_some(),
+            "beklemede-veri sürerken tail kendi ritmiyle tekrarlar"
         );
     }
 
