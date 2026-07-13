@@ -287,6 +287,7 @@ pub struct Sender {
     diag_bw_recovered: u64,         // kol-1'den kurtarılan BW-örneği sayısı
     diag_ambiguous_skipped: u64, // [TUR-2c resmî] kol-2 örnek-atlaması (sample_skipped_ambiguous)
     diag_delivered_credited: u64, // [TUR-2c] kol-2 delivered-kredisi (byte)
+    diag_qd_no_evidence: u64,    // [TUR-3a D-3/1] rtprop-yokken qd_ratio=0 sayısı
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
@@ -337,6 +338,7 @@ impl Sender {
             diag_bw_recovered: 0,
             diag_ambiguous_skipped: 0,
             diag_delivered_credited: 0,
+            diag_qd_no_evidence: 0,
             last_decision: FusionDecision {
                 fec_parity_ratio_permille: 0,
                 arq_aggressiveness_permille: 0,
@@ -657,11 +659,23 @@ impl Sender {
             .saturating_mul(1_000_000)
             .checked_div(dur_ns(srtt))
             .unwrap_or(0);
+        // [TUR-3a önalım, D-3/1] qd_ratio = qd×1000/rtprop; rtprop yoksa 0 (kanıt yok →
+        // boğma yok) + sayaç. Dürüst-rtprop'un zorunlu ikizi: mutlak-ns eşikler sub-kbps'te
+        // fiziksel-taban qd'yi (serialization çift-yönü, saniyeler) kalıcı-HIGH okuyordu.
+        let qd_ratio_permille = match self.rtt.rtprop() {
+            Some(rtp) if !rtp.is_zero() => {
+                dur_ns(self.rtt.queue_delay()).saturating_mul(1000) / dur_ns(rtp)
+            }
+            _ => {
+                self.diag_qd_no_evidence += 1;
+                0
+            }
+        };
         let inputs = FusionInputs {
             loss_ppm: self.loss.loss_windowed_ppm(),
             bandwidth_bps: self.btlbw.btlbw(),
             jitter_ppm,
-            queue_delay: self.rtt.queue_delay(),
+            qd_ratio_permille,
             ack_confidence_permille: self.ack_confidence_permille(now_ns),
         };
         self.fuzzy.decide(&inputs)

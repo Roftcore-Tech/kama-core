@@ -44,7 +44,7 @@ fn tv_fusion_b_decision_s1() {
         loss_ppm: 550_000,
         bandwidth_bps: 175_000,
         jitter_ppm: 50_000,
-        queue_delay: Duration::ZERO,
+        qd_ratio_permille: 0,
         ack_confidence_permille: 1000,
     });
     assert_eq!(d.fec_parity_ratio_permille, 650); // (500·800 + 500·500)/1000
@@ -62,7 +62,7 @@ fn tv_fusion_c_loss_decoupling() {
         loss_ppm: 550_000,
         bandwidth_bps: 175_000,
         jitter_ppm: 50_000,
-        queue_delay: Duration::ZERO,
+        qd_ratio_permille: 0,
         ack_confidence_permille: 1000,
     };
     let s1 = ctrl.decide(&base);
@@ -86,7 +86,7 @@ fn tv_fusion_d_emergency_trigger() {
         loss_ppm: 650_000,
         bandwidth_bps: 25_000,
         jitter_ppm: 50_000,
-        queue_delay: dms(500),
+        qd_ratio_permille: 2500, // 2.5×rtprop → HIGH (oran-uzayı, D-3/1)
         ack_confidence_permille: 100,
     });
     assert_eq!(d.mode, Mode::EmergencyForwardRedundancy);
@@ -124,7 +124,7 @@ fn tv_fusion_via_trait_object() {
         loss_ppm: 550_000,
         bandwidth_bps: 175_000,
         jitter_ppm: 50_000,
-        queue_delay: Duration::ZERO,
+        qd_ratio_permille: 0,
         ack_confidence_permille: 1000,
     });
     assert_eq!(d.fec_parity_ratio_permille, 650);

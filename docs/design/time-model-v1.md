@@ -227,9 +227,27 @@ etkilenmez (hedef spektrumun dar-IQR'a çöküşü — frekans değil).
   parazit-iptali hikâyesinin D-2/D-3 tekrarı. Verim tersine İYİLEŞTİ: deliv/sent 34/36=%94
   (eski 45/59=%76), oran 0.60→0.36×; ama kampanya-metriği (completion@deadline) geriledi:
   kanal ~45 taşıyabilirken 36 sunuldu (0.5×-gaz kanal-altı).
-→ **KARAR NOKTASI (Abkarada; §3.8):** (a) belgeli-regresyon TUR-4'e dek · (b) D-3/1 qd_ratio
-minimal-önalım (önerim — 1x↔1b çiftlenmesinin birebir analoğu: dürüst-rtprop, oran-qd olmadan
-YAŞAYAMAZ) · (c) commit-A'yı btlbw-penceresi+keep-last'a daralt, W_RTPROP'u ertele.
+→ **KARAR (Abkarada, 2026-07-13): (b) qd_ratio minimal-önalım — kapsam-kilidiyle.** (a) RED:
+gerilemiş baseline üç tur taşınır, sonraki turlar kirli zemine oturur. (c) RED — kritik gerekçe:
+W_RTPROP'u ertelemek şişkin-rtprop MASKESİNİ GERİ TAKMAK; kirli-saat D-2/D-3'ün sonraki tüm
+turlarını kirletir (W_BTLBW ack_epoch, ProbeUp süre-ölçümü hepsi rtprop'a bakar) — #4-düzeltmesinin
+(kirli-saat üstüne kurma) tam tersi olurdu. KAPSAM-KİLİDİ: yalnız qd kolu (qd_ratio =
+queue_delay×1000/rtprop; rtprop=None→0+sayaç); D-3'ün kalanı (bw log-ölçek, sıfır-ağırlık fallback)
+TUR-4'te. Kural: "rtprop-fix'inin yaşaması için gereken MİNİMUM fuzzy-değişikliği = qd_ratio,
+o kadar." Bu çiftlenmiş-değişken, iki-değişken değil. DOĞRULAMA-ŞARTI: temiz-1k ≥45'e dönmeli;
+dönmezse ayrı teşhis, genişletme YOK, Abkarada'ya.
+
+**qd_ratio SONUÇ (commit-A2) — DOĞRULAMA-ŞARTI SAĞLANMADI, β-dalı (teşhisle Abkarada'ya):**
+- qd_ratio MEKANİZMASI ÇALIŞTI: erken-faz boğulması kalktı (Startup 15→19 birim/20s), temiz-1k
+  **34→42** (+8); 0.25k süreklilik KORUNDU (düşüş-adımı 0, monoton 21→27, 20/20); p4 100/100 ✓;
+  p5×6 aynı-era {8,11,12,15,100,100} = 2/6 şanslı ✓ (commit-A 2/6 ile tutarlı).
+- AMA 42 < 45: rate=51 (=102×0.5) kilidi t=40+ sürüyor. TEŞHİS (TRAJ qd-diag ile doğrudan):
+  (1) **srtt-EWMA gecikmesi**: kuyruk boşalmışken (infl=267B ≈ 2s) srtt hâlâ 17.9s — α=1/8 ×
+  seyrek-örnek → srtt dakikalarca şişkin → qd=srtt−rtprop sahte-yüksek → ratio 4.85 "HIGH" mıhlı.
+  qd'nin saati srtt-LAG'ıyla kirli — ZM-ailesine yeni üye (EWMA yakınsama-hızı örnek-SAYISI-sınıfı,
+  kanal-zamanı değil; §16.2'ye aday satır). (2) **Startup aşırı-doldurması**: 2.89× gain 20s'de
+  kuyruğu 3.4kB'a (kanalın ~27s'i) şişiriyor; Startup-exit'te DRAIN fazı yok (BBR'da var) → koşunun
+  kalanı drain'le geçiyor. İkisi de 3b/3c bölgesi (DrainRtprop sözleşmesi + faz-geçişleri).
 
 **(ii) packets_in_flight [commit-B, karar-sonrası]:** gözlemci eklendi (TRAJ pif=); temiz-1k'da
 pif inflight'ı dürüst izledi (0'a dönüyor — kayıpsız kanalda sızıntı yok, beklenen); sızıntı-kanıtı
@@ -363,6 +381,9 @@ TUR-3a  estimator pencereleri (K_bw×ack_epoch, K_rtprop×corrected_srtt) + keep
 TUR-3b  DrainRtprop giriş/çıkış sözleşmesi (window-derived giriş + exit-invariant)
 TUR-3c  ProbeUp state + sözleşme + açık match-kolu
 TUR-4   fuzzy normalize + sıfır-ağırlık fallback (arq_light)      ← p5'in taşıyıcısı (§0.7)
+        [KAPSAM DARALDI, talimat 2026-07-13: qd kolu (D-3/1 qd_ratio) TUR-3a'ya önalındı —
+         kalan: bw log-ölçek (D-3/2) + sıfır-ağırlık fallback (D-3/3) + membership-invariant
+         property-testi + üyelik-eşiği kalibrasyonları (qd_ratio placeholder'ları DAHİL)]
 TUR-B   redundancy/kopya bütçesi (p2/p3 taşıma)
 TUR-C   0.25k residual (overdrive + cadence)
 SON     plateau-revisit (delivered-anchor) · MIN_CWND-kalibrasyonu · emergency-dwell'ler
