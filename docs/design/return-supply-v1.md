@@ -67,7 +67,15 @@ new_episode = !have_recv
   "ilk-paket→kopma→dönüş" deseninde kopma-süresi max-fazı baseline'ını şişirir → dedektör
   ≤k-varış kör + dönüşe epizot verilmez; pratik zarar KOTA-YANIŞ-ŞARTIYLA sınırlanır (§2:
   ölü-kanal sessizliğinde kredi yanmaz → oturum-kotası dönüşte sağ) — beyanlı, birim-test
-  senaryosu §9'da.
+  senaryosu §9'da. (c) **sürüklenme-analizi [Abkarada-doğrulaması, GO-öncesi]:** izole kopmada
+  yazım Kg tek-örnek → med=g DEĞİŞMEZ → sonraki kopma eşiği K×g, tetikler ✓; sürüklenme-adımı
+  ancak pencereye ⌈k/2⌉ kopma-yazımı sığarsa (kopmalar-arası ≤1 normal varış): [Kg,g,Kg] med=Kg
+  → üçüncü-kopma eşiği K²g (0.8s·16=12.8s>8s kaçırır); araya ≥2 normal varış → [Kg,g,g] med=g
+  ÖZ-ONARIM ✓. Kayıtlı DV-2 profillerinde YOK (p6 2s-kesinti/8s-temiz: yüzlerce normal-varış;
+  8s-kopuk/2s-pencere: 2-3 normal + 1 kopma-yazımı → med=g). Tek uç: KOPMA-YOĞUN desen
+  (pencere-başına ≤1 varış, %90-kopuk sınıfı) — orada gap'ler ritmin kendisi; "ritim-öğrenme"
+  kota-per-varış spam'ine karşı DOĞRU davranış (r1-hatasının anti-tezi); clamp-üst-sınırı
+  değişmez (tırmanışı geometrik sınırlayan o). DV-2 AÇIK-RİSK listesine (§9) girer.
 - Oturum-ilk (!have_recv) → epizot; varış-2'de sample_count=0 → baseline-yok → kontrol atlanır.
 
 ### 1a.1 Adversarial vektörler — satır-satır (k=3; her CAL-kolu; semantik `>`; kota YENİLEMEMELİ)
@@ -249,5 +257,9 @@ DIŞINA taşarsa kapsam İHLAL → DUR.
 - count=0-deliği senaryosu ("ilk-paket→kopma→dönüş") birim-teste: dönüşte epizot YOK (beyanlı)
   ama kota-yanış-şartı sayesinde oturum-kredisi sağ → dönüş-SACK'leri kredili assert'i.
 - Rejim-geçişi yakınsaması birim-teste: 25ms→800ms dizisinde epizot-sayısı ≤ ⌈log_K(oran)⌉+1.
+- **DV-2 beklenti-kaydına taşınacak AÇIK-RİSKLER (Abkarada-kararı):** (i) count=0-deliği
+  ("ilk-paket→kopma→dönüş": dönüşe epizot yok — DV-2'de bu desen ÖZELLİKLE ölçülür; zarar
+  görülürse ayrı-fix); (ii) kopma-yoğun-desen sürüklenmesi (%90-kopuk profili: ritim-öğrenme
+  davranışı gözlemlenir — beyanlı-tercih doğrulanır ya da yeniden-açılır).
 - Smoke: p4 1.00× ∧ temiz-1k ≥45 ∧ 0.25k 20/20 + beyanlı-istisna (K-5, iki-R-kolu).
 - P5-GATE kanıtı p5-profilinde (DV-2-profilinde değil).
