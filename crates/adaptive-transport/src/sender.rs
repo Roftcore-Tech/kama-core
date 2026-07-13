@@ -214,6 +214,9 @@ const K_BW: u32 = 8;
 const K_RTPROP: u32 = 8;
 /// [TUR-3a.5 commit-α] qd kısa-pencere çarpanı: W_qd = K_qd × ack_epoch [CAL matris {1,2,4}].
 const K_QD: u32 = 2;
+/// [TUR-3b D-2/3] DrainRtprop dwell sınırları (ack_epoch biriminde — kanal-saatli, ZM-2) [CAL].
+const DRAIN_RTPROP_MIN_DWELL_EPOCH: u32 = 1;
+const DRAIN_RTPROP_MAX_DWELL_EPOCH: u32 = 3;
 /// [TUR-3a.5 commit-β] Kuantum-döngü yakınsama-böleni: T = rtprop / K_CONV [CAL matris {2,4,8}].
 /// T=rtprop = 3a-sonrası tek DÜRÜST saat (ack_epoch öz-referans tuzağı reddedildi — srtt-clock-v1 §2.1).
 const K_CONV: u32 = 4;
@@ -264,6 +267,10 @@ pub struct Sender {
     // ── ack_confidence (RECOVER_FWD tetiği): sessizlik-tabanlı ──
     last_ack_ns: Option<u64>,
     first_send_ns: Option<u64>,
+
+    // ── [TUR-3b] DrainRtprop sözleşme-durumu (D-2/3: giriş=pencere-doluşu; exit-invariant) ──
+    drain_rtprop_entry_ns: Option<u64>,
+    drain_rtprop_qualifying: bool, // girişten beri ≥1 rtt-örneği (qualifying_min_rtt)
 
     // ── STARTUP plato tespiti ──
     startup_last_btlbw: u64,
@@ -326,6 +333,8 @@ impl Sender {
             last_now_ns: 0,
             last_ack_ns: None,
             first_send_ns: None,
+            drain_rtprop_entry_ns: None,
+            drain_rtprop_qualifying: false,
             startup_last_btlbw: 0,
             startup_stable_rounds: 0,
             bw_sampled_since_round: false,
@@ -525,6 +534,10 @@ impl Sender {
                 self.diag_rtt_rejected += 1; // §7.3 ack_delay_untrusted (düzeltme reddi; raw işlendi)
             }
             self.rtt.observe(now_ns, sample);
+            // [TUR-3b D-2/3] DrainRtprop dwell'i içinde gelen rtt-örneği = qualifying.
+            if self.state == SenderState::DrainRtprop {
+                self.drain_rtprop_qualifying = true;
+            }
         }
 
         // §3.3-B stop koşulu: teyit edilen birimlerin bekleyen geometrik kopyalarını İPTAL et.
@@ -544,8 +557,18 @@ impl Sender {
     fn on_timer(&mut self, timer: Timer, now_ns: u64) {
         match timer {
             Timer::RtpropProbe => {
+                // [TUR-3b D-2/3] GİRİŞ = rtprop-penceresi-DOLUŞU (min-örnek yaşı ≥ W/2 [CAL]);
+                // 200ms-sabit-tick tetikçiliği CANCELLED — tazelik kanal-saatli (ZM-2).
                 if self.state == SenderState::Steady {
-                    self.state = SenderState::DrainRtprop;
+                    let stale = self
+                        .rtt
+                        .rtprop_age_ns(now_ns)
+                        .is_some_and(|age| age >= self.rtt.rtprop_window_ns() / 2);
+                    if stale {
+                        self.state = SenderState::DrainRtprop;
+                        self.drain_rtprop_entry_ns = Some(now_ns);
+                        self.drain_rtprop_qualifying = false;
+                    }
                 }
             }
             Timer::Pto => {
@@ -737,6 +760,29 @@ impl Sender {
                         SenderState::Steady
                     } else {
                         SenderState::Startup
+                    }
+                }
+                // [TUR-3b D-2/3] ÇIKIŞ-İNVARİANTI (onaylı):
+                // (elapsed ≥ min_dwell ∧ qualifying) ∨ elapsed ≥ max_dwell.
+                // VERIFIED N=0 bulgusu (aynı-event çıkış; ProbeDown-gain hiç uygulanmıyordu) kapanır.
+                SenderState::DrainRtprop => {
+                    let epoch = dur_ns(
+                        self.rtt
+                            .srtt()
+                            .unwrap_or(INITIAL_RTT)
+                            .max(self.expected_ack_interval()),
+                    );
+                    let elapsed =
+                        now_ns.saturating_sub(self.drain_rtprop_entry_ns.unwrap_or(now_ns));
+                    let min_dwell = epoch.saturating_mul(u64::from(DRAIN_RTPROP_MIN_DWELL_EPOCH));
+                    let max_dwell = epoch.saturating_mul(u64::from(DRAIN_RTPROP_MAX_DWELL_EPOCH));
+                    if (elapsed >= min_dwell && self.drain_rtprop_qualifying)
+                        || elapsed >= max_dwell
+                    {
+                        self.drain_rtprop_entry_ns = None;
+                        SenderState::Steady
+                    } else {
+                        SenderState::DrainRtprop
                     }
                 }
                 _ => SenderState::Steady,
@@ -1453,6 +1499,83 @@ mod tests {
         assert!(
             s.reorder.recent_max_reorder() >= 4,
             "note_spurious gözlenen reorder mesafesini kaydetmeli (la=5 − seq=1)"
+        );
+    }
+
+    #[test]
+    fn drain_rtprop_contract_dwell_and_exit_invariant() {
+        // [TUR-3b D-2/3] VERIFIED N=0 bulgusu ölür: giriş-event'inde ÇIKMAZ; exit-invariant =
+        // (elapsed≥min_dwell ∧ qualifying) ∨ elapsed≥max_dwell. Giriş = pencere-doluşu.
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(100)), 0);
+        s.on_event(ack(&[0]), 3_000 * MS); // srtt=3s (conf-eşiği 9s — dwell sırasında sahte-emergency yok)
+        s.on_event(Event::AppData(small(1)), 3_100 * MS); // seq1 (qualifying-ack adayı)
+        s.on_event(Event::AppData(small(9)), 3_200 * MS); // seq2 — HİÇ ack'lenmez: aktiflik-tutucu
+        s.state = SenderState::Steady; // plato-kurulumunu atla (sözleşme-odaklı birim-test)
+
+        // Pencere-doluşu ÖNCESİ: giriş REDDedilir (yaş < W/2).
+        s.on_event(Event::TimerFired(Timer::RtpropProbe), 5_000 * MS);
+        assert_ne!(
+            s.state(),
+            SenderState::DrainRtprop,
+            "taze rtprop → giriş yok"
+        );
+
+        // Doluş SONRASI (yaş ≥ W/2 = max(10s,8×3s)/2 = 12s; min-örnek t=3s → t≥15s): GİRER ve
+        // AYNI event'te ÇIKMAZ (N=0 ölümü).
+        s.state = SenderState::Steady;
+        s.on_event(Event::TimerFired(Timer::RtpropProbe), 15_100 * MS);
+        assert_eq!(
+            s.state(),
+            SenderState::DrainRtprop,
+            "pencere-doluşu → giriş"
+        );
+
+        // min_dwell dolmadan qualifying-örnek: KALIR (invariantın sol-kolu iki-şartlı).
+        let epoch = dur_ns(
+            s.rtt
+                .srtt()
+                .unwrap_or(INITIAL_RTT)
+                .max(s.expected_ack_interval()),
+        );
+        s.on_event(ack(&[1]), 15_100 * MS + epoch / 4); // qualifying=true; seq2 uçuşta (Idle yok)
+        assert_eq!(
+            s.state(),
+            SenderState::DrainRtprop,
+            "min_dwell dolmadan çıkış yok"
+        );
+
+        // min_dwell geçti + qualifying → herhangi bir event çıkışı işler (Pto tick).
+        // NOT: qualifying-ack büyük örnekle (raw≈12.7s) srtt'yi kuantum-döngüde YUKARI taşıdı
+        // (dürüst davranış) → min_dwell BÜYÜDÜ; epoch ack-SONRASI yeniden okunur.
+        let epoch_post = dur_ns(
+            s.rtt
+                .srtt()
+                .unwrap_or(INITIAL_RTT)
+                .max(s.expected_ack_interval()),
+        );
+        s.on_event(
+            Event::TimerFired(Timer::Pto),
+            15_100 * MS + epoch_post + 1_000_000,
+        );
+        assert_eq!(
+            s.state(),
+            SenderState::Steady,
+            "min_dwell ∧ qualifying → çıkış"
+        );
+
+        // max_dwell yedeği: qualifying'siz 3×epoch → çıkış (silence-conf ~680‰ > escalate 300‰).
+        s.state = SenderState::DrainRtprop;
+        s.drain_rtprop_entry_ns = Some(16_000 * MS);
+        s.drain_rtprop_qualifying = false;
+        s.on_event(
+            Event::TimerFired(Timer::Pto),
+            16_000 * MS + 3 * epoch_post + 1_000_000,
+        );
+        assert_eq!(
+            s.state(),
+            SenderState::Steady,
+            "max_dwell yedeği (qualifying'siz)"
         );
     }
 

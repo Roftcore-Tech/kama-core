@@ -46,6 +46,14 @@ impl MinFilter {
     fn min(&self) -> Option<u64> {
         self.samples.iter().map(|&(_, v)| v).min()
     }
+
+    /// Min-değerli örneğin zamanı (pencere-doluşu tespiti — [TUR-3b] DrainRtprop girişi).
+    fn min_entry_time(&self) -> Option<u64> {
+        self.samples
+            .iter()
+            .min_by_key(|&&(_, v)| v)
+            .map(|&(t, _)| t)
+    }
 }
 
 /// RTT / RTprop / queue-delay estimator (engine spec §6).
@@ -173,6 +181,21 @@ impl RttEstimator {
     #[must_use]
     pub fn rttvar(&self) -> Duration {
         Duration::from_nanos(self.rttvar_ns)
+    }
+
+    /// [TUR-3b] rtprop-min-örneğinin YAŞI (ns) — pencere-doluşu: yaş ≥ W/2 → tazeleme gerek
+    /// (DrainRtprop girişi kanal-saatli; 200ms-sabit-tick tetikçiliği değil).
+    #[must_use]
+    pub fn rtprop_age_ns(&self, now_ns: u64) -> Option<u64> {
+        self.rtprop
+            .min_entry_time()
+            .map(|t| now_ns.saturating_sub(t))
+    }
+
+    /// RTprop penceresi (ns) — giriş-eşiği hesabı için (SALT-OKUMA).
+    #[must_use]
+    pub fn rtprop_window_ns(&self) -> u64 {
+        self.rtprop_window_ns
     }
 
     /// RTprop (pencereli min RTT); henüz sample yoksa `None`.
