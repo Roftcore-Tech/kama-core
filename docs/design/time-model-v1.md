@@ -526,6 +526,73 @@ kalan determinizm-kilitleri: (i) ilk-SACK-şansı — dönüş-yolu işi (§3.3-
 (ii) conf-LOW RecoverFwd dilimi (derin-açlık {17,29} sınıfı). P5-GATE dar-IQR kabulü bu iki
 işten sonrasına kalır; öneri: §3.3-E-FULL zaten kampanya-öncesi borç — P5-GATE'i ona bağla.
 
+## 0.23 AYRIŞTIRMA-KAYDI: ilk-SACK-şansı kilidi (TEŞHİS — fix YOK, karar Abkarada'da)
+
+**Yöntem:** 3 bağımsız lens (receiver-cadence / sender-kader-zinciri / trajektori-kanıtı,
+wf_b0b46caa) + elle çapraz-hakemlik. Mekanizmada üçü BİRLEŞTİ; fix-etiketi sentezi aşağıda.
+
+### Mekanizma (kod-zeminli, ölçümle doğrulanmış)
+İki-fazlı ÇİFT-KARARLI dönüş-yolu açlık döngüsü; "ilk-SACK-şansı" rafine hali:
+**KAFES-KANITI:** p5×6 ilk-teslim zamanları {≈0.03, ≈0.03, 8.5, 25.5, 25.5, 34.0}s =
+0.03 + k×8.39s, k∈{0,0,1,3,3,4} — ACK_CADENCE_FLOOR (receiver.rs:91-92; RETURN_BW_PRIOR=31
+statik, :85) VE PreConverge pacing-periyodu (267B/31B/s≈8.6s) İKİSİ de deneme-yoğunluğunu
+~1/8.4s'e kilitliyor. p=0.2 hayatta-kalmayla geometrik: P(k=0)=0.2, gözlenen 2/6 ✓.
+- **Faz-1 (piyango):** İlk SACK cadence-muaf (receiver.rs:220) ama muafiyet EMİSYONLA tükenir
+  (teslimle değil; first_ack_sent set-only :270-273, HİÇ sıfırlanmaz) → ölürse denemeler
+  8.39s-kafesine düşer.
+- **Faz-2 (tohum-bimodalitesi — asıl amplifikatör):** bw-örneği interval = deneme-GECİKMESİ
+  olur → tohum = deliv×267/t ≈ kendi-pacing-tabanı ≤31 B/s (6/6 koşuda aritmetik doğrulandı)
+  vs deneme-1-hayatta → 267/RTT ≈ 10.000 B/s. **325× tohum-uçurumu, tek 65B SACK'in kaderiyle.**
+  Açlık-tohumu DAİRESEL-ölçüm: motor kanalı değil kendi açlığını ölçüyor.
+- **Faz-3 (kendini-kilitleme):** rate=btlbw-pacing → varış-oranı → SACK-arzı (freq ACK_FREQ_N=2
+  varış-saatli; tail 2×gap varış-saatli; tek şans-bağımsız taban 8.39s-cadence) → ×0.2 →
+  hayatta-kalan ~1/20-40s → bw-örnekleri 31-279 → rate düşük kalır. İki dal arası arz-oranı
+  ≈120× = bistabilite. Kader-penceresi: [t≈30ms; t≈35s]; final teslim = ENTEGRE hayatta-kalma
+  (r4: en geç çıkış 34s ama 12 sağ-SACK → 62).
+- Alternatifler sayısal DIŞLANDI: fnr=0 (açlık-koşularında), emisyon-durması yok (pacing-hızında
+  monoton), false-loss fırtınası yok (lppm≤55k, unloss=0 — TUR-2 fix'leri tutuyor).
+
+### Soru-1: dar-fix mi §3.3-E-FULL mü? — CEVAP: İKİSİ DE SAF HALİYLE DEĞİL; üç-bacaklı orta-paket
+- **E-FULL-TAM (ölçülen return_bw→cadence) P5-GATE-anahtarı DEĞİL:** (i) açlık-havzasında
+  BOOTSTRAP-DAİRESEL — sağ-çıkan dönüş-trafiği yokken return_bw ölçülemez, önsel kalır, kilit
+  sürer; (ii) impaired-dalı (N↑=daha az ACK) kayıplı-ama-geniş dönüşte TERS-YÖN; (iii) kilit
+  t≈0'da, ölçüm tanımsızken kurulur. E-FULL'ün gerçek faydası AYRI problem: çıkış-SONRASI
+  sürünme + hızlı-kanal cadence-dürüstlüğü (400× arz) → kampanya-öncesi borç OLARAK KALIR.
+- **Eski dar-fix listesi de yetmez:** tail-simetriği ZATEN yapıldı (3b-rev2) ve bimodaliteyi
+  çözmedi (ölçüldü); muafiyet-genişletme tek başına kafesi değiştirmez.
+- **Mekanizmanın talep ettiği ÜÇ BACAK (mekanizma-düzeyi; tasarım ayrı tur):**
+  1. **Dönüş-yönü deneme-yoğunluğu:** handshake/yeniden-başlama döneminde SACK-TEKRARI
+     (aynı kümülatif-SACK'in R dekorele kopyası; R=4→P(hızlı-tohum) 0.2→0.59, R=8→0.83 —
+     EN BÜYÜK TEK KALDIRAÇ) + muafiyetin sessizlik-epizodu-başına yeniden-kurulması
+     (first_ack_sent → epizot-tabanlı; DV-2 yeniden-başlamasını da AYNI hamle çözer).
+     Maliyet sınırlı: SACK=65B; INV-RATE-1'in dönüş-simetriği ruhu.
+  2. **§3.3-E MİNİMAL-TABAN (spec'te ZATEN DONUK cümle, engine-spec ~:355-359):** cadence'in
+     DATA-varış-oranıyla hızlanması — FULL'ün ölçülen-return_bw kısmı DEĞİL; donmuş minimal
+     kısmın uygulanması.
+  3. **Sender tohum-hijyeni:** gap-sonrası ilk-SACK bw-örneğinin dairesel-ölçüm sınıfı
+     (interval=deneme-gecikmesi → kendi-tabanını ölçme) — örnek-geçerlilik kapısı ailesi;
+     yanına plato-yanılgısı (izole-SACK örnekleriyle 3-olayda "yakınsadı") ve
+     supersede-sansürü (açlıkta ACK'lenen byte'ların örneksiz kalması) sender-taraf eşlikçileri.
+- Sıra-imasi: bacak-1+2 receiver-taraf tek-tur olabilir; bacak-3 estimator-turu (ZM-kurallı).
+
+### Soru-2: DV-2 köküyle aynı mı? — EVET, mekanizma-ailesi AYNI (üç lens hemfikir)
+Ortak çekirdek: seyrek-varış rejiminde SACK-yeniden-deneme arzının statik-önsel cadence'e
+kilitlenmesi + tek-atımlık/emisyon-tüketimli muafiyet. DV-2'ye ÖZGÜ ağırlaştırıcılar (kod-zeminli):
+(a) kopmada PreConverge'e YENİDEN GİRİLMEZ (sender.rs:429-436 — srtt varsa Idle→Startup, bayat
+estimator'la); (b) first_ack_sent sıfırlanmaz → yeniden-başlama muafiyetsiz; (c) last_gap
+zehirlenmesi (receiver.rs:150-152: ilk varış gap=kopma-süresi yazar → tail-eşiği 2×kopma —
+tail tam gerektiği pencerede ölü); (d) cadence-faz rehinesi (sessizlikte timer yeni-bilgi-şartsız
+emit edip last_ack_ns'i sıfırlar → dönüş anında kalan-faz rastgele).
+**AMA p5'in piyango-ekseni (dönüş-kaybı) DV-2'nin temiz-pencereli kopmasında YOK → P5-GATE
+yeniden-kanıtı fix-turu birleşse bile p5'in KENDİSİNDE koşulmalı.**
+
+### Yan-bulgular (kayda; ayrı işler)
+- **Dup-force SACK yolu ÖLÜ-YOL** (iki lens bağımsız buldu): sender her yeniden-emisyona TAZE
+  seq atar (sender.rs:1267-1268) → receiver engine-kopyasını "duplicate" göremez →
+  RX_DUP_SUPPRESS erişilmez; receiver'ın "SACK'im öldü" kanıt-kanalı YOK (spec §3.3-B copy-stop
+  referansı mevcut kablolamada kopuk). Bacak-1 tasarımının girdisi.
+- r4-dersi: kader-metriği çıkış-zamanı değil entegre-hayatta-kalma — fix-turu ölçüm-tasarımına girer.
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
