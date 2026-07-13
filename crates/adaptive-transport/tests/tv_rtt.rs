@@ -2,7 +2,7 @@
 //!
 //! Değerler PR açıklamasında adım adım türetildi (RFC 6298 EWMA; ns'de exact).
 
-use adaptive_transport::rtt::{rtt_sample, RttEstimator};
+use adaptive_transport::rtt::{apply_ack_delay, rtt_sample, RttEstimator};
 use std::time::Duration;
 
 fn dms(n: u64) -> Duration {
@@ -45,4 +45,29 @@ fn tv_rtt_golden() {
 fn tv_rtt_sample_ack_delay_untrusted() {
     assert_eq!(rtt_sample(dms(40), dms(10)), Some(dms(30)));
     assert_eq!(rtt_sample(dms(40), dms(50)), None); // ack_delay > raw → untrusted (§7.3)
+}
+
+#[test]
+fn tv_rtt_apply_ack_delay_min_rtt_guard() {
+    // [TUR-1x] RFC 9002 §5.3 semantiği: düzeltme yalnız sonuç gözlenen-min'in altına inmiyorsa.
+    // Normal düzeltme: 40−10=30 ≥ min(20) → uygulanır.
+    assert_eq!(
+        apply_ack_delay(dms(40), dms(10), Some(dms(20))),
+        (dms(30), true)
+    );
+    // min_rtt yok (ilk örnek) → düzeltme uygulanır.
+    assert_eq!(apply_ack_delay(dms(40), dms(10), None), (dms(30), true));
+    // Düzeltme min-rtt ALTINA iter (40−25=15 < 20) → RED, RAW işlenir (örnek atlanmaz).
+    assert_eq!(
+        apply_ack_delay(dms(40), dms(25), Some(dms(20))),
+        (dms(40), false)
+    );
+    // Underflow (delay > raw) → RED, RAW işlenir.
+    assert_eq!(
+        apply_ack_delay(dms(40), dms(50), Some(dms(20))),
+        (dms(40), false)
+    );
+    // Sub-ms gerçek RTT (loopback sınıfı): mutlak-taban YOK → düzeltme geçerli (ZM-2).
+    let us = Duration::from_micros(200);
+    assert_eq!(apply_ack_delay(us, Duration::ZERO, None), (us, true));
 }

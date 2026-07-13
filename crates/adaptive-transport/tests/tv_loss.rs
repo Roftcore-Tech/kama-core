@@ -41,15 +41,64 @@ fn tv_loss_g2_time_threshold_and_min_delay() {
     assert!(!time_threshold_lost(dms(8), dms(4), dms(10), 9, 8)); // 8 < 10
     assert!(time_threshold_lost(dms(12), dms(4), dms(10), 9, 8)); // 12 > 10
 
-    // stateful: min_delay explicit parametre olarak geçilir.
+    // stateful: min_delay explicit parametre + [TUR-1a] later-ACK preconditionı.
     let cfg = LossConfig {
         min_delay: dms(10),
         ..LossConfig::default()
     };
     let mut d = ThresholdLossDetector::with_config(cfg);
     d.on_sent(10, 0, 1);
-    assert!(d.detect_time_losses(ns(100), dms(100)).is_empty()); // 100 < 112.5
-    assert_eq!(d.detect_time_losses(ns(120), dms(100)), vec![10]); // 120 > 112.5
+    // [TUR-1a / D-1/1] SAF SESSİZLİK (daha yüksek seq ACK'lenmemiş): time-threshold KESİN loss
+    // SINIFLANDIRAMAZ — eşik geçilse bile boş döner (tail-recovery liveness'ın işi, §5.1).
+    assert!(d
+        .detect_time_losses(ns(120), dms(100), Duration::ZERO)
+        .is_empty()); // kanıt yok → loss yazılmaz
+    assert_eq!(d.lost_units(), 0, "saf sessizlik loss metriğini artırmaz");
+    // Kanıt gelsin: seq 11 gönderilip ACK'lenir → seq 10 için later-ACK kanıtı var.
+    d.on_sent(11, 0, 1);
+    d.on_ack(&[11]); // largest_acked=11 (packet-threshold: 11−10=1 < 3 → o yoldan kayıp değil)
+    assert!(d
+        .detect_time_losses(ns(100), dms(100), Duration::ZERO)
+        .is_empty()); // 100 < 112.5 (eşik dolmadı)
+    assert_eq!(
+        d.detect_time_losses(ns(120), dms(100), Duration::ZERO),
+        vec![10]
+    ); // kanıt + eşik → kayıp
+}
+
+#[test]
+fn tv_loss_g2b_cadence_floor_guards_evidence_path() {
+    // [TUR-1b / D-1/2] Cadence-farkında taban: later-ACK kanıtı VARKEN bile elapsed,
+    // K_c×EAI tabanını aşmadan sınıflandırma YOK ("SACK'i henüz gelmedi" ≠ "kayıp").
+    // srtt=100ms → 9/8·srtt=112.5ms; cadence_floor=3s → efektif eşik 3s.
+    let cfg = LossConfig {
+        min_delay: dms(10),
+        ..LossConfig::default()
+    };
+    let mut d = ThresholdLossDetector::with_config(cfg);
+    d.on_sent(10, 0, 1);
+    d.on_sent(11, 0, 1);
+    d.on_ack(&[11]); // kanıt: largest_acked=11
+    let floor = Duration::from_secs(3);
+    assert!(
+        d.detect_time_losses(ns(120), dms(100), floor).is_empty(),
+        "120ms > 112.5ms AMA < 3s cadence-tabanı → sınıflandırma yok"
+    );
+    assert!(
+        d.detect_time_losses(ns(2_900), dms(100), floor).is_empty(),
+        "taban sınırının hemen altı → hâlâ yok"
+    );
+    assert_eq!(
+        d.detect_time_losses(ns(3_100), dms(100), floor),
+        vec![10],
+        "taban aşıldı + kanıt var → kayıp"
+    );
+    // Taban srtt-kolunu KÜÇÜLTEMEZ: floor < 9/8·srtt ise eşik yine 9/8·srtt.
+    let mut d2 = ThresholdLossDetector::with_config(cfg);
+    d2.on_sent(20, 0, 1);
+    d2.on_sent(21, 0, 1);
+    d2.on_ack(&[21]);
+    assert!(d2.detect_time_losses(ns(100), dms(100), dms(1)).is_empty()); // 100 < 112.5 (taban etkisiz-küçük)
 }
 
 #[test]

@@ -72,8 +72,24 @@ pub struct RxOutput {
 
 /// §2.1 ACK_FREQ_N — bu kadar DATA alınınca ACK üret [CAL] (netem'den kalibre).
 const ACK_FREQ_N: u32 = 2;
-/// ack_delay u16 µs tavanı.
-const ACK_DELAY_MAX_US: u64 = u16::MAX as u64;
+/// [TUR-1x] ack_delay V2 encoded tavanı (raw u16). 65535×256µs ≈ 16.78s > cadence-floor 8.39s →
+/// timer-SACK hold'u artık satüre OLMAZ (eski µs-birim tavanı 65.5ms'ti — hold'da anında satüre,
+/// RTT düzeltmesi etkisizdi; §16.2 saat-sınıfı haritası "ack_delay" satırı).
+const ACK_DELAY_ENC_MAX: u64 = u16::MAX as u64;
+
+/// [§16.1] SACK wire boyutu (28 UDP/IP + handle4+seq2+tag16 + ACK_FRAME_V2 gövde, 0-range) — cadence türetimi.
+const SACK_WIRE_BYTES: u64 = 65;
+/// [§16.1] RETURN_BUDGET_FRACTION (Y) permil — SACK+echo dönüşü ≤ Y·return_bw. 0.25 → 250.
+const RETURN_BUDGET_PERMIL: u64 = 250;
+/// [K2/§3.3-E] cold-start return_bw önseli (B/s); worst-corner 0.25 kbps = 31.25 B/s → 31 (int floor).
+const RETURN_BW_PRIOR: u64 = 31;
+/// [K2/R1/R15/§3.3-E/§12] ACK_CADENCE cold-start floor = sack_wire/(Y·return_bw_önsel) ≈ 8.4s.
+/// TIMER-SACK'ları bununla seyrekleşir: kbps'te sabit 20ms tick → SACK-seli/self-congestion (19s-lag);
+/// throttle bunu keser. Frequency-yolu (§2.1, on_datagram) DATA-oranıyla eşleşir → hızlı kanalda responsive
+/// kalır (timer yalnız tail backstop). İlk timer-SACK cadence-exempt ([R1]); return_bw öğrenilince FULL
+/// adaptif hızlanma D2 sonrası (§3.3-E). Sabit const → ADR-17 determinizm (RNG yok).
+const ACK_CADENCE_FLOOR_NS: u64 =
+    SACK_WIRE_BYTES * 1_000_000_000 * 1000 / (RETURN_BUDGET_PERMIL * RETURN_BW_PRIOR);
 
 /// Receiver state machine (§4). rx-set + SACK üretimi; `on_datagram` / `on_ack_timer` ile sürülür.
 pub struct Receiver {
@@ -86,6 +102,10 @@ pub struct Receiver {
     ack_epoch: u8,
     since_last_ack: u32,
     ack_freq: u32,
+    last_ack_ns: u64,     // [K2/§12] son SACK emit anı (timer cadence gate kaynağı)
+    first_ack_sent: bool, // [R1] ilk SACK cadence-exempt: henüz SACK yollanmadıysa timer hemen emit eder
+    ack_delay_saturated: u64, // [TUR-1x] encoded==65535 sayısı (hold > 16.78s — audit; beklenen 0)
+    seen_total: u32, // [§2.2 V2 ölçüm eki] görülen TÜM datagram (birim+kopya+shard; saturating)
 }
 
 impl Receiver {
@@ -102,11 +122,18 @@ impl Receiver {
             ack_epoch: 0,
             since_last_ack: 0,
             ack_freq: ACK_FREQ_N,
+            last_ack_ns: 0,
+            first_ack_sent: false,
+            ack_delay_saturated: 0,
+            seen_total: 0,
         }
     }
 
     /// §4 on_datagram: VERIFIED datagram'ı işle → teslim + belki ACK.
     pub fn on_datagram(&mut self, d: RxDatagram, now_ns: u64) -> RxOutput {
+        // [§2.2 V2] seen_count: HER görülen datagram sayılır (dup/shard DAHİL) — sender'ın
+        // "seen vs sent" yön-ayrımlı kayıp kıyası için (K3 cold-start).
+        self.seen_total = self.seen_total.saturating_add(1);
         // Duplicate (zaten alınmış seq) → RX_DUP_SUPPRESS: teslim etme, yalnız ACK teyidi (§9.4).
         if self.received.contains(&d.seq) {
             self.state = RxState::DupSuppress;
@@ -145,12 +172,19 @@ impl Receiver {
         }
     }
 
-    /// §12 ACK_TIMER: zamanlayıcı ile ACK üret (frekans dolmasa da).
+    /// §12 ACK_TIMER: zamanlayıcı ile ACK üret (frekans dolmasa da). [K2/R1/§3.3-E/§12] cadence-limitli:
+    /// İLK SACK henüz yollanmadıysa cadence-exempt (hemen — client PRE_CONVERGE'den hızlı çıksın); yollandıysa
+    /// son SACK'ten `ACK_CADENCE_FLOOR_NS` geçmeden timer-SACK BASTIRILIR (kbps 20ms-sabit SACK-seli/19s-lag
+    /// önlenir). Frequency-yolu (§2.1) DATA-oranıyla eşleştiğinden hızlı kanalda responsive kalır.
     pub fn on_ack_timer(&mut self, now_ns: u64) -> Option<AckFrame> {
         if !self.have_recv {
             return None;
         }
+        if self.first_ack_sent && now_ns.saturating_sub(self.last_ack_ns) < ACK_CADENCE_FLOOR_NS {
+            return None;
+        }
         self.since_last_ack = 0;
+        self.record_ack_emit(now_ns);
         self.build_ack(now_ns)
     }
 
@@ -180,26 +214,52 @@ impl Receiver {
         u64::try_from(self.received.len()).unwrap_or(u64::MAX) < span
     }
 
-    /// §2.1 ACK-tetik: DATA sayacı ACK_FREQ'e ulaştıysa (ya da `force`) ACK üret.
+    /// §2.1 ACK-tetik: DATA sayacı ACK_FREQ'e ulaştıysa (ya da `force`) ACK üret. Frequency-yolu cadence
+    /// ile GATE'lenmez (DATA-oranıyla eşleşir → self-limiting) ama `last_ack_ns`'i günceller → timer bunu
+    /// backstop olarak referans alır (freq-SACK cadence'i sıfırlar → timer hemen tekrarlamaz).
     fn tick_ack(&mut self, now_ns: u64, force: bool) -> Option<AckFrame> {
         self.since_last_ack += 1;
         if force || self.since_last_ack >= self.ack_freq {
             self.since_last_ack = 0;
+            self.record_ack_emit(now_ns);
             self.build_ack(now_ns)
         } else {
             None
         }
     }
 
+    /// [K2/R1/§12] SACK emit muhasebesi — timer cadence gate'i beslemek için son emit anını + ilk-SACK
+    /// bayrağını günceller. Her GERÇEK SACK emisyonu (freq/force/timer) buradan geçer.
+    fn record_ack_emit(&mut self, now_ns: u64) {
+        self.last_ack_ns = now_ns;
+        self.first_ack_sent = true;
+    }
+
     /// SACK ACK'i rx-set'ten kur (§2) — [`AckFrame::from_received`] gruplamayı yapar.
-    fn build_ack(&self, now_ns: u64) -> Option<AckFrame> {
-        let ack_delay_us = now_ns
+    ///
+    /// [TUR-1x, Seçenek-A] ack_delay FLOOR-encoding: `encoded = min(floor(delay_us/256), 65535)`.
+    /// Floor → receiver kendi delay'ini ŞİŞİRMEZ (decoded ≤ gerçek) → sender'ın path-RTT'si fazla
+    /// KÜÇÜLMEZ. Satürasyon (hold > 16.78s) audit-sayacına yazılır — beklenen 0 (cadence 8.39s).
+    fn build_ack(&mut self, now_ns: u64) -> Option<AckFrame> {
+        let delay_us = now_ns
             .saturating_sub(self.largest_recv_ns)
             .checked_div(1000)
-            .unwrap_or(0)
-            .min(ACK_DELAY_MAX_US) as u16;
+            .unwrap_or(0);
+        let encoded = (delay_us / crate::ack::ACK_DELAY_UNIT_US).min(ACK_DELAY_ENC_MAX);
+        if encoded == ACK_DELAY_ENC_MAX {
+            self.ack_delay_saturated += 1;
+        }
         let received: Vec<u64> = self.received.iter().copied().collect();
-        AckFrame::from_received(&received, self.ack_epoch, ack_delay_us)
+        // arrival_rate: receiver bu artımda BOYUT görmüyor (RxDatagram size taşımaz) → ölçüm YOK →
+        // sentinel (§2.2 zeyli: 0xFFFF = "ölçüm yok/üst-bantta, ipucu olarak KULLANMA"). K3
+        // tüketicisi bağlandığında gerçek pencere-oranı ölçümüyle değiştirilir.
+        AckFrame::from_received(
+            &received,
+            self.ack_epoch,
+            encoded as u16,
+            self.seen_total,
+            crate::ack::ARRIVAL_RATE_SENTINEL,
+        )
     }
 
     // ── gözlemciler ──
@@ -218,6 +278,11 @@ impl Receiver {
     #[must_use]
     pub fn largest_seq(&self) -> Option<u64> {
         self.have_recv.then_some(self.largest_seq)
+    }
+    /// [TUR-1x] ack_delay satürasyon sayısı (encoded==65535; hold > 16.78s) — SALT-GÖZLEM audit.
+    #[must_use]
+    pub fn ack_delay_saturated(&self) -> u64 {
+        self.ack_delay_saturated
     }
 }
 
@@ -289,9 +354,68 @@ mod tests {
     fn ack_delay_reflects_elapsed_since_largest() {
         let mut r = Receiver::new();
         r.on_datagram(data(0, 100), 0);
-        // largest (seq0) 0'da alındı; ACK timer 5ms sonra → ack_delay ≈ 5000µs.
+        // largest (seq0) 0'da alındı; ACK timer 5ms sonra → [TUR-1x] V2 floor-encoding:
+        // floor(5000µs/256)=19 → decoded 19×256µs=4.864ms (floor: şişirme YOK, decoded ≤ gerçek).
         let ack = r.on_ack_timer(5 * MS).expect("ACK");
-        assert_eq!(ack.ack_delay, 5000, "ack_delay = 5ms = 5000µs");
+        assert_eq!(ack.ack_delay, 19, "encoded = floor(5000/256)");
+        assert_eq!(
+            ack.ack_delay_duration(),
+            std::time::Duration::from_micros(19 * 256)
+        );
+        assert_eq!(r.ack_delay_saturated(), 0);
+    }
+
+    #[test]
+    fn ack_delay_large_hold_not_saturated_and_saturation_counted() {
+        // [TUR-1x] Cadence-hold 8.4s ESKİ µs-biriminde satüreydi (65.5ms tavan); V2 256µs-biriminde
+        // gerçek değeriyle taşınır. Tavan 16.78s ÜSTÜ hold → satüre + audit-sayacı.
+        let mut r = Receiver::new();
+        r.on_datagram(data(0, 100), 0);
+        let a0 = r.on_ack_timer(8_400 * MS).expect("ilk timer-SACK exempt");
+        assert_eq!(a0.ack_delay, 32812, "floor(8.4e6µs/256) — satüre DEĞİL");
+        assert_eq!(r.ack_delay_saturated(), 0);
+        // 28.4s hold (> 16.78s tavan) → encoded 65535 + sayaç. (Cadence: 20s > floor → emit olur.)
+        let a1 = r.on_ack_timer(28_400 * MS).expect("cadence doldu");
+        assert_eq!(a1.ack_delay, u16::MAX, "tavan üstü → satüre");
+        assert_eq!(r.ack_delay_saturated(), 1, "satürasyon audit'e yazılır");
+    }
+
+    #[test]
+    fn ack_timer_first_exempt_then_cadence_throttled() {
+        // [R1/K2/§3.3-E] İlk timer-SACK cadence-exempt (hemen); sonrakiler ACK_CADENCE_FLOOR ile seyrek.
+        let mut r = Receiver::new();
+        r.on_datagram(data(0, 100), 0); // 1 DATA (freq'e ulaşmaz → on_datagram SACK üretmez)
+        let a0 = r
+            .on_ack_timer(20 * MS)
+            .expect("[R1] ilk timer-SACK cadence-exempt → hemen emit");
+        assert_eq!(a0.largest_seq, 0);
+        // Cadence dolmadan gelen timer'lar → BASTIRILIR (kbps 20ms SACK-seli önlenir; §12).
+        assert!(
+            r.on_ack_timer(40 * MS).is_none(),
+            "cadence dolmadı (20ms<8.4s) → timer-SACK bastırıldı"
+        );
+        assert!(
+            r.on_ack_timer(500 * MS).is_none(),
+            "hâlâ cadence içinde → timer-SACK bastırıldı"
+        );
+        // ACK_CADENCE_FLOOR (~8.4s) sonrası → tekrar emit (tail backstop).
+        let a1 = r
+            .on_ack_timer(9_000 * MS)
+            .expect("cadence sonrası timer-SACK yine emit");
+        assert_eq!(a1.largest_seq, 0);
+    }
+
+    #[test]
+    fn freq_ack_resets_timer_cadence() {
+        // Frequency-yolu SACK (on_datagram) da last_ack'i günceller → timer backstop hemen tekrarlamaz.
+        let mut r = Receiver::new();
+        r.on_datagram(data(0, 100), 0);
+        let f = r.on_datagram(data(1, 101), 10 * MS); // freq=2 → SACK, last_ack=10ms, first_ack_sent=true
+        assert!(f.ack.is_some(), "freq dolunca SACK");
+        assert!(
+            r.on_ack_timer(30 * MS).is_none(),
+            "freq-SACK cadence'i sıfırladı (20ms<8.4s) → timer-SACK bastırıldı"
+        );
     }
 
     #[test]

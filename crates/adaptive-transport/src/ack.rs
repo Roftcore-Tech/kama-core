@@ -1,10 +1,12 @@
 //! TV-ACK: SACK feedback frame (engine spec §2), fixed-width big-endian (varint YASAK).
 //!
-//! Wire layout (9 B sabit + 4 B × range_count):
+//! Wire layout — V2 0x14 (EMIT, §2.2; 15 B sabit + 4 B × range_count):
 //! ```text
-//! frame_type u8=0x10 · ack_epoch u8 · largest_seq u16 · ack_delay u16 ·
-//! block0_len u16 · range_count u8 · ranges[]{ gap u16, len u16 }
+//! frame_type u8=0x14 · ack_epoch u8 · largest_seq u16 · ack_delay u16(256µs) ·
+//! block0_len u16 · range_count u8 · ranges[]{ gap u16, len u16 } ·
+//! seen_count u32 · arrival_rate u16
 //! ```
+//! V1 0x10 (yalnız DECODE-uyumluluk; 9 B + 4 B × range): aynı baş, ack_delay µs, ölçüm eki YOK.
 //! Descending reconstruction (engine §2):
 //! ```text
 //! cursor = largest_seq − block0_len + 1                 (block0'ın alt ucu)
@@ -13,11 +15,21 @@
 //! u16 wrap: aritmetik mod 2^16 (wrapping); `ack_epoch` yalnız rekey sınırını
 //! disambiguate eder — u16 sarması epoch değişimi DEĞİLDİR.
 
+use std::time::Duration;
+
 use crate::error::TransportError;
 use crate::read::Reader;
 
-/// Transport-control frame_type: ACK (engine spec §1.1).
+/// Transport-control frame_type: ACK **V1** (engine spec §1.1) — `ack_delay` birimi **µs**.
+/// [TUR-1x] DECODE-uyumluluk için tutulur; EMIT artık [`FRAME_TYPE_ACK_V2`] (µs u16 tavanı 65.5ms,
+/// sub-kbps cadence-hold'unda anında satüre → RTT düzeltmesi etkisizdi).
 pub const FRAME_TYPE_ACK: u8 = 0x10;
+/// Transport-control frame_type: ACK **V2** (§2.2, 15B gövde) [TUR-1x, Seçenek-A]:
+/// `ack_delay` birimi **256µs** (tavan 65535×256µs ≈ 16.78s > ACK_CADENCE_FLOOR 8.39s) +
+/// ölçüm eki (`seen_count` u32, `arrival_rate` u16 — K3 cold-start yön-ayrımı).
+pub const FRAME_TYPE_ACK_V2: u8 = 0x14;
+/// V2 `ack_delay` birimi (µs) [STD: Seçenek-A kararı, time-model-v1 D-4/1].
+pub const ACK_DELAY_UNIT_US: u64 = 256;
 
 /// ACK range üst sınırı. `[CAL]` — netem baseline'dan (ADR-18) kalibre edilecek;
 /// magic-number olmasın diye isimlendirildi (engine spec §2.1).
@@ -39,13 +51,28 @@ pub struct AckFrame {
     pub ack_epoch: u8,
     /// Alınan en yüksek seq (bu epoch, u16 wire).
     pub largest_seq: u16,
-    /// µs — `largest_seq` alımı → bu ACK gönderimi (RTT düzeltmesi).
+    /// RAW wire değeri — `largest_seq` alımı → bu ACK gönderimi (RTT düzeltmesi). Birim frame
+    /// versiyonuna bağlı: V2 (0x14) → 256µs [TUR-1x], V1 (0x10) → µs. [`Self::ack_delay_duration`]
+    /// ile çöz; raw değeri doğrudan µs sayma.
     pub ack_delay: u16,
     /// En üstteki ardışık-alınan blok uzunluğu (`largest_seq` dahil).
     pub block0_len: u16,
     /// Ek gap+blok çiftleri (descending); en çok [`MAX_ACK_RANGES`].
     pub ranges: Vec<AckRange>,
+    /// [TUR-1x] wire versiyonu: `true` → 0x14 (ack_delay 256µs + V2 ölçüm eki), `false` → 0x10
+    /// (µs, yalnız decode-uyumluluk).
+    pub v2: bool,
+    /// [§2.2 V2 ölçüm eki] Görülen toplam DATA datagram'ı (birim+kopya; saturating u32).
+    /// Sender kendi gönderdiğiyle kıyaslar: seen≪sent = forward-loss, seen≈sent ama SACK yok =
+    /// return-loss (K3 cold-start yön-ayrımı). V1 decode'da 0 (alan yok).
+    pub seen_count: u32,
+    /// [§2.2 V2 ölçüm eki] Receiver-gözlemli pencere-oranı (B/s). [`ARRIVAL_RATE_SENTINEL`] =
+    /// ölçüm YOK ya da üst-bantta — cold-start ipucu olarak KULLANILMAZ. V1 decode'da sentinel.
+    pub arrival_rate: u16,
 }
+
+/// [§2.2] `arrival_rate` sentinel: ölçüm yok / üst-bantta → ipucu olarak kullanma.
+pub const ARRIVAL_RATE_SENTINEL: u16 = 0xFFFF;
 
 impl AckFrame {
     /// Alınan full-counter seq kümesinden bir ACK kurar.
@@ -56,7 +83,13 @@ impl AckFrame {
     /// en yüksek seq'ler korunacak şekilde [`MAX_ACK_RANGES`] ile clamp'lenir
     /// (engine spec §2.1). Boş girdide `None`.
     #[must_use]
-    pub fn from_received(received_full: &[u64], ack_epoch: u8, ack_delay: u16) -> Option<Self> {
+    pub fn from_received(
+        received_full: &[u64],
+        ack_epoch: u8,
+        ack_delay: u16,
+        seen_count: u32,
+        arrival_rate: u16,
+    ) -> Option<Self> {
         if received_full.is_empty() {
             return None;
         }
@@ -103,7 +136,18 @@ impl AckFrame {
             ack_delay,
             block0_len,
             ranges,
+            v2: true, // [TUR-1x] emit daima V2 (0x14, 15B gövde §2.2); V1 yalnız decode-uyumluluk.
+            seen_count,
+            arrival_rate,
         })
+    }
+
+    /// [TUR-1x] `ack_delay` raw wire değerini süreye çözer (V2 → ×256µs, V1 → ×1µs).
+    /// Floor-encoding V2'de encode-tarafındadır → decode şişirme yapmaz (delay ≤ gerçek).
+    #[must_use]
+    pub fn ack_delay_duration(&self) -> Duration {
+        let unit_us = if self.v2 { ACK_DELAY_UNIT_US } else { 1 };
+        Duration::from_micros(u64::from(self.ack_delay) * unit_us)
     }
 
     /// Acknowledge edilen full-counter seq kümesini rekonstrükte eder — [`Self::from_received`]'in
@@ -138,14 +182,19 @@ impl AckFrame {
     }
 
     /// Canonical fixed-width big-endian byte'lara serialize eder.
+    /// V2 (0x14): 15B sabit + 4B×range (§2.2 ölçüm eki dahil); V1 (0x10): 9B + 4B×range.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         debug_assert!(
             self.ranges.len() <= MAX_ACK_RANGES,
             "range sayısı MAX_ACK_RANGES'i aşıyor"
         );
-        let mut out = Vec::with_capacity(9 + 4 * self.ranges.len());
-        out.push(FRAME_TYPE_ACK);
+        let mut out = Vec::with_capacity(15 + 4 * self.ranges.len());
+        out.push(if self.v2 {
+            FRAME_TYPE_ACK_V2
+        } else {
+            FRAME_TYPE_ACK
+        });
         out.push(self.ack_epoch);
         out.extend_from_slice(&self.largest_seq.to_be_bytes());
         out.extend_from_slice(&self.ack_delay.to_be_bytes());
@@ -154,6 +203,11 @@ impl AckFrame {
         for r in &self.ranges {
             out.extend_from_slice(&r.gap.to_be_bytes());
             out.extend_from_slice(&r.len.to_be_bytes());
+        }
+        if self.v2 {
+            // §2.2 V2 ölçüm eki (fixed-width; opsiyonel alan YOK).
+            out.extend_from_slice(&self.seen_count.to_be_bytes());
+            out.extend_from_slice(&self.arrival_rate.to_be_bytes());
         }
         out
     }
@@ -168,7 +222,8 @@ impl AckFrame {
     pub fn decode(buf: &[u8]) -> Result<Self, TransportError> {
         let mut r = Reader::new(buf);
         let ft = r.u8()?;
-        if ft != FRAME_TYPE_ACK {
+        // [TUR-1x] V2 (0x14, 256µs) VE V1 (0x10, µs — uyumluluk) kabul; layout aynı.
+        if ft != FRAME_TYPE_ACK && ft != FRAME_TYPE_ACK_V2 {
             return Err(TransportError::UnknownFrameType(ft));
         }
         let ack_epoch = r.u8()?;
@@ -182,6 +237,13 @@ impl AckFrame {
             let len = r.u16_be()?;
             ranges.push(AckRange { gap, len });
         }
+        let v2 = ft == FRAME_TYPE_ACK_V2;
+        // §2.2 V2 ölçüm eki; V1'de alan yok → nötr değerler (0 / sentinel).
+        let (seen_count, arrival_rate) = if v2 {
+            (r.u32_be()?, r.u16_be()?)
+        } else {
+            (0, ARRIVAL_RATE_SENTINEL)
+        };
         if r.remaining() != 0 {
             return Err(TransportError::TrailingBytes {
                 count: r.remaining(),
@@ -193,6 +255,9 @@ impl AckFrame {
             ack_delay,
             block0_len,
             ranges,
+            v2,
+            seen_count,
+            arrival_rate,
         })
     }
 }
@@ -217,7 +282,7 @@ mod tests {
     fn acked_full_roundtrips_from_received() {
         // Alınan set (gaps 8,9,11): from_received → encode → decode → acked_full == set.
         let recv = [5u64, 6, 7, 10, 12, 13];
-        let f = AckFrame::from_received(&recv, 0, 100).expect("nonempty");
+        let f = AckFrame::from_received(&recv, 0, 100, 6, ARRIVAL_RATE_SENTINEL).expect("nonempty");
         let bytes = f.encode();
         let f2 = AckFrame::decode(&bytes).expect("decode");
         let mut got = f2.acked_full(14); // expected = largest+1
@@ -228,7 +293,7 @@ mod tests {
     #[test]
     fn acked_full_single_contiguous_block() {
         let recv = [100u64, 101, 102, 103];
-        let f = AckFrame::from_received(&recv, 0, 0).expect("nonempty");
+        let f = AckFrame::from_received(&recv, 0, 0, 4, ARRIVAL_RATE_SENTINEL).expect("nonempty");
         assert!(f.ranges.is_empty(), "tek blok → range yok");
         let mut got = f.acked_full(104);
         got.sort_unstable();
@@ -243,7 +308,37 @@ mod tests {
             ack_delay: 0,
             block0_len: 0,
             ranges: Vec::new(),
+            v2: true,
+            seen_count: 0,
+            arrival_rate: ARRIVAL_RATE_SENTINEL,
         };
         assert!(f.acked_full(1).is_empty(), "block0_len 0 → boş");
+    }
+
+    #[test]
+    fn ack_delay_unit_per_version() {
+        // [TUR-1x] Aynı raw değer: V2 → ×256µs, V1 → ×1µs (decode-uyumluluk).
+        let mut f =
+            AckFrame::from_received(&[1], 0, 100, 1, ARRIVAL_RATE_SENTINEL).expect("nonempty");
+        assert!(f.v2, "emit daima V2");
+        assert_eq!(f.ack_delay_duration(), Duration::from_micros(100 * 256));
+        f.v2 = false;
+        assert_eq!(f.ack_delay_duration(), Duration::from_micros(100));
+    }
+
+    #[test]
+    fn decode_v1_frame_type_compat() {
+        // V1 golden byte'ları (0x10, 9B gövde — ölçüm eki YOK) hâlâ decode edilir; µs semantiği.
+        let mut bytes = AckFrame::from_received(&[5, 6, 7], 0, 40, 3, ARRIVAL_RATE_SENTINEL)
+            .expect("nonempty")
+            .encode();
+        assert_eq!(bytes[0], FRAME_TYPE_ACK_V2, "emit V2");
+        bytes[0] = FRAME_TYPE_ACK;
+        bytes.truncate(9); // V1 gövdesi 9B — V2 ölçüm eki V1'de taşınmaz.
+        let f = AckFrame::decode(&bytes).expect("V1 decode-uyumlu");
+        assert!(!f.v2);
+        assert_eq!(f.ack_delay_duration(), Duration::from_micros(40));
+        assert_eq!(f.seen_count, 0, "V1'de alan yok → nötr");
+        assert_eq!(f.arrival_rate, ARRIVAL_RATE_SENTINEL);
     }
 }

@@ -19,6 +19,16 @@ pub struct RawEvent {
     pub payload_bytes: u64,
 }
 
+/// tx wire byte'larının bileşen ayrımı (teşhis dekompozisyonu — D2: fix ÖNCESİ/SONRASI aynı format).
+/// `data`=yeni DATA, `retx`=ARQ retransmit (§9), `dup`=forward duplication (§11). Toplam = udp_tx_bytes.
+/// quinn bunu ayırt etmez → `default()` (tümü 0); yalnız kama doldurur.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TxComponents {
+    pub data: u64,
+    pub retx: u64,
+    pub dup: u64,
+}
+
 /// Bir koşunun (profil × CC × seed × repeat) metadata + connection-level wire sayaçları.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunMeta {
@@ -44,6 +54,9 @@ pub struct RunMeta {
     pub udp_tx_bytes: u64,
     /// Toplam UDP rx byte (dönüş yolu yükü).
     pub udp_rx_bytes: u64,
+    /// tx wire byte bileşen ayrımı (teşhis; kama doldurur, quinn=default). [D2]
+    #[serde(default)]
+    pub tx: TxComponents,
 }
 
 /// Bir koşunun tüm çıktısı: meta + ham eventler.

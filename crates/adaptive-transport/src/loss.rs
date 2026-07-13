@@ -57,7 +57,15 @@ pub trait LossDetector {
     /// ACK işle; yeni packet-threshold kayıplarını (artan seq) döner.
     fn on_ack(&mut self, acked: &[u64]) -> Vec<u64>;
     /// Time-threshold kayıplarını `now`da ilan et; yeni-kayıp seq'leri döner.
-    fn detect_time_losses(&mut self, now_ns: u64, srtt: Duration) -> Vec<u64>;
+    /// [TUR-1b D-1/2] `cadence_floor` = beklenen-ACK-aralığı türevi dinamik taban:
+    /// eşik = max(num/den·srtt, min_delay, cadence_floor) — eşiğin saati elapsed'in
+    /// içindeki ACK-bekleme sınıfını da temsil eder (ZM-4).
+    fn detect_time_losses(
+        &mut self,
+        now_ns: u64,
+        srtt: Duration,
+        cadence_floor: Duration,
+    ) -> Vec<u64>;
     /// Recovery sonrası kurtarılamayan birim bildir (residual_loss'u besler).
     fn on_unrecovered(&mut self, units: u64);
     /// loss_pre_fec = lost/sent (ppm; recovery ÖNCESİ).
@@ -175,14 +183,32 @@ impl LossDetector for ThresholdLossDetector {
         lost
     }
 
-    fn detect_time_losses(&mut self, now_ns: u64, srtt: Duration) -> Vec<u64> {
+    fn detect_time_losses(
+        &mut self,
+        now_ns: u64,
+        srtt: Duration,
+        cadence_floor: Duration,
+    ) -> Vec<u64> {
+        // [TUR-1a / D-1/1] LATER-ACK PRECONDITION (RFC 9002 §6.1'in atlanmış yarısı): time-threshold
+        // KESİN kayıp sınıflandırması YALNIZ "daha yüksek seq ACK'lendi" kanıtıyla (seq < largest_acked).
+        // Saf sessizlik loss metriğini ARTIRMAZ — sessizlikte tail-recovery liveness'ın işi (§5.1
+        // ack_confidence → RECOVER_FWD spekülatif kopya; loss-sınıflandırması DEĞİL). Bu olmadan
+        // SACK-cadence gecikmesi (K-1) temiz kanalda sistematik false-loss üretiyordu (ölçüldü: 27/27).
+        // [TUR-1b / D-1/2] CADENCE-FARKINDA TABAN: kanıt olsa bile elapsed, beklenen-ACK-aralığı
+        // türevi tabanı (K_c×EAI) aşmadan sınıflandırma YOK — "SACK'i henüz gelmemiş" ile "kayıp"
+        // ayrımı (eşik ile elapsed aynı saat-etki-alanına çekilir, ZM-4).
+        if !self.have_acked {
+            return Vec::new();
+        }
         let cfg = self.cfg;
+        let floor = cfg.min_delay.max(cadence_floor);
+        let la = self.largest_acked;
         let lost: Vec<u64> = self
             .inflight
             .iter()
-            .filter(|(_, s)| {
+            .filter(|(&seq, s)| {
                 let elapsed = Duration::from_nanos(now_ns.saturating_sub(s.send_ns));
-                time_threshold_lost(elapsed, srtt, cfg.min_delay, cfg.time_num, cfg.time_den)
+                seq < la && time_threshold_lost(elapsed, srtt, floor, cfg.time_num, cfg.time_den)
             })
             .map(|(&seq, _)| seq)
             .collect();

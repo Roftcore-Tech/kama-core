@@ -13,7 +13,7 @@ use quinn::{ClientConfig, Endpoint, ServerConfig, TransportConfig};
 use tokio::time::timeout;
 
 use crate::error::BenchError;
-use crate::event::{RawEvent, RunMeta, RunOutput};
+use crate::event::{RawEvent, RunMeta, RunOutput, TxComponents};
 use crate::transport::{BenchTransport, Cc, ClientCfg, ServerCfg};
 
 /// quinn tabanlı QUIC baseline.
@@ -166,6 +166,7 @@ impl BenchTransport for QuinnTransport {
                 max_deadline_ns: cfg.max_deadline.as_nanos() as u64,
                 udp_tx_bytes: stats.udp_tx.bytes,
                 udp_rx_bytes: stats.udp_rx.bytes,
+                tx: TxComponents::default(),
             },
             events,
         })
@@ -198,6 +199,7 @@ fn handshake_failed_output(cfg: &ClientCfg) -> RunOutput {
             max_deadline_ns: cfg.max_deadline.as_nanos() as u64,
             udp_tx_bytes: 0,
             udp_rx_bytes: 0,
+            tx: TxComponents::default(),
         },
         events,
     }

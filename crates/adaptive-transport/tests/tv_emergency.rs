@@ -50,8 +50,13 @@ fn tv_emergency_g2_min_rate_orthogonal_to_loss() {
         let fuzzy_rate = 31_250; // effective_send_rate(bw+qd) — loss girdi DEĞİL
         assert_eq!(send_rate_final(fuzzy_rate, cfg.min_rate_bps, cap), 31_250);
     }
-    // floor: rate düşükse (queue throttle) MIN_RATE floor — delay-driven, loss'tan DEĞİL.
-    assert_eq!(send_rate_final(5_000, cfg.min_rate_bps, cap), 10_000);
+    // [R2/ADIM-6] MIN_RATE = kanal-hayatta-kalma floor'u (31 B/s ürün floor'u), eski 10_000 CANCELLED.
+    // OVERDRIVE-YOK: düşük fuzzy_rate (5000, <80 kbps kanal) floor'a ÇEKİLMEZ — geçer (eski 10_000
+    // sabiti bunu 80 kbps'e zorlayıp <80 kbps kanalları floodluyordu).
+    assert_eq!(send_rate_final(5_000, cfg.min_rate_bps, cap), 5_000);
+    // KİLİT-YOK: floor altındaki rate (queue throttle çöküşü) survival floor'una çekilir (rate→0 önle).
+    assert_eq!(send_rate_final(10, cfg.min_rate_bps, cap), 31);
+    assert_eq!(cfg.min_rate_bps, 31);
 }
 
 #[test]

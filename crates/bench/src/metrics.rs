@@ -185,7 +185,7 @@ fn dur_ns(d: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{RunMeta, RunOutput};
+    use crate::event::{RunMeta, RunOutput, TxComponents};
 
     fn ev(id: u64, sent_ms: u64, delivered_ms: Option<u64>) -> RawEvent {
         RawEvent {
@@ -265,6 +265,7 @@ mod tests {
             max_deadline_ns: dur_ns(s(120)),
             udp_tx_bytes: 1000,
             udp_rx_bytes: 200,
+            tx: TxComponents::default(),
         };
         let run = RunOutput {
             meta,
