@@ -425,9 +425,24 @@ Packet kayıp SAYILIR (recovery için) eğer:
   TTL = K_tomb×T_loss(ilan-anı) [zeyl: onaylı `min(mesaj-deadline,…)` kolu motorda uygulanamaz —
   per-unit deadline engine'e taşınmıyor]; tavan TOMBSTONE_MAX, en-eski-önce eviction +
   `tombstone_evicted` audit. Geç-ACK çarparsa: kol-1 (retx_count==0) → BW-örneği NORMAL + Data'ysa
-  RTT (sansür biter — K-1 sansür-kolu kapanışı); kol-2 (retx'li, Karn-ambiguity) → örnek YOK +
-  `ambiguous_skipped` sayacı (tam kurallar TUR-2c). Süresi/tavanı dolan kaydın geç-ACK'i →
-  Expired/Unknown (örneksiz; teslim-damgası app/bench-katmanında bağımsız).
+  RTT (sansür biter — K-1 sansür-kolu kapanışı); **kol-2 [TUR-2c, NORMATİF]** (superseded —
+  retransmit EMİT edilirken orijinalin tombstone'u işaretlenir, kayıt ilan-anında DONMAZ):
+  RTT ALINMAZ + bu ACK'ten rate-örneği ÜRETİLMEZ + **delivered-KREDİSİ girer** (`credit_delivered`:
+  byte'lar wire'ı gerçekten geçti → sampler kümülatifine; gelecek örnek-delta'larına dürüst yansır)
+  + `sample_skipped_ambiguous` sayacı. ZEYL: per-transmission-seq tasarımında (retransmit YENİ seq)
+  klasik Karn-belirsizliği zayıftır — seq iletimi tekil tanımlar; kurallar yine MUHAFAZAKÂR tutulur
+  (superseded iletimin RTT'si güven-dışı). Retransmit-seq'in KENDİ ACK'i inflight-yolundan tam örnek
+  verir (belirsizlik yok). Süresi/tavanı dolan kaydın geç-ACK'i → Expired/Unknown (örneksiz;
+  teslim-damgası app/bench-katmanında bağımsız).
+  ZEYL-2 [review]: superseded-işaret TEKDÜZEDİR — birimin HERHANGİ yeniden-emisyonu (ARQ retransmit,
+  FWD-dup pending-drain, CapExceeded→HandToForward) orijinalin tombstone'unu işaretler; kol-1/kol-2
+  seçimi recovery-yoluna bağımlı OLAMAZ. Kol-2 geç-ACK'i kanonik spurious-teyididir → §9.3
+  `note_spurious` BURADAN DA beslenir (un-loss yolu yalnız retx-öncesini yakalar).
+  ZEYL-3 [review]: `delivered` WIRE-BYTE muhasebesidir (kapasite ölçümü — her iletim ayrı sayılır;
+  spurious-retransmit'te iki kopya da wire'ı geçtiyse İKİSİ de sayılır, BBR semantiği). D-1/3'ün
+  "teslimat BİR KEZ muhasebe" cümlesi BİRİM-teslim düzlemindedir (kopya-iptal + app/bench idempotent
+  damga) — iki düzlem karıştırılmaz. Kredinin delta-etkisi (başka paketin penceresine düşen kredi o
+  örneğin delta'sını büyütür) stok-BBR eşdeğeridir; interval-tarafı snapshot-eşleşmesiyle yansızdır.
 loss_pre_fec (fuzzy girdisi) = loss_windowed_ppm = Confirmed_units / pencere-içi-gönderim;
   W_loss = K_wl × ack_epoch; ack_epoch = max(corrected_srtt, EAI).  [TUR-2a — ömür-boyu
   monoton ratchet CANCELLED (K-1 fuzzy-zehirlenmesinin köküydü); ömür-boyu sayaç yalnız diag]

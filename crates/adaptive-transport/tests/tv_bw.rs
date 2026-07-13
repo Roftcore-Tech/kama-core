@@ -153,3 +153,45 @@ fn tv_bw_min_interval_and_external_invalid() {
     );
     assert_eq!(f.btlbw(), 62500);
 }
+
+#[test]
+fn tv_bw_credit_delivered_no_sample_but_future_delta() {
+    // [TUR-2c D-1/3 kol-2] credit_delivered: örnek üretmez ama kümülatif delivered'a girer →
+    // SONRAKİ gerçek örneğin delta'sına dürüst yansır (teslimat gerçekti).
+    use adaptive_transport::bw::DeliveryRateSampler;
+    let mut s = DeliveryRateSampler::new();
+    let p0 = s.on_sent(0, 1000, false);
+    let p1 = s.on_sent(ns(10), 1000, false);
+    let r0 = s.on_ack(ns(20), p0);
+    assert_eq!(r0.delivered, 1000);
+    // kol-2 kredisi: 500B superseded-iletim geç-ACK'i — örnek yok, kümülatif +500.
+    s.credit_delivered(ns(30), 500);
+    // Sonraki gerçek örnek: delta = C.delivered(2500) − p1.snapshot(0) = r0'ın 1000'i +
+    // kredi 500 + p1'in kendi 1000'i — kredi delta'da görünür (p1 gönderiminden beri teslim).
+    let r1 = s.on_ack(ns(40), p1);
+    assert_eq!(
+        r1.delivered, 2500,
+        "kredi sonraki örneğin delivered-delta'sında görünmeli"
+    );
+}
+
+#[test]
+fn tv_bw_credit_anchors_next_send_window() {
+    // [TUR-2c review-vektörü] Kredinin delivered_time_ns=now güncellemesi: krediden SONRA
+    // gönderilen paketin snapshot'ı kredi-zamanını taban alır → örneğinin ack_elapsed'i
+    // kredi-anından ölçülür (eşleşmiş pencere, yansız — güncellenmeseydi sahte-uzun interval).
+    use adaptive_transport::bw::DeliveryRateSampler;
+    let mut s = DeliveryRateSampler::new();
+    let p0 = s.on_sent(0, 1000, false);
+    s.on_ack(ns(20), p0); // delivered=1000 @20ms
+    s.credit_delivered(ns(30), 500); // kümülatif 1500 @30ms; in-flight 0'a döner
+                                     // Krediden sonra gönderim: pipe-boş → first_sent/delivered_time yeniden çıpalanır (40ms).
+    let p1 = s.on_sent(ns(40), 1000, false);
+    let r1 = s.on_ack(ns(60), p1);
+    assert_eq!(
+        r1.delivered, 1000,
+        "delta yalnız p1 (kredi ÖNCEKİ pencerede kaldı)"
+    );
+    // interval = max(ack_elapsed=60−40, send_elapsed=0) = 20ms — kredi-sonrası çıpa dürüst.
+    assert_eq!(r1.interval, std::time::Duration::from_millis(20));
+}

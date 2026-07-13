@@ -279,7 +279,8 @@ pub struct Sender {
     tombstone_evicted: u64,         // audit: kapasite-eviction
     diag_tomb_hits: u64,            // geç-ACK tombstone'a çarptı (SALT-GÖZLEM)
     diag_bw_recovered: u64,         // kol-1'den kurtarılan BW-örneği sayısı
-    diag_ambiguous_skipped: u64,    // kol-2 (retx'li) örnek-atlaması — TUR-2c formalize edecek
+    diag_ambiguous_skipped: u64, // [TUR-2c resmî] kol-2 örnek-atlaması (sample_skipped_ambiguous)
+    diag_delivered_credited: u64, // [TUR-2c] kol-2 delivered-kredisi (byte)
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
@@ -329,6 +330,7 @@ impl Sender {
             diag_tomb_hits: 0,
             diag_bw_recovered: 0,
             diag_ambiguous_skipped: 0,
+            diag_delivered_credited: 0,
             last_decision: FusionDecision {
                 fec_parity_ratio_permille: 0,
                 arq_aggressiveness_permille: 0,
@@ -425,8 +427,21 @@ impl Sender {
                         rtt_send_ns = Some(t.send_ns);
                     }
                 } else {
-                    // kol-2 (retransmit'li — Karn ambiguity): örnek YOK; tam kurallar TUR-2c.
+                    // [TUR-2c D-1/3 kol-2] Superseded iletimin geç-ACK'i: RTT YOK + rate-örneği
+                    // YOK (muhafazakâr Karn); ama DELIVERED-KREDİSİ VAR — byte'lar wire'ı
+                    // gerçekten geçti, sampler kümülatifine girer (gelecek örnek-delta'larına
+                    // dürüst yansır). Not: per-transmission seq tasarımında klasik belirsizlik
+                    // zayıftır (seq iletimi tekil tanımlar); kural yine muhafazakâr tutuldu.
+                    self.bw_sampler.credit_delivered(now_ns, t.unit.size);
+                    self.diag_delivered_credited += t.unit.size;
                     self.diag_ambiguous_skipped += 1;
+                    // [TUR-2c review-fix, §9.3] KANONİK spurious-retransmit teyidi tam bu vaka
+                    // ("retransmit'ten SONRA orijinal ACK geldi") → reorder-toleransı yükselir.
+                    // Un-loss yolu (2a) yalnız retx-ÖNCESİ geç-ACK'i yakalıyordu; kol-2 kabloyu
+                    // tamamlar. Ledger zaten Spurious'a çevirir (lppm dürüst).
+                    let la = self.loss.largest_acked().unwrap_or(seq);
+                    self.reorder
+                        .note_spurious(u32::try_from(la.saturating_sub(seq)).unwrap_or(u32::MAX));
                 }
             }
         }
@@ -782,6 +797,9 @@ impl Sender {
                         break; // token yok → sonraki tick'te (deadline plandan düşmez, §9).
                     }
                     self.pending_lost.remove(pos);
+                    // [TUR-2c D-1/3 kol-2] Orijinalin tombstone'u SUPERSEDED: retx-sonrası-
+                    // geç-orijinal-ACK kol-1'e düşemez (2b'de kayıt ilan-anında donuyordu).
+                    self.mark_tombstone_superseded(seq);
                     let new_seq = self.track_sent(
                         rec.unit,
                         now_ns,
@@ -800,6 +818,9 @@ impl Sender {
                         let rec = self.pending_lost.remove(pos).expect("pos geçerli");
                         if policy == CapExceedPolicy::HandToForward {
                             // ARQ cap doldu → forward-recovery'ye devret (§9.1 "veri ulaşsın").
+                            // [TUR-2c review-fix] devir de YENİDEN-EMİSYONDUR → superseded-işaret
+                            // (örnekleme politikası recovery-yoluna bağımlı olamaz — tekdüze kural).
+                            self.mark_tombstone_superseded(rec.seq);
                             self.dup_queue.push(DupRec {
                                 due_ns: now_ns,
                                 unit: rec.unit,
@@ -843,6 +864,10 @@ impl Sender {
         let (factor, spacing) = self.dup_params();
         let recs: Vec<LostRec> = self.pending_lost.drain(..).collect();
         for rec in recs {
+            // [TUR-2c review-fix] FWD-kopya da YENİDEN-EMİSYONDUR: orijinalin tombstone'u
+            // superseded — kol-1/kol-2 seçimi recovery-state'e göre DEĞİŞEMEZ (tekdüze
+            // muhafazakâr kural; ARQ-koluyla simetri).
+            self.mark_tombstone_superseded(rec.seq);
             for i in 0..u64::from(factor) {
                 self.dup_queue.push(DupRec {
                     due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
@@ -850,6 +875,15 @@ impl Sender {
                     interval_ns: 0, // emergency: fire-once, reschedule YOK
                 });
             }
+        }
+    }
+
+    /// [TUR-2c] Orijinal iletimin tombstone'unu SUPERSEDED işaretle (retx_count++): birimin
+    /// HERHANGİ bir yeniden-emisyonundan (ARQ retransmit / FWD dup / HandToForward) sonra
+    /// orijinalin geç-ACK'i kol-1'e (RTT + rate-örneği) düşemez — tekdüze muhafazakâr kural.
+    fn mark_tombstone_superseded(&mut self, seq: u64) {
+        if let Some(t) = self.tombstones.get_mut(&seq) {
+            t.retx_count = t.retx_count.saturating_add(1);
         }
     }
 
@@ -1065,15 +1099,17 @@ impl Sender {
             self.loss.spurious_units_total(),
         )
     }
-    /// [TUR-2b teşhis] tombstone (SALT-GÖZLEM): `(canlı, hit, bw_kurtarılan, evicted, ambiguous)`.
+    /// [TUR-2b/2c teşhis] tombstone (SALT-GÖZLEM):
+    /// `(canlı, hit, bw_kurtarılan, evicted, ambiguous, credited_bytes)`.
     #[must_use]
-    pub fn diag_tombstone(&self) -> (u64, u64, u64, u64, u64) {
+    pub fn diag_tombstone(&self) -> (u64, u64, u64, u64, u64, u64) {
         (
             self.tombstones.len() as u64,
             self.diag_tomb_hits,
             self.diag_bw_recovered,
             self.tombstone_evicted,
             self.diag_ambiguous_skipped,
+            self.diag_delivered_credited,
         )
     }
     /// Son hesaplanan forward-recovery eylemi (§11).
@@ -1378,11 +1414,11 @@ mod tests {
         }
         let srtt_before = s.rtt.srtt().expect("srtt var");
         s.on_event(ack(&[1]), 500 * MS); // GEÇ-ACK → tombstone hit
-        let (live, hits, bw_rec, evicted, ambig) = s.diag_tombstone();
+        let (live, hits, bw_rec, evicted, ambig, credited) = s.diag_tombstone();
         assert_eq!(
-            (live, hits, bw_rec, evicted, ambig),
-            (0, 1, 1, 0, 0),
-            "geç-ACK: hit + kol-1 BW-örneği kurtarılır"
+            (live, hits, bw_rec, evicted, ambig, credited),
+            (0, 1, 1, 0, 0, 0),
+            "geç-ACK: hit + kol-1 BW-örneği kurtarılır (kredi kol-2'nin işi)"
         );
         assert!(
             s.bw_sampled_since_round,
@@ -1393,6 +1429,84 @@ mod tests {
             s.rtt.srtt().expect("srtt") > srtt_before,
             "geç-ACK RTT örneği (kol-1) işlenmeli"
         );
+    }
+
+    #[test]
+    fn karn_superseded_late_ack_credits_without_samples() {
+        // [TUR-2c D-1/3 kol-2] Retransmit EMİT edildikten SONRA gelen orijinal-ACK:
+        // RTT ALINMAZ + rate-örneği ÜRETİLMEZ + delivered-KREDİSİ girer + ambiguous sayacı.
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(200)), 0); // warm-up (MTU) → BtlBw kur
+        s.on_event(ack(&[0]), 10 * MS);
+        s.on_event(Event::AppData(small(42)), 20 * MS); // seq1 = unit 42
+        for i in 1..10 {
+            s.on_event(Event::AppData(small(i)), 20 * MS); // seq2..10
+        }
+        // seq1 packet-threshold kayıp + AYNI event'te retransmit emit (mevcut test-kalıbı).
+        let out = s.on_event(ack(&[2, 3, 4, 5, 6, 7, 8, 9, 10]), 30 * MS);
+        assert!(
+            out.iter().any(|d| d.kind == TransmitKind::Retransmit),
+            "kalıp gereği retransmit emit edilmeli"
+        );
+        // Superseded işareti: tombstone(seq1).retx_count arttı → kol-1'e düşemez.
+        let srtt_before = s.rtt.srtt().expect("srtt");
+        let btlbw_before = s.btlbw.btlbw();
+        // GEÇ orijinal-ACK (seq1): kol-2.
+        s.on_event(ack(&[1]), 400 * MS);
+        let (_, hits, bw_rec, _, ambig, credited) = s.diag_tombstone();
+        assert_eq!((hits, ambig, bw_rec), (1, 1, 0), "kol-2: örneksiz hit");
+        assert!(
+            credited > 0,
+            "delivered-kredisi girmeli (byte'lar wire'ı geçti)"
+        );
+        assert_eq!(
+            s.rtt.srtt().expect("srtt"),
+            srtt_before,
+            "kol-2: RTT örneği ALINMAZ (400ms'lik sahte örnek srtt'yi bozardı)"
+        );
+        assert_eq!(
+            s.btlbw.btlbw(),
+            btlbw_before,
+            "kol-2: bu ACK'ten rate-örneği ÜRETİLMEZ"
+        );
+        // [review-fix §9.3] kanonik spurious (retx-SONRASI orijinal-ACK) reorder-toleransını yükseltir.
+        assert!(
+            s.reorder.recent_max_reorder() >= 9,
+            "kol-2 note_spurious kablosu: gözlenen mesafe (la=10 − seq=1) kaydedilmeli"
+        );
+    }
+
+    #[test]
+    fn karn_both_transmissions_acked_wire_byte_semantics() {
+        // [TUR-2c review-vektörü] Retransmit'in KENDİ ACK'i geldikten SONRA orijinal-geç-ACK:
+        // retransmit inflight-yolundan TAM örnek verir (seq iletimi tekil tanımlar); orijinal
+        // kol-2'den yalnız delivered-KREDİSİ alır. İKİ kopyanın da sayılması WIRE-BYTE
+        // muhasebesidir (kapasite ölçümü, BBR semantiği) — "teslimat BİR KEZ" BİRİM-düzlemidir
+        // (kopya-iptal + bench idempotent damga), iki düzlem karışmaz.
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS);
+        s.on_event(Event::AppData(small(42)), 20 * MS); // seq1
+        for i in 1..10 {
+            s.on_event(Event::AppData(small(i)), 20 * MS);
+        }
+        let out = s.on_event(ack(&[2, 3, 4, 5, 6, 7, 8, 9, 10]), 30 * MS);
+        let retx_seq = out
+            .iter()
+            .find(|d| d.kind == TransmitKind::Retransmit)
+            .expect("retransmit emit")
+            .seq;
+        // 1) Retransmit'in kendi ACK'i: normal inflight-yolu (örnekli).
+        s.on_event(ack(&[retx_seq]), 60 * MS);
+        let srtt_after_retx = s.rtt.srtt().expect("srtt");
+        let btlbw_after_retx = s.btlbw.btlbw();
+        // 2) Orijinal geç-ACK: kol-2 — örneksiz, KREDİLİ.
+        s.on_event(ack(&[1]), 400 * MS);
+        let (_, hits, bw_rec, _, ambig, credited) = s.diag_tombstone();
+        assert_eq!((hits, ambig, bw_rec), (1, 1, 0), "kol-2 örneksiz hit");
+        assert!(credited > 0, "wire-byte kredisi (kopya gerçekten geçti)");
+        assert_eq!(s.rtt.srtt().expect("srtt"), srtt_after_retx, "RTT değişmez");
+        assert_eq!(s.btlbw.btlbw(), btlbw_after_retx, "rate-örneği üretilmez");
     }
 
     #[test]
