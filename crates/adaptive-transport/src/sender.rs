@@ -41,7 +41,7 @@ use crate::fusion::{
 use crate::loss::{LossDetector, ThresholdLossDetector};
 use crate::pacer::{TokenBucket, DEFAULT_BURST_CAP};
 use crate::rate::{effective_send_rate, PacingPhase, SrcConfig, DEFAULT_MTU};
-use crate::rtt::{rtt_sample, RttEstimator};
+use crate::rtt::{apply_ack_delay, RttEstimator};
 
 /// Sender durumları (§3). Geçişler event-driven + deterministik.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +227,9 @@ pub struct Sender {
     // ── [TUR-A teşhis] loss-atıflama sayaçları (SALT-GÖZLEM) ──
     diag_loss_pkt: u64,
     diag_loss_time: u64,
+    // ── [TUR-1x teşhis] ack_delay/RTT-guard sayaçları (SALT-GÖZLEM) ──
+    diag_rtt_rejected: u64, // guard'a takılan sample sayısı (underflow / < MIN_RTT_FLOOR)
+    diag_ack_delay_max_us: u64, // görülen en büyük (decoded) ack_delay — V2 sadakati kanıtı
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
@@ -265,6 +268,8 @@ impl Sender {
             bw_sampled_since_round: false,
             diag_loss_pkt: 0,
             diag_loss_time: 0,
+            diag_rtt_rejected: 0,
+            diag_ack_delay_max_us: 0,
             last_decision: FusionDecision {
                 fec_parity_ratio_permille: 0,
                 arq_aggressiveness_permille: 0,
@@ -348,9 +353,16 @@ impl Sender {
         }
         if let Some(send_ns) = rtt_send_ns {
             let raw = Duration::from_nanos(now_ns.saturating_sub(send_ns));
-            if let Some(sample) = rtt_sample(raw, ack.ack_delay) {
-                self.rtt.observe(now_ns, sample);
+            self.diag_ack_delay_max_us = self
+                .diag_ack_delay_max_us
+                .max(ack.ack_delay.as_micros() as u64);
+            // [TUR-1x] min-rtt guard (RFC 9002 §5.3): düzeltme güvensizse RAW kullanılır —
+            // örnek ATLANMAZ (sample-skip = estimator açlığı, K-1 sınıfı).
+            let (sample, corrected) = apply_ack_delay(raw, ack.ack_delay, self.rtt.rtprop());
+            if !corrected {
+                self.diag_rtt_rejected += 1; // §7.3 ack_delay_untrusted (düzeltme reddi; raw işlendi)
             }
+            self.rtt.observe(now_ns, sample);
         }
 
         // §3.3-B stop koşulu: teyit edilen birimlerin bekleyen geometrik kopyalarını İPTAL et.
@@ -837,6 +849,13 @@ impl Sender {
             self.diag_loss_time,
             self.pending_lost.len() as u64,
         )
+    }
+    /// [TUR-1x teşhis] ack_delay/RTT-guard (SALT-GÖZLEM): `(rejected_samples, max_decoded_ack_delay_us)`.
+    /// V2 kodlama-sadakati kanıtı: max_us cadence-hold mertebesine (saniyeler) çıkabilmeli (eski µs-birim
+    /// tavanı 65535'te kelepçeliydi); rejected temiz kanalda ≈0 beklenir.
+    #[must_use]
+    pub fn diag_rtt(&self) -> (u64, u64) {
+        (self.diag_rtt_rejected, self.diag_ack_delay_max_us)
     }
     /// Son hesaplanan forward-recovery eylemi (§11).
     #[must_use]

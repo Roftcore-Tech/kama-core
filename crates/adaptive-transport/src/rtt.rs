@@ -117,3 +117,24 @@ impl RttEstimator {
 pub fn rtt_sample(raw_rtt: Duration, ack_delay: Duration) -> Option<Duration> {
     raw_rtt.checked_sub(ack_delay)
 }
+
+/// [TUR-1x, Seçenek-A min-rtt guard — RFC 9002 §5.3 semantiği] ack_delay düzeltmesini
+/// GÜVENLİYSE uygular: `corrected = raw − ack_delay` yalnız gözlenen min-RTT'nin (rtprop)
+/// altına İNMİYORSA kullanılır; underflow ya da min-rtt-altı → **raw kullanılır, örnek
+/// ATLANMAZ** (sample-skip estimator açlığı üretir — K-1 sınıfı; raw kendi saatimizde ölçülü
+/// güvenilir üst-sınırdır). Dönüş: `(sample, correction_applied)`.
+///
+/// NOT: mutlak wall-clock taban (1ms) 4-decade'de GEÇERSİZ çıktı — loopback/LAN gerçek RTT
+/// sub-ms; ölçümle yanlışlandı (bench loopback testi) → gözlenen-min guard'ıyla değiştirildi
+/// (ZM-2: decade-bağımlı sabit yasak).
+#[must_use]
+pub fn apply_ack_delay(
+    raw_rtt: Duration,
+    ack_delay: Duration,
+    min_rtt: Option<Duration>,
+) -> (Duration, bool) {
+    match raw_rtt.checked_sub(ack_delay) {
+        Some(c) if min_rtt.is_none_or(|m| c >= m) => (c, true),
+        _ => (raw_rtt, false),
+    }
+}

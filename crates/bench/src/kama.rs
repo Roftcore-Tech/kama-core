@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK};
+use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
 use adaptive_transport::sender::{AckInfo, Event, OpaqueUnit, Sender, Timer, TransmitKind};
 use adaptive_transport::seq::resolve_seq;
@@ -195,10 +195,12 @@ async fn client_loop(
                 let now = elapsed_ns(start);
                 let (st, btlbw, srtt_us, rate, infl) = run.sender.diag_rate();
                 let (lpkt, ltime, lpend) = run.sender.diag_loss();
+                let (rtt_rej, adly_max) = run.sender.diag_rtt();
                 eprintln!(
-                    "TRAJ t={:.1} state={:?} btlbw={} rate={} srtt_us={} infl={} sent_u={} deliv={} loss_pkt={} loss_time={} pend={}",
+                    "TRAJ t={:.1} state={:?} btlbw={} rate={} srtt_us={} infl={} sent_u={} deliv={} loss_pkt={} loss_time={} pend={} rtt_rej={} adly_max_us={}",
                     now as f64 / 1e9, st, btlbw, rate, srtt_us, infl,
-                    run.tx_data / unit_wire.max(1), run.delivered_count, lpkt, ltime, lpend
+                    run.tx_data / unit_wire.max(1), run.delivered_count, lpkt, ltime, lpend,
+                    rtt_rej, adly_max
                 );
             }
             _ = pace.tick() => {
@@ -212,7 +214,8 @@ async fn client_loop(
             r = sock.recv_from(&mut buf) => {
                 let Ok((n, _from)) = r else { continue }; // recv hatası → yoksay (deadline sınırlar).
                 run.rx_bytes += n as u64;
-                if n < 1 || buf[0] != FRAME_TYPE_ACK {
+                // [TUR-1x] V2 (0x14, 256µs) + V1 (0x10, µs) kabul — decode versiyona göre çözer.
+                if n < 1 || (buf[0] != FRAME_TYPE_ACK && buf[0] != FRAME_TYPE_ACK_V2) {
                     continue;
                 }
                 let Ok(frame) = AckFrame::decode(&buf[..n]) else { continue };
@@ -230,7 +233,7 @@ async fn client_loop(
                 }
                 // sender'ı besle: inflight boşalt + RTT/BW + ARQ/fwd recovery (bench delivered'ı KENDİ damgaladı).
                 run.drive(
-                    Event::AckReceived(AckInfo { acked_seqs: acked, ack_delay: Duration::from_micros(u64::from(frame.ack_delay)) }),
+                    Event::AckReceived(AckInfo { acked_seqs: acked, ack_delay: frame.ack_delay_duration() }),
                     now, &sock, cfg.server, &payload,
                 ).await;
             }

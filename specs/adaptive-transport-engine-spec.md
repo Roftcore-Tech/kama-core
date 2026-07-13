@@ -117,6 +117,9 @@ ACK_FRAME {                     # içeriği transport üretir; client↔hub Nois
   ack_epoch     : u8            # rekey/counter-wrap epoch (largest_seq bu epoch'ta)
   largest_seq   : u16_be        # alınan en yüksek seq (bu epoch)
   ack_delay     : u16_be        # µs; largest_seq alımı → bu ACK gönderimi (RTT düzeltmesi, §6)
+                                # [TUR-1x] V1 EMIT EDİLMEZ (yalnız decode-uyumluluk): µs u16 tavanı
+                                # 65.5ms sub-kbps ACK-hold'unda anında doyar → §6 düzeltmesi çalışamaz
+                                # (§16.2 satırı). EMIT = V2 (§2.2, 256µs).
   block0_len    : u16_be        # en üstteki ardışık-alınan blok uzunluğu (largest dahil)
   range_count   : u8            # EK gap+blok çifti sayısı (0 = yalnız cumulative/block0)
   ranges[range_count] {
@@ -151,7 +154,10 @@ Farklı ack_epoch → farklı key domain; cross-epoch ACK reddedilir.
 ```
 - ACK-tetik: max(ACK_FREQ_N alınan DATA, ACK_TIMER_T) hangisi önce (§12).   [CAL]
 - range_count ≤ MAX_ACK_RANGES; taşarsa en yeni (en yüksek seq) bloklar öncelik.   [CAL: MAX_ACK_RANGES ~16]
-- ack_delay = now − largest_seq_recv_time (µs).
+- ack_delay = now − largest_seq_recv_time. [TUR-1x] V2 encoding (NORMATİF, D-4/1 Seçenek-A):
+  `encoded = min(floor(delay_us/256), 65535)` (FLOOR — receiver kendi delay'ini ŞİŞİRMEZ, decoded ≤
+  gerçek → sender path-RTT'si fazla küçülmez); `encoded==65535` → satürasyon audit-sayacı
+  (`ack_delay_saturated`, beklenen 0: tavan 16.78s > ACK_CADENCE_FLOOR 8.39s).
 - Reverse-path impaired (ack_confidence LOW) → ACK decimation (§11): ACK_FREQ artar, ACK-only budget düşer.
 ```
 
@@ -165,15 +171,19 @@ ACK_FRAME_V2 {
   frame_type    : u8       # 0x14   (§1.1 tabloda 0x14; 0x14-0x1F boştu, çakışma YOK)
   ack_epoch     : u8
   largest_seq   : u16_be
-  ack_delay     : u16_be   # µs
+  ack_delay     : u16_be   # [TUR-1x, D-4/1 Seçenek-A] birim 256µs (tavan 65535×256µs ≈ 16.78s >
+                           #   cadence-floor 8.39s). Floor-encoding + satürasyon-sayacı §2.1'de.
+                           #   µs-birim YALNIZ V1'dedir (V1 emit edilmez, decode-uyumluluk).
   block0_len    : u16_be
   range_count   : u8       # ≤ MAX_ACK_RANGES (16)
   ranges[range_count] { gap:u16_be; len:u16_be }
   # ── V2 ölçüm eki ──
   seen_count    : u32_be   # görülen toplam DATA (birim+kopya) → sender kendi gönderdiğiyle kıyaslar:
                            #   seen≪sent = forward-loss; seen≈sent ama SACK gelmiyor = return-loss (p5 ayrımı)
-  arrival_rate  : u16_be   # receiver-gözlemli pencere-oranı B/s (ilk bw örneği). Doygunluk sentinel:
-                           #   0xFFFF = "ölçüm üst-bantta, cold-start ipucu olarak anlamsız" (yeterlilik ölçüt)
+  arrival_rate  : u16_be   # receiver-gözlemli pencere-oranı B/s (ilk bw örneği). Sentinel 0xFFFF =
+                           #   "ölçüm YOK ya da üst-bantta — cold-start ipucu olarak KULLANMA".
+                           #   [TUR-1x zeyli] Mevcut artımda receiver datagram BOYUTU görmez → daima
+                           #   sentinel emit edilir; gerçek pencere-oranı K3 tüketicisiyle bağlanır.
 }
 # 15B sabit + 4B×range_count. Noise üstü, authenticated (§0.2 outer-AEAD güvenlik katmanı).
 # arrival_rate pencere-oranı (packet-pair DEĞİL — cold-start'ta gürültüye dayanıklı yeterli).
@@ -439,6 +449,12 @@ gelince silence sıfırlanır). Somut `ACK_SILENCE_MULT` [CAL] netem baseline'da
 ```
 Girdi: her acked paket için rtt_sample = ack_recv_time − pkt.send_time − ack.ack_delay
        (ack_delay çıkarılır; negatifse ack_delay untrusted → sample invalid, §7.3)
+       [TUR-1x] min-rtt guard (RFC 9002 §5.3 semantiği, NORMATİF): düzeltme yalnız
+       `raw − ack_delay ≥ gözlenen_min_rtt (rtprop)` ise uygulanır; underflow ya da min-rtt-altı
+       → RAW sample işlenir, örnek ATLANMAZ (sample-skip = estimator açlığı, K-1 sınıfı YASAK).
+       Bozuk/kötü ack_delay path-RTT'yi gözlenen-min altına çökertEMEZ. Saat-sınıfı: gözlenen-min
+       (kanal-türevi) — mutlak wall-clock taban (1ms) 4-decade'de GEÇERSİZ çıktı (loopback gerçek
+       RTT sub-ms; bench loopback ÖLÇÜMÜYLE yanlışlandı) → CANCELLED, ZM-2 örneği.
 
 srtt / rttvar (RFC 6298 türevi, EWMA):
   ilk sample: srtt = rtt_sample;            rttvar = rtt_sample / 2
@@ -888,6 +904,8 @@ Tunable'lar [CAL] → baseline ölçümünden sonra vektörlere GERÇEK değerle
 | `BURST_WINDOW` [R3-ADIM6] | burst_cap = clamp(rate·BURST_WINDOW, 1 birim, ~2×MTU); bant-kör 2×MTU dump CANCELLED | tüm bw (4-decade) | 40 ms |
 | refill precision [R1-ADIM6] | sub-byte kesir-kalan taşınır; per-tick tamsayı-truncation (rate<1000 B/s'te stall) YASAK | tüm bw | ns-ölçek integer |
 | `sack_wire` [R15] | 28(UDP/IPv4)+22(handle4+seq2+tag16)+ACK_FRAME_V2 gövde(15+4·range), 0 range | tüm bw | 65B |
+| `ACK_DELAY_UNIT` [TUR-1x] | V2 ack_delay birimi; tavan 65535×birim ≈ 16.78s > ACK_CADENCE floor 8.39s (satürasyon beklenmez, sayaçla denetlenir) | tüm bw (4-decade: floor-encoding hızlı kanalda ≤256µs yuvarlama = ihmal) | 256 µs [STD-karar D-4/1] |
+| min-rtt guard [TUR-1x] | `raw−ack_delay ≥ rtprop` değilse düzeltme REDDedilir, RAW işlenir (örnek atlanmaz; §6/§7.3, RFC 9002 §5.3). **CANCELLED:** mutlak `MIN_RTT_FLOOR=1ms` — loopback sub-ms gerçek RTT'de tüm örnekleri reddedip estimator açlığı yaptı (ZM-2 ihlali, bench-loopback ölçümü) | tüm bw (4-decade: gözlenen-min kanal-türevi) | — (sabitsiz) |
 | `RTT_floor(unit)` | (unit_wire+sack_wire)/floor_bw + PROP_MARGIN | pace edilen taban | 256B@0.25k≈11.9s; 64B@1k≈1.43s |
 | `k_base` (COPY_BASE_FACTOR) [R1] | >1; ilk-SACK cadence-exempt → RTT_floor ilk-SACK modeli. Fallback (exempt değilse): ≥1+ACK_CADENCE/RTT_floor | tüm bw | 1.3-1.5 |
 | `COPY_MULTIPLIER` | geometrik backoff (RFC 6298 analoğu) | tüm bw | 2 [STD] |
@@ -930,7 +948,7 @@ ZM-4  Karşılaştırmanın İKİ YANI aynı saati kullanmalı (örn. loss-thres
 | startup_plateau round | sender.rs | ~~event-count~~ → bw-örneği (TUR-A ölçüm değişikliği) | 3 ms'de STEADY → app-limited kilit (ölçüldü) | RTT-round (delivered-anchor); re-entry'de sayaç sıfırla |
 | W_BTLBW=10s | bw.rs:12 | wall-clock ("~10 RTT" değil) | 0.8-3.3 RTT → btlbw 88→4 çöküşü (ölçüldü); 0.25k'da pencere ACK arası boşalır → btlbw=0 | max(10s, k·srtt) veya örnek-sayısı |
 | W_RTPROP=10s | rtt.rs:16 | wall-clock | 1-4 örnek; 10s+ SACK boşluğunda tek örneğe düşer → rtprop=şişkin RTT | max(10s, k·srtt) |
-| ack_delay wire u16 µs (65.5ms tavan) | receiver.rs/ack.rs | wall-clock tavan | 8.4s ACK-hold 65.5ms'e doyar → RTT örneği ~8.3s şişer (§6 düzeltmesi çalışamaz) | SPEC-SEVİYE: saniye-yetenekli encoding (exponent) |
+| ack_delay wire u16 µs (65.5ms tavan) | receiver.rs/ack.rs | ~~wall-clock tavan~~ → **FIXED [TUR-1x]**: V2 0x14 256µs-birim (tavan 16.78s), floor-encoding + satürasyon-sayacı + MIN_RTT_FLOOR guard | (eski) 8.4s ACK-hold 65.5ms'e doyardı → RTT örneği ~8.3s şişerdi; ölçüm-2: 1.43s hold decoded+subtracted, rtt_rej=0 | ✓ saniye-yetenekli encoding (D-4/1 Seçenek-A) |
 | ACK_CADENCE_FLOOR (RETURN_BW_PRIOR=31 const) | receiver.rs:89 | derleme-zamanı prior (statik 8.39s) | 1kbps'te 4× fazla throttle (2.1s yeterli); K-1'i besler | ölçülen return_bw'den adaptif (§3.3-E FULL) |
 | DrainRtprop dwell | sender update_state `_=>Steady` | event-count(1) | probe 1 ms yaşar → rtprop HİÇ yenilenmez | ölçüm-kapılı çıkış (≥1 RTT / min-rtt örneği) |
 | emergency escalate adımı | emergency.rs update() | event-count (çağrı başına) | 1ms pompada Arq→Dup3 2 ms'de (merdiven fiilen binary) | adım-başına RTT-türevi dwell |
