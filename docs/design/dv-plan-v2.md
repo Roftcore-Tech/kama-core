@@ -1,8 +1,10 @@
-# DV-PLAN v1 — Gerçek-Dünya Doğrulama: üç eksen (Abkarada talimatı, 2026-07-13)
+# DV-PLAN v2 — Gerçek-Dünya Doğrulama: üç eksen (Abkarada talimatı, 2026-07-13)
 
-> **Statü:** ONAYLI PLAN (TUR-3c-sonrası talimat). Yürütme sırası: önce motor-temel (TUR-4
-> dahil), sonra DV-1 → DV-2 → DV-3. Her DV-turu: beklenti-kaydı ÖNCE; tek-eksen; bulgu çıkarsa
-> TEŞHİS (fix ayrı karar). Kampanya-öncesi kapanmalı.
+> **Statü:** ONAYLI PLAN (TUR-4-sonrası senkronizasyon). v1→v2: dört senkron-patch işlendi
+> (P5-GATE sırası fuzzy'den çıkarıldı; DV-3 iki-profile bölündü; DV-1 matrisine 0.25k-anchor+500k;
+> FNR borcu DV-2'ye + byte-cap kapsam-kilidi). Yürütme: motor-temel (TUR-4 ✓) → iki determinizm-
+> kilidi + P5-GATE → DV-1 → DV-2 → DV-3. Her DV: beklenti-kaydı ÖNCE; tek-eksen; bulgu=TEŞHİS
+> (fix ayrı karar). Kampanya-öncesi kapanmalı.
 
 ## Kritik çerçeve (kayda, aynen)
 
@@ -25,7 +27,9 @@ Durum: 0.25k + 1k yoğun test edildi; ProbeUp-sonrası btlbw-kaçış çalışı
 zor noktada test edip gerçek-hedef bölgeyi atlıyoruz.
 
 ### DV-1 (4-decade + hedef-bölge)
-Mevcut fix'leri **{0.05k, 0.1k, 1k, 2k, 5k, 10k, 100k, 900k}** noktalarında koş. İki soru:
+Mevcut fix'leri **{0.05k, 0.1k, 0.25k, 1k, 2k, 5k, 10k, 100k, 500k, 900k}** noktalarında koş.
+0.25k = yeni-keşif-noktası DEĞİL, **bit-özdeş referans/anchor** (yeni decade'leri eski-anchor'a
+bağlar). 500k eklendi (üst-uç regresyon sorusu 500k/900k'yı soruyordu, 500k matriste yoktu). İki soru:
 - (a) [CAL] sabitleri (K_CONV/K_bw/K_c/K_TAIL/...) her decade'de geçerli mi, yoksa
   formül-doğru-ama-sabit-bir-decade'de-bozuluyor mu?
 - (b) **Üst-uç regresyon:** srtt-fix + qd→min 500k/900k'da eski-davranışa dönüyor mu, regresyon mu?
@@ -49,8 +53,17 @@ p6-blackout (2s-pencere/8s-kopuk) + h4-jammer-pulse + YENİ "çoğunlukla-kopuk"
 - (b) 8s-sessizlik sonrası ilk-SACK srtt-fix tarafından doğru mu yorumlanıyor ("8s = kayıp" mı
   sanıyor — D-1'in kökü aralıklıda geri döner mi)?
 - (c) restore_burst kopma-sonrası spike üretiyor mu?
+- (d) **FNR/W_loss borcu (TUR-4'ten taşındı):** W_loss payda-çürümesi nedeniyle oluşan anlık
+  windowed-lppm sıçramalarında fnr/zero-weight ziyaretlerini say. Özellikle RecoverFwd sırasında
+  `pend>0` ile çakışma var mı kaydet. TUR-4'te bu bölge davranışsal-nötrdü (RecoverFwd ∧ pend=0);
+  aralıklı-koşulda pend>0 çakışması görülürse **davranışsal bulgu aç, bu turda fix UYGULAMA.**
 - **Beklenti-kaydı önce.** Motorun EN ÇOK fark yaratacağı (rakip handshake-kuramaz) ama en az
   test-edilmiş senaryosu.
+
+**Byte-cap kapsam-kilidi (kayda):** Byte-cap DV-1'in bağımsız kalibrasyon değişkeni DEĞİLDİR;
+MIN_CWND ile aynı mekanizma-ailesinde, son kalibrasyon fazında ele alınacaktır (ProbeUp gain'i
+byte-cap'e bağlı çıkmadı — kuyruksuz kanalda Little-tavanı 2×btlbw > 1.25×btlbw; tek etkileşim
+MIN_CWND-maskesi, ölçüldü).
 
 ## Eksen-3: Rejim-geçişi — TASARLANMADI; test yok; en kırılgan halka; gerçek-dünyada EN SIK
 
@@ -60,19 +73,37 @@ Risk: btlbw 400k'ya adapte olmuşken kanal aniden 3k'ya düşerse motor eski-yü
 eder mi (MIN_RATE-faciasının tersi)? Adaptif-formüller teoride destekliyor ama KESKİN geçiş hiç
 düşünülmedi.
 
-### DV-3 (rejim-geçişi)
-Dinamik-profil — tek koşuda bant **{400k → 3k → 0(kopma) → 8k}** basamakları, her basamakta N sn. Ölç:
-- (a) Keskin-düşüşte (400k→3k) flood var mı; yeni-banda yakınsama süresi?
-- (b) Keskin-çıkışta (3k→400k) ProbeUp yeni-headroom'u buluyor mu; ne kadar sürede?
-- (c) Kopma→dönüşte PRE_CONVERGE/estimator-reset doğru mu?
+### DV-3 (rejim-geçişi) — İKİ kontrollü profil (saha-gerçekçiliği ve geçiş-stresi karışmasın)
+Test-tasarımı kuralı: her ölçüm-sorusu profilde GERÇEKTEN VAR OLAN bir geçişe bağlı olmalı
+(v1'de 3k→400k sorusu vardı ama profilde o geçiş yoktu — düzeltildi).
+
+**DV-3A — saha-yolu (gerçekçilik):** `400k → 3k → 0(kopma) → 8k`, her basamakta N sn. Ölç:
+- (a) Keskin-DÜŞÜŞte (400k→3k) flood var mı; yeni-banda yakınsama süresi?
+- (b) Kopma→dönüşte (0→8k) PRE_CONVERGE/estimator-reset doğru mu?
+
+**DV-3B — simetrik-geçiş stresi (estimator/ProbeUp izolasyonu):** `3k → 400k → 3k`, her basamakta N sn. Ölç:
+- (c) Keskin-ÇIKIŞta (3k→400k) ProbeUp yeni-headroom'u buluyor mu; ne kadar sürede?
+- (d) Geri-DÜŞÜŞte (400k→3k) eski-yüksek-btlbw ile flood var mı (MIN_RATE-faciasının tersi);
+  estimator yeni-daralmaya ne kadar sürede uyuyor?
+
 - Muhtemelen YENİ tasarım-kararı gerektirir (estimator'ın "kanal-değişti" tespiti) — çıkarsa
-  ADIM-6-sonrası mini-faz olarak KAYDET; bu turda SADECE ölç+teşhis, fix DEĞİL.
+  ADIM-6-sonrası mini-faz olarak KAYDET; bu turlarda SADECE ölç+teşhis, fix DEĞİL.
 
 ## Sıra ve kapsam
 
-1. **Önce motor-temel bitsin:** TUR-4 (fuzzy — P5-GATE dar-IQR son-mührü, p5-determinizmi).
-   Bitmeden DV-turları erken (kirli-zeminde aralıklı/geçiş ölçmek atıf-karıştırır).
-2. **Sonra DV-1 → DV-2 → DV-3** (bant → aralıklı → geçiş; kolaydan-kırılgana).
+1. **TUR-4 fuzzy TAMAMLANDI.** Golden'lar bit-özdeş, 30 suite + clippy temiz. **Dar-IQR kabulü
+   fuzzy kapsamından ÇIKARILMIŞTIR** (TUR-4 onu kapatamadı ve kapsam gereği kapatamazdı — ölçümle
+   dekompoze, atıf-düzeltmesi). Kalan iki determinizm-kilidi fuzzy-DIŞI, DV-1'den ÖNCE kapanmalı:
+   - **(i) dönüş-yolundaki ilk-SACK-şansı.** ÖNCE AYRIŞTIR (Abkarada şartı): bu kilit
+     §3.3-E-FULL-tam-decimation mı gerektiriyor, yoksa dar-bir-fix (ilk-SACK-cadence-muafiyeti,
+     tail-simetriği) mi yeter? Dar-fix yetiyorsa oraya bağlanır; tam-decimation gerçekten
+     gerekiyorsa GEREKÇE gösterilir (neden dar-fix yetmez). **Not:** bu kilit DV-2'nin
+     (aralıklı, kopma-sonrası-ilk-SACK) kökeniyle AYNI olabilir — öyleyse DV-2 hem gerçek-dünya
+     doğrulaması hem P5-GATE-kilidi olur (iki amaç tek tur); ayrıştırma bunu netleştirir.
+   - **(ii) conf-LOW RecoverFwd dilimi** (ayrı, muhtemelen daha küçük fix).
+   - Bu ikisi kapandığında **P5-GATE mühürlenir.** Sonra DV-1.
+2. **Sonra DV-1 → DV-2 → DV-3** (bant → aralıklı → geçiş; kolaydan-kırılgana). (i)-ayrıştırması
+   DV-2'yi öne çekebilir — ilk-SACK-şansı = DV-2-kökü ise özel dikkat.
 3. Her DV: beklenti-kaydı önce; bulgu = teşhis (fix ayrı karar); DV-2/DV-3 muhtemelen yeni
    bulgu/tasarım açar — kaydet, aceleyle fix'leme.
 4. **Kampanya-bağı:** DV-2/DV-3 sonuçları r5'in h-profillerini (h1-h6) besler — rejim-geçişi
