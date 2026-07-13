@@ -201,11 +201,12 @@ async fn client_loop(
                 let pif = run.sender.diag_pif();
                 let (ps, pa, pt, pp) = run.sender.diag_probe();
                 let (rtprop_us, qd_us) = run.sender.diag_qd();
+                let fnr = run.sender.diag_fuzzy_no_rule();
                 eprintln!(
-                    "TRAJ t={:.1} state={:?} btlbw={} rate={} srtt_us={} infl={} sent_u={} deliv={} loss_pkt={} loss_time={} pend={} rtt_rej={} adly_max_us={} unloss={} lppm={} tomb={}/{}/{}/{}/{}/{} pif={} rtprop_us={} qd_us={} probe={}/{}/{}/{}",
+                    "TRAJ t={:.1} state={:?} btlbw={} rate={} srtt_us={} infl={} sent_u={} deliv={} loss_pkt={} loss_time={} pend={} rtt_rej={} adly_max_us={} unloss={} lppm={} tomb={}/{}/{}/{}/{}/{} pif={} rtprop_us={} qd_us={} probe={}/{}/{}/{} fnr={}",
                     now as f64 / 1e9, st, btlbw, rate, srtt_us, infl,
                     run.tx_data / unit_wire.max(1), run.delivered_count, lpkt, ltime, lpend,
-                    rtt_rej, adly_max, unloss, lppm, tomb_live, tomb_hit, bw_rec, tomb_ev, ambig, credited, pif, rtprop_us, qd_us, ps, pa, pt, pp
+                    rtt_rej, adly_max, unloss, lppm, tomb_live, tomb_hit, bw_rec, tomb_ev, ambig, credited, pif, rtprop_us, qd_us, ps, pa, pt, pp, fnr
                 );
             }
             _ = pace.tick() => {

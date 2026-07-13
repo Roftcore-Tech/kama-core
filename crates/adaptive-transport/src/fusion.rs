@@ -15,6 +15,30 @@
 /// Per-mille birim (0..=1000) — membership derecesi ve oran çıktıları (float yok).
 pub const PERMILLE: u32 = 1000;
 
+/// [TUR-4] Sabit-nokta log2: `ilog2(x)·256 + 8-bit lineer-mantissa-kesri`. Bandwidth
+/// membership'inin DOMAIN dönüşümü — 31 B/s–1 MB/s+ (4.5 decade) tek membership-ölçeğine
+/// oturur (mutlak-lineer eşikler sub-kbps'te bw.low≡1 dejenerasyonu üretiyordu, §16.2).
+///
+/// Taşmasız kesir (workflow-bulgusu: naif `(x−2^e)·256 >> e` e≥56'da u64 taşırır —
+/// release'te non-monoton, debug'da panik = ADR-17 ihlali):
+/// `e≥8: frac=(x>>(e−8)) & 0xFF` ; `e<8: frac=(x<<(8−e)) & 0xFF` (e<8'de EXACT).
+/// `x=0 → 0` (ilog2(0) tanımsız/panik). Monotonluk: tüm u64'te non-decreasing; e>8'de
+/// strict DEĞİL (~2-4‰ merdiven — trapezoid rampalarında kabul edilebilir, dokümante).
+/// Kesme-noktaları AYNI fonksiyondan üretilir (offline-float hardcode YASAK — bit-özdeşlik).
+#[must_use]
+pub const fn log2_fp(x: u64) -> u64 {
+    if x == 0 {
+        return 0;
+    }
+    let e = x.ilog2() as u64;
+    let frac = if e >= 8 {
+        (x >> (e - 8)) & 0xFF
+    } else {
+        (x << (8 - e)) & 0xFF
+    };
+    e * 256 + frac
+}
+
 /// Trapezoidal membership: μ(x) per-mille (0..=1000). μ = min(rise, fall).
 /// Shoulder: `a==b` → sol-omuz (rise sabit 1000), `c==d` → sağ-omuz (fall sabit 1000).
 #[must_use]
@@ -107,6 +131,17 @@ impl VarThresholds {
             high: self.high.mu(x),
         }
     }
+
+    /// [TUR-4] Domain-örtüsü invariantı: ∀x: max(μL,μM,μH)>0. Komşu setler KESİN-örtüşmeli
+    /// (`>`; `≥` YETMEZ — trap kenarları dışlayıcı: low.d==med.a noktasında x=low.d için
+    /// μL=0 ∧ μM=0 = tek-nokta zero-weight deliği, workflow-bulgusu). Sol-omuz LOW (0'dan
+    /// kapsar) + sağ-omuz HIGH (∞'a kapsar) yapısal şart.
+    #[must_use]
+    pub fn covers_domain(&self) -> bool {
+        let left_shoulder = self.low.a == 0 && self.low.b == 0;
+        let right_shoulder = self.high.c == u64::MAX && self.high.d == u64::MAX;
+        left_shoulder && right_shoulder && self.low.d > self.med.a && self.med.d > self.high.a
+    }
 }
 
 /// Fuzzy motor yapılandırması — 5 girdinin membership eşikleri + consequent seviyeleri.
@@ -166,10 +201,19 @@ impl FuzzyConfig {
                 med: mid(200_000, 300_000, 500_000, 600_000),
                 high: shoulder_high(500_000, 600_000),
             },
+            // [TUR-4] bandwidth DOMAIN'i log2_fp — RE-DOMAINING ONLY: kesme-noktaları
+            // (50k/100k/150k/200k B/s) KORUNUR ki sr1-throttle/emergency/compress tetik-alanları
+            // DEĞİŞMESİN (tek-değişken); sub-kbps decade-ayrıştırma kalibrasyonu DV-1'in işi
+            // (kanıtla, placeholder'la değil). Değerler AYNI const fn'den — hardcode YASAK.
             bandwidth: VarThresholds {
-                low: shoulder_low(50_000, 100_000),
-                med: mid(50_000, 100_000, 150_000, 200_000),
-                high: shoulder_high(150_000, 200_000),
+                low: shoulder_low(log2_fp(50_000), log2_fp(100_000)),
+                med: mid(
+                    log2_fp(50_000),
+                    log2_fp(100_000),
+                    log2_fp(150_000),
+                    log2_fp(200_000),
+                ),
+                high: shoulder_high(log2_fp(150_000), log2_fp(200_000)),
             },
             jitter: VarThresholds {
                 low: shoulder_low(100_000, 200_000),
@@ -238,6 +282,10 @@ pub struct FusionDecision {
     pub compress: bool,
     /// Recovery modu.
     pub mode: Mode,
+    /// [TUR-4] HİÇBİR FEC/ARQ kuralı ateşlemedi → sıfır-ağırlık fallback kullanıldı
+    /// (fec=fec_zero, arq=arq_light). Gözlemlenebilirlik bayrağı (workflow-bulgusu:
+    /// fallback çıktısı R1-baskın çıktıyla bayt-özdeş — sayaçsız ölçülemez).
+    pub no_rule: bool,
 }
 
 /// Füzyon karar portu (clean-arch). SRC/engine loop kararı bunun üzerinden okur.
@@ -274,7 +322,9 @@ impl FusionController for DeterministicFuzzyController {
 
         // 1) Fuzzification — her crisp girdi → LOW/MED/HIGH dereceleri.
         let loss = c.loss.fuzzify(inputs.loss_ppm);
-        let bw = c.bandwidth.fuzzify(inputs.bandwidth_bps);
+        // [TUR-4] bw DOMAIN dönüşümü: membership log2_fp-ölçeğinde (eşikler de aynı ölçekte).
+        // DİKKAT domain-karışması: bandwidth eşikleri log-fp (≤~16k), diğer 4 değişken HAM birim.
+        let bw = c.bandwidth.fuzzify(log2_fp(inputs.bandwidth_bps));
         let jitter = c.jitter.fuzzify(inputs.jitter_ppm);
         let qd = c.queue_delay.fuzzify(inputs.qd_ratio_permille);
         let ackc = c.ack_confidence.fuzzify(inputs.ack_confidence_permille);
@@ -295,8 +345,23 @@ impl FusionController for DeterministicFuzzyController {
             // R4: loss LOW ∧ jitter HIGH → fec=0, arq=light (reorder-tolerant ≈ düşük agresiflik)
             (loss.low.min(jitter.high), c.fec_zero, c.arq_light),
         ];
-        let fec = weighted_average(rules.iter().map(|&(w, level, _)| (w, level)));
-        let arq = weighted_average(rules.iter().map(|&(w, _, level)| (w, level)));
+        // [TUR-4] SIFIR-AĞIRLIK FALLBACK: kural-kesişim delikleri (ölçülmüş sınıf: lppm≥300k
+        // ∧ sub-kbps → loss.low=0 ∧ bw.med/high=0 → 4 kural da 0-ağırlık → payda-0 → arq=0 →
+        // pending SONSUZA DEK drain edilmez) → muhafazakâr-taban fec_zero + arq_light.
+        // BEYAN: arq consequent'leri ≥arq_light olduğundan arq==0 artık üretilemez —
+        // arq.plan()'ın ==0 baskılama-dalı yapısal-erişilmez (§9 sözleşme-notu spec'te).
+        // fec=0 tabanı: delikler kural-gradyanının parity-niyetini DEVRALMAZ (recovery-obsesif
+        // tabanda ARQ-ekseni muhafazakâr; FEC-ekseni statüko) — bilinçli, DV-2'de yeniden okunur.
+        let total_weight: u64 = rules.iter().map(|&(w, _, _)| u64::from(w)).sum();
+        let no_rule = total_weight == 0;
+        let (fec, arq) = if no_rule {
+            (c.fec_zero, c.arq_light)
+        } else {
+            (
+                weighted_average(rules.iter().map(|&(w, level, _)| (w, level))),
+                weighted_average(rules.iter().map(|&(w, _, level)| (w, level))),
+            )
+        };
 
         // 3) send_rate_gain — §5.4 loss-decoupling: YALNIZ bw + queue_delay.
         //    SR1: bw LOW ∧ queue_delay HIGH → sr_low ; tümleyen ağırlık → sr_high (throttle yok).
@@ -322,6 +387,7 @@ impl FusionController for DeterministicFuzzyController {
             send_rate_gain_permille: send_rate_gain,
             compress,
             mode,
+            no_rule,
         }
     }
 }
