@@ -276,6 +276,130 @@ dwell/drain ölçümleri srtt-SAATİYLE yapılacak, kirli saatle sözleşme öl�
 Alternatif (üç-commit'li tek 3b: srtt + Drain + DrainRtprop) daha az PR ama üç büyük-değişken tek
 turda — önermiyorum.
 
+## 0.15 TUR-3b TASARIM-KAYDI (Drain state-makinesi; ultracode-niyetli — haftalık subagent-limiti
+nedeniyle İNLİNE derin-analiz + beyan, 3a.5-emsali)
+
+**p5-çerçevesi (talimat, beklenti-kaydına):** {11,24,100,100,100,100} P5-GATE HAREKETİ, GEÇİŞİ DEĞİL —
+hâlâ bimodal (IQR 11→100); srtt-fix şanslı-mod FREKANSINI artırdı, açlık-modunu ÖLDÜRMEDİ.
+Açlık-modunun yapısal ölümü = ProbeUp (3c). "srtt p5'i çözdü" yanlış-umudu YASAK; {11,24} aksinin kanıtı.
+
+**(i) Startup-exit DRAIN fazı (BBR-analog; β-bulgusu doğrudan girdi):**
+- Yeni state `Drain`: Startup-plato → Drain → Steady (eski: direkt Steady → overfill Steady'ye taşınıyordu).
+- Gain = Startup'ın tersi: 1000/2885 [STD:BBR drain=1/high_gain]. PacingPhase::Drain + Gain::DRAIN.
+- ÇIKIŞ (byte-karşılaştırma — saat-sınıfsız, ZM-temiz): `inflight_bytes ≤ BDP(btlbw×rtprop)`
+  → Steady; YEDEK: elapsed ≥ K_drain_max×ack_epoch [CAL {2,3,4} başlangıç 3] → Steady (liveness;
+  ACK-açlığında sonsuz-Drain yok). Emergency/pending öncelikleri Drain'i kesebilir (mevcut sıra).
+- ZM-beyanı: dwell kanal-zamanlı (ack_epoch); tetik byte-eşiği (saat-bağımsız).
+**(ii) DrainRtprop SÖZLEŞMESİ (D-2/3 onaylı formülle):**
+- GİRİŞ: RtpropProbe-tick + Steady + **rtprop-penceresi-doluşu** (min-örneğin yaşı ≥ W_rtprop/2
+  [CAL kesir]; 200ms-sabit-tick tetikçiliği biter — pencere tazeliği kanal-saatli).
+- ÇIKIŞ-İNVARİANTI (onaylı): `(elapsed ≥ min_dwell ∧ qualifying_min_rtt_örneği) ∨ elapsed ≥ max_dwell`;
+  min_dwell=1×ack_epoch, max_dwell=3×ack_epoch [CAL]. VERIFIED N=0 bulgusu (aynı-event çıkış +
+  ProbeDown-gain hiç uygulanmıyor) kapanır.
+**(iii) Tüketici-8 EAI-tabanı (3a.5-devri):** sessizlik-eşiği = max(3×srtt_t, K_CONF_EAI×EAI);
+K_CONF_EAI=2 [CAL {1,2,3}] — srtt_t hızlı-düşüşünün sahte-LOW-conf/erken-RecoverFwd riski kapanır.
+**İZLENEN-BORÇ (yeni, §3.7'ye):** Little-kolu fixture-min_cwnd'iyle MASKELİ (3a.5-α'da bağlamadı;
+yarı-2 öngörüm aşırı-temkindi) — MIN_CWND kalibrasyonu (SON'da) gelince kol yeniden görünebilir.
+
+**Beklenti-kaydı (ölçümden önce; talimat: 3b-tırmanışı vs 3c-kalanı AYRIMI):**
+- commit-A (ii): temiz-1k DEĞİŞMEZ (45; sözleşme-doğruluğu — birim-vektörler taşır; DrainRtprop
+  artık gerçek dwell yaşar, ProbeDown-gain fiilen uygulanır).
+- commit-B (i): **3b-tırmanışı = overfill kesilir** → kuyruk-israfı düşer → temiz-1k 45→46-49 bandı;
+  **3c'ye kalan = app-limited ramp**: btlbw 102'de kilitli kalır (plato app-limited), kanal-tavanı
+  (~125B/s → 50-53 birim) ProbeUp'sız VURULAMAZ. "3b tavana varmadı" okuması YANLIŞ olur — beklenen.
+- commit-C (iii): temiz-1k nötr; p5-açlıkta ÇİFT-YÖNLÜ risk (geç-RecoverFwd → daha az spekülatif dup:
+  açlık-teslimi düşebilir DE yükselebilir DE — dürüst belirsizlik, iki-mod ayrı ölçülür).
+- Doğrulama: temiz-1k ≥45 KORUNUR ∧ TIRMANIR; smoke p4/p5×6 aynı-era; tam-matris PR-öncesi.
+
+## 0.16 TUR-3b ÖLÇÜM-KAYDI — commit-A ✓; commit-B'de YAPISAL-BULGU, DUR-noktası
+
+**commit-A (9051164, DrainRtprop sözleşmesi):** temiz-1k 45 DEĞİŞMEDİ ✓ (tahmin). N=0 öldü;
+birim-vektörler: giriş-reddi/dwell/invariant. Test-yazımında 3a.5-β'nın canlı-kanıtı: qualifying-ack
+büyük örneği srtt'yi kuantum-döngüyle taşıyıp min_dwell'i büyüttü (dürüst estimator hareketi).
+
+**commit-B (da44cf0 + 2×BDP ayarı; Startup-Drain):** temiz-1k 45→43 — beklenti (46-49) YANLIŞTI ve
+sapmanın dekompozisyonu TURUN ASIL DERSİ: **ayakta-kuyruk varken kanal ZATEN %100 doluydu — drain
+teslimi ARTIRMAZ, kuyruğu öldürür.** Teslim-kaybı SONDAN: kuyruk ölünce (t≈90; son-faz srtt=3.09s≈
+rtprop, qd=0 — CENNET-zemin) Steady rate=102 < kanal-125 → app-limited-kilit son ~30s'de kanalı AÇ
+bırakıyor (≈−2.6 birim). **ESKİ 45, ayakta-kuyruğun app-limited-kilidi MASKELEMESİYLE geliyordu** —
+3b maskeyi soydu (D-1/D-2 maske-soyma serisinin devamı), açığa çıkan hırsız = 3c'nin tam hedefi
+(btlbw 102→~125 ramp). Drain-hedef ayarı (BDP→2×BDP) süreyi değiştirmedi (fizik aynı). Latency-
+faydası BU bench-metriğinde görünmez (sent_ns=app-offer; hepsi t0'da → pacing-dwell domine) —
+dürüst kayıt: drain'in ölçülebilir kazanımı dürüst-zemin + bench-dışı sınıflar (geç-katılan trafik,
+blackout-taşıma riski).
+
+**→ KARAR (Abkarada, 2026-07-13): (a) commit-B KALIR** — belgeli −2 (43), 3c kuyruk-maskesiz
+temiz-zeminde. (b) RED: sahte-kuyruk-zemin 3c'yi kirletir + Drain 3c'yle iki-değişken (şişkin-
+rtprop-maskesi reddiyle aynı sınıf). (c) RED: yarım-maske, tam-maskeden beter. **Maske-soyma
+serisinin 4.'sü olarak kayıtlı:** D-1 (parazit 100→24) → 3a (rtprop → 34) → 3a.5-β (overfill) →
+3b (kuyruk-drain → app-limited-kilit). Desen: maske soyulur → sayı geçici düşer → altındaki kilit
+çıkar → kilit ZATEN sıradaki turun konusu. 3b, 3c'nin ne yapacağını ÖLÇEREK gösterdi.
+
+**3c-DEVİR (onaylı, HİPOTEZ-formülasyonuyla — 3c beklenti-kaydına aynen):** "app-limited-kilit
+ProbeUp ile btlbw 102→~125 ramp → temiz-1k 43 hem ≥45'e DÖNER hem tavana (50-53) TIRMANIR.
+DÖNMEZSE kilit ProbeUp-dışı bileşen taşıyor → ayrı teşhis, ProbeUp'ı GENİŞLETME." Kilidin SEBEBİ
+ölçüldü (rate=102<125, son-faz temiz); ProbeUp'ın ÇÖZÜMÜ henüz kanıtlanmadı — mantık sağlam,
+ölçüm 3c'de.
+
+**Yan-gözlem (kayıt, talimat):** commit-A test-yazımında 3a.5-β canlı göründü — büyük qualifying-ack
+(12.7s) srtt'yi kuantum-döngüyle taşıyıp min_dwell'i büyüttü = srtt-türev-fix'inin doğru çalıştığının
+EK kanıtı.
+
+## 0.17 TUR-3b commit-C DENEMESİ — 5. MASKE-SOYMA, geri çekildi, karar-noktası
+
+commit-C (tüketici-8 EAI-tabanı) yazıldı, kapıda KIRILDI ve kırılma ÖĞRETİCİ: bench-loopback
+9/10 — tek-kalan-son-paketin teslimi meğer **liveness-dup → DupSuppress-force-ACK** gizli-yoluna
+dayanıyormuş: receiver'ın STATİK 8.39s cadence'i (§16.2'de zaten SUSPECT: "ACK_CADENCE_FLOOR
+statik-prior") tek-paket-tail'in timer-SACK'ini deadline-dışına atıyor; eski 3×srtt-eşiği (fast'ta
+ms'ler) conf'u anında düşürüp RecoverFwd-dup'ı ateşliyor, dup force-ACK tetikliyordu. EAI-tabanı
+(2×EAI≈4.2s; LOW-eşiği ≈14s) bu gizli-yolu kapattı → tail teslim edilemedi. **MASKE-SOYMA #5:**
+tail-ACK-zamanlılığı liveness-emergency'ye (ağır mekanizma) dayanıyormuş — gerçek borç receiver
+statik-cadence (tek-paket-tail için timely-ACK; QUIC max_ack_delay≈25ms sınıfı).
+AYRICA yeni iz: loopback tx=1550B = 17 data-emisyonu / 10 birim (7 fazla-data — retx/dup DEĞİL;
+kaynağı belirsiz, AYRI teşhis ister).
+
+**→ commit-C working-tree'den GERİ ÇEKİLDİ** (A+B kapıları yeşil; C commit'lenmedi).
+**KARAR-NOKTASI (Abkarada):** tüketici-8 tabanı nasıl gelmeli?
+(a) C'yi receiver tail-ACK fix'iyle EŞLEŞTİR (son-paket/tek-paket timer-SACK'i cadence-muaf ya da
+    kısa-gecikmeli — QUIC-max_ack_delay sınıfı; §3.3-E-FULL'ün öne alınmış dar-parçası) → çift
+    taraf birlikte: liveness ağır-yol olmaktan çıkar, conf-tabanı güvenle gelir [ÖNERİM — kök-fix];
+(b) C'nin tabanını yalnız EAI'nin KANAL-koluna bağla (statik-prior'suz) → fast'ta taban≈0 (eski
+    davranış), sub-kbps'te koruma kalır; ama EAI-semantiği bölünür + statik-cadence borcu maskeli
+    kalır;
+(c) C'yi 3c-sonrasına ertele (liveness-sözleşmesi 3b'de eksik kaldı — dürüst kayıt).
+17-data izi: karar ne olursa olsun AYRI teşhis-maddesi (yeni borç-satırı §3.7'ye).
+
+**KARAR (Abkarada): (a) KAPSAM-KİLİTLİ** — yalnız tail/tek-paket timer-SACK muafiyeti (R1'in
+tail-simetriği); tam adaptif ACK-decimation §3.3-E-FULL'e (kampanya-öncesi borç). Adaptivite-şartı:
+muafiyet-gecikmesi MUTLAK-ms OLAMAZ → formül: sessizlik ≥ K_TAIL×son-varış-aralığı (kanal-ölçülü,
+boyutsuz K_TAIL=2 [CAL {1,2,4}]; fast'ta QUIC-max_ack_delay-sınıfı davranış formülden doğar;
+sub-kbps'te aralık≥cadence → devreye girmez). (b) RED (EAI-bölme+maske), (c) RED (3b yarım kalır).
+
+**p5-KAYMA TAHMİNİ (talimat; ölçümden ÖNCE):** tail-muafiyeti p5'te (100kbit; varış-aralığı
+23-45ms → tail-SACK ~46-90ms'de) SACK-EMİSYON sayısını artırır → %80-kayıplı dönüş-yolunda
+hayatta-kalma ÇEKİLİŞ-sayısı artar → **dağılım YUKARI kayar tahmini**: açlık-uç {11-24}→{15-35}
+bandına, şanslı-frekans ↑ (%50-67 sınıfı kalır ya da artar); temiz-1k +0/+1 (son-birim ACK'i erken).
+Bu iyileşme BU turda ölçülür ki 3c'ye YANLIŞ atfedilmesin. Dönüş-bütçesi riski düşük (65B×birkaç
+ek SACK ≪ %25-bütçe).
+
+## 0.18 TUR-3b commit-C FİNAL (rev2) — teşhis-kollu ikinci-iterasyon + kapı GEÇİLDİ
+
+**İlk-C b3-matrisi KIRMIZI:** p5 {0,10,10,56,100-yavaş,100-yavaş} (açlık-uç 0 < 11 İHLAL).
+p5-kayma tahminim ("dağılım yukarı") bileşik-commit için YANLIŞTI. **İki tek-değişken teşhis-kolu**
+(working-tree toggle): yalnız-taban {12,100@c10=.99,100@.91} NORMAL; yalnız-tail {5,8,11} DÜŞÜK →
+birincil şüpheli TAIL-yolu: her tail-SACK record_ack_emit'le CADENCE-saatini sıfırlıyor →
+garantili-ritim kümülatif-SACK'ler erteleniyor → %80-kayıplı dönüşte hayatta-kalan SACK azalıyor
+(r5=0 bileşik-zincir). **rev2 (5ada7a8):** tail-SACK KENDİ ritim-sayacıyla (spam-korumalı) saf-EK
+emisyon; cadence/freq sayaçlarına DOKUNMAZ.
+
+**rev2 SONUÇ — kapı GEÇİLDİ:** p5×6 = **{11, 22, 92, 99, 100, 100}** (üst-uç 4/6; sıfır YOK;
+açlık {11,22} ≥ önceki ✓). TARİHİ koşu r4: **100 birim SAF-DATA (retx=0 dup=0, oran 1.00×) → 92
+teslim** — tail-SACK'lerin taşıdığı en temiz p5 akışı (recovery-trafiği olmadan). p4 da en-temiz
+hali: 100/100, c10=1.00, **oran 1.00×** (liveness-dup 283→0 — tail-SACK gereksizleştirdi).
+Temiz-1k 43 (B'nin belgeli-değeri; 3c-hipotezi duruyor). 0.25k korundu (monoton, 20/20).
+Not: c10-varyansı şanslı-koşularda büyüdü (başlangıç-SACK şansı; c120 teslimleri yüksek) —
+3c/ProbeUp sonrası yeniden okunur.
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
@@ -438,6 +562,8 @@ p5→TUR-4'te geri · p2/p3-tırmanış→TUR-4+B.
 | borç | doğuş | doğrulama/çürütme noktası | durum |
 |---|---|---|---|
 | **ŞANSLI-MOD-FREKANSI** | TUR-2b ölçümü: p5 şanslı-mod 0/9 çekiliş (P≈%3-5 kuyruk). Yapısal savunma ("2b sıcak-yolu hit=0 iken karar-yolu 2a-bit-özdeş → frekans değişemez → netem-varyansı") bir **ÇIKARIM, ölçüm değil** | **TUR-3a retest'i** spektrumu yeniden örnekler: şanslı-mod ~%30 bandına dönerse borç KAPANIR; yine seyrekse yapısal-savunma ÇÜRÜR → şanslı-mod-frekansı bağımsız sorun olarak açılır | AÇIK |
+| **17-data-emisyonu izi (loopback)** | commit-C teşhisi sırasında görüldü: 10 birim / 17 data-send (tx=1550B; retx=0 dup=0) — fazla-emisyonların kaynağı belirsiz | AYRI teşhis (muhtemelen PreConverge/emisyon-yolu); kampanya-metriklerine oran-etkisi olabilir | AÇIK |
+| **Little-kolu min_cwnd-maskesi** | 3a.5-α ölçümü: cwnd/srtt kolu fixture min_cwnd'i sayesinde BAĞLAMADI (yarı-2 öngörüm aşırı-temkin) — kol fiilen uykuda | MIN_CWND kalibrasyonu (sıra-SONU, D-4/2): kalibre min_cwnd küçülürse kol uyanır → srtt_t-paydalı davranış O ZAMAN ölçülür | AÇIK |
 | packets_in_flight kayıp-sızıntısı (sampler) | TUR-2c muhasebe-incelemesi + review-workflow'u: kayıp-ilan edilen paket sampler'ın packets_in_flight'ını düşürmüyor; hit'siz üç yol HİÇ decrement etmez: (a) tombstone TTL-prune, (b) kapasite-eviction, (c) Duplicate-kökenli kayıp (tombstonesuz) → her gerçek-kayıp kalıcı +1 sızıntı → pipe-boş tespiti (first_sent/delivered_time yeniden-çıpalama) kayıplı koşuda bir daha tetiklenmez | TUR-3a (estimator pencereleri) — sampler semantiği zaten o turun masasında | AÇIK |
 
 ## 3.6 Abkarada'ya YENİ karar noktası (TUR-1x final ölçümünden)
