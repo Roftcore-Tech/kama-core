@@ -63,6 +63,20 @@ pub struct RttEstimator {
     rtprop: MinFilter,
     /// RTprop penceresi (ns) — sender kanal-türevi yazar; taban W_RTPROP [STD].
     rtprop_window_ns: u64,
+    /// [TUR-3a.5 commit-α, srtt-clock-v1 §2.2] qd-payı KISA-pencere min-filter'ı: qd artık
+    /// srtt'den DEĞİL buradan (qd = min_W_qd(rtt) − rtprop = ayakta-kuyruk). Kuyruk-fiziği:
+    /// RTT örneği kuyruğu YAŞAMIŞ paketten gelir, gerçek transitin altına inemez → gürültü
+    /// tek-taraflı-yukarı → kısa-min anlamsal-doğru + salıverme ANINDA (gain-mıhı ilacı).
+    qd_min: MinFilter,
+    /// qd kısa-penceresi (ns) — sender K_qd×ack_epoch yazar; [STD] taban BİLİNÇLİ YOK
+    /// (keep-last boşalmayı önler; taban hızlı-decade'de soft-drain'i köreltir).
+    qd_window_ns: u64,
+    /// [TUR-3a.5 commit-β] kuantum-döngü referans-aralığı T (ns); `None` → n≡1 (bugünkü
+    /// RFC-6298 ile BİT-ÖZDEŞ — default-nötr migrasyon). Sender T=rtprop/K_CONV yazar
+    /// (ack_epoch ÖZ-REFERANS tuzağı hesaplandı ve reddedildi — srtt-clock-v1 §2.1).
+    conv_ref_ns: Option<u64>,
+    /// Son örnek zamanı (Δt için).
+    last_sample_ns: Option<u64>,
 }
 
 impl Default for RttEstimator {
@@ -72,6 +86,10 @@ impl Default for RttEstimator {
             rttvar_ns: 0,
             rtprop: MinFilter::default(),
             rtprop_window_ns: dur_ns(W_RTPROP),
+            qd_min: MinFilter::default(),
+            qd_window_ns: dur_ns(W_RTPROP), // ilk yazıma dek muhafazakâr (rtprop-penceresi)
+            conv_ref_ns: None,
+            last_sample_ns: None,
         }
     }
 }
@@ -88,30 +106,61 @@ impl RttEstimator {
         self.rtprop_window_ns = dur_ns(w).max(dur_ns(W_RTPROP)); // taban [STD]: küçültme yok
     }
 
+    /// [TUR-3a.5 commit-α] qd kısa-penceresi: `W_qd = K_qd × ack_epoch` (kanal-türevi;
+    /// W_qd ≤ W_rtprop invariantı çağıranda — kısa-min ≥ uzun-min yapısal kalsın).
+    pub fn set_qd_window(&mut self, w: Duration) {
+        self.qd_window_ns = dur_ns(w).min(self.rtprop_window_ns).max(1);
+    }
+
+    /// [TUR-3a.5 commit-β] Kuantum-döngü referans-aralığı: `T = rtprop / K_CONV` — srtt
+    /// yakınsaması KANAL-ZAMANINA bağlanır (ZM-1 estimator-katmanı fix'i).
+    pub fn set_conv_interval(&mut self, t: Duration) {
+        self.conv_ref_ns = Some(dur_ns(t).max(1));
+    }
+
+    /// [TUR-3a.5 commit-β] Kuantum-adımı üst-sınırı: (7/8)^64 ≈ 1.9e-4 — ötesi "örneğe
+    /// zıpla"ya %0.02 içinde eşdeğer; iş sınırlı (SR-AUDIT-001 ruhu).
+    const QUANTUM_CAP: u64 = 64;
+
     /// `now_ns` anında ölçülen bir `sample`'ı işler (RFC 6298 sırası: rttvar ÖNCE
     /// eski srtt ile, srtt SONRA).
+    ///
+    /// [TUR-3a.5 commit-β, KUANTUM-DÖNGÜ — srtt-clock-v1 §2.1] Aynı güncelleme AYNI örnekle
+    /// `n = clamp(Δt/T, 1, CAP)` kez uygulanır → yakınsama KANAL-ZAMANINA bağlanır (α=1/8'in
+    /// örnek-SAYISI saati sub-kbps'te dakikalar şişkin bırakıyordu — ölçüldü, ZM-1 estimator-
+    /// katmanı). n=1'de (Δt≤T, hızlı-decade floor-1) bugünkü aritmetikle BİT-ÖZDEŞ; kalan
+    /// DÜŞER (muhafazakâr-yön); rttvar EŞ-İŞLENİR (jitter=rttvar/srtt oranı tek-saatli, ZM-4).
+    /// rtprop/qd_min örnek başına BİR kez beslenir (n kopya push YOK).
     pub fn observe(&mut self, now_ns: u64, sample: Duration) {
         let s = dur_ns(sample);
+        let n = match (self.conv_ref_ns, self.last_sample_ns) {
+            (Some(t), Some(last)) => (now_ns.saturating_sub(last) / t).clamp(1, Self::QUANTUM_CAP),
+            _ => 1, // default-nötr (T yazılmamış) ya da ilk örnek
+        };
+        self.last_sample_ns = Some(now_ns);
         match self.srtt_ns {
             None => {
                 // İlk sample: srtt = s, rttvar = s/2.
                 self.srtt_ns = Some(s);
                 self.rttvar_ns = s / 2;
             }
-            Some(srtt) => {
-                let diff = srtt.abs_diff(s);
-                // rttvar = (1−β)·rttvar + β·|srtt_old − s|  → tek bölme, exact.
-                self.rttvar_ns = (((RTTVAR_BETA_DEN - 1) * u128::from(self.rttvar_ns)
-                    + u128::from(diff))
-                    / RTTVAR_BETA_DEN) as u64;
-                // srtt = (1−α)·srtt + α·s
-                self.srtt_ns = Some(
-                    (((SRTT_ALPHA_DEN - 1) * u128::from(srtt) + u128::from(s)) / SRTT_ALPHA_DEN)
-                        as u64,
-                );
+            Some(mut srtt) => {
+                let mut rttvar = self.rttvar_ns;
+                for _ in 0..n {
+                    let diff = srtt.abs_diff(s);
+                    // rttvar = (1−β)·rttvar + β·|srtt_adım − s|  → tek bölme, exact.
+                    rttvar = (((RTTVAR_BETA_DEN - 1) * u128::from(rttvar) + u128::from(diff))
+                        / RTTVAR_BETA_DEN) as u64;
+                    // srtt = (1−α)·srtt + α·s
+                    srtt = (((SRTT_ALPHA_DEN - 1) * u128::from(srtt) + u128::from(s))
+                        / SRTT_ALPHA_DEN) as u64;
+                }
+                self.rttvar_ns = rttvar;
+                self.srtt_ns = Some(srtt);
             }
         }
         self.rtprop.observe(now_ns, s, self.rtprop_window_ns);
+        self.qd_min.observe(now_ns, s, self.qd_window_ns); // [3a.5] aynı örnek, kısa pencere
     }
 
     /// Smoothed RTT; henüz sample yoksa `None`.
@@ -132,11 +181,16 @@ impl RttEstimator {
         self.rtprop.min().map(Duration::from_nanos)
     }
 
-    /// queue_delay = srtt − RTprop (≥0; congestion sinyali, loss DEĞİL). Veri yoksa 0.
+    /// [TUR-3a.5 commit-α, NORMATİF-değişim] queue_delay = min_W_qd(rtt) − RTprop
+    /// (≥0; congestion sinyali, loss DEĞİL). ESKİ tanım (srtt − rtprop) CANCELLED:
+    /// srtt-EWMA lag'ı boş kuyruğu dakikalarca dolu gösteriyordu (ölçüldü, 42-kilidi yarı-1);
+    /// ayakta-kuyruk için doğru istatistik kısa-min (srtt-clock-v1 §2.2). Veri yoksa 0.
     #[must_use]
     pub fn queue_delay(&self) -> Duration {
-        match (self.srtt_ns, self.rtprop.min()) {
-            (Some(srtt), Some(rtprop)) => Duration::from_nanos(srtt.saturating_sub(rtprop)),
+        match (self.qd_min.min(), self.rtprop.min()) {
+            (Some(short_min), Some(rtprop)) => {
+                Duration::from_nanos(short_min.saturating_sub(rtprop))
+            }
             _ => Duration::ZERO,
         }
     }

@@ -515,8 +515,16 @@ RTprop (propagation, min-filter — BBR-türevi):
   (pencere kayan; DRAIN_RTPROP probe ile tazelenir, §8.3)
 
 queue_delay (congestion sinyali — delay-based):
-  queue_delay = srtt − RTprop            (≥0; buffer birikimi = congestion)
-  → fuzzify(queue_delay) LOW/MED/HIGH (§15). BU congestion sinyalidir, loss DEĞİL.
+  [TUR-3a.5-α, NORMATİF] queue_delay = min_{W_qd}(rtt_sample) − RTprop   (≥0; AYAKTA-kuyruk)
+  W_qd = K_qd × ack_epoch (K_qd=2 [CAL {1,2,4}]); W_qd ≤ W_rtprop invariantı; keep-last;
+  [STD] 10s tabanı BİLİNÇLİ YOK. ESKİ tanım (srtt − RTprop) CANCELLED: srtt-EWMA lag'ı boş
+  kuyruğu dakikalarca dolu gösteriyordu (ölçüldü — 42-kilidi). Kuyruk-fiziği: örnek kuyruğu
+  YAŞAMIŞ paketten gelir → gürültü tek-taraflı-yukarı → kısa-min anlamsal-doğru + salıverme
+  ANINDA (srtt-clock-v1 §2.2; ölçüm-α: 42→45, salıverme tek-örnekte qd 17.3s→0.74s).
+  → fuzzify(qd_ratio = queue_delay×1000/RTprop) LOW/MED/HIGH (§15). Congestion sinyali, loss DEĞİL.
+  [TUR-3a.5-β, NORMATİF] srtt/rttvar KUANTUM-DÖNGÜ: güncelleme aynı örnekle n=clamp(Δt/T,1,64)
+  kez; T = rtprop/K_CONV (K_CONV=4 [CAL {2,4,8}]) — yakınsama KANAL-ZAMANLI (ZM-1 estimator-
+  katmanı fix'i; ack_epoch öz-referans tuzağı REDDEDİLDİ). Floor-1: Δt≤T → RFC-6298 bit-özdeş.
 
 jitter / reordering score:
   jitter_score     = rttvar_normalized = rttvar / max(srtt, ε)
@@ -962,6 +970,8 @@ Tunable'lar [CAL] → baseline ölçümünden sonra vektörlere GERÇEK değerle
 | `K_TOMB` tombstone TTL çarpanı [TUR-2b] | TTL = K_tomb×T_loss(ilan-anı); T_loss = max(9/8·srtt, cadence-taban) — eşikle AYNI saat (ZM-4). Onaylı formülün `min(mesaj-deadline,…)` kolu motorda UYGULANAMAZ (per-unit deadline engine'e taşınmıyor; bench/app-katmanı) → TTL tek-kollu ZEYL | tüm bw (kanal-türevi) | 8 [CAL] |
 | `TOMBSTONE_MAX` [TUR-2b] | geç-ACK eşleştirme kayıt tavanı; en-eski-önce eviction + `tombstone_evicted` audit (evict edilenin geç-ACK'i Expired/Unknown — örneksiz) | tüm bw (4-decade doluş: 0.25k≈11, 1M-heavy≈450 ≪ 4096; bellek ≤~350KiB) | 4096 [CAL] |
 | `K_bw` / `K_rtprop` [TUR-3a] | W_BTLBW = max(10s, K_bw×ack_epoch); W_RTPROP = max(10s, K_rtprop×corrected_srtt); ack_epoch = max(srtt, EAI); + KEEP-LAST (D-2/2) | tüm bw (kanal-türevi; 10s [STD] taban hızlı kanalda korunur) | 8 / 8 [CAL matris {6,8,10}] |
+| `K_QD` qd kısa-penceresi [TUR-3a.5-α] | W_qd = K_QD×ack_epoch; W_qd ≤ W_rtprop; keep-last; [STD]-taban YOK (bilinçli — srtt-clock-v1 §2.2) | tüm bw (kanal-türevi) | 2 [CAL matris {1,2,4}] |
+| `K_CONV` kuantum-döngü böleni [TUR-3a.5-β] | T = rtprop/K_CONV; n = clamp(Δt/T, 1, CAP=64); floor-1 hızlı-decade bit-özdeş; kalan düşer (muhafazakâr) | tüm bw (kanal-zamanlı; ADR-18 4-decade kapısında kalibre) | 4 [CAL matris {2,4,8}] |
 | `RTT_floor(unit)` | (unit_wire+sack_wire)/floor_bw + PROP_MARGIN | pace edilen taban | 256B@0.25k≈11.9s; 64B@1k≈1.43s |
 | `k_base` (COPY_BASE_FACTOR) [R1] | >1; ilk-SACK cadence-exempt → RTT_floor ilk-SACK modeli. Fallback (exempt değilse): ≥1+ACK_CADENCE/RTT_floor | tüm bw | 1.3-1.5 |
 | `COPY_MULTIPLIER` | geometrik backoff (RFC 6298 analoğu) | tüm bw | 2 [STD] |
@@ -1012,7 +1022,8 @@ ZM-4  Karşılaştırmanın İKİ YANI aynı saati kullanmalı (örn. loss-thres
 | startup_plateau round | sender.rs | ~~event-count~~ → bw-örneği (TUR-A ölçüm değişikliği) | 3 ms'de STEADY → app-limited kilit (ölçüldü) | RTT-round (delivered-anchor); re-entry'de sayaç sıfırla |
 | W_BTLBW=10s | bw.rs | ~~wall-clock~~ → **FIXED [TUR-3a]**: max(10s, K_bw×ack_epoch) + KEEP-LAST | (eski) 0.8-3.3 RTT → btlbw 88→4 çöküşü; 0.25k tek-örnek-pencere (btlbw her örneği takip: 5 düşüş-adımı ölçüldü) | ✓ kanal-türevi (K_bw=8 [CAL]) |
 | W_RTPROP=10s | rtt.rs | ~~wall-clock~~ → **FIXED [TUR-3a]**: max(10s, K_rtprop×corrected_srtt) + KEEP-LAST | (eski) 1-4 örnek; 10s+ SACK boşluğunda tek örneğe düşer → rtprop=şişkin RTT | ✓ kanal-türevi (K_rtprop=8 [CAL]) |
-| **srtt-EWMA yakınsaması (α=1/8)** [TUR-3a bulgusu — ZM-estimator-katmanı] | rtt.rs observe | **örnek-SAYISI saati** (yakınsama ≈8 örnek; hızlı kanalda ms'ler, sub-kbps'te DAKİKALAR) — kanal-zamanı DEĞİL; ZM-1'in estimator-içi ders-kitabı örneği (INITIAL_RTT/plateau sınıfı) | ÖLÇÜLDÜ: kuyruk boşken (infl=267B≈2s) srtt=17.9s şişkin → qd sahte-yüksek → ratio-HIGH mıhlı → gain 0.5 kalıcı (temiz-1k 42-kilidi). **9 tüketici lag'ı miras alıyor** (loss-eşiği, ack_epoch→W_BTLBW/W_loss, W_RTPROP, tombstone-TTL, jitter, SRC cwnd/srtt, liveness-aralık, ack_conf-ölçeği, qd) | srtt yakınsaması KANAL-ZAMANLI olmalı — **TUR-3a.5/3b tasarım-kararı** (not §0.13) |
+| **srtt-EWMA yakınsaması (α=1/8)** [ZM-estimator-katmanı] | rtt.rs observe | ~~örnek-SAYISI saati~~ → **FIXED [TUR-3a.5-β]**: kuantum-döngü n=clamp(Δt/T,1,64), T=rtprop/K_CONV(4 [CAL]) — kanal-zamanlı; floor-1 hızlı-decade bit-özdeş; rttvar eş-işlenir (ZM-4) | (eski) kuyruk boşken srtt=17.9s şişkin → gain 0.5 mıhı (42-kilidi); 9 tüketici miras alıyordu | ✓ kanal-zamanlı (öz-referans tuzağı: T=ack_epoch REDDEDİLDİ — srtt-clock-v1 §2.1) |
+| **qd-payı** [TUR-3a.5-α] | rtt.rs queue_delay | kısa-pencere-min (W_qd=K_qd×ack_epoch, kanal-türevi; keep-last; [STD]-taban bilinçli yok) | qd = ayakta-kuyruk; salıverme tek-örnekte (ölçüm-α: 42→45; qd 17.3s→0.74s drain'de) | ✓ srtt'den AYRIŞTIRILDI (tek-sayı-sanma düzeltmesi; tablo srtt-clock-v1 §3) |
 | ack_delay wire u16 µs (65.5ms tavan) | receiver.rs/ack.rs | ~~wall-clock tavan~~ → **FIXED [TUR-1x]**: V2 0x14 256µs-birim (tavan 16.78s), floor-encoding + satürasyon-sayacı + MIN_RTT_FLOOR guard | (eski) 8.4s ACK-hold 65.5ms'e doyardı → RTT örneği ~8.3s şişerdi; ölçüm-2: 1.43s hold decoded+subtracted, rtt_rej=0 | ✓ saniye-yetenekli encoding (D-4/1 Seçenek-A) |
 | ACK_CADENCE_FLOOR (RETURN_BW_PRIOR=31 const) | receiver.rs:89 | derleme-zamanı prior (statik 8.39s) | 1kbps'te 4× fazla throttle (2.1s yeterli); K-1'i besler | ölçülen return_bw'den adaptif (§3.3-E FULL) |
 | DrainRtprop dwell | sender update_state `_=>Steady` | event-count(1) | probe 1 ms yaşar → rtprop HİÇ yenilenmez | ölçüm-kapılı çıkış (≥1 RTT / min-rtt örneği) |
