@@ -562,6 +562,8 @@ impl Sender {
                         Some(t) if t.expiry_ns <= now_ns => {
                             self.tombstones.remove(&front);
                             self.tombstone_order.pop_front();
+                            // [commit-B §3.7] artık ACK'lenmeyecek → uçuş-sayısından düş.
+                            self.bw_sampler.forget_in_flight();
                         }
                         Some(_) => break,
                     }
@@ -610,6 +612,10 @@ impl Sender {
         for &seq in lost {
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                if p.origin == TransmitKind::Duplicate {
+                    // [commit-B §3.7] Dup-kökenli kayıp tombstonesuz düşer → uçuş-sayısı burada.
+                    self.bw_sampler.forget_in_flight();
+                }
                 if p.origin != TransmitKind::Duplicate {
                     self.pending_lost.push_back(LostRec {
                         seq,
@@ -624,6 +630,7 @@ impl Sender {
                             Some(old) => {
                                 if self.tombstones.remove(&old).is_some() {
                                     self.tombstone_evicted += 1; // geç-ACK'i artık Expired/Unknown
+                                    self.bw_sampler.forget_in_flight(); // [commit-B §3.7]
                                 }
                             }
                             None => break,
@@ -1578,5 +1585,12 @@ mod tests {
         s.on_event(ack(&[1]), 401_000 * MS);
         let (_, hits, bw_rec, ..) = s.diag_tombstone();
         assert_eq!((hits, bw_rec), (0, 0), "Expired → geç-ACK örneksiz");
+        // [commit-B §3.7] prune uçuş-sayısını düşürmeli: pif == GERÇEK engine-uçuşu (burada
+        // liveness-dup seq'i hâlâ uçuşta → eşitlik). Fix'siz pif = uçuş+1 kalırdı (sızıntı).
+        assert_eq!(
+            s.diag_pif(),
+            s.inflight.len() as u64,
+            "TTL-prune sonrası pif gerçek-uçuşa eşit olmalı (sızıntı-fix)"
+        );
     }
 }

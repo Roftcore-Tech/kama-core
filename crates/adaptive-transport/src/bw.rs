@@ -100,6 +100,15 @@ impl DeliveryRateSampler {
         self.packets_in_flight
     }
 
+    /// [TUR-3a commit-B, §3.7 borç-fix] ACK'lenmeyecek iletimi uçuş-sayısından düşür:
+    /// (a) tombstone TTL-prune, (b) kapasite-eviction, (c) Duplicate-kökenli kayıp (tombstonesuz).
+    /// Sızıntı her gerçek-kayıpta +1 kalıcıydı → `packets_in_flight==0` pipe-boş tespiti
+    /// (on_sent first_sent/delivered_time yeniden-çıpalaması) kayıplı koşuda bir daha
+    /// tetiklenmiyordu (ölçüldü: p5'te pif=23 vs gerçek-uçuş≈14).
+    pub fn forget_in_flight(&mut self) {
+        self.packets_in_flight = self.packets_in_flight.saturating_sub(1);
+    }
+
     /// [TUR-2c D-1/3 kol-2] Rate-örneği ÜRETMEDEN delivered-kredisi: superseded (retx'li)
     /// iletimin GEÇ-ACK'i — byte'lar wire'ı gerçekten geçti → kümülatif delivered'a GİRER
     /// (teslimat gerçek; gelecek örneklerin delta'sına dürüst yansır) ama muhafazakâr Karn

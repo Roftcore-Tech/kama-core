@@ -249,9 +249,32 @@ dönmezse ayrı teşhis, genişletme YOK, Abkarada'ya.
   kuyruğu 3.4kB'a (kanalın ~27s'i) şişiriyor; Startup-exit'te DRAIN fazı yok (BBR'da var) → koşunun
   kalanı drain'le geçiyor. İkisi de 3b/3c bölgesi (DrainRtprop sözleşmesi + faz-geçişleri).
 
-**(ii) packets_in_flight [commit-B, karar-sonrası]:** gözlemci eklendi (TRAJ pif=); temiz-1k'da
-pif inflight'ı dürüst izledi (0'a dönüyor — kayıpsız kanalda sızıntı yok, beklenen); sızıntı-kanıtı
-p5-kollarında commit-B ölçümünde alınacak.
+**(ii) packets_in_flight [commit-B — KAPANDI ✓]:** ÖNCE-kanıtı: p5q_r3'te pif=23 vs gerçek-uçuş≈14
+(**+9 sızıntı** = TTL-prune'lu 8 tombstone + dup-kayıp). Üç yol kapatıldı (`forget_in_flight`:
+TTL-prune, kapasite-evict, Duplicate-kökenli kayıp). SONRA-kanıtı: p5cb_r1 pif=2 = uçuş(1)+tomb(1)
+BİREBİR; p5cb_r2 pif=11 = uçuş(11) BİREBİR. Temiz-1k 42 değişmedi (davranış-nötr; pipe-boş
+yeniden-çıpalama artık kayıplı koşuda da erişilebilir). §3.7 borç satırı KAPANDI.
+
+**KARAR (α) + ÜÇ ŞART (Abkarada, 2026-07-13):** 42 = commit-A/A2'nin dürüst ara-değeri, kabul;
+(β: srtt-anlık-fix 3a-içi) RED — srtt-EWMA fix'i motorun her yerine dokunan KÖK, kendi izolasyonunu
+hak eder. **ŞART-1:** temiz-1k ≥45 dönüşü = **TUR-3b DOĞRULAMA-ŞARTI** (açık-kapı; "42 geçici-kabul,
+İZLENEN" — kaybolmaz). **ŞART-2:** srtt-EWMA bulgusu KÖK olarak kayıtlı: (a) §16.2'ye
+ZM-estimator-katmanı satırı girdi; (b) 3b-kararı: "srtt yakınsaması KANAL-ZAMANLI olmalı";
+(c) TARAMA SONUCU — srtt-lag'ını miras alan **9 tüketici**: loss-eşiği 9/8·srtt · ack_epoch
+(→W_BTLBW+W_loss) · W_RTPROP · tombstone-TTL · jitter-normalize (rttvar/srtt) · SRC Little-kolu
+cwnd/srtt (42-kilidinin İKİNCİ yarısı) · liveness-dup aralığı · ack_confidence 3×srtt ölçeği ·
+qd=srtt−rtprop. (PTO: engine-içi henüz yok — spec-düzeyi, gelecek.) → "srtt-fix bir tur mu tek
+satır mı" CEVABI: dokuz-tüketicili KÖK = kendi turu. **ŞART-3:** Startup-exit DRAIN-fazı-yokluğu
+ayrı bulgu (ProbeUp-unreachable'ın kardeşi — BBR Startup→Drain→ProbeBW'nin Drain ayağı da eksik);
+3b sözleşmesi ÜÇLÜ: giriş + çıkış + drain, hepsi ZM-saat-sınıfıyla.
+
+**3b-YAPI ÖNERİSİ (Abkarada'nın sorusuna; karar onda):** tarama "her yere taşıyor" dediği için
+**3a.5 AYRI ÖN-TUR** öneriyorum: 3a.5 = srtt-kanal-zamanlı yakınsama (tek-değişken; kendi
+beklenti-kaydı + tam kol-matrisi; ölçüm-altyapısı-önce ilkesinin — 1x'in — birebir analoğu: 3b'nin
+dwell/drain ölçümleri srtt-SAATİYLE yapılacak, kirli saatle sözleşme ölçülmez, #4 dersi). Sonra
+3b = DrainRtprop-sözleşmesi + Startup-exit-Drain (iki commit, tek PR; doğrulama-şartı temiz-1k ≥45).
+Alternatif (üç-commit'li tek 3b: srtt + Drain + DrainRtprop) daha az PR ama üç büyük-değişken tek
+turda — önermiyorum.
 
 ## 1. KARARLAR
 
