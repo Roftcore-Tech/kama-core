@@ -645,6 +645,25 @@ max(T_SPACING, kendi-varış-gap'i sınıfı bir taban): dar-dönüşte kota yay
 (YENİ-TASARIM, onaysız girilmez); (β) R=4 seçimi (K-1a farkı 1.1s, 6-koşu-örneklem gürültüsü
 payı; 12-koşu R=4-verisi yok); (γ) her ikisi + startup_plateau-fix'i ayrı-tur paketlemesi.
 
+### §0.24-KARARLAR (Abkarada, 2026-07-14 — çift-KIRMIZI DUR'unun çözümü)
+
+1. **β ÖNCE:** R=4'e 6 ek koşu → 12-koşu K-1a (per-koşu P(>8.4s)=0.8⁴≈%41 → n=6 medyan-kapısı
+   mekanizma-mükemmelken ~%30-48 yanlış-eler — PATCH-2 dersinin K-1a'ya dönüşü). 12-koşu-medyanı
+   ≤8.4s → R=4 seçilir (K-5 zaten ✓) → PR. Medyan ≥9s → mekanizma-bilgisi (per-deneme-sağkalım
+   <0.2) → DUR, α-tasarım-sorusu Abkarada'ya.
+2. **α ŞİMDİ DEĞİL** + sensing-ön-şartı kayda: receiver varış-ritminden p5-açlık(sender-throttle)
+   ile 0.25k'yı(serialization) AYIRT EDEMEZ (ikisi de gap≈8.6-9.9s) → varış-türevli T_SPACING
+   p5-kotasını da yayar → K-1a yapısal bozulur. Gerçek çözüm E-FULL ölçülen-return_bw (§3.7
+   borcu — "statik-önsel-türevi" dürüst-etiketi tam bu gün içindi). **γ RED** (tek-değişken ihlali).
+3. **temiz-1k 44 = BELGELİ-REGRESYON** (3b-commit-B emsali), ŞARTLA: startup_plateau
+   delivered-anchor turu HEMEN sıradaki iş (süresiz-erteleme YOK — regresyon-kapısının anlamı
+   erimesin). β geçerse PR: R=4 + 1k-44-belgeli + plateau-turu-sıradaki taahhüdü.
+4. **RecoverArq-yapışması = bacak-3'ün İKİNCİ-BAŞI:** ProbeUp-köprüsü p5'te yapısal-gölgede.
+   Bacak-3 tasarım-notu İKİ-başlı: tohum-hijyeni (estimator) + RecoverArq-gölgelemesi
+   (faz-önceliği). İkisi sender-taraf, ayrı-tur, D0-notu-önce.
+5. Ekleme-2 geri-çekilmesi KABUL; count=0-deliği DV-2 açık-riski olarak kalır.
+Sıra: β → (geçerse) PR → plateau-turu → bacak-3 D0-notu → DV-1.
+
 **Süreç-kaydı:** Ekleme-2 (kota-yanış şartı) implementasyon-öncesi çelişki-tespitiyle GERİ-
 ÇEKİLDİ (K-1b retry-takvimini bloklardı — not §2 revizyonu; count=0-deliği DV-2 açık-riski
 aynen). Bacak-2 yapısal-gölgeleme dürüst-bulgusu: K_ARR=2'de accel-ritmi freq/tail'le örtüşük;
