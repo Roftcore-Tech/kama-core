@@ -1,6 +1,8 @@
 # srtt-clock-v1 — srtt-Türev-Ayrıştırması (TUR-3a.5 TASARIM NOTU, D0-tarzı)
 
-> **Statü: r1 — Abkarada onayı bekliyor. Kod bu notun onayından SONRA** ("kod notun önüne geçemez").
+> **Statü: r1 ONAYLANDI (Abkarada, 2026-07-13) + KOŞULDU.** Kararlar: K_CONV=4 {2,4,8} + K_qd=2 {1,2,4}
+> (placeholder, golden'a girmez); tüketici-8 EAI-tabanı → 3b liveness-sözleşmesine; byte-cap → 3c
+> notuna devir. Ölçüm-kayıtları §7'de.
 > Otorite: transport-tdd > engine-spec (§16.2 ZM) > time-model-v1 (§0.13 KÖK-kaydı) > bu not > kod.
 > **Üretim-şeffaflığı:** qd-merceği + mekanizma-kataloğu ultracode-workflow'undan (wf_f8792701);
 > tepkisel/ölçek/SRC mercekleri haftalık subagent-limiti nedeniyle INLINE yapıldı (aynı kod-zemin
@@ -112,3 +114,27 @@ her ikisi: 0.25k süreklilik KORUNUR (düşüş-adımı 0) + p4/p5×6 aynı-era 
 3. Tüketici-8 EAI-tabanı (`max(3×srtt_t, K_conf_eai×EAI)`) — bu turda mı, 3b'de mi?
 4. Byte-cap'e dönüş (SRC kolunun rate-form yerine inflight<cwnd kapısı) — 3c/ProbeUp tasarım-notuna
    devir kaydı (bu turda DEĞİL).
+
+## 7. ÖLÇÜM-KAYITLARI (beklenti-kaydı: scratchpad tur3a5-prediction.md; α/β AYRI — talimat)
+
+**α-katkısı (db89539, qd→kısa-min):** temiz-1k **42→45 (+3)** — bandın iyi ucu. Trajektori-kanıtı:
+qd DÜRÜST (kuyruk doluyken 4.6→17.3s; throttle meşru), drain'de **tek-örnekte salıverme**
+(qd 17.3s→0.74s, t≈100) → gain 1000 → rate=btlbw=102; deliv/sent %98. Little-kolu fixture
+min_cwnd'i sayesinde bağlamadı (β-öngörümün aşırı-temkini — dürüstçe: yarı-2 beklediğimden küçük).
+Golden: davranış-sınıfı = tv_rtt qd-asserleri + salıverme-vektörü (türetimli).
+
+**β-katkısı (2e1c137, kuantum-döngü):** temiz-1k **45 KORUNDU** (doğrulama α+β ≥45 ✓, sınırda).
+Teslim-katkısı 0 AMA karakter değişti: dürüst-hızlı srtt erken agresiflik verdi (54 birim sunuldu
+vs α'da 46; kuyruk ayakta, son-qd 23.9s DÜRÜST; verim %98→%83). Kuyruk-yönetimi = 3b-Drain'in işi
+(Startup-overfill bulgusu zaten 3b-maddesi). Golden: 5 yeni aile ✓ + mevcut 4 vektör VERBATIM
+(default-nötr bit-özdeşlik kanıtlandı).
+
+**PR-öncesi tam-matris:** p4 100/100 1.01× ✓. **p5×6 = {11, 24, 100, 100, 100, 100} — şanslı-uç
+4/6 (%67; önceki eralar %8-33): SPEKTRUM ÜST-UCA YOĞUNLAŞTI** — P5-GATE kabul-kriterinin
+(dar-IQR'a çöküş) yönünde İLK büyük hareket, ProbeUp'sız; dört 100 de meşru-taşıyıcılı
+(retx+dup, 1.07-1.14×, c10=0.99-1.00); r2=24 yeni ara-yüksek (tx=9905). Aynı-era kapı: şanslı ✓✓,
+açlık {11,24} ≥ önceki ✓. **0.25k süreklilik KORUNDU: düşüş-adımı 0** (monoton), 20/20.
+
+**Kalan-dürüstlük:** temiz-1k tavana (kanal-drain ~%90+) henüz değil — 45 sınır-değer; kalan kilit
+Startup-overfill/Drain-yokluğu (3b) + ProbeUp (3c). srtt-clock zemini artık dürüst: 3b sözleşmeleri
+bu saatle ölçülebilir.
