@@ -94,6 +94,21 @@ impl DeliveryRateSampler {
         }
     }
 
+    /// Uçuşta-sayılan iletim sayısı (SALT-GÖZLEM — not §3.7 sızıntı-borcu ölçümü [TUR-3a]).
+    #[must_use]
+    pub fn packets_in_flight(&self) -> u64 {
+        self.packets_in_flight
+    }
+
+    /// [TUR-3a commit-B, §3.7 borç-fix] ACK'lenmeyecek iletimi uçuş-sayısından düşür:
+    /// (a) tombstone TTL-prune, (b) kapasite-eviction, (c) Duplicate-kökenli kayıp (tombstonesuz).
+    /// Sızıntı her gerçek-kayıpta +1 kalıcıydı → `packets_in_flight==0` pipe-boş tespiti
+    /// (on_sent first_sent/delivered_time yeniden-çıpalaması) kayıplı koşuda bir daha
+    /// tetiklenmiyordu (ölçüldü: p5'te pif=23 vs gerçek-uçuş≈14).
+    pub fn forget_in_flight(&mut self) {
+        self.packets_in_flight = self.packets_in_flight.saturating_sub(1);
+    }
+
     /// [TUR-2c D-1/3 kol-2] Rate-örneği ÜRETMEDEN delivered-kredisi: superseded (retx'li)
     /// iletimin GEÇ-ACK'i — byte'lar wire'ı gerçekten geçti → kümülatif delivered'a GİRER
     /// (teslimat gerçek; gelecek örneklerin delta'sına dürüst yansır) ama muhafazakâr Karn
@@ -106,17 +121,38 @@ impl DeliveryRateSampler {
 }
 
 /// BtlBw max-filter (engine §7.2/§7.3): geçerli sample'ların pencereli max'ı.
-#[derive(Debug, Clone, Default)]
+///
+/// [TUR-3a D-2/1+2] Pencere KANAL-TÜREVİ (sender `set_window` ile `max(10s, K_bw×ack_epoch)`
+/// yazar — ZM-2: wall-clock sabiti sub-kbps'te 0.8-3.3 RTT'ye düşüyordu, btlbw 88→4 sınıfı) +
+/// KEEP-LAST (son örnek ASLA expire etmez → `valid=false` güncellemelerde budamanın filtreyi
+/// boşaltıp btlbw=0 flap'i üretmesi yapısal biter).
+#[derive(Debug, Clone)]
 pub struct BtlBwFilter {
     /// (time_ns, bw_bps) örnekleri; pencereli max.
     samples: Vec<(u64, u64)>,
+    /// Pencere (ns) — sender kanal-türevi yazar; taban W_BTLBW [STD].
+    window_ns: u64,
+}
+
+impl Default for BtlBwFilter {
+    fn default() -> Self {
+        Self {
+            samples: Vec::new(),
+            window_ns: dur_ns(W_BTLBW),
+        }
+    }
 }
 
 impl BtlBwFilter {
-    /// Boş filter.
+    /// Boş filter (pencere = W_BTLBW [STD] tabanı).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// [TUR-3a D-2/1] Kanal-türevi pencere: `max(10s, K_bw × ack_epoch)` — sender yazar.
+    pub fn set_window(&mut self, w: Duration) {
+        self.window_ns = dur_ns(w).max(dur_ns(W_BTLBW)); // taban [STD]: küçültme yok
     }
 
     /// Sample'ı validity-gate'leyip max-filter'ı günceller; güncel BtlBw'i (bps) döner.
@@ -133,8 +169,15 @@ impl BtlBwFilter {
                 self.samples.push((now_ns, bw));
             }
         }
-        let cutoff = now_ns.saturating_sub(dur_ns(W_BTLBW));
+        let cutoff = now_ns.saturating_sub(self.window_ns);
+        // [TUR-3a D-2/2] KEEP-LAST: budama filtreyi boşaltacaksa en-yeni örnek yaşar.
+        let last = self.samples.last().copied();
         self.samples.retain(|&(t, _)| t >= cutoff);
+        if self.samples.is_empty() {
+            if let Some(l) = last {
+                self.samples.push(l);
+            }
+        }
         self.btlbw()
     }
 

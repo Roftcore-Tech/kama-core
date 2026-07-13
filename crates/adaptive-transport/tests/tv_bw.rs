@@ -195,3 +195,43 @@ fn tv_bw_credit_anchors_next_send_window() {
     // interval = max(ack_elapsed=60−40, send_elapsed=0) = 20ms — kredi-sonrası çıpa dürüst.
     assert_eq!(r1.interval, std::time::Duration::from_millis(20));
 }
+
+#[test]
+fn tv_bw_keep_last_and_channel_window() {
+    // [TUR-3a D-2/2] KEEP-LAST: valid=false güncellemede budama filtreyi BOŞALTAMAZ —
+    // son örnek yaşar (eski davranış: btlbw→0 flap'i; sub-kbps 10s+ ACK-boşluğu sınıfı).
+    use adaptive_transport::bw::{BtlBwFilter, RateSample};
+    use std::time::Duration;
+    let mut f = BtlBwFilter::new();
+    let s = |d: u64, ms: u64| RateSample {
+        delivered: d,
+        interval: Duration::from_millis(ms),
+        is_app_limited: false,
+    };
+    assert_eq!(f.update(s(1000, 100), 0, true), 10_000); // 10kB/s @t=0
+                                                         // t=15s (>10s pencere), geçersiz güncelleme: ESKİ davranış 0'a düşerdi; keep-last 10k tutar.
+    assert_eq!(
+        f.update(s(0, 0), ns(15_000), false),
+        10_000,
+        "keep-last: son örnek expire edilmez (btlbw=0 flap'i yapısal bitti)"
+    );
+    // [TUR-3a D-2/1] kanal-türevi pencere: 40s pencereyle 15s'lik örnek pencere-İÇİ kalır,
+    // yeni düşük örnek max'ı DÜŞÜRMEZ (max-filter).
+    let mut g = BtlBwFilter::new();
+    g.set_window(Duration::from_secs(40));
+    g.update(s(1000, 100), 0, true); // 10k
+    assert_eq!(
+        g.update(s(100, 100), ns(15_000), true),
+        10_000,
+        "40s pencerede t=0 örneği yaşar → max 10k"
+    );
+    // set_window tabanı: 1s istense de 10s [STD] altına inmez (t=5s'te örnek hâlâ pencere-içi).
+    let mut h = BtlBwFilter::new();
+    h.set_window(Duration::from_secs(1));
+    h.update(s(1000, 100), 0, true);
+    assert_eq!(
+        h.update(s(100, 100), ns(5_000), true),
+        10_000,
+        "pencere tabanı 10s: küçültme yok"
+    );
+}

@@ -206,6 +206,12 @@ const K_WL: u32 = 8;
 /// `min(mesaj-deadline, ...)` kolu motorda uygulanamaz (per-unit deadline engine'e taşınmıyor —
 /// bench/app katmanında) → TTL tek-kollu; spec §5 zeyli. Saat-sınıfı: T_loss-türevi (kanal, ZM-2).
 const K_TOMB: u32 = 8;
+/// [TUR-3a D-2/1] Estimator pencere çarpanları [CAL, matris {6,8,10}]:
+/// W_BTLBW = max(10s, K_BW×ack_epoch); W_RTPROP = max(10s, K_RTPROP×corrected_srtt);
+/// ack_epoch = max(corrected_srtt, EAI). Saat-sınıfı: kanal-türevi (ZM-2 — 10s wall-clock
+/// sub-kbps'te 0.8-3.3 RTT'ye düşüyordu: btlbw 88→4 çöküş sınıfı, §16.2).
+const K_BW: u32 = 8;
+const K_RTPROP: u32 = 8;
 /// [TUR-2b D-1/4] Tombstone kayıt tavanı [CAL] — SR-AUDIT-001 bounded; en-eski-önce eviction +
 /// audit. 4-decade doluş-doğrulaması not D-1/4 (0.25kbps ≈ 11 kayıt; ≲Gbps'te ~450 ≪ 4096).
 const TOMBSTONE_MAX: usize = 4096;
@@ -281,6 +287,7 @@ pub struct Sender {
     diag_bw_recovered: u64,         // kol-1'den kurtarılan BW-örneği sayısı
     diag_ambiguous_skipped: u64, // [TUR-2c resmî] kol-2 örnek-atlaması (sample_skipped_ambiguous)
     diag_delivered_credited: u64, // [TUR-2c] kol-2 delivered-kredisi (byte)
+    diag_qd_no_evidence: u64,    // [TUR-3a D-3/1] rtprop-yokken qd_ratio=0 sayısı
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
@@ -331,6 +338,7 @@ impl Sender {
             diag_bw_recovered: 0,
             diag_ambiguous_skipped: 0,
             diag_delivered_credited: 0,
+            diag_qd_no_evidence: 0,
             last_decision: FusionDecision {
                 fec_parity_ratio_permille: 0,
                 arq_aggressiveness_permille: 0,
@@ -394,6 +402,15 @@ impl Sender {
             return;
         }
         self.last_ack_ns = Some(now_ns);
+
+        // [TUR-3a D-2/1] Kanal-türevi estimator pencereleri — örnekler işlenmeden ÖNCE, bir
+        // önceki srtt'yle yazılır (deterministik; 10s [STD] tabanı setter'larda).
+        {
+            let srtt_now = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+            let ack_epoch = srtt_now.max(self.expected_ack_interval());
+            self.btlbw.set_window(ack_epoch * K_BW);
+            self.rtt.set_rtprop_window(srtt_now * K_RTPROP);
+        }
 
         // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
         let mut rtt_send_ns: Option<u64> = None;
@@ -545,6 +562,8 @@ impl Sender {
                         Some(t) if t.expiry_ns <= now_ns => {
                             self.tombstones.remove(&front);
                             self.tombstone_order.pop_front();
+                            // [commit-B §3.7] artık ACK'lenmeyecek → uçuş-sayısından düş.
+                            self.bw_sampler.forget_in_flight();
                         }
                         Some(_) => break,
                     }
@@ -593,6 +612,10 @@ impl Sender {
         for &seq in lost {
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                if p.origin == TransmitKind::Duplicate {
+                    // [commit-B §3.7] Dup-kökenli kayıp tombstonesuz düşer → uçuş-sayısı burada.
+                    self.bw_sampler.forget_in_flight();
+                }
                 if p.origin != TransmitKind::Duplicate {
                     self.pending_lost.push_back(LostRec {
                         seq,
@@ -607,6 +630,7 @@ impl Sender {
                             Some(old) => {
                                 if self.tombstones.remove(&old).is_some() {
                                     self.tombstone_evicted += 1; // geç-ACK'i artık Expired/Unknown
+                                    self.bw_sampler.forget_in_flight(); // [commit-B §3.7]
                                 }
                             }
                             None => break,
@@ -642,11 +666,23 @@ impl Sender {
             .saturating_mul(1_000_000)
             .checked_div(dur_ns(srtt))
             .unwrap_or(0);
+        // [TUR-3a önalım, D-3/1] qd_ratio = qd×1000/rtprop; rtprop yoksa 0 (kanıt yok →
+        // boğma yok) + sayaç. Dürüst-rtprop'un zorunlu ikizi: mutlak-ns eşikler sub-kbps'te
+        // fiziksel-taban qd'yi (serialization çift-yönü, saniyeler) kalıcı-HIGH okuyordu.
+        let qd_ratio_permille = match self.rtt.rtprop() {
+            Some(rtp) if !rtp.is_zero() => {
+                dur_ns(self.rtt.queue_delay()).saturating_mul(1000) / dur_ns(rtp)
+            }
+            _ => {
+                self.diag_qd_no_evidence += 1;
+                0
+            }
+        };
         let inputs = FusionInputs {
             loss_ppm: self.loss.loss_windowed_ppm(),
             bandwidth_bps: self.btlbw.btlbw(),
             jitter_ppm,
-            queue_delay: self.rtt.queue_delay(),
+            qd_ratio_permille,
             ack_confidence_permille: self.ack_confidence_permille(now_ns),
         };
         self.fuzzy.decide(&inputs)
@@ -1099,6 +1135,19 @@ impl Sender {
             self.loss.spurious_units_total(),
         )
     }
+    /// [TUR-3a teşhis] sampler uçuş-sayısı (SALT-GÖZLEM — §3.7 sızıntı-borcu ölçümü).
+    #[must_use]
+    pub fn diag_pif(&self) -> u64 {
+        self.bw_sampler.packets_in_flight()
+    }
+    /// [TUR-3a teşhis] rtprop + queue_delay (SALT-GÖZLEM — qd-atıflaması, µs).
+    #[must_use]
+    pub fn diag_qd(&self) -> (u64, u64) {
+        (
+            self.rtt.rtprop().map_or(0, |d| d.as_micros() as u64),
+            self.rtt.queue_delay().as_micros() as u64,
+        )
+    }
     /// [TUR-2b/2c teşhis] tombstone (SALT-GÖZLEM):
     /// `(canlı, hit, bw_kurtarılan, evicted, ambiguous, credited_bytes)`.
     #[must_use]
@@ -1536,5 +1585,12 @@ mod tests {
         s.on_event(ack(&[1]), 401_000 * MS);
         let (_, hits, bw_rec, ..) = s.diag_tombstone();
         assert_eq!((hits, bw_rec), (0, 0), "Expired → geç-ACK örneksiz");
+        // [commit-B §3.7] prune uçuş-sayısını düşürmeli: pif == GERÇEK engine-uçuşu (burada
+        // liveness-dup seq'i hâlâ uçuşta → eşitlik). Fix'siz pif = uçuş+1 kalırdı (sızıntı).
+        assert_eq!(
+            s.diag_pif(),
+            s.inflight.len() as u64,
+            "TTL-prune sonrası pif gerçek-uçuşa eşit olmalı (sızıntı-fix)"
+        );
     }
 }

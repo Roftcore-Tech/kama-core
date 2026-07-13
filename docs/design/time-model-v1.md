@@ -202,6 +202,80 @@ başladıktan sonra işlenmişti), **1 borç-detayı** (§3.7 packets_in_flight:
 geri-alınabilir, kayıt-korumalı ve Karn-kurallı bir HİPOTEZ. Sırada D-2: TUR-3a (estimator
 pencereleri — §3.7 borçlarının ikisi de masasında).
 
+## 0.13 TUR-3a ölçüm kaydı (D-2/1+2: pencereler + keep-last; ÜÇ AYRI ölçüm — talimat şart-b)
+
+**Beklenti-kaydı önce** (scratchpad tur3a-prediction.md; şart-a ara-çerçevesi başta).
+
+**(i) Şanslı-mod frekansı büyük-n [BORÇ REVİZE-KAPANDI]:** taze n=12 (D-1-final kod) = 1/12; havuz
+post-2b 2/27 ≈ %7.4 vs pre-2b 4/11 ≈ %36 (Fisher p≈0.05, post-hoc). Beklenti-kaydının öngördüğü
+git-bisect-ölçüm dalı koşuldu: **AYRIŞTIRICI = 2a-binary'si (b68cd2d) BUGÜN p5×8 → 1/8 (%12.5)** —
+kendi tarihsel %33'üne değil bugünkü-era havuzuna oturdu. **SONUÇ: kod-nedeni DIŞLANDI (yapısal
+bit-özdeşlik savunması DOĞRULANDI); frekans ORTAM/ZAMAN-duyarlı** (bugünkü-era bandı 3/35 ≈ %8.6).
+Çıkarımlar: (1) şanslı-uç kapı-kıyasları AYNI-ERA çekilişleriyle yapılmalı; (2) P5-GATE kriteri
+etkilenmez (hedef spektrumun dar-IQR'a çöküşü — frekans değil).
+
+**(est) Pencereler + keep-last [KISMİ ✓ + KIRMIZI-SAPMA, dekompoze]:**
+- **0.25k süreklilik ✓ TAM İSABET:** baseline btlbw HER örneği izliyordu (tek-örnek-pencere;
+  5 düşüş-adımı, 18-27 salınım); commit-A sonrası **düşüş-adımı 0** (monoton 21→27) — gerçek
+  max-filter davranışı geldi. Keep-last vektörü: valid=false güncellemede btlbw→0 flap'i öldü.
+- **Temiz-1k ✗ 45→34/100 (tahmin-bandı 45±3 DIŞI) — DOĞRUDAN ATIFLI:** TRAJ+qd-diag: rtprop artık
+  DÜRÜST (3.056s'e sabit — propagation-sınıfı; eskiden 10s-pencere şişkin-RTT'ye tazeleniyordu) →
+  qd = srtt−rtprop GERÇEK kuyruğu gösteriyor (1.6→10.3→4.3s) → **mutlak-eşikli fuzzy qd (D-3'ün
+  BİLİNEN kırığı) her değeri maksimal-HIGH okuyor → send_rate_gain 0.5× KALICI** (rate=51=btlbw/2
+  mıhlı; kuyruk boşalıp qd 4.3s'e inse bile — 4.3s ≈ bu bantta FİZİKSEL-TABAN qd). Eski davranışta
+  İKİ kırık birbirini maskeliyordu (çöp-rtprop → qd≈0 → eşik hiç tetiklenmiyordu) — D-1'deki
+  parazit-iptali hikâyesinin D-2/D-3 tekrarı. Verim tersine İYİLEŞTİ: deliv/sent 34/36=%94
+  (eski 45/59=%76), oran 0.60→0.36×; ama kampanya-metriği (completion@deadline) geriledi:
+  kanal ~45 taşıyabilirken 36 sunuldu (0.5×-gaz kanal-altı).
+→ **KARAR (Abkarada, 2026-07-13): (b) qd_ratio minimal-önalım — kapsam-kilidiyle.** (a) RED:
+gerilemiş baseline üç tur taşınır, sonraki turlar kirli zemine oturur. (c) RED — kritik gerekçe:
+W_RTPROP'u ertelemek şişkin-rtprop MASKESİNİ GERİ TAKMAK; kirli-saat D-2/D-3'ün sonraki tüm
+turlarını kirletir (W_BTLBW ack_epoch, ProbeUp süre-ölçümü hepsi rtprop'a bakar) — #4-düzeltmesinin
+(kirli-saat üstüne kurma) tam tersi olurdu. KAPSAM-KİLİDİ: yalnız qd kolu (qd_ratio =
+queue_delay×1000/rtprop; rtprop=None→0+sayaç); D-3'ün kalanı (bw log-ölçek, sıfır-ağırlık fallback)
+TUR-4'te. Kural: "rtprop-fix'inin yaşaması için gereken MİNİMUM fuzzy-değişikliği = qd_ratio,
+o kadar." Bu çiftlenmiş-değişken, iki-değişken değil. DOĞRULAMA-ŞARTI: temiz-1k ≥45'e dönmeli;
+dönmezse ayrı teşhis, genişletme YOK, Abkarada'ya.
+
+**qd_ratio SONUÇ (commit-A2) — DOĞRULAMA-ŞARTI SAĞLANMADI, β-dalı (teşhisle Abkarada'ya):**
+- qd_ratio MEKANİZMASI ÇALIŞTI: erken-faz boğulması kalktı (Startup 15→19 birim/20s), temiz-1k
+  **34→42** (+8); 0.25k süreklilik KORUNDU (düşüş-adımı 0, monoton 21→27, 20/20); p4 100/100 ✓;
+  p5×6 aynı-era {8,11,12,15,100,100} = 2/6 şanslı ✓ (commit-A 2/6 ile tutarlı).
+- AMA 42 < 45: rate=51 (=102×0.5) kilidi t=40+ sürüyor. TEŞHİS (TRAJ qd-diag ile doğrudan):
+  (1) **srtt-EWMA gecikmesi**: kuyruk boşalmışken (infl=267B ≈ 2s) srtt hâlâ 17.9s — α=1/8 ×
+  seyrek-örnek → srtt dakikalarca şişkin → qd=srtt−rtprop sahte-yüksek → ratio 4.85 "HIGH" mıhlı.
+  qd'nin saati srtt-LAG'ıyla kirli — ZM-ailesine yeni üye (EWMA yakınsama-hızı örnek-SAYISI-sınıfı,
+  kanal-zamanı değil; §16.2'ye aday satır). (2) **Startup aşırı-doldurması**: 2.89× gain 20s'de
+  kuyruğu 3.4kB'a (kanalın ~27s'i) şişiriyor; Startup-exit'te DRAIN fazı yok (BBR'da var) → koşunun
+  kalanı drain'le geçiyor. İkisi de 3b/3c bölgesi (DrainRtprop sözleşmesi + faz-geçişleri).
+
+**(ii) packets_in_flight [commit-B — KAPANDI ✓]:** ÖNCE-kanıtı: p5q_r3'te pif=23 vs gerçek-uçuş≈14
+(**+9 sızıntı** = TTL-prune'lu 8 tombstone + dup-kayıp). Üç yol kapatıldı (`forget_in_flight`:
+TTL-prune, kapasite-evict, Duplicate-kökenli kayıp). SONRA-kanıtı: p5cb_r1 pif=2 = uçuş(1)+tomb(1)
+BİREBİR; p5cb_r2 pif=11 = uçuş(11) BİREBİR. Temiz-1k 42 değişmedi (davranış-nötr; pipe-boş
+yeniden-çıpalama artık kayıplı koşuda da erişilebilir). §3.7 borç satırı KAPANDI.
+
+**KARAR (α) + ÜÇ ŞART (Abkarada, 2026-07-13):** 42 = commit-A/A2'nin dürüst ara-değeri, kabul;
+(β: srtt-anlık-fix 3a-içi) RED — srtt-EWMA fix'i motorun her yerine dokunan KÖK, kendi izolasyonunu
+hak eder. **ŞART-1:** temiz-1k ≥45 dönüşü = **TUR-3b DOĞRULAMA-ŞARTI** (açık-kapı; "42 geçici-kabul,
+İZLENEN" — kaybolmaz). **ŞART-2:** srtt-EWMA bulgusu KÖK olarak kayıtlı: (a) §16.2'ye
+ZM-estimator-katmanı satırı girdi; (b) 3b-kararı: "srtt yakınsaması KANAL-ZAMANLI olmalı";
+(c) TARAMA SONUCU — srtt-lag'ını miras alan **9 tüketici**: loss-eşiği 9/8·srtt · ack_epoch
+(→W_BTLBW+W_loss) · W_RTPROP · tombstone-TTL · jitter-normalize (rttvar/srtt) · SRC Little-kolu
+cwnd/srtt (42-kilidinin İKİNCİ yarısı) · liveness-dup aralığı · ack_confidence 3×srtt ölçeği ·
+qd=srtt−rtprop. (PTO: engine-içi henüz yok — spec-düzeyi, gelecek.) → "srtt-fix bir tur mu tek
+satır mı" CEVABI: dokuz-tüketicili KÖK = kendi turu. **ŞART-3:** Startup-exit DRAIN-fazı-yokluğu
+ayrı bulgu (ProbeUp-unreachable'ın kardeşi — BBR Startup→Drain→ProbeBW'nin Drain ayağı da eksik);
+3b sözleşmesi ÜÇLÜ: giriş + çıkış + drain, hepsi ZM-saat-sınıfıyla.
+
+**3b-YAPI ÖNERİSİ (Abkarada'nın sorusuna; karar onda):** tarama "her yere taşıyor" dediği için
+**3a.5 AYRI ÖN-TUR** öneriyorum: 3a.5 = srtt-kanal-zamanlı yakınsama (tek-değişken; kendi
+beklenti-kaydı + tam kol-matrisi; ölçüm-altyapısı-önce ilkesinin — 1x'in — birebir analoğu: 3b'nin
+dwell/drain ölçümleri srtt-SAATİYLE yapılacak, kirli saatle sözleşme ölçülmez, #4 dersi). Sonra
+3b = DrainRtprop-sözleşmesi + Startup-exit-Drain (iki commit, tek PR; doğrulama-şartı temiz-1k ≥45).
+Alternatif (üç-commit'li tek 3b: srtt + Drain + DrainRtprop) daha az PR ama üç büyük-değişken tek
+turda — önermiyorum.
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
@@ -330,6 +404,9 @@ TUR-3a  estimator pencereleri (K_bw×ack_epoch, K_rtprop×corrected_srtt) + keep
 TUR-3b  DrainRtprop giriş/çıkış sözleşmesi (window-derived giriş + exit-invariant)
 TUR-3c  ProbeUp state + sözleşme + açık match-kolu
 TUR-4   fuzzy normalize + sıfır-ağırlık fallback (arq_light)      ← p5'in taşıyıcısı (§0.7)
+        [KAPSAM DARALDI, talimat 2026-07-13: qd kolu (D-3/1 qd_ratio) TUR-3a'ya önalındı —
+         kalan: bw log-ölçek (D-3/2) + sıfır-ağırlık fallback (D-3/3) + membership-invariant
+         property-testi + üyelik-eşiği kalibrasyonları (qd_ratio placeholder'ları DAHİL)]
 TUR-B   redundancy/kopya bütçesi (p2/p3 taşıma)
 TUR-C   0.25k residual (overdrive + cadence)
 SON     plateau-revisit (delivered-anchor) · MIN_CWND-kalibrasyonu · emergency-dwell'ler

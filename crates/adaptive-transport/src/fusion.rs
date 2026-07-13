@@ -12,14 +12,8 @@
 //! Clean-arch: [`FusionController`] trait = port (SRC/engine loop bunun üzerinden
 //! kararı okur); [`DeterministicFuzzyController`] = fuzzy adapter.
 
-use std::time::Duration;
-
 /// Per-mille birim (0..=1000) — membership derecesi ve oran çıktıları (float yok).
 pub const PERMILLE: u32 = 1000;
-
-fn dur_ns(d: Duration) -> u64 {
-    d.as_nanos() as u64
-}
 
 /// Trapezoidal membership: μ(x) per-mille (0..=1000). μ = min(rise, fall).
 /// Shoulder: `a==b` → sol-omuz (rise sabit 1000), `c==d` → sağ-omuz (fall sabit 1000).
@@ -124,7 +118,9 @@ pub struct FuzzyConfig {
     pub bandwidth: VarThresholds,
     /// jitter (ppm) membership.
     pub jitter: VarThresholds,
-    /// queue_delay (ns) membership.
+    /// [TUR-3a önalım, D-3/1] qd_ratio (per-mille: queue_delay×1000/rtprop) membership —
+    /// MUTLAK-ns eşikleri CANCELLED (sub-kbps'te fiziksel-taban qd saniyeler → kalıcı HIGH →
+    /// gain 0.5× mıhlanması ÖLÇÜLDÜ; dürüst-rtprop'un zorunlu ikizi).
     pub queue_delay: VarThresholds,
     /// ack_confidence (per-mille) membership.
     pub ack_confidence: VarThresholds,
@@ -163,7 +159,6 @@ impl FuzzyConfig {
             c: u64::MAX,
             d: u64::MAX,
         };
-        let ms = |n: u64| n * 1_000_000; // ms → ns
 
         Self {
             loss: VarThresholds {
@@ -182,9 +177,10 @@ impl FuzzyConfig {
                 high: shoulder_high(400_000, 500_000),
             },
             queue_delay: VarThresholds {
-                low: shoulder_low(ms(50), ms(100)),
-                med: mid(ms(50), ms(100), ms(300), ms(400)),
-                high: shoulder_high(ms(300), ms(400)),
+                // qd_ratio per-mille [CAL placeholder]: <0.25×rtprop rahat; >1.5-2×rtprop congested.
+                low: shoulder_low(250, 500),
+                med: mid(250, 500, 1500, 2000),
+                high: shoulder_high(1500, 2000),
             },
             ack_confidence: VarThresholds {
                 low: shoulder_low(300, 500),
@@ -213,8 +209,9 @@ pub struct FusionInputs {
     pub bandwidth_bps: u64,
     /// jitter score (ppm).
     pub jitter_ppm: u64,
-    /// queue_delay = srtt − RTprop.
-    pub queue_delay: Duration,
+    /// [TUR-3a D-3/1] qd_ratio = queue_delay×1000/rtprop (per-mille; rtprop yoksa 0 —
+    /// kanıt yok → boğma yok, sayaçla izlenir).
+    pub qd_ratio_permille: u64,
     /// ack_confidence = delivered-ACK / beklenen-ACK (per-mille).
     pub ack_confidence_permille: u64,
 }
@@ -279,7 +276,7 @@ impl FusionController for DeterministicFuzzyController {
         let loss = c.loss.fuzzify(inputs.loss_ppm);
         let bw = c.bandwidth.fuzzify(inputs.bandwidth_bps);
         let jitter = c.jitter.fuzzify(inputs.jitter_ppm);
-        let qd = c.queue_delay.fuzzify(dur_ns(inputs.queue_delay));
+        let qd = c.queue_delay.fuzzify(inputs.qd_ratio_permille);
         let ackc = c.ack_confidence.fuzzify(inputs.ack_confidence_permille);
 
         // 2) FEC/ARQ kuralları (§8.4/§5.3). Mamdani AND = min; her kural

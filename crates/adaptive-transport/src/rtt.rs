@@ -31,7 +31,16 @@ impl MinFilter {
     fn observe(&mut self, now_ns: u64, value_ns: u64, window_ns: u64) {
         self.samples.push((now_ns, value_ns));
         let cutoff = now_ns.saturating_sub(window_ns);
+        // [TUR-3a D-2/2] KEEP-LAST: budama filtreyi boşaltacaksa en-yeni örnek yaşar.
+        // (push-sonra-buda sırası nedeniyle bugün yapısal olarak boşalamaz — savunma katmanı;
+        // gelecek çağrı-sırası değişikliklerine karşı invariant kilitlenir.)
+        let last = self.samples.last().copied();
         self.samples.retain(|&(t, _)| t >= cutoff);
+        if self.samples.is_empty() {
+            if let Some(l) = last {
+                self.samples.push(l);
+            }
+        }
     }
 
     fn min(&self) -> Option<u64> {
@@ -40,7 +49,11 @@ impl MinFilter {
 }
 
 /// RTT / RTprop / queue-delay estimator (engine spec §6).
-#[derive(Debug, Clone, Default)]
+///
+/// [TUR-3a D-2/1] RTprop penceresi KANAL-TÜREVİ: sender `set_rtprop_window` ile
+/// `max(10s, K_rtprop × corrected_srtt)` yazar (ZM-2 — 10s wall-clock sub-kbps'te 1-4 örneğe
+/// düşüyordu).
+#[derive(Debug, Clone)]
 pub struct RttEstimator {
     /// Smoothed RTT (ns); `None` = henüz sample yok.
     srtt_ns: Option<u64>,
@@ -48,6 +61,19 @@ pub struct RttEstimator {
     rttvar_ns: u64,
     /// RTprop min-filter.
     rtprop: MinFilter,
+    /// RTprop penceresi (ns) — sender kanal-türevi yazar; taban W_RTPROP [STD].
+    rtprop_window_ns: u64,
+}
+
+impl Default for RttEstimator {
+    fn default() -> Self {
+        Self {
+            srtt_ns: None,
+            rttvar_ns: 0,
+            rtprop: MinFilter::default(),
+            rtprop_window_ns: dur_ns(W_RTPROP),
+        }
+    }
 }
 
 impl RttEstimator {
@@ -55,6 +81,11 @@ impl RttEstimator {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// [TUR-3a D-2/1] Kanal-türevi RTprop penceresi: `max(10s, K_rtprop × corrected_srtt)`.
+    pub fn set_rtprop_window(&mut self, w: Duration) {
+        self.rtprop_window_ns = dur_ns(w).max(dur_ns(W_RTPROP)); // taban [STD]: küçültme yok
     }
 
     /// `now_ns` anında ölçülen bir `sample`'ı işler (RFC 6298 sırası: rttvar ÖNCE
@@ -80,7 +111,7 @@ impl RttEstimator {
                 );
             }
         }
-        self.rtprop.observe(now_ns, s, dur_ns(W_RTPROP));
+        self.rtprop.observe(now_ns, s, self.rtprop_window_ns);
     }
 
     /// Smoothed RTT; henüz sample yoksa `None`.
