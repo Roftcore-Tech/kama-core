@@ -171,6 +171,16 @@ const DEFAULT_DUP_SPACING: Duration = Duration::from_millis(20);
 /// §3.3-A en-kötü-köşe önsel pacing floor (B/s) — ürün floor'u ~0.25 kbps. min_rate fixture (Ek-B)
 /// PRE_CONVERGE'de UYGULANMAZ; bu taban kullanılır → 1 kbps kanalı floodlamaz. [CAL PLACEHOLDER]
 const PRE_CONVERGE_FLOOR_BW: u64 = 31;
+/// [TUR-1b D-1/2] Cadence-taban bileşenleri — receiver §2.1/§16.1 AYNA sabitleri (sender-yerel,
+/// deterministik). Beklenen ACK-frekansı (receiver ACK_FREQ_N) [CAL].
+const EXPECTED_ACK_FREQ_N: u64 = 2;
+/// SACK wire boyutu (§16.1 `sack_wire` = 65B; V2 15B gövde dahil).
+const EAI_SACK_WIRE_BYTES: u64 = 65;
+/// Return-bw worst-corner önseli (§16.1; §3.3-E-FULL ölçülen return_bw ile değiştirecek) [CAL].
+const EAI_RETURN_BW_PRIOR: u64 = 31;
+/// K_c cadence çarpanı = 3/2 (1.5) [CAL kalibrasyon-matrisi {1.25, 1.5, 2.0}].
+const CADENCE_KC_NUM: u64 = 3;
+const CADENCE_KC_DEN: u64 = 2;
 /// §3.3-B geometrik kopya: ilk kopya = k_base × RTT_floor; RTT_floor ≈ (unit+sack)/floor_bw.
 /// k_base = 3/2 (>1 → temiz kanalda ilk SACK kopyayı ateşlemeden iptal eder). [CAL PLACEHOLDER]
 const PC_SACK_WIRE: u64 = 65;
@@ -395,7 +405,9 @@ impl Sender {
                 // (srtt BOŞ → tanımsız; geometrik kopya §3.3-B yerini alır). schedule_transmit yine çalışır.
                 if self.state != SenderState::PreConverge {
                     let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
-                    let lost = self.loss.detect_time_losses(now_ns, srtt);
+                    let lost =
+                        self.loss
+                            .detect_time_losses(now_ns, srtt, self.cadence_loss_floor());
                     let before = self.pending_lost.len();
                     self.queue_losses(&lost, now_ns);
                     // [TUR-A teşhis] loss-atıflama: time-threshold (§5b) kaynaklı kuyruklanan kayıp.
@@ -403,6 +415,24 @@ impl Sender {
                 }
             }
         }
+    }
+
+    /// [TUR-1b D-1/2] Cadence-farkında loss-eşiği TABANI = K_c × beklenen-ACK-aralığı (EAI).
+    /// `EAI = ACK_FREQ_N × ort_birim / send_rate_fiili + sack_dönüş_serialization(önsel)`.
+    /// Sender-yerel + deterministik (ADR-17). Saat-sınıfı (ZM-3): kanal-türevi (send_rate,
+    /// inflight-ortalama birim) + worst-corner return-önseli [CAL — §3.3-E-FULL'de ölçülen
+    /// return_bw ile değişir). Amaç (ZM-4): elapsed'in içindeki "SACK'i henüz gelmedi" süresi
+    /// eşiğin saatinde TEMSİL edilsin — kanıtlı-ama-cadence yanlış-sınıflandırması yapısal biter.
+    fn cadence_loss_floor(&self) -> Duration {
+        let unit = if self.inflight.is_empty() {
+            DEFAULT_MTU
+        } else {
+            (self.inflight_bytes / self.inflight.len() as u64).max(1)
+        };
+        let rate = self.pacer.rate().max(1);
+        let eai_ns = EXPECTED_ACK_FREQ_N * unit * 1_000_000_000 / rate
+            + EAI_SACK_WIRE_BYTES * 1_000_000_000 / EAI_RETURN_BW_PRIOR;
+        Duration::from_nanos(eai_ns * CADENCE_KC_NUM / CADENCE_KC_DEN)
     }
 
     /// Kayıp seq'leri recovery kuyruğuna al. Duplicate-kökenli kayıp RE-QUEUE EDİLMEZ (redundancy'di).

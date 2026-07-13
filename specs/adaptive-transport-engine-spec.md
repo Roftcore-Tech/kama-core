@@ -400,8 +400,17 @@ QUIC RFC 9002 packet-threshold(3)+time-threshold(9/8) **loss-based CC** içindir
 ```
 Packet kayıp SAYILIR (recovery için) eğer:
   (a) PACKET_THRESHOLD: daha yüksek seq'li ≥ K paket ACK'lendi (reordering toleransı).   K=[STD:BBR/QUIC 3]
-  (b) TIME_THRESHOLD:   send_time + max(TIME_THRESH × srtt, min_delay) < now.
+  (b) TIME_THRESHOLD:   send_time + max(TIME_THRESH × srtt, min_delay, K_c × EAI) < now
+                        ∧ LATER-ACK KANITI (seq < largest_acked) VAR.                    [TUR-1a/1b, D-1]
                         TIME_THRESH=[STD:9/8]; min_delay=[CAL] (reordering tail).
+      [TUR-1a / D-1/1] KANIT-ŞARTI (RFC 9002 §6.1'in atlanmış yarısı): higher-ACK kanıtı olmadan
+      time-threshold KESİN loss YAZMAZ. Saf sessizlik loss metriğini ARTIRMAZ; fakat liveness
+      amacıyla probe/retransmit tetikleyebilir (§5.1 ackconf → RECOVER_FWD spekülatif kopya —
+      Duplicate sayılır, loss sayılmaz). Kanıtsız-eşik K-1 kompozisyonunun köküydü (ölçüldü: 27/27).
+      [TUR-1b / D-1/2] CADENCE-FARKINDA TABAN (ZM-4): K_c × EAI;
+      EAI = ACK_FREQ_N × ort_inflight_birim / send_rate_fiili + sack_wire/return_bw_önseli.
+      Sender-yerel + deterministik; K_c=1.5 [CAL matris {1.25, 1.5, 2.0}]; return_bw_önseli
+      §3.3-E-FULL'de ölçülen return_bw ile değişir [CAL]. "SACK'i henüz gelmedi" ≠ "kayıp".
 loss_pre_fec = lost_original_units / sent_original_units        (pencere W_loss)   [CAL: W_loss]
 residual_loss = unrecovered_units / sent_units                  (FEC/ARQ SONRASI)
 → loss_rate fuzzy girdisi = fuzzify(loss_pre_fec)  (LOW/MED/HIGH, §15)
@@ -906,6 +915,7 @@ Tunable'lar [CAL] → baseline ölçümünden sonra vektörlere GERÇEK değerle
 | `sack_wire` [R15] | 28(UDP/IPv4)+22(handle4+seq2+tag16)+ACK_FRAME_V2 gövde(15+4·range), 0 range | tüm bw | 65B |
 | `ACK_DELAY_UNIT` [TUR-1x] | V2 ack_delay birimi; tavan 65535×birim ≈ 16.78s > ACK_CADENCE floor 8.39s (satürasyon beklenmez, sayaçla denetlenir) | tüm bw (4-decade: floor-encoding hızlı kanalda ≤256µs yuvarlama = ihmal) | 256 µs [STD-karar D-4/1] |
 | min-rtt guard [TUR-1x] | `raw−ack_delay ≥ rtprop` değilse düzeltme REDDedilir, RAW işlenir (örnek atlanmaz; §6/§7.3, RFC 9002 §5.3). **CANCELLED:** mutlak `MIN_RTT_FLOOR=1ms` — loopback sub-ms gerçek RTT'de tüm örnekleri reddedip estimator açlığı yaptı (ZM-2 ihlali, bench-loopback ölçümü) | tüm bw (4-decade: gözlenen-min kanal-türevi) | — (sabitsiz) |
+| `K_c` cadence-eşik çarpanı [TUR-1b] | loss time-threshold tabanı = K_c×EAI (§5b); EAI = ACK_FREQ_N×ort_birim/send_rate + sack_wire/return_bw_önseli(31 B/s [CAL], §3.3-E-FULL ölçümle değişir) | tüm bw (EAI kanal-türevi; önsel-kolu worst-corner sabit — hızlı kanalda eşiği ~3.1s'e taşır, deadline≫ olduğundan kabul; ölçülen return_bw gelince daralır) | 1.5 [CAL matris {1.25, 1.5, 2.0}] |
 | `RTT_floor(unit)` | (unit_wire+sack_wire)/floor_bw + PROP_MARGIN | pace edilen taban | 256B@0.25k≈11.9s; 64B@1k≈1.43s |
 | `k_base` (COPY_BASE_FACTOR) [R1] | >1; ilk-SACK cadence-exempt → RTT_floor ilk-SACK modeli. Fallback (exempt değilse): ≥1+ACK_CADENCE/RTT_floor | tüm bw | 1.3-1.5 |
 | `COPY_MULTIPLIER` | geometrik backoff (RFC 6298 analoğu) | tüm bw | 2 [STD] |
@@ -944,7 +954,7 @@ ZM-4  Karşılaştırmanın İKİ YANI aynı saati kullanmalı (örn. loss-thres
 
 | mekanizma | kod | fiili sınıf | sub-kbps davranış | gereken sınıf |
 |---|---|---|---|---|
-| time-threshold loss 9/8·srtt | loss.rs + sender on_timer | rtt-türevi eşik ↔ ack-hold'lu wall-clock elapsed | temiz kanalda SİSTEMATİK false loss (K-1) | eşik ≥ beklenen-ACK-cadence + marj |
+| time-threshold loss 9/8·srtt | loss.rs + sender on_timer | ~~rtt-türevi eşik ↔ ack-hold'lu wall-clock elapsed~~ → **FIXED [TUR-1a+1b]**: later-ACK kanıt-şartı + cadence-farkında taban max(9/8·srtt, K_c×EAI) | (eski) temiz kanalda SİSTEMATİK false loss (K-1, 27/27 ölçüldü) | ✓ eşik ≥ beklenen-ACK-cadence (§5b; K_c=1.5 [CAL]) |
 | startup_plateau round | sender.rs | ~~event-count~~ → bw-örneği (TUR-A ölçüm değişikliği) | 3 ms'de STEADY → app-limited kilit (ölçüldü) | RTT-round (delivered-anchor); re-entry'de sayaç sıfırla |
 | W_BTLBW=10s | bw.rs:12 | wall-clock ("~10 RTT" değil) | 0.8-3.3 RTT → btlbw 88→4 çöküşü (ölçüldü); 0.25k'da pencere ACK arası boşalır → btlbw=0 | max(10s, k·srtt) veya örnek-sayısı |
 | W_RTPROP=10s | rtt.rs:16 | wall-clock | 1-4 örnek; 10s+ SACK boşluğunda tek örneğe düşer → rtprop=şişkin RTT | max(10s, k·srtt) |
