@@ -328,14 +328,46 @@ faydası BU bench-metriğinde görünmez (sent_ns=app-offer; hepsi t0'da → pac
 dürüst kayıt: drain'in ölçülebilir kazanımı dürüst-zemin + bench-dışı sınıflar (geç-katılan trafik,
 blackout-taşıma riski).
 
-**→ DOĞRULAMA-ŞARTI ("korunur VE tırmanır") 3b-TEK-BAŞINA YAPISAL SAĞLANAMAZ. KARAR (Abkarada):**
-(a) commit-B KALIR: belgeli −2 (43), dürüst-zemin — 3c ProbeUp hem −2'yi geri alır hem tavana
-    tırmanır; 3c ölçümleri kuyruk-maskesiz temiz zeminde [ÖNERİM — maske-geri-takma (c-sınıfı
-    kararların reddi) çizgisiyle tutarlı];
-(b) commit-B revert: 45 korunur ama sahte-kuyruk-zemin 3c ölçümlerini kirletir + Drain 3c'yle
-    birlikte iki-değişken döner;
-(c) Drain-gain yumuşatma (0.35→0.75): açığı küçültür ama kalibrasyon-bulandırma.
-commit-C (tüketici-8 EAI-tabanı) karardan bağımsız — karar-sonrası işlenecek.
+**→ KARAR (Abkarada, 2026-07-13): (a) commit-B KALIR** — belgeli −2 (43), 3c kuyruk-maskesiz
+temiz-zeminde. (b) RED: sahte-kuyruk-zemin 3c'yi kirletir + Drain 3c'yle iki-değişken (şişkin-
+rtprop-maskesi reddiyle aynı sınıf). (c) RED: yarım-maske, tam-maskeden beter. **Maske-soyma
+serisinin 4.'sü olarak kayıtlı:** D-1 (parazit 100→24) → 3a (rtprop → 34) → 3a.5-β (overfill) →
+3b (kuyruk-drain → app-limited-kilit). Desen: maske soyulur → sayı geçici düşer → altındaki kilit
+çıkar → kilit ZATEN sıradaki turun konusu. 3b, 3c'nin ne yapacağını ÖLÇEREK gösterdi.
+
+**3c-DEVİR (onaylı, HİPOTEZ-formülasyonuyla — 3c beklenti-kaydına aynen):** "app-limited-kilit
+ProbeUp ile btlbw 102→~125 ramp → temiz-1k 43 hem ≥45'e DÖNER hem tavana (50-53) TIRMANIR.
+DÖNMEZSE kilit ProbeUp-dışı bileşen taşıyor → ayrı teşhis, ProbeUp'ı GENİŞLETME." Kilidin SEBEBİ
+ölçüldü (rate=102<125, son-faz temiz); ProbeUp'ın ÇÖZÜMÜ henüz kanıtlanmadı — mantık sağlam,
+ölçüm 3c'de.
+
+**Yan-gözlem (kayıt, talimat):** commit-A test-yazımında 3a.5-β canlı göründü — büyük qualifying-ack
+(12.7s) srtt'yi kuantum-döngüyle taşıyıp min_dwell'i büyüttü = srtt-türev-fix'inin doğru çalıştığının
+EK kanıtı.
+
+## 0.17 TUR-3b commit-C DENEMESİ — 5. MASKE-SOYMA, geri çekildi, karar-noktası
+
+commit-C (tüketici-8 EAI-tabanı) yazıldı, kapıda KIRILDI ve kırılma ÖĞRETİCİ: bench-loopback
+9/10 — tek-kalan-son-paketin teslimi meğer **liveness-dup → DupSuppress-force-ACK** gizli-yoluna
+dayanıyormuş: receiver'ın STATİK 8.39s cadence'i (§16.2'de zaten SUSPECT: "ACK_CADENCE_FLOOR
+statik-prior") tek-paket-tail'in timer-SACK'ini deadline-dışına atıyor; eski 3×srtt-eşiği (fast'ta
+ms'ler) conf'u anında düşürüp RecoverFwd-dup'ı ateşliyor, dup force-ACK tetikliyordu. EAI-tabanı
+(2×EAI≈4.2s; LOW-eşiği ≈14s) bu gizli-yolu kapattı → tail teslim edilemedi. **MASKE-SOYMA #5:**
+tail-ACK-zamanlılığı liveness-emergency'ye (ağır mekanizma) dayanıyormuş — gerçek borç receiver
+statik-cadence (tek-paket-tail için timely-ACK; QUIC max_ack_delay≈25ms sınıfı).
+AYRICA yeni iz: loopback tx=1550B = 17 data-emisyonu / 10 birim (7 fazla-data — retx/dup DEĞİL;
+kaynağı belirsiz, AYRI teşhis ister).
+
+**→ commit-C working-tree'den GERİ ÇEKİLDİ** (A+B kapıları yeşil; C commit'lenmedi).
+**KARAR-NOKTASI (Abkarada):** tüketici-8 tabanı nasıl gelmeli?
+(a) C'yi receiver tail-ACK fix'iyle EŞLEŞTİR (son-paket/tek-paket timer-SACK'i cadence-muaf ya da
+    kısa-gecikmeli — QUIC-max_ack_delay sınıfı; §3.3-E-FULL'ün öne alınmış dar-parçası) → çift
+    taraf birlikte: liveness ağır-yol olmaktan çıkar, conf-tabanı güvenle gelir [ÖNERİM — kök-fix];
+(b) C'nin tabanını yalnız EAI'nin KANAL-koluna bağla (statik-prior'suz) → fast'ta taban≈0 (eski
+    davranış), sub-kbps'te koruma kalır; ama EAI-semantiği bölünür + statik-cadence borcu maskeli
+    kalır;
+(c) C'yi 3c-sonrasına ertele (liveness-sözleşmesi 3b'de eksik kaldı — dürüst kayıt).
+17-data izi: karar ne olursa olsun AYRI teşhis-maddesi (yeni borç-satırı §3.7'ye).
 
 ## 1. KARARLAR
 
@@ -499,6 +531,7 @@ p5→TUR-4'te geri · p2/p3-tırmanış→TUR-4+B.
 | borç | doğuş | doğrulama/çürütme noktası | durum |
 |---|---|---|---|
 | **ŞANSLI-MOD-FREKANSI** | TUR-2b ölçümü: p5 şanslı-mod 0/9 çekiliş (P≈%3-5 kuyruk). Yapısal savunma ("2b sıcak-yolu hit=0 iken karar-yolu 2a-bit-özdeş → frekans değişemez → netem-varyansı") bir **ÇIKARIM, ölçüm değil** | **TUR-3a retest'i** spektrumu yeniden örnekler: şanslı-mod ~%30 bandına dönerse borç KAPANIR; yine seyrekse yapısal-savunma ÇÜRÜR → şanslı-mod-frekansı bağımsız sorun olarak açılır | AÇIK |
+| **17-data-emisyonu izi (loopback)** | commit-C teşhisi sırasında görüldü: 10 birim / 17 data-send (tx=1550B; retx=0 dup=0) — fazla-emisyonların kaynağı belirsiz | AYRI teşhis (muhtemelen PreConverge/emisyon-yolu); kampanya-metriklerine oran-etkisi olabilir | AÇIK |
 | **Little-kolu min_cwnd-maskesi** | 3a.5-α ölçümü: cwnd/srtt kolu fixture min_cwnd'i sayesinde BAĞLAMADI (yarı-2 öngörüm aşırı-temkin) — kol fiilen uykuda | MIN_CWND kalibrasyonu (sıra-SONU, D-4/2): kalibre min_cwnd küçülürse kol uyanır → srtt_t-paydalı davranış O ZAMAN ölçülür | AÇIK |
 | packets_in_flight kayıp-sızıntısı (sampler) | TUR-2c muhasebe-incelemesi + review-workflow'u: kayıp-ilan edilen paket sampler'ın packets_in_flight'ını düşürmüyor; hit'siz üç yol HİÇ decrement etmez: (a) tombstone TTL-prune, (b) kapasite-eviction, (c) Duplicate-kökenli kayıp (tombstonesuz) → her gerçek-kayıp kalıcı +1 sızıntı → pipe-boş tespiti (first_sent/delivered_time yeniden-çıpalama) kayıplı koşuda bir daha tetiklenmez | TUR-3a (estimator pencereleri) — sampler semantiği zaten o turun masasında | AÇIK |
 
