@@ -214,6 +214,9 @@ const K_BW: u32 = 8;
 const K_RTPROP: u32 = 8;
 /// [TUR-3a.5 commit-α] qd kısa-pencere çarpanı: W_qd = K_qd × ack_epoch [CAL matris {1,2,4}].
 const K_QD: u32 = 2;
+/// [TUR-3a.5 commit-β] Kuantum-döngü yakınsama-böleni: T = rtprop / K_CONV [CAL matris {2,4,8}].
+/// T=rtprop = 3a-sonrası tek DÜRÜST saat (ack_epoch öz-referans tuzağı reddedildi — srtt-clock-v1 §2.1).
+const K_CONV: u32 = 4;
 /// [TUR-2b D-1/4] Tombstone kayıt tavanı [CAL] — SR-AUDIT-001 bounded; en-eski-önce eviction +
 /// audit. 4-decade doluş-doğrulaması not D-1/4 (0.25kbps ≈ 11 kayıt; ≲Gbps'te ~450 ≪ 4096).
 const TOMBSTONE_MAX: usize = 4096;
@@ -413,6 +416,10 @@ impl Sender {
             self.btlbw.set_window(ack_epoch * K_BW);
             self.rtt.set_rtprop_window(srtt_now * K_RTPROP);
             self.rtt.set_qd_window(ack_epoch * K_QD); // [3a.5-α] rtprop-penceresinden sonra (≤ invariant)
+                                                      // [3a.5-β] kuantum-döngü T'si — yalnız rtprop varken (PreConverge'de None → n=1).
+            if let Some(rtp) = self.rtt.rtprop() {
+                self.rtt.set_conv_interval(rtp / K_CONV);
+            }
         }
 
         // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
