@@ -311,6 +311,32 @@ yarı-2 öngörüm aşırı-temkindi) — MIN_CWND kalibrasyonu (SON'da) gelince
   açlık-teslimi düşebilir DE yükselebilir DE — dürüst belirsizlik, iki-mod ayrı ölçülür).
 - Doğrulama: temiz-1k ≥45 KORUNUR ∧ TIRMANIR; smoke p4/p5×6 aynı-era; tam-matris PR-öncesi.
 
+## 0.16 TUR-3b ÖLÇÜM-KAYDI — commit-A ✓; commit-B'de YAPISAL-BULGU, DUR-noktası
+
+**commit-A (9051164, DrainRtprop sözleşmesi):** temiz-1k 45 DEĞİŞMEDİ ✓ (tahmin). N=0 öldü;
+birim-vektörler: giriş-reddi/dwell/invariant. Test-yazımında 3a.5-β'nın canlı-kanıtı: qualifying-ack
+büyük örneği srtt'yi kuantum-döngüyle taşıyıp min_dwell'i büyüttü (dürüst estimator hareketi).
+
+**commit-B (da44cf0 + 2×BDP ayarı; Startup-Drain):** temiz-1k 45→43 — beklenti (46-49) YANLIŞTI ve
+sapmanın dekompozisyonu TURUN ASIL DERSİ: **ayakta-kuyruk varken kanal ZATEN %100 doluydu — drain
+teslimi ARTIRMAZ, kuyruğu öldürür.** Teslim-kaybı SONDAN: kuyruk ölünce (t≈90; son-faz srtt=3.09s≈
+rtprop, qd=0 — CENNET-zemin) Steady rate=102 < kanal-125 → app-limited-kilit son ~30s'de kanalı AÇ
+bırakıyor (≈−2.6 birim). **ESKİ 45, ayakta-kuyruğun app-limited-kilidi MASKELEMESİYLE geliyordu** —
+3b maskeyi soydu (D-1/D-2 maske-soyma serisinin devamı), açığa çıkan hırsız = 3c'nin tam hedefi
+(btlbw 102→~125 ramp). Drain-hedef ayarı (BDP→2×BDP) süreyi değiştirmedi (fizik aynı). Latency-
+faydası BU bench-metriğinde görünmez (sent_ns=app-offer; hepsi t0'da → pacing-dwell domine) —
+dürüst kayıt: drain'in ölçülebilir kazanımı dürüst-zemin + bench-dışı sınıflar (geç-katılan trafik,
+blackout-taşıma riski).
+
+**→ DOĞRULAMA-ŞARTI ("korunur VE tırmanır") 3b-TEK-BAŞINA YAPISAL SAĞLANAMAZ. KARAR (Abkarada):**
+(a) commit-B KALIR: belgeli −2 (43), dürüst-zemin — 3c ProbeUp hem −2'yi geri alır hem tavana
+    tırmanır; 3c ölçümleri kuyruk-maskesiz temiz zeminde [ÖNERİM — maske-geri-takma (c-sınıfı
+    kararların reddi) çizgisiyle tutarlı];
+(b) commit-B revert: 45 korunur ama sahte-kuyruk-zemin 3c ölçümlerini kirletir + Drain 3c'yle
+    birlikte iki-değişken döner;
+(c) Drain-gain yumuşatma (0.35→0.75): açığı küçültür ama kalibrasyon-bulandırma.
+commit-C (tüketici-8 EAI-tabanı) karardan bağımsız — karar-sonrası işlenecek.
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
