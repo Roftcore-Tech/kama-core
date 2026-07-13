@@ -1,0 +1,273 @@
+# time-model-v1 (r2-ONAYLI) — Motorun Zaman-Modelinin Sub-kbps'e Taşınması (TASARIM NOTU, D0-tarzı)
+
+> **Statü: r2 ONAYLANDI (Abkarada, 2026-07-12) → TAM-GO.** Dört karar: **(1)** p5 = seçenek (a)
+> belgeli-regresyon, main'e merge YOK, taşıyıcı TUR-4; (b) RED (tek-değişken kırar, 4-kök kompozisyonu
+> maskeler) — ŞART: §3.5 "bilinen-açık kabul-kapısı" izlemesi. **(2)** not r2 tam-GO, TUR-1x'ten devam.
+> **(3)** §3 [CAL] başlangıçları ONAYLI (placeholder, golden'a girmez) + tombstone MAX=4096 4-decade
+> bellek-doğrulaması eklendi (D-1/4). **(4)** TUR-1x aynı PR, sıra 1a→1x→1b, **ÜÇ ayrı ölçüm-noktası**;
+> 1x-sonrası ara-ölçüm (srtt ~8.3s→gerçek-path-RTT) KAYDEDİLMEDEN 1b başlamaz. Her commit:
+> beklenti-kaydı-önce + tek-değişken + p4/p5-smoke (p5 "bilinen-düşük" istisnasıyla).
+> Otorite: transport-tdd (WHAT) > engine-spec (HOW; §16.2 ZM-1..4) > bu not > kod.
+
+## 0. Kök teşhis (r1'den, GO): 22 BREAKS ≠ 22 bug — İKİ paylaşılan yanlış-model
+
+**(a) Estimator saat-modeli:** pencere/dwell/round'lar kanal-zamanı yerine wall-clock/event-count
+ölçüyor (W_BTLBW/W_RTPROP=10s; DrainRtprop dwell=0 event [verify: AYNI çağrıda çıkıyor]; emergency
+ladder=çağrı-sayısı; deescalate_dwell=1s<srtt; dup_spacing=20ms≪serialization; ProbeUp UNREACHABLE).
+
+**(b) Loss-modeli:** loss OLAY (monoton, geri-dönüşsüz, anında-infaz) modellenmiş; sub-kbps fiziğinde
+HİPOTEZ (SACK-cadence gecikmesinden ayırt edilemez; geç kanıtla ÇÜRÜMELİ). K-1 kompozisyonu (ölçüldü):
+false-loss → eviction → ACK-sansürü → estimator açlığı (btlbw 88→4) → fuzzy zehirlenmesi → arq=0 →
+pending drain edilmez → RecoverArq mıhlı.
+
+## 0.5 Temel-kanıt tablosu (r1 + re-verify işlenmiş; tamamı ÖLÇÜLDÜ/VERIFIED)
+
+| bulgu | kanıt | statü |
+|---|---|---|
+| Temiz kanalda %100 time-threshold false-loss (27/27; packet=0) | diag_loss atıflama | ÖLÇÜLDÜ |
+| btlbw 88→4 çöküşü (gerçek ~90-94 B/s iken); nedeni eviction-sansürü | TRAJ; TUR-1a'da kayboldu | ÖLÇÜLDÜ (2 yönlü) |
+| arq=0 → pending drain edilmez (retx=0, pend monoton) | TRAJ + tx-dekompozisyon | ÖLÇÜLDÜ |
+| W_BTLBW/W_RTPROP=10s wall-clock ("~10 RTT" değil) | bw.rs:12/rtt.rs:16 | VERIFIED |
+| ack_delay u16µs=65.5ms tavan → RTT ~8.3s şişer | receiver.rs:76 + rtt akışı | VERIFIED (2 grup) |
+| DrainRtprop N=0 — AYNI on_event'te çıkar, ProbeDown gain hiç uygulanmaz | sender update_state `_` | VERIFIED (CORRECTED-worse) |
+| ProbeUp UNREACHABLE — Steady kalıcı app-limited kilit | compute_send_rate match | VERIFIED (yeni kaçak) |
+| ack_confidence anchor `.or()` ≠ spec `max()`; idle-resume bayat → anında RecoverFwd | sender.rs:756 | VERIFIED (CONFIRMED) |
+| fuzzy mutlak üyelikler → kural-ağırlığı-0 → arq=0 | fusion.rs + ölçüm | VERIFIED + ÖLÇÜLDÜ |
+| UN-LOSS yolu yok; loss_ppm monoton ratchet | loss.rs | VERIFIED |
+| **p5 100/100'ün false-loss-fırtınası PARAZİT recovery'si olduğu** | TUR-1a smoke: p5 24/100, dup 93673→0 | **ÖLÇÜLDÜ (yeni, §0.7)** |
+
+## 0.7 TUR-1a ölçüm kaydı (commit 546927c; talimat-GO ile koşuldu)
+
+**Beklenti-kaydı (önceden):** loss_time 27→0; RecoverArq kaybolur; teslim 29→↑; iki dal: (a) Startup
+ramp tamamlar → btlbw ~110-125, (b) premature-plateau kilitler → btlbw ~88-100, tam ramp TUR-3c'ye.
+**Gerçekleşen:** `loss_time 27→2` (t<108s SIFIR; kalan 2 = kanıtlı-ama-cadence → tam TUR-1b hedefi),
+teslim **29→43/100**, dup=retx=0 (1.00×), 88→4 çöküşü KAYBOLDU (88→102 stabil), **dal (b)**: premature-
+plateau t≈27'de Steady kilitledi, btlbw ~102 app-limited (kayıtlı bağımlılık — başarısızlık DEĞİL).
+p4 100/100 ✓ (oran 1.08→1.01 iyileşme — precondition jitter false-loss'unu da temizledi). p2 1→3/100 ✓.
+**p5 100→24/100 REGRESYON (tahmin ✗, dekompoze):** eski 100/100, false-loss fırtınasının parazit
+recovery'siydi (pending'i fırtına dolduruyor → RecoverFwd 93673B dup). Precondition parazit motoru
+söktü; meşru yollar taşımıyor: (i) kanıtlı sınıflandırma çalışıyor AMA fuzzy arq=0 (D-3 kökü) →
+pending drain edilmiyor; (ii) p5'te SACK'lerin %20'si geçiyor → conf yüksek → RecoverFwd'e girilmiyor.
+**Sonuç: p5, D-3 fallback'ine (TUR-4) + TUR-B'ye bağımlı — D-3 "temizlik" değil, p5'in TAŞIYICISI.**
+→ Abkarada karar noktası §3/5.
+
+## 0.8 TUR-1x ölçüm kaydı (ZORUNLU ara-ölçüm; talimat #4 — 1b bu kayıt olmadan başlamaz)
+
+**Beklenti-kaydı ölçümden ÖNCE yazıldı** (scratchpad tur1x-prediction.md; baseline-sonrası zeyl dahil).
+
+**Baseline (546927c, temiz 1kbps):** srtt "8.3s plato" TAHMİNİ YANLIŞTI → gerçek: **3.0→30.8s monoton
+büyüme, KUYRUK-domine** (infl/rate ≈ 48-62s sender-side netem kuyruk = gerçek kanal-zamanı). Hold
+bileşeni yalnız timer-SACK örneklerinde (kanıt: t≈90 tek kümülatif SACK srtt'yi 14→20.8s sıçrattı;
+freq-SACK'te hold≈0). Kullanıcının "~8.3s→path-RTT" hedefi bu dekompozisyonla okundu: hedef = hold'un
+örneklerden çıkması.
+
+**ÖLÇÜM-ARACI ARTEFAKTI (yeni, measurement-tool-first 4. yakalama):** after-kollarında tekrarlanan
+loss_pkt=4-8 sapması seq-düzeyi yer-gerçeğiyle köklendi: seq 37-38 wire'da GERÇEKTEN kayıp (client
+SND, server RX yok) ama netem dropped=0, Udp Snd/RcvbufErrors=0 → düşüş **kernel ARP/neighbor
+katmanında** (ARP probe'ları da netem kuyruğuna girer → çözümleme timeout → arp_queue sessiz drop;
+neigh girdileri STALE gözlendi). **Fix: kalıcı neighbor-pin, harness/netem-profiles.sh `pin_neigh`**
+— pin sonrası 2 koşu sıfır gap/sıfır loss. SONUÇ: (i) motor TÜM koşularda DOĞRU davranmış (gerçek
+kaybı kanıtla sınıflandırdı — TUR-1a mekanizması sahada doğrulandı); (ii) ölçüm-1'in "kalan 2
+loss_time (kanıtlı-ama-cadence)" kalıntısı büyük olasılıkla AYNI artefakt = gerçek kayıp →
+TUR-1b'nin "2→0" hedef metriği pin'li ortamda ZATEN 0 (1b'nin değeri 0.25k/koruma-katmanına kayar);
+(iii) pin'siz TÜM geçmiş sub-kbps ölçümler (quinn baseline dahil) bu artefaktı içerir — simetrik
+olduğundan karşılaştırma bozulmaz ama kampanya pin'li koşulmalı (r5'e not).
+
+**Guard-revizyonu (ölçümle):** ilk uygulanan mutlak `MIN_RTT_FLOOR=1ms` bench-loopback'te ÇÖKTÜ
+(gerçek RTT sub-ms → tüm örnekler red → srtt kurulamadı → PreConverge kilidi) = kendi ZM-2 ihlalim,
+testle yakalandı → **RFC 9002 §5.3 gözlenen-min guard'ıyla değiştirildi**: düzeltme yalnız sonuç
+rtprop'un altına inmiyorsa; aksi hâlde RAW işlenir, örnek ATLANMAZ (sample-skip = K-1 sınıfı açlık).
+**AFTER (V2 0x14 15B gövde §2.2-konform + 256µs + floor-encoding + satürasyon-sayacı + min-rtt guard):**
+temiz 1kbps: **teslim 41→45/100** (tahmin bandı 43-47 ✓), loss_pkt=0 ✓, loss_time=0 ✓ (tahminden iyi),
+dup=retx=0 ✓, btlbw 88→102 stabil-plato ✓ (app-limited, TUR-3c bağımlılığı kayıtlı), rtt_rej=0 ✓,
+satürasyon=0 ✓. **Kodlama sadakati kanıtı:** adly_max 1.43s DECODED+SUBTRACTED (eski tavan 65.5ms —
+21×büyük hold artık görünür/düşülür); hold-sıçrama sınıfı örnekler kayboldu; srtt saf kuyruk-fiziği
+(kuyruk boşalırken DÜŞÜYOR — r1 t=100-115: 23.6→20.3s).
+
+**Smoke:** p4 100/100, oran 1.01× ✓ (kararlı, 4 ölçümde). **p5 — İKİ AŞAMALI BULGU:**
+(i) *sample-skip'li ilk guard'la* {13,5,13}: sunulan birim 28→15 (tx 7924→4245 deterministik) —
+büyük-ack_delay'li örnekler SKIP → estimator açlığı derinleşti.
+(ii) *RFC-9002 guard'la (final, örnek atlanmaz)* **BIMODAL {100, 13, 4}**: şanslı-mod erken-SACK
+örnekleri sağlıklı → **100/100, oran 1.12×, c10=0.93, data=100 birim + retx=1698B + dup=1698B —
+MEŞRU TAŞIYICI UÇTAN UCA İLK KEZ ÇALIŞTI** (parazit 4.31×/93673B'ye karşı temiz 1.12×); açlık-modu
+(r3 TRAJ): ilk SACK t≈40 (hold 7.77s V2-decoded ✓, srtt=31ms gerçek-path ✓ — 1x DOĞRU), ama tek
+kümülatif-SACK'ten türeyen bw-örneği btlbw'yi 31 B/s'e FLOOR-KİLİTLİYOR → RecoverFwd'de 120s
+floor-crawl (15 birim, dup bile akmıyor — rate-açlığı). **Kökler sıradaki turların tam kendisi:**
+ACK-starved kümülatif-SACK bw-örneği semantiği (TUR-2/Karn-ledger), floor'dan yukarı yol yok
+(TUR-3c ProbeUp — app-limited kilit sınıfı), fuzzy (TUR-4), MIN_CWND (D-4/2). P5-GATE: durum
+"meşru-mekanizma-varlığı KANITLANDI, stabilite yok (bimodal)" — kabul-kriteri stabiliteyi de içerir.
+
+## 0.9 TUR-1b ölçüm kaydı (ölçüm-noktası 3/3)
+
+**Beklenti-kaydı önce** (scratchpad tur1b-prediction.md). Tek değişken: cadence-farkında taban
+`T_loss = max(9/8·srtt, min_delay, K_c×EAI)`, K_c=1.5, EAI sender-yerel deterministik (D-1/2 formülü).
+**Gerçekleşen = tahmin, tam isabet:** temiz 1kbps teslim 45 DEĞİŞMEDİ ✓, loss=0/0 KALDI ✓ (eşik
+yalnız gevşer; değeri KORUMA — erken-pencerede taban≈11.2s vs 9/8·srtt≈3.4s → 3× marj; artefakt-
+sonrası kalan cadence-riski sınıfının yapısal kapanışı). p4 100/100 + 1.01× DEĞİŞMEDİ ✓ (kayıpsız →
+eşik hiç tetiklenmez). p5 bimodal KALDI {10 açlık | 100 şanslı} ✓; şanslı-modda c10=0.99,
+retx 1698→849 DÜŞTÜ (daha az erken-tetik ✓ tahmin), dup 5094 (liveness taşıdı), oran 1.21×.
+Saat-sınıfı beyanı (ZM-3): EAI kanal-türevi + worst-corner return-önseli [CAL] — §16.2/§16.1'e girdi.
+NOT: ölçüm-1'deki "kalan 2 kanıtlı-ama-cadence loss" hedefi ARP-artefakt bulgusuyla (§0.8) yeniden
+yorumlandı — pin'li ortamda zaten 0'dı; 1b'nin ölçülebilir birincil değeri 0.25k/TUR-C'de görünecek.
+
+## 1. KARARLAR
+
+### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
+
+1. **[#1] İKİ MEKANİZMA AYRI — classification vs liveness (TUR-1a'da uygulandı):**
+   - *Loss classification:* higher-ACK kanıtı olmadan time-threshold KESİN loss YAZMAZ (metrik artmaz).
+   - *Liveness recovery:* **"Saf sessizlik loss metriğini ARTIRMAZ; fakat liveness amacıyla
+     probe/retransmit tetikleyebilir"** — §5.1 ack_confidence → RECOVER_FWD spekülatif geometrik kopya
+     (taban=srtt, ×2, ACK'le iptal; Duplicate sayılır, loss sayılmaz). Gerçek tail-loss böyle yaşar.
+2. **Cadence-farkında eşik (TUR-1b):** `T_loss = max(9/8·srtt, K_c × beklenen_ACK_aralığı + marj)`;
+   `beklenen_ACK_aralığı = ACK_FREQ_N × unit_wire / send_rate_fiili + sack_dönüş_serialization`
+   (sender-yerel, deterministik). K_c=1.5 başlangıç, matris {1.25, 1.5, 2.0}.
+3. **[#3] UN-LOSS + retransmission-ambiguity — İKİ KOL:**
+   - *ACK retransmit gönderilmeden ÖNCE geldi:* spurious → pending-retransmit iptal + loss-olayı
+     geri-al (ledger, aşağıda) + **orijinal RTT örneği GEÇERLİ** (tek gönderim, belirsizlik yok) +
+     BW örneği normal.
+   - *ACK retransmit gönderildikten SONRA geldi (Karn ambiguity):* teslimat BİR KEZ muhasebe +
+     pending temizle + spurious/ambiguous sayacı + **RTT örneği ALINMAZ** (generation wire'da ayırt
+     edilemiyor: ilk-ts→sahte-büyük, retx-ts→sahte-küçük). **BW:** delivered byte'ları sampler'ın
+     kümülatif `delivered`'ına GİRER (teslimat gerçek) ama bu ACK'ten **rate-örneği ÜRETİLMEZ**
+     (interval hangi gönderime ait bilinmiyor) — `sample_skipped_ambiguous++`.
+   - *[#3] W_loss EVENT-LEDGER (integer-decrement DEĞİL):* seq-başına durum
+     `Suspected → Confirmed | Spurious | Expired`; `loss_ppm` pencere-içi mevcut event-state'lerinden
+     TÜRETİLİR (Confirmed/pencere-içi-toplam). Monoton ratchet yapısal biter; spurious→
+     `ReorderTracker.note_spurious` beslenir (adaptif reorder_thresh nihayet kablolanır).
+4. **[#2] ACTIVE-FLIGHT vs TOMBSTONE AYRIMI ("inflight'tan silinmez" DEĞİL):**
+   - *Active flight accounting:* `loss_suspected` olan paket `bytes_in_flight`/cwnd muhasebesinden
+     DÜŞÜLEBİLİR (gönderim durmaz).
+   - *Retained transmission record (tombstone):* geç-ACK eşleştirme için AYRI bounded kayıt:
+     `zaman-sınırı = min(mesaj deadline'ı, TOMBSTONE_TTL=K_tomb×T_loss, K_tomb=8 [CAL])` ·
+     `max-kayıt = TOMBSTONE_MAX=4096 [CAL]` · *eviction:* en-eski-TTL-önce · *eviction etkisi:*
+     `tombstone_evicted_total++` (audit sayacı; evict edilen seq'in geç ACK'i artık `Expired/Unknown`
+     — RTT/BW örneği üretmez, teslimat-damgası bench-katmanında zaten bağımsız). SR-AUDIT-001 bounded.
+   - *4-decade bellek/doluş doğrulaması (talimat, 2026-07-12):* steady-state kayıt ≈ pkt_rate ×
+     TTL(=K_tomb×T_loss=9×srtt). **0.25kbps:** ~0.1 pkt/s × 9×~12s ≈ **11 kayıt** (4096'nın %0.3'ü —
+     eviction hiç tetiklenmez). **1kbps:** ~0.4×9×4s ≈ 15. **100kbps:** ~10×9×0.2s ≈ 18.
+     **1Mbps %heavy-loss:** ~1000×9×0.05s ≈ 450. Tavan ancak ≳100k pkt/s'te (≈Gbps küçük-paket)
+     dolar → eviction+audit devreye girer (tasarlanan davranış). Bellek tavanı: 4096 × (~24B kayıt +
+     ~64B map-overhead) ≈ **≤352 KiB** worst-case, sabit. SONUÇ: MAX=4096 4-decade'de güvenli. ✓
+5. **W_loss kayan pencere:** ledger penceresi `W_loss = K_wl × ack_epoch` [CAL] (spec §5'in borcu).
+
+**Beklenti-kaydı (bağımlılıklar AÇIK, #7):** TUR-1b sonrası temiz-kanal loss_time 2→0; TUR-2 sonrası
+kayıplı kanalda estimator sağlığı (btlbw/srtt gerçek-kayıp altında stabil) + spurious-oran ölçülür
+(r5 confusion-matrix ön-provası). **Bunlar btlbw'yi 125'e ÇIKARMAZ** — ramp TUR-3c'ye (ProbeUp),
+p5-tırmanışı TUR-4+TUR-B'ye bağlı. Ara-retest'ler bu bağımlılıkla OKUNUR.
+
+### D-2 — Estimator zaman-referansı [K_w AYRILDI → K_bw + K_rtprop; ack-epoch tanımı]
+
+1. **Pencereler (karar, talimattan):** `ack_epoch = max(corrected_srtt, expected_ack_interval)`;
+   `W_BTLBW = max(10s, K_bw × ack_epoch)`; `W_RTPROP = max(10s, K_rtprop × corrected_srtt)`.
+   Başlangıç K_bw=8, K_rtprop=8; kalibrasyon matrisi K∈{6,8,10} (merkez 8). Gerekçe: bant-örneği
+   geliş-ritmi (ACK-epoch) ≠ min-RTT yenilenme ihtiyacı (RTT). `corrected_srtt` = ack_delay-düzeltilmiş
+   srtt — **TUR-1x'e bağımlı** (kirli-saat, §2 sıra gerekçesi). Hiçbir placeholder golden'a girmez;
+   ölçülen değer girer.
+2. **Keep-last:** max/min-filter son örneği ASLA expire etmez → btlbw=0/rtprop=None flap'i yapısal biter.
+3. **[#5] DrainRtprop (ProbeRTT) giriş/çıkış SÖZLEŞMESİ:** giriş = RTPROP_WINDOW-doluşu (200ms sabit
+   tick DEĞİL); çıkış invariantı KESİN:
+   `exit = (elapsed ≥ min_dwell ∧ qualifying_min_rtt_sample_seen) ∨ elapsed ≥ max_dwell`
+   (örnek hemen gelse tek-event'te çıkmaz; hiç gelmese sonsuza takılmaz). Faz en az bir GERÇEK
+   gönderim fırsatı boyunca uygulanır (yalnız wall-clock değil). min_dwell=1 ack_epoch,
+   max_dwell=3 ack_epoch [CAL].
+4. **[#5] ProbeUp SÖZLEŞMESİ (yapısal; eksikti):**
+   - *Giriş:* backlog'da veri VAR ∧ recovery/emergency AKTİF DEĞİL; periyot RTT-round-türevi
+     (event-count DEĞİL — ZM-1).
+   - *Gain:* 1.25× (Startup 2.89× re-entry RED — Steady bağlamında agresif).
+   - `probe_success = delivered_since_entry ≥ probe_volume ∧ btlbw_sample > old_btlbw × (1+ε)`
+   - `probe_abort = qd_ratio > limit ∨ confirmed_loss > limit`
+   - `probe_timeout = elapsed ≥ max_probe_dwell`
+   - **"Başarısız probe" ≠ "kapasite artmadı"** (abort/timeout ayrı raporlanır, KARIŞTIRILMAZ).
+   - `compute_send_rate`'te ProbeUp AÇIK ayrı match-kolu — `_`'ya BIRAKILMAZ.
+   - **Startup-3ms-hatası tekrarlanmaz kanıtı:** her ProbeUp/Drain eşiği §16.2 ZM-tablosuna
+     saat-sınıfıyla girer.
+5. **Emergency dwell'ler:** `deescalate_dwell = max(1s, k_d×srtt)`; escalate adım-arası RTT-türevi taban.
+6. **anchor:** spec `max(last_ack, first_send)` + aktif-dönem re-base (Idle→aktif geçişinde).
+7. **plateau:** ölçüm-enablerı statüsünde (546927c'de commit'li); delivered-anchor + re-entry
+   sayaç-sıfırlama revisiti K-1+pencere fix'leri sonrası.
+
+### D-3 — Fuzzy üyelik normalizasyonu [#6 karar VERİLDİ + p5-kanıtı]
+
+1. **qd:** rtprop-göreli `qd_ratio = queue_delay/rtprop`. **`rtprop=None` veya 0 davranışı (tanım):**
+   `qd_ratio = 0` (kanıt yok → boğma yok) + `qd_no_evidence_counter++`; keep-last (D-2/2) None'u
+   nadirleştirir.
+2. **bw:** log-ölçek (decade-tabanlı) üyelik; sub-kbps kendi decade'i.
+3. **[#6] Sıfır-ağırlık fallback — SEÇİLDİ:** `sum(rule_weights) ≤ ε` ise: son-geçerli karar
+   **EN FAZLA 1 decision-window** korunur → sonra **`arq_light` güvenli-default** →
+   `fuzzy_no_rule_counter++`. (Sınırsız last-valid RED — bayat arq_heavy'yi kalıcılaştırır.)
+   **Membership invariant testi:** her geçerli input-kombinasyonunda `sum(rule_weights) > ε`
+   (fallback güvenlik-ağı, normal-yol DEĞİL) — property-test + TV-FUZZY'ye girer.
+4. loss girdisi D-1/5 ledger-penceresinden.
+**p5-kanıtı (§0.7):** bu karar p5'in taşıyıcısı — arq=0 kilidi kalkmadan p5 meşru-recovery'yle taşınamaz.
+
+### D-4 — Wire/spec-seviye [AÇIK KARARLAR işlendi; grep-kanıtı aşağıda]
+
+**Grep-kanıtı (iddia değil, satır):**
+```
+$ grep -n -i "ack_delay\|ACK_FRAME\|0x10" specs/ccr-format-spec.md
+2447:  candidates = [ base | seq16, (base - 0x10000) | seq16, (base + 0x10000) | seq16 ]   ← alakasız (seq16 wrap)
+$ grep -n -i "ack_delay\|ACK_FRAME" specs/transport-layer-tdd.md
+(boş — sıfır eşleşme)
+```
+→ ack_delay/ACK_FRAME **KAT-donmuş belgelerde YOK**; layout engine-spec §2 (HOW). 0x14/V2 zaten bu
+döngünün D1-amend'i — KAT kaydı TETİKLENMİYOR (yeni frame, donmuş sete dahil değil).
+
+1. **ack_delay = SEÇENEK A (karar):** u16 kalır, birim 256µs, tavan 16.78s. Şartlar (talimattan, hepsi
+   uygulanacak): **yalnız-V2(0x14) semantiği** (V1 0x10 µs-birimle decode-uyumlu kalır) ·
+   **floor encoding** `encoded = min(floor(actual_us/256), 65535)`, `decoded = encoded×256µs`
+   (receiver delay'i ŞİŞİRMEZ → path-RTT fazla küçülmez) · **saturation-sayacı** (encoded==65535) ·
+   **RTT-subtraction guard** (raw−decoded < min_rtt_floor → sample invalid, §7.3 `ack_delay_untrusted`;
+   underflow yasak) · sack_wire=65B ve §16.1 türetimleri DEĞİŞMEZ.
+2. **MIN_CWND (karar, ACK-progress alt sınırıyla):**
+   `MIN_CWND = max(K_bdp × BDP, min(ACK_FREQ_N, 2) × unit_wire)`, `BDP = btlbw × rtprop`, K_bdp=2
+   [CAL-placeholder]. Gerekçe: salt 1-birim tabanı ACK_FREQ_N=2'yle her paketi timer-SACK'e düşürür
+   (ACK-hold'u yeniden üretir). 4-decade domain doğrulaması (0.25k/1k/100k/1M). **Kalibrasyonu sıranın
+   SONUNDA** (aşağıda).
+
+## 2. TUR SIRASI (REVİZE [#4]: ack_delay ölçüm-ALTYAPISIDIR, D-2'den önce)
+
+```
+TUR-1a  later-ACK + liveness ayrımı            [KOŞULDU: 546927c; ölçüm-1 §0.7]
+TUR-1x  ack_delay Seçenek-A (V2) + corrected-RTT saati     ← D-2 pencereleri KİRLİ SAAT üstüne kurulmasın
+TUR-1b  cadence-farkında eşik (K_c)            [tek PR TUR-1a ile, commit-2; ölçüm-2 zorunlu]
+TUR-2a  W_loss event-ledger + un-loss (spurious→note_spurious kablosu)
+TUR-2b  active-flight/tombstone ayrımı (parametreli, bounded)
+TUR-2c  Karn-ambiguity RTT/BW kuralları
+TUR-3a  estimator pencereleri (K_bw×ack_epoch, K_rtprop×corrected_srtt) + keep-last
+TUR-3b  DrainRtprop giriş/çıkış sözleşmesi (window-derived giriş + exit-invariant)
+TUR-3c  ProbeUp state + sözleşme + açık match-kolu
+TUR-4   fuzzy normalize + sıfır-ağırlık fallback (arq_light)      ← p5'in taşıyıcısı (§0.7)
+TUR-B   redundancy/kopya bütçesi (p2/p3 taşıma)
+TUR-C   0.25k residual (overdrive + cadence)
+SON     plateau-revisit (delivered-anchor) · MIN_CWND-kalibrasyonu · emergency-dwell'ler
+```
+Her tur: TEK-DEĞİŞKEN + beklenti-kaydı-önce + aynı-dekompozisyon-retest + p4/p5 smoke kapısı.
+Beklenti-kayıtları BİRBİRİNE bağımlılıklarıyla yazılır (#7): hangi metrik hangi turda AÇILIR —
+teslim-tavanı: 1a→43 (ölçüldü) · 1x-1b→~45-50 (loss 2→0 + temiz saat) · 3c→fizik-tavanı ~53 ·
+p5→TUR-4'te geri · p2/p3-tırmanış→TUR-4+B.
+
+## 3. Açık noktalar — KARARA BAĞLANDI (Abkarada, 2026-07-12)
+
+1. **p5 sıralama → (a) KABUL:** PR-içi belgeli-regresyon, main'e merge YOK, meşru taşıyıcı TUR-4.
+   (b) RED — tek-değişken disiplinini kırar + p5'in 4-kök kompozisyonunu maskeler.
+2. TOMBSTONE_MAX=4096, K_tomb=8, K_wl → **ONAYLI** (placeholder; golden'a girmez) + 4-decade
+   bellek-doğrulaması D-1/4'e işlendi (0.25kbps doluş ≈ 11 kayıt — tavan güvenli).
+3. ProbeUp başlangıçları → **ONAYLI** (placeholder).
+4. TUR-1x PR yapısı → **aynı PR, 1a→1x→1b, ÜÇ ayrı ölçüm-noktası.** 1x-sonrası ZORUNLU ara-ölçüm:
+   ölçülen srtt ack_delay-A ile ~8.3s'ten gerçek-path-RTT'ye indi mi — **bu kaydedilmeden 1b
+   BAŞLAMAZ** (1b cadence-eşiği temiz-saate muhtaç, düzeltme #4'ün kökü).
+
+## 3.5 Bilinen-açık kabul-kapıları (KAYBOLMAZ-listesi; talimat 2026-07-12)
+
+| kapı | durum | taşıyıcı | kabul-kriteri |
+|---|---|---|---|
+| **P5-GATE** | AÇIK — parazit söküldü (§0.7); TUR-1x final: **BIMODAL {100,13,4}** (§0.8): şanslı-modda meşru taşıyıcı UÇTAN UCA çalıştı (100/100, 1.12×, c10=0.93) — varlık kanıtı ✓; açlık-modu btlbw floor-kilidi (bw-örnek semantiği + ProbeUp-yokluğu) | TUR-2 (bw/Karn-ledger) + TUR-3c (ProbeUp) + TUR-4 (fuzzy) + TUR-B; MIN_CWND (D-4/2) | p5'in meşru mekanizmayla **STABİL** (bimodal değil; ADIM-3 dar-IQR hedefi) savunulabilir değere ulaşması = kabul-kapısı. Her ara-smoke'ta izlenir. |
+
+## 3.6 Abkarada'ya YENİ karar noktası (TUR-1x final ölçümünden)
+
+§0.8-final: p5 açlık-modunun birincil kilidi **btlbw floor-kilidi** (ACK-starved tek-kümülatif-SACK
+bw-örneği + ProbeUp-yokluğu) — TUR-2/TUR-3c'nin tam hedefi; sıra zaten oraya gidiyor. İlk-guard'lı
+ara-bulgudaki "MIN_CWND öne çekilsin mi" sorusu final guard'la ZAYIFLADI (sunulan-birim kolu ikincil).
+Önerim: **sıra korunur** (1b → 2a/2b/2c → 3a/3b/3c → 4); MIN_CWND SON'da kalır. Karar sende —
+alternatif: D-4/2 floor'u TUR-2 yanına küçük-tur (bimodalı kısmen yumuşatır ama kökü çözmez).
