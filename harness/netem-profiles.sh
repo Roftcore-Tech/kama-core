@@ -5,11 +5,29 @@
 # (server egress = ACK/reverse yolu → ack_confidence çöker → EMERGENCY_FORWARD_REDUNDANCY).
 set -euo pipefail
 
+# [ARTEFAKT-FIX 2026-07-13] ARP/neighbor pin (PERMANENT, çift yön).
+# KÖK: ARP istek/probe'ları da egress netem'e girer; sub-kbps'te kuyruk-gecikmesi çözümleme
+# timeout'unu aşar → kernel arp_queue paketleri SESSİZCE düşer (netem "dropped" sayacı GÖRMEZ,
+# Udp SndbufErrors/RcvbufErrors 0 kalır). Seq-düzeyi yer-gerçeğiyle kanıtlandı (temiz 1kbps'te
+# ardışık 2 datagram kaybı, 3/3 koşu; pin sonrası 0/1). Pin'siz sub-kbps ölçümü KONTAMİNE.
+# pin_neigh <client_container> <server_container>
+pin_neigh() {
+  local client="$1" server="$2"
+  local client_ip server_ip client_mac server_mac
+  client_ip=$(docker exec "$client" hostname -i | awk '{print $1}')
+  server_ip=$(docker exec "$client" getent hosts "$server" | awk '{print $1}')
+  client_mac=$(docker exec "$client" cat /sys/class/net/eth0/address)
+  server_mac=$(docker exec "$server" cat /sys/class/net/eth0/address)
+  docker exec "$client" ip neigh replace "$server_ip" lladdr "$server_mac" dev eth0 nud permanent
+  docker exec "$server" ip neigh replace "$client_ip" lladdr "$client_mac" dev eth0 nud permanent
+}
+
 # apply_profile <profil> <client_container> <server_container>
 apply_profile() {
   local profile="$1" client="$2" server="$3"
   local c=(docker exec "$client" tc qdisc replace dev eth0 root netem)
   local s=(docker exec "$server" tc qdisc replace dev eth0 root netem)
+  pin_neigh "$client" "$server"
   case "$profile" in
     p1_loss50)  "${c[@]}" loss 50% rate 100kbit; "${s[@]}" loss 50% rate 100kbit ;;
     p2_loss80)  "${c[@]}" loss 80% rate 200kbit; "${s[@]}" loss 80% rate 200kbit ;;
