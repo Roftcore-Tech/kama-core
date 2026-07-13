@@ -93,6 +93,16 @@ impl DeliveryRateSampler {
             is_app_limited: pkt.is_app_limited,
         }
     }
+
+    /// [TUR-2c D-1/3 kol-2] Rate-örneği ÜRETMEDEN delivered-kredisi: superseded (retx'li)
+    /// iletimin GEÇ-ACK'i — byte'lar wire'ı gerçekten geçti → kümülatif delivered'a GİRER
+    /// (teslimat gerçek; gelecek örneklerin delta'sına dürüst yansır) ama muhafazakâr Karn
+    /// kuralı gereği BU ack'ten örnek çıkmaz. packets_in_flight kol-1'le simetrik düşer.
+    pub fn credit_delivered(&mut self, now_ns: u64, size: u64) {
+        self.delivered += size;
+        self.delivered_time_ns = now_ns;
+        self.packets_in_flight = self.packets_in_flight.saturating_sub(1);
+    }
 }
 
 /// BtlBw max-filter (engine §7.2/§7.3): geçerli sample'ların pencereli max'ı.

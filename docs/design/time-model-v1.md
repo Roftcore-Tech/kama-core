@@ -165,6 +165,43 @@ mekanizmanın yaşadığı yer = ilan-sonrası-geç-SACK rejimleri → **p2 meka
   kanıtlı: geç-ACK → BW-örneği + RTT + plato-round beslemesi; expiry → örneksiz).
 - Ledger canlı-değer kanıtı sürüyor: p5-r7 lppm=71428, p2-r1 lppm=200000 (pencere-içi gerçek oran).
 
+## 0.12 TUR-2c ölçüm kaydı (Karn RTT/BW kuralları; D-1 KAPANIŞI)
+
+**Beklenti-kaydı önce** (scratchpad tur2c-prediction.md), iki talimat-şartıyla:
+**[ŞART-a] NÖTR-ZİNCİR ÇERÇEVESİ:** 2a+2b+2c üç tur üst üste throughput-NÖTR — doğru ve beklenen;
+D-1 "temiz zemin" ayağıdır, hiçbiri tek başına teslim kazanımı vermez, kümülatif K-1 kapanışıdır
+(eşik[1a+1b]+ratchet[2a]+sansür[2b]+Karn[2c]). İlk teslim-kazanımı TUR-3c; D-1 turları 3c'nin
+MÜHİMMATI. "Üç tur ilerlemedik mi?" okuması yanlıştır.
+**[ŞART-b]** şanslı-mod 0/9 borcu §3.7'ye girdi (TUR-3a'da doğrula/çürüt).
+**Tahmin:** her kol değişmez; 2c-tetikleyicisi (retx-sonrası-geç-orijinal-ACK) bu kollarda ≈0
+ateşlenir (açlıkta retx≈0; şanslıda kayıplar gerçek) → davranış-kanıtı birim-vektörlerde.
+**2c'nin kapattığı gerçek delik:** 2b'de tombstone.retx_count İLAN-anında donuyordu → retx-sonrası
+geç-orijinal-ACK yanlışlıkla kol-1'e düşer (sahte-büyük RTT + yanlış-atıflı rate-örneği) —
+superseded-işareti bunu kapattı; kol-2 artık delivered-KREDİSİ verir (örneksiz, `credit_delivered`).
+
+**REVIEW-WORKFLOW (ultracode, commit-öncesi):** 3-mercek düşman-inceleme 12 bulgu üretti;
+doğrulayıcılar session-limit'e düştüğünden özet-verdikt GEÇERSİZDİ (refuted_count=12 artefakt) —
+journal'dan ham bulgular alınıp elle yargılandı: **2 gerçek kod-fix** (1: superseded-işaret yalnız
+ARQ-kolundaydı — FWD-dup pending-drain + HandToForward yolları da yeniden-emisyondur, tekdüze
+`mark_tombstone_superseded` yapıldı; 2: kol-2 kanonik spurious-teyidi `note_spurious`u beslemiyordu
+— §9.3 kablosu tamamlandı), **2 doc-zeyl** (wire-byte vs birim-teslim çift-sayım semantiği; kredi
+delta-etkisi = stok-BBR eşdeğeri — spec §5 ZEYL-2/3), **1 bayat** (spec-güncellenmedi — workflow
+başladıktan sonra işlenmişti), **1 borç-detayı** (§3.7 packets_in_flight: üç no-decrement yolu),
+**2 yeni vektör** (karn çift-ACK sıralaması; tv_bw kredi-çıpası).
+
+**Gerçekleşen (1k + p4 + p5×6, ARP-pin'li):**
+- Temiz-1k 45/100 0/0 ✓, p4 100/100 1.01× ✓ — nötr-tur (şart-a çerçevesi) tahminle birebir.
+- 2c-tetikleyicisi ≈0 tahmini ✓: tombstone-hit=0 tüm kollarda (kayıplar gerçek; tombstone'lar
+  oluştu: 1/2/5 kayıt). Davranış-kanıtı birim-vektörlerde (kol-2: RTT değişmez + rate-örneği yok +
+  kredi + reorder-toleransı yükselir; çift-ACK sıralaması; kredi-çıpası).
+- **p5×6: {11,12,12,20,21,100} — ŞANSLI-MOD GERİ DÖNDÜ** (r3: 100/100, c10=1.00, oran 1.07×,
+  retx=1415B + dup=566B meşru taşıyıcı; lppm=50000 canlı). §3.7 borcunun "2b öldürdü mü" kolu
+  gözlemle çürüdü; frekans-sorusu (≈%30 bandı mı) 3a'nın büyük-n retest'ine kaldı. Ara-modlar
+  (20, 21) süreklilik-spektrumu okumasını pekiştiriyor. Açlık-uç {11-12} ≥ önceki taban ✓.
+**D-1 KAPANDI** (1a→1b→2a→2b→2c): kayıp artık kanıt-şartlı, cadence-farkında, pencere-türetimli,
+geri-alınabilir, kayıt-korumalı ve Karn-kurallı bir HİPOTEZ. Sırada D-2: TUR-3a (estimator
+pencereleri — §3.7 borçlarının ikisi de masasında).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
@@ -288,7 +325,7 @@ TUR-1x  ack_delay Seçenek-A (V2) + corrected-RTT saati     ← D-2 pencereleri 
 TUR-1b  cadence-farkında eşik (K_c)            [tek PR TUR-1a ile, commit-2; ölçüm-2 zorunlu]
 TUR-2a  W_loss event-ledger + un-loss (spurious→note_spurious kablosu)   [KOŞULDU: ölçüm §0.10]
 TUR-2b  active-flight/tombstone ayrımı (parametreli, bounded)   [KOŞULDU: ölçüm §0.11]
-TUR-2c  Karn-ambiguity RTT/BW kuralları
+TUR-2c  Karn-ambiguity RTT/BW kuralları   [KOŞULDU: ölçüm §0.12; D-1 KAPANDI]
 TUR-3a  estimator pencereleri (K_bw×ack_epoch, K_rtprop×corrected_srtt) + keep-last
 TUR-3b  DrainRtprop giriş/çıkış sözleşmesi (window-derived giriş + exit-invariant)
 TUR-3c  ProbeUp state + sözleşme + açık match-kolu
@@ -318,6 +355,13 @@ p5→TUR-4'te geri · p2/p3-tırmanış→TUR-4+B.
 | kapı | durum | taşıyıcı | kabul-kriteri |
 |---|---|---|---|
 | **P5-GATE** | AÇIK — parazit söküldü (§0.7); karakterizasyon GÜNCELLENDİ (talimat 2026-07-13): "bimodal" DEĞİL, **yüksek-varyans süreklilik-SPEKTRUMU** (n=6 TUR-2a: {7,11,12,30,100,100}; r5=30 ara-mod). Şanslı uçta meşru taşıyıcı uçtan uca ✓ (dup-taşıyıcılı r4 c10=1.00; ARQ-taşıyıcılı r6 c10=0.97); açlık ucu btlbw floor-kilidi (bw-örnek semantiği + ProbeUp-yokluğu) | TUR-2b (tombstone) + TUR-3a (pencereler) + TUR-3c (ProbeUp) + TUR-4 (fuzzy) + TUR-B | **Kabul-kriteri (netleştirildi): spektrumun DAR-IQR'a ÇÖKÜŞÜ** (meşru mekanizmayla, yüksek uçta) — TUR-3c/4'ün gerçek testi bu. Her ara-smoke'ta p5 "yüksek-varyans" istisnasıyla: şanslı-uç ≥ önceki ∧ açlık-uç ≥ önceki, spektrum ayrı izlenir. |
+
+## 3.7 İZLENEN-BORÇLAR (talimat 2026-07-13: açık listede tut, kapatınca işaretle)
+
+| borç | doğuş | doğrulama/çürütme noktası | durum |
+|---|---|---|---|
+| **ŞANSLI-MOD-FREKANSI** | TUR-2b ölçümü: p5 şanslı-mod 0/9 çekiliş (P≈%3-5 kuyruk). Yapısal savunma ("2b sıcak-yolu hit=0 iken karar-yolu 2a-bit-özdeş → frekans değişemez → netem-varyansı") bir **ÇIKARIM, ölçüm değil** | **TUR-3a retest'i** spektrumu yeniden örnekler: şanslı-mod ~%30 bandına dönerse borç KAPANIR; yine seyrekse yapısal-savunma ÇÜRÜR → şanslı-mod-frekansı bağımsız sorun olarak açılır | AÇIK |
+| packets_in_flight kayıp-sızıntısı (sampler) | TUR-2c muhasebe-incelemesi + review-workflow'u: kayıp-ilan edilen paket sampler'ın packets_in_flight'ını düşürmüyor; hit'siz üç yol HİÇ decrement etmez: (a) tombstone TTL-prune, (b) kapasite-eviction, (c) Duplicate-kökenli kayıp (tombstonesuz) → her gerçek-kayıp kalıcı +1 sızıntı → pipe-boş tespiti (first_sent/delivered_time yeniden-çıpalama) kayıplı koşuda bir daha tetiklenmez | TUR-3a (estimator pencereleri) — sampler semantiği zaten o turun masasında | AÇIK |
 
 ## 3.6 Abkarada'ya YENİ karar noktası (TUR-1x final ölçümünden)
 
