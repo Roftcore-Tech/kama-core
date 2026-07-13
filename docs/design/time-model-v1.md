@@ -593,6 +593,50 @@ yeniden-kanıtı fix-turu birleşse bile p5'in KENDİSİNDE koşulmalı.**
   referansı mevcut kablolamada kopuk). Bacak-1 tasarımının girdisi.
 - r4-dersi: kader-metriği çıkış-zamanı değil entegre-hayatta-kalma — fix-turu ölçüm-tasarımına girer.
 
+## 0.24 TUR-5 ÖLÇÜM-KAYDI (bacak-1+2, R-matrisi) — KAFES ÖLDÜ; dal-B DOĞRULANDI; temiz-1k KIRMIZI-DUR
+
+**Seçim-serisi (p5×6 × R∈{4,8}):** R=4 {33,100×5}, med-ilk-teslim 9.49s (K-1a ✗);
+R=8 {14,30,100×4}, med-ilk **2.14s** (K-1a ✓) → **çok-kriterli seçim R=8**.
+**Doğrulama-serisi (R=8):** {55,63,100×4}, med-ilk 8.445s — literal-eşiği (8.4s) **45ms aştı**
+(dürüst-beyan; 12-koşu-birleşik 5.30s ✓; kapı-hükmü Abkarada'da). **K-1b 12-koşu KAPISI ✓:**
+>16.8s = 3 ≤ 4 (kesin-binom %95-üst). **K-4 ✓ tüm koşularda** (kredi-invariant canlı;
+tx-oran ≤1.21). K-2 ✗ (min 14) → K-3 ✗.
+
+**KAFES-ÖLÜMÜ (K-1a mekanik-kanıt, alt-kapı):** 18 koşunun TÜM ilk-teslimleri kota/kafes
+TAKVİM-noktalarında ({0.03-0.04, 2.14, 4.24, 6.35, 8.44, 10.54, 14.73-74, 23.14, 39.95, ...}
+— r3-aritmetiğinin parmak-izi, nokta-nokta); eski k×8.39s-kümelenmesi YOK; medyan 25.5s →
+2.1-8.4s bandı (3-12×). r4_3'ün 14.74s'i (kota-4 + kafes-1 = 5. deneme) takvimi tek-koşuda kanıtlar.
+
+**Dal-B DOĞRULANDI (r3 §4 şablonu):**
+```
+Bacak-1 alt-kapısı: ACCEPTED   (kafes-ölümü + K-1b + K-4; K-1a doğrulama-serisi 45ms sınır-notuyla)
+P5-GATE: DEFERRED — bacak-3 kanıtı gerekli
+Tam mühür: yalnız K-2 ∧ K-3 sonrası
+```
+Trajektori-kanıtı ({14,30,33,55,63} koşuları): kurtuluş TAKVİMDE geldi ama tohum =
+267/t_kurtuluş formülüyle floor-yarı-kanal bandında (18-63 B/s; v8_5: 4.24s-ERKEN kurtuluşta
+bile tohum 63 → 63/100) VE **YENİ-BİLEŞEN: RecoverArq-YAPIŞMASI** — %80 dönüş-kaybında pending
+sürekli-yenileniyor → faz-önceliği Steady/ProbeUp'a HİÇ düşmüyor (probe=0/0/0/0; r4_6 41-birim,
+r8_3 38-birim emit) → ProbeUp-köprüsü yapısal-erişilmez. Bacak-3 teşhis-girdisi: tohum-hijyeni
++ RecoverArq-gölgeleme İKİLİSİ. Kuyruk-çekilişleri {14, v8_6-56.7s} ≈ binom-beklentisi (2/18).
+
+**Smoke:** p4 ✓ 100/100 saf-data 1.00× (jitter-kuyruğu 3 meşru-epizot; invariant ✓).
+**temiz-1k 44/100 — KIRMIZI (kapı ≥45): DUR-noktası.** Dekompozisyon: dönüş-bütçesi DEĞİL
+(27 SACK × 65B / 120s ≈ 14.6 B/s ≪ 125 kapasite) — zengin erken-SACK-arzı Startup-PLATO
+tespitini 24.5→37.5s'e uzattı (+13s × gain 2.885 → overfill-kuyruğu büyüdü) → Drain 120s'e
+dek çıkamadı → 50-emit/44-teslim (6 uçuşta; eski 49/45-4-uçuşta). KÖK spec §16.2'de ZATEN
+işaretli yarım-fix: `startup_plateau` sayacı ack-OLAY-tabanlı (gereken-sınıf "RTT-round
+delivered-anchor", TUR-A satırı) — arz-zenginleşmesi olay-sayacını kaydırdı. Tavan-çerçevesi:
+49-tavanda 44 = %90 (önceki %92); kayıp cold-start-fazında, mekanizma-dışı.
+**Fix-seçenekleri (karar Abkarada'nın):** (a) kapı-revizyonu (44 kabul; startup_plateau
+yarım-fix'i zaten SON-listesinde); (b) startup_plateau delivered-anchor fix'i AYRI-tur
+(spec-satırı hazır); (c) kota'yı dar-banda kısıtlama (mekanizmayı sulandırır — ÖNERİLMEZ).
+
+**Süreç-kaydı:** Ekleme-2 (kota-yanış şartı) implementasyon-öncesi çelişki-tespitiyle GERİ-
+ÇEKİLDİ (K-1b retry-takvimini bloklardı — not §2 revizyonu; count=0-deliği DV-2 açık-riski
+aynen). Bacak-2 yapısal-gölgeleme dürüst-bulgusu: K_ARR=2'de accel-ritmi freq/tail'le örtüşük;
+ayrık-katkı dar-pencerede (ölçüldü: accel=0-4/koşu).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
