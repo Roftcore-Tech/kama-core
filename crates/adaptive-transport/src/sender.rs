@@ -338,6 +338,7 @@ pub struct Sender {
     diag_ambiguous_skipped: u64, // [TUR-2c resmî] kol-2 örnek-atlaması (sample_skipped_ambiguous)
     diag_delivered_credited: u64, // [TUR-2c] kol-2 delivered-kredisi (byte)
     diag_qd_no_evidence: u64,    // [TUR-3a D-3/1] rtprop-yokken qd_ratio=0 sayısı
+    diag_fuzzy_no_rule: u64,     // [TUR-4] sıfır-ağırlık fallback ateşleme sayısı
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
@@ -402,12 +403,14 @@ impl Sender {
             diag_ambiguous_skipped: 0,
             diag_delivered_credited: 0,
             diag_qd_no_evidence: 0,
+            diag_fuzzy_no_rule: 0,
             last_decision: FusionDecision {
                 fec_parity_ratio_permille: 0,
                 arq_aggressiveness_permille: 0,
                 send_rate_gain_permille: 1000,
                 compress: false,
                 mode: Mode::Normal,
+                no_rule: false,
             },
             last_recovery: RecoveryAction::Arq,
         }
@@ -772,7 +775,13 @@ impl Sender {
             qd_ratio_permille,
             ack_confidence_permille: self.ack_confidence_permille(now_ns),
         };
-        self.fuzzy.decide(&inputs)
+        let d = self.fuzzy.decide(&inputs);
+        // [TUR-4] sıfır-ağırlık fallback kanıt-sayacı (fallback çıktısı R1-baskın çıktıyla
+        // bayt-özdeş — sayaçsız gözlemlenemez, workflow-bulgusu).
+        if d.no_rule {
+            self.diag_fuzzy_no_rule += 1;
+        }
+        d
     }
 
     /// §3 state geçişleri. Öncelik: IDLE (iş yok) → RECOVER_FWD (ack_confidence LOW, her fazdan) →
@@ -1390,6 +1399,12 @@ impl Sender {
             self.rtt.queue_delay().as_micros() as u64,
         )
     }
+    /// [TUR-4] Sıfır-ağırlık fuzzy-fallback sayacı (gözlemlenebilirlik).
+    #[must_use]
+    pub fn diag_fuzzy_no_rule(&self) -> u64 {
+        self.diag_fuzzy_no_rule
+    }
+
     /// [TUR-3c teşhis] ProbeUp çıkış-sayaçları (SALT-GÖZLEM): (success, abort, timeout, preempt).
     #[must_use]
     pub fn diag_probe(&self) -> (u64, u64, u64, u64) {

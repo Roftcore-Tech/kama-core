@@ -593,6 +593,13 @@ Admin Server ASLA imzalamaz:
 ## 10. RA 3-Gate Entegrasyonu
 
 ```
+Gate-0 — federation resolution (client → operator_id; Gate-1/2/3'ten ÖNCE):
+  Client onboarding'de federation_selector sunar (davet QR/link ile; boş → RoftCore B2C).
+  RA federation_selector → operator_id map'ler (identity E-14). Sonraki gate'ler bu operator_id'ye uygulanır.
+  federation_selector PUBLIC — authentication DEĞİL; yalnız "hangi operator_id/allowlist" seçer (coarse pre-filter).
+  UNIFORM RED: geçersiz selector ile "yetkisiz" AYIRT ETTİRİLMEZ (enumeration önleme; federasyon varlığı sızmaz).
+  Yalnız RA endpoint public; Admin Server/hub IP'leri auth SONRASI HubListRecord ile gelir (identity E-8/E-14).
+
 Gate-1 — license seat:
   RA OrgEntitlementRecord doğrular.
   RA seat_limit'i CSR Intermediate'e gitmeden ÖNCE kontrol eder.
