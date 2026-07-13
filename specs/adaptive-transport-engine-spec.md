@@ -418,6 +418,16 @@ Packet kayıp SAYILIR (recovery için) eğer:
   k = max(K, ρ×recent_max_reorder) TÜKETİLİR (§9.3 kablolandı) + retx_count==0 ise orijinal
   RTT örneği GEÇERLİ [kol-1]); pencere-dışına yaşlanan olay düşer (Expired → doğal decay).
   Ledger + pencere-paydası bounded: LEDGER_MAX=4096, en-eski-önce eviction + audit (SR-AUDIT-001).
+[TUR-2b / D-1/4] ACTIVE-FLIGHT / TOMBSTONE AYRIMI (NORMATİF): kayıp-ilanı "inflight'tan silinir"
+  DEĞİLDİR — İKİ ayrı kavram: (a) *active-flight muhasebesi*: şüpheli paket bytes_in_flight/cwnd'den
+  DÜŞER (gönderim durmaz); (b) *retained transmission record (TOMBSTONE)*: gönderim kaydı
+  {unit, send_ns, bw_sample, retx_count, origin} SAKLANIR — geç-ACK eşleştirme için.
+  TTL = K_tomb×T_loss(ilan-anı) [zeyl: onaylı `min(mesaj-deadline,…)` kolu motorda uygulanamaz —
+  per-unit deadline engine'e taşınmıyor]; tavan TOMBSTONE_MAX, en-eski-önce eviction +
+  `tombstone_evicted` audit. Geç-ACK çarparsa: kol-1 (retx_count==0) → BW-örneği NORMAL + Data'ysa
+  RTT (sansür biter — K-1 sansür-kolu kapanışı); kol-2 (retx'li, Karn-ambiguity) → örnek YOK +
+  `ambiguous_skipped` sayacı (tam kurallar TUR-2c). Süresi/tavanı dolan kaydın geç-ACK'i →
+  Expired/Unknown (örneksiz; teslim-damgası app/bench-katmanında bağımsız).
 loss_pre_fec (fuzzy girdisi) = loss_windowed_ppm = Confirmed_units / pencere-içi-gönderim;
   W_loss = K_wl × ack_epoch; ack_epoch = max(corrected_srtt, EAI).  [TUR-2a — ömür-boyu
   monoton ratchet CANCELLED (K-1 fuzzy-zehirlenmesinin köküydü); ömür-boyu sayaç yalnız diag]
@@ -928,6 +938,8 @@ Tunable'lar [CAL] → baseline ölçümünden sonra vektörlere GERÇEK değerle
 | `K_wl` W_loss pencere çarpanı [TUR-2a] | W_loss = K_wl×ack_epoch, ack_epoch = max(srtt, EAI) (§5 ledger; D-1/5) | tüm bw (kanal-türevi) | 8 [CAL, K_bw/K_rtprop merkeziyle hizalı] |
 | ledger confirm-ufku [TUR-2a] | Suspected→Confirmed = cadence-taban (K_c×EAI) kanıtsız geçince — geç-SACK'in makul varış penceresi; saat-sınıfı = eşikle AYNI (ZM-4) | tüm bw | = K_c×EAI (ayrı sabit YOK) |
 | `LEDGER_MAX` [TUR-2a] | olay-ledger + pencere-paydası kayıt tavanı; en-eski-önce eviction + audit sayacı (SR-AUDIT-001; tombstone MAX ailesi) | tüm bw (bellek-tavanı sabit) | 4096 |
+| `K_TOMB` tombstone TTL çarpanı [TUR-2b] | TTL = K_tomb×T_loss(ilan-anı); T_loss = max(9/8·srtt, cadence-taban) — eşikle AYNI saat (ZM-4). Onaylı formülün `min(mesaj-deadline,…)` kolu motorda UYGULANAMAZ (per-unit deadline engine'e taşınmıyor; bench/app-katmanı) → TTL tek-kollu ZEYL | tüm bw (kanal-türevi) | 8 [CAL] |
+| `TOMBSTONE_MAX` [TUR-2b] | geç-ACK eşleştirme kayıt tavanı; en-eski-önce eviction + `tombstone_evicted` audit (evict edilenin geç-ACK'i Expired/Unknown — örneksiz) | tüm bw (4-decade doluş: 0.25k≈11, 1M-heavy≈450 ≪ 4096; bellek ≤~350KiB) | 4096 [CAL] |
 | `RTT_floor(unit)` | (unit_wire+sack_wire)/floor_bw + PROP_MARGIN | pace edilen taban | 256B@0.25k≈11.9s; 64B@1k≈1.43s |
 | `k_base` (COPY_BASE_FACTOR) [R1] | >1; ilk-SACK cadence-exempt → RTT_floor ilk-SACK modeli. Fallback (exempt değilse): ≥1+ACK_CADENCE/RTT_floor | tüm bw | 1.3-1.5 |
 | `COPY_MULTIPLIER` | geometrik backoff (RFC 6298 analoğu) | tüm bw | 2 [STD] |
@@ -999,6 +1011,13 @@ ACK artık RTT/BW örneği ÜRETEMEZ (censor) → srtt düşük-yanlı kalır + 
 loss_ppm doyar → fuzzy arq=0 → pending_lost drain edilmez → state RecoverArq'a MIHLANIR (Startup
 re-entry yolu da yok). Tek false-loss tüm ölçüm katmanını zehirler. Fix-sınıfı: eşik ack-cadence-farkında
 + un-loss yolu + eviction yerine geç-ACK'e açık muhasebe.
+
+**K-1 KAPANIŞ DURUMU (TUR-1a→2b, hepsi ölçülü):** eşik-kolu ✓ (TUR-1a kanıt-şartı + TUR-1b
+cadence-taban); ratchet/un-loss kolu ✓ (TUR-2a ledger — §5); **sansür-kolu ✓ (TUR-2b tombstone):**
+`queue_losses` artık kaydı DÜŞÜRMEZ — active-flight muhasebesinden düşer (gönderim durmaz) ama
+gönderim-kaydı (bw_sample dahil) TOMBSTONE'da yaşar; geç-ACK kol-1'de (retx'siz) BW+RTT örneği
+KURTARILIR (§5 D-1/4). Kalan kollar: fuzzy arq=0 dejenerasyonu (TUR-4) + Startup re-entry/ProbeUp
+(TUR-3c).
 
 ---
 

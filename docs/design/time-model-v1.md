@@ -134,6 +134,37 @@ SentPacket'in korunmasını gerektirir = 2b tombstone işi; açlık-modunda pend
   birim-vektörlerle kanıtlı (G5 + sender-testi: geç-ACK → pending-iptal + note_spurious + kol-1 RTT).
 - Adaptif packet-threshold (§9.3) kablolandı: besleme (note_spurious) + tüketim (k=max(K,ρ×reorder)).
 
+## 0.11 TUR-2b ölçüm kaydı (active-flight/tombstone; D-1'in son parçası, D-1→D-2 köprüsü)
+
+**Beklenti-kaydı önce** (scratchpad tur2b-prediction.md), Abkarada'nın istediği #7-ayrımıyla:
+tombstone btlbw-ÖRNEĞİNİ serbest bırakır ama app-limited kilidini TAM AÇMAZ (o ProbeUp/TUR-3c) —
+2b = "örnek üretiliyor + kısmi gevşeme", "tam ramp" DEĞİL; "kilit tam açılmadı" 2b-başarısızlığı
+olarak OKUNMAZ. İKİNCİ keskinleştirme (2a-ölçüm gerçeğinden): tombstone-hit geç-ACK'in FİİLEN
+gelmesine bağlı; p5'te unloss=0 ölçüldü → **p5-açlık-modunda hit≈0, btlbw~31 KALIR, tx=4245
+DEĞİŞMEZ, {7-12} KAYMAZ tahmini** (kilit kökü kümülatif-SACK bw-örnek aralığı + ProbeUp-yokluğu);
+mekanizmanın yaşadığı yer = ilan-sonrası-geç-SACK rejimleri → **p2 mekanizma-kolu olarak eklendi**
+(tahmin: p2'de tombstone-hit>0 + bw_recovered>0; teslim 3→3-15 mütevazı — p2 taşıyıcısı TUR-B).
+
+**Gerçekleşen (matris: 1k + p4 + p5×9 + p2×2, ARP-pin'li):**
+- Temiz-1k 45/100 0/0 ✓, p4 100/100 1.01× ✓ — değişmedi (tomb=0: kayıp yok → kayıt yok).
+- **p5 ×9: {6,6,12,12,12,12,14,14,14} — tamamı açlık-ucu, tahminle birebir:** tx=4245 birebir
+  (r9: 8207 ara-gönderim), btlbw~31-86 kaldı, tombstone-hit=0 (kayıplar GERÇEK — geç-ACK yok).
+  Keskinleştirilmiş tahmin ("hit≈0, band kaymaz") ✓. Açlık-uç ≥ önceki ✓ (band {6-14} ⊇ {4-13}
+  örtüşür, taban 6>4). **Şanslı-uç: 0/9 çekiliş — DEĞERLENDİRİLEMEDİ** (P(0/9|~%29-33)≈%3-5
+  şanssızlık-kuyruğu). Birincil savunma YAPISAL: 9 koşunun tümünde hit=0 → 2b'nin sıcak-yol
+  eklentileri (insert/prune/hit-check) karar-yolunu 2a'yla BİT-ÖZDEŞ bırakır → şanslı-mod
+  frekansı 2b'yle değişemez; 0/9 = netem-çekiliş varyansı. TUR-3a retest'i spektrumu yeniden
+  örnekleyecek (kalan-belirsizlik oraya devredildi, gizlenmedi).
+- **p2 mekanizma-kolu: tahmin ✗ — DEKOMPOZE (yapısal içgörü):** tombstone'lar OLUŞTU (5, 9 kayıt)
+  ama hit=0, bw_recovered=0; teslim {2,3} (önceki 3 bandı). Neden: hit'in kaynağı "yanlış-ilan-
+  sonrası-geç-ACK" sınıfı; **TUR-1a kanıt-şartı + TUR-1b cadence-tabanı bu sınıfı yapısal olarak
+  KURUTTU** — kendi eşik-düzeltmelerimiz tombstone'un tetiklenme-alanını daralttı. Tombstone artık
+  throughput-sürücüsü değil: (i) nadir-olay doğruluk-sigortası (reorder/aşırı-geç-SACK rejimleri),
+  (ii) **TUR-2c Karn-kurallarının önkoşul-altyapısı** (kayıt olmadan kol-1/kol-2 ayrımı imkânsız),
+  (iii) K-1 sansür-kolunun yapısal kapanışı (kayıt artık DÜŞMÜYOR; kurtarma-yolu birim-testlerle
+  kanıtlı: geç-ACK → BW-örneği + RTT + plato-round beslemesi; expiry → örneksiz).
+- Ledger canlı-değer kanıtı sürüyor: p5-r7 lppm=71428, p2-r1 lppm=200000 (pencere-içi gerçek oran).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
@@ -256,7 +287,7 @@ TUR-1a  later-ACK + liveness ayrımı            [KOŞULDU: 546927c; ölçüm-1 
 TUR-1x  ack_delay Seçenek-A (V2) + corrected-RTT saati     ← D-2 pencereleri KİRLİ SAAT üstüne kurulmasın
 TUR-1b  cadence-farkında eşik (K_c)            [tek PR TUR-1a ile, commit-2; ölçüm-2 zorunlu]
 TUR-2a  W_loss event-ledger + un-loss (spurious→note_spurious kablosu)   [KOŞULDU: ölçüm §0.10]
-TUR-2b  active-flight/tombstone ayrımı (parametreli, bounded)
+TUR-2b  active-flight/tombstone ayrımı (parametreli, bounded)   [KOŞULDU: ölçüm §0.11]
 TUR-2c  Karn-ambiguity RTT/BW kuralları
 TUR-3a  estimator pencereleri (K_bw×ack_epoch, K_rtprop×corrected_srtt) + keep-last
 TUR-3b  DrainRtprop giriş/çıkış sözleşmesi (window-derived giriş + exit-invariant)
@@ -286,7 +317,7 @@ p5→TUR-4'te geri · p2/p3-tırmanış→TUR-4+B.
 
 | kapı | durum | taşıyıcı | kabul-kriteri |
 |---|---|---|---|
-| **P5-GATE** | AÇIK — parazit söküldü (§0.7); TUR-1x final: **BIMODAL {100,13,4}** (§0.8): şanslı-modda meşru taşıyıcı UÇTAN UCA çalıştı (100/100, 1.12×, c10=0.93) — varlık kanıtı ✓; açlık-modu btlbw floor-kilidi (bw-örnek semantiği + ProbeUp-yokluğu) | TUR-2 (bw/Karn-ledger) + TUR-3c (ProbeUp) + TUR-4 (fuzzy) + TUR-B; MIN_CWND (D-4/2) | p5'in meşru mekanizmayla **STABİL** (bimodal değil; ADIM-3 dar-IQR hedefi) savunulabilir değere ulaşması = kabul-kapısı. Her ara-smoke'ta izlenir. |
+| **P5-GATE** | AÇIK — parazit söküldü (§0.7); karakterizasyon GÜNCELLENDİ (talimat 2026-07-13): "bimodal" DEĞİL, **yüksek-varyans süreklilik-SPEKTRUMU** (n=6 TUR-2a: {7,11,12,30,100,100}; r5=30 ara-mod). Şanslı uçta meşru taşıyıcı uçtan uca ✓ (dup-taşıyıcılı r4 c10=1.00; ARQ-taşıyıcılı r6 c10=0.97); açlık ucu btlbw floor-kilidi (bw-örnek semantiği + ProbeUp-yokluğu) | TUR-2b (tombstone) + TUR-3a (pencereler) + TUR-3c (ProbeUp) + TUR-4 (fuzzy) + TUR-B | **Kabul-kriteri (netleştirildi): spektrumun DAR-IQR'a ÇÖKÜŞÜ** (meşru mekanizmayla, yüksek uçta) — TUR-3c/4'ün gerçek testi bu. Her ara-smoke'ta p5 "yüksek-varyans" istisnasıyla: şanslı-uç ≥ önceki ∧ açlık-uç ≥ önceki, spektrum ayrı izlenir. |
 
 ## 3.6 Abkarada'ya YENİ karar noktası (TUR-1x final ölçümünden)
 
