@@ -110,6 +110,30 @@ Saat-sınıfı beyanı (ZM-3): EAI kanal-türevi + worst-corner return-önseli [
 NOT: ölçüm-1'deki "kalan 2 kanıtlı-ama-cadence loss" hedefi ARP-artefakt bulgusuyla (§0.8) yeniden
 yorumlandı — pin'li ortamda zaten 0'dı; 1b'nin ölçülebilir birincil değeri 0.25k/TUR-C'de görünecek.
 
+## 0.10 TUR-2a ölçüm kaydı (W_loss event-ledger + un-loss; yeni PR)
+
+**Beklenti-kaydı önce** (scratchpad tur2a-prediction.md). Abkarada'nın sorusuna tahminim:
+"un-loss beslenince btlbw-örnek-sansürü azalır mı?" → **HAYIR (2a'da yapısal imkânsız — BW-örneği
+SentPacket'in korunmasını gerektirir = 2b tombstone işi; açlık-modunda pend≈0 zaten loss-yolu değil)".
+
+**Gerçekleşen — tümü tahmin bandında:**
+- Temiz 1kbps: teslim 45, loss=0/0, unloss=0, lppm=0 — HİÇBİR metrik değişmedi ✓ (ledger temiz
+  kanalda boş). p4 100/100 + 1.01× ✓.
+- **p5 (n=6, iki-mod AYRI izleme — talimat kapısı):** {7, 11, 12, 30, 100, 100}.
+  *Açlık-modu* {7-12}: önceki taban {4-13} bandında ✓ (tx=4245 birebir — "2a dokunmaz" tahmini ✓;
+  btlbw-sansürü AZALMADI, tahmin doğrulandı → 2b'nin gerekçesi ölçümle sabit).
+  *Şanslı-mod* 2/6 (~%33, tarihsel ~%40 tutarlı): r4 100/100 c10=1.00 (liveness-taşıyıcılı,
+  dup=5943B); **r6 100/100 c10=0.97 retx=849 — windowed-ppm ARQ'yu ÖLDÜRMEDİ** (riziko-yolu
+  ölçümle çürüdü); btlbw şanslı-modda 8.3-10.3 kB/s'e tırmandı. Kapı: şanslı ≥ önceki ✓,
+  açlık ≥ önceki ✓. Yeni gözlem: r5=30/100 ARA-MOD (31 birim — kısmi kaçış; bimodal aslında
+  süreklilik-spektrumu, kökü aynı).
+- **Ledger sahada:** r6'da canlı lppm=30000 (3 gerçek Confirmed / pencere-gönderim) → fuzzy İLK KEZ
+  gerçek pencere-loss sinyali aldı + ARQ tam draini; r4'te olaylar pencere-dışı decay → lppm 0'a
+  DÖNDÜ = **monoton-ratchet ölümü SAHADA** (K-1 fuzzy-zehirlenmesi kökü kapandı).
+- unloss=0 tüm p5 koşularında (kayıplar GERÇEKti — %5 forward loss; spurious yok). Un-loss yolu
+  birim-vektörlerle kanıtlı (G5 + sender-testi: geç-ACK → pending-iptal + note_spurious + kol-1 RTT).
+- Adaptif packet-threshold (§9.3) kablolandı: besleme (note_spurious) + tüketim (k=max(K,ρ×reorder)).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
@@ -231,7 +255,7 @@ döngünün D1-amend'i — KAT kaydı TETİKLENMİYOR (yeni frame, donmuş sete 
 TUR-1a  later-ACK + liveness ayrımı            [KOŞULDU: 546927c; ölçüm-1 §0.7]
 TUR-1x  ack_delay Seçenek-A (V2) + corrected-RTT saati     ← D-2 pencereleri KİRLİ SAAT üstüne kurulmasın
 TUR-1b  cadence-farkında eşik (K_c)            [tek PR TUR-1a ile, commit-2; ölçüm-2 zorunlu]
-TUR-2a  W_loss event-ledger + un-loss (spurious→note_spurious kablosu)
+TUR-2a  W_loss event-ledger + un-loss (spurious→note_spurious kablosu)   [KOŞULDU: ölçüm §0.10]
 TUR-2b  active-flight/tombstone ayrımı (parametreli, bounded)
 TUR-2c  Karn-ambiguity RTT/BW kuralları
 TUR-3a  estimator pencereleri (K_bw×ack_epoch, K_rtprop×corrected_srtt) + keep-last
@@ -269,5 +293,11 @@ p5→TUR-4'te geri · p2/p3-tırmanış→TUR-4+B.
 §0.8-final: p5 açlık-modunun birincil kilidi **btlbw floor-kilidi** (ACK-starved tek-kümülatif-SACK
 bw-örneği + ProbeUp-yokluğu) — TUR-2/TUR-3c'nin tam hedefi; sıra zaten oraya gidiyor. İlk-guard'lı
 ara-bulgudaki "MIN_CWND öne çekilsin mi" sorusu final guard'la ZAYIFLADI (sunulan-birim kolu ikincil).
-Önerim: **sıra korunur** (1b → 2a/2b/2c → 3a/3b/3c → 4); MIN_CWND SON'da kalır. Karar sende —
-alternatif: D-4/2 floor'u TUR-2 yanına küçük-tur (bimodalı kısmen yumuşatır ama kökü çözmez).
+Önerim: **sıra korunur** (1b → 2a/2b/2c → 3a/3b/3c → 4); MIN_CWND SON'da kalır.
+
+**KARAR (Abkarada, 2026-07-13): sıra KORUNUR — MIN_CWND SON'da.** Gerekçe: açlık-modu kökü
+btlbw-semantiği + ProbeUp; MIN_CWND onların semptomu olabilir; erken çekme = tek-değişken kırar.
+Aynı talimattan ek kararlar: TUR-1 PR merge edildi (#23, squash `2379b0b`; p5 belgeli-regresyon
+karar-a + §3.5 izleme); ARP ön-koşulu r5 §J'ye işlendi; ZM-2 aktif-koruma örneği spec §16.2'ye
+iliştirildi; **TUR-2a GO** (yeni PR; beklenti-kaydı: açlık-modu btlbw-kilidine etkisi ölçülecek;
+smoke'ta iki p5 modu AYRI izlenir: şanslı ≥ önceki, açlık ≥ önceki).
