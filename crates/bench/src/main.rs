@@ -33,6 +33,9 @@ enum Cmd {
         cc: CcArg,
         #[arg(long, value_enum, default_value_t = TransportArg::Quinn)]
         transport: TransportArg,
+        /// [TUR-5 r3] Epizot-kotası R [CAL {4,8}] (kama receiver).
+        #[arg(long, default_value_t = 4)]
+        quota_r: u32,
     },
     /// Client: N mesaj gönder, ham event JSONL yaz.
     Client {
@@ -95,12 +98,14 @@ async fn main() -> Result<(), BenchError> {
             bind,
             cc,
             transport,
+            quota_r,
         } => {
             run_server(
                 transport,
                 ServerCfg {
                     bind,
                     cc: cc.into(),
+                    quota_r,
                 },
             )
             .await

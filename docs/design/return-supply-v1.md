@@ -65,8 +65,8 @@ new_episode = !have_recv
   aralık-korur, tx_ratio-KAPISI sınırlar; episode_count→RAPOR kararının (PATCH-1b) ikinci
   gerekçesi. (b) count=0-deliği: varış-2 gap'i sınıflandırılamaz (baseline yok) ve HAM yazılır —
   "ilk-paket→kopma→dönüş" deseninde kopma-süresi max-fazı baseline'ını şişirir → dedektör
-  ≤k-varış kör + dönüşe epizot verilmez; pratik zarar KOTA-YANIŞ-ŞARTIYLA sınırlanır (§2:
-  ölü-kanal sessizliğinde kredi yanmaz → oturum-kotası dönüşte sağ) — beyanlı, birim-test
+  ≤k-varış kör + dönüşe epizot verilmez; oturum-kotası kopmaya yanmış olabilir (§2 revizyonu —
+  Ekleme-2 geri-çekildi) → desen DV-2 açık-riski olarak ölçülür — beyanlı, birim-test
   senaryosu §9'da. (c) **sürüklenme-analizi [Abkarada-doğrulaması, GO-öncesi]:** izole kopmada
   yazım Kg tek-örnek → med=g DEĞİŞMEZ → sonraki kopma eşiği K×g, tetikler ✓; sürüklenme-adımı
   ancak pencereye ⌈k/2⌉ kopma-yazımı sığarsa (kopmalar-arası ≤1 normal varış): [Kg,g,Kg] med=Kg
@@ -153,10 +153,16 @@ DAHİL**). Kota > 0 iken timer-yolu aralığı `T_SPACING`; HER SACK-emisyonu (f
 kotadan 1 düşer VE paylaşık emisyon-saatini (`last_emit_any`) ilerletir; emisyonlar-arası ≥
 T_SPACING kota-modunda da korunur. Kota 0 → normal rejime dönüş (bacak-2). Epizot-yenilenmesi
 kotayı R'ye RESET'ler (birikim YOK → geçiş-epizotları kredi-şişiremez, §1a beyanlı-sınır).
-**KOTA-YANIŞ ŞARTI [r3-doğrulama]: kredi yalnız `since_last_ack > 0` iken yanar** — ack'lenmemiş
-yeni-bilgi yokken (ölü-kanal sessizliği) timer'ın cadence-tekrarları kotadan DÜŞMEZ → kopma
-boyunca kredi KORUNUR, dönüşte sağ (count=0-deliğinin pratik zararını sınırlar, §1a-b beyanı;
-bütçe-tutarlı: ölü-havaya kota harcanmaz).
+**[r3-impl REVİZYON — Ekleme-2 GERİ-ÇEKİLDİ, implementasyon-öncesi çelişki-tespiti]:**
+"kredi yalnız since_last_ack>0 yanar" şartı K-1b'nin ONAYLI çekirdek-takvimiyle uyumsuz çıktı:
+kota-kopyaları AYNI kümülatif-SACK'in yeniden-denemeleridir ({2.15,4.25,6.35}s — yeni-varış
+OLMADAN atılırlar; P=0.59 kader-penceresi tam budur); ilk emisyon since'i sıfırladığından şart
+kopyaları bloklar → R anlamsızlaşır. Receiver "SACK'im öldü"yü göremediğinden (ölü dup-force
+kanalı, §0.23) kayıplı-dönüş-retry ile ileri-kopma YEREL ayırt-edilemez → şart uygulanamaz.
+KARAR: kota-kopyaları KOŞULSUZ T_SPACING-takvimli yanar (ölü-havaya israf ≤(R−1)×65B ≈ 195B,
+sınırlı); count=0-deliğinin pratik zararı ARTIK SINIRLANMIYOR — desen ("ilk-paket→kopma→dönüş":
+oturum-kotası kopmaya yanar + dönüşe epizot yok → kafes) DV-2 AÇIK-RİSKİ olarak AYNEN ölçülür,
+zarar görülürse ayrı-fix (Abkarada-kararının kendi hükmü).
 
 - **T_SPACING = SACK_WIRE / RETURN_BW_PRIOR ≈ 65/31 ≈ 2.1s — STATİK-ÖNSEL-TÜREVİ (dürüst
   etiket);** E-FULL'de ölçülen return_bw'ye bağlanır (§3.7 statik-prior borcuna yeni-tüketici).
@@ -254,8 +260,8 @@ DIŞINA taşarsa kapsam İHLAL → DUR.
 - İki-dallı dürüst tahmin (dal-B'de paket genişletilmez; "bacak-3-kanıtı-doğdu" kaydı + ayrı teşhis).
 - Adversarial vektörler (V-1..V-5) birim-teste, CAL-kolu-başına (K_EPISODE×k çapraz), kota-
   yenilememe assert'iyle; V-5 tamsayı-ns tam-sınır semantiği iki K-kolunda pinlenir.
-- count=0-deliği senaryosu ("ilk-paket→kopma→dönüş") birim-teste: dönüşte epizot YOK (beyanlı)
-  ama kota-yanış-şartı sayesinde oturum-kredisi sağ → dönüş-SACK'leri kredili assert'i.
+- count=0-deliği senaryosu ("ilk-paket→kopma→dönüş") birim-teste: dönüşte epizot YOK ve
+  oturum-kredisi kopmada yanmış (beyanlı davranış assert'lenir; DV-2 açık-riski).
 - Rejim-geçişi yakınsaması birim-teste: 25ms→800ms dizisinde epizot-sayısı ≤ ⌈log_K(oran)⌉+1.
 - **DV-2 beklenti-kaydına taşınacak AÇIK-RİSKLER (Abkarada-kararı):** (i) count=0-deliği
   ("ilk-paket→kopma→dönüş": dönüşe epizot yok — DV-2'de bu desen ÖZELLİKLE ölçülür; zarar
