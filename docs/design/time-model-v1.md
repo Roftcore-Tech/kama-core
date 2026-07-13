@@ -445,6 +445,30 @@ aynen: **P5-GATE 3c'yle KAPANMAZ** — dar-IQR kabulü TUR-4 (fuzzy/arq + dönü
 **p4-smoke ✓:** 100/100, c10=1.00, saf-data 1.00×, probe-nötr (hızlı kanalda kuyruk anında
 boşalır → backlog-kapısı girişi doğru engelliyor: talep zaten karşılanıyorken prob gereksiz).
 
+## 0.21 TUR-3c SONRASI KARARLAR (Abkarada, 2026-07-13) + byte-cap bağımlılık-raporu
+
+1. **PR #30 MERGED** (squash d0d14da). Üç beyanlı-sapma meşru bulundu.
+2. **temiz-1k = TAVANDA-KAPALI VAKA:** 49-payload-tavan dekompozisyonuyla dosyalandı. Bundan
+   sonra temiz-1k "≥45 korunur" REGRESYON-KAPISI'dır, ilerleme-metriği DEĞİL (fiziksel tavan).
+   İlerleme-metriği p5/lowband/aralıklı-profillere kayar. m1-yanlışlanması motor hatası değil
+   ÖLÇÜT hatasıydı (wire/payload karışımı — önceki turların beklenti-hatası).
+3. **byte-cap bağımlılık-raporu (talimatla):** ProbeUp gain-mekaniği byte-cap'e BAĞLI DEĞİL —
+   kuyruksuz kanalda Little-kolu tavanı = 2×btlbw×(rtprop/srtt) ≈ 2×btlbw > 1.25×btlbw (gain
+   çarpmıyor). ANCAK prob kuyruk kurdukça (srtt>1.6×rtprop) Little-kolu probu 1.25×'in ALTINA
+   kırpabilirdi — bugün bunu MIN_CWND=4×MTU maskesi engelliyor (sub-kbps'te cwnd=4800B ≫ 2×BDP;
+   m1'de ölçüldü: srtt=5.86s, rtprop=3.06s iken rate=127 kırpılmadı çünkü cap=4800/5.86=819).
+   → SONUÇ: byte-cap/Little faz-davranışı işi MIN_CWND-kalibrasyonuyla AYNI mekanizma-ailesi →
+   **SON fazına devir** (D-4/2 yanına); TUR-4-öncesi ayrı commit GEREKMEZ. ProbeUp-stabilizasyonu
+   byte-cap'i beklemez; MIN_CWND kalibre edilirken ProbeUp×Little etkileşimi ölçüm-noktası olur
+   (§3.7 Little-borcu satırıyla birleşik).
+4. **TUR-4 GO** (fuzzy): bw log-ölçek + sıfır-ağırlık fallback (arq_light) + membership-invariant
+   + qd rtprop-göreli üyelik. Hedef: p5-determinizmi (dar-IQR — P5-GATE son-mührü). P5-GATE bu
+   fazda dürüst-açık: ProbeUp açlık-KAÇIŞINI çözdü (p5r6 7.6×), p5-DETERMİNİZMİNİ çözmedi.
+5. **Gerçek-dünya doğrulama üç-eksen planı → `docs/design/dv-plan-v1.md`** (DV-1 bant-decade'leri,
+   DV-2 aralıklılık, DV-3 rejim-geçişi; sıra TUR-4 SONRASI; kampanya-öncesi kapanır). Açık-uyarı
+   aynen kayda: DV-2/DV-3 kapanana kadar "gerçek-dünyaya hazır" İDDİA EDİLMEZ (yalnız
+   "sürekli-bant kanıtlı" denir).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
