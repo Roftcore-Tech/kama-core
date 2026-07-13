@@ -498,6 +498,34 @@ seyrekleştirmiş). Fallback = yapısal-sigorta; dar-IQR bu kapsamdan BEKLENMEZ 
 kesme-noktası-koruma o kadar temiz ki davranış-sınıfı yeniden-üretim bile gerekmedi (175k
 rampa-değeri log-domain'de de tam 500). Commit 37f8a46.
 
+### §0.22-ÖLÇÜM (tam-matris, TUR-4)
+
+**p5×6 = {17, 29, 62, 100, 100, 100}** (önceki-era {11,22,92,99,100,100}). Smoke-kuralı: açlık-uç
+17≥11 ∧ 29≥22 ✓; şanslı-uç 100≥100 ✓ (3/6). **Dar-IQR GELMEDİ** — ölçüm-öncesi dürüst-tahmin
+aynen: fuzzy bu spektrumda karar-yolunu değiştirmiyor; determinizm-kilitleri fuzzy-DIŞI.
+
+**fnr-KEŞFİ (tahminden sapma → dekompozisyon):** fnr=102 İKİ hızlı-mod koşuda (r2 c10=0.97,
+r5 c10=0.95), t≈19.2'de tek-patlama (iki koşuda BİREBİR aynı — deterministik desen); diğer 4
+koşu + p4 + 1k + 0.25k'da fnr=0. Dekompozisyon: pencereli-lppm 20k→41k→125k tırmanıp örnekler-
+arası ANLIK ≥300k'yı aştı — **W_loss payda-çürümesi artefaktı** (pencere-dışı decay gönderim-
+paydasını Confirmed-olaylardan hızlı düşürüyor → oran spike → 1s içinde 0'a döner). Ön-bulgum
+"lppm 0-77k bandı payda-0'a girmez" SON-DEĞER okumasıydı; geçişler GİRİYOR. Davranışsal etki
+bugün SIFIR: patlama-anı state=RecoverFwd ∧ pend=0 → arq tüketilmiyor (lens-bulgusuyla tutarlı)
+→ çıktılar eski-kodla bayt-özdeş (spektrum-eşleşmesi bunu doğrular). Sayaç tam işini yaptı:
+görünmez bölge artık ölçülüyor. DV-2'de (aralıklı-rejim kopma-dönüşleri) bu bölgeye pend>0 ∧
+RecoverArq ile girilirse fallback İLK KEZ davranışsal-canlı olur — izlenecek.
+
+**Kapılar:** temiz-1k **45** ✓ (regresyon-kapısı ≥45; karar-2 çerçevesi); 0.25k **bit-özdeş**
+(sıfır-tick=4, flap=0, son-btlbw=27); p4 100/100 saf-data 1.00× c10=1.00. Kesme-noktası-koruma
+kanıtı: tüm profiller eski-davranışla uyumlu, golden'lar bit-özdeş.
+
+**TUR-4 teslimi (dürüst):** yapısal-sigorta (arq=0 artık İMKÂNSIZ + gözlemlenebilir) +
+log-domain altyapısı (DV-1 kalibrasyonuna hazır) + invariant-katmanı + fnr-keşfi.
+**P5-GATE karar-noktası (Abkarada'ya):** dar-IQR fuzzy'den gelmedi ve gelemezdi (ölçüldü);
+kalan determinizm-kilitleri: (i) ilk-SACK-şansı — dönüş-yolu işi (§3.3-E-FULL ailesi),
+(ii) conf-LOW RecoverFwd dilimi (derin-açlık {17,29} sınıfı). P5-GATE dar-IQR kabulü bu iki
+işten sonrasına kalır; öneri: §3.3-E-FULL zaten kampanya-öncesi borç — P5-GATE'i ona bağla.
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
@@ -661,6 +689,7 @@ p5→TUR-4'te geri · p2/p3-tırmanış→TUR-4+B.
 |---|---|---|---|
 | **ŞANSLI-MOD-FREKANSI** | TUR-2b ölçümü: p5 şanslı-mod 0/9 çekiliş (P≈%3-5 kuyruk). Yapısal savunma ("2b sıcak-yolu hit=0 iken karar-yolu 2a-bit-özdeş → frekans değişemez → netem-varyansı") bir **ÇIKARIM, ölçüm değil** | **TUR-3a retest'i** spektrumu yeniden örnekler: şanslı-mod ~%30 bandına dönerse borç KAPANIR; yine seyrekse yapısal-savunma ÇÜRÜR → şanslı-mod-frekansı bağımsız sorun olarak açılır | AÇIK |
 | **Statik return-prior → ProbeUp-periyodu tüketicisi** | TUR-3c: giriş-periyodu 4×ack_epoch; EAI'nin statik önseli (31 B/s worst-corner) hızlı kanalda epoch'u ~2.1s'e mıhlar → probe-periyodu ≥8.4s'e sabitlenir (kanal-türevi değil, önsel-türevi) | §3.3-E-FULL (ölçülen return_bw) gelince EAI daralır → periyot kanal-zamanlı olur; E-FULL kampanya-öncesi borcun YENİ tüketicisi olarak kaydedildi | AÇIK |
+| **W_loss payda-çürümesi lppm-spike artefaktı** | TUR-4 fnr-keşfi: pencere-dışı decay paydayı olaylardan hızlı düşürüyor → pencereli-lppm anlık ≥300k spike (gerçek kayıp %30 DEĞİL) → fuzzy loss.low=0 bölgesine ~1s'lik sahte-giriş | Bugün zararsız (fallback + fnr-sayacı ile görünür; patlama-anı arq-tüketilmeyen state'te). DV-2 aralıklı-rejimde pend>0∧RecoverArq ile çakışırsa fallback davranışsal-canlı olur → orada yeniden oku; gerekirse payda-tabanı (min-sends) fix'i AYRI karar | AÇIK |
 | **17-data-emisyonu izi (loopback)** | commit-C teşhisi sırasında görüldü: 10 birim / 17 data-send (tx=1550B; retx=0 dup=0) — fazla-emisyonların kaynağı belirsiz | AYRI teşhis (muhtemelen PreConverge/emisyon-yolu); kampanya-metriklerine oran-etkisi olabilir | AÇIK |
 | **Little-kolu min_cwnd-maskesi** | 3a.5-α ölçümü: cwnd/srtt kolu fixture min_cwnd'i sayesinde BAĞLAMADI (yarı-2 öngörüm aşırı-temkin) — kol fiilen uykuda | MIN_CWND kalibrasyonu (sıra-SONU, D-4/2): kalibre min_cwnd küçülürse kol uyanır → srtt_t-paydalı davranış O ZAMAN ölçülür | AÇIK |
 | packets_in_flight kayıp-sızıntısı (sampler) | TUR-2c muhasebe-incelemesi + review-workflow'u: kayıp-ilan edilen paket sampler'ın packets_in_flight'ını düşürmüyor; hit'siz üç yol HİÇ decrement etmez: (a) tombstone TTL-prune, (b) kapasite-eviction, (c) Duplicate-kökenli kayıp (tombstonesuz) → her gerçek-kayıp kalıcı +1 sızıntı → pipe-boş tespiti (first_sent/delivered_time yeniden-çıpalama) kayıplı koşuda bir daha tetiklenmez | TUR-3a (estimator pencereleri) — sampler semantiği zaten o turun masasında | AÇIK |
