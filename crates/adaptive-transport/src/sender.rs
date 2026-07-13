@@ -151,6 +151,20 @@ struct LostRec {
     send_ns: u64,
 }
 
+/// [TUR-2b D-1/4] TOMBSTONE — kayıp-İLANI sonrası SAKLANAN gönderim kaydı (geç-ACK eşleştirme).
+/// Active-flight muhasebesinden DÜŞER (gönderim durmaz) ama kayıt YAŞAR: geç-ACK gelirse
+/// kol-1 (retx_count==0) BW-örneği NORMAL + Data'ysa RTT; kol-2 (retx'li) örneksiz sayaç
+/// (tam kurallar TUR-2c). Süresi/tavanı dolan kaydın geç-ACK'i → Expired/Unknown (örneksiz).
+#[derive(Debug, Clone, Copy)]
+struct TombstoneRec {
+    unit: OpaqueUnit,
+    send_ns: u64,
+    bw_sample: SentPacket,
+    retx_count: u8,
+    origin: TransmitKind,
+    expiry_ns: u64, // ilan + K_TOMB×T_loss(ilan-anı)
+}
+
 /// Zamanlanmış forward-recovery duplication kopyası (§11 spacing — burst-loss dayanıklılığı).
 #[derive(Debug, Clone, Copy)]
 struct DupRec {
@@ -188,6 +202,13 @@ const CADENCE_KC_DEN: u64 = 2;
 /// [TUR-2a D-1/5] W_loss ledger-penceresi çarpanı: W_loss = K_wl × ack_epoch [CAL]
 /// (K_bw/K_rtprop merkezi 8 ile hizalı başlangıç; saat-sınıfı: kanal-türevi, ZM-2).
 const K_WL: u32 = 8;
+/// [TUR-2b D-1/4] Tombstone TTL çarpanı: TTL = K_tomb × T_loss(ilan-anı) [CAL]. Onaylı formülün
+/// `min(mesaj-deadline, ...)` kolu motorda uygulanamaz (per-unit deadline engine'e taşınmıyor —
+/// bench/app katmanında) → TTL tek-kollu; spec §5 zeyli. Saat-sınıfı: T_loss-türevi (kanal, ZM-2).
+const K_TOMB: u32 = 8;
+/// [TUR-2b D-1/4] Tombstone kayıt tavanı [CAL] — SR-AUDIT-001 bounded; en-eski-önce eviction +
+/// audit. 4-decade doluş-doğrulaması not D-1/4 (0.25kbps ≈ 11 kayıt; ≲Gbps'te ~450 ≪ 4096).
+const TOMBSTONE_MAX: usize = 4096;
 /// §3.3-B geometrik kopya: ilk kopya = k_base × RTT_floor; RTT_floor ≈ (unit+sack)/floor_bw.
 /// k_base = 3/2 (>1 → temiz kanalda ilk SACK kopyayı ateşlemeden iptal eder). [CAL PLACEHOLDER]
 const PC_SACK_WIRE: u64 = 65;
@@ -252,6 +273,14 @@ pub struct Sender {
     retx_cfg: RetxConfig,    // reorder_thresh(ρ, K) parametreleri (arq ile aynı fixture)
     diag_unloss: u64,        // teşhis: geri-alınan (Spurious) pending-iptal sayısı
 
+    // ── [TUR-2b] tombstone (geç-ACK eşleştirme; bounded, SR-AUDIT-001) ──
+    tombstones: BTreeMap<u64, TombstoneRec>,
+    tombstone_order: VecDeque<u64>, // ekleme sırası ≈ en-eski-TTL-önce (eviction kaynağı)
+    tombstone_evicted: u64,         // audit: kapasite-eviction
+    diag_tomb_hits: u64,            // geç-ACK tombstone'a çarptı (SALT-GÖZLEM)
+    diag_bw_recovered: u64,         // kol-1'den kurtarılan BW-örneği sayısı
+    diag_ambiguous_skipped: u64,    // kol-2 (retx'li) örnek-atlaması — TUR-2c formalize edecek
+
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
     last_recovery: RecoveryAction,
@@ -294,6 +323,12 @@ impl Sender {
             reorder: ReorderTracker::new(),
             retx_cfg: RetxConfig::fixture(),
             diag_unloss: 0,
+            tombstones: BTreeMap::new(),
+            tombstone_order: VecDeque::new(),
+            tombstone_evicted: 0,
+            diag_tomb_hits: 0,
+            diag_bw_recovered: 0,
+            diag_ambiguous_skipped: 0,
             last_decision: FusionDecision {
                 fec_parity_ratio_permille: 0,
                 arq_aggressiveness_permille: 0,
@@ -372,6 +407,26 @@ impl Sender {
                 if p.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
                     largest = seq;
                     rtt_send_ns = Some(p.send_ns);
+                }
+            } else if let Some(t) = self.tombstones.remove(&seq) {
+                // [TUR-2b D-1/4] GEÇ-ACK tombstone'a çarptı: kayıt korunmuştu → örnekler
+                // KURTARILIR (eski davranış: kayıt düşmüştü → sansür). Süresi geçmiş kayıt
+                // prune edilmişse buraya düşmez (Expired/Unknown — örneksiz).
+                self.diag_tomb_hits += 1;
+                acked_units.push(t.unit.id); // teslim teyidi → bekleyen kopyaları iptal et
+                if t.retx_count == 0 {
+                    // kol-1 (tek gönderim, belirsizlik yok): BW-örneği NORMAL üretilir.
+                    let sample = self.bw_sampler.on_ack(now_ns, t.bw_sample);
+                    self.btlbw.update(sample, now_ns, sample.delivered > 0);
+                    self.bw_sampled_since_round = true;
+                    self.diag_bw_recovered += 1;
+                    if t.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
+                        largest = seq;
+                        rtt_send_ns = Some(t.send_ns);
+                    }
+                } else {
+                    // kol-2 (retransmit'li — Karn ambiguity): örnek YOK; tam kurallar TUR-2c.
+                    self.diag_ambiguous_skipped += 1;
                 }
             }
         }
@@ -464,6 +519,21 @@ impl Sender {
                     // [TUR-A teşhis] loss-atıflama: time-threshold (§5b) kaynaklı kuyruklanan kayıp.
                     self.diag_loss_time += (self.pending_lost.len() - before) as u64;
                 }
+                // [TUR-2b] tombstone TTL budaması: süresi dolan kayıt düşer — sonraki geç-ACK'i
+                // Expired/Unknown (örneksiz). Ekleme-sırası ≈ TTL-sırası (T_loss yavaş değişir);
+                // front'tan tarama deterministik + bounded.
+                while let Some(&front) = self.tombstone_order.front() {
+                    match self.tombstones.get(&front) {
+                        None => {
+                            self.tombstone_order.pop_front(); // hit/evict ile zaten düşmüş
+                        }
+                        Some(t) if t.expiry_ns <= now_ns => {
+                            self.tombstones.remove(&front);
+                            self.tombstone_order.pop_front();
+                        }
+                        Some(_) => break,
+                    }
+                }
             }
         }
     }
@@ -493,7 +563,18 @@ impl Sender {
     }
 
     /// Kayıp seq'leri recovery kuyruğuna al. Duplicate-kökenli kayıp RE-QUEUE EDİLMEZ (redundancy'di).
+    /// [TUR-2b D-1/4] ACTIVE-FLIGHT / TOMBSTONE ayrımı: inflight-muhasebesinden DÜŞER (gönderim
+    /// durmaz) ama gönderim-kaydı SİLİNMEZ — geç-ACK eşleştirme için tombstone'a taşınır
+    /// (bw_sample DAHİL → kol-1'de BW-örneği kurtarılabilir; eski davranış kaydı düşürüp
+    /// geç-ACK örneklerini SANSÜRLÜYORDU — K-1 eviction-sansürü sınıfı).
     fn queue_losses(&mut self, lost: &[u64], now_ns: u64) {
+        if lost.is_empty() {
+            return;
+        }
+        // TTL = K_TOMB × T_loss(ilan-anı); T_loss = max(9/8·srtt, cadence-taban) — eşikle AYNI saat.
+        let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+        let t_loss_ns = (dur_ns(srtt) * 9 / 8).max(dur_ns(self.cadence_loss_floor()));
+        let expiry_ns = now_ns.saturating_add(t_loss_ns.saturating_mul(u64::from(K_TOMB)));
         for &seq in lost {
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
@@ -505,6 +586,29 @@ impl Sender {
                         retx_count: p.retx_count,
                         send_ns: p.send_ns, // [TUR-2a] un-loss kol-1 RTT için orijinal damga
                     });
+                    // [TUR-2b] tombstone: bounded, en-eski-önce eviction + audit.
+                    while self.tombstones.len() >= TOMBSTONE_MAX {
+                        match self.tombstone_order.pop_front() {
+                            Some(old) => {
+                                if self.tombstones.remove(&old).is_some() {
+                                    self.tombstone_evicted += 1; // geç-ACK'i artık Expired/Unknown
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    self.tombstone_order.push_back(seq);
+                    self.tombstones.insert(
+                        seq,
+                        TombstoneRec {
+                            unit: p.unit,
+                            send_ns: p.send_ns,
+                            bw_sample: p.bw_sample,
+                            retx_count: p.retx_count,
+                            origin: p.origin,
+                            expiry_ns,
+                        },
+                    );
                 }
             }
         }
@@ -961,6 +1065,17 @@ impl Sender {
             self.loss.spurious_units_total(),
         )
     }
+    /// [TUR-2b teşhis] tombstone (SALT-GÖZLEM): `(canlı, hit, bw_kurtarılan, evicted, ambiguous)`.
+    #[must_use]
+    pub fn diag_tombstone(&self) -> (u64, u64, u64, u64, u64) {
+        (
+            self.tombstones.len() as u64,
+            self.diag_tomb_hits,
+            self.diag_bw_recovered,
+            self.tombstone_evicted,
+            self.diag_ambiguous_skipped,
+        )
+    }
     /// Son hesaplanan forward-recovery eylemi (§11).
     #[must_use]
     pub fn last_recovery(&self) -> RecoveryAction {
@@ -1244,5 +1359,68 @@ mod tests {
             s.reorder.recent_max_reorder() >= 4,
             "note_spurious gözlenen reorder mesafesini kaydetmeli (la=5 − seq=1)"
         );
+    }
+
+    #[test]
+    fn tombstone_recovers_bw_and_rtt_from_late_ack() {
+        // [TUR-2b D-1/4] Kayıp-ilanı kaydı DÜŞÜRMEZ (tombstone) → geç-ACK'te kol-1
+        // (retx_count==0) BW-örneği + RTT KURTARILIR (eski davranış: sansür).
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(100)), 0);
+        s.on_event(ack(&[0]), 10 * MS);
+        for i in 1..=5u64 {
+            s.on_event(Event::AppData(unit(i)), (10 + i) * MS);
+        }
+        s.on_event(ack(&[2, 3, 4, 5]), 100 * MS); // seq1 → Suspected + tombstone
+        {
+            let (live, hits, ..) = s.diag_tombstone();
+            assert_eq!((live, hits), (1, 0), "ilan tombstone'a yazılmalı");
+        }
+        let srtt_before = s.rtt.srtt().expect("srtt var");
+        s.on_event(ack(&[1]), 500 * MS); // GEÇ-ACK → tombstone hit
+        let (live, hits, bw_rec, evicted, ambig) = s.diag_tombstone();
+        assert_eq!(
+            (live, hits, bw_rec, evicted, ambig),
+            (0, 1, 1, 0, 0),
+            "geç-ACK: hit + kol-1 BW-örneği kurtarılır"
+        );
+        assert!(
+            s.bw_sampled_since_round,
+            "kurtarılan BW-örneği plato-round'unu beslemeli"
+        );
+        // RTT: seq1 en-yüksek-yeni-acked Data → 500ms−11ms ≈ 489ms örneği srtt'yi YUKARI çeker.
+        assert!(
+            s.rtt.srtt().expect("srtt") > srtt_before,
+            "geç-ACK RTT örneği (kol-1) işlenmeli"
+        );
+    }
+
+    #[test]
+    fn tombstone_expiry_yields_no_sample() {
+        // [TUR-2b] TTL geçti → prune (PTO) → çok-geç ACK örneksiz (Expired/Unknown).
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(100)), 0);
+        s.on_event(ack(&[0]), 10 * MS);
+        for i in 1..=5u64 {
+            s.on_event(Event::AppData(unit(i)), (10 + i) * MS);
+        }
+        // Emisyon-flush: tüm birimler ACK'ten ÖNCE wire'a çıksın (pacer-token beklemesi
+        // yüzünden geç-emit → phantom-ack + Pto'da MEŞRU yeni sınıflandırma test-amacını
+        // bulandırıyordu; motor doğruydu, testin zaman-çizgisi özensizdi).
+        for t in [20u64, 30, 40, 60, 80] {
+            s.on_event(Event::TimerFired(Timer::Pto), t * MS);
+        }
+        s.on_event(ack(&[2, 3, 4, 5]), 100 * MS); // seq1 tombstone'da (TTL = 8×T_loss)
+        {
+            let (live, ..) = s.diag_tombstone();
+            assert_eq!(live, 1, "yalnız seq1 tombstone'da olmalı (flush sonrası)");
+        }
+        // TTL geçsin: T_loss ilan-anı ≈ cadence-taban ~3.2s → TTL ~25s; 400s fazlasıyla aşar.
+        s.on_event(Event::TimerFired(Timer::Pto), 400_000 * MS);
+        let (live, ..) = s.diag_tombstone();
+        assert_eq!(live, 0, "TTL dolan kayıt prune edilmeli");
+        s.on_event(ack(&[1]), 401_000 * MS);
+        let (_, hits, bw_rec, ..) = s.diag_tombstone();
+        assert_eq!((hits, bw_rec), (0, 0), "Expired → geç-ACK örneksiz");
     }
 }
