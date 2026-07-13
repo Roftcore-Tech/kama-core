@@ -63,6 +63,14 @@ pub struct RttEstimator {
     rtprop: MinFilter,
     /// RTprop penceresi (ns) — sender kanal-türevi yazar; taban W_RTPROP [STD].
     rtprop_window_ns: u64,
+    /// [TUR-3a.5 commit-α, srtt-clock-v1 §2.2] qd-payı KISA-pencere min-filter'ı: qd artık
+    /// srtt'den DEĞİL buradan (qd = min_W_qd(rtt) − rtprop = ayakta-kuyruk). Kuyruk-fiziği:
+    /// RTT örneği kuyruğu YAŞAMIŞ paketten gelir, gerçek transitin altına inemez → gürültü
+    /// tek-taraflı-yukarı → kısa-min anlamsal-doğru + salıverme ANINDA (gain-mıhı ilacı).
+    qd_min: MinFilter,
+    /// qd kısa-penceresi (ns) — sender K_qd×ack_epoch yazar; [STD] taban BİLİNÇLİ YOK
+    /// (keep-last boşalmayı önler; taban hızlı-decade'de soft-drain'i köreltir).
+    qd_window_ns: u64,
 }
 
 impl Default for RttEstimator {
@@ -72,6 +80,8 @@ impl Default for RttEstimator {
             rttvar_ns: 0,
             rtprop: MinFilter::default(),
             rtprop_window_ns: dur_ns(W_RTPROP),
+            qd_min: MinFilter::default(),
+            qd_window_ns: dur_ns(W_RTPROP), // ilk yazıma dek muhafazakâr (rtprop-penceresi)
         }
     }
 }
@@ -86,6 +96,12 @@ impl RttEstimator {
     /// [TUR-3a D-2/1] Kanal-türevi RTprop penceresi: `max(10s, K_rtprop × corrected_srtt)`.
     pub fn set_rtprop_window(&mut self, w: Duration) {
         self.rtprop_window_ns = dur_ns(w).max(dur_ns(W_RTPROP)); // taban [STD]: küçültme yok
+    }
+
+    /// [TUR-3a.5 commit-α] qd kısa-penceresi: `W_qd = K_qd × ack_epoch` (kanal-türevi;
+    /// W_qd ≤ W_rtprop invariantı çağıranda — kısa-min ≥ uzun-min yapısal kalsın).
+    pub fn set_qd_window(&mut self, w: Duration) {
+        self.qd_window_ns = dur_ns(w).min(self.rtprop_window_ns).max(1);
     }
 
     /// `now_ns` anında ölçülen bir `sample`'ı işler (RFC 6298 sırası: rttvar ÖNCE
@@ -112,6 +128,7 @@ impl RttEstimator {
             }
         }
         self.rtprop.observe(now_ns, s, self.rtprop_window_ns);
+        self.qd_min.observe(now_ns, s, self.qd_window_ns); // [3a.5] aynı örnek, kısa pencere
     }
 
     /// Smoothed RTT; henüz sample yoksa `None`.
@@ -132,11 +149,16 @@ impl RttEstimator {
         self.rtprop.min().map(Duration::from_nanos)
     }
 
-    /// queue_delay = srtt − RTprop (≥0; congestion sinyali, loss DEĞİL). Veri yoksa 0.
+    /// [TUR-3a.5 commit-α, NORMATİF-değişim] queue_delay = min_W_qd(rtt) − RTprop
+    /// (≥0; congestion sinyali, loss DEĞİL). ESKİ tanım (srtt − rtprop) CANCELLED:
+    /// srtt-EWMA lag'ı boş kuyruğu dakikalarca dolu gösteriyordu (ölçüldü, 42-kilidi yarı-1);
+    /// ayakta-kuyruk için doğru istatistik kısa-min (srtt-clock-v1 §2.2). Veri yoksa 0.
     #[must_use]
     pub fn queue_delay(&self) -> Duration {
-        match (self.srtt_ns, self.rtprop.min()) {
-            (Some(srtt), Some(rtprop)) => Duration::from_nanos(srtt.saturating_sub(rtprop)),
+        match (self.qd_min.min(), self.rtprop.min()) {
+            (Some(short_min), Some(rtprop)) => {
+                Duration::from_nanos(short_min.saturating_sub(rtprop))
+            }
             _ => Duration::ZERO,
         }
     }

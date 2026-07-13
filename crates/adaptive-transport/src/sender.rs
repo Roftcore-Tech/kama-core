@@ -212,6 +212,8 @@ const K_TOMB: u32 = 8;
 /// sub-kbps'te 0.8-3.3 RTT'ye düşüyordu: btlbw 88→4 çöküş sınıfı, §16.2).
 const K_BW: u32 = 8;
 const K_RTPROP: u32 = 8;
+/// [TUR-3a.5 commit-α] qd kısa-pencere çarpanı: W_qd = K_qd × ack_epoch [CAL matris {1,2,4}].
+const K_QD: u32 = 2;
 /// [TUR-2b D-1/4] Tombstone kayıt tavanı [CAL] — SR-AUDIT-001 bounded; en-eski-önce eviction +
 /// audit. 4-decade doluş-doğrulaması not D-1/4 (0.25kbps ≈ 11 kayıt; ≲Gbps'te ~450 ≪ 4096).
 const TOMBSTONE_MAX: usize = 4096;
@@ -410,6 +412,7 @@ impl Sender {
             let ack_epoch = srtt_now.max(self.expected_ack_interval());
             self.btlbw.set_window(ack_epoch * K_BW);
             self.rtt.set_rtprop_window(srtt_now * K_RTPROP);
+            self.rtt.set_qd_window(ack_epoch * K_QD); // [3a.5-α] rtprop-penceresinden sonra (≤ invariant)
         }
 
         // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
