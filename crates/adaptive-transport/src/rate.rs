@@ -42,6 +42,11 @@ impl Gain {
         num: 2885,
         den: 1000,
     };
+    /// [TUR-3b] DRAIN = 1/high_gain [STD:BBR] — Startup'ın şişirdiği kuyruğu boşalt.
+    pub const DRAIN: Gain = Gain {
+        num: 1000,
+        den: 2885,
+    };
 
     /// `value`'ya gain uygular (integer, u128 ara-tip).
     #[must_use]
@@ -56,6 +61,8 @@ impl Gain {
 pub enum PacingPhase {
     /// BtlBw hızlı keşif (yüksek gain).
     Startup,
+    /// [TUR-3b] Startup-exit drain: 1/high_gain ile kuyruğu BDP'ye indir [STD:BBR].
+    Drain,
     /// Kararlı: pace = BtlBw.
     Steady,
     /// BW-probe up (kısa).
@@ -70,6 +77,7 @@ impl PacingPhase {
     pub fn gain(self) -> Gain {
         match self {
             PacingPhase::Startup => Gain::STARTUP,
+            PacingPhase::Drain => Gain::DRAIN,
             PacingPhase::Steady => Gain::STEADY,
             PacingPhase::ProbeUp => Gain::PROBE_UP,
             PacingPhase::ProbeDown => Gain::PROBE_DOWN,

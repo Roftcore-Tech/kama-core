@@ -54,6 +54,8 @@ pub enum SenderState {
     PreConverge,
     /// BtlBw hızlı keşif (pacing_gain yüksek), path doldur.
     Startup,
+    /// [TUR-3b] Startup-exit drain (BBR-analog): 1/high_gain ile kuyruk → BDP; sonra Steady.
+    Drain,
     /// pace = BtlBw; periyodik BW/RTprop probe.
     Steady,
     /// residual loss + ack_confidence OK → selective retransmit (§9).
@@ -217,6 +219,8 @@ const K_QD: u32 = 2;
 /// [TUR-3b D-2/3] DrainRtprop dwell sınırları (ack_epoch biriminde — kanal-saatli, ZM-2) [CAL].
 const DRAIN_RTPROP_MIN_DWELL_EPOCH: u32 = 1;
 const DRAIN_RTPROP_MAX_DWELL_EPOCH: u32 = 3;
+/// [TUR-3b] Startup-Drain max-dwell (ack_epoch biriminde; liveness-yedeği) [CAL {2,3,4}].
+const DRAIN_MAX_DWELL_EPOCH: u32 = 3;
 /// [TUR-3a.5 commit-β] Kuantum-döngü yakınsama-böleni: T = rtprop / K_CONV [CAL matris {2,4,8}].
 /// T=rtprop = 3a-sonrası tek DÜRÜST saat (ack_epoch öz-referans tuzağı reddedildi — srtt-clock-v1 §2.1).
 const K_CONV: u32 = 4;
@@ -271,6 +275,7 @@ pub struct Sender {
     // ── [TUR-3b] DrainRtprop sözleşme-durumu (D-2/3: giriş=pencere-doluşu; exit-invariant) ──
     drain_rtprop_entry_ns: Option<u64>,
     drain_rtprop_qualifying: bool, // girişten beri ≥1 rtt-örneği (qualifying_min_rtt)
+    drain_entry_ns: Option<u64>,   // [TUR-3b] Startup-Drain giriş anı (max-dwell yedeği)
 
     // ── STARTUP plato tespiti ──
     startup_last_btlbw: u64,
@@ -335,6 +340,7 @@ impl Sender {
             first_send_ns: None,
             drain_rtprop_entry_ns: None,
             drain_rtprop_qualifying: false,
+            drain_entry_ns: None,
             startup_last_btlbw: 0,
             startup_stable_rounds: 0,
             bw_sampled_since_round: false,
@@ -757,9 +763,34 @@ impl Sender {
                 SenderState::Idle => SenderState::Startup,
                 SenderState::Startup => {
                     if self.startup_plateau() {
-                        SenderState::Steady
+                        // [TUR-3b] BBR-analog: plato → DRAIN (Startup-overfill Steady'ye taşınmaz).
+                        self.drain_entry_ns = Some(now_ns);
+                        SenderState::Drain
                     } else {
                         SenderState::Startup
+                    }
+                }
+                // [TUR-3b] DRAIN çıkışı: inflight ≤ BDP (byte-eşiği — saat-sınıfsız) ∨
+                // elapsed ≥ K_drain_max×ack_epoch (liveness-yedeği; ACK-açlığında sonsuz-Drain yok).
+                SenderState::Drain => {
+                    let bdp = crate::rate::bdp_bytes(
+                        self.btlbw.btlbw(),
+                        self.rtt.rtprop().unwrap_or(INITIAL_RTT),
+                    );
+                    let epoch = dur_ns(
+                        self.rtt
+                            .srtt()
+                            .unwrap_or(INITIAL_RTT)
+                            .max(self.expected_ack_interval()),
+                    );
+                    let elapsed = now_ns.saturating_sub(self.drain_entry_ns.unwrap_or(now_ns));
+                    if self.inflight_bytes <= bdp
+                        || elapsed >= epoch.saturating_mul(u64::from(DRAIN_MAX_DWELL_EPOCH))
+                    {
+                        self.drain_entry_ns = None;
+                        SenderState::Steady
+                    } else {
+                        SenderState::Drain
                     }
                 }
                 // [TUR-3b D-2/3] ÇIKIŞ-İNVARİANTI (onaylı):
@@ -829,6 +860,7 @@ impl Sender {
         }
         let phase = match self.state {
             SenderState::Startup => PacingPhase::Startup,
+            SenderState::Drain => PacingPhase::Drain, // [TUR-3b] 1/high_gain
             SenderState::DrainRtprop => PacingPhase::ProbeDown,
             _ => PacingPhase::Steady,
         };
@@ -1499,6 +1531,47 @@ mod tests {
         assert!(
             s.reorder.recent_max_reorder() >= 4,
             "note_spurious gözlenen reorder mesafesini kaydetmeli (la=5 − seq=1)"
+        );
+    }
+
+    #[test]
+    fn startup_exit_enters_drain_then_steady_on_bdp() {
+        // [TUR-3b] Plato → DRAIN (Steady değil); çıkış inflight≤BDP (byte-eşiği, saat-sınıfsız).
+        // (max-dwell yedeği DrainRtprop-testinde aynı formülle sınanıyor — tekrar edilmez.)
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 500 * MS); // btlbw≈2400B/s, rtprop=0.5s → BDP≈1200B (tek-paket matematiği)
+        for i in 1..=3u64 {
+            s.on_event(Event::AppData(unit(i)), (600 + i) * MS); // 3×MTU kuyruğa
+        }
+        // Pacer-refill tikleriyle emisyonları tamamla (rate≈6.9kB/s → ~173ms/birim).
+        for t in [800u64, 1_000, 1_200] {
+            s.on_event(Event::TimerFired(Timer::Pto), t * MS);
+        }
+        assert!(
+            s.inflight_bytes() > 1_300,
+            "kurulum: uçuş BDP'nin üstünde olmalı (emisyonlar tamam)"
+        );
+        // Plato-koşullarını kur ve tetikle: → DRAIN.
+        s.startup_last_btlbw = s.btlbw.btlbw();
+        s.startup_stable_rounds = STARTUP_PLATEAU_ROUNDS - 1;
+        s.bw_sampled_since_round = true;
+        s.state = SenderState::Startup;
+        s.on_event(Event::TimerFired(Timer::Pto), 1_300 * MS);
+        assert_eq!(
+            s.state(),
+            SenderState::Drain,
+            "plato → Drain (BBR-analog; overfill Steady'ye taşınmaz)"
+        );
+        // Drain'de KALIR (inflight > BDP; dwell dolmadı).
+        s.on_event(Event::TimerFired(Timer::Pto), 1_400 * MS);
+        assert_eq!(s.state(), SenderState::Drain, "inflight>BDP → Drain sürer");
+        // Boşalt (seq3 uçuşta kalır: 1200B ≤ BDP sınır-eşitliği + aktiflik) → Steady.
+        s.on_event(ack(&[1, 2]), 1_500 * MS);
+        assert_eq!(
+            s.state(),
+            SenderState::Steady,
+            "inflight≤BDP → Drain-çıkışı (byte-eşiği)"
         );
     }
 
