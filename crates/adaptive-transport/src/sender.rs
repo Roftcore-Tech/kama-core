@@ -27,7 +27,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
 use crate::arq::{
-    ArqScheduler, CapExceedPolicy, DeadlineArqScheduler, LostSeq, RetxConfig, RetxDecision,
+    ArqScheduler, CapExceedPolicy, DeadlineArqScheduler, LostSeq, ReorderTracker, RetxConfig,
+    RetxDecision,
 };
 use crate::budget::{self, BudgetConfig};
 use crate::bw::{BtlBwFilter, DeliveryRateSampler, SentPacket};
@@ -145,6 +146,9 @@ struct LostRec {
     unit: OpaqueUnit,
     deadline_ns: u64,
     retx_count: u8,
+    /// [TUR-2a D-1/3 kol-1] orijinal gönderim anı — un-loss'ta (retransmit HENÜZ yoksa,
+    /// retx_count==0) orijinal RTT örneği GEÇERLİDİR; bu damgayla alınır.
+    send_ns: u64,
 }
 
 /// Zamanlanmış forward-recovery duplication kopyası (§11 spacing — burst-loss dayanıklılığı).
@@ -181,6 +185,9 @@ const EAI_RETURN_BW_PRIOR: u64 = 31;
 /// K_c cadence çarpanı = 3/2 (1.5) [CAL kalibrasyon-matrisi {1.25, 1.5, 2.0}].
 const CADENCE_KC_NUM: u64 = 3;
 const CADENCE_KC_DEN: u64 = 2;
+/// [TUR-2a D-1/5] W_loss ledger-penceresi çarpanı: W_loss = K_wl × ack_epoch [CAL]
+/// (K_bw/K_rtprop merkezi 8 ile hizalı başlangıç; saat-sınıfı: kanal-türevi, ZM-2).
+const K_WL: u32 = 8;
 /// §3.3-B geometrik kopya: ilk kopya = k_base × RTT_floor; RTT_floor ≈ (unit+sack)/floor_bw.
 /// k_base = 3/2 (>1 → temiz kanalda ilk SACK kopyayı ateşlemeden iptal eder). [CAL PLACEHOLDER]
 const PC_SACK_WIRE: u64 = 65;
@@ -240,6 +247,10 @@ pub struct Sender {
     // ── [TUR-1x teşhis] ack_delay/RTT-guard sayaçları (SALT-GÖZLEM) ──
     diag_rtt_rejected: u64, // guard'a takılan sample sayısı (underflow / < MIN_RTT_FLOOR)
     diag_ack_delay_max_us: u64, // görülen en büyük (decoded) ack_delay — V2 sadakati kanıtı
+    // ── [TUR-2a] adaptif reorder-toleransı + un-loss ──
+    reorder: ReorderTracker, // §9.3 spurious→note_spurious kablosu; packet-thresh tüketimi
+    retx_cfg: RetxConfig,    // reorder_thresh(ρ, K) parametreleri (arq ile aynı fixture)
+    diag_unloss: u64,        // teşhis: geri-alınan (Spurious) pending-iptal sayısı
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
@@ -280,6 +291,9 @@ impl Sender {
             diag_loss_time: 0,
             diag_rtt_rejected: 0,
             diag_ack_delay_max_us: 0,
+            reorder: ReorderTracker::new(),
+            retx_cfg: RetxConfig::fixture(),
+            diag_unloss: 0,
             last_decision: FusionDecision {
                 fec_parity_ratio_permille: 0,
                 arq_aggressiveness_permille: 0,
@@ -361,6 +375,47 @@ impl Sender {
                 }
             }
         }
+        // loss tespiti (§5). loss = RECOVERY sinyali (INV-RATE-1: rate'e DEĞMEZ).
+        // §3.3-C/(1) yasak-1: PRE_CONVERGE'de loss İLANI YOK. §3.3-D: loss kilidi İLK GEÇERLİ SACK'le
+        // (rtt.srtt Some) AÇILIR → o SACK'ten itibaren loss işlenir. Detector her zaman sync kalır.
+        // [TUR-2a §9.3] adaptif packet-threshold: spurious gördükçe reorder-toleransı yükselir.
+        self.loss
+            .set_packet_threshold(u64::from(self.reorder.reorder_thresh(&self.retx_cfg)));
+        let lost = self.loss.on_ack(&ack.acked_seqs, now_ns);
+
+        // [TUR-2a D-1/3] UN-LOSS: kayıp-ilan-edilmiş seq'e ACK geldi → hipotez çürüdü.
+        // pending-retransmit İPTAL + kopyalar iptal + note_spurious kablosu + kol-1 RTT adayı.
+        let unlossed = self.loss.take_unlossed();
+        let mut unloss_rtt: Option<(u64, u64)> = None; // (seq, send_ns)
+        if !unlossed.is_empty() {
+            // Gözlenen-reorder mesafesi görülen EN YÜKSEK acked'e göredir (bu geç-ACK'in
+            // kendi max'ı değil — kayıp-şüphesini yaratan önceki yüksek ACK'ler dahil).
+            let la = self.loss.largest_acked().unwrap_or(0);
+            let mut kept = VecDeque::with_capacity(self.pending_lost.len());
+            for rec in self.pending_lost.drain(..) {
+                if !unlossed.contains(&rec.seq) {
+                    kept.push_back(rec);
+                    continue;
+                }
+                self.diag_unloss += 1;
+                acked_units.push(rec.unit.id); // kopyaları aşağıdaki ortak iptale kat
+                                               // §9.3: gözlenen reorder mesafesiyle toleransı yükselt (küçülmez).
+                self.reorder
+                    .note_spurious(u32::try_from(la.saturating_sub(rec.seq)).unwrap_or(u32::MAX));
+                // kol-1: retransmit HENÜZ gönderilmedi → orijinal RTT örneği GEÇERLİ.
+                if rec.retx_count == 0 && unloss_rtt.is_none_or(|(s, _)| rec.seq >= s) {
+                    unloss_rtt = Some((rec.seq, rec.send_ns));
+                }
+            }
+            self.pending_lost = kept;
+        }
+        // RTT adayı birleşimi: en yüksek yeni-acked orijinal gönderim (inflight ∪ un-loss kol-1).
+        if let Some((useq, usend)) = unloss_rtt {
+            if rtt_send_ns.is_none() || useq >= largest {
+                rtt_send_ns = Some(usend);
+            }
+        }
+
         if let Some(send_ns) = rtt_send_ns {
             let raw = Duration::from_nanos(now_ns.saturating_sub(send_ns));
             self.diag_ack_delay_max_us = self
@@ -380,10 +435,6 @@ impl Sender {
             self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id));
         }
 
-        // loss tespiti (§5). loss = RECOVERY sinyali (INV-RATE-1: rate'e DEĞMEZ).
-        // §3.3-C/(1) yasak-1: PRE_CONVERGE'de loss İLANI YOK. §3.3-D: loss kilidi İLK GEÇERLİ SACK'le
-        // (rtt.srtt Some) AÇILIR → o SACK'ten itibaren loss işlenir. Detector her zaman sync kalır.
-        let lost = self.loss.on_ack(&ack.acked_seqs);
         if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {
             let before = self.pending_lost.len();
             self.queue_losses(&lost, now_ns);
@@ -424,6 +475,12 @@ impl Sender {
     /// return_bw ile değişir). Amaç (ZM-4): elapsed'in içindeki "SACK'i henüz gelmedi" süresi
     /// eşiğin saatinde TEMSİL edilsin — kanıtlı-ama-cadence yanlış-sınıflandırması yapısal biter.
     fn cadence_loss_floor(&self) -> Duration {
+        Duration::from_nanos(dur_ns(self.expected_ack_interval()) * CADENCE_KC_NUM / CADENCE_KC_DEN)
+    }
+
+    /// [TUR-1b/2a] Beklenen-ACK-aralığı EAI (K_c'siz ham değer) — cadence-taban ve
+    /// `ack_epoch = max(srtt, EAI)` (ledger W_loss penceresi, D-2/1 tanımı) bundan türer.
+    fn expected_ack_interval(&self) -> Duration {
         let unit = if self.inflight.is_empty() {
             DEFAULT_MTU
         } else {
@@ -432,7 +489,7 @@ impl Sender {
         let rate = self.pacer.rate().max(1);
         let eai_ns = EXPECTED_ACK_FREQ_N * unit * 1_000_000_000 / rate
             + EAI_SACK_WIRE_BYTES * 1_000_000_000 / EAI_RETURN_BW_PRIOR;
-        Duration::from_nanos(eai_ns * CADENCE_KC_NUM / CADENCE_KC_DEN)
+        Duration::from_nanos(eai_ns)
     }
 
     /// Kayıp seq'leri recovery kuyruğuna al. Duplicate-kökenli kayıp RE-QUEUE EDİLMEZ (redundancy'di).
@@ -446,6 +503,7 @@ impl Sender {
                         unit: p.unit,
                         deadline_ns: now_ns,
                         retx_count: p.retx_count,
+                        send_ns: p.send_ns, // [TUR-2a] un-loss kol-1 RTT için orijinal damga
                     });
                 }
             }
@@ -453,14 +511,20 @@ impl Sender {
     }
 
     /// FuzzyEvaluate (§8.4/§15): ölçümlerden FusionInputs kur → controller kararı.
-    fn fuzzy_evaluate(&self, now_ns: u64) -> FusionDecision {
+    /// [TUR-2a D-1/5] loss girdisi LEDGER-penceresinden türer (lifetime-ratchet ÖLDÜ):
+    /// önce ledger_tick (W_loss = K_wl×ack_epoch; confirm = cadence-taban = geç-SACK ufku),
+    /// sonra `loss_windowed_ppm` — Spurious sayılmaz, pencere-dışı decay eder.
+    fn fuzzy_evaluate(&mut self, now_ns: u64) -> FusionDecision {
         let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+        let ack_epoch = srtt.max(self.expected_ack_interval()); // D-2/1 tanımı
+        self.loss
+            .ledger_tick(now_ns, ack_epoch * K_WL, self.cadence_loss_floor());
         let jitter_ppm = dur_ns(self.rtt.rttvar())
             .saturating_mul(1_000_000)
             .checked_div(dur_ns(srtt))
             .unwrap_or(0);
         let inputs = FusionInputs {
-            loss_ppm: self.loss.loss_pre_fec_ppm(),
+            loss_ppm: self.loss.loss_windowed_ppm(),
             bandwidth_bps: self.btlbw.btlbw(),
             jitter_ppm,
             queue_delay: self.rtt.queue_delay(),
@@ -887,6 +951,16 @@ impl Sender {
     pub fn diag_rtt(&self) -> (u64, u64) {
         (self.diag_rtt_rejected, self.diag_ack_delay_max_us)
     }
+    /// [TUR-2a teşhis] ledger/un-loss (SALT-GÖZLEM): `(unloss_iptal, loss_windowed_ppm,
+    /// spurious_units_total)` — ratchet-ölümü + geri-alma hacmi kanıtı.
+    #[must_use]
+    pub fn diag_ledger(&self) -> (u64, u64, u64) {
+        (
+            self.diag_unloss,
+            self.loss.loss_windowed_ppm(),
+            self.loss.spurious_units_total(),
+        )
+    }
     /// Son hesaplanan forward-recovery eylemi (§11).
     #[must_use]
     pub fn last_recovery(&self) -> RecoveryAction {
@@ -1134,6 +1208,41 @@ mod tests {
             (lpkt, ltime),
             (0, 0),
             "temiz-ama-geç SACK akışında hiçbir loss sınıflandırılmamalı"
+        );
+    }
+
+    #[test]
+    fn unloss_cancels_pending_retransmit_and_raises_tolerance() {
+        // [TUR-2a D-1/3] UN-LOSS: packet-threshold'la kayıp ilan edilen seq'e GEÇ ACK gelirse
+        // pending-retransmit İPTAL edilir (hipotez çürüdü) + reorder-toleransı yükselir
+        // (note_spurious kablosu) + windowed loss_ppm'e SAYILMAZ.
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(100)), 0);
+        s.on_event(ack(&[0]), 10 * MS); // PreConverge'den çık
+        for i in 1..=5u64 {
+            s.on_event(Event::AppData(unit(i)), (10 + i) * MS);
+        }
+        // seq1 atlanır, 2..5 ack'lenir → gap≥3 → seq1 packet-threshold Suspected + pending'e girer.
+        s.on_event(ack(&[2, 3, 4, 5]), 100 * MS);
+        {
+            let (lpkt, _, pend) = s.diag_loss();
+            assert_eq!(
+                (lpkt, pend),
+                (1, 1),
+                "seq1 kayıp ilan edilip kuyruğa girmeli"
+            );
+        }
+        // GEÇ ACK seq1 (reorder'mış meğer) → un-loss: pending boşalır, retransmit YOK.
+        s.on_event(ack(&[1]), 200 * MS);
+        let (unloss, lppm, spur) = s.diag_ledger();
+        let (_, _, pend) = s.diag_loss();
+        assert_eq!(pend, 0, "un-loss pending-retransmit'i iptal etmeli");
+        assert_eq!(unloss, 1);
+        assert_eq!(spur, 1);
+        assert_eq!(lppm, 0, "Spurious windowed-ppm'e sayılmaz");
+        assert!(
+            s.reorder.recent_max_reorder() >= 4,
+            "note_spurious gözlenen reorder mesafesini kaydetmeli (la=5 − seq=1)"
         );
     }
 }

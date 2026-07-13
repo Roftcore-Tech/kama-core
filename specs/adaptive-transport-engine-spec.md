@@ -411,9 +411,18 @@ Packet kayıp SAYILIR (recovery için) eğer:
       EAI = ACK_FREQ_N × ort_inflight_birim / send_rate_fiili + sack_wire/return_bw_önseli.
       Sender-yerel + deterministik; K_c=1.5 [CAL matris {1.25, 1.5, 2.0}]; return_bw_önseli
       §3.3-E-FULL'de ölçülen return_bw ile değişir [CAL]. "SACK'i henüz gelmedi" ≠ "kayıp".
-loss_pre_fec = lost_original_units / sent_original_units        (pencere W_loss)   [CAL: W_loss]
+[TUR-2a / D-1/3, D-1/5] W_loss OLAY-LEDGER'ı (NORMATİF): kayıp bir OLAY değil HİPOTEZdir.
+  Her ilan seq-başına kayıt: Suspected → Confirmed (un-loss ufku kanıtsız geçti — ufuk =
+  cadence-taban, geç-SACK'in makul varış penceresi) | Spurious (geç-ACK geldi → GERİ-ALINDI:
+  pending-retransmit İPTAL + ReorderTracker.note_spurious beslenir + packet-threshold
+  k = max(K, ρ×recent_max_reorder) TÜKETİLİR (§9.3 kablolandı) + retx_count==0 ise orijinal
+  RTT örneği GEÇERLİ [kol-1]); pencere-dışına yaşlanan olay düşer (Expired → doğal decay).
+  Ledger + pencere-paydası bounded: LEDGER_MAX=4096, en-eski-önce eviction + audit (SR-AUDIT-001).
+loss_pre_fec (fuzzy girdisi) = loss_windowed_ppm = Confirmed_units / pencere-içi-gönderim;
+  W_loss = K_wl × ack_epoch; ack_epoch = max(corrected_srtt, EAI).  [TUR-2a — ömür-boyu
+  monoton ratchet CANCELLED (K-1 fuzzy-zehirlenmesinin köküydü); ömür-boyu sayaç yalnız diag]
 residual_loss = unrecovered_units / sent_units                  (FEC/ARQ SONRASI)
-→ loss_rate fuzzy girdisi = fuzzify(loss_pre_fec)  (LOW/MED/HIGH, §15)
+→ loss_rate fuzzy girdisi = fuzzify(loss_windowed_ppm)  (LOW/MED/HIGH, §15)
 → NOT: bu değerler send_rate'i düşürmez; fec_parity_ratio ve arq_aggressiveness'ı besler.
 ```
 
@@ -916,6 +925,9 @@ Tunable'lar [CAL] → baseline ölçümünden sonra vektörlere GERÇEK değerle
 | `ACK_DELAY_UNIT` [TUR-1x] | V2 ack_delay birimi; tavan 65535×birim ≈ 16.78s > ACK_CADENCE floor 8.39s (satürasyon beklenmez, sayaçla denetlenir) | tüm bw (4-decade: floor-encoding hızlı kanalda ≤256µs yuvarlama = ihmal) | 256 µs [STD-karar D-4/1] |
 | min-rtt guard [TUR-1x] | `raw−ack_delay ≥ rtprop` değilse düzeltme REDDedilir, RAW işlenir (örnek atlanmaz; §6/§7.3, RFC 9002 §5.3). **CANCELLED:** mutlak `MIN_RTT_FLOOR=1ms` — loopback sub-ms gerçek RTT'de tüm örnekleri reddedip estimator açlığı yaptı (ZM-2 ihlali, bench-loopback ölçümü) | tüm bw (4-decade: gözlenen-min kanal-türevi) | — (sabitsiz) |
 | `K_c` cadence-eşik çarpanı [TUR-1b] | loss time-threshold tabanı = K_c×EAI (§5b); EAI = ACK_FREQ_N×ort_birim/send_rate + sack_wire/return_bw_önseli(31 B/s [CAL], §3.3-E-FULL ölçümle değişir) | tüm bw (EAI kanal-türevi; önsel-kolu worst-corner sabit — hızlı kanalda eşiği ~3.1s'e taşır, deadline≫ olduğundan kabul; ölçülen return_bw gelince daralır) | 1.5 [CAL matris {1.25, 1.5, 2.0}] |
+| `K_wl` W_loss pencere çarpanı [TUR-2a] | W_loss = K_wl×ack_epoch, ack_epoch = max(srtt, EAI) (§5 ledger; D-1/5) | tüm bw (kanal-türevi) | 8 [CAL, K_bw/K_rtprop merkeziyle hizalı] |
+| ledger confirm-ufku [TUR-2a] | Suspected→Confirmed = cadence-taban (K_c×EAI) kanıtsız geçince — geç-SACK'in makul varış penceresi; saat-sınıfı = eşikle AYNI (ZM-4) | tüm bw | = K_c×EAI (ayrı sabit YOK) |
+| `LEDGER_MAX` [TUR-2a] | olay-ledger + pencere-paydası kayıt tavanı; en-eski-önce eviction + audit sayacı (SR-AUDIT-001; tombstone MAX ailesi) | tüm bw (bellek-tavanı sabit) | 4096 |
 | `RTT_floor(unit)` | (unit_wire+sack_wire)/floor_bw + PROP_MARGIN | pace edilen taban | 256B@0.25k≈11.9s; 64B@1k≈1.43s |
 | `k_base` (COPY_BASE_FACTOR) [R1] | >1; ilk-SACK cadence-exempt → RTT_floor ilk-SACK modeli. Fallback (exempt değilse): ≥1+ACK_CADENCE/RTT_floor | tüm bw | 1.3-1.5 |
 | `COPY_MULTIPLIER` | geometrik backoff (RFC 6298 analoğu) | tüm bw | 2 [STD] |
@@ -950,6 +962,14 @@ ZM-4  Karşılaştırmanın İKİ YANI aynı saati kullanmalı (örn. loss-thres
       içindeki receiver ACK-hold'u threshold'un saati GÖRMÜYORSA karşılaştırma geçersiz — aşağıda K-1).
 ```
 
+> **ZM-2 AKTİF-KORUMA ÖRNEĞİ (ilk kanıt — TUR-1x, 2026-07-13; talimatla kayda geçirildi):** min-rtt
+> guard'ın ilk tasarımı mutlak `MIN_RTT_FLOOR=1ms` wall-clock tabanıydı. ZM-2'nin şart koştuğu
+> 4-decade doğrulaması (bench-loopback testi) tabanı ANINDA yanlışladı: loopback/LAN gerçek RTT
+> sub-ms → TÜM örnekler reddedildi → estimator açlığı → PreConverge kilidi. Taban İPTAL edilip
+> gözlenen-min (rtprop, kanal-türevi) guard'ıyla değiştirildi (§6, RFC 9002 §5.3). Bu, haritanın
+> pasif envanter değil AKTİF koruma olduğunun ilk kanıtıdır: kural, hatayı üretim yerine testte
+> yakaladı.
+
 **Sınıf envanteri (BREAKS + kritik SUSPECT; tam liste denetim kaydında):**
 
 | mekanizma | kod | fiili sınıf | sub-kbps davranış | gereken sınıf |
@@ -967,7 +987,7 @@ ZM-4  Karşılaştırmanın İKİ YANI aynı saati kullanmalı (örn. loss-thres
 | ack_confidence anchor `.or()` | sender.rs | — (semantik) | spec `max(last_ack, first_send)` DEĞİL → idle-resume'da bayat anchor → anında RecoverFwd | spec formülü + aktif-dönem re-base |
 | fuzzy qd üyelikleri 50-400ms | fusion.rs | wall-clock mutlak | sub-kbps'te qd doğal olarak saniyeler → qd.high≡1 → rate yarıya | rtprop-göreli üyelik |
 | fuzzy bw üyelikleri 50-200 kB/s | fusion.rs | mutlak | 31-125 B/s'te bw.low≡1; loss.low=0 ile TÜM kural ağırlıkları 0 → arq=0, pending_lost SONSUZA DEK drain edilmez (ölçüldü: retx=0, pend monoton) | log-ölçek/kanal-göreli kalibrasyon + sıfır-ağırlık fallback |
-| loss_pre_fec_ppm ömür-boyu | loss.rs | monoton ratchet (W_loss YOK) | false-loss kalıcı loss.high → fuzzy zehirlenir; UN-LOSS yolu YOK | §5 W_loss kayan pencere + geç-ACK'te loss geri al |
+| loss_pre_fec_ppm ömür-boyu | loss.rs | ~~monoton ratchet (W_loss YOK)~~ → **FIXED [TUR-2a]**: W_loss olay-ledger'ı (`Suspected→Confirmed\|Spurious`, pencere-dışı Expired) + UN-LOSS (geç-ACK → Spurious: pending-retransmit iptal + `note_spurious` kablosu + kol-1 orijinal-RTT) + fuzzy girdisi `loss_windowed_ppm = Confirmed/pencere-gönderim` | (eski) false-loss kalıcı loss.high → fuzzy zehirlenirdi; ölçüm: p5-r4'te olaylar pencere-dışı decay (lppm→0), p5-r6'da canlı lppm=3% + ARQ tam draini | ✓ W_loss = K_wl×ack_epoch; confirm = cadence-taban (kanal-türevi, ZM-2) |
 | MIN_CWND=4800B | rate.rs:93 | byte-mutlak | BDP'nin 3-48× → inflight-cap kolu hiç seçilmez | k×BDP tabanı |
 | geometrik kopya deadline'sızlığı | sender dup_queue | deadline-türevi AMA tavansız | ölü kanalda sonsuz reschedule (COPY_MAX_INTERVAL/RETRY_BUDGET kodda yok) | §12 deadline tavanı DupRec'e |
 | SAFE (doğru sınıf, örnek): pacer refill+kalan [R1], BURST_WINDOW [R3], PC geometrik takvim (RTT_floor-türevi), ACK_SILENCE=3·srtt, K=3 packet-threshold, ilk-SACK cadence-exempt | — | — | — | — |

@@ -7,11 +7,14 @@
 //! okuyacak); [`ThresholdLossDetector`] = RFC 9002-türevi adapter. FEC/ARQ execution
 //! (§9/§10) + W_loss sliding window (§5 [CAL]) sonraki adımlarda.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
 /// Packet-threshold K [STD:BBR/QUIC RFC 9002 = 3].
 pub const PACKET_THRESHOLD: u64 = 3;
+/// [TUR-2a D-1/3] Ledger + sent-pencere kayıt tavanı [CAL] — SR-AUDIT-001 bounded
+/// (tombstone MAX'la aynı aile; en-eski-önce eviction + audit sayacı).
+pub const LEDGER_MAX: usize = 4096;
 /// Time-threshold pay [STD:RFC 9002 = 9].
 pub const TIME_THRESH_NUM: u64 = 9;
 /// Time-threshold payda [STD:RFC 9002 = 8].
@@ -55,7 +58,9 @@ pub trait LossDetector {
     /// Paket gönderimini kaydet.
     fn on_sent(&mut self, seq: u64, send_ns: u64, units: u64);
     /// ACK işle; yeni packet-threshold kayıplarını (artan seq) döner.
-    fn on_ack(&mut self, acked: &[u64]) -> Vec<u64>;
+    /// [TUR-2a] `now_ns`: ledger ilan-damgası (Suspected) + un-loss tespiti için;
+    /// geri-alınan seq'ler [`ThresholdLossDetector::take_unlossed`] ile drain edilir.
+    fn on_ack(&mut self, acked: &[u64], now_ns: u64) -> Vec<u64>;
     /// Time-threshold kayıplarını `now`da ilan et; yeni-kayıp seq'leri döner.
     /// [TUR-1b D-1/2] `cadence_floor` = beklenen-ACK-aralığı türevi dinamik taban:
     /// eşik = max(num/den·srtt, min_delay, cadence_floor) — eşiğin saati elapsed'in
@@ -104,6 +109,27 @@ struct Sent {
     units: u64,
 }
 
+/// [TUR-2a D-1/3] Loss olay-ledger durumu: kayıp bir OLAY değil HİPOTEZ — geç kanıtla çürüyebilir.
+/// `Suspected → Confirmed | Spurious`; pencere-dışına yaşlanan olay ledger'dan düşer (Expired).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LedgerState {
+    /// İlan edildi; un-loss ufku (confirm_age) içinde geç-ACK'le çürüyebilir.
+    Suspected,
+    /// Ufuk kanıtsız geçti → pencere-içi loss_ppm'e sayılır.
+    Confirmed,
+    /// Geç-ACK geldi → GERİ-ALINDI (un-loss); loss_ppm'e SAYILMAZ.
+    Spurious,
+}
+
+/// Ledger kaydı (declared_ns artan sırada tutulur — pencere budaması front'tan).
+#[derive(Debug, Clone, Copy)]
+struct LossEvent {
+    seq: u64,
+    units: u64,
+    declared_ns: u64,
+    state: LedgerState,
+}
+
 /// RFC 9002-türevi packet/time-threshold loss detector ([`LossDetector`] adapter).
 #[derive(Debug, Clone, Default)]
 pub struct ThresholdLossDetector {
@@ -114,6 +140,14 @@ pub struct ThresholdLossDetector {
     sent_units: u64,
     lost_units: u64,
     unrecovered_units: u64,
+    // ── [TUR-2a D-1/3, D-1/5] olay-ledger + pencere-türetimli loss_ppm ──
+    events: VecDeque<LossEvent>, // declared_ns artan; LEDGER_MAX bounded
+    sent_window: VecDeque<Sent>, // pencere-içi gönderimler (payda); LEDGER_MAX bounded
+    sent_window_units: u64,      // payda toplamı (O(1))
+    unlossed: Vec<u64>,          // son on_ack'te Spurious'a dönen seq'ler (sender drain'ler)
+    spurious_units_total: u64,   // audit: toplam geri-alınan birim
+    ledger_evicted_total: u64,   // audit: kapasite-eviction (SR-AUDIT-001)
+    packet_thresh_dyn: u64,      // 0 = cfg.packet_threshold; sender adaptif k yazar [TUR-2a]
 }
 
 impl ThresholdLossDetector {
@@ -147,17 +181,127 @@ impl ThresholdLossDetector {
     pub fn unrecovered_units(&self) -> u64 {
         self.unrecovered_units
     }
+
+    // ── [TUR-2a D-1/3, D-1/5] ledger API'si (inherent — sender somut tipi tutar) ──
+
+    /// Kayıp-ilanını ledger'a Suspected olarak yazar (bounded; en-eski-önce eviction + audit).
+    fn declare(&mut self, seq: u64, units: u64, declared_ns: u64) {
+        if self.events.len() >= LEDGER_MAX {
+            self.events.pop_front();
+            self.ledger_evicted_total += 1;
+        }
+        self.events.push_back(LossEvent {
+            seq,
+            units,
+            declared_ns,
+            state: LedgerState::Suspected,
+        });
+    }
+
+    /// Son `on_ack`'te GERİ-ALINAN (Spurious) seq'leri boşaltır — sender pending-retransmit
+    /// iptali + `note_spurious` kablosu + kol-1 RTT adayı için tüketir.
+    pub fn take_unlossed(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.unlossed)
+    }
+
+    /// Görülen en yüksek acked seq (un-loss'ta gözlenen-reorder mesafesi = largest − seq).
+    #[must_use]
+    pub fn largest_acked(&self) -> Option<u64> {
+        self.have_acked.then_some(self.largest_acked)
+    }
+
+    /// [TUR-2a] Adaptif packet-threshold: sender `max(K, ρ×recent_max_reorder)` yazar
+    /// (spurious görüldükçe yükselir — §9.3 nihayet kablolandı). 0 = cfg default.
+    pub fn set_packet_threshold(&mut self, k: u64) {
+        self.packet_thresh_dyn = k;
+    }
+
+    /// Ledger bakımı: pencere-dışı olay/gönderim düşer (Expired); un-loss ufku (`confirm_age`)
+    /// kanıtsız geçen Suspected → Confirmed. Deterministik (ADR-17); saat-sınıfı: her iki eşik
+    /// de kanal-türevi (W_loss = K_wl×ack_epoch; confirm_age = cadence-taban) — ZM-2/ZM-3.
+    pub fn ledger_tick(&mut self, now_ns: u64, w_loss: Duration, confirm_age: Duration) {
+        let cutoff = now_ns.saturating_sub(w_loss.as_nanos() as u64);
+        while self.events.front().is_some_and(|e| e.declared_ns < cutoff) {
+            self.events.pop_front(); // Expired — loss_ppm'den doğal decay (ratchet ölümü)
+        }
+        while self.sent_window.front().is_some_and(|s| s.send_ns < cutoff) {
+            let s = self.sent_window.pop_front().expect("front var");
+            self.sent_window_units = self.sent_window_units.saturating_sub(s.units);
+        }
+        let conf_ns = confirm_age.as_nanos() as u64;
+        for e in &mut self.events {
+            if e.state == LedgerState::Suspected && now_ns.saturating_sub(e.declared_ns) >= conf_ns
+            {
+                e.state = LedgerState::Confirmed;
+            }
+        }
+    }
+
+    /// [D-1/3] Pencere-türetimli loss oranı: `Confirmed_units / pencere-içi-gönderim` (ppm).
+    /// Spurious SAYILMAZ (un-loss); pencere-dışı olay düşer → monoton ratchet YAPISAL biter.
+    #[must_use]
+    pub fn loss_windowed_ppm(&self) -> u64 {
+        let confirmed: u64 = self
+            .events
+            .iter()
+            .filter(|e| e.state == LedgerState::Confirmed)
+            .map(|e| e.units)
+            .sum();
+        ratio_ppm(confirmed, self.sent_window_units)
+    }
+
+    /// Audit: toplam geri-alınan (Spurious) birim.
+    #[must_use]
+    pub fn spurious_units_total(&self) -> u64 {
+        self.spurious_units_total
+    }
+    /// Audit: kapasite-eviction sayısı (SR-AUDIT-001 gözlemi).
+    #[must_use]
+    pub fn ledger_evicted_total(&self) -> u64 {
+        self.ledger_evicted_total
+    }
+
+    fn effective_packet_thresh(&self) -> u64 {
+        if self.packet_thresh_dyn == 0 {
+            self.cfg.packet_threshold
+        } else {
+            self.packet_thresh_dyn
+        }
+    }
 }
 
 impl LossDetector for ThresholdLossDetector {
     fn on_sent(&mut self, seq: u64, send_ns: u64, units: u64) {
         self.inflight.insert(seq, Sent { send_ns, units });
         self.sent_units += units;
+        // [TUR-2a D-1/5] pencere-paydası (bounded; eviction paydayı küçültür → ppm hafif
+        // yukarı-yanlı olur, SAKLANMAZ — audit sayacıyla görünür).
+        if self.sent_window.len() >= LEDGER_MAX {
+            if let Some(old) = self.sent_window.pop_front() {
+                self.sent_window_units = self.sent_window_units.saturating_sub(old.units);
+                self.ledger_evicted_total += 1;
+            }
+        }
+        self.sent_window.push_back(Sent { send_ns, units });
+        self.sent_window_units += units;
     }
 
-    fn on_ack(&mut self, acked: &[u64]) -> Vec<u64> {
+    fn on_ack(&mut self, acked: &[u64], now_ns: u64) -> Vec<u64> {
         for &seq in acked {
             self.inflight.remove(&seq);
+            // [TUR-2a D-1/3] UN-LOSS: kayıp-ilan-edilmiş seq'e ACK geldi → hipotez ÇÜRÜDÜ.
+            // Ledger'da Spurious'a çevrilir (Confirmed dahil — kanıt kanıttır; retransmit-sent
+            // belirsizliği SENDER kolunda retx_count'la ayrışır, D-1/3 kol-2/TUR-2c).
+            if let Some(ev) = self
+                .events
+                .iter_mut()
+                .rev()
+                .find(|e| e.seq == seq && e.state != LedgerState::Spurious)
+            {
+                ev.state = LedgerState::Spurious;
+                self.spurious_units_total += ev.units;
+                self.unlossed.push(seq);
+            }
             if !self.have_acked || seq > self.largest_acked {
                 self.largest_acked = seq;
                 self.have_acked = true;
@@ -167,8 +311,8 @@ impl LossDetector for ThresholdLossDetector {
             return Vec::new();
         }
         let la = self.largest_acked;
-        let k = self.cfg.packet_threshold;
-        // Önce kayıp seq'leri topla (immutable borç), sonra kaldır.
+        let k = self.effective_packet_thresh(); // [TUR-2a] adaptif reorder-toleransı (§9.3)
+                                                // Önce kayıp seq'leri topla (immutable borç), sonra kaldır.
         let lost: Vec<u64> = self
             .inflight
             .keys()
@@ -178,6 +322,7 @@ impl LossDetector for ThresholdLossDetector {
         for seq in &lost {
             if let Some(s) = self.inflight.remove(seq) {
                 self.lost_units += s.units;
+                self.declare(*seq, s.units, now_ns); // ledger: Suspected
             }
         }
         lost
@@ -215,6 +360,7 @@ impl LossDetector for ThresholdLossDetector {
         for seq in &lost {
             if let Some(s) = self.inflight.remove(seq) {
                 self.lost_units += s.units;
+                self.declare(*seq, s.units, now_ns); // ledger: Suspected [TUR-2a]
             }
         }
         lost
