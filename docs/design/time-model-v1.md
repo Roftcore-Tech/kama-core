@@ -421,6 +421,30 @@ DrainRtprop idle'ıymış (bkz. maske-soyma #4'ün devamı; kilit değil, faz-di
 (ProbeUp-kusuru DEĞİL — genişletme yok, talimatça). ProbeUp temiz-kanalda görevini "headroom yok"
 ölçümüyle yaptı; asıl sınavı m2/p5 (açlık-modu btlbw-floor-kilidi, §3.6'nın hedefi).
 
+## 0.20 TUR-3c m2 ÖLÇÜM-KAYDI — mekanizma-kanıtı GELDİ (btlbw-floor kaçışı); spektrum üst-uçta örneklendi
+
+**p5×6 = {100, 100, 100, 100, 100(c10=1.00), 81}** — açlık-bandı ({11,22} sınıfı) bugün HİÇ
+örneklenmedi (kernel-RNG çekilişi; P≈(2/3)⁶≈0.09, seyrek ama meşru). Bant-kayması tahmini
+({11,22}→{25-60}) bu yüzden TEST EDİLEMEDİ — yerine daha güçlüsü geldi:
+
+**p5r6 = m2 mekanizma-kanıtı (trajektori):** btlbw **31-kilidinde 68s** (t=8.5→76.5; Startup
+rate=89 iken bile floor'da — ACK-açlığı tek-kümülatif-SACK örnekleri, §3.6'daki birincil-kilit).
+DrainRtprop→Steady sonrası ProbeUp t=78.5 GİRDİ → btlbw **78→191→463→591 (7.6×)** → SUCCESS-çıkış
+t≈102 (probe=1/0/0/0) → teslim 21→**81** (saf-data, retx=0 dup=0). Beklenti-kaydının "ProbeUp
+btlbw'yi 31-kilidinden RAMP'ler → yapısal kaçış" cümlesi birebir ölçüldü.
+
+**Dürüst-atıflama:** Diğer 5 koşu (hepsi 100/100) probe-NÖTR — Steady'ye hiç ulaşmadılar
+(PreConverge/RecoverArq-baskın; giriş Steady-şartlı, dal-2 sınırı aynen). 5×100'ün kaynağı 3c
+DEĞİL — 3b-rev2 tabanının bugünkü şanslı çekilişleri (sender-yolu deterministik: r1/r3/r4/r5
+tx=29432 birebir; varyans yalnız hangi-SACK-hayatta-kalır'dan).
+
+**Şart-b (c10-varyans) DOĞRULANMADI:** c10 = {0,.01,0,.01,1.00,.01} — hâlâ iki-uçlu. İlk-SACK-şansı
+yapısal kalıyor (hızlı-mod koşularında probe hiç koşmadı → etkileyemezdi). Tahmindeki dürüst-dal
+aynen: **P5-GATE 3c'yle KAPANMAZ** — dar-IQR kabulü TUR-4 (fuzzy/arq + dönüş-yolu) sonrasına.
+
+**p4-smoke ✓:** 100/100, c10=1.00, saf-data 1.00×, probe-nötr (hızlı kanalda kuyruk anında
+boşalır → backlog-kapısı girişi doğru engelliyor: talep zaten karşılanıyorken prob gereksiz).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
