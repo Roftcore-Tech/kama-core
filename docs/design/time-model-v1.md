@@ -632,6 +632,19 @@ delivered-anchor", TUR-A satırı) — arz-zenginleşmesi olay-sayacını kaydı
 yarım-fix'i zaten SON-listesinde); (b) startup_plateau delivered-anchor fix'i AYRI-tur
 (spec-satırı hazır); (c) kota'yı dar-banda kısıtlama (mekanizmayı sulandırır — ÖNERİLMEZ).
 
+**İKİNCİ KIRMIZI — 0.25k SEÇİLEN-R(=8) İLE 13/20:** R=4-kolu 20/20 + özet-metrikler ESKİYLE
+ÖZDEŞ (4/0/27, tx=5660); R=8-kolu 13/20, btlbw-son 27→13, sıfır-tick 4→25 (tx aynı — sender-
+emisyon değişmedi; bozulan ACK-fiziği). Dekompozisyon: +7 kota-kopyası @T_SPACING=2.1s ×65B =
+31 B/s ≈ dar-dönüş kanalının TAMAMI ~14.7s → SACK-kuyruklanması → ack-delay/estimator
+zehirlenmesi 300s'e yayılıyor. r3'ün "dar-dönüşte doğal-seyrekleşme" gerekçesi 0.25k'da YANLIŞ
+(T_SPACING = tam-kanal-serialization = doyum); r1-lens'in kota-bütçe uyarısının R=8-ölçekli
+geri-dönüşü. **R-SEÇİM ÇIKMAZI:** R=8 K-1a ✓ ama K-5 ✗; R=4 K-5 ✓ ama K-1a ✗ (9.49s, tek-seri)
+— çok-kriterli kural ("kota-yükünü artıran kol seçilmez") iki kolu da tek-başına bırakmıyor.
+Fix-uzayı (karar Abkarada'nın): (α) T_SPACING'in kanal-türevli tabanı — örn.
+max(T_SPACING, kendi-varış-gap'i sınıfı bir taban): dar-dönüşte kota yayılır, p5'te 2.1s kalır
+(YENİ-TASARIM, onaysız girilmez); (β) R=4 seçimi (K-1a farkı 1.1s, 6-koşu-örneklem gürültüsü
+payı; 12-koşu R=4-verisi yok); (γ) her ikisi + startup_plateau-fix'i ayrı-tur paketlemesi.
+
 **Süreç-kaydı:** Ekleme-2 (kota-yanış şartı) implementasyon-öncesi çelişki-tespitiyle GERİ-
 ÇEKİLDİ (K-1b retry-takvimini bloklardı — not §2 revizyonu; count=0-deliği DV-2 açık-riski
 aynen). Bacak-2 yapısal-gölgeleme dürüst-bulgusu: K_ARR=2'de accel-ritmi freq/tail'le örtüşük;
