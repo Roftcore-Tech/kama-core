@@ -400,6 +400,27 @@ Temiz-1k 43 (B'nin belgeli-değeri; 3c-hipotezi duruyor). 0.25k korundu (monoton
 Not: c10-varyansı şanslı-koşularda büyüdü (başlangıç-SACK şansı; c120 teslimleri yüksek) —
 3c/ProbeUp sonrası yeniden okunur.
 
+## 0.19 TUR-3c m1 ÖLÇÜM-KAYDI — dönüş-kolu ✓, tırmanış-kolu YANLIŞLANDI (hedef miskalibre)
+
+**Mekanik (hepsi kontratça):** giriş t=91 (periyot+qd-histerezis+backlog ✓), gain uygulandı
+(rate 102→127 ✓), kuyruk-kanıtı qd 1.23→2.49s ✓, **dürüst-abort** qd_ratio 814‰>500‰ ✓
+(probe=0/1/0/0). btlbw 102'de KALDI — ve kalması DOĞRU:
+
+**Dekompozisyon — 3b-devri hipotezin "kanal 125" değeri WIRE/PAYLOAD karışımıydı:** 1kbit =
+125 B/s WIRE; birim = 256B payload + 50B başlık (28 UDP/IP + 22 kama) = 306B wire → payload-tavanı
+= 125×256/306 ≈ **104.6 B/s**. btlbw=102 = tavanın %97.5'i → app-limited-kilit 3b-drain'de ZATEN
+kalkmıştı; ProbeUp'ın bulacağı headroom fiziksel olarak yoktu. 120s teorik tavan = **49 birim**;
+50-53 hedefi matematiksel imkânsızdı (miskalibrasyon 125/104.6 oranından geliyordu).
+
+**Sonuç: temiz-1k 43 → 45** (49 tavanın %92'si; kalan = cold-start ~4s + kesim-anı uçuştaki ~4
+birim). +2'nin mekanizması: probe'un kurduğu ayakta-kuyruk sonraki DrainRtprop dip'lerinde
+(rate 76 < 104.6) wire'ı DOLU tutuyor — eski 43'ün "son-30s kaybı"nın gerçek yüzü boş-kuyruklu
+DrainRtprop idle'ıymış (bkz. maske-soyma #4'ün devamı; kilit değil, faz-dip'i).
+
+**Hüküm:** m1 doğrulama-şartının ≥45 kolu SAĞLANDI; tırmanış-kolu hedef-miskalibrasyonla düştü
+(ProbeUp-kusuru DEĞİL — genişletme yok, talimatça). ProbeUp temiz-kanalda görevini "headroom yok"
+ölçümüyle yaptı; asıl sınavı m2/p5 (açlık-modu btlbw-floor-kilidi, §3.6'nın hedefi).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
@@ -562,6 +583,7 @@ p5→TUR-4'te geri · p2/p3-tırmanış→TUR-4+B.
 | borç | doğuş | doğrulama/çürütme noktası | durum |
 |---|---|---|---|
 | **ŞANSLI-MOD-FREKANSI** | TUR-2b ölçümü: p5 şanslı-mod 0/9 çekiliş (P≈%3-5 kuyruk). Yapısal savunma ("2b sıcak-yolu hit=0 iken karar-yolu 2a-bit-özdeş → frekans değişemez → netem-varyansı") bir **ÇIKARIM, ölçüm değil** | **TUR-3a retest'i** spektrumu yeniden örnekler: şanslı-mod ~%30 bandına dönerse borç KAPANIR; yine seyrekse yapısal-savunma ÇÜRÜR → şanslı-mod-frekansı bağımsız sorun olarak açılır | AÇIK |
+| **Statik return-prior → ProbeUp-periyodu tüketicisi** | TUR-3c: giriş-periyodu 4×ack_epoch; EAI'nin statik önseli (31 B/s worst-corner) hızlı kanalda epoch'u ~2.1s'e mıhlar → probe-periyodu ≥8.4s'e sabitlenir (kanal-türevi değil, önsel-türevi) | §3.3-E-FULL (ölçülen return_bw) gelince EAI daralır → periyot kanal-zamanlı olur; E-FULL kampanya-öncesi borcun YENİ tüketicisi olarak kaydedildi | AÇIK |
 | **17-data-emisyonu izi (loopback)** | commit-C teşhisi sırasında görüldü: 10 birim / 17 data-send (tx=1550B; retx=0 dup=0) — fazla-emisyonların kaynağı belirsiz | AYRI teşhis (muhtemelen PreConverge/emisyon-yolu); kampanya-metriklerine oran-etkisi olabilir | AÇIK |
 | **Little-kolu min_cwnd-maskesi** | 3a.5-α ölçümü: cwnd/srtt kolu fixture min_cwnd'i sayesinde BAĞLAMADI (yarı-2 öngörüm aşırı-temkin) — kol fiilen uykuda | MIN_CWND kalibrasyonu (sıra-SONU, D-4/2): kalibre min_cwnd küçülürse kol uyanır → srtt_t-paydalı davranış O ZAMAN ölçülür | AÇIK |
 | packets_in_flight kayıp-sızıntısı (sampler) | TUR-2c muhasebe-incelemesi + review-workflow'u: kayıp-ilan edilen paket sampler'ın packets_in_flight'ını düşürmüyor; hit'siz üç yol HİÇ decrement etmez: (a) tombstone TTL-prune, (b) kapasite-eviction, (c) Duplicate-kökenli kayıp (tombstonesuz) → her gerçek-kayıp kalıcı +1 sızıntı → pipe-boş tespiti (first_sent/delivered_time yeniden-çıpalama) kayıplı koşuda bir daha tetiklenmez | TUR-3a (estimator pencereleri) — sampler semantiği zaten o turun masasında | AÇIK |
