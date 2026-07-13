@@ -464,7 +464,7 @@ boşalır → backlog-kapısı girişi doğru engelliyor: talep zaten karşılan
 4. **TUR-4 GO** (fuzzy): bw log-ölçek + sıfır-ağırlık fallback (arq_light) + membership-invariant
    + qd rtprop-göreli üyelik. Hedef: p5-determinizmi (dar-IQR — P5-GATE son-mührü). P5-GATE bu
    fazda dürüst-açık: ProbeUp açlık-KAÇIŞINI çözdü (p5r6 7.6×), p5-DETERMİNİZMİNİ çözmedi.
-5. **Gerçek-dünya doğrulama üç-eksen planı → `docs/design/dv-plan-v1.md`** (DV-1 bant-decade'leri,
+5. **Gerçek-dünya doğrulama üç-eksen planı → `docs/design/dv-plan-v2.md`** (DV-1 bant-decade'leri,
    DV-2 aralıklılık, DV-3 rejim-geçişi; sıra TUR-4 SONRASI; kampanya-öncesi kapanır). Açık-uyarı
    aynen kayda: DV-2/DV-3 kapanana kadar "gerçek-dünyaya hazır" İDDİA EDİLMEZ (yalnız
    "sürekli-bant kanıtlı" denir).
