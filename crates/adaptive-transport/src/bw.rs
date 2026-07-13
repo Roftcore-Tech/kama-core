@@ -94,6 +94,12 @@ impl DeliveryRateSampler {
         }
     }
 
+    /// Kümülatif delivered (bytes) — [TUR-3c] probe-volume ölçümü (delivered_since_entry).
+    #[must_use]
+    pub fn delivered(&self) -> u64 {
+        self.delivered
+    }
+
     /// Uçuşta-sayılan iletim sayısı (SALT-GÖZLEM — not §3.7 sızıntı-borcu ölçümü [TUR-3a]).
     #[must_use]
     pub fn packets_in_flight(&self) -> u64 {

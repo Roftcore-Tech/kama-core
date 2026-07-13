@@ -199,12 +199,13 @@ async fn client_loop(
                 let (unloss, lppm, _spur) = run.sender.diag_ledger();
                 let (tomb_live, tomb_hit, bw_rec, tomb_ev, ambig, credited) = run.sender.diag_tombstone();
                 let pif = run.sender.diag_pif();
+                let (ps, pa, pt, pp) = run.sender.diag_probe();
                 let (rtprop_us, qd_us) = run.sender.diag_qd();
                 eprintln!(
-                    "TRAJ t={:.1} state={:?} btlbw={} rate={} srtt_us={} infl={} sent_u={} deliv={} loss_pkt={} loss_time={} pend={} rtt_rej={} adly_max_us={} unloss={} lppm={} tomb={}/{}/{}/{}/{}/{} pif={} rtprop_us={} qd_us={}",
+                    "TRAJ t={:.1} state={:?} btlbw={} rate={} srtt_us={} infl={} sent_u={} deliv={} loss_pkt={} loss_time={} pend={} rtt_rej={} adly_max_us={} unloss={} lppm={} tomb={}/{}/{}/{}/{}/{} pif={} rtprop_us={} qd_us={} probe={}/{}/{}/{}",
                     now as f64 / 1e9, st, btlbw, rate, srtt_us, infl,
                     run.tx_data / unit_wire.max(1), run.delivered_count, lpkt, ltime, lpend,
-                    rtt_rej, adly_max, unloss, lppm, tomb_live, tomb_hit, bw_rec, tomb_ev, ambig, credited, pif, rtprop_us, qd_us
+                    rtt_rej, adly_max, unloss, lppm, tomb_live, tomb_hit, bw_rec, tomb_ev, ambig, credited, pif, rtprop_us, qd_us, ps, pa, pt, pp
                 );
             }
             _ = pace.tick() => {

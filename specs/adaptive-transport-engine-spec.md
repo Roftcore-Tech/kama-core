@@ -202,19 +202,25 @@ Durumlar:
   RECOVER_ARQ     → residual loss var + ack_confidence OK → selective retransmit (§9)
   RECOVER_FWD     → ack_confidence LOW → forward redundancy (§11), ACK-bağımsız
   DRAIN_RTPROP    → RTprop probe: inflight düşür, min-RTT ölç (§8.3)
+  DRAIN           → STARTUP-çıkış overfill-tahliyesi (BBR-analog): düşük-gain pace, inflight
+                    cwnd_gain×BDP'ye inene dek (Startup-kuyruk Steady'ye taşınmaz)               [TUR-3b]
+  PROBE_UP        → periyodik +gain bant-probu: app-limited-kilidi kırar (btlbw delivered-rate'ten
+                    ölçülür → rate=btlbw kendi-tavanını hiç aşamaz; probe tavanı test eder)      [TUR-3c]
 
 Geçişler (event-driven, deterministik):
   IDLE   --data-hazır-->                 PRE_CONVERGE                                          [K-KEYSTONE §3.3]
   PRE_CONVERGE --ilk geçerli SACK/echo (RTT+loss kilidi §3.3-D)--> STARTUP                     [R1/R14]
-  STARTUP--BtlBw plato (Δ<ε, N round)--> STEADY
+  STARTUP--BtlBw plato (Δ<ε, N round)--> DRAIN --inflight≤cwnd_gain×BDP ∨ dwell≥3×ack_epoch--> STEADY  [TUR-3b]
+  STEADY --periyot(4×ack_epoch) ∧ qd≤500‰ ∧ backlog--> PROBE_UP --success|abort|timeout|preempt--> STEADY  [TUR-3c]
   ACTIVE --ack_confidence LOW----------->  RECOVER_FWD  --ackconf≥MED--> STEADY   [AMENDMENT-1]
   ACTIVE --residual_loss>0 ∧ ackconf≥MED-> RECOVER_ARQ  --temiz-------> STEADY   [AMENDMENT-1]
   STEADY --rtprop_probe_due------------->  DRAIN_RTPROP --min-rtt ölçüldü--> STEADY
   (any)  --idle > IDLE_TIMEOUT---------->  IDLE
-  ── ACTIVE = {STARTUP,STEADY,RECOVER_ARQ,RECOVER_FWD,DRAIN_RTPROP} (IDLE hariç tüm aktif fazlar).
+  ── ACTIVE = {STARTUP,STEADY,RECOVER_ARQ,RECOVER_FWD,DRAIN_RTPROP,DRAIN,PROBE_UP} (IDLE hariç tüm aktif fazlar).
      PRE_CONVERGE ACTIVE'e DAHİL DEĞİL: recovery (FWD/ARQ) + emergency + loss-ilanı §3.3-C'de DONDURULUR.
      Değerlendirme önceliği (her event): IDLE(iş yok) > PRE_CONVERGE(ölçüm-yok §3.3) > RECOVER_FWD(ackconf
-     LOW) > RECOVER_ARQ(pending loss) > faz-içi(STARTUP plato / STEADY / DRAIN_RTPROP).
+     LOW) > RECOVER_ARQ(pending loss) > faz-içi(STARTUP plato / DRAIN / STEADY / DRAIN_RTPROP / PROBE_UP).
+     PROBE_UP'ı emergency/pending kesmesi = PREEMPT çıkışı (4. tür, AYRI-raporlu muhasebe [TUR-3c]).
 ```
 
 > **[AMENDMENT-1] (impl-driven, gerekçeli — kod-spec tutarlılığı):** Recovery (FWD/ARQ) yalnız STEADY'den
@@ -972,6 +978,8 @@ Tunable'lar [CAL] → baseline ölçümünden sonra vektörlere GERÇEK değerle
 | `K_bw` / `K_rtprop` [TUR-3a] | W_BTLBW = max(10s, K_bw×ack_epoch); W_RTPROP = max(10s, K_rtprop×corrected_srtt); ack_epoch = max(srtt, EAI); + KEEP-LAST (D-2/2) | tüm bw (kanal-türevi; 10s [STD] taban hızlı kanalda korunur) | 8 / 8 [CAL matris {6,8,10}] |
 | `K_QD` qd kısa-penceresi [TUR-3a.5-α] | W_qd = K_QD×ack_epoch; W_qd ≤ W_rtprop; keep-last; [STD]-taban YOK (bilinçli — srtt-clock-v1 §2.2) | tüm bw (kanal-türevi) | 2 [CAL matris {1,2,4}] |
 | `K_CONV` kuantum-döngü böleni [TUR-3a.5-β] | T = rtprop/K_CONV; n = clamp(Δt/T, 1, CAP=64); floor-1 hızlı-decade bit-özdeş; kalan düşer (muhafazakâr) | tüm bw (kanal-zamanlı; ADR-18 4-decade kapısında kalibre) | 4 [CAL matris {2,4,8}] |
+| `K_PROBE_PERIOD_EPOCH` [TUR-3c] | ProbeUp giriş-periyodu: now−last_probe_end ≥ K×ack_epoch(**CANLI** — Steady'de gain=1 → epoch kirlenmez); giriş ayrıca qd_ratio≤500‰ histerezis ∧ backlog; tazelik-kapısı BİLİNÇLİ YOK (rtprop min-örnek yaşı sürekli-akışta bile büyür → kapı probu yapısal bloklar, testle ölçüldü; DrainRtprop yalnız Steady'den girer → probe-dwell'i kadar bekler, sınırlı) | tüm bw (kanal-türevi) | 4 [CAL matris {2,4,8}] |
+| ProbeUp volume/dwell/eşikler [TUR-3c] | volume = btlbw_e×PROBE_VOLUME_EPOCH×epoch_e; max_dwell = PROBE_MAX_DWELL_EPOCH×epoch_e — İKİSİ DE **DONUK** giriş-snapshot'ından (öz-referans tuzağı: probe gain'i canlı-epoch'u ~%20 küçültür, kuyruk-srtt dwell'i UZATIR = pozitif geri-besleme); success: delivered≥volume ∧ btlbw>btlbw_e×(1+ε); abort: qd>500‰ ∨ prob-atıflı kayıp (send_ns≥entry_ns — giriş-öncesi Confirmed-lag/rastgele-kayıp vetosu) | tüm bw (kanal-türevi) | volume=2×, dwell=4×, ε=25‰, qd=500‰ [CAL — placeholder, golden'a GİRMEZ] |
 | `RTT_floor(unit)` | (unit_wire+sack_wire)/floor_bw + PROP_MARGIN | pace edilen taban | 256B@0.25k≈11.9s; 64B@1k≈1.43s |
 | `k_base` (COPY_BASE_FACTOR) [R1] | >1; ilk-SACK cadence-exempt → RTT_floor ilk-SACK modeli. Fallback (exempt değilse): ≥1+ACK_CADENCE/RTT_floor | tüm bw | 1.3-1.5 |
 | `COPY_MULTIPLIER` | geometrik backoff (RFC 6298 analoğu) | tüm bw | 2 [STD] |
@@ -1026,7 +1034,9 @@ ZM-4  Karşılaştırmanın İKİ YANI aynı saati kullanmalı (örn. loss-thres
 | **qd-payı** [TUR-3a.5-α] | rtt.rs queue_delay | kısa-pencere-min (W_qd=K_qd×ack_epoch, kanal-türevi; keep-last; [STD]-taban bilinçli yok) | qd = ayakta-kuyruk; salıverme tek-örnekte (ölçüm-α: 42→45; qd 17.3s→0.74s drain'de) | ✓ srtt'den AYRIŞTIRILDI (tek-sayı-sanma düzeltmesi; tablo srtt-clock-v1 §3) |
 | ack_delay wire u16 µs (65.5ms tavan) | receiver.rs/ack.rs | ~~wall-clock tavan~~ → **FIXED [TUR-1x]**: V2 0x14 256µs-birim (tavan 16.78s), floor-encoding + satürasyon-sayacı + MIN_RTT_FLOOR guard | (eski) 8.4s ACK-hold 65.5ms'e doyardı → RTT örneği ~8.3s şişerdi; ölçüm-2: 1.43s hold decoded+subtracted, rtt_rej=0 | ✓ saniye-yetenekli encoding (D-4/1 Seçenek-A) |
 | ACK_CADENCE_FLOOR (RETURN_BW_PRIOR=31 const) | receiver.rs:89 | derleme-zamanı prior (statik 8.39s) | 1kbps'te 4× fazla throttle (2.1s yeterli); K-1'i besler | ölçülen return_bw'den adaptif (§3.3-E FULL) |
-| DrainRtprop dwell | sender update_state `_=>Steady` | event-count(1) | probe 1 ms yaşar → rtprop HİÇ yenilenmez | ölçüm-kapılı çıkış (≥1 RTT / min-rtt örneği) |
+| DrainRtprop dwell | sender update_state | ~~event-count(1) `_=>Steady`~~ → **FIXED [TUR-3b]**: açık kol + çıkış-invariantı (elapsed≥min_dwell ∧ qualifying-min-rtt) ∨ elapsed≥max_dwell; dwell = DRAIN_RTPROP_MIN/MAX_DWELL_EPOCH(1/3)×ack_epoch | (eski) probe 1 ms yaşar → rtprop HİÇ yenilenmez (N=0 aynı-event çıkış, VERIFIED) | ✓ kanal-türevi ölçüm-kapılı çıkış |
+| **Drain (STARTUP-çıkış)** [TUR-3b] | sender update_state Drain kolu | çıkış = BYTE-eşiği (inflight ≤ cwnd_gain×BDP — saat-sınıfsız, bilinçli) + liveness-yedeği DRAIN_MAX_DWELL_EPOCH(3)×ack_epoch (ACK-açlığında sonsuz-Drain yok) | yalın-BDP sub-kbps'te TEK-pakete iner → 55s aşırı-drain ÖLÇÜLDÜ → cwnd_gain×BDP retune | ✓ byte-eşiği + kanal-türevi yedek |
+| **ProbeUp periyot/dwell/volume** [TUR-3c] | sender update_state Steady/ProbeUp kolları | periyot = CANLI ack_epoch (gain=1'de güvenli); dwell+volume = **DONUK** giriş-snapshot epoch_e/btlbw_e (öz-referans tuzağı İKİNCİ red — srtt-clock-v1 §2.1 emsali: canlı-epoch probe'un kendi gain'iyle küçülür, kuyruk-srtt'yle büyür); kayıp-atfı send_ns≥entry_ns; 4 çıkış AYRI-raporlu (success/abort/timeout/preempt) | probe kendi ölçümünü kirletemez; giriş-öncesi Confirmed-lag probe'a yazılmaz | ✓ kanal-türevi (K_PROBE_PERIOD=4 [CAL]) |
 | emergency escalate adımı | emergency.rs update() | event-count (çağrı başına) | 1ms pompada Arq→Dup3 2 ms'de (merdiven fiilen binary) | adım-başına RTT-türevi dwell |
 | deescalate_dwell=1s | emergency.rs:95 | wall-clock | 1s < 1 srtt → tek ACK'te koruma tam iner (flap) | k·srtt veya ≥1 sağlıklı round |
 | dup_spacing=20ms | emergency/sender | wall-clock | 20ms ≪ serialization → kopyalar wire'da bitişik (dekorelasyon amacı ölür) | k·birim-serialization |
