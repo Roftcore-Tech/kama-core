@@ -1,137 +1,154 @@
-# m45-kanal-durumu-v1 — Kanal-Durumu-Değişim-Tespiti: İki-Tur Ayrışımı + Daralma-Dar-Fix [TASLAK r2 — ONAY BEKLİYOR]
+# m45-kanal-durumu-v1 — Stale-btlbw Reconciliation (TUR-D1) + Kanal-Durumu-Sensing (TUR-S) [TASLAK r3 — ONAY BEKLİYOR]
 
-> **r1→r2 (doğrulama wf_8395cf95 — çekirdek SAĞLAM, muhasebe 4-yerinden sertleşti + aritmetiğim düzeltildi):**
-> Çekirdek DOĞRULANDI-TEMİZ: anti-ratchet yönü + aktüatör-yan-etkisizliği kod-düzeyinde tutuyor;
-> üç-kısıt cevap-varlığı TAM. Kırılanlar (B2-tipi meta-kök DEĞİL — somut fix-sınıflı muhasebe):
-> (F1) kümülatif-SACK batch'i K_SHRINK'i TEK-olayda doldurur (kopma-dönüşünde yanlış-reset; "straggler
-> dolduramaz" iddiam kod-yanlış) → **OLAY-BAŞINA SAYAÇ ≤1 + TAZE-SNAPSHOT-ŞARTI**; (F2) genişleme-
-> sonrası bayat-kohort yeni-btlbw'ye karşı sayılır (SACK azalan-blok + batching → DESEN-2-geri-alma)
-> → **YAŞ-KAPISI** (sent_ns ≥ btlbw-son-yükselme-anı; gerçek-daralmada saydam); (F3) gain-faz damgası
-> gönderim-ANINDA SentPacket'e (Drain-0.347-kohortu Steady'de ack'lenir → her-başlangıçta yanlış-reset)
-> + anti-vacuous-vektör; (F4) semantik-pin: geçersiz=ATLA (sıfırlamaz), sayaç yalnız GEÇERLİ-aykırıyla
-> sıfırlanır. ARİTMETİK-DÜZELTMELERİM (dürüstlük): denge bağlayıcı-terimi min_cwnd (srtt*≈12.8s;
-> "26.5s≈plato" retrofit'ti — srtt aslında MONOTON-tırmanıyor 0.84-0.92 s/s → tespit-zorunluluğu
-> GÜÇLENİR: denge bile yok, kaçak-tırmanış); yanlış-tetik maliyeti "13×/1s" değil probe-GİRİŞ-gecikmeli
-> (~26s-sınıfı, period-kapılı) → S4-önerisi: shrink-reset probe-timer'ı da sıfırlar → maliyet ~1-epoch.
+> **Statü:** D0-TASARIM-NOTU. Mimari-çekirdek GO (Abkarada r3-talimatı); TUR-D1-kod bu-r3-onayına
+> bağlı. **ROL-DARALTMASI (talimat, belge-geneli):** TUR-D1 = **"persistent-underdelivery
+> karşısında stale-high-btlbw demotion/reconciliation"** — "kesin-kanal-daralması-tespiti" DEĞİL.
+> Gerekçe: R_sample ≈ min(C_path, R_offer, R_cwnd, R_pacing, R_ack-clock) — düşük-delivery ALTI
+> nedenden gelebilir; iki-kapı (app_limited+gain) yalnız İKİSİNİ eler; kendi-aritmetiğimizde bile
+> min_cwnd-bağlayıcı (Little-kısıtlı-sender). Mekanizma "kanal-daraldı" DEMEZ; "btlbw birden-fazla
+> güvenilir-teslim-olayında gerçekleştirilebilen-delivery'den ciddi-yüksek + eski-max kontrol-
+> sistemine zararlı → konservatif-aşağı-al" der. Bu daraltma M4-beklememezliği GÜÇLENDİRİR
+> (kanalın-NEDEN-yavaşladığını çözmüyor; eski-max'ın sonsuz-kontrol-zehirlemesini kesiyor).
+> Yeni-kapı (offered-load) EKLENMEDİ — iddia daraltıldı (iki-review hemfikir).
+>
+> **r2→r3:** HIGH-1 atomik-event-verdict + HIGH-2 generation-izolasyonu (kod-öncesi-zorunlu-ikili);
+> "ardışık"→"ardışık-eligible-evidence-olayı"; S1-S5 kararları işli; §6-temizlik (A:plato-kalıntısı-
+> silindi, B:P5-GATE-{100×12}-tek-resmi, C:DESEN-2-iki-metrik); 7-ek-vektör; EK-1-aritmetik-teyit
+> (dört-sayı yeniden-türetildi, ikinci-hata YOK) + EK-2-S5-örtüşme-ölçümü + EK-3-borç-kaydı.
 
-> **Statü:** D0-TASARIM-NOTU (Abkarada M4/M5-GO; üç-zorunlu-kısıt a/b/c cevaplı). ONAYDAN SONRA kod.
-> **Çerçeve (Abkarada):** "aralıklı-kanal-sensing" DEĞİL → **"kanal-durumu-DEĞİŞİM-tespiti"** —
-> üç-geçiş: KOPMA (B1+B2) · DARALMA (DESEN-1) · GENİŞLEME (DESEN-2, KORUNUR). Zemin: 3-lens
-> kod-teşhis-workflow'u (wf_898af776) + DV-2/DV-3 ölçümleri + B2-DUR meta-kök-kaydı.
+## ROL-TABLOSU (talimat)
 
-## 0. KISIT-B CEVABI [TUR-SAYISI-BELİRLEYİCİ]: DESEN-1 bağımsız-dar-fix'e UYGUN → İKİ-TUR AYRIŞIMI
+| mekanizma | gerçek-rol |
+|---|---|
+| TUR-D1 | stale-btlbw estimator-hijyeni / underdelivery-reconciliation |
+| TUR-S / M4+M5 | gerçek-kanal-rejimi + kopma↔yavaşlık ayrımı |
+| M3 | yanlış-estimator-bilgisinin motor-geneli hasar-sınırlaması |
 
-**Hüküm: EVET — daralma-tespiti M4/M5-sensing GEREKTİRMEZ; yerel-dar-fix.** Dört kod-gerekçe:
-1. **Kanıt-altyapısı hazır:** DeliveryRateSampler (bw.rs:46-127, BBR-§7.1) her ACK'te RateSample
-   üretiyor; girdileri SALT monoton-damga-FARKLARI — srtt/rtprop/EAI hiçbir-bacakta YOK.
-2. **B2-meta-kök BULAŞMAZ:** kopma örnek-YOKLUĞU üretir, daralma düşük-değerli örnek-VARLIĞI —
-   ayrım örnek-varlığı düzeyinde, tek-örnek-yorumu düzeyinde değil. B2-DUR'un daraltılmış-ifadesi
-   ("ACK-dizisi + gönderim-geçmişi eklenince aynı gözlem-uzayında değiliz") delivery-DİZİSİNİ
-   izinli-sınıfa koyar — ve bu M4-dış-referans GEREKTİRMEDEN mevcut-yerel-ölçümle kurulur.
-3. **Öz-referans yönü DÜZELTİCİ (anti-ratchet):** zehirlenen-büyüklük (bayat-yüksek btlbw)
-   tespit-EŞİĞİ değil tespit-KONUSU — btlbw ne kadar bayatsa `delivery ≪ btlbw/K` o kadar KOLAY
-   ateşler (negatif-geri-besleme; B2'de zehir eşiği şişirip tespiti BASTIRIYORDU). EWMA-entegrasyon
-   yok — B2-amplifikatörünün (kuantum-n=64) eşdeğeri yok; tek-aykırı-örnek max'ı oynatamaz.
-4. **Mevcut-savunmalar DESEN-1'e KÖR (dar-fix gerekçesi):** Emergency sessizlik-anahtarlı
-   (daralmada ACK akar → conf=1000 → hiç-görmez); fuzzy soft-drain tabanı 0.5× — 13×-sapmayı
-   yapısal-düzeltemez; Little-freni toparlanma değil **ZEHİRLİ-DENGE** (aşağıda §1).
+## 0. İKİ-TUR AYRIŞIMI [kısıt-b; r2'den — GO]
 
-**→ TUR-YAPISI: (TUR-D1) daralma-dar-fix — M4-BEKLEMEZ, önce · (TUR-S) kopma-sensing —
-E-FULL-return_bw'lu, sonra.** Etiket-dürüstlüğü: TUR-D1, §0.30-listesi madde-1'in dar-önalımıdır;
-madde-2 (kopma-ayrımı) TUR-S'de KALIR; **"sensing çözüldü" iddiası YASAK.**
+TUR-D1 (reconciliation, M4-BEKLEMEZ, önce) · TUR-S (kopma-sensing, E-FULL'lu, sonra). Dört
+kod-gerekçe korunur (kanıt-altyapısı-hazır; B2-meta-kök-bulaşmaz — örnek-varlığı-vs-yokluğu;
+öz-referans-DÜZELTİCİ-anti-ratchet; mevcut-savunmalar-DESEN-1'e-kör: Emergency-sessizlik-anahtarlı/
+conf=1000, fuzzy-tabanı-0.5×-yetmez, Little-freni-aşağıda). Etiket: TUR-D1 §0.30-madde-1'in
+dar-önalımı; madde-2 (kopma-ayrımı) TUR-S'de; **"sensing çözüldü" iddiası YASAK.**
 
-## 1. KISIT-A CEVABI: asimetri EPİSTEMİK; tek-yönlü-fix GEREK-ve-YETER (3 koruma-şartıyla)
+## 1. NEDEN-ZORUNLU [kısıt-a; r3 EK-1-TEYİTLİ aritmetik]
 
-**Asimetrinin doğası:** yüksek delivered-örnek kapasitenin KANITI (X teslim-edildi ⇒ kanal ≥ X) →
-max-filter'ı 0-örnek-gecikmeyle yükseltir (bw.rs:175,193); düşük-örnek kapasitesizliğin kanıtı
-DEĞİL (app-limited/gain<1/geçici olabilir) → max'a hiç-değmez; daralma-kanıtı ancak DİZİ-düzeyinde.
-`delivery ≫ btlbw` sinyali yapısal-BOŞ (ilk-aşan-örnek max'ı zıplatır — sürekli-fazlalık
-gözlemlenemez) → genişleme kendi-kendine-görünür, **tek-yönlü fix (yalnız-daralma) yeterli;
-genişleme-yolu (bw.rs:170-194 + ProbeUp sender.rs:920-976 + rate.rs:37) BİT-DEĞİŞMEDEN kalır.**
+**EK-1 yeniden-türetme (traj_dv3_3A2, t=38-70, n=63 — dört-sayı bağımsız-teyit, ikinci-hata YOK):**
+```
+rate×srtt = 4781-4799 B ≈ min_cwnd=4800  → bağlayıcı-terim min_cwnd (2×BDP=631B < 4800)  ✓
+rtprop    = 76574 µs SABİT (flood-boyunca; 1.0-1.7s değerleri t≥122 çökme-sonrası-reseed) ✓
+srtt*     = min_cwnd/bw_yeni = 4800/375 = 12.8s (teorik-denge)                            ✓
+srtt-eğim = 0.92 s/s lineer-fit (ölümsüzlük-eşiği 1/K_BW=0.125; 7.4×) → cutoff GERİLER    ✓
+```
+Ölçülen srtt MONOTON-TIRMANIR (plato yok) → denge-bile-kurulamayan kaçak-tırmanış; kırılma yalnız
+dış-olayla (t=120 loss). **Reconciliation-zorunluluğu ölçülü.** Asimetri epistemik (yüksek-örnek =
+kapasite-kanıtı, 0-örnek-gecikmeli girer; düşük-örnek = kanıt-değil, dizi-düzeyi-çıkarım gerekir;
+`delivery≫btlbw` yapısal-boş) → tek-yönlü mekanizma; genişleme-KOD-yolu (bw.rs:170-194 + ProbeUp
+sender.rs:920-976 + rate.rs:37) **BİT-DEĞİŞMEZ (diff-stat-doğrulama zorunlu).**
 
-**Neden tespit ZORUNLU (bekleyerek-düzelme yok) — iki ölçülü-mekanizma:**
-- **Bayat-max ÖLÜMSÜZLÜK-aritmetiği (AYRI alt-kök):** W_BTLBW = max(10s, 8×ack_epoch),
-  ack_epoch=max(srtt,EAI) (sender.rs:500-503) → daralma→kuyruk→srtt↑→W↑. d(cutoff)/dt =
-  1−8×d(srtt)/dt: eğim > 0.125 s/s iken cutoff GERİLER. DESEN-1 traj-lineer-fit eğimi
-  **0.84-0.92 s/s (eşiğin ~7×)** [r2: r1'deki "0.4-0.5" pencere-dışı-ortalamaydı, düzeltildi]
-  → 4119 ölümsüzdü. (TUR-3a sub-kbps-pencere-fix'i
-  daralma-rejiminde anti-fix'e dönüyor — W-türetim-alt-sorusu §4-S2.)
-- **Little-freni frenler-AMA-durduramaz [r2-düzeltme — r1-aritmetiğim yanlıştı]:** bağlayıcı-terim
-  min_cwnd=4800 (2×BDP=631B < 4800; rate.rs:145/173 — traj: rate×srtt=4798-4799 sabit), rtprop
-  76.6ms (1s değil). Teorik-denge srtt*=4800/375≈12.8s AMA ölçülen srtt MONOTON-TIRMANIYOR
-  (plato yok — r1'in "24-25s plato örtüşmesi" retrofit'ti, geri-çekildi) → durum r1-iddiamdan
-  KÖTÜ: denge bile kurulamıyor, kaçak-tırmanış; kırılma yalnız dış-olayla (t=120 loss). Tespit-
-  zorunluluğu-hükmü GÜÇLENEREK korunur.
+## 2. KISIT-C MATRİSİ [r2'den — GO]
 
-**Üç koruma-şartı (DESEN-2 dokunulmazlığı):** (i) aktüatör YALNIZ-DÜŞÜRÜR (btlbw'yi asla
-yükseltmez — yukarı-yol bit-aynı); (ii) yanlış-tetik maliyeti SINIRLI [r2-düzeltme]:
-tırmanış-hızı 13×/~1s (DESEN-2) ama probe-GİRİŞ-gecikmesi period-kapılı ~26s-sınıfı → toplam-maliyet
-on-saniyeler; S4-önerisi (reset probe-timer'ı sıfırlar) kabul edilirse ~1-epoch'a iner + dedektör
-kendiliğinden-sınırlı (demotion-sonrası delivered≈btlbw_yeni → oran≈1 → yeniden-ateşleyemez); (iii) **öz-kısma-muafiyeti:** gain<1
-fazlarında (Drain 0.347× / DrainRtprop 0.75× / PreConverge) dedektör SUSAR — motor kendi kastığını
-daralma-sanmaz (sender kendi-fazını bilir).
+UNDERDELIVERY/daralma → yerel (bw-domain boyutsuz-oran; sebat = eligible-evidence-OLAY-sayısı) ·
+KOPMA → E-FULL-GEREKLİ (tüm-canlı-saat-adayları srtt-türevli: 3×srtt-b2-kanıtlı-körlük, EAI∝srtt-
+zinciri, ack_epoch-iki-dalı-kirli; sınır-bölge-ayrılamaz + return_bw-dürüst-saat + yön-atfı) ·
+GENİŞLEME → DOKUNMA-listesi (ProbeUp ölçülü-mükemmel).
 
-## 2. KISIT-C CEVABI: 3-kök × dış-referans matrisi
-
-| kök | yerel-sinyal | ratchet-riski | E-FULL/M4 ihtiyacı |
-|---|---|---|---|
-| **DARALMA** | delivery-örnekleri vs btlbw — iki-bacak bw-domain, oran boyutsuz (SAATSİZ) | DÜŞÜK-yapısal, işaret TERS (anti-ratchet); tek-tuzak: sebat-saati süre-olursa srtt-bağı girer → **sebat = örnek-SAYISI** (varış=ACK=fiziksel-drain-ritmi; kanal-yaşadığından saat-yaşar) | **GEREKMEZ** |
-| **KOPMA (B1+B2)** | delivered-delta=0/ACK-yokluğu — sinyal-katmanı temiz AMA | **YÜKSEK:** süre-eşiğinin TÜM canlı-saat-adayları srtt-türevli (3×srtt=b2-kanıtlı-körlük; EAI∝srtt rate.rs:176-zinciri; ack_epoch iki-dalı-kirli); ratchet epizotlar-ARASI kapanır (straggler→n=64→srtt↑→sonraki-kopma-eşiği↑) | **GEREKLİ** — 3-gerekçe: sınır-bölge ayrılamaz (sub-kbps kopma≈EAI-mertebesi; T_SPACING-izomorfu); süre-saatinin dürüst-kaynağı ölçülen-return_bw (E-FULL 3. tüketici: kopma-süre-saati); yön-atfı (forward-vs-return-kopma ancak dönüş-yolu-ölçümüyle) |
-| **GENİŞLEME** | ProbeUp mevcut — 13×/~1s ölçülü-mükemmel | — | — (DOKUNMA-listesi) |
-
-## 3. TUR-D1 MEKANİZMASI (D0-düzeyi; kod onay-sonrası)
+## 3. TUR-D1 MEKANİZMASI [r3 — HIGH-1 + HIGH-2 işli]
 
 ```
-DEDEKTÖR (r2 — olay-saatli + dört-kapılı):
-  GEÇERLİ-örnek şartları (hepsi; sağlanmayan örnek = ATLA, sayacı SIFIRLAMAZ [F4-pin]):
-    !sample.is_app_limited                        ← arz-düşüşü ≠ kanal (bw.rs:30 kablolu)
-    ∧ gönderim-ANI-damgalı gain ≥ 1 [F3: SentPacket'e faz-alanı; tombstone-kol-1 de taşır]
-    ∧ sent_ns ≥ btlbw_son_yükselme_ns [F2 YAŞ-KAPISI — gerçek-daralmada btlbw yükselmez → saydam;
-      genişlemede bayat-kohort yapısal-dışlanır; K_RATIO=2 probe-bileşiğine karşı güvenli-kalır]
-    ∧ TAZE-SNAPSHOT [F1: örneğin delivered_time-damgası bu-ACK-olayından-önceki-olayda tazelenmiş
-      olmalı — kopma-yayılımlı bayat-interval örnekleri daralma-kanıtı DEĞİL, kopma-teşhis-sayacına]
-  SAYAÇ [F1]: OLAY-BAŞINA (SACK-başına) EN-FAZLA +1 — batch N-örnek ≠ N-kanıt ("ARDIŞIK"ın saati
-    varış-sırası; batching'de zaman-eşdeğerliği bozulur → olay-sayacı geri-kurar).
-  ATEŞLEME: K_SHRINK [CAL {3,5}] ardışık-OLAY, her-birinde ≥1 geçerli-örnek < btlbw/K_RATIO [CAL {2,4}];
-    GEÇERLİ-örnek oran-şartını sağlamazsa (≥ btlbw/K_RATIO) → sayaç-sıfırla (tek-sıfırlama-yolu).
-AKTÜATÖR (yalnız-düşürür):
-  btlbw-filter RESET → pencere := tetikleyen-olayların GEÇERLİ-örnekleri (recent-max; tek-örnek-
-  reseed'den kaçınılmış). Yükseltme-KOD-yolu dokunulmaz. diag_shrink_resets++ + TRAJ "shrink=".
-  [S4-önerisi] reset ProbeUp period-timer'ını da sıfırlar → yanlış-tetik-maliyeti probe-giriş-
-  gecikmesinden (~26s-sınıfı, ölçülü) ~1-epoch'a iner; salınımlı-kanalda dip-sonrası hızlı geri-öğrenme.
+── ÖRNEK-KAPILARI (geçemeyen = INELIGIBLE → ATLA, sayaç-korunur [F4]) ──
+  !sample.is_app_limited                                   (bw.rs:30 kablolu)
+  ∧ gönderim-ANI-damgalı gain ≥ 1                          [F3: SentPacket faz-alanı; tombstone-kol-1 taşır]
+  ∧ sent_ns ≥ olay-BAŞI last_raise_ns-snapshot'ı            [F2 yaş-kapısı; HIGH-2-kural-v]
+  ∧ TAZE-SNAPSHOT (delivered_time bu-olaydan-önce tazelenmiş) [F1: kopma-yayılımlı örnek → TUR-S-teşhis-sayacına]
+
+── ATOMİK-EVENT-VERDICT [HIGH-1 — loop-order-bağımsız; kod-öncesi-ZORUNLU] ──
+  B_ref = olay-BAŞI btlbw-snapshot;  G_ref = olay-başı generation
+  if olay-içinde btlbw yükseldi:            verdict = BASELINE_RAISED  → count=0, generation++
+  elif ∃ eligible: sample ≥ B_ref/K_RATIO:  verdict = COUNTER_EVIDENCE → count=0
+  elif ∃ eligible (hepsi düşük):            verdict = LOW_EVIDENCE     → count += 1  (olay-başına-max-1)
+  else:                                     verdict = SKIP             → count-korunur
+  (yüksek-örnek düşüğe ÜSTÜN: batch eski-eşik-üstü-delivery ürettiyse aynı-batch-düşükleri
+   daralmayı-kanıtlamaz — pozitif-kapasite-kanıtı-dominance)
+
+── GENERATION-İZOLASYONU [HIGH-2 — kod-öncesi-ZORUNLU] ──
+  btlbw_generation += 1  her gerçek-max-yükselişte VE her reset/reseed'de
+  (i) her btlbw-yükseliş sayacı KOŞULSUZ-sıfırlar; (ii) reset/reseed = yeni-generation;
+  (iii) sayaç yalnız AYNI-generation olaylarından birikir; (iv) expansion olay-içinde ÖNCE-atomik
+  belirlenir (aynı-olay hem-raise-hem-shrink OLAMAZ); (v) yaş-kapısı olay-başı-ÖNCEKİ
+  last_raise_ns-snapshot'ına göre (yükselişi-yapan-örnek kendi-olayında-geçersizleşmez).
+
+── ATEŞLEME ──
+  K_SHRINK [CAL {3,5}] **ardışık-eligible-evidence-olayı** (LOW_EVIDENCE) — sayılan ARDIŞIK-ACK-
+  olayı DEĞİL: arada app-limited/gain<1/bayat/SKIP olabilir, sayaç-korunur. İki-sonuç beyanlı:
+  sayaç-uzun-yaşar + tek-tek-blackout-dönüşleri epizotlar-boyunca-birikebilir → rol reconciliation
+  olduğundan KABUL (uzun-underdelivery sonunda-demotion'a-yol-açabilir); "kesintisiz-daralma-
+  kanıtı" ADLANDIRILMAZ. Her-olayda ≥1 eligible-örnek < B_ref/K_RATIO [CAL {2,4}].
+
+── AKTÜATÖR (yalnız-düşürür) ──
+  btlbw-filter RESET → pencere := AYNI-generation ∧ verdict=LOW_EVIDENCE olaylarının
+  eligible-düşük-örneklerinin MAX'ı [S2-daraltılmış: tek-örnek-reseed-yok, outlier'a-çökme-yok]
+  generation++ · diag_shrink_resets++ · TRAJ "shrink="
+  [S4-kesin-semantik] reset-sonrası next_probe_eligible_epoch = current_epoch + 1
 ```
-Kopma-dönüş-analizi (F1-sonrası): dönüş-SACK'i sayacı en-fazla-1 artırır; sonraki-olaylar TAZE-
-snapshot'lı gerçek-kanal-örnekleri getirir — kanal aynı-hızda döndüyse oran≈1 → sayaç-sıfırlanır
-(p6b-tekrarlı-kopma K_SHRINK'e ULAŞAMAZ); kanal gerçekten-daraldıysa (40k→kopma→8k) ateşleme DOĞRU.
-- **qd-eş-sinyal ZORUNLU-KAPI DEĞİL [ölçülü-gerekçe]:** DV-3-TRAJ floodda qd≈10µs DONUK-SIFIR
-  ölçtü (W_qd-srtt-bağı; lens-3-öngörüsü doğrulandı) — qd-kapısı dedektörü tam-hedef-senaryoda
-  öldürürdü. Salt-teşhis-sayacına iner.
-- **Loss-ayrımı (INV-RATE-1-analizi):** kalıcı-kayıp-kanalda (p5) btlbw ZATEN kayıp-sonrası-
-  delivered'dan öğrenilmiş → oran≈1 → ateşlemez (yapısal). Kayıp-REJİM-değişimi delivered'ı
-  gerçekten düşürürse btlbw-düşüşü sözleşme-İÇİ (INV-RATE-1: rate=delivered-rate tanımı; yasak
-  olan loss-SAYACI→rate). **Ampirik-kapı yine ZORUNLU: P5-GATE {100×12} KIRMIZI-şart** + temiz-1k=45.
+Kopma-dönüş-analizi (F1+verdict-sonrası): dönüş-SACK'i en-fazla-1-LOW sayar (bayat-snapshot'lılar
+zaten INELIGIBLE→TUR-S-sayacına); sonraki-olaylar taze-örneklerle kanal-gerçeğini ölçer — aynı-hız-
+dönüşte COUNTER_EVIDENCE→sıfırlanır (p6b-tekrarlı-kopma K_SHRINK'e ulaşamaz); gerçek-daralma-üstü-
+dönüşte ateşleme DOĞRU (reconciliation-rolü).
 
-## 4. Açık sorular (onayla)
+## 4. S-KARARLARI (r3-talimat-birleşik)
 
-- **S1: W_BTLBW-türetim alt-fix'i bu-turda-mı?** (ack_epoch=max(srtt,EAI)'nin srtt-dalı ölümsüzlük-
-  kökü; rtprop-epoch/EAI-tabanlı-türetim adayı). ÖNERİ: bu-turda-DEĞİL (tek-değişken; dedektör
-  ölümsüzlüğü zaten kırar — reset expiry-beklemez); ölçüm-sonrası-karar.
-- **S2: reset-sonrası pencere-tohumu** recent-max mı son-örnek mi (öneri: son-K_SHRINK-örneğin
-  max'ı — tek-örnek-reseed'den kaçın, B2-halka-4-dersi).
-- **S3: TUR-S kapsam-onayı** (kopma-sensing: E-FULL ölçülen-return_bw + kanal-durumu-makinesi;
-  girdiler dv-plan-M4/M5-kaydında; ayrı-D0 o-turda).
-- **S4 [r2]: shrink-reset ProbeUp period-timer'ını sıfırlasın mı?** Öneri: EVET — yanlış-tetik-
-  maliyeti ~26s(probe-giriş-gecikmesi)→~1-epoch; salınımlı-kanal (40k↔3k hücresel-deseni) dip-
-  sonrası hızlı geri-öğrenir. Tek-satır-bağlaşım; DESEN-2-koruması bit-aynı kalır.
-- **S5 [r2 — beyanlı-sınır]: app_limited kapsama-körlüğü** — arz yeni-kapasitenin ÜSTÜNDE ama
-  pacing'in ALTINDA kalan ara-vakada tx_queue-boş → app_limited=true → tespit Little-freni
-  backlog-kurana dek GECİKİR (kaçırılmaz, gecikir; yedek-dedektör yok — qd bilinçli-indirildi).
-  Beyanlı-kalıntı; DV-3-yeniden-ölçümünde gecikme-sınıfı raporlanır.
+- **S1 — bu-turda-GİRMEZ + EK-3-BORÇ-KAYDI:** W_BTLBW=8×ack_epoch'un srtt-dalı daralma-rejiminde
+  anti-fix (ölümsüzlük-kökü). Dedektör-reset SEMPTOMU-keser, KÖK-DURUR → **dedektör-reset'e
+  kalıcı-bağımlılık-riski AÇIK-BORÇ** (M3-decoupling veya W-türetim-turunda kapanır; "dedektör-var-
+  diye-W-fix-gereksiz" SANILMAZ). Ölçüm-sonrası-soru: explicit-shrink-reset varken dinamik-W hâlâ
+  gerekli mi, normal-eskime için sabit-epoch yeter mi? [r2'deki "§4-S2" atıfı yanlıştı → S1; düzeltildi]
+- **S2 — recent-max ONAY, daraltılmış** (§3-aktüatöre işlendi).
+- **S3 — TUR-S ayrı-D0 ONAY** (E-FULL-return_bw + ACK-sessizlik + cadence + yön-atfı + durum-
+  makinesi); "sensing-çözüldü" TUR-D1-sonrası İDDİA-EDİLMEZ.
+- **S4 — koşullu-EVET, kesin-semantik** (§3'e işlendi: next_probe_eligible_epoch=current+1).
+  **DARALTMA:** expansion-estimator-FORMÜLÜ bit-aynı AMA ProbeUp-GİRİŞ-zamanlaması bilerek-değişir
+  → davranış-bütünü bit-identical-DEĞİL. **KIRMIZI: DESEN-2 estimator-ramp 13×/~1s bozulursa S4-geri-al.**
+- **S5 — KABUL, kapsam-GENİŞLETİLMİŞ:** düşük-delivery path-capacity-düşüşü-dışında sender-offer/
+  cwnd/rate-sınırından-da gelebilir; TUR-D1 bunları epistemik-ayırma-iddiasında-DEĞİL; persistent-
+  underdelivery karşısında stale-high-btlbw'yi konservatif-reconcile-eder; gerçek-neden DV-3/TUR-S-
+  sınıflandırmasına bırakılır. EK-2 (§5) örtüşme-maliyetini sayısallaştırdı.
 
-## 5. Ölçüm-planı (kod-GO sonrası; beklenti-kaydı ölçümden-önce)
+## 5. EK-2 — S5-KÖR-NOKTASI × FLOOD-PENCERESİ ÖRTÜŞME (kod-beklet-şartı; SONUÇ)
 
-Birim: dedektör-vektörleri (daralma-ateşler / app-limited-susar / gain<1-susar / kopma-sessizlikte-
-ateşleyemez / p5-kalıcı-kayıp-ateşlemez). Sistem: **DV-3A2/3B2 yeniden** (ana-sınav: flood-kesimi —
-infl-63× → ~2×BDP-sınıfı; srtt-plato 24-25s → çöker; toparlanma 60s+ → K_SHRINK-örnek-süresi) +
-**DESEN-2-korunma** (3B2-çıkış 13×/~1s AYNEN) + P5-GATE p5×6 + temiz-1k + 0.25k. KIRMIZI: P5-GATE
-bozulması / DESEN-2-yavaşlaması / temiz-1k<45.
+- **Ampirik (DESEN-1-traj):** bol-backlog'da S5-vakası OLUŞMADI — gönderim-duraksaması ≥0.5s-üstü
+  0-adet/en-uzun-0.5s (sent_u sürekli-arttı → app_limited=false-baskın). Ölçülen-63×-flood
+  app_limited=false altında oluştu → r3-dedektörü o-pencerede eligible-örnek görür (yakalanabilir-sınıf).
+- **Analitik-tavan (arz-sınırlı-vaka; kanal=375B/s, min_cwnd=4800, SACK-kadansı≈6.4s, K_SHRINK=3):**
+  susma = backlog-kurulum + 3-olay-kadansı; flood-büyümesi ARZ-SINIRLI (pacing-hedefi-değil):
+  `arz=600 → ~33s / ~27-birim · arz=1000 → ~22s / ~52-birim · arz=2000 → ~20s / ~120-birim`
+  (ÜST-sınır — Little-decay gerçek-büyümeyi düşürür). Mertebe ölçülü-63-birimle AYNI-SINIF →
+  **kalıntı ihmal-edilemez ama TAVANLI ve arz-oranlı.** Hüküm-önerisi: yedek-tetik bu-turda GEREKMEZ
+  (rol-daraltmasıyla tutarlı: reconciliation gecikebilir, motor-yaşar; KIRMIZI-şartlar korunur).
+- **Ölçüm-aracı-eksiği (beyan):** tam-ampirik-örtüşme-ölçümü **paced-arrival bench-modu** ister —
+  bench'te YOK (client upfront-gönderir). Kod-GO-kapsamına motor-dışı ölçüm-aracı-kalemi önerisi:
+  `bench client --paced-arrival <B/s>` → §6-planındaki paced-vektör gerçek-koşuyla doğrulanır.
+  Abkarada-onayına.
+
+## 6. ÖLÇÜM-PLANI [r3 — temizlik A/B/C + 7-ek-vektör]
+
+**Birim (7-ek-vektör):** (1) mixed-batch-dominance (düşük+yüksek-eligible aynı-ACK → yüksek-kazanır,
+count=0); (2) same-event-expansion (raise-kazanır, generation++, count=0); (3) generation-isolation
+(LOW,LOW→raise→LOW → trigger-YOK); (4) skip-persistence (LOW,LOW→uzun-SKIP→LOW → beklenti-AÇIK-
+pinli: reconciliation-rolünde koruma-kabul, belgeli); (5) **B2-only-artifact** (kapasite-sabit,
+yalnız-srtt-şişer → D1-tetiklenmezse temiz; tetiklenirse false-demotion-recovery ≤S4-epoch —
+B2-artefaktının-daralma-sanılma-maliyeti); (6) ACK-split/batch-invariance (aynı-teslim-dizisi
+tek-cumulative / üç-ayrı / gecikmeli → karar makul-sınırda-değişmez); (7) salınımlı-kanal 40k↔3k
+(shrink→1-epoch-probe→shrink döngü-salınımı + gereksiz-reset-sayısı). + r2-seti: daralma-ateşler /
+app-limited-ATLAR / gain<1-ATLAR (**anti-vacuous-kurgu: Drain'de-gönder-Steady'de-ack'le** — faz-
+SINIRI-geçen-ack) / kopma-sessizlik / p5-kalıcı-kayıp-ateşlemez.
+**Sistem:** DV-3A2/3B2-yeniden — ana-sınav [A: plato-ifadesi-silindi]: **srtt-runaway-eğimi
+0.84-0.92 s/s-sınıfından-çıkar; shrink-reset-sonrası srtt/rate-kapalı-döngü-kaçağı kesilir veya
+ölçülü-üst-sınıra-iner.** **DESEN-2 İKİ-METRİK [C]:** estimator-ramp (ProbeUp-girişinden 13×/~1s
+DEĞİŞMEZ) + end-to-end-recovery (shrink-reset→eski-kapasite; S4-ile ≤~1-epoch-hedefi) — salt-ramp
+S4'ün-asıl-etkisini-ölçmez. + paced-arrival-vektörü (§5, araç-onaylıysa).
+**KIRMIZI (tek-resmi-set [B]):** **P5-GATE {100×12}** (iki-bağımsız-6'lık-seri; p5×6-tek-seri
+ifadesi kaldırıldı) · DESEN-2-ramp-13×/~1s · temiz-1k=45.
+**Kapsam:** bw.rs/sender.rs-daralma-yolu + rate.rs + testler; genişleme-yolu BİT-DEĞİŞMEZ
+(**diff-stat-doğrulama zorunlu**).
