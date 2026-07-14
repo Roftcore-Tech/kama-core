@@ -169,3 +169,6 @@ latency-prediction.md). Hüküm-kuralı: kuyruk-ceza >%20 → kampanya-öncesi; 
 **Dürüst-uyarı:** %8-9 sabit-ceza SIFIR-değil, upfront'ta birikir (RMST'de görünür); D-4/2
 cwnd-enforcement kampanya-SONRASI-kalibrasyon-fazının netleşmiş-kalemi (kaldırılırsa latency-profili
 iyileşir, teslim değişmez). Ölçülü-kanıt tam (maske-#6 + S4-C + DV-1-decade + bu smoke).
+**KOŞULLU-GERİ-ALINABİLİR (Abkarada-şartı):** kampanya RMST-metriği ~%8-9 motor-içi-ceza taşıyacak;
+headline-hücrelerde Kama-Quinn RMST-farkı bu bandın İÇİNE düşerse cwnd-enforcement kampanya-ÖNCESİNE
+ÇEKİLİR (son-borç kör-değil, koşullu). r5-headline-değerlendirmesinde bu satır kontrol-edilir.
