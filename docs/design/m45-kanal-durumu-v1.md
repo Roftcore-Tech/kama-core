@@ -1,4 +1,4 @@
-# m45-kanal-durumu-v1 — Stale-btlbw Reconciliation (TUR-D1) + Kanal-Durumu-Sensing (TUR-S) [TASLAK r3 — ONAY BEKLİYOR]
+# m45-kanal-durumu-v1 — Stale-btlbw Reconciliation (TUR-D1) + Kanal-Durumu-Sensing (TUR-S) [TASLAK r4 — ONAY BEKLİYOR]
 
 > **Statü:** D0-TASARIM-NOTU. Mimari-çekirdek GO (Abkarada r3-talimatı); TUR-D1-kod bu-r3-onayına
 > bağlı. **ROL-DARALTMASI (talimat, belge-geneli):** TUR-D1 = **"persistent-underdelivery
@@ -10,6 +10,16 @@
 > sistemine zararlı → konservatif-aşağı-al" der. Bu daraltma M4-beklememezliği GÜÇLENDİRİR
 > (kanalın-NEDEN-yavaşladığını çözmüyor; eski-max'ın sonsuz-kontrol-zehirlemesini kesiyor).
 > Yeni-kapı (offered-load) EKLENMEDİ — iddia daraltıldı (iki-review hemfikir).
+>
+> **r3→r4 (doğrulama wf_50257403 — PİN-SINIFI; mekanizma-kırılması YOK):** (P1-HIGH) TAZE-SNAPSHOT
+> nicel-pinlendi (iki-okumalı belirsizlik: literal=boş, katı=motivasyonu-öldürür → ack_elapsed-oranlı
+> form §3'e); (P2-HIGH) donmuş-aralık DÜZELTİLDİ: sender.rs:950-976 Steady-GİRİŞ-kapısıymış (S4'ün
+> dokunduğu yer) → BİT-DEĞİŞMEZ = bw.rs:170-194 + ProbeUp-KOLU 920-948 + rate.rs:37; giriş-kapısı
+> yalnız-period-bileşeni-istisnalı; (P3) BASELINE_RAISED=FİLTER-DÜZEYİ pin + kural-(i)-tek-locus +
+> diag-ayrıştırma + vektör-8; (P4) S4-tamamlama (qd_ok∧backlog-korunur; next_probe_ok_ns kod-eşleme;
+> vektör-7-geçme-kriteri); (P5) G_ref-operasyonel (kural-iii verdict'e işlendi); (P6) OLAY-TANIMI
+> (LOW-sayım-aralığı ≥ ack_epoch — split/batch-invariance); (P7/P8) kalıntı-temizlik + EK-2-formül +
+> geometrik-yakınsama + sub-K_RATIO-görünmezlik-beyanı.
 >
 > **r2→r3:** HIGH-1 atomik-event-verdict + HIGH-2 generation-izolasyonu (kod-öncesi-zorunlu-ikili);
 > "ardışık"→"ardışık-eligible-evidence-olayı"; S1-S5 kararları işli; §6-temizlik (A:plato-kalıntısı-
@@ -44,12 +54,14 @@ srtt-eğim = 0.92 s/s lineer-fit (ölümsüzlük-eşiği 1/K_BW=0.125; 7.4×) �
 Ölçülen srtt MONOTON-TIRMANIR (plato yok) → denge-bile-kurulamayan kaçak-tırmanış; kırılma yalnız
 dış-olayla (t=120 loss). **Reconciliation-zorunluluğu ölçülü.** Asimetri epistemik (yüksek-örnek =
 kapasite-kanıtı, 0-örnek-gecikmeli girer; düşük-örnek = kanıt-değil, dizi-düzeyi-çıkarım gerekir;
-`delivery≫btlbw` yapısal-boş) → tek-yönlü mekanizma; genişleme-KOD-yolu (bw.rs:170-194 + ProbeUp
-sender.rs:920-976 + rate.rs:37) **BİT-DEĞİŞMEZ (diff-stat-doğrulama zorunlu).**
+`delivery≫btlbw` yapısal-boş) → tek-yönlü mekanizma; genişleme-KOD-yolu **BİT-DEĞİŞMEZ
+(diff-stat-doğrulama zorunlu) [P2-düzeltme]: bw.rs:170-194 + ProbeUp-KOLU sender.rs:920-948 +
+rate.rs:37.** (r3'teki "920-976" YANLIŞTI: 950-976 Steady-taraf ProbeUp-GİRİŞ-kapısıdır — S4'ün
+bilerek-dokunduğu yer; giriş-kapısında yalnız period-bileşeni değişir, qd_ok∧backlog bit-aynı.)
 
 ## 2. KISIT-C MATRİSİ [r2'den — GO]
 
-UNDERDELIVERY/daralma → yerel (bw-domain boyutsuz-oran; sebat = eligible-evidence-OLAY-sayısı) ·
+UNDERDELIVERY → yerel (bw-domain boyutsuz-oran; sebat = eligible-evidence-OLAY-sayısı) ·
 KOPMA → E-FULL-GEREKLİ (tüm-canlı-saat-adayları srtt-türevli: 3×srtt-b2-kanıtlı-körlük, EAI∝srtt-
 zinciri, ack_epoch-iki-dalı-kirli; sınır-bölge-ayrılamaz + return_bw-dürüst-saat + yön-atfı) ·
 GENİŞLEME → DOKUNMA-listesi (ProbeUp ölçülü-mükemmel).
@@ -61,13 +73,24 @@ GENİŞLEME → DOKUNMA-listesi (ProbeUp ölçülü-mükemmel).
   !sample.is_app_limited                                   (bw.rs:30 kablolu)
   ∧ gönderim-ANI-damgalı gain ≥ 1                          [F3: SentPacket faz-alanı; tombstone-kol-1 taşır]
   ∧ sent_ns ≥ olay-BAŞI last_raise_ns-snapshot'ı            [F2 yaş-kapısı; HIGH-2-kural-v]
-  ∧ TAZE-SNAPSHOT (delivered_time bu-olaydan-önce tazelenmiş) [F1: kopma-yayılımlı örnek → TUR-S-teşhis-sayacına]
+  ∧ TAZE-SNAPSHOT [P1-pin, nicel]: ack_elapsed(= olay-now − pkt.delivered_time_ns-snapshot'ı)
+    ≤ K_FRESH [CAL {2,4}] × olay-BAŞI-ack_epoch — aşan örnek INELIGIBLE → TUR-S-teşhis-sayacına.
+    (Runaway'de ack_elapsed≈srtt≈ack_epoch → oran≈1 ELIGIBLE ✓; blackout-dönüşünde ≫epoch → GATED ✓.
+    Kurulum bw.rs-içi: RateSample'a ack_elapsed alanı — SentPacket-private; olay-başı-sabitlerle
+    sıra-bağımsız. FAİL-OPEN-notu: srtt-şişkin ack_epoch kapıyı GEVŞETİR (daha-çok-eligible) —
+    ana-koruma verdict+olay-başına-max-1; bu kapı belt-and-suspenders.)
 
 ── ATOMİK-EVENT-VERDICT [HIGH-1 — loop-order-bağımsız; kod-öncesi-ZORUNLU] ──
   B_ref = olay-BAŞI btlbw-snapshot;  G_ref = olay-başı generation
-  if olay-içinde btlbw yükseldi:            verdict = BASELINE_RAISED  → count=0, generation++
+  if olay-içinde btlbw yükseldi [P3: FİLTER-DÜZEYİ — app-limited-yüksek-örnek-yükselişi DAHİL;
+     kural-(i) BU-verdict'le gerçeklenir, ayrı-orta-döngü-hook YOK; generation++ yalnız olay-sonu]:
+                                            verdict = BASELINE_RAISED  → count=0, generation++
+                                            (diag_baseline_raised_eligible / _ineligible ayrıştırılır)
   elif ∃ eligible: sample ≥ B_ref/K_RATIO:  verdict = COUNTER_EVIDENCE → count=0
-  elif ∃ eligible (hepsi düşük):            verdict = LOW_EVIDENCE     → count += 1  (olay-başına-max-1)
+  elif ∃ eligible (hepsi düşük):            verdict = LOW_EVIDENCE →
+       count += 1  YALNIZ (G_ref == current_generation [P5: kural-(iii) operasyonel])
+                   ∧ (son-LOW-olayından ≥ 1×olay-başı-ack_epoch geçti [P6: OLAY-TANIMI —
+                      split/batch-invariance: üç-parça-ACK tek-teslim-patlamasından 3-LOW üretemez])
   else:                                     verdict = SKIP             → count-korunur
   (yüksek-örnek düşüğe ÜSTÜN: batch eski-eşik-üstü-delivery ürettiyse aynı-batch-düşükleri
    daralmayı-kanıtlamaz — pozitif-kapasite-kanıtı-dominance)
@@ -90,8 +113,17 @@ GENİŞLEME → DOKUNMA-listesi (ProbeUp ölçülü-mükemmel).
   btlbw-filter RESET → pencere := AYNI-generation ∧ verdict=LOW_EVIDENCE olaylarının
   eligible-düşük-örneklerinin MAX'ı [S2-daraltılmış: tek-örnek-reseed-yok, outlier'a-çökme-yok]
   generation++ · diag_shrink_resets++ · TRAJ "shrink="
-  [S4-kesin-semantik] reset-sonrası next_probe_eligible_epoch = current_epoch + 1
+  [S4-kesin-semantik, P4-tam] reset-sonrası YALNIZ period-bileşeni erkene-çekilir:
+    ayrı `next_probe_ok_ns` alanı; period_ok'a tek-&& (kodda epoch Duration'dır, sayaç-değil —
+    kod-eşleme-pini). qd_ok ∧ backlog kapıları BİT-AYNI korunur; giriş her-zaman-Steady-kolundan.
+    Reset-sonrası-probe FAIL ederse (kanal gerçekten-daraldı): abort/timeout → normal-K_PROBE_PERIOD-
+    kadansına döner; shrink→probe→shrink LİMİT-CYCLE BEKLENMEZ (reset-sonrası B_ref dürüst →
+    örnekler ≥ B_ref/K_RATIO → COUNTER_EVIDENCE) — bu beklenti vektör-7'nin GEÇME-KRİTERİ.
 ```
+**Ardışık-daralma [P8]:** reset-sonrası dürüst-B_ref'le ikinci-daralma (oran>K_RATIO, ör. 3k→300)
+YAKALANIR; staleness her-ateşlemede ≥K_RATIO bölünür → ≤log_K_RATIO(oran)-ateşlemede GEOMETRİK-
+yakınsama. BEYANLI-görünmezlik: oran<K_RATIO daralması (375→250 @K_RATIO=2) hiç-yakalanmaz —
+rol-uyumlu-kalıntı (reconciliation ciddi-staleness-hedefli; küçük-sapma Little/fuzzy-toleransında).
 Kopma-dönüş-analizi (F1+verdict-sonrası): dönüş-SACK'i en-fazla-1-LOW sayar (bayat-snapshot'lılar
 zaten INELIGIBLE→TUR-S-sayacına); sonraki-olaylar taze-örneklerle kanal-gerçeğini ölçer — aynı-hız-
 dönüşte COUNTER_EVIDENCE→sıfırlanır (p6b-tekrarlı-kopma K_SHRINK'e ulaşamaz); gerçek-daralma-üstü-
@@ -122,6 +154,7 @@ dönüşte ateşleme DOĞRU (reconciliation-rolü).
   app_limited=false altında oluştu → r3-dedektörü o-pencerede eligible-örnek görür (yakalanabilir-sınıf).
 - **Analitik-tavan (arz-sınırlı-vaka; kanal=375B/s, min_cwnd=4800, SACK-kadansı≈6.4s, K_SHRINK=3):**
   susma = backlog-kurulum + 3-olay-kadansı; flood-büyümesi ARZ-SINIRLI (pacing-hedefi-değil):
+  formül [P7]: t_susma = 375×(4800/arz)/(arz−375) + 3×6.4s; birim = (arz−375)×t_susma/267:
   `arz=600 → ~33s / ~27-birim · arz=1000 → ~22s / ~52-birim · arz=2000 → ~20s / ~120-birim`
   (ÜST-sınır — Little-decay gerçek-büyümeyi düşürür). Mertebe ölçülü-63-birimle AYNI-SINIF →
   **kalıntı ihmal-edilemez ama TAVANLI ve arz-oranlı.** Hüküm-önerisi: yedek-tetik bu-turda GEREKMEZ
@@ -140,7 +173,9 @@ pinli: reconciliation-rolünde koruma-kabul, belgeli); (5) **B2-only-artifact** 
 yalnız-srtt-şişer → D1-tetiklenmezse temiz; tetiklenirse false-demotion-recovery ≤S4-epoch —
 B2-artefaktının-daralma-sanılma-maliyeti); (6) ACK-split/batch-invariance (aynı-teslim-dizisi
 tek-cumulative / üç-ayrı / gecikmeli → karar makul-sınırda-değişmez); (7) salınımlı-kanal 40k↔3k
-(shrink→1-epoch-probe→shrink döngü-salınımı + gereksiz-reset-sayısı). + r2-seti: daralma-ateşler /
+(GEÇME-KRİTERİ [P4]: limit-cycle-yok — reset-sonrası dürüst-B_ref COUNTER-üretir; gereksiz-reset
+üst-sınırı raporlanır); **(8) [P3] ineligible-spike-erteleme** (LOW,LOW → app-limited-şişkin-raise →
+count=0 doğrulanır + erteleme-maliyeti ölçülür; EK-2/S5-rejim-duyarlılığı beyanı). + r2-seti: persistent-underdelivery-ateşler /
 app-limited-ATLAR / gain<1-ATLAR (**anti-vacuous-kurgu: Drain'de-gönder-Steady'de-ack'le** — faz-
 SINIRI-geçen-ack) / kopma-sessizlik / p5-kalıcı-kayıp-ateşlemez.
 **Sistem:** DV-3A2/3B2-yeniden — ana-sınav [A: plato-ifadesi-silindi]: **srtt-runaway-eğimi
