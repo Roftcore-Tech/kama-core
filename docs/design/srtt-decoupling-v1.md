@@ -1,4 +1,50 @@
-# srtt-decoupling-v1 — W_BTLBW'yi srtt-Runaway'den Ayır (DESEN-1 kök-fix) + TUR-D1 Kaderi [TASLAK r1 — ONAY BEKLİYOR]
+# srtt-decoupling-v1 — W_BTLBW srtt-Ayrımı [TASLAK r1 — ★ NO-GO; kök-daha-derin, yön-uzayı Abkarada'ya]
+
+## ★ r1 NO-GO — DÖRT-HIGH; KÖK D0'DA-SANDIĞIMDAN-DERİN (doğrulama wf_e61d46e9)
+
+**Abkarada'nın Nokta-1 VE Nokta-2 endişeleri İKİSİ DE haklı çıktı.** Dört-W-adayı da problematik +
+"cerrahi-dar W_BTLBW-decouple yeter" iddiası çürüdü.
+
+### DÖRT-W-ADAYININ HEPSİ ÇÜRÜK:
+- **(A) saf-rtprop:** sub-kbps 10s-taban çöküşü (ZM-2) — zaten RED.
+- **(C) sabit-W:** decade-kör (ZM-2) — zaten RED.
+- **(D-i sayım-tabanlı, BAŞ-öneriydi): ZM-1-TUZAĞI [HIGH-1 — Nokta-1].** "kuyruk-değişmez" YALNIZ-
+  sayı-için; N-round'un WALL-TIME'ı değil. Round marker-paketi (sender.rs:1065) kuyruğun-SONUNA
+  girer → ancak ayakta-kuyruk boşalınca teslim → round-latency ≈ queue_delay ≈ srtt (53s). N=8-round
+  ≈ Σsrtt, kuyrukla-BÜYÜR (Startup-3ms-tuzağının kardeşi: sayı-değişmez ama sayının-haritalandığı-saat
+  srtt-bağlı). Ölümsüzlüğü KIRAR (sonlu-N→evict) ama self-stop ~10s DEĞİL, **51s+ kuyruk-bağımlı.**
+- **(D-ii ack_epoch-swap): MTU-BİRİMDE ÇÖKER [HIGH-3].** dW/dt=0.82 unit=267-ARTİFAKTI; unit=1200
+  (MTU) → dW/dt=3.68>1 → ölümsüzlük GERİ. Eşik unit≈326B. Ayrıca EAI=max()=2.097s>rtprop hep-baskın
+  → D-ii srtt'yi EAI(=2×unit/[cwnd/srtt]) üzerinden LAUNDER-ediyor, ayrışmıyor.
+
+### META-HÜKÜM: W_BTLBW-CERRAHİ-DECOUPLE TEK-BAŞINA YETMEZ.
+srtt-şişkinliği ≥6-tüketiciye yayılıyor (MED-bulgular, 9-tüketici-haritam EKSİKTİ):
+W_BTLBW · W_loss (#2-ikinci-kol) · Little cwnd/srtt (Motor-2) · **Drain-dwell (sender.rs:933) ·
+DrainRtprop-dwell (953) · ProbeUp-period (1004)** — hepsi ack_epoch=max(srtt,EAI). Fix-sonrası-recovery
+anlatım (DrainRtprop-boşaltma, Little-self-resolve) TAM-BU-srtt-fazlarına-dayanıyordu → decoupling
+W_BTLBW'yi-çözse-bile srtt-transientte-şişik → bu-zamanlayıcılar-hâlâ-bozuk.
+**Asıl-kök: srtt-EWMA'nın-KENDİSİ** (kuyruk-şişince-şişer — DOĞRU-ölçüm ama pencere/dwell-boyutlandırmada
+YANLIŞ-saat). = BBR'nin srtt-smoothed'ı-pacing'de-merkezi-tutmama gerekçesi (M3-decoupling'in-tam-konusu).
+
+### TUR-D1-ARŞİV KARARI ASKIDA [HIGH-2/HIGH-4]:
+Arşiv-premisi "~10s-self-stop" YALNIZ-reddedilen-(A)'ya-aitti; gerçek D-i/D-ii self-stop 51-64s+ →
+**tam-o-yavaş-rejim aktif-demotion (shrink) katmanının işe-yaradığı yer.** Arşiv yanlış-zemine-kuruluydu.
++ Arşiv-formu CLAUDE.md §6-ihlali (shrink-kodu-canlı, feature-flag-yok; branch-merge-riski PR#31-emsali).
+
+### YÖN-UZAYI (karar-Abkarada; her-biri YENİ-teşhis-turu-ister — kod-yok):
+- **(Y1) delivered-rate-tabanlı-EAI:** ack_epoch'taki EAI'yi PACING-rate(cwnd/srtt, kirli) yerine
+  DELIVERED-rate(btlbw, kuyruk-değişmez INV-RATE-1) ile-hesapla. Örnek-kadansı=gerçekten-delivered-
+  tabanlı. AÇIK-RİSK: flood'da btlbw-bayat → circular (çözülmek-istenen-değişken EAI-hesabında). Son-
+  örnek-instant-delivered kurtarır-mı? — teşhis-ister.
+- **(Y2) per-sample-D-i (round-DEĞİL):** son-N-RATESAMPLE-ring (marker-round-değil) → her-teslim-örneği
+  sayılır; flood'da delivered-akıyor → N-örnek delivered-kadanslı (srtt-değil?). HIGH-1 round'u-çürüttü;
+  per-sample-varyant ZM-1'den-kaçar-mı — teşhis-ister (SACK-batch/interval-mekaniği).
+- **(Y3) srtt-EWMA-kök / M3-tam-refactor:** srtt'yi pencere+dwell+Little'dan-topyekûn-çıkar, rtprop-
+  merkezli (BBR-emsali). En-büyük, en-kök. m45'te "M3 bağımsız-sertleştirme-sonra" demiştik → meğer
+  DESEN-1-için-ÖN-KOŞUL (bir-katman-daha).
+- **(Y4) çoklu-cerrahi-decouple:** 6-tüketicinin-hepsini ayrı-ayrı rtprop/delivered-tabanlı-yap.
+  Dar-ama-çok-nokta; her-biri-kendi-ZM-analizi.
+
 
 > **Statü:** D0-TASARIM-NOTU (Abkarada: EK-3 = DESEN-1'in-KÖKÜ, ertelenebilir-borç-değil; seçenek-b
 > EK-3-önce onaylı). ONAYDAN SONRA kod. Bu **srtt-KÖK-ailesi** (DV-1 srtt-türev-ayrıştırmasının
