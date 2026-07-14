@@ -254,6 +254,8 @@ const K_CONF_EAI: u32 = 2;
 /// T=rtprop = 3a-sonrası tek DÜRÜST saat (ack_epoch öz-referans tuzağı reddedildi — srtt-clock-v1 §2.1).
 const K_CONV: u32 = 4;
 /// [TUR-D1] Shrink-ateşleme: K_SHRINK ardışık-eligible-evidence-OLAYI (LOW_EVIDENCE) [CAL {3,5}].
+/// [Y3-sim] delivered-EAI cadence-hesabı tipik birim-boyu.
+const UNIT_SIZE_HINT: u64 = 267;
 const K_SHRINK: u32 = 3;
 /// [TUR-D1] Underdelivery-oranı: eligible-örnek < B_ref/K_RATIO → LOW-kanıt [CAL {2,4}].
 const K_RATIO: u64 = 2;
@@ -346,6 +348,7 @@ pub struct Sender {
     bw_sampled_since_round: bool,
 
     // ── [TUR-D1] stale-btlbw reconciliation durumu ──
+    wbtlbw_mode: u8,        // [Y3-sim] 0=legacy(srtt) 1=delivered-EAI 2=rtprop-swap
     shrink_count: u32,      // ardışık-LOW_EVIDENCE-olay sayacı (generation-izole)
     btlbw_generation: u64,  // HIGH-2: her max-yükseliş VE her reset yeni-nesil
     last_raise_ns: u64,     // F2 yaş-kapısı çıpası (olay-başı-snapshot'la okunur)
@@ -432,6 +435,7 @@ impl Sender {
             plateau_reached: false,
             arq_share_tick: 0,
             bw_sampled_since_round: false,
+            wbtlbw_mode: 0,
             shrink_count: 0,
             btlbw_generation: 0,
             last_raise_ns: 0,
@@ -532,7 +536,20 @@ impl Sender {
             // srtt-eğimi > 1/K_BW iken cutoff GERİLER → bayat-max ölümsüz (DV-3 ölçülü 0.92 s/s).
             // Shrink-reset SEMPTOMU keser, KÖK DURUR — W-türetim/M3-decoupling turunda kapanır;
             // "dedektör-var-diye-W-fix-gereksiz" SANILMAZ (m45 §4-S1).
-            self.btlbw.set_window(ack_epoch * K_BW);
+            let w_epoch = match self.wbtlbw_mode {
+                1 => {
+                    let dbw = self.btlbw.last_sample_bw().max(1);
+                    let term1 = Duration::from_nanos(2 * UNIT_SIZE_HINT * 1_000_000_000 / dbw);
+                    (term1 + Duration::from_nanos(2_097_000_000)).max(INITIAL_RTT)
+                }
+                2 => self
+                    .rtt
+                    .rtprop()
+                    .unwrap_or(INITIAL_RTT)
+                    .max(self.expected_ack_interval()),
+                _ => ack_epoch,
+            };
+            self.btlbw.set_window(w_epoch * K_BW);
             self.rtt.set_rtprop_window(srtt_now * K_RTPROP);
             self.rtt.set_qd_window(ack_epoch * K_QD); // [3a.5-α] rtprop-penceresinden sonra (≤ invariant)
                                                       // [3a.5-β] kuantum-döngü T'si — yalnız rtprop varken (PreConverge'de None → n=1).
@@ -1623,6 +1640,11 @@ impl Sender {
             self.rtt.queue_delay().as_micros() as u64,
         )
     }
+    /// [Y3-sim] W_BTLBW saat-modu (deneysel; 0=legacy/1=delivered-EAI/2=rtprop-swap).
+    pub fn set_wbtlbw_mode(&mut self, mode: u8) {
+        self.wbtlbw_mode = mode;
+    }
+
     /// [TUR-D1] Shrink-teşhis: (resets, count, stale_snapshot, braise_elig, braise_inelig).
     #[must_use]
     pub fn diag_shrink(&self) -> (u64, u32, u64, u64, u64) {

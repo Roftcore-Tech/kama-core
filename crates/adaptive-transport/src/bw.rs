@@ -222,6 +222,13 @@ impl BtlBwFilter {
         self.samples.iter().map(|&(_, v)| v).max().unwrap_or(0)
     }
 
+    /// [Y3-sim deneysel] Son push'lanan örneğin anlık-bw'si (delivered-cadence için taze-değer;
+    /// bayat-max'tan bağımsız). Boşsa 0.
+    #[must_use]
+    pub fn last_sample_bw(&self) -> u64 {
+        self.samples.last().map_or(0, |&(_, v)| v)
+    }
+
     /// [TUR-D1 aktüatör — YALNIZ-DÜŞÜRÜR] Shrink-reset: pencere, tetikleyen LOW-olayların
     /// eligible-düşük-örneklerinin MAX'ına reseed edilir (S2-daraltılmış; tek-örnek-reseed'in
     /// outlier-çökmesi yok). Yükseltme-yolu (`update`) BİT-DEĞİŞMEZ — bu metot ayrı-giriş.
