@@ -155,3 +155,17 @@ Dört-tur-B2 (yerel-eşik-ailesi yapısal-ölü) + tek-tur-B1 (aynı-aile, kod-s
   katman) — M4/M5-sonrası, ayrı.
 - **KIRMIZI-şart:** M4/M5 P5-GATE {100×12}-mührünü KORUMALI (B1-parasitic-recovery-riski burada
   dış-referansla çözülür — kör-akış yalnız gerçek-kopmada kesilir, p5-yüksek-kayıp-ama-aktif'te DEĞİL).
+
+## LATENCY-SMOKE SONUCU (2026-07-14 — cwnd-enforcement kampanya-öncesi-mi-son-borç-mu KARARI)
+Upfront-backlog 100-msg (r5-upfront-dalı; B1/B2'den bağımsız). Beklenti-kaydı önce (scratchpad
+latency-prediction.md). Hüküm-kuralı: kuyruk-ceza >%20 → kampanya-öncesi; <%20 → son-borç.
+| profil | teslim | fizik-tavan | kuyruk-ceza (eternal-Startup) | deadline-miss kaynağı |
+|---|---|---|---|---|
+| 0.25k (600s) | 56/100 | 61 (wire-fizik) | +8-13% (5-msg) | **WIRE-FİZİK** (deadline 100-msg-için-yetersiz; motor 56/61=%92) |
+| 1k (300s) | 100/100 | 123 | +8-9% (son-msg +18.7s) | **YOK** |
+**HÜKÜM: cwnd-enforcement = SON-BORÇ (kampanya-öncesi DEĞİL).** Gerekçe: motor-kuyruğu deadline-miss
+ÜRETMİYOR (1k 100/100; 0.25k fizik-tavanında); kuyruk-ceza SABİT %8-9 (< %20-eşiği). DV-1'in
+"=wire" hükmü (20-msg) 100-msg-upfront'ta DA doğrulandı — ceza var ama küçük+teslim-korumalı.
+**Dürüst-uyarı:** %8-9 sabit-ceza SIFIR-değil, upfront'ta birikir (RMST'de görünür); D-4/2
+cwnd-enforcement kampanya-SONRASI-kalibrasyon-fazının netleşmiş-kalemi (kaldırılırsa latency-profili
+iyileşir, teslim değişmez). Ölçülü-kanıt tam (maske-#6 + S4-C + DV-1-decade + bu smoke).
