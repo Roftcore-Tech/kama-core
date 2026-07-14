@@ -12,6 +12,51 @@
 > gerekçesi. **Provizyonel-çekirdek (Abkarada A-kararı) KORUNDU** — breach-çerçevem düzeltildi +
 > rtprop-FLOW-only eklendi = YÖN-DEĞİŞİKLİĞİ (r3-breach-kararı geri), onaya sunulur.
 
+## ★ DUR — META-KÖK KANITLANDI (r4-doğrulaması wf_1f89caa7; DÖRT-tur, mekanizma-seçimi Abkarada'ya)
+
+**r4 de kırıldı — ve bu sefer kırılma tek-mekanizma değil META-KÖK:** dört tur (r1 eşik-kapı,
+r2 n-koruma, r3 provizyonel, r4 EAI-breach+FLOW-only) HEPSİ AYNI yapısal-sebepten öldü:
+
+> **META-KÖK:** Aralıklı kanalda TEK RTT-örneğinden "kopma-bekleyişi" ile "meşru-uzun-RTT"
+> YEREL-OLARAK AYIRT-EDİLEMEZ. Her yerel-eşik korunan-değişkenden türer → zehirlendiğinde
+> kendini şişirir (eşik-takipçisi ratchet). Kuantum-döngü n=64 tek-örneği amplifiye eder →
+> FLOW-sınıfı bile tavanı BYPASS eder. **Bu return-supply T_SPACING sensing-ön-şartının
+> İZOMORFU** (orada: "varış-türevli-cadence YAPILAMAZ → E-FULL ölçülen-return_bw"; kayıt §16.1).
+
+r4-doğrulama-kanıtı (bit-exact): (K1a) breach = K_CONF_EAI×EAI; EAI ∝ 1/rate; rate = cwnd/srtt
+(hard-ceiling, rate.rs:176 srtt'ye TERS) → **breach-eşiği srtt'ye BAĞLI** = r3-eşik-takipçisinin
+EAI-formu. Saldırgan sessizliği eşik-altında tutar → örnek FLOW → FLOW tam-güven → kuantum n=64
+→ srtt tek-atışta 17.2s'e çöker; commit-tavanı makinesi HİÇ devreye girmez. (K1b) FLOW rtprop-min'i
+de besler → 0.25k sensing-sınırı örnekleri (raw≈22s FLOW-kalır) rtprop'u 22s'e reseed'ler →
+tavan K_SPAN×22 = §0-poison'un ÜSTÜ. (K1c) GAP-DOWN → qd_min → sahte-congestion → INV-RATE-1
+ihlali (loss→rate-throttle). Yerel-eşik ailesi YAPISAL-ÖLÜ (kanıt tam).
+
+### MEKANİZMA-UZAYI (kapsam-işaretli) — SEÇİM ABKARADA'NIN
+- **(M1) Yerel-eşik ailesi (r1-r4): YAPISAL-ÖLÜ** — dört-tur kanıt; bu ailede r5 DENENMEZ.
+- **(M2) Kuantum n-cap düşürme (dar-tur-İÇİ; KISMİ):** n=64→1 breach'te → tek-atış-felaketi
+  (19.6s) → ~3.35s'e iner AMA çok-örnek-ratchet kalır. **= r2'nin ta kendisi → talimatça
+  zaten NO-GO** ("yavaşlatıyor kırmıyor"). Dar-tur-içi tam-fix YOK.
+- **(M3) srtt'yi tüketicilerden ayır / rtprop-merkezli-pacing (BBR-emsali):** srtt-clock-v1
+  yeniden-açılması — **KAPSAM-DIŞI (büyük refactor).** B2'nin gerçek-mimari-yeri olabilir.
+- **(M4) Dış-referans (E-FULL ölçülen-return_bw ile kopma-tespiti):** yerel-ayırt-edilemezliğin
+  return-supply'daki çözümüyle AYNI — **KAPSAM-DIŞI (E-FULL büyük iş, kampanya-öncesi-borç).**
+- **(M5) Kanal-durumu-makinesi (DV-3 "kanal-değişti tespiti"yle birleştir):** DV-3-tasarım-sorusu.
+
+### KAPSAM-KARARI (Abkarada'ya — B2 DAR-TURLA YAPISAL-ÇÖZÜLEMEZ):
+- **(a) ERTELE-KISMİ:** B2-tam-fix'i M3/M4'e (kampanya-öncesi) ertele; DV-3'ü mevcut-motorla koş
+  AMA DV-3-ölçümünde B2-kirliliğini BEYANLI-artefakt olarak işaretle (Abkarada'nın DV-3-öncesi-B2
+  gerekçesi "kirli-saat DV-3'ü kirletir"di — bu gerekçe kısmen-geçersizleşir; kirlilik-sınırı
+  ölçülür, atıf-karışması beyanla yönetilir).
+- **(b) BÜYÜT:** B2'yi dar-turdan çıkar → M3 (srtt-refactor) ya da M4 (E-FULL-bağı) tam-turu.
+  Büyük, ama meta-kökü GERÇEKTEN çözer.
+- **(c) SIRA-DEĞİŞTİR:** B1 (kopma-körlüğü) ÖNCE — B1'in ACK-sessizlik-kapısı kopma-örneklerinin
+  ÜRETİMİNİ azaltır (gönderim durur → straggler-ack'i azalır) → B2-kirliliği DOLAYLI-hafifler;
+  B2-tam-fix sonra M3/M4 ile.
+
+**Önerim (c): B1'i öne al** — çünkü B1 hem gerçek-dünya-değeri (kopma-körlüğü %74-israf) hem
+B2-kirliliğini dolaylı-azaltır; B2-tam-fix M3/M4-ailesine kampanya-öncesi-borç. Ama META-KÖK-kararı
+(dar-tur-yetersizliği) senin: kapsam + sıra senin masanda.
+
 > **Statü:** D0-TASARIM-NOTU (B2, DV-3-öncesi dar-tur). r2 NO-GO → r3 = PATCH-B2-HIGH
 > ((A)-yapısal-fren, karar-sabit) + 4 S-kararı işli. ONAYDAN SONRA kod.
 > **Kapsam-sınırı:** estimator-dar — `sender.rs` ack-yolu + `rtt.rs` (candidate-track dahil —
