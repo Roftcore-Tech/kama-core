@@ -674,6 +674,30 @@ yanlış-eleme dersi (P≈%30-48) DOĞRULANDI: seri-1 medyanı 9.49 iken 12-koş
 aynen). Bacak-2 yapısal-gölgeleme dürüst-bulgusu: K_ARR=2'de accel-ritmi freq/tail'le örtüşük;
 ayrık-katkı dar-pencerede (ölçüldü: accel=0-4/koşu).
 
+## 0.25 TUR-6 ÖLÇÜM-KAYDI (plateau-delivered-anchor) — KAPI GERİ-SAĞLANDI; MASKE-SOYMA #6
+
+**Sonuçlar:** temiz-1k **45 ✓** (kapı geri; PR-taahhüdü yerine getirildi); p4 100/100 saf-data
+1.00× ✓; p5×2 {98,100} spektrum-sınıfı aynı ✓; 0.25k 20/20 özet-özdeş (4/0/27) ✓.
+
+**MEKANİK-SAPMA (dekompoze — tahmin "Startup 37.5→15-25s" YANLIŞTI, kapı yine de geçti):**
+1k'da Startup HİÇ ÇIKMADI (3.5→120s): btlbw t=20'de 112'ye oturdu ama delivered-anchor round
+KENDİ-KUYRUĞU üzerinden ölçülüyor — Startup 2.885×-gain kuyruğu büyüttükçe srtt 8→72s → round-
+süresi round-başına katlanıyor → 3-stable-round 120s'e sığmadı. **ÖZ-REFERANS sınıfının 3.
+örneği** (srtt-T=ack_epoch, ProbeUp-dwell emsalleri). Teslimi 45'te tutan: Little-kolu
+öz-frenlemesi (cwnd=4800/srtt: rate 323→66) + wire-doyumu — İLK kez Little-kolu fiilen bağladı
+(dev-srtt min_cwnd-maskesini aştı).
+
+**MASKE-SOYMA #6:** eski ack-OLAY-sayaçlı plato Startup'ı SAHTE-erken bitiriyordu (24-37s) ve bu,
+**Startup inflight-TAVANSIZLIĞINI maskeliyordu** (BBR'de Startup-çıkışını sınırlı tutan şey
+cwnd-cap'tir: inflight ≤ gain×BDP; bizde min_cwnd=4800 ≫ BDP(333B@1k) → cap fiilen yok →
+kuyruk 9.6KB'ye kadar büyüdü, infl-ölçülü). Dürüst-round maskeyi kaldırdı; patholoji YENİ değil,
+GÖRÜNÜR oldu. Supply-independence (fix'in asıl hedefi) SAĞLANDI: plato artık SACK-arz-yoğunluğuna
+bağlı değil (birim-testli) → 44-regresyonunun kökü kapalı.
+
+**İZLENEN-BORÇ güçlendi (→ §3.7):** MIN_CWND kalibrasyonu / Startup inflight-cap (D-4/2, SON'da
+planlıydı) — artık 1k'da ÖLÇÜLÜ kanıtı var (eternal-Startup + 9.6KB kuyruk + srtt 72s; teslim
+kapısı Little-frenle tutuyor ama gecikme-profili kötü). Öne-çekilme kararı Abkarada'nın.
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
@@ -839,7 +863,7 @@ p5→TUR-4'te geri · p2/p3-tırmanış→TUR-4+B.
 | **Statik return-prior → ProbeUp-periyodu tüketicisi** | TUR-3c: giriş-periyodu 4×ack_epoch; EAI'nin statik önseli (31 B/s worst-corner) hızlı kanalda epoch'u ~2.1s'e mıhlar → probe-periyodu ≥8.4s'e sabitlenir (kanal-türevi değil, önsel-türevi) | §3.3-E-FULL (ölçülen return_bw) gelince EAI daralır → periyot kanal-zamanlı olur; E-FULL kampanya-öncesi borcun YENİ tüketicisi olarak kaydedildi. **[TUR-5] İKİNCİ yeni-tüketici: T_SPACING** (kota-aralığı; sensing-ön-şartı §0.24-karar-2 — varış-türevli YAPILAMAZ, tek çözüm ölçülen-return_bw) | AÇIK |
 | **W_loss payda-çürümesi lppm-spike artefaktı** | TUR-4 fnr-keşfi: pencere-dışı decay paydayı olaylardan hızlı düşürüyor → pencereli-lppm anlık ≥300k spike (gerçek kayıp %30 DEĞİL) → fuzzy loss.low=0 bölgesine ~1s'lik sahte-giriş | Bugün zararsız (fallback + fnr-sayacı ile görünür; patlama-anı arq-tüketilmeyen state'te). DV-2 aralıklı-rejimde pend>0∧RecoverArq ile çakışırsa fallback davranışsal-canlı olur → orada yeniden oku; gerekirse payda-tabanı (min-sends) fix'i AYRI karar | AÇIK |
 | **17-data-emisyonu izi (loopback)** | commit-C teşhisi sırasında görüldü: 10 birim / 17 data-send (tx=1550B; retx=0 dup=0) — fazla-emisyonların kaynağı belirsiz | AYRI teşhis (muhtemelen PreConverge/emisyon-yolu); kampanya-metriklerine oran-etkisi olabilir | AÇIK |
-| **Little-kolu min_cwnd-maskesi** | 3a.5-α ölçümü: cwnd/srtt kolu fixture min_cwnd'i sayesinde BAĞLAMADI (yarı-2 öngörüm aşırı-temkin) — kol fiilen uykuda | MIN_CWND kalibrasyonu (sıra-SONU, D-4/2): kalibre min_cwnd küçülürse kol uyanır → srtt_t-paydalı davranış O ZAMAN ölçülür | AÇIK |
+| **Little-kolu min_cwnd-maskesi + Startup inflight-cap** | 3a.5-α: kol fixture min_cwnd'iyle uykudaydı. **[TUR-6 GÜNCELLEME]:** maske-soyma #6 — dürüst-plato Startup-tavansızlığını açtı; 1k'da kol İLK KEZ bağladı (srtt 72s → rate 66; kuyruk 9.6KB ölçüldü). BBR-doğru çözüm Startup cwnd-cap (gain×BDP) = MIN_CWND kalibrasyonuyla AYNI aile | MIN_CWND/inflight-cap kalibrasyonu (D-4/2): artık ölçülü-kanıtlı; öne-çekilme kararı Abkarada'nın | AÇIK-GÜÇLENDİ |
 | packets_in_flight kayıp-sızıntısı (sampler) | TUR-2c muhasebe-incelemesi + review-workflow'u: kayıp-ilan edilen paket sampler'ın packets_in_flight'ını düşürmüyor; hit'siz üç yol HİÇ decrement etmez: (a) tombstone TTL-prune, (b) kapasite-eviction, (c) Duplicate-kökenli kayıp (tombstonesuz) → her gerçek-kayıp kalıcı +1 sızıntı → pipe-boş tespiti (first_sent/delivered_time yeniden-çıpalama) kayıplı koşuda bir daha tetiklenmez | TUR-3a (estimator pencereleri) — sampler semantiği zaten o turun masasında | AÇIK |
 
 ## 3.6 Abkarada'ya YENİ karar noktası (TUR-1x final ölçümünden)
