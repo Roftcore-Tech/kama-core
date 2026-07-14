@@ -732,6 +732,38 @@ TUR-7), recovery-dahil golden-korumalı (inv_rate_1_loss_declaration_preserves_p
 TUR-1'de sökülen sahte-100'ün meşru-mekanizmayla yeniden-kazanılması — parazitsiz.
 Sıradaki: DV-1 (motor-final decade-taraması).
 
+## 0.28 DV-1 ÖLÇÜM-KAYDI (motor-final decade-taraması) — 10/10 NOKTA, KIRMIZI YOK
+
+| nokta | teslim | btlbw/tavan | not |
+|---|---|---|---|
+| 0.05k (10/600s) | 9/10 | 4/5.2 | ilk-teslim 63.7s (45.3s birim-serialization fiziği); 10. birim deadline-kuyruğu — TAVAN-fizik, çöküş değil |
+| 0.1k (10/600s) | 10/10 ✓ | 9/10.5 (%86) | sıfır-tick=43 = ilk-SACK-öncesi cold-start (flap DEĞİL) |
+| 0.25k-ANCHOR | **20/20; 27; sıfır-tick=4 — BİT-ÖZDEŞ ✓** | — | ölçüm-aracı + motor-sürekliliği kanıtı |
+| 1k | 45 ✓ | %97.5 | bilinen-profil birebir |
+| 2k | 91 | ~%93 (tavan≈98) | hedef-bölge ✓ |
+| 5k / 10k | 100 / 100 | %98 / %98 | hedef-bölge ✓✓ |
+| 100k | 100 | ~%98.5 | srtt-max 0.83s sağlıklı |
+| 500k | 100 | %98.5 | srtt-max 0.12s — **qd→min ISIRIĞI YOK** |
+| 900k | 100 | (koşu 0.31s'te bitti; oran 1.000) | btlbw-son=0 = TRAJ-tek-örnek ARTEFAKTI (teyitli) |
+
+**Üç-eksen cevapları (beklenti-kaydıyla):**
+(a) **Üst-uç qd→min-regresyonu: GERÇEKLEŞMEDİ** — 500k/900k tam-teslim, srtt sağlıklı, saniye-altı
+tamamlama. Dürüst-sınır: sınav hafif-yüklüydü (koşular saniyelerde bitti); ağır-yük üst-uç stres
+kampanya h-profillerinin işi.
+(b) **Alt-uç [CAL]-geçerlilik: TUTARLI** — pencere>koşu-süresi sınıfı (0.05k'da W'ler ≈ 741s)
+teslimi ENGELLEMEDİ (temiz-kanalda recovery-ihtiyaçsız, tahmin ✓); K_EPISODE yanlış-ateşleme yok;
+yeni-sabit ihtiyacı ÇIKMADI.
+(c) **Eternal-Startup decade-GENİŞLİĞİ ÖLÇÜLDÜ:** 0.05k→10k tüm yavaş-decade'lerde baskın-faz
+Startup + srtt-şişmesi (0.05k'da 416s'e dek; 1k 72s; 10k 8.7s) — teslim HİÇBİR noktada etkilenmedi
+(Little-fren + wire-doyumu taşıyor) ama gecikme-profili yavaş-decade'lerde kötü. **cwnd-enforcement
+borcu (D-4/2) artık TAM-HARİTALI** (maske-#6 + C-kolu-bulgusu + bu tarama); SON'daki tasarımın
+kapsam-verisi hazır. Formül-genelleştirme-ihtiyacı: YOK (bulgular sabit/formül-hatası değil,
+bilinen-borç yüzeyleri).
+
+**Hüküm: DV-1 KAPANDI** — sürekli-bant ekseni 4-decade + hedef-bölge (2-10k) doğrulanmış;
+dv-plan-v2 sırası: DV-2 (aralıklılık) hazır — açık-riskleriyle (count=0-deliği; kopma-yoğun
+sürüklenme; FNR/W_loss pend>0 çakışması).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
