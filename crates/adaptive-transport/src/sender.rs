@@ -31,7 +31,7 @@ use crate::arq::{
     RetxDecision,
 };
 use crate::budget::{self, BudgetConfig};
-use crate::bw::{BtlBwFilter, DeliveryRateSampler, SentPacket};
+use crate::bw::{bw_bps, BtlBwFilter, DeliveryRateSampler, RateSample, SentPacket};
 use crate::emergency::{
     self, EmergencyConfig, EmergencyLevel, Framing, HysteresisConfig, HysteresisController,
     RecoveryAction, RecoveryModeController,
@@ -253,6 +253,13 @@ const K_CONF_EAI: u32 = 2;
 /// [TUR-3a.5 commit-β] Kuantum-döngü yakınsama-böleni: T = rtprop / K_CONV [CAL matris {2,4,8}].
 /// T=rtprop = 3a-sonrası tek DÜRÜST saat (ack_epoch öz-referans tuzağı reddedildi — srtt-clock-v1 §2.1).
 const K_CONV: u32 = 4;
+/// [TUR-D1] Shrink-ateşleme: K_SHRINK ardışık-eligible-evidence-OLAYI (LOW_EVIDENCE) [CAL {3,5}].
+const K_SHRINK: u32 = 3;
+/// [TUR-D1] Underdelivery-oranı: eligible-örnek < B_ref/K_RATIO → LOW-kanıt [CAL {2,4}].
+const K_RATIO: u64 = 2;
+/// [TUR-D1 P1] Taze-snapshot kapısı: ack_elapsed ≤ K_FRESH × olay-başı-ack_epoch [CAL {2,4}].
+/// FAIL-OPEN (srtt-şişkin epoch kapıyı gevşetir) — ana-koruma verdict+olay-başına-max-1.
+const K_FRESH: u32 = 2;
 /// [TUR-2b D-1/4] Tombstone kayıt tavanı [CAL] — SR-AUDIT-001 bounded; en-eski-önce eviction +
 /// audit. 4-decade doluş-doğrulaması not D-1/4 (0.25kbps ≈ 11 kayıt; ≲Gbps'te ~450 ≪ 4096).
 const TOMBSTONE_MAX: usize = 4096;
@@ -338,6 +345,18 @@ pub struct Sender {
     /// bw-sample. (Eski: her on_event çağrısı "round" sayılıyordu → 1ms tick'te 3 round = 3ms'de STEADY.)
     bw_sampled_since_round: bool,
 
+    // ── [TUR-D1] stale-btlbw reconciliation durumu ──
+    shrink_count: u32,      // ardışık-LOW_EVIDENCE-olay sayacı (generation-izole)
+    btlbw_generation: u64,  // HIGH-2: her max-yükseliş VE her reset yeni-nesil
+    last_raise_ns: u64,     // F2 yaş-kapısı çıpası (olay-başı-snapshot'la okunur)
+    last_low_event_ns: u64, // P6 olay-tanımı: LOW-sayım-aralığı ≥ olay-başı-ack_epoch
+    shrink_low_max: u64,    // S2: sayılan-LOW-olayların eligible-düşük-örnek MAX'ı (reseed-tohumu)
+    next_probe_ok_ns: u64,  // S4: shrink-reset-sonrası period-istisnası (0=pasif)
+    diag_shrink_resets: u64,
+    diag_stale_snapshot: u64, // P1: TUR-S-teşhis-sayacı (kopma-yayılımlı örnekler)
+    diag_braise_elig: u64,    // P3: BASELINE_RAISED kaynak-ayrıştırması
+    diag_braise_inelig: u64,
+
     // ── [TUR-A teşhis] loss-atıflama sayaçları (SALT-GÖZLEM) ──
     diag_loss_pkt: u64,
     diag_loss_time: u64,
@@ -413,6 +432,16 @@ impl Sender {
             plateau_reached: false,
             arq_share_tick: 0,
             bw_sampled_since_round: false,
+            shrink_count: 0,
+            btlbw_generation: 0,
+            last_raise_ns: 0,
+            last_low_event_ns: 0,
+            shrink_low_max: 0,
+            next_probe_ok_ns: 0,
+            diag_shrink_resets: 0,
+            diag_stale_snapshot: 0,
+            diag_braise_elig: 0,
+            diag_braise_inelig: 0,
             diag_loss_pkt: 0,
             diag_loss_time: 0,
             diag_rtt_rejected: 0,
@@ -496,9 +525,13 @@ impl Sender {
 
         // [TUR-3a D-2/1] Kanal-türevi estimator pencereleri — örnekler işlenmeden ÖNCE, bir
         // önceki srtt'yle yazılır (deterministik; 10s [STD] tabanı setter'larda).
-        {
+        let ack_epoch_ref = {
             let srtt_now = self.rtt.srtt().unwrap_or(INITIAL_RTT);
             let ack_epoch = srtt_now.max(self.expected_ack_interval());
+            // [TUR-D1 EK-3 AÇIK-BORÇ] W=K_BW×ack_epoch'un srtt-dalı daralma-rejiminde ANTİ-FİX:
+            // srtt-eğimi > 1/K_BW iken cutoff GERİLER → bayat-max ölümsüz (DV-3 ölçülü 0.92 s/s).
+            // Shrink-reset SEMPTOMU keser, KÖK DURUR — W-türetim/M3-decoupling turunda kapanır;
+            // "dedektör-var-diye-W-fix-gereksiz" SANILMAZ (m45 §4-S1).
             self.btlbw.set_window(ack_epoch * K_BW);
             self.rtt.set_rtprop_window(srtt_now * K_RTPROP);
             self.rtt.set_qd_window(ack_epoch * K_QD); // [3a.5-α] rtprop-penceresinden sonra (≤ invariant)
@@ -506,7 +539,13 @@ impl Sender {
             if let Some(rtp) = self.rtt.rtprop() {
                 self.rtt.set_conv_interval(rtp / K_CONV);
             }
-        }
+            ack_epoch
+        };
+        // [TUR-D1 HIGH-1] Atomik-event-verdict için OLAY-BAŞI snapshot'ları (loop-order-bağımsız).
+        let shrink_b_ref = self.btlbw.btlbw();
+        let shrink_g_ref = self.btlbw_generation;
+        let shrink_raise_ref = self.last_raise_ns;
+        let mut shrink_samples: Vec<RateSample> = Vec::new();
 
         // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
         let mut rtt_send_ns: Option<u64> = None;
@@ -522,6 +561,7 @@ impl Sender {
                 acked_units.push(p.unit.id); // §3.3-B stop koşulu: teyit edilen birimin kopyaları iptal
                 let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);
                 self.btlbw.update(sample, now_ns, sample.delivered > 0);
+                shrink_samples.push(sample); // [TUR-D1] olay-sonu verdict için
                 self.bw_sampled_since_round = true; // [TUR-A ölçüm-#1] plato round'u bw-örneğiyle sayılır
                 if p.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
                     largest = seq;
@@ -537,6 +577,7 @@ impl Sender {
                     // kol-1 (tek gönderim, belirsizlik yok): BW-örneği NORMAL üretilir.
                     let sample = self.bw_sampler.on_ack(now_ns, t.bw_sample);
                     self.btlbw.update(sample, now_ns, sample.delivered > 0);
+                    shrink_samples.push(sample); // [TUR-D1] olay-sonu verdict için
                     self.bw_sampled_since_round = true;
                     self.diag_bw_recovered += 1;
                     if t.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
@@ -562,6 +603,18 @@ impl Sender {
                 }
             }
         }
+        // [TUR-D1] Olay-sonu atomik-verdict (tüm btlbw.update'ler bitti; HIGH-1/HIGH-2).
+        let shrink_raised = self.btlbw.btlbw() > shrink_b_ref;
+        self.shrink_apply_event(
+            shrink_raised,
+            shrink_b_ref,
+            shrink_g_ref,
+            ack_epoch_ref,
+            shrink_raise_ref,
+            &shrink_samples,
+            now_ns,
+        );
+
         // loss tespiti (§5). loss = RECOVERY sinyali (INV-RATE-1: rate'e DEĞMEZ).
         // §3.3-C/(1) yasak-1: PRE_CONVERGE'de loss İLANI YOK. §3.3-D: loss kilidi İLK GEÇERLİ SACK'le
         // (rtt.srtt Some) AÇILIR → o SACK'ten itibaren loss işlenir. Detector her zaman sync kalır.
@@ -955,7 +1008,10 @@ impl Sender {
                             .max(self.expected_ack_interval()),
                     );
                     let period_ok = now_ns.saturating_sub(self.last_probe_end_ns)
-                        >= epoch.saturating_mul(u64::from(K_PROBE_PERIOD_EPOCH));
+                        >= epoch.saturating_mul(u64::from(K_PROBE_PERIOD_EPOCH))
+                        // [TUR-D1 S4] shrink-reset-sonrası period-istisnası (YALNIZ period-
+                        // bileşeni; qd_ok ∧ backlog BİT-AYNI — m45 P2/P4).
+                        || (self.next_probe_ok_ns != 0 && now_ns >= self.next_probe_ok_ns);
                     // Giriş-histerezisi (workflow N=0-bulgusu): qd zaten abort-eşiği üstündeyse GİRME.
                     let qd_ok = self.qd_ratio_permille_now() <= PROBE_QD_ABORT_PERMILLE;
                     // DrainRtprop-çakışması çözümü: tazelik-KAPISI YOK (min-örnek yaşı sürekli-akışta
@@ -965,6 +1021,7 @@ impl Sender {
                     if period_ok && qd_ok && backlog {
                         // GİRİŞ-SNAPSHOT'ları (donuk — öz-referans önlenir; ACK'ler işlendikten
                         // sonra alınır: on_event sırası bunu doğal sağlar).
+                        self.next_probe_ok_ns = 0; // [TUR-D1 S4] istisna tek-kullanımlık
                         self.probe_entry_ns = Some(now_ns);
                         self.probe_epoch_entry_ns = epoch;
                         self.probe_btlbw_entry = self.btlbw.btlbw();
@@ -1336,6 +1393,86 @@ impl Sender {
 
     /// §3.1 OnPacketSent muhasebe: seq ata, inflight+RTT/BW/loss kayıt. `origin` recovery türünü ayırır
     /// (DATA = orijinal birim → loss sayacı +1; retransmit/dup = recovery → +0, RTT'de Karn dışı).
+    /// [TUR-D1, m45 §3] Stale-btlbw reconciliation — OLAY-SONU atomik-verdict (HIGH-1) +
+    /// generation-izolasyonu (HIGH-2) + olay-tanımı (P6). Rol: "kesin-kanal-daralması-tespiti"
+    /// DEĞİL, persistent-underdelivery karşısında konservatif btlbw-demotion. Örnek-kapıları:
+    /// !app_limited ∧ gönderim-anı-gain≥1 (F3) ∧ yaş (F2: sent≥raise_ref) ∧ taze-snapshot
+    /// (P1: ack_elapsed ≤ K_FRESH×epoch — aşan → TUR-S-teşhis-sayacı). Verdict-önceliği:
+    /// BASELINE_RAISED > COUNTER_EVIDENCE > LOW_EVIDENCE > SKIP (yüksek-örnek-dominance).
+    #[allow(clippy::too_many_arguments)]
+    fn shrink_apply_event(
+        &mut self,
+        raised: bool,
+        b_ref: u64,
+        g_ref: u64,
+        epoch_ref: Duration,
+        raise_ref: u64,
+        samples: &[RateSample],
+        now_ns: u64,
+    ) {
+        let fresh_lim = epoch_ref.saturating_mul(K_FRESH);
+        let mut any_elig_high = false;
+        let mut any_elig_low = false;
+        let mut any_elig_raiser = false;
+        let mut low_max = 0u64;
+        for sm in samples {
+            if sm.ack_elapsed > fresh_lim {
+                self.diag_stale_snapshot += 1; // kopma-yayılımlı → daralma-kanıtı DEĞİL (TUR-S girdisi)
+                continue;
+            }
+            if sm.is_app_limited || !sm.gain_ge1 || sm.sent_ns < raise_ref {
+                continue; // INELIGIBLE → ATLA (F4: sayaç-korunur)
+            }
+            let bw = bw_bps(sm.delivered, sm.interval);
+            if bw > b_ref {
+                any_elig_raiser = true;
+            }
+            if bw >= b_ref / K_RATIO {
+                any_elig_high = true;
+            } else {
+                any_elig_low = true;
+                low_max = low_max.max(bw);
+            }
+        }
+        if raised {
+            // BASELINE_RAISED — FİLTER-DÜZEYİ (P3: app-limited-yüksek-yükseliş DAHİL; kural-i
+            // BU-verdict'le gerçeklenir, ayrı orta-döngü-hook YOK; generation++ yalnız burada).
+            self.shrink_count = 0;
+            self.shrink_low_max = 0;
+            self.btlbw_generation += 1;
+            self.last_raise_ns = now_ns;
+            if any_elig_raiser {
+                self.diag_braise_elig += 1;
+            } else {
+                self.diag_braise_inelig += 1;
+            }
+        } else if any_elig_high {
+            // COUNTER_EVIDENCE — pozitif-kapasite-kanıtı dominance.
+            self.shrink_count = 0;
+            self.shrink_low_max = 0;
+        } else if any_elig_low {
+            // LOW_EVIDENCE — yalnız aynı-generation (P5/kural-iii) ∧ olay-aralığı ≥ epoch (P6).
+            if g_ref == self.btlbw_generation
+                && now_ns.saturating_sub(self.last_low_event_ns) >= dur_ns(epoch_ref)
+            {
+                self.shrink_count += 1;
+                self.last_low_event_ns = now_ns;
+                self.shrink_low_max = self.shrink_low_max.max(low_max);
+            }
+        } // else: SKIP — sayaç-korunur (ardışık-ELIGIBLE-EVIDENCE-olayı semantiği)
+
+        if self.shrink_count >= K_SHRINK {
+            // AKTÜATÖR (yalnız-düşürür): reseed = sayılan-LOW-olayların eligible-düşük MAX'ı (S2).
+            self.btlbw.shrink_reset(self.shrink_low_max, now_ns);
+            self.btlbw_generation += 1; // kural-ii: reset = yeni-nesil
+            self.shrink_count = 0;
+            self.shrink_low_max = 0;
+            self.diag_shrink_resets += 1;
+            // [S4] period-istisnası: ~1-epoch-sonra probe-eligible (qd_ok ∧ backlog bit-aynı).
+            self.next_probe_ok_ns = now_ns + dur_ns(epoch_ref);
+        }
+    }
+
     fn track_sent(
         &mut self,
         unit: OpaqueUnit,
@@ -1351,7 +1488,15 @@ impl Sender {
         let more_pending = !self.tx_queue.is_empty()
             || !self.pending_lost.is_empty()
             || !self.dup_queue.is_empty();
-        let bw_sample = self.bw_sampler.on_sent(now_ns, unit.size, !more_pending);
+        // [TUR-D1 F3] Gönderim-ANI gain-damgası: öz-kısma fazları (Drain 0.347× /
+        // DrainRtprop 0.75× / PreConverge floor) gain<1 → örnekleri shrink-kanıtı OLAMAZ.
+        let gain_ge1 = !matches!(
+            self.state,
+            SenderState::Drain | SenderState::DrainRtprop | SenderState::PreConverge
+        );
+        let bw_sample = self
+            .bw_sampler
+            .on_sent(now_ns, unit.size, !more_pending, gain_ge1);
         let units = u64::from(origin == TransmitKind::Data); // yalnız orijinal DATA loss sayacına.
         self.loss.on_sent(seq, now_ns, units);
         self.inflight_bytes += unit.size;
@@ -1478,6 +1623,18 @@ impl Sender {
             self.rtt.queue_delay().as_micros() as u64,
         )
     }
+    /// [TUR-D1] Shrink-teşhis: (resets, count, stale_snapshot, braise_elig, braise_inelig).
+    #[must_use]
+    pub fn diag_shrink(&self) -> (u64, u32, u64, u64, u64) {
+        (
+            self.diag_shrink_resets,
+            self.shrink_count,
+            self.diag_stale_snapshot,
+            self.diag_braise_elig,
+            self.diag_braise_inelig,
+        )
+    }
+
     /// [TUR-4] Sıfır-ağırlık fuzzy-fallback sayacı (gözlemlenebilirlik).
     #[must_use]
     pub fn diag_fuzzy_no_rule(&self) -> u64 {
@@ -1543,6 +1700,252 @@ mod tests {
             acked_seqs: seqs.to_vec(),
             ack_delay: Duration::ZERO,
         })
+    }
+
+    // ═══ [TUR-D1] Stale-btlbw reconciliation vektörleri (m45 §6: 8-ek-vektör + r2-seti) ═══
+    // Mekanizma-düzeyi: shrink_apply_event doğrudan sürülür (olay-sonu atomik-verdict).
+
+    const SEC: u64 = 1_000_000_000;
+    /// Eligible örnek: bw B/s (interval=1s → delivered=bw), taze, gain≥1, app_limited=false.
+    fn rs_ok(bw: u64, sent_ns: u64) -> RateSample {
+        RateSample {
+            delivered: bw,
+            interval: Duration::from_secs(1),
+            is_app_limited: false,
+            gain_ge1: true,
+            ack_elapsed: Duration::from_millis(100),
+            sent_ns,
+        }
+    }
+    fn epoch1() -> Duration {
+        Duration::from_secs(1)
+    }
+    /// n adet LOW-olayı sür (aralık 2×epoch — P6-uyumlu), b_ref sabit.
+    fn drive_low(s: &mut Sender, n: u32, b_ref: u64, start_ns: u64) -> u64 {
+        let mut now = start_ns;
+        for _ in 0..n {
+            s.shrink_apply_event(
+                false,
+                b_ref,
+                s.btlbw_generation,
+                epoch1(),
+                0,
+                &[rs_ok(b_ref / K_RATIO / 2, now)],
+                now,
+            );
+            now += 2 * SEC;
+        }
+        now
+    }
+
+    #[test]
+    fn d1_v1_mixed_batch_dominance() {
+        // Vektör-1: aynı-olayda düşük+yüksek eligible → COUNTER_EVIDENCE kazanır, count=0.
+        let mut s = Sender::new();
+        s.shrink_apply_event(
+            false,
+            4000,
+            0,
+            epoch1(),
+            0,
+            &[rs_ok(300, SEC), rs_ok(3000, SEC)],
+            2 * SEC,
+        );
+        assert_eq!(s.shrink_count, 0, "yüksek-örnek dominance");
+    }
+
+    #[test]
+    fn d1_v2_same_event_expansion_wins() {
+        // Vektör-2: olay-içi btlbw-yükselişi (raised) → BASELINE_RAISED; count=0, generation++.
+        let mut s = Sender::new();
+        drive_low(&mut s, 2, 4000, SEC);
+        assert_eq!(s.shrink_count, 2);
+        let g0 = s.btlbw_generation;
+        s.shrink_apply_event(
+            true,
+            4000,
+            g0,
+            epoch1(),
+            0,
+            &[rs_ok(5000, 9 * SEC), rs_ok(300, 9 * SEC)],
+            10 * SEC,
+        );
+        assert_eq!((s.shrink_count, s.btlbw_generation), (0, g0 + 1));
+        assert_eq!(s.diag_braise_elig, 1);
+    }
+
+    #[test]
+    fn d1_v3_generation_isolation() {
+        // Vektör-3: LOW,LOW → raise → LOW → trigger-YOK (sayaç eski-nesilden taşınmaz).
+        let mut s = Sender::new();
+        let now = drive_low(&mut s, 2, 4000, SEC);
+        s.shrink_apply_event(
+            true,
+            4000,
+            s.btlbw_generation,
+            epoch1(),
+            0,
+            &[rs_ok(8000, now)],
+            now,
+        );
+        assert_eq!(s.shrink_count, 0);
+        // yeni-neslin İLK LOW'u — K_SHRINK'e ulaşmaz, reset YOK.
+        s.shrink_apply_event(
+            false,
+            8000,
+            s.btlbw_generation,
+            epoch1(),
+            s.last_raise_ns,
+            &[rs_ok(500, now + 3 * SEC)],
+            now + 4 * SEC,
+        );
+        assert_eq!((s.shrink_count, s.diag_shrink_resets), (1, 0));
+    }
+
+    #[test]
+    fn d1_v4_skip_persistence_then_fire() {
+        // Vektör-4 [beklenti-AÇIK-pinli]: LOW,LOW → uzun-SKIP (örneksiz olaylar) → LOW →
+        // K_SHRINK=3 dolu → ATEŞLER (reconciliation-rolünde SKIP-boyunca-koruma KABUL — m45).
+        let mut s = Sender::new();
+        // filter'a yüksek-örnek koy (reset-sonrası btlbw düşecek — aktüatör-doğrulaması)
+        s.btlbw.update(rs_ok(4000, 0), SEC, true);
+        let mut now = drive_low(&mut s, 2, 4000, 2 * SEC);
+        for _ in 0..5 {
+            s.shrink_apply_event(false, 4000, s.btlbw_generation, epoch1(), 0, &[], now); // SKIP
+            now += 2 * SEC;
+        }
+        assert_eq!(s.shrink_count, 2, "SKIP sayacı korur");
+        s.shrink_apply_event(
+            false,
+            4000,
+            s.btlbw_generation,
+            epoch1(),
+            0,
+            &[rs_ok(900, now)],
+            now,
+        );
+        assert_eq!(s.diag_shrink_resets, 1, "3. LOW ateşler");
+        assert_eq!(
+            s.btlbw.btlbw(),
+            1000,
+            "reseed = sayılan-LOW'ların eligible-düşük MAX'ı (S2)"
+        );
+        assert!(s.next_probe_ok_ns > 0, "S4 period-istisnası kuruldu");
+    }
+
+    #[test]
+    fn d1_v5_b2_artifact_no_fire() {
+        // Vektör-5: kapasite-sabit, yalnız-srtt-şişer → örnekler ≈ btlbw → COUNTER → tetik-YOK.
+        let mut s = Sender::new();
+        let mut now = SEC;
+        for _ in 0..6 {
+            s.shrink_apply_event(false, 4000, 0, epoch1(), 0, &[rs_ok(3900, now)], now);
+            now += 2 * SEC;
+        }
+        assert_eq!((s.shrink_count, s.diag_shrink_resets), (0, 0));
+    }
+
+    #[test]
+    fn d1_v6_ack_split_invariance() {
+        // Vektör-6 [P6 olay-tanımı]: tek-teslim-patlaması 3-parça-ACK'e bölünse de (< epoch-aralıklı)
+        // yalnız 1 LOW sayılır — cumulative-tek-ACK'le eşdeğer.
+        let mut s = Sender::new();
+        let base = 10 * SEC;
+        for i in 0..3u64 {
+            s.shrink_apply_event(
+                false,
+                4000,
+                0,
+                epoch1(),
+                0,
+                &[rs_ok(500, base)],
+                base + i * (SEC / 10),
+            );
+        }
+        assert_eq!(s.shrink_count, 1, "epoch-içi bölünmüş-ACK'ler tek-kanıt");
+    }
+
+    #[test]
+    fn d1_v8_ineligible_spike_deferral() {
+        // Vektör-8 [P3]: LOW,LOW → app-limited-şişkin-örnek filter'ı yükseltir (BASELINE_RAISED,
+        // FİLTER-DÜZEYİ) → count=0 + diag_braise_inelig (eligible-raiser yok).
+        let mut s = Sender::new();
+        let now = drive_low(&mut s, 2, 4000, SEC);
+        let spike = RateSample {
+            is_app_limited: true,
+            ..rs_ok(9000, now)
+        };
+        s.shrink_apply_event(true, 4000, s.btlbw_generation, epoch1(), 0, &[spike], now);
+        assert_eq!((s.shrink_count, s.diag_braise_inelig), (0, 1));
+    }
+
+    #[test]
+    fn d1_r2_gates_skip_not_reset() {
+        // r2-seti [F4 geçersiz=ATLA]: app-limited / gain<1 (Drain'de-gönder-Steady'de-ack'le —
+        // gönderim-anı-damgası) / bayat-yaş / bayat-snapshot örnekleri SAYACI SIFIRLAMAZ.
+        let mut s = Sender::new();
+        let now = drive_low(&mut s, 2, 4000, SEC);
+        let applim = RateSample {
+            is_app_limited: true,
+            ..rs_ok(300, now)
+        };
+        let drained = RateSample {
+            gain_ge1: false,
+            ..rs_ok(300, now)
+        }; // faz-sınırı-geçen-ack (anti-vacuous)
+        let old_age = rs_ok(300, 0); // sent < raise_ref
+        let stale = RateSample {
+            ack_elapsed: Duration::from_secs(30),
+            ..rs_ok(300, now)
+        }; // > K_FRESH×epoch
+        s.shrink_apply_event(
+            false,
+            4000,
+            s.btlbw_generation,
+            epoch1(),
+            SEC / 2,
+            &[applim, drained, stale],
+            now + 2 * SEC,
+        );
+        s.shrink_apply_event(
+            false,
+            4000,
+            s.btlbw_generation,
+            epoch1(),
+            SEC,
+            &[old_age],
+            now + 4 * SEC,
+        );
+        assert_eq!(s.shrink_count, 2, "INELIGIBLE=ATLA — sayaç korunur");
+        assert_eq!(s.diag_stale_snapshot, 1, "bayat-snapshot TUR-S-sayacına");
+    }
+
+    #[test]
+    fn d1_r2_after_fire_honest_bref_counters() {
+        // Vektör-7-çekirdeği [P4 geçme-kriteri]: reset-sonrası B_ref dürüst → örnekler ≥ B_ref/K
+        // → COUNTER → limit-cycle-YOK (yeniden-tetiklenme ancak GERÇEK-ikinci-daralmada).
+        let mut s = Sender::new();
+        s.btlbw.update(rs_ok(4000, 0), SEC, true);
+        let now = drive_low(&mut s, 3, 4000, 2 * SEC); // ateşler (K_SHRINK=3)
+        assert_eq!(s.diag_shrink_resets, 1);
+        let b_new = s.btlbw.btlbw(); // dürüst-reseed (1000-sınıfı)
+        let g = s.btlbw_generation;
+        for i in 0..4u64 {
+            s.shrink_apply_event(
+                false,
+                b_new,
+                g,
+                epoch1(),
+                0,
+                &[rs_ok(b_new, now + i * 2 * SEC)],
+                now + i * 2 * SEC,
+            );
+        }
+        assert_eq!(
+            (s.shrink_count, s.diag_shrink_resets),
+            (0, 1),
+            "dürüst-B_ref COUNTER üretir"
+        );
     }
 
     #[test]

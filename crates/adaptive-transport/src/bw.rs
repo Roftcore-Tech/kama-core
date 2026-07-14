@@ -28,6 +28,10 @@ pub struct SentPacket {
     first_sent_ns: u64,
     sent_ns: u64,
     is_app_limited: bool,
+    /// [TUR-D1 F3] Gönderim-ANI pacing-gain damgası (gain ≥ 1 fazı): shrink-dedektörü
+    /// öz-kısma (Drain/DrainRtprop/PreConverge) örneklerini ack-anı-fazından BAĞIMSIZ eler
+    /// (Drain-kohortu Steady'de ack'lenir — faz-sınırı-geçen-ack vakası).
+    gain_ge1: bool,
 }
 
 /// Bir ACK'ten türeyen delivery-rate örneği (engine §7.1).
@@ -39,6 +43,13 @@ pub struct RateSample {
     pub interval: Duration,
     /// Snapshot app-limited miydi (§7.3).
     pub is_app_limited: bool,
+    /// [TUR-D1 F3] Gönderim-anı gain≥1 damgası (SentPacket'ten taşınır).
+    pub gain_ge1: bool,
+    /// [TUR-D1 P1] ack_elapsed = now − pkt.delivered_time (taze-snapshot kapısının girdisi;
+    /// blackout-yayılımlı örnek ack_elapsed ≫ ack_epoch ile ayrışır).
+    pub ack_elapsed: Duration,
+    /// [TUR-D1 F2] Paketin gönderim-anı (yaş-kapısı: sent_ns ≥ olay-başı last_raise_ns).
+    pub sent_ns: u64,
 }
 
 /// BBR delivery-rate sampler (engine §7.1).
@@ -59,7 +70,13 @@ impl DeliveryRateSampler {
 
     /// Paket gönderimi → snapshot token (engine §7.1). Pipe boşken first_sent /
     /// delivered_time tazelenir.
-    pub fn on_sent(&mut self, now_ns: u64, size: u64, app_limited: bool) -> SentPacket {
+    pub fn on_sent(
+        &mut self,
+        now_ns: u64,
+        size: u64,
+        app_limited: bool,
+        gain_ge1: bool,
+    ) -> SentPacket {
         if self.packets_in_flight == 0 {
             self.first_sent_ns = now_ns;
             self.delivered_time_ns = now_ns;
@@ -72,6 +89,7 @@ impl DeliveryRateSampler {
             first_sent_ns: self.first_sent_ns,
             sent_ns: now_ns,
             is_app_limited: app_limited,
+            gain_ge1,
         }
     }
 
@@ -91,6 +109,9 @@ impl DeliveryRateSampler {
             delivered: self.delivered - pkt.delivered,
             interval: Duration::from_nanos(interval_ns),
             is_app_limited: pkt.is_app_limited,
+            gain_ge1: pkt.gain_ge1,
+            ack_elapsed: Duration::from_nanos(ack_elapsed),
+            sent_ns: pkt.sent_ns,
         }
     }
 
@@ -191,6 +212,15 @@ impl BtlBwFilter {
     #[must_use]
     pub fn btlbw(&self) -> u64 {
         self.samples.iter().map(|&(_, v)| v).max().unwrap_or(0)
+    }
+
+    /// [TUR-D1 aktüatör — YALNIZ-DÜŞÜRÜR] Shrink-reset: pencere, tetikleyen LOW-olayların
+    /// eligible-düşük-örneklerinin MAX'ına reseed edilir (S2-daraltılmış; tek-örnek-reseed'in
+    /// outlier-çökmesi yok). Yükseltme-yolu (`update`) BİT-DEĞİŞMEZ — bu metot ayrı-giriş.
+    /// Çağıran (sender) generation++ ve diag'ı yönetir.
+    pub fn shrink_reset(&mut self, bw: u64, now_ns: u64) {
+        self.samples.clear();
+        self.samples.push((now_ns, bw.max(1)));
     }
 }
 
