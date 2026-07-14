@@ -1,4 +1,4 @@
-# cift-kilit-v1 — p5-Açlık Çift-Kilidi: Tohum-Tavanı × RecoverArq-Yapışması [TASLAK r2 — ONAY BEKLİYOR]
+# cift-kilit-v1 — p5-Açlık Çift-Kilidi: Tohum-Tavanı × RecoverArq-Yapışması [r3 — GO-HAZIR: S4-ölçümü + S1-formülasyonu işli]
 
 > **Statü:** D0-TASARIM-NOTU (İŞ-2). Abkarada'ya döner; ONAYDAN SONRA kod. **Kapsam-sınırı:**
 > sender-taraf (sender.rs / bw.rs / rate.rs; +bench-TRAJ alanları); **receiver.rs'e SIFIR dokunuş.**
@@ -17,6 +17,46 @@
 > ProbeUp-köprü 420s→~250-340s (sonuç ayakta); dal-B lotarya %65-ihlal gerçeği → K-mühür
 > istisna-kuralı S-sorusu; temiz-1k×β1 nedenselliği düzeltildi (1k'da recovery HİÇ girmiyor —
 > β1 1k-inert, ölçülü 0/240).
+
+## 0-ÖN. r2→r3: Abkarada-kararlarının işlenmesi (S4-ölçümü + S1-formülasyonu — GO-önkoşulları)
+
+### S4-ÖLÇÜMÜ (spike-prototip, ATILDI; 3-kol) — **CAP ÖN-KOŞUL DEĞİL**
+Beklenti-kaydı ölçümden önce (scratchpad s4-prediction.md). Kollar: A=main-taban (t6),
+B=spike-β1β2-CAP'SİZ, C=B+min_cwnd=566-önizleme.
+| kol | temiz-1k | 0.25k | p5 |
+|---|---|---|---|
+| A (taban) | 45; infl-max 9.6KB; srtt 72s | 20/20 (4/0/27) | stuck-sınıfı var |
+| B (cap'siz β1β2) | **45; infl 9.9KB; srtt 71.9s = AYNI-SINIF** | **20/20 özet-özdeş** | {40,48,100}; **srtt-şişmesi YOK** (26ms-sınıfı); infl 4-7KB = ramp'in sağlıklı BDP-kullanımı; **p5c: 73.5s-kurtuluş → 100/100** (eski-dünya stuck-14-sınıfı — β1-ön-kanıtı) |
+| C (B+cap-önizleme) | **45; infl 9879B BİREBİR-B** — min_cwnd-küçültme kuyruğu DEĞİŞTİRMİYOR | — | 100/100 (8.66s; cap p5'i bozmuyor) |
+**Karar-kuralı sonucu:** B'de kötüleşme YOK → **inflight-cap β0 DEĞİL, SON'da kalır.**
+C-bulgusu borcun İÇERİĞİNİ netleştirdi: Little RATE-formu inflight'ı sınırlamıyor; kodda
+emisyon-önü `inflight ≤ cwnd` ENFORCEMENT YOK → D-4/2 işi "MIN_CWND-kalibrasyonu" değil
+**cwnd-enforcement tasarımı** (SON'a ölçülü-girdiyle kayıt).
+
+### S1-FORMÜLASYONU — β1 = INV-RATE-1'in TAMAMLANMASI (İHLAL-YORUMU GEREKMEDİ → DUR yok)
+- **Golden-envanteri (tarandı):** kilitleyenler tv_loss_g4 (estimator-düzeyi loss⟂rate),
+  tv_src_pacing_gains (faz→gain haritası), tv_emergency-G2 (clamp⟂). **HİÇBİRİ
+  "recovery-durumu→gain=1.0" eşlemesini kilitlemiyor** — `_ => PacingPhase::Steady` golden'sız
+  KÖR-NOKTA; invariant'ın parçası değil.
+- **Doğru-yorum (β1'in kurduğu):** send_rate = f(btlbw, queue_delay, faz-gain); **faz yalnız
+  KANAL-ÖLÇÜMÜ olaylarıyla değişir** (plato, BDP-eşiği, probe-saatleri); **recovery =
+  NE-gönderilir overlay'i, NASIL-hızlı değil**; loss ne f-girdilerine ne faz-geçişine dokunur.
+  Mevcut yol (kayıp-ilanı → state → gain 2.885→1.0) kör-noktadan sızan DOLAYLI etki — β1
+  sızıntıyı kapatır: invariant'ı GEVŞETMEZ, lafzını ruhuyla hizalar ("loss bizde rate düşürmez"
+  β1-sonrası recovery-dahil TAM doğru; bugünkü hali dış-hakem-yüzeyiydi).
+- **Golden-etkisi:** mevcut INV-RATE-1 golden'ları β1'le **bit-özdeş** (faz→gain haritası ve
+  estimator-yolu değişmiyor; yalnız golden'sız state→faz eşlemesi değişiyor). YENİ golden:
+  "kayıp-ilanı faz-gain'ini değiştirmez" (recovery-girişi gain-korunum vektörü). Spec-ek-cümle
+  (onayına): "Faz-gain'i de loss'tan bağımsızdır; recovery pacing-fazı değil overlay'dir."
+
+### S5-SAYISALLAŞTIRMA (kesin-binom; istisna sayıya bağlı)
+**Ölümcül-lotarya := ilk-teslim ≥ 100s ∧ kurtuluş-öncesi sağ-SACK=0** (ölçülü 115.5s×2;
+p=2/24=0.0833/koşu). n=12: P(X≤2)=%92.8 · P(X≥3)=%7.2 · P(X≥4)=%1.4 → **KURAL:
+X≤2 = PASS-aralığı (lotarya istisna-işaretli; min-kapısı lotarya-dışında) · X=3 = GRİ →
+zorunlu-dekompozisyon (üçü de ≥100s ∧ tohum-düz kanıtlı → lotarya-teyit → seri-tekrar; kanıtsız
+→ KIRMIZI) · X≥4 = kesin-KIRMIZI.** Muhafazakâr-kontrol p=3/24'te bile P(X≥4)=%5.3 — tutarlı.
+
+### S2/S3 işli: K_ARQ_SHARE [CAL {4,8}] başlangıç-4; β1 minimal-base ONAY.
 
 ## 0. HÜKÜM: TEK-ZİNCİR-İKİ-MEKANİZMA (çift-kilit) — ve bir hipotez-düzeltmesi
 
