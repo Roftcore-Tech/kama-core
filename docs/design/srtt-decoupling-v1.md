@@ -1,4 +1,65 @@
-# srtt-decoupling-v1 — W_BTLBW srtt-Ayrımı [TASLAK r1 — ★ NO-GO; kök-daha-derin, yön-uzayı Abkarada'ya]
+# srtt-decoupling-v1 — W_BTLBW srtt-Ayrımı [r2 — SAAT-HARİTASI (Y3-FAZLI); ONAY BEKLİYOR]
+
+## ★ r2 — SAAT-HARİTASI (Y3-FAZLI; Abkarada-onaylı yaklaşım) [ONAY BEKLİYOR]
+
+r1-NO-GO'nun cevabı: **tek-global-W-cevabı YOK; tüketici-başına re-clock.** Teşhis (wf_357cfcae, 3-lens)
+altı-tüketiciyi ÜÇ ROL-SINIFINA ayırdı — her sınıf FARKLI doğru-saat (DV-1 qd→min/tepkisel→EWMA/
+ölçek→kararlı ayrıştırmasının bir-katman-derin hali).
+
+### ÜÇ PREMİS-DÜZELTMESİ (teşhis; r1'i sertleştirir)
+- **P-1:** T3-Little `rate.rs:176` ÇIPLAK-srtt (ack_epoch-DEĞİL; sender.rs:1156) — flood'da özdeş ama
+  sub-kbps'te EAI-koruma-tabanı YOK.
+- **P-2 [circular-çekirdek]:** EAI srtt-BAĞIMSIZ-DEĞİL — `rate=min(pacing,cwnd/srtt)` üzerinden srtt-
+  LAUNDER eder (srtt↑→rate↓→EAI↑). → srtt→rtprop-swap TEK-BAŞINA-ayrıştırmaz (max() şişkin-EAI-seçer).
+  **Estimator'da TEK srtt-temiz-saat = rtprop** (kuyruk-değişmez sert-taban; DESEN-1'de 76.6ms SABİT).
+  Return-prior term2 = 65e9/31 = 2.097s SABİT (decade-kör [CAL], §3.3-E-FULL'e-borç).
+- **P-3:** qd_window (7. tüketici, ack_epoch×K_QD) — MIN-filtre-koruyucu, bug-değil (tamlık-notu).
+
+### SAAT-HARİTASI (altı re-clock; rol-sınıfı ZM'i belirler)
+| # | tüketici (dosya) | rol-sınıfı | doğru-saat + ZM-1 | circular | FAZ |
+|---|---|---|---|---|---|
+| T1 | W_BTLBW sender.rs:535 | PENCERE (MAX-filtre; ANA-KÖK) | delivered-cadence: **son-instant-delivered-EAI** (circular-kırar, ZM-1✓ gürültü→Y2) / **Y2 son-N-ring** (ZM-vakum✓, SACK-batch-açık) — rtprop-YASAK (cadence-değil→sub-kbps-çöküş) | son-instant: DÜŞÜK | 1 |
+| T2 | W_loss sender.rs:837-839 | PENCERE (loss-ledger) | T1-aynı-saat; FAIL-ama-ZARARSIZ (INV-RATE-1: loss-rate-etkilemez→ZM-1-etkisi-NULL) | NULL | 1 (tutarlılık; ertelenebilir) |
+| T3 | Little cwnd/srtt rate.rs:176 | DENOMINATOR=fiziksel-RTT (delay-tepkisi; Motor-2/SUSTAINER) | **cwnd/(rtprop+qd)** = cwnd/min_W_qd (qd=queue_delay rtt.rs:212, zaten-decoupled). rtprop-swap-YASAK (cwnd/rtprop=2×btlbw hep→hiç-bağlamaz→delay-tepkisi-SİLİNİR). SINIRSIZ-qd (cap-ÖNERİLMEZ, koruyucu-sabote). ZM-1: min-filtre-koruyucu✓ | DÜŞÜK | 1 (Motor-2; transient-kaynağı) |
+| T4 | Drain-dwell sender.rs:933 | DWELL (byte-eşiği-BİRİNCİL) | qd-ailesi-KORU (srtt≈rtprop+qd≈qd tesadüfen-doğru-cins); rtprop-rebase-YASAK (3×0.076=0.23s→ZM-2-premature-exit). byte-çıkışı-birincil zaten-saat-sınıfsız | YOK (pasif-cap) | 3 (en-düşük) |
+| T5 | DrainRtprop sender.rs:700,953 | DWELL + GİRİŞ-EŞİĞİ | **giriş-eşiği W_RTPROP/2=srtt×4=212s ASIL-FELÇ** (ZM-4-ihlali; circular-YÜKSEK — flood-kendi-ProbeRTT-barını-kaldırır) → rtprop-tabanlı-rebase; dwell qd/rtprop-ailesi | YÜKSEK (giriş) | 2 |
+| T6 | ProbeUp-period sender.rs:1004 | PERİYOT (bant-arama-aralığı) | faz-RTT-mertebesi → rtprop-tabanlı (period srtt-şişince-seyrekleşir→bant-arama-körü); ZM-1: rtprop-değeri-kuyruk-değişmez✓ | ORTA | 2 |
+
+### KRİTİK: T1-TEK-BAŞINA YETMEZ — İKİ-MOTOR (Abkarada-Nokta-2 doğrulandı)
+T1-fix btlbw'yi-expire-eder (Motor-1) ama **YAVAŞ (~50-68s; delivered-cadence-doğru-W ama yavaş-kanalda
+örnek-seyrek → N-örnek-kapsamı-zorunlu-uzun)**. O 50-68s-boyunca btlbw-hâlâ-bayat → **T3-Little cwnd/srtt
+BAĞLAR (Motor-2/SUSTAINER) → flood-sürer.** → **FAZ-1 = T1 + T3 BİRLİKTE** (iki-motoru-birden-kes;
+T3-tek-başına-btlbw-doğrulunca-serbest AMA transient'te-Motor-2-aktif). T3 delivered-cadence-değil,
+cwnd/(rtprop+qd) — delay-tepkisi-korunur (INV-RATE-1).
+
+### TUR-D1-KADERİ — GÜNCEL (yavaş-expiry aktif-demotion'ı YENİDEN-CANLANDIRIR)
+r1'de "arşiv" demiştim (premis: ~10s-self-stop). Teşhis-düzeltti: **decoupling-sonrası-expiry SONLU-ama-
+YAVAŞ (~50-68s), hızlı-DEĞİL.** Hızlı-expiry yalnız (rtprop-çöküşü-ZM-2-yasak) ya da (aktif-demotion-
+TUR-D1). → **TUR-D1-kaderi Y3-ÖLÇÜMÜNE-bağlı KALIR:** FAZ-1 (T1+T3) sim'de flood-kabul-süresinde-durursa
+(temiz-1k/P5-GATE-korunuyorsa) → TUR-D1-gereksiz (arşiv). Yavaş-expiry-transient-bir-kapıyı-düşürürse →
+TUR-D1-yeniden-inşa (P6→rtprop + reseed→en-taze; hızlı-demotion-katmanı). DO-NOT-MERGE-marker-doğru.
+
+### FAZLAMA (KIRMIZI-kapılı; biri-düşerse-DUR)
+- **FAZ-1: T1 (delivered-cadence-W) + T3 (cwnd/(rtprop+qd)) + T2 (T1-aynı-saat, ucuz)** — iki-motor;
+  DESEN-1-doğrudan-kök. Sim: flood-durur-mu (~kabul-süre) + srtt-runaway-eğim-çıkar-mı.
+- **FAZ-2: T5 (giriş-eşiği-rebase; ProbeRTT-açar→min-rtt-tazeleme) + T6 (ProbeUp-period rtprop)** —
+  recovery-hızlandırma; DESEN-1-flood-YARATMAZ ama toparlanma-geciktirir.
+- **FAZ-3: T4 (Drain-dwell qd-koru)** — en-düşük (byte-eşiği-birincil; şişme-semptom-değil-kök).
+- Her-faz: sim-teşhis (kalibrasyon: fix-öncesi-motor 3A2-repro infl~63×/srtt~53s) → KIRMIZI-kapılar
+  (P5-GATE {100×12, S5-kurallı} + temiz-1k=45 + DESEN-2-ramp-13×/1s + 0.25k-btlbw-anchor) → geçerse-sonraki.
+
+### AÇIK SORULAR (onayla)
+- **S1: T1-saat = son-instant-delivered-EAI mı Y2-ring mi?** Öneri: son-instant (küçük-kod: last_sample_bw()
+  getter; circular-kırar) — gürültü-riski (median-mini-ring→Y2'ye-yakınsar). Y2 daha-saf-ZM ama BtlBwFilter-
+  yeniden-yapısı+TUR-5-regresyon. Sim ikisini-de-ölçebilir.
+- **S2: T3 FAZ-1'e mi FAZ-1b-ayrı-mı?** Öneri: FAZ-1-birlikte (iki-motor; T1-yavaş-expiry T3-transient-
+  flood'la-birleşir — ayrı-ölçüm atıf-karıştırır). Ama tek-değişken-disiplini T1-önce-T3-sonra-der →
+  KARAR: T1-önce-sim (yavaş-expiry-flood-ölç), T3-transient-görülürse-EKLE (dal-yapılı).
+- **S3: T5-giriş-eşiği rebase bu-fazda-mı?** rtprop-kusursuz-değil-kalıntısı (adversaryal-delik) — giriş-
+  eşiği-rebase o-deliği-de-etkiler. Öneri: FAZ-2 (T1-sonrası; ProbeRTT-açılması flood-hızlandırabilir-bonus).
+- **S4: TUR-D1-DO-NOT-MERGE korunur** (Y3-ölçüm-sonrası-karar). ✓
+
+---
 
 ## ★ r1 NO-GO — DÖRT-HIGH; KÖK D0'DA-SANDIĞIMDAN-DERİN (doğrulama wf_e61d46e9)
 
