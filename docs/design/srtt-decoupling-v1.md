@@ -1,4 +1,46 @@
-# srtt-decoupling-v1 — W_BTLBW srtt-Ayrımı [r2 — SAAT-HARİTASI (Y3-FAZLI); ONAY BEKLİYOR]
+# srtt-decoupling-v1 — W_BTLBW srtt-Ayrımı [r2 — ★★ NO-GO (3.-D0-çürüme); TEORİ-TÜKENDİ → SİM-ŞART]
+
+## ★★ r2 NO-GO — ÜÇÜNCÜ-D0-ÇÜRÜMESİ; TEORİ-TURLARI-TÜKENDİ, SİM-ŞART (doğrulama wf_5e027cc4)
+
+Üç-D0-turu (r1-cerrahi-W, r2-saat-haritası) üçü de doğrulamada-çürüdü. Her-tur yeni-kök. Bu, teori-
+tek-başına DESEN-1'i çözemediğinin sinyali — her-aday ölçümsüz-belirsiz, sim-kalibrasyon şart.
+
+### EN-BÜYÜK: T3-ÇERÇEVEM TERSTİ [HIGH-1 + MED×3] — Little DÜZELTİCİ, sustainer-DEĞİL
+- cwnd/(rtprop+qd) DESEN-1'de **cwnd/rtprop'a DEJENERE**: qd_window=2×srtt flood-yaşından-uzun
+  (0.92-eğim → 2×srtt=1.84×flood_age > flood_age tüm-t'de) → min-filtre flood-ÖNCESİ-küçük-örneği-
+  görür → **qd≡0** → rtprop+qd=0.076s → cwnd/0.076=**62663** (bağlamaz). Tam-yasakladığım-şey.
+- **Little (cwnd/srtt) aslında FREN, sustainer-DEĞİL:** srtt>12.8s'de channel-altı-bağlar (53s→90.6 B/s
+  = mevcut-BAĞLAYICI-tavan, flood'u-59s'de-boşaltan). T3-fix o-freni **692×-kaldırır** (90.6→62663) →
+  send_rate 90.6→4119 → **flood DERİNLEŞİR.** "T3 Motor-2'yi-keser / iki-motor" çerçevem YANLIŞTI.
+- Kavramsal-kök: qd-min-filtre "koruyucu" (eski-küçük-tutar) delay-DENOMINATOR-rolü-için YANLIŞ
+  (denominator congestion'la-YÜKSELMELİ). DV-1-qd→min floor-estimator'dan response-denominator'a
+  yanlış-transplant. **→ T3 FAZ-1'den ÇIKAR; Little-DOKUNMA (zaten-düzeltici).**
+- Bonus: aynı-çöken-qd fuzzy-soft-drain + ProbeUp-qd-abort'u ZATEN-besliyor → DESEN-1'de bu-proaktif-
+  savunmalar ZATEN-ölü (P-3 "bug-değil" eksik-anlattı; ayrı-daha-derin-mesele).
+
+### T1-EXPIRY SAYISI TUTARSIZ + candidate-A ZM-2 [HIGH-3 + HIGH-4]
+- İki-headline (iki-motor + TUR-D1-canlanma) ~50-68s'e-dayanıyordu — ama o-sayı **Y2-ring'den** türedi,
+  r2 **candidate-A (delivered-EAI)-öneriyor**. Candidate-A: EAI=2×267/375+2.097=**3.52s → W=28s**, 50s-değil.
+- İÇ-ÇELİŞKİ: circular-kırmak fresh-375 → ~28s; ~50s için queue-dirtied-124 gerekir (circular-kırılmamış).
+  İkisi-birden olamaz. Candidate-A term2=2.097s-sabit → T1-penceresine **ZM-2-decade-körlüğü geri**.
+- → T1-aday-seçimi (candidate-A ~28s vs Y2-ring ~50s) TEORİ-ile-belirlenemiyor; gerçek-expiry ÖLÇÜM-ister.
+
+### META-HÜKÜM: TEORİ-D0-TÜKENDİ → SİM-KALİBRASYON-ŞART (yön-güncelleme)
+Üç-çürüme kanıtı: expiry-süresi (28-mi-50-mi), qd-davranışı (ölü-mü), T3-etkisi (zararlı-mı), TUR-D1-
+kaderi — HEPSİ teori-ile-belirsiz. **Bir-sonraki-adım teori-r3-DEĞİL, sim-harness.** (Kullanıcının
+kalibrasyon-şartlı-sim-kuralı tam-bunun-için: teori-tahmini-ölçümle-doğrulanmadan-güvenilmez.)
+
+### GÜNCEL-YÖN (sim-ölçecek; teori-tahmin-değil-hipotez):
+- **FAZ-1 = T1-TEK** (T3-ÇIKTI; Little-dokunma). T1-hipotezi: btlbw-expire → pacing-375 → kuyruk-boşalır
+  → srtt-düşer → flood-durur (Little-freni-yardımcı, bozulmadan).
+- **T1-aday sim-taraması:** (A) delivered-EAI (son-instant, ~28s-teori, ZM-2-riski) vs (B) Y2-son-N-ring
+  (~50s-teori, TUR-5-regresyon-riski) — sim gerçek-expiry + flood-durma + sub-kbps-btlbw-anchor ölçer.
+- **TUR-D1-kaderi:** expiry-28s(hızlı)→arşiv-güçlü; 50s(yavaş)→aktif-demotion-canlanır — SİM-BELİRLER.
+  DO-NOT-MERGE korunur.
+- **qd-flood'da-ölü:** ayrı-açık-madde (fuzzy-soft-drain + ProbeUp-abort etkilenir; W_qd-srtt-decouple
+  gerekir) — DESEN-1-fix-kapsamında-mı ayrı-mı, Abkarada-kararı.
+
+---
 
 ## ★ r2 — SAAT-HARİTASI (Y3-FAZLI; Abkarada-onaylı yaklaşım) [ONAY BEKLİYOR]
 
