@@ -55,6 +55,8 @@ pub struct ServerCfg {
     pub bind: SocketAddr,
     /// CC.
     pub cc: Cc,
+    /// [TUR-5 r3] Epizot-kotası R [CAL {4,8}] — ölçüm-matrisi (kama receiver'ına geçer).
+    pub quota_r: u32,
 }
 
 /// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).

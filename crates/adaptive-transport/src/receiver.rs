@@ -97,6 +97,24 @@ const ACK_CADENCE_FLOOR_NS: u64 =
 /// aralık ≥ cadence → muafiyet fiilen devreye girmez (cadence-borcu §3.3-E-FULL'de, AYRI).
 const K_TAIL: u64 = 2;
 
+/// [TUR-5 return-supply r3 §1a] Epizot-dedektörü çarpanı — BOYUTSUZ kanal-türevli oran
+/// [CAL {3,4}] (ZM-yasağı mutlak-ZAMAN sabitleridir; boyutsuz oran izinli). K_TAIL'den AYRI:
+/// tail-emisyon-ritmi ≠ epizot-tespiti (r2'nin yeniden-kullanımı semantik-hataydı — talimat).
+/// K=4 default: 25ms-sınıfı ritimlerde tamsayı-tam-bölünme tam-sınırı korur (V-5).
+const K_EPISODE: u64 = 4;
+/// [r3 §1a] Ritim-penceresi boyu [CAL {3,5}] — robust-baseline (max→median) örnek sayısı.
+const EPISODE_WINDOW: usize = 3;
+/// [r3 §2] Epizot-başı SACK-tekrar kredisi (muaf-ilk DAHİL toplam) [CAL {4,8}]; placeholder
+/// golden'a girmez — ölçüm-matrisi bench `--quota-r` ile koşar.
+const QUOTA_R_DEFAULT: u32 = 4;
+/// [r3 §2] Kota-modu emisyon-aralığı = SACK worst-corner serialization'ı ≈ 2.1s.
+/// STATİK-ÖNSEL-TÜREVİ (dürüst-etiket; E-FULL'de ölçülen return_bw'ye bağlanır —
+/// §3.7 statik-prior borcunun yeni-tüketicisi). Dekorelasyon + dar-dönüş doğal-seyrekleşme.
+const T_SPACING_NS: u64 = SACK_WIRE_BYTES * 1_000_000_000 / RETURN_BW_PRIOR;
+/// [r3 §3] §3.3-E MİNİMAL-TABAN çarpanı [CAL {2,4}] ({1} elendi: yapısal paket-başı-ACK):
+/// beklemede-yeni-bilgi varken timer-cadence = clamp(K_ARR×last_gap, T_SPACING, FLOOR).
+const K_ARR: u64 = 2;
+
 /// Receiver state machine (§4). rx-set + SACK üretimi; `on_datagram` / `on_ack_timer` ile sürülür.
 pub struct Receiver {
     state: RxState,
@@ -108,8 +126,19 @@ pub struct Receiver {
     ack_epoch: u8,
     since_last_ack: u32,
     ack_freq: u32,
-    last_ack_ns: u64,     // [K2/§12] son SACK emit anı (timer cadence gate kaynağı)
-    first_ack_sent: bool, // [R1] ilk SACK cadence-exempt: henüz SACK yollanmadıysa timer hemen emit eder
+    last_ack_ns: u64, // [K2/§12] son SACK emit anı (timer cadence gate kaynağı)
+    // [TUR-5 r3] Epizot-dedektörü + kota (R1 ilk-SACK muafiyetinin genellemesi — first_ack_sent
+    // bayrağının yerini oturum-ilk-epizot aldı):
+    gap_window: [u64; 5], // ritim-penceresi (EPISODE_WINDOW aktif; clamp'li-yazım §1a)
+    gap_len: usize,
+    gap_idx: usize,
+    quota: u32,   // kalan epizot-kredisi (emisyonla yanar, T_SPACING-takvimli)
+    quota_r: u32, // R [CAL {4,8}] — bench ölçüm-matrisi set_quota_r ile
+    episode_first_pending: bool, // epizodun İLK emisyonu gecikmesiz (muafiyet)
+    diag_episode_count: u64,
+    diag_quota_burn: u64, // kredi-düşümü toplamı — K-4 SERT-INVARIANT: ≤ R×episode_count
+    diag_accel_emits: u64, // bacak-2 hızlanmış-cadence emisyonları
+    diag_emit_total: u64, // tüm SACK emisyonları (RTRAJ)
     ack_delay_saturated: u64, // [TUR-1x] encoded==65535 sayısı (hold > 16.78s — audit; beklenen 0)
     seen_total: u32, // [§2.2 V2 ölçüm eki] görülen TÜM datagram (birim+kopya+shard; saturating)
     last_arrival_ns: u64, // [3b-C] HERHANGİ datagram'ın son varışı (dup dahil — kanal-tempo kanıtı)
@@ -132,7 +161,16 @@ impl Receiver {
             since_last_ack: 0,
             ack_freq: ACK_FREQ_N,
             last_ack_ns: 0,
-            first_ack_sent: false,
+            gap_window: [0; 5],
+            gap_len: 0,
+            gap_idx: 0,
+            quota: 0,
+            quota_r: QUOTA_R_DEFAULT,
+            episode_first_pending: false,
+            diag_episode_count: 0,
+            diag_quota_burn: 0,
+            diag_accel_emits: 0,
+            diag_emit_total: 0,
             ack_delay_saturated: 0,
             seen_total: 0,
             last_arrival_ns: 0,
@@ -146,7 +184,27 @@ impl Receiver {
         // [§2.2 V2] seen_count: HER görülen datagram sayılır (dup/shard DAHİL) — sender'ın
         // "seen vs sent" yön-ayrımlı kayıp kıyası için (K3 cold-start).
         self.seen_total = self.seen_total.saturating_add(1);
-        // [3b-C] kanal-tempo ölçümü: varış-aralığı (dup dahil — wire'ı geçen her datagram kanıt).
+        // [TUR-5 r3 §1a] EPİZOT-DEĞERLENDİRME — pencere/last_gap GÜNCELLENMEDEN ÖNCE (kopma-gap'i
+        // ritim-referansını zehirleyemez). Oturum-ilk = açık özel-durum. Dup dahil her datagram.
+        if self.seen_total == 1 {
+            self.open_episode();
+        } else {
+            let gap = now_ns.saturating_sub(self.last_arrival_ns);
+            let baseline = self.episode_baseline();
+            if baseline > 0 && gap > K_EPISODE.saturating_mul(baseline) {
+                self.open_episode();
+            }
+            // SİMETRİK CLAMP'Lİ-YAZIM (r3-doğrulama): zehirlenme-koruması + livelock-ölümü +
+            // mikro-gap tabanı tek kuralda; count=0'da (ilk gap) ham — sınıflandırılamaz (beyanlı).
+            let written = if baseline > 0 {
+                gap.clamp(baseline / K_EPISODE, baseline.saturating_mul(K_EPISODE))
+            } else {
+                gap
+            };
+            self.push_gap(written);
+        }
+        // [3b-C] kanal-tempo ölçümü: varış-aralığı HAM kalır (tail/bacak-2 girdisi — anlık ritim;
+        // epizot-penceresi AYRI iş, r3 §3).
         if self.seen_total > 1 {
             self.last_gap_ns = now_ns.saturating_sub(self.last_arrival_ns);
         }
@@ -215,14 +273,107 @@ impl Receiver {
                 >= self.last_gap_ns.saturating_mul(K_TAIL);
         if tail_due {
             self.last_tail_ack_ns = now_ns; // yalnız tail-ritmi; cadence/freq sayaçlarına DOKUNMA
+            self.burn_quota(); // [r3 §2] her emisyon kredi düşürür (birleşik muhasebe)
             return self.build_ack(now_ns);
         }
-        if self.first_ack_sent && now_ns.saturating_sub(self.last_ack_ns) < ACK_CADENCE_FLOOR_NS {
+        let elapsed = now_ns.saturating_sub(self.last_emit_any());
+        // [r3 §2] KOTA-MODU: epizot-kredisi varken T_SPACING-takvimli yeniden-deneme (aynı
+        // kümülatif-SACK'in dekorele kopyaları — kader-penceresi); epizodun İLK emisyonu
+        // gecikmesiz (muafiyet — eski first_ack_sent'in genellemesi). Kopyalar yeni-varış
+        // BEKLEMEZ (retry-semantiği; Ekleme-2 geri-çekildi, not §2 revizyonu).
+        if self.quota > 0 {
+            if self.episode_first_pending || elapsed >= T_SPACING_NS {
+                self.since_last_ack = 0;
+                self.burn_quota();
+                self.record_ack_emit(now_ns);
+                return self.build_ack(now_ns);
+            }
             return None;
         }
+        // [r3 §3] Bacak-2 §3.3-E MİNİMAL-TABAN (kota-dışı): beklemede-yeni-bilgi varken cadence
+        // varış-ritmine bağlanır; yoksa statik-önsel FLOOR (sessiz-dönem tekrarları korunur).
+        let cadence_eff = if self.since_last_ack > 0 && self.last_gap_ns > 0 {
+            (K_ARR.saturating_mul(self.last_gap_ns)).clamp(T_SPACING_NS, ACK_CADENCE_FLOOR_NS)
+        } else {
+            ACK_CADENCE_FLOOR_NS
+        };
+        if elapsed < cadence_eff {
+            return None;
+        }
+        if cadence_eff < ACK_CADENCE_FLOOR_NS {
+            self.diag_accel_emits += 1;
+        }
         self.since_last_ack = 0;
+        self.burn_quota(); // kota=0 burada — yalnız emit_total muhasebesi (birleşik-sayaç)
         self.record_ack_emit(now_ns);
         self.build_ack(now_ns)
+    }
+
+    /// [r3 §2] Birleşik emisyon-saati: son HERHANGİ SACK-emisyonu (freq/timer + tail).
+    fn last_emit_any(&self) -> u64 {
+        self.last_ack_ns.max(self.last_tail_ack_ns)
+    }
+
+    /// [r3 §1a] Yeni-epizot: kredi RESET (birikim yok) + muafiyet + sayaç.
+    fn open_episode(&mut self) {
+        self.quota = self.quota_r;
+        self.episode_first_pending = true;
+        self.diag_episode_count += 1;
+    }
+
+    /// [r3 §2] Kredi-düşümü (her emisyon-yolu) — K-4 SERT-INVARIANT kaynağı.
+    fn burn_quota(&mut self) {
+        self.episode_first_pending = false;
+        self.diag_emit_total += 1;
+        if self.quota > 0 {
+            self.quota -= 1;
+            self.diag_quota_burn += 1;
+        }
+    }
+
+    /// [r3 §1a] Robust-baseline: 0→yok; <k→max (muhafazakâr); ≥k→median(son k).
+    fn episode_baseline(&self) -> u64 {
+        match self.gap_len {
+            0 => 0,
+            n if n < EPISODE_WINDOW => self.gap_window[..n].iter().copied().max().unwrap_or(0),
+            _ => {
+                let mut v = [0u64; 5];
+                v[..EPISODE_WINDOW].copy_from_slice(&self.gap_window[..EPISODE_WINDOW]);
+                let m = &mut v[..EPISODE_WINDOW];
+                m.sort_unstable();
+                m[EPISODE_WINDOW / 2]
+            }
+        }
+    }
+
+    /// [r3 §1a] Ring-yazım (son EPISODE_WINDOW gap; clamp'lenmiş değer).
+    fn push_gap(&mut self, g: u64) {
+        self.gap_window[self.gap_idx] = g;
+        self.gap_idx = (self.gap_idx + 1) % EPISODE_WINDOW;
+        if self.gap_len < EPISODE_WINDOW {
+            self.gap_len += 1;
+        }
+    }
+
+    /// [r3] Bench ölçüm-matrisi: R [CAL {4,8}] koşu-başı ayarı.
+    pub fn set_quota_r(&mut self, r: u32) {
+        self.quota_r = r;
+        // Oturum-ilk epizot new()+ilk-varışta açılır; set çağrısı varıştan ÖNCE yapılır
+        // (serve_loop peer-insert) — açılmış kotayı da hizala (deterministik).
+        if self.quota > 0 {
+            self.quota = r;
+        }
+    }
+
+    /// [r3 §6] RTRAJ diag: (episode_count, quota_burn, accel_emits, emit_total).
+    #[must_use]
+    pub fn diag_return_supply(&self) -> (u64, u64, u64, u64) {
+        (
+            self.diag_episode_count,
+            self.diag_quota_burn,
+            self.diag_accel_emits,
+            self.diag_emit_total,
+        )
     }
 
     /// rx-set + largest/smallest muhasebesi.
@@ -258,6 +409,7 @@ impl Receiver {
         self.since_last_ack += 1;
         if force || self.since_last_ack >= self.ack_freq {
             self.since_last_ack = 0;
+            self.burn_quota(); // [r3 §2] freq/force emisyonları da kredi-muhasebesine girer
             self.record_ack_emit(now_ns);
             self.build_ack(now_ns)
         } else {
@@ -265,11 +417,12 @@ impl Receiver {
         }
     }
 
-    /// [K2/R1/§12] SACK emit muhasebesi — timer cadence gate'i beslemek için son emit anını + ilk-SACK
-    /// bayrağını günceller. Her GERÇEK SACK emisyonu (freq/force/timer) buradan geçer.
+    /// [K2/R1/§12] SACK emit muhasebesi — timer cadence gate'i beslemek için son emit anını
+    /// günceller. Her freq/force/timer emisyonu buradan geçer (tail kendi-saatinde — r3 §2
+    /// birleşik-saat `last_emit_any` ikisinin max'ı). Eski `first_ack_sent` R1-muafiyeti
+    /// oturum-ilk-EPİZOT kotasıyla genellendi [TUR-5 r3].
     fn record_ack_emit(&mut self, now_ns: u64) {
         self.last_ack_ns = now_ns;
-        self.first_ack_sent = true;
     }
 
     /// SACK ACK'i rx-set'ten kur (§2) — [`AckFrame::from_received`] gruplamayı yapar.
@@ -506,5 +659,206 @@ mod tests {
         );
         assert_eq!(r.state(), RxState::FecDecode);
         assert_eq!(r.received_count(), 1, "shard ACK için rx-set'e girer");
+    }
+}
+
+// ── [TUR-5 r3] return-supply sözleşme-vektörleri (V-1..V-5 + count=0 + yakınsama + invariant) ──
+#[cfg(test)]
+mod return_supply_tests {
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+
+    fn data(seq: u64, unit_id: u64) -> RxDatagram {
+        RxDatagram {
+            seq,
+            unit_id,
+            kind: RxKind::Data,
+        }
+    }
+
+    /// Gap-dizisini varışlara çevirip epizot-sayısını ölçer (oturum-ilk epizot DAHİL değil —
+    /// vektörler "kota YENİLEMEMELİ" der: oturum-ilk-sonrası ek-epizot = 0 assert'lenir).
+    fn run_gaps(r: &mut Receiver, gaps_ns: &[u64]) -> u64 {
+        let mut t = 0u64;
+        r.on_datagram(data(0, 0), t);
+        let (ep0, _, _, _) = r.diag_return_supply();
+        for (i, g) in gaps_ns.iter().enumerate() {
+            t += g;
+            r.on_datagram(data(1 + i as u64, 1 + i as u64), t);
+        }
+        let (ep, _, _, _) = r.diag_return_supply();
+        ep - ep0
+    }
+
+    #[test]
+    fn v1_burst_then_normal_gap_no_episode() {
+        // V-1 `20,20,60ms` — K=4: 60>80 F; (K=3 tam-sınır kolu ölçüm-CAL'ında).
+        let mut r = Receiver::new();
+        assert_eq!(
+            run_gaps(&mut r, &[20 * MS, 20 * MS, 60 * MS]),
+            0,
+            "V-1 kota yenilememeli"
+        );
+    }
+
+    #[test]
+    fn v2_micro_gap_batch_no_episode() {
+        // V-2 `25,1,25,25ms` — clamp'li-yazım mikro-gap'i tabana çeker; robust-baseline F.
+        let mut r = Receiver::new();
+        assert_eq!(
+            run_gaps(&mut r, &[25 * MS, MS, 25 * MS, 25 * MS]),
+            0,
+            "V-2 sahte-epizot yok"
+        );
+    }
+
+    #[test]
+    fn v3_bimodal_jitter_no_episode() {
+        // V-3 `25,50,25,50,25ms` — bimodal jitter; medyan iki modu tolere eder.
+        let mut r = Receiver::new();
+        assert_eq!(
+            run_gaps(&mut r, &[25 * MS, 50 * MS, 25 * MS, 50 * MS, 25 * MS]),
+            0,
+            "V-3 sahte-epizot yok"
+        );
+    }
+
+    #[test]
+    fn v4_slow_channel_variance_no_episode() {
+        // V-4 `800ms,1.7s,800ms` — K_TAIL=2 oranını kıran vektör; K_EPISODE=4: 1.7s < 3.2s F.
+        let mut r = Receiver::new();
+        assert_eq!(
+            run_gaps(&mut r, &[800 * MS, 1700 * MS, 800 * MS]),
+            0,
+            "V-4 sahte-epizot yok"
+        );
+    }
+
+    #[test]
+    fn v5_double_micro_gap_integer_boundary() {
+        // V-5 `25,25,1,1,25,25,25ms` — K=4 tamsayı-tam-bölünme: 25/4=6.25ms EXACT →
+        // eşik 4×6.25=25.0 → 25>25 F → sahte-epizot SIFIR (r3 §1a.1 pinli-semantik).
+        let mut r = Receiver::new();
+        assert_eq!(
+            run_gaps(
+                &mut r,
+                &[25 * MS, 25 * MS, MS, MS, 25 * MS, 25 * MS, 25 * MS]
+            ),
+            0,
+            "V-5 K=4: tam-sınır F, sıfır sahte-epizot"
+        );
+    }
+
+    #[test]
+    fn dv2_blackout_opens_episode_and_quota() {
+        // DV-2 sınıfı: kararlı 0.8s ritim → 8s kopma → dönüş: epizot + kota-muafiyeti.
+        let mut r = Receiver::new();
+        let mut t = 0u64;
+        r.on_datagram(data(0, 0), t);
+        for i in 1..=3u64 {
+            t += 800 * MS;
+            r.on_datagram(data(i, i), t);
+        }
+        let (ep_before, _, _, _) = r.diag_return_supply();
+        t += 8_000 * MS; // 8s kopma > K_EPISODE×0.8s=3.2s
+        r.on_datagram(data(4, 4), t);
+        let (ep_after, _, _, _) = r.diag_return_supply();
+        assert_eq!(ep_after - ep_before, 1, "kopma-dönüşü epizot açar");
+        // Muafiyet: ilk timer-SACK gecikmesiz (cadence beklemez).
+        let ack = r.on_ack_timer(t + MS);
+        assert!(ack.is_some(), "epizot-ilk emisyon cadence-muaf");
+    }
+
+    #[test]
+    fn quota_spacing_and_invariant() {
+        // Oturum-ilk epizot: muaf-ilk + T_SPACING-takvimli kopyalar; kredi-invariantı.
+        let mut r = Receiver::new();
+        r.on_datagram(data(0, 0), 0);
+        let mut emits = 0;
+        let mut t = 20 * MS;
+        while t < 20_000 * MS {
+            if r.on_ack_timer(t).is_some() {
+                emits += 1;
+            }
+            t += 20 * MS;
+        }
+        // R=4: muaf@20ms + 3 kopya @ ~T_SPACING(2.1s)-aralıklı = 4 kota-emisyonu;
+        // sonrası FLOOR-cadence (8.39s) → 20s içinde ~1-2 ek.
+        let (ep, burn, _, total) = r.diag_return_supply();
+        assert_eq!(ep, 1, "yalnız oturum-ilk epizot");
+        assert_eq!(burn, 4, "kredi tam R kez yandı");
+        assert!(
+            burn <= 4 * ep,
+            "K-4 SERT-INVARIANT: quota_burn ≤ R×episode_count"
+        );
+        assert!(
+            (5..=6).contains(&emits),
+            "4 kota + 1-2 kafes-emisyonu, ölçülen: {emits}"
+        );
+        assert_eq!(total as usize, emits, "emit_total tutarlı");
+    }
+
+    #[test]
+    fn count0_hole_first_packet_blackout_return() {
+        // count=0-deliği (beyanlı, DV-2 açık-riski): ilk-paket→kopma→dönüş — dönüşe epizot YOK
+        // (baseline yok, sınıflandırılamaz) ve oturum-kotası kopmada yanmış.
+        let mut r = Receiver::new();
+        r.on_datagram(data(0, 0), 0);
+        let mut t = 0;
+        while t < 8_000 * MS {
+            t += 20 * MS;
+            let _ = r.on_ack_timer(t); // kota kopma-sessizliğine yanar (Ekleme-2 geri-çekildi)
+        }
+        let (ep0, burn0, _, _) = r.diag_return_supply();
+        assert_eq!(ep0, 1);
+        assert_eq!(burn0, 4, "kota kopmaya yandı (beyanlı)");
+        r.on_datagram(data(1, 1), t); // dönüş-varışı: count=0 → epizot-kontrol atlanır
+        let (ep1, _, _, _) = r.diag_return_supply();
+        assert_eq!(
+            ep1, 1,
+            "count=0-deliği: dönüşe epizot verilmez (beyanlı-sınır)"
+        );
+    }
+
+    #[test]
+    fn regime_shift_geometric_convergence() {
+        // Rejim-geçişi (25ms → 800ms kalıcı): clamp'li-yazım geometrik yakınsar;
+        // epizot-sayısı ≤ ⌈log_K(oran)⌉+1 = ⌈log4(32)⌉+1 = 4 (livelock YOK).
+        let mut r = Receiver::new();
+        let mut t = 0u64;
+        r.on_datagram(data(0, 0), t);
+        for i in 1..=3u64 {
+            t += 25 * MS;
+            r.on_datagram(data(i, i), t);
+        }
+        let (ep_before, _, _, _) = r.diag_return_supply();
+        for i in 4..=20u64 {
+            t += 800 * MS;
+            r.on_datagram(data(i, i), t);
+        }
+        let (ep_after, _, _, _) = r.diag_return_supply();
+        let transitions = ep_after - ep_before;
+        assert!(
+            (1..=4).contains(&transitions),
+            "geçiş-epizotları sınırlı-geometrik (livelock yok), ölçülen: {transitions}"
+        );
+    }
+
+    #[test]
+    fn arrival_rate_acceleration_mid_regime() {
+        // Bacak-2 ayrık-niş vektörü: K_ARR=2'de accel-ritmi freq(2-varış)/tail(K_TAIL×gap)
+        // ritimleriyle örtüşür (yapısal-gölgeleme — beklenen); accel YALNIZ
+        // "sessizlik < K_TAIL×gap (tail-F) ∧ emit-elapsed ≥ K_ARR×gap" penceresinde ayrışır.
+        // Kota izolasyonu: set_quota_r(0) (kota-kolu devre-dışı; ölçüm-matrisi dışı test-modu).
+        let mut r = Receiver::new();
+        r.set_quota_r(0);
+        r.on_datagram(data(0, 0), 0);
+        r.on_datagram(data(1, 1), 2_000 * MS); // freq-emit @2s (paylaşık emisyon-saati)
+        r.on_datagram(data(2, 2), 4_000 * MS); // since=1
+                                               // t=7.9s: sessizlik=3.9s < 4s (tail F); emit-elapsed=5.9s ≥ cadence_eff=4s < FLOOR.
+        let ack = r.on_ack_timer(7_900 * MS);
+        assert!(ack.is_some(), "accel-penceresinde emisyon");
+        assert_eq!(r.diag_return_supply().2, 1, "hızlanmış-cadence sayacı");
     }
 }

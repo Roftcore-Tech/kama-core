@@ -282,10 +282,11 @@ async fn client_loop(
 /// Server event pump (§4 receiver): per-peer `Receiver`; select{ DATA→on_datagram→SACK / ACK-timer→SACK }.
 /// quinn accept-loop gibi sonsuz (harness process'i öldürür). Tek O(1) recv döngüsü per-mesaj izolasyonu
 /// verir → quinn'in stream-başı task fan-out'una gerek yok (HoL yok).
-async fn serve_loop(sock: UdpSocket, start: Instant) -> Result<(), BenchError> {
+async fn serve_loop(sock: UdpSocket, start: Instant, quota_r: u32) -> Result<(), BenchError> {
     let mut peers: HashMap<SocketAddr, Receiver> = HashMap::new();
     let mut ack_timer = interval(ACK_TICK);
     let mut buf = vec![0u8; SERVER_RECV_BUF];
+    let mut rtraj_tick: u32 = 0;
     loop {
         tokio::select! {
             _ = ack_timer.tick() => {
@@ -297,11 +298,27 @@ async fn serve_loop(sock: UdpSocket, start: Instant) -> Result<(), BenchError> {
                 for (peer, bytes) in acks {
                     let _ = sock.send_to(&bytes, peer).await;
                 }
+                // [TUR-5 r3 §6] RTRAJ ölçüm-kanalı: K-4 invariant+diagnostic server-tarafta doğar
+                // (client rx_bytes yalnız hayatta-kalan-bayt vekili). ~500ms'te bir.
+                rtraj_tick += 1;
+                if rtraj_tick.is_multiple_of(25) {
+                    let (mut ep, mut qb, mut ac, mut tot) = (0u64, 0u64, 0u64, 0u64);
+                    for rx in peers.values() {
+                        let (e, q, a, t) = rx.diag_return_supply();
+                        ep += e; qb += q; ac += a; tot += t;
+                    }
+                    eprintln!("RTRAJ t={:.1} ep={} quota={} accel={} emit_total={}",
+                        now as f64 / 1e9, ep, qb, ac, tot);
+                }
             }
             r = sock.recv_from(&mut buf) => {
                 let Ok((n, peer)) = r else { continue };
                 let Some((wire_seq, unit_id)) = decode_data(&buf[..n]) else { continue };
-                let rx = peers.entry(peer).or_default();
+                let rx = peers.entry(peer).or_insert_with(|| {
+                    let mut r = Receiver::new();
+                    r.set_quota_r(quota_r);
+                    r
+                });
                 let expected = rx.largest_seq().map_or(0, |m| m + 1);
                 let full = resolve_seq(expected, wire_seq);
                 let now = elapsed_ns(start);
@@ -317,7 +334,7 @@ async fn serve_loop(sock: UdpSocket, start: Instant) -> Result<(), BenchError> {
 impl BenchTransport for KamaTransport {
     async fn run_server(&self, cfg: ServerCfg) -> Result<(), BenchError> {
         let sock = UdpSocket::bind(cfg.bind).await?; // bind = setup hatası → Err (harness abort).
-        serve_loop(sock, Instant::now()).await
+        serve_loop(sock, Instant::now(), cfg.quota_r).await
     }
 
     async fn run_client(&self, cfg: ClientCfg) -> Result<RunOutput, BenchError> {
@@ -363,7 +380,7 @@ mod tests {
         // 127.0.0.1 server+client, netem YOK → temiz yol → hepsi teslim + frame doğruluğu.
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let saddr = server.local_addr().unwrap();
-        tokio::spawn(serve_loop(server, Instant::now()));
+        tokio::spawn(serve_loop(server, Instant::now(), 4));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let out = client_loop(client, cfg(saddr, 10, 5000), Instant::now())
@@ -425,7 +442,7 @@ mod tests {
         // dwell'le saniyelere yayılırdı → completion kama lehine şişerdi (review CRITICAL regresyon guard).
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let saddr = server.local_addr().unwrap();
-        tokio::spawn(serve_loop(server, Instant::now()));
+        tokio::spawn(serve_loop(server, Instant::now(), 4));
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let out = client_loop(client, cfg(saddr, 200, 5000), Instant::now())
             .await

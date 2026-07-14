@@ -593,6 +593,87 @@ yeniden-kanıtı fix-turu birleşse bile p5'in KENDİSİNDE koşulmalı.**
   referansı mevcut kablolamada kopuk). Bacak-1 tasarımının girdisi.
 - r4-dersi: kader-metriği çıkış-zamanı değil entegre-hayatta-kalma — fix-turu ölçüm-tasarımına girer.
 
+## 0.24 TUR-5 ÖLÇÜM-KAYDI (bacak-1+2, R-matrisi) — KAFES ÖLDÜ; dal-B DOĞRULANDI; temiz-1k KIRMIZI-DUR
+
+**Seçim-serisi (p5×6 × R∈{4,8}):** R=4 {33,100×5}, med-ilk-teslim 9.49s (K-1a ✗);
+R=8 {14,30,100×4}, med-ilk **2.14s** (K-1a ✓) → **çok-kriterli seçim R=8**.
+**Doğrulama-serisi (R=8):** {55,63,100×4}, med-ilk 8.445s — literal-eşiği (8.4s) **45ms aştı**
+(dürüst-beyan; 12-koşu-birleşik 5.30s ✓; kapı-hükmü Abkarada'da). **K-1b 12-koşu KAPISI ✓:**
+>16.8s = 3 ≤ 4 (kesin-binom %95-üst). **K-4 ✓ tüm koşularda** (kredi-invariant canlı;
+tx-oran ≤1.21). K-2 ✗ (min 14) → K-3 ✗.
+
+**KAFES-ÖLÜMÜ (K-1a mekanik-kanıt, alt-kapı):** 18 koşunun TÜM ilk-teslimleri kota/kafes
+TAKVİM-noktalarında ({0.03-0.04, 2.14, 4.24, 6.35, 8.44, 10.54, 14.73-74, 23.14, 39.95, ...}
+— r3-aritmetiğinin parmak-izi, nokta-nokta); eski k×8.39s-kümelenmesi YOK; medyan 25.5s →
+2.1-8.4s bandı (3-12×). r4_3'ün 14.74s'i (kota-4 + kafes-1 = 5. deneme) takvimi tek-koşuda kanıtlar.
+
+**Dal-B DOĞRULANDI (r3 §4 şablonu):**
+```
+Bacak-1 alt-kapısı: ACCEPTED   (kafes-ölümü + K-1b + K-4; K-1a doğrulama-serisi 45ms sınır-notuyla)
+P5-GATE: DEFERRED — bacak-3 kanıtı gerekli
+Tam mühür: yalnız K-2 ∧ K-3 sonrası
+```
+Trajektori-kanıtı ({14,30,33,55,63} koşuları): kurtuluş TAKVİMDE geldi ama tohum =
+267/t_kurtuluş formülüyle floor-yarı-kanal bandında (18-63 B/s; v8_5: 4.24s-ERKEN kurtuluşta
+bile tohum 63 → 63/100) VE **YENİ-BİLEŞEN: RecoverArq-YAPIŞMASI** — %80 dönüş-kaybında pending
+sürekli-yenileniyor → faz-önceliği Steady/ProbeUp'a HİÇ düşmüyor (probe=0/0/0/0; r4_6 41-birim,
+r8_3 38-birim emit) → ProbeUp-köprüsü yapısal-erişilmez. Bacak-3 teşhis-girdisi: tohum-hijyeni
++ RecoverArq-gölgeleme İKİLİSİ. Kuyruk-çekilişleri {14, v8_6-56.7s} ≈ binom-beklentisi (2/18).
+
+**Smoke:** p4 ✓ 100/100 saf-data 1.00× (jitter-kuyruğu 3 meşru-epizot; invariant ✓).
+**temiz-1k 44/100 — KIRMIZI (kapı ≥45): DUR-noktası.** Dekompozisyon: dönüş-bütçesi DEĞİL
+(27 SACK × 65B / 120s ≈ 14.6 B/s ≪ 125 kapasite) — zengin erken-SACK-arzı Startup-PLATO
+tespitini 24.5→37.5s'e uzattı (+13s × gain 2.885 → overfill-kuyruğu büyüdü) → Drain 120s'e
+dek çıkamadı → 50-emit/44-teslim (6 uçuşta; eski 49/45-4-uçuşta). KÖK spec §16.2'de ZATEN
+işaretli yarım-fix: `startup_plateau` sayacı ack-OLAY-tabanlı (gereken-sınıf "RTT-round
+delivered-anchor", TUR-A satırı) — arz-zenginleşmesi olay-sayacını kaydırdı. Tavan-çerçevesi:
+49-tavanda 44 = %90 (önceki %92); kayıp cold-start-fazında, mekanizma-dışı.
+**Fix-seçenekleri (karar Abkarada'nın):** (a) kapı-revizyonu (44 kabul; startup_plateau
+yarım-fix'i zaten SON-listesinde); (b) startup_plateau delivered-anchor fix'i AYRI-tur
+(spec-satırı hazır); (c) kota'yı dar-banda kısıtlama (mekanizmayı sulandırır — ÖNERİLMEZ).
+
+**İKİNCİ KIRMIZI — 0.25k SEÇİLEN-R(=8) İLE 13/20:** R=4-kolu 20/20 + özet-metrikler ESKİYLE
+ÖZDEŞ (4/0/27, tx=5660); R=8-kolu 13/20, btlbw-son 27→13, sıfır-tick 4→25 (tx aynı — sender-
+emisyon değişmedi; bozulan ACK-fiziği). Dekompozisyon: +7 kota-kopyası @T_SPACING=2.1s ×65B =
+31 B/s ≈ dar-dönüş kanalının TAMAMI ~14.7s → SACK-kuyruklanması → ack-delay/estimator
+zehirlenmesi 300s'e yayılıyor. r3'ün "dar-dönüşte doğal-seyrekleşme" gerekçesi 0.25k'da YANLIŞ
+(T_SPACING = tam-kanal-serialization = doyum); r1-lens'in kota-bütçe uyarısının R=8-ölçekli
+geri-dönüşü. **R-SEÇİM ÇIKMAZI:** R=8 K-1a ✓ ama K-5 ✗; R=4 K-5 ✓ ama K-1a ✗ (9.49s, tek-seri)
+— çok-kriterli kural ("kota-yükünü artıran kol seçilmez") iki kolu da tek-başına bırakmıyor.
+Fix-uzayı (karar Abkarada'nın): (α) T_SPACING'in kanal-türevli tabanı — örn.
+max(T_SPACING, kendi-varış-gap'i sınıfı bir taban): dar-dönüşte kota yayılır, p5'te 2.1s kalır
+(YENİ-TASARIM, onaysız girilmez); (β) R=4 seçimi (K-1a farkı 1.1s, 6-koşu-örneklem gürültüsü
+payı; 12-koşu R=4-verisi yok); (γ) her ikisi + startup_plateau-fix'i ayrı-tur paketlemesi.
+
+### §0.24-KARARLAR (Abkarada, 2026-07-14 — çift-KIRMIZI DUR'unun çözümü)
+
+1. **β ÖNCE:** R=4'e 6 ek koşu → 12-koşu K-1a (per-koşu P(>8.4s)=0.8⁴≈%41 → n=6 medyan-kapısı
+   mekanizma-mükemmelken ~%30-48 yanlış-eler — PATCH-2 dersinin K-1a'ya dönüşü). 12-koşu-medyanı
+   ≤8.4s → R=4 seçilir (K-5 zaten ✓) → PR. Medyan ≥9s → mekanizma-bilgisi (per-deneme-sağkalım
+   <0.2) → DUR, α-tasarım-sorusu Abkarada'ya.
+2. **α ŞİMDİ DEĞİL** + sensing-ön-şartı kayda: receiver varış-ritminden p5-açlık(sender-throttle)
+   ile 0.25k'yı(serialization) AYIRT EDEMEZ (ikisi de gap≈8.6-9.9s) → varış-türevli T_SPACING
+   p5-kotasını da yayar → K-1a yapısal bozulur. Gerçek çözüm E-FULL ölçülen-return_bw (§3.7
+   borcu — "statik-önsel-türevi" dürüst-etiketi tam bu gün içindi). **γ RED** (tek-değişken ihlali).
+3. **temiz-1k 44 = BELGELİ-REGRESYON** (3b-commit-B emsali), ŞARTLA: startup_plateau
+   delivered-anchor turu HEMEN sıradaki iş (süresiz-erteleme YOK — regresyon-kapısının anlamı
+   erimesin). β geçerse PR: R=4 + 1k-44-belgeli + plateau-turu-sıradaki taahhüdü.
+4. **RecoverArq-yapışması = bacak-3'ün İKİNCİ-BAŞI:** ProbeUp-köprüsü p5'te yapısal-gölgede.
+   Bacak-3 tasarım-notu İKİ-başlı: tohum-hijyeni (estimator) + RecoverArq-gölgelemesi
+   (faz-önceliği). İkisi sender-taraf, ayrı-tur, D0-notu-önce.
+5. Ekleme-2 geri-çekilmesi KABUL; count=0-deliği DV-2 açık-riski olarak kalır.
+Sıra: β → (geçerse) PR → plateau-turu → bacak-3 D0-notu → DV-1.
+
+**β-SONUCU (karar-1 uygulandı):** ek-6 R=4: {100,14,100,100,100,99}; **12-koşu R=4 ilk-teslim
+medyanı 2.14s ≤ 8.4s → K-1a ✓ → R=4 SEÇİLDİ** (K-5 ✓ 20/20-özdeş; K-1b 12-koşu 2≤7 ✓; K-4 ✓).
+r4_8 = 115.54s-kuyruk-çekilişi deseninin 3. örneği (24 koşuda 3 ≈ binom). n=6-medyan-kapısının
+yanlış-eleme dersi (P≈%30-48) DOĞRULANDI: seri-1 medyanı 9.49 iken 12-koşu 2.14.
+
+**Süreç-kaydı:** Ekleme-2 (kota-yanış şartı) implementasyon-öncesi çelişki-tespitiyle GERİ-
+ÇEKİLDİ (K-1b retry-takvimini bloklardı — not §2 revizyonu; count=0-deliği DV-2 açık-riski
+aynen). Bacak-2 yapısal-gölgeleme dürüst-bulgusu: K_ARR=2'de accel-ritmi freq/tail'le örtüşük;
+ayrık-katkı dar-pencerede (ölçüldü: accel=0-4/koşu).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
@@ -755,7 +836,7 @@ p5→TUR-4'te geri · p2/p3-tırmanış→TUR-4+B.
 | borç | doğuş | doğrulama/çürütme noktası | durum |
 |---|---|---|---|
 | **ŞANSLI-MOD-FREKANSI** | TUR-2b ölçümü: p5 şanslı-mod 0/9 çekiliş (P≈%3-5 kuyruk). Yapısal savunma ("2b sıcak-yolu hit=0 iken karar-yolu 2a-bit-özdeş → frekans değişemez → netem-varyansı") bir **ÇIKARIM, ölçüm değil** | **TUR-3a retest'i** spektrumu yeniden örnekler: şanslı-mod ~%30 bandına dönerse borç KAPANIR; yine seyrekse yapısal-savunma ÇÜRÜR → şanslı-mod-frekansı bağımsız sorun olarak açılır | AÇIK |
-| **Statik return-prior → ProbeUp-periyodu tüketicisi** | TUR-3c: giriş-periyodu 4×ack_epoch; EAI'nin statik önseli (31 B/s worst-corner) hızlı kanalda epoch'u ~2.1s'e mıhlar → probe-periyodu ≥8.4s'e sabitlenir (kanal-türevi değil, önsel-türevi) | §3.3-E-FULL (ölçülen return_bw) gelince EAI daralır → periyot kanal-zamanlı olur; E-FULL kampanya-öncesi borcun YENİ tüketicisi olarak kaydedildi | AÇIK |
+| **Statik return-prior → ProbeUp-periyodu tüketicisi** | TUR-3c: giriş-periyodu 4×ack_epoch; EAI'nin statik önseli (31 B/s worst-corner) hızlı kanalda epoch'u ~2.1s'e mıhlar → probe-periyodu ≥8.4s'e sabitlenir (kanal-türevi değil, önsel-türevi) | §3.3-E-FULL (ölçülen return_bw) gelince EAI daralır → periyot kanal-zamanlı olur; E-FULL kampanya-öncesi borcun YENİ tüketicisi olarak kaydedildi. **[TUR-5] İKİNCİ yeni-tüketici: T_SPACING** (kota-aralığı; sensing-ön-şartı §0.24-karar-2 — varış-türevli YAPILAMAZ, tek çözüm ölçülen-return_bw) | AÇIK |
 | **W_loss payda-çürümesi lppm-spike artefaktı** | TUR-4 fnr-keşfi: pencere-dışı decay paydayı olaylardan hızlı düşürüyor → pencereli-lppm anlık ≥300k spike (gerçek kayıp %30 DEĞİL) → fuzzy loss.low=0 bölgesine ~1s'lik sahte-giriş | Bugün zararsız (fallback + fnr-sayacı ile görünür; patlama-anı arq-tüketilmeyen state'te). DV-2 aralıklı-rejimde pend>0∧RecoverArq ile çakışırsa fallback davranışsal-canlı olur → orada yeniden oku; gerekirse payda-tabanı (min-sends) fix'i AYRI karar | AÇIK |
 | **17-data-emisyonu izi (loopback)** | commit-C teşhisi sırasında görüldü: 10 birim / 17 data-send (tx=1550B; retx=0 dup=0) — fazla-emisyonların kaynağı belirsiz | AYRI teşhis (muhtemelen PreConverge/emisyon-yolu); kampanya-metriklerine oran-etkisi olabilir | AÇIK |
 | **Little-kolu min_cwnd-maskesi** | 3a.5-α ölçümü: cwnd/srtt kolu fixture min_cwnd'i sayesinde BAĞLAMADI (yarı-2 öngörüm aşırı-temkin) — kol fiilen uykuda | MIN_CWND kalibrasyonu (sıra-SONU, D-4/2): kalibre min_cwnd küçülürse kol uyanır → srtt_t-paydalı davranış O ZAMAN ölçülür | AÇIK |
