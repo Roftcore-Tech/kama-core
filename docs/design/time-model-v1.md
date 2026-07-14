@@ -722,6 +722,16 @@ sonradan görüldü) — amend'le düzeltildi; testlerin düşüş-sebebi β2'ni
 değişimiydi (retx artık gerçekten emit → Karn-kol-2/token-akış varsayımları), fixture'lar
 amaç-korunarak hizalandı (büyük-backlog + tick-kaydırma). Ders: kapı-çıktısı OKUNMADAN commit yok.
 
+## 0.27 ★ P5-GATE MÜHÜR-İLANI (Abkarada, 2026-07-14) — KİLOMETRE-TAŞI
+
+**P5-GATE: ACCEPTED.** İki bağımsız 6'lık seri {100×6} ∧ {100×6}; K-2 min=100 · K-3 tip-7 IQR=0 ·
+S5-lotarya X=0 (istisna gerekmedi). **Dal-A gerçekleşti — dal-B kalıntısı YOK** (β1+β2 orta-tohum
+sınıfını tam-kapattı; α-tetiği hiç görülmedi). Era-zinciri: **{11-33} → {14-63} → {100×12}** —
+tezin amiral-kriteri: p5-determinizmi İKİ eksende kapalı (piyango/kafes TUR-5 + tohum/yapışma
+TUR-7), recovery-dahil golden-korumalı (inv_rate_1_loss_declaration_preserves_phase_gain).
+TUR-1'de sökülen sahte-100'ün meşru-mekanizmayla yeniden-kazanılması — parazitsiz.
+Sıradaki: DV-1 (motor-final decade-taraması).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
