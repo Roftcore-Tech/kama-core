@@ -135,3 +135,23 @@ gerçekleşmedi (fallback hâlâ davranışsal-pasif — p6b-ilk-yorum düzeltil
 bulgusu karara: B1 kopma-körlüğü (%74-israf; ACK-sessizlik-kapısı mekanizma-önerisi), B2
 aralıklı-RTT-kirliliği (1.02→19.6s; rtt_rej=0 guard-deliği; send-freeze → p6b 18/20).
 Sıra-önerisi: B2-dar-turu DV-3-ÖNCESİ (DV-3-ölçümünü kirletmesin); B1 DV-3-SONRASI paket.
+
+## ★ ARALIKLI-KANAL-SENSING-KATMANI (M4/M5) — meta-kök TEK-KAYIT (Abkarada, 2026-07-14)
+
+**META-KÖK (iki-bulgu-tek-kök):** DV-2'nin İKİ bulgusu — B1 kopma-körlüğü (forward: ne-zaman-
+göndermeyi-durdur) + B2 RTT-kirliliği (estimator: örneği-nasıl-yorumla) — TEK meta-köke indirgendi:
+**aralıklı kanalda MEVCUT yerel-gözlemlerle ve TEK gözlemden "kopma" ile "meşru-yavaş" ayırt-edilemez.**
+Dört-tur-B2 (yerel-eşik-ailesi yapısal-ölü) + tek-tur-B1 (aynı-aile, kod-satırlı) bunu kanıtladı.
+İkisinin de doğru-cevabı gözlem-uzayını-genişleten bir SENSING-KATMANI.
+
+**M4/M5-TURU (DV-3-sonrası, D0-notu-önce) — artık "B2-fix" DEĞİL "aralıklı-kanal-sensing-katmanı":**
+- **Girdiler:** E-FULL ölçülen-return_bw + ACK-sessizlik-epizodu + measured-delivery-cadence +
+  estimator-örnek-güven-sınıfı + DV-3-verisi (hangi-rejimler-gerçekten-karıştı).
+- **Çıktı:** kanal-durumu-makinesi (M5) → "kopma-mı-yavaş-mı" AYRIMI (M4-dış-referansla) → hem
+  B1'i (forward-akış-kesim kararı) hem B2'yi (estimator-örnek-kabul) BESLER.
+- **B1-alt-kümesi:** 1a-dup-oran-azaltma sensing-katmanı "kopma-kesin" dediğinde uygulanır
+  (yerel-eşiksiz — dış-referanslı); 1b-ÇIKARILDI (HIGH-2 SACK-truncation).
+- **M3 (estimator-decoupling):** BAĞIMSIZ mimari-sertleştirme (defense-in-depth; M4/M5-rakip-değil-
+  katman) — M4/M5-sonrası, ayrı.
+- **KIRMIZI-şart:** M4/M5 P5-GATE {100×12}-mührünü KORUMALI (B1-parasitic-recovery-riski burada
+  dış-referansla çözülür — kör-akış yalnız gerçek-kopmada kesilir, p5-yüksek-kayıp-ama-aktif'te DEĞİL).
