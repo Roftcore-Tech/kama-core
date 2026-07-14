@@ -1,6 +1,8 @@
 # b1-kopma-korlugu-v1 — Kopma-Körlüğü: ACK-Sessizlik-Kapısı + Dönüş-Kanıtı-Patlaması [r2 — DUR-GERİ-BİLDİRİMİ: B1 da meta-kök-ailesinde; sıra-gerekçesi kısmen-çürüdü; karar Abkarada]
 
-> **Statü:** D0-TASARIM-NOTU (B1; B2-DUR sonrası öne-alındı — Abkarada sıra-kararı). ONAYDAN SONRA kod.
+> **Statü [Abkarada-KARAR]:** ★ DUR / NO-IMPLEMENTATION · B1 M4/M5-aralıklı-sensing-katmanına BAĞLANDI
+> (aynı meta-kök; p5-mühür-riski kabul-edilemez). Korunan: 3-HIGH + meta-kök-indirgeme + kod-satırlı-
+> çürütmeler. 1a-dup-oran ŞARTLI-PARK (M4/M5-alt-kümesi); 1b-ÇIKAR (HIGH-2 seq-bias). KOD YAZILMAZ.
 > **Kapsam-sınırı:** sender-taraf pacing/dup-yolu (`sender.rs` schedule_transmit + plan_forward_
 > duplication + drain_due_duplicates + pacer-etkileşimi) + testler + TRAJ; **başka her şey = İHLAL, DUR.**
 > **AYRIM (Abkarada, korunur):** B1 = **incidence-reduction** (kopma-örneği DOĞUM-sıklığını +
