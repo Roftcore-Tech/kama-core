@@ -127,3 +127,11 @@ paced/interactive mesaj motorun şişkin kuyruğu (srtt-sınıfı: 1k'da ~70s, 0
 düşer → tek-mesaj-RMST felaketi. HÜKÜM iki-dallı: r5-profilleri upfront-backlog'sa cwnd-enforcement
 SON'da kalabilir; **paced-arrival profili varsa kampanya-öncesi LATENCY-KRİTİK tur** (D-4/2 üç-
 ölçümle tam-haritalı, tasarım-verisi hazır). Karar-girdisi: r5-iş-yükü tipi (Abkarada).
+
+## DV-2 SONUÇ-EKİ (2026-07-14 — DV-2 KAPANDI; time-model §0.29)
+6-profil ölçüldü (p6a-düzeltmeli). Üç açık-risk sonuçlandı: count=0-deliği zarar-düşük (beyanlı-
+sınır kalır-önerisi); sürüklenme YOK-kanıtlı (clamp'li-yazım medyan-reddi ölçüldü); FNR/pend>0
+gerçekleşmedi (fallback hâlâ davranışsal-pasif — p6b-ilk-yorum düzeltildi). İKİ yeni-tasarım-
+bulgusu karara: B1 kopma-körlüğü (%74-israf; ACK-sessizlik-kapısı mekanizma-önerisi), B2
+aralıklı-RTT-kirliliği (1.02→19.6s; rtt_rej=0 guard-deliği; send-freeze → p6b 18/20).
+Sıra-önerisi: B2-dar-turu DV-3-ÖNCESİ (DV-3-ölçümünü kirletmesin); B1 DV-3-SONRASI paket.
