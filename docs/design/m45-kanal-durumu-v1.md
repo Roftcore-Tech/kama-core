@@ -64,9 +64,10 @@ genişleme-yolu (bw.rs:170-194 + ProbeUp sender.rs:920-976 + rate.rs:37) BİT-DE
   zorunluluğu-hükmü GÜÇLENEREK korunur.
 
 **Üç koruma-şartı (DESEN-2 dokunulmazlığı):** (i) aktüatör YALNIZ-DÜŞÜRÜR (btlbw'yi asla
-yükseltmez — yukarı-yol bit-aynı); (ii) yanlış-tetik maliyeti SINIRLI-ve-ölçülü: ProbeUp 13×/~1s
-geri-tırmanır (DESEN-2-kanıtı) + dedektör kendiliğinden-sınırlı (demotion-sonrası delivered≈btlbw_yeni
-→ oran≈1 → yeniden-ateşleyemez; yukarı-keşif ProbeUp'ın); (iii) **öz-kısma-muafiyeti:** gain<1
+yükseltmez — yukarı-yol bit-aynı); (ii) yanlış-tetik maliyeti SINIRLI [r2-düzeltme]:
+tırmanış-hızı 13×/~1s (DESEN-2) ama probe-GİRİŞ-gecikmesi period-kapılı ~26s-sınıfı → toplam-maliyet
+on-saniyeler; S4-önerisi (reset probe-timer'ı sıfırlar) kabul edilirse ~1-epoch'a iner + dedektör
+kendiliğinden-sınırlı (demotion-sonrası delivered≈btlbw_yeni → oran≈1 → yeniden-ateşleyemez); (iii) **öz-kısma-muafiyeti:** gain<1
 fazlarında (Drain 0.347× / DrainRtprop 0.75× / PreConverge) dedektör SUSAR — motor kendi kastığını
 daralma-sanmaz (sender kendi-fazını bilir).
 
