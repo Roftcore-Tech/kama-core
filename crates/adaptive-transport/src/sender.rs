@@ -234,6 +234,13 @@ const DRAIN_MAX_DWELL_EPOCH: u32 = 3;
 /// periyot canlı-ack_epoch (Steady, gain=1 → kirlenmez); dwell/volume GİRİŞ-DONUK epoch/btlbw
 /// (öz-referans tuzağı workflow'la bulundu: canlı-epoch probe'un kendi gain'iyle kısalır,
 /// kuyruk-srtt'siyle UZAR — pozitif geri-besleme; srtt-clock-v1 §2.1 tuzağının kardeşi).
+/// [TUR-7 β2, cift-kilit r3 §4] ARQ token-payı [CAL {4,8}]: pending>0 ∧ RecoverArq iken her
+/// K_ARQ_SHARE'inci schedule-grant'i ARQ-ÖNCE kullanır. Gerekçe (ölçülü, §0.24-r3): DATA-önce
+/// ve tek-birim-burst-cap altında ARQ-payı yapısal 0'dı (4 düşük-koşuda 120s retx=0 — BOŞ-NÖBET);
+/// cap-tabanı seçeneği doğrulamada yapısal-ölü (token 2-birime hiç birikmiyor). DATA-önce
+/// ölçülü-kararı KORUNUR (pay sınırlı, sayaç-tabanlı — saat YOK).
+const K_ARQ_SHARE: u32 = 4;
+
 const K_PROBE_PERIOD_EPOCH: u32 = 4; // [CAL {2,4,8}]
 const PROBE_MAX_DWELL_EPOCH: u32 = 4; // ×epoch_entry [onaylı placeholder]
 const PROBE_VOLUME_EPOCH: u32 = 2; // volume = btlbw_entry × 2×epoch_entry [onaylı]
@@ -319,6 +326,13 @@ pub struct Sender {
     // kaydırıp Startup'ı 24.5→37.5s'e uzatmıştı → temiz-1k 44-regresyonu; ölçüldü §0.24).
     startup_round_marker_seq: u64,
     startup_round_complete: bool,
+    // [TUR-7 β1, cift-kilit-v1 r3 + S1-onayı] base_phase ∈ {Startup(true), Steady(false)}:
+    // recovery-overlay'in pacing-gain KAYNAĞI. INV-RATE-1-tamamlama: faz yalnız KANAL-ÖLÇÜMÜ
+    // olaylarıyla değişir (plato); kayıp-ilanı faz-gain'ine DOKUNAMAZ (recovery = NE-gönderilir
+    // overlay'i, NASIL-hızlı değil). Kilit-golden: inv_rate_1_loss_declaration_preserves_phase_gain.
+    base_is_startup: bool,
+    plateau_reached: bool, // [TUR-7 β1] plato-sinyali (base'ten AYRI: taze-giriş de base=false)
+    arq_share_tick: u32,   // [TUR-7 β2] grant-sayacı (K_ARQ_SHARE payı)
     /// [TUR-A ölçüm-#1, TEK DEĞİŞKEN] Son plato-değerlendirmesinden bu yana YENİ bw örneği geldi mi.
     /// Plato round'u yalnız yeni örnekte sayılır (pace-tick başına DEĞİL) — saat-sınıfı: event-count →
     /// bw-sample. (Eski: her on_event çağrısı "round" sayılıyordu → 1ms tick'te 3 round = 3ms'de STEADY.)
@@ -395,6 +409,9 @@ impl Sender {
             startup_stable_rounds: 0,
             startup_round_marker_seq: 0,
             startup_round_complete: false,
+            base_is_startup: false,
+            plateau_reached: false,
+            arq_share_tick: 0,
             bw_sampled_since_round: false,
             diag_loss_pkt: 0,
             diag_loss_time: 0,
@@ -811,6 +828,15 @@ impl Sender {
         let emergency_active =
             level > EmergencyLevel::Arq || decision.mode == Mode::EmergencyForwardRedundancy;
 
+        // [TUR-7 β1] PLATO BASE-ÜSTÜNDE: base==Startup iken round-değerlendirmesi HER durumda
+        // (recovery-altında da) ilerler — ramp'in sonlanması kanal-ölçümüne bağlı kalır
+        // (delivered-anchor round'lar recovery'de de tamamlanır; eternal-2.885 sınırlı).
+        // Beyanlı-sınır (r3): plato recovery-altında gelirse çıkış Steady'ye (Drain o pencerede
+        // atlanır — recovery gain'i base'te tuttuğundan kuyruk S4-B-ölçüsüyle sınırlı).
+        if self.base_is_startup && self.startup_plateau() {
+            self.base_is_startup = false;
+            self.plateau_reached = true;
+        }
         self.state = if idle {
             SenderState::Idle
         } else if self.state == SenderState::PreConverge {
@@ -832,8 +858,9 @@ impl Sender {
             match self.state {
                 SenderState::Idle => SenderState::Startup,
                 SenderState::Startup => {
-                    if self.startup_plateau() {
-                        // [TUR-3b] BBR-analog: plato → DRAIN (Startup-overfill Steady'ye taşınmaz).
+                    if self.plateau_reached {
+                        // [TUR-3b/TUR-7] plato (base-üstünde değerlendirildi) → DRAIN.
+                        self.plateau_reached = false;
                         self.drain_entry_ns = Some(now_ns);
                         SenderState::Drain
                     } else {
@@ -948,6 +975,15 @@ impl Sender {
                         SenderState::Steady
                     }
                 }
+                // [TUR-7 β1] recovery-çıkışı BASE'e döner (Startup-rampı tamamlanmadıysa
+                // Startup'a — kayıp-ilanı rampı KESEMEZ; S1-onaylı INV-RATE-1-tamamlama).
+                SenderState::RecoverArq | SenderState::RecoverFwd => {
+                    if self.base_is_startup {
+                        SenderState::Startup
+                    } else {
+                        SenderState::Steady
+                    }
+                }
                 _ => SenderState::Steady,
             }
         };
@@ -963,11 +999,15 @@ impl Sender {
         }
         // [TUR-6] Startup (re-)entry: plato-sayaç/marker sıfırlama (§16.2 satırının ikinci
         // yarısı "re-entry'de sayaç sıfırla" — recovery-dönüşü bayat-round/bayat-btlbw taşımasın).
-        if prev_state != SenderState::Startup && self.state == SenderState::Startup {
+        // [TUR-7 β1] GERÇEK-giriş = state==Startup ∧ base-henüz-değil (Idle→Startup AppData-
+        // handler'da update_state-ÖNCESİ mutasyonlandığından prev-koşulu KULLANILMAZ — ampirik).
+        // Recovery-DÖNÜŞÜ re-entry SAYILMAZ (base korunuyordu) → sayaç/marker sıfırlanmaz.
+        if self.state == SenderState::Startup && !self.base_is_startup {
             self.startup_stable_rounds = 0;
             self.startup_last_btlbw = self.btlbw.btlbw();
             self.startup_round_marker_seq = self.next_seq;
             self.startup_round_complete = false;
+            self.base_is_startup = true;
         }
     }
 
@@ -1047,6 +1087,11 @@ impl Sender {
             SenderState::Drain => PacingPhase::Drain, // [TUR-3b] 1/high_gain
             SenderState::ProbeUp => PacingPhase::ProbeUp, // [TUR-3c] 1.25× — AÇIK kol (sözleşme)
             SenderState::DrainRtprop => PacingPhase::ProbeDown,
+            // [TUR-7 β1] recovery-overlay: gain BASE'ten (kayıp-ilanı faz-gain'ine dokunamaz —
+            // INV-RATE-1-tamamlama, S1-onaylı; kilit-golden aşağıda test-modülünde).
+            SenderState::RecoverArq | SenderState::RecoverFwd if self.base_is_startup => {
+                PacingPhase::Startup
+            }
             _ => PacingPhase::Steady,
         };
         let btlbw = self.btlbw.btlbw();
@@ -1071,6 +1116,15 @@ impl Sender {
     /// Hepsi tek pacer'ı (token bucket) paylaşır (§9/§13): recovery fırtınası rate'i patlatamaz.
     fn schedule_transmit(&mut self, now_ns: u64) -> Vec<TransmitDecision> {
         let mut out = Vec::new();
+        // [TUR-7 β2] ARQ token-payı: her K_ARQ_SHARE'inci grant'te retx ÖNCE dener (BOŞ-NÖBET
+        // biter — retx fiilen wire'a çıkar); diğer grant'ler DATA-önce (ölçülü-karar korunur).
+        self.arq_share_tick = self.arq_share_tick.wrapping_add(1);
+        if self.state == SenderState::RecoverArq
+            && !self.pending_lost.is_empty()
+            && self.arq_share_tick.is_multiple_of(K_ARQ_SHARE)
+        {
+            self.plan_arq_retransmits(&mut out, now_ns);
+        }
         self.drain_new_data(&mut out, now_ns);
         match self.state {
             SenderState::RecoverArq => self.plan_arq_retransmits(&mut out, now_ns),
@@ -1717,6 +1771,11 @@ mod tests {
             s.on_event(Event::AppData(unit(i)), (10 + i) * MS);
         }
         // seq1 atlanır, 2..5 ack'lenir → gap≥3 → seq1 packet-threshold Suspected + pending'e girer.
+        // [TUR-7 β2 hizalama] backlog token-tavanından BÜYÜK + ilan-tick'i %4-dışı
+        // (token'ı DATA yer; amaç: un-loss iptali, retx değil).
+        for i in 6..=23u64 {
+            s.on_event(Event::AppData(unit(100 + i)), (16 + i) * MS);
+        }
         s.on_event(ack(&[2, 3, 4, 5]), 100 * MS);
         {
             let (lpkt, _, pend) = s.diag_loss();
@@ -1858,6 +1917,83 @@ mod tests {
             s.diag_probe().3,
             1,
             "preemption 4. tür olarak muhasebeleşir"
+        );
+    }
+
+    #[test]
+    fn inv_rate_1_loss_declaration_preserves_phase_gain() {
+        // [TUR-7 β1 KİLİT-GOLDEN — tez-koruması, Abkarada karar-2] "loss bizde rate düşürmez"
+        // recovery-DAHİL: Startup-rampı sırasında kayıp-ilanı (pending>0 → RecoverArq-overlay)
+        // faz-gain'ini DEĞİŞTİRMEZ — rate 2.885×btlbw KALIR (eski-dünya: 1.0×'a düşerdi;
+        // fiili ×2.885 rate-kesimi = INV-RATE-1 kör-noktası, cift-kilit-v1 §0-ÖN/S1).
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 500 * MS); // btlbw≈2400; PreConverge→Startup (base=Startup)
+        for i in 1..=8u64 {
+            s.on_event(Event::AppData(unit(i)), (500 + i) * MS);
+        }
+        for t in [700u64, 900, 1_100] {
+            s.on_event(Event::TimerFired(Timer::Pto), t * MS); // emisyonlar (seq 1..)
+        }
+        assert!(s.base_is_startup, "kurulum: ramp sürüyor");
+        let btlbw = s.btlbw.btlbw();
+        let rate_before = s.pacer.rate();
+        assert_eq!(
+            rate_before,
+            crate::rate::Gain::STARTUP.apply(btlbw),
+            "kurulum: Startup-gain aktif"
+        );
+        // KAYIP-İLANI: seq1 atlanır, 3 üst-ack → packet-threshold → pending>0 → RecoverArq.
+        s.on_event(ack(&[2, 3, 4]), 1_200 * MS);
+        assert_eq!(
+            s.state(),
+            SenderState::RecoverArq,
+            "kayıp-ilanı → recovery-overlay"
+        );
+        let btlbw_after = s.btlbw.btlbw();
+        assert_eq!(
+            s.pacer.rate(),
+            crate::rate::Gain::STARTUP.apply(btlbw_after),
+            "KİLİT: kayıp-ilanı faz-gain'ini DEĞİŞTİRMEZ (rate = 2.885×btlbw KALIR)"
+        );
+        // Pending boşalınca çıkış BASE'e (Startup'a — Steady'ye değil; ramp ölmez).
+        s.on_event(ack(&[1]), 1_300 * MS);
+        assert_eq!(
+            s.state(),
+            SenderState::Startup,
+            "recovery-çıkışı base'e döner"
+        );
+    }
+
+    #[test]
+    fn arq_share_emits_retx_under_token_starvation() {
+        // [TUR-7 β2] BOŞ-NÖBET biter: DATA-backlog doluyken bile her K_ARQ_SHARE'inci grant
+        // retx'i öne alır → retx wire'a çıkar (eski-dünya: DATA-önce tüm token'ı yer, retx=0).
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 500 * MS);
+        for i in 1..=30u64 {
+            s.on_event(Event::AppData(unit(i)), (500 + i) * MS); // kalıcı DATA-backlog
+        }
+        for t in [700u64, 900, 1_100] {
+            s.on_event(Event::TimerFired(Timer::Pto), t * MS);
+        }
+        s.on_event(ack(&[2, 3, 4]), 1_200 * MS); // seq1 → pending (packet-threshold)
+        assert_eq!(s.state(), SenderState::RecoverArq);
+        assert!(!s.pending_lost.is_empty(), "kurulum: pending var");
+        let mut retx_seen = false;
+        let mut t = 1_220 * MS;
+        for _ in 0..40 {
+            let out = s.on_event(Event::TimerFired(Timer::Pto), t);
+            if out.iter().any(|d| d.kind == TransmitKind::Retransmit) {
+                retx_seen = true;
+                break;
+            }
+            t += 20 * MS;
+        }
+        assert!(
+            retx_seen,
+            "β2: token-darlığında bile retx wire'a çıkar (BOŞ-NÖBET biter)"
         );
     }
 
@@ -2059,6 +2195,11 @@ mod tests {
         s.on_event(ack(&[0]), 10 * MS);
         for i in 1..=5u64 {
             s.on_event(Event::AppData(unit(i)), (10 + i) * MS);
+        }
+        // [TUR-7 β2 hizalama] backlog token-tavanından BÜYÜK tutulur (DATA tüm token'ı yer →
+        // retx doğmaz; fixture'ın şişkin-btlbw'si token'ı deviriyor) + ilan-tick'i %4-dışı.
+        for i in 6..=23u64 {
+            s.on_event(Event::AppData(unit(100 + i)), (16 + i) * MS);
         }
         s.on_event(ack(&[2, 3, 4, 5]), 100 * MS); // seq1 → Suspected + tombstone
         {

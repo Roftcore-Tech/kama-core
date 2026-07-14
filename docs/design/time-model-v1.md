@@ -698,6 +698,30 @@ bağlı değil (birim-testli) → 44-regresyonunun kökü kapalı.
 planlıydı) — artık 1k'da ÖLÇÜLÜ kanıtı var (eternal-Startup + 9.6KB kuyruk + srtt 72s; teslim
 kapısı Little-frenle tutuyor ama gecikme-profili kötü). Öne-çekilme kararı Abkarada'nın.
 
+## 0.26 TUR-7 ÖLÇÜM-KAYDI (cift-kilit β1+β2) — **P5-GATE TAM-MÜHÜR KOŞULLARI SAĞLANDI**
+
+**β1-atıf kolu (caabb0a, p5×6):** {16, 40, 88, 100, 100, 100} + 1k=45 ✓ (recovery-inert tahmini ✓).
+Ramp-korunumu imzası: 31.5s-kurtuluş→100, 23s→88, 10.8s→100 — kader artık tohum-kilidi değil
+kurtuluş-zamanı×kalan-süre ({16,40} = 98.7s/73.5s geç-kurtuluş kuyruğu).
+
+**TAM-MÜHÜR (HEAD β1+β2; iki bağımsız 6'lık seri):** **{100×6} ∧ {100×6}** —
+**K-2 min=100 ≥ 80 ✓✓ · K-3 tip-7 IQR=0 ≤ 20 ✓✓ · S5-lotarya X=0 ≤ 2 PASS** (istisna gerekmedi).
+Geç-kurtuluşlar bile tam-teslim: 39.95s→100 (×2), 23s→100 (×2), 14.7s→100 — β2'nin retx/dup-
+drain'i geç-pencerede farkı kapatıyor (β1-kolunda 73.5s→40 idi). Eski-era kıyası: TUR-5-öncesi
+{11-33 açlık-tabanı}, TUR-5 {14-63 orta-bant} → TUR-7 {100×12}. **p5-determinizmi: piyango-ekseni
+(kafes, TUR-5) + tohum/yapışma-ekseni (çift-kilit, TUR-7) İKİSİ de kapalı.**
+**Smoke:** temiz-1k 45 ✓ (β-inert, ölçülü) · p4 100/100 saf-data 1.00× ✓ · 0.25k 20/20 özet-özdeş ✓.
+
+**GRİ-NOKTA (pinleme-eksikliği beyanı → Abkarada):** K-4 tx-oran "≤1.25×" koşu-mu-seri-mi
+pinlenmemişti. Ölçüm: 12-koşu ortalaması 1.114 ✓; tek-koşu-uç m2_p5_5 = **1.37** (dup=9339 —
+ep=3 emergency-liveness dup'ları; kayıp-fırtınası değil, dekompoze). Öneri: kapı = seri-ortalama
+≤1.25 ∧ koşu-uç ≤1.5 + uç-koşu dekompozisyon-zorunlu; karar Abkarada'nın.
+
+**Süreç-beyanı:** β2'nin ilk commit'i kapı-çıktısı okunmadan atılmıştı (2 test-düşüşü + 2 clippy
+sonradan görüldü) — amend'le düzeltildi; testlerin düşüş-sebebi β2'nin kontrat-doğru davranış-
+değişimiydi (retx artık gerçekten emit → Karn-kol-2/token-akış varsayımları), fixture'lar
+amaç-korunarak hizalandı (büyük-backlog + tick-kaydırma). Ders: kapı-çıktısı OKUNMADAN commit yok.
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
