@@ -804,6 +804,43 @@ send-freeze'ler → son-pencereler ıskalandı (18/20). srtt-KÖK ailesi — est
 kopma-dönüş-fizigiyle örtüşüyor — B2-kirliliği DV-3-ölçümünü de kirletebilir → önerim: B2
 estimator-hijyeni DV-3-ÖNCESİ dar-tur; B1 daha büyük tasarım — DV-3-sonrası paketle).
 
+## 0.30 DV-3 ÖLÇÜM-KAYDI (rejim-geçişi; üç-eksenin SONUNCUSU) — KESKİN-DÜŞÜŞ-FLOOD bulgusu
+
+**Profil-düzeltmesi (measurement-tool-first):** ilk-koşu (400k, 120-msg upfront) client saniyelerde
+bitti → geçiş-isabetsiz. Bol-backlog (1500-msg) + 40k-tavan (keskin-geçiş korunur) ile yeniden.
+
+### DESEN-1 [ANA-BULGU — CHANNEL: btlbw-max-filter-latency KESKİN-DÜŞÜŞ FLOOD'u] — İKİ-KEZ ölçüldü
+40k→3k keskin-düşüş (3A2 t≈36 VE 3B2 t≈90 geri-düşüş): btlbw max-filter eski-YÜKSEK-değeri
+(4119, 40k-sınıfı) W_BTLBW=max(10s,8×ack_epoch)-BOYU tutuyor → motor daralan-3k-kanalda 4119-rate
+hedefliyor → **infl 267→16821 (63×!) · srtt 1→24-25s · rate-hedef pacer'ı boğuyor.** Toparlanma
+YALNIZ Little-cwnd/srtt-freni + eventual-loss (3A2 t=120 loss=15 → btlbw 4119→311) ile — ÇOK-YAVAŞ
+(~60s+). Kuyruk-felaketi (netem-buffer taşmasa da gecikme-felaketi; loss ikincil). ETİKET: CHANNEL
+(estimator-ZEHİR-DEĞİL — srtt-şişmesi kuyruktan, kopma-straggler'dan değil; B2-meta-kökten AYRI KÖK).
+
+### DESEN-2 [OLUMLU — CHANNEL: keskin-ÇIKIŞ ProbeUp mükemmel] — fix-gerektirmez
+3k→40k keskin-çıkış (3B2 t=71-72): ProbeUp btlbw 309→3471→4110 (13×, ~1s'de!) srtt 14→0.1s.
+Motor genişleme-yönünde ÇOK-İYİ (beklenti-c ✓ birebir). Asimetri: genişleme-anında, daralma-yavaş.
+
+### DESEN-3 [kopma-dönüş — B2_ESTIMATOR_ART sınırlı + CHANNEL]
+3A2 kopma(0)→8k-dönüş: PreConverge yeniden-girMEDİ (beklenti-b ✓ kod-uyumlu, Idle→Startup);
+kopma-kaybı btlbw'yi GEÇ-düşürdü (t=120 loss=15/2 → btlbw düzeldi); srtt geç-toparladı ama
+zehir-KALICI-DEĞİL (düzeldi). Sınırlı — DV-2-p6b-felaketinin bol-backlog'da hafif-hali.
+
+### DÖRT-SINIF-ETİKET ÖZETİ: CHANNEL(DESEN-1 flood + DESEN-2 çıkış) · B2_ESTIMATOR_ART(DESEN-3
+kopma, sınırlı-düzeldi) · B1_KÖRLÜK_ART(yok — bol-backlog kör-akış-baskılı) · UNRESOLVED(yok).
+
+### M4/M5-GEREKSİNİM-LİSTESİ (sensing-katmanının çözmesi-gereken N-desen — rapor-kapanışı):
+1. **[BAŞ-KALEM] Kanal-DARALMA-tespiti + btlbw-zorla-düşürme:** DESEN-1 flood'u btlbw-max-filter
+   asimetrisinden (yükselişi-anında, düşüşü-pencere-gecikmeli). M4/M5 "kanal-daraldı" (ölçülen-
+   delivery-rate ≪ btlbw sürekli) tespitiyle btlbw'yi ZORLA-düşürmeli (BBR-ProbeRTT-benzeri /
+   kanal-değişti-reset) → flood-kesim. **Bu B2-meta-kökten AYRI 3. kök** (estimator-zehir değil,
+   filter-latency) ama AYNI sensing-katmanı-adayı (kanal-durumu-makinesi ikisini de çözer).
+2. **Kopma-tespiti (B1+B2 birleşik, önceki-kayıt):** DESEN-3 sınırlı ama DV-2-felaketiyle aynı-kök.
+3. **Genişleme (DESEN-2) KORUNMALI:** M4/M5 daralma-fix'i keskin-ÇIKIŞ-ProbeUp'ı (13×/1s) BOZMAMALI.
+
+**Hüküm: DV-3 KAPANDI. Üç-eksen (sürekli-bant DV-1 + aralıklılık DV-2 + rejim-geçişi DV-3) ÖLÇÜLDÜ.**
+M4/M5-tam-tasarımının girdi-verisi hazır: 3-desen + gereksinim-listesi. FIX YOK (teşhis-turu; talimatça).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]
