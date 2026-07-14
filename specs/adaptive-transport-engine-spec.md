@@ -62,6 +62,10 @@ SRC = BBR-türevi delivery-rate model çekirdek + FEC/ARQ füzyonu + forward-rec
     loss       := loss_pre_fec / residual_loss (sayaç)    [recovery kolunu besler; RATE'İ DÜŞÜRMEZ]
 ```
 - **INV-RATE-1 (TDD):** loss send_rate'i AZALTMAZ. SRC yalnız `queue_delay` (delay) + `inflight_cap` ile pace eder.
+  **[TUR-7 S1-onaylı EK-CÜMLE — kör-nokta kapanışı]:** FAZ-GAIN'İ de loss'tan bağımsızdır:
+  faz yalnız KANAL-ÖLÇÜMÜ olaylarıyla değişir (plato/BDP-eşiği/probe-saatleri); recovery-durumları
+  pacing-fazı DEĞİL, gönderim-seçimi OVERLAY'idir (kayıp-ilanı faz-gain'ini değiştiremez —
+  kilit-golden: `inv_rate_1_loss_declaration_preserves_phase_gain`; cift-kilit-v1 §0-ÖN/S1).
 - BBR'ın ölçüm çekirdeği ALINIR; BBR ProbeBW/ProbeRTT gain-cycling state machine ALINMAZ (stabil-path varsayar) → §8 gentle-probe.
 - BBR'da olmayan iki kol EKLENİR: (a) aynı state'ten FEC/ARQ arbitrasyonu (§8.4), (b) ack_confidence LOW'da forward-recovery (§11).
 
