@@ -52,6 +52,14 @@ pub struct RateSample {
     pub sent_ns: u64,
 }
 
+impl SentPacket {
+    /// [TUR-D1 test-only] F3-damga plumbing-doğrulaması (gönderim-anı-damgası regresyon-kalkanı).
+    #[cfg(test)]
+    pub(crate) fn gain_ge1_stamp(&self) -> bool {
+        self.gain_ge1
+    }
+}
+
 /// BBR delivery-rate sampler (engine §7.1).
 #[derive(Debug, Clone, Default)]
 pub struct DeliveryRateSampler {

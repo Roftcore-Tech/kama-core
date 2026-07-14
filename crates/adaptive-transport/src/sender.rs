@@ -1391,8 +1391,6 @@ impl Sender {
         }
     }
 
-    /// §3.1 OnPacketSent muhasebe: seq ata, inflight+RTT/BW/loss kayıt. `origin` recovery türünü ayırır
-    /// (DATA = orijinal birim → loss sayacı +1; retransmit/dup = recovery → +0, RTT'de Karn dışı).
     /// [TUR-D1, m45 §3] Stale-btlbw reconciliation — OLAY-SONU atomik-verdict (HIGH-1) +
     /// generation-izolasyonu (HIGH-2) + olay-tanımı (P6). Rol: "kesin-kanal-daralması-tespiti"
     /// DEĞİL, persistent-underdelivery karşısında konservatif btlbw-demotion. Örnek-kapıları:
@@ -1473,6 +1471,8 @@ impl Sender {
         }
     }
 
+    /// §3.1 OnPacketSent muhasebe: seq ata, inflight+RTT/BW/loss kayıt. `origin` recovery türünü ayırır
+    /// (DATA = orijinal birim → loss sayacı +1; retransmit/dup = recovery → +0, RTT'de Karn dışı).
     fn track_sent(
         &mut self,
         unit: OpaqueUnit,
@@ -1736,6 +1736,29 @@ mod tests {
             now += 2 * SEC;
         }
         now
+    }
+
+    #[test]
+    fn d1_f3_stamp_is_send_time_not_ack_time() {
+        // [MED-2 kapanışı] F3-PLUMBING: damga GÖNDERİM-anı fazından (PreConverge→false),
+        // ack-anı-fazından DEĞİL. Regresyon-kalkanı: damga ack-anına kayarsa bu test kırılır.
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(0)), 0); // Idle→PreConverge: gain<1 → damga false
+        let p0 = s.inflight.get(&0).unwrap().bw_sample;
+        assert!(!p0.gain_ge1_stamp(), "PreConverge-gönderimi gain<1 damgalı");
+        s.on_event(Event::AppData(unit(1)), MS);
+        s.on_event(ack(&[0]), 50 * MS); // → Startup (faz-sınırı geçildi)
+        assert_eq!(s.state(), SenderState::Startup);
+        s.on_event(Event::AppData(unit(2)), 60 * MS); // Startup-gönderimi: gain≥1
+        let p2 = s
+            .inflight
+            .values()
+            .find(|p| p.unit.id == 2)
+            .unwrap()
+            .bw_sample;
+        assert!(p2.gain_ge1_stamp(), "Startup-gönderimi gain≥1 damgalı");
+        // seq1 (PreConverge-damgalı) Startup'ta ack'lenir → damga GÖNDERİM-anını korur:
+        // örnek INELIGIBLE-sınıf (mekanizma-testleri bunu shrink_apply_event'te doğrular).
     }
 
     #[test]
