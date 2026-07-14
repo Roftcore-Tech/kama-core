@@ -1,4 +1,4 @@
-# b1-kopma-korlugu-v1 — Kopma-Körlüğü: ACK-Sessizlik-Kapısı + Dönüş-Kanıtı-Patlaması [TASLAK r1 — ONAY BEKLİYOR]
+# b1-kopma-korlugu-v1 — Kopma-Körlüğü: ACK-Sessizlik-Kapısı + Dönüş-Kanıtı-Patlaması [r2 — DUR-GERİ-BİLDİRİMİ: B1 da meta-kök-ailesinde; sıra-gerekçesi kısmen-çürüdü; karar Abkarada]
 
 > **Statü:** D0-TASARIM-NOTU (B1; B2-DUR sonrası öne-alındı — Abkarada sıra-kararı). ONAYDAN SONRA kod.
 > **Kapsam-sınırı:** sender-taraf pacing/dup-yolu (`sender.rs` schedule_transmit + plan_forward_
@@ -7,6 +7,57 @@
 > boşa-gönderim-israfını düşürür); B2/M4/M5 = **estimator-discrimination** (örneği ayırt-eder).
 > B1 B2-meta-kökünü ÇÖZMEZ; kirlilik-doğumunu ve %74-israfı AZALTIR. Zemin: DV-2 p6b/c90 teşhisi
 > (time-model §0.29) + kod-okuması.
+
+## ★ r1→r2 DUR-GERİ-BİLDİRİMİ (doğrulama wf_c7e19441 — 3 HIGH; ikisi SIRA-KARARINI vurdu)
+
+**ÜST-BULGU: DV-2'nin İKİ bulgusu (B1 kopma-körlüğü + B2 RTT-kirliliği) TEK META-KÖKE indirgeniyor.**
+B1'in değerli-çekirdeği (kör-akışı-kes) "ne-zaman-kopma?" tespitini gerektirir → bu tam da B2'nin
+yerel-ayırt-edilemezliği (kopma-vs-yavaş, TEK-gözlem). B1 forward-tarafta (ne-zaman-göndermeyi-dur),
+B2 estimator-tarafta (örneği-nasıl-yorumla) — AMA ikisinin de doğru-cevabı M4/M5 (kanal-durumu-sensing).
+B1 de YEREL-EŞİK-AİLESİNDE.
+
+### HIGH-1 [SIRA-GEREKÇESİNİ ÇÜRÜTTÜ]: B1 B2-kirli-örnek-DOĞUMUNU azaltmaz (dup ≠ srtt-kaynağı)
+Abkarada (c)-sıra-kararının bir dayanağı ["B1 kör-kopyaları-kesince straggler-ack-doğumu ↓ → B2
+hafifler"] MEKANİK-YANLIŞ: srtt-örneği YALNIZ origin==Data'dan gelir (sender.rs:526,542); dup'lar
+origin=Duplicate → ASLA srtt-örneği olamaz (B2'nin kendi bit-exact-zinciriyle tutarlı: zehir =
+original-DATA-straggler, retx=0). B1 yalnız dup-yolunu keser; original-straggler-zehir (~20 birim
+p6b) B1'in kapsamı-DIŞI. **Net B2-doğum-azalması ≈ 0.** Sıra-dayanağı [%74-WIRE-israf] DURUYOR;
+[B2-hafifletme] dayanağı ÖLDÜ. → B1-önce artık YALNIZ wire-israf + gerçek-dünya-değeriyle savunulur.
+
+### MED-b [KRİTİK — B1 YENİ P5-GATE-MÜHRÜNÜ TEHDİT EDER]: parasitic-recovery riski
+TARİH (time-model §0.29 / dv-plan §0.7): kör-dup-storm'u yok-etmek p5'i 100→24'e DÜŞÜRMÜŞTÜ
+("parasitik-recovery"). Kör-forward-akışın İKİNCİL-rolü: sessizlikte forward-path'i emit-eder-tutar
+→ receiver SACK-üretmeye-devam → %80-reverse-loss'ta her-hayatta-kalan-SACK ARQ'yu açar. B1
+forward-akışı nabza-indirirse bu SACK-fırsat-üretimi düşer → **p5-teslim RİSKİ (mühür-bozabilir).**
+1a pulse-down SELEKTİF-DEĞİL (hangi-kopyanın-teslim-edeceğini bilemez = discrimination=B2-işi) →
+teslim-eden-kopyaları da keser. Benim "p5-nötr, ProbeUp/ramp-taşır" iddiam YANLIŞ-ATIF: ölçüm
+(tur5) p5-teslimi ARQ-retransmit'ten (RecoverArq) geliyor, ramp-değil.
+
+### HIGH-2: 1b "yalnız-teslim-edilmemişlere-patlama" kopma-dönüşünde GÜVENİLMEZ
+SACK MAX_ACK_RANGES=16 + en-yüksek-seq-biased (ack.rs:83,159); kopma-dönüşü rx-set çok-parçalı
+(98-seq) → >16-range → ilk-SACK yalnız top-16 → alttaki TESLİM-EDİLMİŞ birimler unacked-sanılır →
+1b onları TEKRAR gönderir. Kendini-besler (dup-fan-out seq-şişmesi). "Yanlış-tetik zararsız" YANLIŞ.
+→ 1b-ÇIKAR-önerisi (SACK-truncation + karmaşıklık; wire-israf 1a-tek-başına da azalır).
+
+### HIGH-3: eşik-referansı (B inflight-yaş) srtt-BAĞIMSIZ-DEĞİL (temiz-referans YOK)
+Ölçülen-nicelik srtt-free ama GATE-eşiği için: mutlak=ZM-yasak · srtt-katı=B2-akraba ·
+deadline=engine'de-YOK (InflightPacket'te field yok, §16.2) · rtprop=kirletilebilir · EAI=srtt-bağlı.
+Ve meta-kök doğrudan inflight-yaşa uygulanır (gerçek-20s-kanal oldest-unacked-age=20-40s ≈ kopma).
+"(B) yapısal-uzak" iddiam KENDİ-kör-nokta-(i)-beyanımla ÇELİŞİYOR. (B) (A)'dan yalnız HASAR-profilinde
+farklı (dup-oran vs estimator-zehir), meta-kök-akrabalığında DEĞİL.
+
+### KARAR-UZAYI (Abkarada — B1 de dar-turla-tam-çözülmez):
+- **(a) DAR-WIRE-HAFİFLETME + p5-mühür-nöbeti:** yalnız 1a-dup-oran-azaltma (INV-RATE-1-güvenli,
+  dup-scope; LOW-c teyit), 1b-ÇIKAR, hedef-iddiasız (dal-B kabul); **P5-GATE regresyon-kapısı
+  ZORUNLU** (p5×6 {100×6} korunmalı — bozulursa B1-DUR). Kör-akışı-TAM-çözmez (kopma-tespiti M4/M5);
+  yalnız en-kaba-israfı kırpar. Değer: kısmi-wire, düşük-risk-EĞER-p5-korunursa.
+- **(b) B2-İLE-BİRLEŞTİR (M4/M5):** B1+B2 aynı-meta-kök → tek kanal-durumu-sensing-turunda
+  (DV-3-sonrası) birlikte çözülür. En-temiz-mimari; ikisi de kampanya-öncesi-borç.
+- **(c) ERTELE:** DV-3'ü mevcut-motorla (B1+B2 ikisi-de-artefakt-etiketli); M4/M5-sonra.
+
+**Önerim: (b)+(c) birleşik** — B1'i de M4/M5-ailesine bağla (dar-turla-tam-çözülmez + p5-mühür-riski
+çok-yüksek); DV-3'ü ertele-etme, iki-artefakt-etiketli-koş; latency-smoke B1'den-BAĞIMSIZ koşulabilir
+(upfront, cwnd-kararı). Ama sıra-gerekçesi-çürümesi + p5-mühür-riski senin kararın.
 
 ## 0. HÜKÜM — kopma-körlüğü mekanizması (DV-2 p6b, ölçülü)
 
