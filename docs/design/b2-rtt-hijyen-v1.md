@@ -17,8 +17,11 @@
 **r4 de kırıldı — ve bu sefer kırılma tek-mekanizma değil META-KÖK:** dört tur (r1 eşik-kapı,
 r2 n-koruma, r3 provizyonel, r4 EAI-breach+FLOW-only) HEPSİ AYNI yapısal-sebepten öldü:
 
-> **META-KÖK:** Aralıklı kanalda TEK RTT-örneğinden "kopma-bekleyişi" ile "meşru-uzun-RTT"
-> YEREL-OLARAK AYIRT-EDİLEMEZ. Her yerel-eşik korunan-değişkenden türer → zehirlendiğinde
+> **META-KÖK [Abkarada ifade-daraltması — ZORUNLU]:** Aralıklı kanalda, **MEVCUT yerel-gözlemlerle
+> ve TEK RTT-örneğinden** "kopma-bekleyişi" ile "meşru-uzun-RTT" AYIRT-EDİLEMEZ. (Evrensel-DEĞİL:
+> ACK-dizisi + gönderim-geçmişi + dış-throughput + kanal-durumu-bağlamı eklenince ARTIK AYNI
+> GÖZLEM-UZAYINDA DEĞİLİZ → M4/M5 tam-bunu yapar; ayrım O ZAMAN MÜMKÜN. Evrensel-ifade bırakılırsa
+> M4/M5'in de çözemeyeceği YANLIŞ-sanılır.) Her yerel-eşik korunan-değişkenden türer → zehirlendiğinde
 > kendini şişirir (eşik-takipçisi ratchet). Kuantum-döngü n=64 tek-örneği amplifiye eder →
 > FLOW-sınıfı bile tavanı BYPASS eder. **Bu return-supply T_SPACING sensing-ön-şartının
 > İZOMORFU** (orada: "varış-türevli-cadence YAPILAMAZ → E-FULL ölçülen-return_bw"; kayıt §16.1).
@@ -36,11 +39,16 @@ ihlali (loss→rate-throttle). Yerel-eşik ailesi YAPISAL-ÖLÜ (kanıt tam).
 - **(M2) Kuantum n-cap düşürme (dar-tur-İÇİ; KISMİ):** n=64→1 breach'te → tek-atış-felaketi
   (19.6s) → ~3.35s'e iner AMA çok-örnek-ratchet kalır. **= r2'nin ta kendisi → talimatça
   zaten NO-GO** ("yavaşlatıyor kırmıyor"). Dar-tur-içi tam-fix YOK.
-- **(M3) srtt'yi tüketicilerden ayır / rtprop-merkezli-pacing (BBR-emsali):** srtt-clock-v1
-  yeniden-açılması — **KAPSAM-DIŞI (büyük refactor).** B2'nin gerçek-mimari-yeri olabilir.
-- **(M4) Dış-referans (E-FULL ölçülen-return_bw ile kopma-tespiti):** yerel-ayırt-edilemezliğin
-  return-supply'daki çözümüyle AYNI — **KAPSAM-DIŞI (E-FULL büyük iş, kampanya-öncesi-borç).**
-- **(M5) Kanal-durumu-makinesi (DV-3 "kanal-değişti tespiti"yle birleştir):** DV-3-tasarım-sorusu.
+- **(M3) srtt'yi tüketicilerden ayır / rtprop-merkezli-pacing (BBR-emsali) = HASAR-CONTAINMENT,
+  KÖK-ÇÖZÜM DEĞİL:** bir-kirli-örneğin dokuz-tüketiciyi-birden bozmasını engeller (sistem-dayanıklı,
+  değerli) AMA kopma-bekleyişi↔meşru-RTT gözlemsel-belirsizliğini ORTADAN KALDIRMAZ. **KAPSAM-DIŞI
+  (büyük refactor); GELECEKTE M3-SEÇİLİRSE "meta-kök-çözüldü" SANILMAMALI** (hasar-sınırlı ama
+  hâlâ-ayırt-edemeyen motor kampanyaya girerse rejim-geçişi-bulguları yine kirli-atıf taşır).
+- **(M4/M5) KÖK-SENSING ailesi (gözlem-uzayını GENİŞLETİR):** M4 = bağımsız-return_bw/dış-referans
+  (YENİ-BİLGİ ekler; return-supply'daki yerel-ayırt-edilemezlik çözümüyle AYNI); M5 = tek-örneğe
+  DEĞİL OLAY-DİZİSİNE + kanal-rejimine bakar. En-güçlü-nihai: M4-ölçümünü-kullanan-M5-durum-makinesi.
+  **KAPSAM-DIŞI (E-FULL büyük iş, kampanya-öncesi-borç).** — M3 ile RAKİP-DEĞİL, KATMAN:
+  M4/M5 doğru-sinyali-üretir, M3 yanlış-sinyal-sızsa-bile-hasarı-sınırlar (defense-in-depth).
 
 ### KAPSAM-KARARI (Abkarada'ya — B2 DAR-TURLA YAPISAL-ÇÖZÜLEMEZ):
 - **(a) ERTELE-KISMİ:** B2-tam-fix'i M3/M4'e (kampanya-öncesi) ertele; DV-3'ü mevcut-motorla koş
@@ -53,11 +61,15 @@ ihlali (loss→rate-throttle). Yerel-eşik ailesi YAPISAL-ÖLÜ (kanıt tam).
   ÜRETİMİNİ azaltır (gönderim durur → straggler-ack'i azalır) → B2-kirliliği DOLAYLI-hafifler;
   B2-tam-fix sonra M3/M4 ile.
 
-**Önerim (c): B1'i öne al** — çünkü B1 hem gerçek-dünya-değeri (kopma-körlüğü %74-israf) hem
-B2-kirliliğini dolaylı-azaltır; B2-tam-fix M3/M4-ailesine kampanya-öncesi-borç. Ama META-KÖK-kararı
-(dar-tur-yetersizliği) senin: kapsam + sıra senin masanda.
+**KARAR (Abkarada): B2 DUR/NO-IMPLEMENTATION + (c) B1-öne.** Sıra:
+`B2-DUR/kod-yok → B1-tasarım+kod → latency-smoke(upfront) → DV-3(B2-artefakt-etiketli) →
+M4+M5-tam-tasarım → (bağımsız) M3-estimator-decoupling → kampanya`. **AYRIM KORUNUR:**
+B1 = incidence-reduction (kopma-örneği DOĞUM-sıklığını düşürür) · B2/M4/M5 = estimator-
+discrimination (örneği ayırt-eder). B1 B2'yi ÇÖZMEZ, kirlilik-doğumunu AZALTIR.
 
-> **Statü:** D0-TASARIM-NOTU (B2, DV-3-öncesi dar-tur). r2 NO-GO → r3 = PATCH-B2-HIGH
+> **Statü [Abkarada-KARAR]:** ★ DUR / NO-IMPLEMENTATION · Reason: mevcut yerel-gözlem-uzayı
+> yapısal-ayrım için yetersiz · Korunan: bit-exact-kök-zincir + başarısız-aile-kanıtı + mekanizma-
+> haritası · candidate-track / FLOW-only-rtprop / r4-deneysel-kod İMPLEMENTE-EDİLMEZ. r2 NO-GO → r3 = PATCH-B2-HIGH
 > ((A)-yapısal-fren, karar-sabit) + 4 S-kararı işli. ONAYDAN SONRA kod.
 > **Kapsam-sınırı:** estimator-dar — `sender.rs` ack-yolu + `rtt.rs` (candidate-track dahil —
 > büyüme kapsam-içi, talimat) + testler + TRAJ; **başka her şey = İHLAL, DUR.**
