@@ -313,6 +313,12 @@ pub struct Sender {
     // ── STARTUP plato tespiti ──
     startup_last_btlbw: u64,
     startup_stable_rounds: u32,
+    // [TUR-6 plateau-fix, §16.2 yarım-fix kapanışı] DELIVERED-ANCHOR round (BBR-standart):
+    // round-başında işaretlenen next_seq'ten SONRA gönderilen bir birimin İLK ACK'i = 1 round.
+    // Round-tanımı SACK-arz-yoğunluğundan BAĞIMSIZ (TUR-5 zengin-arzı ack-OLAY-sayacını
+    // kaydırıp Startup'ı 24.5→37.5s'e uzatmıştı → temiz-1k 44-regresyonu; ölçüldü §0.24).
+    startup_round_marker_seq: u64,
+    startup_round_complete: bool,
     /// [TUR-A ölçüm-#1, TEK DEĞİŞKEN] Son plato-değerlendirmesinden bu yana YENİ bw örneği geldi mi.
     /// Plato round'u yalnız yeni örnekte sayılır (pace-tick başına DEĞİL) — saat-sınıfı: event-count →
     /// bw-sample. (Eski: her on_event çağrısı "round" sayılıyordu → 1ms tick'te 3 round = 3ms'de STEADY.)
@@ -387,6 +393,8 @@ impl Sender {
             diag_probe_preempt: 0,
             startup_last_btlbw: 0,
             startup_stable_rounds: 0,
+            startup_round_marker_seq: 0,
+            startup_round_complete: false,
             bw_sampled_since_round: false,
             diag_loss_pkt: 0,
             diag_loss_time: 0,
@@ -488,6 +496,10 @@ impl Sender {
         let mut largest = 0u64;
         let mut acked_units: Vec<u64> = Vec::new();
         for &seq in &ack.acked_seqs {
+            // [TUR-6] delivered-anchor round: marker-sonrası gönderilen seq'in ilk ACK'i.
+            if seq >= self.startup_round_marker_seq {
+                self.startup_round_complete = true;
+            }
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
                 acked_units.push(p.unit.id); // §3.3-B stop koşulu: teyit edilen birimin kopyaları iptal
@@ -949,6 +961,14 @@ impl Sender {
             self.last_probe_end_ns = now_ns;
             self.diag_probe_preempt += 1;
         }
+        // [TUR-6] Startup (re-)entry: plato-sayaç/marker sıfırlama (§16.2 satırının ikinci
+        // yarısı "re-entry'de sayaç sıfırla" — recovery-dönüşü bayat-round/bayat-btlbw taşımasın).
+        if prev_state != SenderState::Startup && self.state == SenderState::Startup {
+            self.startup_stable_rounds = 0;
+            self.startup_last_btlbw = self.btlbw.btlbw();
+            self.startup_round_marker_seq = self.next_seq;
+            self.startup_round_complete = false;
+        }
     }
 
     /// [TUR-3c] qd_ratio (per-mille) — giriş-histerezisi + abort için tek-kaynak.
@@ -986,9 +1006,14 @@ impl Sender {
     /// çağrısını round sayıyordu → 1ms pace-tick'te 3 "round" = STARTUP 3ms'de biter, bant hiç
     /// prob edilmez → motor kendi app-limited hızına kilitlenir (TUR-A trajektorisi, kök).
     fn startup_plateau(&mut self) -> bool {
-        if !self.bw_sampled_since_round {
-            return false; // yeni ölçüm yok → round İLERLEMEZ (pace-tick zaman-vekili DEĞİL)
+        // [TUR-6] DELIVERED-ANCHOR round-kapısı: marker-sonrası gönderim ACK'lenmeden round
+        // İLERLEMEZ (ack-OLAY-sayacı DEĞİL — ZM-1; arz-yoğunluğu-bağımsız). bw-örneği şartı
+        // korunur (ölçümsüz round anlamsız).
+        if !self.startup_round_complete || !self.bw_sampled_since_round {
+            return false;
         }
+        self.startup_round_complete = false;
+        self.startup_round_marker_seq = self.next_seq;
         self.bw_sampled_since_round = false;
         let bw = self.btlbw.btlbw();
         if bw == 0 {
@@ -1837,6 +1862,57 @@ mod tests {
     }
 
     #[test]
+    fn plateau_round_is_supply_independent() {
+        // [TUR-6] AYNI round içinde N-fazla ack-OLAYI plato-sayacını İLERLETEMEZ:
+        // round yalnız marker-sonrası gönderimin İLK ACK'iyle döner (delivered-anchor).
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 500 * MS);
+        for i in 1..=6u64 {
+            s.on_event(Event::AppData(unit(i)), (500 + i) * MS);
+        }
+        for t in [700u64, 900, 1_100, 1_300] {
+            s.on_event(Event::TimerFired(Timer::Pto), t * MS); // emisyonlar
+        }
+        s.state = SenderState::Startup;
+        s.startup_stable_rounds = 0;
+        s.startup_last_btlbw = s.btlbw.btlbw();
+        // Marker'ı İLERİYE koy (bu seq henüz gönderilMEDİ) → eldeki tüm ack'ler round-öncesi.
+        s.startup_round_marker_seq = s.next_seq + 100;
+        s.startup_round_complete = false;
+        // Zengin-arz simülasyonu: 3 AYRI ack-olayı (eski sayaç 3 round sayardı → plato).
+        s.on_event(ack(&[1]), 1_400 * MS);
+        s.on_event(ack(&[2]), 1_450 * MS);
+        s.on_event(ack(&[3]), 1_500 * MS);
+        assert_eq!(
+            s.startup_stable_rounds, 0,
+            "marker-öncesi ack'ler round İLERLETMEZ"
+        );
+        assert_eq!(s.state(), SenderState::Startup, "plato tetiklenmedi");
+    }
+
+    #[test]
+    fn startup_reentry_resets_plateau_counter() {
+        // [TUR-6, §16.2 satır-yarısı] Idle→Startup yeniden-girişi bayat sayaç/marker taşımaz.
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 500 * MS);
+        s.startup_stable_rounds = STARTUP_PLATEAU_ROUNDS; // bayat-plato durumu
+        s.startup_round_complete = true;
+        s.state = SenderState::Idle;
+        s.on_event(Event::AppData(unit(9)), 10_000 * MS); // Idle→Startup (srtt var)
+        assert_eq!(s.state(), SenderState::Startup);
+        assert_eq!(s.startup_stable_rounds, 0, "re-entry sayaç-sıfırlar");
+        assert!(!s.startup_round_complete, "re-entry round-bayrağı sıfırlar");
+        // Marker giriş-ANI next_seq'ine konur (aynı-event emisyonu SONRA seq alır → o birim
+        // marker-sonrası sayılır = BBR-doğru; kesin-eşitlik post-emisyon next_seq'le değil).
+        assert_eq!(
+            s.startup_round_marker_seq, 1,
+            "marker giriş-anı next_seq'i (0-değil)"
+        );
+    }
+
+    #[test]
     fn ack_confidence_eai_floor_prevents_false_low() {
         // [TUR-3b commit-C] 3×srtt ≪ EAI iken sessizlik < K_CONF_EAI×EAI conf'u DÜŞÜRMEZ.
         let mut s = Sender::new();
@@ -1877,6 +1953,7 @@ mod tests {
         s.startup_last_btlbw = s.btlbw.btlbw();
         s.startup_stable_rounds = STARTUP_PLATEAU_ROUNDS - 1;
         s.bw_sampled_since_round = true;
+        s.startup_round_complete = true; // [TUR-6] delivered-anchor round-kapısı
         s.state = SenderState::Startup;
         s.on_event(Event::TimerFired(Timer::Pto), 1_300 * MS);
         assert_eq!(
