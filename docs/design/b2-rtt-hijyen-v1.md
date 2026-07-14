@@ -1,140 +1,155 @@
-# b2-rtt-hijyen-v1 — Aralıklı-RTT-Kirliliği: Kabul-Kapısı + n-Koruması [TASLAK r2 — ONAY BEKLİYOR]
+# b2-rtt-hijyen-v1 — Aralıklı-RTT-Kirliliği: EAI-Breach + FLOW-Only-rtprop + Provizyonel-Yükseliş [TASLAK r4 — ONAY BEKLİYOR]
 
-> **r1→r2 (doğrulama-workflow'u wf_a7ff426a — 2 lens; hesapsız-fix 6. yakalama):** r1'in
-> "F-B/F-C kapsanır" iddiası YANLIŞTI: (1) **eşik-altı kör-bant × n-amplifikatör MERDİVENİ** —
-> eskalasyonlu kopmalar (5.5s→15s: eşik 5.63'ün altı → breach-yok → örnek girer, n=21 → srtt
-> 1.02→5.23 → eşik 15.7 → 15s de girer...) iki-adımda p6b-hasarını stale=0'la geri getirir;
-> KÖK: eşiğin srtt-kolu korunan-değişkenden türer + n-amplifikatör eşik-altı örneği reseed'e
-> çevirir → **F1'e n-KORUMASI eklendi (§1-B)**. (2) **blackout-bootstrap kill-switch**: ilk-örnek
-> zehirse (srtt-None + kopma-bekleyişi) kapı doğuştan-ölü → BEYANLI-KALINTI + vektör (§5-S4).
-> (3) S3×§4 iç-çelişkisi giderildi (tek-anlatım: muafiyet YENİ-kod; p5-analizi yeniden — §4).
-> (4) RED-yan-etkileri pinlendi (drain_rtprop_qualifying dahil); breach-çıpası tanımlandı.
+> **r3→r4 (doğrulama wf_cf75fa72 — 8. hesapsız-fix; ÜÇ kök-bulgu, ikisi r3-kararlarımı vurdu):**
+> (K1) **çok-döngülü K_SPAN^m rtprop-ratchet:** GAP-DOWN örnekleri rtprop-min'e girip rezidan
+> kalıyor + dürüst-min yaşlanınca rtprop YÜKSELİYOR → tavan (K_SPAN×rtprop) HAREKETLİ → srtt
+> 1→4→16→65s (~11.5dk); r3-assert'im vacuous-PASS. **→ rtprop-min YALNIZ FLOW'dan beslenir (§1-C):
+> GAP-UP+GAP-DOWN çıkar → rtprop saldırıyla oynatılamaz → tavan SABİT.** (K2) **breach=gap>rtprop
+> hedef-rejimi ÖLDÜRÜR** (r3-kararım): sub-kbps'te EAI≫rtprop → her ack breach → committed hiç
+> beslenmez. **→ breach r2-EAI-eşiğine GERİ (gap > K_CONF_EAI×EAI); çıplak-rtprop-r3-hatam geri-
+> alındı** (hesap: 0.25k/p5 normal-ack FLOW✓, p6b/1k kopma GAP✓). (K3) **rttvar_cand TANIMSIZ** →
+> RFC-6298-kalıbı pin (§1-D). + FLOW-EWMA-yakınsama düzeltmesi; S4-tavan-pin-(v); n=1-GAP-DOWN
+> gerekçesi. **Provizyonel-çekirdek (Abkarada A-kararı) KORUNDU** — breach-çerçevem düzeltildi +
+> rtprop-FLOW-only eklendi = YÖN-DEĞİŞİKLİĞİ (r3-breach-kararı geri), onaya sunulur.
 
-> **Statü:** D0-TASARIM-NOTU (B2, DV-3-öncesi dar-tur — Abkarada karar-2/3). ONAYDAN SONRA kod.
-> **Kapsam-sınırı:** estimator-dar — `sender.rs` ack-yolu (rtt.observe-öncesi kapı) + `rtt.rs`
-> (dokunuş gerekirse minimal) + testler + TRAJ-sayacı; **başka her şey = İHLAL, DUR.**
-> Zemin: 3-soru teşhis-workflow'u (wf_8b56fc88; bit-exact zincir) + DV-2 p6b trajektorisi.
+> **Statü:** D0-TASARIM-NOTU (B2, DV-3-öncesi dar-tur). r2 NO-GO → r3 = PATCH-B2-HIGH
+> ((A)-yapısal-fren, karar-sabit) + 4 S-kararı işli. ONAYDAN SONRA kod.
+> **Kapsam-sınırı:** estimator-dar — `sender.rs` ack-yolu + `rtt.rs` (candidate-track dahil —
+> büyüme kapsam-içi, talimat) + testler + TRAJ; **başka her şey = İHLAL, DUR.**
+>
+> **r2→r3 (talimat b2-r3-talimati.md + 7. hesapsız-fix kaydı):** r2'nin n-koruması ratchet'i
+> KIRMIYOR yavaşlatıyordu — n=1-EWMA'da her kopma-örneği eşiğin-hemen-altında seçilirse
+> srtt_{i+1} ≈ 1.25·srtt_i ÜSTEL (talimat-aritmetiği; doğrulama-hesabım: 2.10s→19.6s
+> **10 adım** — "düzinelerce/pratikte-ölü" hükmüm matematiksel-savunulamazdı; 13-adımlık dizi
+> jammer-tasarlanabilir). r3-tasarımı eşik-makinesini TOPYEKÛN atar (kör-bant kavramı kökten
+> ölür) ve yükselişi provizyonel-track'e alır: **saldırı-serisi çarpanı 1.25^k → 1.00**
+> (commit-tavanı adım-sayısından bağımsız — §2-ispat). n=1 yeniden-adlandırıldı:
+> "tek-örnek amplifikasyon-sınırlayıcı" (merdiven-kırıcı DEĞİL — talimat-1).
 
-## 0. HÜKÜM — dört-halkalı bit-exact zincir (p6b 18/20'nin kökü)
+## 0. HÜKÜM — dört-halkalı bit-exact zincir (r2'den KORUNDU; talimat-onaylı)
 
-1. **Kirli-örnek doğuşu:** kopma-öncesi-gönderilmiş orijinalin (send≈1.80s) SACK-bilgisi iki
-   kopuk-fazda bloke → ilk canlı kümülatif-SACK t≈21.43'te NORMAL-inflight-yolundan raw=19.63s
-   örneği (≈18.7s'i dönüş-ablukası, ~1s'i gerçek path-RTT). Tombstone-kol-1 DEĞİL (tomb_hit=0),
-   dup-eşleme DEĞİL (taze-seq + origin-Karn-kapısı) — sayaç/kodla çürütüldü. NOT: kapı-agnostik
-   sınıf — time-loss ateşleseydi kol-1 AYNI örneği üretirdi; zehir örnek-SINIFINDA.
-2. **Guard-sessizliği (soru-a):** `apply_ack_delay` yalnız AŞAĞI-yön denetler (corrected ≥
-   rtprop → kabul; rtt_rej yalnız düzeltme-reddinde). **KIRILAN VARSAYIM:** "raw kendi monotonic-
-   saatimizde ölçüldüğü için güvenilir KANAL-üst-sınırıdır (tek şüpheli girdi peer-beyanlı
-   ack_delay)" — aralıklıda raw, kanal-RTT'sini değil send→ack KOPMA-BEKLEYİŞİNİ ölçer.
-3. **n=64 amplifikatörü:** kuantum-döngü n=Δt/T=20.15s/254.8ms=79→CAP-64 → TEK örnek srtt'yi
-   1.019→19.613s'e taşıdı (bit-exact: (7/8)^64-hesabı log'la µs-özdeş; n=32 uymaz). Kuantum-
-   varsayımı "geçen-Δt kanal-zamanıydı" blackout'ta kırılır.
-4. **rtprop tek-örnek-reseed + Karn-açlığı kalıcılığı:** 20.15s-boşluk > W=10s → temiz-min
-   prune, kirli-örnek TEK-başına min (min-filter bu anda last-value'ya DEJENERE — prune-on-observe
-   + push-sonra-buda; **keep-last HİÇ ateşlemedi** — §0.29'daki "keep-last tuttu" ifadem İSABETSİZ,
-   düzeltilmiştir). Sonrası tüm teslimler Duplicate-origin → Karn → 98.1s SIFIR-yeni-örnek →
-   kendini-düzeltemez. Öz-etkileşim kilidi: kirli-srtt → W 156.9s, DrainRtprop-girişi t=99.88
-   (gözlem 100.0 µs-uyum), min_dwell 19.6s → çıkışsız.
+1. Kirli-örnek: kopma-öncesi-orijinalin straggler-ack'i, NORMAL-inflight-yolu (raw=19.63s;
+   tombstone/dup-adayları sayaç/kodla çürütüldü; sınıf kapı-agnostik).
+2. Guard-varsayımı kırık: `apply_ack_delay` yalnız AŞAĞI-yön; "raw = güvenilir kanal-üst-sınırı"
+   varsayımı aralıklıda ölür (raw = kopma-bekleyişi).
+3. n=64 kuantum-amplifikatörü: tek örnek → tam-yakınsama (bit-exact).
+4. rtprop tek-örnek-reseed (prune-on-observe dejeneresi) + Karn-açlığı kalıcılığı.
+   Hasar: Little-516, conf-58.8s-körlük, 16.5s-freeze → 18/20.
 
-Hasar-haritası (ölçülü): Little-cap 516'ya kesildi; conf-eşiği 58.8s → RecoverFwd 96s KÖRDÜ;
-dup-aralığı 19.6s → 14-16.5s send-freeze'ler → pencere-ıskalama → 18/20; qd sahte-0; TTL 176.5s.
+## 1. r3-FIX: **ÜÇ-SINIF ÖRNEK-KAPISI + PROVİZYONEL-YÜKSELİŞ** (eşiksiz; kanal-türevli)
 
-## 1. FIX (soru-b): **F1 — tek-boğaz kabul-kapısı** (rtt.observe-öncesi; KANAL-TÜREVLİ, yeni-sabit YOK)
+**Breach-damgası (r4 — r2-EAI-eşiğine GERİ; K2-fix):** ack-boşluğu > **K_CONF_EAI×EAI** olan
+sessizliğin bitiş-anı `breach_ns` damgalanır (ölçüm last_ack_ns-güncellemesinden ÖNCE; çıpa =
+max(last_ack_ns, first_send_ns)). EAI = beklenen-ACK-cadence (mevcut sender-hesabı, kanal-türevi)
+→ hedef-rejim (sub-kbps, EAI≫rtprop) KORUNUR: normal-ack gap≈EAI < K×EAI → FLOW (0.25k/p5-açlık
+hesap-teyitli); kopma (≫EAI) → GAP (p6b/1k). **Sensing-sınırı (BEYANLI):** 0.25k'da EAI-mertebeli
+kopmalar (≤K×EAI) FLOW-kalır — return-supply T_SPACING-ön-şartıyla AYNI sınıf (yerel-veri kopma
+vs yavaş-cadence ayırt-edemez; kesin-ayrım E-FULL/DV-3); zararsız (o örnekler ~cadence-RTT).
+r3-çıplak-rtprop eşiği hedef-rejimi öldürüyordu (K2 — geri-alındı). Örnek-sınıfı = uçuş-penceresi
+breach'le örtüşüyor mu; kümülatif-SACK-sarkması bu tanımla kapalı.
 
 ```
-breach_ns: uçuş-penceresi-bazlı sessizlik-damgası — eşik-üstü ack-boşluğunun bittiği an
-  (ÖLÇÜM last_ack_ns-güncellemesinden ÖNCE alınır — sender.rs:495 tuzağı, teşhis-notu)
-eşik = max(3×srtt, K_CONF_EAI×EAI)      ← MEVCUT conf-eşiği ölçeğinin yeniden-kullanımı
-                                            (sender.rs:1394-1396; tamamı kanal-türevi; K_CONF_EAI=2 mevcut)
-RED-koşulu (İKİ-KOŞUL birlikte):
-  örneğin uçuş-penceresi [send_ns, now] eşik-üstü-sessizlikle örtüşüyor (send_ns < breach_ns)
-  ∧ raw > eşik
-→ örnek HİÇBİR filtreye beslenmez (srtt-EWMA / rttvar / rtprop-min / qd-min) VE
-  **drain_rtprop_qualifying'i SET ETMEZ** (kirli-örnek DrainRtprop çıkış-invariantını
-  sağlayamaz — r2-pin) VE diag_ack_delay/rtt_rejected muhasebesi kapı-ÖNCESİ işler (TRAJ-
-  karşılaştırılabilirlik); yalnız diag_rtt_stale + TRAJ "stale=".
-breach-çıpası (r2-pin): sessizlik-referansı = max(last_ack_ns, first_send_ns) (conf-anchor
-  kalıbı, sender.rs:1387-sınıfı); last_ack_ns yalnız yeni-acked SACK'lerde ilerler (boş-ack
-  erken-dönüşü) — salt-kümülatif akışta gap-şişmesi iki-koşulla emilir (dürüst-raw eşik-altı).
+SINIF-1  FLOW      (breach-örtüşmesi YOK):
+         tam-güven — mevcut kuantum-EWMA + rtprop-min + qd-min AYNEN (0 değişiklik).
+SINIF-2  GAP-DOWN  (breach-örtüşmeli ∧ raw ≤ srtt):
+         n=1 EWMA'ya girer (GEREKÇE: FLOW-dışı Δt kuantum-güvenilirliği kırık → tek-adım,
+         blackout-Δt'sini 64× amplifiye etmez; aşağı-hareket gerçeğe-doğru → güvenli).
+         **rtprop-min'e GİRMEZ (§1-C; K1-fix — GAP-DOWN rezidanları çok-döngülü ratchet'in
+         yakıtıydı).** qd-min girer.
+SINIF-3  GAP-UP    (breach-örtüşmeli ∧ raw > srtt):
+         COMMITTED-track'e HİÇBİR katkı YOK (srtt/rttvar/rtprop-min/qd-min/
+         drain_rtprop_qualifying — hiçbiri) → CANDIDATE-track:
+           cand = EWMA₁/₈(raw);  uyum-bandı: |raw − cand| ≤ 4×rttvar_cand
+           rttvar_cand [PİN, K3 — RFC-6298]: ilk-GAP-UP init=cand/2; uyumlu-örnek
+             rttvar_cand:=¾·rttvar_cand+¼·|raw−cand|; uyumsuz-reset init=raw/2
+             (init=0→band=0→SAHA-ölü/deterministik-test-geçer TUZAĞI, o yüzden raw/2)
+           uyumlu → cand_streak++ ; uyumsuz → cand=raw, rttvar_cand=raw/2, streak=1
+           FLOW veya GAP-DOWN örneği → streak=0 (sürekli-yüksek hipotezine karşı-kanıt)
+         COMMIT: cand_streak ≥ K_CAND [CAL {2,3}] →
+           srtt := min(cand, K_SPAN × rtprop)   ← YAPISAL-TAVAN [CAL {4,8}]
+           rttvar := cand/2-sınıfı reseed; streak=0; diag_cand_commit++
+         her GAP-UP: diag_rtt_stale++ (TRAJ "stale="), commit'ler ayrı-sayaç.
 ```
-- **Ayırt-edilebilirlik (sürekli-20s-RTT vs kopma-bekleyişi):** sürekli-uzun-RTT kanalda ack'ler
-  pipeline'la ~EAI-ritminde akar → boşluk ≤ eşik → örnekler girer, dürüstlük bozulmaz; ilk-temas
-  bootstrap'ı ilk-örnek-kuralıyla muaf. **Rejim-yükseliş deadlock'u YOK:** klasik "raw>k×srtt"
-  tek-koşul kilidi iki-koşulla kırılır — yükselişte ilk örnek(ler) reddedilir ama akış oturunca
-  sessizlik-koşulu düşer → sonraki örnekler girer, EWMA tırmanır (kalıntı: birkaç-örneklik lag,
-  yönlü-güvenli — kanıt-şartı+cadence-taban false-loss'u frenler).
-- **Kümülatif-SACK-sarkması tuzağı kapalı:** sessizlik per-ACK değil uçuş-penceresi-bazlı
-  (eski-seq'in ack'i sessizlik-sonrası İKİNCİ SACK'e sarkarsa per-ACK-sessizlik≈0 olur ve zehir
-  kaçardı — breach-damgası bunu keser).
-- **§1-B — n-KORUMASI (r2; merdiven-kırıcı):** kuantum-döngü varsayımı "örnekler-arası Δt
-  kanal-aktif zamandı" — kesintide kırılır ve eşik-ALTI kör-banttaki örneği fiilen reseed'e
-  çevirir (r1-HIGH). KURAL (kanal-türevli, mevcut-sabitlerle, yeni-sabit YOK):
-  `örnekler-arası gap > rtprop  →  n = 1` (Δt kanal-kanıtı değil → tek-EWMA-adımı).
-  Merdiven-aritmetiği: 5.5s-kopma artık srtt'yi 1.02→1.58s yapar (eşik 4.7→6.3s) — adım-başı
-  ×1.1-1.3; p6b-hasarına ulaşmak düzinelerce ardışık-eskalasyon ister (pratikte ölü). Sürekli-
-  kanalda etkisiz (örnek-arası ≈ EAI ≤ rtprop-sınıfı decade'lerde n zaten küçük; 0.25k'da
-  örnek-arası ≈ rtprop sınırında — davranış-sınıfı smoke'ta izlenir). qd_min de aynı kabul-
-  kapısının arkasında (tek-boğaz) → r1-HIGH'ın qd-bonus-hasarı da kapanır.
-- rtprop tek-örnek-reseed'e ek-koruma GEREKMEZ (kapı+n-koruması birlikte: eşik-üstü kesilir,
-  eşik-altı n=1'le sınırlı); keep-last dokunulmaz.
+Sabit-hijyeni: K_CAND, K_SPAN **boyutsuz kanal-türevli çarpanlar** [CAL, golden'a girmez]
+(K_EPISODE-emsali izinli-sınıf); mutlak-zaman sabiti SIFIR; uyum-bandı mevcut rttvar-mekaniği.
 
-## 2. RED-edilen alternatifler (soru-b devamı; sayısal)
+## 2. RATCHET-KIRILMA ARİTMETİK-İSPATI (talimat-zorunlu-1; her CAL-kolunda)
 
-- **F2 (yalnız rtprop-koruması): RED —** 8/9 tüketici kirli kalır (conf 58.8s-körlüğü, freeze'ler
-  sürer) VE ters-etki: dürüst-rtprop + kirli-srtt → Little 4800/19.61=**245 B/s < btlbw 258**
-  (kirli-BDP'nin bugünkü kısmi-telafisi bozulur — mevcuttan KÖTÜ).
-- **F3 (srtt-korunur, rtprop-kirli): RED —** qd≡0 kalıcı-körlük, Little-tavanı silinir,
-  T=rtprop/K_CONV=4.9s → kuantum-döngü ölür (ZM-1 nüksü); srtt-clock-v1 tablo-6 RED-gerekçesinin
-  aynısı.
+**ÖN-KOŞUL (K3-beyan):** önerme rtprop0-DÜRÜST varsayar (zehirli-bootstrap = S4-(v)).
+**Yapısal önerme:** `srtt_committed ≤ max(flow-dürüst, K_SPAN × rtprop)`; **rtprop GAP-örnekleriyle
+(UP+DOWN) yükselTİLEMEZ** (§1-C: GAP hiç girmez; yalnız FLOW → FLOW-yaşlanması meşru-yükseliş,
+saldırı-değil) → tavan SABİT, çok-döngülü K_SPAN^m ratchet YAPISAL-ölü.
+∴ Saldırı-serisi (her adım tek doğrulanmamış-GAP-örneği, değer serbest-seçimli):
+- committed-EWMA'ya katkı: **0** (SINIF-3 hiç değmiyor) → adım-çarpanı 1.00 (r2: 1.25).
+- candidate-commit yolu: K_CAND ardışık-uyumlu örnek gerekir VE commit-değeri ≤ K_SPAN×rtprop —
+  rtprop saldırıyla oynatılamadığından tavan SABİT: **k-adımlı seri için srtt ≤ K_SPAN×rtprop₀,
+  k'dan BAĞIMSIZ** → "sınırsız-yukarı-taşıma" YAPISAL-imkânsız (talimat-invariantı).
 
-## 3. Dokuz-tüketici etkileşimi (soru-c): **F1'de değişen formül 0/9**
+| CAL-kolu | tavan (rtprop=1.019s, p6b) | kalıntı-hasar-sınırı (conf-eşiği 3×tavan) | agreement-saldırı maliyeti |
+|---|---|---|---|
+| K_SPAN=4 | srtt ≤ 4.08s | ≤ 12.2s (p6b-kirli 58.8s'e karşı) | — |
+| K_SPAN=8 | srtt ≤ 8.15s | ≤ 24.5s | — |
+| K_CAND=2 | — | — | kopma-başına-1-örnekle commit için 2 ARDIŞIK uyumlu (±4·rttvar_cand) kopma-değeri; araya tek flow/gap-down girse sıfırlanır |
+| K_CAND=3 | — | — | 3 ardışık-uyumlu (daha pahalı; commit-gecikmesi ↑) |
 
-Tek-boğaz (rtt.observe = EWMA+rtprop-min+qd-min'in tek besleme-noktası) sayesinde dokuz tüketici
-(pacing/Little · loss-eşiği · conf-eşiği · EAI/epoch→W'ler · W_RTPROP · tombstone-TTL · jitter ·
-dup/tail-cadence · qd) + ProbeUp-periyot/DrainRtprop/plato-round FORMÜL-DEĞİŞMEDEN dürüst-saatte
-kalır. Kabul-edilen kalıntılar (beyanlı): (i) meşru rejim-yükselişinde birkaç-örneklik lag;
-(ii) pencere-İÇİ örnek-arzı sıfırlığı (p6b'de tüm pencere-teslimleri dup → Karn) bu fix'in görevi
-DEĞİL — o, B1/kopma-körlüğü paketinin kapsamı (harita-notu); fix zehri keser, açlığı çözmez.
+r2-karşı-doğrulaması: eski-tasarımda aynı seri 2.10→19.6s'i **10 adımda** alıyordu (1.25^k);
+r3'te aynı seri srtt'yi K_SPAN×1.019'da tavanlar — **üstel-büyüme yapısal-imkânsız.**
 
-## 4. Ölçüm-planı + beklenti-şablonu (kod-GO sonrası, ölçümden önce yazılacak)
+## 3. ADAPTİF-MERDİVEN KARŞI-VEKTÖRÜ (talimat-zorunlu-2; ≥20-adım; assert-invariant)
 
-- **Birim-vektörler:** p6b-zinciri (kirli-örnek kesilir; srtt/rtprop 1.02s kalır); rejim-yükseliş
-  deadlock-yok (1→20s: lag-sonrası EWMA tırmanır); kümülatif-SACK-sarkması breach-testi;
-  sürekli-uzun-RTT muafiyeti; **(r2-ek) ESKALASYONLU-KOPMA merdiven-vektörü** (5.5s→15s dizisi:
-  n-korumasıyla srtt-tırmanışı sınırlı, p6b-hasarı OLUŞMAZ assert'i); **(r2-ek) blackout-
-  bootstrap vektörü** (S4-kalıntısı pinlenir: davranış belgelenir, KIRMIZI değil-beyanlı);
-  n-koruması sınır-vektörü (gap ≈ rtprop tam-sınırı, tamsayı-semantiği pinli).
-- **DV-2-seti yeniden (ana-sınav p6b):** İKİ-DALLI: (dal-A) srtt-dürüst → freeze'ler kalkar +
-  conf-eşiği 6.26s → kopmalarda RecoverFwd zamanında → 18/20 → ≥19/20 bandı; (dal-B) teslim
-  aynı-kalır ama sayaç/trajektori zehir-kesimini kanıtlar (davranış-iyileşmesi B1'e bağlıysa
-  dürüst-kayıt — fix yine değerli: DV-3-ölçümünü temizler, ASIL amaç bu). h4/c90/count0/p6a3
-  sınıf-aynı beklenir.
-- **Sürekli-smoke:** temiz-1k(=45) + 0.25k(özet-özdeş; n-koruması sınır-kontrolü: örnek-arası ≈
-  rtprop → davranış-sınıfı izlenir) — kapı sürekli-kanalda tetiklenmez-tahmini (0.25k: boşluk
-  8.4s < eşik ✓). **p5-analizi (r2 — tek-anlatım, S3-çelişkisi giderildi):** İLK p5-kurtuluş-
-  örneği muaf girer (srtt-None bypass — YENİ-kod, mevcut-davranış DEĞİL; r1-atfı yanlıştı) →
-  srtt=tohum-raw (2-15s sınıfı). İKİNCİ+ kurtuluş-örnekleri (SACK-abluka-bekleyişli) kapıda
-  KESİLEBİLİR → srtt tohum-değerinde DONAR. Bu, bugünkü davranıştan İYİLEŞME-yönlü (bugün o
-  örnekler srtt'yi ŞİŞİRİYOR; donma < şişme — saat-türevleri küçülür) ama yeni örnek-açlığı-
-  kanalı: dürüst-26ms'ye iniş yine imkânsız (o zaten bugün de imkânsızdı — Karn+abluka).
-  p5×2-smoke dal-yapılı: (dal-A) sınıf-aynı/iyileşme; (dal-B) beklenmedik-kayma → dekompoze.
-  PreConverge-kilidi tarif-düzeltmesi (r1-hatam): muafiyet olmasaydı srtt None-KALIR (INITIAL_RTT
-  değil) → PreConverge-çıkışı kilitlenirdi (sender.rs srtt.is_some()-şartı) — muafiyet bu yüzden
-  ZORUNLU-bileşen (tasarımsal, tesadüf değil).
-- TRAJ: `stale=` sayacı.
+Vektör (birim-test): kararlı 1.02s-kanal; 20 adım: adım-i'de `gap_i > rtprop` ∧ raw_i =
+saldırgan-seçimli-artan-seri (eski-eşik-takipçisi dizi DAHİL: raw_i = 3×srtt_anlık − 1µs;
+ve uyum-bandı-oyunlu dizi: K_CAND-blok-başına sabit-değer merdiveni L, 3L, 9L...).
+**ASSERT-INVARIANT (her adım-sonu):** `srtt_committed ≤ K_SPAN × rtprop` ∧ `rtprop == 1.019s
+(dürüst-değer; hiç oynamadı)`. PASS-hesabı: uyum-oyunlu dizi en-iyi-halde commit'i
+min(L-serisi, K_SPAN×1.019)'a taşır → 20. adımda da srtt ≤ 4.08s (K_SPAN=4-kolu) — p6b-hasar-
+sınıfı (conf-58.8s / freeze-16.5s) OLUŞAMAZ (conf ≤ 12.2s; dup-aralık ≤ 4.1s). Ek-vektörler:
+r2-seti (p6b-zinciri, sarkma-breach, deadlock-yok, sürekli-uzun-RTT-muafiyeti, blackout-bootstrap
+S4-pinli) + reseed-guard vektörü (boş-pencere + GAP → keep-last korunur).
 
-## 5. Açık sorular (onayla birlikte)
+## 4. PROVİZYONELİN KÖR-NOKTASI + KALICI-YÜKSEK-RTT AYRIMI (talimat-zorunlu-3 + KÖK-varsayım)
 
-- **S1:** Duplicate-kopyanın KENDİ send_ns'iyle RTT-örneği (teşhis F-D — taze-seq belirsizlik-siz;
-  örnekleme-açlığı kanalını açar ve p6b'de zehir-sonrası kendini-düzeltmeyi sağlar) — bu tura
-  GİRMELİ Mİ? Önerim: GİRMESİN (tek-değişken; açlık B1-kapsamı) ama B1-paketinin masasına kayıt.
-- **S2:** RED-edilen örnek salt-sayaç mı, ayrı "bekleyiş-istatistiği" mi (ileride DV-3 kanal-
-  değişti-tespitine girdi olabilir)? Önerim: bu turda salt-sayaç; istatistik DV-3-tasarım-sorusu.
-- **S3 (r2-güncel):** ilk-örnek-muafiyeti YENİ-kod olarak yazılır (srtt-None bypass) — p5-tohumu
-  yaşar; İKİNCİ+ örnek-analizi §4'te (tek-anlatım).
-- **S4 (r2 — BEYANLI-KALINTI, karar):** blackout-bootstrap kill-switch — İLK örnek zehirse
-  (kopma ilk-ack'ten önce başlarsa; p6b'de 0.2s farkla ıskalandı) muafiyet zehri tohumlar →
-  eşik 60s → kapı o oturumda ölü; rtprop ilk-dürüst-örnekle öz-onarır ama srtt Karn-açlığında
-  saplanabilir. NADİR-desen + n-koruması-yarı-ilaçsız. Önerim: KABUL+beyan (dar-tur disiplini;
-  birim-vektörle davranış pinlenir; DV-3-izleme maddesi) — alternatif (ikinci-örnek-rebase
-  mekanizması) yeni-tasarım, bu tura girmez. Karar Abkarada'nın.
+- **Meşru-yükseliş (YOĞUN-akışlı kanal, 1→20s):** pipelined ack'lerde örnekler-arası boşluk ≈
+  gönderim-aralığı ≪ RTT → breach-örtüşmesi YOK → FLOW-sınıfı → normal-EWMA tırmanır.
+  Gecikme-hesabı: 1→19s = 23 EWMA-ADIMI ama FLOW kuantum-döngüyü korur (n=Δt/T) → ~1 ack/s'te
+  n≈3-4 → **~6-8 FLOW-örneği** (r3 "23 örnek" n≡1-varsayımı, düzeltildi) — sınırlı ve
+  YÖNLÜ-GÜVENLİ (alt-tahmin döneminde false-loss'u kanıt-şartı+cadence-taban frenler; TUR-1
+  makinesi). **Sürekli-20s-RTT kanal (DV-1-emsal-muafiyet): SAĞLANIR** — yoğun-akışta sınıf
+  FLOW'dur, kapı hiç dokunmaz; bootstrap'ta ilk-örnek-bypass (S3) zaten 20s'i tohumlar.
+- **SPARSE-kalıcı-yüksek kanal (KÖK-varsayım cevabı — BEYANLI-KÖR-NOKTA):** her örnek breach-
+  örtüşmeli (ack-boşlukları > rtprop) → hepsi GAP-UP → commit-tavanı K_SPAN×rtprop_eski —
+  gerçek-20s'e TAM adaptasyon imkânsız (srtt en-çok 4-8×rtprop'u izler). Bu desen YEREL-veriyle
+  kopma-tekrarından AYIRT-EDİLEMEZ (T_SPACING-sensing-ön-şartıyla aynı sınıf; kesin-ayrım
+  E-FULL-ölçümü/DV-3-rejim-tespiti işi — S2-kararıyla bekleyiş-istatistiği oraya). Tavanlı-izleme
+  ara-durumu: sistem 20s-kanalı ≥4×rtprop-doğruluğunda izler; kalan sapmanın maliyeti false-loss
+  değil (kanıt-şartı) fazla-kopya sınıfı — sınırlı, DV-3'te ölçülür. **Tradeoff-cetveli:**
+  K_CAND↑ → saldırı-pahalı ∧ meşru-sparse-commit-gecikmesi↑; K_SPAN↑ → sparse-izleme-doğru ∧
+  saldırı-tavanı-yüksek. Beklenti-kaydına iki-uç dengesi (başlangıç: K_CAND=2, K_SPAN=4 —
+  saldırı-tavanı-dar; sparse-desen DV-3-verisiyle yeniden-kalibre).
+
+## 5. Dokuz-tüketici (r2'den; anlatım-düzeltmesi talimattan)
+
+**Formül 0/9 DEĞİŞMEZ; giriş-trajektorisi 9/9 değişir** (dürüst-saat beslemesi). Tek-boğaz
+(rtt.observe) kod-doğrulanmış; drain_rtprop_qualifying GAP-sınıflarında SET edilmez (r2-pin);
+diag-muhasebe kapı-öncesi. F2/F3-RED gerekçeleri aynen (245<258 karşı-örneği dahil).
+
+## 6. S-KARARLARI (talimat-işli)
+
+- **S1 GİRMESİN** ✓ — Duplicate-kendi-send_ns örneği B1-masasına açık-madde.
+- **S2 SALT-SAYAÇ** ✓ — `stale=` + `cand=`/`commit=` TRAJ-alanları; bekleyiş-dağılımı DV-3'e.
+- **S3 ONAY** ✓ — srtt-None ilk-örnek-bypass YENİ-kod olarak yazılır (r1-atıf-hatası kabul;
+  PreConverge-çıkışı için zorunlu-bileşen).
+- **S4 KABUL+BEYAN — "bilinen bootstrap-failure-mode"** (nadir-desen ifadesi düzeltildi).
+  Birim-test KESİN-pinler: (i) ilk-örnek zehirlenebilir; (ii) kapı o-oturumda-etkisiz-olabilir;
+  (iii) B2 bu-vakayı-çözme-iddiasında-DEĞİL; (iv) DV-3'te izlenecek; **(v) [K3] TAVAN-ölümü:**
+  zehirli-bootstrap rtprop0'ı tohumlar → commit-tavanı K_SPAN×zehir (80-160s) → kapı VE tavan
+  birlikte ölür; §2 rtprop0-DÜRÜST-varsayar (BEYANLI-ön-koşul); kurtuluş: ilk-FLOW-örneği
+  rtprop-min'i indirir (sparse'ta gecikir). DV-3 her ikisini kapsar.
+
+## 7. Ölçüm-planı (kod-GO sonrası; beklenti-kaydı ölçümden-önce)
+
+Birim: §3-vektör-seti (merdiven-assert dahil). DV-2-seti yeniden (ana-sınav p6b: dal-A srtt-dürüst
+→ freeze'ler kalkar → ≥19/20; dal-B teslim-aynı-ama-zehir-kesildi → dürüst-kayıt, asıl-amaç
+DV-3-temizliği). Sürekli-smoke: p5×2 (İKİNCİ+ kurtuluş-örnekleri artık GAP-UP-karantinalı —
+srtt tohum-değerinde donar; bugünkü-şişmeden İYİLEŞME-yönlü; dal-yapılı izleme) + temiz-1k(=45)
++ 0.25k (n=1-sınır + sınıf-dağılımı izlenir). TRAJ: stale=/cand=/commit=.
