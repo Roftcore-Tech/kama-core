@@ -764,6 +764,46 @@ bilinen-borç yüzeyleri).
 dv-plan-v2 sırası: DV-2 (aralıklılık) hazır — açık-riskleriyle (count=0-deliği; kopma-yoğun
 sürüklenme; FNR/W_loss pend>0 çakışması).
 
+## 0.29 DV-2 ÖLÇÜM-KAYDI (aralıklı-rejim) — ÜÇ AÇIK-RİSK SONUÇLANDI; İKİ YENİ-TASARIM-BULGUSU
+
+| profil | sonuç | özet |
+|---|---|---|
+| p6a@100k | (kesinti-isabetsiz — profil-hatası beyanlı: koşu 2.3s'te bitti) → p6a3-düzeltmesi | — |
+| p6a3 (2s-kesinti/8s-temiz @3k) | 20/20; oran 1.30; fnr=5.5k | kısa-kesinti TEMİZ |
+| h4-pulse (0.5s/2s ×~24) | 100/100; oran 1.07; lppm=0 | jammer-darbe TEMİZ |
+| p6b (8s-KOPUK/2s-pencere) | 18/20; oran 4.90 | ANA-BULGU-PROFİLİ (aşağıda) |
+| c90 (%90-kopuk) | 10/10; oran 4.00 | sürüklenme-YOK kanıtı |
+| count0 (ilk-paket→10s-kopma) | 20/20; ilk 15.72s | beyanlı-sınır µs-teyit |
+
+**AÇIK-RİSK KAPANIŞLARI:**
+1. **count=0-deliği: ÖLÇÜLDÜ, ZARAR-DÜŞÜK.** Zincir dört-halkasıyla teyit (kota kopma-içinde
+   T_SPACING-takvimli yandı — ack_delay-özdeşliği 14.702=3×2.104+8.39 µs-hassas; dönüş kafes-
+   slotuna oturdu; ilk-teslim = kopma-sonu + 4.67s-kafes-artığı + 0.25s-transit; ep=1; varış-2
+   ham-yazımı baseline'ı 15.8s'e şişirdi → ~14s dedektör-körlüğü, zararsız-geçti). Teslim 20/20,
+   oran 1.05. → ÖNERİ: beyanlı-sınır KALIR (ayrı-fix eşiği altında); kafes-artığı E-FULL-borcuyla
+   çözülür-sınıf.
+2. **Kopma-yoğun sürüklenme: YOK — r3-tasarımı saha-kanıtlı.** c90'da tek clamp'li kopma-yazımı
+   medyan-tarafından reddedildi (ring [3.02,0.76,0.76]→medyan 0.76); ep-kaçakları (2/4 ve p6b
+   4/12) dedektör-suçu DEĞİL: o pencerelerde SIFIR-ileri-varış (gönderici-sessizliği). Risk KAPANDI.
+3. **FNR/pend>0-çakışması: GERÇEKLEŞMEDİ + monitör-anı yorumumun DÜZELTİLMESİ:** p6b fnr=94k
+   "fallback işi taşıdı" İLK-yorumum YANLIŞTI — pend=0 (240/240), RecoverArq=0, retx=0: kayıplar
+   tombstone'a gidiyor, pend beslenmiyor → fallback yine SAF-SAYAÇ (davranışsal-pasif; arq=0
+   olsaydı sonuç aynıydı). Sigorta-değeri duruyor; canlılık hâlâ görülmedi.
+
+**YENİ-TASARIM-BULGULARI (dv-plan öngörüsü "aralıklı yeni-tasarım açar" — fix YOK, karara):**
+**B1 — KOPMA-KÖRLÜĞÜ:** dup/copy-akışı bağlantısızlıkta kör: p6b'de 98 gönderimin %74'ü KOPUK-
+HAVAYA (pacer blok boyunca hız değiştirmiyor; dup %79.6-pay); c90 oran-4.00 aynı-sınıf; ep-kaçağı
+pencereleri = gönderici-kör-ritmi (pencerelere paket denk gelmiyor). Mekanizma-önerisi (tek-cümle,
+teşhisten): ACK-sessizlik kapısı — sessizlik k·srtt'yi aşınca kopya-akışı düşük-nabza iner,
+birikmiş arz ilk dönüş-kanıtında yalnız teslim-edilmemişlere patlar.
+**B2 — RTT-KİRLİLİĞİ (aralıklı-özgü, p6b eksik-2'nin GERÇEK nedeni):** srtt/rtprop 1.02→19.6s
+zehirlenmesi (dup-teslim eşleme-sınıfı + rtprop-min penceresi devrinde kirli-örneğe yenilenme;
+rtt_rej=0 — mevcut min-rtt-guard bu sınıfı YAKALAMIYOR) → RTT-ölçekli her şey şişti → 16.5s
+send-freeze'ler → son-pencereler ıskalandı (18/20). srtt-KÖK ailesi — estimator-turu adayı.
+**Sıra-sorusu Abkarada'ya:** B1/B2 fix-turları DV-3'ten önce mi sonra mı (DV-3 rejim-geçişi
+kopma-dönüş-fizigiyle örtüşüyor — B2-kirliliği DV-3-ölçümünü de kirletebilir → önerim: B2
+estimator-hijyeni DV-3-ÖNCESİ dar-tur; B1 daha büyük tasarım — DV-3-sonrası paketle).
+
 ## 1. KARARLAR
 
 ### D-1 — Loss-modeli yeniden-tanımı (K-1 kökü; İLK) [düzeltme #1, #2, #3 işlendi]

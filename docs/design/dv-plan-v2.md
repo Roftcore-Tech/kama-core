@@ -109,3 +109,29 @@ Test-tasarımı kuralı: her ölçüm-sorusu profilde GERÇEKTEN VAR OLAN bir ge
 4. **Kampanya-bağı:** DV-2/DV-3 sonuçları r5'in h-profillerini (h1-h6) besler — rejim-geçişi
    r5'te SABİT-profil, gerçek-dünya dinamik; DV-3 bulgusu r5'e "dinamik-geçiş profili"
    eklenmesini gerektirebilir. Kampanya-öncesi kapanmalı.
+
+## DV-1 SONUÇ-EKİ (2026-07-14 — DV-1 KAPANDI; iki AÇIK-RİSK kampanyaya taşınıyor)
+
+DV-1: 10/10 nokta KIRMIZI'sız (time-model §0.28). [CAL]-decade-tutarlılığı ölçümle kapandı
+(yeni-sabit çıkmadı). İKİ dürüstlük-notu "geçti" DEĞİL "kampanyaya-taşınıyor":
+
+**(a) qd→min üst-uç regresyonu ÖLÇÜLMEDİ-kanıtlanmadı:** hafif-yükte tetiklenmedi ≠ ağır-yükte
+tetiklenmez. → **h6 (10Mbit ağır-yük) kampanya-profilinde qd→min-ısırığı ÖZEL-İZLENECEK**;
+r5 §L (kripto-CPU) yanına "üst-uç estimator-regresyon izleme" satırı (Abkarada r5-dosyasına işler).
+
+**(b) eternal-Startup latency-borcu — LATENCY-ETKİ-ANALİZİ (Abkarada-sorusuna sayısal cevap):**
+DV-1 gecikme-medyanları wire-doyum alt-sınırının 0.99-1.06×'ı (1k-900k; alt-uç 1.18-1.39 =
+cold-start). **Upfront-backlog iş-yükünde (mevcut bench) "teslim-eder-ama-geç" GÖRÜNMEZ** —
+gecikme wire-bound, motor-kuyruğu uçtan-uca süreye eklenmiyor. **CEZA SEYREK-VARIŞLI iş-yükünde:**
+paced/interactive mesaj motorun şişkin kuyruğu (srtt-sınıfı: 1k'da ~70s, 0.05k'da 416s) arkasına
+düşer → tek-mesaj-RMST felaketi. HÜKÜM iki-dallı: r5-profilleri upfront-backlog'sa cwnd-enforcement
+SON'da kalabilir; **paced-arrival profili varsa kampanya-öncesi LATENCY-KRİTİK tur** (D-4/2 üç-
+ölçümle tam-haritalı, tasarım-verisi hazır). Karar-girdisi: r5-iş-yükü tipi (Abkarada).
+
+## DV-2 SONUÇ-EKİ (2026-07-14 — DV-2 KAPANDI; time-model §0.29)
+6-profil ölçüldü (p6a-düzeltmeli). Üç açık-risk sonuçlandı: count=0-deliği zarar-düşük (beyanlı-
+sınır kalır-önerisi); sürüklenme YOK-kanıtlı (clamp'li-yazım medyan-reddi ölçüldü); FNR/pend>0
+gerçekleşmedi (fallback hâlâ davranışsal-pasif — p6b-ilk-yorum düzeltildi). İKİ yeni-tasarım-
+bulgusu karara: B1 kopma-körlüğü (%74-israf; ACK-sessizlik-kapısı mekanizma-önerisi), B2
+aralıklı-RTT-kirliliği (1.02→19.6s; rtt_rej=0 guard-deliği; send-freeze → p6b 18/20).
+Sıra-önerisi: B2-dar-turu DV-3-ÖNCESİ (DV-3-ölçümünü kirletmesin); B1 DV-3-SONRASI paket.
