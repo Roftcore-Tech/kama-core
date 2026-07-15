@@ -64,3 +64,32 @@ Kod: sender.rs ack_epoch-bloğu (delivered-cadence) + bw.rs last_sample_bw (zate
 - mode-switch-silme-anı: K4 — netem-A/B-sonuçları-kayıt-edildikten-sonra final-cleanup-commit'inde.
 - qd-ticket (K8): "secondary-safety-path-deadness" — kampanya-öncesi-kapanma-ZORUNLU; owner=Abkarada-
   sırası (TUR-S-yanı); bu-PR observability-only (netem-telemetrisi qd/soft-drain/abort-enstrümante).
+
+## (b)-HÜKMÜ + GATE-REVİZYONU + BEYAN [Abkarada Ş1-Ş4; K6-tekrar-öncesi]
+
+### (b)-hüküm: BUG-DEĞİL — geometri-çakışması (sim-izli)
+lfb dürüst-tazelenir (4767→375 t=56) ∧ W doğru-yeniden-hesaplanır (28.2s formül-birebir). Plato =
+geçiş-örnekleri(t≈40'a-dek) + W-adım-≈28s (term2-prior-tabanı×K_BW) + kopma-frozen-pencere.
+**UZUN-DARALMA-KANITI:** kopmasız 40k→3k-90s → btlbw 5191→378@90s→389@125s (kanal-375) —
+çok-adımlı-expiry TAM-yakınsar; plato yalnız "kısa-basamak+hemen-kopma" geometrisine-özgü.
+
+### Ş1 — GATE-REVİZYONU (AÇIK-KAYIT; sessiz-değiştirme-değil, fizik-düzeltmesi)
+- **ESKİ-gate:** "btlbw kanal-bandına-iner (re-flood-yok)" → 3A2'de **FAIL** (1686-platosu).
+- **FİZİK-GEREKÇESİ:** 3A2-geometrisinde ikinci-expiry-adımı kopmaya-denk-gelir; kopmada ÖRNEK-YOK
+  → retain-çalışmaz → expiry FİZİKSEL-İMKÂNSIZ → eski-gate imkânsızı-istiyordu.
+- **YENİ-gate:** "kopmasız-daralma → kanal-bandına-iner (NETEM-doğrulamalı, Ş2) ∧ kopma-kesmeli →
+  tek-adım-demotion ≥%50" (3A2-ölçülü: 4109→1686 = %59 ✓-sınıfı).
+
+### Ş3 — BEYAN (P4-maliyeti-dahil)
+Kopma-frozen-pencere sınır-vakasında btlbw 1-adım-inmiş-değerde-kalır (~1686): aşırı-sürüşü
+4.5×→1.7×'e-indirir AMA kopma-sonrası-drenajı-da-sınırlar (P4: +108-vs-legacy-+180 — legacy
+KAZARA-hızlıydı, 5.3×-aşırı-sürüşle). Kökü RecoverArq-bant-keşfi-yok (ÜÇ-kanıtlı TUR-S-ticket:
+p5-probe=0 + sim-45s + netem-P4). **Tam-yakınsama kopma-TESPİTİYLE-tamamlanır**; kopma-frozen-
+pencere-politikası TUR-S-girdi-listesinde.
+
+### Ş4 — TUR-D1-KADER-ANALİZİ (K6-temiz-çıkarsa ARŞİV-otomatik)
+Kopma-frozen-vakasını shrink-DE-çözemez: LOW_EVIDENCE-olayı ELIGIBLE-ÖRNEK-ister; kopmada ACK/örnek-
+YOK → K_SHRINK-sayacı-ilerleyemez → shrink-de-frozen (yapısal-özdeş-kısıt). Kopma-ÖNCESİ-daralmada:
+delivered-EAI-W aynı-demotionu zaten-yapıyor (t=64-68 ≈ TUR-D1-netem-t=66-reset'i) → artık-değer-yok.
+Kopmasız-daralmada: yakınsama-kanıtlı → gereksiz. **Kanıt-zinciri:** yakınsama-kanıtlı + kalan-vaka-
+kapsam-dışı (örnek-yokluğu-her-mekanizmayı-keser) + gerçek-çözüm-TUR-S-kopma-tespiti → son-niş-kapandı.
