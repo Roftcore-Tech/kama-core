@@ -1,4 +1,36 @@
-# tur-s-sensing-v1 — Kanal-Durumu-Sensing Katmanı [r1 — ★ KISMİ-NO-GO: FAZ-1a-dedektör-çürüdü; fazlama+FAZ-0-ayakta]
+# tur-s-sensing-v1 — Kanal-Durumu-Sensing Katmanı [r2 — SAYAÇ-ÇEKİRDEK fizibilite-kanıtlı; ONAY BEKLİYOR]
+
+## ★ r2 — SAYAÇ-ÇEKİRDEK (titiz-fizibilite-SONUÇLU; wf_4855943b, 4000×koşu/senaryo, seed'li) [ONAY BEKLİYOR]
+
+### Fizibilite-hükmü (sim-ölçülü; teorileme-değil)
+- **(a) FIRTINA ÇÖZÜLÜR ✓:** Wilson-LCB-q̂ (nokta-kestirim-5×-FA-aşımı-veriyor) + koşu-kalibreli-T2-eşik
+  → FA/120s = 0.009(TABAN)/0.023(KOTA)/0.035(KARIŞIK) — üçü-de-<0.05-hedef-içi. Ritim'in-ratchet +
+  jitter-kırılganlığı TAMAMEN-gider (jitter-bağışık: FA 0.242-vs-0.243). Kaba-simimin-0.49'u ham-T1-
+  formunun-beklenen-çıktısıymış — form-değil-KALİBRASYON-eksikti.
+- **(b) TESPİT = KADANS-İŞİ (bilgi-sınırı; sayaç-aşamaz):** KOTA-2.1s-kadansta D≈50-60s'ten-güvenilir
+  (oracle D=50-%90, D=60-%99.8, gecikme-~44s); **TABAN-8.39s'de 120s-ufukta-D≤90-İMKÂNSIZ** (T*=112.6s);
+  kalıcı-kopma-~127s-gecikmeli. **Kadans-kuralı: E ≤ D_hedef/24** (D=60→E≤2.4s). D=30/40 HİÇBİR-formda-
+  güvenilir-değil → **kısa-kopmalar (p6-2s/8s-sınıfı) sender-dedektörünün-İŞİ-DEĞİL** — onlar receiver-
+  epizot-dedektörü (mevcut, return-supply-r3) + frozen-W'nin-alanında-kalır; sender-dedektörü UZUN-
+  kopma/kalıcı-kesinti-tespiti (D≥50-60s + kalıcı) hedefler. DÜRÜST-KAPSAM-BEYANI.
+
+### r2-tasarım-kararları (onaya)
+1. **FAZ-1b-TERFİ:** kümülatif-emisyon-sayacı (V3-frame, +2B) sensing-çekirdeğine — sayaç-alanı-DEĞER
+   (kayba-bağışık-q̂/Ê; LCB'nin-girdisi) ama tespit-gücü-kadansa-bağlı-beyanıyla. FAZ-1a-ritim-dedektörü-
+   ARŞİV (iki-uçlu-başarısızlık-kanıtlı).
+2. **Dedektör-formu PİN:** Wilson-LCB(z=1.645, takas-düğmesi) + T2-koşu-kalibreli-kuantil; politika-
+   sabitlerinden-tohumlama (E-üst-sınırı-bilinir; ≥1-varış-arming — silahlanma-%42-70); KARIŞIK-kadansta
+   eşik-E-üst-sınırıyla.
+3. **"Kopma-dedeksiyon-taban-kadansı" sözleşme-sorusu [S4-yeni]:** D=60-hedefi-E≤2.4s-ister → KOTA-2.1s-
+   sınırda; FLOOR-8.39s-uçta-dedektör-ancak-D≥150s. Kadans-taahhüdü return-bütçesiyle-çelişir (r4-dersi)
+   → E-FULL-ölçülen-return_bw'yle-adaptif-kadans FAZ-2+-konusu; şimdilik-kapsam-beyanı.
+4. **MED-pinleri:** clamp-kümülatif-ratchet → baseline-mutlak-üst-taban ≤c×FLOOR; FLOOR/T_SPACING=4.0=
+   K_EPISODE-bıçak-sırtı → bütçe-oranı/K-ayrıştırması-veya-kota-dönemi-dışlama (V3-kota-biti-adayı);
+   **tail-pre-empt = BAĞIMSIZ-mevcut-kod-bulgusu** (kopmada-2×stale_last_gap-duplicate-SACK bütçe-ihlali;
+   receiver.rs:268-277 — sensing-beklemez, ayrı-değerlendirme-Abkarada'ya).
+5. Sınırlılık-beyanı: Bernoulli-kayıp-varsayımı (patlamalı-kayıpta-eşikler-yeniden-türetilir; netem-PR-
+   doğrulamada-sınanır).
+
 
 ## ★ r1 KISMİ-NO-GO — FAZ-1a-survivor-ritmi NAİF-FORMU-ÇÜRÜDÜ (doğrulama wf_ac16274a; dinamik-simli)
 
