@@ -237,6 +237,19 @@ impl BtlBwFilter {
         self.last_full_bw
     }
 
+    /// [Y3-sim SALT-GÖZLEM] Aktif pencere (ns) — (b)-bug-arayışı: expiry-sonrası W yeniden-boyutlanıyor mu.
+    #[must_use]
+    pub fn window_ns(&self) -> u64 {
+        self.window_ns
+    }
+
+    /// [Y3-sim SALT-GÖZLEM] Pencere-örnekleri (t_ns, bw) — mekanizma-izi-kalibrasyonu
+    /// (max'a-giren-örnek zamanı/değeri netem-tazelenme-desenine karşı eşlenir).
+    #[must_use]
+    pub fn samples_snapshot(&self) -> Vec<(u64, u64)> {
+        self.samples.clone()
+    }
+
     /// [TUR-D1 aktüatör — YALNIZ-DÜŞÜRÜR] Shrink-reset: pencere, tetikleyen LOW-olayların
     /// eligible-düşük-örneklerinin MAX'ına reseed edilir (S2-daraltılmış; tek-örnek-reseed'in
     /// outlier-çökmesi yok). Yükseltme-yolu (`update`) BİT-DEĞİŞMEZ — bu metot ayrı-giriş.

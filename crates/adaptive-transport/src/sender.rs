@@ -1640,6 +1640,18 @@ impl Sender {
             self.rtt.queue_delay().as_micros() as u64,
         )
     }
+    /// [Y3-sim SALT-GÖZLEM] (last_full_bw, window_ns) — (b)-bug-arayışı.
+    #[must_use]
+    pub fn diag_wbtlbw(&self) -> (u64, u64) {
+        (self.btlbw.last_sample_bw(), self.btlbw.window_ns())
+    }
+
+    /// [Y3-sim SALT-GÖZLEM] btlbw-pencere-örnek-izi (mekanizma-izi-kalibrasyonu).
+    #[must_use]
+    pub fn diag_btlbw_samples(&self) -> Vec<(u64, u64)> {
+        self.btlbw.samples_snapshot()
+    }
+
     /// [Y3-sim] W_BTLBW saat-modu (deneysel; 0=legacy/1=delivered-EAI/2=rtprop-swap).
     pub fn set_wbtlbw_mode(&mut self, mode: u8) {
         self.wbtlbw_mode = mode;

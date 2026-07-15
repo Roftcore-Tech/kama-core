@@ -86,7 +86,7 @@ struct SimResult {
 }
 
 /// Sender'ı 3A2-senaryosunda in-process sürer. wmode: 0=legacy 1=delivered-EAI 2=rtprop-swap.
-fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8) -> SimResult {
+fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8, trace_mech: bool, cad_ms: u64) -> SimResult {
     let mut s = Sender::new();
     s.set_wbtlbw_mode(wmode);
     let mut fwd = Link::new(rate_3a2(0), 5 * MS); // forward: basamaklı
@@ -124,6 +124,7 @@ fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8) -> SimResult {
     }
 
     let mut infl_max = 0u64;
+    let mut last_sack_ns = 0u64;
     let mut srtt_max_us = 0u64;
     let mut btlbw_daralma = 0u64;
     let mut expiry_ns = 0u64;
@@ -156,8 +157,17 @@ fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8) -> SimResult {
                 periods[pidx(now)].1 += 1;
             }
         }
-        // ack-tick (20ms): yeni-teslim seq'leri kümülatif-ACK → reverse-link.
-        if now.is_multiple_of(20 * MS) {
+        // [BATCH-MODEL] ack-tick: netem-receiver SACK-cadence'i rate-ölçekli (~6.4s @375B/s,
+        // DV-2-ölçüsü; 40k'da ~0.48s). Eski-ideal-20ms modeli netem-batch'ini temsil-etmiyordu
+        // (mekanizma-izi-kalibrasyonu dersi: iki-hastalık-aynı-ateş).
+        let sack_interval = if fwd.rate_bps > 0 {
+            ((u128::from(cad_ms) * MS as u128 * 375 / fwd.rate_bps as u128) as u64)
+                .clamp(20 * MS, 8 * SEC)
+        } else {
+            8 * SEC
+        };
+        if now.saturating_sub(last_sack_ns) >= sack_interval {
+            last_sack_ns = now;
             let new_seqs: Vec<u64> = recv.difference(&acked_reported).copied().collect();
             if !new_seqs.is_empty() {
                 for &sq in &new_seqs {
@@ -199,6 +209,29 @@ fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8) -> SimResult {
         if (69 * SEC..70 * SEC).contains(&now) {
             btlbw_daralma = btlbw;
         }
+        // [MEKANİZMA-İZİ] daralma-penceresi örnek-akışı: max'a-giren-örneklerin tazelik-deseni.
+        if trace_mech && (35 * SEC..70 * SEC).contains(&now) && now.is_multiple_of(4 * SEC) {
+            let sm = s.diag_btlbw_samples();
+            let fresh = sm
+                .iter()
+                .filter(|&&(t, _)| now.saturating_sub(t) < 4 * SEC)
+                .count();
+            let hi_fresh = sm
+                .iter()
+                .filter(|&&(t, v)| now.saturating_sub(t) < 4 * SEC && v > 2000)
+                .count();
+            let (lfb, w) = s.diag_wbtlbw();
+            eprintln!(
+                "    [İZ t={}s] btlbw={} örnek={} taze4s={} taze-YÜKSEK={} lfb={} W={:.1}s",
+                now / SEC,
+                btlbw,
+                sm.len(),
+                fresh,
+                hi_fresh,
+                lfb,
+                w as f64 / 1e9
+            );
+        }
         // [K5-kök-teşhis] P4-iz: toparlanma-dönemi 2s'de-bir durum-serisi.
         if now >= 100 * SEC && now.is_multiple_of(2 * SEC) {
             let (st, bw2, srtt2, rate2, infl2) = s.diag_rate();
@@ -234,7 +267,7 @@ fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8) -> SimResult {
 fn calibrate_3a2_reproduces_netem_flood() {
     // KALİBRASYON: fix-öncesi mevcut motor netem-3A2'yi repro etmeli.
     // netem-referans: infl-max ~16821B (63×267), srtt-max 24-53s, btlbw bayat-4119-sınıfı.
-    let r = run_3a2(1500, 145, 0);
+    let r = run_3a2(1500, 145, 0, true, 1_600);
     println!(
         "[CALIB 3a2] infl_max={}B ({}×) srtt_max={:.1}s btlbw@daralma-end={} shrink={} delivered={}",
         r.infl_max,
@@ -259,11 +292,128 @@ fn calibrate_3a2_reproduces_netem_flood() {
 
 #[test]
 #[ignore = "ağır sim; manuel"]
+fn scan_long_narrowing_convergence() {
+    // (c)-sınır-testi: kopmasız-UZUN-daralma (40k→3k, 90s) — çok-adımlı-expiry kanal-bandına
+    // yakınsar mı (plato kopma-kesmesine-özgü mü)?
+    let r = run_long_narrow(1500, 130, 1, 1_600);
+    println!(
+        "[UZUN-DARALMA mode=1] btlbw@60={} @90={} @125={} (kanal=375; bant=<600?)",
+        r.periods[0].0, r.periods[0].1, r.btlbw_at_daralma_end
+    );
+}
+
+/// 40k(0-35s) → 3k(35-130s, kopmasız-uzun). periods[0]=(btlbw@60, btlbw@90) kaba-taşıyıcı.
+fn run_long_narrow(n_units: usize, t_max_s: u64, wmode: u8, cad_ms: u64) -> SimResult {
+    let mut s = Sender::new();
+    s.set_wbtlbw_mode(wmode);
+    let mut fwd = Link::new(5000, 5 * MS);
+    let mut rev = Link::new(1_000_000, 5 * MS);
+    let mut recv: HashSet<u64> = HashSet::new();
+    let mut acked: HashSet<u64> = HashSet::new();
+    let mut rev_if: VecDeque<(u64, Vec<u64>)> = VecDeque::new();
+    for i in 0..n_units {
+        for d in s.on_event(
+            Event::AppData(OpaqueUnit {
+                id: i as u64,
+                size: UNIT,
+            }),
+            0,
+        ) {
+            fwd.send(d.seq, d.size, d.unit_id, 0);
+        }
+    }
+    let mut now = 0u64;
+    let mut last_sack = 0u64;
+    let mut b60 = 0u64;
+    let mut b90 = 0u64;
+    let mut blast = 0u64;
+    let t_max = t_max_s * SEC;
+    while now < t_max {
+        fwd.rate_bps = if now < 35 * SEC { 5000 } else { 375 };
+        for d in s.on_event(Event::TimerFired(Timer::Pto), now) {
+            fwd.send(d.seq, d.size, d.unit_id, now);
+        }
+        if now.is_multiple_of(200 * MS) {
+            s.on_event(Event::TimerFired(Timer::RtpropProbe), now);
+        }
+        for (seq, _u) in fwd.poll(now) {
+            recv.insert(seq);
+        }
+        let si = ((u128::from(cad_ms) * MS as u128 * 375 / fwd.rate_bps as u128) as u64)
+            .clamp(20 * MS, 8 * SEC);
+        if now.saturating_sub(last_sack) >= si {
+            last_sack = now;
+            let ns: Vec<u64> = recv.difference(&acked).copied().collect();
+            if !ns.is_empty() {
+                for &q in &ns {
+                    acked.insert(q);
+                }
+                rev.send(0, 40, 0, now);
+                let a = rev.q.back().map(|&(x, _, _)| x).unwrap_or(now);
+                rev.q.pop_back();
+                rev_if.push_back((a, ns));
+            }
+        }
+        while let Some(&(a, _)) = rev_if.front() {
+            if a <= now {
+                let (_, sq) = rev_if.pop_front().unwrap();
+                s.on_event(
+                    Event::AckReceived(AckInfo {
+                        acked_seqs: sq,
+                        ack_delay: Duration::ZERO,
+                    }),
+                    now,
+                );
+            } else {
+                break;
+            }
+        }
+        let (_, b, _, _, _) = s.diag_rate();
+        if (60 * SEC..61 * SEC).contains(&now) {
+            b60 = b;
+        }
+        if (90 * SEC..91 * SEC).contains(&now) {
+            b90 = b;
+        }
+        blast = b;
+        now += MS;
+    }
+    SimResult {
+        expiry_s: 0.0,
+        infl_max: 0,
+        srtt_max_us: 0,
+        btlbw_at_daralma_end: blast,
+        shrink_resets: 0,
+        delivered: recv.len(),
+        periods: [(b60, b90), (0, 0), (0, 0), (0, 0)],
+        dropped: 0,
+    }
+}
+
+#[test]
+#[ignore = "ağır sim; manuel"]
+fn recalibrate_cadence() {
+    // Re-kalibrasyon: cadence-katsayısı → netem-63× infl-hedefi (legacy-mode).
+    for cad in [1_600u64, 3_200, 6_400, 9_600] {
+        let r = run_3a2(1500, 145, 0, false, cad);
+        println!(
+            "[RECAL cad={}ms] infl={}× srtt={:.1}s btlbw@70={} deliv={}",
+            cad,
+            r.infl_max / UNIT,
+            r.srtt_max_us as f64 / 1e6,
+            r.btlbw_at_daralma_end,
+            r.delivered
+        );
+    }
+}
+
+#[test]
+#[ignore = "ağır sim; manuel"]
 fn scan_wbtlbw_hypotheses() {
     // H1+H2: üç W-modu 3A2'de — flood-durma + expiry + srtt-runaway kesimi.
     // 0=legacy(mevcut), 1=delivered-EAI (~28s-teori), 2=rtprop-swap.
     for (mode, name) in [(0u8, "legacy"), (1, "delivered-EAI"), (2, "rtprop-swap")] {
-        let r = run_3a2(1500, 145, mode);
+        let r = run_3a2(1500, 145, mode, mode == 1, 1_600);
         println!(
             "[H1/H2 mode={} {}] infl_max={}× srtt_max={:.1}s expiry={:.1}s btlbw@70s={} unique={} dropped={}",
             mode, name, r.infl_max / UNIT, r.srtt_max_us as f64 / 1e6,
