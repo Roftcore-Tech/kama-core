@@ -1,4 +1,29 @@
-# tur-s-sensing-v1 — Kanal-Durumu-Sensing Katmanı: FAZLAMA + Pasif-E-FULL + Kritiklik [TASLAK r1 — ONAY BEKLİYOR]
+# tur-s-sensing-v1 — Kanal-Durumu-Sensing Katmanı [r1 — ★ KISMİ-NO-GO: FAZ-1a-dedektör-çürüdü; fazlama+FAZ-0-ayakta]
+
+## ★ r1 KISMİ-NO-GO — FAZ-1a-survivor-ritmi NAİF-FORMU-ÇÜRÜDÜ (doğrulama wf_ac16274a; dinamik-simli)
+
+**FAZLAMA + FAZ-0 + bütçe-beyanı + kritiklik AYAKTA; çürüyen FAZ-1a'nın-dedektör-çekirdeği:**
+- **HIGH-1 [benim-yön-transpozem]:** p5-hesabım %5-FORWARD-olasılığını %80-DÖNÜŞ-dedektörüne-taşımış.
+  Doğrusu: P(3-ardışık-SACK-kaybı)=0.8³=0.512 → üçlü-kayıp-34.4s=eşik-TAM-SINIR; dörtlü-(P=0.41)-hep-aşar.
+  Verifier-dinamik-simi: İKİ-UÇLU-başarısızlık — sabit-baseline'da sahte-kopma-FIRTINASI; adaptif-
+  baseline'da medyan-eşik-100.7s → p5'te-tam-SAĞIR. **Bilgi-sınırı: q=0.2/E=8.39s'de α=0.05-eşiği-113s
+  → p5'te-<2dk-kopmalar-BU-DEDEKTÖR-SINIFIYLA-AYIRT-EDİLEMEZ.** "Yapısal-sessiz"-iddiam-ÖLÜ.
+- **HIGH-2:** baseline-B2-istisnası-DEĞİL dominant-yollarda: freq/tail-ritmi sender'ın-KENDİ-pacing'inden
+  → kopma-öncesi-yavaşlama-launder'ı; FLOOR-tavanıyla-sınırlı-ama tespit-gecikmesi-×336-şişebilir
+  (DPI/throttle-adversary-açabilir).
+- **MED'ler:** clamp-kümülatif-ratchet (per-write-doğru-kümülatif-yanlış: 2.7×T-lineer-maliyetle-sınırsız;
+  p5-doğal-gürültü-P≈0.26/çift-kendisi-yürütür → mutlak-üst-taban-≤c×FLOOR-pini-gerekli) ·
+  FLOOR/T_SPACING=4.0=K_EPISODE-tam-eşitlik-bıçak-sırtı (kota→cadence-geçişi-garanti-sahte-epizot;
+  çapraz-dedektör-zincirleme) · FLOOR-heartbeat-atfım-eksik (tail-pre-empt: kopmada-2×stale_last_gap-
+  duplicate-SACK — bütçe-ihlali + bimodal-heartbeat).
+
+**YAPISAL-SONUÇ (Abkarada'ya):** %80-kayıplı-dönüşte YEREL-RİTİM-GÖZLEMİ-yetmez — B2-meta-kökün
+dönüş-yolu-İZOMORFU. **FAZ-1b'nin-kümülatif-emisyon-sayacı (kayba-bağışık) opsiyonel-keskinleştirme-
+DEĞİL, dedektörün-ÇEKİRDEK-ön-koşulu-olabilir** (sayaç-delta → kayıp-kestirimi → eşik-kayıp-düzeltmeli
+→ fırtına+sağırlık-ikisi-birden-çözülür-Mü — TEORİLEME-YAPILMIYOR, sim-ölçer: verifier-lens1_sim.py-
+temeli + emisyon-sayaçlı-varyant). FAZ-yeniden-sıralama-adayı: 1b-çekirdeğe (V3-frame-öne) — karar-
+Abkarada. FAZ-0-qd-fix'i bu-çürümeden-BAĞIMSIZ (S1-hemen-önerisi-ayakta).
+
 
 > **Statü:** D0-TASARIM-NOTU (Abkarada TUR-S-GO, yapı-şartlı). KOD YOK. Zemin: 3-lens kod-teşhis
 > (wf_ec93d9b8) + Y3/m45/B2-DUR/return-supply-kayıtları. **İLK-GÖREV FAZLAMA** (madde-1):
