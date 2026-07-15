@@ -52,14 +52,6 @@ pub struct RateSample {
     pub sent_ns: u64,
 }
 
-impl SentPacket {
-    /// [TUR-D1 test-only] F3-damga plumbing-doğrulaması (gönderim-anı-damgası regresyon-kalkanı).
-    #[cfg(test)]
-    pub(crate) fn gain_ge1_stamp(&self) -> bool {
-        self.gain_ge1
-    }
-}
-
 /// BBR delivery-rate sampler (engine §7.1).
 #[derive(Debug, Clone, Default)]
 pub struct DeliveryRateSampler {
@@ -248,15 +240,6 @@ impl BtlBwFilter {
     #[must_use]
     pub fn samples_snapshot(&self) -> Vec<(u64, u64)> {
         self.samples.clone()
-    }
-
-    /// [TUR-D1 aktüatör — YALNIZ-DÜŞÜRÜR] Shrink-reset: pencere, tetikleyen LOW-olayların
-    /// eligible-düşük-örneklerinin MAX'ına reseed edilir (S2-daraltılmış; tek-örnek-reseed'in
-    /// outlier-çökmesi yok). Yükseltme-yolu (`update`) BİT-DEĞİŞMEZ — bu metot ayrı-giriş.
-    /// Çağıran (sender) generation++ ve diag'ı yönetir.
-    pub fn shrink_reset(&mut self, bw: u64, now_ns: u64) {
-        self.samples.clear();
-        self.samples.push((now_ns, bw.max(1)));
     }
 }
 

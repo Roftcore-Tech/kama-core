@@ -77,8 +77,6 @@ struct SimResult {
     infl_max: u64,
     srtt_max_us: u64,
     btlbw_at_daralma_end: u64, // t≈69s (3k-basamak sonu)
-    #[allow(dead_code)] // arşiv-TUR-D1 sayacı; motor-diag'ı canlı, pin-testleri okumuyor
-    shrink_resets: u64,
     delivered: usize,
     /// [K5] dönem-ayrımlı (P1 temiz-40k / P2 daralma-flood / P3 kopma / P4 toparlanma-8k):
     /// (wire_sent, unique_delivered) × 4 + dropped-toplam.
@@ -249,13 +247,11 @@ fn run_3a2(n_units: usize, t_max_s: u64, trace_mech: bool, cad_ms: u64) -> SimRe
         now += MS;
     }
 
-    let (shrink_resets, _, _, _, _) = s.diag_shrink();
     SimResult {
         expiry_s: expiry_ns as f64 / 1e9,
         infl_max,
         srtt_max_us,
         btlbw_at_daralma_end: btlbw_daralma,
-        shrink_resets,
         delivered: unique_units.len(),
         periods,
         dropped: fwd.dropped,
@@ -380,7 +376,6 @@ fn run_long_narrow(n_units: usize, t_max_s: u64, cad_ms: u64) -> SimResult {
         infl_max: 0,
         srtt_max_us: 0,
         btlbw_at_daralma_end: blast,
-        shrink_resets: 0,
         delivered: recv.len(),
         periods: [(b60, b90), (0, 0), (0, 0), (0, 0)],
         dropped: 0,
@@ -512,7 +507,6 @@ fn run_const(n_units: usize, t_max_s: u64, rate_bps: u64) -> SimResult {
         infl_max: 0,
         srtt_max_us: srtt_max,
         btlbw_at_daralma_end: last_btlbw,
-        shrink_resets: 0,
         delivered: recv.len(),
         periods: [(0, 0); 4],
         dropped: fwd.dropped,
