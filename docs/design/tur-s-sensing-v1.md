@@ -14,6 +14,14 @@
   epizot-dedektörü (mevcut, return-supply-r3) + frozen-W'nin-alanında-kalır; sender-dedektörü UZUN-
   kopma/kalıcı-kesinti-tespiti (D≥50-60s + kalıcı) hedefler. DÜRÜST-KAPSAM-BEYANI.
 
+### r2-HÜKMÜ = ŞIK-(iii)-HİBRİT (Abkarada-madde-4-formatı)
+Sayaç-dedektör ÇALIŞIYOR-koşullu: fırtına-çözüldü (LCB+T2, FA<0.05 ✓) ∧ tespit-KADANS-SINIRLI →
+**hibrit:** (1) KOTA-kadanslı-dönemlerde sayaç-dedektör AKTİF (D≥50-60s uzun-kopma/kalıcı-kesinti);
+(2) FLOOR-8.39s-uçta + kısa-kopmalarda (D<50) **teşhis-only + q̂-KAPILI-tüketiciler** (madde-3-HIGH-1-
+çözümü: kopma-KESİN-tespit-yok ama frozen-W/B2-örnek-sınıfı q̂-eşiğiyle-tetiklenir — QUIC-timeout'a-
+gittiği-yerde-q̂-bilerek-davranma = diferansiyatör); (3) kısa-kopmalar receiver-epizot-dedektörü-
+alanında (mevcut). Beyanlı-sınır-üçüncüsü (B2/B1/sensing) — bilgi-teorik, mimari-dürüstlük.
+
 ### r2-tasarım-kararları (onaya)
 1. **FAZ-1b-TERFİ:** kümülatif-emisyon-sayacı (V3-frame, +2B) sensing-çekirdeğine — sayaç-alanı-DEĞER
    (kayba-bağışık-q̂/Ê; LCB'nin-girdisi) ama tespit-gücü-kadansa-bağlı-beyanıyla. FAZ-1a-ritim-dedektörü-
