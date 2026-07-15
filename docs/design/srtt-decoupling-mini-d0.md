@@ -93,3 +93,16 @@ YOK → K_SHRINK-sayacı-ilerleyemez → shrink-de-frozen (yapısal-özdeş-kıs
 delivered-EAI-W aynı-demotionu zaten-yapıyor (t=64-68 ≈ TUR-D1-netem-t=66-reset'i) → artık-değer-yok.
 Kopmasız-daralmada: yakınsama-kanıtlı → gereksiz. **Kanıt-zinciri:** yakınsama-kanıtlı + kalan-vaka-
 kapsam-dışı (örnek-yokluğu-her-mekanizmayı-keser) + gerçek-çözüm-TUR-S-kopma-tespiti → son-niş-kapandı.
+
+## K6R-FİNAL GATE-TABLOSU (n=5 A/B + uzun-daralma-netem) — TÜM-YEŞİL → K7-MERGE
+| gate | sonuç |
+|---|---|
+| temiz-1k=45 | ✓ 45/100 |
+| 0.25k-anchor | ✓ 20/20 |
+| P5 {100×12, S5-kurallı} | ✓ literal-11/12; S5: X=0 (k6ra_p5_4 ilk=73.5s<100s tanım-dışı; shrink=0 fix-masum) |
+| DESEN-2/3B2 | ✓ 446 (sınıf-aynı) |
+| **UZUN-DARALMA netem-mühürü (Ş2)** | ✓ **btlbw 4114→1990→308 (t=100 KANAL-BANDI); üç-adımlı-expiry netem-doğrulandı; teslim new=633>leg=616; leg-1681'de-kaldı** |
+| 3A2 yeni-gate (Ş1) | ✓ onset-p95=31.5s<35 (n=5) · tek-adım %52-84≥50 (5/5) · re-flood-yok |
+| Teslim-delta | %3.6'ya-daraldı (new-varyans-minimal 641-659; leg 651-726) — Ş3-beyanlı-P4-borcu |
+**K7:** switch-silindi (final-cleanup); sim kalıcı-pinlere-indirgendi (expiry-pin + uzun-daralma-assert +
+anchor-assert + dönem-sayaç); spec-§16.1 W_BTLBW-satırı; TUR-D1=ARŞİV (Ş4-kanıt-zinciri-otomatik).

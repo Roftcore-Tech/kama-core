@@ -348,7 +348,6 @@ pub struct Sender {
     bw_sampled_since_round: bool,
 
     // ── [TUR-D1] stale-btlbw reconciliation durumu ──
-    wbtlbw_mode: u8,        // [Y3-sim] 0=legacy(srtt) 1=delivered-EAI 2=rtprop-swap
     shrink_count: u32,      // ardışık-LOW_EVIDENCE-olay sayacı (generation-izole)
     btlbw_generation: u64,  // HIGH-2: her max-yükseliş VE her reset yeni-nesil
     last_raise_ns: u64,     // F2 yaş-kapısı çıpası (olay-başı-snapshot'la okunur)
@@ -435,7 +434,6 @@ impl Sender {
             plateau_reached: false,
             arq_share_tick: 0,
             bw_sampled_since_round: false,
-            wbtlbw_mode: 1, // [Y3 kalıcı-yol] delivered-EAI default; 0=legacy A/B-testi (K4: netem-sonrası-silinir)
             shrink_count: 0,
             btlbw_generation: 0,
             last_raise_ns: 0,
@@ -536,19 +534,17 @@ impl Sender {
             // srtt-eğimi > 1/K_BW iken cutoff GERİLER → bayat-max ölümsüz (DV-3 ölçülü 0.92 s/s).
             // Shrink-reset SEMPTOMU keser, KÖK DURUR — W-türetim/M3-decoupling turunda kapanır;
             // "dedektör-var-diye-W-fix-gereksiz" SANILMAZ (m45 §4-S1).
-            let w_epoch = match self.wbtlbw_mode {
-                1 => {
-                    let dbw = self.btlbw.last_sample_bw().max(1);
-                    let term1 = Duration::from_nanos(2 * UNIT_SIZE_HINT * 1_000_000_000 / dbw);
-                    (term1 + Duration::from_nanos(2_097_000_000)).max(INITIAL_RTT)
-                }
-                2 => self
-                    .rtt
-                    .rtprop()
-                    .unwrap_or(INITIAL_RTT)
-                    .max(self.expected_ack_interval()),
-                _ => ack_epoch,
+            // [Y3 KALICI — K6R-mühürlü] W_BTLBW delivered-EAI-türetimi: cadence = 2×unit/
+            // SON-TAM-örnek-delivered (last_full_bw; K3-pinleri) + return-prior(2.097s [CAL,
+            // E-FULL-borcu]). srtt-runaway'den DECOUPLED (kuyruk-değişmez) → bayat-max çok-adımlı-
+            // expire (adım≈W; uzun-daralmada kanal-bandına yakınsar — netem-mühür: 4114→308).
+            // Kopma-frozen-pencere sınır-vakası BEYANLI (TUR-S kopma-tespiti tamamlar; mini-D0 Ş3).
+            let w_epoch = {
+                let dbw = self.btlbw.last_sample_bw().max(1);
+                let term1 = Duration::from_nanos(2 * UNIT_SIZE_HINT * 1_000_000_000 / dbw);
+                (term1 + Duration::from_nanos(2_097_000_000)).max(INITIAL_RTT)
             };
+            let _ = ack_epoch; // W_loss-kolu (aşağıda) ack_epoch-kullanmayı sürdürür (S2: zararsız)
             self.btlbw.set_window(w_epoch * K_BW);
             self.rtt.set_rtprop_window(srtt_now * K_RTPROP);
             self.rtt.set_qd_window(ack_epoch * K_QD); // [3a.5-α] rtprop-penceresinden sonra (≤ invariant)
@@ -1650,11 +1646,6 @@ impl Sender {
     #[must_use]
     pub fn diag_btlbw_samples(&self) -> Vec<(u64, u64)> {
         self.btlbw.samples_snapshot()
-    }
-
-    /// [Y3-sim] W_BTLBW saat-modu (deneysel; 0=legacy/1=delivered-EAI/2=rtprop-swap).
-    pub fn set_wbtlbw_mode(&mut self, mode: u8) {
-        self.wbtlbw_mode = mode;
     }
 
     /// [TUR-D1] Shrink-teşhis: (resets, count, stale_snapshot, braise_elig, braise_inelig).

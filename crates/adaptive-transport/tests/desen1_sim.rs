@@ -77,6 +77,7 @@ struct SimResult {
     infl_max: u64,
     srtt_max_us: u64,
     btlbw_at_daralma_end: u64, // t≈69s (3k-basamak sonu)
+    #[allow(dead_code)] // arşiv-TUR-D1 sayacı; motor-diag'ı canlı, pin-testleri okumuyor
     shrink_resets: u64,
     delivered: usize,
     /// [K5] dönem-ayrımlı (P1 temiz-40k / P2 daralma-flood / P3 kopma / P4 toparlanma-8k):
@@ -86,9 +87,8 @@ struct SimResult {
 }
 
 /// Sender'ı 3A2-senaryosunda in-process sürer. wmode: 0=legacy 1=delivered-EAI 2=rtprop-swap.
-fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8, trace_mech: bool, cad_ms: u64) -> SimResult {
+fn run_3a2(n_units: usize, t_max_s: u64, trace_mech: bool, cad_ms: u64) -> SimResult {
     let mut s = Sender::new();
-    s.set_wbtlbw_mode(wmode);
     let mut fwd = Link::new(rate_3a2(0), 5 * MS); // forward: basamaklı
     let mut rev = Link::new(1_000_000, 5 * MS); // reverse: hızlı (ACK küçük, 1MB/s)
     let mut recv: HashSet<u64> = HashSet::new(); // alıcıda teslim-olmuş seq'ler
@@ -264,30 +264,23 @@ fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8, trace_mech: bool, cad_ms: u6
 
 #[test]
 #[ignore = "ağır sim; manuel: cargo test --test desen1_sim -- --ignored --nocapture"]
-fn calibrate_3a2_reproduces_netem_flood() {
-    // KALİBRASYON: fix-öncesi mevcut motor netem-3A2'yi repro etmeli.
-    // netem-referans: infl-max ~16821B (63×267), srtt-max 24-53s, btlbw bayat-4119-sınıfı.
-    let r = run_3a2(1500, 145, 0, true, 1_600);
+fn desen1_expiry_pin_3a2() {
+    // [Y3 KALICI-PİN — K6R-netem-mühürlü] delivered-EAI-motor 3A2'de: onset<35s + tek-adım≥%50 +
+    // re-flood-yok. (Legacy-kalibrasyon tarihsel: mode-0 kayıtları mini-D0'da; switch silindi.)
+    let r = run_3a2(1500, 145, true, 1_600);
     println!(
-        "[CALIB 3a2] infl_max={}B ({}×) srtt_max={:.1}s btlbw@daralma-end={} shrink={} delivered={}",
-        r.infl_max,
+        "[PIN 3a2] infl_max={}× srtt_max={:.1}s expiry={:.1}s btlbw@70s={} unique={}",
         r.infl_max / UNIT,
         r.srtt_max_us as f64 / 1e6,
+        r.expiry_s,
         r.btlbw_at_daralma_end,
-        r.shrink_resets,
         r.delivered,
     );
-    // Kalibrasyon-eşiği (mertebe; netem-varyansı kabul): flood GERÇEKTEN oluşmalı.
     assert!(
-        r.infl_max > 20 * UNIT,
-        "flood repro: infl-max ≫ birim beklenir, ölçülen {}",
-        r.infl_max
+        r.btlbw_at_daralma_end < 2100,
+        "tek-adım-demotion ≥%50 beklenir (4109→<2054), ölçülen {}",
+        r.btlbw_at_daralma_end
     );
-    assert!(
-        r.srtt_max_us > 5 * MS,
-        "srtt-runaway repro beklenir (>5s), ölçülen {}us",
-        r.srtt_max_us
-    ); // 5s = 5e6 us
 }
 
 #[test]
@@ -295,17 +288,21 @@ fn calibrate_3a2_reproduces_netem_flood() {
 fn scan_long_narrowing_convergence() {
     // (c)-sınır-testi: kopmasız-UZUN-daralma (40k→3k, 90s) — çok-adımlı-expiry kanal-bandına
     // yakınsar mı (plato kopma-kesmesine-özgü mü)?
-    let r = run_long_narrow(1500, 130, 1, 1_600);
+    let r = run_long_narrow(1500, 130, 1_600);
     println!(
-        "[UZUN-DARALMA mode=1] btlbw@60={} @90={} @125={} (kanal=375; bant=<600?)",
+        "[UZUN-DARALMA] btlbw@60={} @90={} @125={} (kanal=375)",
         r.periods[0].0, r.periods[0].1, r.btlbw_at_daralma_end
+    );
+    assert!(
+        r.btlbw_at_daralma_end < 600,
+        "kopmasız-daralmada kanal-bandına-yakınsama (netem-mühürlü-gate), ölçülen {}",
+        r.btlbw_at_daralma_end
     );
 }
 
 /// 40k(0-35s) → 3k(35-130s, kopmasız-uzun). periods[0]=(btlbw@60, btlbw@90) kaba-taşıyıcı.
-fn run_long_narrow(n_units: usize, t_max_s: u64, wmode: u8, cad_ms: u64) -> SimResult {
+fn run_long_narrow(n_units: usize, t_max_s: u64, cad_ms: u64) -> SimResult {
     let mut s = Sender::new();
-    s.set_wbtlbw_mode(wmode);
     let mut fwd = Link::new(5000, 5 * MS);
     let mut rev = Link::new(1_000_000, 5 * MS);
     let mut recv: HashSet<u64> = HashSet::new();
@@ -395,7 +392,7 @@ fn run_long_narrow(n_units: usize, t_max_s: u64, wmode: u8, cad_ms: u64) -> SimR
 fn recalibrate_cadence() {
     // Re-kalibrasyon: cadence-katsayısı → netem-63× infl-hedefi (legacy-mode).
     for cad in [1_600u64, 3_200, 6_400, 9_600] {
-        let r = run_3a2(1500, 145, 0, false, cad);
+        let r = run_3a2(1500, 145, false, cad);
         println!(
             "[RECAL cad={}ms] infl={}× srtt={:.1}s btlbw@70={} deliv={}",
             cad,
@@ -409,26 +406,13 @@ fn recalibrate_cadence() {
 
 #[test]
 #[ignore = "ağır sim; manuel"]
-fn scan_wbtlbw_hypotheses() {
-    // H1+H2: üç W-modu 3A2'de — flood-durma + expiry + srtt-runaway kesimi.
-    // 0=legacy(mevcut), 1=delivered-EAI (~28s-teori), 2=rtprop-swap.
-    for (mode, name) in [(0u8, "legacy"), (1, "delivered-EAI"), (2, "rtprop-swap")] {
-        let r = run_3a2(1500, 145, mode, mode == 1, 1_600);
-        println!(
-            "[H1/H2 mode={} {}] infl_max={}× srtt_max={:.1}s expiry={:.1}s btlbw@70s={} unique={} dropped={}",
-            mode, name, r.infl_max / UNIT, r.srtt_max_us as f64 / 1e6,
-            r.expiry_s, r.btlbw_at_daralma_end, r.delivered, r.dropped,
-        );
-        for (i, pname) in ["P1-temiz40k", "P2-daralma", "P3-kopma", "P4-topar8k"]
-            .iter()
-            .enumerate()
-        {
-            println!(
-                "    {}: wire={} unique={}",
-                pname, r.periods[i].0, r.periods[i].1
-            );
-        }
-    }
+fn desen1_period_counters() {
+    // [Y3 KALICI-PİN] dönem-sayaçları: P2-teslim-sınıfı + P4-drenaj (RecoverArq-borç-izleme).
+    let r = run_3a2(1500, 145, false, 1_600);
+    println!(
+        "[PIN dönem] unique={} dropped={} P={:?}",
+        r.delivered, r.dropped, r.periods
+    );
 }
 
 #[test]
@@ -438,25 +422,30 @@ fn scan_subkbps_anchor() {
     // (delivered-EAI term2=2.097s ZM-2-riski). Sabit 250bit = 31 B/s.
     // [K5] komşuluk-taraması {0.20k,0.25k,0.30k,1k}: ZM-2-hükmü tek-anchor'dan genelleşsin.
     for rate in [25u64, 31, 37, 125] {
-        for (mode, name) in [(0u8, "legacy"), (1, "delivered-EAI")] {
-            let r = run_const(200, 90, rate, mode);
+        {
+            let name = "delivered-EAI";
+            let r = run_const(200, 90, rate);
             println!(
-                "[H2-anchor rate={} mode={} {}] btlbw-son={} srtt_max={:.1}s delivered={}/200",
+                "[H2-anchor rate={} {}] btlbw-son={} srtt_max={:.1}s delivered={}/200",
                 rate,
-                mode,
                 name,
                 r.btlbw_at_daralma_end,
                 r.srtt_max_us as f64 / 1e6,
                 r.delivered,
+            );
+            assert!(
+                r.btlbw_at_daralma_end >= rate.saturating_sub(rate / 4),
+                "sub-kbps anchor korunmalı (ZM-2), rate={} ölçülen {}",
+                rate,
+                r.btlbw_at_daralma_end
             );
         }
     }
 }
 
 /// Sabit-rate kanal (sub-kbps anchor kontrolü). btlbw_at_daralma_end = son-btlbw.
-fn run_const(n_units: usize, t_max_s: u64, rate_bps: u64, wmode: u8) -> SimResult {
+fn run_const(n_units: usize, t_max_s: u64, rate_bps: u64) -> SimResult {
     let mut s = Sender::new();
-    s.set_wbtlbw_mode(wmode);
     let mut fwd = Link::new(rate_bps, 5 * MS);
     let mut rev = Link::new(1_000_000, 5 * MS);
     let mut recv: HashSet<u64> = HashSet::new();

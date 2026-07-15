@@ -42,8 +42,6 @@ pub struct ClientCfg {
     pub cc: Cc,
     /// Reproducibility seed / repeat kimliği.
     pub seed: u64,
-    /// [Y3 K4 A/B] W_BTLBW legacy-saat (srtt) — netem-A/B; cleanup'ta silinir.
-    pub wbtlbw_legacy: bool,
     /// Tekrar indeksi (A varyans).
     pub repeat: u32,
     /// netem profil adı.

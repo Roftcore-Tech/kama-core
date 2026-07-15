@@ -57,9 +57,6 @@ enum Cmd {
         profile: String,
         #[arg(long, value_enum, default_value_t = TransportArg::Quinn)]
         transport: TransportArg,
-        /// [Y3 K4 A/B] W_BTLBW legacy-saat (srtt) — netem-A/B; cleanup'ta silinir.
-        #[arg(long, default_value_t = false)]
-        wbtlbw_legacy: bool,
         #[arg(long)]
         out: PathBuf,
     },
@@ -124,7 +121,6 @@ async fn main() -> Result<(), BenchError> {
             profile,
             transport,
             out,
-            wbtlbw_legacy,
         } => {
             let cfg = ClientCfg {
                 server,
@@ -135,7 +131,6 @@ async fn main() -> Result<(), BenchError> {
                 seed,
                 repeat,
                 profile,
-                wbtlbw_legacy,
             };
             let output = run_client(transport, cfg).await?;
             output.write_jsonl(&out)?;
