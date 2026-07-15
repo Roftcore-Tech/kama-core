@@ -515,11 +515,16 @@ impl Sender {
                 let term1 = Duration::from_nanos(2 * UNIT_SIZE_HINT * 1_000_000_000 / dbw);
                 (term1 + Duration::from_nanos(2_097_000_000)).max(INITIAL_RTT)
             };
-            let _ = ack_epoch; // W_loss-kolu (aşağıda) ack_epoch-kullanmayı sürdürür (S2: zararsız)
+            let _ = ack_epoch; // W_loss-kolu (fuzzy_evaluate) kendi ack_epoch'unu hesaplar (S2: zararsız)
             self.btlbw.set_window(w_epoch * K_BW);
             self.rtt.set_rtprop_window(srtt_now * K_RTPROP);
-            self.rtt.set_qd_window(ack_epoch * K_QD); // [3a.5-α] rtprop-penceresinden sonra (≤ invariant)
-                                                      // [3a.5-β] kuantum-döngü T'si — yalnız rtprop varken (PreConverge'de None → n=1).
+            // [S-FAZ-0, K8-fix] W_qd srtt-dalından delivered-EAI-saatine (TEK-TOKEN: ack_epoch→
+            // w_epoch). Kök: W_qd=2×srtt flood'da flood-öncesine-uzanır → qd≡0 → fuzzy-soft-drain
+            // + ProbeUp-abort ÖLÜ (K8 secondary-safety-path-deadness). w_epoch kuyruk-değişmez →
+            // DESEN-1'de qd onset+~8s canlanır; sağlıklı-rejimde DEĞER-ÖZDEŞ (rate≈dbw → EAI≡w_epoch).
+            // Little bit-değişmez (rate.rs girdisi srtt; qd-tüketicileri yalnız fusion-sr1 + ProbeUp).
+            self.rtt.set_qd_window(w_epoch * K_QD); // [3a.5-α] rtprop-penceresinden sonra (≤ invariant)
+                                                    // [3a.5-β] kuantum-döngü T'si — yalnız rtprop varken (PreConverge'de None → n=1).
             if let Some(rtp) = self.rtt.rtprop() {
                 self.rtt.set_conv_interval(rtp / K_CONV);
             }
