@@ -435,7 +435,7 @@ impl Sender {
             plateau_reached: false,
             arq_share_tick: 0,
             bw_sampled_since_round: false,
-            wbtlbw_mode: 0,
+            wbtlbw_mode: 1, // [Y3 kalıcı-yol] delivered-EAI default; 0=legacy A/B-testi (K4: netem-sonrası-silinir)
             shrink_count: 0,
             btlbw_generation: 0,
             last_raise_ns: 0,

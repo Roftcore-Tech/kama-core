@@ -91,9 +91,15 @@ struct ClientRun {
 }
 
 impl ClientRun {
-    fn new(msg_count: usize) -> Self {
+    fn new(msg_count: usize, wbtlbw_legacy: bool) -> Self {
         Self {
-            sender: Sender::new(),
+            sender: {
+                let mut sn = Sender::new();
+                if wbtlbw_legacy {
+                    sn.set_wbtlbw_mode(0); // [Y3 K4 A/B] legacy-saat (netem-A/B; cleanup'ta silinir)
+                }
+                sn
+            },
             seq_to_unit: HashMap::new(),
             max_emitted_seq: 0,
             sent_ns: vec![None; msg_count],
@@ -148,7 +154,7 @@ async fn client_loop(
     let msg_count = cfg.msg_count;
     let payload = vec![0x5Au8; usize::try_from(cfg.payload_bytes).unwrap_or(0)];
     let unit_size = HDR_DATA as u64 + cfg.payload_bytes;
-    let mut run = ClientRun::new(usize::try_from(msg_count).unwrap_or(0));
+    let mut run = ClientRun::new(usize::try_from(msg_count).unwrap_or(0), cfg.wbtlbw_legacy);
 
     // Tüm birimleri t0'da enqueue — engine'in İÇ pacing'i yayılımı belirlesin (yapay serileştirme değil;
     // her iki transport da aynı start'tan aynı max_deadline bütçesini alır → adil karşılaştırma).
@@ -363,6 +369,7 @@ mod tests {
             seed: 0,
             repeat: 0,
             profile: "loopback".to_string(),
+            wbtlbw_legacy: false,
         }
     }
 

@@ -167,6 +167,10 @@ pub struct BtlBwFilter {
     samples: Vec<(u64, u64)>,
     /// Pencere (ns) — sender kanal-türevi yazar; taban W_BTLBW [STD].
     window_ns: u64,
+    /// [Y3 K3-pin] Son TAM-GEÇERLİ (valid ∧ interval≥1ms ∧ !app_limited) örneğin anlık-bw'si.
+    /// delivered-EAI cadence-girdisi: app-limited örnek W'yi KÜÇÜLTEMEZ (pin-iii; idle-sonrası
+    /// kapasite-kaybı); yeni-örnek-yoksa son-geçerli-değer-tekrar (pin-iv).
+    last_full_bw: u64,
 }
 
 impl Default for BtlBwFilter {
@@ -174,6 +178,7 @@ impl Default for BtlBwFilter {
         Self {
             samples: Vec::new(),
             window_ns: dur_ns(W_BTLBW),
+            last_full_bw: 0,
         }
     }
 }
@@ -203,6 +208,9 @@ impl BtlBwFilter {
             if app_limited_ok {
                 self.samples.push((now_ns, bw));
             }
+            if !sample.is_app_limited {
+                self.last_full_bw = bw; // [Y3 K3-pin-iii] yalnız tam-geçerli örnek cadence-girdisi
+            }
         }
         let cutoff = now_ns.saturating_sub(self.window_ns);
         // [TUR-3a D-2/2] KEEP-LAST: budama filtreyi boşaltacaksa en-yeni örnek yaşar.
@@ -226,7 +234,7 @@ impl BtlBwFilter {
     /// bayat-max'tan bağımsız). Boşsa 0.
     #[must_use]
     pub fn last_sample_bw(&self) -> u64 {
-        self.samples.last().map_or(0, |&(_, v)| v)
+        self.last_full_bw
     }
 
     /// [TUR-D1 aktüatör — YALNIZ-DÜŞÜRÜR] Shrink-reset: pencere, tetikleyen LOW-olayların

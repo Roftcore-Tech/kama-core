@@ -312,6 +312,7 @@ mod loopback_tests {
                 seed: 0,
                 repeat: 0,
                 profile: "loopback".to_string(),
+                wbtlbw_legacy: false,
             })
             .await
             .expect("client run (ALPN/provider/handshake OK)");
@@ -368,6 +369,7 @@ mod loopback_tests {
                 seed: 0,
                 repeat: 0,
                 profile: "deadaddr".to_string(),
+                wbtlbw_legacy: false,
             })
             .await
             .expect("bounded return, HANG değil");

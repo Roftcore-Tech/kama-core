@@ -8,7 +8,6 @@ use adaptive_transport::sender::{AckInfo, Event, OpaqueUnit, Sender, Timer};
 use std::collections::{HashSet, VecDeque};
 use std::time::Duration;
 
-const NS: u64 = 1; // ns birimi
 const MS: u64 = 1_000_000;
 const SEC: u64 = 1_000_000_000;
 const UNIT: u64 = 267; // wire birim (payload 256 + overhead ~ tur5 ölçüsü)
@@ -17,8 +16,9 @@ const UNIT: u64 = 267; // wire birim (payload 256 + overhead ~ tur5 ölçüsü)
 struct Link {
     rate_bps: u64, // 0 = kopma (link-down: yeni+kuyruk düşer)
     delay_ns: u64,
-    busy_until: u64,         // serializasyon-kuyruğu bitiş-anı
-    q: VecDeque<(u64, u64)>, // (arrival_ns, seq)
+    busy_until: u64,              // serializasyon-kuyruğu bitiş-anı
+    q: VecDeque<(u64, u64, u64)>, // (arrival_ns, seq, unit_id)
+    dropped: u64,
 }
 impl Link {
     fn new(rate_bps: u64, delay_ns: u64) -> Self {
@@ -27,27 +27,31 @@ impl Link {
             delay_ns,
             busy_until: 0,
             q: VecDeque::new(),
+            dropped: 0,
         }
     }
-    fn send(&mut self, seq: u64, size: u64, now: u64) {
+    fn send(&mut self, seq: u64, size: u64, unit_id: u64, now: u64) {
         if self.rate_bps == 0 {
+            self.dropped += 1;
             return; // kopma: paket düşer
         }
         let serialize = size.saturating_mul(SEC) / self.rate_bps;
         let start = now.max(self.busy_until);
         self.busy_until = start + serialize;
-        self.q.push_back((self.busy_until + self.delay_ns, seq));
+        self.q
+            .push_back((self.busy_until + self.delay_ns, seq, unit_id));
     }
     /// Kopma başında (rate 0'a düşünce) uçuştaki kuyruğu boşalt (link-down semantiği).
     fn drop_inflight(&mut self) {
+        self.dropped += self.q.len() as u64;
         self.q.clear();
         self.busy_until = 0;
     }
-    fn poll(&mut self, now: u64) -> Vec<u64> {
+    fn poll(&mut self, now: u64) -> Vec<(u64, u64)> {
         let mut out = Vec::new();
-        while let Some(&(arr, seq)) = self.q.front() {
+        while let Some(&(arr, seq, uid)) = self.q.front() {
             if arr <= now {
-                out.push(seq);
+                out.push((seq, uid));
                 self.q.pop_front();
             } else {
                 break;
@@ -75,6 +79,10 @@ struct SimResult {
     btlbw_at_daralma_end: u64, // t≈69s (3k-basamak sonu)
     shrink_resets: u64,
     delivered: usize,
+    /// [K5] dönem-ayrımlı (P1 temiz-40k / P2 daralma-flood / P3 kopma / P4 toparlanma-8k):
+    /// (wire_sent, unique_delivered) × 4 + dropped-toplam.
+    periods: [(u64, u64); 4],
+    dropped: u64,
 }
 
 /// Sender'ı 3A2-senaryosunda in-process sürer. wmode: 0=legacy 1=delivered-EAI 2=rtprop-swap.
@@ -86,6 +94,20 @@ fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8) -> SimResult {
     let mut recv: HashSet<u64> = HashSet::new(); // alıcıda teslim-olmuş seq'ler
     let mut acked_reported: HashSet<u64> = HashSet::new();
     let mut rev_inflight: VecDeque<(u64, Vec<u64>)> = VecDeque::new(); // (ack_arrival, seqs)
+    let mut unique_units: HashSet<u64> = HashSet::new();
+    let mut periods = [(0u64, 0u64); 4]; // (wire_sent, unique_delivered) — P1/P2/P3/P4
+    fn pidx(t_ns: u64) -> usize {
+        let t = t_ns / SEC;
+        if t < 35 {
+            0
+        } else if t < 70 {
+            1
+        } else if t < 100 {
+            2
+        } else {
+            3
+        }
+    }
 
     // t=0: tüm birimleri enqueue (backlog).
     for i in 0..n_units {
@@ -96,7 +118,8 @@ fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8) -> SimResult {
             }),
             0,
         ) {
-            fwd.send(d.seq, d.size, 0);
+            periods[0].0 += 1;
+            fwd.send(d.seq, d.size, d.unit_id, 0);
         }
     }
 
@@ -119,26 +142,30 @@ fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8) -> SimResult {
 
         // pace-tick (1ms): token-drain → transmit kararları → forward-link.
         for d in s.on_event(Event::TimerFired(Timer::Pto), now) {
-            fwd.send(d.seq, d.size, now);
+            periods[pidx(now)].0 += 1;
+            fwd.send(d.seq, d.size, d.unit_id, now);
         }
         // rtprop-tick (200ms).
-        if now % (200 * MS) == 0 {
+        if now.is_multiple_of(200 * MS) {
             s.on_event(Event::TimerFired(Timer::RtpropProbe), now);
         }
-        // forward-varışlar → alıcı teslim-set.
-        for seq in fwd.poll(now) {
+        // forward-varışlar → alıcı teslim-set (seq ACK-için; unit_id unique-teslim-için).
+        for (seq, uid) in fwd.poll(now) {
             recv.insert(seq);
+            if unique_units.insert(uid) {
+                periods[pidx(now)].1 += 1;
+            }
         }
         // ack-tick (20ms): yeni-teslim seq'leri kümülatif-ACK → reverse-link.
-        if now % (20 * MS) == 0 {
+        if now.is_multiple_of(20 * MS) {
             let new_seqs: Vec<u64> = recv.difference(&acked_reported).copied().collect();
             if !new_seqs.is_empty() {
                 for &sq in &new_seqs {
                     acked_reported.insert(sq);
                 }
                 // ACK'in kendisi reverse-link'te serialize olur (küçük); varış-anını hesapla.
-                rev.send(0, 40, now); // 40B ACK-frame; seq-önemsiz
-                let ack_arr = rev.q.back().map(|&(a, _)| a).unwrap_or(now);
+                rev.send(0, 40, 0, now); // 40B ACK-frame; seq-önemsiz
+                let ack_arr = rev.q.back().map(|&(a, _, _)| a).unwrap_or(now);
                 rev.q.pop_back(); // ACK-frame'i seq-taşımıyor; varış-anını aldık
                 rev_inflight.push_back((ack_arr, new_seqs));
             }
@@ -172,6 +199,19 @@ fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8) -> SimResult {
         if (69 * SEC..70 * SEC).contains(&now) {
             btlbw_daralma = btlbw;
         }
+        // [K5-kök-teşhis] P4-iz: toparlanma-dönemi 2s'de-bir durum-serisi.
+        if now >= 100 * SEC && now.is_multiple_of(2 * SEC) {
+            let (st, bw2, srtt2, rate2, infl2) = s.diag_rate();
+            eprintln!(
+                "    [P4-iz t={}s] state={:?} btlbw={} rate={} srtt={:.1}s infl={}",
+                now / SEC,
+                st,
+                bw2,
+                rate2,
+                srtt2 as f64 / 1e6,
+                infl2
+            );
+        }
 
         now += MS;
     }
@@ -183,7 +223,9 @@ fn run_3a2(n_units: usize, t_max_s: u64, wmode: u8) -> SimResult {
         srtt_max_us,
         btlbw_at_daralma_end: btlbw_daralma,
         shrink_resets,
-        delivered: recv.len(),
+        delivered: unique_units.len(),
+        periods,
+        dropped: fwd.dropped,
     }
 }
 
@@ -223,10 +265,19 @@ fn scan_wbtlbw_hypotheses() {
     for (mode, name) in [(0u8, "legacy"), (1, "delivered-EAI"), (2, "rtprop-swap")] {
         let r = run_3a2(1500, 145, mode);
         println!(
-            "[H1/H2 mode={} {}] infl_max={}× srtt_max={:.1}s expiry={:.1}s btlbw@70s={} delivered={}",
+            "[H1/H2 mode={} {}] infl_max={}× srtt_max={:.1}s expiry={:.1}s btlbw@70s={} unique={} dropped={}",
             mode, name, r.infl_max / UNIT, r.srtt_max_us as f64 / 1e6,
-            r.expiry_s, r.btlbw_at_daralma_end, r.delivered,
+            r.expiry_s, r.btlbw_at_daralma_end, r.delivered, r.dropped,
         );
+        for (i, pname) in ["P1-temiz40k", "P2-daralma", "P3-kopma", "P4-topar8k"]
+            .iter()
+            .enumerate()
+        {
+            println!(
+                "    {}: wire={} unique={}",
+                pname, r.periods[i].0, r.periods[i].1
+            );
+        }
     }
 }
 
@@ -235,16 +286,20 @@ fn scan_wbtlbw_hypotheses() {
 fn scan_subkbps_anchor() {
     // H2 decade-körlük kontrolü: 0.25k sabit-kanalda her-mod btlbw-anchor'ı bozuyor mu?
     // (delivered-EAI term2=2.097s ZM-2-riski). Sabit 250bit = 31 B/s.
-    for (mode, name) in [(0u8, "legacy"), (1, "delivered-EAI"), (2, "rtprop-swap")] {
-        let r = run_const(200, 90, 31, mode);
-        println!(
-            "[H2-anchor mode={} {}] btlbw-son={} srtt_max={:.1}s delivered={}/200",
-            mode,
-            name,
-            r.btlbw_at_daralma_end,
-            r.srtt_max_us as f64 / 1e6,
-            r.delivered,
-        );
+    // [K5] komşuluk-taraması {0.20k,0.25k,0.30k,1k}: ZM-2-hükmü tek-anchor'dan genelleşsin.
+    for rate in [25u64, 31, 37, 125] {
+        for (mode, name) in [(0u8, "legacy"), (1, "delivered-EAI")] {
+            let r = run_const(200, 90, rate, mode);
+            println!(
+                "[H2-anchor rate={} mode={} {}] btlbw-son={} srtt_max={:.1}s delivered={}/200",
+                rate,
+                mode,
+                name,
+                r.btlbw_at_daralma_end,
+                r.srtt_max_us as f64 / 1e6,
+                r.delivered,
+            );
+        }
     }
 }
 
@@ -265,7 +320,7 @@ fn run_const(n_units: usize, t_max_s: u64, rate_bps: u64, wmode: u8) -> SimResul
             }),
             0,
         ) {
-            fwd.send(d.seq, d.size, 0);
+            fwd.send(d.seq, d.size, d.unit_id, 0);
         }
     }
     let mut srtt_max = 0u64;
@@ -274,22 +329,22 @@ fn run_const(n_units: usize, t_max_s: u64, rate_bps: u64, wmode: u8) -> SimResul
     let t_max = t_max_s * SEC;
     while now < t_max {
         for d in s.on_event(Event::TimerFired(Timer::Pto), now) {
-            fwd.send(d.seq, d.size, now);
+            fwd.send(d.seq, d.size, d.unit_id, now);
         }
-        if now % (200 * MS) == 0 {
+        if now.is_multiple_of(200 * MS) {
             s.on_event(Event::TimerFired(Timer::RtpropProbe), now);
         }
-        for seq in fwd.poll(now) {
+        for (seq, _uid) in fwd.poll(now) {
             recv.insert(seq);
         }
-        if now % (20 * MS) == 0 {
+        if now.is_multiple_of(20 * MS) {
             let ns: Vec<u64> = recv.difference(&acked).copied().collect();
             if !ns.is_empty() {
                 for &q in &ns {
                     acked.insert(q);
                 }
-                rev.send(0, 40, now);
-                let a = rev.q.back().map(|&(x, _)| x).unwrap_or(now);
+                rev.send(0, 40, 0, now);
+                let a = rev.q.back().map(|&(x, _, _)| x).unwrap_or(now);
                 rev.q.pop_back();
                 rev_if.push_back((a, ns));
             }
@@ -320,5 +375,7 @@ fn run_const(n_units: usize, t_max_s: u64, rate_bps: u64, wmode: u8) -> SimResul
         btlbw_at_daralma_end: last_btlbw,
         shrink_resets: 0,
         delivered: recv.len(),
+        periods: [(0, 0); 4],
+        dropped: fwd.dropped,
     }
 }
