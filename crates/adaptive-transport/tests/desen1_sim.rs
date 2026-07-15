@@ -74,6 +74,7 @@ fn rate_3a2(now: u64) -> u64 {
 
 struct SimResult {
     expiry_s: f64,
+    qd_max_us: u64,
     infl_max: u64,
     srtt_max_us: u64,
     btlbw_at_daralma_end: u64, // t≈69s (3k-basamak sonu)
@@ -122,6 +123,7 @@ fn run_3a2(n_units: usize, t_max_s: u64, trace_mech: bool, cad_ms: u64) -> SimRe
     }
 
     let mut infl_max = 0u64;
+    let mut qd_max_us = 0u64;
     let mut last_sack_ns = 0u64;
     let mut srtt_max_us = 0u64;
     let mut btlbw_daralma = 0u64;
@@ -196,6 +198,8 @@ fn run_3a2(n_units: usize, t_max_s: u64, trace_mech: bool, cad_ms: u64) -> SimRe
 
         // izleme.
         let (_, btlbw, srtt_us, _rate, infl) = s.diag_rate();
+        let (_, qd_us) = s.diag_qd();
+        qd_max_us = qd_max_us.max(qd_us);
         // Daralma-penceresi (35-70s): flood-metrikleri + expiry (btlbw kanal-yakınına düşme-anı).
         if (35 * SEC..70 * SEC).contains(&now) {
             infl_max = infl_max.max(infl);
@@ -253,6 +257,7 @@ fn run_3a2(n_units: usize, t_max_s: u64, trace_mech: bool, cad_ms: u64) -> SimRe
         srtt_max_us,
         btlbw_at_daralma_end: btlbw_daralma,
         delivered: unique_units.len(),
+        qd_max_us,
         periods,
         dropped: fwd.dropped,
     }
@@ -271,6 +276,12 @@ fn desen1_expiry_pin_3a2() {
         r.expiry_s,
         r.btlbw_at_daralma_end,
         r.delivered,
+    );
+    println!("[FAZ-0 qd] qd_max={:.1}s", r.qd_max_us as f64 / 1e6);
+    assert!(
+        r.qd_max_us > 1_000_000,
+        "FAZ-0: DESEN-1'de qd canlanmalı (>1s), ölçülen {}us",
+        r.qd_max_us
     );
     assert!(
         r.btlbw_at_daralma_end < 2100,
@@ -373,6 +384,7 @@ fn run_long_narrow(n_units: usize, t_max_s: u64, cad_ms: u64) -> SimResult {
     }
     SimResult {
         expiry_s: 0.0,
+        qd_max_us: 0,
         infl_max: 0,
         srtt_max_us: 0,
         btlbw_at_daralma_end: blast,
@@ -504,6 +516,7 @@ fn run_const(n_units: usize, t_max_s: u64, rate_bps: u64) -> SimResult {
     }
     SimResult {
         expiry_s: 0.0,
+        qd_max_us: 0,
         infl_max: 0,
         srtt_max_us: srtt_max,
         btlbw_at_daralma_end: last_btlbw,
