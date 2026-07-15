@@ -253,6 +253,8 @@ const K_CONF_EAI: u32 = 2;
 /// [TUR-3a.5 commit-β] Kuantum-döngü yakınsama-böleni: T = rtprop / K_CONV [CAL matris {2,4,8}].
 /// T=rtprop = 3a-sonrası tek DÜRÜST saat (ack_epoch öz-referans tuzağı reddedildi — srtt-clock-v1 §2.1).
 const K_CONV: u32 = 4;
+/// [Y3-sim] delivered-EAI cadence-hesabı tipik birim-boyu.
+const UNIT_SIZE_HINT: u64 = 267;
 /// [TUR-2b D-1/4] Tombstone kayıt tavanı [CAL] — SR-AUDIT-001 bounded; en-eski-önce eviction +
 /// audit. 4-decade doluş-doğrulaması not D-1/4 (0.25kbps ≈ 11 kayıt; ≲Gbps'te ~450 ≪ 4096).
 const TOMBSTONE_MAX: usize = 4096;
@@ -499,14 +501,29 @@ impl Sender {
         {
             let srtt_now = self.rtt.srtt().unwrap_or(INITIAL_RTT);
             let ack_epoch = srtt_now.max(self.expected_ack_interval());
-            self.btlbw.set_window(ack_epoch * K_BW);
+            // [TUR-D1 EK-3 AÇIK-BORÇ] W=K_BW×ack_epoch'un srtt-dalı daralma-rejiminde ANTİ-FİX:
+            // srtt-eğimi > 1/K_BW iken cutoff GERİLER → bayat-max ölümsüz (DV-3 ölçülü 0.92 s/s).
+            // Shrink-reset SEMPTOMU keser, KÖK DURUR — W-türetim/M3-decoupling turunda kapanır;
+            // "dedektör-var-diye-W-fix-gereksiz" SANILMAZ (m45 §4-S1).
+            // [Y3 KALICI — K6R-mühürlü] W_BTLBW delivered-EAI-türetimi: cadence = 2×unit/
+            // SON-TAM-örnek-delivered (last_full_bw; K3-pinleri) + return-prior(2.097s [CAL,
+            // E-FULL-borcu]). srtt-runaway'den DECOUPLED (kuyruk-değişmez) → bayat-max çok-adımlı-
+            // expire (adım≈W; uzun-daralmada kanal-bandına yakınsar — netem-mühür: 4114→308).
+            // Kopma-frozen-pencere sınır-vakası BEYANLI (TUR-S kopma-tespiti tamamlar; mini-D0 Ş3).
+            let w_epoch = {
+                let dbw = self.btlbw.last_sample_bw().max(1);
+                let term1 = Duration::from_nanos(2 * UNIT_SIZE_HINT * 1_000_000_000 / dbw);
+                (term1 + Duration::from_nanos(2_097_000_000)).max(INITIAL_RTT)
+            };
+            let _ = ack_epoch; // W_loss-kolu (aşağıda) ack_epoch-kullanmayı sürdürür (S2: zararsız)
+            self.btlbw.set_window(w_epoch * K_BW);
             self.rtt.set_rtprop_window(srtt_now * K_RTPROP);
             self.rtt.set_qd_window(ack_epoch * K_QD); // [3a.5-α] rtprop-penceresinden sonra (≤ invariant)
                                                       // [3a.5-β] kuantum-döngü T'si — yalnız rtprop varken (PreConverge'de None → n=1).
             if let Some(rtp) = self.rtt.rtprop() {
                 self.rtt.set_conv_interval(rtp / K_CONV);
             }
-        }
+        };
 
         // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
         let mut rtt_send_ns: Option<u64> = None;
@@ -562,6 +579,7 @@ impl Sender {
                 }
             }
         }
+
         // loss tespiti (§5). loss = RECOVERY sinyali (INV-RATE-1: rate'e DEĞMEZ).
         // §3.3-C/(1) yasak-1: PRE_CONVERGE'de loss İLANI YOK. §3.3-D: loss kilidi İLK GEÇERLİ SACK'le
         // (rtt.srtt Some) AÇILIR → o SACK'ten itibaren loss işlenir. Detector her zaman sync kalır.
@@ -1334,8 +1352,6 @@ impl Sender {
         }
     }
 
-    /// §3.1 OnPacketSent muhasebe: seq ata, inflight+RTT/BW/loss kayıt. `origin` recovery türünü ayırır
-    /// (DATA = orijinal birim → loss sayacı +1; retransmit/dup = recovery → +0, RTT'de Karn dışı).
     fn track_sent(
         &mut self,
         unit: OpaqueUnit,
@@ -1351,7 +1367,15 @@ impl Sender {
         let more_pending = !self.tx_queue.is_empty()
             || !self.pending_lost.is_empty()
             || !self.dup_queue.is_empty();
-        let bw_sample = self.bw_sampler.on_sent(now_ns, unit.size, !more_pending);
+        // [TUR-D1 F3] Gönderim-ANI gain-damgası: öz-kısma fazları (Drain 0.347× /
+        // DrainRtprop 0.75× / PreConverge floor) gain<1 damgası (örnek-sınıflandırma-bilgisi; tüketicisi-arşivlendi, alan-korunur).
+        let gain_ge1 = !matches!(
+            self.state,
+            SenderState::Drain | SenderState::DrainRtprop | SenderState::PreConverge
+        );
+        let bw_sample = self
+            .bw_sampler
+            .on_sent(now_ns, unit.size, !more_pending, gain_ge1);
         let units = u64::from(origin == TransmitKind::Data); // yalnız orijinal DATA loss sayacına.
         self.loss.on_sent(seq, now_ns, units);
         self.inflight_bytes += unit.size;
@@ -1478,6 +1502,18 @@ impl Sender {
             self.rtt.queue_delay().as_micros() as u64,
         )
     }
+    /// [Y3-sim SALT-GÖZLEM] (last_full_bw, window_ns) — (b)-bug-arayışı.
+    #[must_use]
+    pub fn diag_wbtlbw(&self) -> (u64, u64) {
+        (self.btlbw.last_sample_bw(), self.btlbw.window_ns())
+    }
+
+    /// [Y3-sim SALT-GÖZLEM] btlbw-pencere-örnek-izi (mekanizma-izi-kalibrasyonu).
+    #[must_use]
+    pub fn diag_btlbw_samples(&self) -> Vec<(u64, u64)> {
+        self.btlbw.samples_snapshot()
+    }
+
     /// [TUR-4] Sıfır-ağırlık fuzzy-fallback sayacı (gözlemlenebilirlik).
     #[must_use]
     pub fn diag_fuzzy_no_rule(&self) -> u64 {

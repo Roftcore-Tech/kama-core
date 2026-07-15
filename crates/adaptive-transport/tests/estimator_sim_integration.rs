@@ -19,7 +19,9 @@ async fn run() -> u64 {
     let mut filter = BtlBwFilter::new();
 
     // t=0'da 4 paket gönder → token'lar.
-    let tokens: Vec<_> = (0..4).map(|_| sampler.on_sent(0, 1250, false)).collect();
+    let tokens: Vec<_> = (0..4)
+        .map(|_| sampler.on_sent(0, 1250, false, true))
+        .collect();
 
     // Sim teslimleri (clock üzerinden zamanlanır); varış anları estimator'ı besler.
     for d in sim.deliver(&clock, 4).await {

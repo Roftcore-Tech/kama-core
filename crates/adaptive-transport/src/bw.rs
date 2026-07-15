@@ -28,6 +28,10 @@ pub struct SentPacket {
     first_sent_ns: u64,
     sent_ns: u64,
     is_app_limited: bool,
+    /// [TUR-D1 F3] Gönderim-ANI pacing-gain damgası (gain ≥ 1 fazı): shrink-dedektörü
+    /// öz-kısma (Drain/DrainRtprop/PreConverge) örneklerini ack-anı-fazından BAĞIMSIZ eler
+    /// (Drain-kohortu Steady'de ack'lenir — faz-sınırı-geçen-ack vakası).
+    gain_ge1: bool,
 }
 
 /// Bir ACK'ten türeyen delivery-rate örneği (engine §7.1).
@@ -39,6 +43,13 @@ pub struct RateSample {
     pub interval: Duration,
     /// Snapshot app-limited miydi (§7.3).
     pub is_app_limited: bool,
+    /// [TUR-D1 F3] Gönderim-anı gain≥1 damgası (SentPacket'ten taşınır).
+    pub gain_ge1: bool,
+    /// [TUR-D1 P1] ack_elapsed = now − pkt.delivered_time (taze-snapshot kapısının girdisi;
+    /// blackout-yayılımlı örnek ack_elapsed ≫ ack_epoch ile ayrışır).
+    pub ack_elapsed: Duration,
+    /// [TUR-D1 F2] Paketin gönderim-anı (yaş-kapısı: sent_ns ≥ olay-başı last_raise_ns).
+    pub sent_ns: u64,
 }
 
 /// BBR delivery-rate sampler (engine §7.1).
@@ -59,7 +70,13 @@ impl DeliveryRateSampler {
 
     /// Paket gönderimi → snapshot token (engine §7.1). Pipe boşken first_sent /
     /// delivered_time tazelenir.
-    pub fn on_sent(&mut self, now_ns: u64, size: u64, app_limited: bool) -> SentPacket {
+    pub fn on_sent(
+        &mut self,
+        now_ns: u64,
+        size: u64,
+        app_limited: bool,
+        gain_ge1: bool,
+    ) -> SentPacket {
         if self.packets_in_flight == 0 {
             self.first_sent_ns = now_ns;
             self.delivered_time_ns = now_ns;
@@ -72,6 +89,7 @@ impl DeliveryRateSampler {
             first_sent_ns: self.first_sent_ns,
             sent_ns: now_ns,
             is_app_limited: app_limited,
+            gain_ge1,
         }
     }
 
@@ -91,6 +109,9 @@ impl DeliveryRateSampler {
             delivered: self.delivered - pkt.delivered,
             interval: Duration::from_nanos(interval_ns),
             is_app_limited: pkt.is_app_limited,
+            gain_ge1: pkt.gain_ge1,
+            ack_elapsed: Duration::from_nanos(ack_elapsed),
+            sent_ns: pkt.sent_ns,
         }
     }
 
@@ -138,6 +159,10 @@ pub struct BtlBwFilter {
     samples: Vec<(u64, u64)>,
     /// Pencere (ns) — sender kanal-türevi yazar; taban W_BTLBW [STD].
     window_ns: u64,
+    /// [Y3 K3-pin] Son TAM-GEÇERLİ (valid ∧ interval≥1ms ∧ !app_limited) örneğin anlık-bw'si.
+    /// delivered-EAI cadence-girdisi: app-limited örnek W'yi KÜÇÜLTEMEZ (pin-iii; idle-sonrası
+    /// kapasite-kaybı); yeni-örnek-yoksa son-geçerli-değer-tekrar (pin-iv).
+    last_full_bw: u64,
 }
 
 impl Default for BtlBwFilter {
@@ -145,6 +170,7 @@ impl Default for BtlBwFilter {
         Self {
             samples: Vec::new(),
             window_ns: dur_ns(W_BTLBW),
+            last_full_bw: 0,
         }
     }
 }
@@ -174,6 +200,9 @@ impl BtlBwFilter {
             if app_limited_ok {
                 self.samples.push((now_ns, bw));
             }
+            if !sample.is_app_limited {
+                self.last_full_bw = bw; // [Y3 K3-pin-iii] yalnız tam-geçerli örnek cadence-girdisi
+            }
         }
         let cutoff = now_ns.saturating_sub(self.window_ns);
         // [TUR-3a D-2/2] KEEP-LAST: budama filtreyi boşaltacaksa en-yeni örnek yaşar.
@@ -191,6 +220,26 @@ impl BtlBwFilter {
     #[must_use]
     pub fn btlbw(&self) -> u64 {
         self.samples.iter().map(|&(_, v)| v).max().unwrap_or(0)
+    }
+
+    /// [Y3-sim deneysel] Son push'lanan örneğin anlık-bw'si (delivered-cadence için taze-değer;
+    /// bayat-max'tan bağımsız). Boşsa 0.
+    #[must_use]
+    pub fn last_sample_bw(&self) -> u64 {
+        self.last_full_bw
+    }
+
+    /// [Y3-sim SALT-GÖZLEM] Aktif pencere (ns) — (b)-bug-arayışı: expiry-sonrası W yeniden-boyutlanıyor mu.
+    #[must_use]
+    pub fn window_ns(&self) -> u64 {
+        self.window_ns
+    }
+
+    /// [Y3-sim SALT-GÖZLEM] Pencere-örnekleri (t_ns, bw) — mekanizma-izi-kalibrasyonu
+    /// (max'a-giren-örnek zamanı/değeri netem-tazelenme-desenine karşı eşlenir).
+    #[must_use]
+    pub fn samples_snapshot(&self) -> Vec<(u64, u64)> {
+        self.samples.clone()
     }
 }
 

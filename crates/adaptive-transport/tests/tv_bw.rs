@@ -19,14 +19,14 @@ fn dms(ms: u64) -> Duration {
 fn tv_bw_sampler_golden() {
     // 1250B paket, 2-in-flight, bottleneck 20ms/pkt, RTT 40ms (engine §7.1).
     let mut s = DeliveryRateSampler::new();
-    let p0 = s.on_sent(ns(0), 1250, false);
-    let p1 = s.on_sent(ns(0), 1250, false);
+    let p0 = s.on_sent(ns(0), 1250, false, true);
+    let p1 = s.on_sent(ns(0), 1250, false, true);
     let r0 = s.on_ack(ns(40), p0);
-    let p2 = s.on_sent(ns(40), 1250, false);
+    let p2 = s.on_sent(ns(40), 1250, false, true);
     let r1 = s.on_ack(ns(60), p1);
-    let p3 = s.on_sent(ns(60), 1250, false);
+    let p3 = s.on_sent(ns(60), 1250, false, true);
     let r2 = s.on_ack(ns(80), p2);
-    let p4 = s.on_sent(ns(80), 1250, false);
+    let p4 = s.on_sent(ns(80), 1250, false, true);
     let r3 = s.on_ack(ns(100), p3);
     let r4 = s.on_ack(ns(120), p4);
 
@@ -63,11 +63,17 @@ fn tv_bw_loss_does_not_reduce_btlbw() {
         delivered: 1250,
         interval: dms(40),
         is_app_limited: false,
+        gain_ge1: true,
+        ack_elapsed: Duration::ZERO,
+        sent_ns: 0,
     };
     let s62500 = RateSample {
         delivered: 2500,
         interval: dms(40),
         is_app_limited: false,
+        gain_ge1: true,
+        ack_elapsed: Duration::ZERO,
+        sent_ns: 0,
     };
 
     let mut f = BtlBwFilter::new();
@@ -86,6 +92,9 @@ fn tv_bw_app_limited_rule() {
             delivered: 2500,
             interval: dms(40),
             is_app_limited: false,
+            gain_ge1: true,
+            ack_elapsed: Duration::ZERO,
+            sent_ns: 0,
         },
         0,
         true,
@@ -98,6 +107,9 @@ fn tv_bw_app_limited_rule() {
             delivered: 1000,
             interval: dms(50),
             is_app_limited: true,
+            gain_ge1: true,
+            ack_elapsed: Duration::ZERO,
+            sent_ns: 0,
         },
         ns(10),
         true,
@@ -110,6 +122,9 @@ fn tv_bw_app_limited_rule() {
             delivered: 4000,
             interval: dms(50),
             is_app_limited: true,
+            gain_ge1: true,
+            ack_elapsed: Duration::ZERO,
+            sent_ns: 0,
         },
         ns(20),
         true,
@@ -125,6 +140,9 @@ fn tv_bw_min_interval_and_external_invalid() {
             delivered: 2500,
             interval: dms(40),
             is_app_limited: false,
+            gain_ge1: true,
+            ack_elapsed: Duration::ZERO,
+            sent_ns: 0,
         },
         0,
         true,
@@ -135,6 +153,9 @@ fn tv_bw_min_interval_and_external_invalid() {
             delivered: 100,
             interval: Duration::from_micros(500),
             is_app_limited: false,
+            gain_ge1: true,
+            ack_elapsed: Duration::ZERO,
+            sent_ns: 0,
         },
         ns(1),
         true,
@@ -147,6 +168,9 @@ fn tv_bw_min_interval_and_external_invalid() {
             delivered: 9999,
             interval: dms(40),
             is_app_limited: false,
+            gain_ge1: true,
+            ack_elapsed: Duration::ZERO,
+            sent_ns: 0,
         },
         ns(2),
         false,
@@ -160,8 +184,8 @@ fn tv_bw_credit_delivered_no_sample_but_future_delta() {
     // SONRAKİ gerçek örneğin delta'sına dürüst yansır (teslimat gerçekti).
     use adaptive_transport::bw::DeliveryRateSampler;
     let mut s = DeliveryRateSampler::new();
-    let p0 = s.on_sent(0, 1000, false);
-    let p1 = s.on_sent(ns(10), 1000, false);
+    let p0 = s.on_sent(0, 1000, false, true);
+    let p1 = s.on_sent(ns(10), 1000, false, true);
     let r0 = s.on_ack(ns(20), p0);
     assert_eq!(r0.delivered, 1000);
     // kol-2 kredisi: 500B superseded-iletim geç-ACK'i — örnek yok, kümülatif +500.
@@ -182,11 +206,11 @@ fn tv_bw_credit_anchors_next_send_window() {
     // kredi-anından ölçülür (eşleşmiş pencere, yansız — güncellenmeseydi sahte-uzun interval).
     use adaptive_transport::bw::DeliveryRateSampler;
     let mut s = DeliveryRateSampler::new();
-    let p0 = s.on_sent(0, 1000, false);
+    let p0 = s.on_sent(0, 1000, false, true);
     s.on_ack(ns(20), p0); // delivered=1000 @20ms
     s.credit_delivered(ns(30), 500); // kümülatif 1500 @30ms; in-flight 0'a döner
                                      // Krediden sonra gönderim: pipe-boş → first_sent/delivered_time yeniden çıpalanır (40ms).
-    let p1 = s.on_sent(ns(40), 1000, false);
+    let p1 = s.on_sent(ns(40), 1000, false, true);
     let r1 = s.on_ack(ns(60), p1);
     assert_eq!(
         r1.delivered, 1000,
@@ -207,6 +231,9 @@ fn tv_bw_keep_last_and_channel_window() {
         delivered: d,
         interval: Duration::from_millis(ms),
         is_app_limited: false,
+        gain_ge1: true,
+        ack_elapsed: Duration::ZERO,
+        sent_ns: 0,
     };
     assert_eq!(f.update(s(1000, 100), 0, true), 10_000); // 10kB/s @t=0
                                                          // t=15s (>10s pencere), geçersiz güncelleme: ESKİ davranış 0'a düşerdi; keep-last 10k tutar.
