@@ -15,19 +15,26 @@
 
 pub mod aad;
 pub mod control;
+pub mod epoch_machine;
 pub mod error;
+pub mod handle_assign;
+pub mod hub_sim;
 pub mod inner;
 pub mod opened;
 pub mod outer;
 pub mod pn;
 pub mod protector;
 pub mod retry;
+pub mod session;
 
 pub use control::{
     decode_control_body, encode_control_body, split_for_send, ACK_MAX_RANGES,
     RECOVERED_MAX_ESI_RANGES, SACK_MAX_GAP_BLOCKS,
 };
+pub use epoch_machine::{DhEpochMachine, EpochAction, RecvEpoch0, Role, GRACE_MIN_PACKETS};
 pub use error::{PnReject, WireError};
+pub use handle_assign::{HandleAssign, HandleAssignAck, HANDLE_ASSIGN_LEN};
+pub use hub_sim::{HubSim, ResponderDelivery, HANDLE_ASSIGN_MAX_RETRIES};
 pub use inner::InnerPlain;
 pub use opened::{OpenedTransportShard, PrivateAdmissionProof};
 pub use outer::ExtendedOuter;
@@ -37,3 +44,4 @@ pub use protector::{
     SealedPacket, SealedPacketMeta, WireSizeError, KEY_LEN, SEND_PN_CAP,
 };
 pub use retry::{InboundControlDedup, InboundOutcome, RetryClass};
+pub use session::{Direction, Session, SessionId, SessionLifecycle, SessionManager};

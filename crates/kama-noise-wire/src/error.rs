@@ -41,6 +41,13 @@ pub enum WireError {
     /// Gelen control-count DR-1 tavanını aşıyor (DoS-guard; FAIL-CLOSED reject).
     #[error("control count {count} exceeds cap {cap} for kind {kind:#04x}")]
     ControlCountExceedsCap { kind: u8, count: usize, cap: usize },
+    /// Datagram'ın h_ext'i hiçbir aktif-session'a ait değil (§2.55 unknown-handle → cheap-drop;
+    /// cross-session/stale reddi — eski-session yeni-session'a admission-alamaz).
+    #[error("unknown handle h_ext={0:#010x} (no active session)")]
+    UnknownHandle(u32),
+    /// Session tombstone/closed (SESSION_CLOSE sonrası bounded-grace; data-admit-etmez).
+    #[error("session closed (tombstone) h_ext={0:#010x}")]
+    SessionClosed(u32),
 }
 
 /// §4 precheck reddi — hangi-kural düştüğü (window-ilerletmeden).
