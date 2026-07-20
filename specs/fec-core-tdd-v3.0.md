@@ -1,5 +1,11 @@
 # kama-fec-core-tdd — Kripto-Agnostik FEC/Erasure Çekirdeği [v3.0 — dört-karar-boşluğu-KAPATILDI + öz-tarama-temiz; FULL-DESIGN-GO-onayı: Abkarada; + TRANSPORT-NON-REGRESSION]
 
+> **STATÜ — DR-4 CLOSED (KOŞUL-A / LE64)** [Önceki "GEÇİCİ STATÜ OVERRIDE — DR-4 AÇIK" bloğu, DR-4-envanteri
+> KOŞUL-A(2)-KESİN-sağladığı için otomatik-kilitle kaldırıldı — karar-paketi GÖREV-2.]
+> - **Cryptographic-profile freeze: CLOSED** — AEAD-nonce96=LE64 (noise-wire §4.5); FULL-DESIGN-GO yeniden-aktif.
+> - **Sprint-4: GO** — DR-4-CLOSED sonrası · **Sprint-5: HOLD** (N1-legacy-interop + cross-crate-integration) · **Production: NO-GO**.
+> - Sprint-durum-otoritesi: karar-paketi BÖLÜM-5.
+
 > **STATÜ (MADDE-1 — tek-merdiven):** wire-tasarımı-KİLİTLİ (§2.6-noise-wire byte-layout, §11-PMTU — final). **GO:** FEC-
 > crate-POC · canonical-source-symbol · metadata-recoverability · golden-vectors · profile-çalışması · **FEC-core-
 > POC/codec-KODU** (kripto-agnostik-taraf-BAŞLANIR). **D1-ENTRY-NO-GO:** N1-N10-UYUM + POC-tamamlanmadan production-
@@ -238,6 +244,11 @@ CONTEXT + recovered-source-INDEX'inden-alınır (inner-header-eşitliği-DEĞİL
 doğrulama YALNIZ: actual_payload_len ≤ (E−11) · source_flags-reserved-nonzero→reject · chunk_offset-block-
 tutarlılığı. Mismatch → reject + rank-ARTMAZ + allocation-GENİŞLEMEZ + reason-code (içerik-sızdırmaz). K_actual-
 uyumu inner-header'da (§2.6, block-common) — o ayrı-kontrol.
+**ON-DEMAND-RECOMPUTE — D0-ÖLÇÜM-KAYDI [2026-07]:** reed-solomon-simd tüm-R'yi-tek-encode()'da-üretir →
+tek-ESI-recompute/encode ≈ 0.9× — **CPU-tasarrufu-YOK.** On-demand'in-gerçek-faydası = BELLEK/SCHEDULING (tüm-R-
+repair'i-önceden-tutmama/göndermeme), CPU-DEĞİL. RsSimdEngine-reuse ~1.0× ("decoder-İNŞA-baskın"-hipotezi-ÇÜRÜDÜ;
+maliyet-decode-işleminin-kendisinde) — kalıcılaştırma M4/M5-allocation-ölçümüne-bağlı (count/bytes/peak-mem/
+p50-p95-p99/churn/stale-state-fuzz/one-shot-karşılaştırma).
 **ON-DEMAND-RECOMPUTE-NETLEŞTİRME (analiz-P0-11 — "yeniden-encode-yasak"-daraltıldı):** YASAK-olan = farklı-
 profile/matrix/source-ordering/code-space-ile-yeniden-encode. **SERBEST** = aynı-immutable-source-set+aynı-profile'
 dan kullanılmamış-repair-ESI'yi-sonradan-DETERMİNİSTİK-yeniden-hesaplamak (golden-vector-aynı-byte-şartıyla) —
@@ -323,7 +334,11 @@ sealed_len (EXTENDED)        = 26 + encrypted_inner_len        # h_ext4+wf1+flag
 sealed_len (legacy-SESSION_DATA) = 22 + plaintext_payload_len  # AEAD-expansion=yalnız-tag-varsayımı;
                                                                # farklıysa-EXACT-formül-N7-raporunda-güncellenir
 ```
-Kurallar: **E-hiçbir-zaman-doğrudan-1200-DEĞİL** · IPv4/IPv6/tunnel-AYRI-hesap · IP-fragmentation'a-GÜVENİLMEZ ·
+Kurallar: **E-hiçbir-zaman-doğrudan-1200-DEĞİL. **E-PROFİL-SEÇİM-KURALI [D0-ölçüm-dersi]:** overhead-yüzdesi-TEK-BAŞINA-
+profil-SEÇTİRMEZ — E=1024 (%3.5-overhead) = BULK-transfer/yüksek-bandwidth-profili; **sub-kbps ≠ E=1024** (0.25kbps'
+te-1024B-symbol ≈ 33s-serialization → deadline-ölür). Sub-kbps-adayı = küçük-E (64/96/128) + {time-to-first-decode ·
+block-completion-time · deadline-miss-prob · retx-maliyeti · serialization-süresi · repair-scheduling-latency}
+metrikleriyle-seçim** · IPv4/IPv6/tunnel-AYRI-hesap · IP-fragmentation'a-GÜVENİLMEZ ·
 profile-shard-size: even-byte + mümkünse-64-multiple (reed-solomon-simd) + sub-kbps-serialization + deadline.
 **MID-BLOCK-PMTU-SHRINK:** Profile.E-block-boyunca-IMMUTABLE; küçülüp-sığmazsa yeni-shard-GÖNDERİLMEZ → block-
 abort/expire → kalan-data-KÜÇÜK-profile-YENİ-block. N7-raporu: ICMP-black-hole-fallback + padding-size-class-etkisi.
@@ -448,8 +463,11 @@ YOL) → ortak-entegrasyon-gate → D1. **fec-core bağımsız-test-edilebilir (
 | PARAM admission | Bootstrap-profile; PARAM_ACK=confirmation, kapı-değil | CLOSED |
 | dh_epoch transition | 5-adım confirmation-safe machine; grace=max(4×sRTT,64pkt) CAL | CLOSED |
 | K-width invariant | 1≤K_actual≤K_shape≤255; E≥11; fail-closed | CLOSED |
+| AEAD nonce96 mapping | DR-4 KOŞUL-A LE64-lock (noise-wire §4.5); envanter=NO_VECTOR/debt=NO | CLOSED |
 
-**Tüm-gate'ler-CLOSED → FULL-DESIGN-GO.** (Önceki-"11-gate"-sayımı-alt-kararların-birleştirilmesiydi; normatif-
+**Tüm-ÖNCEKİ-gate'ler-CLOSED; AEAD-nonce96-mapping-OPEN.** Envelope/wire-layout-freeze-KORUNUR;
+cryptographic-profile-freeze DR-4-kapanana-kadar-ASKIDA. [DR-4-koşulu-uygulanıp-§4.5-işlendiğinde: OPEN→CLOSED →
+FULL-DESIGN-GO-yeniden-aktive.] (Önceki-"11-gate"-sayımı-alt-kararların-birleştirilmesiydi; normatif-
 liste-BU-tablodur.)
 
 ## STATÜ-MERDİVENİ [PATCH-H]

@@ -1,5 +1,12 @@
 # kama-noise-wire-tdd — Kama Noise Secure-Wire Profile [v2.0 — dört-karar-boşluğu-KAPATILDI (HANDLE_ASSIGN-frozen · bootstrap-profile-admission · confirmation-safe-epoch · K-invariant) + öz-tarama-temiz; FULL-DESIGN-GO-onayı: Abkarada]
 
+> **STATÜ — DR-4 CLOSED (KOŞUL-A / LE64)** [Önceki "GEÇİCİ STATÜ OVERRIDE — DR-4 AÇIK" bloğu, DR-4-envanteri
+> KOŞUL-A(2)-KESİN-sağladığı için otomatik-kilitle kaldırıldı — karar-paketi GÖREV-2.]
+> - **Cryptographic-profile freeze: CLOSED** — AEAD-nonce96=LE64 (§4.5); FULL-DESIGN-GO yeniden-aktif (16-gate+nonce96=CLOSED).
+> - **Sprint-4: GO** — DR-4-CLOSED sonrası (session/HANDLE_ASSIGN/dh_epoch-machine/INIT-flight/restart; D1-promptu-§5).
+> - **Sprint-5: HOLD** (bağımsız-gate'ler: N1-legacy-interop + cross-crate-integration) · **Production: NO-GO** (testler-tamamlanmadı).
+> - Sprint-durum-otoritesi: karar-paketi BÖLÜM-5. Bu-holdlar-tasarım-gate-değil-süreç-gatetir.
+
 > **ONAY (Abkarada, resmî):** Bu-belge D0-çalışma-talimatı-olarak **ONAYLANDI.** Riskler-doğru-yere-taşınmış. **GO:**
 > mevcut-Noise-kod-envanteri · PN/nonce/replay-analizi · hostile-handshake/bootstrap-tasarımı · exact-sealed-length/
 > PMTU-ölçümü · secure-control-frame-tasarımı · shared-schema-tasarımı. **STATÜ (MADDE-1 — tek-merdiven):** wire-
@@ -110,7 +117,9 @@ flight-state-machine.** Bootstrap-FEC Alpha'da-KULLANILMAZ (Beta/ayrı-araştır
   amplification/reflection-yüzeyi-varsa-etkinleştirilir.
 · Forward-loss A-aşamasını (RECEIVER_ESTABLISHED: forward-%90'da-INIT-hiç-ulaşmayabilir → session-kurulamaz),
   reverse-loss B/C-aşamalarını (SENDER_CONFIRMED-gecikir; FS_UPGRADED-gerçekleşmeyebilir) etkiler.
-**BAĞ:** mevcut-PRE_CONVERGE-cold-start + KEYSTONE-Noise-AEAD-probe = tam-bu (B)-katmanı → D0'da-birleşik.
+**BAĞ [DR-2-NETLEŞTİRME]:** PRE_CONVERGE/KEYSTONE bu-katmanla-yalnız-ANALOJİ-ilişkisindedir, ÖZDEŞ-DEĞİL —
+PreConverge = CC-cold-start (data, tavansız, yeni-seq); INIT-flight = AYRI-güvenlik-kritik-katman (cached-byte-for-
+byte, bounded, anti-amplification). KEYSTONE-probe INIT-flight'ın-parçası; PreConverge'e-bağlanmaz.
 **D0-çıktısı = mühürlü-handshake'in hostile-paket-teslim-KARARI (pattern-DEĞİL).**
 
 **EARLY-DATA-REPLAY/IDEMPOTENCY (analiz-P0-5 — init_counter-tek-başına-YETMEZ) [NORMATİF]:**
@@ -346,6 +355,10 @@ expected_pn[dh_epoch]      # u64, en-yüksek-kabul+1, HER-dh_epoch-AYRI
 replay_window[dh_epoch]    # bitmap, WINDOW=2^14=16384, HER-dh_epoch-AYRI
 ```
 Legacy-seq16-16-bit-düşük, extended-pn32-32-bit-düşük; İKİSİ-de AYNI-direction-local-full-PN'in-düşük-bitleri (§2.5).
+**[DR-3 — SABİT-KAPSAM-AYRIMI, KARAR-VERİLDİ]:** anti-replay-sabitleri PER-ENCODING-WIDTH: **legacy-seq16-yolu →
+ccr-§35.8-sabitleri** (REPLAY_WINDOW=1024, MAX_FUTURE_GAP=4096, MAX_REORDER=8192 — mühürlü; 16-bit-span-65536'ya-
+uygun-dar-pencere); **extended-pn32-yolu → bu-bölümün-sabitleri** (WINDOW=2^14, FUTURE_GAP_MAX=2^13 — 32-bit-span-
+geniş-pencere-taşır). İki-otorite-arasında-ÇELİŞKİ-DEĞİL-kapsam-ayrımı; iki-yol-ayrı-sabit-setini-uygular.
 ```
 reconstruct(low_bits, low_width_bits, dh_epoch):
   span   = 1 << low_width_bits              # 16→65536 | 32→2^32
@@ -388,6 +401,43 @@ yapısal-imkansız). **ORDER:** (1)fixed-cost-outer-parse (2)handle→layout (§
 (4)too-old/dup/future-precheck-window-İLERLETMEDEN (5)dh_epoch-cipher-state-AEAD-attempt (6)success→COMMIT (7)inner-
 parse+bounds (8)OpenedPacket-handoff. **Unauthenticated-paket replay-window-İLERLETMEZ.** N1 = kod-bu-pseudocode'a-
 uyuyor-mu (uymuyorsa-KOD-düzeltilir).
+
+## 4.5 AEAD-NONCE96 [NORMATİF — KİLİTLİ, DR-4] (ChaCha20-Poly1305, per-direction per-dh_epoch CipherState)
+
+> DR-4-CLOSED — KOŞUL-A (LE64-OTOMATİK). Envanter: `reports/decision-requests/DR-4-envanter.md` (vector=NO_VECTOR,
+> compatibility-debt=NO → gerçek-borç-yok). D2'nin-BE'si farklı-nonce-modeli (HKDF-türevli) + Historical → LE'yi-engellemez.
+
+```
+fn nonce96(full_pn: u64) -> [u8; 12]:
+    nonce = [0u8; 12]
+    nonce[0..4]  = 0x00 0x00 0x00 0x00          # 32-bit zero prefix
+    nonce[4..12] = full_pn.to_le_bytes()        # LE64 — Noise-Framework-ChaChaPoly-KANONİK-mapping
+    return nonce
+
+ÖRNEK-BYTE'LAR (elle-yazılmış — golden bunları-DOĞRUDAN-assert-eder):
+    full_pn=0     → 00 00 00 00 · 00 00 00 00 00 00 00 00
+    full_pn=1     → 00 00 00 00 · 01 00 00 00 00 00 00 00
+    full_pn=2^32  → 00 00 00 00 · 00 00 00 00 01 00 00 00
+    full_pn=2^63  → 00 00 00 00 · 00 00 00 00 00 00 00 80
+
+NOT: wire'daki pn32/seq16 BIG-ENDIAN-taşınır (§2.6 — network-byte-order); nonce96 ise CIPHER-PRIMITIVE-girdisidir
+ve Noise-ChaChaPoly-kanonik-LE64-kullanır. İKİ-FARKLI-SERIALIZATION-SÖZLEŞMESİ — karıştırılmaz.
+
+GEREKÇELİ-AYRIMLAR (test-edilebilir-INVARIANT'lar — spec-cümlesi-değil-test):
+  INV-NONCE-DIR-1  : direction nonce'a-KODLANMAZ çünkü Split() per-direction-AYRI-key-üretir.
+                     BİRİNCİL-TEST: deterministic-KDF/Split-vector → k_A→B != k_B→A (key-derivation-seviyesi).
+                     EK-REGRESSION: aynı-{nonce,AAD,plaintext}-iki-yön-farklı-ciphertext (ispat-değil-regression).
+  INV-NONCE-EPOCH-1: dh_epoch nonce'a-KODLANMAZ çünkü her-epoch-AYRI-cipher-key/state.
+                     BİRİNCİL-TEST: k_epoch0 != k_epoch1 (KDF-vector) + epoch1-counter=0-assert + epoch0/epoch1-
+                     AYNI-key-NESNESİNİ-paylaşamaz (tip/lifecycle-assert).
+  INV-NONCE-REUSE-1: aynı-key-altında-aynı-nonce96-İKİNCİ-KEZ-KULLANILAMAZ.
+                     TEST: counter-monoton + no-reuse-guard + wrap/cap-öncesi-SESSION_RENEW_REQUIRED + restart=
+                     yeni-session/yeni-key (full-PN-persist-YOK).
+
+Seçili-mapping protocol-version-V1-için-IMMUTABLE.
+GOLDEN-ZORUNLU-ASSERT-SETİ: reconstructed-full_pn · exact-nonce96-bytes · exact-AAD · exact-ciphertext · exact-tag ·
+RustCrypto==libsodium-IETF-eşitliği (K-WIRE-NONCE96-1).
+```
 
 ## 5. ALPHA DH-EPOCH + SESSION RENEWAL [NORMATİF — KİLİTLİ, MADDE-7] (in-session-key-phase-YOK)
 **Alpha-normatifi (dört-kavram, çelişki-çözüldü):**
@@ -499,6 +549,9 @@ resource-trust-DEĞİL** — fec-core-bounds (§13-fec-core-tdd) auth-sonrası-d
   bounded-retry-idempotent).
 - **K-WIRE-BOOTSTRAP-C:** FS_UPGRADED gecikebilir-veya-gerçekleşmeyebilir; epoch-0-usable-KALIR ve-güvenlik-statüsü
   (klasik-FS-değil) açık-RAPORLANIR. Pattern-DEĞİŞMEZ (§0.7-A/§0.9). Test-matrisi: fwd/rev {0/90,90/0,90/90,burst}×{A,B,C}.
+- **K-WIRE-NONCE96-1 [DR-4-kapanış-kanıtı]:** golden'lar nonce96-BYTE-DİZİSİNİ-doğrudan-assert-eder (full_pn ∈
+  {0, 1, 2^32, 2^63}-örnekleri) + RFC-8439-resmi-vector'lar + libsodium-IETF-differential-cross-check (CI-oracle;
+  runtime-backend-switching-YOK) + random-{key,nonce,AAD,pt}-corpus-eşitliği.
 - **K-WIRE-AAD-1:** outer-alanlar-byte-level + AAD-canonical (golden-vector-AAD-kapsar); iki-impl-aynı-AAD.
 - **K-WIRE-AEADFAIL-1:** AEAD-fail silent-drop+log, replay-window-ilerlemez, state-poisoning-yok, DoS-vektörü-değil.
 - **K-WIRE-TRIAL-1:** key-trial-sayısı-sabit-küçük; trial+decode-timing-uniform (side-channel-sızdırmaz).
@@ -551,6 +604,19 @@ final · PACKET-enum-arayüzü (P0-1) · SealedPacketMeta (P0-4) · schema-crate
 (seçim-DEĞİL) + fec-core-POC ∥ ortak-entegrasyon-
 gate → D1. **[GÜNCELLENDİ: wire-tasarımı-KİLİTLİ §2.5-2.8 — bu-eski-kısıt-kalktı.] seq-2B/nonce/rekey/AAD kod-görülmeden ONAYLANMAZ.**
 
+## 13.5 KRİPTO-PROFİLE-FREEZE-CHECKLIST [SÜREÇ-NORMATİFİ — DR-4-dersinden] (her-crypto-profile-freeze'de-ZORUNLU)
+Semantik↔serialization-boşluğu-sınıfını (DR-4: full_pn-tanımlı-ama-12B-nonce-mapping-tanımsızdı) yapısal-önler:
+```
+□ key-derivation  □ key-scope  □ direction-separation  □ epoch-separation  □ AEAD-algorithm+varyant
+□ nonce-width  □ NONCE-EXACT-BYTE-MAPPING  □ counter-başlangıcı  □ counter-monotonicity/no-reuse
+□ counter-wrap/cap  □ AAD-exact-bytes  □ plaintext-exact-bytes  □ tag-placement  □ decrypt-failure-state-etkisi
+□ replay-window-commit-order  □ restart-semantics  □ INDEPENDENT-GOLDEN-ORACLE  □ RFC/standard-vector
+□ cross-implementation-vector
+```
+Self-generated-golden TEK-BAŞINA-YETMEZ (yanlış-davranışı-da-sabitler): en-az {spec-elle-yazılmış-byte-örnekleri +
+RustCrypto-çıktısı + bağımsız-libsodium-IETF-çıktısı} üçlüsü. Deprecate-edilen-her-appendix-için "hâlâ-normatif-
+tek-satırı-var-mı"-taraması ZORUNLU (D2-tuzağı).
+
 ## D0-B ORTAK-GATE KAPANIŞ-TABLOSU [iki-belgede-BYTE-FOR-BYTE-AYNI — PATCH-G]
 | Gate | Karar | Durum |
 |---|---|---|
@@ -574,8 +640,11 @@ gate → D1. **[GÜNCELLENDİ: wire-tasarımı-KİLİTLİ §2.5-2.8 — bu-eski-
 | PARAM admission | Bootstrap-profile; PARAM_ACK=confirmation, kapı-değil | CLOSED |
 | dh_epoch transition | 5-adım confirmation-safe machine; grace=max(4×sRTT,64pkt) CAL | CLOSED |
 | K-width invariant | 1≤K_actual≤K_shape≤255; E≥11; fail-closed | CLOSED |
+| AEAD nonce96 mapping | DR-4 KOŞUL-A LE64-lock (§4.5); envanter=NO_VECTOR/debt=NO | CLOSED |
 
-**Tüm-gate'ler-CLOSED → FULL-DESIGN-GO.** (Önceki-"11-gate"-sayımı-alt-kararların-birleştirilmesiydi; normatif-
+**Tüm-ÖNCEKİ-gate'ler-CLOSED; AEAD-nonce96-mapping-OPEN.** Envelope/wire-layout-freeze-KORUNUR;
+cryptographic-profile-freeze DR-4-kapanana-kadar-ASKIDA. [DR-4-koşulu-uygulanıp-§4.5-işlendiğinde: OPEN→CLOSED →
+FULL-DESIGN-GO-yeniden-aktive.] (Önceki-"11-gate"-sayımı-alt-kararların-birleştirilmesiydi; normatif-
 liste-BU-tablodur.)
 
 ## STATÜ-MERDİVENİ [PATCH-H]
