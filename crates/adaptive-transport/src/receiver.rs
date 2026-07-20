@@ -2,7 +2,7 @@
 //!
 //! **Deterministik çekirdek (ADR-17):** datagram metadata'sı girer → teslim + ACK çıkar. Kripto
 //! DIŞINDA (INV-ENGINE-SOC): güvenlik katmanı (Noise+kompakt, §0.2) datagram'ı çözer/verify eder;
-//! Receiver VERIFIED opak birim + metadata (seq/block_id/shard_index) ALIR. verify FAIL → güvenlik
+//! Receiver VERIFIED opak birim + metadata (seq/block_id/esi/k_actual — schema §2.6) ALIR. verify FAIL → güvenlik
 //! katmanı silent drop (transport hiç görmez). Receiver seq metadata OKUR, rx-set tutar, SACK üretir
 //! ([`crate::ack`]). per-shard AEAD + RS-decode GÜVENLİK katmanında (authenticate-before-decode, INV-FEC-1).
 //!
@@ -36,15 +36,17 @@ pub enum RxKind {
     /// SESSION_DATA — E2E opak birim teslim edilir.
     Data,
     /// FEC_SHARD — block/shard; reconstruction güvenlik katmanında (transport buffer'lar + ACK'ler).
+    /// **Genişlik schema §2.6 ile hizalı (DR-S5-2, N8/N3-düzeltme):** block_id u32 · esi u16 · k_actual u8 ·
+    /// is_repair (source/repair-ayrımı). r-alanı KALKTI (R_code_max profile/code-space'ten; §4 R-üçlü).
     FecShard {
-        /// FEC block kimliği.
-        block_id: u64,
-        /// Shard indeksi (0..k+r).
-        shard_index: u16,
-        /// Data shard sayısı.
-        k: u16,
-        /// Parity shard sayısı.
-        r: u16,
+        /// FEC block kimliği (schema §2.6: session+direction-scoped u32).
+        block_id: u32,
+        /// Encoding Symbol ID (schema §2.6: esi u16).
+        esi: u16,
+        /// Bloktaki gerçek source-shard sayısı (schema §2.6: k_actual u8; B4: 1≤k_actual≤255).
+        k_actual: u8,
+        /// source/repair ayrımı (schema ShardKind).
+        is_repair: bool,
     },
 }
 
@@ -225,8 +227,12 @@ impl Receiver {
         let (delivered, is_shard) = match d.kind {
             RxKind::Data => (vec![d.unit_id], false),
             RxKind::FecShard { .. } => {
-                // Shard buffer'lanır + ACK'lenir; RS-decode + reconstruction GÜVENLİK katmanında
-                // (authenticate-before-decode, INV-FEC-1). Transport birimi burada teslim ETMEZ.
+                // ADMISSION-KÖPRÜSÜ (DR-S5-2): RxDatagram ZATEN open-edilmiş/authenticated (güvenlik-katmanı
+                // AEAD-verify etti — INV-FEC-1 authenticate-before-decode). Buraya YALNIZ sealed-type'tan-gelen
+                // shard ulaşır (forged-shard bu-noktaya ERİŞEMEZ). Shard buffer'lanır + ACK'lenir; RS-decode +
+                // reconstruction GÜVENLİK/engine-katmanında (opened-shard → fec-codec; kama-integration-pipeline).
+                // Transport birimi burada teslim ETMEZ. **N8: shard-admission BtlBw/credit-YOLU-AÇMAZ** (kredi
+                // yalnız gerçek-wire-ACK'ten, sender.bw.rs; RECOVERED logical-ACK≠credit).
                 (Vec::new(), true)
             }
         };
@@ -647,9 +653,9 @@ mod tests {
             unit_id: 100,
             kind: RxKind::FecShard {
                 block_id: 7,
-                shard_index: 0,
-                k: 4,
-                r: 2,
+                esi: 0,
+                k_actual: 4,
+                is_repair: false,
             },
         };
         let o = r.on_datagram(shard, 0);
@@ -659,6 +665,30 @@ mod tests {
         );
         assert_eq!(r.state(), RxState::FecDecode);
         assert_eq!(r.received_count(), 1, "shard ACK için rx-set'e girer");
+    }
+
+    // DR-S5-2: repair-shard da buffer+ACK, teslim-YOK (is_repair ayrımı + INV-FEC-1 korunur).
+    #[test]
+    fn repair_shard_buffered_not_delivered() {
+        let mut r = Receiver::new();
+        let shard = RxDatagram {
+            seq: 1,
+            unit_id: 200,
+            kind: RxKind::FecShard {
+                block_id: 7,
+                esi: 0,
+                k_actual: 4,
+                is_repair: true, // repair
+            },
+        };
+        let o = r.on_datagram(shard, 0);
+        assert!(
+            o.delivered.is_empty(),
+            "repair-shard teslim-YOK (INV-FEC-1)"
+        );
+        assert_eq!(r.state(), RxState::FecDecode);
+        // N8: shard-admission ACK-üretir (SACK) ama BtlBw-credit-YOLU-AÇMAZ (kredi sender.bw.rs'te, gerçek-wire-ACK).
+        assert_eq!(r.received_count(), 1);
     }
 }
 

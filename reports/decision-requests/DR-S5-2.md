@@ -3,6 +3,15 @@
 - **Sprint:** 5c (cerrahi; §2-protokol). **Statü:** ÖNERİ — Abkarada-onayı-öncesi UYGULANMAZ.
 - **Non-regression referansı:** `reports/d1-exit/baseline-pre-5c.md` (A+B+C). ⚠ Metodoloji §D-onayına bağlı.
 
+## 0. ÖN-KONTROL SONUCU (Abkarada-şartı) — RxKind::FecShard çağıran-listesi
+
+`grep -rn RxKind::FecShard crates/adaptive-transport/` → **3 site, hiçbiri mühürlü-yola değmez:**
+- `receiver.rs:39` — enum TANIMI (değiştirilecek).
+- `receiver.rs:227` — buffer-yolu `RxKind::FecShard { .. }` (`..`-pattern → alan-genişliğinden BAĞIMSIZ; değişmez).
+- `receiver.rs:648-650` — TEST-constructor (yeni-genişliğe güncellenecek).
+- **Alan-erişimi:** yalnız `shard_index` @ test:650. src/-içinde RxKind-alan-erişimi YOK.
+- **Mühürlü-komşu-çağıran YOK:** RxKind::Data-teslim / SACK-V2 / bw.rs bu-tipe DEĞMEZ. → GÜVENLİ, DUR-gerekmedi.
+
 ## 1. Dokunulacak dosya:satır (±3-bağlam)
 
 **(a) receiver.rs:35-49** — RxKind::FecShard genişlikleri (N8/N3-bulgusu: schema §2.6 ile uyumsuz):
