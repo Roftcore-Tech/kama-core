@@ -1,0 +1,18 @@
+[package]
+name = "kama-integration"
+version = "0.1.0"
+edition = "2021"
+license = "Proprietary"
+publish = false
+
+# ENGINE-SEVİYESİ cross-crate integration harness (Sprint-5a). fec-codec + schema + noise-wire'ı
+# uçtan-uca birleştirir (mock-key; paylaşılan adaptive-transport-koduna DOKUNMAZ). Bu-crate hiçbir
+# production-crate'e BAĞLANMAZ (yalnız-test/harness; bench-emsali).
+
+[dependencies]
+kama-transport-schema = { path = "../kama-transport-schema" }
+kama-fec-codec = { path = "../kama-fec-codec" }
+kama-noise-wire = { path = "../kama-noise-wire" }
+
+[dev-dependencies]
+zeroize = "1"

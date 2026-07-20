@@ -46,6 +46,24 @@
 > (ayrı-track, FEC-ilgisiz). Bu-paketteki ölçüm-seti spec-çıpalı: {golden-byte, recompute==golden, PMTU-byte, throughput-indicative,
 > supply-chain}. Sayısal-metrik-etiketi gerekiyorsa Abkarada-tanımı beklenir (fabrike-DEĞİL).
 
+### 3.1 Sprint-3 (D1) ölçüm güncellemesi — engine-reuse + E=1024
+
+| profile | encode µs | encode MB/s | recon-STATELESS µs | recon-REUSE µs | reuse-hızlanma |
+|---|---|---|---|---|---|
+| 0x03 K8R4E64  | 0.29 | ~1741 | 174 | 177 | **1.0×** |
+| 0x05 K8R4E1024 | 0.94 | ~8685 | 196 | 188 | **1.0×** |
+| 0x06 K16R8E1024 | 2.40 | ~6832 | 192 | 190 | **1.0×** |
+
+**KRİTİK BULGU — D0-hipotezi ÇÜRÜDÜ:** D0, reconstruct'ın ~1000×-encode olmasını "decoder-İNŞA-baskın" varsayıp
+`RsSimdEngine` reset()-reuse'unu ZORUNLU kılmıştı. **Ölçüm reuse'un hızlanma VERMEDİĞİNİ gösterdi (~1.0×).** Maliyet
+`new()`/`reset()`-inşasında DEĞİL, reed-solomon-simd'in **decode-işleminin-kendisinde** (FFT-tabanlı fixed-cost;
+küçük-K/R'de amortize-olmaz). `RsSimdEngine` yine de korunur (doğru, byte-eş `reuse==stateless==golden`, alloc-azaltır);
+decode-fixed-cost'un düşürülmesi AYRI-optimizasyon-takibi (spec-kararı-değil; şimdilik büyük-E amortize-eder).
+
+**E=1024 (Sprint-3, sub-kbps/M3):** encode ~8.7 GB/s (E=64'ün ~5×'i — büyük-blok fixed-cost'u amortize eder);
+sealed FEC-shard = **1061B** (26+11+1024), app-payload 1013B, sabit-overhead **%3.5** (vs %36.6@E=64). IPv4/IPv6
+datagram 1089/1109B — 1280-tabanının altında. Yeni profiller: 0x05 K8R4E1024 · 0x06 K16R8E1024.
+
 ## 4. STATÜ-MERDİVENİ (§ PATCH-H) — FEC-tarafı durum
 
 | şart | durum |

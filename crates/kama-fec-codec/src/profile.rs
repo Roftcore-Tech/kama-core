@@ -80,6 +80,22 @@ pub const PROFILES: &[FecProfile] = &[
         r_code_max: 8,
         e: 64,
     },
+    // Büyük-E profilleri (Sprint-3; sub-kbps/M3 — sabit-overhead 37B → %3.5@E=1024 vs %36.6@E=64).
+    // E=1024=16×64 (64-multiple; sealed FEC-shard = 26+11+1024 = 1061B < 1280 PMTU-tabanı).
+    FecProfile {
+        profile_id: 0x05,
+        code_suite_id: CODE_SUITE_RS_SIMD_V1,
+        k_shape: 8,
+        r_code_max: 4,
+        e: 1024,
+    },
+    FecProfile {
+        profile_id: 0x06,
+        code_suite_id: CODE_SUITE_RS_SIMD_V1,
+        k_shape: 16,
+        r_code_max: 8,
+        e: 1024,
+    },
 ];
 
 /// profile_id → katalog profili (allowlist; bilinmeyen → None).

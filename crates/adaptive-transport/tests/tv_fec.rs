@@ -1,6 +1,10 @@
-//! TV-FEC golden vektörleri — §10.1 FEC_SHARD FRAMING codec. YALNIZ framing (metadata
-//! round-trip + bounds + typed error); kripto (RS-encode/AEAD/reconstruct) YOK — o güvenlik
-//! katmanının conformance'ı. Değerler PR açıklamasında adım adım türetildi.
+//! TV-FEC golden vektörleri — §10.1 FEC_SHARD FRAMING codec.
+//!
+//! **RETIRED / DEPRECATED (D1 Sprint-3):** bu golden'lar legacy 0x20-cleartext-framing'i belgeler;
+//! o yol noise-wire EXTENDED-seal'e (§2.6) MİGRE edildi (METADATA-LEAK-01). Production-FEC-wire golden'ı
+//! artık `kama-noise-wire/tests/golden_wire.rs` (101B@E=64 EXTENDED-datagram). Bu test yalnız
+//! deprecated-codec'in geriye-dönük-tutarlılığını korur (byte-değişmezliği); yeni-format DEĞİL.
+#![allow(deprecated)] // deprecated legacy-codec bilinçli test ediliyor (retire-öncesi tutarlılık)
 
 use adaptive_transport::error::TransportError;
 use adaptive_transport::fec::{FecShardFrame, SHARD_TAG_LEN};
