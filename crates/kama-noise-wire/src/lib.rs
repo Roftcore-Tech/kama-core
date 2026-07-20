@@ -19,11 +19,13 @@ pub mod epoch_machine;
 pub mod error;
 pub mod handle_assign;
 pub mod hub_sim;
+pub mod init_flight;
 pub mod inner;
 pub mod opened;
 pub mod outer;
 pub mod pn;
 pub mod protector;
+pub mod restart;
 pub mod retry;
 pub mod session;
 
@@ -35,6 +37,10 @@ pub use epoch_machine::{DhEpochMachine, EpochAction, RecvEpoch0, Role, GRACE_MIN
 pub use error::{PnReject, WireError};
 pub use handle_assign::{HandleAssign, HandleAssignAck, HANDLE_ASSIGN_LEN};
 pub use hub_sim::{HubSim, ResponderDelivery, HANDLE_ASSIGN_MAX_RETRIES};
+pub use init_flight::{
+    AntiAmplification, InitAdmission, InitFlight, InitReceiver, InitReplayIdentity,
+    InitRetryConfig, RetransmitOutcome,
+};
 pub use inner::InnerPlain;
 pub use opened::{OpenedTransportShard, PrivateAdmissionProof};
 pub use outer::ExtendedOuter;
@@ -42,6 +48,10 @@ pub use pn::{reconstruct, PnParams, ReplayWindow, EXTENDED_PN_PARAMS, LEGACY_PN_
 pub use protector::{
     nonce96, KamaNoiseWireProtector, KamaNoiseWireSizer, LogicalPacketRef, PacketClass, SealArgs,
     SealedPacket, SealedPacketMeta, WireSizeError, KEY_LEN, SEND_PN_CAP,
+};
+pub use restart::{
+    early_data_policy, resume_allowed_after_restart, EarlyDataPolicy, InitCounterStore,
+    PersistentReplayGuard, ReplayOutcome,
 };
 pub use retry::{InboundControlDedup, InboundOutcome, RetryClass};
 pub use session::{Direction, Session, SessionId, SessionLifecycle, SessionManager};
