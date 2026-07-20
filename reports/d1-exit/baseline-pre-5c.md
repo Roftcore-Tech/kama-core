@@ -57,9 +57,10 @@ uzun-daralma@125 : 377 / 380 / 389           (aralık-pin: <600 ✓ hepsinde)
 Güvenilir-non-regression-gate = (A) exact-test-sayıları + (B) aralık-assertion-pass/fail + (C) FEC-off-yapısal.
 `sim_determinism.rs` scripted-sim (HashSet-order-bağımsız) AYRI ve deterministiktir (birebir run1==run2 assert'i geçer).
 
-**KARAR-TALEBİ (Abkarada):** 5c-non-regression-metodolojisi = {A+B+C aralık/count-gate} olsun mu (ÖNERİM: EVET, robust);
-YOKSA desen1_sim `HashSet→BTreeSet` deterministik-yapılsın-mı-önce (sim-harness-değişikliği; kendisi-pin)? İkincisi
-seçilirse ayrı-mini-DR (DR-S5-0) gerekir çünkü sim-harness-mühürlü-pin.
+**KARAR (Abkarada, 2026-07-21):** §D-metodoloji = **{A+B+C} KİLİTLENDİ.** **DR-S5-0 (HashSet→BTreeSet) REDDEDİLDİ** —
+gerekçe: sim-harness mühürlü-pin-doğrulayıcısı; BTreeSet'e-çevirmek ACK-batch-sırasını→rate-control-yolunu→pin'in-
+doğruladığı-davranışı DEĞİŞTİRİR (aracı-düzeltmek-için-kanıtı-bozmak). HashSet-nondeterminizmi gerçek-üretim-
+davranışının-parçası; aralık-assertion bu-değişkenliğe-RAĞMEN-tutması-gereken-invariant'ı yakalar (doğru-katman).
 
 ## E. NETEM-NIGHTLY PİNLERİ (§4.4 self-hosted; YEREL-DEĞİL)
 
