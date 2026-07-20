@@ -5,6 +5,7 @@ members = [
     "crates/ccr-codec",
     "crates/adaptive-transport",
     "crates/kama-transport-schema",
+    "crates/kama-fec-codec",
     "crates/hub-server",
     "crates/client-core",
     "crates/ra-ca",

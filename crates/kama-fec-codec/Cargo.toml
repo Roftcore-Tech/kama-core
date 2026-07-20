@@ -1,0 +1,11 @@
+[package]
+name = "kama-fec-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+kama-transport-schema = { path = "../kama-transport-schema" }
+reed-solomon-simd = "3.1.0"
