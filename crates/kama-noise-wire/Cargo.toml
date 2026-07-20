@@ -1,0 +1,22 @@
+[package]
+name = "kama-noise-wire"
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+[features]
+# K-WIRE-SEALED-TYPE-1: test-constructor'ı dış-crate entegrasyon-testlerine açar (production-build'de KAPALI).
+test-util = []
+
+[dependencies]
+kama-transport-schema = { path = "../kama-transport-schema" }
+thiserror.workspace = true
+# AEAD: ChaCha20-Poly1305 (RFC 8439; pki-§13-registry primitifi). Crate-seçimi DR-4-notlu
+# (registry-crate-adı-vermez; RFC-deterministik → wire-byte crate-bağımsız; RFC-vektör-testli).
+chacha20poly1305 = "0.10"
+zeroize = "1"
+
+[dev-dependencies]
+proptest = "1"
+trybuild = "1"

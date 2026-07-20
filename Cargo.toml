@@ -6,6 +6,7 @@ members = [
     "crates/adaptive-transport",
     "crates/kama-transport-schema",
     "crates/kama-fec-codec",
+    "crates/kama-noise-wire",
     "crates/hub-server",
     "crates/client-core",
     "crates/ra-ca",

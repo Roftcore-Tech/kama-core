@@ -1,0 +1,11 @@
+error: cannot construct `PrivateAdmissionProof` with struct literal syntax due to private fields
+ --> tests/ui/forge_proof.rs:3:14
+  |
+3 |     let _p = kama_noise_wire::PrivateAdmissionProof { };
+  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+help: you might have meant to use the `new_crate_only` associated function
+  |
+3 -     let _p = kama_noise_wire::PrivateAdmissionProof { };
+3 +     let _p = kama_noise_wire::PrivateAdmissionProof::new_crate_only();
+  |
