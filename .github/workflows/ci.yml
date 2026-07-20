@@ -39,3 +39,14 @@ jobs:
       # +nightly rust-toolchain.toml'daki 1.96.0 pin'ini ezer (rustup precedence #1);
       # düz `cargo miri test` stable'a düşer ve miri stable'da olmadığından FAIL ederdi.
       - run: cargo +nightly miri test -p crypto -p ccr-codec
+
+  # KATMAN-3 (DR-5): RustCrypto==libsodium AEAD differential-oracle. AYRI-CI-JOB — production-graph-dışı
+  # (libsodium-oracle feature default-KAPALI). sodiumoxide=0.2.7 PIN (bundled-libsodium vendored-build; cc yeter).
+  # HARD-FAIL: byte-eş değilse gate düşer. Isolated: libsodium-env-sorunu ana quality-gate'i BLOKLAMAZ.
+  aead-differential:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p kama-noise-wire --features libsodium-oracle --test aead_differential -- --nocapture

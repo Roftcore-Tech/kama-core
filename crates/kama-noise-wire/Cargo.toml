@@ -20,7 +20,8 @@ thiserror.workspace = true
 chacha20poly1305 = "0.10"
 zeroize = "1"
 # libsodium IETF-ChaCha20-Poly1305 independent-oracle — YALNIZ `libsodium-oracle` feature'ıyla (test-only).
-sodiumoxide = { version = "0.2", optional = true }
+# PIN (=0.2.7): differential-oracle sürümü sabit (libsodium-sys bundled-libsodium build; Cargo.lock-teyitli).
+sodiumoxide = { version = "=0.2.7", optional = true }
 
 [dev-dependencies]
 proptest = "1"
