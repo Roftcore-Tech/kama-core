@@ -74,6 +74,28 @@ HKDF-BLAKE2s, SHA-256:                      pki-ca-ra-hsm-tdd.md §13 registry'y
 **Gerekçe:** libsodium audit geçmişi + constant-time garantiler; dalek pure-Rust cross-check imkânı;
 DER'in yalnızca dar bir alt kümesi gerekli (CCR ≡ X.509 differential fuzz, ccr §32).
 **Kural:** Kripto primitifi registry dışından EKLENMEZ (pki §13 tek otorite).
+**⚠ AEAD-BACKEND GÜNCELLENDİ (DR-5, aşağıdaki amendment):** ChaCha20-Poly1305'in **production-backend'i artık
+RustCrypto `chacha20poly1305`** (libsodium DEĞİL); libsodium yalnız test-oracle. Ed25519/X25519/BLAKE2s/ristretto
+kararları DEĞİŞMEDİ.
+
+### ADR-03 AMENDMENT — AEAD Backend Seçimi [GÜNCELLENDİ: 2026-07, DR-5]
+
+**KARAR:** Production-backend = RustCrypto `chacha20poly1305` v0.10.1 (IETF-varyantı;
+checksum `10cd79432192d1c0f4e1a0fef9527696cc039165d729fb41b3f4f4f354c2dc35`, Cargo.lock-teyitli).
+Independent-test-oracle = libsodium IETF-ChaCha20-Poly1305 (YALNIZ-CI/test; production-dependency-DEĞİL).
+Runtime-backend-switching: YOK. Generic-CryptoProvider-abstraction: YOK (Kama = kapalı-tek-profil-güvenlik-yaklaşımı).
+
+**GEREKÇE:** küçük-FFI/deployment-yüzeyi · saf-Rust-toolchain-bütünlüğü · kolay-cross-compilation · sade-build-zinciri ·
+audit-edilebilir-supply-chain. (NOT: "forbid-unsafe-bozulur"-gerekçesi-DEĞİL — güvenli-wrapper-FFI çağıran-crate'in-
+unsafe'i-sayılmaz; asıl-maliyet-native-lib/ABI/packaging-karmaşıklığıdır.)
+
+**ZORUNLU-UYGULAMA-KISITLARI:** production-type-AÇIKÇA-`ChaCha20Poly1305` (XChaCha20Poly1305-YANLIŞLIKLA-KULLANILMAZ —
+tip-assert) · exact-version Cargo.lock/cargo-metadata'dan (uydurma-YOK) · checksum-registry/lockfile-metadata'dan ·
+license+SBOM-kayıtlı · libsodium test-only/ayrı-CI-job (production-dependency-graph'ına-GİRMEZ) ·
+differential-test-failure = HARD-FAIL · runtime-backend-seçimi-YOK · public-CryptoProvider-abstraction-YOK ·
+RFC-8439-resmi-vector'ları + random-{key,nonce,AAD,pt}-corpus-eşitliği.
+
+**ESKİ-KARAR (libsodium-primary AEAD):** SUPERSEDED — erken-dönem-varsayımı; proje-saf-Rust'a-evrildi.
 
 ### ADR-04 — VOPRF: ristretto255-SHA512 (RFC 9497), libsodium ristretto üzerinde
 

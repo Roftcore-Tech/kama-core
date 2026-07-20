@@ -4,6 +4,8 @@ members = [
     "crates/crypto",
     "crates/ccr-codec",
     "crates/adaptive-transport",
+    "crates/kama-transport-schema",
+    "crates/kama-fec-codec",
     "crates/hub-server",
     "crates/client-core",
     "crates/ra-ca",
@@ -20,4 +22,5 @@ publish = false
 
 [workspace.dependencies]
 thiserror = "2"
+blake2 = "0.10"
 tokio = { version = "1", features = ["time"] }
