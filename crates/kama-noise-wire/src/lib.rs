@@ -33,7 +33,7 @@ pub use opened::{OpenedTransportShard, PrivateAdmissionProof};
 pub use outer::ExtendedOuter;
 pub use pn::{reconstruct, PnParams, ReplayWindow, EXTENDED_PN_PARAMS, LEGACY_PN_PARAMS};
 pub use protector::{
-    KamaNoiseWireProtector, KamaNoiseWireSizer, LogicalPacketRef, PacketClass, SealArgs,
+    nonce96, KamaNoiseWireProtector, KamaNoiseWireSizer, LogicalPacketRef, PacketClass, SealArgs,
     SealedPacket, SealedPacketMeta, WireSizeError, KEY_LEN, SEND_PN_CAP,
 };
 pub use retry::{InboundControlDedup, InboundOutcome, RetryClass};

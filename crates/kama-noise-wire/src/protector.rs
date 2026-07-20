@@ -1,9 +1,9 @@
 //! KamaNoiseWireProtector — EXTENDED seal/open (§0 API + §4-ORDER + §0.5 sizer/meta).
 //!
 //! AEAD: ChaCha20-Poly1305 (RFC 8439; pki-§13 registry: key 32B / nonce 12B / tag 16B).
-//! NONCE-KURGUSU [DR-4 — ccr-§35-aktifte-byte-exact-tanım-YOK]: nonce = [4B-zero || full_pn u64_be]
-//! (görev-promptu-varsayılanı; dh_epoch nonce'a-GİRMEZ — epoch AYRI-cipher-state/key'dedir, ccr-emsal
-//! epoch_1_root-HKDF). DR-4-kararı değişirse yalnız bu-fonksiyon + golden'lar güncellenir.
+//! NONCE96 [DR-4-CLOSED — KOŞUL-A/LE64; noise-wire §4.5 KİLİTLİ]: nonce = [4B-zero || LE64(full_pn)]
+//! (Noise-Framework-ChaChaPoly-kanonik-mapping; dh_epoch nonce'a-GİRMEZ — epoch AYRI-cipher-state/key'dedir).
+//! wire'daki pn32/seq16 BIG-ENDIAN (§2.6); nonce96 CIPHER-PRIMITIVE-girdisi LE64 — iki-ayrı-serialization.
 //!
 //! Anahtar-yaşamı: [`Zeroizing`] kopyalar; cipher-state drop'ta anahtar-materyali bırakır (zeroize).
 
@@ -28,6 +28,16 @@ pub const SEND_PN_CAP: u64 = 1 << 62;
 
 /// AEAD-anahtar boyu (registry: 32B).
 pub const KEY_LEN: usize = 32;
+
+/// NONCE96 (§4.5 NORMATİF, DR-4-CLOSED KOŞUL-A/LE64): `nonce = [0x00000000 ‖ LE64(full_pn)]`.
+/// Deterministik-public-mapping (sır-DEĞİL; sır yalnız key). Noise-Framework-ChaChaPoly-kanonik.
+/// wire'daki pn32/seq16 big-endian (§2.6) — nonce96 cipher-primitive-girdisi LE64 (iki-ayrı-serialization).
+#[must_use]
+pub fn nonce96(full_pn: u64) -> [u8; 12] {
+    let mut n = [0u8; 12];
+    n[4..12].copy_from_slice(&full_pn.to_le_bytes());
+    n
+}
 
 /// Paket-sınıfı (SealedPacketMeta; §0.5 P0-4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,11 +168,8 @@ impl KamaNoiseWireProtector {
         self.recv_windows[usize::from(dh_epoch & 1)].expected_pn()
     }
 
-    /// DR-4 nonce-kurgusu: [4B-zero || full_pn u64_be].
     fn nonce_for(full_pn: u64) -> Nonce {
-        let mut n = [0u8; 12];
-        n[4..12].copy_from_slice(&full_pn.to_be_bytes());
-        *Nonce::from_slice(&n)
+        *Nonce::from_slice(&nonce96(full_pn))
     }
 
     fn encode_inner_plain(
