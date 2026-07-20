@@ -11,7 +11,8 @@ pub mod error;
 pub mod profile;
 
 pub use codec::{
-    FecCodec, ReceivedSymbol, RecoveredSource, RepairSymbol, RsSimdCodec, SourceSymbol,
+    FecCodec, ReceivedSymbol, RecoveredSource, RepairSymbol, RsSimdCodec, RsSimdEngine,
+    SourceSymbol,
 };
 pub use error::FecError;
 pub use profile::{by_id, FecProfile, CODE_SUITE_RS_SIMD_V1, PROFILES};

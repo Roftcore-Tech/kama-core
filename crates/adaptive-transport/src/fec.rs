@@ -1,19 +1,20 @@
-//! TV-FEC (§10.1): FEC_SHARD wire framing codec.
+//! TV-FEC (§10.1): FEC_SHARD wire framing codec — **DEPRECATED / MUST NOT IMPLEMENT (D1-migrasyon)**.
 //!
-//! Transport yalnız FRAMING metadata okur/yazar (block_id/shard_index/k/r/shard_len —
-//! reliability/reconstruction TRACKING için). `opaque_secured` (= ct ‖ aead_tag) transport
-//! için TEK OPAK BLOB'dur: transport ASLA parse/verify ETMEZ. RS-encode + per-shard AEAD
-//! EXECUTION güvenlik katmanında (Noise+kompakt); **bu crate kripto İÇERMEZ** (INV-ENGINE-SOC,
-//! INV-FEC-1). Fixed-width big-endian (ADR-05, varint yasak).
+//! > **KULLANMA (D1 Sprint-3 kararı).** Bu 0x20-cleartext-framing yolu, FEC-shard'ların
+//! > `kama-noise-wire` EXTENDED-seal'ine (§2.6: h_ext-outer + encrypted-inner + per-shard-AEAD)
+//! > MİGRE edilmesiyle ÜSTÜNLENDİ. N3/N4-raporları: bu yol frame_type-byte + plaintext-FEC-metadata
+//! > (block_id/shard_index/k/r) sızdırır (METADATA-LEAK-01) ve §2.6-EXTENDED-kompozisyona UYUMSUZ.
+//! > **Production-FEC-wire artık noise-wire EXTENDED'dir** (golden: `kama-noise-wire/tests/golden_wire.rs`).
+//! > Bu modül YALNIZ tarihsel/test-referansı olarak korunur (CLAUDE.md: deprecated-sessizce-SİLİNMEZ);
+//! > yeni-kod KULLANMAZ. Beta+ tam-kaldırma.
 //!
-//! AUDIT-FINDING METADATA-LEAK-01 (spec engine §10.1): framing metadata plaintext; k/r emergency-koşul
-//! sızıntısı → DPI/EW okuyabilir. Alpha KABUL, Beta+ minimize (k/r blok-başına, frame_type
-//! indistinguishability, cover traffic). Bu codec framing-açık; ct||tag zaten opak (leak ARTMIYOR).
+//! Tarihsel açıklama: transport yalnız FRAMING metadata okurdu; `opaque_secured` (= ct ‖ aead_tag)
+//! opak-blob'du. AUDIT-FINDING METADATA-LEAK-01: k/r/block_id plaintext → DPI/EW okuyabilir.
 
 use crate::error::TransportError;
 use crate::read::Reader;
 
-/// Transport-control frame_type: FEC_SHARD (spec §10.1 / engine §1.1).
+/// **DEPRECATED (D1):** legacy 0x20 FEC_SHARD frame_type. Yerine noise-wire EXTENDED (§2.6).
 pub const FRAME_TYPE_FEC_SHARD: u8 = 0x20;
 
 /// Güvenlik katmanının her shard'a eklediği AEAD trailer boyutu (spec §10.1: aead_tag 16B).
@@ -24,6 +25,13 @@ pub const FRAME_TYPE_FEC_SHARD: u8 = 0x20;
 pub const SHARD_TAG_LEN: usize = 16;
 
 /// FEC shard wire frame (spec §10.1): 10B framing header + `opaque_secured` (shard_len + tag).
+///
+/// **DEPRECATED (D1 Sprint-3):** noise-wire EXTENDED-seal (§2.6) ile üstünlendi; METADATA-LEAK-01.
+/// Yeni-kod `UnsealedTransportPacket::FecShard` + `KamaNoiseWireProtector::seal` kullanır.
+#[deprecated(
+    since = "0.1.0",
+    note = "legacy 0x20 cleartext-framing (METADATA-LEAK-01); use kama-noise-wire EXTENDED seal (§2.6)"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FecShardFrame {
     /// Blok kimliği (hop-scoped, wrap→rekey).
@@ -41,6 +49,7 @@ pub struct FecShardFrame {
     pub opaque_secured: Vec<u8>,
 }
 
+#[allow(deprecated)] // legacy-codec kendi-impl'i; deprecation dış-kullanıcıya yönelik
 impl FecShardFrame {
     /// Canonical fixed-width big-endian byte'lara serialize eder.
     #[must_use]

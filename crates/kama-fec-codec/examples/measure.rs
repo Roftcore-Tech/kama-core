@@ -1,18 +1,19 @@
 //! FEC-POC İLK-ÖLÇÜM harness'i (teşhis-seviyesi — netem/criterion PR-gate DEĞİL; ölçüm-disiplini).
 //! encode/reconstruct throughput + recompute-vs-full-encode (§6 POC-ölçer). Tek-koşu, indicative.
 
-use kama_fec_codec::{by_id, FecCodec, ReceivedSymbol, RsSimdCodec, SourceSymbol};
+use kama_fec_codec::{by_id, FecCodec, ReceivedSymbol, RsSimdCodec, RsSimdEngine, SourceSymbol};
 use std::time::Instant;
 
 fn main() {
     let c = RsSimdCodec;
+    let engine = RsSimdEngine::new();
     let iters = 20_000u32;
-    println!("# FEC-POC ilk-ölçüm (indicative, {iters} iter/profil, tek-koşu)");
+    println!("# FEC-POC ölçüm (indicative, {iters} iter/profil, tek-koşu)");
     println!(
-        "profil        K  R  E  | encode(µs) enc-MB/s | reconstruct(µs) rec-MB/s | recompute/enc"
+        "profil        K  R  E  | enc(µs) enc-MB/s | recon-STATELESS(µs) | recon-REUSE(µs) | reuse-hızlanma | recompute/enc"
     );
-    // Not: encoder/decoder HER çağrıda taze kurulur (stateless trait); reconstruct = decoder-inşa-baskın.
-    for pid in [0x01u8, 0x02, 0x03, 0x04] {
+    // Sprint-3: RsSimdEngine reset()-reuse → reconstruct decoder-inşa-baskınlığını giderir (D0-ölçüm).
+    for pid in [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06] {
         let p = by_id(pid).unwrap();
         let k = p.k_shape_usize();
         let e = p.e_usize();
@@ -66,12 +67,23 @@ fn main() {
                 bytes: &rr.bytes,
             });
         }
+        // reconstruct STATELESS (her-çağrı taze-decoder).
         let t = Instant::now();
         for _ in 0..iters {
             let _ = c.reconstruct(&p, &recv, 0).unwrap();
         }
         let rec_ns = t.elapsed().as_nanos() as f64 / f64::from(iters);
-        let rec_mbps = block_bytes / (rec_ns / 1e9) / 1e6;
+
+        // reconstruct REUSE (RsSimdEngine reset()) — warmup ilk-reset kurar.
+        for _ in 0..100 {
+            let _ = engine.reconstruct(&p, &recv, 0).unwrap();
+        }
+        let t = Instant::now();
+        for _ in 0..iters {
+            let _ = engine.reconstruct(&p, &recv, 0).unwrap();
+        }
+        let reuse_ns = t.elapsed().as_nanos() as f64 / f64::from(iters);
+        let speedup = rec_ns / reuse_ns;
 
         // recompute tek-ESI vs full-encode.
         let t = Instant::now();
@@ -82,15 +94,16 @@ fn main() {
         let ratio = recompute_ns / enc_ns;
 
         println!(
-            "0x{pid:02x} K{k:<2}R{r}E{e:<3} | {:9.3} {enc_mbps:8.1} | {:12.3} {rec_mbps:8.1} | {ratio:12.2}x",
+            "0x{pid:02x} K{k:<2}R{r}E{e:<4}| {:7.3} {enc_mbps:8.1} | {:19.3} | {:15.3} | {speedup:13.1}× | {ratio:12.2}x",
             enc_ns / 1000.0,
-            rec_ns / 1000.0
+            rec_ns / 1000.0,
+            reuse_ns / 1000.0
         );
     }
     // wire-byte tablosu (deterministik — §2.6 constants).
     println!("\n# sealed-wire-byte (§2.6: outer 26 + FEC-inner-hdr 11 + symbol E)");
     println!("profil  E  | sealed_FEC_shard(B) | app-source-payload(E-11) | IPv4-datagram | IPv6-datagram");
-    for pid in [0x01u8, 0x02, 0x03, 0x04] {
+    for pid in [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06] {
         let p = by_id(pid).unwrap();
         let e = p.e_usize();
         let sealed = 26 + 11 + e;
