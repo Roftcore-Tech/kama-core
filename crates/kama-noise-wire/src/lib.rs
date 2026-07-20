@@ -14,13 +14,19 @@
 #![forbid(unsafe_code)]
 
 pub mod aad;
+pub mod control;
 pub mod error;
 pub mod inner;
 pub mod opened;
 pub mod outer;
 pub mod pn;
 pub mod protector;
+pub mod retry;
 
+pub use control::{
+    decode_control_body, encode_control_body, split_for_send, ACK_MAX_RANGES,
+    RECOVERED_MAX_ESI_RANGES, SACK_MAX_GAP_BLOCKS,
+};
 pub use error::{PnReject, WireError};
 pub use inner::InnerPlain;
 pub use opened::{OpenedTransportShard, PrivateAdmissionProof};
@@ -30,3 +36,4 @@ pub use protector::{
     KamaNoiseWireProtector, KamaNoiseWireSizer, LogicalPacketRef, PacketClass, SealArgs,
     SealedPacket, SealedPacketMeta, WireSizeError, KEY_LEN, SEND_PN_CAP,
 };
+pub use retry::{InboundControlDedup, InboundOutcome, RetryClass};

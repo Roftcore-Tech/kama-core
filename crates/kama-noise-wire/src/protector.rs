@@ -13,7 +13,10 @@ use zeroize::Zeroizing;
 
 use crate::aad::build_aad;
 use crate::error::WireError;
-use crate::inner::{encode_fec_inner, parse_inner, CONTROL_INNER_PREFIX_LEN, FEC_INNER_HDR_LEN};
+use crate::inner::{
+    encode_control_inner, encode_fec_inner, parse_inner, CONTROL_INNER_PREFIX_LEN,
+    FEC_INNER_HDR_LEN,
+};
 use crate::opened::OpenedTransportShard;
 use crate::outer::{ExtendedOuter, OUTER_HDR_LEN, TAG_LEN};
 use crate::pn::{reconstruct, ReplayWindow, EXTENDED_PN_PARAMS};
@@ -62,12 +65,12 @@ pub struct SealedPacket {
 /// Boyut-hatası (§0.5 sizer-sözleşmesi).
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum WireSizeError {
-    /// Control-body-codec'i olmayan tip (Sprint-2'ye-dek typed-stub; reachable todo!() YASAK).
-    #[error("control body codec not implemented: {0}")]
-    FeatureNotImplemented(&'static str),
     /// Symbol boş (E ≥ 11 invariant'ının wire-yüzü).
     #[error("empty symbol")]
     EmptySymbol,
+    /// Control-count DR-1 tavanını aşıyor → önce `split_for_send` gerekir (boyutlanamaz).
+    #[error("control count exceeds cap (split_for_send required): kind {kind:#04x}")]
+    ControlCountExceedsCap { kind: u8 },
 }
 
 /// §0.5 P0-3: pacer-admission seal-ÖNCESİ kesin-boyut. NORMATİF: `seal(p).len() == sealed_len(p)`.
@@ -184,9 +187,17 @@ impl KamaNoiseWireProtector {
                 ))
             }
             UnsealedTransportPacket::Control(c) => {
-                // Sprint-2: §2.57 typed-body-codec. Şimdilik body-codec'i olmayan control seal-edilemez.
-                let _ = c;
-                Err(WireError::SealInput("control body codec: sprint-2"))
+                // §2.57 typed-body-codec (Sprint-2). control_id inner-header'da; body ayrı.
+                crate::control::control_body_len(c)?; // tavan-aşımı → çağıran split_for_send yapmalıydı
+                let body = crate::control::encode_control_body(c);
+                Ok((
+                    encode_control_inner(c.codepoint(), c.control_id(), &body),
+                    LogicalPacketRef::Control {
+                        inner_kind: c.codepoint(),
+                        control_id: c.control_id(),
+                    },
+                    PacketClass::Control,
+                ))
             }
         }
     }
@@ -319,13 +330,18 @@ impl KamaNoiseWireSizer for KamaNoiseWireProtector {
                 // 26 + (11 + E)  (§2.6; N7: 101B @ E=64)
                 Ok(EXTENDED_OUTER_OVERHEAD + FEC_INNER_HDR_LEN + symbol.len())
             }
-            UnsealedTransportPacket::Control(_) => {
-                // Sprint-2 body-codec'le: 26 + 6 + body_len. Şimdilik typed-stub.
+            UnsealedTransportPacket::Control(c) => {
+                // 26 (outer) + 6 (inner_version+inner_kind+control_id) + body (§2.57).
+                let body = crate::control::control_body_len(c).map_err(|e| match e {
+                    WireError::ControlCountExceedsCap { kind, .. } => {
+                        WireSizeError::ControlCountExceedsCap { kind }
+                    }
+                    _ => WireSizeError::ControlCountExceedsCap {
+                        kind: c.codepoint(),
+                    },
+                })?;
                 let _ = TAG_LEN;
-                let _ = CONTROL_INNER_PREFIX_LEN;
-                Err(WireSizeError::FeatureNotImplemented(
-                    "control body codec: sprint-2",
-                ))
+                Ok(EXTENDED_OUTER_OVERHEAD + CONTROL_INNER_PREFIX_LEN + body)
             }
         }
     }

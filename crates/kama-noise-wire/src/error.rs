@@ -35,6 +35,12 @@ pub enum WireError {
     /// Full-PN cap'e ulaştı — SESSION_RENEW_REQUIRED tetiklenmeli (§4 WRAP; gönderim-reddi).
     #[error("pn cap reached; session renewal required")]
     PnCapReached,
+    /// Control-body parse/sınır hatası (§2.57 fail-closed; içerik-sızdırmayan sabit-mesaj).
+    #[error("control decode: {0}")]
+    ControlDecode(&'static str),
+    /// Gelen control-count DR-1 tavanını aşıyor (DoS-guard; FAIL-CLOSED reject).
+    #[error("control count {count} exceeds cap {cap} for kind {kind:#04x}")]
+    ControlCountExceedsCap { kind: u8, count: usize, cap: usize },
 }
 
 /// §4 precheck reddi — hangi-kural düştüğü (window-ilerletmeden).
