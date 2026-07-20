@@ -617,6 +617,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kama-integration"
+version = "0.1.0"
+dependencies = [
+ "kama-fec-codec",
+ "kama-noise-wire",
+ "kama-transport-schema",
+ "zeroize",
+]
+
+[[package]]
 name = "kama-noise-wire"
 version = "0.1.0"
 dependencies = [
