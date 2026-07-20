@@ -159,6 +159,11 @@ struct PendingFecParity {
     size: u64,
 }
 
+/// confirmed_logical üst-sınırı (DR-S5-3; SR-AUDIT-001 unbounded-alloc-yok). Engine
+/// `take_confirmed_logical` ile drenaj yapmasa-da defter bounded: cap-dolunca en-eski-teyit düşer
+/// (memory-hijyen; mühürlü-DEĞİL — logical-ledger'ın hiçbir mühürlü-muhasebeye etkisi yok).
+const CONFIRMED_LOGICAL_CAP: usize = 4096;
+
 /// Transmit türü.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransmitKind {
@@ -342,6 +347,10 @@ pub struct Sender {
     fec_enabled: bool, // guard: false → FecParity-dalı-hiç-çalışmaz (allocation-yok)
     pending_fec: VecDeque<PendingFecParity>, // engine FEC-encode-sonrası enqueue; sender pace-eder
 
+    // ── send-record ↔ ACK-eşleme (DR-S5-3; SALT-LOGICAL — BtlBw/delivered'e BESLENMEZ) ──
+    sent_logical: BTreeMap<u64, SrLogicalRef>, // wire-seq → logical (yalnız FEC/control; DATA burada YOK)
+    confirmed_logical: VecDeque<(u64, SrLogicalRef)>, // wire-ACK-teyit logical; BOUNDED (drain-yoksa cap'te eski düşer)
+
     // ── ack_confidence (RECOVER_FWD tetiği): sessizlik-tabanlı ──
     last_ack_ns: Option<u64>,
     first_send_ns: Option<u64>,
@@ -437,6 +446,8 @@ impl Sender {
             last_now_ns: 0,
             fec_enabled: false, // DR-S5-1: default-OFF → hot-path byte-değişmez (C-kuralı)
             pending_fec: VecDeque::new(),
+            sent_logical: BTreeMap::new(), // DR-S5-3
+            confirmed_logical: VecDeque::new(),
             last_ack_ns: None,
             first_send_ns: None,
             drain_rtprop_entry_ns: None,
@@ -587,6 +598,9 @@ impl Sender {
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
                 acked_units.push(p.unit.id); // §3.3-B stop koşulu: teyit edilen birimin kopyaları iptal
+                                             // DR-S5-3 [SALT-LOGICAL — BtlBw'ye DEĞMEZ]: wire-ACK hangi-logical-paketi teyit-etti?
+                                             // Ayrı-defter (bounded); bw_sampler/btlbw'yi OKUMAZ/YAZMAZ (N8: recovered≠ACK tabanı).
+                self.record_confirmed_logical(seq);
                 let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);
                 self.btlbw.update(sample, now_ns, sample.delivered > 0);
                 self.bw_sampled_since_round = true; // [TUR-A ölçüm-#1] plato round'u bw-örneğiyle sayılır
@@ -1220,6 +1234,29 @@ impl Sender {
         });
     }
 
+    /// DR-S5-3: wire-ACK'lenen seq'in logical-teyidini ayrı-deftere yazar (BOUNDED). **SALT-LOGICAL —
+    /// bw_sampler/btlbw/delivered'e DOKUNMAZ.** sent_logical'da-yoksa (DATA/bilinmeyen) NO-OP.
+    fn record_confirmed_logical(&mut self, seq: u64) {
+        if let Some(lref) = self.sent_logical.remove(&seq) {
+            if self.confirmed_logical.len() >= CONFIRMED_LOGICAL_CAP {
+                self.confirmed_logical.pop_front(); // bounded: drain-yoksa en-eski düşer (SR-AUDIT-001)
+            }
+            self.confirmed_logical.push_back((seq, lref));
+        }
+    }
+
+    /// Engine wire-ACK ile teyit-edilen logical-paketleri drenajlar (ARQ-cancel/retention; DR-S5-3).
+    /// Salt-logical defter; BtlBw/rate ile ilgisi YOK.
+    pub fn take_confirmed_logical(&mut self) -> Vec<(u64, SrLogicalRef)> {
+        self.confirmed_logical.drain(..).collect()
+    }
+
+    /// Teyit-edilen-logical defter uzunluğu (teşhis/test; DR-S5-3).
+    #[must_use]
+    pub fn diag_confirmed_logical_count(&self) -> usize {
+        self.confirmed_logical.len()
+    }
+
     /// Bekleyen FEC-parity'yi pace-ederek emit et (DR-S5-1). fec_enabled-OFF → NO-OP (hot-path byte-değişmez).
     /// Pacing: mevcut `pacer.try_send` (TokenBucket-internals'a DOKUNMAZ; data/retx ile aynı-API). send-record-hint üretir.
     fn plan_fec_parity(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
@@ -1239,6 +1276,14 @@ impl Sender {
                 now_ns,
                 0,
                 TransmitKind::FecParity,
+            );
+            // DR-S5-3: emit-anında seq→logical kaydı (ACK-teyidinde eşlenecek; SALT-LOGICAL).
+            self.sent_logical.insert(
+                seq,
+                SrLogicalRef::Fec {
+                    block_id: p.block_id,
+                    esi: p.esi,
+                },
             );
             out.push(TransmitDecision {
                 kind: TransmitKind::FecParity,
@@ -1729,6 +1774,107 @@ mod tests {
         assert_eq!(
             recov, 0,
             "temiz cold-start'ta spurious recovery YOK (dup+retx={recov})"
+        );
+    }
+
+    // ── DR-S5-3 N8-SPOT: send-record↔ACK-eşleme BtlBw'ye SIZMAZ (sayısal bit-özdeşlik) ──
+    // Aynı DATA-senaryosu iki-kez: (ref) sent_logical-boş → mapping NO-OP · (mapped) acked-seq'ler
+    // sent_logical'a konur → record_confirmed_logical FIRES. BtlBw BİT-ÖZDEŞ olmalı (eşleme BtlBw-yolunu
+    // değiştirmez; yeni-satır yalnız ayrı-defter). Sender ACK-yolu deterministik (BTreeMap; HashSet-YOK).
+    fn warmup_btlbw(map_acked: bool) -> (u64, usize) {
+        let mut s = Sender::new();
+        for i in 0..8u64 {
+            let out = s.on_event(Event::AppData(unit(i)), i * 10 * MS);
+            let seqs: Vec<u64> = out.iter().map(|d| d.seq).collect();
+            if map_acked {
+                // mapping'i ateşle: bu seq'leri logical-deftere kaydet (ACK'te record_confirmed_logical firar).
+                for &sq in &seqs {
+                    s.sent_logical.insert(
+                        sq,
+                        SrLogicalRef::Fec {
+                            block_id: 1,
+                            esi: 0,
+                        },
+                    );
+                }
+            }
+            if !seqs.is_empty() {
+                s.on_event(ack(&seqs), i * 10 * MS + 5 * MS);
+            }
+        }
+        (s.diag_rate().1, s.diag_confirmed_logical_count())
+    }
+
+    #[test]
+    fn dr_s5_3_mapping_does_not_change_btlbw() {
+        let (btlbw_ref, cl_ref) = warmup_btlbw(false); // mapping NO-OP
+        let (btlbw_mapped, cl_mapped) = warmup_btlbw(true); // mapping FIRES
+        assert_eq!(
+            btlbw_ref, btlbw_mapped,
+            "N8: send-record↔ACK-eşleme BtlBw'yi DEĞİŞTİRMEZ (bit-özdeş: {btlbw_ref} == {btlbw_mapped})"
+        );
+        assert_eq!(
+            cl_ref, 0,
+            "ref: mapping-fire-etmedi (confirmed_logical boş)"
+        );
+        assert!(
+            cl_mapped > 0,
+            "mapped: mapping-fire-etti (confirmed_logical dolu) → yine BtlBw-özdeş"
+        );
+    }
+
+    // ── DR-S5-3: confirmed_logical yalnız FEC/control-teyidi (DATA-değil) + drenaj ──
+    #[test]
+    fn dr_s5_3_confirmed_logical_take() {
+        let mut s = Sender::new();
+        // Data emit et, GERÇEK emitted-seq'leri yakala, onları logical-deftere koy + ACK'le.
+        let mut emitted: Vec<u64> = Vec::new();
+        for i in 0..4u64 {
+            let out = s.on_event(Event::AppData(unit(i)), i * 10 * MS);
+            emitted.extend(out.iter().map(|d| d.seq));
+        }
+        assert!(!emitted.is_empty(), "en-az-bir seq emit");
+        for &sq in &emitted {
+            s.sent_logical.insert(
+                sq,
+                SrLogicalRef::Fec {
+                    block_id: 7,
+                    esi: sq as u16,
+                },
+            );
+        }
+        s.on_event(ack(&emitted), 100 * MS);
+        let taken = s.take_confirmed_logical();
+        assert_eq!(
+            taken.len(),
+            emitted.len(),
+            "her acked-emitted logical-teyit"
+        );
+        assert!(taken
+            .iter()
+            .all(|(_, r)| matches!(r, SrLogicalRef::Fec { block_id: 7, .. })));
+        assert_eq!(s.diag_confirmed_logical_count(), 0, "take drenajladı");
+    }
+
+    // ── DR-S5-3 BOUNDED: drain-yoksa cap'te en-eski düşer (SR-AUDIT-001 unbounded-alloc-yok) ──
+    #[test]
+    fn dr_s5_3_confirmed_logical_bounded() {
+        let mut s = Sender::new();
+        // CAP+50 kez ateşle (drenaj YOK) → len tavanı-aşmaz.
+        for seq in 0..(CONFIRMED_LOGICAL_CAP as u64 + 50) {
+            s.sent_logical.insert(
+                seq,
+                SrLogicalRef::Fec {
+                    block_id: 0,
+                    esi: 0,
+                },
+            );
+            s.record_confirmed_logical(seq);
+        }
+        assert_eq!(
+            s.diag_confirmed_logical_count(),
+            CONFIRMED_LOGICAL_CAP,
+            "bounded: cap-aşılmaz (drain-yoksa en-eski düşer)"
         );
     }
 
