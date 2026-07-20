@@ -58,6 +58,38 @@ pub trait FecCodec {
         received: &[ReceivedSymbol<'_>],
         known_zero_count: usize,
     ) -> Result<Vec<RecoveredSource>, FecError>;
+
+    /// Tek repair-ESI'yi on-demand DETERMİNİSTİK yeniden-hesaplar (§6, on-demand-recompute-netleştirme):
+    /// `recompute_repair(esi)` == `encode()[esi]` == golden-vector (aynı-immutable-source-set + aynı-profile).
+    /// SERBEST-olan budur; YASAK-olan farklı-profile/matrix/ordering-ile-yeniden-encode.
+    ///
+    /// **POC-BULGUSU (§6):** reed-solomon-simd tüm-R recovery-shard'ı tek `encode()` çağrısında üretir; bu
+    /// backend'de gerçek-tek-ESI-compute-saving YOKtur (encode-then-select). On-demand-repair'in faydası
+    /// latency/scheduling/bellek-tutma-ertelemesi, CPU-tasarrufu-DEĞİL (R≤8 küçük). N7-PMTU ile ortak.
+    ///
+    /// # Errors
+    /// esi ≥ R_code_max → [`FecError::EsiOutOfRange`]; ayrıca [`FecCodec::encode`] hataları.
+    fn recompute_repair(
+        &self,
+        profile: &FecProfile,
+        source: &[SourceSymbol<'_>],
+        esi: u16,
+    ) -> Result<RepairSymbol, FecError> {
+        if usize::from(esi) >= profile.r_code_max as usize {
+            return Err(FecError::EsiOutOfRange {
+                esi,
+                kind: "repair",
+            });
+        }
+        let repairs = self.encode(profile, source)?;
+        repairs
+            .into_iter()
+            .find(|rs| rs.esi == esi)
+            .ok_or(FecError::EsiOutOfRange {
+                esi,
+                kind: "repair",
+            })
+    }
 }
 
 /// reed-solomon-simd tabanlı codec (Alpha CODE_SUITE_RS_SIMD_V1).
