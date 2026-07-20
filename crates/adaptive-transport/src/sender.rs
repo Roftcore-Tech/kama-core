@@ -119,6 +119,44 @@ pub struct TransmitDecision {
     pub unit_id: u64,
     /// Wire boyutu.
     pub size: u64,
+    /// Send-record hook'u (§0.5 P0-4; DR-S5-1). YALNIZ FEC/control-emisyonunda `Some`; DATA/retx/dup için
+    /// `None` (mevcut-davranış korunur). Engine bunu noise-wire `SealedPacketMeta`'ya tamamlar (seal-sonrası
+    /// full_wire_pn/dh_epoch/sealed_len eklenir). SoC: transport-core NoiseState-TİPİ-TUTMAZ → kendi-hint-tipi.
+    pub send_record: Option<SendRecordHint>,
+}
+
+/// Send-record hint'i (transport-tarafı; §0.5). Engine noise-wire-SealedPacketMeta'ya eşler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendRecordHint {
+    /// Logical referans (FEC: block_id+esi).
+    pub logical_ref: SrLogicalRef,
+    /// Paket-sınıfı.
+    pub packet_class: SrPacketClass,
+    /// Retransmit-generation (§0.5 send_generation).
+    pub send_generation: u32,
+}
+
+/// Transport-tarafı logical-ref (noise-wire LogicalPacketRef'e engine'de eşlenir; SoC-bağımsız).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrLogicalRef {
+    /// FEC shard: block_id + esi.
+    Fec { block_id: u32, esi: u16 },
+}
+
+/// Transport-tarafı paket-sınıfı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrPacketClass {
+    Source,
+    Repair,
+    Control,
+}
+
+/// Bekleyen FEC-parity (engine FEC-encode-sonrası enqueue eder; sender pace-eder — DR-S5-1).
+#[derive(Debug, Clone, Copy)]
+struct PendingFecParity {
+    block_id: u32,
+    esi: u16,
+    size: u64,
 }
 
 /// Transmit türü.
@@ -130,7 +168,8 @@ pub enum TransmitKind {
     Retransmit,
     /// forward-recovery duplication (§11) — ACK-bağımsız redundant kopya.
     Duplicate,
-    /// FEC parity shard (§10) — POLİTİKA; transport üretmez (güvenlik katmanı encode eder). Emit EDİLMEZ.
+    /// FEC parity shard (§10; DR-S5-1) — KOŞULLU-emit (fec_enabled). Shard-byte'ları güvenlik-katmanı
+    /// encode-eder; sender YALNIZ pace-eder + send-record-hint üretir. fec_enabled=OFF → emit-EDİLMEZ.
     FecParity,
 }
 
@@ -299,6 +338,10 @@ pub struct Sender {
     dup_queue: Vec<DupRec>,          // §11 zamanlanmış forward-recovery kopyaları
     last_now_ns: u64,
 
+    // ── FEC-emisyon (DR-S5-1; koşullu — guard-OFF'ta hot-path byte-değişmez) ──
+    fec_enabled: bool, // guard: false → FecParity-dalı-hiç-çalışmaz (allocation-yok)
+    pending_fec: VecDeque<PendingFecParity>, // engine FEC-encode-sonrası enqueue; sender pace-eder
+
     // ── ack_confidence (RECOVER_FWD tetiği): sessizlik-tabanlı ──
     last_ack_ns: Option<u64>,
     first_send_ns: Option<u64>,
@@ -392,6 +435,8 @@ impl Sender {
             pending_lost: VecDeque::new(),
             dup_queue: Vec::new(),
             last_now_ns: 0,
+            fec_enabled: false, // DR-S5-1: default-OFF → hot-path byte-değişmez (C-kuralı)
+            pending_fec: VecDeque::new(),
             last_ack_ns: None,
             first_send_ns: None,
             drain_rtprop_entry_ns: None,
@@ -1155,7 +1200,61 @@ impl Sender {
             _ => {}
         }
         self.drain_due_duplicates(&mut out, now_ns);
+        // DR-S5-1: FEC-parity DATA/recovery SONRASI (DATA-ÖNCE-sıralaması mühürlü); yalnız fec_enabled.
+        self.plan_fec_parity(&mut out, now_ns);
         out
+    }
+
+    /// FEC-emisyonu aç/kapa (DR-S5-1 guard). Engine FEC-etkinken açar; kapalı=mühürlü-hot-path.
+    pub fn set_fec_enabled(&mut self, on: bool) {
+        self.fec_enabled = on;
+    }
+
+    /// Engine FEC-encode-sonrası bir repair-shard'ı emisyon-kuyruğuna alır (DR-S5-1). fec_enabled-OFF'ta
+    /// enqueue-edilse-de plan_fec_parity çalışmaz (guard). Shard-byte'ları güvenlik-katmanında; burada boyut+ref.
+    pub fn enqueue_fec_parity(&mut self, block_id: u32, esi: u16, size: u64) {
+        self.pending_fec.push_back(PendingFecParity {
+            block_id,
+            esi,
+            size,
+        });
+    }
+
+    /// Bekleyen FEC-parity'yi pace-ederek emit et (DR-S5-1). fec_enabled-OFF → NO-OP (hot-path byte-değişmez).
+    /// Pacing: mevcut `pacer.try_send` (TokenBucket-internals'a DOKUNMAZ; data/retx ile aynı-API). send-record-hint üretir.
+    fn plan_fec_parity(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        if !self.fec_enabled {
+            return; // guard-OFF: dal-hiç-çalışmaz, allocation-yok (C-kuralı).
+        }
+        while let Some(&p) = self.pending_fec.front() {
+            if !self.pacer.try_send(p.size) {
+                break; // token yok → sonraki tick (data/retx ile aynı pacing-davranışı).
+            }
+            self.pending_fec.pop_front();
+            let seq = self.track_sent(
+                OpaqueUnit {
+                    id: u64::from(p.esi),
+                    size: p.size,
+                },
+                now_ns,
+                0,
+                TransmitKind::FecParity,
+            );
+            out.push(TransmitDecision {
+                kind: TransmitKind::FecParity,
+                seq,
+                unit_id: u64::from(p.esi),
+                size: p.size,
+                send_record: Some(SendRecordHint {
+                    logical_ref: SrLogicalRef::Fec {
+                        block_id: p.block_id,
+                        esi: p.esi,
+                    },
+                    packet_class: SrPacketClass::Repair,
+                    send_generation: 0,
+                }),
+            });
+        }
     }
 
     /// RECOVER_ARQ (§9): ACK-güdümlü selective retransmit. arq_aggressiveness=0 → baskıla (fec-dominant).
@@ -1197,6 +1296,7 @@ impl Sender {
                         seq: new_seq,
                         unit_id: rec.unit.id,
                         size: rec.unit.size,
+                        send_record: None,
                     });
                 }
                 RetxDecision::CapExceeded { seq, policy } => {
@@ -1291,6 +1391,7 @@ impl Sender {
                 seq,
                 unit_id: dup.unit.id,
                 size: dup.unit.size,
+                send_record: None,
             });
             // §3.3-B geometrik reschedule: interval_ns>0 (PRE_CONVERGE kopyası) → sonraki kopya
             // ×COPY_MULTIPLIER (sayı-tavanı YOK, deadline'a dek; teyit gelince §3.3-B stop ile iptal).
@@ -1320,6 +1421,7 @@ impl Sender {
                 seq,
                 unit_id: front.id,
                 size: front.size,
+                send_record: None,
             });
             if self.state == SenderState::RecoverFwd {
                 let (factor, spacing) = self.dup_params();
