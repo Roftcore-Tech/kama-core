@@ -54,6 +54,22 @@ fn rustcrypto_equals_libsodium_across_nonce_mapping() {
     }
 }
 
+// KATMAN-3 legacy (Sprint-5b): legacy §35.9 AAD (28B) + LE64-nonce'un da impl-bağımsız-eşitliği.
+#[test]
+fn rustcrypto_equals_libsodium_legacy_aad() {
+    sodiumoxide::init().expect("libsodium init");
+    let key = [0x77u8; 32];
+    let pt = b"legacy session-data hot-path payload";
+    for &full_pn in &[0u64, 1, 5, 1 << 16, 1u64 << 40] {
+        let seq16 = (full_pn & 0xFFFF) as u16;
+        let aad = kama_noise_wire::build_legacy_aad(0x01, 0x0001, 0x01, 1, seq16, &[0x33u8; 16]);
+        let nonce = nonce96(full_pn);
+        let a = rustcrypto_seal(&key, &nonce, &aad, pt);
+        let b = libsodium_seal(&key, &nonce, &aad, pt);
+        assert_eq!(a, b, "legacy differential mismatch @ full_pn={full_pn}");
+    }
+}
+
 #[test]
 fn rustcrypto_equals_libsodium_varied_inputs() {
     sodiumoxide::init().expect("libsodium init");

@@ -15,12 +15,14 @@
 
 pub mod aad;
 pub mod control;
+pub mod demux;
 pub mod epoch_machine;
 pub mod error;
 pub mod handle_assign;
 pub mod hub_sim;
 pub mod init_flight;
 pub mod inner;
+pub mod legacy;
 pub mod opened;
 pub mod outer;
 pub mod pn;
@@ -33,6 +35,7 @@ pub use control::{
     decode_control_body, encode_control_body, split_for_send, ACK_MAX_RANGES,
     RECOVERED_MAX_ESI_RANGES, SACK_MAX_GAP_BLOCKS,
 };
+pub use demux::{HandleClass, HandleRouter};
 pub use epoch_machine::{DhEpochMachine, EpochAction, RecvEpoch0, Role, GRACE_MIN_PACKETS};
 pub use error::{PnReject, WireError};
 pub use handle_assign::{HandleAssign, HandleAssignAck, HANDLE_ASSIGN_LEN};
@@ -42,6 +45,10 @@ pub use init_flight::{
     InitRetryConfig, RetransmitOutcome,
 };
 pub use inner::InnerPlain;
+pub use legacy::{
+    build_legacy_aad, LegacyDirection, LegacySessionProtector, LEGACY_AAD_LEN, LEGACY_OVERHEAD,
+    SESSION_DATA_MAGIC,
+};
 pub use opened::{OpenedTransportShard, PrivateAdmissionProof};
 pub use outer::ExtendedOuter;
 pub use pn::{reconstruct, PnParams, ReplayWindow, EXTENDED_PN_PARAMS, LEGACY_PN_PARAMS};
