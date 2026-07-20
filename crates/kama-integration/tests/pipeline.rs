@@ -4,10 +4,12 @@
 //! + dh_epoch-geçişi + seal==sealed_len/PMTU-admission.
 
 use kama_fec_codec::{by_id, FecCodec, FecProfile, ReceivedSymbol, RsSimdCodec, SourceSymbol};
+use kama_noise_wire::retry::control_produces_bandwidth_credit;
 use kama_noise_wire::{
     InnerPlain, KamaNoiseWireProtector, KamaNoiseWireSizer, SealArgs, WireError,
 };
-use kama_transport_schema::inner_kind::ShardKind;
+use kama_transport_schema::control::Control;
+use kama_transport_schema::inner_kind::{ShardKind, ACK, RECOVERED};
 use kama_transport_schema::prefix::SourcePrefix;
 use kama_transport_schema::{LogicalShardHeader, UnsealedTransportPacket};
 use zeroize::Zeroizing;
@@ -420,5 +422,87 @@ fn pipeline_epoch_transition_live() {
         receiver_open_decode(&mut rx, &p, &raw, ka1).unwrap(),
         app,
         "epoch-1 pipeline decode"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// N8-YENİDEN-DOĞRULAMA (emisyon-AÇIK) · Test-2: recovered ≠ ACK/BtlBw-credit
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+// D0-N8'in ikinci-yarısı: FEC-decode başarısı (RECOVERED) BtlBw'ye/delivered-EAI'ye kredi-VERMEZ.
+// Emisyon-AÇIK canlı-pipeline: source-kayıp + repair → recovered-source LOGICAL-teslim (app-bytes
+// tam) AMA WIRE-teslim DEĞİL (repair-decode'dan geldi, wire'dan gelmedi) → kredi-tabanına girmez.
+//
+// SINIR-NOTU (DR-S5-3 §5): sender-tarafı RECOVERED-control-İŞLEME (→ confirmed_logical logical-defter)
+// henüz-bağlı-DEĞİL (ayrı-adım). Bu test recovered≠BtlBw-credit'in GÜVENLİK-yarısını kanıtlar:
+// recovered'ın BtlBw'ye YAPISAL-yolu YOK (kredi yalnız wire-ACK'ten, engine SealedPacketMeta ile).
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn n8_recovered_is_logical_delivery_not_wire_credit() {
+    let (mut tx, mut rx) = pair(0x0100_00A8);
+    let p = profile3();
+    let app = vec![0x5Au8; 53 * 5]; // 5 chunk → K_actual=5
+    let (sent, _ks, k_actual) = sender_encode_seal(&mut tx, &p, &app, 1, 0x9ABC, 0);
+    assert_eq!(k_actual, 5);
+
+    // 2 source düş (esi 1,3): bunlar WIRE'da HİÇ teslim-edilmez; receiver repair'den kurtaracak.
+    let lost_source_esis = [1u16, 3u16];
+    let dgs: Vec<Vec<u8>> = sent
+        .iter()
+        .filter(|s| s.is_repair || !lost_source_esis.contains(&s.esi))
+        .map(|s| s.datagram.clone())
+        .collect();
+    // Wire-teslim source esi'leri = kredi-tabanı (yalnız wire'dan gelenler → BtlBw/delivered).
+    let wire_delivered_source: Vec<u16> = sent
+        .iter()
+        .filter(|s| !s.is_repair && !lost_source_esis.contains(&s.esi))
+        .map(|s| s.esi)
+        .collect();
+
+    // Recovered ile app-bytes TAM (logical-teslim başarılı).
+    let out = receiver_open_decode(&mut rx, &p, &dgs, k_actual).unwrap();
+    assert_eq!(out, app, "recovered ile app-bytes TAM (logical-teslim)");
+
+    // ── ASSERT-2a: recovered-source WIRE-teslim DEĞİL → kredi-tabanına girmez ──
+    // Kredi-tabanı (wire-teslim) yalnız {0,2,4}; recovered {1,3} bunun-DIŞINDA.
+    assert_eq!(
+        wire_delivered_source.len(),
+        3,
+        "wire-teslim source = {{0,2,4}} (BtlBw/delivered-kredi-tabanı)"
+    );
+    for e in lost_source_esis {
+        assert!(
+            !wire_delivered_source.contains(&e),
+            "recovered esi={e} WIRE-teslim-DEĞİL (repair-decode'dan; BtlBw'ye bit-eklemez)"
+        );
+    }
+
+    // ── ASSERT-2b: RECOVERED-control ile ACK AYRI-defter/AYRI-codepoint; RECOVERED kredi-ÜRETMEZ ──
+    let recovered_ctl = Control::Recovered {
+        id: 20,
+        block_id: 1,
+        esi_ranges: vec![(1, 1), (3, 3)], // tam kurtarılan esi'ler
+    };
+    let ack_ctl = Control::Ack {
+        id: 21,
+        acked_dh_epoch: 0,
+        ranges: vec![(0, 4)],
+    };
+    // RECOVERED wire-katmanında BtlBw-credit ÜRETMEZ (§2.57; N8-invariant).
+    assert!(
+        !control_produces_bandwidth_credit(&recovered_ctl),
+        "RECOVERED BtlBw-credit ÜRETMEZ (recovered≠ACK)"
+    );
+    // Ayrı-codepoint → yapısal olarak ACK'le KARIŞAMAZ (ayrı-defter runtime-kanıtı).
+    assert_eq!(
+        recovered_ctl.codepoint(),
+        RECOVERED,
+        "RECOVERED codepoint=0x12"
+    );
+    assert_eq!(ack_ctl.codepoint(), ACK, "ACK codepoint=0x10");
+    assert_ne!(
+        recovered_ctl.codepoint(),
+        ack_ctl.codepoint(),
+        "RECOVERED ≠ ACK (ayrı-defter: recovered→retention-release; ACK→wire-kredi/confirmed_logical)"
     );
 }
