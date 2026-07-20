@@ -135,6 +135,16 @@ impl FecCodec for RsSimdCodec {
         let e = profile.e_usize();
         let r = profile.r_code_max as usize;
 
+        // K_actual = K_shape − known_zero_count (§6 Model-A; B4: 1 ≤ K_actual ≤ K_shape).
+        // known_zero ≥ K_shape → K_actual < 1: fail-closed (decoder-bootstrap-tek-biçimli).
+        if known_zero_count >= k {
+            return Err(FecError::KnownZeroTooLarge {
+                known_zero: known_zero_count,
+                k_shape: k,
+            });
+        }
+        let k_actual = k - known_zero_count;
+
         // Admitted-distinct ayrıştır + dedup + range-check.
         let mut src_seen = vec![false; k];
         let mut rep_seen = vec![false; r];
@@ -167,6 +177,14 @@ impl FecCodec for RsSimdCodec {
                         kind: "source",
                     });
                 }
+                // Real-source YALNIZ [0, K_actual)'da yaşar; zero-pad-slot [K_actual, K_shape) sender'ca
+                // GÖNDERİLMEZ → gelmesi K_actual-tutarsızlığı (§6 fail-closed).
+                if idx >= k_actual {
+                    return Err(FecError::SourceInZeroRegion {
+                        esi: s.esi,
+                        k_actual,
+                    });
+                }
                 if src_seen[idx] {
                     return Err(FecError::DuplicateEsi(s.esi));
                 }
@@ -183,9 +201,7 @@ impl FecCodec for RsSimdCodec {
                 k_shape: k,
             });
         }
-        // Known-zero injection: son known_zero_count source-slot canonical-zero (§6 Model-A).
-        // K_actual = K_shape − known_zero_count → indexler [K_actual, K_shape) zero-source.
-        let k_actual = k.saturating_sub(known_zero_count);
+        // Known-zero injection: [K_actual, K_shape) slotları canonical-zero bilinen-source (§6 Model-A).
         let zero_shard = vec![0u8; e];
         for (offset, seen) in src_seen[k_actual..k].iter_mut().enumerate() {
             if !*seen {

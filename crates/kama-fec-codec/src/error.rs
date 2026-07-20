@@ -28,6 +28,13 @@ pub enum FecError {
         known_zero: usize,
         k_shape: usize,
     },
+    /// known_zero_count K_shape'e eşit/aşkın → K_actual < 1 (B4 ihlali; §6 Model-A fail-closed).
+    #[error("known_zero_count {known_zero} >= K_shape {k_shape} (K_actual < 1)")]
+    KnownZeroTooLarge { known_zero: usize, k_shape: usize },
+    /// Admitted source ESI zero-pad bölgesinde [K_actual, K_shape) — sender bu slotu GÖNDERMEZ;
+    /// gelmesi K_actual-tutarsızlığı (§6 Model-A: reject + rank-ARTMAZ + allocation-GENİŞLEMEZ).
+    #[error("source ESI {esi} in zero-pad region [{k_actual}, K_shape) — K_actual mismatch")]
+    SourceInZeroRegion { esi: u16, k_actual: usize },
     /// reed-solomon-simd motor hatası (opak — RS-crate).
     #[error("rs engine: {0}")]
     RsEngine(String),
