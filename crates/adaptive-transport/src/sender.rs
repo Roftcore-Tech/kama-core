@@ -198,6 +198,16 @@ struct PendingFecParity {
 /// (memory-hijyen; mühürlü-DEĞİL — logical-ledger'ın hiçbir mühürlü-muhasebeye etkisi yok).
 const CONFIRMED_LOGICAL_CAP: usize = 4096;
 
+/// sent_logical üst-sınırı (DR-S5-6; SR-AUDIT-001). GEREKÇE (M1-doğruluk-şartı, Abkarada şart-2):
+/// eviction ancak "kayıt ACK-dönmeden düşerse" M1-delivery'yi yapay-düşürür. Kalıcı-büyüme kaynağı
+/// in-flight DEĞİL (SACK-range'ler toplu-remove eder), KAYIP-ve-kurtarılmamış sızıntısıdır:
+/// ~fwd_loss × rate × süre. 16384 ≈ 120s-M1-hücresi × %15-loss × ~910 pkt/s'e kadar SIFIR-eviction
+/// (M1-hostile-profilleri bunun-altında). M1-HÜCRE-İŞARETLEME-KURALI: **YALNIZ evicted>0**
+/// (sessiz-eğilme-yok). `ack_miss` işaretleme-kuralına GİRMEZ — miss>0 ∧ evicted==0 beklenen
+/// Recovered→geç-ACK yarışıdır (RECOVERED kaydı-teyit-etti, geciken-wire-ACK sonra-geldi; artefakt
+/// DEĞİL — adversarial-ÇÜRÜT-1 bulgusu). Gerekirse özgüllük-seti (recovered_then_acked) M1-sonrası.
+const SENT_LOGICAL_CAP: usize = 16384;
+
 /// Transmit türü.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransmitKind {
@@ -382,9 +392,11 @@ pub struct Sender {
     pending_fec: VecDeque<PendingFecParity>, // engine FEC-encode-sonrası enqueue; sender pace-eder
 
     // ── send-record ↔ ACK-eşleme (DR-S5-3; SALT-LOGICAL — BtlBw/delivered'e BESLENMEZ) ──
-    sent_logical: BTreeMap<u64, SrLogicalRef>, // wire-seq → logical (yalnız FEC/control; DATA burada YOK)
+    sent_logical: BTreeMap<u64, SrLogicalRef>, // wire-seq → logical (FEC-parity plan_fec_parity-içi; DATA engine-post-emit register_sent_logical — DR-S5-6)
     confirmed_logical: VecDeque<(u64, SrLogicalRef, ConfirmSource)>, // teyit-logical (WireAck|Recovered — DR-S5-4); BOUNDED
     diag_recovered_cancels: u64, // DR-S5-4: RECOVERED ile iptal-edilen bekleyen-retransmit sayısı (K2/M1-sinyali)
+    diag_sent_logical_evicted: u64, // DR-S5-6: cap-eviction sayısı (M1-guard: hücrede 0-olmalı)
+    diag_confirmed_logical_miss: u64, // DR-S5-6: ACK-teyidi kayıtsız-seq'e geldi (M1'de tüm-emisyon-register'lıyken = eviction-artefaktı)
 
     // ── ack_confidence (RECOVER_FWD tetiği): sessizlik-tabanlı ──
     last_ack_ns: Option<u64>,
@@ -483,7 +495,9 @@ impl Sender {
             pending_fec: VecDeque::new(),
             sent_logical: BTreeMap::new(), // DR-S5-3
             confirmed_logical: VecDeque::new(),
-            diag_recovered_cancels: 0, // DR-S5-4
+            diag_recovered_cancels: 0,      // DR-S5-4
+            diag_sent_logical_evicted: 0,   // DR-S5-6
+            diag_confirmed_logical_miss: 0, // DR-S5-6
             last_ack_ns: None,
             first_send_ns: None,
             drain_rtprop_entry_ns: None,
@@ -1288,7 +1302,42 @@ impl Sender {
             }
             self.confirmed_logical
                 .push_back((seq, lref, ConfirmSource::WireAck));
+        } else {
+            // DR-S5-6: kayıtsız-seq'e ACK-teyidi (salt-teşhis). Normal-akışta zararsız (register-
+            // edilmemiş-DATA). M1'de-bile TEK-BAŞINA artefakt-göstergesi DEĞİL: miss>0 ∧ evicted==0
+            // beklenen Recovered→geç-ACK yarışıdır (RECOVERED kaydı-önce-teyit-etti). M1-hücre-
+            // işaretleme YALNIZ evicted>0 ile (SENT_LOGICAL_CAP yorumu; adversarial-ÇÜRÜT-1).
+            self.diag_confirmed_logical_miss += 1;
         }
+    }
+
+    /// DR-S5-6: sent_logical'a BOUNDED-insert (SR-AUDIT-001). Seq'ler monoton → en-eski = en-küçük-seq
+    /// (`pop_first`). Eviction M1-artefakt-riski taşır → audit-sayaç (M1-guard: hücrede 0-olmalı).
+    fn insert_sent_logical(&mut self, seq: u64, lref: SrLogicalRef) {
+        if !self.sent_logical.contains_key(&seq) && self.sent_logical.len() >= SENT_LOGICAL_CAP {
+            self.sent_logical.pop_first(); // en-eski-seq düşer
+            self.diag_sent_logical_evicted += 1;
+        }
+        self.sent_logical.insert(seq, lref);
+    }
+
+    /// DR-S5-6 (M1-adalet; N8-v2 Not-2 kapanışı): engine, emit-edilmiş bir seq'in logical-kimliğini
+    /// deftere kaydeder — DATA-source için (FEC-parity `plan_fec_parity`'de zaten-kayıtlı). Transport
+    /// DATA'nın block/esi'sini BİLMEZ (SoC); çevrim-bilgisi engine'de, kayıt post-emit (TransmitDecision
+    /// pub seq üzerinden). **SALT-DEFTER — bw_sampler/btlbw/pacer/schedule'a DOKUNMAZ.**
+    pub fn register_sent_logical(&mut self, seq: u64, lref: SrLogicalRef) {
+        self.insert_sent_logical(seq, lref);
+    }
+
+    /// DR-S5-6 teşhis: (sent_logical-len, cap-evicted, ack-teyit-kayıtsız-miss). M1-guard:
+    /// hücre-koşusunda evicted==0 olmalı (aksi eviction-artefaktı → hücre-işaretlenir).
+    #[must_use]
+    pub fn diag_sent_logical(&self) -> (usize, u64, u64) {
+        (
+            self.sent_logical.len(),
+            self.diag_sent_logical_evicted,
+            self.diag_confirmed_logical_miss,
+        )
     }
 
     /// DR-S5-4 [SALT-LOGICAL — N8-firewall]: RECOVERED-control işle. YALNIZ pending_lost/dup_queue/
@@ -1373,7 +1422,8 @@ impl Sender {
                 TransmitKind::FecParity,
             );
             // DR-S5-3: emit-anında seq→logical kaydı (ACK-teyidinde eşlenecek; SALT-LOGICAL).
-            self.sent_logical.insert(
+            // DR-S5-6: bounded-helper'dan (cap-altında davranış-özdeş).
+            self.insert_sent_logical(
                 seq,
                 SrLogicalRef::Fec {
                     block_id: p.block_id,
@@ -2106,6 +2156,91 @@ mod tests {
             s.diag_confirmed_logical_count(),
             pending_before,
         )
+    }
+
+    // ── DR-S5-6: register_sent_logical (DATA-defter) — bounded/evict/miss + WireAck-teyit ──
+    #[test]
+    fn dr_s5_6_register_bounded_evict_miss() {
+        let mut s = Sender::new();
+        // CAP+50 register (drenajsız) → len==CAP, evicted==50; en-eski (en-küçük-seq) düştü.
+        for seq in 0..(SENT_LOGICAL_CAP as u64 + 50) {
+            s.register_sent_logical(
+                seq,
+                SrLogicalRef::Fec {
+                    block_id: 1,
+                    esi: 0,
+                },
+            );
+        }
+        let (len, evicted, miss0) = s.diag_sent_logical();
+        assert_eq!(len, SENT_LOGICAL_CAP, "bounded: cap-aşılmaz");
+        assert_eq!(evicted, 50, "aşan-50 en-eski-drop (audit)");
+        assert_eq!(miss0, 0);
+        // Evict-edilmiş seq'e (0..50) teyit-denemesi → defter-girişi YOK + miss-artefakt-sayacı artar
+        // (şart-2: M1 bu-artefaktı GÖRÜR, sessizce-eğilmez).
+        s.record_confirmed_logical(10); // evicted-bölge
+        assert_eq!(
+            s.diag_confirmed_logical_count(),
+            0,
+            "evicted-seq teyit-alamaz"
+        );
+        assert_eq!(s.diag_sent_logical().2, 1, "miss-artefakt sayıldı");
+        // Yaşayan-seq teyit-alır (WireAck).
+        s.record_confirmed_logical(SENT_LOGICAL_CAP as u64 + 10);
+        assert_eq!(s.diag_confirmed_logical_count(), 1);
+    }
+
+    // ── DR-S5-6 ŞART-1: N8-bit-özdeşlik DATA-versiyonu — register-fires-vs-noop → BtlBw BİT-ÖZDEŞ ──
+    /// Aynı DATA+ACK senaryosu; `fires` → her-DATA-emisyonu PUBLIC register_sent_logical ile deftere
+    /// kaydedilir (engine-post-emit örüntüsü). Dönen: (btlbw, WireAck-girişi-sayısı).
+    fn warmup_data_register(fires: bool) -> (u64, usize) {
+        let mut s = Sender::new();
+        for i in 0..8u64 {
+            let out = s.on_event(Event::AppData(unit(i)), i * 10 * MS);
+            let seqs: Vec<u64> = out.iter().map(|d| d.seq).collect();
+            if fires {
+                for &sq in &seqs {
+                    // engine-post-emit: DATA-source logical-kimliği (block=2, esi=seq).
+                    s.register_sent_logical(
+                        sq,
+                        SrLogicalRef::Fec {
+                            block_id: 2,
+                            esi: sq as u16,
+                        },
+                    );
+                }
+            }
+            if !seqs.is_empty() {
+                s.on_event(ack(&seqs), i * 10 * MS + 5 * MS);
+            }
+        }
+        let wireack = s
+            .take_confirmed_logical()
+            .iter()
+            .filter(|(_, _, src)| *src == ConfirmSource::WireAck)
+            .count();
+        (s.diag_rate().1, wireack)
+    }
+
+    #[test]
+    fn dr_s5_6_n8_data_register_does_not_change_btlbw() {
+        let (btlbw_noop, wa_noop) = warmup_data_register(false);
+        let (btlbw_fires, wa_fires) = warmup_data_register(true);
+        assert_eq!(wa_noop, 0, "noop: defter-girişi yok");
+        assert!(
+            wa_fires > 0,
+            "fires: DATA-teyitleri deftere girdi (WireAck)"
+        );
+        assert!(
+            btlbw_noop > 0,
+            "dejenerasyon-guard: 0==0 trivial-eşitlik değil (BtlBw kuruldu)"
+        );
+        // ŞART-1 HÜKMÜ: DATA-send-record da (FEC-parity gibi) BtlBw'ye SIZMAZ — bit-özdeş.
+        // (S5-3/DR-S5-4 N8-spot ailesinin DATA-üyesi.)
+        assert_eq!(
+            btlbw_fires, btlbw_noop,
+            "N8-DATA: register_sent_logical BtlBw'yi DEĞİŞTİRMEZ ({btlbw_fires} == {btlbw_noop})"
+        );
     }
 
     #[test]
