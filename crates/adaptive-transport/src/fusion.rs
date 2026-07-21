@@ -175,6 +175,12 @@ pub enum FuzzyConfigError {
 
 /// DR-1e-v2: doğrulanmış-config newtype — `Sender::try_with_fuzzy_config` sözleşme-tipi.
 /// Tek-üretim-yolu [`FuzzyConfig::validate`] (yapısal-güvence tip-düzeyinde).
+///
+/// Compile-time-yapısal-kanıt (Commit-F): dış-koddan raw-kuruluş DERLENMEZ (private-alan):
+/// ```compile_fail
+/// let c = adaptive_transport::fusion::FuzzyConfig::fixture();
+/// let _v = adaptive_transport::fusion::ValidatedFuzzyConfig(c); // E0423: private-alan
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct ValidatedFuzzyConfig(FuzzyConfig);
 
@@ -183,6 +189,16 @@ impl ValidatedFuzzyConfig {
     #[must_use]
     pub(crate) fn into_inner(self) -> FuzzyConfig {
         self.0
+    }
+
+    /// Commit-F (invariant-sertleştirme): built-in-fixture'ın GÜVENİLİR-sarmalayıcısı — internal-ctor
+    /// sınırı yalnız `ValidatedFuzzyConfig` kabul-eder; genel-caller-validation-bypass'ı YOK
+    /// (pub(crate); tek-meşru-kullanım `Sender::new`). Runtime-validate/unwrap/expect YOK (panik-siz);
+    /// fixture-geçerliliği CI-invariantı: `tv_fusion::dr_1e_validation::fixture_validates`
+    /// (fixture-invalid-olursa CI-kırılır).
+    #[must_use]
+    pub(crate) fn trusted_fixture() -> Self {
+        Self(FuzzyConfig::fixture())
     }
 }
 

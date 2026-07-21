@@ -38,7 +38,7 @@ use crate::emergency::{
 };
 use crate::fusion::{
     DeterministicFuzzyController, FusionController, FusionDecision, FusionInputSnapshot,
-    FusionInputs, FuzzyConfig, FuzzyConfigError, Mode,
+    FusionInputs, FuzzyConfig, FuzzyConfigError, Mode, ValidatedFuzzyConfig,
 };
 use crate::loss::{LossDetector, ThresholdLossDetector};
 use crate::pacer::{TokenBucket, DEFAULT_BURST_CAP};
@@ -477,7 +477,7 @@ impl Sender {
     /// `tv_fusion::fixture_validates`).
     #[must_use]
     pub fn new() -> Self {
-        Self::new_internal(FuzzyConfig::fixture())
+        Self::new_internal(ValidatedFuzzyConfig::trusted_fixture())
     }
 
     /// DR-1e-v2: dışarıdan-verilen fuzzy-config ile (validate-İÇERİDE; typed-hata — panik-yok).
@@ -487,12 +487,14 @@ impl Sender {
     /// [`FuzzyConfigError`] — yapısal/spec-invariant ihlali (fusion.rs §13.4-tablosu).
     pub fn try_with_fuzzy_config(config: FuzzyConfig) -> Result<Self, FuzzyConfigError> {
         let validated = config.validate()?;
-        Ok(Self::new_internal(validated.into_inner()))
+        Ok(Self::new_internal(validated))
     }
 
     /// Ortak-internal-ctor (DR-1e-v2): her-iki-public-ctor buraya-delege. Motor-matematiği/
     /// diğer-fixture'lar DEĞİŞMEZ; yalnız fuzzy-config-parametrik.
-    fn new_internal(fuzzy_cfg: FuzzyConfig) -> Self {
+    /// Commit-F-invariant: TEK-gerçek-ctor YALNIZ `ValidatedFuzzyConfig` kabul-eder (raw-`FuzzyConfig`-
+    /// overload-YOK) — "Sender-yalnız-validated/trusted-config'le-kurulur" tip-düzeyi-sınırı.
+    fn new_internal(fuzzy_cfg: ValidatedFuzzyConfig) -> Self {
         let budget_cfg = BudgetConfig::fixture();
         Self {
             state: SenderState::Idle,
@@ -500,7 +502,7 @@ impl Sender {
             rtt: RttEstimator::new(),
             bw_sampler: DeliveryRateSampler::new(),
             btlbw: BtlBwFilter::new(),
-            fuzzy: DeterministicFuzzyController::new(fuzzy_cfg),
+            fuzzy: DeterministicFuzzyController::new(fuzzy_cfg.into_inner()),
             src_cfg: SrcConfig::default(),
             budget_cfg,
             emergency: HysteresisController::new(HysteresisConfig::fixture(), EmergencyLevel::Arq),
@@ -976,8 +978,10 @@ impl Sender {
         if d.no_rule {
             self.diag_fuzzy_no_rule += 1;
         }
-        // Commit-D: CANONICAL-snapshot — aynı-`inputs`-DEĞERİ kopyalanır (ikinci-hesap-yok;
-        // Copy-struct: alloc/IO/format/RNG-yok; timing/state-semantiği-değişmez).
+        // Commit-D: CANONICAL-snapshot — aynı-`inputs`-DEĞERİ kopyalanır (ikinci-hesap-yok).
+        // HÜKÜM (Commit-F-daraltması): "Semantic non-regression demonstrated; the diagnostic path
+        // adds one fixed-size Copy assignment with no allocation, I/O or formatting. Performance
+        // neutrality has not been independently benchmarked." (benchmark 1a-blocker-DEĞİL.)
         self.fusion_event_index += 1;
         self.last_fusion_snapshot = Some(FusionInputSnapshot {
             loss_windowed_ppm: inputs.loss_ppm,
