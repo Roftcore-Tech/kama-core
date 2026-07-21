@@ -128,6 +128,8 @@ struct Scenario {
     fec_on: bool,
     w_units: u64,
     t_max_ms: u64,
+    r_parity: u64, // blok-başına parity-adedi (sabit-FEC-arm-seviyesi; tarama-kesit-1)
+    sack_ms: u64,  // SACK-kadansı (fixed-ARQ-yoğunluk-PROXY'si; tarama-kesit-1)
 }
 
 impl Scenario {
@@ -141,6 +143,8 @@ impl Scenario {
             fec_on,
             w_units: 400,
             t_max_ms: 300_000,
+            r_parity: R,
+            sack_ms: SACK_MS,
         }
     }
 }
@@ -174,6 +178,9 @@ struct Metrics {
     rec_batches_arrived: u64,
     retx_dup_emitted: u64, // Retransmit+Duplicate decision-sayısı (K1-vergisi/M5)
     max_queue_ms: u64,     // FIFO-kuyruk gecikme-tepe (bufferbloat-gözlemi)
+    /// Deadline-hit-rate ham-verisi (M2-metriği; NETLEŞTİRME-2): teslim-anı ≤ {2s,5s,10s}
+    /// eşiklerindeki unit-sayısı (payda = total_units; ıskalayan+teslim-edilmeyen = miss).
+    dl_hits: [usize; 3],
 }
 
 /// Tek hücre-arm koşusu. `fec_on` tek-fark (KARAR-3).
@@ -188,6 +195,8 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
         fec_on,
         w_units,
         t_max_ms,
+        r_parity,
+        sack_ms,
     } = sc;
     let ser_ms: u64 = 1000 / cap_pps;
     let mut fwd_chan = FwdChan::new(fwd);
@@ -365,7 +374,7 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
                 .collect();
             for b in ready {
                 emitted_in_block.remove(&b);
-                for r in 0..R {
+                for r in 0..r_parity {
                     s.enqueue_fec_parity(b, (K + r) as u16, UNIT);
                 }
             }
@@ -404,7 +413,7 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
         }
 
         // 3) SACK-kadansı (kümülatif; RECOVERED piggyback — aynı-datagram, aynı-drop).
-        if t_ms.is_multiple_of(SACK_MS)
+        if t_ms.is_multiple_of(sack_ms)
             && (!rx_acked.is_empty() || !pending_recovered.is_empty())
             && rng.pass(p_rev)
         {
@@ -504,6 +513,8 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
         }
     };
     let (_, evicted, ack_miss) = s.diag_sent_logical();
+    let dl_hits =
+        [2_000u64, 5_000, 10_000].map(|d| deliver_t.values().filter(|&&t| t <= d).count());
     Metrics {
         delivered_units: deliver_t.len(),
         total_units: w_units as usize,
@@ -521,6 +532,7 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
         rec_batches_arrived,
         retx_dup_emitted,
         max_queue_ms,
+        dl_hits,
     }
 }
 
@@ -784,5 +796,208 @@ fn m5_trace_table() {
             median(sl),
             median(mq)
         );
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// TARAMA-KESİT-1 — karar-yüzeyi tek-eksen-süpürmeleri (≤200-hücre; NETLEŞTİRME-1).
+// 7-arm: ARQ-baseline(≡ARQ-orta, sack50) · FEC-düşük/orta/yüksek(r=2/4/8) · ARQ-hafif/orta/agresif
+// (sack=100/50/25 — ARQ-yoğunluk-PROXY'si: feedback-frekansı; motor-içi-agresiflik-düğmesi mühürlü).
+// Nominal (süpürülmeyen-eksenler): IID-5%, rev=0, RTT≈150ms(d=50), C=50pps, gap=40ms, W=400, T=300s.
+// Deadline-ekseni: AYRI-KOŞU-DEĞİL — dl_hits post-hoc-eşikler (2s/5s/10s; NETLEŞTİRME-2-metriği).
+// E-ekseni: bu-kesitte ANALİTİK (M3-verisi; sim-shard-düzeyi-refactor = ikinci-kesit).
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+#[test]
+#[ignore]
+fn sweep_kesit_1() {
+    struct Arm {
+        name: &'static str,
+        fec_on: bool,
+        r: u64,
+        sack: u64,
+    }
+    let arms = [
+        Arm {
+            name: "ARQ-baseline",
+            fec_on: false,
+            r: 0,
+            sack: 50,
+        },
+        Arm {
+            name: "FEC-dusuk-r2",
+            fec_on: true,
+            r: 2,
+            sack: 50,
+        },
+        Arm {
+            name: "FEC-orta-r4",
+            fec_on: true,
+            r: 4,
+            sack: 50,
+        },
+        Arm {
+            name: "FEC-yuksek-r8",
+            fec_on: true,
+            r: 8,
+            sack: 50,
+        },
+        Arm {
+            name: "ARQ-hafif-s100",
+            fec_on: false,
+            r: 0,
+            sack: 100,
+        },
+        // ARQ-orta ≡ ARQ-baseline (sack50) — ayrı-koşu-yok, tabloda-not.
+        Arm {
+            name: "ARQ-agresif-s25",
+            fec_on: false,
+            r: 0,
+            sack: 25,
+        },
+    ];
+    let nominal = |fec_on: bool| Scenario::m1(fec_on, 0.05, 0.0);
+
+    // Eksenler: (ad, senaryo-mutasyonu listesi)
+    let mut cells: Vec<(String, Scenario)> = Vec::new();
+    // 1) forward-loss
+    for pf in [0.01, 0.03, 0.05, 0.10, 0.20, 0.30] {
+        for a in &arms {
+            let mut sc = nominal(a.fec_on);
+            sc.fwd = ChanModel::Iid(pf);
+            sc.r_parity = a.r;
+            sc.sack_ms = a.sack;
+            cells.push((format!("loss,{:.0}%,{}", pf * 100.0, a.name), sc));
+        }
+    }
+    // 2) IID-vs-burst (aynı-kaba-oran-sınıfı; patern-farkı)
+    let patterns: [(&str, ChanModel); 3] = [
+        ("iid5", ChanModel::Iid(0.05)),
+        (
+            "ge-hafif",
+            ChanModel::Ge {
+                p_good: 0.001,
+                p_bad: 0.20,
+                mean_good_ms: 5000,
+                mean_bad_ms: 500,
+            },
+        ),
+        (
+            "ge-agir",
+            ChanModel::Ge {
+                p_good: 0.001,
+                p_bad: 0.40,
+                mean_good_ms: 2000,
+                mean_bad_ms: 200,
+            },
+        ),
+    ];
+    for (pn, pm) in patterns {
+        for a in &arms {
+            let mut sc = nominal(a.fec_on);
+            sc.fwd = pm;
+            sc.r_parity = a.r;
+            sc.sack_ms = a.sack;
+            cells.push((format!("pattern,{pn},{}", a.name), sc));
+        }
+    }
+    // 3) bandwidth (headroom-sabit: gap = 2×ser → offered≈C/2)
+    for cap in [12u64, 25, 50, 100] {
+        for a in &arms {
+            let mut sc = nominal(a.fec_on);
+            sc.cap_pps = cap;
+            sc.app_gap_ms = 2 * (1000 / cap);
+            sc.r_parity = a.r;
+            sc.sack_ms = a.sack;
+            cells.push((format!("bw,{cap}pps,{}", a.name), sc));
+        }
+    }
+    // 4) offered/headroom (C=50-sabit; gap süpürülür: ≈C/4, C/3, C/2, 3C/4)
+    for gap in [80u64, 53, 40, 27] {
+        for a in &arms {
+            let mut sc = nominal(a.fec_on);
+            sc.app_gap_ms = gap;
+            sc.r_parity = a.r;
+            sc.sack_ms = a.sack;
+            cells.push((format!("headroom,gap{gap}ms,{}", a.name), sc));
+        }
+    }
+    // 5) RTT
+    for d in [50u64, 250, 1000, 2500] {
+        for a in &arms {
+            let mut sc = nominal(a.fec_on);
+            sc.d_ms = d;
+            if d >= 1000 {
+                sc.t_max_ms = 600_000;
+            }
+            sc.r_parity = a.r;
+            sc.sack_ms = a.sack;
+            cells.push((format!("rtt,d{d}ms,{}", a.name), sc));
+        }
+    }
+    // 6) reverse-silence
+    for pr in [0.50, 0.90, 0.99] {
+        for a in &arms {
+            let mut sc = nominal(a.fec_on);
+            sc.p_rev = pr;
+            sc.r_parity = a.r;
+            sc.sack_ms = a.sack;
+            cells.push((format!("rev,{:.0}%,{}", pr * 100.0, a.name), sc));
+        }
+    }
+    assert!(
+        cells.len() <= 200,
+        "NETLEŞTİRME-1: hücre={} ≤ 200",
+        cells.len()
+    );
+    eprintln!("[kesit-1] hücre-sayısı: {}", cells.len());
+
+    println!("eksen,nokta,arm,goodput_per_byte,completion,t_p50_ms,t_p95_ms,dl2s,dl5s,dl10s,retx_dup,parity,cancels,sealed_MB,max_q_ms,evicted");
+    for (label, sc) in cells {
+        let mut gp = vec![];
+        let mut comp = vec![];
+        let mut p50 = vec![];
+        let mut p95 = vec![];
+        let mut d2 = vec![];
+        let mut d5 = vec![];
+        let mut d10 = vec![];
+        let mut rd = vec![];
+        let mut par = vec![];
+        let mut canc = vec![];
+        let mut sl = vec![];
+        let mut mq = vec![];
+        let mut ev = 0u64;
+        for seed in [11u64, 23, 37] {
+            let m = run_arm(sc, seed);
+            let tot = m.total_units as f64;
+            gp.push(m.delivered_bytes as f64 / m.sealed_bytes.max(1) as f64);
+            comp.push(m.delivered_units as f64 / tot);
+            p50.push(m.t_p50_ms as f64);
+            p95.push(m.t_p95_ms as f64);
+            d2.push(m.dl_hits[0] as f64 / tot);
+            d5.push(m.dl_hits[1] as f64 / tot);
+            d10.push(m.dl_hits[2] as f64 / tot);
+            rd.push(m.retx_dup_emitted as f64);
+            par.push(m.parity_emitted as f64);
+            canc.push(m.recovered_cancels as f64);
+            sl.push(m.sealed_bytes as f64 / 1e6);
+            mq.push(m.max_queue_ms as f64);
+            ev = ev.max(m.evicted);
+        }
+        println!(
+            "{label},{:.4},{:.3},{:.0},{:.0},{:.3},{:.3},{:.3},{:.0},{:.0},{:.0},{:.2},{:.0},{ev}",
+            median(gp),
+            median(comp),
+            median(p50),
+            median(p95),
+            median(d2),
+            median(d5),
+            median(d10),
+            median(rd),
+            median(par),
+            median(canc),
+            median(sl),
+            median(mq)
+        );
+        assert_eq!(ev, 0, "KARAR-2 evicted-guard: {label}");
     }
 }
