@@ -90,6 +90,26 @@ pub struct SealedShard {
 }
 
 /// app-bytes → Model-A blok → source+repair seal. Döner: (shard'lar, k_actual).
+/// Variable-r-preflight: `emit_r` KADAR repair seal-eder (0..=Rmax); k_actual app-boyundan.
+/// Receiver-tarafına exact-R sinyali TAŞINMAZ (kanıt-amacı: alıcı kaç-repair-geldiğini-dinamik-kabul-eder).
+pub fn encode_seal_block_with_r(
+    tx: &mut KamaNoiseWireProtector,
+    profile: &FecProfile,
+    app_bytes: &[u8],
+    block_id: u32,
+    message_id: u32,
+    base_pn: u64,
+    emit_r: usize,
+) -> (Vec<SealedShard>, u8) {
+    let (mut all, k_actual) =
+        encode_seal_block(tx, profile, app_bytes, block_id, message_id, base_pn);
+    // Not: encode_seal_block PN'leri source+TÜM-repair için tahsis etti; emit_r-üstünü DÜŞÜRMEK
+    // wire-PN-sıralamasını bozmaz (atlanan-PN'ler hiç-gönderilmemiş-sayılır; alıcı-toleranslı).
+    let k = usize::from(k_actual);
+    all.truncate(k + emit_r);
+    (all, k_actual)
+}
+
 pub fn encode_seal_block(
     tx: &mut KamaNoiseWireProtector,
     profile: &FecProfile,
