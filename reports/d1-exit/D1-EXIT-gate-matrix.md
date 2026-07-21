@@ -1,8 +1,20 @@
 # D1-EXIT — GATE-TO-EVIDENCE MATRİSİ (10-kutu; her-gate KANIT-LİNKLİ, iddia-değil)
 
-> Abkarada-revize-kararı gereği: her-gate için mekanizma-çalışıyor-İDDİASI-değil, **kanıt/artefakt-LİNKİ**.
-> Durum-özeti: **10/10 kutu KANITLI-kapalı** — ikisi kapsam-şerhli (aşağıda açık): K1-netem-nightly-açık-madde;
-> adaptive-FEC-actuation D1-şartı-DEĞİL → known-limitation/deferred-integration (bkz. §B).
+> ## RESMÎ-KAPANIŞ-KAYDI (Abkarada-hükmü, 2026-07-21):
+> # **D1 CLOSED WITH ACCEPTED DEFERRED ITEMS**
+>
+> D1-kapsamında-kapatılan = aşağıdaki-10-gate'in-kanıtladığı MEKANİZMA-katmanı. "Transport-omurgasındaki-
+> bütün-işler-tamamlandı" tarzı geniş-kapanış-ifadesi KULLANILMAZ — sonraki-fazlara-ertelenen-transport-işleri
+> aşağıda AÇIKÇA-ayrılmıştır. **ACCEPTED DEFERRED ITEMS (asgari-liste):**
+> 1. Adaptive FEC actuation (fuzzy-karar→FEC-icra kablosu)
+> 2. `fec_parity_ratio` dead-output entegrasyonu (§10.2 r=round(ratio×k) dahil)
+> 3. Gerçek K1 netem-doğrulaması (spurious-gap-vergisi; sim'de-sıfır ≠ netem'de-sıfır)
+> 4. PMTU shrink/adaptation mekanizması
+> 5. Fuzzy calibration (eşikler [CAL]-fixture; config-injection-yolu dahil)
+> 6. Senkron FEC–ARQ koordinasyonu (budget_cap-kablolama + dup↔parity-arbitrasyon)
+> 7. Gerçek-ağ (netem-nightly-tam-matris) ve saha-doğrulamaları (trafo-profilleri dahil)
+>
+> Her-gate iddia-cümlesiyle-değil doğrudan dosya/test/rapor/CI kanıt-bağlantısıyla gösterilir (aşağıda).
 
 ## A. 10-KUTU MATRİS
 
@@ -40,6 +52,8 @@
 
 ## C. D1-EXIT-HÜKMÜ
 
-Mekanizma-katmanı 10/10-kanıtlı; bilinen-sınırlar §B'de-açık. **D1-EXIT-paketi Abkarada-onayına-hazır.**
-Onay-sonrası: paralel-hatlar (TARAMA + MİNİMAL-AKTÜASYON 1e→1a) + Sprint-6-paralel (revize-karar-sırası;
-minimal-aktüasyon-borcu Sprint-6-sonrasına-tümden-bırakılmaz).
+**D1 CLOSED WITH ACCEPTED DEFERRED ITEMS** (resmî-kayıt üstte; deferred-liste-7-madde). Mekanizma-katmanı
+10/10-kanıt-linkli; bilinen-sınırlar §B + deferred-listede-açık. Sonraki-sıra (bağlayıcı-yönlendirme):
+Aşama-A-dil-düzeltmeleri → 1e-mini-DR + 1a-semantik-tablosu (tasarım-only) → tarama-ilk-crossover-kesiti →
+onay-sonrası 1e/1a-implementasyon → Sprint-6 (tek-geliştirici-gerçeği: önce-1e/1a). RsSimdEngine: GEÇİCİ-TUT
+(M3-M4-M5.md düzeltme-üst-notu; alloc-ölçüm-planı düşük-öncelik, blocker-değil).
