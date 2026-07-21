@@ -33,10 +33,9 @@ const SACK_MS: u64 = 50; // KARAR-3: iki-arm AYNI
 const D_MS: u64 = 50; // tek-yön gecikme
 const DATA_ID_BASE: u64 = 1_000_000; // parity-unit_id(=esi) çakışması-yok
 const CAP_PPS: u64 = 50; // forward-link kapasitesi (pkt/s) → serialization 20ms/paket
-const SER_MS: u64 = 1000 / CAP_PPS; // 20ms
-                                    // Akışlı-yük: offered = C/2 = 25 pkt/s — FEC-overhead (R/K=%50) + retransmit/dup-headroom.
-                                    // Araç-doğrulama-bulgusu: offered≈C→parity tam-starving; offered=2C/3→retx/dup'la-yarışta yine-starving
-                                    // (DATA-ÖNCE mühürlü-sıralamada parity token-ARTIĞINA akar — gerçek-motor-dinamiği; rapora-geçer).
+                         // Akışlı-yük: offered = C/2 = 25 pkt/s — FEC-overhead (R/K=%50) + retransmit/dup-headroom.
+                         // Araç-doğrulama-bulgusu: offered≈C→parity tam-starving; offered=2C/3→retx/dup'la-yarışta yine-starving
+                         // (DATA-ÖNCE mühürlü-sıralamada parity token-ARTIĞINA akar — gerçek-motor-dinamiği; rapora-geçer).
 const APP_GAP_MS: u64 = 40;
 
 /// Deterministik xorshift64 (kanal-kararları; HashSet-order-bağımsız).
@@ -61,6 +60,90 @@ impl Rng {
 
 /// Uçuştaki SACK: (varış-t, kümülatif-ack-snapshot, recovered-batch).
 type SackInFlight = (u64, Vec<u64>, Vec<(u32, u16, u64)>);
+
+/// Forward-kanal-modeli (M5): IID veya Gilbert-Elliott iki-durumlu burst.
+#[derive(Clone, Copy)]
+enum ChanModel {
+    Iid(f64),
+    /// GE: good/bad kayıp-olasılıkları + ortalama-durum-süreleri (geometrik-geçiş).
+    Ge {
+        p_good: f64,
+        p_bad: f64,
+        mean_good_ms: u64,
+        mean_bad_ms: u64,
+    },
+}
+
+/// Forward-kanal-durumu (GE-state; IID'de durumsuz — M1-determinizm korunur: IID tek-rng-çağrısı).
+struct FwdChan {
+    model: ChanModel,
+    ge_bad: bool,
+    last_t_ms: u64,
+}
+
+impl FwdChan {
+    fn new(model: ChanModel) -> Self {
+        Self {
+            model,
+            ge_bad: false,
+            last_t_ms: 0,
+        }
+    }
+    /// true = paket-GEÇTİ.
+    fn pass(&mut self, rng: &mut Rng, t_ms: u64) -> bool {
+        match self.model {
+            ChanModel::Iid(p) => rng.pass(p),
+            ChanModel::Ge {
+                p_good,
+                p_bad,
+                mean_good_ms,
+                mean_bad_ms,
+            } => {
+                // Zaman-tabanlı geometrik durum-geçişi (dt/mean olasılığıyla flip).
+                let dt = t_ms.saturating_sub(self.last_t_ms).max(1);
+                self.last_t_ms = t_ms;
+                let mean = if self.ge_bad {
+                    mean_bad_ms
+                } else {
+                    mean_good_ms
+                };
+                let flip_p = (dt as f64 / mean as f64).min(1.0);
+                if !rng.pass(flip_p) {
+                    self.ge_bad = !self.ge_bad;
+                }
+                rng.pass(if self.ge_bad { p_bad } else { p_good })
+            }
+        }
+    }
+}
+
+/// Senaryo-parametreleri (M1/M3-K1/M5 ortak-harness).
+#[derive(Clone, Copy)]
+struct Scenario {
+    fwd: ChanModel,
+    p_rev: f64,
+    d_ms: u64,       // tek-yön gecikme
+    cap_pps: u64,    // forward-link kapasitesi
+    app_gap_ms: u64, // akışlı-yük aralığı
+    fec_on: bool,
+    w_units: u64,
+    t_max_ms: u64,
+}
+
+impl Scenario {
+    fn m1(fec_on: bool, p_fwd: f64, p_rev: f64) -> Self {
+        Scenario {
+            fwd: ChanModel::Iid(p_fwd),
+            p_rev,
+            d_ms: D_MS,
+            cap_pps: CAP_PPS,
+            app_gap_ms: APP_GAP_MS,
+            fec_on,
+            w_units: 400,
+            t_max_ms: 300_000,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Arrival {
@@ -89,18 +172,25 @@ struct Metrics {
     parity_emitted: u64,
     blocks_decoded: u64,
     rec_batches_arrived: u64,
+    retx_dup_emitted: u64, // Retransmit+Duplicate decision-sayısı (K1-vergisi/M5)
+    max_queue_ms: u64,     // FIFO-kuyruk gecikme-tepe (bufferbloat-gözlemi)
 }
 
 /// Tek hücre-arm koşusu. `fec_on` tek-fark (KARAR-3).
 #[allow(clippy::too_many_lines)]
-fn run_arm(
-    fec_on: bool,
-    p_fwd: f64,
-    p_rev: f64,
-    seed: u64,
-    w_units: u64,
-    t_max_ms: u64,
-) -> Metrics {
+fn run_arm(sc: Scenario, seed: u64) -> Metrics {
+    let Scenario {
+        fwd,
+        p_rev,
+        d_ms,
+        cap_pps,
+        app_gap_ms,
+        fec_on,
+        w_units,
+        t_max_ms,
+    } = sc;
+    let ser_ms: u64 = 1000 / cap_pps;
+    let mut fwd_chan = FwdChan::new(fwd);
     let mut s = Sender::new();
     s.set_fec_enabled(fec_on);
     let mut rng = Rng::new(seed);
@@ -135,6 +225,8 @@ fn run_arm(
     let mut link_free_ms: u64 = 0; // forward-FIFO (kapasiteli-link)
     let mut parity_emitted = 0u64;
     let mut rec_batches_arrived = 0u64;
+    let mut retx_dup_emitted = 0u64;
+    let mut max_queue_ms = 0u64;
 
     // DATA registrasyonu (DR-S5-6: tüm-emisyon-register'lı) + blok/esi ataması.
     for i in 0..w_units {
@@ -154,7 +246,10 @@ fn run_arm(
                              sealed_bytes: &mut u64,
                              unit_lref: &BTreeMap<u64, (u32, u16)>,
                              link_free_ms: &mut u64,
-                             parity_emitted: &mut u64| {
+                             parity_emitted: &mut u64,
+                             fwd_chan: &mut FwdChan,
+                             retx_dup: &mut u64,
+                             max_q: &mut u64| {
         for d in out {
             *sealed_bytes += d.size + OVERHEAD;
             let (is_parity, block, esi) = if d.kind == TransmitKind::FecParity {
@@ -183,13 +278,17 @@ fn run_arm(
                     unit_retx_emitted.insert(d.unit_id);
                 }
             }
+            if matches!(d.kind, TransmitKind::Retransmit | TransmitKind::Duplicate) {
+                *retx_dup += 1;
+            }
             seq_unit.insert(d.seq, d.unit_id);
             // Forward-link: KAPASİTELİ-FIFO (serialization+kuyruk) → sonra loss-zar.
             let depart = (*link_free_ms).max(t_ms);
-            *link_free_ms = depart + SER_MS;
-            if rng.pass(p_fwd) {
+            *link_free_ms = depart + ser_ms;
+            *max_q = (*max_q).max(depart.saturating_sub(t_ms));
+            if fwd_chan.pass(rng, t_ms) {
                 arrivals.push(Arrival {
-                    t_ms: depart + SER_MS + D_MS,
+                    t_ms: depart + ser_ms + d_ms,
                     unit_id: d.unit_id,
                     is_parity,
                     block,
@@ -207,7 +306,7 @@ fn run_arm(
         let now = t_ms * MS;
 
         // 0) Akışlı-app: her APP_GAP_MS bir-unit (W'ye kadar) — gerçek-kullanım-modeli.
-        if t_ms.is_multiple_of(APP_GAP_MS) && app_sent < w_units {
+        if t_ms.is_multiple_of(app_gap_ms) && app_sent < w_units {
             let out = s.on_event(
                 Event::AppData(OpaqueUnit {
                     id: DATA_ID_BASE + app_sent,
@@ -229,6 +328,9 @@ fn run_arm(
                 &unit_lref,
                 &mut link_free_ms,
                 &mut parity_emitted,
+                &mut fwd_chan,
+                &mut retx_dup_emitted,
+                &mut max_queue_ms,
             );
         }
 
@@ -248,6 +350,9 @@ fn run_arm(
                 &unit_lref,
                 &mut link_free_ms,
                 &mut parity_emitted,
+                &mut fwd_chan,
+                &mut retx_dup_emitted,
+                &mut max_queue_ms,
             );
         }
 
@@ -306,7 +411,7 @@ fn run_arm(
             {
                 let snapshot: Vec<u64> = rx_acked.iter().copied().collect();
                 let rec_batch: Vec<(u32, u16, u64)> = pending_recovered.clone();
-                sacks.push((t_ms + D_MS, snapshot, rec_batch));
+                sacks.push((t_ms + d_ms, snapshot, rec_batch));
             }
             // pending_recovered receiver-tarafında tutulur; ulaşana-kadar sonraki-SACK'lerde tekrar
             // (kümülatif-bildirim; ulaşınca sender-idempotent — cancel ikinci-kez no-op).
@@ -345,6 +450,9 @@ fn run_arm(
                     &unit_lref,
                     &mut link_free_ms,
                     &mut parity_emitted,
+                    &mut fwd_chan,
+                    &mut retx_dup_emitted,
+                    &mut max_queue_ms,
                 );
             }
             if fec_on && !rec_batch.is_empty() {
@@ -411,6 +519,8 @@ fn run_arm(
         parity_emitted,
         blocks_decoded: block_decoded.len() as u64,
         rec_batches_arrived,
+        retx_dup_emitted,
+        max_queue_ms,
     }
 }
 
@@ -423,8 +533,6 @@ fn median(mut v: Vec<f64>) -> f64 {
 #[test]
 #[ignore]
 fn m1_matrix() {
-    const W: u64 = 400;
-    const T_MAX: u64 = 300_000; // 300s-sim
     const SEEDS: [u64; 5] = [11, 23, 37, 53, 71];
     let revs = [0.50, 0.70, 0.90, 0.95];
     let fwds = [0.01, 0.05, 0.15];
@@ -446,7 +554,7 @@ fn m1_matrix() {
                 let mut dec = vec![];
                 let mut rcv = vec![];
                 for &seed in &SEEDS {
-                    let m = run_arm(arm, pf, pr, seed, W, T_MAX);
+                    let m = run_arm(Scenario::m1(arm, pf, pr), seed);
                     gp.push(m.delivered_bytes as f64 / m.sealed_bytes.max(1) as f64);
                     comp.push(m.delivered_units as f64 / m.total_units as f64);
                     p50.push(m.t_p50_ms as f64);
@@ -495,9 +603,186 @@ fn m1_matrix() {
 #[test]
 fn m1_smoke_single_cell() {
     for arm in [true, false] {
-        let m = run_arm(arm, 0.05, 0.70, 7, 64, 60_000);
+        let m = run_arm(
+            Scenario {
+                w_units: 64,
+                t_max_ms: 60_000,
+                ..Scenario::m1(arm, 0.05, 0.70)
+            },
+            7,
+        );
         assert!(m.delivered_units > 0, "teslim-oldu (arm={arm})");
         assert_eq!(m.evicted, 0, "KARAR-2 guard");
         assert!(m.sealed_bytes > 0);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// M3-K1 — FEC-on TEMİZ-LİNK spurious-retransmit-vergisi (sim-ön-kontrol; gerçek-K1 netem-nightly)
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+#[test]
+fn m3_k1_clean_link_spurious_tax() {
+    let base = Scenario {
+        fwd: ChanModel::Iid(0.0),
+        p_rev: 0.0,
+        w_units: 200,
+        t_max_ms: 120_000,
+        ..Scenario::m1(false, 0.0, 0.0)
+    };
+    let arq = run_arm(
+        Scenario {
+            fec_on: false,
+            ..base
+        },
+        5,
+    );
+    let fec = run_arm(
+        Scenario {
+            fec_on: true,
+            ..base
+        },
+        5,
+    );
+    eprintln!(
+        "[M3-K1] temiz-link: ARQ retx_dup={} sealed={}B | FEC retx_dup={} sealed={}B parity={} (vergi: retx_dup-farkı={}, byte-farkı={}B)",
+        arq.retx_dup_emitted, arq.sealed_bytes, fec.retx_dup_emitted, fec.sealed_bytes,
+        fec.parity_emitted,
+        fec.retx_dup_emitted as i64 - arq.retx_dup_emitted as i64,
+        fec.sealed_bytes as i64 - arq.sealed_bytes as i64
+    );
+    assert_eq!(arq.delivered_units, 200);
+    assert_eq!(fec.delivered_units, 200);
+    assert_eq!(fec.evicted, 0);
+    // K1-sim-hükmü raporda: sim'de spurious-gap-vergisi retx_dup-farkı olarak ölçülür;
+    // sim-SACK-kümülatif-idealize olduğundan sıfır-çıkması "netem'de-de-sıfır" DEMEK-DEĞİL (nightly-madde).
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// M5 — TRACE-SETİ + TRAFO-PROFİLLERİ (CC-katmanı testi; çoğu fec-off — "FEC-orada-sessiz").
+// PMTU-shrink: transport-PMTU-mekanizması-YOK (DEFAULT_MTU-sabit; envanter) → known-limitation, taranamaz.
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+#[test]
+#[ignore]
+fn m5_trace_table() {
+    let traces: Vec<(&str, Scenario)> = vec![
+        (
+            "iid-1%",
+            Scenario {
+                fwd: ChanModel::Iid(0.01),
+                p_rev: 0.0,
+                ..Scenario::m1(false, 0.0, 0.0)
+            },
+        ),
+        (
+            "iid-10%",
+            Scenario {
+                fwd: ChanModel::Iid(0.10),
+                p_rev: 0.0,
+                ..Scenario::m1(false, 0.0, 0.0)
+            },
+        ),
+        (
+            "iid-30%",
+            Scenario {
+                fwd: ChanModel::Iid(0.30),
+                p_rev: 0.0,
+                ..Scenario::m1(false, 0.0, 0.0)
+            },
+        ),
+        (
+            "ge-burst",
+            Scenario {
+                fwd: ChanModel::Ge {
+                    p_good: 0.001,
+                    p_bad: 0.40,
+                    mean_good_ms: 2000,
+                    mean_bad_ms: 200,
+                },
+                p_rev: 0.0,
+                ..Scenario::m1(false, 0.0, 0.0)
+            },
+        ),
+        (
+            "rtt-1s-iid5%",
+            Scenario {
+                fwd: ChanModel::Iid(0.05),
+                p_rev: 0.0,
+                d_ms: 500,
+                ..Scenario::m1(false, 0.0, 0.0)
+            },
+        ),
+        (
+            "rtt-5s-iid5%",
+            Scenario {
+                fwd: ChanModel::Iid(0.05),
+                p_rev: 0.0,
+                d_ms: 2500,
+                t_max_ms: 600_000,
+                ..Scenario::m1(false, 0.0, 0.0)
+            },
+        ),
+        (
+            "rev-95-rtt1s",
+            Scenario {
+                fwd: ChanModel::Iid(0.05),
+                p_rev: 0.95,
+                d_ms: 500,
+                ..Scenario::m1(false, 0.0, 0.0)
+            },
+        ),
+        (
+            // TRAFO-1 bufferbloat: loss-0, RTT-baz-64ms, offered≈C → FIFO-kuyruk şişer (RTT 64→saniyeler)
+            "trafo-bufferbloat",
+            Scenario {
+                fwd: ChanModel::Iid(0.0),
+                p_rev: 0.0,
+                d_ms: 32,
+                app_gap_ms: 20,
+                ..Scenario::m1(false, 0.0, 0.0)
+            },
+        ),
+        (
+            // TRAFO-2 kırsal: ~30kbps (C=3pps@1237B), yüksek-RTT-600ms, hafif-loss
+            "trafo-kirsal-30kbps",
+            Scenario {
+                fwd: ChanModel::Iid(0.02),
+                p_rev: 0.0,
+                d_ms: 300,
+                cap_pps: 3,
+                app_gap_ms: 350,
+                w_units: 100,
+                t_max_ms: 600_000,
+                ..Scenario::m1(false, 0.0, 0.0)
+            },
+        ),
+    ];
+    println!("trace,completion,t_p50_ms,t_p95_ms,retx_dup,sealed_MB,max_queue_ms,evicted");
+    for (name, sc) in traces {
+        let mut comp = vec![];
+        let mut p50 = vec![];
+        let mut p95 = vec![];
+        let mut rd = vec![];
+        let mut sl = vec![];
+        let mut mq = vec![];
+        let mut ev = 0u64;
+        for seed in [11u64, 23, 37] {
+            let m = run_arm(sc, seed);
+            comp.push(m.delivered_units as f64 / m.total_units as f64);
+            p50.push(m.t_p50_ms as f64);
+            p95.push(m.t_p95_ms as f64);
+            rd.push(m.retx_dup_emitted as f64);
+            sl.push(m.sealed_bytes as f64 / 1e6);
+            mq.push(m.max_queue_ms as f64);
+            ev = ev.max(m.evicted);
+        }
+        println!(
+            "{name},{:.3},{:.0},{:.0},{:.0},{:.2},{:.0},{ev}",
+            median(comp),
+            median(p50),
+            median(p95),
+            median(rd),
+            median(sl),
+            median(mq)
+        );
     }
 }

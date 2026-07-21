@@ -1,4 +1,16 @@
-# M1 — REVERSE-NİŞ ÖLÇÜMÜ (bilimsel-deney raporu) — SONUÇ NE-ÇIKTIYSA-O
+# M1 — FIXED-FEC RESIDUAL-BUDGET CHARACTERIZATION [YENİDEN-ADLANDIRILDI]
+
+> **ÇERÇEVE-REVİZYONU (ölçüm-felsefesi kararı + Abkarada-hükmü):** Bu deney başlangıçta "reverse-niş: FEC-arm
+> vs ARQ-arm" olarak-çerçevelenmişti — **YANLIŞ-SORU** (Kama-kayıtlı-yapısal-hata): iki-arm fuzzy-katmanı-DEVRE-DIŞI
+> iki-uç-modu yarıştırdı; "ARQ-12/12" Kama-hakkında-bir-şey-söylemez, yalnız "bu-rejimde-sabit-FEC-verimsiz" der —
+> ki-bu-ZATEN controller'ın-FEC'e-yönelmemesi-gereken-rejim. **Deneyin-gerçek-değeri:** sabit-FEC'in
+> ARTIK-BÜTÇE (token-artığı) altındaki davranış-karakterizasyonu + iki-kalıcı-mekanik-bulgu (parity-starving-
+> politikasızlığı; RECOVER_FWD-gölgesi) + fuzzy-kalibrasyonuna crossover-taban-verisi. Envanter-bağı:
+> `fec_parity_ratio` DEAD-OUTPUT olduğundan (bkz. fuzzy-controller-envanter.md) **M1'in-ölçtüğü "fuzzy'nin-
+> FEC-kararı" DEĞİLDİ ve olamazdı.** Aşağıdaki-orijinal-rapor tarihsel-bütünlükle korunur; "niş-çürüdü"-hükmü
+> "sabit-FEC-bu-rejimde-verimsiz (beklenen)" olarak-okunmalı.
+
+# [ORİJİNAL-RAPOR] M1 — REVERSE-NİŞ ÖLÇÜMÜ (bilimsel-deney raporu) — SONUÇ NE-ÇIKTIYSA-O
 
 > **HÜKÜM (dürüstlük-protokolü §4):** Bu sim-modelinde ve bu matris-parametrelerinde **Kama-FEC-arm HİÇBİR
 > hücrede goodput_per_sealed_byte'ta kazanmadı (ARQ 12/12); completion her-hücrede-iki-arm 1.000; zaman-metrikleri
