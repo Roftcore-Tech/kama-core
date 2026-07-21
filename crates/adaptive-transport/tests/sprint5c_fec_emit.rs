@@ -41,7 +41,7 @@ fn fec_off_no_emit() {
 #[test]
 fn fec_on_emits_with_send_record() {
     let mut s = Sender::new();
-    s.set_fec_enabled(true);
+    s.set_manual_fec_enabled(true).expect("Manual-mode");
     s.enqueue_fec_parity(7, 0, UNIT);
     s.enqueue_fec_parity(7, 3, UNIT);
     let decisions = run(&mut s, 0, 800);
@@ -71,7 +71,7 @@ fn fec_on_emits_with_send_record() {
 #[test]
 fn data_before_fec_parity() {
     let mut s = Sender::new();
-    s.set_fec_enabled(true);
+    s.set_manual_fec_enabled(true).expect("Manual-mode");
     s.enqueue_fec_parity(1, 0, UNIT);
     // Uzun-sür (pacing sub-kbps olsa da tüm-birimler drain olsun; ordering pacing-bağımsız).
     let decisions = run(&mut s, 3, 60_000);

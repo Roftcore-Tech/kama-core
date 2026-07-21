@@ -28,7 +28,7 @@ fn ack(seqs: &[u64], delay_ms: u64) -> Event {
 /// Döner: (btlbw, send_rate=pacer.rate, loss_pkt, fec_emitted, acked_total).
 fn drive(loss_mod: u64) -> (u64, u64, u64, usize, u64) {
     let mut s = Sender::new();
-    s.set_fec_enabled(true); // ← emisyon-AÇIK (ihlal-yolu fiziksel-mümkün)
+    s.set_manual_fec_enabled(true).expect("Manual-mode"); // ← emisyon-AÇIK (ihlal-yolu fiziksel-mümkün)
     let mut fec_emitted = 0usize;
     let mut acked_total = 0u64;
 

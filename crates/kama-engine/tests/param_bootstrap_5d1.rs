@@ -42,7 +42,7 @@ fn drive_fec(sender: &mut Sender, ticks: u64) -> usize {
 
 fn fresh_fec_sender() -> Sender {
     let mut s = Sender::new();
-    s.set_fec_enabled(true); // B2-direktifi: HEMEN emit
+    s.set_manual_fec_enabled(true).expect("Manual-mode"); // B2-direktifi: HEMEN emit
     s.enqueue_fec_parity(1, 0, 267);
     s.enqueue_fec_parity(1, 1, 267);
     s

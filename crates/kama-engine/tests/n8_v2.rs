@@ -34,7 +34,7 @@ fn ack(seqs: &[u64]) -> Event {
 fn drive(fires: bool) -> (u64, u64, usize, bool) {
     // ── SENDER-tarafı: warm-up + FEC-parity-emisyonu (gerçek send_record'dan RecoveredMap.register) ──
     let mut s = Sender::new();
-    s.set_fec_enabled(true);
+    s.set_manual_fec_enabled(true).expect("Manual-mode");
     let mut rmap = RecoveredMap::new();
 
     for i in 0..20u64 {

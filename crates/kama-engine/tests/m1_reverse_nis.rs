@@ -248,7 +248,7 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
     let ser_ms: u64 = 1000 / cap_pps;
     let mut fwd_chan = FwdChan::new(fwd);
     let mut s = Sender::new();
-    s.set_fec_enabled(fec_on);
+    s.set_manual_fec_enabled(fec_on).expect("Manual-mode");
     let mut rng = Rng::new(seed);
     let mut rmap = RecoveredMap::new();
 

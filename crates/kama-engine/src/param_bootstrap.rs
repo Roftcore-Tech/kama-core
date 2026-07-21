@@ -15,7 +15,7 @@ use kama_transport_schema::param::ParamFields;
 pub struct ParamSetPlan {
     /// Seal+emit edilecek PARAM_SET control-frame'i (param_hash bind-edilmiş).
     pub control: Control,
-    /// B2: `true` → çağıran HEMEN `sender.set_fec_enabled(true)` yapar (PARAM_ACK-beklemeden).
+    /// B2: `true` → çağıran HEMEN `sender.set_manual_fec_enabled(true)` yapar (PARAM_ACK-beklemeden).
     pub start_fec_immediately: bool,
     /// Yerel-hesaplanan param_hash (PARAM_ACK-echo doğrulaması için saklanır).
     pub param_hash: [u8; 32],
