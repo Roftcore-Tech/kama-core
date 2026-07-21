@@ -25,6 +25,7 @@ pub mod inner;
 pub mod legacy;
 pub mod opened;
 pub mod outer;
+pub mod param_bind;
 pub mod pn;
 pub mod protector;
 pub mod restart;

@@ -48,6 +48,12 @@ pub enum WireError {
     /// Session tombstone/closed (SESSION_CLOSE sonrası bounded-grace; data-admit-etmez).
     #[error("session closed (tombstone) h_ext={0:#010x}")]
     SessionClosed(u32),
+    /// PARAM_SET alan-sınırı ihlali (§8 B4; canonical_hash_input fail-closed).
+    #[error("param invalid: {0}")]
+    ParamInvalid(&'static str),
+    /// Gelen PARAM_SET.param_hash yerel-hesapla eşleşmiyor (§8 fail-closed; profil-bağı reddi).
+    #[error("param_hash mismatch (fail-closed)")]
+    ParamHashMismatch,
 }
 
 /// §4 precheck reddi — hangi-kural düştüğü (window-ilerletmeden).

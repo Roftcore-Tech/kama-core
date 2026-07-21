@@ -97,6 +97,22 @@ RFC-8439-resmi-vector'ları + random-{key,nonce,AAD,pt}-corpus-eşitliği.
 
 **ESKİ-KARAR (libsodium-primary AEAD):** SUPERSEDED — erken-dönem-varsayımı; proje-saf-Rust'a-evrildi.
 
+### ADR-03 AMENDMENT-2 — Hash Backend (BLAKE2s-256 / param_hash) [GÜNCELLENDİ: 2026-07, DR-S5-5]
+
+**KARAR:** `param_hash = BLAKE2s-256(DS ‖ fields)` (noise-wire-tdd §8) üretim-backend'i = RustCrypto `blake2` v0.10
+(`Blake2s256`). Üretim-home = `kama-noise-wire` (kripto-katmanı). Schema kripto-free KALIR (yalnız canonical-byte-üretir);
+adaptive-transport crypto-agnostik KALIR (INV-ENGINE-SOC).
+
+**GEREKÇE:** BLAKE2s-256 pki §13 registry'de (cipher_suite 0x0001). ADR-03-üst-kararı BLAKE2s'i libsodium'a atamıştı
+AMA libsodium `crypto_generichash` = BLAKE2b ≠ BLAKE2s (256-bit BLAKE2s'i doğrudan expose-etmez) → libsodium-BLAKE2s-yolu
+uygulanamaz. DR-5 emsali (production-crypto = RustCrypto; libsodium yalnız test-oracle) + golden-vektör zaten RustCrypto
+`blake2` ile üretiliyor → drift-gate kesintisiz.
+
+**ZORUNLU-UYGULAMA-KISITLARI:** üretim-tip AÇIKÇA `blake2::Blake2s256` (256-bit; BLAKE2b/uzunluk-varyantı-karıştırılmaz) ·
+exact-version + checksum Cargo.lock'tan · golden-eşitlik-gate (`bind_transport_parameters` == `golden_param_blake2s_hash`
+byte-özdeş) · runtime-backend-switching YOK · public CryptoProvider-abstraction YOK. AEAD-backend (DR-5, RustCrypto
+chacha20poly1305) DEĞİŞMEZ. Gelecek Noise HKDF-BLAKE2s aynı-backend'e yönelir (tutarlılık; bu-amendment onu implemente-etmez).
+
 ### ADR-04 — VOPRF: ristretto255-SHA512 (RFC 9497), libsodium ristretto üzerinde
 
 **Statü:** KABUL (discovery-architecture.md ile aynı; suite 0x0001)

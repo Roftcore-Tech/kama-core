@@ -1,0 +1,20 @@
+[package]
+name = "kama-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Engine kompozisyon-düğümü (Sprint-5d): noise-wire (OpenedTransportShard/param_bind) + fec-codec
+# (reconstruct/by_id) + schema (ParamFields/Control) birleştirir. SoC: bu-crate transport-core'un
+# ÜSTÜ; adaptive-transport'u üretimde TUTMAZ (crypto-agnostik kalması için) — yalnız direktif üretir.
+[dependencies]
+thiserror.workspace = true
+kama-transport-schema = { path = "../kama-transport-schema" }
+kama-fec-codec = { path = "../kama-fec-codec" }
+kama-noise-wire = { path = "../kama-noise-wire" }
+
+[dev-dependencies]
+# B2-bootstrap testi gerçek Sender'ı (transport-core) sürer — engine üretimi buna hard-bağlı DEĞİL.
+adaptive-transport = { path = "../adaptive-transport" }
+zeroize = "1"
