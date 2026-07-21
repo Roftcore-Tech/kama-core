@@ -79,6 +79,13 @@ struct FwdChan {
     model: ChanModel,
     ge_bad: bool,
     last_t_ms: u64,
+    // Validity-audit: realized-loss + burst-istatistikleri (pattern-ekseni ayrıştırması).
+    attempts: u64,
+    drops: u64,
+    cur_run: u64, // ardışık-drop-koşusu
+    burst_count: u64,
+    burst_sum: u64,
+    burst_max: u64,
 }
 
 impl FwdChan {
@@ -87,11 +94,32 @@ impl FwdChan {
             model,
             ge_bad: false,
             last_t_ms: 0,
+            attempts: 0,
+            drops: 0,
+            cur_run: 0,
+            burst_count: 0,
+            burst_sum: 0,
+            burst_max: 0,
         }
+    }
+    fn note(&mut self, passed: bool) -> bool {
+        self.attempts += 1;
+        if passed {
+            if self.cur_run > 0 {
+                self.burst_count += 1;
+                self.burst_sum += self.cur_run;
+                self.burst_max = self.burst_max.max(self.cur_run);
+                self.cur_run = 0;
+            }
+        } else {
+            self.drops += 1;
+            self.cur_run += 1;
+        }
+        passed
     }
     /// true = paket-GEÇTİ.
     fn pass(&mut self, rng: &mut Rng, t_ms: u64) -> bool {
-        match self.model {
+        let passed = match self.model {
             ChanModel::Iid(p) => rng.pass(p),
             ChanModel::Ge {
                 p_good,
@@ -113,7 +141,8 @@ impl FwdChan {
                 }
                 rng.pass(if self.ge_bad { p_bad } else { p_good })
             }
-        }
+        };
+        self.note(passed)
     }
 }
 
@@ -181,6 +210,21 @@ struct Metrics {
     /// Deadline-hit-rate ham-verisi (M2-metriği; NETLEŞTİRME-2): teslim-anı ≤ {2s,5s,10s}
     /// eşiklerindeki unit-sayısı (payda = total_units; ıskalayan+teslim-edilmeyen = miss).
     dl_hits: [usize; 3],
+    // ── Validity-audit alanları (Kesit-1 denetimi; harness-only) ──
+    app_sent: u64,
+    data_units_emitted: usize, // distinct-DATA-unit emisyonu (kuyrukta-kalan = app_sent − bu)
+    blocks_enqueue_completed: u64, // parity-enqueue-tetiklenen blok-sayısı
+    parity_enqueued: u64,      // enqueue_fec_parity çağrı-adedi (= r × blocks_completed)
+    censored: bool,            // horizon-censoring: t_max'a-çarpıp tam-teslim-olmadı
+    fwd_attempts: u64,
+    fwd_drops: u64,
+    burst_count: u64,
+    burst_mean_x100: u64,
+    burst_max: u64,
+    // FusionInput-KISMİ telemetri (mevcut-public-diag'lardan; loss_ppm/jitter/ackconf diag-YOK — plan-notu):
+    fi_btlbw: [u64; 4],    // min/p50/p90/max (500ms-örnekleme)
+    fi_qd_ratio: [u64; 4], // qd*1000/rtprop permille
+    fi_no_rule: u64,       // diag_fuzzy_no_rule (kümülatif)
 }
 
 /// Tek hücre-arm koşusu. `fec_on` tek-fark (KARAR-3).
@@ -258,7 +302,8 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
                              parity_emitted: &mut u64,
                              fwd_chan: &mut FwdChan,
                              retx_dup: &mut u64,
-                             max_q: &mut u64| {
+                             max_q: &mut u64,
+                             data_units: &mut BTreeSet<u64>| {
         for d in out {
             *sealed_bytes += d.size + OVERHEAD;
             let (is_parity, block, esi) = if d.kind == TransmitKind::FecParity {
@@ -290,6 +335,9 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
             if matches!(d.kind, TransmitKind::Retransmit | TransmitKind::Duplicate) {
                 *retx_dup += 1;
             }
+            if d.kind == TransmitKind::Data {
+                data_units.insert(d.unit_id);
+            }
             seq_unit.insert(d.seq, d.unit_id);
             // Forward-link: KAPASİTELİ-FIFO (serialization+kuyruk) → sonra loss-zar.
             let depart = (*link_free_ms).max(t_ms);
@@ -309,6 +357,11 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
     };
 
     let mut app_sent: u64 = 0;
+    let mut data_units_emitted: BTreeSet<u64> = BTreeSet::new();
+    let mut blocks_enqueue_completed = 0u64;
+    let mut parity_enqueued = 0u64;
+    let mut fi_btlbw_s: Vec<u64> = Vec::new();
+    let mut fi_qd_s: Vec<u64> = Vec::new();
     let mut t_ms: u64 = 0;
     while t_ms < t_max_ms {
         t_ms += TICK_MS;
@@ -340,6 +393,7 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
                 &mut fwd_chan,
                 &mut retx_dup_emitted,
                 &mut max_queue_ms,
+                &mut data_units_emitted,
             );
         }
 
@@ -362,7 +416,21 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
                 &mut fwd_chan,
                 &mut retx_dup_emitted,
                 &mut max_queue_ms,
+                &mut data_units_emitted,
             );
+        }
+
+        // FusionInput-KISMİ örnekleme (500ms; mevcut-diag'lar — audit §9).
+        if t_ms.is_multiple_of(500) {
+            let (_, btlbw, _, _, _) = s.diag_rate();
+            fi_btlbw_s.push(btlbw);
+            let (qd_us, _) = s.diag_qd();
+            let (_, rtprop_us) = s.diag_rtt();
+            fi_qd_s.push(if rtprop_us > 0 {
+                qd_us * 1000 / rtprop_us
+            } else {
+                0
+            });
         }
 
         // 1b) Blok-tamamlanınca parity-enqueue (yalnız FEC-arm; engine-encode-anı-modeli).
@@ -374,8 +442,10 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
                 .collect();
             for b in ready {
                 emitted_in_block.remove(&b);
+                blocks_enqueue_completed += 1;
                 for r in 0..r_parity {
                     s.enqueue_fec_parity(b, (K + r) as u16, UNIT);
+                    parity_enqueued += 1;
                 }
             }
         }
@@ -462,6 +532,7 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
                     &mut fwd_chan,
                     &mut retx_dup_emitted,
                     &mut max_queue_ms,
+                    &mut data_units_emitted,
                 );
             }
             if fec_on && !rec_batch.is_empty() {
@@ -533,7 +604,34 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
         retx_dup_emitted,
         max_queue_ms,
         dl_hits,
+        app_sent,
+        data_units_emitted: data_units_emitted.len(),
+        blocks_enqueue_completed,
+        parity_enqueued,
+        censored: (deliver_t.len() as u64) < w_units,
+        fwd_attempts: fwd_chan.attempts,
+        fwd_drops: fwd_chan.drops,
+        burst_count: fwd_chan.burst_count,
+        burst_mean_x100: if fwd_chan.burst_count > 0 {
+            fwd_chan.burst_sum * 100 / fwd_chan.burst_count
+        } else {
+            0
+        },
+        burst_max: fwd_chan.burst_max,
+        fi_btlbw: quartiles(&mut fi_btlbw_s),
+        fi_qd_ratio: quartiles(&mut fi_qd_s),
+        fi_no_rule: s.diag_fuzzy_no_rule(),
     }
+}
+
+/// (min, p50, p90, max) — audit-özeti.
+fn quartiles(v: &mut Vec<u64>) -> [u64; 4] {
+    if v.is_empty() {
+        return [0; 4];
+    }
+    v.sort_unstable();
+    let n = v.len();
+    [v[0], v[n / 2], v[(n * 9 / 10).min(n - 1)], v[n - 1]]
 }
 
 fn median(mut v: Vec<f64>) -> f64 {
@@ -807,15 +905,15 @@ fn m5_trace_table() {
 // Deadline-ekseni: AYRI-KOŞU-DEĞİL — dl_hits post-hoc-eşikler (2s/5s/10s; NETLEŞTİRME-2-metriği).
 // E-ekseni: bu-kesitte ANALİTİK (M3-verisi; sim-shard-düzeyi-refactor = ikinci-kesit).
 // ══════════════════════════════════════════════════════════════════════════════════════════════
-#[test]
-#[ignore]
-fn sweep_kesit_1() {
-    struct Arm {
-        name: &'static str,
-        fec_on: bool,
-        r: u64,
-        sack: u64,
-    }
+struct Arm {
+    name: &'static str,
+    fec_on: bool,
+    r: u64,
+    sack: u64,
+}
+
+/// Kesit-1 hücre-inşası (sweep + seed-level-audit ortak; 6-distinct-executed-arms / 7-logical-labels).
+fn kesit1_cells() -> Vec<(String, Scenario)> {
     let arms = [
         Arm {
             name: "ARQ-baseline",
@@ -944,6 +1042,13 @@ fn sweep_kesit_1() {
             cells.push((format!("rev,{:.0}%,{}", pr * 100.0, a.name), sc));
         }
     }
+    cells
+}
+
+#[test]
+#[ignore]
+fn sweep_kesit_1() {
+    let cells = kesit1_cells();
     assert!(
         cells.len() <= 200,
         "NETLEŞTİRME-1: hücre={} ≤ 200",
@@ -999,5 +1104,53 @@ fn sweep_kesit_1() {
             median(mq)
         );
         assert_eq!(ev, 0, "KARAR-2 evicted-guard: {label}");
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// KESİT-1 VALIDITY-AUDIT — seed-level döküm (medyan-CSV-sınırlaması-giderimi) + audit-sütunları.
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+#[test]
+#[ignore]
+fn audit_seed_level() {
+    println!("eksen,nokta,arm,seed,goodput,completion,t_p50,t_p95,dl2,dl5,dl10,retx_dup,parity_enq,parity_emit,blocks_enq,cancels,sealed_B,max_q,evicted,censored,app_sent,data_emitted,fwd_att,fwd_drop,burst_n,burst_mean_x100,burst_max,btlbw_min,btlbw_p50,btlbw_p90,btlbw_max,qdr_p50,qdr_max,no_rule");
+    for (label, sc) in kesit1_cells() {
+        for seed in [11u64, 23, 37] {
+            let m = run_arm(sc, seed);
+            let tot = m.total_units as f64;
+            println!(
+                "{label},{seed},{:.4},{:.4},{},{},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                m.delivered_bytes as f64 / m.sealed_bytes.max(1) as f64,
+                m.delivered_units as f64 / tot,
+                m.t_p50_ms,
+                m.t_p95_ms,
+                m.dl_hits[0] as f64 / tot,
+                m.dl_hits[1] as f64 / tot,
+                m.dl_hits[2] as f64 / tot,
+                m.retx_dup_emitted,
+                m.parity_enqueued,
+                m.parity_emitted,
+                m.blocks_enqueue_completed,
+                m.recovered_cancels,
+                m.sealed_bytes,
+                m.max_queue_ms,
+                m.evicted,
+                u8::from(m.censored),
+                m.app_sent,
+                m.data_units_emitted,
+                m.fwd_attempts,
+                m.fwd_drops,
+                m.burst_count,
+                m.burst_mean_x100,
+                m.burst_max,
+                m.fi_btlbw[0],
+                m.fi_btlbw[1],
+                m.fi_btlbw[2],
+                m.fi_btlbw[3],
+                m.fi_qd_ratio[1],
+                m.fi_qd_ratio[3],
+                m.fi_no_rule
+            );
+        }
     }
 }

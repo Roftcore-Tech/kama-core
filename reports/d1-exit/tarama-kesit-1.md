@@ -1,4 +1,27 @@
-# TARAMA-KESİT-1 — karar-yüzeyi ilk-crossover-kesiti (tek-eksen-süpürmeleri)
+# TARAMA-KESİT-1 — karar-yüzeyi ilk-kesiti
+
+> ## RESMÎ-STATÜ (Abkarada-denetimi, 2026-07-22):
+> # **EXPLORATORY DECISION-SURFACE SCREENING — NOT YET CALIBRATION EVIDENCE**
+>
+> **CORRIGENDUM (orijinal-gövde-aşağıda-korunur; tam-denetim: [validity-audit](tarama-kesit-1-validity-audit.md)):**
+> Bu-kesitten fuzzy-üyelik-eşiği veya ürün-politikası DOĞRUDAN-türetilemez: 3-seed-medyan · Scenario-knob ≠
+> gerçek-FusionInputs · birçok-FEC-arm'da requested-r ↔ realized-parity AYRIŞIYOR (arm-collapse-tablosu-audit'te;
+> d1000/d2500 r-crossover-için FULLY-COLLAPSED) · bazı-hücreler horizon-censored (bw-12pps 3/3; loss-30 ARQ-armları) ·
+> deadline-farkları çoğunlukla metrik-çözünürlüğü-seviyesinde · ARQ-yoğunluk = SACK-cadence-PROXY · tek-eksen
+> bileşik-fuzzy-kurallarını-doğrulamaz. **Terminoloji-düzeltmesi:** "7-arm/144-hücre-önde" → **6-distinct-executed-
+> arms / 7-logical-labels (ARQ-orta≡ARQ-baseline; istatistikte-bir-kez-sayılır) / 24-scenario-points / 144-run-rows**;
+> goodput-hükmü: **"24/24 scenario-noktasında en-yüksek goodput_per_byte bir-ARQ-arm'ında gözlendi"** (dominance-
+> iddiası-değil; loss-30'da completion: FEC-r2/r4/r8=1.000 > ARQ-baseline=0.998 — goodput≠completion-objective).
+> **§16-dil-düzeltmeleri:** "R1-doğrulandı"→"R1-yönelimiyle-TUTARLI (fuzzy-arm-koşulmadı; realized-parity-değişken —
+> kural-doğrulaması-değil)" · "deadline-karar-değeri-gösterildi"→"küçük-tekrarlanması-gereken-ÖN-SİNYAL (seed-varyansı-
+> bandında)" · "crossover-adayı loss×RTT×rev"→"arm-collapse-ayrıştırıldıktan-SONRA-araştırılacak etkileşim-HİPOTEZİ
+> (daralmanın-token/pacer-baskısı-açıklaması audit'te-DOĞRULANDI — d1000-emit=20/20/20 r-bağımsız)" · "pattern-önceliği-
+> düşük"→"eşleşmemiş-pattern-profillerinde-sıralama-değişmedi (realized-loss MATCHED-DEĞİL: iid5≈%2.2-6.8, ge-hafif≈
+> %0.5-2 — pattern-vs-rate-ayrıştırılamaz)" · "ackconf-için-rev90-99-ayrıştırıcı"→"environment-space-screening;
+> actual-ackconf-mapping-PENDING" · "headroom-sinyali-zayıf"→"yalnız-test-edilen-POZİTİF-headroom-bölgesinde (util
+> 0.25-0.74) zayıf" · "FEC-düşük/orta/yüksek"→"requested-r2/r4/r8 (realized-parity-ayrıca)".
+
+# [ORİJİNAL] TARAMA-KESİT-1 — karar-yüzeyi ilk-crossover-kesiti (tek-eksen-süpürmeleri)
 
 > **Amaç-çerçevesi:** fuzzy-kalibrasyon/tasarım-verisi — ürün/white-paper-üstünlük-iddiası ÜRETİLMEZ.
 > Harness-only (`m1_reverse_nis.rs::sweep_kesit_1`); mühürlü-koda-dokunulmadı. Ham-veri:
