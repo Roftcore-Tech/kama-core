@@ -37,8 +37,8 @@ use crate::emergency::{
     RecoveryAction, RecoveryModeController,
 };
 use crate::fusion::{
-    DeterministicFuzzyController, FusionController, FusionDecision, FusionInputs, FuzzyConfig,
-    FuzzyConfigError, Mode,
+    DeterministicFuzzyController, FusionController, FusionDecision, FusionInputSnapshot,
+    FusionInputs, FuzzyConfig, FuzzyConfigError, Mode,
 };
 use crate::loss::{LossDetector, ThresholdLossDetector};
 use crate::pacer::{TokenBucket, DEFAULT_BURST_CAP};
@@ -464,6 +464,9 @@ pub struct Sender {
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
+    // Commit-D: canonical-girdi-anlık-görüntüsü (fuzzy_evaluate-kopyası; salt-teşhis, davranışsız).
+    last_fusion_snapshot: Option<FusionInputSnapshot>,
+    fusion_event_index: u64,
     last_recovery: RecoveryAction,
 }
 
@@ -557,6 +560,8 @@ impl Sender {
             diag_delivered_credited: 0,
             diag_qd_no_evidence: 0,
             diag_fuzzy_no_rule: 0,
+            last_fusion_snapshot: None,
+            fusion_event_index: 0,
             last_decision: FusionDecision {
                 fec_parity_ratio_permille: 0,
                 arq_aggressiveness_permille: 0,
@@ -971,7 +976,26 @@ impl Sender {
         if d.no_rule {
             self.diag_fuzzy_no_rule += 1;
         }
+        // Commit-D: CANONICAL-snapshot — aynı-`inputs`-DEĞERİ kopyalanır (ikinci-hesap-yok;
+        // Copy-struct: alloc/IO/format/RNG-yok; timing/state-semantiği-değişmez).
+        self.fusion_event_index += 1;
+        self.last_fusion_snapshot = Some(FusionInputSnapshot {
+            loss_windowed_ppm: inputs.loss_ppm,
+            bandwidth_bps: inputs.bandwidth_bps,
+            jitter_ppm: inputs.jitter_ppm,
+            qd_ratio_permille: inputs.qd_ratio_permille,
+            ack_confidence_permille: inputs.ack_confidence_permille,
+            no_rule: d.no_rule,
+            event_index: self.fusion_event_index,
+        });
         d
+    }
+
+    /// Commit-D: controller'ın-son-gördüğü girdiler (canonical; harness-örneklemesi dışarıdan).
+    /// `None` = henüz-hiç-fuzzy_evaluate-koşmadı.
+    #[must_use]
+    pub fn diag_fusion_input_snapshot(&self) -> Option<FusionInputSnapshot> {
+        self.last_fusion_snapshot
     }
 
     /// §3 state geçişleri. Öncelik: IDLE (iş yok) → RECOVER_FWD (ack_confidence LOW, her fazdan) →
@@ -2288,6 +2312,34 @@ mod tests {
             btlbw_fires, btlbw_noop,
             "N8: RECOVERED BtlBw'ye bit-eklemez (bit-özdeş: {btlbw_fires} == {btlbw_noop})"
         );
+    }
+
+    // ── Commit-D §4.3: snapshot = controller-input CANONICAL-eşitliği ──
+    #[test]
+    fn fusion_snapshot_equals_controller_input() {
+        let mut s = Sender::new();
+        assert!(s.diag_fusion_input_snapshot().is_none(), "başlangıç: None");
+        // Birkaç-event sür (loss/qd/ackconf-yolları-dolaşsın).
+        for i in 0..6u64 {
+            let out = s.on_event(Event::AppData(unit(i)), i * 10 * MS);
+            let seqs: Vec<u64> = out.iter().map(|d| d.seq).collect();
+            if i % 2 == 0 && !seqs.is_empty() {
+                s.on_event(ack(&seqs), i * 10 * MS + 5 * MS);
+            }
+        }
+        let snap = s.diag_fusion_input_snapshot().expect("evaluate-koştu");
+        // CANONICAL-kanıt: snapshot-inputs'uyla decide → last_decision BİT-ÖZDEŞ
+        // (iki-bağımsız-hesap-değil; aynı-değerin-kopyası olduğunun-fonksiyonel-kanıtı).
+        let replay = DeterministicFuzzyController::fixture().decide(&snap.to_inputs());
+        assert_eq!(
+            replay,
+            s.last_decision(),
+            "snapshot→decide == last_decision"
+        );
+        assert_eq!(snap.no_rule, s.last_decision().no_rule);
+        assert!(snap.event_index > 0);
+        // Default-nötrlük: snapshot-okuma state-değiştirmez (ikinci-okuma-özdeş).
+        assert_eq!(s.diag_fusion_input_snapshot(), Some(snap));
     }
 
     // ── DR-1e-v2 §3.1: default-equivalence — new() ≡ try_with_fuzzy_config(fixture) ──

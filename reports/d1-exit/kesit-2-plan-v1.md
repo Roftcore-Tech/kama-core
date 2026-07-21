@@ -7,7 +7,7 @@
 | 1 | Kesit-1 validity-audit tamam | ✅ [validity-audit](tarama-kesit-1-validity-audit.md) |
 | 2 | Gap80-r2-anomalisi açıklandı | ✅ kök-neden: BtlBw-offered-kilitlenmesi×token-artığı (bimodal) |
 | 3 | requested/planned/emitted-parity harness'ta-görünür | ✅ (parity_enq/emit + blocks; DR-1a-telemetry-impl'le-tam) |
-| 4 | Actual-FusionInputs-telemetri | ◐ KISMİ (btlbw/qd/no_rule); loss_ppm/jitter/ackconf-diag 1e-turu-additive → **kesit-2-blocker: bu-üçü-eklenmeden ackconf/loss-üyelik-eksenleri koşulmaz** |
+| 4 | Actual-FusionInputs-telemetri | ✅ (Commit-D: `FusionInputSnapshot` canonical-tek-kaynak; 5-alan-tam {loss_ppm, bandwidth, jitter, qd_ratio, ackconf} + no_rule + event_index; harness-örnekleme-dışarıdan; eşitlik-testi `fusion_snapshot_equals_controller_input`) — **kesit-2 yine-de KOŞULMAZ (diğer-blocker'lar + izin)** |
 | 5 | Censoring-işaretleniyor | ✅ (Metrics.censored) |
 | 6 | Seed-level-sonuçlar-korunuyor | ✅ (audit_seed_level-CSV) |
 | 7 | Objective/Pareto-raporlama-tanımlı | ✅ (audit-§6; objective-sırası-politika-kararı-AÇIK) |

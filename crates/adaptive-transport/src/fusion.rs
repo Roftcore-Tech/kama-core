@@ -374,6 +374,38 @@ pub struct FusionInputs {
     pub ack_confidence_permille: u64,
 }
 
+/// Commit-D (FusionInputs-gözlemlenebilirliği): controller'ın GERÇEKTEN-gördüğü girdilerin
+/// olay-anı-anlık-görüntüsü. CANONICAL-TEK-KAYNAK: `fuzzy_evaluate`in kurduğu `FusionInputs`
+/// DEĞERİNİN kopyası (ikinci-formülle-hesap-YOK); + karar-bağlamı (no_rule, event_index).
+/// Alan-tipleri FusionInputs ile HİZALI (u64). Environment-knob ≠ bu-değerler (kesit-1-audit-§9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FusionInputSnapshot {
+    pub loss_windowed_ppm: u64,
+    pub bandwidth_bps: u64,
+    pub jitter_ppm: u64,
+    pub qd_ratio_permille: u64,
+    pub ack_confidence_permille: u64,
+    /// Bu-girdilerle-üretilen kararın sıfır-ağırlık-fallback bayrağı.
+    pub no_rule: bool,
+    /// fuzzy_evaluate-çağrı-index'i (deterministik olay-sayacı; ADR-17 — duvar-saati-değil).
+    pub event_index: u64,
+}
+
+impl FusionInputSnapshot {
+    /// Snapshot'tan FusionInputs (offline-replay/decide-yeniden-üretimi; active-rule-weights
+    /// bu-inputs+config ile offline-yeniden-üretilebilir — ek-alan-gerekmez).
+    #[must_use]
+    pub fn to_inputs(&self) -> FusionInputs {
+        FusionInputs {
+            loss_ppm: self.loss_windowed_ppm,
+            bandwidth_bps: self.bandwidth_bps,
+            jitter_ppm: self.jitter_ppm,
+            qd_ratio_permille: self.qd_ratio_permille,
+            ack_confidence_permille: self.ack_confidence_permille,
+        }
+    }
+}
+
 /// Recovery/pacing modu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {

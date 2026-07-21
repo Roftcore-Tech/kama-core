@@ -222,9 +222,12 @@ struct Metrics {
     burst_mean_x100: u64,
     burst_max: u64,
     // FusionInput-KISMİ telemetri (mevcut-public-diag'lardan; loss_ppm/jitter/ackconf diag-YOK — plan-notu):
-    fi_btlbw: [u64; 4],    // min/p50/p90/max (500ms-örnekleme)
-    fi_qd_ratio: [u64; 4], // qd*1000/rtprop permille
-    fi_no_rule: u64,       // diag_fuzzy_no_rule (kümülatif)
+    fi_btlbw: [u64; 4], // min/p50/p90/max (500ms-örnekleme; Commit-D canonical-snapshot)
+    fi_qd_ratio: [u64; 4], // qd_ratio_permille (snapshot)
+    fi_no_rule: u64,    // diag_fuzzy_no_rule (kümülatif)
+    fi_loss_ppm: [u64; 4],
+    fi_jitter_ppm: [u64; 4],
+    fi_ackconf: [u64; 4],
 }
 
 /// Tek hücre-arm koşusu. `fec_on` tek-fark (KARAR-3).
@@ -362,6 +365,9 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
     let mut parity_enqueued = 0u64;
     let mut fi_btlbw_s: Vec<u64> = Vec::new();
     let mut fi_qd_s: Vec<u64> = Vec::new();
+    let mut fi_loss_s: Vec<u64> = Vec::new();
+    let mut fi_jit_s: Vec<u64> = Vec::new();
+    let mut fi_ack_s: Vec<u64> = Vec::new();
     let mut t_ms: u64 = 0;
     while t_ms < t_max_ms {
         t_ms += TICK_MS;
@@ -420,13 +426,16 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
             );
         }
 
-        // FusionInput-KISMİ örnekleme (500ms; mevcut-diag'lar — audit §9).
+        // FusionInput-örnekleme (500ms): Commit-D CANONICAL-snapshot (controller'ın-gördüğü;
+        // environment-knob-değil). 5-alan-tam → kesit-2-önkoşul-4 kapanışı.
         if t_ms.is_multiple_of(500) {
-            let (_, btlbw, _, _, _) = s.diag_rate();
-            fi_btlbw_s.push(btlbw);
-            let (qd_us, _) = s.diag_qd();
-            let (_, rtprop_us) = s.diag_rtt();
-            fi_qd_s.push((qd_us * 1000).checked_div(rtprop_us).unwrap_or(0));
+            if let Some(snap) = s.diag_fusion_input_snapshot() {
+                fi_btlbw_s.push(snap.bandwidth_bps);
+                fi_qd_s.push(snap.qd_ratio_permille);
+                fi_loss_s.push(snap.loss_windowed_ppm);
+                fi_jit_s.push(snap.jitter_ppm);
+                fi_ack_s.push(snap.ack_confidence_permille);
+            }
         }
 
         // 1b) Blok-tamamlanınca parity-enqueue (yalnız FEC-arm; engine-encode-anı-modeli).
@@ -615,6 +624,9 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
         fi_btlbw: quartiles(&mut fi_btlbw_s),
         fi_qd_ratio: quartiles(&mut fi_qd_s),
         fi_no_rule: s.diag_fuzzy_no_rule(),
+        fi_loss_ppm: quartiles(&mut fi_loss_s),
+        fi_jitter_ppm: quartiles(&mut fi_jit_s),
+        fi_ackconf: quartiles(&mut fi_ack_s),
     }
 }
 
@@ -1107,13 +1119,13 @@ fn sweep_kesit_1() {
 #[test]
 #[ignore]
 fn audit_seed_level() {
-    println!("eksen,nokta,arm,seed,goodput,completion,t_p50,t_p95,dl2,dl5,dl10,retx_dup,parity_enq,parity_emit,blocks_enq,cancels,sealed_B,max_q,evicted,censored,app_sent,data_emitted,fwd_att,fwd_drop,burst_n,burst_mean_x100,burst_max,btlbw_min,btlbw_p50,btlbw_p90,btlbw_max,qdr_p50,qdr_max,no_rule");
+    println!("eksen,nokta,arm,seed,goodput,completion,t_p50,t_p95,dl2,dl5,dl10,retx_dup,parity_enq,parity_emit,blocks_enq,cancels,sealed_B,max_q,evicted,censored,app_sent,data_emitted,fwd_att,fwd_drop,burst_n,burst_mean_x100,burst_max,btlbw_min,btlbw_p50,btlbw_p90,btlbw_max,qdr_p50,qdr_max,no_rule,loss_ppm_p50,jitter_ppm_p50,ackconf_p50");
     for (label, sc) in kesit1_cells() {
         for seed in [11u64, 23, 37] {
             let m = run_arm(sc, seed);
             let tot = m.total_units as f64;
             println!(
-                "{label},{seed},{:.4},{:.4},{},{},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{label},{seed},{:.4},{:.4},{},{},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 m.delivered_bytes as f64 / m.sealed_bytes.max(1) as f64,
                 m.delivered_units as f64 / tot,
                 m.t_p50_ms,
@@ -1143,7 +1155,10 @@ fn audit_seed_level() {
                 m.fi_btlbw[3],
                 m.fi_qd_ratio[1],
                 m.fi_qd_ratio[3],
-                m.fi_no_rule
+                m.fi_no_rule,
+                m.fi_loss_ppm[1],
+                m.fi_jitter_ppm[1],
+                m.fi_ackconf[1]
             );
         }
     }
