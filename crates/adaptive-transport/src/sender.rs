@@ -88,6 +88,40 @@ pub enum Event {
     AckReceived(AckInfo),
     /// Timer ateşlendi (§12).
     TimerFired(Timer),
+    /// DR-S5-4: RECOVERED-control (engine block_id/esi→unit_id-çevrimi SONRASI). SAF-LOGICAL olay:
+    /// retransmit-cancel + retention-release + logical-defter; **rate/pacing/schedule yoluna GİRMEZ**
+    /// (emit-üretmez; N8: recovered≠ACK — BtlBw/delivered-kredi-yolu AÇILMAZ).
+    RecoveredControl(RecoveredInfo),
+}
+
+/// DR-S5-4: RECOVERED-control'ün sender-girdisi. Engine, Control::Recovered'ın logical (block_id,
+/// esi_ranges) referanslarını kendi send-record'undan native `unit_id`'ye ÇEVİRİP verir (SoC:
+/// çevrim engine'de; sender ACK-cancel/retention-release ile AYNI unit_id-mekanizmasını kullanır).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveredInfo {
+    /// Kurtarılan (receiver-FEC-decode) birimler.
+    pub units: Vec<RecoveredUnit>,
+}
+
+/// Tek kurtarılan-birim: native unit_id + logical-kimlik (defter-kaydı için).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveredUnit {
+    /// Transport-native birim kimliği (cancel-anahtarı; ACK-cancel ile aynı).
+    pub unit_id: u64,
+    /// Logical-kimlik (confirmed_logical defter-kaydı; SrLogicalRef::Fec).
+    pub block_id: u32,
+    /// Logical ESI.
+    pub esi: u16,
+}
+
+/// DR-S5-4: confirmed_logical defter-girişinin teyit-KAYNAĞI. M1 "FEC-kurtardığını-retransmit-etmiyor"
+/// ayrımı: Recovered-teslim (FEC) vs WireAck-teslim. Kredi-anlamı YOK (defter salt-logical).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmSource {
+    /// Gerçek wire-ACK teyidi (DR-S5-3 yolu).
+    WireAck,
+    /// RECOVERED-control teyidi (FEC-decode; kredi-ÜRETMEZ — N8).
+    Recovered,
 }
 
 /// §2 ACK rekonstrüksiyonunun ÇIKTISI (transport-control codec ayrı; burada çözülmüş girdi).
@@ -349,7 +383,8 @@ pub struct Sender {
 
     // ── send-record ↔ ACK-eşleme (DR-S5-3; SALT-LOGICAL — BtlBw/delivered'e BESLENMEZ) ──
     sent_logical: BTreeMap<u64, SrLogicalRef>, // wire-seq → logical (yalnız FEC/control; DATA burada YOK)
-    confirmed_logical: VecDeque<(u64, SrLogicalRef)>, // wire-ACK-teyit logical; BOUNDED (drain-yoksa cap'te eski düşer)
+    confirmed_logical: VecDeque<(u64, SrLogicalRef, ConfirmSource)>, // teyit-logical (WireAck|Recovered — DR-S5-4); BOUNDED
+    diag_recovered_cancels: u64, // DR-S5-4: RECOVERED ile iptal-edilen bekleyen-retransmit sayısı (K2/M1-sinyali)
 
     // ── ack_confidence (RECOVER_FWD tetiği): sessizlik-tabanlı ──
     last_ack_ns: Option<u64>,
@@ -448,6 +483,7 @@ impl Sender {
             pending_fec: VecDeque::new(),
             sent_logical: BTreeMap::new(), // DR-S5-3
             confirmed_logical: VecDeque::new(),
+            diag_recovered_cancels: 0, // DR-S5-4
             last_ack_ns: None,
             first_send_ns: None,
             drain_rtprop_entry_ns: None,
@@ -501,6 +537,13 @@ impl Sender {
 
     /// Ana döngü (§3): olay işle → FuzzyEvaluate → state → send_rate → UpdatePacing → ScheduleTransmit.
     pub fn on_event(&mut self, event: Event, now_ns: u64) -> Vec<TransmitDecision> {
+        // DR-S5-4 SAF-LOGICAL erken-dönüş: RECOVERED-control pacer-saatine/fuzzy/rate/schedule'a
+        // HİÇ girmez (emit-yok, kredi-yok, saat-ilerletme-yok — N8-bit-özdeşliğin yapısal-tabanı).
+        if let Event::RecoveredControl(info) = &event {
+            self.on_recovered_control(info);
+            return Vec::new();
+        }
+
         let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
         self.pacer.refill(dt);
         self.last_now_ns = now_ns;
@@ -520,6 +563,8 @@ impl Sender {
             }
             Event::AckReceived(ack) => self.on_ack_received(&ack, now_ns),
             Event::TimerFired(timer) => self.on_timer(timer, now_ns),
+            // Yukarıda erken-dönüşle işlendi (defensive no-op; exhaustiveness için).
+            Event::RecoveredControl(_) => {}
         }
 
         let decision = self.fuzzy_evaluate(now_ns);
@@ -1241,14 +1286,64 @@ impl Sender {
             if self.confirmed_logical.len() >= CONFIRMED_LOGICAL_CAP {
                 self.confirmed_logical.pop_front(); // bounded: drain-yoksa en-eski düşer (SR-AUDIT-001)
             }
-            self.confirmed_logical.push_back((seq, lref));
+            self.confirmed_logical
+                .push_back((seq, lref, ConfirmSource::WireAck));
         }
     }
 
-    /// Engine wire-ACK ile teyit-edilen logical-paketleri drenajlar (ARQ-cancel/retention; DR-S5-3).
-    /// Salt-logical defter; BtlBw/rate ile ilgisi YOK.
-    pub fn take_confirmed_logical(&mut self) -> Vec<(u64, SrLogicalRef)> {
+    /// DR-S5-4 [SALT-LOGICAL — N8-firewall]: RECOVERED-control işle. YALNIZ pending_lost/dup_queue/
+    /// confirmed_logical'a dokunur; **bw_sampler/btlbw/credit_delivered/pacer'a SIFIR-satır**
+    /// (recovered≠ACK — kredi-yolu AÇILMAZ; §0 yasak-6-blok). Emit-üretmez (saf-state; on_event
+    /// erken-dönüşle schedule_transmit'i ATLAR).
+    fn on_recovered_control(&mut self, info: &RecoveredInfo) {
+        for ru in &info.units {
+            // (i) retransmit-CANCEL: kurtarılan-unit'in bekleyen ARQ-retransmit'i iptal — FEC
+            // ana-avantajı (K2/M1: kurtardığını-retransmit-etmeme). Saf VecDeque-filtre;
+            // pacer yalnız retransmit-ATTEMPT'te okunur → cancel attempt'i hiç-başlatmaz.
+            let before = self.pending_lost.len();
+            self.pending_lost.retain(|r| r.unit.id != ru.unit_id);
+            self.diag_recovered_cancels += (before - self.pending_lost.len()) as u64;
+            // (ii) retention-RELEASE: bekleyen forward-dup kopyaları iptal (mevcut acked-cancel
+            // `dup_queue.retain(!acked_units.contains)` mekanizmasının birebir-paraleli).
+            self.dup_queue.retain(|d| d.unit.id != ru.unit_id);
+            // (iii) logical-defter: recovered-teyit (ConfirmSource::Recovered; SALT-LOGICAL).
+            self.record_recovered_logical(ru.block_id, ru.esi);
+        }
+    }
+
+    /// DR-S5-4: recovered-logical'ı defter'e yaz (ConfirmSource::Recovered). sent_logical'da kayıtlı
+    /// bir emisyonu (block_id, esi) varsa onu teyit-eder (kayıtsız-recovered → NO-OP; bilinmeyen-logical
+    /// teyit-edilmez — record_confirmed_logical'ın unknown-seq-NO-OP'uyla simetrik). **bw'ye DOKUNMAZ.**
+    fn record_recovered_logical(&mut self, block_id: u32, esi: u16) {
+        let found = self
+            .sent_logical
+            .iter()
+            .find(|(_, lref)| {
+                matches!(lref, SrLogicalRef::Fec { block_id: b, esi: e } if *b == block_id && *e == esi)
+            })
+            .map(|(&seq, _)| seq);
+        if let Some(seq) = found {
+            if let Some(lref) = self.sent_logical.remove(&seq) {
+                if self.confirmed_logical.len() >= CONFIRMED_LOGICAL_CAP {
+                    self.confirmed_logical.pop_front(); // bounded (SR-AUDIT-001)
+                }
+                self.confirmed_logical
+                    .push_back((seq, lref, ConfirmSource::Recovered));
+            }
+        }
+    }
+
+    /// Engine teyit-edilen logical-paketleri drenajlar (ARQ-cancel/retention; DR-S5-3 + DR-S5-4
+    /// ConfirmSource-marker). Salt-logical defter; BtlBw/rate ile ilgisi YOK.
+    pub fn take_confirmed_logical(&mut self) -> Vec<(u64, SrLogicalRef, ConfirmSource)> {
         self.confirmed_logical.drain(..).collect()
+    }
+
+    /// DR-S5-4 (K2/M1-sinyali): RECOVERED ile iptal-edilen bekleyen-retransmit sayısı. M1'de
+    /// FEC-arm-metriği olarak okunur ("FEC kurtardığını-retransmit-etmiyor"un ölçülebilir-kanıtı).
+    #[must_use]
+    pub fn diag_recovered_cancels(&self) -> u64 {
+        self.diag_recovered_cancels
     }
 
     /// Teyit-edilen-logical defter uzunluğu (teşhis/test; DR-S5-3).
@@ -1850,9 +1945,9 @@ mod tests {
             emitted.len(),
             "her acked-emitted logical-teyit"
         );
-        assert!(taken
-            .iter()
-            .all(|(_, r)| matches!(r, SrLogicalRef::Fec { block_id: 7, .. })));
+        assert!(taken.iter().all(|(_, r, src)| {
+            matches!(r, SrLogicalRef::Fec { block_id: 7, .. }) && *src == ConfirmSource::WireAck
+        }));
         assert_eq!(s.diag_confirmed_logical_count(), 0, "take drenajladı");
     }
 
@@ -1875,6 +1970,168 @@ mod tests {
             s.diag_confirmed_logical_count(),
             CONFIRMED_LOGICAL_CAP,
             "bounded: cap-aşılmaz (drain-yoksa en-eski düşer)"
+        );
+    }
+
+    // ── DR-S5-4: RECOVERED → retransmit-cancel + retention-release + Recovered-marker'lı defter ──
+    #[test]
+    fn dr_s5_4_recovered_cancels_and_ledger() {
+        let mut s = Sender::new();
+        // pending-retransmit + bekleyen-dup + sent_logical kaydı olan bir unit kur (direct-state).
+        s.pending_lost.push_back(LostRec {
+            seq: 5,
+            unit: OpaqueUnit { id: 42, size: 1200 },
+            deadline_ns: 0,
+            retx_count: 0,
+            send_ns: 0,
+        });
+        s.dup_queue.push(DupRec {
+            due_ns: 0,
+            unit: OpaqueUnit { id: 42, size: 1200 },
+            interval_ns: 0,
+        });
+        s.sent_logical.insert(
+            5,
+            SrLogicalRef::Fec {
+                block_id: 9,
+                esi: 2,
+            },
+        );
+
+        let out = s.on_event(
+            Event::RecoveredControl(RecoveredInfo {
+                units: vec![RecoveredUnit {
+                    unit_id: 42,
+                    block_id: 9,
+                    esi: 2,
+                }],
+            }),
+            77 * MS,
+        );
+        assert!(out.is_empty(), "saf-state: RECOVERED emit-üretmez");
+        assert!(s.pending_lost.is_empty(), "(i) retransmit-CANCEL");
+        assert!(s.dup_queue.is_empty(), "(ii) retention-RELEASE");
+        assert_eq!(s.diag_recovered_cancels(), 1, "K2/M1-sinyali saydı");
+        let taken = s.take_confirmed_logical();
+        assert_eq!(
+            taken,
+            vec![(
+                5,
+                SrLogicalRef::Fec {
+                    block_id: 9,
+                    esi: 2
+                },
+                ConfirmSource::Recovered
+            )],
+            "(iii) defter Recovered-marker'lı (WireAck'ten ayrık)"
+        );
+        // Kayıtsız-recovered (sent_logical'da olmayan) → defter-NO-OP, cancel-sayacı-artmaz.
+        s.on_event(
+            Event::RecoveredControl(RecoveredInfo {
+                units: vec![RecoveredUnit {
+                    unit_id: 999,
+                    block_id: 1,
+                    esi: 0,
+                }],
+            }),
+            78 * MS,
+        );
+        assert_eq!(
+            s.diag_recovered_cancels(),
+            1,
+            "bilinmeyen-unit cancel-saymaz"
+        );
+        assert_eq!(
+            s.diag_confirmed_logical_count(),
+            0,
+            "bilinmeyen-logical defter-NO-OP"
+        );
+    }
+
+    // ── DR-S5-4 §3 N8-BİT-ÖZDEŞLİK (ZORUNLU): recovered fires-vs-noop → BtlBw BİT-ÖZDEŞ ──
+    /// Aynı DATA+loss senaryosu; `fires` → sondaki RECOVERED-olayı ateşlenir. Dönen:
+    /// (btlbw, recovered_cancels, confirmed_logical_len, pending_lost_önce).
+    fn warmup_recovered(fires: bool) -> (u64, u64, usize, usize) {
+        let mut s = Sender::new();
+        // Faz-1: temiz warm-up (BtlBw kurulsun; tüm-emitted ACK'lenir).
+        for i in 0..30u64 {
+            let out = s.on_event(Event::AppData(unit(i)), i * 10 * MS);
+            let acks: Vec<u64> = out.iter().map(|d| d.seq).collect();
+            if !acks.is_empty() {
+                s.on_event(ack(&acks), i * 10 * MS + 5 * MS);
+            }
+        }
+        // Faz-2: kuyruk-sonu-kayıp — 10 unit emit, YALNIZ-en-yüksek-seq ACK'lenir →
+        // packet-threshold öncekileri kayıp-ilan eder; pacer-burst yalnız-birkaçını hemen-retransmit
+        // eder → kalanlar pending_lost'ta (deterministik; iki-koşuda özdeş).
+        let mut tail: Vec<u64> = Vec::new();
+        for j in 0..10u64 {
+            let out = s.on_event(Event::AppData(unit(100 + j)), (300 + j) * MS);
+            tail.extend(out.iter().map(|d| d.seq));
+        }
+        if let Some(&top) = tail.iter().max() {
+            s.on_event(ack(&[top]), 315 * MS);
+        }
+        // İki-koşuda da AYNI ön-durum: pending_lost'taki unit'ler + sent_logical kayıtları.
+        let lost: Vec<(u64, u64)> = s.pending_lost.iter().map(|r| (r.seq, r.unit.id)).collect();
+        let units: Vec<RecoveredUnit> = lost
+            .iter()
+            .enumerate()
+            .map(|(k, &(sq, uid))| {
+                s.sent_logical.insert(
+                    sq,
+                    SrLogicalRef::Fec {
+                        block_id: 1,
+                        esi: k as u16,
+                    },
+                );
+                RecoveredUnit {
+                    unit_id: uid,
+                    block_id: 1,
+                    esi: k as u16,
+                }
+            })
+            .collect();
+        let pending_before = s.pending_lost.len();
+        if fires {
+            s.on_event(Event::RecoveredControl(RecoveredInfo { units }), 305 * MS);
+        }
+        // Post-fire saf-tick'ler (ACK-yok → btlbw iki-kolda-da değişmemeli).
+        for t in 0..5u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), (310 + t * 10) * MS);
+        }
+        (
+            s.diag_rate().1,
+            s.diag_recovered_cancels(),
+            s.diag_confirmed_logical_count(),
+            pending_before,
+        )
+    }
+
+    #[test]
+    fn dr_s5_4_n8_recovered_does_not_change_btlbw() {
+        let (btlbw_noop, canc_noop, cl_noop, pend_noop) = warmup_recovered(false);
+        let (btlbw_fires, canc_fires, cl_fires, pend_fires) = warmup_recovered(true);
+        // Vacuity-korumaları: senaryo gerçekten kayıp-üretti (iki-koşuda aynı ön-durum).
+        assert!(
+            pend_noop > 0 && pend_fires > 0,
+            "pending_lost dolu (kayıp gerçek)"
+        );
+        assert_eq!(
+            pend_noop, pend_fires,
+            "iki-koşu aynı ön-durum (deterministik)"
+        );
+        // fires: cancel gerçekleşti + defter doldu; noop: hiçbiri.
+        assert!(canc_fires > 0, "fires: retransmit-cancel gerçekleşti");
+        assert_eq!(canc_noop, 0, "noop: cancel-yok");
+        assert!(
+            cl_fires > cl_noop,
+            "fires: recovered→confirmed_logical DOLDU (muhasebe)"
+        );
+        // §3 HÜKÜM: recovered-fires BtlBw'yi DEĞİŞTİRMEZ (kredi-yolu AÇILMADI — bit-özdeş).
+        assert_eq!(
+            btlbw_fires, btlbw_noop,
+            "N8: RECOVERED BtlBw'ye bit-eklemez (bit-özdeş: {btlbw_fires} == {btlbw_noop})"
         );
     }
 

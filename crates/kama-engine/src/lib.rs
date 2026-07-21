@@ -23,9 +23,11 @@ pub mod error;
 pub mod param_bootstrap;
 pub mod param_state;
 pub mod preparam_hold;
+pub mod recovered_map;
 
 pub use admission::admit_and_decode;
 pub use error::EngineError;
 pub use param_bootstrap::{plan_param_bootstrap, ParamAckTracker, ParamSetPlan};
 pub use param_state::{BoundParam, ParamState};
 pub use preparam_hold::{PreParamHold, MAX_PREPARAM_SHARDS};
+pub use recovered_map::{RecoveredMap, ResolvedRecovered, RECOVERED_MAP_CAP};
