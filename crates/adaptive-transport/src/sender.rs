@@ -37,7 +37,8 @@ use crate::emergency::{
     RecoveryAction, RecoveryModeController,
 };
 use crate::fusion::{
-    DeterministicFuzzyController, FusionController, FusionDecision, FusionInputs, Mode,
+    DeterministicFuzzyController, FusionController, FusionDecision, FusionInputs, FuzzyConfig,
+    FuzzyConfigError, Mode,
 };
 use crate::loss::{LossDetector, ThresholdLossDetector};
 use crate::pacer::{TokenBucket, DEFAULT_BURST_CAP};
@@ -468,8 +469,27 @@ pub struct Sender {
 
 impl Sender {
     /// Fixture config ile (KALİBRE DEĞİL — golden/motor testi; gerçek değerler netem'den).
+    /// DR-1e-v2: ortak-internal-ctor'a delege; fixture VALIDATE-EDİLMEDEN geçirilir (mevcut-
+    /// davranış-birebir; panik-yolu-YOK — fixture-geçerliliği ayrı-test-time-invariant:
+    /// `tv_fusion::fixture_validates`).
     #[must_use]
     pub fn new() -> Self {
+        Self::new_internal(FuzzyConfig::fixture())
+    }
+
+    /// DR-1e-v2: dışarıdan-verilen fuzzy-config ile (validate-İÇERİDE; typed-hata — panik-yok).
+    /// Kalibrasyon = config-değişikliği (kod-değil). Yalnız fuzzy-config (god-config-yok).
+    ///
+    /// # Errors
+    /// [`FuzzyConfigError`] — yapısal/spec-invariant ihlali (fusion.rs §13.4-tablosu).
+    pub fn try_with_fuzzy_config(config: FuzzyConfig) -> Result<Self, FuzzyConfigError> {
+        let validated = config.validate()?;
+        Ok(Self::new_internal(validated.into_inner()))
+    }
+
+    /// Ortak-internal-ctor (DR-1e-v2): her-iki-public-ctor buraya-delege. Motor-matematiği/
+    /// diğer-fixture'lar DEĞİŞMEZ; yalnız fuzzy-config-parametrik.
+    fn new_internal(fuzzy_cfg: FuzzyConfig) -> Self {
         let budget_cfg = BudgetConfig::fixture();
         Self {
             state: SenderState::Idle,
@@ -477,7 +497,7 @@ impl Sender {
             rtt: RttEstimator::new(),
             bw_sampler: DeliveryRateSampler::new(),
             btlbw: BtlBwFilter::new(),
-            fuzzy: DeterministicFuzzyController::fixture(),
+            fuzzy: DeterministicFuzzyController::new(fuzzy_cfg),
             src_cfg: SrcConfig::default(),
             budget_cfg,
             emergency: HysteresisController::new(HysteresisConfig::fixture(), EmergencyLevel::Arq),
@@ -2267,6 +2287,50 @@ mod tests {
         assert_eq!(
             btlbw_fires, btlbw_noop,
             "N8: RECOVERED BtlBw'ye bit-eklemez (bit-özdeş: {btlbw_fires} == {btlbw_noop})"
+        );
+    }
+
+    // ── DR-1e-v2 §3.1: default-equivalence — new() ≡ try_with_fuzzy_config(fixture) ──
+    #[test]
+    fn dr_1e_default_constructor_equivalence() {
+        let mut a = Sender::new();
+        let mut b = Sender::try_with_fuzzy_config(FuzzyConfig::fixture()).unwrap();
+        let mut all_a: Vec<TransmitDecision> = Vec::new();
+        let mut all_b: Vec<TransmitDecision> = Vec::new();
+        // Aynı-event-dizisi: DATA + kuyruk-sonu-kayıp + ACK + Pto (fusion/rate/mode-yollarını gezer).
+        for i in 0..12u64 {
+            let (oa, ob) = (
+                a.on_event(Event::AppData(unit(i)), i * 10 * MS),
+                b.on_event(Event::AppData(unit(i)), i * 10 * MS),
+            );
+            let seqs: Vec<u64> = oa.iter().map(|d| d.seq).collect();
+            all_a.extend(oa);
+            all_b.extend(ob);
+            if i % 3 != 2 && !seqs.is_empty() {
+                all_a.extend(a.on_event(ack(&seqs), i * 10 * MS + 5 * MS));
+                all_b.extend(b.on_event(ack(&seqs), i * 10 * MS + 5 * MS));
+            }
+        }
+        for t in 0..20u64 {
+            all_a.extend(a.on_event(Event::TimerFired(Timer::Pto), (200 + t * 50) * MS));
+            all_b.extend(b.on_event(Event::TimerFired(Timer::Pto), (200 + t * 50) * MS));
+        }
+        // Kararlar + emisyon-dizisi + sayaçlar BİT-ÖZDEŞ (davranışsal-özdeşlik-kümesi).
+        assert_eq!(
+            all_a, all_b,
+            "TransmitDecision-dizisi (scheduling/pacing) özdeş"
+        );
+        assert_eq!(
+            a.last_decision(),
+            b.last_decision(),
+            "fusion-decision özdeş"
+        );
+        assert_eq!(a.diag_rate(), b.diag_rate(), "rate/btlbw/pif özdeş");
+        assert_eq!(a.diag_loss(), b.diag_loss(), "loss-sayaçları özdeş");
+        assert_eq!(
+            a.diag_fuzzy_no_rule(),
+            b.diag_fuzzy_no_rule(),
+            "no_rule-sayacı özdeş"
         );
     }
 

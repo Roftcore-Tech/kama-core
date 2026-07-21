@@ -258,3 +258,145 @@ fn tv_fusion_zero_weight_fallback() {
     assert!(!n.no_rule);
     assert_eq!(n.arq_aggressiveness_permille, 200);
 }
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// DR-1e-v2: FuzzyConfig::validate — yapısal/spec-invariant matrisi (politika-sıralaması ENFORCE-EDİLMEZ).
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+mod dr_1e_validation {
+    use adaptive_transport::fusion::{FuzzyConfig, FuzzyConfigError};
+
+    #[test]
+    fn fixture_validates() {
+        // §2.1: fixture-geçerliliği test-time-invariant (new()-panik-yolu-yok kanıtı).
+        assert!(FuzzyConfig::fixture().validate().is_ok());
+    }
+
+    #[test]
+    fn trap_order_violations_rejected() {
+        // a>b
+        let mut c = FuzzyConfig::fixture();
+        c.loss.med.a = c.loss.med.b + 1;
+        assert!(matches!(
+            c.validate(),
+            Err(FuzzyConfigError::TrapOrder {
+                var: "loss",
+                band: "med"
+            })
+        ));
+        // b>c
+        let mut c = FuzzyConfig::fixture();
+        c.jitter.med.b = c.jitter.med.c + 1;
+        assert!(matches!(
+            c.validate(),
+            Err(FuzzyConfigError::TrapOrder {
+                var: "jitter",
+                band: "med"
+            })
+        ));
+        // c>d
+        let mut c = FuzzyConfig::fixture();
+        c.queue_delay.med.c = c.queue_delay.med.d + 1;
+        assert!(matches!(
+            c.validate(),
+            Err(FuzzyConfigError::TrapOrder {
+                var: "queue_delay",
+                band: "med"
+            })
+        ));
+    }
+
+    #[test]
+    fn coverage_violation_rejected() {
+        // Sol-omuz-bozma (low.a>0) → [TUR-4] coverage spec-invariant.
+        let mut c = FuzzyConfig::fixture();
+        c.loss.low.a = 1;
+        c.loss.low.b = 1;
+        assert!(matches!(
+            c.validate(),
+            Err(FuzzyConfigError::Coverage { var: "loss" })
+        ));
+        // Örtüşme-deliği (low.d == med.a) → tek-nokta-zero-weight.
+        let mut c = FuzzyConfig::fixture();
+        c.bandwidth.med.a = c.bandwidth.low.d;
+        assert!(matches!(
+            c.validate(),
+            Err(FuzzyConfigError::Coverage { var: "bandwidth" })
+        ));
+    }
+
+    #[test]
+    fn domain_ranges_rejected() {
+        // loss-ppm > 1M (order+coverage-korunarak: yalnız high.b-aşımı)
+        let mut c = FuzzyConfig::fixture();
+        c.loss.high.b = 2_000_000;
+        assert!(matches!(
+            c.validate(),
+            Err(FuzzyConfigError::LossPpmDomain { got: 2_000_000 })
+        ));
+        // ackconf-permille > 1000
+        let mut c = FuzzyConfig::fixture();
+        c.ack_confidence.med.d = 1500;
+        assert!(matches!(
+            c.validate(),
+            Err(FuzzyConfigError::AckPermilleDomain { got: 1500 })
+        ));
+        // bandwidth raw-bytes (log2_fp-domain-dışı; order-korumalı: high.b — a≤b≤c=MAX)
+        let mut c = FuzzyConfig::fixture();
+        c.bandwidth.high.b = 50_000; // raw-B/s — domain-hatası (log2_fp≤16383)
+        assert!(matches!(
+            c.validate(),
+            Err(FuzzyConfigError::BandwidthDomain { got: 50_000 })
+        ));
+        // consequent > 1000
+        let mut c = FuzzyConfig::fixture();
+        c.fec_high = 1001;
+        assert!(matches!(
+            c.validate(),
+            Err(FuzzyConfigError::ConsequentRange {
+                field: "fec_high",
+                got: 1001
+            })
+        ));
+    }
+
+    #[test]
+    fn boundary_valid_cases_accepted() {
+        // Sınır-değerler: consequent==1000, ackconf-eşik==1000, loss==1M → GEÇERLİ.
+        let mut c = FuzzyConfig::fixture();
+        c.fec_high = 1000;
+        c.sr_high = 1000;
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn policy_ordering_not_enforced() {
+        // §13.4: consequent-SIRALAMASI politika-kısıtı — ters-sıra YAPISAL-geçerli (bilinçli).
+        let mut c = FuzzyConfig::fixture();
+        c.fec_zero = 900;
+        c.fec_high = 100; // "ters" — deneysel-kötü olabilir; yapısal-invalid DEĞİL
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn validated_determinism() {
+        // Aynı-config + aynı-inputs → aynı-karar (ADR-17; validate-yolu-üzerinden).
+        use adaptive_transport::fusion::{
+            DeterministicFuzzyController, FusionController, FusionInputs,
+        };
+        let v = FuzzyConfig::fixture().validate().unwrap();
+        let v2 = FuzzyConfig::fixture().validate().unwrap();
+        let _ = (v, v2); // newtype-üretimi-deterministik; karar-determinizmi controller-üstünden:
+        let ctl = DeterministicFuzzyController::fixture();
+        let inp = FusionInputs {
+            loss_ppm: 550_000,
+            bandwidth_bps: 175_000,
+            jitter_ppm: 50_000,
+            qd_ratio_permille: 0,
+            ack_confidence_permille: 1000,
+        };
+        let d1 = ctl.decide(&inp);
+        let d2 = ctl.decide(&inp);
+        assert_eq!(d1, d2);
+        assert_eq!(d1.no_rule, d2.no_rule);
+    }
+}

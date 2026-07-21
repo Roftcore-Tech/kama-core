@@ -144,6 +144,48 @@ impl VarThresholds {
     }
 }
 
+/// DR-1e-v2: config-doğrulama hataları (typed; panik-yok). Her-varyant hangi-alan +
+/// hangi-invariant'ın ihlal-edildiğini taşır (§13.4: yalnız YAPISAL/matematiksel + spec-invariant;
+/// consequent-SIRALAMASI politika-kısıtı olduğundan ENFORCE-EDİLMEZ).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FuzzyConfigError {
+    /// Trapezoid a≤b≤c≤d ihlali (yapısal: trap_permille-öngereksinimi).
+    #[error("trapezoid order violated: {var}.{band} (a<=b<=c<=d)")]
+    TrapOrder {
+        var: &'static str,
+        band: &'static str,
+    },
+    /// [TUR-4] covers_domain spec-invariant ihlali (sol-omuz-LOW + sağ-omuz-HIGH + kesin-örtüşme).
+    #[error("coverage invariant violated: {var} (left-shoulder LOW, right-shoulder HIGH, strict overlap)")]
+    Coverage { var: &'static str },
+    /// Girdi-domain sınırı: loss-eşikleri ppm-tanım-alanında (≤1_000_000; oran≤%100).
+    #[error("loss threshold {got} exceeds ppm domain (<=1_000_000)")]
+    LossPpmDomain { got: u64 },
+    /// Girdi-domain sınırı: ack_confidence permille-tanım-alanında (≤1000).
+    #[error("ack_confidence threshold {got} exceeds permille domain (<=1000)")]
+    AckPermilleDomain { got: u64 },
+    /// Bandwidth-eşikleri log2_fp-DOMAİNİNDE olmalı (≤ log2_fp(u64::MAX)=16383; raw-byte-değeri
+    /// verilmesi tipik-hata — domain-tür-uyumu).
+    #[error("bandwidth threshold {got} not in log2_fp domain (<=16383; raw bytes/sec given?)")]
+    BandwidthDomain { got: u64 },
+    /// Consequent permille-aralık ihlali (≤1000).
+    #[error("consequent {field}={got} exceeds permille (<=1000)")]
+    ConsequentRange { field: &'static str, got: u32 },
+}
+
+/// DR-1e-v2: doğrulanmış-config newtype — `Sender::try_with_fuzzy_config` sözleşme-tipi.
+/// Tek-üretim-yolu [`FuzzyConfig::validate`] (yapısal-güvence tip-düzeyinde).
+#[derive(Debug, Clone, Copy)]
+pub struct ValidatedFuzzyConfig(FuzzyConfig);
+
+impl ValidatedFuzzyConfig {
+    /// İç-config (crate-içi tüketim; motor-ctor'una geçirilir).
+    #[must_use]
+    pub(crate) fn into_inner(self) -> FuzzyConfig {
+        self.0
+    }
+}
+
 /// Fuzzy motor yapılandırması — 5 girdinin membership eşikleri + consequent seviyeleri.
 #[derive(Debug, Clone, Copy)]
 pub struct FuzzyConfig {
@@ -183,6 +225,78 @@ pub struct FuzzyConfig {
 impl FuzzyConfig {
     /// **KALİBRE DEĞİL** fixture — gerçek eşikler netem baseline'dan (§598). Golden
     /// yalnız motor matematiğini + kural tablosunu kilitler; hiçbir eşik iddia edilmez.
+    /// DR-1e-v2 §13.4: yapısal/matematiksel + spec-invariant doğrulaması. Consequent-
+    /// SIRALAMASI (fec_zero<=med<=high vb.) POLİTİKA-kısıtıdır — bilinçli-ENFORCE-EDİLMEZ
+    /// (kalibrasyon-uzayını-daraltır; deneysel-kötü ≠ yapısal-invalid).
+    ///
+    /// # Errors
+    /// [`FuzzyConfigError`] — ihlal-edilen alan+invariant varyantta.
+    pub fn validate(self) -> Result<ValidatedFuzzyConfig, FuzzyConfigError> {
+        const LOG2_FP_MAX: u64 = 16383; // log2_fp(u64::MAX)
+        fn traps(var: &'static str, v: &VarThresholds) -> Result<(), FuzzyConfigError> {
+            for (band, t) in [("low", &v.low), ("med", &v.med), ("high", &v.high)] {
+                if !(t.a <= t.b && t.b <= t.c && t.c <= t.d) {
+                    return Err(FuzzyConfigError::TrapOrder { var, band });
+                }
+            }
+            if !v.covers_domain() {
+                return Err(FuzzyConfigError::Coverage { var });
+            }
+            Ok(())
+        }
+        traps("loss", &self.loss)?;
+        traps("bandwidth", &self.bandwidth)?;
+        traps("jitter", &self.jitter)?;
+        traps("queue_delay", &self.queue_delay)?;
+        traps("ack_confidence", &self.ack_confidence)?;
+        // Girdi-domain sınırları (tanım-alanı-tür-uyumu; sonlu-eşikler denetlenir — omuz-MAX'ları hariç).
+        for t in [&self.loss.low, &self.loss.med, &self.loss.high] {
+            for &x in &[t.a, t.b, t.c, t.d] {
+                if x != u64::MAX && x > 1_000_000 {
+                    return Err(FuzzyConfigError::LossPpmDomain { got: x });
+                }
+            }
+        }
+        for t in [
+            &self.ack_confidence.low,
+            &self.ack_confidence.med,
+            &self.ack_confidence.high,
+        ] {
+            for &x in &[t.a, t.b, t.c, t.d] {
+                if x != u64::MAX && x > 1000 {
+                    return Err(FuzzyConfigError::AckPermilleDomain { got: x });
+                }
+            }
+        }
+        for t in [
+            &self.bandwidth.low,
+            &self.bandwidth.med,
+            &self.bandwidth.high,
+        ] {
+            for &x in &[t.a, t.b, t.c, t.d] {
+                if x != u64::MAX && x > LOG2_FP_MAX {
+                    return Err(FuzzyConfigError::BandwidthDomain { got: x });
+                }
+            }
+        }
+        for (field, v) in [
+            ("fec_zero", self.fec_zero),
+            ("fec_med", self.fec_med),
+            ("fec_high", self.fec_high),
+            ("arq_light", self.arq_light),
+            ("arq_med", self.arq_med),
+            ("arq_moderate", self.arq_moderate),
+            ("sr_low", self.sr_low),
+            ("sr_med", self.sr_med),
+            ("sr_high", self.sr_high),
+        ] {
+            if v > PERMILLE {
+                return Err(FuzzyConfigError::ConsequentRange { field, got: v });
+            }
+        }
+        Ok(ValidatedFuzzyConfig(self))
+    }
+
     #[must_use]
     pub fn fixture() -> Self {
         // Kısayol: sol-omuz LOW, orta MED, sağ-omuz HIGH.
