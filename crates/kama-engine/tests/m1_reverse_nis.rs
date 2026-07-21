@@ -426,11 +426,7 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
             fi_btlbw_s.push(btlbw);
             let (qd_us, _) = s.diag_qd();
             let (_, rtprop_us) = s.diag_rtt();
-            fi_qd_s.push(if rtprop_us > 0 {
-                qd_us * 1000 / rtprop_us
-            } else {
-                0
-            });
+            fi_qd_s.push((qd_us * 1000).checked_div(rtprop_us).unwrap_or(0));
         }
 
         // 1b) Blok-tamamlanınca parity-enqueue (yalnız FEC-arm; engine-encode-anı-modeli).
@@ -612,11 +608,9 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
         fwd_attempts: fwd_chan.attempts,
         fwd_drops: fwd_chan.drops,
         burst_count: fwd_chan.burst_count,
-        burst_mean_x100: if fwd_chan.burst_count > 0 {
-            fwd_chan.burst_sum * 100 / fwd_chan.burst_count
-        } else {
-            0
-        },
+        burst_mean_x100: (fwd_chan.burst_sum * 100)
+            .checked_div(fwd_chan.burst_count)
+            .unwrap_or(0),
         burst_max: fwd_chan.burst_max,
         fi_btlbw: quartiles(&mut fi_btlbw_s),
         fi_qd_ratio: quartiles(&mut fi_qd_s),
@@ -625,7 +619,7 @@ fn run_arm(sc: Scenario, seed: u64) -> Metrics {
 }
 
 /// (min, p50, p90, max) — audit-özeti.
-fn quartiles(v: &mut Vec<u64>) -> [u64; 4] {
+fn quartiles(v: &mut [u64]) -> [u64; 4] {
     if v.is_empty() {
         return [0; 4];
     }
