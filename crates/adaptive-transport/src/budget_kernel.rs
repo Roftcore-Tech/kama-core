@@ -131,8 +131,10 @@ pub struct BudgetDecision {
     pub floor_grants: u32,
     /// Hard-cap-bastırması-oldu-mu (C1: cap-aşılamaz → floor-miss-adayı; teşhis-zorunlu).
     pub cap_suppressed: bool,
-    /// Bu-tur-borçlanılan-byte (yalnız-BoundedDebtFloor; ≤max_debt).
-    pub borrowed_bytes: u64,
+    /// Bu-turda-İZİN-verilen-borç-tavanı (yalnız-B-sınıfı-due-floor; GERÇEK-borç settle'da-doğar).
+    pub borrow_allowance_bytes: u64,
+    /// Bu-tur-rezerve-edilen (entitlement'tan-korunan) byte — settle-muhasebesi-girdisi.
+    pub reserved_bytes: u64,
     /// Sonraki-uyanma-önerisi (ns; en-yakın-ticket-deadline'ına; 0=öneri-yok).
     pub next_wakeup_hint_ns: u64,
 }
@@ -267,10 +269,14 @@ pub fn step(
     }
 
     let t_floor = t_floor_ns(p, ctx.srtt_ns, ctx.parity_size, ctx.pacing_rate_bps);
-    let mut borrowed = 0u64;
+    let mut borrow_allowance = 0u64;
     let mut cap_suppressed = false;
 
     // Rezervasyon (R/B): korunan-pay = min(entitlement, talep) — work-conserving (talep-yoksa-0).
+    // Rezervasyon (R/B): korunan-pay = min(entitlement, talep, avail). KUANTUM-NOTU (sim-bulgusu-2):
+    // psize-altı-rezerv İSRAF-DEĞİL — rezerve-token bucket'ta-BİRİKİR (DATA-tüketemez) ve havuz
+    // psize'a-ulaşınca-emisyon-olur; displacement = yalnız-entitlement'tan-HARCANAN (settle-ile-
+    // ölçülür), tick-başı-rezerv-tekrarı-sayılmaz (metrik-artefaktı-düzeltildi).
     let reserved = match kind {
         PolicyKind::LeftoverOnly => 0,
         _ => st
@@ -287,7 +293,8 @@ pub fn step(
     if matches!(kind, PolicyKind::FloorCap | PolicyKind::BoundedDebtFloor)
         && parity_budget > st.hardcap_credit
     {
-        // B-sınıfı-C2-dar-istisnası: floor-ticket-DUE ise max_debt'e-kadar-borçlan.
+        // B-sınıfı-C2-dar-istisnası: floor-ticket-DUE ise max_debt'e-kadar-borç-İZNİ
+        // (GERÇEK-borç settle'da — harcanmamış-izin-debt-doğurmaz).
         if kind == PolicyKind::BoundedDebtFloor
             && ctx.floor_tickets > 0
             && ctx.oldest_ticket_age_ns >= t_floor
@@ -296,9 +303,8 @@ pub fn step(
             let extra = need.saturating_sub(st.hardcap_credit);
             let can_borrow = p.max_debt_bytes.saturating_sub(st.debt_bytes);
             if extra <= can_borrow {
-                borrowed = extra;
-                st.debt_bytes = st.debt_bytes.saturating_add(extra);
-                parity_budget = need; // yalnız-due-floor-servis-kadarı (borçla)
+                borrow_allowance = extra;
+                parity_budget = need; // yalnız-due-floor-servis-kadarı (borç-izinli)
             } else {
                 cap_suppressed = true;
                 parity_budget = st.hardcap_credit;
@@ -319,18 +325,9 @@ pub fn step(
         0
     };
 
-    // Harcama-muhasebesi: parity-harcaması-önce-entitlement'tan (reserved-kadarı), sonra-leftover;
-    // hard-cap-credit-tüm-parity-harcamasından-düşer.
-    let spend = parity_budget;
-    let from_entitlement = spend.min(reserved);
-    st.entitlement_credit = st.entitlement_credit.saturating_sub(from_entitlement);
-    if matches!(kind, PolicyKind::FloorCap | PolicyKind::BoundedDebtFloor) {
-        st.hardcap_credit = st
-            .hardcap_credit
-            .saturating_add(borrowed)
-            .saturating_sub(spend.min(st.hardcap_credit.saturating_add(borrowed)));
-    }
-
+    // İKİ-FAZ-MUHASEBE (adversarial-sim-bulgusu: akışkan-varsayım × kuantalı-emisyon):
+    // step() HARCAMA-DÜŞMEZ — yalnız-limit-üretir; GERÇEK-harcama `settle()`-ile-düşülür
+    // (harcanmamış-grant credit-eritmez → kuantum-altı-turlarda-birikim-korunur).
     let next_wakeup_hint_ns = if ctx.floor_tickets > 0 {
         t_floor.saturating_sub(ctx.oldest_ticket_age_ns.min(t_floor))
     } else {
@@ -341,9 +338,41 @@ pub fn step(
         parity_token_limit: parity_budget,
         floor_grants,
         cap_suppressed,
-        borrowed_bytes: borrowed,
+        borrow_allowance_bytes: borrow_allowance,
+        reserved_bytes: reserved,
         next_wakeup_hint_ns,
     }
+}
+
+/// İKİNCİ-FAZ: GERÇEK-parity-harcamasının-muhasebesi (çağıran drain-sonrası-çağırır).
+/// `spent ≤ d.parity_token_limit` şart (assert). Döner: gerçekleşen-borç (teşhis).
+/// entitlement: spent'in-reserved-kadarı-düşer; hard-cap: spent-düşer, açık borç-doğurur
+/// (≤ allowance; debt'e-yazılır — sonraki-accrual-önce-kapatır).
+#[must_use]
+pub fn settle(
+    kind: PolicyKind,
+    p: &PolicyParams,
+    st: &mut BudgetPolicyState,
+    d: &BudgetDecision,
+    spent_bytes: u64,
+) -> u64 {
+    assert!(
+        spent_bytes <= d.parity_token_limit,
+        "spent≤limit-sözleşmesi"
+    );
+    let from_entitlement = spent_bytes.min(d.reserved_bytes);
+    st.entitlement_credit = st.entitlement_credit.saturating_sub(from_entitlement);
+    let mut borrowed = 0u64;
+    if matches!(kind, PolicyKind::FloorCap | PolicyKind::BoundedDebtFloor) {
+        let from_cap = spent_bytes.min(st.hardcap_credit);
+        st.hardcap_credit -= from_cap;
+        let overrun = spent_bytes - from_cap;
+        borrowed = overrun.min(d.borrow_allowance_bytes);
+        // C1-mutlaklık: allowance-üstü-harcama-sözleşme-ihlali (assert; sim-kanıtlı).
+        assert!(overrun <= d.borrow_allowance_bytes, "cap-aşımı-yasak (C1)");
+        st.debt_bytes = (st.debt_bytes.saturating_add(borrowed)).min(p.max_debt_bytes);
+    }
+    borrowed
 }
 
 #[cfg(test)]
@@ -397,7 +426,8 @@ mod tests {
                                     // I1: toplam-limit ≤ available + borç (borç-yalnız-B-due-floor).
                                     assert!(
                                         d1.parity_token_limit
-                                            <= c.available_tokens.saturating_add(d1.borrowed_bytes),
+                                            <= c.available_tokens
+                                                .saturating_add(d1.borrow_allowance_bytes),
                                         "I1 {kind:?}"
                                     );
                                     assert!(d1.data_token_limit <= c.available_tokens);
@@ -424,13 +454,17 @@ mod tests {
                                             .min(bulk + u64::from(tickets) * 1200);
                                         assert_eq!(d1.parity_token_limit, want, "I6");
                                         assert_eq!(d1.floor_grants, 0);
-                                        assert_eq!(d1.borrowed_bytes, 0);
+                                        assert_eq!(d1.borrow_allowance_bytes, 0);
                                     }
-                                    // I2: borç-yalnız-B'de-ve-due-ticket-varken.
-                                    if d1.borrowed_bytes > 0 {
+                                    // I2: borç-İZNİ-yalnız-B'de-ve-due-ticket-varken.
+                                    if d1.borrow_allowance_bytes > 0 {
                                         assert_eq!(kind, PolicyKind::BoundedDebtFloor);
                                         assert!(tickets > 0);
                                     }
+                                    // I7-settle: tam-limit-harcaması-sonrası state-bound'ları.
+                                    let _ = settle(kind, &p, &mut st, &d1, d1.parity_token_limit);
+                                    assert!(st.entitlement_credit <= p.entitlement_cap_bytes);
+                                    assert!(st.debt_bytes <= p.max_debt_bytes);
                                     cases += 1;
                                 }
                             }
@@ -586,11 +620,14 @@ mod tests {
             &ctx(60_000, 2_400, 0, 0, 1, 999_000_000_000),
         );
         assert_eq!(
-            d.borrowed_bytes, 1_020,
-            "due-floor-borçlandı (extra=1200−180)"
+            d.borrow_allowance_bytes, 1_020,
+            "due-floor-borç-İZNİ (extra=1200−180)"
         );
-        assert_eq!(st.debt_bytes, 1_020);
+        assert_eq!(st.debt_bytes, 0, "izin≠borç: settle-öncesi-debt-yok");
         assert_eq!(d.floor_grants, 1, "due-ticket-servis");
+        let got = settle(PolicyKind::BoundedDebtFloor, &p, &mut st, &d, 1_200);
+        assert_eq!(got, 1_020, "GERÇEK-borç-settle'da");
+        assert_eq!(st.debt_bytes, 1_020);
         let mut st2 = BudgetPolicyState::default();
         let d2 = step(
             PolicyKind::BoundedDebtFloor,
@@ -598,8 +635,22 @@ mod tests {
             &mut st2,
             &ctx(60_000, 2_400, 0, 0, 1, 0),
         );
-        assert_eq!(d2.borrowed_bytes, 0, "erken-ticket-borç-yok");
+        assert_eq!(d2.borrow_allowance_bytes, 0, "erken-ticket-borç-izni-yok");
         assert!(d2.cap_suppressed, "erken-ticket-cap-bastırması-teşhisli");
+        // Kuantum-altı-birikim (iki-faz-kanıtı): spent=0-settle → entitlement-ERİMEZ.
+        let mut st4 = BudgetPolicyState::default();
+        let d4 = step(
+            PolicyKind::ProtectedShare,
+            &p,
+            &mut st4,
+            &ctx(60_000, 600, 600, 4_800, 0, 0),
+        );
+        let ent_after_step = st4.entitlement_credit;
+        let _ = settle(PolicyKind::ProtectedShare, &p, &mut st4, &d4, 0);
+        assert_eq!(
+            st4.entitlement_credit, ent_after_step,
+            "harcanmamış-grant-eritmez"
+        );
         // Borç-geri-ödeme: sonraki-accrual-önce-borcu-kapatır.
         let mut st3 = BudgetPolicyState {
             entitlement_credit: 0,
