@@ -16,3 +16,7 @@ tokio = { version = "1", features = ["time", "rt", "macros", "test-util"] }
 # Commit-V: test-only/non-default CANLI-BÜTÇE-PROTOTİPİ (CONDITIONAL-GO).
 # OFF (default): FloorCap-kodu-üretim-yoluna-BAĞLANMAZ; derlenmiş-yol-baseline-özdeş.
 experimental-fec-budget = []
+
+[[example]]
+name = "udp_budget_runner"
+required-features = ["experimental-fec-budget"]

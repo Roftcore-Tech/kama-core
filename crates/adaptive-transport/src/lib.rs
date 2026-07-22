@@ -39,6 +39,8 @@ pub mod rtt;
 pub mod sender;
 pub mod seq;
 pub mod sim;
+#[cfg(feature = "experimental-fec-budget")]
+pub mod udp_runner;
 
 // Internal: ack/fec ortak bounds-checked reader (ADR-05 → ccr-codec).
 mod read;
