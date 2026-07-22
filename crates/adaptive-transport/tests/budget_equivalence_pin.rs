@@ -16,8 +16,8 @@ fn leftover_equivalence_pin_constants() {
     s.set_manual_fec_enabled(true).unwrap();
     // Deterministik-mini-senaryo: 6-DATA (batch-ACK) + 3-parity-enqueue + PTO-drenajı.
     let mut decisions: Vec<(u8, u64, u64)> = Vec::new(); // (kind-tag, seq, size)
-    let mut push = |out: &[adaptive_transport::sender::TransmitDecision],
-                    acc: &mut Vec<(u8, u64, u64)>| {
+    let push = |out: &[adaptive_transport::sender::TransmitDecision],
+                acc: &mut Vec<(u8, u64, u64)>| {
         for d in out {
             let k = match d.kind {
                 TransmitKind::Data => 0u8,

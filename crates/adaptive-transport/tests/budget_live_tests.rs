@@ -6,8 +6,8 @@
 
 use adaptive_transport::budget_kernel::PolicyParams;
 use adaptive_transport::sender::{
-    AckInfo, BudgetPolicy, BudgetPolicyTransitionError, Event, FecActuationMode, OpaqueUnit,
-    RecoveredInfo, RecoveredUnit, Sender, Timer, TransmitKind,
+    AckInfo, BudgetPolicy, BudgetPolicyTransitionError, Event, OpaqueUnit, RecoveredInfo,
+    RecoveredUnit, Sender, Timer, TransmitKind,
 };
 use std::time::Duration;
 
@@ -301,10 +301,9 @@ fn subquantum_no_phantom_reservation() {
     s.set_budget_policy(floorcap()).unwrap();
     let a = s.open_fec_block_authority();
     assert_eq!(s.close_fec_block_manual(a, 4, 8, 1200), Ok(8));
-    let mut t = t0 * 1_000 + 1; // µs-taban: 1ms-tick'ler
-    for _ in 0..400u64 {
-        let _ = s.on_event(Event::TimerFired(Timer::Pto), t * 1_000_000 / 1_000);
-        t += 1;
+    let base = t0 * 1_000 + 1; // µs-taban: 1ms-tick'ler
+    for i in 0..400u64 {
+        let _ = s.on_event(Event::TimerFired(Timer::Pto), (base + i) * 1_000);
     }
     let d = s.diag_budget();
     assert!(
