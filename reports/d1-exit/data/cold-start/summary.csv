@@ -1,0 +1,4 @@
+unit_size,first_delay_s,observed_first_dup_s,within_2x_bound,dup_count,final_state_preconverge
+65,6.3,6.3,true,2,true
+300,17.7,17.7,true,2,true
+1200,61.2,61.2,true,2,true
