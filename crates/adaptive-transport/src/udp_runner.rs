@@ -93,10 +93,17 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut peer: Option<std::net::SocketAddr> = None;
     let mut buf = [0u8; 2048];
     let mut last_sack = Instant::now();
+    let mut last_rx = Instant::now(); // erken-çıkış: ilk-paketten-sonra-5s-sessizlik → bitir
+    let mut seen_any = false;
     while start.elapsed() < deadline {
+        if seen_any && last_rx.elapsed() > Duration::from_secs(5) {
+            break; // gönderici-bitti (idle-erken-çıkış; wall-time-kısaltma)
+        }
         if let Ok((n, from)) = sock.recv_from(&mut buf) {
             if n >= 23 {
                 peer = Some(from);
+                seen_any = true;
+                last_rx = Instant::now();
                 let seq = u64::from_be_bytes(buf[1..9].try_into().unwrap());
                 let b = u32::from_be_bytes(buf[17..21].try_into().unwrap());
                 let e = u16::from_be_bytes(buf[21..23].try_into().unwrap());
