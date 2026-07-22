@@ -24,6 +24,7 @@
 pub mod ack;
 pub mod arq;
 pub mod budget;
+pub mod budget_kernel;
 pub mod bw;
 pub mod clock;
 pub mod emergency;
