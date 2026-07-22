@@ -1,0 +1,3 @@
+configured_rtt_ms,srtt_us_warm_p50,note
+100,112769,loss-fidelity-run (delay 50ms each way)
+2500,2516564,high-rtt --emit-fuzzy confirmation (delay 1250ms each way)
