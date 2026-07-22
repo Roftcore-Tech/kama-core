@@ -99,14 +99,30 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut block_complete: BTreeMap<u32, u64> = BTreeMap::new(); // block → complete-ms (K-source-hazır)
     let mut block_first: BTreeMap<u32, u64> = BTreeMap::new(); // block → ilk-görülme-ms (open-proxy)
     let mut src_have: BTreeMap<u32, BTreeSet<u16>> = BTreeMap::new(); // yalnız-source-esi (<K)
+    let mut finish_seen = 0u32; // FA: sender-FINISH-marker sayacı (temiz-bitiş)
+    let mut ev_count = 0u64;
     while start.elapsed() < deadline {
-        if seen_any && last_rx.elapsed() > Duration::from_secs(5) {
-            break; // gönderici-bitti (idle-erken-çıkış; wall-time-kısaltma)
+        // FA: idle-erken-çıkış YALNIZ-FALLBACK (FINISH-marker gelmezse); normal-yol=FINISH-marker.
+        if seen_any && last_rx.elapsed() > Duration::from_secs(8) {
+            break;
+        }
+        if finish_seen >= 3 {
+            break; // FINISH-marker ≥3-onaylı (UDP-kaybına-karşı) → temiz-drain-bitti
         }
         if let Ok((n, from)) = sock.recv_from(&mut buf) {
+            if n >= 1 && buf[0] == 0xFE {
+                // FA: sender-FINISH-marker (workload-tamam) → ACK-FINISH + drain-onayı.
+                peer = Some(from);
+                seen_any = true;
+                finish_seen += 1;
+                last_rx = Instant::now();
+                let _ = sock.send_to(&[0xFEu8], from);
+                continue;
+            }
             if n >= 23 {
                 peer = Some(from);
                 seen_any = true;
+                ev_count += 1;
                 last_rx = Instant::now();
                 let seq = u64::from_be_bytes(buf[1..9].try_into().unwrap());
                 let b = u32::from_be_bytes(buf[17..21].try_into().unwrap());
@@ -164,20 +180,43 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
             last_sack = Instant::now();
         }
     }
-    // Receiver-outcome-ledger (R2-kapatma): blok-completion + operational-dl.
+    // FA: RECEIVER-GRACEFUL-FINALIZE — ledger + checksum + done-marker (SIGTERM-değil, temiz-yol).
+    std::fs::create_dir_all(&cfg.out_dir).map_err(|e| e.to_string())?;
     let op = cfg.op_horizon_ms;
-    if let Ok(mut f) = std::fs::File::create(format!("{}/{}-rxledger.csv", cfg.out_dir, cfg.run_id))
-    {
-        std::fs::create_dir_all(&cfg.out_dir).ok();
-        let _ = writeln!(f, "run_id,block,first_ms,complete_ms,rel_ms,dl_op");
-        for (b, first) in &block_first {
-            let (comp, rel, dlop) = match block_complete.get(b) {
-                Some(&c) => (c as i64, (c - first) as i64, u8::from((c - first) <= op)),
-                None => (-1, -1, 0),
-            };
-            let _ = writeln!(f, "{},{b},{first},{comp},{rel},{dlop}", cfg.run_id);
-        }
+    let mut body = String::from("run_id,block,first_ms,complete_ms,rel_ms,dl_op\n");
+    let (mut finalized, mut pending) = (0u64, 0u64);
+    for (b, first) in &block_first {
+        let (comp, rel, dlop) = match block_complete.get(b) {
+            Some(&c) => {
+                finalized += 1;
+                (c as i64, (c - first) as i64, u8::from((c - first) <= op))
+            }
+            None => {
+                pending += 1;
+                (-1, -1, 0)
+            }
+        };
+        body.push_str(&format!("{},{b},{first},{comp},{rel},{dlop}\n", cfg.run_id));
     }
+    // FNV-1a checksum (ledger-integrity; deterministik).
+    let mut ck = 0xcbf2_9ce4_8422_2325u64;
+    for by in body.bytes() {
+        ck ^= u64::from(by);
+        ck = ck.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    let lpath = format!("{}/{}-rxledger.csv", cfg.out_dir, cfg.run_id);
+    std::fs::write(&lpath, &body).map_err(|e| e.to_string())?;
+    // FA: done-marker (orchestrator-BAŞARI-teyidi; marker-yoksa run≠başarılı).
+    let clean = finish_seen >= 3; // FINISH-onaylı-mı (yoksa idle-fallback)
+    let marker = format!(
+        "run_id={}\npolicy={}\nreceiver_events={ev_count}\nfinalized_blocks={finalized}\npending_blocks={pending}\nledger_path={lpath}\nledger_checksum={ck:x}\nclean_shutdown={clean}\n",
+        cfg.run_id, cfg.policy
+    );
+    std::fs::write(
+        format!("{}/{}-rxdone.marker", cfg.out_dir, cfg.run_id),
+        marker,
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -305,7 +344,26 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
             break;
         }
     }
-    // Çıktılar.
+    // FA: WORKLOAD-tamam → FINISH-marker (0xFE) tekrar-gönder + rx-ACK-bekle (SIGTERM-yerine-graceful).
+    let fin_start = Instant::now();
+    let mut fin_acked = false;
+    while fin_start.elapsed() < Duration::from_secs(3) {
+        let _ = sock.send(&[0xFEu8; 1]);
+        if let Ok(n) = sock.recv(&mut buf) {
+            if n >= 1 && buf[0] == 0xFE {
+                fin_acked = true;
+                // Birkaç-kez-daha-gönder (rx ≥3-FINISH-görsün) sonra-çık.
+                for _ in 0..5 {
+                    let _ = sock.send(&[0xFEu8; 1]);
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let _ = fin_acked; // best-effort; rx idle-fallback'i de temiz-finalize-eder
+                       // Çıktılar.
     std::fs::create_dir_all(&cfg.out_dir).map_err(|e| e.to_string())?;
     let d = s.diag_fec_actuation();
     let b = s.diag_budget();
