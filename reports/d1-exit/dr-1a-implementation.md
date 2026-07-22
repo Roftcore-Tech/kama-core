@@ -1,5 +1,12 @@
 # DR-1a IMPLEMENTATION REPORT (Commit F/G/H) — ayrı-belge (§19-arşiv-kuralı)
 
+> **CORRIGENDUM (Commit-J, sahiplik-düzeltmesi; git-diff-gerçeği):** Commit-G (`9a30240`) sunumda
+> "test+docs-only" olarak-sunulmuştu — YANLIŞ: G, sender.rs'e +439-satır ÜRETİM-kodu (authority-enum,
+> latch, compute_requested_r, diag, plan_fec_parity-guard) + 6-dosyada-tek-satır-API-migrasyonu içerir.
+> Commit-H (`5097136`) başlığı "engine-actuation-wiring" ima-ediyordu — YANILTICI: H yalnız-test+rapor
+> (`controller_actuation.rs` + 2-rapor; SIFIR-üretim-satırı). DOĞRU-atıf: **G = üretim-actuation-yüzeyi;
+> H = engine-path-entegrasyon-testleri+kanıt.** Tarih-yeniden-yazılmadı; yalnız-bu-not.
+
 > Onay-zinciri: "DR-1e-v2 IMPLEMENTATION ACCEPTED — ONE INVARIANT-HARDENING PATCH REQUIRED" →
 > "DR-1a-v2 ADDENDUM APPROVED WITH SAME-EVENT CAUSALITY INTERPRETATION" → "DR-1a-v2 APPROVED FOR
 > IMPLEMENTATION". DR-1a-v2 + addendum korunur; bu-rapor implementasyon-kanıtıdır.

@@ -21,7 +21,14 @@ Diag-zinciri-doğrulaması: `FecActuationDiag.enqueued_r_total==emitted_r_total=
 planned→enqueued→emitted AYRIŞTIRILABİLİR (kesit-1-arm-collapse-körlüğü-giderildi). Out-of-order/duplicate/
 interleaved: preflight-kapsamında-kanıtlı (aynı-receiver-yolu; engine-tekrarı consecutive+interleaved-r'de).
 
-**HÜKÜM: engine-path-matrisi PASS → "wire/profil-değişikliği-GEREKMEZ" NİHAİ-kabul-kanıtı tamam** (preflight+
-engine-path ikisi-de-yeşil). Harness-notları (araç-doğrulama-tarihçesi; motor-bulgusu-değil): per-paket-anlık-
-ACK app-limited-örnek-üretip btlbw=0-bırakır → BATCH-ACK-deseni (SACK-gerçeğine-uygun) şart; repair-esi-uzayı
-0-based (codec `esi<r_code_max`; source-uzayından `is_repair`-ile-ayrık).
+**HÜKÜM (Commit-J-daraltılmış-NİHAİ-ifade):** Mevcut codec/schema ve negotiated profile içinde,
+`0 ≤ emitted_r ≤ r_code_max` değişimleri için ek wire alanı veya profile-ID değişimi gerekmediği
+preflight ve engine-path testleriyle doğrulandı.
+
+KAPSAM-DIŞI (bu-hüküm-İDDİA-ETMEZ): K/E-değişimi · codec-değişimi · yeni-profil-formatı · gelecekteki-
+receiver-davranışları · PARAM-yeniden-müzakeresi · blok-ortası-profil-değişimi · `r > r_code_max` ·
+farklı-wire-schema-versiyonu. Bunların-her-biri-ayrı-DR/kanıt-gerektirir.
+
+Harness-notları (araç-doğrulama-tarihçesi; motor-bulgusu-değil): per-paket-anlık-ACK app-limited-örnek-
+üretip btlbw=0-bırakır → BATCH-ACK-deseni (SACK-gerçeğine-uygun) şart; repair-esi-uzayı 0-based (codec
+`esi<r_code_max`; source-uzayından `is_repair`-ile-ayrık).

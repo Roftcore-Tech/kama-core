@@ -2827,6 +2827,42 @@ mod tests {
         );
     }
 
+    // ── Commit-J §8.3: last_latch TAM-ÖZDEŞ-overwrite (carryover-YOK) ──
+    #[test]
+    fn dr_1a_last_latch_full_overwrite_no_carryover() {
+        let mut s = Sender::new();
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        s.on_event(Event::AppData(unit(0)), 0);
+        let snap = s.controller_decision_snapshot().unwrap();
+        // 1. latch: SUPPRESSED (NoRule; requested-görünür).
+        let nr = ControllerDecisionSnapshot {
+            no_rule: true,
+            ratio_permille: 700,
+            ..snap
+        };
+        let r1 = s.fec_controller_latch(s.open_fec_block_authority(), Some(nr), 8, 4);
+        assert_eq!(r1.suppression, Some(FecSuppressionReason::NoRule));
+        assert_eq!(s.diag_fec_actuation().last_latch, Some(r1));
+        // 2. latch: TEMİZ — last_latch TAM-yeni-değer; suppression-carryover-YOK.
+        let ok = ControllerDecisionSnapshot {
+            ratio_permille: 500,
+            ..snap
+        };
+        let r2 = s.fec_controller_latch(s.open_fec_block_authority(), Some(ok), 8, 4);
+        assert_eq!(r2.suppression, None, "temiz-latch");
+        assert_eq!(
+            s.diag_fec_actuation().last_latch,
+            Some(r2),
+            "TAM-overwrite: alan-alan-yeni-latch (önceki-suppression/ratio-taşınmadı)"
+        );
+        assert_ne!(r1, r2, "iki-latch-farklı → overwrite-gözlemlenebilir");
+        // 3. latch: tekrar-SUPPRESSED — yine-tam-yeni (çift-yönlü-kanıt).
+        let r3 = s.fec_controller_latch(s.open_fec_block_authority(), Some(nr), 8, 4);
+        assert_eq!(s.diag_fec_actuation().last_latch, Some(r3));
+        assert_eq!(r3.suppression, Some(FecSuppressionReason::NoRule));
+    }
+
     // ── Commit-D §4.3: snapshot = controller-input CANONICAL-eşitliği ──
     #[test]
     fn fusion_snapshot_equals_controller_input() {
