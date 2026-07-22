@@ -13,8 +13,8 @@
 //! - GE/burst: 1s-pencere-kaderi-hash'li (bad-pencere p_bad; good p_good) — matched-realized-hedef
 //!   ~%10; gerçekleşen-raporlanır; |realized−hedef|/hedef > 0.3 → hücre-INVALID-işaretli.
 //! - Hücreler(13): iid10 · ge-short · ge-long · d1000-ge · d2500-iid10 · blackout-10s · blackout-30s-rep ·
-//!   rev99 · offered-c1 · bw12 · gap80(30-seed,iid5) · manyblock · interleaved4. Arm'lar(7-ana):
-//!   ARQ-off, r2/r4×{Leftover,P15,F15}; F10/F20(r4): {gap80,manyblock,d1000-ge}; T_floor-m1/m4(r4-F15):
+//!   rev99 · offered-c1 · bw12 · gap80+rev99(30-seed; rev99-genişletmesi=AA-§2-ön-beyanlı: 10-seed-dl_op-CI-hassasiyet-yetersizliği) · manyblock · interleaved4. Arm'lar(7-ana):
+//!   ARQ-off, r2/r4×{Leftover,P15,F15}; F10/F20(r4): {gap80,manyblock,d1000-ge,blackout-10s,blackout-30s} (AA-güncellemesi: blackout-kök-neden-Q5 F10-karşılaştırması-için — koşudan-önce-beyan); T_floor-m1/m4(r4-F15):
 //!   {bw12,d1000-ge,manyblock,offered-c1}. Controller-arm-YOK (kalibrasyonsuz≠policy-evidence).
 //! - Utility-bölme-sıfırları çıktıda-"NA"-explicit (script).
 #![cfg(feature = "experimental-fec-budget")]
@@ -693,13 +693,16 @@ fn policy_outcome_sweep() {
     writeln!(bf, "cell,arm,seed,block,gen,open_ms,close_ms,planned,admitted,emitted,first_par,last_par,repairs_rx,src_lost_first,retx_units,fec_decoded,decode_ms,comp_rel_ms,dl2,dl5,dl10,dl30,dl_op,completed_ext,avoided_retx,canceled,moot_parity,parity_bytes,never_delivered").unwrap();
     writeln!(rf, "cell,arm,seed,completion,goodput,enq,emit,canc,retx_dup,retx_bytes,ndisp,rdisp,waste,tk_miss,tk_on,tk_late,distinct_keys,end_t,censored").unwrap();
     for (cell, sc) in cells() {
-        let seeds: Vec<u64> = if cell == "gap80" {
+        let seeds: Vec<u64> = if matches!(cell, "gap80" | "rev99") {
             SEEDS10.iter().chain(SEEDS30X.iter()).copied().collect()
         } else {
             SEEDS10.to_vec()
         };
         let mut arms = arms_main();
-        if matches!(cell, "gap80" | "manyblock" | "d1000-ge") {
+        if matches!(
+            cell,
+            "gap80" | "manyblock" | "d1000-ge" | "blackout-10s" | "blackout-30s"
+        ) {
             arms.push(Arm {
                 name: "r4-F10",
                 r: 4,

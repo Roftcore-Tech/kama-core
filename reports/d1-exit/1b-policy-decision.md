@@ -1,4 +1,14 @@
-# Z3 — P15/F15 KARAR-RAPORU: paired-outcome + fairness-vs-concentration + Pareto + SHORTLIST
+# Z3 — P15/F15 KARAR-RAPORU
+
+> **CORRIGENDUM-AA (hüküm-gereği; tarih-korundu):** (1) "P15, F15-tarafından-pratikte-domine"-ifadesi
+> GERİ-ÇEKİLDİ. Doğru-hüküm: **"F15, test-edilen-hedef-hücrelerin-çoğunda benefit-eksenlerinde-P15'in-
+> önündedir ve deterministic-primary-shortlist'tir; ancak blackout-30s-operational-completion-ekseninde-
+> P15-daha-iyi-olduğundan iki-politika-Pareto-anlamında-kesin-biçimde-birbirini-DOMİNE-ETMEZ."**
+> (2) "H2-concentration-çürütüldü"-ifadesi-DARALTILDI: **"test-edilen-deterministik-deficit/impairment-
+> hücrelerinde concentration-hipotezi-DESTEKLENMEDİ (hiçbir-deficit-sınıfında F15-decode<P15); bu-sonuç
+> gerçek-netem-doğrulaması-öncesinde EVRENSEL-HÜKÜM-DEĞİLDİR."** Cluster-istatistiği+kök-neden:
+> [1b-cluster-stats-aa.md](1b-cluster-stats-aa.md).
+: paired-outcome + fairness-vs-concentration + Pareto + SHORTLIST
 
 > Kanıt: Z2-sweep (paired-trace; blok-düzeyi). Bu-rapor-shortlist-üretir; PRODUCTION-DEFAULT-SEÇMEZ.
 
