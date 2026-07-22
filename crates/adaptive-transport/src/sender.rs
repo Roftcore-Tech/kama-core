@@ -360,6 +360,7 @@ struct BudgetExt {
     state: crate::budget_kernel::BudgetPolicyState,
     tickets: VecDeque<FloorTicket>,
     reserved_now: u64,
+    parity_budget_left: Option<u64>, // C1-canlı-enforcement: None=Leftover-sınırsız; Some=kernel-limit-kalanı
     pending_decision: Option<crate::budget_kernel::BudgetDecision>,
     spent_this_opportunity: u64,
     last_opportunity_ns: u64,
@@ -2128,6 +2129,10 @@ impl Sender {
         #[cfg(feature = "experimental-fec-budget")]
         self.budget_service_tickets(out, now_ns);
         while let Some(&p) = self.pending_fec.front() {
+            #[cfg(feature = "experimental-fec-budget")]
+            if !self.budget_parity_allows(p.size) {
+                break; // C1-canlı: kernel-limit (Leftover'da-None → hiç-girmez; baseline-özdeş)
+            }
             let balance_before = self.pacer.tokens(); // READ-ONLY (mühürlü-TokenBucket'a-dokunulmaz)
             if !self.pacer.try_send(p.size) {
                 // Commit-G: budget-denied-GÖRÜNÜRLÜĞÜ (gauge; 1b-tasarım-girdisi — politika-DEĞİŞMEDİ).
@@ -2154,10 +2159,7 @@ impl Sender {
             }
             let _sz = self.emit_parity_at(0, out, now_ns);
             #[cfg(feature = "experimental-fec-budget")]
-            {
-                self.budget_ext.spent_this_opportunity =
-                    self.budget_ext.spent_this_opportunity.saturating_add(_sz);
-            }
+            self.budget_parity_spend(_sz);
         }
     }
 
@@ -2281,6 +2283,7 @@ impl Sender {
         self.budget_ext.spent_this_opportunity = 0;
         let Some((kind, params)) = self.budget_kind_params() else {
             self.budget_ext.reserved_now = 0; // LeftoverOnly: inert (baseline-özdeş)
+            self.budget_ext.parity_budget_left = None;
             return;
         };
         let elapsed = now_ns.saturating_sub(self.budget_ext.last_opportunity_ns);
@@ -2369,6 +2372,24 @@ impl Sender {
         });
         self.budget_ext.pending_decision = Some(d);
         self.budget_ext.reserved_now = reserved;
+        self.budget_ext.parity_budget_left = Some(d.parity_token_limit);
+    }
+
+    /// C1-canlı-enforcement: parity-harcaması kernel-limitini-aşamaz (Leftover: None=sınırsız-baseline).
+    #[cfg(feature = "experimental-fec-budget")]
+    fn budget_parity_allows(&self, size: u64) -> bool {
+        self.budget_ext
+            .parity_budget_left
+            .is_none_or(|left| left >= size)
+    }
+
+    #[cfg(feature = "experimental-fec-budget")]
+    fn budget_parity_spend(&mut self, size: u64) {
+        if let Some(left) = self.budget_ext.parity_budget_left.as_mut() {
+            *left = left.saturating_sub(size);
+        }
+        self.budget_ext.spent_this_opportunity =
+            self.budget_ext.spent_this_opportunity.saturating_add(size);
     }
 
     /// F2-ticket-servisi (FloorCap): ticket-FIFO-önünden; hedef-bloğun-İLK-pending-item'ı (bounded-scan).
@@ -2391,12 +2412,14 @@ impl Sender {
                 continue;
             };
             let size = self.pending_fec[idx].size;
+            if !self.budget_parity_allows(size) {
+                break; // C1: kernel-parity-limiti (hardcap-dahil) aşılamaz → miss-adayı (teşhisli)
+            }
             if !self.pacer.try_send(size) {
                 break; // token-yok → sonraki-opportunity (miss-taraması-rezervde)
             }
             let sz = self.emit_parity_at(idx, out, now_ns);
-            self.budget_ext.spent_this_opportunity =
-                self.budget_ext.spent_this_opportunity.saturating_add(sz);
+            self.budget_parity_spend(sz);
             self.budget_ext.tickets.pop_front();
             if t.missed || now_ns > t.deadline_ns {
                 self.budget_ext.tk_late = self.budget_ext.tk_late.saturating_add(1);
@@ -2417,10 +2440,8 @@ impl Sender {
             self.budget_ext.reserved_now = 0;
             return;
         };
-        let spent = self
-            .budget_ext
-            .spent_this_opportunity
-            .min(d.parity_token_limit);
+        // C1-canlı-enforcement-sonrası spent ≤ limit YAPISAL (clamp-maskesi-yok; kernel-assert-gerçek).
+        let spent = self.budget_ext.spent_this_opportunity;
         if self.budget_ext.reserved_now > spent {
             self.budget_ext.reservation_waste_total = self
                 .budget_ext
@@ -2431,6 +2452,7 @@ impl Sender {
         let _borrowed = crate::budget_kernel::settle(kind, &params, &mut st, &d, spent);
         self.budget_ext.state = st;
         self.budget_ext.reserved_now = 0;
+        self.budget_ext.parity_budget_left = None;
         self.budget_ext.spent_this_opportunity = 0;
     }
 
