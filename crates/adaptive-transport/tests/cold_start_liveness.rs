@@ -128,7 +128,10 @@ fn cold_start_first_loss_recovers_ack_free_but_state_pinned() {
 #[test]
 fn cold_start_timeline_evidence_artifact() {
     // Repo reports dizinine yaz (CARGO_MANIFEST_DIR = crates/adaptive-transport → ../../).
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../reports/d1-exit/data/cold-start");
+    let dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../reports/d1-exit/data/cold-start"
+    );
     std::fs::create_dir_all(dir).ok();
     let mut sum = String::from(
         "unit_size,first_delay_s,observed_first_dup_s,within_2x_bound,dup_count,final_state_preconverge\n",
