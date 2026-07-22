@@ -1,13 +1,22 @@
 # FH — FUZZY CALIBRATION EVIDENCE REVIEW [production-fuzzy-config-DEĞİŞMEDİ]
 
+> **BAĞLAYICI-ÇERÇEVE (zorunlu-başlık):** Bu deney ARQ ile FEC'i KARŞILAŞTIRMAZ. ARQ bütün-kollarda
+> AKTİFTİR (aynı-impl/ACK-NACK/retransmit-zamanlayıcı/retry-semantiği); değişen-tek-değişken ARQ-substrate'ı
+> ÜZERİNE eklenen PROAKTİF-FEC-repair-miktarıdır (r0=ARQ+0, r1=ARQ+1, r2=ARQ+2, r4=ARQ+4). Ölçülen =
+> **ARQ-substrate üzerine PROAKTİF-FEC'in MARJİNAL-FAYDASI** (marginal-FEC-utility-over-ARQ). FEC hiçbir-
+> kolda ARQ'nun-yerine-geçmez; FEC'in-kapatamadığı-residual-deficit her-zaman-ARQ'yla-tamamlanır.
+
+
 > Zincir: FA(graceful) → FB(DR-1b-freeze) → FC/FD(fuzzy-dataset+oracle) → FE/FF(analiz) → FG(shadow).
 > 224-netem-run/0-fail; 231k-gerçek-fuzzy-event. PR#44-draft.
 
 ## Ana-soru cevabı
-"Gerçek-Kama-stack'inde-hangi-gözlemlenebilir-durumlarda-FEC-recovery-faydası-üretir-ve-fuzzy-doğru-
-ayırıyor-mu?" → **Test-edilen-7-profilde (nominal→30%-loss→GE-burst→blackout→lowbw→offered≈C) FEC
-(fixed-r) r0-üzerinde-SIFIR-outcome-faydası-gösterdi (oracle-EquivalentSet-7/7). Fuzzy-controller-
-ratio=0 çıkarıyor ve bu OUTCOME-DOĞRU (CorrectZero-7/7). Ayırt-etme-sorunu-YOK: ayrılacak-fayda-yok.**
+"ARQ-substrate-her-koşulda-aktifken hangi-durumda PROAKTİF-FEC-eklemek marjinal-outcome-faydası-üretir-ve-
+fuzzy-doğru-seçiyor-mu?" → **Test-edilen-7-profilde proaktif-FEC (ARQ+1/2/4) ARQ-substrate-üzerine SIFIR-
+MARJİNAL-fayda-gösterdi (NoMarginalFecUtility_thisCondition 7/7) çünkü ARQ-substrate deadline'ı-zaten-
+karşıladı. Controller proaktif-FEC=0 çıkarıyor ve bu BU-KOŞULLARDA-DOĞRU (CorrectZeroProactiveFec 7/7).
+Bu GLOBAL-"FEC-hiçbir-rejimde-faydalı-değil" HÜKMÜ-DEĞİLDİR — ARQ-limited/FEC-feasible-rejim (R-C2)
+üretilmedi.**
 
 ## Kanıt-hiyerarşisi (§20; higher-layer-bağlayıcı)
 1. Real-UDP/netem-outcome: fixed-r-oracle EquivalentSet-7/7 (r0≡r4). ← BAĞLAYICI
@@ -34,7 +43,10 @@ bulunamadı (kanıt-yokluğu; profil-tasarımı-ileride-genişletilebilir). (R-C
 (run/profil-expected-utility; packet-fate-r-arm'ları-birebir-paired-değil).
 
 ## HÜKÜM-ÖNERİSİ
-**FUZZY CALIBRATION EVIDENCE PASSED — CURRENT ZERO-BIASED CONTROLLER RETAINED.**
-Gerekçe: 7/7-profil-oracle-EquivalentSet → FEC-outcome-faydası-YOK → controller-ratio=0 outcome-doğru;
-hiçbir-config-adayı-alignment-iyileştiremez. Production-fuzzy-config-DEĞİŞMEDİ. Residual: loss-signal-
-fidelity + FEC-fayda-rejimi-arama = ayrı-gelecek-kapılar (fuzzy-calibration-DEĞİL).
+**FUZZY CALIBRATION EVIDENCE PASSED — CURRENT ZERO-BIASED CONTROLLER RETAINED (condition-scoped).**
+Gerekçe: 7/7-profil-oracle-NoMarginalFecUtility_thisCondition → ARQ-substrate-üzerine-proaktif-FEC-marjinal-
+faydası-BU-KOŞULLARDA-YOK → controller-proaktif-FEC=0 bu-koşullarda-doğru; hiçbir-config-adayı-alignment-
+iyileştiremez (loss-signal=0 + koşulda-marjinal-fayda-yok). **HÜKÜM-GLOBAL-DEĞİL:** ARQ-limited/FEC-feasible-
+rejim bulunursa-controller-orada-proaktif-FEC>0-üretmeli — o-rejim-bu-turda-üretilmedi (R-C2, açık-residual).
+Production-fuzzy-config-DEĞİŞMEDİ. Residual: loss-signal-fidelity + ARQ-limited/FEC-feasible-rejim-arama =
+ayrı-gelecek-kapılar.

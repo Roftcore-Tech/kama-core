@@ -95,13 +95,15 @@ for prof,rm in sorted(prof_dlop.items()):
     r0=rm.get("r0",0)
     best_r=max(rm,key=lambda k:rm[k]); best=rm[best_r]
     delta=best-r0
-    if delta>0.01: olab=f"Prefer{best_r.upper()}"
-    elif max(rm.values())-min(rm.values())<=0.01: olab="EquivalentSet"
+    # ÇERÇEVE: r0=ARQ+0-proaktif-FEC; r>0=ARQ+N-proaktif-FEC. Karşılaştırma=marjinal-FEC-utility-over-ARQ.
+    if delta>0.01: olab=f"MarginalFecUtility_{best_r.upper()}"  # ARQ+FEC-hibrit bu-koşulda-avantajlı
+    elif max(rm.values())-min(rm.values())<=0.01: olab="NoMarginalFecUtility_thisCondition"  # ARQ-substrate-deadline'ı-zaten-karşıladı
     else: olab="Inconclusive"
     # current fuzzy in these profiles: loss stays <200k → R1 → ratio=0 → PreferR0-equivalent.
     # class: eğer oracle=EquivalentSet/PreferR0 → CorrectZero; eğer PreferR2/R4 ama fuzzy-ratio=0 → UnderProtect
-    if olab in ("EquivalentSet","PreferR0"): cls="CorrectZero"
-    elif olab.startswith("Prefer"): cls="UnderProtect"
+    # cls: controller-proaktif-FEC=0-kararı bu-koşulda-doğru-mu (ARQ-substrate-yeterliyse EVET; global-DEĞİL).
+    if olab.startswith("NoMarginalFecUtility"): cls="CorrectZeroProactiveFec_thisCondition"
+    elif olab.startswith("MarginalFecUtility"): cls="UnderProvisionedProactiveFec"
     else: cls="Inconclusive"
     lab.write(f"{prof},{r0:.4f},{rm.get('r1',0):.4f},{rm.get('r2',0):.4f},{rm.get('r4',0):.4f},{best_r},{delta:.4f},{olab},{cls}\n")
 print("yazıldı: fe-input-distribution / fe-membership-support / fe-empirical-coverage / ff-oracle / ff-oracle-label")

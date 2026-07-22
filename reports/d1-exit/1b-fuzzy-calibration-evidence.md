@@ -1,5 +1,12 @@
 # FC–FF — Fuzzy Calibration Evidence [production-fuzzy-config-DEĞİŞMEDİ; frozen-fixture-reference]
 
+> **BAĞLAYICI-ÇERÇEVE (zorunlu-başlık):** Bu deney ARQ ile FEC'i KARŞILAŞTIRMAZ. ARQ bütün-kollarda
+> AKTİFTİR (aynı-impl/ACK-NACK/retransmit-zamanlayıcı/retry-semantiği); değişen-tek-değişken ARQ-substrate'ı
+> ÜZERİNE eklenen PROAKTİF-FEC-repair-miktarıdır (r0=ARQ+0, r1=ARQ+1, r2=ARQ+2, r4=ARQ+4). Ölçülen =
+> **ARQ-substrate üzerine PROAKTİF-FEC'in MARJİNAL-FAYDASI** (marginal-FEC-utility-over-ARQ). FEC hiçbir-
+> kolda ARQ'nun-yerine-geçmez; FEC'in-kapatamadığı-residual-deficit her-zaman-ARQ'yla-tamamlanır.
+
+
 > Kanıt: GERÇEK-Sender + GERÇEK-UDP + GERÇEK-netem (rootless); 7-profil (nominal/loss_med/loss_high/ge_burst/blackout30/lowbw30k/offered_c) × 4-fixed-r-oracle-arm
 > (r0/r1/r2/r4; LeftoverOnly) × 8-rep; **222 502 gerçek-fuzzy-event** (--emit-fuzzy; additive-diag-poll;
 > decision-DEĞİŞMEDİ). Fuzzy-config=FROZEN-fixture (analytic-membership; anchor-validated).
@@ -29,7 +36,14 @@ loss.MED/HIGH memberships **gerçek-trafikte-HİÇ-realize-olmuyor** (dead-in-tr
 `no_rule_frac=0.0000` (loss.low=1 → R1-her-event-ateşler) · `ratio_zero_frac=1.0000` (her-karar-ratio=0) ·
 `mode=Normal-%100` (emergency-YOK). (Uniform-grid-coverage §rule-coverage-prepass'ta-AYRI; empirical≠grid.)
 
-## FF — Fixed-r ORACLE vs current-fuzzy (ground-truth outcome)
+## FF-ÇERÇEVE-DÜZELTMESİ (bağlayıcı)
+r0=ARQ+0-proaktif-FEC · r1/r2/r4=ARQ+1/2/4-proaktif-FEC. Aşağıdaki-tablo "ARQ-vs-FEC" DEĞİL; **ARQ-
+substrate-üzerine-proaktif-FEC'in-marjinal-faydasını** ölçer. "delta=0" = *bu-exact-workload/deadline/
+impairment/capacity-koşulunda ARQ-substrate deadline'ı-zaten-karşıladığı-için proaktif-FEC-marjinal-
+fayda-üretmedi* — **"FEC-faydasız/ARQ-kazandı" DEĞİL**, koşula-özgü-"NoMarginalFecUtility". Residual-
+deficit-varsa-ARQ-tamamlar (hibrit-beklenen-davranış).
+
+## FF — proaktif-FEC-marjinal-utility ORACLE (ARQ-her-kolda-aktif; ground-truth outcome)
 | profil | dl_op r0 | r1 | r2 | r4 | best | Δ vs r0 | oracle | fuzzy-sınıf |
 |---|---|---|---|---|---|---|---|---|
 | nominal (5%) | 0.9737 | 0.9737 | 0.9737 | 0.9737 | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
@@ -40,8 +54,11 @@ loss.MED/HIGH memberships **gerçek-trafikte-HİÇ-realize-olmuyor** (dead-in-tr
 | lowbw30k | 1.0000 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
 | offered_c | 1.0000 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
 
-**7/7-PROFİLDE FEC (r1/r2/r4) r0-üzerinde-SIFIR-outcome-faydası** — ARQ/SACK-loop deadline-içinde-
-her-bloğu-recover-ediyor. Controller'ın-ratio=0'ı OUTCOME-DOĞRU (CorrectZero), miscalibration-DEĞİL.
+**7/7-PROFİLDE proaktif-FEC (r1/r2/r4) ARQ-substrate-üzerine-SIFIR-MARJİNAL-fayda** — ARQ-substrate
+(retransmit+SACK) deadline-içinde-her-bloğu-zaten-tamamlıyor, dolayısıyla-proaktif-repair-eklemenin-
+marjinal-outcome-katkısı-0. Controller'ın-proaktif-FEC=0-kararı BU-KOŞULLARDA-DOĞRU (CorrectZeroProactive
+Fec_thisCondition) — **GLOBAL-"FEC-faydasız"-DEĞİL; test-edilen-koşullar ARQ-limited/FEC-feasible-deadline-
+bölgesine-ULAŞMADI (R-C2).** miscalibration-değil.
 0.9737-tavan (1.0-değil) horizon-kenarı-blokları (r-bağımsız; FEC-düzeltemez).
 
 ## §14-kritik-sorular (cevaplar)
