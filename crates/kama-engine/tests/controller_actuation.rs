@@ -108,7 +108,12 @@ fn engine_block(
         ratio_permille: ratio_override,
         ..snap
     };
-    let latch = s.fec_controller_latch(Some(snap), k_actual, p.r_code_max);
+    let latch = s.fec_controller_latch(
+        s.open_fec_block_authority(),
+        Some(snap),
+        k_actual,
+        p.r_code_max,
+    );
     for esi in 0..latch.planned_r {
         // repair-esi-uzayı 0-based (codec: esi<r_code_max; is_repair-ayrımı AYRI-uzay).
         s.enqueue_fec_parity(block_id, esi, 64);
@@ -286,7 +291,7 @@ fn engine_partial_block_and_emergency() {
         emergency: true,
         ..snap
     };
-    let latch = s.fec_controller_latch(Some(em), 8, 4);
+    let latch = s.fec_controller_latch(s.open_fec_block_authority(), Some(em), 8, 4);
     assert_eq!(latch.computed_r, 4, "requested-telemetride-görünür");
     assert_eq!(latch.planned_r, 0, "emitted/enqueued=0 (interlock)");
     assert_eq!(
@@ -322,7 +327,7 @@ fn engine_mode_transitions() {
         );
     }
     let snap = s.controller_decision_snapshot().unwrap();
-    let r = s.fec_controller_latch(Some(snap), 8, 4);
+    let r = s.fec_controller_latch(s.open_fec_block_authority(), Some(snap), 8, 4);
     assert_eq!(r.suppression, Some(FecSuppressionReason::ManualDisabled));
     // C→M(true): manuel-sabit-akış (enqueue-yolu) devralır — plan_fec_parity Manual{true}-emit-eder.
     s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: true })

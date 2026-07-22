@@ -127,6 +127,25 @@ pub enum FecActuationMode {
     Controller,
 }
 
+/// Commit-I (review-hardening §1, Model-D-dar-varyantı): BLOK-OTORİTE-WITNESS'ı — blok-AÇILIŞINDA
+/// aktif-mode'u YAKALAR; o-bloğun-tüm-otorite-kararları (latch/Manual-dal-seçimi) BU-mode'la-yapılır.
+/// Private-alan → yalnız [`Sender::open_fec_block_authority`] üretir (forge/elle-kurulum-derlenmez).
+/// YAPISAL-GARANTİ: "blok hangi-mode'da-açıldıysa o-mode'da-kapanır" — sonraki `set_fec_actuation_mode`
+/// in-flight-witness'ı ETKİLEYEMEZ (Copy-değer). Pending-state-YOK → idle-transition-hemen; no-future-
+/// block-leak-yok; repeated-transition = last-write-wins (aktif-mode'da; açık-witness'lar-değişmez).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FecBlockAuthority {
+    mode: FecActuationMode,
+}
+
+impl FecBlockAuthority {
+    /// Bu-bloğun-otorite-mode'u (blok-açılış-anı-yakalaması).
+    #[must_use]
+    pub fn mode(&self) -> FecActuationMode {
+        self.mode
+    }
+}
+
 /// Commit-G: otorite-API hataları (sessiz-no-op-YASAK).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum FecAuthorityError {
@@ -185,9 +204,14 @@ pub struct FecActuationDiag {
     pub emitted_r_total: u64,
     /// RECOVERED-iptalleri (DR-S5-4-sayacı; canceled-zinciri).
     pub canceled_r_total: u64,
-    /// Son-plan_fec_parity-token-kesintisinde-bekleyen-parity (GAUGE; kümülatif-değil —
-    /// budget-denied-görünürlüğü; 1b-tasarım-girdisi).
-    pub budget_denied_r_gauge: u64,
+    /// §8.1-EXACT-TANIM: SON-plan_fec_parity-token-REDDİ-anında-kuyrukta-bekleyen-parity-adedi
+    /// (GAUGE — kümülatif-DEĞİL; requested−emitted-DEĞİL; clamp/suppression/mode-disabled-farkları
+    /// token-denial-SAYILMAZ; yalnız-pacer-token-reddi). 1b-tasarım-girdisi.
+    pub token_denied_r_gauge: u64,
+    /// Commit-I: son-mode-transition-isteğinin event-index'i.
+    pub last_transition_event_index: u64,
+    /// Commit-I: uygulanan-transition-sayısı (saturating; wrap-yok).
+    pub transition_applied_count: u64,
 }
 
 /// Commit-G: ratio→r SAF-hesabı (§8). Half-up; float/RNG/platform-rounding-YOK; overflow-kanıtı:
@@ -483,7 +507,9 @@ pub struct Sender {
     manual_toggle_rejected_count: u64,
     parity_enqueued_total: u64,
     parity_emitted_total: u64,
-    budget_denied_r_gauge: u64,
+    token_denied_r_gauge: u64, // Commit-J-rename (eski: budget_denied_r_gauge) — §8.1-exact-tanım
+    last_transition_event_index: u64, // Commit-I
+    transition_applied_count: u64, // Commit-I: saturating
     pending_fec: VecDeque<PendingFecParity>, // engine FEC-encode-sonrası enqueue; sender pace-eder
 
     // ── send-record ↔ ACK-eşleme (DR-S5-3; SALT-LOGICAL — BtlBw/delivered'e BESLENMEZ) ──
@@ -619,7 +645,9 @@ impl Sender {
             manual_toggle_rejected_count: 0,
             parity_enqueued_total: 0,
             parity_emitted_total: 0,
-            budget_denied_r_gauge: 0,
+            token_denied_r_gauge: 0,
+            last_transition_event_index: 0,
+            transition_applied_count: 0,
             pending_fec: VecDeque::new(),
             sent_logical: BTreeMap::new(), // DR-S5-3
             confirmed_logical: VecDeque::new(),
@@ -1438,7 +1466,18 @@ impl Sender {
         mode: FecActuationMode,
     ) -> Result<(), FecAuthorityError> {
         self.fec_mode = mode;
+        self.last_transition_event_index = self.fusion_event_index;
+        self.transition_applied_count = self.transition_applied_count.saturating_add(1);
         Ok(())
+    }
+
+    /// Commit-I: blok-AÇILIŞINDA çağrılır — o-anki-aktif-mode witness'a-yakalanır. Bloğun-otorite-
+    /// kararları bu-witness'la (yapısal open-mode==close-mode).
+    #[must_use]
+    pub fn open_fec_block_authority(&self) -> FecBlockAuthority {
+        FecBlockAuthority {
+            mode: self.fec_mode,
+        }
     }
 
     /// Commit-G: manuel-FEC-toggle — YALNIZ Manual-mode'da. Controller'da TYPED-red (sessiz-no-op-YASAK;
@@ -1453,7 +1492,8 @@ impl Sender {
                 Ok(())
             }
             FecActuationMode::Controller => {
-                self.manual_toggle_rejected_count += 1;
+                self.manual_toggle_rejected_count =
+                    self.manual_toggle_rejected_count.saturating_add(1);
                 Err(FecAuthorityError::NotInManualMode)
             }
         }
@@ -1484,6 +1524,7 @@ impl Sender {
     /// suppression→planned. Her-adım FecLatchResult'ta-görünür. Baskılamalar LITERAL-0 (config-bağımsız).
     pub fn fec_controller_latch(
         &mut self,
+        authority: FecBlockAuthority,
         snapshot: Option<ControllerDecisionSnapshot>,
         k_actual: u8,
         profile_r_max: u16,
@@ -1497,17 +1538,20 @@ impl Sender {
             same_event_eligible: same_ev,
             suppression: Some(why),
         };
-        let r = match self.fec_mode {
+        // Commit-I: otorite = WITNESS-mode (blok-açılış-yakalaması) — aktif-mode-DEĞİL.
+        let r = match authority.mode {
             FecActuationMode::Manual { .. } => zero(0, FecSuppressionReason::ManualDisabled, false),
             FecActuationMode::Controller => match snapshot {
                 None => {
-                    self.no_eligible_decision_count += 1;
+                    self.no_eligible_decision_count =
+                        self.no_eligible_decision_count.saturating_add(1);
                     zero(0, FecSuppressionReason::NoEligibleDecision, false)
                 }
                 Some(s) if s.event_index != self.fusion_event_index => {
                     // SAME-EVENT-CAUSALITY-GUARD (addendum-onaylı-ad): önceki-event-kararı yeni-bloğa
                     // UYGULANMAZ; fail-closed LITERAL-0. (Ağ-staleness-politikası-DEĞİL — ayrı-faz.)
-                    self.decision_event_mismatch_count += 1;
+                    self.decision_event_mismatch_count =
+                        self.decision_event_mismatch_count.saturating_add(1);
                     zero(
                         s.ratio_permille,
                         FecSuppressionReason::DecisionEventMismatch,
@@ -1515,7 +1559,7 @@ impl Sender {
                     )
                 }
                 Some(s) if s.no_rule => {
-                    self.no_rule_zero_count += 1;
+                    self.no_rule_zero_count = self.no_rule_zero_count.saturating_add(1);
                     zero(0, FecSuppressionReason::NoRule, true) // LITERAL-0 (fec_zero-config'e-BAĞLI-DEĞİL)
                 }
                 Some(s) => {
@@ -1562,14 +1606,16 @@ impl Sender {
             enqueued_r_total: self.parity_enqueued_total,
             emitted_r_total: self.parity_emitted_total,
             canceled_r_total: self.diag_recovered_cancels,
-            budget_denied_r_gauge: self.budget_denied_r_gauge,
+            token_denied_r_gauge: self.token_denied_r_gauge,
+            last_transition_event_index: self.last_transition_event_index,
+            transition_applied_count: self.transition_applied_count,
         }
     }
 
     /// Engine FEC-encode-sonrası bir repair-shard'ı emisyon-kuyruğuna alır (DR-S5-1). fec_enabled-OFF'ta
     /// enqueue-edilse-de plan_fec_parity çalışmaz (guard). Shard-byte'ları güvenlik-katmanında; burada boyut+ref.
     pub fn enqueue_fec_parity(&mut self, block_id: u32, esi: u16, size: u64) {
-        self.parity_enqueued_total += 1;
+        self.parity_enqueued_total = self.parity_enqueued_total.saturating_add(1);
         self.pending_fec.push_back(PendingFecParity {
             block_id,
             esi,
@@ -1694,10 +1740,10 @@ impl Sender {
         while let Some(&p) = self.pending_fec.front() {
             if !self.pacer.try_send(p.size) {
                 // Commit-G: budget-denied-GÖRÜNÜRLÜĞÜ (gauge; 1b-tasarım-girdisi — politika-DEĞİŞMEDİ).
-                self.budget_denied_r_gauge = self.pending_fec.len() as u64;
+                self.token_denied_r_gauge = self.pending_fec.len() as u64;
                 break; // token yok → sonraki tick (data/retx ile aynı pacing-davranışı).
             }
-            self.parity_emitted_total += 1;
+            self.parity_emitted_total = self.parity_emitted_total.saturating_add(1);
             self.pending_fec.pop_front();
             let seq = self.track_sent(
                 OpaqueUnit {
@@ -2650,7 +2696,7 @@ mod tests {
         s.set_fec_actuation_mode(FecActuationMode::Controller)
             .unwrap();
         // 4.3 INITIAL: hiç-decision-yok → LITERAL-0 + sayaç.
-        let r = s.fec_controller_latch(None, 8, 4);
+        let r = s.fec_controller_latch(s.open_fec_block_authority(), None, 8, 4);
         assert_eq!(
             (r.planned_r, r.suppression),
             (0, Some(FecSuppressionReason::NoEligibleDecision))
@@ -2664,7 +2710,7 @@ mod tests {
             event_index: snap.event_index.wrapping_sub(1),
             ..snap
         };
-        let r = s.fec_controller_latch(Some(stale), 8, 4);
+        let r = s.fec_controller_latch(s.open_fec_block_authority(), Some(stale), 8, 4);
         assert_eq!(
             (r.planned_r, r.suppression),
             (0, Some(FecSuppressionReason::DecisionEventMismatch))
@@ -2676,7 +2722,7 @@ mod tests {
             no_rule: true,
             ..snap
         };
-        let r = s.fec_controller_latch(Some(nr), 8, 4);
+        let r = s.fec_controller_latch(s.open_fec_block_authority(), Some(nr), 8, 4);
         assert_eq!(
             (r.planned_r, r.suppression),
             (0, Some(FecSuppressionReason::NoRule))
@@ -2687,7 +2733,7 @@ mod tests {
             ratio_permille: 500,
             ..snap
         };
-        let r = s.fec_controller_latch(Some(em), 8, 4);
+        let r = s.fec_controller_latch(s.open_fec_block_authority(), Some(em), 8, 4);
         assert_eq!(r.computed_r, 4);
         assert_eq!(r.planned_r, 0);
         assert_eq!(
@@ -2699,13 +2745,13 @@ mod tests {
             ratio_permille: 500,
             ..snap
         };
-        let r = s.fec_controller_latch(Some(ok), 8, 4);
+        let r = s.fec_controller_latch(s.open_fec_block_authority(), Some(ok), 8, 4);
         assert!(r.same_event_eligible);
         assert_eq!((r.computed_r, r.planned_r, r.suppression), (4, 4, None));
         // ManualDisabled: Manual-mode'da-latch → 0.
         s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: true })
             .unwrap();
-        let r = s.fec_controller_latch(Some(ok), 8, 4);
+        let r = s.fec_controller_latch(s.open_fec_block_authority(), Some(ok), 8, 4);
         assert_eq!(
             (r.planned_r, r.suppression),
             (0, Some(FecSuppressionReason::ManualDisabled))
@@ -2722,7 +2768,7 @@ mod tests {
         let out = s.on_event(Event::AppData(unit(0)), 0);
         let _ = out; // emisyonlar-bu-event'te; block-close engine-tarafı-AYNI-bağlamda.
         let snap = s.controller_decision_snapshot().unwrap();
-        let r = s.fec_controller_latch(Some(snap), 8, 4);
+        let r = s.fec_controller_latch(s.open_fec_block_authority(), Some(snap), 8, 4);
         assert!(
             r.same_event_eligible,
             "fuzzy latch'ten-ÖNCE koştu (aynı-event-index)"
@@ -2745,6 +2791,40 @@ mod tests {
         );
         // Ve-o-bağlamda-latch-yapılsaydı-bile: snapshot-hala-önceki-event'in → guard-değerlendirmesi
         // index-eşitliğiyle: eşit (yeni-fuzzy-yok) → normal-akış-zararsız; guard anormal-yolları-hedefler.
+    }
+
+    // ── Commit-I §8.2: counter-saturation (wrap-YOK; debug/release-özdeş) ──
+    #[test]
+    fn dr_1a_counter_saturation_boundary() {
+        let mut s = Sender::new();
+        s.transition_applied_count = u64::MAX - 1;
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        assert_eq!(s.diag_fec_actuation().transition_applied_count, u64::MAX);
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        assert_eq!(
+            s.diag_fec_actuation().transition_applied_count,
+            u64::MAX,
+            "saturating: MAX'ta-kalır"
+        );
+        s.no_rule_zero_count = u64::MAX;
+        let snap = ControllerDecisionSnapshot {
+            ratio_permille: 0,
+            event_index: s.fusion_event_index,
+            no_rule: true,
+            emergency: false,
+        };
+        let _ = s.fec_controller_latch(s.open_fec_block_authority(), Some(snap), 8, 4);
+        // Manual-default'ta ManualDisabled-dalı no_rule-sayacına-girmez; Controller'a-alıp-tekrar:
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        let _ = s.fec_controller_latch(s.open_fec_block_authority(), Some(snap), 8, 4);
+        assert_eq!(
+            s.diag_fec_actuation().no_rule_zero_count,
+            u64::MAX,
+            "no-wrap"
+        );
     }
 
     // ── Commit-D §4.3: snapshot = controller-input CANONICAL-eşitliği ──
