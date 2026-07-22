@@ -8,6 +8,7 @@
 //! SAF-DOĞRULAMA: mühürlü-koda (bw.rs/send_rate/delivered-EAI/W_BTLBW) DOKUNMAZ; yalnız
 //! public API'yi sürer + diag OKUR.
 
+#![allow(deprecated)] // enqueue_fec_parity: legacy-harness-yolu (Commit-K deprecation) — bu-dosya tam-o-yolu-test-eder
 use adaptive_transport::sender::{AckInfo, Event, OpaqueUnit, Sender, TransmitKind};
 use std::time::Duration;
 

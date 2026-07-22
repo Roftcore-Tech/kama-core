@@ -13,6 +13,7 @@
 //! RS-decode MDS-sayım-kuralı (ulaşan≥K → eksik-source recovered; codec-doğruluğu admission_5d2/pipeline
 //! testlerinde ayrıca-kanıtlı). Gerçek Sender-motoru; iki-arm tek-fark fec_enabled.
 
+#![allow(deprecated)] // enqueue_fec_parity: legacy-harness-yolu (Commit-K deprecation) — bu-dosya tam-o-yolu-test-eder
 use adaptive_transport::sender::{
     AckInfo, Event, OpaqueUnit, RecoveredInfo, RecoveredUnit, Sender, SrLogicalRef, Timer,
     TransmitKind,

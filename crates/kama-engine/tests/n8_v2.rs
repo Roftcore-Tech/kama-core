@@ -8,6 +8,7 @@
 //! receiver gerçek-FEC-decode-recovery (admit_and_decode) → Control::Recovered seal→open→decode
 //! (wire-roundtrip) → engine resolve (block/esi→unit_id, ÇEVRİM-ENGINE'DE) → sender RecoveredControl.
 
+#![allow(deprecated)] // enqueue_fec_parity: legacy-harness-yolu (Commit-K deprecation) — bu-dosya tam-o-yolu-test-eder
 mod common;
 
 use adaptive_transport::sender::{

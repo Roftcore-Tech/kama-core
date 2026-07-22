@@ -1,6 +1,7 @@
 //! Sprint-5c DR-S5-1: FecParity koşullu-emit + SealedPacketMeta-hook.
 //! guard-OFF → emit-yok (hot-path byte-değişmez, C-kuralı) · guard-ON → emit + send_record · DATA-ÖNCE korunur.
 
+#![allow(deprecated)] // enqueue_fec_parity: legacy-harness-yolu (Commit-K deprecation) — bu-dosya tam-o-yolu-test-eder
 use adaptive_transport::sender::{
     Event, OpaqueUnit, Sender, SrLogicalRef, SrPacketClass, Timer, TransmitDecision, TransmitKind,
 };

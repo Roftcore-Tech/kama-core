@@ -7,6 +7,7 @@
 //! canlı-loss'tan hedef-ratio-üretmek kırılgan-olurdu). Manual-mode non-regression: mevcut-tüm-harness
 //! (sprint5c/n8/m1/n8_v2) Manual-yolda; Controller default-DEĞİL.
 
+#![allow(deprecated)] // enqueue_fec_parity: legacy-harness-yolu (Commit-K deprecation) — bu-dosya tam-o-yolu-test-eder
 mod common;
 
 use adaptive_transport::sender::{
@@ -102,22 +103,15 @@ fn engine_block(
             t0_ms * MS + k_units as u64 * MS,
         );
     }
-    // (2) BLOK-TAMAM (aynı-event-bağlamı): snapshot → latch → planned_r × enqueue.
+    // (2) BLOK-TAMAM (aynı-event-bağlamı): snapshot → latch (otorite-tüketimi + staging-dahili —
+    // Commit-K; repair-esi-uzayı 0-based: esi 0..planned_r).
     let snap = s.controller_decision_snapshot().expect("fuzzy-koştu");
     let snap = ControllerDecisionSnapshot {
         ratio_permille: ratio_override,
         ..snap
     };
-    let latch = s.fec_controller_latch(
-        s.open_fec_block_authority(),
-        Some(snap),
-        k_actual,
-        p.r_code_max,
-    );
-    for esi in 0..latch.planned_r {
-        // repair-esi-uzayı 0-based (codec: esi<r_code_max; is_repair-ayrımı AYRI-uzay).
-        s.enqueue_fec_parity(block_id, esi, 64);
-    }
+    let authority = s.open_fec_block_authority();
+    let latch = s.fec_controller_latch(authority, Some(snap), k_actual, p.r_code_max, block_id, 64);
     // (3) EMİSYON (gerçek-yol: plan_fec_parity token'la) → FecParity-decisions.
     let mut emitted_esis: Vec<u16> = Vec::new();
     for t in 0..200u64 {
@@ -291,7 +285,8 @@ fn engine_partial_block_and_emergency() {
         emergency: true,
         ..snap
     };
-    let latch = s.fec_controller_latch(s.open_fec_block_authority(), Some(em), 8, 4);
+    let a_em = s.open_fec_block_authority();
+    let latch = s.fec_controller_latch(a_em, Some(em), 8, 4, 900, 64);
     assert_eq!(latch.computed_r, 4, "requested-telemetride-görünür");
     assert_eq!(latch.planned_r, 0, "emitted/enqueued=0 (interlock)");
     assert_eq!(
@@ -327,7 +322,8 @@ fn engine_mode_transitions() {
         );
     }
     let snap = s.controller_decision_snapshot().unwrap();
-    let r = s.fec_controller_latch(s.open_fec_block_authority(), Some(snap), 8, 4);
+    let a_md = s.open_fec_block_authority();
+    let r = s.fec_controller_latch(a_md, Some(snap), 8, 4, 901, 64);
     assert_eq!(r.suppression, Some(FecSuppressionReason::ManualDisabled));
     // C→M(true): manuel-sabit-akış (enqueue-yolu) devralır — plan_fec_parity Manual{true}-emit-eder.
     s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: true })

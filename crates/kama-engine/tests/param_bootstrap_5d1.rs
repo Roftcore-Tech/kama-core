@@ -1,6 +1,7 @@
 //! Sprint-5d-1 — PARAM-bootstrap (B2 akışı) uçtan-uca.
 //! Bob-offline proaktif-emit · receiver hash-verify fail-closed · bounded pre-param hold · PARAM_ACK=confirmation-only.
 
+#![allow(deprecated)] // enqueue_fec_parity: legacy-harness-yolu (Commit-K deprecation) — bu-dosya tam-o-yolu-test-eder
 mod common;
 
 use adaptive_transport::sender::{Event, Sender, Timer, TransmitKind};

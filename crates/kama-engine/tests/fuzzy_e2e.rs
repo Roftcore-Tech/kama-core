@@ -115,13 +115,11 @@ fn real_latch_emit_decode(
         .collect();
     let repairs = RsSimdCodec.encode(&p, &srcs).unwrap();
 
-    // GERÇEK-zincir: witness → GERÇEK-snapshot (yazılmaz!) → latch → enqueue → gerçek-emisyon.
+    // GERÇEK-zincir: witness → GERÇEK-snapshot (yazılmaz!) → latch (otorite-tüketimi + staging-dahili
+    // — Commit-K) → gerçek-emisyon.
     let authority = s.open_fec_block_authority();
     let snap = s.controller_decision_snapshot().expect("gerçek-decision");
-    let latch = s.fec_controller_latch(authority, Some(snap), k_actual, p.r_code_max);
-    for esi in 0..latch.planned_r {
-        s.enqueue_fec_parity(block_id, esi, 64);
-    }
+    let latch = s.fec_controller_latch(authority, Some(snap), k_actual, p.r_code_max, block_id, 64);
     // Emisyon-drenajı: her-tick emitted-DATA'yı batch-ACK'le (retransmit-backlog'u GERÇEKTEN
     // boşalt — ACK'siz-drenaj PTO'yla re-loss/re-queue döngüsüne girer, burst-cap≤2×MTU'yla
     // parity'ye hiç-sıra-gelmez); parity-esi dedup (re-emisyon çift-sayılmasın).
@@ -385,7 +383,7 @@ fn e2e_real_fuzzy_emergency_attempt() {
         let authority = s.open_fec_block_authority();
         let real = s.controller_decision_snapshot().unwrap();
         assert!(real.emergency, "gerçek-snapshot emergency-işaretli");
-        let latch = s.fec_controller_latch(authority, Some(real), 8, 4);
+        let latch = s.fec_controller_latch(authority, Some(real), 8, 4, 0x44, 64);
         assert_eq!(latch.planned_r, 0, "interlock: emisyon-yok");
         let expect = if real.no_rule {
             FecSuppressionReason::NoRule
