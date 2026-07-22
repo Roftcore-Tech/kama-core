@@ -1,0 +1,2 @@
+run_id,config_hash,policy,enq,emit,canc,waste,ndisp,rdisp,tk_adm,tk_on,tk_late,tk_miss
+loss_med-r4-2,32b8c9113dc396ef,leftover,148,148,0,0,0,0,0,0,0,0
