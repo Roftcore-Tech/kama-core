@@ -2,7 +2,9 @@
 
 > 1b = parity-token/budget-politikası (budget_cap-kablolama, token-artığı-zamanlaması, BtlBw-offered-
 > kilitlenmesi-kararı). Bu-dosya 1b-DR-yazılmadan-önce-karşılanması/temsil-edilmesi-gereken-kayıtları-
-> toplar. 1b-İZNİ-VERİLMEDİ; buradaki-hiçbir-madde-implementasyon-değildir.
+> toplar. **FAZ-DURUMU (Abkarada, 2026-07-22): "DR-1b DESIGN AUTHORIZED — IMPLEMENTATION NOT
+> AUTHORIZED"** — evidence+design-fazı-açık (Commit-N-attribution-diag + Commit-O-micro-sweep +
+> Commit-P-DR-1b-v1); üretim-politika-değişikliği-YOK.
 
 - [ ] **Token-denial-attribution (Commit-K/L-kaydı):** `token_denied_r_gauge` block/event-attribution
   taşımaz → **bu-değer attribution-olmadan calibration-veya-budget-policy-verisi-olarak-KULLANILMAZ.**
@@ -19,3 +21,12 @@
   politika-kararından-önce-veriyle-ele-alınmalı.
 - [ ] **DATA-ÖNCE-sıralaması:** mühürlü; 1b token-politikası-sıralamayı-değiştirmez (değiştirecekse-
   ayrı-açık-karar).
+
+- [ ] **Commit-N-attribution-diag (bu-faz):** FecTokenDenialSnapshot (last-denial-tam-overwrite;
+  block/generation/mode/event-attribution; interleaved-ayrıştırma-testli; RECOVERED/suppression/clamp
+  denial-SAYILMAZ) — 1b-verisinin-ön-koşulu.
+- [ ] **Commit-O Micro-Sweep-1 (bu-faz):** leftover-token-davranışı block/event-düzeyinde-ölçülür;
+  arm-collapse nicel-açıklanır; BtlBw-offered-kilidi↔parity-starvation-ayrıştırılır; validity-sınıfları
+  (FULLY-COLLAPSED-hücreden-crossover-hükmü-YOK).
+- [ ] **1b-tasarım-bağlayıcı-sınırı:** pacing-algoritması/BtlBw-estimator/queue-ordering/DATA-first-
+  SIRASI-değişmez-varsayımıyla-tasarlanır; biri-gerekirse-ayrı-explicit-DR.

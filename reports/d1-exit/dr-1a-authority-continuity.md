@@ -1,6 +1,13 @@
 # DR-1a SON-SEMANTİK-KAPI RAPORU (Commit K+L) — block-authority-continuity + product-reachability
 
-> Talimat-statüsü: "DR-1a FUNCTIONAL REVIEW PASSED / FINAL CLOSURE BLOCKED — BLOCK AUTHORITY
+> **NİHAİ-HÜKÜM (Abkarada, 2026-07-22): "DR-1a MECHANISM CLOSED — PRODUCT INTEGRATION DEFERRED."**
+> **BASELINE-FREEZE:** Commit-K=`9f3d463` + Commit-L=`6da77ae` DONDURULDU. Şu-alanlara-yeni-değişiklik
+> YALNIZ-ayrı-açık-DR'la: FecBlockAuthority · FecActuationMode · ratio→r-formülü · same-event-guard ·
+> block-stable-emission-semantics · emergency-suppression · authority-continuity · variable-r-wire-
+> kontratı. Kritik-regresyon-dışında DR-1a-yeniden-AÇILMAZ. Hükmün-kapsamı/kapsam-dışı-listesi
+> talimat-metnindedir (mekanizma-kapalı; ürün-runtime/1b/1d/kalibrasyon/Kesit-2-hükümleri/Sprint-6 AÇIK).
+>
+> Talimat-statüsü (önceki-tur): "DR-1a FUNCTIONAL REVIEW PASSED / FINAL CLOSURE BLOCKED — BLOCK AUTHORITY
 > CONTINUITY + PRODUCT-REACHABILITY SCOPE". Bu-rapor 4-kapsam-maddesinin kanıt-belgesidir.
 
 ## 1. Tespit-edilen-uyuşmazlık (talimat-§1) — DOĞRULANDI ve KAPATILDI
