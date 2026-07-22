@@ -204,6 +204,36 @@ pub fn admit(
     AdmissionResult::AdmittedBulkOnly
 }
 
+/// U7: floor-zamanlama-sınıflandırması — rate=0'da devasa-saturating-deadline-ÜRETİLMEZ; sözleşme-
+/// ASKIDA (deadline İLK-pozitif-rate-eligible-opportunity'de-BAŞLAR — kalan-süre-devamı-değil).
+/// İstismar-önlemi: çağıran `floor_suspended_time`/`rate_zero_events`-ölçer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloorTiming {
+    /// Pozitif-rate: deadline = admit-anı + t_floor_ns (event-saati).
+    Eligible { deadline_delta_ns: u64 },
+    /// rate=0 → sözleşme-askıda (motor-notu: pacer-min-rate>0 → üretim-yolunda-pratik-erişilmez).
+    SuspendedNoRate,
+    /// Scheduling-opportunity-akışı-yok (idle; çağıran-wakeup-hint'iyle-çözer).
+    SuspendedNoOpportunity,
+}
+
+/// U7-sınıflandırıcı: rate=0 → SuspendedNoRate; aksi Eligible{t_floor}.
+#[must_use]
+pub fn floor_timing(
+    p: &PolicyParams,
+    srtt_ns: u64,
+    parity_size: u64,
+    rate_bps: u64,
+) -> FloorTiming {
+    if rate_bps == 0 {
+        FloorTiming::SuspendedNoRate
+    } else {
+        FloorTiming::Eligible {
+            deadline_delta_ns: t_floor_ns(p, srtt_ns, parity_size, rate_bps),
+        }
+    }
+}
+
 /// T_floor (talimat-§5): `clamp(mult×srtt, min, max).max(serialization + granularity)` —
 /// srtt-yok/0 → prior; serialization = parity_size/rate (rate=0 → rate-1-tabanı, saturating).
 #[must_use]
@@ -493,6 +523,83 @@ mod tests {
         // E1024-vs-E64-parity-boyutu serialization-tabanını-büyütür (1kB/s-linkte:
         // ser(1061B)=1.061s+gran > 600ms-base; ser(101B)=111ms < 600ms-base).
         assert!(t_floor_ns(&p, 0, 1061, 1_000) > t_floor_ns(&p, 0, 101, 1_000));
+    }
+
+    /// U3-ENVELOPE-PROPERTY (arbitrary-başlangıç-credit): her-[a,b]-aralığında
+    /// `protected_displacement ≤ credit(a) + floor(share×accrual)` ve
+    /// `total_parity_spend ≤ hardcap_credit(a) + floor(hardcap_share×accrual)` + 0≤credit≤cap.
+    #[test]
+    fn resource_envelope_properties_arbitrary_initial_credit() {
+        let p = PolicyParams::defaults();
+        for kind in [PolicyKind::ProtectedShare, PolicyKind::FloorCap] {
+            for init_ent in [0u64, 1_200, 4_800] {
+                for init_cap in [0u64, 2_400, 9_600] {
+                    let mut st = BudgetPolicyState {
+                        entitlement_credit: init_ent.min(p.entitlement_cap_bytes),
+                        hardcap_credit: init_cap.min(p.hardcap_cap_bytes),
+                        debt_bytes: 0,
+                    };
+                    let ent_a = st.entitlement_credit;
+                    let cap_a = st.hardcap_credit;
+                    let mut accrual_total = 0u64;
+                    let mut displaced = 0u64;
+                    let mut parity_spend = 0u64;
+                    // Deterministik-karışık-sürüş: değişken-rate/talep 200-opportunity.
+                    for i in 0..200u64 {
+                        let rate = [0u64, 31, 12_000, 60_000, 240_000][(i % 5) as usize];
+                        let c = BudgetContext {
+                            elapsed_ns: 10_000_000,
+                            pacing_rate_bps: rate,
+                            available_tokens: 2_400 + (i % 3) * 1_200,
+                            data_demand_bytes: (i % 4) * 1_200,
+                            arq_demand_bytes: (i % 2) * 600,
+                            bulk_parity_demand_bytes: ((i + 1) % 5) * 1_200,
+                            floor_tickets: (i % 3) as u32,
+                            oldest_ticket_age_ns: i * 10_000_000,
+                            parity_size: 1_200,
+                            srtt_ns: 100_000_000,
+                        };
+                        accrual_total += rate * 10_000_000 / 1_000_000_000;
+                        let d = step(kind, &p, &mut st, &c);
+                        // Kuantize-tam-harcama (gerçekçi-drain): limit'in-psize-katı.
+                        let spend = (d.parity_token_limit / 1_200) * 1_200;
+                        displaced += spend.min(d.reserved_bytes);
+                        parity_spend += spend;
+                        let _ = settle(kind, &p, &mut st, &d, spend);
+                        assert!(st.entitlement_credit <= p.entitlement_cap_bytes);
+                        assert!(st.hardcap_credit <= p.hardcap_cap_bytes);
+                    }
+                    let ent_env = ent_a + share(accrual_total, p.share_permille);
+                    assert!(
+                        displaced <= ent_env,
+                        "U3-entitlement-envelope: {displaced} ≤ {ent_env} ({kind:?})"
+                    );
+                    if kind == PolicyKind::FloorCap {
+                        let cap_env = cap_a + share(accrual_total, p.hardcap_share_permille);
+                        assert!(
+                            parity_spend <= cap_env,
+                            "U3-hardcap-envelope: {parity_spend} ≤ {cap_env}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// U7: FloorTiming-sınıflandırması.
+    #[test]
+    fn floor_timing_rate_zero_suspended() {
+        let p = PolicyParams::defaults();
+        assert_eq!(
+            floor_timing(&p, 100_000_000, 1200, 0),
+            FloorTiming::SuspendedNoRate
+        );
+        match floor_timing(&p, 100_000_000, 1200, 60_000) {
+            FloorTiming::Eligible { deadline_delta_ns } => {
+                assert_eq!(deadline_delta_ns, t_floor_ns(&p, 100_000_000, 1200, 60_000));
+            }
+            other => panic!("Eligible-bekleniyordu: {other:?}"),
+        }
     }
 
     /// Admission-feasibility typed-sonuçları (§4.1) — her-red-nedeni-ayrık.

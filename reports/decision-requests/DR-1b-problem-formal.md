@@ -17,6 +17,18 @@ ediyordu (blocker-1) — v2 sınıf-seçimini-açık-yapar.
 
 ## 2. POLİTİKA-SINIFLARI
 
+> **CORRIGENDUM (Commit-U; hüküm-gereği):** Aşağıdaki-tablonun-R-satırındaki T2=✓(*) gösterimi
+> YANLIŞTI — T2 "rezervasyon-VEYA-borçlanma-yok" demektir; R'de-rezervasyon-VAR → T2=✗. Düzeltilmiş-
+> gösterim (T2-iki-sütuna-ayrıldı — tercih-edilen-açık-form):
+>
+> | sınıf | T1 (DATA-tüm-token) | T2a No-reservation | T2b No-borrowing | T3 (saturated-süre-garantisi) |
+> |---|---|---|---|---|
+> | L | ✓ | ✓ | ✓ | ✗ |
+> | R | ✗ | **✗ (rezervasyon-VAR)** | ✓ | koşullu-✓ |
+> | B | anlık/koşullu | ✗ | **✗ (borç-VAR)** | koşullu-✓ |
+>
+> Aşağıdaki-orijinal-tablo-tarihsel-kayıt-olarak-korunur (yeniden-yazılmadı).
+
 | sınıf | T1 | T2 | T3 | tanım |
 |---|---|---|---|---|
 | **L — Strict-leftover** (baseline) | ✓ | ✓ | ✗ | DATA-önce-tüm-token; parity-yalnız-gerçek-leftover; floor = garanti-DEĞİL, **best-effort** |

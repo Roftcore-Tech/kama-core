@@ -134,3 +134,101 @@ before/after-ledger; DATA-displacement/tail-latency; N8; tüm-mevcut-kapılar.
 "reservation-yok"-sınırının-süpersedesi; production'da-uygulama-onayı) · (b) F2-parity-içi-ordering-
 değişikliği · (c) manual_r-typed-reject (dış-API-davranış-değişikliği) · (d) canlı-prototip-koşusu ·
 (e) [CAL]-sabitlerinin-default-seçimi. Hiçbiri-bu-turda-uygulanmadı.
+
+---
+## EK-U — CANLI-PROTOTİP-ÖNCESİ SEMANTİK-PATCH'LER (Commit-U; CONDITIONAL-GO-şartları)
+
+> Hüküm: "DR-1b-v2 READY FOR EXPERIMENTAL LIVE-PROTOTYPE REVIEW — **CONDITIONAL GO**" (yalnız
+> test-only/non-default-canlı-prototip). Onaylı-scope: bounded-entitlement · DATA-mutlak-token-
+> önceliğinin-deneysel-FloorCap'te-kaldırılması · F2-parity-içi-öncelik · test-only-wiring ·
+> deneysel-[CAL]. ONAYSIZ: production-default · runtime-activation · **stale-eviction (DEFER)** ·
+> **bounded-debt (prototip-dışı)** · emergency-parity · **manual_r-public-API-değişikliği (DEFER —
+> bütçe-prototipiyle-ilgisiz)** · BtlBw/pacer-algo · queue-preemption · wire-order.
+
+### U1. T2-tablo-düzeltmesi
+[problem-formal-corrigendum'una-işlendi] — R: No-reservation=✗ (rezervasyon-VAR), No-borrowing=✓.
+
+### U2. Doğru-ad: **BANKED SERVICE ENTITLEMENT**
+`entitlement_credit` fiziksel-token-SAKLAMAZ. Doğru-cümle: **"Gerçek-token o-anda DATA-tarafından-
+kullanılabilir; kullanılmamış-parity-entitlement ise bounded-credit-olarak ilerideki-scheduling-
+opportunity'lere-taşınabilir (geçmişte-kazanılmış-bounded-SERVİS-HAKKI)."** Sonraki-parity bu-hakkı-
+kullanırken O-ANKİ pre-parity-akışını-yerinden-eder. Bu-BORÇLANMA-DEĞİLDİR.
+
+### U3. Formal-resource-envelope'lar (bağlayıcı; kernel-property-testli — arbitrary-başlangıç-credit)
+Her `[a,b]`-event-aralığı-için:
+```
+protected_displacement[a,b] ≤ entitlement_credit(a) + floor(entitlement_share × pacing_accrual[a,b])
+0 ≤ entitlement_credit(t) ≤ entitlement_credit_cap
+total_parity_spend[a,b]   ≤ hardcap_credit(a)     + floor(hardcap_share × pacing_accrual[a,b])
+0 ≤ hardcap_credit(t) ≤ hardcap_credit_cap
+```
+Sonuçlar: uzun-dönem-pay share-sınırlı; kısa-pencere başlangıç-credit'i-kadar-burst-MÜMKÜN;
+**"her-pencerede-kesinlikle-≤%20"-iddiası-KULLANILMAZ**; hard-cap = token-bucket-BURST-ENVELOPE
+(alt-pencere-mutlak-oranı-değil); credit'siz-cap-aşımı-imkansız.
+
+### U4. Ticket-lifecycle (kimlik=`(block_id, authority_generation)`; çift-sayım-kimlikle-engelli)
+`Requested → Rejected | AdmittedPending → {ServicedOnTime | ServicedLate{missed:true} |
+CanceledMoot{missed:bool} | PendingAtHorizon}`. `Evicted` BU-PROTOTİPTE-KULLANILMAZ (stale-eviction-
+DEFER — U8). Miss: deadline-İLK-aşımında-tam-1-kez (missed=true + sayaç + last_floor_miss-overwrite);
+geç-servis=ServicedLate{missed:true} (ikinci-sayım-yok); deadline-ÖNCESİ-cancel=CanceledMoot{missed:false}
+(miss-DEĞİL); deadline-SONRASI-cancel miss-zaten-sayıldı (tekrar-yok); **admission-rejection ≠ floor-miss**.
+Ayrı-sayaçlar: rejected / admitted / serviced_on_time / serviced_late / missed_unique /
+canceled_before_deadline / canceled_after_deadline / pending_at_horizon.
+
+### U5. N_floor-exact-formülü (opportunity-tabanlı-birincil-sözleşme)
+`N_floor(ticket) = ticket_queue_position_at_admission + 1` (konservatif-bound); global-ticket-cap=8 →
+`N_floor ≤ 8`. Şartlar: yeni-ticket-öne-geçmez (FIFO) · cancel-yalnız-kısaltır · her-feasible-
+opportunity'de ≥1-ticket-servis · aynı-profile-içi-size-uyumu · hardcap+token-feasibility.
+Property-testler: position-0..cap−1 / cancellation / late-insertion / interleaved / size / cap-suppression.
+
+### U6. Policy-transition (Actuation-mode'dan-AYRI)
+`FecActuationMode` (Manual↔Controller): budget-credit'i-OTOMATİK-SIFIRLAMAZ; queued-parity-block-stable;
+FecBlockAuthority-değişmez; yalnız-sonraki-blokların-talep-kaynağı-değişir. `BudgetPolicy`-değişimi
+YALNIZ `tickets==0 ∧ pending_bulk==0 ∧ outstanding_reservation==0` iken; aksi
+`Err(BudgetPolicyTransitionError::Busy)`. Başarıda: entitlement/hardcap/debt-RESET; kümülatif-sayaçlar-
+RESETLENMEZ; gauge'lar-sıfırlanır; miss-snapshot-korunur (dokümante). Rollback FloorCap→LeftoverOnly:
+boş-kuyruk-şartı-sayesinde ticket-migration-problemi-DOĞMAZ; tek-adım-deterministik (gevşetme=ayrı-DR).
+
+### U7. T_floor & rate=0 (FloorTiming-sınıflandırması; kernel-uygulandı)
+`FloorTiming = Eligible{deadline_event_time} | SuspendedNoRate | SuspendedNoOpportunity`.
+**rate=0 → floor-contract-ASKIDA; deadline İLK-pozitif-rate-eligible-opportunity'de-BAŞLAR** (kalan-süre-
+devamı-değil — açık-karar). İstismar-önlemi: `floor_suspended_time` + `rate_zero_events` ölçülür.
+Pozitif-rate'te-formül-aynı: `max(clamp(mult×srtt,Tmin,Tmax), serialization+granularity)`.
+(Motor-notu: pacer-min-rate>0 → SuspendedNoRate-üretim-yolunda-pratik-erişilmez; kernel-düzeyi-tanımlı.)
+
+### U8. Stale-eviction: **BU-PROTOTİPTE-UYGULANMAZ** (hüküm)
+Gerekçe: yeni-reliability/cancellation-politikası; long-RTT/blackout'ta-faydalı-parity-silebilir;
+budget-etkisiyle-karışır. Aktif-bound'lar: item/byte/ticket-cap + newest-reject. Stale-age-YALNIZ-
+ölçülür (oldest-pending-age / age-at-service / age-at-cancel / age-at-horizon). Ayrı-deney/DR'a.
+
+### U9. ARQ/new-DATA resource-semantiği (bağlayıcı-ilk-model)
+**"Protected-parity-reservation, parity'den-önce-token-kullanan TOPLAM-pre-parity-bütçeden-ayrılır"** —
+yani new-DATA'yı-VE-retransmission/ARQ'yu-potansiyel-geciktirebilir (yalnız-experimental-policy'de).
+Ayrı-ölçüm: `new_data_displaced` / `retransmission_displaced` / `total_pre_parity_displaced` + tail-
+latency'ler + recovery-completion + retx-count + residual-loss + duplicate-recovery-work.
+**"FloorCap-yalnız-DATA'yı-etkiler"-HÜKMÜ-KULLANILMAZ**; ARQ-güvenliğine-olumlu-hüküm-ölçümsüz-
+KURULMAZ. ARQ-displacement-kabul-edilemezse: FloorCap-RED / entitlement-yalnız-new-DATA'ya /
+ARQ-parity-ortak-arbitration-ayrı-DR (sessiz-politika-değişikliği-yok).
+
+### U10. Admission ≠ current-credit (ayrım)
+Admission-yalnız-STATİK/bounded-feasibility (item/byte/ticket/per-block/duplicate/moot/size/identity);
+**o-anki-credit-yetersizliği-tek-başına-RED-nedeni-DEĞİL** (credit-T_floor-içinde-oluşabilir). Current-
+credit → service-time-kararı + miss-değerlendirmesi. Deadline'a-kadar-quantum-matematiksel-imkansızsa
+(konservatif-GELECEK-accrual-üst-sınırıyla: `credit(a)+share×rate_now×T_floor < psize`) →
+`AdmittedBulkOnly`/typed-`FloorInfeasible`.
+
+### U11. F2-HOL-kararı
+Negotiated-profile-içinde-parity-size-SABİTLİĞİ admission'da-ENFORCE-edilir (ticket-size ≠ ilk-görülen-
+profil-size → AdmittedBulkOnly) → **strict-FIFO** güvenli (HOL-farklı-size-imkansız-kılındı). Aksi-
+gereksinim-doğarsa bounded-first-feasible-scan (≤ticket-cap) — unbounded-tarama-YOK.
+
+### U12. Atomik-rezervasyon (HAYALET-REZERVASYON-YASAĞI; Commit-V-akışı)
+Rezervasyon YALNIZ "aynı-scheduling-opportunity-içinde-GERÇEKTEN-emit-edilebilir-kuantize-parity"-için.
+Ön-koşullar: pending-item-var · block/generation-geçerli · ¬moot (RECOVERED-AYNI-event'te-budget-
+planından-ÖNCE-işlenir) · size-bilinir · hardcap-yeter · entitlement/leftover-yeter · pacer-toplam-yeter ·
+item-erişilebilir · suppression/interlock-yok · F2-seçim-yapılmış. `reserved = tam-emit-edilebilir-
+bütün-birimler` (kuantum-altı-grant'la-DATA-limiti-DÜŞÜRÜLMEZ). Akış: aday→exact-quantum→izin→rezerv-
+kesinleş→pre-parity-limit→DATA/ARQ-mevcut-sırayla-drain→rezerve-parity-emit→settle. Kabul-kriteri:
+**normal-deterministik-yolda reservation-waste = 0**; oluşursa `reservation_waste_bytes_total`+exact-
+reason+event+block/gen+reserved+spent-teşhisi. Mutation-pinleri: kuantum-altı-grant / moot-rezerv /
+settle-öncesi-credit-azalt / feasibility-öncesi-DATA-limiti-düşür → testler-DÜŞMELİ.
