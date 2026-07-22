@@ -95,6 +95,10 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut last_sack = Instant::now();
     let mut last_rx = Instant::now(); // erken-çıkış: ilk-paketten-sonra-5s-sessizlik → bitir
     let mut seen_any = false;
+    let mut rx_start: Option<Instant> = None;
+    let mut block_complete: BTreeMap<u32, u64> = BTreeMap::new(); // block → complete-ms (K-source-hazır)
+    let mut block_first: BTreeMap<u32, u64> = BTreeMap::new(); // block → ilk-görülme-ms (open-proxy)
+    let mut src_have: BTreeMap<u32, BTreeSet<u16>> = BTreeMap::new(); // yalnız-source-esi (<K)
     while start.elapsed() < deadline {
         if seen_any && last_rx.elapsed() > Duration::from_secs(5) {
             break; // gönderici-bitti (idle-erken-çıkış; wall-time-kısaltma)
@@ -108,8 +112,23 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                 let b = u32::from_be_bytes(buf[17..21].try_into().unwrap());
                 let e = u16::from_be_bytes(buf[21..23].try_into().unwrap());
                 acked.insert(seq);
+                let now_ms = rx_start
+                    .get_or_insert_with(Instant::now)
+                    .elapsed()
+                    .as_millis() as u64;
+                block_first.entry(b).or_insert(now_ms);
+                // Source-completion: distinct-source-esi (<K) tam-K → blok-teslim (decode-veya-doğrudan).
+                if e < K as u16 {
+                    src_have.entry(b).or_default().insert(e);
+                }
                 let s = have.entry(b).or_default();
                 let newly = s.insert(e);
+                if s.len() as u64 >= K {
+                    // MDS: distinct≥K → tüm-K-source-kurtarılabilir → blok-tamam.
+                    block_complete.entry(b).or_insert(now_ms);
+                } else if src_have.get(&b).is_some_and(|x| x.len() as u64 >= K) {
+                    block_complete.entry(b).or_insert(now_ms);
+                }
                 // MDS-decode-modeli: distinct ≥ K ∧ eksik-source → recovered-bildir.
                 if newly && s.len() as u64 >= K {
                     for miss in 0..K as u16 {
@@ -143,6 +162,20 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                 }
             }
             last_sack = Instant::now();
+        }
+    }
+    // Receiver-outcome-ledger (R2-kapatma): blok-completion + operational-dl.
+    let op = cfg.op_horizon_ms;
+    if let Ok(mut f) = std::fs::File::create(format!("{}/{}-rxledger.csv", cfg.out_dir, cfg.run_id))
+    {
+        std::fs::create_dir_all(&cfg.out_dir).ok();
+        let _ = writeln!(f, "run_id,block,first_ms,complete_ms,rel_ms,dl_op");
+        for (b, first) in &block_first {
+            let (comp, rel, dlop) = match block_complete.get(b) {
+                Some(&c) => (c as i64, (c - first) as i64, u8::from((c - first) <= op)),
+                None => (-1, -1, 0),
+            };
+            let _ = writeln!(f, "{},{b},{first},{comp},{rel},{dlop}", cfg.run_id);
         }
     }
     Ok(())
