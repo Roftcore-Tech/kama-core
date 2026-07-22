@@ -3,4 +3,6 @@ blackout30,0.9737,0.9737,0.9737,0.9737,r0,0.0000,EquivalentSet,CorrectZero
 ge_burst,0.9737,0.9737,0.9737,0.9737,r0,0.0000,EquivalentSet,CorrectZero
 loss_high,0.9737,0.9737,0.9737,0.9737,r0,0.0000,EquivalentSet,CorrectZero
 loss_med,0.9737,0.9737,0.9737,0.9737,r0,0.0000,EquivalentSet,CorrectZero
+lowbw30k,1.0000,1.0000,1.0000,1.0000,r0,0.0000,EquivalentSet,CorrectZero
 nominal,0.9737,0.9737,0.9737,0.9737,r0,0.0000,EquivalentSet,CorrectZero
+offered_c,1.0000,1.0000,1.0000,1.0000,r0,0.0000,EquivalentSet,CorrectZero

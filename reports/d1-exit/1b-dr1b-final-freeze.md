@@ -2,7 +2,7 @@
 
 > Phase-A (FA-graceful-shutdown) offered≈C SIGTERM-race'i-kapattı: rx FINISH-marker'la-temiz-çıkar,
 > done-marker+checksum-yazar (clean_shutdown=true). Önceki-eşitlik-hükmü (netem-AH: outcome-policy-
-> bağımsız) FA-marker'lı-rerun'da-KORUNDU (offered_c dahil complete-ledger; çelişki-YOK).
+> bağımsız) FA-marker'lı-rerun'da-KORUNDU: **offered_c 32/32-run clean_shutdown=true done-marker** (SIGTERM-race-KAPANDI; complete-ledger; oracle-r0≡r4-dl_op=1.0 → çelişki-YOK, eşitlik-teyit).
 
 ## Bağlayıcı-kayıtlar (freeze)
 1. **Production/default = `BudgetPolicy::LeftoverOnly`** (DEĞİŞMEDİ).

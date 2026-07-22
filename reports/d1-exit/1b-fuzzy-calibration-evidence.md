@@ -1,6 +1,6 @@
 # FC–FF — Fuzzy Calibration Evidence [production-fuzzy-config-DEĞİŞMEDİ; frozen-fixture-reference]
 
-> Kanıt: GERÇEK-Sender + GERÇEK-UDP + GERÇEK-netem (rootless); 5-profil × 4-fixed-r-oracle-arm
+> Kanıt: GERÇEK-Sender + GERÇEK-UDP + GERÇEK-netem (rootless); 7-profil (nominal/loss_med/loss_high/ge_burst/blackout30/lowbw30k/offered_c) × 4-fixed-r-oracle-arm
 > (r0/r1/r2/r4; LeftoverOnly) × 8-rep; **222 502 gerçek-fuzzy-event** (--emit-fuzzy; additive-diag-poll;
 > decision-DEĞİŞMEDİ). Fuzzy-config=FROZEN-fixture (analytic-membership; anchor-validated).
 > Veri: [data/fuzzy-evidence/](data/fuzzy-evidence/). Inference-birimi=run/profil; event-bağımsız-örnek-DEĞİL.
@@ -37,8 +37,10 @@ loss.MED/HIGH memberships **gerçek-trafikte-HİÇ-realize-olmuyor** (dead-in-tr
 | loss_high (30%) | 0.9737 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
 | ge_burst (12/55%) | 0.9737 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
 | blackout30 | 0.9737 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
+| lowbw30k | 1.0000 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
+| offered_c | 1.0000 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
 
-**HER-PROFİLDE FEC (r1/r2/r4) r0-üzerinde-SIFIR-outcome-faydası** — ARQ/SACK-loop deadline-içinde-
+**7/7-PROFİLDE FEC (r1/r2/r4) r0-üzerinde-SIFIR-outcome-faydası** — ARQ/SACK-loop deadline-içinde-
 her-bloğu-recover-ediyor. Controller'ın-ratio=0'ı OUTCOME-DOĞRU (CorrectZero), miscalibration-DEĞİL.
 0.9737-tavan (1.0-değil) horizon-kenarı-blokları (r-bağımsız; FEC-düzeltemez).
 
