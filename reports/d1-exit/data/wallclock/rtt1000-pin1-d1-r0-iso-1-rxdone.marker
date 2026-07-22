@@ -1,0 +1,8 @@
+run_id=rtt1000-pin1-d1-r0-iso-1
+policy=leftover
+receiver_events=260
+finalized_blocks=15
+pending_blocks=15
+ledger_path=/home/ryuzaki/Desktop/kama-core/reports/d1-exit/data/wallclock/rtt1000-pin1-d1-r0-iso-1-rxledger.csv
+ledger_checksum=7f65da22c2ba131e
+clean_shutdown=true
