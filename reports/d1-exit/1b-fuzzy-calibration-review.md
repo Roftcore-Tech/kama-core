@@ -19,7 +19,7 @@ Bu GLOBAL-"FEC-hiçbir-rejimde-faydalı-değil" HÜKMÜ-DEĞİLDİR — ARQ-limi
 üretilmedi.**
 
 ## Kanıt-hiyerarşisi (§20; higher-layer-bağlayıcı)
-1. Real-UDP/netem-outcome: fixed-r-oracle EquivalentSet-7/7 (r0≡r4). ← BAĞLAYICI
+1. Real-UDP/netem-outcome: proaktif-FEC-marjinal-utility-oracle NoMarginalFecUtility_thisCondition-7/7 (ARQ+0≡ARQ+4). ← BAĞLAYICI
 2. Real-Sender-fuzzy-trace: loss_windowed_ppm=0 → R1 → ratio=0 (231k-event).
 3. Deterministic-model: (önceki-tur) FEC-fayda-gösterdi = MODEL-DIAGNOSTIC (higher-layer-ile-çelişti →
    higher-layer-kazanır; discrepancy-belgeli: sim-leftover-token-artefaktı).

@@ -44,15 +44,15 @@ fayda-üretmedi* — **"FEC-faydasız/ARQ-kazandı" DEĞİL**, koşula-özgü-"N
 deficit-varsa-ARQ-tamamlar (hibrit-beklenen-davranış).
 
 ## FF — proaktif-FEC-marjinal-utility ORACLE (ARQ-her-kolda-aktif; ground-truth outcome)
-| profil | dl_op r0 | r1 | r2 | r4 | best | Δ vs r0 | oracle | fuzzy-sınıf |
+| profil (ARQ-hep-aktif) | dl_op ARQ+0 | +1 | +2 | +4 | best | Δ-marjinal | oracle | fuzzy-sınıf |
 |---|---|---|---|---|---|---|---|---|
-| nominal (5%) | 0.9737 | 0.9737 | 0.9737 | 0.9737 | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
-| loss_med (15%) | 0.9737 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
-| loss_high (30%) | 0.9737 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
-| ge_burst (12/55%) | 0.9737 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
-| blackout30 | 0.9737 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
-| lowbw30k | 1.0000 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
-| offered_c | 1.0000 | " | " | " | r0 | 0.0000 | EquivalentSet | **CorrectZero** |
+| nominal (5%) | 0.9737 | 0.9737 | 0.9737 | 0.9737 | r0 | 0.0000 | NoMarginalFecUtility | **CorrectZeroProactiveFec** |
+| loss_med (15%) | 0.9737 | " | " | " | r0 | 0.0000 | NoMarginalFecUtility | **CorrectZeroProactiveFec** |
+| loss_high (30%) | 0.9737 | " | " | " | r0 | 0.0000 | NoMarginalFecUtility | **CorrectZeroProactiveFec** |
+| ge_burst (12/55%) | 0.9737 | " | " | " | r0 | 0.0000 | NoMarginalFecUtility | **CorrectZeroProactiveFec** |
+| blackout30 | 0.9737 | " | " | " | r0 | 0.0000 | NoMarginalFecUtility | **CorrectZeroProactiveFec** |
+| lowbw30k | 1.0000 | " | " | " | r0 | 0.0000 | NoMarginalFecUtility | **CorrectZeroProactiveFec** |
+| offered_c | 1.0000 | " | " | " | r0 | 0.0000 | NoMarginalFecUtility | **CorrectZeroProactiveFec** |
 
 **7/7-PROFİLDE proaktif-FEC (r1/r2/r4) ARQ-substrate-üzerine-SIFIR-MARJİNAL-fayda** — ARQ-substrate
 (retransmit+SACK) deadline-içinde-her-bloğu-zaten-tamamlıyor, dolayısıyla-proaktif-repair-eklemenin-
@@ -62,7 +62,7 @@ bölgesine-ULAŞMADI (R-C2).** miscalibration-değil.
 0.9737-tavan (1.0-değil) horizon-kenarı-blokları (r-bağımsız; FEC-düzeltemez).
 
 ## §14-kritik-sorular (cevaplar)
-1. ratio=0-olaylarının-%'si-doğru? **%100 (CorrectZero; oracle-EquivalentSet-her-profil).**
+1. proaktif-FEC=0-olaylarının-%'si-BU-KOŞULLARDA-doğru? **%100 (CorrectZeroProactiveFec_thisCondition; oracle-NoMarginalFecUtility-her-profil; GLOBAL-hüküm-DEĞİL).**
 2/3. no-rule/non-zero-FEC-faydalı-bölge? **BULUNAMADI (oracle-hiçbir-profilde-r>0>r0).**
 4. Emergency-overlap-zararlı-mı? Gerçek-yolda-emergency-HİÇ-tetiklenmedi (mode=Normal-%100).
 5. Loss-eşikleri-observed-support'la-uyumsuz-mu? loss.MED/HIGH-dead (support-0) AMA-observed-loss-0-
