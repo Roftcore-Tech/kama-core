@@ -27,6 +27,7 @@ fn cfg(policy: &str, port_base: u16, out: &str) -> RunnerCfg {
         deficit: 0,
         deficit_from_block: 0,
         drop_repair: false,
+        tx_settle_ms: 4000,
     }
 }
 

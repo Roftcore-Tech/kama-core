@@ -39,7 +39,8 @@ pub struct RunnerCfg {
     pub deficit: u16, // FK: TEST-ONLY exact-source-erasure (rx-ingress; per-block-ilk-N-source-esi düşür)
     pub deficit_from_block: u32, // FK: deficit YALNIZ b>=bu (warmup; ilk-paket-kaybı-cold-start-deadlock önle)
     pub drop_repair: bool, // FK: FEC-IZOLASYON — silinen-esi'nin substrat-onarımını (§9-ARQ 0x01 + §11-dup 0x03)
-                           // da düşür → blok YALNIZ first-flight (kalan-source + parity) ile tamamlanabilir (saf-FEC-decodability testi).
+    // da düşür → blok YALNIZ first-flight (kalan-source + parity) ile tamamlanabilir (saf-FEC-decodability testi).
+    pub tx_settle_ms: u64, // FR: workload+parity-drain-sonrası SACK/ARQ-round-trip-settle (yüksek-RTT için ≥birkaç-RTT)
 }
 
 impl RunnerCfg {
@@ -113,6 +114,8 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut decode_via: BTreeMap<u32, u8> = BTreeMap::new(); // block→0=substrat(src-full),1=FEC(parity)
     let mut repair_kind: BTreeMap<u32, u8> = BTreeMap::new(); // FK: silinen-esi'yi hangi-substrat kurtardı
                                                               // (0x01=§9-ARQ, 0x03=§11-dup, 0=none/FEC-only)
+    let mut repair_arrival: BTreeMap<u32, u64> = BTreeMap::new(); // FR: substrat-onarım-arrival-ms (ARQ-repair
+                                                                  // wall-clock; T_fec_decode<deadline<T_arq testi)
     while start.elapsed() < deadline {
         // FA: idle-erken-çıkış YALNIZ-FALLBACK (FINISH-marker gelmezse); normal-yol=FINISH-marker.
         if seen_any && last_rx.elapsed() > Duration::from_secs(8) {
@@ -164,8 +167,10 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                     if cfg.drop_repair {
                         continue; // FEC-IZOLASYON: substrat-onarımını da düşür → yalnız-FEC tamamlayabilir
                     }
-                    // HİBRİT: onarımı geçir + hangi-substrat-arm kurtardı kaydet (ilk-onarım).
+                    // HİBRİT: onarımı geçir + hangi-substrat-arm + NE ZAMAN kurtardı (ilk-onarım-arrival;
+                    // wall-clock ARQ-repair-latency = Phase-C T_arq_repair_arrival girdisi).
                     repair_kind.entry(b).or_insert(kind);
+                    repair_arrival.entry(b).or_insert(now_ms);
                 }
                 acked.insert(seq);
                 // SINIFLANDIRMA WIRE-KIND'A göre (esi-büyüklüğüne DEĞİL): parity-esi 0-tabanlı
@@ -230,7 +235,7 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     std::fs::create_dir_all(&cfg.out_dir).map_err(|e| e.to_string())?;
     let op = cfg.op_horizon_ms;
     let mut body = String::from(
-        "run_id,block,first_ms,complete_ms,rel_ms,dl_op,deficit_applied,decode_via,first_repair_ms,repair_kind\n",
+        "run_id,block,first_ms,complete_ms,rel_ms,dl_op,deficit_applied,decode_via,first_repair_ms,repair_kind,arq_repair_ms\n",
     );
     let (mut finalized, mut pending) = (0u64, 0u64);
     for (b, first) in &block_first {
@@ -248,8 +253,9 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         let dv = decode_via.get(b).map_or(-1i8, |&v| v as i8); // -1=incomplete,0=substrat,1=FEC
         let fr = first_repair.get(b).map_or(-1i64, |&v| v as i64);
         let rk = repair_kind.get(b).copied().unwrap_or(0); // 0=none/FEC-only,1=§9-ARQ,3=§11-dup
+        let ar = repair_arrival.get(b).map_or(-1i64, |&v| v as i64); // substrat-onarım-arrival (rel rx_start)
         body.push_str(&format!(
-            "{},{b},{first},{comp},{rel},{dlop},{da},{dv},{fr},{rk}\n",
+            "{},{b},{first},{comp},{rel},{dlop},{da},{dv},{fr},{rk},{ar}\n",
             cfg.run_id
         ));
     }
@@ -432,7 +438,11 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         // + parity/ARQ-drain (enqueued==emitted) + 4s-idle-settle (round-trip'ler-tamamlansın) sonra-
         // biter; ext_horizon-cap. (Önceki-bug: tx op_horizon'da-erken-çıkıp parity-emit-etmiyordu.)
         let dfa = s.diag_fec_actuation();
-        let workload_done = app >= cfg.w_units;
+        // workload_done = app-enqueue-bitti VE tüm-bloklar-KAPANDI (=tüm-source DISPATCH-edildi). İkincisi
+        // şart: yüksek-RTT'de dispatch ACK-clocked → enqueue'dan-geri-kalır; yalnız-enqueue'ya-baksak
+        // settle-erken-tetiklenir + dispatch-edilmemiş-bloklar-hiç-ulaşmaz (FR-bug: RTT1s'te 18/30-blok-kayıp).
+        let all_blocks_closed = (close_ms.len() as u64) >= cfg.w_units / K;
+        let workload_done = app >= cfg.w_units && all_blocks_closed;
         let parity_drained = dfa.enqueued_r_total == dfa.emitted_r_total;
         if workload_done && parity_drained {
             settle_since = settle_since.or(Some(t_ms));
@@ -440,7 +450,9 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
             settle_since = None;
         }
         if let Some(sd) = settle_since {
-            if t_ms.saturating_sub(sd) > 4000 {
+            // settle_ms: workload+parity-drain-SONRASI SACK/ARQ-round-trip'lere-verilen-süre. Yüksek-RTT'de
+            // ARQ-repair ~1.5×RTT → settle ≥ birkaç-RTT olmalı (faithful-harness). Default 4000 (loopback).
+            if t_ms.saturating_sub(sd) > cfg.tx_settle_ms {
                 break;
             }
         }
