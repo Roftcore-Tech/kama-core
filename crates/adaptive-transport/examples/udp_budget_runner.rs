@@ -40,6 +40,8 @@ fn main() {
         w_units: get("--w-units", "80").parse().unwrap_or(80),
         peer: get("--peer", "127.0.0.1:47002"),
         bind: get("--bind", "127.0.0.1:47001"),
+        fixed_r: get("--fixed-r", "4").parse().unwrap_or(4),
+        emit_fuzzy: args.iter().any(|a| a == "--emit-fuzzy"),
     };
     let deadline = Duration::from_millis(cfg.ext_horizon_ms);
     let r = match role.as_str() {

@@ -22,6 +22,8 @@ fn cfg(policy: &str, port_base: u16, out: &str) -> RunnerCfg {
         w_units: 40,
         peer: format!("127.0.0.1:{}", port_base + 1),
         bind: format!("127.0.0.1:{port_base}"),
+        fixed_r: 4,
+        emit_fuzzy: false,
     }
 }
 

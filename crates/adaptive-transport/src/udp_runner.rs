@@ -34,6 +34,8 @@ pub struct RunnerCfg {
     pub w_units: u64,
     pub peer: String,
     pub bind: String,
+    pub fixed_r: u16,     // FD-oracle: sabit-r (0..=4; close_fec_block_manual-r)
+    pub emit_fuzzy: bool, // FC: fuzzy-event-dataset yaz (additive; decision-değişmez)
 }
 
 impl RunnerCfg {
@@ -243,8 +245,40 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut buf = [0u8; 4096];
     let mut last_tick = Instant::now();
     let base = 1_000_000u64;
+    // FC: canonical fuzzy-event dataset (additive; existing-diag-poll; decision-DEĞİŞMEZ).
+    let mut fuzzy_rows = String::new();
+    let mut last_ev_idx = u64::MAX;
     while start.elapsed() < deadline {
         let t_ms = start.elapsed().as_millis() as u64;
+        // FC: fuzzy-event-yakalama (event_index-ilerlediğinde tek-satır; salt-gözlem).
+        if cfg.emit_fuzzy {
+            if let Some(fi) = s.diag_fusion_input_snapshot() {
+                if fi.event_index != last_ev_idx {
+                    last_ev_idx = fi.event_index;
+                    let dec = s.last_decision();
+                    let (_st, btlbw, srtt_us, rate, inflight) = s.diag_rate();
+                    fuzzy_rows.push_str(&format!(
+                        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:?},{}\n",
+                        cfg.run_id,
+                        cfg.policy,
+                        fi.event_index,
+                        t_ms,
+                        fi.loss_windowed_ppm,
+                        fi.qd_ratio_permille,
+                        fi.jitter_ppm,
+                        fi.ack_confidence_permille,
+                        fi.bandwidth_bps,
+                        btlbw,
+                        srtt_us,
+                        rate,
+                        inflight,
+                        dec.fec_parity_ratio_permille,
+                        dec.mode,
+                        u8::from(fi.no_rule)
+                    ));
+                }
+            }
+        }
         // app + tick (inline):
         if app < cfg.w_units && t_ms >= app * 40 {
             let out = s.on_event(
@@ -365,6 +399,14 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let _ = fin_acked; // best-effort; rx idle-fallback'i de temiz-finalize-eder
                        // Çıktılar.
     std::fs::create_dir_all(&cfg.out_dir).map_err(|e| e.to_string())?;
+    if cfg.emit_fuzzy && !fuzzy_rows.is_empty() {
+        let hdr = "run_id,policy,event_index,t_ms,loss_windowed_ppm,qd_ratio_permille,jitter_ppm,ack_confidence_permille,bandwidth_bps,btlbw,srtt_us,pacing_rate,inflight_bytes,fuzzy_ratio_permille,mode,no_rule\n";
+        std::fs::write(
+            format!("{}/{}-fuzzy.csv", cfg.out_dir, cfg.run_id),
+            format!("{hdr}{fuzzy_rows}"),
+        )
+        .map_err(|e| e.to_string())?;
+    }
     let d = s.diag_fec_actuation();
     let b = s.diag_budget();
     let mut lf = std::fs::File::create(format!("{}/{}-ledger.csv", cfg.out_dir, cfg.run_id))
