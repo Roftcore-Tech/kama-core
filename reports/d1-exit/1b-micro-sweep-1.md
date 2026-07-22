@@ -1,5 +1,14 @@
 # 1b Budget Characterization — Micro-Sweep 1 (Commit-O) [KESİT-2-DEĞİLDİR; policy-değişikliği-YOK]
 
+> **CORRIGENDUM (Commit-Q; hüküm-gereği):** Bu-raporun-önceki "Model-D starvation'ı d1000/d2500-dahil-
+> sıfırlar" ifadesi GERİ-ÇEKİLDİ. Doğru-ifade: **"Model-D güvenilir-replay-hücrelerinde umut-verici
+> görünmüştür; contended-hücrelerde (loss20/rev99/d1000/d2500/offered-c1) replay-fidelity-yetersiz
+> olduğundan starvation-elimination-iddiası gerçek-motor-deneyi-gerektirir."** Bu-hücrelerden exact-
+> realization/displacement/starvation=0/exact-delay HÜKMÜ-ÇIKARILMAZ; Model-D'nin-oradaki-statüsü
+> "directionally-promising, unverified". "Model-D-önerilen-uygulama-modeli" ifadesi-daraltıldı:
+> **Model-D/C candidate architecture — not yet selected policy** (Model-A ikinci-aday-açık).
+> Candidate-seçimi gerçek-event-çözünürlüklü-prototipe-bağlı (DR-1b-v2).
+
 > Harness: `kama-engine/tests/micro_sweep_1b.rs` (deterministik-sim; model-beyanı-m1-harness'la-aynı;
 > Controller-arm GERÇEK-fuzzy-yolu ENJEKSİYONSUZ). 10-hücre × 5-arm × 10-paired-seed (gap80: 30-seed).
 > Veri: [data/micro-sweep-1b/](data/micro-sweep-1b/) — seed-level + blok-ledger(.gz) + interval(.gz) +

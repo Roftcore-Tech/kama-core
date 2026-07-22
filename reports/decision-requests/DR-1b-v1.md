@@ -1,5 +1,13 @@
 # DR-1b-v1 — Parity token/budget politikası [TASLAK — NO IMPLEMENTATION]
 
+> **HÜKÜM (Abkarada, 2026-07-22): "DR-1b EVIDENCE PHASE PASSED" + "DR-1b-v1 DESIGN BLOCKED FOR
+> IMPLEMENTATION"** — 7-exact-blocker: (1) floor-garantisi↔"rezervasyon-yok"-çelişkisi; (2) per-block-
+> floor↔değişmeyen-FIFO-çelişkisi; (3) floor-vs-hard-cap-önceliği-tanımsız; (4) service-feasibility/
+> admission-contract-tanımsız; (5) window/cap-accounting-tanımsız; (6) T_floor-timer/serialization-
+> eksik; (7) Model-D-contended-faydası-güvenilmez-replay'e-dayalı. §B'nin-"ÖNERİLEN"-ifadesi-
+> DARALTILDI: **Model-D/C candidate-architecture — not-yet-selected-policy** (Model-A-ikinci-aday-açık).
+> Revizyon: [DR-1b-v2](DR-1b-v2.md) + [problem-formalizasyonu](DR-1b-problem-formal.md).
+>
 > Statü: **TASLAK — NO IMPLEMENTATION** (faz: "DR-1b DESIGN AUTHORIZED — IMPLEMENTATION NOT
 > AUTHORIZED"). Kanıt-tabanı: [1b-micro-sweep-1](../d1-exit/1b-micro-sweep-1.md) (MS1) + Commit-N-
 > attribution + [rule-coverage-prepass](../d1-exit/rule-coverage-prepass.md) + kesit-1-audit.

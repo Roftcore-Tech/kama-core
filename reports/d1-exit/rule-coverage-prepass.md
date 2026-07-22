@@ -66,3 +66,16 @@ MS1-zarfının-tamamen-ÜSTÜNDE**. R2/R3/no-rule-bölgeleri yalnız fuzzy_e2e-t
 (süreğen-yüksek-kayıp ≥ W_loss≈16.8s + btlbw-bakım-burst'leri) ulaşılabilir. no-rule-oranı/emergency-
 oranı normal-hücrelerde ölçülen-yolda-0 (hiç-tetiklenmedi). Bu KALİBRASYON-GİRDİSİDİR (kesit-2-üyelik-
 sınırı-tasarımına); bu-turda-eşik-DEĞİŞTİRİLMEDİ.
+
+## DİL-DÜZELTMESİ (Commit-Q) + evaluator-drift-seçenekleri
+
+**no_rule=%54.7 YALNIZ şudur:** örneklenen-UNIFORM-MATEMATİKSEL-grid'in %54.7'si. ŞUNLAR-DEĞİLDİR:
+gerçek-ağ-zamanının-%54.7'si · production-state-olasılığı · trafik-ağırlıklı-olasılık. (Event-driven-
+gerçeklik 11.2'de: ölçülen-yolda no-rule/emergency normal-hücrelerde-hiç-tetiklenmedi.) Aynı-uyarı
+tüm-grid-oranları-için-geçerlidir (R1-%29.4 vb.).
+
+**Kaynak-formül-kopyası drift-riski (1b-blocker-DEĞİL; kalibrasyon-fazı-öncesi-önerilir):** seçenekler —
+(a) canonical-test-only-evaluator (decide()'ın pub(crate)+cfg(test)-görünür-sarmalayıcısı; küçük-DR),
+(b) shared-rule-definition (kural-tablosu-tek-kaynak-const'a-çıkarılır), (c) generated-rule-map
+(build-time-üretim), (d) daha-geniş-çapa-seti (mevcut-3-gerçek-yol-çapasına grid-köşe-noktaları-eklenir).
+ÖNERİ: (a)+(d) — en-küçük-yüzey.
