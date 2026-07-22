@@ -36,6 +36,10 @@ pub struct RunnerCfg {
     pub bind: String,
     pub fixed_r: u16,     // FD-oracle: sabit-r (0..=4; close_fec_block_manual-r)
     pub emit_fuzzy: bool, // FC: fuzzy-event-dataset yaz (additive; decision-değişmez)
+    pub deficit: u16, // FK: TEST-ONLY exact-source-erasure (rx-ingress; per-block-ilk-N-source-esi düşür)
+    pub deficit_from_block: u32, // FK: deficit YALNIZ b>=bu (warmup; ilk-paket-kaybı-cold-start-deadlock önle)
+    pub drop_repair: bool, // FK: FEC-IZOLASYON — silinen-esi'nin substrat-onarımını (§9-ARQ 0x01 + §11-dup 0x03)
+                           // da düşür → blok YALNIZ first-flight (kalan-source + parity) ile tamamlanabilir (saf-FEC-decodability testi).
 }
 
 impl RunnerCfg {
@@ -90,7 +94,7 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     sock.set_read_timeout(Some(Duration::from_millis(20))).ok();
     let start = Instant::now();
     let mut acked: BTreeSet<u64> = BTreeSet::new();
-    let mut have: BTreeMap<u32, BTreeSet<u16>> = BTreeMap::new();
+    let mut par_have: BTreeMap<u32, BTreeSet<u16>> = BTreeMap::new(); // distinct-parity-shard esi (kind 0x02)
     let mut recovered: Vec<(u32, u16)> = Vec::new();
     let mut peer: Option<std::net::SocketAddr> = None;
     let mut buf = [0u8; 2048];
@@ -103,6 +107,12 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut src_have: BTreeMap<u32, BTreeSet<u16>> = BTreeMap::new(); // yalnız-source-esi (<K)
     let mut finish_seen = 0u32; // FA: sender-FINISH-marker sayacı (temiz-bitiş)
     let mut ev_count = 0u64;
+    let mut dropped: BTreeSet<(u32, u16)> = BTreeSet::new(); // FK: ingress-düşürülen source
+    let mut deficit_applied: BTreeMap<u32, u16> = BTreeMap::new(); // block→uygulanan-deficit
+    let mut first_repair: BTreeMap<u32, u64> = BTreeMap::new(); // FJ: block→ilk-parity-arrival-ms
+    let mut decode_via: BTreeMap<u32, u8> = BTreeMap::new(); // block→0=substrat(src-full),1=FEC(parity)
+    let mut repair_kind: BTreeMap<u32, u8> = BTreeMap::new(); // FK: silinen-esi'yi hangi-substrat kurtardı
+                                                              // (0x01=§9-ARQ, 0x03=§11-dup, 0=none/FEC-only)
     while start.elapsed() < deadline {
         // FA: idle-erken-çıkış YALNIZ-FALLBACK (FINISH-marker gelmezse); normal-yol=FINISH-marker.
         if seen_any && last_rx.elapsed() > Duration::from_secs(8) {
@@ -127,32 +137,66 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                 ev_count += 1;
                 last_rx = Instant::now();
                 let seq = u64::from_be_bytes(buf[1..9].try_into().unwrap());
+                let kind = buf[0];
                 let b = u32::from_be_bytes(buf[17..21].try_into().unwrap());
                 let e = u16::from_be_bytes(buf[21..23].try_into().unwrap());
-                acked.insert(seq);
                 let now_ms = rx_start
                     .get_or_insert_with(Instant::now)
                     .elapsed()
                     .as_millis() as u64;
                 block_first.entry(b).or_insert(now_ms);
-                // Source-completion: distinct-source-esi (<K) tam-K → blok-teslim (decode-veya-doğrudan).
-                if e < K as u16 {
-                    src_have.entry(b).or_default().insert(e);
+                // FK: TEST-ONLY exact-source-erasure — ilk-uçuş-source-esi<deficit DÜŞER (ingress;
+                // FEC-decode/ARQ-öncesi). Retransmit (kind=Retransmit=0x01 ⇒ enc'de-değil; wire-kind
+                // datagram[0]) ingress-drop-EDİLMEZ (ARQ-kurtarır). İlk-uçuş=Data(0x00)/Parity(0x02).
+                let target_esi = e < K as u16
+                    && cfg.deficit > 0
+                    && b >= cfg.deficit_from_block
+                    && e < cfg.deficit;
+                // İlk-uçuş-source (0x00) ERASE: gerçek-silinme (rx'e-hiç-girmez).
+                if target_esi && kind == 0x00 && !dropped.contains(&(b, e)) {
+                    dropped.insert((b, e));
+                    deficit_applied.entry(b).or_insert(0);
+                    *deficit_applied.get_mut(&b).unwrap() += 1;
+                    continue; // ingress-drop
                 }
-                let s = have.entry(b).or_default();
-                let newly = s.insert(e);
-                if s.len() as u64 >= K {
-                    // MDS: distinct≥K → tüm-K-source-kurtarılabilir → blok-tamam.
-                    block_complete.entry(b).or_insert(now_ms);
-                } else if src_have.get(&b).is_some_and(|x| x.len() as u64 >= K) {
-                    block_complete.entry(b).or_insert(now_ms);
+                // Substrat-onarımı (§9-ARQ=0x01 / §11-dup=0x03) silinen-esi için:
+                if target_esi && dropped.contains(&(b, e)) && (kind == 0x01 || kind == 0x03) {
+                    if cfg.drop_repair {
+                        continue; // FEC-IZOLASYON: substrat-onarımını da düşür → yalnız-FEC tamamlayabilir
+                    }
+                    // HİBRİT: onarımı geçir + hangi-substrat-arm kurtardı kaydet (ilk-onarım).
+                    repair_kind.entry(b).or_insert(kind);
                 }
-                // MDS-decode-modeli: distinct ≥ K ∧ eksik-source → recovered-bildir.
-                if newly && s.len() as u64 >= K {
-                    for miss in 0..K as u16 {
-                        if !s.contains(&miss) {
-                            recovered.push((b, miss));
-                            s.insert(miss);
+                acked.insert(seq);
+                // SINIFLANDIRMA WIRE-KIND'A göre (esi-büyüklüğüne DEĞİL): parity-esi 0-tabanlı
+                // (close_fec_block_manual `for esi in 0..r`) → source-esi ile ÇAKIŞIR. MDS-decode
+                // ayrı-küme sayar: distinct = |source-esi| + |parity-shard|. K-distinct → recoverable.
+                if kind == 0x02 {
+                    par_have.entry(b).or_default().insert(e);
+                    first_repair.entry(b).or_insert(now_ms); // ilk-parity-arrival (FJ)
+                } else {
+                    src_have.entry(b).or_default().insert(e); // 0x00/0x01/0x03 = source-shard
+                }
+                let src_n = src_have.get(&b).map_or(0, BTreeSet::len);
+                let par_n = par_have.get(&b).map_or(0, BTreeSet::len);
+                let src_full = src_n >= K as usize; // tüm-source geldi (substrat/onarım tamamladı)
+                if src_n + par_n >= K as usize {
+                    let was_new = !block_complete.contains_key(&b);
+                    block_complete.entry(b).or_insert(now_ms);
+                    if was_new {
+                        // decode_via: src_full → substrat(0; erasure onarımla/tam-source doldu);
+                        // aksi → FEC(1; parity K-distinct'i first-flight'ta tamamladı, source-eksik).
+                        decode_via.insert(b, u8::from(!src_full));
+                        // eksik-source-esi'yi RECOVERED-kontrolüyle tx'e bildir (ARQ-iptal): src_have'a
+                        // YAZMA (src_full-etiketini bozmasın) — yalnız kontrol-mesajı.
+                        if let Some(sh) = src_have.get(&b) {
+                            for miss in 0..K as u16 {
+                                if !sh.contains(&miss)
+                                    && !recovered.iter().any(|&(bb, ee)| bb == b && ee == miss)
+                                {
+                                    recovered.push((b, miss));
+                                }
+                            }
                         }
                     }
                 }
@@ -185,7 +229,9 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     // FA: RECEIVER-GRACEFUL-FINALIZE — ledger + checksum + done-marker (SIGTERM-değil, temiz-yol).
     std::fs::create_dir_all(&cfg.out_dir).map_err(|e| e.to_string())?;
     let op = cfg.op_horizon_ms;
-    let mut body = String::from("run_id,block,first_ms,complete_ms,rel_ms,dl_op\n");
+    let mut body = String::from(
+        "run_id,block,first_ms,complete_ms,rel_ms,dl_op,deficit_applied,decode_via,first_repair_ms,repair_kind\n",
+    );
     let (mut finalized, mut pending) = (0u64, 0u64);
     for (b, first) in &block_first {
         let (comp, rel, dlop) = match block_complete.get(b) {
@@ -198,7 +244,14 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                 (-1, -1, 0)
             }
         };
-        body.push_str(&format!("{},{b},{first},{comp},{rel},{dlop}\n", cfg.run_id));
+        let da = deficit_applied.get(b).copied().unwrap_or(0);
+        let dv = decode_via.get(b).map_or(-1i8, |&v| v as i8); // -1=incomplete,0=substrat,1=FEC
+        let fr = first_repair.get(b).map_or(-1i64, |&v| v as i64);
+        let rk = repair_kind.get(b).copied().unwrap_or(0); // 0=none/FEC-only,1=§9-ARQ,3=§11-dup
+        body.push_str(&format!(
+            "{},{b},{first},{comp},{rel},{dlop},{da},{dv},{fr},{rk}\n",
+            cfg.run_id
+        ));
     }
     // FNV-1a checksum (ledger-integrity; deterministik).
     let mut ck = 0xcbf2_9ce4_8422_2325u64;
@@ -248,6 +301,7 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     // FC: canonical fuzzy-event dataset (additive; existing-diag-poll; decision-DEĞİŞMEZ).
     let mut fuzzy_rows = String::new();
     let mut last_ev_idx = u64::MAX;
+    let mut settle_since: Option<u64> = None; // FK: workload+parity-drained-settle takibi
     while start.elapsed() < deadline {
         let t_ms = start.elapsed().as_millis() as u64;
         // FC: fuzzy-event-yakalama (event_index-ilerlediğinde tek-satır; salt-gözlem).
@@ -321,7 +375,7 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         for b in ready {
             emitted_in_block.remove(&b);
             let a = s.open_fec_block_authority();
-            let _ = s.close_fec_block_manual(a, b, 4, UNIT as u64);
+            let _ = s.close_fec_block_manual(a, b, cfg.fixed_r, UNIT as u64);
             close_ms.insert(b, t_ms);
         }
         // Geri-yol: SACK/RECOVERED.
@@ -374,8 +428,21 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
             }
         }
         std::thread::sleep(Duration::from_millis(2));
-        if app >= cfg.w_units && t_ms > cfg.op_horizon_ms {
-            break;
+        // FK: tx-loop-süresi op_horizon'DAN-AYRI (op_horizon=rx-recovery-deadline). tx workload-sent
+        // + parity/ARQ-drain (enqueued==emitted) + 4s-idle-settle (round-trip'ler-tamamlansın) sonra-
+        // biter; ext_horizon-cap. (Önceki-bug: tx op_horizon'da-erken-çıkıp parity-emit-etmiyordu.)
+        let dfa = s.diag_fec_actuation();
+        let workload_done = app >= cfg.w_units;
+        let parity_drained = dfa.enqueued_r_total == dfa.emitted_r_total;
+        if workload_done && parity_drained {
+            settle_since = settle_since.or(Some(t_ms));
+        } else {
+            settle_since = None;
+        }
+        if let Some(sd) = settle_since {
+            if t_ms.saturating_sub(sd) > 4000 {
+                break;
+            }
         }
     }
     // FA: WORKLOAD-tamam → FINISH-marker (0xFE) tekrar-gönder + rx-ACK-bekle (SIGTERM-yerine-graceful).
@@ -477,9 +544,17 @@ fn emit(
                 *eib.entry(b).or_insert(0) += 1;
                 open_ms.entry(b).or_insert(t_ms);
             }
-            (u8::from(d.kind != TransmitKind::Data), b, e, d.unit_id)
+            // FK: wire-kind — §9-ARQ-retransmit(0x01) ile §11-forward-recovery-duplication(0x03) AYRI
+            // kodlanır (rx substratı-doğru-atfetsin: reaktif-ARQ vs ACK-bağımsız-proaktif-dup).
+            let wk = match d.kind {
+                TransmitKind::Data => 0x00u8,
+                TransmitKind::Retransmit => 0x01,
+                TransmitKind::Duplicate => 0x03,
+                TransmitKind::FecParity => 0x02, // yukarıda-ele-alındı (ulaşılmaz)
+            };
+            (wk, b, e, d.unit_id)
         } else {
-            (3u8, u32::MAX, u16::MAX, d.unit_id)
+            (0xFDu8, u32::MAX, u16::MAX, d.unit_id)
         };
         let _ = sock.send(&enc(kind, d.seq, unit, b, e, d.size as usize));
     }

@@ -42,6 +42,9 @@ fn main() {
         bind: get("--bind", "127.0.0.1:47001"),
         fixed_r: get("--fixed-r", "4").parse().unwrap_or(4),
         emit_fuzzy: args.iter().any(|a| a == "--emit-fuzzy"),
+        deficit: get("--deficit", "0").parse().unwrap_or(0),
+        deficit_from_block: get("--deficit-from-block", "0").parse().unwrap_or(0),
+        drop_repair: args.iter().any(|a| a == "--drop-repair"),
     };
     let deadline = Duration::from_millis(cfg.ext_horizon_ms);
     let r = match role.as_str() {

@@ -24,6 +24,9 @@ fn cfg(policy: &str, port_base: u16, out: &str) -> RunnerCfg {
         bind: format!("127.0.0.1:{port_base}"),
         fixed_r: 4,
         emit_fuzzy: false,
+        deficit: 0,
+        deficit_from_block: 0,
+        drop_repair: false,
     }
 }
 
@@ -131,5 +134,85 @@ fn fa_no_finish_marker_is_not_clean() {
     assert!(
         marker.contains("clean_shutdown=false"),
         "FINISH-yok → clean=false (orchestrator-IncompleteReceiverLedger-tetiği): {marker}"
+    );
+}
+
+/// FK — exact-source-deficit MDS-decode mekanik-pini (DELAY-BAĞIMSIZ kombinatoryal ayrışma).
+/// Bu deney ARQ ile FEC'i KARŞILAŞTIRMAZ: ARQ/substrat bütün-kollarda-aktiftir; ölçülen ARQ-substratı
+/// üzerine eklenen proaktif-FEC-parity'nin marjinal-decode-faydasıdır. FEC-IZOLASYON (drop_repair):
+/// substrat-onarımı düşürülür → blok YALNIZ first-flight (kalan-source+parity) ile tamamlanabilir.
+/// Sınır: (K-deficit)+r ≥ K ⟺ r ≥ deficit. Pin-1 deficit=1: r=0 → PENDING (7<8); r=1 → FEC-complete (8).
+/// (Wall-clock-latency ayrışması wall-delay-gerektirir; rootless-netem-faithful-delay-uygulamaz → ayrı
+/// katman. Bu pin kombinatoryal-decodability'yi kilitler.)
+#[cfg(feature = "experimental-fec-budget")]
+fn deficit_case(deficit: u16, r: u16, drop_repair: bool, port_base: u16, tag: &str) -> (u32, u32) {
+    let out = std::env::temp_dir().join(format!("fk-{tag}"));
+    let out = out.to_string_lossy().to_string();
+    let _ = std::fs::remove_dir_all(&out);
+    let tx = cfg("leftover", port_base, &out);
+    let tx = RunnerCfg {
+        run_id: format!("fk-{tag}"),
+        w_units: 120, // 15 blok (K=8); warmup-sonrası (b>=5) 10 deficit-bloğu
+        fixed_r: r,
+        deficit,
+        deficit_from_block: 5,
+        drop_repair,
+        op_horizon_ms: 2_000,
+        ext_horizon_ms: 30_000,
+        ..tx
+    };
+    let rx = RunnerCfg {
+        bind: tx.peer.clone(),
+        peer: tx.bind.clone(),
+        ..tx.clone()
+    };
+    let rxh = std::thread::spawn(move || run_rx(&rx, Duration::from_millis(30_000)));
+    std::thread::sleep(Duration::from_millis(50));
+    run_tx(&tx, Duration::from_millis(30_000)).expect("tx");
+    rxh.join().unwrap().expect("rx");
+    let led = std::fs::read_to_string(format!("{out}/fk-{tag}-rxledger.csv")).expect("ledger");
+    let (mut comp, mut pend) = (0u32, 0u32);
+    for line in led.lines().skip(1) {
+        let c: Vec<&str> = line.split(',').collect();
+        // kolonlar: run,block,first,complete,rel,dl_op,deficit_applied,decode_via,first_repair,repair_kind
+        let deficit_applied: u16 = c[6].parse().unwrap_or(0);
+        if deficit_applied == 0 {
+            continue; // yalnız deficit-uygulanan bloklar
+        }
+        if c[7] == "-1" {
+            pend += 1;
+        } else {
+            comp += 1;
+        }
+    }
+    (comp, pend)
+}
+
+#[cfg(feature = "experimental-fec-budget")]
+#[test]
+fn fk_mds_isolation_pin1_separates() {
+    // Pin-1 FEC-IZOLASYON: deficit=1. r=0 → FEC-decode-İMKANSIZ (7 distinct < K=8) → PENDING.
+    // r=1 → parity K-distinct'i first-flight'ta tamamlar (7+1=8) → COMPLETE. Mekanik-ayrışma.
+    let (c0, p0) = deficit_case(1, 0, true, 47080, "iso-d1r0");
+    let (c1, p1) = deficit_case(1, 1, true, 47084, "iso-d1r1");
+    assert!(
+        c0 == 0 && p0 > 0,
+        "deficit=1 r=0 izolasyon → tüm-deficit-blok PENDING (FEC-imkansız): complete={c0} pending={p0}"
+    );
+    assert!(
+        p1 == 0 && c1 > 0,
+        "deficit=1 r=1 izolasyon → tüm-deficit-blok FEC-COMPLETE: complete={c1} pending={p1}"
+    );
+}
+
+/// FK — HİBRİT (substrat-onarımı-açık): FEC-yetmese-bile (r<deficit) ARQ/§11-substrat residual'ı
+/// TAMAMLAR (hibrit "veri-ulaşsın"). deficit=1 r=0 → izolasyonda-pending; hibritte substrat-complete.
+#[cfg(feature = "experimental-fec-budget")]
+#[test]
+fn fk_hybrid_substrate_completes_residual() {
+    let (comp, pend) = deficit_case(1, 0, false, 47088, "hyb-d1r0");
+    assert!(
+        pend == 0 && comp > 0,
+        "deficit=1 r=0 hibrit → substrat (ARQ/§11) residual'ı-tamamlar: complete={comp} pending={pend}"
     );
 }
