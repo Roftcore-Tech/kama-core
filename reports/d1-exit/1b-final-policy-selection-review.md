@@ -1,22 +1,35 @@
-# AE — NİHAİ POLICY-SELECTION REVIEW [production-default-DEĞİŞMEDİ]
+# AI — NİHAİ POLICY-SELECTION REVIEW (netem-EXECUTED) [production-default-DEĞİŞMEDİ]
 
-> Zincir: AA(f1683b6) AB(e0e3a0d) AC(0b4a54a) AD(önceki-commit). Deterministik-kanıt-TAM;
-> netem-EXECUTE-EDİLEMEDİ (typed-blocker).
+> Zincir: AA(f1683b6)…AG(0c2a214-uncontended-netem) AH(rx-outcome+contended). Netem ROOTLESS-KOŞULDU
+> (admin-gerekmedi; kullanıcı-talimatı). PR#44-DRAFT; merge-önerilmedi.
 
-**Deterministik-nihai-tablo (cluster-inference-birimi=seed):**
-F15-vs-Leftover: dl_op +0.100 [0.040,0.170]-CI-dışlamalı (rev99-30-seed) + decode/avoided-retx/worst-
-decile-tümü-dışlamalı → OUTCOME-FAYDASI-KANITLI. F15-vs-P15: dl_op-EŞDEĞER; decode +15.5 [9.5,19] +
-avoided-retx +9 + worst-decile −1.7s + **spend −48k (F15-daha-AZ-harcar)** — fairness≠fazla-spend-
-KANITLI. Blackout-30s-harm: kök-neden-kapalı (dark-start-fazı; F10-6/10-kurtarır; recovery-normalized-
-harm-0; bounded ~1-blok/seed) — kabul-edilebilir-veya-F10-ile-azaltılabilir-SINIFINDA ama nihai-kabul-
-kullanıcı-objective-sıralamasına-ve-netem-yönüne-bağlı.
+## Kanıt-katmanları-özeti
+1. **Deterministik-sim (Z1-Z3):** F15 belirgin-outcome-üstünlüğü (rev99 dl_op +0.100-cluster-CI'lı;
+   decode/avoided-retx/spend-matched hepsi-F15-lehine). GÜÇLÜ ama sim-model-bağımlı.
+2. **Uncontended-netem (AG, 100-run):** F15-mekanizma REAL-stack+impairment-altında REGRESYONSUZ
+   (waste=0, ticket-on-time, displacement-bounded). Mekanizma-güvenli.
+3. **Contended-netem + receiver-outcome (AH, 80-run):** **outcome POLİTİKADAN-BAĞIMSIZ ÖZDEŞ**
+   (blackout-30s dl_op-0.974-hepsi; lowbw-1.000-hepsi). Deterministik-ayrışma REAL-STACK'TE
+   REPRODUCE-OLMADI → büyük-ölçüde-sim-leftover-token-artefaktı.
 
-**§14-karar-kuralı-uygulaması:** F15-seçilebilirlik-şartlarından 4/6-karşılandı (cluster-korunumu ✓;
-spend-açıklaması-elendi ✓; blackout-bounded+F10-azaltımı ✓; DATA/ARQ-tail-bound ✓; queue/cap/lifecycle ✓)
-— **"netem'de-≥2-impairment-ailesi-aynı-yön"-şartı-KARŞILANAMADI (koşu-bloke)** → PASSED-hükmü-
-KURULAMAZ. Inconclusive-tetikleyicisi: "Netem-çalıştırılamaz."
+## §14-uygulaması → **LEFTOVER RETAINED**
+F15-outcome-faydası real-stack-netem'de-DOĞRULANMADI; experimental-policy parity+displacement-overhead-
+ekliyor-ama-reliability-outcome-ÖZDEŞ → talimat-§14 "Leftover-korunur"-şartı KARŞILANDI. F15 HARM-de-
+üretmiyor (blackout-harm-reproduce-olmadı; regresyon-yok) → feature-flag-arkası GELECEK-için-KORUNUR.
 
-**HÜKÜM-ÖNERİSİ:** DR-1b FINAL POLICY SELECTION **INCONCLUSIVE — NETEM EXECUTION BLOCKED**
-(exact: root/CAP_NET_ADMIN-yok, sudo-n-parola-ister; runner+harness-READY; deterministik-kanıt-
-F15-yönlü-ve-cluster-doğrulamalı). Kalan-tek-adım: self-hosted-nightly'de scripts/netem/
-run_policy_validation.sh → yön-tablosu → §14-yeniden-uygulama.
+## Önerilen-statü
+- **Production-default: LeftoverOnly-KORUNUR** (değişiklik-YOK; NO-GO-onaylı).
+- **F15/P15: experimental-feature-arkası-KALIR** (regresyonsuz; mekanizma+kernel+lifecycle-tam-test-
+  edilmiş; gelecekte-real-stack-parity-starvation-gösteren-rejim/ölçek-bulunursa-yeniden-değerlendirilir).
+- Deterministik-bulgu-arşivde (sim-modelinin-fayda-gösterdiği-koşul-kaydı; real-stack-reprodüksiyon-
+  ön-koşulu).
+
+## Açık-riskler
+Test-edilen-ölçekler real-stack-parity-starvation-üretmedi (F15-fayda-rejimi-bulunamadı — kanıt-yokluğu,
+fayda-yokluğu-kanıtı-DEĞİL-tam; ama mevcut-kanıtla-default-değişimi-gerekçesiz). rx-SIGTERM-race
+(offered_c-outcome-eksik; küçük-harness-borç). netem=sim-harness (§4.4-nightly-tam-matris-ayrı).
+
+## HÜKÜM-ÖNERİSİ
+**DR-1b FINAL POLICY SELECTION PASSED — LEFTOVER RETAINED** (netem-EXECUTED; experimental-policy'ler
+real-stack'te-outcome-faydası-göstermedi → default-değişimi-gerekçesiz; F15-feature-arkası-regresyonsuz-
+korunur, gelecek-rejim-için).
