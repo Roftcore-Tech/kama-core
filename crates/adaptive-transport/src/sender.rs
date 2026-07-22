@@ -295,6 +295,116 @@ pub struct FecTokenDenialSnapshot {
     pub emitted_r_total_at_denial: u64,
 }
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// Commit-V: EXPERIMENTAL-FEC-BUDGET (cargo-feature `experimental-fec-budget`; DEFAULT-OFF).
+// OFF: aşağıdaki-HİÇBİR-öğe-derlenmez → üretim-yolu-baseline-BYTE-ÖZDEŞ. ON+LeftoverOnly:
+// rezervasyon=0/ticket-yok/kernel-çağrılmaz → karar-dizisi-baseline-özdeş (Commit-W-testli).
+// Product/admin-activation-YOK: politika-yalnız-test/harness `set_budget_policy`-ile-seçer.
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+/// Deneysel-bütçe-politikası (yalnız-test/harness-seçer; default-HER-KOŞULDA-LeftoverOnly).
+#[cfg(feature = "experimental-fec-budget")]
+#[derive(Debug, Clone, Copy)]
+pub enum BudgetPolicy {
+    /// Baseline: mevcut-leftover-davranışı-birebir (rezervasyon/ticket/kernel-yok).
+    LeftoverOnly,
+    /// R-sınıfı-pay (ticket'sız).
+    ProtectedShareExperimental(crate::budget_kernel::PolicyParams),
+    /// R + F2-ticket + C1-cap.
+    FloorCapExperimental(crate::budget_kernel::PolicyParams),
+}
+
+#[cfg(feature = "experimental-fec-budget")]
+impl Default for BudgetPolicy {
+    // derive(Default)-yerine-açık-impl: default=LeftoverOnly-sözleşmesi-görünür-kalsın.
+    #[allow(clippy::derivable_impls)]
+    fn default() -> Self {
+        BudgetPolicy::LeftoverOnly
+    }
+}
+
+/// U6: policy-geçişi yalnız-boş-kuyrukta (Busy-guard).
+#[cfg(feature = "experimental-fec-budget")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BudgetPolicyTransitionError {
+    #[error("budget policy busy: pending tickets/bulk parity/reservation outstanding")]
+    Busy,
+}
+
+/// U4: floor-ticket (kimlik=(block,generation); missed-tam-1-kez).
+#[cfg(feature = "experimental-fec-budget")]
+#[derive(Debug, Clone, Copy)]
+struct FloorTicket {
+    block_id: u32,
+    generation: u64,
+    deadline_ns: u64,
+    missed: bool,
+}
+
+/// U4-miss-teşhisi (tam-overwrite).
+#[cfg(feature = "experimental-fec-budget")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FloorMissSnapshot {
+    pub block_id: u32,
+    pub generation: u64,
+    pub event_index: u64,
+    pub pending_items: u64,
+    pub pending_tickets: u64,
+    pub cap_suppressed: bool,
+}
+
+#[cfg(feature = "experimental-fec-budget")]
+#[derive(Debug, Default)]
+struct BudgetExt {
+    policy: BudgetPolicy,
+    state: crate::budget_kernel::BudgetPolicyState,
+    tickets: VecDeque<FloorTicket>,
+    reserved_now: u64,
+    pending_decision: Option<crate::budget_kernel::BudgetDecision>,
+    spent_this_opportunity: u64,
+    last_opportunity_ns: u64,
+    profile_parity_size: u64, // U11: F2-size-sabitliği (0=henüz-görülmedi)
+    // U4-lifecycle-sayaçları (saturating):
+    tk_rejected: u64,
+    tk_admitted: u64,
+    tk_on_time: u64,
+    tk_late: u64,
+    tk_missed_unique: u64,
+    tk_cancel_before: u64,
+    tk_cancel_after: u64,
+    bulk_admission_rejected: u64, // staging-cap-reddi (admitted_r < planned_r kaynağı)
+    last_floor_miss: Option<FloorMissSnapshot>,
+    reservation_waste_total: u64,
+    new_data_displaced: u64,
+    retx_displaced: u64,
+    cap_suppressed_events: u64,
+    rate_zero_events: u64,
+}
+
+/// Canlı-telemetri (U-EK-§17-alt-kümesi; salt-gözlem).
+#[cfg(feature = "experimental-fec-budget")]
+#[derive(Debug, Clone, Copy)]
+pub struct BudgetDiag {
+    pub entitlement_credit: u64,
+    pub hardcap_credit: u64,
+    pub reserved_now: u64,
+    pub tickets_pending: u64,
+    pub tk_rejected: u64,
+    pub tk_admitted: u64,
+    pub tk_on_time: u64,
+    pub tk_late: u64,
+    pub tk_missed_unique: u64,
+    pub tk_cancel_before: u64,
+    pub tk_cancel_after: u64,
+    pub bulk_admission_rejected: u64,
+    pub last_floor_miss: Option<FloorMissSnapshot>,
+    pub reservation_waste_total: u64,
+    pub new_data_displaced: u64,
+    pub retx_displaced: u64,
+    pub cap_suppressed_events: u64,
+    pub rate_zero_events: u64,
+}
+
 /// Commit-G: ratio→r SAF-hesabı (§8). Half-up; float/RNG/platform-rounding-YOK; overflow-kanıtı:
 /// ratio≤1000 ∧ k_actual≤255 → çarpım ≤255_000 « u64. `R_ENQUEUE_CAP`-YOK (tek-clamp profile-bound).
 #[must_use]
@@ -602,6 +712,8 @@ pub struct Sender {
     parity_enqueue_rejected_count: u64, // Commit-K: izinsiz-legacy-enqueue-reddi
     foreign_authority_rejected_count: u64, // Commit-K: yabancı-witness-reddi
     token_denied_r_gauge: u64,  // Commit-J-rename (eski: budget_denied_r_gauge) — §8.1-exact-tanım
+    #[cfg(feature = "experimental-fec-budget")]
+    budget_ext: BudgetExt, // Commit-V (OFF'ta-derlenmez; ON+LeftoverOnly-inert)
     last_token_denial: Option<FecTokenDenialSnapshot>, // Commit-N: son-denial TAM-overwrite (salt-teşhis)
     token_denial_count_total: u64, // Commit-N: kümülatif-denial-OLAYI-sayısı (saturating)
     last_transition_event_index: u64, // Commit-I
@@ -749,6 +861,8 @@ impl Sender {
             parity_enqueue_rejected_count: 0,
             foreign_authority_rejected_count: 0,
             token_denied_r_gauge: 0,
+            #[cfg(feature = "experimental-fec-budget")]
+            budget_ext: BudgetExt::default(),
             last_token_denial: None,
             token_denial_count_total: 0,
             last_transition_event_index: 0,
@@ -1541,6 +1655,10 @@ impl Sender {
     /// Hepsi tek pacer'ı (token bucket) paylaşır (§9/§13): recovery fırtınası rate'i patlatamaz.
     fn schedule_transmit(&mut self, now_ns: u64) -> Vec<TransmitDecision> {
         let mut out = Vec::new();
+        // Commit-V (U12-atomik-plan-adım-1..5): pre-parity-drain'lerden-ÖNCE exact-emittable-kuantum-
+        // rezervasyonu (OFF'ta-derlenmez; LeftoverOnly'de-no-op → karar-dizisi-baseline-özdeş).
+        #[cfg(feature = "experimental-fec-budget")]
+        self.budget_reserve(now_ns);
         // [TUR-7 β2] ARQ token-payı: her K_ARQ_SHARE'inci grant'te retx ÖNCE dener (BOŞ-NÖBET
         // biter — retx fiilen wire'a çıkar); diğer grant'ler DATA-önce (ölçülü-karar korunur).
         self.arq_share_tick = self.arq_share_tick.wrapping_add(1);
@@ -1561,6 +1679,9 @@ impl Sender {
         // mode-kapısı-YOK (üyelik=izin; girişte-kapılı) — buraya-drain-guard-EKLEME: Commit-K'nın
         // kaldırdığı suppression-bug'ını-geri-getirir.
         self.plan_fec_parity(&mut out, now_ns);
+        // Commit-V (U12-adım-8): gerçek-harcama-settle + waste-denetimi (normal-yolda-waste=0).
+        #[cfg(feature = "experimental-fec-budget")]
+        self.budget_settle();
         out
     }
 
@@ -1680,6 +1801,10 @@ impl Sender {
                         Some(manual_r),
                     );
                 }
+                #[cfg(feature = "experimental-fec-budget")]
+                if manual_r > 0 {
+                    self.budget_admit_block(block_id, authority.generation, parity_size);
+                }
                 Ok(manual_r)
             }
             FecActuationMode::Manual { enabled: false } => Ok(0),
@@ -1792,6 +1917,10 @@ impl Sender {
                 authority.mode,
                 Some(r.planned_r),
             );
+        }
+        #[cfg(feature = "experimental-fec-budget")]
+        if r.planned_r > 0 {
+            self.budget_admit_block(block_id, authority.generation, parity_size);
         }
         self.last_latch = Some(r);
         r
@@ -1922,6 +2051,29 @@ impl Sender {
             self.parity_canceled_total = self
                 .parity_canceled_total
                 .saturating_add((before_fec - self.pending_fec.len()) as u64);
+            // Commit-V/U4: ticket-CanceledMoot (deadline-öncesi≠miss; sonrası-miss-zaten-1-kez-sayıldı).
+            #[cfg(feature = "experimental-fec-budget")]
+            {
+                let now = self.last_now_ns;
+                let mut before_cnt = 0u64;
+                let mut after_cnt = 0u64;
+                self.budget_ext.tickets.retain(|t| {
+                    if t.block_id == ru.block_id {
+                        if t.missed || now > t.deadline_ns {
+                            after_cnt += 1;
+                        } else {
+                            before_cnt += 1;
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
+                self.budget_ext.tk_cancel_before =
+                    self.budget_ext.tk_cancel_before.saturating_add(before_cnt);
+                self.budget_ext.tk_cancel_after =
+                    self.budget_ext.tk_cancel_after.saturating_add(after_cnt);
+            }
         }
     }
 
@@ -1972,6 +2124,9 @@ impl Sender {
     /// allocation-yok (C-kuralı byte-değişmez). Pacing: mevcut `pacer.try_send` (TokenBucket-internals'a
     /// DOKUNMAZ; data/retx ile aynı-API). send-record-hint üretir.
     fn plan_fec_parity(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        // Commit-V/F2: FloorCap'te ticket'lı-blokların-İLK-parity'si-önce (parity-İÇİ-seçim; onaylı-scope).
+        #[cfg(feature = "experimental-fec-budget")]
+        self.budget_service_tickets(out, now_ns);
         while let Some(&p) = self.pending_fec.front() {
             let balance_before = self.pacer.tokens(); // READ-ONLY (mühürlü-TokenBucket'a-dokunulmaz)
             if !self.pacer.try_send(p.size) {
@@ -1997,44 +2152,382 @@ impl Sender {
                 });
                 break; // token yok → sonraki tick (data/retx ile aynı pacing-davranışı).
             }
-            self.parity_emitted_total = self.parity_emitted_total.saturating_add(1);
-            self.pending_fec.pop_front();
-            let seq = self.track_sent(
-                OpaqueUnit {
-                    id: u64::from(p.esi),
-                    size: p.size,
-                },
-                now_ns,
-                0,
-                TransmitKind::FecParity,
-            );
-            // DR-S5-3: emit-anında seq→logical kaydı (ACK-teyidinde eşlenecek; SALT-LOGICAL).
-            // DR-S5-6: bounded-helper'dan (cap-altında davranış-özdeş).
-            self.insert_sent_logical(
-                seq,
-                SrLogicalRef::Fec {
+            let _sz = self.emit_parity_at(0, out, now_ns);
+            #[cfg(feature = "experimental-fec-budget")]
+            {
+                self.budget_ext.spent_this_opportunity =
+                    self.budget_ext.spent_this_opportunity.saturating_add(_sz);
+            }
+        }
+    }
+
+    /// Parity-emisyon-gövdesi (Commit-V-refaktörü; davranış-birebir — try_send-BAŞARISI-sonrası-çağrılır).
+    /// idx: kuyruk-konumu (bulk=0; F2-ticket-servisi-hedef-blok-item'ı). Döner: emit-edilen-boyut.
+    fn emit_parity_at(&mut self, idx: usize, out: &mut Vec<TransmitDecision>, now_ns: u64) -> u64 {
+        let p = self
+            .pending_fec
+            .remove(idx)
+            .expect("emit_parity_at: idx-geçerli");
+        self.parity_emitted_total = self.parity_emitted_total.saturating_add(1);
+        let seq = self.track_sent(
+            OpaqueUnit {
+                id: u64::from(p.esi),
+                size: p.size,
+            },
+            now_ns,
+            0,
+            TransmitKind::FecParity,
+        );
+        // DR-S5-3: emit-anında seq→logical kaydı (ACK-teyidinde eşlenecek; SALT-LOGICAL).
+        // DR-S5-6: bounded-helper'dan (cap-altında davranış-özdeş).
+        self.insert_sent_logical(
+            seq,
+            SrLogicalRef::Fec {
+                block_id: p.block_id,
+                esi: p.esi,
+            },
+        );
+        out.push(TransmitDecision {
+            kind: TransmitKind::FecParity,
+            seq,
+            unit_id: u64::from(p.esi),
+            size: p.size,
+            send_record: Some(SendRecordHint {
+                logical_ref: SrLogicalRef::Fec {
                     block_id: p.block_id,
                     esi: p.esi,
                 },
-            );
-            out.push(TransmitDecision {
-                kind: TransmitKind::FecParity,
-                seq,
-                unit_id: u64::from(p.esi),
-                size: p.size,
-                send_record: Some(SendRecordHint {
-                    logical_ref: SrLogicalRef::Fec {
-                        block_id: p.block_id,
-                        esi: p.esi,
-                    },
-                    packet_class: SrPacketClass::Repair,
-                    send_generation: 0,
-                }),
-            });
+                packet_class: SrPacketClass::Repair,
+                send_generation: 0,
+            }),
+        });
+        p.size
+    }
+
+    // ── Commit-V: EXPERIMENTAL-BUDGET metodları (cfg; OFF'ta-derlenmez) ──
+
+    /// U6: policy-geçişi — Busy-guard (ticket/bulk/rezerv-boşken); başarıda credit-reset,
+    /// kümülatif-sayaçlar-KORUNUR, gauge'lar-sıfır (last_floor_miss-KORUNUR — dokümante).
+    #[cfg(feature = "experimental-fec-budget")]
+    pub fn set_budget_policy(
+        &mut self,
+        policy: BudgetPolicy,
+    ) -> Result<(), BudgetPolicyTransitionError> {
+        if !self.budget_ext.tickets.is_empty()
+            || !self.pending_fec.is_empty()
+            || self.budget_ext.reserved_now > 0
+        {
+            return Err(BudgetPolicyTransitionError::Busy);
+        }
+        self.budget_ext.policy = policy;
+        self.budget_ext.state.reset();
+        self.budget_ext.reserved_now = 0;
+        self.budget_ext.pending_decision = None;
+        self.budget_ext.spent_this_opportunity = 0;
+        self.budget_ext.profile_parity_size = 0;
+        Ok(())
+    }
+
+    /// Canlı-telemetri (salt-gözlem).
+    #[cfg(feature = "experimental-fec-budget")]
+    #[must_use]
+    pub fn diag_budget(&self) -> BudgetDiag {
+        let b = &self.budget_ext;
+        BudgetDiag {
+            entitlement_credit: b.state.entitlement_credit,
+            hardcap_credit: b.state.hardcap_credit,
+            reserved_now: b.reserved_now,
+            tickets_pending: b.tickets.len() as u64,
+            tk_rejected: b.tk_rejected,
+            tk_admitted: b.tk_admitted,
+            tk_on_time: b.tk_on_time,
+            tk_late: b.tk_late,
+            tk_missed_unique: b.tk_missed_unique,
+            tk_cancel_before: b.tk_cancel_before,
+            tk_cancel_after: b.tk_cancel_after,
+            bulk_admission_rejected: b.bulk_admission_rejected,
+            last_floor_miss: b.last_floor_miss,
+            reservation_waste_total: b.reservation_waste_total,
+            new_data_displaced: b.new_data_displaced,
+            retx_displaced: b.retx_displaced,
+            cap_suppressed_events: b.cap_suppressed_events,
+            rate_zero_events: b.rate_zero_events,
+        }
+    }
+
+    #[cfg(feature = "experimental-fec-budget")]
+    fn budget_kind_params(
+        &self,
+    ) -> Option<(
+        crate::budget_kernel::PolicyKind,
+        crate::budget_kernel::PolicyParams,
+    )> {
+        match self.budget_ext.policy {
+            BudgetPolicy::LeftoverOnly => None,
+            BudgetPolicy::ProtectedShareExperimental(p) => {
+                Some((crate::budget_kernel::PolicyKind::ProtectedShare, p))
+            }
+            BudgetPolicy::FloorCapExperimental(p) => {
+                Some((crate::budget_kernel::PolicyKind::FloorCap, p))
+            }
+        }
+    }
+
+    /// U12-atomik-rezervasyon: yalnız-AYNI-opportunity'de-gerçekten-emit-edilebilir-TAM-kuantum.
+    /// (RECOVERED-cancel'ler kendi-event'lerinde-önce-işlenmiştir — moot-item-rezervi-yapısal-yok.)
+    #[cfg(feature = "experimental-fec-budget")]
+    #[allow(clippy::cast_possible_truncation)]
+    fn budget_reserve(&mut self, now_ns: u64) {
+        self.budget_ext.spent_this_opportunity = 0;
+        let Some((kind, params)) = self.budget_kind_params() else {
+            self.budget_ext.reserved_now = 0; // LeftoverOnly: inert (baseline-özdeş)
+            return;
+        };
+        let elapsed = now_ns.saturating_sub(self.budget_ext.last_opportunity_ns);
+        self.budget_ext.last_opportunity_ns = now_ns;
+        let rate = self.pacer.rate();
+        if rate == 0 {
+            // U7: SuspendedNoRate (üretim-yolu-pratik-erişilmez; ölçülür).
+            self.budget_ext.rate_zero_events = self.budget_ext.rate_zero_events.saturating_add(1);
+            self.budget_ext.reserved_now = 0;
+            return;
+        }
+        // U4-miss-taraması: deadline-İLK-aşımı → missed-tam-1-kez + snapshot-overwrite.
+        let ev = self.fusion_event_index;
+        let pend_items = self.pending_fec.len() as u64;
+        let pend_tickets = self.budget_ext.tickets.len() as u64;
+        for t in &mut self.budget_ext.tickets {
+            if !t.missed && now_ns > t.deadline_ns {
+                t.missed = true;
+                self.budget_ext.tk_missed_unique =
+                    self.budget_ext.tk_missed_unique.saturating_add(1);
+                self.budget_ext.last_floor_miss = Some(FloorMissSnapshot {
+                    block_id: t.block_id,
+                    generation: t.generation,
+                    event_index: ev,
+                    pending_items: pend_items,
+                    pending_tickets: pend_tickets,
+                    cap_suppressed: false,
+                });
+            }
+        }
+        // Talepler (bounded-hesap; teşhis-sınıfı — erken-kesme available+psize-üstünde).
+        let avail = self.pacer.tokens();
+        let cutoff = avail.saturating_add(4 * DEFAULT_MTU);
+        let mut data_demand = 0u64;
+        for u in &self.tx_queue {
+            data_demand += u.size;
+            if data_demand > cutoff {
+                break;
+            }
+        }
+        let mut arq_demand = 0u64;
+        for r in &self.pending_lost {
+            arq_demand += r.unit.size;
+            if arq_demand > cutoff {
+                break;
+            }
+        }
+        let psize = self
+            .pending_fec
+            .front()
+            .map_or(self.budget_ext.profile_parity_size, |x| x.size);
+        let bulk_bytes: u64 = self.pending_fec.iter().map(|x| x.size).sum();
+        let n_tickets = self.budget_ext.tickets.len() as u32;
+        let bulk_minus_tickets =
+            bulk_bytes.saturating_sub(u64::from(n_tickets).saturating_mul(psize));
+        let oldest_age = self.budget_ext.tickets.front().map_or(0, |t| {
+            now_ns
+                .saturating_sub(t.deadline_ns.saturating_sub(0))
+                .min(now_ns)
+        });
+        let ctx = crate::budget_kernel::BudgetContext {
+            elapsed_ns: elapsed,
+            pacing_rate_bps: rate,
+            available_tokens: avail,
+            data_demand_bytes: data_demand,
+            arq_demand_bytes: arq_demand,
+            bulk_parity_demand_bytes: bulk_minus_tickets,
+            floor_tickets: n_tickets,
+            oldest_ticket_age_ns: oldest_age,
+            parity_size: psize,
+            srtt_ns: self.rtt.srtt().map_or(0, dur_ns),
+        };
+        let mut st = self.budget_ext.state;
+        let d = crate::budget_kernel::step(kind, &params, &mut st, &ctx);
+        self.budget_ext.state = st;
+        if d.cap_suppressed {
+            self.budget_ext.cap_suppressed_events =
+                self.budget_ext.cap_suppressed_events.saturating_add(1);
+        }
+        // U12-EXACT-kuantum: rezerv = tam-emit-edilebilir-birimler (limit, pacer-toplamı, pending).
+        let reserved = d.parity_token_limit.checked_div(psize).map_or(0, |units| {
+            units
+                .min(avail / psize)
+                .min(self.pending_fec.len() as u64)
+                .saturating_mul(psize)
+        });
+        self.budget_ext.pending_decision = Some(d);
+        self.budget_ext.reserved_now = reserved;
+    }
+
+    /// F2-ticket-servisi (FloorCap): ticket-FIFO-önünden; hedef-bloğun-İLK-pending-item'ı (bounded-scan).
+    #[cfg(feature = "experimental-fec-budget")]
+    fn budget_service_tickets(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        if !matches!(
+            self.budget_ext.policy,
+            BudgetPolicy::FloorCapExperimental(_)
+        ) {
+            return;
+        }
+        while let Some(t) = self.budget_ext.tickets.front().copied() {
+            let Some(idx) = self
+                .pending_fec
+                .iter()
+                .position(|q| q.block_id == t.block_id)
+            else {
+                // Item-yok (yarış-artığı): ticket-düş (cancel-muhasebesi RECOVERED-yolunda yapılır).
+                self.budget_ext.tickets.pop_front();
+                continue;
+            };
+            let size = self.pending_fec[idx].size;
+            if !self.pacer.try_send(size) {
+                break; // token-yok → sonraki-opportunity (miss-taraması-rezervde)
+            }
+            let sz = self.emit_parity_at(idx, out, now_ns);
+            self.budget_ext.spent_this_opportunity =
+                self.budget_ext.spent_this_opportunity.saturating_add(sz);
+            self.budget_ext.tickets.pop_front();
+            if t.missed || now_ns > t.deadline_ns {
+                self.budget_ext.tk_late = self.budget_ext.tk_late.saturating_add(1);
+            } else {
+                self.budget_ext.tk_on_time = self.budget_ext.tk_on_time.saturating_add(1);
+            }
+        }
+    }
+
+    /// U12-adım-8: settle + waste-denetimi (normal-deterministik-yolda waste=0 — kabul-kriteri).
+    #[cfg(feature = "experimental-fec-budget")]
+    fn budget_settle(&mut self) {
+        let Some(d) = self.budget_ext.pending_decision.take() else {
+            self.budget_ext.reserved_now = 0;
+            return;
+        };
+        let Some((kind, params)) = self.budget_kind_params() else {
+            self.budget_ext.reserved_now = 0;
+            return;
+        };
+        let spent = self
+            .budget_ext
+            .spent_this_opportunity
+            .min(d.parity_token_limit);
+        if self.budget_ext.reserved_now > spent {
+            self.budget_ext.reservation_waste_total = self
+                .budget_ext
+                .reservation_waste_total
+                .saturating_add(self.budget_ext.reserved_now - spent);
+        }
+        let mut st = self.budget_ext.state;
+        let _borrowed = crate::budget_kernel::settle(kind, &params, &mut st, &d, spent);
+        self.budget_ext.state = st;
+        self.budget_ext.reserved_now = 0;
+        self.budget_ext.spent_this_opportunity = 0;
+    }
+
+    /// U-staging-hook: otorite-bağlı-staging-sonrası ticket-admission + bulk-cap (yalnız-experimental-
+    /// policy'de; LeftoverOnly'de-çağrı-inert). U11: size-sabitliği-enforce (≠profil → ticket-yok).
+    #[cfg(feature = "experimental-fec-budget")]
+    fn budget_admit_block(&mut self, block_id: u32, generation: u64, parity_size: u64) {
+        let Some((kind, params)) = self.budget_kind_params() else {
+            return;
+        };
+        if kind != crate::budget_kernel::PolicyKind::FloorCap {
+            return;
+        }
+        if self.budget_ext.profile_parity_size == 0 {
+            self.budget_ext.profile_parity_size = parity_size;
+        }
+        let caps = crate::budget_kernel::AdmissionCaps {
+            pending_items_cap: 64,
+            pending_bytes_cap: 64 * self.budget_ext.profile_parity_size.max(1),
+            floor_ticket_cap: 8,
+            per_block_admitted_cap: 8,
+            parity_size_max: 2 * DEFAULT_MTU,
+        };
+        let has_ticket = self
+            .budget_ext
+            .tickets
+            .iter()
+            .any(|t| t.block_id == block_id);
+        let size_ok = parity_size == self.budget_ext.profile_parity_size;
+        let res = crate::budget_kernel::admit(
+            &caps,
+            self.pending_fec.len() as u32,
+            self.pending_fec.iter().map(|x| x.size).sum(),
+            self.budget_ext.tickets.len() as u32,
+            0,
+            parity_size,
+            true,
+            has_ticket,
+            size_ok, // size≠profil → bulk-only (U11 strict-FIFO-güvencesi)
+        );
+        match res {
+            crate::budget_kernel::AdmissionResult::AdmittedWithFloorTicket => {
+                let rate = self.pacer.rate();
+                let srtt = self.rtt.srtt().map_or(0, dur_ns);
+                let delta =
+                    match crate::budget_kernel::floor_timing(&params, srtt, parity_size, rate) {
+                        crate::budget_kernel::FloorTiming::Eligible { deadline_delta_ns } => {
+                            deadline_delta_ns
+                        }
+                        _ => {
+                            // U7: rate=0 → askıda; deadline-ilk-pozitif-rate'te-başlar (burada: uzak-işaret).
+                            self.budget_ext.rate_zero_events =
+                                self.budget_ext.rate_zero_events.saturating_add(1);
+                            u64::MAX / 2
+                        }
+                    };
+                self.budget_ext.tickets.push_back(FloorTicket {
+                    block_id,
+                    generation,
+                    deadline_ns: self.last_now_ns.saturating_add(delta),
+                    missed: false,
+                });
+                self.budget_ext.tk_admitted = self.budget_ext.tk_admitted.saturating_add(1);
+            }
+            crate::budget_kernel::AdmissionResult::AdmittedBulkOnly => {}
+            _ => {
+                self.budget_ext.tk_rejected = self.budget_ext.tk_rejected.saturating_add(1);
+            }
         }
     }
 
     /// RECOVER_ARQ (§9): ACK-güdümlü selective retransmit. arq_aggressiveness=0 → baskıla (fec-dominant).
+    /// Commit-V: pre-parity-token-kapısı. OFF: saf-try_send (inline; byte-özdeş). ON: rezerv-korunur —
+    /// `tokens < size + reserved` → red (yalnız-tokens≥size-iken-displacement-sayılır: "would-have-sent").
+    #[inline]
+    fn try_send_pre_parity(&mut self, size: u64, is_retx: bool) -> bool {
+        #[cfg(feature = "experimental-fec-budget")]
+        {
+            let r = self.budget_ext.reserved_now;
+            if r > 0 && self.pacer.tokens() < size.saturating_add(r) {
+                if self.pacer.tokens() >= size {
+                    if is_retx {
+                        self.budget_ext.retx_displaced =
+                            self.budget_ext.retx_displaced.saturating_add(size);
+                    } else {
+                        self.budget_ext.new_data_displaced =
+                            self.budget_ext.new_data_displaced.saturating_add(size);
+                    }
+                }
+                return false;
+            }
+        }
+        #[cfg(not(feature = "experimental-fec-budget"))]
+        let _ = is_retx;
+        self.pacer.try_send(size)
+    }
+
     fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         let lost: Vec<LostSeq> = self
             .pending_lost
@@ -2055,7 +2548,7 @@ impl Sender {
                         continue;
                     };
                     let rec = self.pending_lost[pos];
-                    if !self.pacer.try_send(rec.unit.size) {
+                    if !self.try_send_pre_parity(rec.unit.size, true) {
                         break; // token yok → sonraki tick'te (deadline plandan düşmez, §9).
                     }
                     self.pending_lost.remove(pos);
@@ -2158,7 +2651,7 @@ impl Sender {
                 i += 1;
                 continue; // henüz vadesi gelmedi.
             }
-            if !self.pacer.try_send(self.dup_queue[i].unit.size) {
+            if !self.try_send_pre_parity(self.dup_queue[i].unit.size, true) {
                 break; // token yok.
             }
             let dup = self.dup_queue.remove(i);
@@ -2188,7 +2681,7 @@ impl Sender {
         while let Some(front) = self.tx_queue.front().copied() {
             // [R3/ADIM-6] Burst clamp artık pipeline'da kanal-türevli set_burst_cap ile (PreConverge floor
             // rate → burst_cap = 1 birim). Ayrı PreConverge özel-durumu GEREKMEZ (tek kapı, tüm state'ler).
-            if !self.pacer.try_send(front.size) {
+            if !self.try_send_pre_parity(front.size, false) {
                 break;
             }
             self.tx_queue.pop_front();

@@ -11,3 +11,8 @@ tokio.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["time", "rt", "macros", "test-util"] }
+
+[features]
+# Commit-V: test-only/non-default CANLI-BÜTÇE-PROTOTİPİ (CONDITIONAL-GO).
+# OFF (default): FloorCap-kodu-üretim-yoluna-BAĞLANMAZ; derlenmiş-yol-baseline-özdeş.
+experimental-fec-budget = []
