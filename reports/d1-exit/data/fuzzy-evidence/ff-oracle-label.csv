@@ -1,0 +1,6 @@
+profile,dlop_r0,dlop_r1,dlop_r2,dlop_r4,best_r,delta_best_vs_r0,oracle_label,current_fuzzy_class
+blackout30,0.9737,0.9737,0.9737,0.9737,r0,0.0000,EquivalentSet,CorrectZero
+ge_burst,0.9737,0.9737,0.9737,0.9737,r0,0.0000,EquivalentSet,CorrectZero
+loss_high,0.9737,0.9737,0.9737,0.9737,r0,0.0000,EquivalentSet,CorrectZero
+loss_med,0.9737,0.9737,0.9737,0.9737,r0,0.0000,EquivalentSet,CorrectZero
+nominal,0.9737,0.9737,0.9737,0.9737,r0,0.0000,EquivalentSet,CorrectZero
