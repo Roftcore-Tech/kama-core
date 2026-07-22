@@ -1,0 +1,2 @@
+policy=leftover;ent_share=150;hc_share=250;ent_cap=4800;hc_cap=9600;ticket_cap=8;t_floor_mult=2000;op=3000;ext=90000;seed=102;w=400
+hash=b9248cc52404ee57
