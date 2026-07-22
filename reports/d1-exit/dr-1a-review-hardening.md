@@ -1,5 +1,15 @@
 # DR-1a REVIEW-HARDENING RAPORU (Commit I+J) — nihai-kapanış-kanıtları
 
+> **COMMIT-K-SUPERSESSION-NOTU (authority-continuity-turu; sessiz-değişiklik-yasağı-gereği):**
+> (1) §1'deki 2.8-nüansı ("zaten-enqueue-edilmiş-parity'nin EMİSYONU current-authority-emisyon-
+> kapısına-tabidir") Commit-K'da BİLİNÇLİ-DEĞİŞTİ: kuyruk-üyeliği=kalıcı-emisyon-izni (block-stable,
+> Seçenek-1) — current-mode kuyruklu-parity'yi-artık-BASTIRAMAZ (kanıt: emission_continuity.rs).
+> (2) §6-tablosundaki `canceled_r_total`-satırı o-tarihte diag_recovered_cancels'a (DATA-retransmit-
+> iptalleri) bağlıydı — Commit-K REBIND: artık PARITY-iptalleri (RECOVERED-parity-cancel); boylamsal-
+> diag-karşılaştırmalarında seri-anlamı-değişir. (3) Latch-imzası genişledi (+block_id+parity_size;
+> staging-dahili) ve diag'a `parity_enqueue_rejected_count`+`foreign_authority_rejected_count` eklendi.
+> Güncel-otorite: [dr-1a-authority-continuity.md](dr-1a-authority-continuity.md).
+
 > Talimat: "DR-1a IMPLEMENTATION FUNCTIONALLY PASS — FINAL CLOSURE PENDING REVIEW-HARDENING".
 > Bu-rapor 5-kapanış-maddesinin kanıt-belgesidir: (1) mode-transition-blok-sınırı-YAPISAL-garantisi,
 > (2) gerçek-fuzzy-E2E, (3) G/H-sahiplik-corrigendum'u, (4) wire/profil-hüküm-daraltması,

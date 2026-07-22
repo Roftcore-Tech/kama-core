@@ -1,5 +1,12 @@
 # DR-S5-4 — sender-RECOVERED-wiring: retransmit-cancel + retention-release + recovered→confirmed_logical [ONAYLANDI + UYGULANDI]
 
+> **COMMIT-K-ADDENDUM (authority-continuity-turu):** on_recovered_control yazım-kümesi (i)(ii)(iii)'e
+> **(iv) pending_fec parity-CANCEL** eklendi (blok-decode-edildi → kuyruklu-parity-anlamsız; block_id-
+> bazlı-retain; sayaç `parity_canceled_total` → diag `canceled_r_total`). Bu-DR'ın "SALT-LOGICAL"
+> beyanındaki yazım-kümesi-genişlemesidir — bw_sampler/btlbw/credit/pacer'a SIFIR-satır-ilkesi ve
+> N8-bit-özdeşlik AYNEN-korunur (emisyon-kuyruğu kredi-yolu-değildir; iptal=gelecek-gönderim-yok-olur).
+> Kanıt: emission_continuity.rs::t66 (+çift-sayım-pini). Ayrıntı: reports/d1-exit/dr-1a-authority-continuity.md.
+
 - **Sprint:** 5d-3 (cerrahi; §2-protokol). **Statü:** ONAYLANDI (Abkarada, 2026-07-21) — **§4 SEÇENEK-A**
   (diag_recovered_cancels + ConfirmSource-marker; send_generation-semantiği-dokunulmadı; B=ileride-ayrı-alt-DR).
   Üç-uygulama-şartı karşılandı: (1) N8-bit-özdeşlik-testi commit'te (`dr_s5_4_n8_recovered_does_not_change_btlbw`),

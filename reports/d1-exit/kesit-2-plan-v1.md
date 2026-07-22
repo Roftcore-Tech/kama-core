@@ -38,3 +38,11 @@ capacity-step-down tanımlı; horizon/censoring-raporu-zorunlu. (Production/whit
 hazırsa; controller'a-BAĞLANMAZ (tasarım-verisi).
 
 **F. Adaptif-arm'lar:** controller-ratio-arm YALNIZ-1a-impl-sonrası; synchronized-FEC+ARQ-arm YALNIZ-1b/1d-sonrası.
+
+**G. Emergency/no-rule-örtüşme-bulgusu (Commit-J/K-girdisi; grid+rule-coverage-tasarımına):** Fixture-
+geometrisinde GERÇEK-emergency-bölgesi (bw.low>500 ⇔ bw<75kB/s) non-zero-FEC-kurallarının-öncül-
+uzaylarından (R2:bw.high, R3:bw.med∧loss.med) AYRIK ve no-rule-bölgesiyle-ÇAKIŞIR → gerçek-yol-
+emergency'de requested-ratio-sıfır-olabilir; `EmergencyPendingArbitration` non-zero-dalı-yalnız-
+enjeksiyonlu-unit'te-görülür. SONUÇ: emergency-FEC-politikası-bugün-ampirik-olarak-anlamsız; 1b/1d+
+kalibrasyon-öncesi-ürün-davranışı-olarak-YORUMLANMAZ. Kesit-2-grid'i emergency-bölge-hücrelerini ve
+rule-coverage-boşluk-analizini (hangi-girdi-bölgeleri-hiçbir-kuralı-ateşlemiyor) ayrıca-örneklemeli.

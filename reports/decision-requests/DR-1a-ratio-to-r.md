@@ -17,7 +17,7 @@ enum FecActuationMode { Manual /* DEFAULT */, Controller }
 
 | Mode | FEC-açık-mı kararı | `set_fec_enabled(b)` | `fec_parity_ratio` |
 |---|---|---|---|
-| **Manual** (default) | `fec_enabled`-bool (mevcut-DR-S5-1 davranışı AYNEN) | ETKİLİ (tek-yetkili) | OKUNMAZ (dead-output-kalır; telemetri-görünür) |
+| **Manual** (default) | `fec_enabled`-bool (mevcut-DR-S5-1 davranışı AYNEN — **COMMIT-K-CORRIGENDUM:** enqueue-while-disabled artık-RED+sayaç ve drain-mode-kapısı-kalktı; pause/resume-semantiği-bilinçli-son, bkz. dr-1a-authority-continuity.md) | ETKİLİ (tek-yetkili) | OKUNMAZ (dead-output-kalır; telemetri-görünür) |
 | **Controller** | `latched_ratio > 0` (blok-başına; §9-latch) | **ETKİSİZ** — çağrı no-op + `diag_manual_toggle_ignored`-sayaç (hata-değil; geçiş-dönemi-gürültüsüz) | TEK-YETKİLİ (r-türetimi §1-§8) |
 
 Mode-geçişi: açık-API `set_fec_actuation(mode)`; geçiş **yalnız block-boundary'de-etkinleşir** (mid-block-
