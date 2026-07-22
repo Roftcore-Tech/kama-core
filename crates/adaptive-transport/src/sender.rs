@@ -262,6 +262,39 @@ pub struct FecActuationDiag {
     pub transition_applied_count: u64,
 }
 
+/// Commit-N (1b-evidence): SON-token-denial anlık-görüntüsü — SALT-TEŞHİS (politika-değişikliği-YOK).
+/// TOKEN-DENIAL-KESİN-TANIMI: "emisyon-İZNİ-olan (kuyruklu) parity'nin mevcut-token-şartını
+/// (`pacer.try_send`) sağlayamadığı PLANLAMA-anı". ŞUNLAR-DENIAL-DEĞİL (bu-yapıya-YAZILMAZ):
+/// ratio-clamp · no-rule/emergency/ManualDisabled/ForeignAuthority-suppression · legacy-enqueue-reddi ·
+/// RECOVERED-cancellation · mode-transition · blok-terk. Her-denial-TAM-overwrite (carryover-yok);
+/// unbounded-history/alloc/IO/format/RNG-yok (Copy-alanlar). `token_balance_before` mevcut-READ-ONLY
+/// `TokenBucket::tokens()`-erişimcisinden (mühürlü-TokenBucket'a-DOKUNULMADI); token-maliyeti =
+/// denied-item-boyutu (try_send-argümanı). Per-block-emitted-ledger'ı SENDER-TUTMAZ (bounded-model);
+/// `emitted_r_total_at_denial` global-sayaç-anıdır — blok-düzeyi-ledger harness/test-collector'da.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FecTokenDenialSnapshot {
+    /// Denial-anındaki fusion-event-index (planlama-anı-attribution'u).
+    pub denial_event_index: u64,
+    /// Reddedilen (kuyruk-önü) item'ın bloğu.
+    pub block_id: u32,
+    /// Item'ın staging-otoritesi-generation'ı (legacy-enqueue: None).
+    pub authority_generation: Option<u64>,
+    /// Item'ın staging-anı-kaynak-otoritesi.
+    pub authority_mode: FecActuationMode,
+    /// Denial-anı-kuyruk-uzunluğu (toplam-bekleyen-parity).
+    pub pending_parity_total: u64,
+    /// Aynı-bloğun-kuyruktaki-item-adedi (interleaved-blok-ayrıştırması).
+    pub pending_for_block: u64,
+    /// Reddedilen-item-boyutu = token-maliyeti (try_send-argümanı).
+    pub parity_size_bytes: u64,
+    /// Denial-anı-pacer-token-bakiyesi (READ-ONLY-erişimci).
+    pub token_balance_before: u64,
+    /// Item'ın-bloğunun-planned/manual-r'ı (otorite-staging-tag'i; legacy: None).
+    pub planned_r: Option<u16>,
+    /// Denial-anı-global-emitted-sayacı (per-block-DEĞİL — bounded-model; ledger-harness'ta).
+    pub emitted_r_total_at_denial: u64,
+}
+
 /// Commit-G: ratio→r SAF-hesabı (§8). Half-up; float/RNG/platform-rounding-YOK; overflow-kanıtı:
 /// ratio≤1000 ∧ k_actual≤255 → çarpım ≤255_000 « u64. `R_ENQUEUE_CAP`-YOK (tek-clamp profile-bound).
 #[must_use]
@@ -349,6 +382,10 @@ struct PendingFecParity {
     block_id: u32,
     esi: u16,
     size: u64,
+    // ── Commit-N (1b-evidence; SALT-TEŞHİS — davranışa-etkisiz attribution-tag'leri) ──
+    authority_generation: Option<u64>, // otorite-bağlı-staging: witness-gen; legacy-enqueue: None
+    authority_mode: FecActuationMode, // staging-anı-kaynak-otorite (witness / current-mode-snapshot)
+    planned_r: Option<u16>,           // otorite-bağlı: bloğun-planned/manual-r; legacy: None
 }
 
 /// confirmed_logical üst-sınırı (DR-S5-3; SR-AUDIT-001 unbounded-alloc-yok). Engine
@@ -565,6 +602,8 @@ pub struct Sender {
     parity_enqueue_rejected_count: u64, // Commit-K: izinsiz-legacy-enqueue-reddi
     foreign_authority_rejected_count: u64, // Commit-K: yabancı-witness-reddi
     token_denied_r_gauge: u64,  // Commit-J-rename (eski: budget_denied_r_gauge) — §8.1-exact-tanım
+    last_token_denial: Option<FecTokenDenialSnapshot>, // Commit-N: son-denial TAM-overwrite (salt-teşhis)
+    token_denial_count_total: u64, // Commit-N: kümülatif-denial-OLAYI-sayısı (saturating)
     last_transition_event_index: u64, // Commit-I
     transition_applied_count: u64, // Commit-I: saturating
     pending_fec: VecDeque<PendingFecParity>, // engine FEC-encode-sonrası enqueue; sender pace-eder
@@ -710,6 +749,8 @@ impl Sender {
             parity_enqueue_rejected_count: 0,
             foreign_authority_rejected_count: 0,
             token_denied_r_gauge: 0,
+            last_token_denial: None,
+            token_denial_count_total: 0,
             last_transition_event_index: 0,
             transition_applied_count: 0,
             pending_fec: VecDeque::new(),
@@ -1585,13 +1626,25 @@ impl Sender {
     }
 
     /// Commit-K: OTORİTE-DOĞRULANMIŞ kuyruk-girişi (iç-yol; izin-kapısı-atlanır çünkü izin witness/
-    /// latch-kararından-türedi). Tek push-noktası: enqueued-sayacı-burada.
-    fn push_parity_authorized(&mut self, block_id: u32, esi: u16, size: u64) {
+    /// latch-kararından-türedi). Tek push-noktası: enqueued-sayacı-burada. Commit-N: attribution-
+    /// tag'leri (salt-teşhis; davranışa-etkisiz).
+    fn push_parity_authorized(
+        &mut self,
+        block_id: u32,
+        esi: u16,
+        size: u64,
+        authority_generation: Option<u64>,
+        authority_mode: FecActuationMode,
+        planned_r: Option<u16>,
+    ) {
         self.parity_enqueued_total = self.parity_enqueued_total.saturating_add(1);
         self.pending_fec.push_back(PendingFecParity {
             block_id,
             esi,
             size,
+            authority_generation,
+            authority_mode,
+            planned_r,
         });
     }
 
@@ -1618,7 +1671,14 @@ impl Sender {
         match authority.mode {
             FecActuationMode::Manual { enabled: true } => {
                 for esi in 0..manual_r {
-                    self.push_parity_authorized(block_id, esi, parity_size);
+                    self.push_parity_authorized(
+                        block_id,
+                        esi,
+                        parity_size,
+                        Some(authority.generation),
+                        authority.mode,
+                        Some(manual_r),
+                    );
                 }
                 Ok(manual_r)
             }
@@ -1724,10 +1784,24 @@ impl Sender {
         // Commit-K: STAGING — planned-parity witness-otoritesiyle-kuyruklanır (izin-kaynağı=bu-latch;
         // sonraki-global-mode-değişimi-bastıramaz). planned_r=0 → kuyruk-dokunulmaz.
         for esi in 0..r.planned_r {
-            self.push_parity_authorized(block_id, esi, parity_size);
+            self.push_parity_authorized(
+                block_id,
+                esi,
+                parity_size,
+                Some(authority.generation),
+                authority.mode,
+                Some(r.planned_r),
+            );
         }
         self.last_latch = Some(r);
         r
+    }
+
+    /// Commit-N: token-denial-teşhisi — `(son-denial-snapshot, kümülatif-denial-olay-sayısı)`.
+    /// SALT-GÖZLEM; §8.1-gauge'dan-ayrı (gauge=pending-adet; bu=attribution).
+    #[must_use]
+    pub fn diag_token_denial(&self) -> (Option<FecTokenDenialSnapshot>, u64) {
+        (self.last_token_denial, self.token_denial_count_total)
     }
 
     /// Commit-G/H: aktüasyon-teşhisi (named; son-latch + bounded-sayaçlar).
@@ -1772,7 +1846,8 @@ impl Sender {
                 self.parity_enqueue_rejected_count.saturating_add(1);
             return;
         }
-        self.push_parity_authorized(block_id, esi, size);
+        let mode = self.fec_mode;
+        self.push_parity_authorized(block_id, esi, size, None, mode, None);
     }
 
     /// DR-S5-3: wire-ACK'lenen seq'in logical-teyidini ayrı-deftere yazar (BOUNDED). **SALT-LOGICAL —
@@ -1898,9 +1973,28 @@ impl Sender {
     /// DOKUNMAZ; data/retx ile aynı-API). send-record-hint üretir.
     fn plan_fec_parity(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         while let Some(&p) = self.pending_fec.front() {
+            let balance_before = self.pacer.tokens(); // READ-ONLY (mühürlü-TokenBucket'a-dokunulmaz)
             if !self.pacer.try_send(p.size) {
                 // Commit-G: budget-denied-GÖRÜNÜRLÜĞÜ (gauge; 1b-tasarım-girdisi — politika-DEĞİŞMEDİ).
                 self.token_denied_r_gauge = self.pending_fec.len() as u64;
+                // Commit-N: attribution-snapshot (TAM-overwrite; yalnız-GERÇEK-token-denial-yolu).
+                self.token_denial_count_total = self.token_denial_count_total.saturating_add(1);
+                self.last_token_denial = Some(FecTokenDenialSnapshot {
+                    denial_event_index: self.fusion_event_index,
+                    block_id: p.block_id,
+                    authority_generation: p.authority_generation,
+                    authority_mode: p.authority_mode,
+                    pending_parity_total: self.pending_fec.len() as u64,
+                    pending_for_block: self
+                        .pending_fec
+                        .iter()
+                        .filter(|q| q.block_id == p.block_id)
+                        .count() as u64,
+                    parity_size_bytes: p.size,
+                    token_balance_before: balance_before,
+                    planned_r: p.planned_r,
+                    emitted_r_total_at_denial: self.parity_emitted_total,
+                });
                 break; // token yok → sonraki tick (data/retx ile aynı pacing-davranışı).
             }
             self.parity_emitted_total = self.parity_emitted_total.saturating_add(1);
@@ -3109,6 +3203,154 @@ mod tests {
         let g1 = s.open_fec_block_authority().generation();
         let g2 = s.open_fec_block_authority().generation();
         assert!(g2 > g1, "monoton-generation");
+    }
+
+    // ── Commit-N: token-denial ATTRIBUTION (blok/event/generation) + kesin-semantik-ayrım ──
+    #[test]
+    #[allow(deprecated)] // legacy-enqueue-reddi≠denial-dalını-da-test-eder
+    fn commit_n_token_denial_attribution_and_semantics() {
+        let mut s = Sender::new();
+        s.set_manual_fec_enabled(true).unwrap();
+        // (a) DENIAL-DEĞİL-yolları snapshot-YAZMAZ: legacy-enqueue-reddi + suppression'lar + clamp.
+        s.set_manual_fec_enabled(false).unwrap();
+        s.enqueue_fec_parity(9, 0, 64); // izinsiz-red
+        assert_eq!(s.diag_token_denial(), (None, 0), "enqueue-reddi≠denial");
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        s.on_event(Event::AppData(unit(0)), 0);
+        let snap = s.controller_decision_snapshot().unwrap();
+        let nr = ControllerDecisionSnapshot {
+            no_rule: true,
+            ..snap
+        };
+        let aa = s.open_fec_block_authority();
+        let _ = s.fec_controller_latch(aa, Some(nr), 8, 4, 30, 64);
+        let em = ControllerDecisionSnapshot {
+            emergency: true,
+            ratio_permille: 500,
+            ..snap
+        };
+        let ab = s.open_fec_block_authority();
+        let _ = s.fec_controller_latch(ab, Some(em), 8, 4, 31, 64);
+        let clamp = ControllerDecisionSnapshot {
+            ratio_permille: 1000,
+            ..snap
+        }; // computed-8→clamp-4
+        let ac = s.open_fec_block_authority();
+        let l = s.fec_controller_latch(ac, Some(clamp), 8, 4, 32, 100_000);
+        assert_eq!((l.computed_r, l.planned_r), (8, 4), "clamp-oldu");
+        assert_eq!(
+            s.diag_token_denial().0,
+            None,
+            "no-rule/emergency/clamp≠denial (emisyon-denenmedi)"
+        );
+        // (b) GERÇEK-denial: 100kB-item try_send-red → snapshot TAM-attribution.
+        let out = s.on_event(Event::TimerFired(Timer::Pto), MS);
+        let _ = out;
+        let (d, n) = s.diag_token_denial();
+        let d = d.expect("gerçek-token-denial-kaydedildi");
+        assert!(n >= 1);
+        assert_eq!(d.block_id, 32, "denied-item-bloğu");
+        assert_eq!(
+            d.authority_mode,
+            FecActuationMode::Controller,
+            "staging-otoritesi"
+        );
+        assert!(
+            d.authority_generation.is_some(),
+            "otorite-bağlı-staging: gen-attribution"
+        );
+        assert_eq!(d.planned_r, Some(4), "bloğun-planned_r-tag'i");
+        assert_eq!(d.parity_size_bytes, 100_000);
+        assert!(
+            d.token_balance_before < 100_000,
+            "bakiye<maliyet (denial-tutarlı)"
+        );
+        assert_eq!(d.pending_for_block, 4, "aynı-blok-4-item-kuyrukta");
+        assert_eq!(d.pending_parity_total, 4);
+        assert_eq!(
+            d.denial_event_index,
+            s.diag_fusion_input_snapshot().unwrap().event_index,
+            "planlama-anı-event-attribution"
+        );
+        // (c) RECOVERED-cancellation DENIAL-SAYILMAZ: blok-32-cancel → sayaç/snapshot-DEĞİŞMEZ.
+        let n_before = s.diag_token_denial().1;
+        s.on_event(
+            Event::RecoveredControl(RecoveredInfo {
+                units: vec![RecoveredUnit {
+                    unit_id: 3200,
+                    block_id: 32,
+                    esi: 0,
+                }],
+            }),
+            2 * MS,
+        );
+        assert_eq!(
+            s.diag_token_denial().1,
+            n_before,
+            "cancel≠denial (sayaç-sabit)"
+        );
+        assert_eq!(
+            s.diag_fec_actuation().canceled_r_total,
+            4,
+            "4-item-cancel-edildi"
+        );
+    }
+
+    // ── Commit-N: interleaved-blok-denial-ayrıştırması + TAM-overwrite (carryover-yok) + saturation ──
+    #[test]
+    #[allow(deprecated)] // legacy-enqueue None-attribution-dalını-da-test-eder
+    fn commit_n_interleaved_denial_overwrite_and_saturation() {
+        let mut s = Sender::new();
+        s.set_manual_fec_enabled(true).unwrap();
+        // Blok-40 (otorite-bağlı; küçük-64B → emit-edilebilir) + blok-41 (legacy; 100kB → hep-denied).
+        let w = s.open_fec_block_authority();
+        let g40 = w.generation();
+        assert_eq!(s.close_fec_block_manual(w, 40, 1, 64), Ok(1));
+        s.enqueue_fec_parity(41, 0, 100_000); // legacy: gen=None, planned=None
+                                              // İlk-tick'ler: 64B-emit-olana-kadar (önde) — sonra-41-öne-geçer-ve-denial-41'e-atfedilir.
+        let mut denial_41_seen = false;
+        for t in 1..400u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), t * 10 * MS);
+            if let (Some(d), _) = s.diag_token_denial() {
+                if d.block_id == 41 {
+                    denial_41_seen = true;
+                    assert_eq!(
+                        d.authority_generation, None,
+                        "legacy-item: gen-attribution-None"
+                    );
+                    assert_eq!(d.planned_r, None, "legacy-item: planned-None");
+                    assert_eq!(d.authority_mode, FecActuationMode::Manual { enabled: true });
+                    break;
+                }
+                // 41'den-önce-görülen-denial-varsa-40'a-ait-olmalı (interleaved-ayrışma):
+                assert_eq!(d.block_id, 40);
+                assert_eq!(
+                    d.authority_generation,
+                    Some(g40),
+                    "blok-40-denial: witness-gen"
+                );
+            }
+        }
+        assert!(denial_41_seen, "blok-41-denial-atfedildi");
+        assert_eq!(
+            s.diag_fec_actuation().emitted_r_total,
+            1,
+            "blok-40-emit-oldu (ayrışma-kanıtı)"
+        );
+        // TAM-overwrite/carryover-yok: son-snapshot-41'in (Some-gen-carryover-YOK — None-üzerine-yazıldı).
+        let (d, _) = s.diag_token_denial();
+        assert_eq!(
+            d.unwrap().authority_generation,
+            None,
+            "overwrite: önceki-Some(gen)-taşınmadı"
+        );
+        // Saturation: denial-sayacı-MAX'ta-kalır.
+        s.token_denial_count_total = u64::MAX - 1;
+        s.on_event(Event::TimerFired(Timer::Pto), 5000 * MS);
+        assert_eq!(s.diag_token_denial().1, u64::MAX);
+        s.on_event(Event::TimerFired(Timer::Pto), 5001 * MS);
+        assert_eq!(s.diag_token_denial().1, u64::MAX, "saturating: wrap-yok");
     }
 
     // ── Commit-D §4.3: snapshot = controller-input CANONICAL-eşitliği ──
