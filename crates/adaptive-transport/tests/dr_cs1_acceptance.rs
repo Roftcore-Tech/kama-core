@@ -9,31 +9,171 @@
 //! INV-CS-6 completion). Kabul-matrisi kalemleri talimat-§4'te normatiftir.
 #![cfg(feature = "experimental-cold-start")]
 
-// ── F1 (M1: on_event_batch + next_wakeup_ns + Tick + adapter) ──────────────────────────────
+// ── F1 (M1: on_event_batch + next_wakeup_ns + Tick + adapter) — İMPLEMENTE ─────────────────
 
-#[test]
-#[ignore = "F1: batch-of-1 ≡ legacy tekil on_event kimliği (INV-CS-5; flag-ON)"]
-fn f1_batch_of_one_equals_legacy_single() {}
+use adaptive_transport::sender::{
+    AckInfo, Event, OpaqueUnit, Sender, SenderState, Timer, TransmitDecision,
+};
+use std::time::Duration;
 
-#[test]
-#[ignore = "F1: Tick-only no-op (EK5-E2) — boş-batch + due-yok → schedule_transmit/drain çağrılmaz; counter/trace değişmez"]
-fn f1_tick_only_noop_exact() {}
+const MS: u64 = 1_000_000;
 
-#[test]
-#[ignore = "F1/DI-12E: aynı-now_ns İKİ inbound farklı-geliş-sırası → AYNI sonuç (tip-önceliği determinizmi; cfg(test) exposed-timer-hook)"]
-fn f1_di12e_same_ns_two_inbound_order_invariant() {}
+fn mk_seq() -> Vec<(u64, Event)> {
+    // Deterministik golden-dizi: AppData@0 → Pto-tick'ler → Ack(seq0)@250ms → Pto'lar → AppData.
+    let mut v: Vec<(u64, Event)> = vec![(0, Event::AppData(OpaqueUnit { id: 1, size: 1200 }))];
+    for i in 1..=20u64 {
+        v.push((i * 10 * MS, Event::TimerFired(Timer::Pto)));
+    }
+    v.push((
+        250 * MS,
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::from_millis(1),
+        }),
+    ));
+    for i in 26..=40u64 {
+        v.push((i * 10 * MS, Event::TimerFired(Timer::Pto)));
+    }
+    v.push((410 * MS, Event::AppData(OpaqueUnit { id: 2, size: 1200 })));
+    for i in 42..=60u64 {
+        v.push((i * 10 * MS, Event::TimerFired(Timer::Pto)));
+    }
+    v
+}
 
+/// INV-CS-5: batch-of-1 ≡ legacy tekil on_event (flag-ON) — output-dizisi + state + wakeup özdeş.
 #[test]
-#[ignore = "F1/DI-12F: aynı-timestamp AYRI socket-read'ler adapter'da TEK batch → ACK kazanır (adapter atomiklik)"]
-fn f1_di12f_adapter_single_batch_ack_wins() {}
+fn f1_batch_of_one_equals_legacy_single() {
+    let mut a = Sender::new();
+    let mut b = Sender::new();
+    let mut out_a: Vec<TransmitDecision> = Vec::new();
+    let mut out_b: Vec<TransmitDecision> = Vec::new();
+    for (t, ev) in mk_seq() {
+        out_a.extend(a.on_event(ev.clone(), t));
+        out_b.extend(b.on_event_batch(t, vec![ev]));
+    }
+    assert_eq!(
+        out_a, out_b,
+        "batch-of-1 output-dizisi legacy'yle-özdeş-değil"
+    );
+    assert_eq!(a.state(), b.state(), "state-uyuşmazlığı");
+    assert_eq!(a.next_wakeup_ns(), b.next_wakeup_ns());
+}
 
+/// EK5-E2: Tick-only exact-no-op — boş-batch + due-yok + iş-yok → output-boş, core-koşmaz
+/// (fuzzy-event-index ilerlemez → snapshot-None-kalır), state-değişmez.
 #[test]
-#[ignore = "F1/DI-12G: timer-due-DEĞİLKEN inbound-ACK scheduling-işi üretir → no-op-bastırması UYGULANMAZ (output normal çıkar)"]
-fn f1_di12g_inbound_batch_completes_scheduling() {}
+fn f1_tick_only_noop_exact() {
+    let mut s = Sender::new();
+    let out = s.on_event(Event::Tick, 5 * MS);
+    assert!(out.is_empty(), "no-op output-boş-olmalı");
+    assert_eq!(s.state(), SenderState::Idle, "state-değişmemeli");
+    assert!(
+        s.diag_fusion_input_snapshot().is_none(),
+        "core-koşmamalı (fuzzy-evaluate-izi-yok)"
+    );
+    // Gelecek-deadline'lı hook varken (due-DEĞİL) Tick yine no-op + hook ateşlenmez.
+    s.cs_test_arm_hook_timer(100 * MS, 7);
+    let out2 = s.on_event(Event::Tick, 50 * MS);
+    assert!(out2.is_empty());
+    assert!(s.cs_test_hook_fired().is_empty(), "erken-fire-yasak");
+    assert_eq!(s.next_wakeup_ns(), Some(100 * MS));
+}
 
+/// DI-12E (F1): aynı-now_ns İKİ inbound FARKLI geliş-sırasıyla aynı-batch'e → AYNI sonuç
+/// (tip-önceliği: ACK-önce; stable-sort) + due-hook BİR-KEZ, inbound-SONRASI (faz-3).
 #[test]
-#[ignore = "F1/C2 post-condition: her on_event_batch dönüşünde next_wakeup_ns ∈ {None, gelecek} (busy-loop yapısal-imkansız)"]
-fn f1_c2_postcondition_no_due_after_batch() {}
+fn f1_di12e_same_ns_two_inbound_order_invariant() {
+    let build = |order_swapped: bool| -> (Vec<TransmitDecision>, SenderState, usize) {
+        let mut s = Sender::new();
+        // warm: ilk-DATA + ACK → Startup'a-çıkmış-durumda ikinci-tur-olayları anlamlı.
+        let _ = s.on_event(Event::AppData(OpaqueUnit { id: 1, size: 1200 }), 0);
+        let ack = Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::from_millis(1),
+        });
+        let app = Event::AppData(OpaqueUnit { id: 2, size: 1200 });
+        s.cs_test_arm_hook_timer(100 * MS, 1); // due@batch-anı
+        let inbound = if order_swapped {
+            vec![app, ack]
+        } else {
+            vec![ack, app]
+        };
+        let out = s.on_event_batch(100 * MS, inbound);
+        (out, s.state(), s.cs_test_hook_fired().len())
+    };
+    let (o1, st1, f1) = build(false);
+    let (o2, st2, f2) = build(true);
+    assert_eq!(
+        o1, o2,
+        "geliş-sırası-değişince-sonuç-değişti (atomiklik-ihlali)"
+    );
+    assert_eq!(st1, st2);
+    assert_eq!(f1, 1, "due-hook-tam-BİR-kez");
+    assert_eq!(f2, 1);
+}
+
+/// DI-12F (F1; adapter): aynı-timestamp AYRI "socket-read"ler adapter'da TEK batch olur
+/// (per-iterasyon tek-damga) → tek-batch'te işlenir; hook BİR-kez-inbound-sonrası ateşler.
+/// (F4'te gerçek-CS-timer'larla + gerçek-runner'la tam-tekrar.)
+#[test]
+#[cfg(feature = "experimental-fec-budget")]
+fn f1_di12f_adapter_single_batch_ack_wins() {
+    use adaptive_transport::udp_runner::CsBatchAdapter;
+    let mut ad = CsBatchAdapter::new(500 * MS);
+    // iki AYRI read, aynı-iterasyon → aynı-damga, tek-batch.
+    ad.push(Event::AckReceived(AckInfo {
+        acked_seqs: vec![0],
+        ack_delay: Duration::ZERO,
+    }));
+    ad.push(Event::AppData(OpaqueUnit { id: 9, size: 1200 }));
+    assert_eq!(ad.stamp(), 500 * MS);
+    let (bn, bev) = ad.drain();
+    assert_eq!(bn, 500 * MS, "damga-iterasyon-başına-BİR-kez");
+    assert_eq!(bev.len(), 2, "aynı-ns-olaylar-TEK-batch'te");
+    // Sender-tarafı: tek-batch + due-hook → hook inbound-SONRASI bir-kez.
+    let mut s = Sender::new();
+    let _ = s.on_event(Event::AppData(OpaqueUnit { id: 1, size: 1200 }), 0);
+    s.cs_test_arm_hook_timer(bn, 2);
+    let _ = s.on_event_batch(bn, bev);
+    assert_eq!(s.cs_test_hook_fired().len(), 1, "tek-batch → tek-fire");
+}
+
+/// DI-12G (EK5-E2 daraltması): timer-due-DEĞİLKEN inbound scheduling-işi üretir → no-op-
+/// bastırması inbound-içeren-batch'e UYGULANMAZ (output normal-çıkar).
+#[test]
+fn f1_di12g_inbound_batch_completes_scheduling() {
+    let mut s = Sender::new();
+    let out = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    assert!(
+        !out.is_empty(),
+        "inbound-batch output-üretmeli (no-op-bastırması-yanlış-uygulanmış)"
+    );
+    assert!(s.next_wakeup_ns().is_none(), "F1: üretim-timer'ı-yok");
+}
+
+/// C2 post-condition: her batch-dönüşünde next_wakeup ∈ {None, gelecek}; due-hook retire-on-fire
+/// (çift-fire-yok; sonraki-boş-batch E2-no-op).
+#[test]
+fn f1_c2_postcondition_no_due_after_batch() {
+    let mut s = Sender::new();
+    s.cs_test_arm_hook_timer(5 * MS, 3);
+    // due@10ms → boş-batch yine-de faz-3'ü koşar (due-var; E2-no-op-DEĞİL).
+    let _ = s.on_event_batch(10 * MS, Vec::new());
+    assert_eq!(s.cs_test_hook_fired(), &[(10 * MS, 3)], "overdue-hook-fire");
+    assert!(
+        s.next_wakeup_ns().is_none_or(|w| w > 10 * MS),
+        "C2: dönüşte-due-kalmamalı"
+    );
+    // aynı-anda tekrar boş-batch → E2-no-op + çift-fire-yok.
+    let out2 = s.on_event_batch(10 * MS, Vec::new());
+    assert!(out2.is_empty());
+    assert_eq!(
+        s.cs_test_hook_fired().len(),
+        1,
+        "retire-on-fire (çift-fire-yasak)"
+    );
+}
 
 // ── F2A (probe-emission feasibility) ───────────────────────────────────────────────────────
 

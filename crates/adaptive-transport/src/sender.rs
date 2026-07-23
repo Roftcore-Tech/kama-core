@@ -93,6 +93,20 @@ pub enum Event {
     /// retransmit-cancel + retention-release + logical-defter; **rate/pacing/schedule yoluna GİRMEZ**
     /// (emit-üretmez; N8: recovered≠ACK — BtlBw/delivered-kredi-yolu AÇILMAZ).
     RecoveredControl(RecoveredInfo),
+    /// DR-CS-1 M1 (EK5-i): `Tick` ≡ `on_event_batch{now_ns, inbound=[]}` — tek-giriş-noktası,
+    /// çift-semantik-yok. Adapter CS-wakeup'larında üretir. E2: due-exposed-timer VE bekleyen-
+    /// scheduling-işi yoksa EXACT-NO-OP (schedule_transmit/drain çağrılmaz).
+    #[cfg(feature = "experimental-cold-start")]
+    Tick,
+}
+
+/// DR-CS-1 M1: exposed-timer türleri (`next_wakeup_ns` sözleşmesine bağlı küme). Scope: CS-probe/
+/// CS-giveup/(d)-PTO (F2A/F2B'de eklenir) + TEST-ONLY hook (F1 atomiklik-kanıtı; üretim-yolu-değil).
+#[cfg(feature = "experimental-cold-start")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CsTimerKind {
+    /// TEST-ONLY (DI-12E/F/G F1-sürümleri): fire-kaydı üretir, başka-etkisi-yok.
+    TestHook(u8),
 }
 
 /// DR-S5-4: RECOVERED-control'ün sender-girdisi. Engine, Control::Recovered'ın logical (block_id,
@@ -720,6 +734,11 @@ pub struct Sender {
     last_transition_event_index: u64, // Commit-I
     transition_applied_count: u64, // Commit-I: saturating
     pending_fec: VecDeque<PendingFecParity>, // engine FEC-encode-sonrası enqueue; sender pace-eder
+    // ── DR-CS-1 M1 (cfg-gated; flag-OFF'ta derlenmez → struct byte-özdeş) ──
+    #[cfg(feature = "experimental-cold-start")]
+    cs_wakeup: Vec<(u64, CsTimerKind)>, // exposed-timer kümesi (deadline_ns, kind); retire-on-fire
+    #[cfg(feature = "experimental-cold-start")]
+    cs_hook_fired: Vec<(u64, u8)>, // TEST-ONLY gözlem: hook-timer fire-kayıtları (now_ns, id)
 
     // ── send-record ↔ ACK-eşleme (DR-S5-3; SALT-LOGICAL — BtlBw/delivered'e BESLENMEZ) ──
     sent_logical: BTreeMap<u64, SrLogicalRef>, // wire-seq → logical (FEC-parity plan_fec_parity-içi; DATA engine-post-emit register_sent_logical — DR-S5-6)
@@ -869,6 +888,10 @@ impl Sender {
             last_transition_event_index: 0,
             transition_applied_count: 0,
             pending_fec: VecDeque::new(),
+            #[cfg(feature = "experimental-cold-start")]
+            cs_wakeup: Vec::new(),
+            #[cfg(feature = "experimental-cold-start")]
+            cs_hook_fired: Vec::new(),
             sent_logical: BTreeMap::new(), // DR-S5-3
             confirmed_logical: VecDeque::new(),
             diag_recovered_cancels: 0,      // DR-S5-4
@@ -935,7 +958,19 @@ impl Sender {
             self.on_recovered_control(info);
             return Vec::new();
         }
+        // DR-CS-1 M1 (EK5-i): Tick ≡ boş-batch — tek-giriş-noktası (çift-semantik-yok).
+        #[cfg(feature = "experimental-cold-start")]
+        if matches!(event, Event::Tick) {
+            return self.on_event_batch(now_ns, Vec::new());
+        }
+        self.on_event_core(event, now_ns);
+        self.schedule_transmit(now_ns)
+    }
 
+    /// on_event çekirdeği: dispatch + fuzzy + state + rate/burst — `schedule_transmit`-HARİÇ.
+    /// DR-CS-1 M1 batch-girişi bu çekirdeği paylaşır; flag-OFF davranışı BİREBİR (salt-dikiş-
+    /// refaktörü; tek-output-seam schedule_transmit'te kalır).
+    fn on_event_core(&mut self, event: Event, now_ns: u64) {
         let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
         self.pacer.refill(dt);
         self.last_now_ns = now_ns;
@@ -957,6 +992,9 @@ impl Sender {
             Event::TimerFired(timer) => self.on_timer(timer, now_ns),
             // Yukarıda erken-dönüşle işlendi (defensive no-op; exhaustiveness için).
             Event::RecoveredControl(_) => {}
+            // on_event/on_event_batch girişinde ele-alınır (buraya ulaşmaz; exhaustiveness).
+            #[cfg(feature = "experimental-cold-start")]
+            Event::Tick => {}
         }
 
         let decision = self.fuzzy_evaluate(now_ns);
@@ -978,8 +1016,150 @@ impl Sender {
             // küçük burst'le boşalır — bu birimler STARTUP'ta emit → §3.3-B geometrik kopya ALMAZ).
             self.pacer.fill_to_cap();
         }
+    }
 
-        self.schedule_transmit(now_ns)
+    // ── DR-CS-1 M1 (EK5): ATOMİK BATCH GİRİŞİ + next_wakeup_ns + faz-makinesi ────────────────
+    // Flag-OFF'ta bu blok DERLENMEZ (INV-CS-5: legacy tekil-yol byte-for-byte). Scope: bağlanan
+    // timer'lar = CS-probe/CS-giveup/(d)-PTO (F2A/F2B'de eklenir) + TEST-ONLY hook (F1-atomiklik-
+    // kanıtları). Genel-tam-wakeup-API iddiası YOK.
+
+    /// DR-CS-1 M1 — TEK atomik giriş noktası (EK5-E1). Dört faz sırayla, tek çağrıda:
+    /// 1) authenticated-inbound işle (tip-önceliği: DATA-ACK → [probe-echo F2B] → varış-sırası)
+    /// 2) state-resolution / cancellation / disarm
+    /// 3) due exposed-timer'lar BİR KEZ (retire-on-fire)
+    /// 4) output-scheduling (tek schedule_transmit)
+    ///
+    /// Post-condition (C2, NORMATİF): dönüşte due exposed-timer kalmaz; `next_wakeup_ns()` ∈
+    /// {None, gelecek} (busy-loop yapısal-imkansız). `Event::Tick` ≡ boş-batch; E2: boş-batch +
+    /// due-yok + bekleyen-iş-yok → EXACT-NO-OP. RecoveredControl-only batch = legacy-özdeş
+    /// saf-logical (saat/schedule-ilerletmez; N8-tabanı) — due-timer-yoksa boş döner.
+    #[cfg(feature = "experimental-cold-start")]
+    pub fn on_event_batch(
+        &mut self,
+        now_ns: u64,
+        mut inbound: Vec<Event>,
+    ) -> Vec<TransmitDecision> {
+        let any_due = self.cs_any_due(now_ns);
+        // E2 exact-no-op: yalnız boş-batch (Tick) + due-yok + bekleyen-scheduling-işi-yok.
+        if inbound.is_empty() && !any_due && !self.cs_has_pending_work() {
+            return Vec::new();
+        }
+        let was_empty = inbound.is_empty();
+        // Faz-1: tip-önceliği (EK5-iv; stable-sort → aynı-tip varış-sırası korunur).
+        inbound.sort_by_key(Self::cs_type_priority);
+        let mut had_pipeline_inbound = false; // RecoveredControl/Tick pipeline'a girmez
+        for ev in inbound {
+            if let Event::RecoveredControl(info) = &ev {
+                self.on_recovered_control(info); // saf-logical (DR-S5-4; N8-tabanı)
+                continue;
+            }
+            if matches!(ev, Event::Tick) {
+                continue; // batch-içi Tick anlamsız (boş-batch-eşdeğeri); yut
+            }
+            had_pipeline_inbound = true;
+            self.on_event_core(ev, now_ns);
+        }
+        if !had_pipeline_inbound {
+            // İki-durum: boş-batch (Tick) veya RecoveredControl-only.
+            if !any_due && !was_empty {
+                // RecoveredControl-only + due-yok → legacy-özdeşlik: RecoveredControl tek-başına
+                // saat-ilerletmez/emisyon-yaratamaz (N8) — iş-olsa-bile boş döner.
+                return Vec::new();
+            }
+            if !any_due && !self.cs_has_pending_work() {
+                return Vec::new(); // savunmacı (E2'de-yakalanmıştı)
+            }
+            // Tick+iş VEYA due-timer-var → saat/refill ilerlet (core-refill muadili) → faz-2..4.
+            let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
+            self.pacer.refill(dt);
+            self.last_now_ns = now_ns;
+        }
+        // Faz-2: state-resolution / cancellation / disarm (F1: CS-state-yok; F2A/F2B genişletir).
+        self.cs_phase2_resolve(now_ns);
+        // Faz-3: due exposed-timer'lar BİR KEZ (retire-on-fire; deadline+ekleme-sırası).
+        self.cs_phase3_fire_due(now_ns);
+        // Faz-4: output-scheduling (tek-seam).
+        let out = self.schedule_transmit(now_ns);
+        // C2 post-condition: batch-sınırında due-kalmadı.
+        debug_assert!(
+            self.next_wakeup_ns().is_none_or(|w| w > now_ns),
+            "C2-ihlali: batch-dönüşünde due-exposed-timer kaldı"
+        );
+        out
+    }
+
+    /// DR-CS-1 M1: bir-sonraki exposed-wakeup deadline'ı (ns). C2: HİÇBİR-zaman geçmiş-değer
+    /// expose-edilmez (batch-post-condition). None = bağlı-timer-yok.
+    #[cfg(feature = "experimental-cold-start")]
+    #[must_use]
+    pub fn next_wakeup_ns(&self) -> Option<u64> {
+        self.cs_wakeup.iter().map(|&(d, _)| d).min()
+    }
+
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_type_priority(e: &Event) -> u8 {
+        match e {
+            Event::AckReceived(_) => 0, // DATA-ACK önce (EK5-iv)
+            // F2B: probe-echo → 1
+            _ => 2,
+        }
+    }
+
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_any_due(&self, now_ns: u64) -> bool {
+        self.cs_wakeup.iter().any(|&(d, _)| d <= now_ns)
+    }
+
+    /// "Önceden-oluşmuş bekleyen scheduling-işi" (E2): kuyruklarda drain-bekleyen-iş var mı.
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_has_pending_work(&self) -> bool {
+        !self.tx_queue.is_empty()
+            || !self.pending_lost.is_empty()
+            || !self.dup_queue.is_empty()
+            || !self.pending_fec.is_empty()
+    }
+
+    /// Faz-2 (F1: yer-tutucu; F2B: srtt-ingest→terminal→probe-disarm→giveup-cancel→retire).
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_phase2_resolve(&mut self, _now_ns: u64) {}
+
+    /// Faz-3: due exposed-timer'ları BİR KEZ ateşle (retire-on-fire; deadline-sırası).
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_phase3_fire_due(&mut self, now_ns: u64) {
+        // deadline-sırası deterministik (stable: eşit-deadline'da ekleme-sırası).
+        let mut due: Vec<(u64, CsTimerKind)> = Vec::new();
+        self.cs_wakeup.retain(|&(d, k)| {
+            if d <= now_ns {
+                due.push((d, k));
+                false // retire-on-fire
+            } else {
+                true
+            }
+        });
+        due.sort_by_key(|&(d, _)| d);
+        for (_, kind) in due {
+            match kind {
+                CsTimerKind::TestHook(id) => self.cs_hook_fired.push((now_ns, id)),
+                // F2A: CsProbe → probe-emisyonu-enqueue; F2B: CsGiveup/PtoUnit.
+            }
+        }
+    }
+
+    /// TEST-ONLY (F1 atomiklik-kanıtları; DI-12E/F/G F1-sürümleri): exposed-timer-hook arm.
+    /// Üretim-yolu-değil (feature default-OFF + doc-hidden).
+    #[cfg(feature = "experimental-cold-start")]
+    #[doc(hidden)]
+    pub fn cs_test_arm_hook_timer(&mut self, deadline_ns: u64, id: u8) {
+        self.cs_wakeup
+            .push((deadline_ns, CsTimerKind::TestHook(id)));
+    }
+
+    /// TEST-ONLY: hook-fire kayıtları (now_ns, id).
+    #[cfg(feature = "experimental-cold-start")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn cs_test_hook_fired(&self) -> &[(u64, u8)] {
+        &self.cs_hook_fired
     }
 
     /// §3.2 OnAckReceived: inflight boşalt + RTT/BW/loss güncelle.

@@ -78,6 +78,40 @@ impl RunnerCfg {
     }
 }
 
+/// DR-CS-1 M1 ADAPTER (EK5-ii — NORMATİF; teslim-edilen-kod): poll-iterasyonu başına saat BİR-KEZ
+/// örneklenir; o iterasyonda toplanan TÜM inbound aynı `now_ns` ile damgalanır ve TEK
+/// `on_event_batch` çağrısına gider → aynı-ns olaylar ayrı-batch'lere DÜŞEMEZ (atomiklik-inşaatla).
+/// Flag-OFF'ta derlenmez (legacy per-event yol birebir; INV-CS-5).
+#[cfg(feature = "experimental-cold-start")]
+pub struct CsBatchAdapter {
+    now_ns: u64,
+    events: Vec<Event>,
+}
+
+#[cfg(feature = "experimental-cold-start")]
+impl CsBatchAdapter {
+    #[must_use]
+    pub fn new(now_ns: u64) -> Self {
+        Self {
+            now_ns,
+            events: Vec::new(),
+        }
+    }
+    pub fn push(&mut self, ev: Event) {
+        self.events.push(ev);
+    }
+    /// İterasyon-damgası (tüm-inbound bu-değerle işlenir).
+    #[must_use]
+    pub fn stamp(&self) -> u64 {
+        self.now_ns
+    }
+    /// Tek-batch teslimi: (damga, olaylar).
+    #[must_use]
+    pub fn drain(self) -> (u64, Vec<Event>) {
+        (self.now_ns, self.events)
+    }
+}
+
 /// Datagram: [kind u8][seq u64][unit u64][block u32][esi u16] + dolgu (size-temsili).
 fn enc(kind: u8, seq: u64, unit: u64, b: u32, e: u16, size: usize) -> Vec<u8> {
     let mut v = vec![0u8; size.max(23)];
@@ -310,6 +344,10 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut settle_since: Option<u64> = None; // FK: workload+parity-drained-settle takibi
     while start.elapsed() < deadline {
         let t_ms = start.elapsed().as_millis() as u64;
+        // DR-CS-1 M1 ADAPTER (EK5-ii): saat iterasyon-başına BİR-KEZ örneklenir; bu-iterasyonun
+        // TÜM inbound'u aynı-damgayla TEK on_event_batch çağrısına gider (flag-ON yolu).
+        #[cfg(feature = "experimental-cold-start")]
+        let mut cs_adapter = CsBatchAdapter::new(now_ns(&start));
         // FC: fuzzy-event-yakalama (event_index-ilerlediğinde tek-satır; salt-gözlem).
         if cfg.emit_fuzzy {
             if let Some(fi) = s.diag_fusion_input_snapshot() {
@@ -341,35 +379,43 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         }
         // app + tick (inline):
         if app < cfg.w_units && t_ms >= app * 40 {
-            let out = s.on_event(
-                Event::AppData(OpaqueUnit {
-                    id: base + app,
-                    size: UNIT as u64,
-                }),
-                now_ns(&start),
-            );
+            let ev = Event::AppData(OpaqueUnit {
+                id: base + app,
+                size: UNIT as u64,
+            });
             app += 1;
-            emit(
-                &sock,
-                &out,
-                &mut emitted_in_block,
-                &mut open_ms,
-                &mut par_emit,
-                t_ms,
-                base,
-            );
+            #[cfg(feature = "experimental-cold-start")]
+            cs_adapter.push(ev);
+            #[cfg(not(feature = "experimental-cold-start"))]
+            {
+                let out = s.on_event(ev, now_ns(&start));
+                emit(
+                    &sock,
+                    &out,
+                    &mut emitted_in_block,
+                    &mut open_ms,
+                    &mut par_emit,
+                    t_ms,
+                    base,
+                );
+            }
         }
         if last_tick.elapsed() >= Duration::from_millis(10) {
-            let out = s.on_event(Event::TimerFired(Timer::Pto), now_ns(&start));
-            emit(
-                &sock,
-                &out,
-                &mut emitted_in_block,
-                &mut open_ms,
-                &mut par_emit,
-                t_ms,
-                base,
-            );
+            #[cfg(feature = "experimental-cold-start")]
+            cs_adapter.push(Event::TimerFired(Timer::Pto));
+            #[cfg(not(feature = "experimental-cold-start"))]
+            {
+                let out = s.on_event(Event::TimerFired(Timer::Pto), now_ns(&start));
+                emit(
+                    &sock,
+                    &out,
+                    &mut emitted_in_block,
+                    &mut open_ms,
+                    &mut par_emit,
+                    t_ms,
+                    base,
+                );
+            }
             last_tick = Instant::now();
         }
         // Blok-tamam → otorite-bağlı-close (gerçek-budget-yolu).
@@ -399,22 +445,25 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                     }
                 }
                 if !new.is_empty() {
-                    let out = s.on_event(
-                        Event::AckReceived(AckInfo {
-                            acked_seqs: new,
-                            ack_delay: Duration::ZERO,
-                        }),
-                        now_ns(&start),
-                    );
-                    emit(
-                        &sock,
-                        &out,
-                        &mut emitted_in_block,
-                        &mut open_ms,
-                        &mut par_emit,
-                        t_ms,
-                        base,
-                    );
+                    let ev = Event::AckReceived(AckInfo {
+                        acked_seqs: new,
+                        ack_delay: Duration::ZERO,
+                    });
+                    #[cfg(feature = "experimental-cold-start")]
+                    cs_adapter.push(ev);
+                    #[cfg(not(feature = "experimental-cold-start"))]
+                    {
+                        let out = s.on_event(ev, now_ns(&start));
+                        emit(
+                            &sock,
+                            &out,
+                            &mut emitted_in_block,
+                            &mut open_ms,
+                            &mut par_emit,
+                            t_ms,
+                            base,
+                        );
+                    }
                 }
             } else if buf[0] == 0xA1 {
                 let mut units = Vec::new();
@@ -427,9 +476,43 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                         esi: e,
                     });
                 }
-                s.on_event(
-                    Event::RecoveredControl(RecoveredInfo { units }),
-                    now_ns(&start),
+                let ev = Event::RecoveredControl(RecoveredInfo { units });
+                #[cfg(feature = "experimental-cold-start")]
+                cs_adapter.push(ev);
+                #[cfg(not(feature = "experimental-cold-start"))]
+                {
+                    s.on_event(ev, now_ns(&start));
+                }
+            }
+        }
+        // DR-CS-1 M1 FLUSH (EK5-E1): iterasyonun tüm-inbound'u TEK atomik batch'te; sonrasında
+        // hâlâ-due-varsa boş-batch (Tick). Flag-OFF'ta derlenmez (legacy per-event yol yukarıda).
+        #[cfg(feature = "experimental-cold-start")]
+        {
+            let (bn, bev) = cs_adapter.drain();
+            if !bev.is_empty() {
+                let out = s.on_event_batch(bn, bev);
+                emit(
+                    &sock,
+                    &out,
+                    &mut emitted_in_block,
+                    &mut open_ms,
+                    &mut par_emit,
+                    t_ms,
+                    base,
+                );
+            }
+            let now2 = now_ns(&start);
+            if s.next_wakeup_ns().is_some_and(|w| w <= now2) {
+                let out = s.on_event_batch(now2, Vec::new()); // Tick
+                emit(
+                    &sock,
+                    &out,
+                    &mut emitted_in_block,
+                    &mut open_ms,
+                    &mut par_emit,
+                    t_ms,
+                    base,
                 );
             }
         }
