@@ -99,7 +99,9 @@ FEC_SHARD           block data/parity shard                     per-shard AEAD* 
 transport-control frame ilk byte = frame_type:
   0x10 ACK_FRAME
   0x11 CTRL_MTU_PROBE
-  0x12 CTRL_PATH_PROBE          # [K4] AEAD-içi `subtype` ile versiyonlu: cold-start ölçüm varyantı (§11.1); mevcut semantik korunur
+  0x12 CTRL_PATH_PROBE          # CANCELLED — conflicts with authoritative §2.56 registry: 0x12 is RECOVERED.
+                                # Superseded by DR-CS-1: 0x19 CTRL_CS_PROBE / 0x1A CTRL_CS_ECHO
+                                # (kama-noise-wire-tdd-v2.0 §2.56/§2.57 otoritatif; bu-satır arşiv-notu, sessiz-silme-yok)
   0x13 CTRL_REKEY_SIGNAL
   0x14 ACK_FRAME_V2             # [K3/R2] cold-start ölçüm eki (§2.2); V1 0x10 korunur
   0x20 FEC_SHARD_HEADER
@@ -796,7 +798,14 @@ duplication/parity yine available_redundancy_budget ile clamp (§8.5).
 
 ---
 
-## 11.1 Cold-Start Probe/Echo — CTRL_PATH_PROBE genişletmesi (NORMATİF) [K4/K-KEYSTONE/R3/revize-D0 §4.2]
+## 11.1 Cold-Start Probe/Echo — CTRL_PATH_PROBE genişletmesi [K4/K-KEYSTONE/R3/revize-D0 §4.2]
+
+> **CANCELLED/SUPERSEDED [DR-CS-1-AMENDMANI; Abkarada-onaylı]:** Bu bölümün `0x12`-codepoint'i otoritatif
+> `kama-noise-wire-tdd-v2.0 §2.56` registry'siyle ÇAKIŞIR (0x12=RECOVERED; runtime-assert). Probe/echo
+> semantiği DR-CS-1 ile **0x19 CTRL_CS_PROBE / 0x1A CTRL_CS_ECHO**'ya taşındı; authoritative-byte-layout
+> artık noise-wire-§2.57'dedir (PROBE_WIRE_EXACT=44B; ECHO_WIRE_MAX=43B). Bu bölüm ARŞİVDİR (semantik-
+> kaynak olarak-okunabilir; byte-layout/codepoint için OKUNMAZ). Otorite-sırası: §2.56-registry >
+> sealed-control-byte-layout > engine/runtime > bu-draft.
 
 > Hızlandırıcı ölçüm birimi. **Noise İÇİNDE** (authenticated hop-control frame — INV-CRYPTO-1 / §1
 > taksonomisi; below-Noise DEĞİL, Ek-B). `CTRL_PATH_PROBE (0x12)` versiyonlu genişletmesi — mevcut 0x12
@@ -826,6 +835,9 @@ CTRL_PATH_PROBE_v2 (echo) {            # receiver→sender, stateless (akışın
   [AEAD tag : 16B]
 }
 # [R4-fix] echo AEAD-gövdesi=12B (frame_type1+subtype1+probe_seq2+seen_count4+arrival_gap4) (+handle 4 +tag 16 = 32B wire).
+# CANCELLED — omitted 11-byte echo body overhead [DR-CS-1]: sealed-control-yolu zorunlu (EXTENDED-outer 26B
+# [wire_format+wire_flags+pn32 dahil] + control-inner 6B [inner_version+inner_kind+control_id]) → authoritative
+# hesap ECHO_WIRE_MAX = 26+6+11 = 43B (noise-wire-§2.57). 32B-rakamı KULLANILMAZ.
 # pad, echo'yu (32B wire) domine → amplification ≤ 1. nonce/token YOK: AEAD anti-forge/replay + proof-of-knowledge'ı kapsar.
 ```
 
