@@ -148,6 +148,8 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut decode_via: BTreeMap<u32, u8> = BTreeMap::new(); // block→0=substrat(src-full),1=FEC(parity)
     let mut repair_kind: BTreeMap<u32, u8> = BTreeMap::new(); // FK: silinen-esi'yi hangi-substrat kurtardı
                                                               // (0x01=§9-ARQ, 0x03=§11-dup, 0=none/FEC-only)
+    #[cfg(feature = "experimental-cold-start")]
+    let mut cs_probe_rx: u64 = 0; // DR-CS-1 F2A: gelen-probe sayacı (drop-only)
     let mut repair_arrival: BTreeMap<u32, u64> = BTreeMap::new(); // FR: substrat-onarım-arrival-ms (ARQ-repair
                                                                   // wall-clock; T_fec_decode<deadline<T_arq testi)
     while start.elapsed() < deadline {
@@ -166,6 +168,14 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                 finish_seen += 1;
                 last_rx = Instant::now();
                 let _ = sock.send_to(&[0xFEu8], from);
+                continue;
+            }
+            // DR-CS-1 F2A: CS-probe (0x12) — echo-ÜRETİLMEZ (F2A-kapsam); drop + sayaç (marker'a).
+            #[cfg(feature = "experimental-cold-start")]
+            if n >= 4 && buf[0] == 0x12 {
+                cs_probe_rx += 1;
+                seen_any = true;
+                last_rx = Instant::now();
                 continue;
             }
             if n >= 23 {
@@ -303,10 +313,13 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     std::fs::write(&lpath, &body).map_err(|e| e.to_string())?;
     // FA: done-marker (orchestrator-BAŞARI-teyidi; marker-yoksa run≠başarılı).
     let clean = finish_seen >= 3; // FINISH-onaylı-mı (yoksa idle-fallback)
-    let marker = format!(
+    #[allow(unused_mut)]
+    let mut marker = format!(
         "run_id={}\npolicy={}\nreceiver_events={ev_count}\nfinalized_blocks={finalized}\npending_blocks={pending}\nledger_path={lpath}\nledger_checksum={ck:x}\nclean_shutdown={clean}\n",
         cfg.run_id, cfg.policy
     );
+    #[cfg(feature = "experimental-cold-start")]
+    marker.push_str(&format!("cs_probe_rx={cs_probe_rx}\n"));
     std::fs::write(
         format!("{}/{}-rxdone.marker", cfg.out_dir, cfg.run_id),
         marker,
@@ -627,6 +640,20 @@ fn emit(
     base: u64,
 ) {
     for d in out {
+        // DR-CS-1 M2 (F2A): CS-probe — §11.1-layout harness-plaintext-temsili (boyut-sınıfı+alan-
+        // düzeni birebir; AEAD-yok → 16B tag-yeri-pad): [frame_type=0x12][subtype=0x01]
+        // [probe_seq u16_be][hub_handle u32=0][pad → toplam-44B]. Harness-kind-uzayında 0x12
+        // serbest (0x00-0x03/0xFE/0xA0/0xA1); ÜRETİM-inner_kind-0x12-çakışması F2B-DUR-B-konusu.
+        #[cfg(feature = "experimental-cold-start")]
+        if d.kind == TransmitKind::CsProbe {
+            let mut v = vec![0u8; d.size as usize]; // 44B (amp≤1 pad dahil)
+            v[0] = 0x12;
+            v[1] = 0x01; // subtype: cold-start-probe
+            v[2..4].copy_from_slice(&(d.seq as u16).to_be_bytes()); // probe_seq
+                                                                    // v[4..8] hub_handle=0 (harness); kalan pad=0 (tag-yeri dahil)
+            let _ = sock.send(&v);
+            continue;
+        }
         let (kind, b, e, unit) = if d.kind == TransmitKind::FecParity {
             let h = d.send_record.expect("hint");
             let SrLogicalRef::Fec { block_id, esi } = h.logical_ref;
@@ -646,6 +673,8 @@ fn emit(
                 TransmitKind::Retransmit => 0x01,
                 TransmitKind::Duplicate => 0x03,
                 TransmitKind::FecParity => 0x02, // yukarıda-ele-alındı (ulaşılmaz)
+                #[cfg(feature = "experimental-cold-start")]
+                TransmitKind::CsProbe => 0x12, // yukarıda-ele-alındı (ulaşılmaz)
             };
             (wk, b, e, d.unit_id)
         } else {

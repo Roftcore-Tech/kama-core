@@ -107,7 +107,17 @@ pub enum Event {
 enum CsTimerKind {
     /// TEST-ONLY (DI-12E/F/G F1-sürümleri): fire-kaydı üretir, başka-etkisi-yok.
     TestHook(u8),
+    /// M2 CS-probe merdiveni fire'ı (idx 0..N_PROBE; fire-anları 3/9/21/45s arm'dan-itibaren).
+    CsProbe(u8),
 }
+
+// ── DR-CS-1 M2 [CAL] sabitleri (F2A) ──
+#[cfg(feature = "experimental-cold-start")]
+const CS_PROBE_FIRES_NS: [u64; 4] = [3_000_000_000, 9_000_000_000, 21_000_000_000, 45_000_000_000];
+#[cfg(feature = "experimental-cold-start")]
+const CS_PROBE_WIRE_MAX: u64 = 44; // amp≤1 pad dahil (ECHO_WIRE_MAX=43B → probe≥43; F0-tespit-(i))
+#[cfg(feature = "experimental-cold-start")]
+const CS_PROBE_TX_HARD_BUDGET: u64 = 200; // nominal 4×44=176B (INV-CS-2; YALNIZ-forward-probe)
 
 /// DR-S5-4: RECOVERED-control'ün sender-girdisi. Engine, Control::Recovered'ın logical (block_id,
 /// esi_ranges) referanslarını kendi send-record'undan native `unit_id`'ye ÇEVİRİP verir (SoC:
@@ -540,6 +550,11 @@ pub enum TransmitKind {
     /// FEC parity shard (§10; DR-S5-1) — KOŞULLU-emit (fec_enabled). Shard-byte'ları güvenlik-katmanı
     /// encode-eder; sender YALNIZ pace-eder + send-record-hint üretir. fec_enabled=OFF → emit-EDİLMEZ.
     FecParity,
+    /// DR-CS-1 M2 (F2A): cold-start CS-probe (CTRL_PATH_PROBE cold-start-varyantı; ≤44B; amp≤1).
+    /// `seq`-alanı = probe_seq (AYRI-namespace; INV-CS-7); data-seq/loss-ledger'a GİRMEZ (units=0-
+    /// muadili: track_sent-ÇAĞRILMAZ). Encode güvenlik/harness-katmanında (§11.1-layout).
+    #[cfg(feature = "experimental-cold-start")]
+    CsProbe,
 }
 
 /// Bir gönderilmiş paketin muhasebe kaydı (RTT/BW/loss + retransmit).
@@ -739,6 +754,20 @@ pub struct Sender {
     cs_wakeup: Vec<(u64, CsTimerKind)>, // exposed-timer kümesi (deadline_ns, kind); retire-on-fire
     #[cfg(feature = "experimental-cold-start")]
     cs_hook_fired: Vec<(u64, u8)>, // TEST-ONLY gözlem: hook-timer fire-kayıtları (now_ns, id)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_armed_once: bool, // M2: merdiven epoch-başına-BİR-kez arm (yeniden-arm-YOK)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_disarmed: bool, // srtt/state-çıkışı-disarm (kalan-fire'lar + pending iptal)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_seq_next: u16, // INV-CS-7: session-monoton; yeniden-kullanım-YOK
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_seq_wrapped: u64, // wrap → probe-YOK + typed-diag (saturating-sayaç)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_pending: VecDeque<u16>, // fire-edilmiş, pacer-bekleyen probe'lar (probe_seq)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_emitted: u64, // wire-emission-sayısı (INV-CS-1 kanıtı)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_tx_bytes: u64, // cold_probe_tx_bytes (INV-CS-2; C4: YALNIZ-forward-probe)
 
     // ── send-record ↔ ACK-eşleme (DR-S5-3; SALT-LOGICAL — BtlBw/delivered'e BESLENMEZ) ──
     sent_logical: BTreeMap<u64, SrLogicalRef>, // wire-seq → logical (FEC-parity plan_fec_parity-içi; DATA engine-post-emit register_sent_logical — DR-S5-6)
@@ -892,6 +921,20 @@ impl Sender {
             cs_wakeup: Vec::new(),
             #[cfg(feature = "experimental-cold-start")]
             cs_hook_fired: Vec::new(),
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_armed_once: false,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_disarmed: false,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_seq_next: 0,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_seq_wrapped: 0,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_pending: VecDeque::new(),
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_emitted: 0,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_tx_bytes: 0,
             sent_logical: BTreeMap::new(), // DR-S5-3
             confirmed_logical: VecDeque::new(),
             diag_recovered_cancels: 0,      // DR-S5-4
@@ -951,20 +994,30 @@ impl Sender {
     }
 
     /// Ana döngü (§3): olay işle → FuzzyEvaluate → state → send_rate → UpdatePacing → ScheduleTransmit.
+    ///
+    /// DR-CS-1 (EK5-v): flag-ON'da tekil `on_event` = adapter'ın batch-of-1 sarmalaması (TÜM
+    /// olaylar dört-faz-pipeline'dan geçer; Tick ≡ boş-batch). Flag-OFF = legacy-yol BİREBİR.
     pub fn on_event(&mut self, event: Event, now_ns: u64) -> Vec<TransmitDecision> {
-        // DR-S5-4 SAF-LOGICAL erken-dönüş: RECOVERED-control pacer-saatine/fuzzy/rate/schedule'a
-        // HİÇ girmez (emit-yok, kredi-yok, saat-ilerletme-yok — N8-bit-özdeşliğin yapısal-tabanı).
-        if let Event::RecoveredControl(info) = &event {
-            self.on_recovered_control(info);
-            return Vec::new();
-        }
-        // DR-CS-1 M1 (EK5-i): Tick ≡ boş-batch — tek-giriş-noktası (çift-semantik-yok).
         #[cfg(feature = "experimental-cold-start")]
-        if matches!(event, Event::Tick) {
-            return self.on_event_batch(now_ns, Vec::new());
+        {
+            let inbound = if matches!(event, Event::Tick) {
+                Vec::new()
+            } else {
+                vec![event]
+            };
+            self.on_event_batch(now_ns, inbound)
         }
-        self.on_event_core(event, now_ns);
-        self.schedule_transmit(now_ns)
+        #[cfg(not(feature = "experimental-cold-start"))]
+        {
+            // DR-S5-4 SAF-LOGICAL erken-dönüş: RECOVERED-control pacer-saatine/fuzzy/rate/schedule'a
+            // HİÇ girmez (emit-yok, kredi-yok, saat-ilerletme-yok — N8-bit-özdeşliğin yapısal-tabanı).
+            if let Event::RecoveredControl(info) = &event {
+                self.on_recovered_control(info);
+                return Vec::new();
+            }
+            self.on_event_core(event, now_ns);
+            self.schedule_transmit(now_ns)
+        }
     }
 
     /// on_event çekirdeği: dispatch + fuzzy + state + rate/burst — `schedule_transmit`-HARİÇ.
@@ -1119,9 +1172,18 @@ impl Sender {
             || !self.pending_fec.is_empty()
     }
 
-    /// Faz-2 (F1: yer-tutucu; F2B: srtt-ingest→terminal→probe-disarm→giveup-cancel→retire).
+    /// Faz-2: state-resolution/cancellation/disarm. F2A: srtt-oluştuysa (DATA-ACK-yoluyla)
+    /// CS-probe-merdiveni DISARM (kalan-fire'lar + pacer-bekleyen-pending iptal; C3: ACK-önce-
+    /// işlendiği-için aynı-batch'te probe-fire-edilmeden-disarm). F2B: +terminal/giveup/retire.
     #[cfg(feature = "experimental-cold-start")]
-    fn cs_phase2_resolve(&mut self, _now_ns: u64) {}
+    fn cs_phase2_resolve(&mut self, _now_ns: u64) {
+        if self.cs_probe_armed_once && !self.cs_probe_disarmed && self.rtt.srtt().is_some() {
+            self.cs_probe_disarmed = true;
+            self.cs_wakeup
+                .retain(|&(_, k)| !matches!(k, CsTimerKind::CsProbe(_)));
+            self.cs_probe_pending.clear();
+        }
+    }
 
     /// Faz-3: due exposed-timer'ları BİR KEZ ateşle (retire-on-fire; deadline-sırası).
     #[cfg(feature = "experimental-cold-start")]
@@ -1140,9 +1202,65 @@ impl Sender {
         for (_, kind) in due {
             match kind {
                 CsTimerKind::TestHook(id) => self.cs_hook_fired.push((now_ns, id)),
-                // F2A: CsProbe → probe-emisyonu-enqueue; F2B: CsGiveup/PtoUnit.
+                CsTimerKind::CsProbe(_idx) => {
+                    // M2 fire: probe_seq ata (INV-CS-7 monoton; wrap→probe-YOK+typed-diag) +
+                    // bütçe-kontrol (INV-CS-2 hard) → pacer-bekleyen-pending'e.
+                    if self.cs_probe_disarmed {
+                        continue;
+                    }
+                    if self.cs_probe_tx_bytes.saturating_add(CS_PROBE_WIRE_MAX)
+                        > CS_PROBE_TX_HARD_BUDGET
+                    {
+                        continue; // hard-bütçe: emisyon-yok (nominal-176B zaten-altında)
+                    }
+                    if self.cs_probe_seq_next == u16::MAX {
+                        self.cs_probe_seq_wrapped = self.cs_probe_seq_wrapped.saturating_add(1);
+                        continue; // wrap → yeni-probe-YOK (typed-diag-sayacı)
+                    }
+                    let pseq = self.cs_probe_seq_next;
+                    self.cs_probe_seq_next += 1;
+                    self.cs_probe_pending.push_back(pseq);
+                }
             }
         }
+    }
+
+    /// M2 emisyon-pass'i (F2A): pacer-bekleyen probe'ları paced-emit et. `schedule_transmit`'in
+    /// SONUNA-eklenir (budget_settle-sonrası) → mühürlü-DATA-önce-sıralama + FEC-budget-penceresi
+    /// DOKUNULMAZ (F0-tespit-(vii) ekleme-noktası). Plain `pacer.try_send` (44B) — TokenBucket-
+    /// değişikliği-YOK; probe kendi-bütçesiyle-sınırlı (≤200B-toplam).
+    #[cfg(feature = "experimental-cold-start")]
+    fn drain_cs_probes(&mut self, out: &mut Vec<TransmitDecision>) {
+        while let Some(&pseq) = self.cs_probe_pending.front() {
+            if !self.pacer.try_send(CS_PROBE_WIRE_MAX) {
+                break; // token-yok → sonraki-event'te (pending-korunur)
+            }
+            self.cs_probe_pending.pop_front();
+            self.cs_probe_emitted += 1;
+            self.cs_probe_tx_bytes += CS_PROBE_WIRE_MAX;
+            out.push(TransmitDecision {
+                kind: TransmitKind::CsProbe,
+                seq: u64::from(pseq), // probe_seq (AYRI-namespace; data-seq-DEĞİL)
+                unit_id: 0,
+                size: CS_PROBE_WIRE_MAX,
+                send_record: None,
+            });
+        }
+    }
+
+    /// DR-CS-1 diag (INV-CS-1/2 kanıt-sayaçları): (emitted, cold_probe_tx_bytes, seq_wrapped,
+    /// pending_len, armed, disarmed).
+    #[cfg(feature = "experimental-cold-start")]
+    #[must_use]
+    pub fn diag_cold_start(&self) -> (u64, u64, u64, usize, bool, bool) {
+        (
+            self.cs_probe_emitted,
+            self.cs_probe_tx_bytes,
+            self.cs_probe_seq_wrapped,
+            self.cs_probe_pending.len(),
+            self.cs_probe_armed_once,
+            self.cs_probe_disarmed,
+        )
     }
 
     /// TEST-ONLY (F1 atomiklik-kanıtları; DI-12E/F/G F1-sürümleri): exposed-timer-hook arm.
@@ -1863,6 +1981,10 @@ impl Sender {
         // Commit-V (U12-adım-8): gerçek-harcama-settle + waste-denetimi (normal-yolda-waste=0).
         #[cfg(feature = "experimental-fec-budget")]
         self.budget_settle();
+        // DR-CS-1 M2 (F2A): CS-probe pass'i EN-SONDA (F0-tespit-(vii) ekleme-noktası) — mühürlü
+        // DATA-önce-sıralama + FEC-budget-penceresi dokunulmaz; flag-OFF'ta derlenmez.
+        #[cfg(feature = "experimental-cold-start")]
+        self.drain_cs_probes(&mut out);
         out
     }
 
@@ -2919,6 +3041,16 @@ impl Sender {
                     unit: front,
                     interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
                 });
+                // DR-CS-1 M2 ARM (F2A): PreConverge + srtt=None + İLK-DATA-wire-emisyonu (try_send-
+                // geçti = t₀) → CS-probe merdiveni epoch-başına-BİR-kez arm (fire 3/9/21/45s).
+                #[cfg(feature = "experimental-cold-start")]
+                if !self.cs_probe_armed_once && self.rtt.srtt().is_none() {
+                    self.cs_probe_armed_once = true;
+                    for (i, off) in CS_PROBE_FIRES_NS.iter().enumerate() {
+                        self.cs_wakeup
+                            .push((now_ns.saturating_add(*off), CsTimerKind::CsProbe(i as u8)));
+                    }
+                }
             }
         }
     }

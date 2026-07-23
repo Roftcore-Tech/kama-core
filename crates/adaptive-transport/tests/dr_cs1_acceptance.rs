@@ -149,7 +149,12 @@ fn f1_di12g_inbound_batch_completes_scheduling() {
         !out.is_empty(),
         "inbound-batch output-üretmeli (no-op-bastırması-yanlış-uygulanmış)"
     );
-    assert!(s.next_wakeup_ns().is_none(), "F1: üretim-timer'ı-yok");
+    // F2A-sonrası: ilk-DATA-emisyonu CS-probe-merdivenini-armlar → next_wakeup = 3s-fire.
+    assert_eq!(
+        s.next_wakeup_ns(),
+        Some(3_000_000_000),
+        "arm-sonrası ilk-probe-fire-deadline'ı-expose"
+    );
 }
 
 /// C2 post-condition: her batch-dönüşünde next_wakeup ∈ {None, gelecek}; due-hook retire-on-fire
@@ -175,15 +180,134 @@ fn f1_c2_postcondition_no_due_after_batch() {
     );
 }
 
-// ── F2A (probe-emission feasibility) ───────────────────────────────────────────────────────
+// ── F2A (probe-emission feasibility) — İMPLEMENTE ──────────────────────────────────────────
 
-#[test]
-#[ignore = "F2A/DI-1B: saturated-DATA-backlog @ normal-profil — CS-probe mühürlü-DATA-önce-sıralama DEĞİŞMEDEN ≤T_FIRST_PROBE+PACER_ERR wire-emission"]
-fn f2a_di1b_probe_emission_under_saturated_backlog() {}
+use adaptive_transport::sender::TransmitKind;
 
+/// Saturated-backlog cold-start sürücüsü: N-birim t=0'da (kuyruk-dolu), ACK-YOK, 100ms-Pto-tick.
+/// Dönüş: (t_ns, CsProbe-emisyonları) + tüm-batch-output'larda DATA-önce-sıra-denetimi.
+fn drive_cold_saturated(units: u64, horizon_ns: u64) -> (Sender, Vec<(u64, u64)>) {
+    let mut s = Sender::new();
+    let mut probes: Vec<(u64, u64)> = Vec::new(); // (t_ns, probe_seq)
+    let mut inbound: Vec<Event> = (0..units)
+        .map(|i| {
+            Event::AppData(OpaqueUnit {
+                id: 1 + i,
+                size: 1200,
+            })
+        })
+        .collect();
+    let out0 = s.on_event_batch(0, std::mem::take(&mut inbound));
+    assert!(
+        out0.iter().any(|d| d.kind == TransmitKind::Data),
+        "t=0 initial-DATA-burst bekleniyor"
+    );
+    let mut t = 100 * MS;
+    while t <= horizon_ns {
+        let out = s.on_event_batch(t, vec![Event::TimerFired(Timer::Pto)]);
+        // Mühürlü DATA-önce-sıra: aynı-output-Vec'te hiçbir Data, CsProbe'dan SONRA gelmez
+        // (probe-pass EN-SONDA — yapısal + burada-assert).
+        let first_probe_idx = out.iter().position(|d| d.kind == TransmitKind::CsProbe);
+        if let Some(pi) = first_probe_idx {
+            assert!(
+                out[pi..].iter().all(|d| d.kind == TransmitKind::CsProbe),
+                "DATA-önce-sıra-ihlali: probe'dan-sonra-data"
+            );
+        }
+        for d in &out {
+            if d.kind == TransmitKind::CsProbe {
+                assert_eq!(d.size, 44, "PROBE_WIRE_MAX=44B");
+                probes.push((t, d.seq));
+            }
+        }
+        t += 100 * MS;
+    }
+    (s, probes)
+}
+
+const SEC: u64 = 1_000_000_000;
+const PACER_ERR_NS: u64 = 250 * MS;
+
+/// DI-1B (F2A): saturated-DATA-backlog — CS-probe mühürlü-DATA-önce-sıralama DEĞİŞMEDEN
+/// ≤ T_FIRST_PROBE(3s)+PACER_ERR(250ms) wire-emission (INV-CS-1; boyuttan-bağımsız).
 #[test]
-#[ignore = "F2A/DI-6B: saturated-backlog @ 31 B/s floor — probe token-feasibility (44B ≤ accrued-tokens @ 3s)"]
-fn f2a_di6b_probe_emission_at_floor_rate() {}
+fn f2a_di1b_probe_emission_under_saturated_backlog() {
+    let (s, probes) = drive_cold_saturated(40, 4 * SEC);
+    assert!(
+        !probes.is_empty(),
+        "saturated-backlog'da probe STARVE-ETTİ (DUR-B-tetiği)"
+    );
+    let (t_first, seq_first) = probes[0];
+    assert!(
+        t_first <= 3 * SEC + PACER_ERR_NS,
+        "ilk-probe {}ms > 3s+250ms (INV-CS-1-ihlali)",
+        t_first / MS
+    );
+    assert_eq!(seq_first, 0, "probe_seq monoton-0-başlar (INV-CS-7)");
+    let (emitted, tx_bytes, wrapped, _pend, armed, disarmed) = s.diag_cold_start();
+    assert!(armed && !disarmed);
+    assert_eq!(emitted, 1);
+    assert_eq!(tx_bytes, 44);
+    assert_eq!(wrapped, 0);
+}
+
+/// DI-6B (F2A): 31 B/s-floor token-feasibility — 4-fire (3/9/21/45s) hepsi tolerans-içi emit;
+/// bütçe nominal-176B ≤ hard-200B; 5.-probe-YOK (N=4); token-matematiği F0-tespit-(vii)-uyumlu
+/// (93B@3s / 235B@9s / 563B@21s ≥ 44B).
+#[test]
+fn f2a_di6b_probe_emission_at_floor_rate() {
+    let (s, probes) = drive_cold_saturated(40, 46 * SEC);
+    assert_eq!(probes.len(), 4, "merdiven N=4 (5.-probe-yasak)");
+    for (i, fire) in [3u64, 9, 21, 45].iter().enumerate() {
+        let (t, pseq) = probes[i];
+        assert!(
+            t >= *fire * SEC && t <= *fire * SEC + PACER_ERR_NS,
+            "probe-{i} t={}ms beklenen [{fire}s, {fire}s+250ms] (token-starve?)",
+            t / MS
+        );
+        assert_eq!(pseq, i as u64, "probe_seq monoton (INV-CS-7)");
+    }
+    let (emitted, tx_bytes, wrapped, pend, _armed, _dis) = s.diag_cold_start();
+    assert_eq!(emitted, 4);
+    assert_eq!(tx_bytes, 176, "nominal-bütçe 4×44=176B (INV-CS-2)");
+    assert!(tx_bytes <= 200, "hard-bütçe");
+    assert_eq!(wrapped, 0);
+    assert_eq!(pend, 0, "pending-drenajlı");
+}
+
+/// F2A disarm (DI-4-önkoşulu): ilk-fire'dan-ÖNCE hayatta-kalan DATA-ACK → srtt → faz-2-disarm
+/// → probe-0 (temiz-hızlı-linkte sıfır-maliyet; INV-CS-5).
+#[test]
+fn f2a_probe_disarm_on_early_data_ack() {
+    let mut s = Sender::new();
+    let _ = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let _ = s.on_event_batch(
+        1 * SEC,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    let mut t = 1 * SEC + 100 * MS;
+    let mut any_probe = false;
+    while t <= 10 * SEC {
+        let out = s.on_event_batch(t, vec![Event::TimerFired(Timer::Pto)]);
+        any_probe |= out.iter().any(|d| d.kind == TransmitKind::CsProbe);
+        t += 100 * MS;
+    }
+    assert!(
+        !any_probe,
+        "erken-ACK-sonrası probe-emisyonu-yasak (disarm)"
+    );
+    let (emitted, _, _, pend, armed, disarmed) = s.diag_cold_start();
+    assert_eq!(emitted, 0);
+    assert_eq!(pend, 0);
+    assert!(armed && disarmed);
+    assert!(
+        s.next_wakeup_ns().is_none(),
+        "disarm-sonrası CS-wakeup-kalmamalı"
+    );
+}
 
 // ── F2B (echo + bootstrap-RTT + Startup + (d) PTO binding) ─────────────────────────────────
 
