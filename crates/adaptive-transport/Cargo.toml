@@ -16,6 +16,9 @@ tokio = { version = "1", features = ["time", "rt", "macros", "test-util"] }
 # Commit-V: test-only/non-default CANLI-BÜTÇE-PROTOTİPİ (CONDITIONAL-GO).
 # OFF (default): FloorCap-kodu-üretim-yoluna-BAĞLANMAZ; derlenmiş-yol-baseline-özdeş.
 experimental-fec-budget = []
+# DR-CS-1 (MINIMAL BOOTSTRAP): cold-start batch-API + CS-probe merdiveni. DEFAULT-OFF; flag
+# yalnız-LOCAL (M7); OFF'ta adapter-devre-dışı + legacy-tekil-yol byte-for-byte (INV-CS-5).
+experimental-cold-start = []
 
 [[example]]
 name = "udp_budget_runner"

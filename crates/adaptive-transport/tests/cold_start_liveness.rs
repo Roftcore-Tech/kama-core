@@ -11,6 +11,10 @@
 //! ACK ile; sender.rs 1385/1136/987-989). Bound: ilk-eligible-send'den-sonra en-geç 2×first_delay içinde
 //! ACK-BAĞIMSIZ bir Duplicate emit-EDİLMELİ (yoksa SilentStall); state-ilerleme ACK-YOKKEN yapısal-
 //! imkansızdır (bu bir liveness-özelliğidir, harness-artefaktı-DEĞİL).
+//!
+//! DR-CS-1 ROLÜ (F0): bu-4-test FLAG-OFF (`experimental-cold-start` KAPALI) beklentileridir ve
+//! AYNEN KORUNUR — INV-CS-5 flag-OFF-kimliğinin canlı-pinleri (DI-5). Flag-ON kabul-matrisi ayrı:
+//! tests/dr_cs1_acceptance.rs (F0'da-ignored-iskelet).
 
 use adaptive_transport::sender::{
     AckInfo, Event, OpaqueUnit, Sender, SenderState, Timer, TransmitKind,
