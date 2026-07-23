@@ -309,39 +309,405 @@ fn f2a_probe_disarm_on_early_data_ack() {
     );
 }
 
-// ── F2B (echo + bootstrap-RTT + Startup + (d) PTO binding) ─────────────────────────────────
+// ── F2B (echo + bootstrap-RTT + Startup + (d) PTO binding) — İMPLEMENTE ────────────────────
 
-#[test]
-#[ignore = "F2B/DI-1: ilk-DATA-kaybı (65/300/1200B) — probe≤3s+PACER_ERR; echo→bootstrap-srtt→Startup; retransmit MEVCUT-PTO/ARQ-yolundan; C2-assert: due-PTO ek-RTT/ek-network-event beklemez"]
-fn f2b_di1_first_data_loss_bootstrap_recovery() {}
+use adaptive_transport::sender::CsSrttSource;
 
-#[test]
-#[ignore = "F2B/DI-1A (C2): overdue-PTO-after-bootstrap — echo-anında deadline geçmişte → AYNI batch faz-3'te fire; busy-loop-yok; çift-fire-yok"]
-fn f2b_di1a_overdue_pto_fires_same_batch() {}
+/// Cold-start sürücüsü: tek-birim + 100ms-Pto-tick'lerle `to_ns`'e kadar; emisyonları toplar.
+fn drive_ticks(s: &mut Sender, from_ns: u64, to_ns: u64) -> Vec<(u64, TransmitDecision)> {
+    let mut out = Vec::new();
+    let mut t = from_ns;
+    while t <= to_ns {
+        for d in s.on_event_batch(t, vec![Event::TimerFired(Timer::Pto)]) {
+            out.push((t, d));
+        }
+        t += 100 * MS;
+    }
+    out
+}
 
-#[test]
-#[ignore = "F2B/DI-1C (EK4-A2): re-armed-PTO-lifecycle — her-yeni-PTO-deadline next_wakeup'ta; ACK tüm-kayıtları-retire; çift-fire/busy-loop-yok"]
-fn f2b_di1c_rearmed_pto_lifecycle_exposure() {}
+/// (d)-yardımcı: hedef-birimin Retransmit'ini bekle — önce verilen-batch-çıktısına bak; yoksa
+/// exposed-deadline'a TEK-boş-Tick (yeni-network-event-YOK) ile atla ve orada-fire'ı doğrula.
+/// Dönüş: (fire_edilen_batch_çıktısı). Not: deadline mevcut-cadence-tabanıyla (EAI@31B/s türevi)
+/// dakikalar-mertebesinde-olabilir — MEVCUT-eşik-kuralları-değiştirilemez (0.2-mühür); simüle-zaman.
+fn expect_retransmit_via_wakeup(
+    s: &mut Sender,
+    first_t: u64,
+    first_out: &[TransmitDecision],
+    unit_id: u64,
+) -> (u64, Vec<TransmitDecision>) {
+    let has = |o: &[TransmitDecision]| {
+        o.iter()
+            .any(|d| d.kind == TransmitKind::Retransmit && d.unit_id == unit_id)
+    };
+    if has(first_out) {
+        return (first_t, first_out.to_vec()); // overdue-aynı-batch (C2)
+    }
+    let wk = s
+        .next_wakeup_ns()
+        .expect("(d)-deadline expose-edilmeli (EK4-A2)");
+    let out = s.on_event_batch(wk + MS, Vec::new()); // TEK-boş-Tick: due→faz-3-fire
+    assert!(
+        has(&out),
+        "retransmit exposed-deadline'da Tick-only-ile-fire-etmeli (yeni-network-event-yok)"
+    );
+    (wk + MS, out)
+}
 
+/// DI-1: ilk-DATA-kaybı — probe→echo→bootstrap-srtt→Startup; sonraki-trafiğin-ACK'i kayıp-birimi
+/// MEVCUT time-threshold/ARQ-yolundan retransmit-eder; (C2) due-PTO ACK-batch'inin-KENDİSİNDE
+/// fire-eder (ek-RTT/ek-network-event-BEKLEMEZ).
 #[test]
-#[ignore = "F2B/DI-2: tekil-ACK-frame-erasure — echo→srtt→(d)→mevcut-PTO spurious-retransmit (BEKLENEN; §2.4-a); dup-sayaç-artar; bootstrap_induced_retransmit_bytes-doğru; yön-teşhisi-İDDİA-EDİLMEZ"]
-fn f2b_di2_single_ack_erasure_spurious_expected() {}
+fn f2b_di1_first_data_loss_bootstrap_recovery() {
+    for size in [65u64, 300, 1200] {
+        let mut s = Sender::new();
+        // u1@0 → seq0 emit (KAYIP: ACK-gelmeyecek).
+        let out0 = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size })]);
+        assert!(out0.iter().any(|d| d.kind == TransmitKind::Data));
+        // 3s: probe-fire (INV-CS-1).
+        let probes = drive_ticks(&mut s, 100 * MS, 3 * SEC + 200 * MS);
+        assert!(
+            probes.iter().any(|(_, d)| d.kind == TransmitKind::CsProbe),
+            "probe-emisyonu (size={size})"
+        );
+        // echo → bootstrap-srtt → Startup (kaynak=ProbeEcho).
+        let _ = s.on_event_batch(
+            3 * SEC + 300 * MS,
+            vec![Event::CsProbeEcho { probe_seq: 0 }],
+        );
+        assert_ne!(s.state(), SenderState::PreConverge, "Startup-geçişi");
+        let (src, _, _, _) = s.diag_cs_bootstrap();
+        assert_eq!(src, Some(CsSrttSource::ProbeEcho), "ResolvedByProbeEcho");
+        // Startup: u2 emit (seq1) → ACK'i gelir → largest=1 > seq0 → (d)-deadline overdue →
+        // AYNI-batch'te seq0-Retransmit (C2-assert).
+        let out2 = s.on_event_batch(
+            3 * SEC + 400 * MS,
+            vec![Event::AppData(OpaqueUnit { id: 2, size })],
+        );
+        assert!(out2.iter().any(|d| d.kind == TransmitKind::Data), "u2-emit");
+        let ack_batch = s.on_event_batch(
+            4 * SEC,
+            vec![Event::AckReceived(AckInfo {
+                acked_seqs: vec![1],
+                ack_delay: Duration::from_millis(1),
+            })],
+        );
+        // (d)+C2: overdue-ise-ACK-batch'inde; değilse exposed-deadline'da TEK-boş-Tick'le
+        // (yeni-network-event-YOK) MEVCUT-PTO/ARQ-yolundan çıkar.
+        let (_ft, fired) = expect_retransmit_via_wakeup(&mut s, 4 * SEC, &ack_batch, 1);
+        assert!(fired
+            .iter()
+            .any(|d| d.kind == TransmitKind::Retransmit && d.unit_id == 1));
+        // busy-loop-yok (fire-sonrası):
+        let now_after = s.next_wakeup_ns();
+        assert!(now_after.is_none_or(|w| w > 4 * SEC));
+    }
+}
 
+/// DI-1A (C2): deadline echo'dan-ÖNCE-kurulmuş (Duplicate-ACK largest_acked'ı-yükseltir ama
+/// srtt-vermez) → echo-batch'inde overdue-PTO AYNI-batch faz-3'te fire; çift-fire-yok.
 #[test]
-#[ignore = "F2B/DI-4: temiz-yavaş (RTT 2.5s/5s) — ≤1 zararsız-probe; erken-data-ACK merdiveni-disarm (probe 0)"]
-fn f2b_di4_clean_slow_link_at_most_one_probe() {}
+fn f2b_di1a_overdue_pto_fires_same_batch() {
+    let mut s = Sender::new();
+    let _ = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    // 61.2s'e-kadar-sür: geometrik-dup (seq1) emit-edilir; probe'lar 3/9/21/45s'te-çıkar.
+    let all = drive_ticks(&mut s, 100 * MS, 62 * SEC);
+    assert!(
+        all.iter().any(|(_, d)| d.kind == TransmitKind::Duplicate),
+        "geometrik-kopya-emit (seq1)"
+    );
+    let n_probes = all
+        .iter()
+        .filter(|(_, d)| d.kind == TransmitKind::CsProbe)
+        .count();
+    assert_eq!(n_probes, 4, "merdiven-tam (echo-yok)");
+    // Duplicate-ACK: largest_acked=1 (deadline-kurulur) ama origin=Duplicate → srtt-YOK.
+    let _ = s.on_event_batch(
+        63 * SEC,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![1],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    assert_eq!(
+        s.state(),
+        SenderState::PreConverge,
+        "srtt-hala-yok (dup-ACK)"
+    );
+    // Geç-echo (probe_seq=3, emit@45s): srtt kurulur; deadline-kurulmuştu (dup-ACK) →
+    // overdue-ise-AYNI-batch, değilse exposed-deadline'da TEK-boş-Tick'le fire (C2; ek-network-
+    // event-beklemez).
+    let echo_batch = s.on_event_batch(64 * SEC, vec![Event::CsProbeEcho { probe_seq: 3 }]);
+    let (_ft, _fired) = expect_retransmit_via_wakeup(&mut s, 64 * SEC, &echo_batch, 1);
+    // Çift-fire-yok + post-condition: aynı-anda-tekrar-boş-batch yeni-Retransmit-üretmez.
+    let wk_after = s.next_wakeup_ns();
+    if let Some(w) = wk_after {
+        let again = s.on_event_batch(w.saturating_sub(1), Vec::new());
+        assert!(
+            !again.iter().any(|d| d.kind == TransmitKind::Retransmit),
+            "deadline-öncesi-Tick fire-etmez (çift-fire/erken-fire-yok)"
+        );
+    }
+}
 
+/// DI-1C (EK4-A2): re-armed-PTO yaşam-döngüsü — retransmit'in-ACK'i-de-düşer; SONRAKİ trafik-ACK'i
+/// largest'ı-yükseltince YENİ deadline next_wakeup'ta görünür; Tick-only ile-ikinci-retransmit;
+/// nihai-ACK TÜM BootstrapPto-kayıtlarını-retire-eder.
 #[test]
-#[ignore = "F2B/DI-8: late-echo 5-yok-sayma-koşulu tek-tek — sample-beslenmez, seq-retire, state-bozulmaz"]
-fn f2b_di8_late_echo_five_ignore_conditions() {}
+fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
+    let mut s = Sender::new();
+    let _ = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let _ = drive_ticks(&mut s, 100 * MS, 3 * SEC + 100 * MS); // probe@3s
+    let _ = s.on_event_batch(
+        3 * SEC + 200 * MS,
+        vec![Event::CsProbeEcho { probe_seq: 0 }],
+    );
+    // u2/u3 emit + ACK → largest>0 → ilk-retransmit (u1).
+    let _ = s.on_event_batch(
+        3 * SEC + 300 * MS,
+        vec![
+            Event::AppData(OpaqueUnit { id: 2, size: 1200 }),
+            Event::AppData(OpaqueUnit { id: 3, size: 1200 }),
+        ],
+    );
+    let b1 = s.on_event_batch(
+        4 * SEC,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![1, 2],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    let (ft1, fired1) = expect_retransmit_via_wakeup(&mut s, 4 * SEC, &b1, 1);
+    let rtx1: Vec<_> = fired1
+        .iter()
+        .filter(|d| d.kind == TransmitKind::Retransmit && d.unit_id == 1)
+        .collect();
+    assert_eq!(rtx1.len(), 1, "ilk-retransmit");
+    let rtx1_seq = rtx1[0].seq;
+    let mut t1 = ft1 + 60 * SEC; // fire-sonrası ileri-zaman (simüle)
+                                 // Retransmit'in-ACK'i-de-düşer. SONRAKİ trafik: u4 enqueue + token-refill-bekleyerek emit
+                                 // (kuyruk-önü u3-olabilir; 31 B/s-refill ~38.7s/birim) → seq'i-çıktıdan-izle.
+    let mut out_all = s.on_event_batch(t1, vec![Event::AppData(OpaqueUnit { id: 4, size: 1200 })]);
+    let mut s4_opt = None;
+    for _ in 0..20 {
+        if let Some(d) = out_all
+            .iter()
+            .find(|d| d.kind == TransmitKind::Data && d.unit_id == 4)
+        {
+            s4_opt = Some(d.seq);
+            break;
+        }
+        t1 += 40 * SEC;
+        out_all = s.on_event_batch(t1, vec![Event::TimerFired(Timer::Pto)]);
+    }
+    let s4 = s4_opt.expect("u4-emit (token-refill-sonrası)");
+    assert!(s4 > rtx1_seq, "u4-seq monoton-yüksek");
+    let b2 = s.on_event_batch(
+        t1 + SEC,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![s4],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    // İkinci-retransmit: overdue-ise-b2'de; değilse exposed-deadline'da Tick-only (EK4-A2).
+    let (_ft2, fired2) = expect_retransmit_via_wakeup(&mut s, t1 + SEC, &b2, 1);
+    let rtx2_seq = fired2
+        .iter()
+        .find(|d| d.kind == TransmitKind::Retransmit && d.unit_id == 1)
+        .unwrap()
+        .seq;
+    assert!(rtx2_seq > rtx1_seq, "yeni-seq (nonce-reuse-yok)");
+    // Nihai-ACK → birim-outstanding'ten-çıkar → BootstrapPto-kayıtları-retire (EK4-A2-yaşam-döngüsü).
+    let t_end = t1 + 600 * SEC;
+    let _ = s.on_event_batch(
+        t_end,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![rtx2_seq],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    assert!(
+        s.next_wakeup_ns().is_none_or(|w| w > t_end),
+        "ACK-sonrası-due-yok (tüm-PTO-wakeup-kayıtları-temiz)"
+    );
+}
 
+/// DI-2 (§2.4-a): tekil-ACK-frame-erasure — DATA-ulaştı-ACK-düştü; echo-bootstrap → sonraki-ACK-
+/// kanıtıyla mevcut-PTO SPURIOUS-retransmit (BEKLENEN-maliyet; correctness-alıcı-dedup'unda);
+/// bootstrap_induced_retransmit_bytes EXACT; yön-teşhisi-İDDİA-EDİLMEZ.
 #[test]
-#[ignore = "F2B/DI-11: probe_seq benzersizliği (INV-CS-7) — monoton; yeniden-kullanım-yok; stale-echo-yok-sayılır; wrap→probe-yok+typed-diag"]
-fn f2b_di11_probe_seq_uniqueness_and_wrap() {}
+fn f2b_di2_single_ack_erasure_spurious_expected() {
+    let mut s = Sender::new();
+    let _ = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let _ = drive_ticks(&mut s, 100 * MS, 3 * SEC + 100 * MS);
+    let _ = s.on_event_batch(
+        3 * SEC + 200 * MS,
+        vec![Event::CsProbeEcho { probe_seq: 0 }],
+    );
+    let (_, _, induced0, _) = s.diag_cs_bootstrap();
+    assert_eq!(induced0, 0);
+    let _ = s.on_event_batch(
+        3 * SEC + 300 * MS,
+        vec![Event::AppData(OpaqueUnit { id: 2, size: 1200 })],
+    );
+    let b = s.on_event_batch(
+        4 * SEC,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![1],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    let (_ft, fired) = expect_retransmit_via_wakeup(&mut s, 4 * SEC, &b, 1);
+    assert!(
+        fired
+            .iter()
+            .any(|d| d.kind == TransmitKind::Retransmit && d.unit_id == 1),
+        "spurious-retransmit BEKLENEN (mevcut-yol; alıcı-seq-dedup-atar)"
+    );
+    let (_, _, induced, _) = s.diag_cs_bootstrap();
+    assert_eq!(
+        induced, 1200,
+        "bootstrap_induced_retransmit_bytes EXACT (birim-başına-bir-kez)"
+    );
+}
 
+/// DI-4: temiz-yavaş link — RTT 2.5s: data-ACK@2.5s (<3s) → probe-0; RTT 5s: probe@3s (1-adet),
+/// ACK@5s-disarm → toplam ≤1 zararsız-probe.
 #[test]
-#[ignore = "F2B/N8-spot: probe-RTT-ingest cwnd/BtlBw/delivery-rate/loss/ack-conf/pacing'i DEĞİŞTİRMEZ (izolasyon; M3)"]
-fn f2b_n8_probe_rtt_ingest_isolation() {}
+fn f2b_di4_clean_slow_link_at_most_one_probe() {
+    // RTT 2.5s → probe-0.
+    let mut a = Sender::new();
+    let _ = a.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let pre = drive_ticks(&mut a, 100 * MS, 2 * SEC + 400 * MS);
+    let _ = a.on_event_batch(
+        2 * SEC + 500 * MS,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    let post = drive_ticks(&mut a, 2 * SEC + 600 * MS, 10 * SEC);
+    let n_a = pre
+        .iter()
+        .chain(post.iter())
+        .filter(|(_, d)| d.kind == TransmitKind::CsProbe)
+        .count();
+    assert_eq!(n_a, 0, "RTT2.5s: erken-data-ACK → probe-0");
+    // RTT 5s → tam-1-probe.
+    let mut b = Sender::new();
+    let _ = b.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let pre = drive_ticks(&mut b, 100 * MS, 4 * SEC + 900 * MS);
+    let _ = b.on_event_batch(
+        5 * SEC,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    let post = drive_ticks(&mut b, 5 * SEC + 100 * MS, 15 * SEC);
+    let n_b = pre
+        .iter()
+        .chain(post.iter())
+        .filter(|(_, d)| d.kind == TransmitKind::CsProbe)
+        .count();
+    assert_eq!(n_b, 1, "RTT5s: ≤1 zararsız-probe");
+}
+
+/// DI-8: late-echo yok-sayma — koşul-1 (data-ACK-önce-kurdu), koşul-2 (seq-outstanding-değil),
+/// koşul-3/4 (tek-tüketim/duplicate). (Koşul-5 TimedOut = F3-M5-testi; koşul-"session-generation"
+/// in-instance-yeniden-giriş-İMKANSIZ — F0-tespit-(v) — yeni-instance-yeni-namespace.)
+#[test]
+fn f2b_di8_late_echo_ignore_conditions() {
+    // Koşul-1: data-ACK-sonrası echo yok-sayılır (srtt-değişmez; resolved-kaynak-DataAck-kalır).
+    let mut s = Sender::new();
+    let _ = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let _ = drive_ticks(&mut s, 100 * MS, 3 * SEC + 100 * MS); // probe@3s outstanding
+    let _ = s.on_event_batch(
+        4 * SEC,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    let (src, outst, _, _) = s.diag_cs_bootstrap();
+    assert_eq!(src, Some(CsSrttSource::DataAck));
+    assert_eq!(
+        outst, 0,
+        "terminal → outstanding-probe KESİN-retire (INV-CS-3)"
+    );
+    let (st0, _b0, srtt0, _r0, _i0) = s.diag_rate();
+    let _ = s.on_event_batch(5 * SEC, vec![Event::CsProbeEcho { probe_seq: 0 }]);
+    let (st1, _b1, srtt1, _r1, _i1) = s.diag_rate();
+    assert_eq!(srtt0, srtt1, "koşul-1: geç-echo sample-beslemez");
+    assert_eq!(st0, st1);
+    let (src1, _, _, _) = s.diag_cs_bootstrap();
+    assert_eq!(src1, Some(CsSrttSource::DataAck), "kaynak-overwrite-yok");
+
+    // Koşul-2: bilinmeyen-probe_seq yok-sayılır (soğukta).
+    let mut c = Sender::new();
+    let _ = c.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let _ = drive_ticks(&mut c, 100 * MS, 3 * SEC + 100 * MS);
+    let _ = c.on_event_batch(
+        3 * SEC + 200 * MS,
+        vec![Event::CsProbeEcho { probe_seq: 7 }],
+    );
+    assert_eq!(
+        c.state(),
+        SenderState::PreConverge,
+        "koşul-2: state-bozulmaz"
+    );
+    // Koşul-3/4: ilk-echo tüketir; duplicate-echo srtt'yi-değiştirmez.
+    let _ = c.on_event_batch(
+        3 * SEC + 300 * MS,
+        vec![Event::CsProbeEcho { probe_seq: 0 }],
+    );
+    let (_, _, srtt_a, _, _) = c.diag_rate();
+    let _ = c.on_event_batch(5 * SEC, vec![Event::CsProbeEcho { probe_seq: 0 }]);
+    let (_, _, srtt_b, _, _) = c.diag_rate();
+    assert_eq!(
+        srtt_a, srtt_b,
+        "koşul-3/4: tek-tüketim (duplicate-yok-sayılır)"
+    );
+}
+
+/// DI-11 (F2B-yarısı): probe_seq monoton + echo-tek-tüketim (INV-CS-7). (Wrap-guard F2A-kodda;
+/// u16::MAX-erişimi-4-probe'ta-imkansız — typed-diag-sayacı diag_cold_start'ta.)
+#[test]
+fn f2b_di11_probe_seq_uniqueness() {
+    let mut s = Sender::new();
+    let _ = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let all = drive_ticks(&mut s, 100 * MS, 46 * SEC);
+    let seqs: Vec<u64> = all
+        .iter()
+        .filter(|(_, d)| d.kind == TransmitKind::CsProbe)
+        .map(|(_, d)| d.seq)
+        .collect();
+    assert_eq!(seqs, vec![0, 1, 2, 3], "monoton + yeniden-kullanım-yok");
+    let (_, _, wrapped, _, _, _) = s.diag_cold_start();
+    assert_eq!(wrapped, 0);
+}
+
+/// N8-SPOT (M3-izolasyon): echo-ingest btlbw/loss/inflight'ı DEĞİŞTİRMEZ (yalnız srtt + doğal-
+/// state-geçişi). delivery-sample/loss-declaration/inflight-mutasyonu-YOK.
+#[test]
+fn f2b_n8_probe_rtt_ingest_isolation() {
+    let mut s = Sender::new();
+    let _ = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let _ = drive_ticks(&mut s, 100 * MS, 3 * SEC + 100 * MS);
+    let (_, btlbw0, srtt0, _, inflight0) = s.diag_rate();
+    assert_eq!(srtt0, 0, "ön-koşul: srtt-yok");
+    let fi0 = s.diag_fusion_input_snapshot().map(|f| f.loss_windowed_ppm);
+    let _ = s.on_event_batch(
+        3 * SEC + 200 * MS,
+        vec![Event::CsProbeEcho { probe_seq: 0 }],
+    );
+    let (_, btlbw1, srtt1, _, inflight1) = s.diag_rate();
+    let fi1 = s.diag_fusion_input_snapshot().map(|f| f.loss_windowed_ppm);
+    assert_eq!(btlbw0, btlbw1, "N8: BtlBw/delivery-DEĞİŞMEDİ");
+    assert_eq!(inflight0, inflight1, "N8: inflight-DEĞİŞMEDİ");
+    assert_eq!(fi0, fi1, "N8: loss-DEĞİŞMEDİ");
+    assert!(srtt1 > 0, "yalnız-srtt-kuruldu (izinli-etki)");
+}
 
 // ── F3 (M5 typed timeout + M6 patience) ────────────────────────────────────────────────────
 

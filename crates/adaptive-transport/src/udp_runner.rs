@@ -149,7 +149,15 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut repair_kind: BTreeMap<u32, u8> = BTreeMap::new(); // FK: silinen-esi'yi hangi-substrat kurtardı
                                                               // (0x01=§9-ARQ, 0x03=§11-dup, 0=none/FEC-only)
     #[cfg(feature = "experimental-cold-start")]
-    let mut cs_probe_rx: u64 = 0; // DR-CS-1 F2A: gelen-probe sayacı (drop-only)
+    let mut cs_probe_rx: u64 = 0; // DR-CS-1: gelen-probe sayacı
+    #[cfg(feature = "experimental-cold-start")]
+    let mut cs_echo_tx: u64 = 0; // üretilen-echo (alıcı-defteri; INV-CS-2/C4)
+    #[cfg(feature = "experimental-cold-start")]
+    let mut cs_echo_tx_bytes: u64 = 0; // cold_echo_tx_bytes = echo×43B
+    #[cfg(feature = "experimental-cold-start")]
+    let mut cs_echo_suppressed: u64 = 0; // T_ECHO_MIN-suppress (ledger-eşleşme-testi DI-13C)
+    #[cfg(feature = "experimental-cold-start")]
+    let mut cs_last_echo: Option<Instant> = None;
     let mut repair_arrival: BTreeMap<u32, u64> = BTreeMap::new(); // FR: substrat-onarım-arrival-ms (ARQ-repair
                                                                   // wall-clock; T_fec_decode<deadline<T_arq testi)
     while start.elapsed() < deadline {
@@ -170,12 +178,31 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                 let _ = sock.send_to(&[0xFEu8], from);
                 continue;
             }
-            // DR-CS-1 F2A: CS-probe (0x12) — echo-ÜRETİLMEZ (F2A-kapsam); drop + sayaç (marker'a).
+            // DR-CS-1 F2B: CS-probe (0x19) → idempotent-stateless ECHO (0x1A; §2.57-temsil; 43B=
+            // ECHO_WIRE_MAX-sınıfı) + T_ECHO_MIN=500ms/akış rate-limit (suppress-sayaçlı).
+            // seen_count/arrival_gap YALNIZ-LEDGER (karar-girdisi-değil). Per-probe-allocation-YOK.
             #[cfg(feature = "experimental-cold-start")]
-            if n >= 4 && buf[0] == 0x12 {
+            if n >= 4 && buf[0] == 0x19 {
                 cs_probe_rx += 1;
                 seen_any = true;
+                let gap_ms = last_rx.elapsed().as_millis() as u32;
                 last_rx = Instant::now();
+                let allow =
+                    cs_last_echo.is_none_or(|t: Instant| t.elapsed() >= Duration::from_millis(500));
+                if allow {
+                    cs_last_echo = Some(Instant::now());
+                    let mut e = [0u8; 43];
+                    e[0] = 0x1A; // CTRL_CS_ECHO
+                    e[1] = 0x01; // subtype
+                    e[2..4].copy_from_slice(&buf[2..4]); // probe_seq (yansıtılan)
+                    e[4..8].copy_from_slice(&(ev_count as u32).to_be_bytes()); // seen_count (ledger)
+                    e[8..12].copy_from_slice(&gap_ms.to_be_bytes()); // arrival_gap (ledger)
+                    let _ = sock.send_to(&e, from);
+                    cs_echo_tx += 1;
+                    cs_echo_tx_bytes += 43;
+                } else {
+                    cs_echo_suppressed += 1;
+                }
                 continue;
             }
             if n >= 23 {
@@ -319,7 +346,9 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         cfg.run_id, cfg.policy
     );
     #[cfg(feature = "experimental-cold-start")]
-    marker.push_str(&format!("cs_probe_rx={cs_probe_rx}\n"));
+    marker.push_str(&format!(
+        "cs_probe_rx={cs_probe_rx}\ncs_echo_tx={cs_echo_tx}\ncs_echo_tx_bytes={cs_echo_tx_bytes}\ncs_echo_suppressed={cs_echo_suppressed}\n"
+    ));
     std::fs::write(
         format!("{}/{}-rxdone.marker", cfg.out_dir, cfg.run_id),
         marker,
@@ -446,6 +475,13 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         // Geri-yol: SACK/RECOVERED.
         while let Ok(n) = sock.recv(&mut buf) {
             if n < 3 {
+                continue;
+            }
+            // DR-CS-1 F2B: CS-echo (0x1A) → Event::CsProbeEcho (yalnız flag-ON; adapter-batch).
+            #[cfg(feature = "experimental-cold-start")]
+            if n >= 4 && buf[0] == 0x1A {
+                let pseq = u16::from_be_bytes(buf[2..4].try_into().unwrap());
+                cs_adapter.push(Event::CsProbeEcho { probe_seq: pseq });
                 continue;
             }
             let cnt = u16::from_be_bytes(buf[1..3].try_into().unwrap()) as usize;
@@ -640,17 +676,16 @@ fn emit(
     base: u64,
 ) {
     for d in out {
-        // DR-CS-1 M2 (F2A): CS-probe — §11.1-layout harness-plaintext-temsili (boyut-sınıfı+alan-
-        // düzeni birebir; AEAD-yok → 16B tag-yeri-pad): [frame_type=0x12][subtype=0x01]
-        // [probe_seq u16_be][hub_handle u32=0][pad → toplam-44B]. Harness-kind-uzayında 0x12
-        // serbest (0x00-0x03/0xFE/0xA0/0xA1); ÜRETİM-inner_kind-0x12-çakışması F2B-DUR-B-konusu.
+        // DR-CS-1 M2 (F2B; AMENDMAN-onaylı-codepoint): CS-probe — otoritatif §2.57-layout'un
+        // harness-plaintext-temsili (kind=inner_kind=0x19; body: subtype+probe_seq+pad; 44B =
+        // PROBE_WIRE_EXACT boyut-sınıfı; AEAD/outer-yeri sıfır-pad). Üretim-sealed-yolu noise-
+        // wire-codec'te (dr_cs1_wire.rs-kanıtlı); harness alan-düzenini-birebir-taşır.
         #[cfg(feature = "experimental-cold-start")]
         if d.kind == TransmitKind::CsProbe {
-            let mut v = vec![0u8; d.size as usize]; // 44B (amp≤1 pad dahil)
-            v[0] = 0x12;
-            v[1] = 0x01; // subtype: cold-start-probe
+            let mut v = vec![0u8; d.size as usize]; // 44B
+            v[0] = 0x19; // CTRL_CS_PROBE (DR-CS-1-amendman; eski-0x12-CANCELLED)
+            v[1] = 0x01; // subtype: cold-start
             v[2..4].copy_from_slice(&(d.seq as u16).to_be_bytes()); // probe_seq
-                                                                    // v[4..8] hub_handle=0 (harness); kalan pad=0 (tag-yeri dahil)
             let _ = sock.send(&v);
             continue;
         }
@@ -674,7 +709,7 @@ fn emit(
                 TransmitKind::Duplicate => 0x03,
                 TransmitKind::FecParity => 0x02, // yukarıda-ele-alındı (ulaşılmaz)
                 #[cfg(feature = "experimental-cold-start")]
-                TransmitKind::CsProbe => 0x12, // yukarıda-ele-alındı (ulaşılmaz)
+                TransmitKind::CsProbe => 0x19, // yukarıda-ele-alındı (ulaşılmaz)
             };
             (wk, b, e, d.unit_id)
         } else {

@@ -23,6 +23,8 @@
 //! **Kapsam (Artım 1+3):** state machine + ölçüm + karar pipeline + DATA pacing + recovery İCRA
 //! (ARQ retransmit / forward duplication). Receiver (§4) = sonraki artım.
 
+#[cfg(feature = "experimental-cold-start")]
+use std::collections::BTreeSet;
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
@@ -98,6 +100,16 @@ pub enum Event {
     /// scheduling-işi yoksa EXACT-NO-OP (schedule_transmit/drain çağrılmaz).
     #[cfg(feature = "experimental-cold-start")]
     Tick,
+    /// DR-CS-1 M3 (F2B): authenticated CS-probe-echo (CTRL_CS_ECHO 0x1A; güvenlik-katmanı-açtı,
+    /// engine/runner çevirdi). YALNIZ bootstrap-RTT: `(probe_seq)`-lookup → tek-tüketim →
+    /// rtt-estimator (matematik-değişmez). cwnd/BtlBw/delivery/loss/ack-conf'a DOKUNMAZ (N8-spot).
+    /// seen_count/arrival_gap SENDER'A-TAŞINMAZ (ledger-only alıcı/harness-defterinde; karar-
+    /// girdisi-yapılamaz — amendman-§3).
+    #[cfg(feature = "experimental-cold-start")]
+    CsProbeEcho {
+        /// Yansıtılan probe_seq (INV-CS-7 namespace).
+        probe_seq: u16,
+    },
 }
 
 /// DR-CS-1 M1: exposed-timer türleri (`next_wakeup_ns` sözleşmesine bağlı küme). Scope: CS-probe/
@@ -109,6 +121,20 @@ enum CsTimerKind {
     TestHook(u8),
     /// M2 CS-probe merdiveni fire'ı (idx 0..N_PROBE; fire-anları 3/9/21/45s arm'dan-itibaren).
     CsProbe(u8),
+    /// (d)-kapsamı: bootstrap-sonrası MEVCUT time-threshold makinesinin bir-sonraki deadline'ı
+    /// (EK4-A2 yaşam-döngüsü: her-batch faz-2'de canlı-loss-state'ten yeniden-türetilir; fire =
+    /// mevcut `Timer::Pto` core-yolu — YENİ-retransmit-yolu-YOK, INV-CS-4).
+    BootstrapPto,
+}
+
+/// DR-CS-1 (F2B): bootstrap-srtt'nin kaynağı (INV-CS-3 terminal-sınıflandırma + diag).
+#[cfg(feature = "experimental-cold-start")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsSrttSource {
+    /// Hayatta-kalan DATA-ACK srtt'yi kurdu (ResolvedByDataAck).
+    DataAck,
+    /// CS-probe-echo srtt'yi kurdu (ResolvedByProbeEcho).
+    ProbeEcho,
 }
 
 // ── DR-CS-1 M2 [CAL] sabitleri (F2A) ──
@@ -768,6 +794,16 @@ pub struct Sender {
     cs_probe_emitted: u64, // wire-emission-sayısı (INV-CS-1 kanıtı)
     #[cfg(feature = "experimental-cold-start")]
     cs_probe_tx_bytes: u64, // cold_probe_tx_bytes (INV-CS-2; C4: YALNIZ-forward-probe)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_outstanding: Vec<(u16, u64)>, // emit-edilmiş, echo-bekleyen (probe_seq, emit_ns); ≤N_PROBE
+    #[cfg(feature = "experimental-cold-start")]
+    cs_resolved: Option<CsSrttSource>, // ilk-bootstrap-sonucu (INV-CS-3; tam-bir-kez)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_epoch_timed_out: bool, // M5 (F3): TimedOut-terminal → post-timeout-echo-yok-sayma (koşul-5)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_induced_units: BTreeSet<u64>, // bootstrap-anı-outstanding unit_id'ler (induced-retx-atfı; bounded)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_induced_retx_bytes: u64, // bootstrap_induced_retransmit_bytes (C4; §2.4-a)
 
     // ── send-record ↔ ACK-eşleme (DR-S5-3; SALT-LOGICAL — BtlBw/delivered'e BESLENMEZ) ──
     sent_logical: BTreeMap<u64, SrLogicalRef>, // wire-seq → logical (FEC-parity plan_fec_parity-içi; DATA engine-post-emit register_sent_logical — DR-S5-6)
@@ -935,6 +971,16 @@ impl Sender {
             cs_probe_emitted: 0,
             #[cfg(feature = "experimental-cold-start")]
             cs_probe_tx_bytes: 0,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_outstanding: Vec::new(),
+            #[cfg(feature = "experimental-cold-start")]
+            cs_resolved: None,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_epoch_timed_out: false,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_induced_units: BTreeSet::new(),
+            #[cfg(feature = "experimental-cold-start")]
+            cs_induced_retx_bytes: 0,
             sent_logical: BTreeMap::new(), // DR-S5-3
             confirmed_logical: VecDeque::new(),
             diag_recovered_cancels: 0,      // DR-S5-4
@@ -1048,6 +1094,10 @@ impl Sender {
             // on_event/on_event_batch girişinde ele-alınır (buraya ulaşmaz; exhaustiveness).
             #[cfg(feature = "experimental-cold-start")]
             Event::Tick => {}
+            // DR-CS-1 M3: echo-ingest (yalnız-RTT; N8-spot-izolasyon) → pipeline-devamı state'i
+            // doğal-PreConverge→Startup geçirir (mevcut srtt.is_some kapısı).
+            #[cfg(feature = "experimental-cold-start")]
+            Event::CsProbeEcho { probe_seq } => self.cs_on_probe_echo(probe_seq, now_ns),
         }
 
         let decision = self.fuzzy_evaluate(now_ns);
@@ -1133,6 +1183,13 @@ impl Sender {
         self.cs_phase3_fire_due(now_ns);
         // Faz-4: output-scheduling (tek-seam).
         let out = self.schedule_transmit(now_ns);
+        // §2.4-a/C4: bootstrap-induced-retransmit atfı — bootstrap-anı-outstanding birimin
+        // Retransmit-emisyonu (unit_id-eşleşme; birim-başına-BİR-kez; bounded).
+        for d in &out {
+            if d.kind == TransmitKind::Retransmit && self.cs_induced_units.remove(&d.unit_id) {
+                self.cs_induced_retx_bytes += d.size;
+            }
+        }
         // C2 post-condition: batch-sınırında due-kalmadı.
         debug_assert!(
             self.next_wakeup_ns().is_none_or(|w| w > now_ns),
@@ -1152,9 +1209,9 @@ impl Sender {
     #[cfg(feature = "experimental-cold-start")]
     fn cs_type_priority(e: &Event) -> u8 {
         match e {
-            Event::AckReceived(_) => 0, // DATA-ACK önce (EK5-iv)
-            // F2B: probe-echo → 1
-            _ => 2,
+            Event::AckReceived(_) => 0,     // DATA-ACK önce (EK5-iv)
+            Event::CsProbeEcho { .. } => 1, // probe-echo ikinci
+            _ => 2,                         // aynı-tip-varış-sırası (stable-sort)
         }
     }
 
@@ -1172,9 +1229,41 @@ impl Sender {
             || !self.pending_fec.is_empty()
     }
 
-    /// Faz-2: state-resolution/cancellation/disarm. F2A: srtt-oluştuysa (DATA-ACK-yoluyla)
-    /// CS-probe-merdiveni DISARM (kalan-fire'lar + pacer-bekleyen-pending iptal; C3: ACK-önce-
-    /// işlendiği-için aynı-batch'te probe-fire-edilmeden-disarm). F2B: +terminal/giveup/retire.
+    /// DR-CS-1 M3 (F2B) — echo-ingest: `(probe_seq)`-lookup → TEK-TÜKETİM → YALNIZ rtt-estimator
+    /// (matematik-değişmez; `source=ProbeEcho` etiketi diag'ta). LATE-ECHO-YOK-SAYMA (5-koşul):
+    /// (1) data-ACK-srtt-oluşturduysa (2) seq-outstanding-değilse (3) session_generation/epoch-
+    /// değiştiyse (in-instance-yeniden-giriş-İMKANSIZ — F0-tespit-(v); yeni-instance=yeni-namespace)
+    /// (4) echo-zaten-işlendiyse (tek-tüketim=aynı-koşul-2-yolu) (5) epoch-TimedOut-kapandıysa.
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_on_probe_echo(&mut self, probe_seq: u16, now_ns: u64) {
+        if self.cs_epoch_timed_out {
+            return; // koşul-5: post-timeout-echo YOK-SAYILIR (Seçenek-A; probe_seq'ler-retire'lı)
+        }
+        if self.rtt.srtt().is_some() {
+            return; // koşul-1 (data-ACK-önce-kurdu) — koşul-4'ü-de-kapsar (ilk-echo-sonrası)
+        }
+        let Some(pos) = self
+            .cs_probe_outstanding
+            .iter()
+            .position(|&(s, _)| s == probe_seq)
+        else {
+            return; // koşul-2/4: outstanding-değil (hiç-emit-edilmedi / zaten-tüketildi / retire'lı)
+        };
+        let (_, emit_ns) = self.cs_probe_outstanding.swap_remove(pos); // TEK-TÜKETİM
+        let sample = Duration::from_nanos(now_ns.saturating_sub(emit_ns));
+        // Bootstrap-anı-outstanding DATA kümesi (induced-retx-atfı §2.4-a; bounded=inflight).
+        self.cs_induced_units = self.inflight.values().map(|p| p.unit.id).collect();
+        // YALNIZ RTT-estimator (mevcut observe; matematik-değişmez). cwnd/BtlBw/delivery/loss/
+        // ack-conf'a DOKUNULMAZ (N8-spot-testli).
+        self.rtt.observe(now_ns, sample);
+        self.cs_resolved = Some(CsSrttSource::ProbeEcho);
+    }
+
+    /// Faz-2: state-resolution/cancellation/disarm. (a) srtt-oluştuysa CS-probe-merdiveni DISARM
+    /// (kalan-fire'lar + pending iptal; C3: ACK/echo-önce-işlendiği-için aynı-batch'te fire-
+    /// edilmeden-disarm) + INV-CS-3 terminal-kaynağı (DataAck-yolu burada-yakalanır) + outstanding-
+    /// probe-retire. (b) (d)/EK4-A2: BootstrapPto-exposure canlı-loss-state'ten yeniden-türetilir
+    /// (retire-all + re-register; ACK/recovery-temizliği-otomatik).
     #[cfg(feature = "experimental-cold-start")]
     fn cs_phase2_resolve(&mut self, _now_ns: u64) {
         if self.cs_probe_armed_once && !self.cs_probe_disarmed && self.rtt.srtt().is_some() {
@@ -1182,12 +1271,46 @@ impl Sender {
             self.cs_wakeup
                 .retain(|&(_, k)| !matches!(k, CsTimerKind::CsProbe(_)));
             self.cs_probe_pending.clear();
+            self.cs_probe_outstanding.clear(); // epoch-kapanışı: outstanding-probe KESİN-retire
+            if self.cs_resolved.is_none() {
+                self.cs_resolved = Some(CsSrttSource::DataAck); // ResolvedByDataAck
+            }
+        }
+        // (d)/EK4-A2: bootstrap-sonrası MEVCUT time-threshold deadline'ı expose (yaşam-döngüsü:
+        // her-batch yeniden-türet → re-arm/ACK-retire otomatik; C2: overdue-ise-aynı-batch-faz-3).
+        if self.cs_resolved.is_some() {
+            self.cs_wakeup
+                .retain(|&(_, k)| !matches!(k, CsTimerKind::BootstrapPto));
+            if let Some(srtt) = self.rtt.srtt() {
+                if let Some(d) = self
+                    .loss
+                    .next_time_loss_deadline_ns(srtt, self.cadence_loss_floor())
+                {
+                    self.cs_wakeup.push((d, CsTimerKind::BootstrapPto));
+                }
+            }
         }
     }
 
-    /// Faz-3: due exposed-timer'ları BİR KEZ ateşle (retire-on-fire; deadline-sırası).
+    /// Faz-3: due exposed-timer'ları ateşle (retire-on-fire; deadline-sırası). Dış-döngü:
+    /// fire-yan-etkisi (BootstrapPto-re-arm floor-kayması-edge'i) yeni-due-üretirse AYNI-batch'te
+    /// tüketilir (C2: geleceğe-erteleme-YASAK; ilerleme-garantili — her-tur-birim-declare-eder;
+    /// güvenlik-tavanı debug_assert'li).
     #[cfg(feature = "experimental-cold-start")]
     fn cs_phase3_fire_due(&mut self, now_ns: u64) {
+        let mut guard = 0u32;
+        while self.cs_any_due(now_ns) {
+            guard += 1;
+            debug_assert!(guard <= 64, "faz-3 due-döngüsü ilerleme-kaybı");
+            if guard > 64 {
+                break; // release-güvenlik: kalan-due bir-sonraki-batch'te (anomali-korunması)
+            }
+            self.cs_phase3_fire_due_once(now_ns);
+        }
+    }
+
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_phase3_fire_due_once(&mut self, now_ns: u64) {
         // deadline-sırası deterministik (stable: eşit-deadline'da ekleme-sırası).
         let mut due: Vec<(u64, CsTimerKind)> = Vec::new();
         self.cs_wakeup.retain(|&(d, k)| {
@@ -1202,6 +1325,22 @@ impl Sender {
         for (_, kind) in due {
             match kind {
                 CsTimerKind::TestHook(id) => self.cs_hook_fired.push((now_ns, id)),
+                CsTimerKind::BootstrapPto => {
+                    // (d)-fire: MEVCUT Pto-core-yolu (dispatch+fuzzy+state — pending_lost-oluşursa
+                    // update_state RecoverArq'a-geçer → faz-4 plan_arq AYNI-batch'te emit-eder;
+                    // DI-1A "ek-RTT/ek-network-event-beklemez"). INV-CS-4: yeni-retransmit-yolu-YOK.
+                    self.on_event_core(Event::TimerFired(Timer::Pto), now_ns);
+                    // EK4-A2 re-arm: kalan-eligible-birim-varsa YENİ-deadline (zorunlu-gelecek:
+                    // az-önce-fire-edilen-eşik-altı-birimler declare-edilip-inflight'tan-düştü).
+                    if let Some(srtt) = self.rtt.srtt() {
+                        if let Some(d) = self
+                            .loss
+                            .next_time_loss_deadline_ns(srtt, self.cadence_loss_floor())
+                        {
+                            self.cs_wakeup.push((d, CsTimerKind::BootstrapPto));
+                        }
+                    }
+                }
                 CsTimerKind::CsProbe(_idx) => {
                     // M2 fire: probe_seq ata (INV-CS-7 monoton; wrap→probe-YOK+typed-diag) +
                     // bütçe-kontrol (INV-CS-2 hard) → pacer-bekleyen-pending'e.
@@ -1238,6 +1377,8 @@ impl Sender {
             self.cs_probe_pending.pop_front();
             self.cs_probe_emitted += 1;
             self.cs_probe_tx_bytes += CS_PROBE_WIRE_MAX;
+            // F2B: echo-korelasyonu-için outstanding-kayıt (probe_seq, emit_ns=RTT-t0).
+            self.cs_probe_outstanding.push((pseq, self.last_now_ns));
             out.push(TransmitDecision {
                 kind: TransmitKind::CsProbe,
                 seq: u64::from(pseq), // probe_seq (AYRI-namespace; data-seq-DEĞİL)
@@ -1260,6 +1401,19 @@ impl Sender {
             self.cs_probe_pending.len(),
             self.cs_probe_armed_once,
             self.cs_probe_disarmed,
+        )
+    }
+
+    /// DR-CS-1 F2B diag: (bootstrap-sonucu-kaynağı, outstanding-probe-sayısı,
+    /// bootstrap_induced_retransmit_bytes, epoch_timed_out).
+    #[cfg(feature = "experimental-cold-start")]
+    #[must_use]
+    pub fn diag_cs_bootstrap(&self) -> (Option<CsSrttSource>, usize, u64, bool) {
+        (
+            self.cs_resolved,
+            self.cs_probe_outstanding.len(),
+            self.cs_induced_retx_bytes,
+            self.cs_epoch_timed_out,
         )
     }
 

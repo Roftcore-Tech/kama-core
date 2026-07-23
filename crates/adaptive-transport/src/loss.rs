@@ -270,6 +270,33 @@ impl ThresholdLossDetector {
     }
 }
 
+impl ThresholdLossDetector {
+    /// DR-CS-1 (d) [READ-ONLY türetme; eşik/ledger-semantiği DEĞİŞMEZ]: MEVCUT time-threshold
+    /// makinesinin bir-SONRAKİ deadline'ı — eligibility `detect_time_losses` ile BİREBİR
+    /// (`have_acked` && `seq < largest_acked`); deadline = send_ns + max(srtt·num/den, floor).
+    /// None = eligible-birim-yok (ör. hiç-ACK-kanıtı-yok veya tail > largest_acked —
+    /// F0-tespit-(iii)-caveat'i; o-birimler mevcut-RecoverFwd/geometrik-yola-kalır).
+    #[must_use]
+    pub fn next_time_loss_deadline_ns(
+        &self,
+        srtt: Duration,
+        cadence_floor: Duration,
+    ) -> Option<u64> {
+        if !self.have_acked {
+            return None;
+        }
+        let floor = self.cfg.min_delay.max(cadence_floor);
+        let thresh = scale_duration(srtt, self.cfg.time_num, self.cfg.time_den)
+            .max(floor)
+            .as_nanos() as u64;
+        self.inflight
+            .iter()
+            .filter(|(&seq, _)| seq < self.largest_acked)
+            .map(|(_, s)| s.send_ns.saturating_add(thresh))
+            .min()
+    }
+}
+
 impl LossDetector for ThresholdLossDetector {
     fn on_sent(&mut self, seq: u64, send_ns: u64, units: u64) {
         self.inflight.insert(seq, Sent { send_ns, units });
