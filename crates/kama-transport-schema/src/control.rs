@@ -57,6 +57,22 @@ pub enum Control {
         reason_code: u8,
         renew_hint: u8,
     },
+    /// 0x19 [DR-CS-1] — cold-start CS-probe (subtype=0x01; pad=9B-sıfır wire-codec'te; amp≤1:
+    /// PROBE_WIRE_EXACT=44B). probe_seq: sender-session-monoton (INV-CS-7). RETRY-EDİLMEZ.
+    CsProbe {
+        id: ControlId,
+        subtype: u8,
+        probe_seq: u16,
+    },
+    /// 0x1A [DR-CS-1] — cold-start probe-echo (idempotent-stateless; ECHO_WIRE_MAX=43B).
+    /// seen_count/arrival_gap YALNIZ-LEDGER (karar-girdisi-YAPILAMAZ — amendman-§3).
+    CsEcho {
+        id: ControlId,
+        subtype: u8,
+        probe_seq: u16,
+        seen_count: u32,
+        arrival_gap: u32,
+    },
 }
 
 impl Control {
@@ -74,6 +90,8 @@ impl Control {
             Control::BlockAbort { .. } => BLOCK_ABORT,
             Control::SessionClose { .. } => SESSION_CLOSE,
             Control::SessionRenewRequired { .. } => SESSION_RENEW_REQUIRED,
+            Control::CsProbe { .. } => CTRL_CS_PROBE,
+            Control::CsEcho { .. } => CTRL_CS_ECHO,
         }
     }
 
@@ -89,7 +107,9 @@ impl Control {
             | Control::ParamAck { id, .. }
             | Control::BlockAbort { id, .. }
             | Control::SessionClose { id, .. }
-            | Control::SessionRenewRequired { id, .. } => *id,
+            | Control::SessionRenewRequired { id, .. }
+            | Control::CsProbe { id, .. }
+            | Control::CsEcho { id, .. } => *id,
         }
     }
 }

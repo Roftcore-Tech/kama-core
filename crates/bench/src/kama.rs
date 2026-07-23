@@ -130,7 +130,9 @@ impl ClientRun {
                     TransmitKind::Data => self.tx_data += n,
                     TransmitKind::Retransmit => self.tx_retx += n,
                     TransmitKind::Duplicate => self.tx_dup += n,
-                    TransmitKind::FecParity => {} // emit edilmez (§10 politika)
+                    // FecParity emit-edilmez (§10 politika); CsProbe (DR-CS-1, yalnız
+                    // experimental-cold-start feature'ıyla-var) bench-legacy-sürücüde sayılmaz.
+                    _ => {}
                 }
             }
         }

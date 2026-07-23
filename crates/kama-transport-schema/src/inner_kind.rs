@@ -19,6 +19,10 @@ pub const PARAM_ACK: u8 = 0x15;
 pub const BLOCK_ABORT: u8 = 0x16;
 pub const SESSION_CLOSE: u8 = 0x17;
 pub const SESSION_RENEW_REQUIRED: u8 = 0x18;
+/// DR-CS-1-AMENDMAN (Abkarada-onaylı; §2.56): cold-start minimal-bootstrap probe.
+pub const CTRL_CS_PROBE: u8 = 0x19;
+/// DR-CS-1-AMENDMAN: cold-start probe-echo (idempotent-stateless yanıt).
+pub const CTRL_CS_ECHO: u8 = 0x1A;
 
 /// FEC shard türü (source/repair) — §2.6 FEC-inner header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +59,9 @@ pub enum InnerKind {
     Control(u8),
 }
 
-/// Codepoint → InnerKind (fail-closed: 0x00 reserved, 0x03..0x0F FEC-reserved, 0x19..0xFF reserved).
+/// Codepoint → InnerKind (fail-closed: 0x00 reserved, 0x03..0x0F FEC-reserved, 0x1B..0xFF reserved).
+/// Fail-closed = FRAME-seviyesi reject (session-yaşar) — eski-peer'ın yeni-codepoint'leri safe-ignore
+/// etmesinin yapısal-tabanı (DR-CS-1 mixed-version).
 ///
 /// # Errors
 /// Reserved/bilinmeyen codepoint → [`SchemaError::UnknownInnerKind`].
@@ -71,7 +77,9 @@ pub fn classify(cp: u8) -> Result<InnerKind, SchemaError> {
         | PARAM_ACK
         | BLOCK_ABORT
         | SESSION_CLOSE
-        | SESSION_RENEW_REQUIRED => Ok(InnerKind::Control(cp)),
+        | SESSION_RENEW_REQUIRED
+        | CTRL_CS_PROBE
+        | CTRL_CS_ECHO => Ok(InnerKind::Control(cp)),
         other => Err(SchemaError::UnknownInnerKind(other)),
     }
 }

@@ -33,6 +33,8 @@ impl RetryClass {
                 RetryClass::UntilNetworkAck
             }
             ACK | SACK | RECOVERED | PARAM_ACK => RetryClass::NoRetry,
+            // DR-CS-1 (§2.57-amendman): probe-retry = merdivenin-kendisi; echo idempotent-stateless.
+            CTRL_CS_PROBE | CTRL_CS_ECHO => RetryClass::NoRetry,
             _ => RetryClass::NoRetry,
         }
     }
