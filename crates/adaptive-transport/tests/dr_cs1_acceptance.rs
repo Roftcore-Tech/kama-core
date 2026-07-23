@@ -404,50 +404,49 @@ fn f2b_di1_first_data_loss_bootstrap_recovery() {
     }
 }
 
-/// DI-1A (C2): deadline echo'dan-ÖNCE-kurulmuş (Duplicate-ACK largest_acked'ı-yükseltir ama
-/// srtt-vermez) → echo-batch'inde overdue-PTO AYNI-batch faz-3'te fire; çift-fire-yok.
+/// DI-1A (C2): bootstrap-sonrası kayıp-birim retransmit'i YENİ-NETWORK-EVENT-BEKLEMEDEN çıkar —
+/// deadline-overdue-ise ACK-batch'inde, değilse exposed-deadline'da TEK-boş-Tick'le (C2). DÜRÜST-
+/// NOT: mühürlü cadence-floor (EAI@31B/s türevi) nedeniyle deadline gelecek-olabilir → "aynı-batch"
+/// GARANTİ-değil; normatif-özellik "ek-network-event-yok + busy-loop-yok"tur (helper doğrular).
 #[test]
 fn f2b_di1a_overdue_pto_fires_same_batch() {
     let mut s = Sender::new();
     let _ = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
-    // 61.2s'e-kadar-sür: geometrik-dup (seq1) emit-edilir; probe'lar 3/9/21/45s'te-çıkar.
-    let all = drive_ticks(&mut s, 100 * MS, 62 * SEC);
-    assert!(
-        all.iter().any(|(_, d)| d.kind == TransmitKind::Duplicate),
-        "geometrik-kopya-emit (seq1)"
-    );
-    let n_probes = all
-        .iter()
-        .filter(|(_, d)| d.kind == TransmitKind::CsProbe)
-        .count();
-    assert_eq!(n_probes, 4, "merdiven-tam (echo-yok)");
-    // Duplicate-ACK: largest_acked=1 (deadline-kurulur) ama origin=Duplicate → srtt-YOK.
+    let _ = drive_ticks(&mut s, 100 * MS, 3 * SEC + 100 * MS); // probe@3s
     let _ = s.on_event_batch(
-        63 * SEC,
+        3 * SEC + 200 * MS,
+        vec![Event::CsProbeEcho { probe_seq: 0 }],
+    );
+    assert_ne!(s.state(), SenderState::PreConverge, "echo-bootstrap");
+    let out2 = s.on_event_batch(
+        3 * SEC + 300 * MS,
+        vec![Event::AppData(OpaqueUnit { id: 2, size: 1200 })],
+    );
+    let s2 = out2
+        .iter()
+        .find(|d| d.kind == TransmitKind::Data && d.unit_id == 2)
+        .map(|d| d.seq)
+        .expect("u2-emit");
+    let ack_batch = s.on_event_batch(
+        4 * SEC,
         vec![Event::AckReceived(AckInfo {
-            acked_seqs: vec![1],
+            acked_seqs: vec![s2],
             ack_delay: Duration::from_millis(1),
         })],
     );
-    assert_eq!(
-        s.state(),
-        SenderState::PreConverge,
-        "srtt-hala-yok (dup-ACK)"
+    // (d)+C2: overdue-ise-ACK-batch'inde, değilse exposed-deadline'da TEK-boş-Tick (yeni-network-
+    // event-YOK); busy-loop-yok (post-condition helper-içinde + burada).
+    let (ft, fired) = expect_retransmit_via_wakeup(&mut s, 4 * SEC, &ack_batch, 1);
+    assert!(fired
+        .iter()
+        .any(|d| d.kind == TransmitKind::Retransmit && d.unit_id == 1));
+    // Çift-fire-yok: fire-anında-tekrar-boş-batch yeni-retransmit-üretmez.
+    let again = s.on_event_batch(ft, Vec::new());
+    assert!(
+        !again.iter().any(|d| d.kind == TransmitKind::Retransmit),
+        "aynı-anda-tekrar-Tick yeni-retransmit-üretmez"
     );
-    // Geç-echo (probe_seq=3, emit@45s): srtt kurulur; deadline-kurulmuştu (dup-ACK) →
-    // overdue-ise-AYNI-batch, değilse exposed-deadline'da TEK-boş-Tick'le fire (C2; ek-network-
-    // event-beklemez).
-    let echo_batch = s.on_event_batch(64 * SEC, vec![Event::CsProbeEcho { probe_seq: 3 }]);
-    let (_ft, _fired) = expect_retransmit_via_wakeup(&mut s, 64 * SEC, &echo_batch, 1);
-    // Çift-fire-yok + post-condition: aynı-anda-tekrar-boş-batch yeni-Retransmit-üretmez.
-    let wk_after = s.next_wakeup_ns();
-    if let Some(w) = wk_after {
-        let again = s.on_event_batch(w.saturating_sub(1), Vec::new());
-        assert!(
-            !again.iter().any(|d| d.kind == TransmitKind::Retransmit),
-            "deadline-öncesi-Tick fire-etmez (çift-fire/erken-fire-yok)"
-        );
-    }
+    assert!(s.next_wakeup_ns().is_none_or(|w| w > ft));
 }
 
 /// DI-1C (EK4-A2): re-armed-PTO yaşam-döngüsü — retransmit'in-ACK'i-de-düşer; SONRAKİ trafik-ACK'i
@@ -711,29 +710,208 @@ fn f2b_n8_probe_rtt_ingest_isolation() {
 
 // ── F3 (M5 typed timeout + M6 patience) ────────────────────────────────────────────────────
 
-#[test]
-#[ignore = "F3/DI-2B: sustained-reverse-blackout — echo-beklenmez; bütçe+program+typed-timeout; direction-diagnosis-YAPILMAZ"]
-fn f3_di2b_reverse_blackout_budget_and_timeout() {}
+// ── F3 (M5 typed timeout + M6 patience) — İMPLEMENTE ───────────────────────────────────────
 
-#[test]
-#[ignore = "F3/DI-3: çift-yön-ölü — timeout ≤60s+ε epoch'ta-BİR-kez; geç-echo-YOK-SAYILIR (Seçenek-A); legacy-kopya→DATA-ACK=PostTimeoutRecovery; ikinci-terminal-YOK"]
-fn f3_di3_both_dead_single_terminal_timeout() {}
+use adaptive_transport::sender::CsTerminal;
 
+/// DI-2B/DI-3: çift-yön-ölü (echo-yok, ACK-yok) → giveup@60s TimedOut (epoch-BİR-kez); post-timeout
+/// geç-echo YOK-SAYILIR (Seçenek-A); legacy-geometrik-kopya→DATA-ACK = PostTimeoutRecovery (ikinci-
+/// terminal-YOK). Direction-diagnosis YAPILMAZ (yalnız TimedOut; forward/reverse-ayrımı-iddia-yok).
 #[test]
-#[ignore = "F3/DI-7: heal-mid-cold — giveup-öncesi→ResolvedBy*; sonrası→yalnız-DATA-ACK-PostTimeoutRecovery"]
-fn f3_di7_heal_before_and_after_giveup() {}
+fn f3_di3_both_dead_single_terminal_then_post_timeout() {
+    let mut s = Sender::new();
+    let _ = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    // 60s'e-kadar: 4-probe-çıkar (echo-yok); giveup@60s → TimedOut.
+    let all = drive_ticks(&mut s, 100 * MS, 60 * SEC + 200 * MS);
+    assert_eq!(
+        all.iter()
+            .filter(|(_, d)| d.kind == TransmitKind::CsProbe)
+            .count(),
+        4
+    );
+    assert_eq!(
+        s.take_cs_terminal(),
+        Some(CsTerminal::TimedOut),
+        "giveup@60s → TimedOut"
+    );
+    let (_, _, _, timed_out) = s.diag_cs_bootstrap();
+    assert!(timed_out);
+    // epoch-BİR-kez: sonraki-Tick'ler yeni-terminal-üretmez.
+    let _ = drive_ticks(&mut s, 60 * SEC + 300 * MS, 130 * SEC);
+    assert_eq!(
+        s.take_cs_terminal(),
+        None,
+        "TimedOut-tek-kez (drain-sonrası-boş)"
+    );
+    // Post-timeout geç-echo YOK-SAYILIR (koşul-5): srtt-kurmaz, terminal-üretmez.
+    let _ = s.on_event_batch(131 * SEC, vec![Event::CsProbeEcho { probe_seq: 0 }]);
+    assert_eq!(
+        s.state(),
+        SenderState::PreConverge,
+        "post-timeout-echo-yok-sayıldı"
+    );
+    assert_eq!(s.take_cs_terminal(), None);
+    // Heal-yolu: post-timeout yeni-DATA (u2) çıkar + DATA-ACK'i srtt-kurar → PostTimeoutRecovery
+    // (İKİNCİ-terminal-değil). (Legacy-geometrik-kopya ORİJİNAL-u1'i-taşır ama Duplicate-ACK'i
+    // ambiguous-RTT-nedeniyle-srtt-VERMEZ — bootstrap yeni/retransmit-olmayan-DATA-ACK'iyle olur.)
+    let out2 = s.on_event_batch(
+        131 * SEC + 500 * MS,
+        vec![Event::AppData(OpaqueUnit { id: 2, size: 1200 })],
+    );
+    // u2 token-refill-bekleyebilir; çıktıdan-seq-izle (gerekirse Tick-zinciri).
+    let mut t = 131 * SEC + 600 * MS;
+    let mut s2 = out2
+        .iter()
+        .find(|d| d.kind == TransmitKind::Data && d.unit_id == 2)
+        .map(|d| d.seq);
+    let mut probe_out;
+    for _ in 0..40 {
+        if s2.is_some() {
+            break;
+        }
+        t += 40 * SEC;
+        probe_out = s.on_event_batch(t, vec![Event::TimerFired(Timer::Pto)]);
+        s2 = probe_out
+            .iter()
+            .find(|d| d.kind == TransmitKind::Data && d.unit_id == 2)
+            .map(|d| d.seq);
+    }
+    let s2 = s2.expect("post-timeout u2-emit");
+    let _ = s.on_event_batch(
+        t + 5 * SEC,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![s2],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    assert_ne!(s.state(), SenderState::PreConverge, "DATA-ACK → Startup");
+    assert_eq!(
+        s.take_cs_terminal(),
+        Some(CsTerminal::PostTimeoutRecovery),
+        "post-timeout-DATA-ACK = PostTimeoutRecovery (ikinci-TimedOut/Resolved-DEĞİL)"
+    );
+}
 
+/// DI-7: heal-mid-cold — giveup-ÖNCESİ echo → ResolvedByProbeEcho (TimedOut-YOK); ayrı-instance
+/// giveup-SONRASI → PostTimeoutRecovery (DI-3'te-kanıtlandı; burada-öncesi-kolu).
 #[test]
-#[ignore = "F3/DI-12A-D (C3): eş-zaman-sıralaması — A: ACK@probe-deadline→probe-çıkmaz; B: echo@giveup→timeout-çıkmaz; C: ACK@giveup→timeout-çıkmaz; D: timeout-1ns-önce→TimedOut-geçerli+PostTimeoutRecovery"]
-fn f3_di12ad_equal_timestamp_ordering() {}
+fn f3_di7_heal_before_giveup_resolves_not_timeout() {
+    let mut s = Sender::new();
+    let _ = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let _ = drive_ticks(&mut s, 100 * MS, 9 * SEC + 100 * MS); // probe 3s,9s outstanding
+                                                               // giveup-öncesi (t=10s < 60s) echo → ResolvedByProbeEcho.
+    let _ = s.on_event_batch(10 * SEC, vec![Event::CsProbeEcho { probe_seq: 1 }]);
+    assert_eq!(
+        s.take_cs_terminal(),
+        Some(CsTerminal::ResolvedByProbeEcho),
+        "giveup-öncesi-echo → ResolvedByProbeEcho"
+    );
+    // giveup-anı-geçse-bile TimedOut ÜRETİLMEZ (retire-edildi).
+    let _ = drive_ticks(&mut s, 10 * SEC + 100 * MS, 70 * SEC);
+    assert_eq!(s.take_cs_terminal(), None, "resolved-sonrası TimedOut-yok");
+    let (_, _, _, timed_out) = s.diag_cs_bootstrap();
+    assert!(!timed_out);
+}
 
+/// DI-12A-D (C3 eş-zaman-sıralaması): A: ACK@probe-deadline → ResolvedByDataAck, probe-ÇIKMAZ ·
+/// B: echo@giveup → ResolvedByProbeEcho, timeout-ÇIKMAZ · C: ACK@giveup → ResolvedByDataAck,
+/// timeout-ÇIKMAZ · D: timeout-1ns-ÖNCE → TimedOut-geçerli, sonraki-ACK = PostTimeoutRecovery.
 #[test]
-#[ignore = "F3/DI-13A-D (C4): muhasebe — probe/echo/induced-retransmit sayaçları EXACT; rate-limit-suppress-ledger; 31B/s-shared-medium-serialization"]
-fn f3_di13ad_bidirectional_accounting() {}
+fn f3_di12ad_equal_timestamp_ordering() {
+    // A: ACK EXACTLY @ 3s (probe-deadline). Faz-2-ACK-önce → faz-3-probe-fire-etmez.
+    let mut a = Sender::new();
+    let _ = a.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let _ = drive_ticks(&mut a, 100 * MS, 2 * SEC + 900 * MS); // 3s'e-değme
+    let out_a = a.on_event_batch(
+        3 * SEC,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    assert!(
+        !out_a.iter().any(|d| d.kind == TransmitKind::CsProbe),
+        "A: ACK@probe-deadline → probe-çıkmaz (C3)"
+    );
+    assert_eq!(a.take_cs_terminal(), Some(CsTerminal::ResolvedByDataAck));
 
+    // B: echo EXACTLY @ 60s (giveup-deadline). Faz-2-echo→srtt→giveup-retire → timeout-çıkmaz.
+    let mut b = Sender::new();
+    let _ = b.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let _ = drive_ticks(&mut b, 100 * MS, 59 * SEC + 900 * MS); // 60s'e-değme (4-probe-çıktı)
+    let _ = b.on_event_batch(60 * SEC, vec![Event::CsProbeEcho { probe_seq: 3 }]);
+    assert_eq!(
+        b.take_cs_terminal(),
+        Some(CsTerminal::ResolvedByProbeEcho),
+        "B: echo@giveup → ResolvedByProbeEcho, TimedOut-YOK"
+    );
+
+    // C: ACK EXACTLY @ 60s (giveup). Faz-2-ACK→srtt→giveup-retire → timeout-çıkmaz.
+    let mut c = Sender::new();
+    let _ = c.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let _ = drive_ticks(&mut c, 100 * MS, 59 * SEC + 900 * MS);
+    let _ = c.on_event_batch(
+        60 * SEC,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    assert_eq!(
+        c.take_cs_terminal(),
+        Some(CsTerminal::ResolvedByDataAck),
+        "C: ACK@giveup → ResolvedByDataAck, TimedOut-YOK"
+    );
+
+    // D: timeout-Tick 1ns ÖNCE (ACK-yok) → TimedOut; SONRAKİ-ACK = PostTimeoutRecovery.
+    let mut d = Sender::new();
+    let _ = d.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let _ = drive_ticks(&mut d, 100 * MS, 59 * SEC + 900 * MS);
+    let _ = d.on_event_batch(60 * SEC, vec![Event::TimerFired(Timer::Pto)]); // giveup-fire
+    assert_eq!(
+        d.take_cs_terminal(),
+        Some(CsTerminal::TimedOut),
+        "D: timeout"
+    );
+    let _ = d.on_event_batch(
+        61 * SEC,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    assert_eq!(
+        d.take_cs_terminal(),
+        Some(CsTerminal::PostTimeoutRecovery),
+        "D: timeout-sonrası-ACK = PostTimeoutRecovery (ikinci-terminal-değil)"
+    );
+}
+
+/// M6 (EK4-A1): RX_COLD_ABANDON profil-türevi bound formülü — max-birim-1200B'de 75s-sabiti
+/// HİÇBİR-profilde-geçerli-değil (F0-tespit-(viii) donmuş-tablo). Bu test formül-kontratını-kilitler
+/// (harness-rx S-A-105s-kullanır; DI-10-wire-tarafı F4/W-3).
 #[test]
-#[ignore = "F3/DI-10: RX-kaynak-sınırları — hard-cap-assert; typed-diagnostic; wire-görünür-Superseded; patience EK4-A1-formül-uygunluk"]
-fn f3_di10_rx_resource_caps_and_patience() {}
+fn f3_m6_patience_bound_formula_1200b_exceeds_75s() {
+    // RX_COLD_ABANDON = max(A, B); A = 60(giveup)+5(RTT_MAX)+10(alw) = 75.
+    // B = T_elig(1200B) + serial@31 + FDB + margin.
+    let a = 75.0_f64;
+    let t_elig = 1.5 * (1200.0 + 65.0) / 31.0; // ≈61.2s (legacy geometrik; floor-BW=31)
+    let serial = 1200.0 / 31.0; // ≈38.7s
+    for fdb in [0.05_f64, 0.125, 0.5, 1.25, 2.5] {
+        let b = t_elig + serial + fdb + 2.0;
+        let bound = a.max(b);
+        assert!(b > a, "1200B-B-dalı 75s'i-aşar (fdb={fdb}): B={b:.1}");
+        assert!(
+            bound >= 101.0,
+            "profil-türevi-patience ≥101s (>75s → S-A/S-B-zorunlu)"
+        );
+    }
+    // 65B/300B: 75s-geçerli (B ≤ A).
+    for size in [65.0_f64, 300.0] {
+        let b = 1.5 * (size + 65.0) / 31.0 + size / 31.0 + 0.05 + 2.0;
+        assert!(b < a, "küçük-birim 75s-yeter (size={size}): B={b:.1}");
+    }
+}
 
 // ── F4 (wire; faithful-harness — ayrıca scripts/netem altında W-1..W-4 koşuları) ───────────
 

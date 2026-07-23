@@ -160,9 +160,17 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut cs_last_echo: Option<Instant> = None;
     let mut repair_arrival: BTreeMap<u32, u64> = BTreeMap::new(); // FR: substrat-onarım-arrival-ms (ARQ-repair
                                                                   // wall-clock; T_fec_decode<deadline<T_arq testi)
+                                                                  // DR-CS-1 M6 (EK4-A1; S-A profil-türevi patience): cold-start-flag'iyle idle-terk-eşiği
+                                                                  // RX_COLD_ABANDON'a-yükseltilir (max-birim-1200B'de 75s HİÇBİR-profilde-geçerli-değil,
+                                                                  // F0-tespit-(viii): 102-105s). Ürün-alıcı-patience-host'u-YOK (harness-sözleşme; hüküm-tavanı
+                                                                  // SENDER-SIDE). Flag-OFF'ta 8s-korunur (INV-CS-5 kimliği).
+    #[cfg(feature = "experimental-cold-start")]
+    let idle_abandon = Duration::from_secs(105); // S-A: max(102-104.4, 105-tavan)
+    #[cfg(not(feature = "experimental-cold-start"))]
+    let idle_abandon = Duration::from_secs(8);
     while start.elapsed() < deadline {
         // FA: idle-erken-çıkış YALNIZ-FALLBACK (FINISH-marker gelmezse); normal-yol=FINISH-marker.
-        if seen_any && last_rx.elapsed() > Duration::from_secs(8) {
+        if seen_any && last_rx.elapsed() > idle_abandon {
             break;
         }
         if finish_seen >= 3 {

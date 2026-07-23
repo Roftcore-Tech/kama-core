@@ -125,6 +125,25 @@ enum CsTimerKind {
     /// (EK4-A2 yaşam-döngüsü: her-batch faz-2'de canlı-loss-state'ten yeniden-türetilir; fire =
     /// mevcut `Timer::Pto` core-yolu — YENİ-retransmit-yolu-YOK, INV-CS-4).
     BootstrapPto,
+    /// M5 (F3): cold-start giveup deadline (T_COLD_GIVEUP; son-probe+RTT_MAX sonrası). Fire →
+    /// resolved-değilse TimedOut-terminal + epoch-kapanışı.
+    CsGiveup,
+}
+
+/// DR-CS-1 M5 (F3): cold-start bootstrap TERMINAL sonucu (INV-CS-3; output-API — input-Event'ten
+/// AYRI). Epoch-başına EN-FAZLA-bir terminal (ResolvedBy*/TimedOut); TimedOut-sonrası DATA-ACK-
+/// kurtarması `PostTimeoutRecovery` (İKİNCİ-terminal-DEĞİL). `take_cs_terminal` ile drain.
+#[cfg(feature = "experimental-cold-start")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsTerminal {
+    /// Hayatta-kalan DATA-ACK bootstrap-srtt kurdu.
+    ResolvedByDataAck,
+    /// CS-probe-echo bootstrap-srtt kurdu.
+    ResolvedByProbeEcho,
+    /// Giveup-deadline'a kadar çözülmedi (terminal-bildirim; oturum-zorunlu-kapanmaz).
+    TimedOut,
+    /// TimedOut-SONRASI DATA-ACK-kurtarması (ikinci-terminal-değil; heal-bildirimi).
+    PostTimeoutRecovery,
 }
 
 /// DR-CS-1 (F2B): bootstrap-srtt'nin kaynağı (INV-CS-3 terminal-sınıflandırma + diag).
@@ -144,6 +163,8 @@ const CS_PROBE_FIRES_NS: [u64; 4] = [3_000_000_000, 9_000_000_000, 21_000_000_00
 const CS_PROBE_WIRE_MAX: u64 = 44; // amp≤1 pad dahil (ECHO_WIRE_MAX=43B → probe≥43; F0-tespit-(i))
 #[cfg(feature = "experimental-cold-start")]
 const CS_PROBE_TX_HARD_BUDGET: u64 = 200; // nominal 4×44=176B (INV-CS-2; YALNIZ-forward-probe)
+#[cfg(feature = "experimental-cold-start")]
+const CS_GIVEUP_NS: u64 = 60_000_000_000; // T_COLD_GIVEUP=60s (son-probe-45s + RTT_MAX-5s + marj)
 
 /// DR-S5-4: RECOVERED-control'ün sender-girdisi. Engine, Control::Recovered'ın logical (block_id,
 /// esi_ranges) referanslarını kendi send-record'undan native `unit_id`'ye ÇEVİRİP verir (SoC:
@@ -804,6 +825,10 @@ pub struct Sender {
     cs_induced_units: BTreeSet<u64>, // bootstrap-anı-outstanding unit_id'ler (induced-retx-atfı; bounded)
     #[cfg(feature = "experimental-cold-start")]
     cs_induced_retx_bytes: u64, // bootstrap_induced_retransmit_bytes (C4; §2.4-a)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_srtt_reported: bool, // M5: bootstrap-srtt-terminal bir-kez-raporlandı (PostTimeout ayrı)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_terminal: Option<CsTerminal>, // M5 output-API (drain: take_cs_terminal)
 
     // ── send-record ↔ ACK-eşleme (DR-S5-3; SALT-LOGICAL — BtlBw/delivered'e BESLENMEZ) ──
     sent_logical: BTreeMap<u64, SrLogicalRef>, // wire-seq → logical (FEC-parity plan_fec_parity-içi; DATA engine-post-emit register_sent_logical — DR-S5-6)
@@ -981,6 +1006,10 @@ impl Sender {
             cs_induced_units: BTreeSet::new(),
             #[cfg(feature = "experimental-cold-start")]
             cs_induced_retx_bytes: 0,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_srtt_reported: false,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_terminal: None,
             sent_logical: BTreeMap::new(), // DR-S5-3
             confirmed_logical: VecDeque::new(),
             diag_recovered_cancels: 0,      // DR-S5-4
@@ -1266,6 +1295,8 @@ impl Sender {
     /// (retire-all + re-register; ACK/recovery-temizliği-otomatik).
     #[cfg(feature = "experimental-cold-start")]
     fn cs_phase2_resolve(&mut self, _now_ns: u64) {
+        // (a) ilk-srtt → ladder/pending/outstanding-disarm + kaynak-belirle (echo-yolu cs_resolved'ı
+        //     zaten-ProbeEcho-yaptı; aksi DataAck).
         if self.cs_probe_armed_once && !self.cs_probe_disarmed && self.rtt.srtt().is_some() {
             self.cs_probe_disarmed = true;
             self.cs_wakeup
@@ -1275,6 +1306,21 @@ impl Sender {
             if self.cs_resolved.is_none() {
                 self.cs_resolved = Some(CsSrttSource::DataAck); // ResolvedByDataAck
             }
+        }
+        // (b) M5 terminal-raporlama (bir-kez; C3: ACK/echo faz-2 → giveup faz-3'te fire-etmez çünkü
+        //     giveup burada-retire). TimedOut-sonrası-srtt → PostTimeoutRecovery (ikinci-terminal-değil).
+        if self.cs_probe_armed_once && !self.cs_srtt_reported && self.rtt.srtt().is_some() {
+            self.cs_srtt_reported = true;
+            self.cs_wakeup
+                .retain(|&(_, k)| !matches!(k, CsTimerKind::CsGiveup));
+            self.cs_terminal = Some(if self.cs_epoch_timed_out {
+                CsTerminal::PostTimeoutRecovery
+            } else {
+                match self.cs_resolved {
+                    Some(CsSrttSource::ProbeEcho) => CsTerminal::ResolvedByProbeEcho,
+                    _ => CsTerminal::ResolvedByDataAck,
+                }
+            });
         }
         // (d)/EK4-A2: bootstrap-sonrası MEVCUT time-threshold deadline'ı expose (yaşam-döngüsü:
         // her-batch yeniden-türet → re-arm/ACK-retire otomatik; C2: overdue-ise-aynı-batch-faz-3).
@@ -1325,6 +1371,21 @@ impl Sender {
         for (_, kind) in due {
             match kind {
                 CsTimerKind::TestHook(id) => self.cs_hook_fired.push((now_ns, id)),
+                CsTimerKind::CsGiveup => {
+                    // M5: resolved-değilse (faz-2 srtt-raporlamadıysa) TimedOut-terminal + epoch-
+                    // kapanışı (INV-CS-3 tek-terminal; C3: aynı-batch'te-çözüm-olsaydı-giveup-faz-2'de-
+                    // retire-edilirdi → buraya-ulaşmaz). outstanding-probe KESİN-retire (post-timeout-
+                    // echo cs_epoch_timed_out-guard'ıyla-yok-sayılır).
+                    if !self.cs_srtt_reported && !self.cs_epoch_timed_out {
+                        self.cs_epoch_timed_out = true;
+                        self.cs_terminal = Some(CsTerminal::TimedOut);
+                        self.cs_probe_disarmed = true;
+                        self.cs_wakeup
+                            .retain(|&(_, k)| !matches!(k, CsTimerKind::CsProbe(_)));
+                        self.cs_probe_pending.clear();
+                        self.cs_probe_outstanding.clear();
+                    }
+                }
                 CsTimerKind::BootstrapPto => {
                     // (d)-fire: MEVCUT Pto-core-yolu (dispatch+fuzzy+state — pending_lost-oluşursa
                     // update_state RecoverArq'a-geçer → faz-4 plan_arq AYNI-batch'te emit-eder;
@@ -1402,6 +1463,13 @@ impl Sender {
             self.cs_probe_armed_once,
             self.cs_probe_disarmed,
         )
+    }
+
+    /// DR-CS-1 M5 (F3) output-API: cold-start terminal-sonucunu DRAIN et (input-Event'ten-AYRI;
+    /// epoch-başına-en-fazla-bir ResolvedBy*/TimedOut + ayrı PostTimeoutRecovery). Tek-tüketim.
+    #[cfg(feature = "experimental-cold-start")]
+    pub fn take_cs_terminal(&mut self) -> Option<CsTerminal> {
+        self.cs_terminal.take()
     }
 
     /// DR-CS-1 F2B diag: (bootstrap-sonucu-kaynağı, outstanding-probe-sayısı,
@@ -3204,6 +3272,9 @@ impl Sender {
                         self.cs_wakeup
                             .push((now_ns.saturating_add(*off), CsTimerKind::CsProbe(i as u8)));
                     }
+                    // M5: giveup-deadline (epoch-başına-bir; T_COLD_GIVEUP).
+                    self.cs_wakeup
+                        .push((now_ns.saturating_add(CS_GIVEUP_NS), CsTimerKind::CsGiveup));
                 }
             }
         }
