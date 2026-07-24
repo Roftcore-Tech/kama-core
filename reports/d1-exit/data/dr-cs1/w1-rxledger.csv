@@ -1,0 +1,3 @@
+run_id,block,first_ms,complete_ms,rel_ms,dl_op,deficit_applied,decode_via,first_repair_ms,repair_kind,arq_repair_ms
+w1,0,0,5498,5498,0,1,0,-1,1,4816
+w1,1,5545,5791,246,1,1,0,-1,1,5791

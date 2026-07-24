@@ -1,0 +1,12 @@
+run_id=clean-50
+policy=leftover
+receiver_events=80
+finalized_blocks=10
+pending_blocks=0
+ledger_path=/tmp/claude-1000/-home-ryuzaki-Desktop-kama-core/cf56ed3f-e45a-45a8-8940-cd5b15e47886/scratchpad/w4-clean/clean-50-rxledger.csv
+ledger_checksum=4b52c6270bd1698f
+clean_shutdown=true
+cs_probe_rx=0
+cs_echo_tx=0
+cs_echo_tx_bytes=0
+cs_echo_suppressed=0
