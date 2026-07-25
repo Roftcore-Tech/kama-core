@@ -21,7 +21,10 @@ source "$LIB"; faithful_setup; trap faithful_teardown EXIT
   echo "acceptance_rtt100_min_ms=${m%.*}"
 } > "$OUT/PROVENANCE.txt"
 
-runrx() { faithful_rx "$BIN_CS" --role rx --bind 10.9.0.2:47002 --peer 10.9.0.1:47001 "$@" 2>/dev/null & echo $!; }
+# KRİTİK: rx arka-plan-işinin STDOUT'u da yönlendirilmeli. Aksi hâlde `RX=$(runrx ...)` komut-ikamesi
+# arka-plan-rx'in stdout-fd'sini (ikame-borusu) tutar → ikame rx-ÇIKANA-KADAR BLOKLAR (66s) → tx ancak
+# rx-öldükten-SONRA başlar → rx/tx HİÇ örtüşmez → receiver_events=0 (tüm-wire-hücreleri-geçersiz-olurdu).
+runrx() { faithful_rx "$BIN_CS" --role rx --bind 10.9.0.2:47002 --peer 10.9.0.1:47001 "$@" >/dev/null 2>&1 & echo $!; }
 
 # ── DI-2B: reverse-blackout (forward-open) → probe-reach + echo-lost + TimedOut ──
 for sz in 65 300 1200; do
