@@ -631,7 +631,19 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         let all_blocks_closed = (close_ms.len() as u64) >= cfg.w_units / K;
         let workload_done = app >= cfg.w_units && all_blocks_closed;
         let parity_drained = dfa.enqueued_r_total == dfa.emitted_r_total;
-        if workload_done && parity_drained {
+        // FC-closure (DI-2B faithfulness): armed-VE-henüz-terminal-OLMAYAN cold-start-epizodu = BEKLEYEN
+        // sender-işi. settle-exit'i bloklar → sender-tarafı give-up-terminal'i (60s) HER payload-boyutunda
+        // gözlemlenebilir. Aksi: küçük-workload (65B tüm-pencere ilk-cwnd'e-sığar → workload_done@t0) blackout-
+        // altında give-up'tan-ÖNCE settle-çıkar (terminals=none artefaktı). Bu HARNESS-gözlem-kapısı; mekanizma
+        // (give-up-timer) DEĞİŞMEZ; flag-OFF-binary byte-özdeş (cfg-gated).
+        #[cfg(feature = "experimental-cold-start")]
+        let cs_pending = {
+            let (_, _, _, _, armed, disarmed) = s.diag_cold_start();
+            armed && !disarmed
+        };
+        #[cfg(not(feature = "experimental-cold-start"))]
+        let cs_pending = false;
+        if workload_done && parity_drained && !cs_pending {
             settle_since = settle_since.or(Some(t_ms));
         } else {
             settle_since = None;
@@ -722,8 +734,9 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     #[cfg(feature = "experimental-cold-start")]
     {
         let (_, _, induced, _timed) = s.diag_cs_bootstrap();
+        let (emitted, tx_bytes, wrapped, _pend, armed, disarmed) = s.diag_cold_start();
         let body = format!(
-            "cs_terminals={}\nbootstrap_induced_retransmit_bytes={induced}\n",
+            "cs_probe_emitted={emitted}\ncs_probe_tx_bytes={tx_bytes}\ncs_probe_seq_wrapped={wrapped}\ncs_armed={armed}\ncs_disarmed={disarmed}\ncs_terminals={}\nbootstrap_induced_retransmit_bytes={induced}\n",
             if cs_terminal_log.is_empty() {
                 "none".into()
             } else {

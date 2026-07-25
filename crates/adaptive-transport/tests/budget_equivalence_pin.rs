@@ -24,6 +24,8 @@ fn leftover_equivalence_pin_constants() {
                 TransmitKind::Retransmit => 1,
                 TransmitKind::Duplicate => 2,
                 TransmitKind::FecParity => 3,
+                #[cfg(feature = "experimental-cold-start")]
+                TransmitKind::CsProbe => 4,
             };
             acc.push((k, d.seq, d.size));
         }

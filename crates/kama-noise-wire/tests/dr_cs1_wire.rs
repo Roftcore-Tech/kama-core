@@ -268,3 +268,108 @@ fn g8_existing_recovered_golden_unchanged() {
     );
     assert_eq!(control_body_len(&rec).unwrap(), 14);
 }
+
+/// FC5 — TAM MIXED-VERSION MATRİSİ (5-satır; codec/runtime-seviyesi = faithful-PRODUCTION-yolu; harness-
+/// raw-UDP AEAD-sealed-DEĞİL, safe-ignore'u-modellemez). Her-satır İKİ-sonuç: wire_safety +
+/// feature_effectiveness. "old receiver" = amendman-ÖNCESİ allowlist {0x01,0x02,0x10..0x18} (0x19/0x1A
+/// reserved-reject); `old_classify` bunu-modeller (bugünkü-classify'ın-0x1B-davranışıyla-özdeş = g4).
+#[test]
+fn g9_mixed_version_matrix() {
+    // Amendman-ÖNCESİ (old) allowlist: 0x19/0x1A YOK → reject (frame-drop, safe-ignore).
+    let old_classify = |cp: u8| -> bool {
+        matches!(cp, 0x01 | 0x02) || (0x10..=0x18).contains(&cp)
+    };
+    let (mut a, mut b) = paired();
+    let mut pnc = 0u64;
+    let mut pn = || {
+        pnc += 1;
+        pnc
+    };
+
+    // ── Satır 1: new-sender-ON → old-receiver ──
+    // Sender 0x19/0x1A-emit-eder; old-rx AEAD-açar (authentic) ama inner-classify-reddeder → FRAME-drop
+    // (session-yaşar); echo-üretmez → feature-effectiveness FAIL. wire_safety PASS.
+    for c in [probe(1, 0), echo(2, 0)] {
+        let cp = c.codepoint();
+        assert!(!old_classify(cp), "old-rx 0x{cp:02x}'i-TANIMAZ (reserved-reject)");
+        // SEALED-frame old-rx'te de AEAD-açılır (kimlik-doğru); inner-reject = frame-drop, session-alive:
+        let sealed = a
+            .seal(
+                &UnsealedTransportPacket::Control(c),
+                SealArgs {
+                    wire_pn: pn(),
+                    dh_epoch: 0,
+                    send_generation: 0,
+                },
+            )
+            .unwrap();
+        assert!(b.open(&sealed.bytes).is_ok(), "AEAD-açılır (session-kill-YOK)");
+        // Sonraki-BİLİNEN-frame doğru-decode (parser-desync-YOK):
+        let known = a
+            .seal(
+                &UnsealedTransportPacket::Control(Control::Ack {
+                    id: 9,
+                    acked_dh_epoch: 0,
+                    ranges: vec![(1, 2)],
+                }),
+                SealArgs {
+                    wire_pn: pn(),
+                    dh_epoch: 0,
+                    send_generation: 0,
+                },
+            )
+            .unwrap();
+        let op = b.open(&known.bytes).unwrap();
+        assert!(matches!(
+            decode_control(op.inner()).unwrap().unwrap(),
+            Control::Ack { .. }
+        ));
+    }
+
+    // ── Satır 2: new-sender-OFF → old-receiver ──
+    // OFF: 0x19/0x1A wire'a-ÇIKMAZ (sender-flag-OFF; adaptive-transport-INV-CS-5-kimliği). Codec-seviyesi:
+    // yalnız-mevcut-frame'ler → old-rx tam-uyumlu. Kanıt: RECOVERED(0x12)-golden old-classify'da-da-geçerli.
+    assert!(old_classify(0x12), "0x12=RECOVERED old-rx'te-de-BİLİNİR (değişmedi)");
+
+    // ── Satır 3: old-sender → new-receiver ──
+    // Old-sender 0x19/0x1A-göndermez; new-rx tüm-eski-frame'leri-decode-eder + 0x12=RECOVERED-golden.
+    let rec = Control::Recovered { id: 3, block_id: 9, esi_ranges: vec![(0, 3)] };
+    let sealed = a
+        .seal(
+            &UnsealedTransportPacket::Control(rec.clone()),
+            SealArgs { wire_pn: pn(), dh_epoch: 0, send_generation: 0 },
+        )
+        .unwrap();
+    let op = b.open(&sealed.bytes).unwrap();
+    assert_eq!(decode_control(op.inner()).unwrap().unwrap(), rec, "new-rx eski-frame-decode");
+    assert_eq!(inner_kind::RECOVERED, 0x12);
+
+    // ── Satır 4: new-sender-ON → new-receiver ──
+    // 0x19/0x1A tam-roundtrip + classify-Ok → feature EFFECTIVE. wire_safety PASS.
+    for c in [probe(4, 7), echo(5, 7)] {
+        assert!(matches!(classify(c.codepoint()), Ok(InnerKind::Control(_))));
+        let sealed = a
+            .seal(
+                &UnsealedTransportPacket::Control(c.clone()),
+                SealArgs { wire_pn: pn(), dh_epoch: 0, send_generation: 0 },
+            )
+            .unwrap();
+        let op = b.open(&sealed.bytes).unwrap();
+        assert_eq!(decode_control(op.inner()).unwrap().unwrap(), c, "new/new roundtrip (feature-effective)");
+    }
+
+    // ── Satır 5: new-sender-OFF → new-receiver ──
+    // OFF → 0x19/0x1A wire'a-çıkmaz; mevcut-frame'ler byte-özdeş (g8). Codec: RECOVERED-golden-korunur.
+    // (Sender-flag-OFF-byte-for-byte adaptive-transport-INV-CS-5-testinde; burada-codec-uyum.)
+    assert!(matches!(classify(0x12), Ok(InnerKind::Control(0x12))));
+
+    // Duplicate/replay 0x19/0x1A ikinci-kez-etkisiz (g5-tekrar; matris-satır-ortak):
+    let s = a
+        .seal(
+            &UnsealedTransportPacket::Control(probe(6, 1)),
+            SealArgs { wire_pn: pn(), dh_epoch: 0, send_generation: 0 },
+        )
+        .unwrap();
+    assert!(b.open(&s.bytes).is_ok());
+    assert!(b.open(&s.bytes).is_err(), "replay-reject (pn-window)");
+}

@@ -282,13 +282,13 @@ fn f2a_probe_disarm_on_early_data_ack() {
     let mut s = Sender::new();
     let _ = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
     let _ = s.on_event_batch(
-        1 * SEC,
+        SEC,
         vec![Event::AckReceived(AckInfo {
             acked_seqs: vec![0],
             ack_delay: Duration::from_millis(1),
         })],
     );
-    let mut t = 1 * SEC + 100 * MS;
+    let mut t = SEC + 100 * MS;
     let mut any_probe = false;
     while t <= 10 * SEC {
         let out = s.on_event_batch(t, vec![Event::TimerFired(Timer::Pto)]);
