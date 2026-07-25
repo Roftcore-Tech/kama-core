@@ -46,6 +46,9 @@ fn main() {
         deficit_from_block: get("--deficit-from-block", "0").parse().unwrap_or(0),
         drop_repair: args.iter().any(|a| a == "--drop-repair"),
         tx_settle_ms: get("--tx-settle-ms", "4000").parse().unwrap_or(4000),
+        unit_bytes: get("--unit-bytes", "1200").parse().unwrap_or(1200),
+        drop_first_sack: args.iter().any(|a| a == "--drop-first-sack"),
+        cold_block_cap: get("--cold-block-cap", "0").parse().unwrap_or(0),
     };
     let deadline = Duration::from_millis(cfg.ext_horizon_ms);
     let r = match role.as_str() {

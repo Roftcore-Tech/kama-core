@@ -41,6 +41,9 @@ pub struct RunnerCfg {
     pub drop_repair: bool, // FK: FEC-IZOLASYON — silinen-esi'nin substrat-onarımını (§9-ARQ 0x01 + §11-dup 0x03)
     // da düşür → blok YALNIZ first-flight (kalan-source + parity) ile tamamlanabilir (saf-FEC-decodability testi).
     pub tx_settle_ms: u64, // FR: workload+parity-drain-sonrası SACK/ARQ-round-trip-settle (yüksek-RTT için ≥birkaç-RTT)
+    pub unit_bytes: u64,   // FC-closure: DATA-birim-boyutu (W-3 65/300/1200B; default 1200=UNIT)
+    pub drop_first_sack: bool, // FC-closure W-2 TEST-ONLY: İLK-SACK-emisyonunu exact-once-suppress
+    pub cold_block_cap: u32, // FC-closure DI-10: rx incomplete-block hard-cap (0=sınırsız/UNIT-default)
 }
 
 impl RunnerCfg {
@@ -158,6 +161,12 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut cs_echo_suppressed: u64 = 0; // T_ECHO_MIN-suppress (ledger-eşleşme-testi DI-13C)
     #[cfg(feature = "experimental-cold-start")]
     let mut cs_last_echo: Option<Instant> = None;
+    #[cfg(feature = "experimental-cold-start")]
+    let mut cs_dup_deliveries: u64 = 0; // FC-closure W-2: (block,esi) zaten-src_have'de → duplicate-teslim
+    #[cfg(feature = "experimental-cold-start")]
+    let mut cs_first_sack_dropped = false; // W-2 exact-once: ilk-SACK-suppress-uygulandı-mı
+    #[cfg(feature = "experimental-cold-start")]
+    let mut cs_rxcap_diag: u64 = 0; // DI-10: cold-block-cap-aşımı typed-diag sayacı (sessiz-eviction-yok)
     let mut repair_arrival: BTreeMap<u32, u64> = BTreeMap::new(); // FR: substrat-onarım-arrival-ms (ARQ-repair
                                                                   // wall-clock; T_fec_decode<deadline<T_arq testi)
                                                                   // DR-CS-1 M6 (EK4-A1; S-A profil-türevi patience): cold-start-flag'iyle idle-terk-eşiği
@@ -259,7 +268,26 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                     par_have.entry(b).or_default().insert(e);
                     first_repair.entry(b).or_insert(now_ms); // ilk-parity-arrival (FJ)
                 } else {
-                    src_have.entry(b).or_default().insert(e); // 0x00/0x01/0x03 = source-shard
+                    // FC-closure W-2: (block,esi) zaten-varsa DUPLICATE-teslim (spurious-retransmit'in
+                    // alıcı-dedup'u; app-teslimi-block-completion-ile-BİR-kez). DI-10: incomplete-block
+                    // cold-cap (aşımda typed-diag; SESSİZ-EVICTION-YOK — yeni-blok-kabul-edilmez-sayılır).
+                    let sh = src_have.entry(b).or_default();
+                    #[cfg(feature = "experimental-cold-start")]
+                    if sh.contains(&e) {
+                        cs_dup_deliveries += 1;
+                    }
+                    #[cfg(feature = "experimental-cold-start")]
+                    if cfg.cold_block_cap > 0 && !block_complete.contains_key(&b) && sh.is_empty() {
+                        let incomplete = src_have
+                            .iter()
+                            .filter(|(bb, _)| !block_complete.contains_key(bb))
+                            .count();
+                        if incomplete >= cfg.cold_block_cap as usize {
+                            cs_rxcap_diag += 1; // typed-diag (sessiz-değil); bu-blok-yeni-slot-almaz
+                        }
+                    }
+                    let sh = src_have.entry(b).or_default();
+                    sh.insert(e); // 0x00/0x01/0x03 = source-shard
                 }
                 let src_n = src_have.get(&b).map_or(0, BTreeSet::len);
                 let par_n = par_have.get(&b).map_or(0, BTreeSet::len);
@@ -295,7 +323,19 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                 for q in &tail {
                     v.extend(q.to_be_bytes());
                 }
-                let _ = sock.send_to(&v, p);
+                // FC-closure W-2 (TEST-ONLY; cold-start-flag): İLK non-boş-SACK'i exact-once-suppress
+                // (DATA-ulaştı ama ACK-emisyonu-düştü; sonraki-SACK'ler-geçer). Random-loss-DEĞİL.
+                #[cfg(feature = "experimental-cold-start")]
+                let suppress = cfg.drop_first_sack && !cs_first_sack_dropped && !tail.is_empty();
+                #[cfg(not(feature = "experimental-cold-start"))]
+                let suppress = false;
+                #[cfg(feature = "experimental-cold-start")]
+                if suppress {
+                    cs_first_sack_dropped = true;
+                }
+                if !suppress {
+                    let _ = sock.send_to(&v, p);
+                }
                 if !recovered.is_empty() {
                     let mut r = vec![0xA1u8];
                     let take: Vec<_> = recovered.drain(..).take(100).collect();
@@ -355,7 +395,7 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     );
     #[cfg(feature = "experimental-cold-start")]
     marker.push_str(&format!(
-        "cs_probe_rx={cs_probe_rx}\ncs_echo_tx={cs_echo_tx}\ncs_echo_tx_bytes={cs_echo_tx_bytes}\ncs_echo_suppressed={cs_echo_suppressed}\n"
+        "cs_probe_rx={cs_probe_rx}\ncs_echo_tx={cs_echo_tx}\ncs_echo_tx_bytes={cs_echo_tx_bytes}\ncs_echo_suppressed={cs_echo_suppressed}\ncs_dup_deliveries={cs_dup_deliveries}\ncs_first_sack_dropped={cs_first_sack_dropped}\ncs_rxcap_diag={cs_rxcap_diag}\n"
     ));
     std::fs::write(
         format!("{}/{}-rxdone.marker", cfg.out_dir, cfg.run_id),
@@ -392,6 +432,8 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut fuzzy_rows = String::new();
     let mut last_ev_idx = u64::MAX;
     let mut settle_since: Option<u64> = None; // FK: workload+parity-drained-settle takibi
+    #[cfg(feature = "experimental-cold-start")]
+    let mut cs_terminal_log: Vec<String> = Vec::new(); // FC-closure: M5-terminal-drain (INV-CS-3)
     while start.elapsed() < deadline {
         let t_ms = start.elapsed().as_millis() as u64;
         // DR-CS-1 M1 ADAPTER (EK5-ii): saat iterasyon-başına BİR-KEZ örneklenir; bu-iterasyonun
@@ -431,7 +473,7 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         if app < cfg.w_units && t_ms >= app * 40 {
             let ev = Event::AppData(OpaqueUnit {
                 id: base + app,
-                size: UNIT as u64,
+                size: cfg.unit_bytes,
             });
             app += 1;
             #[cfg(feature = "experimental-cold-start")]
@@ -477,7 +519,7 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         for b in ready {
             emitted_in_block.remove(&b);
             let a = s.open_fec_block_authority();
-            let _ = s.close_fec_block_manual(a, b, cfg.fixed_r, UNIT as u64);
+            let _ = s.close_fec_block_manual(a, b, cfg.fixed_r, cfg.unit_bytes);
             close_ms.insert(b, t_ms);
         }
         // Geri-yol: SACK/RECOVERED.
@@ -571,6 +613,11 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                     t_ms,
                     base,
                 );
+            }
+            // FC-closure: M5-terminal drain (INV-CS-3; take_cs_terminal tek-tüketim). Son-terminal
+            // marker'a (ResolvedByDataAck/ProbeEcho/TimedOut/PostTimeoutRecovery).
+            if let Some(term) = s.take_cs_terminal() {
+                cs_terminal_log.push(format!("{term:?}@{t_ms}ms"));
             }
         }
         std::thread::sleep(Duration::from_millis(2));
@@ -671,6 +718,20 @@ pub fn run_tx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         format!("{}\nhash={:x}\n", cfg.canonical_dump(), cfg.config_hash()),
     )
     .ok();
+    // FC-closure: tx-side cold-start terminal-log (M5; INV-CS-3 sonuç-sınıfları).
+    #[cfg(feature = "experimental-cold-start")]
+    {
+        let (_, _, induced, _timed) = s.diag_cs_bootstrap();
+        let body = format!(
+            "cs_terminals={}\nbootstrap_induced_retransmit_bytes={induced}\n",
+            if cs_terminal_log.is_empty() {
+                "none".into()
+            } else {
+                cs_terminal_log.join(",")
+            }
+        );
+        std::fs::write(format!("{}/{}-cstx.txt", cfg.out_dir, cfg.run_id), body).ok();
+    }
     Ok(())
 }
 
