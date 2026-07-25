@@ -1,0 +1,15 @@
+run_id=w2-250-65-r3
+policy=leftover
+receiver_events=8
+finalized_blocks=1
+pending_blocks=0
+ledger_path=/home/ryuzaki/Desktop/kama-core/reports/d1-exit/data/dr-cs1-w2/w2-250-65-r3-rxledger.csv
+ledger_checksum=8b58ae078fe5f9b7
+clean_shutdown=true
+cs_probe_rx=0
+cs_echo_tx=0
+cs_echo_tx_bytes=0
+cs_echo_suppressed=0
+cs_dup_deliveries=0
+cs_first_sack_dropped=true
+cs_rxcap_diag=0

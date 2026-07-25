@@ -69,7 +69,7 @@ for sz in 65 300 1200; do
   sleep 0.3
   timeout 100 "$BIN_OFF" --role tx --bind 10.9.0.1:47001 --peer 10.9.0.2:47002 --policy leftover --fixed-r 0 \
     --run-id w1off-$sz --output-dir "$OUT" --operational-horizon 2000 --extended-horizon 90000 --w-units 16 \
-    --tx-settle-ms 8000 2>/dev/null
+    --unit-bytes $sz --tx-settle-ms 8000 2>/dev/null
   wait $RX 2>/dev/null; echo "w1off-$sz done" >> "$OUT/RUNLOG"
 done
 echo "ALL-DONE" >> "$OUT/RUNLOG"

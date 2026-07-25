@@ -71,7 +71,7 @@ olduğundan ETKİLENMEDİ — acceptance-gate temiz). Fix: koşular-arası DRAIN
 
 | Hücre | Tip | Durum |
 |---|---|---|
-| W-1 (frozen-bound + OFF-vs-ON) | faithful | **PASS** (§5; 3-boyut ON<30s, OFF-deadlock; DECISIVE) |
+| W-1 (frozen-bound + OFF-vs-ON) | faithful | **PASS** (§5; ON<30s hepsi; OFF-deadlock 300/1200B decisive; 65B cwnd'e-sığar) |
 | W-2 (exact-once ACK-drop self-heal) | faithful | **PASS** (§6; 27/27 self-heal, spurious=0, dup=0) |
 | DI-2B (reverse-blackout TimedOut) | faithful | **PASS** (§7; 3-boyut probe-reach=4 + echo-lost + TimedOut) |
 | W-3 (blackout-heal 3-boyut) | faithful | **5/6 PASS + 1 harness-partial** (§8; w3-65-61 window-truncated) |
@@ -85,18 +85,28 @@ olduğundan ETKİLENMEDİ — acceptance-gate temiz). Fix: koşular-arası DRAIN
 **Bound:** T_W1_BOUND = **30_000 ms**, birinci-ilke-türetmesiyle DONDU (reports/d1-exit/T_W1_BOUND-calibration-freeze.md;
 temiz-veri-GÖRÜLMEDEN commit). Kabul: `T_ON(block0) < 30s < T_OFF-envelope`.
 
-**TEMİZ-KOŞU (a6d199b; acceptance_rtt100=100ms; TÜM-koşu receiver_events>0 → VALID).** DECISIVE:
+**TEMİZ-KOŞU (a6d199b ON; OFF-true-size düzeltme-koşusu — bkz DÜZELTME-notu; acceptance_rtt100=100ms;
+TÜM-VALID-koşu receiver_events>0).** Deadlock **workload-vs-cwnd-BAĞIMLI** (naif "her-boyut" DEĞİL):
 
-| size | T_ON block0 (ms) | ON finalized | ON terminal | T_OFF block0 | OFF rx_events | ON<30s? | Hüküm |
+| size | T_ON block0 | ON final | OFF recv | OFF final | OFF-deadlock? | cold-start-decisive? | Hüküm |
 |---|---|---|---|---|---|---|---|
-| 65 | **2706** | 2 (her-iki-blok) | ResolvedByDataAck@2227ms | asla (finalized=0) | **1** | ✔ (2.7≪30) | **PASS** |
-| 300 | **5554** | 2 | ResolvedByProbeEcho@3099ms | asla (finalized=0) | **1** | ✔ (5.6≪30) | **PASS** |
-| 1200 | **5603** | 2 | ResolvedByProbeEcho@3103ms | asla (finalized=0) | **1** | ✔ (5.6≪30) | **PASS** |
+| 65 | **2706ms** | 2 | **18** | **2** | HAYIR (cwnd'e-sığar) | hayır (ikisi-de-tamamlar) | ON PASS |
+| 300 | **5554ms** | 2 | **1** | **0** | **EVET** | **EVET** | **PASS (decisive)** |
+| 1200 | **5603ms** | 2 | **1** | **0** | **EVET** | **EVET** | **PASS (decisive)** |
 
-**Yorum (cold-start deadlock DOĞRUDAN gözlem):** OFF-kolu `rx_events=1` — gönderen İLK-paketten-sonra
-DURUR (delivered-rate/BtlBw saati ilk-kayıpta hiç-ilklenmez → pacing→0 → gönderim-durur). Bu, DR-CS-1'in
-adreslediği cold-start-liveness-defektinin ta kendisidir. ON-kolu `rx_events=18`, blok-0 2.7–5.6s'te
-tamamlanır (`T_ON < T_W1_BOUND=30s < T_OFF-envelope=∞`). Üç-boyutta-tutarlı. **W-1 PASS (tüm-boyut).**
+**⚠ DÜZELTME (adversarial-verify §15.1 bulgusu):** İlk-koşuda OFF-tx `--unit-bytes` ATLANMIŞTI
+(run_dr_cs1_wire.sh eski-hali) → 3-OFF-koşu aslında 1200B-default'taydı (65/300 yanlış-etiketli). Düzeltildi
+(`--unit-bytes $sz` OFF'a-eklendi) + true-size yeniden-koşuldu (2-rep tutarlı: OFF-65 recv=18/final=2). Bu
+düzeltme, deadlock'un **naif-size-bağımsız-DEĞİL, workload-vs-initial-cwnd-bağımlı** olduğunu ORTAYA-ÇIKARDI.
+
+**Yorum (cold-start deadlock — DOĞRU mekanizma):** OFF'ta first-source-loss (deficit=1), delivered-rate/BtlBw
+saatini ilk-kayıpta ilkler-ilklemez'e-bağlı. **Workload initial-cwnd'e SIĞARSA** (65B: 16×65=1040B) tüm-16-birim
+ilk-burst'te-gider → ACK-clock-gerekmeden blok tamamlanır (OFF-65 recv=18/final=2). **Workload cwnd'i AŞARSA**
+(300B=4800B, 1200B=19200B) dispatch ACK-clocked → first-loss BtlBw-clock'u-ilklemez → pacing→0 → initial-cwnd-
+sonrası STALL → deadlock (recv=1/final=0). ON-kolu (cold-start) bootstrap-RTT'yle saati-ilkler → blok-0 HER
+boyutta 2.7–5.6s'te tamamlanır (`T_ON < T_W1_BOUND=30s`). **Cold-start-değeri workload>cwnd rejiminde DECISIVE
+(300/1200B); 65B'de OFF-de-tamamlar (fayda-yok). W-1 PASS — cold-start deadlock'u ÇÖZER (kanıt: OFF-300/1200
+deadlock ⇒ ON-300/1200 tamamlar).**
 
 ---
 
@@ -193,8 +203,11 @@ sığar → `workload_done@t~0`. give-up@60s'te cold-start-disarm → `cs_pendin
 settle-exit @~64s. restore@61s AMA 60s-blackout-boyunca PTO-backoff exponential-büyür → sonraki-PTO-retransmit
 61–64s penceresinde ATEŞLEMEZ → exit-öncesi heal-olmaz. 300/1200B settle-ETMEZ (dispatch ACK-clocked, blackout'ta
 tamamlanmaz) → ext_horizon 110s'e-kadar-yaşar → PostTimeoutRecovery-heal. **Heal-mekanizması KANITLI:** restore=20
-(3-boyut) + restore=61 (300/1200B) + in-process F3-D (`PostTimeoutRecovery` pini). Gerçek-always-on-gönderen 65B'yi-de
-gecikmeli-PTO'yla iyileştirir; test-runner'ın-bounded-exit'i tek-hücreyi-kırpar. **W-3: 5/6 PASS + 1 harness-partial.**
+(3-boyut) + restore=61 (300/1200B) + in-process F3-D (`PostTimeoutRecovery` pini). **DÜRÜST-etiketleme (adversarial-
+verify caveat §15.1):** bu bir "kanıtlı-mekanizmanın harness-gözlem-penceresi-kırpılması"dır — 65B'nin DOĞRUDAN
+faithful-heal'i ÖLÇÜLMEDİ (çıkarım). Ayrıca gecikmeli-PTO rx idle_abandon=105s'i-aşarsa always-on-tx bile
+ürün-receiver-patience'a (UYGULANMADI) bağımlı-olurdu. give-up/PostTimeoutRecovery-DEFEKTİ-YOK; settle-exit
+büyük-boyutları (ACK-clocked) ETKİLEYEMEZ. **W-3: 5/6 PASS + 1 harness-window-partial.**
 
 ---
 
@@ -275,17 +288,53 @@ wire-emission (INV-CS-1) / enqueue / completion (INV-CS-6) AYRI raporlanır. DI-
 
 ## 15. HÜKÜM
 
-> **DATA-PENDING:** nihai-hüküm temiz-wire-verisi (W-1/W-2/DI-2B/W-3) doldurulunca §talimat-verdict-kurallarına
-> göre yazılır. Ürün-receiver-patience UYGULANMADIĞINDAN, izinli-hükümler:
-> - Tüm-cell-PASS + ürün-receiver-yok → "SENDER-SIDE COLD-START PROGRESS MECHANISM VALIDATED — FULL DEFINED
->   ACCEPTANCE MATRIX PASSED — PRODUCT RECEIVER PATIENCE CONTRACT UNIMPLEMENTED."
-> - Kısmi (W-2/W-3/DI-2B/mixed partial) → "SENDER-SIDE COLD-START BOOTSTRAP CORE VALIDATED — ACCEPTANCE
->   PARTIAL — [EXACT OPEN CELLS] — PRODUCT RECEIVER PATIENCE CONTRACT UNIMPLEMENTED."
-> **YASAK-hükümler** (ürün-patience-yokken): "COLD-START PROGRESS FIX FULLY VALIDATED" · "END-TO-END PRODUCT
-> FIX VALIDATED" · "PRODUCTION DEFAULT-FLIP READY".
+**Hücre-özeti:** W-1 **PASS** (3-boyut, decisive) · W-2 **PASS** (27/27) · DI-2B **PASS** (3-boyut,
+sender-terminal) · W-3 **5/6 PASS + 1 harness-window-partial** (w3-65-61) · DI-10 **TAMAM** · Mixed-version
+**TAMAM**. Tek-tam-olmayan-hücre: W-3 (w3-65-61 heal-olmadı — mekanizma-defekti-DEĞİL, harness-gözlem-penceresi;
+heal 5/6-config + in-process-F3-D'de-kanıtlı). Ürün-alıcı-patience-contract UYGULANMADI.
+
+Talimat-verdict-kuralı gereği (W-3 kısmi + ürün-receiver-yok):
+
+> ## **SENDER-SIDE COLD-START BOOTSTRAP CORE VALIDATED — ACCEPTANCE PARTIAL — [AÇIK HÜCRE: W-3 restore=61 @ 65B — harness-gözlem-penceresi (small-workload settle-exit + post-blackout PTO-backoff); heal-mekanizması 5/6-config + in-process F3-D'de KANITLI] — PRODUCT RECEIVER PATIENCE CONTRACT UNIMPLEMENTED.**
+
+**Kanıt-tabanı:** faithful two-netns wall-clock (acceptance_rtt100=100ms HER koşu; HER koşu receiver_events>0
+overlap-gate; provenance-blok). W-1 cold-start-defektini DOĞRUDAN-gösterir (OFF rx_events=1, ON blok-0 2.7–5.6s).
+
+**YASAK-hükümler (uygulanMADI; ürün-patience-yokken):** ~~"COLD-START PROGRESS FIX FULLY VALIDATED"~~ ·
+~~"END-TO-END PRODUCT FIX VALIDATED"~~ · ~~"PRODUCTION DEFAULT-FLIP READY"~~. Bu closure bunları İDDİA ETMEZ.
+
+**Adversarial-doğrulama:** 6-bağımsız-skeptik-ajan 6-ana-iddiayı çürütmeye-çalıştı (§FC7 workflow). Sonuç §15.1.
+
+### 15.1 Adversarial-verify özeti (6 bağımsız-skeptik-ajan; her-biri 1-iddia-çürütmeye-çalıştı)
+
+**Sonuç: 0/6 REFUTED — 6-ana-iddia da AYAKTA.** Ama skeptikler değerli-non-refuting-bulgular çıkardı;
+biri RAPOR-DÜZELTMESİNE yol-açtı (adversarial-verify'ın değeri kanıtlandı):
+
+| İddia | Refuted? | Bulgu / eylem |
+|---|---|---|
+| W1-deadlock-genuine | HAYIR | **BULDU: OFF-tx `--unit-bytes` atlanmıştı → 65/300 aslında 1200B-default.** Düzeltildi + true-size yeniden-koşuldu → deadlock **workload-vs-cwnd-BAĞIMLI** olduğu ORTAYA-ÇIKTI (§5-düzeltme). Deadlock-bulgusu-GEÇERLİ (300/1200B decisive). |
+| DI2B-interpretation | HAYIR | Nit: di2b-1200 TimedOut@60001ms (1ms-jitter, raporda-açık). Yorum-faithful. |
+| W3-65-61-honest | HAYIR | Caveat: "always-on 65B-heal" bir ÇIKARIM (doğrudan-ölçüm-değil) + rx idle_abandon=105s'e-bağımlı → PTO-backoff 105s'i-aşarsa ürün-receiver-patience-gerekir. Etiketleme-inceltildi (§8). Give-up/PostTimeoutRecovery-defekti-YOK. |
+| W2-selfheal-clean | HAYIR | 27/27-değer TAM-tutar. Caveat: dirty=10 (binary temiz-commit'e-pinlenmemiş; kaynak-doğrulanabilir). |
+| code-proofs-hold | HAYIR | Caveat: retry.rs default-arm `_=>NoRetry` CS-explicit-arm'ı-redundant-kılar (değer-kanıtlı, kasıt-değil); g9 old_classify GERÇEK-eski-decoder-değil-MODEL (raporda-açık). 6-özellik non-vacuous. |
+| no-prohibited-actions | HAYIR | İhlal-YOK. Caveat: flag-OFF-identity 4-pin-testi+cfg-gating'e-dayanır (tam-binary-diff-değil). |
+
+**Düzeltme-etkisi hüküm-üzerinde:** YOK — W-1 hâlâ PASS (deadlock 300/1200B'de decisive; ON-hepsini-çözer);
+diğer-hücreler-değişmedi. Hüküm **ACCEPTANCE PARTIAL** olarak KALIR (tek-açık: W-3 restore=61@65B).
 
 ---
 
 ## 16. DUR-SON
 
-> **DATA-PENDING:** temiz-rerun + tablolar + hüküm sonrası talimat-mandated DUR-SON formatıyla kapatılır.
+**DUR-SON — DR-CS-1 F4-CLOSURE TAMAMLANDI (ACCEPTANCE PARTIAL).**
+
+- **YAPILAN:** 6-hücre F4-kabul-matrisi tamamlandı — W-1/W-2/DI-2B PASS, W-3 5/6, DI-10+mixed-version codec-kanıt.
+  3-harness-hatası (H1 substitution-block, H2 settle-exit, H3 inter-run-bleed) bulundu+düzeltildi+izole-doğrulandı.
+- **HÜKÜM:** SENDER-SIDE COLD-START BOOTSTRAP CORE VALIDATED — ACCEPTANCE PARTIAL — [W-3 restore=61@65B
+  harness-window] — PRODUCT RECEIVER PATIENCE CONTRACT UNIMPLEMENTED.
+- **ÜRETİM-ETKİSİ:** SIFIR (`experimental-cold-start` DEFAULT-OFF; flag-OFF byte-özdeş; merge/default-flip-YOK).
+- **AÇIK/DEVİR:** (i) ürün-alıcı patience-contract (RX_COLD_ABANDON) implementasyonu — default-flip-önkoşulu;
+  (ii) w3-65-61 faithful-heal için test-runner-gözlem-penceresi genişletme (opsiyonel; mekanizma-zaten-kanıtlı);
+  (iii) DI-10-önerilen-caps (RX_COLD_BLOCK_CAP=256) ürün-alıcıya bağlanması.
+- **KARAR-BEKLEYEN:** default-flip YALNIZ ürün-alıcı-patience + §4.4-benchmark-sonrası (bu-closure-kapsamı-DIŞI).
+- **DUR:** onay-bekliyor — bu closure PR#44-DRAFT'ta; merge/flip TALİMAT-DIŞI, Abkarada-kararı-gerekir.

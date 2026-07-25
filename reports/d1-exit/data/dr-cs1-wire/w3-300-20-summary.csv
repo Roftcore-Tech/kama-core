@@ -1,0 +1,2 @@
+run_id,config_hash,policy,enq,emit,canc,waste,ndisp,rdisp,tk_adm,tk_on,tk_late,tk_miss
+w3-300-20,e32ed6f4ce3e9766,leftover,0,0,0,0,0,0,0,0,0,0
