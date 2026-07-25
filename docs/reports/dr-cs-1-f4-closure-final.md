@@ -40,8 +40,8 @@ ARP'a-bağımlı-olmaması (aksi netem-loss ARP-reply'i-düşürür → forward-
 
 ## 3. ⚠ HARNESS-BÜTÜNLÜĞÜ BULGULARI (DÜRÜST — ölçüm-öncesi-düzeltildi)
 
-Bu closure sırasında iki HARNESS-hatası bulundu ve düzeltildi; **her ikisi de wire-kanıtını geçersiz-kılardı**.
-Şeffaflık gereği raporlanır (measurement-tool-first disiplini).
+Bu closure sırasında ÜÇ HARNESS-hatası bulundu ve düzeltildi; **her biri wire-kanıtını geçersiz-kılardı**.
+Şeffaflık gereği raporlanır (measurement-tool-first disiplini). Hiçbiri ÜRÜN-kodu değil; hepsi test-harness.
 
 ### 3.1 BUG-H1 — `$(runrx)` komut-ikamesi rx-ömrü-boyunca BLOKLAR (KRİTİK)
 `runrx()` rx'i arka-plana-atarken YALNIZ stderr'i yönlendiriyordu; rx'in **stdout**'u `$(runrx)` komut-ikame
@@ -56,6 +56,14 @@ settle-çıkıyordu → `cs_terminals=none` artefaktı (300/1200B TimedOut@60s v
 armed-VE-terminal-olmayan cold-start-epizodu = BEKLEYEN-sender-işi → settle-exit bloklanır → give-up-terminal
 HER boyutta gözlemlenebilir. **HARNESS-gözlem-kapısı; mekanizma (give-up-timer) DEĞİŞMEZ; flag-OFF byte-özdeş.**
 Fix: `33558d9`. Doğrulama: 65/300/1200B üçü de `TimedOut@60000ms` (tutarlı).
+
+### 3.3 BUG-H3 — W-2 yüksek-RTT inter-run FINISH-marker bleed (izole-doğrulandı + düzeltildi)
+Yüksek-RTT'de (250/1000ms) bir önceki-koşunun FINISH-marker'ları (`0xFE`), netem-gecikmesiyle SONRAKİ
+koşunun rx'i BIND-olurken varır → yeni-rx ≥3-stale-FINISH görüp ERKEN-çıkar (`receiver_events=0`) →
+tx-ölü-rx'e-gönderir → **cascade** (rep1-PASS, rep2/rep3-FAIL). İzole-tekrar-üretim: RTT250 3-rep →
+[8, 0, 0]. Kök-neden bu (RTT100'de bleed-YOK: kısa-gecikme + 14-run-testi doğruladı; wire-matris RTT100
+olduğundan ETKİLENMEDİ — acceptance-gate temiz). Fix: koşular-arası DRAIN (çift-yön %100-loss + 1.2s-settle;
+`85d6a84`). İzole-doğrulama fix-sonrası: RTT250 4/4-PASS. **W-2 fix-sonrası yeniden-koşuldu (§6).**
 
 ---
 
