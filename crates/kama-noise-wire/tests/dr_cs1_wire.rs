@@ -3,8 +3,8 @@
 //! malformed-reject · unknown-codepoint-safe-ignore(sınıf-özelliği) · replay · golden-değişmedi.
 
 use kama_noise_wire::control::{
-    control_body_len, decode_control, encode_control_body, CS_ECHO_BODY_LEN, CS_PROBE_BODY_LEN,
-    CS_PROBE_PAD_LEN, CS_SUBTYPE_COLD_START,
+    control_body_len, decode_control, decode_control_body, encode_control_body, CS_ECHO_BODY_LEN,
+    CS_PROBE_BODY_LEN, CS_PROBE_PAD_LEN, CS_SUBTYPE_COLD_START,
 };
 use kama_noise_wire::retry::{InboundControlDedup, InboundOutcome, RetryClass};
 use kama_noise_wire::{KamaNoiseWireProtector, KamaNoiseWireSizer, SealArgs};
@@ -138,14 +138,18 @@ fn g3_exact_layout_roundtrip_and_wire_lengths() {
         let decoded = decode_control(opened.inner()).unwrap().unwrap();
         assert_eq!(decoded, c, "roundtrip");
     }
-    // amp≤1: probe_wire(44) ≥ echo_wire(43).
-    assert!(44 >= 43);
+    // amp≤1: probe_wire ≥ echo_wire (runtime-sizer; sabit-literal-değil).
+    let probe_wire = a.sealed_len(&UnsealedTransportPacket::Control(p)).unwrap();
+    let echo_wire = a.sealed_len(&UnsealedTransportPacket::Control(e)).unwrap();
+    assert!(
+        probe_wire >= echo_wire,
+        "amp≤1: {probe_wire} >= {echo_wire}"
+    );
 }
 
 /// §6.3 — Malformed/truncated/reserved reject (FAIL-CLOSED).
 #[test]
 fn g3b_malformed_truncated_reject() {
-    use kama_noise_wire::control::decode_control_body;
     // kısa-body (probe 12B-altı):
     for cut in 0..CS_PROBE_BODY_LEN {
         let body = encode_control_body(&probe(1, 5));
@@ -276,9 +280,8 @@ fn g8_existing_recovered_golden_unchanged() {
 #[test]
 fn g9_mixed_version_matrix() {
     // Amendman-ÖNCESİ (old) allowlist: 0x19/0x1A YOK → reject (frame-drop, safe-ignore).
-    let old_classify = |cp: u8| -> bool {
-        matches!(cp, 0x01 | 0x02) || (0x10..=0x18).contains(&cp)
-    };
+    let old_classify =
+        |cp: u8| -> bool { matches!(cp, 0x01 | 0x02) || (0x10..=0x18).contains(&cp) };
     let (mut a, mut b) = paired();
     let mut pnc = 0u64;
     let mut pn = || {
@@ -291,7 +294,10 @@ fn g9_mixed_version_matrix() {
     // (session-yaşar); echo-üretmez → feature-effectiveness FAIL. wire_safety PASS.
     for c in [probe(1, 0), echo(2, 0)] {
         let cp = c.codepoint();
-        assert!(!old_classify(cp), "old-rx 0x{cp:02x}'i-TANIMAZ (reserved-reject)");
+        assert!(
+            !old_classify(cp),
+            "old-rx 0x{cp:02x}'i-TANIMAZ (reserved-reject)"
+        );
         // SEALED-frame old-rx'te de AEAD-açılır (kimlik-doğru); inner-reject = frame-drop, session-alive:
         let sealed = a
             .seal(
@@ -303,7 +309,10 @@ fn g9_mixed_version_matrix() {
                 },
             )
             .unwrap();
-        assert!(b.open(&sealed.bytes).is_ok(), "AEAD-açılır (session-kill-YOK)");
+        assert!(
+            b.open(&sealed.bytes).is_ok(),
+            "AEAD-açılır (session-kill-YOK)"
+        );
         // Sonraki-BİLİNEN-frame doğru-decode (parser-desync-YOK):
         let known = a
             .seal(
@@ -329,19 +338,34 @@ fn g9_mixed_version_matrix() {
     // ── Satır 2: new-sender-OFF → old-receiver ──
     // OFF: 0x19/0x1A wire'a-ÇIKMAZ (sender-flag-OFF; adaptive-transport-INV-CS-5-kimliği). Codec-seviyesi:
     // yalnız-mevcut-frame'ler → old-rx tam-uyumlu. Kanıt: RECOVERED(0x12)-golden old-classify'da-da-geçerli.
-    assert!(old_classify(0x12), "0x12=RECOVERED old-rx'te-de-BİLİNİR (değişmedi)");
+    assert!(
+        old_classify(0x12),
+        "0x12=RECOVERED old-rx'te-de-BİLİNİR (değişmedi)"
+    );
 
     // ── Satır 3: old-sender → new-receiver ──
     // Old-sender 0x19/0x1A-göndermez; new-rx tüm-eski-frame'leri-decode-eder + 0x12=RECOVERED-golden.
-    let rec = Control::Recovered { id: 3, block_id: 9, esi_ranges: vec![(0, 3)] };
+    let rec = Control::Recovered {
+        id: 3,
+        block_id: 9,
+        esi_ranges: vec![(0, 3)],
+    };
     let sealed = a
         .seal(
             &UnsealedTransportPacket::Control(rec.clone()),
-            SealArgs { wire_pn: pn(), dh_epoch: 0, send_generation: 0 },
+            SealArgs {
+                wire_pn: pn(),
+                dh_epoch: 0,
+                send_generation: 0,
+            },
         )
         .unwrap();
     let op = b.open(&sealed.bytes).unwrap();
-    assert_eq!(decode_control(op.inner()).unwrap().unwrap(), rec, "new-rx eski-frame-decode");
+    assert_eq!(
+        decode_control(op.inner()).unwrap().unwrap(),
+        rec,
+        "new-rx eski-frame-decode"
+    );
     assert_eq!(inner_kind::RECOVERED, 0x12);
 
     // ── Satır 4: new-sender-ON → new-receiver ──
@@ -351,11 +375,19 @@ fn g9_mixed_version_matrix() {
         let sealed = a
             .seal(
                 &UnsealedTransportPacket::Control(c.clone()),
-                SealArgs { wire_pn: pn(), dh_epoch: 0, send_generation: 0 },
+                SealArgs {
+                    wire_pn: pn(),
+                    dh_epoch: 0,
+                    send_generation: 0,
+                },
             )
             .unwrap();
         let op = b.open(&sealed.bytes).unwrap();
-        assert_eq!(decode_control(op.inner()).unwrap().unwrap(), c, "new/new roundtrip (feature-effective)");
+        assert_eq!(
+            decode_control(op.inner()).unwrap().unwrap(),
+            c,
+            "new/new roundtrip (feature-effective)"
+        );
     }
 
     // ── Satır 5: new-sender-OFF → new-receiver ──
@@ -367,9 +399,152 @@ fn g9_mixed_version_matrix() {
     let s = a
         .seal(
             &UnsealedTransportPacket::Control(probe(6, 1)),
-            SealArgs { wire_pn: pn(), dh_epoch: 0, send_generation: 0 },
+            SealArgs {
+                wire_pn: pn(),
+                dh_epoch: 0,
+                send_generation: 0,
+            },
         )
         .unwrap();
     assert!(b.open(&s.bytes).is_ok());
     assert!(b.open(&s.bytes).is_err(), "replay-reject (pn-window)");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DI-10 — RECEIVER RESOURCE-CAP / LIFECYCLE (cold-start ADDITIONS'un O(1)/bounded-kanıtı).
+// Ürün-alıcı UYGULANMADI; bu testler DR-CS-1 WIRE-eklerinin (0x19/0x1A) alıcıya UNBOUNDED-durum
+// DAYATMADIĞINI production-codec-seviyesinde kanıtlar (harness-artefaktı-değil).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// §DI-10.1 — Wire-ekleri NoRetry: gönderen probe/echo için retry-kuyruğu-durumu BİRİKTİRMEZ
+/// (deadline-bounded UntilNetworkAck DEĞİL). → sender-tarafı O(1) (ladder-zamanlayıcı ayrı; INV-CS-7).
+#[test]
+fn g10_di10_wire_additions_are_noretry() {
+    assert_eq!(
+        RetryClass::of(inner_kind::CTRL_CS_PROBE),
+        RetryClass::NoRetry
+    );
+    assert_eq!(
+        RetryClass::of(inner_kind::CTRL_CS_ECHO),
+        RetryClass::NoRetry
+    );
+    assert_eq!(RetryClass::of_control(&probe(1, 1)), RetryClass::NoRetry);
+    assert_eq!(RetryClass::of_control(&echo(1, 1)), RetryClass::NoRetry);
+}
+
+/// §DI-10.2 — Fixed-width / amplifikasyon-yok: probe/echo body-uzunluğu ALAN-DEĞERLERİNDEN bağımsız
+/// SABİT (length-prefix-YOK → wire UNBOUNDED-alloc İSTEYEMEZ). Ekstrem-değerler → aynı-boyut.
+#[test]
+fn g10b_di10_fixed_width_no_amplification() {
+    let p_ext = Control::CsProbe {
+        id: u32::MAX,
+        subtype: CS_SUBTYPE_COLD_START,
+        probe_seq: u16::MAX,
+    };
+    let e_ext = Control::CsEcho {
+        id: u32::MAX,
+        subtype: CS_SUBTYPE_COLD_START,
+        probe_seq: u16::MAX,
+        seen_count: u32::MAX,
+        arrival_gap: u32::MAX,
+    };
+    assert_eq!(control_body_len(&p_ext).unwrap(), CS_PROBE_BODY_LEN);
+    assert_eq!(control_body_len(&e_ext).unwrap(), CS_ECHO_BODY_LEN);
+    assert_eq!(encode_control_body(&p_ext).len(), CS_PROBE_BODY_LEN);
+    assert_eq!(encode_control_body(&e_ext).len(), CS_ECHO_BODY_LEN);
+    // sealed-wire de sabit (44/43); girdi-ekstrem olsa da amplifikasyon-yok.
+    let (mut a, _b) = paired();
+    for (i, (c, want)) in [(p_ext.clone(), 44usize), (e_ext.clone(), 43usize)]
+        .into_iter()
+        .enumerate()
+    {
+        let s = a
+            .seal(
+                &UnsealedTransportPacket::Control(c),
+                SealArgs {
+                    wire_pn: (i + 1) as u64,
+                    dh_epoch: 0,
+                    send_generation: 0,
+                },
+            )
+            .unwrap();
+        assert_eq!(s.bytes.len(), want, "sealed-wire sabit-değil");
+    }
+}
+
+/// §DI-10.3 — ADVERSARIAL: probe'lar InboundControlDedup.admit()'e SOKULMAMALI. Kanıt: farklı-id'li
+/// N-probe admit()'e girerse `seen` LİNEER-BÜYÜR (unbounded; Sprint-4-TTL-öncesi bilinen-sınır).
+/// → alıcı probe'u STATELESS-echo-yoluyla ele-almalı (idempotent-yeniden-üretim; harness bu-modeli
+/// [udp_runner.rs rx 0x19→43B fixed-buf, SIFIR-map-insert] kullanır). Bu test anti-pattern'i-sabitler.
+#[test]
+fn g10c_di10_probe_flood_must_not_dedup_unbounded() {
+    let mut dedup = InboundControlDedup::new(64);
+    const FLOOD: u32 = 1024;
+    for i in 0..FLOOD {
+        // farklı control_id (=id) → her-biri Fresh → seen'e-eklenir.
+        assert_eq!(
+            dedup.admit(&probe(i, (i & 0xFFFF) as u16)),
+            InboundOutcome::Fresh
+        );
+    }
+    // KANIT: admit()-yolu unbounded (N-probe → N-seen). Bu YÜZDEN probe admit()'ten-GEÇMEMELİ.
+    assert_eq!(
+        dedup.seen_count(),
+        FLOOD as usize,
+        "admit-yolu-unbounded (anti-pattern-kanıtı)"
+    );
+    // Karşıt: STATELESS-echo yolu — hiçbir-koleksiyon-tutmadan echo-body üretir (O(1); durum-birikmez).
+    // Body sabit CS_ECHO_BODY_LEN (11B); sealed-wire eşdeğeri 43B (g3/g10b). Working-set probe-sayısından
+    // BAĞIMSIZ (FLOOD-boyunca sabit) → O(1) bellek.
+    let mut last_len = 0usize;
+    for i in 0..FLOOD {
+        let e = stateless_echo(
+            &probe(i, (i & 0xFFFF) as u16),
+            /*seen*/ 3,
+            /*gap*/ 40_000,
+        );
+        assert_eq!(e.len(), CS_ECHO_BODY_LEN, "stateless-echo body sabit-11B");
+        last_len = e.len();
+    }
+    assert_eq!(last_len, CS_ECHO_BODY_LEN); // working-set sabit; probe-sayısından bağımsız (O(1)).
+}
+
+/// §DI-10.4 — Echo idempotent-yeniden-üretim: aynı (probe_seq, ledger) → BYTE-ÖZDEŞ echo (saklı-durum
+/// GEREKMEZ; replay'de yeniden-üretilebilir) + seal→open→decode roundtrip. Stateless-regen kanıtı.
+#[test]
+fn g10d_di10_echo_idempotent_regeneration() {
+    let e1 = stateless_echo(&probe(9, 0x0102), 7, 12_345);
+    let e2 = stateless_echo(&probe(9, 0x0102), 7, 12_345);
+    assert_eq!(e1, e2, "aynı-girdi → byte-özdeş echo (idempotent-regen)");
+    // decode-edilebilir + roundtrip (production-codec):
+    let c = Control::CsEcho {
+        id: 9,
+        subtype: CS_SUBTYPE_COLD_START,
+        probe_seq: 0x0102,
+        seen_count: 7,
+        arrival_gap: 12_345,
+    };
+    let body = encode_control_body(&c);
+    assert_eq!(
+        &e1[..],
+        &body[..],
+        "stateless_echo body == codec-encode (aynı-wire)"
+    );
+    let dec = decode_control_body(inner_kind::CTRL_CS_ECHO, 9, &body).unwrap();
+    assert_eq!(dec, c, "roundtrip (regen → decode)");
+}
+
+/// STATELESS echo-üretici (DI-10 modeli): saklı-durum-YOK; girdi→11B-body (harness rx 43B-wire buf'un
+/// codec-eşdeğeri). Yalnız test-yardımcısı; production alıcı-bu-saf-fonksiyonu-kullanmalı.
+fn stateless_echo(p: &Control, seen_count: u32, arrival_gap: u32) -> Vec<u8> {
+    let Control::CsProbe { id, probe_seq, .. } = *p else {
+        panic!("probe-değil")
+    };
+    encode_control_body(&Control::CsEcho {
+        id,
+        subtype: CS_SUBTYPE_COLD_START,
+        probe_seq,
+        seen_count,
+        arrival_gap,
+    })
 }

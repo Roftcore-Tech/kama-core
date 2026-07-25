@@ -924,5 +924,53 @@ fn f4_di5_flag_off_identity() {}
 fn f4_di6_floor_rate_control_progress() {}
 
 #[test]
-#[ignore = "F4/DI-9: mixed-version çift-sütun (wire-güvenlik + feature-etkinlik) tüm-kombinasyonlar"]
+#[ignore = "F4/DI-9: mixed-version 5-satır çift-sütun — kama-noise-wire/tests/dr_cs1_wire.rs::g9 (codec-seviyesi; production-yol)"]
 fn f4_di9_mixed_version_matrix() {}
+
+/// F4/DI-10 — RECEIVER RESOURCE-CAP (bounds-before-alloc; SR-AUDIT-001). cold_admit_new_block SAF-fonksiyon:
+/// cap==0 → sınırsız; aksi → open_incomplete<cap. cap+1-adversarial: cap-th YENİ-blok REDDEDİLİR (typed-diag
+/// harness'te ayrı-sayaç; burada karar-fonksiyonu). Mevcut-bloklar EVICT-EDİLMEZ (reddin-kendisi = yeni-slot-yok).
+/// Önerilen cap RX_COLD_BLOCK_CAP=256 (=kama-engine MAX_PREPARAM_SHARDS precedent) → byte-cap 256×K(8)×UNIT(1200)
+/// = 2,457,600 B. Ürün-alıcı UYGULANMADI; bu karar-fonksiyonu + harness-modeli bounding-disiplinini kanıtlar.
+#[test]
+#[cfg(feature = "experimental-fec-budget")] // cold_admit_new_block udp_runner'da (fec-budget-gated harness).
+fn f4_di10_receiver_cold_block_cap() {
+    use adaptive_transport::udp_runner::cold_admit_new_block;
+    // cap==0 → sınırsız (UNIT-default; hiçbir open-sayısında reddetmez).
+    for open in [0usize, 1, 256, 10_000, usize::MAX] {
+        assert!(cold_admit_new_block(open, 0), "cap0-sınırsız (open={open})");
+    }
+    // cap=256 boundary (cap+1 adversarial):
+    const CAP: u32 = 256;
+    for open in 0..CAP as usize {
+        assert!(
+            cold_admit_new_block(open, CAP),
+            "open<cap admit (open={open})"
+        );
+    }
+    assert!(
+        !cold_admit_new_block(CAP as usize, CAP),
+        "open==cap → YENİ-blok reddedilir (cap-th)"
+    );
+    assert!(
+        !cold_admit_new_block(CAP as usize + 1, CAP),
+        "cap+1 adversarial reddedilir"
+    );
+    assert!(
+        !cold_admit_new_block(usize::MAX, CAP),
+        "aşırı-open reddedilir"
+    );
+    // Monotonluk: reddedilen-bölgede tekrar-admit-olmaz (eviction-yok; state küçülmez → yeniden-açılmaz).
+    let mut prev = true;
+    for open in 250..260usize {
+        let admit = cold_admit_new_block(open, CAP);
+        assert!(
+            !admit || prev,
+            "monoton: bir-kez-reddedince tekrar-admit-etmez"
+        );
+        prev = admit;
+    }
+    // Küçük-cap smoke (deterministik sınır): cap=2 → 0,1 admit; 2,3 reddet.
+    assert!(cold_admit_new_block(0, 2) && cold_admit_new_block(1, 2));
+    assert!(!cold_admit_new_block(2, 2) && !cold_admit_new_block(3, 2));
+}

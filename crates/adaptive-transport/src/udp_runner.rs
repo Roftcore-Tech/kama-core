@@ -17,6 +17,16 @@ use std::time::{Duration, Instant};
 pub const UNIT: usize = 1200;
 const K: u64 = 8;
 
+/// FC-closure DI-10 — cold-state incomplete-block cap kararı (SR-AUDIT-001 bounds-before-alloc).
+/// `open_incomplete` = şu-an-açık (tamamlanmamış, en-az-bir-shard'lı) blok-sayısı. Cap>0 ve
+/// `open_incomplete >= cap` ise YENİ-blok reddedilir (slot ALLOCATE edilmez; mevcut-bloklar
+/// EVICT-EDİLMEZ → sessiz-eviction-yok; reddin-kendisi typed-diag ile sayılır). Cap==0 = sınırsız.
+/// Saf-fonksiyon (RNG-yok; aynı-girdi→aynı-çıktı) → determinist unit-test edilebilir.
+#[must_use]
+pub fn cold_admit_new_block(open_incomplete: usize, cap: u32) -> bool {
+    cap == 0 || open_incomplete < cap as usize
+}
+
 #[derive(Debug, Clone)]
 pub struct RunnerCfg {
     pub policy: String, // leftover|p15|f15 (+param-alanları-CLI'dan)
@@ -271,22 +281,28 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                     // FC-closure W-2: (block,esi) zaten-varsa DUPLICATE-teslim (spurious-retransmit'in
                     // alıcı-dedup'u; app-teslimi-block-completion-ile-BİR-kez). DI-10: incomplete-block
                     // cold-cap (aşımda typed-diag; SESSİZ-EVICTION-YOK — yeni-blok-kabul-edilmez-sayılır).
+                    // DI-10: YENİ-blok mı? (henüz-src-shard-yok VE tamamlanmamış). Cap-kararı YALNIZ
+                    // yeni-blok-slot-tahsisi-öncesi (bounds-before-alloc); mevcut-blok/duplicate cap'e-takılmaz.
+                    #[cfg(feature = "experimental-cold-start")]
+                    {
+                        let is_new_block = src_have.get(&b).is_none_or(BTreeSet::is_empty)
+                            && !block_complete.contains_key(&b);
+                        if cfg.cold_block_cap > 0 && is_new_block {
+                            let open_incomplete = src_have
+                                .iter()
+                                .filter(|(bb, s)| !block_complete.contains_key(bb) && !s.is_empty())
+                                .count();
+                            if !cold_admit_new_block(open_incomplete, cfg.cold_block_cap) {
+                                cs_rxcap_diag += 1; // typed-diag (sessiz-DEĞİL); yeni-slot ALLOCATE-edilmez.
+                                continue; // bounds-before-alloc: reddedilir; mevcut-bloklar EVICT-edilmez.
+                            }
+                        }
+                    }
                     let sh = src_have.entry(b).or_default();
                     #[cfg(feature = "experimental-cold-start")]
                     if sh.contains(&e) {
                         cs_dup_deliveries += 1;
                     }
-                    #[cfg(feature = "experimental-cold-start")]
-                    if cfg.cold_block_cap > 0 && !block_complete.contains_key(&b) && sh.is_empty() {
-                        let incomplete = src_have
-                            .iter()
-                            .filter(|(bb, _)| !block_complete.contains_key(bb))
-                            .count();
-                        if incomplete >= cfg.cold_block_cap as usize {
-                            cs_rxcap_diag += 1; // typed-diag (sessiz-değil); bu-blok-yeni-slot-almaz
-                        }
-                    }
-                    let sh = src_have.entry(b).or_default();
                     sh.insert(e); // 0x00/0x01/0x03 = source-shard
                 }
                 let src_n = src_have.get(&b).map_or(0, BTreeSet::len);
