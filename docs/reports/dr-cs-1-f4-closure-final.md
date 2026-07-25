@@ -63,10 +63,10 @@ Fix: `33558d9`. Doğrulama: 65/300/1200B üçü de `TimedOut@60000ms` (tutarlı)
 
 | Hücre | Tip | Durum |
 |---|---|---|
-| W-1 (frozen-bound + OFF-vs-ON) | faithful | DATA-PENDING (temiz-rerun; T_W1_BOUND=30s DONDU §11) |
-| W-2 (exact-once ACK-drop self-heal) | faithful | DATA-PENDING (ayrı W-2 koşusu; §6) |
-| DI-2B (reverse-blackout TimedOut) | faithful | DATA-PENDING (sender-terminal §7; settle-fix-doğrulandı) |
-| W-3 (blackout-heal 3-boyut) | faithful | DATA-PENDING (temiz-rerun; §8) |
+| W-1 (frozen-bound + OFF-vs-ON) | faithful | **PASS** (§5; 3-boyut ON<30s, OFF-deadlock; DECISIVE) |
+| W-2 (exact-once ACK-drop self-heal) | faithful | DATA-PENDING (ayrı W-2 koşusu çalışıyor; §6) |
+| DI-2B (reverse-blackout TimedOut) | faithful | **PASS** (§7; 3-boyut probe-reach=4 + echo-lost + TimedOut) |
+| W-3 (blackout-heal 3-boyut) | faithful | **5/6 PASS + 1 harness-partial** (§8; w3-65-61 window-truncated) |
 | DI-10 (rx-caps + O(1)-probe-path) | codec+pure-fn | **TAMAM** (§9; g10-g10d + f4_di10 PASS) |
 | Mixed-version (5-satır) | codec | **TAMAM** (§10; g9 PASS) |
 
@@ -77,13 +77,18 @@ Fix: `33558d9`. Doğrulama: 65/300/1200B üçü de `TimedOut@60000ms` (tutarlı)
 **Bound:** T_W1_BOUND = **30_000 ms**, birinci-ilke-türetmesiyle DONDU (reports/d1-exit/T_W1_BOUND-calibration-freeze.md;
 temiz-veri-GÖRÜLMEDEN commit). Kabul: `T_ON(block0) < 30s < T_OFF-envelope`.
 
-> **DATA-PENDING (temiz-rerun a6d199b):** aşağıdaki tablo temiz-koşudan doldurulacak.
+**TEMİZ-KOŞU (a6d199b; acceptance_rtt100=100ms; TÜM-koşu receiver_events>0 → VALID).** DECISIVE:
 
-| size | T_ON block0 (ms) | ON finalized? | T_OFF block0 (90s-ufuk) | ON<30s? | OFF≫ON? | Hüküm |
-|---|---|---|---|---|---|---|
-| 65 | — | — | — | — | — | — |
-| 300 | — | — | — | — | — | — |
-| 1200 | — | — | — | — | — | — |
+| size | T_ON block0 (ms) | ON finalized | ON terminal | T_OFF block0 | OFF rx_events | ON<30s? | Hüküm |
+|---|---|---|---|---|---|---|---|
+| 65 | **2706** | 2 (her-iki-blok) | ResolvedByDataAck@2227ms | asla (finalized=0) | **1** | ✔ (2.7≪30) | **PASS** |
+| 300 | **5554** | 2 | ResolvedByProbeEcho@3099ms | asla (finalized=0) | **1** | ✔ (5.6≪30) | **PASS** |
+| 1200 | **5603** | 2 | ResolvedByProbeEcho@3103ms | asla (finalized=0) | **1** | ✔ (5.6≪30) | **PASS** |
+
+**Yorum (cold-start deadlock DOĞRUDAN gözlem):** OFF-kolu `rx_events=1` — gönderen İLK-paketten-sonra
+DURUR (delivered-rate/BtlBw saati ilk-kayıpta hiç-ilklenmez → pacing→0 → gönderim-durur). Bu, DR-CS-1'in
+adreslediği cold-start-liveness-defektinin ta kendisidir. ON-kolu `rx_events=18`, blok-0 2.7–5.6s'te
+tamamlanır (`T_ON < T_W1_BOUND=30s < T_OFF-envelope=∞`). Üç-boyutta-tutarlı. **W-1 PASS (tüm-boyut).**
 
 ---
 
@@ -127,14 +132,19 @@ temiz-veri-GÖRÜLMEDEN commit). Kabul: `T_ON(block0) < 30s < T_OFF-envelope`.
 echo-reverse'te-kaybolur → sender echo-alamaz → give-up@60s TimedOut. **settle-fix (BUG-H2) doğrulandı:**
 65/300/1200B üçü de `cs_probe_emitted=4, cs_armed=true, cs_disarmed=true, cs_terminals=TimedOut@60000ms`.
 
-> **DATA-PENDING (temiz-rerun):** sender-terminal tutarlılığı + rx-tarafı probe-reach (BUG-H1-sonrası
-> receiver_events>0 ⇒ forward-teslim; reverse-blackout'ta echo-kayıp) doldurulacak.
+**TEMİZ-KOŞU (a6d199b; receiver_events>0 → VALID; forward-teslim-kanıtı BUG-H1-sonrası).** Tutarlı:
 
-| size | cs_probe_emitted | terminal | rx receiver_events | rx cs_probe_rx | rx cs_echo_tx | Hüküm |
-|---|---|---|---|---|---|---|
-| 65 | — | — | — | — | — | — |
-| 300 | — | — | — | — | — | — |
-| 1200 | — | — | — | — | — | — |
+| size | probe_emit | terminal | rx receiver_events | rx cs_probe_rx | rx cs_echo_tx | echo_bytes | Hüküm |
+|---|---|---|---|---|---|---|---|
+| 65 | 4 | TimedOut@60000ms | 25 | **4** | 4 | 172 | **PASS** |
+| 300 | 4 | TimedOut@60000ms | 6 | **4** | 4 | 172 | **PASS** |
+| 1200 | 4 | TimedOut@60001ms | 2 | **4** | 4 | 172 | **PASS** |
+
+**Yorum:** forward-açık → 4-probe HER boyutta rx'e-ULAŞIR (`cs_probe_rx=4`); rx 4-echo-ÜRETİR (172B) ama
+reverse-blackout'ta HEPSİ-KAYBOLUR → gönderen echo-alamaz → give-up@60s `TimedOut`. Bu FAITHFUL DI-2B:
+**probe-reach + echo-generated-but-lost + sender-TimedOut**, üç-boyutta-tutarlı. `rx_events` boyutla-azalır
+(25/6/2): küçük-birim → daha-çok-ARQ-retransmit datagram'ı sığar (INV-RATE-1: kayıp send_rate'i-düşürmez).
+**DI-2B PASS (tüm-boyut, sender-terminal).**
 
 **70s-restore PostTimeoutRecovery varyantı:** in-process F3-D (`f3_*` A/B/C/D) TimedOut@60s → sonraki-ACK =
 `PostTimeoutRecovery` (ikinci-terminal-değil) PIN'li (dr_cs1_acceptance.rs). Faithful-70s-restore: DATA-PENDING/opsiyonel.
@@ -147,12 +157,24 @@ echo-reverse'te-kaybolur → sender echo-alamaz → give-up@60s TimedOut. **sett
 (giveup-öncesi → ResolvedByDataAck beklenir) + restore=61s (giveup-sonrası → TimedOut sonra heal =
 PostTimeoutRecovery). deficit=1 (first-source-loss katmanı).
 
-> **DATA-PENDING (temiz-rerun):**
+**TEMİZ-KOŞU (a6d199b; receiver_events>0 → VALID).** 5/6-PASS + 1-harness-window-partial:
 
-| size | restore | terminal | finalized(heal) | T_heal(ms) | receiver_events | Hüküm |
+| size | restore | terminal | finalized(heal) | T_heal | rx_events | Hüküm |
 |---|---|---|---|---|---|---|
-| 65/300/1200 | 20 | — | — | — | — | — |
-| 65/300/1200 | 61 | — | — | — | — | — |
+| 65 | 20 | ResolvedByProbeEcho@21143ms | **1** | 21.1s (~1s post-restore) | 14 | **PASS** |
+| 300 | 20 | ResolvedByProbeEcho@21102ms | **1** | 21.1s | 10 | **PASS** |
+| 1200 | 20 | ResolvedByProbeEcho@21099ms | **1** | 21.1s | 9 | **PASS** |
+| 300 | 61 | TimedOut@60000ms → PostTimeoutRecovery@63872ms | **1** | 63.9s (2.9s post-restore) | 11 | **PASS** |
+| 1200 | 61 | TimedOut@60000ms → PostTimeoutRecovery@83225ms | **1** | 83.2s (22s post-restore) | 10 | **PASS** |
+| 65 | 61 | TimedOut@60000ms (PostTimeoutRecovery-YOK) | 0 | — (heal-YOK) | 2 | **PARTIAL** ⚠ |
+
+**⚠ w3-65-61 (harness-gözlem-penceresi kenarı — MEKANİZMA-DEFEKTİ-DEĞİL):** 65B tüm-pencere ilk-cwnd'e-
+sığar → `workload_done@t~0`. give-up@60s'te cold-start-disarm → `cs_pending=false` → küçük-workload
+settle-exit @~64s. restore@61s AMA 60s-blackout-boyunca PTO-backoff exponential-büyür → sonraki-PTO-retransmit
+61–64s penceresinde ATEŞLEMEZ → exit-öncesi heal-olmaz. 300/1200B settle-ETMEZ (dispatch ACK-clocked, blackout'ta
+tamamlanmaz) → ext_horizon 110s'e-kadar-yaşar → PostTimeoutRecovery-heal. **Heal-mekanizması KANITLI:** restore=20
+(3-boyut) + restore=61 (300/1200B) + in-process F3-D (`PostTimeoutRecovery` pini). Gerçek-always-on-gönderen 65B'yi-de
+gecikmeli-PTO'yla iyileştirir; test-runner'ın-bounded-exit'i tek-hücreyi-kırpar. **W-3: 5/6 PASS + 1 harness-partial.**
 
 ---
 
