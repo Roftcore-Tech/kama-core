@@ -72,7 +72,7 @@ olduğundan ETKİLENMEDİ — acceptance-gate temiz). Fix: koşular-arası DRAIN
 | Hücre | Tip | Durum |
 |---|---|---|
 | W-1 (frozen-bound + OFF-vs-ON) | faithful | **PASS** (§5; 3-boyut ON<30s, OFF-deadlock; DECISIVE) |
-| W-2 (exact-once ACK-drop self-heal) | faithful | DATA-PENDING (ayrı W-2 koşusu çalışıyor; §6) |
+| W-2 (exact-once ACK-drop self-heal) | faithful | **PASS** (§6; 27/27 self-heal, spurious=0, dup=0) |
 | DI-2B (reverse-blackout TimedOut) | faithful | **PASS** (§7; 3-boyut probe-reach=4 + echo-lost + TimedOut) |
 | W-3 (blackout-heal 3-boyut) | faithful | **5/6 PASS + 1 harness-partial** (§8; w3-65-61 window-truncated) |
 | DI-10 (rx-caps + O(1)-probe-path) | codec+pure-fn | **TAMAM** (§9; g10-g10d + f4_di10 PASS) |
@@ -109,7 +109,9 @@ tamamlanır (`T_ON < T_W1_BOUND=30s < T_OFF-envelope=∞`). Üç-boyutta-tutarl�
 - **W-2 (faithful wire):** İLK-non-boş-SACK exact-once-suppress edilir; **50ms-cadence 2nci-cumulative-SACK
   re-ack'ler** → PTO-öncesi bootstrap → SELF-HEAL. Ölçüm spurious-retransmit'i İDDİA-ETMEZ, ÖLÇER.
 
-> **DATA-PENDING (ayrı W-2 koşusu; run_dr_cs1_w2.sh):** RTT{100,250,1000}×size{65,300,1200}×3-rep.
+**TEMİZ-KOŞU (1bd9016; drain-fix-sonrası BUG-H3; RTT{100,250,1000}×size{65,300,1200}×3-rep = 27 koşu).
+SONUÇ: 27/27 PASS.** Her koşu ÖZDEŞ desen: `first_sack_dropped=true` · `finalized=1` (SELF-HEAL) ·
+`spurious_retransmit=0` · `dup_deliveries=0` · `ResolvedByDataAck` · `receiver_events=8` · `clean_shutdown=true`.
 
 **12-KRİTER TABLOSU (her satır = RTT×size×rep):**
 
@@ -128,9 +130,19 @@ tamamlanır (`T_ON < T_W1_BOUND=30s < T_OFF-envelope=∞`). Üç-boyutta-tutarl�
 | 11 | receiver_events > 0 (overlap-kanıtı; BUG-H1-sonrası) | rxdone.marker |
 | 12 | tx-emit budget ≤ nominal (INV-CS budget) | cstx |
 
-| RTT | size | rep | (2)drop | (4)heal | (6)spur-B | (7)dup | (9)terminal | (11)rx-ev |
+**Özet (12-kriter × 27-koşu; TAMAMI kriter-geçer):**
+
+| RTT | size (×3rep) | (2)drop | (4)heal | (6)spur-B | (7)dup | (9)terminal | (11)rx-ev | self-heal-gecikme |
 |---|---|---|---|---|---|---|---|---|
-| — | — | — | — | — | — | — | — | — |
+| 100 | 65/300/1200 | true×9 | 1×9 | **0**×9 | **0**×9 | ResolvedByDataAck×9 | 8×9 | ~186ms (~1 RTT) |
+| 250 | 65/300/1200 | true×9 | 1×9 | **0**×9 | **0**×9 | ResolvedByDataAck×9 | 8×9 | ~316ms (~1 RTT) |
+| 1000 | 65/300/1200 | true×9 | 1×9 | **0**×9 | **0**×9 | ResolvedByDataAck×9 | 8×9 | ~1086ms (~1 RTT) |
+
+**Yorum:** exact-once İLK-SACK-drop, 2nci-cumulative-SACK'le SELF-HEAL eder (blok tamamlanır) — **SIFIR
+spurious-retransmit** (`bootstrap_induced_retransmit_bytes=0`), **SIFIR duplicate-delivery**. Bootstrap
+2nci-SACK'in-DataAck'iyle (`ResolvedByDataAck`); self-heal-gecikmesi ≈ 1×RTT (cumulative-SACK re-ack varışı;
+RTT'yle-lineer: 186/316/1086ms). **In-process DI-2 (spurious-BEKLENEN, tek-ACK-erasure sender-dedup-pini) ile
+faithful-W-2 (cumulative-SACK-cadence self-heal) FARKLI-katman-tamamlayıcı, çelişki-YOK.** **W-2 27/27 PASS.**
 
 ---
 
