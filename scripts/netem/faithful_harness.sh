@@ -24,6 +24,13 @@ faithful_setup() { # yalnız unshare -rnm İÇİNDE çağrılır
   nsenter -t "$CHILD" -n ip addr add 10.9.0.2/24 dev v1
   nsenter -t "$CHILD" -n ip link set v1 up
   nsenter -t "$CHILD" -n ip link set lo up
+  # STATİK-ARP (her-iki-yön): reverse-blackout ARP-reply'i-düşürünce forward-teslimin-ARP'a-bağımlı
+  # OLMAMASI için (DI-2B/W-3 blackout senaryoları; aksi netem-loss ARP'ı-kilitler → forward-de-durur).
+  local m0 m1
+  m0=$(ip link show v0 | awk '/link\/ether/{print $2}')
+  m1=$(nsenter -t "$CHILD" -n ip link show v1 | awk '/link\/ether/{print $2}')
+  ip neigh replace 10.9.0.2 lladdr "$m1" dev v0 nud permanent
+  nsenter -t "$CHILD" -n ip neigh replace 10.9.0.1 lladdr "$m0" dev v1 nud permanent
   export CHILD
 }
 
