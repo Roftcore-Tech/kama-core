@@ -37,7 +37,13 @@ for rtt in 100 250 1000; do
       timeout 45 "$BIN_CS" --role tx --bind 10.9.0.1:47001 --peer 10.9.0.2:47002 --policy leftover --fixed-r 0 \
         --run-id "$id" --output-dir "$OUT" --operational-horizon 4000 --extended-horizon 30000 \
         --w-units 8 --unit-bytes "$sz" --tx-settle-ms $((rtt*6)) >/dev/null 2>&1
-      wait $RX 2>/dev/null; echo "$id done" >> "$OUT/W2-RUNLOG"
+      wait $RX 2>/dev/null
+      # INTER-RUN DRAIN (KRİTİK — yüksek-RTT bleed'i önle): çift-yön %100-loss + settle. Aksi: bir-önceki
+      # koşunun FINISH-marker'ları (0xFE) netem-gecikmesiyle SONRAKİ rx'e-sızar → yeni-rx ≥3-stale-FINISH
+      # görüp ERKEN-çıkar (rx_ev=0) → tx-ölü-rx'e-gönderir → cascade. RTT100'de bleed-yok (kısa-gecikme;
+      # 14-run-testi doğruladı) ama RTT250/1000'de kaskad-kırar. Drain in-flight'ı-boşaltır (izole-doğrulandı).
+      faithful_netem "delay 1ms loss 100%" "delay 1ms loss 100%"; sleep 1.2
+      echo "$id done" >> "$OUT/W2-RUNLOG"
     done
   done
 done
