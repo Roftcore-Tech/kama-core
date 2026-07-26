@@ -55,14 +55,17 @@ recovery_contributed_to_completion       (bool)
 recovery_path = "none"  UNLESS gerçek-recovery-gözlendi
 ```
 
-### 2.2 Düzeltme-3: WORKLOAD/CWND LEDGER (ampirik)
+### 2.2 Düzeltme-3: WORKLOAD/EMPIRICAL-DISPATCH LEDGER (Abkarada-düzeltme-2 isimlendirme dahil)
 ```
 workload_units · unit_bytes · total_workload_bytes
-effective_initial_cwnd_bytes  = first_flight_burst_units × unit_bytes  (AMPİRİK: 1500ms-stall-gap öncesi
-                                block-0 yeni-source-shard sayısı; sender-diff GEREKMEZ)
-workload_to_initial_cwnd_ratio
+empirical_initial_dispatch_bytes = first_flight_burst_units × unit_bytes  (AMPİRİK: 1500ms-stall-gap öncesi
+                                   block-0 yeni-source-shard sayısı; PROTOKOL-cwnd DEĞİL — W-1'in "cwnd"iyle
+                                   KARIŞTIRILMAZ; sender-diff GEREKMEZ)
+workload_to_effective_dispatch_ratio
 ```
 **Kritik gereksinim:** rx VE tx birebir `--w-units/--unit-bytes` alır (aksi rx-default w=80/unit=1200 → yanlış-oran).
+**Not (frozen-evidence):** R3-marker'ları eski-etiketi `w2b_effective_initial_cwnd_bytes` taşır = AYNI-değer,
+yeniden-yorumla `empirical_initial_dispatch_bytes` (Abkarada-düzeltme-2). Harness-adı düzeltildi; re-run-gerekmez.
 
 ### 2.3 A+C BOUNDS
 - **CAP=64-release KALDIRILDI** (senaryoyu ~3.2s'te partial-starvation'a çeviriyordu). `suppressed_ack` =
@@ -117,15 +120,22 @@ decisive. **Abkarada'nın confirmatory-matris-ısrarı doğrulandı.**
 
 ## 6. MEKANİSTİK YORUM (confirmatory)
 
-- **effective_initial_cwnd ≈ 1 UNIT** (ff_burst=1; ratio=w_units=8) TÜM boyutlarda. cwnd UNIT-sabit; fark
+- **empirical_initial_dispatch ≈ 1 UNIT** (ff_burst=1; ratio=w_units=8) TÜM boyutlarda — **protokol-cwnd DEĞİL**
+  (ampirik-ilk-dispatch; W-1-cwnd'iyle-karıştırılmaz). ff-burst UNIT-sabit; fark
   BYTE-tabanlı floor-dispatch-hızından + OFF-deadlock'tan gelir (workload/cwnd-rejimi Abkarada-düzeltme-3'le açığa-çıktı).
 - **65B NEUTRAL:** küçük-workload (520B) → OFF-de floor-dispatch'le @~14.7s tamamlar → cold-start-gerekmez.
 - **300B DECISIVE:** OFF (no-PreConverge-floor) 1-pakette DEADLOCK; ON (cold-start PreConverge-floor) tüm-8-birim
   dispatch → @~61s tamamlar. completion_trigger=FirstFlight (recovery-DEĞİL; sürdürülen-dispatch) · recovery_path=none.
 - **1200B NO_COMPLETION@45s (ikisi de):** app_delivery=0. **Doğrulanmış DATA-plane partial-progress asimetrisi:**
   ON **3 distinct source-shard** (transport_dup=0; floor-dispatch-liveness), OFF **1** (deadlock). Control-plane-DEĞİL
-  (probe receiver_events'e-sayılmaz) ama **block-completion-DA-DEĞİL** (kısmi 3/8). DECISIVE-vs-NEUTRAL 45s-cap'te
-  ÇÖZÜLMEDİ (formül ~264s; 300B-deseni DECISIVE-öngörür — bu-turda-ölçülmedi).
+  (probe receiver_events'e-sayılmaz) ama **block-completion-DA-DEĞİL** (kısmi 3/8). Nihai-kayıt: *"cold-start produces
+  additional source progress, but completion benefit is not demonstrated within 45 seconds."* DECISIVE-vs-NEUTRAL
+  45s-cap'te ÇÖZÜLMEDİ. YASAK: 1200B-decisive/liveness-solved/recovery-impossible/FEC-ARQ-hükmü.
+
+> **MEKANİZMA-İNCELTMESİ (Abkarada; freeze-öncesi güçlendirme):** "cold-start-ON BtlBw-oluşmadan-da source-dispatch'in-
+> devam-etmesini-sağlar; observed-completion first-flight-source-dispatch-iledir (recovery-DEĞİL)." **"PreConverge
+> floor-dispatch" KESİN-kök-neden-olarak-mühürlenmeden-ÖNCE** `state_at_each_source_wire_emission / srtt / pacing_rate
+> / dispatch_authority` state-at-emission-ledger'ıyla-doğrulanmalı (A1-blocker-DEĞİL; freeze-mekanizma-açıklamasını sağlamlaştırır).
 
 ---
 
@@ -141,7 +151,7 @@ Tüm 6 ana-iddia AYAKTA. En değerli non-refuting bulgu (skeptik-titizliğinin k
 
 ---
 
-## 8. HÜKÜM — DR-CS-1 SENDER-SIDE ACCEPTANCE: FULL
+## 8. HÜKÜM — DR-CS-1 SENDER-SIDE ACCEPTANCE: FULL — SCOPE-LIMITED CHARACTERIZATION COMPLETE
 
 > - **W-1:** cold-start DECISIVE (workload>initial-cwnd + ACK feedback; 300/1200B).
 > - **W-2B-R3 (TOTAL ACK starvation):** **300B DECISIVE** (OFF-deadlock recv=1, ON @~61–62s PreConverge-floor) ·
@@ -152,7 +162,9 @@ Tüm 6 ana-iddia AYAKTA. En değerli non-refuting bulgu (skeptik-titizliğinin k
 
 **FULL gerekçesi (Abkarada-semantiği):** full-starvation-sınır-koşulu deterministik-karakterize-edildi +
 doğal-production-path'ler-ayrıştırıldı + ON/OFF-marjinal-etki-dürüstçe-ölçüldü + uygulama-doğruluğu-korundu.
-Cold-start'ın hem **faydalı-bölgesi (65B-üzeri)** hem **faydasız-sınırı (65B)** haritalandı — güçlü-sonuç.
+Cold-start'ın faydası **workload-rejimine-bağlı**: `300B/w8 DECISIVE (kanıtlı)` · `65B/w8 NEUTRAL (kanıtlı)` ·
+`1200B/w8 completion-UNRESOLVED@45s (partial-progress-var)`. **"Faydalı-bölge 65B-üzeri" GENELLEMESİ KULLANILMAZ**
+(300–1200B-arası ölçülmedi). Hüküm: `FULL — SCOPE-LIMITED CHARACTERIZATION COMPLETE`.
 **AÇIK (A2):** ürün-alıcı-patience/resource + POST-TIMEOUT RECOVERED-CONTROL NOTIFICATION CONTRACT. Merge/flip-YASAK.
 
 ---
@@ -180,7 +192,7 @@ Push: `a056b8b..1d50c6e → origin/d1-sprint5c`.
    çeliştiğinde körlemesine-taşımak ölçümü-bozar (partial-starvation'a-çevirir). A+C ile düzeltildi.
 3. **Alan-isimlendirme mekanizmayı-doğru-yansıtmalı.** `recovery_path`-tek-alan aşırı-genelleştirmeydi; completion_
    trigger vs recovery-event ayrımı gerçeği-doğru-taşıdı (first-flight-completion recovery-DEĞİL).
-4. **workload/cwnd birinci-sınıf.** effective-cwnd≈1-unit + ratio=w_units — size-etkisini workload/cwnd-rejim-
+4. **workload/dispatch birinci-sınıf.** empirical-initial-dispatch≈1-unit (protokol-cwnd-DEĞİL; Abkarada-düzeltme-2) + ratio=w_units — size-etkisini workload/dispatch-rejim-
    etkisinden ayırdı; hem-ölçüm-hem-yorum netleşti.
 5. **Adversarial-verify interpretation-nüanslarını yakalar.** 1200B "control-plane-mı-data-plane-mı" nüansı
    skeptikle netleşti (`transport_dup=0` → data-plane-partial ama completion-değil). → daha-dürüst-closure.

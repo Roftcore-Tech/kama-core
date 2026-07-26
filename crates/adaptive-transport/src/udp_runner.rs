@@ -232,8 +232,8 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut w2b_recovery_events_before_completion: u64 = 0; // block-0 completion-ÖNCESİ re-send/recovery olayları
     let mut w2b_first_recovery_kind: Option<u8> = None; // block-0 İLK recovery-event'inin wire-kind'ı (0x01/0x02/0x03)
     let mut w2b_first_recovery_time: Option<u64> = None; // block-0 İLK recovery-event zamanı
-                                                         // R3 (Abkarada-düzeltme-3): workload/cwnd ampirik-oranı. effective_initial_cwnd = ilk-uçuş-burst (stall-gap
-                                                         // >GAP_MS öncesi block-0 distinct-source-shard sayısı) × unit_bytes. Salt-gözlem; sender-diff GEREKMEZ.
+                                                         // R3 (Abkarada-düzeltme-3): AMPİRİK ilk-dispatch-oranı (protokol-cwnd DEĞİL). empirical_initial_dispatch =
+                                                         // ilk-uçuş-burst (stall-gap >1500ms öncesi block-0 distinct-source-shard) × unit_bytes. Salt-gözlem; sender-diff GEREKMEZ.
     let mut w2b_ff_burst_units: u64 = 0; // block-0 ilk-uçuş-burst distinct-source-shard sayısı
     let mut w2b_ff_ended = false; // ilk-uçuş-burst bitti mi (stall-gap gözlendi)
     let mut w2b_last_src_arrival: Option<u64> = None; // block-0 son source-shard arrival (gap-tespiti)
@@ -601,16 +601,18 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         } else {
             "none".to_string()
         };
-        // R3 (düzeltme-3): workload/cwnd ampirik-oranı. effective_initial_cwnd = ff-burst × unit_bytes.
+        // R3 (Abkarada-düzeltme-2): AMPİRİK ilk-dispatch metriği — sender'ın PROTOKOL-İÇİ cwnd-değişkeni
+        // DEĞİL; faithful-wire'da stall-gap(1500ms)-öncesi gözlenen ilk-dispatch miktarı. W-1'in "cwnd"iyle
+        // KARIŞTIRILMAMALI. Alan-adı: empirical_initial_dispatch_bytes (eski effective_initial_cwnd_bytes yerine).
         let total_workload = cfg.w_units * cfg.unit_bytes;
-        let eff_cwnd = w2b_ff_burst_units * cfg.unit_bytes;
-        let ratio = if eff_cwnd > 0 {
-            format!("{:.3}", total_workload as f64 / eff_cwnd as f64)
+        let eff_dispatch = w2b_ff_burst_units * cfg.unit_bytes;
+        let ratio = if eff_dispatch > 0 {
+            format!("{:.3}", total_workload as f64 / eff_dispatch as f64)
         } else {
             "inf".to_string()
         };
         marker.push_str(&format!(
-            "w2b_clock_domain=CLOCK_MONOTONIC-single-host\nw2b_feature_state={feature_state}\nw2b_workload_units={}\nw2b_unit_bytes={}\nw2b_total_workload_bytes={total_workload}\nw2b_effective_initial_cwnd_bytes={eff_cwnd}\nw2b_first_flight_burst_units={}\nw2b_workload_to_initial_cwnd_ratio={ratio}\nw2b_completion_trigger_kind={completion_trigger_kind}\nw2b_completion_time={completion_time}\nw2b_first_recovery_event_kind={first_recovery_kind}\nw2b_first_recovery_event_time={first_recovery_time}\nw2b_recovery_events_before_completion_count={}\nw2b_recovery_contributed_to_completion={recovery_contributed}\nw2b_recovery_path={recovery_path}\nw2b_suppression_start={}\nw2b_suppressed_ack_count={w2b_suppressed_ack_count}\nw2b_ack_cap_hard_hit={w2b_hard_cap_hit}\nw2b_transport_duplicate_rx_count={w2b_transport_dup_rx}\nw2b_application_delivery_count={w2b_app_delivery}\nw2b_application_duplicate_delivery_count={w2b_app_dup_delivery}\nw2b_retransmit_rx_first={retransmit_first}\nw2b_retransmit_rx_count={w2b_retransmit_rx_count}\nw2b_suppression_release={}\nw2b_released_ack_wire={}\n",
+            "w2b_clock_domain=CLOCK_MONOTONIC-single-host\nw2b_feature_state={feature_state}\nw2b_workload_units={}\nw2b_unit_bytes={}\nw2b_total_workload_bytes={total_workload}\nw2b_empirical_initial_dispatch_bytes={eff_dispatch}\nw2b_first_flight_burst_units={}\nw2b_workload_to_effective_dispatch_ratio={ratio}\nw2b_completion_trigger_kind={completion_trigger_kind}\nw2b_completion_time={completion_time}\nw2b_first_recovery_event_kind={first_recovery_kind}\nw2b_first_recovery_event_time={first_recovery_time}\nw2b_recovery_events_before_completion_count={}\nw2b_recovery_contributed_to_completion={recovery_contributed}\nw2b_recovery_path={recovery_path}\nw2b_suppression_start={}\nw2b_suppressed_ack_count={w2b_suppressed_ack_count}\nw2b_ack_cap_hard_hit={w2b_hard_cap_hit}\nw2b_transport_duplicate_rx_count={w2b_transport_dup_rx}\nw2b_application_delivery_count={w2b_app_delivery}\nw2b_application_duplicate_delivery_count={w2b_app_dup_delivery}\nw2b_retransmit_rx_first={retransmit_first}\nw2b_retransmit_rx_count={w2b_retransmit_rx_count}\nw2b_suppression_release={}\nw2b_released_ack_wire={}\n",
             cfg.w_units,
             cfg.unit_bytes,
             w2b_ff_burst_units,

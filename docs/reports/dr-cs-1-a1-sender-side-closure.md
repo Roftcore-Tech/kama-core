@@ -58,24 +58,34 @@ release-DEĞİL — hiçbir hücrede tetiklenmedi); T_MAX-emekli; formül-türev
 | **300B** | **DECISIVE** (3 RTT) | 9 / **~61s** ✔ | **1 / deadlock** ✗ | FirstFlight | 8.0 / 1 |
 | **1200B** | **NO_COMPLETION@45s** (3 RTT) | **3 / progress** | **1 / deadlock** | NoCompletionWithinHorizon | 8.0 / 1 |
 
-**Mekanistik yorum (doğru):**
-- **workload/cwnd:** effective_initial_cwnd ≈ **1 unit** (ff=1; ratio=w_units=8) TÜM boyutlarda. Yani cwnd
-  UNIT-sabit; fark BYTE-tabanlı dispatch-hızından + OFF-deadlock'tan gelir.
-- **65B NEUTRAL:** küçük-workload → OFF-de floor-dispatch'le tamamlar (recv=9) → cold-start-gerekmez.
-- **300B DECISIVE:** OFF 1-pakette DEADLOCK (recv=1; BtlBw-yok + PreConverge-floor-yok); ON cold-start'ın
-  **PreConverge floor-dispatch**'iyle tüm-birimleri-gönderir → @~61s tamamlar. **Cold-start'ın nedensel-
-  liveness-faydası.** (recovery_path=none; completion_trigger=FirstFlight — yani recovery-DEĞİL, sürdürülen-
-  dispatch. Cold-start ARQ-substratını değiştirmez; dispatch-liveness'ini korur.)
-- **1200B:** 45s-cap'te İKİSİ DE blok-tamamlamaz (app_delivery=0; NO_COMPLETION_BY_45S — mutlak-NoRecovery-DEĞİL,
-  formül ~264s). **DATA-plane PARTIAL-progress asimetrisi (doğrulandı; adversarial §5):** ON **3 DISTINCT
-  source-shard** alır (transport_dup=0; floor-dispatch-liveness), OFF **1** (deadlock). Bu control-plane-DEĞİL
-  (probe receiver_events'e-sayılmaz) ama **blok-completion-DA-DEĞİL** (kısmi 3/8-birim). → cold-start-liveness
-  1200B'de-de partial-progress-sağlar; DECISIVE-vs-NEUTRAL 45s-cap'te ÇÖZÜLMEDİ (300B-deseni ~264s'te DECISIVE-
-  öngörür ama bu-turda-ölçülmedi).
+**Mekanistik yorum:**
+- **workload/dispatch (Abkarada-düzeltme-2 — İSİM):** `empirical_initial_dispatch_bytes` ≈ **1 unit** (ff_burst=1;
+  ratio=w_units=8) TÜM boyutlarda. **Bu sender'ın PROTOKOL-İÇİ cwnd-değişkeni DEĞİLDİR** — faithful-wire'da
+  stall-gap(1500ms)-öncesi gözlenen AMPİRİK ilk-dispatch-miktarıdır (W-1'in "cwnd"iyle KARIŞTIRILMAMALI). ff-burst
+  UNIT-sabit; boyut-farkı BYTE-tabanlı floor-dispatch-hızından + OFF-deadlock'tan gelir.
+- **65B NEUTRAL (kanıtlanmış-nötr-hücre):** küçük-workload (520B) → OFF-de floor-dispatch'le tamamlar (recv=9) →
+  cold-start-gerekmez.
+- **300B DECISIVE (kanıtlanmış-faydalı-hücre):** OFF 1-pakette DEADLOCK (recv=1); ON tüm-8-birimi-gönderir →
+  @~61–62s tamamlar (recv=9). **Cold-start'ın nedensel-liveness-faydası.** recovery_path=none; completion_trigger=
+  FirstFlight — completion RETRANSMISSION/RECOVERY ile-DEĞİL, sürdürülen first-flight-source-dispatch ile.
+- **1200B (UNRESOLVED@45s):** 45s-cap'te İKİSİ DE blok-tamamlamaz (app_delivery=0; NO_COMPLETION_BY_45S — mutlak-
+  NoRecovery-DEĞİL). **DATA-plane PARTIAL-progress asimetrisi (doğrulandı; adversarial §5):** ON **3 DISTINCT
+  source-shard** (transport_dup=0), OFF **1** (deadlock). Control-plane-DEĞİL (probe receiver_events'e-sayılmaz)
+  ama **blok-completion-DA-DEĞİL** (kısmi 3/8). **Nihai-kayıt: "cold-start produces additional source progress,
+  but completion benefit is not demonstrated within 45 seconds."** YASAK-iddialar: 1200B-decisive · 1200B-liveness-
+  solved · 1200B-recovery-impossible · FEC/ARQ-hükmü.
 
-**Sınır-bulgusu (düzeltilmiş):** Pilot "cold-start-nötr-mekanizması-BtlBw-gerektirir" da YANLIŞTI. Confirmatory:
-cold-start'ın liveness-faydası **BtlBw-değil PreConverge-floor-dispatch** üzerinden — TOTAL-ACK-starvation'da-BİLE
-decisive (300B). Cold-start yalnız faydalı-bölgede-değil, **faydasız-sınır-bölgesi (65B) de haritalandı.**
+**Sınır-bulgusu (Abkarada-düzeltme-1 — KAPSAM):** Cold-start'ın faydası **workload-rejimine-bağlıdır**:
+`300B/w8 DECISIVE (kanıtlı)` · `65B/w8 NEUTRAL (kanıtlı)` · `1200B/w8 completion-UNRESOLVED@45s`. **"Faydalı-bölge
+65B-üzeri" GENELLEMESİ KULLANILMAZ** — 300–1200B-arası-boyutlar HİÇ-ölçülmedi. **Mekanizma-inceltmesi (Abkarada):**
+cold-start-ON BtlBw-oluşmadan-da source-dispatch'in-devam-etmesini-sağlar; observed-completion first-flight-source-
+dispatch-iledir (recovery-DEĞİL). "PreConverge floor-dispatch" KESİN-kök-neden-olarak-yazılmadan-ÖNCE (freeze-öncesi)
+`state_at_each_source_wire_emission / srtt / pacing_rate / dispatch_authority` state-at-emission-ledger'ıyla-doğrulanmalı.
+
+> **REINTERPRETASYON NOTU (frozen-evidence):** R3-marker'ları (`70ea2de`-harness) eski-etiketi
+> `w2b_effective_initial_cwnd_bytes` / `w2b_workload_to_initial_cwnd_ratio` taşır = AYNI-DEĞER, yeniden-yorumla
+> `empirical_initial_dispatch_bytes` / `workload_to_effective_dispatch_ratio` (protokol-cwnd-DEĞİL; Abkarada-
+> düzeltme-2). Harness alan-adı düzeltildi (sonraki-koşular); değerler-özdeş olduğundan 54-koşu re-run-GEREKMEZ.
 
 ---
 
@@ -103,21 +113,25 @@ Diğer-concern'ler adreslendi (interpretation-nuance/proof-strength; refute-DEĞ
 
 ## 6. HÜKÜM
 
-> ## **DR-CS-1 SENDER-SIDE ACCEPTANCE: FULL**
-> - **W-1:** cold-start DECISIVE when workload > initial-cwnd AND some ACK feedback exists (300/1200B).
-> - **W-2B (R3, TOTAL ACK starvation):** cold-start is **DECISIVE at 300B** (OFF deadlocks after 1 packet;
->   ON completes @~61–62s via PreConverge floor-dispatch) — **NOT neutral**; **NEUTRAL at 65B** (both complete,
->   workload fits); **1200B NO_COMPLETION within 45s cap for BOTH** (app_delivery=0) with a verified **DATA-plane
->   partial-progress asymmetry** (ON 3 distinct source-shards, transport_dup=0; OFF 1, deadlock) — cold-start
->   liveness partial-progresses even here, but completion (DECISIVE-vs-NEUTRAL) is UNRESOLVED at the 45s cap.
->   Completion path = sustained first-flight dispatch (recovery_path=none; no recovery re-send).
+> ## **DR-CS-1 SENDER-SIDE ACCEPTANCE: FULL — SCOPE-LIMITED CHARACTERIZATION COMPLETE**
+> - **W-1:** cold-start DECISIVE when workload > empirical-initial-dispatch AND some ACK feedback exists.
+> - **W-2B (R3, TOTAL ACK starvation) — workload-regime dependent:**
+>   - **300B/w8: DECISIVE (proven)** — OFF deadlocks after 1 packet (recv=1); ON completes @~61–62s (recv=9)
+>     via sustained first-flight source dispatch (recovery_path=none; no retransmission/recovery).
+>   - **65B/w8: NEUTRAL (proven)** — both complete (~14.7s).
+>   - **1200B/w8: UNRESOLVED @45s** — neither completes within the 45s cap (app_delivery=0 both). Verified
+>     DATA-plane partial-progress asymmetry (ON 3 distinct source-shards, transport_dup=0; OFF 1, deadlock):
+>     *cold-start produces additional source progress, but completion benefit is not demonstrated within 45s.*
+>   - Sizes 300–1200B NOT measured; **no "beneficial above 65B" generalization**.
 > - **W-3:** post-blackout healing validated (3/3).
 > - **H1:** clean.
 
-**FULL gerekçesi (Abkarada-semantiği):** full-starvation-sınır-koşulu deterministik-karakterize-edildi +
-doğal-production-path'ler-ayrıştırıldı (completion_trigger vs recovery-event) + ON/OFF-marjinal-etki-dürüstçe-
-ölçüldü (65B-neutral / 300B-decisive / 1200B-progress) + uygulama-doğruluğu-korundu (app_dup=0 tüm-hücre).
-Cold-start'ın hem **faydalı-bölgesi** hem **faydasız-sınırı** haritalandı.
+**FULL — SCOPE-LIMITED CHARACTERIZATION COMPLETE gerekçesi (Abkarada-semantiği; "her-boyutta-completion"
+DEĞİL):** full-starvation-sınır-koşulu deterministik-karakterize-edildi + doğal-production-path'ler-ayrıştırıldı
+(completion_trigger vs recovery-event) + ON/OFF-marjinal-etki-dürüstçe-ölçüldü (65B-NEUTRAL / 300B-DECISIVE /
+1200B-UNRESOLVED@45s) + açık-hücre horizon-sınırlı-doğru-sınıflandırıldı + uygulama-doğruluğu+dedup-korundu
+(app_dup=0 tüm-hücre). **Kanıtlanan: 300B/w8-DECISIVE + 65B/w8-NEUTRAL kesin; 1200B/w8 completion-UNRESOLVED@45s
+(partial-progress-var); 300–1200B-arası-ölçülmedi. Genelleme YOK.**
 
 **AÇIK (A2):** ürün-alıcı-patience/resource + **POST-TIMEOUT RECOVERED-CONTROL NOTIFICATION CONTRACT** (ürün-
 katmanının ACK-bağımsız post-timeout-recovery'yi nasıl-öğrendiği). End-to-end-product-FULL A2-öncesi iddia-EDİLMEZ.
@@ -141,8 +155,9 @@ A2 (product receiver)          → NO-GO (sıradaki; + POST-TIMEOUT RECOVERED-CO
   pre-reg/gerçeklik-çelişkisi (recovery-path + [CAL]-bounds) faithful-ölçümle-bulundu, dürüstçe-DUR-B'ye-taşındı,
   Abkarada-kararıyla (A3+B1, A+C-hibrit) çözüldü. **Pilot-overclaim confirmatory-matrisle DÜZELTİLDİ** →
   cold-start 300B'de DECISIVE (nötr-DEĞİL). Adversarial-verify 0/6-refuted (1200B-nüansı doğrulandı+hassaslaştırıldı).
-- **HÜKÜM:** `DR-CS-1 SENDER-SIDE ACCEPTANCE: FULL` — W-1 decisive(workload>cwnd+ACK) · W-2B-R3
-  {65B-NEUTRAL, 300B-DECISIVE, 1200B-NO_COMPLETION@45s+partial-progress} · W-3 heal-3/3 · H1-clean.
+- **HÜKÜM:** `DR-CS-1 SENDER-SIDE ACCEPTANCE: FULL — SCOPE-LIMITED CHARACTERIZATION COMPLETE` — W-1 decisive
+  (workload>empirical-dispatch+ACK) · W-2B-R3 {65B-NEUTRAL, 300B-DECISIVE, 1200B-UNRESOLVED@45s+partial-progress}
+  · W-3 heal-3/3 · H1-clean. (300–1200B-arası-ölçülmedi; "beneficial-above-65B" genellemesi YOK.)
 - **ÜRETİM-ETKİSİ:** SIFIR (harness/test-only; flag-OFF byte-özdeş; clippy+pin yeşil; merge/flip-YASAK).
 - **KANIT:** faithful two-netns; 54+3-koşu; her-koşu VALID (acceptance-RTT-pin + overlap-gate + arg-paritesi +
   clock-domain + ack_cap_hard=false + app_dup=0); pre-reg-anchor'ları donmuş (a635efa/70ea2de); adversarial-0/6.

@@ -27,20 +27,22 @@ yürütülmesidir.
 
 | Alan | Durum | Hüküm | Sonraki adım |
 |---|---|---|---|
-| Cold-start kök nedeni | Çözüldü (workload-vs-initial-cwnd) | GO | — |
+| Cold-start kök nedeni | Çözüldü (workload-vs-empirical-initial-dispatch; protokol-cwnd DEĞİL) | GO | — |
 | Sender external wakeup / batch API | Uygulandı | GO | B'de mühürlenecek |
 | Probe/echo bootstrap RTT | Uygulandı | GO | B'de mühürlenecek |
 | PreConverge→Startup + PTO binding (+re-arm) | Doğrulandı | GO | B'de mühürlenecek |
 | Typed timeout + epoch semantiği | Uygulandı | GO | B'de mühürlenecek |
 | W-1 first-source-loss recovery | Decisive PASS (300/1200B) | GO | — |
 | W-2A exact-once first-SACK self-heal | PASS 27/27 | GO | — |
-| W-2B-R3 full ACK-starvation (ON/OFF confirmatory) | 65B-NEUTRAL · 300B-DECISIVE · 1200B-NO_COMPLETION@45s | **GO** (kapandı) | — |
+| W-2B-R3 full ACK-starvation (ON/OFF confirmatory) | 65B-NEUTRAL (kanıtlı) · 300B-DECISIVE (kanıtlı) · 1200B-UNRESOLVED@45s (ON=ek DATA-plane partial-progress 3/8; completion 45s'te GÖSTERİLMEDİ) | **GO** (kapandı) | — |
 | W-3 restore=61 @ 65B | 3/3 PASS (RecoveredByForwardRecoveryControl) | **GO** (kapandı) | — |
-| **DR-CS-1 SENDER-SIDE ACCEPTANCE** | **FULL** (W-1+W-2B-R3+W-3+H1) | **GO** | A2 |
+| **DR-CS-1 SENDER-SIDE ACCEPTANCE** | **FULL — SCOPE-LIMITED CHARACTERIZATION COMPLETE** (W-1+W-2B-R3+W-3+H1) | **GO** | A2 |
 | DI-2B sustained reverse-blackout | PASS (3 boyut) | GO | — |
 | Receiver wire resource shape (O(1)/bounded) | Doğrulandı | PARTIAL GO | A2 |
 | **Product receiver patience** | Uygulanmadı | **NO-GO** | **A2** |
 | **Product receiver resource lifecycle** | Uygulanmadı | **NO-GO** | **A2 (iki-seviye cap)** |
+| **Post-timeout RECOVERED notification contract** | Tanımlanmadı (ürün-alıcı) | **NO-GO** | **A2** |
+| **End-to-end product cold-start fix** | Doğrulanmadı (yalnız sender-side karakterize edildi) | **NO-GO** | **A2** |
 | Mixed-version codec güvenliği | Doğrulandı (g9) | GO | flip-öncesi rollout-politikası ayrı |
 | Runtime/deployment interoperability | Kısmi | PARTIAL | flip-öncesi |
 | FEC codec | Çalışıyor | GO | — |
