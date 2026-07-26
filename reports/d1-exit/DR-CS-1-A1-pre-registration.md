@@ -1,3 +1,14 @@
+> ## ⛔ SUPERSEDED — ARŞİV (Abkarada DUR-B kararı, 2026-07-26)
+> Bu belgenin **W-2B** bölümü (§3, `retransmit_path=ExistingPtoArq` varsayımı) hükümsüzdür:
+> ```
+> REJECTED AS MECHANISTICALLY INAPPLICABLE —
+> FULL DATA-ACK/SACK SUPPRESSION PREVENTS §9 ARQ FROM FIRING.
+> SUPERSEDED BY W-2B-R2.
+> ```
+> W-2B → **W-2B-R2** (yeni pre-registration: `DR-CS-1-A1-R2-pre-registration.md`). **W-1/W-3/DI-2B/DI-10/mixed
+> bölümleri + §1 [CAL] tablosu (HORIZON/RX_PATIENCE/T_MAX/CAP/RTT-tol) GEÇERLİ kalır.** W-3-65 kabul-kriteri
+> B1-kararıyla güncellendi (bkz. R2 pre-reg). Bu belge arşiv-deseniyle KORUNUR; içeriği/sonucu DEĞİŞTİRİLMEZ.
+
 # DR-CS-1 TUR-A1 — PRE-REGISTRATION (F-A1-0 artefaktı)
 
 > **BAĞLAYICI ÇERÇEVE:** Bu deney ARQ ile FEC'i karşılaştırmaz; ARQ tüm kollarda aktiftir. DR-CS-1 bir
