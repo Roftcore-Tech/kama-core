@@ -212,27 +212,24 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut cs_first_sack_dropped = false; // W-2 exact-once: ilk-SACK-suppress-uygulandı-mı
     #[cfg(feature = "experimental-cold-start")]
     let mut cs_rxcap_diag: u64 = 0; // DI-10: cold-block-cap-aşımı typed-diag sayacı (sessiz-eviction-yok)
-                                    // ── TUR-A1 W-2B faithful ACK-starvation ledger sayaçları (rx-tarafı; suppress_data_acks-gated) ──
-    #[cfg(feature = "experimental-cold-start")]
+                                    // ── TUR-A1 W-2B-R2 faithful ACK-starvation ledger (rx-tarafı; suppress_data_acks-gated; HER-İKİ-build ──
+                                    // ON/OFF matched-arm karşılaştırması için GENEL (feature'a-değil suppress_data_acks-runtime-flag'ine bağlı;
+                                    // default-false → flag-OFF byte-özdeş). Cold-start-özel alanlar (probe/echo/srtt) tx-tarafında ON-only.
     let mut w2b_suppression_start: Option<u64> = None; // ilk-DATA-ACK/SACK bastırma anı (rel-ms)
-    #[cfg(feature = "experimental-cold-start")]
     let mut w2b_suppressed_ack_count: u64 = 0; // bastırılan matching-ACK/SACK sayısı
-    #[cfg(feature = "experimental-cold-start")]
     let mut w2b_transport_dup_rx: u64 = 0; // (block,esi) zaten-src_have → transport-duplicate DATA arrival
-    #[cfg(feature = "experimental-cold-start")]
     let mut w2b_app_delivery: u64 = 0; // block-completion'da app-teslim (birim başına BİR kez)
-    #[cfg(feature = "experimental-cold-start")]
     let w2b_app_dup_delivery: u64 = 0; // uygulama-katmanı çift-teslim: was_new-guard + dedup → yapısal 0 (§2.5)
-    #[cfg(feature = "experimental-cold-start")]
     let mut w2b_released: bool = false; // arrival-triggered release uygulandı mı
-    #[cfg(feature = "experimental-cold-start")]
     let mut w2b_release_time: Option<u64> = None; // suppression_release (rel-ms)
-    #[cfg(feature = "experimental-cold-start")]
     let mut w2b_released_ack_wire: Option<u64> = None; // release-sonrası İLK SACK wire-emission (rel-ms)
-    #[cfg(feature = "experimental-cold-start")]
-    let mut w2b_retransmit_rx: Vec<(u64, u64)> = Vec::new(); // (rel-ms, unit_id) transport-duplicate DATA arrival'ları
-    #[cfg(feature = "experimental-cold-start")]
+    let mut w2b_retransmit_rx: Vec<(u64, u64)> = Vec::new(); // (rel-ms, unit_id) transport-duplicate DATA arrival'ları (POST-completion spurious re-send)
     let mut w2b_retransmit_rx_count: u64 = 0;
+    // R2: recovery_path = block-0'ı TAMAMLAYAN shard'ın WIRE-KIND'ı (completion-mekanizması; her-iki-build):
+    // 0x00=first-flight(recovery-gerekmedi) · 0x01=§9-ARQ-Retransmit(ExistingPtoArq) · 0x02=FEC-parity ·
+    // 0x03=§11-forward-recovery(ForwardRecoveryDup). Bilinen-kind'lerin HEPSİ mevcut-production-yol.
+    let mut w2b_completion_kind: Option<u8> = None; // block-0'ı tamamlayan shard'ın kind'ı
+    let mut w2b_completion_wire: Option<u64> = None; // block-0-completion shard'ının arrival'ı (rx-gözlem)
     let mut repair_arrival: BTreeMap<u32, u64> = BTreeMap::new(); // FR: substrat-onarım-arrival-ms (ARQ-repair
                                                                   // wall-clock; T_fec_decode<deadline<T_arq testi)
                                                                   // DR-CS-1 M6 (EK4-A1; S-A profil-türevi patience): cold-start-flag'iyle idle-terk-eşiği
@@ -355,22 +352,23 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                         }
                     }
                     let sh = src_have.entry(b).or_default();
+                    let is_dup = sh.contains(&e);
                     #[cfg(feature = "experimental-cold-start")]
-                    if sh.contains(&e) {
+                    if is_dup {
                         cs_dup_deliveries += 1;
-                        // TUR-A1 W-2B: (block,esi) zaten-src_have → transport-duplicate DATA arrival =
-                        // PTO-retransmit (loss=0'da tek-neden). unit_id = base-göreli block*K+esi (tx-eşleşir).
-                        if cfg.suppress_data_acks {
-                            let unit_id = u64::from(b) * K + u64::from(e);
-                            w2b_transport_dup_rx += 1;
-                            w2b_retransmit_rx.push((now_ms, unit_id));
-                            w2b_retransmit_rx_count += 1;
-                            // ARRIVAL-TRIGGERED RELEASE: İLK transport-duplicate arrival'da suppression bırakılır
-                            // (ACK-üretiminden HEMEN ÖNCE; talimat §2.1). Sonraki-SACK release-sonrası geçer.
-                            if !w2b_released {
-                                w2b_released = true;
-                                w2b_release_time = Some(now_ms);
-                            }
+                    }
+                    // TUR-A1 W-2B-R2 (GENEL; her-iki-build; suppress_data_acks-gated): (block,esi) zaten-src_have
+                    // → transport-duplicate DATA arrival (spurious re-send). unit_id = base-göreli block*K+esi
+                    // (tx-eşleşir). ARRIVAL-TRIGGERED RELEASE: İLK duplicate'te suppression bırakılır (§2.1).
+                    if is_dup && cfg.suppress_data_acks {
+                        let unit_id = u64::from(b) * K + u64::from(e);
+                        w2b_transport_dup_rx += 1;
+                        w2b_retransmit_rx.push((now_ms, unit_id));
+                        w2b_retransmit_rx_count += 1;
+                        // ARRIVAL-TRIGGERED RELEASE: İLK transport-duplicate'te suppression bırakılır (§2.1).
+                        if !w2b_released {
+                            w2b_released = true;
+                            w2b_release_time = Some(now_ms);
                         }
                     }
                     sh.insert(e); // 0x00/0x01/0x03 = source-shard
@@ -381,12 +379,15 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                 if src_n + par_n >= K as usize {
                     let was_new = !block_complete.contains_key(&b);
                     block_complete.entry(b).or_insert(now_ms);
-                    // TUR-A1 W-2B: app-teslim block-completion'da BİR kez (was_new-guard → K-source birim
-                    // teslim edilir). was_new=false ise (duplicate-DATA completion-check'i yeniden-girer)
-                    // TEKRAR-teslim YOK (dedup) → app_dup_delivery ARTMAZ (yapısal 0; §2.5 beklentisi).
-                    #[cfg(feature = "experimental-cold-start")]
+                    // TUR-A1 W-2B-R2 (GENEL): app-teslim block-completion'da BİR kez (was_new-guard → K-source
+                    // birim teslim edilir). was_new=false (duplicate re-entry) → TEKRAR-teslim YOK (dedup) →
+                    // app_dup_delivery ARTMAZ (yapısal 0; §2.5). recovery_path = TAMAMLAYAN-shard'ın wire-kind'ı.
                     if cfg.suppress_data_acks && was_new {
                         w2b_app_delivery += K;
+                        if w2b_completion_kind.is_none() {
+                            w2b_completion_kind = Some(kind); // block-0'ı tamamlayan shard (completion-mekanizması)
+                            w2b_completion_wire = Some(now_ms);
+                        }
                     }
                     if was_new {
                         // decode_via: src_full → substrat(0; erasure onarımla/tam-source doldu);
@@ -416,31 +417,30 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                 for q in &tail {
                     v.extend(q.to_be_bytes());
                 }
-                // FC-closure W-2 (TEST-ONLY; cold-start-flag): İLK non-boş-SACK'i exact-once-suppress
-                // (DATA-ulaştı ama ACK-emisyonu-düştü; sonraki-SACK'ler-geçer). Random-loss-DEĞİL.
+                let sack_ms = rx_start
+                    .as_ref()
+                    .map_or(0, |s| s.elapsed().as_millis() as u64);
+                // FC-closure W-2A (drop_first_sack) COLD-START-gated; W-2B-R2 (suppress_data_acks) GENEL.
                 #[cfg(feature = "experimental-cold-start")]
-                let suppress = {
-                    let sack_ms = rx_start
-                        .as_ref()
-                        .map_or(0, |s| s.elapsed().as_millis() as u64);
-                    let first_sack =
-                        cfg.drop_first_sack && !cs_first_sack_dropped && !tail.is_empty();
-                    if first_sack {
+                let first_sack = {
+                    let f = cfg.drop_first_sack && !cs_first_sack_dropped && !tail.is_empty();
+                    if f {
                         cs_first_sack_dropped = true;
                     }
-                    // TUR-A1 W-2B: arrival-triggered release'e kadar TÜM matching-SACK bastırılır.
-                    // (probe-echo 0x1A ayrı yolda; hiç bastırılmaz.) Release-sonrası ilk-SACK geçer.
-                    let w2b_suppress = cfg.suppress_data_acks && !w2b_released && !tail.is_empty();
-                    if w2b_suppress {
-                        w2b_suppression_start.get_or_insert(sack_ms);
-                        w2b_suppressed_ack_count += 1;
-                    } else if cfg.suppress_data_acks && w2b_released && !tail.is_empty() {
-                        w2b_released_ack_wire.get_or_insert(sack_ms); // release-sonrası İLK SACK wire-emit
-                    }
-                    first_sack || w2b_suppress
+                    f
                 };
                 #[cfg(not(feature = "experimental-cold-start"))]
-                let suppress = false;
+                let first_sack = false;
+                // TUR-A1 W-2B-R2 (GENEL; her-iki-build): arrival-triggered release'e kadar TÜM matching-SACK
+                // bastırılır (probe-echo 0x1A ayrı-yolda; hiç-bastırılmaz). Release-sonrası ilk-SACK geçer.
+                let w2b_suppress = cfg.suppress_data_acks && !w2b_released && !tail.is_empty();
+                if w2b_suppress {
+                    w2b_suppression_start.get_or_insert(sack_ms);
+                    w2b_suppressed_ack_count += 1;
+                } else if cfg.suppress_data_acks && w2b_released && !tail.is_empty() {
+                    w2b_released_ack_wire.get_or_insert(sack_ms); // release-sonrası İLK SACK wire-emit
+                }
+                let suppress = first_sack || w2b_suppress;
                 if !suppress {
                     let _ = sock.send_to(&v, p);
                 }
@@ -501,18 +501,47 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         "run_id={}\npolicy={}\nreceiver_events={ev_count}\nfinalized_blocks={finalized}\npending_blocks={pending}\nledger_path={lpath}\nledger_checksum={ck:x}\nclean_shutdown={clean}\n",
         cfg.run_id, cfg.policy
     );
+    // TUR-A1 W-3-65 (B1): recovery_observation — block-0'ın erased-esi'sini HANGİ substrat kurtardı
+    // (repair_kind: 0x01=§9-ARQ-retransmit, 0x03=§11-forward-recovery-control/dup). deficit>0 (loss) rejiminde.
+    if cfg.deficit > 0 {
+        let ro = match repair_kind.get(&0) {
+            Some(0x01) => "RecoveredByArqRetransmit",
+            Some(0x03) => "RecoveredByForwardRecoveryControl",
+            Some(_) => "RecoveredByOtherSubstrate",
+            None => "FirstFlightOrFecOrUnrecovered",
+        };
+        marker.push_str(&format!("recovery_observation={ro}\n"));
+    }
     #[cfg(feature = "experimental-cold-start")]
     marker.push_str(&format!(
         "cs_probe_rx={cs_probe_rx}\ncs_echo_tx={cs_echo_tx}\ncs_echo_tx_bytes={cs_echo_tx_bytes}\ncs_echo_suppressed={cs_echo_suppressed}\ncs_dup_deliveries={cs_dup_deliveries}\ncs_first_sack_dropped={cs_first_sack_dropped}\ncs_rxcap_diag={cs_rxcap_diag}\n"
     ));
-    // TUR-A1 W-2B rx-tarafı 25-alan-ledger'ın rx-alanları (clock-domain: tek-host CLOCK_MONOTONIC).
-    #[cfg(feature = "experimental-cold-start")]
+    // TUR-A1 W-2B-R2 rx-tarafı ledger (GENEL; her-iki-build → ON/OFF matched-arm; clock-domain: tek-host
+    // CLOCK_MONOTONIC). feature_state compile-time; completion_time = block-0 ilk-completion (rx-block-ts).
     if cfg.suppress_data_acks {
+        #[cfg(feature = "experimental-cold-start")]
+        let feature_state = "ON";
+        #[cfg(not(feature = "experimental-cold-start"))]
+        let feature_state = "OFF";
         let retransmit_first = w2b_retransmit_rx
             .first()
             .map_or_else(|| "none".to_string(), |(t, u)| format!("{t}ms#unit{u}"));
+        let completion_time = block_complete
+            .get(&0)
+            .map_or_else(|| "none".to_string(), |v| format!("{v}ms"));
+        // R2 recovery_path: GÖZLENEN — block-0'ı TAMAMLAYAN shard'ın wire-kind'ı (completion-mekanizması).
+        // Bilinen-kind'lerin HEPSİ mevcut-production-yol → yeni/test-only-path YOK (DUR-B-tetiği-yok).
+        let recovery_path = match w2b_completion_kind {
+            Some(0x00) => "FirstFlightNoRecovery".to_string(), // ilk-uçuşta tamamlandı (recovery gerekmedi)
+            Some(0x01) => "ExistingPtoArq".to_string(),
+            Some(0x03) => "ForwardRecoveryDup".to_string(),
+            Some(0x02) => "OtherExistingProductionPath[FecParity]".to_string(),
+            Some(k) => format!("OtherExistingProductionPath[{k:#04x}]"),
+            None => "NoRecovery".to_string(), // block-0 hiç tamamlanmadı
+        };
+        let fwd_wire = w2b_completion_wire.map_or_else(|| "none".to_string(), |v| format!("{v}ms"));
         marker.push_str(&format!(
-            "w2b_clock_domain=CLOCK_MONOTONIC-single-host\nw2b_suppression_start={}\nw2b_suppressed_ack_count={w2b_suppressed_ack_count}\nw2b_transport_duplicate_rx_count={w2b_transport_dup_rx}\nw2b_application_delivery_count={w2b_app_delivery}\nw2b_application_duplicate_delivery_count={w2b_app_dup_delivery}\nw2b_retransmit_rx_first={retransmit_first}\nw2b_retransmit_rx_count={w2b_retransmit_rx_count}\nw2b_suppression_release={}\nw2b_released_ack_wire={}\n",
+            "w2b_clock_domain=CLOCK_MONOTONIC-single-host\nw2b_feature_state={feature_state}\nw2b_recovery_path={recovery_path}\nw2b_forward_recovery_wire_time={fwd_wire}\nw2b_forward_recovery_eligible_time={fwd_wire}\nw2b_completion_time={completion_time}\nw2b_suppression_start={}\nw2b_suppressed_ack_count={w2b_suppressed_ack_count}\nw2b_transport_duplicate_rx_count={w2b_transport_dup_rx}\nw2b_application_delivery_count={w2b_app_delivery}\nw2b_application_duplicate_delivery_count={w2b_app_dup_delivery}\nw2b_retransmit_rx_first={retransmit_first}\nw2b_retransmit_rx_count={w2b_retransmit_rx_count}\nw2b_suppression_release={}\nw2b_released_ack_wire={}\n",
             w2b_suppression_start.map_or_else(|| "none".to_string(), |v| format!("{v}ms")),
             w2b_release_time.map_or_else(|| "none".to_string(), |v| format!("{v}ms")),
             w2b_released_ack_wire.map_or_else(|| "none".to_string(), |v| format!("{v}ms")),
