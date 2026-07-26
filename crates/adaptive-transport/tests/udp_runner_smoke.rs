@@ -31,6 +31,8 @@ fn cfg(policy: &str, port_base: u16, out: &str) -> RunnerCfg {
         unit_bytes: 1200,
         drop_first_sack: false,
         cold_block_cap: 0,
+        no_settle_exit: false,
+        suppress_data_acks: false,
     }
 }
 

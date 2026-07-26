@@ -49,6 +49,8 @@ fn main() {
         unit_bytes: get("--unit-bytes", "1200").parse().unwrap_or(1200),
         drop_first_sack: args.iter().any(|a| a == "--drop-first-sack"),
         cold_block_cap: get("--cold-block-cap", "0").parse().unwrap_or(0),
+        no_settle_exit: args.iter().any(|a| a == "--no-settle-exit"),
+        suppress_data_acks: args.iter().any(|a| a == "--suppress-data-acks"),
     };
     let deadline = Duration::from_millis(cfg.ext_horizon_ms);
     let r = match role.as_str() {
