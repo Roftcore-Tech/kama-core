@@ -1,3 +1,11 @@
+> ## ⛔ SUPERSEDED — NON-INTERFERING BOUNDS REQUIRED (Abkarada DUR-B(2) kararı, 2026-07-26)
+> R2, devraldığı eski-W-2B `[CAL]` bound'larını (CAP=64 release + T_MAX=30s) taşıyordu; bunlar R2'nin
+> full-starvation-karakterizasyonuyla MEKANİSTİK-ÇELİŞTİ (CAP ~3.2s'te release → partial-starvation).
+> **Karar: A+C hibrit** — CAP-release RED, T_MAX-emekli, non-interfering safety-bounds + formül-türevi
+> per-cell-horizon + completion-trigger/recovery-path AYRIMI + workload/cwnd ledger. **W-2B-R2 → W-2B-R3.**
+> Yeni: `DR-CS-1-A1-R3-pre-registration.md`. **W-3-65 (B1; §3) GEÇERLİ ve 3/3-PASS kapandı** — R3-değişikliği
+> W-3-65'i etkilemez. Bu belge arşiv-deseniyle KORUNUR; sonucu DEĞİŞTİRİLMEZ.
+
 # DR-CS-1 TUR-A1 — R2 PRE-REGISTRATION (Abkarada DUR-B kararı: A3 + B1)
 
 > **BAĞLAYICI ÇERÇEVE:** ARQ tüm kollarda aktiftir; DR-CS-1 cold-start LIVENESS DR'ı. **PRODUCTION CODE

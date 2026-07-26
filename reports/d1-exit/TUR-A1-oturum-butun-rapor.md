@@ -35,9 +35,11 @@ bağlandı, biri bekliyor). Bir hücre (**W-3-65**) tam kapandı.
 ### İki temel bilimsel bulgu
 1. **W-2B recovery-path bulgusu:** Full ACK-starvation altında §9-ARQ retransmit **mekanistik ateşleyemez**
    (SACK-reaktif; feedback-bastırılmış). Motor doğal-recovery'yi §11 forward-recovery (ACK-bağımsız) ile yapar.
-2. **Full-starvation recovery karakterizasyonu:** Doğal-recovery **yavaş floor-rate byte-tabanlı dispatch**
-   (65B~14s, 300B~61s, 1200B NoRecovery). BtlBw hiç ilklenmez (ACK-gerektirir; cold-start yalnız srtt-kurar) →
-   **cold-start marjinal-etkisi NÖTR** (ON≈OFF).
+2. **Full-starvation recovery karakterizasyonu (PİLOT — nihai-değil):** Doğal-recovery **yavaş floor-rate
+   byte-tabanlı dispatch** (65B~14s, 300B~61s, 1200B NoRecovery). BtlBw hiç ilklenmez (ACK-gerektirir; cold-start
+   yalnız srtt-kurar). **Pilot evidence suggests ON≈OFF under full ACK starvation at RTT100/w8. Confirmatory
+   54-run matrix remains pending** (Abkarada-düzeltmesi; genel "FULL-STARVATION'DA COLD-START NÖTRDÜR" hükmü
+   tam-matris-bitmeden TAŞINMAZ).
 
 ---
 
@@ -159,9 +161,15 @@ R2-harness ON/OFF izole-doğrulaması (RTT100, w=8, suppress_data_acks):
 
 **Mekanizma:** Full-ACK-starvation'da BtlBw hiç-ilklenmez (delivered-rate ACK-gerektirir) → pacing floor-rate'e
 düşer → dispatch **yavaş + byte-tabanlı** (65B<300B<1200B). Cold-start-bootstrap YALNIZ srtt-kurar (BtlBw-DEĞİL;
-M3-invariant) → **cold-start marjinal-completion-faydası SIFIR** bu rejimde. **Sınır-bulgusu:** cold-start'ın
-W-1'deki-faydası (2.7–5.6s) SOME-ACK-feedback gerektirir; TOTAL-suppression'da nötr. Spurious-dup(§11)
-cadence-floor'da (~16s/65B); app_dup=0 (dedup temiz).
+M3-invariant). **PİLOT-HÜKMÜ (nihai-DEĞİL):** *Pilot evidence suggests ON≈OFF under full ACK starvation at
+RTT100/w8; confirmatory 54-run matrix pending.* Genel "cold-start-marjinal-faydası-SIFIR" hükmü tam-matris-
+bitmeden yazılmaz. Sınır-hipotezi: cold-start'ın W-1'deki-faydası (2.7–5.6s) SOME-ACK-feedback gerektirir —
+R3-matriste doğrulanacak. Spurious-dup(§11) cadence-floor'da (~16s/65B); app_dup=0 (dedup temiz).
+
+> **NOT (Abkarada-düzeltme-2):** Bu pilotta `recovery_path=block-0-tamamlayan-shard'ın-wire-kind'ı` tanımı
+> AŞIRI-GENELLEŞTİRME idi (FirstFlightNoRecovery bir recovery-yolu-değil). R3-harness'ta alan-AYRIMI (completion_
+> trigger_kind + first_recovery_event + recovery_events_before_completion) yapıldı; `recovery_path` yalnız-
+> gerçekten-recovery-gözlendiyse. Ayrıca `workload/cwnd-oranı` R3-ledger'da birinci-sınıf (Abkarada-düzeltme-3).
 
 ---
 
