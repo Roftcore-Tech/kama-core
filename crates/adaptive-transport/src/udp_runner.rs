@@ -225,11 +225,24 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
     let mut w2b_released_ack_wire: Option<u64> = None; // release-sonrası İLK SACK wire-emission (rel-ms)
     let mut w2b_retransmit_rx: Vec<(u64, u64)> = Vec::new(); // (rel-ms, unit_id) transport-duplicate DATA arrival'ları (POST-completion spurious re-send)
     let mut w2b_retransmit_rx_count: u64 = 0;
-    // R2: recovery_path = block-0'ı TAMAMLAYAN shard'ın WIRE-KIND'ı (completion-mekanizması; her-iki-build):
-    // 0x00=first-flight(recovery-gerekmedi) · 0x01=§9-ARQ-Retransmit(ExistingPtoArq) · 0x02=FEC-parity ·
-    // 0x03=§11-forward-recovery(ForwardRecoveryDup). Bilinen-kind'lerin HEPSİ mevcut-production-yol.
-    let mut w2b_completion_kind: Option<u8> = None; // block-0'ı tamamlayan shard'ın kind'ı
-    let mut w2b_completion_wire: Option<u64> = None; // block-0-completion shard'ının arrival'ı (rx-gözlem)
+    // R3 (Abkarada-düzeltme-2): TRIGGER/RECOVERY AYRIMI. completion_trigger_kind = block-0'ı TAMAMLAYAN
+    // shard'ın wire-kind'ı (0x00=FirstFlight · 0x01=ExistingPtoArq · 0x03=ForwardRecoveryDup · 0x02=OtherKind).
+    // Bu tek-başına recovery-yolu-DEĞİL (first-flight completion recovery-değildir); recovery-olayları AYRI.
+    let mut w2b_completion_kind: Option<u8> = None; // completion_trigger_kind (block-0 tamamlayan shard)
+    let mut w2b_recovery_events_before_completion: u64 = 0; // block-0 completion-ÖNCESİ re-send/recovery olayları
+    let mut w2b_first_recovery_kind: Option<u8> = None; // block-0 İLK recovery-event'inin wire-kind'ı (0x01/0x02/0x03)
+    let mut w2b_first_recovery_time: Option<u64> = None; // block-0 İLK recovery-event zamanı
+                                                         // R3 (Abkarada-düzeltme-3): workload/cwnd ampirik-oranı. effective_initial_cwnd = ilk-uçuş-burst (stall-gap
+                                                         // >GAP_MS öncesi block-0 distinct-source-shard sayısı) × unit_bytes. Salt-gözlem; sender-diff GEREKMEZ.
+    let mut w2b_ff_burst_units: u64 = 0; // block-0 ilk-uçuş-burst distinct-source-shard sayısı
+    let mut w2b_ff_ended = false; // ilk-uçuş-burst bitti mi (stall-gap gözlendi)
+    let mut w2b_last_src_arrival: Option<u64> = None; // block-0 son source-shard arrival (gap-tespiti)
+                                                      // R3 (Abkarada A+C-bounds): ACK_CAP_HARD = runaway-güvenlik-sigortası (release-DEĞİL; aşımda ABORT→INVALID).
+                                                      // Formül-türevi: ceil(GLOBAL_WATCHDOG_MS/SACK_CADENCE_MS) × 2 = ceil(150000/50)×2 = 6000. Normal-hücrede
+                                                      // erişilemez (en-uzun-horizon 85s → ~1700 suppressed). suppressed_ack SATURATING (overflow-yok).
+    const W2B_SACK_CADENCE_MS: u64 = 50;
+    const W2B_ACK_CAP_HARD: u64 = 6000;
+    let mut w2b_hard_cap_hit = false; // ACK_CAP_HARD aşıldı mı → run INVALID (DUR-B-tetiği)
     let mut repair_arrival: BTreeMap<u32, u64> = BTreeMap::new(); // FR: substrat-onarım-arrival-ms (ARQ-repair
                                                                   // wall-clock; T_fec_decode<deadline<T_arq testi)
                                                                   // DR-CS-1 M6 (EK4-A1; S-A profil-türevi patience): cold-start-flag'iyle idle-terk-eşiği
@@ -371,6 +384,30 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                             w2b_release_time = Some(now_ms);
                         }
                     }
+                    // R3 (düzeltme-2): block-0 completion-ÖNCESİ RECOVERY-OLAYLARI (re-send: 0x01/0x02/0x03).
+                    // FirstFlight (0x00) recovery-DEĞİL. first_recovery_event + count.
+                    if cfg.suppress_data_acks && b == 0 && !block_complete.contains_key(&0) {
+                        if matches!(kind, 0x01..=0x03) {
+                            w2b_recovery_events_before_completion += 1;
+                            if w2b_first_recovery_kind.is_none() {
+                                w2b_first_recovery_kind = Some(kind);
+                                w2b_first_recovery_time = Some(now_ms);
+                            }
+                        }
+                        // R3 (düzeltme-3): ilk-uçuş-burst = stall-gap ÖNCESİ block-0 YENİ-source-shard sayısı
+                        // (ampirik effective-initial-cwnd). GAP eşiği = 1500ms (floor-rate re-send'leri ayırır).
+                        if !is_dup && (e as u64) < K {
+                            if let Some(prev) = w2b_last_src_arrival {
+                                if now_ms.saturating_sub(prev) > 1500 {
+                                    w2b_ff_ended = true;
+                                }
+                            }
+                            if !w2b_ff_ended {
+                                w2b_ff_burst_units += 1;
+                            }
+                            w2b_last_src_arrival = Some(now_ms);
+                        }
+                    }
                     sh.insert(e); // 0x00/0x01/0x03 = source-shard
                 }
                 let src_n = src_have.get(&b).map_or(0, BTreeSet::len);
@@ -384,9 +421,8 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                     // app_dup_delivery ARTMAZ (yapısal 0; §2.5). recovery_path = TAMAMLAYAN-shard'ın wire-kind'ı.
                     if cfg.suppress_data_acks && was_new {
                         w2b_app_delivery += K;
-                        if w2b_completion_kind.is_none() {
-                            w2b_completion_kind = Some(kind); // block-0'ı tamamlayan shard (completion-mekanizması)
-                            w2b_completion_wire = Some(now_ms);
+                        if b == 0 && w2b_completion_kind.is_none() {
+                            w2b_completion_kind = Some(kind); // completion_trigger_kind (block-0 tamamlayan shard)
                         }
                     }
                     if was_new {
@@ -436,7 +472,14 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
                 let w2b_suppress = cfg.suppress_data_acks && !w2b_released && !tail.is_empty();
                 if w2b_suppress {
                     w2b_suppression_start.get_or_insert(sack_ms);
-                    w2b_suppressed_ack_count += 1;
+                    // A+C: suppressed_ack SATURATING diagnostic (release-tetiği-DEĞİL). ACK_CAP_HARD =
+                    // runaway-güvenlik: aşımda ABORT→INVALID (release-DEĞİL); normal-hücrede erişilemez.
+                    if w2b_suppressed_ack_count < W2B_ACK_CAP_HARD {
+                        w2b_suppressed_ack_count += 1;
+                    } else {
+                        w2b_hard_cap_hit = true; // saturate + runaway-flag (DUR-B/INVALID)
+                    }
+                    let _ = W2B_SACK_CADENCE_MS; // formül-türevi (pre-reg gerekçesi; last_sack cadence=50ms)
                 } else if cfg.suppress_data_acks && w2b_released && !tail.is_empty() {
                     w2b_released_ack_wire.get_or_insert(sack_ms); // release-sonrası İLK SACK wire-emit
                 }
@@ -526,22 +569,52 @@ pub fn run_rx(cfg: &RunnerCfg, deadline: Duration) -> Result<(), String> {
         let retransmit_first = w2b_retransmit_rx
             .first()
             .map_or_else(|| "none".to_string(), |(t, u)| format!("{t}ms#unit{u}"));
-        let completion_time = block_complete
-            .get(&0)
-            .map_or_else(|| "none".to_string(), |v| format!("{v}ms"));
-        // R2 recovery_path: GÖZLENEN — block-0'ı TAMAMLAYAN shard'ın wire-kind'ı (completion-mekanizması).
-        // Bilinen-kind'lerin HEPSİ mevcut-production-yol → yeni/test-only-path YOK (DUR-B-tetiği-yok).
-        let recovery_path = match w2b_completion_kind {
-            Some(0x00) => "FirstFlightNoRecovery".to_string(), // ilk-uçuşta tamamlandı (recovery gerekmedi)
+        let completed = block_complete.get(&0).copied();
+        let completion_time = completed.map_or_else(|| "none".to_string(), |v| format!("{v}ms"));
+        // R3 (düzeltme-2): completion_trigger_kind = block-0'ı TAMAMLAYAN shard'ın wire-kind'ı (recovery-yolu
+        // DEĞİL — first-flight completion recovery-değildir). Ayrı alanlar: first_recovery_event + count.
+        let completion_trigger_kind = match w2b_completion_kind {
+            Some(0x00) => "FirstFlight".to_string(),
             Some(0x01) => "ExistingPtoArq".to_string(),
             Some(0x03) => "ForwardRecoveryDup".to_string(),
-            Some(0x02) => "OtherExistingProductionPath[FecParity]".to_string(),
-            Some(k) => format!("OtherExistingProductionPath[{k:#04x}]"),
-            None => "NoRecovery".to_string(), // block-0 hiç tamamlanmadı
+            Some(0x02) => "OtherExistingProductionKind[FecParity]".to_string(),
+            Some(k) => format!("OtherExistingProductionKind[{k:#04x}]"),
+            None => "NoCompletionWithinHorizon".to_string(),
         };
-        let fwd_wire = w2b_completion_wire.map_or_else(|| "none".to_string(), |v| format!("{v}ms"));
+        let first_recovery_kind = match w2b_first_recovery_kind {
+            Some(0x01) => "ExistingPtoArq".to_string(),
+            Some(0x02) => "FecParity".to_string(),
+            Some(0x03) => "ForwardRecoveryDup".to_string(),
+            Some(k) => format!("OtherKind[{k:#04x}]"),
+            None => "none".to_string(),
+        };
+        let first_recovery_time =
+            w2b_first_recovery_time.map_or_else(|| "none".to_string(), |v| format!("{v}ms"));
+        // recovery_contributed_to_completion: completion-öncesi recovery-event VARSA veya completing-shard
+        // bir-recovery-kind (0x01/0x02/0x03) ise TRUE. FirstFlight-completion + recovery-event-yok → FALSE.
+        let completing_is_recovery = matches!(w2b_completion_kind, Some(0x01..=0x03));
+        let recovery_contributed =
+            w2b_recovery_events_before_completion > 0 || completing_is_recovery;
+        // recovery_path: YALNIZ gerçekten-recovery-gözlendiyse (aksi "none"; düzeltme-2 disiplini).
+        let recovery_path = if recovery_contributed {
+            completion_trigger_kind.clone()
+        } else {
+            "none".to_string()
+        };
+        // R3 (düzeltme-3): workload/cwnd ampirik-oranı. effective_initial_cwnd = ff-burst × unit_bytes.
+        let total_workload = cfg.w_units * cfg.unit_bytes;
+        let eff_cwnd = w2b_ff_burst_units * cfg.unit_bytes;
+        let ratio = if eff_cwnd > 0 {
+            format!("{:.3}", total_workload as f64 / eff_cwnd as f64)
+        } else {
+            "inf".to_string()
+        };
         marker.push_str(&format!(
-            "w2b_clock_domain=CLOCK_MONOTONIC-single-host\nw2b_feature_state={feature_state}\nw2b_recovery_path={recovery_path}\nw2b_forward_recovery_wire_time={fwd_wire}\nw2b_forward_recovery_eligible_time={fwd_wire}\nw2b_completion_time={completion_time}\nw2b_suppression_start={}\nw2b_suppressed_ack_count={w2b_suppressed_ack_count}\nw2b_transport_duplicate_rx_count={w2b_transport_dup_rx}\nw2b_application_delivery_count={w2b_app_delivery}\nw2b_application_duplicate_delivery_count={w2b_app_dup_delivery}\nw2b_retransmit_rx_first={retransmit_first}\nw2b_retransmit_rx_count={w2b_retransmit_rx_count}\nw2b_suppression_release={}\nw2b_released_ack_wire={}\n",
+            "w2b_clock_domain=CLOCK_MONOTONIC-single-host\nw2b_feature_state={feature_state}\nw2b_workload_units={}\nw2b_unit_bytes={}\nw2b_total_workload_bytes={total_workload}\nw2b_effective_initial_cwnd_bytes={eff_cwnd}\nw2b_first_flight_burst_units={}\nw2b_workload_to_initial_cwnd_ratio={ratio}\nw2b_completion_trigger_kind={completion_trigger_kind}\nw2b_completion_time={completion_time}\nw2b_first_recovery_event_kind={first_recovery_kind}\nw2b_first_recovery_event_time={first_recovery_time}\nw2b_recovery_events_before_completion_count={}\nw2b_recovery_contributed_to_completion={recovery_contributed}\nw2b_recovery_path={recovery_path}\nw2b_suppression_start={}\nw2b_suppressed_ack_count={w2b_suppressed_ack_count}\nw2b_ack_cap_hard_hit={w2b_hard_cap_hit}\nw2b_transport_duplicate_rx_count={w2b_transport_dup_rx}\nw2b_application_delivery_count={w2b_app_delivery}\nw2b_application_duplicate_delivery_count={w2b_app_dup_delivery}\nw2b_retransmit_rx_first={retransmit_first}\nw2b_retransmit_rx_count={w2b_retransmit_rx_count}\nw2b_suppression_release={}\nw2b_released_ack_wire={}\n",
+            cfg.w_units,
+            cfg.unit_bytes,
+            w2b_ff_burst_units,
+            w2b_recovery_events_before_completion,
             w2b_suppression_start.map_or_else(|| "none".to_string(), |v| format!("{v}ms")),
             w2b_release_time.map_or_else(|| "none".to_string(), |v| format!("{v}ms")),
             w2b_released_ack_wire.map_or_else(|| "none".to_string(), |v| format!("{v}ms")),
