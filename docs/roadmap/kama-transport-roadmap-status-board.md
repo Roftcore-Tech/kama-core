@@ -34,8 +34,9 @@ yürütülmesidir.
 | Typed timeout + epoch semantiği | Uygulandı | GO | B'de mühürlenecek |
 | W-1 first-source-loss recovery | Decisive PASS (300/1200B) | GO | — |
 | W-2A exact-once first-SACK self-heal | PASS 27/27 | GO | — |
-| **W-2B faithful ACK-starvation — probe→PTO dalı** | Tam doğrulanmadı | **OPEN** | **A1** |
-| **W-3 restore=61 @ 65B** | UNOBSERVED (harness-horizon) | **PARTIAL** | **A1** |
+| W-2B-R3 full ACK-starvation (ON/OFF confirmatory) | 65B-NEUTRAL · 300B-DECISIVE · 1200B-NO_COMPLETION@45s | **GO** (kapandı) | — |
+| W-3 restore=61 @ 65B | 3/3 PASS (RecoveredByForwardRecoveryControl) | **GO** (kapandı) | — |
+| **DR-CS-1 SENDER-SIDE ACCEPTANCE** | **FULL** (W-1+W-2B-R3+W-3+H1) | **GO** | A2 |
 | DI-2B sustained reverse-blackout | PASS (3 boyut) | GO | — |
 | Receiver wire resource shape (O(1)/bounded) | Doğrulandı | PARTIAL GO | A2 |
 | **Product receiver patience** | Uygulanmadı | **NO-GO** | **A2** |

@@ -1,0 +1,1 @@
+configured_rtt=100 rtt_p50=100 rtt_p95=101 rtt_tol_p50=PASS rtt_tol_p95=PASS
