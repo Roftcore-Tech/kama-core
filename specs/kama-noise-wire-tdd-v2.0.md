@@ -313,6 +313,25 @@ CTRL_CS_PROBE / CTRL_CS_ECHO [DR-CS-1] → RETRY-EDİLMEZ (probe-retry = merdive
   gelen-CLOSE-retry'larına-ACK-üretebilsin; bounded-süre-sonra-tombstone-discard). · Receiver TÜM-tekrarları
   **control_id-ile-idempotent** işler (aynı-id-ikinci-kez-app/state-side-effect-YOK; yalnız-ACK-yeniden-üretilebilir).
 
+**DR-CS-1b-A2-AMENDMAN A-2 [Abkarada-onaylı; dar-kapsam — davranış-açıklama-notu]:** CTRL_CS_PROBE/
+CTRL_CS_ECHO (0x19/0x1A) **control_id-dedup-set'ine GİRMEZ** — alıcı bunları demux'ta dedup-ÖNCESİ
+stateless-echo-yoluna ayırır (caller-dispatch; DI-10/g10c: dedup-girişi unbounded-büyüme-anti-pattern'i).
+Yukarıdaki "control_id-dedup OTOMATİK" ifadesi probe/echo için YALNIZ outer-pn-window kripto-replay-katmanını
+ifade eder; echo idempotent-stateless olduğundan logical-dedup'un önleyeceği side-effect yoktur. Bu not
+wire-layout/codepoint-anlamı DEĞİŞTİRMEZ.
+
+**DR-CS-1b-A2-AMENDMAN A-3 [Abkarada-onaylı; dar-kapsam — control_id-atama-kontratı]:**
+```
+control_id MUST be monotonically allocated per session and direction.
+Retries MUST retain the original control_id.
+A control_id MUST NOT be reused within the same session/direction.
+```
+Wrap-semantiği: **control_id wrap olmadan önce session-renewal ZORUNLU** (modular-wrap-karşılaştırması
+TANIMLANMAZ; wrap'a-ulaşmadan-renewal). Receiver-dedup fixed-window/high-water modeliyle uygulanabilir;
+window-altına-düşen-id → yanıt `DuplicateAckOnly` + **ayrık teşhis `ControlIdBelowDedupWindow`** (window-
+sizing-varsayımı-bozulması sessizce-"duplicate"-sanılmaz). Bu kontrat dedup/replay-semantiğinin ve peer-
+interoperability'nin parçasıdır; wire-layout DEĞİŞMEZ.
+
 ## 2.6 FINAL-BYTE-LAYOUT [NORMATİF — KİLİTLİ] (tek-otorite: bu-tablo + schema-crate)
 ```
 EXTENDED-OUTER (fixed 26B + encrypted_inner):
@@ -529,6 +548,16 @@ Noise-channel-İÇİNDE-authenticated-binding). [DURUM-A (prologue-binding) = RE
   admission-kapısı-DEĞİL); yalnız-KALICI-hash-mismatch → SESSION_CLOSE.
 · Unsupported/hash-mismatch → downgrade-olarak-FAIL-CLOSED-reddedilir. Generic-negotiation/provider-sistemi-DEĞİL. **DOWNGRADE-KORUMASI:** seçili-suite/profile Noise-transcript/channel-
 binding'e-bağlı. Genel-provider-API-DEĞİL.
+
+**DR-CS-1b-A2-AMENDMAN A-1 [Abkarada-onaylı; dar-kapsam — pre-param-hold aşım-politikası]:** Ürün-alıcı
+yolunda pre-param bounded-hold'un aşım-davranışı **"aşımda-en-eski-drop" DEĞİL, rezervasyon-katmanı
+TYPED-REJECT'tir** (INV-CS-RX-RESOURCE: "cap aşımı sessiz eviction değil typed diagnostic"). Admission
+alt-kapısı: `RX_PREPARAM_SHARD_CAP_PER_SESSION = min(RX_COLD_TOTAL_SHARD_CAP_PER_SESSION,
+MAX_PREPARAM_SHARDS)` — pre-PARAM admission preparam-cap VE total-cold-cap'i BİRDEN kontrol eder; hold'un
+fiziksel kapasitesi aşılamadığından hold-içi en-eski-drop dalı ÖLÜ-KOD-PİNLİ kalır. `MAX_PREPARAM_SHARDS`
+artırılacaksa engine-fiziksel-kapasitesi ve preparam-cap AYNI isimli-dilimde birlikte yükseltilir.
+Yukarıdaki "(max_preparam_shards, küçük; aşımda-en-eski-drop)" ifadesi bu amendmanla ürün-yolunda
+SUPERSEDE edilir (metin tarihsel-kayıt olarak korunur); wire-layout/PARAM-akışı DEĞİŞMEZ.
 
 ## 9. NOISE-GÜVENLİK-SINIRI (go/no-go-§3.6) [NORMATİF]
 "Kama-wire kullanılan-N-türevi-handshake'in-EPOCH-BAZLI-özelliklerini-miras-alır: dh-epoch-0 = klasik-FS-DEĞİL (per-INIT-ephemeral-confidentiality; recipient-static-ele-geçerse-epoch-0-initial-çözülür), dh-epoch-1 = FULL-FS (SESSION_INIT_RESPONSE-sonrası). Profil-bunun-ÖTESİNDE-ek-FS/PCS-mekanizması-EKLEMEZ; REKEY-Alpha'da-cap→re-handshake (§5)." Modülerlik ≠ şifresiz-production-modu: "FEC-Noise'dan-bağımsız-olması production-Kama'nın-şifresiz-mod-sunması-

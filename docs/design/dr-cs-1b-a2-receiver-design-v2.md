@@ -1,4 +1,9 @@
-# DR-CS-1b / A2 — ÜRÜN-ALICI PATIENCE + RESOURCE — TASARIM v2 [6-BLOCKER REVİZYONU; ONAY BEKLİYOR]
+# DR-CS-1b / A2 — ÜRÜN-ALICI PATIENCE + RESOURCE — TASARIM v2 [GO — APPROVED WITH DECISION AMENDMENT]
+
+> **ÜST-NOT (2026-07-27):** Abkarada v2-hükmü: **"A2 TASARIM v2: GO — TASARIM ONAYLANDI"** — bağlayıcı
+> kararlar `dr-cs-1b-a2-v2-decision-amendment.md`'de (K-1..K-7; çelişkide AMENDMAN kazanır: §3-MAX_PREPARAM-
+> invariantı→K-4-alt-kapı, §6-slot-semantiği→K-2, §10-A-3-aday→K-3-ONAYLI). **PRODUCTION IMPLEMENTATION:
+> HÂLÂ NO-GO** (K-6 süreç-sırası 5-8 tamamlanmadan koda dokunulmaz).
 
 **Statü:** v1-incelemesinin (Abkarada) hükmü uyarınca hazırlanan revizyon — icra-talimatı ÖNCESİ son tasarım
 turu. **Üretim-kodu değişikliği: SIFIR** (docs-only). v1 (`dr-cs-1b-a2-receiver-design-v1.md`) ARŞİV
