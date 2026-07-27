@@ -1,4 +1,15 @@
-# DR-CS-1b / A2 — [CAL] TÜRETİM + SAYISAL FREEZE — ClientReceiver r2 [TASLAK — MÜHÜR İÇİN DÖNÜŞ]
+# DR-CS-1b / A2 — [CAL] TÜRETİM + SAYISAL FREEZE — ClientReceiver r2 [SEALED — SCOPE-BOUNDED]
+
+> **MÜHÜR KAYDI (Abkarada, 2026-07-27):** *"K-6 ADIM-6: GO — CLIENTRECEIVER [CAL] r2 SCOPE-BOUNDED OLARAK
+> MÜHÜRLENDİ."* Damga kabul: sha256=5b298244722eafe12611d027cae1c980763e69c744ee01562c69f10a59738318
+> @2026-07-27T20:52:39Z. **İSTİSNA:** CONTROL_DEDUP_WINDOW=4096 MÜHÜRLENMEDİ — CANDIDATE; dört hard-değer
+> (MAX_CONTROL_ID_ISSUE_RATE_PER_DIRECTION · MAX_CONTROL_ID_BURST · MAX_CONTROL_REORDER_ALLOWANCE ·
+> MAX_RETRY_REORDER_HORIZON) TÜM logical-control üreticileri üzerinden türetilip normatif-donduktan sonra
+> required_window-hesabıyla ayrı **CAL-10 addendum** hazırlanır ve implementation-ÖNCESİ onaya sunulur.
+> İcra-talimatında fixed-window-implementasyonundan önce **F-CID-0 kapısı**: producer-inventory →
+> hard-rate/burst/reorder-derivation → CAL-10-freeze → fixed-window-impl. C-8: ACCEPTED FOR
+> RESOURCE-BOUNDEDNESS ONLY (fairness/availability HubReceiver-devri; zorunlu-diag korunur).
+> Mühür-sonrası değişiklik = yeni-versiyon + yeniden-onay; GEVŞEME YASAK. Production-impl NO-GO.
 
 **Statü:** K-6 ADIM-6 taslağı, **r2** — Abkarada DUR-B kararının üç zorunlu türetim-düzeltmesi işlendi:
 (1) toplam-envelope modeli (16 MiB = cold-15 + side-1; "16+1-üstüne" REDDEDİLDİ), (2) reachable-shard-cap
