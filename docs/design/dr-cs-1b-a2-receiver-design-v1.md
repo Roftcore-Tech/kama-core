@@ -1,4 +1,19 @@
-# DR-CS-1b / A2 — ÜRÜN-ALICI PATIENCE + RESOURCE ENTEGRASYONU — TASARIM v1 [ONAY BEKLİYOR]
+# DR-CS-1b / A2 — ÜRÜN-ALICI PATIENCE + RESOURCE ENTEGRASYONU — TASARIM v1 [ARŞİV — v2 YÜRÜRLÜKTE]
+
+> **ÜST-NOT (2026-07-27):** Abkarada v1-incelemesi: *"A2 DESIGN DIRECTION: GO / A2 PRODUCTION
+> IMPLEMENTATION v1: NO-GO — 6 bağlayıcı düzeltme sonrası v2 gerekli."* Altı blocker + ek düzeltmeler
+> `dr-cs-1b-a2-receiver-design-v2.md`'de işlendi; **v2 geçerli belgedir.** Bu v1, v2'nin açıkça revize
+> ettiği bölümlerde **MUST NOT IMPLEMENT** statüsündedir — tam liste (v2-verify-turuyla genişletildi):
+> D-1 host-crate · P-1/P-2-patience-semantiği · **P-4-session-idle-anchor-koşulu** ·
+> **§3.1-hizalama-tablosu (eski cap-adları)** · §3.2-cap-matematiği · **§3.3-global-cap-formülü
+> (N_SESSION×RX_COLD_BLOCK_CAP×U_oversub — v2-§3 min()-formu geçerli)** · §4.3-iade-sırası ·
+> D-5-dedup-session-scoping · §6.2-notice-API'si · **§7.1-F-C-bound-cümlesi (session-scoped-dedup-tabanlı
+> — v2-§5 fixed-window'la yeniden türetilir)** · **§7.2-hücre-cap-değerleri (cap=256/cap=2 — reddedilen
+> sayı; v2-§9 [CAL]-placeholder'ları geçerli)** · **§8.1-[CAL]-tablosu (v2-§9 yerine geçer)** ·
+> T_ECHO_MIN-sabiti · **§9-iskeletindeki "ColdRxHost" adı ve "dedup-session-scoping" kalemleri
+> (v2-§1/§5 ile okunur)**. v2'nin referansla-yürürlükte tuttuğu bölümler v1-metninden okunur;
+> §4.1/§3.4'ün "blok+byte+shard" üç-boyut sözlüğü v2-§3 dört-eksen eşlemesiyle okunur.
+> Karar-izlenebilirliği için silinmez.
 
 **Statü:** TASARIM-TASLAĞI — Abkarada incelemesi + bağlayıcı icra-talimatı bekliyor (DUR-B).
 **Yetki tabanı:** Abkarada A1-mühür kararı (2026-07-26): *"A2 TASARIM VE BAĞLAYICI TALİMAT HAZIRLIĞI: GO. A2
