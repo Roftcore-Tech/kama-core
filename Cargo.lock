@@ -632,6 +632,7 @@ dependencies = [
 name = "kama-integration"
 version = "0.1.0"
 dependencies = [
+ "adaptive-transport",
  "kama-engine",
  "kama-fec-codec",
  "kama-noise-wire",

@@ -238,17 +238,33 @@ impl ReceiverHost {
 
     /// Gerçek-Session'lı aktif-yuva kurar (verilen simetrik-anahtarla; F2-ingest testleri paired-key
     /// verir). Product: handshake-Split()-key'leriyle. SESSION_COUNT_CAP enforce.
+    /// Degenerate-simetrik ince-örtü: [`install_session_with_directional_keys`]'e `(key, key)` delege
+    /// eder (mevcut F2/F5 çağıranları byte-özdeş; davranış DEĞİŞMEZ).
     pub fn install_session_with_keys(
         &mut self,
         h_ext: u32,
         key: &Zeroizing<[u8; 32]>,
+    ) -> Result<(), HostError> {
+        self.install_session_with_directional_keys(h_ext, key, key)
+    }
+
+    /// AYRI directional TX/RX anahtarla aktif-yuva kurar (CLOSURE-1B: sender-TX = receiver-RX;
+    /// degenerate-symmetric DEĞİL). `send_key` = bu-alıcının GÖNDERME-yönü (RECOVERED-seal),
+    /// `recv_key` = bu-alıcının ALMA-yönü (kaynak-shard-open). Product: gerçek-handshake-Split()
+    /// directional-key'leri (Sprint-6); burada test-only directional key-injection (gerçek-handshake
+    /// İDDİA EDİLMEZ). SESSION_COUNT_CAP enforce.
+    pub fn install_session_with_directional_keys(
+        &mut self,
+        h_ext: u32,
+        send_key: &Zeroizing<[u8; 32]>,
+        recv_key: &Zeroizing<[u8; 32]>,
     ) -> Result<(), HostError> {
         self.global_cold
             .register_session()
             .map_err(|_| HostError::SessionCountCapExceeded {
                 cap: SESSION_COUNT_CAP,
             })?;
-        let protector = KamaNoiseWireProtector::new(h_ext, key, key);
+        let protector = KamaNoiseWireProtector::new(h_ext, send_key, recv_key);
         let session = Session::new(SessionId(u64::from(h_ext)), Direction::Responder, protector);
         self.sessions.insert(
             h_ext,

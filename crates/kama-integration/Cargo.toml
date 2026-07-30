@@ -11,9 +11,13 @@ publish = false
 
 [features]
 # DR-CS-1b/A2: ReceiverHost composition-root (K-9 global-ledger sahibi). DEFAULT-OFF.
+# CLOSURE-1B: bayrak, dev-dep adaptive-transport'un cold-start-yüzeyini de İLERİ-taşır (yalnız-test
+# derlemesi; flag-OFF'ta forward-YOK → adaptive-transport default → workspace flag-OFF byte-özdeş,
+# INV-CS-5 + adaptive-transport'un-kendi-flag-OFF-380/0-pini bozulmaz).
 experimental-cold-start = [
     "kama-engine/experimental-cold-start",
     "kama-noise-wire/experimental-cold-start",
+    "adaptive-transport/experimental-cold-start",
 ]
 
 [dependencies]
@@ -26,3 +30,6 @@ kama-noise-wire = { path = "../kama-noise-wire" }
 
 [dev-dependencies]
 zeroize = "1"
+# CLOSURE-1B (DR-CS-1b/A2): birleşik 65B-heal testi için sender-tarafı. Cold-start-yüzeyi feature-
+# forward ile açılır (üstteki [features]); flag-OFF derlemede feature-OFF → workspace-pin korunur.
+adaptive-transport = { path = "../adaptive-transport" }
