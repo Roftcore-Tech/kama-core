@@ -6,8 +6,8 @@
 
 use kama_engine::cold_rx_state::{
     CapKind, CapScope, ColdAdmitOutcome, ColdAdmitRequest, ColdReleaseReason, ColdRxState,
-    GlobalColdLedger, GLOBAL_COLD_BYTE_CAP, RX_COLD_RETAINED_BYTE_CAP_PER_SESSION,
-    SESSION_COUNT_CAP, TOMBSTONE_REGISTRY_CAP,
+    GlobalColdLedger, TombstoneRegistry, GLOBAL_COLD_BYTE_CAP,
+    RX_COLD_RETAINED_BYTE_CAP_PER_SESSION, SESSION_COUNT_CAP, TOMBSTONE_REGISTRY_CAP,
 };
 use kama_engine::EngineError;
 
@@ -366,16 +366,19 @@ fn session_count_cap_and_underflow() {
     );
 }
 
-/// TOMBSTONE_REGISTRY_CAP (K-1: registry-dolu → fail-closed) + token commit + grace-underflow typed.
+/// TOMBSTONE_REGISTRY RAII: reserve/commit/cancel + DROP-AUTO-CANCEL (Abkarada: panik YOK, slot iade).
 #[test]
-fn tombstone_registry_cap_token_commit_underflow() {
-    let mut global = GlobalColdLedger::new();
-    let mut tokens = Vec::new();
+fn tombstone_registry_raii_reserve_commit_and_full() {
+    let reg = TombstoneRegistry::new();
+    // 64 slot reserve+commit → 64 lease (grace-boyunca yaşayan).
+    let mut leases = Vec::new();
     for _ in 0..TOMBSTONE_REGISTRY_CAP {
-        tokens.push(global.reserve_tombstone().unwrap());
+        leases.push(reg.reserve().unwrap().commit());
     }
+    assert_eq!(reg.count(), 64);
+    // Dolu → fail-closed (sayaç değişmez).
     assert!(matches!(
-        global.reserve_tombstone(),
+        reg.reserve(),
         Err(EngineError::ColdCapExceeded {
             scope: CapScope::Global,
             kind: CapKind::TombstoneRegistry,
@@ -383,32 +386,43 @@ fn tombstone_registry_cap_token_commit_underflow() {
             requested: 65
         })
     ));
-    for t in tokens {
-        global.commit_tombstone(t);
-    }
-    assert_eq!(global.res.tombstone_count, 64);
-    for _ in 0..TOMBSTONE_REGISTRY_CAP {
-        global.release_committed_tombstone().unwrap();
-    }
-    assert_eq!(
-        global.release_committed_tombstone(),
-        Err(EngineError::ColdInvariantViolation(
-            "tombstone_count_underflow"
-        ))
-    );
+    // Grace-expiry: lease-drop → slot otomatik-iade (tam-bir-kez).
+    leases.clear();
+    assert_eq!(reg.count(), 0, "committed lease-drop slotu iade etmedi");
 }
 
-/// Reservation-token CANCEL (precompute-fail-rollback): sayaç geri verilir; sızıntı yok.
+/// Explicit CANCEL (precompute-fail-rollback): slot geri verilir.
 #[test]
-fn tombstone_reservation_cancel_returns_slot() {
-    let mut global = GlobalColdLedger::new();
-    let t = global.reserve_tombstone().unwrap();
-    assert_eq!(global.res.tombstone_count, 1);
-    global.cancel_tombstone(t);
+fn tombstone_reservation_explicit_cancel() {
+    let reg = TombstoneRegistry::new();
+    let t = reg.reserve().unwrap();
+    assert_eq!(reg.count(), 1);
+    t.cancel();
+    assert_eq!(reg.count(), 0, "explicit cancel slotu geri vermedi");
+}
+
+/// DROP-AUTO-CANCEL (Abkarada F1-B-DUR-B): commit/cancel EDİLMEDEN token scope-sonu düşerse
+/// slot OTOMATİK geri gelir — PANİK YOK. (Eski panik-Drop reddedilmişti.)
+#[test]
+fn tombstone_reservation_drop_auto_cancels_no_panic() {
+    let reg = TombstoneRegistry::new();
+    {
+        let _t = reg.reserve().unwrap(); // ne commit ne cancel
+        assert_eq!(reg.count(), 1);
+    } // _t scope-sonu Drop → AUTO-CANCEL (panik-yok)
     assert_eq!(
-        global.res.tombstone_count, 0,
-        "cancel slotu geri vermedi (sızıntı)"
+        reg.count(),
+        0,
+        "pending token-drop slotu iade etmedi (auto-cancel yok)"
     );
+
+    // Erken-return simülasyonu: ? benzeri yolda token-drop → slot geri.
+    let f = || -> Result<(), ()> {
+        let _t = reg.reserve().unwrap();
+        Err(()) // early-return without explicit cancel
+    };
+    assert!(f().is_err());
+    assert_eq!(reg.count(), 0, "early-return token-drop slotu iade etmedi");
 }
 
 /// P-1 çapası: first_arrival yalnız İLK shard'da yazılır; sonraki shard'lar DEĞİŞTİRMEZ

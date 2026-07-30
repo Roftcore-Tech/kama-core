@@ -25,7 +25,9 @@
 //! CONTROL_DEDUP_WINDOW BURADA YOK (CANDIDATE; CAL-10/F-CID-0; noise-wire).
 
 use crate::error::EngineError;
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 // ---- [CAL]-SEALED sabitler (freeze-r2 §3 birebir) ----------------------------------------------
 
@@ -150,11 +152,105 @@ pub struct SessionColdReservation {
 }
 
 /// Global-rezervasyon durumu (reject-yolunda DEĞİŞMEZ — test-pinli).
+/// NOT: tombstone-sayacı burada DEĞİL — RAII [`TombstoneRegistry`]'de (Rc<Cell>; auto-cancel/release).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct GlobalColdReservation {
     pub retained_bytes: u64,
     pub session_count: u64,
-    pub tombstone_count: u64,
+}
+
+/// TOMBSTONE_REGISTRY_CAP RAII-sayaç (Abkarada F1-B-DUR-B: Drop-auto-cancel; PANİK YASAK).
+/// Rc<Cell> tek-thread single-writer-domain (K-9); Send/Sync GEREKMEZ. reserve → token; token-Drop
+/// (unsettled) → otomatik-decrement (slot-iade, panik-yok). ReceiverHost bu tipin INSTANCE-sahibidir.
+#[derive(Debug, Clone, Default)]
+pub struct TombstoneRegistry {
+    count: Rc<Cell<u64>>,
+}
+
+impl TombstoneRegistry {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Aktif tombstone-slot sayısı (reserve + commit − release/cancel).
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count.get()
+    }
+
+    /// PHASE-A adım-2: slot RESERVE (dolu → fail-closed; sayaç değişmez). RAII-token döner.
+    ///
+    /// # Errors
+    /// Cap-doluysa [`EngineError::ColdCapExceeded`] (Global/TombstoneRegistry).
+    pub fn reserve(&self) -> Result<TombstoneReservationToken, EngineError> {
+        let c = self.count.get();
+        if c + 1 > TOMBSTONE_REGISTRY_CAP {
+            return Err(EngineError::ColdCapExceeded {
+                scope: CapScope::Global,
+                kind: CapKind::TombstoneRegistry,
+                cap: TOMBSTONE_REGISTRY_CAP,
+                requested: c + 1,
+            });
+        }
+        self.count.set(c + 1);
+        Ok(TombstoneReservationToken {
+            count: Rc::clone(&self.count),
+            settled: false,
+        })
+    }
+}
+
+fn dec_saturating(cell: &Rc<Cell<u64>>) {
+    cell.set(cell.get().saturating_sub(1));
+}
+
+/// PENDING tombstone-rezervasyon KANITI (PHASE-A). non-Clone/Copy → iki-kez-commit/cancel derleme-
+/// imkansız. **Drop-AUTO-CANCEL (Abkarada F1-B-DUR-B):** commit VEYA cancel edilmeden düşerse sayaç
+/// OTOMATİK geri-verilir — **PANİK YOK** (production-güvenli; erken-return/hata-yolu/unwind-güvenli).
+#[derive(Debug)]
+#[must_use = "tombstone reservation: commit(→lease) or cancel; else auto-cancelled on drop"]
+pub struct TombstoneReservationToken {
+    count: Rc<Cell<u64>>,
+    settled: bool,
+}
+
+impl TombstoneReservationToken {
+    /// PHASE-B: rezervasyonu kalıcı [`CommittedTombstoneLease`]'e çevirir (tombstone-entry sahiplenir).
+    pub fn commit(mut self) -> CommittedTombstoneLease {
+        self.settled = true; // pending-drop-auto-cancel'ı sustur; slot lease'e devredilir.
+        CommittedTombstoneLease {
+            count: Rc::clone(&self.count),
+        }
+    }
+
+    /// PHASE-A rollback (precompute-fail): slotu geri verir (explicit; Drop de aynısını yapardı).
+    pub fn cancel(mut self) {
+        self.settled = true;
+        dec_saturating(&self.count);
+    }
+}
+
+impl Drop for TombstoneReservationToken {
+    fn drop(&mut self) {
+        if !self.settled {
+            // AUTO-CANCEL: pending-rezervasyon güvenle geri-verilir. PANİK YOK (unwind-güvenli).
+            dec_saturating(&self.count);
+        }
+    }
+}
+
+/// COMMIT-edilmiş tombstone slot KİRASI: tombstone-entry sahiplenir; grace-expiry'de entry ile birlikte
+/// Drop → registry-slot OTOMATİK-iade (tam-bir-kez; PANİK YOK).
+#[derive(Debug)]
+pub struct CommittedTombstoneLease {
+    count: Rc<Cell<u64>>,
+}
+
+impl Drop for CommittedTombstoneLease {
+    fn drop(&mut self) {
+        dec_saturating(&self.count);
+    }
 }
 
 /// Blok-defter girdisi (K-2-alt-küme: bunlar RxColdLedgerBlock'lardır; BootstrapColdBlock-kimliği
@@ -213,74 +309,6 @@ impl GlobalColdLedger {
                     "session_count_underflow",
                 ))?;
         Ok(())
-    }
-
-    /// TOMBSTONE_REGISTRY_CAP slot-REZERVASYONU (K-1: registry-dolu → fail-closed typed-diag).
-    /// PHASE-A adım-2 (Abkarada iki-aşamalı close): DESTRUCTIVE-teardown-ÖNCESİ slot GARANTİLENİR.
-    /// Sayacı ANINDA artırır (kapasite garantisi) ve tek-tüketimlik `TombstoneReservationToken` döner:
-    /// commit veya cancel EDİLMEZSE token-Drop sayacı geri-verir (single-writer-domain sayaç-sızıntısı
-    /// yapısal-imkansız). Token non-Clone/Copy → iki-kez-commit/release derleme-düzeyinde imkansız.
-    ///
-    /// # Errors
-    /// Cap-doluysa [`EngineError::ColdCapExceeded`] (Global/TombstoneRegistry); `res` değişmez.
-    pub fn reserve_tombstone(&mut self) -> Result<TombstoneReservationToken, EngineError> {
-        if self.res.tombstone_count + 1 > TOMBSTONE_REGISTRY_CAP {
-            return Err(EngineError::ColdCapExceeded {
-                scope: CapScope::Global,
-                kind: CapKind::TombstoneRegistry,
-                cap: TOMBSTONE_REGISTRY_CAP,
-                requested: self.res.tombstone_count + 1,
-            });
-        }
-        self.res.tombstone_count += 1;
-        Ok(TombstoneReservationToken { settled: false })
-    }
-
-    /// PHASE-B adım-10: rezervasyonu tombstone-entry'ye COMMIT eder (sayaç artmış-kalır; token tüketilir).
-    pub fn commit_tombstone(&mut self, mut token: TombstoneReservationToken) {
-        token.settled = true; // Drop-guard'ı sustur: slot artık kalıcı-tombstone.
-    }
-
-    /// PHASE-A rollback (precompute-fail): rezerve slotu geri verir (sayaç düşürülür; token tüketilir).
-    /// GRACE-EXPIRY (adım-13) için de: commit-edilmiş slot buradan DEĞİL, `release_committed_tombstone`
-    /// ile düşer — bu yol yalnız COMMIT-EDİLMEMİŞ token'ı geri alır.
-    pub fn cancel_tombstone(&mut self, mut token: TombstoneReservationToken) {
-        token.settled = true; // Drop-guard'ı sustur: aşağıda explicit düşürülüyor.
-        self.res.tombstone_count = self.res.tombstone_count.saturating_sub(1);
-    }
-
-    /// GRACE-EXPIRY (adım-13): COMMIT-edilmiş tombstone slot'unu serbest bırakır (token'sız; entry-düşümü).
-    ///
-    /// # Errors
-    /// Sayaç-altında çağrı: [`EngineError::ColdInvariantViolation`].
-    pub fn release_committed_tombstone(&mut self) -> Result<(), EngineError> {
-        self.res.tombstone_count =
-            self.res
-                .tombstone_count
-                .checked_sub(1)
-                .ok_or(EngineError::ColdInvariantViolation(
-                    "tombstone_count_underflow",
-                ))?;
-        Ok(())
-    }
-}
-
-/// Tombstone slot-REZERVASYON KANITI (PHASE-A adım-2 → PHASE-B commit / rollback-cancel).
-/// non-Clone/Copy (tek-tüketim; iki-kez-commit/release derleme-imkansız) + Drop-guard: settle-EDİLMEDEN
-/// düşerse `panic` (transaction-mantığı her yolda commit VEYA cancel çağırmak ZORUNDA — sayaç-sızıntısı
-/// yapısal-yakalanır; single-writer-domain'de deterministik). `#[must_use]`: kullanılmadan-bırakma-uyarısı.
-#[derive(Debug)]
-#[must_use = "tombstone reservation must be committed or cancelled (else slot leaks)"]
-pub struct TombstoneReservationToken {
-    settled: bool,
-}
-
-impl Drop for TombstoneReservationToken {
-    fn drop(&mut self) {
-        assert!(
-            self.settled,
-            "TombstoneReservationToken dropped without commit/cancel — registry slot leak (transaction bug)"
-        );
     }
 }
 

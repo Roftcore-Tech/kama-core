@@ -84,7 +84,7 @@ fn a2_f0_global_ledger_pure_type_with_c8_diag_fields() {
     let g = GlobalColdLedger::new();
     assert_eq!(g.res.retained_bytes, 0);
     assert_eq!(g.res.session_count, 0);
-    assert_eq!(g.res.tombstone_count, 0);
+    // tombstone-sayacı artık RAII TombstoneRegistry'de (Rc<Cell>; res'ten çıktı).
     assert_eq!(g.diag.global_cold_budget_exceeded, 0);
     assert_eq!(g.diag.cold_admission_rejected_by_global_budget, 0);
     assert_eq!(g.diag.active_sessions_at_global_exhaustion, 0);

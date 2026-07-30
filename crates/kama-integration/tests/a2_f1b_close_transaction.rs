@@ -20,12 +20,12 @@ fn close_happy_path_reserve_before_tombstone() {
     assert_eq!(host.session_count(), 1);
     assert_eq!(host.tombstone_count(), 0);
 
-    host.close_session(0x0000_0001, || Ok(ack(1000))).unwrap();
+    host.close_session(0x0000_0001, |_s| Ok(ack(1000))).unwrap();
 
     // Active→Tombstone ÇEVRİMİ: iki ayrı eksen (active-sayaç çıkar, tombstone-sayaç girer).
     assert_eq!(host.session_count(), 0, "Active-entry düşmedi");
     assert_eq!(host.tombstone_count(), 1, "Tombstone kurulmadı");
-    assert_eq!(host.global_cold().res.tombstone_count, 1);
+    assert_eq!(host.tombstone_registry_count(), 1);
     assert_eq!(
         host.global_cold().res.session_count,
         0,
@@ -40,7 +40,7 @@ fn close_registry_full_no_destructive_mutation() {
     // 64 slot'u tombstone'a çevir (her biri ayrı session).
     for i in 0..64u32 {
         host.insert_active_session_for_test(i).unwrap();
-        host.close_session(i, || Ok(ack(0))).unwrap();
+        host.close_session(i, |_s| Ok(ack(0))).unwrap();
     }
     assert_eq!(host.tombstone_count(), 64);
 
@@ -48,7 +48,7 @@ fn close_registry_full_no_destructive_mutation() {
     host.insert_active_session_for_test(999).unwrap();
     let before_sessions = host.session_count();
     let before_tomb = host.tombstone_count();
-    let r = host.close_session(999, || Ok(ack(0)));
+    let r = host.close_session(999, |_s| Ok(ack(0)));
     assert_eq!(r, Err(HostError::TombstoneRegistryFull));
     assert_eq!(
         host.session_count(),
@@ -58,7 +58,7 @@ fn close_registry_full_no_destructive_mutation() {
     assert_eq!(host.tombstone_count(), before_tomb);
     // 999 hâlâ Active (yeniden-close denenebilir): registry açılınca çalışır.
     host.expire_tombstone(0).unwrap(); // bir slot aç
-    host.close_session(999, || Ok(ack(0))).unwrap();
+    host.close_session(999, |_s| Ok(ack(0))).unwrap();
     assert_eq!(host.tombstone_count(), 64);
 }
 
@@ -67,14 +67,14 @@ fn close_registry_full_no_destructive_mutation() {
 fn close_precompute_failure_rolls_back_reservation() {
     let mut host = ReceiverHost::new();
     host.insert_active_session_for_test(0x55).unwrap();
-    let before_tomb = host.global_cold().res.tombstone_count;
+    let before_tomb = host.tombstone_registry_count();
 
-    let r = host.close_session(0x55, || Err(HostError::PrecomputeFailed("seal failed")));
+    let r = host.close_session(0x55, |_s| Err(HostError::PrecomputeFailed("seal failed")));
     assert!(matches!(r, Err(HostError::PrecomputeFailed(_))));
 
     // Rollback: rezervasyon geri verildi (sızıntı yok) + Active-session dokunulmadı.
     assert_eq!(
-        host.global_cold().res.tombstone_count,
+        host.tombstone_registry_count(),
         before_tomb,
         "rezervasyon sızdı"
     );
@@ -85,7 +85,7 @@ fn close_precompute_failure_rolls_back_reservation() {
     );
     assert_eq!(host.tombstone_count(), 0);
     // Sonraki başarılı close çalışır (state tutarlı):
-    host.close_session(0x55, || Ok(ack(0))).unwrap();
+    host.close_session(0x55, |_s| Ok(ack(0))).unwrap();
     assert_eq!(host.tombstone_count(), 1);
 }
 
@@ -94,13 +94,13 @@ fn close_precompute_failure_rolls_back_reservation() {
 fn grace_expiry_full_cleanup() {
     let mut host = ReceiverHost::new();
     host.insert_active_session_for_test(0x77).unwrap();
-    host.close_session(0x77, || Ok(ack(500))).unwrap();
-    assert_eq!(host.global_cold().res.tombstone_count, 1);
+    host.close_session(0x77, |_s| Ok(ack(500))).unwrap();
+    assert_eq!(host.tombstone_registry_count(), 1);
 
     host.expire_tombstone(0x77).unwrap();
     assert_eq!(host.tombstone_count(), 0);
     assert_eq!(
-        host.global_cold().res.tombstone_count,
+        host.tombstone_registry_count(),
         0,
         "committed registry-slot serbest kalmadı"
     );
@@ -112,8 +112,8 @@ fn grace_expiry_full_cleanup() {
 fn double_close_is_typed_not_silent() {
     let mut host = ReceiverHost::new();
     host.insert_active_session_for_test(0x88).unwrap();
-    host.close_session(0x88, || Ok(ack(0))).unwrap();
-    let r = host.close_session(0x88, || Ok(ack(0)));
+    host.close_session(0x88, |_s| Ok(ack(0))).unwrap();
+    let r = host.close_session(0x88, |_s| Ok(ack(0)));
     assert_eq!(r, Err(HostError::UnknownSession { h_ext: 0x88 }));
     assert_eq!(host.tombstone_count(), 1, "double-close tombstone'u bozdu");
 }
@@ -123,9 +123,9 @@ fn double_close_is_typed_not_silent() {
 fn double_expiry_is_typed() {
     let mut host = ReceiverHost::new();
     host.insert_active_session_for_test(0x99).unwrap();
-    host.close_session(0x99, || Ok(ack(0))).unwrap();
+    host.close_session(0x99, |_s| Ok(ack(0))).unwrap();
     host.expire_tombstone(0x99).unwrap();
     let r = host.expire_tombstone(0x99);
     assert_eq!(r, Err(HostError::UnknownTombstone { h_ext: 0x99 }));
-    assert_eq!(host.global_cold().res.tombstone_count, 0);
+    assert_eq!(host.tombstone_registry_count(), 0);
 }

@@ -7,6 +7,7 @@ use kama_fec_codec::{
     by_id, FecCodec, FecError, FecProfile, ReceivedSymbol, RsSimdCodec, SourceSymbol,
 };
 use kama_noise_wire::retry::control_produces_bandwidth_credit;
+use kama_noise_wire::SensitiveSymbolBytes;
 use kama_noise_wire::{
     nonce96, InnerPlain, KamaNoiseWireProtector, KamaNoiseWireSizer, SealArgs, WireError,
     SEND_PN_CAP,
@@ -161,8 +162,8 @@ fn receiver_open_decode(
     let known_zero = k_shape - usize::from(k_actual);
 
     // Open → symbols topla (owned; sonra ReceivedSymbol referansları).
-    let mut source_syms: Vec<(u16, Vec<u8>)> = Vec::new();
-    let mut repair_syms: Vec<(u16, Vec<u8>)> = Vec::new();
+    let mut source_syms: Vec<(u16, SensitiveSymbolBytes)> = Vec::new();
+    let mut repair_syms: Vec<(u16, SensitiveSymbolBytes)> = Vec::new();
     for dg in received_datagrams {
         let opened = protector.open(dg)?;
         match opened.into_inner() {
@@ -181,14 +182,14 @@ fn receiver_open_decode(
         recv.push(ReceivedSymbol {
             esi: *esi,
             is_repair: false,
-            bytes,
+            bytes: bytes.as_ref(),
         });
     }
     for (esi, bytes) in &repair_syms {
         recv.push(ReceivedSymbol {
             esi: *esi,
             is_repair: true,
-            bytes,
+            bytes: bytes.as_ref(),
         });
     }
     let recovered = codec
@@ -196,7 +197,8 @@ fn receiver_open_decode(
         .map_err(|_| WireError::InnerParse("fec reconstruct"))?;
 
     // Tüm K_actual source-symbol'ü topla (alınan + kurtarılan).
-    let mut all_source: Vec<Option<Vec<u8>>> = vec![None; usize::from(k_actual)];
+    let mut all_source: Vec<Option<SensitiveSymbolBytes>> = Vec::new();
+    all_source.resize_with(usize::from(k_actual), || None);
     for (esi, bytes) in source_syms {
         if (esi as usize) < usize::from(k_actual) {
             all_source[esi as usize] = Some(bytes);
@@ -204,7 +206,7 @@ fn receiver_open_decode(
     }
     for r in recovered {
         if (r.esi as usize) < usize::from(k_actual) {
-            all_source[r.esi as usize] = Some(r.bytes);
+            all_source[r.esi as usize] = Some(SensitiveSymbolBytes::from(r.bytes));
         }
     }
 

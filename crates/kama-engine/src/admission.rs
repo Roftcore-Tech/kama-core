@@ -11,7 +11,7 @@
 
 use crate::error::EngineError;
 use kama_fec_codec::{by_id, FecCodec, ReceivedSymbol, RsSimdCodec};
-use kama_noise_wire::{InnerPlain, OpenedTransportShard};
+use kama_noise_wire::{InnerPlain, OpenedTransportShard, SensitiveSymbolBytes};
 use kama_transport_schema::inner_kind::ShardKind;
 use kama_transport_schema::prefix::SourcePrefix;
 
@@ -35,8 +35,10 @@ pub fn admit_and_decode(
         .ok_or(EngineError::Reassembly("k_actual > k_shape"))?;
 
     // Open-edilmiş (authenticated) shard'lardan symbol topla (owned; sonra ReceivedSymbol referansları).
-    let mut source_syms: Vec<(u16, Vec<u8>)> = Vec::new();
-    let mut repair_syms: Vec<(u16, Vec<u8>)> = Vec::new();
+    // A-5.1 (DR-CS-1b/A2; Abkarada dar type-propagation): SensitiveSymbolBytes MOVE edilir (KOPYALANMAZ);
+    // decode-sonrası bu Vec'ler drop'ta zeroize olur. TYPE-GATE/profil/INV-FEC-1/N8 DEĞİŞMEZ.
+    let mut source_syms: Vec<(u16, SensitiveSymbolBytes)> = Vec::new();
+    let mut repair_syms: Vec<(u16, SensitiveSymbolBytes)> = Vec::new();
     for shard in shards {
         match shard.into_inner() {
             InnerPlain::FecShard { header, symbol } => {
@@ -63,20 +65,24 @@ pub fn admit_and_decode(
         recv.push(ReceivedSymbol {
             esi: *esi,
             is_repair: false,
-            bytes,
+            bytes: bytes.as_ref(),
         });
     }
     for (esi, bytes) in &repair_syms {
         recv.push(ReceivedSymbol {
             esi: *esi,
             is_repair: true,
-            bytes,
+            bytes: bytes.as_ref(),
         });
     }
     let recovered = codec.reconstruct(&profile, &recv, known_zero)?;
 
     // Tüm K_actual source'u topla (alınan + kurtarılan) → reassemble (canonical prefix).
-    let mut all_source: Vec<Option<Vec<u8>>> = vec![None; usize::from(k_actual)];
+    // A-5.1: all_source de SensitiveSymbolBytes taşır (reconstructed-symbol da zeroize-sahibi olur;
+    // recovered codec-Vec'i SensitiveSymbolBytes'a SARILIR — ham-Vec dışarı-akmaz). Reassembly/prefix-
+    // parse borrow'la (&[u8] deref) çalışır; decode-control-flow DEĞİŞMEZ.
+    let mut all_source: Vec<Option<SensitiveSymbolBytes>> = Vec::new();
+    all_source.resize_with(usize::from(k_actual), || None);
     for (esi, bytes) in source_syms {
         if (esi as usize) < usize::from(k_actual) {
             all_source[esi as usize] = Some(bytes);
@@ -84,7 +90,7 @@ pub fn admit_and_decode(
     }
     for r in recovered {
         if (r.esi as usize) < usize::from(k_actual) {
-            all_source[r.esi as usize] = Some(r.bytes);
+            all_source[r.esi as usize] = Some(SensitiveSymbolBytes::from(r.bytes));
         }
     }
 

@@ -45,7 +45,7 @@ pub use init_flight::{
     AntiAmplification, InitAdmission, InitFlight, InitReceiver, InitReplayIdentity,
     InitRetryConfig, RetransmitOutcome,
 };
-pub use inner::InnerPlain;
+pub use inner::{InnerPlain, SensitiveSymbolBytes};
 pub use legacy::{
     build_legacy_aad, LegacyDirection, LegacySessionProtector, LEGACY_AAD_LEN, LEGACY_OVERHEAD,
     SESSION_DATA_MAGIC,

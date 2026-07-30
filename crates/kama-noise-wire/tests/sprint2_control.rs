@@ -390,7 +390,7 @@ fn decode_control_type_discrimination() {
             esi: 0,
             k_actual: 1,
         },
-        symbol: vec![0u8; 64],
+        symbol: kama_noise_wire::SensitiveSymbolBytes::from(vec![0u8; 64]),
     };
     assert!(
         decode_control(&fec).is_none(),

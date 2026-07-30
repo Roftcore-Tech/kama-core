@@ -18,6 +18,7 @@ experimental-cold-start = [
 
 [dependencies]
 thiserror.workspace = true
+zeroize = "1"
 kama-engine = { path = "../kama-engine" }
 kama-transport-schema = { path = "../kama-transport-schema" }
 kama-fec-codec = { path = "../kama-fec-codec" }

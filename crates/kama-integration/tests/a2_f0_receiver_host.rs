@@ -11,7 +11,7 @@ fn a2_f0_host_constructs_with_owned_global_ledger() {
     assert_eq!(host.session_count(), 0);
     assert_eq!(host.global_cold().res.retained_bytes, 0);
     assert_eq!(host.global_cold().res.session_count, 0);
-    assert_eq!(host.global_cold().res.tombstone_count, 0);
+    assert_eq!(host.tombstone_registry_count(), 0);
 }
 
 /// Pin-2: ingest-stub TYPED-error döner (reachable todo!() yok); state değişmez.
@@ -30,11 +30,11 @@ fn a2_f0_host_ingest_stub_returns_typed_error() {
 #[test]
 fn a2_f1b_close_unknown_session_typed() {
     let mut host = ReceiverHost::new();
-    let r = host.close_session(0xDEAD_BEEF, || {
+    let r = host.close_session(0xDEAD_BEEF, |_s| {
         Ok(kama_integration::CachedCloseAck {
             grace_deadline_ns: 0,
         })
     });
     assert_eq!(r, Err(HostError::UnknownSession { h_ext: 0xDEAD_BEEF }));
-    assert_eq!(host.global_cold().res.tombstone_count, 0);
+    assert_eq!(host.tombstone_registry_count(), 0);
 }

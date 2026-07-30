@@ -31,7 +31,10 @@ pub mod recovered_map;
 
 pub use admission::admit_and_decode;
 #[cfg(feature = "experimental-cold-start")]
-pub use cold_rx_state::{ColdRxState, GlobalColdLedger};
+pub use cold_rx_state::{
+    ColdRxState, CommittedTombstoneLease, GlobalColdLedger, TombstoneRegistry,
+    TombstoneReservationToken,
+};
 pub use error::EngineError;
 pub use param_bootstrap::{plan_param_bootstrap, ParamAckTracker, ParamSetPlan};
 pub use param_state::{BoundParam, ParamState};

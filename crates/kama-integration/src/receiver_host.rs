@@ -17,11 +17,17 @@
 //! (open-demux → cold-gate → transport-Receiver) A2-F1'de kablolanır; adaptive-transport
 //! prod-dep'i o dilimde eklenir.
 
-use kama_engine::cold_rx_state::{ColdRxState, GlobalColdLedger, SESSION_COUNT_CAP};
+use kama_engine::cold_rx_state::{
+    ColdRxState, CommittedTombstoneLease, GlobalColdLedger, TombstoneRegistry, SESSION_COUNT_CAP,
+};
 use kama_engine::EngineError;
-use kama_noise_wire::{HandleRouter, SessionManager};
+use kama_noise_wire::{
+    Direction, HandleRouter, KamaNoiseWireProtector, Session, SessionId, SessionLifecycle,
+    SessionManager,
+};
 use std::collections::BTreeMap;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 /// ReceiverHost typed-hataları (reachable todo!() YASAK).
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -74,22 +80,28 @@ pub struct CachedCloseAck {
     pub grace_deadline_ns: u64,
 }
 
-/// Session-başına kompozisyon-yuvası (F1: + transport-Receiver + gerçek-Session + tombstone-payload).
-#[derive(Debug, Default)]
+/// Session-başına kompozisyon-yuvası: gerçek noise-wire `Session` (crypto-state) + session-local cold-defter.
 pub struct SessionSlot {
     pub cold: ColdRxState,
+    session: Session,
 }
 
-/// Tombstone-kaydı (grace-recv; ağır-state DÜŞMÜŞ — yalnız cached CLOSE-ACK + deadline).
-#[derive(Debug)]
+/// Tombstone-kaydı (grace-recv; ağır cold-state DÜŞMÜŞ). Minimal-state: send-retired `Session`
+/// (recv-cipher + recv-ReplayWindow grace boyunca YAŞAR; send-yarısı A-4 ile retired) + cached CLOSE-ACK +
+/// registry-slot KİRASI (Drop → slot otomatik-iade). Entry düşünce Session-drop (recv-cipher zeroize-on-drop)
+/// + lease-drop (slot-iade) BİRLİKTE.
 struct TombstoneEntry {
     ack: CachedCloseAck,
+    _session: Session,
+    _lease: CommittedTombstoneLease,
 }
 
 /// Ürün-alıcı composition-root (D-1: `kama-integration`; yeni-crate AÇILMAZ).
 pub struct ReceiverHost {
     /// K-9: global-defter INSTANCE'ı — tek-sahip burası (single-writer domain).
     global_cold: GlobalColdLedger,
+    /// K-9: TOMBSTONE_REGISTRY_CAP RAII-sayacı (Drop-auto-cancel/release; panik-yok).
+    tombstone_registry: TombstoneRegistry,
     sessions: BTreeMap<u32, SessionSlot>,
     tombstones: BTreeMap<u32, TombstoneEntry>,
     session_manager: SessionManager,
@@ -101,6 +113,7 @@ impl ReceiverHost {
     pub fn new() -> Self {
         Self {
             global_cold: GlobalColdLedger::new(),
+            tombstone_registry: TombstoneRegistry::new(),
             sessions: BTreeMap::new(),
             tombstones: BTreeMap::new(),
             session_manager: SessionManager::new(),
@@ -126,14 +139,36 @@ impl ReceiverHost {
         self.tombstones.len()
     }
 
-    /// Test/host-bridge: aktif session-yuvası ekler (F1-B-ingest gerçek-Session'ı buraya koyar).
+    /// Registry-sayacı (reserve+commit − cancel/release). Diag/plateau-ölçümü.
+    #[must_use]
+    pub fn tombstone_registry_count(&self) -> u64 {
+        self.tombstone_registry.count()
+    }
+
+    /// Tombstone grace-deadline (cached CLOSE-ACK metadata; grace-yönetimi/expiry-zamanlaması).
+    #[must_use]
+    pub fn tombstone_grace_deadline_ns(&self, h_ext: u32) -> Option<u64> {
+        self.tombstones.get(&h_ext).map(|t| t.ack.grace_deadline_ns)
+    }
+
+    /// Test/host-bridge: gerçek noise-wire `Session`'lı aktif-yuva ekler (mock-key; F1-B-ingest gerçek-
+    /// handshake-key'leriyle kuracak). SESSION_COUNT_CAP enforce.
     pub fn insert_active_session_for_test(&mut self, h_ext: u32) -> Result<(), HostError> {
         self.global_cold
             .register_session()
             .map_err(|_| HostError::SessionCountCapExceeded {
                 cap: SESSION_COUNT_CAP,
             })?;
-        self.sessions.insert(h_ext, SessionSlot::default());
+        let key = Zeroizing::new([0x11u8; 32]);
+        let protector = KamaNoiseWireProtector::new(h_ext, &key, &key);
+        let session = Session::new(SessionId(u64::from(h_ext)), Direction::Responder, protector);
+        self.sessions.insert(
+            h_ext,
+            SessionSlot {
+                cold: ColdRxState::new(),
+                session,
+            },
+        );
         Ok(())
     }
 
@@ -173,63 +208,68 @@ impl ReceiverHost {
     /// [`HostError::PrecomputeFailed`] · [`HostError::EngineInvariant`].
     pub fn close_session<F>(&mut self, h_ext: u32, precompute: F) -> Result<(), HostError>
     where
-        F: FnOnce() -> Result<CachedCloseAck, HostError>,
+        F: FnOnce(&mut Session) -> Result<CachedCloseAck, HostError>,
     {
         // Idempotency/varlık: yalnız Active session kapatılır (tombstone/bilinmeyen → typed).
-        if !self.sessions.contains_key(&h_ext) {
-            return Err(HostError::UnknownSession { h_ext });
-        }
-
-        // ---- PHASE-A: PREPARE (destructive-teardown YOK) ----------------------------------------
-        // (2) Kapasite GARANTİSİ önce: slot RESERVE (RAII token; dolu → fail-closed, state değişmez).
-        let token = self
-            .global_cold
-            .reserve_tombstone()
-            .map_err(|_| HostError::TombstoneRegistryFull)?;
-
-        // (3) send-canlıyken sealed CLOSE-ACK precompute; fail → rezervasyon-ROLLBACK (cancel), teardown YOK.
-        let ack = match precompute() {
-            Ok(a) => a,
-            Err(_e) => {
-                self.global_cold.cancel_tombstone(token);
-                return Err(HostError::PrecomputeFailed("sealed close-ack precompute"));
-            }
+        let slot = match self.sessions.get_mut(&h_ext) {
+            Some(s) => s,
+            None => return Err(HostError::UnknownSession { h_ext }),
         };
 
-        // ---- PHASE-B: COMMIT (single-writer domain; reserve GARANTİLİ olduğundan destructive güvenli) --
-        // reserve-BEFORE-release invariant'ı: buraya YALNIZ token elde-edildikten SONRA gelinir.
+        // ---- PHASE-A: PREPARE (destructive-teardown YOK; tüm fallible-işlem burada) --------------
+        // (2) Kapasite GARANTİSİ önce: RAII token RESERVE (dolu → fail-closed, state değişmez).
+        let token = self
+            .tombstone_registry
+            .reserve()
+            .map_err(|_| HostError::TombstoneRegistryFull)?;
+
+        // (3) send-canlıyken (henüz begin_close YOK) sealed CLOSE-ACK PRECOMPUTE. Fail → token
+        // scope-sonu Drop-AUTO-CANCEL (explicit-cancel gerekmez) → destructive-teardown YOK.
+        let ack = match precompute(&mut slot.session) {
+            Ok(a) => a,
+            Err(_e) => return Err(HostError::PrecomputeFailed("sealed close-ack precompute")),
+        };
+
+        // ---- PHASE-B: COMMIT (single-writer domain; NORMAL koşulda INFALLIBLE) -------------------
+        // Buraya YALNIZ token+ack GARANTİLİ iken gelinir (reserve-BEFORE-destruct). Underflow gibi
+        // defter-tutarsızlıkları = bug → EngineInvariant (DUR-B; sessiz-devam YOK).
         let mut slot = self
             .sessions
             .remove(&h_ext)
-            .expect("PHASE-A varlık-kontrolü sonrası slot mevcut olmalı (single-writer)");
-        // (5-6) gerçek-Session teardown (Closing + drop_send_state) F1-B-ingest-kablolamasında;
-        // iskelet: cold-tarafı release (7) + ağır-state (8) düşer.
+            .expect("PHASE-A get_mut sonrası slot mevcut (single-writer)");
+        // (5-6) GERÇEK teardown: lifecycle→Closing + A-4 drop_send_state (send-cipher grace'te YAŞAMAZ).
+        slot.session.begin_close();
+        debug_assert_eq!(slot.session.lifecycle(), SessionLifecycle::Closing);
+        // (7-8) ağır cold-state release (session+global rezerv iade + [F1.5 A-5 zeroize buffer-drop'ta]).
         slot.cold.release_session(&mut self.global_cold)?;
-        // (9-10) Active-entry rezerve-slot kullanılarak Tombstone'a ÇEVRİLİR: active-sayaçtan çıkar
-        // (unregister), tombstone-sayacına gir (commit). İki AYRI eksen (SESSION_COUNT vs TOMBSTONE_REGISTRY).
+        // (9-10) Active→Tombstone ÇEVRİMİ: active-sayaçtan çıkar (unregister; HandleRouter kaydına
+        // DOKUNMAZ — route grace-sonuna kadar kalır), rezerve-slot COMMIT (token→lease, tombstone sahiplenir).
         self.global_cold.unregister_session()?;
-        self.global_cold.commit_tombstone(token);
-        self.tombstones.insert(h_ext, TombstoneEntry { ack });
+        let lease = token.commit();
+        self.tombstones.insert(
+            h_ext,
+            TombstoneEntry {
+                ack,
+                _session: slot.session, // send-retired; recv grace boyunca yaşar
+                _lease: lease,
+            },
+        );
         Ok(())
     }
 
-    /// GRACE-EXPIRY cleanup (adım-11-13): tombstone recv-state + cached-ACK düşer/zeroize +
-    /// HandleRouter.unregister + registry-slot serbest (committed-tombstone).
+    /// GRACE-EXPIRY cleanup (adım-11-13): tombstone-entry düşer → `Session`-Drop (recv-cipher/ReplayWindow
+    /// zeroize-on-drop) + cached-ACK-Drop + `CommittedTombstoneLease`-Drop (registry-slot OTOMATİK-iade,
+    /// panik-yok) BİRLİKTE + HandleRouter.unregister (route yalnız BURADA silinir).
     ///
     /// # Errors
-    /// [`HostError::UnknownTombstone`] (çift-expiry) · [`HostError::EngineInvariant`] (underflow).
+    /// [`HostError::UnknownTombstone`] (çift-expiry; registry-underflow üretmez).
     pub fn expire_tombstone(&mut self, h_ext: u32) -> Result<(), HostError> {
-        let entry = match self.tombstones.remove(&h_ext) {
-            Some(e) => e,
-            None => return Err(HostError::UnknownTombstone { h_ext }),
-        };
-        // (11) tombstone recv-state + cached-ACK düşer/zeroize. Gerçek recv-cipher/ReplayWindow
-        // zeroize'ı F1-B-ingest'te opak noise-wire-tipiyle (Drop/zeroize sözleşmesi); iskelette
-        // cached-ACK scope-sonu düşer. Grace-deadline'ı diag/log-dışı okunmaz.
-        let _expired_deadline = entry.ack.grace_deadline_ns;
-        // (13) committed-tombstone registry-slot serbest (token'sız; grace-yolu).
-        self.global_cold.release_committed_tombstone()?;
-        // (12) HandleRouter.unregister F1-B-ingest'te gerçek-h_ext ile (router şu an kayıt-tutmuyor).
+        // (11+13) entry-remove → Session/ack/lease BİRLİKTE Drop (recv-zeroize + slot-auto-iade).
+        if self.tombstones.remove(&h_ext).is_none() {
+            return Err(HostError::UnknownTombstone { h_ext });
+        }
+        // (12) HandleRouter.unregister YALNIZ grace-expiry'de (F1-B-ingest gerçek-router-kaydını siler;
+        // route grace boyunca korunmuştu — Abkarada §3 invariant).
         Ok(())
     }
 }
