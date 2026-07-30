@@ -366,12 +366,13 @@ fn session_count_cap_and_underflow() {
     );
 }
 
-/// TOMBSTONE_REGISTRY_CAP (K-1: registry-dolu → fail-closed typed-diag) + underflow typed.
+/// TOMBSTONE_REGISTRY_CAP (K-1: registry-dolu → fail-closed) + token commit + grace-underflow typed.
 #[test]
-fn tombstone_registry_cap_and_underflow() {
+fn tombstone_registry_cap_token_commit_underflow() {
     let mut global = GlobalColdLedger::new();
+    let mut tokens = Vec::new();
     for _ in 0..TOMBSTONE_REGISTRY_CAP {
-        global.reserve_tombstone().unwrap();
+        tokens.push(global.reserve_tombstone().unwrap());
     }
     assert!(matches!(
         global.reserve_tombstone(),
@@ -382,14 +383,31 @@ fn tombstone_registry_cap_and_underflow() {
             requested: 65
         })
     ));
+    for t in tokens {
+        global.commit_tombstone(t);
+    }
+    assert_eq!(global.res.tombstone_count, 64);
     for _ in 0..TOMBSTONE_REGISTRY_CAP {
-        global.release_tombstone().unwrap();
+        global.release_committed_tombstone().unwrap();
     }
     assert_eq!(
-        global.release_tombstone(),
+        global.release_committed_tombstone(),
         Err(EngineError::ColdInvariantViolation(
             "tombstone_count_underflow"
         ))
+    );
+}
+
+/// Reservation-token CANCEL (precompute-fail-rollback): sayaç geri verilir; sızıntı yok.
+#[test]
+fn tombstone_reservation_cancel_returns_slot() {
+    let mut global = GlobalColdLedger::new();
+    let t = global.reserve_tombstone().unwrap();
+    assert_eq!(global.res.tombstone_count, 1);
+    global.cancel_tombstone(t);
+    assert_eq!(
+        global.res.tombstone_count, 0,
+        "cancel slotu geri vermedi (sızıntı)"
     );
 }
 

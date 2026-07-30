@@ -15,4 +15,4 @@
 pub mod receiver_host;
 
 #[cfg(feature = "experimental-cold-start")]
-pub use receiver_host::{HostError, ReceiverHost};
+pub use receiver_host::{CachedCloseAck, HostError, ReceiverHost, SlotLifecycle};
