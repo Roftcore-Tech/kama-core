@@ -24,8 +24,8 @@ use kama_engine::cold_rx_state::{
 use kama_engine::{admit_and_decode, EngineError};
 use kama_noise_wire::inner::InnerPlain;
 use kama_noise_wire::{
-    Direction, HandleRouter, KamaNoiseWireProtector, OpenedTransportShard, Session, SessionId,
-    SessionLifecycle, SessionManager,
+    ControlDedupWindow, DedupDecision, Direction, HandleRouter, KamaNoiseWireProtector,
+    OpenedTransportShard, Session, SessionId, SessionLifecycle, SessionManager,
 };
 use kama_transport_schema::inner_kind::ShardKind;
 use std::collections::BTreeMap;
@@ -59,6 +59,10 @@ pub enum IngestOutcome {
     Dropped(&'static str),
     /// Stateless probe → echo üretildi (O(1)).
     ProbeEchoed,
+    /// F3: yeni control (dedup-Fresh) → side-effect (F4-işleme yolu).
+    ControlFresh { inner_kind: u8 },
+    /// F3: görülmüş control (dedup-Duplicate/window-altı) → idempotent yalnız-ACK.
+    ControlDuplicate,
 }
 
 /// ReceiverHost typed-hataları (reachable todo!() YASAK).
@@ -129,6 +133,8 @@ pub struct SessionSlot {
     blocks: BTreeMap<u32, BlockAssembly>,
     /// S-B session-idle-anchor: son authenticated-DATA-varış (probe/control BESLEMEZ).
     last_data_arrival_ns: u64,
+    /// F3: fixed-window control dedup (session-scoped; probe/echo GİRMEZ). Closing'de düşer.
+    dedup: ControlDedupWindow,
 }
 
 /// Tombstone-kaydı (grace-recv; ağır cold-state DÜŞMÜŞ). Minimal-state: send-retired `Session`
@@ -244,6 +250,7 @@ impl ReceiverHost {
                 session,
                 blocks: BTreeMap::new(),
                 last_data_arrival_ns: 0,
+                dedup: ControlDedupWindow::new(),
             },
         );
         Ok(())
@@ -291,13 +298,24 @@ impl ReceiverHost {
         // OpenedTransportShard sealed-tip (yeniden-kurulamaz) → tüketmeden inner()-ile oku, sonra
         // block-assembly'ye MOVE (decode'a authenticated-shard olarak girer; INV-FEC-1).
         let (profile_id, is_repair, block_id, k_actual) = match opened.inner() {
-            InnerPlain::Control { inner_kind, .. } => {
-                if *inner_kind == 0x19 {
-                    // Stateless probe/echo: ControlDedupWindow'a GİRMEZ; O(1); patience-BESLEMEZ.
+            InnerPlain::Control {
+                inner_kind,
+                control_id,
+                ..
+            } => {
+                if *inner_kind == 0x19 || *inner_kind == 0x1A {
+                    // Stateless probe/echo (A-2): ControlDedupWindow'a GİRMEZ; O(1); patience-BESLEMEZ.
                     self.cs_echo_count = self.cs_echo_count.saturating_add(1);
                     return Ok(IngestOutcome::ProbeEchoed);
                 }
-                return Ok(IngestOutcome::Dropped("control (non-probe) — F3 dedup"));
+                // F3: fixed-window control dedup (session-scoped). Fresh → side-effect (F4-işleme);
+                // DuplicateAckOnly → idempotent (yalnız-ACK). SESSION_CLOSE-retry'ı da bu yol kapsar.
+                return Ok(match slot.dedup.check(*control_id) {
+                    DedupDecision::Fresh => IngestOutcome::ControlFresh {
+                        inner_kind: *inner_kind,
+                    },
+                    DedupDecision::DuplicateAckOnly => IngestOutcome::ControlDuplicate,
+                });
             }
             InnerPlain::FecShard { header, .. } => (
                 header.profile_id,

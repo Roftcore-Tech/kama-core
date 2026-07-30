@@ -240,11 +240,10 @@ fn g5_replay_and_dedup() {
         b.open(&sealed.bytes).is_err(),
         "AYNI-bytes-replay-reject (pn-window)"
     );
-    // control_id-dedup (§2.57 idempotency; probe/echo-otomatik-kapsam):
-    let mut d = InboundControlDedup::new(16);
-    assert_eq!(d.admit(&probe(9, 3)), InboundOutcome::Fresh);
-    assert_eq!(d.admit(&probe(9, 3)), InboundOutcome::DuplicateAckOnly);
-    // RetryClass: RETRY-EDİLMEZ (spec-§2.57-amendman-tablosu).
+    // [DUR-B-4a A1-PİN-AMENDMANI; F3-A-2]: probe/echo control_id-dedup'a (InboundControlDedup /
+    // ControlDedupWindow) GİRMEZ (g10c anti-pattern; stateless-echo). Eski "probe-otomatik-kapsam"
+    // satırları KALDIRILDI — probe replay-koruması YALNIZ outer-pn-window (yukarıda) + idempotent-
+    // stateless-echo (g10d). RetryClass: RETRY-EDİLMEZ (spec-§2.57-amendman-tablosu).
     assert_eq!(RetryClass::of(0x19), RetryClass::NoRetry);
     assert_eq!(RetryClass::of(0x1A), RetryClass::NoRetry);
 }
