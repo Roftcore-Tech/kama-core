@@ -14,13 +14,13 @@ fn a2_f0_host_constructs_with_owned_global_ledger() {
     assert_eq!(host.tombstone_registry_count(), 0);
 }
 
-/// Pin-2: ingest-stub TYPED-error döner (reachable todo!() yok); state değişmez.
+/// Pin-2 (F2-evrimi): session-siz ingest → unknown-handle drop (typed Ok; state değişmez; panic yok).
 #[test]
-fn a2_f0_host_ingest_stub_returns_typed_error() {
+fn a2_f2_ingest_unknown_handle_drop_no_mutation() {
     let mut host = ReceiverHost::new();
     assert_eq!(
         host.on_datagram(0, &[0u8; 8]),
-        Err(HostError::FeatureNotImplemented("a2_f1_ingest"))
+        Ok(kama_integration::IngestOutcome::Dropped("unknown handle"))
     );
     assert_eq!(host.session_count(), 0);
     assert_eq!(host.global_cold().res.retained_bytes, 0);

@@ -18,16 +18,48 @@
 //! prod-dep'i o dilimde eklenir.
 
 use kama_engine::cold_rx_state::{
-    ColdRxState, CommittedTombstoneLease, GlobalColdLedger, TombstoneRegistry, SESSION_COUNT_CAP,
+    ColdAdmitOutcome, ColdAdmitRequest, ColdReleaseReason, ColdRxState, CommittedTombstoneLease,
+    GlobalColdLedger, TombstoneRegistry, SESSION_COUNT_CAP,
 };
-use kama_engine::EngineError;
+use kama_engine::{admit_and_decode, EngineError};
+use kama_noise_wire::inner::InnerPlain;
 use kama_noise_wire::{
-    Direction, HandleRouter, KamaNoiseWireProtector, Session, SessionId, SessionLifecycle,
-    SessionManager,
+    Direction, HandleRouter, KamaNoiseWireProtector, OpenedTransportShard, Session, SessionId,
+    SessionLifecycle, SessionManager,
 };
+use kama_transport_schema::inner_kind::ShardKind;
 use std::collections::BTreeMap;
 use thiserror::Error;
 use zeroize::Zeroizing;
+
+// ── F2 product-receiver sabitleri ────────────────────────────────────────────────────────────────
+
+/// MANDATORY-BOOTSTRAP-PROFILE (§8-noise-wire B2; Alpha tek-code_suite). K=8/R=4/E=64.
+const BOOTSTRAP_PROFILE_ID: u8 = 0x03;
+/// Retained-cost modeli (freeze-r2 §2 SHARD_RETAINED_COST): E=64 → allocator-sınıf(80) + H_SHARD(256).
+const SHARD_RETAINED_COST_E64: u64 = 336;
+
+/// RX_COLD_ABANDON(profil) — F0-(viii) donmuş sınıf (receiver-monotonic ns; ZM-2 4-decade profil-türevi).
+/// app-payload ≤300B → 75s sınıfı; >300B → 105s (1200B/S-B). E=64 bootstrap ≈53B app → 75s.
+const RX_COLD_ABANDON_SMALL_NS: u64 = 75 * 1_000_000_000;
+/// SESSION_IDLE_HOLD [CAL] konservatif profil-türevi (F2; ≥ en-büyük per-block deadline).
+const SESSION_IDLE_HOLD_NS: u64 = 105 * 1_000_000_000;
+/// TOMBSTONE_GRACE ≤ SESSION_IDLE_HOLD (§7.4 invariant; derleme-zamanı-pinli).
+const TOMBSTONE_GRACE_NS: u64 = 30 * 1_000_000_000;
+const _: () = assert!(TOMBSTONE_GRACE_NS <= SESSION_IDLE_HOLD_NS);
+
+/// Ingest sonucu (product-gözlem; test/telemetri).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IngestOutcome {
+    /// FEC source/repair shard cold-admit edildi (blok ilerledi).
+    ShardAdmitted { block_id: u32, progress: u8 },
+    /// Blok K-shard'a ulaştı → decode + app-delivery (payload-uzunluğu; içerik sızdırılmaz).
+    BlockDelivered { block_id: u32, app_len: usize },
+    /// Duplicate/role-conflict/cap-reject/param-mismatch → drop (typed neden).
+    Dropped(&'static str),
+    /// Stateless probe → echo üretildi (O(1)).
+    ProbeEchoed,
+}
 
 /// ReceiverHost typed-hataları (reachable todo!() YASAK).
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -80,10 +112,23 @@ pub struct CachedCloseAck {
     pub grace_deadline_ns: u64,
 }
 
-/// Session-başına kompozisyon-yuvası: gerçek noise-wire `Session` (crypto-state) + session-local cold-defter.
+/// Blok-toplama: authenticated shard'lar (byte'lar) + non-renewable deadline + K-decode eşiği.
+struct BlockAssembly {
+    /// P-1 non-renewable-deadline (first_authenticated_shard_time + RX_COLD_ABANDON; RESETLENMEZ).
+    deadline_ns: u64,
+    k_actual: u8,
+    /// Authenticated shard'lar (open()-ürünü; INV-FEC-1 — decode'a yalnız bunlar girer).
+    shards: Vec<OpenedTransportShard>,
+}
+
+/// Session-başına kompozisyon-yuvası: gerçek noise-wire `Session` (crypto-state) + session-local
+/// cold-defter (muhasebe) + per-block assembly (byte-buffer) + son authenticated-DATA anchor (S-B).
 pub struct SessionSlot {
     pub cold: ColdRxState,
     session: Session,
+    blocks: BTreeMap<u32, BlockAssembly>,
+    /// S-B session-idle-anchor: son authenticated-DATA-varış (probe/control BESLEMEZ).
+    last_data_arrival_ns: u64,
 }
 
 /// Tombstone-kaydı (grace-recv; ağır cold-state DÜŞMÜŞ). Minimal-state: send-retired `Session`
@@ -104,7 +149,13 @@ pub struct ReceiverHost {
     tombstone_registry: TombstoneRegistry,
     sessions: BTreeMap<u32, SessionSlot>,
     tombstones: BTreeMap<u32, TombstoneEntry>,
+    /// Teslim-edilen app-payload'lar (product-gözlem; gerçek-üründe app-callback).
+    delivered: Vec<Vec<u8>>,
+    /// Stateless-echo sayacı (probe → echo; O(1) working-set).
+    cs_echo_count: u64,
+    #[allow(dead_code)] // F2-slice: SessionManager/HandleRouter tam-kablolama F3-F4 ingest'te
     session_manager: SessionManager,
+    #[allow(dead_code)]
     router: HandleRouter,
 }
 
@@ -116,9 +167,24 @@ impl ReceiverHost {
             tombstone_registry: TombstoneRegistry::new(),
             sessions: BTreeMap::new(),
             tombstones: BTreeMap::new(),
+            delivered: Vec::new(),
+            cs_echo_count: 0,
             session_manager: SessionManager::new(),
             router: HandleRouter::new(),
         }
+    }
+
+    /// Stateless-echo sayacı (probe → echo; test/telemetri).
+    #[must_use]
+    pub fn cs_echo_count(&self) -> u64 {
+        self.cs_echo_count
+    }
+
+    /// Standart tombstone grace-deadline (now + TOMBSTONE_GRACE; §7.4 ≤ SESSION_IDLE_HOLD).
+    /// close_session precompute-closure'ında cached-ACK için kullanılır.
+    #[must_use]
+    pub fn default_grace_deadline_ns(now_ns: u64) -> u64 {
+        now_ns.saturating_add(TOMBSTONE_GRACE_NS)
     }
 
     /// K-9 global-defter salt-okunur görünümü (diag/plateau-ölçümü).
@@ -151,43 +217,198 @@ impl ReceiverHost {
         self.tombstones.get(&h_ext).map(|t| t.ack.grace_deadline_ns)
     }
 
-    /// Test/host-bridge: gerçek noise-wire `Session`'lı aktif-yuva ekler (mock-key; F1-B-ingest gerçek-
-    /// handshake-key'leriyle kuracak). SESSION_COUNT_CAP enforce.
+    /// Test/host-bridge: gerçek noise-wire `Session`'lı aktif-yuva ekler (mock-key). Tek-register
+    /// [`install_session_with_keys`]'te (çift-register YOK).
     pub fn insert_active_session_for_test(&mut self, h_ext: u32) -> Result<(), HostError> {
+        self.install_session_with_keys(h_ext, &Zeroizing::new([0x11u8; 32]))
+    }
+
+    /// Gerçek-Session'lı aktif-yuva kurar (verilen simetrik-anahtarla; F2-ingest testleri paired-key
+    /// verir). Product: handshake-Split()-key'leriyle. SESSION_COUNT_CAP enforce.
+    pub fn install_session_with_keys(
+        &mut self,
+        h_ext: u32,
+        key: &Zeroizing<[u8; 32]>,
+    ) -> Result<(), HostError> {
         self.global_cold
             .register_session()
             .map_err(|_| HostError::SessionCountCapExceeded {
                 cap: SESSION_COUNT_CAP,
             })?;
-        let key = Zeroizing::new([0x11u8; 32]);
-        let protector = KamaNoiseWireProtector::new(h_ext, &key, &key);
+        let protector = KamaNoiseWireProtector::new(h_ext, key, key);
         let session = Session::new(SessionId(u64::from(h_ext)), Direction::Responder, protector);
         self.sessions.insert(
             h_ext,
             SessionSlot {
                 cold: ColdRxState::new(),
                 session,
+                blocks: BTreeMap::new(),
+                last_data_arrival_ns: 0,
             },
         );
         Ok(())
     }
 
-    /// Inbound-datagram girişi: HandleRouter.classify → SessionManager.open → demux →
-    /// {stateless-echo | control-dedup | cold-gate → Receiver} (v2-§1.3 hedef-akışı).
-    /// A2-F1'de kablolanır.
+    /// Teslim-edilen app-payload sayısı (product-gözlem; F2-kabul).
+    #[must_use]
+    pub fn delivered_count(&self) -> usize {
+        self.delivered.len()
+    }
+
+    /// GERÇEK INGEST YOLU (F2; v2-§1.3): h_ext-demux → gerçek AEAD-open (INV-FEC-1: authenticated-shard)
+    /// → inner-demux → {stateless-echo | ParamState/profil-gate → iki-seviye cold-admission →
+    /// block-assembly → K-decode-delivery}. Test-harness-mantığı DEĞİL; gerçek `Session` + `ColdRxState`
+    /// + `admit_and_decode`. Saat dışarıdan (`now_ns`; receiver-monotonic, ZM-3/4).
     ///
     /// # Errors
-    /// F0-iskelet: her çağrı [`HostError::FeatureNotImplemented`] (`"a2_f1_ingest"`).
-    pub fn on_datagram(&mut self, _now_ns: u64, _datagram: &[u8]) -> Result<(), HostError> {
-        // Alanların F0'da ölü-koddan sayılmaması + sahiplik-imzasının derlenmesi için dokunuş:
-        let _ = (
-            &self.global_cold,
-            self.sessions.len(),
-            &self.session_manager,
-            &self.router,
-            SESSION_COUNT_CAP,
-        );
-        Err(HostError::FeatureNotImplemented("a2_f1_ingest"))
+    /// Yapısal host-hataları (cold-invariant → DUR-B). Normal-drop'lar `IngestOutcome::Dropped` (Err DEĞİL).
+    pub fn on_datagram(
+        &mut self,
+        now_ns: u64,
+        datagram: &[u8],
+    ) -> Result<IngestOutcome, HostError> {
+        // h_ext = §2.6 wire-layout ilk-4-byte (fixed-cost; alloc-öncesi demux).
+        if datagram.len() < 4 {
+            return Ok(IngestOutcome::Dropped("datagram too short"));
+        }
+        let h_ext = u32::from_be_bytes([datagram[0], datagram[1], datagram[2], datagram[3]]);
+        let slot = match self.sessions.get_mut(&h_ext) {
+            Some(s) => s,
+            // Tombstone-grace: authenticated-CLOSE-retry burada cached-ACK üretir (F2.4; iskelet: bilinen
+            // tombstone → echo-yolu). Bilinmeyen → drop (fixed-cost).
+            None if self.tombstones.contains_key(&h_ext) => {
+                return Ok(IngestOutcome::Dropped("tombstone grace (recv-only)"))
+            }
+            None => return Ok(IngestOutcome::Dropped("unknown handle")),
+        };
+
+        // GERÇEK AEAD-open (verify-before-admission §6; fail → drop, side-effect-yok).
+        let opened = match slot.session.protector_mut().open(datagram) {
+            Ok(o) => o,
+            Err(_) => return Ok(IngestOutcome::Dropped("aead verify failed")),
+        };
+
+        // OpenedTransportShard sealed-tip (yeniden-kurulamaz) → tüketmeden inner()-ile oku, sonra
+        // block-assembly'ye MOVE (decode'a authenticated-shard olarak girer; INV-FEC-1).
+        let (profile_id, is_repair, block_id, k_actual) = match opened.inner() {
+            InnerPlain::Control { inner_kind, .. } => {
+                if *inner_kind == 0x19 {
+                    // Stateless probe/echo: ControlDedupWindow'a GİRMEZ; O(1); patience-BESLEMEZ.
+                    self.cs_echo_count = self.cs_echo_count.saturating_add(1);
+                    return Ok(IngestOutcome::ProbeEchoed);
+                }
+                return Ok(IngestOutcome::Dropped("control (non-probe) — F3 dedup"));
+            }
+            InnerPlain::FecShard { header, .. } => (
+                header.profile_id,
+                matches!(header.kind, ShardKind::Repair),
+                header.block_id,
+                header.k_actual,
+            ),
+        };
+        let esi = match opened.inner() {
+            InnerPlain::FecShard { header, .. } => header.esi,
+            InnerPlain::Control { .. } => unreachable!(),
+        };
+
+        // Profil-gate (MANDATORY-BOOTSTRAP; PARAM-bağı fail-closed).
+        if profile_id != BOOTSTRAP_PROFILE_ID {
+            return Ok(IngestOutcome::Dropped("profile mismatch"));
+        }
+        // İKİ-SEVİYE ATOMİK cold-admission (K-9).
+        let req = ColdAdmitRequest {
+            block_id,
+            esi,
+            is_repair,
+            retained_cost_bytes: SHARD_RETAINED_COST_E64,
+            pre_param: false, // bootstrap-confirmed
+        };
+        match slot
+            .cold
+            .admit_cold_shard(now_ns, req, &mut self.global_cold)
+        {
+            Ok(ColdAdmitOutcome::Admitted) => {}
+            Ok(ColdAdmitOutcome::Duplicate) => {
+                return Ok(IngestOutcome::Dropped("duplicate shard"))
+            }
+            Err(EngineError::ShardRoleConflict { .. }) => {
+                return Ok(IngestOutcome::Dropped("shard role conflict"))
+            }
+            Err(EngineError::ColdCapExceeded { .. }) => {
+                return Ok(IngestOutcome::Dropped("cold cap exceeded"))
+            }
+            Err(e) => return Err(HostError::from(e)),
+        }
+
+        // S-B: authenticated-DATA anchor'ı yenile (yalnız DATA; probe/control DEĞİL).
+        slot.last_data_arrival_ns = now_ns;
+
+        // Block-assembly: ilk-shard → non-renewable deadline (RESETLENMEZ; sonraki-shard değiştirmez).
+        let asm = slot
+            .blocks
+            .entry(block_id)
+            .or_insert_with(|| BlockAssembly {
+                deadline_ns: now_ns.saturating_add(RX_COLD_ABANDON_SMALL_NS),
+                k_actual,
+                shards: Vec::new(),
+            });
+        asm.shards.push(opened); // authenticated-shard MOVE
+        let progress = asm.shards.len() as u8;
+
+        // K-decode eşiği: yeterli shard → admit_and_decode → app-delivery + block-release.
+        if progress >= asm.k_actual {
+            let asm = slot.blocks.remove(&block_id).expect("var");
+            match admit_and_decode(asm.shards, BOOTSTRAP_PROFILE_ID, asm.k_actual) {
+                Ok(app) => {
+                    let app_len = app.len();
+                    self.delivered.push(app);
+                    slot.cold.release_block(
+                        block_id,
+                        ColdReleaseReason::Delivered,
+                        &mut self.global_cold,
+                    )?;
+                    Ok(IngestOutcome::BlockDelivered { block_id, app_len })
+                }
+                // Decode-yetersiz: shard'lar drop (A-5 zeroize); blok deadline'da evict.
+                Err(_) => Ok(IngestOutcome::ShardAdmitted { block_id, progress }),
+            }
+        } else {
+            Ok(IngestOutcome::ShardAdmitted { block_id, progress })
+        }
+    }
+
+    /// PATIENCE-TICK (receiver-monotonic; non-renewable per-block deadline): deadline-geçmiş bloklar
+    /// EVICT + zeroize (shard-drop) + cold-state release + typed-diag. S-B: canlı-blok-yokken
+    /// authenticated-DATA-yoksa session-idle sonrası iade-zinciri (F2 diag; gerçek-teardown close_session).
+    /// Döner: (evicted_block_count, idle_sessions).
+    pub fn on_patience_tick(&mut self, now_ns: u64) -> (usize, usize) {
+        let mut evicted = 0usize;
+        let mut idle_sessions = 0usize;
+        for slot in self.sessions.values_mut() {
+            let expired: Vec<u32> = slot
+                .blocks
+                .iter()
+                .filter(|(_, a)| now_ns >= a.deadline_ns)
+                .map(|(b, _)| *b)
+                .collect();
+            for b in expired {
+                slot.blocks.remove(&b); // shard-buffer Drop → A-5 zeroize
+                let _ = slot.cold.release_block(
+                    b,
+                    ColdReleaseReason::DeadlineEvicted,
+                    &mut self.global_cold,
+                );
+                evicted += 1;
+            }
+            // S-B session-idle: canlı-blok yok VE son-authenticated-DATA'dan bu yana IDLE_HOLD geçti.
+            if slot.blocks.is_empty()
+                && slot.last_data_arrival_ns > 0
+                && now_ns.saturating_sub(slot.last_data_arrival_ns) >= SESSION_IDLE_HOLD_NS
+            {
+                idle_sessions += 1;
+            }
+        }
+        (evicted, idle_sessions)
     }
 
     /// İKİ-AŞAMALI CLOSE-TRANSACTION (Abkarada DUR-B düzeltmesi; reserve-BEFORE-destruct).
