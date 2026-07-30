@@ -33,3 +33,8 @@ zeroize = "1"
 # CLOSURE-1B (DR-CS-1b/A2): birleşik 65B-heal testi için sender-tarafı. Cold-start-yüzeyi feature-
 # forward ile açılır (üstteki [features]); flag-OFF derlemede feature-OFF → workspace-pin korunur.
 adaptive-transport = { path = "../adaptive-transport" }
+
+# CLOSURE-2 (DR-CS-1b/A2): A2-RX netem runner (gerçek ReceiverHost product-path + /proc/self/statm RSS).
+[[example]]
+name = "a2_rx_netem_runner"
+required-features = ["experimental-cold-start"]
