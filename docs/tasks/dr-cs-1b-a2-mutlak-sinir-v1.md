@@ -81,6 +81,9 @@ G-7  Zaman-ölçen her yeni mekanizma engine-spec §16.2 tablosuna saat-sınıf�
 crypto · ccr-codec-alanı · kama-fec-codec · kama-transport-schema · hub-server · client-core ·
 ra-ca · discovery · admin-server
 (schema'ya alan/codepoint ekleme zaten §2.56-DUR-B; A2'nin hiçbir maddesi wire'a alan eklemez)
+TEK-SATIR İSİMLİ-İSTİSNA [DUR-B-SCHEMA-GOLDEN-1; Abkarada-GO]: kama-transport-schema/tests/golden_v0.rs
+inner_kind_registry TESTİ — yalnız stale-golden consistency-repair (0x19/0x1A→accepted, 0x1B→rejected;
+f175a14-mühürlü-kararın yansıması). Schema-production-kodu/diğer-golden'lar AÇILMIŞ SAYILMAZ.
 ```
 
 ### 2.6 Doküman/script yüzeyi (serbest; kayıt-disiplinli)
