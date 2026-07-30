@@ -6,7 +6,7 @@
 //! Anahtar simetrik (CLOSURE-2 KAYNAK-ölçümü; key-semantiği CLOSURE-1B'de doğrulandı).
 //!
 //! Kullanım: --role tx|rx --bind A --peer B --duration-ms N --sessions N --label PROF --run-id ID --out FILE
-//! Freeze: reports/decision-requests/A2-CLOSURE-2-pre-registration.md (sha256=a6eff6f3).
+//! Freeze: reports/decision-requests/A2-CLOSURE-2-pre-registration.md v2 (sha256=d7b9aea0).
 
 #[cfg(feature = "experimental-cold-start")]
 fn main() {
@@ -174,7 +174,7 @@ mod imp {
                 pn[s] += 1;
                 let _ = sock.send_to(&dg, peer);
             }
-            if i % 3 == 0 {
+            if i.is_multiple_of(3) {
                 for s in 0..sessions as usize {
                     let dg = seal_probe(&mut eps[s], probe_seq, pn[s]);
                     pn[s] += 1;
@@ -182,7 +182,7 @@ mod imp {
                 }
                 probe_seq = probe_seq.wrapping_add(1);
             }
-            if i % 5 == 0 {
+            if i.is_multiple_of(5) {
                 for s in 0..sessions as usize {
                     let dg = seal_control(&mut eps[s], ctl_id, pn[s]);
                     pn[s] += 1;
@@ -283,7 +283,11 @@ mod imp {
         if let Some(dir) = std::path::Path::new(out).parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        match std::fs::OpenOptions::new().create(true).append(true).open(out) {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(out)
+        {
             Ok(mut f) => {
                 let _ = f.write_all(line.as_bytes());
             }

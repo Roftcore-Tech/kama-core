@@ -1,0 +1,50 @@
+p1_lowbw/p1_lowbw-r1: baseline_rss=2428928 peak_rss=2547712 max_retained=21504 post_clean_retained=0 rejects=64 sessions=8 tombstones=0 cs_echo=48
+p1_lowbw-r1 done
+p1_lowbw/p1_lowbw-r2: baseline_rss=2433024 peak_rss=2547712 max_retained=24192 post_clean_retained=0 rejects=64 sessions=8 tombstones=0 cs_echo=40
+p1_lowbw-r2 done
+p1_lowbw/p1_lowbw-r3: baseline_rss=2445312 peak_rss=2547712 max_retained=24192 post_clean_retained=0 rejects=64 sessions=8 tombstones=0 cs_echo=48
+p1_lowbw-r3 done
+PROFIL-TAMAM p1_lowbw
+p2_highrtt/p2_highrtt-r1: baseline_rss=2445312 peak_rss=2547712 max_retained=23184 post_clean_retained=0 rejects=64 sessions=8 tombstones=0 cs_echo=47
+p2_highrtt-r1 done
+p2_highrtt/p2_highrtt-r2: baseline_rss=2428928 peak_rss=2551808 max_retained=25872 post_clean_retained=0 rejects=64 sessions=8 tombstones=0 cs_echo=41
+p2_highrtt-r2 done
+p2_highrtt/p2_highrtt-r3: baseline_rss=2445312 peak_rss=2547712 max_retained=31248 post_clean_retained=0 rejects=58 sessions=8 tombstones=0 cs_echo=16
+p2_highrtt-r3 done
+PROFIL-TAMAM p2_highrtt
+p3_loss/p3_loss-r1: baseline_rss=2433024 peak_rss=2527232 max_retained=23520 post_clean_retained=0 rejects=75 sessions=8 tombstones=0 cs_echo=8
+p3_loss-r1 done
+p3_loss/p3_loss-r2: baseline_rss=2445312 peak_rss=2531328 max_retained=22512 post_clean_retained=0 rejects=82 sessions=8 tombstones=0 cs_echo=0
+p3_loss-r2 done
+p3_loss/p3_loss-r3: baseline_rss=2420736 peak_rss=2527232 max_retained=26208 post_clean_retained=0 rejects=66 sessions=8 tombstones=0 cs_echo=8
+p3_loss-r3 done
+PROFIL-TAMAM p3_loss
+p4_jitter/p4_jitter-r1: baseline_rss=2428928 peak_rss=2535424 max_retained=25200 post_clean_retained=0 rejects=75 sessions=8 tombstones=0 cs_echo=8
+p4_jitter-r1 done
+p4_jitter/p4_jitter-r2: baseline_rss=2433024 peak_rss=2539520 max_retained=23520 post_clean_retained=0 rejects=74 sessions=8 tombstones=0 cs_echo=8
+p4_jitter-r2 done
+p4_jitter/p4_jitter-r3: baseline_rss=2441216 peak_rss=2547712 max_retained=24864 post_clean_retained=0 rejects=60 sessions=8 tombstones=0 cs_echo=40
+p4_jitter-r3 done
+PROFIL-TAMAM p4_jitter
+p5_burstloss/p5_burstloss-r1: baseline_rss=2445312 peak_rss=2547712 max_retained=22512 post_clean_retained=0 rejects=64 sessions=8 tombstones=0 cs_echo=48
+p5_burstloss-r1 done
+p5_burstloss/p5_burstloss-r2: baseline_rss=2445312 peak_rss=2547712 max_retained=25872 post_clean_retained=0 rejects=64 sessions=8 tombstones=0 cs_echo=42
+p5_burstloss-r2 done
+p5_burstloss/p5_burstloss-r3: baseline_rss=2379776 peak_rss=2551808 max_retained=24192 post_clean_retained=0 rejects=64 sessions=8 tombstones=0 cs_echo=46
+p5_burstloss-r3 done
+PROFIL-TAMAM p5_burstloss
+p6_intermittency/p6_intermittency-r1: baseline_rss=2445312 peak_rss=2613248 max_retained=23856 post_clean_retained=0 rejects=64 sessions=8 tombstones=0 cs_echo=48
+p6_intermittency-r1 done
+p6_intermittency/p6_intermittency-r2: baseline_rss=2445312 peak_rss=2547712 max_retained=31584 post_clean_retained=0 rejects=62 sessions=8 tombstones=0 cs_echo=5
+p6_intermittency-r2 done
+p6_intermittency/p6_intermittency-r3: baseline_rss=2445312 peak_rss=2613248 max_retained=27552 post_clean_retained=0 rejects=64 sessions=8 tombstones=0 cs_echo=4
+p6_intermittency-r3 done
+PROFIL-TAMAM p6_intermittency
+p7_combined/p7_combined-r1: baseline_rss=2445312 peak_rss=2547712 max_retained=33600 post_clean_retained=0 rejects=52 sessions=8 tombstones=0 cs_echo=20
+p7_combined-r1 done
+p7_combined/p7_combined-r2: baseline_rss=2441216 peak_rss=2551808 max_retained=29232 post_clean_retained=0 rejects=58 sessions=8 tombstones=0 cs_echo=35
+p7_combined-r2 done
+p7_combined/p7_combined-r3: baseline_rss=2449408 peak_rss=2551808 max_retained=32256 post_clean_retained=0 rejects=52 sessions=8 tombstones=0 cs_echo=32
+p7_combined-r3 done
+PROFIL-TAMAM p7_combined
+ALL-DONE
