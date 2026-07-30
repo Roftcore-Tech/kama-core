@@ -9,9 +9,9 @@ use kama_integration::{HostError, ReceiverHost};
 fn a2_f0_host_constructs_with_owned_global_ledger() {
     let host = ReceiverHost::new();
     assert_eq!(host.session_count(), 0);
-    assert_eq!(host.global_cold().retained_bytes, 0);
-    assert_eq!(host.global_cold().session_count, 0);
-    assert_eq!(host.global_cold().tombstone_count, 0);
+    assert_eq!(host.global_cold().res.retained_bytes, 0);
+    assert_eq!(host.global_cold().res.session_count, 0);
+    assert_eq!(host.global_cold().res.tombstone_count, 0);
 }
 
 /// Pin-2: F0-stub'ları TYPED-error döner (reachable todo!() yok); state değişmez.
@@ -27,5 +27,5 @@ fn a2_f0_host_stubs_return_typed_errors() {
         Err(HostError::FeatureNotImplemented("a2_f1_close_chain"))
     );
     assert_eq!(host.session_count(), 0);
-    assert_eq!(host.global_cold().retained_bytes, 0);
+    assert_eq!(host.global_cold().res.retained_bytes, 0);
 }
