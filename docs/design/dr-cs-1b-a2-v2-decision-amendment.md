@@ -132,6 +132,51 @@ global byte cap · session count cap · tombstone registry cap · plateau bound.
 10. pre-registered plateau + product receiver matrisi
 ```
 
+## K-8 — NOTICE SAHİPLİĞİ DÜZELTMESİ (Abkarada adım-7/8-kararı; BAĞLAYICI)
+
+`PostTimeoutNotice` **SENDER-tarafı state'idir**:
+```text
+kama-engine::ColdRxState : notice-slot TUTMAZ · PostTimeoutNotice TUTMAZ · sender-cold_epoch-state TUTMAZ
+adaptive-transport::Sender: current-cold_epoch · BootstrapColdBlock-identity · PostTimeoutNotice-one-slot ·
+                            NOTICE_BOUND=1 · MAX_COLD_BLOCKS_PER_EPOCH=1 ·
+                            MAX_ACTIVE_COLD_EPOCHS_PER_SESSION_DIRECTION=1
+```
+State YALNIZ F4.2'de, `sender.rs` DUR-B-3 diliminde doğar. ReceiverHost yalnız RECOVERED-kontrol-emisyonunu
+yönetir; sender-application-notice-state'ini SAHİPLENMEZ. (MUTLAK-SINIR-§2.2 ve talimat-F0.3'teki
+"notice-slot (1/1/1)" ifadeleri kaldırıldı.)
+
+## K-9 — GLOBAL LEDGER SAHİPLİĞİ DÜZELTMESİ (Abkarada adım-7/8-kararı; BAĞLAYICI)
+
+```text
+kama-engine::ColdRxState      : SESSION-LOCAL admission/resource state
+kama-integration::ReceiverHost: PROCESS-WIDE/GLOBAL resource state SAHİBİ:
+  GLOBAL_COLD_RETAINED_MEMORY_BUDGET · GLOBAL_COLD_BYTE_CAP · SESSION_COUNT_CAP ·
+  TOMBSTONE_REGISTRY_CAP · global-reservation-ledger
+İki-seviyeli admission ATOMİK: global-reserve + session-reserve → ikisi-de-başarılıysa commit →
+herhangi-biri-reddederse HİÇBİR ledger değişmez.
+Engine SAF ledger-TİPLERİNİ sağlayabilir; global-bütçenin LIFECYCLE-sahibi OLAMAZ.
+```
+
+## K-10 — ADIM-7/8 DİĞER KARAR-KAYITLARI (Abkarada; aynen)
+
+```text
+MUTLAK-SINIR v1               : CONDITIONAL GO   (K-8/K-9-işlenince)
+A-4 protector-amendmanı       : GO               (7-normatif-postcondition; retired-state YAPISAL;
+                                                  spec-A-4 §0.9-sonuna işlendi)
+Faz-bazlı icra-talimatı v1    : CONDITIONAL GO   (K-8/K-9-işlenince)
+F-CID-0 / RECOVERED           : NORMATİF-BOUND + F4.5 ONAYLI (F4.1 öne-ALINMAZ; CAL-10 konservatif:
+                                RECOVERED-rate/burst ≤ pre-registered-SACK-return-supply-allocation;
+                                F4.1'de merkezi ControlIdIssueGate'e bağlanır; yeni-logical=yeni-id+
+                                rate/burst-tüketimi, retry=aynı-id-rate-tüketmez-ama-horizon-hesabında)
+PARAM_SET_RETRY               : DUR-B-3-DIŞI; varsayılan A2-production-kapsamı-DIŞI. F-CID-0 yalnız
+                                READ-ONLY-envanter (cadence/deadline/max-retry/new-id/retry-same-id/
+                                hard-horizon); hard-bound-varsa değer-CAL-10'a; yoksa/patience-uyumsuzsa
+                                → isimli "DUR-B-PARAM — PARAM_SET RETRY COORDINATION" (param_state.rs/
+                                param_bootstrap.rs sessizce AÇILMAZ)
+SONRAKİ-KAPI                  : bu-kararlar 4-belgeye işlenip commit → A2-F0 PRODUCTION GO;
+                                sonraki-fazlar DUR-A/★onay/DUR-B kapılarıyla; merge+default-flip yasak
+```
+
 ## K-7 — NİHAİ DURUM TABLOSU (Abkarada; aynen)
 
 ```text

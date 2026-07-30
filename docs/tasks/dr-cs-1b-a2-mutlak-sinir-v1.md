@@ -35,7 +35,7 @@ G-7  Zaman-ölçen her yeni mekanizma engine-spec §16.2 tablosuna saat-sınıf�
 | Dosya | İzin | Not |
 |---|---|---|
 | `src/lib.rs` | ÜRETİMLEŞTİRME | "lib-kod içermez / üretim-grafiğine girmez" beyanı değişir; ReceiverHost modül-ağacı açılır |
-| `src/receiver_host.rs` (YENİ) | YENİ-MODÜL | SessionManager/HandleRouter/open-demux/clock-sampling/ColdRxState-çağrıları/transport-Receiver kompozisyonu + lifecycle/cleanup (v2-§4 hibrit-sıra) + receiver-emisyon-bütçesi |
+| `src/receiver_host.rs` (YENİ) | YENİ-MODÜL | SessionManager/HandleRouter/open-demux/clock-sampling/ColdRxState-çağrıları/transport-Receiver kompozisyonu + lifecycle/cleanup (v2-§4 hibrit-sıra) + receiver-emisyon-bütçesi. **K-9: PROCESS-WIDE kaynak-SAHİBİ** — GLOBAL_COLD_RETAINED_MEMORY_BUDGET · GLOBAL_COLD_BYTE_CAP · SESSION_COUNT_CAP · TOMBSTONE_REGISTRY_CAP · global-reservation-ledger; iki-seviyeli admission ATOMİK (global+session reserve → ikisi-de-başarılıysa commit; biri-reddederse hiçbir-ledger-değişmez). **K-8: sender-notice-state'ini SAHİPLENMEZ** (yalnız RECOVERED-emisyonu) |
 | `src/` altında ek yeni modüller | YENİ-MODÜL | ReceiverHost'un alt-parçaları (ör. tombstone_registry.rs, cold_ledger-köprüsü). **Şerh (verify):** tombstone-KAYIT-içeriği opak noise-wire-tipidir; ham anahtar/AEAD-primitifi integration'da TANIMLANAMAZ (tip session.rs-dönüşüm-kancasında doğar; registry yalnız cap=64 + grace-deadline + lookup) |
 | `Cargo.toml` | FEATURE+DEP | experimental-cold-start; üretim-dep'ler (engine/noise-wire/schema/adaptive-transport) |
 | `tests/` | SERBEST | mevcut testler korunur (12 test yeşil kalır) |
@@ -44,13 +44,13 @@ G-7  Zaman-ölçen her yeni mekanizma engine-spec §16.2 tablosuna saat-sınıf�
 
 | Dosya | İzin | Not |
 |---|---|---|
-| `src/cold_rx_state.rs` (YENİ) | YENİ-MODÜL | rezervasyon-defteri (OPEN_BLOCK/RETAINED_BYTE/TOTAL_SHARD eksenleri + SHARDS_PER_BLOCK ön-kapı + PREPARAM min()-alt-kapı) + saf admission/deadline state-machine (enjekte `now`; saat TUTMAZ) + notice-slot (1/1/1) |
+| `src/cold_rx_state.rs` (YENİ) | YENİ-MODÜL | **SESSION-LOCAL** rezervasyon-defteri (OPEN_BLOCK/RETAINED_BYTE/TOTAL_SHARD eksenleri + SHARDS_PER_BLOCK ön-kapı + PREPARAM min()-alt-kapı) + saf admission/deadline state-machine (enjekte `now`; saat TUTMAZ). **K-8: notice-slot/PostTimeoutNotice/sender-cold_epoch-state TUTMAZ** (sender.rs-F4.2-dilimi). **K-9: global-bütçe lifecycle-sahibi DEĞİL** — saf ledger-TİPLERİ sağlayabilir; global-defter ReceiverHost'ta |
 | `src/error.rs` | GENİŞLETME | CapExceeded{scope,kind∈4-eksen} + C-8 5-diag + ParamNeverArrived + InvariantViolation sınıfı (ADDITIVE; mevcut varyant değişmez) |
 | `src/preparam_hold.rs` | DAR | YALNIZ zeroize-on-drop/evict eklentisi (fec-core-§9 P0-9); MAX_PREPARAM_SHARDS ve en-eski-drop-dalı DEĞİŞMEZ (A-1: dal ölü-kod-pinli kalır) |
 | `src/lib.rs` | MODÜL-KAYIT | yeni modül + re-export |
 | `Cargo.toml` | FEATURE | experimental-cold-start (+ zeroize-dep gerekirse — registry-dışı kripto-primitifi DEĞİL) |
 | `tests/` | SERBEST | |
-| **DOKUNULMAZ** | `admission.rs` (TYPE-GATE/profil-gate/N8), `recovered_map.rs`, `param_state.rs`, `param_bootstrap.rs` | semantik-değişiklik = DUR-B |
+| **DOKUNULMAZ** | `admission.rs` (TYPE-GATE/profil-gate/N8), `recovered_map.rs`, `param_state.rs`, `param_bootstrap.rs` | semantik-değişiklik = DUR-B. **PARAM_SET_RETRY (Abkarada):** DUR-B-3-DIŞI + varsayılan-A2-kapsamı-DIŞI; F-CID-0 yalnız READ-ONLY-envanter; yetersiz-bound/patience-uyumsuzluk → isimli **"DUR-B-PARAM — PARAM_SET RETRY COORDINATION"** açılır — bu dosyalar sessizce AÇILMAZ |
 
 ### 2.3 `crates/kama-noise-wire` — DAR dilimler
 
@@ -58,7 +58,7 @@ G-7  Zaman-ölçen her yeni mekanizma engine-spec §16.2 tablosuna saat-sınıf�
 |---|---|---|
 | `src/demux.rs` | DAR | `HandleRouter::unregister(h_ext)` (ADDITIVE; flag-OFF'ta çağrılmaz) |
 | `src/session.rs` | DAR | lifecycle=Closing durumu + tombstone-dönüşüm kancası (K-1 pinleri; cfg-gated). **Tombstone-TİPİ burada doğar** (kripto-materyal noise-wire-tipi içinde kalır) |
-| `src/protector.rs` | **DAR-İSİMLİ — A-4-AMENDMAN-KAPILI (verify-BLOCKER-çözümü)** | YALNIZ additive cfg-gated **`drop_send_state()`**: send_cipher'lar=None + last_sealed_pn-zeroize; **recv-state'e (recv_cipher/recv_windows) SIFIR dokunuş**. Gerekçe: K-1-pinleri ("send-cipher grace'te YAŞAMAZ / recv-cipher yalnız-grace / recv-ReplayWindow korunur") mevcut-pub-API'yle UYGULANAMAZ (cipher-alanları modül-private; alternatifler pin/§0.9-ihlali). Bu satır **§0.9-L4 isimli-spec-amendmanı (A-4 ADAY)** gerektirir — DUR-B-2 paketinde Abkarada-onayına bağlı; onaysız protector.rs'ye dokunulMAZ |
+| `src/protector.rs` | **DAR-İSİMLİ — A-4-ONAYLI (Abkarada-GO)** | YALNIZ additive cfg-gated **`drop_send_state()`** — 7-normatif-postcondition (spec-A-4 aynen): yalnız-lifecycle=Closing · TÜM send-secret/key/cipher zeroize · send-PN/nonce-allocation irreversibly-retired · recv-cipher+recv-ReplayWindow byte-for-byte-korunur · sonraki-seal → typed `SendStateRetired` · sessiz-reinit YASAK · tekrar-çağrı idempotent-veya-typed-`AlreadyRetired`. **Retired-state YAPISAL temsil** (yalnız None-yazmak YETMEZ). Wire/codepoint/AEAD/receive-path DEĞİŞMEZ |
 | `src/retry.rs` | DAR + F-CID-0-KAPILI | admit()-İMZASI DEĞİŞMEZ; probe/echo caller-dispatch zaten dışarıda (A-2); fixed-window (ControlDedupWindow) YALNIZ CAL-10-mühründen sonra; `ControlIdBelowDedupWindow` diag |
 | `src/restart.rs` | DAR + **REPLAY_PAIR_CAP-onay-kapılı** | PersistentReplayGuard: REPLAY_PAIR_CAP + typed-reject + "cert-verify-sonrası" çağrı-sözleşmesi (cfg-gated); **REPLAY_PAIR_CAP değeri Abkarada-onaysız kodlanamaz** (talimat-§9); onay-öncesi typed-stub |
 | `src/error.rs` | GENİŞLETME | ADDITIVE typed-varyantlar |
@@ -71,7 +71,7 @@ G-7  Zaman-ölçen her yeni mekanizma engine-spec §16.2 tablosuna saat-sınıf�
 
 | Dosya | İzin | Not |
 |---|---|---|
-| `src/sender.rs` | **YALNIZ Tetik-2 dilimi; DUR-B-3-KAPILI** | RecoveredControl-işleyicisinde post-timeout-durum kontrolü + PostTimeoutNotice-defteri + `take_post_timeout_notice()` (K-2/D-6 sözleşmesi). ŞARTLAR: N8-bit-özdeşlik (fires-vs-noop BtlBw) + tek-terminal korunur (CsTerminal'e varyant EKLENMEZ) + flag-OFF-byte-özdeş. bw/loss/rate/pacer/fusion-yollarına SIFIR satır |
+| `src/sender.rs` | **YALNIZ Tetik-2+K-8 dilimi; DUR-B-3-KAPILI** | RecoveredControl-işleyicisinde post-timeout-durum kontrolü + **K-8-sender-state'inin TAMAMI burada doğar (F4.2):** current-cold_epoch + BootstrapColdBlock-identity + PostTimeoutNotice-one-slot + NOTICE_BOUND=1 + MAX_COLD_BLOCKS_PER_EPOCH=1 + MAX_ACTIVE_COLD_EPOCHS_PER_SESSION_DIRECTION=1 + `take_post_timeout_notice()` (K-2/D-6 sözleşmesi). ŞARTLAR: N8-bit-özdeşlik (fires-vs-noop BtlBw) + tek-terminal korunur (CsTerminal'e varyant EKLENMEZ) + flag-OFF-byte-özdeş. bw/loss/rate/pacer/fusion-yollarına SIFIR satır |
 | `src/udp_runner.rs` + `examples/` + `tests/` | TEST-HARNESS | A1-rejimi aynen (test-only; W-3-65-rerun/plateau enstrümantasyonu) |
 | **DOKUNULMAZ** | `receiver.rs` (transport-çekirdeği; patience HOST'ta yaşar), `bw.rs`, `loss.rs`, `fusion.rs`, `rate.rs`, `pacer.rs`, `arq.rs`, `ack.rs`, `budget*.rs`, `fec.rs`, `seq.rs`, diğerleri | INV-RATE-1 / N8 / INV-ENGINE-SOC bölgesi |
 

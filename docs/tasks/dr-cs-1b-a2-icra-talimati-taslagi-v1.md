@@ -39,9 +39,11 @@ F0.1  experimental-cold-start feature'ı kama-engine + kama-noise-wire + kama-in
       (test-pin; derlenmiş-özdeşlik nerede ölçülebilirse ek-kanıt).
 F0.2  kama-integration üretimleştirme: ReceiverHost iskeleti (typed-error stub'lar;
       FeatureNotImplemented-deseni; reachable todo!() YASAK).
-F0.3  kama-engine ColdRxState iskeleti: dört-eksen defter tipleri + [CAL]-SEALED sabitler
-      (freeze-r2 değerleriyle bire-bir; tuning-yasak yorum-pinli) + CapExceeded/5-diag/
-      ParamNeverArrived/InvariantViolation typed-varyantları (stub).
+F0.3  kama-engine ColdRxState iskeleti (K-8/K-9-uyumlu): SESSION-LOCAL dört-eksen defter tipleri +
+      [CAL]-SEALED sabitler (freeze-r2 birebir; tuning-yasak yorum-pinli) + CapExceeded/5-diag/
+      ParamNeverArrived/InvariantViolation typed-varyantları (stub). NOTICE-SLOT YOK (K-8: sender-
+      state; F4.2'de doğar). Global-defter-TİPİ saf-tip olarak burada tanımlanabilir; LIFECYCLE-sahibi
+      ReceiverHost (K-9; F0.2-iskeletinde global-defter alanı).
 F0.4  ZM-3: patience/hold/grace timer'ları §16.2-tablosuna saat-sınıfıyla KAYDEDİLİR (doc-commit;
       receiver-monotonic; ColdRxState saat-tutmaz — now enjekte).
 F0.5  Kabul: iki-modda derleme + tüm-mevcut-testler yeşil + yüzey-denetimi temiz.
@@ -50,9 +52,12 @@ F0.5  Kabul: iki-modda derleme + tüm-mevcut-testler yeşil + yüzey-denetimi te
 ## 2. A2-F1 — DEFTER + CAP'LER + İADE-ZİNCİRİ + ZEROIZE + MODEL-KAPISI
 
 ```text
-F1.1  Rezervasyon-defteri (v1-§4.1 semantiği, v2-§3-eksen-eşlemesiyle): admit-cold-shard →
-      {SHARDS_PER_BLOCK ön-kapı → PREPARAM-alt-kapı (min=192) → session-eksenleri → global-eksenler}
-      ATOMİK; typed-outcome {Admitted, Rejected(kind)}; kalıcı-retention-öncesi.
+F1.1  Rezervasyon-defteri (v1-§4.1 semantiği, v2-§3-eksen-eşlemesiyle; **K-9-sahiplik-ayrımıyla**):
+      admit-cold-shard → {SHARDS_PER_BLOCK ön-kapı → PREPARAM-alt-kapı (min=192) →
+      session-eksenleri [ColdRxState] → global-eksenler [ReceiverHost-global-ledger]} —
+      **iki-seviye ATOMİK: global-reserve + session-reserve → ikisi-de-başarılıysa commit;
+      biri-reddederse HİÇBİR ledger değişmez** (K-9 aynen); typed-outcome {Admitted, Rejected(kind)};
+      kalıcı-retention-öncesi.
 F1.2  SEALED-cap'ler (freeze-r2 birebir): OPEN_BLOCK=8 · SHARDS_PER_BLOCK=24 ·
       MAX_SHARDS_BY_BLOCK_SHAPE=192 (#5b; 8×24-türetim-kaydı) · TOTAL_SHARD=192 · PREPARAM=192 ·
       RETAINED_BYTE=480KiB · GLOBAL_COLD_BYTE_CAP=15MiB (#3; #1-GLOBAL_COLD_RETAINED F5.2-bound'udur) ·
@@ -110,8 +115,18 @@ F-CID-0.1  LOGICAL-CONTROL PRODUCER INVENTORY: control_id-tüketen TÜM üretici
            mevcut receiver-sabitleri). [Alternatif — Abkarada-seçimi: F4.1'i F-CID-0-öncesine almak;
            taslak normatif-bound-yolunu öneriyor.]
 F-CID-0.2  HARD-türetim + ENFORCE: MAX_CONTROL_ID_ISSUE_RATE_PER_DIRECTION · MAX_CONTROL_ID_BURST ·
-           MAX_CONTROL_REORDER_ALLOWANCE · MAX_RETRY_REORDER_HORIZON — emisyon-yoluna enforce-sabitleri
-           olarak bağlanır (gözlem-değil-kanıtlı-max; A-3-monoton-atayıcı bu fazda doğar).
+           MAX_CONTROL_REORDER_ALLOWANCE · MAX_RETRY_REORDER_HORIZON — merkezi **`ControlIdIssueGate`**
+           enforce-yoluna bağlanır (gözlem-değil-kanıtlı-max; A-3-monoton-atayıcı bu fazda doğar).
+           Tüketim-kuralı (Abkarada aynen): yeni-logical-control → yeni-control_id + rate/burst-tüketimi;
+           retry → AYNI-control_id, yeni-ID-rate TÜKETMEZ fakat retry/reorder-horizon hesabına GİRER.
+           CAL-10, RECOVERED-producer-yokken konservatif hard-bound içerir: RECOVERED-rate/burst ≤
+           pre-registered-SACK-return-supply-allocation (F4.1'de aynı Gate'e bağlanır).
+F-CID-0.2b PARAM_SET_RETRY READ-ONLY-ENVANTERİ (Abkarada-kararı; kod-DEĞİŞİKLİĞİ-YOK):
+           cadence · deadline · maximum-retry-count · new-control-ID-issue-behavior ·
+           retry-same-ID-behavior · hard-retry/reorder-horizon. Mevcut-kod hard-ve-yeterli-bound
+           sağlıyorsa değişiklik-YAPILMAZ, değer CAL-10'a girer; yoksa/receiver-patience-uyumsuzsa →
+           isimli **"DUR-B-PARAM — PARAM_SET RETRY COORDINATION"** açılır (param_state.rs/
+           param_bootstrap.rs sessizce AÇILMAZ; DUR-B-3-DIŞI; varsayılan-A2-kapsamı-DIŞI).
 F-CID-0.3  required_window = RATE × RETRY_REORDER_HORIZON + BURST + REORDER_ALLOWANCE hesabıyla
            CAL-10-ADDENDUM belgesi → hash+timestamp → ★ ABKARADA-ONAYINA sunulur.
 F-CID-0.4  CAL-10-mühürsüz A2-F3'e GEÇİLMEZ.
@@ -134,18 +149,21 @@ F3-KABUL: window-sınır test-matrisi (id>high-water / window-içi-işaretli / w
 
 ```text
 F4.1  Receiver-emisyonu: RECOVERED (0x12) bütçesi SACK-return-supply-defterinden (kota/T_SPACING-içi).
-F4.2  ★ DUR-B-3-ONAYI SONRASI sender-Tetik-2 (MUTLAK-SINIR §2.4 dilimi): TimedOut-sonrası
-      RecoveredControl → PostTimeoutNotice{session/dh_epoch, cold_epoch, block_id, cause, proof_time};
+F4.2  ★ DUR-B-3-ONAYI SONRASI sender-Tetik-2 + **K-8-STATE-DOĞUŞU** (MUTLAK-SINIR §2.4 dilimi;
+      K-8: bu state'in TAMAMI sender.rs'te doğar — ColdRxState/ReceiverHost TUTMAZ): current-cold_epoch +
+      BootstrapColdBlock-identity + PostTimeoutNotice-one-slot; TimedOut-sonrası RecoveredControl →
+      PostTimeoutNotice{session/dh_epoch, cold_epoch, block_id, cause, proof_time};
       first-valid-proof-wins; take_post_timeout_notice() pull-API.
-F4.3  1/1/1-pinler (SEALED): NOTICE_BOUND=1 · MAX_COLD_BLOCKS_PER_EPOCH=1 (yalnız BootstrapColdBlock-
-      sınıfı; kimlik=(session_or_dh_epoch,direction,cold_epoch,block_id)) · MAX_ACTIVE_COLD_EPOCHS=1
-      (HashMap-yasak; tek-CURRENT-slot). Aynı-epoch/farklı-blok → InvariantViolation + DUR-B;
-      stale-proof → IGNORE + diag; duplicate → idempotent-no-op; close → sender-tarafı release.
+F4.3  1/1/1-pinler (SEALED; K-8: sender.rs'te pinlenir): NOTICE_BOUND=1 · MAX_COLD_BLOCKS_PER_EPOCH=1
+      (yalnız BootstrapColdBlock-sınıfı; kimlik=(session_or_dh_epoch,direction,cold_epoch,block_id)) ·
+      MAX_ACTIVE_COLD_EPOCHS=1 (HashMap-yasak; tek-CURRENT-slot). Aynı-epoch/farklı-blok →
+      InvariantViolation + DUR-B; stale-proof → IGNORE + diag; duplicate → idempotent-no-op;
+      close → sender-tarafı release. ReceiverHost yalnız RECOVERED-emisyonunu yönetir.
 F4.4  Kanıt-şartları: N8-bit-özdeşlik (fires-vs-noop BtlBw) + tek-terminal-pinleri + flag-OFF-özdeş.
-F4.5  ★ CAL-10-DOĞRULAMA-KAPISI (verify-BLOCKER-çözümünün ikinci-yarısı): F4.1-emisyon-yolu CAL-10
-      hard-rate/burst enforce-sabitlerine BAĞLANIR; kod-satır-referansı F-CID-0-envanterine işlenir;
-      gerçekleşen-emisyon normatif-bound'u (F-CID-0.1-istisnası) AŞIYORSA → DUR-B + CAL-10-yeni-versiyon
-      (mühür-sonrası-değişiklik=yeniden-onay kuralı).
+F4.5  ★ CAL-10-DOĞRULAMA-KAPISI (Abkarada-onaylı çözüm): F4.1-RECOVERED-emisyonu merkezi
+      **ControlIdIssueGate** + rate/burst-enforce-yoluna BAĞLANIR; kod-satır-referansı F-CID-0-envanterine
+      işlenir; gerçek-producer normatif-bound'u (≤ pre-registered-SACK-return-supply-allocation) AŞIYORSA
+      → DUR-B → CAL-10-yeni-versiyon → yeniden-onay (Abkarada aynen).
 ```
 
 ## 7. A2-F5 — PRE-REG-FREEZE → PLATEAU + W-3-65-ÜRÜN-RERUN
@@ -184,7 +202,7 @@ Status-board güncellemesi DUR-SON-yetkisiyle.
 | T_ECHO_MIN(profile) | F2.5 | aynı (formül v2-§7; ZM-2-4-decade) |
 | **REPLAY_PAIR_CAP** (verify-eklendi) | F1.4 (restart.rs-dilimi) | **F1.4-implementasyonundan ÖNCE** değer-önerisi → ★onay → kod; onaysızken typed-stub |
 | **RECOVERED-emisyon-kota-oranı** (verify-eklendi; v1-soru-5) | F4.1 | F4.1-öncesi değer-önerisi → ★onay (SACK-return-supply-defter-payı; F-CID-0-normatif-bound'uyla tutarlı) |
-| PARAM_SET_RETRY_CADENCE/DEADLINE | **AÇIK-SORU (talimat-onayı-ÖNCESİ Abkarada'ya):** sender-tarafı dokunuş DUR-B-3-ailesine mi girer, ayrı-dilim mi, A2-DIŞI-mı? | yüzey-kararıyla birlikte |
+| PARAM_SET_RETRY_CADENCE/DEADLINE | **KARAR-VERİLDİ (Abkarada):** DUR-B-3-DIŞI; varsayılan-A2-kapsamı-DIŞI; F-CID-0.2b read-only-envanter | hard-bound-varsa değer-CAL-10'a; yoksa DUR-B-PARAM |
 | CAL-10 (CONTROL_DEDUP_WINDOW) | F-CID-0 (§4) | CAL-10-addendum → ★onay; F3-önkoşulu |
 
 Kural: ★-onaysız hiçbir aday-değer koda girmez (pre-registered-değerler-outcome'dan-seçilemez çerçevesi);

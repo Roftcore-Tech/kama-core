@@ -66,6 +66,23 @@ ccr §35'te-MÜHÜRLÜ + test-vektörlü — noise-wire-onu-OKUR; FEC-shard-seal
 D0-N1-N10-raporları bu-mevcut-yapıyı-ENVANTERLER (değiştirmez); wire-değişikliği-GEREKİYORSA (örn seq-2B→32-bit-PN)
 → AYRI-DECISION + Abkarada-onayı + mühürlü-handshake/probe-testleri-yeniden. Sessiz-L4-değişikliği-YASAK.
 
+**DR-CS-1b-A2-AMENDMAN A-4 [Abkarada-onaylı; dar-kapsam — protector send-state-retirement]:** Session-close
+tombstone/grace-yaşam-döngüsü (K-1: "send-cipher grace'te YAŞAMAZ; recv-cipher yalnız-grace") için
+`KamaNoiseWireProtector`'a YALNIZ şu additive cfg-gated API eklenir: **`drop_send_state()`**. Normatif
+postcondition'lar (Abkarada; aynen):
+```text
+- yalnız lifecycle=Closing altında çağrılır
+- tüm send-direction secret/key/cipher state zeroize edilir
+- tüm send PN/nonce allocation state irreversibly retired edilir
+- recv cipher ve recv ReplayWindow byte-for-byte korunur
+- sonraki seal denemesi typed SendStateRetired döndürür
+- sessiz reinitialization yasaktır
+- tekrar çağrı idempotent veya typed AlreadyRetired olur
+```
+Yalnız `send_cipher=None` yazmak YETMEZ — **retired-state yapısal olarak temsil edilir** (typed-durum;
+sessiz-reinit yapısal-imkansız). Wire-layout, codepoint, AEAD-algoritması ve **receive-path DEĞİŞMEZ**;
+bu amendman §0.9-mühürlü-kripto listesindeki hiçbir kalemi yeniden-tanımlamaz.
+
 ## 0.7 HANDSHAKE-PAKET-SURVIVAL HOSTILE-AÇIĞI (beşinci-geçiş-§10 — YENİ-P0; handshake-PATTERN-DEĞİL) [NORMATİF]
 
 **ÖNEMLİ-AYRIM (Abkarada-düzeltmesi — iki-farklı-katman-KARIŞTIRILMAZ):**
