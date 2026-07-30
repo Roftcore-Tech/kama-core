@@ -39,10 +39,10 @@ yürütülmesidir.
 | **DR-CS-1 SENDER-SIDE ACCEPTANCE** | **FULL — SCOPE-LIMITED CHARACTERIZATION COMPLETE** (W-1+W-2B-R3+W-3+H1) | **GO** | A2 |
 | DI-2B sustained reverse-blackout | PASS (3 boyut) | GO | — |
 | Receiver wire resource shape (O(1)/bounded) | Doğrulandı | PARTIAL GO | A2 |
-| **Product receiver patience** | UYGULANDI (F2 non-renewable-deadline; gerçek ReceiverHost) | **GO** (PARTIAL-validation) | birleşik-uçtan-uca + RSS/netem |
+| **Product receiver patience** | UYGULANDI (F2 non-renewable-deadline; gerçek ReceiverHost) | **GO** (CLOSURE-1B+2 validated) | — |
 | **Product receiver resource lifecycle** | UYGULANDI (F1 iki-seviye-ATOMİK-cap + tombstone-RAII + A-4/A-5 zeroize) | **GO** | — |
-| **Post-timeout RECOVERED notification contract** | UYGULANDI (F4 PostTimeoutNotice sender + RECOVERED-emit receiver; N8-bit-özdeş) | **GO** | birleşik-uçtan-uca-test |
-| **End-to-end product cold-start fix** | **PRODUCT COLD-START PARTIAL** (mekanizma-bütünlüğü TAM/491-test; validation-derinliği kısmi — birleşik-uçtan-uca+RSS/netem+gerçek-handshake eksik; docs/reports/dr-cs-1b-a2-dur-son.md) | **PARTIAL** | (i)-(iii) DUR-SON-§5 |
+| **Post-timeout RECOVERED notification contract** | UYGULANDI (F4 PostTimeoutNotice sender + RECOVERED-emit receiver; N8-bit-özdeş) | **GO** (CLOSURE-1B validated) | — |
+| **End-to-end product cold-start fix** | **PRODUCT COLD-START PARTIAL** (mekanizma TAM; **CLOSURE-1B** birleşik-65B-heal-directional-key PASS/c710cff + **CLOSURE-2** faithful-netem-7-profil-RSS/allocator PASS/8a1616b; kalan-TEK hücre-(iii) gerçek-Noise-handshake-derived-Split-key=SEALED-Sprint-6; docs/reports/dr-cs-1b-a2-dur-son.md) | **PARTIAL** | hücre-(iii) Sprint-6-kripto |
 | Mixed-version codec güvenliği | Doğrulandı (g9) | GO | flip-öncesi rollout-politikası ayrı |
 | Runtime/deployment interoperability | Kısmi | PARTIAL | flip-öncesi |
 | FEC codec | Çalışıyor | GO | — |

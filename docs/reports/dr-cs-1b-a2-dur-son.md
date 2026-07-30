@@ -28,16 +28,22 @@ Faz-zinciri F1-C → F2 → F-CID-0/CAL-10 → F3 → F4 → F5 tamamlandı. **�
 | Recovery-notification (sender+receiver mekanizma) | ✅ PASS | F4 sender-4 + receiver-1 |
 | Plateau F-A/F-B/F-C (deterministik defter) | ✅ PASS | F5 3-flood |
 | Product W-3-65 delivery + cap-stress | ✅ PASS | F5 3× repeatable |
-| **Birleşik uçtan-uca 65B-heal (sender+receiver TEK-akışta)** | ⚠️ KISMİ | sender-PostTimeoutNotice (F4) ve receiver-delivery (F5) AYRI-testlerde; birleşik-tek-akış YOK |
-| **Gerçek RSS-plateau ölçümü** | ⚠️ KISMİ | deterministik-defter/model-assert; gerçek-RSS + netem-hostile self-hosted-nightly (§4.4) DIŞI |
-| **Gerçek handshake-Split key** | ⚠️ KISMİ | mock-symmetric-key; gerçek-Noise-handshake ayrı |
+| **Birleşik uçtan-uca 65B-heal (sender+receiver TEK-akışta)** | ✅ PASS (CLOSURE-1B) | AYRI directional-key tek-akış; sender bootstrap→TimedOut→receiver decode/delivery→RECOVERED-emit→gerçek open/decode/RecoveredMap-bridge→sender PostTimeoutNotice; 3-tekrar + 6-negatif-pin + 300B-DataAckClocked-smoke (a2_c1b_unified_heal; commit c710cff) |
+| **Gerçek RSS-plateau ölçümü** | ✅ PASS (CLOSURE-2) | gerçek ReceiverHost product-path + /proc/self/statm RSS + FAITHFUL two-netns netem 7-profil×3 (21/21 HARD-boundedness; retained max=%0.21-cap; cleanup→0; typed-reject evrensel; commit 8a1616b) |
+| **Gerçek handshake-Split key (hücre-iii)** | ⚠️ AÇIK (Sprint-6) | CLOSURE-1B directional-key kullandı (TEST-ONLY; "handshake-derived" İDDİA-EDİLMEDİ); gerçek-Noise-handshake-Split SEALED Sprint-6 kripto — Abkarada'nın-bağlayıcı-kararıyla ERTELENDİ |
 
 Kapılar (her faz): fmt + clippy(-D, iki-config) + FLAG-OFF **380/0** + ALL-FEATURES **491/0** +
 A1-pinleri (cold_start_liveness 4 · dr_cs1_acceptance 22 · dr_cs1_wire 12 [g5-amendmanlı]) + unsafe-YOK.
 
 ## 3. HÜKÜM
 
-> ## **PRODUCT COLD-START PARTIAL — birleşik-uçtan-uca-65B-heal-akışı + gerçek-RSS/netem-ölçümü + gerçek-handshake-key EKSİK**
+> ## **PRODUCT COLD-START PARTIAL — real Noise handshake-derived Split key EKSİK (Sprint-6 kripto)**
+>
+> **CLOSURE-TURU-SONRASI GÜNCELLEME (Abkarada FINAL VALIDATION CLOSURE DIRECTIVE):** hücre-(i)
+> birleşik-uçtan-uca-65B-heal → **CLOSURE-1B PASS** (AYRI directional-key; commit c710cff) · hücre-(ii)
+> gerçek-RSS/netem → **CLOSURE-2 PASS** (faithful two-netns 7-profil; commit 8a1616b). Kalan-TEK-hücre
+> hücre-(iii) gerçek-Noise-handshake-derived-Split-key'dir (SEALED Sprint-6). Abkarada BAĞLAYICI-kararı:
+> "Closure-2 PASS olsa bile PARTIAL — real handshake-derived Split key eksik". Hüküm PARTIAL korunur.
 
 **Gerekçe (dürüst-ölçüm-disiplini):** Ürün-alıcı MEKANİZMA-BÜTÜNLÜĞÜ TAM ve gerçek `ReceiverHost` üzerinde
 ÇALIŞIR (ingest→admission→decode→delivery→release; patience; tombstone; dedup; recovery-notification;
@@ -57,8 +63,21 @@ Bu DUR-SON default-flip ÖNERMEZ.
 
 ## 5. KAPANMAMIŞ HÜCRELER → SONRAKİ (Abkarada-kararına)
 ```text
-(i)   Birleşik uçtan-uca 65B-heal integration-testi (sender+receiver tek-akış; kama-integration)
-(ii)  Gerçek-RSS/allocator plateau + netem 7-hostile-profil (self-hosted-nightly §4.4)
-(iii) Gerçek Noise-handshake-Split key (mock→gerçek)
+(i)   Birleşik uçtan-uca 65B-heal integration-testi   → KAPANDI (CLOSURE-1B; c710cff)
+(ii)  Gerçek-RSS/allocator + netem 7-hostile-profil    → KAPANDI (CLOSURE-2; 8a1616b; faithful two-netns)
+(iii) Gerçek Noise-handshake-derived Split key         → AÇIK (SEALED Sprint-6 kripto; Abkarada-ertelemesi)
 (iv)  DUR-B-4b: roadmap:61-63 SUPERSEDED-by-B1 üst-not (bu DUR-SON-yetkisiyle status-board)
+```
+
+## 6. CLOSURE-TURU KANIT-ZİNCİRİ
+```text
+CLOSURE-1B (c710cff): a2_c1b_unified_heal — AYRI directional-key birleşik-65B-heal (3-tekrar) +
+  6-negatif-pin (wrong-key/reversed-direction/stale-epoch/duplicate/same-epoch-diff-block/no-proof) +
+  300B-DataAckClocked-smoke. Ürün-yüzeyi: install_session_with_directional_keys. NEG-5-ifade-sapması:
+  direktif "InvariantViolation" der; sealed-uygulama first-valid-proof-SUPPRESSION (üretim-değişmedi).
+  Kapılar: FLAG-OFF 380/0 (INV-CS-5) · ALL-FEATURES 491→499 · A1-pin sağlam.
+CLOSURE-2 (8a1616b): a2_rx_netem_runner (gerçek ReceiverHost + /proc/self/statm) × FAITHFUL two-netns
+  netem 7-profil×3. HÜKÜM PASS. Ölçüm-geçerlik: tek-netns-veth netem-inert (SESSİZCE-yok-sayar) →
+  YAKALANDI (faithful-netem-harness) → two-netns'e-taşındı (delay 200ms→200.27ms doğrulandı).
+  Pre-reg v2 sha256=d7b9aea0 (koşu-öncesi FROZEN). Rapor: reports/d1-exit/A2-CLOSURE-2-results.md.
 ```
