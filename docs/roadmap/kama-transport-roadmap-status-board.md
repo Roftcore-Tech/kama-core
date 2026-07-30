@@ -39,10 +39,10 @@ yürütülmesidir.
 | **DR-CS-1 SENDER-SIDE ACCEPTANCE** | **FULL — SCOPE-LIMITED CHARACTERIZATION COMPLETE** (W-1+W-2B-R3+W-3+H1) | **GO** | A2 |
 | DI-2B sustained reverse-blackout | PASS (3 boyut) | GO | — |
 | Receiver wire resource shape (O(1)/bounded) | Doğrulandı | PARTIAL GO | A2 |
-| **Product receiver patience** | Uygulanmadı | **NO-GO** | **A2** |
-| **Product receiver resource lifecycle** | Uygulanmadı | **NO-GO** | **A2 (iki-seviye cap)** |
-| **Post-timeout RECOVERED notification contract** | Tanımlanmadı (ürün-alıcı) | **NO-GO** | **A2** |
-| **End-to-end product cold-start fix** | Doğrulanmadı (yalnız sender-side karakterize edildi) | **NO-GO** | **A2** |
+| **Product receiver patience** | UYGULANDI (F2 non-renewable-deadline; gerçek ReceiverHost) | **GO** (PARTIAL-validation) | birleşik-uçtan-uca + RSS/netem |
+| **Product receiver resource lifecycle** | UYGULANDI (F1 iki-seviye-ATOMİK-cap + tombstone-RAII + A-4/A-5 zeroize) | **GO** | — |
+| **Post-timeout RECOVERED notification contract** | UYGULANDI (F4 PostTimeoutNotice sender + RECOVERED-emit receiver; N8-bit-özdeş) | **GO** | birleşik-uçtan-uca-test |
+| **End-to-end product cold-start fix** | **PRODUCT COLD-START PARTIAL** (mekanizma-bütünlüğü TAM/491-test; validation-derinliği kısmi — birleşik-uçtan-uca+RSS/netem+gerçek-handshake eksik; docs/reports/dr-cs-1b-a2-dur-son.md) | **PARTIAL** | (i)-(iii) DUR-SON-§5 |
 | Mixed-version codec güvenliği | Doğrulandı (g9) | GO | flip-öncesi rollout-politikası ayrı |
 | Runtime/deployment interoperability | Kısmi | PARTIAL | flip-öncesi |
 | FEC codec | Çalışıyor | GO | — |
