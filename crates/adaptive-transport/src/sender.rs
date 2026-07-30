@@ -146,6 +146,32 @@ pub enum CsTerminal {
     PostTimeoutRecovery,
 }
 
+/// K-8/F4: post-timeout recovery-kanıt türü (PostTimeoutNotice.cause).
+#[cfg(feature = "experimental-cold-start")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostTimeoutCause {
+    /// TimedOut-sonrası DATA-ACK-clocked kurtarma (300/1200B rejimi).
+    DataAckClocked,
+    /// TimedOut-sonrası §11 forward-recovery RECOVERED-control (65B-sınıfı ACK-bağımsız heal; B1-amendman).
+    RecoveredControl,
+}
+
+/// K-8/F4 SENDER-tarafı POST-TIMEOUT NOTIFICATION CONTRACT: ürün-katmanına TimedOut-terminali-ALDIKTAN
+/// SONRA bloğun kurtarıldığını bildirir (ikinci-terminal DEĞİL; CsTerminal DEĞİŞMEZ). one-slot (NOTICE_BOUND=1;
+/// first-valid-proof-wins; duplicate/stale no-op). N8: BtlBw/credit'e SIFIR etki (SALT-LOGICAL bildirim).
+#[cfg(feature = "experimental-cold-start")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostTimeoutNotice {
+    /// Aktif bootstrap cold-epoch (MAX_ACTIVE_COLD_EPOCHS_PER_SESSION_DIRECTION=1).
+    pub cold_epoch: u32,
+    /// Kurtarılan BootstrapColdBlock (MAX_COLD_BLOCKS_PER_EPOCH=1).
+    pub block_id: u32,
+    /// İlk-geçerli-kanıt türü (first-valid-proof-wins).
+    pub cause: PostTimeoutCause,
+    /// Kanıt-zamanı (receiver-monotonic ns; teşhis).
+    pub proof_time_ns: u64,
+}
+
 /// DR-CS-1 (F2B): bootstrap-srtt'nin kaynağı (INV-CS-3 terminal-sınıflandırma + diag).
 #[cfg(feature = "experimental-cold-start")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -829,6 +855,12 @@ pub struct Sender {
     cs_srtt_reported: bool, // M5: bootstrap-srtt-terminal bir-kez-raporlandı (PostTimeout ayrı)
     #[cfg(feature = "experimental-cold-start")]
     cs_terminal: Option<CsTerminal>, // M5 output-API (drain: take_cs_terminal)
+    // ── K-8/F4: PostTimeoutNotice (SENDER-tarafı; ColdRxState/Host TUTMAZ). one-slot NOTICE_BOUND=1;
+    //    MAX_ACTIVE_COLD_EPOCHS=1 (tek cs_cold_epoch); SALT-LOGICAL (BtlBw'ye SIFIR satır — N8). ──
+    #[cfg(feature = "experimental-cold-start")]
+    cs_cold_epoch: u32, // aktif bootstrap cold-epoch (F4-slice: tek-epoch; MAX_ACTIVE_COLD_EPOCHS=1)
+    #[cfg(feature = "experimental-cold-start")]
+    post_timeout_notice: Option<PostTimeoutNotice>, // one-slot; first-valid-proof-wins
 
     // ── send-record ↔ ACK-eşleme (DR-S5-3; SALT-LOGICAL — BtlBw/delivered'e BESLENMEZ) ──
     sent_logical: BTreeMap<u64, SrLogicalRef>, // wire-seq → logical (FEC-parity plan_fec_parity-içi; DATA engine-post-emit register_sent_logical — DR-S5-6)
@@ -1010,6 +1042,10 @@ impl Sender {
             cs_srtt_reported: false,
             #[cfg(feature = "experimental-cold-start")]
             cs_terminal: None,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_cold_epoch: 0,
+            #[cfg(feature = "experimental-cold-start")]
+            post_timeout_notice: None,
             sent_logical: BTreeMap::new(), // DR-S5-3
             confirmed_logical: VecDeque::new(),
             diag_recovered_cancels: 0,      // DR-S5-4
@@ -1314,6 +1350,13 @@ impl Sender {
             self.cs_wakeup
                 .retain(|&(_, k)| !matches!(k, CsTimerKind::CsGiveup));
             self.cs_terminal = Some(if self.cs_epoch_timed_out {
+                // K-8/F4 TETİK-2a: TimedOut-sonrası DATA-ACK-clocked heal → PostTimeoutNotice
+                // (first-valid-proof; SALT-LOGICAL N8). block_id=cs_cold_epoch-bootstrap (F4-slice tek-block).
+                self.record_post_timeout_notice(
+                    0, // F4-slice bootstrap-block (tek-block; MAX_COLD_BLOCKS_PER_EPOCH=1)
+                    PostTimeoutCause::DataAckClocked,
+                    _now_ns,
+                );
                 CsTerminal::PostTimeoutRecovery
             } else {
                 match self.cs_resolved {
@@ -1470,6 +1513,28 @@ impl Sender {
     #[cfg(feature = "experimental-cold-start")]
     pub fn take_cs_terminal(&mut self) -> Option<CsTerminal> {
         self.cs_terminal.take()
+    }
+
+    /// K-8/F4: PostTimeoutNotice one-slot kaydı (first-valid-proof-wins). NOTICE_BOUND=1: slot-doluysa
+    /// idempotent no-op (duplicate/sonraki-kanıt). SALT-LOGICAL — BtlBw/pacer/rate'e SIFIR-satır (N8).
+    /// same-epoch/farklı-block: MAX_COLD_BLOCKS_PER_EPOCH=1 varsayımı (F4-slice tek-block); farklı-block
+    /// gelirse slot-doluluğuyla no-op (invariant F5-pre-reg'de test-pinlenir).
+    #[cfg(feature = "experimental-cold-start")]
+    fn record_post_timeout_notice(&mut self, block_id: u32, cause: PostTimeoutCause, now_ns: u64) {
+        if self.post_timeout_notice.is_none() {
+            self.post_timeout_notice = Some(PostTimeoutNotice {
+                cold_epoch: self.cs_cold_epoch,
+                block_id,
+                cause,
+                proof_time_ns: now_ns,
+            });
+        }
+    }
+
+    /// K-8/F4: PostTimeoutNotice drain (ürün-katmanı pull-API; take = tek-tüketim).
+    #[cfg(feature = "experimental-cold-start")]
+    pub fn take_post_timeout_notice(&mut self) -> Option<PostTimeoutNotice> {
+        self.post_timeout_notice.take()
     }
 
     /// DR-CS-1 F2B diag: (bootstrap-sonucu-kaynağı, outstanding-probe-sayısı,
@@ -2556,6 +2621,20 @@ impl Sender {
     /// (recovered≠ACK — kredi-yolu AÇILMAZ; §0 yasak-6-blok). Emit-üretmez (saf-state; on_event
     /// erken-dönüşle schedule_transmit'i ATLAR).
     fn on_recovered_control(&mut self, info: &RecoveredInfo) {
+        // K-8/F4 TETİK-2b: TimedOut-SONRASI §11 forward-recovery RECOVERED → PostTimeoutNotice
+        // (65B-sınıfı ACK-bağımsız heal; B1-amendman). SALT-LOGICAL (N8: BtlBw'ye dokunmaz). first-valid-
+        // proof-wins (slot-doluysa no-op). Yalnız TimedOut-terminali-alınmışsa (post-timeout).
+        #[cfg(feature = "experimental-cold-start")]
+        if self.cs_epoch_timed_out {
+            if let Some(ru) = info.units.first() {
+                let now = self.last_now_ns;
+                self.record_post_timeout_notice(
+                    ru.block_id,
+                    PostTimeoutCause::RecoveredControl,
+                    now,
+                );
+            }
+        }
         for ru in &info.units {
             // (i) retransmit-CANCEL: kurtarılan-unit'in bekleyen ARQ-retransmit'i iptal — FEC
             // ana-avantajı (K2/M1: kurtardığını-retransmit-etmeme). Saf VecDeque-filtre;

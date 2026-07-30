@@ -94,6 +94,20 @@ fn f3_non_probe_control_deduped() {
     );
 }
 
+/// F4 RECEIVER: RECOVERED-emisyonu ControlIdIssueGate'ten monoton control_id + gerçek-seal datagram.
+#[test]
+fn f4_recovered_emission_uses_issue_gate() {
+    let mut host = ReceiverHost::new();
+    host.install_session_with_keys(H_EXT, &key()).unwrap();
+    let d0 = host.emit_recovered(H_EXT, 5, vec![(0, 2)], 0).unwrap();
+    let d1 = host.emit_recovered(H_EXT, 5, vec![(3, 4)], 1).unwrap();
+    assert!(!d0.is_empty() && !d1.is_empty());
+    assert_ne!(d0, d1, "farklı control_id + pn → farklı wire");
+    // Batch-sınırı reset + bilinmeyen-session → UnknownSession.
+    host.end_emission_batch(H_EXT);
+    assert!(host.emit_recovered(0xDEAD, 1, vec![(0, 0)], 0).is_err());
+}
+
 /// F3.5: Closing (close_session) sonrası dedup-penceresi düşer (session-slot ile birlikte);
 /// tombstone-yolu devreye girer (grace-recv).
 #[test]

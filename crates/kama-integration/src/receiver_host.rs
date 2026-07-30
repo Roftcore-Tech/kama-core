@@ -24,10 +24,13 @@ use kama_engine::cold_rx_state::{
 use kama_engine::{admit_and_decode, EngineError};
 use kama_noise_wire::inner::InnerPlain;
 use kama_noise_wire::{
-    ControlDedupWindow, DedupDecision, Direction, HandleRouter, KamaNoiseWireProtector,
-    OpenedTransportShard, Session, SessionId, SessionLifecycle, SessionManager,
+    ControlDedupWindow, ControlIdIssueGate, DedupDecision, Direction, HandleRouter,
+    KamaNoiseWireProtector, OpenedTransportShard, SealArgs, Session, SessionId, SessionLifecycle,
+    SessionManager,
 };
+use kama_transport_schema::control::Control;
 use kama_transport_schema::inner_kind::ShardKind;
+use kama_transport_schema::UnsealedTransportPacket;
 use std::collections::BTreeMap;
 use thiserror::Error;
 use zeroize::Zeroizing;
@@ -135,6 +138,10 @@ pub struct SessionSlot {
     last_data_arrival_ns: u64,
     /// F3: fixed-window control dedup (session-scoped; probe/echo GİRMEZ). Closing'de düşer.
     dedup: ControlDedupWindow,
+    /// F4: RECOVERED-emisyonu için control_id issuance-gate (F-CID-0; monoton + burst-enforce).
+    issue_gate: ControlIdIssueGate,
+    /// F4: bu batch'te RECOVERED-emisyon sayısı (SACK-return-supply-bütçesi payı; end_batch reset).
+    recovered_emitted_in_batch: u32,
 }
 
 /// Tombstone-kaydı (grace-recv; ağır cold-state DÜŞMÜŞ). Minimal-state: send-retired `Session`
@@ -251,6 +258,8 @@ impl ReceiverHost {
                 blocks: BTreeMap::new(),
                 last_data_arrival_ns: 0,
                 dedup: ControlDedupWindow::new(),
+                issue_gate: ControlIdIssueGate::new(),
+                recovered_emitted_in_batch: 0,
             },
         );
         Ok(())
@@ -392,6 +401,57 @@ impl ReceiverHost {
             }
         } else {
             Ok(IngestOutcome::ShardAdmitted { block_id, progress })
+        }
+    }
+
+    /// F4 RECEIVER RECOVERED-EMİSYONU (§10; §11 forward-recovery): blok-decode ile kurtarılan source-ESI'ler
+    /// için sender'a RECOVERED-control (ARQ-cancel; logical-recovery — ACK/BtlBw-credit DEĞİL, §2.57).
+    /// control_id F-CID-0 ControlIdIssueGate'ten (monoton + burst-enforce = SACK-return-supply bütçe-payı);
+    /// gerçek-wire sealed datagram döner (sender'a gönderilecek). Active-session'da (send-canlı).
+    ///
+    /// # Errors
+    /// [`HostError::UnknownSession`] · burst-aşımı [`HostError::PrecomputeFailed`] ("control-id burst") ·
+    /// seal-hatası [`HostError::PrecomputeFailed`].
+    pub fn emit_recovered(
+        &mut self,
+        h_ext: u32,
+        block_id: u32,
+        esi_ranges: Vec<(u16, u16)>,
+        wire_pn: u64,
+    ) -> Result<Vec<u8>, HostError> {
+        let slot = self
+            .sessions
+            .get_mut(&h_ext)
+            .ok_or(HostError::UnknownSession { h_ext })?;
+        // F-CID-0: control_id monoton + burst-enforce (SACK-return-supply bütçe-payı).
+        let id = slot
+            .issue_gate
+            .issue()
+            .map_err(|_| HostError::PrecomputeFailed("control-id burst/renewal"))?;
+        slot.recovered_emitted_in_batch = slot.recovered_emitted_in_batch.saturating_add(1);
+        let ctrl = Control::Recovered {
+            id,
+            block_id,
+            esi_ranges,
+        };
+        slot.session
+            .seal(
+                &UnsealedTransportPacket::Control(ctrl),
+                SealArgs {
+                    wire_pn,
+                    dh_epoch: 0,
+                    send_generation: 0,
+                },
+            )
+            .map(|sealed| sealed.bytes)
+            .map_err(|_| HostError::PrecomputeFailed("recovered seal"))
+    }
+
+    /// Emisyon-batch sınırı: RECOVERED-burst + control-id-gate burst sayaçlarını sıfırlar.
+    pub fn end_emission_batch(&mut self, h_ext: u32) {
+        if let Some(slot) = self.sessions.get_mut(&h_ext) {
+            slot.issue_gate.end_batch();
+            slot.recovered_emitted_in_batch = 0;
         }
     }
 
