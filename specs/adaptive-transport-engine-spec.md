@@ -1041,6 +1041,14 @@ ZM-4  Karşılaştırmanın İKİ YANI aynı saati kullanmalı (örn. loss-thres
       içindeki receiver ACK-hold'u threshold'un saati GÖRMÜYORSA karşılaştırma geçersiz — aşağıda K-1).
 ```
 
+> **ZM-3-KAYIT [DR-CS-1b-A2-F0.4; Abkarada-talimat-onaylı]:** A2 ürün-alıcı zaman-mekanizmaları bu
+> envantere şu saat-sınıfıyla girer: **receiver-monotonic (CLOCK_MONOTONIC; kompozisyon-kökü
+> `ReceiverHost`'ta örneklenir; `kama-engine::ColdRxState` saat TUTMAZ — `now_ns` enjekte).**
+> Kapsanan eşikler: per-block patience-deadline `RX_COLD_ABANDON` (profil-türevi — ZM-2-uyumlu;
+> non-renewable, first-authenticated-shard-anchor) · `SESSION_IDLE_HOLD` · `TOMBSTONE_GRACE` ·
+> `T_ECHO_MIN(profile)` (üçü [CAL]-aday; wall-clock-sabit-girecekse ZM-2 4-decade doğrulaması ŞART) ·
+> plateau-test-timer'ları. Karşılaştırmaların iki yanı aynı monotonic-domain (ZM-4).
+
 > **ZM-2 AKTİF-KORUMA ÖRNEĞİ (ilk kanıt — TUR-1x, 2026-07-13; talimatla kayda geçirildi):** min-rtt
 > guard'ın ilk tasarımı mutlak `MIN_RTT_FLOOR=1ms` wall-clock tabanıydı. ZM-2'nin şart koştuğu
 > 4-decade doğrulaması (bench-loopback testi) tabanı ANINDA yanlışladı: loopback/LAN gerçek RTT

@@ -8,6 +8,10 @@ publish = false
 # Engine kompozisyon-düğümü (Sprint-5d): noise-wire (OpenedTransportShard/param_bind) + fec-codec
 # (reconstruct/by_id) + schema (ParamFields/Control) birleştirir. SoC: bu-crate transport-core'un
 # ÜSTÜ; adaptive-transport'u üretimde TUTMAZ (crypto-agnostik kalması için) — yalnız direktif üretir.
+[features]
+# DR-CS-1b/A2: urun-alici cold-start entegrasyonu. DEFAULT-OFF; flag-OFF byte-ozdes (INV-CS-5).
+experimental-cold-start = []
+
 [dependencies]
 thiserror.workspace = true
 kama-transport-schema = { path = "../kama-transport-schema" }

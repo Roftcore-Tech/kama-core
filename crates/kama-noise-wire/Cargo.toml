@@ -6,6 +6,8 @@ license = "UNLICENSED"
 publish = false
 
 [features]
+# DR-CS-1b/A2: urun-alici cold-start dar-dilimleri (unregister/tombstone/A-4). DEFAULT-OFF.
+experimental-cold-start = []
 # K-WIRE-SEALED-TYPE-1: test-constructor'ı dış-crate entegrasyon-testlerine açar (production-build'de KAPALI).
 test-util = []
 # KATMAN-3 (DR-5): RustCrypto==libsodium AEAD differential-oracle. TEST-ONLY, DEFAULT-KAPALI →

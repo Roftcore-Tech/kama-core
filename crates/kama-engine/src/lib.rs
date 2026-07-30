@@ -19,6 +19,10 @@
 //! kredi yalnız gerçek-wire-ACK (sender.bw.rs, mühürlü). RECOVERED = logical-teslim ≠ ACK.
 
 pub mod admission;
+/// DR-CS-1b/A2 — SESSION-LOCAL cold-rx state (K-8/K-9 sahiplik-sınırlarıyla; [CAL]-SEALED sabitler).
+/// Feature-gated: `experimental-cold-start` DEFAULT-OFF; flag-OFF'ta modül DERLENMEZ (INV-CS-5).
+#[cfg(feature = "experimental-cold-start")]
+pub mod cold_rx_state;
 pub mod error;
 pub mod param_bootstrap;
 pub mod param_state;
@@ -26,6 +30,8 @@ pub mod preparam_hold;
 pub mod recovered_map;
 
 pub use admission::admit_and_decode;
+#[cfg(feature = "experimental-cold-start")]
+pub use cold_rx_state::{ColdRxState, GlobalColdLedger};
 pub use error::EngineError;
 pub use param_bootstrap::{plan_param_bootstrap, ParamAckTracker, ParamSetPlan};
 pub use param_state::{BoundParam, ParamState};

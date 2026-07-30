@@ -30,4 +30,25 @@ pub enum EngineError {
     /// Beklenen control-tipi değil (PARAM_SET/PARAM_ACK bekleniyordu).
     #[error("unexpected control kind")]
     UnexpectedControl,
+    /// A2-fazı henüz uygulanmadı (typed-stub; reachable todo!() YASAK — CLAUDE.md §6).
+    #[cfg(feature = "experimental-cold-start")]
+    #[error("feature not implemented: {0}")]
+    FeatureNotImplemented(&'static str),
+    /// Cold-cap aşımı: sessiz-eviction YOK, typed-reject (INV-CS-RX-RESOURCE; [CAL]-freeze-r2).
+    #[cfg(feature = "experimental-cold-start")]
+    #[error("cold cap exceeded: {scope:?}/{kind:?} cap={cap} requested={requested}")]
+    ColdCapExceeded {
+        scope: crate::cold_rx_state::CapScope,
+        kind: crate::cold_rx_state::CapKind,
+        cap: u64,
+        requested: u64,
+    },
+    /// PARAM hiç gelmedi; pre-PARAM blok per-block-deadline'da evict edildi (P-6).
+    #[cfg(feature = "experimental-cold-start")]
+    #[error("param never arrived; block {block_id} deadline expired")]
+    ParamNeverArrived { block_id: u32 },
+    /// Cold-invariant ihlali (örn. K-2 aynı-epoch/farklı-blok) → DUR-B tetikleyicisi.
+    #[cfg(feature = "experimental-cold-start")]
+    #[error("cold invariant violation: {0}")]
+    ColdInvariantViolation(&'static str),
 }

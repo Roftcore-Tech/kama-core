@@ -5,11 +5,20 @@ edition = "2021"
 license = "Proprietary"
 publish = false
 
-# ENGINE-SEVİYESİ cross-crate integration harness (Sprint-5a). fec-codec + schema + noise-wire'ı
-# uçtan-uca birleştirir (mock-key; paylaşılan adaptive-transport-koduna DOKUNMAZ). Bu-crate hiçbir
-# production-crate'e BAĞLANMAZ (yalnız-test/harness; bench-emsali).
+# Sprint-5a: ENGINE-SEVİYESİ cross-crate integration harness (tests/). DR-CS-1b/A2 (Abkarada D-1):
+# bu crate ÜRETİMLEŞTİRİLİYOR — ReceiverHost composition-root burada doğar (feature-gated, DEFAULT-OFF;
+# flag-OFF'ta eski-harness-rolü aynen). adaptive-transport prod-dep'i F1'de (kompozisyon-doldurma) gelir.
+
+[features]
+# DR-CS-1b/A2: ReceiverHost composition-root (K-9 global-ledger sahibi). DEFAULT-OFF.
+experimental-cold-start = [
+    "kama-engine/experimental-cold-start",
+    "kama-noise-wire/experimental-cold-start",
+]
 
 [dependencies]
+thiserror.workspace = true
+kama-engine = { path = "../kama-engine" }
 kama-transport-schema = { path = "../kama-transport-schema" }
 kama-fec-codec = { path = "../kama-fec-codec" }
 kama-noise-wire = { path = "../kama-noise-wire" }
