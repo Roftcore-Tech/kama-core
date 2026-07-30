@@ -219,25 +219,56 @@ fn atomicity_global_untouched_on_session_reject() {
     );
 }
 
-/// Dedup: aynı (block,esi,is_repair) → Duplicate + SIFIR-tüketim; source≠repair aynı-esi ayrı-kimlik.
+/// Dedup (F1-A-düzeltmesi; Abkarada): kimlik (block_id,esi) — aynı-role → Duplicate;
+/// FARKLI-role → typed ShardRoleConflict; İKİ-durumda-da LİTERAL byte-for-byte ledger-değişmezliği
+/// (delta=0; mevcut-kayıt değişmez; pre-PARAM role-flip'le ikinci-rezervasyon yapısal-engelli).
 #[test]
-fn dedup_idempotent_and_repair_distinct() {
+fn dedup_identity_block_esi_role_is_verified_property() {
     let mut cold = ColdRxState::new();
     let mut global = GlobalColdLedger::new();
     assert_eq!(
-        cold.admit_cold_shard(1, req(0, 7, 100, false), &mut global),
+        cold.admit_cold_shard(1, req(0, 7, 100, true), &mut global),
         Ok(ColdAdmitOutcome::Admitted)
     );
+
+    // Durum-1: aynı-kimlik + AYNI-role → Duplicate; byte-for-byte pin (res + TÜM-state).
     let (cb, gb) = (cold.clone(), global);
     assert_eq!(
-        cold.admit_cold_shard(2, req(0, 7, 100, false), &mut global),
+        cold.admit_cold_shard(2, req(0, 7, 100, true), &mut global),
         Ok(ColdAdmitOutcome::Duplicate)
     );
     assert_reservations_unchanged(&cold, &cb, &global, &gb);
-    let mut r = req(0, 7, 100, false);
-    r.is_repair = true;
     assert_eq!(
-        cold.admit_cold_shard(2, r, &mut global),
+        cold, cb,
+        "Duplicate blok-defterini de değiştirdi (literal-değişmezlik ihlali)"
+    );
+
+    // Durum-2: aynı-kimlik + FARKLI-role → typed ShardRoleConflict; byte-for-byte pin;
+    // mevcut-kayıt (role=pre_param-rezervi dahil) DEĞİŞMEZ.
+    let (cb2, gb2) = (cold.clone(), global);
+    let mut flip = req(0, 7, 100, true);
+    flip.is_repair = true;
+    assert_eq!(
+        cold.admit_cold_shard(2, flip, &mut global),
+        Err(EngineError::ShardRoleConflict {
+            block_id: 0,
+            esi: 7
+        })
+    );
+    assert_reservations_unchanged(&cold, &cb2, &global, &gb2);
+    assert_eq!(
+        cold, cb2,
+        "RoleConflict state-değiştirdi (mevcut-kayıt korunmalı)"
+    );
+    assert_eq!(
+        cold.res.total_shards, 1,
+        "role-flip ikinci-rezervasyon aldı (yapısal-engel ihlali)"
+    );
+    assert_eq!(cold.res.preparam_shards, 1);
+
+    // Farklı-esi hâlâ ayrı-kimlik (normal-yol regresyonu):
+    assert_eq!(
+        cold.admit_cold_shard(2, req(0, 8, 100, false), &mut global),
         Ok(ColdAdmitOutcome::Admitted)
     );
     assert_eq!(cold.res.total_shards, 2);

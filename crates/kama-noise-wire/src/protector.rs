@@ -110,6 +110,11 @@ pub struct KamaNoiseWireProtector {
     /// Epoch-kabul bayrakları (§4-adım-1 + B3): [0]=epoch-0 (grace-bitince-false), [1]=epoch-1
     /// (anahtar-kurulunca-true). B3-adım-3: Bob epoch-0'dayken-de geçerli-epoch-1-paketi-KABUL-EDER.
     recv_epoch_accepts: [bool; 2],
+    /// A-4 (DR-CS-1b/A2; spec-§0.9-amendmanı): send-state RETIRED yapısal-bayrağı — TEK-YÖN
+    /// (true'ya-yazan-tek-yol drop_send_state; temizleyen API YOK → sessiz-reinit YAPISAL-imkansız;
+    /// seal + install-sonrası-seal bu-bayrakla kapılı → renewal-üzerinden-reactivation İMKANSIZ).
+    #[cfg(feature = "experimental-cold-start")]
+    send_retired: bool,
 }
 
 impl KamaNoiseWireProtector {
@@ -136,7 +141,22 @@ impl KamaNoiseWireProtector {
                 ReplayWindow::new(EXTENDED_PN_PARAMS),
             ],
             recv_epoch_accepts: [true, false],
+            #[cfg(feature = "experimental-cold-start")]
+            send_retired: false,
         }
+    }
+
+    /// A-4 `drop_send_state()` — send-yarısı-emekliliği (7-postcondition; spec-§0.9-A-4 aynen):
+    /// yalnız lifecycle=Closing altında çağrılır (yapısal: `pub(crate)` — tek-üretim-yolu
+    /// `Session::begin_close`) · TÜM send-secret/cipher zeroize (cipher drop = anahtar-yaşamı-notu) ·
+    /// send-PN/nonce-allocation irreversibly-retired · recv-cipher + recv-ReplayWindow'a SIFIR-dokunuş ·
+    /// sonraki-seal → typed `SendStateRetired` · sessiz-reinit YASAK (bayrak tek-yön) ·
+    /// tekrar-çağrı İDEMPOTENT.
+    #[cfg(feature = "experimental-cold-start")]
+    pub(crate) fn drop_send_state(&mut self) {
+        self.send_cipher = [None, None];
+        self.last_sealed_pn = [None, None];
+        self.send_retired = true;
     }
 
     /// SESSION_INIT_RESPONSE-sonrası epoch-1 anahtar-kurulumu (dh_epoch 0→1; §5).
@@ -218,6 +238,11 @@ impl KamaNoiseWireProtector {
         p: &UnsealedTransportPacket,
         args: SealArgs,
     ) -> Result<SealedPacket, WireError> {
+        // A-4: retired-send-state → typed-reject (yapısal tek-yön bayrak; reactivation-imkansız).
+        #[cfg(feature = "experimental-cold-start")]
+        if self.send_retired {
+            return Err(WireError::SendStateRetired(self.h_ext));
+        }
         let ei = usize::from(args.dh_epoch & 1);
         let cipher = self.send_cipher[ei]
             .as_ref()

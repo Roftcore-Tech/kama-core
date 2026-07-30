@@ -5,6 +5,10 @@ use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum WireError {
+    /// A-4 (DR-CS-1b/A2): send-state retired (drop_send_state-sonrası seal-denemesi; Closing/grace).
+    #[cfg(feature = "experimental-cold-start")]
+    #[error("send state retired: h_ext {0:#010x}")]
+    SendStateRetired(u32),
     /// Datagram EXTENDED-minimum'dan kısa (26B outer) veya ct-boyu tutarsız.
     #[error("datagram too short: {got} < {min}")]
     DatagramTooShort { got: usize, min: usize },

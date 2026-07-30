@@ -47,6 +47,10 @@ pub enum EngineError {
     #[cfg(feature = "experimental-cold-start")]
     #[error("param never arrived; block {block_id} deadline expired")]
     ParamNeverArrived { block_id: u32 },
+    /// Kimlik (block_id,esi) mevcut ama role-biti FARKLI (F1-A: role kimlik-değil; delta=0).
+    #[cfg(feature = "experimental-cold-start")]
+    #[error("shard role conflict: block {block_id} esi {esi}")]
+    ShardRoleConflict { block_id: u32, esi: u16 },
     /// Cold-invariant ihlali (örn. K-2 aynı-epoch/farklı-blok) → DUR-B tetikleyicisi.
     #[cfg(feature = "experimental-cold-start")]
     #[error("cold invariant violation: {0}")]

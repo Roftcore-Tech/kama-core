@@ -11,7 +11,12 @@
 //! Rezervasyon-alanları (`res`) diag-sayaçlarından (`diag`) AYRIŞTIRILDI: reject-yolunda `res`
 //! byte-for-byte değişmez (test-pinli); C-8 diag'ları reject'i SAYMAK ZORUNDA olduğundan ayrı yaşar.
 //!
-//! KONTROL-SIRASI (deterministik; talimat-F1.1): (0) (block,esi,is_repair)-dedup → Duplicate ·
+//! CONCURRENCY-PİNİ (Abkarada F1-A-DUR-B; BAĞLAYICI): GlobalColdLedger + session-ledger mutasyonu
+//! AYNI ReceiverHost EXCLUSIVE/SINGLE-WRITER domain'indedir (&mut-disiplinli tek-yazar; paylaşımlı/
+//! çok-iş-parçacıklı mutasyona geçiş = THREAD-MODELİ-DEĞİŞİKLİĞİ = DUR-B).
+//!
+//! KONTROL-SIRASI (deterministik; talimat-F1.1): (0) (block_id,esi)-dedup → aynı-role=Duplicate /
+//! farklı-role=ShardRoleConflict (İKİSİNDE-DE delta=0) ·
 //! (1) SHARDS_PER_BLOCK ön-kapı · (2) PREPARAM alt-kapı (K-4 min) · (3) OPEN_BLOCK (yeni-blok) ·
 //! (4) TOTAL_SHARD (defense-in-depth: mevcut-sabitlerle şekil-kapısı önce dolar — allowlist
 //! genişlerse bağlayıcı olur) · (5) session-RETAINED_BYTE · (6) global-BYTE. İlk-dolan-reddeder.
@@ -20,7 +25,7 @@
 //! CONTROL_DEDUP_WINDOW BURADA YOK (CANDIDATE; CAL-10/F-CID-0; noise-wire).
 
 use crate::error::EngineError;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 // ---- [CAL]-SEALED sabitler (freeze-r2 §3 birebir) ----------------------------------------------
 
@@ -79,7 +84,9 @@ pub enum CapKind {
 pub struct ColdAdmitRequest {
     pub block_id: u32,
     pub esi: u16,
-    /// source/repair ayrımı — dedup-kimliğinin parçası (aynı-esi source≠repair).
+    /// Role-biti: KİMLİĞİN-PARÇASI-DEĞİL (Abkarada F1-A-düzeltmesi) — kimlik (block_id,esi);
+    /// is_repair kimliğe-ait-DOĞRULANAN-özelliktir. Aynı-kimlik+farklı-role → ShardRoleConflict
+    /// (pre-PARAM role-flip'le ikinci-rezervasyon yapısal-engelli).
     pub is_repair: bool,
     /// Retained-memory modeli maliyeti (yalnız-payload DEĞİL; freeze-r2 §2).
     pub retained_cost_bytes: u64,
@@ -92,7 +99,7 @@ pub struct ColdAdmitRequest {
 pub enum ColdAdmitOutcome {
     /// Rezervasyon yapıldı (iki-seviye commit).
     Admitted,
-    /// Aynı (block,esi,is_repair) zaten defterde — retransmit/replay; rezervasyon TÜKETİLMEDİ.
+    /// Aynı (block_id,esi)+AYNI-role zaten defterde — retransmit/replay; rezervasyon TÜKETİLMEDİ.
     Duplicate,
 }
 
@@ -157,7 +164,8 @@ struct BlockEntry {
     first_arrival_ns: u64,
     retained_bytes: u64,
     preparam_shards: u64,
-    admitted: BTreeSet<(u16, bool)>,
+    /// esi → is_repair (kimlik=(block_id,esi); role=doğrulanan-özellik — F1-A-düzeltmesi).
+    admitted: BTreeMap<u16, bool>,
 }
 
 // ---- Ledger tipleri ----------------------------------------------------------------------------
@@ -274,10 +282,18 @@ impl ColdRxState {
     ) -> Result<ColdAdmitOutcome, EngineError> {
         // ---- SALT-OKUNUR kontrol fazı -----------------------------------------------------------
         let entry = self.blocks.get(&req.block_id);
-        // (0) dedup: rezervasyon tüketmeden erken-dönüş (retransmit normal-wire-olayı).
+        // (0) dedup — kimlik (block_id,esi); role-biti kimlik-DEĞİL (F1-A-düzeltmesi):
+        //     aynı-role → Duplicate; farklı-role → typed ShardRoleConflict; İKİSİNDE-DE delta=0
+        //     (mevcut-kayıt değişmez; role-flip'le ikinci-rezervasyon yapısal-imkansız).
         if let Some(e) = entry {
-            if e.admitted.contains(&(req.esi, req.is_repair)) {
-                return Ok(ColdAdmitOutcome::Duplicate);
+            if let Some(&role) = e.admitted.get(&req.esi) {
+                if role == req.is_repair {
+                    return Ok(ColdAdmitOutcome::Duplicate);
+                }
+                return Err(EngineError::ShardRoleConflict {
+                    block_id: req.block_id,
+                    esi: req.esi,
+                });
             }
         }
         let is_new_block = entry.is_none();
@@ -357,9 +373,9 @@ impl ColdRxState {
                 first_arrival_ns: now_ns,
                 retained_bytes: 0,
                 preparam_shards: 0,
-                admitted: BTreeSet::new(),
+                admitted: BTreeMap::new(),
             });
-        e.admitted.insert((req.esi, req.is_repair));
+        e.admitted.insert(req.esi, req.is_repair);
         e.retained_bytes += req.retained_cost_bytes;
         if req.pre_param {
             e.preparam_shards += 1;
