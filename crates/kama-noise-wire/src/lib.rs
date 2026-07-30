@@ -61,5 +61,7 @@ pub use restart::{
     early_data_policy, resume_allowed_after_restart, EarlyDataPolicy, InitCounterStore,
     PersistentReplayGuard, ReplayOutcome,
 };
+#[cfg(feature = "experimental-cold-start")]
+pub use restart::{RECENT_CAP_PER_PAIR, REPLAY_PAIR_CAP};
 pub use retry::{InboundControlDedup, InboundOutcome, RetryClass};
 pub use session::{Direction, Session, SessionId, SessionLifecycle, SessionManager};

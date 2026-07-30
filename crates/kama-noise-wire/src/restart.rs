@@ -55,7 +55,22 @@ pub enum ReplayOutcome {
     Fresh,
     /// Replay (görülmüş/eski): İKİNCİ-app-side-effect ÜRETİLMEZ (idempotent).
     ReplayNoSideEffect,
+    /// DR-CS-1b/A2 F1-C: REPLAY_PAIR_CAP dolu — YENİ device-pair kaydı reddedildi (typed fail-closed;
+    /// mevcut pair'ler KORUNUR; silent-eviction YOK). Yalnız `experimental-cold-start` altında üretilir.
+    #[cfg(feature = "experimental-cold-start")]
+    PairRegistryFull,
 }
+
+/// DR-CS-1b/A2 F1-C — ClientReceiver device-pair-registry üst-sınırı ([CAL]; freeze-r2 side-state).
+/// 64 beklenen-retained-pair × headroom-2. `experimental-cold-start` altında enforce; flag-OFF: mevcut
+/// unbounded davranış (INV-CS-5). Ölçüm side-state bütçesini aşarsa yalnız AŞAĞI türetilir.
+#[cfg(feature = "experimental-cold-start")]
+pub const REPLAY_PAIR_CAP: usize = 128;
+
+/// Per-pair recent-window (out-of-order/replay-detection); high-water-invariant ile evict-edilen counter
+/// yeniden-Fresh-OLAMAZ (correctness-bound: RECENT ≥ reorder-derinliği; INIT monoton → 16 yeterli).
+#[cfg(feature = "experimental-cold-start")]
+pub const RECENT_CAP_PER_PAIR: usize = 16;
 
 /// Cihaz-çifti başına persistent-anti-replay: high-water (en-yüksek-görülen init_counter) + recent-set
 /// (high-water-altı reorder için, bounded). Restart'ta snapshot'tan-geri-yüklenir.
@@ -91,6 +106,15 @@ impl PersistentReplayGuard {
         recipient: [u8; 16],
         init_counter: u64,
     ) -> ReplayOutcome {
+        // DR-CS-1b/A2 F1-C: YENİ device-pair kaydı REPLAY_PAIR_CAP ile sınırlı. Çağrı-sözleşmesi:
+        // `admit` YALNIZ cert-verification SONRASI çağrılır (doğrulanmamış-kaynak pair yaratamaz). Cap-
+        // dolu + YENİ-pair → typed fail-closed reject (mevcut pair'ler korunur; silent-eviction YOK).
+        #[cfg(feature = "experimental-cold-start")]
+        if !self.per_pair.contains_key(&(sender, recipient))
+            && self.per_pair.len() >= REPLAY_PAIR_CAP
+        {
+            return ReplayOutcome::PairRegistryFull;
+        }
         let cap = self.recent_cap;
         let st = self.per_pair.entry((sender, recipient)).or_default();
         if init_counter > st.high_water {
