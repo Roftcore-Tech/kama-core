@@ -1,3 +1,7 @@
+> **[SUPERSEDED-BY-v1.1 — 2026-07-31]** Bu v1.0 (sha `cf005739`) tarihsel-referans olarak KORUNUR;
+> donmuş-nicelikler [FS-PREREG-v1.1.md](FS-PREREG-v1.1.md)'deki dar-isimli-amendmanlarla güncellendi
+> (B0-freeze). Çelişkide v1.1 üstündür.
+
 # FS-PREREG — DR-FEC-FS-1 v2 EXECUTION BUDGET + COVERAGE + STATISTICS FREEZE
 
 **Statü:** Sonuç-taşıyan-koşulardan ÖNCE dondurulur (§5/§27-6). Bütçe, hücre-üretim-kuralı, confirmatory-

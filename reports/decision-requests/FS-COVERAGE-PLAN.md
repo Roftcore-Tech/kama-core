@@ -1,3 +1,7 @@
+> **[SUPERSEDED-BY-v1.1 — 2026-07-31]** Bu v1.0 (sha `91b33e1e`) tarihsel-referans; koşu-sayıları
+> [FS-COVERAGE-PLAN-v1.1.md](FS-COVERAGE-PLAN-v1.1.md)'de güncellendi (F2-DUR-B → FS-1 540; confirmatory
+> 670). Çelişkide v1.1 üstündür.
+
 # FS-COVERAGE-PLAN — exact generated cells / sampling (DR-FEC-FS-1 v2 §5.1-D)
 
 **Statü:** FS-2-ÖNCESİ dondurulur; FS-PREREG (sha ayrı) ile eşlik. Exact-hücre + sampling-kuralı; slow-diye-
