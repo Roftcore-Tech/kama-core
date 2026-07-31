@@ -1,5 +1,8 @@
 # FS-PREREG-v1.1 — B0 AMENDMENT (DR-FEC-FS-1 v5 §4-§5)
 
+> **⛔ SUPERSEDED-BY FS-PREREG-v1.2.md** (sha256 `da4af3c49195f8cfbec7d26e1b5542a6802391e5d9b86ff193bf1255739da034`,
+> FROZEN). Bu v1.1 tarihsel-referans; bağlayıcı-otorite v1.2'dir. v1.1'in değişmeyen nicelikleri v1.2 §D'de korunur.
+
 **Statü:** FS-PREREG-v1.0 (sha `cf005739`) **BASE**; bu v1.1 yalnız §4-§5'te sayılan **dar, isimli
 amendmanları** ekler ve outcome-görülmeden freeze edilir. v1.0'daki donmuş nicelikler (arm-set, statistics,
 per-run instrument-chain, timing-chain, censoring-felsefesi, verdict-path) AYNEN geçerli; aşağıda YALNIZ

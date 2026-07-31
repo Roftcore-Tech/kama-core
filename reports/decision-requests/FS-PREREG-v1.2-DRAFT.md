@@ -1,5 +1,8 @@
 # FS-PREREG-v1.2 — HARNESS-A AMENDMENT **DRAFT** (DONMAMIŞ)
 
+> **⛔ SUPERSEDED-BY FS-PREREG-v1.2.md (FINAL, FROZEN sha256 `da4af3c4…`).** Bu DRAFT, FINAL'e
+> INCORPORATED (A1.0–A1.11 detaylı-türetme kaynağı). Bağlayıcı-otorite FS-PREREG-v1.2.md'dir.
+
 > **STATÜ: DRAFT — FREEZE-EDİLMEDİ · HASH-YOK.** Bu belge FS-HARNESS-A inşası sırasında ortaya çıkan
 > ve Abkarada tarafından bağlayıcı-olarak-verilen netleştirmeleri BİRİKTİRİR. **Tek bir konsolide
 > re-hash FS-HARNESS-B tamamlandıktan SONRA, FS-1 result-bearing-run'lardan ÖNCE yapılır** (v1.2-FINAL).
