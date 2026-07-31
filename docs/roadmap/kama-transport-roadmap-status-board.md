@@ -46,8 +46,8 @@ yürütülmesidir.
 | Mixed-version codec güvenliği | Doğrulandı (g9) | GO | flip-öncesi rollout-politikası ayrı |
 | Runtime/deployment interoperability | Kısmi | PARTIAL | flip-öncesi |
 | FEC codec | Çalışıyor | GO | — |
-| **FEC emission timing** | Çözülmedi (parity-at-block-close) | **NO-GO** | **C0→C3** |
-| **FEC marginal utility** | Kanıtlanmadı (tek istisna: MarginalFecBeneficial@RTT250) | **NO-GO** | **C1→D** |
+| **FEC emission timing** | Çözülmedi (parity-at-block-close) | **NO-GO** | **DR-FEC-FS-1** (C0→C3 supersede) |
+| **FEC marginal utility** | Kanıtlanmadı (tek istisna: MarginalFecBeneficial@RTT250; **MarginalFecEssential deficit≤2-sınırlı** — FS-CORRIGENDUM) | **NO-GO** | **DR-FEC-FS-1** (C1→D supersede) |
 | Hostile-network readiness | Kanıtlanmadı | NO-GO | Program 1+2 |
 | Feature default flip (cold-start) | Yasak | NO-GO | A2 + rollout + §4.4-benchmark sonrası karar |
 | PR #44 | DRAFT | NO-GO (merge) | Abkarada kararı |
@@ -107,6 +107,12 @@ değişikliği YASAK.
 ---
 
 ## 3. PROGRAM 2 — FEC (DR-FEC-ET-1: PARITY AVAILABILITY / EMISSION TIMING)
+
+> **[SUPERSEDED-by DR-FEC-FS-1 — 2026-07-31]** Aşağıdaki `C0→C1→C2→C3→D` yürütme-yolu **tarihsel-referans**
+> olarak korunur ama kalan-yürütme `DR-FEC-FS-1 v2` (full-scale FEC utility/emission/adaptation) ile
+> supersede edildi. Detay + eşleme: [DR-FEC-FS-1-amendment.md](DR-FEC-FS-1-amendment.md). DR-1b faithful-
+> revalidation FS-3'e katlanır; K4-dürüst-geri-çekme §17-baraj-koşullu korunur. Nihai-hüküm yalnız
+> FS-DUR-SON + Abkarada-onayı ile.
 
 **Araştırma sorusu:** *Parity, mevcut ARQ retransmitten önce receiver'a ulaşabilecek kadar erken
 wire'a çıkıyor mu?* Önce baseline ölçülür; çözüm doğrudan yazılmaz.
