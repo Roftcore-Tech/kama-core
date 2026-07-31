@@ -43,6 +43,21 @@ pub struct RedundancyCost {
     pub redundancy_packet_count: u64,
 }
 
+/// FEC-shard sealed-wire FRAMING (source VE repair İÇİN AYNI — INV-ENGINE-SOC: transport ikisini
+/// BOYUTLA ayırt-EDEMEZ; tek fark sealed-payload İÇİNDEKİ 1-byte inner_kind codepoint'i, wire-boyu değil).
+/// GROUNDED (uydurma-YOK; §8 ölçülmemiş-byte-yasağı): EXTENDED_OUTER_OVERHEAD(26: h_ext4+wfmt1+wflags1+
+/// pn4+tag16) + FEC_INNER_HDR_LEN(11: iv1+kind1+flags1+pid1+block4+esi2+k1) = 37. Otorite: kama-noise-wire
+/// `protector.rs` sealed_len(FecShard) = 26 + 11 + E ("N7: 101B @ E=64"). Sabit-const → ADR-17 deterministik.
+pub const FS_SHARD_FRAMING_BYTES: u64 = 37;
+
+/// Bir FEC-shard'ın (source|retransmit|duplicate|repair — HEPSİ) sealed-wire datagram boyu = symbol-E +
+/// sabit-framing. TEK-DOMAIN: A1-dup, F0-parity, source, retransmit AYNI modelden serialize+sayılır
+/// (C-P4 realized-wire adilliği + PIN-E egress + completion-timing hepsi tek sealed-byte-domain'inde).
+#[must_use]
+pub fn fs_sealed_len(symbol_e: u64) -> u64 {
+    symbol_e.saturating_add(FS_SHARD_FRAMING_BYTES)
+}
+
 /// Paket-yutağı (channel/socket egress soyutlaması). Emitter YALNIZ buna yazar — Sender'a dokunmaz.
 pub trait PacketSink {
     fn send(&mut self, id: TracePacketId, sealed: &[u8]);
@@ -468,8 +483,11 @@ fn process_emissions(
             };
             res.duplicates_emitted += 1;
             res.cost.redundancy_packet_count += 1;
+            // TEK-DOMAIN: d.size = sealed datagram (fs_sealed_len; F0-parity ile AYNI). payload + framing
+            // == realized == d.size (A1_WIRE_ACCOUNTING_REAL_DATAGRAM; framing artık 0-DEĞİL).
             res.cost.realized_sealed_wire_bytes += d.size;
             res.cost.redundancy_payload_bytes += unit_size;
+            res.cost.redundancy_framing_bytes += d.size.saturating_sub(unit_size);
             if res.timing.t_redundancy_wire.is_none() {
                 res.timing.redundancy_kind = Some(RedundancyKind::Duplicate);
                 res.timing.t_redundancy_eligible = Some(now);
@@ -530,7 +548,9 @@ pub fn run_arm(arm: Arm, cfg: &RunCfg) -> RunResult {
         d0.extend(s.on_event(
             Event::AppData(OpaqueUnit {
                 id: u,
-                size: cfg.unit_size,
+                // OpaqueUnit.size = güvenlik-katmanının sealed ct||tag blob wire-boyu (sender.rs:74-82;
+                // TransmitDecision.size ondan). E-symbol DEĞİL → fs_sealed_len (Sender wire-reality'de pace-eder).
+                size: fs_sealed_len(cfg.unit_size),
             }),
             0,
         ));
@@ -751,10 +771,10 @@ mod tests {
         // configured_r=2, k=8 → target 2 source; onları emit et.
         let mut emitter = A1EarlyEmitter::new(2, domain_seed(11, "A1_DUP_TARGET"), 0, 8);
         let mut sink = CountingSink::default();
-        let sealed = [0xABu8; 108];
+        let sealed = [0xABu8; 101]; // GROUNDED sealed FEC-shard @ E=64 (26+11+64; protector.rs N7)
         let targets: Vec<u16> = emitter.target_set().iter().copied().collect();
         for esi in &targets {
-            emitter.maybe_emit_duplicate((0, *esi), &sealed, 65, &mut sink);
+            emitter.maybe_emit_duplicate((0, *esi), &sealed, 64, &mut sink);
         }
 
         let after = snapshot(&s);
@@ -770,16 +790,16 @@ mod tests {
     fn a1_early_duplicate_consumes_wire_budget() {
         let mut emitter = A1EarlyEmitter::new(2, domain_seed(11, "A1_DUP_TARGET"), 0, 8);
         let mut sink = CountingSink::default();
-        let sealed = [0u8; 108];
+        let sealed = [0u8; 101]; // GROUNDED sealed FEC-shard @ E=64 (fs_sealed_len(64)=101)
         let targets: Vec<u16> = emitter.target_set().iter().copied().collect();
         for esi in &targets {
-            emitter.maybe_emit_duplicate((0, *esi), &sealed, 65, &mut sink);
+            emitter.maybe_emit_duplicate((0, *esi), &sealed, 64, &mut sink);
         }
         let cost = emitter.cost();
         assert_eq!(cost.redundancy_packet_count, 2);
-        assert_eq!(cost.realized_sealed_wire_bytes, 216); // 2×108
-        assert_eq!(cost.redundancy_payload_bytes, 130); // 2×65
-        assert_eq!(cost.redundancy_framing_bytes, 86); // 2×43
+        assert_eq!(cost.realized_sealed_wire_bytes, 2 * fs_sealed_len(64)); // 2×101
+        assert_eq!(cost.redundancy_payload_bytes, 128); // 2×64 (E)
+        assert_eq!(cost.redundancy_framing_bytes, 2 * FS_SHARD_FRAMING_BYTES); // 2×37
         assert_eq!(
             cost.redundancy_payload_bytes + cost.redundancy_framing_bytes,
             cost.realized_sealed_wire_bytes
@@ -1052,5 +1072,42 @@ mod tests {
         assert_eq!(a.instrument.config_hash, b.instrument.config_hash);
         // PATH-TIMING ledger-only mevcut (karar-tüketimi-yok; yalnız gözlem).
         let _ = a.path_timing.path_srtt_ns;
+    }
+
+    /// A1_WIRE_ACCOUNTING_REAL_DATAGRAM (review-blocking-pin): bir duplicate için payload + framing ==
+    /// total-datagram == BottleneckChannel-serialization — HEPSİ AYNI sealed-domain (fs_sealed_len;
+    /// source==repair). Eski-defekt: A1 raw-payload (framing=0) sayıyordu, F0-parity framed → domain-uyuşmazlığı.
+    #[test]
+    fn a1_wire_accounting_real_datagram() {
+        let c = cfg(&[]); // deficit-yok → loss/retransmit-yok (unit_size=300 E-symbol).
+        let r = run_arm(Arm::A1 { r: 1 }, &c);
+        assert_eq!(r.duplicates_emitted, 1, "r=1 → blok-total 1 dup");
+        let sealed = fs_sealed_len(c.unit_size); // 337 = 300 (E) + 37 (grounded framing)
+                                                 // (1) accounting: payload + framing == realized == sealed datagram (framing artık 0-DEĞİL).
+        assert_eq!(
+            r.cost.redundancy_payload_bytes, c.unit_size,
+            "payload = E-symbol"
+        );
+        assert_eq!(
+            r.cost.redundancy_framing_bytes, FS_SHARD_FRAMING_BYTES,
+            "framing = grounded 37B (0-DEĞİL)"
+        );
+        assert_eq!(
+            r.cost.redundancy_payload_bytes + r.cost.redundancy_framing_bytes,
+            r.cost.realized_sealed_wire_bytes,
+            "payload+framing != realized (domain-tutarsız)"
+        );
+        assert_eq!(
+            r.cost.realized_sealed_wire_bytes, sealed,
+            "realized != sealed datagram"
+        );
+        // (2) channel-serialization AYNI domain: loss-yok → 8 source + 1 dup = 9 datagram × sealed.
+        assert_eq!(r.data_emitted, 8);
+        assert_eq!(r.retransmits_emitted, 0);
+        assert_eq!(
+            r.channel_serialized_bytes,
+            9 * sealed,
+            "channel dup'u sealed-domain'de saymadı (F0-parity ile aynı-birim değil)"
+        );
     }
 }

@@ -113,7 +113,6 @@ fn main() {
                 &deficit.iter().map(|&u| u as u16).collect::<Vec<_>>(),
                 link_bps,
                 owd_ns,
-                108,
             );
             println!(
                 "binary_provenance.config_hash={:#018x}",
@@ -143,16 +142,24 @@ fn main() {
             print_timing(&res.timing);
             println!("parity_delay_class={:?}", res.timing.parity_delay_class());
             print_path_timing(&res.path_timing);
-            println!(
-                "completion_cause={}",
-                if res.fec_decoded_sources > 0 && res.retransmits == 0 {
-                    "fec"
-                } else if res.retransmits > 0 {
-                    "hybrid_arq"
-                } else {
-                    "direct"
-                }
-            );
+            // Timing-honest cause: blok'u FEC mi ARQ mı TAMAMLADI (retransmit-SAYISI değil — parity post-DATA
+            // geç-varınca ARQ SPURIOUS retransmit sızdırabilir AMA FEC yine erken-tamamlar → cause=fec).
+            let fec_beats_arq = match (res.timing.t_repair_usable, res.timing.t_arq_arrival) {
+                (Some(u), Some(a)) => u <= a,
+                (Some(_), None) => true,
+                _ => false,
+            };
+            let fec_completed = res.fec_decoded_sources > 0 && fec_beats_arq;
+            let cause = if fec_completed {
+                "fec"
+            } else if res.retransmits > 0 {
+                "arq"
+            } else {
+                "direct"
+            };
+            // FEC tamamladıysa emitilen retransmit'ler SPURIOUS (FEC-decode ARQ-emisyonundan geç-kaldı).
+            let spurious = if fec_completed { res.retransmits } else { 0 };
+            println!("completion_cause={cause} spurious_retransmits={spurious}");
             println!(
                 "INVALID={}",
                 !(res.instrument.faithful && res.instrument.overlap_ok)

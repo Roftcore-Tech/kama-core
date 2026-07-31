@@ -37,14 +37,17 @@ for arm in a0 a1 f0; do
   check "clean-loopback:$arm" $? "$d $inv"
 done
 
-echo; echo "=== [2] F0 GERÇEK reconstruct (D2/R2 drop 2,5) ==="
+echo; echo "=== [2] F0 GERÇEK reconstruct (D2/R2 drop 2,5) — FEC blok'u tamamlar (byte-equal + estimator-pure) ==="
+# NOT: doğru (büyük) sealed-boyutta parity post-DATA GEÇ varır → ARQ SPURIOUS retransmit sızdırabilir
+# AMA FEC yine ERKEN tamamlar (t_repair_usable < t_arq_arrival → cause=fec). Bu GERÇEKÇİ FEC-utility bulgusu.
 out=$("$BIN" --arm f0 --r 2 --deficit 2,5)
 be=$(echo "$out" | grep -oE "reconstruct_byte_equal=[a-z]+" | head -1)
-rt=$(echo "$out" | grep -oE "retransmits=[0-9]+" | head -1)
+fd=$(echo "$out" | grep -oE "fec_decoded_sources=[0-9]+" | head -1)
 ep=$(echo "$out" | grep -oE "estimator_pure=[a-z]+" | head -1)
 cc=$(echo "$out" | grep -oE "completion_cause=[a-z_]+" | head -1)
-[ "$be" = "reconstruct_byte_equal=true" ] && [ "$rt" = "retransmits=0" ] && [ "$ep" = "estimator_pure=true" ] && [ "$cc" = "completion_cause=fec" ]
-check "f0-real-reconstruct" $? "$be $rt $ep $cc"
+sp=$(echo "$out" | grep -oE "spurious_retransmits=[0-9]+" | head -1)
+[ "$be" = "reconstruct_byte_equal=true" ] && [ "$fd" = "fec_decoded_sources=2" ] && [ "$ep" = "estimator_pure=true" ] && [ "$cc" = "completion_cause=fec" ]
+check "f0-real-reconstruct (FEC completes)" $? "$be $fd $ep $cc ($sp — GERÇEKÇİ spurious-ARQ)"
 
 echo; echo "=== [3] A1 blind-dup HIT (drop=2 ∈ target) → cause=duplicate, retransmits=0 ==="
 out=$("$BIN" --arm a1 --r 2 --deficit 2)

@@ -5,14 +5,13 @@
 
 #[path = "common/fs_f0.rs"]
 mod fs_f0;
+use adaptive_transport::fs_harness::{fs_sealed_len, FS_SHARD_FRAMING_BYTES};
 use fs_f0::{run_f0, MS};
-
-const PARITY_FRAME: u64 = 108; // parity sealed-wire (E=64 payload + 44 framing)
 
 /// F0_LOOPBACK: loss-yok → block-tamamlanır; parity substrate'i BOZMAZ; cold-start-sızmaz.
 #[test]
 fn f0_loopback() {
-    let r = run_f0(2, &[], 1_000_000, 20 * MS, PARITY_FRAME);
+    let r = run_f0(2, &[], 1_000_000, 20 * MS);
     assert_eq!(r.delivered, 8);
     assert!(r.completion_ns.is_some());
     assert!(r.reconstruct_byte_equal);
@@ -27,7 +26,7 @@ fn f0_loopback() {
 /// F0_EXACT_D1_R1 + F0_ENCODER_REAL: 1-erased + 1-real-repair → GERÇEK reconstruct == original.
 #[test]
 fn f0_exact_d1_r1_real_decode_byte_equal() {
-    let r = run_f0(1, &[3], 1_000_000, 20 * MS, PARITY_FRAME);
+    let r = run_f0(1, &[3], 1_000_000, 20 * MS);
     assert_eq!(r.delivered, 8);
     assert_eq!(r.fec_decoded_sources, 1);
     assert!(r.reconstruct_byte_equal, "reconstructed != original");
@@ -48,7 +47,7 @@ fn f0_exact_d1_r1_real_decode_byte_equal() {
 /// F0_EXACT_D2_R2: 2-erasure + 2-repair → GERÇEK 2-source reconstruct == original.
 #[test]
 fn f0_exact_d2_r2_two_erasure_real_decode() {
-    let r = run_f0(2, &[2, 5], 1_000_000, 20 * MS, PARITY_FRAME);
+    let r = run_f0(2, &[2, 5], 1_000_000, 20 * MS);
     assert_eq!(r.delivered, 8);
     assert_eq!(r.fec_decoded_sources, 2);
     assert!(r.reconstruct_byte_equal);
@@ -58,7 +57,7 @@ fn f0_exact_d2_r2_two_erasure_real_decode() {
 /// F0_EXACT_D2_R1 (HYBRID): FEC-yetersiz → residual-ARQ tamamlar (ARQ-KAPALI-DEĞİL).
 #[test]
 fn f0_exact_d2_r1_insufficient_fec_residual_arq() {
-    let r = run_f0(1, &[2, 5], 1_000_000, 20 * MS, PARITY_FRAME);
+    let r = run_f0(1, &[2, 5], 1_000_000, 20 * MS);
     assert_eq!(r.delivered, 8, "hybrid: FEC-yetersiz olsa da ARQ tamamlar");
     assert!(r.retransmits > 0, "residual-ARQ çalışmalı");
     assert!(r.reconstruct_byte_equal);
@@ -72,7 +71,7 @@ fn f0_exact_d2_r1_insufficient_fec_residual_arq() {
 #[test]
 fn f0_purity_fixed_r_no_controller() {
     for &rr in &[1u16, 2, 4] {
-        let r = run_f0(rr, &[], 1_000_000, 20 * MS, PARITY_FRAME);
+        let r = run_f0(rr, &[], 1_000_000, 20 * MS);
         assert_eq!(
             r.parity_emitted,
             u64::from(rr),
@@ -84,7 +83,7 @@ fn f0_purity_fixed_r_no_controller() {
 /// F0_RECOVERED_SCOPE + ESTIMATOR-PURITY (6. pin): decode→RECOVERED estimator'a-dokunmaz; notice-yok.
 #[test]
 fn f0_recovered_scope_estimator_purity() {
-    let r = run_f0(2, &[2, 5], 1_000_000, 20 * MS, PARITY_FRAME);
+    let r = run_f0(2, &[2, 5], 1_000_000, 20 * MS);
     assert!(r.fec_decoded_sources > 0, "RECOVERED-yolu tetiklenmeli");
     assert!(
         r.estimator_pure,
@@ -96,17 +95,15 @@ fn f0_recovered_scope_estimator_purity() {
     );
 }
 
-/// F0 WIRE-ACCOUNTING: redundancy payload/framing/sealed tutarlı (A1 ile aynı-domain; C-P4 realized-wire).
+/// F0 WIRE-ACCOUNTING: redundancy payload/framing/sealed tutarlı (A1-dup ile AYNI-domain fs_sealed_len;
+/// GROUNDED 26+11+E=101@E=64 — eski uydurma 108 DEĞİL; C-P4 realized-wire source==repair).
 #[test]
 fn f0_wire_accounting_consistent() {
-    let r = run_f0(2, &[], 1_000_000, 20 * MS, PARITY_FRAME);
-    assert_eq!(
-        r.realized_sealed_wire_bytes,
-        2 * PARITY_FRAME,
-        "2 parity × 108"
-    );
+    let r = run_f0(2, &[], 1_000_000, 20 * MS);
+    let sealed = fs_sealed_len(64); // 101 grounded (source==repair; protector.rs N7)
+    assert_eq!(r.realized_sealed_wire_bytes, 2 * sealed, "2 parity × 101");
     assert_eq!(r.redundancy_payload_bytes, 2 * 64);
-    assert_eq!(r.redundancy_framing_bytes, 2 * (PARITY_FRAME - 64));
+    assert_eq!(r.redundancy_framing_bytes, 2 * FS_SHARD_FRAMING_BYTES);
     assert_eq!(
         r.redundancy_payload_bytes + r.redundancy_framing_bytes,
         r.realized_sealed_wire_bytes

@@ -36,16 +36,17 @@ Etki: C-P4 budget-parity artık gerçek-eşdeğer (A1 blok-total-r ↔ F0 r-pari
 Smoke-kanıt: A1 r=2,k=8,seed=2026 → target={2,3}, duplicates_emitted=2 (blok-total), payload=128B.
 ```
 
-## A1.2 — C-P4 FAIRNESS: realized-sealed-wire (v1.1 C-P4 SIKILAŞTIRMA)
+## A1.2 — C-P4 FAIRNESS: realized-sealed-wire (v1.1 C-P4 SIKILAŞTIRMA + A1.11 DÜZELTMESİ)
 ```text
 C-P4 coding-vs-dup fairness'ı configured_r-eşitliği TEK-BAŞINA-YETMEZ. Nihai metrik:
   **realized_sealed_wire_bytes** (payload + framing), A1/F0 AYNI physical-accounting-domain'inde
   (ortak BottleneckChannel egress + ortak RedundancyCost). Otomatik BUDGET_MISMATCH-guard:
   |wire_A1 − wire_F*| toleransı-aşarsa → BUDGET_MISMATCH-NO-CAUSAL-EVIDENCE (coding-claim GEÇERSİZ).
-NOT: A1-dup framing=0 (source-frame kopyası) iken F0-parity framing≠0 (parity-header). Bu FARK
-  gizlenmez — realized-wire İKİSİNİ de içerir; F0 aynı-recovery'yi daha-çok-wire'la sağlıyorsa bu
-  DUPLICATION_ADVANTAGE tarafına yazılır (C-P4 sınıf-kararı wire-dahil).
-Smoke-kanıt: A1 dup wire=128B (128 payload + 0 framing) · F0 parity wire=216B (128 payload + 88 framing).
+DÜZELTİLDİ (A1.11): source-shard ve repair-shard sealed-wire boyu AYNI (INV-ENGINE-SOC; transport
+  ikisini boyutla ayırt-edemez). Bu yüzden A1-dup framing = F0-parity framing = FS_SHARD_FRAMING_BYTES(37).
+  A1 r=2 realized-wire == F0 r=2 realized-wire (matched-r → matched-wire) → C-P4 GERÇEK budget-eşitliği.
+Smoke-kanıt (DÜZELTİLMİŞ, grounded fs_sealed_len): A1 dup r=2 = 202B (128 payload + 74 framing) ==
+  F0 parity r=2 = 202B (128 payload + 74 framing). Eski uydurma "128 vs 216" domain-hatasıydı (A1.11).
 ```
 
 ## A1.3 — BLIND-DUP HONESTY + causal ledger (v1.1 C-P1/C-P3 NETLEŞTİRME)
@@ -95,18 +96,23 @@ F2 (interleaved/pre-DATA parity) SEALED "DATA-before-parity ordering"i (sender.r
 Ref: FS-SEAL-COLLISION-MAPS.md (F2 DUR-B).
 ```
 
-## A1.8 — TAIL-LOSS CONFOUND (YENİ BULGU; C-P3/deficit-selection etkisi) ⚠️ OPEN → FS-HARNESS-B
+## A1.8 — TAIL-LOSS = B_REAL_TAIL_ERASURE (SINIFLANDIRILDI; horizon-uzatmayla ÇÖZÜLMEZ) → FS-HARNESS-B
 ```text
-BULGU (binary-smoke, drop=son-unit): deficit blok'un SON source-unit'ine düşerse, ARQ-substrate (A0 ve
-  A1-MISS) kaybı fast-retransmit ile TESPİT-edemeyebilir (ardıl-data yok → dup-ACK/SACK tetiklenmez; RTO
-  horizon'u aşabilir) → blok HİÇ-tamamlanmaz (delivered=k−1, completion=None).
-KONFOUND: tail-pozisyon-deficit'te A0-vs-F0 KIYASI ÇARPIK — F0-parity tail-kaybı deterministik-kurtarır,
-  A0 yapısal-olarak fast-retransmit-edemez. Bu YA (a) GERÇEK-FEC-avantajı (tail-loss-protection; meşru-niş)
-  YA (b) horizon-çok-kısa-ise harness-artefaktı. FS-HARNESS-B'de DİSAMBİGÜ-EDİLMELİ:
-    seçenek-1: horizon'u RTO-tabanlı-retransmit'i-garanti-edecek-kadar-uzat (artefaktı-ele) — sonra tail-deficit
-               A0/F0 için ADİL;
-    seçenek-2: tail-loss'u AÇIK ölçülen-FEC-boyutu-olarak-işaretle (konfound-eleme-değil, boyut-olarak-raporla).
-  KARAR Abkarada'ya (C-P3 bağımlılığı). Bu satır REVERSE-SCHEDULE OPEN-ITEM olarak taşınır.
+SINIFLANDIRMA (reviewer talebi "önce sınıflandır A vs B"): **B_REAL_TAIL_ERASURE** — harness-defekti DEĞİL.
+KANIT (kod-yolu, workflow + doğrudan-okuma teyit): run_arm PTO'yu SADIK servis-eder (Timer::Pto her 1ms-tick,
+  koşulsuz, 20s-horizon boyunca; fs_harness.rs:612). Sender YAPISAL-olarak tail-loss'u kurtaramaz:
+  detect_time_losses "seq < largest_acked" ÖN-KOŞULUNA bağlı (loss.rs:383; RFC9002 §6.1 later-ACK; temiz-
+  kanal false-loss'unu önlemek için EKLENDİ). SON-unit düşünce largest_acked=k−2'de takılır → seq(son) HİÇBİR
+  ZAMAN < largest_acked olmaz → sonsuza-dek loss-ilan-edilemez. Timer-kümesi {Pto, RtpropProbe} — GERÇEK
+  RTO/TLP YOK. Belgelenmiş-caveat: loss.rs:277 (tail>largest_acked "F0-tespit-(iii)"), loss.rs:364 (tail-
+  recovery §5.1 ack_confidence→RECOVER_FWD liveness'e ERTELENDİ, A0'da aktif-DEĞİL). affects_slice_a=false.
+SONUÇ: **horizon-uzatma ÇÖZMEZ** (timeout-sorunu değil, seq<largest_acked yapısal-önkoşulu). Bu GERÇEK bir
+  tail-erasure rejimidir ve doğrudan FEC-lehine kanıttır (FEC tail-kaybını deterministik-kurtarır, ARQ
+  yapısal-olarak KURTARAMAZ). C-P3'te KORUNUR (maskeleme-YOK).
+FS-HARNESS-B [B2] YAPILACAKLAR (reviewer B-dalı talimatı): (1) tail-loss'u AÇIK ölçülen-boyut-olarak işaretle
+  (source-position/tail-erasure metadata); tail-pozisyonları DIŞLAMA; frozen-horizon'a göre censor/raporla.
+  (2) GERÇEK-fix Sender'da (harness-DEĞİL): RTO/TLP VEYA §5.1 ack_confidence→RECOVER_FWD tail-liveness —
+  bu transport-crate işi, FS-HARNESS-A kapsamı-DIŞI. KARAR Abkarada (C-P3 bağımlılığı).
 ```
 
 ## A1.9 — INVALID ⟂ INCOMPLETE ortogonalliği (v1.1 §censoring NETLEŞTİRME)
@@ -126,6 +132,22 @@ Reality-audit: RTT/BtlBw bilgisi transport-engine'de ZATEN-MEVCUT (RttEstimator 
   PLUMBING_GAP→çözüldü: ledger-only, karar-tüketmez (§B0.6 snapshot-contamination), production-değişiklik-YOK.
 ```
 
+## A1.11 — WIRE-ACCOUNTING GROUNDING (review-blocking-fix; A1.2 domain-düzeltmesi) ✅
+```text
+REVIEW-BULGUSU: eski run_arm A1-dup raw-payload (framing=0, wire=d.size=E) sayıyordu; F0-parity uydurma
+  parity_frame=108 (framing=44). İki-sorun: (i) A1/F0 FARKLI-domain (payload-only vs framed) → C-P4 sahte;
+  (ii) source DATA da payload-only serialize → completion-timing domain-tutarsız.
+GROUNDED-DÜZELTME (uydurma-YOK; §8): TEK sealed-datagram modeli — fs_sealed_len(E) = E + FS_SHARD_FRAMING_BYTES.
+  FS_SHARD_FRAMING_BYTES = 37 = EXTENDED_OUTER_OVERHEAD(26: h_ext4+wfmt1+wflags1+pn4+tag16) +
+  FEC_INNER_HDR_LEN(11: iv1+kind1+flags1+pid1+block4+esi2+k1). Otorite: kama-noise-wire protector.rs
+  sealed_len(FecShard) = 26+11+E ("N7: 101B @ E=64"). SOURCE ve REPAIR shard BOYUTU AYNI (tek FecShard;
+  fark yalnız sealed-payload İÇİNDEKİ 1-byte inner_kind 0x01/0x02 — wire-boyu-değil). Eski "108/44" UYDURMA
+  (gerçek 101/37; +7B over-count; "44" cold-start CTRL_CS_PROBE frame'iyle rastlantısal-çakışma).
+UYGULAMA: source|retransmit|A1-dup|F0-parity HEPSİ fs_sealed_len'den serialize + sayılır (OpaqueUnit.size =
+  sealed wire-boyu; Sender wire-reality'de pace-eder). Pin: A1_WIRE_ACCOUNTING_REAL_DATAGRAM — bir dup için
+  payload + framing == realized == channel-serialization, HEPSİ AGREE. Sonuç: A1 r=2 = F0 r=2 = 202B (matched).
+```
+
 ---
 
 ## DEĞİŞMEYENLER (v1.1'den AYNEN)
@@ -140,6 +162,7 @@ K4-RETREAT; agent-önerir/Abkarada-onaylar) · cost/pareto (§B0.8).
 ```text
 base       : FS-PREREG-v1.1 sha256=60353e99715cd4e51a42c53a94b6c1ad6963d8c3b3ef017ebc1bf2b9c3aaadf7
 statü      : DRAFT — HASH-YOK, FREEZE-YOK. v1.2-FINAL re-hash = FS-HARNESS-B-sonrası, FS-1-öncesi (TEK konsolide).
-kaynak     : FS-HARNESS-A inşa-turu netleştirmeleri (A1.0–A1.10). Smoke-kanıtları scripts/netem/fs_runner_smoke.sh.
-açık-item  : A1.8 TAIL-LOSS CONFOUND → FS-HARNESS-B reverse-schedule (horizon-uzat VEYA tail-boyut-raporla; Abkarada).
+kaynak     : FS-HARNESS-A inşa-turu netleştirmeleri (A1.0–A1.11). Smoke-kanıtları scripts/netem/fs_runner_smoke.sh.
+açık-item  : A1.8 TAIL-LOSS = B_REAL_TAIL_ERASURE → FS-HARNESS-B [B2] (Sender RTO/TLP/§5.1-liveness + tail-metadata;
+             harness-DEĞİL Sender-fix; horizon-uzatma ÇÖZMEZ). C-P3 bağımlılığı → Abkarada.
 ```

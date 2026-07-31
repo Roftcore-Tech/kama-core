@@ -4,7 +4,8 @@
 
 use adaptive_transport::fs_harness::BottleneckChannel;
 use adaptive_transport::fs_harness::{
-    BlockTiming, PathTimingLedger, PerRunInstrument, RedundancyKind,
+    fs_sealed_len, BlockTiming, PathTimingLedger, PerRunInstrument, RedundancyKind,
+    FS_SHARD_FRAMING_BYTES,
 };
 use adaptive_transport::fs_trace::{
     RedundancyPolicy, TraceChannel, TracePacketId, TraceSpec, TransmissionRole,
@@ -70,14 +71,10 @@ pub struct F0Result {
     pub realized_sealed_wire_bytes: u64,
 }
 
-/// F0 kapalı-döngü. `parity_wire_frame` = parity paketinin sealed-wire boyu (payload E + framing).
-pub fn run_f0(
-    manual_r: u16,
-    drop_initial: &[u16],
-    link_bps: u64,
-    owd_ns: u64,
-    parity_frame: u64,
-) -> F0Result {
+/// F0 kapalı-döngü. Sealed-wire boyu GROUNDED (fs_sealed_len; source==repair AYNI — INV-ENGINE-SOC;
+/// eski uydurma parity_frame=108 KALDIRILDI → gerçek 26+11+E=101@E=64, protector.rs N7).
+pub fn run_f0(manual_r: u16, drop_initial: &[u16], link_bps: u64, owd_ns: u64) -> F0Result {
+    let sealed = fs_sealed_len(E as u64); // 101 @ E=64: source VE repair AYNI sealed-datagram
     let src = source_bytes();
     let repairs = real_repairs(&src);
     let p = profile();
@@ -123,7 +120,7 @@ pub fn run_f0(
         let d = s.on_event(
             Event::AppData(OpaqueUnit {
                 id: u,
-                size: E as u64,
+                size: sealed, // wire-reality: sealed ct||tag blob (E-symbol DEĞİL); source==repair
             }),
             0,
         );
@@ -142,7 +139,7 @@ pub fn run_f0(
                 role,
                 attempt: u16::from(is_retx),
             };
-            match ch.offer(id, E as u64, 0) {
+            match ch.offer(id, sealed, 0) {
                 Some(arr) => deliveries.push((arr, esi, false, tx.seq)),
                 None if timing.t_source_loss.is_none() => timing.t_source_loss = Some(0),
                 None => {}
@@ -164,11 +161,11 @@ pub fn run_f0(
             role: TransmissionRole::Repair,
             attempt: 0,
         };
-        // Accounting (aynı-domain): payload E + framing (parity_frame − E).
-        res.realized_sealed_wire_bytes += parity_frame;
+        // Accounting (TEK-domain; A1-dup ile AYNI fs_sealed_len): payload E + grounded framing 37.
+        res.realized_sealed_wire_bytes += sealed;
         res.redundancy_payload_bytes += E as u64;
-        res.redundancy_framing_bytes += parity_frame.saturating_sub(E as u64);
-        if let Some(arr) = ch.offer(id, parity_frame, 0) {
+        res.redundancy_framing_bytes += FS_SHARD_FRAMING_BYTES;
+        if let Some(arr) = ch.offer(id, sealed, 0) {
             deliveries.push((arr, esi, true, u64::MAX));
         }
     }
@@ -305,7 +302,7 @@ pub fn run_f0(
                 role,
                 attempt: u16::from(is_retx),
             };
-            if let Some(arr) = ch.offer(id, E as u64, now) {
+            if let Some(arr) = ch.offer(id, sealed, now) {
                 deliveries.push((arr, esi, false, tx.seq));
                 if is_retx && timing.t_arq_arrival.is_none() {
                     // arrival capture: en-erken retransmit-teslim (yaklaşık; delivery-loop kesinleştirir).
