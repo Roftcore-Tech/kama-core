@@ -25,13 +25,12 @@ No FS-1 result-bearing run until BOTH slices complete ∧ tüm family-sanity/ins
 ## 2. DÖRT BAĞLAYICI PİN (kaydedildi)
 
 ```text
-PIN-A  A1-EARLY STATE-NEUTRAL: proactive-duplication ARQ/loss/recovery/PTO/RTT-estimator-semantiğini
-       DEĞİŞTİRMEZ. MUST-NOT: loss-state-üret · RECOVER_FWD-zorla · ARQ-retransmit-eligibility-değiştir ·
-       PTO/recovery-timer-yeniden-kur · RECOVERED-semantics-üret · RTT/BtlBw/loss-estimator'a-sahte-feedback.
-       MAY-ONLY: same-source-payload bounded-redundant-transmission + exact-redundancy-byte-accounting.
-       Test: a1_early_duplicate_is_transport_state_neutral — before/after TAM-snapshot karşılaştırması
-       (loss-state · ARQ-eligibility · PTO-deadline/state · recovery-mode · retx-counters · RTT-estimator ·
-       BtlBw-estimator · cold-start-state · FEC-state); A1 ON/OFF arasında duplicate-emisyon-HARİCİNDE-özdeş.
+PIN-A  A1-EARLY DIRECT EMISSION-SIDE STATE NEUTRALITY (Abkarada netleştirmesi): duplicate-EMİSYON-EYLEMİ
+       Sender-state'ini DOĞRUDAN değiştirmez. **YALNIZ emission-side; post-feedback-eşitlik İSTENMEZ** —
+       duplicate'in sonradan gerçek-receiver-feedback'iyle (erken-ACK/decode) yarattığı state-değişimi
+       müdahalenin MEŞRU-nedensel-sonucudur (A1-vs-A0 post-feedback state-eşitliği YASAK-DEĞİL/İSTENMEZ).
+       Test: emisyon-öncesi-snapshot → dup-emit → FEEDBACK'TEN-ÖNCE-snapshot → özdeş (state/BtlBw/qd/rtt/
+       loss-ledger/pif/RTT). Yapısal: [`A1EarlyEmitter`] Sender'a REFERANS-TUTMAZ (mutasyon tip-düzeyinde-imkânsız).
 PIN-B  PAIRING TRACE SEMANTICS FROZEN: **exact-deficit = INITIAL-SOURCE-TRANSMISSION ERASURE** (source-
        identity erasure DEĞİL) — key=(source_id, role, attempt); D yalnız role=InitialSource siler;
        retransmit(A0)/duplicate(A1)/parity(F0) BAĞIMSIZ-admissible (default PassAll; redundancy-policy
@@ -91,17 +90,28 @@ FEC/redundancy lehine bias-üretirdi (yakalandı+düzeltildi).
 Kapılar: fmt + clippy(-D, 2cfg) + FLAG-OFF **382** (değişmedi; fs_trace flag-OFF-derlenmez) +
 ALL-FEATURES **→507** + A1-pin sağlam.
 
-## 5. FS-HARNESS-A KALAN İŞ (dürüst; henüz result-bearing-YOK)
+## 5. COST-ACCOUNTING + ExactDeficit ETİKETLEME (bağlayıcı)
+- **Redundancy-cost AYRI kaydedilir** (`RedundancyCost`): `configured_r · redundancy_payload_bytes ·
+  realized_sealed_wire_bytes · packet_count`. **C-P4 fairness REALIZED-SEALED-WIRE-BYTES üstünden**
+  (configured_r DEĞİL — A1 r=2 sealed-byte'ı ≠ FEC r=2; header/framing farkı).
+- **ExactDeficit + RedundancyPolicy::PassAll = MEKANİZMA/CAUSAL-replication** (recovery-mekanizması-
+  karşılaştırması, matched-initial-deficit); **product-utility-iddiası DEĞİL** (doğal-kanalda redundancy-
+  paketlerinin de kaybolduğu iddia). Product-claim **natural-IID/burst** kollarında (redundancy'nin-de-
+  kaybolabildiği yer). Rapor bu etiketi taşır.
+
+## 6. FS-HARNESS-A İLERLEME (dürüst; henüz result-bearing-YOK)
 ```text
-[✓] PIN-B TraceChannel (fs_trace.rs; 5-test)
-[✓] F2 DUR-B verdict + A1-EARLY §11-reuse-rejection kararı (PIN-A yolu)
-[ ] A1-EARLY runner-level duplication emission + exact-byte-accounting (duplicate-selection D-bağımsız)
-[ ] a1_early_duplicate_is_transport_state_neutral testi (before/after TAM-state-snapshot; PIN-A)
-[ ] a1_early_duplicate_consumes_wire_budget testi (aynı-path/serialization/accounting; PIN-E egress-fairness)
+[✓] PIN-B TraceChannel (fs_trace.rs; attempt-aware; 6-test)
+[✓] F2 DUR-B verdict + A1-EARLY §11-reuse-rejection kararı
+[✓] A1-EARLY emitter (fs_harness.rs) + exact-byte-accounting (RedundancyCost) + D-bağımsız-selection
+[✓] a1_early_duplicate_is_transport_state_neutral (PIN-A direct emission-side; 1-test)
+[✓] a1_early_duplicate_consumes_wire_budget (PIN-E; realized-sealed-wire; 1-test)
+[✓] a1_duplicate_target_selection_is_deficit_independent (D-bağımsız; 1-test)
 [ ] F0 integration (mevcut open_fec_block_authority yolu runner'a bağlanır)
 [ ] 9-timestamp instrumentation (t_source_loss..t_block_complete tek-clock) + metadata (path_timing ledger-only)
 [ ] per-run instrument-chain (binary-provenance · arg-diff · trace-hash · overlap-gate)
-[ ] fs_runner (arm=a0|a1|f0; --trace; --arm; deterministic channel) + loopback-smoke
+[ ] fs_runner (arm=a0|a1|f0; --trace; --arm; deterministic bottleneck-channel) + loopback-smoke
 FS-HARNESS-B: F1 · F3 · F4 (PIN-C/PIN-D) + family-mechanism-pins.
 ```
-Yukarıdakiler tamamlanana + pin'ler-yeşil olana kadar **FS-1 KOŞULMAZ**.
+Yukarıdakiler tamamlanana + pin'ler-yeşil olana kadar **FS-1 KOŞULMAZ**. Kapılar: FLAG-OFF **382** ·
+ALL-FEATURES **→510** · fmt · clippy(-D,2cfg) · A1-pin sağlam.

@@ -30,6 +30,9 @@ pub mod clock;
 pub mod emergency;
 pub mod error;
 pub mod fec;
+/// DR-FEC-FS-1 FS-HARNESS-A — A1-EARLY duplication emitter + redundancy cost-accounting (PIN-A/PIN-E).
+#[cfg(feature = "experimental-fec-budget")]
+pub mod fs_harness;
 /// DR-FEC-FS-1 FS-HARNESS-A — trace-driven paired replay channel (pin-2 pairing semantics).
 #[cfg(feature = "experimental-fec-budget")]
 pub mod fs_trace;
