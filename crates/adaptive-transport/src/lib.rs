@@ -30,6 +30,9 @@ pub mod clock;
 pub mod emergency;
 pub mod error;
 pub mod fec;
+/// DR-FEC-FS-1 FS-HARNESS-A — trace-driven paired replay channel (pin-2 pairing semantics).
+#[cfg(feature = "experimental-fec-budget")]
+pub mod fs_trace;
 pub mod fusion;
 pub mod loss;
 pub mod pacer;
