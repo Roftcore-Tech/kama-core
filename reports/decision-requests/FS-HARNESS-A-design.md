@@ -29,10 +29,19 @@ PIN-A  A1-EARLY STATE-NEUTRAL: proactive-duplication ARQ/loss/recovery/PTO/RTT-e
        DEĞİŞTİRMEZ. MUST-NOT: loss-state-üret · RECOVER_FWD-zorla · ARQ-retransmit-eligibility-değiştir ·
        PTO/recovery-timer-yeniden-kur · RECOVERED-semantics-üret · RTT/BtlBw/loss-estimator'a-sahte-feedback.
        MAY-ONLY: same-source-payload bounded-redundant-transmission + exact-redundancy-byte-accounting.
-       Test: a1_early_duplicate_is_transport_state_neutral (Sender-state trajektörü dup-ON=dup-OFF).
-PIN-B  PAIRING TRACE SEMANTICS FROZEN: exact-deficit=semantic-source-id-keyed-deterministic-loss;
-       natural-IID/burst=arm-independent-deterministic-channel/time-trace; wire-ordinal-drop-replay
-       TEK-BAŞINA GEÇERSİZ (kollar farklı-packet-count). → [UYGULANDI §4].
+       Test: a1_early_duplicate_is_transport_state_neutral — before/after TAM-snapshot karşılaştırması
+       (loss-state · ARQ-eligibility · PTO-deadline/state · recovery-mode · retx-counters · RTT-estimator ·
+       BtlBw-estimator · cold-start-state · FEC-state); A1 ON/OFF arasında duplicate-emisyon-HARİCİNDE-özdeş.
+PIN-B  PAIRING TRACE SEMANTICS FROZEN: **exact-deficit = INITIAL-SOURCE-TRANSMISSION ERASURE** (source-
+       identity erasure DEĞİL) — key=(source_id, role, attempt); D yalnız role=InitialSource siler;
+       retransmit(A0)/duplicate(A1)/parity(F0) BAĞIMSIZ-admissible (default PassAll; redundancy-policy
+       D'den bağımsız scriptable). natural-IID/burst=arm-independent-deterministic. wire-ordinal-drop-replay
+       GEÇERSİZ. A1 duplicate-selection D'den BAĞIMSIZ + future-loss-knowledge-YOK. → [UYGULANDI §4; DÜZELTİLDİ].
+PIN-E  A1-EARLY EGRESS-FAIRNESS (Abkarada düzeltme-2): runner-duplication Sender-recovery-STATE'ini bypass-
+       edebilir AMA experiment'in PHYSICAL-egress-cost'unu bypass-EDEMEZ. Her duplicate: aynı-UDP/netem-path ·
+       gerçek link-serialization/bandwidth · exact-sealed-wire-accounting · bottleneck-queue/source-displacement.
+       Bedava-unmetered-lane YOK. Sender-pacing-SONRASI dup'lanıyorsa bu-ayrım-açıkça-ölçülüp-raporlanır.
+       Test: a1_early_duplicate_consumes_wire_budget.
 PIN-C  F1/F3 MECHANISM PIN (slice-B): yalnız-eligibility DEĞİL, GERÇEK wire-time-advancement:
        t_parity_wire(candidate) < t_parity_wire(F0) prereg-mechanism-fixture'da, DATA-before-parity-
        ihlal-etmeden. Yapamıyorsa → "STRUCTURALLY NON-EFFECTIVE UNDER CURRENT ORDERING" (ordering-
@@ -70,18 +79,25 @@ NaturalBurst}` + `TraceChannel::decide()` (saf-fonksiyon; RNG-YOK). Semantik:
 - NaturalBurst: time-domain [lo,hi) interval (packet-count'tan bağımsız).
 - Determinism-pin: `decision_log_hash` — aynı-trace × N → identical.
 
-**Testler (5/5 PASS):** `exact_deficit_drops_only_named_sources` · `exact_deficit_source_deficit_is_arm_
-invariant` (A0/A1/F0 ÖZDEŞ source-deficit) · `natural_iid_deterministic_and_arm_independent` ·
+**DÜZELTME (Abkarada düzeltme-1; attempt-aware):** ExactDeficit artık `drop_initial`(role=InitialSource) +
+`RedundancyPolicy{PassAll|Iid}`; key=(source_id, role, attempt). Böylece kayıp-source'un **retransmit'i,
+duplicate'ı, parity'si BAĞIMSIZ-admissible** — eski "source-id-keyed" biçimi A0-retransmit'i de öldürüp
+FEC/redundancy lehine bias-üretirdi (yakalandı+düzeltildi).
+
+**Testler (6/6 PASS):** `exact_deficit_erases_only_initial_source_transmission` (retransmit/dup/parity PASS) ·
+`initial_source_deficit_is_arm_invariant_and_recovery_fair` (D özdeş ∧ recovery-attempt-hiç-düşmez) ·
+`redundancy_policy_independently_scriptable` · `natural_iid_deterministic_arm_independent_attempt_aware` ·
 `natural_burst_time_domain` · `trace_determinism_thrice_identical_hash`.
 Kapılar: fmt + clippy(-D, 2cfg) + FLAG-OFF **382** (değişmedi; fs_trace flag-OFF-derlenmez) +
-ALL-FEATURES **501→506** (+5) + A1-pin sağlam.
+ALL-FEATURES **→507** + A1-pin sağlam.
 
 ## 5. FS-HARNESS-A KALAN İŞ (dürüst; henüz result-bearing-YOK)
 ```text
 [✓] PIN-B TraceChannel (fs_trace.rs; 5-test)
 [✓] F2 DUR-B verdict + A1-EARLY §11-reuse-rejection kararı (PIN-A yolu)
-[ ] A1-EARLY runner-level duplication emission + exact-byte-accounting
-[ ] a1_early_duplicate_is_transport_state_neutral testi (Sender-state dup-ON=dup-OFF)
+[ ] A1-EARLY runner-level duplication emission + exact-byte-accounting (duplicate-selection D-bağımsız)
+[ ] a1_early_duplicate_is_transport_state_neutral testi (before/after TAM-state-snapshot; PIN-A)
+[ ] a1_early_duplicate_consumes_wire_budget testi (aynı-path/serialization/accounting; PIN-E egress-fairness)
 [ ] F0 integration (mevcut open_fec_block_authority yolu runner'a bağlanır)
 [ ] 9-timestamp instrumentation (t_source_loss..t_block_complete tek-clock) + metadata (path_timing ledger-only)
 [ ] per-run instrument-chain (binary-provenance · arg-diff · trace-hash · overlap-gate)
