@@ -45,3 +45,9 @@ adaptive-transport = { path = "../adaptive-transport" }
 [[example]]
 name = "a2_rx_netem_runner"
 required-features = ["experimental-cold-start"]
+
+# DR-FEC-FS-1 FS-HARNESS-A: fs_runner CLI (A0/A1 via adaptive-transport run_arm + F0 via shared codec-loop).
+# Machine-readable KEY=VALUE; result-bearing DEĞİL (harness-smoke). FS-1 v1.2-freeze-SONRASI ayrı-tur.
+[[example]]
+name = "fs_runner"
+required-features = ["experimental-fs-harness"]

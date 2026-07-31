@@ -115,10 +115,16 @@ ALL-FEATURES **→507** + A1-pin sağlam.
 [✓] CLOSED-LOOP run_arm (GERÇEK Sender + BottleneckChannel; A0/A1) + FAITHFULNESS-smoke (3-test):
     loopback→8/8-teslim-0-retransmit · A0-deficit→ARQ-retransmit-ile-kurtarır(faithful) · A1-deficit→duplicate-
     ile-kurtarır-0-retransmit-A0'dan-ERKEN-biter (C-P4-mekanizması kanıtlı)
-[ ] F0 integration (open_fec_block_authority TEK-semantic-point; PathTiming-tüketmez; configured-R-only; parity-decode)
-[ ] full 9-timestamp/generic-ledger döngüde-doldurma (şu an completion + retransmit/dup-sayaç; per-block-lifecycle eksik)
-[ ] per-run-instrument-chain (binary-provenance · arg-diff · trace-hash · overlap-gate) + fs_runner CLI + loopback-smoke-binary
-FS-HARNESS-B: F1 · F3 · F4 (PIN-C/PIN-D) + family-mechanism-pins.
+[✓] F0 integration (kama-integration; open_fec_block_authority TEK-semantic-point; PathTiming-tüketmez;
+    configured-R-only; GERÇEK RsSimdCodec encode+reconstruct+byte-equality; RECOVERED-scope + estimator-purity;
+    hybrid residual-ARQ) — tests/common/fs_f0.rs (paylaşılan) + 7 sanity-pin (fs_f0_closed_loop.rs)
+[✓] full 9-timestamp/generic-ledger döngüde-doldurma + **t_repair_usable** (reconstruct-complete/dup-arrival) +
+    ParityDelayClass::UsableBeforeArq(t_repair_usable-tabanlı) + a1_dup_hits/misses + PathTimingLedger
+[✓] per-run-instrument-chain (faithful · overlap · config-hash(binary/arg-provenance) · trace-hash · intervention ·
+    counts) + admitted() gate + fs_runner CLI (examples/fs_runner.rs; --arm a0|a1|f0, machine-readable) +
+    BINARY loopback/recovery smoke (scripts/netem/fs_runner_smoke.sh; 6/6 GREEN)
+→ **FS-HARNESS-A tamamlandı — bkz. FS-HARNESS-A-CHECKPOINT.md (reverse-schedule OPEN-ITEM → slice-B).**
+FS-HARNESS-B: F1 · F3 · F4 (PIN-C/PIN-D) + family-mechanism-pins + reverse-blackout-schedule + tail-loss-confound.
 ```
 
 ## 7. A0/A1 CLOSED-LOOP DAVRANIŞ TABLOSU (run_arm; smoke-kanıtlı)

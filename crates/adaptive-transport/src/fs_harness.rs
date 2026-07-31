@@ -20,9 +20,10 @@ use crate::fs_trace::{TraceChannel, TracePacketId, TransmissionRole};
 use std::collections::BTreeSet;
 
 /// Redundancy'nin türü (arm-neutral timing-ledger + accounting eşlemesi için).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum RedundancyKind {
     /// A0: proaktif-redundancy yok.
+    #[default]
     None,
     /// A1-EARLY: same-byte source-duplication.
     Duplicate,
@@ -200,6 +201,57 @@ pub struct BlockTiming {
     pub t_redundancy_enqueued: Option<u64>,
     pub t_redundancy_wire: Option<u64>,
     pub t_redundancy_arrival: Option<u64>,
+    /// **t_repair_usable (Abkarada):** redundancy'nin GERÇEKTEN-kullanılabilir olduğu an. FEC için =
+    /// reconstruct-TAMAMLANDI + recovered-byte-hazır (codec-decode-latency dahil; parity-arrival'DAN
+    /// FARKLI). A1 için = duplicate-arrival (decode-latency yok). **USABLE_BEFORE_ARQ bundan türetilir.**
+    pub t_repair_usable: Option<u64>,
+}
+
+/// Redundancy gecikme-sınıfı (§8.1; t_repair_usable-tabanlı — parity-arrival DEĞİL).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParityDelayClass {
+    NotEligible,
+    EligibleNotEnqueued,
+    EnqueuedNotWire,
+    WireButLate,
+    /// t_repair_usable < t_arq_arrival (redundancy ARQ-onarımından ÖNCE kullanılabilir).
+    UsableBeforeArq,
+}
+
+impl BlockTiming {
+    /// USABLE_BEFORE_ARQ **t_repair_usable**'dan türetilir (codec-latency causal-path'te; parity-arrival DEĞİL).
+    #[must_use]
+    pub fn parity_delay_class(&self) -> ParityDelayClass {
+        match (
+            self.t_redundancy_eligible,
+            self.t_redundancy_enqueued,
+            self.t_redundancy_wire,
+        ) {
+            (None, _, _) => ParityDelayClass::NotEligible,
+            (Some(_), None, _) => ParityDelayClass::EligibleNotEnqueued,
+            (Some(_), Some(_), None) => ParityDelayClass::EnqueuedNotWire,
+            (Some(_), Some(_), Some(_)) => match (self.t_repair_usable, self.t_arq_arrival) {
+                (Some(u), Some(a)) if u < a => ParityDelayClass::UsableBeforeArq,
+                (Some(u), None) if self.t_block_complete.is_some_and(|c| u <= c) => {
+                    ParityDelayClass::UsableBeforeArq
+                }
+                _ => ParityDelayClass::WireButLate,
+            },
+        }
+    }
+}
+
+impl BottleneckChannel {
+    /// Trace decision-log hash (pairing-kanıtı: aynı-trace kollar-arası identical-hash).
+    #[must_use]
+    pub fn trace_hash(&self) -> u64 {
+        self.trace.decision_log_hash()
+    }
+    /// (kanal-karar-sayısı, düşürülen) — faithfulness: realized-drop vs configured-|D|.
+    #[must_use]
+    pub fn trace_counts(&self) -> (u64, u64) {
+        self.trace.counts()
+    }
 }
 
 impl BlockTiming {
@@ -298,6 +350,42 @@ pub struct RunCfg {
     pub dup_seed: u64,
 }
 
+/// Path-timing snapshot ledger-only (A0/A1/F0 KARAR-İÇİN-TÜKETMEZ; yalnız gözlem).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PathTimingLedger {
+    pub path_srtt_ns: Option<u64>,
+    pub path_min_rtt_ns: Option<u64>,
+    pub path_rttvar_ns: u64,
+    pub path_queue_delay_ns: u64,
+    pub path_sample_present: bool,
+    pub path_rtprop_fresh: bool,
+}
+
+/// Per-run instrument-chain (admission-gate'ler; ihlal → INVALID — NO EVIDENCE, protokol-FAIL-DEĞİL).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PerRunInstrument {
+    /// faithfulness: realized-source-drop == configured (deterministic-channel → tam-eşit).
+    pub faithful: bool,
+    /// overlap-gate: receiver_events > 0.
+    pub overlap_ok: bool,
+    /// binary/arg provenance (config-kimliği; arg-parity kanıtı).
+    pub config_hash: u64,
+    /// trace-kimliği (pairing: aynı-trace kollar-arası identical).
+    pub trace_hash: u64,
+    /// intervention-kimliği.
+    pub arm_intervention: RedundancyKind,
+    pub configured_source_drops: u64,
+    pub realized_source_drops: u64,
+    pub receiver_events: u64,
+}
+impl PerRunInstrument {
+    /// Admission: faithful ∧ overlap. İhlal → INVALID.
+    #[must_use]
+    pub fn admitted(&self) -> bool {
+        self.faithful && self.overlap_ok
+    }
+}
+
 /// Kapalı-döngü koşu sonucu (observational).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RunResult {
@@ -309,6 +397,13 @@ pub struct RunResult {
     pub duplicates_emitted: u64,
     pub cost: RedundancyCost,
     pub channel_serialized_bytes: u64,
+    /// 9-timestamp + generic ledger (t_repair_usable dahil).
+    pub timing: BlockTiming,
+    /// A1 blind-dup causal: hit = dropped-initial ∈ target; miss = dropped-initial ∉ target.
+    pub a1_dup_hits: u64,
+    pub a1_dup_misses: u64,
+    pub path_timing: PathTimingLedger,
+    pub instrument: PerRunInstrument,
 }
 
 fn tag_for(kind: TransmitKind, unit: u64) -> Option<(TracePacketId, bool)> {
@@ -328,6 +423,7 @@ fn tag_for(kind: TransmitKind, unit: u64) -> Option<(TracePacketId, bool)> {
 }
 
 /// Emisyonları işle: semantic-tag → BottleneckChannel → delivery-schedule; A1'de SEÇİLİ-source dup (blok-total).
+/// deliveries: (arr, unit, seq, kind) — kind: 0=source · 1=retransmit · 2=duplicate. Timing capture.
 fn process_emissions(
     decisions: &[TransmitDecision],
     now: u64,
@@ -335,19 +431,33 @@ fn process_emissions(
     unit_size: u64,
     ch: &mut BottleneckChannel,
     res: &mut RunResult,
-    deliveries: &mut Vec<(u64, u64, u64)>,
+    deliveries: &mut Vec<(u64, u64, u64, u8)>,
 ) {
     for d in decisions {
         let Some((id, is_data)) = tag_for(d.kind, d.unit_id) else {
             continue;
         };
-        match d.kind {
-            TransmitKind::Data => res.data_emitted += 1,
-            TransmitKind::Retransmit => res.retransmits_emitted += 1,
-            _ => {}
-        }
-        if let Some(arr) = ch.offer(id, d.size, now) {
-            deliveries.push((arr, d.unit_id, d.seq));
+        let kind_tag = match d.kind {
+            TransmitKind::Data => {
+                res.data_emitted += 1;
+                0
+            }
+            TransmitKind::Retransmit => {
+                res.retransmits_emitted += 1;
+                if res.timing.t_arq_eligible.is_none() {
+                    res.timing.t_arq_eligible = Some(now);
+                    res.timing.t_arq_wire = Some(now);
+                }
+                1
+            }
+            _ => continue,
+        };
+        match ch.offer(id, d.size, now) {
+            Some(arr) => deliveries.push((arr, d.unit_id, d.seq, kind_tag)),
+            None if is_data && res.timing.t_source_loss.is_none() => {
+                res.timing.t_source_loss = Some(now); // deterministic INITIAL-source DROP-anı
+            }
+            None => {}
         }
         // A1 blok-total: yalnız SEÇİLİ (target) source'un BİR duplicate'i (K×R DEĞİL).
         if is_data && dup_target.contains(&(d.unit_id as u16)) {
@@ -360,8 +470,14 @@ fn process_emissions(
             res.cost.redundancy_packet_count += 1;
             res.cost.realized_sealed_wire_bytes += d.size;
             res.cost.redundancy_payload_bytes += unit_size;
+            if res.timing.t_redundancy_wire.is_none() {
+                res.timing.redundancy_kind = Some(RedundancyKind::Duplicate);
+                res.timing.t_redundancy_eligible = Some(now);
+                res.timing.t_redundancy_enqueued = Some(now);
+                res.timing.t_redundancy_wire = Some(now); // dup: eligible=enqueued=wire (early, synchronous)
+            }
             if let Some(arr) = ch.offer(did, d.size, now) {
-                deliveries.push((arr, d.unit_id, d.seq));
+                deliveries.push((arr, d.unit_id, d.seq, 2));
             }
         }
     }
@@ -405,8 +521,9 @@ pub fn run_arm(arm: Arm, cfg: &RunCfg) -> RunResult {
         ..RunResult::default()
     };
     let mut delivered: BTreeSet<u64> = BTreeSet::new();
-    let mut deliveries: Vec<(u64, u64, u64)> = Vec::new();
+    let mut deliveries: Vec<(u64, u64, u64, u8)> = Vec::new();
     let mut acks: Vec<(u64, u64)> = Vec::new();
+    let mut receiver_events = 0u64;
 
     let mut d0 = Vec::new();
     for u in 0..cfg.num_units as u64 {
@@ -431,10 +548,30 @@ pub fn run_arm(arm: Arm, cfg: &RunCfg) -> RunResult {
     let mut now = 0u64;
     while now < cfg.horizon_ns && delivered.len() < cfg.num_units {
         now += cfg.dt_ns;
-        deliveries.retain(|&(arr, unit, seq)| {
+        deliveries.retain(|&(arr, unit, seq, kind)| {
             if arr <= now {
-                if delivered.insert(unit) && delivered.len() == cfg.num_units {
-                    res.completion_ns = Some(arr.max(now));
+                receiver_events += 1;
+                let first = delivered.insert(unit);
+                if first {
+                    // Arrival-timestamp by kind (t_repair_usable = dup-arrival; A1 decode-latency-yok).
+                    match kind {
+                        1 if res.timing.t_arq_arrival.is_none() => {
+                            res.timing.t_arq_arrival = Some(arr);
+                        }
+                        2 => {
+                            if res.timing.t_redundancy_arrival.is_none() {
+                                res.timing.t_redundancy_arrival = Some(arr);
+                            }
+                            if res.timing.t_repair_usable.is_none() {
+                                res.timing.t_repair_usable = Some(arr);
+                            }
+                        }
+                        _ => {}
+                    }
+                    if delivered.len() == cfg.num_units {
+                        res.completion_ns = Some(arr.max(now));
+                        res.timing.t_block_complete = res.completion_ns;
+                    }
                 }
                 acks.push((arr + cfg.owd_ns, seq));
                 false
@@ -485,7 +622,63 @@ pub fn run_arm(arm: Arm, cfg: &RunCfg) -> RunResult {
     }
     res.delivered_units = delivered.len();
     res.channel_serialized_bytes = ch.serialized_bytes();
+    // A0 redundancy_kind=None (dup-yoksa timing'de set edilmedi).
+    if res.timing.redundancy_kind.is_none() {
+        res.timing.redundancy_kind = Some(RedundancyKind::None);
+    }
+    // A1 blind-dup hit/miss: dropped-initial ∈ target → hit (dup-kurtarır); ∉ → miss (ARQ-fallback).
+    for &u in &cfg.drop_initial_units {
+        if dup_target.contains(&(u as u16)) {
+            res.a1_dup_hits += 1;
+        } else if matches!(arm, Arm::A1 { .. }) {
+            res.a1_dup_misses += 1;
+        }
+    }
+    // Path-timing ledger-only (KARAR-İÇİN-TÜKETİLMEDİ; yalnız gözlem).
+    let pt = s.path_timing_snapshot();
+    res.path_timing = PathTimingLedger {
+        path_srtt_ns: pt.srtt_ns,
+        path_min_rtt_ns: pt.min_rtt_ns,
+        path_rttvar_ns: pt.rttvar_ns,
+        path_queue_delay_ns: pt.queue_delay_ns,
+        path_sample_present: pt.sample_present,
+        path_rtprop_fresh: pt.rtprop_fresh,
+    };
+    // Per-run instrument-chain.
+    let (_, realized_drops) = ch.trace_counts();
+    let configured = cfg.drop_initial_units.len() as u64;
+    res.instrument = PerRunInstrument {
+        faithful: realized_drops == configured, // deterministic-channel → tam-eşit
+        overlap_ok: receiver_events > 0,
+        config_hash: run_config_hash(arm, cfg),
+        trace_hash: ch.trace_hash(),
+        arm_intervention: res.timing.redundancy_kind.unwrap_or(RedundancyKind::None),
+        configured_source_drops: configured,
+        realized_source_drops: realized_drops,
+        receiver_events,
+    };
     res
+}
+
+/// Config-kimliği (binary/arg provenance + arg-parity: aynı-config → aynı-hash; yalnız arm-farkı ölçülür).
+#[must_use]
+pub fn run_config_hash(arm: Arm, cfg: &RunCfg) -> u64 {
+    let arm_disc: u8 = match arm {
+        Arm::A0 => 0,
+        Arm::A1 { .. } => 1,
+    };
+    let mut k = Vec::new();
+    k.push(arm_disc);
+    k.extend_from_slice(&(cfg.num_units as u64).to_le_bytes());
+    k.extend_from_slice(&cfg.unit_size.to_le_bytes());
+    k.extend_from_slice(&cfg.link_bps.to_le_bytes());
+    k.extend_from_slice(&cfg.owd_ns.to_le_bytes());
+    k.extend_from_slice(&cfg.dt_ns.to_le_bytes());
+    k.extend_from_slice(&cfg.dup_seed.to_le_bytes());
+    for u in &cfg.drop_initial_units {
+        k.extend_from_slice(&u.to_le_bytes());
+    }
+    fnv1a(&k)
 }
 
 #[cfg(test)]
@@ -784,5 +977,80 @@ mod tests {
             a1.retransmits_emitted > 0,
             "target-dışı kayıp → duplicate kurtarmaz, ARQ-retransmit-gerekir (blind-dup dürüst-davranışı)"
         );
+    }
+
+    /// TIMING LEDGER + INSTRUMENT: A0-deficit → t_source_loss/t_arq_arrival/t_block_complete dolu; admitted.
+    #[test]
+    fn run_arm_timing_ledger_and_instrument_chain() {
+        let r = run_arm(Arm::A0, &cfg(&[2, 5]));
+        assert!(
+            r.timing.t_source_loss.is_some(),
+            "t_source_loss (deterministic-drop) dolmalı"
+        );
+        assert!(
+            r.timing.t_arq_wire.is_some() && r.timing.t_arq_arrival.is_some(),
+            "ARQ-lifecycle dolmalı"
+        );
+        assert!(r.timing.t_block_complete.is_some());
+        assert_eq!(
+            r.timing.redundancy_kind,
+            Some(RedundancyKind::None),
+            "A0 = None"
+        );
+        // instrument-chain admitted.
+        assert!(
+            r.instrument.faithful,
+            "realized-drop({}) != configured({})",
+            r.instrument.realized_source_drops, r.instrument.configured_source_drops
+        );
+        assert!(r.instrument.overlap_ok, "overlap-gate (receiver_events>0)");
+        assert!(r.instrument.admitted(), "instrument admitted olmalı");
+        assert_eq!(r.instrument.configured_source_drops, 2);
+    }
+
+    /// A1 HIT: target-içi kayıp → hit=1/miss=0; t_repair_usable(dup-arrival) dolu; class=UsableBeforeArq.
+    #[test]
+    fn run_arm_a1_hit_ledger_and_usable_before_arq() {
+        let arm = Arm::A1 { r: 3 };
+        let target = run_dup_target(arm, &cfg(&[]));
+        let victim = *target.iter().next().unwrap() as u64;
+        let r = run_arm(arm, &cfg(&[victim]));
+        assert_eq!(r.a1_dup_hits, 1, "target-içi-kayıp → hit");
+        assert_eq!(r.a1_dup_misses, 0);
+        assert!(
+            r.timing.t_repair_usable.is_some(),
+            "t_repair_usable (dup-arrival) dolmalı"
+        );
+        assert_eq!(r.timing.redundancy_kind, Some(RedundancyKind::Duplicate));
+        // USABLE_BEFORE_ARQ t_repair_usable'dan (retransmit-gerekmedi → t_arq_arrival None; usable≤complete).
+        assert_eq!(
+            r.timing.parity_delay_class(),
+            ParityDelayClass::UsableBeforeArq
+        );
+    }
+
+    /// A1 MISS: target-dışı kayıp → hit=0/miss=1.
+    #[test]
+    fn run_arm_a1_miss_ledger() {
+        let arm = Arm::A1 { r: 2 };
+        let target = run_dup_target(arm, &cfg(&[]));
+        let victim = (0..8u64).find(|u| !target.contains(&(*u as u16))).unwrap();
+        let r = run_arm(arm, &cfg(&[victim]));
+        assert_eq!(r.a1_dup_hits, 0);
+        assert_eq!(r.a1_dup_misses, 1, "target-dışı-kayıp → miss");
+    }
+
+    /// TRACE-HASH DETERMINISM: aynı arm+cfg → identical trace-hash (replay-stable pairing-kanıtı).
+    #[test]
+    fn run_arm_trace_hash_deterministic() {
+        let a = run_arm(Arm::A1 { r: 2 }, &cfg(&[2, 5]));
+        let b = run_arm(Arm::A1 { r: 2 }, &cfg(&[2, 5]));
+        assert_eq!(
+            a.instrument.trace_hash, b.instrument.trace_hash,
+            "trace-hash replay-stabil değil"
+        );
+        assert_eq!(a.instrument.config_hash, b.instrument.config_hash);
+        // PATH-TIMING ledger-only mevcut (karar-tüketimi-yok; yalnız gözlem).
+        let _ = a.path_timing.path_srtt_ns;
     }
 }
