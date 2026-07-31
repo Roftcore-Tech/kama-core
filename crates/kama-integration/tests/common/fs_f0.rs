@@ -69,6 +69,10 @@ pub struct F0Result {
     pub redundancy_payload_bytes: u64,
     pub redundancy_framing_bytes: u64,
     pub realized_sealed_wire_bytes: u64,
+    /// **§8 TOTAL-OUTCOME-COST (Pareto/oracle; INTERVENTION-BUDGET'ten AYRI):** ARQ-retransmit wire-byte'ları.
+    pub arq_retransmit_bytes: u64,
+    /// FEC erken-tamamladıysa emitilen retransmit'ler SPURIOUS (hybrid-coordination-cost; BUDGET_MISMATCH-DEĞİL).
+    pub spurious_retransmits: u64,
 }
 
 /// F0 kapalı-döngü. Sealed-wire boyu GROUNDED (fs_sealed_len; source==repair AYNI — INV-ENGINE-SOC;
@@ -113,6 +117,8 @@ pub fn run_f0(manual_r: u16, drop_initial: &[u16], link_bps: u64, owd_ns: u64) -
         redundancy_payload_bytes: 0,
         redundancy_framing_bytes: 0,
         realized_sealed_wire_bytes: 0,
+        arq_retransmit_bytes: 0,
+        spurious_retransmits: 0,
     };
 
     // t=0: K source DATA (esi=unit_id).
@@ -288,6 +294,7 @@ pub fn run_f0(manual_r: u16, drop_initial: &[u16], link_bps: u64, owd_ns: u64) -
                 TransmitKind::Data => (TransmissionRole::InitialSource, false),
                 TransmitKind::Retransmit => {
                     res.retransmits += 1;
+                    res.arq_retransmit_bytes += sealed; // §8 total-outcome-cost (sealed wire)
                     if timing.t_arq_eligible.is_none() {
                         timing.t_arq_eligible = Some(now);
                         timing.t_arq_wire = Some(now);
@@ -314,6 +321,18 @@ pub fn run_f0(manual_r: u16, drop_initial: &[u16], link_bps: u64, owd_ns: u64) -
     res.post_timeout_notice_none = s.take_post_timeout_notice().is_none();
     res.delivered = delivered_src.len();
     res.serialized_bytes = ch.serialized_bytes();
+    // §8 SPURIOUS: FEC blok'u ERKEN tamamladıysa (t_repair_usable ≤ t_arq_arrival) emitilen retransmit'ler
+    // SPURIOUS (hybrid-coordination-cost; BUDGET_MISMATCH-DEĞİL — total-outcome-cost'a ayrı yazılır).
+    let fec_beats_arq = match (timing.t_repair_usable, timing.t_arq_arrival) {
+        (Some(u), Some(a)) => u <= a,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    res.spurious_retransmits = if res.fec_decoded_sources > 0 && fec_beats_arq {
+        res.retransmits
+    } else {
+        0
+    };
     let pt = s.path_timing_snapshot();
     res.path_timing = PathTimingLedger {
         path_srtt_ns: pt.srtt_ns,
@@ -332,6 +351,10 @@ pub fn run_f0(manual_r: u16, drop_initial: &[u16], link_bps: u64, owd_ns: u64) -
         configured_source_drops: drop_initial.len() as u64,
         realized_source_drops: ch.trace_counts().1,
         receiver_events,
+        forward_schedule_id: ch.forward_schedule_id(),
+        reverse_schedule_id: ch.reverse_schedule_id(),
+        configured_schedule_hash: ch.configured_schedule_hash(),
+        reverse_dropped: ch.reverse_counts().1,
     };
     res.timing = timing;
     res

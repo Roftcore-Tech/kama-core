@@ -267,6 +267,27 @@ impl BottleneckChannel {
     pub fn trace_counts(&self) -> (u64, u64) {
         self.trace.counts()
     }
+
+    /// **B1/B3 — reverse-path (ACK) kararı:** `true` = ACK DÜŞER (Sender feedback-almaz). Forward'dan AYRI.
+    pub fn decide_reverse(&mut self, emit_time_ns: u64, ack_ordinal: u64) -> bool {
+        self.trace.decide_reverse(emit_time_ns, ack_ordinal)
+    }
+    #[must_use]
+    pub fn reverse_counts(&self) -> (u64, u64) {
+        self.trace.reverse_counts()
+    }
+    #[must_use]
+    pub fn forward_schedule_id(&self) -> u64 {
+        self.trace.forward_schedule_id()
+    }
+    #[must_use]
+    pub fn reverse_schedule_id(&self) -> u64 {
+        self.trace.reverse_schedule_id()
+    }
+    #[must_use]
+    pub fn configured_schedule_hash(&self) -> u64 {
+        self.trace.configured_schedule_hash()
+    }
 }
 
 impl BlockTiming {
@@ -337,7 +358,36 @@ impl BottleneckChannel {
 
 // ── CLOSED-LOOP RUNNER (gerçek Sender + BottleneckChannel; A0/A1) ─────────────────────────────────
 
-use crate::fs_trace::{RedundancyPolicy, TraceSpec};
+use crate::fs_trace::{RedundancyPolicy, ReverseSpec, TraceSpec};
+
+/// **B2 — deficit source-position sınıfı** (tail-erasure karakterizasyonu; analiz tail'i universal-FEC-
+/// avantajından ayırabilsin diye). k=source_count; TAIL = son-unit(k−1) düşük; HEAD = ilk-unit(0); MIXED = birden-çok-strata.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum DeficitPosition {
+    /// Deficit-yok.
+    #[default]
+    None,
+    /// İlk source-unit (esi 0) bölgesi (largest_acked hızlı-ilerler → recovery-fair).
+    Head,
+    /// Orta source-unit'ler (ne ilk ne son).
+    Middle,
+    /// SON source-unit (esi k−1) — seq>largest_acked yapısal tail-erasure sınıfı.
+    Tail,
+    /// Birden-çok strata (head+tail vb.).
+    Mixed,
+}
+
+/// **B2 — tail-erasure'ın hangi yolla (varsa) kurtarıldığı** (yalnız-gözlem; Sender-fix YOK).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TailRecoveryPath {
+    /// Kurtarılamadı (yapısal tail-erasure stall; B_REAL_TAIL_ERASURE).
+    #[default]
+    NoneStalled,
+    /// ARQ-retransmit ile kurtarıldı (tail-DEĞİL ya da later-ACK mevcuttu).
+    Arq,
+    /// A1 duplicate ile kurtarıldı.
+    Duplicate,
+}
 use crate::sender::{AckInfo, Event, OpaqueUnit, Sender, Timer, TransmitDecision, TransmitKind};
 use std::time::Duration;
 
@@ -363,6 +413,8 @@ pub struct RunCfg {
     pub drop_initial_units: BTreeSet<u64>,
     /// A1 duplicate-target seed (domain-separated; deficit-BAĞIMSIZ). Loss-trace'ten AYRI.
     pub dup_seed: u64,
+    /// **B1/B3 — reverse-path (ACK-yönü) impairment şeması** (blackout/loss). Clear = Harness-A davranışı.
+    pub reverse: ReverseSpec,
 }
 
 /// Path-timing snapshot ledger-only (A0/A1/F0 KARAR-İÇİN-TÜKETMEZ; yalnız gözlem).
@@ -392,6 +444,12 @@ pub struct PerRunInstrument {
     pub configured_source_drops: u64,
     pub realized_source_drops: u64,
     pub receiver_events: u64,
+    /// **B1/B3 — reverse-path provenance (forward'dan AYRI-görünür).**
+    pub forward_schedule_id: u64,
+    pub reverse_schedule_id: u64,
+    /// B3 pairing-kimliği: forward+reverse CONFIGURED-şema (kollar-arası ÖZDEŞ olmalı; realizasyon-DEĞİL).
+    pub configured_schedule_hash: u64,
+    pub reverse_dropped: u64,
 }
 impl PerRunInstrument {
     /// Admission: faithful ∧ overlap. İhlal → INVALID.
@@ -419,6 +477,18 @@ pub struct RunResult {
     pub a1_dup_misses: u64,
     pub path_timing: PathTimingLedger,
     pub instrument: PerRunInstrument,
+    /// **B2 — tail-erasure karakterizasyonu (yalnız-gözlem; Sender-fix YOK).**
+    pub deficit_position: DeficitPosition,
+    pub deficit_is_tail: bool,
+    /// source_count = num_units (K).
+    pub source_count: u64,
+    /// Loss-detection anında gözlemlenen largest-acked (harness-observable; tail-erasure kanıtı: k−2'de takılır).
+    pub largest_acked_observed: Option<u64>,
+    pub tail_recovery_path: TailRecoveryPath,
+    /// **§8 TOTAL-OUTCOME-COST (Pareto/oracle; INTERVENTION-BUDGET'ten AYRI):** ARQ-retransmit wire-byte'ları.
+    pub arq_retransmit_bytes: u64,
+    /// FEC/dup erken-tamamladıysa emitilen retransmit'ler SPURIOUS (hybrid-coordination-cost; BUDGET_MISMATCH-DEĞİL).
+    pub spurious_retransmits: u64,
 }
 
 fn tag_for(kind: TransmitKind, unit: u64) -> Option<(TracePacketId, bool)> {
@@ -459,6 +529,7 @@ fn process_emissions(
             }
             TransmitKind::Retransmit => {
                 res.retransmits_emitted += 1;
+                res.arq_retransmit_bytes += d.size; // §8 total-outcome-cost (sealed wire)
                 if res.timing.t_arq_eligible.is_none() {
                     res.timing.t_arq_eligible = Some(now);
                     res.timing.t_arq_wire = Some(now);
@@ -524,10 +595,13 @@ pub fn run_arm(arm: Arm, cfg: &RunCfg) -> RunResult {
         .iter()
         .map(|&u| (0u32, u as u16))
         .collect();
-    let trace = TraceChannel::new(TraceSpec::ExactDeficit {
-        drop_initial: drop_set,
-        redundancy: RedundancyPolicy::PassAll,
-    });
+    let trace = TraceChannel::with_reverse(
+        TraceSpec::ExactDeficit {
+            drop_initial: drop_set,
+            redundancy: RedundancyPolicy::PassAll,
+        },
+        cfg.reverse.clone(), // B1/B3: reverse-path (ACK) impairment
+    );
     let mut ch = BottleneckChannel::new(trace, cfg.link_bps, cfg.owd_ns);
     let mut s = Sender::new();
     let mut res = RunResult {
@@ -542,6 +616,8 @@ pub fn run_arm(arm: Arm, cfg: &RunCfg) -> RunResult {
     let mut deliveries: Vec<(u64, u64, u64, u8)> = Vec::new();
     let mut acks: Vec<(u64, u64)> = Vec::new();
     let mut receiver_events = 0u64;
+    let mut ack_ordinal = 0u64; // B1 reverse-loss iid-anahtarı (monoton ACK-sayacı)
+    let mut largest_acked_observed: Option<u64> = None; // B2 tail-erasure kanıtı
 
     let mut d0 = Vec::new();
     for u in 0..cfg.num_units as u64 {
@@ -593,7 +669,15 @@ pub fn run_arm(arm: Arm, cfg: &RunCfg) -> RunResult {
                         res.timing.t_block_complete = res.completion_ns;
                     }
                 }
-                acks.push((arr + cfg.owd_ns, seq));
+                // B1/B3 REVERSE-PATH: ACK receiver→sender'da `arr` anında emit. Reverse-blackout/loss
+                // içindeyse DÜŞER → Sender feedback-almaz (largest_acked ilerlemez; ARQ-clock durur — C-P3).
+                let ack_dropped = ch.decide_reverse(arr, ack_ordinal);
+                ack_ordinal += 1;
+                if !ack_dropped {
+                    acks.push((arr + cfg.owd_ns, seq));
+                    largest_acked_observed =
+                        Some(largest_acked_observed.map_or(unit, |m| m.max(unit)));
+                }
                 false
             } else {
                 true
@@ -664,8 +748,27 @@ pub fn run_arm(arm: Arm, cfg: &RunCfg) -> RunResult {
         path_sample_present: pt.sample_present,
         path_rtprop_fresh: pt.rtprop_fresh,
     };
-    // Per-run instrument-chain.
+    // B2 — tail-erasure karakterizasyonu (yalnız-gözlem; Sender-fix YOK).
+    res.source_count = cfg.num_units as u64;
+    res.deficit_position = classify_deficit_position(&cfg.drop_initial_units, cfg.num_units as u64);
+    res.deficit_is_tail = matches!(res.deficit_position, DeficitPosition::Tail);
+    res.largest_acked_observed = largest_acked_observed;
+    res.tail_recovery_path = if res.a1_dup_hits > 0 {
+        TailRecoveryPath::Duplicate
+    } else if res.retransmits_emitted > 0 && res.delivered_units == cfg.num_units {
+        TailRecoveryPath::Arq
+    } else {
+        TailRecoveryPath::NoneStalled // tamamlanmadıysa (tail-erasure) veya recovery-yoksa
+    };
+    // §8 spurious: dup erken-tamamladıysa (a1-hit) emitilen ARQ-retransmit'ler SPURIOUS (hybrid-cost).
+    res.spurious_retransmits = if res.a1_dup_hits > 0 {
+        res.retransmits_emitted
+    } else {
+        0
+    };
+    // Per-run instrument-chain (+ B1/B3 reverse provenance ayrı-görünür).
     let (_, realized_drops) = ch.trace_counts();
+    let (_, reverse_dropped) = ch.reverse_counts();
     let configured = cfg.drop_initial_units.len() as u64;
     res.instrument = PerRunInstrument {
         faithful: realized_drops == configured, // deterministic-channel → tam-eşit
@@ -676,8 +779,31 @@ pub fn run_arm(arm: Arm, cfg: &RunCfg) -> RunResult {
         configured_source_drops: configured,
         realized_source_drops: realized_drops,
         receiver_events,
+        forward_schedule_id: ch.forward_schedule_id(),
+        reverse_schedule_id: ch.reverse_schedule_id(),
+        configured_schedule_hash: ch.configured_schedule_hash(),
+        reverse_dropped,
     };
     res
+}
+
+/// **B2 — deficit source-position sınıflandırması** (HEAD/MIDDLE/TAIL; tail = son-unit k−1 ∈ D).
+#[must_use]
+pub fn classify_deficit_position(drop: &BTreeSet<u64>, k: u64) -> DeficitPosition {
+    if drop.is_empty() || k == 0 {
+        return DeficitPosition::None;
+    }
+    let last = k - 1;
+    let has_tail = drop.contains(&last);
+    let has_head = drop.contains(&0);
+    let has_middle = drop.iter().any(|&u| u != 0 && u != last);
+    match (has_head, has_middle, has_tail) {
+        (_, _, true) if drop.len() == 1 => DeficitPosition::Tail,
+        (true, false, false) if drop.len() == 1 => DeficitPosition::Head,
+        (false, true, false) if drop.len() == 1 => DeficitPosition::Middle,
+        // Çoklu-strata: tail dahilse yine TAIL-riski taşır ama Mixed etiketlenir (analiz stratify-eder).
+        _ => DeficitPosition::Mixed,
+    }
 }
 
 /// Config-kimliği (binary/arg provenance + arg-parity: aynı-config → aynı-hash; yalnız arm-farkı ölçülür).
@@ -698,7 +824,88 @@ pub fn run_config_hash(arm: Arm, cfg: &RunCfg) -> u64 {
     for u in &cfg.drop_initial_units {
         k.extend_from_slice(&u.to_le_bytes());
     }
+    // B1/B3: reverse-şema config-kimliğine dahil (aynı-forward + farklı-reverse → farklı config-hash).
+    let rc = TraceChannel::with_reverse(
+        TraceSpec::NaturalIid {
+            loss_permille: 0,
+            seed: 0,
+        },
+        cfg.reverse.clone(),
+    );
+    k.extend_from_slice(&rc.reverse_schedule_id().to_le_bytes());
     fnv1a(&k)
+}
+
+// ── PIN-C MECHANISM FIXTURE (F1/F3 parity wire-time) ─────────────────────────────────────────────
+
+/// **PIN-C mechanism modeli:** real-Sender'ın DATA-first + pacer parity-emisyonu (schedule_transmit'te
+/// plan_fec_parity, DATA-drain SONRASI — sender.rs:2290 mühürlü; pacer-token-gated). Parity kendi-block'unun
+/// önündeki DATA'yı wire'da GEÇEMEZ → `t_parity_wire = data_before_parity × serialize_ns`. `t_parity_eligible`
+/// (logical-close anı) AYRIDIR — F1 onu ilerletir ama wire'ı ilerletemez (STRUCTURALLY_NON_EFFECTIVE).
+#[derive(Debug, Clone, Copy)]
+pub struct ParityWireModel {
+    pub link_bps: u64,
+    pub sealed_len: u64,
+}
+impl ParityWireModel {
+    #[must_use]
+    pub fn serialize_ns(&self) -> u64 {
+        self.sealed_len
+            .saturating_mul(8)
+            .saturating_mul(1_000_000_000)
+            / self.link_bps.max(1)
+    }
+    /// t_parity_wire: parity, block'un `data_before_parity` DATA'sı serialize edildikten SONRA wire'a çıkar.
+    #[must_use]
+    pub fn t_parity_wire(&self, data_before_parity: u64) -> u64 {
+        data_before_parity.saturating_mul(self.serialize_ns())
+    }
+}
+
+/// **PIN-C sonucu** (F1/F3 candidate mekanizması).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinCResult {
+    /// `t_parity_wire(candidate) < t_parity_wire(F0)` → parity WIRE-time ilerledi (ordering-mührü korunarak): EFEKTİF.
+    WireTimeAdvanced,
+    /// Eligibility ilerledi AMA t_parity_wire ilerlemedi (DATA-first/pacer-gated) → STRUCTURALLY NON-EFFECTIVE
+    /// UNDER CURRENT ORDERING. (Sıradan performance-failure DEĞİL; ordering-mührü GEVŞETİLMEZ.)
+    StructurallyNonEffectiveUnderCurrentOrdering,
+}
+
+/// PIN-C bağlayıcı-değerlendirme: candidate parity WIRE-time'ını F0'a göre ilerletti mi? (eligibility TEK-BAŞINA
+/// yetmez — wire ŞART.)
+#[must_use]
+pub fn pin_c_classify(t_parity_wire_f0: u64, t_parity_wire_candidate: u64) -> PinCResult {
+    if t_parity_wire_candidate < t_parity_wire_f0 {
+        PinCResult::WireTimeAdvanced
+    } else {
+        PinCResult::StructurallyNonEffectiveUnderCurrentOrdering
+    }
+}
+
+// ── F4 ADAPTIVE-K MECHANISM (MECHANISTIC/EXPLORATORY) ────────────────────────────────────────────
+
+/// F4 confidence-öncesi FROZEN muhafazakâr-K.
+pub const F4_K_COLD: u32 = 2;
+
+/// **F4 — FROZEN adaptive-K seçim-kuralı.** MECHANISTIC/EXPLORATORY — path-timing discriminative-validity /
+/// online-selectability / controller-readiness KURMAZ (FS-5B). ADR-17 saf-deterministik (integer-only; RNG-YOK;
+/// GELECEK-bilgi-YOK; post-completion-etiket-YOK; FEC-utility-outcome K'yi ETKİLEMEZ). YALNIZ mevcut
+/// PathTimingState snapshot'ını okur. Confidence-kapısı: sample+rtprop-fresh değilse K_COLD. Aksi: base-RTT
+/// bucket (<50ms→1 · 50–150ms→2 · ≥150ms→3). Eşikler golden-vector için DONDURULDU.
+#[must_use]
+pub fn f4_select_k(pt: &crate::sender::PathTimingState) -> u32 {
+    if !(pt.sample_present && pt.rtprop_fresh) {
+        return F4_K_COLD;
+    }
+    let Some(base) = pt.min_rtt_ns else {
+        return F4_K_COLD;
+    };
+    match base {
+        0..=49_999_999 => 1,           // base < 50ms (short-haul)
+        50_000_000..=149_999_999 => 2, // 50–150ms
+        _ => 3,                        // ≥150ms (long-haul)
+    }
 }
 
 #[cfg(test)]
@@ -939,6 +1146,7 @@ mod tests {
             dt_ns: MS,
             drop_initial_units: drop.iter().copied().collect(),
             dup_seed: domain_seed(2026, "A1_DUP_TARGET"),
+            reverse: ReverseSpec::Clear,
         }
     }
 
@@ -1072,6 +1280,176 @@ mod tests {
         assert_eq!(a.instrument.config_hash, b.instrument.config_hash);
         // PATH-TIMING ledger-only mevcut (karar-tüketimi-yok; yalnız gözlem).
         let _ = a.path_timing.path_srtt_ns;
+    }
+
+    /// **B2 — B_REAL_TAIL_ERASURE deterministik pin:** A0 tail-deficit (son-unit) → PTO sadık-servis →
+    /// horizon-uzatma KURTARMAZ (yapısal, timeout-DEĞİL) → stall (delivered=k−1, completion=None,
+    /// retransmit=0, largest_acked=k−2). Harness-defekt DEĞİL (admitted). MIDDLE-deficit KURTARILIR (kontrast).
+    #[test]
+    fn b2_tail_erasure_is_real_not_harness_defect() {
+        let k = 8u64;
+        let tail = run_arm(Arm::A0, &cfg(&[k - 1]));
+        assert_eq!(tail.deficit_position, DeficitPosition::Tail);
+        assert!(tail.deficit_is_tail);
+        assert!(
+            tail.completion_ns.is_none(),
+            "tail-erasure yapısal-olarak tamamlanmamalı"
+        );
+        assert_eq!(tail.delivered_units as u64, k - 1, "delivered = k−1");
+        assert_eq!(
+            tail.retransmits_emitted, 0,
+            "loss-classify seq<largest_acked ister → tail retransmit-YOK"
+        );
+        assert_eq!(
+            tail.largest_acked_observed,
+            Some(k - 2),
+            "largest_acked k−2'de takılır (son-unit ACK'lenmez)"
+        );
+        assert_eq!(tail.tail_recovery_path, TailRecoveryPath::NoneStalled);
+        assert!(
+            tail.instrument.admitted(),
+            "harness-geçerli (PTO sadık-servis-edildi; INVALID/defekt DEĞİL)"
+        );
+        // HORIZON-UZATMA ÇÖZMEZ (yapısal-önkoşul, timeout değil).
+        let mut long = cfg(&[k - 1]);
+        long.horizon_ns *= 3;
+        let tail_long = run_arm(Arm::A0, &long);
+        assert!(
+            tail_long.completion_ns.is_none(),
+            "horizon-uzatma tail-erasure'ı çözdü → yapısal-değilmiş (B sınıflandırması hatalı)"
+        );
+        // KONTRAST — MIDDLE-deficit ARQ ile KURTARILIR (later-ACK mevcut → loss-classify çalışır).
+        let mid = run_arm(Arm::A0, &cfg(&[3]));
+        assert_eq!(mid.deficit_position, DeficitPosition::Middle);
+        assert_eq!(
+            mid.delivered_units as u64, k,
+            "middle-deficit ARQ ile tamamlanır"
+        );
+        assert!(mid.retransmits_emitted > 0);
+        assert_eq!(mid.tail_recovery_path, TailRecoveryPath::Arq);
+    }
+
+    /// **B3 — PAIRED reverse-blackout:** A0/A1 AYNI (forward+reverse) şema → configured_schedule_hash ÖZDEŞ
+    /// (channel-intervention identity; kol-çıktısı/realizasyon farklı olabilir). Reverse-blackout GERÇEKTEN
+    /// ACK düşürür (feedback-starvation). Aynı-seed TEK-BAŞINA değil — şema-kimliği pairing kanıtı.
+    #[test]
+    fn b3_paired_reverse_blackout_channel_intervention_identical() {
+        let mut c = cfg(&[2]);
+        c.reverse = ReverseSpec::Scheduled {
+            blackout_intervals_ns: vec![(30 * MS, 400 * MS)],
+            loss_permille: 0,
+            seed: 0,
+        };
+        let a0 = run_arm(Arm::A0, &c);
+        let a1 = run_arm(Arm::A1 { r: 2 }, &c);
+        assert_eq!(
+            a0.instrument.configured_schedule_hash, a1.instrument.configured_schedule_hash,
+            "paired-trace configured-şema kollar-arası farklı (B3 ihlali)"
+        );
+        assert_eq!(
+            a0.instrument.reverse_schedule_id,
+            a1.instrument.reverse_schedule_id
+        );
+        assert_eq!(
+            a0.instrument.forward_schedule_id,
+            a1.instrument.forward_schedule_id
+        );
+        assert!(
+            a0.instrument.reverse_dropped > 0,
+            "reverse-blackout hiç-ACK-düşürmedi (window ıskaladı)"
+        );
+        // Clear-reverse ≠ blackout-reverse: reverse_schedule_id FARKLI (ayrı-görünürlük).
+        let clear = run_arm(Arm::A0, &cfg(&[2]));
+        assert_ne!(
+            clear.instrument.reverse_schedule_id, a0.instrument.reverse_schedule_id,
+            "Clear ve Scheduled reverse-şema aynı-id (ayrımsız)"
+        );
+    }
+
+    /// **F1 PIN-C fixture — STRUCTURALLY_NON_EFFECTIVE:** early-logical-close eligibility'yi ilerletir AMA
+    /// DATA-first parity'yi block-DATA'nın ARDINDA tutar (sender.rs:2290 mühür) → t_parity_wire ilerlemez.
+    /// Ordering-mührü GEVŞETİLMEZ; sahte-başarı YOK; sıradan-fail olarak GİZLENMEZ.
+    #[test]
+    fn f1_pin_c_structurally_non_effective_under_ordering() {
+        let m = ParityWireModel {
+            link_bps: 1_000_000,
+            sealed_len: fs_sealed_len(64),
+        };
+        let k = 8u64;
+        // F0: later-trigger close → eligible = wire = K-DATA sonrası.
+        let (elig_f0, wire_f0) = (m.t_parity_wire(k), m.t_parity_wire(k));
+        // F1: early logical-close → eligible ilerledi (≈0) AMA wire hâlâ K-DATA-first (DEĞİŞMEDİ).
+        let elig_f1 = 0u64;
+        let wire_f1 = m.t_parity_wire(k); // parity block'un K DATA'sını GEÇEMEZ (DATA-first).
+        assert!(
+            elig_f1 < elig_f0,
+            "F1 eligibility ilerlemedi (fixture-kurgusu hatalı)"
+        );
+        assert_eq!(
+            wire_f1, wire_f0,
+            "F1 wire F0'dan sapmamalı (ordering-mührü)"
+        );
+        assert_eq!(
+            pin_c_classify(wire_f0, wire_f1),
+            PinCResult::StructurallyNonEffectiveUnderCurrentOrdering,
+            "F1 wire-time ilerletmediği hâlde EFEKTİF raporlandı (sahte-başarı)"
+        );
+    }
+
+    /// **F3 PIN-C fixture — WireTimeAdvanced:** deadline partial-block (K'<K) close → parity'nin ÖNÜNDE
+    /// daha-az DATA → t_parity_wire(F3) < t_parity_wire(F0). Ordering-mührü korunur (interleaved-YOK).
+    #[test]
+    fn f3_pin_c_partial_block_advances_wire_time() {
+        let m = ParityWireModel {
+            link_bps: 1_000_000,
+            sealed_len: fs_sealed_len(64),
+        };
+        let (k, k_partial) = (8u64, 4u64);
+        let wire_f0 = m.t_parity_wire(k); // parity after 8 DATA
+        let wire_f3 = m.t_parity_wire(k_partial); // partial parity after 4 DATA
+        assert!(
+            wire_f3 < wire_f0,
+            "partial-block parity daha-erken wire'a çıkmalı"
+        );
+        assert_eq!(
+            pin_c_classify(wire_f0, wire_f3),
+            PinCResult::WireTimeAdvanced
+        );
+    }
+
+    /// **F4 mechanism pin (PIN-D):** iki-FARKLI prereg path-state → FARKLI K (frozen-kural). No-future-leakage
+    /// (yalnız-snapshot; deterministik: aynı-state → aynı-K). MECHANISTIC/EXPLORATORY (validity-iddiası YOK).
+    #[test]
+    fn f4_adaptive_k_two_states_differ_no_leakage() {
+        use crate::sender::PathTimingState;
+        let short = PathTimingState {
+            srtt_ns: Some(30_000_000),
+            min_rtt_ns: Some(30_000_000),
+            rttvar_ns: 1_000_000,
+            queue_delay_ns: 0,
+            sample_present: true,
+            rtprop_fresh: true,
+        };
+        let long = PathTimingState {
+            srtt_ns: Some(220_000_000),
+            min_rtt_ns: Some(220_000_000),
+            ..short
+        };
+        let (k_short, k_long) = (f4_select_k(&short), f4_select_k(&long));
+        assert_eq!(k_short, 1, "short-haul base<50ms → K=1");
+        assert_eq!(k_long, 3, "long-haul base≥150ms → K=3");
+        assert_ne!(
+            k_short, k_long,
+            "iki-path-state aynı-K (mechanism ayrışmıyor)"
+        );
+        // No-leakage / determinism: aynı-snapshot iki-kez → AYNI K (RNG/future-YOK).
+        assert_eq!(f4_select_k(&short), k_short);
+        // Confidence-kapısı: fresh-değil → K_COLD (base yüksek olsa bile).
+        let cold = PathTimingState {
+            sample_present: false,
+            ..long
+        };
+        assert_eq!(f4_select_k(&cold), F4_K_COLD, "confidence-kapısı açılmadı");
     }
 
     /// A1_WIRE_ACCOUNTING_REAL_DATAGRAM (review-blocking-pin): bir duplicate için payload + framing ==

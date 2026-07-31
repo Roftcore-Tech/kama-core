@@ -69,11 +69,26 @@ a1miss=$(echo "$a1" | grep -oE "a1_dup_misses=[0-9]+" | head -1)
 [ "$a1c" = "$a0c" ] && [ "$a1r" = "retransmits=1" ] && [ "$a0r" = "retransmits=1" ] && [ "$a1miss" = "a1_dup_misses=1" ]
 check "a1-miss≡a0 (honesty)" $? "a1{$a1c $a1r $a1miss} a0{$a0c $a0r}"
 
-echo; echo "=== [5] TAIL-LOSS confound probe (drop=7, son-unit) — INFO (gate DEĞİL) ==="
-out=$("$BIN" --arm a1 --r 2 --deficit 7)
+echo; echo "=== [5] B2 TAIL-ERASURE (drop=7 son-unit) → B_REAL_TAIL_ERASURE (Tail + stall + admitted) ==="
+out=$("$BIN" --arm a0 --deficit 7)
+dp=$(echo "$out" | grep -oE "deficit_position=[A-Za-z]+" | head -1)
+it=$(echo "$out" | grep -oE "deficit_is_tail=[a-z]+" | head -1)
+la=$(echo "$out" | grep -oE "largest_acked_observed=Some\([0-9]+\)" | head -1)
+trp=$(echo "$out" | grep -oE "tail_recovery_path=[A-Za-z]+" | head -1)
+adm=$(echo "$out" | grep -oE "admitted=[a-z]+" | head -1)
 d=$(echo "$out" | grep -oE "delivered=[0-9]+/8" | head -1)
-inv=$(echo "$out" | grep -oE "INVALID=[a-z]+" | head -1)
-echo "INFO  tail-loss(drop=7): $d $inv  → FS-HARNESS-B OPEN ITEM (tail-position ARQ-detect confound)"
+[ "$dp" = "deficit_position=Tail" ] && [ "$it" = "deficit_is_tail=true" ] && [ "$la" = "largest_acked_observed=Some(6)" ] && [ "$trp" = "tail_recovery_path=NoneStalled" ] && [ "$adm" = "admitted=true" ] && [ "$d" = "delivered=7/8" ]
+check "b2-tail-erasure (B_REAL, admitted)" $? "$dp $it $la $trp $adm $d"
+
+echo; echo "=== [6] B3 REVERSE-BLACKOUT (drop=2, --reverse-blackout 30,400) → ACK düşer (feedback-starve) ==="
+a0r=$("$BIN" --arm a0 --deficit 2 --reverse-blackout 30,400)
+a1r=$("$BIN" --arm a1 --r 2 --deficit 2 --reverse-blackout 30,400)
+rd=$(echo "$a0r" | grep -oE "reverse_dropped=[0-9]+" | head -1)
+csh0=$(echo "$a0r" | grep -oE "configured_schedule_hash=0x[0-9a-f]+" | head -1)
+csh1=$(echo "$a1r" | grep -oE "configured_schedule_hash=0x[0-9a-f]+" | head -1)
+rdn=$(echo "$rd" | grep -oE "[0-9]+")
+[ -n "$rdn" ] && [ "$rdn" -gt 0 ] && [ "$csh0" = "$csh1" ]
+check "b3-paired-reverse-blackout (identity+drop)" $? "$rd A0/A1-configured_schedule_hash-eşit=$([ "$csh0" = "$csh1" ] && echo yes || echo NO)"
 
 echo; echo "=== SONUÇ: pass=$pass fail=$fail ==="
 [ "$fail" -eq 0 ] && { echo "SMOKE GREEN"; exit 0; } || { echo "SMOKE RED"; exit 1; }

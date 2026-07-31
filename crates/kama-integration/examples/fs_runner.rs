@@ -39,6 +39,23 @@ fn main() {
         .filter_map(|s| s.trim().parse().ok())
         .collect();
     let dup_seed = adaptive_transport::fs_harness::domain_seed(seed, "A1_DUP_TARGET");
+    // B1/B3: --reverse-blackout lo_ms,hi_ms → reverse-path (ACK) blackout aralığı (C-P3).
+    let reverse = {
+        let bl = get("--reverse-blackout", "");
+        let parts: Vec<u64> = bl
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        if parts.len() == 2 {
+            adaptive_transport::fs_trace::ReverseSpec::Scheduled {
+                blackout_intervals_ns: vec![(parts[0] * 1_000_000, parts[1] * 1_000_000)],
+                loss_permille: 0,
+                seed: 0,
+            }
+        } else {
+            adaptive_transport::fs_trace::ReverseSpec::Clear
+        }
+    };
 
     // arg-parity / binary-provenance: config-kimliği (arm hariç aynı → arg-parity kanıtı).
     let cfg = RunCfg {
@@ -50,6 +67,7 @@ fn main() {
         dt_ns: 1_000_000,
         drop_initial_units: deficit.clone(),
         dup_seed,
+        reverse,
     };
 
     println!("# fs_runner (DR-FEC-FS-1 FS-HARNESS-A; result-bearing=NO)");
@@ -105,6 +123,20 @@ fn main() {
             println!("parity_delay_class={:?}", res.timing.parity_delay_class());
             print_path_timing(&res.path_timing);
             println!("completion_cause={}", completion_cause_a(&res));
+            // B2 tail-erasure karakterizasyonu.
+            println!(
+                "deficit_position={:?} deficit_is_tail={} source_count={} largest_acked_observed={:?} tail_recovery_path={:?}",
+                res.deficit_position, res.deficit_is_tail, res.source_count, res.largest_acked_observed, res.tail_recovery_path
+            );
+            // B1/B3 reverse provenance (forward'dan AYRI-görünür) + §8 total-outcome-cost.
+            println!(
+                "forward_schedule_id={:#018x} reverse_schedule_id={:#018x} configured_schedule_hash={:#018x} reverse_dropped={}",
+                res.instrument.forward_schedule_id, res.instrument.reverse_schedule_id, res.instrument.configured_schedule_hash, res.instrument.reverse_dropped
+            );
+            println!(
+                "total_outcome.arq_retransmit_bytes={} total_outcome.spurious_retransmits={}",
+                res.arq_retransmit_bytes, res.spurious_retransmits
+            );
             println!("INVALID={}", !res.instrument.admitted());
         }
         "f0" => {
