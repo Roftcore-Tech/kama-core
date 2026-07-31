@@ -107,11 +107,19 @@ ALL-FEATURES **→507** + A1-pin sağlam.
 [✓] a1_early_duplicate_is_transport_state_neutral (PIN-A direct emission-side; 1-test)
 [✓] a1_early_duplicate_consumes_wire_budget (PIN-E; realized-sealed-wire; 1-test)
 [✓] a1_duplicate_target_selection_is_deficit_independent (D-bağımsız; 1-test)
-[ ] F0 integration (mevcut open_fec_block_authority yolu runner'a bağlanır)
-[ ] 9-timestamp instrumentation (t_source_loss..t_block_complete tek-clock) + metadata (path_timing ledger-only)
-[ ] per-run instrument-chain (binary-provenance · arg-diff · trace-hash · overlap-gate)
-[ ] fs_runner (arm=a0|a1|f0; --trace; --arm; deterministic bottleneck-channel) + loopback-smoke
+[✓] RedundancyCost framing-split (payload/framing/realized-sealed-wire ayrı; integration-rule-2 accounting-domain)
+[✓] a1_emission_order PER_SOURCE_ADJACENT_EARLY (deterministik; async-scheduling'e-bırakılmaz; 1-test)
+[✓] BlockTiming generic-redundancy-ledger (t_redundancy_* HER-arm + legacy t_parity_* F*; integration-rule-1; 1-test)
+    (t_source_loss = deterministic-TraceChannel-INITIAL-DROP-anı, ACK-tahmini-DEĞİL)
+[✓] BottleneckChannel (serialization+drop+prop; dup BEDAVA-LANE-ALMAZ; dropped-de-egress-tüketir; PIN-E; 2-test)
+[ ] F0 integration (open_fec_block_authority TEK-semantic-point; PathTiming-tüketmez; configured-R-only; purity)
+[ ] closed-loop fs_runner (gerçek Sender + BottleneckChannel + F0 + timing-ledger doldurma) + per-run-instrument-
+    chain (binary-provenance · arg-diff · trace-hash · overlap-gate) + loopback-smoke
 FS-HARNESS-B: F1 · F3 · F4 (PIN-C/PIN-D) + family-mechanism-pins.
 ```
 Yukarıdakiler tamamlanana + pin'ler-yeşil olana kadar **FS-1 KOŞULMAZ**. Kapılar: FLAG-OFF **382** ·
-ALL-FEATURES **→510** · fmt · clippy(-D,2cfg) · A1-pin sağlam.
+ALL-FEATURES **→514** · fmt · clippy(-D,2cfg) · A1-pin sağlam.
+
+**F0 HISTORICAL-CONTROL PURITY (integration-rule-2; runner'da mühürlenecek):** configured-R yalnız prereg-arm-
+config'den · PathTimingState TÜKETMEZ · controller-output'a-göre-R-değiştirmez · `open_fec_block_authority` TEK-
+belgeli-semantic-block-point'te. A1/F0 accounting AYNI-domain (`RedundancyCost`; C-P4 = realized_sealed_wire_bytes).
