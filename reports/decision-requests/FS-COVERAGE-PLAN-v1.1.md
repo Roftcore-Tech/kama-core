@@ -43,7 +43,7 @@ EVIDENCE-GAP kaydı (O3/K4-bar girdisi). Arm-İKAMESİ YASAK.
 ## PROVENANCE
 ```text
 base   : FS-COVERAGE-PLAN-v1.0 sha256=91b33e1e2dee5d87f9809e986ea4b154f246c66c30cf3a52fb9cefa9a46cb8bb (SUPERSEDED-BY-v1.1)
-sha256 : 7f0a58e01b4ae0e0ffcab59b117a70a2a152dd1bb0759bcc16c501d6cf386e6c
+sha256: 2648370135bae58b6b9a9f8981e0d0da08c67ac3a9b2bbeb831f93d7ae0a4fc5
 tarih  : 2026-07-31T14:23:52Z
 prereg : FS-PREREG-v1.1.md (ayrı-hash)
 ```

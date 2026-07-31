@@ -88,7 +88,7 @@ ihlal|BUDGET_MISMATCH(coding-claim'inde).
 ## PROVENANCE
 ```text
 base    : FS-PREREG-v1.0 sha256=cf005739d4fca2d42faf75e5c22c761f379eb6a438f811843d34cd9b3fbee5dc (SUPERSEDED-BY-v1.1)
-sha256  : f77e204f01a3feb7c6eb48973981f18603d3edb8fd44f8c2e8091ab9736db941
+sha256: 60353e99715cd4e51a42c53a94b6c1ad6963d8c3b3ef017ebc1bf2b9c3aaadf7
 tarih   : 2026-07-31T14:23:52Z
 coverage: FS-COVERAGE-PLAN-v1.1.md (ayrı-hash) · seal-maps: FS-SEAL-COLLISION-MAPS.md
 ```
