@@ -19,6 +19,13 @@ experimental-cold-start = [
     "kama-noise-wire/experimental-cold-start",
     "adaptive-transport/experimental-cold-start",
 ]
+# DR-FEC-FS-1 FS-HARNESS-A: F0 closed-loop (real Sender FEC-authority + real RsSimdCodec + BottleneckChannel).
+# YALNIZ test-derlemesi (dev-dep adaptive-transport + mevcut-prod-dep kama-fec-codec). Production lib-grafiği
+# GENİŞLEMEZ (kama-fec-codec zaten-prod-dep; adaptive-transport dev-only). flag-OFF forward-YOK.
+experimental-fs-harness = [
+    "adaptive-transport/experimental-fec-budget",
+    "adaptive-transport/experimental-cold-start",
+]
 
 [dependencies]
 thiserror.workspace = true
