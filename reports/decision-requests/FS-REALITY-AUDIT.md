@@ -49,15 +49,17 @@ yolu (Manual{enabled,ratio} / Controller + open_fec_block_authority) kullanarak 
 
 `FusionInputs` (fusion.rs) YALNIZ **5 alan**: `loss_ppm · bandwidth_bps · jitter_ppm · qd_ratio_permille ·
 ack_confidence_permille`. **YOK:** RTT/SRTT · time-to-deadline · deadline-slack · tahmini-ARQ-repair-gecikmesi
-· burst-persistence · reordering · reverse-path-confidence · reverse-bandwidth. **Kritik:** tarihsel tek-fayda-
-bölgesinin ayırıcısı **RTT'dir ve fusion-girdisinde YOK** → canlı-controller o bölgeyi ayırt-EDEMEZ
-(`FU-regime-observability.md` "CONTROLLER OBSERVABILITY BLOCKED" bulgusu GÜNCEL-DOĞRULANDI). FS-5 bu eksikliği
-aday-ölçümlerle (SRTT/deadline-slack/ARQ-repair-tahmini) test edecek.
+· burst-persistence · reordering · reverse-path-confidence · reverse-bandwidth. **DÜZELTME (FS-RTT-REALITY-
+AUDIT, 2026-07-31):** `FusionInputs`-oranı "controller-RTT'yi-göremiyor" DEMEK-DEĞİL — engine srtt/min_rtt(rtprop)/
+rttvar/queue_delay'i ZATEN ölçüyor (`rtt.rs`); mutlak-magnitude yalnız oran'a-düşürülüyordu = **PLUMBING_GAP**
+(mimari-imkânsızlık-DEĞİL). FS-5A ÇÖZÜLDÜ (read-only `path_timing_snapshot()`); FS-5B (RTT-gerçekten-
+discriminative-mi) AÇIK. Kalan-girdiler (time-to-deadline/ARQ-repair/burst/reorder/reverse) FS-5B-adayları.
 
 ## 3.4 STALE / SUPERSEDED İŞARETLERİ
 ```text
 STALE      fuzzy-controller-envanter.md §"fec_parity_ratio ÖLÜ-ÇIKTI"  → SUPERSEDED-by: DR-1a latch/R-wiring (bu-audit §3.2)
 GEÇERLİ    envanter §senkron-mod=SPEC-NİYETİ, dup↔parity=SIFIR, MinimalParity=ÖLÜ, budget_cap=kablosuz  → HÂLÂ-DOĞRU
-GEÇERLİ    FU-regime-observability CONTROLLER-OBSERVABILITY-BLOCKED  → HÂLÂ-DOĞRU (FusionInputs RTT-içermiyor)
+DARALTILDI FU-regime-observability CONTROLLER-OBSERVABILITY-BLOCKED  → SUPERSEDED-partial: FusionInputs-RTT-yok AMA
+           engine-RTT-ölçüyor = PLUMBING_GAP (FS-5A-çözüldü); yalnız FS-5B-discrimination açık (FS-RTT-REALITY-AUDIT)
 ```
 Eski belgeler SESSİZCE düzeltilmedi; yukarıdaki işaretlerle referanslandı.

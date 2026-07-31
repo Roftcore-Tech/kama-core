@@ -212,6 +212,29 @@ pub struct RecoveredUnit {
     pub esi: u16,
 }
 
+/// FS-5A (DR-FEC-FS-1) — PATH-TIMING SALT-GÖZLEM snapshot. Engine'in ZATEN ölçtüğü RTT/path-timing
+/// state'inin ([`crate::rtt::RttEstimator`]) MUTLAK-DEĞER görünümü. `FusionInputs` yalnız ORAN taşıdığından
+/// (jitter=rttvar/srtt, qd_ratio=queue_delay/rtprop) mutlak-magnitude FEC-selector'a ulaşmıyordu — bu
+/// snapshot o PLUMBING-GAP'i kapatır (**yeni-ölçüm YOK; salt-forward**). Case-A(base≈220,qd düşük) vs
+/// Case-B(base≈30,qd yüksek) AYNI-srtt'de `min_rtt_ns`+`queue_delay_ns` ile AYRIŞIR. **Production-policy
+/// DEĞİŞMEZ:** fusion/`FusionInputs`/wire dokunulmadı; salt-okuma — experimental FEC-selector + FS-harness
+/// girdisi. Üretim-çağıranı YOK (flag-OFF byte-özdeş; INV-CS-5-ruhu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathTimingState {
+    /// Smoothed RTT (ns); henüz RTT-sample yoksa `None`.
+    pub srtt_ns: Option<u64>,
+    /// min/base RTT = RTprop (pencereli-min; ns); henüz sample yoksa `None`.
+    pub min_rtt_ns: Option<u64>,
+    /// RTT varyansı (ns).
+    pub rttvar_ns: u64,
+    /// Ayakta-kuyruk gecikmesi = min_W_qd(rtt) − rtprop (ns; ≥0; congestion sinyali, loss DEĞİL).
+    pub queue_delay_ns: u64,
+    /// Confidence: en az bir RTT-sample işlendi mi (srtt mevcut).
+    pub sample_present: bool,
+    /// Freshness: rtprop-min-örneği taze mi (yaş < pencere/2 → taze; kanal-saatli).
+    pub rtprop_fresh: bool,
+}
+
 /// Commit-G (DR-1a): FEC-aktüasyon TEK-OTORİTESİ. Ayrı `fec_enabled: bool` KALDIRILDI
 /// (gizli-ikinci-state-yok); Manual-enabled enum-İÇİNDE. Default: `Manual { enabled: false }`
 /// (mevcut-davranış-birebir). Geçişler block-boundary-etkin (çağıran-kontratı: engine mode-değişimini
@@ -3516,6 +3539,28 @@ impl Sender {
             self.rtt.rtprop().map_or(0, |d| d.as_micros() as u64),
             self.rtt.queue_delay().as_micros() as u64,
         )
+    }
+
+    /// FS-5A (DR-FEC-FS-1) — PATH-TIMING SALT-GÖZLEM snapshot: engine'in ZATEN-ölçtüğü mutlak RTT/path-
+    /// timing state'i (srtt · min_rtt/rtprop · rttvar · queue_delay + confidence/freshness). `FusionInputs`
+    /// yalnız-oran taşıdığından FEC-selector'a ulaşmayan MUTLAK-magnitude'ı salt-forward eder (yeni-ölçüm
+    /// YOK). **Production-policy/`FusionInputs`/wire DEĞİŞMEZ** — experimental FEC-selector + FS-harness
+    /// (Case-A/B rejim-ayrımı) girdisi. Freshness kanal-saatli (`last_now_ns`).
+    #[must_use]
+    pub fn path_timing_snapshot(&self) -> PathTimingState {
+        let now = self.last_now_ns;
+        let rtprop_fresh = self
+            .rtt
+            .rtprop_age_ns(now)
+            .is_some_and(|age| age < self.rtt.rtprop_window_ns() / 2);
+        PathTimingState {
+            srtt_ns: self.rtt.srtt().map(dur_ns),
+            min_rtt_ns: self.rtt.rtprop().map(dur_ns),
+            rttvar_ns: dur_ns(self.rtt.rttvar()),
+            queue_delay_ns: dur_ns(self.rtt.queue_delay()),
+            sample_present: self.rtt.srtt().is_some(),
+            rtprop_fresh,
+        }
     }
     /// [Y3-sim SALT-GÖZLEM] (last_full_bw, window_ns) — (b)-bug-arayışı.
     #[must_use]
