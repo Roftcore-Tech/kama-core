@@ -112,11 +112,28 @@ ALL-FEATURES **→507** + A1-pin sağlam.
 [✓] BlockTiming generic-redundancy-ledger (t_redundancy_* HER-arm + legacy t_parity_* F*; integration-rule-1; 1-test)
     (t_source_loss = deterministic-TraceChannel-INITIAL-DROP-anı, ACK-tahmini-DEĞİL)
 [✓] BottleneckChannel (serialization+drop+prop; dup BEDAVA-LANE-ALMAZ; dropped-de-egress-tüketir; PIN-E; 2-test)
-[ ] F0 integration (open_fec_block_authority TEK-semantic-point; PathTiming-tüketmez; configured-R-only; purity)
-[ ] closed-loop fs_runner (gerçek Sender + BottleneckChannel + F0 + timing-ledger doldurma) + per-run-instrument-
-    chain (binary-provenance · arg-diff · trace-hash · overlap-gate) + loopback-smoke
+[✓] CLOSED-LOOP run_arm (GERÇEK Sender + BottleneckChannel; A0/A1) + FAITHFULNESS-smoke (3-test):
+    loopback→8/8-teslim-0-retransmit · A0-deficit→ARQ-retransmit-ile-kurtarır(faithful) · A1-deficit→duplicate-
+    ile-kurtarır-0-retransmit-A0'dan-ERKEN-biter (C-P4-mekanizması kanıtlı)
+[ ] F0 integration (open_fec_block_authority TEK-semantic-point; PathTiming-tüketmez; configured-R-only; parity-decode)
+[ ] full 9-timestamp/generic-ledger döngüde-doldurma (şu an completion + retransmit/dup-sayaç; per-block-lifecycle eksik)
+[ ] per-run-instrument-chain (binary-provenance · arg-diff · trace-hash · overlap-gate) + fs_runner CLI + loopback-smoke-binary
 FS-HARNESS-B: F1 · F3 · F4 (PIN-C/PIN-D) + family-mechanism-pins.
 ```
+
+## 7. A0/A1 CLOSED-LOOP DAVRANIŞ TABLOSU (run_arm; smoke-kanıtlı)
+| Alan | A0 | A1-EARLY |
+|---|---|---|
+| Sender-state intervention | none | none (runner-level dup; PIN-A) |
+| Recovery via | ARQ retransmit | duplicate (retransmit-YOK) |
+| Redundancy type | none | duplicate |
+| Redundancy timing | — | per-source-adjacent-early |
+| Same deterministic channel | ✓ (BottleneckChannel) | ✓ |
+| Same physical egress (serialize) | ✓ | ✓ (dup budget-tüketir; PIN-E) |
+| Wire accounting | ✓ | ✓ (RedundancyCost) |
+| PathTiming used for decision | no | no |
+| deficit{2,5} completion | daha-geç (retransmit-turu) | daha-erken (dup) |
+F0 satırı (FEC authority · coded-repair · block-close · legacy+generic-timestamp) F0-integration-sonrası eklenecek.
 Yukarıdakiler tamamlanana + pin'ler-yeşil olana kadar **FS-1 KOŞULMAZ**. Kapılar: FLAG-OFF **382** ·
 ALL-FEATURES **→514** · fmt · clippy(-D,2cfg) · A1-pin sağlam.
 

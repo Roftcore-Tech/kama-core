@@ -233,13 +233,202 @@ impl BottleneckChannel {
     }
 }
 
+// ── CLOSED-LOOP RUNNER (gerçek Sender + BottleneckChannel; A0/A1) ─────────────────────────────────
+
+use crate::fs_trace::{RedundancyPolicy, TraceSpec};
+use crate::sender::{AckInfo, Event, OpaqueUnit, Sender, TransmitDecision, TransmitKind};
+use std::collections::BTreeSet;
+use std::time::Duration;
+
+/// Ölçülen kol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arm {
+    /// ARQ + 0 proaktif-redundancy.
+    A0,
+    /// ARQ + same-byte early source-duplication (r kopya).
+    A1 { r: u16 },
+}
+
+/// Kapalı-döngü koşu konfigürasyonu.
+#[derive(Debug, Clone)]
+pub struct RunCfg {
+    pub num_units: usize,
+    pub unit_size: u64,
+    pub link_bps: u64,
+    pub owd_ns: u64,
+    pub horizon_ns: u64,
+    pub dt_ns: u64,
+    /// ExactDeficit: INITIAL-transmission'ı düşürülen unit_id'ler (retransmit/duplicate BAĞIMSIZ-geçer).
+    pub drop_initial_units: BTreeSet<u64>,
+}
+
+/// Kapalı-döngü koşu sonucu (observational).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RunResult {
+    pub num_units: usize,
+    pub delivered_units: usize,
+    pub completion_ns: Option<u64>,
+    pub data_emitted: u64,
+    pub retransmits_emitted: u64,
+    pub duplicates_emitted: u64,
+    pub cost: RedundancyCost,
+    pub channel_serialized_bytes: u64,
+}
+
+fn tag_for(kind: TransmitKind, unit: u64) -> Option<(TracePacketId, bool)> {
+    let (role, is_data) = match kind {
+        TransmitKind::Data => (TransmissionRole::InitialSource, true),
+        TransmitKind::Retransmit => (TransmissionRole::RetransmitSource, false),
+        _ => return None, // Sender'ın-kendi-Duplicate(§11)/FecParity/CsProbe → A0/A1'de yok-say
+    };
+    Some((
+        TracePacketId {
+            source_id: (0, unit as u16),
+            role,
+            attempt: u16::from(!is_data),
+        },
+        is_data,
+    ))
+}
+
+/// Bir emisyon-listesini işle: semantic-tag → BottleneckChannel → delivery-schedule; A1'de dup-inject.
+fn process_emissions(
+    decisions: &[TransmitDecision],
+    now: u64,
+    r: u16,
+    ch: &mut BottleneckChannel,
+    res: &mut RunResult,
+    deliveries: &mut Vec<(u64, u64, u64)>,
+) {
+    for d in decisions {
+        let Some((id, is_data)) = tag_for(d.kind, d.unit_id) else {
+            continue;
+        };
+        match d.kind {
+            TransmitKind::Data => res.data_emitted += 1,
+            TransmitKind::Retransmit => res.retransmits_emitted += 1,
+            _ => {}
+        }
+        if let Some(arr) = ch.offer(id, d.size, now) {
+            deliveries.push((arr, d.unit_id, d.seq));
+        }
+        // A1: bir Data emisyonundan HEMEN-SONRA r duplicate (PER_SOURCE_ADJACENT_EARLY).
+        if is_data && r > 0 {
+            for i in 0..r {
+                let did = TracePacketId {
+                    source_id: (0, d.unit_id as u16),
+                    role: TransmissionRole::Duplicate,
+                    attempt: i + 1,
+                };
+                res.duplicates_emitted += 1;
+                res.cost.redundancy_packet_count += 1;
+                res.cost.realized_sealed_wire_bytes += d.size;
+                res.cost.redundancy_payload_bytes += d.size;
+                if let Some(arr) = ch.offer(did, d.size, now) {
+                    deliveries.push((arr, d.unit_id, d.seq));
+                }
+            }
+        }
+    }
+}
+
+/// KAPALI-DÖNGÜ: gerçek `Sender` (ARQ+ACK+pacing) × deterministic `BottleneckChannel` (semantic-trace).
+/// A0 kayıp-source'u ARQ-retransmit ile, A1 duplicate ile kurtarır. Observational-ledger; production DEĞİL.
+#[must_use]
+pub fn run_arm(arm: Arm, cfg: &RunCfg) -> RunResult {
+    let r = match arm {
+        Arm::A1 { r } => r,
+        Arm::A0 => 0,
+    };
+    let drop_set: BTreeSet<(u32, u16)> = cfg
+        .drop_initial_units
+        .iter()
+        .map(|&u| (0u32, u as u16))
+        .collect();
+    let trace = TraceChannel::new(TraceSpec::ExactDeficit {
+        drop_initial: drop_set,
+        redundancy: RedundancyPolicy::PassAll,
+    });
+    let mut ch = BottleneckChannel::new(trace, cfg.link_bps, cfg.owd_ns);
+    let mut s = Sender::new();
+    let mut res = RunResult {
+        num_units: cfg.num_units,
+        cost: RedundancyCost {
+            configured_r: r,
+            ..RedundancyCost::default()
+        },
+        ..RunResult::default()
+    };
+    let mut delivered: BTreeSet<u64> = BTreeSet::new();
+    let mut deliveries: Vec<(u64, u64, u64)> = Vec::new(); // (arrival, unit, seq)
+    let mut acks: Vec<(u64, u64)> = Vec::new(); // (ack_arrival, seq)
+
+    // t=0: tüm DATA'yı sun.
+    let mut d0 = Vec::new();
+    for u in 0..cfg.num_units as u64 {
+        d0.extend(s.on_event(
+            Event::AppData(OpaqueUnit {
+                id: u,
+                size: cfg.unit_size,
+            }),
+            0,
+        ));
+    }
+    process_emissions(&d0, 0, r, &mut ch, &mut res, &mut deliveries);
+
+    let mut now = 0u64;
+    while now < cfg.horizon_ns && delivered.len() < cfg.num_units {
+        now += cfg.dt_ns;
+        // (1) Forward-delivery due: unit teslim + reverse-ACK planla.
+        let mut newly_acked: Vec<u64> = Vec::new();
+        deliveries.retain(|&(arr, unit, seq)| {
+            if arr <= now {
+                if delivered.insert(unit) && delivered.len() == cfg.num_units {
+                    res.completion_ns = Some(arr.max(now));
+                }
+                acks.push((arr + cfg.owd_ns, seq)); // reverse-path
+                let _ = &mut newly_acked;
+                false
+            } else {
+                true
+            }
+        });
+        // (2) Reverse ACK due → Sender'a besle.
+        let due: Vec<u64> = {
+            let mut v = Vec::new();
+            acks.retain(|&(t, seq)| {
+                if t <= now {
+                    v.push(seq);
+                    false
+                } else {
+                    true
+                }
+            });
+            v
+        };
+        if !due.is_empty() {
+            let d = s.on_event(
+                Event::AckReceived(AckInfo {
+                    acked_seqs: due,
+                    ack_delay: Duration::from_nanos(0),
+                }),
+                now,
+            );
+            process_emissions(&d, now, r, &mut ch, &mut res, &mut deliveries);
+        }
+        // (3) PTO tick → ARQ-retransmit (kayıp-source için).
+        let d = s.on_event(Event::TimerFired(crate::sender::Timer::Pto), now);
+        process_emissions(&d, now, r, &mut ch, &mut res, &mut deliveries);
+    }
+    res.delivered_units = delivered.len();
+    res.channel_serialized_bytes = ch.serialized_bytes();
+    res
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs_trace::{RedundancyPolicy, TraceChannel, TraceSpec};
-    use crate::sender::{AckInfo, Event, OpaqueUnit, Sender};
-    use std::collections::BTreeSet;
-    use std::time::Duration;
+    use crate::fs_trace::TraceChannel;
 
     const MS: u64 = 1_000_000;
 
@@ -476,5 +665,58 @@ mod tests {
             Some(30),
             "F*(FecRepair) legacy-parity + generic AYNI"
         );
+    }
+
+    fn cfg(drop: &[u64]) -> RunCfg {
+        RunCfg {
+            num_units: 8,
+            unit_size: 300,
+            link_bps: 1_000_000,
+            owd_ns: 20 * MS, // 20ms one-way → 40ms RTT
+            horizon_ns: 30_000 * MS,
+            dt_ns: MS,
+            drop_initial_units: drop.iter().copied().collect(),
+        }
+    }
+
+    /// CLOSED-LOOP SMOKE (loopback): kayıp-yok → tüm-unit teslim, retransmit-YOK.
+    #[test]
+    fn run_arm_loopback_completes_no_retransmit() {
+        let r = run_arm(Arm::A0, &cfg(&[]));
+        assert_eq!(r.delivered_units, 8, "loopback tüm-unit teslim etmeli");
+        assert!(r.completion_ns.is_some(), "tamamlanmalı");
+        assert_eq!(r.retransmits_emitted, 0, "kayıp-yok → retransmit-yok");
+        assert_eq!(r.data_emitted, 8);
+    }
+
+    /// FAITHFULNESS: A0 kayıp-source'u ancak ARQ-RETRANSMIT ile kurtarır (retransmit > 0).
+    #[test]
+    fn run_arm_a0_deficit_recovers_via_retransmit() {
+        let r = run_arm(Arm::A0, &cfg(&[2, 5]));
+        assert_eq!(r.delivered_units, 8, "A0 nihayetinde tüm-unit'i kurtarmalı");
+        assert!(
+            r.retransmits_emitted > 0,
+            "A0 kayıp-source'u retransmit-ETMEDEN kurtardı (harness UNFAITHFUL)"
+        );
+    }
+
+    /// FAITHFULNESS: A1 kayıp-source'u DUPLICATE ile kurtarır (retransmit gerekmez) VE A0'dan ERKEN biter.
+    #[test]
+    fn run_arm_a1_deficit_recovers_via_duplicate_earlier_than_a0() {
+        let a0 = run_arm(Arm::A0, &cfg(&[2, 5]));
+        let a1 = run_arm(Arm::A1 { r: 1 }, &cfg(&[2, 5]));
+        assert_eq!(a1.delivered_units, 8, "A1 tüm-unit teslim");
+        assert!(a1.duplicates_emitted > 0, "A1 duplicate üretmeli");
+        assert_eq!(
+            a1.retransmits_emitted, 0,
+            "A1 duplicate-kurtardı → retransmit-GEREKMEZ"
+        );
+        assert!(
+            a1.completion_ns.unwrap() < a0.completion_ns.unwrap(),
+            "A1({:?}) A0({:?})'dan erken bitmedi (mekanizma-kanıtı yok)",
+            a1.completion_ns,
+            a0.completion_ns
+        );
+        assert!(a1.channel_serialized_bytes > a0.channel_serialized_bytes);
     }
 }
