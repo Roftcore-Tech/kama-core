@@ -58,6 +58,14 @@ pub enum SpineArm {
     },
 }
 
+/// **S3-R2: forward-impairment SUM-TYPE (RULE-9; execution-layer).** Geçersiz-kombinasyon (NaturalIid+deficit)
+/// temsil-EDİLEMEZ. NaturalIid = deficit-free surface (S3-A DUR-B → ALT-1). loss_permille SABİT 200 (p=0.20).
+#[derive(Debug, Clone)]
+pub enum ForwardImpairment {
+    ExactDeficit { drop_global_ids: BTreeSet<u16> },
+    NaturalIid { loss_permille: u32, seed: u64 },
+}
+
 #[derive(Debug, Clone)]
 pub struct SpineCfg {
     pub link_bps: u64,
@@ -65,7 +73,7 @@ pub struct SpineCfg {
     pub owd_ns: u64,
     pub horizon_ns: u64,
     pub dt_ns: u64,
-    pub drop_global_ids: BTreeSet<u16>,
+    pub forward: ForwardImpairment,
     pub dup_seed: u64,
     pub reverse: ReverseSpec,
     /// F4 PRE-DECISION base-RTT (path-history; ns). 0 → cold (f4→K_COLD=K4). Only F4 consumes.
@@ -80,10 +88,30 @@ impl SpineCfg {
             owd_ns,
             horizon_ns: 40_000 * MS,
             dt_ns: MS,
-            drop_global_ids: drop.iter().copied().collect(),
+            forward: ForwardImpairment::ExactDeficit {
+                drop_global_ids: drop.iter().copied().collect(),
+            },
             dup_seed: 0xD00D,
             reverse: ReverseSpec::Clear,
             f4_base_rtt_ns: 0,
+        }
+    }
+    /// S3-R2: NaturalIid forward-channel (deficit-free; loss_permille=200 SABİT; seed replicate-ekseni).
+    #[must_use]
+    pub fn iid(link_bps: u64, owd_ns: u64, loss_permille: u32, seed: u64) -> Self {
+        let mut c = Self::diag(link_bps, owd_ns, &[]);
+        c.forward = ForwardImpairment::NaturalIid {
+            loss_permille,
+            seed,
+        };
+        c
+    }
+    /// ExactDeficit configured drop-set (NaturalIid → boş; per-workload configured-deficit YOK).
+    #[must_use]
+    pub fn exact_drop_ids(&self) -> BTreeSet<u16> {
+        match &self.forward {
+            ForwardImpairment::ExactDeficit { drop_global_ids } => drop_global_ids.clone(),
+            ForwardImpairment::NaturalIid { .. } => BTreeSet::new(),
         }
     }
     #[must_use]
@@ -106,6 +134,12 @@ impl SpineCfg {
     #[must_use]
     pub fn with_dt(mut self, dt_ns: u64) -> Self {
         self.dt_ns = dt_ns;
+        self
+    }
+    /// S3-R2: horizon (IID-fixture'ında koşu-süresini sınırlar; tüm-48-InitialSource offer'ından SONRA yeterli).
+    #[must_use]
+    pub fn with_horizon(mut self, ns: u64) -> Self {
+        self.horizon_ns = ns;
         self
     }
 }
@@ -186,6 +220,8 @@ pub struct SpineResult {
     pub source_offer_end_ns: u64,
     pub t_first_source_wire_complete: Option<u64>,
     pub realized_source_wire_bps: u64,
+    // ── S3-R2: NaturalIid realized InitialSource drops (arm-invariance/pairing/determinism) ──
+    pub realized_initial_source_drop_ids: Vec<u16>,
 }
 
 fn fnv(vals: &[u64]) -> u64 {
@@ -334,14 +370,21 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
     let elig = source_offer_schedule(cfg, sealed);
     let sched_hash = fnv(&elig);
 
-    let drop_set: BTreeSet<(u32, u16)> = cfg.drop_global_ids.iter().map(|&g| (0u32, g)).collect();
-    let trace = TraceChannel::with_reverse(
-        TraceSpec::ExactDeficit {
-            drop_initial: drop_set,
+    // S3-R2: forward-channel = ExactDeficit (drop_initial) VEYA NaturalIid (deficit-free hash-drop).
+    let forward_spec = match &cfg.forward {
+        ForwardImpairment::ExactDeficit { drop_global_ids } => TraceSpec::ExactDeficit {
+            drop_initial: drop_global_ids.iter().map(|&g| (0u32, g)).collect(),
             redundancy: RedundancyPolicy::PassAll,
         },
-        cfg.reverse.clone(),
-    );
+        ForwardImpairment::NaturalIid {
+            loss_permille,
+            seed,
+        } => TraceSpec::NaturalIid {
+            loss_permille: *loss_permille,
+            seed: *seed,
+        },
+    };
+    let trace = TraceChannel::with_reverse(forward_spec, cfg.reverse.clone());
     let mut ch = BottleneckChannel::new(trace, cfg.link_bps, cfg.owd_ns);
     let mut s = Sender::new();
     if is_fec {
@@ -359,8 +402,8 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
         source_sequence_hash: sequence_hash(&canonical),
         source_offer_schedule_hash: sched_hash,
         global_to_local_mapping_hash: global_to_local_hash_k(k),
-        dropped_global_ids: cfg.drop_global_ids.iter().copied().collect(),
-        deficit_count: cfg.drop_global_ids.len(),
+        dropped_global_ids: cfg.exact_drop_ids().iter().copied().collect(),
+        deficit_count: cfg.exact_drop_ids().len(),
         forward_trace_hash: 0,
         reverse_trace_hash: 0,
         configured_schedule_hash: 0,
@@ -411,6 +454,7 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
         source_offer_end_ns: 0,
         t_first_source_wire_complete: None,
         realized_source_wire_bps: 0,
+        realized_initial_source_drop_ids: Vec::new(),
     };
 
     let mut delivered_src: BTreeSet<u16> = BTreeSet::new();
@@ -471,10 +515,15 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
                 }
                 deliveries.push((arr, gid, false, seq, block));
             }
-            None if !is_retx && res.timing.t_source_loss.is_none() => {
-                res.timing.t_source_loss = Some(now);
+            None => {
+                if !is_retx {
+                    // S3-R2: realized InitialSource-drop (ExactDeficit → configured; NaturalIid → hash-drop).
+                    res.realized_initial_source_drop_ids.push(gid);
+                    if res.timing.t_source_loss.is_none() {
+                        res.timing.t_source_loss = Some(now);
+                    }
+                }
             }
-            None => {}
         }
         if is_a1 && !is_retx && dup_targets.contains(&gid) {
             let did = TracePacketId {
@@ -740,7 +789,7 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
         res.delivered_app_bytes = reasm.iter().map(Vec::len).sum();
         res.reassembly_equal = reasm == originals;
     }
-    for &g in &cfg.drop_global_ids {
+    for &g in &cfg.exact_drop_ids() {
         if dup_targets.contains(&g) {
             res.a1_dup_hits += 1;
         } else if is_a1 {
@@ -770,7 +819,15 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
         path_rtprop_fresh: pt.rtprop_fresh,
     };
     let (_, realized_drops) = ch.trace_counts();
-    res.faithful = realized_drops == cfg.drop_global_ids.len() as u64;
+    res.realized_initial_source_drop_ids.sort_unstable();
+    res.faithful = match &cfg.forward {
+        // ExactDeficit: realized total-drop == configured |D| (redundancy PassAll → yalnız InitialSource düşer).
+        ForwardImpairment::ExactDeficit { drop_global_ids } => {
+            realized_drops == drop_global_ids.len() as u64
+        }
+        // NaturalIid: configured-deficit YOK → harness-valid (determinism/pairing AYRI pinlerde kanıtlanır).
+        ForwardImpairment::NaturalIid { .. } => true,
+    };
     res.overlap_ok = receiver_events > 0;
     res.admitted = res.faithful && res.overlap_ok;
     res.forward_trace_hash = ch.trace_hash();
