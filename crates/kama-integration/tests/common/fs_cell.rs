@@ -341,3 +341,59 @@ pub fn base_cell_of(row: &HistoricalRow) -> BaseCell {
 pub fn unique_base_hashes(cells: &[BaseCell]) -> BTreeSet<u64> {
     cells.iter().map(base_cell_semantics_hash).collect()
 }
+
+/// **§26 CANDIDATE-MATRIX artifact (v1.3-candidate; NON-FROZEN; deterministik JSON).** 12 base-cell
+/// (9 ExactDeficit + 3 NaturalIid) + base_cell_semantics_hash'ler + projected 360-run. serde-YOK (manual,
+/// canonical). Bu S4-manifest DEĞİL; 360 result-row ÜRETİLMEZ.
+#[must_use]
+pub fn candidate_matrix_json() -> String {
+    let cells = amended_base_cells();
+    let uniq = unique_base_hashes(&cells);
+    let mut s = String::new();
+    s.push_str("{\n");
+    s.push_str("  \"artifact\": \"FS-1-CELL-MATRIX-v1.3-CANDIDATE\",\n");
+    s.push_str("  \"frozen\": false,\n");
+    s.push_str("  \"amendment\": \"ALT-1\",\n");
+    s.push_str(
+        "  \"note\": \"S4-manifest DEGIL; 360 result-row URETILMEZ; v1.3-freeze S3'te YOK.\",\n",
+    );
+    s.push_str(&format!("  \"base_cell_count\": {},\n", cells.len()));
+    s.push_str(&format!(
+        "  \"unique_base_cell_semantics\": {},\n",
+        uniq.len()
+    ));
+    s.push_str(&format!(
+        "  \"duplicate_base_cells\": {},\n",
+        cells.len() - uniq.len()
+    ));
+    s.push_str("  \"invalid_variant_combos\": 0,\n");
+    s.push_str(&format!("  \"arms\": {},\n", FS1_ARMS.len()));
+    s.push_str(&format!("  \"reps\": {},\n", FS1_REPS));
+    s.push_str(&format!(
+        "  \"projected_result_bearing_runs\": {},\n",
+        cells.len() * FS1_ARMS.len() * FS1_REPS as usize
+    ));
+    s.push_str("  \"cells\": [\n");
+    for (i, c) in cells.iter().enumerate() {
+        let (kind, dc, lp) = match c.impairment {
+            FsImpairment::ExactDeficit { drop_count } => (
+                "ExactDeficit",
+                format!("{}", drop_count.get()),
+                "null".into(),
+            ),
+            FsImpairment::NaturalIid { loss_permille } => (
+                "NaturalIid",
+                "null".into(),
+                format!("{}", loss_permille.get()),
+            ),
+        };
+        let comma = if i + 1 < cells.len() { "," } else { "" };
+        s.push_str(&format!(
+            "    {{ \"index\": {}, \"rtt_ms\": {}, \"impairment\": \"{}\", \"exact_drop_count\": {}, \"iid_loss_permille\": {}, \"bottleneck_bps\": {}, \"source_offer_pacer_bps\": {}, \"base_cell_semantics_hash\": \"0x{:016x}\" }}{}\n",
+            i, c.rtt_ms, kind, dc, lp, c.bottleneck_bps, c.source_offer_pacer_bps,
+            base_cell_semantics_hash(c), comma
+        ));
+    }
+    s.push_str("  ]\n}\n");
+    s
+}

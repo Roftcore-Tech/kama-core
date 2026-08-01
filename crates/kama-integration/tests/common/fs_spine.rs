@@ -222,6 +222,17 @@ pub struct SpineResult {
     pub realized_source_wire_bps: u64,
     // ── S3-R2: NaturalIid realized InitialSource drops (arm-invariance/pairing/determinism) ──
     pub realized_initial_source_drop_ids: Vec<u16>,
+    // ── S3-R3: common result-schema completion (§25; typed None/N-A, sahte-sıfır YOK) ──
+    pub impairment_kind: &'static str,
+    pub configured_exact_drop_count: Option<u8>,
+    pub configured_iid_loss_permille: Option<u16>,
+    pub realized_initial_source_losses: usize,
+    pub realized_retransmission_losses: u64,
+    pub realized_duplicate_losses: u64,
+    pub realized_repair_losses: u64,
+    pub reverse_event_hash: u64,
+    pub pairing_gate_passed: bool,
+    pub pairing_failure_reason: Option<&'static str>,
 }
 
 fn fnv(vals: &[u64]) -> u64 {
@@ -455,6 +466,16 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
         t_first_source_wire_complete: None,
         realized_source_wire_bps: 0,
         realized_initial_source_drop_ids: Vec::new(),
+        impairment_kind: "ExactDeficit",
+        configured_exact_drop_count: None,
+        configured_iid_loss_permille: None,
+        realized_initial_source_losses: 0,
+        realized_retransmission_losses: 0,
+        realized_duplicate_losses: 0,
+        realized_repair_losses: 0,
+        reverse_event_hash: 0,
+        pairing_gate_passed: false,
+        pairing_failure_reason: None,
     };
 
     let mut delivered_src: BTreeSet<u16> = BTreeSet::new();
@@ -516,7 +537,10 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
                 deliveries.push((arr, gid, false, seq, block));
             }
             None => {
-                if !is_retx {
+                if is_retx {
+                    // S3-R3: realized retransmission-loss (IID → retransmit de düşebilir; role-admissibility).
+                    res.realized_retransmission_losses += 1;
+                } else {
                     // S3-R2: realized InitialSource-drop (ExactDeficit → configured; NaturalIid → hash-drop).
                     res.realized_initial_source_drop_ids.push(gid);
                     if res.timing.t_source_loss.is_none() {
@@ -541,6 +565,9 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
             }
             if let Some(arr) = ch.offer(did, sealed, now) {
                 deliveries.push((arr, gid, false, u64::MAX, block));
+            } else {
+                // S3-R3: realized duplicate-loss (IID → dup da düşebilir; garantili-teslim YOK).
+                res.realized_duplicate_losses += 1;
             }
         }
     };
@@ -626,6 +653,9 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
                             res.timing.t_parity_wire = Some(wire);
                         }
                         deliveries.push((arr, ri as u16, true, u64::MAX, b as u16));
+                    } else {
+                        // S3-R3: realized repair-loss (IID → parity da düşebilir; garantili-teslim YOK).
+                        res.realized_repair_losses += 1;
                     }
                 }
             }
@@ -830,8 +860,30 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
     };
     res.overlap_ok = receiver_events > 0;
     res.admitted = res.faithful && res.overlap_ok;
+    // S3-R3: common result-schema completion (§25). configured = variant-local (typed None/N-A).
+    match &cfg.forward {
+        ForwardImpairment::ExactDeficit { drop_global_ids } => {
+            res.impairment_kind = "ExactDeficit";
+            res.configured_exact_drop_count = u8::try_from(drop_global_ids.len()).ok();
+            res.configured_iid_loss_permille = None;
+        }
+        ForwardImpairment::NaturalIid { loss_permille, .. } => {
+            res.impairment_kind = "NaturalIid";
+            res.configured_exact_drop_count = None;
+            res.configured_iid_loss_permille = u16::try_from(*loss_permille).ok();
+        }
+    }
+    res.realized_initial_source_losses = res.realized_initial_source_drop_ids.len();
+    res.pairing_gate_passed = res.admitted;
+    res.pairing_failure_reason = if res.admitted {
+        None
+    } else {
+        Some("not-admitted")
+    };
     res.forward_trace_hash = ch.trace_hash();
     res.reverse_trace_hash = ch.reverse_decision_log_hash();
+    // S3-R3 schema: reverse_event_hash = realized reverse decision-log (reverse_trace_hash ile AYNI; §25-alias).
+    res.reverse_event_hash = ch.reverse_decision_log_hash();
     res.configured_schedule_hash = ch.configured_schedule_hash();
     // S3-R1: reverse identity (configured, forward'dan AYRI) + realized reverse events.
     res.forward_schedule_id = ch.forward_schedule_id();
