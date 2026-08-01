@@ -883,18 +883,80 @@ pub fn pin_c_classify(t_parity_wire_f0: u64, t_parity_wire_candidate: u64) -> Pi
     }
 }
 
+// ── §17/§18 DEADLINE GEOMETRY (arm-independent; ratified formula; v1.3-DONDURULMADI) ─────────────
+
+/// **§17 — effective source-egress rate** = min(configured source-pacer, bottleneck capacity) (bits/s;
+/// BottleneckChannel.link_bps ile AYNI birim). util=0.80C → pacer = 0.80×C; capacity = C → effective = 0.80C.
+/// (NOT: harness'ın source'u GERÇEKTEN 0.80C'de pace-ettiği kanıtı 6-arm-spine-source-emission'ında ölçülür.)
+#[must_use]
+pub fn fs_effective_source_bps(source_pacer_bps: u64, bottleneck_capacity_bps: u64) -> u64 {
+    source_pacer_bps.min(bottleneck_capacity_bps)
+}
+
+/// Ortak source-serialization envelope süresi (ns): total_base_source_sealed_bytes × 8 bit / effective_bps.
+/// TÜM-arm için AYNI (48×101=4848B); proaktif-intervention HARİÇ (arm-independence).
+#[must_use]
+pub fn fs_t_serialize_source_ns(total_base_source_sealed_bytes: u64, effective_bps: u64) -> u64 {
+    total_base_source_sealed_bytes
+        .saturating_mul(8)
+        .saturating_mul(1_000_000_000)
+        / effective_bps.max(1)
+}
+
+/// **§18 — arm-independent deadline (ms; ceil):** T_serialize_source + N_recovery×RTT + M_fixed.
+/// N_recovery=2, M_fixed=50ms (OUTCOME-BLIND inherited design-constants; §19). Proaktif-intervention deadline'a
+/// GİRMEZ (completion-time'a/hit'e/cost'a GİRER). ceil(exact) = ceil(t_ser_ms) + N×RTT + M (N×RTT+M integer).
+#[must_use]
+pub fn fs_deadline_ms(total_base_source_sealed_bytes: u64, effective_bps: u64, rtt_ms: u64) -> u64 {
+    const N_RECOVERY: u64 = 2;
+    const M_FIXED_MS: u64 = 50;
+    let t_ser_ms_ceil =
+        fs_t_serialize_source_ns(total_base_source_sealed_bytes, effective_bps).div_ceil(1_000_000);
+    t_ser_ms_ceil + N_RECOVERY * rtt_ms + M_FIXED_MS
+}
+
 // ── F4 ADAPTIVE-K MECHANISM (MECHANISTIC/EXPLORATORY) ────────────────────────────────────────────
 
-/// F4 confidence-öncesi FROZEN muhafazakâr-K.
-pub const F4_K_COLD: u32 = 2;
+/// **F4 seçilen block-K (OPTION-D; v1.3-aday).** YALNIZ codec-realize-edilebilir değerler — K=1/K=3 YOK, ordinal YOK.
+/// E=64 profiller: K2→0x01 · K4→0x02 · K8→0x03 (kama-fec-codec katalog). `k()` gerçek-block-K; `profile_id()` codec-profil.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodecK {
+    K2,
+    K4,
+    K8,
+}
+impl CodecK {
+    /// Gerçek block-K değeri (num source-symbols/blok).
+    #[must_use]
+    pub fn k(self) -> u16 {
+        match self {
+            CodecK::K2 => 2,
+            CodecK::K4 => 4,
+            CodecK::K8 => 8,
+        }
+    }
+    /// E=64 codec-profil id (source==repair; profile.rs 0x01/0x02/0x03). Katalog-varlığı kama-integration'da pinlenir.
+    #[must_use]
+    pub fn profile_id(self) -> u8 {
+        match self {
+            CodecK::K2 => 0x01,
+            CodecK::K4 => 0x02,
+            CodecK::K8 => 0x03,
+        }
+    }
+}
 
-/// **F4 — FROZEN adaptive-K seçim-kuralı.** MECHANISTIC/EXPLORATORY — path-timing discriminative-validity /
-/// online-selectability / controller-readiness KURMAZ (FS-5B). ADR-17 saf-deterministik (integer-only; RNG-YOK;
-/// GELECEK-bilgi-YOK; post-completion-etiket-YOK; FEC-utility-outcome K'yi ETKİLEMEZ). YALNIZ mevcut
-/// PathTimingState snapshot'ını okur. Confidence-kapısı: sample+rtprop-fresh değilse K_COLD. Aksi: base-RTT
-/// bucket (<50ms→1 · 50–150ms→2 · ≥150ms→3). Eşikler golden-vector için DONDURULDU.
+/// F4 confidence-öncesi FROZEN muhafazakâr-K (region-2 default → K=4; codec-realize-edilebilir).
+pub const F4_K_COLD: CodecK = CodecK::K4;
+
+/// **F4 — OPTION-D DIRECT-K seçim-kuralı (v1.3-aday; pre-data düzeltme; sonuç-görülmeden).** DOĞRUDAN
+/// codec-realize-edilebilir block-K döner (ordinal-{1,2,3} YOK; K=1/K=3 YOK — v1.2-literal-K-realizability-gap
+/// kapatıldı). Base-RTT bölge-sınırları Harness-B/v1.2 ile AYNI: region1(<50ms)→K2 · region2(50-150ms)→K4 ·
+/// region3(≥150ms)→K8. Confidence-kapısı: sample+rtprop-fresh değilse K_COLD(K4). MECHANISTIC/EXPLORATORY —
+/// discriminative-validity/online-selectability/controller-readiness KURMAZ (FS-5B). ADR-17 saf-deterministik
+/// (integer-only; RNG-YOK; GELECEK/outcome-bilgi-YOK). YALNIZ F4 PathTimingState tüketir.
 #[must_use]
-pub fn f4_select_k(pt: &crate::sender::PathTimingState) -> u32 {
+pub fn f4_select_k(pt: &crate::sender::PathTimingState) -> CodecK {
     if !(pt.sample_present && pt.rtprop_fresh) {
         return F4_K_COLD;
     }
@@ -902,9 +964,9 @@ pub fn f4_select_k(pt: &crate::sender::PathTimingState) -> u32 {
         return F4_K_COLD;
     };
     match base {
-        0..=49_999_999 => 1,           // base < 50ms (short-haul)
-        50_000_000..=149_999_999 => 2, // 50–150ms
-        _ => 3,                        // ≥150ms (long-haul)
+        0..=49_999_999 => CodecK::K2, // region1 <50ms → K=2 (profil 0x01)
+        50_000_000..=149_999_999 => CodecK::K4, // region2 50-150ms → K=4 (profil 0x02)
+        _ => CodecK::K8,              // region3 ≥150ms → K=8 (profil 0x03)
     }
 }
 
@@ -1417,6 +1479,27 @@ mod tests {
         );
     }
 
+    /// **§17/§18 DEADLINE-GEOMETRY pin (v1.3-aday; frozen-DEĞİL):** ortak 48×101=4848B source-envelope @ effective
+    /// 0.80C (C=1Mbps bits/s) → arm-independent deadline 199/599/2099ms (ratified §18). effective=min(pacer,capacity).
+    #[test]
+    fn deadline_geometry_arm_independent_ratified_values() {
+        let capacity_bps = 1_000_000u64; // C = 1 Mbps (bits/s; BottleneckChannel birimi)
+        let pacer_bps = capacity_bps * 80 / 100; // util=0.80C → 800_000 bits/s
+        let effective = fs_effective_source_bps(pacer_bps, capacity_bps);
+        assert_eq!(effective, 800_000, "effective = min(0.80C, C) = 0.80C");
+        let base_source = 48 * fs_sealed_len(64); // 4848B (arm-independent; intervention HARİÇ)
+        assert_eq!(base_source, 4848);
+        // T_serialize_source = 4848×8 / 800_000 s = 48.48ms.
+        let t_ser_ns = fs_t_serialize_source_ns(base_source, effective);
+        assert_eq!(t_ser_ns, 48_480_000, "48.48ms source-serialization");
+        // Arm-independent deadlines (ceil): RTT{50,250,1000} → {199,599,2099}.
+        assert_eq!(fs_deadline_ms(base_source, effective, 50), 199);
+        assert_eq!(fs_deadline_ms(base_source, effective, 250), 599);
+        assert_eq!(fs_deadline_ms(base_source, effective, 1000), 2099);
+        // C-P2 future RTT=2500 → 5099.
+        assert_eq!(fs_deadline_ms(base_source, effective, 2500), 5099);
+    }
+
     /// **F4 mechanism pin (PIN-D):** iki-FARKLI prereg path-state → FARKLI K (frozen-kural). No-future-leakage
     /// (yalnız-snapshot; deterministik: aynı-state → aynı-K). MECHANISTIC/EXPLORATORY (validity-iddiası YOK).
     #[test]
@@ -1436,20 +1519,33 @@ mod tests {
             ..short
         };
         let (k_short, k_long) = (f4_select_k(&short), f4_select_k(&long));
-        assert_eq!(k_short, 1, "short-haul base<50ms → K=1");
-        assert_eq!(k_long, 3, "long-haul base≥150ms → K=3");
+        assert_eq!(
+            k_short,
+            CodecK::K2,
+            "region1 base<50ms → K2 (OPTION-D direct-K)"
+        );
+        assert_eq!(
+            k_long,
+            CodecK::K8,
+            "region3 base≥150ms → K8 (OPTION-D direct-K)"
+        );
         assert_ne!(
             k_short, k_long,
             "iki-path-state aynı-K (mechanism ayrışmıyor)"
         );
         // No-leakage / determinism: aynı-snapshot iki-kez → AYNI K (RNG/future-YOK).
         assert_eq!(f4_select_k(&short), k_short);
-        // Confidence-kapısı: fresh-değil → K_COLD (base yüksek olsa bile).
+        // Confidence-kapısı: fresh-değil → K_COLD=K4 (base yüksek olsa bile).
         let cold = PathTimingState {
             sample_present: false,
             ..long
         };
         assert_eq!(f4_select_k(&cold), F4_K_COLD, "confidence-kapısı açılmadı");
+        // OPTION-D REALIZABILITY: her seçim codec-realize-edilebilir block-K (∈{2,4,8}); K=1/K=3 ÜRETİLEMEZ.
+        for ck in [CodecK::K2, CodecK::K4, CodecK::K8] {
+            assert!(matches!(ck.k(), 2 | 4 | 8), "illegal block-K");
+            assert!(matches!(ck.profile_id(), 0x01..=0x03), "illegal profile");
+        }
     }
 
     /// A1_WIRE_ACCOUNTING_REAL_DATAGRAM (review-blocking-pin): bir duplicate için payload + framing ==
