@@ -1,0 +1,343 @@
+//! DR-FEC-FS-1 S3-R0 — TYPED IMPAIRMENT SUM-TYPE + SEMANTIC CELL-UNIQUENESS (ALT-1 amendment).
+//! HARNESS-ONLY / DIAGNOSTIC (config+coverage layer; result-bearing DEĞİL). Bu modül RUN-execution'a HENÜZ
+//! wire-EDİLMEZ (R2 NaturalIid-plumbing). Amaç:
+//!  (a) impairment = SUM-TYPE → geçersiz-kombinasyon (NaturalIid+deficit / ExactDeficit-drop_count'suz /
+//!      variant-yabancı-param) TİP-DÜZEYİNDE temsil-EDİLEMEZ (RULE-9);
+//!  (b) üç-katman semantik-hash (BASE_CELL / RUN_EXECUTION / ROW_IDENTITY) → RULE-8 semantic-cell-uniqueness;
+//!  (c) ALT-1 12-hücre amended matris + tarihsel 18-satır duplicate-tespiti (S3-A DUR-B'nin makineleşmesi).
+//! deficit ARTIK top-level ambiguous field DEĞİL — variant-local (ExactDeficit.drop_count). IID20 deficit-inert.
+#![allow(dead_code)]
+
+#[path = "fs_workload.rs"]
+mod fs_workload;
+use fs_workload::{APP_UNITS, APP_UNIT_BYTES, E, TOTAL_APP_BYTES, TOTAL_SOURCE_SYMBOLS};
+
+use adaptive_transport::fs_harness::fs_sealed_len;
+use std::collections::BTreeSet;
+
+// ── FS-1 FROZEN COVERAGE CONSTANTS (ALT-1 amended; Abkarada-ratified) ──────────────────────────────
+pub const FS1_RTT_MS: [u64; 3] = [50, 250, 1000];
+pub const FS1_EXACT_DEFICITS: [u8; 3] = [1, 2, 4];
+pub const FS1_IID_LOSS_PERMILLE: u16 = 200; // p = 0.20 SABİT (matched-deficit / sweep YASAK; S3-A)
+pub const FS1_BOTTLENECK_BPS: u64 = 1_000_000;
+pub const FS1_SOURCE_OFFER_PACER_BPS: u64 = 800_000; // 0.80 × C (bottleneck-DÜŞÜRME değil; §13)
+pub const FS1_ARMS: [&str; 6] = ["A0", "A1-EARLY", "F0", "F1", "F3", "F4"];
+pub const FS1_REPS: u8 = 5;
+
+// ── TYPED-VALIDATION ERRORS (§5 temsil-edilemez-invariant kapısı) ──────────────────────────────────
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum CellConfigError {
+    #[error("ExactDeficit drop_count {0} ∉ {{1,2,4}}")]
+    InvalidDropCount(u8),
+    #[error("NaturalIid loss_permille {0} != 200 (FS-1 sabit p=0.20; sweep YASAK)")]
+    InvalidLossPermille(u16),
+    #[error("NaturalIid + deficit=Some({0}) GEÇERSİZ (deficit IID20 altında inert; S3-A DUR-B / RULE-9)")]
+    IidWithDeficit(u8),
+    #[error("ExactDeficit drop_count YOK (variant-local param zorunlu)")]
+    ExactDeficitWithoutCount,
+    #[error("ExactDeficit + iid_loss_permille=Some({0}) GEÇERSİZ (variant-yabancı param; RULE-9)")]
+    ExactDeficitWithIid(u16),
+    #[error("bilinmeyen impairment_kind '{0}'")]
+    UnknownKind(String),
+}
+
+// ── VARIANT-LOCAL NEWTYPES (validated) ─────────────────────────────────────────────────────────────
+/// exact-deficit drop-count ∈ {1,2,4}. YALNIZ ExactDeficit variantına özgü.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExactDeficitCount(u8);
+impl ExactDeficitCount {
+    pub fn new(d: u8) -> Result<Self, CellConfigError> {
+        match d {
+            1 | 2 | 4 => Ok(Self(d)),
+            _ => Err(CellConfigError::InvalidDropCount(d)),
+        }
+    }
+    #[must_use]
+    pub fn get(self) -> u8 {
+        self.0
+    }
+}
+
+/// IID loss-permille (FS-1 sabit 200 = p 0.20). YALNIZ NaturalIid variantına özgü.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LossPermille(u16);
+impl LossPermille {
+    pub fn new(p: u16) -> Result<Self, CellConfigError> {
+        if p == FS1_IID_LOSS_PERMILLE {
+            Ok(Self(p))
+        } else {
+            Err(CellConfigError::InvalidLossPermille(p))
+        }
+    }
+    #[must_use]
+    pub fn get(self) -> u16 {
+        self.0
+    }
+}
+
+// ── IMPAIRMENT SUM-TYPE (§5; RULE-9) ───────────────────────────────────────────────────────────────
+/// **Impairment SUM-TYPE.** Variant-local param'lar; geçersiz-kombinasyon TEMSİL-EDİLEMEZ:
+///  - `ExactDeficit`: drop_count ∈ {1,2,4} · iid_loss_permille = N/A
+///  - `NaturalIid`  : loss_permille = 200 · exact_deficit = N/A  (deficit IID20-inert; S3-A DUR-B)
+///
+/// `NaturalIid{ deficit }` yapılandırması BU TİPTE TEMSİL-EDİLEMEZ (variant deficit-field-siz).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FsImpairment {
+    ExactDeficit { drop_count: ExactDeficitCount },
+    NaturalIid { loss_permille: LossPermille },
+}
+
+impl FsImpairment {
+    pub fn exact_deficit(d: u8) -> Result<Self, CellConfigError> {
+        Ok(Self::ExactDeficit {
+            drop_count: ExactDeficitCount::new(d)?,
+        })
+    }
+    pub fn natural_iid(p: u16) -> Result<Self, CellConfigError> {
+        Ok(Self::NaturalIid {
+            loss_permille: LossPermille::new(p)?,
+        })
+    }
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::ExactDeficit { .. } => "ExactDeficit",
+            Self::NaturalIid { .. } => "NaturalIid",
+        }
+    }
+    /// §6 result-schema: variant-local configured accessor'ı (ExactDeficit → Some(d); IID → None).
+    #[must_use]
+    pub fn configured_exact_drop_count(&self) -> Option<u8> {
+        match self {
+            Self::ExactDeficit { drop_count } => Some(drop_count.get()),
+            Self::NaturalIid { .. } => None,
+        }
+    }
+    /// §6 result-schema: variant-local configured accessor'ı (IID → Some(200); ExactDeficit → None).
+    #[must_use]
+    pub fn configured_iid_loss_permille(&self) -> Option<u16> {
+        match self {
+            Self::NaturalIid { loss_permille } => Some(loss_permille.get()),
+            Self::ExactDeficit { .. } => None,
+        }
+    }
+}
+
+/// **§5 TYPED-VALIDATION GATE.** Bir düz/serbest `(impairment_kind, drop_count?, iid_loss_permille?)` girişini
+/// (manifest/CLI satırı benzeri) SUM-TYPE'a çevirir; GEÇERSİZ-kombinasyonu typed-error ile REDDEDER.
+/// NaturalIid+deficit / ExactDeficit-count'suz / variant-yabancı-param → hata (temsil-edilemez-invariant kapısı).
+pub fn parse_impairment(
+    kind: &str,
+    drop_count: Option<u8>,
+    iid_loss_permille: Option<u16>,
+) -> Result<FsImpairment, CellConfigError> {
+    match kind {
+        "ExactDeficit" => {
+            if let Some(p) = iid_loss_permille {
+                return Err(CellConfigError::ExactDeficitWithIid(p));
+            }
+            let d = drop_count.ok_or(CellConfigError::ExactDeficitWithoutCount)?;
+            FsImpairment::exact_deficit(d)
+        }
+        "NaturalIid" => {
+            if let Some(d) = drop_count {
+                return Err(CellConfigError::IidWithDeficit(d));
+            }
+            FsImpairment::natural_iid(iid_loss_permille.unwrap_or(FS1_IID_LOSS_PERMILLE))
+        }
+        other => Err(CellConfigError::UnknownKind(other.to_string())),
+    }
+}
+
+// ── BASE CELL + THREE-LEVEL SEMANTIC HASHES (§7) ───────────────────────────────────────────────────
+/// Reverse'in cell-defining olup-olmadığı. FS-1 base-matriste reverse=Clear → cell-defining DEĞİL
+/// (reverse-pairing S3-R1 AYRI eksen). cell-defining ise base-cell-hash'e girer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReverseCellSpec {
+    Clear,
+    ScheduledId(u64),
+}
+
+/// **Bilimsel base-cell** (RULE-8 çekirdeği). arm / rep / seed / row-id / label İÇERMEZ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BaseCell {
+    pub rtt_ms: u64,
+    pub impairment: FsImpairment,
+    pub bottleneck_bps: u64,
+    pub source_offer_pacer_bps: u64,
+    pub reverse: ReverseCellSpec,
+}
+
+/// Arm-config (execution-affecting). configured_r = S1/S2-otoritesi (A0=0; diğer arm r). §9: DEĞİŞMEZ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArmConfig {
+    pub arm: &'static str,
+    pub configured_r: u16,
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+fn push_impairment(b: &mut Vec<u8>, imp: &FsImpairment) {
+    // deficit YALNIZ ExactDeficit'e girer; NaturalIid'de (loss_permille) — deficit GİRMEZ (S3-A çekirdeği).
+    match imp {
+        FsImpairment::ExactDeficit { drop_count } => {
+            b.push(0x01);
+            b.push(drop_count.get());
+        }
+        FsImpairment::NaturalIid { loss_permille } => {
+            b.push(0x02);
+            b.extend_from_slice(&loss_permille.get().to_le_bytes());
+        }
+    }
+}
+
+/// **A. BASE_CELL_SEMANTICS_HASH** — yalnız bilimsel base-cell: RTT · workload-geometri · impairment-variant +
+/// variant-param · util/source-offer · (cell-defining) reverse. HARİÇ: arm · rep · seed · row-id · label.
+#[must_use]
+pub fn base_cell_semantics_hash(c: &BaseCell) -> u64 {
+    let mut b: Vec<u8> = Vec::new();
+    b.push(0xB1); // domain tag: base-cell
+    b.extend_from_slice(&c.rtt_ms.to_le_bytes());
+    // workload-geometri (sabit; yine de commit → grounding-chain / RULE-2).
+    b.extend_from_slice(&(TOTAL_SOURCE_SYMBOLS as u64).to_le_bytes());
+    b.extend_from_slice(&(E as u64).to_le_bytes());
+    b.extend_from_slice(&(TOTAL_APP_BYTES as u64).to_le_bytes());
+    b.extend_from_slice(&(APP_UNITS as u64).to_le_bytes());
+    b.extend_from_slice(&(APP_UNIT_BYTES as u64).to_le_bytes());
+    b.extend_from_slice(&fs_sealed_len(E as u64).to_le_bytes());
+    push_impairment(&mut b, &c.impairment);
+    b.extend_from_slice(&c.bottleneck_bps.to_le_bytes());
+    b.extend_from_slice(&c.source_offer_pacer_bps.to_le_bytes());
+    match c.reverse {
+        ReverseCellSpec::Clear => b.push(0x10),
+        ReverseCellSpec::ScheduledId(id) => {
+            b.push(0x11);
+            b.extend_from_slice(&id.to_le_bytes());
+        }
+    }
+    fnv1a(&b)
+}
+
+/// **B. RUN_EXECUTION_SEMANTICS_HASH** — base-cell + arm + arm-config + seed + config-version.
+/// HARİÇ: filename · row-display-label · result-outcome.
+#[must_use]
+pub fn run_execution_semantics_hash(
+    c: &BaseCell,
+    arm: &ArmConfig,
+    seed: u64,
+    config_version: u32,
+) -> u64 {
+    let mut b: Vec<u8> = Vec::new();
+    b.push(0xE2);
+    b.extend_from_slice(&base_cell_semantics_hash(c).to_le_bytes());
+    b.extend_from_slice(arm.arm.as_bytes());
+    b.push(0x00);
+    b.extend_from_slice(&arm.configured_r.to_le_bytes());
+    b.extend_from_slice(&seed.to_le_bytes());
+    b.extend_from_slice(&config_version.to_le_bytes());
+    fnv1a(&b)
+}
+
+/// **C. ROW_IDENTITY_HASH** — manifest-row-kimliği + presentation-metadata (display-label dahil).
+/// AYNI run_execution_semantics_hash + FARKLI row_identity_hash = duplicate-execution-row (RULE-8).
+#[must_use]
+pub fn row_identity_hash(
+    exec_hash: u64,
+    row_label: &str,
+    display_deficit_label: Option<u8>,
+) -> u64 {
+    let mut b: Vec<u8> = Vec::new();
+    b.push(0xC3);
+    b.extend_from_slice(&exec_hash.to_le_bytes());
+    b.extend_from_slice(row_label.as_bytes());
+    b.push(0x00);
+    if let Some(d) = display_deficit_label {
+        b.push(0xDD);
+        b.push(d);
+    }
+    fnv1a(&b)
+}
+
+// ── AMENDED (12) + HISTORICAL (18) MATRICES ────────────────────────────────────────────────────────
+/// **ALT-1 amended base-matris = 12 hücre** (9 ExactDeficit + 3 NaturalIid).
+#[must_use]
+pub fn amended_base_cells() -> Vec<BaseCell> {
+    let mut out = Vec::new();
+    for &rtt in &FS1_RTT_MS {
+        for &d in &FS1_EXACT_DEFICITS {
+            out.push(BaseCell {
+                rtt_ms: rtt,
+                impairment: FsImpairment::exact_deficit(d).unwrap(),
+                bottleneck_bps: FS1_BOTTLENECK_BPS,
+                source_offer_pacer_bps: FS1_SOURCE_OFFER_PACER_BPS,
+                reverse: ReverseCellSpec::Clear,
+            });
+        }
+    }
+    for &rtt in &FS1_RTT_MS {
+        out.push(BaseCell {
+            rtt_ms: rtt,
+            impairment: FsImpairment::natural_iid(FS1_IID_LOSS_PERMILLE).unwrap(),
+            bottleneck_bps: FS1_BOTTLENECK_BPS,
+            source_offer_pacer_bps: FS1_SOURCE_OFFER_PACER_BPS,
+            reverse: ReverseCellSpec::Clear,
+        });
+    }
+    out
+}
+
+/// Tarihsel 18-satır candidate grid (RTT × deficit-label × impairment). IID satırları d-LABEL taşır AMA
+/// impairment=NaturalIid (label INERT; S3-A). base-cell-hash label'ı YOK-SAYAR → IID d-satırları çöker.
+pub struct HistoricalRow {
+    pub rtt_ms: u64,
+    pub deficit_label: u8,
+    pub impairment: FsImpairment,
+    pub row_label: String,
+}
+
+#[must_use]
+pub fn historical_base_rows() -> Vec<HistoricalRow> {
+    let mut out = Vec::new();
+    for &rtt in &FS1_RTT_MS {
+        for &d in &FS1_EXACT_DEFICITS {
+            out.push(HistoricalRow {
+                rtt_ms: rtt,
+                deficit_label: d,
+                impairment: FsImpairment::exact_deficit(d).unwrap(), // label == drop_count
+                row_label: format!("rtt{rtt}-d{d}-exact"),
+            });
+        }
+        for &d in &FS1_EXACT_DEFICITS {
+            out.push(HistoricalRow {
+                rtt_ms: rtt,
+                deficit_label: d, // d-LABEL taşınır AMA impairment IID (label inert → duplicate)
+                impairment: FsImpairment::natural_iid(FS1_IID_LOSS_PERMILLE).unwrap(),
+                row_label: format!("rtt{rtt}-d{d}-iid20"),
+            });
+        }
+    }
+    out
+}
+
+#[must_use]
+pub fn base_cell_of(row: &HistoricalRow) -> BaseCell {
+    BaseCell {
+        rtt_ms: row.rtt_ms,
+        impairment: row.impairment,
+        bottleneck_bps: FS1_BOTTLENECK_BPS,
+        source_offer_pacer_bps: FS1_SOURCE_OFFER_PACER_BPS,
+        reverse: ReverseCellSpec::Clear,
+    }
+}
+
+#[must_use]
+pub fn unique_base_hashes(cells: &[BaseCell]) -> BTreeSet<u64> {
+    cells.iter().map(base_cell_semantics_hash).collect()
+}
