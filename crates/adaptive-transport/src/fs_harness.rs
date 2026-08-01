@@ -277,6 +277,10 @@ impl BottleneckChannel {
         self.trace.reverse_counts()
     }
     #[must_use]
+    pub fn reverse_decision_log_hash(&self) -> u64 {
+        self.trace.reverse_decision_log_hash()
+    }
+    #[must_use]
     pub fn forward_schedule_id(&self) -> u64 {
         self.trace.forward_schedule_id()
     }
