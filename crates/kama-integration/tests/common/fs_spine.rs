@@ -16,8 +16,8 @@ pub use fs_workload::{
 
 use adaptive_transport::fs_harness::BottleneckChannel;
 use adaptive_transport::fs_harness::{
-    a1_duplicate_target_set, f4_select_k, fs_sealed_len, BlockTiming, CodecK, PathTimingLedger,
-    RedundancyKind,
+    a1_duplicate_target_set, f4_select_k, fs_effective_source_bps, fs_sealed_len,
+    fs_t_serialize_source_ns, BlockTiming, CodecK, PathTimingLedger, RedundancyKind,
 };
 use adaptive_transport::fs_trace::{
     RedundancyPolicy, ReverseSpec, TraceChannel, TracePacketId, TraceSpec, TransmissionRole,
@@ -96,6 +96,18 @@ impl SpineCfg {
         self.f4_base_rtt_ns = ns;
         self
     }
+    /// S3-R1: reverse-path spesifikasyonu (Clear | Scheduled{blackout,loss}). configured — realized-DEĞİL.
+    #[must_use]
+    pub fn with_reverse(mut self, reverse: ReverseSpec) -> Self {
+        self.reverse = reverse;
+        self
+    }
+    /// S3-R1: virtual-time çözünürlüğü. Paced-fixture'da 0.80C eligibility-time'ları dt-katı olmalı (10µs).
+    #[must_use]
+    pub fn with_dt(mut self, dt_ns: u64) -> Self {
+        self.dt_ns = dt_ns;
+        self
+    }
 }
 
 /// F1/F3 structural-null sınıflandırması (parity-wire).
@@ -159,6 +171,21 @@ pub struct SpineResult {
     // F4 + structural
     pub f4_base_rtt_ns: u64,
     pub structural_class: StructuralClass,
+    // ── S3-R1: reverse identity/separation (configured vs realized) ──
+    pub forward_schedule_id: u64,
+    pub reverse_schedule_id: u64,
+    pub reverse_spec_kind: &'static str,
+    pub reverse_event_count: u64,
+    pub reverse_dropped_count: u64,
+    pub reverse_blackout_intervals: Vec<(u64, u64)>,
+    // ── S3-R1: source-offer pacing (bottleneck vs source-offer vs realized-wire; §14/§15) ──
+    pub bottleneck_capacity_bps: u64,
+    pub source_offer_pacer_bps: u64,
+    pub configured_source_offer_bps: u64,
+    pub source_offer_start_ns: u64,
+    pub source_offer_end_ns: u64,
+    pub t_first_source_wire_complete: Option<u64>,
+    pub realized_source_wire_bps: u64,
 }
 
 fn fnv(vals: &[u64]) -> u64 {
@@ -371,6 +398,19 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
         path_timing: PathTimingLedger::default(),
         f4_base_rtt_ns: cfg.f4_base_rtt_ns,
         structural_class: StructuralClass::NotApplicable,
+        forward_schedule_id: 0,
+        reverse_schedule_id: 0,
+        reverse_spec_kind: "Clear",
+        reverse_event_count: 0,
+        reverse_dropped_count: 0,
+        reverse_blackout_intervals: Vec::new(),
+        bottleneck_capacity_bps: 0,
+        source_offer_pacer_bps: 0,
+        configured_source_offer_bps: 0,
+        source_offer_start_ns: 0,
+        source_offer_end_ns: 0,
+        t_first_source_wire_complete: None,
+        realized_source_wire_bps: 0,
     };
 
     let mut delivered_src: BTreeSet<u16> = BTreeSet::new();
@@ -423,6 +463,10 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
                     let wire = arr.saturating_sub(owd);
                     if wire > res.t_final_source_wire_complete.unwrap_or(0) {
                         res.t_final_source_wire_complete = Some(wire);
+                    }
+                    // S3-R1: first source wire (realized-pacing spanı için min-wire).
+                    if res.t_first_source_wire_complete.is_none_or(|w| wire < w) {
+                        res.t_first_source_wire_complete = Some(wire);
                     }
                 }
                 deliveries.push((arr, gid, false, seq, block));
@@ -732,6 +776,44 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
     res.forward_trace_hash = ch.trace_hash();
     res.reverse_trace_hash = ch.reverse_decision_log_hash();
     res.configured_schedule_hash = ch.configured_schedule_hash();
+    // S3-R1: reverse identity (configured, forward'dan AYRI) + realized reverse events.
+    res.forward_schedule_id = ch.forward_schedule_id();
+    res.reverse_schedule_id = ch.reverse_schedule_id();
+    let (rev_events, rev_dropped) = ch.reverse_counts();
+    res.reverse_event_count = rev_events;
+    res.reverse_dropped_count = rev_dropped;
+    let (rev_kind, rev_blackout) = match &cfg.reverse {
+        ReverseSpec::Clear => ("Clear", Vec::new()),
+        ReverseSpec::Scheduled {
+            blackout_intervals_ns,
+            ..
+        } => ("Scheduled", blackout_intervals_ns.clone()),
+    };
+    res.reverse_spec_kind = rev_kind;
+    res.reverse_blackout_intervals = rev_blackout;
+    // S3-R1: source-offer pacing — bottleneck vs configured-offer vs realized-wire (§14/§15).
+    res.bottleneck_capacity_bps = cfg.link_bps;
+    res.source_offer_pacer_bps = cfg.source_offer_pacer_bps;
+    if cfg.source_offer_pacer_bps > 0 {
+        let eff = fs_effective_source_bps(cfg.source_offer_pacer_bps, cfg.link_bps);
+        res.configured_source_offer_bps = eff; // min(pacer, bottleneck) = 0.80C
+        res.source_offer_start_ns = 0;
+        res.source_offer_end_ns =
+            fs_t_serialize_source_ns(TOTAL_SOURCE_SYMBOLS as u64 * sealed, eff);
+    }
+    // realized source wire rate: (N-1) inter-departure spanı (first-wire serialize-offset'i düşürür).
+    if let (Some(first), Some(last)) = (
+        res.t_first_source_wire_complete,
+        res.t_final_source_wire_complete,
+    ) {
+        if last > first {
+            res.realized_source_wire_bps = (TOTAL_SOURCE_SYMBOLS as u64 - 1)
+                .saturating_mul(sealed)
+                .saturating_mul(8)
+                .saturating_mul(1_000_000_000)
+                / (last - first);
+        }
+    }
     // F1/F3 structural-null (per-run): parity-wire, final-source-wire'DAN ÖNCE OLAMAZ (sender-wide-gate).
     // Paired F1/F3-vs-F0 t_first_parity_wire eşitliği testte (deterministik). Advancement → FALSIFIED (DUR-A).
     if is_f1 || is_f3 {
