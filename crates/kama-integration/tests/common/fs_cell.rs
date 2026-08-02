@@ -397,3 +397,72 @@ pub fn candidate_matrix_json() -> String {
     s.push_str("  ]\n}\n");
     s
 }
+
+// ── S4-A: RESULT-BEARING ARM-SET (OPT-A) + REPETITION LINEAGE (frozen, outcome-blind; RULE-10/11) ──
+/// OPT-A result-bearing arm-set (F1/F4 collapse → DIAGNOSTIC-only; FS-1-CROSS-ARM-BEHAVIORAL-COLLAPSE-AUDIT).
+pub const FS1_RESULT_BEARING_ARMS: [&str; 4] = ["A0", "A1-EARLY", "F0", "F3"];
+/// OPT-A: result-bearing-DIŞI (mechanism-validation diagnostic; §11).
+pub const FS1_DIAGNOSTIC_ARMS: [&str; 2] = ["F1", "F4"];
+/// OPT-A projected result-bearing = 12 × 4 × 5 = 240 (SUPERSEDES 360).
+pub const FS1_RESULT_BEARING_RUNS: usize = 12 * 4 * 5;
+
+/// Base-cell readable id (deterministik; scientific-semantik typed-field/hash'ten gelir, string-parse'tan DEĞİL).
+#[must_use]
+pub fn base_cell_id(c: &BaseCell) -> String {
+    match c.impairment {
+        FsImpairment::ExactDeficit { drop_count } => {
+            format!("rtt{}-exactd{}", c.rtt_ms, drop_count.get())
+        }
+        FsImpairment::NaturalIid { .. } => format!("rtt{}-iid20", c.rtt_ms),
+    }
+}
+
+/// Paired trace-seed (base-cell + repetition). Distinct-rep → distinct-seed → distinct-lineage (RULE-10).
+/// Outcome-blind (yalnız base-cell-semantics + rep). Frozen domain "FS1_PAIRED_TRACE_v1".
+#[must_use]
+pub fn paired_trace_seed(c: &BaseCell, rep: u8) -> u64 {
+    let mut b: Vec<u8> = b"FS1_PAIRED_TRACE_v1".to_vec();
+    b.extend_from_slice(&base_cell_semantics_hash(c).to_le_bytes());
+    b.push(rep);
+    fnv1a(&b)
+}
+
+/// Per-cell ExactDeficit ranking seed (rep-BAĞIMSIZ; cell-sabit). rep, non-overlapping window seçer.
+/// Frozen domain "FS1_EXACT_RANK_v1"; outcome-blind (yalnız base-cell-semantics).
+#[must_use]
+pub fn exact_rank_seed(c: &BaseCell) -> u64 {
+    let mut b: Vec<u8> = b"FS1_EXACT_RANK_v1".to_vec();
+    b.extend_from_slice(&base_cell_semantics_hash(c).to_le_bytes());
+    fnv1a(&b)
+}
+
+/// ExactDeficit hedef-seti: 48-gid cell-ranking (rank_seed-keyed) + rep NON-OVERLAPPING window
+/// `[rep*d, (rep+1)*d)`. 5-rep → 5 GARANTİLİ-distinct set (max rep*d = 4*4 = 16 < 48). deterministik;
+/// outcome-blind; arm-BAĞIMSIZ; per-block-çarpım-YOK. Sıralı döner. distinctness-by-construction (§5).
+#[must_use]
+pub fn exact_deficit_target_set(drop_count: u8, rank_seed: u64, rep: u8) -> Vec<u16> {
+    let mut ranked: Vec<(u64, u16)> = (0..TOTAL_SOURCE_SYMBOLS as u16)
+        .map(|g| {
+            let mut b = rank_seed.to_le_bytes().to_vec();
+            b.extend_from_slice(&g.to_le_bytes());
+            (fnv1a(&b), g)
+        })
+        .collect();
+    ranked.sort_unstable();
+    let start = rep as usize * drop_count as usize;
+    let mut out: Vec<u16> = ranked[start..start + drop_count as usize]
+        .iter()
+        .map(|(_, g)| *g)
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+#[must_use]
+pub fn exact_drop_set_hash(ids: &[u16]) -> u64 {
+    let mut b: Vec<u8> = b"FS1_DROPSET_v1".to_vec();
+    for &g in ids {
+        b.extend_from_slice(&g.to_le_bytes());
+    }
+    fnv1a(&b)
+}
