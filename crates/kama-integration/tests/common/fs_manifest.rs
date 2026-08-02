@@ -7,7 +7,9 @@
 mod fs_cell;
 pub use fs_cell::*;
 
-use adaptive_transport::fs_harness::{fs_deadline_ms, fs_effective_source_bps};
+use adaptive_transport::fs_harness::{
+    fs_deadline_ms, fs_effective_source_bps, fs_t_serialize_source_ns,
+};
 
 // ── PROVENANCE CONSTANTS (candidate; §25 CANDIDATE_NOT_FROZEN) ──────────────────────────────────────
 pub const MANIFEST_SCHEMA_VERSION: &str = "FS-1-MANIFEST-v1.3-CANDIDATE";
@@ -405,4 +407,89 @@ pub fn manifest_jsonl() -> String {
 #[must_use]
 pub fn manifest_row_count() -> usize {
     manifest_jsonl().lines().count()
+}
+
+// ── S5-A: OBSERVATION HORIZON (frozen v1.1 §B0.3; arm-independent; outcome-independent) ─────────────
+// T_horizon = ceil(T_serialize_source) + (k_rtt + bounded_recovery_rtt)*RTT + M_fixed_horizon
+//   k_rtt=6 · bounded_recovery_allowance=3*RTT · M_fixed_horizon=200ms  (FS-PREREG-v1.1 §B0.3, v1.2-preserved).
+pub const HORIZON_K_RTT: u64 = 6;
+pub const HORIZON_BOUNDED_RECOVERY_RTT: u64 = 3;
+pub const HORIZON_M_FIXED_MS: u64 = 200;
+
+#[must_use]
+pub fn observation_horizon_ms(rtt_ms: u64) -> u64 {
+    let eff = fs_effective_source_bps(FS1_SOURCE_OFFER_PACER_BPS, FS1_BOTTLENECK_BPS);
+    let t_ser_ms = fs_t_serialize_source_ns(TOTAL_SOURCE_SYMBOLS_U64 * sealed_source_bytes(), eff)
+        .div_ceil(1_000_000);
+    t_ser_ms + (HORIZON_K_RTT + HORIZON_BOUNDED_RECOVERY_RTT) * rtt_ms + HORIZON_M_FIXED_MS
+}
+
+// ── S5-A: EXECUTION ORDER (frozen domain-separated permutation; operational-metadata, cell-axis-DEĞİL) ─
+pub const EXEC_ORDER_DOMAIN: &str = "FS1_EXEC_ORDER_v1";
+
+fn exec_order_key(prefix: &str, tail: &str) -> u64 {
+    let mut b: Vec<u8> = EXEC_ORDER_DOMAIN.as_bytes().to_vec();
+    b.extend_from_slice(prefix.as_bytes());
+    b.push(0);
+    b.extend_from_slice(tail.as_bytes());
+    fnv(&b)
+}
+
+/// Deterministik execution-order: (order_index, group_id, base_cell_id, rep, arm, run_id). 240 giriş.
+/// grup-permütasyonu = fnv(domain, group_id) sıralaması; grup-içi arm-permütasyonu = fnv(domain, group_id, arm).
+#[must_use]
+pub fn execution_order_entries() -> Vec<(usize, String, String, u8, &'static str, String)> {
+    // 60 grup (base_cell, rep) topla + anahtarla sırala.
+    let mut groups: Vec<(u64, BaseCell, u8, String)> = Vec::new();
+    for c in amended_base_cells() {
+        for rep in 0..FS1_REPS {
+            let gid = pairing_group_id(&c, rep);
+            groups.push((exec_order_key("G", &gid), c, rep, gid));
+        }
+    }
+    groups.sort_by(|a, b| a.0.cmp(&b.0).then(a.3.cmp(&b.3)));
+    let mut out = Vec::new();
+    let mut idx = 0usize;
+    for (_, c, rep, gid) in &groups {
+        // grup-içi arm sırası.
+        let mut arms: Vec<(u64, &'static str)> = FS1_RESULT_BEARING_ARMS
+            .iter()
+            .map(|&a| (exec_order_key(gid, a), a))
+            .collect();
+        arms.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.cmp(y.1)));
+        for (_, arm) in arms {
+            out.push((
+                idx,
+                gid.clone(),
+                base_cell_id(c),
+                *rep,
+                arm,
+                run_id(c, arm, *rep),
+            ));
+            idx += 1;
+        }
+    }
+    out
+}
+
+#[must_use]
+pub fn execution_order_json() -> String {
+    let entries = execution_order_entries();
+    let mut s = String::new();
+    s.push_str("{\n");
+    s.push_str("  \"artifact\": \"FS-1-EXECUTION-ORDER-v1\",\n");
+    s.push_str(&format!("  \"order_domain\": \"{EXEC_ORDER_DOMAIN}\",\n"));
+    s.push_str("  \"unit\": \"pairing-group (base-cell + repetition + 4 arms)\",\n");
+    s.push_str("  \"pairing_groups\": 60,\n");
+    s.push_str(&format!("  \"total_rows\": {},\n", entries.len()));
+    s.push_str("  \"note\": \"operational-metadata; scientific-cell-axis DEĞİL. deterministik; fs/time/uuid-YOK.\",\n");
+    s.push_str("  \"order\": [\n");
+    for (i, (idx, gid, bcid, rep, arm, rid)) in entries.iter().enumerate() {
+        let comma = if i + 1 < entries.len() { "," } else { "" };
+        s.push_str(&format!(
+            "    {{ \"order_index\": {idx}, \"pairing_group_id\": \"{gid}\", \"base_cell_id\": \"{bcid}\", \"repetition_index\": {rep}, \"arm\": \"{arm}\", \"run_id\": \"{rid}\" }}{comma}\n"
+        ));
+    }
+    s.push_str("  ]\n}\n");
+    s
 }
