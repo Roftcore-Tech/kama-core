@@ -51,3 +51,9 @@ required-features = ["experimental-cold-start"]
 [[example]]
 name = "fs_runner"
 required-features = ["experimental-fs-harness"]
+
+# DR-FEC-FS-1 S5-C: manifest-driven FS-1 runner (frozen execution-baseline binary). Default EXECUTABILITY_ONLY;
+# result-bearing YALNIZ --result-bearing flag + valid-provenance ile. Reproducible-build (deterministic; §S5-C.2).
+[[example]]
+name = "fs1_runner"
+required-features = ["experimental-fs-harness"]
