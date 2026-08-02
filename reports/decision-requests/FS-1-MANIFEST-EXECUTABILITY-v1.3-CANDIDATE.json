@@ -1,0 +1,29 @@
+{
+  "artifact": "FS-1-MANIFEST-EXECUTABILITY-v1.3-CANDIDATE",
+  "mode": "EXECUTABILITY_ONLY",
+  "result_bearing": false,
+  "manifest_schema_version": "FS-1-MANIFEST-v1.3-CANDIDATE",
+  "candidate_prereg_status": "CANDIDATE_NOT_FROZEN",
+  "v12_historical_hash": "da4af3c49195f8cfbec7d26e1b5542a6802391e5d9b86ff193bf1255739da034",
+  "s3_candidate_matrix_hash": "399bfcd4b5c75a25c1c036ed56719e0afe725a15f0df2c3d0d53116b67313b11",
+  "source_commit": "dd73770",
+  "expected_binary_provenance": "kama-integration@experimental-fs-harness",
+  "total": 240,
+  "dispatchable": 240,
+  "unsupported": 0,
+  "ambiguous": 0,
+  "invalid": 0,
+  "duplicate": 0,
+  "by_family": { "ExactDeficit": 180, "NaturalIid": 60 },
+  "by_arm": { "A0": 60, "A1-EARLY": 60, "F0": 60, "F3": 60 },
+  "pairing_groups": 60,
+  "output_paths_unique": true,
+  "result_bearing_firewall": {
+    "raw_artifact_namespace": "reports/fs-1/raw/PENDING-v1.3-FREEZE",
+    "raw_result_files_written": 0,
+    "channel_loop_advanced": false,
+    "outcome_fields_populated": false,
+    "fs1_run_ids_spent": 0
+  },
+  "failures": []
+}

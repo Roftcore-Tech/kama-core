@@ -30,6 +30,9 @@ pub fn sealed_source_bytes() -> u64 {
     fs_sealed_len(E as u64)
 }
 
+/// Canonical source-symbol count (48; TOTAL_SOURCE_SYMBOLS'e bağlı; pub-re-export).
+pub const FS1_SOURCE_SYMBOLS: u16 = TOTAL_SOURCE_SYMBOLS as u16;
+
 // ── FS-1 FROZEN COVERAGE CONSTANTS (ALT-1 amended; Abkarada-ratified) ──────────────────────────────
 pub const FS1_RTT_MS: [u64; 3] = [50, 250, 1000];
 pub const FS1_EXACT_DEFICITS: [u8; 3] = [1, 2, 4];
