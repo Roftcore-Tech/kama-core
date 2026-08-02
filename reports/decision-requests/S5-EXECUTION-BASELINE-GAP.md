@@ -1,5 +1,10 @@
 # S5-EXECUTION-BASELINE-GAP (S5-C → STOP; readiness-incomplete before one-way freeze)
 
+> **✅ RESOLVED via OPT-1 (Abkarada).** FS-1 result-bearing runner (fs1_runner) + deterministic reproducible-build
+> kuruldu (execution-baseline commit 5c7e005; binary SHA-256 75ca6eb7… üç-bağımsız-build byte-özdeş). Bu belge
+> tarihsel-decision-request (OPT-1'e yol-açtı). Güncel-durum: FS-1-EXECUTION-BASELINE-v1.json (RESOLVED). Aşağısı orijinal-gap.
+
+
 > **STOP before FS-1-FREEZE-LOCK-v1.3.** S5-A + S5-B TAMAM (authority-audits + coverage-v1.2 + analysis/oracle/
 > structural-null/F4 frozen-artifacts + validators; gate-yeşil). S5-C: reproducible SOURCE-provenance kuruldu AMA
 > **reproducible EXECUTION-BINARY kurulamaz** — one-way freeze-lock (§31) `execution_binary_sha256` gerektirir; §36
