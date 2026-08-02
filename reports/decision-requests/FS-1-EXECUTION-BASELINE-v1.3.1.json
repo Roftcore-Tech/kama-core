@@ -1,0 +1,62 @@
+{
+  "artifact": "FS-1-EXECUTION-BASELINE-v1.3.1",
+  "supersedes": "FS-1-EXECUTION-BASELINE-v1 (75ca6eb7…; refuse-stub binary; PRESERVED, not overwritten)",
+  "status": "RESOLVED (OPT-R1 §6: result-bearing EXECUTOR complete; reproducible binary FROZEN; 4-build byte-identical)",
+  "reason_for_new_baseline": "S6 (08a35c2) LAUNCH-NOT-AUTHORIZED — old binary 75ca6eb7 could not execute the result-bearing contract (positive path was a permanent refuse-stub; no run+persist/append-only-raw/ledger/checksum). OPT-R1 rebuilt the executor inside fs1_runner. FROZEN SCIENCE UNCHANGED (invariance-proof: FS-1-SCIENCE-INVARIANCE-v1.3.1.md).",
+  "execution_source_commit": "a3ab2fedf30e28c13d136657fc6196a3670ce747",
+  "execution_binary_sha256": "8438991bf5cf01309b3a8c9f1b1ec7c2c648a1941e6ce0d49687c2595ac7e514",
+  "old_binary_sha256": "75ca6eb7b65047809ab9e27e579e20c819bd8e664e6085130c540703896e0461",
+  "differs_from_old_binary": true,
+  "reproducible_build": {
+    "command": "CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=1700000000 RUSTFLAGS=\"--remap-path-prefix=$PWD=/fs1 --remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$(rustc --print sysroot)=/rust\" cargo build --release -p kama-integration --features experimental-fs-harness --example fs1_runner",
+    "binary_path": "target/release/examples/fs1_runner",
+    "cargo_incremental": "0",
+    "source_date_epoch": "1700000000",
+    "remap_path_prefix": ["$PWD=/fs1", "$HOME/.cargo=/cargo", "$(rustc --print sysroot)=/rust"],
+    "independent_clean_locations": 4,
+    "method": "git archive a3ab2fe → 4 independent clean dirs → build → sha256sum",
+    "four_build_byte_identical": true,
+    "four_build_sha256": [
+      "8438991bf5cf01309b3a8c9f1b1ec7c2c648a1941e6ce0d49687c2595ac7e514",
+      "8438991bf5cf01309b3a8c9f1b1ec7c2c648a1941e6ce0d49687c2595ac7e514",
+      "8438991bf5cf01309b3a8c9f1b1ec7c2c648a1941e6ce0d49687c2595ac7e514",
+      "8438991bf5cf01309b3a8c9f1b1ec7c2c648a1941e6ce0d49687c2595ac7e514"
+    ],
+    "reproducible_execution_binary_gap": "NOT TRIGGERED (unique sha across 4 clean builds; §36/DUR-B not raised)"
+  },
+  "reproducible_source_provenance": {
+    "cargo_lock_sha256": "47893d24b4ea9b80cb1198f653931a09b8a15c8a4767a24375beb4337b046ad4",
+    "cargo_lock_unchanged_since_v1": true,
+    "rustc_version": "1.96.0 (ac68faa20 2026-05-25)",
+    "cargo_version": "1.96.0 (30a34c682 2026-05-25)",
+    "toolchain_pin": "rust-toolchain.toml channel=1.96.0 (clippy,rustfmt,rust-src)",
+    "target_triple": "x86_64-unknown-linux-gnu",
+    "feature_set": "kama-integration/experimental-fs-harness",
+    "harness_version": "fs-spine-S5",
+    "manifest_generator_version": 1,
+    "schema_validator_version": 1,
+    "analysis_skeleton_version": 1
+  },
+  "science_inertness": {
+    "candidate_manifest_sha256": "e9e331a4b25662b728fb667e88066e5d9dc42642a52503cb77227b0ac7f02c10",
+    "candidate_manifest_sha_unchanged": true,
+    "science_generator_modules_unchanged_5c7e005_to_a3ab2fe": ["fs_manifest.rs", "fs_cell.rs", "fs_dryrun.rs", "fs_spine.rs", "fs_analysis.rs", "fs_workload.rs"],
+    "run_spine_behavior_unchanged": true,
+    "new_binary_executability": "240/240 dispatchable (ExactDeficit=180, NaturalIid=60, 60 pairing_groups)"
+  },
+  "no_new_dependency": "pure-Rust SHA-256 (FIPS 180-4) in-harness; no sha2/ring/digest crate added; Cargo.lock byte-identical to v1.",
+  "musl_note": "ADR-19 musl-static = PRODUCTION-DEPLOY-SERVER gereği; FS-1 runner = diagnostic/campaign-tool (deploy-server DEĞİL) → musl-zorunlu-DEĞİL. host x86_64-unknown-linux-gnu + reproducible-flags yeterli (4-build byte-özdeş kanıtlı).",
+  "runtime_code_complete": {
+    "manifest_generator": true,
+    "manifest_validator": true,
+    "raw_schema": "defined (FS-1-RAW-SCHEMA-v1.json); executor emits full RawRecord per row",
+    "analysis_schema_validator": true,
+    "executability_mode": true,
+    "result_bearing_runner": true,
+    "result_bearing_executor": "COMPLETE (reserve→run_spine→classify→atomic-write+checksum→ledger-commit; INVALID-only-retry; crash-safe quarantine)",
+    "persistence": "append-only raw-writer (temp→fsync→rename, no-overwrite, .sha256 sidecar) + append-only ledger (dup-start/dup-valid reject, primary+2 retry ceiling)",
+    "result_bearing_gate": "--result-bearing + 7-check verify-chain (generator-consistency + freeze-lock + candidate + self-binary-hash + final-manifest + empty-namespace + empty-ledger) + --i-have-launch-authorization",
+    "freeze_checks": "ready (execution_binary_sha256 resolved → FS-1-FREEZE-LOCK-v1.3.1 generable in S5-F2)"
+  },
+  "post_baseline_rule": "§23/§7: bu commit (a3ab2fe) SONRASI hiçbir Rust/runtime/schema/generator kodu DEĞİŞMEZ. Değişirse binary-provenance geçersiz → S5-C2 tekrar."
+}
