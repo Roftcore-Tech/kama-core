@@ -10,10 +10,25 @@
 
 #[path = "fs_workload.rs"]
 mod fs_workload;
-use fs_workload::{APP_UNITS, APP_UNIT_BYTES, E, TOTAL_APP_BYTES, TOTAL_SOURCE_SYMBOLS};
+use fs_workload::{
+    canonical_workload, sequence_hash, APP_UNITS, APP_UNIT_BYTES, E, TOTAL_APP_BYTES,
+    TOTAL_SOURCE_SYMBOLS,
+};
 
 use adaptive_transport::fs_harness::fs_sealed_len;
 use std::collections::BTreeSet;
+
+/// Canonical 48-symbol source-sequence hash (workload-invariant; tüm-hücre AYNI). Manifest workload-field'i.
+#[must_use]
+pub fn canonical_sequence_hash() -> u64 {
+    sequence_hash(&canonical_workload())
+}
+
+/// Sealed source-symbol bytes (E+37 = 101). Manifest/pacing için tek-otorite.
+#[must_use]
+pub fn sealed_source_bytes() -> u64 {
+    fs_sealed_len(E as u64)
+}
 
 // ── FS-1 FROZEN COVERAGE CONSTANTS (ALT-1 amended; Abkarada-ratified) ──────────────────────────────
 pub const FS1_RTT_MS: [u64; 3] = [50, 250, 1000];
