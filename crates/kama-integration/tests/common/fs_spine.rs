@@ -7,6 +7,8 @@
 #![allow(dead_code, unused_imports)] // re-export'lar test-binary'lerine göre farklı-alt-küme kullanır
 #![allow(clippy::needless_range_loop)] // block-index b çoklu-vec (source/repair/repairs_by_block) indeksler
 
+#[path = "fs_tailprobe.rs"]
+pub mod fs_tailprobe;
 #[path = "fs_workload.rs"]
 mod fs_workload;
 pub use fs_workload::{
@@ -39,6 +41,8 @@ pub const REF_BLOCKS: u16 = 6;
 #[derive(Debug, Clone, Copy)]
 pub enum SpineArm {
     A0,
+    /// DR-ARQ-TAIL-1: A0 + experiment-only bounded tail probe (deconfounding arm; NOT an FS-1 arm).
+    A0Tail,
     A1 {
         r: u16,
     },
@@ -369,8 +373,10 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
     let originals = app_units();
 
     // Arm geometry.
+    let is_a0tail = matches!(arm, SpineArm::A0Tail);
     let (arm_name, r, is_a1, is_fec, is_f1, is_f3, is_f4) = match arm {
         SpineArm::A0 => ("A0", 0, false, false, false, false, false),
+        SpineArm::A0Tail => ("A0-TAIL", 0, false, false, false, false, false),
         SpineArm::A1 { r } => ("A1", r, true, false, false, false, false),
         SpineArm::F0 { r } => ("F0", r, false, true, false, false, false),
         SpineArm::F1 { r } => ("F1", r, false, true, true, false, false),
@@ -529,6 +535,15 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
 
     // OPT-X2: completing-source mechanism (event-based; set at each delivered_src growth).
     let mut completion_mech = CompletionCause::NotCompleted;
+    // DR-ARQ-TAIL-1: experiment-only bounded tail probe (A0-TAIL arm only; gated → other arms unchanged).
+    let mut tail_probe = if is_a0tail {
+        Some(fs_tailprobe::TailProbe::new(
+            fs_tailprobe::TailProbeCfg::conservative(),
+        ))
+    } else {
+        None
+    };
+    let rtt_ns = 2 * cfg.owd_ns;
     let mut delivered_src: BTreeSet<u16> = BTreeSet::new();
     let mut recv_src_block: Vec<BTreeMap<u16, Vec<u8>>> = vec![BTreeMap::new(); nblocks as usize];
     let mut recv_rep_block: Vec<BTreeMap<u16, Vec<u8>>> = vec![BTreeMap::new(); nblocks as usize];
@@ -765,6 +780,10 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
                     } else {
                         CompletionCause::InitialSource
                     };
+                    // DR-ARQ-TAIL-1: source-delivery = ACK progress → resets the tail timer.
+                    if let Some(tp) = tail_probe.as_mut() {
+                        tp.on_ack_progress(arr);
+                    }
                     recv_src_block[block as usize]
                         .insert(local, canonical[gid as usize].symbol_bytes.clone());
                 }
@@ -888,6 +907,33 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
                     true,
                 ),
                 _ => {}
+            }
+        }
+        // DR-ARQ-TAIL-1: drive the bounded tail probe (A0-TAIL only). Outstanding = offered source not yet
+        // delivered (ack-eliciting tail). On probe-due (PTO idle), retransmit the outstanding tail (bounded).
+        let outstanding: Vec<u16> = if tail_probe.is_some() {
+            (0..TOTAL_SOURCE_SYMBOLS as u16)
+                .filter(|g| fed.contains(g) && !delivered_src.contains(g))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let fire = tail_probe.as_mut().is_some_and(|tp| {
+            matches!(
+                tp.on_tick(now, rtt_ns, outstanding.len() as u32),
+                fs_tailprobe::ProbeDecision::Probe { .. }
+            )
+        });
+        if fire {
+            let mut spurious = 0u32;
+            for &gid in &outstanding {
+                if !res.realized_initial_source_drop_ids.contains(&gid) {
+                    spurious += 1; // retransmit of a non-erased unit (would have arrived) = spurious
+                }
+                offer_data(&mut ch, &mut deliveries, &mut res, gid, u64::MAX, now, true);
+            }
+            if let Some(tp) = tail_probe.as_mut() {
+                tp.record_probe(outstanding.len() as u64, spurious);
             }
         }
         if delivered_src.len() == TOTAL_SOURCE_SYMBOLS && res.completion_ns.is_none() {

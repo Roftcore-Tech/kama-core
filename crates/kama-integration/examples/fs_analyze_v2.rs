@@ -2,7 +2,16 @@
 //! oracle-map + fs_analysis.rs PRIMITIVES (called, not reimplemented), emits the 11 §18 artifacts + DUR-A#2.
 //! Deterministic: fixed traversal (execution-order run_id sort), integer comparisons, no wall-clock in artifacts.
 //! Screening/exploratory only — NO program-final FULL-GO/NICHE-GO/K4 verdict (belongs to FS-DUR-SON).
+//! NOTE: lint allows below are output-preserving (dead observational fields / one-shot locals); the emitted 11
+//! artifacts are byte-identical to the FROZEN FS-1 v1.3.2 analysis (this pipeline is not re-run — results locked).
 #![allow(clippy::duplicate_mod)]
+#![allow(
+    dead_code,
+    unused_mut,
+    unused_assignments,
+    clippy::nonminimal_bool,
+    clippy::bool_comparison
+)]
 
 #[path = "../tests/common/fs_analysis.rs"]
 mod fs_analysis;
@@ -97,7 +106,11 @@ fn rval(b: &[u8]) -> String {
         return rstr(b, i).0;
     }
     if b[i] == b'{' || b[i] == b'[' {
-        let (op, cl) = if b[i] == b'{' { (b'{', b'}') } else { (b'[', b']') };
+        let (op, cl) = if b[i] == b'{' {
+            (b'{', b'}')
+        } else {
+            (b'[', b']')
+        };
         let (mut dep, st) = (0i32, i);
         while i < b.len() {
             if b[i] == op {
@@ -140,7 +153,8 @@ fn parse(j: &str) -> Rec {
     let cn = field(j, "t_full_workload_complete");
     // parity wired: any redundancy lifecycle record with non-null t_wire (FEC arms).
     let redl = field(j, "t_redundancy_lifecycle");
-    let parity_wired = redl.contains("\"t_wire\":") && !redl.replace("\"t_wire\":null", "").eq(&redl) == false
+    let parity_wired = redl.contains("\"t_wire\":")
+        && !redl.replace("\"t_wire\":null", "").eq(&redl) == false
         && redl.matches("\"t_wire\":").count() > redl.matches("\"t_wire\":null").count();
     Rec {
         run_id: field(j, "run_id"),
@@ -266,7 +280,11 @@ fn main() {
             a.reasm_fail += 1;
         }
     }
-    let get = |cell: &str, arm: &str| agg.get(&(cell.to_string(), arm.to_string())).cloned().unwrap_or_default();
+    let get = |cell: &str, arm: &str| {
+        agg.get(&(cell.to_string(), arm.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    };
 
     // ── global accounting ──
     let total = recs.len();
@@ -279,7 +297,11 @@ fn main() {
     );
     for cell in &cells {
         let rtt = recs.iter().find(|r| &r.cell == cell).map_or(0, |r| r.rtt);
-        let fam = recs.iter().find(|r| &r.cell == cell).map(|r| r.family.clone()).unwrap_or_default();
+        let fam = recs
+            .iter()
+            .find(|r| &r.cell == cell)
+            .map(|r| r.family.clone())
+            .unwrap_or_default();
         for arm in arms {
             let mut a = get(cell, arm);
             let (mn, mx) = (
@@ -311,7 +333,14 @@ fn main() {
     fs::write(format!("{outdir}/FS-1-CELL-RESULTS-v1.3.2.csv"), &cell_csv).unwrap();
 
     // ── §8 pairwise deltas (per cell, per rep-lineage; 6 comparisons) ──
-    let comps = [("A1-EARLY", "A0"), ("F0", "A0"), ("F3", "A0"), ("F0", "A1-EARLY"), ("F3", "A1-EARLY"), ("F3", "F0")];
+    let comps = [
+        ("A1-EARLY", "A0"),
+        ("F0", "A0"),
+        ("F3", "A0"),
+        ("F0", "A1-EARLY"),
+        ("F3", "A1-EARLY"),
+        ("F3", "F0"),
+    ];
     let mut pair_csv = String::from("cell,comparison,rep,x_status,y_status,paired_complete,delta_completion_ns,delta_intervention,delta_arq,delta_total\n");
     // index by (cell,arm,rep) -> rec
     let mut idx: BTreeMap<(String, String, u8), &Rec> = BTreeMap::new();
@@ -329,7 +358,8 @@ fn main() {
                 };
                 let both = rx.complete && ry.complete;
                 let dc = if both {
-                    (rx.completion_ns.unwrap_or(0) as i64 - ry.completion_ns.unwrap_or(0) as i64).to_string()
+                    (rx.completion_ns.unwrap_or(0) as i64 - ry.completion_ns.unwrap_or(0) as i64)
+                        .to_string()
                 } else {
                     "NA".into() // frozen spec: censored is not a latency value → no numeric paired latency delta
                 };
@@ -346,7 +376,11 @@ fn main() {
             }
         }
     }
-    fs::write(format!("{outdir}/FS-1-PAIRWISE-DELTAS-v1.3.2.csv"), &pair_csv).unwrap();
+    fs::write(
+        format!("{outdir}/FS-1-PAIRWISE-DELTAS-v1.3.2.csv"),
+        &pair_csv,
+    )
+    .unwrap();
 
     // ── §14 oracle per cell (uses frozen primitives) ──
     // "X beats Y" via oracle ordering: reliability(complete count) → deadline_hits → latency(median, lower better) → total-cost(lower).
@@ -370,7 +404,10 @@ fn main() {
     let mut oracle_rows = String::from("# FS-1-ORACLE-VERDICT-v1.3.2 (frozen oracle-ordering + C-P4 fairness; per-cell; screening)\n\n");
     let _ = writeln!(oracle_rows, "> O0 no-redundancy · O1 redundancy-value · O2 FEC-specific · O3 insufficient. FEC>A0 alone ≠ FEC-specific; FEC-specific requires FEC>A1 at matched realized wire.\n");
     let mut oclass_count: BTreeMap<&str, u32> = BTreeMap::new();
-    let _ = writeln!(oracle_rows, "| cell | A1>A0 | F0>A0 | F3>A0 | F0>A1 | F3>A1 | F0-vs-A1 fairness | oracle |");
+    let _ = writeln!(
+        oracle_rows,
+        "| cell | A1>A0 | F0>A0 | F3>A0 | F0>A1 | F3>A1 | F0-vs-A1 fairness | oracle |"
+    );
     let _ = writeln!(oracle_rows, "|---|---|---|---|---|---|---|---|");
     for cell in &cells {
         let a1a0 = beats(cell, "A1-EARLY", "A0");
@@ -379,8 +416,18 @@ fn main() {
         let f0a1 = beats(cell, "F0", "A1-EARLY");
         let f3a1 = beats(cell, "F3", "A1-EARLY");
         // C-P4 fairness: F0 vs A1 realized intervention-wire parity (max realized intervention bytes).
-        let f0_iv = get(cell, "F0").intervention.iter().copied().max().unwrap_or(0);
-        let a1_iv = get(cell, "A1-EARLY").intervention.iter().copied().max().unwrap_or(0);
+        let f0_iv = get(cell, "F0")
+            .intervention
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0);
+        let a1_iv = get(cell, "A1-EARLY")
+            .intervention
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0);
         let fair = coding_causal_fairness(f0_iv as u32, a1_iv as u32);
         // sufficient = all 4 arms present (5 rows each).
         let sufficient = arms.iter().all(|a| get(cell, a).n == 5);
@@ -406,11 +453,20 @@ fn main() {
             "| {cell} | {a1a0} | {f0a0} | {f3a0} | {f0a1} | {f3a1} | {ff} | {ostr} |"
         );
     }
-    let _ = writeln!(oracle_rows, "\n**Oracle class distribution (12 cells):** O0={} O1={} O2={} O3={}",
-        oclass_count.get("O0").unwrap_or(&0), oclass_count.get("O1").unwrap_or(&0),
-        oclass_count.get("O2").unwrap_or(&0), oclass_count.get("O3").unwrap_or(&0));
+    let _ = writeln!(
+        oracle_rows,
+        "\n**Oracle class distribution (12 cells):** O0={} O1={} O2={} O3={}",
+        oclass_count.get("O0").unwrap_or(&0),
+        oclass_count.get("O1").unwrap_or(&0),
+        oclass_count.get("O2").unwrap_or(&0),
+        oclass_count.get("O3").unwrap_or(&0)
+    );
     let _ = writeln!(oracle_rows, "\nNote: F3 vs A1 is BUDGET_MISMATCH (2424B vs 1212B) → coding-causal attribution PROHIBITED (C-P4); any F3>A1 is not FEC-specific coding gain. F3 vs F0 reported in pairwise CSV.");
-    fs::write(format!("{outdir}/FS-1-ORACLE-VERDICT-v1.3.2.md"), &oracle_rows).unwrap();
+    fs::write(
+        format!("{outdir}/FS-1-ORACLE-VERDICT-v1.3.2.md"),
+        &oracle_rows,
+    )
+    .unwrap();
 
     // ── §15 DUR-A#2 mechanism screening (frozen mechanical criteria; per arm across all cells) ──
     let mut dur = String::from("# FS-1-DUR-A2-MECHANISM-SCREENING-v1.3.2\n\n> Frozen mechanical elimination criteria ONLY: decode-failure · permanent-starvation · unbounded-cost · systematic-parity-unusability · invariant-violation. Screening (RETAIN/ELIMINATE/INSUFFICIENT/SCOPE-LIMITED RETAIN); NOT a program-final verdict (FS-DUR-SON).\n\n");
@@ -443,10 +499,11 @@ fn main() {
         parity_present = is_fec;
         let permanent_starvation = !completes_somewhere; // never completes any row anywhere
         let unbounded_cost = false; // bounded campaign; max total is finite and small
-        // systematic parity unusability (structural-null): FEC arm whose FEC never contributed a decode anywhere.
+                                    // systematic parity unusability (structural-null): FEC arm whose FEC never contributed a decode anywhere.
         let parity_unusable = is_fec && !parity_used_any;
         let invariant_violation = false; // all records schema-conformant + provenance-verified
-        let eliminate = decode_fail > 0 || permanent_starvation || unbounded_cost || invariant_violation;
+        let eliminate =
+            decode_fail > 0 || permanent_starvation || unbounded_cost || invariant_violation;
         let screening = if eliminate {
             "ELIMINATE"
         } else if parity_unusable {
@@ -461,17 +518,29 @@ fn main() {
         let _ = parity_present;
     }
     let _ = writeln!(dur, "\nScope: bulk-only, in-process BottleneckChannel, current ARQ (no RTO/TLP), K2 not in grid, F1/F4 diagnostic-only. No FULL-GO/NICHE-GO/RESEARCH-ONLY/K4 verdict here.");
-    fs::write(format!("{outdir}/FS-1-DUR-A2-MECHANISM-SCREENING-v1.3.2.md"), &dur).unwrap();
+    fs::write(
+        format!("{outdir}/FS-1-DUR-A2-MECHANISM-SCREENING-v1.3.2.md"),
+        &dur,
+    )
+    .unwrap();
 
     // ── §5 censoring report ──
     let mut cens_md = format!("# FS-1-CENSORING-REPORT-v1.3.2\n\nGlobal: total={total} complete={complete} censored={censored} ({:.1}%). Censored rows are NOT latency observations (frozen spec) — excluded from latency stats; completion/censoring pattern reported in pairwise CSV.\n\n| cell | arm | n | censored | N_valid_complete |\n|---|---|---|---|---|\n", censored as f64 * 100.0 / total as f64);
     for cell in &cells {
         for arm in arms {
             let a = get(cell, arm);
-            let _ = writeln!(cens_md, "| {cell} | {arm} | {} | {} | {} |", a.n, a.censored, a.complete);
+            let _ = writeln!(
+                cens_md,
+                "| {cell} | {arm} | {} | {} | {} |",
+                a.n, a.censored, a.complete
+            );
         }
     }
-    fs::write(format!("{outdir}/FS-1-CENSORING-REPORT-v1.3.2.md"), &cens_md).unwrap();
+    fs::write(
+        format!("{outdir}/FS-1-CENSORING-REPORT-v1.3.2.md"),
+        &cens_md,
+    )
+    .unwrap();
 
     // ── §9 tail strata ──
     let mut tail_md = String::from("# FS-1-TAIL-STRATA-v1.3.2\n\nTail = REAL_TAIL_ERASURE (terminal source-id 47 erased on initial transmission; ARQ-unrecoverable). Reported separately from non-tail. FEC completion under tail-loss demonstrates coverage of an erasure class the current ARQ (no RTO/TLP) may miss — NOT automatic product-wide/future-tail-ARQ/FEC-specific superiority.\n\n| cell | arm | tail_rows | complete | censored |\n|---|---|---|---|---|\n");
@@ -479,7 +548,11 @@ fn main() {
         for arm in arms {
             let a = get(cell, arm);
             if a.tail_real > 0 {
-                let _ = writeln!(tail_md, "| {cell} | {arm} | {} | {} | {} |", a.tail_real, a.complete, a.censored);
+                let _ = writeln!(
+                    tail_md,
+                    "| {cell} | {arm} | {} | {} | {} |",
+                    a.tail_real, a.complete, a.censored
+                );
             }
         }
     }
@@ -487,14 +560,22 @@ fn main() {
 
     // ── §13 F4 derived policy (diagnostic; no independent rows) ──
     let f4 = "# FS-1-F4-DERIVED-POLICY-RESULT-v1.3.2\n\nF4 is diagnostic-only and derived (RULE-17; zero independent sample; no CI). Derived policy: RTT50 → paired F3 outcome; RTT250 → paired F0 outcome; RTT1000 → paired F0 outcome. F4 adds NO independent evidence and is NOT counted as a fifth arm (f4_is_independent_evidence()==false). See per-cell F0/F3 rows for the derived values.\n";
-    fs::write(format!("{outdir}/FS-1-F4-DERIVED-POLICY-RESULT-v1.3.2.md"), f4).unwrap();
+    fs::write(
+        format!("{outdir}/FS-1-F4-DERIVED-POLICY-RESULT-v1.3.2.md"),
+        f4,
+    )
+    .unwrap();
 
     // ── integrity + results json ──
     let integ = format!(
         "{{\"artifact\":\"FS-1-ANALYSIS-INTEGRITY-v1.3.2\",\"records\":{total},\"complete\":{complete},\"censored\":{censored},\"cells\":{},\"arms\":4,\"pairing_groups\":60,\"invalid\":0,\"schema\":\"FS-1-RAW-SCHEMA-v2\",\"invariance_vs_v1_3_1\":\"PASS (fs_compare_v2; shared-field mismatch=0; 176/64)\"}}\n",
         cells.len()
     );
-    fs::write(format!("{outdir}/FS-1-ANALYSIS-INTEGRITY-v1.3.2.json"), &integ).unwrap();
+    fs::write(
+        format!("{outdir}/FS-1-ANALYSIS-INTEGRITY-v1.3.2.json"),
+        &integ,
+    )
+    .unwrap();
 
     // machine-readable results (per cell,arm) with traceability run_id lists.
     let mut results = String::from("{\"artifact\":\"FS-1-ANALYSIS-RESULTS-v1.3.2\",\"cells\":[");
@@ -508,14 +589,22 @@ fn main() {
                 results.push(',');
             }
             let a = get(cell, arm);
-            let rids: Vec<String> = recs.iter().filter(|r| &r.cell == cell && r.arm == *arm).map(|r| format!("\"{}\"", r.run_id)).collect();
+            let rids: Vec<String> = recs
+                .iter()
+                .filter(|r| &r.cell == cell && r.arm == *arm)
+                .map(|r| format!("\"{}\"", r.run_id))
+                .collect();
             let _ = write!(results, "{{\"arm\":\"{arm}\",\"n\":{},\"complete\":{},\"censored\":{},\"deadline_hits\":{},\"spurious\":{},\"fec_decoded\":{},\"tail_real\":{},\"run_ids\":[{}]}}",
                 a.n, a.complete, a.censored, a.deadline_hits, a.spurious, a.fec_decoded, a.tail_real, rids.join(","));
         }
         results.push_str("]}");
     }
     results.push_str("]}\n");
-    fs::write(format!("{outdir}/FS-1-ANALYSIS-RESULTS-v1.3.2.json"), &results).unwrap();
+    fs::write(
+        format!("{outdir}/FS-1-ANALYSIS-RESULTS-v1.3.2.json"),
+        &results,
+    )
+    .unwrap();
 
     // ── main report ──
     let mut report = String::new();
@@ -534,6 +623,12 @@ fn main() {
     fs::write(format!("{outdir}/FS-1-ANALYSIS-CHECKPOINT.md"), &ck).unwrap();
 
     println!("ANALYSIS COMPLETE: {total} records, {complete} complete, {censored} censored");
-    println!("oracle O0={} O1={} O2={} O3={}", oclass_count.get("O0").unwrap_or(&0), oclass_count.get("O1").unwrap_or(&0), oclass_count.get("O2").unwrap_or(&0), oclass_count.get("O3").unwrap_or(&0));
+    println!(
+        "oracle O0={} O1={} O2={} O3={}",
+        oclass_count.get("O0").unwrap_or(&0),
+        oclass_count.get("O1").unwrap_or(&0),
+        oclass_count.get("O2").unwrap_or(&0),
+        oclass_count.get("O3").unwrap_or(&0)
+    );
     println!("11 artifacts written to {outdir}");
 }
