@@ -10,14 +10,63 @@ use super::fs_spine::{BlockObs, CompletionCause, SpineResult, TOTAL_SOURCE_SYMBO
 
 // ── canonical field order (must equal FS-1-RAW-SCHEMA-v2 field_order) ─────────────────────────────────
 pub const FIELD_ORDER: [&str; 57] = [
-    "run_id","attempt_index","pairing_group_id","arm","base_cell_id","repetition_index",
-    "freeze_lock_sha256","prereg_sha256","final_manifest_sha256","coverage_sha256","analysis_spec_sha256","oracle_map_sha256","execution_binary_sha256","execution_source_commit","cargo_lock_sha256","toolchain_identity",
-    "typed_manifest_row","base_cell_semantics_hash","run_execution_semantics_hash","resolved_behavior_semantics_hash","configured_schedule_hash",
-    "configured_forward_hash","configured_reverse_hash","observed_forward_event_hash","observed_reverse_event_hash","initial_source_decisions","intervention_decisions","retransmission_decisions","actual_forward_event_count","actual_reverse_event_count",
-    "t_first_source_offer","t_final_source_wire_complete","t_redundancy_lifecycle","t_repair_usable","t_arq_lifecycle","t_full_workload_complete","deadline_ms","observation_horizon_ms","censor_time_ns",
-    "validity_class","completion_or_censoring","deadline_hit","delivered_fragments","delivered_bytes","reassembly_equal","completion_cause","remaining_fragments","tail_status",
-    "base_source_bytes","proactive_intervention_bytes","arq_retransmit_bytes","control_bytes","total_outcome_bytes","spurious_retransmissions",
-    "fec_decoded_sources","retransmits","result_bearing",
+    "run_id",
+    "attempt_index",
+    "pairing_group_id",
+    "arm",
+    "base_cell_id",
+    "repetition_index",
+    "freeze_lock_sha256",
+    "prereg_sha256",
+    "final_manifest_sha256",
+    "coverage_sha256",
+    "analysis_spec_sha256",
+    "oracle_map_sha256",
+    "execution_binary_sha256",
+    "execution_source_commit",
+    "cargo_lock_sha256",
+    "toolchain_identity",
+    "typed_manifest_row",
+    "base_cell_semantics_hash",
+    "run_execution_semantics_hash",
+    "resolved_behavior_semantics_hash",
+    "configured_schedule_hash",
+    "configured_forward_hash",
+    "configured_reverse_hash",
+    "observed_forward_event_hash",
+    "observed_reverse_event_hash",
+    "initial_source_decisions",
+    "intervention_decisions",
+    "retransmission_decisions",
+    "actual_forward_event_count",
+    "actual_reverse_event_count",
+    "t_first_source_offer",
+    "t_final_source_wire_complete",
+    "t_redundancy_lifecycle",
+    "t_repair_usable",
+    "t_arq_lifecycle",
+    "t_full_workload_complete",
+    "deadline_ms",
+    "observation_horizon_ms",
+    "censor_time_ns",
+    "validity_class",
+    "completion_or_censoring",
+    "deadline_hit",
+    "delivered_fragments",
+    "delivered_bytes",
+    "reassembly_equal",
+    "completion_cause",
+    "remaining_fragments",
+    "tail_status",
+    "base_source_bytes",
+    "proactive_intervention_bytes",
+    "arq_retransmit_bytes",
+    "control_bytes",
+    "total_outcome_bytes",
+    "spurious_retransmissions",
+    "fec_decoded_sources",
+    "retransmits",
+    "result_bearing",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,46 +256,109 @@ impl RawRecordV2 {
         kv!("cargo_lock_sha256", q(&p.cargo_lock_sha256));
         kv!("toolchain_identity", q(&p.toolchain_identity));
         kv!("typed_manifest_row", self.typed_manifest_row.clone());
-        kv!("base_cell_semantics_hash", q(&self.base_cell_semantics_hash));
-        kv!("run_execution_semantics_hash", q(&self.run_execution_semantics_hash));
-        kv!("resolved_behavior_semantics_hash", q(&self.resolved_behavior_semantics_hash));
-        kv!("configured_schedule_hash", q(&self.configured_schedule_hash));
+        kv!(
+            "base_cell_semantics_hash",
+            q(&self.base_cell_semantics_hash)
+        );
+        kv!(
+            "run_execution_semantics_hash",
+            q(&self.run_execution_semantics_hash)
+        );
+        kv!(
+            "resolved_behavior_semantics_hash",
+            q(&self.resolved_behavior_semantics_hash)
+        );
+        kv!(
+            "configured_schedule_hash",
+            q(&self.configured_schedule_hash)
+        );
         kv!("configured_forward_hash", q(&self.configured_forward_hash));
         kv!("configured_reverse_hash", q(&self.configured_reverse_hash));
-        kv!("observed_forward_event_hash", q(&self.observed_forward_event_hash));
-        kv!("observed_reverse_event_hash", q(&self.observed_reverse_event_hash));
-        kv!("initial_source_decisions", arr_json(&self.initial_source_decisions, decision_json));
-        kv!("intervention_decisions", arr_json(&self.intervention_decisions, decision_json));
-        kv!("retransmission_decisions", arr_json(&self.retransmission_decisions, decision_json));
-        kv!("actual_forward_event_count", self.actual_forward_event_count.to_string());
-        kv!("actual_reverse_event_count", self.actual_reverse_event_count.to_string());
+        kv!(
+            "observed_forward_event_hash",
+            q(&self.observed_forward_event_hash)
+        );
+        kv!(
+            "observed_reverse_event_hash",
+            q(&self.observed_reverse_event_hash)
+        );
+        kv!(
+            "initial_source_decisions",
+            arr_json(&self.initial_source_decisions, decision_json)
+        );
+        kv!(
+            "intervention_decisions",
+            arr_json(&self.intervention_decisions, decision_json)
+        );
+        kv!(
+            "retransmission_decisions",
+            arr_json(&self.retransmission_decisions, decision_json)
+        );
+        kv!(
+            "actual_forward_event_count",
+            self.actual_forward_event_count.to_string()
+        );
+        kv!(
+            "actual_reverse_event_count",
+            self.actual_reverse_event_count.to_string()
+        );
         kv!("t_first_source_offer", opt_u64(self.t_first_source_offer));
-        kv!("t_final_source_wire_complete", opt_u64(self.t_final_source_wire_complete));
-        kv!("t_redundancy_lifecycle", arr_json(&self.t_redundancy_lifecycle, redundancy_lifecycle_json));
+        kv!(
+            "t_final_source_wire_complete",
+            opt_u64(self.t_final_source_wire_complete)
+        );
+        kv!(
+            "t_redundancy_lifecycle",
+            arr_json(&self.t_redundancy_lifecycle, redundancy_lifecycle_json)
+        );
         kv!("t_repair_usable", opt_u64(self.t_repair_usable));
-        kv!("t_arq_lifecycle", arr_json(&self.t_arq_lifecycle, arq_lifecycle_json));
-        kv!("t_full_workload_complete", opt_u64(self.t_full_workload_complete));
+        kv!(
+            "t_arq_lifecycle",
+            arr_json(&self.t_arq_lifecycle, arq_lifecycle_json)
+        );
+        kv!(
+            "t_full_workload_complete",
+            opt_u64(self.t_full_workload_complete)
+        );
         kv!("deadline_ms", self.deadline_ms.to_string());
-        kv!("observation_horizon_ms", self.observation_horizon_ms.to_string());
+        kv!(
+            "observation_horizon_ms",
+            self.observation_horizon_ms.to_string()
+        );
         kv!("censor_time_ns", opt_u64(self.censor_time_ns));
         kv!("validity_class", q(self.validity_class.label()));
         kv!(
             "completion_or_censoring",
-            format!("{{\"status\":\"{}\",\"time_ns\":{}}}", self.completion_status, self.completion_time_ns)
+            format!(
+                "{{\"status\":\"{}\",\"time_ns\":{}}}",
+                self.completion_status, self.completion_time_ns
+            )
         );
         kv!("deadline_hit", self.deadline_hit.to_string());
         kv!("delivered_fragments", self.delivered_fragments.to_string());
         kv!("delivered_bytes", self.delivered_bytes.to_string());
         kv!("reassembly_equal", self.reassembly_equal.to_string());
-        kv!("completion_cause", q(completion_cause_str(self.completion_cause)));
+        kv!(
+            "completion_cause",
+            q(completion_cause_str(self.completion_cause))
+        );
         kv!("remaining_fragments", self.remaining_fragments.to_string());
         kv!("tail_status", q(self.tail_status));
         kv!("base_source_bytes", self.base_source_bytes.to_string());
-        kv!("proactive_intervention_bytes", self.proactive_intervention_bytes.to_string());
-        kv!("arq_retransmit_bytes", self.arq_retransmit_bytes.to_string());
+        kv!(
+            "proactive_intervention_bytes",
+            self.proactive_intervention_bytes.to_string()
+        );
+        kv!(
+            "arq_retransmit_bytes",
+            self.arq_retransmit_bytes.to_string()
+        );
         kv!("control_bytes", self.control_bytes.to_string());
         kv!("total_outcome_bytes", self.total_outcome_bytes.to_string());
-        kv!("spurious_retransmissions", self.spurious_retransmissions.to_string());
+        kv!(
+            "spurious_retransmissions",
+            self.spurious_retransmissions.to_string()
+        );
         kv!("fec_decoded_sources", self.fec_decoded_sources.to_string());
         kv!("retransmits", self.retransmits.to_string());
         kv!("result_bearing", self.result_bearing.to_string());
@@ -291,7 +403,11 @@ pub fn build_record_v2(
     observation_horizon_ms: u32,
 ) -> RawRecordV2 {
     let by_role = |pred: fn(TransmissionRole) -> bool| -> Vec<DecisionEvent> {
-        r.forward_decisions.iter().copied().filter(|e| pred(e.role)).collect()
+        r.forward_decisions
+            .iter()
+            .copied()
+            .filter(|e| pred(e.role))
+            .collect()
     };
     let completed = r.completed;
     let deadline_ns = u64::from(deadline_ms) * 1_000_000;
@@ -385,11 +501,15 @@ pub fn validate_v2(json: &str) -> Result<(), SchemaError> {
         }
     }
     if keys.len() != 57 {
-        return Err(SchemaError::WrongType(format!("key count {} != 57", keys.len())));
+        return Err(SchemaError::WrongType(format!(
+            "key count {} != 57",
+            keys.len()
+        )));
     }
     // enum domains.
     let arm = field_str(json, "arm");
-    if !["A0", "A1-EARLY", "F0", "F3"].contains(&arm.as_str()) {
+    // FS-1 arms {A0,A1-EARLY,F0,F3} + DR-ARQ-TAIL-1 R2A deconfounding arms {A0-FROZEN,A0-TAIL} (additive; FS-1 unaffected).
+    if !["A0", "A1-EARLY", "F0", "F3", "A0-FROZEN", "A0-TAIL"].contains(&arm.as_str()) {
         return Err(SchemaError::EnumViolation(format!("arm={arm}")));
     }
     let vc = field_str(json, "validity_class");
@@ -397,7 +517,14 @@ pub fn validate_v2(json: &str) -> Result<(), SchemaError> {
         return Err(SchemaError::EnumViolation(format!("validity_class={vc}")));
     }
     let cc = field_str(json, "completion_cause");
-    if !["INITIAL_SOURCE", "ARQ_RETRANSMIT", "FEC_DECODE", "NOT_COMPLETED"].contains(&cc.as_str()) {
+    if ![
+        "INITIAL_SOURCE",
+        "ARQ_RETRANSMIT",
+        "FEC_DECODE",
+        "NOT_COMPLETED",
+    ]
+    .contains(&cc.as_str())
+    {
         return Err(SchemaError::EnumViolation(format!("completion_cause={cc}")));
     }
     let ts = field_str(json, "tail_status");
@@ -407,27 +534,41 @@ pub fn validate_v2(json: &str) -> Result<(), SchemaError> {
     // nullability + consistency.
     let censored = vc == "VALID_CENSORED";
     if censored && cc != "NOT_COMPLETED" {
-        return Err(SchemaError::ConsistencyViolation("censored but completion_cause != NOT_COMPLETED".into()));
+        return Err(SchemaError::ConsistencyViolation(
+            "censored but completion_cause != NOT_COMPLETED".into(),
+        ));
     }
     if !censored && cc == "NOT_COMPLETED" {
-        return Err(SchemaError::ConsistencyViolation("completed but completion_cause == NOT_COMPLETED".into()));
+        return Err(SchemaError::ConsistencyViolation(
+            "completed but completion_cause == NOT_COMPLETED".into(),
+        ));
     }
     let cn = field_raw(json, "t_full_workload_complete");
     if censored && cn != "null" {
-        return Err(SchemaError::NullabilityViolation("t_full_workload_complete must be null when censored".into()));
+        return Err(SchemaError::NullabilityViolation(
+            "t_full_workload_complete must be null when censored".into(),
+        ));
     }
     if !censored && cn == "null" {
-        return Err(SchemaError::NullabilityViolation("t_full_workload_complete must be present when completed".into()));
+        return Err(SchemaError::NullabilityViolation(
+            "t_full_workload_complete must be present when completed".into(),
+        ));
     }
     let ct = field_raw(json, "censor_time_ns");
     if censored && ct == "null" {
-        return Err(SchemaError::NullabilityViolation("censor_time_ns must be present when censored".into()));
+        return Err(SchemaError::NullabilityViolation(
+            "censor_time_ns must be present when censored".into(),
+        ));
     }
     if !censored && ct != "null" {
-        return Err(SchemaError::NullabilityViolation("censor_time_ns must be null when completed".into()));
+        return Err(SchemaError::NullabilityViolation(
+            "censor_time_ns must be null when completed".into(),
+        ));
     }
     if field_raw(json, "result_bearing") != "true" {
-        return Err(SchemaError::ConsistencyViolation("result_bearing != true".into()));
+        return Err(SchemaError::ConsistencyViolation(
+            "result_bearing != true".into(),
+        ));
     }
     Ok(())
 }

@@ -72,3 +72,7 @@ required-features = ["experimental-fs-harness"]
 [[example]]
 name = "dr_arqtail_r1"
 required-features = ["experimental-fs-harness"]
+
+[[example]]
+name = "dr_arqtail_r2a"
+required-features = ["experimental-fs-harness"]
