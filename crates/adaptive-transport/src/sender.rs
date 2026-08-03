@@ -46,6 +46,7 @@ use crate::loss::{LossDetector, ThresholdLossDetector};
 use crate::pacer::{TokenBucket, DEFAULT_BURST_CAP};
 use crate::rate::{effective_send_rate, PacingPhase, SrcConfig, DEFAULT_MTU};
 use crate::rtt::{apply_ack_delay, RttEstimator};
+use crate::tail_recovery::{ProbeDecision, TailRecovery, TailRecoveryConfig};
 
 /// Sender durumları (§3). Geçişler event-driven + deterministik.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +125,10 @@ enum CsTimerKind {
     /// (d)-kapsamı: bootstrap-sonrası MEVCUT time-threshold makinesinin bir-sonraki deadline'ı
     /// (EK4-A2 yaşam-döngüsü: her-batch faz-2'de canlı-loss-state'ten yeniden-türetilir; fire =
     /// mevcut `Timer::Pto` core-yolu — YENİ-retransmit-yolu-YOK, INV-CS-4).
+    /// SUPERSESSION (DR-ARQ-PRODUCT-TAIL-1, versioned TDD): `Timer::Pto` MAY now emit a bounded tail-loss probe
+    /// (`emit_tail_probe`) — but ONLY when `TailRecovery` is explicitly enabled (product-config, default OFF). With
+    /// the default OFF config this INV-CS-4 "no-Pto-retransmit" invariant holds byte-for-byte; the supersession is
+    /// gated + additive, not silent. See docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4.
     BootstrapPto,
     /// M5 (F3): cold-start giveup deadline (T_COLD_GIVEUP; son-probe+RTT_MAX sonrası). Fire →
     /// resolved-değilse TimedOut-terminal + epoch-kapanışı.
@@ -819,6 +824,10 @@ pub struct Sender {
     inflight: BTreeMap<u64, InflightPacket>,
     tx_queue: VecDeque<OpaqueUnit>,
     pending_lost: VecDeque<LostRec>, // §5 kayıp seq'ler → RECOVER_ARQ retransmit / RECOVER_FWD dup
+    // DR-ARQ-PRODUCT-TAIL-1: bounded tail-loss recovery (default OFF; INV-CS-4 supersession). Decision logic lives
+    // in crate::tail_recovery; the sender only bridges live ACK/RTT/inflight state to it and emits via the ARQ path.
+    tail_recovery: TailRecovery,
+    tail_probe_pending: Option<u64>, // oldest-inflight seq a PTO probe is due for (un-emitted); None ⇒ none.
     dup_queue: Vec<DupRec>,          // §11 zamanlanmış forward-recovery kopyaları
     last_now_ns: u64,
 
@@ -1007,6 +1016,8 @@ impl Sender {
             inflight: BTreeMap::new(),
             tx_queue: VecDeque::new(),
             pending_lost: VecDeque::new(),
+            tail_recovery: TailRecovery::new(TailRecoveryConfig::default()), // default OFF
+            tail_probe_pending: None,
             dup_queue: Vec::new(),
             last_now_ns: 0,
             fec_mode: FecActuationMode::Manual { enabled: false }, // default: mevcut-davranış-birebir
@@ -1125,6 +1136,24 @@ impl Sender {
             },
             last_recovery: RecoveryAction::Arq,
         }
+    }
+
+    /// DR-ARQ-PRODUCT-TAIL-1: product config — enable/tune the bounded tail-recovery mechanism (default OFF).
+    /// Additive; does not touch any other sender state. INV-CS-4 supersession (docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD).
+    pub fn set_tail_recovery_config(&mut self, cfg: TailRecoveryConfig) {
+        self.tail_recovery = TailRecovery::new(cfg);
+        self.tail_probe_pending = None;
+    }
+
+    /// DR-ARQ-PRODUCT-TAIL-1 diagnostics (observation-only): (probes, probe_bytes, spurious, spurious_bytes).
+    #[must_use]
+    pub fn tail_probe_diag(&self) -> (u64, u64, u64, u64) {
+        (
+            self.tail_recovery.probe_count(),
+            self.tail_recovery.probe_bytes(),
+            self.tail_recovery.spurious_probe_count(),
+            self.tail_recovery.spurious_probe_bytes(),
+        )
     }
 
     /// Ana döngü (§3): olay işle → FuzzyEvaluate → state → send_rate → UpdatePacing → ScheduleTransmit.
@@ -1596,6 +1625,9 @@ impl Sender {
             return;
         }
         self.last_ack_ns = Some(now_ns);
+        // DR-ARQ-PRODUCT-TAIL-1: snapshot inflight to detect REAL progress (new ack-eliciting data acked) vs a
+        // duplicate/stale ACK that removes nothing. Only real progress resets the tail timer (§4).
+        let inflight_before = self.inflight.len();
 
         // [TUR-3a D-2/1] Kanal-türevi estimator pencereleri — örnekler işlenmeden ÖNCE, bir
         // önceki srtt'yle yazılır (deterministik; 10s [STD] tabanı setter'larda).
@@ -1759,6 +1791,16 @@ impl Sender {
             // [TUR-A teşhis] loss-atıflama: packet-threshold (§5a) kaynaklı kuyruklanan kayıp sayısı.
             self.diag_loss_pkt += (self.pending_lost.len() - before) as u64;
         }
+        // DR-ARQ-PRODUCT-TAIL-1 (gated): real ACK progress (inflight shrank) resets the tail timer + clears backoff;
+        // a drained inflight disarms. Duplicate/stale ACKs that remove nothing do NOT reset (§4).
+        if self.tail_recovery.is_enabled() {
+            if self.inflight.len() < inflight_before {
+                self.tail_recovery.on_ack_progress(now_ns);
+            }
+            if self.inflight.is_empty() {
+                self.tail_recovery.disarm();
+            }
+        }
     }
 
     /// §12 timer handler (RTprop probe → DRAIN_RTPROP; PTO → zaman-eşiği loss).
@@ -1807,6 +1849,20 @@ impl Sender {
                             self.bw_sampler.forget_in_flight();
                         }
                         Some(_) => break,
+                    }
+                }
+                // DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → skipped, OFF-mode byte-identical): a PTO with
+                // outstanding data and no ACK progress for a PTO interval makes the OLDEST inflight probe-eligible.
+                // Emission (token + re-verify) happens in plan_arq_retransmits; the attempt is spent only on a real
+                // emission (§3 probe-due ≠ probe-sent).
+                if self.tail_recovery.is_enabled() {
+                    let oldest = self.inflight.keys().next().copied();
+                    let srtt = self.rtt.srtt().map(dur_ns);
+                    let rttvar = dur_ns(self.rtt.rttvar());
+                    if let ProbeDecision::ProbeDue { target_seq, .. } =
+                        self.tail_recovery.on_timer(now_ns, srtt, rttvar, oldest)
+                    {
+                        self.tail_probe_pending = Some(target_seq);
                     }
                 }
             }
@@ -2283,6 +2339,9 @@ impl Sender {
             SenderState::RecoverFwd => self.plan_forward_duplication(now_ns),
             _ => {}
         }
+        // DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → no-op): forced PTO tail probe, state-independent, after the
+        // normal ARQ planner (so it never double-plans a seq the planner already superseded).
+        self.emit_tail_probe(&mut out, now_ns);
         self.drain_due_duplicates(&mut out, now_ns);
         // DR-S5-1/Commit-K: FEC-parity DATA/recovery SONRASI (DATA-ÖNCE-sıralaması mühürlü). Drain'de
         // mode-kapısı-YOK (üyelik=izin; girişte-kapılı) — buraya-drain-guard-EKLEME: Commit-K'nın
@@ -3236,6 +3295,89 @@ impl Sender {
                 }
             }
         }
+    }
+
+    /// DR-ARQ-PRODUCT-TAIL-1 (gated; ON-only — never reached when disabled): retire a still-outstanding `seq` from
+    /// inflight into a bounded tombstone WITHOUT declaring loss (no pending_lost push, no loss-counter mutation —
+    /// INV-RATE-1). Used by the PTO tail probe to supersede the original before retransmitting a probe copy, so a
+    /// late ACK of the ORIGINAL seq is disambiguated (Karn) and its bytes are not double-counted in inflight.
+    /// Mirrors the Data/Duplicate tombstone bookkeeping of `queue_losses` (same expiry clock, bounded eviction,
+    /// bw in-flight accounting) minus the loss semantics. OFF-mode is unaffected (this is unreachable when disabled).
+    fn retire_inflight_to_tombstone(&mut self, seq: u64, now_ns: u64) {
+        let Some(p) = self.inflight.remove(&seq) else {
+            return;
+        };
+        self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+        if p.origin == TransmitKind::Duplicate {
+            // Dup-origin: no tombstone (matches queue_losses) — drop the in-flight count here.
+            self.bw_sampler.forget_in_flight();
+            return;
+        }
+        let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+        let t_loss_ns = (dur_ns(srtt) * 9 / 8).max(dur_ns(self.cadence_loss_floor()));
+        let expiry_ns = now_ns.saturating_add(t_loss_ns.saturating_mul(u64::from(K_TOMB)));
+        while self.tombstones.len() >= TOMBSTONE_MAX {
+            match self.tombstone_order.pop_front() {
+                Some(old) => {
+                    if self.tombstones.remove(&old).is_some() {
+                        self.tombstone_evicted += 1;
+                        self.bw_sampler.forget_in_flight();
+                    }
+                }
+                None => break,
+            }
+        }
+        self.tombstone_order.push_back(seq);
+        self.tombstones.insert(
+            seq,
+            TombstoneRec {
+                unit: p.unit,
+                send_ns: p.send_ns,
+                bw_sample: p.bw_sample,
+                retx_count: p.retx_count,
+                origin: p.origin,
+                expiry_ns,
+            },
+        );
+    }
+
+    /// DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → no-op): emit at most one forced PTO tail probe. Called from
+    /// schedule_transmit AFTER the normal ARQ planner and REGARDLESS of sender state (a PTO probe is independent of
+    /// the RecoverArq state machine). ARQ-eligibility override ONLY — emission still uses the safe token
+    /// (try_send_pre_parity) + track_sent path (no pacing/wire-format bypass). Re-verifies the target is still
+    /// outstanding at emission time (ACK race / already-retransmitted ⇒ absent from inflight ⇒ cancelled, attempt NOT
+    /// consumed). Declares NO "confirmed loss" (pending_lost/loss counters untouched — INV-RATE-1). Karn: the probe
+    /// copy is emitted as a Retransmit (origin ≠ Data ⇒ excluded from RTT sampling) and the superseded original's
+    /// tombstone retx_count is bumped so its late ACK is Karn-excluded too. Cap spent only on a real emission (§3).
+    fn emit_tail_probe(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        if !self.tail_recovery.is_enabled() {
+            return;
+        }
+        let Some(target) = self.tail_probe_pending.take() else {
+            return;
+        };
+        let Some((unit, retx_count)) = self.inflight.get(&target).map(|r| (r.unit, r.retx_count))
+        else {
+            return; // target no longer outstanding → cancelled; attempt NOT consumed.
+        };
+        if !self.try_send_pre_parity(unit.size, true) {
+            self.tail_probe_pending = Some(target); // no token → keep pending; cap NOT consumed.
+            return;
+        }
+        // Supersede the still-outstanding original: retire it inflight→tombstone (no loss declaration), then bump
+        // the tombstone so the original's late ACK is Karn-excluded, then emit the probe copy under a fresh seq.
+        self.retire_inflight_to_tombstone(target, now_ns);
+        self.mark_tombstone_superseded(target);
+        let new_seq = self.track_sent(unit, now_ns, retx_count + 1, TransmitKind::Retransmit);
+        out.push(TransmitDecision {
+            kind: TransmitKind::Retransmit,
+            seq: new_seq,
+            unit_id: unit.id,
+            size: unit.size,
+            send_record: None,
+        });
+        self.tail_recovery.on_probe_sent(now_ns); // spend the attempt only on a real emission.
+        self.tail_recovery.record_probe(unit.size, false);
     }
 
     /// RECOVER_FWD (§11): ACK-BAĞIMSIZ forward duplication. Kayıp birimleri `factor` kez zaman-aralıklı
@@ -4681,6 +4823,258 @@ mod tests {
             s.last_decision().arq_aggressiveness_permille
         );
         assert_eq!(s.state(), SenderState::RecoverArq);
+    }
+
+    // ── DR-ARQ-PRODUCT-TAIL-1 integration (default-OFF exactness + ON path) ──
+    fn tail_cfg_on() -> TailRecoveryConfig {
+        TailRecoveryConfig {
+            enabled: true,
+            min_pto_ns: MS,
+            max_pto_ns: 1000 * MS,
+            initial_pto_ns: MS,
+            max_backoff_pto_ns: 100_000 * MS,
+            max_ack_delay_ns: 0,
+            max_tail_probes: 2,
+        }
+    }
+
+    #[test]
+    fn tail_probe_off_never_probes() {
+        // default OFF: outstanding tail + repeated PTO ⇒ 0 tail probes (INV-CS-4 baseline preserved).
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS);
+        s.on_event(Event::AppData(small(99)), 20 * MS); // unacked tail
+        for t in 1..=20u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS);
+        }
+        assert_eq!(s.tail_probe_diag().0, 0, "OFF must never probe");
+    }
+
+    #[test]
+    fn tail_probe_on_no_loss_zero_probe() {
+        // ON but everything acked (inflight drains) ⇒ disarmed ⇒ 0 probes, 0 added bytes.
+        let mut s = Sender::new();
+        s.set_tail_recovery_config(tail_cfg_on());
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS);
+        s.on_event(Event::AppData(small(1)), 20 * MS);
+        s.on_event(ack(&[1]), 30 * MS); // acked → inflight drains
+        for t in 1..=20u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), (30 + t * 100) * MS);
+        }
+        let (probes, bytes, _, _) = s.tail_probe_diag();
+        assert_eq!(probes, 0, "no-loss ON ⇒ 0 probe");
+        assert_eq!(bytes, 0, "no-loss ON ⇒ 0 added probe bytes");
+    }
+
+    #[test]
+    fn tail_probe_mid_stream_loss_no_same_tick_double_plan() {
+        // Mid-stream loss (later packets exist) IS detectable by the existing packet-threshold ARQ: the lost seq
+        // moves to pending_lost (out of inflight) and RECOVER_ARQ retransmits it. The probe targets the oldest
+        // INFLIGHT seq, which by construction EXCLUDES anything just moved to pending_lost (detect_time_losses runs
+        // before the probe arm in the same Pto tick). §1b/§3 invariant: within ONE tick, the normal ARQ and the
+        // probe never BOTH retransmit the same unit. (The probe MAY later recover the retransmission if it in turn
+        // becomes an unacked terminal tail — that is correct bounded recovery, not a duplicate.)
+        let mut s = Sender::new();
+        s.set_tail_recovery_config(tail_cfg_on());
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS); // srtt + BtlBw/tokens.
+        for i in 1..=5u64 {
+            s.on_event(Event::AppData(small(i)), (10 + i) * MS);
+        }
+        let mut retx = 0usize;
+        let mut ticks: Vec<Vec<TransmitDecision>> = Vec::new();
+        ticks.push(s.on_event(ack(&[2, 3, 4, 5]), 30 * MS)); // seq 1 lost → normal ARQ recovers.
+        for t in 1..=20u64 {
+            ticks.push(s.on_event(Event::TimerFired(Timer::Pto), (30 + t * 100) * MS));
+        }
+        for out in &ticks {
+            let mut retx_unit_ids: Vec<u64> = out
+                .iter()
+                .filter(|d| d.kind == TransmitKind::Retransmit)
+                .map(|d| d.unit_id)
+                .collect();
+            retx += retx_unit_ids.len();
+            let before = retx_unit_ids.len();
+            retx_unit_ids.sort_unstable();
+            retx_unit_ids.dedup();
+            assert_eq!(
+                retx_unit_ids.len(),
+                before,
+                "no unit retransmitted twice in a single tick (no ARQ+probe double-plan)"
+            );
+        }
+        assert!(retx >= 1, "mid-stream loss recovered (retx={retx})");
+        assert!(
+            s.tail_probe_diag().0 <= 2,
+            "any follow-on tail probe stays bounded by max_tail_probes"
+        );
+    }
+
+    #[test]
+    fn tail_probe_terminal_tail_bounded_recovery() {
+        // Terminal tail = the LAST outstanding source unit, nothing sent after it. The existing ARQ is BLIND to it
+        // (no later packet ⇒ no packet-threshold; time-threshold has no later-acked reference either — this is the
+        // classic tail-loss hole INV-CS-4 left open). PROVEN: with tail_probe OFF this seq stays stuck in inflight,
+        // 0 retransmits. With the bounded probe ON, at most max_tail_probes probes recover it — no more.
+        // Warm-up first so srtt + BtlBw/tokens exist (a probe respects pacing; a cold PreConverge floor is
+        // deliberately too token-starved to probe — that is correct pacing behaviour, not a mechanism failure).
+        let recover = |on: bool| {
+            let mut s = Sender::new();
+            if on {
+                s.set_tail_recovery_config(tail_cfg_on());
+            }
+            s.on_event(Event::AppData(unit(200)), 0);
+            s.on_event(ack(&[0]), 10 * MS); // srtt + BtlBw + leaves PreConverge.
+            s.on_event(Event::AppData(small(99)), 20 * MS); // the terminal tail (never acked).
+            let mut probe_retx = 0usize;
+            for t in 1..=40u64 {
+                probe_retx += s
+                    .on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS)
+                    .iter()
+                    .filter(|d| d.kind == TransmitKind::Retransmit)
+                    .count();
+            }
+            (probe_retx, s.tail_probe_diag(), s.pending_lost.len())
+        };
+        // OFF: normal ARQ is blind to the pure tail → 0 retransmits (the hole).
+        let (off_retx, off_diag, _) = recover(false);
+        assert_eq!(
+            off_retx, 0,
+            "normal ARQ is blind to a pure tail (OFF ⇒ 0 retx)"
+        );
+        assert_eq!(off_diag.0, 0, "OFF ⇒ 0 probes");
+        // ON: bounded probe recovers it (1..=max_tail_probes), each surfaced as a Retransmit decision.
+        let (on_retx, on_diag, _) = recover(true);
+        let (probes, bytes, spurious, _) = on_diag;
+        assert!(probes >= 1, "tail probe ON ⇒ ≥1 probe (got {probes})");
+        assert!(probes <= 2, "bounded by max_tail_probes (got {probes})");
+        assert!(bytes >= 1, "probe emitted real bytes");
+        assert_eq!(
+            on_retx as u64, probes,
+            "every probe surfaced as a Retransmit decision"
+        );
+        // no spurious accounting on a genuinely-lost tail (unit was never acked).
+        assert_eq!(spurious, 0, "genuinely lost tail ⇒ not spurious");
+    }
+
+    #[test]
+    fn tail_probe_token_unavailable_cap_not_consumed() {
+        // §3 probe-due ≠ probe-sent: a cold PreConverge floor is deliberately token-starved (~1.5 B/tick), so a
+        // 100 B probe is DUE every tick but can never be emitted. The attempt/cap must NOT be consumed on a due-but-
+        // un-emitted probe — the target stays pending so a later token can still send it (bounded once, not spent).
+        let mut s = Sender::new();
+        s.set_tail_recovery_config(tail_cfg_on());
+        s.on_event(Event::AppData(small(99)), 0); // cold start: no srtt, floor pacing, no ACK.
+        for t in 1..=20u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), t * 50 * MS);
+        }
+        assert_eq!(
+            s.tail_probe_diag().0,
+            0,
+            "token-starved ⇒ 0 emissions ⇒ cap not consumed"
+        );
+        assert!(
+            s.tail_probe_pending.is_some(),
+            "probe stays pending (due) while token-starved — not dropped, not spent"
+        );
+        assert_eq!(
+            s.inflight.keys().next().copied(),
+            Some(0),
+            "the outstanding tail is still un-recovered (held for a future token)"
+        );
+    }
+
+    #[test]
+    fn tail_probe_ack_race_cancels_without_consuming_cap() {
+        // §3 re-verify-at-emission: a probe is DUE and pending (token-starved) when a real ACK drains the target
+        // first. At emission the target is no longer inflight ⇒ the probe CANCELS (attempt NOT consumed, no wire
+        // bytes), and the pending slot clears. No spurious retransmission of already-delivered data.
+        let mut s = Sender::new();
+        s.set_tail_recovery_config(tail_cfg_on());
+        s.on_event(Event::AppData(small(99)), 0);
+        for t in 1..=6u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), t * 50 * MS);
+        }
+        assert_eq!(s.tail_probe_pending, Some(0), "probe due+pending pre-ACK");
+        // the ACK for seq 0 arrives before the probe could ever get a token → target drains.
+        let out = s.on_event(ack(&[0]), 400 * MS);
+        assert_eq!(
+            out.iter()
+                .filter(|d| d.kind == TransmitKind::Retransmit)
+                .count(),
+            0,
+            "ACK-race ⇒ no probe retransmit emitted"
+        );
+        assert_eq!(s.tail_probe_diag().0, 0, "ACK-race ⇒ cap not consumed");
+        assert_eq!(s.tail_probe_pending, None, "cancelled probe slot cleared");
+        assert!(
+            s.inflight.is_empty(),
+            "target delivered, nothing outstanding"
+        );
+    }
+
+    #[test]
+    fn tail_probe_ack_is_karn_excluded_from_rtt() {
+        // Karn: an ACK of a PROBE (origin = Retransmit) must NEVER feed the RTT estimator (send-time ambiguity).
+        // The sender samples RTT only for origin == Data (sender.rs); probes emit as Retransmit, so acking them
+        // leaves srtt untouched. Proven by capturing srtt after the probe fires, then acking the probe seqs.
+        let mut s = Sender::new();
+        s.set_tail_recovery_config(tail_cfg_on());
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS); // the ONLY Data RTT sample → srtt fixed here.
+        s.on_event(Event::AppData(small(99)), 20 * MS);
+        for t in 1..=40u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS);
+        }
+        assert!(s.tail_probe_diag().0 >= 1, "probe fired (precondition)");
+        let srtt_before = s.rtt.srtt();
+        // every currently-outstanding seq is a probe retransmit (origin = Retransmit).
+        let probe_seqs: Vec<u64> = s.inflight.keys().copied().collect();
+        assert!(!probe_seqs.is_empty(), "probe retransmits outstanding");
+        s.on_event(
+            Event::AckReceived(AckInfo {
+                acked_seqs: probe_seqs,
+                ack_delay: Duration::ZERO,
+            }),
+            5_000 * MS,
+        );
+        assert_eq!(
+            s.rtt.srtt(),
+            srtt_before,
+            "probe ACK is Karn-excluded — srtt must not move"
+        );
+    }
+
+    #[test]
+    fn tail_probe_determinism_two_senders() {
+        // Deterministic (RNG-free): two independent senders driven by the identical event sequence produce
+        // byte-identical outputs AND identical probe accounting.
+        let drive = || {
+            let mut s = Sender::new();
+            s.set_tail_recovery_config(tail_cfg_on());
+            let mut trace: Vec<(TransmitKind, u64, u64)> = Vec::new();
+            let push = |out: Vec<TransmitDecision>, trace: &mut Vec<(TransmitKind, u64, u64)>| {
+                for d in out {
+                    trace.push((d.kind, d.seq, d.size));
+                }
+            };
+            push(s.on_event(Event::AppData(unit(200)), 0), &mut trace);
+            push(s.on_event(ack(&[0]), 10 * MS), &mut trace);
+            push(s.on_event(Event::AppData(small(99)), 20 * MS), &mut trace);
+            for t in 1..=40u64 {
+                push(
+                    s.on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS),
+                    &mut trace,
+                );
+            }
+            (trace, s.tail_probe_diag())
+        };
+        let a = drive();
+        let b = drive();
+        assert_eq!(a.0, b.0, "identical event stream ⇒ identical output trace");
+        assert_eq!(a.1, b.1, "identical probe accounting");
     }
 
     #[test]

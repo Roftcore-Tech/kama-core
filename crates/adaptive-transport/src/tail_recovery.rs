@@ -166,13 +166,21 @@ impl TailRecovery {
         if now_ns.saturating_sub(armed) < pto {
             return ProbeDecision::Idle; // not yet due.
         }
-        let round = self.probe_index;
-        self.probe_index = self.probe_index.saturating_add(1);
-        self.armed_at_ns = Some(now_ns); // re-arm; next probe waits base·2^index.
+        // DUE — but do NOT consume the attempt here (§3 probe-due ≠ probe-sent). The sender consumes it via
+        // `on_probe_sent` ONLY after a successful emission (token available + target still outstanding). While a
+        // probe is due but un-emitted (no token), on_timer keeps returning ProbeDue without advancing the cap.
         ProbeDecision::ProbeDue {
             target_seq: target,
-            probe_index: round,
+            probe_index: self.probe_index,
         }
+    }
+
+    /// Consume one probe attempt AFTER a confirmed successful emission (token available, target still outstanding
+    /// at emission time). Advances the round (exponential backoff) and re-arms the idle window. NOT called on a
+    /// cancelled (ACK-race) or token-starved probe → the hard cap is spent only on real wire emissions (§3).
+    pub fn on_probe_sent(&mut self, now_ns: u64) {
+        self.probe_index = self.probe_index.saturating_add(1);
+        self.armed_at_ns = Some(now_ns);
     }
 
     /// Record the outcome of a fired probe (observation-only). `spurious` = the unit was in fact deliverable
@@ -293,7 +301,8 @@ mod tests {
             t.on_timer(RTT, Some(RTT), VAR, Some(9)),
             ProbeDecision::ProbeDue { probe_index: 0, .. }
         ));
-        // round 1 needs 2·PTO after re-arm at RTT → fires at RTT+2·RTT = 3·RTT.
+        t.on_probe_sent(RTT); // emission consumed the attempt.
+                              // round 1 needs 2·PTO after re-arm at RTT → fires at RTT+2·RTT = 3·RTT.
         assert_eq!(
             t.on_timer(2 * RTT, Some(RTT), VAR, Some(9)),
             ProbeDecision::Idle
@@ -302,6 +311,7 @@ mod tests {
             t.on_timer(3 * RTT, Some(RTT), VAR, Some(9)),
             ProbeDecision::ProbeDue { probe_index: 1, .. }
         ));
+        t.on_probe_sent(3 * RTT);
         // cap = 2 → no more, forever (bounded).
         assert_eq!(
             t.on_timer(100 * RTT, Some(RTT), VAR, Some(9)),
@@ -314,6 +324,24 @@ mod tests {
     }
 
     #[test]
+    fn token_starved_probe_does_not_consume_cap() {
+        // §3: probe DUE repeatedly but never emitted (no on_probe_sent) → cap NOT consumed; still due.
+        let mut t = TailRecovery::new(on_cfg());
+        t.on_ack_progress(0);
+        for k in 1..50u64 {
+            assert!(matches!(
+                t.on_timer(k * RTT, Some(RTT), VAR, Some(1)),
+                ProbeDecision::ProbeDue { probe_index: 0, .. }
+            ));
+        }
+        assert_eq!(
+            t.probe_index(),
+            0,
+            "un-emitted probe must not consume the cap"
+        );
+    }
+
+    #[test]
     fn ack_progress_resets_and_clears_backoff() {
         let mut t = TailRecovery::new(on_cfg());
         t.on_ack_progress(0);
@@ -321,6 +349,7 @@ mod tests {
             t.on_timer(RTT, Some(RTT), VAR, Some(1)),
             ProbeDecision::ProbeDue { probe_index: 0, .. }
         ));
+        t.on_probe_sent(RTT);
         // ACK progress resets window + backoff.
         t.on_ack_progress(RTT + 5);
         assert_eq!(t.probe_index(), 0);
@@ -425,12 +454,11 @@ mod tests {
             t.on_ack_progress(0);
             let mut trace = Vec::new();
             for k in 0..12u64 {
-                trace.push(t.on_timer(
-                    k * RTT,
-                    Some(RTT),
-                    VAR,
-                    if k < 10 { Some(5) } else { None },
-                ));
+                let d = t.on_timer(k * RTT, Some(RTT), VAR, if k < 10 { Some(5) } else { None });
+                if let ProbeDecision::ProbeDue { .. } = d {
+                    t.on_probe_sent(k * RTT);
+                }
+                trace.push(d);
             }
             (trace, t.probe_index())
         };
@@ -450,6 +478,7 @@ mod tests {
         for k in 1..500u64 {
             if let ProbeDecision::ProbeDue { .. } = t.on_timer(k * RTT, Some(RTT), VAR, Some(1)) {
                 probes += 1;
+                t.on_probe_sent(k * RTT); // probe went to wire (then was lost — no progress).
             }
         }
         assert_eq!(probes, on_cfg().max_tail_probes);
