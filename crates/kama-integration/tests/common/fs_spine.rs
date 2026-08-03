@@ -20,7 +20,8 @@ use adaptive_transport::fs_harness::{
     fs_t_serialize_source_ns, BlockTiming, CodecK, PathTimingLedger, RedundancyKind,
 };
 use adaptive_transport::fs_trace::{
-    RedundancyPolicy, ReverseSpec, TraceChannel, TracePacketId, TraceSpec, TransmissionRole,
+    DecisionEvent, RedundancyPolicy, ReverseSpec, TraceChannel, TracePacketId, TraceSpec,
+    TransmissionRole,
 };
 use adaptive_transport::sender::{
     AckInfo, Event, OpaqueUnit, PathTimingState, RecoveredInfo, RecoveredUnit, Sender, Timer,
@@ -152,6 +153,34 @@ pub enum StructuralClass {
     StructuralAnalysisFalsified,
 }
 
+/// OPT-X2 (observation-only): mechanism that delivered the last source unit which made the workload complete.
+/// Captured AT the completion event (this-tick delivery mechanism), NOT inferred from post-hoc counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionCause {
+    /// completed via an initial-source transmission (no recovery needed for the completing unit).
+    InitialSource,
+    /// the completing unit arrived via an ARQ retransmission (its initial transmission was erased).
+    ArqRetransmit,
+    /// the completing unit was reconstructed via FEC decode.
+    FecDecode,
+    /// workload censored (never completed within the horizon).
+    NotCompleted,
+}
+
+/// OPT-X2 (observation-only): per-block lifecycle observation ledger, PARALLEL to the aggregate `timing`
+/// (does NOT alter `timing` or any outcome/spurious computation). First-per-block timestamps.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BlockObs {
+    pub block_id: u32,
+    pub t_redundancy_eligible: Option<u64>,
+    pub t_redundancy_enqueued: Option<u64>,
+    pub t_redundancy_wire: Option<u64>,
+    pub t_redundancy_arrival: Option<u64>,
+    pub t_arq_eligible: Option<u64>,
+    pub t_arq_wire: Option<u64>,
+    pub t_arq_arrival: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SpineResult {
     pub arm: &'static str,
@@ -233,6 +262,17 @@ pub struct SpineResult {
     pub reverse_event_hash: u64,
     pub pairing_gate_passed: bool,
     pub pairing_failure_reason: Option<&'static str>,
+    // ── OPT-X2 observation-only additive fields (do NOT feed actuation/RNG/outcomes) ──
+    /// Lossless append-only forward decision events (from TraceChannel). observed_forward_event_hash =
+    /// forward_trace_hash; actual_forward_event_count = forward_decisions.len().
+    pub forward_decisions: Vec<DecisionEvent>,
+    /// Control-class (ACK/CS) emitted frame bytes; excludes source/FEC/ARQ-source payload. (0 in the
+    /// forward-bulk deterministic model — no byte-accounted control frames are emitted.)
+    pub control_bytes: u64,
+    /// Mechanism of the completing source unit, captured at the completion event.
+    pub completion_cause: CompletionCause,
+    /// Per-block lifecycle observation ledger (parallel to aggregate `timing`).
+    pub per_block_obs: Vec<BlockObs>,
 }
 
 fn fnv(vals: &[u64]) -> u64 {
@@ -476,8 +516,19 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
         reverse_event_hash: 0,
         pairing_gate_passed: false,
         pairing_failure_reason: None,
+        forward_decisions: Vec::new(),
+        control_bytes: 0,
+        completion_cause: CompletionCause::NotCompleted,
+        per_block_obs: (0..nblocks)
+            .map(|b| BlockObs {
+                block_id: u32::from(b),
+                ..BlockObs::default()
+            })
+            .collect(),
     };
 
+    // OPT-X2: completing-source mechanism (event-based; set at each delivered_src growth).
+    let mut completion_mech = CompletionCause::NotCompleted;
     let mut delivered_src: BTreeSet<u16> = BTreeSet::new();
     let mut recv_src_block: Vec<BTreeMap<u16, Vec<u8>>> = vec![BTreeMap::new(); nblocks as usize];
     let mut recv_rep_block: Vec<BTreeMap<u16, Vec<u8>>> = vec![BTreeMap::new(); nblocks as usize];
@@ -514,6 +565,11 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
             if res.timing.t_arq_eligible.is_none() {
                 res.timing.t_arq_eligible = Some(now);
                 res.timing.t_arq_wire = Some(now);
+            }
+            // OPT-X2 per-block obs (parallel; does not touch aggregate res.timing above).
+            if let Some(o) = res.per_block_obs.get_mut(block as usize) {
+                o.t_arq_eligible.get_or_insert(now);
+                o.t_arq_wire.get_or_insert(now);
             }
         } else {
             res.base_source_bytes += sealed;
@@ -562,6 +618,11 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
                 res.timing.t_redundancy_eligible = Some(now);
                 res.timing.t_redundancy_enqueued = Some(now);
                 res.timing.t_redundancy_wire = Some(now);
+            }
+            if let Some(o) = res.per_block_obs.get_mut(block as usize) {
+                o.t_redundancy_eligible.get_or_insert(now);
+                o.t_redundancy_enqueued.get_or_insert(now);
+                o.t_redundancy_wire.get_or_insert(now);
             }
             if let Some(arr) = ch.offer(did, sealed, now) {
                 deliveries.push((arr, gid, false, u64::MAX, block));
@@ -637,6 +698,12 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
             }
             res.timing.t_parity_enqueued = Some(now);
             for b in 0..nblocks as usize {
+                if !repairs_by_block[b].is_empty() {
+                    if let Some(o) = res.per_block_obs.get_mut(b) {
+                        o.t_redundancy_eligible.get_or_insert(now);
+                        o.t_redundancy_enqueued.get_or_insert(now);
+                    }
+                }
                 for ri in 0..repairs_by_block[b].len() {
                     res.repair_count += 1;
                     res.intervention_bytes += sealed;
@@ -651,6 +718,9 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
                         if res.t_first_parity_wire.is_none_or(|w| wire < w) {
                             res.t_first_parity_wire = Some(wire);
                             res.timing.t_parity_wire = Some(wire);
+                        }
+                        if let Some(o) = res.per_block_obs.get_mut(b) {
+                            o.t_redundancy_wire.get_or_insert(wire);
                         }
                         deliveries.push((arr, ri as u16, true, u64::MAX, b as u16));
                     } else {
@@ -675,10 +745,26 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
                 if res.timing.t_parity_arrival.is_none() {
                     res.timing.t_parity_arrival = Some(arr);
                 }
+                if let Some(o) = res.per_block_obs.get_mut(block as usize) {
+                    o.t_redundancy_arrival.get_or_insert(arr);
+                }
             } else {
                 let gid = idx;
                 let (_b, local) = global_to_local_k(gid, k);
+                // OPT-X2: mechanism of this source arrival (event-based). A gid whose INITIAL transmission
+                // was erased can only arrive here via ARQ retransmit; otherwise it is the initial source.
+                let via_arq = res.realized_initial_source_drop_ids.contains(&gid);
+                if via_arq {
+                    if let Some(o) = res.per_block_obs.get_mut(block as usize) {
+                        o.t_arq_arrival.get_or_insert(arr);
+                    }
+                }
                 if delivered_src.insert(gid) {
+                    completion_mech = if via_arq {
+                        CompletionCause::ArqRetransmit
+                    } else {
+                        CompletionCause::InitialSource
+                    };
                     recv_src_block[block as usize]
                         .insert(local, canonical[gid as usize].symbol_bytes.clone());
                 }
@@ -727,6 +813,7 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
                             res.reconstruct_byte_equal = false;
                         }
                         if delivered_src.insert(gid) {
+                            completion_mech = CompletionCause::FecDecode;
                             recv_src_block[b].insert(rsym.esi, rsym.bytes.clone());
                             res.fec_decoded_sources += 1;
                             recovered_now.push(gid);
@@ -807,6 +894,8 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
             res.completion_ns = Some(now);
             res.timing.t_block_complete = Some(now);
             res.t_full_workload_complete = Some(now);
+            // OPT-X2: capture the completing-unit mechanism AT the completion event.
+            res.completion_cause = completion_mech;
         }
     }
 
@@ -881,6 +970,14 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
         Some("not-admitted")
     };
     res.forward_trace_hash = ch.trace_hash();
+    // OPT-X2 observation export: lossless forward decision vector (observed_forward_event_hash == forward_trace_hash;
+    // actual_forward_event_count == forward_decisions.len()). control_bytes stays 0 (no byte-accounted control frames).
+    res.forward_decisions = ch.forward_decisions().to_vec();
+    debug_assert_eq!(
+        ch.trace_hash(),
+        ch.recomputed_trace_hash(),
+        "OPT-X2: captured forward decisions diverged from rolling hash"
+    );
     res.reverse_trace_hash = ch.reverse_decision_log_hash();
     // S3-R3 schema: reverse_event_hash = realized reverse decision-log (reverse_trace_hash ile AYNI; §25-alias).
     res.reverse_event_hash = ch.reverse_decision_log_hash();

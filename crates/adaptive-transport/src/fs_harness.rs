@@ -262,6 +262,16 @@ impl BottleneckChannel {
     pub fn trace_hash(&self) -> u64 {
         self.trace.decision_log_hash()
     }
+    /// OPT-X2 observation-only: export the append-only forward decision events (lossless per-event trace).
+    #[must_use]
+    pub fn forward_decisions(&self) -> &[crate::fs_trace::DecisionEvent] {
+        self.trace.forward_decisions()
+    }
+    /// OPT-X2 consistency pin delegate: recomputed forward decision-log hash from the captured vector.
+    #[must_use]
+    pub fn recomputed_trace_hash(&self) -> u64 {
+        self.trace.recomputed_decision_log_hash()
+    }
     /// (kanal-karar-sayısı, düşürülen) — faithfulness: realized-drop vs configured-|D|.
     #[must_use]
     pub fn trace_counts(&self) -> (u64, u64) {
