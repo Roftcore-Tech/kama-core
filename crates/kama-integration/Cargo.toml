@@ -57,3 +57,7 @@ required-features = ["experimental-fs-harness"]
 [[example]]
 name = "fs1_runner"
 required-features = ["experimental-fs-harness"]
+
+[[example]]
+name = "fs1_runner_v2"
+required-features = ["experimental-fs-harness"]
