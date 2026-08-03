@@ -45,6 +45,8 @@ pub mod rtt;
 pub mod sender;
 pub mod seq;
 pub mod sim;
+/// DR-ARQ-PRODUCT-TAIL-1 — bounded tail-loss recovery state machine (default OFF; INV-CS-4 supersession TDD).
+pub mod tail_recovery;
 #[cfg(feature = "experimental-fec-budget")]
 pub mod udp_runner;
 
