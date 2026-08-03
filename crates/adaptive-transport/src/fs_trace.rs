@@ -197,6 +197,21 @@ fn keyed(id: TracePacketId, seed: u64) -> [u8; 17] {
     k
 }
 
+/// **OPT-X2 observation-only instrumentation.** Terminal per-event forward decision record (append-only; lossless).
+/// Captured ADDITIVELY at the existing decision point — reconstructs the exact `rec` fed to `decision_log_hash`,
+/// so `recomputed_decision_log_hash()` MUST equal `decision_log_hash()` (consistency pin). Does NOT alter any
+/// existing computation, RNG, counter, or the returned drop decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecisionEvent {
+    pub role: TransmissionRole,
+    pub block_id: u32,
+    pub esi: u16,
+    pub attempt: u16,
+    pub emit_time_ns: u64,
+    /// true = DROP, false = PASS (exact `drop` returned by `decide`).
+    pub dropped: bool,
+}
+
 /// Deterministik paired-replay kanalı. `decide()` saf-fonksiyon; karar-log determinism-pin için tutulur.
 /// **B1: forward + reverse impairment AYRI-görünür** (ayrı realizasyon-hash + ayrı counts + ayrı şema-kimliği).
 pub struct TraceChannel {
@@ -208,6 +223,8 @@ pub struct TraceChannel {
     reverse_decision_log_hash: u64,
     reverse_decided: u64,
     reverse_dropped: u64,
+    /// OPT-X2 additive observation: append-only forward decision events (lossless per-event trace).
+    forward_decisions: Vec<DecisionEvent>,
 }
 
 impl TraceChannel {
@@ -228,6 +245,7 @@ impl TraceChannel {
             reverse_decision_log_hash: 0xcbf2_9ce4_8422_2325,
             reverse_decided: 0,
             reverse_dropped: 0,
+            forward_decisions: Vec::new(),
         }
     }
 
@@ -273,6 +291,15 @@ impl TraceChannel {
         if drop {
             self.dropped += 1;
         }
+        // OPT-X2 additive observation: record the (already-computed) decision. No effect on hash/counters/drop.
+        self.forward_decisions.push(DecisionEvent {
+            role: id.role,
+            block_id: id.source_id.0,
+            esi: id.source_id.1,
+            attempt: id.attempt,
+            emit_time_ns,
+            dropped: drop,
+        });
         drop
     }
 
@@ -280,6 +307,32 @@ impl TraceChannel {
     #[must_use]
     pub fn decision_log_hash(&self) -> u64 {
         self.decision_log_hash
+    }
+
+    /// OPT-X2: append-only forward decision events (lossless per-event trace; observation-only).
+    #[must_use]
+    pub fn forward_decisions(&self) -> &[DecisionEvent] {
+        &self.forward_decisions
+    }
+
+    /// OPT-X2 CONSISTENCY PIN: recompute the rolling forward decision-log hash from the captured event vector.
+    /// MUST equal `decision_log_hash()` — proves the additive capture faithfully mirrors the (untouched) rolling hash.
+    #[must_use]
+    pub fn recomputed_decision_log_hash(&self) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for ev in &self.forward_decisions {
+            let id = TracePacketId {
+                source_id: (ev.block_id, ev.esi),
+                role: ev.role,
+                attempt: ev.attempt,
+            };
+            let mut rec = keyed(id, 0).to_vec();
+            rec.extend_from_slice(&ev.emit_time_ns.to_le_bytes());
+            rec.push(u8::from(ev.dropped));
+            h ^= fnv1a(&rec);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
     }
 
     /// (karar-sayısı, düşürülen-sayısı) — realized-loss faithfulness raporu için.
@@ -601,6 +654,51 @@ mod tests {
             "forward ve reverse şema-kimliği çakıştı"
         );
         assert_eq!(a.configured_schedule_hash(), b.configured_schedule_hash());
+    }
+
+    /// OPT-X2 INSTRUMENTATION-INVARIANCE PIN: additive decision capture mirrors the rolling hash exactly, and the
+    /// captured event vector is lossless (count == decided; drop flags match). Recompute == rolling for every spec.
+    #[test]
+    fn opt_x2_decision_capture_consistency() {
+        use TransmissionRole::*;
+        for spec in [
+            exact(&[(0, 2), (0, 5)]),
+            TraceSpec::NaturalIid {
+                loss_permille: 200,
+                seed: 42,
+            },
+            TraceSpec::NaturalBurst {
+                drop_intervals_ns: vec![(1_000, 2_000)],
+            },
+        ] {
+            let mut ch = TraceChannel::new(spec);
+            let stream: Vec<(TracePacketId, u64)> = (0..64u32)
+                .flat_map(|i| {
+                    [
+                        (pid(InitialSource, i / 8, (i % 8) as u16, 0), u64::from(i) * 500),
+                        (pid(Repair, i / 8, (i % 8) as u16, 0), u64::from(i) * 500 + 10),
+                        (pid(RetransmitSource, i / 8, (i % 8) as u16, 1), u64::from(i) * 500 + 20),
+                    ]
+                })
+                .collect();
+            for &(id, t) in &stream {
+                let _ = ch.decide(id, t);
+            }
+            // rolling hash (untouched) == recomputed-from-vector (additive capture faithful).
+            assert_eq!(
+                ch.decision_log_hash(),
+                ch.recomputed_decision_log_hash(),
+                "additive capture diverged from rolling hash"
+            );
+            // lossless: one event per decision; drop flags reconstruct counts.
+            let (decided, dropped) = ch.counts();
+            assert_eq!(ch.forward_decisions().len() as u64, decided, "capture count != decided");
+            assert_eq!(
+                ch.forward_decisions().iter().filter(|e| e.dropped).count() as u64,
+                dropped,
+                "captured drops != dropped counter"
+            );
+        }
     }
 
     /// DETERMINISM-PIN: aynı trace × 3 replay → identical decision-log hash.
