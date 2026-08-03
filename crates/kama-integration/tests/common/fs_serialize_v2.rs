@@ -277,6 +277,7 @@ pub fn build_record_v2(
     run_id: &str,
     base_cell_id: &str,
     pairing_group_id: &str,
+    arm_canonical: &str,
     rep: u8,
     attempt: u8,
     validity: ValidityV2,
@@ -305,7 +306,7 @@ pub fn build_record_v2(
         run_id: run_id.into(),
         attempt_index: attempt,
         pairing_group_id: pairing_group_id.into(),
-        arm: r.arm.into(),
+        arm: arm_canonical.into(), // canonical {A0,A1-EARLY,F0,F3}; NOT the internal SpineResult.arm ("A1")
         base_cell_id: base_cell_id.into(),
         repetition_index: rep,
         prov: prov.clone(),
@@ -387,6 +388,10 @@ pub fn validate_v2(json: &str) -> Result<(), SchemaError> {
         return Err(SchemaError::WrongType(format!("key count {} != 57", keys.len())));
     }
     // enum domains.
+    let arm = field_str(json, "arm");
+    if !["A0", "A1-EARLY", "F0", "F3"].contains(&arm.as_str()) {
+        return Err(SchemaError::EnumViolation(format!("arm={arm}")));
+    }
     let vc = field_str(json, "validity_class");
     if !["INVALID", "VALID_COMPLETE", "VALID_CENSORED"].contains(&vc.as_str()) {
         return Err(SchemaError::EnumViolation(format!("validity_class={vc}")));

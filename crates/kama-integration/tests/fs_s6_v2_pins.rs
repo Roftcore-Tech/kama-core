@@ -36,6 +36,7 @@ fn record_for(cell_id: &str, arm: &str, rep: u8) -> (RawRecordV2, String) {
         &rid,
         cell_id,
         &pairing_group_id(c, rep),
+        arm,
         rep,
         0,
         v,

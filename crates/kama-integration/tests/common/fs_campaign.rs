@@ -230,6 +230,7 @@ pub fn execute_row_v2(
         run_id,
         &base_cell_id(c),
         &pairing_group_id(c, rep),
+        arm,
         rep,
         attempt,
         validity,

@@ -42,7 +42,7 @@ fn main() {
         let r = run_spine(arm_of("F0"), &build_cfg(c, 0));
         let h = row_hashes(c, "F0", 0);
         let rec = build_record_v2(
-            "SELFCHECK", "rtt50-exactd1", "pg--rtt50-exactd1--rep0", 0, 0, classify_v2(&r), &r,
+            "SELFCHECK", "rtt50-exactd1", "pg--rtt50-exactd1--rep0", "F0", 0, 0, classify_v2(&r), &r,
             &prov, "{}".into(), h.base, h.exec, h.behav,
             u32::try_from(deadline_ms_for(c.rtt_ms)).unwrap(),
             u32::try_from(observation_horizon_ms(c.rtt_ms)).unwrap(),
