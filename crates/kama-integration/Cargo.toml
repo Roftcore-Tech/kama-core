@@ -68,3 +68,7 @@ name = "fs_compare_v2"
 [[example]]
 name = "fs_analyze_v2"
 required-features = ["experimental-fs-harness"]
+
+[[example]]
+name = "dr_arqtail_r1"
+required-features = ["experimental-fs-harness"]
