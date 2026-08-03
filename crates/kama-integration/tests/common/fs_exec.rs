@@ -231,6 +231,34 @@ impl RawWriter {
         std::fs::write(final_p.with_extension("json.sha256"), format!("{sha}\n")).ok();
         Ok(sha)
     }
+    /// OPT-X2 v2 path: atomic write of a PRE-SERIALIZED body (schema-v2 record already validated by caller).
+    /// Same atomic temp→fsync→rename + .sha256 sidecar + no-overwrite semantics as `write`.
+    pub fn write_serialized(
+        &self,
+        run_id: &str,
+        attempt: u8,
+        body: &str,
+    ) -> Result<String, ExecError> {
+        std::fs::create_dir_all(&self.namespace).ok();
+        let final_p = self.final_path(run_id, attempt);
+        if final_p.exists() {
+            return Err(ExecError::OutputExists(final_p.display().to_string()));
+        }
+        let sha = sha256_hex(body.as_bytes());
+        let tmp = self
+            .namespace
+            .join(format!("{run_id}.attempt{attempt}.json.tmp"));
+        {
+            let mut f =
+                std::fs::File::create(&tmp).map_err(|e| ExecError::OutputExists(e.to_string()))?;
+            f.write_all(body.as_bytes()).ok();
+            f.sync_all().ok();
+        }
+        std::fs::rename(&tmp, &final_p).map_err(|e| ExecError::OutputExists(e.to_string()))?;
+        std::fs::write(final_p.with_extension("json.sha256"), format!("{sha}\n")).ok();
+        Ok(sha)
+    }
+
     /// Interrupted-residue: yarım .tmp dosyası (finalize-edilmemiş). restart quarantine-etmeli, overwrite-DEĞİL.
     #[must_use]
     pub fn residue_tmps(&self) -> Vec<PathBuf> {

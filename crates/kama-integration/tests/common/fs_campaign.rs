@@ -8,11 +8,14 @@
 mod fs_dryrun;
 #[path = "fs_exec.rs"]
 mod fs_exec;
+#[path = "fs_serialize_v2.rs"]
+mod fs_serialize_v2;
 #[path = "fs_spine.rs"]
 mod fs_spine;
 
 pub use fs_dryrun::*;
 pub use fs_exec::*;
+pub use fs_serialize_v2::*;
 pub use fs_spine::{run_spine, SpineArm, SpineCfg, MS};
 
 const LINK_BPS: u64 = 1_000_000;
@@ -171,4 +174,111 @@ pub fn run_campaign(
         }
     }
     out
+}
+
+// ── OPT-X2 v1.3.2 SCHEMA-V2 CAMPAIGN FLOW (instrumented executor; schema-conformant serializer) ────────
+
+/// SpineResult → schema-v2 validity.
+#[must_use]
+pub fn classify_v2(r: &fs_spine::SpineResult) -> ValidityV2 {
+    if r.completed && r.reassembly_equal {
+        ValidityV2::ValidComplete
+    } else {
+        ValidityV2::ValidCensored
+    }
+}
+
+/// Frozen candidate-manifest row (scientific config) for each run_id — typed_manifest_row source.
+#[must_use]
+pub fn manifest_rows_by_run_id() -> std::collections::BTreeMap<String, String> {
+    let mut m = std::collections::BTreeMap::new();
+    for line in manifest_jsonl().lines() {
+        // extract "run_id":"<val>"
+        if let Some(p) = line.find("\"run_id\":\"") {
+            let rest = &line[p + 10..];
+            if let Some(e) = rest.find('"') {
+                m.insert(rest[..e].to_string(), line.to_string());
+            }
+        }
+    }
+    m
+}
+
+/// Result-bearing per-row executor (v2): reserve → run_spine → classify_v2 → build_record_v2 → validate_v2
+/// (fail-closed) → atomic write_serialized → ledger-commit. INVALID-only-retry (unchanged policy).
+#[allow(clippy::too_many_arguments)]
+pub fn execute_row_v2(
+    run_id: &str,
+    c: &BaseCell,
+    arm: &str,
+    rep: u8,
+    prov: &ProvV2,
+    manifest_row: &str,
+    writer: &RawWriter,
+    ledger: &Ledger,
+) -> Result<ValidityV2, ExecError> {
+    quarantine_residue(writer)?;
+    let attempt = match ledger.next_attempt(run_id) {
+        Some(a) => a,
+        None => return Err(ExecError::RetryExceeded(run_id.into())),
+    };
+    ledger.reserve_start(run_id, attempt)?;
+    let r = run_spine(arm_of(arm), &build_cfg(c, rep));
+    let validity = classify_v2(&r);
+    let h = row_hashes(c, arm, rep);
+    let rec = build_record_v2(
+        run_id,
+        &base_cell_id(c),
+        &pairing_group_id(c, rep),
+        rep,
+        attempt,
+        validity,
+        &r,
+        prov,
+        manifest_row.to_string(),
+        h.base,
+        h.exec,
+        h.behav,
+        u32::try_from(deadline_ms_for(c.rtt_ms)).unwrap_or(0),
+        u32::try_from(observation_horizon_ms(c.rtt_ms)).unwrap_or(0),
+    );
+    let body = rec.serialize();
+    // KALICI-KURAL-3 executable per-record conformance gate (fail-closed).
+    if let Err(e) = validate_v2(&body) {
+        return Err(ExecError::ProvenanceMismatch(format!("schema-v2 validation: {e:?}")));
+    }
+    let map_v = match validity {
+        ValidityV2::ValidComplete => Validity::ValidComplete,
+        ValidityV2::ValidCensored => Validity::ValidCensored,
+        ValidityV2::Invalid => Validity::Invalid,
+    };
+    let raw_sha = writer.write_serialized(run_id, attempt, &body)?;
+    ledger.commit(run_id, attempt, map_v, &raw_sha)?;
+    Ok(validity)
+}
+
+/// SERIAL v2 campaign over the frozen execution-order.
+#[must_use]
+pub fn run_campaign_v2(
+    prov: &ProvV2,
+    writer: &RawWriter,
+    ledger: &Ledger,
+) -> Vec<(String, ValidityV2)> {
+    let cells = amended_base_cells();
+    let rows = manifest_rows_by_run_id();
+    let mut out = Vec::new();
+    for (_, _, bcid, rep, arm, rid) in execution_order_entries() {
+        let c = cells.iter().find(|c| base_cell_id(c) == bcid).unwrap();
+        let mrow = rows.get(&rid).cloned().unwrap_or_default();
+        if let Ok(v) = execute_row_v2(&rid, c, arm, rep, prov, &mrow, writer, ledger) {
+            out.push((rid, v));
+        }
+    }
+    out
+}
+
+/// Executable pin: terminal_source_id == 47 for the FS-1 workload (source_symbol_count==48).
+#[must_use]
+pub fn tail_terminal_id_pin() -> bool {
+    (fs_spine::TOTAL_SOURCE_SYMBOLS as u16).saturating_sub(1) == 47
 }
