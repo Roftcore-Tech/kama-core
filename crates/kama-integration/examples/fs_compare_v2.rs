@@ -216,7 +216,11 @@ fn main() {
     let pass = agg_ok && corr_ok && field_ok;
 
     println!("SCIENCE-INVARIANCE COMPARATOR");
-    println!("matched_rows={matched} old_count={} new_count={}", old.len(), new.len());
+    println!(
+        "matched_rows={matched} old_count={} new_count={}",
+        old.len(),
+        new.len()
+    );
     println!("aggregate: complete_old={vc_old} complete_new={vc_new} censored_old={cn_old} censored_new={cn_new} (expected 176/64)");
     println!("shared_field_mismatch_rows={}", mismatch.len());
     println!("shared_digest_old=0x{digest_old:016x} shared_digest_new=0x{digest_new:016x} digests_equal={}", digest_old == digest_new);
@@ -233,5 +237,7 @@ fn main() {
 }
 
 fn arg(args: &[String], k: &str) -> Option<String> {
-    args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == k)
+        .and_then(|i| args.get(i + 1).cloned())
 }

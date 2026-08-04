@@ -675,9 +675,18 @@ mod tests {
             let stream: Vec<(TracePacketId, u64)> = (0..64u32)
                 .flat_map(|i| {
                     [
-                        (pid(InitialSource, i / 8, (i % 8) as u16, 0), u64::from(i) * 500),
-                        (pid(Repair, i / 8, (i % 8) as u16, 0), u64::from(i) * 500 + 10),
-                        (pid(RetransmitSource, i / 8, (i % 8) as u16, 1), u64::from(i) * 500 + 20),
+                        (
+                            pid(InitialSource, i / 8, (i % 8) as u16, 0),
+                            u64::from(i) * 500,
+                        ),
+                        (
+                            pid(Repair, i / 8, (i % 8) as u16, 0),
+                            u64::from(i) * 500 + 10,
+                        ),
+                        (
+                            pid(RetransmitSource, i / 8, (i % 8) as u16, 1),
+                            u64::from(i) * 500 + 20,
+                        ),
                     ]
                 })
                 .collect();
@@ -692,7 +701,11 @@ mod tests {
             );
             // lossless: one event per decision; drop flags reconstruct counts.
             let (decided, dropped) = ch.counts();
-            assert_eq!(ch.forward_decisions().len() as u64, decided, "capture count != decided");
+            assert_eq!(
+                ch.forward_decisions().len() as u64,
+                decided,
+                "capture count != decided"
+            );
             assert_eq!(
                 ch.forward_decisions().iter().filter(|e| e.dropped).count() as u64,
                 dropped,

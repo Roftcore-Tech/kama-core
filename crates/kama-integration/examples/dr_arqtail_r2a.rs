@@ -111,7 +111,8 @@ fn cfg_of(c: &Cell, rep: u8) -> SpineCfg {
         }
     }
 }
-const ARMS: [(&str, fn() -> SpineArm); 4] = [
+type ArmSpec = (&'static str, fn() -> SpineArm);
+const ARMS: [ArmSpec; 4] = [
     ("A0-FROZEN", || SpineArm::A0),
     ("A0-TAIL", || SpineArm::A0Tail),
     ("F0", || SpineArm::F0 { r: 2 }),
@@ -396,8 +397,8 @@ fn analyze() {
         recs.push(fs::read_to_string(p).unwrap());
     }
     // key by (cell, arm, rep)
-    let mut by: BTreeMap<(String, String, u8), (bool, u64, u64, u64, u64, u64, bool)> =
-        BTreeMap::new();
+    type RepRow = (bool, u64, u64, u64, u64, u64, bool);
+    let mut by: BTreeMap<(String, String, u8), RepRow> = BTreeMap::new();
     let mut agg: BTreeMap<(String, String), A> = BTreeMap::new();
     let mut cells: Vec<String> = Vec::new();
     for j in &recs {

@@ -55,13 +55,22 @@ fn record_for(cell_id: &str, arm: &str, rep: u8) -> (RawRecordV2, String) {
 
 #[test]
 fn tail_terminal_id_pin_holds() {
-    assert!(tail_terminal_id_pin(), "terminal_source_id must be 47 (source_symbol_count==48)");
+    assert!(
+        tail_terminal_id_pin(),
+        "terminal_source_id must be 47 (source_symbol_count==48)"
+    );
 }
 
 /// Every representative (cell,arm,rep) produces a schema-v2-conformant record.
 #[test]
 fn all_representative_records_conform() {
-    let cells = ["rtt50-exactd1", "rtt250-exactd2", "rtt1000-exactd4", "rtt50-iid20", "rtt1000-iid20"];
+    let cells = [
+        "rtt50-exactd1",
+        "rtt250-exactd2",
+        "rtt1000-exactd4",
+        "rtt50-iid20",
+        "rtt1000-iid20",
+    ];
     let arms = ["A0", "A1-EARLY", "F0", "F3"];
     let mut n = 0;
     for cell in cells {
@@ -84,7 +93,10 @@ fn all_representative_records_conform() {
 #[test]
 fn decision_vector_consistency() {
     let cells = amended_base_cells();
-    let c = cells.iter().find(|c| base_cell_id(c) == "rtt50-exactd4").unwrap();
+    let c = cells
+        .iter()
+        .find(|c| base_cell_id(c) == "rtt50-exactd4")
+        .unwrap();
     let r = run_spine(arm_of("F0"), &build_cfg(c, 1));
     // observed_forward_event_hash == forward_trace_hash; actual count == vector len.
     assert_eq!(
@@ -92,8 +104,15 @@ fn decision_vector_consistency() {
         r.forward_decisions.len() as u64
     );
     // role partition: initial+intervention+retransmission counts sum to forward_decisions minus control.
-    let init = r.forward_decisions.iter().filter(|e| format!("{:?}", e.role) == "InitialSource").count();
-    assert!(init >= 48, "at least 48 initial-source decisions, got {init}");
+    let init = r
+        .forward_decisions
+        .iter()
+        .filter(|e| format!("{:?}", e.role) == "InitialSource")
+        .count();
+    assert!(
+        init >= 48,
+        "at least 48 initial-source decisions, got {init}"
+    );
 }
 
 /// A0 on a tail-erasure cell → censored → completion_cause NOT_COMPLETED, t_full_workload_complete null,
@@ -157,11 +176,20 @@ fn negative_conformance_rejections() {
     validate_v2(&good).unwrap();
     // missing field
     let missing = good.replacen(",\"result_bearing\":true", "", 1);
-    assert!(matches!(validate_v2(&missing), Err(SchemaError::MissingField(_))));
+    assert!(matches!(
+        validate_v2(&missing),
+        Err(SchemaError::MissingField(_))
+    ));
     // unknown field
     let unknown = good.replacen("{", "{\"extra_field\":1,", 1);
-    assert!(matches!(validate_v2(&unknown), Err(SchemaError::UnknownField(_))));
+    assert!(matches!(
+        validate_v2(&unknown),
+        Err(SchemaError::UnknownField(_))
+    ));
     // enum violation
     let badenum = good.replacen("\"completion_cause\":\"", "\"completion_cause\":\"XXX", 1);
-    assert!(matches!(validate_v2(&badenum), Err(SchemaError::EnumViolation(_))));
+    assert!(matches!(
+        validate_v2(&badenum),
+        Err(SchemaError::EnumViolation(_))
+    ));
 }

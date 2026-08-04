@@ -246,7 +246,9 @@ pub fn execute_row_v2(
     let body = rec.serialize();
     // KALICI-KURAL-3 executable per-record conformance gate (fail-closed).
     if let Err(e) = validate_v2(&body) {
-        return Err(ExecError::ProvenanceMismatch(format!("schema-v2 validation: {e:?}")));
+        return Err(ExecError::ProvenanceMismatch(format!(
+            "schema-v2 validation: {e:?}"
+        )));
     }
     let map_v = match validity {
         ValidityV2::ValidComplete => Validity::ValidComplete,
