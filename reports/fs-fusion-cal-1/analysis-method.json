@@ -1,0 +1,89 @@
+{
+  "method_id": "FS-FUSION-CAL-1-ANALYSIS-METHOD-v1",
+  "frozen_before_new_analysis": true,
+  "note_on_prior_knowledge": "The locked headline results of FS-1 v1.3.2, R2A (+corrigendum) and the product-tail grid are already published and are cited as-is. This record freezes the method for the NEW per-cell Pareto action-labelling analysis performed by FS-FUSION-CAL-1, which has not been computed at the time this record is written.",
+  "inputs": {
+    "canonical_dataset": "reports/fs-fusion-cal-1/canonical-calibration-data.csv",
+    "canonical_schema_version": "FS-FUSION-CAL-1-CANONICAL-v1",
+    "authoritative_sources": [
+      "reports/fs-1/raw/v1.3.2 (240, FS1_IN_PROCESS)",
+      "reports/dr-arq-tail-1/v1/raw (8400, R2A_IN_PROCESS)",
+      "reports/dr-arq-product-tail-1/v1/result.csv (2290, PRODUCT_NETNS)"
+    ],
+    "never_read": [
+      "reports/fs-1/raw/v1.3.1 (SUPERSEDED-INCOMPLETE-SCHEMA)",
+      "commit 44e0c50 dataset (INVALIDATED arm-label bug)"
+    ]
+  },
+  "domain_separation": {
+    "rule": "MANDATORY. In-process (FS1, R2A) and faithful netns (PRODUCT) rows are NEVER pooled into a single population.",
+    "permitted": ["domain-stratified analysis", "rule-consistency checks across domains", "external validation of a region label", "domain-specific confidence"],
+    "forbidden": ["pooling in-process and netns latency into one distribution", "presenting an in-process FEC effect as a faithful product effect", "counting the product ARQ-tail result as product FEC validation"]
+  },
+  "endpoint_hierarchy_lexicographic": [
+    {"rank": 1, "endpoint": "safety_invariant_correctness", "field": "invariant_ok / reassembly_equal", "rule": "any action with a safety/invariant failure in a cell is ELIMINATED from that cell before any other comparison"},
+    {"rank": 2, "endpoint": "horizon_completion", "field": "horizon_complete", "rule": "higher is better; censoring is the complement"},
+    {"rank": 3, "endpoint": "realized_total_wire_bytes", "field": "total_wire_bytes", "rule": "lower is better; compared only when completion is not distinguishable"},
+    {"rank": 4, "endpoint": "rmst_restricted_mean_time", "field": "completion_time_ns/censor_time_ns within horizon", "rule": "lower is better; censoring-aware"},
+    {"rank": 5, "endpoint": "conditional_completion_latency", "field": "completion_time_ns over completed rows only", "rule": "reported ALWAYS with its completion population; never a standalone headline"}
+  ],
+  "deadline_endpoint": {
+    "treatment": "SEPARATE SECONDARY ONLY",
+    "rule": "deadline_hit is reported separately and never substituted for horizon completion. No product SLO exists; the benchmark deadline is not an SLO."
+  },
+  "no_scalar_utility": {
+    "rule": "No arbitrary scalar utility weighting of completion vs cost is invented. Pareto / non-dominance is used first. If a numeric non-inferiority margin would be required and is not defined by an existing product requirement, the cell is left as NON_DOMINATED_TRADEOFF or INSUFFICIENT_EVIDENCE rather than silently inventing a threshold."
+  },
+  "statistics": {
+    "completion_rate_ci": "Wilson score 95% interval",
+    "paired_binary_effect": "McNemar exact (binomial on discordant pairs, two-sided), alpha=0.05; pairing unit = pairing_group_id (cell + repetition/seed lineage)",
+    "cost_delta": "paired/grouped bootstrap, 10000 resamples, resampling at the pairing-group level (never row-level), 95% percentile interval, fixed RNG seed 20260804",
+    "censored_time": "Kaplan-Meier + RMST restricted to the cell observation horizon",
+    "conditional_latency": "median over completed rows, always reported with n_complete",
+    "multiple_comparisons": "the number of cells and pairwise contrasts is reported explicitly; per-cell labels are SCREENING-grade and are not presented as confirmatory family-wise-controlled inference",
+    "small_n_caveats": "FS-1 n=5 per cell/arm is exploratory only; R2A n=100 and PRODUCT n=30 are evaluated separately and never merged"
+  },
+  "per_cell_action_labels": {
+    "vocabulary": ["ARQ_DOMINANT", "FEC_DOMINANT", "FUSION_DOMINANT", "NON_DOMINATED_TRADEOFF", "INSUFFICIENT_EVIDENCE", "UNSUPPORTED_RUNTIME_FEATURES", "SAFETY_REJECTED"],
+    "decision_procedure_ordered": [
+      "1. Drop any action with a safety/invariant failure in the cell (SAFETY_REJECTED if all drop).",
+      "2. Pairwise within the SAME domain only. Completion: McNemar exact on paired discordance. If p<0.05 and direction consistent, the winner is completion-superior.",
+      "3. If completion is NOT distinguishable (p>=0.05), compare realized total wire via grouped bootstrap; a strictly lower cost whose 95% CI excludes 0 is cost-superior.",
+      "4. If still tied, compare RMST.",
+      "5. If exactly one action is superior at the highest discriminating rank and not worse at a higher rank, label by its family: ARQ_* -> ARQ_DOMINANT, FEC_* -> FEC_DOMINANT, simultaneous ARQ+FEC -> FUSION_DOMINANT.",
+      "6. If two actions trade off across ranks (one completes more, the other costs less) -> NON_DOMINATED_TRADEOFF.",
+      "7. If CIs are too wide / n too small to discriminate -> INSUFFICIENT_EVIDENCE. Never force a winner.",
+      "8. If the region cannot be identified from runtime-observable features -> UNSUPPORTED_RUNTIME_FEATURES (overrides the outcome label for POLICY purposes; the outcome label is still recorded for science)."
+    ],
+    "fusion_coverage_note": "No authoritative arm combines tail-capable ARQ with proactive FEC simultaneously. FUSION_DOMINANT therefore CANNOT be established from existing data and any fusion region is INSUFFICIENT_EVIDENCE until supplementary training covers it."
+  },
+  "leakage_firewall": {
+    "forbidden_as_runtime_policy_input": ["arm_raw", "action", "cell_id", "cfg_stratum", "cfg_rtt_ms", "cfg_loss_label", "cfg_structure", "cfg_drop_count", "horizon_complete", "censored", "completion_time_ns", "censor_time_ns", "deadline_hit", "completion_cause", "tail_status", "reassembly_equal", "fec_decoded_sources", "pairing_group_id", "run_id"],
+    "rule": "These are configuration/outcome/label fields. They may be used for OFFLINE analysis and region definition only. A runtime policy may consume ONLY prefix-causal features that the sender can compute at decision time.",
+    "critical_finding": "All 10930 authoritative rows have runtime_features_present=0 (no runtime fusion-input telemetry was recorded). Therefore NO runtime feature->action map can be fitted from the authoritative data alone; authoritative data grounds CELL->ACTION->OUTCOME only. The runtime-feature bridge must come from supplementary training runs that record telemetry, or the region is UNSUPPORTED."
+  },
+  "grouping_and_splits": {
+    "row_random_split": "FORBIDDEN",
+    "grouping_unit": "cell_id + pairing_group_id (seed lineage)",
+    "rule": "the same cell/seed lineage may never appear on both sides of a train/validation split; validation outcomes are not opened during tuning",
+    "true_holdout": "a NEW disjoint seed domain executed after the pre-holdout freeze"
+  },
+  "amendment_v1_1": {
+    "reason": "METHOD-CORRECTNESS FIX, not an outcome-driven threshold. The first execution of the v1 procedure revealed two statistical/reporting defects that would have produced misleading labels. Both are corrected here and the analysis was re-run in full. The uncorrected first-pass output is preserved as decision-regions.v1-uncorrected.csv.",
+    "defect_1_underpowered_cost_fallthrough": {
+      "observed": "With FS-1 n=5 per cell/arm the McNemar exact test has almost no power: 61 of 72 FS-1 contrasts fell through to the wire-cost rank. Where every arm completed 5/5 this is a legitimate Pareto conclusion (equal completion, lower cost dominates), but where completion differs numerically yet is statistically undetectable, letting cost decide silently would assert a preference the data cannot support.",
+      "fix": "Split the non-significant completion outcome into two cases: (a) COMPLETION-IDENTICAL on every paired group (zero discordance, a_only==b_only==0) -> proceed to cost as a valid Pareto comparison; (b) DISCORDANCE PRESENT but p>=alpha -> mark completion_underpowered=true; a cost winner is only accepted if it does NOT contradict the numeric completion direction, otherwise the contrast is NON_DOMINATED_TRADEOFF (never force a winner).",
+      "principle": "This tightens, never loosens, the conditions under which a winner is declared."
+    },
+    "defect_2_family_label_collapse": {
+      "observed": "In PRODUCT_NETNS both arms (ARQ_FROZEN=tail probe OFF, ARQ_TAIL=tail probe ON) belong to the ARQ family, so the family-level label ARQ_DOMINANT is uninformative and hides which action is preferred.",
+      "fix": "Emit preferred_action as a first-class column alongside the family label, and report the per-domain preferred-action distribution."
+    },
+    "integrity_note": "No endpoint, alpha, bootstrap seed, endpoint ordering, or domain-separation rule was changed. No numeric non-inferiority margin was invented."
+  },
+  "outputs": [
+    "reports/fs-fusion-cal-1/decision-regions.csv",
+    "reports/fs-fusion-cal-1/decision-regions.v1-uncorrected.csv",
+    "reports/fs-fusion-cal-1/training-results.json"
+  ]
+}

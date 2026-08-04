@@ -1,0 +1,31 @@
+{
+  "alpha": 0.05,
+  "bootstrap": {
+    "resamples": 10000,
+    "seed": 20260804,
+    "unit": "pairing_group"
+  },
+  "cells_analyzed": 77,
+  "fusion_coverage": "NO authoritative arm combines tail-capable ARQ with proactive FEC; FUSION_DOMINANT is unreachable from existing data.",
+  "labels_by_domain": {
+    "FS1_IN_PROCESS|ARQ_DOMINANT": 6,
+    "FS1_IN_PROCESS|NON_DOMINATED_TRADEOFF": 6,
+    "PRODUCT_NETNS|ARQ_DOMINANT": 29,
+    "PRODUCT_NETNS|INSUFFICIENT_EVIDENCE": 15,
+    "R2A_IN_PROCESS|ARQ_DOMINANT": 16,
+    "R2A_IN_PROCESS|FEC_DOMINANT": 4,
+    "R2A_IN_PROCESS|NON_DOMINATED_TRADEOFF": 1
+  },
+  "method": "FS-FUSION-CAL-1-ANALYSIS-METHOD-v1",
+  "pairwise_contrasts": 242,
+  "preferred_action_by_domain": {
+    "FS1_IN_PROCESS|ARQ_FROZEN": 6,
+    "FS1_IN_PROCESS|NONE": 6,
+    "PRODUCT_NETNS|ARQ_FROZEN": 2,
+    "PRODUCT_NETNS|ARQ_TAIL": 27,
+    "PRODUCT_NETNS|NONE": 15,
+    "R2A_IN_PROCESS|ARQ_TAIL": 16,
+    "R2A_IN_PROCESS|FEC_R2": 4,
+    "R2A_IN_PROCESS|NONE": 1
+  }
+}
