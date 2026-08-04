@@ -41,6 +41,7 @@ checkpoints/diagnostics → commit messages. Every scientific number below is ci
 | Product tail state machine | DONE | `crates/adaptive-transport/src/tail_recovery.rs` | `17246324` (+`8c4b0f11` diag) | pure deterministic bounded PTO probe; default-OFF | production tuning; default-ON readiness |
 | Production sender wiring | DONE | `crates/adaptive-transport/src/sender.rs` (§5.2) | `21811df7` | input-map + action-apply only; OFF byte-identical | that ON is enabled by default |
 | Two-netns product validation | DONE → GO | `reports/dr-arq-product-tail-1/v1/FINAL-CHECKPOINT.md` | `b0412708` | correctness/bounded/faithful; OFF stuck vs ON recovers | deadline SLO; kernel/NIC; product-wide policy |
+| Fuzzy ARQ/FEC calibration (FS-FUSION-CAL-1) | DONE → **NO-GO** | `reports/fs-fusion-cal-1/FINAL-REPORT.md` | `dbee6674` | shipped config is uncalibrated; per-cell Pareto regions; safe default-OFF policy architecture; **loss rate alone cannot gate FEC** | any FEC activation threshold; any default-ON |
 | Quinn/TCP/KCP comparison | NOT STARTED | — | — | — | (no result exists) |
 | White paper | NOT STARTED (this program) | — | — | — | — |
 | Product-v2 tuning | NOT STARTED | — | — | — | — |
@@ -85,6 +86,19 @@ over 50/250/1000 ms netns/netem, bounded and correct." **Forbidden:** default-en
 (699/2499/9249 ms), NOT deadline. *Cite:* corrigendum `a0d17f89` §1. Product grid: deadline_hit (op) ≈ 0 across
 arms; the effect is on horizon completion + conditional latency. **Forbidden:** presenting any horizon completion
 as deadline/real-time success; presenting the 3×LB benchmark deadline as a product SLO (no product SLO exists).
+
+**7. Fuzzy calibration (FS-FUSION-CAL-1, `dbee6674`).** Production runs the explicitly NON-calibrated
+`FuzzyConfig::fixture()` via `Sender::new()` → `trusted_fixture()` (sender.rs:983-985), a path that also skips
+`validate()`. That fixture classifies 200 000 ppm (20 % loss) as **fully LOW** → fires R1 (`fec_zero`), so it
+never recommends FEC in the region where the data shows FEC Pareto-dominates (IID-20 %: 59–66/100 vs ARQ_TAIL
+12–14/100, at lower wire). Per-cell Pareto regions over all 10 930 authoritative rows: R2A prefers ARQ_TAIL ×16 /
+FEC_R2 ×4; PRODUCT prefers ARQ_TAIL ×27 / ARQ_FROZEN ×2. **A pre-registered group-disjoint holdout produced a
+harmful false positive** (`burst/20/high`: same 200 000 ppm, but burst structure prefers ARQ while IID prefers
+FEC) ⇒ **CALIBRATION-NO-GO**: loss rate alone cannot gate FEC, because loss burstiness/run-length is computed
+**nowhere** in `adaptive-transport`. *Cite:* `reports/fs-fusion-cal-1/{FINAL-REPORT.md, freeze.json,
+holdout-cell-results.json}`. **Forbidden:** any FEC activation threshold on loss rate; any default-ON.
+Blocking prerequisite: a prefix-causal runtime loss-structure estimator. Product impact: NONE (default-OFF;
+sender/arq/loss/rtt/fusion/tail_recovery byte-unchanged).
 
 **6. In-process model vs faithful two-netns/netem.** FS-1 and R2A are **in-process deterministic** models
 (`run_spine`, SpineArm). The DR-ARQ-PRODUCT-TAIL-1 validation is **faithful rootless two-netns/netem** driving the
