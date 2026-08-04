@@ -37,6 +37,9 @@ pub mod fs_harness;
 #[cfg(feature = "experimental-fec-budget")]
 pub mod fs_trace;
 pub mod fusion;
+/// FS-FUSION-CAL-1 — versioned calibration + pure fusion policy + independent safety validator
+/// (default OFF; advisory only; every failure mode degrades to ArqOnly).
+pub mod fusion_policy;
 pub mod loss;
 pub mod pacer;
 pub mod rate;
