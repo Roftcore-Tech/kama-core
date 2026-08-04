@@ -113,7 +113,6 @@ fn run_tx(a: &[String]) -> i32 {
     let lb_ms = argu(a, "--lb-ms", 600);
     let ext_horizon_ms = argu(a, "--ext-horizon-ms", 30000);
     let tick_ms = argu(a, "--tick-ms", 10);
-    let offer_ms = argu(a, "--offer-ms", 5);
     let run_id = arg(a, "--run-id", "r0");
     let cell = arg(a, "--cell", "cell");
     let structure = arg(a, "--struct", "iid");
@@ -121,6 +120,7 @@ fn run_tx(a: &[String]) -> i32 {
     let rtt = arg(a, "--rtt", "low");
     let rep = argu(a, "--rep", 0);
     let result_out = arg(a, "--result-out", "");
+    let verbose = a.iter().any(|x| x == "--verbose");
 
     let sock = match UdpSocket::bind(&bind) {
         Ok(s) => s,
@@ -135,10 +135,7 @@ fn run_tx(a: &[String]) -> i32 {
     }
     sock.set_read_timeout(Some(Duration::from_millis(1))).ok();
 
-    let mut s = Sender::new();
-    if arm == "on" {
-        s.set_tail_recovery_config(tail_on_config());
-    }
+    let mut s = Sender::new(); // tail probe stays OFF through warmup; enabled fresh below (if arm==on)
 
     let start = Instant::now();
     let now_ns = |st: &Instant| st.elapsed().as_nanos() as u64;
@@ -149,27 +146,111 @@ fn run_tx(a: &[String]) -> i32 {
     let mut retx_decisions: u64 = 0;
     let mut offered: u64 = 0;
     let mut last_tick = Instant::now();
-    let mut last_offer = Instant::now();
     let mut t_complete_ms: Option<u64> = None;
     let mut recovered_via_probe = false;
     let mut buf = [0u8; 4096];
-
-    // Terminal unit id set (delivered-tracking never needs it, but recovery-cause does).
     let terminal_unit = BASE + w_units - 1;
 
+    // ── WARMUP (NOT counted in the measured row): bring the flow out of PreConverge and drain over the
+    //    (impaired) path using normal ARQ only. The tail-recovery mechanism targets a CONVERGED flow;
+    //    cold-start bootstrap loss is a separate concern (DR-CS-1), not what this validates. Warmup ids live
+    //    in a disjoint space (900_000+) that rx never terminal-drops. Bounded by warm_deadline.
+    let warm_base = 900_000u64;
+    let warm_n = 8u64;
+    let mut warm_off = 0u64;
+    let warm_deadline_ms = (ext_horizon_ms / 2).max(2000);
     loop {
-        let el_ms = start.elapsed().as_millis() as u64;
+        let el = start.elapsed().as_millis() as u64;
+        let (_st, _bw, srtt_us, _rate, inflight) = s.diag_rate();
+        let converged = srtt_us > 0;
+        if converged && inflight == 0 && warm_off >= warm_n {
+            break;
+        }
+        if el >= warm_deadline_ms {
+            break;
+        }
+        // steady trickle so lost warmup units get packet-threshold-recovered (a later packet always follows)
+        if warm_off < warm_n || (!converged && warm_off < warm_n + el / 200) {
+            let out = s.on_event(
+                Event::AppData(OpaqueUnit {
+                    id: warm_base + warm_off,
+                    size: unit_bytes,
+                }),
+                now_ns(&start),
+            );
+            warm_off += 1;
+            emit_all(
+                &sock,
+                &out,
+                &mut seq_unit,
+                &mut wire_bytes,
+                &mut retx_decisions,
+            );
+        }
+        if last_tick.elapsed() >= Duration::from_millis(tick_ms) {
+            let out = s.on_event(Event::TimerFired(Timer::Pto), now_ns(&start));
+            emit_all(
+                &sock,
+                &out,
+                &mut seq_unit,
+                &mut wire_bytes,
+                &mut retx_decisions,
+            );
+            last_tick = Instant::now();
+        }
+        while let Ok(n) = sock.recv(&mut buf) {
+            if n >= 3 && buf[0] == 0xA0 {
+                let cnt = u16::from_be_bytes([buf[1], buf[2]]) as usize;
+                let mut fresh = Vec::new();
+                for i in 0..cnt.min((n - 3) / 8) {
+                    let off = 3 + i * 8;
+                    let q = u64::from_be_bytes(buf[off..off + 8].try_into().unwrap());
+                    if acked_seen.insert(q) {
+                        fresh.push(q);
+                    }
+                }
+                if !fresh.is_empty() {
+                    let out = s.on_event(
+                        Event::AckReceived(AckInfo {
+                            acked_seqs: fresh,
+                            ack_delay: Duration::ZERO,
+                        }),
+                        now_ns(&start),
+                    );
+                    emit_all(
+                        &sock,
+                        &out,
+                        &mut seq_unit,
+                        &mut wire_bytes,
+                        &mut retx_decisions,
+                    );
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Discard warmup from the MEASURED metrics; enable the tail probe fresh for the measured phase.
+    wire_bytes = 0;
+    retx_decisions = 0;
+    delivered.clear();
+    let measured_start_ms = start.elapsed().as_millis() as u64;
+    if arm == "on" {
+        s.set_tail_recovery_config(tail_on_config());
+    }
+
+    loop {
+        let el_ms = (start.elapsed().as_millis() as u64).saturating_sub(measured_start_ms);
         if el_ms >= ext_horizon_ms {
             break;
         }
-        // offer workload (one unit per offer_ms) — sender paces emission internally.
-        if offered < w_units && last_offer.elapsed() >= Duration::from_millis(offer_ms) {
+        // offer the WHOLE workload up front (app hands the transport its data); the sender's pacer serializes
+        // it at ~0.8·BtlBw — matching the frozen deadline-feasibility serialize (4848 B ≈ 48.5 ms @ 800 kbps).
+        while offered < w_units {
             let ev = Event::AppData(OpaqueUnit {
                 id: BASE + offered,
                 size: unit_bytes,
             });
             offered += 1;
-            last_offer = Instant::now();
             let out = s.on_event(ev, now_ns(&start));
             emit_all(
                 &sock,
@@ -190,6 +271,14 @@ fn run_tx(a: &[String]) -> i32 {
                 &mut retx_decisions,
             );
             last_tick = Instant::now();
+            if verbose && el_ms.is_multiple_of(250) {
+                let (st, btlbw, srtt_us, rate, inflight) = s.diag_rate();
+                let (due, sent, ..) = s.tail_probe_diag_ext();
+                eprintln!(
+                    "  t={el_ms}ms st={st:?} btlbw={btlbw} srtt_us={srtt_us} rate={rate} inflight={inflight} offered={offered} deliv={} wire={wire_bytes} due={due} sent={sent}",
+                    delivered.len()
+                );
+            }
         }
         // ingest SACKs
         while let Ok(n) = sock.recv(&mut buf) {
@@ -236,11 +325,14 @@ fn run_tx(a: &[String]) -> i32 {
         // completion
         if t_complete_ms.is_none() && delivered.len() as u64 == w_units {
             t_complete_ms = Some(el_ms);
-            // settle briefly then finish (allow final ACK flush)
         }
+        // post-completion settle = a few RTT for the final ACK flush only (NOT the scientific horizon;
+        // censoring still uses ext_horizon_ms). Keeps completing rows short without adaptive stopping.
         if let Some(tc) = t_complete_ms {
-            if el_ms >= tc + 3 * lb_ms.max(50) {
-                break; // settled after completion
+            let srtt_ms = s.diag_rate().2 / 1000; // srtt_us → ms
+            let settle = (2 * srtt_ms).clamp(100, 1000);
+            if el_ms >= tc + settle {
+                break;
             }
         }
         std::thread::sleep(Duration::from_millis(1));
