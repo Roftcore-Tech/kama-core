@@ -41,7 +41,7 @@ checkpoints/diagnostics → commit messages. Every scientific number below is ci
 | Product tail state machine | DONE | `crates/adaptive-transport/src/tail_recovery.rs` | `17246324` (+`8c4b0f11` diag) | pure deterministic bounded PTO probe; default-OFF | production tuning; default-ON readiness |
 | Production sender wiring | DONE | `crates/adaptive-transport/src/sender.rs` (§5.2) | `21811df7` | input-map + action-apply only; OFF byte-identical | that ON is enabled by default |
 | Two-netns product validation | DONE → GO | `reports/dr-arq-product-tail-1/v1/FINAL-CHECKPOINT.md` | `b0412708` | correctness/bounded/faithful; OFF stuck vs ON recovers | deadline SLO; kernel/NIC; product-wide policy |
-| Fuzzy ARQ/FEC calibration (FS-FUSION-CAL-1) | DONE → **NO-GO** | `reports/fs-fusion-cal-1/FINAL-REPORT.md` | `dbee6674` | shipped config is uncalibrated; per-cell Pareto regions; safe default-OFF policy architecture; **loss rate alone cannot gate FEC** | any FEC activation threshold; any default-ON |
+| Fusion calibration (FS-FUSION-CAL-1) | IN PROGRESS — earlier NO-GO **WITHDRAWN** | `reports/fs-fusion-cal-1/FRAMING-CORRIGENDUM.md` | (this turn) | shipped config is uncalibrated; **marginal utility of proactive redundancy on always-on ARQ is POSITIVE in 15/21 R2A cells and never reduced completion (0/21 harm)**; safe default-OFF architecture with ARQ zero-diff | any calibration verdict (policy must be re-derived on the marginal-utility axis); any default-ON |
 | Quinn/TCP/KCP comparison | NOT STARTED | — | — | — | (no result exists) |
 | White paper | NOT STARTED (this program) | — | — | — | — |
 | Product-v2 tuning | NOT STARTED | — | — | — | — |
@@ -87,7 +87,9 @@ over 50/250/1000 ms netns/netem, bounded and correct." **Forbidden:** default-en
 arms; the effect is on horizon completion + conditional latency. **Forbidden:** presenting any horizon completion
 as deadline/real-time success; presenting the 3×LB benchmark deadline as a product SLO (no product SLO exists).
 
-**7. Fuzzy calibration (FS-FUSION-CAL-1, `dbee6674`).** Production runs the explicitly NON-calibrated
+**7. Fusion calibration (FS-FUSION-CAL-1) — BINDING FRAMING.** *"ARQ-vs-FEC" language is FORBIDDEN* (`docs/design/dr-cs-1b-a2-receiver-design-v2.md:20`; `reports/d1-exit/1b-fec-utility-boundary-observability.md:191`). **ARQ is active in EVERY arm**; r0 = ARQ+0 proactive FEC, r2/r4 = ARQ+2/4 proactive parity. The measured quantity is the **marginal utility of proactive redundancy on top of always-on ARQ**, on two orthogonal axes (ARQ capability × redundancy r). Corrected result (`marginal-utility-regions.csv`): r0→r2 gives **15/21 POSITIVE, 5 no-change, 1 indeterminate, and `base_only`=0 in 21/21 — adding redundancy never reduced completion**; largest gains where headroom exists (S1 tail 0/100→100/100; S3 IID-20 % 12/100→66/100 at the *lowest* cost +772…842 B), pure cost where the flow already completes (S2 83–96 %). **The (tail-capable ARQ, r>0) fusion cell is absent from every dataset — unmeasured.** An earlier turn produced a CALIBRATION-NO-GO from an invalid cross-axis contrast (`A0-TAIL` vs `F0`) drawn partly from a dataset with no FEC arm; that verdict is **WITHDRAWN** (see corrigendum). No calibration verdict currently stands; default remains OFF; product byte-unchanged.
+
+**7-old (WITHDRAWN).** Production runs the explicitly NON-calibrated
 `FuzzyConfig::fixture()` via `Sender::new()` → `trusted_fixture()` (sender.rs:983-985), a path that also skips
 `validate()`. That fixture classifies 200 000 ppm (20 % loss) as **fully LOW** → fires R1 (`fec_zero`), so it
 never recommends FEC in the region where the data shows FEC Pareto-dominates (IID-20 %: 59–66/100 vs ARQ_TAIL
