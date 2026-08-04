@@ -72,6 +72,9 @@ pub struct TailRecovery {
     spurious_probe_count: u64,
     spurious_probe_bytes: u64,
     timer_fire_count: u64,
+    /// Times `on_timer` returned `ProbeDue` (probe eligible/scheduled). `probe_due_count - probe_count`
+    /// = probes that were due but not emitted (token-starved / ACK-race cancelled). Observation-only.
+    probe_due_count: u64,
 }
 
 impl TailRecovery {
@@ -87,6 +90,7 @@ impl TailRecovery {
             spurious_probe_count: 0,
             spurious_probe_bytes: 0,
             timer_fire_count: 0,
+            probe_due_count: 0,
         }
     }
 
@@ -169,6 +173,7 @@ impl TailRecovery {
         // DUE — but do NOT consume the attempt here (§3 probe-due ≠ probe-sent). The sender consumes it via
         // `on_probe_sent` ONLY after a successful emission (token available + target still outstanding). While a
         // probe is due but un-emitted (no token), on_timer keeps returning ProbeDue without advancing the cap.
+        self.probe_due_count = self.probe_due_count.saturating_add(1); // observation-only (§7 probe_due).
         ProbeDecision::ProbeDue {
             target_seq: target,
             probe_index: self.probe_index,
@@ -213,6 +218,11 @@ impl TailRecovery {
     #[must_use]
     pub fn timer_fire_count(&self) -> u64 {
         self.timer_fire_count
+    }
+    /// §7 probe_due: times a probe was eligible (`ProbeDue`), independent of whether it was emitted.
+    #[must_use]
+    pub fn probe_due_count(&self) -> u64 {
+        self.probe_due_count
     }
     #[must_use]
     pub fn probe_index(&self) -> u32 {

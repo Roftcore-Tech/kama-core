@@ -828,7 +828,9 @@ pub struct Sender {
     // in crate::tail_recovery; the sender only bridges live ACK/RTT/inflight state to it and emits via the ARQ path.
     tail_recovery: TailRecovery,
     tail_probe_pending: Option<u64>, // oldest-inflight seq a PTO probe is due for (un-emitted); None ⇒ none.
-    dup_queue: Vec<DupRec>,          // §11 zamanlanmış forward-recovery kopyaları
+    tail_probe_cancelled: u64, // observation-only (§7): due probes cancelled at emission (ACK-race: target no
+    // longer outstanding). Distinct from token-starved (kept pending). Only mutated on the ON path.
+    dup_queue: Vec<DupRec>, // §11 zamanlanmış forward-recovery kopyaları
     last_now_ns: u64,
 
     // ── FEC-emisyon (DR-S5-1; koşullu — guard-OFF'ta hot-path byte-değişmez) ──
@@ -1018,6 +1020,7 @@ impl Sender {
             pending_lost: VecDeque::new(),
             tail_recovery: TailRecovery::new(TailRecoveryConfig::default()), // default OFF
             tail_probe_pending: None,
+            tail_probe_cancelled: 0,
             dup_queue: Vec::new(),
             last_now_ns: 0,
             fec_mode: FecActuationMode::Manual { enabled: false }, // default: mevcut-davranış-birebir
@@ -1143,6 +1146,7 @@ impl Sender {
     pub fn set_tail_recovery_config(&mut self, cfg: TailRecoveryConfig) {
         self.tail_recovery = TailRecovery::new(cfg);
         self.tail_probe_pending = None;
+        self.tail_probe_cancelled = 0;
     }
 
     /// DR-ARQ-PRODUCT-TAIL-1 diagnostics (observation-only): (probes, probe_bytes, spurious, spurious_bytes).
@@ -1153,6 +1157,22 @@ impl Sender {
             self.tail_recovery.probe_bytes(),
             self.tail_recovery.spurious_probe_count(),
             self.tail_recovery.spurious_probe_bytes(),
+        )
+    }
+
+    /// DR-ARQ-PRODUCT-TAIL-1 extended diagnostics (observation-only, §7 separable probe accounting):
+    /// (probe_due, probe_sent, probe_cancelled, probe_bytes, spurious_count, timer_fire_count).
+    /// `probe_due` = eligible; `probe_sent` = emitted (cap-consuming); `probe_cancelled` = ACK-race cancels;
+    /// `probe_due - probe_sent - probe_cancelled` = token-starved (kept pending). Never affects wire/decisions.
+    #[must_use]
+    pub fn tail_probe_diag_ext(&self) -> (u64, u64, u64, u64, u64, u64) {
+        (
+            self.tail_recovery.probe_due_count(),
+            self.tail_recovery.probe_count(),
+            self.tail_probe_cancelled,
+            self.tail_recovery.probe_bytes(),
+            self.tail_recovery.spurious_probe_count(),
+            self.tail_recovery.timer_fire_count(),
         )
     }
 
@@ -3358,7 +3378,9 @@ impl Sender {
         };
         let Some((unit, retx_count)) = self.inflight.get(&target).map(|r| (r.unit, r.retx_count))
         else {
-            return; // target no longer outstanding → cancelled; attempt NOT consumed.
+            // target no longer outstanding (ACK race / already retransmitted) → cancelled; attempt NOT consumed.
+            self.tail_probe_cancelled = self.tail_probe_cancelled.saturating_add(1);
+            return;
         };
         if !self.try_send_pre_parity(unit.size, true) {
             self.tail_probe_pending = Some(target); // no token → keep pending; cap NOT consumed.
