@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace += with *= in Sender::on_ack_received
+@@ -555,17 +555,17 @@
+                 // prune edilmişse buraya düşmez (Expired/Unknown — örneksiz).
+                 self.diag_tomb_hits += 1;
+                 acked_units.push(t.unit.id); // teslim teyidi → bekleyen kopyaları iptal et
+                 if t.retx_count == 0 {
+                     // kol-1 (tek gönderim, belirsizlik yok): BW-örneği NORMAL üretilir.
+                     let sample = self.bw_sampler.on_ack(now_ns, t.bw_sample);
+                     self.btlbw.update(sample, now_ns, sample.delivered > 0);
+                     self.bw_sampled_since_round = true;
+-                    self.diag_bw_recovered += 1;
++                    self.diag_bw_recovered *= /* ~ changed by cargo-mutants ~ */ 1;
+                     if t.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
+                         largest = seq;
+                         rtt_send_ns = Some(t.send_ns);
+                     }
+                 } else {
+                     // [TUR-2c D-1/3 kol-2] Superseded iletimin geç-ACK'i: RTT YOK + rate-örneği
+                     // YOK (muhafazakâr Karn); ama DELIVERED-KREDİSİ VAR — byte'lar wire'ı
+                     // gerçekten geçti, sampler kümülatifine girer (gelecek örnek-delta'larına

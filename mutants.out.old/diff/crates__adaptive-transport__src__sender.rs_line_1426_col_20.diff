@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace <= with > in Sender::ack_confidence_permille
+@@ -1418,17 +1418,17 @@
+             None => return 1000,
+         };
+         let silence = now_ns.saturating_sub(anchor);
+         let srtt = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
+         // [TUR-3b commit-C] eşik = max(3×srtt, K_CONF_EAI×EAI) — tüketici-8 (srtt-clock-v1 §3).
+         let threshold = srtt
+             .saturating_mul(u64::from(ACK_SILENCE_SRTT_MULT))
+             .max(dur_ns(self.expected_ack_interval()).saturating_mul(u64::from(K_CONF_EAI)));
+-        if silence <= threshold {
++        if silence > /* ~ changed by cargo-mutants ~ */ threshold {
+             return 1000;
+         }
+         threshold
+             .saturating_mul(1000)
+             .checked_div(silence)
+             .unwrap_or(0)
+             .min(1000)
+     }

@@ -1,0 +1,82 @@
+
+*** crates/adaptive-transport/src/sender.rs:1141:9: replace Sender::schedule_transmit -> Vec<TransmitDecision> with vec![Default::default()]
+
+*** mutation diff:
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::schedule_transmit -> Vec<TransmitDecision> with vec![Default::default()]
+@@ -1133,34 +1133,17 @@
+ 
+     /// ScheduleTransmit (§3): pacing bütçesinde emit — sıra §3'e göre **DATA ÖNCE**, sonra recovery.
+     /// Recovery-obsesif "veri ULAŞSIN" AGGREGATE'te en çok teslim demektir: her birim en az bir kez
+     /// denensin (completion-optimal) → sonra kaybolanlar artakalan bütçeyle kurtarılsın. Recovery-first
+     /// birkaç eski birimi ısrarla retransmit ederken YENİ birimleri aç bırakırdı (loopback bottleneck-yok
+     /// flood'unda birimlerin yarısı hiç gönderilmez; rate-limited path'te de daha az distinct teslim).
+     /// Hepsi tek pacer'ı (token bucket) paylaşır (§9/§13): recovery fırtınası rate'i patlatamaz.
+     fn schedule_transmit(&mut self, now_ns: u64) -> Vec<TransmitDecision> {
+-        let mut out = Vec::new();
+-        // [TUR-7 β2] ARQ token-payı: her K_ARQ_SHARE'inci grant'te retx ÖNCE dener (BOŞ-NÖBET
+-        // biter — retx fiilen wire'a çıkar); diğer grant'ler DATA-önce (ölçülü-karar korunur).
+-        self.arq_share_tick = self.arq_share_tick.wrapping_add(1);
+-        if self.state == SenderState::RecoverArq
+-            && !self.pending_lost.is_empty()
+-            && self.arq_share_tick.is_multiple_of(K_ARQ_SHARE)
+-        {
+-            self.plan_arq_retransmits(&mut out, now_ns);
+-        }
+-        self.drain_new_data(&mut out, now_ns);
+-        match self.state {
+-            SenderState::RecoverArq => self.plan_arq_retransmits(&mut out, now_ns),
+-            SenderState::RecoverFwd => self.plan_forward_duplication(now_ns),
+-            _ => {}
+-        }
+-        self.drain_due_duplicates(&mut out, now_ns);
+-        out
++        vec![Default::default()] /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// RECOVER_ARQ (§9): ACK-güdümlü selective retransmit. arq_aggressiveness=0 → baskıla (fec-dominant).
+     fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+         let lost: Vec<LostSeq> = self
+             .pending_lost
+             .iter()
+             .map(|r| LostSeq {
+
+
+*** /home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=adaptive-transport@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh pin-project-lite v0.2.17
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh thiserror-impl v2.0.18
+       Fresh tokio-macros v2.7.0
+       Fresh thiserror v2.0.18
+       Fresh tokio v1.52.3
+       Dirty adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-eYQkWv.tmp/crates/adaptive-transport): the file `crates/adaptive-transport/src/sender.rs` has changed (1786134978.528441522s, 3s after last build at 1786134975.560535316s)
+   Compiling adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-eYQkWv.tmp/crates/adaptive-transport)
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9cc1446eb98710ef -C extra-filename=-eecea9df1309094a --out-dir /tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta`
+error[E0277]: the trait bound `TransmitDecision: Default` is not satisfied
+    --> crates/adaptive-transport/src/sender.rs:1141:14
+     |
+1141 |         vec![Default::default()] /* ~ changed by cargo-mutants ~ */
+     |              ^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+     |
+help: the trait `Default` is not implemented for `TransmitDecision`
+    --> crates/adaptive-transport/src/sender.rs:113:1
+     |
+ 113 | pub struct TransmitDecision {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `adaptive-transport` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `adaptive-transport` (lib test) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9cc1446eb98710ef -C extra-filename=-eecea9df1309094a --out-dir /tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-eYQkWv.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib` (exit status: 1)
+
+*** result: Failure(101)

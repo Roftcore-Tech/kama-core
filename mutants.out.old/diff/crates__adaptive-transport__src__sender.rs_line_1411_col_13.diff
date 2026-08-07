@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace || with && in Sender::ack_confidence_permille
+@@ -1403,17 +1403,17 @@
+     fn ack_confidence_permille(&self, now_ns: u64) -> u64 {
+         // §3.3-C/(4) yasak-4: PRE_CONVERGE'de ack_confidence FULL sabit — sessizlik cold-start'ta
+         // reverse-path çöküşü DEĞİL taban-bw serialization gecikmesi (threshold≈300ms ≪ RTT_floor).
+         if self.state == SenderState::PreConverge {
+             return 1000;
+         }
+         let active = !self.inflight.is_empty()
+             || !self.pending_lost.is_empty()
+-            || !self.tx_queue.is_empty()
++            && /* ~ changed by cargo-mutants ~ */ !self.tx_queue.is_empty()
+             || !self.dup_queue.is_empty();
+         if !active {
+             return 1000;
+         }
+         let anchor = match self.last_ack_ns.or(self.first_send_ns) {
+             Some(a) => a,
+             None => return 1000,
+         };

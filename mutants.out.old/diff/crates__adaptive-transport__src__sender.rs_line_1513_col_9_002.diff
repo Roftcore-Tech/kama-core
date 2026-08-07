@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::diag_wbtlbw -> (u64, u64) with (1, 0)
+@@ -1505,17 +1505,17 @@
+         (
+             self.rtt.rtprop().map_or(0, |d| d.as_micros() as u64),
+             self.rtt.queue_delay().as_micros() as u64,
+         )
+     }
+     /// [Y3-sim SALT-GÖZLEM] (last_full_bw, window_ns) — (b)-bug-arayışı.
+     #[must_use]
+     pub fn diag_wbtlbw(&self) -> (u64, u64) {
+-        (self.btlbw.last_sample_bw(), self.btlbw.window_ns())
++        (1, 0) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [Y3-sim SALT-GÖZLEM] btlbw-pencere-örnek-izi (mekanizma-izi-kalibrasyonu).
+     #[must_use]
+     pub fn diag_btlbw_samples(&self) -> Vec<(u64, u64)> {
+         self.btlbw.samples_snapshot()
+     }
+ 

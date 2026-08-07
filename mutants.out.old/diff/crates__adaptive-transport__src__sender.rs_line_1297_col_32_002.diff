@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace > with >= in Sender::drain_due_duplicates
+@@ -1289,17 +1289,17 @@
+             out.push(TransmitDecision {
+                 kind: TransmitKind::Duplicate,
+                 seq,
+                 unit_id: dup.unit.id,
+                 size: dup.unit.size,
+             });
+             // §3.3-B geometrik reschedule: interval_ns>0 (PRE_CONVERGE kopyası) → sonraki kopya
+             // ×COPY_MULTIPLIER (sayı-tavanı YOK, deadline'a dek; teyit gelince §3.3-B stop ile iptal).
+-            if dup.interval_ns > 0 {
++            if dup.interval_ns >= /* ~ changed by cargo-mutants ~ */ 0 {
+                 let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER);
+                 self.dup_queue.push(DupRec {
+                     due_ns: now_ns.saturating_add(next_interval),
+                     unit: dup.unit,
+                     interval_ns: next_interval,
+                 });
+             }
+         }

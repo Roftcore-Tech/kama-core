@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace += with -= in Sender::fuzzy_evaluate
+@@ -810,17 +810,17 @@
+         let jitter_ppm = dur_ns(self.rtt.rttvar())
+             .saturating_mul(1_000_000)
+             .checked_div(dur_ns(srtt))
+             .unwrap_or(0);
+         // [TUR-3a önalım, D-3/1] qd_ratio = qd×1000/rtprop; rtprop yoksa 0 (kanıt yok →
+         // boğma yok) + sayaç. Dürüst-rtprop'un zorunlu ikizi: mutlak-ns eşikler sub-kbps'te
+         // fiziksel-taban qd'yi (serialization çift-yönü, saniyeler) kalıcı-HIGH okuyordu.
+         let qd_ratio_permille = if self.rtt.rtprop().is_none_or(|r| r.is_zero()) {
+-            self.diag_qd_no_evidence += 1;
++            self.diag_qd_no_evidence -= /* ~ changed by cargo-mutants ~ */ 1;
+             0
+         } else {
+             self.qd_ratio_permille_now()
+         };
+         let inputs = FusionInputs {
+             loss_ppm: self.loss.loss_windowed_ppm(),
+             bandwidth_bps: self.btlbw.btlbw(),
+             jitter_ppm,

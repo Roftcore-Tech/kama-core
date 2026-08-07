@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ delete ! in Sender::drain_new_data
+@@ -1305,17 +1305,17 @@
+         }
+     }
+ 
+     /// Yeni DATA'yı pace ederek emit et. RECOVER_FWD'de her DATA ayrıca (factor−1) kopya planlar.
+     fn drain_new_data(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+         while let Some(front) = self.tx_queue.front().copied() {
+             // [R3/ADIM-6] Burst clamp artık pipeline'da kanal-türevli set_burst_cap ile (PreConverge floor
+             // rate → burst_cap = 1 birim). Ayrı PreConverge özel-durumu GEREKMEZ (tek kapı, tüm state'ler).
+-            if !self.pacer.try_send(front.size) {
++            if  /* ~ changed by cargo-mutants ~ */self.pacer.try_send(front.size) {
+                 break;
+             }
+             self.tx_queue.pop_front();
+             let seq = self.track_sent(front, now_ns, 0, TransmitKind::Data);
+             out.push(TransmitDecision {
+                 kind: TransmitKind::Data,
+                 seq,
+                 unit_id: front.id,

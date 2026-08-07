@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace <= with > in Sender::update_state
+@@ -975,17 +975,17 @@
+                         self.rtt
+                             .srtt()
+                             .unwrap_or(INITIAL_RTT)
+                             .max(self.expected_ack_interval()),
+                     );
+                     let period_ok = now_ns.saturating_sub(self.last_probe_end_ns)
+                         >= epoch.saturating_mul(u64::from(K_PROBE_PERIOD_EPOCH));
+                     // Giriş-histerezisi (workflow N=0-bulgusu): qd zaten abort-eşiği üstündeyse GİRME.
+-                    let qd_ok = self.qd_ratio_permille_now() <= PROBE_QD_ABORT_PERMILLE;
++                    let qd_ok = self.qd_ratio_permille_now() > /* ~ changed by cargo-mutants ~ */ PROBE_QD_ABORT_PERMILLE;
+                     // DrainRtprop-çakışması çözümü: tazelik-KAPISI YOK (min-örnek yaşı sürekli-akışta
+                     // bile büyür — kapı ProbeUp'ı yapısal bloklar, test+m1'de ölçüldü). DrainRtprop
+                     // yalnız Steady'den girer → probe-dwell'i kadar bekler (sınırlı ≤4×epoch_entry).
+                     let backlog = !self.tx_queue.is_empty();
+                     if period_ok && qd_ok && backlog {
+                         // GİRİŞ-SNAPSHOT'ları (donuk — öz-referans önlenir; ACK'ler işlendikten
+                         // sonra alınır: on_event sırası bunu doğal sağlar).
+                         self.probe_entry_ns = Some(now_ns);

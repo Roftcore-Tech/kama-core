@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace >= with < in Sender::startup_plateau
+@@ -1089,17 +1089,17 @@
+                 .startup_last_btlbw
+                 .saturating_mul(STARTUP_PLATEAU_EPS_PERMILLE);
+         if grew {
+             self.startup_stable_rounds = 0;
+         } else {
+             self.startup_stable_rounds += 1;
+         }
+         self.startup_last_btlbw = bw;
+-        self.startup_stable_rounds >= STARTUP_PLATEAU_ROUNDS
++        self.startup_stable_rounds < /* ~ changed by cargo-mutants ~ */ STARTUP_PLATEAU_ROUNDS
+     }
+ 
+     /// send_rate (§8.2 + §8.5): SRC pacing × fuzzy gain, sonra budget clamp. INV-RATE-1: recovery
+     /// durumları base rate'i (Steady) DÜŞÜRMEZ; fuzzy send_rate_gain yalnız bw+queue_delay'den.
+     fn compute_send_rate(&self, decision: &FusionDecision) -> u64 {
+         // §3.3-A/[R8]: PRE_CONVERGE en-kötü-köşe önsel pacing = floor. min_rate fixture (Ek-B)
+         // UYGULANMAZ → 1 kbps kanalı floodlamaz (self-congestion). İlk ölçümle Startup'ta ramp başlar.
+         if self.state == SenderState::PreConverge {

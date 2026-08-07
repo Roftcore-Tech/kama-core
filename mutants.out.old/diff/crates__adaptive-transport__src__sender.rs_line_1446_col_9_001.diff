@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::inflight_bytes -> u64 with 1
+@@ -1438,17 +1438,17 @@
+     /// Güncel state.
+     #[must_use]
+     pub fn state(&self) -> SenderState {
+         self.state
+     }
+     /// inflight bytes.
+     #[must_use]
+     pub fn inflight_bytes(&self) -> u64 {
+-        self.inflight_bytes
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+     /// Son füzyon kararı.
+     #[must_use]
+     pub fn last_decision(&self) -> FusionDecision {
+         self.last_decision
+     }
+     /// TUR-A teşhis rate-trajektori snapshot'ı (SALT-GÖZLEM; davranış DEĞİŞMEZ):
+     /// `(state, btlbw_bps, srtt_us, send_rate_bps, inflight_bytes)`. floor→btlbw ramp kilidini ölçmek için.

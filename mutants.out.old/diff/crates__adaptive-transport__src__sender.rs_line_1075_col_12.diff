@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ delete ! in Sender::startup_plateau
+@@ -1067,17 +1067,17 @@
+     ///
+     /// [TUR-A ölçüm-#1, TEK DEĞİŞKEN] Round = YENİ bw-örneği (ACK'ten). Eski kod her on_event
+     /// çağrısını round sayıyordu → 1ms pace-tick'te 3 "round" = STARTUP 3ms'de biter, bant hiç
+     /// prob edilmez → motor kendi app-limited hızına kilitlenir (TUR-A trajektorisi, kök).
+     fn startup_plateau(&mut self) -> bool {
+         // [TUR-6] DELIVERED-ANCHOR round-kapısı: marker-sonrası gönderim ACK'lenmeden round
+         // İLERLEMEZ (ack-OLAY-sayacı DEĞİL — ZM-1; arz-yoğunluğu-bağımsız). bw-örneği şartı
+         // korunur (ölçümsüz round anlamsız).
+-        if !self.startup_round_complete || !self.bw_sampled_since_round {
++        if  /* ~ changed by cargo-mutants ~ */self.startup_round_complete || !self.bw_sampled_since_round {
+             return false;
+         }
+         self.startup_round_complete = false;
+         self.startup_round_marker_seq = self.next_seq;
+         self.bw_sampled_since_round = false;
+         let bw = self.btlbw.btlbw();
+         if bw == 0 {
+             return false;

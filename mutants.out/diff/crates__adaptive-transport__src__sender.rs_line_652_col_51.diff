@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace || with && in Sender::on_ack_received
+@@ -644,17 +644,17 @@
+             }
+         }
+ 
+         // §3.3-B stop koşulu: teyit edilen birimlerin bekleyen geometrik kopyalarını İPTAL et.
+         if !acked_units.is_empty() {
+             self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id));
+         }
+ 
+-        if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {
++        if self.state != SenderState::PreConverge && /* ~ changed by cargo-mutants ~ */ self.rtt.srtt().is_some() {
+             let before = self.pending_lost.len();
+             self.queue_losses(&lost, now_ns);
+             // [TUR-A teşhis] loss-atıflama: packet-threshold (§5a) kaynaklı kuyruklanan kayıp sayısı.
+             self.diag_loss_pkt += (self.pending_lost.len() - before) as u64;
+         }
+     }
+ 
+     /// §12 timer handler (RTprop probe → DRAIN_RTPROP; PTO → zaman-eşiği loss).

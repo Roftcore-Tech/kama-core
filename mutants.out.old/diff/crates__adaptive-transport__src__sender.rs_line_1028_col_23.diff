@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace == with != in Sender::update_state
+@@ -1020,17 +1020,17 @@
+             self.last_probe_end_ns = now_ns;
+             self.diag_probe_preempt += 1;
+         }
+         // [TUR-6] Startup (re-)entry: plato-sayaç/marker sıfırlama (§16.2 satırının ikinci
+         // yarısı "re-entry'de sayaç sıfırla" — recovery-dönüşü bayat-round/bayat-btlbw taşımasın).
+         // [TUR-7 β1] GERÇEK-giriş = state==Startup ∧ base-henüz-değil (Idle→Startup AppData-
+         // handler'da update_state-ÖNCESİ mutasyonlandığından prev-koşulu KULLANILMAZ — ampirik).
+         // Recovery-DÖNÜŞÜ re-entry SAYILMAZ (base korunuyordu) → sayaç/marker sıfırlanmaz.
+-        if self.state == SenderState::Startup && !self.base_is_startup {
++        if self.state != /* ~ changed by cargo-mutants ~ */ SenderState::Startup && !self.base_is_startup {
+             self.startup_stable_rounds = 0;
+             self.startup_last_btlbw = self.btlbw.btlbw();
+             self.startup_round_marker_seq = self.next_seq;
+             self.startup_round_complete = false;
+             self.base_is_startup = true;
+         }
+     }
+ 

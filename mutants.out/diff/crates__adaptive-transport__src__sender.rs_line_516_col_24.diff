@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace + with - in Sender::on_ack_received
+@@ -508,17 +508,17 @@
+             // [Y3 KALICI — K6R-mühürlü] W_BTLBW delivered-EAI-türetimi: cadence = 2×unit/
+             // SON-TAM-örnek-delivered (last_full_bw; K3-pinleri) + return-prior(2.097s [CAL,
+             // E-FULL-borcu]). srtt-runaway'den DECOUPLED (kuyruk-değişmez) → bayat-max çok-adımlı-
+             // expire (adım≈W; uzun-daralmada kanal-bandına yakınsar — netem-mühür: 4114→308).
+             // Kopma-frozen-pencere sınır-vakası BEYANLI (TUR-S kopma-tespiti tamamlar; mini-D0 Ş3).
+             let w_epoch = {
+                 let dbw = self.btlbw.last_sample_bw().max(1);
+                 let term1 = Duration::from_nanos(2 * UNIT_SIZE_HINT * 1_000_000_000 / dbw);
+-                (term1 + Duration::from_nanos(2_097_000_000)).max(INITIAL_RTT)
++                (term1 - /* ~ changed by cargo-mutants ~ */ Duration::from_nanos(2_097_000_000)).max(INITIAL_RTT)
+             };
+             let _ = ack_epoch; // W_loss-kolu (fuzzy_evaluate) kendi ack_epoch'unu hesaplar (S2: zararsız)
+             self.btlbw.set_window(w_epoch * K_BW);
+             self.rtt.set_rtprop_window(srtt_now * K_RTPROP);
+             // [S-FAZ-0, K8-fix] W_qd srtt-dalından delivered-EAI-saatine (TEK-TOKEN: ack_epoch→
+             // w_epoch). Kök: W_qd=2×srtt flood'da flood-öncesine-uzanır → qd≡0 → fuzzy-soft-drain
+             // + ProbeUp-abort ÖLÜ (K8 secondary-safety-path-deadness). w_epoch kuyruk-değişmez →
+             // DESEN-1'de qd onset+~8s canlanır; sağlıklı-rejimde DEĞER-ÖZDEŞ (rate≈dbw → EAI≡w_epoch).

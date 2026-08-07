@@ -1,0 +1,1485 @@
+
+*** crates/adaptive-transport/src/sender.rs:448:9: replace Sender::on_event -> Vec<TransmitDecision> with vec![]
+
+*** mutation diff:
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::on_event -> Vec<TransmitDecision> with vec![]
+@@ -440,58 +440,17 @@
+                 no_rule: false,
+             },
+             last_recovery: RecoveryAction::Arq,
+         }
+     }
+ 
+     /// Ana döngü (§3): olay işle → FuzzyEvaluate → state → send_rate → UpdatePacing → ScheduleTransmit.
+     pub fn on_event(&mut self, event: Event, now_ns: u64) -> Vec<TransmitDecision> {
+-        let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
+-        self.pacer.refill(dt);
+-        self.last_now_ns = now_ns;
+-
+-        match event {
+-            Event::AppData(unit) => {
+-                self.tx_queue.push_back(unit);
+-                if self.state == SenderState::Idle {
+-                    // §3.3 cold-start YALNIZ ilk sefer (hiç ölçüm yok). Ölçüm varsa (rtt.srtt Some) önsel
+-                    // zaten tahliye edilmiş → Idle→Startup (normal resume), PreConverge'e geri DÖNÜLMEZ.
+-                    self.state = if self.rtt.srtt().is_none() {
+-                        SenderState::PreConverge
+-                    } else {
+-                        SenderState::Startup
+-                    };
+-                }
+-            }
+-            Event::AckReceived(ack) => self.on_ack_received(&ack, now_ns),
+-            Event::TimerFired(timer) => self.on_timer(timer, now_ns),
+-        }
+-
+-        let decision = self.fuzzy_evaluate(now_ns);
+-        self.last_decision = decision;
+-        let prev_state = self.state;
+-        self.update_state(&decision, now_ns);
+-        let send_rate = self.compute_send_rate(&decision);
+-        self.pacer.set_rate(send_rate);
+-        // [R3/ADIM-6] KANAL-TÜREVLİ burst cap: max(1 birim, rate·pencere), üstten ~2×MTU. Bant-kör 2400B
+-        // sabiti yerine → PreConverge floor'da 1-birim (self-congestion/backlog-spike yok), Startup+'ta
+-        // ölçülen bw'ye orantılı micro-burst. front yoksa MTU (güvenli 1-paket tabanı).
+-        let front_size = self.tx_queue.front().map_or(DEFAULT_MTU, |u| u.size);
+-        let window_bytes = send_rate.saturating_mul(BURST_WINDOW_NS) / 1_000_000_000;
+-        let burst_hi = front_size.max(2 * DEFAULT_MTU);
+-        self.pacer
+-            .set_burst_cap(window_bytes.clamp(front_size, burst_hi));
+-        if prev_state == SenderState::PreConverge && self.state != SenderState::PreConverge {
+-            // §3.3-D cold-start çıkışı: kanal-türevli micro-burst grant (STARTUP probing; kuyruk kanal-uygun
+-            // küçük burst'le boşalır — bu birimler STARTUP'ta emit → §3.3-B geometrik kopya ALMAZ).
+-            self.pacer.fill_to_cap();
+-        }
+-
+-        self.schedule_transmit(now_ns)
++        vec![] /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// §3.2 OnAckReceived: inflight boşalt + RTT/BW/loss güncelle.
+     fn on_ack_received(&mut self, ack: &AckInfo, now_ns: u64) {
+         if ack.acked_seqs.is_empty() {
+             return;
+         }
+         self.last_ack_ns = Some(now_ns);
+
+
+*** /home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=adaptive-transport@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh pin-project-lite v0.2.17
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh tokio-macros v2.7.0
+       Fresh thiserror-impl v2.0.18
+       Fresh tokio v1.52.3
+       Fresh thiserror v2.0.18
+       Dirty adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-3FBM8d.tmp/crates/adaptive-transport): the file `crates/adaptive-transport/src/sender.rs` has changed (1786134347.167902179s, 13s after last build at 1786134334.294428738s)
+   Compiling adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-3FBM8d.tmp/crates/adaptive-transport)
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9cc1446eb98710ef -C extra-filename=-eecea9df1309094a --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta`
+warning: unused variable: `event`
+   --> crates/adaptive-transport/src/sender.rs:447:32
+    |
+447 |     pub fn on_event(&mut self, event: Event, now_ns: u64) -> Vec<TransmitDecision> {
+    |                                ^^^^^ help: if this is intentional, prefix it with an underscore: `_event`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `now_ns`
+   --> crates/adaptive-transport/src/sender.rs:447:46
+    |
+447 |     pub fn on_event(&mut self, event: Event, now_ns: u64) -> Vec<TransmitDecision> {
+    |                                              ^^^^^^ help: if this is intentional, prefix it with an underscore: `_now_ns`
+
+warning: fields `unit`, `send_ns`, `bw_sample`, `retx_count`, and `origin` are never read
+   --> crates/adaptive-transport/src/sender.rs:139:5
+    |
+138 | struct InflightPacket {
+    |        -------------- fields in this struct
+139 |     unit: OpaqueUnit,
+    |     ^^^^
+140 |     send_ns: u64,
+    |     ^^^^^^^
+141 |     bw_sample: SentPacket,
+    |     ^^^^^^^^^
+142 |     retx_count: u8,
+    |     ^^^^^^^^^^
+143 |     origin: TransmitKind,
+    |     ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `seq`, `unit`, `deadline_ns`, `retx_count`, and `send_ns` are never read
+   --> crates/adaptive-transport/src/sender.rs:149:5
+    |
+148 | struct LostRec {
+    |        ------- fields in this struct
+149 |     seq: u64,
+    |     ^^^
+150 |     unit: OpaqueUnit,
+    |     ^^^^
+151 |     deadline_ns: u64,
+    |     ^^^^^^^^^^^
+152 |     retx_count: u8,
+    |     ^^^^^^^^^^
+...
+155 |     send_ns: u64,
+    |     ^^^^^^^
+    |
+    = note: `LostRec` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `unit`, `send_ns`, `bw_sample`, `retx_count`, `origin`, and `expiry_ns` are never read
+   --> crates/adaptive-transport/src/sender.rs:164:5
+    |
+163 | struct TombstoneRec {
+    |        ------------ fields in this struct
+164 |     unit: OpaqueUnit,
+    |     ^^^^
+165 |     send_ns: u64,
+    |     ^^^^^^^
+166 |     bw_sample: SentPacket,
+    |     ^^^^^^^^^
+167 |     retx_count: u8,
+    |     ^^^^^^^^^^
+168 |     origin: TransmitKind,
+    |     ^^^^^^
+169 |     expiry_ns: u64, // ilan + K_TOMB×T_loss(ilan-anı)
+    |     ^^^^^^^^^
+    |
+    = note: `TombstoneRec` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `due_ns`, `unit`, and `interval_ns` are never read
+   --> crates/adaptive-transport/src/sender.rs:175:5
+    |
+174 | struct DupRec {
+    |        ------ fields in this struct
+175 |     due_ns: u64,
+    |     ^^^^^^
+176 |     unit: OpaqueUnit,
+    |     ^^^^
+...
+179 |     interval_ns: u64,
+    |     ^^^^^^^^^^^
+    |
+    = note: `DupRec` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: enum `ProbeExit` is never used
+   --> crates/adaptive-transport/src/sender.rs:184:6
+    |
+184 | enum ProbeExit {
+    |      ^^^^^^^^^
+
+warning: constant `INITIAL_RTT` is never used
+   --> crates/adaptive-transport/src/sender.rs:190:7
+    |
+190 | const INITIAL_RTT: Duration = Duration::from_millis(100);
+    |       ^^^^^^^^^^^
+
+warning: constant `STARTUP_PLATEAU_ROUNDS` is never used
+   --> crates/adaptive-transport/src/sender.rs:192:7
+    |
+192 | const STARTUP_PLATEAU_ROUNDS: u32 = 3;
+    |       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `STARTUP_PLATEAU_EPS_PERMILLE` is never used
+   --> crates/adaptive-transport/src/sender.rs:194:7
+    |
+194 | const STARTUP_PLATEAU_EPS_PERMILLE: u64 = 50;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ACK_SILENCE_SRTT_MULT` is never used
+   --> crates/adaptive-transport/src/sender.rs:196:7
+    |
+196 | const ACK_SILENCE_SRTT_MULT: u32 = 3;
+    |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `DEFAULT_DUP_FACTOR` is never used
+   --> crates/adaptive-transport/src/sender.rs:198:7
+    |
+198 | const DEFAULT_DUP_FACTOR: u8 = 2;
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: constant `DEFAULT_DUP_SPACING` is never used
+   --> crates/adaptive-transport/src/sender.rs:199:7
+    |
+199 | const DEFAULT_DUP_SPACING: Duration = Duration::from_millis(20);
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `PRE_CONVERGE_FLOOR_BW` is never used
+   --> crates/adaptive-transport/src/sender.rs:202:7
+    |
+202 | const PRE_CONVERGE_FLOOR_BW: u64 = 31;
+    |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EXPECTED_ACK_FREQ_N` is never used
+   --> crates/adaptive-transport/src/sender.rs:205:7
+    |
+205 | const EXPECTED_ACK_FREQ_N: u64 = 2;
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EAI_SACK_WIRE_BYTES` is never used
+   --> crates/adaptive-transport/src/sender.rs:207:7
+    |
+207 | const EAI_SACK_WIRE_BYTES: u64 = 65;
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EAI_RETURN_BW_PRIOR` is never used
+   --> crates/adaptive-transport/src/sender.rs:209:7
+    |
+209 | const EAI_RETURN_BW_PRIOR: u64 = 31;
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `CADENCE_KC_NUM` is never used
+   --> crates/adaptive-transport/src/sender.rs:211:7
+    |
+211 | const CADENCE_KC_NUM: u64 = 3;
+    |       ^^^^^^^^^^^^^^
+
+warning: constant `CADENCE_KC_DEN` is never used
+   --> crates/adaptive-transport/src/sender.rs:212:7
+    |
+212 | const CADENCE_KC_DEN: u64 = 2;
+    |       ^^^^^^^^^^^^^^
+
+warning: constant `K_WL` is never used
+   --> crates/adaptive-transport/src/sender.rs:215:7
+    |
+215 | const K_WL: u32 = 8;
+    |       ^^^^
+
+warning: constant `K_TOMB` is never used
+   --> crates/adaptive-transport/src/sender.rs:219:7
+    |
+219 | const K_TOMB: u32 = 8;
+    |       ^^^^^^
+
+warning: constant `K_BW` is never used
+   --> crates/adaptive-transport/src/sender.rs:224:7
+    |
+224 | const K_BW: u32 = 8;
+    |       ^^^^
+
+warning: constant `K_RTPROP` is never used
+   --> crates/adaptive-transport/src/sender.rs:225:7
+    |
+225 | const K_RTPROP: u32 = 8;
+    |       ^^^^^^^^
+
+warning: constant `K_QD` is never used
+   --> crates/adaptive-transport/src/sender.rs:227:7
+    |
+227 | const K_QD: u32 = 2;
+    |       ^^^^
+
+warning: constant `DRAIN_RTPROP_MIN_DWELL_EPOCH` is never used
+   --> crates/adaptive-transport/src/sender.rs:229:7
+    |
+229 | const DRAIN_RTPROP_MIN_DWELL_EPOCH: u32 = 1;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `DRAIN_RTPROP_MAX_DWELL_EPOCH` is never used
+   --> crates/adaptive-transport/src/sender.rs:230:7
+    |
+230 | const DRAIN_RTPROP_MAX_DWELL_EPOCH: u32 = 3;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `DRAIN_MAX_DWELL_EPOCH` is never used
+   --> crates/adaptive-transport/src/sender.rs:232:7
+    |
+232 | const DRAIN_MAX_DWELL_EPOCH: u32 = 3;
+    |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `K_ARQ_SHARE` is never used
+   --> crates/adaptive-transport/src/sender.rs:242:7
+    |
+242 | const K_ARQ_SHARE: u32 = 4;
+    |       ^^^^^^^^^^^
+
+warning: constant `K_PROBE_PERIOD_EPOCH` is never used
+   --> crates/adaptive-transport/src/sender.rs:244:7
+    |
+244 | const K_PROBE_PERIOD_EPOCH: u32 = 4; // [CAL {2,4,8}]
+    |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `PROBE_MAX_DWELL_EPOCH` is never used
+   --> crates/adaptive-transport/src/sender.rs:245:7
+    |
+245 | const PROBE_MAX_DWELL_EPOCH: u32 = 4; // ×epoch_entry [onaylı placeholder]
+    |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `PROBE_VOLUME_EPOCH` is never used
+   --> crates/adaptive-transport/src/sender.rs:246:7
+    |
+246 | const PROBE_VOLUME_EPOCH: u32 = 2; // volume = btlbw_entry × 2×epoch_entry [onaylı]
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: constant `PROBE_SUCCESS_EPS_PERMILLE` is never used
+   --> crates/adaptive-transport/src/sender.rs:247:7
+    |
+247 | const PROBE_SUCCESS_EPS_PERMILLE: u64 = 25; // btlbw_entry×1.025 [CAL]
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `PROBE_QD_ABORT_PERMILLE` is never used
+   --> crates/adaptive-transport/src/sender.rs:248:7
+    |
+248 | const PROBE_QD_ABORT_PERMILLE: u64 = 500; // onaylı (giriş-histerezisi de bu eşik)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `K_CONF_EAI` is never used
+   --> crates/adaptive-transport/src/sender.rs:252:7
+    |
+252 | const K_CONF_EAI: u32 = 2;
+    |       ^^^^^^^^^^
+
+warning: constant `K_CONV` is never used
+   --> crates/adaptive-transport/src/sender.rs:255:7
+    |
+255 | const K_CONV: u32 = 4;
+    |       ^^^^^^
+
+warning: constant `UNIT_SIZE_HINT` is never used
+   --> crates/adaptive-transport/src/sender.rs:257:7
+    |
+257 | const UNIT_SIZE_HINT: u64 = 267;
+    |       ^^^^^^^^^^^^^^
+
+warning: constant `TOMBSTONE_MAX` is never used
+   --> crates/adaptive-transport/src/sender.rs:260:7
+    |
+260 | const TOMBSTONE_MAX: usize = 4096;
+    |       ^^^^^^^^^^^^^
+
+warning: constant `PC_SACK_WIRE` is never used
+   --> crates/adaptive-transport/src/sender.rs:263:7
+    |
+263 | const PC_SACK_WIRE: u64 = 65;
+    |       ^^^^^^^^^^^^
+
+warning: constant `PC_KBASE_NUM` is never used
+   --> crates/adaptive-transport/src/sender.rs:264:7
+    |
+264 | const PC_KBASE_NUM: u64 = 3;
+    |       ^^^^^^^^^^^^
+
+warning: constant `PC_KBASE_DEN` is never used
+   --> crates/adaptive-transport/src/sender.rs:265:7
+    |
+265 | const PC_KBASE_DEN: u64 = 2;
+    |       ^^^^^^^^^^^^
+
+warning: constant `PC_COPY_MULTIPLIER` is never used
+   --> crates/adaptive-transport/src/sender.rs:266:7
+    |
+266 | const PC_COPY_MULTIPLIER: u64 = 2;
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: constant `BURST_WINDOW_NS` is never used
+   --> crates/adaptive-transport/src/sender.rs:270:7
+    |
+270 | const BURST_WINDOW_NS: u64 = 40_000_000;
+    |       ^^^^^^^^^^^^^^^
+
+warning: multiple fields are never read
+   --> crates/adaptive-transport/src/sender.rs:283:5
+    |
+273 | pub struct Sender {
+    |            ------ fields in this struct
+...
+283 |     fuzzy: DeterministicFuzzyController,
+    |     ^^^^^
+284 |     src_cfg: SrcConfig,
+    |     ^^^^^^^
+285 |     budget_cfg: BudgetConfig,
+    |     ^^^^^^^^^^
+286 |     emergency: HysteresisController,
+287 |     emergency_cfg: EmergencyConfig,
+    |     ^^^^^^^^^^^^^
+...
+291 |     arq: DeadlineArqScheduler,
+    |     ^^^
+...
+294 |     next_seq: u64,
+    |     ^^^^^^^^
+295 |     inflight_bytes: u64,
+296 |     inflight: BTreeMap<u64, InflightPacket>,
+    |     ^^^^^^^^
+297 |     tx_queue: VecDeque<OpaqueUnit>,
+    |     ^^^^^^^^
+298 |     pending_lost: VecDeque<LostRec>, // §5 kayıp seq'ler → RECOVER_ARQ retransmit / RECOVER_FWD dup
+299 |     dup_queue: Vec<DupRec>,          // §11 zamanlanmış forward-recovery kopyaları
+    |     ^^^^^^^^^
+300 |     last_now_ns: u64,
+    |     ^^^^^^^^^^^
+...
+303 |     last_ack_ns: Option<u64>,
+    |     ^^^^^^^^^^^
+304 |     first_send_ns: Option<u64>,
+    |     ^^^^^^^^^^^^^
+...
+307 |     drain_rtprop_entry_ns: Option<u64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+308 |     drain_rtprop_qualifying: bool, // girişten beri ≥1 rtt-örneği (qualifying_min_rtt)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+309 |     drain_entry_ns: Option<u64>,   // [TUR-3b] Startup-Drain giriş anı (max-dwell yedeği)
+    |     ^^^^^^^^^^^^^^
+310 |     // ── [TUR-3c] ProbeUp sözleşme-durumu (giriş-DONUK snapshot'lar — öz-referans önlenir) ──
+311 |     probe_entry_ns: Option<u64>,
+    |     ^^^^^^^^^^^^^^
+312 |     probe_epoch_entry_ns: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^
+313 |     probe_btlbw_entry: u64,
+    |     ^^^^^^^^^^^^^^^^^
+314 |     probe_delivered_entry: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+315 |     probe_loss_attributed: bool, // probe-atıflı kayıp-ilanı (send_ns ≥ entry; queue_losses işaretler)
+    |     ^^^^^^^^^^^^^^^^^^^^^
+316 |     last_probe_end_ns: u64,
+    |     ^^^^^^^^^^^^^^^^^
+...
+323 |     startup_last_btlbw: u64,
+    |     ^^^^^^^^^^^^^^^^^^
+324 |     startup_stable_rounds: u32,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+...
+329 |     startup_round_marker_seq: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+330 |     startup_round_complete: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+...
+335 |     base_is_startup: bool,
+    |     ^^^^^^^^^^^^^^^
+336 |     plateau_reached: bool, // [TUR-7 β1] plato-sinyali (base'ten AYRI: taze-giriş de base=false)
+    |     ^^^^^^^^^^^^^^^
+337 |     arq_share_tick: u32,   // [TUR-7 β2] grant-sayacı (K_ARQ_SHARE payı)
+    |     ^^^^^^^^^^^^^^
+...
+341 |     bw_sampled_since_round: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+...
+350 |     reorder: ReorderTracker, // §9.3 spurious→note_spurious kablosu; packet-thresh tüketimi
+    |     ^^^^^^^
+351 |     retx_cfg: RetxConfig,    // reorder_thresh(ρ, K) parametreleri (arq ile aynı fixture)
+    |     ^^^^^^^^
+...
+356 |     tombstone_order: VecDeque<u64>, // ekleme sırası ≈ en-eski-TTL-önce (eviction kaynağı)
+    |     ^^^^^^^^^^^^^^^
+...
+362 |     diag_qd_no_evidence: u64,    // [TUR-3a D-3/1] rtprop-yokken qd_ratio=0 sayısı
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> crates/adaptive-transport/src/sender.rs:452:8
+     |
+ 370 | impl Sender {
+     | ----------- methods in this implementation
+...
+ 452 |     fn on_ack_received(&mut self, ack: &AckInfo, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^
+...
+ 620 |     fn on_timer(&mut self, timer: Timer, now_ns: u64) {
+     |        ^^^^^^^^
+...
+ 677 |     fn cadence_loss_floor(&self) -> Duration {
+     |        ^^^^^^^^^^^^^^^^^^
+...
+ 683 |     fn expected_ack_interval(&self) -> Duration {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+...
+ 700 |     fn queue_losses(&mut self, lost: &[u64], now_ns: u64) {
+     |        ^^^^^^^^^^^^
+...
+ 764 |     fn fuzzy_evaluate(&mut self, now_ns: u64) -> FusionDecision {
+     |        ^^^^^^^^^^^^^^
+...
+ 800 |     fn update_state(&mut self, decision: &FusionDecision, now_ns: u64) {
+     |        ^^^^^^^^^^^^
+...
+ 997 |     fn qd_ratio_permille_now(&self) -> u64 {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+...
+1007 |     fn probe_close_success(&mut self, now_ns: u64) -> SenderState {
+     |        ^^^^^^^^^^^^^^^^^^^
+...
+1015 |     fn probe_close(&mut self, now_ns: u64, exit: ProbeExit) -> SenderState {
+     |        ^^^^^^^^^^^
+...
+1030 |     fn startup_plateau(&mut self) -> bool {
+     |        ^^^^^^^^^^^^^^^
+...
+1061 |     fn compute_send_rate(&self, decision: &FusionDecision) -> u64 {
+     |        ^^^^^^^^^^^^^^^^^
+...
+1099 |     fn schedule_transmit(&mut self, now_ns: u64) -> Vec<TransmitDecision> {
+     |        ^^^^^^^^^^^^^^^^^
+...
+1121 |     fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1189 |     fn plan_forward_duplication(&mut self, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1229 |     fn mark_tombstone_superseded(&mut self, seq: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1236 |     fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1268 |     fn drain_new_data(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^
+...
+1312 |     fn dup_params(&self) -> (u8, Duration) {
+     |        ^^^^^^^^^^
+...
+1319 |     fn track_sent(
+     |        ^^^^^^^^^^
+...
+1362 |     fn ack_confidence_permille(&self, now_ns: u64) -> u64 {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `dur_ns` is never used
+    --> crates/adaptive-transport/src/sender.rs:1528:4
+     |
+1528 | fn dur_ns(d: Duration) -> u64 {
+     |    ^^^^^^
+
+warning: multiple fields are never read
+   --> crates/adaptive-transport/src/sender.rs:283:5
+    |
+273 | pub struct Sender {
+    |            ------ fields in this struct
+...
+283 |     fuzzy: DeterministicFuzzyController,
+    |     ^^^^^
+284 |     src_cfg: SrcConfig,
+    |     ^^^^^^^
+285 |     budget_cfg: BudgetConfig,
+    |     ^^^^^^^^^^
+286 |     emergency: HysteresisController,
+287 |     emergency_cfg: EmergencyConfig,
+    |     ^^^^^^^^^^^^^
+...
+291 |     arq: DeadlineArqScheduler,
+    |     ^^^
+...
+300 |     last_now_ns: u64,
+    |     ^^^^^^^^^^^
+...
+309 |     drain_entry_ns: Option<u64>,   // [TUR-3b] Startup-Drain giriş anı (max-dwell yedeği)
+    |     ^^^^^^^^^^^^^^
+...
+316 |     last_probe_end_ns: u64,
+    |     ^^^^^^^^^^^^^^^^^
+...
+336 |     plateau_reached: bool, // [TUR-7 β1] plato-sinyali (base'ten AYRI: taze-giriş de base=false)
+    |     ^^^^^^^^^^^^^^^
+337 |     arq_share_tick: u32,   // [TUR-7 β2] grant-sayacı (K_ARQ_SHARE payı)
+    |     ^^^^^^^^^^^^^^
+...
+351 |     retx_cfg: RetxConfig,    // reorder_thresh(ρ, K) parametreleri (arq ile aynı fixture)
+    |     ^^^^^^^^
+...
+356 |     tombstone_order: VecDeque<u64>, // ekleme sırası ≈ en-eski-TTL-önce (eviction kaynağı)
+    |     ^^^^^^^^^^^^^^^
+...
+362 |     diag_qd_no_evidence: u64,    // [TUR-3a D-3/1] rtprop-yokken qd_ratio=0 sayısı
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> crates/adaptive-transport/src/sender.rs:452:8
+     |
+ 370 | impl Sender {
+     | ----------- methods in this implementation
+...
+ 452 |     fn on_ack_received(&mut self, ack: &AckInfo, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^
+...
+ 620 |     fn on_timer(&mut self, timer: Timer, now_ns: u64) {
+     |        ^^^^^^^^
+...
+ 677 |     fn cadence_loss_floor(&self) -> Duration {
+     |        ^^^^^^^^^^^^^^^^^^
+...
+ 700 |     fn queue_losses(&mut self, lost: &[u64], now_ns: u64) {
+     |        ^^^^^^^^^^^^
+...
+ 764 |     fn fuzzy_evaluate(&mut self, now_ns: u64) -> FusionDecision {
+     |        ^^^^^^^^^^^^^^
+...
+ 800 |     fn update_state(&mut self, decision: &FusionDecision, now_ns: u64) {
+     |        ^^^^^^^^^^^^
+...
+ 997 |     fn qd_ratio_permille_now(&self) -> u64 {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+...
+1007 |     fn probe_close_success(&mut self, now_ns: u64) -> SenderState {
+     |        ^^^^^^^^^^^^^^^^^^^
+...
+1015 |     fn probe_close(&mut self, now_ns: u64, exit: ProbeExit) -> SenderState {
+     |        ^^^^^^^^^^^
+...
+1030 |     fn startup_plateau(&mut self) -> bool {
+     |        ^^^^^^^^^^^^^^^
+...
+1061 |     fn compute_send_rate(&self, decision: &FusionDecision) -> u64 {
+     |        ^^^^^^^^^^^^^^^^^
+...
+1099 |     fn schedule_transmit(&mut self, now_ns: u64) -> Vec<TransmitDecision> {
+     |        ^^^^^^^^^^^^^^^^^
+...
+1121 |     fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1189 |     fn plan_forward_duplication(&mut self, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1229 |     fn mark_tombstone_superseded(&mut self, seq: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1236 |     fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1268 |     fn drain_new_data(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^
+...
+1312 |     fn dup_params(&self) -> (u8, Duration) {
+     |        ^^^^^^^^^^
+...
+1319 |     fn track_sent(
+     |        ^^^^^^^^^^
+
+warning: `adaptive-transport` (lib) generated 45 warnings (run `cargo fix --lib -p adaptive-transport` to apply 2 suggestions)
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name sender_diag_contract --edition=2021 crates/adaptive-transport/tests/sender_diag_contract.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=94869bef0d91bd6f -C extra-filename=-8b3d86e66aba1413 --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_loss --edition=2021 crates/adaptive-transport/tests/tv_loss.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=2915ea32283ef278 -C extra-filename=-e6453bbda81134c9 --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_emergency --edition=2021 crates/adaptive-transport/tests/tv_emergency.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4c837564abfb7932 -C extra-filename=-a7f1dcd46634dc52 --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name soak_long_session --edition=2021 crates/adaptive-transport/tests/soak_long_session.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=fc219ad7b1bf8087 -C extra-filename=-0ad1916f93bd8eb3 --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_ack --edition=2021 crates/adaptive-transport/tests/tv_ack.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d675d6053d1007c7 -C extra-filename=-70c932a8d042d67b --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name sender_state_matrix --edition=2021 crates/adaptive-transport/tests/sender_state_matrix.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=f49d317ad6cea255 -C extra-filename=-fed3079949ced682 --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_fec --edition=2021 crates/adaptive-transport/tests/tv_fec.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=1db605633c1eb866 -C extra-filename=-e6cfb042edb0a4c5 --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_pace --edition=2021 crates/adaptive-transport/tests/tv_pace.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=8b19741c7bf4de37 -C extra-filename=-b4a3ecb929894216 --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_src --edition=2021 crates/adaptive-transport/tests/tv_src.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=23ae02ff911c8940 -C extra-filename=-c8d777488c23512a --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name desen1_sim --edition=2021 crates/adaptive-transport/tests/desen1_sim.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4ddc67122b6c5485 -C extra-filename=-1e7f285b056d400a --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name sender_loss_path --edition=2021 crates/adaptive-transport/tests/sender_loss_path.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=562edecac1468011 -C extra-filename=-7027a583815f77d4 --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_arq --edition=2021 crates/adaptive-transport/tests/tv_arq.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=ed278ab19f2d721e -C extra-filename=-02e1623740961522 --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+warning: `adaptive-transport` (lib test) generated 37 warnings (35 duplicates)
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name estimator_sim_integration --edition=2021 crates/adaptive-transport/tests/estimator_sim_integration.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=f4b99d857f05e036 -C extra-filename=-a3bf05855cebd84f --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_rtt --edition=2021 crates/adaptive-transport/tests/tv_rtt.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=644cbf5927c7af68 -C extra-filename=-ebc6108cb5d9f7d9 --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_bw --edition=2021 crates/adaptive-transport/tests/tv_bw.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=39ae13a6da4f2ca2 -C extra-filename=-cac03acb78cdc2a2 --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_fusion --edition=2021 crates/adaptive-transport/tests/tv_fusion.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=7be1dd62cfcd06b2 -C extra-filename=-e575f66ff291330c --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name sim_determinism --edition=2021 crates/adaptive-transport/tests/sim_determinism.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4b6cc29854c66f43 -C extra-filename=-da8e4697a640fbeb --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_seq --edition=2021 crates/adaptive-transport/tests/tv_seq.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=2fdb1ee030afd915 -C extra-filename=-659089571c5a701d --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.76s
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/adaptive_transport-eecea9df1309094a`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/desen1_sim-1e7f285b056d400a`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/estimator_sim_integration-a3bf05855cebd84f`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/sender_diag_contract-8b3d86e66aba1413`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/sender_loss_path-7027a583815f77d4`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/sender_state_matrix-fed3079949ced682`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/sim_determinism-da8e4697a640fbeb`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/soak_long_session-0ad1916f93bd8eb3`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/tv_ack-70c932a8d042d67b`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/tv_arq-02e1623740961522`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/tv_bw-cac03acb78cdc2a2`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/tv_emergency-a7f1dcd46634dc52`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/tv_fec-e6cfb042edb0a4c5`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/tv_fusion-e575f66ff291330c`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/tv_loss-e6453bbda81134c9`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/tv_pace-b4a3ecb929894216`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/tv_rtt-ebc6108cb5d9f7d9`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/tv_seq-659089571c5a701d`
+  Executable `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/tv_src-c8d777488c23512a`
+
+*** result: Success
+
+*** /home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=adaptive-transport@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh pin-project-lite v0.2.17
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh tokio-macros v2.7.0
+       Fresh thiserror-impl v2.0.18
+       Fresh thiserror v2.0.18
+       Fresh tokio v1.52.3
+warning: unused variable: `event`
+   --> crates/adaptive-transport/src/sender.rs:447:32
+    |
+447 |     pub fn on_event(&mut self, event: Event, now_ns: u64) -> Vec<TransmitDecision> {
+    |                                ^^^^^ help: if this is intentional, prefix it with an underscore: `_event`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `now_ns`
+   --> crates/adaptive-transport/src/sender.rs:447:46
+    |
+447 |     pub fn on_event(&mut self, event: Event, now_ns: u64) -> Vec<TransmitDecision> {
+    |                                              ^^^^^^ help: if this is intentional, prefix it with an underscore: `_now_ns`
+
+warning: fields `unit`, `send_ns`, `bw_sample`, `retx_count`, and `origin` are never read
+   --> crates/adaptive-transport/src/sender.rs:139:5
+    |
+138 | struct InflightPacket {
+    |        -------------- fields in this struct
+139 |     unit: OpaqueUnit,
+    |     ^^^^
+140 |     send_ns: u64,
+    |     ^^^^^^^
+141 |     bw_sample: SentPacket,
+    |     ^^^^^^^^^
+142 |     retx_count: u8,
+    |     ^^^^^^^^^^
+143 |     origin: TransmitKind,
+    |     ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `seq`, `unit`, `deadline_ns`, `retx_count`, and `send_ns` are never read
+   --> crates/adaptive-transport/src/sender.rs:149:5
+    |
+148 | struct LostRec {
+    |        ------- fields in this struct
+149 |     seq: u64,
+    |     ^^^
+150 |     unit: OpaqueUnit,
+    |     ^^^^
+151 |     deadline_ns: u64,
+    |     ^^^^^^^^^^^
+152 |     retx_count: u8,
+    |     ^^^^^^^^^^
+...
+155 |     send_ns: u64,
+    |     ^^^^^^^
+    |
+    = note: `LostRec` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `unit`, `send_ns`, `bw_sample`, `retx_count`, `origin`, and `expiry_ns` are never read
+   --> crates/adaptive-transport/src/sender.rs:164:5
+    |
+163 | struct TombstoneRec {
+    |        ------------ fields in this struct
+164 |     unit: OpaqueUnit,
+    |     ^^^^
+165 |     send_ns: u64,
+    |     ^^^^^^^
+166 |     bw_sample: SentPacket,
+    |     ^^^^^^^^^
+167 |     retx_count: u8,
+    |     ^^^^^^^^^^
+168 |     origin: TransmitKind,
+    |     ^^^^^^
+169 |     expiry_ns: u64, // ilan + K_TOMB×T_loss(ilan-anı)
+    |     ^^^^^^^^^
+    |
+    = note: `TombstoneRec` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `due_ns`, `unit`, and `interval_ns` are never read
+   --> crates/adaptive-transport/src/sender.rs:175:5
+    |
+174 | struct DupRec {
+    |        ------ fields in this struct
+175 |     due_ns: u64,
+    |     ^^^^^^
+176 |     unit: OpaqueUnit,
+    |     ^^^^
+...
+179 |     interval_ns: u64,
+    |     ^^^^^^^^^^^
+    |
+    = note: `DupRec` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: enum `ProbeExit` is never used
+   --> crates/adaptive-transport/src/sender.rs:184:6
+    |
+184 | enum ProbeExit {
+    |      ^^^^^^^^^
+
+warning: constant `INITIAL_RTT` is never used
+   --> crates/adaptive-transport/src/sender.rs:190:7
+    |
+190 | const INITIAL_RTT: Duration = Duration::from_millis(100);
+    |       ^^^^^^^^^^^
+
+warning: constant `STARTUP_PLATEAU_ROUNDS` is never used
+   --> crates/adaptive-transport/src/sender.rs:192:7
+    |
+192 | const STARTUP_PLATEAU_ROUNDS: u32 = 3;
+    |       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `STARTUP_PLATEAU_EPS_PERMILLE` is never used
+   --> crates/adaptive-transport/src/sender.rs:194:7
+    |
+194 | const STARTUP_PLATEAU_EPS_PERMILLE: u64 = 50;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ACK_SILENCE_SRTT_MULT` is never used
+   --> crates/adaptive-transport/src/sender.rs:196:7
+    |
+196 | const ACK_SILENCE_SRTT_MULT: u32 = 3;
+    |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `DEFAULT_DUP_FACTOR` is never used
+   --> crates/adaptive-transport/src/sender.rs:198:7
+    |
+198 | const DEFAULT_DUP_FACTOR: u8 = 2;
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: constant `DEFAULT_DUP_SPACING` is never used
+   --> crates/adaptive-transport/src/sender.rs:199:7
+    |
+199 | const DEFAULT_DUP_SPACING: Duration = Duration::from_millis(20);
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `PRE_CONVERGE_FLOOR_BW` is never used
+   --> crates/adaptive-transport/src/sender.rs:202:7
+    |
+202 | const PRE_CONVERGE_FLOOR_BW: u64 = 31;
+    |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EXPECTED_ACK_FREQ_N` is never used
+   --> crates/adaptive-transport/src/sender.rs:205:7
+    |
+205 | const EXPECTED_ACK_FREQ_N: u64 = 2;
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EAI_SACK_WIRE_BYTES` is never used
+   --> crates/adaptive-transport/src/sender.rs:207:7
+    |
+207 | const EAI_SACK_WIRE_BYTES: u64 = 65;
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EAI_RETURN_BW_PRIOR` is never used
+   --> crates/adaptive-transport/src/sender.rs:209:7
+    |
+209 | const EAI_RETURN_BW_PRIOR: u64 = 31;
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `CADENCE_KC_NUM` is never used
+   --> crates/adaptive-transport/src/sender.rs:211:7
+    |
+211 | const CADENCE_KC_NUM: u64 = 3;
+    |       ^^^^^^^^^^^^^^
+
+warning: constant `CADENCE_KC_DEN` is never used
+   --> crates/adaptive-transport/src/sender.rs:212:7
+    |
+212 | const CADENCE_KC_DEN: u64 = 2;
+    |       ^^^^^^^^^^^^^^
+
+warning: constant `K_WL` is never used
+   --> crates/adaptive-transport/src/sender.rs:215:7
+    |
+215 | const K_WL: u32 = 8;
+    |       ^^^^
+
+warning: constant `K_TOMB` is never used
+   --> crates/adaptive-transport/src/sender.rs:219:7
+    |
+219 | const K_TOMB: u32 = 8;
+    |       ^^^^^^
+
+warning: constant `K_BW` is never used
+   --> crates/adaptive-transport/src/sender.rs:224:7
+    |
+224 | const K_BW: u32 = 8;
+    |       ^^^^
+
+warning: constant `K_RTPROP` is never used
+   --> crates/adaptive-transport/src/sender.rs:225:7
+    |
+225 | const K_RTPROP: u32 = 8;
+    |       ^^^^^^^^
+
+warning: constant `K_QD` is never used
+   --> crates/adaptive-transport/src/sender.rs:227:7
+    |
+227 | const K_QD: u32 = 2;
+    |       ^^^^
+
+warning: constant `DRAIN_RTPROP_MIN_DWELL_EPOCH` is never used
+   --> crates/adaptive-transport/src/sender.rs:229:7
+    |
+229 | const DRAIN_RTPROP_MIN_DWELL_EPOCH: u32 = 1;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `DRAIN_RTPROP_MAX_DWELL_EPOCH` is never used
+   --> crates/adaptive-transport/src/sender.rs:230:7
+    |
+230 | const DRAIN_RTPROP_MAX_DWELL_EPOCH: u32 = 3;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `DRAIN_MAX_DWELL_EPOCH` is never used
+   --> crates/adaptive-transport/src/sender.rs:232:7
+    |
+232 | const DRAIN_MAX_DWELL_EPOCH: u32 = 3;
+    |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `K_ARQ_SHARE` is never used
+   --> crates/adaptive-transport/src/sender.rs:242:7
+    |
+242 | const K_ARQ_SHARE: u32 = 4;
+    |       ^^^^^^^^^^^
+
+warning: constant `K_PROBE_PERIOD_EPOCH` is never used
+   --> crates/adaptive-transport/src/sender.rs:244:7
+    |
+244 | const K_PROBE_PERIOD_EPOCH: u32 = 4; // [CAL {2,4,8}]
+    |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `PROBE_MAX_DWELL_EPOCH` is never used
+   --> crates/adaptive-transport/src/sender.rs:245:7
+    |
+245 | const PROBE_MAX_DWELL_EPOCH: u32 = 4; // ×epoch_entry [onaylı placeholder]
+    |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `PROBE_VOLUME_EPOCH` is never used
+   --> crates/adaptive-transport/src/sender.rs:246:7
+    |
+246 | const PROBE_VOLUME_EPOCH: u32 = 2; // volume = btlbw_entry × 2×epoch_entry [onaylı]
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: constant `PROBE_SUCCESS_EPS_PERMILLE` is never used
+   --> crates/adaptive-transport/src/sender.rs:247:7
+    |
+247 | const PROBE_SUCCESS_EPS_PERMILLE: u64 = 25; // btlbw_entry×1.025 [CAL]
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `PROBE_QD_ABORT_PERMILLE` is never used
+   --> crates/adaptive-transport/src/sender.rs:248:7
+    |
+248 | const PROBE_QD_ABORT_PERMILLE: u64 = 500; // onaylı (giriş-histerezisi de bu eşik)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `K_CONF_EAI` is never used
+   --> crates/adaptive-transport/src/sender.rs:252:7
+    |
+252 | const K_CONF_EAI: u32 = 2;
+    |       ^^^^^^^^^^
+
+warning: constant `K_CONV` is never used
+   --> crates/adaptive-transport/src/sender.rs:255:7
+    |
+255 | const K_CONV: u32 = 4;
+    |       ^^^^^^
+
+warning: constant `UNIT_SIZE_HINT` is never used
+   --> crates/adaptive-transport/src/sender.rs:257:7
+    |
+257 | const UNIT_SIZE_HINT: u64 = 267;
+    |       ^^^^^^^^^^^^^^
+
+warning: constant `TOMBSTONE_MAX` is never used
+   --> crates/adaptive-transport/src/sender.rs:260:7
+    |
+260 | const TOMBSTONE_MAX: usize = 4096;
+    |       ^^^^^^^^^^^^^
+
+warning: constant `PC_SACK_WIRE` is never used
+   --> crates/adaptive-transport/src/sender.rs:263:7
+    |
+263 | const PC_SACK_WIRE: u64 = 65;
+    |       ^^^^^^^^^^^^
+
+warning: constant `PC_KBASE_NUM` is never used
+   --> crates/adaptive-transport/src/sender.rs:264:7
+    |
+264 | const PC_KBASE_NUM: u64 = 3;
+    |       ^^^^^^^^^^^^
+
+warning: constant `PC_KBASE_DEN` is never used
+   --> crates/adaptive-transport/src/sender.rs:265:7
+    |
+265 | const PC_KBASE_DEN: u64 = 2;
+    |       ^^^^^^^^^^^^
+
+warning: constant `PC_COPY_MULTIPLIER` is never used
+   --> crates/adaptive-transport/src/sender.rs:266:7
+    |
+266 | const PC_COPY_MULTIPLIER: u64 = 2;
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: constant `BURST_WINDOW_NS` is never used
+   --> crates/adaptive-transport/src/sender.rs:270:7
+    |
+270 | const BURST_WINDOW_NS: u64 = 40_000_000;
+    |       ^^^^^^^^^^^^^^^
+
+warning: multiple fields are never read
+   --> crates/adaptive-transport/src/sender.rs:283:5
+    |
+273 | pub struct Sender {
+    |            ------ fields in this struct
+...
+283 |     fuzzy: DeterministicFuzzyController,
+    |     ^^^^^
+284 |     src_cfg: SrcConfig,
+    |     ^^^^^^^
+285 |     budget_cfg: BudgetConfig,
+    |     ^^^^^^^^^^
+286 |     emergency: HysteresisController,
+287 |     emergency_cfg: EmergencyConfig,
+    |     ^^^^^^^^^^^^^
+...
+291 |     arq: DeadlineArqScheduler,
+    |     ^^^
+...
+294 |     next_seq: u64,
+    |     ^^^^^^^^
+295 |     inflight_bytes: u64,
+296 |     inflight: BTreeMap<u64, InflightPacket>,
+    |     ^^^^^^^^
+297 |     tx_queue: VecDeque<OpaqueUnit>,
+    |     ^^^^^^^^
+298 |     pending_lost: VecDeque<LostRec>, // §5 kayıp seq'ler → RECOVER_ARQ retransmit / RECOVER_FWD dup
+299 |     dup_queue: Vec<DupRec>,          // §11 zamanlanmış forward-recovery kopyaları
+    |     ^^^^^^^^^
+300 |     last_now_ns: u64,
+    |     ^^^^^^^^^^^
+...
+303 |     last_ack_ns: Option<u64>,
+    |     ^^^^^^^^^^^
+304 |     first_send_ns: Option<u64>,
+    |     ^^^^^^^^^^^^^
+...
+307 |     drain_rtprop_entry_ns: Option<u64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+308 |     drain_rtprop_qualifying: bool, // girişten beri ≥1 rtt-örneği (qualifying_min_rtt)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+309 |     drain_entry_ns: Option<u64>,   // [TUR-3b] Startup-Drain giriş anı (max-dwell yedeği)
+    |     ^^^^^^^^^^^^^^
+310 |     // ── [TUR-3c] ProbeUp sözleşme-durumu (giriş-DONUK snapshot'lar — öz-referans önlenir) ──
+311 |     probe_entry_ns: Option<u64>,
+    |     ^^^^^^^^^^^^^^
+312 |     probe_epoch_entry_ns: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^
+313 |     probe_btlbw_entry: u64,
+    |     ^^^^^^^^^^^^^^^^^
+314 |     probe_delivered_entry: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+315 |     probe_loss_attributed: bool, // probe-atıflı kayıp-ilanı (send_ns ≥ entry; queue_losses işaretler)
+    |     ^^^^^^^^^^^^^^^^^^^^^
+316 |     last_probe_end_ns: u64,
+    |     ^^^^^^^^^^^^^^^^^
+...
+323 |     startup_last_btlbw: u64,
+    |     ^^^^^^^^^^^^^^^^^^
+324 |     startup_stable_rounds: u32,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+...
+329 |     startup_round_marker_seq: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+330 |     startup_round_complete: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+...
+335 |     base_is_startup: bool,
+    |     ^^^^^^^^^^^^^^^
+336 |     plateau_reached: bool, // [TUR-7 β1] plato-sinyali (base'ten AYRI: taze-giriş de base=false)
+    |     ^^^^^^^^^^^^^^^
+337 |     arq_share_tick: u32,   // [TUR-7 β2] grant-sayacı (K_ARQ_SHARE payı)
+    |     ^^^^^^^^^^^^^^
+...
+341 |     bw_sampled_since_round: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+...
+350 |     reorder: ReorderTracker, // §9.3 spurious→note_spurious kablosu; packet-thresh tüketimi
+    |     ^^^^^^^
+351 |     retx_cfg: RetxConfig,    // reorder_thresh(ρ, K) parametreleri (arq ile aynı fixture)
+    |     ^^^^^^^^
+...
+356 |     tombstone_order: VecDeque<u64>, // ekleme sırası ≈ en-eski-TTL-önce (eviction kaynağı)
+    |     ^^^^^^^^^^^^^^^
+...
+362 |     diag_qd_no_evidence: u64,    // [TUR-3a D-3/1] rtprop-yokken qd_ratio=0 sayısı
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> crates/adaptive-transport/src/sender.rs:452:8
+     |
+ 370 | impl Sender {
+     | ----------- methods in this implementation
+...
+ 452 |     fn on_ack_received(&mut self, ack: &AckInfo, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^
+...
+ 620 |     fn on_timer(&mut self, timer: Timer, now_ns: u64) {
+     |        ^^^^^^^^
+...
+ 677 |     fn cadence_loss_floor(&self) -> Duration {
+     |        ^^^^^^^^^^^^^^^^^^
+...
+ 683 |     fn expected_ack_interval(&self) -> Duration {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+...
+ 700 |     fn queue_losses(&mut self, lost: &[u64], now_ns: u64) {
+     |        ^^^^^^^^^^^^
+...
+ 764 |     fn fuzzy_evaluate(&mut self, now_ns: u64) -> FusionDecision {
+     |        ^^^^^^^^^^^^^^
+...
+ 800 |     fn update_state(&mut self, decision: &FusionDecision, now_ns: u64) {
+     |        ^^^^^^^^^^^^
+...
+ 997 |     fn qd_ratio_permille_now(&self) -> u64 {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+...
+1007 |     fn probe_close_success(&mut self, now_ns: u64) -> SenderState {
+     |        ^^^^^^^^^^^^^^^^^^^
+...
+1015 |     fn probe_close(&mut self, now_ns: u64, exit: ProbeExit) -> SenderState {
+     |        ^^^^^^^^^^^
+...
+1030 |     fn startup_plateau(&mut self) -> bool {
+     |        ^^^^^^^^^^^^^^^
+...
+1061 |     fn compute_send_rate(&self, decision: &FusionDecision) -> u64 {
+     |        ^^^^^^^^^^^^^^^^^
+...
+1099 |     fn schedule_transmit(&mut self, now_ns: u64) -> Vec<TransmitDecision> {
+     |        ^^^^^^^^^^^^^^^^^
+...
+1121 |     fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1189 |     fn plan_forward_duplication(&mut self, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1229 |     fn mark_tombstone_superseded(&mut self, seq: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1236 |     fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1268 |     fn drain_new_data(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^
+...
+1312 |     fn dup_params(&self) -> (u8, Duration) {
+     |        ^^^^^^^^^^
+...
+1319 |     fn track_sent(
+     |        ^^^^^^^^^^
+...
+1362 |     fn ack_confidence_permille(&self, now_ns: u64) -> u64 {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `dur_ns` is never used
+    --> crates/adaptive-transport/src/sender.rs:1528:4
+     |
+1528 | fn dur_ns(d: Duration) -> u64 {
+     |    ^^^^^^
+
+warning: multiple fields are never read
+   --> crates/adaptive-transport/src/sender.rs:283:5
+    |
+273 | pub struct Sender {
+    |            ------ fields in this struct
+...
+283 |     fuzzy: DeterministicFuzzyController,
+    |     ^^^^^
+284 |     src_cfg: SrcConfig,
+    |     ^^^^^^^
+285 |     budget_cfg: BudgetConfig,
+    |     ^^^^^^^^^^
+286 |     emergency: HysteresisController,
+287 |     emergency_cfg: EmergencyConfig,
+    |     ^^^^^^^^^^^^^
+...
+291 |     arq: DeadlineArqScheduler,
+    |     ^^^
+...
+300 |     last_now_ns: u64,
+    |     ^^^^^^^^^^^
+...
+309 |     drain_entry_ns: Option<u64>,   // [TUR-3b] Startup-Drain giriş anı (max-dwell yedeği)
+    |     ^^^^^^^^^^^^^^
+...
+316 |     last_probe_end_ns: u64,
+    |     ^^^^^^^^^^^^^^^^^
+...
+336 |     plateau_reached: bool, // [TUR-7 β1] plato-sinyali (base'ten AYRI: taze-giriş de base=false)
+    |     ^^^^^^^^^^^^^^^
+337 |     arq_share_tick: u32,   // [TUR-7 β2] grant-sayacı (K_ARQ_SHARE payı)
+    |     ^^^^^^^^^^^^^^
+...
+351 |     retx_cfg: RetxConfig,    // reorder_thresh(ρ, K) parametreleri (arq ile aynı fixture)
+    |     ^^^^^^^^
+...
+356 |     tombstone_order: VecDeque<u64>, // ekleme sırası ≈ en-eski-TTL-önce (eviction kaynağı)
+    |     ^^^^^^^^^^^^^^^
+...
+362 |     diag_qd_no_evidence: u64,    // [TUR-3a D-3/1] rtprop-yokken qd_ratio=0 sayısı
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> crates/adaptive-transport/src/sender.rs:452:8
+     |
+ 370 | impl Sender {
+     | ----------- methods in this implementation
+...
+ 452 |     fn on_ack_received(&mut self, ack: &AckInfo, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^
+...
+ 620 |     fn on_timer(&mut self, timer: Timer, now_ns: u64) {
+     |        ^^^^^^^^
+...
+ 677 |     fn cadence_loss_floor(&self) -> Duration {
+     |        ^^^^^^^^^^^^^^^^^^
+...
+ 700 |     fn queue_losses(&mut self, lost: &[u64], now_ns: u64) {
+     |        ^^^^^^^^^^^^
+...
+ 764 |     fn fuzzy_evaluate(&mut self, now_ns: u64) -> FusionDecision {
+     |        ^^^^^^^^^^^^^^
+...
+ 800 |     fn update_state(&mut self, decision: &FusionDecision, now_ns: u64) {
+     |        ^^^^^^^^^^^^
+...
+ 997 |     fn qd_ratio_permille_now(&self) -> u64 {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+...
+1007 |     fn probe_close_success(&mut self, now_ns: u64) -> SenderState {
+     |        ^^^^^^^^^^^^^^^^^^^
+...
+1015 |     fn probe_close(&mut self, now_ns: u64, exit: ProbeExit) -> SenderState {
+     |        ^^^^^^^^^^^
+...
+1030 |     fn startup_plateau(&mut self) -> bool {
+     |        ^^^^^^^^^^^^^^^
+...
+1061 |     fn compute_send_rate(&self, decision: &FusionDecision) -> u64 {
+     |        ^^^^^^^^^^^^^^^^^
+...
+1099 |     fn schedule_transmit(&mut self, now_ns: u64) -> Vec<TransmitDecision> {
+     |        ^^^^^^^^^^^^^^^^^
+...
+1121 |     fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1189 |     fn plan_forward_duplication(&mut self, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1229 |     fn mark_tombstone_superseded(&mut self, seq: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1236 |     fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1268 |     fn drain_new_data(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+     |        ^^^^^^^^^^^^^^
+...
+1312 |     fn dup_params(&self) -> (u8, Duration) {
+     |        ^^^^^^^^^^
+...
+1319 |     fn track_sent(
+     |        ^^^^^^^^^^
+
+warning: `adaptive-transport` (lib) generated 45 warnings (run `cargo fix --lib -p adaptive-transport` to apply 2 suggestions)
+warning: `adaptive-transport` (lib test) generated 37 warnings (35 duplicates)
+       Fresh adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-3FBM8d.tmp/crates/adaptive-transport)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running `/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/adaptive_transport-eecea9df1309094a`
+
+running 47 tests
+test ack::tests::acked_full_empty_on_zero_block0 ... ok
+test ack::tests::ack_delay_unit_per_version ... ok
+test ack::tests::acked_full_roundtrips_from_received ... ok
+test ack::tests::decode_v1_frame_type_compat ... ok
+test receiver::return_supply_tests::arrival_rate_acceleration_mid_regime ... ok
+test receiver::return_supply_tests::dv2_blackout_opens_episode_and_quota ... ok
+test receiver::return_supply_tests::regime_shift_geometric_convergence ... ok
+test receiver::return_supply_tests::quota_spacing_and_invariant ... ok
+test receiver::return_supply_tests::v1_burst_then_normal_gap_no_episode ... ok
+test ack::tests::acked_full_single_contiguous_block ... ok
+test receiver::return_supply_tests::v2_micro_gap_batch_no_episode ... ok
+test receiver::return_supply_tests::v3_bimodal_jitter_no_episode ... ok
+test receiver::tests::ack_delay_reflects_elapsed_since_largest ... ok
+test receiver::tests::ack_timer_first_exempt_then_cadence_throttled ... ok
+test receiver::tests::duplicate_suppressed_not_delivered ... ok
+test receiver::tests::fec_shard_buffered_not_delivered ... ok
+test receiver::return_supply_tests::v4_slow_channel_variance_no_episode ... ok
+test receiver::return_supply_tests::count0_hole_first_packet_blackout_return ... ok
+test receiver::tests::ack_delay_large_hold_not_saturated_and_saturation_counted ... ok
+test receiver::tests::freq_ack_resets_timer_cadence ... ok
+test receiver::tests::gap_produces_sack_range_and_reorder_state ... ok
+test receiver::tests::in_order_delivers_and_acks_on_frequency ... ok
+test receiver::tests::tail_pending_data_gets_cadence_exempt_sack ... ok
+test sender::tests::ack_confidence_eai_floor_prevents_false_low ... FAILED
+test receiver::return_supply_tests::v5_double_micro_gap_integer_boundary ... ok
+test sender::tests::arq_share_emits_retx_under_token_starvation ... FAILED
+test sender::tests::ack_frees_inflight_and_updates_rtt ... FAILED
+test sender::tests::drain_rtprop_contract_dwell_and_exit_invariant ... FAILED
+test sender::tests::drains_to_idle_when_quiescent ... ok
+test sender::tests::inv_rate_1_loss_declaration_preserves_phase_gain ... FAILED
+test sender::tests::karn_both_transmissions_acked_wire_byte_semantics ... FAILED
+test sender::tests::ack_confidence_low_enters_recover_fwd_and_duplicates ... FAILED
+test sender::tests::karn_superseded_late_ack_credits_without_samples ... FAILED
+test sender::tests::plateau_round_is_supply_independent ... ok
+test sender::tests::preconverge_clean_no_spurious_recovery ... FAILED
+test sender::tests::clean_pair_flow_no_time_threshold_loss ... ok
+test sender::tests::low_loss_with_healthy_acks_retransmits ... FAILED
+test sender::tests::probe_up_timeout_and_preempt_bookkeeping ... FAILED
+test sender::tests::probe_up_contract_entry_success_and_gates ... FAILED
+test sender::tests::idle_to_preconverge_then_startup_on_first_ack ... FAILED
+test sender::tests::retransmit_references_same_unit_id ... FAILED
+test sender::tests::tail_loss_liveness_without_loss_classification ... FAILED
+test sender::tests::startup_exit_enters_drain_then_steady_on_bdp ... FAILED
+test sender::tests::startup_reentry_resets_plateau_counter ... FAILED
+test sender::tests::unloss_cancels_pending_retransmit_and_raises_tolerance ... FAILED
+test sender::tests::tombstone_expiry_yields_no_sample ... FAILED
+test sender::tests::tombstone_recovers_bw_and_rtt_from_late_ack ... FAILED
+
+failures:
+
+---- sender::tests::ack_confidence_eai_floor_prevents_false_low stdout ----
+
+thread 'sender::tests::ack_confidence_eai_floor_prevents_false_low' (4083825) panicked at crates/adaptive-transport/src/sender.rs:2064:9:
+taban aşılınca sessizlik yine sinyaldir
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- sender::tests::arq_share_emits_retx_under_token_starvation stdout ----
+
+thread 'sender::tests::arq_share_emits_retx_under_token_starvation' (4083828) panicked at crates/adaptive-transport/src/sender.rs:1982:9:
+assertion `left == right` failed
+  left: Idle
+ right: RecoverArq
+
+---- sender::tests::ack_frees_inflight_and_updates_rtt stdout ----
+
+thread 'sender::tests::ack_frees_inflight_and_updates_rtt' (4083827) panicked at crates/adaptive-transport/src/sender.rs:1596:9:
+assertion `left == right` failed
+  left: 0
+ right: 1200
+
+---- sender::tests::drain_rtprop_contract_dwell_and_exit_invariant stdout ----
+
+thread 'sender::tests::drain_rtprop_contract_dwell_and_exit_invariant' (4083830) panicked at crates/adaptive-transport/src/sender.rs:2135:9:
+assertion `left == right` failed: pencere-doluşu → giriş
+  left: Steady
+ right: DrainRtprop
+
+---- sender::tests::inv_rate_1_loss_declaration_preserves_phase_gain stdout ----
+
+thread 'sender::tests::inv_rate_1_loss_declaration_preserves_phase_gain' (4083833) panicked at crates/adaptive-transport/src/sender.rs:1938:9:
+kurulum: ramp sürüyor
+
+---- sender::tests::karn_both_transmissions_acked_wire_byte_semantics stdout ----
+
+thread 'sender::tests::karn_both_transmissions_acked_wire_byte_semantics' (4083834) panicked at crates/adaptive-transport/src/sender.rs:2291:14:
+retransmit emit
+
+---- sender::tests::ack_confidence_low_enters_recover_fwd_and_duplicates stdout ----
+
+thread 'sender::tests::ack_confidence_low_enters_recover_fwd_and_duplicates' (4083826) panicked at crates/adaptive-transport/src/sender.rs:1635:9:
+ACK yok → RECOVER_FWD'e girmeli (§11)
+
+---- sender::tests::karn_superseded_late_ack_credits_without_samples stdout ----
+
+thread 'sender::tests::karn_superseded_late_ack_credits_without_samples' (4083835) panicked at crates/adaptive-transport/src/sender.rs:2241:9:
+kalıp gereği retransmit emit edilmeli
+
+---- sender::tests::preconverge_clean_no_spurious_recovery stdout ----
+
+thread 'sender::tests::preconverge_clean_no_spurious_recovery' (4083838) panicked at crates/adaptive-transport/src/sender.rs:1570:9:
+assertion `left == right` failed
+  left: Idle
+ right: PreConverge
+
+---- sender::tests::low_loss_with_healthy_acks_retransmits stdout ----
+
+thread 'sender::tests::low_loss_with_healthy_acks_retransmits' (4083836) panicked at crates/adaptive-transport/src/sender.rs:1666:9:
+düşük loss + ACK-canlı → RECOVER_ARQ retransmit (retx=0, arq_aggr=0)
+
+---- sender::tests::probe_up_timeout_and_preempt_bookkeeping stdout ----
+
+thread 'sender::tests::probe_up_timeout_and_preempt_bookkeeping' (4083841) panicked at crates/adaptive-transport/src/sender.rs:1887:9:
+assertion `left == right` failed: ilk giriş
+  left: Steady
+ right: ProbeUp
+
+---- sender::tests::probe_up_contract_entry_success_and_gates stdout ----
+
+thread 'sender::tests::probe_up_contract_entry_success_and_gates' (4083839) panicked at crates/adaptive-transport/src/sender.rs:1848:9:
+assertion `left == right` failed: kapılar açık → giriş; aynı-event çıkış YOK
+  left: Steady
+ right: ProbeUp
+
+---- sender::tests::idle_to_preconverge_then_startup_on_first_ack stdout ----
+
+thread 'sender::tests::idle_to_preconverge_then_startup_on_first_ack' (4083832) panicked at crates/adaptive-transport/src/sender.rs:1554:9:
+assertion `left == right` failed
+  left: Idle
+ right: PreConverge
+
+---- sender::tests::retransmit_references_same_unit_id stdout ----
+
+thread 'sender::tests::retransmit_references_same_unit_id' (4083846) panicked at crates/adaptive-transport/src/sender.rs:1687:9:
+assertion `left == right` failed: retransmit kayıp birimin unit_id'sini (42) yeni seq ile taşımalı
+  left: None
+ right: Some(42)
+
+---- sender::tests::tail_loss_liveness_without_loss_classification stdout ----
+
+thread 'sender::tests::tail_loss_liveness_without_loss_classification' (4083849) panicked at crates/adaptive-transport/src/sender.rs:1731:9:
+tail liveness: RECOVER_FWD spekülatif kopyayı ateşlemeli (unit 42)
+
+---- sender::tests::startup_exit_enters_drain_then_steady_on_bdp stdout ----
+
+thread 'sender::tests::startup_exit_enters_drain_then_steady_on_bdp' (4083847) panicked at crates/adaptive-transport/src/sender.rs:2084:9:
+kurulum: uçuş BDP'nin üstünde olmalı (emisyonlar tamam)
+
+---- sender::tests::startup_reentry_resets_plateau_counter stdout ----
+
+thread 'sender::tests::startup_reentry_resets_plateau_counter' (4083848) panicked at crates/adaptive-transport/src/sender.rs:2040:9:
+assertion `left == right` failed
+  left: Idle
+ right: Startup
+
+---- sender::tests::unloss_cancels_pending_retransmit_and_raises_tolerance stdout ----
+
+thread 'sender::tests::unloss_cancels_pending_retransmit_and_raises_tolerance' (4083852) panicked at crates/adaptive-transport/src/sender.rs:1782:13:
+assertion `left == right` failed: seq1 kayıp ilan edilip kuyruğa girmeli
+  left: (0, 0)
+ right: (1, 1)
+
+---- sender::tests::tombstone_expiry_yields_no_sample stdout ----
+
+thread 'sender::tests::tombstone_expiry_yields_no_sample' (4083850) panicked at crates/adaptive-transport/src/sender.rs:2324:13:
+assertion `left == right` failed: yalnız seq1 tombstone'da olmalı (flush sonrası)
+  left: 0
+ right: 1
+
+---- sender::tests::tombstone_recovers_bw_and_rtt_from_late_ack stdout ----
+
+thread 'sender::tests::tombstone_recovers_bw_and_rtt_from_late_ack' (4083851) panicked at crates/adaptive-transport/src/sender.rs:2207:13:
+assertion `left == right` failed: ilan tombstone'a yazılmalı
+  left: (0, 0)
+ right: (1, 0)
+
+
+failures:
+    sender::tests::ack_confidence_eai_floor_prevents_false_low
+    sender::tests::ack_confidence_low_enters_recover_fwd_and_duplicates
+    sender::tests::ack_frees_inflight_and_updates_rtt
+    sender::tests::arq_share_emits_retx_under_token_starvation
+    sender::tests::drain_rtprop_contract_dwell_and_exit_invariant
+    sender::tests::idle_to_preconverge_then_startup_on_first_ack
+    sender::tests::inv_rate_1_loss_declaration_preserves_phase_gain
+    sender::tests::karn_both_transmissions_acked_wire_byte_semantics
+    sender::tests::karn_superseded_late_ack_credits_without_samples
+    sender::tests::low_loss_with_healthy_acks_retransmits
+    sender::tests::preconverge_clean_no_spurious_recovery
+    sender::tests::probe_up_contract_entry_success_and_gates
+    sender::tests::probe_up_timeout_and_preempt_bookkeeping
+    sender::tests::retransmit_references_same_unit_id
+    sender::tests::startup_exit_enters_drain_then_steady_on_bdp
+    sender::tests::startup_reentry_resets_plateau_counter
+    sender::tests::tail_loss_liveness_without_loss_classification
+    sender::tests::tombstone_expiry_yields_no_sample
+    sender::tests::tombstone_recovers_bw_and_rtt_from_late_ack
+    sender::tests::unloss_cancels_pending_retransmit_and_raises_tolerance
+
+test result: FAILED. 27 passed; 20 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p adaptive-transport --lib`
+
+*** result: Failure(101)

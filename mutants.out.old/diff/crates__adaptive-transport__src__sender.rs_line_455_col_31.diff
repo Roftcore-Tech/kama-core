@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace == with != in Sender::on_event
+@@ -447,17 +447,17 @@
+     pub fn on_event(&mut self, event: Event, now_ns: u64) -> Vec<TransmitDecision> {
+         let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
+         self.pacer.refill(dt);
+         self.last_now_ns = now_ns;
+ 
+         match event {
+             Event::AppData(unit) => {
+                 self.tx_queue.push_back(unit);
+-                if self.state == SenderState::Idle {
++                if self.state != /* ~ changed by cargo-mutants ~ */ SenderState::Idle {
+                     // §3.3 cold-start YALNIZ ilk sefer (hiç ölçüm yok). Ölçüm varsa (rtt.srtt Some) önsel
+                     // zaten tahliye edilmiş → Idle→Startup (normal resume), PreConverge'e geri DÖNÜLMEZ.
+                     self.state = if self.rtt.srtt().is_none() {
+                         SenderState::PreConverge
+                     } else {
+                         SenderState::Startup
+                     };
+                 }

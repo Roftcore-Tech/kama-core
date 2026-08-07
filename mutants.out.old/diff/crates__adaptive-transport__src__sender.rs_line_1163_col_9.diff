@@ -1,0 +1,78 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::plan_arq_retransmits with ()
+@@ -1155,74 +1155,17 @@
+             _ => {}
+         }
+         self.drain_due_duplicates(&mut out, now_ns);
+         out
+     }
+ 
+     /// RECOVER_ARQ (§9): ACK-güdümlü selective retransmit. arq_aggressiveness=0 → baskıla (fec-dominant).
+     fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+-        let lost: Vec<LostSeq> = self
+-            .pending_lost
+-            .iter()
+-            .map(|r| LostSeq {
+-                seq: r.seq,
+-                deadline_ns: r.deadline_ns,
+-                retx_count: r.retx_count,
+-            })
+-            .collect();
+-        let plan = self
+-            .arq
+-            .plan(&lost, self.last_decision.arq_aggressiveness_permille);
+-        for dec in plan {
+-            match dec {
+-                RetxDecision::Retransmit { seq } => {
+-                    let Some(pos) = self.pending_lost.iter().position(|r| r.seq == seq) else {
+-                        continue;
+-                    };
+-                    let rec = self.pending_lost[pos];
+-                    if !self.pacer.try_send(rec.unit.size) {
+-                        break; // token yok → sonraki tick'te (deadline plandan düşmez, §9).
+-                    }
+-                    self.pending_lost.remove(pos);
+-                    // [TUR-2c D-1/3 kol-2] Orijinalin tombstone'u SUPERSEDED: retx-sonrası-
+-                    // geç-orijinal-ACK kol-1'e düşemez (2b'de kayıt ilan-anında donuyordu).
+-                    self.mark_tombstone_superseded(seq);
+-                    let new_seq = self.track_sent(
+-                        rec.unit,
+-                        now_ns,
+-                        rec.retx_count + 1,
+-                        TransmitKind::Retransmit,
+-                    );
+-                    out.push(TransmitDecision {
+-                        kind: TransmitKind::Retransmit,
+-                        seq: new_seq,
+-                        unit_id: rec.unit.id,
+-                        size: rec.unit.size,
+-                    });
+-                }
+-                RetxDecision::CapExceeded { seq, policy } => {
+-                    if let Some(pos) = self.pending_lost.iter().position(|r| r.seq == seq) {
+-                        let rec = self.pending_lost.remove(pos).expect("pos geçerli");
+-                        if policy == CapExceedPolicy::HandToForward {
+-                            // ARQ cap doldu → forward-recovery'ye devret (§9.1 "veri ulaşsın").
+-                            // [TUR-2c review-fix] devir de YENİDEN-EMİSYONDUR → superseded-işaret
+-                            // (örnekleme politikası recovery-yoluna bağımlı olamaz — tekdüze kural).
+-                            self.mark_tombstone_superseded(rec.seq);
+-                            self.dup_queue.push(DupRec {
+-                                due_ns: now_ns,
+-                                unit: rec.unit,
+-                                interval_ns: 0, // emergency: fire-once
+-                            });
+-                        }
+-                        // ConnectionFail: spine'da düşür; gerçek impl bağlantı-fail sinyali verir.
+-                    }
+-                }
+-            }
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// RECOVER_FWD (§11): ACK-BAĞIMSIZ forward duplication. Kayıp birimleri `factor` kez zaman-aralıklı
+     /// kopya olarak planla (ACK beklemeden — reverse-path çöktüğü için ARQ futile).
+     ///
+     /// [TUR-1a / D-1/1 liveness kolu] pending_lost BOŞKEN (saf-sessizlik: later-ACK preconditionı loss
+     /// SINIFLANDIRMASINI blokladı ama tail cevapsız): unacked orijinal inflight birimlerine spekülatif
+     /// geometrik kopya (taban=srtt, ×2 backoff; ACK'le iptal §3.3-B-stop). Loss METRİĞİNE dokunmaz —

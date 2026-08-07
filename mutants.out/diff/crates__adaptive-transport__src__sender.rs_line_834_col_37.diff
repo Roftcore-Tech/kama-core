@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace += with -= in Sender::fuzzy_evaluate
+@@ -826,17 +826,17 @@
+             jitter_ppm,
+             qd_ratio_permille,
+             ack_confidence_permille: self.ack_confidence_permille(now_ns),
+         };
+         let d = self.fuzzy.decide(&inputs);
+         // [TUR-4] sıfır-ağırlık fallback kanıt-sayacı (fallback çıktısı R1-baskın çıktıyla
+         // bayt-özdeş — sayaçsız gözlemlenemez, workflow-bulgusu).
+         if d.no_rule {
+-            self.diag_fuzzy_no_rule += 1;
++            self.diag_fuzzy_no_rule -= /* ~ changed by cargo-mutants ~ */ 1;
+         }
+         d
+     }
+ 
+     /// §3 state geçişleri. Öncelik: IDLE (iş yok) → RECOVER_FWD (ack_confidence LOW, her fazdan) →
+     /// faz-içi (STARTUP plato / RECOVER_ARQ / STEADY).
+     fn update_state(&mut self, decision: &FusionDecision, now_ns: u64) {
+         let prev_state = self.state; // [TUR-3c] preemption-muhasebesi için

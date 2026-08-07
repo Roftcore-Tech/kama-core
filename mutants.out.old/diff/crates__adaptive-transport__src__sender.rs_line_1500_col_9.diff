@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::diag_pif -> u64 with 0
+@@ -1492,17 +1492,17 @@
+             self.diag_unloss,
+             self.loss.loss_windowed_ppm(),
+             self.loss.spurious_units_total(),
+         )
+     }
+     /// [TUR-3a teşhis] sampler uçuş-sayısı (SALT-GÖZLEM — §3.7 sızıntı-borcu ölçümü).
+     #[must_use]
+     pub fn diag_pif(&self) -> u64 {
+-        self.bw_sampler.packets_in_flight()
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+     /// [TUR-3a teşhis] rtprop + queue_delay (SALT-GÖZLEM — qd-atıflaması, µs).
+     #[must_use]
+     pub fn diag_qd(&self) -> (u64, u64) {
+         (
+             self.rtt.rtprop().map_or(0, |d| d.as_micros() as u64),
+             self.rtt.queue_delay().as_micros() as u64,
+         )

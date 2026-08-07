@@ -1,0 +1,26 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::diag_probe -> (u64, u64, u64, u64) with (0, 1, 0, 0)
+@@ -1523,22 +1523,17 @@
+     #[must_use]
+     pub fn diag_fuzzy_no_rule(&self) -> u64 {
+         self.diag_fuzzy_no_rule
+     }
+ 
+     /// [TUR-3c teşhis] ProbeUp çıkış-sayaçları (SALT-GÖZLEM): (success, abort, timeout, preempt).
+     #[must_use]
+     pub fn diag_probe(&self) -> (u64, u64, u64, u64) {
+-        (
+-            self.diag_probe_success,
+-            self.diag_probe_abort,
+-            self.diag_probe_timeout,
+-            self.diag_probe_preempt,
+-        )
++        (0, 1, 0, 0) /* ~ changed by cargo-mutants ~ */
+     }
+     /// [TUR-2b/2c teşhis] tombstone (SALT-GÖZLEM):
+     /// `(canlı, hit, bw_kurtarılan, evicted, ambiguous, credited_bytes)`.
+     #[must_use]
+     pub fn diag_tombstone(&self) -> (u64, u64, u64, u64, u64, u64) {
+         (
+             self.tombstones.len() as u64,
+             self.diag_tomb_hits,

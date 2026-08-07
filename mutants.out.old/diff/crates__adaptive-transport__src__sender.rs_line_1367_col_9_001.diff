@@ -1,0 +1,51 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::track_sent -> u64 with 1
+@@ -1359,47 +1359,17 @@
+ 
+     fn track_sent(
+         &mut self,
+         unit: OpaqueUnit,
+         now_ns: u64,
+         retx_count: u8,
+         origin: TransmitKind,
+     ) -> u64 {
+-        let seq = self.next_seq;
+-        self.next_seq += 1;
+-        if self.first_send_ns.is_none() {
+-            self.first_send_ns = Some(now_ns);
+-        }
+-        let more_pending = !self.tx_queue.is_empty()
+-            || !self.pending_lost.is_empty()
+-            || !self.dup_queue.is_empty();
+-        // [TUR-D1 F3] Gönderim-ANI gain-damgası: öz-kısma fazları (Drain 0.347× /
+-        // DrainRtprop 0.75× / PreConverge floor) gain<1 damgası (örnek-sınıflandırma-bilgisi; tüketicisi-arşivlendi, alan-korunur).
+-        let gain_ge1 = !matches!(
+-            self.state,
+-            SenderState::Drain | SenderState::DrainRtprop | SenderState::PreConverge
+-        );
+-        let bw_sample = self
+-            .bw_sampler
+-            .on_sent(now_ns, unit.size, !more_pending, gain_ge1);
+-        let units = u64::from(origin == TransmitKind::Data); // yalnız orijinal DATA loss sayacına.
+-        self.loss.on_sent(seq, now_ns, units);
+-        self.inflight_bytes += unit.size;
+-        self.inflight.insert(
+-            seq,
+-            InflightPacket {
+-                unit,
+-                send_ns: now_ns,
+-                bw_sample,
+-                retx_count,
+-                origin,
+-            },
+-        );
+-        seq
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// ack_confidence (per-mille, §5.1): reverse-path canlılığı = ACK SESSİZLİĞİ. Aktif iş varken son
+     /// ACK'ten (ya da ilk gönderimden) geçen süre srtt katını aşarsa güven düşer. Yeni paket "düşük
+     /// güven" DEĞİL — yalnız SESSİZLİK reverse-path çöküşüdür.
+     fn ack_confidence_permille(&self, now_ns: u64) -> u64 {
+         // §3.3-C/(4) yasak-4: PRE_CONVERGE'de ack_confidence FULL sabit — sessizlik cold-start'ta
+         // reverse-path çöküşü DEĞİL taban-bw serialization gecikmesi (threshold≈300ms ≪ RTT_floor).

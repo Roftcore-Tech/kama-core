@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ delete match arm RecoveryAction::Duplication{factor, spacing} in Sender::dup_params
+@@ -1347,17 +1347,17 @@
+                 });
+             }
+         }
+     }
+ 
+     /// last_recovery'den (factor, spacing); Duplication değilse varsayılan (§11 Tiny framing).
+     fn dup_params(&self) -> (u8, Duration) {
+         match self.last_recovery {
+-            RecoveryAction::Duplication { factor, spacing } => (factor, spacing),
++             /* ~ changed by cargo-mutants ~ */
+             _ => (DEFAULT_DUP_FACTOR, DEFAULT_DUP_SPACING),
+         }
+     }
+ 
+     fn track_sent(
+         &mut self,
+         unit: OpaqueUnit,
+         now_ns: u64,

@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace >= with < in Sender::on_ack_received
+@@ -616,17 +616,17 @@
+                 if rec.retx_count == 0 && unloss_rtt.is_none_or(|(s, _)| rec.seq >= s) {
+                     unloss_rtt = Some((rec.seq, rec.send_ns));
+                 }
+             }
+             self.pending_lost = kept;
+         }
+         // RTT adayı birleşimi: en yüksek yeni-acked orijinal gönderim (inflight ∪ un-loss kol-1).
+         if let Some((useq, usend)) = unloss_rtt {
+-            if rtt_send_ns.is_none() || useq >= largest {
++            if rtt_send_ns.is_none() || useq < /* ~ changed by cargo-mutants ~ */ largest {
+                 rtt_send_ns = Some(usend);
+             }
+         }
+ 
+         if let Some(send_ns) = rtt_send_ns {
+             let raw = Duration::from_nanos(now_ns.saturating_sub(send_ns));
+             self.diag_ack_delay_max_us = self
+                 .diag_ack_delay_max_us

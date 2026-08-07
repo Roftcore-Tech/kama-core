@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace >= with < in Sender::on_ack_received
+@@ -531,17 +531,17 @@
+         };
+ 
+         // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
+         let mut rtt_send_ns: Option<u64> = None;
+         let mut largest = 0u64;
+         let mut acked_units: Vec<u64> = Vec::new();
+         for &seq in &ack.acked_seqs {
+             // [TUR-6] delivered-anchor round: marker-sonrası gönderilen seq'in ilk ACK'i.
+-            if seq >= self.startup_round_marker_seq {
++            if seq < /* ~ changed by cargo-mutants ~ */ self.startup_round_marker_seq {
+                 self.startup_round_complete = true;
+             }
+             if let Some(p) = self.inflight.remove(&seq) {
+                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                 acked_units.push(p.unit.id); // §3.3-B stop koşulu: teyit edilen birimin kopyaları iptal
+                 let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);
+                 self.btlbw.update(sample, now_ns, sample.delivered > 0);
+                 self.bw_sampled_since_round = true; // [TUR-A ölçüm-#1] plato round'u bw-örneğiyle sayılır

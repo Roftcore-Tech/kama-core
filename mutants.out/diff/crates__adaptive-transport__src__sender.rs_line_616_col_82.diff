@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace >= with < in Sender::on_ack_received
+@@ -608,17 +608,17 @@
+                     continue;
+                 }
+                 self.diag_unloss += 1;
+                 acked_units.push(rec.unit.id); // kopyaları aşağıdaki ortak iptale kat
+                                                // §9.3: gözlenen reorder mesafesiyle toleransı yükselt (küçülmez).
+                 self.reorder
+                     .note_spurious(u32::try_from(la.saturating_sub(rec.seq)).unwrap_or(u32::MAX));
+                 // kol-1: retransmit HENÜZ gönderilmedi → orijinal RTT örneği GEÇERLİ.
+-                if rec.retx_count == 0 && unloss_rtt.is_none_or(|(s, _)| rec.seq >= s) {
++                if rec.retx_count == 0 && unloss_rtt.is_none_or(|(s, _)| rec.seq < /* ~ changed by cargo-mutants ~ */ s) {
+                     unloss_rtt = Some((rec.seq, rec.send_ns));
+                 }
+             }
+             self.pending_lost = kept;
+         }
+         // RTT adayı birleşimi: en yüksek yeni-acked orijinal gönderim (inflight ∪ un-loss kol-1).
+         if let Some((useq, usend)) = unloss_rtt {
+             if rtt_send_ns.is_none() || useq >= largest {

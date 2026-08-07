@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace == with != in Sender::on_ack_received
+@@ -634,17 +634,17 @@
+             // [TUR-1x] min-rtt guard (RFC 9002 §5.3): düzeltme güvensizse RAW kullanılır —
+             // örnek ATLANMAZ (sample-skip = estimator açlığı, K-1 sınıfı).
+             let (sample, corrected) = apply_ack_delay(raw, ack.ack_delay, self.rtt.rtprop());
+             if !corrected {
+                 self.diag_rtt_rejected += 1; // §7.3 ack_delay_untrusted (düzeltme reddi; raw işlendi)
+             }
+             self.rtt.observe(now_ns, sample);
+             // [TUR-3b D-2/3] DrainRtprop dwell'i içinde gelen rtt-örneği = qualifying.
+-            if self.state == SenderState::DrainRtprop {
++            if self.state != /* ~ changed by cargo-mutants ~ */ SenderState::DrainRtprop {
+                 self.drain_rtprop_qualifying = true;
+             }
+         }
+ 
+         // §3.3-B stop koşulu: teyit edilen birimlerin bekleyen geometrik kopyalarını İPTAL et.
+         if !acked_units.is_empty() {
+             self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id));
+         }

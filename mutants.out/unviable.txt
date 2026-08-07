@@ -1,0 +1,8 @@
+crates/adaptive-transport/src/sender.rs:448:9: replace Sender::on_event -> Vec<TransmitDecision> with vec![Default::default()]
+crates/adaptive-transport/src/sender.rs:516:24: replace + with * in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:519:43: replace * with + in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:520:49: replace * with + in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:526:44: replace * with + in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:529:48: replace / with % in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:806:9: replace Sender::fuzzy_evaluate -> FusionDecision with Default::default()
+crates/adaptive-transport/src/sender.rs:809:44: replace * with + in Sender::fuzzy_evaluate

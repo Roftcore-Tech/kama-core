@@ -1,0 +1,61 @@
+
+*** crates/adaptive-transport/src/sender.rs:529:48: replace / with % in Sender::on_ack_received
+
+*** mutation diff:
+--- crates/adaptive-transport/src/sender.rs
++++ replace / with % in Sender::on_ack_received
+@@ -521,17 +521,17 @@
+             // [S-FAZ-0, K8-fix] W_qd srtt-dalından delivered-EAI-saatine (TEK-TOKEN: ack_epoch→
+             // w_epoch). Kök: W_qd=2×srtt flood'da flood-öncesine-uzanır → qd≡0 → fuzzy-soft-drain
+             // + ProbeUp-abort ÖLÜ (K8 secondary-safety-path-deadness). w_epoch kuyruk-değişmez →
+             // DESEN-1'de qd onset+~8s canlanır; sağlıklı-rejimde DEĞER-ÖZDEŞ (rate≈dbw → EAI≡w_epoch).
+             // Little bit-değişmez (rate.rs girdisi srtt; qd-tüketicileri yalnız fusion-sr1 + ProbeUp).
+             self.rtt.set_qd_window(w_epoch * K_QD); // [3a.5-α] rtprop-penceresinden sonra (≤ invariant)
+                                                     // [3a.5-β] kuantum-döngü T'si — yalnız rtprop varken (PreConverge'de None → n=1).
+             if let Some(rtp) = self.rtt.rtprop() {
+-                self.rtt.set_conv_interval(rtp / K_CONV);
++                self.rtt.set_conv_interval(rtp % /* ~ changed by cargo-mutants ~ */ K_CONV);
+             }
+         };
+ 
+         // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
+         let mut rtt_send_ns: Option<u64> = None;
+         let mut largest = 0u64;
+         let mut acked_units: Vec<u64> = Vec::new();
+         for &seq in &ack.acked_seqs {
+
+
+*** /home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=adaptive-transport@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh thiserror-impl v2.0.18
+       Fresh tokio-macros v2.7.0
+       Fresh pin-project-lite v0.2.17
+       Fresh tokio v1.52.3
+       Fresh thiserror v2.0.18
+       Dirty adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-mm80BX.tmp/crates/adaptive-transport): the file `crates/adaptive-transport/src/sender.rs` has changed (1786134418.862134308s, 22s after last build at 1786134396.412677650s)
+   Compiling adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-mm80BX.tmp/crates/adaptive-transport)
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-mm80BX.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-mm80BX.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-mm80BX.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-mm80BX.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-mm80BX.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta`
+error[E0369]: cannot calculate the remainder of `Duration` divided by `u32`
+   --> crates/adaptive-transport/src/sender.rs:529:48
+    |
+529 |                 self.rtt.set_conv_interval(rtp % /* ~ changed by cargo-mutants ~ */ K_CONV);
+    |                                            --- ^                                    ------ u32
+    |                                            |
+    |                                            Duration
+    |
+note: `Duration` does not implement `Rem<u32>`
+   --> /home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/time.rs:81:1
+    |
+ 81 | pub struct Duration {
+    | ^^^^^^^^^^^^^^^^^^^ `Duration` is defined in another crate
+
+For more information about this error, try `rustc --explain E0369`.
+error: could not compile `adaptive-transport` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-mm80BX.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-mm80BX.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-mm80BX.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-mm80BX.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-mm80BX.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta` (exit status: 1)
+
+*** result: Failure(101)

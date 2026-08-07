@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace match guard t.expiry_ns <= now_ns with true in Sender::on_timer
+@@ -691,17 +691,17 @@
+                 // [TUR-2b] tombstone TTL budaması: süresi dolan kayıt düşer — sonraki geç-ACK'i
+                 // Expired/Unknown (örneksiz). Ekleme-sırası ≈ TTL-sırası (T_loss yavaş değişir);
+                 // front'tan tarama deterministik + bounded.
+                 while let Some(&front) = self.tombstone_order.front() {
+                     match self.tombstones.get(&front) {
+                         None => {
+                             self.tombstone_order.pop_front(); // hit/evict ile zaten düşmüş
+                         }
+-                        Some(t) if t.expiry_ns <= now_ns => {
++                        Some(t) if true /* ~ changed by cargo-mutants ~ */ => {
+                             self.tombstones.remove(&front);
+                             self.tombstone_order.pop_front();
+                             // [commit-B §3.7] artık ACK'lenmeyecek → uçuş-sayısından düş.
+                             self.bw_sampler.forget_in_flight();
+                         }
+                         Some(_) => break,
+                     }
+                 }

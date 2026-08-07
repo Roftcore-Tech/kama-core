@@ -1,0 +1,48 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::ack_confidence_permille -> u64 with 1
+@@ -1398,44 +1398,17 @@
+     }
+ 
+     /// ack_confidence (per-mille, §5.1): reverse-path canlılığı = ACK SESSİZLİĞİ. Aktif iş varken son
+     /// ACK'ten (ya da ilk gönderimden) geçen süre srtt katını aşarsa güven düşer. Yeni paket "düşük
+     /// güven" DEĞİL — yalnız SESSİZLİK reverse-path çöküşüdür.
+     fn ack_confidence_permille(&self, now_ns: u64) -> u64 {
+         // §3.3-C/(4) yasak-4: PRE_CONVERGE'de ack_confidence FULL sabit — sessizlik cold-start'ta
+         // reverse-path çöküşü DEĞİL taban-bw serialization gecikmesi (threshold≈300ms ≪ RTT_floor).
+-        if self.state == SenderState::PreConverge {
+-            return 1000;
+-        }
+-        let active = !self.inflight.is_empty()
+-            || !self.pending_lost.is_empty()
+-            || !self.tx_queue.is_empty()
+-            || !self.dup_queue.is_empty();
+-        if !active {
+-            return 1000;
+-        }
+-        let anchor = match self.last_ack_ns.or(self.first_send_ns) {
+-            Some(a) => a,
+-            None => return 1000,
+-        };
+-        let silence = now_ns.saturating_sub(anchor);
+-        let srtt = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
+-        // [TUR-3b commit-C] eşik = max(3×srtt, K_CONF_EAI×EAI) — tüketici-8 (srtt-clock-v1 §3).
+-        let threshold = srtt
+-            .saturating_mul(u64::from(ACK_SILENCE_SRTT_MULT))
+-            .max(dur_ns(self.expected_ack_interval()).saturating_mul(u64::from(K_CONF_EAI)));
+-        if silence <= threshold {
+-            return 1000;
+-        }
+-        threshold
+-            .saturating_mul(1000)
+-            .checked_div(silence)
+-            .unwrap_or(0)
+-            .min(1000)
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     // ── gözlemciler (test + entegrasyon) ──
+ 
+     /// Güncel state.
+     #[must_use]
+     pub fn state(&self) -> SenderState {
+         self.state

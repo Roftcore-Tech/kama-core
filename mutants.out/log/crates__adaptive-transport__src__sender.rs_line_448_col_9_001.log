@@ -1,0 +1,120 @@
+
+*** crates/adaptive-transport/src/sender.rs:448:9: replace Sender::on_event -> Vec<TransmitDecision> with vec![Default::default()]
+
+*** mutation diff:
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::on_event -> Vec<TransmitDecision> with vec![Default::default()]
+@@ -440,58 +440,17 @@
+                 no_rule: false,
+             },
+             last_recovery: RecoveryAction::Arq,
+         }
+     }
+ 
+     /// Ana döngü (§3): olay işle → FuzzyEvaluate → state → send_rate → UpdatePacing → ScheduleTransmit.
+     pub fn on_event(&mut self, event: Event, now_ns: u64) -> Vec<TransmitDecision> {
+-        let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
+-        self.pacer.refill(dt);
+-        self.last_now_ns = now_ns;
+-
+-        match event {
+-            Event::AppData(unit) => {
+-                self.tx_queue.push_back(unit);
+-                if self.state == SenderState::Idle {
+-                    // §3.3 cold-start YALNIZ ilk sefer (hiç ölçüm yok). Ölçüm varsa (rtt.srtt Some) önsel
+-                    // zaten tahliye edilmiş → Idle→Startup (normal resume), PreConverge'e geri DÖNÜLMEZ.
+-                    self.state = if self.rtt.srtt().is_none() {
+-                        SenderState::PreConverge
+-                    } else {
+-                        SenderState::Startup
+-                    };
+-                }
+-            }
+-            Event::AckReceived(ack) => self.on_ack_received(&ack, now_ns),
+-            Event::TimerFired(timer) => self.on_timer(timer, now_ns),
+-        }
+-
+-        let decision = self.fuzzy_evaluate(now_ns);
+-        self.last_decision = decision;
+-        let prev_state = self.state;
+-        self.update_state(&decision, now_ns);
+-        let send_rate = self.compute_send_rate(&decision);
+-        self.pacer.set_rate(send_rate);
+-        // [R3/ADIM-6] KANAL-TÜREVLİ burst cap: max(1 birim, rate·pencere), üstten ~2×MTU. Bant-kör 2400B
+-        // sabiti yerine → PreConverge floor'da 1-birim (self-congestion/backlog-spike yok), Startup+'ta
+-        // ölçülen bw'ye orantılı micro-burst. front yoksa MTU (güvenli 1-paket tabanı).
+-        let front_size = self.tx_queue.front().map_or(DEFAULT_MTU, |u| u.size);
+-        let window_bytes = send_rate.saturating_mul(BURST_WINDOW_NS) / 1_000_000_000;
+-        let burst_hi = front_size.max(2 * DEFAULT_MTU);
+-        self.pacer
+-            .set_burst_cap(window_bytes.clamp(front_size, burst_hi));
+-        if prev_state == SenderState::PreConverge && self.state != SenderState::PreConverge {
+-            // §3.3-D cold-start çıkışı: kanal-türevli micro-burst grant (STARTUP probing; kuyruk kanal-uygun
+-            // küçük burst'le boşalır — bu birimler STARTUP'ta emit → §3.3-B geometrik kopya ALMAZ).
+-            self.pacer.fill_to_cap();
+-        }
+-
+-        self.schedule_transmit(now_ns)
++        vec![Default::default()] /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// §3.2 OnAckReceived: inflight boşalt + RTT/BW/loss güncelle.
+     fn on_ack_received(&mut self, ack: &AckInfo, now_ns: u64) {
+         if ack.acked_seqs.is_empty() {
+             return;
+         }
+         self.last_ack_ns = Some(now_ns);
+
+
+*** /home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=adaptive-transport@0.1.0
+   Compiling proc-macro2 v1.0.106
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /home/kaan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.106/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "nightly", "proc-macro", "span-locations"))' -C metadata=1e35bded761715ad -C extra-filename=-e8b85e895052fb77 --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/build/proc-macro2-e8b85e895052fb77 -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --cap-lints allow`
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.46
+   Compiling thiserror v2.0.18
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /home/kaan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/quote-1.0.46/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "proc-macro"))' -C metadata=0401d04ec5a5500a -C extra-filename=-406fd56f69b1ef5b --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/build/quote-406fd56f69b1ef5b -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --cap-lints allow`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name unicode_ident --edition=2021 /home/kaan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=83304495dca11a53 -C extra-filename=-7b5331368ce720fe --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --cap-lints allow`
+   Compiling pin-project-lite v0.2.17
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name pin_project_lite --edition=2018 /home/kaan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-project-lite-0.2.17/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--warn=clippy::unused_trait_names' --warn=unreachable_pub --warn=unnameable_types --warn=unexpected_cfgs '--warn=clippy::undocumented_unsafe_blocks' '--warn=clippy::transmute_undefined_repr' '--warn=clippy::trailing_empty_array' --warn=single_use_lifetimes --warn=rust_2018_idioms '--warn=clippy::pedantic' --warn=non_ascii_idents '--warn=clippy::inline_asm_x86_att_syntax' --warn=improper_ctypes_definitions --warn=improper_ctypes --warn=deprecated_safe '--warn=clippy::default_union_representation' '--warn=clippy::as_underscore' '--warn=clippy::as_ptr_cast_mut' '--warn=clippy::all' '--allow=clippy::type_complexity' '--allow=clippy::too_many_lines' '--allow=clippy::too_many_arguments' '--allow=clippy::struct_field_names' '--allow=clippy::struct_excessive_bools' '--allow=clippy::single_match_else' '--allow=clippy::single_match' '--allow=clippy::similar_names' '--allow=clippy::range_plus_one' '--allow=clippy::nonminimal_bool' '--allow=clippy::naive_bytecount' '--allow=clippy::module_name_repetitions' '--allow=clippy::missing_errors_doc' '--allow=clippy::manual_range_contains' '--allow=clippy::manual_assert' '--allow=clippy::incompatible_msrv' '--allow=clippy::float_cmp' '--allow=clippy::doc_markdown' '--allow=clippy::declare_interior_mutable_const' '--allow=clippy::collapsible_match' '--allow=clippy::cast_lossless' '--allow=clippy::borrow_as_ptr' '--allow=clippy::bool_assert_comparison' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=cfc72e36a36c072a -C extra-filename=-84104c71dcf82ece --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --cap-lints allow`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /home/kaan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "std"))' -C metadata=1c1f2d6dd5889ebf -C extra-filename=-06418e57f8f7fd0d --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/build/thiserror-06418e57f8f7fd0d -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --cap-lints allow`
+     Running `/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/build/quote-406fd56f69b1ef5b/build-script-build`
+     Running `/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/build/thiserror-06418e57f8f7fd0d/build-script-build`
+     Running `/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/build/proc-macro2-e8b85e895052fb77/build-script-build`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name proc_macro2 --edition=2021 /home/kaan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.106/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "nightly", "proc-macro", "span-locations"))' -C metadata=6ba7a183cf864533 -C extra-filename=-6e361d414403e107 --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --extern unicode_ident=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libunicode_ident-7b5331368ce720fe.rmeta --cap-lints allow --cfg wrap_proc_macro --cfg proc_macro_span_location --cfg proc_macro_span_file --check-cfg 'cfg(fuzzing)' --check-cfg 'cfg(no_is_available)' --check-cfg 'cfg(no_literal_byte_character)' --check-cfg 'cfg(no_literal_c_string)' --check-cfg 'cfg(no_source_text)' --check-cfg 'cfg(proc_macro_span)' --check-cfg 'cfg(proc_macro_span_file)' --check-cfg 'cfg(proc_macro_span_location)' --check-cfg 'cfg(procmacro2_backtrace)' --check-cfg 'cfg(procmacro2_build_probe)' --check-cfg 'cfg(procmacro2_nightly_testing)' --check-cfg 'cfg(procmacro2_semver_exempt)' --check-cfg 'cfg(randomize_layout)' --check-cfg 'cfg(span_locations)' --check-cfg 'cfg(super_unstable)' --check-cfg 'cfg(wrap_proc_macro)'`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name quote --edition=2021 /home/kaan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/quote-1.0.46/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "proc-macro"))' -C metadata=c0e1555fe8239b99 -C extra-filename=-e3338ff9e189f247 --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --extern proc_macro2=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libproc_macro2-6e361d414403e107.rmeta --cap-lints allow --check-cfg 'cfg(no_diagnostic_namespace)'`
+   Compiling syn v2.0.118
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name syn --edition=2021 /home/kaan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.118/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --cfg 'feature="clone-impls"' --cfg 'feature="default"' --cfg 'feature="derive"' --cfg 'feature="full"' --cfg 'feature="parsing"' --cfg 'feature="printing"' --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "test", "visit", "visit-mut"))' -C metadata=986b3738f4b8af18 -C extra-filename=-b42890113e233df4 --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --extern proc_macro2=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libproc_macro2-6e361d414403e107.rmeta --extern quote=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libquote-e3338ff9e189f247.rmeta --extern unicode_ident=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libunicode_ident-7b5331368ce720fe.rmeta --cap-lints allow`
+   Compiling thiserror-impl v2.0.18
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name thiserror_impl --edition=2021 /home/kaan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-impl-2.0.18/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type proc-macro --emit=dep-info,link -C prefer-dynamic -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=592467ffd5ceccdf -C extra-filename=-7679e814081b4cb9 --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --extern proc_macro2=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libproc_macro2-6e361d414403e107.rlib --extern quote=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libquote-e3338ff9e189f247.rlib --extern syn=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libsyn-b42890113e233df4.rlib --extern proc_macro --cap-lints allow`
+   Compiling tokio-macros v2.7.0
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tokio_macros --edition=2021 /home/kaan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-macros-2.7.0/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type proc-macro --emit=dep-info,link -C prefer-dynamic -C embed-bitcode=no --warn=unexpected_cfgs --check-cfg 'cfg(fuzzing)' --check-cfg 'cfg(loom)' --check-cfg 'cfg(mio_unsupported_force_poll_poll)' --check-cfg 'cfg(tokio_allow_from_blocking_fd)' --check-cfg 'cfg(tokio_internal_mt_counters)' --check-cfg 'cfg(tokio_no_parking_lot)' --check-cfg 'cfg(tokio_no_tuning_tests)' --check-cfg 'cfg(tokio_unstable)' --check-cfg 'cfg(target_os, values("cygwin"))' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=c57680bc088ddafd -C extra-filename=-80ade180b2bc6c3e --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --extern proc_macro2=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libproc_macro2-6e361d414403e107.rlib --extern quote=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libquote-e3338ff9e189f247.rlib --extern syn=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libsyn-b42890113e233df4.rlib --extern proc_macro --cap-lints allow`
+   Compiling tokio v1.52.3
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tokio --edition=2021 /home/kaan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.3/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unexpected_cfgs --check-cfg 'cfg(fuzzing)' --check-cfg 'cfg(loom)' --check-cfg 'cfg(mio_unsupported_force_poll_poll)' --check-cfg 'cfg(tokio_allow_from_blocking_fd)' --check-cfg 'cfg(tokio_internal_mt_counters)' --check-cfg 'cfg(tokio_no_parking_lot)' --check-cfg 'cfg(tokio_no_tuning_tests)' --check-cfg 'cfg(tokio_unstable)' --check-cfg 'cfg(target_os, values("cygwin"))' --cfg 'feature="default"' --cfg 'feature="macros"' --cfg 'feature="rt"' --cfg 'feature="sync"' --cfg 'feature="test-util"' --cfg 'feature="time"' --cfg 'feature="tokio-macros"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("bytes", "default", "fs", "full", "io-std", "io-uring", "io-util", "libc", "macros", "mio", "net", "parking_lot", "process", "rt", "rt-multi-thread", "signal", "signal-hook-registry", "socket2", "sync", "taskdump", "test-util", "time", "tokio-macros", "tracing", "windows-sys"))' -C metadata=8630bd0b62a0e7a6 -C extra-filename=-ef8455a258b6310f --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --extern pin_project_lite=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libpin_project_lite-84104c71dcf82ece.rmeta --extern tokio_macros=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libtokio_macros-80ade180b2bc6c3e.so --cap-lints allow`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name thiserror --edition=2021 /home/kaan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "std"))' -C metadata=b0a59099da478c88 -C extra-filename=-936b95e02a631401 --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --extern thiserror_impl=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libthiserror_impl-7679e814081b4cb9.so --cap-lints allow --check-cfg 'cfg(error_generic_member_access)' --check-cfg 'cfg(thiserror_nightly_testing)' --check-cfg 'cfg(thiserror_no_backtrace_type)'`
+   Compiling adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-aTl9eg.tmp/crates/adaptive-transport)
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta`
+error[E0277]: the trait bound `TransmitDecision: Default` is not satisfied
+   --> crates/adaptive-transport/src/sender.rs:448:14
+    |
+448 |         vec![Default::default()] /* ~ changed by cargo-mutants ~ */
+    |              ^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Default` is not implemented for `TransmitDecision`
+   --> crates/adaptive-transport/src/sender.rs:113:1
+    |
+113 | pub struct TransmitDecision {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9cc1446eb98710ef -C extra-filename=-eecea9df1309094a --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `adaptive-transport` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `adaptive-transport` (lib test) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9cc1446eb98710ef -C extra-filename=-eecea9df1309094a --out-dir /tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-aTl9eg.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib` (exit status: 1)
+
+*** result: Failure(101)

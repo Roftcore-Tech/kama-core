@@ -1,0 +1,25 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::diag_ledger -> (u64, u64, u64) with (0, 1, 1)
+@@ -1483,21 +1483,17 @@
+     #[must_use]
+     pub fn diag_rtt(&self) -> (u64, u64) {
+         (self.diag_rtt_rejected, self.diag_ack_delay_max_us)
+     }
+     /// [TUR-2a teşhis] ledger/un-loss (SALT-GÖZLEM): `(unloss_iptal, loss_windowed_ppm,
+     /// spurious_units_total)` — ratchet-ölümü + geri-alma hacmi kanıtı.
+     #[must_use]
+     pub fn diag_ledger(&self) -> (u64, u64, u64) {
+-        (
+-            self.diag_unloss,
+-            self.loss.loss_windowed_ppm(),
+-            self.loss.spurious_units_total(),
+-        )
++        (0, 1, 1) /* ~ changed by cargo-mutants ~ */
+     }
+     /// [TUR-3a teşhis] sampler uçuş-sayısı (SALT-GÖZLEM — §3.7 sızıntı-borcu ölçümü).
+     #[must_use]
+     pub fn diag_pif(&self) -> u64 {
+         self.bw_sampler.packets_in_flight()
+     }
+     /// [TUR-3a teşhis] rtprop + queue_delay (SALT-GÖZLEM — qd-atıflaması, µs).
+     #[must_use]

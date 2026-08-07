@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::last_recovery -> RecoveryAction with Default::default()
+@@ -1546,17 +1546,17 @@
+             self.tombstone_evicted,
+             self.diag_ambiguous_skipped,
+             self.diag_delivered_credited,
+         )
+     }
+     /// Son hesaplanan forward-recovery eylemi (§11).
+     #[must_use]
+     pub fn last_recovery(&self) -> RecoveryAction {
+-        self.last_recovery
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+     /// Güncel emergency seviyesi.
+     #[must_use]
+     pub fn emergency_level(&self) -> EmergencyLevel {
+         self.emergency.level()
+     }
+ }
+ 

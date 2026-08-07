@@ -1,0 +1,47 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::compute_send_rate -> u64 with 0
+@@ -1097,43 +1097,17 @@
+         self.startup_stable_rounds >= STARTUP_PLATEAU_ROUNDS
+     }
+ 
+     /// send_rate (§8.2 + §8.5): SRC pacing × fuzzy gain, sonra budget clamp. INV-RATE-1: recovery
+     /// durumları base rate'i (Steady) DÜŞÜRMEZ; fuzzy send_rate_gain yalnız bw+queue_delay'den.
+     fn compute_send_rate(&self, decision: &FusionDecision) -> u64 {
+         // §3.3-A/[R8]: PRE_CONVERGE en-kötü-köşe önsel pacing = floor. min_rate fixture (Ek-B)
+         // UYGULANMAZ → 1 kbps kanalı floodlamaz (self-congestion). İlk ölçümle Startup'ta ramp başlar.
+-        if self.state == SenderState::PreConverge {
+-            return PRE_CONVERGE_FLOOR_BW;
+-        }
+-        let phase = match self.state {
+-            SenderState::Startup => PacingPhase::Startup,
+-            SenderState::Drain => PacingPhase::Drain, // [TUR-3b] 1/high_gain
+-            SenderState::ProbeUp => PacingPhase::ProbeUp, // [TUR-3c] 1.25× — AÇIK kol (sözleşme)
+-            SenderState::DrainRtprop => PacingPhase::ProbeDown,
+-            // [TUR-7 β1] recovery-overlay: gain BASE'ten (kayıp-ilanı faz-gain'ine dokunamaz —
+-            // INV-RATE-1-tamamlama, S1-onaylı; kilit-golden aşağıda test-modülünde).
+-            SenderState::RecoverArq | SenderState::RecoverFwd if self.base_is_startup => {
+-                PacingPhase::Startup
+-            }
+-            _ => PacingPhase::Steady,
+-        };
+-        let btlbw = self.btlbw.btlbw();
+-        let rtprop = self.rtt.rtprop().unwrap_or(INITIAL_RTT);
+-        let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+-        let fuzzy_rate = effective_send_rate(
+-            &self.src_cfg,
+-            btlbw,
+-            rtprop,
+-            srtt,
+-            phase.gain(),
+-            decision.send_rate_gain_permille,
+-        );
+-        budget::send_rate_final(fuzzy_rate, self.budget_cfg.min_rate_bps, u64::MAX)
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// ScheduleTransmit (§3): pacing bütçesinde emit — sıra §3'e göre **DATA ÖNCE**, sonra recovery.
+     /// Recovery-obsesif "veri ULAŞSIN" AGGREGATE'te en çok teslim demektir: her birim en az bir kez
+     /// denensin (completion-optimal) → sonra kaybolanlar artakalan bütçeyle kurtarılsın. Recovery-first
+     /// birkaç eski birimi ısrarla retransmit ederken YENİ birimleri aç bırakırdı (loopback bottleneck-yok
+     /// flood'unda birimlerin yarısı hiç gönderilmez; rate-limited path'te de daha az distinct teslim).
+     /// Hepsi tek pacer'ı (token bucket) paylaşır (§9/§13): recovery fırtınası rate'i patlatamaz.

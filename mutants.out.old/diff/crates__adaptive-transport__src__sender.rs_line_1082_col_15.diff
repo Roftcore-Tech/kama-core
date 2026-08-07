@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace == with != in Sender::startup_plateau
+@@ -1074,17 +1074,17 @@
+         // korunur (ölçümsüz round anlamsız).
+         if !self.startup_round_complete || !self.bw_sampled_since_round {
+             return false;
+         }
+         self.startup_round_complete = false;
+         self.startup_round_marker_seq = self.next_seq;
+         self.bw_sampled_since_round = false;
+         let bw = self.btlbw.btlbw();
+-        if bw == 0 {
++        if bw != /* ~ changed by cargo-mutants ~ */ 0 {
+             return false;
+         }
+         let grew = bw
+             .saturating_sub(self.startup_last_btlbw)
+             .saturating_mul(1000)
+             > self
+                 .startup_last_btlbw
+                 .saturating_mul(STARTUP_PLATEAU_EPS_PERMILLE);

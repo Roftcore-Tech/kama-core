@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace < with > in Sender::drain_due_duplicates
+@@ -1271,17 +1271,17 @@
+         if let Some(t) = self.tombstones.get_mut(&seq) {
+             t.retx_count = t.retx_count.saturating_add(1);
+         }
+     }
+ 
+     /// Vadesi gelen duplicate kopyalarını pace ederek emit et (§11 spacing).
+     fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+         let mut i = 0;
+-        while i < self.dup_queue.len() {
++        while i > /* ~ changed by cargo-mutants ~ */ self.dup_queue.len() {
+             if self.dup_queue[i].due_ns > now_ns {
+                 i += 1;
+                 continue; // henüz vadesi gelmedi.
+             }
+             if !self.pacer.try_send(self.dup_queue[i].unit.size) {
+                 break; // token yok.
+             }
+             let dup = self.dup_queue.remove(i);

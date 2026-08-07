@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace >= with < in Sender::update_state
+@@ -903,17 +903,17 @@
+                     let epoch = dur_ns(
+                         self.rtt
+                             .srtt()
+                             .unwrap_or(INITIAL_RTT)
+                             .max(self.expected_ack_interval()),
+                     );
+                     let elapsed = now_ns.saturating_sub(self.drain_entry_ns.unwrap_or(now_ns));
+                     if self.inflight_bytes <= bdp
+-                        || elapsed >= epoch.saturating_mul(u64::from(DRAIN_MAX_DWELL_EPOCH))
++                        || elapsed < /* ~ changed by cargo-mutants ~ */ epoch.saturating_mul(u64::from(DRAIN_MAX_DWELL_EPOCH))
+                     {
+                         self.drain_entry_ns = None;
+                         SenderState::Steady
+                     } else {
+                         SenderState::Drain
+                     }
+                 }
+                 // [TUR-3b D-2/3] ÇIKIŞ-İNVARİANTI (onaylı):

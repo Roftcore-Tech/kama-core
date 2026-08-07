@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace * with / in Sender::fuzzy_evaluate
+@@ -801,17 +801,17 @@
+     /// FuzzyEvaluate (§8.4/§15): ölçümlerden FusionInputs kur → controller kararı.
+     /// [TUR-2a D-1/5] loss girdisi LEDGER-penceresinden türer (lifetime-ratchet ÖLDÜ):
+     /// önce ledger_tick (W_loss = K_wl×ack_epoch; confirm = cadence-taban = geç-SACK ufku),
+     /// sonra `loss_windowed_ppm` — Spurious sayılmaz, pencere-dışı decay eder.
+     fn fuzzy_evaluate(&mut self, now_ns: u64) -> FusionDecision {
+         let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+         let ack_epoch = srtt.max(self.expected_ack_interval()); // D-2/1 tanımı
+         self.loss
+-            .ledger_tick(now_ns, ack_epoch * K_WL, self.cadence_loss_floor());
++            .ledger_tick(now_ns, ack_epoch / /* ~ changed by cargo-mutants ~ */ K_WL, self.cadence_loss_floor());
+         let jitter_ppm = dur_ns(self.rtt.rttvar())
+             .saturating_mul(1_000_000)
+             .checked_div(dur_ns(srtt))
+             .unwrap_or(0);
+         // [TUR-3a önalım, D-3/1] qd_ratio = qd×1000/rtprop; rtprop yoksa 0 (kanıt yok →
+         // boğma yok) + sayaç. Dürüst-rtprop'un zorunlu ikizi: mutlak-ns eşikler sub-kbps'te
+         // fiziksel-taban qd'yi (serialization çift-yönü, saniyeler) kalıcı-HIGH okuyordu.
+         let qd_ratio_permille = if self.rtt.rtprop().is_none_or(|r| r.is_zero()) {

@@ -1,0 +1,68 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::on_timer with ()
+@@ -654,64 +654,17 @@
+             self.queue_losses(&lost, now_ns);
+             // [TUR-A teşhis] loss-atıflama: packet-threshold (§5a) kaynaklı kuyruklanan kayıp sayısı.
+             self.diag_loss_pkt += (self.pending_lost.len() - before) as u64;
+         }
+     }
+ 
+     /// §12 timer handler (RTprop probe → DRAIN_RTPROP; PTO → zaman-eşiği loss).
+     fn on_timer(&mut self, timer: Timer, now_ns: u64) {
+-        match timer {
+-            Timer::RtpropProbe => {
+-                // [TUR-3b D-2/3] GİRİŞ = rtprop-penceresi-DOLUŞU (min-örnek yaşı ≥ W/2 [CAL]);
+-                // 200ms-sabit-tick tetikçiliği CANCELLED — tazelik kanal-saatli (ZM-2).
+-                if self.state == SenderState::Steady {
+-                    let stale = self
+-                        .rtt
+-                        .rtprop_age_ns(now_ns)
+-                        .is_some_and(|age| age >= self.rtt.rtprop_window_ns() / 2);
+-                    if stale {
+-                        self.state = SenderState::DrainRtprop;
+-                        self.drain_rtprop_entry_ns = Some(now_ns);
+-                        self.drain_rtprop_qualifying = false;
+-                    }
+-                }
+-            }
+-            Timer::Pto => {
+-                // §3.3-C/(1,5) yasak: PRE_CONVERGE'de time-threshold loss-ilanı + PTO DONDURULUR
+-                // (srtt BOŞ → tanımsız; geometrik kopya §3.3-B yerini alır). schedule_transmit yine çalışır.
+-                if self.state != SenderState::PreConverge {
+-                    let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+-                    let lost =
+-                        self.loss
+-                            .detect_time_losses(now_ns, srtt, self.cadence_loss_floor());
+-                    let before = self.pending_lost.len();
+-                    self.queue_losses(&lost, now_ns);
+-                    // [TUR-A teşhis] loss-atıflama: time-threshold (§5b) kaynaklı kuyruklanan kayıp.
+-                    self.diag_loss_time += (self.pending_lost.len() - before) as u64;
+-                }
+-                // [TUR-2b] tombstone TTL budaması: süresi dolan kayıt düşer — sonraki geç-ACK'i
+-                // Expired/Unknown (örneksiz). Ekleme-sırası ≈ TTL-sırası (T_loss yavaş değişir);
+-                // front'tan tarama deterministik + bounded.
+-                while let Some(&front) = self.tombstone_order.front() {
+-                    match self.tombstones.get(&front) {
+-                        None => {
+-                            self.tombstone_order.pop_front(); // hit/evict ile zaten düşmüş
+-                        }
+-                        Some(t) if t.expiry_ns <= now_ns => {
+-                            self.tombstones.remove(&front);
+-                            self.tombstone_order.pop_front();
+-                            // [commit-B §3.7] artık ACK'lenmeyecek → uçuş-sayısından düş.
+-                            self.bw_sampler.forget_in_flight();
+-                        }
+-                        Some(_) => break,
+-                    }
+-                }
+-            }
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [TUR-1b D-1/2] Cadence-farkında loss-eşiği TABANI = K_c × beklenen-ACK-aralığı (EAI).
+     /// `EAI = ACK_FREQ_N × ort_birim / send_rate_fiili + sack_dönüş_serialization(önsel)`.
+     /// Sender-yerel + deterministik (ADR-17). Saat-sınıfı (ZM-3): kanal-türevi (send_rate,
+     /// inflight-ortalama birim) + worst-corner return-önseli [CAL — §3.3-E-FULL'de ölçülen
+     /// return_bw ile değişir). Amaç (ZM-4): elapsed'in içindeki "SACK'i henüz gelmedi" süresi
+     /// eşiğin saatinde TEMSİL edilsin — kanıtlı-ama-cadence yanlış-sınıflandırması yapısal biter.

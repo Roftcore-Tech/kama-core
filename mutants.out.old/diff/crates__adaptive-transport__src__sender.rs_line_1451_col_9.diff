@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::last_decision -> FusionDecision with Default::default()
+@@ -1443,17 +1443,17 @@
+     /// inflight bytes.
+     #[must_use]
+     pub fn inflight_bytes(&self) -> u64 {
+         self.inflight_bytes
+     }
+     /// Son füzyon kararı.
+     #[must_use]
+     pub fn last_decision(&self) -> FusionDecision {
+-        self.last_decision
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+     /// TUR-A teşhis rate-trajektori snapshot'ı (SALT-GÖZLEM; davranış DEĞİŞMEZ):
+     /// `(state, btlbw_bps, srtt_us, send_rate_bps, inflight_bytes)`. floor→btlbw ramp kilidini ölçmek için.
+     #[must_use]
+     pub fn diag_rate(&self) -> (SenderState, u64, u64, u64, u64) {
+         let srtt_us = self
+             .rtt
+             .srtt()

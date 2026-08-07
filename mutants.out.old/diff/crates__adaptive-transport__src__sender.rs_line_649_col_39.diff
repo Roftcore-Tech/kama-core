@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ delete ! in Sender::on_ack_received
+@@ -641,17 +641,17 @@
+             // [TUR-3b D-2/3] DrainRtprop dwell'i içinde gelen rtt-örneği = qualifying.
+             if self.state == SenderState::DrainRtprop {
+                 self.drain_rtprop_qualifying = true;
+             }
+         }
+ 
+         // §3.3-B stop koşulu: teyit edilen birimlerin bekleyen geometrik kopyalarını İPTAL et.
+         if !acked_units.is_empty() {
+-            self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id));
++            self.dup_queue.retain(|d|  /* ~ changed by cargo-mutants ~ */acked_units.contains(&d.unit.id));
+         }
+ 
+         if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {
+             let before = self.pending_lost.len();
+             self.queue_losses(&lost, now_ns);
+             // [TUR-A teşhis] loss-atıflama: packet-threshold (§5a) kaynaklı kuyruklanan kayıp sayısı.
+             self.diag_loss_pkt += (self.pending_lost.len() - before) as u64;
+         }

@@ -1,0 +1,48 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::drain_due_duplicates with ()
+@@ -1270,44 +1270,17 @@
+     fn mark_tombstone_superseded(&mut self, seq: u64) {
+         if let Some(t) = self.tombstones.get_mut(&seq) {
+             t.retx_count = t.retx_count.saturating_add(1);
+         }
+     }
+ 
+     /// Vadesi gelen duplicate kopyalarını pace ederek emit et (§11 spacing).
+     fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+-        let mut i = 0;
+-        while i < self.dup_queue.len() {
+-            if self.dup_queue[i].due_ns > now_ns {
+-                i += 1;
+-                continue; // henüz vadesi gelmedi.
+-            }
+-            if !self.pacer.try_send(self.dup_queue[i].unit.size) {
+-                break; // token yok.
+-            }
+-            let dup = self.dup_queue.remove(i);
+-            let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
+-            out.push(TransmitDecision {
+-                kind: TransmitKind::Duplicate,
+-                seq,
+-                unit_id: dup.unit.id,
+-                size: dup.unit.size,
+-            });
+-            // §3.3-B geometrik reschedule: interval_ns>0 (PRE_CONVERGE kopyası) → sonraki kopya
+-            // ×COPY_MULTIPLIER (sayı-tavanı YOK, deadline'a dek; teyit gelince §3.3-B stop ile iptal).
+-            if dup.interval_ns > 0 {
+-                let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER);
+-                self.dup_queue.push(DupRec {
+-                    due_ns: now_ns.saturating_add(next_interval),
+-                    unit: dup.unit,
+-                    interval_ns: next_interval,
+-                });
+-            }
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Yeni DATA'yı pace ederek emit et. RECOVER_FWD'de her DATA ayrıca (factor−1) kopya planlar.
+     fn drain_new_data(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+         while let Some(front) = self.tx_queue.front().copied() {
+             // [R3/ADIM-6] Burst clamp artık pipeline'da kanal-türevli set_burst_cap ile (PreConverge floor
+             // rate → burst_cap = 1 birim). Ayrı PreConverge özel-durumu GEREKMEZ (tek kapı, tüm state'ler).
+             if !self.pacer.try_send(front.size) {

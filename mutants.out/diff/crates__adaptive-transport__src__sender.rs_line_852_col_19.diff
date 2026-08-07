@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace > with == in Sender::update_state
+@@ -844,17 +844,17 @@
+         let level = self.emergency.update(health, now_ns);
+         self.last_recovery = emergency::action(level, Framing::Tiny, &self.emergency_cfg);
+ 
+         let idle = self.tx_queue.is_empty()
+             && self.inflight.is_empty()
+             && self.pending_lost.is_empty()
+             && self.dup_queue.is_empty();
+         let emergency_active =
+-            level > EmergencyLevel::Arq || decision.mode == Mode::EmergencyForwardRedundancy;
++            level == /* ~ changed by cargo-mutants ~ */ EmergencyLevel::Arq || decision.mode == Mode::EmergencyForwardRedundancy;
+ 
+         // [TUR-7 β1] PLATO BASE-ÜSTÜNDE: base==Startup iken round-değerlendirmesi HER durumda
+         // (recovery-altında da) ilerler — ramp'in sonlanması kanal-ölçümüne bağlı kalır
+         // (delivered-anchor round'lar recovery'de de tamamlanır; eternal-2.885 sınırlı).
+         // Beyanlı-sınır (r3): plato recovery-altında gelirse çıkış Steady'ye (Drain o pencerede
+         // atlanır — recovery gain'i base'te tuttuğundan kuyruk S4-B-ölçüsüyle sınırlı).
+         if self.base_is_startup && self.startup_plateau() {
+             self.base_is_startup = false;

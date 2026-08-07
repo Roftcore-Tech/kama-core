@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ delete ! in Sender::on_ack_received
+@@ -592,17 +592,17 @@
+         self.loss
+             .set_packet_threshold(u64::from(self.reorder.reorder_thresh(&self.retx_cfg)));
+         let lost = self.loss.on_ack(&ack.acked_seqs, now_ns);
+ 
+         // [TUR-2a D-1/3] UN-LOSS: kayıp-ilan-edilmiş seq'e ACK geldi → hipotez çürüdü.
+         // pending-retransmit İPTAL + kopyalar iptal + note_spurious kablosu + kol-1 RTT adayı.
+         let unlossed = self.loss.take_unlossed();
+         let mut unloss_rtt: Option<(u64, u64)> = None; // (seq, send_ns)
+-        if !unlossed.is_empty() {
++        if  /* ~ changed by cargo-mutants ~ */unlossed.is_empty() {
+             // Gözlenen-reorder mesafesi görülen EN YÜKSEK acked'e göredir (bu geç-ACK'in
+             // kendi max'ı değil — kayıp-şüphesini yaratan önceki yüksek ACK'ler dahil).
+             let la = self.loss.largest_acked().unwrap_or(0);
+             let mut kept = VecDeque::with_capacity(self.pending_lost.len());
+             for rec in self.pending_lost.drain(..) {
+                 if !unlossed.contains(&rec.seq) {
+                     kept.push_back(rec);
+                     continue;

@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace += with *= in Sender::probe_close
+@@ -1053,17 +1053,17 @@
+     }
+ 
+     /// ProbeUp çıkış-muhasebesi (abort/timeout — AYRI raporlanır: "başarısız ≠ kapasite-yok").
+     fn probe_close(&mut self, now_ns: u64, exit: ProbeExit) -> SenderState {
+         self.probe_entry_ns = None;
+         self.last_probe_end_ns = now_ns;
+         match exit {
+             ProbeExit::Abort => self.diag_probe_abort += 1,
+-            ProbeExit::Timeout => self.diag_probe_timeout += 1,
++            ProbeExit::Timeout => self.diag_probe_timeout *= /* ~ changed by cargo-mutants ~ */ 1,
+         }
+         SenderState::Steady
+     }
+ 
+     /// STARTUP plato: BtlBw N round Δ<ε ise stabil (§3 STARTUP→STEADY).
+     ///
+     /// [TUR-A ölçüm-#1, TEK DEĞİŞKEN] Round = YENİ bw-örneği (ACK'ten). Eski kod her on_event
+     /// çağrısını round sayıyordu → 1ms pace-tick'te 3 "round" = STARTUP 3ms'de biter, bant hiç

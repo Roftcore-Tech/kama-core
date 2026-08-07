@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace == with != in Sender::plan_forward_duplication
+@@ -1231,17 +1231,17 @@
+         if self.pending_lost.is_empty() {
+             // Saf-sessizlik tail-liveness: kopyası zaten planlı olmayan orijinal-DATA inflight birimleri.
+             let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
+             let tail: Vec<OpaqueUnit> = self
+                 .inflight
+                 .values()
+                 .filter(|p| p.origin == TransmitKind::Data)
+                 .map(|p| p.unit)
+-                .filter(|u| !self.dup_queue.iter().any(|d| d.unit.id == u.id))
++                .filter(|u| !self.dup_queue.iter().any(|d| d.unit.id != /* ~ changed by cargo-mutants ~ */ u.id))
+                 .collect();
+             for unit in tail {
+                 self.dup_queue.push(DupRec {
+                     due_ns: now_ns,
+                     unit,
+                     interval_ns: srtt_ns.max(1), // geometrik reschedule (drain'de ×COPY_MULTIPLIER)
+                 });
+             }

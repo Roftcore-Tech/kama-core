@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace / with * in Sender::queue_losses
+@@ -739,17 +739,17 @@
+     /// (bw_sample DAHİL → kol-1'de BW-örneği kurtarılabilir; eski davranış kaydı düşürüp
+     /// geç-ACK örneklerini SANSÜRLÜYORDU — K-1 eviction-sansürü sınıfı).
+     fn queue_losses(&mut self, lost: &[u64], now_ns: u64) {
+         if lost.is_empty() {
+             return;
+         }
+         // TTL = K_TOMB × T_loss(ilan-anı); T_loss = max(9/8·srtt, cadence-taban) — eşikle AYNI saat.
+         let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+-        let t_loss_ns = (dur_ns(srtt) * 9 / 8).max(dur_ns(self.cadence_loss_floor()));
++        let t_loss_ns = (dur_ns(srtt) * 9 * /* ~ changed by cargo-mutants ~ */ 8).max(dur_ns(self.cadence_loss_floor()));
+         let expiry_ns = now_ns.saturating_add(t_loss_ns.saturating_mul(u64::from(K_TOMB)));
+         for &seq in lost {
+             if let Some(p) = self.inflight.remove(&seq) {
+                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                 // [TUR-3c workflow-bulgusu (a)] loss-abort YALNIZ probe-ATIFLI kayıpla:
+                 // send_ns ≥ probe-girişi (probe-öncesi trafiğin geç-Confirmed'i probe'u öldürmesin;
+                 // rastgele-kayıp vetosu da böyle daralır — INV-RATE-1 gerilimi düşer).
+                 if let Some(entry) = self.probe_entry_ns {

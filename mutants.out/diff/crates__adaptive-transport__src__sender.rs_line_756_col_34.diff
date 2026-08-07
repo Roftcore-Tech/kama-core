@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace >= with < in Sender::queue_losses
+@@ -748,17 +748,17 @@
+         let expiry_ns = now_ns.saturating_add(t_loss_ns.saturating_mul(u64::from(K_TOMB)));
+         for &seq in lost {
+             if let Some(p) = self.inflight.remove(&seq) {
+                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                 // [TUR-3c workflow-bulgusu (a)] loss-abort YALNIZ probe-ATIFLI kayıpla:
+                 // send_ns ≥ probe-girişi (probe-öncesi trafiğin geç-Confirmed'i probe'u öldürmesin;
+                 // rastgele-kayıp vetosu da böyle daralır — INV-RATE-1 gerilimi düşer).
+                 if let Some(entry) = self.probe_entry_ns {
+-                    if p.send_ns >= entry {
++                    if p.send_ns < /* ~ changed by cargo-mutants ~ */ entry {
+                         self.probe_loss_attributed = true;
+                     }
+                 }
+                 if p.origin == TransmitKind::Duplicate {
+                     // [commit-B §3.7] Dup-kökenli kayıp tombstonesuz düşer → uçuş-sayısı burada.
+                     self.bw_sampler.forget_in_flight();
+                 }
+                 if p.origin != TransmitKind::Duplicate {

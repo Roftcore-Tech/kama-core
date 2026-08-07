@@ -1,0 +1,31 @@
+crates/adaptive-transport/src/sender.rs:448:9: replace Sender::on_event -> Vec<TransmitDecision> with vec![Default::default()]
+crates/adaptive-transport/src/sender.rs:516:24: replace + with * in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:519:43: replace * with + in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:520:49: replace * with + in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:526:44: replace * with + in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:529:48: replace / with % in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:806:9: replace Sender::fuzzy_evaluate -> FusionDecision with Default::default()
+crates/adaptive-transport/src/sender.rs:809:44: replace * with + in Sender::fuzzy_evaluate
+crates/adaptive-transport/src/sender.rs:1049:9: replace Sender::probe_close_success -> SenderState with Default::default()
+crates/adaptive-transport/src/sender.rs:1057:9: replace Sender::probe_close -> SenderState with Default::default()
+crates/adaptive-transport/src/sender.rs:1141:9: replace Sender::schedule_transmit -> Vec<TransmitDecision> with vec![Default::default()]
+crates/adaptive-transport/src/sender.rs:1441:9: replace Sender::state -> SenderState with Default::default()
+crates/adaptive-transport/src/sender.rs:1451:9: replace Sender::last_decision -> FusionDecision with Default::default()
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 0, 0, 0, 0)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 0, 0, 0, 1)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 0, 0, 1, 0)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 0, 0, 1, 1)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 0, 1, 0, 0)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 0, 1, 0, 1)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 0, 1, 1, 0)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 0, 1, 1, 1)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 1, 0, 0, 0)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 1, 0, 0, 1)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 1, 0, 1, 1)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 1, 0, 1, 0)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 1, 1, 0, 0)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 1, 1, 1, 0)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 1, 1, 0, 1)
+crates/adaptive-transport/src/sender.rs:1457:9: replace Sender::diag_rate -> (SenderState, u64, u64, u64, u64) with (Default::default(), 1, 1, 1, 1)
+crates/adaptive-transport/src/sender.rs:1554:9: replace Sender::last_recovery -> RecoveryAction with Default::default()
+crates/adaptive-transport/src/sender.rs:1559:9: replace Sender::emergency_level -> EmergencyLevel with Default::default()

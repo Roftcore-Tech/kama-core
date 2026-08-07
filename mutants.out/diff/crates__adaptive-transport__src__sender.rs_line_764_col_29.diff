@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace != with == in Sender::queue_losses
+@@ -756,17 +756,17 @@
+                     if p.send_ns >= entry {
+                         self.probe_loss_attributed = true;
+                     }
+                 }
+                 if p.origin == TransmitKind::Duplicate {
+                     // [commit-B §3.7] Dup-kökenli kayıp tombstonesuz düşer → uçuş-sayısı burada.
+                     self.bw_sampler.forget_in_flight();
+                 }
+-                if p.origin != TransmitKind::Duplicate {
++                if p.origin == /* ~ changed by cargo-mutants ~ */ TransmitKind::Duplicate {
+                     self.pending_lost.push_back(LostRec {
+                         seq,
+                         unit: p.unit,
+                         deadline_ns: now_ns,
+                         retx_count: p.retx_count,
+                         send_ns: p.send_ns, // [TUR-2a] un-loss kol-1 RTT için orijinal damga
+                     });
+                     // [TUR-2b] tombstone: bounded, en-eski-önce eviction + audit.

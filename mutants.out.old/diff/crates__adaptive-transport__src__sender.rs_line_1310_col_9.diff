@@ -1,0 +1,60 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::drain_new_data with ()
+@@ -1302,56 +1302,17 @@
+                     interval_ns: next_interval,
+                 });
+             }
+         }
+     }
+ 
+     /// Yeni DATA'yı pace ederek emit et. RECOVER_FWD'de her DATA ayrıca (factor−1) kopya planlar.
+     fn drain_new_data(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+-        while let Some(front) = self.tx_queue.front().copied() {
+-            // [R3/ADIM-6] Burst clamp artık pipeline'da kanal-türevli set_burst_cap ile (PreConverge floor
+-            // rate → burst_cap = 1 birim). Ayrı PreConverge özel-durumu GEREKMEZ (tek kapı, tüm state'ler).
+-            if !self.pacer.try_send(front.size) {
+-                break;
+-            }
+-            self.tx_queue.pop_front();
+-            let seq = self.track_sent(front, now_ns, 0, TransmitKind::Data);
+-            out.push(TransmitDecision {
+-                kind: TransmitKind::Data,
+-                seq,
+-                unit_id: front.id,
+-                size: front.size,
+-            });
+-            if self.state == SenderState::RecoverFwd {
+-                let (factor, spacing) = self.dup_params();
+-                for i in 1..u64::from(factor) {
+-                    self.dup_queue.push(DupRec {
+-                        due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
+-                        unit: front,
+-                        interval_ns: 0, // emergency: fire-once
+-                    });
+-                }
+-            } else if self.state == SenderState::PreConverge {
+-                // §3.3-B geometrik kopya: ilk kopya k_base×RTT_floor sonra; ateşlenince ×COPY_MULTIPLIER.
+-                // RTT_floor ≈ (unit+sack)/floor_bw. Temiz kanalda ilk SACK bunu ateşlemeden iptal eder.
+-                // [K-D2] t₀ = wire-emit anı = buradaki `now_ns` (birim pacer.try_send'i geçti = WIRE'a çıktı),
+-                // sunum/enqueue anı DEĞİL → burst kuyruğunun serialization gecikmesi otomatik hesaba girer.
+-                let rtt_floor = (front.size + PC_SACK_WIRE)
+-                    .saturating_mul(1_000_000_000)
+-                    .checked_div(PRE_CONVERGE_FLOOR_BW)
+-                    .unwrap_or(0);
+-                let first_delay = rtt_floor.saturating_mul(PC_KBASE_NUM) / PC_KBASE_DEN;
+-                self.dup_queue.push(DupRec {
+-                    due_ns: now_ns.saturating_add(first_delay),
+-                    unit: front,
+-                    interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
+-                });
+-            }
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// last_recovery'den (factor, spacing); Duplication değilse varsayılan (§11 Tiny framing).
+     fn dup_params(&self) -> (u8, Duration) {
+         match self.last_recovery {
+             RecoveryAction::Duplication { factor, spacing } => (factor, spacing),
+             _ => (DEFAULT_DUP_FACTOR, DEFAULT_DUP_SPACING),
+         }

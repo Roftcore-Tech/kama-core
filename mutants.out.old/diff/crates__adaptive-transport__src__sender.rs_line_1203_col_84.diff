@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace == with != in Sender::plan_arq_retransmits
+@@ -1195,17 +1195,17 @@
+                     out.push(TransmitDecision {
+                         kind: TransmitKind::Retransmit,
+                         seq: new_seq,
+                         unit_id: rec.unit.id,
+                         size: rec.unit.size,
+                     });
+                 }
+                 RetxDecision::CapExceeded { seq, policy } => {
+-                    if let Some(pos) = self.pending_lost.iter().position(|r| r.seq == seq) {
++                    if let Some(pos) = self.pending_lost.iter().position(|r| r.seq != /* ~ changed by cargo-mutants ~ */ seq) {
+                         let rec = self.pending_lost.remove(pos).expect("pos geçerli");
+                         if policy == CapExceedPolicy::HandToForward {
+                             // ARQ cap doldu → forward-recovery'ye devret (§9.1 "veri ulaşsın").
+                             // [TUR-2c review-fix] devir de YENİDEN-EMİSYONDUR → superseded-işaret
+                             // (örnekleme politikası recovery-yoluna bağımlı olamaz — tekdüze kural).
+                             self.mark_tombstone_superseded(rec.seq);
+                             self.dup_queue.push(DupRec {
+                                 due_ns: now_ns,

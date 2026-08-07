@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ delete ! in Sender::plan_arq_retransmits
+@@ -1174,17 +1174,17 @@
+             .plan(&lost, self.last_decision.arq_aggressiveness_permille);
+         for dec in plan {
+             match dec {
+                 RetxDecision::Retransmit { seq } => {
+                     let Some(pos) = self.pending_lost.iter().position(|r| r.seq == seq) else {
+                         continue;
+                     };
+                     let rec = self.pending_lost[pos];
+-                    if !self.pacer.try_send(rec.unit.size) {
++                    if  /* ~ changed by cargo-mutants ~ */self.pacer.try_send(rec.unit.size) {
+                         break; // token yok → sonraki tick'te (deadline plandan düşmez, §9).
+                     }
+                     self.pending_lost.remove(pos);
+                     // [TUR-2c D-1/3 kol-2] Orijinalin tombstone'u SUPERSEDED: retx-sonrası-
+                     // geç-orijinal-ACK kol-1'e düşemez (2b'de kayıt ilan-anında donuyordu).
+                     self.mark_tombstone_superseded(seq);
+                     let new_seq = self.track_sent(
+                         rec.unit,

@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ delete ! in Sender::on_ack_received
+@@ -629,17 +629,17 @@
+         if let Some(send_ns) = rtt_send_ns {
+             let raw = Duration::from_nanos(now_ns.saturating_sub(send_ns));
+             self.diag_ack_delay_max_us = self
+                 .diag_ack_delay_max_us
+                 .max(ack.ack_delay.as_micros() as u64);
+             // [TUR-1x] min-rtt guard (RFC 9002 §5.3): düzeltme güvensizse RAW kullanılır —
+             // örnek ATLANMAZ (sample-skip = estimator açlığı, K-1 sınıfı).
+             let (sample, corrected) = apply_ack_delay(raw, ack.ack_delay, self.rtt.rtprop());
+-            if !corrected {
++            if  /* ~ changed by cargo-mutants ~ */corrected {
+                 self.diag_rtt_rejected += 1; // §7.3 ack_delay_untrusted (düzeltme reddi; raw işlendi)
+             }
+             self.rtt.observe(now_ns, sample);
+             // [TUR-3b D-2/3] DrainRtprop dwell'i içinde gelen rtt-örneği = qualifying.
+             if self.state == SenderState::DrainRtprop {
+                 self.drain_rtprop_qualifying = true;
+             }
+         }

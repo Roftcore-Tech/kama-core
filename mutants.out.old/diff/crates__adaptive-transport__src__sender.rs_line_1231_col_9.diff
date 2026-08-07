@@ -1,0 +1,54 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::plan_forward_duplication with ()
+@@ -1223,50 +1223,17 @@
+     /// RECOVER_FWD (§11): ACK-BAĞIMSIZ forward duplication. Kayıp birimleri `factor` kez zaman-aralıklı
+     /// kopya olarak planla (ACK beklemeden — reverse-path çöktüğü için ARQ futile).
+     ///
+     /// [TUR-1a / D-1/1 liveness kolu] pending_lost BOŞKEN (saf-sessizlik: later-ACK preconditionı loss
+     /// SINIFLANDIRMASINI blokladı ama tail cevapsız): unacked orijinal inflight birimlerine spekülatif
+     /// geometrik kopya (taban=srtt, ×2 backoff; ACK'le iptal §3.3-B-stop). Loss METRİĞİNE dokunmaz —
+     /// "saf sessizlik loss'u artırmaz; fakat liveness amacıyla probe/retransmit tetikleyebilir" (§5.1).
+     fn plan_forward_duplication(&mut self, now_ns: u64) {
+-        if self.pending_lost.is_empty() {
+-            // Saf-sessizlik tail-liveness: kopyası zaten planlı olmayan orijinal-DATA inflight birimleri.
+-            let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
+-            let tail: Vec<OpaqueUnit> = self
+-                .inflight
+-                .values()
+-                .filter(|p| p.origin == TransmitKind::Data)
+-                .map(|p| p.unit)
+-                .filter(|u| !self.dup_queue.iter().any(|d| d.unit.id == u.id))
+-                .collect();
+-            for unit in tail {
+-                self.dup_queue.push(DupRec {
+-                    due_ns: now_ns,
+-                    unit,
+-                    interval_ns: srtt_ns.max(1), // geometrik reschedule (drain'de ×COPY_MULTIPLIER)
+-                });
+-            }
+-            return;
+-        }
+-        let (factor, spacing) = self.dup_params();
+-        let recs: Vec<LostRec> = self.pending_lost.drain(..).collect();
+-        for rec in recs {
+-            // [TUR-2c review-fix] FWD-kopya da YENİDEN-EMİSYONDUR: orijinalin tombstone'u
+-            // superseded — kol-1/kol-2 seçimi recovery-state'e göre DEĞİŞEMEZ (tekdüze
+-            // muhafazakâr kural; ARQ-koluyla simetri).
+-            self.mark_tombstone_superseded(rec.seq);
+-            for i in 0..u64::from(factor) {
+-                self.dup_queue.push(DupRec {
+-                    due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
+-                    unit: rec.unit,
+-                    interval_ns: 0, // emergency: fire-once, reschedule YOK
+-                });
+-            }
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [TUR-2c] Orijinal iletimin tombstone'unu SUPERSEDED işaretle (retx_count++): birimin
+     /// HERHANGİ bir yeniden-emisyonundan (ARQ retransmit / FWD dup / HandToForward) sonra
+     /// orijinalin geç-ACK'i kol-1'e (RTT + rate-örneği) düşemez — tekdüze muhafazakâr kural.
+     fn mark_tombstone_superseded(&mut self, seq: u64) {
+         if let Some(t) = self.tombstones.get_mut(&seq) {
+             t.retx_count = t.retx_count.saturating_add(1);

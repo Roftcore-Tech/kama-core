@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace == with != in Sender::update_state
+@@ -857,17 +857,17 @@
+         // Beyanlı-sınır (r3): plato recovery-altında gelirse çıkış Steady'ye (Drain o pencerede
+         // atlanır — recovery gain'i base'te tuttuğundan kuyruk S4-B-ölçüsüyle sınırlı).
+         if self.base_is_startup && self.startup_plateau() {
+             self.base_is_startup = false;
+             self.plateau_reached = true;
+         }
+         self.state = if idle {
+             SenderState::Idle
+-        } else if self.state == SenderState::PreConverge {
++        } else if self.state != /* ~ changed by cargo-mutants ~ */ SenderState::PreConverge {
+             // §3.3-D kademeli tahliye: ilk geçerli SACK (RTT kilidi açıldı) → Startup; yoksa PreConverge.
+             // emergency/ARQ/loss burada BYPASS edilir — recovery cold-start'ta DONDURULMUŞ (§3.3-C).
+             if self.rtt.srtt().is_some() {
+                 SenderState::Startup
+             } else {
+                 SenderState::PreConverge
+             }
+         } else if emergency_active {

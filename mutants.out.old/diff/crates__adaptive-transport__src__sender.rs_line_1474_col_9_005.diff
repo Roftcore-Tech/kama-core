@@ -1,0 +1,25 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::diag_loss -> (u64, u64, u64) with (1, 0, 1)
+@@ -1466,21 +1466,17 @@
+             self.inflight_bytes,
+         )
+     }
+     /// [TUR-A teşhis, ölçüm-#2] loss-atıflama (SALT-GÖZLEM): `(packet_threshold_queued,
+     /// time_threshold_queued, pending_lost_now)`. Temiz kanalda hangi tetik spurious RecoverArq açıyor —
+     /// gerçek gap (packet) mi, cadence-gap (time) mi.
+     #[must_use]
+     pub fn diag_loss(&self) -> (u64, u64, u64) {
+-        (
+-            self.diag_loss_pkt,
+-            self.diag_loss_time,
+-            self.pending_lost.len() as u64,
+-        )
++        (1, 0, 1) /* ~ changed by cargo-mutants ~ */
+     }
+     /// [TUR-1x teşhis] ack_delay/RTT-guard (SALT-GÖZLEM): `(rejected_samples, max_decoded_ack_delay_us)`.
+     /// V2 kodlama-sadakati kanıtı: max_us cadence-hold mertebesine (saniyeler) çıkabilmeli (eski µs-birim
+     /// tavanı 65535'te kelepçeliydi); rejected temiz kanalda ≈0 beklenir.
+     #[must_use]
+     pub fn diag_rtt(&self) -> (u64, u64) {
+         (self.diag_rtt_rejected, self.diag_ack_delay_max_us)
+     }

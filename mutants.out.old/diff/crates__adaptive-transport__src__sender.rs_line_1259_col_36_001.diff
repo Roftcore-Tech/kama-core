@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace + with * in Sender::plan_forward_duplication
+@@ -1251,17 +1251,17 @@
+         let recs: Vec<LostRec> = self.pending_lost.drain(..).collect();
+         for rec in recs {
+             // [TUR-2c review-fix] FWD-kopya da YENİDEN-EMİSYONDUR: orijinalin tombstone'u
+             // superseded — kol-1/kol-2 seçimi recovery-state'e göre DEĞİŞEMEZ (tekdüze
+             // muhafazakâr kural; ARQ-koluyla simetri).
+             self.mark_tombstone_superseded(rec.seq);
+             for i in 0..u64::from(factor) {
+                 self.dup_queue.push(DupRec {
+-                    due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
++                    due_ns: now_ns * /* ~ changed by cargo-mutants ~ */ i.saturating_mul(dur_ns(spacing)),
+                     unit: rec.unit,
+                     interval_ns: 0, // emergency: fire-once, reschedule YOK
+                 });
+             }
+         }
+     }
+ 
+     /// [TUR-2c] Orijinal iletimin tombstone'unu SUPERSEDED işaretle (retx_count++): birimin

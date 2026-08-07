@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ delete match arm SenderState::RecoverFwd in Sender::schedule_transmit
+@@ -1146,17 +1146,17 @@
+             && !self.pending_lost.is_empty()
+             && self.arq_share_tick.is_multiple_of(K_ARQ_SHARE)
+         {
+             self.plan_arq_retransmits(&mut out, now_ns);
+         }
+         self.drain_new_data(&mut out, now_ns);
+         match self.state {
+             SenderState::RecoverArq => self.plan_arq_retransmits(&mut out, now_ns),
+-            SenderState::RecoverFwd => self.plan_forward_duplication(now_ns),
++             /* ~ changed by cargo-mutants ~ */
+             _ => {}
+         }
+         self.drain_due_duplicates(&mut out, now_ns);
+         out
+     }
+ 
+     /// RECOVER_ARQ (§9): ACK-güdümlü selective retransmit. arq_aggressiveness=0 → baskıla (fec-dominant).
+     fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {

@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::diag_rtt -> (u64, u64) with (1, 1)
+@@ -1477,17 +1477,17 @@
+             self.pending_lost.len() as u64,
+         )
+     }
+     /// [TUR-1x teşhis] ack_delay/RTT-guard (SALT-GÖZLEM): `(rejected_samples, max_decoded_ack_delay_us)`.
+     /// V2 kodlama-sadakati kanıtı: max_us cadence-hold mertebesine (saniyeler) çıkabilmeli (eski µs-birim
+     /// tavanı 65535'te kelepçeliydi); rejected temiz kanalda ≈0 beklenir.
+     #[must_use]
+     pub fn diag_rtt(&self) -> (u64, u64) {
+-        (self.diag_rtt_rejected, self.diag_ack_delay_max_us)
++        (1, 1) /* ~ changed by cargo-mutants ~ */
+     }
+     /// [TUR-2a teşhis] ledger/un-loss (SALT-GÖZLEM): `(unloss_iptal, loss_windowed_ppm,
+     /// spurious_units_total)` — ratchet-ölümü + geri-alma hacmi kanıtı.
+     #[must_use]
+     pub fn diag_ledger(&self) -> (u64, u64, u64) {
+         (
+             self.diag_unloss,
+             self.loss.loss_windowed_ppm(),

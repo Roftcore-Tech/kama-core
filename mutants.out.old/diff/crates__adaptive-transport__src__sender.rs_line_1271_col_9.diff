@@ -1,0 +1,23 @@
+--- crates/adaptive-transport/src/sender.rs
++++ replace Sender::mark_tombstone_superseded with ()
+@@ -1263,19 +1263,17 @@
+             }
+         }
+     }
+ 
+     /// [TUR-2c] Orijinal iletimin tombstone'unu SUPERSEDED işaretle (retx_count++): birimin
+     /// HERHANGİ bir yeniden-emisyonundan (ARQ retransmit / FWD dup / HandToForward) sonra
+     /// orijinalin geç-ACK'i kol-1'e (RTT + rate-örneği) düşemez — tekdüze muhafazakâr kural.
+     fn mark_tombstone_superseded(&mut self, seq: u64) {
+-        if let Some(t) = self.tombstones.get_mut(&seq) {
+-            t.retx_count = t.retx_count.saturating_add(1);
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Vadesi gelen duplicate kopyalarını pace ederek emit et (§11 spacing).
+     fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+         let mut i = 0;
+         while i < self.dup_queue.len() {
+             if self.dup_queue[i].due_ns > now_ns {
+                 i += 1;

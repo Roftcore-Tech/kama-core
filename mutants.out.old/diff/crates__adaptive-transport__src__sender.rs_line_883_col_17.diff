@@ -1,0 +1,30 @@
+--- crates/adaptive-transport/src/sender.rs
++++ delete match arm SenderState::Startup in Sender::update_state
+@@ -875,26 +875,17 @@
+             SenderState::RecoverFwd
+         } else if !self.pending_lost.is_empty() {
+             // residual loss + ack_confidence OK → selective retransmit (§9), her aktif fazdan
+             // (§3 AMENDMENT-1; RECOVER_FWD ile simetrik: loss STARTUP'ta olsa da recovery tıkanmamalı).
+             SenderState::RecoverArq
+         } else {
+             match self.state {
+                 SenderState::Idle => SenderState::Startup,
+-                SenderState::Startup => {
+-                    if self.plateau_reached {
+-                        // [TUR-3b/TUR-7] plato (base-üstünde değerlendirildi) → DRAIN.
+-                        self.plateau_reached = false;
+-                        self.drain_entry_ns = Some(now_ns);
+-                        SenderState::Drain
+-                    } else {
+-                        SenderState::Startup
+-                    }
+-                }
++                 /* ~ changed by cargo-mutants ~ */
+                 // [TUR-3b] DRAIN çıkışı: inflight ≤ BDP (byte-eşiği — saat-sınıfsız) ∨
+                 // elapsed ≥ K_drain_max×ack_epoch (liveness-yedeği; ACK-açlığında sonsuz-Drain yok).
+                 SenderState::Drain => {
+                     // Hedef = cwnd_gain×BDP (Steady'nin yaşanabilir üst-sınırı; yalın-BDP
+                     // sub-kbps'te TEK-pakete iner → 55s aşırı-drain ÖLÇÜLDÜ, teslim −2).
+                     let bdp = crate::rate::CWND_GAIN
+                         * crate::rate::bdp_bytes(
+                             self.btlbw.btlbw(),
