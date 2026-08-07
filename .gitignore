@@ -1,4 +1,15 @@
 /target
 **/*.rs.bk
 Cargo.lock.orig
-/results
+
+# netem koşum çıktıları ham (büyük, geçici) — ancak CI-07 kalite kapısının karşılaştırdığı
+# BASELINE depoda DURMALIDIR (BUL-01: baseline yoksa karşılaştırılacak bir şey yoktur).
+# Not: `/results` yerine `/results/*` yazılır — git, ATILMIŞ bir dizinin içindeki dosyayı geri
+# alamaz; dizinin kendisi hariç tutulmamalı ki alt dizin `!` ile geri alınabilsin.
+/results/*
+!/results/baseline/
+
+# cargo-fuzz: build çıktısı ve crash artifact'ları izlenmez; corpus KASITEN izlenir
+# (BUL-04 / TC-09: corpus commit edilmezse her koşum sıfırdan başlar, regresyon koruması oluşmaz).
+/fuzz/target
+/fuzz/artifacts

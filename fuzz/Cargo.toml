@@ -1,0 +1,70 @@
+[package]
+name = "kama-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "Proprietary"
+
+# SR-STR-CORE-001 §5.2 (TC-08/TC-09/TC-10) · §6 CI-08. cargo-fuzz konvansiyonu: bu crate ANA
+# workspace'e ÜYE DEĞİLDİR (boş [workspace] tablosu ile ayrılır) — libfuzzer-sys nightly + özel
+# RUSTFLAGS gerektirir, ana `cargo test --workspace` koşumunu kirletmemelidir.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+kama-noise-wire = { path = "../crates/kama-noise-wire" }
+kama-transport-schema = { path = "../crates/kama-transport-schema" }
+kama-fec-codec = { path = "../crates/kama-fec-codec" }
+zeroize = "1"
+
+[profile.release]
+debug = 1
+
+# ── TC-08: AEAD-baypaslı inner-parser hedefi (BUL-04'ün çekirdeği) ──
+[[bin]]
+name = "fuzz_inner_parse"
+path = "fuzz_targets/fuzz_inner_parse.rs"
+test = false
+doc = false
+bench = false
+
+# ── TC-09: mevcut üç hedefin kalıcılaştırılması ──
+[[bin]]
+name = "fuzz_open"
+path = "fuzz_targets/fuzz_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_control_decode"
+path = "fuzz_targets/fuzz_control_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ack_decode"
+path = "fuzz_targets/fuzz_ack_decode.rs"
+test = false
+doc = false
+bench = false
+
+# ── TC-10: düşük-kapsamlı parser yüzeyleri ──
+[[bin]]
+name = "fuzz_prefix"
+path = "fuzz_targets/fuzz_prefix.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_fec_decode"
+path = "fuzz_targets/fuzz_fec_decode.rs"
+test = false
+doc = false
+bench = false

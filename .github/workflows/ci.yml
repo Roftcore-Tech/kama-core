@@ -1,52 +1,192 @@
 name: core-ci
+
+# SR-STR-CORE-001 §6 CI değişiklik seti: CI-01, CI-02, CI-03, CI-04, CI-05, CI-06, CI-09.
+# CI-07 (netem kalite kapısı) ve CI-08'in nightly kolu ayrı workflow'tadır: nightly.yml
+#
+# Değişiklik gerekçeleri (kısa):
+#   CI-01  BUL-03 — `--all-features` altında trybuild kapısı 0 test koşuyordu (test-util açık →
+#          dosya cfg ile eleniyor). Mühürlü-tip garantisinin (K-WIRE-SEALED-TYPE-1) TEK CI
+#          koruması default-feature koşumudur. `--locked` lock-drift'i de kapatır.
+#   CI-02  BUL-02 — miri hedefi `-p crypto -p ccr-codec` idi; bu iki crate üç satırlık stub
+#          olduğu için kapı her PR'da yeşil yanıp 0 test koşuyordu (yanlış güvenlik hissi).
+#   CI-03  BUL-02'nin gerçek çözümü — miri'nin karşılayamadığı bellek-güvenliği kanıtı ASan ile.
+#   CI-04  BUL-12 — release'de integer overflow panik yerine wrap eder, `debug_assert!`ler
+#          derlenmez. Sevk edilen konfigürasyon kapısızdı (`cargo build --release` derler, KOŞMAZ).
+#   CI-05  BUL-12 — feature-unification altında production görünümünün derlendiğini kanıtlar.
+#   CI-06  BUL-06 — branch kapsamı %81,21 ve hiç ölçülmüyordu; eşik yok, geri gidiş yakalanmıyordu.
+#   CI-09  Asılı bir runner CI kuyruğunu saatlerce tutabilir.
+
 on:
   push:
     branches: [main]
   pull_request:
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  # ── Statik kapılar + default/all-features/release/no-default test matrisi ──
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 30          # CI-09
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all --all-features
-      - run: cargo build --release --all
 
-  security:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo install cargo-audit cargo-deny --locked
-      - run: cargo audit
-      - run: cargo deny check
+      - name: fmt
+        run: cargo fmt --all -- --check
 
+      - name: clippy (all-features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # CI-05 — production görünümü (feature-unification kapısı)
+      - name: clippy (no-default-features)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+      # CI-01 — DEFAULT feature koşumu. trybuild/K-WIRE-SEALED-TYPE-1 YALNIZ burada koşar.
+      - name: test (default features, locked)
+        run: cargo test --workspace --locked
+
+      # CI-01 doğrulaması: sealed-tip kapısının fiilen 1 test koştuğunu KANITLA. Bu adım olmadan
+      # kapı sessizce tekrar 0 teste düşebilir (BUL-03'ün tam olarak yaşandığı senaryo).
+      - name: assert sealed-type gate actually runs
+        run: |
+          out=$(cargo test -p kama-noise-wire --locked --test trybuild -- --list)
+          echo "$out"
+          echo "$out" | grep -q "sealed_type_cannot_be_forged" \
+            || { echo "::error::K-WIRE-SEALED-TYPE-1 kapisi 0 test kosuyor (BUL-03 regresyonu)"; exit 1; }
+
+      - name: test (all-features)
+        run: cargo test --workspace --all-features
+
+      # CI-05
+      - name: test (no-default-features)
+        run: cargo test --workspace --no-default-features
+
+      # CI-04 — sevk edilen konfigürasyon
+      - name: test (all-features, release)
+        run: cargo test --workspace --all-features --release
+
+  # ── CI-02: miri, GERÇEK bir hedefle ──
   miri:
     runs-on: ubuntu-latest
+    timeout-minutes: 20          # CI-09
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri, rust-src
       - uses: Swatinem/rust-cache@v2
-      # +nightly rust-toolchain.toml'daki 1.96.0 pin'ini ezer (rustup precedence #1);
-      # düz `cargo miri test` stable'a düşer ve miri stable'da olmadığından FAIL ederdi.
-      - run: cargo +nightly miri test -p crypto -p ccr-codec
 
-  # KATMAN-3 (DR-5): RustCrypto==libsodium AEAD differential-oracle. AYRI-CI-JOB — production-graph-dışı
-  # (libsodium-oracle feature default-KAPALI). sodiumoxide=0.2.7 PIN (bundled-libsodium vendored-build; cc yeter).
-  # HARD-FAIL: byte-eş değilse gate düşer. Isolated: libsodium-env-sorunu ana quality-gate'i BLOKLAMAZ.
-  aead-differential:
+      # [ÖLÇÜLDÜ] kama-transport-schema: 9 test / 2,7 s — CI'ya uygun.
+      # kama-noise-wire: proptest `getcwd` nedeniyle -Zmiri-disable-isolation gerektirir (UB DEĞİL).
+      # kama-fec-codec: tek binary 1 913 s'de bitmedi → CI dışı.
+      # Kapının BOŞ OLMADIĞI aynı adımda kanıtlanır (BUL-02 regresyon-koruması).
+      - name: miri (transport-schema) + non-empty gate assertion
+        run: |
+          set -o pipefail
+          cargo +nightly miri test -p kama-transport-schema 2>&1 | tee miri.log
+          grep -Eq "test result: ok\. [1-9][0-9]* passed" miri.log \
+            || { echo "::error::miri kapisi 0 test kosuyor (BUL-02 regresyonu)"; exit 1; }
+
+  # ── CI-03: AddressSanitizer ──
+  asan:
     runs-on: ubuntu-latest
+    timeout-minutes: 25          # CI-09
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      # [ÖLÇÜLDÜ] ASan altında kama-noise-wire: 90 test / 15,1 s / sıfır sanitizer hatası.
+      - name: ASan (noise-wire)
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+          RUSTDOCFLAGS: "-Zsanitizer=address"
+        run: >
+          cargo +nightly test -p kama-noise-wire
+          -Zbuild-std --target x86_64-unknown-linux-gnu
+      - name: ASan (fec-codec)
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+          RUSTDOCFLAGS: "-Zsanitizer=address"
+        run: >
+          cargo +nightly test -p kama-fec-codec
+          -Zbuild-std --target x86_64-unknown-linux-gnu
+
+  # ── CI-06: kapsam kapısı ──
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30          # CI-09
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # [ÖLÇÜLDÜ] mevcut line %93,65. Eşik gürültü payı bırakacak kadar altta (92) ama geri
+      # gidişi yakalayacak kadar yakın. Ratchet: eşik yükseldikçe bu satır güncellenir.
+      - name: line coverage gate
+        run: cargo llvm-cov --workspace --all-features --fail-under-lines 92
+
+  # ── Statik güvenlik kapıları ──
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15          # CI-09
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p kama-noise-wire --features libsodium-oracle --test aead_differential -- --nocapture
+      - uses: taiki-e/install-action@cargo-deny
+      - uses: taiki-e/install-action@cargo-audit
+      # BUL-14: sodiumoxide 0.2.7 → RUSTSEC-2021-0137 (unmaintained). Bugün allowed-warning;
+      # AÇIK-2 kararı verilene kadar exit=0 kalır. Karar `deny`e çekilirse buraya --deny warnings.
+      - run: cargo audit
+      - run: cargo deny check
+
+  # ── KATMAN-3 (DR-5): RustCrypto == libsodium AEAD differential-oracle ──
+  # AYRI-CI-JOB — production-graph-dışı (libsodium-oracle feature default-KAPALI).
+  # HARD-FAIL: byte-eş değilse gate düşer. Isolated: libsodium-env sorunu quality'yi BLOKLAMAZ.
+  aead-differential:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20          # CI-09
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: >
+          cargo test -p kama-noise-wire --features libsodium-oracle
+          --test aead_differential -- --nocapture
+
+  # ── CI-08 (PR kolu): fuzz smoke ──
+  # [ÖLÇÜLDÜ] exec/s 57 k–492 k → 60 saniyelik smoke anlamlı derinlik üretir ve PR'ı yavaşlatmaz.
+  # 30 dk/hedef koşumu nightly.yml'dedir.
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25          # CI-09
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-fuzz
+      - name: fuzz smoke (60 s / hedef)
+        run: |
+          set -e
+          for t in fuzz_inner_parse fuzz_open fuzz_control_decode \
+                   fuzz_ack_decode fuzz_prefix fuzz_fec_decode; do
+            echo "::group::$t"
+            cargo +nightly fuzz run "$t" -- \
+              -max_total_time=60 -rss_limit_mb=2048 -print_final_stats=1
+            echo "::endgroup::"
+          done
+      - name: upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/

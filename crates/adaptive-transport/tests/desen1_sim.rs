@@ -1,16 +1,60 @@
 //! DESEN-1 discrete-event sim harness (srtt-decoupling Y3 hipotez-taraması).
 //! Store-and-forward link + ACK-loop + basamaklı-rate; Sender'ı in-process sürer.
-//! KALİBRASYON-ŞARTI: fix-öncesi motor 3A2'yi repro etmeli (infl~63×, srtt~53s) —
-//! etmezse harness güvenilmez. Deterministik (RNG yok); netem DEĞİL — teşhis-GO/NO-GO.
-//! Koş: cargo test --test desen1_sim -- --ignored --nocapture
-
+//! Deterministik (RNG yok); netem DEĞİL — teşhis-GO/NO-GO.
+//!
+//! **TC-16 (SR-STR-CORE-001 §5.4, BUL-07) sonrası durum.** Beş testin beşi de `#[ignore]` idi ve
+//! kaynak yorumu "ağır sim; manuel" diyordu. [ÖLÇÜLDÜ] fiili maliyetler (test binary'si doğrudan
+//! çağrılarak, tek tek):
+//!
+//!   desen1_expiry_pin_3a2            2,85 s   ← assertion VAR   → CI
+//!   desen1_period_counters           2,72 s   ← print-only      → CI (panik-kapısı)
+//!   scan_long_narrowing_convergence  2,14 s   ← assertion VAR   → CI
+//!   scan_subkbps_anchor              1,19 s   ← assertion VAR   → CI
+//!   recalibrate_cadence              8,67 s   ← print-only sweep → NIGHTLY
+//!
+//! [ÖLÇÜLDÜ — DÜZELTME] SR-STR-CORE-001 §5.4 TC-16 "ağır tarama varyantı" olarak
+//! `scan_long_narrowing_convergence`'i işaret ediyordu; ölçüm bunun 2,14 s ile en UCUZ ikinci test
+//! olduğunu, gerçek ağır varyantın 8,67 s ile `recalibrate_cadence` olduğunu (4×) gösterdi.
+//! Nightly'ye taşınan bu yüzden `recalibrate_cadence`'tır. Deponun tek gerçek darboğaz modeli
+//! artık ~9 s'lik bir CI maliyetiyle her PR'da koşar.
+//!
+//! **KALİBRASYON-ŞARTI — [ÖLÇÜLDÜ] YAPISAL BULGU (TC-16/a).** Eski başlık "fix-öncesi motor 3A2'yi
+//! repro etmeli (infl~63×, srtt~53s) — etmezse harness güvenilmez" diyordu. Bu koşul çalışan bir
+//! teste DÖNÜŞTÜRÜLEMEZ: koşul FIX-ÖNCESİ motoru tarif eder, o motor bu depoda artık yoktur
+//! (`mode-0` switch'i silinmiş, "legacy-kalibrasyon tarihsel" notu bunu kaydediyor). Bugünkü
+//! motorla ölçülen imza infl_max=54×, srtt_max=29,0 s'dir — yani şart bugün ZATEN sağlanmıyor ve
+//! sağlanması da BEKLENMEZ. Şartı olduğu gibi teste çevirmek her koşumda kırmızı üretirdi.
+//!   → Uygulanan çözüm: `harness_signature_pin()` MEVCUT motorun imzasını pinler (regresyon-kapısı).
+//!   → [BEKLİYOR — Abkarada] Fix-öncesi 3A2 imzasının repro edilebilirliği bir gereksinim olarak
+//!     korunacak mı? Korunacaksa fix-öncesi motorun bir varyant/feature olarak geri getirilmesi
+//!     gerekir; korunmayacaksa başlıktaki şart spec'ten düşürülmelidir.
+//!
+//! Koş (CI seti):  cargo test --test desen1_sim
+//! Koş (nightly):  cargo test --test desen1_sim -- --ignored --nocapture
 use adaptive_transport::sender::{AckInfo, Event, OpaqueUnit, Sender, Timer};
 use std::collections::{HashSet, VecDeque};
 use std::time::Duration;
 
 const MS: u64 = 1_000_000;
 const SEC: u64 = 1_000_000_000;
-const UNIT: u64 = 267; // wire birim (payload 256 + overhead ~ tur5 ölçüsü)
+/// **SENARYO KALİBRASYON SABİTİ — WIRE BOYUTU DEĞİLDİR.** (TC-17 / AÇIK-5 cevabı.)
+///
+/// [ÖLÇÜLDÜ] Gerçek §2.6 sealed FEC-shard boyutu `26 (outer) + 11 (inner) + E`'dir:
+/// E=64 → 101 B, E=1024 → 1061 B (`kama-integration/tests/byte_accounting.rs` bunu pinler).
+/// 267 = "payload 256 + overhead ~11" türetimi 26 B outer'ı atlar VE katalogda 256 B payload
+/// taşıyan tek-shard diye bir şey yoktur (E=64 kapasitesi 53 B; 256 B → 5 shard × 101 = 505 B).
+///
+/// [ÖLÇÜLDÜ] UNIT'i 101'e çekmek DÜZELTME DEĞİL, SENARYO YIKIMIDIR: rate merdiveni bu birime
+/// göre kalibre edilmiştir. UNIT=101 ile `run_3a2` ölçümleri infl_max 54× → 0×, qd_max 36,6 s →
+/// 0,3 s, delivered 732 → 1500'e gider; yani darboğaz tamamen kaybolur ve harness modellemesi
+/// gereken şeyi modellemeyi bırakır (iki test de kırmızıya döner).
+///
+/// Sonuç: UNIT bir SENARYO parametresidir (birim × rate merdiveni birlikte kalibre edilmiştir),
+/// wire muhasebesinin kaynağı DEĞİLDİR. Wire muhasebesi `byte_accounting.rs`'te kapı altındadır.
+/// Bu iki katman ayrı tutulur; birinin diğerinden türetilmesi ancak rate merdiveninin yeniden
+/// kalibrasyonuyla mümkündür. [BEKLİYOR — Abkarada: merdiven gerçek profil boyutlarına göre
+/// yeniden kalibre edilecek mi, yoksa UNIT senaryo-sabiti olarak mı kalacak?]
+const UNIT: u64 = 267;
 
 /// Store-and-forward link: rate B/s (basamaklı), tek-yön gecikme, FIFO inf-buffer.
 struct Link {
@@ -264,7 +308,6 @@ fn run_3a2(n_units: usize, t_max_s: u64, trace_mech: bool, cad_ms: u64) -> SimRe
 }
 
 #[test]
-#[ignore = "ağır sim; manuel: cargo test --test desen1_sim -- --ignored --nocapture"]
 fn desen1_expiry_pin_3a2() {
     // [Y3 KALICI-PİN — K6R-netem-mühürlü] delivered-EAI-motor 3A2'de: onset<35s + tek-adım≥%50 +
     // re-flood-yok. (Legacy-kalibrasyon tarihsel: mode-0 kayıtları mini-D0'da; switch silindi.)
@@ -291,7 +334,6 @@ fn desen1_expiry_pin_3a2() {
 }
 
 #[test]
-#[ignore = "ağır sim; manuel"]
 fn scan_long_narrowing_convergence() {
     // (c)-sınır-testi: kopmasız-UZUN-daralma (40k→3k, 90s) — çok-adımlı-expiry kanal-bandına
     // yakınsar mı (plato kopma-kesmesine-özgü mü)?
@@ -395,7 +437,7 @@ fn run_long_narrow(n_units: usize, t_max_s: u64, cad_ms: u64) -> SimResult {
 }
 
 #[test]
-#[ignore = "ağır sim; manuel"]
+#[ignore = "[ÖLÇÜLDÜ] 8,67 s — deponun en ağır sim varyantı, assertion yok (print-only sweep). Nightly: cargo test --test desen1_sim -- --ignored --nocapture"]
 fn recalibrate_cadence() {
     // Re-kalibrasyon: cadence-katsayısı → netem-63× infl-hedefi (legacy-mode).
     for cad in [1_600u64, 3_200, 6_400, 9_600] {
@@ -412,7 +454,6 @@ fn recalibrate_cadence() {
 }
 
 #[test]
-#[ignore = "ağır sim; manuel"]
 fn desen1_period_counters() {
     // [Y3 KALICI-PİN] dönem-sayaçları: P2-teslim-sınıfı + P4-drenaj (RecoverArq-borç-izleme).
     let r = run_3a2(1500, 145, false, 1_600);
@@ -423,7 +464,6 @@ fn desen1_period_counters() {
 }
 
 #[test]
-#[ignore = "ağır sim; manuel"]
 fn scan_subkbps_anchor() {
     // H2 decade-körlük kontrolü: 0.25k sabit-kanalda her-mod btlbw-anchor'ı bozuyor mu?
     // (delivered-EAI term2=2.097s ZM-2-riski). Sabit 250bit = 31 B/s.
@@ -524,4 +564,91 @@ fn run_const(n_units: usize, t_max_s: u64, rate_bps: u64) -> SimResult {
         periods: [(0, 0); 4],
         dropped: fwd.dropped,
     }
+}
+
+// ── TC-16/a — Harness kalibrasyon kapısı ────────────────────────────────────
+
+/// Dosya başlığındaki "KALİBRASYON-ŞARTI"nın çalışan karşılığı.
+///
+/// **Neden fix-öncesi 3A2 imzası (infl~63×, srtt~53s) DEĞİL:** o imza artık üretilemez — fix-öncesi
+/// motor bu depoda yok (bkz. modül başlığı TC-16/a). Kalibre olmadığı gösterilmemiş bir simülatörle
+/// alınan GO/NO-GO kararı kanıt değildir; ancak "kalibre" ölçütü ERİŞİLEBİLİR bir imza olmalıdır.
+///
+/// Bu test MEVCUT motorun DESEN-1 imzasını pinler. Motor değişip imza kayarsa burada kırmızı yanar
+/// ve `desen1_expiry_pin_3a2` / `desen1_period_counters` sonuçları YENİDEN YORUMLANMALIDIR —
+/// kaymış bir harness'la alınmış eski GO/NO-GO kararları taşınamaz.
+///
+/// Toleranslar dar değil KABA'dır (±%25 / ±%35): amaç gürültü yakalamak değil, REJİM DEĞİŞİMİ
+/// yakalamaktır (54× → 0× gibi). [ÖLÇÜLDÜ] referans: infl_max=54 UNIT, srtt_max=29,0 s,
+/// btlbw@70s=1126, delivered=732, qd_max=36,6 s.
+#[test]
+fn harness_signature_pin() {
+    let r = run_3a2(1500, 145, true, 1_600);
+    let infl_units = r.infl_max / UNIT;
+    let srtt_s = r.srtt_max_us as f64 / 1e6;
+
+    println!(
+        "[KALİBRASYON] infl_max={}× srtt_max={:.1}s btlbw@70={} delivered={} qd_max={:.1}s",
+        infl_units,
+        srtt_s,
+        r.btlbw_at_daralma_end,
+        r.delivered,
+        r.qd_max_us as f64 / 1e6
+    );
+
+    // (1) Darboğaz REJİMİ yaşıyor mu? Bu, harness'in modellemesi gereken tek şeydir.
+    assert!(
+        infl_units >= 20,
+        "darboğaz kayboldu: infl_max={infl_units}× (beklenen ≥20; referans 54×). \
+         UNIT veya rate merdiveni değişmiş olabilir — bkz. UNIT doc-comment'ı"
+    );
+    assert!(
+        srtt_s >= 10.0,
+        "srtt şişmesi kayboldu: {srtt_s:.1}s (beklenen ≥10s; referans 29,0s)"
+    );
+    assert!(
+        r.delivered < 1500,
+        "hiç kayıp/gecikme yok — link doymamış (delivered={}/1500)",
+        r.delivered
+    );
+
+    // (2) İmza bandı (kaba): referans değerlerin etrafında.
+    assert!(
+        (40..=70).contains(&infl_units),
+        "infl_max imza-bandı dışında: {infl_units}× (referans 54×, bant 40..70)"
+    );
+    assert!(
+        (20.0..=40.0).contains(&srtt_s),
+        "srtt_max imza-bandı dışında: {srtt_s:.1}s (referans 29,0s, bant 20..40)"
+    );
+    assert!(
+        (600..=900).contains(&r.delivered),
+        "delivered imza-bandı dışında: {} (referans 732, bant 600..900)",
+        r.delivered
+    );
+}
+
+/// TC-17 / AÇIK-5'in ölçüm karşılığı: `UNIT`'in wire boyutu OLMADIĞININ kaydı.
+///
+/// `byte_accounting.rs` gerçek wire birimini (101 / 1061 B) kapı altına alır. Bu test, sim'in
+/// birim sabitinin o sayılardan farklı olduğunu ve bunun BİLİNÇLİ olduğunu sabitler. Birisi
+/// "düzeltme" niyetiyle UNIT'i 101 yaparsa `harness_signature_pin` düşer ve buradaki yorum
+/// nedenini söyler.
+#[test]
+fn unit_is_a_scenario_constant_not_a_wire_size() {
+    // §2.6 + N4-wire-overhead.md: gerçek sealed FEC-shard = 26 + 11 + E.
+    const REAL_WIRE_E64: u64 = 26 + 11 + 64; // 101
+    const REAL_WIRE_E1024: u64 = 26 + 11 + 1024; // 1061
+
+    assert_ne!(
+        UNIT, REAL_WIRE_E64,
+        "UNIT wire boyutuna eşitlenmiş — harness_signature_pin'i kontrol et"
+    );
+    assert_ne!(UNIT, REAL_WIRE_E1024);
+    // Eski türetimin kaydı: 267 = 256 payload + 11 inner header (26 B outer ATLANMIŞ).
+    assert_eq!(
+        UNIT,
+        256 + 11,
+        "UNIT'in tarihsel türetimi değişti — doc-comment güncellenmeli"
+    );
 }
