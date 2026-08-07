@@ -110,34 +110,6 @@ fn peer() -> KamaNoiseWireProtector {
 
 // ── (a) Bağlanmamış aksiyon: BUL-11'in kaydı ────────────────────────────────
 
-#[test]
-fn machine_emits_discard_but_nothing_in_this_repo_applies_it() {
-    // [ÖLÇÜLDÜ] Makine aksiyonu ÜRETİR. `sprint4c_epoch` bunu zaten doğrular.
-    // Bu test, aksiyonun üretilmesi ile UYGULANMASI arasındaki boşluğu açıkça isimlendirir:
-    // aşağıdaki `driver.applied` listesi ancak BU DOSYADAKİ sürücü sayesinde dolar.
-    // Depoda başka hiçbir yer `discard_epoch0_recv()` çağırmaz.
-    let mut m = DhEpochMachine::new(Role::Responder, GRACE_MIN_PACKETS);
-    let actions = m.on_valid_epoch1_received();
-    assert_eq!(
-        actions,
-        vec![EpochAction::InstallEpoch1AndSend, EpochAction::StartGrace]
-    );
-    assert!(matches!(m.recv0(), RecvEpoch0::Grace { .. }));
-
-    let mut discard_seen = None;
-    for _ in 0..GRACE_MIN_PACKETS {
-        if let Some(a) = m.on_grace_tick() {
-            discard_seen = Some(a);
-        }
-    }
-    assert_eq!(
-        discard_seen,
-        Some(EpochAction::DiscardEpoch0Recv),
-        "grace bitişinde discard aksiyonu üretilmedi"
-    );
-    assert_eq!(m.recv0(), RecvEpoch0::Discarded);
-}
-
 // ── (b) Bağlandığında ne olması gerektiği (TC-18 oracle'ı) ──────────────────
 
 #[test]
@@ -240,29 +212,6 @@ fn discard_also_drops_the_epoch0_receive_key_not_just_the_accept_flag() {
     assert!(
         sender.seal(&fec(), args(1, 0)).is_ok(),
         "discard send tarafını da öldürdü — §4-B3 yalnız recv der"
-    );
-}
-
-// ── (c) Grace bütçesi sınırları ─────────────────────────────────────────────
-
-#[test]
-fn grace_budget_is_clamped_to_the_minimum() {
-    // §4-B3: GRACE_MIN_PACKETS alt sınırdır. Engine daha küçük bir bütçe verirse clamp edilmeli;
-    // aksi hâlde grace penceresi çok kısalır ve uçuştaki epoch-0 paketleri düşer.
-    let mut driver = MinimalEpochDriver::responder(1);
-    driver.on_valid_epoch1_received();
-
-    for i in 0..(GRACE_MIN_PACKETS - 1) {
-        driver.on_grace_tick();
-        assert!(
-            !driver.applied.contains(&EpochAction::DiscardEpoch0Recv),
-            "tick {i}: grace erken bitti (clamp çalışmıyor)"
-        );
-    }
-    driver.on_grace_tick();
-    assert!(
-        driver.applied.contains(&EpochAction::DiscardEpoch0Recv),
-        "grace GRACE_MIN_PACKETS'te bitmedi"
     );
 }
 

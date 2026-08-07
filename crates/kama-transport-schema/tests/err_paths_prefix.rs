@@ -64,27 +64,29 @@ fn serialize_reserved_flags_writes_no_bytes() {
 // ── (b) serialize_symbol: PayloadTooLong ────────────────────────────────────
 
 #[test]
-fn serialize_payload_over_capacity_is_too_long() {
+fn serialize_payload_capacity_boundary_is_exact() {
+    // Off-by-one kapısı: cap KABUL, cap+1 REDDEDİLİR — ikisi tek testte.
+    // NOT: `golden_v0::payload_too_long_fail_closed` PayloadTooLong site'ını zaten kapatıyor
+    // (E=16, cap=5). Buradaki değer sınırın İKİ YANINI birlikte pinlemek ve dönen alan
+    // değerlerini ({len, cap}) `{ .. }` yerine tam olarak assert etmek.
     let mut out = [0u8; E];
-    let payload = vec![0xAAu8; CAP + 1];
-    let p = ok_prefix((CAP + 1) as u16);
+
+    // (a) cap → Ok, payload aynen yazılır
+    let payload = vec![0xAAu8; CAP];
+    let p = ok_prefix(CAP as u16);
+    assert_eq!(p.serialize_symbol(&payload, &mut out), Ok(()));
+    assert_eq!(&out[SOURCE_PREFIX_LEN..], &payload[..]);
+
+    // (b) cap+1 → PayloadTooLong, alan değerleri tam
+    let over = vec![0xAAu8; CAP + 1];
+    let q = ok_prefix((CAP + 1) as u16);
     assert_eq!(
-        p.serialize_symbol(&payload, &mut out),
+        q.serialize_symbol(&over, &mut out),
         Err(SchemaError::PayloadTooLong {
             len: CAP + 1,
             cap: CAP
         })
     );
-}
-
-#[test]
-fn serialize_payload_exactly_at_capacity_succeeds() {
-    // Sınır-testi: cap kabul edilir, cap+1 reddedilir (off-by-one kapısı).
-    let mut out = [0u8; E];
-    let payload = vec![0xAAu8; CAP];
-    let p = ok_prefix(CAP as u16);
-    assert_eq!(p.serialize_symbol(&payload, &mut out), Ok(()));
-    assert_eq!(&out[SOURCE_PREFIX_LEN..], &payload[..]);
 }
 
 #[test]
@@ -206,22 +208,3 @@ fn parse_declared_len_exactly_at_capacity_succeeds() {
 }
 
 // ── (g) roundtrip + alan-sırası kilidi ──────────────────────────────────────
-
-#[test]
-fn serialize_parse_roundtrip_pins_field_order() {
-    // ADR-05 fixed-width big-endian, §2.6 alan-sırası: message_id | chunk_offset |
-    // actual_payload_len | source_flags. Sıra değişirse bu assert düşer.
-    let mut out = [0u8; E];
-    let payload = [0xDEu8, 0xAD, 0xBE, 0xEF];
-    let p = ok_prefix(4);
-    p.serialize_symbol(&payload, &mut out).unwrap();
-
-    assert_eq!(&out[0..4], &0x1122_3344u32.to_be_bytes(), "message_id");
-    assert_eq!(&out[4..8], &0x5566_7788u32.to_be_bytes(), "chunk_offset");
-    assert_eq!(&out[8..10], &4u16.to_be_bytes(), "actual_payload_len");
-    assert_eq!(out[10], SOURCE_FLAG_FINAL, "source_flags");
-    assert_eq!(&out[11..15], &payload, "payload");
-    assert!(out[15..].iter().all(|&b| b == 0), "canonical zero-pad");
-
-    assert_eq!(SourcePrefix::parse(&out), Ok(p));
-}

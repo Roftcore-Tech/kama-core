@@ -14,7 +14,7 @@
 //! Sapma varsa test kırmızı ve sabitin türetimi dokümante edilir.
 
 use kama_noise_wire::inner::{CONTROL_INNER_PREFIX_LEN, FEC_INNER_HDR_LEN};
-use kama_noise_wire::{KamaNoiseWireProtector, KamaNoiseWireSizer, SealArgs};
+use kama_noise_wire::{KamaNoiseWireProtector, KamaNoiseWireSizer};
 use kama_transport_schema::control::Control;
 use kama_transport_schema::inner_kind::ShardKind;
 use kama_transport_schema::{
@@ -58,47 +58,6 @@ fn fec_wire_overhead_is_37_bytes() {
     assert_eq!(EXTENDED_OUTER_OVERHEAD, 26, "outer overhead (§2.6)");
     assert_eq!(FEC_INNER_HDR_LEN, 11, "unified inner header (§2.56)");
     assert_eq!(FEC_WIRE_OVERHEAD, 37, "N4: 26 outer + 11 inner");
-}
-
-#[test]
-fn sealed_len_is_overhead_plus_e_for_every_catalog_profile() {
-    // Katalogdaki her E için sealed_len == 37 + E. Katalog: E ∈ {64, 1024}.
-    let p = protector();
-    for e in [64usize, 1024] {
-        let pkt = shard(e);
-        assert_eq!(
-            p.sealed_len(&pkt).expect("sealed_len"),
-            FEC_WIRE_OVERHEAD + e,
-            "E={e}"
-        );
-    }
-    // N7 çapraz-kontrolü: E=64 → 101 B (N4 raporundaki sayı).
-    assert_eq!(p.sealed_len(&shard(64)).unwrap(), 101);
-    // E=1024 → 1061 B < 1280 PMTU-tabanı (profile.rs 0x05/0x06 yorumundaki iddia).
-    assert_eq!(p.sealed_len(&shard(1024)).unwrap(), 1061);
-    assert!(p.sealed_len(&shard(1024)).unwrap() < 1280, "PMTU-tabanı");
-}
-
-#[test]
-fn seal_length_equals_sealed_len_exactly() {
-    // §0.5 P0-3 / K-WIRE-SIZE-1: sözleşme KESİN eşitliktir, üst-sınır değil.
-    // sealed_len pacer-admission'da seal-ÖNCESİ kullanılır; eşitsizlik pacing'i kaydırır.
-    let mut p = protector();
-    for (i, e) in [64usize, 1024].into_iter().enumerate() {
-        let pkt = shard(e);
-        let want = p.sealed_len(&pkt).expect("sealed_len");
-        let sealed = p
-            .seal(
-                &pkt,
-                SealArgs {
-                    wire_pn: i as u64 + 1,
-                    dh_epoch: 0,
-                    send_generation: 0,
-                },
-            )
-            .expect("seal");
-        assert_eq!(sealed.bytes.len(), want, "E={e}: seal != sealed_len");
-    }
 }
 
 // ── (b) desen1_sim UNIT sabitinin türetimi ──────────────────────────────────

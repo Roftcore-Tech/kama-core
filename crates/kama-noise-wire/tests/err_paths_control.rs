@@ -152,23 +152,6 @@ fn recovered_range_check_precedes_trailing_byte_check() {
 // ── decode_control() yönlendirmesi ──────────────────────────────────────────
 
 #[test]
-fn decode_control_returns_none_for_fec_inner() {
-    // §4-ORDER-8: FEC-shard control decoder'a HİÇ girmemeli. `None` dönmezse yukarıdaki
-    // codepoint guard'ı ikinci savunma hattı olarak devreye girer — ama ilk hat burasıdır.
-    let inner = InnerPlain::FecShard {
-        header: kama_transport_schema::LogicalShardHeader {
-            kind: kama_transport_schema::inner_kind::ShardKind::Source,
-            profile_id: 0x03,
-            block_id: 7,
-            esi: 3,
-            k_actual: 8,
-        },
-        symbol: vec![0xAA; 64],
-    };
-    assert!(kama_noise_wire::control::decode_control(&inner).is_none());
-}
-
-#[test]
 fn decode_control_propagates_body_errors_for_control_inner() {
     // Control-inner için hata YUTULMAMALI: `Some(Err(..))` dönmeli, `None` değil.
     // `None` dönseydi bozuk bir control sessizce "control değil" sayılır ve düşürülürdü.

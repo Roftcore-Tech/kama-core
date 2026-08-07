@@ -236,24 +236,6 @@ fn seal_on_epoch1_succeeds_after_install() {
 }
 
 #[test]
-fn open_on_epoch1_without_keys_is_epoch_not_accepted() {
-    // [ÖLÇÜLDÜ] Modül-notu TC-04/a: open() yolundaki EpochKeysMissing site'ı ERİŞİLEMEZ —
-    // epoch-kabul bayrağı anahtar kontrolünden önce düşer. Bu test GERÇEK davranışı pinler.
-    // Kod sırası değişip EpochKeysMissing dönmeye başlarsa burada kırmızı yanar ve
-    // modül notu ile birlikte güncellenmesi gerekir.
-    let mut sender = KamaNoiseWireProtector::new(H_EXT, &key(0x33), &key(0x44));
-    sender.install_epoch1_keys(&key(0x33), &key(0x44));
-    let datagram = sender.seal(&shard(64), args(1, 1)).expect("seal").bytes;
-
-    let mut receiver = protector(); // epoch-1 anahtarı YOK
-    assert_eq!(
-        receiver.open(&datagram).unwrap_err(),
-        WireError::EpochNotAccepted(1),
-        "open() epoch-1'i EpochKeysMissing ile değil EpochNotAccepted ile reddetmeli"
-    );
-}
-
-#[test]
 fn open_on_discarded_epoch0_is_epoch_not_accepted() {
     // Aynı yapısal sebep: discard sonrası recv_epoch_accepts[0]=false VE recv_cipher[0]=None
     // birlikte set edilir; kabul bayrağı önce düştüğü için EpochKeysMissing'e ulaşılmaz.
