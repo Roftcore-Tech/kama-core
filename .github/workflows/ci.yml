@@ -70,6 +70,12 @@ jobs:
       - name: test (all-features, release)
         run: cargo test --workspace --all-features --release
 
+      # SOAK — uzun-oturum bellek kararlılığı (kama-media soak disiplininin karşılığı).
+      # [ÖLÇÜLDÜ] 4,98 s debug / 0,27 s release. Release tercih edilir: allocator sayımı
+      # optimize edilmiş yapıda gerçek çalışma-kümesini yansıtır.
+      - name: soak (uzun oturum bellek kararlılığı)
+        run: cargo test -p adaptive-transport --test soak_long_session --release
+
   # ── CI-02: miri, GERÇEK bir hedefle ──
   miri:
     runs-on: ubuntu-latest
