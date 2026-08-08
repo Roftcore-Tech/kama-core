@@ -1,0 +1,25 @@
+--- crates/adaptive-transport/src/emergency.rs
++++ replace HysteresisConfig::fixture -> Self with Default::default()
+@@ -84,21 +84,17 @@
+     /// de-escalate'ler arası minimum süre (escalate'e uygulanmaz).
+     pub deescalate_dwell: Duration,
+ }
+ 
+ impl HysteresisConfig {
+     /// **KALİBRE DEĞİL** fixture.
+     #[must_use]
+     pub fn fixture() -> Self {
+-        Self {
+-            escalate_permille: 300,
+-            deescalate_permille: 700,
+-            deescalate_dwell: Duration::from_millis(1000),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Emergency davranış yapılandırması. **[CAL] fixture** (netem'e).
+ #[derive(Debug, Clone, Copy)]
+ pub struct EmergencyConfig {
+     /// Dup2 duplication faktörü.
+     pub dup2_factor: u8,

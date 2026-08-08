@@ -1,0 +1,27 @@
+--- crates/adaptive-transport/src/arq.rs
++++ replace RetxConfig::fixture -> Self with Default::default()
+@@ -64,23 +64,17 @@
+     /// Cap aşımı politikası.
+     pub cap_exceed: CapExceedPolicy,
+ }
+ 
+ impl RetxConfig {
+     /// **KALİBRE DEĞİL** fixture.
+     #[must_use]
+     pub fn fixture() -> Self {
+-        Self {
+-            arq_retx_cap: 3,
+-            reorder_k: 3,
+-            reorder_rho_num: 2,
+-            reorder_rho_den: 1,
+-            cap_exceed: CapExceedPolicy::HandToForward,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Selective retransmit planlayıcı portu (clean-arch).
+ pub trait ArqScheduler {
+     /// Kayıp seq'lerden retransmit planı üretir. `arq_aggressiveness_permille == 0` →
+     /// baskıla (boş plan, fec-dominant). Aksi halde deadline-öncelikli (erken önce);
+     /// expired deadline DROP EDİLMEZ.

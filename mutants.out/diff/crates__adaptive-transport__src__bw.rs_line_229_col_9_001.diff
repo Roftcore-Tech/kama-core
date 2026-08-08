@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/bw.rs
++++ replace BtlBwFilter::last_sample_bw -> u64 with 1
+@@ -221,17 +221,17 @@
+     pub fn btlbw(&self) -> u64 {
+         self.samples.iter().map(|&(_, v)| v).max().unwrap_or(0)
+     }
+ 
+     /// [Y3-sim deneysel] Son push'lanan örneğin anlık-bw'si (delivered-cadence için taze-değer;
+     /// bayat-max'tan bağımsız). Boşsa 0.
+     #[must_use]
+     pub fn last_sample_bw(&self) -> u64 {
+-        self.last_full_bw
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [Y3-sim SALT-GÖZLEM] Aktif pencere (ns) — (b)-bug-arayışı: expiry-sonrası W yeniden-boyutlanıyor mu.
+     #[must_use]
+     pub fn window_ns(&self) -> u64 {
+         self.window_ns
+     }
+ 

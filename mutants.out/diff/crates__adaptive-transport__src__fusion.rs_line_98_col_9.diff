@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/fusion.rs
++++ replace Trap::mu -> u32 with 0
+@@ -90,17 +90,17 @@
+     /// Düşen kenar sonu.
+     pub d: u64,
+ }
+ 
+ impl Trap {
+     /// μ(x) per-mille.
+     #[must_use]
+     pub fn mu(&self, x: u64) -> u32 {
+-        trap_permille(x, self.a, self.b, self.c, self.d)
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Bir girdinin üç membership derecesi (per-mille).
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub struct Degrees {
+     /// LOW derecesi.
+     pub low: u32,

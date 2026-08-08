@@ -1,0 +1,53 @@
+--- crates/adaptive-transport/src/fusion.rs
++++ replace trap_permille -> u32 with 0
+@@ -38,49 +38,17 @@
+     };
+     e * 256 + frac
+ }
+ 
+ /// Trapezoidal membership: μ(x) per-mille (0..=1000). μ = min(rise, fall).
+ /// Shoulder: `a==b` → sol-omuz (rise sabit 1000), `c==d` → sağ-omuz (fall sabit 1000).
+ #[must_use]
+ pub fn trap_permille(x: u64, a: u64, b: u64, c: u64, d: u64) -> u32 {
+-    let rise = if a >= b {
+-        // dejenere/sol-omuz: yükselen kenar yok, x ≥ b'de tam
+-        if x >= b {
+-            PERMILLE
+-        } else {
+-            0
+-        }
+-    } else if x <= a {
+-        0
+-    } else if x >= b {
+-        PERMILLE
+-    } else {
+-        // a < x < b : (x−a)/(b−a) per-mille
+-        ((u128::from(x - a) * u128::from(PERMILLE)) / u128::from(b - a)) as u32
+-    };
+-
+-    let fall = if c >= d {
+-        // sağ-omuz: düşen kenar yok, x ≤ c'de tam
+-        if x <= c {
+-            PERMILLE
+-        } else {
+-            0
+-        }
+-    } else if x >= d {
+-        0
+-    } else if x <= c {
+-        PERMILLE
+-    } else {
+-        // c < x < d : (d−x)/(d−c) per-mille
+-        ((u128::from(d - x) * u128::from(PERMILLE)) / u128::from(d - c)) as u32
+-    };
+-
+-    rise.min(fall)
++    0 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Tek trapezoidal membership (a,b,c,d eşikleri).
+ #[derive(Debug, Clone, Copy)]
+ pub struct Trap {
+     /// Yükselen kenar başı.
+     pub a: u64,
+     /// Yükselen kenar sonu / plateau başı.

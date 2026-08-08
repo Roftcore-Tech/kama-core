@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/fusion.rs
++++ replace >= with < in trap_permille
+@@ -61,17 +61,17 @@
+ 
+     let fall = if c >= d {
+         // sağ-omuz: düşen kenar yok, x ≤ c'de tam
+         if x <= c {
+             PERMILLE
+         } else {
+             0
+         }
+-    } else if x >= d {
++    } else if x < /* ~ changed by cargo-mutants ~ */ d {
+         0
+     } else if x <= c {
+         PERMILLE
+     } else {
+         // c < x < d : (d−x)/(d−c) per-mille
+         ((u128::from(d - x) * u128::from(PERMILLE)) / u128::from(d - c)) as u32
+     };
+ 

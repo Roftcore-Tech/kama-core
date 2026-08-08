@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/bw.rs
++++ replace DeliveryRateSampler::delivered -> u64 with 1
+@@ -113,17 +113,17 @@
+             ack_elapsed: Duration::from_nanos(ack_elapsed),
+             sent_ns: pkt.sent_ns,
+         }
+     }
+ 
+     /// Kümülatif delivered (bytes) — [TUR-3c] probe-volume ölçümü (delivered_since_entry).
+     #[must_use]
+     pub fn delivered(&self) -> u64 {
+-        self.delivered
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Uçuşta-sayılan iletim sayısı (SALT-GÖZLEM — not §3.7 sızıntı-borcu ölçümü [TUR-3a]).
+     #[must_use]
+     pub fn packets_in_flight(&self) -> u64 {
+         self.packets_in_flight
+     }
+ 

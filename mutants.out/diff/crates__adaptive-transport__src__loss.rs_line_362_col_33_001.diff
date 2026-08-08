@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace += with *= in <impl LossDetector for ThresholdLossDetector>::detect_time_losses
+@@ -354,17 +354,17 @@
+             .filter(|(&seq, s)| {
+                 let elapsed = Duration::from_nanos(now_ns.saturating_sub(s.send_ns));
+                 seq < la && time_threshold_lost(elapsed, srtt, floor, cfg.time_num, cfg.time_den)
+             })
+             .map(|(&seq, _)| seq)
+             .collect();
+         for seq in &lost {
+             if let Some(s) = self.inflight.remove(seq) {
+-                self.lost_units += s.units;
++                self.lost_units *= /* ~ changed by cargo-mutants ~ */ s.units;
+                 self.declare(*seq, s.units, now_ns); // ledger: Suspected [TUR-2a]
+             }
+         }
+         lost
+     }
+ 
+     fn on_unrecovered(&mut self, units: u64) {
+         self.unrecovered_units += units;

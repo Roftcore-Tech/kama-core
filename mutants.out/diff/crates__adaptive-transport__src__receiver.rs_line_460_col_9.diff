@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace Receiver::state -> RxState with Default::default()
+@@ -452,17 +452,17 @@
+         )
+     }
+ 
+     // ── gözlemciler ──
+ 
+     /// Güncel state.
+     #[must_use]
+     pub fn state(&self) -> RxState {
+-        self.state
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+     /// Alınan farklı seq sayısı.
+     #[must_use]
+     pub fn received_count(&self) -> usize {
+         self.received.len()
+     }
+     /// Alınan en yüksek seq (varsa).
+     #[must_use]

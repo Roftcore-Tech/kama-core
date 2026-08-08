@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace += with *= in Receiver::on_ack_timer
+@@ -296,17 +296,17 @@
+             (K_ARR.saturating_mul(self.last_gap_ns)).clamp(T_SPACING_NS, ACK_CADENCE_FLOOR_NS)
+         } else {
+             ACK_CADENCE_FLOOR_NS
+         };
+         if elapsed < cadence_eff {
+             return None;
+         }
+         if cadence_eff < ACK_CADENCE_FLOOR_NS {
+-            self.diag_accel_emits += 1;
++            self.diag_accel_emits *= /* ~ changed by cargo-mutants ~ */ 1;
+         }
+         self.since_last_ack = 0;
+         self.burn_quota(); // kota=0 burada — yalnız emit_total muhasebesi (birleşik-sayaç)
+         self.record_ack_emit(now_ns);
+         self.build_ack(now_ns)
+     }
+ 
+     /// [r3 §2] Birleşik emisyon-saati: son HERHANGİ SACK-emisyonu (freq/timer + tail).

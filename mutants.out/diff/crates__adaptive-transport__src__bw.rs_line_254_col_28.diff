@@ -1,0 +1,14 @@
+--- crates/adaptive-transport/src/bw.rs
++++ replace * with + in bw_bps
+@@ -246,10 +246,10 @@
+ /// bw_sample = delivered · 1e9 / interval (bytes/sec, integer truncation). interval 0
+ /// ise 0.
+ #[must_use]
+ pub fn bw_bps(delivered: u64, interval: Duration) -> u64 {
+     let ns = dur_ns(interval);
+     if ns == 0 {
+         return 0;
+     }
+-    (u128::from(delivered) * 1_000_000_000 / u128::from(ns)) as u64
++    (u128::from(delivered) + /* ~ changed by cargo-mutants ~ */ 1_000_000_000 / u128::from(ns)) as u64
+ }

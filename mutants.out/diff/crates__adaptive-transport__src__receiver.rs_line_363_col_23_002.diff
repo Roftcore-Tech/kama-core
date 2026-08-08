@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace > with >= in Receiver::set_quota_r
+@@ -355,17 +355,17 @@
+         }
+     }
+ 
+     /// [r3] Bench ölçüm-matrisi: R [CAL {4,8}] koşu-başı ayarı.
+     pub fn set_quota_r(&mut self, r: u32) {
+         self.quota_r = r;
+         // Oturum-ilk epizot new()+ilk-varışta açılır; set çağrısı varıştan ÖNCE yapılır
+         // (serve_loop peer-insert) — açılmış kotayı da hizala (deterministik).
+-        if self.quota > 0 {
++        if self.quota >= /* ~ changed by cargo-mutants ~ */ 0 {
+             self.quota = r;
+         }
+     }
+ 
+     /// [r3 §6] RTRAJ diag: (episode_count, quota_burn, accel_emits, emit_total).
+     #[must_use]
+     pub fn diag_return_supply(&self) -> (u64, u64, u64, u64) {
+         (

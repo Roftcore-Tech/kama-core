@@ -1,0 +1,257 @@
+
+*** crates/adaptive-transport/src/bw.rs:229:9: replace BtlBwFilter::last_sample_bw -> u64 with 1
+
+*** mutation diff:
+--- crates/adaptive-transport/src/bw.rs
++++ replace BtlBwFilter::last_sample_bw -> u64 with 1
+@@ -221,17 +221,17 @@
+     pub fn btlbw(&self) -> u64 {
+         self.samples.iter().map(|&(_, v)| v).max().unwrap_or(0)
+     }
+ 
+     /// [Y3-sim deneysel] Son push'lanan örneğin anlık-bw'si (delivered-cadence için taze-değer;
+     /// bayat-max'tan bağımsız). Boşsa 0.
+     #[must_use]
+     pub fn last_sample_bw(&self) -> u64 {
+-        self.last_full_bw
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [Y3-sim SALT-GÖZLEM] Aktif pencere (ns) — (b)-bug-arayışı: expiry-sonrası W yeniden-boyutlanıyor mu.
+     #[must_use]
+     pub fn window_ns(&self) -> u64 {
+         self.window_ns
+     }
+ 
+
+
+*** /home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=adaptive-transport@0.1.0
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh tokio-macros v2.7.0
+       Fresh thiserror-impl v2.0.18
+       Fresh pin-project-lite v0.2.17
+       Fresh tokio v1.52.3
+       Fresh thiserror v2.0.18
+       Dirty adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-2LEMmU.tmp/crates/adaptive-transport): the file `crates/adaptive-transport/src/bw.rs` has changed (1786141954.398843999s, 37s after last build at 1786141917.554852213s)
+   Compiling adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-2LEMmU.tmp/crates/adaptive-transport)
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_fusion --edition=2021 crates/adaptive-transport/tests/tv_fusion.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=7be1dd62cfcd06b2 -C extra-filename=-e575f66ff291330c --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_rtt --edition=2021 crates/adaptive-transport/tests/tv_rtt.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=644cbf5927c7af68 -C extra-filename=-ebc6108cb5d9f7d9 --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name estimator_sim_integration --edition=2021 crates/adaptive-transport/tests/estimator_sim_integration.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=f4b99d857f05e036 -C extra-filename=-a3bf05855cebd84f --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_fec --edition=2021 crates/adaptive-transport/tests/tv_fec.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=1db605633c1eb866 -C extra-filename=-e6cfb042edb0a4c5 --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_arq --edition=2021 crates/adaptive-transport/tests/tv_arq.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=ed278ab19f2d721e -C extra-filename=-02e1623740961522 --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_emergency --edition=2021 crates/adaptive-transport/tests/tv_emergency.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4c837564abfb7932 -C extra-filename=-a7f1dcd46634dc52 --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_loss --edition=2021 crates/adaptive-transport/tests/tv_loss.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=2915ea32283ef278 -C extra-filename=-e6453bbda81134c9 --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_seq --edition=2021 crates/adaptive-transport/tests/tv_seq.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=2fdb1ee030afd915 -C extra-filename=-659089571c5a701d --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_ack --edition=2021 crates/adaptive-transport/tests/tv_ack.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d675d6053d1007c7 -C extra-filename=-70c932a8d042d67b --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name soak_long_session --edition=2021 crates/adaptive-transport/tests/soak_long_session.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=fc219ad7b1bf8087 -C extra-filename=-0ad1916f93bd8eb3 --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name sender_state_matrix --edition=2021 crates/adaptive-transport/tests/sender_state_matrix.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=f49d317ad6cea255 -C extra-filename=-fed3079949ced682 --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name sender_diag_contract --edition=2021 crates/adaptive-transport/tests/sender_diag_contract.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=94869bef0d91bd6f -C extra-filename=-8b3d86e66aba1413 --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name desen1_sim --edition=2021 crates/adaptive-transport/tests/desen1_sim.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4ddc67122b6c5485 -C extra-filename=-1e7f285b056d400a --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_bw --edition=2021 crates/adaptive-transport/tests/tv_bw.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=39ae13a6da4f2ca2 -C extra-filename=-cac03acb78cdc2a2 --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name sender_loss_path --edition=2021 crates/adaptive-transport/tests/sender_loss_path.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=562edecac1468011 -C extra-filename=-7027a583815f77d4 --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_pace --edition=2021 crates/adaptive-transport/tests/tv_pace.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=8b19741c7bf4de37 -C extra-filename=-b4a3ecb929894216 --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name tv_src --edition=2021 crates/adaptive-transport/tests/tv_src.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=23ae02ff911c8940 -C extra-filename=-c8d777488c23512a --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name sim_determinism --edition=2021 crates/adaptive-transport/tests/sim_determinism.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4b6cc29854c66f43 -C extra-filename=-da8e4697a640fbeb --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern adaptive_transport=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9cc1446eb98710ef -C extra-filename=-eecea9df1309094a --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.08s
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/adaptive_transport-eecea9df1309094a`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/desen1_sim-1e7f285b056d400a`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/estimator_sim_integration-a3bf05855cebd84f`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/sender_diag_contract-8b3d86e66aba1413`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/sender_loss_path-7027a583815f77d4`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/sender_state_matrix-fed3079949ced682`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/sim_determinism-da8e4697a640fbeb`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/soak_long_session-0ad1916f93bd8eb3`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/tv_ack-70c932a8d042d67b`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/tv_arq-02e1623740961522`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/tv_bw-cac03acb78cdc2a2`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/tv_emergency-a7f1dcd46634dc52`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/tv_fec-e6cfb042edb0a4c5`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/tv_fusion-e575f66ff291330c`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/tv_loss-e6453bbda81134c9`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/tv_pace-b4a3ecb929894216`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/tv_rtt-ebc6108cb5d9f7d9`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/tv_seq-659089571c5a701d`
+  Executable `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/tv_src-c8d777488c23512a`
+
+*** result: Success
+
+*** /home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=adaptive-transport@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh thiserror-impl v2.0.18
+       Fresh tokio-macros v2.7.0
+       Fresh pin-project-lite v0.2.17
+       Fresh tokio v1.52.3
+       Fresh thiserror v2.0.18
+       Fresh adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-2LEMmU.tmp/crates/adaptive-transport)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/adaptive_transport-eecea9df1309094a`
+
+running 47 tests
+test ack::tests::ack_delay_unit_per_version ... ok
+test ack::tests::decode_v1_frame_type_compat ... ok
+test receiver::return_supply_tests::arrival_rate_acceleration_mid_regime ... ok
+test receiver::return_supply_tests::count0_hole_first_packet_blackout_return ... ok
+test receiver::return_supply_tests::regime_shift_geometric_convergence ... ok
+test receiver::return_supply_tests::v1_burst_then_normal_gap_no_episode ... ok
+test receiver::return_supply_tests::v2_micro_gap_batch_no_episode ... ok
+test receiver::return_supply_tests::v3_bimodal_jitter_no_episode ... ok
+test receiver::return_supply_tests::v4_slow_channel_variance_no_episode ... ok
+test receiver::return_supply_tests::v5_double_micro_gap_integer_boundary ... ok
+test ack::tests::acked_full_roundtrips_from_received ... ok
+test receiver::tests::ack_delay_large_hold_not_saturated_and_saturation_counted ... ok
+test receiver::tests::ack_timer_first_exempt_then_cadence_throttled ... ok
+test receiver::tests::ack_delay_reflects_elapsed_since_largest ... ok
+test ack::tests::acked_full_empty_on_zero_block0 ... ok
+test receiver::tests::duplicate_suppressed_not_delivered ... ok
+test receiver::tests::fec_shard_buffered_not_delivered ... ok
+test receiver::tests::freq_ack_resets_timer_cadence ... ok
+test receiver::tests::gap_produces_sack_range_and_reorder_state ... ok
+test receiver::tests::tail_pending_data_gets_cadence_exempt_sack ... ok
+test sender::tests::ack_confidence_eai_floor_prevents_false_low ... ok
+test receiver::tests::in_order_delivers_and_acks_on_frequency ... ok
+test sender::tests::ack_confidence_low_enters_recover_fwd_and_duplicates ... ok
+test sender::tests::ack_frees_inflight_and_updates_rtt ... ok
+test sender::tests::arq_share_emits_retx_under_token_starvation ... ok
+test sender::tests::drain_rtprop_contract_dwell_and_exit_invariant ... ok
+test sender::tests::drains_to_idle_when_quiescent ... ok
+test sender::tests::idle_to_preconverge_then_startup_on_first_ack ... ok
+test sender::tests::inv_rate_1_loss_declaration_preserves_phase_gain ... ok
+test sender::tests::karn_both_transmissions_acked_wire_byte_semantics ... ok
+test sender::tests::low_loss_with_healthy_acks_retransmits ... ok
+test ack::tests::acked_full_single_contiguous_block ... ok
+test sender::tests::plateau_round_is_supply_independent ... ok
+test receiver::return_supply_tests::dv2_blackout_opens_episode_and_quota ... ok
+test sender::tests::preconverge_clean_no_spurious_recovery ... ok
+test receiver::return_supply_tests::quota_spacing_and_invariant ... ok
+test sender::tests::probe_up_contract_entry_success_and_gates ... ok
+test sender::tests::karn_superseded_late_ack_credits_without_samples ... ok
+test sender::tests::startup_exit_enters_drain_then_steady_on_bdp ... ok
+test sender::tests::probe_up_timeout_and_preempt_bookkeeping ... ok
+test sender::tests::startup_reentry_resets_plateau_counter ... ok
+test sender::tests::clean_pair_flow_no_time_threshold_loss ... ok
+test sender::tests::tombstone_expiry_yields_no_sample ... ok
+test sender::tests::retransmit_references_same_unit_id ... ok
+test sender::tests::tail_loss_liveness_without_loss_classification ... ok
+test sender::tests::unloss_cancels_pending_retransmit_and_raises_tolerance ... ok
+test sender::tests::tombstone_recovers_bw_and_rtt_from_late_ack ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running `/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/desen1_sim-1e7f285b056d400a`
+
+running 7 tests
+test recalibrate_cadence ... ignored, [ÖLÇÜLDÜ] 8,67 s — deponun en ağır sim varyantı, assertion yok (print-only sweep). Nightly: cargo test --test desen1_sim -- --ignored --nocapture
+test unit_is_a_scenario_constant_not_a_wire_size ... ok
+test scan_subkbps_anchor ... ok
+test scan_long_narrowing_convergence ... FAILED
+test desen1_expiry_pin_3a2 ... FAILED
+test harness_signature_pin ... FAILED
+test desen1_period_counters ... ok
+
+failures:
+
+---- scan_long_narrowing_convergence stdout ----
+[UZUN-DARALMA] btlbw@60=5562 @90=5562 @125=5562 (kanal=375)
+
+thread 'scan_long_narrowing_convergence' (768874) panicked at crates/adaptive-transport/tests/desen1_sim.rs:345:5:
+kopmasız-daralmada kanal-bandına-yakınsama (netem-mühürlü-gate), ölçülen 5562
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- desen1_expiry_pin_3a2 stdout ----
+    [İZ t=36s] btlbw=5562 örnek=646 taze4s=56 taze-YÜKSEK=56 lfb=1 W=4288.8s
+    [İZ t=40s] btlbw=5562 örnek=674 taze4s=28 taze-YÜKSEK=19 lfb=1 W=4288.8s
+    [İZ t=44s] btlbw=5562 örnek=679 taze4s=5 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=48s] btlbw=5562 örnek=686 taze4s=7 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=52s] btlbw=5562 örnek=690 taze4s=4 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=56s] btlbw=5562 örnek=697 taze4s=7 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=60s] btlbw=5562 örnek=701 taze4s=4 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=64s] btlbw=5562 örnek=708 taze4s=7 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=68s] btlbw=5562 örnek=713 taze4s=5 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [P4-iz t=100s] state=Steady btlbw=5562 rate=180 srtt=38.7s infl=28302
+    [P4-iz t=102s] state=RecoverArq btlbw=5562 rate=5562 srtt=0.8s infl=6675
+    [P4-iz t=104s] state=RecoverArq btlbw=5562 rate=2913 srtt=1.6s infl=12282
+    [P4-iz t=106s] state=RecoverArq btlbw=5562 rate=1326 srtt=3.6s infl=14151
+    [P4-iz t=108s] state=RecoverArq btlbw=5562 rate=822 srtt=5.8s infl=13884
+    [P4-iz t=110s] state=RecoverArq btlbw=5562 rate=779 srtt=6.2s infl=13617
+    [P4-iz t=112s] state=RecoverArq btlbw=5562 rate=563 srtt=8.5s infl=13083
+    [P4-iz t=114s] state=RecoverArq btlbw=5562 rate=467 srtt=10.3s infl=11481
+    [P4-iz t=116s] state=RecoverArq btlbw=5562 rate=418 srtt=11.5s infl=10680
+    [P4-iz t=118s] state=RecoverArq btlbw=5562 rate=381 srtt=12.6s infl=9879
+    [P4-iz t=120s] state=RecoverArq btlbw=5562 rate=356 srtt=13.5s infl=8010
+    [P4-iz t=122s] state=RecoverArq btlbw=5562 rate=348 srtt=13.8s infl=6942
+    [P4-iz t=124s] state=RecoverArq btlbw=5562 rate=354 srtt=13.6s infl=5874
+    [P4-iz t=126s] state=RecoverArq btlbw=5562 rate=402 srtt=11.9s infl=4005
+    [P4-iz t=128s] state=RecoverArq btlbw=5562 rate=497 srtt=9.6s infl=3471
+    [P4-iz t=130s] state=RecoverArq btlbw=5562 rate=702 srtt=6.8s infl=2670
+    [P4-iz t=132s] state=RecoverArq btlbw=5562 rate=3651 srtt=3.1s infl=2937
+    [P4-iz t=134s] state=RecoverArq btlbw=5562 rate=5562 srtt=2.8s infl=11481
+    [P4-iz t=136s] state=RecoverArq btlbw=5562 rate=5562 srtt=2.8s infl=20826
+    [P4-iz t=138s] state=RecoverArq btlbw=5562 rate=5562 srtt=3.5s infl=29370
+    [P4-iz t=140s] state=RecoverArq btlbw=5562 rate=5562 srtt=3.8s infl=38982
+    [P4-iz t=142s] state=RecoverArq btlbw=5562 rate=4484 srtt=5.6s infl=46725
+    [P4-iz t=144s] state=RecoverArq btlbw=5562 rate=3466 srtt=7.2s infl=52332
+[PIN 3a2] infl_max=92× srtt_max=30.3s expiry=0.0s btlbw@70s=5562 unique=884
+[FAZ-0 qd] qd_max=0.0s
+
+thread 'desen1_expiry_pin_3a2' (768871) panicked at crates/adaptive-transport/tests/desen1_sim.rs:324:5:
+FAZ-0: DESEN-1'de qd canlanmalı (>1s), ölçülen 0us
+
+---- harness_signature_pin stdout ----
+    [İZ t=36s] btlbw=5562 örnek=638 taze4s=56 taze-YÜKSEK=56 lfb=1 W=4288.8s
+    [İZ t=40s] btlbw=5562 örnek=652 taze4s=14 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=44s] btlbw=5562 örnek=656 taze4s=4 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=48s] btlbw=5562 örnek=663 taze4s=7 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=52s] btlbw=5562 örnek=667 taze4s=4 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=56s] btlbw=5562 örnek=674 taze4s=7 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=60s] btlbw=5562 örnek=679 taze4s=5 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=64s] btlbw=5562 örnek=685 taze4s=6 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [İZ t=68s] btlbw=5562 örnek=690 taze4s=5 taze-YÜKSEK=0 lfb=1 W=4288.8s
+    [P4-iz t=100s] state=Steady btlbw=5562 rate=135 srtt=38.7s infl=21093
+    [P4-iz t=102s] state=Steady btlbw=5562 rate=135 srtt=38.7s infl=21360
+    [P4-iz t=104s] state=RecoverArq btlbw=5562 rate=5562 srtt=0.8s infl=7743
+    [P4-iz t=106s] state=RecoverArq btlbw=5562 rate=2648 srtt=2.2s infl=15219
+    [P4-iz t=108s] state=RecoverArq btlbw=5562 rate=1517 srtt=3.8s infl=16821
+    [P4-iz t=110s] state=RecoverArq btlbw=5562 rate=1098 srtt=5.3s infl=17889
+    [P4-iz t=112s] state=RecoverArq btlbw=5562 rate=849 srtt=6.9s infl=17889
+    [P4-iz t=114s] state=RecoverArq btlbw=5562 rate=652 srtt=8.9s infl=16821
+    [P4-iz t=116s] state=RecoverArq btlbw=5562 rate=569 srtt=10.2s infl=16287
+    [P4-iz t=118s] state=RecoverArq btlbw=5562 rate=498 srtt=11.7s infl=15486
+    [P4-iz t=120s] state=RecoverArq btlbw=5562 rate=427 srtt=13.6s infl=13884
+    [P4-iz t=122s] state=RecoverArq btlbw=5562 rate=393 srtt=14.8s infl=13083
+    [P4-iz t=124s] state=RecoverArq btlbw=5562 rate=368 srtt=15.8s infl=12015
+    [P4-iz t=126s] state=RecoverArq btlbw=5562 rate=344 srtt=16.9s infl=10413
+    [P4-iz t=128s] state=RecoverArq btlbw=5562 rate=335 srtt=17.3s infl=9078
+    [P4-iz t=130s] state=RecoverArq btlbw=5562 rate=333 srtt=17.5s infl=8277
+    [P4-iz t=132s] state=RecoverArq btlbw=5562 rate=340 srtt=17.1s infl=6408
+    [P4-iz t=134s] state=RecoverArq btlbw=5562 rate=376 srtt=15.5s infl=5340
+    [P4-iz t=136s] state=RecoverArq btlbw=5562 rate=439 srtt=13.2s infl=4272
+    [P4-iz t=138s] state=RecoverArq btlbw=5562 rate=638 srtt=9.1s infl=2937
+    [P4-iz t=140s] state=RecoverArq btlbw=5562 rate=1013 srtt=5.7s infl=2670
+    [P4-iz t=142s] state=RecoverArq btlbw=5562 rate=5562 srtt=3.6s infl=6141
+    [P4-iz t=144s] state=RecoverArq btlbw=5562 rate=5562 srtt=3.3s infl=14952
+[KALİBRASYON] infl_max=74× srtt_max=30.5s btlbw@70=5562 delivered=854 qd_max=0.0s
+
+thread 'harness_signature_pin' (768873) panicked at crates/adaptive-transport/tests/desen1_sim.rs:616:5:
+infl_max imza-bandı dışında: 74× (referans 54×, bant 40..70)
+
+
+failures:
+    desen1_expiry_pin_3a2
+    harness_signature_pin
+    scan_long_narrowing_convergence
+
+test result: FAILED. 3 passed; 3 failed; 1 ignored; 0 measured; 0 filtered out; finished in 25.38s
+
+error: test failed, to rerun pass `-p adaptive-transport --test desen1_sim`
+
+*** result: Failure(101)

@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/arq.rs
++++ replace >= with < in <impl ArqScheduler for DeadlineArqScheduler>::plan
+@@ -109,17 +109,17 @@
+         }
+         // Deadline-öncelik: erken deadline önce. deadline YALNIZ SIRA — expired seq
+         // DROP EDİLMEZ, planda kalır ("veri ulaşsın").
+         let mut ordered = lost.to_vec();
+         ordered.sort_by_key(|l| l.deadline_ns);
+         ordered
+             .into_iter()
+             .map(|l| {
+-                if l.retx_count >= self.cfg.arq_retx_cap {
++                if l.retx_count < /* ~ changed by cargo-mutants ~ */ self.cfg.arq_retx_cap {
+                     RetxDecision::CapExceeded {
+                         seq: l.seq,
+                         policy: self.cfg.cap_exceed,
+                     }
+                 } else {
+                     RetxDecision::Retransmit { seq: l.seq }
+                 }
+             })

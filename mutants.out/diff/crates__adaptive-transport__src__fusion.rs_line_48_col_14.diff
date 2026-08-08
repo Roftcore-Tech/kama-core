@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/fusion.rs
++++ replace >= with < in trap_permille
+@@ -40,17 +40,17 @@
+ }
+ 
+ /// Trapezoidal membership: μ(x) per-mille (0..=1000). μ = min(rise, fall).
+ /// Shoulder: `a==b` → sol-omuz (rise sabit 1000), `c==d` → sağ-omuz (fall sabit 1000).
+ #[must_use]
+ pub fn trap_permille(x: u64, a: u64, b: u64, c: u64, d: u64) -> u32 {
+     let rise = if a >= b {
+         // dejenere/sol-omuz: yükselen kenar yok, x ≥ b'de tam
+-        if x >= b {
++        if x < /* ~ changed by cargo-mutants ~ */ b {
+             PERMILLE
+         } else {
+             0
+         }
+     } else if x <= a {
+         0
+     } else if x >= b {
+         PERMILLE

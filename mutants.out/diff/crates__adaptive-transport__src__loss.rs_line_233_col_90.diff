@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace >= with < in ThresholdLossDetector::ledger_tick
+@@ -225,17 +225,17 @@
+             self.events.pop_front(); // Expired — loss_ppm'den doğal decay (ratchet ölümü)
+         }
+         while self.sent_window.front().is_some_and(|s| s.send_ns < cutoff) {
+             let s = self.sent_window.pop_front().expect("front var");
+             self.sent_window_units = self.sent_window_units.saturating_sub(s.units);
+         }
+         let conf_ns = confirm_age.as_nanos() as u64;
+         for e in &mut self.events {
+-            if e.state == LedgerState::Suspected && now_ns.saturating_sub(e.declared_ns) >= conf_ns
++            if e.state == LedgerState::Suspected && now_ns.saturating_sub(e.declared_ns) < /* ~ changed by cargo-mutants ~ */ conf_ns
+             {
+                 e.state = LedgerState::Confirmed;
+             }
+         }
+     }
+ 
+     /// [D-1/3] Pencere-türetimli loss oranı: `Confirmed_units / pencere-içi-gönderim` (ppm).
+     /// Spurious SAYILMAZ (un-loss); pencere-dışı olay düşer → monoton ratchet YAPISAL biter.

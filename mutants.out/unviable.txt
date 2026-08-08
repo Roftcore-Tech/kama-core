@@ -1,8 +1,21 @@
-crates/adaptive-transport/src/sender.rs:448:9: replace Sender::on_event -> Vec<TransmitDecision> with vec![Default::default()]
-crates/adaptive-transport/src/sender.rs:516:24: replace + with * in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:519:43: replace * with + in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:520:49: replace * with + in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:526:44: replace * with + in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:529:48: replace / with % in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:806:9: replace Sender::fuzzy_evaluate -> FusionDecision with Default::default()
-crates/adaptive-transport/src/sender.rs:809:44: replace * with + in Sender::fuzzy_evaluate
+crates/adaptive-transport/src/arq.rs:72:9: replace RetxConfig::fixture -> Self with Default::default()
+crates/adaptive-transport/src/arq.rs:107:9: replace <impl ArqScheduler for DeadlineArqScheduler>::plan -> Vec<RetxDecision> with vec![Default::default()]
+crates/adaptive-transport/src/bw.rs:80:9: replace DeliveryRateSampler::on_sent -> SentPacket with Default::default()
+crates/adaptive-transport/src/bw.rs:99:9: replace DeliveryRateSampler::on_ack -> RateSample with Default::default()
+crates/adaptive-transport/src/emergency.rs:35:9: replace EmergencyLevel::escalated -> Self with Default::default()
+crates/adaptive-transport/src/emergency.rs:42:9: replace EmergencyLevel::deescalated -> Self with Default::default()
+crates/adaptive-transport/src/emergency.rs:92:9: replace HysteresisConfig::fixture -> Self with Default::default()
+crates/adaptive-transport/src/emergency.rs:119:9: replace EmergencyConfig::fixture -> Self with Default::default()
+crates/adaptive-transport/src/emergency.rs:159:9: replace <impl RecoveryModeController for HysteresisController>::update -> EmergencyLevel with Default::default()
+crates/adaptive-transport/src/emergency.rs:177:9: replace <impl RecoveryModeController for HysteresisController>::level -> EmergencyLevel with Default::default()
+crates/adaptive-transport/src/emergency.rs:184:5: replace action -> RecoveryAction with Default::default()
+crates/adaptive-transport/src/fec.rs:77:9: replace FecShardFrame::decode -> Result<Self, TransportError> with Ok(Default::default())
+crates/adaptive-transport/src/fusion.rs:128:9: replace VarThresholds::fuzzify -> Degrees with Default::default()
+crates/adaptive-transport/src/fusion.rs:189:9: replace FuzzyConfig::fixture -> Self with Default::default()
+crates/adaptive-transport/src/fusion.rs:313:9: replace DeterministicFuzzyController::fixture -> Self with Default::default()
+crates/adaptive-transport/src/fusion.rs:321:9: replace <impl FusionController for DeterministicFuzzyController>::decide -> FusionDecision with Default::default()
+crates/adaptive-transport/src/receiver.rs:186:9: replace Receiver::on_datagram -> RxOutput with Default::default()
+crates/adaptive-transport/src/receiver.rs:255:9: replace Receiver::on_ack_timer -> Option<AckFrame> with Some(Default::default())
+crates/adaptive-transport/src/receiver.rs:409:9: replace Receiver::tick_ack -> Option<AckFrame> with Some(Default::default())
+crates/adaptive-transport/src/receiver.rs:434:9: replace Receiver::build_ack -> Option<AckFrame> with Some(Default::default())
+crates/adaptive-transport/src/receiver.rs:460:9: replace Receiver::state -> RxState with Default::default()

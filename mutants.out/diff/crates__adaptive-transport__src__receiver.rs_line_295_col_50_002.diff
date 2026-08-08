@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace > with >= in Receiver::on_ack_timer
+@@ -287,17 +287,17 @@
+                 self.burn_quota();
+                 self.record_ack_emit(now_ns);
+                 return self.build_ack(now_ns);
+             }
+             return None;
+         }
+         // [r3 §3] Bacak-2 §3.3-E MİNİMAL-TABAN (kota-dışı): beklemede-yeni-bilgi varken cadence
+         // varış-ritmine bağlanır; yoksa statik-önsel FLOOR (sessiz-dönem tekrarları korunur).
+-        let cadence_eff = if self.since_last_ack > 0 && self.last_gap_ns > 0 {
++        let cadence_eff = if self.since_last_ack >= /* ~ changed by cargo-mutants ~ */ 0 && self.last_gap_ns > 0 {
+             (K_ARR.saturating_mul(self.last_gap_ns)).clamp(T_SPACING_NS, ACK_CADENCE_FLOOR_NS)
+         } else {
+             ACK_CADENCE_FLOOR_NS
+         };
+         if elapsed < cadence_eff {
+             return None;
+         }
+         if cadence_eff < ACK_CADENCE_FLOOR_NS {

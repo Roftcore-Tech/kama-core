@@ -1,0 +1,15 @@
+--- crates/adaptive-transport/src/arq.rs
++++ replace ReorderTracker::recent_max_reorder -> u32 with 1
+@@ -153,11 +153,11 @@
+     /// Küçülmez (max korunur).
+     pub fn note_spurious(&mut self, observed_reorder: u32) {
+         self.recent_max_reorder = self.recent_max_reorder.max(observed_reorder);
+     }
+ 
+     /// Güncel `recent_max_reorder`.
+     #[must_use]
+     pub fn recent_max_reorder(&self) -> u32 {
+-        self.recent_max_reorder
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ }

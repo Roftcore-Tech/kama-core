@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ delete ! in <impl LossDetector for ThresholdLossDetector>::detect_time_losses
+@@ -337,17 +337,17 @@
+         // [TUR-1a / D-1/1] LATER-ACK PRECONDITION (RFC 9002 §6.1'in atlanmış yarısı): time-threshold
+         // KESİN kayıp sınıflandırması YALNIZ "daha yüksek seq ACK'lendi" kanıtıyla (seq < largest_acked).
+         // Saf sessizlik loss metriğini ARTIRMAZ — sessizlikte tail-recovery liveness'ın işi (§5.1
+         // ack_confidence → RECOVER_FWD spekülatif kopya; loss-sınıflandırması DEĞİL). Bu olmadan
+         // SACK-cadence gecikmesi (K-1) temiz kanalda sistematik false-loss üretiyordu (ölçüldü: 27/27).
+         // [TUR-1b / D-1/2] CADENCE-FARKINDA TABAN: kanıt olsa bile elapsed, beklenen-ACK-aralığı
+         // türevi tabanı (K_c×EAI) aşmadan sınıflandırma YOK — "SACK'i henüz gelmemiş" ile "kayıp"
+         // ayrımı (eşik ile elapsed aynı saat-etki-alanına çekilir, ZM-4).
+-        if !self.have_acked {
++        if  /* ~ changed by cargo-mutants ~ */self.have_acked {
+             return Vec::new();
+         }
+         let cfg = self.cfg;
+         let floor = cfg.min_delay.max(cadence_floor);
+         let la = self.largest_acked;
+         let lost: Vec<u64> = self
+             .inflight
+             .iter()

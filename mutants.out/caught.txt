@@ -1,111 +1,430 @@
-crates/adaptive-transport/src/sender.rs:448:9: replace Sender::on_event -> Vec<TransmitDecision> with vec![]
-crates/adaptive-transport/src/sender.rs:479:70: replace / with * in Sender::on_event
-crates/adaptive-transport/src/sender.rs:479:70: replace / with % in Sender::on_event
-crates/adaptive-transport/src/sender.rs:455:31: replace == with != in Sender::on_event
-crates/adaptive-transport/src/sender.rs:483:51: replace && with || in Sender::on_event
-crates/adaptive-transport/src/sender.rs:480:41: replace * with / in Sender::on_event
-crates/adaptive-transport/src/sender.rs:483:23: replace == with != in Sender::on_event
-crates/adaptive-transport/src/sender.rs:494:9: replace Sender::on_ack_received with ()
-crates/adaptive-transport/src/sender.rs:515:69: replace * with + in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:483:65: replace != with == in Sender::on_event
-crates/adaptive-transport/src/sender.rs:515:85: replace / with * in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:515:69: replace * with / in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:516:24: replace + with - in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:520:49: replace * with / in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:529:48: replace / with * in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:546:68: replace > with == in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:539:20: replace >= with < in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:546:68: replace > with < in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:548:29: replace == with != in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:548:77: replace || with && in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:548:84: replace >= with < in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:556:37: replace += with -= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:556:37: replace += with *= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:558:33: replace == with != in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:563:44: replace += with -= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:563:44: replace += with *= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:575:50: replace += with -= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:575:50: replace += with *= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:576:49: replace += with -= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:576:49: replace += with *= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:600:12: delete ! in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:606:20: delete ! in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:610:34: replace += with -= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:610:34: replace += with *= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:616:82: replace >= with < in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:624:46: replace >= with < in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:638:40: replace += with -= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:637:16: delete ! in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:642:27: replace == with != in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:638:40: replace += with *= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:648:12: delete ! in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:649:39: delete ! in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:656:32: replace += with -= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:656:32: replace += with *= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:656:60: replace - with / in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:656:60: replace - with + in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:662:9: replace Sender::on_timer with ()
-crates/adaptive-transport/src/sender.rs:666:31: replace == with != in Sender::on_timer
-crates/adaptive-transport/src/sender.rs:670:48: replace >= with < in Sender::on_timer
-crates/adaptive-transport/src/sender.rs:670:79: replace / with % in Sender::on_timer
-crates/adaptive-transport/src/sender.rs:670:79: replace / with * in Sender::on_timer
-crates/adaptive-transport/src/sender.rs:689:41: replace += with -= in Sender::on_timer
-crates/adaptive-transport/src/sender.rs:689:69: replace - with / in Sender::on_timer
-crates/adaptive-transport/src/sender.rs:699:36: replace match guard t.expiry_ns <= now_ns with false in Sender::on_timer
-crates/adaptive-transport/src/sender.rs:699:48: replace <= with > in Sender::on_timer
-crates/adaptive-transport/src/sender.rs:719:9: replace Sender::cadence_loss_floor -> Duration with Default::default()
-crates/adaptive-transport/src/sender.rs:719:84: replace / with % in Sender::cadence_loss_floor
-crates/adaptive-transport/src/sender.rs:719:67: replace * with + in Sender::cadence_loss_floor
-crates/adaptive-transport/src/sender.rs:725:9: replace Sender::expected_ack_interval -> Duration with Default::default()
-crates/adaptive-transport/src/sender.rs:732:13: replace + with - in Sender::expected_ack_interval
-crates/adaptive-transport/src/sender.rs:728:34: replace / with * in Sender::expected_ack_interval
-crates/adaptive-transport/src/sender.rs:732:13: replace + with * in Sender::expected_ack_interval
-crates/adaptive-transport/src/sender.rs:731:65: replace / with * in Sender::expected_ack_interval
-crates/adaptive-transport/src/sender.rs:732:51: replace / with % in Sender::expected_ack_interval
-crates/adaptive-transport/src/sender.rs:732:51: replace / with * in Sender::expected_ack_interval
-crates/adaptive-transport/src/sender.rs:732:35: replace * with + in Sender::expected_ack_interval
-crates/adaptive-transport/src/sender.rs:732:35: replace * with / in Sender::expected_ack_interval
-crates/adaptive-transport/src/sender.rs:742:9: replace Sender::queue_losses with ()
-crates/adaptive-transport/src/sender.rs:747:43: replace / with * in Sender::queue_losses
-crates/adaptive-transport/src/sender.rs:756:34: replace >= with < in Sender::queue_losses
-crates/adaptive-transport/src/sender.rs:760:29: replace == with != in Sender::queue_losses
-crates/adaptive-transport/src/sender.rs:764:29: replace != with == in Sender::queue_losses
-crates/adaptive-transport/src/sender.rs:773:49: replace >= with < in Sender::queue_losses
-crates/adaptive-transport/src/sender.rs:777:60: replace += with *= in Sender::queue_losses
-crates/adaptive-transport/src/sender.rs:818:38: replace += with -= in Sender::fuzzy_evaluate
-crates/adaptive-transport/src/sender.rs:834:37: replace += with -= in Sender::fuzzy_evaluate
-crates/adaptive-transport/src/sender.rs:842:9: replace Sender::update_state with ()
-crates/adaptive-transport/src/sender.rs:850:13: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:849:13: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:848:13: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:852:41: replace || with && in Sender::update_state
-crates/adaptive-transport/src/sender.rs:852:19: replace > with == in Sender::update_state
-crates/adaptive-transport/src/sender.rs:852:19: replace > with < in Sender::update_state
-crates/adaptive-transport/src/sender.rs:852:19: replace > with >= in Sender::update_state
-crates/adaptive-transport/src/sender.rs:852:58: replace == with != in Sender::update_state
-crates/adaptive-transport/src/sender.rs:859:33: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:865:30: replace == with != in Sender::update_state
-crates/adaptive-transport/src/sender.rs:876:19: delete ! in Sender::update_state
-crates/adaptive-transport/src/sender.rs:883:17: delete match arm SenderState::Startup in Sender::update_state
-crates/adaptive-transport/src/sender.rs:895:17: delete match arm SenderState::Drain in Sender::update_state
-crates/adaptive-transport/src/sender.rs:922:17: delete match arm SenderState::DrainRtprop in Sender::update_state
-crates/adaptive-transport/src/sender.rs:943:17: delete match arm SenderState::ProbeUp in Sender::update_state
-crates/adaptive-transport/src/sender.rs:973:17: delete match arm SenderState::Steady in Sender::update_state
-crates/adaptive-transport/src/sender.rs:1003:17: delete match arm SenderState::RecoverArq | SenderState::RecoverFwd in Sender::update_state
-crates/adaptive-transport/src/sender.rs:899:25: replace * with / in Sender::update_state
-crates/adaptive-transport/src/sender.rs:899:25: replace * with + in Sender::update_state
-crates/adaptive-transport/src/sender.rs:911:25: replace || with && in Sender::update_state
-crates/adaptive-transport/src/sender.rs:910:44: replace <= with > in Sender::update_state
-crates/adaptive-transport/src/sender.rs:911:36: replace >= with < in Sender::update_state
-crates/adaptive-transport/src/sender.rs:934:25: replace || with && in Sender::update_state
-crates/adaptive-transport/src/sender.rs:933:46: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:933:33: replace >= with < in Sender::update_state
-crates/adaptive-transport/src/sender.rs:934:36: replace >= with < in Sender::update_state
-crates/adaptive-transport/src/sender.rs:949:25: replace / with % in Sender::update_state
-crates/adaptive-transport/src/sender.rs:949:25: replace / with * in Sender::update_state
-crates/adaptive-transport/src/sender.rs:948:25: replace * with + in Sender::update_state
-crates/adaptive-transport/src/sender.rs:948:25: replace * with / in Sender::update_state
-crates/adaptive-transport/src/sender.rs:955:45: replace >= with < in Sender::update_state
-crates/adaptive-transport/src/sender.rs:957:29: replace > with == in Sender::update_state
-crates/adaptive-transport/src/sender.rs:957:29: replace > with < in Sender::update_state
-crates/adaptive-transport/src/sender.rs:957:29: replace > with >= in Sender::update_state
+crates/adaptive-transport/src/arq.rs:107:9: replace <impl ArqScheduler for DeadlineArqScheduler>::plan -> Vec<RetxDecision> with vec![]
+crates/adaptive-transport/src/arq.rs:146:9: replace ReorderTracker::reorder_thresh -> u32 with 0
+crates/adaptive-transport/src/arq.rs:107:40: replace == with != in <impl ArqScheduler for DeadlineArqScheduler>::plan
+crates/adaptive-transport/src/arq.rs:117:33: replace >= with < in <impl ArqScheduler for DeadlineArqScheduler>::plan
+crates/adaptive-transport/src/arq.rs:146:9: replace ReorderTracker::reorder_thresh -> u32 with 1
+crates/adaptive-transport/src/arq.rs:147:13: replace / with % in ReorderTracker::reorder_thresh
+crates/adaptive-transport/src/arq.rs:146:54: replace * with / in ReorderTracker::reorder_thresh
+crates/adaptive-transport/src/arq.rs:155:9: replace ReorderTracker::note_spurious with ()
+crates/adaptive-transport/src/arq.rs:161:9: replace ReorderTracker::recent_max_reorder -> u32 with 0
+crates/adaptive-transport/src/arq.rs:161:9: replace ReorderTracker::recent_max_reorder -> u32 with 1
+crates/adaptive-transport/src/bw.rs:18:5: replace dur_ns -> u64 with 0
+crates/adaptive-transport/src/bw.rs:18:5: replace dur_ns -> u64 with 1
+crates/adaptive-transport/src/arq.rs:146:54: replace * with + in ReorderTracker::reorder_thresh
+crates/adaptive-transport/src/bw.rs:80:35: replace == with != in DeliveryRateSampler::on_sent
+crates/adaptive-transport/src/bw.rs:84:32: replace += with -= in DeliveryRateSampler::on_sent
+crates/adaptive-transport/src/bw.rs:84:32: replace += with *= in DeliveryRateSampler::on_sent
+crates/adaptive-transport/src/bw.rs:99:24: replace += with -= in DeliveryRateSampler::on_ack
+crates/adaptive-transport/src/bw.rs:99:24: replace += with *= in DeliveryRateSampler::on_ack
+crates/adaptive-transport/src/bw.rs:109:39: replace - with + in DeliveryRateSampler::on_ack
+crates/adaptive-transport/src/bw.rs:109:39: replace - with / in DeliveryRateSampler::on_ack
+crates/adaptive-transport/src/bw.rs:127:9: replace DeliveryRateSampler::packets_in_flight -> u64 with 0
+crates/adaptive-transport/src/bw.rs:136:9: replace DeliveryRateSampler::forget_in_flight with ()
+crates/adaptive-transport/src/bw.rs:127:9: replace DeliveryRateSampler::packets_in_flight -> u64 with 1
+crates/adaptive-transport/src/bw.rs:144:9: replace DeliveryRateSampler::credit_delivered with ()
+crates/adaptive-transport/src/bw.rs:187:9: replace BtlBwFilter::set_window with ()
+crates/adaptive-transport/src/bw.rs:144:24: replace += with -= in DeliveryRateSampler::credit_delivered
+crates/adaptive-transport/src/bw.rs:197:9: replace BtlBwFilter::update -> u64 with 0
+crates/adaptive-transport/src/bw.rs:197:9: replace BtlBwFilter::update -> u64 with 1
+crates/adaptive-transport/src/bw.rs:144:24: replace += with *= in DeliveryRateSampler::credit_delivered
+crates/adaptive-transport/src/bw.rs:197:37: replace >= with < in BtlBwFilter::update
+crates/adaptive-transport/src/bw.rs:199:57: replace || with && in BtlBwFilter::update
+crates/adaptive-transport/src/bw.rs:199:63: replace >= with < in BtlBwFilter::update
+crates/adaptive-transport/src/bw.rs:199:34: delete ! in BtlBwFilter::update
+crates/adaptive-transport/src/bw.rs:210:41: replace >= with < in BtlBwFilter::update
+crates/adaptive-transport/src/bw.rs:222:9: replace BtlBwFilter::btlbw -> u64 with 0
+crates/adaptive-transport/src/bw.rs:197:18: replace && with || in BtlBwFilter::update
+crates/adaptive-transport/src/bw.rs:222:9: replace BtlBwFilter::btlbw -> u64 with 1
+crates/adaptive-transport/src/bw.rs:235:9: replace BtlBwFilter::window_ns -> u64 with 0
+crates/adaptive-transport/src/bw.rs:229:9: replace BtlBwFilter::last_sample_bw -> u64 with 0
+crates/adaptive-transport/src/bw.rs:229:9: replace BtlBwFilter::last_sample_bw -> u64 with 1
+crates/adaptive-transport/src/bw.rs:235:9: replace BtlBwFilter::window_ns -> u64 with 1
+crates/adaptive-transport/src/bw.rs:242:9: replace BtlBwFilter::samples_snapshot -> Vec<(u64, u64)> with vec![]
+crates/adaptive-transport/src/bw.rs:242:9: replace BtlBwFilter::samples_snapshot -> Vec<(u64, u64)> with vec![(0, 0)]
+crates/adaptive-transport/src/bw.rs:242:9: replace BtlBwFilter::samples_snapshot -> Vec<(u64, u64)> with vec![(0, 1)]
+crates/adaptive-transport/src/bw.rs:242:9: replace BtlBwFilter::samples_snapshot -> Vec<(u64, u64)> with vec![(1, 0)]
+crates/adaptive-transport/src/bw.rs:250:5: replace bw_bps -> u64 with 0
+crates/adaptive-transport/src/bw.rs:242:9: replace BtlBwFilter::samples_snapshot -> Vec<(u64, u64)> with vec![(1, 1)]
+crates/adaptive-transport/src/bw.rs:250:5: replace bw_bps -> u64 with 1
+crates/adaptive-transport/src/bw.rs:251:11: replace == with != in bw_bps
+crates/adaptive-transport/src/bw.rs:254:44: replace / with % in bw_bps
+crates/adaptive-transport/src/bw.rs:254:44: replace / with * in bw_bps
+crates/adaptive-transport/src/bw.rs:254:28: replace * with + in bw_bps
+crates/adaptive-transport/src/bw.rs:254:28: replace * with / in bw_bps
+crates/adaptive-transport/src/emergency.rs:159:57: replace && with || in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:159:28: replace < with > in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:159:28: replace < with == in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:18:5: replace dur_ns -> u64 with 0
+crates/adaptive-transport/src/emergency.rs:159:71: replace < with == in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:18:5: replace dur_ns -> u64 with 1
+crates/adaptive-transport/src/emergency.rs:159:71: replace < with > in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:162:66: replace && with || in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:162:35: replace > with == in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:162:35: replace > with < in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:162:80: replace > with == in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:162:80: replace > with < in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:167:41: replace < with > in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:167:41: replace < with == in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:167:45: replace + with * in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:167:41: replace < with <= in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:167:45: replace + with - in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:168:16: delete ! in <impl RecoveryModeController for HysteresisController>::update
+crates/adaptive-transport/src/emergency.rs:206:5: replace ack_decimation -> bool with true
+crates/adaptive-transport/src/emergency.rs:206:5: replace ack_decimation -> bool with false
+crates/adaptive-transport/src/emergency.rs:206:11: replace != with == in ack_decimation
+crates/adaptive-transport/src/fec.rs:57:9: replace FecShardFrame::encode -> Vec<u8> with vec![]
+crates/adaptive-transport/src/fec.rs:79:15: replace != with == in FecShardFrame::decode
+crates/adaptive-transport/src/fec.rs:57:9: replace FecShardFrame::encode -> Vec<u8> with vec![0]
+crates/adaptive-transport/src/fec.rs:57:9: replace FecShardFrame::encode -> Vec<u8> with vec![1]
+crates/adaptive-transport/src/fec.rs:88:40: replace > with == in FecShardFrame::decode
+crates/adaptive-transport/src/fec.rs:88:40: replace > with < in FecShardFrame::decode
+crates/adaptive-transport/src/fec.rs:88:25: replace + with - in FecShardFrame::decode
+crates/adaptive-transport/src/fec.rs:93:47: replace + with - in FecShardFrame::decode
+crates/adaptive-transport/src/fec.rs:93:47: replace + with * in FecShardFrame::decode
+crates/adaptive-transport/src/fec.rs:95:27: replace != with == in FecShardFrame::decode
+crates/adaptive-transport/src/fusion.rs:30:10: replace == with != in log2_fp
+crates/adaptive-transport/src/fusion.rs:34:21: replace >= with < in log2_fp
+crates/adaptive-transport/src/fusion.rs:30:5: replace log2_fp -> u64 with 0
+crates/adaptive-transport/src/fusion.rs:30:5: replace log2_fp -> u64 with 1
+crates/adaptive-transport/src/fusion.rs:35:24: replace & with | in log2_fp
+crates/adaptive-transport/src/fusion.rs:35:24: replace & with ^ in log2_fp
+crates/adaptive-transport/src/fusion.rs:35:12: replace >> with << in log2_fp
+crates/adaptive-transport/src/fusion.rs:35:18: replace - with + in log2_fp
+crates/adaptive-transport/src/fusion.rs:35:18: replace - with / in log2_fp
+crates/adaptive-transport/src/fusion.rs:37:24: replace & with | in log2_fp
+crates/adaptive-transport/src/fusion.rs:37:24: replace & with ^ in log2_fp
+crates/adaptive-transport/src/fusion.rs:37:12: replace << with >> in log2_fp
+crates/adaptive-transport/src/fusion.rs:37:18: replace - with / in log2_fp
+crates/adaptive-transport/src/fusion.rs:37:18: replace - with + in log2_fp
+crates/adaptive-transport/src/fusion.rs:39:7: replace * with + in log2_fp
+crates/adaptive-transport/src/fusion.rs:39:13: replace + with - in log2_fp
+crates/adaptive-transport/src/fusion.rs:46:5: replace trap_permille -> u32 with 0
+crates/adaptive-transport/src/fusion.rs:46:5: replace trap_permille -> u32 with 1
+crates/adaptive-transport/src/fusion.rs:39:13: replace + with * in log2_fp
+crates/adaptive-transport/src/fusion.rs:39:7: replace * with / in log2_fp
+crates/adaptive-transport/src/fusion.rs:53:17: replace <= with > in trap_permille
+crates/adaptive-transport/src/fusion.rs:48:14: replace >= with < in trap_permille
+crates/adaptive-transport/src/fusion.rs:46:21: replace >= with < in trap_permille
+crates/adaptive-transport/src/fusion.rs:55:17: replace >= with < in trap_permille
+crates/adaptive-transport/src/fusion.rs:59:53: replace / with % in trap_permille
+crates/adaptive-transport/src/fusion.rs:59:53: replace / with * in trap_permille
+crates/adaptive-transport/src/fusion.rs:59:24: replace - with + in trap_permille
+crates/adaptive-transport/src/fusion.rs:59:29: replace * with + in trap_permille
+crates/adaptive-transport/src/fusion.rs:59:29: replace * with / in trap_permille
+crates/adaptive-transport/src/fusion.rs:59:68: replace - with / in trap_permille
+crates/adaptive-transport/src/fusion.rs:59:24: replace - with / in trap_permille
+crates/adaptive-transport/src/fusion.rs:59:68: replace - with + in trap_permille
+crates/adaptive-transport/src/fusion.rs:69:17: replace >= with < in trap_permille
+crates/adaptive-transport/src/fusion.rs:64:14: replace <= with > in trap_permille
+crates/adaptive-transport/src/fusion.rs:62:21: replace >= with < in trap_permille
+crates/adaptive-transport/src/fusion.rs:71:17: replace <= with > in trap_permille
+crates/adaptive-transport/src/fusion.rs:75:53: replace / with % in trap_permille
+crates/adaptive-transport/src/fusion.rs:75:53: replace / with * in trap_permille
+crates/adaptive-transport/src/fusion.rs:75:29: replace * with + in trap_permille
+crates/adaptive-transport/src/fusion.rs:75:24: replace - with + in trap_permille
+crates/adaptive-transport/src/fusion.rs:75:29: replace * with / in trap_permille
+crates/adaptive-transport/src/fusion.rs:75:24: replace - with / in trap_permille
+crates/adaptive-transport/src/fusion.rs:98:9: replace Trap::mu -> u32 with 0
+crates/adaptive-transport/src/fusion.rs:98:9: replace Trap::mu -> u32 with 1
+crates/adaptive-transport/src/fusion.rs:75:68: replace - with + in trap_permille
+crates/adaptive-transport/src/fusion.rs:75:68: replace - with / in trap_permille
+crates/adaptive-transport/src/fusion.rs:141:9: replace VarThresholds::covers_domain -> bool with true
+crates/adaptive-transport/src/fusion.rs:141:9: replace VarThresholds::covers_domain -> bool with false
+crates/adaptive-transport/src/fusion.rs:141:40: replace == with != in VarThresholds::covers_domain
+crates/adaptive-transport/src/fusion.rs:141:59: replace == with != in VarThresholds::covers_domain
+crates/adaptive-transport/src/fusion.rs:142:69: replace == with != in VarThresholds::covers_domain
+crates/adaptive-transport/src/fusion.rs:142:42: replace == with != in VarThresholds::covers_domain
+crates/adaptive-transport/src/fusion.rs:143:68: replace && with || in VarThresholds::covers_domain
+crates/adaptive-transport/src/fusion.rs:143:41: replace && with || in VarThresholds::covers_domain
+crates/adaptive-transport/src/fusion.rs:143:23: replace && with || in VarThresholds::covers_domain
+crates/adaptive-transport/src/fusion.rs:143:55: replace > with == in VarThresholds::covers_domain
+crates/adaptive-transport/src/fusion.rs:143:55: replace > with < in VarThresholds::covers_domain
+crates/adaptive-transport/src/fusion.rs:143:55: replace > with >= in VarThresholds::covers_domain
+crates/adaptive-transport/src/fusion.rs:143:82: replace > with == in VarThresholds::covers_domain
+crates/adaptive-transport/src/fusion.rs:143:82: replace > with < in VarThresholds::covers_domain
+crates/adaptive-transport/src/fusion.rs:356:36: replace == with != in <impl FusionController for DeterministicFuzzyController>::decide
+crates/adaptive-transport/src/fusion.rs:375:33: replace > with < in <impl FusionController for DeterministicFuzzyController>::decide
+crates/adaptive-transport/src/fusion.rs:375:33: replace > with == in <impl FusionController for DeterministicFuzzyController>::decide
+crates/adaptive-transport/src/fusion.rs:375:44: replace / with * in <impl FusionController for DeterministicFuzzyController>::decide
+crates/adaptive-transport/src/fusion.rs:382:31: replace > with < in <impl FusionController for DeterministicFuzzyController>::decide
+crates/adaptive-transport/src/fusion.rs:382:42: replace / with * in <impl FusionController for DeterministicFuzzyController>::decide
+crates/adaptive-transport/src/fusion.rs:403:5: replace weighted_average -> u32 with 0
+crates/adaptive-transport/src/fusion.rs:403:5: replace weighted_average -> u32 with 1
+crates/adaptive-transport/src/fusion.rs:382:54: replace == with != in <impl FusionController for DeterministicFuzzyController>::decide
+crates/adaptive-transport/src/fusion.rs:406:13: replace += with -= in weighted_average
+crates/adaptive-transport/src/fusion.rs:397:5: replace min3 -> u32 with 0
+crates/adaptive-transport/src/fusion.rs:406:13: replace += with *= in weighted_average
+crates/adaptive-transport/src/fusion.rs:406:34: replace * with + in weighted_average
+crates/adaptive-transport/src/fusion.rs:397:5: replace min3 -> u32 with 1
+crates/adaptive-transport/src/fusion.rs:406:34: replace * with / in weighted_average
+crates/adaptive-transport/src/fusion.rs:407:13: replace += with -= in weighted_average
+crates/adaptive-transport/src/fusion.rs:407:13: replace += with *= in weighted_average
+crates/adaptive-transport/src/loss.rs:27:5: replace packet_threshold_lost -> bool with true
+crates/adaptive-transport/src/loss.rs:27:5: replace packet_threshold_lost -> bool with false
+crates/adaptive-transport/src/loss.rs:27:39: replace >= with < in packet_threshold_lost
+crates/adaptive-transport/src/loss.rs:40:5: replace time_threshold_lost -> bool with true
+crates/adaptive-transport/src/loss.rs:40:5: replace time_threshold_lost -> bool with false
+crates/adaptive-transport/src/loss.rs:40:13: replace > with == in time_threshold_lost
+crates/adaptive-transport/src/loss.rs:40:13: replace > with < in time_threshold_lost
+crates/adaptive-transport/src/loss.rs:44:5: replace scale_duration -> Duration with Default::default()
+crates/adaptive-transport/src/loss.rs:44:45: replace / with % in scale_duration
+crates/adaptive-transport/src/loss.rs:44:27: replace * with + in scale_duration
+crates/adaptive-transport/src/loss.rs:44:45: replace / with * in scale_duration
+crates/adaptive-transport/src/loss.rs:49:5: replace ratio_ppm -> u64 with 1
+crates/adaptive-transport/src/loss.rs:49:5: replace ratio_ppm -> u64 with 0
+crates/adaptive-transport/src/loss.rs:49:12: replace == with != in ratio_ppm
+crates/adaptive-transport/src/loss.rs:52:22: replace * with + in ratio_ppm
+crates/adaptive-transport/src/loss.rs:44:27: replace * with / in scale_duration
+crates/adaptive-transport/src/loss.rs:52:34: replace / with % in ratio_ppm
+crates/adaptive-transport/src/loss.rs:52:34: replace / with * in ratio_ppm
+crates/adaptive-transport/src/loss.rs:52:22: replace * with / in ratio_ppm
+crates/adaptive-transport/src/loss.rs:172:9: replace ThresholdLossDetector::sent_units -> u64 with 0
+crates/adaptive-transport/src/loss.rs:172:9: replace ThresholdLossDetector::sent_units -> u64 with 1
+crates/adaptive-transport/src/loss.rs:177:9: replace ThresholdLossDetector::lost_units -> u64 with 0
+crates/adaptive-transport/src/loss.rs:189:9: replace ThresholdLossDetector::declare with ()
+crates/adaptive-transport/src/loss.rs:177:9: replace ThresholdLossDetector::lost_units -> u64 with 1
+crates/adaptive-transport/src/loss.rs:204:9: replace ThresholdLossDetector::take_unlossed -> Vec<u64> with vec![]
+crates/adaptive-transport/src/loss.rs:189:30: replace >= with < in ThresholdLossDetector::declare
+crates/adaptive-transport/src/loss.rs:204:9: replace ThresholdLossDetector::take_unlossed -> Vec<u64> with vec![0]
+crates/adaptive-transport/src/loss.rs:210:9: replace ThresholdLossDetector::largest_acked -> Option<u64> with None
+crates/adaptive-transport/src/loss.rs:204:9: replace ThresholdLossDetector::take_unlossed -> Vec<u64> with vec![1]
+crates/adaptive-transport/src/loss.rs:210:9: replace ThresholdLossDetector::largest_acked -> Option<u64> with Some(0)
+crates/adaptive-transport/src/loss.rs:210:9: replace ThresholdLossDetector::largest_acked -> Option<u64> with Some(1)
+crates/adaptive-transport/src/loss.rs:224:65: replace < with > in ThresholdLossDetector::ledger_tick
+crates/adaptive-transport/src/loss.rs:216:9: replace ThresholdLossDetector::set_packet_threshold with ()
+crates/adaptive-transport/src/loss.rs:224:65: replace < with <= in ThresholdLossDetector::ledger_tick
+crates/adaptive-transport/src/loss.rs:227:66: replace < with == in ThresholdLossDetector::ledger_tick
+crates/adaptive-transport/src/loss.rs:223:9: replace ThresholdLossDetector::ledger_tick with ()
+crates/adaptive-transport/src/loss.rs:233:50: replace && with || in ThresholdLossDetector::ledger_tick
+crates/adaptive-transport/src/loss.rs:227:66: replace < with <= in ThresholdLossDetector::ledger_tick
+crates/adaptive-transport/src/loss.rs:233:90: replace >= with < in ThresholdLossDetector::ledger_tick
+crates/adaptive-transport/src/loss.rs:244:9: replace ThresholdLossDetector::loss_windowed_ppm -> u64 with 1
+crates/adaptive-transport/src/loss.rs:247:33: replace == with != in ThresholdLossDetector::loss_windowed_ppm
+crates/adaptive-transport/src/loss.rs:256:9: replace ThresholdLossDetector::spurious_units_total -> u64 with 0
+crates/adaptive-transport/src/loss.rs:233:24: replace == with != in ThresholdLossDetector::ledger_tick
+crates/adaptive-transport/src/loss.rs:256:9: replace ThresholdLossDetector::spurious_units_total -> u64 with 1
+crates/adaptive-transport/src/loss.rs:244:9: replace ThresholdLossDetector::loss_windowed_ppm -> u64 with 0
+crates/adaptive-transport/src/loss.rs:265:9: replace ThresholdLossDetector::effective_packet_thresh -> u64 with 0
+crates/adaptive-transport/src/loss.rs:275:9: replace <impl LossDetector for ThresholdLossDetector>::on_sent with ()
+crates/adaptive-transport/src/loss.rs:276:25: replace += with -= in <impl LossDetector for ThresholdLossDetector>::on_sent
+crates/adaptive-transport/src/loss.rs:265:9: replace ThresholdLossDetector::effective_packet_thresh -> u64 with 1
+crates/adaptive-transport/src/loss.rs:265:35: replace == with != in ThresholdLossDetector::effective_packet_thresh
+crates/adaptive-transport/src/loss.rs:276:25: replace += with *= in <impl LossDetector for ThresholdLossDetector>::on_sent
+crates/adaptive-transport/src/loss.rs:279:35: replace >= with < in <impl LossDetector for ThresholdLossDetector>::on_sent
+crates/adaptive-transport/src/loss.rs:286:32: replace += with -= in <impl LossDetector for ThresholdLossDetector>::on_sent
+crates/adaptive-transport/src/loss.rs:290:9: replace <impl LossDetector for ThresholdLossDetector>::on_ack -> Vec<u64> with vec![]
+crates/adaptive-transport/src/loss.rs:290:9: replace <impl LossDetector for ThresholdLossDetector>::on_ack -> Vec<u64> with vec![0]
+crates/adaptive-transport/src/loss.rs:290:9: replace <impl LossDetector for ThresholdLossDetector>::on_ack -> Vec<u64> with vec![1]
+crates/adaptive-transport/src/loss.rs:299:33: replace == with != in <impl LossDetector for ThresholdLossDetector>::on_ack
+crates/adaptive-transport/src/loss.rs:299:51: replace != with == in <impl LossDetector for ThresholdLossDetector>::on_ack
+crates/adaptive-transport/src/loss.rs:299:40: replace && with || in <impl LossDetector for ThresholdLossDetector>::on_ack
+crates/adaptive-transport/src/loss.rs:286:32: replace += with *= in <impl LossDetector for ThresholdLossDetector>::on_sent
+crates/adaptive-transport/src/loss.rs:302:43: replace += with -= in <impl LossDetector for ThresholdLossDetector>::on_ack
+crates/adaptive-transport/src/loss.rs:305:33: replace || with && in <impl LossDetector for ThresholdLossDetector>::on_ack
+crates/adaptive-transport/src/loss.rs:302:43: replace += with *= in <impl LossDetector for ThresholdLossDetector>::on_ack
+crates/adaptive-transport/src/loss.rs:305:16: delete ! in <impl LossDetector for ThresholdLossDetector>::on_ack
+crates/adaptive-transport/src/loss.rs:305:40: replace > with == in <impl LossDetector for ThresholdLossDetector>::on_ack
+crates/adaptive-transport/src/loss.rs:305:40: replace > with < in <impl LossDetector for ThresholdLossDetector>::on_ack
+crates/adaptive-transport/src/loss.rs:310:12: delete ! in <impl LossDetector for ThresholdLossDetector>::on_ack
+crates/adaptive-transport/src/loss.rs:324:33: replace += with -= in <impl LossDetector for ThresholdLossDetector>::on_ack
+crates/adaptive-transport/src/loss.rs:345:9: replace <impl LossDetector for ThresholdLossDetector>::detect_time_losses -> Vec<u64> with vec![1]
+crates/adaptive-transport/src/loss.rs:324:33: replace += with *= in <impl LossDetector for ThresholdLossDetector>::on_ack
+crates/adaptive-transport/src/loss.rs:345:9: replace <impl LossDetector for ThresholdLossDetector>::detect_time_losses -> Vec<u64> with vec![]
+crates/adaptive-transport/src/loss.rs:345:9: replace <impl LossDetector for ThresholdLossDetector>::detect_time_losses -> Vec<u64> with vec![0]
+crates/adaptive-transport/src/loss.rs:356:26: replace && with || in <impl LossDetector for ThresholdLossDetector>::detect_time_losses
+crates/adaptive-transport/src/loss.rs:356:21: replace < with > in <impl LossDetector for ThresholdLossDetector>::detect_time_losses
+crates/adaptive-transport/src/loss.rs:345:12: delete ! in <impl LossDetector for ThresholdLossDetector>::detect_time_losses
+crates/adaptive-transport/src/loss.rs:362:33: replace += with -= in <impl LossDetector for ThresholdLossDetector>::detect_time_losses
+crates/adaptive-transport/src/loss.rs:356:21: replace < with == in <impl LossDetector for ThresholdLossDetector>::detect_time_losses
+crates/adaptive-transport/src/loss.rs:362:33: replace += with *= in <impl LossDetector for ThresholdLossDetector>::detect_time_losses
+crates/adaptive-transport/src/loss.rs:370:9: replace <impl LossDetector for ThresholdLossDetector>::on_unrecovered with ()
+crates/adaptive-transport/src/loss.rs:370:32: replace += with -= in <impl LossDetector for ThresholdLossDetector>::on_unrecovered
+crates/adaptive-transport/src/loss.rs:374:9: replace <impl LossDetector for ThresholdLossDetector>::loss_pre_fec_ppm -> u64 with 1
+crates/adaptive-transport/src/loss.rs:370:32: replace += with *= in <impl LossDetector for ThresholdLossDetector>::on_unrecovered
+crates/adaptive-transport/src/loss.rs:374:9: replace <impl LossDetector for ThresholdLossDetector>::loss_pre_fec_ppm -> u64 with 0
+crates/adaptive-transport/src/receiver.rs:92:44: replace / with %
+crates/adaptive-transport/src/receiver.rs:92:44: replace / with *
+crates/adaptive-transport/src/receiver.rs:92:37: replace * with +
+crates/adaptive-transport/src/receiver.rs:92:37: replace * with /
+crates/adaptive-transport/src/receiver.rs:92:21: replace * with +
+crates/adaptive-transport/src/loss.rs:378:9: replace <impl LossDetector for ThresholdLossDetector>::residual_loss_ppm -> u64 with 0
+crates/adaptive-transport/src/receiver.rs:92:21: replace * with /
+crates/adaptive-transport/src/receiver.rs:92:68: replace * with +
+crates/adaptive-transport/src/loss.rs:378:9: replace <impl LossDetector for ThresholdLossDetector>::residual_loss_ppm -> u64 with 1
+crates/adaptive-transport/src/receiver.rs:92:68: replace * with /
+crates/adaptive-transport/src/receiver.rs:113:59: replace / with %
+crates/adaptive-transport/src/receiver.rs:113:43: replace * with +
+crates/adaptive-transport/src/receiver.rs:113:59: replace / with *
+crates/adaptive-transport/src/receiver.rs:189:28: replace == with != in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:113:43: replace * with /
+crates/adaptive-transport/src/receiver.rs:194:29: replace && with || in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:194:25: replace > with == in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:194:25: replace > with < in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:194:25: replace > with >= in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:194:36: replace > with == in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:194:36: replace > with < in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:194:36: replace > with >= in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:199:39: replace > with == in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:199:39: replace > with < in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:199:39: replace > with >= in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:200:36: replace / with * in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:200:36: replace / with % in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:208:28: replace > with == in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:208:28: replace > with < in Receiver::on_datagram
+crates/adaptive-transport/src/receiver.rs:255:9: replace Receiver::on_ack_timer -> Option<AckFrame> with None
+crates/adaptive-transport/src/receiver.rs:255:12: delete ! in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:272:13: replace && with || in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:270:13: replace && with || in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:269:13: replace && with || in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:268:44: replace > with == in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:268:44: replace > with < in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:268:44: replace > with >= in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:269:33: replace > with == in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:269:33: replace > with < in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:269:33: replace > with >= in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:271:17: replace >= with < in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:273:17: replace >= with < in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:284:23: replace > with == in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:284:23: replace > with < in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:284:23: replace > with >= in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:285:43: replace || with && in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:285:54: replace >= with < in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:295:50: replace > with == in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:295:50: replace > with < in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:295:74: replace > with < in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:295:74: replace > with == in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:300:20: replace < with == in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:300:20: replace < with > in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:303:24: replace < with == in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:303:24: replace < with > in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:304:35: replace += with -= in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:304:35: replace += with *= in Receiver::on_ack_timer
+crates/adaptive-transport/src/receiver.rs:314:9: replace Receiver::last_emit_any -> u64 with 0
+crates/adaptive-transport/src/receiver.rs:314:9: replace Receiver::last_emit_any -> u64 with 1
+crates/adaptive-transport/src/receiver.rs:321:33: replace += with -= in Receiver::open_episode
+crates/adaptive-transport/src/receiver.rs:319:9: replace Receiver::open_episode with ()
+crates/adaptive-transport/src/receiver.rs:321:33: replace += with *= in Receiver::open_episode
+crates/adaptive-transport/src/receiver.rs:326:9: replace Receiver::burn_quota with ()
+crates/adaptive-transport/src/receiver.rs:327:30: replace += with -= in Receiver::burn_quota
+crates/adaptive-transport/src/receiver.rs:327:30: replace += with *= in Receiver::burn_quota
+crates/adaptive-transport/src/receiver.rs:328:23: replace > with == in Receiver::burn_quota
+crates/adaptive-transport/src/receiver.rs:328:23: replace > with < in Receiver::burn_quota
+crates/adaptive-transport/src/receiver.rs:328:23: replace > with >= in Receiver::burn_quota
+crates/adaptive-transport/src/receiver.rs:329:24: replace -= with += in Receiver::burn_quota
+crates/adaptive-transport/src/receiver.rs:329:24: replace -= with /= in Receiver::burn_quota
+crates/adaptive-transport/src/receiver.rs:330:34: replace += with -= in Receiver::burn_quota
+crates/adaptive-transport/src/receiver.rs:330:34: replace += with *= in Receiver::burn_quota
+crates/adaptive-transport/src/receiver.rs:336:9: replace Receiver::episode_baseline -> u64 with 1
+crates/adaptive-transport/src/receiver.rs:336:9: replace Receiver::episode_baseline -> u64 with 0
+crates/adaptive-transport/src/receiver.rs:338:18: replace match guard n < EPISODE_WINDOW with false in Receiver::episode_baseline
+crates/adaptive-transport/src/receiver.rs:338:20: replace < with == in Receiver::episode_baseline
+crates/adaptive-transport/src/receiver.rs:338:20: replace < with > in Receiver::episode_baseline
+crates/adaptive-transport/src/receiver.rs:344:34: replace / with * in Receiver::episode_baseline
+crates/adaptive-transport/src/receiver.rs:351:9: replace Receiver::push_gap with ()
+crates/adaptive-transport/src/receiver.rs:352:43: replace % with / in Receiver::push_gap
+crates/adaptive-transport/src/receiver.rs:352:43: replace % with + in Receiver::push_gap
+crates/adaptive-transport/src/receiver.rs:352:38: replace + with - in Receiver::push_gap
+crates/adaptive-transport/src/receiver.rs:353:25: replace < with == in Receiver::push_gap
+crates/adaptive-transport/src/receiver.rs:352:38: replace + with * in Receiver::push_gap
+crates/adaptive-transport/src/receiver.rs:353:25: replace < with > in Receiver::push_gap
+crates/adaptive-transport/src/receiver.rs:354:26: replace += with -= in Receiver::push_gap
+crates/adaptive-transport/src/receiver.rs:354:26: replace += with *= in Receiver::push_gap
+crates/adaptive-transport/src/receiver.rs:360:9: replace Receiver::set_quota_r with ()
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (0, 0, 0, 0)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (0, 0, 0, 1)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (0, 0, 1, 0)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (0, 0, 1, 1)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (0, 1, 0, 0)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (0, 1, 0, 1)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (0, 1, 1, 0)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (0, 1, 1, 1)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (1, 0, 0, 0)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (1, 0, 0, 1)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (1, 0, 1, 0)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (1, 0, 1, 1)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (1, 1, 0, 0)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (1, 1, 0, 1)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (1, 1, 1, 0)
+crates/adaptive-transport/src/receiver.rs:371:9: replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (1, 1, 1, 1)
+crates/adaptive-transport/src/receiver.rs:382:12: delete ! in Receiver::record_seq
+crates/adaptive-transport/src/receiver.rs:381:9: replace Receiver::record_seq with ()
+crates/adaptive-transport/src/receiver.rs:389:20: replace > with == in Receiver::record_seq
+crates/adaptive-transport/src/receiver.rs:389:20: replace > with < in Receiver::record_seq
+crates/adaptive-transport/src/receiver.rs:398:9: replace Receiver::has_gap -> bool with true
+crates/adaptive-transport/src/receiver.rs:398:12: delete ! in Receiver::has_gap
+crates/adaptive-transport/src/receiver.rs:398:9: replace Receiver::has_gap -> bool with false
+crates/adaptive-transport/src/receiver.rs:401:57: replace + with - in Receiver::has_gap
+crates/adaptive-transport/src/receiver.rs:401:57: replace + with * in Receiver::has_gap
+crates/adaptive-transport/src/receiver.rs:401:37: replace - with / in Receiver::has_gap
+crates/adaptive-transport/src/receiver.rs:402:64: replace < with == in Receiver::has_gap
+crates/adaptive-transport/src/receiver.rs:402:64: replace < with > in Receiver::has_gap
+crates/adaptive-transport/src/receiver.rs:402:64: replace < with <= in Receiver::has_gap
+crates/adaptive-transport/src/receiver.rs:409:9: replace Receiver::tick_ack -> Option<AckFrame> with None
+crates/adaptive-transport/src/receiver.rs:409:29: replace += with -= in Receiver::tick_ack
+crates/adaptive-transport/src/receiver.rs:409:29: replace += with *= in Receiver::tick_ack
+crates/adaptive-transport/src/receiver.rs:410:18: replace || with && in Receiver::tick_ack
+crates/adaptive-transport/src/receiver.rs:410:41: replace >= with < in Receiver::tick_ack
+crates/adaptive-transport/src/receiver.rs:425:9: replace Receiver::record_ack_emit with ()
+crates/adaptive-transport/src/receiver.rs:434:9: replace Receiver::build_ack -> Option<AckFrame> with None
+crates/adaptive-transport/src/receiver.rs:438:33: replace / with % in Receiver::build_ack
+crates/adaptive-transport/src/receiver.rs:438:33: replace / with * in Receiver::build_ack
+crates/adaptive-transport/src/receiver.rs:439:20: replace == with != in Receiver::build_ack
+crates/adaptive-transport/src/receiver.rs:440:38: replace += with -= in Receiver::build_ack
+crates/adaptive-transport/src/receiver.rs:440:38: replace += with *= in Receiver::build_ack
+crates/adaptive-transport/src/receiver.rs:465:9: replace Receiver::received_count -> usize with 0
+crates/adaptive-transport/src/receiver.rs:470:9: replace Receiver::largest_seq -> Option<u64> with Some(0)
+crates/adaptive-transport/src/receiver.rs:475:9: replace Receiver::ack_delay_saturated -> u64 with 0
+crates/adaptive-transport/src/receiver.rs:475:9: replace Receiver::ack_delay_saturated -> u64 with 1
+crates/adaptive-transport/src/rtt.rs:20:5: replace dur_ns -> u64 with 0
+crates/adaptive-transport/src/rtt.rs:20:5: replace dur_ns -> u64 with 1
+crates/adaptive-transport/src/rtt.rs:32:9: replace MinFilter::observe with ()
+crates/adaptive-transport/src/rtt.rs:47:9: replace MinFilter::min -> Option<u64> with None
+crates/adaptive-transport/src/rtt.rs:47:9: replace MinFilter::min -> Option<u64> with Some(1)
+crates/adaptive-transport/src/rtt.rs:47:9: replace MinFilter::min -> Option<u64> with Some(0)
+crates/adaptive-transport/src/rtt.rs:52:9: replace MinFilter::min_entry_time -> Option<u64> with None
+crates/adaptive-transport/src/rtt.rs:38:41: replace >= with < in MinFilter::observe
+crates/adaptive-transport/src/rtt.rs:52:9: replace MinFilter::min_entry_time -> Option<u64> with Some(0)
+crates/adaptive-transport/src/rtt.rs:126:9: replace RttEstimator::set_conv_interval with ()
+crates/adaptive-transport/src/rtt.rs:114:9: replace RttEstimator::set_rtprop_window with ()
+crates/adaptive-transport/src/rtt.rs:143:9: replace RttEstimator::observe with ()
+crates/adaptive-transport/src/rtt.rs:145:13: delete match arm (Some(t), Some(last)) in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:120:9: replace RttEstimator::set_qd_window with ()
+crates/adaptive-transport/src/rtt.rs:145:67: replace / with * in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:145:67: replace / with % in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:153:36: replace / with % in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:153:36: replace / with * in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:160:75: replace + with - in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:161:25: replace / with % in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:161:25: replace / with * in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:160:54: replace * with / in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:160:54: replace * with + in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:160:75: replace + with * in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:164:25: replace / with % in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:164:25: replace / with * in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:163:70: replace + with - in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:160:49: replace - with + in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:163:70: replace + with * in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:160:49: replace - with / in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:163:46: replace - with + in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:163:46: replace - with / in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:163:51: replace * with + in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:177:9: replace RttEstimator::srtt -> Option<Duration> with None
+crates/adaptive-transport/src/rtt.rs:163:51: replace * with / in RttEstimator::observe
+crates/adaptive-transport/src/rtt.rs:177:9: replace RttEstimator::srtt -> Option<Duration> with Some(Default::default())
+crates/adaptive-transport/src/rtt.rs:190:9: replace RttEstimator::rtprop_age_ns -> Option<u64> with None
+crates/adaptive-transport/src/rtt.rs:190:9: replace RttEstimator::rtprop_age_ns -> Option<u64> with Some(0)
+crates/adaptive-transport/src/rtt.rs:190:9: replace RttEstimator::rtprop_age_ns -> Option<u64> with Some(1)
+crates/adaptive-transport/src/rtt.rs:198:9: replace RttEstimator::rtprop_window_ns -> u64 with 0
+crates/adaptive-transport/src/rtt.rs:198:9: replace RttEstimator::rtprop_window_ns -> u64 with 1
+crates/adaptive-transport/src/rtt.rs:204:9: replace RttEstimator::rtprop -> Option<Duration> with None
+crates/adaptive-transport/src/rtt.rs:204:9: replace RttEstimator::rtprop -> Option<Duration> with Some(Default::default())
+crates/adaptive-transport/src/rtt.rs:183:9: replace RttEstimator::rttvar -> Duration with Default::default()
+crates/adaptive-transport/src/rtt.rs:213:9: replace RttEstimator::queue_delay -> Duration with Default::default()
+crates/adaptive-transport/src/rtt.rs:214:13: delete match arm (Some(short_min), Some(rtprop)) in RttEstimator::queue_delay
+crates/adaptive-transport/src/rtt.rs:244:5: replace apply_ack_delay -> (Duration, bool) with (Default::default(), false)
+crates/adaptive-transport/src/rtt.rs:244:5: replace apply_ack_delay -> (Duration, bool) with (Default::default(), true)
+crates/adaptive-transport/src/rtt.rs:245:20: replace match guard min_rtt.is_none_or(|m| c >= m) with true in apply_ack_delay
+crates/adaptive-transport/src/rtt.rs:226:5: replace rtt_sample -> Option<Duration> with Some(Default::default())
+crates/adaptive-transport/src/rtt.rs:226:5: replace rtt_sample -> Option<Duration> with None
+crates/adaptive-transport/src/rtt.rs:245:20: replace match guard min_rtt.is_none_or(|m| c >= m) with false in apply_ack_delay
+crates/adaptive-transport/src/rtt.rs:245:45: replace >= with < in apply_ack_delay

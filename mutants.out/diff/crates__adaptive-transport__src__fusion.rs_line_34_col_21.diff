@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/fusion.rs
++++ replace >= with < in log2_fp
+@@ -26,17 +26,17 @@
+ /// strict DEĞİL (~2-4‰ merdiven — trapezoid rampalarında kabul edilebilir, dokümante).
+ /// Kesme-noktaları AYNI fonksiyondan üretilir (offline-float hardcode YASAK — bit-özdeşlik).
+ #[must_use]
+ pub const fn log2_fp(x: u64) -> u64 {
+     if x == 0 {
+         return 0;
+     }
+     let e = x.ilog2() as u64;
+-    let frac = if e >= 8 {
++    let frac = if e < /* ~ changed by cargo-mutants ~ */ 8 {
+         (x >> (e - 8)) & 0xFF
+     } else {
+         (x << (8 - e)) & 0xFF
+     };
+     e * 256 + frac
+ }
+ 
+ /// Trapezoidal membership: μ(x) per-mille (0..=1000). μ = min(rise, fall).

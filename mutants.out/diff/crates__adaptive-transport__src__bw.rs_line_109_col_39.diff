@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/bw.rs
++++ replace - with + in DeliveryRateSampler::on_ack
+@@ -101,17 +101,17 @@
+         self.packets_in_flight = self.packets_in_flight.saturating_sub(1);
+ 
+         let ack_elapsed = now_ns.saturating_sub(pkt.delivered_time_ns);
+         let send_elapsed = pkt.sent_ns.saturating_sub(pkt.first_sent_ns);
+         let interval_ns = ack_elapsed.max(send_elapsed);
+         self.first_sent_ns = pkt.sent_ns; // sonraki interval'in tabanı
+ 
+         RateSample {
+-            delivered: self.delivered - pkt.delivered,
++            delivered: self.delivered + /* ~ changed by cargo-mutants ~ */ pkt.delivered,
+             interval: Duration::from_nanos(interval_ns),
+             is_app_limited: pkt.is_app_limited,
+             gain_ge1: pkt.gain_ge1,
+             ack_elapsed: Duration::from_nanos(ack_elapsed),
+             sent_ns: pkt.sent_ns,
+         }
+     }
+ 

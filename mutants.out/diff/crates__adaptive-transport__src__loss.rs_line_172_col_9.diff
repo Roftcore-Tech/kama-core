@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace ThresholdLossDetector::sent_units -> u64 with 0
+@@ -164,17 +164,17 @@
+             cfg,
+             ..Self::default()
+         }
+     }
+ 
+     /// Toplam gönderilen birim.
+     #[must_use]
+     pub fn sent_units(&self) -> u64 {
+-        self.sent_units
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+     /// Kayıp ilan edilen toplam birim (recovery öncesi).
+     #[must_use]
+     pub fn lost_units(&self) -> u64 {
+         self.lost_units
+     }
+     /// Kurtarılamayan toplam birim (recovery sonrası).
+     #[must_use]

@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/fusion.rs
++++ replace * with / in trap_permille
+@@ -67,17 +67,17 @@
+             0
+         }
+     } else if x >= d {
+         0
+     } else if x <= c {
+         PERMILLE
+     } else {
+         // c < x < d : (d−x)/(d−c) per-mille
+-        ((u128::from(d - x) * u128::from(PERMILLE)) / u128::from(d - c)) as u32
++        ((u128::from(d - x) / /* ~ changed by cargo-mutants ~ */ u128::from(PERMILLE)) / u128::from(d - c)) as u32
+     };
+ 
+     rise.min(fall)
+ }
+ 
+ /// Tek trapezoidal membership (a,b,c,d eşikleri).
+ #[derive(Debug, Clone, Copy)]
+ pub struct Trap {

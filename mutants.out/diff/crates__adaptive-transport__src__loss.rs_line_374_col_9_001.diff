@@ -1,0 +1,19 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace <impl LossDetector for ThresholdLossDetector>::loss_pre_fec_ppm -> u64 with 1
+@@ -366,15 +366,15 @@
+         lost
+     }
+ 
+     fn on_unrecovered(&mut self, units: u64) {
+         self.unrecovered_units += units;
+     }
+ 
+     fn loss_pre_fec_ppm(&self) -> u64 {
+-        ratio_ppm(self.lost_units, self.sent_units)
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn residual_loss_ppm(&self) -> u64 {
+         ratio_ppm(self.unrecovered_units, self.sent_units)
+     }
+ }

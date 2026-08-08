@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/fusion.rs
++++ replace && with || in VarThresholds::covers_domain
+@@ -135,17 +135,17 @@
+     /// [TUR-4] Domain-örtüsü invariantı: ∀x: max(μL,μM,μH)>0. Komşu setler KESİN-örtüşmeli
+     /// (`>`; `≥` YETMEZ — trap kenarları dışlayıcı: low.d==med.a noktasında x=low.d için
+     /// μL=0 ∧ μM=0 = tek-nokta zero-weight deliği, workflow-bulgusu). Sol-omuz LOW (0'dan
+     /// kapsar) + sağ-omuz HIGH (∞'a kapsar) yapısal şart.
+     #[must_use]
+     pub fn covers_domain(&self) -> bool {
+         let left_shoulder = self.low.a == 0 && self.low.b == 0;
+         let right_shoulder = self.high.c == u64::MAX && self.high.d == u64::MAX;
+-        left_shoulder && right_shoulder && self.low.d > self.med.a && self.med.d > self.high.a
++        left_shoulder && right_shoulder || /* ~ changed by cargo-mutants ~ */ self.low.d > self.med.a && self.med.d > self.high.a
+     }
+ }
+ 
+ /// Fuzzy motor yapılandırması — 5 girdinin membership eşikleri + consequent seviyeleri.
+ #[derive(Debug, Clone, Copy)]
+ pub struct FuzzyConfig {
+     /// loss_rate (ppm) membership.
+     pub loss: VarThresholds,

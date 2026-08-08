@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace || with && in Receiver::on_ack_timer
+@@ -277,17 +277,17 @@
+             return self.build_ack(now_ns);
+         }
+         let elapsed = now_ns.saturating_sub(self.last_emit_any());
+         // [r3 §2] KOTA-MODU: epizot-kredisi varken T_SPACING-takvimli yeniden-deneme (aynı
+         // kümülatif-SACK'in dekorele kopyaları — kader-penceresi); epizodun İLK emisyonu
+         // gecikmesiz (muafiyet — eski first_ack_sent'in genellemesi). Kopyalar yeni-varış
+         // BEKLEMEZ (retry-semantiği; Ekleme-2 geri-çekildi, not §2 revizyonu).
+         if self.quota > 0 {
+-            if self.episode_first_pending || elapsed >= T_SPACING_NS {
++            if self.episode_first_pending && /* ~ changed by cargo-mutants ~ */ elapsed >= T_SPACING_NS {
+                 self.since_last_ack = 0;
+                 self.burn_quota();
+                 self.record_ack_emit(now_ns);
+                 return self.build_ack(now_ns);
+             }
+             return None;
+         }
+         // [r3 §3] Bacak-2 §3.3-E MİNİMAL-TABAN (kota-dışı): beklemede-yeni-bilgi varken cadence

@@ -1,0 +1,67 @@
+
+*** crates/adaptive-transport/src/fusion.rs:313:9: replace DeterministicFuzzyController::fixture -> Self with Default::default()
+
+*** mutation diff:
+--- crates/adaptive-transport/src/fusion.rs
++++ replace DeterministicFuzzyController::fixture -> Self with Default::default()
+@@ -305,19 +305,17 @@
+     #[must_use]
+     pub fn new(cfg: FuzzyConfig) -> Self {
+         Self { cfg }
+     }
+ 
+     /// Fixture config ile (KALİBRE DEĞİL — golden/motor testi için).
+     #[must_use]
+     pub fn fixture() -> Self {
+-        Self {
+-            cfg: FuzzyConfig::fixture(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl FusionController for DeterministicFuzzyController {
+     fn decide(&self, inputs: &FusionInputs) -> FusionDecision {
+         let c = &self.cfg;
+ 
+         // 1) Fuzzification — her crisp girdi → LOW/MED/HIGH dereceleri.
+
+
+*** /home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=adaptive-transport@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh pin-project-lite v0.2.17
+       Fresh proc-macro2 v1.0.106
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh thiserror-impl v2.0.18
+       Fresh tokio-macros v2.7.0
+       Fresh tokio v1.52.3
+       Fresh thiserror v2.0.18
+       Dirty adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-8iy4q8.tmp/crates/adaptive-transport): couldn't read metadata for file `target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib`
+   Compiling adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-8iy4q8.tmp/crates/adaptive-transport)
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9cc1446eb98710ef -C extra-filename=-eecea9df1309094a --out-dir /tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+error[E0277]: the trait bound `DeterministicFuzzyController: Default` is not satisfied
+   --> crates/adaptive-transport/src/fusion.rs:313:9
+    |
+313 |         Default::default() /* ~ changed by cargo-mutants ~ */
+    |         ^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Default` is not implemented for `DeterministicFuzzyController`
+   --> crates/adaptive-transport/src/fusion.rs:299:1
+    |
+299 | pub struct DeterministicFuzzyController {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `adaptive-transport` (lib test) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9cc1446eb98710ef -C extra-filename=-eecea9df1309094a --out-dir /tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `adaptive-transport` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta` (exit status: 1)
+
+*** result: Failure(101)

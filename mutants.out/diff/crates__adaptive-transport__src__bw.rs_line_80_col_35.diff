@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/bw.rs
++++ replace == with != in DeliveryRateSampler::on_sent
+@@ -72,17 +72,17 @@
+     /// delivered_time tazelenir.
+     pub fn on_sent(
+         &mut self,
+         now_ns: u64,
+         size: u64,
+         app_limited: bool,
+         gain_ge1: bool,
+     ) -> SentPacket {
+-        if self.packets_in_flight == 0 {
++        if self.packets_in_flight != /* ~ changed by cargo-mutants ~ */ 0 {
+             self.first_sent_ns = now_ns;
+             self.delivered_time_ns = now_ns;
+         }
+         self.packets_in_flight += 1;
+         SentPacket {
+             size,
+             delivered: self.delivered,
+             delivered_time_ns: self.delivered_time_ns,

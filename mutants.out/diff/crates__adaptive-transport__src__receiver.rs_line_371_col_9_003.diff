@@ -1,0 +1,26 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace Receiver::diag_return_supply -> (u64, u64, u64, u64) with (0, 0, 1, 1)
+@@ -363,22 +363,17 @@
+         if self.quota > 0 {
+             self.quota = r;
+         }
+     }
+ 
+     /// [r3 §6] RTRAJ diag: (episode_count, quota_burn, accel_emits, emit_total).
+     #[must_use]
+     pub fn diag_return_supply(&self) -> (u64, u64, u64, u64) {
+-        (
+-            self.diag_episode_count,
+-            self.diag_quota_burn,
+-            self.diag_accel_emits,
+-            self.diag_emit_total,
+-        )
++        (0, 0, 1, 1) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// rx-set + largest/smallest muhasebesi.
+     fn record_seq(&mut self, seq: u64, now_ns: u64) {
+         self.received.insert(seq);
+         if !self.have_recv {
+             self.smallest_seq = seq;
+             self.largest_seq = seq;

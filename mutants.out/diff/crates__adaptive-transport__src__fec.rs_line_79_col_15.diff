@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/fec.rs
++++ replace != with == in FecShardFrame::decode
+@@ -71,17 +71,17 @@
+     /// # Errors
+     /// [`TransportError::UnknownFrameType`] (frame_type≠0x20),
+     /// [`TransportError::InvalidShardCount`] (k+r>255, GF(2^8)),
+     /// [`TransportError::Truncated`] (kısa buffer),
+     /// [`TransportError::TrailingBytes`] (sonda artan).
+     pub fn decode(buf: &[u8]) -> Result<Self, TransportError> {
+         let mut rd = Reader::new(buf);
+         let ft = rd.u8()?;
+-        if ft != FRAME_TYPE_FEC_SHARD {
++        if ft == /* ~ changed by cargo-mutants ~ */ FRAME_TYPE_FEC_SHARD {
+             return Err(TransportError::UnknownFrameType(ft));
+         }
+         let block_id = rd.u32_be()?;
+         let shard_index = rd.u8()?;
+         let k = rd.u8()?;
+         let r = rd.u8()?;
+         let shard_len = rd.u16_be()?;
+         // GF(2^8): k+r ≤ 255 (spec §10.2 RS_MAX_SHARDS).

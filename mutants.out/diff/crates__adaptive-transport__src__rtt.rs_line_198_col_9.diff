@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/rtt.rs
++++ replace RttEstimator::rtprop_window_ns -> u64 with 0
+@@ -190,17 +190,17 @@
+         self.rtprop
+             .min_entry_time()
+             .map(|t| now_ns.saturating_sub(t))
+     }
+ 
+     /// RTprop penceresi (ns) — giriş-eşiği hesabı için (SALT-OKUMA).
+     #[must_use]
+     pub fn rtprop_window_ns(&self) -> u64 {
+-        self.rtprop_window_ns
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// RTprop (pencereli min RTT); henüz sample yoksa `None`.
+     #[must_use]
+     pub fn rtprop(&self) -> Option<Duration> {
+         self.rtprop.min().map(Duration::from_nanos)
+     }
+ 

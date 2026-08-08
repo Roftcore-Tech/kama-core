@@ -1,0 +1,34 @@
+--- crates/adaptive-transport/src/bw.rs
++++ replace DeliveryRateSampler::on_sent -> SentPacket with Default::default()
+@@ -72,30 +72,17 @@
+     /// delivered_time tazelenir.
+     pub fn on_sent(
+         &mut self,
+         now_ns: u64,
+         size: u64,
+         app_limited: bool,
+         gain_ge1: bool,
+     ) -> SentPacket {
+-        if self.packets_in_flight == 0 {
+-            self.first_sent_ns = now_ns;
+-            self.delivered_time_ns = now_ns;
+-        }
+-        self.packets_in_flight += 1;
+-        SentPacket {
+-            size,
+-            delivered: self.delivered,
+-            delivered_time_ns: self.delivered_time_ns,
+-            first_sent_ns: self.first_sent_ns,
+-            sent_ns: now_ns,
+-            is_app_limited: app_limited,
+-            gain_ge1,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Paket ACK'i → delivery-rate örneği (engine §7.1).
+     /// `interval = max(ack_elapsed, send_elapsed)`, `delivered = C.delivered − P.delivered`.
+     pub fn on_ack(&mut self, now_ns: u64, pkt: SentPacket) -> RateSample {
+         self.delivered += pkt.size;
+         self.delivered_time_ns = now_ns;
+         self.packets_in_flight = self.packets_in_flight.saturating_sub(1);

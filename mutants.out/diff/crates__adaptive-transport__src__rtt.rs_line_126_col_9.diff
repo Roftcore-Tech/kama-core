@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/rtt.rs
++++ replace RttEstimator::set_conv_interval with ()
+@@ -118,17 +118,17 @@
+     /// W_qd ≤ W_rtprop invariantı çağıranda — kısa-min ≥ uzun-min yapısal kalsın).
+     pub fn set_qd_window(&mut self, w: Duration) {
+         self.qd_window_ns = dur_ns(w).min(self.rtprop_window_ns).max(1);
+     }
+ 
+     /// [TUR-3a.5 commit-β] Kuantum-döngü referans-aralığı: `T = rtprop / K_CONV` — srtt
+     /// yakınsaması KANAL-ZAMANINA bağlanır (ZM-1 estimator-katmanı fix'i).
+     pub fn set_conv_interval(&mut self, t: Duration) {
+-        self.conv_ref_ns = Some(dur_ns(t).max(1));
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [TUR-3a.5 commit-β] Kuantum-adımı üst-sınırı: (7/8)^64 ≈ 1.9e-4 — ötesi "örneğe
+     /// zıpla"ya %0.02 içinde eşdeğer; iş sınırlı (SR-AUDIT-001 ruhu).
+     const QUANTUM_CAP: u64 = 64;
+ 
+     /// `now_ns` anında ölçülen bir `sample`'ı işler (RFC 6298 sırası: rttvar ÖNCE
+     /// eski srtt ile, srtt SONRA).

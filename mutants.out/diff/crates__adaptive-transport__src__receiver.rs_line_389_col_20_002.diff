@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace > with >= in Receiver::record_seq
+@@ -381,17 +381,17 @@
+         self.received.insert(seq);
+         if !self.have_recv {
+             self.smallest_seq = seq;
+             self.largest_seq = seq;
+             self.largest_recv_ns = now_ns;
+             self.have_recv = true;
+         } else {
+             self.smallest_seq = self.smallest_seq.min(seq);
+-            if seq > self.largest_seq {
++            if seq >= /* ~ changed by cargo-mutants ~ */ self.largest_seq {
+                 self.largest_seq = seq;
+                 self.largest_recv_ns = now_ns; // ack_delay largest'ın alımından ölçülür.
+             }
+         }
+     }
+ 
+     /// rx-set [smallest..largest] aralığında boşluk (gap) var mı → reorder/loss göstergesi.
+     fn has_gap(&self) -> bool {

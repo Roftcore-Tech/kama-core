@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/bw.rs
++++ replace BtlBwFilter::samples_snapshot -> Vec<(u64, u64)> with vec![]
+@@ -234,17 +234,17 @@
+     pub fn window_ns(&self) -> u64 {
+         self.window_ns
+     }
+ 
+     /// [Y3-sim SALT-GÖZLEM] Pencere-örnekleri (t_ns, bw) — mekanizma-izi-kalibrasyonu
+     /// (max'a-giren-örnek zamanı/değeri netem-tazelenme-desenine karşı eşlenir).
+     #[must_use]
+     pub fn samples_snapshot(&self) -> Vec<(u64, u64)> {
+-        self.samples.clone()
++        vec![] /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// bw_sample = delivered · 1e9 / interval (bytes/sec, integer truncation). interval 0
+ /// ise 0.
+ #[must_use]
+ pub fn bw_bps(delivered: u64, interval: Duration) -> u64 {
+     let ns = dur_ns(interval);

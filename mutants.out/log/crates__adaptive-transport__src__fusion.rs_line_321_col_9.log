@@ -1,0 +1,135 @@
+
+*** crates/adaptive-transport/src/fusion.rs:321:9: replace <impl FusionController for DeterministicFuzzyController>::decide -> FusionDecision with Default::default()
+
+*** mutation diff:
+--- crates/adaptive-transport/src/fusion.rs
++++ replace <impl FusionController for DeterministicFuzzyController>::decide -> FusionDecision with Default::default()
+@@ -313,87 +313,17 @@
+         Self {
+             cfg: FuzzyConfig::fixture(),
+         }
+     }
+ }
+ 
+ impl FusionController for DeterministicFuzzyController {
+     fn decide(&self, inputs: &FusionInputs) -> FusionDecision {
+-        let c = &self.cfg;
+-
+-        // 1) Fuzzification — her crisp girdi → LOW/MED/HIGH dereceleri.
+-        let loss = c.loss.fuzzify(inputs.loss_ppm);
+-        // [TUR-4] bw DOMAIN dönüşümü: membership log2_fp-ölçeğinde (eşikler de aynı ölçekte).
+-        // DİKKAT domain-karışması: bandwidth eşikleri log-fp (≤~16k), diğer 4 değişken HAM birim.
+-        let bw = c.bandwidth.fuzzify(log2_fp(inputs.bandwidth_bps));
+-        let jitter = c.jitter.fuzzify(inputs.jitter_ppm);
+-        let qd = c.queue_delay.fuzzify(inputs.qd_ratio_permille);
+-        let ackc = c.ack_confidence.fuzzify(inputs.ack_confidence_permille);
+-
+-        // 2) FEC/ARQ kuralları (§8.4/§5.3). Mamdani AND = min; her kural
+-        //    (güç, fec_seviye, arq_seviye) üretir.
+-        let rules: [(u32, u32, u32); 4] = [
+-            // R1: loss LOW → fec=0, arq=light
+-            (loss.low, c.fec_zero, c.arq_light),
+-            // R2: loss HIGH ∧ bw HIGH ∧ jitter LOW → fec=high, arq=moderate
+-            (
+-                min3(loss.high, bw.high, jitter.low),
+-                c.fec_high,
+-                c.arq_moderate,
+-            ),
+-            // R3: loss MED ∧ bw MED → fec=med, arq=med
+-            (loss.med.min(bw.med), c.fec_med, c.arq_med),
+-            // R4: loss LOW ∧ jitter HIGH → fec=0, arq=light (reorder-tolerant ≈ düşük agresiflik)
+-            (loss.low.min(jitter.high), c.fec_zero, c.arq_light),
+-        ];
+-        // [TUR-4] SIFIR-AĞIRLIK FALLBACK: kural-kesişim delikleri (ölçülmüş sınıf: lppm≥300k
+-        // ∧ sub-kbps → loss.low=0 ∧ bw.med/high=0 → 4 kural da 0-ağırlık → payda-0 → arq=0 →
+-        // pending SONSUZA DEK drain edilmez) → muhafazakâr-taban fec_zero + arq_light.
+-        // BEYAN: arq consequent'leri ≥arq_light olduğundan arq==0 artık üretilemez —
+-        // arq.plan()'ın ==0 baskılama-dalı yapısal-erişilmez (§9 sözleşme-notu spec'te).
+-        // fec=0 tabanı: delikler kural-gradyanının parity-niyetini DEVRALMAZ (recovery-obsesif
+-        // tabanda ARQ-ekseni muhafazakâr; FEC-ekseni statüko) — bilinçli, DV-2'de yeniden okunur.
+-        let total_weight: u64 = rules.iter().map(|&(w, _, _)| u64::from(w)).sum();
+-        let no_rule = total_weight == 0;
+-        let (fec, arq) = if no_rule {
+-            (c.fec_zero, c.arq_light)
+-        } else {
+-            (
+-                weighted_average(rules.iter().map(|&(w, level, _)| (w, level))),
+-                weighted_average(rules.iter().map(|&(w, _, level)| (w, level))),
+-            )
+-        };
+-
+-        // 3) send_rate_gain — §5.4 loss-decoupling: YALNIZ bw + queue_delay.
+-        //    SR1: bw LOW ∧ queue_delay HIGH → sr_low ; tümleyen ağırlık → sr_high (throttle yok).
+-        let sr1 = bw.low.min(qd.high);
+-        let sr_default = PERMILLE.saturating_sub(sr1);
+-        let send_rate_gain =
+-            weighted_average([(sr1, c.sr_low), (sr_default, c.sr_high)].into_iter());
+-
+-        // 4) Emergency (§11 trigger): loss HIGH ∧ bw LOW ∧ ack_confidence LOW.
+-        let emergency = min3(loss.high, bw.low, ackc.low);
+-        let mode = if emergency > PERMILLE / 2 {
+-            Mode::EmergencyForwardRedundancy
+-        } else {
+-            Mode::Normal
+-        };
+-
+-        // 5) compress: bw LOW baskın veya emergency → ON.
+-        let compress = bw.low > PERMILLE / 2 || mode == Mode::EmergencyForwardRedundancy;
+-
+-        FusionDecision {
+-            fec_parity_ratio_permille: fec,
+-            arq_aggressiveness_permille: arq,
+-            send_rate_gain_permille: send_rate_gain,
+-            compress,
+-            mode,
+-            no_rule,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Üç değerin min'i (Mamdani AND).
+ fn min3(a: u32, b: u32, c: u32) -> u32 {
+     a.min(b).min(c)
+ }
+ 
+
+
+*** /home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=adaptive-transport@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh tokio-macros v2.7.0
+       Fresh thiserror-impl v2.0.18
+       Fresh pin-project-lite v0.2.17
+       Fresh tokio v1.52.3
+       Fresh thiserror v2.0.18
+       Dirty adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-8iy4q8.tmp/crates/adaptive-transport): couldn't read metadata for file `target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib`
+   Compiling adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-8iy4q8.tmp/crates/adaptive-transport)
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta`
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9cc1446eb98710ef -C extra-filename=-eecea9df1309094a --out-dir /tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
+error[E0277]: the trait bound `FusionDecision: Default` is not satisfied
+   --> crates/adaptive-transport/src/fusion.rs:321:9
+    |
+321 |         Default::default() /* ~ changed by cargo-mutants ~ */
+    |         ^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Default` is not implemented for `FusionDecision`
+   --> crates/adaptive-transport/src/fusion.rs:274:1
+    |
+274 | pub struct FusionDecision {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `adaptive-transport` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `adaptive-transport` (lib test) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9cc1446eb98710ef -C extra-filename=-eecea9df1309094a --out-dir /tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib` (exit status: 1)
+
+*** result: Failure(101)

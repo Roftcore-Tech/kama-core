@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace >= with < in ThresholdLossDetector::declare
+@@ -181,17 +181,17 @@
+     pub fn unrecovered_units(&self) -> u64 {
+         self.unrecovered_units
+     }
+ 
+     // ── [TUR-2a D-1/3, D-1/5] ledger API'si (inherent — sender somut tipi tutar) ──
+ 
+     /// Kayıp-ilanını ledger'a Suspected olarak yazar (bounded; en-eski-önce eviction + audit).
+     fn declare(&mut self, seq: u64, units: u64, declared_ns: u64) {
+-        if self.events.len() >= LEDGER_MAX {
++        if self.events.len() < /* ~ changed by cargo-mutants ~ */ LEDGER_MAX {
+             self.events.pop_front();
+             self.ledger_evicted_total += 1;
+         }
+         self.events.push_back(LossEvent {
+             seq,
+             units,
+             declared_ns,
+             state: LedgerState::Suspected,

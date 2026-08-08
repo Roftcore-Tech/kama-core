@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace Receiver::last_emit_any -> u64 with 1
+@@ -306,17 +306,17 @@
+         self.since_last_ack = 0;
+         self.burn_quota(); // kota=0 burada — yalnız emit_total muhasebesi (birleşik-sayaç)
+         self.record_ack_emit(now_ns);
+         self.build_ack(now_ns)
+     }
+ 
+     /// [r3 §2] Birleşik emisyon-saati: son HERHANGİ SACK-emisyonu (freq/timer + tail).
+     fn last_emit_any(&self) -> u64 {
+-        self.last_ack_ns.max(self.last_tail_ack_ns)
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [r3 §1a] Yeni-epizot: kredi RESET (birikim yok) + muafiyet + sayaç.
+     fn open_episode(&mut self) {
+         self.quota = self.quota_r;
+         self.episode_first_pending = true;
+         self.diag_episode_count += 1;
+     }

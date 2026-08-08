@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace += with *= in Receiver::burn_quota
+@@ -319,17 +319,17 @@
+         self.quota = self.quota_r;
+         self.episode_first_pending = true;
+         self.diag_episode_count += 1;
+     }
+ 
+     /// [r3 §2] Kredi-düşümü (her emisyon-yolu) — K-4 SERT-INVARIANT kaynağı.
+     fn burn_quota(&mut self) {
+         self.episode_first_pending = false;
+-        self.diag_emit_total += 1;
++        self.diag_emit_total *= /* ~ changed by cargo-mutants ~ */ 1;
+         if self.quota > 0 {
+             self.quota -= 1;
+             self.diag_quota_burn += 1;
+         }
+     }
+ 
+     /// [r3 §1a] Robust-baseline: 0→yok; <k→max (muhafazakâr); ≥k→median(son k).
+     fn episode_baseline(&self) -> u64 {

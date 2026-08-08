@@ -30,38 +30,24 @@
        Fresh proc-macro2 v1.0.106
        Fresh quote v1.0.46
        Fresh syn v2.0.118
-       Fresh thiserror-impl v2.0.18
        Fresh tokio-macros v2.7.0
+       Fresh thiserror-impl v2.0.18
        Fresh pin-project-lite v0.2.17
        Fresh tokio v1.52.3
        Fresh thiserror v2.0.18
-       Dirty adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-3FBM8d.tmp/crates/adaptive-transport): couldn't read metadata for file `target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib`
-   Compiling adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-3FBM8d.tmp/crates/adaptive-transport)
-     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta`
-     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9cc1446eb98710ef -C extra-filename=-eecea9df1309094a --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib`
-error[E0308]: mismatched types
-   --> crates/adaptive-transport/src/sender.rs:809:81
-    |
-809 |             .ledger_tick(now_ns, ack_epoch + /* ~ changed by cargo-mutants ~ */ K_WL, self.cadence_loss_floor());
-    |                                  ---------                                      ^^^^ expected `Duration`, found `u32`
-    |                                  |
-    |                                  expected because this is `std::time::Duration`
-
-For more information about this error, try `rustc --explain E0308`.
-error: could not compile `adaptive-transport` (lib test) due to 1 previous error
-
-Caused by:
-  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9cc1446eb98710ef -C extra-filename=-eecea9df1309094a --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rlib --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rlib` (exit status: 1)
-warning: build failed, waiting for other jobs to finish...
+       Dirty adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-LQxsax.tmp/crates/adaptive-transport): couldn't read metadata for file `target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib`
+   Compiling adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-LQxsax.tmp/crates/adaptive-transport)
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-LQxsax.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-LQxsax.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-LQxsax.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-LQxsax.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-LQxsax.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta`
 error[E0308]: mismatched types
    --> crates/adaptive-transport/src/sender.rs:809:81
     |
 809 |             .ledger_tick(now_ns, ack_epoch + /* ~ changed by cargo-mutants ~ */ K_WL, self.cadence_loss_floor());
     |                                  --------- expected because this is `Duration`  ^^^^ expected `Duration`, found `u32`
 
+For more information about this error, try `rustc --explain E0308`.
 error: could not compile `adaptive-transport` (lib) due to 1 previous error
 
 Caused by:
-  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-3FBM8d.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta` (exit status: 1)
+  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-LQxsax.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-LQxsax.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-LQxsax.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-LQxsax.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-LQxsax.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta` (exit status: 1)
 
 *** result: Failure(101)

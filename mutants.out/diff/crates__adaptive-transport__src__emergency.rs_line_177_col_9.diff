@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/emergency.rs
++++ replace <impl RecoveryModeController for HysteresisController>::level -> EmergencyLevel with Default::default()
+@@ -169,17 +169,17 @@
+                 self.level = self.level.deescalated();
+                 self.last_deescalate_ns = Some(now_ns);
+             }
+         }
+         self.level
+     }
+ 
+     fn level(&self) -> EmergencyLevel {
+-        self.level
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Level + framing → forward-recovery eylemi (§11).
+ #[must_use]
+ pub fn action(level: EmergencyLevel, framing: Framing, cfg: &EmergencyConfig) -> RecoveryAction {
+     match (level, framing) {
+         (EmergencyLevel::Arq, _) => RecoveryAction::Arq,

@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/bw.rs
++++ replace += with *= in DeliveryRateSampler::on_ack
+@@ -91,17 +91,17 @@
+             is_app_limited: app_limited,
+             gain_ge1,
+         }
+     }
+ 
+     /// Paket ACK'i → delivery-rate örneği (engine §7.1).
+     /// `interval = max(ack_elapsed, send_elapsed)`, `delivered = C.delivered − P.delivered`.
+     pub fn on_ack(&mut self, now_ns: u64, pkt: SentPacket) -> RateSample {
+-        self.delivered += pkt.size;
++        self.delivered *= /* ~ changed by cargo-mutants ~ */ pkt.size;
+         self.delivered_time_ns = now_ns;
+         self.packets_in_flight = self.packets_in_flight.saturating_sub(1);
+ 
+         let ack_elapsed = now_ns.saturating_sub(pkt.delivered_time_ns);
+         let send_elapsed = pkt.sent_ns.saturating_sub(pkt.first_sent_ns);
+         let interval_ns = ack_elapsed.max(send_elapsed);
+         self.first_sent_ns = pkt.sent_ns; // sonraki interval'in tabanı
+ 

@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/rtt.rs
++++ replace RttEstimator::rtprop -> Option<Duration> with None
+@@ -196,17 +196,17 @@
+     #[must_use]
+     pub fn rtprop_window_ns(&self) -> u64 {
+         self.rtprop_window_ns
+     }
+ 
+     /// RTprop (pencereli min RTT); henüz sample yoksa `None`.
+     #[must_use]
+     pub fn rtprop(&self) -> Option<Duration> {
+-        self.rtprop.min().map(Duration::from_nanos)
++        None /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [TUR-3a.5 commit-α, NORMATİF-değişim] queue_delay = min_W_qd(rtt) − RTprop
+     /// (≥0; congestion sinyali, loss DEĞİL). ESKİ tanım (srtt − rtprop) CANCELLED:
+     /// srtt-EWMA lag'ı boş kuyruğu dakikalarca dolu gösteriyordu (ölçüldü, 42-kilidi yarı-1);
+     /// ayakta-kuyruk için doğru istatistik kısa-min (srtt-clock-v1 §2.2). Veri yoksa 0.
+     #[must_use]
+     pub fn queue_delay(&self) -> Duration {

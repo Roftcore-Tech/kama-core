@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/bw.rs
++++ replace DeliveryRateSampler::packets_in_flight -> u64 with 1
+@@ -119,17 +119,17 @@
+     #[must_use]
+     pub fn delivered(&self) -> u64 {
+         self.delivered
+     }
+ 
+     /// Uçuşta-sayılan iletim sayısı (SALT-GÖZLEM — not §3.7 sızıntı-borcu ölçümü [TUR-3a]).
+     #[must_use]
+     pub fn packets_in_flight(&self) -> u64 {
+-        self.packets_in_flight
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [TUR-3a commit-B, §3.7 borç-fix] ACK'lenmeyecek iletimi uçuş-sayısından düşür:
+     /// (a) tombstone TTL-prune, (b) kapasite-eviction, (c) Duplicate-kökenli kayıp (tombstonesuz).
+     /// Sızıntı her gerçek-kayıpta +1 kalıcıydı → `packets_in_flight==0` pipe-boş tespiti
+     /// (on_sent first_sent/delivered_time yeniden-çıpalaması) kayıplı koşuda bir daha
+     /// tetiklenmiyordu (ölçüldü: p5'te pif=23 vs gerçek-uçuş≈14).
+     pub fn forget_in_flight(&mut self) {

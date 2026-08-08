@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace += with -= in <impl LossDetector for ThresholdLossDetector>::on_sent
+@@ -278,17 +278,17 @@
+         // yukarı-yanlı olur, SAKLANMAZ — audit sayacıyla görünür).
+         if self.sent_window.len() >= LEDGER_MAX {
+             if let Some(old) = self.sent_window.pop_front() {
+                 self.sent_window_units = self.sent_window_units.saturating_sub(old.units);
+                 self.ledger_evicted_total += 1;
+             }
+         }
+         self.sent_window.push_back(Sent { send_ns, units });
+-        self.sent_window_units += units;
++        self.sent_window_units -= /* ~ changed by cargo-mutants ~ */ units;
+     }
+ 
+     fn on_ack(&mut self, acked: &[u64], now_ns: u64) -> Vec<u64> {
+         for &seq in acked {
+             self.inflight.remove(&seq);
+             // [TUR-2a D-1/3] UN-LOSS: kayıp-ilan-edilmiş seq'e ACK geldi → hipotez ÇÜRÜDÜ.
+             // Ledger'da Spurious'a çevrilir (Confirmed dahil — kanıt kanıttır; retransmit-sent
+             // belirsizliği SENDER kolunda retx_count'la ayrışır, D-1/3 kol-2/TUR-2c).

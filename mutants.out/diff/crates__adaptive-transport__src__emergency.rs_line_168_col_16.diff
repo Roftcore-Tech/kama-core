@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/emergency.rs
++++ delete ! in <impl RecoveryModeController for HysteresisController>::update
+@@ -160,17 +160,17 @@
+             // ESCALATE — ANINDA, dwell YOK (recovery-obsesif: hemen koru).
+             self.level = self.level.escalated();
+         } else if health_permille > self.cfg.deescalate_permille && self.level > EmergencyLevel::Arq
+         {
+             // DE-ESCALATE — dwell'li (osilasyon önlemi).
+             let locked = self
+                 .last_deescalate_ns
+                 .is_some_and(|t| now_ns < t + dur_ns(self.cfg.deescalate_dwell));
+-            if !locked {
++            if  /* ~ changed by cargo-mutants ~ */locked {
+                 self.level = self.level.deescalated();
+                 self.last_deescalate_ns = Some(now_ns);
+             }
+         }
+         self.level
+     }
+ 
+     fn level(&self) -> EmergencyLevel {

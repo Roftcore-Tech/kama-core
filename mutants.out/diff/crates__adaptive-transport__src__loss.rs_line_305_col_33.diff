@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace || with && in <impl LossDetector for ThresholdLossDetector>::on_ack
+@@ -297,17 +297,17 @@
+                 .iter_mut()
+                 .rev()
+                 .find(|e| e.seq == seq && e.state != LedgerState::Spurious)
+             {
+                 ev.state = LedgerState::Spurious;
+                 self.spurious_units_total += ev.units;
+                 self.unlossed.push(seq);
+             }
+-            if !self.have_acked || seq > self.largest_acked {
++            if !self.have_acked && /* ~ changed by cargo-mutants ~ */ seq > self.largest_acked {
+                 self.largest_acked = seq;
+                 self.have_acked = true;
+             }
+         }
+         if !self.have_acked {
+             return Vec::new();
+         }
+         let la = self.largest_acked;

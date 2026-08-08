@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace == with != in Receiver::on_datagram
+@@ -181,17 +181,17 @@
+ 
+     /// §4 on_datagram: VERIFIED datagram'ı işle → teslim + belki ACK.
+     pub fn on_datagram(&mut self, d: RxDatagram, now_ns: u64) -> RxOutput {
+         // [§2.2 V2] seen_count: HER görülen datagram sayılır (dup/shard DAHİL) — sender'ın
+         // "seen vs sent" yön-ayrımlı kayıp kıyası için (K3 cold-start).
+         self.seen_total = self.seen_total.saturating_add(1);
+         // [TUR-5 r3 §1a] EPİZOT-DEĞERLENDİRME — pencere/last_gap GÜNCELLENMEDEN ÖNCE (kopma-gap'i
+         // ritim-referansını zehirleyemez). Oturum-ilk = açık özel-durum. Dup dahil her datagram.
+-        if self.seen_total == 1 {
++        if self.seen_total != /* ~ changed by cargo-mutants ~ */ 1 {
+             self.open_episode();
+         } else {
+             let gap = now_ns.saturating_sub(self.last_arrival_ns);
+             let baseline = self.episode_baseline();
+             if baseline > 0 && gap > K_EPISODE.saturating_mul(baseline) {
+                 self.open_episode();
+             }
+             // SİMETRİK CLAMP'Lİ-YAZIM (r3-doğrulama): zehirlenme-koruması + livelock-ölümü +

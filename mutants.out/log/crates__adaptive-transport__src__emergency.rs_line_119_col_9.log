@@ -1,0 +1,65 @@
+
+*** crates/adaptive-transport/src/emergency.rs:119:9: replace EmergencyConfig::fixture -> Self with Default::default()
+
+*** mutation diff:
+--- crates/adaptive-transport/src/emergency.rs
++++ replace EmergencyConfig::fixture -> Self with Default::default()
+@@ -111,23 +111,17 @@
+     /// Dup3 segment-block minimal parity (per-mille).
+     pub block_parity_dup3_permille: u32,
+ }
+ 
+ impl EmergencyConfig {
+     /// **KALİBRE DEĞİL** fixture.
+     #[must_use]
+     pub fn fixture() -> Self {
+-        Self {
+-            dup2_factor: 2,
+-            dup3_factor: 3,
+-            dup_spacing: Duration::from_millis(20),
+-            block_parity_dup2_permille: 100,
+-            block_parity_dup3_permille: 200,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Retreat mode controller portu (clean-arch).
+ pub trait RecoveryModeController {
+     /// `health` (ack_confidence↑ / residual_loss↓, per-mille) + `now` → güncel level.
+     fn update(&mut self, health_permille: u32, now_ns: u64) -> EmergencyLevel;
+     /// Güncel level.
+
+
+*** /home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=adaptive-transport@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh thiserror-impl v2.0.18
+       Fresh tokio-macros v2.7.0
+       Fresh pin-project-lite v0.2.17
+       Fresh tokio v1.52.3
+       Fresh thiserror v2.0.18
+       Dirty adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-2LEMmU.tmp/crates/adaptive-transport): couldn't read metadata for file `target/debug/deps/libadaptive_transport-4b03a0460702d25b.rlib`
+   Compiling adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-2LEMmU.tmp/crates/adaptive-transport)
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta`
+error[E0277]: the trait bound `EmergencyConfig: Default` is not satisfied
+   --> crates/adaptive-transport/src/emergency.rs:119:9
+    |
+119 |         Default::default() /* ~ changed by cargo-mutants ~ */
+    |         ^^^^^^^^^^^^^^^^^^ the trait `Default` is not implemented for `EmergencyConfig`
+    |
+help: consider annotating `EmergencyConfig` with `#[derive(Default)]`
+    |
+102 + #[derive(Default)]
+103 | pub struct EmergencyConfig {
+    |
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `adaptive-transport` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-2LEMmU.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta` (exit status: 1)
+
+*** result: Failure(101)

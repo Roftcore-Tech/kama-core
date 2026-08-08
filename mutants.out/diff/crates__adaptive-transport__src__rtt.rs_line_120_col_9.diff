@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/rtt.rs
++++ replace RttEstimator::set_qd_window with ()
+@@ -112,17 +112,17 @@
+     /// [TUR-3a D-2/1] Kanal-türevi RTprop penceresi: `max(10s, K_rtprop × corrected_srtt)`.
+     pub fn set_rtprop_window(&mut self, w: Duration) {
+         self.rtprop_window_ns = dur_ns(w).max(dur_ns(W_RTPROP)); // taban [STD]: küçültme yok
+     }
+ 
+     /// [TUR-3a.5 commit-α] qd kısa-penceresi: `W_qd = K_qd × ack_epoch` (kanal-türevi;
+     /// W_qd ≤ W_rtprop invariantı çağıranda — kısa-min ≥ uzun-min yapısal kalsın).
+     pub fn set_qd_window(&mut self, w: Duration) {
+-        self.qd_window_ns = dur_ns(w).min(self.rtprop_window_ns).max(1);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [TUR-3a.5 commit-β] Kuantum-döngü referans-aralığı: `T = rtprop / K_CONV` — srtt
+     /// yakınsaması KANAL-ZAMANINA bağlanır (ZM-1 estimator-katmanı fix'i).
+     pub fn set_conv_interval(&mut self, t: Duration) {
+         self.conv_ref_ns = Some(dur_ns(t).max(1));
+     }
+ 

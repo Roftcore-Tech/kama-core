@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/bw.rs
++++ delete ! in BtlBwFilter::update
+@@ -195,17 +195,17 @@
+     /// alt-sınır; §7.3).
+     pub fn update(&mut self, sample: RateSample, now_ns: u64, valid: bool) -> u64 {
+         if valid && sample.interval >= MIN_RATE_INTERVAL {
+             let bw = bw_bps(sample.delivered, sample.interval);
+             let app_limited_ok = !sample.is_app_limited || bw >= self.btlbw();
+             if app_limited_ok {
+                 self.samples.push((now_ns, bw));
+             }
+-            if !sample.is_app_limited {
++            if  /* ~ changed by cargo-mutants ~ */sample.is_app_limited {
+                 self.last_full_bw = bw; // [Y3 K3-pin-iii] yalnız tam-geçerli örnek cadence-girdisi
+             }
+         }
+         let cutoff = now_ns.saturating_sub(self.window_ns);
+         // [TUR-3a D-2/2] KEEP-LAST: budama filtreyi boşaltacaksa en-yeni örnek yaşar.
+         let last = self.samples.last().copied();
+         self.samples.retain(|&(t, _)| t >= cutoff);
+         if self.samples.is_empty() {

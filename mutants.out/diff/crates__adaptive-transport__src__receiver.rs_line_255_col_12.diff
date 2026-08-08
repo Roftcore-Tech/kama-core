@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ delete ! in Receiver::on_ack_timer
+@@ -247,17 +247,17 @@
+         }
+     }
+ 
+     /// §12 ACK_TIMER: zamanlayıcı ile ACK üret (frekans dolmasa da). [K2/R1/§3.3-E/§12] cadence-limitli:
+     /// İLK SACK henüz yollanmadıysa cadence-exempt (hemen — client PRE_CONVERGE'den hızlı çıksın); yollandıysa
+     /// son SACK'ten `ACK_CADENCE_FLOOR_NS` geçmeden timer-SACK BASTIRILIR (kbps 20ms-sabit SACK-seli/19s-lag
+     /// önlenir). Frequency-yolu (§2.1) DATA-oranıyla eşleştiğinden hızlı kanalda responsive kalır.
+     pub fn on_ack_timer(&mut self, now_ns: u64) -> Option<AckFrame> {
+-        if !self.have_recv {
++        if  /* ~ changed by cargo-mutants ~ */self.have_recv {
+             return None;
+         }
+         // [TUR-3b commit-C, karar-a] TAIL-MUAFİYETİ (R1 ilk-SACK muafiyetinin simetriği):
+         // beklemede-veri (freq'e ulaşmamış varış) VE sessizlik ≥ K_TAIL×son-varış-aralığı →
+         // bu bir TAIL'dir; cadence beklenmez (eski davranışta tek-kalan-paketin ACK'i 8.39s
+         // cadence'e takılıyor, teslim liveness-emergency gizli-yoluna dayanıyordu — MASKE #5).
+         // [rev2 — teşhis-kollarıyla ölçüldü] Tail-SACK cadence-saatini SIFIRLAMAZ: b3-matrisi
+         // p5'te {0,10,10,56,100-yavaş,100-yavaş} verdi; kol-atıflaması tail-emisyonların

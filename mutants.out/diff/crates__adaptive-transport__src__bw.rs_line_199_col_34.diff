@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/bw.rs
++++ delete ! in BtlBwFilter::update
+@@ -191,17 +191,17 @@
+     ///
+     /// `valid=false` (reverse_path_impaired / ack_delay_untrusted — §7.3 dış flag'ler)
+     /// veya `interval < MIN_RATE_INTERVAL` → sample max-filter'a GİRMEZ. app-limited
+     /// sample yalnız mevcut BtlBw'den ≥ ise girer (yüksek app-limited = geçerli
+     /// alt-sınır; §7.3).
+     pub fn update(&mut self, sample: RateSample, now_ns: u64, valid: bool) -> u64 {
+         if valid && sample.interval >= MIN_RATE_INTERVAL {
+             let bw = bw_bps(sample.delivered, sample.interval);
+-            let app_limited_ok = !sample.is_app_limited || bw >= self.btlbw();
++            let app_limited_ok =  /* ~ changed by cargo-mutants ~ */sample.is_app_limited || bw >= self.btlbw();
+             if app_limited_ok {
+                 self.samples.push((now_ns, bw));
+             }
+             if !sample.is_app_limited {
+                 self.last_full_bw = bw; // [Y3 K3-pin-iii] yalnız tam-geçerli örnek cadence-girdisi
+             }
+         }
+         let cutoff = now_ns.saturating_sub(self.window_ns);

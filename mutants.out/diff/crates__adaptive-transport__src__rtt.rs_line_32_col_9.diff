@@ -1,0 +1,32 @@
+--- crates/adaptive-transport/src/rtt.rs
++++ replace MinFilter::observe with ()
+@@ -24,28 +24,17 @@
+ #[derive(Debug, Clone, Default)]
+ struct MinFilter {
+     /// (time_ns, value_ns) örnekleri; pencere dışı at.
+     samples: Vec<(u64, u64)>,
+ }
+ 
+ impl MinFilter {
+     fn observe(&mut self, now_ns: u64, value_ns: u64, window_ns: u64) {
+-        self.samples.push((now_ns, value_ns));
+-        let cutoff = now_ns.saturating_sub(window_ns);
+-        // [TUR-3a D-2/2] KEEP-LAST: budama filtreyi boşaltacaksa en-yeni örnek yaşar.
+-        // (push-sonra-buda sırası nedeniyle bugün yapısal olarak boşalamaz — savunma katmanı;
+-        // gelecek çağrı-sırası değişikliklerine karşı invariant kilitlenir.)
+-        let last = self.samples.last().copied();
+-        self.samples.retain(|&(t, _)| t >= cutoff);
+-        if self.samples.is_empty() {
+-            if let Some(l) = last {
+-                self.samples.push(l);
+-            }
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn min(&self) -> Option<u64> {
+         self.samples.iter().map(|&(_, v)| v).min()
+     }
+ 
+     /// Min-değerli örneğin zamanı (pencere-doluşu tespiti — [TUR-3b] DrainRtprop girişi).
+     fn min_entry_time(&self) -> Option<u64> {

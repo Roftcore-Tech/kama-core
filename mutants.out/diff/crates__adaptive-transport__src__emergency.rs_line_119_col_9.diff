@@ -1,0 +1,27 @@
+--- crates/adaptive-transport/src/emergency.rs
++++ replace EmergencyConfig::fixture -> Self with Default::default()
+@@ -111,23 +111,17 @@
+     /// Dup3 segment-block minimal parity (per-mille).
+     pub block_parity_dup3_permille: u32,
+ }
+ 
+ impl EmergencyConfig {
+     /// **KALİBRE DEĞİL** fixture.
+     #[must_use]
+     pub fn fixture() -> Self {
+-        Self {
+-            dup2_factor: 2,
+-            dup3_factor: 3,
+-            dup_spacing: Duration::from_millis(20),
+-            block_parity_dup2_permille: 100,
+-            block_parity_dup3_permille: 200,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Retreat mode controller portu (clean-arch).
+ pub trait RecoveryModeController {
+     /// `health` (ack_confidence↑ / residual_loss↓, per-mille) + `now` → güncel level.
+     fn update(&mut self, health_permille: u32, now_ns: u64) -> EmergencyLevel;
+     /// Güncel level.

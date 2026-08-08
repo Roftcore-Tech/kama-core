@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ delete ! in Receiver::record_seq
+@@ -374,17 +374,17 @@
+             self.diag_accel_emits,
+             self.diag_emit_total,
+         )
+     }
+ 
+     /// rx-set + largest/smallest muhasebesi.
+     fn record_seq(&mut self, seq: u64, now_ns: u64) {
+         self.received.insert(seq);
+-        if !self.have_recv {
++        if  /* ~ changed by cargo-mutants ~ */self.have_recv {
+             self.smallest_seq = seq;
+             self.largest_seq = seq;
+             self.largest_recv_ns = now_ns;
+             self.have_recv = true;
+         } else {
+             self.smallest_seq = self.smallest_seq.min(seq);
+             if seq > self.largest_seq {
+                 self.largest_seq = seq;

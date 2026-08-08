@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace += with *= in Receiver::tick_ack
+@@ -401,17 +401,17 @@
+         let span = self.largest_seq - self.smallest_seq + 1;
+         u64::try_from(self.received.len()).unwrap_or(u64::MAX) < span
+     }
+ 
+     /// §2.1 ACK-tetik: DATA sayacı ACK_FREQ'e ulaştıysa (ya da `force`) ACK üret. Frequency-yolu cadence
+     /// ile GATE'lenmez (DATA-oranıyla eşleşir → self-limiting) ama `last_ack_ns`'i günceller → timer bunu
+     /// backstop olarak referans alır (freq-SACK cadence'i sıfırlar → timer hemen tekrarlamaz).
+     fn tick_ack(&mut self, now_ns: u64, force: bool) -> Option<AckFrame> {
+-        self.since_last_ack += 1;
++        self.since_last_ack *= /* ~ changed by cargo-mutants ~ */ 1;
+         if force || self.since_last_ack >= self.ack_freq {
+             self.since_last_ack = 0;
+             self.burn_quota(); // [r3 §2] freq/force emisyonları da kredi-muhasebesine girer
+             self.record_ack_emit(now_ns);
+             self.build_ack(now_ns)
+         } else {
+             None
+         }

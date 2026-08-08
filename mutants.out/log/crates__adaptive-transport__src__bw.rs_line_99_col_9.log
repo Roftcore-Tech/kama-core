@@ -1,0 +1,75 @@
+
+*** crates/adaptive-transport/src/bw.rs:99:9: replace DeliveryRateSampler::on_ack -> RateSample with Default::default()
+
+*** mutation diff:
+--- crates/adaptive-transport/src/bw.rs
++++ replace DeliveryRateSampler::on_ack -> RateSample with Default::default()
+@@ -91,33 +91,17 @@
+             is_app_limited: app_limited,
+             gain_ge1,
+         }
+     }
+ 
+     /// Paket ACK'i → delivery-rate örneği (engine §7.1).
+     /// `interval = max(ack_elapsed, send_elapsed)`, `delivered = C.delivered − P.delivered`.
+     pub fn on_ack(&mut self, now_ns: u64, pkt: SentPacket) -> RateSample {
+-        self.delivered += pkt.size;
+-        self.delivered_time_ns = now_ns;
+-        self.packets_in_flight = self.packets_in_flight.saturating_sub(1);
+-
+-        let ack_elapsed = now_ns.saturating_sub(pkt.delivered_time_ns);
+-        let send_elapsed = pkt.sent_ns.saturating_sub(pkt.first_sent_ns);
+-        let interval_ns = ack_elapsed.max(send_elapsed);
+-        self.first_sent_ns = pkt.sent_ns; // sonraki interval'in tabanı
+-
+-        RateSample {
+-            delivered: self.delivered - pkt.delivered,
+-            interval: Duration::from_nanos(interval_ns),
+-            is_app_limited: pkt.is_app_limited,
+-            gain_ge1: pkt.gain_ge1,
+-            ack_elapsed: Duration::from_nanos(ack_elapsed),
+-            sent_ns: pkt.sent_ns,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Kümülatif delivered (bytes) — [TUR-3c] probe-volume ölçümü (delivered_since_entry).
+     #[must_use]
+     pub fn delivered(&self) -> u64 {
+         self.delivered
+     }
+ 
+
+
+*** /home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=adaptive-transport@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh thiserror-impl v2.0.18
+       Fresh tokio-macros v2.7.0
+       Fresh pin-project-lite v0.2.17
+       Fresh tokio v1.52.3
+       Fresh thiserror v2.0.18
+       Dirty adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-8iy4q8.tmp/crates/adaptive-transport): the file `crates/adaptive-transport/src/arq.rs` has changed (1786141841.148574005s, 36s after last build at 1786141805.942878781s)
+   Compiling adaptive-transport v0.1.0 (/tmp/cargo-mutants-kama-core-8iy4q8.tmp/crates/adaptive-transport)
+     Running `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta`
+error[E0277]: the trait bound `RateSample: Default` is not satisfied
+  --> crates/adaptive-transport/src/bw.rs:99:9
+   |
+99 |         Default::default() /* ~ changed by cargo-mutants ~ */
+   |         ^^^^^^^^^^^^^^^^^^ the trait `Default` is not implemented for `RateSample`
+   |
+help: consider annotating `RateSample` with `#[derive(Default)]`
+   |
+39 + #[derive(Default)]
+40 | pub struct RateSample {
+   |
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `adaptive-transport` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/kaan/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name adaptive_transport --edition=2021 crates/adaptive-transport/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d0a7c6c604c7bef7 -C extra-filename=-4b03a0460702d25b --out-dir /tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libthiserror-936b95e02a631401.rmeta --extern tokio=/tmp/cargo-mutants-kama-core-8iy4q8.tmp/target/debug/deps/libtokio-ef8455a258b6310f.rmeta` (exit status: 1)
+
+*** result: Failure(101)

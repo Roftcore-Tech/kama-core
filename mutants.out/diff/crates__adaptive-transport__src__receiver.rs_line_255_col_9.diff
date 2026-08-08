@@ -1,0 +1,75 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace Receiver::on_ack_timer -> Option<AckFrame> with None
+@@ -247,71 +247,17 @@
+         }
+     }
+ 
+     /// §12 ACK_TIMER: zamanlayıcı ile ACK üret (frekans dolmasa da). [K2/R1/§3.3-E/§12] cadence-limitli:
+     /// İLK SACK henüz yollanmadıysa cadence-exempt (hemen — client PRE_CONVERGE'den hızlı çıksın); yollandıysa
+     /// son SACK'ten `ACK_CADENCE_FLOOR_NS` geçmeden timer-SACK BASTIRILIR (kbps 20ms-sabit SACK-seli/19s-lag
+     /// önlenir). Frequency-yolu (§2.1) DATA-oranıyla eşleştiğinden hızlı kanalda responsive kalır.
+     pub fn on_ack_timer(&mut self, now_ns: u64) -> Option<AckFrame> {
+-        if !self.have_recv {
+-            return None;
+-        }
+-        // [TUR-3b commit-C, karar-a] TAIL-MUAFİYETİ (R1 ilk-SACK muafiyetinin simetriği):
+-        // beklemede-veri (freq'e ulaşmamış varış) VE sessizlik ≥ K_TAIL×son-varış-aralığı →
+-        // bu bir TAIL'dir; cadence beklenmez (eski davranışta tek-kalan-paketin ACK'i 8.39s
+-        // cadence'e takılıyor, teslim liveness-emergency gizli-yoluna dayanıyordu — MASKE #5).
+-        // [rev2 — teşhis-kollarıyla ölçüldü] Tail-SACK cadence-saatini SIFIRLAMAZ: b3-matrisi
+-        // p5'te {0,10,10,56,100-yavaş,100-yavaş} verdi; kol-atıflaması tail-emisyonların
+-        // record_ack_emit'le garantili-ritim (cadence) SACK'lerini ERTELEDİĞİNİ gösterdi
+-        // (%80-kayıplı dönüşte hayatta-kalan SACK fiilen azaldı; r5=0 bileşik-zincir).
+-        // Tail artık KENDİ ritim-sayacını tutar (spam-siz) ve cadence bağımsız akar —
+-        // tail-SACK saf-EK emisyondur.
+-        let tail_due = self.since_last_ack > 0
+-            && self.last_gap_ns > 0
+-            && now_ns.saturating_sub(self.last_arrival_ns)
+-                >= self.last_gap_ns.saturating_mul(K_TAIL)
+-            && now_ns.saturating_sub(self.last_tail_ack_ns)
+-                >= self.last_gap_ns.saturating_mul(K_TAIL);
+-        if tail_due {
+-            self.last_tail_ack_ns = now_ns; // yalnız tail-ritmi; cadence/freq sayaçlarına DOKUNMA
+-            self.burn_quota(); // [r3 §2] her emisyon kredi düşürür (birleşik muhasebe)
+-            return self.build_ack(now_ns);
+-        }
+-        let elapsed = now_ns.saturating_sub(self.last_emit_any());
+-        // [r3 §2] KOTA-MODU: epizot-kredisi varken T_SPACING-takvimli yeniden-deneme (aynı
+-        // kümülatif-SACK'in dekorele kopyaları — kader-penceresi); epizodun İLK emisyonu
+-        // gecikmesiz (muafiyet — eski first_ack_sent'in genellemesi). Kopyalar yeni-varış
+-        // BEKLEMEZ (retry-semantiği; Ekleme-2 geri-çekildi, not §2 revizyonu).
+-        if self.quota > 0 {
+-            if self.episode_first_pending || elapsed >= T_SPACING_NS {
+-                self.since_last_ack = 0;
+-                self.burn_quota();
+-                self.record_ack_emit(now_ns);
+-                return self.build_ack(now_ns);
+-            }
+-            return None;
+-        }
+-        // [r3 §3] Bacak-2 §3.3-E MİNİMAL-TABAN (kota-dışı): beklemede-yeni-bilgi varken cadence
+-        // varış-ritmine bağlanır; yoksa statik-önsel FLOOR (sessiz-dönem tekrarları korunur).
+-        let cadence_eff = if self.since_last_ack > 0 && self.last_gap_ns > 0 {
+-            (K_ARR.saturating_mul(self.last_gap_ns)).clamp(T_SPACING_NS, ACK_CADENCE_FLOOR_NS)
+-        } else {
+-            ACK_CADENCE_FLOOR_NS
+-        };
+-        if elapsed < cadence_eff {
+-            return None;
+-        }
+-        if cadence_eff < ACK_CADENCE_FLOOR_NS {
+-            self.diag_accel_emits += 1;
+-        }
+-        self.since_last_ack = 0;
+-        self.burn_quota(); // kota=0 burada — yalnız emit_total muhasebesi (birleşik-sayaç)
+-        self.record_ack_emit(now_ns);
+-        self.build_ack(now_ns)
++        None /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [r3 §2] Birleşik emisyon-saati: son HERHANGİ SACK-emisyonu (freq/timer + tail).
+     fn last_emit_any(&self) -> u64 {
+         self.last_ack_ns.max(self.last_tail_ack_ns)
+     }
+ 
+     /// [r3 §1a] Yeni-epizot: kredi RESET (birikim yok) + muafiyet + sayaç.

@@ -1,0 +1,24 @@
+--- crates/adaptive-transport/src/emergency.rs
++++ replace EmergencyLevel::escalated -> Self with Default::default()
+@@ -27,20 +27,17 @@
+     Dup2,
+     /// 3× duplication / daha yüksek minimal parity.
+     Dup3,
+ }
+ 
+ impl EmergencyLevel {
+     /// Bir üst seviye (Dup3'te doygun).
+     fn escalated(self) -> Self {
+-        match self {
+-            Self::Arq => Self::Dup2,
+-            Self::Dup2 | Self::Dup3 => Self::Dup3,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+     /// Bir alt seviye (Arq'ta doygun).
+     fn deescalated(self) -> Self {
+         match self {
+             Self::Dup3 => Self::Dup2,
+             Self::Dup2 | Self::Arq => Self::Arq,
+         }
+     }

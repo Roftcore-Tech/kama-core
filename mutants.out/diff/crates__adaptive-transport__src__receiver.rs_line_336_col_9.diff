@@ -1,0 +1,31 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace Receiver::episode_baseline -> u64 with 0
+@@ -328,27 +328,17 @@
+         if self.quota > 0 {
+             self.quota -= 1;
+             self.diag_quota_burn += 1;
+         }
+     }
+ 
+     /// [r3 §1a] Robust-baseline: 0→yok; <k→max (muhafazakâr); ≥k→median(son k).
+     fn episode_baseline(&self) -> u64 {
+-        match self.gap_len {
+-            0 => 0,
+-            n if n < EPISODE_WINDOW => self.gap_window[..n].iter().copied().max().unwrap_or(0),
+-            _ => {
+-                let mut v = [0u64; 5];
+-                v[..EPISODE_WINDOW].copy_from_slice(&self.gap_window[..EPISODE_WINDOW]);
+-                let m = &mut v[..EPISODE_WINDOW];
+-                m.sort_unstable();
+-                m[EPISODE_WINDOW / 2]
+-            }
+-        }
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [r3 §1a] Ring-yazım (son EPISODE_WINDOW gap; clamp'lenmiş değer).
+     fn push_gap(&mut self, g: u64) {
+         self.gap_window[self.gap_idx] = g;
+         self.gap_idx = (self.gap_idx + 1) % EPISODE_WINDOW;
+         if self.gap_len < EPISODE_WINDOW {
+             self.gap_len += 1;

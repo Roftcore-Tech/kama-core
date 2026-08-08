@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace ThresholdLossDetector::take_unlossed -> Vec<u64> with vec![]
+@@ -196,17 +196,17 @@
+             declared_ns,
+             state: LedgerState::Suspected,
+         });
+     }
+ 
+     /// Son `on_ack`'te GERİ-ALINAN (Spurious) seq'leri boşaltır — sender pending-retransmit
+     /// iptali + `note_spurious` kablosu + kol-1 RTT adayı için tüketir.
+     pub fn take_unlossed(&mut self) -> Vec<u64> {
+-        std::mem::take(&mut self.unlossed)
++        vec![] /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Görülen en yüksek acked seq (un-loss'ta gözlenen-reorder mesafesi = largest − seq).
+     #[must_use]
+     pub fn largest_acked(&self) -> Option<u64> {
+         self.have_acked.then_some(self.largest_acked)
+     }
+ 

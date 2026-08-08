@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/fusion.rs
++++ replace == with != in log2_fp
+@@ -22,17 +22,17 @@
+ /// Taşmasız kesir (workflow-bulgusu: naif `(x−2^e)·256 >> e` e≥56'da u64 taşırır —
+ /// release'te non-monoton, debug'da panik = ADR-17 ihlali):
+ /// `e≥8: frac=(x>>(e−8)) & 0xFF` ; `e<8: frac=(x<<(8−e)) & 0xFF` (e<8'de EXACT).
+ /// `x=0 → 0` (ilog2(0) tanımsız/panik). Monotonluk: tüm u64'te non-decreasing; e>8'de
+ /// strict DEĞİL (~2-4‰ merdiven — trapezoid rampalarında kabul edilebilir, dokümante).
+ /// Kesme-noktaları AYNI fonksiyondan üretilir (offline-float hardcode YASAK — bit-özdeşlik).
+ #[must_use]
+ pub const fn log2_fp(x: u64) -> u64 {
+-    if x == 0 {
++    if x != /* ~ changed by cargo-mutants ~ */ 0 {
+         return 0;
+     }
+     let e = x.ilog2() as u64;
+     let frac = if e >= 8 {
+         (x >> (e - 8)) & 0xFF
+     } else {
+         (x << (8 - e)) & 0xFF
+     };

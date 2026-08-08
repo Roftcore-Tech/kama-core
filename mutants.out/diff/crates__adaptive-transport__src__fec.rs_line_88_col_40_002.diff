@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/fec.rs
++++ replace > with >= in FecShardFrame::decode
+@@ -80,17 +80,17 @@
+             return Err(TransportError::UnknownFrameType(ft));
+         }
+         let block_id = rd.u32_be()?;
+         let shard_index = rd.u8()?;
+         let k = rd.u8()?;
+         let r = rd.u8()?;
+         let shard_len = rd.u16_be()?;
+         // GF(2^8): k+r ≤ 255 (spec §10.2 RS_MAX_SHARDS).
+-        if u16::from(k) + u16::from(r) > 255 {
++        if u16::from(k) + u16::from(r) >= /* ~ changed by cargo-mutants ~ */ 255 {
+             return Err(TransportError::InvalidShardCount { k, r });
+         }
+         // opaque_secured = ct(shard_len) ‖ tag(SHARD_TAG_LEN); TEK blob, İÇERİĞE BAKILMAZ.
+         // PARSER-02: take bounds-check yapar (buffer kısaysa Truncated).
+         let blob_len = usize::from(shard_len) + SHARD_TAG_LEN;
+         let opaque_secured = rd.take(blob_len)?.to_vec();
+         if rd.remaining() != 0 {
+             return Err(TransportError::TrailingBytes {

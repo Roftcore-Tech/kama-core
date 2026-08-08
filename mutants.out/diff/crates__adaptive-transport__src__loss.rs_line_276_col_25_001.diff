@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace += with *= in <impl LossDetector for ThresholdLossDetector>::on_sent
+@@ -268,17 +268,17 @@
+             self.packet_thresh_dyn
+         }
+     }
+ }
+ 
+ impl LossDetector for ThresholdLossDetector {
+     fn on_sent(&mut self, seq: u64, send_ns: u64, units: u64) {
+         self.inflight.insert(seq, Sent { send_ns, units });
+-        self.sent_units += units;
++        self.sent_units *= /* ~ changed by cargo-mutants ~ */ units;
+         // [TUR-2a D-1/5] pencere-paydası (bounded; eviction paydayı küçültür → ppm hafif
+         // yukarı-yanlı olur, SAKLANMAZ — audit sayacıyla görünür).
+         if self.sent_window.len() >= LEDGER_MAX {
+             if let Some(old) = self.sent_window.pop_front() {
+                 self.sent_window_units = self.sent_window_units.saturating_sub(old.units);
+                 self.ledger_evicted_total += 1;
+             }
+         }

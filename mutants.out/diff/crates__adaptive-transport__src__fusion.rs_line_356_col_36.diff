@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/fusion.rs
++++ replace == with != in <impl FusionController for DeterministicFuzzyController>::decide
+@@ -348,17 +348,17 @@
+         // [TUR-4] SIFIR-AĞIRLIK FALLBACK: kural-kesişim delikleri (ölçülmüş sınıf: lppm≥300k
+         // ∧ sub-kbps → loss.low=0 ∧ bw.med/high=0 → 4 kural da 0-ağırlık → payda-0 → arq=0 →
+         // pending SONSUZA DEK drain edilmez) → muhafazakâr-taban fec_zero + arq_light.
+         // BEYAN: arq consequent'leri ≥arq_light olduğundan arq==0 artık üretilemez —
+         // arq.plan()'ın ==0 baskılama-dalı yapısal-erişilmez (§9 sözleşme-notu spec'te).
+         // fec=0 tabanı: delikler kural-gradyanının parity-niyetini DEVRALMAZ (recovery-obsesif
+         // tabanda ARQ-ekseni muhafazakâr; FEC-ekseni statüko) — bilinçli, DV-2'de yeniden okunur.
+         let total_weight: u64 = rules.iter().map(|&(w, _, _)| u64::from(w)).sum();
+-        let no_rule = total_weight == 0;
++        let no_rule = total_weight != /* ~ changed by cargo-mutants ~ */ 0;
+         let (fec, arq) = if no_rule {
+             (c.fec_zero, c.arq_light)
+         } else {
+             (
+                 weighted_average(rules.iter().map(|&(w, level, _)| (w, level))),
+                 weighted_average(rules.iter().map(|&(w, _, level)| (w, level))),
+             )
+         };

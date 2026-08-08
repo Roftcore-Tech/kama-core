@@ -1,22 +1,21 @@
 crates/adaptive-transport/src/sender.rs:448:9: replace Sender::on_event -> Vec<TransmitDecision> with vec![]
 crates/adaptive-transport/src/sender.rs:479:70: replace / with * in Sender::on_event
-crates/adaptive-transport/src/sender.rs:455:31: replace == with != in Sender::on_event
-crates/adaptive-transport/src/sender.rs:480:41: replace * with / in Sender::on_event
 crates/adaptive-transport/src/sender.rs:479:70: replace / with % in Sender::on_event
+crates/adaptive-transport/src/sender.rs:455:31: replace == with != in Sender::on_event
 crates/adaptive-transport/src/sender.rs:483:51: replace && with || in Sender::on_event
+crates/adaptive-transport/src/sender.rs:480:41: replace * with / in Sender::on_event
 crates/adaptive-transport/src/sender.rs:483:23: replace == with != in Sender::on_event
 crates/adaptive-transport/src/sender.rs:494:9: replace Sender::on_ack_received with ()
+crates/adaptive-transport/src/sender.rs:515:69: replace * with + in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:483:65: replace != with == in Sender::on_event
 crates/adaptive-transport/src/sender.rs:515:85: replace / with * in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:515:69: replace * with + in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:515:69: replace * with / in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:516:24: replace + with - in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:519:43: replace * with / in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:520:49: replace * with / in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:529:48: replace / with * in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:546:68: replace > with == in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:546:68: replace > with < in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:539:20: replace >= with < in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:546:68: replace > with < in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:548:29: replace == with != in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:548:77: replace || with && in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:548:84: replace >= with < in Sender::on_ack_received
@@ -29,11 +28,12 @@ crates/adaptive-transport/src/sender.rs:575:50: replace += with -= in Sender::on
 crates/adaptive-transport/src/sender.rs:575:50: replace += with *= in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:576:49: replace += with -= in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:576:49: replace += with *= in Sender::on_ack_received
-crates/adaptive-transport/src/sender.rs:606:20: delete ! in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:600:12: delete ! in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:606:20: delete ! in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:610:34: replace += with -= in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:610:34: replace += with *= in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:616:82: replace >= with < in Sender::on_ack_received
+crates/adaptive-transport/src/sender.rs:624:46: replace >= with < in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:638:40: replace += with -= in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:637:16: delete ! in Sender::on_ack_received
 crates/adaptive-transport/src/sender.rs:642:27: replace == with != in Sender::on_ack_received
@@ -55,10 +55,11 @@ crates/adaptive-transport/src/sender.rs:699:36: replace match guard t.expiry_ns 
 crates/adaptive-transport/src/sender.rs:699:48: replace <= with > in Sender::on_timer
 crates/adaptive-transport/src/sender.rs:719:9: replace Sender::cadence_loss_floor -> Duration with Default::default()
 crates/adaptive-transport/src/sender.rs:719:84: replace / with % in Sender::cadence_loss_floor
+crates/adaptive-transport/src/sender.rs:719:67: replace * with + in Sender::cadence_loss_floor
 crates/adaptive-transport/src/sender.rs:725:9: replace Sender::expected_ack_interval -> Duration with Default::default()
 crates/adaptive-transport/src/sender.rs:732:13: replace + with - in Sender::expected_ack_interval
-crates/adaptive-transport/src/sender.rs:732:13: replace + with * in Sender::expected_ack_interval
 crates/adaptive-transport/src/sender.rs:728:34: replace / with * in Sender::expected_ack_interval
+crates/adaptive-transport/src/sender.rs:732:13: replace + with * in Sender::expected_ack_interval
 crates/adaptive-transport/src/sender.rs:731:65: replace / with * in Sender::expected_ack_interval
 crates/adaptive-transport/src/sender.rs:732:51: replace / with % in Sender::expected_ack_interval
 crates/adaptive-transport/src/sender.rs:732:51: replace / with * in Sender::expected_ack_interval
@@ -66,250 +67,45 @@ crates/adaptive-transport/src/sender.rs:732:35: replace * with + in Sender::expe
 crates/adaptive-transport/src/sender.rs:732:35: replace * with / in Sender::expected_ack_interval
 crates/adaptive-transport/src/sender.rs:742:9: replace Sender::queue_losses with ()
 crates/adaptive-transport/src/sender.rs:747:43: replace / with * in Sender::queue_losses
-crates/adaptive-transport/src/sender.rs:747:39: replace * with / in Sender::queue_losses
 crates/adaptive-transport/src/sender.rs:756:34: replace >= with < in Sender::queue_losses
 crates/adaptive-transport/src/sender.rs:760:29: replace == with != in Sender::queue_losses
 crates/adaptive-transport/src/sender.rs:764:29: replace != with == in Sender::queue_losses
 crates/adaptive-transport/src/sender.rs:773:49: replace >= with < in Sender::queue_losses
+crates/adaptive-transport/src/sender.rs:777:60: replace += with *= in Sender::queue_losses
 crates/adaptive-transport/src/sender.rs:818:38: replace += with -= in Sender::fuzzy_evaluate
 crates/adaptive-transport/src/sender.rs:834:37: replace += with -= in Sender::fuzzy_evaluate
 crates/adaptive-transport/src/sender.rs:842:9: replace Sender::update_state with ()
 crates/adaptive-transport/src/sender.rs:850:13: replace && with || in Sender::update_state
 crates/adaptive-transport/src/sender.rs:849:13: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:852:41: replace || with && in Sender::update_state
 crates/adaptive-transport/src/sender.rs:848:13: replace && with || in Sender::update_state
+crates/adaptive-transport/src/sender.rs:852:41: replace || with && in Sender::update_state
 crates/adaptive-transport/src/sender.rs:852:19: replace > with == in Sender::update_state
 crates/adaptive-transport/src/sender.rs:852:19: replace > with < in Sender::update_state
 crates/adaptive-transport/src/sender.rs:852:19: replace > with >= in Sender::update_state
 crates/adaptive-transport/src/sender.rs:852:58: replace == with != in Sender::update_state
+crates/adaptive-transport/src/sender.rs:859:33: replace && with || in Sender::update_state
 crates/adaptive-transport/src/sender.rs:865:30: replace == with != in Sender::update_state
 crates/adaptive-transport/src/sender.rs:876:19: delete ! in Sender::update_state
-crates/adaptive-transport/src/sender.rs:859:33: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:895:17: delete match arm SenderState::Drain in Sender::update_state
 crates/adaptive-transport/src/sender.rs:883:17: delete match arm SenderState::Startup in Sender::update_state
+crates/adaptive-transport/src/sender.rs:895:17: delete match arm SenderState::Drain in Sender::update_state
 crates/adaptive-transport/src/sender.rs:922:17: delete match arm SenderState::DrainRtprop in Sender::update_state
 crates/adaptive-transport/src/sender.rs:943:17: delete match arm SenderState::ProbeUp in Sender::update_state
 crates/adaptive-transport/src/sender.rs:973:17: delete match arm SenderState::Steady in Sender::update_state
 crates/adaptive-transport/src/sender.rs:1003:17: delete match arm SenderState::RecoverArq | SenderState::RecoverFwd in Sender::update_state
 crates/adaptive-transport/src/sender.rs:899:25: replace * with / in Sender::update_state
+crates/adaptive-transport/src/sender.rs:899:25: replace * with + in Sender::update_state
 crates/adaptive-transport/src/sender.rs:911:25: replace || with && in Sender::update_state
 crates/adaptive-transport/src/sender.rs:910:44: replace <= with > in Sender::update_state
 crates/adaptive-transport/src/sender.rs:911:36: replace >= with < in Sender::update_state
 crates/adaptive-transport/src/sender.rs:934:25: replace || with && in Sender::update_state
 crates/adaptive-transport/src/sender.rs:933:46: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:934:36: replace >= with < in Sender::update_state
 crates/adaptive-transport/src/sender.rs:933:33: replace >= with < in Sender::update_state
+crates/adaptive-transport/src/sender.rs:934:36: replace >= with < in Sender::update_state
 crates/adaptive-transport/src/sender.rs:949:25: replace / with % in Sender::update_state
 crates/adaptive-transport/src/sender.rs:949:25: replace / with * in Sender::update_state
 crates/adaptive-transport/src/sender.rs:948:25: replace * with + in Sender::update_state
+crates/adaptive-transport/src/sender.rs:948:25: replace * with / in Sender::update_state
 crates/adaptive-transport/src/sender.rs:955:45: replace >= with < in Sender::update_state
 crates/adaptive-transport/src/sender.rs:957:29: replace > with == in Sender::update_state
 crates/adaptive-transport/src/sender.rs:957:29: replace > with < in Sender::update_state
-crates/adaptive-transport/src/sender.rs:958:87: replace / with * in Sender::update_state
-crates/adaptive-transport/src/sender.rs:959:40: replace > with < in Sender::update_state
-crates/adaptive-transport/src/sender.rs:961:33: replace >= with < in Sender::update_state
-crates/adaptive-transport/src/sender.rs:981:25: replace >= with < in Sender::update_state
-crates/adaptive-transport/src/sender.rs:983:62: replace <= with > in Sender::update_state
-crates/adaptive-transport/src/sender.rs:987:35: delete ! in Sender::update_state
-crates/adaptive-transport/src/sender.rs:988:43: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:988:34: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:1017:13: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:1016:13: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:1015:23: replace == with != in Sender::update_state
-crates/adaptive-transport/src/sender.rs:1016:27: replace != with == in Sender::update_state
-crates/adaptive-transport/src/sender.rs:1021:37: replace += with *= in Sender::update_state
-crates/adaptive-transport/src/sender.rs:1021:37: replace += with -= in Sender::update_state
-crates/adaptive-transport/src/sender.rs:1028:23: replace == with != in Sender::update_state
-crates/adaptive-transport/src/sender.rs:1028:50: delete ! in Sender::update_state
-crates/adaptive-transport/src/sender.rs:1028:47: replace && with || in Sender::update_state
-crates/adaptive-transport/src/sender.rs:1039:9: replace Sender::qd_ratio_permille_now -> u64 with 0
-crates/adaptive-transport/src/sender.rs:1040:26: replace match guard !rtp.is_zero() with true in Sender::qd_ratio_permille_now
-crates/adaptive-transport/src/sender.rs:1040:26: replace match guard !rtp.is_zero() with false in Sender::qd_ratio_permille_now
-crates/adaptive-transport/src/sender.rs:1041:69: replace / with * in Sender::qd_ratio_permille_now
-crates/adaptive-transport/src/sender.rs:1051:33: replace += with -= in Sender::probe_close_success
-crates/adaptive-transport/src/sender.rs:1051:33: replace += with *= in Sender::probe_close_success
-crates/adaptive-transport/src/sender.rs:1060:55: replace += with -= in Sender::probe_close
-crates/adaptive-transport/src/sender.rs:1061:59: replace += with -= in Sender::probe_close
-crates/adaptive-transport/src/sender.rs:1061:59: replace += with *= in Sender::probe_close
-crates/adaptive-transport/src/sender.rs:1075:9: replace Sender::startup_plateau -> bool with true
-crates/adaptive-transport/src/sender.rs:1075:41: replace || with && in Sender::startup_plateau
-crates/adaptive-transport/src/sender.rs:1075:9: replace Sender::startup_plateau -> bool with false
-crates/adaptive-transport/src/sender.rs:1075:12: delete ! in Sender::startup_plateau
-crates/adaptive-transport/src/sender.rs:1075:44: delete ! in Sender::startup_plateau
-crates/adaptive-transport/src/sender.rs:1082:15: replace == with != in Sender::startup_plateau
-crates/adaptive-transport/src/sender.rs:1088:13: replace > with < in Sender::startup_plateau
-crates/adaptive-transport/src/sender.rs:1094:40: replace += with -= in Sender::startup_plateau
-crates/adaptive-transport/src/sender.rs:1094:40: replace += with *= in Sender::startup_plateau
-crates/adaptive-transport/src/sender.rs:1097:36: replace >= with < in Sender::startup_plateau
-crates/adaptive-transport/src/sender.rs:1105:9: replace Sender::compute_send_rate -> u64 with 0
-crates/adaptive-transport/src/sender.rs:1105:9: replace Sender::compute_send_rate -> u64 with 1
-crates/adaptive-transport/src/sender.rs:1105:23: replace == with != in Sender::compute_send_rate
-crates/adaptive-transport/src/sender.rs:1109:13: delete match arm SenderState::Startup in Sender::compute_send_rate
-crates/adaptive-transport/src/sender.rs:1115:66: replace match guard self.base_is_startup with true in Sender::compute_send_rate
-crates/adaptive-transport/src/sender.rs:1115:66: replace match guard self.base_is_startup with false in Sender::compute_send_rate
-crates/adaptive-transport/src/sender.rs:1141:9: replace Sender::schedule_transmit -> Vec<TransmitDecision> with vec![]
-crates/adaptive-transport/src/sender.rs:1147:13: replace && with || in Sender::schedule_transmit
-crates/adaptive-transport/src/sender.rs:1146:13: replace && with || in Sender::schedule_transmit
-crates/adaptive-transport/src/sender.rs:1145:23: replace == with != in Sender::schedule_transmit
-crates/adaptive-transport/src/sender.rs:1146:16: delete ! in Sender::schedule_transmit
-crates/adaptive-transport/src/sender.rs:1153:13: delete match arm SenderState::RecoverArq in Sender::schedule_transmit
-crates/adaptive-transport/src/sender.rs:1154:13: delete match arm SenderState::RecoverFwd in Sender::schedule_transmit
-crates/adaptive-transport/src/sender.rs:1163:9: replace Sender::plan_arq_retransmits with ()
-crates/adaptive-transport/src/sender.rs:1178:81: replace == with != in Sender::plan_arq_retransmits
-crates/adaptive-transport/src/sender.rs:1182:24: delete ! in Sender::plan_arq_retransmits
-crates/adaptive-transport/src/sender.rs:1192:40: replace + with - in Sender::plan_arq_retransmits
-crates/adaptive-transport/src/sender.rs:1231:9: replace Sender::plan_forward_duplication with ()
-crates/adaptive-transport/src/sender.rs:1237:38: replace == with != in Sender::plan_forward_duplication
-crates/adaptive-transport/src/sender.rs:1239:29: delete ! in Sender::plan_forward_duplication
-crates/adaptive-transport/src/sender.rs:1271:9: replace Sender::mark_tombstone_superseded with ()
-crates/adaptive-transport/src/sender.rs:1259:36: replace + with * in Sender::plan_forward_duplication
-crates/adaptive-transport/src/sender.rs:1278:9: replace Sender::drain_due_duplicates with ()
-crates/adaptive-transport/src/sender.rs:1279:17: replace < with == in Sender::drain_due_duplicates
-crates/adaptive-transport/src/sender.rs:1279:17: replace < with > in Sender::drain_due_duplicates
-crates/adaptive-transport/src/sender.rs:1279:17: replace < with <= in Sender::drain_due_duplicates
-crates/adaptive-transport/src/sender.rs:1281:19: replace += with -= in Sender::drain_due_duplicates
-crates/adaptive-transport/src/sender.rs:1284:16: delete ! in Sender::drain_due_duplicates
-crates/adaptive-transport/src/sender.rs:1310:9: replace Sender::drain_new_data with ()
-crates/adaptive-transport/src/sender.rs:1313:16: delete ! in Sender::drain_new_data
-crates/adaptive-transport/src/sender.rs:1324:27: replace == with != in Sender::drain_new_data
-crates/adaptive-transport/src/sender.rs:1333:34: replace == with != in Sender::drain_new_data
-crates/adaptive-transport/src/sender.rs:1328:40: replace + with * in Sender::drain_new_data
-crates/adaptive-transport/src/sender.rs:1367:9: replace Sender::track_sent -> u64 with 0
-crates/adaptive-transport/src/sender.rs:1367:9: replace Sender::track_sent -> u64 with 1
-crates/adaptive-transport/src/sender.rs:1368:23: replace += with -= in Sender::track_sent
-crates/adaptive-transport/src/sender.rs:1368:23: replace += with *= in Sender::track_sent
-crates/adaptive-transport/src/sender.rs:1372:28: delete ! in Sender::track_sent
-crates/adaptive-transport/src/sender.rs:1373:13: replace || with && in Sender::track_sent
-crates/adaptive-transport/src/sender.rs:1377:24: delete ! in Sender::track_sent
-crates/adaptive-transport/src/sender.rs:1383:41: delete ! in Sender::track_sent
-crates/adaptive-transport/src/sender.rs:1384:38: replace == with != in Sender::track_sent
-crates/adaptive-transport/src/sender.rs:1386:29: replace += with -= in Sender::track_sent
-crates/adaptive-transport/src/sender.rs:1386:29: replace += with *= in Sender::track_sent
-crates/adaptive-transport/src/sender.rs:1406:9: replace Sender::ack_confidence_permille -> u64 with 0
-crates/adaptive-transport/src/sender.rs:1406:9: replace Sender::ack_confidence_permille -> u64 with 1
-crates/adaptive-transport/src/sender.rs:1406:23: replace == with != in Sender::ack_confidence_permille
-crates/adaptive-transport/src/sender.rs:1412:13: replace || with && in Sender::ack_confidence_permille
-crates/adaptive-transport/src/sender.rs:1410:13: replace || with && in Sender::ack_confidence_permille
-crates/adaptive-transport/src/sender.rs:1409:22: delete ! in Sender::ack_confidence_permille
-crates/adaptive-transport/src/sender.rs:1413:12: delete ! in Sender::ack_confidence_permille
-crates/adaptive-transport/src/sender.rs:1426:20: replace <= with > in Sender::ack_confidence_permille
-crates/adaptive-transport/src/sender.rs:1446:9: replace Sender::inflight_bytes -> u64 with 0
-crates/adaptive-transport/src/sender.rs:1446:9: replace Sender::inflight_bytes -> u64 with 1
-crates/adaptive-transport/src/sender.rs:1474:9: replace Sender::diag_loss -> (u64, u64, u64) with (0, 0, 0)
-crates/adaptive-transport/src/sender.rs:1474:9: replace Sender::diag_loss -> (u64, u64, u64) with (0, 0, 1)
-crates/adaptive-transport/src/sender.rs:1474:9: replace Sender::diag_loss -> (u64, u64, u64) with (0, 1, 0)
-crates/adaptive-transport/src/sender.rs:1474:9: replace Sender::diag_loss -> (u64, u64, u64) with (0, 1, 1)
-crates/adaptive-transport/src/sender.rs:1474:9: replace Sender::diag_loss -> (u64, u64, u64) with (1, 0, 0)
-crates/adaptive-transport/src/sender.rs:1474:9: replace Sender::diag_loss -> (u64, u64, u64) with (1, 0, 1)
-crates/adaptive-transport/src/sender.rs:1474:9: replace Sender::diag_loss -> (u64, u64, u64) with (1, 1, 0)
-crates/adaptive-transport/src/sender.rs:1474:9: replace Sender::diag_loss -> (u64, u64, u64) with (1, 1, 1)
-crates/adaptive-transport/src/sender.rs:1485:9: replace Sender::diag_rtt -> (u64, u64) with (0, 0)
-crates/adaptive-transport/src/sender.rs:1485:9: replace Sender::diag_rtt -> (u64, u64) with (0, 1)
-crates/adaptive-transport/src/sender.rs:1491:9: replace Sender::diag_ledger -> (u64, u64, u64) with (0, 0, 0)
-crates/adaptive-transport/src/sender.rs:1485:9: replace Sender::diag_rtt -> (u64, u64) with (1, 1)
-crates/adaptive-transport/src/sender.rs:1485:9: replace Sender::diag_rtt -> (u64, u64) with (1, 0)
-crates/adaptive-transport/src/sender.rs:1491:9: replace Sender::diag_ledger -> (u64, u64, u64) with (0, 0, 1)
-crates/adaptive-transport/src/sender.rs:1491:9: replace Sender::diag_ledger -> (u64, u64, u64) with (0, 1, 0)
-crates/adaptive-transport/src/sender.rs:1491:9: replace Sender::diag_ledger -> (u64, u64, u64) with (0, 1, 1)
-crates/adaptive-transport/src/sender.rs:1491:9: replace Sender::diag_ledger -> (u64, u64, u64) with (1, 0, 0)
-crates/adaptive-transport/src/sender.rs:1491:9: replace Sender::diag_ledger -> (u64, u64, u64) with (1, 1, 0)
-crates/adaptive-transport/src/sender.rs:1491:9: replace Sender::diag_ledger -> (u64, u64, u64) with (1, 0, 1)
-crates/adaptive-transport/src/sender.rs:1491:9: replace Sender::diag_ledger -> (u64, u64, u64) with (1, 1, 1)
-crates/adaptive-transport/src/sender.rs:1500:9: replace Sender::diag_pif -> u64 with 0
-crates/adaptive-transport/src/sender.rs:1500:9: replace Sender::diag_pif -> u64 with 1
-crates/adaptive-transport/src/sender.rs:1505:9: replace Sender::diag_qd -> (u64, u64) with (0, 0)
-crates/adaptive-transport/src/sender.rs:1505:9: replace Sender::diag_qd -> (u64, u64) with (0, 1)
-crates/adaptive-transport/src/sender.rs:1505:9: replace Sender::diag_qd -> (u64, u64) with (1, 0)
-crates/adaptive-transport/src/sender.rs:1505:9: replace Sender::diag_qd -> (u64, u64) with (1, 1)
-crates/adaptive-transport/src/sender.rs:1513:9: replace Sender::diag_wbtlbw -> (u64, u64) with (0, 0)
-crates/adaptive-transport/src/sender.rs:1513:9: replace Sender::diag_wbtlbw -> (u64, u64) with (0, 1)
-crates/adaptive-transport/src/sender.rs:1513:9: replace Sender::diag_wbtlbw -> (u64, u64) with (1, 0)
-crates/adaptive-transport/src/sender.rs:1513:9: replace Sender::diag_wbtlbw -> (u64, u64) with (1, 1)
-crates/adaptive-transport/src/sender.rs:1519:9: replace Sender::diag_btlbw_samples -> Vec<(u64, u64)> with vec![]
-crates/adaptive-transport/src/sender.rs:1519:9: replace Sender::diag_btlbw_samples -> Vec<(u64, u64)> with vec![(0, 0)]
-crates/adaptive-transport/src/sender.rs:1519:9: replace Sender::diag_btlbw_samples -> Vec<(u64, u64)> with vec![(0, 1)]
-crates/adaptive-transport/src/sender.rs:1519:9: replace Sender::diag_btlbw_samples -> Vec<(u64, u64)> with vec![(1, 0)]
-crates/adaptive-transport/src/sender.rs:1519:9: replace Sender::diag_btlbw_samples -> Vec<(u64, u64)> with vec![(1, 1)]
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (0, 0, 0, 0)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (0, 0, 0, 1)
-crates/adaptive-transport/src/sender.rs:1525:9: replace Sender::diag_fuzzy_no_rule -> u64 with 1
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (0, 0, 1, 0)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (0, 1, 0, 0)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (0, 0, 1, 1)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (0, 1, 0, 1)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (0, 1, 1, 0)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (0, 1, 1, 1)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (1, 0, 0, 0)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (1, 0, 0, 1)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (1, 0, 1, 0)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (1, 0, 1, 1)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (1, 1, 0, 0)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (1, 1, 0, 1)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (1, 1, 1, 0)
-crates/adaptive-transport/src/sender.rs:1531:9: replace Sender::diag_probe -> (u64, u64, u64, u64) with (1, 1, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 0, 0, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 0, 0, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 0, 0, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 0, 0, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 0, 1, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 0, 1, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 0, 1, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 0, 1, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 1, 0, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 1, 0, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 1, 0, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 1, 0, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 1, 1, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 1, 1, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 1, 1, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 0, 1, 1, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 0, 0, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 0, 0, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 0, 0, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 0, 0, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 0, 1, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 0, 1, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 0, 1, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 0, 1, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 1, 0, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 1, 0, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 1, 0, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 1, 0, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 1, 1, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 1, 1, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 1, 1, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (0, 1, 1, 1, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 0, 0, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 0, 0, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 0, 0, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 0, 1, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 0, 0, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 0, 1, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 0, 1, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 0, 1, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 1, 0, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 1, 0, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 1, 0, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 1, 0, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 1, 1, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 1, 1, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 1, 1, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 0, 1, 1, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 0, 0, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 0, 0, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 0, 0, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 0, 0, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 0, 1, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 0, 1, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 0, 1, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 0, 1, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 1, 0, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 1, 0, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 1, 0, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 1, 0, 1, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 1, 1, 0, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 1, 1, 0, 1)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 1, 1, 1, 0)
-crates/adaptive-transport/src/sender.rs:1542:9: replace Sender::diag_tombstone -> (u64, u64, u64, u64, u64, u64) with (1, 1, 1, 1, 1, 1)
-crates/adaptive-transport/src/sender.rs:1570:5: replace dur_ns -> u64 with 0
-crates/adaptive-transport/src/sender.rs:1570:5: replace dur_ns -> u64 with 1
+crates/adaptive-transport/src/sender.rs:957:29: replace > with >= in Sender::update_state

@@ -1,0 +1,30 @@
+--- crates/adaptive-transport/src/fusion.rs
++++ replace log2_fp -> u64 with 1
+@@ -22,26 +22,17 @@
+ /// Taşmasız kesir (workflow-bulgusu: naif `(x−2^e)·256 >> e` e≥56'da u64 taşırır —
+ /// release'te non-monoton, debug'da panik = ADR-17 ihlali):
+ /// `e≥8: frac=(x>>(e−8)) & 0xFF` ; `e<8: frac=(x<<(8−e)) & 0xFF` (e<8'de EXACT).
+ /// `x=0 → 0` (ilog2(0) tanımsız/panik). Monotonluk: tüm u64'te non-decreasing; e>8'de
+ /// strict DEĞİL (~2-4‰ merdiven — trapezoid rampalarında kabul edilebilir, dokümante).
+ /// Kesme-noktaları AYNI fonksiyondan üretilir (offline-float hardcode YASAK — bit-özdeşlik).
+ #[must_use]
+ pub const fn log2_fp(x: u64) -> u64 {
+-    if x == 0 {
+-        return 0;
+-    }
+-    let e = x.ilog2() as u64;
+-    let frac = if e >= 8 {
+-        (x >> (e - 8)) & 0xFF
+-    } else {
+-        (x << (8 - e)) & 0xFF
+-    };
+-    e * 256 + frac
++    1 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Trapezoidal membership: μ(x) per-mille (0..=1000). μ = min(rise, fall).
+ /// Shoulder: `a==b` → sol-omuz (rise sabit 1000), `c==d` → sağ-omuz (fall sabit 1000).
+ #[must_use]
+ pub fn trap_permille(x: u64, a: u64, b: u64, c: u64, d: u64) -> u32 {
+     let rise = if a >= b {
+         // dejenere/sol-omuz: yükselen kenar yok, x ≥ b'de tam

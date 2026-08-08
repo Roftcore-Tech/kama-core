@@ -1,0 +1,23 @@
+--- crates/adaptive-transport/src/fusion.rs
++++ replace DeterministicFuzzyController::fixture -> Self with Default::default()
+@@ -305,19 +305,17 @@
+     #[must_use]
+     pub fn new(cfg: FuzzyConfig) -> Self {
+         Self { cfg }
+     }
+ 
+     /// Fixture config ile (KALİBRE DEĞİL — golden/motor testi için).
+     #[must_use]
+     pub fn fixture() -> Self {
+-        Self {
+-            cfg: FuzzyConfig::fixture(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl FusionController for DeterministicFuzzyController {
+     fn decide(&self, inputs: &FusionInputs) -> FusionDecision {
+         let c = &self.cfg;
+ 
+         // 1) Fuzzification — her crisp girdi → LOW/MED/HIGH dereceleri.

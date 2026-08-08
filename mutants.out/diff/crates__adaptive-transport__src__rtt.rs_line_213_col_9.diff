@@ -1,0 +1,26 @@
+--- crates/adaptive-transport/src/rtt.rs
++++ replace RttEstimator::queue_delay -> Duration with Default::default()
+@@ -205,22 +205,17 @@
+     }
+ 
+     /// [TUR-3a.5 commit-α, NORMATİF-değişim] queue_delay = min_W_qd(rtt) − RTprop
+     /// (≥0; congestion sinyali, loss DEĞİL). ESKİ tanım (srtt − rtprop) CANCELLED:
+     /// srtt-EWMA lag'ı boş kuyruğu dakikalarca dolu gösteriyordu (ölçüldü, 42-kilidi yarı-1);
+     /// ayakta-kuyruk için doğru istatistik kısa-min (srtt-clock-v1 §2.2). Veri yoksa 0.
+     #[must_use]
+     pub fn queue_delay(&self) -> Duration {
+-        match (self.qd_min.min(), self.rtprop.min()) {
+-            (Some(short_min), Some(rtprop)) => {
+-                Duration::from_nanos(short_min.saturating_sub(rtprop))
+-            }
+-            _ => Duration::ZERO,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// rtt_sample = raw_rtt − ack_delay (engine §6). `ack_delay` raw'ı aşarsa untrusted
+ /// → `None` (negatif sample invalid; §7.3 ack_delay_untrusted).
+ #[must_use]
+ pub fn rtt_sample(raw_rtt: Duration, ack_delay: Duration) -> Option<Duration> {
+     raw_rtt.checked_sub(ack_delay)

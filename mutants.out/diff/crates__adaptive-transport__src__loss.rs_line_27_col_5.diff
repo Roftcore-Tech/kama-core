@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace packet_threshold_lost -> bool with true
+@@ -19,17 +19,17 @@
+ pub const TIME_THRESH_NUM: u64 = 9;
+ /// Time-threshold payda [STD:RFC 9002 = 8].
+ pub const TIME_THRESH_DEN: u64 = 8;
+ 
+ /// Packet-threshold: `largest_acked − seq ≥ k` (RFC 9002 §6.1.1). K altı = reorder
+ /// (bekle), K üstü = kayıp.
+ #[must_use]
+ pub fn packet_threshold_lost(seq: u64, largest_acked: u64, k: u64) -> bool {
+-    largest_acked.saturating_sub(seq) >= k
++    true /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Time-threshold: `elapsed > max(num/den·srtt, min_delay)` (RFC 9002 §6.1.2; §5).
+ /// `min_delay` [CAL] parametre — reordering tail + tiny-srtt koruması.
+ #[must_use]
+ pub fn time_threshold_lost(
+     elapsed: Duration,
+     srtt: Duration,

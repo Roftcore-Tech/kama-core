@@ -1,0 +1,29 @@
+--- crates/adaptive-transport/src/fec.rs
++++ replace FecShardFrame::encode -> Vec<u8> with vec![]
+@@ -49,25 +49,17 @@
+     pub opaque_secured: Vec<u8>,
+ }
+ 
+ #[allow(deprecated)] // legacy-codec kendi-impl'i; deprecation dış-kullanıcıya yönelik
+ impl FecShardFrame {
+     /// Canonical fixed-width big-endian byte'lara serialize eder.
+     #[must_use]
+     pub fn encode(&self) -> Vec<u8> {
+-        let mut out = Vec::with_capacity(10 + self.opaque_secured.len());
+-        out.push(FRAME_TYPE_FEC_SHARD);
+-        out.extend_from_slice(&self.block_id.to_be_bytes());
+-        out.push(self.shard_index);
+-        out.push(self.k);
+-        out.push(self.r);
+-        out.extend_from_slice(&self.shard_len.to_be_bytes());
+-        out.extend_from_slice(&self.opaque_secured); // opak — transport içeriğe BAKMAZ
+-        out
++        vec![] /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Canonical byte'ları çözer. `opaque_secured` = shard_len + tag bytes olarak TEK blob
+     /// okunur (İÇERİĞE BAKILMAZ). PARSER-02 bounds-check.
+     ///
+     /// # Errors
+     /// [`TransportError::UnknownFrameType`] (frame_type≠0x20),
+     /// [`TransportError::InvalidShardCount`] (k+r>255, GF(2^8)),

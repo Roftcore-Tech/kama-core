@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/rtt.rs
++++ replace RttEstimator::srtt -> Option<Duration> with None
+@@ -169,17 +169,17 @@
+         }
+         self.rtprop.observe(now_ns, s, self.rtprop_window_ns);
+         self.qd_min.observe(now_ns, s, self.qd_window_ns); // [3a.5] aynı örnek, kısa pencere
+     }
+ 
+     /// Smoothed RTT; henüz sample yoksa `None`.
+     #[must_use]
+     pub fn srtt(&self) -> Option<Duration> {
+-        self.srtt_ns.map(Duration::from_nanos)
++        None /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// RTT varyansı.
+     #[must_use]
+     pub fn rttvar(&self) -> Duration {
+         Duration::from_nanos(self.rttvar_ns)
+     }
+ 

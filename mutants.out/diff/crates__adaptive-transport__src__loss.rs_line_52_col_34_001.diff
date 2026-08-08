@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace / with * in ratio_ppm
+@@ -44,17 +44,17 @@
+     let ns = d.as_nanos() * u128::from(num) / u128::from(den);
+     Duration::from_nanos(ns as u64)
+ }
+ 
+ fn ratio_ppm(num: u64, den: u64) -> u64 {
+     if den == 0 {
+         return 0;
+     }
+-    (u128::from(num) * 1_000_000 / u128::from(den)) as u64
++    (u128::from(num) * 1_000_000 * /* ~ changed by cargo-mutants ~ */ u128::from(den)) as u64
+ }
+ 
+ /// Loss detection port (clean-arch). Füzyon (§8.4) `loss_pre_fec`'i buradan okur;
+ /// loss sayaçları send_rate'e GİRMEZ (INV-RATE-1).
+ pub trait LossDetector {
+     /// Paket gönderimini kaydet.
+     fn on_sent(&mut self, seq: u64, send_ns: u64, units: u64);
+     /// ACK işle; yeni packet-threshold kayıplarını (artan seq) döner.

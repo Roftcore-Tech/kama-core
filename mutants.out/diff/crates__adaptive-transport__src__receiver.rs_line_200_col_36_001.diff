@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace / with * in Receiver::on_datagram
+@@ -192,17 +192,17 @@
+             let gap = now_ns.saturating_sub(self.last_arrival_ns);
+             let baseline = self.episode_baseline();
+             if baseline > 0 && gap > K_EPISODE.saturating_mul(baseline) {
+                 self.open_episode();
+             }
+             // SİMETRİK CLAMP'Lİ-YAZIM (r3-doğrulama): zehirlenme-koruması + livelock-ölümü +
+             // mikro-gap tabanı tek kuralda; count=0'da (ilk gap) ham — sınıflandırılamaz (beyanlı).
+             let written = if baseline > 0 {
+-                gap.clamp(baseline / K_EPISODE, baseline.saturating_mul(K_EPISODE))
++                gap.clamp(baseline * /* ~ changed by cargo-mutants ~ */ K_EPISODE, baseline.saturating_mul(K_EPISODE))
+             } else {
+                 gap
+             };
+             self.push_gap(written);
+         }
+         // [3b-C] kanal-tempo ölçümü: varış-aralığı HAM kalır (tail/bacak-2 girdisi — anlık ritim;
+         // epizot-penceresi AYRI iş, r3 §3).
+         if self.seen_total > 1 {

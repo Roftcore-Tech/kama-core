@@ -1,0 +1,14 @@
+--- crates/adaptive-transport/src/emergency.rs
++++ replace ack_decimation -> bool with true
+@@ -198,10 +198,10 @@
+             permille: cfg.block_parity_dup3_permille,
+         },
+     }
+ }
+ 
+ /// ACK decimation aktif mi (§11: emergency'de sparse ACK). Arq dışında `true`.
+ #[must_use]
+ pub fn ack_decimation(level: EmergencyLevel) -> bool {
+-    level != EmergencyLevel::Arq
++    true /* ~ changed by cargo-mutants ~ */
+ }

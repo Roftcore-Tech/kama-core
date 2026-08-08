@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace * with + in scale_duration
+@@ -36,17 +36,17 @@
+     min_delay: Duration,
+     num: u64,
+     den: u64,
+ ) -> bool {
+     elapsed > scale_duration(srtt, num, den).max(min_delay)
+ }
+ 
+ fn scale_duration(d: Duration, num: u64, den: u64) -> Duration {
+-    let ns = d.as_nanos() * u128::from(num) / u128::from(den);
++    let ns = d.as_nanos() + /* ~ changed by cargo-mutants ~ */ u128::from(num) / u128::from(den);
+     Duration::from_nanos(ns as u64)
+ }
+ 
+ fn ratio_ppm(num: u64, den: u64) -> u64 {
+     if den == 0 {
+         return 0;
+     }
+     (u128::from(num) * 1_000_000 / u128::from(den)) as u64

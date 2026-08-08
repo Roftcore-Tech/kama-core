@@ -1,0 +1,16 @@
+--- crates/adaptive-transport/src/rtt.rs
++++ replace match guard min_rtt.is_none_or(|m| c >= m) with true in apply_ack_delay
+@@ -237,12 +237,12 @@
+ /// (ZM-2: decade-bağımlı sabit yasak).
+ #[must_use]
+ pub fn apply_ack_delay(
+     raw_rtt: Duration,
+     ack_delay: Duration,
+     min_rtt: Option<Duration>,
+ ) -> (Duration, bool) {
+     match raw_rtt.checked_sub(ack_delay) {
+-        Some(c) if min_rtt.is_none_or(|m| c >= m) => (c, true),
++        Some(c) if true /* ~ changed by cargo-mutants ~ */ => (c, true),
+         _ => (raw_rtt, false),
+     }
+ }

@@ -1,0 +1,36 @@
+--- crates/adaptive-transport/src/emergency.rs
++++ replace action -> RecoveryAction with Default::default()
+@@ -176,32 +176,16 @@
+     fn level(&self) -> EmergencyLevel {
+         self.level
+     }
+ }
+ 
+ /// Level + framing → forward-recovery eylemi (§11).
+ #[must_use]
+ pub fn action(level: EmergencyLevel, framing: Framing, cfg: &EmergencyConfig) -> RecoveryAction {
+-    match (level, framing) {
+-        (EmergencyLevel::Arq, _) => RecoveryAction::Arq,
+-        (EmergencyLevel::Dup2, Framing::Tiny) => RecoveryAction::Duplication {
+-            factor: cfg.dup2_factor,
+-            spacing: cfg.dup_spacing,
+-        },
+-        (EmergencyLevel::Dup3, Framing::Tiny) => RecoveryAction::Duplication {
+-            factor: cfg.dup3_factor,
+-            spacing: cfg.dup_spacing,
+-        },
+-        (EmergencyLevel::Dup2, Framing::SegmentBlock) => RecoveryAction::MinimalParity {
+-            permille: cfg.block_parity_dup2_permille,
+-        },
+-        (EmergencyLevel::Dup3, Framing::SegmentBlock) => RecoveryAction::MinimalParity {
+-            permille: cfg.block_parity_dup3_permille,
+-        },
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// ACK decimation aktif mi (§11: emergency'de sparse ACK). Arq dışında `true`.
+ #[must_use]
+ pub fn ack_decimation(level: EmergencyLevel) -> bool {
+     level != EmergencyLevel::Arq
+ }

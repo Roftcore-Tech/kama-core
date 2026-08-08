@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace ThresholdLossDetector::largest_acked -> Option<u64> with Some(1)
+@@ -202,17 +202,17 @@
+     /// iptali + `note_spurious` kablosu + kol-1 RTT adayı için tüketir.
+     pub fn take_unlossed(&mut self) -> Vec<u64> {
+         std::mem::take(&mut self.unlossed)
+     }
+ 
+     /// Görülen en yüksek acked seq (un-loss'ta gözlenen-reorder mesafesi = largest − seq).
+     #[must_use]
+     pub fn largest_acked(&self) -> Option<u64> {
+-        self.have_acked.then_some(self.largest_acked)
++        Some(1) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [TUR-2a] Adaptif packet-threshold: sender `max(K, ρ×recent_max_reorder)` yazar
+     /// (spurious görüldükçe yükselir — §9.3 nihayet kablolandı). 0 = cfg default.
+     pub fn set_packet_threshold(&mut self, k: u64) {
+         self.packet_thresh_dyn = k;
+     }
+ 

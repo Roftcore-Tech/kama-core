@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace Receiver::ack_delay_saturated -> u64 with 0
+@@ -467,17 +467,17 @@
+     /// Alınan en yüksek seq (varsa).
+     #[must_use]
+     pub fn largest_seq(&self) -> Option<u64> {
+         self.have_recv.then_some(self.largest_seq)
+     }
+     /// [TUR-1x] ack_delay satürasyon sayısı (encoded==65535; hold > 16.78s) — SALT-GÖZLEM audit.
+     #[must_use]
+     pub fn ack_delay_saturated(&self) -> u64 {
+-        self.ack_delay_saturated
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl Default for Receiver {
+     fn default() -> Self {
+         Self::new()
+     }
+ }

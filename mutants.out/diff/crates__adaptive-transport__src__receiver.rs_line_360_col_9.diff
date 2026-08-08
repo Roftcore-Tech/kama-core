@@ -1,0 +1,26 @@
+--- crates/adaptive-transport/src/receiver.rs
++++ replace Receiver::set_quota_r with ()
+@@ -352,22 +352,17 @@
+         self.gap_idx = (self.gap_idx + 1) % EPISODE_WINDOW;
+         if self.gap_len < EPISODE_WINDOW {
+             self.gap_len += 1;
+         }
+     }
+ 
+     /// [r3] Bench ölçüm-matrisi: R [CAL {4,8}] koşu-başı ayarı.
+     pub fn set_quota_r(&mut self, r: u32) {
+-        self.quota_r = r;
+-        // Oturum-ilk epizot new()+ilk-varışta açılır; set çağrısı varıştan ÖNCE yapılır
+-        // (serve_loop peer-insert) — açılmış kotayı da hizala (deterministik).
+-        if self.quota > 0 {
+-            self.quota = r;
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// [r3 §6] RTRAJ diag: (episode_count, quota_burn, accel_emits, emit_total).
+     #[must_use]
+     pub fn diag_return_supply(&self) -> (u64, u64, u64, u64) {
+         (
+             self.diag_episode_count,
+             self.diag_quota_burn,

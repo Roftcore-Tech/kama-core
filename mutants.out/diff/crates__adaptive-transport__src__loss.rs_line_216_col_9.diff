@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/loss.rs
++++ replace ThresholdLossDetector::set_packet_threshold with ()
+@@ -208,17 +208,17 @@
+     #[must_use]
+     pub fn largest_acked(&self) -> Option<u64> {
+         self.have_acked.then_some(self.largest_acked)
+     }
+ 
+     /// [TUR-2a] Adaptif packet-threshold: sender `max(K, ρ×recent_max_reorder)` yazar
+     /// (spurious görüldükçe yükselir — §9.3 nihayet kablolandı). 0 = cfg default.
+     pub fn set_packet_threshold(&mut self, k: u64) {
+-        self.packet_thresh_dyn = k;
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Ledger bakımı: pencere-dışı olay/gönderim düşer (Expired); un-loss ufku (`confirm_age`)
+     /// kanıtsız geçen Suspected → Confirmed. Deterministik (ADR-17); saat-sınıfı: her iki eşik
+     /// de kanal-türevi (W_loss = K_wl×ack_epoch; confirm_age = cadence-taban) — ZM-2/ZM-3.
+     pub fn ledger_tick(&mut self, now_ns: u64, w_loss: Duration, confirm_age: Duration) {
+         let cutoff = now_ns.saturating_sub(w_loss.as_nanos() as u64);
+         while self.events.front().is_some_and(|e| e.declared_ns < cutoff) {

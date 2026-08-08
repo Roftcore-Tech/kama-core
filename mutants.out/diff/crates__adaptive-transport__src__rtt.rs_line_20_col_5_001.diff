@@ -1,0 +1,21 @@
+--- crates/adaptive-transport/src/rtt.rs
++++ replace dur_ns -> u64 with 1
+@@ -12,17 +12,17 @@
+ const SRTT_ALPHA_DEN: u128 = 8;
+ /// rttvar EWMA payda: β = 1/4 `[STD: RFC 6298]`.
+ const RTTVAR_BETA_DEN: u128 = 4;
+ /// RTprop min-filter penceresi `[STD: BBR 10s]`.
+ const W_RTPROP: Duration = Duration::from_secs(10);
+ 
+ /// `Duration` → u64 nanosecond (transport süreleri saniyeler altında).
+ fn dur_ns(d: Duration) -> u64 {
+-    d.as_nanos() as u64
++    1 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Kayan zaman penceresinde min-filter (RTprop için).
+ #[derive(Debug, Clone, Default)]
+ struct MinFilter {
+     /// (time_ns, value_ns) örnekleri; pencere dışı at.
+     samples: Vec<(u64, u64)>,
+ }
