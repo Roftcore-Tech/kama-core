@@ -378,3 +378,38 @@ fn receiver_accessors_reflect_real_reception_state() {
     assert_eq!(r.largest_seq(), Some(42));
     assert_eq!(r.received_count(), 5);
 }
+
+/// MUTANT `emergency.rs:162:80` — `self.level > EmergencyLevel::Arq` → `>=`.
+///
+/// [ÖLÇÜLDÜ] İlk yazımda `deescalation_stops_at_the_arq_floor` ile öldürmeyi denedim;
+/// KAÇTI. Sebebi: `deescalated()` Arq'ta DOYGUN (`Dup2 | Arq => Arq`), yani mutant seviye
+/// olarak aynı sonucu veriyor. Ama **yan etki farklı**: guard gevşediğinde Arq'ta da
+/// `last_deescalate_ns = Some(now_ns)` yazılır.
+///
+/// **Neden önemli:** O zaman damgası dwell kilidinin çapasıdır. Arq'ta boşuna güncellenirse,
+/// bir sonraki GERÇEK gerileme (Dup2 → Arq) sahte bir dwell kilidine takılır ve emergency
+/// gereğinden uzun açık kalır — dar bantta forward-duplication israfı demektir.
+///
+/// Test bu yan etkiyi zamanlama üzerinden gözlemler.
+#[test]
+fn arq_floor_does_not_stamp_the_dwell_clock() {
+    let (mut c, cfg) = hyst();
+    let high = cfg.deescalate_permille + 1;
+    let low = cfg.escalate_permille - 1;
+
+    // (1) Arq'ta yüksek sağlık: DOĞRU kodda hiçbir şey olmaz (guard bloklar).
+    //     Mutantta `deescalated()` çağrılır ve dwell damgası t=0'a yazılır.
+    assert_eq!(c.update(high, 0), EmergencyLevel::Arq);
+
+    // (2) Tırman.
+    assert_eq!(c.update(low, MS), EmergencyLevel::Dup2);
+
+    // (3) Hemen geriye: DOĞRU kodda `last_deescalate_ns` hâlâ None → kilit YOK → geriler.
+    //     Mutantta Some(0) → 2ms < 0+500ms → KİLİTLİ → Dup2'de kalır.
+    assert_eq!(
+        c.update(high, 2 * MS),
+        EmergencyLevel::Arq,
+        "ilk gerçek gerileme sahte dwell kilidine takıldı — \
+         Arq tabanında dwell damgası yazılıyor olabilir"
+    );
+}

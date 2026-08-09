@@ -145,3 +145,17 @@ jobs:
             results/*.jsonl
             results/kama-vs-quinn.json
             results/gate-report.json
+  
+  kani:
+    name: kani (bicimsel dogrulama - pn.rs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true   # K-1 duzeltilene kadar KASTEN kirmizi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install --locked kani-verifier
+      - run: cargo kani setup
+      - name: kani proofs
+        run: cargo kani -p kama-noise-wire --tests

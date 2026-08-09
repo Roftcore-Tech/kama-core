@@ -13,3 +13,6 @@ Cargo.lock.orig
 # (BUL-04 / TC-09: corpus commit edilmezse her koşum sıfırdan başlar, regresyon koruması oluşmaz).
 /fuzz/target
 /fuzz/artifacts
+# cargo-mutants çıktısı — her koşumda binlerce diff üretir, izlenmemeli
+/mutants.out/
+/mutants.out.old/

@@ -123,6 +123,33 @@ jobs:
         run: >
           cargo +nightly test -p kama-fec-codec
           -Zbuild-std --target x86_64-unknown-linux-gnu
+          
+  # MSan — başlatılmamış-bellek okuması (SIMD bağımlılıkları: reed-solomon-simd,
+  # chacha20poly1305). [ÖLÇÜLDÜ] fec-codec 40 test, noise-wire 190 test temiz geçiyor.
+  # NOT: Rust `-Zsanitizer=undefined` DESTEKLEMİYOR (UBSan yok); MSan bu risk sınıfının
+  # doğru aracıdır. `--tests` zorunlu: doc-test'ler ABI-mismatch hatası veriyor.
+  msan:
+    name: msan (uninitialized memory, SIMD deps)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - name: msan (kama-fec-codec)
+        env:
+          RUSTFLAGS: "-Zsanitizer=memory -Zsanitizer-memory-track-origins"
+        run: >
+          cargo +nightly test -p kama-fec-codec --tests
+          --target x86_64-unknown-linux-gnu -Zbuild-std
+      - name: msan (kama-noise-wire)
+        env:
+          RUSTFLAGS: "-Zsanitizer=memory -Zsanitizer-memory-track-origins"
+        run: >
+          cargo +nightly test -p kama-noise-wire --tests
+          --target x86_64-unknown-linux-gnu -Zbuild-std
 
   # ── CI-06: kapsam kapısı ──
   coverage:
