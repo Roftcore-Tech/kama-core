@@ -11,3 +11,5 @@ tokio.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["time", "rt", "macros", "test-util"] }
+[lints]
+workspace = true
