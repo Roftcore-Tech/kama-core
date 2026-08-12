@@ -330,15 +330,15 @@ fn startup_pacing_floor_is_bootstrap_only_and_released() {
 /// Default-tracking pin: the PRODUCT DEFAULT path (`startup_pacing_init: None`) must be behaviourally
 /// EQUIVALENT to the arm that matches the current default — same wire, same estimator snapshot.
 ///
-/// DR-RATE-RAMP-2B §A3.2/§A4: the default was reverted **ON → OFF** (unresolved EK4-A2 deadline-exposure
-/// uncertainty; see `reports/dr-rate-ramp-2b/`). This pin exists to keep the *default* honest, so its
-/// reference arm follows the default. Nothing is weakened: it still asserts exact digest/epoch/window
-/// equality, and `explicit_arm_differs_from_default` below still proves the axis is real.
+/// The default moved OFF (DR-RATE-RAMP-2B) and back to **ON** once EK4-A2 was fixed and sealed
+/// (`tests/ek4_a2_liveness.rs`). This pin keeps the *default* honest, so its reference arm follows
+/// the default. Nothing is weakened: it still asserts exact digest/epoch/window equality, and
+/// `explicit_arm_differs_from_default` below still proves the axis is real.
 #[test]
 fn default_equals_matching_explicit_treatment() {
     for rep in [2u32, 16, 31] {
-        let d = run_flow(&rr_cfg(rep, None)); // product default (now OFF)
-        let e = run_flow(&rr_cfg(rep, Some(false))); // explicit arm matching the default
+        let d = run_flow(&rr_cfg(rep, None)); // product default (now ON)
+        let e = run_flow(&rr_cfg(rep, Some(true))); // explicit arm matching the default
         assert_eq!(d.wire_digest, e.wire_digest, "rep{rep}: wire digest must match");
         assert_eq!(
             d.source_prefix_digest, e.source_prefix_digest,
@@ -356,12 +356,12 @@ fn default_equals_matching_explicit_treatment() {
 }
 
 /// The arm OPPOSITE to the default must still differ (the axis is real, not a no-op).
-/// DR-RATE-RAMP-2B: default is now OFF, so the opposite arm is `Some(true)`. The assertion itself is
-/// unchanged — the startup-pacing axis must produce a different wire.
+/// Default is ON again, so the opposite arm is `Some(false)`. The assertion itself is unchanged —
+/// the startup-pacing axis must produce a different wire.
 #[test]
 fn explicit_arm_differs_from_default() {
     let default_arm = run_flow(&rr_cfg(2, None));
-    let opposite = run_flow(&rr_cfg(2, Some(true)));
+    let opposite = run_flow(&rr_cfg(2, Some(false)));
     assert_ne!(
         default_arm.wire_digest, opposite.wire_digest,
         "the startup-pacing axis must actually change behaviour"
