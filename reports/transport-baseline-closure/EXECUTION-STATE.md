@@ -7,7 +7,7 @@ superseded by this file.
 |---|---|
 | Branch | `transport-baseline-closure` |
 | HEAD | see `git log -1` (latest commit below) |
-| Local `main` HEAD | `bb61c2da` — **not advanced; `main` IS an ancestor, so `--ff-only` is possible when M1 passes** |
+| Local `main` HEAD | **`02915bd9`** — M1 merged `--ff-only`; verified green in a clean worktree AFTER the merge |
 | Result-bearing calibration runs | **0** |
 | Remote push / PR | **none** |
 
@@ -35,7 +35,14 @@ d76d36aa fix(transport): make wakeup deadlines liveness-complete
 | M4 product runtime | not started |
 | M5 final grounding | not started |
 
-**`main` is at `bb61c2da` — the merge was performed and then UNDONE.**
+**M1 IS MERGED.** `main` `bb61c2da` → `02915bd9` via `--ff-only`, local only (no push, no PR).
+
+Post-merge verification in a second clean worktree from merged `main`:
+`--workspace --all-targets --all-features --no-run` **exit 0** · workspace default **472 / 0** ·
+`--all-features` **826 / 0** · `fuzzy_e2e` **5 / 0** · `ek4_a2_liveness` **5 / 0**.
+The verdict was withheld until these exit codes were read.
+
+**Next: M2** — DR-CS-3 panel contract V2, bootstrap validation, default decision.
 
 ### CLEAN-CHECKOUT DEFECT — corrected record and repair
 

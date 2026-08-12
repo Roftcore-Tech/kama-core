@@ -1,9 +1,9 @@
 {
   "ledger": "TRANSPORT-BASELINE-CLOSURE-EXECUTION-STATE",
   "branch": "transport-baseline-closure",
-  "main_head": "bb61c2da",
+  "main_head": "02915bd9",
   "main_is_ancestor": true,
-  "main_advanced": false,
+  "main_advanced": true,
   "ff_only_possible_when_m1_passes": true,
   "calibration_result_bearing_runs": 0,
   "remote_push": false,
@@ -22,12 +22,14 @@
   ],
   "milestones": {
     "M1": "PASS",
-    "M2": "not started",
+    "M2": "next - DR-CS-3 panel contract V2, bootstrap validation, default decision",
     "M3": "not started",
     "M4": "not started",
     "M5": "not started"
   },
-  "merged_to_main": [],
+  "merged_to_main": [
+    "M1 baseline liveness (ff-only, local)"
+  ],
   "ek4_a2": {
     "status": "CLOSED",
     "checkpoint_hypothesis": "REFUTED - on_event_core routes TimerFired to on_timer (sender.rs:1506) and detect_time_losses is already invoked there",
@@ -300,5 +302,26 @@
     "observed": "reports/d1-exit/data/cold-start/timeline-*.csv modified after a test run in the CLEAN worktree",
     "cause": "crates/adaptive-transport/tests/cold_start_liveness.rs writes evidence artifacts into the repo tree via std::fs::write",
     "classification": "repo-hygiene issue, not a product defect and not an unexplained change"
+  },
+  "post_merge_verification": {
+    "worktree": "second clean worktree from merged main",
+    "no_run": "exit 0",
+    "workspace_default": {
+      "passed": 472,
+      "failed": 0
+    },
+    "workspace_all_features": {
+      "passed": 826,
+      "failed": 0
+    },
+    "fuzzy_e2e": {
+      "passed": 5,
+      "failed": 0
+    },
+    "ek4_a2_liveness": {
+      "passed": 5,
+      "failed": 0
+    },
+    "verdict_withheld_until_exit_codes_read": true
   }
 }
