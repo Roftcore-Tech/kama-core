@@ -332,13 +332,31 @@
     "step1_c2_contract": "DONE f742afd9; committed bytes match 0abbb114/353311bf; committed before harness change",
     "step1b_v1_bound": "DONE f742afd9",
     "step2_v2_channel": "DONE 595814ba",
-    "step3_structural_tests": "NOT STARTED (8 required)",
+    "step3_structural_tests": "DONE - 8 contract clauses + 4 \u00a72 items (2.1 cardinality, 2.2 tie-break, 2.3 inventory, 2.4 default cfg)",
     "step4_gate": "NOT RUN since V2 change",
-    "step5_panels": "NOT STARTED"
+    "step5_panels": "NOT STARTED",
+    "v2_semantics_clarification": "each real packet advances its direction chain exactly once; four echoes = four draws is CORRECT; the V1 defect was Echo on a treatment-only stream separated from ACK; post-treatment divergence is real packet-domain physics, only the pre-treatment prefix must match",
+    "pairing_language": "NOT a paired comparison on the same trace; correct phrasing is shared seed + bit-identical pre-treatment prefix + real packet-domain divergence. Gates are absolute so this is not blocking.",
+    "rep14_pre_analysis": {
+      "source": "frozen preflight--P0-tail-OFF--rep14.json, inspection only",
+      "ack_batches": 0,
+      "first_ack_ns": null,
+      "delivered_src_at_epoch": 0,
+      "acks_before_each_echo": 0,
+      "branch": "ZERO - shared reverse chain leaves echo draw positions at 0,1,2,3, same as a private chain",
+      "v2_effect_comes_only_from": [
+        "the forward chain (probes now share DATA chain)",
+        "the reverse model itself: in the PRIMARY panel reverse is lossless for both ACK and Echo, so the V1 failure mode (4/4 echoes reverse-dropped) is structurally impossible there"
+      ],
+      "primary_panel_rep14_depends_on": "whether at least one Probe survives the forward chain",
+      "inference_sharpened": "if rep14 recovers in primary, that is largely attributable to the reverse model, NOT proof the mechanism handles reverse loss; a bidirectional censored outcome stays NETWORK-CENSORED in the denominator",
+      "changes_no_gate": true
+    }
   },
   "gate_negative_controls": {
     "compile": "exit 1, step 1 FAIL (cargo error not masked)",
     "failing_test": "pending",
     "dirty_worktree": "pending"
-  }
+  },
+  "gate_cost_note": "gate.sh ~355 s because structural tests drive real panels; cost item, not a defect"
 }

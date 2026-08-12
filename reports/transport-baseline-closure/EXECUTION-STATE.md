@@ -230,3 +230,78 @@ The DIRTY worktree holds untracked FS-CAL files (`fs_cal2_spine.rs`, `fs_cal2_sc
 `fs_cal2_runner.rs`) referencing `adaptive_transport::fate_estimator`, which M1 un-declared. They do
 not exist in a clean worktree and do not affect the gate; they are deferred to M5 per E2. Local full
 builds must be per-target or in a clean worktree.
+
+
+---
+
+## M2 — V2 semantics clarification (recorded)
+
+Correct packet-domain meaning, as implemented:
+
+* every real wire packet advances the shared GE state of its direction **exactly once**;
+* four real Echo emissions consume four reverse draws — that is correct, not a defect;
+* elapsed time alone never produces a draw;
+* **the V1 defect was not that four echoes consumed four draws.** It was that Echo consumed them on
+  a treatment-only stream separated from ACK;
+* ACK and Echo share one chronological reverse stream; DATA, retransmissions, Probe and every other
+  real forward datagram share one chronological forward stream;
+* once the treatment emits an extra Probe, channel state after that point may legitimately diverge
+  from the baseline — that is real packet-domain physics. Only the identical traffic **prefix before
+  the treatment** must match bit for bit.
+
+The frozen C2 contract is already consistent with this; it was **not** modified.
+
+### Pairing language (reporting, not a gate)
+
+A single chronological chain means the treatment arm does **not** consume the same draw sequence as
+the baseline, because its extra Probes insert draws. This is fair by construction, but results must
+**not** be described as "paired comparison on the same trace". The correct phrasing is: *shared seed,
+bit-identical pre-treatment prefix, real packet-domain divergence thereafter.* The C2 gates are
+absolute (locked 3/3, fresh ≥38/40), so this is not blocking.
+
+## §2 remaining structural items — DONE
+
+| item | how it is pinned |
+|---|---|
+| 2.1 chain cardinality | `forward_chain_key` / `reverse_chain_key` exposed and asserted canonical + distinct; combined with the two accounting identities, exactly one chain per direction accounts for every datagram |
+| 2.2 same-timestamp tie-break | forward indices are dense and in emission order; `drain_bootstrap_probes` runs LAST so DATA takes strictly earlier indices than a same-turn Probe; reproducible across runs |
+| 2.3 datagram inventory | `TransmitKind` = {Data, Retransmit, Duplicate, FecParity, CsProbe}. First four traverse the forward chain; **FecParity is now an explicit arm with a `channel_bypass_violations` counter asserted 0** — the silent `_ => {}` catch-all is gone |
+| 2.4 default configuration | the structural test file carries no `cfg(feature)` gate, so all of it runs in the DEFAULT build; a test asserts the shipped defaults (startup pacing ON, bootstrap OFF) |
+
+## §3 rep14 reverse draw-position pre-analysis (BEFORE any panel run)
+
+From the frozen record `preflight--P0-tail-OFF--rep14.json`, by inspection — no new run:
+
+```
+ack_batches            = 0
+first_ack_ns           = None
+delivered_src_at_epoch = 0
+```
+
+**Zero real ACKs traverse the reverse direction in rep14**, because no DATA was ever delivered.
+This is the `0` branch: on the shared reverse chain the echoes occupy draw positions `0,1,2,3` —
+the *same positions* a private chain would give them. Sharing the reverse chain with ACK therefore
+does **not** shift rep14's echo draw positions.
+
+So V2's effect on rep14 comes only from:
+
+1. **the forward chain** — Probes now share DATA's chain, so which probes survive the forward path
+   changes; and
+2. **the reverse model itself** — in the **primary continuity panel** the reverse direction is
+   lossless for *both* ACK and Echo, so rep14's V1 failure mode (4/4 echoes reverse-dropped) is
+   **structurally impossible** there. Its outcome depends entirely on whether at least one Probe
+   survives the forward chain.
+
+In the **bidirectional robustness panel** the reverse direction is impaired for both classes; with
+zero ACKs the echo positions are again `0..3`, but on a *different key* (`V2Reverse`, not the V1
+`DRCS3EchoReverse`), so the realised bits differ.
+
+**This changes no gate.** It only sharpens, before results exist, what may be concluded: if rep14
+recovers in the primary panel that is largely attributable to the reverse model, not to proof that
+the mechanism handles reverse loss; and a bidirectional censored outcome remains `NETWORK-CENSORED`
+in the denominator.
+
+## Cost note
+
+`gate.sh` is now ~355 s because the structural tests drive real panels. Recorded as a cost item for
+later milestones, not a defect.

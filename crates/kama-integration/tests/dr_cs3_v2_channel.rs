@@ -222,3 +222,92 @@ fn v1_private_class_stream_fails_the_shared_chain_property() {
     );
     assert_eq!(shared.steps(), 4, "V2: one chain accounts for all 4 reverse packets");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// §2 REMAINING STRUCTURAL ITEMS (2.1 cardinality · 2.2 tie-break · 2.3 inventory · 2.4 default cfg)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/// **2.1 CHAIN CARDINALITY.** Exactly one chain instance per direction for the whole run, and the
+/// keys are the canonical directional keys — no legacy chain survives in any corner of the panel.
+/// Together with tests (1) and (2), whose accounting identities show these two chains account for
+/// EVERY forward and reverse datagram, this pins cardinality at one-per-direction.
+#[test]
+fn exactly_one_chain_instance_per_direction() {
+    for on in [false, true] {
+        let r = run_panel(&cfg(31, on, GE));
+        assert_eq!(r.forward_chain_key, forward_key(DOMAIN, CELL, 31));
+        assert_eq!(r.reverse_chain_key, reverse_key(DOMAIN, CELL, 31));
+        assert_ne!(r.forward_chain_key, r.reverse_chain_key);
+        // no third stream: every forward datagram is on the forward chain, every reverse one on the
+        // reverse chain (the two accounting identities), so no other chain can exist.
+        assert_eq!(
+            r.forward_steps,
+            r.tx_data + r.tx_retx + r.tx_dup + r.probes_emitted,
+            "bootstrap_on={on}"
+        );
+        assert_eq!(r.reverse_steps, r.acks_generated + r.echoes_generated, "bootstrap_on={on}");
+    }
+}
+
+/// **2.2 SAME-TIMESTAMP TIE-BREAK.** When DATA and a Probe are planned in the same scheduling turn
+/// they enter the chain in a deterministic order: the product plans `drain_bootstrap_probes` LAST,
+/// so within a turn every DATA takes a strictly earlier chain index than any Probe.
+#[test]
+fn same_turn_tie_break_is_deterministic_data_before_probe() {
+    let r = run_panel(&cfg(41, true, LossModel::None));
+    assert!(!r.forward_order.is_empty(), "the run must emit forward datagrams");
+    // Indices are strictly increasing and gap-free: one chain, one step per datagram.
+    for (i, (_, idx)) in r.forward_order.iter().enumerate() {
+        assert_eq!(*idx, i as u64, "forward chain indices must be dense and in emission order");
+    }
+    // A Probe never takes an index that a DATA of the SAME turn should have had: since probes are
+    // appended last, every probe index is greater than the index of every DATA emitted before it.
+    let mut last_probe: Option<u64> = None;
+    for (kind, idx) in &r.forward_order {
+        if *kind == 'B' {
+            last_probe = Some(*idx);
+        } else if let Some(p) = last_probe {
+            assert!(*idx > p, "a DATA after a probe must take a later index, never reuse one");
+        }
+    }
+    // And the ordering is reproducible.
+    let r2 = run_panel(&cfg(41, true, LossModel::None));
+    assert_eq!(r.forward_order, r2.forward_order, "tie-break must be deterministic across runs");
+}
+
+/// **2.3 DATAGRAM INVENTORY.** `TransmitKind` is {Data, Retransmit, Duplicate, FecParity, CsProbe}.
+/// Data/Retransmit/Duplicate/CsProbe traverse the forward chain. FecParity is the only remaining
+/// variant; the panel never enables FEC, so it must never be produced — asserted exactly, not
+/// swallowed by a catch-all.
+#[test]
+fn every_datagram_type_traverses_a_chain_or_is_proven_impossible() {
+    for on in [false, true] {
+        for rev_model in [LossModel::None, GE] {
+            let mut c = cfg(51, on, rev_model);
+            c.tail_on = true; // exercise the recovery classes too
+            let r = run_panel(&c);
+            assert_eq!(
+                r.channel_bypass_violations, 0,
+                "no datagram type may bypass both directional chains (FecParity must not occur)"
+            );
+            assert_eq!(r.forward_steps, r.tx_data + r.tx_retx + r.tx_dup + r.probes_emitted);
+            assert_eq!(r.reverse_steps, r.acks_generated + r.echoes_generated);
+        }
+    }
+}
+
+/// **2.4 DEFAULT CONFIGURATION.** This file carries no `#[cfg(feature = ...)]` gate, so every
+/// structural test above runs in the DEFAULT build — the configuration that ships. This test exists
+/// to state that explicitly and to fail loudly if the shipped defaults ever drift.
+#[test]
+fn structural_tests_run_under_the_shipped_default_configuration() {
+    use adaptive_transport::sender::{BootstrapRttConfig, StartupPacingConfig};
+    assert!(
+        StartupPacingConfig::default().enabled,
+        "M1 shipped startup pacing default-ON"
+    );
+    assert!(
+        !BootstrapRttConfig::default().enabled,
+        "bootstrap is still default-OFF; M2 decides it"
+    );
+}

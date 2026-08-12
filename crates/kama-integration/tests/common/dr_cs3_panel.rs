@@ -320,6 +320,14 @@ pub struct PanelOut {
     pub acks_reverse_dropped: u64,
     /// ACKs OFFERED to the reverse channel (delivered + dropped).
     pub acks_generated: u64,
+    /// 2.1 chain cardinality: the ONE forward chain key used for the whole run.
+    pub forward_chain_key: String,
+    /// 2.1 chain cardinality: the ONE reverse chain key used for the whole run.
+    pub reverse_chain_key: String,
+    /// 2.3: a datagram type that bypassed both directional chains (MUST stay 0).
+    pub channel_bypass_violations: u64,
+    /// 2.2 tie-break trace: `(kind, forward chain index)` per forward emission, bounded.
+    pub forward_order: Vec<(char, u64)>,
     /// Packets that traversed the forward chain (observation-only).
     pub forward_steps: u64,
     /// Packets that traversed the reverse chain (observation-only).
@@ -345,14 +353,13 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
     };
 
     // ── V2: ONE chain per DIRECTION, advanced chronologically per traversing packet ──────────
-    let mut fwd = GeChain::new(
-        forward_key(&cfg.seed_domain, &cfg.cell_id, cfg.repetition),
-        cfg.forward_model,
-    );
-    let mut rev = GeChain::new(
-        reverse_key(&cfg.seed_domain, &cfg.cell_id, cfg.repetition),
-        cfg.reverse_model,
-    );
+    let fk = forward_key(&cfg.seed_domain, &cfg.cell_id, cfg.repetition);
+    let rk = reverse_key(&cfg.seed_domain, &cfg.cell_id, cfg.repetition);
+    out.forward_chain_key = fk.clone();
+    out.reverse_chain_key = rk.clone();
+    // EXACTLY ONE chain object per direction for the entire run (2.1).
+    let mut fwd = GeChain::new(fk, cfg.forward_model);
+    let mut rev = GeChain::new(rk, cfg.reverse_model);
 
     // ── real product sender ─────────────────────────────────────────────────────────────────
     let mut s = Sender::new();
@@ -410,7 +417,11 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
                     TransmitKind::Data => {
                         out.tx_data += 1;
                         let gid = (d.unit_id - BASE_UNIT_ID) as u16;
+                        let idx = fwd.steps();
                         let drop = fwd.next_drop(); // forward chain, chronological
+                        if out.forward_order.len() < 4096 {
+                            out.forward_order.push(('D', idx));
+                        }
                         seq_map.insert(d.seq, (Logical::Src(gid), true));
                         wire_lines.push(format!("D|{gid}|{}|{}", d.seq, u8::from(drop)));
                         src_prefix_lines.push(format!("{gid}|{}", u8::from(drop)));
@@ -427,7 +438,13 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
                             out.tx_dup += 1;
                         }
                         let gid = (d.unit_id - BASE_UNIT_ID) as u16;
+                        let idx = fwd.steps();
                         let drop = fwd.next_drop(); // SAME forward chain as DATA
+                        if out.forward_order.len() < 4096 {
+                            out.forward_order.push(
+                                (if d.kind == TransmitKind::Retransmit { 'R' } else { 'U' }, idx),
+                            );
+                        }
                         seq_map.insert(d.seq, (Logical::Src(gid), false));
                         wire_lines.push(format!("R|{gid}|{}|{}", d.seq, u8::from(drop)));
                         out.retx_wire_bytes += SEALED;
@@ -470,7 +487,11 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
                             .push(format!("t={now} probe_emission seq={probe_seq}"));
                         // SAME forward chain as DATA. The chain is advanced unconditionally so a
                         // scripted override cannot desynchronise the shared channel state.
+                        let probe_idx = fwd.steps();
                         let chan_drop = fwd.next_drop();
+                        if out.forward_order.len() < 4096 {
+                            out.forward_order.push(('B', probe_idx));
+                        }
                         let drop = cfg
                             .probe_drop_script
                             .as_ref()
@@ -484,7 +505,13 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
                             probe_deliveries.push((arr, sealed));
                         }
                     }
-                    _ => {}
+                    // 2.3 DATAGRAM INVENTORY: every TransmitKind must either traverse a directional
+                    // chain or be proven impossible here. FecParity is the only remaining variant and
+                    // the panel never enables FEC, so it must never appear; if it ever does it is
+                    // counted rather than silently swallowed by a catch-all.
+                    TransmitKind::FecParity => {
+                        out.channel_bypass_violations += 1;
+                    }
                 }
             }
         };
