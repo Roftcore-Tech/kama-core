@@ -1,0 +1,33 @@
+{
+  "artifact": "SPURIOUS-RETRANSMIT-SUPERSESSION",
+  "hashed_before_test_edit": true,
+  "test": "kama-integration/tests/fs_fec_arms.rs::f0_cost_split_intervention_vs_total_outcome",
+  "measured": {
+    "startup_pacing_off": {
+      "spurious_retransmits": ">0",
+      "test": "passes"
+    },
+    "startup_pacing_on": {
+      "spurious_retransmits": 0,
+      "test": "fails on assert spurious>0"
+    }
+  },
+  "isolation": "toggled only the startup-pacing axis in run_f0's sender; instrumentation removed, fs_f0.rs restored from backup, git diff empty",
+  "what_old_assertion_documents": "a \u00a78 COST-SPLIT proof separating INTERVENTION-BUDGET (C-P4 proactive parity sealed wire) from TOTAL-OUTCOME-COST; the spurious line demonstrates the leak channel is real",
+  "asserts_presence_of_a_cost_not_a_safety_property": true,
+  "why_supersession_not_regression": "with the floor active the late-parity race that produced the spurious retransmit does not occur; fewer wasted retransmissions is strictly better - lower total-outcome cost, unchanged intervention budget",
+  "unaffected_assertions": [
+    "fec_decoded_sources == 2",
+    "realized_sealed_wire_bytes == 2 * fs_sealed_len(64)",
+    "arq_retransmit_bytes == retransmits * sealed"
+  ],
+  "discipline": {
+    "artifact_before_edit": true,
+    "original_preserved_verbatim": true,
+    "rescoped_to": "startup-pacing-INACTIVE path",
+    "assertion_weakened": false,
+    "assertion_deleted": false,
+    "new_behaviour_sealed_by": "companion test under the product default asserting spurious_retransmits == 0 plus the unchanged accounting identity and budget"
+  },
+  "result": "STARTUP-PACING-REMOVES-D2R2-SPURIOUS-LEAK \u00b7 COST-SPLIT-PROOF-PRESERVED-ON-BOTH-AXES"
+}

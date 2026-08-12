@@ -1,0 +1,71 @@
+{
+  "artifact": "FEC-PARITY-OBSERVATION-CORRIGENDUM",
+  "corrects": [
+    "commit 68165aca",
+    "EXECUTION-STATE entry produced by it"
+  ],
+  "prior_artifacts_modified": false,
+  "wrong_claim": "with the startup pacing floor ACTIVE, zero FEC_R2 parity units reach the wire; shipping the default would trade a fixed liveness defect for a broken FEC actuator",
+  "observation_was_real": true,
+  "conclusion_was_wrong": true,
+  "measured_truth": {
+    "floor_on": {
+      "t_ms": 20779,
+      "block": 1,
+      "esi": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "send_record": true,
+      "kind": "FecParity",
+      "units": 4
+    },
+    "floor_off": {
+      "t_ms": 20804,
+      "block": 1,
+      "esi": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "send_record": true,
+      "kind": "FecParity",
+      "units": 4
+    },
+    "drive_window_identical": {
+      "t_ms": 17534,
+      "window": [
+        17544,
+        26534
+      ]
+    },
+    "both_instants_inside_window": true,
+    "floor_on_is_earlier_by_ms": 25
+  },
+  "real_mechanism": {
+    "harness_made_two_on_event_calls_per_iteration": true,
+    "counted_only": "Event::TimerFired(Timer::Pto) return",
+    "discarded": "ack(data_seqs) return at now + 5ms",
+    "tick_instants": "17544 + 10k -> 20774, 20784, ...",
+    "ack_instant": 20779,
+    "floor_off": "parity lands on a Pto tick (20804) -> counted -> emitted=4",
+    "floor_on": "flow slightly faster, parity lands in the ACK-driven schedule (20779) whose return was thrown away -> emitted=0 while the wire carried 4"
+  },
+  "fix": {
+    "where": "kama-engine/tests/fuzzy_e2e.rs real_latch_emit_decode",
+    "what": "collect parity from BOTH on_event returns",
+    "assertion_changed": false,
+    "threshold_relaxed": false,
+    "golden_rewritten": false,
+    "fec_path_touched": false
+  },
+  "consequences": [
+    "StartupPacingConfig::default() restored to ON; there is no FEC-parity blocker",
+    "explicit FEC_R2 remains runtime-executable and is marginally faster with the floor active",
+    "error class recorded: a fixed-cadence harness sampling only one of several scheduler entry points can convert a TIMING SHIFT into an apparent TOTAL LOSS OF FUNCTION"
+  ],
+  "standing_correction": "any statement describing a 'broken FEC actuator', 'FEC parity starvation' or 'zero parity reaches the wire' is WITHDRAWN; measured fact is 4/4 parity in both arms, floor ON 25 ms earlier"
+}

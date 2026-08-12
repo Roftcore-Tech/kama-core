@@ -164,5 +164,31 @@
     "LostRec.deadline_ns is an ordering key and is never a wakeup source",
     "a timer wakeup means the event loop delivers Timer::Pto at that instant - timer-driven, not a periodic tick",
     "default-tracking pins follow whatever the default is; their assertions never weaken"
-  ]
+  ],
+  "user_wip_manifest_correction": {
+    "wrongly_classified_as_user_wip": [
+      "reports/d1-exit/data/cold-start/timeline-65B.csv",
+      "reports/d1-exit/data/cold-start/timeline-300B.csv",
+      "reports/d1-exit/data/cold-start/timeline-1200B.csv",
+      "reports/d1-exit/data/cold-start/summary.csv"
+    ],
+    "actual_nature": "test-generated evidence artifacts",
+    "writer": "crates/adaptive-transport/tests/cold_start_liveness.rs::cold_start_timeline_evidence_artifact (:132-174) writes them into the repo tree via std::fs::write on every run",
+    "consequence": "any workspace test run rewrites them; a cargo test --all in this turn did so",
+    "recoverable": false,
+    "hand_authored_content_lost": false,
+    "why_no_loss": "the earlier modified state was itself drift from a previous run, present in this session's first git status before any of my changes; the files now match HEAD exactly",
+    "still_excluded_from_commits": true,
+    "genuine_user_wip": [
+      "docs/design/*",
+      "docs/tasks/*",
+      "reports/d1-exit/data/*.log",
+      "reports/d1-exit/data/netem-a2/console.txt",
+      "crates/adaptive-transport/src/fate_estimator.rs",
+      "crates/kama-integration/examples/fs_cal2_runner.rs",
+      "crates/kama-integration/tests/common/fs_cal2_*.rs",
+      "reports/fs-cal-2/",
+      "scripts/fs-cal-2/"
+    ]
+  }
 }

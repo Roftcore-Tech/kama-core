@@ -159,11 +159,23 @@ explicit FEC_R2 must stay runtime-executable.
 
 ## User WIP manifest (never to be committed)
 
-`reports/d1-exit/data/cold-start/timeline-{65,300,1200}B.csv` plus untracked user docs/logs
-(`docs/design/*`, `docs/tasks/*`, `reports/d1-exit/data/*.log`,
-`reports/d1-exit/data/netem-a2/console.txt`, `crates/adaptive-transport/src/fate_estimator.rs`,
+**CORRECTION.** `reports/d1-exit/data/cold-start/timeline-{65,300,1200}B.csv` and `summary.csv` were
+listed here as user WIP. That was **wrong**: they are **test-generated evidence artifacts**.
+`crates/adaptive-transport/tests/cold_start_liveness.rs::cold_start_timeline_evidence_artifact`
+(`:132-174`) writes them into the repo tree with `std::fs::write` on every run, so **any workspace
+test run rewrites them**. A `cargo test --all` in this turn did exactly that; the prior bytes were
+never committed or stashed and are not recoverable. Nothing hand-authored was lost — the earlier
+modified state was itself drift from a previous run (present in this session's first `git status`,
+before any of my changes) — and the files now match HEAD exactly.
+
+They must still stay **out of every product-repair commit**, but for a different reason: they are
+regenerated output, not authored content.
+
+Genuine user WIP (untracked, never touched): `docs/design/*`, `docs/tasks/*`,
+`reports/d1-exit/data/*.log`, `reports/d1-exit/data/netem-a2/console.txt`,
+`crates/adaptive-transport/src/fate_estimator.rs`,
 `crates/kama-integration/{examples/fs_cal2_runner.rs,tests/common/fs_cal2_*.rs}`,
-`reports/fs-cal-2/`, `scripts/fs-cal-2/`).
+`reports/fs-cal-2/`, `scripts/fs-cal-2/`.
 
 ## Decisions already made — do NOT re-ask
 
