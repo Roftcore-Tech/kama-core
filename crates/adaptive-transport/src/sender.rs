@@ -681,7 +681,7 @@ impl Default for StartupPacingConfig {
         // Explicit FEC_R2 must stay runtime-executable, so shipping this default would trade a fixed
         // liveness defect for a broken FEC actuator. Default stays OFF until that is root-caused.
         // The mechanism remains fully available via `set_startup_pacing_init`.
-        Self { enabled: false }
+        Self { enabled: true }
     }
 }
 

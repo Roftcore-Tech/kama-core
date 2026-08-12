@@ -337,8 +337,8 @@ fn startup_pacing_floor_is_bootstrap_only_and_released() {
 #[test]
 fn default_equals_matching_explicit_treatment() {
     for rep in [2u32, 16, 31] {
-        let d = run_flow(&rr_cfg(rep, None)); // product default (still OFF; see sender.rs)
-        let e = run_flow(&rr_cfg(rep, Some(false))); // explicit arm matching the default
+        let d = run_flow(&rr_cfg(rep, None)); // product default (ON)
+        let e = run_flow(&rr_cfg(rep, Some(true))); // explicit arm matching the default
         assert_eq!(d.wire_digest, e.wire_digest, "rep{rep}: wire digest must match");
         assert_eq!(
             d.source_prefix_digest, e.source_prefix_digest,
@@ -361,7 +361,7 @@ fn default_equals_matching_explicit_treatment() {
 #[test]
 fn explicit_arm_differs_from_default() {
     let default_arm = run_flow(&rr_cfg(2, None));
-    let opposite = run_flow(&rr_cfg(2, Some(true)));
+    let opposite = run_flow(&rr_cfg(2, Some(false)));
     assert_ne!(
         default_arm.wire_digest, opposite.wire_digest,
         "the startup-pacing axis must actually change behaviour"
