@@ -1,0 +1,107 @@
+{
+  "artifact": "EK4-A2-NEXT-WAKEUP-CONTRACT",
+  "derived_before_any_code_change": true,
+  "start_head": "4aa11a93af44b2b9e884461e8db3d1ed576c8b4f",
+  "current_definition": {
+    "gate": "#[cfg(feature = \"experimental-cold-start\")] - NOT in the default build",
+    "body": "self.cs_wakeup.iter().map(|&(d,_)| d).min()",
+    "documented_scope": "sender.rs:116 - CS-probe / CS-giveup / (d)-PTO + TEST-ONLY hook",
+    "is_general_event_loop_api": false
+  },
+  "call_sites": [
+    {
+      "site": "sender.rs:1706",
+      "kind": "debug_assert C2 post-condition"
+    },
+    {
+      "site": "udp_runner.rs:862",
+      "kind": "bench runner (experimental-fec-budget), not a product path"
+    },
+    {
+      "site": "dr_cs1_acceptance.rs:60,80,154,170,307,347,402,449,529",
+      "kind": "tests; the failing EK4-A2 one is :347"
+    }
+  ],
+  "product_runtime_consumer_exists": false,
+  "deadline_sources": [
+    {
+      "n": 1,
+      "source": "CS probe ladder / CS giveup / BootstrapPto",
+      "state": "cs_wakeup: Vec<(u64, CsTimerKind)>",
+      "deadline": "stored",
+      "gated": "experimental-cold-start",
+      "in_next_wakeup_today": true
+    },
+    {
+      "n": 2,
+      "source": "ARQ time-threshold loss",
+      "state": "loss.inflight, largest_acked, have_acked",
+      "deadline": "min{send_ns : seq < largest_acked} + max(scale(srtt,time_num/den), max(min_delay, cadence_floor)) (loss.rs:280-297)",
+      "gated": null,
+      "in_next_wakeup_today": false
+    },
+    {
+      "n": 3,
+      "source": "3.3-B geometric copies",
+      "state": "dup_queue: Vec<DupRec>",
+      "deadline": "due_ns",
+      "gated": null,
+      "in_next_wakeup_today": false
+    },
+    {
+      "n": 4,
+      "source": "DR-CS-3 bootstrap ladder",
+      "state": "bs_armed_ns, bs_next_step",
+      "deadline": "bs_armed_ns + BS_FIRES_NS[bs_next_step]",
+      "gated": "none (config default OFF)",
+      "in_next_wakeup_today": false
+    },
+    {
+      "n": 5,
+      "source": "tail-recovery PTO",
+      "state": "tail_recovery.armed_at_ns",
+      "deadline": "armed_at_ns + current_pto_ns(srtt,rttvar) (tail_recovery.rs:127)",
+      "gated": "none (config default OFF)",
+      "in_next_wakeup_today": false
+    },
+    {
+      "n": 6,
+      "source": "pacer token refill",
+      "state": "pacer.tokens/rate/burst_cap/refill_rem",
+      "deadline": "time until enough tokens exist for the head-of-line pending unit",
+      "gated": null,
+      "in_next_wakeup_today": false
+    }
+  ],
+  "ordering": {
+    "event_ingest": "cs_type_priority: AckReceived=0, CsProbeEcho=1, other=2 (stable)",
+    "output_drain": "schedule_transmit sender.rs:2806-2852: arq share tick -> drain_new_data -> recovery -> emit_tail_probe -> drain_due_duplicates -> plan_fec_parity -> legacy CS probes -> drain_bootstrap_probes",
+    "pto_rearm": "each batch re-derives the (d)-scope deadline and re-pushes CsTimerKind::BootstrapPto, but ONLY when cs_resolved.is_some() AND rtt.srtt().is_some() AND loss.next_time_loss_deadline_ns(..) is Some (sender.rs:1817-1826, mirrored :1872-1891)"
+  },
+  "exact_none_branch": {
+    "chain": "next_wakeup_ns() = min(cs_wakeup); cs_wakeup empty because BootstrapPto not pushed because loss.next_time_loss_deadline_ns(..) returned None",
+    "why": "it maps over inflight filtered by seq < largest_acked, and the unit had already been DECLARED LOST - moved out of inflight into pending_lost",
+    "conclusion": "the outstanding work is NOT a future deadline; it is DUE-NOW work (pending_lost) that could not be emitted because the pacer had no tokens. Its next progress instant is governed by source #6, which nothing exposes.",
+    "existing_pending_work_predicate": "cs_has_pending_work() sender.rs:1736 (feature-gated) = tx_queue | pending_lost | dup_queue | pending_fec"
+  },
+  "binding_contract": {
+    "must_not_return_none_when": "after the documented immediate-output drain, timer-driven outstanding work OR an internal future deadline exists",
+    "none_valid_only_when": [
+      "terminal/closed",
+      "genuinely idle",
+      "no immediate output",
+      "no internal deadline",
+      "progress depends solely on external network input"
+    ],
+    "due_now_signal": "Some(now) - never a hidden 'poll me again' None",
+    "no_busy_loop": "Some(now) only while due work actually exists, and cleared once consumed, so a driver that drains then re-queries converges"
+  },
+  "minimal_fix_constraints": [
+    "expose the EARLIEST deadline across sources 1-6, all of which already exist",
+    "do not invent a new independent timer",
+    "do not create a second source of truth for timers/scheduling",
+    "do not change PTO backoff, retry counts, the startup pacing formula, or FEC/tail/bootstrap behaviour",
+    "clear the readiness signal after due-now work is consumed"
+  ],
+  "scope_change_required": "remove #[cfg(feature = \"experimental-cold-start\")] so the default-build runtime (A\u015eAMA 9) can sleep on it; source #1 stays feature-gated internally and contributes nothing when off"
+}

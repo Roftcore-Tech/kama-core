@@ -1,0 +1,83 @@
+{
+  "RESULT": "DR-CS-3 IMPLEMENTED \u00b7 SECURITY AND PRODUCT-PATH INTEGRATION PASS \u00b7 DEFAULT PENDING PANEL VALIDATION",
+  "commit_push_pr": false,
+  "defaults": {
+    "BootstrapRttConfig": "OFF",
+    "FEC": "OFF",
+    "StartupPacingConfig": "ON",
+    "TailRecoveryConfig": "OFF"
+  },
+  "e2e_lineage_proven": [
+    "probe edge",
+    "sender emission",
+    "authenticated receiver arrival",
+    "typed echo action",
+    "sealed echo emission",
+    "sender decode+match",
+    "RTT sample from local timestamps",
+    "srtt 0->positive",
+    "PreConverge exit",
+    "startup pacing takeover",
+    "ladder cancelled"
+  ],
+  "gates": {
+    "adaptive_transport_lib_coldstart": "144/144",
+    "adaptive_transport_lib_default": "145/145",
+    "clippy": "clean",
+    "fs_cal2_pins": "33/33",
+    "off_zero_diff": "192/192 PASS"
+  },
+  "integration_label": "AUTHENTICATED TRANSPORT INTEGRATION WITH TEST-INJECTED SESSION KEYS",
+  "integration_tests": 6,
+  "legacy_supersession": "drain_cs_probes skipped when BootstrapRttConfig.enabled (no dual ladder)",
+  "not_run": [
+    "locked 8 panel",
+    "fresh P0/P1 N=40",
+    "tail-v2",
+    "estimator wiring",
+    "final re-grounding",
+    "FS-CAL YETK\u0130-2"
+  ],
+  "phase": "DR-CS-3 implementation",
+  "receiver": {
+    "amplification_lt_1": true,
+    "auth_boundary": "ingest at :331 is after protector.open() at :318, inside the h_ext slot",
+    "bench_udp_runner_used": false,
+    "budget_bytes": 172,
+    "echo_wire_max": 43,
+    "emitter": "emit_cs_echo (mirrors emit_recovered)",
+    "growing_sets": false,
+    "max_unique_echoes": 4,
+    "socket_io_in_parser": false,
+    "state": "per-session fixed-size (Option<u16> + [Option<u16>;4] + u64)",
+    "typed_action": "bs_pending_echo + take_pending_cs_echo"
+  },
+  "result_bearing_calibration_runs": 0,
+  "scope_limits": [
+    "test-injected session keys; no Noise handshake in repo (Sprint-6 debt); NOT a full product end-to-end / key-establishment claim",
+    "kama_integration::receiver_host is itself cfg(experimental-cold-start) (lib.rs:14-18); the receiver composition root is not in the shipped default build; un-gating it was NOT done"
+  ],
+  "security_tests_sender": 10,
+  "sender": {
+    "additive_no_pacer_call": true,
+    "budget_bytes": 200,
+    "config": "BootstrapRttConfig (default OFF)",
+    "drain_position": "last in schedule_transmit",
+    "edge_only": true,
+    "ladder_ns": [
+      3000000000,
+      9000000000,
+      21000000000,
+      45000000000
+    ],
+    "new_constants_invented": 0,
+    "no_pacer_debt": true,
+    "outstanding_slots": 1,
+    "probe_wire_exact": 44,
+    "ungated": [
+      "TransmitKind::CsProbe",
+      "Event::CsProbeEcho"
+    ],
+    "worst_case_bytes": 176
+  }
+}

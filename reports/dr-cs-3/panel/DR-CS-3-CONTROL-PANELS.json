@@ -1,0 +1,11 @@
+{
+  "artifact": "DR-CS-3-CONTROL-PANELS",
+  "status": "NOT RUN",
+  "scope_intended": "\u00a76 control panels: no-loss RTT{50,250,1000} \u00b7 IID-p5 \u00b7 probe/echo loss scenarios",
+  "reason_not_run": "\u00a74 locked panel FAIL. \u00a78 FAIL branch requires stopping with the exact failure lineage; the panel sequence was not continued.",
+  "records_generated": 0,
+  "data_fabricated": false,
+  "gated_by": "DR-CS-3-LOCKED-PANEL verdict = FAIL",
+  "runner_mode_exists": true,
+  "calibration_result_bearing_runs": 0
+}

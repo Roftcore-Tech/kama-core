@@ -1,0 +1,12 @@
+{
+  "artifact": "DR-CS-3-GROUNDING-CORRIGENDUM",
+  "now": "BOOTSTRAP-PROBE-PRODUCTIZATION-MAPPING-GROUNDED",
+  "reason": "format, parser, authentication boundary and outbound response pattern were grounded, but neither the sender emitter nor the receiver responder was implemented; the old label could be read as 'the path works'",
+  "supersedes_label_of": {
+    "file": "DR-CS-3-PRODUCT-PATH-GROUNDING.md",
+    "preserved_unchanged": true,
+    "sha256_prefix": "dd6737987c43696982565bd714cceddb"
+  },
+  "technical_findings_still_valid": true,
+  "was": "PRODUCT-BOOTSTRAP-PROBE-PATH-GROUNDED"
+}

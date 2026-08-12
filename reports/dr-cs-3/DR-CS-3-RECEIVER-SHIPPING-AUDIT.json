@@ -1,0 +1,111 @@
+{
+  "VERDICT": "SHIPPING RECEIVER COMPOSITION ROOT NOT GROUNDED",
+  "action": "STOP (\u00a72 DUR clause); receiver_host NOT un-gated",
+  "artifact": "DR-CS-3-RECEIVER-SHIPPING-AUDIT",
+  "audit_table": {
+    "aead_open_seal": {
+      "decision": "ship-ready",
+      "experimental_dep": false,
+      "needed": true
+    },
+    "bench_test_helper": {
+      "decision": "stays gated",
+      "experimental_dep": "in-module test bridge",
+      "needed": false
+    },
+    "control_ingest": {
+      "decision": "cannot ship as-is",
+      "experimental_dep": true,
+      "needed": true
+    },
+    "cs_echo_response": {
+      "decision": "blocked by ControlIdIssueGate",
+      "experimental_dep": true,
+      "needed": true
+    },
+    "cs_probe_parse": {
+      "decision": "ship-ready",
+      "experimental_dep": false,
+      "needed": true
+    },
+    "diagnostic_only_state": {
+      "decision": "would ship incidentally",
+      "experimental_dep": false,
+      "needed": false
+    },
+    "legacy_experimental_ladder": {
+      "decision": "stays gated",
+      "experimental_dep": "n/a (lives in sender.rs)",
+      "needed": false
+    },
+    "pending_outbound_action": {
+      "decision": "ship-ready",
+      "experimental_dep": false,
+      "needed": true
+    },
+    "recovered_control_response": {
+      "decision": "stays gated",
+      "experimental_dep": true,
+      "needed": false
+    },
+    "session_slot_state": {
+      "decision": "cannot ship as-is",
+      "experimental_dep": true,
+      "needed": true
+    }
+  },
+  "bootstrap_default": "OFF",
+  "cold_start_fixed_verdict": false,
+  "compile_probe": {
+    "errors": [
+      "E0432 unresolved import kama_engine::cold_rx_state",
+      "E0432 unresolved imports kama_noise_wire::{ControlDedupWindow, ControlIdIssueGate, DedupDecision}",
+      "E0599 no variant EngineError::ColdInvariantViolation"
+    ],
+    "performed": true,
+    "reverted": true
+  },
+  "gated_dependencies": {
+    "EngineError::ColdInvariantViolation": "gated variant",
+    "kama-engine": "src/lib.rs:24-25 cold_rx_state module (INV-CS-5: flag-OFF'ta mod\u00fcl DERLENMEZ)",
+    "kama-noise-wire": "src/lib.rs:45-48 ControlDedupWindow, DedupDecision, ControlIdIssueGate"
+  },
+  "gating_is_transitive": true,
+  "module_body_internal_cfg_count": 0,
+  "path_assessment": {
+    "PATH_A": "REJECTED \u2014 does not compile under default features; drags a gated three-crate subsystem",
+    "PATH_B": "attempted; the shipping-safe core is almost separable but blocked by ControlIdIssueGate, and would still have NO shipping consumer; a parallel copy is forbidden by \u00a72"
+  },
+  "product_behavior_changed": false,
+  "shipping_consumer": {
+    "exists": false,
+    "kama_integration_bin_targets": 0,
+    "references": [
+      "examples/a2_rx_netem_runner.rs (EXAMPLE / netem bench runner)",
+      "7 test files",
+      "doc comments in kama-engine/src/cold_rx_state.rs"
+    ],
+    "workspace_bin_targets": [
+      "crates/bench"
+    ]
+  },
+  "unblock_decisions": [
+    "name the shipping composition root (which product crate/binary owns the receive path)",
+    "decide whether the cold-RX subsystem is promoted to the default build (separate auditable step)",
+    "or promote ControlIdIssueGate alone (generic control-plane) and host the responder in the crate that owns the shipping receive path"
+  ],
+  "ungated_and_ship_ready": [
+    "Session",
+    "SessionId",
+    "SessionManager",
+    "SessionLifecycle",
+    "Direction",
+    "HandleRouter",
+    "KamaNoiseWireProtector",
+    "SealArgs",
+    "OpenedTransportShard",
+    "decode_control",
+    "Control::CsProbe/CsEcho (schema, zero gating)",
+    "DR-CS-3 pending-action state"
+  ]
+}

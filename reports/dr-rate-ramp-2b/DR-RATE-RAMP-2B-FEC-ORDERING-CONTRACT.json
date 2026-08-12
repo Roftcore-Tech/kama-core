@@ -1,0 +1,225 @@
+{
+  "artifact": "DR-RATE-RAMP-2B-FEC-ORDERING-CONTRACT",
+  "start_head": "4aa11a93af44b2b9e884461e8db3d1ed576c8b4f",
+  "hashed_before": "any assertion change or product-semantics change",
+  "tree_changes_at_hash_time": [
+    {
+      "file": "crates/adaptive-transport/tests/budget_equivalence_pin.rs",
+      "change": "remove #[cfg(experimental-cold-start)] from the TransmitKind::CsProbe match arm",
+      "semantic_effect": "none"
+    },
+    {
+      "file": "crates/adaptive-transport/src/udp_runner.rs",
+      "change": "remove #[cfg(experimental-cold-start)] from the TransmitKind::CsProbe match arm (value 0x19 unchanged)",
+      "semantic_effect": "none"
+    }
+  ],
+  "q1_sequence_meaning": {
+    "encoding": "the pin's own kind tags: 0=TransmitKind::Data, 3=TransmitKind::FecParity (budget_equivalence_pin.rs:22-31)",
+    "structure": "TransmitDecision stream FLATTENED across every scheduling turn (6 AppData + 1 Ack + 40 Pto)",
+    "is_intra_turn_order": false,
+    "is_per_block_order": false,
+    "full_record": [
+      [
+        0,
+        0,
+        1200
+      ],
+      [
+        0,
+        1,
+        1200
+      ],
+      [
+        0,
+        2,
+        1200
+      ],
+      [
+        0,
+        3,
+        1200
+      ],
+      [
+        3,
+        4,
+        400
+      ],
+      [
+        3,
+        5,
+        400
+      ],
+      [
+        0,
+        6,
+        1200
+      ],
+      [
+        0,
+        7,
+        1200
+      ],
+      [
+        3,
+        8,
+        400
+      ]
+    ],
+    "grouped_by_turn": {
+      "startup_pacing_off": {
+        "AppData@0ms": "D",
+        "Ack@7ms": "DD",
+        "Pto@10ms": "D",
+        "Pto@20ms": "DD",
+        "Pto@30ms": "PPP"
+      },
+      "startup_pacing_on": {
+        "AppData@0ms": "D",
+        "Ack@7ms": "DD",
+        "Pto@10ms": "DPP",
+        "Pto@20ms": "DD",
+        "Pto@30ms": "P"
+      }
+    }
+  },
+  "q2_only_byte_budget": {
+    "answer": false,
+    "assertions": [
+      "enqueued_r_total==3",
+      "emitted_r_total==3",
+      "(data_count,parity_count)==(6,3)",
+      "last_data<first_par",
+      "total_bytes==6*1200+3*400",
+      "max_seq==8"
+    ]
+  },
+  "q3_all_data_before_parity": {
+    "answer": "yes, but GLOBALLY over the whole scenario",
+    "assertion_site": "budget_equivalence_pin.rs:70-72"
+  },
+  "q4_level_of_definition": {
+    "scheduler_turn": {
+      "authority": "sender.rs:2831 'FEC-parity DATA/recovery SONRASI (DATA-ONCE-siralamasi muhurlu)'",
+      "realisation": "fixed call order in schedule_transmit sender.rs:2806-2852: plan_arq_retransmits? -> drain_new_data -> recovery -> emit_tail_probe -> drain_due_duplicates -> plan_fec_parity -> probe passes",
+      "sealed": true
+    },
+    "fec_block": {
+      "authority": "close_fec_block_manual sender.rs:2946-2979 -> push_parity_authorized",
+      "property": "parity for block B is only staged after B's K sources were emitted",
+      "structural": true
+    },
+    "global_flow": {
+      "stated_by_any_code_or_design_authority": false
+    },
+    "pin_exercises_block_level": false,
+    "pin_block_note": "pin uses deprecated enqueue_fec_parity(9,...) while its DATA are OpaqueUnit 100..105 with no block association; parity and DATA are not in the same FEC block/group"
+  },
+  "q5_startup_pacing_effect": {
+    "changes": "timing only (how many units fit in a turn)",
+    "changes_semantic_wire_order": false,
+    "measured_per_turn_violations": {
+      "startup_pacing_off": 0,
+      "startup_pacing_on": 0
+    },
+    "evidence": "with the floor active Pto@10ms emits [D,P,P] - DATA first then parity; the 5th/6th DATA land in the LATER Pto@20ms turn"
+  },
+  "q6_decoder_or_grouping_effect": {
+    "answer": false,
+    "reasons": [
+      "parity carries SrLogicalRef::Fec{block_id,esi}; receiver groups by block_id",
+      "Reed-Solomon is an erasure code over a block - decode needs K symbols OF THAT BLOCK in any arrival order",
+      "same-block inversion is structurally impossible in the authoritative path",
+      "in the pin's scenario the parity block (9) shares no group with the DATA units"
+    ]
+  },
+  "q7_counts_and_budget_same": {
+    "answer": true,
+    "data": 6,
+    "parity": 3,
+    "total_bytes": 8400,
+    "enqueued_r_total": 3,
+    "emitted_r_total": 3,
+    "max_seq": 8,
+    "note": "all five of these assertions still pass under the product default; only last_data<first_par fails"
+  },
+  "q8_sealing_decision": {
+    "name": "Commit-W LEFTOVER-E\u015eDE\u011eERL\u0130K-P\u0130N\u0130",
+    "site": "budget_equivalence_pin.rs:1-5",
+    "stated_purpose": "ON+LeftoverOnly == OFF-baseline decision-level equivalence for experimental-fec-budget",
+    "constants_provenance": "explicitly measured FROM a feature-OFF baseline run (comment at :63)",
+    "sealed_as_startup_pacing_contract": false
+  },
+  "sealed_property_measured": {
+    "scenario": "the pin's exact scenario under both feature settings",
+    "fec_budget_off": {
+      "sequence": [
+        [
+          0,
+          0,
+          1200
+        ],
+        [
+          0,
+          1,
+          1200
+        ],
+        [
+          0,
+          2,
+          1200
+        ],
+        [
+          0,
+          3,
+          1200
+        ],
+        [
+          3,
+          4,
+          400
+        ],
+        [
+          3,
+          5,
+          400
+        ],
+        [
+          0,
+          6,
+          1200
+        ],
+        [
+          0,
+          7,
+          1200
+        ],
+        [
+          3,
+          8,
+          400
+        ]
+      ],
+      "enqueued_r_total": 3,
+      "emitted_r_total": 3,
+      "total_bytes": 8400,
+      "max_seq": 8
+    },
+    "fec_budget_on": {
+      "identical": true,
+      "enqueued_r_total": 3,
+      "emitted_r_total": 3,
+      "total_bytes": 8400,
+      "max_seq": 8
+    },
+    "verdict": "ON + LeftoverOnly == OFF-baseline holds byte-for-byte; the property Commit-W sealed is INTACT"
+  },
+  "contract_statement": {
+    "scheduler_turn": "HOLDS (0 violations, measured)",
+    "fec_block": "HOLDS (structural)",
+    "feature_equivalence": "HOLDS (byte-identical)",
+    "budget_and_counts": "HOLDS (unchanged)",
+    "whole_flow_ordering": "DOES NOT HOLD - and is not stated by any code or design authority"
+  },
+  "consequence_for_a3": "the failing assertion is the only one of the five with no authority behind it: a trajectory constant, not an invariant"
+}

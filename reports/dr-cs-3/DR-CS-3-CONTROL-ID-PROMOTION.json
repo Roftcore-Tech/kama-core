@@ -1,0 +1,14 @@
+{
+  "decisive": "control_id_gate.rs:9 \u2014 CsProbe(0x19)/CsEcho(0x1A) explicitly do NOT enter control-id dedup or the gate",
+  "defect_found_and_fixed": "previous emit_cs_echo called issue_gate.issue(), violating that contract; the echo now carries the request's own control_id",
+  "gate_deps": {
+    "ColdRxState": false,
+    "DedupDecision": false,
+    "GlobalColdLedger": false,
+    "TombstoneRegistry": false,
+    "bench": false
+  },
+  "gate_is_general_primitive": true,
+  "issue_gate_refs_in_core": 0,
+  "verdict": "PROMOTION NOT REQUIRED"
+}

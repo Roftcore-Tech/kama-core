@@ -1,0 +1,11 @@
+{
+  "artifact": "DR-CS-3-FRESH-P0",
+  "status": "NOT RUN",
+  "scope_intended": "\u00a75 fresh paired panel, P0 (tail OFF), GE-L10 p=20% RTT=1000, N=40",
+  "reason_not_run": "\u00a74 locked panel FAIL (efficacy 2/3). \u00a74 is explicit: \"Locked panel d\u00fc\u015ferse fresh panel \u00e7al\u0131\u015ft\u0131rma.\"",
+  "records_generated": 0,
+  "data_fabricated": false,
+  "gated_by": "DR-CS-3-LOCKED-PANEL verdict = FAIL",
+  "runner_mode_exists": true,
+  "calibration_result_bearing_runs": 0
+}

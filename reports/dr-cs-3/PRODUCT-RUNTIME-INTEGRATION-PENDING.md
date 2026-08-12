@@ -1,0 +1,43 @@
+# PRODUCT-RUNTIME-INTEGRATION-PENDING
+
+> Binding technical debt. Until it is closed, the transport is **not** a usable product.
+
+## Where we are
+The **default-build receiver component** (`ReceiverControlCore`) and the **default-build sender bootstrap
+emitter** are implemented, bounded, security-tested and integration-tested. Library-level, the authenticated
+bootstrap RTT mechanism is ready:
+`Sender → sealed CsProbe → AEAD open → decode → bounded responder → typed CsEcho → seal → echo ingest →
+matched local RTT → srtt>0 → PreConverge exit → startup pacing`.
+
+## What is missing (all of it, today)
+
+| Missing piece | Status |
+|---|---|
+| Product crate / binary owner | **None.** Only `crates/bench` has a `[[bin]]`. `hub-server`, `client-core`, `admin-server`, `ra-ca`, `discovery` are 3-line stubs with no transport deps. |
+| UDP receive / send loop | **None** in product code. Sockets exist only in bench + examples + the feature-gated bench runner. |
+| Connection lifecycle | **None.** Nothing creates/retires sessions at process level. |
+| Noise handshake | **None.** `crates/crypto/src/lib.rs` is 3 lines; zero `x25519`/`snow`/handshake code. |
+| Split-derived directional keys | **None.** Keys are test-injected; `install_session_with_*` docs say *"Product: gerçek-handshake-Split()"*. |
+| Sender ↔ core wiring | **Not done.** No code drives both together over a socket. |
+| Outbound datagram drain | Component returns sealed bytes; **nobody sends them**. |
+| Process-level end-to-end test | **None.** |
+| Shutdown / error / resource-bound validation | **None** at process level. |
+
+## Claims that remain FORBIDDEN until this debt is closed
+`SHIPPING RECEIVER COMPLETE` · `FULL PRODUCT END-TO-END PASS` · `DEPLOYABLE TRANSPORT` ·
+`TRANSPORT PRODUCT READY` · `PRODUCT COLD-START FULLY FIXED` · any "Noise handshake verified" or
+"deployment network path verified" statement.
+
+## Next phase: `PRODUCT-RUNTIME-INTEGRATION` (NOT started)
+1. Name the real product crate/binary owner.
+2. UDP receive/send loop.
+3. Connection lifecycle.
+4. Noise handshake.
+5. Split-derived directional keys.
+6. `Sender` ↔ `ReceiverControlCore` wiring.
+7. Outbound datagram drain.
+8. Process-level end-to-end test.
+9. Shutdown / error / resource-bound validation.
+
+Also still pending, separately: the DR-CS-3 **locked/fresh panel validation** that gates
+`BootstrapRttConfig` default-ON.

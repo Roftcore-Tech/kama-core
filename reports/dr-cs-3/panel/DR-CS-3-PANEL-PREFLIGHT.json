@@ -1,0 +1,87 @@
+{
+  "artifact": "DR-CS-3-PANEL-PREFLIGHT",
+  "verdict": "DR-CS-3 PANEL PREFLIGHT PASS",
+  "start_head": "4aa11a93af44b2b9e884461e8db3d1ed576c8b4f",
+  "branch": "d1-sprint5c",
+  "commit_made": false,
+  "scope": {
+    "label": "AUTHENTICATED TRANSPORT COMPONENT WITH TEST-INJECTED SESSION KEYS",
+    "validates_noise_handshake": false,
+    "validates_product_binary": false,
+    "validates_deployment_network_path": false
+  },
+  "s1_1_ownership": {
+    "corrigendum": "Prior reporting said ReceiverHost 'delegates to the core'. It does NOT compose a ReceiverControlCore. It re-uses the single-source BootstrapEchoResponder policy; session lookup / AEAD open / decode / seal are separate code paths calling the same primitives on their own instances.",
+    "prior_artifacts_modified": false,
+    "full_core_delegation_performed": false,
+    "full_core_delegation_reason": "ReceiverHost demuxes h_ext from the wire and owns tombstone grace, cold admission and block assembly; wrapping the core would duplicate the session map or force cold-RX state through a component that excludes it. Directive forbids refactor for terminology alone.",
+    "shared": ["BootstrapEchoResponder state+policy", "BootstrapEchoResponder::echo_control"],
+    "separate": ["session map", "h_ext lookup", "AEAD open call site", "decode call site", "seal call site", "session cap"],
+    "acceptance": {
+      "single_responder_implementation": {"result": "PASS", "struct_defs": 1, "impl_blocks": 1},
+      "policy_semantically_identical": {"result": "PASS"},
+      "at_most_one_echo_producer_per_probe": {"result": "PASS", "mechanism": "single pending Option<u16> slot; take_pending drains once; commit is the only accounting path"},
+      "byte_identical_echo": {"result": "PASS", "test": "default_core_and_receiver_host_emit_byte_identical_echo"},
+      "same_security_and_budget_rules": {"result": "PASS"}
+    },
+    "two_responder_risk": "Structurally possible only if the same datagram for the same h_ext were fed to both a ReceiverControlCore and a ReceiverHost in one process. No such composition exists. Recorded as a PRODUCT-RUNTIME-INTEGRATION composition rule: exactly one responder owner per session."
+  },
+  "s1_2_control_id_reflection": {
+    "verdict": "CONTROL-ID-REFLECTION-SAFE",
+    "claims": {
+      "control_id_is_not_aead_nonce": {"result": "PASS", "evidence": "protector.rs:36 nonce96(full_pn)=[0x00000000 || LE64(full_pn)]; sole call sites nonce_for(args.wire_pn) at :269 and nonce_for(candidate) at :334"},
+      "control_id_is_not_aad_input": {"result": "PASS", "evidence": "aad.rs:16-24 AAD = AAD_DS || h_ext || EXTENDED_V1 || wire_flags || pn_trunc; control_id occurrences in aad.rs = 0"},
+      "sealing_uses_separate_monotone_counter": {"result": "PASS", "evidence": "SealArgs.wire_pn + last_sealed_pn[epoch]; non-monotonic refused as WireError::SealInput('non-monotonic wire_pn (nonce-reuse guard)'); SEND_PN_CAP"},
+      "probe_echo_outside_control_id_issue_gate": {"result": "PASS", "evidence": "control_id_gate.rs:4-9 producer inventory 0x10..0x18 only; core issue_gate refs = 0; host emit_cs_echo no longer calls issue()"},
+      "probe_echo_outside_inbound_control_id_dedup": {"result": "PASS", "evidence": "receiver_host.rs:342-361 returns before slot.dedup.check(control_id); core has no dedup window; InboundControlDedup has no production consumer"},
+      "same_control_id_both_directions_no_nonce_reuse": {"result": "PASS", "evidence": "send_cipher from send_key, recv_cipher from recv_key; identical plaintext at identical wire_pn yields different ciphertext; cross-direction open fails"},
+      "probe_seq_is_authoritative_correlation": {"result": "PASS", "evidence": "Event::CsProbeEcho carries probe_seq only; sender.rs:2341 rejects seq != probe_seq"},
+      "control_id_only_idempotent_request_response_identity": {"result": "PASS", "evidence": "echoed verbatim; RetryClass::of(0x19)==of(0x1A)==NoRetry"},
+      "replay_bounded_by_fixed_size_probe_seq_state": {"result": "PASS", "evidence": "echoed: [Option<u16>; 4] fixed array"}
+    },
+    "exact_tests": {
+      "same_control_id_opposite_directions_differ": "PASS",
+      "replayed_probe_no_additional_echo": "PASS",
+      "replayed_echo_no_additional_rtt_sample": "PASS",
+      "same_control_id_wrong_probe_seq_no_rtt": "PASS",
+      "same_probe_seq_wrong_session_no_rtt": "PASS",
+      "fifth_generation_no_echo": "PASS",
+      "sender_receiver_budgets_hold": "PASS",
+      "nonce_pure_function_of_wire_pn": "PASS",
+      "probe_seq_authoritative_control_id_verbatim": "PASS",
+      "probe_echo_consume_zero_control_id_issuance_budget": "PASS"
+    },
+    "run_counts": {
+      "default_build": {"passed": 10, "failed": 0},
+      "experimental_cold_start": {"passed": 12, "failed": 0}
+    },
+    "budgets_observed": {
+      "sender_probe_wire_budget_bytes": 200,
+      "receiver_echo_budget_bytes": 172,
+      "probe_wire_exact_bytes": 44,
+      "echo_wire_bytes": 43,
+      "amplification_ratio": "43/44 < 1"
+    }
+  },
+  "s1_3_session_capacity": {
+    "constant": "MAX_CORE_SESSIONS",
+    "value": 1024,
+    "value_changed_this_turn": false,
+    "fail_closed": true,
+    "typed_error": "CoreError::SessionCapacity { cap: 1024 }",
+    "eviction": "none (no LRU, no TTL, no silent replacement)",
+    "existing_sessions_affected_at_capacity": false,
+    "reinstall_of_existing_handle_permitted_at_capacity": true,
+    "reinstall_semantics": "replaces that handle's session and resets its responder (rekey path, not eviction)",
+    "capacity_reclaimed_by": "explicit close_session only",
+    "status": "component safety cap",
+    "final_product_capacity_decision_owner": "PRODUCT-RUNTIME-INTEGRATION",
+    "grounding_test": "session_capacity_is_fail_closed_without_eviction"
+  },
+  "outcome": {
+    "s1_1": "PASS (corrigendum recorded)",
+    "s1_2": "PASS (CONTROL-ID-REFLECTION-SAFE)",
+    "s1_3": "RECORDED (value unchanged)",
+    "panel_authorised": true
+  }
+}

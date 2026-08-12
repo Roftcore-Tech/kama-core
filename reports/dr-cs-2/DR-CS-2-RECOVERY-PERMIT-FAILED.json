@@ -1,0 +1,99 @@
+{
+  "artifact": "DR-CS-2-RECOVERY-PERMIT-FAILED",
+  "binding_consequence": "any successor must (a) produce an RTT-sampleable transmission (or change what may establish srtt) and (b) ADD allowance rather than reallocate it",
+  "disposition": "BoundedRecoveryCreditConfig + permit state + duplicate-credit emission + permit-specific product tests REMOVED (FAZ 0.2); artifacts and diagnostics retained",
+  "failure_classes": [
+    {
+      "cause": "credited emission is TransmitKind::Duplicate; RTT sampling gated at sender.rs:2060 on p.origin==Data (Karn); PreConverge exit requires srtt",
+      "evidence": {
+        "ack_batches": 2,
+        "credit_wire_bytes": 202,
+        "credited": 2,
+        "first_ack_ns": 9033070000,
+        "first_delivery_ns": 8533070000,
+        "max_srtt_us": 0,
+        "permits": 2,
+        "run": "P0 rep9 credit ON",
+        "state_changes": [
+          [
+            0,
+            "PreConverge"
+          ]
+        ]
+      },
+      "id": "CREDIT-DELIVERED-AND-ACKED-BUT-KARN-EXCLUDED",
+      "structural": true
+    },
+    {
+      "cause": "a pacing debit reallocates rather than adds under total token starvation",
+      "evidence": {
+        "tx_data": [
+          20,
+          18
+        ],
+        "tx_duplicate": [
+          0,
+          2
+        ]
+      },
+      "id": "CREDIT-IS-NET-NEUTRAL-UNDER-DEBIT"
+    },
+    {
+      "evidence": {
+        "debit_bytes": 202,
+        "delay_s": 6.52,
+        "delayed_ms": [
+          [
+            27065,
+            33581
+          ],
+          [
+            23807,
+            30323
+          ],
+          [
+            20549,
+            27065
+          ]
+        ],
+        "floor_bps": 31,
+        "rep39": [
+          "62904",
+          "None"
+        ]
+      },
+      "id": "NEW-STALL-PRODUCED"
+    }
+  ],
+  "locked_regression": {
+    "baseline_stalls": 3,
+    "new_stalls": 1,
+    "panels": [
+      "P0-tail-OFF",
+      "P1-tail-ON"
+    ],
+    "rescued": 0
+  },
+  "mechanism_was_correct": {
+    "MECHANISM_SUCCESS": "PASS",
+    "SAFETY_PASS": "PASS",
+    "budget_respected": true,
+    "duplicate_mints_denied": "~5M",
+    "note": "the contract targeted the wrong quantity: cold start is unlocked by an RTT SAMPLE, not by a delivered byte",
+    "violations": 0
+  },
+  "must_not_retry_by": [
+    "allowing duplicates to yield RTT samples",
+    "relaxing Karn",
+    "increasing credit count",
+    "reducing the debit",
+    "removing srtt from the PreConverge exit",
+    "synthetic RTT on ACK"
+  ],
+  "supersedes": {
+    "contract": "DR-CS-2-RECOVERY-PERMIT-CONTRACT.md",
+    "preserved_unchanged": true,
+    "sha256": "1ebb23a63a8316acf915cf0225abcd0496353a577fd913f5133ab2ed45289aea"
+  },
+  "verdict": "FAILED \u2014 structurally incapable; withdrawn"
+}

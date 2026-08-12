@@ -1,0 +1,302 @@
+{
+  "artifact": "DR-CS-3-LOCKED-PANEL",
+  "verdict": "DR-CS-3 LOCKED PANEL FAIL",
+  "verdict_detail": "efficacy gate 2/3; every safety/accounting gate PASS",
+  "scope": {
+    "label": "DEFAULT-BUILD AUTHENTICATED TRANSPORT COMPONENT PANEL WITH TEST-INJECTED SESSION KEYS",
+    "validates_noise_handshake": false,
+    "validates_product_binary": false,
+    "validates_deployment_network_path": false
+  },
+  "runner": "examples/dr_cs3_panel_runner locked",
+  "release_binary_sha256": "bd4c8169441d3395d6c121ca9b26e3ee3757a669294e0af6337febdbf7c9174e",
+  "runs": 32,
+  "fit_use": "FORBIDDEN",
+  "result_bearing": false,
+  "calibration_result_bearing_runs": 0,
+  "harness": {
+    "fs_cal2_spine_modified": false,
+    "separate_harness": "crates/kama-integration/tests/common/dr_cs3_panel.rs",
+    "real_components": [
+      "product Sender",
+      "default-build ReceiverControlCore",
+      "kama-transport-schema control codec",
+      "AEAD seal/open (KamaNoiseWireProtector)",
+      "RTT estimator",
+      "PreConverge exit",
+      "startup-pacing handoff"
+    ],
+    "session_keys": "TEST-INJECTED directional (no Noise handshake exists in this repository)",
+    "seed_domain": "FSFC2-DIAG42B",
+    "cell_id": "P2-GE20L10-RTT1000",
+    "reps": [
+      5,
+      9,
+      14,
+      16,
+      17,
+      25,
+      38,
+      39
+    ],
+    "rtt_ms": 1000,
+    "loss_model": "Ge{p_ppm:200000,l:10}",
+    "warmup_units": 384,
+    "unit_bytes": 101,
+    "warmup_timeout_ns": 65000000000,
+    "generator": "fs_cal2_gen stream_key + loss_bits (FS-CAL-2 \u00a75.3), re-used unchanged",
+    "new_seeds_selected": false,
+    "additional_disjoint_streams": [
+      "DRCS3ProbeForward",
+      "DRCS3EchoReverse"
+    ],
+    "existing_stream_classes_untouched": true
+  },
+  "harness_validity": {
+    "baselines_reproducing_frozen_records": "16/16 exact",
+    "fields_compared": [
+      "preconverge_exit_ns",
+      "tx_data",
+      "ack_batches",
+      "delivered_src_at_epoch",
+      "epoch_trigger",
+      "warmup_complete",
+      "source_prefix_digest"
+    ],
+    "source_prefix_digest_identical": true
+  },
+  "outcome_definition": {
+    "cold_start_stall": "preconverge_exit_ns is None within the 65 s window",
+    "warmup_complete": "separate, harder criterion; reported but NOT the gate"
+  },
+  "panels": {
+    "P0-tail-OFF": {
+      "records": 8,
+      "baseline_cold_start_stall": [
+        9,
+        14,
+        17
+      ],
+      "recovered": [
+        9,
+        17
+      ],
+      "not_recovered": [
+        14
+      ],
+      "baseline_success": [
+        5,
+        16,
+        25,
+        38,
+        39
+      ],
+      "new_stall": [],
+      "rep39_treatment_stall": false,
+      "max_probe_wire_bytes": 176,
+      "max_echo_wire_bytes": 172
+    },
+    "P1-tail-ON": {
+      "records": 8,
+      "baseline_cold_start_stall": [
+        9,
+        14,
+        17
+      ],
+      "recovered": [
+        9,
+        17
+      ],
+      "not_recovered": [
+        14
+      ],
+      "baseline_success": [
+        5,
+        16,
+        25,
+        38,
+        39
+      ],
+      "new_stall": [],
+      "rep39_treatment_stall": false,
+      "max_probe_wire_bytes": 176,
+      "max_echo_wire_bytes": 172
+    }
+  },
+  "acceptance": {
+    "baseline_stall_recovered": {
+      "required": "3/3",
+      "actual": "2/3",
+      "result": "FAIL"
+    },
+    "baseline_success_no_new_stall": {
+      "required": "5/5",
+      "actual": "5/5",
+      "result": "PASS"
+    },
+    "rep39_not_stalled": {
+      "result": "PASS",
+      "baseline_ms": 62904,
+      "treatment_ms": 4000
+    },
+    "sender_budget_violation": {
+      "required": 0,
+      "actual": 0,
+      "result": "PASS"
+    },
+    "receiver_budget_violation": {
+      "required": 0,
+      "actual": 0,
+      "result": "PASS"
+    },
+    "auth_security_failure": {
+      "required": 0,
+      "actual": 0,
+      "result": "PASS"
+    },
+    "data_displacement": {
+      "required": 0,
+      "actual": 0,
+      "result": "PASS"
+    },
+    "arq_timer_diff_pre_unlock": {
+      "required": 0,
+      "actual": 0,
+      "result": "PASS"
+    },
+    "duplicate_rtt_sample": {
+      "required": 0,
+      "actual": 0,
+      "result": "PASS"
+    },
+    "new_stall": {
+      "required": 0,
+      "actual": 0,
+      "result": "PASS"
+    },
+    "off_arm_emits_nothing": {
+      "required": 0,
+      "actual": 0,
+      "result": "PASS"
+    }
+  },
+  "cold_start_exit_ms": {
+    "14": {
+      "baseline": "STALL",
+      "treatment": "STALL"
+    },
+    "16": {
+      "baseline": 23807,
+      "treatment": 23807
+    },
+    "17": {
+      "baseline": "STALL",
+      "treatment": 4000
+    },
+    "25": {
+      "baseline": 20549,
+      "treatment": 20549
+    },
+    "38": {
+      "baseline": 23807,
+      "treatment": 4000
+    },
+    "39": {
+      "baseline": 62904,
+      "treatment": 4000
+    },
+    "5": {
+      "baseline": 27065,
+      "treatment": 4000
+    },
+    "9": {
+      "baseline": "STALL",
+      "treatment": 4000
+    }
+  },
+  "failure_lineage_rep14": {
+    "failing_step": "echo_generation -> sealed_echo_emission",
+    "probes_emitted": 4,
+    "probe_wire_bytes": 176,
+    "probe_budget": 200,
+    "probes_authenticated": 4,
+    "echoes_generated": 4,
+    "echo_wire_bytes": 172,
+    "echo_budget": 172,
+    "echoes_arrived": 0,
+    "echo_match_valid": 0,
+    "rtt_sample_ns": 0,
+    "all_violation_counters": 0,
+    "reverse_stream_key": "FSFC2-DIAG42B|P2-GE20L10-RTT1000|rep14|DRCS3EchoReverse",
+    "reverse_drop_bits": [
+      true,
+      true,
+      true,
+      true
+    ],
+    "cause": "GE chain starts Bad; mean bad-run length L=10 exceeds the 4-step ladder, so all four generations fall inside one burst",
+    "mechanism_defect": false
+  },
+  "per_rep_bootstrap_streams": {
+    "5": {
+      "probe_fwd": "....",
+      "echo_rev": "...."
+    },
+    "9": {
+      "probe_fwd": "....",
+      "echo_rev": "...."
+    },
+    "14": {
+      "probe_fwd": "....",
+      "echo_rev": "DDDD"
+    },
+    "16": {
+      "probe_fwd": "DDDD",
+      "echo_rev": "...."
+    },
+    "17": {
+      "probe_fwd": "....",
+      "echo_rev": "...."
+    },
+    "25": {
+      "probe_fwd": "....",
+      "echo_rev": "DD.."
+    },
+    "38": {
+      "probe_fwd": "....",
+      "echo_rev": "...."
+    },
+    "39": {
+      "probe_fwd": "....",
+      "echo_rev": "...."
+    }
+  },
+  "recorded_harness_limitations": [
+    {
+      "id": "L1",
+      "title": "consecutive-draw correlation for temporally distant probes",
+      "detail": "the four echoes draw from four consecutive indices of one GE chain, forcing maximal burst correlation between events 6 s / 12 s / 24 s apart; GE bad-run length is defined in packets (L=10)",
+      "changed_this_turn": false,
+      "reason": "fixed by design before the run; changing it after seeing the outcome is forbidden by \u00a70"
+    },
+    {
+      "id": "L2",
+      "title": "reverse-path asymmetry",
+      "detail": "the DATA path's reverse (ACK) direction is lossless (inherited verbatim from the frozen FS-CAL-2 channel so baselines reproduce exactly), while the bootstrap echo's reverse direction is GE-lossy; the treatment faces an impairment the baseline never faces",
+      "changed_this_turn": false,
+      "reason": "same"
+    }
+  ],
+  "consequence": {
+    "fresh_panels_run": false,
+    "control_panels_run": false,
+    "two_netns_run": false,
+    "bootstrap_default": "OFF (unchanged)",
+    "second_treatment_added": false,
+    "ladder_timing_changed": false,
+    "budget_changed": false,
+    "retry_or_timer_added": false,
+    "preconverge_floor_changed": false,
+    "seed_or_threshold_changed": false
+  }
+}

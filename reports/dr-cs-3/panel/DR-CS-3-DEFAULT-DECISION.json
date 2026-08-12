@@ -1,0 +1,111 @@
+{
+  "artifact": "DR-CS-3-DEFAULT-DECISION",
+  "decision": "NO PROMOTION",
+  "bootstrap_rtt_default": "OFF (enabled: false, unchanged)",
+  "verdict": "DR-CS-3 PANEL PREFLIGHT PASS \u00b7 LOCKED PANEL FAIL (EFFICACY 2/3) \u00b7 BOOTSTRAP RTT DEFAULT-OFF \u00b7 PRODUCT RUNTIME INTEGRATION PENDING",
+  "gate_ledger": {
+    "preflight_conformance": "PASS",
+    "locked_3_of_3_recovered": "FAIL (2/3: rep9 ok, rep17 ok, rep14 not recovered)",
+    "baseline_success_to_treatment_stall": "PASS (0/5 both panels)",
+    "fresh_p0_p1_panel": "NOT RUN (gated on locked panel)",
+    "no_loss_zero_overhead": "NOT RUN",
+    "iid_non_regression": "NOT RUN",
+    "probe_echo_loss_safety": "NOT RUN as a panel; equivalent safety properties pinned by \u00a71 preflight tests",
+    "two_netns_component_lineage": "NOT RUN",
+    "budget_security_accounting_violations": "PASS (0 across 32 locked runs)",
+    "data_displacement": "PASS (0)",
+    "arq_timer_diff": "PASS (0)",
+    "rate_ramp_regression": "FAIL (one open regression found; NOT a bootstrap issue)",
+    "off_zero_diff": "PASS (0 probes, 0 echo bytes on every OFF arm)"
+  },
+  "fail_branch_compliance": {
+    "bootstrap_default_off": true,
+    "ladder_timing_unchanged": true,
+    "budget_not_increased": true,
+    "no_new_retry_or_timer": true,
+    "preconverge_floor_unchanged": true,
+    "duplicate_credit_not_reintroduced": true,
+    "not_rescued_with_tail_or_fec": true,
+    "seed_or_threshold_not_tuned": true,
+    "no_second_treatment": true,
+    "exact_failure_lineage_recorded": true
+  },
+  "product_state": {
+    "BootstrapRttConfig_default_enabled": false,
+    "StartupPacingConfig_default_enabled": true,
+    "TailRecoveryConfig_default_enabled": false,
+    "fec_policy_default": "OFF",
+    "BS_FIRES_NS": [
+      3000000000,
+      9000000000,
+      21000000000,
+      45000000000
+    ],
+    "BS_TX_HARD_BUDGET": 200,
+    "ECHO_BUDGET_BYTES": 172,
+    "PRE_CONVERGE_FLOOR_BW": 31,
+    "product_sources_unchanged_vs_start_manifest": true
+  },
+  "what_the_panel_established": {
+    "failure_is_mechanism_defect": false,
+    "rep14": {
+      "probes_emitted": 4,
+      "probe_wire_bytes": 176,
+      "probes_authenticated": 4,
+      "echoes_generated": 4,
+      "echo_wire_bytes": 172,
+      "echoes_arrived": 0,
+      "reverse_drop_bits": [
+        true,
+        true,
+        true,
+        true
+      ],
+      "violations": 0
+    },
+    "effect_where_a_round_trip_survives_ms": {
+      "9": {
+        "baseline": "STALL",
+        "treatment": 4000
+      },
+      "17": {
+        "baseline": "STALL",
+        "treatment": 4000
+      },
+      "39": {
+        "baseline": 62904,
+        "treatment": 4000
+      },
+      "5": {
+        "baseline": 27065,
+        "treatment": 4000
+      },
+      "38": {
+        "baseline": 23807,
+        "treatment": 4000
+      }
+    },
+    "summary": "the mechanism is correct and effective when a bootstrap round trip survives; the 4-step ladder is not long enough to survive a reverse-path burst spanning all four generations",
+    "ladder_extension_proposed_as_fix": false
+  },
+  "recorded_limitations": [
+    "consecutive-draw correlation for temporally distant probes",
+    "reverse-path asymmetry: ACK reverse lossless, echo reverse GE-lossy"
+  ],
+  "collateral_finding": "DR-CS-3-COLLATERAL-FINDING-RATE-RAMP-PIN",
+  "forbidden_claims_still_forbidden": [
+    "SHIPPING RECEIVER COMPLETE",
+    "FULL PRODUCT END-TO-END PASS",
+    "DEPLOYABLE TRANSPORT",
+    "TRANSPORT PRODUCT READY",
+    "PRODUCT COLD-START FULLY FIXED"
+  ],
+  "git": {
+    "commit": false,
+    "push": false,
+    "pr": false,
+    "head": "4aa11a93af44b2b9e884461e8db3d1ed576c8b4f"
+  },
+  "calibration_result_bearing_runs": 0,
+  "next": "DUR"
+}

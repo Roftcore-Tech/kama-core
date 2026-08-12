@@ -1,0 +1,87 @@
+{
+  "artifact": "DR-CS-3-COLLATERAL-FINDING-RATE-RAMP-PIN",
+  "status": "REGRESSION FOUND \u00b7 ROOT-CAUSED \u00b7 NOT FIXED (out of scope, needs an explicit decision)",
+  "is_dr_cs3_panel_result": false,
+  "test": "crates/adaptive-transport/tests/budget_equivalence_pin.rs::leftover_equivalence_pin_constants",
+  "stage_1_compile_break": {
+    "error": "E0004 non-exhaustive patterns: TransmitKind::CsProbe not covered",
+    "cause": "the CsProbe match arm was #[cfg(feature=\"experimental-cold-start\")] but DR-CS-3 un-gated the variant",
+    "effect": "the test target silently stopped building, so earlier green suite runs never exercised this pin",
+    "fix_applied": "removed the #[cfg] from that arm (test-only, one line)",
+    "fix_correctness": "unambiguous - the variant is un-gated, so gating the arm makes the match non-exhaustive"
+  },
+  "stage_2_behavioural_failure": {
+    "assertion": "last_data < first_par (pin: DATA-once-parity)",
+    "isolation": {
+      "startup_pacing_off": {
+        "kinds": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          3,
+          3,
+          3
+        ],
+        "last_data": 5,
+        "first_par": 6,
+        "pin": "passes"
+      },
+      "startup_pacing_on": {
+        "kinds": [
+          0,
+          0,
+          0,
+          0,
+          3,
+          3,
+          0,
+          0,
+          3
+        ],
+        "last_data": 7,
+        "first_par": 4,
+        "pin": "fails"
+      },
+      "product_default": {
+        "kinds": [
+          0,
+          0,
+          0,
+          0,
+          3,
+          3,
+          0,
+          0,
+          3
+        ],
+        "last_data": 7,
+        "first_par": 4,
+        "pin": "fails"
+      }
+    },
+    "root_cause": "DR-RATE-RAMP-2 / FAZ-1A startup pacing default-ON changes the pacer token trajectory: only 4 of 6 DATA fit before the parity drain, so DATA 5 and 6 emit in later PTO turns after parity",
+    "dr_cs3_involvement": "none - BootstrapRttConfig is default OFF and the scenario never enters the bootstrap gate",
+    "other_pin_assertions_still_hold": [
+      "enqueued_r_total=3",
+      "emitted_r_total=3",
+      "(data_count,parity_count)=(6,3)",
+      "total_bytes=6*1200+3*400",
+      "max_seq=8"
+    ]
+  },
+  "not_fixed_because": [
+    "SS0 forbids changing the startup-pacing axis this turn",
+    "weakening or re-baselining a sealed pin after seeing the result is forbidden",
+    "the pin asserts a GLOBAL ordering across ~47 turns; the sealed DATA-first invariant is a PER-TURN property which still holds - whether the global form is still the intended contract is a specification question"
+  ],
+  "consequence_for_earlier_claims": "the earlier DR-RATE-RAMP-2 validation reported no regressions; that did not cover this pin because the target was not compiling. Rate-ramp default-ON has one known open regression until resolved.",
+  "decision_required": [
+    "amend the pin to the per-turn DATA-first invariant with a recorded supersession",
+    "change startup pacing so the global ordering is preserved",
+    "accept and record the ordering change as intended, superseding the sealed constant explicitly"
+  ],
+  "tree_state": "one failing test in adaptive-transport, left failing and VISIBLE rather than hidden behind a compile error"
+}

@@ -1,0 +1,42 @@
+{
+  "artifact": "BOOTSTRAP-PROBE-NOT-PRODUCT-GROUNDED",
+  "exists": {
+    "ladder_constants": "sender.rs:192-198 CS_PROBE_FIRES_NS=[3,9,21,45]s, CS_GIVEUP_NS=60s, CS_PROBE_WIRE_MAX=44B, CS_PROBE_TX_HARD_BUDGET=200B",
+    "receiver_recognition": "kama-integration/src/receiver_host.rs:331-334 (composition root, unconditional): counts and returns IngestOutcome::ProbeEchoed",
+    "wire_format": [
+      "kama-transport-schema/src/inner_kind.rs:25 CTRL_CS_ECHO=0x1A",
+      "kama-transport-schema/src/control.rs:67 (ECHO_WIRE_MAX=43B)"
+    ]
+  },
+  "gate": "\u00a71.4 \u2014 probe/echo must be a real product path at BOTH ends",
+  "missing": [
+    {
+      "decisive": true,
+      "detail": "receiver_host only counts; IngestOutcome::ProbeEchoed consumed ONLY by tests (a2_f3_control_ingest.rs:48,55; a2_f5_plateau_product.rs:92). The only echo writer is udp_runner.rs:288 (e[0]=0x1A) in a module declared 'BENCH-RUNNER ... \u00dcRET\u0130M-YOLUNA-BA\u011eLI-DE\u011e\u0130L' and additionally experimental-cold-start gated (udp_runner.rs:768)",
+      "id": "NO-PRODUCT-ECHO-TRANSMITTER"
+    },
+    {
+      "detail": "adaptive-transport/src/receiver.rs: 0 refs to 0x19/0x1A/CsProbe/probe_echo",
+      "id": "PRODUCT-RECEIVER-CRATE-HAS-NO-PROBE-SUPPORT"
+    },
+    {
+      "detail": "TransmitKind::CsProbe (sender.rs:759-760) and drain_cs_probes (sender.rs:1808-1809) are both #[cfg(feature=\"experimental-cold-start\")]",
+      "id": "NO-SENDER-EMITTER-IN-DEFAULT-BUILD"
+    }
+  ],
+  "phase": "DR-CS-2B FAZ 1",
+  "status": {
+    "FAZ0_cleanup": "DONE (zero-diff PASS)",
+    "FAZ1_grounding": "FAIL",
+    "FAZ2_to_7": "NOT STARTED",
+    "alternative_treatment": "NOT applied",
+    "product_behavior_changed_this_turn": false
+  },
+  "unblock_items": [
+    "product-path echo responder emitting 0x1A with ECHO_WIRE_MAX<=request",
+    "default-build sender probe emitter NOT using the experimental-cold-start pipeline (disqualified on 4 grounds)",
+    "decision on ADDITIVE probe send allowance (a pacing debit reallocates, per the FAZ-2 failure)"
+  ],
+  "verdict": "STOP",
+  "why_stop_not_a_small_addition": "closing it requires a product-path echo RESPONDER = receiver/ACK-ingest patching (forbidden this turn) and a new product wire behaviour; harness-modelling it would be the forbidden fake product path (already rejected in the FAZ-2 A1 audit)"
+}
