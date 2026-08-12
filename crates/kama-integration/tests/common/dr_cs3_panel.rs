@@ -318,6 +318,8 @@ pub struct PanelOut {
     pub source_prefix_digest: String,
     /// ACKs dropped by the REVERSE channel (0 on the primary continuity panel).
     pub acks_reverse_dropped: u64,
+    /// ACKs OFFERED to the reverse channel (delivered + dropped).
+    pub acks_generated: u64,
     /// Packets that traversed the forward chain (observation-only).
     pub forward_steps: u64,
     /// Packets that traversed the reverse chain (observation-only).
@@ -555,6 +557,7 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
             let Logical::Src(gid) = logical;
             delivered_src.insert(gid);
             // ACK traverses the SAME reverse chain as Echo, in chronological emission order.
+            out.acks_generated += 1;
             if rev.next_drop() {
                 out.acks_reverse_dropped += 1;
             } else {
