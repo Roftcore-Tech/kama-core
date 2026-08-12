@@ -18,6 +18,60 @@ jobs:
       - run: cargo test --all --all-features
       - run: cargo build --release --all
 
+  # DR-RATE-RAMP-2B §A1 / AŞAMA-2: `--all-features` CANNOT stand in for the default build.
+  # Two real breakages hid here: a test target that stopped compiling under default features, and a
+  # LIB that stopped compiling under `--features experimental-fec-budget` alone. Each configuration
+  # below is built AND tested on its own, and every step prints its own compiled/run/filtered counts.
+  semantic-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default-workspace
+            args: ""
+          - name: all-features
+            args: "--all-features"
+          - name: experimental-cold-start
+            args: "-p adaptive-transport -p kama-integration --features experimental-cold-start"
+          - name: experimental-fec-budget
+            args: "-p adaptive-transport --features experimental-fec-budget"
+          - name: diagnostic
+            args: "-p adaptive-transport -p kama-integration --features diag-sched-telemetry"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: "build (${{ matrix.name }})"
+        run: cargo build --all-targets ${{ matrix.args }}
+      - name: "clippy (${{ matrix.name }})"
+        run: cargo clippy --all-targets ${{ matrix.args }} -- -D warnings
+      - name: "test (${{ matrix.name }}) with visible counts"
+        run: |
+          set -o pipefail
+          cargo test ${{ matrix.args }} 2>&1 | tee /tmp/out.txt
+          echo "----- ${{ matrix.name }} summary -----"
+          COMPILED=$(grep -c '^     Running ' /tmp/out.txt || true)
+          RUN=$(grep -oP '^test result: \w+\. \K[0-9]+' /tmp/out.txt | paste -sd+ - | sed 's/^$/0/' | bc)
+          FILTERED=$(grep -oP '; \K[0-9]+(?= filtered out)' /tmp/out.txt | paste -sd+ - | sed 's/^$/0/' | bc)
+          IGNORED=$(grep -oP '; \K[0-9]+(?= ignored)' /tmp/out.txt | paste -sd+ - | sed 's/^$/0/' | bc)
+          echo "test_binaries_compiled=$COMPILED"
+          echo "tests_run=$RUN"
+          echo "tests_ignored=$IGNORED"
+          echo "tests_filtered_out=$FILTERED"
+          if [ "$COMPILED" -eq 0 ]; then echo "no test binary compiled for ${{ matrix.name }}"; exit 1; fi
+
+  # FS-CAL-2 pins must run in the DEFAULT build (the ARQ contract binds to that configuration).
+  fs-cal-pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p kama-integration --test fs_cal2_pins -- --nocapture
+
   security:
     runs-on: ubuntu-latest
     steps:
