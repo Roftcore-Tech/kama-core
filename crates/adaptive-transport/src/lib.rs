@@ -31,7 +31,6 @@ pub mod emergency;
 pub mod error;
 /// FS-CAL-2 v3 §3 — prefix-causal loss-structure fate estimator (pure/deterministic/integer-only;
 /// observation-only: no product caller; guard grounded to `tail_recovery::base_pto_ns`).
-pub mod fate_estimator;
 pub mod fec;
 /// DR-FEC-FS-1 FS-HARNESS-A — A1-EARLY duplication emitter + redundancy cost-accounting (PIN-A/PIN-E).
 #[cfg(feature = "experimental-fec-budget")]

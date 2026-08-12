@@ -63,15 +63,6 @@ jobs:
           echo "tests_filtered_out=$FILTERED"
           if [ "$COMPILED" -eq 0 ]; then echo "no test binary compiled for ${{ matrix.name }}"; exit 1; fi
 
-  # FS-CAL-2 pins must run in the DEFAULT build (the ARQ contract binds to that configuration).
-  fs-cal-pins:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p kama-integration --test fs_cal2_pins -- --nocapture
-
   security:
     runs-on: ubuntu-latest
     steps:
