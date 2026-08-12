@@ -170,9 +170,11 @@ fn network_censored_is_separate_but_stays_in_the_denominator() {
 ///
 /// The proof is the DRAW-INDEX MAPPING, which is deterministic. Drive the identical chronological
 /// event sequence ACK, Echo, ACK, Echo:
-///   * V2 (one reverse chain): the echoes land on chain positions 1 and 3 — interleaved with ACKs.
-///   * V1 (private echo chain): the echoes land on positions 0 and 1 of their own chain, completely
-///     independent of how many ACKs were sent.
+///
+/// * V2 (one reverse chain): the echoes land on chain positions 1 and 3 — interleaved with ACKs.
+/// * V1 (private echo chain): the echoes land on positions 0 and 1 of their own chain, completely
+///   independent of how many ACKs were sent.
+///
 /// That independence is exactly the defect that let four echoes 6/12/24 s apart consume four
 /// consecutive draws in rep14.
 #[test]
