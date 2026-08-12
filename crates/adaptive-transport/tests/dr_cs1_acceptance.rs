@@ -343,15 +343,28 @@ fn expect_retransmit_via_wakeup(
     if has(first_out) {
         return (first_t, first_out.to_vec()); // overdue-aynı-batch (C2)
     }
-    let wk = s
-        .next_wakeup_ns()
-        .expect("(d)-deadline expose-edilmeli (EK4-A2)");
-    let out = s.on_event_batch(wk + MS, Vec::new()); // TEK-boş-Tick: due→faz-3-fire
-    assert!(
-        has(&out),
-        "retransmit exposed-deadline'da Tick-only-ile-fire-etmeli (yeni-network-event-yok)"
-    );
-    (wk + MS, out)
+    // EK4-A2 (DR-RATE-RAMP-2B/AŞAMA-1): `next_wakeup_ns()` artık MEVCUT authoritative kaynakların
+    // EN ERKEN'ini raporlar (ARQ/dup/bootstrap/tail deadline'ları + pacer-token'a bağlı due-now iş),
+    // yalnız `cs_wakeup`'ı değil. Daha erken uyanmak DOĞRUdur; sürücü işi bitene kadar uyanışları
+    // takip eder. Korunan özellik AYNI ve daha güçlüdür: retransmit YALNIZ expose edilen
+    // deadline'larla, HİÇBİR yeni network-event olmadan ve periodic tick KULLANILMADAN fire eder.
+    let mut t = first_t;
+    for _ in 0..64 {
+        let wk = s
+            .next_wakeup_ns()
+            .expect("(d)-deadline expose-edilmeli (EK4-A2): outstanding iş varken None YASAK");
+        // Overdue deadline (wk <= t) MEŞRUdur: "şimdi due" demektir. Sürücü max(wk, now)'a ilerler.
+        t = wk.max(t).saturating_add(MS);
+        // Timer-güdümlü uyanış: `next_wakeup_ns()` bir TIMER deadline'ıdır, uyanınca timer ATEŞLENİR.
+        // Bu PERIODIC TICK DEĞİLDİR — yalnız API'nin döndürdüğü deadline'da, yeni network-event
+        // OLMADAN. (Feature build'de eski `cs_wakeup` faz-3'ü bu Pto'yu İÇERİDEN üretiyordu; genel
+        // default-build API'sinde üreten taraf event-loop'tur.)
+        let out = s.on_event_batch(t, vec![Event::TimerFired(Timer::Pto)]);
+        if has(&out) {
+            return (t, out);
+        }
+    }
+    panic!("retransmit exposed-deadline zincirinde fire etmedi (yeni-network-event-yok)")
 }
 
 /// DI-1: ilk-DATA-kaybı — probe→echo→bootstrap-srtt→Startup; sonraki-trafiğin-ACK'i kayıp-birimi

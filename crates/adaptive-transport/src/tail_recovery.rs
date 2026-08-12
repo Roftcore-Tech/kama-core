@@ -75,6 +75,12 @@ pub struct TailRecovery {
     /// Times `on_timer` returned `ProbeDue` (probe eligible/scheduled). `probe_due_count - probe_count`
     /// = probes that were due but not emitted (token-starved / ACK-race cancelled). Observation-only.
     probe_due_count: u64,
+    /// DR-CS-2 (observation-only): `not-due → due` TRANSITIONS. `probe_due_count` is level-triggered
+    /// (it grows with the timer poll rate while a probe stays due-but-unemitted) and therefore MUST NOT
+    /// be read as "probes wanted"; this edge counter is the demand signal.
+    probe_due_edge_count: u64,
+    /// Whether the previous `on_timer` returned `ProbeDue` (edge detection state).
+    was_due: bool,
 }
 
 impl TailRecovery {
@@ -91,6 +97,8 @@ impl TailRecovery {
             spurious_probe_bytes: 0,
             timer_fire_count: 0,
             probe_due_count: 0,
+            probe_due_edge_count: 0,
+            was_due: false,
         }
     }
 
@@ -129,6 +137,13 @@ impl TailRecovery {
         self.probe_index = 0;
     }
 
+    /// EK4-A2 (event-loop liveness): armed idle-window başlangıcı (SALT-OKUMA; yeni state DEĞİL).
+    /// `next_wakeup_ns()` PTO deadline'ını `armed_at_ns + current_pto_ns(..)` ile türetir.
+    #[must_use]
+    pub fn armed_at_ns(&self) -> Option<u64> {
+        self.armed_at_ns
+    }
+
     /// No outstanding ack-eliciting source ⇒ disarm (mechanism inert on a drained/no-loss flow).
     pub fn disarm(&mut self) {
         self.armed_at_ns = None;
@@ -148,11 +163,13 @@ impl TailRecovery {
     ) -> ProbeDecision {
         self.timer_fire_count = self.timer_fire_count.saturating_add(1);
         if !self.cfg.enabled {
+            self.was_due = false; // edge-detect: leaving the due state
             return ProbeDecision::Idle;
         }
         let Some(target) = oldest_inflight_seq else {
             // nothing outstanding → never fires; normal-flow send untouched.
             self.disarm();
+            self.was_due = false; // edge-detect: leaving the due state
             return ProbeDecision::Idle;
         };
         // arm the idle window if not already armed for this outstanding data.
@@ -160,24 +177,38 @@ impl TailRecovery {
             .armed_at_ns
             .get_or_insert(now_ns.max(self.last_progress_ns));
         if self.probe_index >= self.cfg.max_tail_probes {
+            self.was_due = false; // edge-detect: leaving the due state
             return ProbeDecision::Idle; // bounded — never unbounded retransmission.
         }
         let pto = self.current_pto_ns(srtt_ns, rttvar_ns);
         // reordering / delayed-ACK guard: never probe within one PTO of the most recent ACK progress.
         if now_ns.saturating_sub(self.last_progress_ns) < pto {
+            self.was_due = false; // edge-detect: leaving the due state
             return ProbeDecision::Idle;
         }
         if now_ns.saturating_sub(armed) < pto {
+            self.was_due = false; // edge-detect: leaving the due state
             return ProbeDecision::Idle; // not yet due.
         }
         // DUE — but do NOT consume the attempt here (§3 probe-due ≠ probe-sent). The sender consumes it via
         // `on_probe_sent` ONLY after a successful emission (token available + target still outstanding). While a
         // probe is due but un-emitted (no token), on_timer keeps returning ProbeDue without advancing the cap.
-        self.probe_due_count = self.probe_due_count.saturating_add(1); // observation-only (§7 probe_due).
+        self.probe_due_count = self.probe_due_count.saturating_add(1); // observation-only (§7 probe_due) — LEVEL.
+        if !self.was_due {
+            self.probe_due_edge_count = self.probe_due_edge_count.saturating_add(1); // EDGE (demand).
+        }
+        self.was_due = true;
         ProbeDecision::ProbeDue {
             target_seq: target,
             probe_index: self.probe_index,
         }
+    }
+
+    /// Observation-only: `not-due → due` TRANSITION count (the demand signal). Unlike `probe_due_count`,
+    /// this does NOT grow with the timer poll rate.
+    #[must_use]
+    pub fn probe_due_edge_count(&self) -> u64 {
+        self.probe_due_edge_count
     }
 
     /// Consume one probe attempt AFTER a confirmed successful emission (token available, target still outstanding

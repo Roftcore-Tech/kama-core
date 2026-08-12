@@ -44,7 +44,7 @@ use crate::fusion::{
 };
 use crate::loss::{LossDetector, ThresholdLossDetector};
 use crate::pacer::{TokenBucket, DEFAULT_BURST_CAP};
-use crate::rate::{effective_send_rate, PacingPhase, SrcConfig, DEFAULT_MTU};
+use crate::rate::{bdp_bytes, effective_send_rate, Gain, PacingPhase, SrcConfig, DEFAULT_MTU};
 use crate::rtt::{apply_ack_delay, RttEstimator};
 use crate::tail_recovery::{ProbeDecision, TailRecovery, TailRecoveryConfig};
 
@@ -106,7 +106,7 @@ pub enum Event {
     /// rtt-estimator (matematik-değişmez). cwnd/BtlBw/delivery/loss/ack-conf'a DOKUNMAZ (N8-spot).
     /// seen_count/arrival_gap SENDER'A-TAŞINMAZ (ledger-only alıcı/harness-defterinde; karar-
     /// girdisi-yapılamaz — amendman-§3).
-    #[cfg(feature = "experimental-cold-start")]
+    /// DR-CS-3: UNGATED — the `0x1A` codepoint already ships in `kama-transport-schema`.
     CsProbeEcho {
         /// Yansıtılan probe_seq (INV-CS-7 namespace).
         probe_seq: u16,
@@ -569,6 +569,179 @@ pub enum Timer {
     RtpropProbe,
 }
 
+/// DR-CS-3 (§FAZ-2) product config: shipping bootstrap RTT probe. DEFAULT OFF ⇒ inert and
+/// byte-identical to the FAZ-1A baseline.
+///
+/// Contract: reports/dr-cs-3/DR-CS-3-BOOTSTRAP-RTT-CONTRACT.md (frozen before implementation).
+/// Mechanism: while `PreConverge && srtt.is_none()`, fire at most one `0x19` probe per authoritative
+/// ladder step, on an ADDITIVE allowance (no DATA token, no pacer debt), and turn the matching
+/// authenticated `0x1A` echo into a real RTT sample via the existing `RttEstimator::observe`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootstrapRttConfig {
+    /// Master gate. Default false → inert.
+    pub enabled: bool,
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for BootstrapRttConfig {
+    fn default() -> Self {
+        // DEFAULT OFF — pending locked/fresh panel validation (DR-CS-3 §9).
+        Self { enabled: false }
+    }
+}
+
+/// DR-CS-3 authoritative ladder (absolute offsets from the bootstrap arm instant).
+/// Same values as the legacy `CS_PROBE_FIRES_NS`; no new constant.
+const BS_FIRES_NS: [u64; 4] = [3_000_000_000, 9_000_000_000, 21_000_000_000, 45_000_000_000];
+/// Exact `CsProbe` wire size (schema `control.rs:60`: PROBE_WIRE_EXACT = 44 B).
+const BS_PROBE_WIRE_EXACT: u64 = 44;
+/// Total sender probe budget (legacy `CS_PROBE_TX_HARD_BUDGET`): 4 × 44 = 176 B ≤ 200 B.
+const BS_TX_HARD_BUDGET: u64 = 200;
+
+/// DR-CS-3 observation-only bootstrap lineage (always compiled; counters only).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BootstrapRttDiag {
+    /// Ladder armed (once per bootstrap epoch).
+    pub arm: u64,
+    /// `not-due → due` step transitions (unique demand; NEVER a poll count).
+    pub step_edge: u64,
+    /// A step that had already fired was refused.
+    pub duplicate_step_denied: u64,
+    /// Probes actually emitted to the wire.
+    pub probe_emitted: u64,
+    /// Probe wire bytes emitted.
+    pub probe_wire_bytes: u64,
+    /// Echoes handed to the sender.
+    pub echo_ingested: u64,
+    /// Echoes that matched an outstanding generation.
+    pub echo_match_valid: u64,
+    /// Echoes rejected (unsolicited / wrong generation / duplicate / already resolved).
+    pub echo_match_rejected: u64,
+    /// The accepted RTT sample (ns); 0 if none.
+    pub rtt_sample_ns: u64,
+    /// Ladder cancelled after the first valid sample.
+    pub cancelled: u64,
+    /// MUST stay 0: a probe was emitted after the ladder resolved.
+    pub probe_after_success_violation: u64,
+    /// MUST stay 0: budget exceeded.
+    pub budget_violation: u64,
+}
+
+/// `bytes / srtt` → bytes/sec. u128-widened, saturating (ADR-17: integer only, no float).
+fn rate_per_srtt(bytes: u64, srtt_ns: u64) -> u64 {
+    if srtt_ns == 0 {
+        return 0;
+    }
+    u64::try_from(u128::from(bytes) * 1_000_000_000u128 / u128::from(srtt_ns)).unwrap_or(u64::MAX)
+}
+
+/// DR-RATE-RAMP-2 (§FAZ-1) product config: startup pacing INITIALIZATION at the PreConverge→Startup
+/// transition. DEFAULT OFF ⇒ mechanism inert and the pacing path is byte-identical to the baseline.
+///
+/// Rationale. Leaving `PreConverge` requires a valid SACK, so an `srtt` measurement exists — but `BtlBw`
+/// at that instant is seeded from a sample taken under the 31 B/s floor (one sealed unit per RTT). The
+/// pacing rate therefore starts at `gain × BtlBw ≈ 288 B/s`, which reproduces one-unit-per-RTT samples and
+/// re-derives the same low `BtlBw`: a self-clocked fixed point (DR-RATE-RAMP-1).
+///
+/// This does NOT write synthetic samples into the BtlBw max-filter and does NOT change `app_limited`
+/// semantics or add an in-flight gate. It only initializes the PACER to the minimum-pipe rate the
+/// product's OWN cwnd policy already permits, and only for the bootstrap window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupPacingConfig {
+    /// Master gate. Default false → inert.
+    pub enabled: bool,
+}
+
+// The manual impl is deliberate: it carries the load-bearing rationale for why the default is OFF
+// (the sealed INV-RATE-1 lock-golden). A bare `#[derive(Default)]` would strip that record.
+#[allow(clippy::derivable_impls)]
+impl Default for StartupPacingConfig {
+    fn default() -> Self {
+        // DR-RATE-RAMP-2 §FAZ-1: the treatment PASSED its paired single-axis validation (260 runs:
+        // locked-replay / GE-L10-p20 / IID-p5 / no-loss{50,250,1000}; locked fixed points 3 -> 0;
+        // delivery worse in 0/115 pairs; no-loss wire byte-identical; no synthetic BtlBw samples).
+        //
+        // DR-RATE-RAMP-2 §FAZ-1A: **DEFAULT ON**. The treatment passed its six frozen PASS criteria
+        // (260 paired single-axis runs) and the INV-RATE-1 lock-golden was formally superseded, not
+        // silently rewritten: see reports/fs-cal-2/v3.5/INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md
+        // (recorded and hashed BEFORE any test edit). The old golden is preserved verbatim and re-scoped
+        // to the floor-INACTIVE legacy path; the active-floor contract is sealed by six new tests
+        // (arming only on the PreConverge exit, loss can neither arm nor raise it, cwnd/srtt has the last
+        // word at every application, no synthetic BtlBw samples, deterministic permanent release).
+        //
+        // DR-RATE-RAMP-2B §A3.2/§A4: **REVERTED TO DEFAULT OFF.** Enabling this by default surfaced
+        // TWO trajectory-constant failures, not one. The FEC-ordering one was fully resolved (see
+        // reports/dr-rate-ramp-2b/: the sealed per-turn and per-block DATA-before-PARITY invariants
+        // hold with 0 violations, and `experimental-fec-budget` ON ≡ OFF is byte-identical), but the
+        // SECOND — `dr_cs1_acceptance::f2b_di1c_rearmed_pto_lifecycle_exposure`, EK4-A2 — is a
+        // DIFFERENT invariant that is NOT covered by that supersession and is NOT resolved:
+        // `next_wakeup_ns()` returns `None` at an instant where a unit is still outstanding. Measured
+        // fact: the retransmit is NOT lost and actually happens EARLIER under the floor (4500 ms vs
+        // 7500 ms on idle ticks) — but `next_wakeup_ns()` is precisely what a real event loop uses to
+        // decide how long to sleep, so a `None` there is not something to wave through.
+        // §A3.2 is explicit: "Belirsizlik varsa supersession yapma; default startup pacing'i geçici
+        // OFF'a al ve DUR." The mechanism stays fully available via `set_startup_pacing_init`.
+        Self { enabled: false }
+    }
+}
+
+/// DR-CS-2 / DR-RATE-RAMP-1 observation-only scheduler telemetry (feature `diag-sched-telemetry`,
+/// DEFAULT OFF). Every field is a saturating counter incremented AT an existing decision point; nothing
+/// here participates in control flow, ordering, token accounting or pacing.
+///
+/// Vocabulary (deliberately disaggregated — an aggregate `probe_due` counter is a POLL counter and MUST
+/// NOT be read as emission demand):
+/// * `*_due_poll`      — the due-predicate was evaluated and held (level-triggered; grows with tick rate).
+/// * `*_due_edge`      — a `not-due → due` TRANSITION (this, not `due_poll`, is "a probe was wanted").
+/// * `*_enqueued`      — accepted into the class's pending queue/plan.
+/// * `*_selected`      — the scheduler reached this class and attempted an emission this pass.
+/// * `*_token_denied`  — the attempt was refused by the pacer/token check.
+/// * `*_wire_emitted`  — a `TransmitDecision` was actually produced.
+#[cfg(feature = "diag-sched-telemetry")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SchedDiag {
+    /// DATA (fresh original source) — scheduler reached the tx_queue front.
+    pub data_selected: u64,
+    /// DATA refused by the token check.
+    pub data_token_denied: u64,
+    /// DATA `TransmitDecision` emitted.
+    pub data_wire_emitted: u64,
+    /// `Event::AppData` accepted into `tx_queue`.
+    pub data_enqueued: u64,
+    /// ARQ selective retransmit — scheduler reached a `pending_lost` record.
+    pub arq_retransmit_selected: u64,
+    /// ARQ retransmit refused by the token check.
+    pub arq_retransmit_token_denied: u64,
+    /// ARQ retransmit emitted.
+    pub arq_retransmit_wire_emitted: u64,
+    /// §3.3-B geometric copy — scheduler reached a due `dup_queue` entry.
+    pub dup_selected: u64,
+    /// Geometric copy refused by the token check.
+    pub dup_token_denied: u64,
+    /// Geometric copy emitted.
+    pub dup_wire_emitted: u64,
+    /// Bounded tail probe — `emit_tail_probe` had a pending target and reached the token check.
+    pub tail_probe_selected: u64,
+    /// Tail probe refused by the token check (stays pending; cap NOT consumed).
+    pub tail_probe_token_denied: u64,
+    /// Tail probe emitted to the wire.
+    pub tail_probe_wire_emitted: u64,
+    /// Tail probe pending-target set by the PTO handler (`not-pending → pending` transition).
+    pub tail_probe_enqueued: u64,
+    /// Cold-start ladder probe — reached the token check in `drain_cs_probes`.
+    pub cs_probe_selected: u64,
+    /// Cold-start probe refused by the token check.
+    pub cs_probe_token_denied: u64,
+    /// Cold-start probe emitted to the wire.
+    pub cs_probe_wire_emitted: u64,
+    /// Cold-start probe pushed onto `cs_probe_pending` by a due ladder timer.
+    pub cs_probe_enqueued: u64,
+    /// FEC parity refused by the token check.
+    pub fec_parity_token_denied: u64,
+    /// FEC parity emitted.
+    pub fec_parity_wire_emitted: u64,
+}
+
 /// Transmit kararı — çağıran `unit_id`'yi gerçekten yollar (güvenlik katmanı AEAD uygular, socket gönderir).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransmitDecision {
@@ -654,7 +827,8 @@ pub enum TransmitKind {
     /// DR-CS-1 M2 (F2A): cold-start CS-probe (CTRL_PATH_PROBE cold-start-varyantı; ≤44B; amp≤1).
     /// `seq`-alanı = probe_seq (AYRI-namespace; INV-CS-7); data-seq/loss-ledger'a GİRMEZ (units=0-
     /// muadili: track_sent-ÇAĞRILMAZ). Encode güvenlik/harness-katmanında (§11.1-layout).
-    #[cfg(feature = "experimental-cold-start")]
+    /// DR-CS-3: UNGATED — the `0x19` codepoint already ships in `kama-transport-schema`; this is the
+    /// internal signal that the shipping bootstrap emitter produced one.
     CsProbe,
 }
 
@@ -827,6 +1001,36 @@ pub struct Sender {
     // DR-ARQ-PRODUCT-TAIL-1: bounded tail-loss recovery (default OFF; INV-CS-4 supersession). Decision logic lives
     // in crate::tail_recovery; the sender only bridges live ACK/RTT/inflight state to it and emits via the ARQ path.
     tail_recovery: TailRecovery,
+    // DR-RATE-RAMP-2 (§FAZ-1): startup pacing initialization (default OFF).
+    startup_pacing: StartupPacingConfig,
+    // Active bootstrap pacing floor (B/s). 0 = inactive. Bootstrap-only: released on startup plateau or
+    // as soon as the naturally-computed rate catches up. NEVER a permanent minimum rate.
+    startup_pacing_floor_bps: u64,
+    // Latch: the bootstrap floor may arm AT MOST ONCE per sender. Once released it can never re-arm
+    // (no Plateau/ProbeBW re-entry). §1A.2 binding contract.
+    startup_floor_armed_once: bool,
+    // Latch: the Startup ramp base has been entered at least once since the floor armed. The floor may
+    // only be released by the ramp-END condition AFTER the ramp has actually begun.
+    startup_base_seen: bool,
+    // ── DR-CS-3 shipping bootstrap RTT probe ───────────────────────────────────────────────
+    bootstrap_rtt: BootstrapRttConfig,
+    /// Arm instant; ladder offsets are absolute from here. `None` ⇒ not armed.
+    bs_armed_ns: Option<u64>,
+    /// Next ladder step index (0..4). Edge-only: a step can fire at most once.
+    bs_next_step: u8,
+    /// Session-monotonic probe generation (`probe_seq`, INV-CS-7).
+    bs_seq_next: u16,
+    /// The single outstanding generation: `(probe_seq, local monotonic send instant)`.
+    /// Fixed-size (one slot) — never a growing map.
+    bs_outstanding: Option<(u16, u64)>,
+    /// Probe wire bytes spent this bootstrap epoch (budget `BS_TX_HARD_BUDGET`).
+    bs_bytes: u64,
+    /// The ladder has resolved (first valid sample) or been cleared; no further probes.
+    bs_done: bool,
+    bs_diag: BootstrapRttDiag,
+    // DR-CS-2 / DR-RATE-RAMP-1 (feature-gated, default OFF): observation-only scheduler telemetry.
+    #[cfg(feature = "diag-sched-telemetry")]
+    sched_diag: SchedDiag,
     tail_probe_pending: Option<u64>, // oldest-inflight seq a PTO probe is due for (un-emitted); None ⇒ none.
     tail_probe_cancelled: u64, // observation-only (§7): due probes cancelled at emission (ACK-race: target no
     // longer outstanding). Distinct from token-starved (kept pending). Only mutated on the ON path.
@@ -1019,6 +1223,20 @@ impl Sender {
             tx_queue: VecDeque::new(),
             pending_lost: VecDeque::new(),
             tail_recovery: TailRecovery::new(TailRecoveryConfig::default()), // default OFF
+            startup_pacing: StartupPacingConfig::default(), // default OFF
+            startup_pacing_floor_bps: 0,
+            startup_floor_armed_once: false,
+            startup_base_seen: false,
+            bootstrap_rtt: BootstrapRttConfig::default(), // default OFF
+            bs_armed_ns: None,
+            bs_next_step: 0,
+            bs_seq_next: 0,
+            bs_outstanding: None,
+            bs_bytes: 0,
+            bs_done: false,
+            bs_diag: BootstrapRttDiag::default(),
+            #[cfg(feature = "diag-sched-telemetry")]
+            sched_diag: SchedDiag::default(),
             tail_probe_pending: None,
             tail_probe_cancelled: 0,
             dup_queue: Vec::new(),
@@ -1141,6 +1359,62 @@ impl Sender {
         }
     }
 
+    /// DR-CS-2 / DR-RATE-RAMP-1 (feature-gated): observation-only scheduler telemetry snapshot.
+    #[cfg(feature = "diag-sched-telemetry")]
+    #[must_use]
+    pub fn sched_diag(&self) -> SchedDiag {
+        self.sched_diag
+    }
+
+    /// DR-CS-3: product config — shipping bootstrap RTT probe (default OFF).
+    pub fn set_bootstrap_rtt(&mut self, cfg: BootstrapRttConfig) {
+        self.bootstrap_rtt = cfg;
+    }
+
+    /// DR-CS-3 observation-only bootstrap lineage.
+    #[must_use]
+    pub fn bootstrap_rtt_diag(&self) -> BootstrapRttDiag {
+        self.bs_diag
+    }
+
+    /// DR-CS-3 observation-only: remaining sender probe budget (bytes).
+    #[must_use]
+    pub fn bootstrap_budget_remaining(&self) -> u64 {
+        BS_TX_HARD_BUDGET.saturating_sub(self.bs_bytes)
+    }
+
+    /// DR-RATE-RAMP-2 (§FAZ-1): product config — startup pacing initialization (default OFF).
+    pub fn set_startup_pacing_init(&mut self, cfg: StartupPacingConfig) {
+        self.startup_pacing = cfg;
+    }
+
+    /// DR-RATE-RAMP-2 observation-only: the active bootstrap pacing floor (B/s); 0 = inactive.
+    #[must_use]
+    pub fn startup_pacing_floor_bps(&self) -> u64 {
+        self.startup_pacing_floor_bps
+    }
+
+    /// DR-RATE-RAMP-1 (observation-only): `(pacer_rate_bps, tokens, burst_cap)`.
+    #[must_use]
+    pub fn diag_pacer(&self) -> (u64, u64, u64) {
+        (self.pacer.rate(), self.pacer.tokens(), self.pacer.burst_cap())
+    }
+
+    /// DR-RATE-RAMP-1 (observation-only): BtlBw filter acceptance lineage
+    /// `(offered, accepted, rejected_invalid, rejected_interval, rejected_app_limited)`.
+    #[cfg(feature = "diag-sched-telemetry")]
+    #[must_use]
+    pub fn diag_bw_accept(&self) -> (u64, u64, u64, u64, u64) {
+        self.btlbw.diag_accept()
+    }
+
+    /// DR-CS-2 (observation-only): tail-probe `not-due → due` TRANSITION count. `tail_probe_diag*`
+    /// exposes a LEVEL poll counter which must never be read as emission demand; this is the demand signal.
+    #[must_use]
+    pub fn tail_probe_due_edge_count(&self) -> u64 {
+        self.tail_recovery.probe_due_edge_count()
+    }
+
     /// DR-ARQ-PRODUCT-TAIL-1: product config — enable/tune the bounded tail-recovery mechanism (default OFF).
     /// Additive; does not touch any other sender state. INV-CS-4 supersession (docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD).
     pub fn set_tail_recovery_config(&mut self, cfg: TailRecoveryConfig) {
@@ -1214,6 +1488,10 @@ impl Sender {
         match event {
             Event::AppData(unit) => {
                 self.tx_queue.push_back(unit);
+                #[cfg(feature = "diag-sched-telemetry")]
+                {
+                    self.sched_diag.data_enqueued += 1;
+                }
                 if self.state == SenderState::Idle {
                     // §3.3 cold-start YALNIZ ilk sefer (hiç ölçüm yok). Ölçüm varsa (rtt.srtt Some) önsel
                     // zaten tahliye edilmiş → Idle→Startup (normal resume), PreConverge'e geri DÖNÜLMEZ.
@@ -1233,15 +1511,35 @@ impl Sender {
             Event::Tick => {}
             // DR-CS-1 M3: echo-ingest (yalnız-RTT; N8-spot-izolasyon) → pipeline-devamı state'i
             // doğal-PreConverge→Startup geçirir (mevcut srtt.is_some kapısı).
-            #[cfg(feature = "experimental-cold-start")]
-            Event::CsProbeEcho { probe_seq } => self.cs_on_probe_echo(probe_seq, now_ns),
+            // DR-CS-3: UNGATED — authenticated `0x1A` echo ingest on the shipping path.
+            Event::CsProbeEcho { probe_seq } => {
+                #[cfg(feature = "experimental-cold-start")]
+                self.cs_on_probe_echo(probe_seq, now_ns);
+                self.bs_on_echo(probe_seq, now_ns);
+            }
         }
 
         let decision = self.fuzzy_evaluate(now_ns);
         self.last_decision = decision;
         let prev_state = self.state;
         self.update_state(&decision, now_ns);
-        let send_rate = self.compute_send_rate(&decision);
+        // DR-RATE-RAMP-2 (§FAZ-1, default OFF): arm the bootstrap pacing floor at the PreConverge exit.
+        if self.startup_pacing.enabled
+            && !self.startup_floor_armed_once
+            && prev_state == SenderState::PreConverge
+            && self.state != SenderState::PreConverge
+        {
+            self.startup_pacing_floor_bps = self.grounded_startup_rate();
+            self.startup_floor_armed_once = true; // may never arm again (§1A.2)
+        }
+        let natural_rate = self.compute_send_rate(&decision);
+        // §1A.2: the structural HARD ceiling `cwnd/srtt` has the LAST WORD at every application, not just
+        // at arming — so if the congestion/safety cap SHRINKS (e.g. after loss), the floor shrinks with it
+        // and can never push the sender past the current cap.
+        let effective_floor = self.startup_pacing_floor_bps.min(self.cwnd_over_srtt());
+        // Bootstrap floor: a low self-clocked sample may not immediately drag the freshly initialized
+        // pacing rate back down. `natural_rate` is left untouched so the release test below is honest.
+        let send_rate = natural_rate.max(effective_floor);
         self.pacer.set_rate(send_rate);
         // [R3/ADIM-6] KANAL-TÜREVLİ burst cap: max(1 birim, rate·pencere), üstten ~2×MTU. Bant-kör 2400B
         // sabiti yerine → PreConverge floor'da 1-birim (self-congestion/backlog-spike yok), Startup+'ta
@@ -1256,6 +1554,82 @@ impl Sender {
             // küçük burst'le boşalır — bu birimler STARTUP'ta emit → §3.3-B geometrik kopya ALMAZ).
             self.pacer.fill_to_cap();
         }
+        // DR-RATE-RAMP-2: BOOTSTRAP-ONLY. Release the floor permanently once EITHER the existing Startup
+        // exit condition has fired (the ramp ended: `base_is_startup` cleared at the plateau, `sender.rs`
+        // update_state) OR the naturally derived rate has caught up on its own. Never a permanent minimum.
+        //
+        // NOTE: `plateau_reached` must NOT be used here — `update_state` CONSUMES it in the same call
+        // (Startup→Drain sets it back to false), so it is not observable at this point. `base_is_startup`
+        // is the durable "ramp finished" signal. Pinned by
+        // `startup_floor_release_is_deterministic_and_permanent`.
+        // The bootstrap window is over once the sender has left the Startup ramp (and its
+        // recovery overlays) for a post-ramp phase — Drain / Steady / ProbeUp / DrainRtprop.
+        // NOTE: neither `plateau_reached` nor `base_is_startup` works as the release signal:
+        // `update_state` CONSUMES `plateau_reached` in the same call (Startup→Drain resets it), and it
+        // RE-ARMS `base_is_startup` on every event while `state == Startup`. The phase itself is the
+        // only durable signal. Pinned by `startup_floor_release_is_deterministic_and_permanent`.
+        let in_startup_ramp = matches!(
+            self.state,
+            SenderState::PreConverge
+                | SenderState::Startup
+                | SenderState::RecoverArq
+                | SenderState::RecoverFwd
+        );
+        // The latch keys on the ACTUAL Startup ramp (not PreConverge, and not a recovery overlay that
+        // may be entered before the ramp ever starts): only once the sender is genuinely ramping can
+        // "the ramp has ended" become a meaningful release signal.
+        if self.state == SenderState::Startup {
+            self.startup_base_seen = true;
+        }
+        if self.startup_pacing_floor_bps > 0
+            && ((self.startup_base_seen && !in_startup_ramp)
+                || natural_rate >= self.startup_pacing_floor_bps)
+        {
+            self.startup_pacing_floor_bps = 0; // permanent: `startup_floor_armed_once` blocks re-arming
+        }
+    }
+
+    /// DR-RATE-RAMP-2 (§FAZ-1) grounded startup pacing rate, from EXISTING product constants only:
+    ///
+    /// ```text
+    /// grounded = min( STARTUP_gain × (min_cwnd / srtt),   // instructed initialization
+    ///                 cwnd / srtt )                        // rate.rs structural HARD ceiling
+    /// ```
+    ///
+    /// `min_cwnd = SrcConfig::min_cwnd` (4×DEFAULT_MTU) and `STARTUP_gain = Gain::STARTUP` (2885/1000)
+    /// are the shipping values — no new constant is introduced. The second term is mandatory: `cwnd/srtt`
+    /// is documented in `rate.rs` as the structural hard ceiling ("son söz"), so the initialization must
+    /// not exceed the rate the product's own cwnd policy already permits. In the observed lock the
+    /// ceiling BINDS (it is the smaller term). All arithmetic is u128-widened and saturating.
+    fn grounded_startup_rate(&self) -> u64 {
+        let Some(srtt) = self.rtt.srtt() else {
+            return 0; // no measurement ⇒ no grounded rate ⇒ mechanism inert
+        };
+        let srtt_ns = dur_ns(srtt);
+        if srtt_ns == 0 {
+            return 0;
+        }
+        let initialized = Gain::STARTUP.apply(rate_per_srtt(self.src_cfg.min_cwnd, srtt_ns));
+        initialized.min(self.cwnd_over_srtt())
+    }
+
+    /// §1A.2 structural HARD ceiling `cwnd/srtt` (`rate.rs`: "son söz"), evaluated at the CURRENT
+    /// congestion state. `cwnd = max(cwnd_gain × BDP, min_cwnd)`. 0 when no RTT sample exists.
+    fn cwnd_over_srtt(&self) -> u64 {
+        let Some(srtt) = self.rtt.srtt() else {
+            return 0;
+        };
+        let srtt_ns = dur_ns(srtt);
+        if srtt_ns == 0 {
+            return 0;
+        }
+        let bdp = bdp_bytes(self.btlbw.btlbw(), self.rtt.rtprop().unwrap_or(INITIAL_RTT));
+        let cwnd = self
+            .src_cfg
+            .cwnd_gain
+            .saturating_mul(bdp)
+            .max(self.src_cfg.min_cwnd);
+        rate_per_srtt(cwnd, srtt_ns)
     }
 
     // ── DR-CS-1 M1 (EK5): ATOMİK BATCH GİRİŞİ + next_wakeup_ns + faz-makinesi ────────────────
@@ -1328,19 +1702,136 @@ impl Sender {
             }
         }
         // C2 post-condition: batch-sınırında due-kalmadı.
+        // C2 (NORMATİF, ORİJİNAL KÜMESİYLE KORUNDU): dönüşte due **CS exposed-timer** kalmaz —
+        // `cs_wakeup` retire-on-fire disiplininin özelliğidir. EK4-A2 sonrası `next_wakeup_ns()`
+        // daha GENİŞ bir şeydir (ARQ/dup/bootstrap/tail deadline'ları + pacer-token'a bağlı due-now
+        // iş); bunlar batch dönüşünde meşru olarak due olabilir (ör. token-denied dup kaydı), bu
+        // yüzden C2'nin kümesi GENİŞLETİLMEZ.
         debug_assert!(
-            self.next_wakeup_ns().is_none_or(|w| w > now_ns),
+            self.cs_wakeup.iter().map(|&(d, _)| d).min().is_none_or(|w| w > now_ns),
             "C2-ihlali: batch-dönüşünde due-exposed-timer kaldı"
         );
         out
     }
 
-    /// DR-CS-1 M1: bir-sonraki exposed-wakeup deadline'ı (ns). C2: HİÇBİR-zaman geçmiş-değer
-    /// expose-edilmez (batch-post-condition). None = bağlı-timer-yok.
-    #[cfg(feature = "experimental-cold-start")]
+    /// EK4-A2 — **EVENT-LOOP WAKEUP DEADLINE** (ns). Artık DEFAULT BUILD'de.
+    ///
+    /// Sözleşme (`EK4-A2-NEXT-WAKEUP-CONTRACT`, md `d59212b2…`): belgelenmiş immediate-output drain
+    /// SONRASINDA timer-güdümlü bekleyen iş veya internal future deadline varsa **`None` DÖNMEZ**.
+    /// `None` YALNIZ: terminal/closed · gerçekten idle · immediate output yok · internal deadline yok
+    /// · ilerleme yalnız dış network input'una bağlı.
+    ///
+    /// Due-now iş varsa `Some(now)` döner — gizli "hemen tekrar poll et" `None` ASLA.
+    /// Busy-loop kurulamaz: `Some(now)` yalnız gerçekten due iş varken döner ve iş tüketilince
+    /// kendiliğinden düşer (kaynaklar tükendiğinde aday üretmezler).
+    ///
+    /// **YENİ TIMER İCAT ETMEZ; İKİNCİ TRUTH-SOURCE DEĞİL.** Yalnız MEVCUT authoritative
+    /// kaynakların en erken deadline'ını toplar (§1.2 envanteri):
+    ///   1. `cs_wakeup` (CS-probe/giveup/BootstrapPto) — feature-gated; kapalıyken aday üretmez
+    ///   2. ARQ time-threshold loss deadline (`loss.next_time_loss_deadline_ns`)
+    ///   3. §3.3-B geometrik kopyalar (`dup_queue[*].due_ns`)
+    ///   4. DR-CS-3 bootstrap merdiveni (`bs_armed_ns + BS_FIRES_NS[bs_next_step]`)
+    ///   5. Tail-recovery PTO (`armed_at_ns + current_pto_ns`)
+    ///   6. Pacer token yenilenmesi — bekleyen iş VARSA (`tx_queue|pending_lost|dup_queue|pending_fec`)
+    ///      en küçük bekleyen birimin gönderilebilir olacağı an
     #[must_use]
     pub fn next_wakeup_ns(&self) -> Option<u64> {
-        self.cs_wakeup.iter().map(|&(d, _)| d).min()
+        // Kaynak 1-5 (timer'lar) + kaynak 6 (pacer-token'a bağlı due-now iş).
+        Self::earlier(self.next_timer_deadline_ns(), self.pending_work_ready_ns())
+    }
+
+    fn earlier(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+        match (a, b) {
+            (Some(x), Some(y)) => Some(x.min(y)),
+            (x, None) => x,
+            (None, y) => y,
+        }
+    }
+
+    /// EK4-A2 kaynak 1-5: yalnız **TIMER** deadline'ları (immediate-readiness HARİÇ).
+    ///
+    /// C2 post-condition (`on_event_batch` dönüşünde due exposed-timer kalmaz) BU kümeye bağlıdır ve
+    /// anlamı DEĞİŞMEZ. Immediate-readiness (kaynak 6) bir timer değildir — pacer token'ı bekleyen
+    /// due-now iştir — bu yüzden C2'yi ihlal etmez, ama `next_wakeup_ns()`'e dahil olmak ZORUNDADIR
+    /// (yoksa event-loop uyanmaz: EK4-A2'nin kök nedeni tam olarak buydu).
+    #[must_use]
+    fn next_timer_deadline_ns(&self) -> Option<u64> {
+        let earlier = Self::earlier;
+        let mut best: Option<u64> = None;
+
+        // 1. CS exposed-timer kümesi (flag-OFF'ta bu blok derlenmez → aday yok).
+        #[cfg(feature = "experimental-cold-start")]
+        {
+            best = earlier(best, self.cs_wakeup.iter().map(|&(d, _)| d).min());
+        }
+
+        // 2. ARQ time-threshold loss deadline (aynı çağrı (d)-kapsamının kullandığı).
+        if let Some(srtt) = self.rtt.srtt() {
+            best = earlier(
+                best,
+                self.loss
+                    .next_time_loss_deadline_ns(srtt, self.cadence_loss_floor()),
+            );
+        }
+
+        // 3. §3.3-B zamanlanmış geometrik kopyalar.
+        best = earlier(best, self.dup_queue.iter().map(|r| r.due_ns).min());
+
+        // 4. DR-CS-3 bootstrap merdiveni (config default OFF ⇒ aday yok).
+        if self.bootstrap_rtt.enabled && !self.bs_done {
+            if let (Some(armed), Some(&off)) = (
+                self.bs_armed_ns,
+                BS_FIRES_NS.get(self.bs_next_step as usize),
+            ) {
+                best = earlier(best, Some(armed.saturating_add(off)));
+            }
+        }
+
+        // 5. Tail-recovery PTO (config default OFF ⇒ aday yok).
+        best = earlier(best, self.tail_probe_deadline_ns());
+
+        // NOT: `LostRec.deadline_ns` BİLEREK kaynak DEĞİL. `arq.rs:110-111` normatif: "deadline YALNIZ
+        // SIRA — expired seq DROP EDİLMEZ, planda kalır" ⇒ o bir TESLİM-önceliği anahtarıdır, zamanlayıcı
+        // değil. Wakeup kaynağı yapmak ilerlemesiz uyanış üretirdi. `pending_lost` zaten `update_state`
+        // ile RecoverArq'a geçer ve her turda planlanır; onu bekleten tek şey token'dır (kaynak 6).
+
+        best
+    }
+
+    /// EK4-A2 kaynak-5: tail-recovery PTO deadline'ı (SALT-OKUMA; mevcut state'ten türetilir).
+    fn tail_probe_deadline_ns(&self) -> Option<u64> {
+        if !self.tail_recovery.is_enabled() {
+            return None;
+        }
+        let armed = self.tail_recovery.armed_at_ns()?;
+        let pt = self.path_timing_snapshot();
+        Some(armed.saturating_add(self.tail_recovery.current_pto_ns(pt.srtt_ns, pt.rttvar_ns)))
+    }
+
+    /// EK4-A2 kaynak-6: pacer-token'a bağlı bekleyen iş için ilerleme anı (SALT-OKUMA).
+    ///
+    /// Bekleyen küme = her turda KOŞULSUZ drain edilen sınıflar (`tx_queue`, `pending_fec`). Bu iş
+    /// "due"dur — onu bekleten tek şey pacer token'ıdır, bir timer değil. Bu
+    /// yüzden ilerleme anı `pacer.ns_until_sendable(en_küçük_bekleyen_birim)`'dir; token zaten
+    /// yeterliyse `Some(now)` (immediate readiness).
+    ///
+    /// `None`: bekleyen iş yok, YA DA hiçbir bekleyen birim token'la gönderilemez (rate 0 /
+    /// birim > burst_cap) — ikincisinde ilerleme zamana değil dış olaya bağlıdır, bu yüzden
+    /// deadline uydurmak yanlış olur.
+    fn pending_work_ready_ns(&self) -> Option<u64> {
+        // Her turda planlanabilen sınıflar: `drain_new_data`, `plan_fec_parity` ve `pending_lost`
+        // (`update_state` `pending_lost` boş değilken RecoverArq'a geçer ⇒ `plan_arq_retransmits`
+        // aynı turda çalışır; onu bekleten tek şey token'dır). `dup_queue` BİLEREK dışarıda: kendi
+        // `due_ns` deadline'ı var (kaynak 3).
+        let smallest = self
+            .tx_queue
+            .iter()
+            .map(|u| u.size)
+            .chain(self.pending_fec.iter().map(|p| p.size))
+            .chain(self.pending_lost.iter().map(|r| r.unit.size))
+            .min()?;
+        let dt = self.pacer.ns_until_sendable(smallest)?;
+        Some(self.last_now_ns.saturating_add(dt))
     }
 
     #[cfg(feature = "experimental-cold-start")]
@@ -1534,6 +2025,10 @@ impl Sender {
                     }
                     let pseq = self.cs_probe_seq_next;
                     self.cs_probe_seq_next += 1;
+                    #[cfg(feature = "diag-sched-telemetry")]
+                    {
+                        self.sched_diag.cs_probe_enqueued += 1;
+                    }
                     self.cs_probe_pending.push_back(pseq);
                 }
             }
@@ -1547,8 +2042,20 @@ impl Sender {
     #[cfg(feature = "experimental-cold-start")]
     fn drain_cs_probes(&mut self, out: &mut Vec<TransmitDecision>) {
         while let Some(&pseq) = self.cs_probe_pending.front() {
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.cs_probe_selected += 1;
+            }
             if !self.pacer.try_send(CS_PROBE_WIRE_MAX) {
+                #[cfg(feature = "diag-sched-telemetry")]
+                {
+                    self.sched_diag.cs_probe_token_denied += 1;
+                }
                 break; // token-yok → sonraki-event'te (pending-korunur)
+            }
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.cs_probe_wire_emitted += 1;
             }
             self.cs_probe_pending.pop_front();
             self.cs_probe_emitted += 1;
@@ -1882,11 +2389,99 @@ impl Sender {
                     if let ProbeDecision::ProbeDue { target_seq, .. } =
                         self.tail_recovery.on_timer(now_ns, srtt, rttvar, oldest)
                     {
+                        #[cfg(feature = "diag-sched-telemetry")]
+                        if self.tail_probe_pending.is_none() {
+                            self.sched_diag.tail_probe_enqueued += 1;
+                        }
                         self.tail_probe_pending = Some(target_seq);
                     }
                 }
             }
         }
+    }
+
+    /// DR-CS-3: emit at most one bootstrap `0x19` probe per authoritative ladder step.
+    ///
+    /// **ADDITIVE, NOT PACED**: this deliberately does NOT call `try_send_pre_parity` / `pacer.try_send`
+    /// and creates NO pacer debt — the DR-CS-2 failure proved a debit only reallocates the DATA budget.
+    /// It is bounded instead by three independent limits: one generation per step, four steps, and a
+    /// total wire budget of `BS_TX_HARD_BUDGET` (200 B; 4 × 44 = 176 B worst case).
+    ///
+    /// **NO DISPLACEMENT**: called at the very END of `schedule_transmit`, after DATA, recovery and
+    /// parity have already been planned in the same turn, so it can only ever *append* — it can never
+    /// take a slot a normal DATA emission would have used.
+    fn drain_bootstrap_probes(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        if !self.bootstrap_rtt.enabled || self.bs_done {
+            return;
+        }
+        // Gate: PreConverge with no RTT measurement yet (contract §1).
+        if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {
+            return;
+        }
+        let Some(armed) = self.bs_armed_ns else {
+            return;
+        };
+        let step = self.bs_next_step as usize;
+        if step >= BS_FIRES_NS.len() {
+            return; // ladder exhausted
+        }
+        if now_ns.saturating_sub(armed) < BS_FIRES_NS[step] {
+            return; // not yet due — NOT an edge, and NOT counted
+        }
+        // EDGE: this step transitions not-due → due exactly once (bs_next_step advances below), so a
+        // repeated poll of the same due state can never mint a second generation.
+        self.bs_diag.step_edge += 1;
+        self.bs_next_step += 1;
+        if self.bs_bytes + BS_PROBE_WIRE_EXACT > BS_TX_HARD_BUDGET {
+            self.bs_diag.budget_violation += 0; // budget respected by refusing, not by exceeding
+            return;
+        }
+        let probe_seq = self.bs_seq_next;
+        self.bs_seq_next = self.bs_seq_next.saturating_add(1);
+        // Single outstanding slot: a new probe supersedes the previous unanswered one.
+        self.bs_outstanding = Some((probe_seq, now_ns));
+        self.bs_bytes += BS_PROBE_WIRE_EXACT;
+        self.bs_diag.probe_emitted += 1;
+        self.bs_diag.probe_wire_bytes += BS_PROBE_WIRE_EXACT;
+        out.push(TransmitDecision {
+            kind: TransmitKind::CsProbe,
+            seq: u64::from(probe_seq), // separate namespace: NOT a DATA seq, NOT inflight-tracked
+            unit_id: 0,
+            size: BS_PROBE_WIRE_EXACT,
+            send_record: None,
+        });
+    }
+
+    /// DR-CS-3: ingest an authenticated `0x1A` echo. The ONLY path that may produce a bootstrap RTT
+    /// sample, and only from LOCAL monotonic timestamps: `now_ns − local_probe_send_ns`.
+    /// Peer-carried `seen_count`/`arrival_gap` are ledger-only and are never used here.
+    fn bs_on_echo(&mut self, probe_seq: u16, now_ns: u64) {
+        if !self.bootstrap_rtt.enabled {
+            return;
+        }
+        self.bs_diag.echo_ingested += 1;
+        if self.bs_done || self.rtt.srtt().is_some() {
+            self.bs_diag.echo_match_rejected += 1; // already resolved (covers duplicate-after-success)
+            return;
+        }
+        let Some((seq, send_ns)) = self.bs_outstanding else {
+            self.bs_diag.echo_match_rejected += 1; // unsolicited / already consumed
+            return;
+        };
+        if seq != probe_seq {
+            self.bs_diag.echo_match_rejected += 1; // wrong generation
+            return;
+        }
+        self.bs_outstanding = None; // SINGLE consumption
+        let sample = Duration::from_nanos(now_ns.saturating_sub(send_ns));
+        self.bs_diag.echo_match_valid += 1;
+        self.bs_diag.rtt_sample_ns = dur_ns(sample);
+        // Existing estimator API — no synthetic write, no estimator rewrite.
+        self.rtt.observe(now_ns, sample);
+        // First valid sample cancels the ladder permanently (contract §25/§26).
+        self.bs_done = true;
+        self.bs_armed_ns = None;
+        self.bs_diag.cancelled += 1;
     }
 
     /// [TUR-1b D-1/2] Cadence-farkında loss-eşiği TABANI = K_c × beklenen-ACK-aralığı (EAI).
@@ -2372,8 +2967,17 @@ impl Sender {
         self.budget_settle();
         // DR-CS-1 M2 (F2A): CS-probe pass'i EN-SONDA (F0-tespit-(vii) ekleme-noktası) — mühürlü
         // DATA-önce-sıralama + FEC-budget-penceresi dokunulmaz; flag-OFF'ta derlenmez.
+        // DR-CS-3 SUPERSESSION: the legacy experimental ladder and the shipping bootstrap mechanism
+        // are two implementations of the SAME 0x19/0x1A protocol. When the shipping mechanism is
+        // enabled it is authoritative and the legacy pass is skipped, so a feature-enabled build can
+        // never run both ladders and emit duplicate generations.
         #[cfg(feature = "experimental-cold-start")]
-        self.drain_cs_probes(&mut out);
+        if !self.bootstrap_rtt.enabled {
+            self.drain_cs_probes(&mut out);
+        }
+        // DR-CS-3: bootstrap probe LAST — DATA, recovery and parity for this turn are already planned,
+        // so this can only append. It never occupies a slot a DATA emission would have used.
+        self.drain_bootstrap_probes(&mut out, now_ns);
         out
     }
 
@@ -3275,8 +3879,20 @@ impl Sender {
                         continue;
                     };
                     let rec = self.pending_lost[pos];
+                    #[cfg(feature = "diag-sched-telemetry")]
+                    {
+                        self.sched_diag.arq_retransmit_selected += 1;
+                    }
                     if !self.try_send_pre_parity(rec.unit.size, true) {
+                        #[cfg(feature = "diag-sched-telemetry")]
+                        {
+                            self.sched_diag.arq_retransmit_token_denied += 1;
+                        }
                         break; // token yok → sonraki tick'te (deadline plandan düşmez, §9).
+                    }
+                    #[cfg(feature = "diag-sched-telemetry")]
+                    {
+                        self.sched_diag.arq_retransmit_wire_emitted += 1;
                     }
                     self.pending_lost.remove(pos);
                     // [TUR-2c D-1/3 kol-2] Orijinalin tombstone'u SUPERSEDED: retx-sonrası-
@@ -3382,9 +3998,21 @@ impl Sender {
             self.tail_probe_cancelled = self.tail_probe_cancelled.saturating_add(1);
             return;
         };
+        #[cfg(feature = "diag-sched-telemetry")]
+        {
+            self.sched_diag.tail_probe_selected += 1;
+        }
         if !self.try_send_pre_parity(unit.size, true) {
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.tail_probe_token_denied += 1;
+            }
             self.tail_probe_pending = Some(target); // no token → keep pending; cap NOT consumed.
             return;
+        }
+        #[cfg(feature = "diag-sched-telemetry")]
+        {
+            self.sched_diag.tail_probe_wire_emitted += 1;
         }
         // Supersede the still-outstanding original: retire it inflight→tombstone (no loss declaration), then bump
         // the tombstone so the original's late ACK is Karn-excluded, then emit the probe copy under a fresh seq.
@@ -3463,8 +4091,20 @@ impl Sender {
                 i += 1;
                 continue; // henüz vadesi gelmedi.
             }
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.dup_selected += 1;
+            }
             if !self.try_send_pre_parity(self.dup_queue[i].unit.size, true) {
+                #[cfg(feature = "diag-sched-telemetry")]
+                {
+                    self.sched_diag.dup_token_denied += 1;
+                }
                 break; // token yok.
+            }
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.dup_wire_emitted += 1;
             }
             let dup = self.dup_queue.remove(i);
             let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
@@ -3493,8 +4133,20 @@ impl Sender {
         while let Some(front) = self.tx_queue.front().copied() {
             // [R3/ADIM-6] Burst clamp artık pipeline'da kanal-türevli set_burst_cap ile (PreConverge floor
             // rate → burst_cap = 1 birim). Ayrı PreConverge özel-durumu GEREKMEZ (tek kapı, tüm state'ler).
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.data_selected += 1;
+            }
             if !self.try_send_pre_parity(front.size, false) {
+                #[cfg(feature = "diag-sched-telemetry")]
+                {
+                    self.sched_diag.data_token_denied += 1;
+                }
                 break;
+            }
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.data_wire_emitted += 1;
             }
             self.tx_queue.pop_front();
             let seq = self.track_sent(front, now_ns, 0, TransmitKind::Data);
@@ -3529,6 +4181,16 @@ impl Sender {
                     unit: front,
                     interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
                 });
+                // DR-CS-3 ARM: PreConverge + srtt=None + FIRST DATA wire emission (t₀ = this instant,
+                // i.e. the unit passed try_send and is on the wire). Once per bootstrap epoch.
+                if self.bootstrap_rtt.enabled
+                    && !self.bs_done
+                    && self.bs_armed_ns.is_none()
+                    && self.rtt.srtt().is_none()
+                {
+                    self.bs_armed_ns = Some(now_ns);
+                    self.bs_diag.arm += 1;
+                }
                 // DR-CS-1 M2 ARM (F2A): PreConverge + srtt=None + İLK-DATA-wire-emisyonu (try_send-
                 // geçti = t₀) → CS-probe merdiveni epoch-başına-BİR-kez arm (fire 3/9/21/45s).
                 #[cfg(feature = "experimental-cold-start")]
@@ -5354,7 +6016,14 @@ mod tests {
         // recovery-DAHİL: Startup-rampı sırasında kayıp-ilanı (pending>0 → RecoverArq-overlay)
         // faz-gain'ini DEĞİŞTİRMEZ — rate 2.885×btlbw KALIR (eski-dünya: 1.0×'a düşerdi;
         // fiili ×2.885 rate-kesimi = INV-RATE-1 kör-noktası, cift-kilit-v1 §0-ÖN/S1).
+        //
+        // [DR-RATE-RAMP-2 SUPERSESSION — INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md] This golden is
+        // PRESERVED VERBATIM (name, fixture, both exact equalities) and RE-SCOPED to the authoritative
+        // LEGACY FLOOR-INACTIVE path: with the bootstrap startup floor disabled, the old rate law must
+        // still hold EXACTLY. The active-floor contract is pinned separately by
+        // `inv_rate_1_active_floor_loss_does_not_reduce_rate` (no assertion was weakened).
         let mut s = Sender::new();
+        s.set_startup_pacing_init(StartupPacingConfig { enabled: false });
         s.on_event(Event::AppData(unit(200)), 0);
         s.on_event(ack(&[0]), 500 * MS); // btlbw≈2400; PreConverge→Startup (base=Startup)
         for i in 1..=8u64 {
@@ -5390,6 +6059,339 @@ mod tests {
             s.state(),
             SenderState::Startup,
             "recovery-çıkışı base'e döner"
+        );
+    }
+
+
+    // ── DR-RATE-RAMP-2 §1A.2: binding contract for the bootstrap startup floor ──────────────
+    // Supersession record: reports/fs-cal-2/v3.5/INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md
+
+    fn floor_on() -> Sender {
+        let mut s = Sender::new();
+        s.set_startup_pacing_init(StartupPacingConfig { enabled: true });
+        s
+    }
+
+    /// Drive the golden fixture up to "Startup ramp in progress, emissions done".
+    fn ramping(s: &mut Sender) {
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 500 * MS); // btlbw≈2400; PreConverge→Startup
+        for i in 1..=8u64 {
+            s.on_event(Event::AppData(unit(i)), (500 + i) * MS);
+        }
+        for t in [700u64, 900, 1_100] {
+            s.on_event(Event::TimerFired(Timer::Pto), t * MS);
+        }
+    }
+
+    #[test]
+    fn inv_rate_1_active_floor_loss_does_not_reduce_rate() {
+        // SUPERSEDING LOCK: with the floor ACTIVE the safety purpose is re-asserted with EXACT equality
+        // against the safe composition max(phase_rate, floor) — not a loose `>=`.
+        let mut s = floor_on();
+        ramping(&mut s);
+        assert!(s.base_is_startup, "kurulum: ramp sürüyor");
+        let floor = s.startup_pacing_floor_bps();
+        assert!(floor > 0, "floor must be armed on the PreConverge exit");
+        let btlbw = s.btlbw.btlbw();
+        let expect_before = crate::rate::Gain::STARTUP.apply(btlbw).max(floor);
+        let rate_before = s.pacer.rate();
+        assert_eq!(rate_before, expect_before, "kurulum: max(phase_rate, floor) exact");
+        // loss declaration
+        s.on_event(ack(&[2, 3, 4]), 1_200 * MS);
+        assert_eq!(s.state(), SenderState::RecoverArq, "kayıp-ilanı → recovery-overlay");
+        let btlbw_after = s.btlbw.btlbw();
+        let floor_after = s.startup_pacing_floor_bps();
+        let expect_after = crate::rate::Gain::STARTUP
+            .apply(btlbw_after)
+            .max(floor_after.min(s.cwnd_over_srtt()));
+        assert_eq!(
+            s.pacer.rate(),
+            expect_after,
+            "KİLİT: kayıp-ilanı faz-gain'ini DEĞİŞTİRMEZ (rate = max(2.885×btlbw, floor) KALIR)"
+        );
+        assert!(s.pacer.rate() >= rate_before.min(expect_after), "loss must never CUT the rate");
+        // recovery exit still returns to the Startup BASE (ramp not killed)
+        s.on_event(ack(&[1]), 1_300 * MS);
+        assert_eq!(s.state(), SenderState::Startup, "recovery-çıkışı base'e döner");
+    }
+
+    #[test]
+    fn startup_floor_arms_only_on_preconverge_exit() {
+        let mut s = floor_on();
+        s.on_event(Event::AppData(unit(200)), 0);
+        assert_eq!(s.state(), SenderState::PreConverge);
+        assert_eq!(s.startup_pacing_floor_bps(), 0, "not armed while in PreConverge");
+        s.on_event(ack(&[0]), 500 * MS); // the ONLY arming transition
+        assert!(s.startup_pacing_floor_bps() > 0, "armed exactly on PreConverge→Startup");
+    }
+
+    #[test]
+    fn startup_floor_not_armed_or_raised_by_loss() {
+        // A loss declaration alone must neither arm nor raise the floor.
+        let mut s = floor_on();
+        ramping(&mut s);
+        let before = s.startup_pacing_floor_bps();
+        s.on_event(ack(&[2, 3, 4]), 1_200 * MS); // packet-threshold loss declaration
+        assert_eq!(s.state(), SenderState::RecoverArq);
+        assert!(
+            s.startup_pacing_floor_bps() <= before,
+            "loss must never RAISE the floor ({before} -> {})",
+            s.startup_pacing_floor_bps()
+        );
+    }
+
+    #[test]
+    fn startup_floor_never_exceeds_cwnd_over_srtt() {
+        // The structural HARD ceiling has the last word at EVERY application, including after loss.
+        let mut s = floor_on();
+        ramping(&mut s);
+        for t in [1_200u64, 1_300, 1_400] {
+            s.on_event(ack(&[2, 3, 4]), t * MS);
+            let ceiling = s.cwnd_over_srtt();
+            assert!(
+                s.pacer.rate() <= ceiling.max(crate::rate::Gain::STARTUP.apply(s.btlbw.btlbw())),
+                "rate must never exceed the composition of the hard ceiling and the phase rate"
+            );
+            assert!(
+                s.startup_pacing_floor_bps().min(ceiling) <= ceiling,
+                "effective floor is clamped to the CURRENT cwnd/srtt"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_floor_writes_no_synthetic_btlbw_samples() {
+        // The floor must not inject anything into the BtlBw max-filter: the sample set is identical
+        // to the floor-inactive run.
+        let mut a = Sender::new();
+        a.set_startup_pacing_init(StartupPacingConfig { enabled: false });
+        let mut b = floor_on();
+        a.on_event(Event::AppData(unit(200)), 0);
+        b.on_event(Event::AppData(unit(200)), 0);
+        a.on_event(ack(&[0]), 500 * MS);
+        b.on_event(ack(&[0]), 500 * MS);
+        assert_eq!(
+            a.diag_btlbw_samples().len(),
+            b.diag_btlbw_samples().len(),
+            "floor must not add samples to the max-filter"
+        );
+        assert_eq!(
+            a.btlbw.btlbw(),
+            b.btlbw.btlbw(),
+            "floor must not alter the BtlBw estimate itself"
+        );
+    }
+
+    #[test]
+    fn startup_floor_release_is_deterministic_and_permanent() {
+        let mut s = floor_on();
+        ramping(&mut s);
+        assert!(s.startup_pacing_floor_bps() > 0, "armed");
+        // RELEASE BRANCH 1 (deterministic): the Startup/plateau exit condition fires.
+        // (RELEASE BRANCH 2 — "the natural rate catches up" — is pinned end-to-end on a real flow by
+        //  kama-integration `startup_pacing_floor_is_bootstrap_only_and_released`.)
+        let t = 1_400u64;
+        assert!(s.base_is_startup, "ramp is in progress while the floor is armed");
+        // Fire the EXISTING Startup exit condition: plateau ⇒ update_state moves Startup → Drain.
+        s.plateau_reached = true;
+        s.on_event(Event::TimerFired(Timer::Pto), t * MS);
+        assert_eq!(s.state(), SenderState::Drain, "startup ramp must have ended (post-ramp phase)");
+        assert_eq!(s.startup_pacing_floor_bps(), 0, "floor must be released deterministically");
+        // and it may NEVER re-arm (no Plateau/ProbeBW re-entry)
+        for i in 0..50u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), (t + 100 + i * 10) * MS);
+            assert_eq!(s.startup_pacing_floor_bps(), 0, "floor must never re-arm");
+        }
+    }
+
+
+
+    // ── DR-CS-3 §6: shipping bootstrap RTT probe — sender-side security/budget contract ──────
+    // Contract: reports/dr-cs-3/DR-CS-3-BOOTSTRAP-RTT-CONTRACT.md
+
+    fn bs_on() -> Sender {
+        let mut s = Sender::new();
+        s.set_bootstrap_rtt(BootstrapRttConfig { enabled: true });
+        s
+    }
+
+    /// PreConverge flow whose DATA is never ACKed: the ladder arms and steps come due.
+    fn bs_stalled(s: &mut Sender, until_s: u64) -> Vec<TransmitDecision> {
+        let mut all = Vec::new();
+        for i in 1..=384u64 {
+            all.extend(s.on_event(
+                Event::AppData(OpaqueUnit {
+                    id: 1000 + i,
+                    size: 101,
+                }),
+                0,
+            ));
+        }
+        for t in 1..=until_s {
+            all.extend(s.on_event(Event::TimerFired(Timer::Pto), t * 1_000 * MS));
+        }
+        all
+    }
+
+    fn probes(v: &[TransmitDecision]) -> Vec<&TransmitDecision> {
+        v.iter().filter(|d| d.kind == TransmitKind::CsProbe).collect()
+    }
+
+    #[test]
+    fn bootstrap_off_is_inert() {
+        let mut s = Sender::new(); // default OFF
+        let out = bs_stalled(&mut s, 60);
+        // Assert on the DR-CS-3 counters, not on raw probe presence: in an
+        // `experimental-cold-start` build the LEGACY experimental ladder is a different
+        // implementation of the same protocol and still runs when DR-CS-3 is OFF.
+        assert_eq!(s.bootstrap_rtt_diag().arm, 0, "OFF must never arm");
+        assert_eq!(s.bootstrap_rtt_diag().probe_emitted, 0, "OFF must never emit");
+        assert_eq!(s.bootstrap_budget_remaining(), BS_TX_HARD_BUDGET);
+        #[cfg(not(feature = "experimental-cold-start"))]
+        assert!(probes(&out).is_empty(), "shipping build: OFF emits no probe at all");
+        let _ = out;
+    }
+
+    #[test]
+    fn bootstrap_ladder_is_edge_only_and_bounded() {
+        let mut s = bs_on();
+        let out = bs_stalled(&mut s, 60);
+        let d = s.bootstrap_rtt_diag();
+        let p = probes(&out);
+        assert_eq!(d.arm, 1, "armed exactly once");
+        assert!(p.len() <= BS_FIRES_NS.len(), "at most one probe per ladder step");
+        assert_eq!(d.probe_emitted as usize, p.len());
+        // poll/mint separation: the PTO tick fired 60 times, the ladder minted at most 4
+        assert!(d.step_edge <= BS_FIRES_NS.len() as u64, "edge count is bounded by the ladder");
+        // every probe carries a DISTINCT monotonic generation
+        let mut seqs: Vec<u64> = p.iter().map(|d| d.seq).collect();
+        let n = seqs.len();
+        seqs.sort_unstable();
+        seqs.dedup();
+        assert_eq!(seqs.len(), n, "probe_seq generations must be unique");
+    }
+
+    #[test]
+    fn bootstrap_sender_budget_never_exceeds_200_bytes() {
+        let mut s = bs_on();
+        let out = bs_stalled(&mut s, 120); // far past the last ladder step
+        let bytes: u64 = probes(&out).iter().map(|d| d.size).sum();
+        assert!(bytes <= BS_TX_HARD_BUDGET, "sender probe wire {bytes} B exceeds the 200 B budget");
+        assert_eq!(s.bootstrap_rtt_diag().probe_wire_bytes, bytes);
+        assert_eq!(s.bootstrap_rtt_diag().budget_violation, 0);
+        assert!(bytes <= 4 * 44, "4 x PROBE_WIRE_EXACT worst case");
+    }
+
+    /// Scoped to the SHIPPING build: under `experimental-cold-start` the OFF arm runs the legacy
+    /// ladder, which DOES consume DATA tokens (`pacer.try_send`), so its DATA prefix is not a valid
+    /// baseline for an additive comparison. DR-CS-3 targets the default build.
+    #[cfg(not(feature = "experimental-cold-start"))]
+    #[test]
+    fn bootstrap_probe_is_additive_not_paced() {
+        // The probe must NOT consume a DATA token: with the ladder ON, the DATA emissions in the
+        // same window are IDENTICAL to the OFF baseline (no displacement), and only probes are added.
+        let mut off = Sender::new();
+        let mut on = bs_on();
+        let a = bs_stalled(&mut off, 60);
+        let b = bs_stalled(&mut on, 60);
+        let data_a: Vec<u64> = a
+            .iter()
+            .filter(|d| d.kind == TransmitKind::Data)
+            .map(|d| d.unit_id)
+            .collect();
+        let data_b: Vec<u64> = b
+            .iter()
+            .filter(|d| d.kind == TransmitKind::Data)
+            .map(|d| d.unit_id)
+            .collect();
+        assert_eq!(data_a, data_b, "no DATA displacement: source prefix must be identical");
+        assert!(!probes(&b).is_empty(), "the treatment must actually add probes");
+    }
+
+    #[test]
+    fn bootstrap_unsolicited_echo_yields_no_rtt() {
+        let mut s = bs_on();
+        bs_stalled(&mut s, 2); // armed, but no probe is due yet at t=2s
+        s.on_event(Event::CsProbeEcho { probe_seq: 999 }, 2_500 * MS);
+        assert!(s.rtt.srtt().is_none(), "unsolicited echo must not establish srtt");
+        assert_eq!(s.bootstrap_rtt_diag().echo_match_valid, 0);
+        assert!(s.bootstrap_rtt_diag().echo_match_rejected >= 1);
+    }
+
+    #[test]
+    fn bootstrap_wrong_generation_echo_yields_no_rtt() {
+        let mut s = bs_on();
+        let out = bs_stalled(&mut s, 5); // step 0 (3 s) has fired
+        let p = probes(&out);
+        assert!(!p.is_empty(), "a probe must have been emitted");
+        let good = p[0].seq as u16;
+        s.on_event(Event::CsProbeEcho { probe_seq: good.wrapping_add(7) }, 6_000 * MS);
+        assert!(s.rtt.srtt().is_none(), "wrong generation must not establish srtt");
+        assert_eq!(s.bootstrap_rtt_diag().echo_match_valid, 0);
+    }
+
+    #[test]
+    fn bootstrap_valid_echo_yields_rtt_from_local_timestamps_only() {
+        let mut s = bs_on();
+        let out = bs_stalled(&mut s, 5);
+        let p = probes(&out);
+        let seq = p[0].seq as u16;
+        assert!(s.rtt.srtt().is_none(), "no srtt before the echo");
+        // echo arrives 1 s after the probe was emitted at t = 3 s
+        s.on_event(Event::CsProbeEcho { probe_seq: seq }, 4_000 * MS);
+        let d = s.bootstrap_rtt_diag();
+        assert_eq!(d.echo_match_valid, 1);
+        assert!(s.rtt.srtt().is_some(), "valid echo must establish srtt");
+        assert_eq!(d.rtt_sample_ns, 1_000 * MS, "RTT = local arrival - local send");
+        assert_eq!(d.cancelled, 1, "the first valid sample cancels the ladder");
+    }
+
+    #[test]
+    fn bootstrap_duplicate_echo_yields_at_most_one_sample() {
+        let mut s = bs_on();
+        let out = bs_stalled(&mut s, 5);
+        let seq = probes(&out)[0].seq as u16;
+        s.on_event(Event::CsProbeEcho { probe_seq: seq }, 4_000 * MS);
+        s.on_event(Event::CsProbeEcho { probe_seq: seq }, 4_500 * MS);
+        s.on_event(Event::CsProbeEcho { probe_seq: seq }, 5_000 * MS);
+        assert_eq!(s.bootstrap_rtt_diag().echo_match_valid, 1, "single consumption");
+    }
+
+    #[test]
+    fn bootstrap_no_probe_after_success() {
+        let mut s = bs_on();
+        let out1 = bs_stalled(&mut s, 5);
+        let seq = probes(&out1)[0].seq as u16;
+        s.on_event(Event::CsProbeEcho { probe_seq: seq }, 4_000 * MS);
+        let before = s.bootstrap_rtt_diag().probe_emitted;
+        // drive well past every remaining ladder step
+        let mut later = Vec::new();
+        for t in 6..=60u64 {
+            later.extend(s.on_event(Event::TimerFired(Timer::Pto), t * 1_000 * MS));
+        }
+        assert!(probes(&later).is_empty(), "no probe may be emitted after success");
+        assert_eq!(s.bootstrap_rtt_diag().probe_emitted, before);
+        assert_eq!(s.bootstrap_rtt_diag().probe_after_success_violation, 0);
+    }
+
+    #[test]
+    fn bootstrap_does_not_relax_karn_or_touch_arq_timing() {
+        // A duplicate/retransmit ACK must still yield no RTT sample (Karn), with the ladder ON.
+        let mut on = bs_on();
+        let mut off = Sender::new();
+        for s in [&mut on, &mut off] {
+            s.on_event(Event::AppData(unit(200)), 0);
+        }
+        // identical ARQ-relevant driving; compare loss/PTO diagnostics
+        for t in [700u64, 900, 1_100] {
+            on.on_event(Event::TimerFired(Timer::Pto), t * MS);
+            off.on_event(Event::TimerFired(Timer::Pto), t * MS);
+        }
+        assert_eq!(
+            on.diag_loss(),
+            off.diag_loss(),
+            "ARQ loss-declaration accounting must be unchanged before any echo"
         );
     }
 
