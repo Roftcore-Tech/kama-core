@@ -124,11 +124,14 @@ fn real_latch_emit_decode(
     // boşalt — ACK'siz-drenaj PTO'yla re-loss/re-queue döngüsüne girer, burst-cap≤2×MTU'yla
     // parity'ye hiç-sıra-gelmez); parity-esi dedup (re-emisyon çift-sayılmasın).
     let mut emitted: Vec<u16> = Vec::new();
-    for t in 0..900u64 {
-        let now = (t_ms + 10 + t * 10) * MS;
-        let out = s.on_event(Event::TimerFired(Timer::Pto), now);
-        let mut data_seqs: Vec<u64> = Vec::new();
-        for d in &out {
+    // Emisyonlar HER on_event dönüşünden toplanır — Pto-tick'ten DE ACK'ten DE. Eskiden yalnız
+    // Pto-tick'in çıktısı sayılıyordu ve ACK çağrısının dönüşü ATILIYORDU; parity o çağrıda
+    // emit edildiğinde gerçek emisyon görünmez oluyordu (ölçüm kör noktası, ürün kusuru DEĞİL —
+    // bkz. reports/dr-rate-ramp-2b/FEC-PARITY-OBSERVATION-CORRIGENDUM.md).
+    let collect = |out: &[adaptive_transport::sender::TransmitDecision],
+                       emitted: &mut Vec<u16>,
+                       data_seqs: &mut Vec<u64>| {
+        for d in out {
             if d.kind == TransmitKind::FecParity {
                 if let Some(h) = d.send_record {
                     let adaptive_transport::sender::SrLogicalRef::Fec { block_id: b, esi } =
@@ -141,8 +144,16 @@ fn real_latch_emit_decode(
                 data_seqs.push(d.seq);
             }
         }
+    };
+    for t in 0..900u64 {
+        let now = (t_ms + 10 + t * 10) * MS;
+        let out = s.on_event(Event::TimerFired(Timer::Pto), now);
+        let mut data_seqs: Vec<u64> = Vec::new();
+        collect(&out, &mut emitted, &mut data_seqs);
         if !data_seqs.is_empty() {
-            s.on_event(ack(data_seqs), now + 5 * MS);
+            let ack_out = s.on_event(ack(data_seqs), now + 5 * MS);
+            let mut ignored: Vec<u64> = Vec::new();
+            collect(&ack_out, &mut emitted, &mut ignored);
         }
         if emitted.len() as u16 >= latch.planned_r {
             break;
