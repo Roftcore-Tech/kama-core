@@ -16,11 +16,16 @@
 //! binary, does NOT verify a deployment network path, and does NOT discharge the product-runtime
 //! debt (`PRODUCT-RUNTIME-INTEGRATION-PENDING`).
 //!
-//! **SEED/LOSS IDENTITY.** Seed derivation and loss generation are the FS-CAL-2 §5.3 primitives
-//! re-used verbatim from `fs_cal2_gen` (`stream_key`, `loss_bits`). The workload, channel, warm-up
-//! length, offer pacing, virtual tick and horizon constants are the frozen FS-CAL-2 / R2A identity
-//! values, restated here so this module owns no dependency on the spine. The three existing stream
-//! classes are untouched; the bootstrap path draws from two ADDITIONAL, disjoint stream keys.
+//! **SEED/LOSS IDENTITY (V2).** The draw primitives are the FS-CAL-2 §5.3 ones re-used verbatim
+//! from `fs_cal2_gen` (`draw_u64`, `ppm_hit`, `ge_transitions`, `markov_bd_transitions`), but the
+//! per-class precomputed streams are GONE. Contract `DR-CS-3-PANEL-CONTRACT-V2` (md `0abbb114…`)
+//! fixes ONE chain per DIRECTION, advanced once per traversing packet in chronological emission
+//! order: forward carries DATA + ARQ retransmissions + Probe, reverse carries ACK + Echo. There is
+//! no packet-class stream and no treatment-only impairment.
+//!
+//! The workload, channel, warm-up length, offer pacing, virtual tick and horizon constants are the
+//! frozen FS-CAL-2 / R2A identity values, restated here so this module owns no dependency on the
+//! spine.
 #![allow(dead_code)]
 
 #[path = "fs_cal2_gen.rs"]
@@ -30,7 +35,7 @@ use adaptive_transport::sender::{
     AckInfo, BootstrapRttConfig, Event, OpaqueUnit, Sender, SenderState, Timer, TransmitKind,
 };
 use adaptive_transport::tail_recovery::TailRecoveryConfig;
-use fs_cal2_gen::{loss_bits, sha256_hex, stream_key, LossModel, StreamClass};
+use fs_cal2_gen::{sha256_hex, LossModel};
 use kama_integration::receiver_control_core::{ECHO_BUDGET_BYTES, MAX_ECHOES};
 use kama_integration::{CoreIngest, ReceiverControlCore};
 use kama_noise_wire::control::decode_control;
@@ -139,7 +144,7 @@ impl GeChain {
     /// Advance EXACTLY one packet-domain step; `true` = this packet is dropped.
     ///
     /// The transition algebra is the frozen FS-CAL-2 §3.5/§6.0 one, stepped incrementally instead of
-    /// precomputed, so a single chain reproduces `loss_bits` draw for draw.
+    /// precomputed, so a single chain reproduces the frozen generator draw for draw.
     pub fn next_drop(&mut self) -> bool {
         let i = self.idx;
         self.idx += 1;
