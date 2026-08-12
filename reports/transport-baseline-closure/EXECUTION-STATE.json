@@ -21,7 +21,7 @@
     "0b9f6f36 test(transport): expose default-build and semantic feature configurations"
   ],
   "milestones": {
-    "M1": "EK4-A2 DONE \u00b7 CI matrix DONE \u00b7 startup-pacing default-ON BLOCKED",
+    "M1": "PASS",
     "M2": "not started",
     "M3": "not started",
     "M4": "not started",
@@ -74,27 +74,8 @@
     "product_wire_behaviour_changed": false
   },
   "blocking_gate": {
-    "name": "startup pacing default-ON",
-    "tests": [
-      "kama-engine/tests/fuzzy_e2e.rs::e2e_real_fuzzy_nonzero_r2_to_emission",
-      "kama-engine/tests/fuzzy_e2e.rs::e2e_real_fuzzy_partial_block"
-    ],
-    "measured": {
-      "floor_active": {
-        "ratio": 800,
-        "planned": 4,
-        "emitted": 0
-      },
-      "floor_inactive": {
-        "ratio": 800,
-        "planned": 4,
-        "emitted": 4
-      }
-    },
-    "isolation": "toggled only set_startup_pacing_init in controller_sender(); file restored with cp, never git checkout; its diff is empty",
-    "assertion": "planned > 0 && emitted == planned fails at fuzzy_e2e.rs:277",
-    "why_not_shipped": "not a stale trajectory constant; \u00a712 requires explicit FEC_R2 to stay runtime-executable, so shipping would trade a fixed liveness defect for a broken FEC actuator",
-    "default": "OFF; mechanism still available via set_startup_pacing_init"
+    "status": "RESOLVED",
+    "see": "m1_blockers_resolved"
   },
   "next_step_exact": {
     "goal": "root-cause why the startup pacing floor starves plan_fec_parity",
@@ -132,13 +113,13 @@
     "clippy": "clean (adaptive-transport and kama-integration, default and feature builds)",
     "no_loss_rate_ramp": "ON vs OFF 30/30 byte-identical (wire, source prefix, delivered)",
     "workspace_all_features": {
-      "passed": 873,
+      "passed": 874,
       "failed": 0
     },
-    "note": "green state is with startup pacing default-OFF; the FEC-parity starvation returns if the default flips"
+    "note": "measured with startup pacing default-ON"
   },
   "defaults": {
-    "startup_pacing": "OFF",
+    "startup_pacing": "ON",
     "bootstrap_rtt": "OFF",
     "tail_recovery": "OFF",
     "fec_adaptive_policy": "OFF"
@@ -190,5 +171,27 @@
       "reports/fs-cal-2/",
       "scripts/fs-cal-2/"
     ]
-  }
+  },
+  "m1_blockers_resolved": [
+    {
+      "n": 1,
+      "blocker": "EK4-A2 event-loop liveness",
+      "resolution": "fixed (b7b15ddc); stale dup_queue due_ns replaced by the instant the scheduler can act; 7 regressions sealed"
+    },
+    {
+      "n": 2,
+      "blocker": "FEC-ordering trajectory constant",
+      "resolution": "formal supersession; per-turn and per-block DATA-before-PARITY hold with 0 violations"
+    },
+    {
+      "n": 3,
+      "blocker": "apparent FEC parity starvation",
+      "resolution": "WITHDRAWN - never a product defect; both arms emit 4/4 parity, floor ON 25 ms earlier; harness counted only the Timer::Pto return and discarded the ACK return; corrigendum 3bfd4a9d"
+    },
+    {
+      "n": 4,
+      "blocker": "D2/R2 spurious-retransmit assertion",
+      "resolution": "supersession 7718b94f; floor removes the late-parity leak (spurious 0); original preserved verbatim and re-scoped; companion test seals the default"
+    }
+  ]
 }

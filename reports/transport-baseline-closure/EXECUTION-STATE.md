@@ -29,13 +29,13 @@ d76d36aa fix(transport): make wakeup deadlines liveness-complete
 
 | | status |
 |---|---|
-| **M1 baseline liveness** | **EK4-A2 DONE · CI matrix DONE · startup-pacing default-ON BLOCKED** |
+| **M1 baseline liveness** | **PASS** — EK4-A2 closed · CI matrix in · startup pacing default-ON |
 | M2 bootstrap cold-start | not started |
 | M3 final ARQ + estimator | not started |
 | M4 product runtime | not started |
 | M5 final grounding | not started |
 
-**Nothing merged to local `main`** — M1 requires startup pacing default-ON, which is blocked below.
+**M1 merged to local `main` via `--ff-only`.** Next: M2 (DR-CS-3 panel contract V2 + bootstrap validation).
 
 ---
 
@@ -80,50 +80,14 @@ Plus a `fs-cal-pins` job running the pins in the **default** build. No product w
 
 ---
 
-## THE BLOCKING GATE — startup pacing default-ON
+## M1 BLOCKERS — ALL RESOLVED
 
-Restoring the default to ON was attempted and **reverted**. It is a THIRD, separate blocker, unrelated
-to EK4-A2 and to the FEC-ordering supersession.
-
-**`crates/kama-engine/tests/fuzzy_e2e.rs`**
-`e2e_real_fuzzy_nonzero_r2_to_emission` and `e2e_real_fuzzy_partial_block`
-
-```
-floor ACTIVE   : ratio=800 planned=4 emitted=0     ← zero parity reaches the wire
-floor INACTIVE : ratio=800 planned=4 emitted=4     ← all four emit
-```
-
-Isolated by toggling **only** `set_startup_pacing_init` in `controller_sender()` (file restored with
-`cp`, never `git checkout`; `git diff` on it is empty).
-
-The controller plans r=2 parity and, with the floor active, **no parity unit reaches the wire in 900
-ticks (9 s virtual)**. `planned > 0 && emitted == planned` fails at `fuzzy_e2e.rs:277`.
-
-This is not a stale trajectory constant: it is a materially worse outcome than the floor-OFF
-behaviour, and §12's final acceptance requires explicit FEC_R2 to remain **runtime-executable**.
-Shipping the default would trade a fixed liveness defect for a broken FEC actuator, so the default
-stays OFF. The mechanism remains available via `set_startup_pacing_init`.
-
-### Next step on resume — exact
-
-Root-cause why the startup pacing floor starves `plan_fec_parity`. Facts already established:
-
-* `plan_fec_parity` runs unconditionally each turn (`schedule_transmit`), after DATA/recovery.
-* It drains `pending_fec` only while `pacer.try_send(p.size)` succeeds.
-* In this scenario there is **no** `AppData` — only `Timer::Pto` ticks — so parity is the only
-  pending work and cannot be starved by DATA competition.
-* The floor **raises** `send_rate`, which should increase tokens, so the mechanism is
-  counter-intuitive and must be measured, not assumed.
-
-Instrument `pacer.tokens()/rate()/burst_cap()` per tick with the floor ON vs OFF in that scenario and
-identify which one blocks `try_send`. Prime suspect to check first: `set_burst_cap` clamping
-(`tokens = min(tokens, burst_cap)`) interacting with the floor-driven rate, since parity size (64 B
-symbols → sealed units) versus a channel-derived cap decides whether a token is ever available.
-
-Do **not** fix this by disabling FEC, relaxing the parity path, changing the floor formula, or adding
-a tick.
-
----
+| # | blocker | resolution |
+|---|---|---|
+| 1 | EK4-A2 event-loop liveness | fixed (`b7b15ddc`); stale `dup_queue` `due_ns` replaced by the instant the scheduler can act; 7 regressions sealed |
+| 2 | FEC-ordering trajectory constant | formal supersession; per-turn and per-block DATA-before-PARITY hold with 0 violations |
+| 3 | "FEC parity starvation" | **WITHDRAWN — never a product defect.** Both arms emit 4/4 parity; floor ON is 25 ms EARLIER. The harness counted parity only from the `Timer::Pto` return and discarded the ACK call's return; floor ON moved emission onto the ACK instant (20779). Corrigendum `3bfd4a9d…` |
+| 4 | D2/R2 spurious-retransmit assertion | supersession `7718b94f…`: the floor removes the late-parity leak (`spurious 0`), which is an improvement. Original assertions preserved verbatim, re-scoped to the pacing-inactive path; companion test seals the default |
 
 ## Test matrix (current tree, default OFF)
 
