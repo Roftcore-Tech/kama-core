@@ -29,7 +29,7 @@ d76d36aa fix(transport): make wakeup deadlines liveness-complete
 
 | | status |
 |---|---|
-| **M1 baseline liveness** | **NOT MERGED** — all technical gates pass in the working tree, but the branch does NOT build in a clean checkout (see CLEAN-CHECKOUT DEFECT) |
+| **M1 baseline liveness** | **PASS** — verified entirely in a clean worktree from committed content |
 | M2 bootstrap cold-start | not started |
 | M3 final ARQ + estimator | not started |
 | M4 product runtime | not started |
@@ -37,96 +37,44 @@ d76d36aa fix(transport): make wakeup deadlines liveness-complete
 
 **`main` is at `bb61c2da` — the merge was performed and then UNDONE.**
 
-### CLEAN-CHECKOUT DEFECT (my error, must be fixed before any merge)
+### CLEAN-CHECKOUT DEFECT — corrected record and repair
 
-`--ff-only` merged M1 into `main`, and the mandated clean-worktree verification then showed the
-merged tree **does not compile**:
+**What was and was not broken:**
 
-```
-error[E0583]: file not found for module `fate_estimator`
-  --> crates/adaptive-transport/src/lib.rs:34
-```
+* `main@bb61c2da` **compiled cleanly before, and does now** — re-verified in a fresh worktree,
+  `cargo build --all` exit 0. `main` points at it again. **No claim is made that `main` was broken.**
+* What was broken is the **commit closure of `transport-baseline-closure` after `29dc1a10`**:
+  committed files referenced sources that were never tracked.
+* Untracked files in the dirty working tree **masked** the missing commits, so every in-tree gate
+  passed while a clean checkout could not build.
+* The temporary `--ff-only` merge therefore failed in a clean checkout, and the **branch pointer was
+  safely restored** with `git branch -f` (pointer move only — no `reset --hard`, no working tree or
+  user file touched).
 
-Cause: commit `29dc1a10` committed `crates/adaptive-transport/src/lib.rs`, which carried a
-**pre-existing uncommitted** line `pub mod fate_estimator;`, while
-`crates/adaptive-transport/src/fate_estimator.rs` stayed **untracked** (I had classified it as user
-WIP and excluded it from every commit). I committed a modified file without verifying its
-dependencies were tracked.
+**Missing closure, enumerated by `cargo test --workspace --all-targets --all-features --no-run`:**
+`crates/adaptive-transport/src/fate_estimator.rs` · `tests/common/fs_cal2_{schema,spine,gen,policy}.rs`.
+(`fs_exec.rs` and `fs_f0.rs` were already tracked; `examples/fs_cal2_runner.rs` is referenced by no
+committed code.)
 
-`main` was restored to `bb61c2da` with `git branch -f` (branch-pointer move only; no working tree
-touched, no `reset --hard`, no user file altered). The branch `transport-baseline-closure` still
-holds all work at `48ec9d4d`.
+**Repair (`15a82531`) — decided per file from scope, not from the working-tree label:**
 
-**Files that committed code needs but that are untracked:**
+| item | stage it belongs to | decision |
+|---|---|---|
+| `pub mod fate_estimator;` | AŞAMA 6 / **M3** | hunk reverted — committed early; the file itself untouched on disk |
+| `fs_cal2_pins.rs` | **FS-CAL-2 YETKİ-1** | untracked again (its whole `fs_cal2_*` harness is untracked); it was also the only committed user of `fate_estimator` |
+| `dr_cs3_panel.rs`, `dr_cs3_panel_runner.rs` | **M2** | untracked again; need `fs_cal2_gen.rs` and will land in M2 with it |
+| `fs-cal-pins` CI job | — | removed with the suite it invoked |
 
-| file | needed by |
-|---|---|
-| `crates/adaptive-transport/src/fate_estimator.rs` | `lib.rs:34` (**product library**) |
-| `crates/kama-integration/tests/common/fs_cal2_schema.rs` | `fs_cal2_pins.rs` |
-| `crates/kama-integration/tests/common/fs_cal2_spine.rs` | `fs_cal2_schema.rs` |
-| `crates/kama-integration/tests/common/fs_cal2_gen.rs` | `fs_cal2_spine.rs`, `dr_cs3_panel.rs` |
-| `crates/kama-integration/tests/common/fs_cal2_policy.rs` | `fs_cal2_spine.rs` |
-| `crates/kama-integration/examples/fs_cal2_runner.rs` | referenced by reports/tooling |
-| `crates/kama-integration/tests/common/fs_exec.rs` | `fs_cal2_gen.rs` (verify) |
+`git rm --cached` restores exactly the untracked state these files had before, so **nothing is lost
+from disk**. M1 keeps only what it owns: the EK4-A2 wakeup fix and regressions, startup pacing
+default-ON, the FEC-ordering and spurious-retransmit supersessions, the `fuzzy_e2e` observation fix,
+and the semantic CI matrix.
 
-**All measured green results remain valid for the working tree**; they were simply never a
-clean-checkout claim. Nothing about EK4-A2, the FEC corrigendum or the supersessions changes.
+**Clean worktree now compiles:** `cargo test --workspace --all-targets --all-features --no-run`
+exit **0**.
 
-### Next step on resume — exact
-
-1. Enumerate the full untracked closure the committed code needs (`cargo build --all` in a fresh
-   worktree until it compiles).
-2. Decide per file: `fate_estimator.rs` is required **product source** and must be tracked; the
-   FS-CAL harness files are required by committed tests. Neither is authored user WIP in the sense my
-   manifest assumed.
-3. Commit them in a single-purpose commit, or revert the `lib.rs` hunk if `fate_estimator` is not
-   meant to ship yet — decide from the code, not from the manifest.
-4. **Re-verify `cargo build --all` and `cargo test --all` in a FRESH worktree BEFORE merging.** The
-   clean-worktree check must gate the merge, not follow it.
-
-
----
-
-## DONE this turn
-
-### EK4-A2 — **CLOSED**
-
-The checkpoint's hypothesis (external `Timer::Pto` not reaching the loss-declaration branch) was
-**REFUTED**: `on_event_core` routes `Event::TimerFired(timer) => self.on_timer(timer, now_ns)`
-(`sender.rs:1506`), and `detect_time_losses` is already invoked there.
-
-Per-source instrumentation found the real culprit — **source 3, `dup_queue`**:
-
-```
-cs=Some(79.096s)  arq=Some(79.096s)  tail=None  pend=None
-dup=Some(61.210s)   ← stale, while now = 68.3 s
-```
-
-`next_wakeup_ns()` reported a scheduled geometric copy's `due_ns` verbatim. Once that instant has
-passed but the pacer cannot afford the unit, `drain_due_duplicates` leaves the record queued and
-`due_ns` never advances — so the same overdue instant was reported forever and a wakeup-driven driver
-spun without progress. The cold-start and ARQ deadlines were coherent all along.
-
-**Fix (minimal, no new timer, no second truth source):** the dup source now reports what the
-scheduler can actually act on — `due_ns` when still in the future, otherwise the instant the pacer can
-afford the unit. Both inputs read from existing authoritative state. ARQ share, PTO backoff, retry
-counts and the startup pacing formula are untouched.
-
-**Sealed by `crates/adaptive-transport/tests/ek4_a2_liveness.rs` (7 tests, all green):** external PTO
-drives loss declaration at a due deadline · empty batch ≠ real PTO batch in a due-loss state ·
-internal + external PTO in one batch do not double-process · wakeup-driven driver progresses with no
-periodic tick · no stale-forever instant · `None` only when genuinely idle · accessor is
-observation-only · PreConverge still freezes time-threshold declaration.
-
-### CI semantic matrix — **DONE**
-
-`.github/workflows/ci.yml` gains a `semantic-matrix` job that builds, clippies and tests each
-configuration separately (default workspace · all-features · `experimental-cold-start` ·
-`experimental-fec-budget` · diagnostic), printing per-configuration counts for compiled test
-binaries, tests run, ignored and filtered out, and failing if a configuration compiled no test binary.
-Plus a `fs-cal-pins` job running the pins in the **default** build. No product wire behaviour touched.
-
----
+**Process rule now binding:** the clean-worktree gate must **precede** the merge. Last time it ran
+after, which is how a broken closure reached `main` at all.
 
 ## M1 BLOCKERS — ALL RESOLVED
 
@@ -137,21 +85,38 @@ Plus a `fs-cal-pins` job running the pins in the **default** build. No product w
 | 3 | "FEC parity starvation" | **WITHDRAWN — never a product defect.** Both arms emit 4/4 parity; floor ON is 25 ms EARLIER. The harness counted parity only from the `Timer::Pto` return and discarded the ACK call's return; floor ON moved emission onto the ACK instant (20779). Corrigendum `3bfd4a9d…` |
 | 4 | D2/R2 spurious-retransmit assertion | supersession `7718b94f…`: the floor removes the late-parity leak (`spurious 0`), which is an improvement. Original assertions preserved verbatim, re-scoped to the pacing-inactive path; companion test seals the default |
 
-## Test matrix (current tree, default OFF)
+## Test matrix — CLEAN WORKTREE, committed content only
 
-| scope | passed | failed |
-|---|---|---|
-| workspace `--all` (default features) | **521** | 0 |
-| workspace `--all --all-features` | **873** | 0 |
-| adaptive-transport default | 249 | 0 |
-| adaptive-transport `experimental-cold-start` | 274 | 0 |
-| adaptive-transport `diag-sched-telemetry` | 249 | 0 |
-| adaptive-transport `experimental-fec-budget` | 296 | 0 |
-| adaptive-transport `--all-features` | 323 | 0 |
-| kama-integration default / cold-start | 71 / 109 | 0 |
+| gate | result |
+|---|---|
+| `cargo test --workspace --all-targets --all-features --no-run` | **exit 0** |
+| workspace default | **472 / 0** |
+| workspace `--all-features` | **826 / 0** |
+| adaptive-transport `experimental-cold-start` | **258 / 0** |
+| adaptive-transport `experimental-fec-budget` | **280 / 0** |
+| adaptive-transport `diag-sched-telemetry` | **233 / 0** |
+| `fuzzy_e2e` (FEC_R2 `planned=4 emitted=4`) | **5 / 0** |
+| `fs_fec_arms` (cost split, both pacing axes) | **4 / 0** |
+| `ek4_a2_liveness` default / cold-start | **5 / 0**, **7 / 0** |
+| `budget_equivalence_pin` | **5 / 0** |
+| `startup_floor_*` seals | **5 / 0** |
+| `inv_rate_1_*` seals | **2 / 0** |
+| clippy `-D warnings` ×4 scopes | **clean** |
 
-clippy `-D warnings` clean on adaptive-transport and kama-integration, default and feature builds.
-No-loss rate-ramp: ON vs OFF **30/30 byte-identical** (wire, source prefix, delivered).
+Counts are lower than the earlier dirty-tree figures (which were 521 / 874) because `fs_cal2_pins.rs`
+and the panel harness are deferred; this is the honest committed-content baseline.
+
+**Rate-ramp coverage in M1 — correction.** An earlier note claimed deferring `fs_cal2_pins.rs`
+removed the startup-floor regressions from M1. It did not; that was a wrong test filter. The full
+active-floor contract is in the `adaptive-transport` lib under `startup_floor_*` /`inv_rate_1_*`
+names and all of it passes. Only the **panel-level seeded replay**
+(`rate_lock_seeds_escape_the_fixed_point`) defers with the FS-CAL harness.
+
+**Post-test cleanliness caveat (known, benign).** After a test run the clean worktree shows
+`reports/d1-exit/data/cold-start/timeline-*.csv` modified:
+`crates/adaptive-transport/tests/cold_start_liveness.rs` writes evidence artifacts into the repo tree
+via `std::fs::write`. This is a repo-hygiene issue (a test writing into `reports/`), not a product
+defect and not an unexplained change. Recorded rather than worked around.
 
 ## Defaults (nothing unverified is ON)
 

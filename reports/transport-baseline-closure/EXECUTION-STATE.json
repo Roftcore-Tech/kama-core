@@ -21,7 +21,7 @@
     "0b9f6f36 test(transport): expose default-build and semantic feature configurations"
   ],
   "milestones": {
-    "M1": "NOT MERGED - clean-checkout defect",
+    "M1": "PASS",
     "M2": "not started",
     "M3": "not started",
     "M4": "not started",
@@ -95,28 +95,48 @@
     ]
   },
   "test_matrix": {
+    "scope": "CLEAN WORKTREE, committed content only",
+    "no_run_gate": "exit 0",
     "workspace_default": {
-      "passed": 521,
+      "passed": 472,
+      "failed": 0
+    },
+    "workspace_all_features": {
+      "passed": 826,
       "failed": 0
     },
     "adaptive_transport": {
-      "default": 249,
-      "experimental-cold-start": 274,
-      "diag-sched-telemetry": 249,
-      "experimental-fec-budget": 296,
-      "all-features": 323
+      "experimental-cold-start": 258,
+      "experimental-fec-budget": 280,
+      "diag-sched-telemetry": 233
     },
-    "kama_integration": {
-      "default": 71,
-      "experimental-cold-start": 109
+    "fuzzy_e2e": {
+      "passed": 5,
+      "failed": 0,
+      "fec_r2": "planned=4 emitted=4"
     },
-    "clippy": "clean (adaptive-transport and kama-integration, default and feature builds)",
-    "no_loss_rate_ramp": "ON vs OFF 30/30 byte-identical (wire, source prefix, delivered)",
-    "workspace_all_features": {
-      "passed": 874,
+    "fs_fec_arms": {
+      "passed": 4,
       "failed": 0
     },
-    "note": "measured with startup pacing default-ON"
+    "ek4_a2_liveness": {
+      "default": 5,
+      "experimental-cold-start": 7
+    },
+    "budget_equivalence_pin": {
+      "passed": 5,
+      "failed": 0
+    },
+    "startup_floor_seals": {
+      "passed": 5,
+      "failed": 0
+    },
+    "inv_rate_1_seals": {
+      "passed": 2,
+      "failed": 0
+    },
+    "clippy_scopes": "clean x4",
+    "note": "lower than the earlier dirty-tree 521/874 because fs_cal2_pins.rs and the panel harness are deferred; this is the honest committed-content baseline"
   },
   "defaults": {
     "startup_pacing": "ON",
@@ -237,6 +257,48 @@
       "decide per file from the code: fate_estimator.rs is required product source; FS-CAL harness files are required by committed tests",
       "commit them single-purpose, or revert the lib.rs hunk if fate_estimator is not meant to ship yet",
       "RE-VERIFY cargo build --all and cargo test --all in a FRESH worktree BEFORE merging - the clean check must GATE the merge, not follow it"
-    ]
+    ],
+    "main_bb61c2da_compiled_before_and_now": true,
+    "claim_main_was_broken": "NOT MADE - main@bb61c2da builds clean, re-verified exit 0",
+    "what_was_broken": "the commit closure of transport-baseline-closure after 29dc1a10",
+    "masking": "untracked files in the dirty working tree masked the missing commits, so in-tree gates passed while a clean checkout could not build",
+    "merge_reverted": "branch pointer restored with git branch -f (pointer move only)",
+    "repair_commit": "15a82531",
+    "repair_decisions": [
+      {
+        "item": "pub mod fate_estimator;",
+        "stage": "A\u015eAMA 6 / M3",
+        "decision": "hunk reverted (committed early); file untouched on disk"
+      },
+      {
+        "item": "fs_cal2_pins.rs",
+        "stage": "FS-CAL-2 YETK\u0130-1",
+        "decision": "untracked again; whole fs_cal2_* harness is untracked; only committed user of fate_estimator"
+      },
+      {
+        "item": "dr_cs3_panel.rs, dr_cs3_panel_runner.rs",
+        "stage": "M2",
+        "decision": "untracked again; need fs_cal2_gen.rs, land in M2 with it"
+      },
+      {
+        "item": "fs-cal-pins CI job",
+        "stage": "-",
+        "decision": "removed with the suite it invoked"
+      }
+    ],
+    "nothing_lost_from_disk": "git rm --cached restores the prior untracked state",
+    "clean_worktree_no_run_gate": "exit 0",
+    "binding_process_rule": "the clean-worktree gate must PRECEDE the merge"
+  },
+  "rate_ramp_coverage_correction": {
+    "earlier_claim": "deferring fs_cal2_pins.rs removed the startup-floor regressions from M1",
+    "status": "WRONG - caused by a bad test filter",
+    "reality": "the full active-floor contract is in the adaptive-transport lib under startup_floor_* / inv_rate_1_* names and all of it passes",
+    "actually_deferred": "only the panel-level seeded replay rate_lock_seeds_escape_the_fixed_point"
+  },
+  "post_test_cleanliness_caveat": {
+    "observed": "reports/d1-exit/data/cold-start/timeline-*.csv modified after a test run in the CLEAN worktree",
+    "cause": "crates/adaptive-transport/tests/cold_start_liveness.rs writes evidence artifacts into the repo tree via std::fs::write",
+    "classification": "repo-hygiene issue, not a product defect and not an unexplained change"
   }
 }
