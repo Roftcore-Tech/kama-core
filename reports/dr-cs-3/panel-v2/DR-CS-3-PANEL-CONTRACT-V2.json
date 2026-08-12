@@ -1,0 +1,75 @@
+{
+  "artifact": "DR-CS-3-PANEL-CONTRACT-V2",
+  "frozen_before_any_v2_panel_run": true,
+  "hashed_before_harness_change": true,
+  "base": {
+    "main": "3e6dfa30",
+    "branch_head": "e39b587e",
+    "closure_gate": "12/12"
+  },
+  "why_v1_invalid_for_promotion": {
+    "v1_result": "2/3 locked recovery",
+    "defects": [
+      "baseline ACK reverse path lossless while treatment Echo reverse path GE-lossy (treatment-only impairment)",
+      "Probe drew from DRCS3ProbeForward and Echo from DRCS3EchoReverse - independent per-class channel state",
+      "each class advanced its GE chain from its OWN packet index, so four echoes spread over 45 s consumed four CONSECUTIVE draws"
+    ],
+    "rep14": "4/4 probes authenticated, 4/4 echoes generated at the 172 B budget, 0 echoes on the wire because that private chain read [D,D,D,D]",
+    "status": "retained as historical diagnostic; not confirmatory; cannot promote a default"
+  },
+  "binding_channel_semantics": [
+    "one forward channel state shared by DATA and Probe, advanced chronologically in emission order",
+    "one reverse channel state shared by ACK and Echo, advanced chronologically in emission order",
+    "no treatment-only impairment - same channel by construction",
+    "GE stays packet-domain; state advances once per packet traversing the channel; NOT from a per-class index; NOT converted to time-decay (that would be post-hoc)",
+    "separable RNG per direction permitted so the treatment cannot shift the baseline DATA draw sequence; distribution and path semantics identical; baseline and treatment see the same realisation for shared packets"
+  ],
+  "panels": {
+    "primary_continuity": {
+      "forward": "DATA + Probe impaired",
+      "reverse": "ACK + Echo lossless",
+      "role": "preserves continuity with the frozen baselines; decides the default"
+    },
+    "bidirectional_robustness": {
+      "forward": "DATA + Probe impaired",
+      "reverse": "ACK + Echo same impairment",
+      "role": "new diagnostic; no claim to reproduce frozen baselines; never merged with primary"
+    }
+  },
+  "outcome_classes": {
+    "RTT-OPPORTUNITY": "at least one Probe reached the receiver AND at least one corresponding Echo reached the sender; mechanism must then produce matched local RTT, srtt>0, PreConverge exit; opportunity without exit is a genuine mechanism failure",
+    "NETWORK-CENSORED": "every Probe forward-dropped, or every generated Echo reverse-dropped; not a mechanism defect and NOT a PASS; own class; KEPT IN THE DENOMINATOR; no post-hoc exclusion; no seed changes to avoid it",
+    "SAFETY-FAILURE": "budget overrun, replay/mismatch RTT, duplicate RTT sample, authentication violation, DATA displacement, ARQ timer diff; never counted as censored"
+  },
+  "acceptance_gates_for_default_on": [
+    "locked primary panel: 3/3 of the known stalls recover",
+    "new stalls: 0",
+    "fresh primary N=40: first valid ACK in at least 38/40",
+    "zero-transmission stalls: 0",
+    "safety / budget / invariant violations: 0",
+    "no-loss RTT{50,250,1000}: completion regression 0",
+    "valid ACK before the first probe instant => bootstrap overhead exactly 0",
+    "otherwise overhead within the frozen protocol budget (sender <=200 B, receiver <=172 B, echo 43 B < probe 44 B)",
+    "gate.sh fully green"
+  ],
+  "censored_counts_against_gates": [
+    1,
+    3
+  ],
+  "on_failure": "C1 - verify the instrument via \u00a74 (A0/A1/A2/A3), find the real product root cause, apply the minimum bounded fix on the shipping Sender + ReceiverControlCore path, re-run this same panel; harness echo / fake responder / product-less adapter remain forbidden",
+  "harness_scope": {
+    "label": "DEFAULT-BUILD AUTHENTICATED TRANSPORT COMPONENT PANEL WITH TEST-INJECTED SESSION KEYS",
+    "real": [
+      "product Sender",
+      "default-build ReceiverControlCore",
+      "schema codec",
+      "AEAD"
+    ],
+    "does_not_validate": [
+      "Noise handshake",
+      "product binary",
+      "deployment network path"
+    ],
+    "those_are": "M4"
+  }
+}

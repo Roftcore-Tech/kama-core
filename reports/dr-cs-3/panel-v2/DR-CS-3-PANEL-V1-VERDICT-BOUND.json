@@ -1,0 +1,19 @@
+{
+  "artifact": "DR-CS-3-PANEL-V1-VERDICT-BOUND",
+  "v1_locked_result": "2/3",
+  "marking": "SUPERSEDED - INVALID FOR DEFAULT PROMOTION DUE TO TREATMENT-ONLY CHANNEL IMPAIRMENT",
+  "v1_records_preserved": true,
+  "structurally_proven": [
+    "baseline ACK and treatment Echo did not see the same reverse channel semantics (ACK lossless, Echo GE-lossy)",
+    "per-class loss streams were used (DRCS3ProbeForward, DRCS3EchoReverse), giving packet classes independent channel state",
+    "therefore the V1 baseline/treatment comparison was not comparable and cannot promote or block a default"
+  ],
+  "explicitly_not_claimed": [
+    "C2 conclusively explains rep14",
+    "the bootstrap mechanism works 3/3 on the locked panel",
+    "rep14 will certainly recover under V2"
+  ],
+  "diagnostic_expectation_recorded_before_any_v2_result": "V2 semantics are expected to change rep14's outcome. If rep14 still fails under V2, V1's invalidity is NOT reversed - it only means channel asymmetry was not the sole cause, and \u00a74 (A0/A1/A2/A3) is applied to find the additional root cause.",
+  "expectation_is_an_acceptance_gate": false,
+  "binding_gates": "the nine in DR-CS-3-PANEL-CONTRACT-V2 (md 0abbb114, json 353311bf)"
+}
