@@ -669,12 +669,19 @@ impl Default for StartupPacingConfig {
         // (arming only on the PreConverge exit, loss can neither arm nor raise it, cwnd/srtt has the last
         // word at every application, no synthetic BtlBw samples, deterministic permanent release).
         //
-        // DR-RATE-RAMP-2B §A3.2/§A4 reverted this to OFF because enabling it surfaced TWO
-        // trajectory-constant failures. The FEC-ordering one was resolved by formal supersession;
-        // the second (EK4-A2 `next_wakeup_ns()` returning None / a stale instant while work was
-        // outstanding) was a REAL event-loop liveness defect, now FIXED and regression-sealed
-        // (tests/ek4_a2_liveness.rs; reports/ek4-a2/). Default restored to ON.
-        Self { enabled: true }
+        // DR-RATE-RAMP-2B §A3.2/§A4 reverted this to OFF. EK4-A2 (the liveness blocker) is now FIXED
+        // and regression-sealed (tests/ek4_a2_liveness.rs; reports/ek4-a2/), and restoring the default
+        // to ON was attempted here — but it exposed a THIRD, separate blocker:
+        //
+        //   kama-engine/tests/fuzzy_e2e.rs::{e2e_real_fuzzy_nonzero_r2_to_emission,
+        //   e2e_real_fuzzy_partial_block} -- the controller plans r=2 parity (ratio=800, planned=4)
+        //   and with the floor ACTIVE **zero** parity units reach the wire in 900 ticks (9 s virtual),
+        //   while with the floor INACTIVE all 4 emit. Isolated by toggling ONLY this axis.
+        //
+        // Explicit FEC_R2 must stay runtime-executable, so shipping this default would trade a fixed
+        // liveness defect for a broken FEC actuator. Default stays OFF until that is root-caused.
+        // The mechanism remains fully available via `set_startup_pacing_init`.
+        Self { enabled: false }
     }
 }
 
