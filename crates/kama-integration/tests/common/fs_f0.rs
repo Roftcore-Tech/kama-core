@@ -78,6 +78,19 @@ pub struct F0Result {
 /// F0 kapalı-döngü. Sealed-wire boyu GROUNDED (fs_sealed_len; source==repair AYNI — INV-ENGINE-SOC;
 /// eski uydurma parity_frame=108 KALDIRILDI → gerçek 26+11+E=101@E=64, protector.rs N7).
 pub fn run_f0(manual_r: u16, drop_initial: &[u16], link_bps: u64, owd_ns: u64) -> F0Result {
+    run_f0_paced(manual_r, drop_initial, link_bps, owd_ns, None)
+}
+
+/// DR-RATE-RAMP-2B: same run with an EXPLICIT startup-pacing axis. `None` = product default.
+/// Added so the §8 cost-split proof can be asserted on BOTH sides of that axis
+/// (`reports/dr-rate-ramp-2b/SPURIOUS-RETRANSMIT-SUPERSESSION.md`, md `7718b94f…`).
+pub fn run_f0_paced(
+    manual_r: u16,
+    drop_initial: &[u16],
+    link_bps: u64,
+    owd_ns: u64,
+    startup_pacing: Option<bool>,
+) -> F0Result {
     let sealed = fs_sealed_len(E as u64); // 101 @ E=64: source VE repair AYNI sealed-datagram
     let src = source_bytes();
     let repairs = real_repairs(&src);
@@ -89,6 +102,9 @@ pub fn run_f0(manual_r: u16, drop_initial: &[u16], link_bps: u64, owd_ns: u64) -
     });
     let mut ch = BottleneckChannel::new(trace, link_bps, owd_ns);
     let mut s = Sender::new();
+    if let Some(enabled) = startup_pacing {
+        s.set_startup_pacing_init(adaptive_transport::sender::StartupPacingConfig { enabled });
+    }
     s.set_manual_fec_enabled(true).unwrap(); // F0 PURITY: Manual fixed-R
 
     let mut delivered_src: BTreeSet<u16> = BTreeSet::new();

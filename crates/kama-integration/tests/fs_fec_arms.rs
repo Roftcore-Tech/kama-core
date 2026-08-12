@@ -8,7 +8,7 @@
 mod fs_f0;
 
 use adaptive_transport::fs_harness::{fs_sealed_len, pin_c_classify, ParityWireModel, PinCResult};
-use fs_f0::{run_f0, MS};
+use fs_f0::{run_f0, run_f0_paced, MS};
 use kama_fec_codec::{by_id, FecCodec, ReceivedSymbol, RsSimdCodec, SourceSymbol};
 
 /// PIN-C wire-model (harness-ortak sealed-boyut; F0 = 8-DATA-önce parity).
@@ -122,8 +122,12 @@ fn f3_partial_block_real_decode_and_pin_c_advances() {
 /// vs TOTAL-OUTCOME-COST (§8 = arq_retransmit_bytes + spurious_retransmits). Spurious ≠ BUDGET_MISMATCH.
 #[test]
 fn f0_cost_split_intervention_vs_total_outcome() {
+    // DR-RATE-RAMP-2B SUPERSESSION (md `7718b94f…`): these constants were measured on the
+    // startup-pacing-INACTIVE path and are PRESERVED VERBATIM here, re-scoped to it. The floor
+    // removes the late-parity race that produced the spurious retransmit; the product-default
+    // behaviour is sealed by `f0_cost_split_under_product_default` below. Nothing weakened.
     let sealed = fs_sealed_len(64); // 101B grounded
-    let r = run_f0(2, &[2, 5], 1_000_000, 20 * MS);
+    let r = run_f0_paced(2, &[2, 5], 1_000_000, 20 * MS, Some(false));
     assert_eq!(r.fec_decoded_sources, 2, "FEC tamamlamalı");
     // INTERVENTION-BUDGET (C-P4): YALNIZ proaktif parity sealed-wire (2 × 101).
     assert_eq!(r.realized_sealed_wire_bytes, 2 * sealed);
@@ -140,5 +144,30 @@ fn f0_cost_split_intervention_vs_total_outcome() {
     assert!(
         r.spurious_retransmits <= r.retransmits,
         "spurious ≤ toplam-retransmit (mantık)"
+    );
+}
+
+/// **§8 COST-SPLIT under the PRODUCT DEFAULT** (startup pacing ON). The split itself is unchanged —
+/// INTERVENTION-BUDGET is still exactly the proactive parity sealed wire and the accounting identity
+/// still holds — but the late-parity race no longer leaks a spurious ARQ retransmit, so the
+/// TOTAL-OUTCOME-COST is strictly lower. See SPURIOUS-RETRANSMIT-SUPERSESSION.
+#[test]
+fn f0_cost_split_under_product_default() {
+    let sealed = fs_sealed_len(64);
+    let r = run_f0_paced(2, &[2, 5], 1_000_000, 20 * MS, None); // product default
+    assert_eq!(r.fec_decoded_sources, 2, "FEC must still complete the block");
+    assert_eq!(
+        r.realized_sealed_wire_bytes,
+        2 * sealed,
+        "INTERVENTION-BUDGET unchanged: only proactive parity sealed wire"
+    );
+    assert_eq!(
+        r.arq_retransmit_bytes,
+        r.retransmits * sealed,
+        "accounting identity must hold on the default path too"
+    );
+    assert_eq!(
+        r.spurious_retransmits, 0,
+        "startup pacing removes the D2/R2 late-parity spurious leak"
     );
 }
