@@ -669,19 +669,12 @@ impl Default for StartupPacingConfig {
         // (arming only on the PreConverge exit, loss can neither arm nor raise it, cwnd/srtt has the last
         // word at every application, no synthetic BtlBw samples, deterministic permanent release).
         //
-        // DR-RATE-RAMP-2B §A3.2/§A4: **REVERTED TO DEFAULT OFF.** Enabling this by default surfaced
-        // TWO trajectory-constant failures, not one. The FEC-ordering one was fully resolved (see
-        // reports/dr-rate-ramp-2b/: the sealed per-turn and per-block DATA-before-PARITY invariants
-        // hold with 0 violations, and `experimental-fec-budget` ON ≡ OFF is byte-identical), but the
-        // SECOND — `dr_cs1_acceptance::f2b_di1c_rearmed_pto_lifecycle_exposure`, EK4-A2 — is a
-        // DIFFERENT invariant that is NOT covered by that supersession and is NOT resolved:
-        // `next_wakeup_ns()` returns `None` at an instant where a unit is still outstanding. Measured
-        // fact: the retransmit is NOT lost and actually happens EARLIER under the floor (4500 ms vs
-        // 7500 ms on idle ticks) — but `next_wakeup_ns()` is precisely what a real event loop uses to
-        // decide how long to sleep, so a `None` there is not something to wave through.
-        // §A3.2 is explicit: "Belirsizlik varsa supersession yapma; default startup pacing'i geçici
-        // OFF'a al ve DUR." The mechanism stays fully available via `set_startup_pacing_init`.
-        Self { enabled: false }
+        // DR-RATE-RAMP-2B §A3.2/§A4 reverted this to OFF because enabling it surfaced TWO
+        // trajectory-constant failures. The FEC-ordering one was resolved by formal supersession;
+        // the second (EK4-A2 `next_wakeup_ns()` returning None / a stale instant while work was
+        // outstanding) was a REAL event-loop liveness defect, now FIXED and regression-sealed
+        // (tests/ek4_a2_liveness.rs; reports/ek4-a2/). Default restored to ON.
+        Self { enabled: true }
     }
 }
 
@@ -1774,8 +1767,30 @@ impl Sender {
             );
         }
 
-        // 3. §3.3-B zamanlanmış geometrik kopyalar.
-        best = earlier(best, self.dup_queue.iter().map(|r| r.due_ns).min());
+        // 3. §3.3-B zamanlanmış geometrik kopyalar — ELIGIBILITY + EMISSION birlikte.
+        //
+        // `due_ns` yalnız NE ZAMAN uygun olduğunu söyler; emisyon ayrıca pacer token'ına bağlıdır
+        // (`drain_due_duplicates` → `try_send`). due geçmiş ama token yetmiyorsa kayıt kuyrukta
+        // kalır ve `due_ns` DEĞİŞMEZ → stale değeri tekrar tekrar raporlamak ilerlemesiz uyanış
+        // (busy-loop) üretir. Bu yüzden raporlanan an, scheduler'ın GERÇEKTEN işleyebileceği andır:
+        //   due gelecekte  → `due_ns`
+        //   due geçmiş     → token'ın yeteceği an
+        // (Yeni timer YOK: her iki girdi de mevcut authoritative durumdan okunur.)
+        best = earlier(
+            best,
+            self.dup_queue
+                .iter()
+                .filter_map(|r| {
+                    if r.due_ns > self.last_now_ns {
+                        Some(r.due_ns)
+                    } else {
+                        self.pacer
+                            .ns_until_sendable(r.unit.size)
+                            .map(|dt| self.last_now_ns.saturating_add(dt))
+                    }
+                })
+                .min(),
+        );
 
         // 4. DR-CS-3 bootstrap merdiveni (config default OFF ⇒ aday yok).
         if self.bootstrap_rtt.enabled && !self.bs_done {
