@@ -131,11 +131,26 @@ fn cold_start_first_loss_recovers_ack_free_but_state_pinned() {
 /// unit-boyutu için first_delay ve GÖZLENEN ilk-Duplicate zamanını belgeler (bound-doğrulama).
 #[test]
 fn cold_start_timeline_evidence_artifact() {
-    // Repo reports dizinine yaz (CARGO_MANIFEST_DIR = crates/adaptive-transport → ../../).
-    let dir = concat!(
+    // M2a REPO HYGIENE: a test MUST NOT write into the repo tree. Default target is this test
+    // binary's private temp dir (CARGO_TARGET_TMPDIR is per-package and per-run, so parallel tests
+    // cannot collide). The canonical repo evidence is regenerated ONLY on an explicit opt-in, and
+    // the target files are announced when it happens.
+    // Scientific content, test inputs and transport behaviour are UNCHANGED — only the destination.
+    let repo_dir = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../reports/d1-exit/data/cold-start"
     );
+    let regen_repo = std::env::var("COLD_START_EVIDENCE_REPO").is_ok();
+    let tmp_dir = format!("{}/cold-start-evidence", env!("CARGO_TARGET_TMPDIR"));
+    let dir: &str = if regen_repo {
+        eprintln!(
+            "COLD_START_EVIDENCE_REPO set — regenerating canonical evidence in {repo_dir}: \
+             summary.csv, timeline-{{65,300,1200}}B.csv"
+        );
+        repo_dir
+    } else {
+        &tmp_dir
+    };
     std::fs::create_dir_all(dir).ok();
     let mut sum = String::from(
         "unit_size,first_delay_s,observed_first_dup_s,within_2x_bound,dup_count,final_state_preconverge\n",
@@ -177,6 +192,18 @@ fn cold_start_timeline_evidence_artifact() {
         sum.contains(",true,"),
         "en-az-bir boyutta within-bound Duplicate + pinned"
     );
+    // Content is verified AT the destination, wherever that is.
+    let written = std::fs::read_to_string(format!("{dir}/summary.csv"))
+        .expect("evidence summary must be readable at its destination");
+    assert_eq!(written, sum, "written evidence must match what was asserted");
+    for size in [65u64, 300, 1200] {
+        let t = std::fs::read_to_string(format!("{dir}/timeline-{size}B.csv"))
+            .expect("per-size timeline must be readable at its destination");
+        assert!(
+            t.starts_with("t_s,kind,seq,unit_id\n"),
+            "timeline-{size}B.csv header"
+        );
+    }
 }
 
 /// KONTROL — hayatta-kalan ACK PreConverge'i açar: ilk-source teslim + ACK gelirse state Startup'a
