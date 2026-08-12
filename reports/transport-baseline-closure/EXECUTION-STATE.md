@@ -29,13 +29,61 @@ d76d36aa fix(transport): make wakeup deadlines liveness-complete
 
 | | status |
 |---|---|
-| **M1 baseline liveness** | **PASS** — EK4-A2 closed · CI matrix in · startup pacing default-ON |
+| **M1 baseline liveness** | **NOT MERGED** — all technical gates pass in the working tree, but the branch does NOT build in a clean checkout (see CLEAN-CHECKOUT DEFECT) |
 | M2 bootstrap cold-start | not started |
 | M3 final ARQ + estimator | not started |
 | M4 product runtime | not started |
 | M5 final grounding | not started |
 
-**M1 merged to local `main` via `--ff-only`.** Next: M2 (DR-CS-3 panel contract V2 + bootstrap validation).
+**`main` is at `bb61c2da` — the merge was performed and then UNDONE.**
+
+### CLEAN-CHECKOUT DEFECT (my error, must be fixed before any merge)
+
+`--ff-only` merged M1 into `main`, and the mandated clean-worktree verification then showed the
+merged tree **does not compile**:
+
+```
+error[E0583]: file not found for module `fate_estimator`
+  --> crates/adaptive-transport/src/lib.rs:34
+```
+
+Cause: commit `29dc1a10` committed `crates/adaptive-transport/src/lib.rs`, which carried a
+**pre-existing uncommitted** line `pub mod fate_estimator;`, while
+`crates/adaptive-transport/src/fate_estimator.rs` stayed **untracked** (I had classified it as user
+WIP and excluded it from every commit). I committed a modified file without verifying its
+dependencies were tracked.
+
+`main` was restored to `bb61c2da` with `git branch -f` (branch-pointer move only; no working tree
+touched, no `reset --hard`, no user file altered). The branch `transport-baseline-closure` still
+holds all work at `48ec9d4d`.
+
+**Files that committed code needs but that are untracked:**
+
+| file | needed by |
+|---|---|
+| `crates/adaptive-transport/src/fate_estimator.rs` | `lib.rs:34` (**product library**) |
+| `crates/kama-integration/tests/common/fs_cal2_schema.rs` | `fs_cal2_pins.rs` |
+| `crates/kama-integration/tests/common/fs_cal2_spine.rs` | `fs_cal2_schema.rs` |
+| `crates/kama-integration/tests/common/fs_cal2_gen.rs` | `fs_cal2_spine.rs`, `dr_cs3_panel.rs` |
+| `crates/kama-integration/tests/common/fs_cal2_policy.rs` | `fs_cal2_spine.rs` |
+| `crates/kama-integration/examples/fs_cal2_runner.rs` | referenced by reports/tooling |
+| `crates/kama-integration/tests/common/fs_exec.rs` | `fs_cal2_gen.rs` (verify) |
+
+**All measured green results remain valid for the working tree**; they were simply never a
+clean-checkout claim. Nothing about EK4-A2, the FEC corrigendum or the supersessions changes.
+
+### Next step on resume — exact
+
+1. Enumerate the full untracked closure the committed code needs (`cargo build --all` in a fresh
+   worktree until it compiles).
+2. Decide per file: `fate_estimator.rs` is required **product source** and must be tracked; the
+   FS-CAL harness files are required by committed tests. Neither is authored user WIP in the sense my
+   manifest assumed.
+3. Commit them in a single-purpose commit, or revert the `lib.rs` hunk if `fate_estimator` is not
+   meant to ship yet — decide from the code, not from the manifest.
+4. **Re-verify `cargo build --all` and `cargo test --all` in a FRESH worktree BEFORE merging.** The
+   clean-worktree check must gate the merge, not follow it.
+
 
 ---
 

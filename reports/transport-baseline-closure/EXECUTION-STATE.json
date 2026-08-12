@@ -21,7 +21,7 @@
     "0b9f6f36 test(transport): expose default-build and semantic feature configurations"
   ],
   "milestones": {
-    "M1": "PASS",
+    "M1": "NOT MERGED - clean-checkout defect",
     "M2": "not started",
     "M3": "not started",
     "M4": "not started",
@@ -193,5 +193,50 @@
       "blocker": "D2/R2 spurious-retransmit assertion",
       "resolution": "supersession 7718b94f; floor removes the late-parity leak (spurious 0); original preserved verbatim and re-scoped; companion test seals the default"
     }
-  ]
+  ],
+  "clean_checkout_defect": {
+    "error": "E0583 file not found for module `fate_estimator` at crates/adaptive-transport/src/lib.rs:34",
+    "cause": "commit 29dc1a10 committed lib.rs carrying a PRE-EXISTING uncommitted `pub mod fate_estimator;` line while fate_estimator.rs stayed untracked (excluded as user WIP)",
+    "my_error": true,
+    "detected_by": "the mandated clean-worktree verification, but AFTER the merge had been announced",
+    "main_restored_to": "bb61c2da via git branch -f (pointer move only; no reset --hard, no working tree or user file touched)",
+    "branch_intact_at": "48ec9d4d",
+    "untracked_files_committed_code_needs": [
+      {
+        "file": "crates/adaptive-transport/src/fate_estimator.rs",
+        "needed_by": "lib.rs:34 (product library)"
+      },
+      {
+        "file": "crates/kama-integration/tests/common/fs_cal2_schema.rs",
+        "needed_by": "fs_cal2_pins.rs"
+      },
+      {
+        "file": "crates/kama-integration/tests/common/fs_cal2_spine.rs",
+        "needed_by": "fs_cal2_schema.rs"
+      },
+      {
+        "file": "crates/kama-integration/tests/common/fs_cal2_gen.rs",
+        "needed_by": "fs_cal2_spine.rs, dr_cs3_panel.rs"
+      },
+      {
+        "file": "crates/kama-integration/tests/common/fs_cal2_policy.rs",
+        "needed_by": "fs_cal2_spine.rs"
+      },
+      {
+        "file": "crates/kama-integration/examples/fs_cal2_runner.rs",
+        "needed_by": "reports/tooling"
+      },
+      {
+        "file": "crates/kama-integration/tests/common/fs_exec.rs",
+        "needed_by": "fs_cal2_gen.rs (verify)"
+      }
+    ],
+    "green_results_still_valid_for": "the working tree; they were never a clean-checkout claim",
+    "next_steps": [
+      "enumerate the full untracked closure via cargo build --all in a fresh worktree",
+      "decide per file from the code: fate_estimator.rs is required product source; FS-CAL harness files are required by committed tests",
+      "commit them single-purpose, or revert the lib.rs hunk if fate_estimator is not meant to ship yet",
+      "RE-VERIFY cargo build --all and cargo test --all in a FRESH worktree BEFORE merging - the clean check must GATE the merge, not follow it"
+    ]
+  }
 }
