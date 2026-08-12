@@ -111,13 +111,83 @@ impl Chan {
     }
 }
 
-/// Bootstrap stream classes — DISJOINT from the three FS-CAL-2 classes, so the existing
-/// InitialSource / Parity / ArqRetransmission streams are bit-for-bit unchanged.
-const CLASS_PROBE_FWD: &str = "DRCS3ProbeForward";
-const CLASS_ECHO_REV: &str = "DRCS3EchoReverse";
+/// **V2 CHANNEL (contract `DR-CS-3-PANEL-CONTRACT-V2`, md `0abbb114…`).**
+///
+/// ONE channel state per DIRECTION, advanced **chronologically, once per packet that actually
+/// traverses it**. There is no per-class stream and no treatment-only impairment: DATA, ARQ
+/// retransmissions and Probes all consume the FORWARD chain in emission order; ACKs and Echoes all
+/// consume the REVERSE chain in emission order.
+///
+/// GE stays **packet-domain**: wall-clock gaps never synthesise draws. Two packets 24 s apart
+/// consume two consecutive steps exactly as two packets 1 ms apart would — the model says nothing
+/// about elapsed time, and inventing a time-decay here would be a post-hoc change made after seeing
+/// V1's outcome.
+pub struct GeChain {
+    key: String,
+    model: LossModel,
+    idx: u64,
+    /// GE bad-state / MARKOV-BD previous-loss carrier.
+    bad: bool,
+}
 
-fn bootstrap_key(domain: &str, cell_id: &str, repetition: u32, class: &str) -> String {
-    format!("{domain}|{cell_id}|rep{repetition}|{class}")
+impl GeChain {
+    #[must_use]
+    pub fn new(key: String, model: LossModel) -> Self {
+        Self { key, model, idx: 0, bad: false }
+    }
+
+    /// Advance EXACTLY one packet-domain step; `true` = this packet is dropped.
+    ///
+    /// The transition algebra is the frozen FS-CAL-2 §3.5/§6.0 one, stepped incrementally instead of
+    /// precomputed, so a single chain reproduces `loss_bits` draw for draw.
+    pub fn next_drop(&mut self) -> bool {
+        let i = self.idx;
+        self.idx += 1;
+        match self.model {
+            LossModel::None => false,
+            LossModel::Iid { p_ppm } => fs_cal2_gen::ppm_hit(fs_cal2_gen::draw_u64(&self.key, i), p_ppm),
+            LossModel::MarkovBd { p_ppm, b_ppm } => {
+                let (p11, p01) = fs_cal2_gen::markov_bd_transitions(p_ppm, b_ppm);
+                let d = fs_cal2_gen::draw_u64(&self.key, i);
+                self.bad = if i == 0 {
+                    fs_cal2_gen::ppm_hit(d, p_ppm)
+                } else if self.bad {
+                    fs_cal2_gen::ppm_hit(d, p11)
+                } else {
+                    fs_cal2_gen::ppm_hit(d, p01)
+                };
+                self.bad
+            }
+            LossModel::Ge { p_ppm, l } => {
+                let (pgb, pbg) = fs_cal2_gen::ge_transitions(p_ppm, l);
+                let d = fs_cal2_gen::draw_u64(&self.key, i);
+                self.bad = if i == 0 {
+                    fs_cal2_gen::ppm_hit(d, p_ppm)
+                } else if self.bad {
+                    !fs_cal2_gen::ppm_hit(d, pbg)
+                } else {
+                    fs_cal2_gen::ppm_hit(d, pgb)
+                };
+                self.bad
+            }
+        }
+    }
+
+    /// Packets that have traversed this direction so far (observation-only).
+    #[must_use]
+    pub fn steps(&self) -> u64 {
+        self.idx
+    }
+}
+
+/// Direction keys. Distinct per DIRECTION only — never per packet class, never per treatment arm.
+#[must_use]
+pub fn forward_key(domain: &str, cell_id: &str, repetition: u32) -> String {
+    format!("{domain}|{cell_id}|rep{repetition}|V2Forward")
+}
+#[must_use]
+pub fn reverse_key(domain: &str, cell_id: &str, repetition: u32) -> String {
+    format!("{domain}|{cell_id}|rep{repetition}|V2Reverse")
 }
 
 /// Panel configuration (one run). Exactly ONE treatment axis: [`PanelCfg::bootstrap_on`].
@@ -131,14 +201,11 @@ pub struct PanelCfg {
     pub seed_domain: String,
     /// RTT cell (ms).
     pub rtt_ms: u64,
-    /// InitialSource loss model.
-    pub source_model: LossModel,
-    /// ArqRetransmission loss model.
-    pub retx_model: LossModel,
-    /// Forward bootstrap-probe loss model.
-    pub probe_model: LossModel,
-    /// Reverse bootstrap-echo loss model.
-    pub echo_model: LossModel,
+    /// **V2**: the ONE forward channel model — DATA, ARQ retransmissions and Probes all traverse it.
+    pub forward_model: LossModel,
+    /// **V2**: the ONE reverse channel model — ACKs and Echoes both traverse it.
+    /// `LossModel::None` = the primary continuity panel (reverse lossless, matching the frozen cell).
+    pub reverse_model: LossModel,
     /// PANEL axis (held fixed within a panel): tail recovery OFF (P0) / ON (P1).
     pub tail_on: bool,
     /// **TREATMENT axis** — the only thing that differs between the two arms of a panel.
@@ -249,6 +316,14 @@ pub struct PanelOut {
     pub wire_digest: String,
     /// Canonical source-prefix digest (DATA emissions only).
     pub source_prefix_digest: String,
+    /// ACKs dropped by the REVERSE channel (0 on the primary continuity panel).
+    pub acks_reverse_dropped: u64,
+    /// Packets that traversed the forward chain (observation-only).
+    pub forward_steps: u64,
+    /// Packets that traversed the reverse chain (observation-only).
+    pub reverse_steps: u64,
+    /// V2 outcome class: `RTT-OPPORTUNITY` | `NETWORK-CENSORED` | `NO-BOOTSTRAP`.
+    pub outcome_class: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -267,33 +342,15 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
         ..PanelOut::default()
     };
 
-    // ── §5.3 deterministic per-class loss streams (existing three classes untouched) ─────────
-    let src_key = stream_key(
-        &cfg.seed_domain,
-        &cfg.cell_id,
-        cfg.repetition,
-        StreamClass::InitialSource,
+    // ── V2: ONE chain per DIRECTION, advanced chronologically per traversing packet ──────────
+    let mut fwd = GeChain::new(
+        forward_key(&cfg.seed_domain, &cfg.cell_id, cfg.repetition),
+        cfg.forward_model,
     );
-    let rtx_key = stream_key(
-        &cfg.seed_domain,
-        &cfg.cell_id,
-        cfg.repetition,
-        StreamClass::ArqRetransmission,
+    let mut rev = GeChain::new(
+        reverse_key(&cfg.seed_domain, &cfg.cell_id, cfg.repetition),
+        cfg.reverse_model,
     );
-    let src_bits = loss_bits(&src_key, cfg.source_model, WARMUP_UNITS as usize);
-    let rtx_bits = loss_bits(&rtx_key, cfg.retx_model, 4096);
-    // Disjoint bootstrap streams.
-    let probe_bits = loss_bits(
-        &bootstrap_key(&cfg.seed_domain, &cfg.cell_id, cfg.repetition, CLASS_PROBE_FWD),
-        cfg.probe_model,
-        64,
-    );
-    let echo_bits = loss_bits(
-        &bootstrap_key(&cfg.seed_domain, &cfg.cell_id, cfg.repetition, CLASS_ECHO_REV),
-        cfg.echo_model,
-        64,
-    );
-    let mut rtx_idx = 0usize;
 
     // ── real product sender ─────────────────────────────────────────────────────────────────
     let mut s = Sender::new();
@@ -351,7 +408,7 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
                     TransmitKind::Data => {
                         out.tx_data += 1;
                         let gid = (d.unit_id - BASE_UNIT_ID) as u16;
-                        let drop = src_bits[gid as usize];
+                        let drop = fwd.next_drop(); // forward chain, chronological
                         seq_map.insert(d.seq, (Logical::Src(gid), true));
                         wire_lines.push(format!("D|{gid}|{}|{}", d.seq, u8::from(drop)));
                         src_prefix_lines.push(format!("{gid}|{}", u8::from(drop)));
@@ -368,8 +425,7 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
                             out.tx_dup += 1;
                         }
                         let gid = (d.unit_id - BASE_UNIT_ID) as u16;
-                        let drop = rtx_bits[rtx_idx.min(rtx_bits.len() - 1)];
-                        rtx_idx += 1;
+                        let drop = fwd.next_drop(); // SAME forward chain as DATA
                         seq_map.insert(d.seq, (Logical::Src(gid), false));
                         wire_lines.push(format!("R|{gid}|{}|{}", d.seq, u8::from(drop)));
                         out.retx_wire_bytes += SEALED;
@@ -410,11 +466,14 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
                         }
                         out.lineage
                             .push(format!("t={now} probe_emission seq={probe_seq}"));
+                        // SAME forward chain as DATA. The chain is advanced unconditionally so a
+                        // scripted override cannot desynchronise the shared channel state.
+                        let chan_drop = fwd.next_drop();
                         let drop = cfg
                             .probe_drop_script
                             .as_ref()
                             .and_then(|v| v.get(probe_gen).copied())
-                            .unwrap_or_else(|| probe_bits[probe_gen.min(probe_bits.len() - 1)]);
+                            .unwrap_or(chan_drop);
                         probe_gen += 1;
                         wire_lines.push(format!("B|{probe_seq}|{}|{}", d.seq, u8::from(drop)));
                         // The frame is sealed EXACTLY ONCE, at emission, and carried through the
@@ -495,7 +554,12 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
             }
             let Logical::Src(gid) = logical;
             delivered_src.insert(gid);
-            acks.push((arr.saturating_add(owd_ns), seq));
+            // ACK traverses the SAME reverse chain as Echo, in chronological emission order.
+            if rev.next_drop() {
+                out.acks_reverse_dropped += 1;
+            } else {
+                acks.push((arr.saturating_add(owd_ns), seq));
+            }
         }
 
         // 5) BOOTSTRAP PROBE arrivals → REAL ReceiverControlCore (authenticated ingest)
@@ -533,13 +597,13 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
                                     "t={now} echo_generation seq={seq} wire={}B",
                                     bytes.len()
                                 ));
+                                // SAME reverse chain as ACK, advanced unconditionally.
+                                let chan_drop = rev.next_drop();
                                 let drop = cfg
                                     .echo_drop_script
                                     .as_ref()
                                     .and_then(|v| v.get(echo_gen).copied())
-                                    .unwrap_or_else(|| {
-                                        echo_bits[echo_gen.min(echo_bits.len() - 1)]
-                                    });
+                                    .unwrap_or(chan_drop);
                                 echo_gen += 1;
                                 wire_lines.push(format!("E|{seq}|{}", u8::from(drop)));
                                 if !drop {
@@ -670,6 +734,19 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
             out.receiver_budget_violation += 1;
         }
     }
+    out.forward_steps = fwd.steps();
+    out.reverse_steps = rev.steps();
+    // C2 §4 outcome class. NETWORK-CENSORED is its own class and stays in the denominator; it is
+    // never a PASS and never a mechanism defect.
+    out.outcome_class = if !cfg.bootstrap_on {
+        "NO-BOOTSTRAP"
+    } else if out.echoes_arrived > 0 && out.probes_authenticated > 0 {
+        "RTT-OPPORTUNITY"
+    } else if out.probes_emitted > 0 {
+        "NETWORK-CENSORED"
+    } else {
+        "NO-BOOTSTRAP"
+    };
     out.wire_digest = sha256_hex(wire_lines.join("\n").as_bytes());
     out.source_prefix_digest = sha256_hex(src_prefix_lines.join("\n").as_bytes());
     out

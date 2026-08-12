@@ -170,10 +170,10 @@ fn base_cfg(cell: &str, domain: &str, rep: u32, rtt_ms: u64, timeout: u64) -> Pa
         repetition: rep,
         seed_domain: domain.into(),
         rtt_ms,
-        source_model: GE,
-        retx_model: GE,
-        probe_model: GE,
-        echo_model: GE,
+        forward_model: GE,
+        // PRIMARY CONTINUITY panel default: the frozen DR-CS cell is forward-loss + reverse-lossless.
+        // The bidirectional robustness panel overrides this; both directions then share one model.
+        reverse_model: LossModel::None,
         tail_on: false,
         bootstrap_on: false,
         warmup_timeout_ns: timeout,
@@ -279,10 +279,8 @@ fn main() {
                         let cell = format!("CTRL-NOLOSS-RTT{rtt}");
                         let mut cfg = base_cfg(&cell, "DRCS3-CTRL-V1", rep, rtt, timeout);
                         cfg.tail_on = tail_on;
-                        cfg.source_model = LossModel::None;
-                        cfg.retx_model = LossModel::None;
-                        cfg.probe_model = LossModel::None;
-                        cfg.echo_model = LossModel::None;
+                        cfg.forward_model = LossModel::None;
+                        cfg.reverse_model = LossModel::None;
                         let (b, t) = run_pair(&cfg);
                         let run_id = format!("control-noloss--{panel}--rtt{rtt}--rep{rep}");
                         line(&run_id, &b, &t);
@@ -305,10 +303,7 @@ fn main() {
                     let cell = "CTRL-IID5-RTT1000";
                     let mut cfg = base_cfg(cell, "DRCS3-CTRL-V1", rep, 1000, timeout);
                     cfg.tail_on = tail_on;
-                    cfg.source_model = iid;
-                    cfg.retx_model = iid;
-                    cfg.probe_model = iid;
-                    cfg.echo_model = iid;
+                    cfg.forward_model = iid;
                     let (b, t) = run_pair(&cfg);
                     let run_id = format!("control-iid5--{panel}--rep{rep}");
                     line(&run_id, &b, &t);
