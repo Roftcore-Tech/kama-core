@@ -1,0 +1,133 @@
+{
+  "ledger": "TRANSPORT-BASELINE-CLOSURE-EXECUTION-STATE",
+  "branch": "transport-baseline-closure",
+  "head": "a4e9b33b",
+  "main_head": "bb61c2da",
+  "main_advanced": false,
+  "last_successful_commit": "a4e9b33b",
+  "calibration_result_bearing_runs": 0,
+  "remote_push": false,
+  "remote_pr": false,
+  "commits": [
+    "a4e9b33b docs(transport): record baseline contracts, panels and supersessions",
+    "41838ab9 test(transport): validate authenticated bootstrap RTT path",
+    "29dc1a10 feat(transport): add bounded bootstrap RTT sender and receiver core",
+    "d76d36aa fix(transport): make wakeup deadlines liveness-complete",
+    "0b9f6f36 test(transport): expose default-build and semantic feature configurations"
+  ],
+  "milestones": {
+    "M1_baseline_liveness": "IN PROGRESS - blocked on failing gate",
+    "M2_bootstrap_cold_start": "not started",
+    "M3_final_arq_estimator": "not started",
+    "M4_product_runtime": "not started",
+    "M5_final_grounding": "not started"
+  },
+  "merged_to_main": [],
+  "merge_blocked_reason": "M1 acceptance not met (1 failing test under experimental-cold-start); \u00a77 forbids merging a known-failing state",
+  "completed_this_turn": [
+    "\u00a72 dedicated branch created from d1-sprint5c HEAD 4aa11a93; working tree preserved byte-identically; 5 single-purpose commits; user WIP in none of them",
+    "\u00a7A1 compile visibility committed: budget_equivalence_pin.rs and udp_runner.rs:1102 CsProbe arms un-gated; 7/7 feature combos compile; CI blind spot recorded (ci.yml:18 runs only --all-features)",
+    "\u00a71.2 inventory hashed before any code change (md d59212b2, json 18dffa48)",
+    "\u00a71.4 fix: next_wakeup_ns() un-gated + earliest of six sources; next_timer_deadline_ns/pending_work_ready_ns split so C2 keeps cs_wakeup scope; read-only ns_until_sendable and armed_at_ns",
+    "two of my own defects found by tests and fixed (LostRec.deadline_ns misused as a timer; helper forbidding overdue deadlines)",
+    "3 of 4 EK4-A2-family tests now pass"
+  ],
+  "test_matrix": {
+    "default": {
+      "passed": 244,
+      "failed": 0
+    },
+    "experimental-fec-budget": {
+      "passed": 291,
+      "failed": 0
+    },
+    "diag-sched-telemetry": {
+      "passed": 244,
+      "failed": 0
+    },
+    "experimental-cold-start": {
+      "passed": 158,
+      "failed": 1
+    },
+    "all-features": {
+      "passed": 198,
+      "failed": 1
+    },
+    "clippy_adaptive_transport_all_targets": "clean"
+  },
+  "failing_gate": {
+    "test": "dr_cs1_acceptance::f2b_di1c_rearmed_pto_lifecycle_exposure",
+    "phase": "2",
+    "trace": {
+      "after_b2": {
+        "state": "Startup",
+        "next_wakeup_ns": 61209677418,
+        "diag_loss": [
+          0,
+          1,
+          0
+        ],
+        "pacer": {
+          "rate": 51,
+          "tokens": 865,
+          "burst_cap": 1200
+        }
+      },
+      "wakeups_it0_to_it19": "wake=61209677418 UNCHANGED while now advances 68.309s -> 68.328s; out=0; pending_lost=0; nothing consumed"
+    },
+    "what_the_deadline_is": "ARQ time-threshold loss deadline for inflight seq 3 (first retransmit of unit 1), below largest_acked=4; ~7s overdue and re-reported unchanged forever",
+    "code_facts": [
+      "LossDetector declares on_sent / on_ack / detect_time_losses / on_unrecovered",
+      "detect_time_losses IS already invoked on the Timer::Pto path (sender.rs:2351-2362), guarded only by state != PreConverge; state was Startup",
+      "its eligibility predicate (loss.rs:375-386) is algebraically IDENTICAL to the deadline formula in next_time_loss_deadline_ns (loss.rs:280-297)"
+    ],
+    "so": "at now=68.3s > deadline=61.2s the unit SHOULD be declared lost, and it is not"
+  },
+  "next_hypothesis_to_verify_first": {
+    "claim": "externally-supplied Timer::Pto is not reaching the loss-declaration branch through on_event_batch",
+    "evidence": "batches containing TimerFired(Pto) produced byte-identical results to empty batches (out=0 in both); the CS batch phase-machine generates its own Timer::Pto internally when a cs_wakeup entry fires (CsTimerKind::BootstrapPto), which is why the old cs_wakeup-only API worked with empty batches",
+    "how": "trace on_event_batch's phase machine for handling of a caller-supplied Event::TimerFired(Timer::Pto)",
+    "compliant_fix_if_confirmed": "make the caller-supplied timer event drive the same existing loss-declaration path; do NOT add a timer, relax the ARQ share, change PTO backoff/retries, or reintroduce a periodic tick"
+  },
+  "invariants_not_to_change": [
+    "arq.rs deadline-as-ordering-key",
+    "C2 scoped to cs_wakeup",
+    "no new timer / second truth source",
+    "no periodic safety tick",
+    "PTO backoff and retry counts",
+    "startup pacing formula",
+    "FEC drain and scheduler call order",
+    "per-turn and per-block DATA-before-PARITY",
+    "Karn exclusion",
+    "no synthetic RTT"
+  ],
+  "defaults": {
+    "startup_pacing": "OFF",
+    "bootstrap_rtt": "OFF",
+    "tail_recovery": "OFF",
+    "fec_adaptive_policy": "OFF"
+  },
+  "user_wip_manifest": [
+    "reports/d1-exit/data/cold-start/timeline-65B.csv",
+    "reports/d1-exit/data/cold-start/timeline-300B.csv",
+    "reports/d1-exit/data/cold-start/timeline-1200B.csv",
+    "docs/design/*",
+    "docs/tasks/*",
+    "reports/d1-exit/data/*.log",
+    "reports/d1-exit/data/netem-a2/console.txt",
+    "crates/adaptive-transport/src/fate_estimator.rs",
+    "crates/kama-integration/examples/fs_cal2_runner.rs",
+    "crates/kama-integration/tests/common/fs_cal2_*.rs",
+    "reports/fs-cal-2/",
+    "scripts/fs-cal-2/"
+  ],
+  "decisions_do_not_reask": [
+    "next_wakeup_ns() is the general event-loop deadline API and lives in the default build",
+    "it aggregates the EARLIEST of existing authoritative sources; never invents a timer",
+    "C2 stays scoped to cs_wakeup",
+    "immediate readiness is Some(now); a driver that drains then re-queries must converge",
+    "source 6 covers classes planned every turn (tx_queue, pending_fec, pending_lost); dup_queue reports via its own due_ns",
+    "LostRec.deadline_ns is an ordering key and is never a wakeup source",
+    "a timer wakeup means the event loop delivers Timer::Pto at that instant - timer-driven, not a periodic tick"
+  ]
+}
