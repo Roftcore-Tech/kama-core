@@ -130,6 +130,7 @@ a tick.
 | scope | passed | failed |
 |---|---|---|
 | workspace `--all` (default features) | **521** | 0 |
+| workspace `--all --all-features` | **873** | 0 |
 | adaptive-transport default | 249 | 0 |
 | adaptive-transport `experimental-cold-start` | 274 | 0 |
 | adaptive-transport `diag-sched-telemetry` | 249 | 0 |

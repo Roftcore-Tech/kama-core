@@ -130,7 +130,12 @@
       "experimental-cold-start": 109
     },
     "clippy": "clean (adaptive-transport and kama-integration, default and feature builds)",
-    "no_loss_rate_ramp": "ON vs OFF 30/30 byte-identical (wire, source prefix, delivered)"
+    "no_loss_rate_ramp": "ON vs OFF 30/30 byte-identical (wire, source prefix, delivered)",
+    "workspace_all_features": {
+      "passed": 873,
+      "failed": 0
+    },
+    "note": "green state is with startup pacing default-OFF; the FEC-parity starvation returns if the default flips"
   },
   "defaults": {
     "startup_pacing": "OFF",
