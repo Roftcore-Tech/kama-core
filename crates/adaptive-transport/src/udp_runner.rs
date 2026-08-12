@@ -1104,7 +1104,10 @@ fn emit(
                 TransmitKind::Retransmit => 0x01,
                 TransmitKind::Duplicate => 0x03,
                 TransmitKind::FecParity => 0x02, // yukarıda-ele-alındı (ulaşılmaz)
-                #[cfg(feature = "experimental-cold-start")]
+                // DR-RATE-RAMP-2B/A1: `CsProbe` is un-gated (DR-CS-3 put the shipping bootstrap
+                // emitter in the default build), so this arm MUST NOT be feature-gated — otherwise
+                // the match is non-exhaustive and the LIB fails to compile under
+                // `--features experimental-fec-budget` alone. Value unchanged (0x19).
                 TransmitKind::CsProbe => 0x19, // yukarıda-ele-alındı (ulaşılmaz)
             };
             (wk, b, e, d.unit_id)
