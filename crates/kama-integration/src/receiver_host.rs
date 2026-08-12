@@ -22,6 +22,8 @@ use kama_engine::cold_rx_state::{
     GlobalColdLedger, TombstoneRegistry, SESSION_COUNT_CAP,
 };
 use kama_engine::{admit_and_decode, EngineError};
+use crate::receiver_control_core::BootstrapEchoResponder;
+use kama_noise_wire::control::decode_control;
 use kama_noise_wire::inner::InnerPlain;
 use kama_noise_wire::{
     ControlDedupWindow, ControlIdIssueGate, DedupDecision, Direction, HandleRouter,
@@ -142,6 +144,13 @@ pub struct SessionSlot {
     issue_gate: ControlIdIssueGate,
     /// F4: bu batch'te RECOVERED-emisyon sayısı (SACK-return-supply-bütçesi payı; end_batch reset).
     recovered_emitted_in_batch: u32,
+    // ── DR-CS-3 bootstrap RTT responder — DELEGATED to the default-build single source ─────
+    /// The ONE responder implementation, shared with [`crate::receiver_control_core`]. This overlay
+    /// adds no second implementation, no second state and no second seal path.
+    bs: BootstrapEchoResponder,
+    /// Control id of the most recent authenticated probe (echoed back; probe/echo never enter
+    /// control-id issuance or dedup — `control_id_gate.rs` A-2).
+    bs_last_control_id: u32,
 }
 
 /// Tombstone-kaydı (grace-recv; ağır cold-state DÜŞMÜŞ). Minimal-state: send-retired `Session`
@@ -276,6 +285,8 @@ impl ReceiverHost {
                 dedup: ControlDedupWindow::new(),
                 issue_gate: ControlIdIssueGate::new(),
                 recovered_emitted_in_batch: 0,
+                bs: BootstrapEchoResponder::default(),
+                bs_last_control_id: 0,
             },
         );
         Ok(())
@@ -331,6 +342,21 @@ impl ReceiverHost {
                 if *inner_kind == 0x19 || *inner_kind == 0x1A {
                     // Stateless probe/echo (A-2): ControlDedupWindow'a GİRMEZ; O(1); patience-BESLEMEZ.
                     self.cs_echo_count = self.cs_echo_count.saturating_add(1);
+                    // ── DR-CS-3: authenticated 0x19 ⇒ typed pending ECHO ACTION ──────────────
+                    // Reached ONLY after `protector.open()` succeeded (verify-before-admission) and
+                    // inside this session's slot, so the probe is authenticated AND connection-bound.
+                    // Recognition semantics are unchanged (still `ProbeEchoed`, `cs_echo_count`
+                    // still counts every probe); only the RESPONSE is bounded, below and in
+                    // `emit_cs_echo`. No socket I/O happens here — the composition caller drains it.
+                    if *inner_kind == 0x19 {
+                        if let Some(Ok(Control::CsProbe { probe_seq, .. })) =
+                            decode_control(opened.inner())
+                        {
+                            // SINGLE SOURCE: the bounded policy lives in the default-build responder.
+                            slot.bs.on_authenticated_probe(probe_seq);
+                            slot.bs_last_control_id = *control_id;
+                        }
+                    }
                     return Ok(IngestOutcome::ProbeEchoed);
                 }
                 // F3: fixed-window control dedup (session-scoped). Fresh → side-effect (F4-işleme);
@@ -461,6 +487,55 @@ impl ReceiverHost {
             )
             .map(|sealed| sealed.bytes)
             .map_err(|_| HostError::PrecomputeFailed("recovered seal"))
+    }
+
+    /// DR-CS-3: drain the typed pending echo action produced by an authenticated `0x19`.
+    /// Returns the correlation (`probe_seq`) the caller must echo, at most once per arrival.
+    pub fn take_pending_cs_echo(&mut self, h_ext: u32) -> Option<u16> {
+        self.sessions.get_mut(&h_ext)?.bs.take_pending()
+    }
+
+    /// DR-CS-3: emit the authenticated `0x1A` echo for `probe_seq`, delegating the bounded policy
+    /// and the frame construction to the **single-source** [`BootstrapEchoResponder`].
+    ///
+    /// The request's `control_id` is echoed back: `CsProbe`/`CsEcho` are stateless and explicitly do
+    /// NOT enter control-id issuance or dedup (`control_id_gate.rs` A-2), so the `ControlIdIssueGate`
+    /// is deliberately **not** consumed here.
+    ///
+    /// # Errors
+    /// [`HostError::UnknownSession`] · [`HostError::PrecomputeFailed`] on a bounded-policy refusal
+    /// (duplicate generation / generation cap / budget) or on seal failure.
+    pub fn emit_cs_echo(
+        &mut self,
+        h_ext: u32,
+        probe_seq: u16,
+        wire_pn: u64,
+    ) -> Result<Vec<u8>, HostError> {
+        let slot = self
+            .sessions
+            .get_mut(&h_ext)
+            .ok_or(HostError::UnknownSession { h_ext })?;
+        slot.bs
+            .commit(probe_seq)
+            .map_err(|_| HostError::PrecomputeFailed("cs-echo bounded policy"))?;
+        let ctrl = BootstrapEchoResponder::echo_control(probe_seq, slot.bs_last_control_id);
+        slot.session
+            .seal(
+                &UnsealedTransportPacket::Control(ctrl),
+                SealArgs {
+                    wire_pn,
+                    dh_epoch: 0,
+                    send_generation: 0,
+                },
+            )
+            .map(|sealed| sealed.bytes)
+            .map_err(|_| HostError::PrecomputeFailed("cs-echo seal"))
+    }
+
+    /// DR-CS-3 observation-only: `(unique_echoes_emitted, echo_wire_bytes, budget_bytes)`.
+    #[must_use]
+    pub fn cs_echo_budget(&self, h_ext: u32) -> Option<(usize, u64, u64)> {
+        Some(self.sessions.get(&h_ext)?.bs.budget())
     }
 
     /// Emisyon-batch sınırı: RECOVERED-burst + control-id-gate burst sayaçlarını sıfırlar.

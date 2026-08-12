@@ -19,6 +19,9 @@ experimental-cold-start = [
     "kama-noise-wire/experimental-cold-start",
     "adaptive-transport/experimental-cold-start",
 ]
+# DR-CS-2 / DR-RATE-RAMP-1: observation-only scheduler telemetry (default OFF).
+diag-sched-telemetry = ["adaptive-transport/diag-sched-telemetry"]
+
 # DR-FEC-FS-1 FS-HARNESS-A: F0 closed-loop (real Sender FEC-authority + real RsSimdCodec + BottleneckChannel).
 # YALNIZ test-derlemesi (dev-dep adaptive-transport + mevcut-prod-dep kama-fec-codec). Production lib-grafiği
 # GENİŞLEMEZ (kama-fec-codec zaten-prod-dep; adaptive-transport dev-only). flag-OFF forward-YOK.

@@ -155,6 +155,21 @@ impl DeliveryRateSampler {
 /// boşaltıp btlbw=0 flap'i üretmesi yapısal biter).
 #[derive(Debug, Clone)]
 pub struct BtlBwFilter {
+    /// DR-RATE-RAMP-1 observation-only: samples offered to the filter.
+    #[cfg(feature = "diag-sched-telemetry")]
+    diag_offered: u64,
+    /// Rejected because the caller passed `valid = false`.
+    #[cfg(feature = "diag-sched-telemetry")]
+    diag_rejected_invalid: u64,
+    /// Rejected because `interval < MIN_RATE_INTERVAL`.
+    #[cfg(feature = "diag-sched-telemetry")]
+    diag_rejected_interval: u64,
+    /// Rejected because app-limited AND below the current BtlBw.
+    #[cfg(feature = "diag-sched-telemetry")]
+    diag_rejected_app_limited: u64,
+    /// Accepted into the max-filter.
+    #[cfg(feature = "diag-sched-telemetry")]
+    diag_accepted: u64,
     /// (time_ns, bw_bps) örnekleri; pencereli max.
     samples: Vec<(u64, u64)>,
     /// Pencere (ns) — sender kanal-türevi yazar; taban W_BTLBW [STD].
@@ -171,6 +186,16 @@ impl Default for BtlBwFilter {
             samples: Vec::new(),
             window_ns: dur_ns(W_BTLBW),
             last_full_bw: 0,
+            #[cfg(feature = "diag-sched-telemetry")]
+            diag_offered: 0,
+            #[cfg(feature = "diag-sched-telemetry")]
+            diag_rejected_invalid: 0,
+            #[cfg(feature = "diag-sched-telemetry")]
+            diag_rejected_interval: 0,
+            #[cfg(feature = "diag-sched-telemetry")]
+            diag_rejected_app_limited: 0,
+            #[cfg(feature = "diag-sched-telemetry")]
+            diag_accepted: 0,
         }
     }
 }
@@ -194,9 +219,24 @@ impl BtlBwFilter {
     /// sample yalnız mevcut BtlBw'den ≥ ise girer (yüksek app-limited = geçerli
     /// alt-sınır; §7.3).
     pub fn update(&mut self, sample: RateSample, now_ns: u64, valid: bool) -> u64 {
+        #[cfg(feature = "diag-sched-telemetry")]
+        {
+            self.diag_offered = self.diag_offered.saturating_add(1);
+            if !valid {
+                self.diag_rejected_invalid = self.diag_rejected_invalid.saturating_add(1);
+            } else if sample.interval < MIN_RATE_INTERVAL {
+                self.diag_rejected_interval = self.diag_rejected_interval.saturating_add(1);
+            }
+        }
         if valid && sample.interval >= MIN_RATE_INTERVAL {
             let bw = bw_bps(sample.delivered, sample.interval);
             let app_limited_ok = !sample.is_app_limited || bw >= self.btlbw();
+            #[cfg(feature = "diag-sched-telemetry")]
+            if app_limited_ok {
+                self.diag_accepted = self.diag_accepted.saturating_add(1);
+            } else {
+                self.diag_rejected_app_limited = self.diag_rejected_app_limited.saturating_add(1);
+            }
             if app_limited_ok {
                 self.samples.push((now_ns, bw));
             }
@@ -214,6 +254,20 @@ impl BtlBwFilter {
             }
         }
         self.btlbw()
+    }
+
+    /// DR-RATE-RAMP-1 observation-only filter acceptance lineage:
+    /// `(offered, accepted, rejected_invalid, rejected_interval, rejected_app_limited)`.
+    #[cfg(feature = "diag-sched-telemetry")]
+    #[must_use]
+    pub fn diag_accept(&self) -> (u64, u64, u64, u64, u64) {
+        (
+            self.diag_offered,
+            self.diag_accepted,
+            self.diag_rejected_invalid,
+            self.diag_rejected_interval,
+            self.diag_rejected_app_limited,
+        )
     }
 
     /// Güncel BtlBw (bytes/sec); sample yoksa 0.
