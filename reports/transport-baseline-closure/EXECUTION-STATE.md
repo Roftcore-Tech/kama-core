@@ -29,7 +29,7 @@ d76d36aa fix(transport): make wakeup deadlines liveness-complete
 
 | | status |
 |---|---|
-| **M1 baseline liveness** | **PASS** — verified entirely in a clean worktree from committed content |
+| M1 baseline liveness | **PASS**, merged; post-merge smoke green |
 | M2 bootstrap cold-start | not started |
 | M3 final ARQ + estimator | not started |
 | M4 product runtime | not started |
@@ -173,3 +173,60 @@ Genuine user WIP (untracked, never touched): `docs/design/*`, `docs/tasks/*`,
 * A timer wakeup means the event loop delivers `Timer::Pto` at that instant — timer-driven, not a
   periodic tick.
 * Default-tracking pins follow whatever the default is; their assertions never weaken.
+
+
+---
+
+# M2 — DR-CS-3 (IN PROGRESS)
+
+`main` = `3e6dfa30` · branch ahead with M2 work · no push/PR.
+
+| step | status |
+|---|---|
+| 0 closure (`fs_cal2_gen` + `dr_cs3_panel` + runner) | **DONE** `e39b587e`, gate **12/12** |
+| 1 C2 contract frozen | **DONE** `f742afd9` — md `0abbb114…`, json `353311bf…`; **committed bytes match the frozen hashes**, and committed **before** the harness change |
+| 1b V1 verdict bounded | **DONE** `f742afd9` |
+| 2 V2 channel implemented | **DONE** `595814ba` |
+| 3 structural tests (8) | **NOT STARTED** |
+| 4 gate after V2 change | **NOT RUN** |
+| 5 panels | **NOT STARTED** |
+
+## V1 verdict — bounded
+
+`SUPERSEDED — INVALID FOR DEFAULT PROMOTION DUE TO TREATMENT-ONLY CHANNEL IMPAIRMENT`.
+
+Proven only: baseline ACK and treatment Echo saw different reverse semantics; per-class streams gave
+classes independent state; therefore the comparison was not comparable. **Not** claimed: that C2
+explains rep14, that the mechanism is 3/3, or that rep14 will recover. Diagnostic prior (not a gate):
+if rep14 still fails under V2, V1 stays invalid and §4 A0–A3 finds the additional cause.
+
+## V2 channel as implemented
+
+`GeChain` = one state per **direction**, advanced once per traversing packet, chronologically.
+Forward: DATA + ARQ retransmits + Probe. Reverse: ACK + Echo. No per-class stream, no treatment-only
+impairment. GE stays packet-domain; no time-decay conversion. Scripted overrides advance the shared
+chain unconditionally so they cannot desynchronise state. New observations: `acks_reverse_dropped`,
+`forward_steps`, `reverse_steps`, `outcome_class` ∈ {RTT-OPPORTUNITY, NETWORK-CENSORED, NO-BOOTSTRAP}.
+
+## Remaining structural tests (all 8 required before any panel)
+
+1. DATA→Probe→DATA consumes the forward sequence in order
+2. ACK→Echo→ACK consumes the reverse sequence in order
+3. changing packet class creates no separate GE state
+4. same chronological prefix ⇒ same draws in baseline and treatment
+5. on a treatment-free prefix, bootstrap ON/OFF channel state is identical
+6. echoes 6/12/24 s apart synthesise no consecutive treatment-only draws
+7. NETWORK-CENSORED classified separately but kept in the denominator
+8. a negative fixture rebuilding V1 semantics FAILS the structural test
+
+## gate.sh negative controls (§5, one-time)
+
+compile-error control: **exit 1, step 1 FAIL** — a cargo error is not masked by the pipeline.
+Failing-test and dirty-worktree controls: **pending**.
+
+## Local build note
+
+The DIRTY worktree holds untracked FS-CAL files (`fs_cal2_spine.rs`, `fs_cal2_schema.rs`,
+`fs_cal2_runner.rs`) referencing `adaptive_transport::fate_estimator`, which M1 un-declared. They do
+not exist in a clean worktree and do not affect the gate; they are deferred to M5 per E2. Local full
+builds must be per-target or in a clean worktree.

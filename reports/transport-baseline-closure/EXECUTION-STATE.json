@@ -1,7 +1,7 @@
 {
   "ledger": "TRANSPORT-BASELINE-CLOSURE-EXECUTION-STATE",
   "branch": "transport-baseline-closure",
-  "main_head": "02915bd9",
+  "main_head": "3e6dfa30",
   "main_is_ancestor": true,
   "main_advanced": true,
   "ff_only_possible_when_m1_passes": true,
@@ -21,11 +21,14 @@
     "0b9f6f36 test(transport): expose default-build and semantic feature configurations"
   ],
   "milestones": {
-    "M1": "PASS",
-    "M2": "next - DR-CS-3 panel contract V2, bootstrap validation, default decision",
+    "M1": "PASS merged",
+    "M2a": "PASS merged",
+    "M2": "IN PROGRESS",
     "M3": "not started",
     "M4": "not started",
-    "M5": "not started"
+    "M5": "not started",
+    "M6": "not started",
+    "M7": "not started"
   },
   "merged_to_main": [
     "M1 baseline liveness (ff-only, local)"
@@ -323,5 +326,19 @@
       "failed": 0
     },
     "verdict_withheld_until_exit_codes_read": true
+  },
+  "m2_progress": {
+    "step0_closure": "DONE e39b587e gate 12/12",
+    "step1_c2_contract": "DONE f742afd9; committed bytes match 0abbb114/353311bf; committed before harness change",
+    "step1b_v1_bound": "DONE f742afd9",
+    "step2_v2_channel": "DONE 595814ba",
+    "step3_structural_tests": "NOT STARTED (8 required)",
+    "step4_gate": "NOT RUN since V2 change",
+    "step5_panels": "NOT STARTED"
+  },
+  "gate_negative_controls": {
+    "compile": "exit 1, step 1 FAIL (cargo error not masked)",
+    "failing_test": "pending",
+    "dirty_worktree": "pending"
   }
 }
