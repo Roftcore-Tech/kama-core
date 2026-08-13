@@ -172,7 +172,8 @@ fn base_cfg(cell: &str, domain: &str, rep: u32, rtt_ms: u64, timeout: u64) -> Pa
         rtt_ms,
         forward_model: GE,
         // PRIMARY CONTINUITY panel default: the frozen DR-CS cell is forward-loss + reverse-lossless.
-        // The bidirectional robustness panel overrides this; both directions then share one model.
+        // `--reverse ge` selects the BIDIRECTIONAL ROBUSTNESS panel, where ACK and Echo share the
+        // same reverse impairment. The two panels are reported separately and never merged (C2 §3).
         reverse_model: LossModel::None,
         tail_on: false,
         bootstrap_on: false,
@@ -208,12 +209,27 @@ fn line(run_id: &str, b: &PanelOut, t: &PanelOut) {
         t.rtt_sample_ns / 1_000_000,
         data_displacement(b, t)
     );
+    println!(
+        "    class={} fwd_steps={} rev_steps={} acks_gen={} acks_rev_dropped={} bypass={}",
+        t.outcome_class, t.forward_steps, t.reverse_steps, t.acks_generated,
+        t.acks_reverse_dropped, t.channel_bypass_violations
+    );
 }
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let mode = a.get(1).cloned().unwrap_or_else(|| "locked".into());
     let timeout = argu(&a, "--timeout-ns", 65_000_000_000);
+    // C2 §3 panel selector. `none` = primary continuity, `ge` = bidirectional robustness.
+    let reverse = match arg(&a, "--reverse", "none").as_str() {
+        "ge" => GE,
+        "none" => LossModel::None,
+        other => {
+            eprintln!("unknown --reverse {other} (none | ge)");
+            std::process::exit(2);
+        }
+    };
+    let panel_kind = if matches!(reverse, LossModel::None) { "primary" } else { "bidirectional" };
 
     match mode.as_str() {
         // ── §4 LOCKED REGRESSION PANEL ──────────────────────────────────────────────────────
@@ -225,8 +241,9 @@ fn main() {
                 for rep in [5u32, 9, 14, 16, 17, 25, 38, 39] {
                     let mut cfg = base_cfg(cell, domain, rep, 1000, timeout);
                     cfg.tail_on = tail_on;
+                    cfg.reverse_model = reverse;
                     let (b, t) = run_pair(&cfg);
-                    let run_id = format!("locked--{panel}--rep{rep}");
+                    let run_id = format!("locked-{panel_kind}--{panel}--rep{rep}");
                     line(&run_id, &b, &t);
                     write_with_sidecar(
                         &Path::new(&outdir).join(format!("{run_id}.json")),
@@ -251,8 +268,9 @@ fn main() {
                 for rep in 0..n {
                     let mut cfg = base_cfg(cell, &domain, rep, 1000, timeout);
                     cfg.tail_on = tail_on;
+                    cfg.reverse_model = reverse;
                     let (b, t) = run_pair(&cfg);
-                    let run_id = format!("fresh--{panel}--rep{rep}");
+                    let run_id = format!("fresh-{panel_kind}--{panel}--rep{rep}");
                     line(&run_id, &b, &t);
                     write_with_sidecar(
                         &Path::new(&outdir).join(format!("{run_id}.json")),
