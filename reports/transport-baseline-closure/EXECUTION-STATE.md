@@ -305,3 +305,102 @@ in the denominator.
 
 `gate.sh` is now ~355 s because the structural tests drive real panels. Recorded as a cost item for
 later milestones, not a defect.
+
+---
+
+# M2 — V2 PANEL FINDING (§4 closure, no seed search)
+
+## Verdict on C2 gate 1
+
+`UNEVALUABLE — FROZEN CHALLENGE PHENOTYPE NOT REPRODUCED UNDER V2`
+
+Not PASS, not FAIL. The current result is **no evidence about bootstrap efficacy**. M3 stays blocked.
+
+## §0 Empty-pass rule (recorded before further results)
+
+Gate 1 came out unevaluable *visibly*. The same structure can produce an **invisible** empty pass on
+the other gates: if the BASELINE (OFF) arm already meets a gate, the treatment arm meeting it says
+nothing about the mechanism. Therefore, for every panel gate, without changing any threshold:
+
+> **POSITIVE CONTROL** — the panel's OFF arm is reported against the same threshold. If the OFF arm
+> meets the gate on its own, that gate is labelled **`MECHANISM-UNEVALUABLE (NON-HARM ONLY)`**, is
+> not counted as PASS, and is not used as a default-ON justification.
+
+Binding in particular for `fresh primary N=40 · first valid ACK ≥ 38/40`.
+
+## §2 Key-domain lineage — measured, not assumed
+
+V1 forward draws came from `stream_key(domain, cell, rep, InitialSource)` =
+`…|rep{N}|InitialSource`. V2 uses `…|rep{N}|V2Forward`.
+
+First 20 forward drops (`D` = drop), computed directly from the frozen generator:
+
+| rep | V1 `InitialSource` | V2 `V2Forward` |
+|---|---|---|
+| 9 | `DDDDDDDDDDDDDDDDDDDD` | `....................` |
+| 14 | `DDDDDDDDDDDDDDDDDDDD` | `....................` |
+| 17 | `DDDDDDDDDDDDDDDDDDDD` | `..........DDDDDD....` |
+| 5 | `DDDDDDDD.....DDDD...` | `....................` |
+| 16 | `DDDDDDD.............` | `DDDDDDDDDD..........` |
+| 25 | `DDDDDD..............` | `....................` |
+| 38 | `DDDDDDD.............` | `....................` |
+| 39 | `DDDDDDDDDDDDDDDDDDD.` | `DDDDDDDDD...........` |
+
+**Attribution: KEY RE-DOMAINING, not packet interleaving.** Under the new key the first 20 forward
+draws for rep9/14/17 are already all-good, so the flow never enters the stall phenotype — this
+happens *before* any retransmission or Probe could interleave. Interleaving perturbs the sequence
+only after recovery traffic starts, so it cannot explain a phenotype that is absent from draw 0.
+
+(It also explains rep16: `DDDDDDDDDD` under V2Forward — the only locked rep that still stalls, and
+only in the bidirectional panel where reverse loss compounds it.)
+
+## §2c Key-selection guard — ruling
+
+The C2 contract clause 5 says only: *"A distinct RNG stream per direction is permitted."* It does
+**not** name `V2Forward`. Re-using the `InitialSource` key for the forward direction would be
+equally contract-conformant.
+
+Both keys conform ⇒ per §2c the choice **may not** be made on "which one brings the old stalls
+back". **The current key is kept** and the §5 preregistered replacement path is the only route to a
+new challenge panel. No key change is made here.
+
+## §2b Chain initial state
+
+`GeChain::new` sets `bad = false`, but `next_drop` at `i == 0` uses the **stationary** probability,
+so the initial state is **seed-derived**, not fixed-good:
+
+```
+P(first packet already bad)   = p                = 0.200
+P(good -> bad) per packet     = pgb              = 25 000 ppm = 0.0250
+P(stay bad)                   = 1 - 1/L          = 0.900   (mean bad run L = 10 packets)
+PreConverge window            ~ 20 packets       (31 B/s floor, 101 B unit, 65 s)
+P(bad run covers all 20 | bad at start)          = 0.1351
+P(start bad AND run covers 20)                   = 0.0270
+```
+
+⇒ per-seed OFF-stall rate ≈ **2.7 %** (lower bound; ignores paths that enter bad after draw 0).
+⇒ a finite universe of ≈ **371 seeds** is indicated to expect ≥ 10 OFF-stalls. This sizes §5's
+universe; it changes no gate or threshold.
+
+## §6 Bidirectional claim limit (recorded before results)
+
+All nine C2 gates are keyed to the **primary** panels. The bidirectional robustness panel is
+reported separately and **has no gate**. rep14's real V1 failure was a reverse-loss phenomenon,
+which is structurally impossible in the primary panel (reverse lossless). So reverse-loss behaviour
+will be measured but not gated.
+
+1. **CLAIM LIMIT.** A default-ON decision taken on the primary gates means *"bootstrap is safe and
+   effective under the primary continuity model"*. It does **not** mean *"bootstrap survives reverse
+   loss"*.
+2. **PRESENTATION REQUIREMENT.** The bidirectional result is presented in the **same report**, beside
+   the default-ON recommendation. If it shows weakness it is recorded by name as an M7 backlog item,
+   never passed over silently.
+
+## Still open in M2
+
+§1 gate at the panel commit (`de5119c0`) · §3 zero-probe paired invariant (6 reps) · §4 displacement
+metric split (`scheduler_data_displacement` vs `channel_fate_divergence`, `N/A — NO ECHO` instead of
+`u64::MAX`) · §5 preregistered replacement panel (universe + phenotype + OFF-only selection + seed-set
+hash before any ON run).
+
+Panels 1–2 are retained as **DIAGNOSTIC / UNGATED**.
