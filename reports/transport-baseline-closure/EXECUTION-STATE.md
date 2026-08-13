@@ -507,3 +507,50 @@ non-authoritative **because of the `u64::MAX` horizon**, not the probe count.
 
 The current `channel_fate_divergence` still measures emission-schedule differences and **must not be
 reported under that name** until (2) lands.
+
+## §1 Downstream egress inventory — claim limited
+
+The grounded evidence is labelled exactly:
+
+`PACER/GRANT DISPLACEMENT STRUCTURALLY PREVENTED`
+
+**Not** "displacement impossible on the whole egress path". Inventory from `drain_bootstrap_probes`
+to real wire emission:
+
+| finite resource | can a Probe drop / defer / evict DATA? | code lineage |
+|---|---|---|
+| pacer token / grant | **No** | `drain_bootstrap_probes` calls `try_send` **0×**; `drain_new_data` **4×** |
+| planner output vector | **No cap** | `schedule_transmit` has no `truncate` / `take(N)` / `retain` / `pop` |
+| `on_event` / `on_event_batch` return | **No truncation** | Vec returned verbatim |
+| per-turn wire-byte, batch or datagram cap | **None exists** in the product emission path | no `MAX_BATCH` / `BATCH_CAP` / `MAX_DATAGRAM` / per-turn byte cap |
+| `tx_queue`, `pending_lost`, `dup_queue`, `pending_fec` | **Untouched** | 0 references in the probe path |
+| `sent_logical` (bounded 16384, oldest-first eviction) | **Not entered** | probe carries `send_record: None`, "NOT inflight-tracked" |
+| inflight accounting | **Not entered** | same |
+| debt carried to the next turn | **None** | "creates NO pacer debt" |
+
+### Limit of this inventory (binding)
+
+`schedule_transmit` returns a **plan**. Socket write, backpressure, datagram batching and any
+egress-side queue **do not exist in the product yet** — they arrive with the M4 runtime. So
+displacement on that segment is **UNASSESSABLE UNTIL M4**, not shown absent. It is recorded as an
+open M4 verification item, not as a passed check.
+
+### `NO DISPLACEMENT != NO COST` (binding)
+
+A Probe still: spends wire bytes (44 B each, ≤ 200 B per epoch); advances the shared directional
+channel state, legitimately re-phasing downstream fates; and remains subject to the amplification,
+budget and (from M4) backpressure gates. "No displacement" is a statement about **contended grants
+only**.
+
+## §2 Source weighting (recorded)
+
+Order of authority for the displacement grounding:
+
+1. frozen C2 contract context;
+2. DR-CS-2 measured precedent (`CREDIT-IS-NET-NEUTRAL-UNDER-DEBIT`, `tx_data 20→18`, `dup 0→2`);
+3. shipping code structure (`try_send` 0× vs 4×; probe appended last; no debt);
+4. the `sender.rs` explanatory comment.
+
+The comment is ranked **last**, not first. The grounding artifact
+(`DR-CS-3-DISPLACEMENT-SEMANTICS-GROUNDING`, md `775f60ef…`) is left unmodified; this ordering and
+the claim limit above are recorded here as its addendum.
