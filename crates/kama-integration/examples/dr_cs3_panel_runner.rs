@@ -388,8 +388,40 @@ fn main() {
             }
             println!("DRCS3-CONTROL-DONE");
         }
+        // ── §5 PREREGISTERED SELECTION: OFF ARM ONLY over the frozen 512-seed universe ────────
+        // The ON arm is NOT built, NOT run and NOT read here. Qualifying phenotype (frozen):
+        // preconverge_exit_ns == None && ack_batches == 0 && delivered == 0 && trigger == TIMEOUT.
+        "select" => {
+            let n = argu(&a, "--n", 512) as u32;
+            let domain = arg(&a, "--domain", "DRCS3-V2-CHALLENGE");
+            let cell = "P2-GE20L10-RTT1000";
+            let mut qualifying: Vec<u32> = Vec::new();
+            for rep in 0..n {
+                let mut c = base_cfg(cell, &domain, rep, 1000, timeout);
+                c.reverse_model = LossModel::None; // primary continuity
+                c.bootstrap_on = false; // OFF ARM ONLY
+                let r = run_panel(&c);
+                let q = r.preconverge_exit_ns.is_none()
+                    && r.ack_batches == 0
+                    && r.delivered_src_at_epoch == 0
+                    && r.epoch_trigger == "TIMEOUT";
+                if q {
+                    qualifying.push(rep);
+                    println!("QUALIFY rep={rep} tx={} acks={} deliv={} trigger={}",
+                        r.tx_data, r.ack_batches, r.delivered_src_at_epoch, r.epoch_trigger);
+                }
+                if rep % 64 == 63 {
+                    println!("  ... scanned {} / {n}, qualifying so far {}", rep + 1, qualifying.len());
+                }
+            }
+            println!("SELECT-DONE universe={n} domain={domain} qualifying={qualifying:?}");
+            let challenge: Vec<u32> = qualifying.iter().copied().take(3).collect();
+            let confirm: Vec<u32> = qualifying.iter().copied().skip(3).take(3).collect();
+            println!("CHALLENGE-SET={challenge:?}");
+            println!("CONFIRMATION-SET={confirm:?}");
+        }
         other => {
-            eprintln!("unknown mode {other} (locked | fresh | control)");
+            eprintln!("unknown mode {other} (locked | fresh | control | select)");
             std::process::exit(2);
         }
     }
