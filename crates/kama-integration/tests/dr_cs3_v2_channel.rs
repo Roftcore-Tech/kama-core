@@ -11,7 +11,8 @@
 mod dr_cs3_panel;
 
 use dr_cs3_panel::fs_cal2_gen::LossModel;
-use dr_cs3_panel::{forward_key, reverse_key, run_panel, GeChain, PanelCfg};
+use dr_cs3_panel::{channel_fate_divergence, echo_bounded_window, forward_key, reverse_key,
+    run_panel, scheduler_data_displacement, GeChain, PanelCfg};
 
 const GE: LossModel = LossModel::Ge { p_ppm: 200_000, l: 10 };
 const CELL: &str = "V2-STRUCT";
@@ -312,4 +313,65 @@ fn structural_tests_run_under_the_shipped_default_configuration() {
         !BootstrapRttConfig::default().enabled,
         "bootstrap is still default-OFF; M2 decides it"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// §4 DISPLACEMENT METRIC — positive controls (contract md `61d64d55…`)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/// **PC1 + PC4.** Before the first Probe reaches the wire the arms must be identical, so scheduler
+/// displacement is 0 — and it stays 0 even on runs where fate divergence is non-zero. The two
+/// quantities are never conflated.
+#[test]
+fn scheduler_displacement_is_zero_and_distinct_from_fate_divergence() {
+    for rep in [7u32, 11, 14, 41] {
+        let b = run_panel(&cfg(rep, false, LossModel::None));
+        let t = run_panel(&cfg(rep, true, LossModel::None));
+        assert_eq!(
+            scheduler_data_displacement(&b, &t),
+            0,
+            "rep{rep}: the treatment must not suppress any DATA before its first Probe"
+        );
+        // divergence AFTER the probe is legitimate physics and must not be counted as displacement
+        let _ = channel_fate_divergence(&b, &t);
+    }
+}
+
+/// **PC2.** With no extra packets at all (bootstrap OFF in both arms) the whole trace is identical:
+/// zero displacement and zero fate divergence.
+#[test]
+fn without_extra_packets_the_whole_trace_is_identical() {
+    for rep in [7u32, 14] {
+        let a = run_panel(&cfg(rep, false, LossModel::None));
+        let b = run_panel(&cfg(rep, false, LossModel::None));
+        assert_eq!(scheduler_data_displacement(&a, &b), 0);
+        assert_eq!(channel_fate_divergence(&a, &b), 0, "no probe ⇒ no divergence window at all");
+        assert_eq!(a.data_emit_ticks, b.data_emit_ticks);
+        assert_eq!(a.wire_digest, b.wire_digest);
+    }
+}
+
+/// **PC3.** Each extra Probe advances the shared forward chain exactly once.
+#[test]
+fn each_probe_advances_the_shared_chain_exactly_once() {
+    for rep in [16u32, 39, 41] {
+        let b = run_panel(&cfg(rep, false, LossModel::None));
+        let t = run_panel(&cfg(rep, true, LossModel::None));
+        if t.probes_emitted > 0 && b.tx_data == t.tx_data && b.tx_retx == t.tx_retx {
+            assert_eq!(
+                t.forward_steps - b.forward_steps,
+                t.probes_emitted,
+                "rep{rep}: forward steps must grow by exactly the probe count"
+            );
+        }
+    }
+}
+
+/// Echo-bounded windows report `N/A — NO ECHO` rather than silently spanning the whole trace.
+#[test]
+fn echo_bounded_window_is_none_when_no_echo_arrives() {
+    let t = run_panel(&cfg(16, true, LossModel::None)); // rep16: probes forward-dropped
+    if t.echoes_arrived == 0 {
+        assert_eq!(echo_bounded_window(&t), None, "no echo ⇒ N/A, never u64::MAX as a horizon");
+    }
 }

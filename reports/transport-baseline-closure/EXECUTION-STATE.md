@@ -404,3 +404,55 @@ metric split (`scheduler_data_displacement` vs `channel_fate_divergence`, `N/A �
 hash before any ON run).
 
 Panels 1–2 are retained as **DIAGNOSTIC / UNGATED**.
+
+## §1 gate at the panel commit — SATISFIED
+
+`gate.sh` at `de5119c0` (the exact commit the panels ran on): **12/12 PASS**
+(492 / 539 / 492 / 602 / 846, clippy clean ×5, worktree clean). Panels 1–2 are therefore **gated
+evidence**, not ungated diagnostics. Their *interpretation* is unchanged: gate 1 stays
+`UNEVALUABLE`.
+
+## §3 zero-probe paired invariant — PASS, 0 violations
+
+Six locked-primary P0 reps where bootstrap never armed (`probes=0`, `echoes=0`):
+
+| rep | OFF pc | ON pc | OFF/ON tx | OFF/ON acks | wire digest | src prefix |
+|---|---|---|---|---|---|---|
+| 5, 9, 14, 17, 25, 38 | 1000 ms | 1000 ms | 384 / 384 | equal | **equal** | **equal** |
+
+With `Probe=0` and `Echo=0` the arms are bit-identical on traffic and channel digests. No
+nondeterminism, no treatment-before-arm effect.
+
+## §4 displacement metric — split and frozen
+
+Contract `DR-CS-3-DISPLACEMENT-METRIC-CONTRACT` md `61d64d55…` / json `9c32668a…`, hashed **before**
+any new measurement.
+
+The old single number was **not authoritative**: it used `first_echo_tick`, and with no echo the
+horizon became `u64::MAX`, diffing two whole trajectories. That is how runs whose treatment emitted
+at most 3 probes reported `disp=376..382`. Those readings were an instrument artefact, **not** DATA
+displacement.
+
+Replaced by two quantities split at the **first Probe on the wire** — the true boundary between
+"arms must be identical" and "divergence is legitimate":
+
+| metric | window | expectation | role |
+|---|---|---|---|
+| `scheduler_data_displacement` | ticks `< first_probe_tick` | **must be 0** | safety-gate input (C2 gate 5) |
+| `channel_fate_divergence` | ticks `>= first_probe_tick` | non-zero is normal | descriptive only, never a gate, never called displacement |
+
+Echo-bounded windows now report **`N/A — NO ECHO`** instead of silently spanning the trace.
+
+Positive controls PC1–PC4 written (pre-treatment divergence 0 · no extra packets ⇒ whole-trace
+identical · one Probe advances the shared chain exactly once · the two quantities never conflated);
+execution in flight.
+
+## Still open in M2
+
+§4 positive-control results · §5 preregistered replacement panel (finite universe sized by the
+2.7 % rate ≈ 371 seeds · exact OFF-stall phenotype · OFF/control-only selection · deterministic
+first-K rule · **selected seed set hashed before any ON run** · original 3/3 strictness · fresh N=40
+and zero-new-stall gates unchanged · separate confirmation set).
+
+rep16's locked-bidirectional stall stays **diagnostic only** — no product-failure claim without its
+exact Probe/Echo authentication and loss lineage.

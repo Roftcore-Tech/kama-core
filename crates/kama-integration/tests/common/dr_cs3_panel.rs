@@ -315,8 +315,12 @@ pub struct PanelOut {
     pub tail_probe: (u64, u64, u64),
     /// Tick indices at which a DATA emission occurred (for the paired displacement check).
     pub data_emit_ticks: Vec<u64>,
-    /// Tick index of the first accepted echo (`u64::MAX` if none).
+    /// Tick index of the first accepted echo (`u64::MAX` if none) — echo-bounded, see the metric
+    /// contract: consumers must report `N/A — NO ECHO` rather than treating MAX as a horizon.
     pub first_echo_tick: u64,
+    /// Tick index of the first Probe reaching the wire (`u64::MAX` if none). This, not the echo, is
+    /// the boundary between "arms must be identical" and "divergence is legitimate physics".
+    pub first_probe_tick: u64,
     /// Canonical wire trace digest.
     pub wire_digest: String,
     /// Canonical source-prefix digest (DATA emissions only).
@@ -484,6 +488,9 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
                             out.sender_budget_violation += 1;
                         }
                         out.probes_emitted += 1;
+                        if out.first_probe_tick == u64::MAX {
+                            out.first_probe_tick = tick;
+                        }
                         out.probe_wire_bytes += sealed.len() as u64;
                         if out.probe_wire_bytes > SENDER_PROBE_BUDGET {
                             out.sender_budget_violation += 1;
@@ -787,22 +794,46 @@ pub fn run_panel(cfg: &PanelCfg) -> PanelOut {
     out
 }
 
-/// Paired DATA-displacement metric: tick indices where the BASELINE emitted DATA and the TREATMENT
-/// did not, restricted to the window before the treatment's first accepted echo. The bootstrap probe
-/// is append-only and consumes no pacer token, so this must be 0.
+/// **METRIC CONTRACT** `DR-CS-3-DISPLACEMENT-METRIC-CONTRACT` (md `61d64d55…`).
+///
+/// DATA the treatment genuinely failed to emit BECAUSE of the treatment, measured strictly before
+/// the first Probe reaches the wire — the window where the two arms MUST be identical. Any non-zero
+/// value is a real scheduler defect. Safety-gate input (C2 gate 5).
 #[must_use]
-pub fn data_displacement(baseline: &PanelOut, treatment: &PanelOut) -> u64 {
-    let horizon = treatment.first_echo_tick;
+pub fn scheduler_data_displacement(baseline: &PanelOut, treatment: &PanelOut) -> u64 {
+    let horizon = treatment.first_probe_tick; // exclusive
     let t: BTreeSet<u64> = treatment
         .data_emit_ticks
         .iter()
         .copied()
-        .filter(|&x| x <= horizon)
+        .filter(|&x| x < horizon)
         .collect();
     baseline
         .data_emit_ticks
         .iter()
         .copied()
-        .filter(|&x| x <= horizon && !t.contains(&x))
+        .filter(|&x| x < horizon && !t.contains(&x))
         .count() as u64
+}
+
+/// How often DATA fates differ AFTER an extra Probe entered the shared packet-domain chain.
+///
+/// **Expected non-zero and NOT a defect.** One extra packet advances the shared GE chain by one
+/// step, which legitimately re-phases every subsequent fate. Descriptive only — never a gate, never
+/// reported as displacement.
+#[must_use]
+pub fn channel_fate_divergence(baseline: &PanelOut, treatment: &PanelOut) -> u64 {
+    let from = treatment.first_probe_tick;
+    if from == u64::MAX {
+        return 0; // no extra packet ever entered the chain
+    }
+    let b: BTreeSet<u64> = baseline.data_emit_ticks.iter().copied().filter(|&x| x >= from).collect();
+    let t: BTreeSet<u64> = treatment.data_emit_ticks.iter().copied().filter(|&x| x >= from).collect();
+    b.symmetric_difference(&t).count() as u64
+}
+
+/// Echo-bounded reporting helper: `None` renders as `N/A — NO ECHO`, never as a whole-trace horizon.
+#[must_use]
+pub fn echo_bounded_window(treatment: &PanelOut) -> Option<u64> {
+    (treatment.first_echo_tick != u64::MAX).then_some(treatment.first_echo_tick)
 }

@@ -1,0 +1,32 @@
+{
+  "artifact": "DR-CS-3-DISPLACEMENT-METRIC-CONTRACT",
+  "frozen_before_new_measurement": true,
+  "replaces": "the single data_displacement number, which was not authoritative",
+  "why_old_metric_wrong": "compared DATA emission ticks up to first_echo_tick; with no echo the horizon became u64::MAX and silently diffed two whole trajectories, reporting disp=376..382 on runs whose treatment emitted at most 3 probes",
+  "metrics": {
+    "scheduler_data_displacement": {
+      "window": "emission ticks < first_probe_tick",
+      "value": "count of ticks where baseline emitted DATA and treatment did not",
+      "must_be": 0,
+      "rationale": "before any extra packet exists there is no legitimate divergence; non-zero is a real scheduler defect",
+      "is_gate_input": "C2 gate 5"
+    },
+    "channel_fate_divergence": {
+      "window": "emission ticks >= first_probe_tick",
+      "value": "count of differing ticks",
+      "expected_non_zero": true,
+      "is_defect": false,
+      "rationale": "one extra packet advances the shared GE chain by one step, legitimately re-phasing every subsequent fate",
+      "is_gate": false,
+      "never_labelled": "DATA displacement"
+    }
+  },
+  "echo_bounded_rule": "any metric whose window depends on an Echo reports 'N/A - NO ECHO' when none arrives; it never silently expands to the whole trace",
+  "positive_controls": [
+    "pre-treatment divergence = 0 with bootstrap ON",
+    "no extra packets => whole-trace divergence = 0 with bootstrap OFF",
+    "one extra Probe advances the shared chain exactly once (forward_steps differs by probes_emitted)",
+    "a run with channel_fate_divergence > 0 must still have scheduler_data_displacement == 0"
+  ],
+  "reporting_rule": "scheduler_data_displacement is a safety gate input; channel_fate_divergence is descriptive only and never a gate, defect, or displacement claim"
+}

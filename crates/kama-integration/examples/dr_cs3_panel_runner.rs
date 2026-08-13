@@ -14,7 +14,7 @@
 mod dr_cs3_panel;
 
 use dr_cs3_panel::fs_cal2_gen::{sha256_hex, LossModel};
-use dr_cs3_panel::{data_displacement, run_panel, PanelCfg, PanelOut};
+use dr_cs3_panel::{channel_fate_divergence, echo_bounded_window, run_panel, scheduler_data_displacement, PanelCfg, PanelOut};
 use std::fs;
 use std::io::Write as _;
 use std::path::Path;
@@ -79,7 +79,7 @@ struct BsScenario {
 fn pair_json(id: &Id<'_>, b: &PanelOut, t: &PanelOut) -> String {
     let (run_id, panel, cell, domain, rep, rtt_ms) =
         (id.run_id, id.panel, id.cell, id.domain, id.rep, id.rtt_ms);
-    let disp = data_displacement(b, t);
+    let disp = scheduler_data_displacement(b, t);
     let mut s = String::new();
     s.push_str("{\n");
     let mut f = |k: &str, v: String| s.push_str(&format!("  {}: {},\n", q(k), v));
@@ -137,7 +137,9 @@ fn pair_json(id: &Id<'_>, b: &PanelOut, t: &PanelOut) -> String {
         f(&format!("{tag}_wire_digest"), q(&o.wire_digest));
         f(&format!("{tag}_source_prefix_digest"), q(&o.source_prefix_digest));
     }
-    f("data_displacement", disp.to_string());
+    f("scheduler_data_displacement", disp.to_string());
+    f("channel_fate_divergence", channel_fate_divergence(b, t).to_string());
+    f("echo_bounded_window", echo_bounded_window(t).map_or("\"N/A — NO ECHO\"".to_string(), |v| v.to_string()));
     f("arq_timer_diff_pre_unlock", {
         // Before the first accepted echo the two arms differ ONLY by the appended probe, so the
         // ARQ/tail timer state must be identical there. (After the unlock, divergence is the
@@ -207,12 +209,18 @@ fn line(run_id: &str, b: &PanelOut, t: &PanelOut) {
         t.probes_authenticated,
         t.echoes_generated,
         t.rtt_sample_ns / 1_000_000,
-        data_displacement(b, t)
+        scheduler_data_displacement(b, t)
     );
     println!(
         "    class={} fwd_steps={} rev_steps={} acks_gen={} acks_rev_dropped={} bypass={}",
         t.outcome_class, t.forward_steps, t.reverse_steps, t.acks_generated,
         t.acks_reverse_dropped, t.channel_bypass_violations
+    );
+    println!(
+        "    sched_disp={} fate_div={} echo_window={}",
+        scheduler_data_displacement(b, t),
+        channel_fate_divergence(b, t),
+        echo_bounded_window(t).map_or("N/A — NO ECHO".to_string(), |v| v.to_string())
     );
 }
 
