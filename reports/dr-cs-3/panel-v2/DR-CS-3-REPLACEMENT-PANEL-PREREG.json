@@ -57,5 +57,52 @@
     "changing the seed domain to obtain stalls",
     "post-hoc exclusion of NETWORK-CENSORED",
     "altering any C2 threshold"
-  ]
+  ],
+  "addendum": {
+    "A1_rate_is_assumption": {
+      "value": "0.2 * 0.9^19 ~= 0.027017",
+      "basis": "channel parameters + 20-packet PreConverge window",
+      "equivalence_to_exact_phenotype_demonstrated": false,
+      "status": "sizing rationale only",
+      "if_exact_or_lower_bound": {
+        "N": 512,
+        "E_X": 13.83,
+        "P_X_ge_6": 0.9943
+      },
+      "universe_stays": 512
+    },
+    "A2_window_sensitivity": {
+      "20_packets": 13.8,
+      "30_packets": 4.8,
+      "35_packets": 2.8,
+      "selection_run_records": "observed forward-packet-count distribution (no extra cost)",
+      "attribution_if_under_3": {
+        "observed_window_near_20": "CHANNEL-MODEL-PROPERTY",
+        "observed_window_much_greater": "SIZING-ASSUMPTION-MISMATCH"
+      },
+      "mismatch_remedy": "a NEW preregistration with a corrected window - NOT enlarging this universe",
+      "packet_count_alone_conclusive": false
+    },
+    "A3_confirmation_is_holdout": [
+      "first three qualifying = challenge set",
+      "next three = confirmation holdout",
+      "both lists hashed before any ON arm runs",
+      "challenge ON runs first",
+      "confirmation not opened until challenge is 3/3",
+      "product fixes allowed against challenge; each fix requires challenge 3/3 again",
+      "confirmation opens ONCE, after challenge 3/3 and the final product commit is frozen",
+      "default promotion requires confirmation 3/3 as well",
+      "if the product changes after the confirmation result is seen, that set is no longer a holdout and may not be reused for a PASS",
+      "confirmation failure BLOCKS M2 and requires \u00a74 lineage / C1"
+    ],
+    "A4_selection_enrichment": {
+      "old_locked": "3 stalls in 8 seeds = 37.5%",
+      "analytic_base": "~2.7%",
+      "enrichment": "~14x",
+      "replacement_has_same_property": "three seeds chosen from 512 are by definition worst cases",
+      "binding": "3/3 recovered is MECHANISM evidence, NOT PREVALENCE evidence",
+      "phrasing": "the mechanism recovers the selected stall phenotype - NOT cold start is solved",
+      "prevalence_only_from": "an unselected sample (the fresh panel)"
+    }
+  }
 }

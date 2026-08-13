@@ -1,0 +1,86 @@
+{
+  "artifact": "DR-CS-3-DISPLACEMENT-METRIC-CONTRACT-V2",
+  "supersedes": {
+    "artifact": "DR-CS-3-DISPLACEMENT-METRIC-CONTRACT",
+    "md": "61d64d55",
+    "json": "9c32668a",
+    "marking": "SUPERSEDED - emission ticks were mislabeled as channel fates and gate-5 scope was not grounded"
+  },
+  "written_before": "any seed search and any new panel result",
+  "is": "instrument-defect closure, not a reopening of M2 or any C2 threshold",
+  "gate5_reground": {
+    "exact_frozen_text": "safety / budget / invariant violations: 0",
+    "c2_class": "SAFETY-FAILURE = budget overrun, replay/mismatch RTT, duplicate RTT sample, authentication violation, DATA displacement, ARQ timer diff",
+    "consequence": "gate 5's DATA-displacement component is scoped to the WHOLE RUN, not a pre-Probe window",
+    "withdrawn": "the narrowing to ticks < first_probe_tick, which makes it structurally zero and silently redefines the frozen gate"
+  },
+  "quantities": {
+    "pre_treatment_scheduler_equivalence": {
+      "scope": "prefix before the first treatment packet enters its directional channel",
+      "requirement": "traffic, event and channel digests exactly equal between arms",
+      "is_gate5": false,
+      "is": "structural invariant"
+    },
+    "scheduler_data_displacement": {
+      "source": "scheduler ARBITRATION RECORD, whole run",
+      "never": "inferred from emission-tick set differences",
+      "records": [
+        "was a DATA eligible/queued at that decision point",
+        "did the Probe consume a pacing or budget opportunity a DATA would have taken",
+        "which DATA identity was affected",
+        "how many scheduler ticks was it deferred",
+        "was that DATA later sent or suppressed entirely"
+      ],
+      "claim_limit": "proves only directly observed Probe-over-DATA arbitration; must not label long downstream trajectory differences as Probe-caused displacement",
+      "is_gate5_component": true
+    },
+    "channel_fate_divergence": {
+      "scope": "matched DATA transmission attempts only",
+      "identity": "DATA/source identity + transmission-attempt ordinal, from existing protocol identity; no new random or outcome-dependent matching",
+      "never_single_number": true,
+      "must_report": [
+        "matched_attempts",
+        "matched_fate_divergences",
+        "unmatched_baseline_attempts",
+        "unmatched_treatment_attempts",
+        "trajectory_divergence_start"
+      ],
+      "unmatched_are_not_zero_divergence": true
+    },
+    "trajectory_divergence": {
+      "scope": "downstream traffic that cannot be matched",
+      "is_gate": false,
+      "never_conflated_with": [
+        "displacement",
+        "fate divergence"
+      ]
+    }
+  },
+  "echo_bounded_rule": "report 'N/A - NO ECHO'; never expand to a whole-trace horizon",
+  "event_log_required": [
+    "chronological draw index",
+    "tick / emission order",
+    "packet kind",
+    "stable DATA identity + transmission-attempt ordinal",
+    "drop/deliver fate",
+    "scripted-override source"
+  ],
+  "event_log_excluded_from_digests": true,
+  "positive_controls_non_vacuous": [
+    "PC3 asserts probes_emitted > 0 AND the fixture tx equality explicitly; no silent conditional pass",
+    "PC4 asserts matched_fate_divergences > 0 AND the exact expected scheduler_data_displacement together",
+    "no-echo asserts echoes_arrived == 0 first, then echo_bounded_window == None",
+    "no-extra-packet asserts the entire directional event/fate trace is exactly equal",
+    "at least one fixture must PRODUCE post-treatment scheduler displacement and the oracle must be shown catching it"
+  ],
+  "controls_report": [
+    "assertion count",
+    "fixture activation count"
+  ],
+  "synthetic_control_limit": "validates the oracle only; not evidence of product behaviour; never alters the shipping scheduler",
+  "withdrawn_claim": {
+    "text": "a treatment emitting <=3 probes cannot displace 380 DATA emissions",
+    "marking": "SUPERSEDED - unsupported causal inference",
+    "correct": "a few Probes can re-phase the shared GE state and, through pacing and ACK feedback, produce long downstream trajectory divergence; the old 376-382 figures remain non-authoritative because they used a u64::MAX horizon when no Echo arrived, not because of the probe count"
+  }
+}

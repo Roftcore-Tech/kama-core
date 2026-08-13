@@ -82,3 +82,72 @@ The C2 gates are **not** modified by this replacement:
 Seed shopping · reading ON results during selection · widening the universe after seeing counts ·
 weakening the phenotype · changing the seed domain to obtain stalls · post-hoc exclusion of
 `NETWORK-CENSORED` · altering any C2 threshold.
+
+---
+
+# ADDENDUM (explanatory only; added before any seed search)
+
+## A1. The 2.7 % figure is an analytic sizing assumption, not a measured rate
+
+`0.2 × 0.9^19 ≈ 0.027017` is derived from the channel parameters and a **20-packet** PreConverge
+window. It has **not** been shown equivalent to the exact OFF-stall phenotype of §2. Until that
+equivalence is demonstrated it stands only as sizing rationale.
+
+If the assumption is exact or a sufficient lower bound, then for N = 512:
+
+```
+E[X] ≈ 13.83        P(X ≥ 6) ≈ 0.9943
+```
+
+The universe stays **512**. It is not enlarged merely to raise these numbers.
+
+## A2. Window-assumption sensitivity, and its attribution
+
+The rate is sharply sensitive to the assumed window:
+
+```
+20 packets → E[X] ≈ 13.8     30 packets → ≈ 4.8     35 packets → ≈ 2.8   (BELOW 3)
+```
+
+The OFF-only selection run therefore records the **observed forward-packet-count distribution** at no
+extra cost. If fewer than three seeds qualify, attribution comes from that distribution:
+
+* observed window ≈ 20 → `CHANNEL-MODEL-PROPERTY` (the model does not produce the phenotype);
+* observed window ≫ 20 → `SIZING-ASSUMPTION-MISMATCH` (the universe was mis-sized).
+
+A `SIZING-ASSUMPTION-MISMATCH` is **not** fixed by enlarging this universe. It requires a **new**
+preregistration with a corrected window. This preregistration is never silently reinterpreted, and
+packet count alone is not conclusive causal evidence.
+
+## A3. Confirmation is a real holdout — binding roles
+
+Frozen before any seed search:
+
+1. first three qualifying seeds = **challenge set**;
+2. next three = **confirmation holdout**;
+3. both lists hashed **before** any ON arm runs;
+4. challenge ON runs first;
+5. confirmation is **not opened** until challenge is 3/3;
+6. product fixes may be made against the challenge set; each fix requires challenge 3/3 again;
+7. confirmation opens **once**, only after challenge 3/3 **and** the final product commit is frozen;
+8. default promotion requires confirmation **3/3** as well;
+9. if the product changes after the confirmation result is seen, that set is no longer a holdout and
+   may not be reused to produce a PASS;
+10. confirmation failure **blocks M2** and requires §4 lineage / C1.
+
+This does not relax the frozen C2 challenge threshold; it is a stricter acceptance condition added
+before any result was seen.
+
+## A4. Selection-enrichment warning
+
+The old locked set had 3 stalls in 8 seeds (37.5 %) against an analytic base rate of ≈ 2.7 % —
+roughly **14× enrichment**. The replacement panel has the same property by construction: three seeds
+chosen from 512 are, by definition, worst cases.
+
+```
+⇒ "3/3 recovered" is MECHANISM evidence, NOT PREVALENCE evidence.
+```
+
+This distinction is preserved in the default-ON justification and in any external report:
+*"the mechanism recovers the selected stall phenotype"* — **not** *"cold start is solved"*. A
+prevalence claim may come only from an unselected sample (the fresh panel).
