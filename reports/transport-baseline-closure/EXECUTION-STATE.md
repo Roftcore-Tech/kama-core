@@ -456,3 +456,54 @@ and zero-new-stall gates unchanged · separate confirmation set).
 
 rep16's locked-bidirectional stall stays **diagnostic only** — no product-failure claim without its
 exact Probe/Echo authentication and loss lineage.
+
+## §12.5 behaviour-neutrality — PASS (retroactive for `b2c7f120`)
+
+Locked panels re-run at **both** `de5119c0` and `b2c7f120`, same seeds/domain/parameters, primary and
+bidirectional, OFF and ON arms:
+
+```
+records compared : 32
+fields compared  : 18 per record
+field mismatches : 0
+missing records  : 0
+```
+
+Compared: `wire_digest` · `source_prefix_digest` · terminal classification · tx DATA/retransmit/Probe ·
+ACK/Echo counts · PreConverge exit · directional draw counts. New event-log fields are excluded from
+the digests by design.
+
+⇒ `b2c7f120` is **observation-only**; the panel 1–2 evidence gated at `de5119c0` is **not stale**.
+This check is now mandatory for every future `dr_cs3_panel.rs` instrumentation commit.
+
+## §4 metric closure — corrected contract, implementation still owed
+
+Superseded: `DR-CS-3-DISPLACEMENT-METRIC-CONTRACT` (md `61d64d55…`) —
+`SUPERSEDED — emission ticks were mislabeled as channel fates and gate-5 scope was not grounded`.
+
+Replacement: `DR-CS-3-DISPLACEMENT-METRIC-CONTRACT-V2` md `e4e4212a…` / json `3c5d1864…`.
+
+**Gate 5 re-grounded.** Frozen text is *"safety / budget / invariant violations: 0"*; C2 §4 puts
+**DATA displacement** inside `SAFETY-FAILURE`. So its scope is the **whole run**. The earlier
+narrowing to `ticks < first_probe_tick` made it structurally zero and silently redefined a frozen
+gate — **withdrawn**.
+
+**Withdrawn claim:** *"a treatment emitting ≤3 probes cannot displace 380 DATA emissions"* →
+`SUPERSEDED — unsupported causal inference`. A few Probes can re-phase the shared GE state and, via
+pacing and ACK feedback, produce long downstream divergence. The 376–382 figures remain
+non-authoritative **because of the `u64::MAX` horizon**, not the probe count.
+
+**Still owed before any selection run:**
+
+1. directional event log (draw index · emission order · packet kind · DATA identity + attempt
+   ordinal · fate · override source), excluded from digests;
+2. `channel_fate_divergence` recomputed over **matched attempts only**, reported with
+   `matched_attempts` / `matched_fate_divergences` / `unmatched_baseline_attempts` /
+   `unmatched_treatment_attempts` / `trajectory_divergence_start`;
+3. `scheduler_data_displacement` measured from the **arbitration record**, whole run;
+4. non-vacuous controls, including **one fixture that produces displacement** so the oracle is shown
+   catching it; assertion and fixture-activation counts reported;
+5. §12.6 finite run budget frozen before the 512-seed selection.
+
+The current `channel_fate_divergence` still measures emission-schedule differences and **must not be
+reported under that name** until (2) lands.
