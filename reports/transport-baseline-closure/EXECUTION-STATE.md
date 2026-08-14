@@ -623,3 +623,60 @@ segment is `UNASSESSABLE UNTIL M4`:
 * `EWOULDBLOCK`, partial write, bounded queue, batch cap and datagram cap are all tested;
 * when the M4 runtime exists, **gate 5 is re-measured for the downstream egress segment**;
 * today's M2 result does **not** transfer automatically to M4 backpressure behaviour.
+
+## §1 Calibration terminology — corrected
+
+Only **wall time** was measured; no process accounting (`user`/`system`) was taken. So the
+`0.78 CPU-h` figure is **not** an authoritative CPU measurement. Split correctly:
+
+| quantity | status |
+|---|---|
+| serial wall-core projection (all-converge) | **≈0.78 h** — projection, not measured CPU |
+| ideal 2-worker wall projection | **≈23.5 min** |
+| actual measured user CPU | **NOT MEASURED** |
+| actual measured system CPU | **NOT MEASURED** |
+
+Correct preliminary statement:
+
+> `512 OFF selection is computationally feasible; conservative all-converge serial wall-core
+> projection ≈0.78 h and ideal 2-worker wall projection ≈23.5 min.`
+
+Actual CPU-hours will be measured with `/usr/bin/time` (or equivalent process accounting) during the
+**authoritative** calibration on the final instrumented binary.
+
+Superseded: *"higher stall rate moves cost toward the upper bound"* →
+`SUPERSEDED — stall paths are cheaper; all-converge is the conservative cost bound`.
+
+## §2 Paired structural oracle — in progress
+
+`crates/adaptive-transport/tests/dr_cs3_structural_oracle.rs`.
+
+Shipping `Sender` has **no `Clone`** and none was added: both arms are built from identical frozen
+inputs and their initial state is asserted equal. **No new shipping accessor was needed** — the
+oracle reads only existing `diag_pacer` / `diag_rate` / `diag_sent_logical` / `diag_loss` /
+`diag_fec_actuation` / `state`. Note `pacer debt no longer exists` (removed with the DR-CS-2
+treatment), which is itself evidence for the structural claim.
+
+The oracle does **not** hard-code zero: it compares the paired normal-packet plan and the
+pacer/inflight/`sent_logical` state, so a future token-consuming Probe fails it with no test change.
+
+**Synthetic sensitivity control: PASS** — a modelled DR-CS-2 debiting substitution is caught by the
+same derivation (`displaced=1`). Oracle proof only; not product evidence.
+
+**Defect found in my own first draft:** cells 5 and 6 were merely "more elapsed time" and never
+created recovery or parity state, so they would have passed **vacuously**. They now seed a real ACK
+gap (`pending_lost > 0`) and real queued parity (`enqueued_r_total > 0`), with activation asserted.
+
+**Current status:** cells 1–4 build and pass their preconditions. Cell 5's recovery seeding does not
+yet produce `pending_lost > 0` — the ACK-gap construction needs correcting. Per §3 this must be
+resolved as either a real cell or an explicit `UNCONSTRUCTIBLE-BY-PRODUCT-INVARIANT` /
+`UNCONSTRUCTIBLE-BY-HARNESS-LIMITATION` classification. **It is not silently skipped and the matrix
+is not reported complete.**
+
+## Still open in M2
+
+Cell 5/6 construction (or classification) · §5 directional channel event log · §6 derived event-log
+cap (from code-derived finite bounds, not `889 × safety factor`) with `size_of::<ChannelEvent>()` and
+worst-case memory · §7 non-vacuous channel controls · §8 neutrality 32×18 · fresh-worktree gate
+12/12 · authoritative §12.6 budget with measured CPU and 1/2/4-worker contention · then the 512
+OFF-only selection.
