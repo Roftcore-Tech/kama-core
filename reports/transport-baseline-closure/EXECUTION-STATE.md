@@ -554,3 +554,72 @@ Order of authority for the displacement grounding:
 The comment is ranked **last**, not first. The grounding artifact
 (`DR-CS-3-DISPLACEMENT-SEMANTICS-GROUNDING`, md `775f60ef…`) is left unmodified; this ordering and
 the claim limit above are recorded here as its addendum.
+
+## §1 Preliminary cost calibration (feasibility only — NOT a seed search)
+
+OFF-only, fixed set, **outside** the selection domain (`FSFC2-DIAG42B`), on reps whose results were
+already known. Warmed release binary; compile time excluded. Functional results were not read for any
+selection purpose. Median of 3 runs each.
+
+| path | median wall | min / max | sim ticks | fwd / rev events | peak RSS |
+|---|---|---|---|---|---|
+| rep9 — converges (384 delivered, 376 ACKs) | **5.518 s** | 5.354 / 5.535 | 6.5 M | 513 / 376 | 2872 KiB |
+| rep16 — stalls (tx=20, no ACK) | **0.454 s** | 0.450 / 0.474 | 6.5 M | 20 / 10 | 2872 KiB |
+
+**Correction to my own labelling.** I had called these "fast-exit" and "full-horizon". The measurement
+inverts that: **both** run the full 65 s virtual horizon (6.5 M ticks), and cost is driven by
+**packet/ACK processing volume**, not by the horizon. A *stall* is the **cheap** case (12× cheaper); a
+*converging* run is the expensive one.
+
+### §1b Three projections for the 512-seed OFF-only selection
+
+| assumption | total CPU | wall @1 worker | wall @2 workers |
+|---|---|---|---|
+| 1 — optimistic lower bound (**all stall**) | 0.06 CPU-h (3.9 min) | 3.9 min | 1.9 min |
+| 2 — conservative upper bound (**all converge**) | **0.78 CPU-h (47.1 min)** | 47.1 min | **23.5 min** |
+| 3 — expected mix, **2.7 % stall / 97.3 % converge** | 0.77 CPU-h (45.9 min) | 45.9 min | 23.0 min |
+
+The mix ratio used is written out explicitly above. The 2.7 % figure is the **analytic sizing
+assumption** `0.2 × 0.9^19`, **not** a measured prevalence, and its equivalence to the exact
+OFF-stall phenotype is still unproven. It is not adjusted to make the cost look smaller.
+
+**Direction of the risk is the opposite of the earlier assumption.** Because a stall costs 12× less
+than a converging run, a *higher* true stall rate makes the selection **cheaper**. The conservative
+bound is therefore the **all-converge** case (≈0.78 CPU-h), not the all-stall case. Feasibility is
+comfortable at ~23 min on 2 workers.
+
+This is a preliminary feasibility estimate only. The **authoritative §12.6 budget** is frozen later,
+on the final instrumented, neutrality-PASS, gated HEAD — after the event-log overhead exists — and
+will reproduce these same three projections.
+
+## §2 Gate-5 displacement component — classification
+
+`STRUCTURAL REGRESSION INVARIANT — PACER/GRANT DISPLACEMENT EXPECTED 0 BY ADDITIVE, UNPACED, DATA-FIRST DESIGN`
+
+Claim limits:
+
+* `0` in the shipping scheduler ⇒ the structural invariant holds;
+* `>0` ⇒ product regression **or** instrument/oracle defect;
+* it is **not** empirical mechanism-efficacy or prevalence evidence;
+* it does **not** cover the Probe's wire-byte, channel-state, amplification or future backpressure
+  costs.
+
+Gate 5's other safety/budget/invariant components stay evaluated by the panels and their budget
+measurements.
+
+## §5 `M4-EGRESS-PRIORITY-INVARIANT` (recorded now; M4 NOT started)
+
+Binding acceptance constraint for the future M4 runtime, derived from the finding that the egress
+segment is `UNASSESSABLE UNTIL M4`:
+
+* the real socket/backpressure/batching layer must explicitly enumerate its finite egress resources;
+* DATA/recovery/parity hold **higher admission and retention priority** than a bootstrap Probe;
+* under capacity pressure the Probe is dropped or deferred **first**;
+* Probe admission must never evict, truncate or delay already-planned or queued
+  DATA/recovery/parity;
+* literal tail-truncation is **not** mandated — the binding property is the DATA-first priority
+  invariant;
+* batching and reordering may not violate that priority;
+* `EWOULDBLOCK`, partial write, bounded queue, batch cap and datagram cap are all tested;
+* when the M4 runtime exists, **gate 5 is re-measured for the downstream egress segment**;
+* today's M2 result does **not** transfer automatically to M4 backpressure behaviour.

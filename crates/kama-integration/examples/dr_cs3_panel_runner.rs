@@ -19,6 +19,18 @@ use std::fs;
 use std::io::Write as _;
 use std::path::Path;
 
+/// Peak RSS in KiB from /proc/self/status (Linux; 0 elsewhere). Observation-only.
+fn peak_rss_kb() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmHWM:"))
+                .and_then(|l| l.split_whitespace().nth(1).and_then(|v| v.parse().ok()))
+        })
+        .unwrap_or(0)
+}
+
 fn arg(a: &[String], k: &str, d: &str) -> String {
     a.iter()
         .position(|x| x == k)
@@ -420,8 +432,43 @@ fn main() {
             println!("CHALLENGE-SET={challenge:?}");
             println!("CONFIRMATION-SET={confirm:?}");
         }
+        // ── §1 PRELIMINARY COST CALIBRATION (feasibility only; NOT a seed search) ────────────
+        // Fixed set, OFF-only, OUTSIDE the selection domain, on already-known reps. Functional
+        // results are not read for selection purposes.
+        "calib" => {
+            let reps = argu(&a, "--reps", 3);
+            let cases: [(&str, LossModel, u32); 2] = [
+                // fast-exit path: locked primary rep9 leaves PreConverge at 1000 ms
+                ("fast-exit", LossModel::None, 9),
+                // full-horizon path: locked bidirectional rep16 runs to the 65 s timeout
+                ("full-horizon", GE, 16),
+            ];
+            for (name, rev, rep) in cases {
+                let mut wall = Vec::new();
+                let (mut fwd, mut rev_steps, mut ticks) = (0u64, 0u64, 0u64);
+                for _ in 0..reps {
+                    let mut c = base_cfg("P2-GE20L10-RTT1000", "FSFC2-DIAG42B", rep, 1000, timeout);
+                    c.reverse_model = rev;
+                    c.bootstrap_on = false; // OFF-only
+                    let t0 = std::time::Instant::now();
+                    let r = run_panel(&c);
+                    wall.push(t0.elapsed().as_secs_f64());
+                    fwd = r.forward_steps;
+                    rev_steps = r.reverse_steps;
+                    ticks = r.observation_epoch_ns / 10_000; // DT_NS
+                }
+                wall.sort_by(|x, y| x.partial_cmp(y).unwrap());
+                let med = wall[wall.len() / 2];
+                println!(
+                    "CALIB path={name} rep={rep} median_wall_s={med:.3} min={:.3} max={:.3} \
+                     sim_ticks={ticks} fwd_events={fwd} rev_events={rev_steps} rss_kb={}",
+                    wall[0], wall[wall.len() - 1], peak_rss_kb()
+                );
+            }
+            println!("CALIB-DONE reps_per_path={reps}");
+        }
         other => {
-            eprintln!("unknown mode {other} (locked | fresh | control | select)");
+            eprintln!("unknown mode {other} (locked | fresh | control | select | calib)");
             std::process::exit(2);
         }
     }
