@@ -7,6 +7,22 @@
 #   scripts/gate.sh [target-dir]
 #
 # Machine safety: -j2, one cargo process at a time (never parallelise the steps).
+#
+# GATE CONTRACT — 13 checks (was 12; the fmt check is new):
+#     0            cargo fmt --all -- --check          <-- added; see below
+#     1            compile closure (--workspace --all-targets --all-features)
+#     2..6         tests: default | fec-budget | diag-telemetry | cold-start | all-features
+#     7  (x5)      clippy -D warnings, once per feature configuration
+#     8            worktree clean after the tests
+#
+# Why step 0 exists: CLAUDE.md section 7 makes `cargo fmt --check` a PR gate, but the hosted
+# workflow only fires on push:[main] and pull_request. Branch `transport-baseline-closure` has no
+# PR and no hosted runs, so no commit on it has ever been fmt-checked -- the drift measured at HEAD
+# (POST-CI-FORMAT-DRIFT, 136 hunks, absent at the last hosted-green SHA 4aa11a93) accumulated
+# entirely unobserved. This gate is the only place it can be caught locally.
+#
+# A RED here on an unformatted HEAD is the gate working, not a product or test failure. Report it
+# as GATE RED -- POST-CI-FORMAT-DRIFT.
 set -uo pipefail
 
 JOBS="${GATE_JOBS:--j2}"
@@ -36,6 +52,15 @@ run_tests() { # name, extra-args...
 }
 
 echo "== gate.sh :: $(git rev-parse --short HEAD) :: CARGO_TARGET_DIR=$CARGO_TARGET_DIR =="
+
+# 0 — formatting, byte-identical to the hosted `quality` job's step.
+# The repo pins rustfmt via rust-toolchain.toml (1.96.0), so the bare invocation IS the pinned one.
+# This step is NOT skippable and NOT warning-only: the branch has never been checked by hosted CI
+# (workflow triggers are push:[main] + pull_request; this branch has no PR and no runs), so the
+# only place the fmt gate can run at all is here.
+out="$(cargo fmt --all -- --check 2>&1)"; rc=$?
+record "0 fmt-check" "$rc" "hunks=$(grep -c '^Diff in ' <<<"$out")"
+[ "$rc" -ne 0 ] && grep '^Diff in ' <<<"$out" | sed 's/:.*//' | sort -u | head -25
 
 # 1 — compile closure (catches files referenced but never tracked)
 out="$(cargo build $JOBS --workspace --all-targets --all-features 2>&1)"; rc=$?
