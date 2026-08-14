@@ -42,9 +42,10 @@
 //!   ────────  ─────────────────────────────────────────  ────────────────────────────────────────
 //!   probe     a CsProbe DECISION in the target turn      bootstrap_rtt_diag().probe_emitted DELTA
 //!                                                        across that same on_event
-//!   parity    diag_fec_actuation() pending depth AT      diag_fec_actuation().emitted_r_total DELTA
-//!             ENTRY (enqueued−emitted−cancelled), or     across the target on_event, or the
-//!             a FecParity DECISION in the target turn    diag_token_denial() event-count DELTA
+//!   parity    parity_pending_at_entry > 0 (the exact     parity_competed_for_paced_grant:
+//!             diag_fec_actuation() depth read BEFORE     diag_fec_actuation().emitted_r_total DELTA
+//!             the call), or parity_actuated_in_target_   across the target on_event, or the
+//!             turn (a FecParity DECISION in that turn)   diag_token_denial() event-count DELTA
 //!                                                        across it (the parity queue front was
 //!                                                        reached and refused by the pacer)
 //!   recovery  a Retransmit DECISION in the target turn   diag_loss() ledger movement across that
@@ -63,6 +64,43 @@
 //!
 //! Consequence: mutating ONLY a proving source must turn the criterion RED while the marking source
 //! still reports the cell active. That is the mutation contract this file is verified against.
+//! ```
+//!
+//! ## PARITY — THREE DISTINCT CONCEPTS, NEVER CONFLATED
+//! ```text
+//! parity_pending_at_entry          EXACT pending-parity depth read from diag_fec_actuation()
+//!                                  BEFORE the target on_event (enqueued − emitted − cancelled).
+//!                                  It says parity WORK EXISTS. It says NOTHING about what the
+//!                                  target turn did with it.
+//! parity_actuated_in_target_turn   a real TransmitKind::FecParity DECISION was emitted IN THE
+//!                                  TARGET TURN (cross-checked against the emitted_r_total delta).
+//!                                  This is the ONLY thing that means "parity actually ran here".
+//! parity_competed_for_paced_grant  the scheduler REACHED the parity queue front in the target turn
+//!                                  and the pacer answered it: emitted_r_total DELTA > 0 (parity
+//!                                  took a grant) or diag_token_denial() event-count DELTA > 0
+//!                                  (parity asked and was REFUSED). Parity TOUCHED THE PACER.
+//!
+//! `parity_pending_at_entry > 0` is NOT `parity_actuated_in_target_turn`, and NEITHER of them is
+//! evidence of parity-vs-DATA contention. The product plans DATA/ARQ BEFORE `plan_fec_parity` in
+//! the SAME turn (sender.rs `schedule_transmit`), so parity only ever sees the RESIDUE of a grant
+//! that DATA has already been offered. A parity token denial is therefore DOWNSTREAM of the DATA
+//! decision, not a competitor to it.
+//! ```
+//!
+//! ## cell_7 CLAIM SCOPE (the decisive cell, correctly described)
+//! ```text
+//! cell_7 = PROBE-DUE x ONE-DATA-GRANT x PARITY-PENDING-AT-ENTRY
+//!          PARITY NOT ACTUATED IN TARGET TURN
+//! MEASURED (default build): parity_pending_at_entry = 3, actual DATA grants = 1,
+//!          FecParity decisions in the target turn = 0, emitted_r_total delta = 0
+//!          (token_denial delta = 1 — the parity queue front was reached and REFUSED, AFTER DATA
+//!          had already taken the single grant).
+//! IT IS     genuine Probe-vs-DATA contention evidence, and it REMAINS in the Gate-5 denominator.
+//! IT IS NOT evidence of target-turn parity ACTUATION.
+//! IT IS NOT evidence of parity-vs-DATA contention.
+//! The earlier label "parity-active" asserted both of the last two and is WITHDRAWN. Nothing about
+//! the measurement, the cell construction, the denominator or any assertion changed with it — only
+//! what the cell is allowed to be called.
 //! ```
 //!
 //! ## FROZEN ARITHMETIC LINEAGE (measurement-validated; not re-derived here)
@@ -489,8 +527,13 @@ enum CellVerdict {
     /// Probe activated in the treatment arm, but the control arm emitted no DATA — nothing exists to
     /// displace, so the cell is a Probe-ACTIVATION control, not displacement evidence.
     ActivatedButVacuousForDataDisplacement,
-    /// Recovery/parity state is active, but the control arm emitted no DATA — a state-INVARIANCE
-    /// control, not displacement evidence.
+    /// Parity was ACTUATED in the target turn (a real `FecParity` decision), but the control arm
+    /// emitted no DATA — so parity ran while nothing existed for it to displace. A parity-ACTUATION
+    /// control, NOT displacement evidence, and NOT in the Gate-5 denominator.
+    ParityActuatedButVacuousForDataDisplacement,
+    /// Recovery work, or parity work merely PENDING AT ENTRY, is present but the control arm emitted
+    /// no DATA — a state-INVARIANCE control, not displacement evidence. Distinct from the variant
+    /// above: nothing was actuated in the target turn here.
     StateActiveButVacuousForDataDisplacement,
     /// The treatment is entirely INERT here (probe not due by design) and the control arm emits no
     /// DATA. A negative control for probe activation; not displacement evidence.
@@ -510,6 +553,9 @@ impl CellVerdict {
             Self::ContentionTesting => "contention-testing",
             Self::ActivatedButVacuousForDataDisplacement => {
                 "ACTIVATED-BUT-VACUOUS-FOR-DATA-DISPLACEMENT"
+            }
+            Self::ParityActuatedButVacuousForDataDisplacement => {
+                "PARITY-ACTUATED-BUT-VACUOUS-FOR-DATA-DISPLACEMENT"
             }
             Self::StateActiveButVacuousForDataDisplacement => {
                 "STATE-ACTIVE-BUT-VACUOUS-FOR-DATA-DISPLACEMENT"
@@ -755,7 +801,13 @@ struct RegimeCell {
     required_activation: &'static str,
     units: u64,
     parity: Option<(u64, u16)>,
-    expect_parity_active: bool,
+    /// FROZEN expectation for `parity_pending_or_actuated`
+    /// (`parity_pending_at_entry > 0 || parity_actuated_in_target_turn`) — i.e. "this cell stages
+    /// parity work at all". It is deliberately NOT an expectation of ACTUATION: whether the target
+    /// turn actuates parity is a MEASURED outcome, reported per cell and carried by the verdict.
+    expect_parity_pending_or_actuated: bool,
+    /// The cell's own frozen claim-scope sentence about parity. PRINTED, never asserted over.
+    parity_claim_scope: &'static str,
 }
 
 /// The regimes the frozen arithmetic actually admits. Every field left of the result is FROZEN
@@ -771,7 +823,9 @@ const REGIME_CELLS: [RegimeCell; 5] = [
         required_activation: "queued DATA only (no probe, no recovery, no parity)",
         units: 8,
         parity: None,
-        expect_parity_active: false,
+        expect_parity_pending_or_actuated: false,
+        parity_claim_scope: "NO parity staged: parity_pending_at_entry == 0 and no FecParity \
+                             decision is possible ⇒ this cell says NOTHING about parity.",
     },
     RegimeCell {
         id: "cell_2 probe-DUE x ZeroDataGrant",
@@ -783,7 +837,9 @@ const REGIME_CELLS: [RegimeCell; 5] = [
         required_activation: "probe emitted in treatment arm + queued DATA",
         units: 8,
         parity: None,
-        expect_parity_active: false,
+        expect_parity_pending_or_actuated: false,
+        parity_claim_scope: "NO parity staged: parity_pending_at_entry == 0 and no FecParity \
+                             decision is possible ⇒ this cell says NOTHING about parity.",
     },
     RegimeCell {
         id: "cell_3 probe-DUE x OneDataGrant",
@@ -796,43 +852,66 @@ const REGIME_CELLS: [RegimeCell; 5] = [
             "probe emitted in treatment arm + exactly one DATA grant + queued DATA",
         units: 8,
         parity: None,
-        expect_parity_active: false,
+        expect_parity_pending_or_actuated: false,
+        parity_claim_scope: "NO parity staged: parity_pending_at_entry == 0 and no FecParity \
+                             decision is possible ⇒ this cell says NOTHING about parity.",
     },
     RegimeCell {
-        id: "cell_6 probe-DUE x ZeroDataGrant x parity-active",
+        id: "cell_6 probe-DUE x ZeroDataGrant x parity-PENDING-at-entry",
         target_ns: 3_000 * MS,
         expected_probe_due: true,
         expected_entry_tokens: 93,
         expected_token_predicate: TokenPredicate::ZeroDataGrantCapacityNonZeroTokens,
         expected_grant_class: GrantClass::ZeroDataGrant,
-        required_activation: "probe emitted + parity active in TARGET turn + queued DATA",
+        required_activation: "probe emitted + parity PENDING AT ENTRY + queued DATA (whether the \
+                              target turn ACTUATES parity is MEASURED, never required)",
         units: 8,
         parity: Some((40, 3)),
-        expect_parity_active: true,
+        expect_parity_pending_or_actuated: true,
+        parity_claim_scope: "PARITY STAGED (pending at entry). Whether it is ACTUATED in \
+                             the target turn is a MEASURED outcome carried by the verdict. The \
+                             control arm takes NO DATA grant here, so whatever parity does is \
+                             VACUOUS for DATA displacement and this cell is NOT in the Gate-5 \
+                             denominator.",
     },
-    // cell_7 — THE DECISIVE CELL. Strictly stronger than cell_6 (which is sub-grant and therefore
-    // vacuous for DATA displacement) and strictly stronger than cell_3 (which has no competing
-    // recovery/parity state). It is cell_6's construction (units 8, parity 3x40 B) at cell_3's
-    // instant (SATURATION_NS), so the probe is DUE, parity is ACTIVE, and the single grant is
-    // GENUINELY CONTENDED. Predicates below were frozen BEFORE the first run.
+    // cell_7 — THE DECISIVE CELL for the Gate-5 Probe-vs-DATA claim. Strictly stronger than cell_6
+    // (which is sub-grant and therefore vacuous for DATA displacement) and strictly stronger than
+    // cell_3 (which stages no parity work at all). It is cell_6's construction (units 8, parity
+    // 3x40 B) at cell_3's instant (SATURATION_NS), so the probe is DUE, parity work is PENDING AT
+    // ENTRY, and the single grant is GENUINELY CONTENDED BY THE PROBE. Predicates below were frozen
+    // BEFORE the first run.
+    //
+    // CLAIM SCOPE — PROBE-DUE x ONE-DATA-GRANT x PARITY-PENDING-AT-ENTRY, PARITY NOT ACTUATED IN
+    // TARGET TURN. Measured in the default build: parity_pending_at_entry = 3, actual DATA grants
+    // = 1, FecParity decisions in the target turn = 0. The cell REMAINS in the Gate-5 denominator
+    // as genuine Probe-vs-DATA contention evidence, but it is NOT evidence of target-turn parity
+    // ACTUATION and NOT evidence of parity-vs-DATA contention.
     //
     // If parity were to consume the single grant ahead of DATA, the control arm would emit no DATA
-    // and the honest verdict is STATE-ACTIVE-BUT-VACUOUS-FOR-DATA-DISPLACEMENT — the scheduler-order
-    // lineage and the observed front kind/size are printed either way, and nothing is forced to look
-    // like a pass. Product plan order (sender.rs schedule_transmit): DATA/ARQ → tail probe →
-    // duplicates → plan_fec_parity → budget_settle → legacy CS ladder → bootstrap probe.
+    // and the honest verdict is PARITY-ACTUATED-BUT-VACUOUS-FOR-DATA-DISPLACEMENT — the
+    // scheduler-order lineage and the observed front kind/size are printed either way, and nothing
+    // is forced to look like a pass. Product plan order (sender.rs schedule_transmit): DATA/ARQ →
+    // tail probe → duplicates → plan_fec_parity → budget_settle → legacy CS ladder → bootstrap
+    // probe. DATA is planned FIRST, which is exactly why a parity token denial in this turn is
+    // downstream of the DATA decision rather than a competitor to it.
     RegimeCell {
-        id: "cell_7 probe-DUE x OneDataGrant x parity-active",
+        id: "cell_7 probe-DUE x OneDataGrant x parity-PENDING-at-entry",
         target_ns: SATURATION_NS,
         expected_probe_due: true,
         expected_entry_tokens: 101,
         expected_token_predicate: TokenPredicate::OneDataGrantCapacitySaturated,
         expected_grant_class: GrantClass::OneDataGrant,
-        required_activation:
-            "probe emitted + parity active in TARGET turn + exactly one CONTENDED DATA grant",
+        required_activation: "probe emitted + parity PENDING AT ENTRY + exactly one DATA \
+                              grant CONTENDED BY THE PROBE (parity ACTUATION is MEASURED, never \
+                              required)",
         units: 8,
         parity: Some((40, 3)),
-        expect_parity_active: true,
+        expect_parity_pending_or_actuated: true,
+        parity_claim_scope: "PROBE-DUE x ONE-DATA-GRANT x PARITY-PENDING-AT-ENTRY, PARITY \
+                             NOT ACTUATED IN TARGET TURN. Gate-5 evidence for PROBE-vs-DATA \
+                             contention ONLY. It is NOT evidence of target-turn parity ACTUATION \
+                             and NOT evidence of parity-vs-DATA contention — the measured \
+                             actuation/competition facts are printed per run.",
     },
 ];
 
@@ -845,10 +924,10 @@ const REGIME_CELLS: [RegimeCell; 5] = [
 /// a string built from literal text can never be empty, so a guard on `is_empty()` is unreachable
 /// and certifies nothing.
 ///
-/// **The split is the point.** The previous revision recorded the two locals that *defined*
-/// `parity_active` and then re-tested that same disjunction, so no assignment of measured facts
+/// **The split is the point.** The previous revision recorded the two locals that *defined* the
+/// parity flag and then re-tested that same disjunction, so no assignment of measured facts
 /// could make the flag true and the check false: the criterion printed `true` while verifying
-/// nothing (mutating `pending_fec_at_entry` did NOT turn it red). Every `*_mark_*` field below comes
+/// nothing (mutating `parity_pending_at_entry` did NOT turn it red). Every marking field below comes
 /// from a different product surface than the `*_proof_*` fields it is checked against, so breaking
 /// exactly one proving source turns criterion (2) RED while the marking source still says active.
 #[derive(Debug, Clone, Copy)]
@@ -861,14 +940,17 @@ struct ActivationObservation {
     /// a surface INDEPENDENT of the decision list.
     probe_proof_bs_counter_delta: u64,
 
-    // ── PARITY ──────────────────────────────────────────────────────────────────────────────────
-    /// MARK — EXACT pending-parity depth at target-turn ENTRY, from `diag_fec_actuation()`
-    /// (`enqueued_r_total − emitted_r_total − canceled_r_total`) read BEFORE the call.
-    parity_mark_pending_at_entry: u64,
-    /// MARK — a real `TransmitKind::FecParity` decision in the target turn (the decision list).
-    parity_mark_decision_in_turn: bool,
+    // ── PARITY — three DISTINCT concepts, never conflated ───────────────────────────────────────
+    /// MARK, CONCEPT 1 — `parity_pending_at_entry`: EXACT pending-parity depth at target-turn ENTRY,
+    /// from `diag_fec_actuation()` (`enqueued_r_total − emitted_r_total − canceled_r_total`) read
+    /// BEFORE the call. Parity WORK EXISTS. This is NOT actuation and NOT contention.
+    parity_pending_at_entry: u64,
+    /// MARK, CONCEPT 2 — `parity_actuated_in_target_turn`: a real `TransmitKind::FecParity` decision
+    /// in the TARGET turn (the decision list). This is the ONLY thing that licenses the words
+    /// "parity actuated"; a positive `parity_pending_at_entry` never does.
+    parity_actuated_in_target_turn: bool,
     /// PROOF — `diag_fec_actuation().emitted_r_total` DELTA across the target `on_event`. Same
-    /// physical event as `parity_mark_decision_in_turn` seen through a DIFFERENT surface (the
+    /// physical event as `parity_actuated_in_target_turn` seen through a DIFFERENT surface (the
     /// product's own cumulative emission counter, sender.rs:3266), so the two can disagree.
     parity_proof_emitted_counter_delta: u64,
     /// PROOF — `diag_token_denial().1` (`token_denial_count_total`) DELTA across the target
@@ -903,13 +985,18 @@ impl ActivationObservation {
         self.probe_proof_bs_counter_delta > 0
     }
 
-    /// PROOF: the parity scheduler was REACHED in this turn — it either emitted (product emission
-    /// counter advanced) or was refused by the pacer (token-denial event counter advanced).
+    /// CONCEPT 3 — `parity_competed_for_paced_grant`: the parity scheduler was REACHED in this turn
+    /// and the pacer answered it — parity either emitted (product emission counter advanced) or was
+    /// REFUSED (token-denial event counter advanced).
     ///
     /// Deliberately reads NEITHER of the marking sources: not the entry depth, not the decision
-    /// list. A cell can therefore be marked parity-active (pending depth at entry) and still fail to
-    /// prove it, if the scheduler never reaches the parity queue in the target turn.
-    fn parity_proved(self) -> bool {
+    /// list. A cell can therefore carry `parity_pending_at_entry > 0` and still fail to show any
+    /// competition, if the scheduler never reaches the parity queue in the target turn.
+    ///
+    /// **This is NOT parity-vs-DATA contention.** The product plans DATA/ARQ before
+    /// `plan_fec_parity` in the same turn, so parity competes only for the RESIDUE of a grant DATA
+    /// has already been offered; a denial here is downstream of the DATA decision.
+    fn parity_competed_for_paced_grant(self) -> bool {
         self.parity_proof_emitted_counter_delta > 0 || self.parity_proof_token_denial_delta > 0
     }
 
@@ -952,7 +1039,13 @@ struct Fingerprint {
     /// ATTRIBUTED origin of any control-arm probe (never inferred from `TransmitKind` or `cfg`).
     baseline_probe_source: BaselineProbeSource,
     recovery_active: bool,
-    parity_active: bool,
+    /// `parity_pending_at_entry > 0 || parity_actuated_in_target_turn` — "this cell carries parity
+    /// work at all". It is the RULE-8 axis flag and is deliberately NOT called "parity active":
+    /// pending-at-entry, actuated-in-turn and competed-for-a-paced-grant are three different facts,
+    /// reported separately in [`ActivationObservation`] and never collapsed into this one bit.
+    parity_pending_or_actuated: bool,
+    /// The frozen per-cell parity claim-scope sentence. PRINT ONLY.
+    parity_claim_scope: &'static str,
     /// The SUBSTANTIVE activation facts closure criterion (2) asserts over.
     activation: ActivationObservation,
     /// Human-readable rendering of `activation`. PRINT ONLY — never load-bearing.
@@ -969,7 +1062,7 @@ impl Fingerprint {
             self.probe_due,
             GrantClass::of(self.available_data_grants),
             self.recovery_active,
-            self.parity_active,
+            self.parity_pending_or_actuated,
         )
     }
 }
@@ -979,7 +1072,7 @@ impl Fingerprint {
 fn print_fingerprint_table(rows: &[Fingerprint]) {
     eprintln!("\n RULE-8 FINGERPRINT TABLE (one row per cell; front kind/size and burst_cap OBSERVED per cell)");
     eprintln!(
-        "{:<48} {:<20} {:>5} {:>5} {:>5} {:<26} {:>4} {:>6} {:<14} {:<14} {:<20} {:<16} {:>7} constructibility verdict",
+        "{:<58} {:<20} {:>5} {:>5} {:>5} {:<26} {:>4} {:>6} {:<14} {:<14} {:<20} {:<36} {:>7} constructibility verdict",
         "CELL",
         "expected grant cls",
         "call",
@@ -991,12 +1084,12 @@ fn print_fingerprint_table(rows: &[Fingerprint]) {
         "OFF data ids",
         "ON data ids",
         "probe emission",
-        "recov/parity",
+        "recov / parity(3 concepts)",
         "nonvac"
     );
     for f in rows {
         eprintln!(
-            "{:<48} {:<20} {:>5} {:>5} {:>5} {:<26} {:>4} {:>6} {:<14} {:<14} {:<20} {:<16} {:>7} {}",
+            "{:<58} {:<20} {:>5} {:>5} {:>5} {:<26} {:>4} {:>6} {:<14} {:<14} {:<20} {:<36} {:>7} {}",
             f.cell,
             format!("{:?}", f.expected_grant_class),
             f.call_entry_tokens,
@@ -1008,7 +1101,13 @@ fn print_fingerprint_table(rows: &[Fingerprint]) {
             format!("{:?}", f.off_data_ids),
             format!("{:?}", f.on_data_ids),
             format!("ON={} OFF={}", f.probe_emitted, f.probe_in_baseline),
-            format!("r={} p={}", f.recovery_active, f.parity_active),
+            format!(
+                "r={} p:pend={} act={} comp={}",
+                f.recovery_active,
+                f.activation.parity_pending_at_entry,
+                f.activation.parity_actuated_in_target_turn,
+                f.activation.parity_competed_for_paced_grant()
+            ),
             f.contention_non_vacuous,
             f.verdict.label(),
         );
@@ -1018,9 +1117,17 @@ fn print_fingerprint_table(rows: &[Fingerprint]) {
          AUTHORITATIVE) | post = post_turn_residue (AUDIT ONLY, never an entry predicate) | \
          debit = paced bytes excluding CsProbe"
     );
+    eprintln!(
+        "  parity legend: pend = parity_pending_at_entry (depth BEFORE the turn — work EXISTS) | \
+         act = parity_actuated_in_target_turn (a real FecParity DECISION in the turn — the ONLY \
+         licence for the word \"actuated\") | comp = parity_competed_for_paced_grant (the scheduler \
+         reached the parity queue front and the pacer emitted or REFUSED). THREE DISTINCT FACTS; \
+         `pend > 0` is NEVER reported as actuation, and none of them is parity-vs-DATA contention \
+         (DATA/ARQ is planned BEFORE plan_fec_parity in the same turn)."
+    );
     for f in rows {
         eprintln!(
-            "  {:<48} startup_pacing={} rate={} window_bytes={} (< front_size={} ⇒ cap locks to the \
+            "  {:<58} startup_pacing={} rate={} window_bytes={} (< front_size={} ⇒ cap locks to the \
              front packet) data_queued_at_entry={} baseline_cs_probe_bytes={} \
              baseline_probe_source={} expected_token_predicate={:?} activation_proof: {}",
             f.cell,
@@ -1035,20 +1142,21 @@ fn print_fingerprint_table(rows: &[Fingerprint]) {
             f.activation_proof
         );
         eprintln!(
-            "  {:<48} activation MARKS  : probe_decision_in_turn={} | parity_pending_at_entry={} \
-             parity_decision_in_turn={} | retransmit_in_turn={} (recovery_state_after={} — \
+            "  {:<58} activation MARKS  : probe_decision_in_turn={} | parity_pending_at_entry={} \
+             parity_actuated_in_target_turn={} | retransmit_in_turn={} (recovery_state_after={} — \
              DIAGNOSTIC, never a proof)",
             "",
             f.activation.probe_mark_decision_in_turn,
-            f.activation.parity_mark_pending_at_entry,
-            f.activation.parity_mark_decision_in_turn,
+            f.activation.parity_pending_at_entry,
+            f.activation.parity_actuated_in_target_turn,
             f.activation.recovery_mark_retransmit_in_turn,
             f.activation.recovery_state_after,
         );
         eprintln!(
-            "  {:<48} activation PROOFS : bs_probe_counter_delta={} | fec_emitted_counter_delta={} \
+            "  {:<58} activation PROOFS : bs_probe_counter_delta={} | fec_emitted_counter_delta={} \
              token_denial_count_delta={} (denied_pending_total={}) | loss_declared_delta={} \
-             pending_lost_drop={} ⇒ probe_proved={} parity_proved={} recovery_proved={}",
+             pending_lost_drop={} ⇒ probe_proved={} parity_competed_for_paced_grant={} \
+             recovery_proved={}",
             "",
             f.activation.probe_proof_bs_counter_delta,
             f.activation.parity_proof_emitted_counter_delta,
@@ -1057,9 +1165,10 @@ fn print_fingerprint_table(rows: &[Fingerprint]) {
             f.activation.recovery_proof_loss_declared_delta,
             f.activation.recovery_proof_pending_lost_drop,
             f.activation.probe_proved(),
-            f.activation.parity_proved(),
+            f.activation.parity_competed_for_paced_grant(),
             f.activation.recovery_proved(),
         );
+        eprintln!("  {:<58} CLAIM SCOPE       : {}", "", f.parity_claim_scope);
     }
 }
 
@@ -1229,8 +1338,9 @@ fn run_regime_cells(startup_pacing: bool, label: &str) -> MatrixResult {
             ));
         }
         // ── PRECONDITION 3: parity pending at target-turn ENTRY (cumulative totals are NOT used)
-        // MARKING source for the parity leg — `diag_fec_actuation()` depth read BEFORE the call.
-        let pending_fec_entry = off.pending_fec();
+        // CONCEPT 1 / MARKING source for the parity leg — `diag_fec_actuation()` depth read BEFORE
+        // the call. "Parity work EXISTS"; this is NOT actuation and NOT contention.
+        let parity_pending_at_entry = off.pending_fec();
         // PROVING sources for the parity leg, sampled BEFORE the call so only the target turn's
         // movement is counted. Both are surfaces the marking source does not touch.
         let fec_emitted_before = off.s.diag_fec_actuation().emitted_r_total;
@@ -1485,15 +1595,21 @@ fn run_regime_cells(startup_pacing: bool, label: &str) -> MatrixResult {
         }
 
         // ── PARITY — MARK from entry depth / decision list, PROVE from the product counters ──────
-        let parity_in_turn = off_out.iter().any(|d| d.kind == TransmitKind::FecParity);
-        // MARK: pending at ENTRY, or a real emission in the TARGET turn.
-        // A cumulative `enqueued_r_total > 0` alone is deliberately NOT used.
-        let parity_active = pending_fec_entry > 0 || parity_in_turn;
-        // PROOF: movement of surfaces the marking sources do not read — the product's own cumulative
-        // parity EMISSION counter, and the token-DENIAL event counter that only `plan_fec_parity`
-        // writes when the pacer refuses the parity queue front. Together they say "the scheduler
-        // actually reached the parity queue in THIS turn", which is what `parity_active` claims and
-        // what neither marking source can establish on its own.
+        // CONCEPT 2 — a real FecParity DECISION in the TARGET turn. The ONLY licence for the words
+        // "parity actuated". `parity_pending_at_entry > 0` is NEVER reported as actuation.
+        let parity_actuated_in_target_turn =
+            off_out.iter().any(|d| d.kind == TransmitKind::FecParity);
+        // The RULE-8 AXIS flag: "this cell carries parity work at all" = concept 1 OR concept 2.
+        // Deliberately NOT named `parity_active` — that name asserted actuation and contention it
+        // never measured. A cumulative `enqueued_r_total > 0` alone is still not used.
+        let parity_pending_or_actuated =
+            parity_pending_at_entry > 0 || parity_actuated_in_target_turn;
+        // CONCEPT 3 PROOF: movement of surfaces the marking sources do not read — the product's own
+        // cumulative parity EMISSION counter, and the token-DENIAL event counter that only
+        // `plan_fec_parity` writes when the pacer refuses the parity queue front. Together they say
+        // "the scheduler actually reached the parity queue and the pacer answered in THIS turn"
+        // (`parity_competed_for_paced_grant`), which neither marking source can establish on its
+        // own — and which is still NOT parity-vs-DATA contention, since DATA/ARQ is planned first.
         let fec_emitted_delta = off
             .s
             .diag_fec_actuation()
@@ -1506,17 +1622,18 @@ fn run_regime_cells(startup_pacing: bool, label: &str) -> MatrixResult {
         } else {
             0
         };
-        if parity_active != c.expect_parity_active {
+        if parity_pending_or_actuated != c.expect_parity_pending_or_actuated {
             reds.push(format!(
-                "{}: parity activation expected={} observed={parity_active} \
-                 (pending_at_entry={pending_fec_entry}, emitted_in_turn={parity_in_turn})",
-                c.id, c.expect_parity_active
+                "{}: parity pending-or-actuated expected={} observed={parity_pending_or_actuated} \
+                 (parity_pending_at_entry={parity_pending_at_entry}, \
+                 parity_actuated_in_target_turn={parity_actuated_in_target_turn})",
+                c.id, c.expect_parity_pending_or_actuated
             ));
         }
         // The DECISION LIST and the product's cumulative emission counter are two views of the same
         // physical event; a disagreement means one of them is not measuring what it claims, so the
         // parity leg of criterion (2) would be resting on an unproven source.
-        if parity_in_turn && fec_emitted_delta == 0 {
+        if parity_actuated_in_target_turn && fec_emitted_delta == 0 {
             reds.push(format!(
                 "{}: FecParity decision(s) were emitted in the TARGET turn but \
                  diag_fec_actuation().emitted_r_total did NOT advance — the decision list and the \
@@ -1524,7 +1641,7 @@ fn run_regime_cells(startup_pacing: bool, label: &str) -> MatrixResult {
                 c.id
             ));
         }
-        if !parity_in_turn && fec_emitted_delta > 0 {
+        if !parity_actuated_in_target_turn && fec_emitted_delta > 0 {
             reds.push(format!(
                 "{}: diag_fec_actuation().emitted_r_total advanced by {fec_emitted_delta} in the \
                  TARGET turn but no FecParity decision was emitted — the counter and the decision \
@@ -1541,8 +1658,8 @@ fn run_regime_cells(startup_pacing: bool, label: &str) -> MatrixResult {
         let activation = ActivationObservation {
             probe_mark_decision_in_turn: probe_emitted,
             probe_proof_bs_counter_delta: on_bs_probe_delta,
-            parity_mark_pending_at_entry: pending_fec_entry,
-            parity_mark_decision_in_turn: parity_in_turn,
+            parity_pending_at_entry,
+            parity_actuated_in_target_turn,
             parity_proof_emitted_counter_delta: fec_emitted_delta,
             parity_proof_token_denial_delta: token_denial_delta,
             parity_proof_denied_pending_total: denied_pending_total,
@@ -1554,7 +1671,8 @@ fn run_regime_cells(startup_pacing: bool, label: &str) -> MatrixResult {
         let activation_proof = format!(
             "probe MARK decision_in_target_turn={probe_emitted} / PROOF \
              bootstrap_rtt_diag().probe_emitted delta={on_bs_probe_delta}; \
-             parity MARK pending_at_entry={pending_fec_entry} decision_in_target_turn={parity_in_turn} \
+             parity MARK parity_pending_at_entry={parity_pending_at_entry} \
+             parity_actuated_in_target_turn={parity_actuated_in_target_turn} \
              / PROOF emitted_r_total delta={fec_emitted_delta} token_denial_count delta={token_denial_delta}; \
              recovery MARK retx_in_target_turn={retx_in_turn} / PROOF \
              loss_declared_delta={loss_declared_delta} pending_lost_drop={pending_lost_drop} \
@@ -1602,10 +1720,15 @@ fn run_regime_cells(startup_pacing: bool, label: &str) -> MatrixResult {
              | diagnostic recovery_state={recovery_state})"
         );
         eprintln!(
-            "  parity active in turn    : {parity_active} (MARK pending_at_entry={pending_fec_entry} \
-             emitted_in_turn={parity_in_turn} | PROOF emitted_r_total_delta={fec_emitted_delta} \
-             token_denial_delta={token_denial_delta} denied_pending_total={denied_pending_total})"
+            "  parity (3 concepts)      : parity_pending_at_entry={parity_pending_at_entry} \
+             parity_actuated_in_target_turn={parity_actuated_in_target_turn} \
+             parity_competed_for_paced_grant={} \
+             (axis parity_pending_or_actuated={parity_pending_or_actuated} | PROOF \
+             emitted_r_total_delta={fec_emitted_delta} token_denial_delta={token_denial_delta} \
+             denied_pending_total={denied_pending_total})",
+            fec_emitted_delta > 0 || token_denial_delta > 0
         );
+        eprintln!("  parity CLAIM SCOPE       : {}", c.parity_claim_scope);
         eprintln!(
             "  post_turn_residue        : {post_turn_tokens} (measurement point 3 — AUDIT ONLY; \
              NEVER an entry predicate)"
@@ -1634,7 +1757,7 @@ fn run_regime_cells(startup_pacing: bool, label: &str) -> MatrixResult {
             rep.violation
         );
         if rep.violation {
-            let non_vacuous = data_queued > 0 && (probe_emitted || parity_active);
+            let non_vacuous = data_queued > 0 && (probe_emitted || parity_pending_or_actuated);
             let predicates_ok = decision_entry_tokens == c.expected_entry_tokens
                 && observed_class == c.expected_grant_class
                 && probe_emitted == c.expected_probe_due;
@@ -1727,7 +1850,14 @@ fn run_regime_cells(startup_pacing: bool, label: &str) -> MatrixResult {
             CellVerdict::CellUnconstructibleHarnessLimitation
         } else if contention_non_vacuous {
             CellVerdict::ContentionTesting
-        } else if recovery_active || parity_active {
+        } else if parity_actuated_in_target_turn {
+            // MEASURED, not frozen: parity really ran in this turn, but the control arm took no DATA
+            // grant, so there was nothing for it to displace. Distinguished from the generic
+            // state-active label so "parity actuated" is never claimed for a cell that only had
+            // parity PENDING AT ENTRY. Still OUT of the Gate-5 denominator — only ContentionTesting
+            // cells are in it, and that ordering is unchanged.
+            CellVerdict::ParityActuatedButVacuousForDataDisplacement
+        } else if recovery_active || parity_pending_or_actuated {
             CellVerdict::StateActiveButVacuousForDataDisplacement
         } else if probe_emitted {
             CellVerdict::ActivatedButVacuousForDataDisplacement
@@ -1735,6 +1865,14 @@ fn run_regime_cells(startup_pacing: bool, label: &str) -> MatrixResult {
             CellVerdict::InertTreatmentVacuousForDataDisplacement
         };
         eprintln!("  CONSTRUCTIBILITY VERDICT : {}", verdict.label());
+        if verdict == CellVerdict::ParityActuatedButVacuousForDataDisplacement {
+            eprintln!(
+                "    parity was ACTUATED in the target turn (a real FecParity decision, \
+                 emitted_r_total delta={fec_emitted_delta}) but the control arm took NO DATA grant, \
+                 so nothing existed for it to displace. This is a parity-ACTUATION control. It is \
+                 NOT in the Gate-5 denominator and it is NOT evidence of parity-vs-DATA contention."
+            );
+        }
         if verdict == CellVerdict::InertTreatmentVacuousForDataDisplacement {
             eprintln!(
                 "    the treatment is ENTIRELY INERT in this cell (probe_emitted=false, by design: \
@@ -1777,7 +1915,8 @@ fn run_regime_cells(startup_pacing: bool, label: &str) -> MatrixResult {
             probe_in_baseline,
             baseline_probe_source,
             recovery_active,
-            parity_active,
+            parity_pending_or_actuated,
+            parity_claim_scope: c.parity_claim_scope,
             activation,
             activation_proof,
             contention_non_vacuous,
@@ -1893,7 +2032,7 @@ fn print_unconstructible_records(fingerprints: &[Fingerprint]) -> Vec<String> {
     );
     for f in fingerprints {
         eprintln!(
-            "                             {:<48} rate={} window_bytes={} front={}/{}B burst_cap={}",
+            "                             {:<58} rate={} window_bytes={} front={}/{}B burst_cap={}",
             f.cell, f.observed_rate, f.window_bytes, f.front_kind, f.front_size, f.burst_cap
         );
         if f.burst_cap >= 2 * UNIT {
@@ -1948,7 +2087,10 @@ struct ConjunctionAttempt {
     /// same window: `plan_arq_retransmits` removes the record it retransmits (sender.rs:3919).
     recovery_proof_pending_lost_drop: bool,
     probe_emitted_treatment: bool,
-    parity_active: bool,
+    /// `parity_pending_at_entry > 0 || parity_actuated_in_target_turn` for this attempt. Never
+    /// called "parity active": no cell_5 route stages parity, so all three parity concepts are
+    /// silent here and the field records only that fact.
+    parity_pending_or_actuated: bool,
     breaking_transition: String,
 }
 
@@ -2020,7 +2162,11 @@ fn print_attempt(a: &ConjunctionAttempt) {
         "    probe emitted (treat.)  : {}",
         a.probe_emitted_treatment
     );
-    eprintln!("    parity active in turn   : {}", a.parity_active);
+    eprintln!(
+        "    parity pend-or-actuated : {} (no cell_5 route stages parity: parity_pending_at_entry=0, \
+         parity_actuated_in_target_turn=false, parity_competed_for_paced_grant=false)",
+        a.parity_pending_or_actuated
+    );
     eprintln!("    FAILED CONJUNCT(S)      : {}", a.failed_conjuncts());
     eprintln!("    breaking transition     : {}", a.breaking_transition);
 }
@@ -2136,7 +2282,7 @@ fn run_cell_5() -> (Vec<String>, &'static str, Vec<ConjunctionAttempt>) {
             recovery_proof_loss_declared_delta: loss_delta,
             recovery_proof_pending_lost_drop: pending_lost_drop,
             probe_emitted_treatment: probe,
-            parity_active: false,
+            parity_pending_or_actuated: false,
             breaking_transition: format!(
                 "the SAME on_event produced the first RTT sample (srtt now {srtt_us} us), which \
                  (a) closes drain_bootstrap_probes' `rtt.srtt().is_none()` gate and (b) drives \
@@ -2203,7 +2349,7 @@ fn run_cell_5() -> (Vec<String>, &'static str, Vec<ConjunctionAttempt>) {
             recovery_proof_loss_declared_delta: loss_delta2,
             recovery_proof_pending_lost_drop: pending_lost_drop2,
             probe_emitted_treatment: probe2,
-            parity_active: false,
+            parity_pending_or_actuated: false,
             breaking_transition: format!(
                 "the recovery leg IS reachable here (recovery_state={recovery_state2}), but srtt is \
                  now Some for good, so the bootstrap ladder can never re-open — the gate is \
@@ -2254,7 +2400,7 @@ fn run_cell_5() -> (Vec<String>, &'static str, Vec<ConjunctionAttempt>) {
             recovery_proof_loss_declared_delta: loss_delta,
             recovery_proof_pending_lost_drop: pending_lost_drop,
             probe_emitted_treatment: probe,
-            parity_active: false,
+            parity_pending_or_actuated: false,
             breaking_transition:
                 "no transition broke it — `on_timer(Timer::Pto)` FREEZES time-threshold loss \
                  declaration while `state == PreConverge` (sender.rs:2374-2384, §3.3-C). The probe \
@@ -2337,6 +2483,7 @@ fn print_scope_summary(
 
     let n_contention = m.count(CellVerdict::ContentionTesting);
     let n_activated = m.count(CellVerdict::ActivatedButVacuousForDataDisplacement);
+    let n_parity_actuated = m.count(CellVerdict::ParityActuatedButVacuousForDataDisplacement);
     let n_state = m.count(CellVerdict::StateActiveButVacuousForDataDisplacement);
     let n_inert = m.count(CellVerdict::InertTreatmentVacuousForDataDisplacement);
     let n_harness = m.count(CellVerdict::CellUnconstructibleHarnessLimitation);
@@ -2352,6 +2499,7 @@ fn print_scope_summary(
     eprintln!("\n===== SCOPE SUMMARY (startup_pacing = false) =====");
     eprintln!("  contention-testing cells                        : {n_contention}");
     eprintln!("  activated-but-vacuous-for-DATA-displacement     : {n_activated}");
+    eprintln!("  parity-ACTUATED-but-vacuous-for-DATA-displacement: {n_parity_actuated}");
     eprintln!("  state-active-but-vacuous-for-DATA-displacement  : {n_state}");
     eprintln!("  unreachable-by-frozen-config-invariant          : {unreachable}");
     eprintln!("  harness-limited cells                           : {n_harness}");
@@ -2366,7 +2514,8 @@ fn print_scope_summary(
     );
     eprintln!("  [extra] unreachable records                     : cell_4a, cell_4b, cell_5");
     eprintln!("  [extra] observed regimes                        : {regimes:?}");
-    let accounted = n_contention + n_activated + n_state + n_inert + n_harness + n_conf;
+    let accounted =
+        n_contention + n_activated + n_parity_actuated + n_state + n_inert + n_harness + n_conf;
     eprintln!(
         "  [extra] per-cell accounting                     : {accounted} classified / {} built",
         m.fingerprints.len()
@@ -2430,16 +2579,58 @@ fn print_scope_summary(
             m.fingerprints.len() - n_conf
         )
     };
+    // The parity clause is derived LIVE from the three measured concepts, so the claim can never
+    // drift back into calling a pending-at-entry cell "parity-active".
+    let cells_parity_pending: Vec<&str> = m
+        .fingerprints
+        .iter()
+        .filter(|f| f.activation.parity_pending_at_entry > 0)
+        .map(|f| f.cell)
+        .collect();
+    let cells_parity_actuated: Vec<&str> = m
+        .fingerprints
+        .iter()
+        .filter(|f| f.activation.parity_actuated_in_target_turn)
+        .map(|f| f.cell)
+        .collect();
+    let cells_parity_competed: Vec<&str> = m
+        .fingerprints
+        .iter()
+        .filter(|f| f.activation.parity_competed_for_paced_grant())
+        .map(|f| f.cell)
+        .collect();
+    let denom_pending_not_actuated: Vec<&str> = m
+        .fingerprints
+        .iter()
+        .filter(|f| {
+            f.verdict == CellVerdict::ContentionTesting
+                && f.activation.parity_pending_at_entry > 0
+                && !f.activation.parity_actuated_in_target_turn
+        })
+        .map(|f| f.cell)
+        .collect();
+    let parity_clause = format!(
+        "PARITY CLAIM SCOPE (three DISTINCT concepts, never conflated): \
+         parity_pending_at_entry > 0 in {cells_parity_pending:?}; \
+         parity_actuated_in_target_turn in {cells_parity_actuated:?}; \
+         parity_competed_for_paced_grant in {cells_parity_competed:?}. \
+         The denominator cell(s) {denom_pending_not_actuated:?} carry parity work PENDING AT ENTRY \
+         and did NOT actuate parity in the target turn: they are evidence of PROBE-vs-DATA \
+         contention ONLY, and are NOT evidence of target-turn parity actuation and NOT evidence of \
+         parity-vs-DATA contention. Nothing in this run licenses a parity-vs-DATA displacement \
+         claim in either direction: the product plans DATA/ARQ BEFORE plan_fec_parity in the same \
+         turn, so a parity token denial is downstream of the DATA decision, not a competitor to it"
+    );
     eprintln!(
         "  CLAIM SCOPE: Paired runtime oracle confirms zero Probe-caused DATA grant displacement in \
          the contended single-grant regime (OneDataGrant: decision_entry_tokens == burst_cap == \
          {cap} B, with the control arm actually TAKING that grant and EMITTING a DATA identity), as \
          measured in the {build_axis}; {exclusion_clause}. The Gate-5 denominator for this run is \
-         {denominator:?}. ZeroDataGrant cells are Probe-activation / state-invariance controls \
-         ONLY — they are VACUOUS for DATA displacement (the control arm holds no DATA grant to \
-         displace) and are NOT in the Gate-5 denominator. cell_4a / cell_4b / cell_5 are unreachable \
-         by frozen-config arithmetic, not time-swept. This is NOT a completed matrix over all \
-         conceivable regimes."
+         {denominator:?}. {parity_clause}. ZeroDataGrant cells are Probe-activation / \
+         state-invariance / parity-actuation controls ONLY — they are VACUOUS for DATA displacement \
+         (the control arm holds no DATA grant to displace) and are NOT in the Gate-5 denominator. \
+         cell_4a / cell_4b / cell_5 are unreachable by frozen-config arithmetic, not time-swept. \
+         This is NOT a completed matrix over all conceivable regimes."
     );
 
     // ── CLOSURE CRITERION ───────────────────────────────────────────────────────────────────────
@@ -2450,9 +2641,11 @@ fn print_scope_summary(
     // leg's PROVING source is a product surface its MARKING source never reads:
     //   probe    MARK  a CsProbe decision in the target turn
     //            PROVE bootstrap_rtt_diag().probe_emitted ADVANCED across that on_event;
-    //   parity   MARK  pending depth at ENTRY, or a FecParity decision in the target turn
-    //            PROVE diag_fec_actuation().emitted_r_total advanced, or the diag_token_denial()
-    //                  event counter advanced (the parity queue front was reached and refused);
+    //   parity   MARK  parity_pending_at_entry > 0, or parity_actuated_in_target_turn
+    //            PROVE parity_competed_for_paced_grant — diag_fec_actuation().emitted_r_total
+    //                  advanced, or the diag_token_denial() event counter advanced (the parity queue
+    //                  front was reached and refused). NOTE: this proves parity TOUCHED THE PACER,
+    //                  never that parity was ACTUATED and never that it contended WITH DATA;
     //   recovery MARK  a Retransmit decision in the target turn
     //            PROVE the diag_loss() ledger moved across that on_event — a positive cumulative
     //                  loss-declared delta and/or a strict pending_lost depth drop.
@@ -2464,12 +2657,14 @@ fn print_scope_summary(
             if f.probe_emitted && !f.activation.probe_proved() {
                 missing.push("probe (bootstrap_rtt_diag().probe_emitted delta == 0)".to_string());
             }
-            if f.parity_active && !f.activation.parity_proved() {
+            if f.parity_pending_or_actuated && !f.activation.parity_competed_for_paced_grant() {
                 missing.push(format!(
-                    "parity (marked active by pending_at_entry={} / decision_in_turn={} but the \
-                     product counters did not move: emitted_r_total delta={}, token_denial delta={})",
-                    f.activation.parity_mark_pending_at_entry,
-                    f.activation.parity_mark_decision_in_turn,
+                    "parity (marked by parity_pending_at_entry={} / \
+                     parity_actuated_in_target_turn={} but the product counters did not move, so \
+                     parity_competed_for_paced_grant is UNPROVEN: emitted_r_total delta={}, \
+                     token_denial delta={})",
+                    f.activation.parity_pending_at_entry,
+                    f.activation.parity_actuated_in_target_turn,
                     f.activation.parity_proof_emitted_counter_delta,
                     f.activation.parity_proof_token_denial_delta
                 ));
@@ -2482,8 +2677,7 @@ fn print_scope_summary(
                 );
             }
             if f.probe_emitted != f.probe_due {
-                missing
-                    .push("probe emission does not match the frozen probe_due axis".to_string());
+                missing.push("probe emission does not match the frozen probe_due axis".to_string());
             }
             if missing.is_empty() {
                 None
@@ -2596,10 +2790,12 @@ fn print_scope_summary(
     eprintln!(
         "  (2) every reported active cell proves activation in turn: {c2} (each leg PROVED from a \
          product surface its MARKING source never reads — probe: MARK CsProbe decision / PROVE \
-         bootstrap_rtt_diag().probe_emitted delta > 0; parity: MARK pending_fec at entry OR a \
-         FecParity decision / PROVE diag_fec_actuation().emitted_r_total delta > 0 OR \
-         diag_token_denial() event-count delta > 0; recovery: MARK a Retransmit decision / PROVE a \
-         cumulative loss-declared delta OR a pending_lost depth drop across that on_event) \
+         bootstrap_rtt_diag().probe_emitted delta > 0; parity: MARK parity_pending_at_entry > 0 OR \
+         parity_actuated_in_target_turn / PROVE parity_competed_for_paced_grant, i.e. \
+         diag_fec_actuation().emitted_r_total delta > 0 OR diag_token_denial() event-count delta > 0 \
+         — which proves parity TOUCHED THE PACER, never that it was ACTUATED and never that it \
+         contended WITH DATA; recovery: MARK a Retransmit decision / PROVE a cumulative \
+         loss-declared delta OR a pending_lost depth drop across that on_event) \
          recovery legs exercised (cells + cell_5 routes)={recovery_legs_exercised} \
          failures={c2_failures:?}"
     );
@@ -2694,7 +2890,7 @@ fn shipping_default_pacing_confirmation() {
         .zip(on_pacing.fingerprints.iter())
     {
         eprintln!(
-            "  {:<48} rate OFF={} ON={} | cap OFF={} ON={} | front OFF={}/{}B ON={}/{}B | \
+            "  {:<58} rate OFF={} ON={} | cap OFF={} ON={} | front OFF={}/{}B ON={}/{}B | \
              call OFF={} ON={} | dec OFF={} ON={} | avail OFF={} ON={} | actual OFF={} ON={} | \
              verdict OFF={} ON={}",
             a.cell,
