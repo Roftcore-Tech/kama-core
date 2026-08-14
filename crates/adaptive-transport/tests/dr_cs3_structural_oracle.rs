@@ -1,129 +1,126 @@
 //! DR-CS-3 — **PAIRED STRUCTURAL ORACLE** for the gate-5 displacement component.
 //!
 //! Classification: `STRUCTURAL REGRESSION INVARIANT — PACER/GRANT DISPLACEMENT EXPECTED 0 BY
-//! ADDITIVE, UNPACED, DATA-FIRST DESIGN`. Semantics `A — contended grant/token`
-//! (`DR-CS-3-DISPLACEMENT-SEMANTICS-GROUNDING`, md `775f60ef…`).
+//! ADDITIVE, UNPACED, DATA-FIRST DESIGN`; semantics `A — contended grant/token`.
 //!
-//! Two senders are built from **identical frozen inputs** (shipping `Sender` has no `Clone`, and none
-//! is added), their initial state is asserted equal, then one scheduling turn is compared.
+//! **Grounded accessor semantics** (from signatures, not tuple position):
+//! * `diag_loss() = (diag_loss_pkt, diag_loss_time, pending_lost.len())` — `.0`/`.1` are CUMULATIVE
+//!   loss-declared counters; `.2` is an INSTANTANEOUS depth. Loss is declared *and* drained inside
+//!   one `on_event(AckReceived)`, so post-call depth is NOT an activation oracle.
+//! * `diag_pacer() = (rate_bps, tokens, burst_cap)`; tokens are BYTES.
+//! * `try_send(size)`: `tokens >= size` then `tokens -= size` ⇒ **grant cost = packet bytes**.
+//! * pacer debt: `N/A — REMOVED BY DR-CS-2` (no debt concept exists in the product).
 //!
-//! The oracle does NOT hard-code "displacement = 0". It derives the verdict from paired output and
-//! pacer/state differences, so a future token-consuming Probe would fail it with no test change.
+//! Shipping `Sender` has no `Clone` and none is added: both arms are built from identical frozen
+//! inputs and asserted equal before the target event.
 
 use adaptive_transport::sender::{
-    BootstrapRttConfig, Event, OpaqueUnit, Sender, StartupPacingConfig, Timer, TransmitDecision,
-    TransmitKind,
+    AckInfo, BootstrapRttConfig, Event, OpaqueUnit, Sender, StartupPacingConfig, Timer,
+    TransmitDecision, TransmitKind,
 };
+use std::time::Duration;
 
 const MS: u64 = 1_000_000;
 const SEC: u64 = 1_000_000_000;
-const UNIT: u64 = 101;
+const UNIT: u64 = 101; // DATA size, and therefore its exact grant cost in tokens
 
-/// Everything the oracle compares. Read entirely from EXISTING observation accessors.
-#[derive(Debug, PartialEq, Eq, Clone)]
-struct Snap {
-    state: String,
+// ── the ONE shared oracle ───────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OracleInput {
+    /// Ordered NORMAL-packet plan (Probe suffix excluded by construction).
+    plan: Vec<(String, u64, u64, u64)>,
     tokens: u64,
     burst_cap: u64,
     rate: u64,
     inflight: u64,
     sent_logical_len: usize,
-    sent_logical_evicted: u64,
     pending_lost: u64,
 }
 
-fn snap(s: &Sender) -> Snap {
-    let (rate, tokens, burst_cap) = s.diag_pacer();
-    let (_st, _bw, _srtt, _r, inflight) = s.diag_rate();
-    let (sl_len, sl_evicted, _miss) = s.diag_sent_logical();
-    Snap {
-        state: format!("{:?}", s.state()),
-        tokens,
-        burst_cap,
-        rate,
-        inflight,
-        sent_logical_len: sl_len,
-        sent_logical_evicted: sl_evicted,
-        pending_lost: s.diag_loss().2,
-    }
+#[derive(Debug, Default)]
+struct DisplacementReport {
+    missing_or_replaced: Vec<(String, u64, u64, u64)>,
+    order_divergence: usize,
+    length_divergence: i64,
+    pacer_divergence: bool,
+    inflight_or_sentlogical_divergence: bool,
+    /// Total direct-grant displacement verdict.
+    total: usize,
 }
 
-/// Normal (non-Probe) packets, in emission order, as comparable identities.
-fn normal_prefix(out: &[TransmitDecision]) -> Vec<(String, u64, u64, u64)> {
+/// The single comparator used by BOTH the shipping cells and the synthetic control.
+/// Never `zip`-only: it sees length, unmatched prefix/suffix, identity, kind and order.
+fn evaluate_grant_displacement(off: &OracleInput, on: &OracleInput) -> DisplacementReport {
+    let mut r = DisplacementReport {
+        length_divergence: on.plan.len() as i64 - off.plan.len() as i64,
+        pacer_divergence: off.tokens != on.tokens
+            || off.burst_cap != on.burst_cap
+            || off.rate != on.rate,
+        inflight_or_sentlogical_divergence: off.inflight != on.inflight
+            || off.sent_logical_len != on.sent_logical_len
+            || off.pending_lost != on.pending_lost,
+        ..DisplacementReport::default()
+    };
+    // Any OFF normal packet not present in the ON plan was replaced or dropped.
+    for p in &off.plan {
+        if !on.plan.contains(p) {
+            r.missing_or_replaced.push(p.clone());
+        }
+    }
+    // Order divergence over the common prefix.
+    for (a, b) in off.plan.iter().zip(on.plan.iter()) {
+        if a != b {
+            r.order_divergence += 1;
+        }
+    }
+    r.total = r.missing_or_replaced.len()
+        + r.order_divergence
+        + r.length_divergence.unsigned_abs() as usize
+        + usize::from(r.pacer_divergence)
+        + usize::from(r.inflight_or_sentlogical_divergence);
+    r
+}
+
+fn normal_plan(out: &[TransmitDecision]) -> Vec<(String, u64, u64, u64)> {
     out.iter()
         .filter(|d| d.kind != TransmitKind::CsProbe)
         .map(|d| (format!("{:?}", d.kind), d.seq, d.unit_id, d.size))
         .collect()
 }
 
-fn probes(out: &[TransmitDecision]) -> Vec<&TransmitDecision> {
-    out.iter().filter(|d| d.kind == TransmitKind::CsProbe).collect()
+fn input(s: &Sender, out: &[TransmitDecision]) -> OracleInput {
+    let (rate, tokens, burst_cap) = s.diag_pacer();
+    let (_st, _bw, _sr, _r, inflight) = s.diag_rate();
+    let (sl, _ev, _m) = s.diag_sent_logical();
+    OracleInput {
+        plan: normal_plan(out),
+        tokens,
+        burst_cap,
+        rate,
+        inflight,
+        sent_logical_len: sl,
+        pending_lost: s.diag_loss().2,
+    }
 }
 
-/// Deterministic sender from frozen inputs. `bootstrap_on` is the ONLY axis.
-#[allow(deprecated)] // legacy parity enqueue is the bounded way to make pending_fec non-empty
-fn build(bootstrap_on: bool, c: &Cell) -> (Sender, Vec<TransmitDecision>) {
-    let mut s = Sender::new();
-    s.set_startup_pacing_init(StartupPacingConfig { enabled: false }); // freeze the pacing axis
-    s.set_bootstrap_rtt(BootstrapRttConfig { enabled: bootstrap_on });
-    if c.extra == Extra::ParityPending {
-        s.set_manual_fec_enabled(true).expect("manual FEC authority");
-    }
-    let mut pre = Vec::new();
-    for i in 0..c.units {
-        pre.extend(s.on_event(
-            Event::AppData(OpaqueUnit { id: 1000 + i, size: UNIT }),
-            0,
-        ));
-    }
-    // Advance in fixed steps so both arms see an identical clock sequence.
-    let mut t = 100 * MS;
-    let mut seeded = false;
-    while t <= c.advance_to_ns {
-        pre.extend(s.on_event(Event::TimerFired(Timer::Pto), t));
-        // Create the cell's extra state ONCE, identically in both arms.
-        if !seeded && t >= c.advance_to_ns / 2 {
-            match c.extra {
-                Extra::RecoveryPending => {
-                    // ACK a LATER seq only, leaving an earlier one below largest_acked ⇒ real loss.
-                    let sent: Vec<u64> = pre
-                        .iter()
-                        .filter(|d| d.kind == TransmitKind::Data)
-                        .map(|d| d.seq)
-                        .collect();
-                    if sent.len() >= 2 {
-                        pre.extend(s.on_event(
-                            Event::AckReceived(adaptive_transport::sender::AckInfo {
-                                acked_seqs: sent[1..].to_vec(),
-                                ack_delay: std::time::Duration::from_millis(1),
-                            }),
-                            t,
-                        ));
-                        seeded = true;
-                    }
-                }
-                Extra::ParityPending => {
-                    for esi in 0..3u16 {
-                        s.enqueue_fec_parity(9, esi, 400);
-                    }
-                    seeded = true;
-                }
-                Extra::None => seeded = true,
-            }
-        }
-        t += 100 * MS;
-    }
-    (s, pre)
+/// `(probe_due, token_regime, queued_data, recovery_active, parity_active, target_event_kind)`
+#[derive(Debug, PartialEq, Eq)]
+struct Fingerprint {
+    probe_due: bool,
+    grants_available: u64,
+    queued_data: u64,
+    recovery_active: bool,
+    parity_active: bool,
+    target_event: &'static str,
 }
 
-/// What extra product state the cell must genuinely create.
-#[derive(PartialEq, Eq, Clone, Copy)]
-enum Extra {
-    None,
-    /// A real ACK gap so loss is declared and `pending_lost > 0` (RecoverArq path).
-    RecoveryPending,
-    /// Real queued FEC parity via the manual authority (`pending_fec > 0`).
-    ParityPending,
+// ── cells ───────────────────────────────────────────────────────────────────────────────────────
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum Target {
+    Tick,
+    AckGap,
 }
 
 struct Cell {
@@ -131,149 +128,193 @@ struct Cell {
     units: u64,
     advance_to_ns: u64,
     probe_due_expected: bool,
-    extra: Extra,
+    target: Target,
+    parity_before_target: bool,
 }
 
-/// The six cells, frozen before results.
 const CELLS: [Cell; 6] = [
-    Cell { name: "1 probe NOT due + queued DATA + one grant",     units: 8,  advance_to_ns: SEC,                probe_due_expected: false, extra: Extra::None },
-    Cell { name: "2 probe due + queued DATA + zero token",        units: 8,  advance_to_ns: 3 * SEC,            probe_due_expected: true,  extra: Extra::None },
-    Cell { name: "3 probe due + queued DATA + exactly one grant", units: 8,  advance_to_ns: 3 * SEC + 300 * MS, probe_due_expected: true,  extra: Extra::None },
-    Cell { name: "4 probe due + queued DATA + several grants",    units: 24, advance_to_ns: 9 * SEC,            probe_due_expected: true,  extra: Extra::None },
-    Cell { name: "5 probe due + DATA + recovery pending",         units: 24, advance_to_ns: 21 * SEC,           probe_due_expected: true,  extra: Extra::RecoveryPending },
-    Cell { name: "6 probe due + DATA + parity pending",           units: 24, advance_to_ns: 45 * SEC,           probe_due_expected: true,  extra: Extra::ParityPending },
+    Cell { name: "1 probe NOT due + queued DATA",           units: 8,  advance_to_ns: SEC,       probe_due_expected: false, target: Target::Tick,   parity_before_target: false },
+    Cell { name: "2 probe due + queued DATA + zero grant",  units: 8,  advance_to_ns: 3 * SEC - 100 * MS,  probe_due_expected: true,  target: Target::Tick,   parity_before_target: false },
+    Cell { name: "3 probe due + queued DATA + one grant",   units: 8,  advance_to_ns: 9 * SEC - 100 * MS,  probe_due_expected: true,  target: Target::Tick,   parity_before_target: false },
+    Cell { name: "4 probe due + queued DATA + many grants", units: 24, advance_to_ns: 21 * SEC - 100 * MS, probe_due_expected: true,  target: Target::Tick,   parity_before_target: false },
+    Cell { name: "5 probe due + DATA + recovery in-turn",   units: 24, advance_to_ns: 21 * SEC - 100 * MS, probe_due_expected: true,  target: Target::AckGap, parity_before_target: false },
+    Cell { name: "6 probe due + DATA + parity pending",     units: 24, advance_to_ns: 45 * SEC - 100 * MS, probe_due_expected: true,  target: Target::Tick,   parity_before_target: true },
 ];
 
-/// **SHIPPING NEGATIVE FIXTURE.** For every frozen cell: identical initial state, DATA genuinely
-/// queued, and — where the cell says so — a Probe genuinely emitted. The normal-packet prefix and
-/// the whole pacer/inflight/sent_logical state must be EXACTLY equal, and the Probe may only appear
-/// as a suffix carrying no send_record.
+/// Build one arm up to (but not including) the target event.
+#[allow(deprecated)]
+fn build(bootstrap_on: bool, c: &Cell) -> (Sender, Vec<TransmitDecision>) {
+    let mut s = Sender::new();
+    s.set_startup_pacing_init(StartupPacingConfig { enabled: false });
+    s.set_bootstrap_rtt(BootstrapRttConfig { enabled: bootstrap_on });
+    if c.parity_before_target {
+        s.set_manual_fec_enabled(true).expect("manual FEC authority");
+    }
+    let mut pre = Vec::new();
+    for i in 0..c.units {
+        pre.extend(s.on_event(Event::AppData(OpaqueUnit { id: 1000 + i, size: UNIT }), 0));
+    }
+    let mut t = 100 * MS;
+    while t <= c.advance_to_ns {
+        pre.extend(s.on_event(Event::TimerFired(Timer::Pto), t));
+        t += 100 * MS;
+    }
+    // Parity is staged IMMEDIATELY before the target turn, identically in both arms.
+    if c.parity_before_target {
+        for esi in 0..3u16 {
+            s.enqueue_fec_parity(9, esi, 400);
+        }
+    }
+    (s, pre)
+}
+
 #[test]
 fn paired_structural_oracle_six_cells() {
-    let mut exercised = 0usize;
-    let mut probe_cells = 0usize;
-    let mut assertions = 0usize;
+    let mut fingerprints: Vec<(&str, Fingerprint)> = Vec::new();
+    let (mut assertions, mut activations) = (0usize, 0usize);
 
     for c in &CELLS {
-        // Two senders from identical frozen inputs; bootstrap is the only axis.
         let (mut off, off_pre) = build(false, c);
         let (mut on, on_pre) = build(true, c);
 
         // PRECONDITION: identical starting point.
-        assert_eq!(snap(&off), snap(&on), "{}: initial state must be identical", c.name);
-        assert_eq!(
-            normal_prefix(&off_pre),
-            normal_prefix(&on_pre),
-            "{}: pre-turn normal traffic must be identical",
-            c.name
-        );
-        assertions += 2;
-
-        // PRECONDITION: DATA genuinely queued and unsent (fewer emitted than fed).
-        let emitted_data = off_pre.iter().filter(|d| d.kind == TransmitKind::Data).count() as u64;
-        assert!(
-            emitted_data < c.units,
-            "{}: fixture must leave DATA queued (emitted {emitted_data} of {})",
-            c.name,
-            c.units
-        );
+        assert_eq!(input(&off, &off_pre), input(&on, &on_pre), "{}: identical start", c.name);
         assertions += 1;
 
-        // ACTIVATION: the cell's extra product state must genuinely exist.
-        match c.extra {
-            Extra::RecoveryPending => {
-                assert!(off.diag_loss().2 > 0, "{}: recovery must be pending", c.name);
-                assertions += 1;
-            }
-            Extra::ParityPending => {
-                let d = off.diag_fec_actuation();
-                assert!(d.enqueued_r_total > 0, "{}: parity must be enqueued", c.name);
-                assertions += 1;
-            }
-            Extra::None => {}
+        // Measured token regime at the target instant (grant cost = UNIT bytes).
+        let (_rate, tokens, _cap) = off.diag_pacer();
+        let grants = tokens / UNIT;
+        let emitted = off_pre.iter().filter(|d| d.kind == TransmitKind::Data).count() as u64;
+        let queued = c.units - emitted;
+        assert!(queued > 0, "{}: DATA must remain queued (emitted {emitted}/{})", c.name, c.units);
+        assertions += 1;
+
+        // Cell-2/3/4 token-regime claims must be MEASURED, not named.
+        eprintln!("PRE {} tokens={tokens} grants={grants} queued={queued}", c.name);
+        match c.name.chars().next().unwrap() {
+            '2' => { assert_eq!(grants, 0, "{}: must have zero grants (tokens={tokens})", c.name); assertions += 1; }
+            '3' => { assert_eq!(grants, 1, "{}: must have exactly one grant (tokens={tokens})", c.name); assertions += 1; }
+            '4' => { assert!(grants >= 2, "{}: must have >=2 grants (tokens={tokens})", c.name); assertions += 1; }
+            _ => {}
         }
 
-        // One scheduling turn at the same instant on both arms.
+        let loss_before = off.diag_loss();
         let t = c.advance_to_ns + 100 * MS;
-        let off_out = off.on_event(Event::TimerFired(Timer::Pto), t);
-        let on_out = on.on_event(Event::TimerFired(Timer::Pto), t);
 
-        // ACTIVATION: the cell's probe-due expectation must actually hold.
-        let on_probes = probes(&on_out);
-        let probe_seen = !on_probes.is_empty() || on.bootstrap_rtt_diag().probe_emitted > 0;
+        // The TARGET event, delivered identically to both arms.
+        let (off_out, on_out) = match c.target {
+            Target::Tick => (
+                off.on_event(Event::TimerFired(Timer::Pto), t),
+                on.on_event(Event::TimerFired(Timer::Pto), t),
+            ),
+            Target::AckGap => {
+                let sent: Vec<u64> = off_pre
+                    .iter()
+                    .filter(|d| d.kind == TransmitKind::Data)
+                    .map(|d| d.seq)
+                    .collect();
+                assert!(sent.len() >= 3, "{}: need >=3 sent DATA for a gap", c.name);
+                let gap: Vec<u64> = sent[1..].to_vec(); // withhold the FIRST ⇒ real gap
+                (
+                    off.on_event(Event::AckReceived(AckInfo { acked_seqs: gap.clone(), ack_delay: Duration::from_millis(1) }), t),
+                    on.on_event(Event::AckReceived(AckInfo { acked_seqs: gap, ack_delay: Duration::from_millis(1) }), t),
+                )
+            }
+        };
+
+        // ACTIVATION — proven from the TARGET turn, never from a stale cumulative alone.
+        let probe_active = on_out.iter().any(|d| d.kind == TransmitKind::CsProbe);
+        assert_eq!(probe_active, c.probe_due_expected, "{}: probe activation", c.name);
+        assertions += 1;
+        if probe_active { activations += 1; }
+
+        let loss_after = off.diag_loss();
+        let recovery_active = c.target == Target::AckGap
+            && (loss_after.0 > loss_before.0
+                || loss_after.1 > loss_before.1
+                || off_out.iter().any(|d| d.kind == TransmitKind::Retransmit));
+        if c.target == Target::AckGap {
+            assert!(
+                recovery_active,
+                "{}: recovery must activate in the target turn (loss {loss_before:?} -> {loss_after:?})",
+                c.name
+            );
+            assertions += 1;
+            activations += 1;
+        }
+
+        let parity_active = off_out.iter().any(|d| d.kind == TransmitKind::FecParity);
+        if c.parity_before_target {
+            assert!(parity_active, "{}: parity must emit in the target turn", c.name);
+            assertions += 1;
+            activations += 1;
+        }
+
+        // THE ORACLE — one shared comparator, verdict derived not hard-coded.
+        let rep = evaluate_grant_displacement(&input(&off, &off_out), &input(&on, &on_out));
         assert_eq!(
-            probe_seen, c.probe_due_expected,
-            "{}: probe activation must match the frozen cell (seen={probe_seen})",
+            rep.total, 0,
+            "{}: shipping displacement must be 0, got {rep:?}",
             c.name
         );
         assertions += 1;
-        if c.probe_due_expected {
-            probe_cells += 1;
-        }
 
-        // ORACLE — derived, not hard-coded: the normal-packet plan and the pacer/state must be
-        // identical, so no grant was diverted.
-        assert_eq!(
-            normal_prefix(&off_out),
-            normal_prefix(&on_out),
-            "{}: DATA/recovery/parity prefix diverged ⇒ grant displacement",
-            c.name
-        );
-        assert_eq!(
-            snap(&off),
-            snap(&on),
-            "{}: pacer/inflight/sent_logical state diverged ⇒ grant displacement",
-            c.name
-        );
-        assertions += 2;
-
-        // Probe may only be a suffix, and must carry no send record.
-        for p in &on_probes {
-            assert!(p.send_record.is_none(), "{}: probe must carry no send_record", c.name);
+        // Probe may only be a suffix and must carry no send record.
+        for p in on_out.iter().filter(|d| d.kind == TransmitKind::CsProbe) {
+            assert!(p.send_record.is_none(), "{}: probe carries no send_record", c.name);
             assertions += 1;
         }
-        let normal_on = normal_prefix(&on_out).len();
-        assert_eq!(
-            on_out[..normal_on].iter().filter(|d| d.kind == TransmitKind::CsProbe).count(),
-            0,
-            "{}: probes must be appended after all normal packets, never interleaved",
+        let n = normal_plan(&on_out).len();
+        assert!(
+            on_out[..n].iter().all(|d| d.kind != TransmitKind::CsProbe),
+            "{}: probes must be appended after all normal packets",
             c.name
         );
         assertions += 1;
 
-        exercised += 1;
+        fingerprints.push((c.name, Fingerprint {
+            probe_due: probe_active,
+            grants_available: grants,
+            queued_data: queued,
+            recovery_active,
+            parity_active,
+            target_event: match c.target { Target::Tick => "Pto", Target::AckGap => "AckGap" },
+        }));
     }
 
-    assert_eq!(exercised, CELLS.len(), "all frozen cells must be exercised");
-    assert!(probe_cells >= 5, "at least the five probe-due cells must have activated");
+    // RULE-8 — semantic cell uniqueness.
+    for i in 0..fingerprints.len() {
+        for j in (i + 1)..fingerprints.len() {
+            assert_ne!(
+                fingerprints[i].1, fingerprints[j].1,
+                "RULE-8 SEMANTIC CELL UNIQUENESS FAILURE: {} and {} share a fingerprint",
+                fingerprints[i].0, fingerprints[j].0
+            );
+        }
+    }
+
+    for (n, f) in &fingerprints {
+        eprintln!("CELL {n} -> {f:?}");
+    }
     eprintln!(
-        "ORACLE cells_exercised={exercised}/{} probe_active_cells={probe_cells} assertions={assertions}",
+        "ORACLE exercised={} unreachable=0 harness_limited=0 activations={activations} assertions={assertions} shipping_displacement_per_cell=0",
         CELLS.len()
     );
 }
 
-/// **SYNTHETIC POSITIVE CONTROL — oracle sensitivity only.** Models the DR-CS-2 debiting behaviour:
-/// a treatment packet consumes the same finite grant a DATA would have taken. The SAME comparison
-/// must report non-zero displacement. This is not shipping behaviour and is not product evidence.
+/// **SYNTHETIC POSITIVE CONTROL** — DR-CS-2 debiting, evaluated by the SAME helper.
 #[test]
-fn synthetic_debiting_treatment_is_caught_by_the_same_oracle() {
-    // OFF: the grant goes to DATA.
-    let off_out: Vec<(String, u64, u64, u64)> =
-        vec![("Data".into(), 0, 1000, UNIT), ("Data".into(), 1, 1001, UNIT)];
-    // ON: a treatment packet consumed one grant, substituting for a DATA (DR-CS-2: tx 20→18, dup 0→2).
-    let on_out: Vec<(String, u64, u64, u64)> =
-        vec![("Data".into(), 0, 1000, UNIT), ("Duplicate".into(), 1, 1001, UNIT)];
+fn synthetic_debiting_is_caught_by_the_same_oracle() {
+    let base = |plan: Vec<(String, u64, u64, u64)>, tokens: u64| OracleInput {
+        plan, tokens, burst_cap: 1200, rate: 31, inflight: 0, sent_logical_len: 0, pending_lost: 0,
+    };
+    // OFF: the single grant goes to DATA.
+    let off = base(vec![("Data".into(), 0, 1000, UNIT)], 0);
+    // ON: a treatment packet consumed that same grant instead (tx 20->18, dup 0->2).
+    let on = base(vec![("Duplicate".into(), 0, 1000, UNIT)], 0);
 
-    // Same derivation the shipping oracle uses: compare the normal-packet plan.
-    let displaced = off_out
-        .iter()
-        .zip(on_out.iter())
-        .filter(|(a, b)| a != b)
-        .count();
-    assert!(
-        displaced > 0,
-        "the oracle must catch a treatment packet taking a DATA's grant"
-    );
-    assert_eq!(displaced, 1, "exactly one grant was substituted");
-    eprintln!("SYNTHETIC-SENSITIVITY displaced={displaced} (oracle proof only, not product evidence)");
+    let rep = evaluate_grant_displacement(&off, &on);
+    assert_eq!(rep.missing_or_replaced.len(), 1, "the DATA was replaced");
+    assert_eq!(rep.total, 2, "one replacement + one order divergence"); // exact, derived
+    eprintln!("SYNTHETIC displacement_total={} report={rep:?}", rep.total);
 }

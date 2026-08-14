@@ -680,3 +680,62 @@ cap (from code-derived finite bounds, not `889 × safety factor`) with `size_of:
 worst-case memory · §7 non-vacuous channel controls · §8 neutrality 32×18 · fresh-worktree gate
 12/12 · authoritative §12.6 budget with measured CPU and 1/2/4-worker contention · then the 512
 OFF-only selection.
+
+## §1 Accessor semantics — GROUNDED from signatures
+
+| accessor | field | semantics |
+|---|---|---|
+| `diag_loss()` | `.0` `diag_loss_pkt` · `.1` `diag_loss_time` | **CUMULATIVE** loss-declared counters |
+| | `.2` `pending_lost.len()` | **INSTANTANEOUS** depth |
+| `diag_pacer()` | `(rate_bps, tokens, burst_cap)` | tokens in **BYTES** |
+| `try_send(size)` | `tokens >= size` then `tokens -= size` | **grant cost = packet bytes** (DATA = 101 B) |
+| `diag_fec_actuation().enqueued_r_total` | — | **CUMULATIVE** ("was enqueued at some point") |
+| pacer debt | — | `N/A — REMOVED BY DR-CS-2` |
+
+**§2 event-lifecycle finding:** loss is declared **and** drained inside a single
+`on_event(AckReceived)` (ACK → `queue_losses` → `update_state` → phase-4 `schedule_transmit` →
+`plan_arq_retransmits`). So a post-call `pending_lost == 0` does **not** mean recovery did not occur —
+my earlier cell-5 activation check was measuring the wrong thing. Binding activation evidence is the
+cumulative counters and/or a real `TransmitKind::Retransmit` in the **target-turn output**.
+
+## §6 ONE shared oracle — done
+
+`evaluate_grant_displacement(off, on) -> DisplacementReport` is now the single comparator used by
+**both** the shipping cells and the synthetic control. It is not `zip`-only: it reports
+`missing_or_replaced` identities, `order_divergence`, `length_divergence`, `pacer_divergence`,
+`inflight_or_sentlogical_divergence` and a derived `total`. Probe suffix is excluded from the normal
+plan by construction; structural zero is never hard-coded.
+
+**Synthetic control PASS through the shared helper:** DR-CS-2 debiting yields
+`missing_or_replaced=[("Data",0,1000,101)]`, `order_divergence=1`, `total=2` — exact and derived.
+
+## §2/§4 six-cell matrix — RED, in progress (no vacuous pass)
+
+Corrected this turn: cells now deliver their **target event** (Pto tick or ACK-gap) with both arms
+built identically up to that instant, and `advance_to_ns` was moved to just before each ladder step
+(3/9/21/45 s) so the Probe activates **in** the target turn rather than during the pre-loop.
+
+**Measured token regimes (evidence-driven, names not yet verified):**
+
+```
+cell 1  tokens=31  grants=0  queued=7
+cell 2  tokens=89  grants=0  queued=7
+cell 3  tokens=71  grants=0  queued=5   ← named "one grant", measured ZERO
+```
+
+**RULE-8 status: cells 2 and 3 currently share a token regime (`grants=0`), so their names are not
+yet justified by measurement.** The matrix is **not** reported complete and no cell is claimed. Under
+the 31 B/s PreConverge floor, tokens accumulate slowly and are consumed at 101 B per DATA, so
+reaching a stable 1-grant and ≥2-grant regime needs the fixture timing tuned to real token arithmetic
+— which is permitted (fixture timing may be corrected to genuinely construct frozen cell semantics)
+but must not become inventing new cells or new gates.
+
+Cells 4–6 were not reached this turn.
+
+## Still open in M2
+
+Cell 2/3/4 token-regime construction (or `UNCONSTRUCTIBLE` classification with lineage) · cell 5
+recovery activation via cumulative counters · cell 6 parity in the target turn · RULE-8 uniqueness ·
+then the directional channel event log, derived cap, non-vacuous channel controls, 32×18 neutrality,
+gate 12/12, authoritative §12.6 budget with measured user/system CPU and 1/2/4-worker contention, and
+finally the 512 OFF-only selection.
