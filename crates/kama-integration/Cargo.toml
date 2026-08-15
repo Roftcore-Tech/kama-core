@@ -79,3 +79,14 @@ required-features = ["experimental-fs-harness"]
 [[example]]
 name = "dr_arqtail_r2a"
 required-features = ["experimental-fs-harness"]
+
+# FS-FUSION-CELL-1: the (tail-capable ARQ, r>0) cell and the ARQ-cost attribution that goes with it.
+# Both drive the fs_campaign spine, so they need the same feature the other spine runners need —
+# without this, `cargo build --all-targets` on the default feature set fails to resolve fs_harness.
+[[example]]
+name = "fs_fusion_cell"
+required-features = ["experimental-fs-harness"]
+
+[[example]]
+name = "fs_arq_contribution"
+required-features = ["experimental-fs-harness"]

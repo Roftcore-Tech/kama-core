@@ -1013,6 +1013,11 @@ pub struct Sender {
     next_seq: u64,
     inflight_bytes: u64,
     inflight: BTreeMap<u64, InflightPacket>,
+    /// FS-CAL-2 v3 §3 loss-STRUCTURE estimator. OBSERVATION-ONLY: it is fed by the same events the
+    /// engine already processes and is read by nothing except `diag_loss_structure`. No decision,
+    /// no ordering, no byte on the wire depends on it. It exists because Q17 and FS-FUSION-CELL-1
+    /// both showed that loss RATE cannot gate FEC and loss STRUCTURE is the missing input.
+    fate_estimator: crate::fate_estimator::FateEstimator,
     tx_queue: VecDeque<OpaqueUnit>,
     pending_lost: VecDeque<LostRec>, // §5 kayıp seq'ler → RECOVER_ARQ retransmit / RECOVER_FWD dup
     // DR-ARQ-PRODUCT-TAIL-1: bounded tail-loss recovery (default OFF; INV-CS-4 supersession). Decision logic lives
@@ -1237,10 +1242,11 @@ impl Sender {
             next_seq: 0,
             inflight_bytes: 0,
             inflight: BTreeMap::new(),
+            fate_estimator: crate::fate_estimator::FateEstimator::new(),
             tx_queue: VecDeque::new(),
             pending_lost: VecDeque::new(),
             tail_recovery: TailRecovery::new(TailRecoveryConfig::default()), // default OFF
-            startup_pacing: StartupPacingConfig::default(), // default OFF
+            startup_pacing: StartupPacingConfig::default(),                  // default OFF
             startup_pacing_floor_bps: 0,
             startup_floor_armed_once: false,
             startup_base_seen: false,
@@ -1414,7 +1420,11 @@ impl Sender {
     /// DR-RATE-RAMP-1 (observation-only): `(pacer_rate_bps, tokens, burst_cap)`.
     #[must_use]
     pub fn diag_pacer(&self) -> (u64, u64, u64) {
-        (self.pacer.rate(), self.pacer.tokens(), self.pacer.burst_cap())
+        (
+            self.pacer.rate(),
+            self.pacer.tokens(),
+            self.pacer.burst_cap(),
+        )
     }
 
     /// DR-RATE-RAMP-1 (observation-only): BtlBw filter acceptance lineage
@@ -1438,6 +1448,19 @@ impl Sender {
         self.tail_recovery = TailRecovery::new(cfg);
         self.tail_probe_pending = None;
         self.tail_probe_cancelled = 0;
+    }
+
+    /// FS-CAL-2 v3 §3 loss-STRUCTURE snapshot (observation-only).
+    ///
+    /// Returns the estimator's current window features. `burst_delta_ppm = p11 - p01` is the
+    /// quantity Q17 proved is missing from the FEC gate: at one loss RATE, IID structure wants
+    /// coding and burst structure wants ARQ, so a rate-only threshold cannot separate them.
+    ///
+    /// Nothing in the engine reads this. It is exposed so the input exists and can be measured
+    /// before any rule is allowed to consume it — see reports/fs-fusion-cell-1/Q18-CALIBRATION-DEFECT.md.
+    #[must_use]
+    pub fn diag_loss_structure(&self) -> crate::fate_estimator::WindowFeatures {
+        self.fate_estimator.snapshot()
     }
 
     /// DR-ARQ-PRODUCT-TAIL-1 diagnostics (observation-only): (probes, probe_bytes, spurious, spurious_bytes).
@@ -1725,7 +1748,11 @@ impl Sender {
         // iş); bunlar batch dönüşünde meşru olarak due olabilir (ör. token-denied dup kaydı), bu
         // yüzden C2'nin kümesi GENİŞLETİLMEZ.
         debug_assert!(
-            self.cs_wakeup.iter().map(|&(d, _)| d).min().is_none_or(|w| w > now_ns),
+            self.cs_wakeup
+                .iter()
+                .map(|&(d, _)| d)
+                .min()
+                .is_none_or(|w| w > now_ns),
             "C2-ihlali: batch-dönüşünde due-exposed-timer kaldı"
         );
         out
@@ -2240,6 +2267,12 @@ impl Sender {
             }
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                // Observation-only success evidence, ORIGINALS ONLY — the same Karn discipline the
+                // RTT sampler applies two lines below. A retransmit or duplicate proves nothing
+                // about the original's fate, and feeding one would corrupt the structure counters.
+                if p.origin == TransmitKind::Data {
+                    self.fate_estimator.on_original_ack(p.unit.id);
+                }
                 acked_units.push(p.unit.id); // §3.3-B stop koşulu: teyit edilen birimin kopyaları iptal
                                              // DR-S5-3 [SALT-LOGICAL — BtlBw'ye DEĞMEZ]: wire-ACK hangi-logical-paketi teyit-etti?
                                              // Ayrı-defter (bounded); bw_sampler/btlbw'yi OKUMAZ/YAZMAZ (N8: recovered≠ACK tabanı).
@@ -2576,6 +2609,15 @@ impl Sender {
                     self.bw_sampler.forget_in_flight();
                 }
                 if p.origin != TransmitKind::Duplicate {
+                    // Observation-only: same original-loss evidence the ARQ path acts on, with the
+                    // reordering guard taken from the PRODUCT bounded-PTO symbol rather than
+                    // re-derived, so the estimator can never disagree with the tail path about
+                    // what counts as a loss.
+                    let guard = self
+                        .tail_recovery
+                        .base_pto_ns(self.rtt.srtt().map(dur_ns), dur_ns(self.rtt.rttvar()));
+                    self.fate_estimator
+                        .on_loss_evidence(p.unit.id, now_ns, guard);
                     self.pending_lost.push_back(LostRec {
                         seq,
                         unit: p.unit,
@@ -6101,7 +6143,6 @@ mod tests {
         );
     }
 
-
     // ── DR-RATE-RAMP-2 §1A.2: binding contract for the bootstrap startup floor ──────────────
     // Supersession record: reports/fs-cal-2/v3.5/INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md
 
@@ -6135,10 +6176,17 @@ mod tests {
         let btlbw = s.btlbw.btlbw();
         let expect_before = crate::rate::Gain::STARTUP.apply(btlbw).max(floor);
         let rate_before = s.pacer.rate();
-        assert_eq!(rate_before, expect_before, "kurulum: max(phase_rate, floor) exact");
+        assert_eq!(
+            rate_before, expect_before,
+            "kurulum: max(phase_rate, floor) exact"
+        );
         // loss declaration
         s.on_event(ack(&[2, 3, 4]), 1_200 * MS);
-        assert_eq!(s.state(), SenderState::RecoverArq, "kayıp-ilanı → recovery-overlay");
+        assert_eq!(
+            s.state(),
+            SenderState::RecoverArq,
+            "kayıp-ilanı → recovery-overlay"
+        );
         let btlbw_after = s.btlbw.btlbw();
         let floor_after = s.startup_pacing_floor_bps();
         let expect_after = crate::rate::Gain::STARTUP
@@ -6149,10 +6197,17 @@ mod tests {
             expect_after,
             "KİLİT: kayıp-ilanı faz-gain'ini DEĞİŞTİRMEZ (rate = max(2.885×btlbw, floor) KALIR)"
         );
-        assert!(s.pacer.rate() >= rate_before.min(expect_after), "loss must never CUT the rate");
+        assert!(
+            s.pacer.rate() >= rate_before.min(expect_after),
+            "loss must never CUT the rate"
+        );
         // recovery exit still returns to the Startup BASE (ramp not killed)
         s.on_event(ack(&[1]), 1_300 * MS);
-        assert_eq!(s.state(), SenderState::Startup, "recovery-çıkışı base'e döner");
+        assert_eq!(
+            s.state(),
+            SenderState::Startup,
+            "recovery-çıkışı base'e döner"
+        );
     }
 
     #[test]
@@ -6160,9 +6215,16 @@ mod tests {
         let mut s = floor_on();
         s.on_event(Event::AppData(unit(200)), 0);
         assert_eq!(s.state(), SenderState::PreConverge);
-        assert_eq!(s.startup_pacing_floor_bps(), 0, "not armed while in PreConverge");
+        assert_eq!(
+            s.startup_pacing_floor_bps(),
+            0,
+            "not armed while in PreConverge"
+        );
         s.on_event(ack(&[0]), 500 * MS); // the ONLY arming transition
-        assert!(s.startup_pacing_floor_bps() > 0, "armed exactly on PreConverge→Startup");
+        assert!(
+            s.startup_pacing_floor_bps() > 0,
+            "armed exactly on PreConverge→Startup"
+        );
     }
 
     #[test]
@@ -6231,20 +6293,29 @@ mod tests {
         // (RELEASE BRANCH 2 — "the natural rate catches up" — is pinned end-to-end on a real flow by
         //  kama-integration `startup_pacing_floor_is_bootstrap_only_and_released`.)
         let t = 1_400u64;
-        assert!(s.base_is_startup, "ramp is in progress while the floor is armed");
+        assert!(
+            s.base_is_startup,
+            "ramp is in progress while the floor is armed"
+        );
         // Fire the EXISTING Startup exit condition: plateau ⇒ update_state moves Startup → Drain.
         s.plateau_reached = true;
         s.on_event(Event::TimerFired(Timer::Pto), t * MS);
-        assert_eq!(s.state(), SenderState::Drain, "startup ramp must have ended (post-ramp phase)");
-        assert_eq!(s.startup_pacing_floor_bps(), 0, "floor must be released deterministically");
+        assert_eq!(
+            s.state(),
+            SenderState::Drain,
+            "startup ramp must have ended (post-ramp phase)"
+        );
+        assert_eq!(
+            s.startup_pacing_floor_bps(),
+            0,
+            "floor must be released deterministically"
+        );
         // and it may NEVER re-arm (no Plateau/ProbeBW re-entry)
         for i in 0..50u64 {
             s.on_event(Event::TimerFired(Timer::Pto), (t + 100 + i * 10) * MS);
             assert_eq!(s.startup_pacing_floor_bps(), 0, "floor must never re-arm");
         }
     }
-
-
 
     // ── DR-CS-3 §6: shipping bootstrap RTT probe — sender-side security/budget contract ──────
     // Contract: reports/dr-cs-3/DR-CS-3-BOOTSTRAP-RTT-CONTRACT.md
@@ -6274,7 +6345,9 @@ mod tests {
     }
 
     fn probes(v: &[TransmitDecision]) -> Vec<&TransmitDecision> {
-        v.iter().filter(|d| d.kind == TransmitKind::CsProbe).collect()
+        v.iter()
+            .filter(|d| d.kind == TransmitKind::CsProbe)
+            .collect()
     }
 
     #[test]
@@ -6285,10 +6358,17 @@ mod tests {
         // `experimental-cold-start` build the LEGACY experimental ladder is a different
         // implementation of the same protocol and still runs when DR-CS-3 is OFF.
         assert_eq!(s.bootstrap_rtt_diag().arm, 0, "OFF must never arm");
-        assert_eq!(s.bootstrap_rtt_diag().probe_emitted, 0, "OFF must never emit");
+        assert_eq!(
+            s.bootstrap_rtt_diag().probe_emitted,
+            0,
+            "OFF must never emit"
+        );
         assert_eq!(s.bootstrap_budget_remaining(), BS_TX_HARD_BUDGET);
         #[cfg(not(feature = "experimental-cold-start"))]
-        assert!(probes(&out).is_empty(), "shipping build: OFF emits no probe at all");
+        assert!(
+            probes(&out).is_empty(),
+            "shipping build: OFF emits no probe at all"
+        );
         let _ = out;
     }
 
@@ -6299,10 +6379,16 @@ mod tests {
         let d = s.bootstrap_rtt_diag();
         let p = probes(&out);
         assert_eq!(d.arm, 1, "armed exactly once");
-        assert!(p.len() <= BS_FIRES_NS.len(), "at most one probe per ladder step");
+        assert!(
+            p.len() <= BS_FIRES_NS.len(),
+            "at most one probe per ladder step"
+        );
         assert_eq!(d.probe_emitted as usize, p.len());
         // poll/mint separation: the PTO tick fired 60 times, the ladder minted at most 4
-        assert!(d.step_edge <= BS_FIRES_NS.len() as u64, "edge count is bounded by the ladder");
+        assert!(
+            d.step_edge <= BS_FIRES_NS.len() as u64,
+            "edge count is bounded by the ladder"
+        );
         // every probe carries a DISTINCT monotonic generation
         let mut seqs: Vec<u64> = p.iter().map(|d| d.seq).collect();
         let n = seqs.len();
@@ -6316,7 +6402,10 @@ mod tests {
         let mut s = bs_on();
         let out = bs_stalled(&mut s, 120); // far past the last ladder step
         let bytes: u64 = probes(&out).iter().map(|d| d.size).sum();
-        assert!(bytes <= BS_TX_HARD_BUDGET, "sender probe wire {bytes} B exceeds the 200 B budget");
+        assert!(
+            bytes <= BS_TX_HARD_BUDGET,
+            "sender probe wire {bytes} B exceeds the 200 B budget"
+        );
         assert_eq!(s.bootstrap_rtt_diag().probe_wire_bytes, bytes);
         assert_eq!(s.bootstrap_rtt_diag().budget_violation, 0);
         assert!(bytes <= 4 * 44, "4 x PROBE_WIRE_EXACT worst case");
@@ -6344,8 +6433,14 @@ mod tests {
             .filter(|d| d.kind == TransmitKind::Data)
             .map(|d| d.unit_id)
             .collect();
-        assert_eq!(data_a, data_b, "no DATA displacement: source prefix must be identical");
-        assert!(!probes(&b).is_empty(), "the treatment must actually add probes");
+        assert_eq!(
+            data_a, data_b,
+            "no DATA displacement: source prefix must be identical"
+        );
+        assert!(
+            !probes(&b).is_empty(),
+            "the treatment must actually add probes"
+        );
     }
 
     #[test]
@@ -6353,7 +6448,10 @@ mod tests {
         let mut s = bs_on();
         bs_stalled(&mut s, 2); // armed, but no probe is due yet at t=2s
         s.on_event(Event::CsProbeEcho { probe_seq: 999 }, 2_500 * MS);
-        assert!(s.rtt.srtt().is_none(), "unsolicited echo must not establish srtt");
+        assert!(
+            s.rtt.srtt().is_none(),
+            "unsolicited echo must not establish srtt"
+        );
         assert_eq!(s.bootstrap_rtt_diag().echo_match_valid, 0);
         assert!(s.bootstrap_rtt_diag().echo_match_rejected >= 1);
     }
@@ -6365,8 +6463,16 @@ mod tests {
         let p = probes(&out);
         assert!(!p.is_empty(), "a probe must have been emitted");
         let good = p[0].seq as u16;
-        s.on_event(Event::CsProbeEcho { probe_seq: good.wrapping_add(7) }, 6_000 * MS);
-        assert!(s.rtt.srtt().is_none(), "wrong generation must not establish srtt");
+        s.on_event(
+            Event::CsProbeEcho {
+                probe_seq: good.wrapping_add(7),
+            },
+            6_000 * MS,
+        );
+        assert!(
+            s.rtt.srtt().is_none(),
+            "wrong generation must not establish srtt"
+        );
         assert_eq!(s.bootstrap_rtt_diag().echo_match_valid, 0);
     }
 
@@ -6382,7 +6488,11 @@ mod tests {
         let d = s.bootstrap_rtt_diag();
         assert_eq!(d.echo_match_valid, 1);
         assert!(s.rtt.srtt().is_some(), "valid echo must establish srtt");
-        assert_eq!(d.rtt_sample_ns, 1_000 * MS, "RTT = local arrival - local send");
+        assert_eq!(
+            d.rtt_sample_ns,
+            1_000 * MS,
+            "RTT = local arrival - local send"
+        );
         assert_eq!(d.cancelled, 1, "the first valid sample cancels the ladder");
     }
 
@@ -6394,7 +6504,11 @@ mod tests {
         s.on_event(Event::CsProbeEcho { probe_seq: seq }, 4_000 * MS);
         s.on_event(Event::CsProbeEcho { probe_seq: seq }, 4_500 * MS);
         s.on_event(Event::CsProbeEcho { probe_seq: seq }, 5_000 * MS);
-        assert_eq!(s.bootstrap_rtt_diag().echo_match_valid, 1, "single consumption");
+        assert_eq!(
+            s.bootstrap_rtt_diag().echo_match_valid,
+            1,
+            "single consumption"
+        );
     }
 
     #[test]
@@ -6409,7 +6523,10 @@ mod tests {
         for t in 6..=60u64 {
             later.extend(s.on_event(Event::TimerFired(Timer::Pto), t * 1_000 * MS));
         }
-        assert!(probes(&later).is_empty(), "no probe may be emitted after success");
+        assert!(
+            probes(&later).is_empty(),
+            "no probe may be emitted after success"
+        );
         assert_eq!(s.bootstrap_rtt_diag().probe_emitted, before);
         assert_eq!(s.bootstrap_rtt_diag().probe_after_success_violation, 0);
     }
