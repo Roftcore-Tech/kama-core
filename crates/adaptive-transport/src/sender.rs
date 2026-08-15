@@ -678,8 +678,25 @@ impl Default for StartupPacingConfig {
         //   and with the floor ACTIVE **zero** parity units reach the wire in 900 ticks (9 s virtual),
         //   while with the floor INACTIVE all 4 emit. Isolated by toggling ONLY this axis.
         //
-        // Explicit FEC_R2 must stay runtime-executable, so shipping this default would trade a fixed
-        // liveness defect for a broken FEC actuator. Default stays OFF until that is root-caused.
+        // Explicit FEC_R2 must stay runtime-executable, so shipping this default would have traded a
+        // fixed liveness defect for a broken FEC actuator.
+        //
+        // RESOLVED 2026-08-15 — the FEC-actuator blocker above no longer reproduces, so the default is
+        // ON (restored by 925dea66). Re-measured with the floor ACTIVE, i.e. through this very default,
+        // on the exact scenario the paragraph above names:
+        //
+        //   kama-engine/tests/fuzzy_e2e.rs  ->  5/5 pass
+        //     e2e_real_fuzzy_nonzero_r2_to_emission : ratio=800 planned=4 emitted=4
+        //     e2e_real_fuzzy_partial_block         : ratio=800 planned=4 emitted=4
+        //
+        // Same ratio and same planned count the blocker cites; emitted is 4, not the 0 it reported.
+        // The assertion is `emitted == planned` with planned=4, so it is non-vacuous — a zero-parity
+        // regression would fail it rather than pass trivially.
+        //
+        // Until this line the comment said "Default stays OFF" while the code returned true: 925dea66
+        // flipped the value and left the rationale from 68165aca in place. The value was right and the
+        // record was stale; the record is now corrected rather than the behaviour.
+        //
         // The mechanism remains fully available via `set_startup_pacing_init`.
         Self { enabled: true }
     }
