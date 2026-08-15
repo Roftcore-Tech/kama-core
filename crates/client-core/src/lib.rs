@@ -39,6 +39,7 @@
 #![forbid(unsafe_code)]
 
 pub use adaptive_transport::sender::{Event, OpaqueUnit, Sender, TransmitDecision, TransmitKind};
+pub use adaptive_transport::tail_recovery::TailRecoveryConfig;
 pub use kama_engine::{admit_and_decode, EngineError};
 pub use kama_noise_wire::opened::OpenedTransportShard;
 
@@ -140,24 +141,50 @@ mod tests {
 
     /// Guards the defaults this crate documents, so the doc comment cannot drift from the code
     /// the way the startup-pacing rationale did (see sender.rs and commit 50cd8e35).
+    ///
+    /// The observation horizon is **derived from the shipped config**, not chosen. A literal
+    /// here would encode a coverage claim that silently stops being true when a bound moves:
+    /// an earlier draft of this test drove 30 s and claimed to be "well past every tail-probe
+    /// deadline", while `max_backoff_pto_ns` is 120 s — it covered a quarter of the range it
+    /// asserted. Deriving the horizon makes the test track the config instead of a guess.
     #[test]
     fn shipped_defaults_are_what_the_docs_say() {
+        let cfg = TailRecoveryConfig::default();
+
+        // Worst case the mechanism could reach if it were enabled: every permitted probe round
+        // waiting the maximum backed-off PTO, after the initial no-RTT PTO, plus the receiver's
+        // ACK-delay budget. Nothing here is a literal; each term names the bound it comes from.
+        let horizon_ns = cfg
+            .initial_pto_ns
+            .saturating_add(cfg.max_ack_delay_ns)
+            .saturating_add(
+                cfg.max_backoff_pto_ns
+                    .saturating_mul(u64::from(cfg.max_tail_probes) + 1),
+            );
+
+        // One tick per base-PTO floor, so the sweep cannot step over a deadline. Bounded by the
+        // same arithmetic rather than by a chosen iteration count.
+        let step_ns = cfg.min_pto_ns.max(1);
+        let ticks = horizon_ns / step_ns;
+
         let mut s = ClientSession::new();
-        // Drive a stalled flow well past every tail-probe deadline. With tail recovery OFF the
-        // probe counters must stay at zero; if the default ever flips, this fails here rather
-        // than in a campaign.
+        // Payload size is a genuinely arbitrary fixture: this test asserts nothing about bytes,
+        // only that a unit is outstanding so the tail path has something to probe for.
         s.on_event(Event::AppData(OpaqueUnit { id: 1, size: 101 }), 0);
-        for t in 1..=30u64 {
+        for i in 1..=ticks {
             s.on_event(
                 Event::TimerFired(adaptive_transport::sender::Timer::Pto),
-                t * 1_000_000_000,
+                i.saturating_mul(step_ns),
             );
         }
+
         let (probes, probe_bytes, spurious, _) = s.sender().tail_probe_diag();
         assert_eq!(
             (probes, probe_bytes, spurious),
             (0, 0, 0),
-            "tail recovery is default-OFF: a stalled flow must emit no probe"
+            "tail recovery is default-OFF: a flow stalled for {horizon_ns} ns \
+             ({ticks} ticks, the full worst-case probe horizon of the shipped config) \
+             must emit no probe"
         );
     }
 }
