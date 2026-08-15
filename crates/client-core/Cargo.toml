@@ -5,4 +5,21 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# COMPOSITION ROOT. This is the first crate in the workspace to hold BOTH halves of the
+# transport in its PRODUCTION dependency graph:
+#
+#   adaptive-transport — egress: decides what and when to send (Sender -> TransmitDecision)
+#   kama-engine        — ingress: admits and decodes authenticated shards (admit_and_decode)
+#
+# Before this, adaptive-transport had no internal production dependents at all except the
+# bench crate, and kama-engine reached it only through [dev-dependencies]. The two sides were
+# joined exclusively inside test builds, which is why every validated mechanism was
+# structurally unshippable. See reports/EVIDENCE-LEDGER-2026-08-15.md §5.
+
 [dependencies]
+adaptive-transport = { path = "../adaptive-transport" }
+kama-engine = { path = "../kama-engine" }
+# For `OpenedTransportShard`, which is the ingress witness type. It is deliberately only
+# constructible via `protector.open()` (AEAD-verify), so INV-FEC-1's authenticate-before-decode
+# ordering is enforced by the type system rather than by convention.
+kama-noise-wire = { path = "../kama-noise-wire" }
