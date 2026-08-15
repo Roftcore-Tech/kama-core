@@ -3,3 +3,12 @@
 Cargo.lock.orig
 /results
 scratchbin/
+
+# Alternate CARGO_TARGET_DIRs. `/target` was ignored but these were not, so build output
+# counted as untracked: .gate-target alone was 61286 files, and scripts/gate.sh step 8
+# (`git status --porcelain`, untracked-sensitive) failed on the directory step 1 had just
+# created. All three carry CACHEDIR.TAG + .rustc_info.json and no source.
+#   .gate-target  — scripts/gate.sh default target dir (gate.sh:29)
+#   .nb-*         — per-commit target dirs used by the netem/benchmark worktree runs
+/.gate-target/
+/.nb-*/
