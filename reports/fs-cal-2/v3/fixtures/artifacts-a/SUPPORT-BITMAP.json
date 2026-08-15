@@ -1,0 +1,23 @@
+{
+  "bitmap_sha256": "cfcf4378a66620c73829e10838231626e424a2557b83bb0dd44fd8b7a9fec718",
+  "eligible_group_counts_by_bin": {
+    "3,10": 3,
+    "3,2": 1,
+    "4,2": 2,
+    "4,3": 1,
+    "5,10": 1
+  },
+  "fixture_mode": true,
+  "min_cells": 1,
+  "min_groups": 3,
+  "pinned_design_thresholds": {
+    "min_cells": 2,
+    "min_groups": 100
+  },
+  "supported_bins": [
+    "3,10",
+    "3,2",
+    "4,2",
+    "4,3"
+  ]
+}

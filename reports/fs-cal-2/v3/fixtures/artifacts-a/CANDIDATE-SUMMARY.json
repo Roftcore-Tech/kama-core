@@ -1,0 +1,22 @@
+{
+  "best_metrics_lexicographic": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "candidate_count_after_tier_1": 35,
+  "candidate_count_after_tier_2": 35,
+  "candidate_count_after_tier_3": 35,
+  "candidate_count_after_tier_4": 35,
+  "candidate_set_sha256": "2c81979de4b76708a6cee4936d5eae870a27f3a84aac989a1bd11e7ac893c3bb",
+  "final_tie_count": 35,
+  "selected_tuple": [
+    0,
+    100000,
+    -200000,
+    0,
+    500000
+  ],
+  "total_candidates": 72
+}

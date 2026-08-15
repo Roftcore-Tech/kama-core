@@ -1,0 +1,2 @@
+P1-IID30-RTT1000: eligible 10/40
+P2-GE20L10-RTT1000: eligible 19/40

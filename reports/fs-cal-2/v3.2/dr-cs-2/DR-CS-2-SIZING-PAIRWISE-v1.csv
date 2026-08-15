@@ -1,0 +1,2 @@
+pair_id,repetition,seed_domain,cell_id,baseline_STALL,ladder_STALL,baseline_ZERO_TX_STALL,ladder_ZERO_TX_STALL,discordant
+# NO ROWS — sizing diagnostic NOT EXECUTED (LADDER-NOT-ISOLATABLE at the A1 gate)

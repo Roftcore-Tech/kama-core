@@ -1,0 +1,39 @@
+{
+  "K1_direction_diversity": {
+    "labels": [
+      "R0_PREFERRED"
+    ],
+    "pass": false
+  },
+  "K2_separability_auc_ge_vs_iid": {
+    "auc": 1.0,
+    "note": "fixture-scale point AUC (bootstrap lower bound is the K2 criterion at training scale)",
+    "pass": true
+  },
+  "K3_loco_decision_stability": {
+    "pass": true
+  },
+  "K4_alias_conflict": {
+    "conflicting_bins": [],
+    "pass": true
+  },
+  "K5_bootstrap_policy_stability": {
+    "B": 50,
+    "pass": true,
+    "stable_fraction": 1.0
+  },
+  "K6_tie_region_identity": {
+    "pass": true
+  },
+  "K7_support_activation": {
+    "pass": false,
+    "r2_cells": []
+  },
+  "K8_data_contract": {
+    "note": "conformance PASS upstream (else pipeline halts)",
+    "pass": true
+  },
+  "overall": {
+    "pass": false
+  }
+}

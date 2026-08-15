@@ -1,0 +1,131 @@
+{
+  "bootstrap_B": 2000,
+  "checks": [
+    {
+      "check": "AUC_IID_vs_GE-L3_p10",
+      "detail": "95% AUC lower bound = 0.9989",
+      "pass": true
+    },
+    {
+      "check": "AUC_IID_vs_GE-L10_p10",
+      "detail": "95% AUC lower bound = 1.0",
+      "pass": true
+    },
+    {
+      "check": "AUC_IID_vs_GE-L3_p20",
+      "detail": "95% AUC lower bound = 1.0",
+      "pass": true
+    },
+    {
+      "check": "AUC_IID_vs_GE-L10_p20",
+      "detail": "95% AUC lower bound = 1.0",
+      "pass": true
+    },
+    {
+      "check": "AUC_IID_vs_GE-L3_p30",
+      "detail": "95% AUC lower bound = 1.0",
+      "pass": true
+    },
+    {
+      "check": "AUC_IID_vs_GE-L10_p30",
+      "detail": "95% AUC lower bound = 1.0",
+      "pass": true
+    },
+    {
+      "check": "MBD_b15_median_p10",
+      "detail": "median=148664.0",
+      "pass": true
+    },
+    {
+      "check": "MBD_b35_median_p10",
+      "detail": "median=339583.0",
+      "pass": true
+    },
+    {
+      "check": "ordering_p10",
+      "detail": "medians IID<b15<b35<GE-L3<GE-L10 = [10611.0, 148664.0, 339583.0, 594687.5, 834715.5]",
+      "pass": true
+    },
+    {
+      "check": "MBD_b15_median_p20",
+      "detail": "median=154021.0",
+      "pass": true
+    },
+    {
+      "check": "MBD_b35_median_p20",
+      "detail": "median=349659.0",
+      "pass": true
+    },
+    {
+      "check": "ordering_p20",
+      "detail": "medians IID<b15<b35<GE-L3<GE-L10 = [8528.0, 154021.0, 349659.0, 567118.0, 845629.5]",
+      "pass": true
+    },
+    {
+      "check": "MBD_b15_median_p30",
+      "detail": "median=143370.0",
+      "pass": true
+    },
+    {
+      "check": "MBD_b35_median_p30",
+      "detail": "median=339218.0",
+      "pass": true
+    },
+    {
+      "check": "ordering_p30",
+      "detail": "medians IID<b15<b35<GE-L3<GE-L10 = [1058.5, 143370.0, 339218.0, 506103.0, 837319.0]",
+      "pass": true
+    },
+    {
+      "check": "eligibility_MARKOV-BD-b15_p10",
+      "detail": "eligible fraction = 1.0",
+      "pass": true
+    },
+    {
+      "check": "eligibility_MARKOV-BD-b35_p10",
+      "detail": "eligible fraction = 0.996",
+      "pass": true
+    },
+    {
+      "check": "eligibility_MARKOV-BD-b15_p20",
+      "detail": "eligible fraction = 1.0",
+      "pass": true
+    },
+    {
+      "check": "eligibility_MARKOV-BD-b35_p20",
+      "detail": "eligible fraction = 1.0",
+      "pass": true
+    },
+    {
+      "check": "eligibility_MARKOV-BD-b15_p30",
+      "detail": "eligible fraction = 1.0",
+      "pass": true
+    },
+    {
+      "check": "eligibility_MARKOV-BD-b35_p30",
+      "detail": "eligible fraction = 1.0",
+      "pass": true
+    },
+    {
+      "check": "GE_eligibility_observational",
+      "detail": "GE eligibility (NOT a gate; low \u21d2 R0 fallback): {'GE-L3_p10': 0.978, 'GE-L10_p10': 0.81, 'GE-L3_p20': 1.0, 'GE-L10_p20': 0.986, 'GE-L3_p30': 1.0, 'GE-L10_p30': 1.0}",
+      "pass": true
+    },
+    {
+      "check": "p05_eligibility_recorded",
+      "detail": "p=5% eligibility {'IID': 0.944, 'MARKOV-BD-b15': 0.922, 'MARKOV-BD-b35': 0.86, 'GE-L3': 0.728, 'GE-L10': 0.564}; low=True \u2192 p\u22645% EXCLUDED from support (mechanical rule)",
+      "pass": true
+    }
+  ],
+  "overall_pass": true,
+  "p05_eligibility": {
+    "GE-L10": 0.564,
+    "GE-L3": 0.728,
+    "IID": 0.944,
+    "MARKOV-BD-b15": 0.922,
+    "MARKOV-BD-b35": 0.86
+  },
+  "p05_excluded_from_support": true,
+  "s0_traces": 10000,
+  "seed": 20260805
+}

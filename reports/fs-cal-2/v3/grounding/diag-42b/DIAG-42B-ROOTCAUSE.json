@@ -1,0 +1,52 @@
+{
+  "analysis": "DIAG-42B ROOT-CAUSE (companion to DIAG-42B-VERDICT.json; does NOT alter the raw as-run verdict)",
+  "as_run_verdict_ref": "DIAG-42B-VERDICT.json (buggy warmup_complete=delivery-based \u2192 P1 0.25 / P2 0.475, overall FAIL)",
+  "design_faithful_note": "warmup_complete corrected to epoch-reached per \u00a72.3/\u00a73.1/line-130 (fate-known, not delivery); snapshot timing UNCHANGED (flag-only), so recompute on same raw fields is EXACT.",
+  "cells": {
+    "P1-IID30-RTT1000": {
+      "n": 40,
+      "design_faithful_eligible": 33,
+      "design_faithful_fraction": 0.825,
+      "pass_at_0.90": false,
+      "binding_failure_modes": {
+        "N<256": 4,
+        "stale": 3
+      },
+      "per_condition_pass": {
+        "N==256": 36,
+        "n10+n11>=8": 40,
+        "n00+n01>=32": 40,
+        "not_stale": 37,
+        "converged": 40
+      }
+    },
+    "P2-GE20L10-RTT1000": {
+      "n": 40,
+      "design_faithful_eligible": 19,
+      "design_faithful_fraction": 0.475,
+      "pass_at_0.90": false,
+      "binding_failure_modes": {
+        "stale": 9,
+        "N<256|few_loss_tr|few_nonloss_tr|stale|unconverged": 8,
+        "N<256|few_loss_tr": 2,
+        "N<256|few_loss_tr|few_nonloss_tr": 1,
+        "N<256": 1
+      },
+      "per_condition_pass": {
+        "N==256": 28,
+        "n10+n11>=8": 29,
+        "n00+n01>=32": 31,
+        "not_stale": 23,
+        "converged": 32
+      }
+    }
+  },
+  "overall_pass_design_faithful": false,
+  "root_cause": [
+    "P2 dominated by 8/40 sender cold-start STALLS (PreConverge, zero observed transmission, all counters 0, timeout epoch 18498ms) at RTT=1000ms under GE-L10 opening burst \u2014 product-path/sender phenomenon, NOT an eligibility-flag bug. Open question: genuine cold-start vs harness sender-driving at high RTT.",
+    "telemetry_stale driven by GROUNDED product FusionSafetyConfig max_telemetry_age_ns=2s (fusion_policy.rs:142); at RTT=1000ms ACK cadence ~1s so any loss burst exceeds 2s \u2192 legitimately stale. Real product behavior.",
+    "N<256 fate-known = exactly the design-anticipated \u00a74.2b failure (\u00a74.2b: 384 warm-up paketinden 256 fate-known cikmayabilir).",
+    "Epoch-trigger direction: non-zero-N epochs 10.3-18.5s (delivery-drain). A fate-known-drain trigger fires ~2.5s \u2192 LESS sender convergence \u2192 WORSE. Current delivery trigger is the MOST GENEROUS faithful reading, and STILL fails."
+  ],
+  "verdict": "SECTION \u00a74.2b NOT PASSED (robust across as-run AND most-generous design-faithful reading). YETKI-2 NOT AUTHORIZED. Design-prescribed response: new design/calibration version (re-evaluate warm-up length/window/eligibility thresholds + 2s staleness bound at high RTT + sender cold-start) \u2192 S0 + \u00a74.2b re-run. Abkarada authority."
+}

@@ -1,0 +1,31 @@
+{
+  "VERDICT": "ACK-PATH-FORWARD-LOSS",
+  "acks_generated": 0,
+  "acks_ingested": 0,
+  "calibration_use": "FORBIDDEN",
+  "emission_spacing_ms": 3258.1,
+  "emissions_total": 18,
+  "fit_use": "FORBIDDEN",
+  "floor_quantum_check": "101 B / 31 B/s = 3258.06 ms (matches to the tick)",
+  "forward_dropped": 18,
+  "harness_limitation": "no reverse-path ACK loss is modelled (reverse_drop structurally false)",
+  "not_reached": [
+    "ACK-PATH-REVERSE-LOSS"
+  ],
+  "phase": "FAZ-1",
+  "product_behavior_changed": false,
+  "receiver_arrivals": 0,
+  "refuted": [
+    "ACK-PATH-RECEIVER (hop never reached)",
+    "ACK-PATH-SENDER-INGEST (hop never reached)",
+    "ACK-PATH-HARNESS (app_enqueued=384, Timer::Pto driven every tick)"
+  ],
+  "result_bearing": false,
+  "routing": "forward loss => no receiver/ingest patch; cold-start remedy belongs to FAZ 3",
+  "stalled_seeds": [
+    9,
+    14,
+    17
+  ],
+  "study": "ACK-PATH-ROOTCAUSE"
+}

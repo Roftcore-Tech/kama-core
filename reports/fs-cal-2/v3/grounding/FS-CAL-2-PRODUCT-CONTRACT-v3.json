@@ -1,0 +1,284 @@
+{
+  "compile_configuration": "DEFAULT cargo features (no experimental-cold-start / experimental-fec-budget) — identical to the DR-ARQ-PRODUCT-TAIL-1 product-validation compile path",
+  "contract_id": "FS-CAL-2-PRODUCT-CONTRACT-v3",
+  "cost_contract": {
+    "max_combined_recovery_overhead_bytes": {
+      "grounded": true,
+      "source_sha256": "4f2b0dc59325e65ca7b8987ff6095fa23d80a0198b3af72b8c23d71d416c2f0c",
+      "source_symbol": "FusionSafetyConfig::default().hard_combined_byte_cap (fusion_policy.rs:128-129, 141)",
+      "value": 8192
+    },
+    "max_fec_bytes_per_block": {
+      "grounded": true,
+      "r2_realized": 202,
+      "source_sha256": "4f2b0dc59325e65ca7b8987ff6095fa23d80a0198b3af72b8c23d71d416c2f0c",
+      "source_symbol": "FusionSafetyConfig::default().hard_fec_byte_budget (fusion_policy.rs:126-127, 140)",
+      "value": 4096
+    },
+    "max_fec_wire_ratio_ppm": {
+      "grounded": true,
+      "note": "R2 = 202/808 B = 250,000 ppm of decision-block source bytes ≤ 800,000",
+      "r2_realized_ppm": 250000,
+      "source_sha256": "4f2b0dc59325e65ca7b8987ff6095fa23d80a0198b3af72b8c23d71d416c2f0c",
+      "source_symbol": "FusionSafetyConfig::default().hard_max_redundancy_permille=800 (fusion_policy.rs:124-125, 139) — permille→ppm ×1000",
+      "value": 800000
+    },
+    "minimum_completion_gain_pp": {
+      "grounded": false,
+      "label": "EXPERIMENTAL_BOUND — design-frozen scientific bound; NOT a product SLO; carries no product claim",
+      "source_symbol": "design §4.0c/§6.3/§7.2 frozen minimum effect",
+      "value": 15
+    },
+    "primary_horizon_definition": {
+      "grounded": true,
+      "source_symbol": "DR-ARQ-PRODUCT-TAIL-1 / R2A frozen horizons (fs_cal2_spine::horizon_ms; reports/dr-arq-product-tail-1/FIDELITY-AND-FREEZE.md identity)",
+      "value": "frozen per-RTT run horizon {50→699, 250→2499, 1000→9249} ms applied FROM the decision epoch"
+    },
+    "verdict": "cost bounds GROUNDED (three product symbols + one explicit EXPERIMENTAL_BOUND + grounded horizon) — §4.0c training-blocker NOT triggered"
+  },
+  "design_sha256": "115fa266a40f744013d209d36711a698096a28509ede11dd417f23aa5cdb3393",
+  "fec_r2_grounding": {
+    "authoritative_source_symbol": "FS-1/R2A SpineArm::F0{r:2} coding identity (fs_spine.rs:186-291 audit) EMITTED through the product Sender authority (fs_cal2_spine.rs)",
+    "codec_profile_identity": {
+      "E": 64,
+      "K": 8,
+      "api": "kama_fec_codec::by_id(0x03)",
+      "code_suite": "CODE_SUITE_RS_SIMD_V1",
+      "profile_id": "0x03"
+    },
+    "codec_source_sha256": {
+      "codec.rs": "b25ead178c797e1a14665ca836e10ce2064b345b180e8b7ec40fad11730e8ad8",
+      "profile.rs": "6979f5dcfb6caf01a6d0fee5d2cebdb16a46a8a249de07af44c283b8f3144385"
+    },
+    "combined_overhead_cap": "FusionSafetyConfig.hard_combined_byte_cap = 8192",
+    "decode_reassembly_path": "FS-1/R2A counting-MDS rule (distinct<K && repairs>=1 && distinct+repairs>=K) + RsSimdCodec.reconstruct (codec.rs:310+) + byte-equality vs canonical + Event::RecoveredControl feedback (sender.rs:2721-2759 pure-logical); golden: fs_cal2_pins::fec_decode_success_recovers_tail",
+    "executable_in_product_path": true,
+    "k_and_r_runtime_assertion": "fs_cal2_pins::r2_parity_wire_proof_exact (parity_bytes == 2×101; staged==2 else inv_fail)",
+    "max_fec_bytes": "FusionSafetyConfig.hard_fec_byte_budget = 4096 (see cost_contract)",
+    "note": "fs_spine (FS-1/R2A) emitted parity harness-side; FS-CAL-2 keeps the IDENTICAL coding identity (K/E/profile/RsSimdCodec/r/sealed-len/decode rule) but routes emission through the product Sender FEC authority — no fake harness arm (§4.1 rule).",
+    "parity_emission_path": "open_fec_block_authority (sender.rs:2400-2408) → close_fec_block_manual (sender.rs:2464-2505) → pending_fec → plan_fec_parity (sender.rs:2827-2869) → emit_parity_at/track_sent → TransmitKind::FecParity; pacer.try_send token-gated; integration proof: fs_cal2_pins::r2_parity_wire_proof_exact",
+    "parity_sealed_len": 101,
+    "r1_r4": "ABSENT from this design (per §4.1)",
+    "serializer_fields": "FS-CAL-2-RAW-SCHEMA-v3 (emitted from fs_cal2_schema.rs; parity accounting fields parity_bytes/fec_decoded_sources/fec_decode_success)"
+  },
+  "harness_source_sha256": {
+    "fate_estimator.rs": "9116cc39af77870af5d94ac2c23be5649f8d18265d8ac0b25a9f6eada5db685c",
+    "fs_cal2_gen.rs": "1aeb2334e397835384a1dc49a4234401e45dbc7882afcca2db861d0c7e281371",
+    "fs_cal2_policy.rs": "be0c5846137e215054a535b534a8ee8b93e3658b26dfba727e0299df4cc58d14",
+    "fs_cal2_schema.rs": "40a677ca75e4920443b726bb64e98a090b9d2802a77cc5ae61e389b5105f01e8",
+    "fs_cal2_spine.rs": "cd740097dd6716b5ee6cb20c062f0dd8c51c8dbac36cc0dfa31f5d44119e3f89",
+    "fs_spine.rs (FS-1 reference)": "f44a96158fcbf6c17d884e8b02f165fcb485142ac6e1c039b65e81aa51a486bd"
+  },
+  "inputs": [
+    {
+      "design_factor_or_value": "engine-internal; NOT an FS-CAL-2 policy input (the §7.3 policy consumes the FATE-estimator measured_loss_ppm instead)",
+      "fallback_if_unavailable": "n/a (engine-internal)",
+      "input_symbol": "FusionInputs.loss_ppm (fusion.rs:381)",
+      "role": "FIXED",
+      "runtime_producer": "ThresholdLossDetector::loss_windowed_ppm (loss.rs:240-251) via Sender::fuzzy_evaluate (sender.rs:2004)",
+      "source_file": "crates/adaptive-transport/src/fusion.rs",
+      "source_file_sha256": "6c0ade9ad92654251274f1d8103ce9f853df04696ebc06c4f41429c295f5feae"
+    },
+    {
+      "design_factor_or_value": "hard budget guard dimension (design §7.3: bandwidth is a FusionSafetyConfig guard, not a membership)",
+      "fallback_if_unavailable": "R0 / SAFETY_CAP",
+      "input_symbol": "FusionInputs.bandwidth_bps (fusion.rs:383)",
+      "role": "SAFETY_ONLY",
+      "runtime_producer": "BtlBwFilter::btlbw (bw.rs:221) via sender.rs:2005",
+      "source_file": "crates/adaptive-transport/src/fusion.rs",
+      "source_file_sha256": "6c0ade9ad92654251274f1d8103ce9f853df04696ebc06c4f41429c295f5feae"
+    },
+    {
+      "design_factor_or_value": "UNCALIBRATED-v1 (design §7.3): not an FEC-activation membership in this version",
+      "fallback_if_unavailable": "R0 (not consulted)",
+      "input_symbol": "FusionInputs.jitter_ppm (fusion.rs:385)",
+      "role": "UNSUPPORTED",
+      "runtime_producer": "rttvar*1e6/srtt (sender.rs:1990-1993)",
+      "source_file": "crates/adaptive-transport/src/fusion.rs",
+      "source_file_sha256": "6c0ade9ad92654251274f1d8103ce9f853df04696ebc06c4f41429c295f5feae"
+    },
+    {
+      "design_factor_or_value": "UNCALIBRATED-v1",
+      "fallback_if_unavailable": "R0 (not consulted)",
+      "input_symbol": "FusionInputs.qd_ratio_permille (fusion.rs:388)",
+      "role": "UNSUPPORTED",
+      "runtime_producer": "queue_delay*1000/rtprop (sender.rs:1997-2002, 2238-2246)",
+      "source_file": "crates/adaptive-transport/src/fusion.rs",
+      "source_file_sha256": "6c0ade9ad92654251274f1d8103ce9f853df04696ebc06c4f41429c295f5feae"
+    },
+    {
+      "design_factor_or_value": "UNCALIBRATED-v1",
+      "fallback_if_unavailable": "R0 (not consulted)",
+      "input_symbol": "FusionInputs.ack_confidence_permille (fusion.rs:390)",
+      "role": "UNSUPPORTED",
+      "runtime_producer": "silence-based ack_confidence_permille (sender.rs:3600-3631)",
+      "source_file": "crates/adaptive-transport/src/fusion.rs",
+      "source_file_sha256": "6c0ade9ad92654251274f1d8103ce9f853df04696ebc06c4f41429c295f5feae"
+    },
+    {
+      "design_factor_or_value": "runtime policy feature (§7.3 allowlist)",
+      "fallback_if_unavailable": "R0 / ESTIMATOR_INELIGIBLE",
+      "input_symbol": "measured_loss_ppm (fate_estimator::WindowFeatures)",
+      "role": "VARIED",
+      "runtime_producer": "FateEstimator window over receiver-ACK/recovery-lineage fates (§3.2/§3.3; fs_cal2_spine evidence wiring)",
+      "source_file": "crates/adaptive-transport/src/fate_estimator.rs",
+      "source_file_sha256": "9116cc39af77870af5d94ac2c23be5649f8d18265d8ac0b25a9f6eada5db685c"
+    },
+    {
+      "design_factor_or_value": "runtime policy feature (§7.3 allowlist)",
+      "fallback_if_unavailable": "R0 / ESTIMATOR_INELIGIBLE",
+      "input_symbol": "burst_delta_ppm (fate_estimator::WindowFeatures)",
+      "role": "VARIED",
+      "runtime_producer": "Laplace p11-p01 over the 256-fate window (§3.3)",
+      "source_file": "crates/adaptive-transport/src/fate_estimator.rs",
+      "source_file_sha256": "9116cc39af77870af5d94ac2c23be5649f8d18265d8ac0b25a9f6eada5db685c"
+    },
+    {
+      "design_factor_or_value": "policy gate",
+      "fallback_if_unavailable": "R0 / ESTIMATOR_INELIGIBLE",
+      "input_symbol": "estimator_eligible (fate_estimator::WindowFeatures::eligible)",
+      "role": "VARIED",
+      "runtime_producer": "N==256 && n10+n11>=8 && n00+n01>=32 && warmup_complete && !stale && converged (§3.4 pinned)",
+      "source_file": "crates/adaptive-transport/src/fate_estimator.rs",
+      "source_file_sha256": "9116cc39af77870af5d94ac2c23be5649f8d18265d8ac0b25a9f6eada5db685c"
+    },
+    {
+      "design_factor_or_value": "policy gate",
+      "fallback_if_unavailable": "R0 / OUT_OF_SUPPORT",
+      "input_symbol": "support_eligible (fs_cal2_policy::support_bins + bitmap)",
+      "role": "VARIED",
+      "runtime_producer": "frozen §3.4b bitmap membership of (loss_bin, burst_bin)",
+      "source_file": "crates/kama-integration/tests/common/fs_cal2_policy.rs",
+      "source_file_sha256": "be0c5846137e215054a535b534a8ee8b93e3658b26dfba727e0299df4cc58d14"
+    },
+    {
+      "design_factor_or_value": "policy gate",
+      "fallback_if_unavailable": "R0 / UNSUPPORTED_WORKLOAD",
+      "input_symbol": "workload_supported (WORKLOAD_PROFILE_ID interlock)",
+      "role": "VARIED",
+      "runtime_producer": "workload_profile_id == frozen FSCAL2-BULK-W384-K8-U101-v1 (§2.2 mechanical interlock)",
+      "source_file": "crates/kama-integration/tests/common/fs_cal2_spine.rs",
+      "source_file_sha256": "cd740097dd6716b5ee6cb20c062f0dd8c51c8dbac36cc0dfa31f5d44119e3f89"
+    }
+  ],
+  "joint_action_contract": {
+    "arq_contract_id": "FSCAL2-ARQ-DEFAULTFEAT-TAILV1-v1",
+    "arq_setting_symbol": "Sender::new() + set_tail_recovery_config(tail_on_config())",
+    "arq_setting_value": {
+      "compile_features": "default (no experimental-*)",
+      "fuzzy_config": "FuzzyConfig::fixture() (uncalibrated engine default — unchanged)",
+      "retx_fixture": {
+        "arq_retx_cap": 3,
+        "cap_exceed": "HandToForward",
+        "reorder_k": 3,
+        "reorder_rho": "2/1"
+      },
+      "tail": {
+        "enabled": true,
+        "initial_pto_ns": 1000000000,
+        "max_ack_delay_ns": 25000000,
+        "max_backoff_pto_ns": 30000000000,
+        "max_pto_ns": 10000000000,
+        "max_tail_probes": 3,
+        "min_pto_ns": 10000000
+      }
+    },
+    "arq_source_sha256": {
+      "arq.rs": "1b154e6a381cda58a2e89c75fa91824a899d9c93fedec2bfb63c07eeac520ce7",
+      "dr_arqtail_product.rs": "6abee6a9efc17d97e2a989f8eafe37d4ddb86749c695528a6f61d9a298c6baa0",
+      "sender.rs": "fc538d7868657ec523e55806e808b46ee3b3952454b0abeec336c6570821f182",
+      "tail_recovery.rs": "0cd0b9cb271e232afc97241cf11bc247215ae846dabad03193174ee41b245df4"
+    },
+    "controller_accessible_executable_arq_settings_count": 0,
+    "evidence": [
+      "fusion arq output inert: arq.rs:105-109 ==0 gate; 0 unproducible (fusion.rs:513-514; min consequent arq_light=200 fusion.rs:367; no_rule fallback also 200 fusion.rs:519-520)",
+      "RetxConfig fixture-frozen at construction (arq.rs:68-80: cap=3, reorder_k=3, rho=2/1, HandToForward); NO runtime setter on Sender (complete pub fn set_ enumeration: sender.rs 1146/2386/2415/2919)",
+      "set_tail_recovery_config is an operator/harness API outside the decision loop (sender.rs:1144-1150); no policy path reaches it"
+    ],
+    "invalid_if_arq_setting_changes": true,
+    "resolution": "count == 1 executable ARQ configuration ⇒ joint action = {frozen ARQ} × {R0, R2} (design §4.0b first branch; row budget 39,300 stands)"
+  },
+  "outputs": [
+    {
+      "actuator_state": "VARIABLE",
+      "actuator_symbol": "external fec_controller_latch chain only (sender.rs:2508-2619); default fec_mode Manual{enabled:false} (sender.rs:1026)",
+      "output_symbol": "FusionDecision.fec_parity_ratio_permille (fusion.rs:438)",
+      "phase": "B",
+      "source_file": "crates/adaptive-transport/src/fusion.rs",
+      "source_file_sha256": "6c0ade9ad92654251274f1d8103ce9f853df04696ebc06c4f41429c295f5feae",
+      "treatment_arm": "NONE — FS-CAL-2 R2 actuates via close_fec_block_manual, NOT via the fuzzy ratio (conditional latch path unused; default Manual{false})",
+      "wire_proof_test": "r2_parity_wire_proof_exact (fs_cal2_pins)"
+    },
+    {
+      "actuator_state": "DEGENERATE",
+      "actuator_symbol": "arq.plan ==0 gate only (arq.rs:105-109); fixture min 200 ⇒ structurally unreachable (fusion.rs:513-514)",
+      "output_symbol": "FusionDecision.arq_aggressiveness_permille (fusion.rs:440)",
+      "phase": "C",
+      "source_file": "crates/adaptive-transport/src/fusion.rs",
+      "source_file_sha256": "6c0ade9ad92654251274f1d8103ce9f853df04696ebc06c4f41429c295f5feae",
+      "treatment_arm": "NONE — inert on the product path (proof cited)",
+      "wire_proof_test": "n/a (degenerate; audit-proven)"
+    },
+    {
+      "actuator_state": "VARIABLE",
+      "actuator_symbol": "compute_send_rate → pacer.set_rate (sender.rs:2303-2333, 1244-1245; rate.rs:164-184)",
+      "output_symbol": "FusionDecision.send_rate_gain_permille (fusion.rs:442)",
+      "phase": "D",
+      "source_file": "crates/adaptive-transport/src/fusion.rs",
+      "source_file_sha256": "6c0ade9ad92654251274f1d8103ce9f853df04696ebc06c4f41429c295f5feae",
+      "treatment_arm": "NONE — send-rate is loss-decoupled (INV-RATE-1) and out of FS-CAL-2 scope (phase D); identical across arms by construction (same engine, same inputs)",
+      "wire_proof_test": "r0_determinism_wire_digest_exact (pacing identity within arm pairing)"
+    },
+    {
+      "actuator_state": "ABSENT",
+      "actuator_symbol": "NO consumer anywhere (whole-crate grep)",
+      "output_symbol": "FusionDecision.compress (fusion.rs:444)",
+      "phase": "D",
+      "source_file": "crates/adaptive-transport/src/fusion.rs",
+      "source_file_sha256": "6c0ade9ad92654251274f1d8103ce9f853df04696ebc06c4f41429c295f5feae",
+      "treatment_arm": "NONE",
+      "wire_proof_test": "n/a"
+    },
+    {
+      "actuator_state": "VARIABLE",
+      "actuator_symbol": "update_state → RecoverFwd arm flip (sender.rs:2052-2080, 2357-2361) + FEC latch suppression (sender.rs:2578-2587)",
+      "output_symbol": "FusionDecision.mode / EmergencyForwardRedundancy (fusion.rs:446)",
+      "phase": "C",
+      "source_file": "crates/adaptive-transport/src/fusion.rs",
+      "source_file_sha256": "6c0ade9ad92654251274f1d8103ce9f853df04696ebc06c4f41429c295f5feae",
+      "treatment_arm": "NONE — emergency machinery kept AS-IS in every arm (fixed baseline); not a treatment axis",
+      "wire_proof_test": "covered by arm-identical engine (pairing prefix equality)"
+    },
+    {
+      "actuator_state": "DEGENERATE",
+      "actuator_symbol": "diag counter + FEC-latch fail-closed zero (sender.rs:2013-2015, 2571-2573)",
+      "output_symbol": "FusionDecision.no_rule (fusion.rs:450)",
+      "phase": "B",
+      "source_file": "crates/adaptive-transport/src/fusion.rs",
+      "source_file_sha256": "6c0ade9ad92654251274f1d8103ce9f853df04696ebc06c4f41429c295f5feae",
+      "treatment_arm": "NONE (diagnostic)",
+      "wire_proof_test": "n/a"
+    },
+    {
+      "actuator_state": "VARIABLE",
+      "actuator_symbol": "plan_fec_parity → TransmitKind::FecParity (sender.rs:2827-2912); paced via pacer.try_send; seq via track_sent",
+      "output_symbol": "close_fec_block_manual staged parity (sender.rs:2464-2505)",
+      "phase": "A",
+      "source_file": "crates/adaptive-transport/src/sender.rs",
+      "source_file_sha256": "fc538d7868657ec523e55806e808b46ee3b3952454b0abeec336c6570821f182",
+      "treatment_arm": "STATIC_R2 / CALIBRATED_POLICY(R2)",
+      "wire_proof_test": "r2_parity_wire_proof_exact + fec_decode_success_recovers_tail + fec_decode_failure_arq_liveness (fs_cal2_pins)"
+    },
+    {
+      "actuator_state": "VARIABLE",
+      "actuator_symbol": "emit_tail_probe → TransmitKind::Retransmit (token-gated, cap=3)",
+      "output_symbol": "TailRecovery bounded probe (tail_recovery.rs; sender.rs:3372-3403)",
+      "phase": "A",
+      "source_file": "crates/adaptive-transport/src/tail_recovery.rs",
+      "source_file_sha256": "0cd0b9cb271e232afc97241cf11bc247215ae846dabad03193174ee41b245df4",
+      "treatment_arm": "ALL ARMS (part of the frozen ARQ base, not a treatment)",
+      "wire_proof_test": "terminal_tail_r0_probe_recovers (fs_cal2_pins)"
+    }
+  ],
+  "source_commit_40hex": "4aa11a93af44b2b9e884461e8db3d1ed576c8b4f"
+}

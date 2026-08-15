@@ -1,0 +1,412 @@
+{
+  "checkpoint": "FS-CAL-2-V3.2-DECISION-CHECKPOINT",
+  "design_sha256": "115fa266a40f744013d209d36711a698096a28509ede11dd417f23aa5cdb3393",
+  "dr_cs_2": "REQUIRED",
+  "head": "4aa11a93af44b2b9e884461e8db3d1ed576c8b4f",
+  "item_10_recommendation": {
+    "path": "PATH-B",
+    "reason": "A PRODUCT-COLD-START-LIVENESS component is CONFIRMED, which mandates DR-CS-2 and forbids making v3.2 pass. No single change reaches the 0.90 bar; only a cumulative stack does, and two of its components are forbidden. PATH-A would narrow the product claim away from the BLOS regime without fixing either product defect."
+  },
+  "item_11_counterfactuals_diagnostic_only": {
+    "WARNING": "NOT authorization to change any threshold; each requires a new design version + fresh S0 + fresh \u00a74.2b",
+    "extended_65s": 0.725,
+    "frozen_budget": 0.475,
+    "marginal_alone": {
+      "fate_known_ready": 1,
+      "loss_tr_bar_4": 3,
+      "staleness_removed": 0
+    },
+    "plus_fate_known_ready": 0.75,
+    "plus_loss_tr_bar_4": 0.9,
+    "plus_no_staleness": 0.825
+  },
+  "item_12_open_decisions": [
+    "PATH-A vs PATH-B",
+    "authorize DR-CS-2 + its scope",
+    "max_telemetry_age_ns ownership (implement producer / RTT-relative / drop from eligibility)",
+    "adopt t_fate_known_ready epoch trigger + 5-timestamp split",
+    "transition-floor vs GE-burst structure",
+    "rate-ramp-lock DR placement",
+    "re-freeze FS-CAL-2-PRODUCT-CONTRACT-v3.json"
+  ],
+  "item_1_arq_tail": {
+    "corrigendum": "FS-CAL-2-PRODUCT-CONTRACT-v3.json:69,161 record a stale fs_cal2_spine.rs sha256",
+    "identical_both_arms": true,
+    "product_default_enabled": false,
+    "proof": [
+      "fs_cal2_spine.rs:309 tail_cfg bound once",
+      "fs_cal2_spine.rs:363 applied at construction",
+      "fs_cal2_spine.rs:718 sole arm branch, 355 lines later",
+      "set_manual_fec_enabled writes only fec_mode (sender.rs:2415-2427)",
+      "runtime: fs_cal2_pins.rs:190 terminal_tail_r0_probe_recovers asserts probe_sent>=1 in R0"
+    ],
+    "tail_enabled": true,
+    "verdict": "ARQ-CONTRACT-PASS"
+  },
+  "item_2_estimator_product_path": {
+    "missing": "wiring + one ordinal counter, NOT measurement",
+    "sites": {
+      "guard": "sender.rs:1878-1883",
+      "late_ack": "sender.rs:1708-1723",
+      "loss": "sender.rs:1921-1951 queue_losses",
+      "recovered": "sender.rs:2725-2745",
+      "success": "sender.rs:1695-1707"
+    },
+    "verdict": "PRODUCT-ESTIMATOR-INTEGRATION-FEASIBLE"
+  },
+  "item_3_D1": {
+    "classes": {
+      "HARNESS-TIME-BUDGET": 5,
+      "PRODUCT-COLD-START-LIVENESS": 3
+    },
+    "n": 8,
+    "runs": [
+      {
+        "N": 0,
+        "ack_batches": 0,
+        "app_enqueued": 384,
+        "class": "PRODUCT-COLD-START-LIVENESS",
+        "converged": false,
+        "delivered_src": 0,
+        "eligible": false,
+        "epoch_ms": 65000,
+        "epoch_trigger": "TIMEOUT",
+        "first_delivery_ms": null,
+        "preconverge_exit_ms": null,
+        "rep": 14,
+        "stale": true,
+        "tail_probe_due": 6400000,
+        "tail_probe_sent": 0,
+        "tx_data": 20,
+        "tx_duplicate": 0,
+        "tx_retransmit": 0
+      },
+      {
+        "N": 256,
+        "ack_batches": 382,
+        "app_enqueued": 384,
+        "class": "HARNESS-TIME-BUDGET",
+        "converged": true,
+        "delivered_src": 384,
+        "eligible": true,
+        "epoch_ms": 35687,
+        "epoch_trigger": "DRAIN",
+        "first_delivery_ms": 23307,
+        "preconverge_exit_ms": 23807,
+        "rep": 16,
+        "stale": false,
+        "tail_probe_due": 2280726,
+        "tail_probe_sent": 0,
+        "tx_data": 384,
+        "tx_duplicate": 0,
+        "tx_retransmit": 28
+      },
+      {
+        "N": 0,
+        "ack_batches": 0,
+        "app_enqueued": 384,
+        "class": "PRODUCT-COLD-START-LIVENESS",
+        "converged": false,
+        "delivered_src": 0,
+        "eligible": false,
+        "epoch_ms": 65000,
+        "epoch_trigger": "TIMEOUT",
+        "first_delivery_ms": null,
+        "preconverge_exit_ms": null,
+        "rep": 17,
+        "stale": true,
+        "tail_probe_due": 6400000,
+        "tail_probe_sent": 0,
+        "tx_data": 20,
+        "tx_duplicate": 0,
+        "tx_retransmit": 0
+      },
+      {
+        "N": 256,
+        "ack_batches": 366,
+        "app_enqueued": 384,
+        "class": "HARNESS-TIME-BUDGET",
+        "converged": true,
+        "delivered_src": 366,
+        "eligible": false,
+        "epoch_ms": 65000,
+        "epoch_trigger": "TIMEOUT",
+        "first_delivery_ms": 20049,
+        "preconverge_exit_ms": 20549,
+        "rep": 25,
+        "stale": true,
+        "tail_probe_due": 1954922,
+        "tail_probe_sent": 3,
+        "tx_data": 384,
+        "tx_duplicate": 2,
+        "tx_retransmit": 113
+      },
+      {
+        "N": 256,
+        "ack_batches": 368,
+        "app_enqueued": 384,
+        "class": "HARNESS-TIME-BUDGET",
+        "converged": true,
+        "delivered_src": 384,
+        "eligible": true,
+        "epoch_ms": 35649,
+        "epoch_trigger": "DRAIN",
+        "first_delivery_ms": 23307,
+        "preconverge_exit_ms": 23807,
+        "rep": 38,
+        "stale": false,
+        "tail_probe_due": 2280726,
+        "tail_probe_sent": 0,
+        "tx_data": 384,
+        "tx_duplicate": 0,
+        "tx_retransmit": 79
+      },
+      {
+        "N": 2,
+        "ack_batches": 2,
+        "app_enqueued": 384,
+        "class": "HARNESS-TIME-BUDGET",
+        "converged": true,
+        "delivered_src": 4,
+        "eligible": false,
+        "epoch_ms": 65000,
+        "epoch_trigger": "TIMEOUT",
+        "first_delivery_ms": 62404,
+        "preconverge_exit_ms": 62904,
+        "rep": 39,
+        "stale": false,
+        "tail_probe_due": 6190403,
+        "tail_probe_sent": 0,
+        "tx_data": 23,
+        "tx_duplicate": 0,
+        "tx_retransmit": 1
+      },
+      {
+        "N": 256,
+        "ack_batches": 381,
+        "app_enqueued": 384,
+        "class": "HARNESS-TIME-BUDGET",
+        "converged": true,
+        "delivered_src": 384,
+        "eligible": true,
+        "epoch_ms": 40918,
+        "epoch_trigger": "DRAIN",
+        "first_delivery_ms": 26565,
+        "preconverge_exit_ms": 27065,
+        "rep": 5,
+        "stale": false,
+        "tail_probe_due": 2635370,
+        "tail_probe_sent": 0,
+        "tx_data": 384,
+        "tx_duplicate": 2,
+        "tx_retransmit": 86
+      },
+      {
+        "N": 0,
+        "ack_batches": 0,
+        "app_enqueued": 384,
+        "class": "PRODUCT-COLD-START-LIVENESS",
+        "converged": false,
+        "delivered_src": 0,
+        "eligible": false,
+        "epoch_ms": 65000,
+        "epoch_trigger": "TIMEOUT",
+        "first_delivery_ms": null,
+        "preconverge_exit_ms": null,
+        "rep": 9,
+        "stale": true,
+        "tail_probe_due": 6400000,
+        "tail_probe_sent": 0,
+        "tx_data": 20,
+        "tx_duplicate": 0,
+        "tx_retransmit": 0
+      }
+    ]
+  },
+  "item_4_D2": {
+    "bar": 0.9,
+    "classes": {
+      "CONVERGED-NORMALLY": 34,
+      "HARNESS-TIME-BUDGET": 4,
+      "PRODUCT-COLD-START-LIVENESS": 2
+    },
+    "eligible": 29,
+    "eligible_fraction": 0.725,
+    "n": 40,
+    "note": "DIAGNOSTIC ONLY \u2014 not a \u00a74.2b re-qualification",
+    "pass": false
+  },
+  "item_5_root_cause": {
+    "class": "MIXED",
+    "counts": {
+      "CONVERGED-NORMALLY": 34,
+      "HARNESS-TIME-BUDGET": 9,
+      "PRODUCT-COLD-START-LIVENESS": 5
+    },
+    "evidence": {
+      "all_stalled_app_enqueued_384": true,
+      "all_stalled_zero_acks": true,
+      "all_stalled_zero_duplicates": true,
+      "all_stalled_zero_probes_sent": true,
+      "interpretation": "Every stalled run was offered all 384 units (app_enqueued=384 \u21d2 NOT a harness feeding failure), emitted only the handful the PreConverge floor allows, received zero ACKs, and fired ZERO \u00a73.3-B geometric copies and ZERO tail probes despite millions of probe-due decisions \u2014 i.e. both product cold-start recovery mechanisms were token-starved.",
+      "stalled_probe_due_values": [
+        6400000
+      ],
+      "stalled_runs": 5,
+      "stalled_tx_data_values": [
+        20
+      ]
+    },
+    "extended_timeout_derivation": {
+      "candidate_a_coldstart_giveup_plus_guard_ns": 65000000000,
+      "candidate_b_last_probe_step_plus_rtt_plus_guard_ns": 51000000000,
+      "candidate_c_floor_60s_ns": 60000000000,
+      "extended_timeout_ns": 65000000000,
+      "extended_timeout_s": 65.0,
+      "frozen_warmup_timeout_ns": 18498000000,
+      "frozen_warmup_timeout_s": 18.498,
+      "guard_justification": "guard = RTT (one full round trip for the first SACK to return) + PreConverge emission quantum (ceil(SEALED / PRE_CONVERGE_FLOOR_BW) = time to accrue tokens for ONE 101 B unit at the 31 B/s floor) + harness timer resolution dt (10 \u00b5s), rounded UP to a whole second. Both terms are required: a sender that has just emitted its first unit needs a further RTT before any SACK can possibly arrive, and it cannot emit at all faster than the floor quantum.",
+      "guard_ns": 5000000000,
+      "guard_s": 5.0,
+      "harness_tick_dt_ns": 10000,
+      "preconverge_emission_quantum_ns": 3258064517,
+      "preconverge_emission_quantum_s": 3.2581,
+      "preconverge_floor_bw_bytes_per_s": 31,
+      "ratio_extended_over_frozen": 3.5139,
+      "rtt_ns": 1000000000,
+      "sealed_unit_bytes": 101
+    },
+    "floor_pacing": {
+      "formula": "tx_data \u2248 floor(budget_s \u00d7 PRE_CONVERGE_FLOOR_BW(31 B/s) / SEALED(101 B))",
+      "observed": {
+        "65": {
+          "observed_tx_data": [
+            20
+          ],
+          "predicted": 19
+        }
+      }
+    },
+    "second_pathology": "post-convergence rate-ramp lock (D2 rep2: 288 B/s vs 27525 B/s healthy; rep31)",
+    "statement": "MIXED, with a CONFIRMED PRODUCT-COLD-START-LIVENESS component. A subset of runs recovers only AFTER the frozen 18.498 s budget (HARNESS-TIME-BUDGET), but another subset never leaves PreConverge even at the authoritative extended bound (65 s > CS_GIVEUP 60 s) while the harness drives every product path and offers all 384 units. HARNESS-DRIVER is REFUTED by app_enqueued=384 on every stalled run."
+  },
+  "item_6_telemetry": {
+    "Q1_telemetry_never_produced": {
+      "answer": "These runs have NO telemetry at all (zero ACK batches, srtt never set). Their telemetry_stale=true is produced by the harness zero-initialisation of last_ack_progress_ns, not by an aged measurement.",
+      "fraction": 0.1042,
+      "runs": 5
+    },
+    "Q2_produced_but_older_than_2s_at_decision": {
+      "epoch_age_ms": [
+        15674,
+        30973,
+        33024,
+        49403,
+        52260
+      ],
+      "fraction_of_runs_with_telemetry": 0.1163,
+      "runs": 5
+    },
+    "Q3_single_input_or_combined_snapshot": {
+      "harness": "SINGLE input: now \u2212 last ACK ARRIVAL (fs_cal2_spine.rs, one assignment site).",
+      "product": "UNDETERMINED. FusionObservation::telemetry_age_ns has NO producer anywhere in the repo outside a #[cfg(test)] fixture; the doc says 'newest telemetry update feeding inputs' over 5 heterogeneous signals, which is a MIN-over-ages (permissive) reading, but no code implements it.",
+      "verdict": "The threshold (2 s) is grounded; the OPERAND is not. Harness staleness is a proxy, NOT a faithful reproduction of a product definition."
+    },
+    "Q4_freshness_refresh_after_corrections": {
+      "answer": "NO. last_ack_progress_ns is refreshed ONLY on a non-empty ACK batch. Late-ACK and spurious-loss corrections in the estimator do NOT refresh it. It is also refreshed by parity/retransmit ACKs, and it performs no inflight-shrink progress test despite its name \u2014 the genuine product analogue (TailRecovery::last_progress_ns, gated on inflight shrink) exists but is not publicly readable and is not used."
+    },
+    "Q5_burst_localised_or_whole_rtt1000": {
+      "note": "Staleness at RTT=1000 ms splits into two DISTINCT populations, not one gradient.",
+      "population_A_no_telemetry_at_all": 5,
+      "population_B_aged_telemetry": 5
+    }
+  },
+  "item_7_verdict": "Window reduction is NOT a remedy: reach_fraction identical (0.8333) at every W.",
+  "item_7_window_feasibility": {
+    "128": {
+      "all_auc_bars_met": true,
+      "markov_bd_min_coverage_pinned": 0.814,
+      "max_abs_bias_ppm": 23172.0,
+      "mean_stdev_ppm": 96517.2,
+      "min_auc_lo95": 0.9979,
+      "reach_fraction": 0.8333,
+      "state_bytes": 1152,
+      "time_to_w_ms_median": 9400.0
+    },
+    "192": {
+      "all_auc_bars_met": true,
+      "markov_bd_min_coverage_pinned": 0.992,
+      "max_abs_bias_ppm": 15681.0,
+      "mean_stdev_ppm": 81665.6,
+      "min_auc_lo95": 0.9987,
+      "reach_fraction": 0.8333,
+      "state_bytes": 1728,
+      "time_to_w_ms_median": 10300.0
+    },
+    "256": {
+      "all_auc_bars_met": true,
+      "markov_bd_min_coverage_pinned": 0.996,
+      "max_abs_bias_ppm": 10782.0,
+      "mean_stdev_ppm": 71902.2,
+      "min_auc_lo95": 0.9989,
+      "reach_fraction": 0.8333,
+      "state_bytes": 2304,
+      "time_to_w_ms_median": 11000.0
+    },
+    "64": {
+      "all_auc_bars_met": true,
+      "markov_bd_min_coverage_pinned": 0.294,
+      "max_abs_bias_ppm": 36888.0,
+      "mean_stdev_ppm": 126251.4,
+      "min_auc_lo95": 0.9771,
+      "reach_fraction": 0.8333,
+      "state_bytes": 576,
+      "time_to_w_ms_median": 7850.0
+    }
+  },
+  "item_8_semantics": {
+    "applied_to_existing_dataset": false,
+    "decision": "fate-known-ready is design-correct; delivery-drain is a harness defect",
+    "new_42b_dataset_produced": false,
+    "rationale": "chosen by WHEN THE PRODUCT COULD DECIDE, not by which yields higher eligibility",
+    "separate_timestamps_required": [
+      "t_warmup_end",
+      "t_delivery_drain",
+      "t_fate_known_ready",
+      "t_estimator_snapshot",
+      "t_decision_block"
+    ],
+    "timing": 1767.0
+  },
+  "item_9_paths": {
+    "PATH_A": {
+      "caveat": "34/40 fresh RTT1000 runs converge normally; excluding the cell discards a mostly-working region and fixes neither product defect",
+      "coverage_lost": "RTT~1000ms long-haul/BLOS/satellite-relay \u2014 a stated product target",
+      "fallback_interlock": "R0/ESTIMATOR_INELIGIBLE, proven wire-identical by calibrated_r0_equals_static_r0_wire_exact",
+      "fraction_dropped": 0.383,
+      "rows_dropped": 15050,
+      "rows_kept": 24250,
+      "support_predicate": "observed-snapshot eligibility + \u00a73.4b support bins (NOT the RTT label \u2014 \u00a73.4b forbids configured labels)"
+    },
+    "PATH_B": {
+      "prerequisites": [
+        "DR-CS-2 cold-start liveness",
+        "RTT-relative freshness / telemetry_age producer (separate safety design)",
+        "post-convergence rate-ramp lock DR",
+        "estimator v2 only if a gap remains"
+      ],
+      "rows_preserved": 39300
+    }
+  },
+  "prohibitions_honored": {
+    "bar_0_90_unchanged": true,
+    "eligibility_thresholds_unchanged": true,
+    "existing_artifacts_unmodified": true,
+    "frozen_42b_records_verified": 82,
+    "max_telemetry_age_ns_unchanged": true,
+    "no_commit_push_pr": true,
+    "rtt1000_not_dropped": true
+  },
+  "result_bearing_calibration_runs": 0,
+  "yetki_2": "NOT AUTHORIZED"
+}

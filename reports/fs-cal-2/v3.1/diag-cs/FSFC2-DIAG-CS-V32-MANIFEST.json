@@ -1,0 +1,209 @@
+{
+  "arq_contract": {
+    "applies_identically_to_both_arms": true,
+    "arq_contract_id": "FSCAL2-ARQ-DEFAULTFEAT-TAILV1-v1",
+    "compile_features": "DEFAULT (no experimental-cold-start, no experimental-fec-budget)",
+    "setting_symbol": "Sender::new() + set_tail_recovery_config(tail_on_config())",
+    "tail_on_config": {
+      "enabled": true,
+      "initial_pto_ns": 1000000000,
+      "max_ack_delay_ns": 25000000,
+      "max_backoff_pto_ns": 30000000000,
+      "max_pto_ns": 10000000000,
+      "max_tail_probes": 3,
+      "min_pto_ns": 10000000
+    },
+    "tail_probe": "ON (verified \u00a71)"
+  },
+  "calibration_rows_contributed": 0,
+  "condition": {
+    "arm": "STATIC_R0",
+    "burst_length_l": 10,
+    "estimator_window": 256,
+    "note": "Identical to the FAILED \u00a74.2b P2 cell (P2-GE20L10-RTT1000).",
+    "p_ppm": 200000,
+    "rtt_ms": 1000,
+    "structure": "GE-L10",
+    "warmup_units": 384,
+    "workload_sealed_bytes": 101
+  },
+  "extended_timeout_derivation": {
+    "candidate_a_coldstart_giveup_plus_guard_ns": 65000000000,
+    "candidate_b_last_probe_step_plus_rtt_plus_guard_ns": 51000000000,
+    "candidate_c_floor_60s_ns": 60000000000,
+    "extended_timeout_ns": 65000000000,
+    "extended_timeout_s": 65.0,
+    "frozen_warmup_timeout_ns": 18498000000,
+    "frozen_warmup_timeout_s": 18.498,
+    "guard_justification": "guard = RTT (one full round trip for the first SACK to return) + PreConverge emission quantum (ceil(SEALED / PRE_CONVERGE_FLOOR_BW) = time to accrue tokens for ONE 101 B unit at the 31 B/s floor) + harness timer resolution dt (10 \u00b5s), rounded UP to a whole second. Both terms are required: a sender that has just emitted its first unit needs a further RTT before any SACK can possibly arrive, and it cannot emit at all faster than the floor quantum.",
+    "guard_ns": 5000000000,
+    "guard_s": 5.0,
+    "harness_tick_dt_ns": 10000,
+    "preconverge_emission_quantum_ns": 3258064517,
+    "preconverge_emission_quantum_s": 3.2581,
+    "preconverge_floor_bw_bytes_per_s": 31,
+    "ratio_extended_over_frozen": 3.5139,
+    "rtt_ns": 1000000000,
+    "sealed_unit_bytes": 101
+  },
+  "fit_use": "FORBIDDEN",
+  "grounded_constants": {
+    "CS_GIVEUP_NS": {
+      "cfg_gate": "#[cfg(feature = \"experimental-cold-start\")]",
+      "compiled_in_fs_cal_2": false,
+      "file_line": "crates/adaptive-transport/src/sender.rs:198",
+      "literal": "const CS_GIVEUP_NS: u64 = 60_000_000_000; // T_COLD_GIVEUP=60s (son-probe-45s + RTT_MAX-5s + marj)",
+      "note": "AUTHORITATIVE product cold-start give-up bound. NOT compiled under FS-CAL-2's DEFAULT features, so it does not act as a runtime escape hatch here; it is used as the authoritative timeout REFERENCE.",
+      "symbol": "sender.rs::CS_GIVEUP_NS",
+      "value": 60000000000
+    },
+    "CS_PROBE_FIRES_NS": {
+      "cfg_gate": "#[cfg(feature = \"experimental-cold-start\")]",
+      "compiled_in_fs_cal_2": false,
+      "file_line": "crates/adaptive-transport/src/sender.rs:192",
+      "last_step_ns": 45000000000,
+      "symbol": "sender.rs::CS_PROBE_FIRES_NS",
+      "value": [
+        3000000000,
+        9000000000,
+        21000000000,
+        45000000000
+      ]
+    },
+    "PC_COPY_MULTIPLIER": {
+      "compiled_in_fs_cal_2": true,
+      "file_line": "crates/adaptive-transport/src/sender.rs:794",
+      "note": "\u00a73.3-B geometric copy reschedule multiplier (interval \u00d7= 2 on each fire).",
+      "value": 2
+    },
+    "PC_KBASE": {
+      "compiled_in_fs_cal_2": true,
+      "file_line": "crates/adaptive-transport/src/sender.rs:792-793",
+      "value": "3/2"
+    },
+    "PRE_CONVERGE_FLOOR_BW": {
+      "applied_at": "crates/adaptive-transport/src/sender.rs:2306 (compute_send_rate: PreConverge \u21d2 return PRE_CONVERGE_FLOOR_BW)",
+      "compiled_in_fs_cal_2": true,
+      "file_line": "crates/adaptive-transport/src/sender.rs:726",
+      "literal": "const PRE_CONVERGE_FLOOR_BW: u64 = 31;  // \u00a73.3-A worst-corner prior pacing floor (B/s) ~0.25 kbps",
+      "symbol": "sender.rs::PRE_CONVERGE_FLOOR_BW",
+      "units": "bytes/second",
+      "value": 31
+    },
+    "PreConverge_exit_rule": {
+      "file_line": "crates/adaptive-transport/src/sender.rs:56-58, 2066-2072",
+      "literal": "\u00a73.3 cold-start: ... loss-ilan\u0131/PTO/emergency/ack_confidence DONDURULUR. \u0130lk ge\u00e7erli SACK'te \u2192 Startup.",
+      "operative": "PreConverge is left ONLY on the first valid SACK. PTO/time-threshold loss declaration is FROZEN while in PreConverge (sender.rs:1847 guards it)."
+    }
+  },
+  "isolation": "Namespace-disjoint from every calibration dataset. These records live under reports/fs-cal-2/v3.1/diag-cs/ and carry experiment_phase=DIAG_CS_V32 + fit_use=FORBIDDEN. They MUST NOT enter any training / support-bitmap / holdout / parameter-fit dataset.",
+  "layers": {
+    "D1": {
+      "cell_id": "P2-GE20L10-RTT1000",
+      "n": 8,
+      "name": "deterministic stall replay",
+      "purpose": "debugging only \u2014 produces NO rate and NO scientific effect estimate.",
+      "rationale": "The EXACT 8 runs that produced zero-transmission stalls in the failed \u00a74.2b P2 cell (same seed_domain + cell_id + repetition \u21d2 byte-identical loss streams).",
+      "repetitions": [
+        5,
+        9,
+        14,
+        16,
+        17,
+        25,
+        38,
+        39
+      ],
+      "seed_domain": "FSFC2-DIAG42B",
+      "warmup_timeout_ns": 65000000000
+    },
+    "D2": {
+      "cell_id": "P2-GE20L10-RTT1000",
+      "n": 40,
+      "name": "fresh diagnostic",
+      "rationale": "Disjoint seed domain \u2014 NOT a re-read of the \u00a74.2b draws.",
+      "repetitions": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39
+      ],
+      "seed_domain": "FSFC2-DIAG-CS-V32",
+      "warmup_timeout_ns": 65000000000
+    },
+    "INVARIANCE_CONTROL": {
+      "name": "science-invariance control",
+      "purpose": "Re-run the stall seeds at the FROZEN timeout with the instrumented binary and prove every estimator field matches the frozen \u00a74.2b records exactly (KALICI-KURAL-3: executable conformance check, not inspection).",
+      "repetitions": [
+        5,
+        9,
+        14,
+        16,
+        17,
+        25,
+        38,
+        39
+      ],
+      "seed_domain": "FSFC2-DIAG42B",
+      "warmup_timeout_ns": 18498000000
+    }
+  },
+  "manifest": "FSFC2-DIAG-CS-V32",
+  "namespace": "FSFC2-DIAG-CS-V32",
+  "prohibitions": [
+    "No calibration fit, no policy freeze, no support-bitmap derivation from these rows.",
+    "max_telemetry_age_ns MUST NOT be changed by this diagnostic.",
+    "Eligibility thresholds (N=256, n10+n11>=8, n00+n01>=32) MUST NOT be changed.",
+    "The 0.90 \u00a74.2b bar MUST NOT be lowered.",
+    "RTT=1000 MUST NOT be dropped from scope merely because it fails."
+  ],
+  "provenance": {
+    "source_commit_40hex": "4aa11a93af44b2b9e884461e8db3d1ed576c8b4f",
+    "source_sha256": {
+      "crates/adaptive-transport/src/fate_estimator.rs": "9116cc39af77870af5d94ac2c23be5649f8d18265d8ac0b25a9f6eada5db685c",
+      "crates/adaptive-transport/src/fusion_policy.rs": "4f2b0dc59325e65ca7b8987ff6095fa23d80a0198b3af72b8c23d71d416c2f0c",
+      "crates/adaptive-transport/src/sender.rs": "fc538d7868657ec523e55806e808b46ee3b3952454b0abeec336c6570821f182",
+      "crates/adaptive-transport/src/tail_recovery.rs": "0cd0b9cb271e232afc97241cf11bc247215ae846dabad03193174ee41b245df4",
+      "crates/kama-integration/examples/fs_cal2_runner.rs": "ce3c1b536b053aca1c7cc2cb3e3fb2c9182ab66e017bc684a935de4d0709c6ef",
+      "crates/kama-integration/tests/common/fs_cal2_spine.rs": "5fdfe207f40a482b279871624d9ad80a5965eb7d1362e0a47d98871a46795734"
+    }
+  },
+  "purpose": "liveness/root-cause only",
+  "result_bearing": false
+}

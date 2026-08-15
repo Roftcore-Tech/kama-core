@@ -1,0 +1,40 @@
+{
+  "artifact": "INV-RATE-1-STARTUP-FLOOR-SUPERSESSION",
+  "authorized_by": "PRODUCT REPAIR CONTINUATION \u00a71A.1",
+  "head_at_start": "4aa11a93af44b2b9e884461e8db3d1ed576c8b4f",
+  "no_assertion_weakened_to_ge": true,
+  "old_test_disposition": "NOT deleted. Preserved verbatim with name, fixture and both exact equality assertions; one line added that DISABLES the floor, making it the authoritative legacy floor-inactive pin (old rate law must hold EXACTLY).",
+  "safety_purpose": "INV-RATE-1: loss must NOT reduce send_rate; closes the TUR-7 blind spot where a loss declaration during Startup flipped the phase gain 2.885x -> 1.0x (an effective x2.885 rate cut)",
+  "superseded_test": {
+    "name": "sender::tests::inv_rate_1_loss_declaration_preserves_phase_gain",
+    "path": "crates/adaptive-transport/src/sender.rs",
+    "seal": "[TUR-7 \u03b21 K\u0130L\u0130T-GOLDEN \u2014 tez-korumas\u0131, Abkarada karar-2]; cift-kilit-v1 \u00a70-\u00d6N/S1"
+  },
+  "superseding_tests": [
+    "inv_rate_1_loss_declaration_preserves_phase_gain (re-scoped, floor inactive)",
+    "inv_rate_1_active_floor_loss_does_not_reduce_rate",
+    "startup_floor_arms_only_on_preconverge_exit",
+    "startup_floor_not_armed_or_raised_by_loss",
+    "startup_floor_never_exceeds_cwnd_over_srtt",
+    "startup_floor_writes_no_synthetic_btlbw_samples",
+    "startup_floor_release_is_deterministic_and_permanent"
+  ],
+  "why_exact_equality_no_longer_universal": {
+    "fixture_numbers": {
+      "btlbw": 2400,
+      "grounded_floor": 9600,
+      "phase_derived": 6924,
+      "srtt_ms": 500
+    },
+    "new_law": "effective = max(phase_derived_rate, startup_floor), startup_floor <= cwnd/srtt",
+    "old_law": "rate == Gain::STARTUP.apply(btlbw)"
+  },
+  "why_safety_purpose_not_violated": [
+    "floor is a max(): it can only RAISE the rate, never cut it",
+    "floor arms ONLY on PreConverge->Startup; loss can neither arm nor raise it",
+    "PacingPhase / Gain::STARTUP / base_is_startup / recovery-exit-to-base untouched",
+    "cwnd/srtt structural HARD ceiling bounds the floor, including a post-loss shrinking cap",
+    "bootstrap-only: deterministic permanent release; cannot re-arm in later phases"
+  ],
+  "written_before_any_test_edit": true
+}

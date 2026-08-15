@@ -1,0 +1,24 @@
+{
+  "configured_offline_only": [
+    "configured_burst_length",
+    "configured_loss_ppm",
+    "configured_markov_b_ppm",
+    "configured_rtt_ms",
+    "configured_structure",
+    "configured_tail_length"
+  ],
+  "errors": [],
+  "expected_from_manifest": 45,
+  "extra": [],
+  "missing": [],
+  "policy_replay_allowlist": [
+    "burst_delta_ppm",
+    "estimator_eligible",
+    "measured_loss_ppm",
+    "support_eligible",
+    "workload_supported"
+  ],
+  "records_seen": 45,
+  "records_valid": 45,
+  "verdict": "PASS"
+}

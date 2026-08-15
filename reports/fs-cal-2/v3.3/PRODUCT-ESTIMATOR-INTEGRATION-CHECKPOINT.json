@@ -1,0 +1,14 @@
+{
+  "artifact": "PRODUCT-ESTIMATOR-INTEGRATION-CHECKPOINT",
+  "fit_use": "FORBIDDEN",
+  "notes": [
+    "Status remains PRODUCT-ESTIMATOR-INTEGRATION-FEASIBLE, which is NOT a PASS.",
+    "Still required: real product caller; ordinal/source counter; grounded telemetry_age_ns producer (no producer exists outside a cfg(test) fixture); policy stays default-OFF; R0 fallback preserved."
+  ],
+  "phase": "FAZ-5",
+  "product_behavior_changed": false,
+  "reason": "Not reached; FAZ 2 stopped.",
+  "result_bearing_calibration_runs": 0,
+  "scope": "estimator wiring + telemetry grounding",
+  "status": "NOT STARTED"
+}

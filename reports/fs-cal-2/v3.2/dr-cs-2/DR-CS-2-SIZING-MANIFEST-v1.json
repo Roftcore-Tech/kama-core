@@ -1,0 +1,42 @@
+{
+  "blocking_gate": {
+    "consequence": "per the frozen preregistration, the 80-run sizing diagnostic was NOT executed",
+    "gate": "A1 ladder isolation",
+    "verdict": "LADDER-NOT-ISOLATABLE"
+  },
+  "calibration_use": "FORBIDDEN",
+  "condition": {
+    "N_pairs": 40,
+    "T_EVAL_ns": 65000000000,
+    "arms": [
+      "CS-BASELINE",
+      "CS-LADDER-ONLY"
+    ],
+    "burst_l": 10,
+    "executed_runs": 0,
+    "p_ppm": 200000,
+    "planned_runs": 80,
+    "rtt_ms": 1000,
+    "structure": "GE-L10"
+  },
+  "fit_use": "FORBIDDEN",
+  "manifest": "DR-CS-2-SIZING-V1",
+  "minimum_event_gate": "baseline_stall_count < 4 -> CS-AMBIGUOUS-INSUFFICIENT-EVENTS",
+  "namespace": "DR-CS-2-SIZING-V1",
+  "provenance": {
+    "source_commit_40hex": "4aa11a93af44b2b9e884461e8db3d1ed576c8b4f",
+    "source_sha256": {
+      "crates/adaptive-transport/src/bw.rs": "667264bbc4645ca54c7b964f4effd09d2cd119a8c85a04bbe249ffd3c1836b94",
+      "crates/adaptive-transport/src/pacer.rs": "e9fea2a9120483a0707c283c503a9107b6f2be1cc0befa7346993874b9632c2d",
+      "crates/adaptive-transport/src/sender.rs": "3548fcbd2006a7385c3339f5738bd7882cd039b123e24465dd8e94cee5774945",
+      "crates/adaptive-transport/src/tail_recovery.rs": "e785263721a96deb8688efa375910332e546cb61285b57d996e30babc8296712",
+      "crates/kama-integration/tests/common/fs_cal2_spine.rs": "ebb81dd41f1e0b902da4a00a32caeb04ec2c4e3bfa2e0443677c5223f41c59ef"
+    }
+  },
+  "purpose": "cold-start ladder sizing (liveness only)",
+  "result_bearing": false,
+  "seed_rule": "SHA256(\"DR-CS-2-SIZING-V1\" || repetition || stream_class)",
+  "stall_predicate": "STALL(65s) := no PreConverge exit by T_EVAL OR no valid ACK/SACK by T_EVAL",
+  "status": "NOT EXECUTED \u2014 blocked at the \u00a7A1 isolation gate",
+  "zero_tx_stall_predicate": "STALL AND data_wire_emitted=0 AND recovery/control wire emission=0"
+}
