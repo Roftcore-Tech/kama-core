@@ -86,10 +86,27 @@ as a whole.
 
 Read from the M2 execution plan, `TASK-C0` (lines 954-975) and `TASK-C1` (lines 979-1004).
 
-**Provenance warning.** `specs/Kama_M2_Claude_Code_Atomik_Yurutme_Plani_2026-08-15.md` is
-**UNTRACKED** (`git ls-files --error-unmatch` fails; `git status` shows `??`). The whole disposition
-below therefore rests on a file that is not in git — the same reproducibility failure mode §12
-records for the deleted `/tmp` comparator. Tracking that plan is a prerequisite for D0.
+**Provenance — resolved by TASK-A0P.** The plan this disposition rests on is now **tracked**, in the
+same explicit-path commit that records this provenance:
+
+    path     : specs/Kama_M2_Claude_Code_Atomik_Yurutme_Plani_2026-08-15.md
+    revision : rev.2
+    sha256   : 4bda43a82c89d01ded0aaac1b4cce9b36784dca76554746abb3bf4980292e95a
+    bytes    : 57774
+    lines    : 1444
+
+    M2-EXECUTION-PLAN-REV2-BYTE-FREEZE — plan bytes were NOT modified while tracking it.
+
+Resolved by **semantic markers, not filename or line count**: it was the unique untracked Markdown
+file (of 41) carrying all eight of `TASK-A0` / `TASK-D0` / `TASK-V1` / `TASK-V5` / `TASK-C0` /
+`TASK-C1` / `TASK-S0` / `TASK-S1`, plus the §3.3 predeclared time-cut rule (line 286), D0 item 10's
+locked-panel impact declaration, and TASK-V1's two axes (authoritative / diagnostic).
+
+The disposition below was checked against that exact revision. Every obligation cited by its
+**eighteen** rows is present in the plan, with none invented and none missing: rows 1-12 and 17 map
+to `TASK-C0` (lines 964-971 and its PASS at 975), rows 13-16 and 18 to `TASK-C1` (PASS bullets
+997-1000 and its FAIL at 1004). `TASK-C0` and `TASK-C1` sit at lines 954 and 979, and the dependency
+chain at lines 319-334 resolves to `V5 → C0 → C1 → S0 → S1 → S2` as §8 states.
 
 | # | Original obligation | Source | Disposition | How PASS/FAIL is evaluated |
 |---|---|---|---|---|
@@ -211,7 +228,7 @@ They must not be converted into an event cap, a runtime bound, or a product find
 
 ## 8. Dependency update
 
-Plan graph before (from the untracked plan document, lines 319-334):
+Plan graph before (from the tracked rev.2 plan, sha256 `4bda43a8…e95a`, lines 319-334):
 
     TASK-V5 → TASK-C0 → TASK-C1 → TASK-S0 → TASK-S1 → TASK-S2
 
