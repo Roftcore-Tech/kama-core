@@ -32,7 +32,7 @@ fn main() {
                 continue;
             }
             a0_censored += 1;
-            let a0t = run_spine(SpineArm::A0Tail, &build_cfg(c, rep));
+            let a0t = run_spine(SpineArm::A0Tail { r: 0 }, &build_cfg(c, rep));
             let f0 = run_spine(SpineArm::F0 { r: 2 }, &build_cfg(c, rep));
             if a0t.completed {
                 a0tail_recovered += 1;

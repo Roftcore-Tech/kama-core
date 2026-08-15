@@ -42,7 +42,19 @@ pub const REF_BLOCKS: u16 = 6;
 pub enum SpineArm {
     A0,
     /// DR-ARQ-TAIL-1: A0 + experiment-only bounded tail probe (deconfounding arm; NOT an FS-1 arm).
-    A0Tail,
+    ///
+    /// `r` is the proactive redundancy carried alongside the tail probe.
+    ///
+    /// * `r = 0` is the original tail-only arm and is byte-identical to it — every existing call
+    ///   site passes 0, so the banked R2A dataset stays valid.
+    /// * `r > 0` is the **fusion cell**: tail-capable ARQ *and* proactive redundancy together.
+    ///   FS-FUSION-CAL-1's framing corrigendum §3 records that this cell "is genuinely absent
+    ///   from every authoritative dataset" — the coverage matrix has r0/r2/r4 for frozen ARQ but
+    ///   only r0 for tail-capable ARQ, so the question the fusion calibration exists to answer
+    ///   was never measured on the arm that matters.
+    A0Tail {
+        r: u16,
+    },
     A1 {
         r: u16,
     },
@@ -373,10 +385,15 @@ pub fn run_spine(arm: SpineArm, cfg: &SpineCfg) -> SpineResult {
     let originals = app_units();
 
     // Arm geometry.
-    let is_a0tail = matches!(arm, SpineArm::A0Tail);
+    let is_a0tail = matches!(arm, SpineArm::A0Tail { .. });
     let (arm_name, r, is_a1, is_fec, is_f1, is_f3, is_f4) = match arm {
         SpineArm::A0 => ("A0", 0, false, false, false, false, false),
-        SpineArm::A0Tail => ("A0-TAIL", 0, false, false, false, false, false),
+        // r=0 keeps the original label and the original geometry (is_fec=false), so the tail-only
+        // arm is unchanged. r>0 is the fusion cell and takes F0's coding geometry, with a DISTINCT
+        // label: two arms that behave differently must not share a name, or a later analysis
+        // cannot tell their records apart.
+        SpineArm::A0Tail { r: 0 } => ("A0-TAIL", 0, false, false, false, false, false),
+        SpineArm::A0Tail { r } => ("A0-TAIL+F", r, false, true, false, false, false),
         SpineArm::A1 { r } => ("A1", r, true, false, false, false, false),
         SpineArm::F0 { r } => ("F0", r, false, true, false, false, false),
         SpineArm::F1 { r } => ("F1", r, false, true, true, false, false),

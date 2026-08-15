@@ -114,7 +114,7 @@ fn cfg_of(c: &Cell, rep: u8) -> SpineCfg {
 type ArmSpec = (&'static str, fn() -> SpineArm);
 const ARMS: [ArmSpec; 4] = [
     ("A0-FROZEN", || SpineArm::A0),
-    ("A0-TAIL", || SpineArm::A0Tail),
+    ("A0-TAIL", || SpineArm::A0Tail { r: 0 }),
     ("F0", || SpineArm::F0 { r: 2 }),
     ("A1-EARLY", || SpineArm::A1 { r: 2 }),
 ];
