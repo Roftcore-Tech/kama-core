@@ -5,6 +5,30 @@
 
 ---
 
+## 0. ERRATUM — corrections applied 2026-08-15 after direct re-measurement
+
+Two rows in §1.1 were overstated in the first cut of this ledger. Both were relayed from a survey
+agent and committed without my re-measuring them. Corrected here against the raw data:
+
+* **Q5 RETRACTED.** The claimed "cell where the probe is measurably worse" is an adversarial slice
+  that drops probes at 40 %, where `mean_probe_sent` = 0.2 and n = 10. Two runs of difference is
+  noise. **No completion regression is established anywhere in the corpus.**
+* **Q6 RECLASSIFIED.** The shipped-default / validated-config mismatch is real, but
+  `set_tail_recovery_config()` already exists, so enabling correctly is a wiring call, not a
+  re-measurement. It does **not** belong on the list of things blocking the tail result.
+
+**Net effect on the tail verdict: it is stronger than the first cut implied.** 12 terminal-tail
+cells, n = 30 each, 2290 rows: OFF 0-3/30 → ON 29-30/30 in **11 of 12**, with the single exception
+(`terminal-tail,10,med`) failing loudly through its own `cap_exhausted` = 30 counter. **The tail
+probe needs no further measurement.** One tuning item remains, and it was already recorded as
+tuning-pending by the campaign itself.
+
+This does not weaken §5 — it sharpens it. The tail mechanism is measured, proven, and still
+unshippable, because it is `enabled: false` behind an unwired dependency edge. That is a coding
+deficit, not a testing deficit.
+
+---
+
 ## 1. EVIDENCE LEDGER
 
 ### 1.1 ARQ / tail recovery
@@ -14,9 +38,9 @@
 | Q1 | Does a bounded PTO tail probe recover terminal-tail erasures the shipped ARQ censors, **on a real wire**? | **PROVEN** | Verbatim: *"**GO — MECHANISM CORRECT, POLICY/TUNING PENDING**"*. Terminal-tail, 12 cells × 30 paired reps, N=360/arm: OFF **8/360 (2.2 %)** vs ON **329/360 (91.4 %)**. ON-only 27–30/30 in 11 of 12 cells; **OFF-only = 0 in every cell**. Cost +101…+404 B, 1–4 retransmitted units. | `reports/dr-arq-product-tail-1/v1/FINAL-CHECKPOINT.md` |
 | Q2 | Is it bounded and invariant-clean? | **PROVEN** | 2290/2290 rows (2160 core + 130 adversarial), 0 missing/extra/duplicate/skip. **global max `probe_sent` = 3 = cap**; `inv_fail` = 0 across all 2290; `sum_spurious` = 0 across all adversarial slices; OFF rows with probe activity = 0. Frozen: commit `c46e8fa3`, binary `a1113236`, manifest `bf849aba`, rustc 1.96.0. | same, §2 |
 | Q3 | Do the reorder / delayed-ACK guards hold? | **PROVEN** | reorder OFF 1.00 / ON 1.00, `probe_sent` 0. delayedack OFF 0.00 / ON 0.20, `probe_sent` 0. jitter, pathpause (mid-run 100 % blackout), rttstepup, rttstepdown: OFF 0.00 → ON 1.00. | same, §5 + `v1/CELL-RESULTS.csv` |
-| Q4 | Is tail recovery ready to ship default-ON? | **NO — PARTIAL** | Three recorded blockers + one unrecorded. (T1) `terminal-tail,10,med,on`: **0/30 complete, `sum_cap_exhausted` = 30, `probe_sent` = 3.0, +303 B pure cost** — cap spent before packet-threshold ARQ engages. (T2) high-loss cold-start token starvation in PreConverge (harness warms up first; a default-ON product would not). (T3) `dl_hit` = 0.0 in **every** terminal cell, both arms — no product SLO exists. | `reports/dr-arq-product-tail-1/v1/FINAL-CHECKPOINT.md` §6 + `CELL-RESULTS.csv` |
-| Q5 | Is there a cell where ON is measurably **worse**? | **PROVEN — yes, and it is under-reported** | `probeloss,40,med`: OFF **3/10** complete vs ON **1/10**; paired off-only 2, on-only 0, Δwire −404. The checkpoint reports this cell only as *"the retry CAP holds (≤3, observed 1)"* and does not flag the completion regression. n=10. | `reports/dr-arq-product-tail-1/v1/CELL-RESULTS.csv` (verified line-by-line) |
-| Q6 | Was the **shipped** config the one validated? | **NO — unrecorded in any report** | `TailRecoveryConfig::default()`: `max_tail_probes: 2`, min_pto 1 ms, max_pto 60 s, max_backoff 120 s. Validated `tail_on_config()`: **`max_tail_probes: 3`**, min_pto 10 ms, max_pto 10 s, max_backoff 30 s. Only `initial_pto` and `max_ack_delay` match. Flipping `enabled=true` today ships a configuration that was **never run** — and the T1 finding is specifically about cap-3 exhaustion. | `crates/adaptive-transport/src/tail_recovery.rs:36-46` vs `crates/adaptive-transport/examples/dr_arqtail_product.rs:36-46` |
+| Q4 | Is tail recovery ready to ship default-ON? | **NO — PARTIAL** | **One real tuning blocker**, plus two items reclassified after direct re-measurement (see Q5 retracted, Q6 wiring). (T1) `terminal-tail,10,med,on`: **0/30 complete, `sum_cap_exhausted` = 30, `probe_sent` = 3.0, +303 B pure cost** — cap spent before packet-threshold ARQ engages. (T2) high-loss cold-start token starvation in PreConverge (harness warms up first; a default-ON product would not). (T3) `dl_hit` = 0.0 in **every** terminal cell, both arms — no product SLO exists. | `reports/dr-arq-product-tail-1/v1/FINAL-CHECKPOINT.md` §6 + `CELL-RESULTS.csv` |
+| Q5 | Is there a cell where ON is measurably **worse**? | **RETRACTED — NOT SUPPORTED** | Original reading: `probeloss,40,med` OFF **3/10** vs ON **1/10**. Re-measured directly from `CELL-RESULTS.csv`: it is an **adversarial slice that drops the probes themselves at 40 %**, and `mean_probe_sent` = **0.2** with `max_probe_sent` = 1 — the probe barely fires. A 2-run difference at **n=10** is indistinguishable from noise. The checkpoint was right to record only that the cap held. **No completion regression is established anywhere in the corpus.** |
+| Q6 | Was the **shipped** config the one validated? | **NO — but this is a WIRING decision, not a measurement gap** | `TailRecoveryConfig::default()` (`tail_recovery.rs:36-46`) = cap **2**, min_pto 1 ms, max_pto 60 s, backoff 120 s. Validated `tail_on_config()` (`dr_arqtail_product.rs:36-46`) = cap **3**, 10 ms, 10 s, 30 s. `sender.rs:1225` constructs from `default()`. **But `set_tail_recovery_config()` already exists at `sender.rs:1420`** — so the correct way to enable is to call the setter with the validated config, never to flip the default. That path is already in the code. **No re-measurement is required.** |
 | Q7 | In-process tail effect (precursor evidence) | **PROVEN (in-process only)** | R2A C1, 9 S1 cells × N=100: A0-FROZEN 0/100 → A0-TAIL 100/100 at d1 (all RTTs, +101 B); rtt1000-d4 29/100 → 74/100 (+650 B). A0-FROZEN-only-complete = 0 in every cell. | `reports/dr-arq-tail-1/v1/DR-ARQ-TAIL-1-R2A-FINAL-REPORT.md` §C1 |
 
 ### 1.2 FEC / proactive redundancy
@@ -225,4 +249,4 @@ One new arm on an existing harness, plus the telemetry fields. *Beats a new camp
 **5. Add retraction banners to the four superseded documents, and delete or commit the untracked trees.**
 `fs-fusion-cal-1/FINAL-REPORT.md` + `FINAL-CHECKPOINT.md` (verdict withdrawn), `docs/results/kama-vs-quinn-v1.md` (p5 headline is an artifact), `FS-wallclock-fec-utility.md` §49-51 (superseded by the deadline corrigendum), `docs/roadmap/…status-board.md` (stale by four campaigns, and it is the customer-facing artifact). Then either commit `reports/fs-cal-2/` (1801 files) and `crates/adaptive-transport/src/fate_estimator.rs` or delete them. *Beats more measurement because a reader landing on any of these first takes away a retracted number, and the comparator-lost-in-`/tmp` incident proves untracked artifacts become permanently void.*
 
-**Explicitly do NOT do next:** flip tail recovery default-ON (the shipped config was never validated — Q6), re-run any FS-1/R2A/product-tail grid, start R2B, start the Quinn/TCP/KCP comparison (the baseline is contaminated and must be re-run pinned first), or resume the DR-CS-3 neutrality chain (the challenge phenotype is destroyed and may not be re-keyed).
+**Explicitly do NOT do next:** enable tail recovery by flipping `TailRecoveryConfig::default()` — enable it by calling `set_tail_recovery_config()` with the validated config (Q6); re-run any FS-1/R2A/product-tail grid, start R2B, start the Quinn/TCP/KCP comparison (the baseline is contaminated and must be re-run pinned first), or resume the DR-CS-3 neutrality chain (the challenge phenotype is destroyed and may not be re-keyed).
