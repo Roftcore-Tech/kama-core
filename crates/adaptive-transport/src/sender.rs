@@ -2609,15 +2609,25 @@ impl Sender {
                     self.bw_sampler.forget_in_flight();
                 }
                 if p.origin != TransmitKind::Duplicate {
-                    // Observation-only: same original-loss evidence the ARQ path acts on, with the
-                    // reordering guard taken from the PRODUCT bounded-PTO symbol rather than
-                    // re-derived, so the estimator can never disagree with the tail path about
-                    // what counts as a loss.
-                    let guard = self
-                        .tail_recovery
-                        .base_pto_ns(self.rtt.srtt().map(dur_ns), dur_ns(self.rtt.rttvar()));
-                    self.fate_estimator
-                        .on_loss_evidence(p.unit.id, now_ns, guard);
+                    // Observation-only loss evidence, ORIGINALS ONLY — symmetric with the success
+                    // side in on_ack_received. The enclosing branch admits everything that is not
+                    // a Duplicate, which also lets Retransmit and FecParity through, and parity
+                    // carries `unit_id: u64::from(p.esi)` (sender.rs, plan_fec_parity): an ESI is a
+                    // small integer in a DIFFERENT namespace from source logical ids. Feeding it
+                    // would inject foreign ids into a window defined over logical source order and
+                    // could fabricate `id`/`id+1` adjacency or collide with a real source id.
+                    //
+                    // The estimator's contract is the fate of an ORIGINAL transmission, so only
+                    // TransmitKind::Data may feed either side. Found by SOURCE-GROUNDING S-0.7,
+                    // which asks the question this wiring had not been asked: ingest existing is
+                    // not the same as ingest being faithful.
+                    if p.origin == TransmitKind::Data {
+                        let guard = self
+                            .tail_recovery
+                            .base_pto_ns(self.rtt.srtt().map(dur_ns), dur_ns(self.rtt.rttvar()));
+                        self.fate_estimator
+                            .on_loss_evidence(p.unit.id, now_ns, guard);
+                    }
                     self.pending_lost.push_back(LostRec {
                         seq,
                         unit: p.unit,

@@ -84,6 +84,37 @@ fn estimator_has_exactly_one_reader() {
             "unexpected estimator use — this would make it decision-carrying: {u}"
         );
     }
-    // Exactly the wiring this commit adds: two writes, one read.
+    // Exactly the wiring: two writes, one read.
     assert_eq!(uses.len(), 3, "estimator use count changed: {uses:?}");
+}
+
+/// SOURCE-GROUNDING S-0.7 — ingest FIDELITY, not merely ingest presence.
+///
+/// Both feeding sites must admit ONLY `TransmitKind::Data`. The loss site sits inside a branch
+/// that admits everything except `Duplicate`, so `Retransmit` and `FecParity` reach it unless the
+/// narrower condition is present. Parity carries `unit_id: u64::from(p.esi)` — an ESI is a small
+/// integer in a different namespace from source logical ids, so feeding it injects foreign ids into
+/// a window defined over logical source order.
+///
+/// This is a source-level pin because the corruption is silent: the counters would still be
+/// well-formed, the arithmetic would still be correct, and every existing fixture would still pass
+/// while describing a fate sequence the product never produced.
+#[test]
+fn estimator_ingest_admits_only_originals() {
+    let src = include_str!("../src/sender.rs");
+    let flat = src.replace('\n', " ");
+    for (site, needle) in [
+        ("success", ".on_original_ack("),
+        ("loss", ".on_loss_evidence("),
+    ] {
+        let i = flat
+            .find(needle)
+            .unwrap_or_else(|| panic!("{site} feeding site not found"));
+        // The guard must appear within the enclosing block, shortly before the call.
+        let window = &flat[i.saturating_sub(700)..i];
+        assert!(
+            window.contains("p.origin == TransmitKind::Data"),
+            "{site} ingest is not restricted to originals — Retransmit/FecParity can reach it"
+        );
+    }
 }
