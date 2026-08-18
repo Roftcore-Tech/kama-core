@@ -129,3 +129,18 @@ yetkilendirilmiş kalem**, kendi nötrlük kanıtıyla. Bu turda yazılmadı, me
 
 Ve hepsinin önünde: **estimator ürün yolunda dejenere** (`advance()` yok) ⇒ yapı sinyali şu an
 üretilemiyor. Bu kapanmadan diğer üçü akademik.
+
+---
+
+## ÇÖZÜM KAYDI (2026-08-15, sonradan)
+
+"En ağır bulgu"nun `advance()` bacağı **kapatıldı** — tasarım ve gerekçe:
+`docs/design/ESTIMATOR-LIFECYCLE.md`. `advance(now)` motor saatiyle birlikte `on_event_core`
+girişinde; `finalized` FATE_WINDOW'a sınırlandı (denklik kanıtıyla); üç zorunlu doğrulama
+(`n10+n11>0` gerçek akışta, deterministik dizide tam sayaçlar, legacy neutrality) iki build'de de
+yeşil. Boş geçen `f.n > 0` testi `n10+n11 > 0` ile değiştirildi.
+
+Karşıt denetimin yeni bulgusu — **in-guard düzeltme bacağı ürün yolunda erişilemez** (geç ACK
+tombstone/un-loss'a düşüyor, estimator'ı beslemiyor) — `ESTIMATOR-LIFECYCLE.md §6.1`'de bağlayıcı
+sınır olarak kayıtlı: **bu kapanmadan hiçbir kalibrasyon `burst_delta` tüketemez.** S-8'in
+enstrümantasyon dalı ve Prereg-A `BLOCKED-PENDING-INSTRUMENTATION` durumu değişmedi.

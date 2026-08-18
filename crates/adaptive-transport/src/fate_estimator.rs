@@ -197,7 +197,24 @@ impl FateEstimator {
         if self.provisional.remove(&id).is_some() {
             self.spurious_loss_corrections = self.spurious_loss_corrections.saturating_add(1);
         }
-        self.finalized.insert(id, false);
+        self.insert_finalized(id, false);
+    }
+
+    /// Single insert point for `finalized`, bounded to [`FATE_WINDOW`] entries (SR-AUDIT-001: no
+    /// unbounded product allocation — the product lifecycle wiring makes this map grow, so it must
+    /// carry its own bound).
+    ///
+    /// Eviction is by LOWEST id (`pop_first`), which is exactly the set [`Self::snapshot`] already
+    /// ignores: the window is the highest [`FATE_WINDOW`] ids (`skip = len − FATE_WINDOW`), so
+    /// `snapshot(bounded) ≡ snapshot(unbounded)` in every reachable state. Late evidence for an
+    /// evicted id re-enters below the window and is evicted again here — the window is unchanged;
+    /// only the `late_ack_corrections`/`spurious_loss_corrections` counters can undercount for
+    /// evicted ids (observability-only).
+    fn insert_finalized(&mut self, id: u64, loss: bool) {
+        self.finalized.insert(id, loss);
+        while self.finalized.len() > FATE_WINDOW {
+            self.finalized.pop_first();
+        }
     }
 
     /// LOSS lineage evidence at `now_ns` (sender loss declaration, ARQ/tail retransmit emission, or
@@ -223,7 +240,7 @@ impl FateEstimator {
             .collect();
         for id in due {
             self.provisional.remove(&id);
-            self.finalized.insert(id, true);
+            self.insert_finalized(id, true);
         }
     }
 

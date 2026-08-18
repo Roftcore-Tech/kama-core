@@ -1524,6 +1524,18 @@ impl Sender {
         let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
         self.pacer.refill(dt);
         self.last_now_ns = now_ns;
+        // FS-CAL-2 v3 §3 lifecycle (design: docs/design/ESTIMATOR-LIFECYCLE.md). Finalize
+        // guard-elapsed provisional losses at the engine clock, BEFORE this event's evidence is
+        // fed: an ACK arriving at now >= expiry is late by the module contract (the fate sealed at
+        // expiry), and advance-first realises exactly that — feed-first would silently extend the
+        // guard to "the next event". Evidence fed later in THIS event gets expiry = now + guard
+        // > now, so it cannot be finalized prematurely by this call. TimerFired flows through this
+        // core, so a flow that goes silent after losses still finalizes on PTO ticks — the exact
+        // degenerate case S-ANSWERS recorded (advance had zero product callers; the product window
+        // held successes only and n10+n11 was structurally zero). RecoveredControl never reaches
+        // this core, preserving its documented clock isolation. Observation-only: nothing reads
+        // the estimator except diag_loss_structure (pinned by loss_structure_observation.rs).
+        self.fate_estimator.advance(now_ns);
 
         match event {
             Event::AppData(unit) => {
