@@ -1463,6 +1463,18 @@ impl Sender {
         self.fate_estimator.snapshot()
     }
 
+    /// S-0.7 correction-leg diagnostics (observation-only):
+    /// `(late_ack_corrections, spurious_loss_corrections, loss_to_success_corrections)`.
+    #[must_use]
+    pub fn diag_fate_corrections(&self) -> (u64, u64, u64) {
+        let (late, spurious) = self.fate_estimator.corrections();
+        (
+            late,
+            spurious,
+            self.fate_estimator.loss_to_success_corrections(),
+        )
+    }
+
     /// DR-ARQ-PRODUCT-TAIL-1 diagnostics (observation-only): (probes, probe_bytes, spurious, spurious_bytes).
     #[must_use]
     pub fn tail_probe_diag(&self) -> (u64, u64, u64, u64) {
@@ -2302,6 +2314,13 @@ impl Sender {
                 // prune edilmişse buraya düşmez (Expired/Unknown — örneksiz).
                 self.diag_tomb_hits += 1;
                 acked_units.push(t.unit.id); // teslim teyidi → bekleyen kopyaları iptal et
+                                             // S-0.7 correction leg (ESTIMATOR-LIFECYCLE §6.1): the ORIGINAL's own seq was
+                                             // late-acked — the product just disproved the loss it declared, so the estimator's
+                                             // fate is corrected in place. ORIGINALS ONLY: a superseded transmission's late ACK
+                                             // (kol-2, origin Retransmit) proves nothing about the original's fate.
+                if t.origin == TransmitKind::Data {
+                    self.fate_estimator.correct_original_delivered(t.unit.id);
+                }
                 if t.retx_count == 0 {
                     // kol-1 (tek gönderim, belirsizlik yok): BW-örneği NORMAL üretilir.
                     let sample = self.bw_sampler.on_ack(now_ns, t.bw_sample);
@@ -2356,7 +2375,15 @@ impl Sender {
                 }
                 self.diag_unloss += 1;
                 acked_units.push(rec.unit.id); // kopyaları aşağıdaki ortak iptale kat
-                                               // §9.3: gözlenen reorder mesafesiyle toleransı yükselt (küçülmez).
+                                               // S-0.7 correction leg: un-loss = the declared-lost seq itself was acked, the loss
+                                               // hypothesis is withdrawn. retx_count == 0 ⟺ this record is the ORIGINAL emission
+                                               // (a lost retransmit re-enters pending_lost with retx_count ≥ 1 and its ACK proves
+                                               // only the retransmit's delivery). Exactly-once is carried by the estimator method:
+                                               // the same late ACK can hit both the tombstone branch and this drain in one event.
+                if rec.retx_count == 0 {
+                    self.fate_estimator.correct_original_delivered(rec.unit.id);
+                }
+                // §9.3: gözlenen reorder mesafesiyle toleransı yükselt (küçülmez).
                 self.reorder
                     .note_spurious(u32::try_from(la.saturating_sub(rec.seq)).unwrap_or(u32::MAX));
                 // kol-1: retransmit HENÜZ gönderilmedi → orijinal RTT örneği GEÇERLİ.

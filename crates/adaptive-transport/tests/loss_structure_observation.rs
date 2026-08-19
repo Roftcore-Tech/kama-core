@@ -206,12 +206,17 @@ fn estimator_has_exactly_one_reader() {
             u.contains(".on_loss_evidence")
                 || u.contains(".on_original_ack")
                 || u.contains(".advance(")
+                || u.contains(".correct_original_delivered(")
+                || u.contains(".corrections()")
+                || u.contains(".loss_to_success_corrections()")
                 || u.contains(".snapshot()"),
             "unexpected estimator use — this would make it decision-carrying: {u}"
         );
     }
-    // Exactly the wiring: two evidence writes, one lifecycle advance, one diagnostic read.
-    assert_eq!(uses.len(), 4, "estimator use count changed: {uses:?}");
+    // Exactly the wiring: two evidence writes, one lifecycle advance, two S-0.7 correction
+    // hooks (tombstone kol-1 + un-loss, both originals-gated), and three observation-only reads
+    // (one snapshot + the correction-counter pair in diag_fate_corrections).
+    assert_eq!(uses.len(), 8, "estimator use count changed: {uses:?}");
 }
 
 /// SOURCE-GROUNDING S-0.7 — ingest FIDELITY, not merely ingest presence.
@@ -243,4 +248,158 @@ fn estimator_ingest_admits_only_originals() {
             "{site} ingest is not restricted to originals — Retransmit/FecParity can reach it"
         );
     }
+}
+
+/// S-0.7 correction leg — a declared-then-disproven loss is corrected IN PLACE, exactly once.
+///
+/// Drive: converge, declare seq 1 lost via a gapped ACK, let the guard elapse so the fate
+/// finalizes LOSS, then late-ACK the ORIGINAL seq 1. The product's un-loss/tombstone machinery
+/// withdraws the loss; the estimator must flip the SAME fate to SUCCESS — not append a new one —
+/// and a repeated late ACK must not correct twice.
+#[test]
+fn declared_loss_disproven_by_late_ack_corrects_in_place_once() {
+    let mut s = Sender::new();
+    feed(&mut s, 12);
+    for t in 1..=20u64 {
+        s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    // Converge (srtt) so loss processing is unlocked.
+    s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::ZERO,
+        }),
+        4_100 * MS,
+    );
+    for t in 21..=40u64 {
+        s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    // Gapped ACK: seq 1 (unit 1001) falls behind the packet threshold and is declared lost.
+    s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![2, 3, 4, 5, 6],
+            ack_delay: Duration::ZERO,
+        }),
+        9_000 * MS,
+    );
+    // Let the reordering guard elapse: the loss finalizes into the window.
+    for t in 46..=90u64 {
+        s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    let before = s.diag_loss_structure();
+    assert!(
+        before.window_ids.contains(&1001) && before.lost >= 1,
+        "precondition: unit 1001 must be finalized LOSS before the late ACK: {before:?}"
+    );
+    assert_eq!(
+        s.diag_fate_corrections().2,
+        0,
+        "no correction may exist yet"
+    );
+
+    // The ORIGINAL seq 1 arrives late — the product disproves its own declaration.
+    s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![1],
+            ack_delay: Duration::ZERO,
+        }),
+        18_200 * MS,
+    );
+    let after = s.diag_loss_structure();
+    let idx = after.window_ids.iter().position(|&i| i == 1001).unwrap();
+    assert!(
+        !after.window_fates[idx],
+        "the SAME fate must read SUCCESS after the product's disproof: {after:?}"
+    );
+    assert_eq!(
+        after.n, before.n,
+        "correction must flip in place, not append a new fate"
+    );
+    assert_eq!(s.diag_fate_corrections().2, 1, "exactly one correction");
+
+    // Repeat the same late ACK: exactly-once must hold.
+    s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![1],
+            ack_delay: Duration::ZERO,
+        }),
+        18_400 * MS,
+    );
+    assert_eq!(
+        s.diag_fate_corrections().2,
+        1,
+        "a repeated late ACK must not correct twice"
+    );
+}
+
+/// S-0.7 correction leg, negative arm — a RETRANSMIT's ACK proves nothing about the original.
+///
+/// After the loss is declared, drive the ARQ until the retransmit is emitted under a NEW seq, ACK
+/// that seq, and assert the original's LOSS fate stands and the correction counter stays zero.
+#[test]
+fn retransmit_ack_cannot_correct_the_originals_fate() {
+    let mut s = Sender::new();
+    feed(&mut s, 12);
+    for t in 1..=20u64 {
+        s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::ZERO,
+        }),
+        4_100 * MS,
+    );
+    for t in 21..=40u64 {
+        s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    // The retransmit is planned in the SAME on_event that declares the loss (loss is declared and
+    // drained inside one AckReceived — an established property of this engine), so capture it from
+    // that call's own output, then keep collecting while the guard elapses.
+    let mut retx_seq = None;
+    for d in s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![2, 3, 4, 5, 6],
+            ack_delay: Duration::ZERO,
+        }),
+        9_000 * MS,
+    ) {
+        if d.kind == TransmitKind::Retransmit && d.unit_id == 1001 {
+            retx_seq = Some(d.seq);
+        }
+    }
+    for t in 46..=90u64 {
+        for d in s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS) {
+            if d.kind == TransmitKind::Retransmit && d.unit_id == 1001 {
+                retx_seq = Some(d.seq);
+            }
+        }
+    }
+    let retx_seq = retx_seq.expect("ARQ must have retransmitted the declared-lost unit 1001");
+    let before = s.diag_loss_structure();
+    let idx = before.window_ids.iter().position(|&i| i == 1001).unwrap();
+    assert!(
+        before.window_fates[idx],
+        "precondition: 1001 finalized LOSS"
+    );
+
+    // ACK the RETRANSMIT seq — delivery of the copy, not of the original.
+    s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![retx_seq],
+            ack_delay: Duration::ZERO,
+        }),
+        18_200 * MS,
+    );
+    let after = s.diag_loss_structure();
+    let idx = after.window_ids.iter().position(|&i| i == 1001).unwrap();
+    assert!(
+        after.window_fates[idx],
+        "a retransmit ACK must NOT rewrite the original's LOSS: {after:?}"
+    );
+    assert_eq!(
+        s.diag_fate_corrections().2,
+        0,
+        "no correction may be counted for a retransmit ACK"
+    );
 }

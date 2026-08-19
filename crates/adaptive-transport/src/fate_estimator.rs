@@ -175,6 +175,10 @@ pub struct FateEstimator {
     late_ack_corrections: u64,
     /// Provisional loss corrected to `SUCCESS` by an original-ACK inside the guard (§3.1).
     spurious_loss_corrections: u64,
+    /// Finalized `LOSS` corrected in place to `SUCCESS` by the PRODUCT's own loss-disproof
+    /// machinery (TUR-2a un-loss / TUR-2b tombstone late-ACK) — see
+    /// [`Self::correct_original_delivered`].
+    loss_to_success_corrections: u64,
 }
 
 impl FateEstimator {
@@ -227,6 +231,47 @@ impl FateEstimator {
         }
         let expiry = now_ns.saturating_add(guard_ns);
         self.provisional.entry(id).or_insert(expiry);
+    }
+
+    /// Product-authoritative disproof of a declared loss (S-0.7 correction leg): the ORIGINAL
+    /// transmission of `id` is proven delivered by the product's own late-ACK machinery
+    /// (TUR-2a un-loss / TUR-2b tombstone hit). Corrects the SAME fate in place instead of
+    /// appending an unrelated `SUCCESS`:
+    ///
+    /// * still provisional → removed and finalized `SUCCESS` (`spurious_loss_corrections`);
+    /// * finalized `LOSS`  → flipped to `SUCCESS` in place (`loss_to_success_corrections`) —
+    ///   transition counters reflect it on the next [`Self::snapshot`], which recomputes from
+    ///   the map.
+    ///
+    /// Exactly-once: a repeat call finds `SUCCESS` and is a counted-nowhere no-op, so the
+    /// double-path event (a late ACK that hits BOTH the tombstone branch and the un-loss drain
+    /// in one `on_ack_received`) still corrects once.
+    ///
+    /// §3.1's "immutable once fate-known" bars late ACK *evidence* ([`Self::on_original_ack`]);
+    /// it does not bar the product itself WITHDRAWING the loss declaration the fate was built
+    /// from. An id already evicted from the bounded window is a no-op (`false`).
+    pub fn correct_original_delivered(&mut self, id: u64) -> bool {
+        if self.provisional.remove(&id).is_some() {
+            self.spurious_loss_corrections = self.spurious_loss_corrections.saturating_add(1);
+            self.insert_finalized(id, false);
+            return true;
+        }
+        match self.finalized.get_mut(&id) {
+            Some(fate) if *fate => {
+                *fate = false;
+                self.loss_to_success_corrections =
+                    self.loss_to_success_corrections.saturating_add(1);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// S-0.7 correction-leg diagnostic: finalized `LOSS` fates flipped to `SUCCESS` by
+    /// [`Self::correct_original_delivered`].
+    #[must_use]
+    pub fn loss_to_success_corrections(&self) -> u64 {
+        self.loss_to_success_corrections
     }
 
     /// Advance virtual time: finalize every provisional loss whose guard has elapsed

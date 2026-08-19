@@ -125,3 +125,48 @@ doygunlukta da doğru) — FS-CAL-2 akışına not düşüldü.
 Çağrı noktasında yanlış bir `advance(u64::MAX)` üç doğrulamayı da geçerdi (aynı-olay kanıtı yine
 erken finalize olamaz; guard süresini pinleyen Sender-seviyesi test yok). V2 bunu estimator
 seviyesinde pinliyor; Sender seviyesinde pinlemek 6.1 kapandığında anlamlı olur.
+
+## 7. KAPANIŞ — S-0.7 düzeltme bacağı uygulandı + iki kollu ürün-yolu ölçümü
+
+### 7.1 Uygulanan düzeltme semantiği (§6.1 kapandı)
+
+`FateEstimator::correct_original_delivered(id)`: ürünün kendi kayıp-çürütme makinesi
+(TUR-2a un-loss / TUR-2b tombstone geç-ACK) orijinalin teslimini kanıtladığında AYNI fate yerinde
+düzeltilir — provisional → SUCCESS (`spurious_loss_corrections`), finalized LOSS → SUCCESS
+(`loss_to_success_corrections`). Yeni bir SUCCESS eklenmez; tam-bir-kez (tekrar çağrı no-op —
+aynı geç-ACK'in tombstone dalını VE un-loss drenajını tek olayda vurması bu yüzden güvenli).
+İki ürün kancası, ikisi de yalnız-orijinal kapılı: tombstone kol-1 `t.origin == Data`,
+un-loss `rec.retx_count == 0` (⟺ orijinal emisyon). §3.1'in "immutable once fate-known" kuralı
+geç ACK *kanıtını* engeller (`on_original_ack` değişmedi); ürünün kendi ilanını GERİ ÇEKMESİNİ
+engellemez. Fuzzy/parity/pacing/send-rate kararları ve `advance()` yerleşimi değişmedi;
+`burst_delta`'yı hiçbir kural tüketmiyor (V3 pini: 8 kullanım = 2 kanıt yazımı + advance +
+2 düzeltme kancası + 3 salt-gözlem okuma).
+
+Doğrulamalar (default + experimental-cold-start): loss_structure_observation **6/6 × 2 build** —
+gerçek akışta `n10+n11>0` · deterministik dizi tam sayaçlar `(2,3,2,2)` · LOSS→SUCCESS yerinde ve
+tam-bir-kez · retransmit ACK'i düzeltemez (negatif kol) · lib 145/145 · fuzzy_e2e 5/5 · q18 1/1 ·
+clippy iki config'de temiz.
+
+### 7.2 FATE2ARM-V1 ölçümü (gerçek Sender→estimator yolu, overlay OFF)
+
+Konfig (koşudan önce beyan edildi): 300×101B · tam 60 kayıp (%20) · ACK RTT 50 ms · 25 ms adım ·
+240 s ufuk · N=20 paired seed (`FNV1a("FATE2ARM-V1"‖kol‖seed)`) · eligibility bayrakları
+(true, false, true). Sürücü: `examples/fate_two_arm.rs`.
+
+| Kol | Eligible/20 | İlk elig. medyanı | `burst_delta` medyanı | min–max | LOSS→SUCCESS |
+|---|---:|---:|---:|---:|---:|
+| IID (dağınık) | 20 | 3 700 ms | **+600** | −144 089 … +121 041 | 0 |
+| GE-L3 (kümeli) | 20 | 3 700 ms | **+567 118** | +554 692 … +586 120 | 0 |
+
+Paired fark `GEL3 − IID`: medyan **+565 882**, min +457 620, max +704 433, **20/20 pozitif**.
+Ham aralıklar örtüşmüyor (IID max 121 041 ≪ GEL3 min 554 692; boşluk ~433 000 ppm).
+Sağlamlık: her koşuda `N=256`, ölçülen kayıp ~203–205k ppm (her iki kol), `n10+n11 ≥ 48`.
+GEL3 medyanı, errata'nın W-CLUSTER analitik değerine (+572 999) yakınsıyor — bankalanmış
+matematikle bağımsız çapraz doğrulama. Düzeltme sayacı bu sürücüde beklenen şekilde 0
+(kayıp orijinaller hiç teslim edilmiyor); düzeltme bacağı birim testlerle kanıtlı.
+
+### 7.3 Hüküm
+
+**`SIGNAL-SEPARATES`** — her iki kol 20/20 eligible; GE-L3 çıktıları IID kolundan ayrık-aralıklı
+biçimde yüksek. Bu ölçüm eşik seçmez ve FEC üstünlüğü iddia etmez; yalnız estimator'ın gerçek
+ürün yolunda iki kayıp yapısını ayırdığını gösterir.
