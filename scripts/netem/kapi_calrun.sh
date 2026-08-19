@@ -59,6 +59,9 @@ if [ "${1:-}" = "--inner-run" ]; then
   kapi3_realized "$OUT" pre
 
   GATE_E="$OUT/gate_e"; GATE_M="$OUT/gate_m"
+  # Kalıntı-durum temizliği: başarısız önceki denemeden kalan gate dosyaları barrier'ı ATLATIRDI
+  # (bayat .go → client beklemeden geçer, server erken arm eder). Her koşu taze gate'le başlar.
+  rm -f "$GATE_E.ready" "$GATE_E.go" "$GATE_M.ready" "$GATE_M.go"
   # --gate-watch: reverse-bütçe arm'ı client'ın ölçüm-t0'ına senkron (warmup-ACK'leri muaf, r5 D.2).
   kapi3_b "$BENCH" serve --bind 10.10.1.1:4433 --transport "$TRANSPORT" --quota-r "$QUOTA" \
     $REV_BUDGET --gate-watch "$GATE_M" > "$OUT/server.log" 2>&1 < /dev/null & SRV=$!
