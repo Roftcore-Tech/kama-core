@@ -249,6 +249,12 @@ async fn client_loop(
     // döngüsünde zamanlanır (mesaj i → t=i×interval); sent_ns yine app-offer anı.
     let interval_ns = u64::try_from(cfg.submit_interval.as_nanos()).unwrap_or(u64::MAX);
 
+    // [W6] Kuruluş-gate'i: kama'da handshake yok → soket bağlanır bağlanmaz "kurulu" (DÜZLEM-A
+    // temiz-ağ kuruluş alanı). Harness bu noktada (A2) netem'i uygular; warmup impaired koşar.
+    if let Some(g) = &cfg.establish_gate {
+        crate::transport::gate_sync(g).await?;
+    }
+
     // ── [KAPI-1 W6] FAZ-0: warmup (ölçüm-DIŞI) + gate senkronu ─────────────────────────────
     // Warmup birimleri WARMUP_BASE+i id'leriyle AYNI motor/soket yolundan akar; kayıt yollarına
     // yapısal olarak girmez. Amaç: transport state'i (estimator/pacer/RTT) ölçümden önce oturt —
@@ -583,6 +589,7 @@ mod tests {
             budget: BudgetMode::Unlimited,
             warmup_msgs: 0,
             gate: None,
+            establish_gate: None,
         }
     }
 

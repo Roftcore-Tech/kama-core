@@ -95,6 +95,9 @@ enum Cmd {
         /// [KAPI-1 W6] Barrier gate yolu (`<gate>.ready` yazılır, `<gate>.go` beklenir).
         #[arg(long)]
         gate: Option<PathBuf>,
+        /// [KAPI-1 W6] Kuruluş-gate'i (bağlantı kurulunca ready; netem uygulanınca go → warmup).
+        #[arg(long)]
+        establish_gate: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -233,6 +236,7 @@ async fn main() -> Result<(), BenchError> {
             budget_ceiling_bytes,
             warmup_msgs,
             gate,
+            establish_gate,
             out,
         } => {
             let cfg = ClientCfg {
@@ -254,6 +258,7 @@ async fn main() -> Result<(), BenchError> {
                 )?,
                 warmup_msgs,
                 gate,
+                establish_gate,
             };
             let output = run_client(transport, cfg).await?;
             output.write_jsonl(&out)?;

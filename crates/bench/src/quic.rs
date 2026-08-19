@@ -245,6 +245,11 @@ impl BenchTransport for QuinnTransport {
             Ok(Err(_handshake_err)) => return Ok(handshake_failed_output(&cfg, gov.as_ref())),
             Err(_timed_out) => return Ok(handshake_failed_output(&cfg, gov.as_ref())),
         };
+        // [W6] Kuruluş-gate'i: handshake TEMİZ ağda tamam (DÜZLEM-A); harness şimdi netem'i
+        // uygular (A2) — warmup impaired koşar.
+        if let Some(g) = &cfg.establish_gate {
+            crate::transport::gate_sync(g).await?;
+        }
         // [KAPI-1 W6] Warmup (ölçüm-DIŞI): aynı bağlantıda W mesaj gönderilir (per-mesaj 10 s
         // tavan) + kısa settle. A1: harness netem'i warmup SONRASI uygular (temiz-kanal converge);
         // A2: netem zaten aktif (impaired steady-state). Sonra gate; ölçüm-t0 = GO anı.
@@ -523,6 +528,7 @@ mod loopback_tests {
                 budget: crate::budget::BudgetMode::Burst { cap_bytes: 60 },
                 warmup_msgs: 0,
                 gate: None,
+                establish_gate: None,
             })
             .await
             .expect("governed run bounded Ok");
@@ -584,6 +590,7 @@ mod loopback_tests {
                 budget: crate::budget::BudgetMode::Unlimited,
                 warmup_msgs: 2,
                 gate: Some(gate.clone()),
+                establish_gate: None,
             })
             .await
             .expect("client run");
@@ -625,6 +632,7 @@ mod loopback_tests {
                 budget: crate::budget::BudgetMode::Unlimited,
                 warmup_msgs: 0,
                 gate: None,
+                establish_gate: None,
             })
             .await
             .expect("client run (ALPN/provider/handshake OK)");
@@ -686,6 +694,7 @@ mod loopback_tests {
                 budget: crate::budget::BudgetMode::Unlimited,
                 warmup_msgs: 0,
                 gate: None,
+                establish_gate: None,
             })
             .await
             .expect("bounded return, HANG değil");

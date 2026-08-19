@@ -84,6 +84,10 @@ pub struct ClientCfg {
     /// [KAPI-1 W6] Barrier gate yolu: warmup+quiescence sonrası `<gate>.ready` yazılır,
     /// `<gate>.go` beklenir; ölçüm-t0 = GO anı. None = gate yok (t0 ≈ koşu başı).
     pub gate: Option<std::path::PathBuf>,
+    /// [KAPI-1 W6] Kuruluş-gate'i: DÜZLEM-A "session temiz ağda kurulur" alanı için İKİNCİ senkron
+    /// noktası — bağlantı kurulunca `<g>.ready`, harness netem'i (A2: burada; A1: ölçüm-gate'inde)
+    /// uygulayıp `<g>.go` yazar; warmup ancak ondan sonra başlar. None = senkronsuz.
+    pub establish_gate: Option<std::path::PathBuf>,
 }
 
 /// [KAPI-1 W6] Dosya-tabanlı barrier: `<gate>.ready` yaz → `<gate>.go` bekle (5 ms poll, 120 s

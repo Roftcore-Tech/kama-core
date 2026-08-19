@@ -136,6 +136,10 @@ impl BenchTransport for QdgramTransport {
             Ok(Ok(c)) => c,
             Ok(Err(_)) | Err(_) => return Ok(failed_output(&cfg, gov.as_ref())),
         };
+        // [W6] Kuruluş-gate'i (handshake temiz ağda; netem bu noktada uygulanır, A2).
+        if let Some(g) = &cfg.establish_gate {
+            crate::transport::gate_sync(g).await?;
+        }
         // [KAPI-1 W6] warmup (ölçüm-DIŞI, ARQ'suz — amaç state-ısıtma; 10 s tavan) + gate.
         if cfg.warmup_msgs > 0 {
             warmup_pump(&cfg, &conn).await;
@@ -491,6 +495,7 @@ mod tests {
             budget: BudgetMode::Unlimited,
             warmup_msgs: 0,
             gate: None,
+            establish_gate: None,
         }
     }
 

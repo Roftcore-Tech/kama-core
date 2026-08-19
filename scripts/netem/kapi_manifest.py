@@ -211,6 +211,8 @@ def gen_rows(phase: str, drand_hex: str | None):
                 "deadline_s": deadline_s,
                 "budget": budgets(prof, deadline_s, workload, plan["msgs"], interval),
                 "plane": "A2", "quota_r": 4,
+                # KAPI-1 §3.2: warmup = max(10×RTT, 10 s) — paced Sınıf-I'de 10 msg ≈ 10 s.
+                "warmup_msgs": 10,
             }
 
 
