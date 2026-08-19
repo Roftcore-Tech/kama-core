@@ -25,6 +25,7 @@ use adaptive_transport::seq::resolve_seq;
 use tokio::net::UdpSocket;
 use tokio::time::interval;
 
+use crate::budget::{BudgetGovernor, BudgetMode, IPV4_UDP_OVERHEAD};
 use crate::error::BenchError;
 use crate::event::{RawEvent, RunMeta, RunOutput, TxComponents};
 use adaptive_transport::tail_recovery::TailRecoveryConfig;
@@ -79,6 +80,9 @@ fn elapsed_ns(start: Instant) -> u64 {
 /// Client koşu durumu: sender engine + ölçüm muhasebesi (seq→unit join, sent/delivered damgaları, byte sayaçları).
 struct ClientRun {
     sender: Sender,
+    /// [KAPI-1 W2] forward-yön governor'ü. Kama'da handshake yok → kuruluşta arm(0)
+    /// (DÜZLEM-A t=0; W6 barrier'ı bu anı harness-t0'a bağlayacak).
+    gov: BudgetGovernor,
     seq_to_unit: HashMap<u64, u64>,
     max_emitted_seq: u64,
     sent_ns: Vec<Option<u64>>,
@@ -93,15 +97,18 @@ struct ClientRun {
 }
 
 impl ClientRun {
-    fn new(msg_count: usize, arm: KamaArm) -> Self {
+    fn new(msg_count: usize, arm: KamaArm, budget: BudgetMode) -> Self {
         // KAPI-1 W4: kol seçimi Sender kuruluşunda uygulanır. TailV1 = adlandırılmış doğrulanmış
         // sabit; default bounds ile ENABLE ETME (o bounds hiç kampanya görmedi — tail_recovery.rs).
         let mut sender = Sender::new();
         if arm == KamaArm::TailV1 {
             sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
         }
+        let mut gov = BudgetGovernor::new(budget);
+        gov.arm(0);
         Self {
             sender,
+            gov,
             seq_to_unit: HashMap::new(),
             max_emitted_seq: 0,
             sent_ns: vec![None; msg_count],
@@ -131,6 +138,12 @@ impl ClientRun {
             // sent_ns burada DAMGALANMAZ — app-offer'da (enqueue) damgalanır (quinn frame'i, aşağıdaki
             // client_loop notu). Wire-emit'te damgalamak kama'nın pacing dwell'ini latency'den dışlardı.
             let frame = encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload);
+            // [KAPI-1 W2] packet-atomic bütçe kapısı: ret = enjeksiyon yok (kanal-silinmesi
+            // eşdeğeri; sender state'i ZATEN emisyonu işledi — INV-RATE-1 gereği rate düşmez,
+            // kayıp kurtarma kolu normal işler). Governor bekletmez (pacing-nötr).
+            if !self.gov.permit(frame.len() as u64 + IPV4_UDP_OVERHEAD, now) {
+                continue;
+            }
             if let Ok(n) = sock.send_to(&frame, server).await {
                 let n = n as u64;
                 self.tx_bytes += n;
@@ -158,7 +171,11 @@ async fn client_loop(
     let msg_count = cfg.msg_count;
     let payload = vec![0x5Au8; usize::try_from(cfg.payload_bytes).unwrap_or(0)];
     let unit_size = HDR_DATA as u64 + cfg.payload_bytes;
-    let mut run = ClientRun::new(usize::try_from(msg_count).unwrap_or(0), cfg.kama_arm);
+    let mut run = ClientRun::new(
+        usize::try_from(msg_count).unwrap_or(0),
+        cfg.kama_arm,
+        cfg.budget,
+    );
 
     // Tüm birimleri t0'da enqueue — engine'in İÇ pacing'i yayılımı belirlesin (yapay serileştirme değil;
     // her iki transport da aynı start'tan aynı max_deadline bütçesini alır → adil karşılaştırma).
@@ -328,6 +345,7 @@ async fn client_loop(
         udp_rx_bytes: run.rx_bytes,
         kama_arm: cfg.kama_arm.label().to_string(),
         submit_interval_ns: interval_ns,
+        budget: run.gov.snapshot(),
     };
     Ok(RunOutput { meta, events })
 }
@@ -335,11 +353,20 @@ async fn client_loop(
 /// Server event pump (§4 receiver): per-peer `Receiver`; select{ DATA→on_datagram→SACK / ACK-timer→SACK }.
 /// quinn accept-loop gibi sonsuz (harness process'i öldürür). Tek O(1) recv döngüsü per-mesaj izolasyonu
 /// verir → quinn'in stream-başı task fan-out'una gerek yok (HoL yok).
-async fn serve_loop(sock: UdpSocket, start: Instant, quota_r: u32) -> Result<(), BenchError> {
+async fn serve_loop(
+    sock: UdpSocket,
+    start: Instant,
+    quota_r: u32,
+    budget: BudgetMode,
+) -> Result<(), BenchError> {
     let mut peers: HashMap<SocketAddr, Receiver> = HashMap::new();
     let mut ack_timer = interval(ACK_TICK);
     let mut buf = vec![0u8; SERVER_RECV_BUF];
     let mut rtraj_tick: u32 = 0;
+    // [KAPI-1 W2] reverse-yön (ACK-egress) governor'ü — kama'da handshake yok → hemen arm.
+    // Server RunOutput üretmez; sayaçlar periyodik BUDGET-REV satırıyla görünür (TRAJ gibi).
+    let mut gov = BudgetGovernor::new(budget);
+    gov.arm(elapsed_ns(start));
     loop {
         tokio::select! {
             _ = ack_timer.tick() => {
@@ -349,7 +376,21 @@ async fn serve_loop(sock: UdpSocket, start: Instant, quota_r: u32) -> Result<(),
                     .filter_map(|(peer, rx)| rx.on_ack_timer(now).map(|a| (*peer, a.encode())))
                     .collect();
                 for (peer, bytes) in acks {
-                    let _ = sock.send_to(&bytes, peer).await;
+                    if gov.permit(bytes.len() as u64 + IPV4_UDP_OVERHEAD, now) {
+                        let _ = sock.send_to(&bytes, peer).await;
+                    }
+                }
+                if budget != BudgetMode::Unlimited && rtraj_tick.is_multiple_of(500) {
+                    let s = gov.snapshot();
+                    eprintln!(
+                        "BUDGET-REV t={:.1} injected={}B/{}p refused={}B/{}p first_refusal_ns={}",
+                        now as f64 / 1e9,
+                        s.injected_bytes,
+                        s.injected_pkts,
+                        s.refused_bytes,
+                        s.refused_pkts,
+                        s.first_refusal_ns
+                    );
                 }
                 // [TUR-5 r3 §6] RTRAJ ölçüm-kanalı: K-4 invariant+diagnostic server-tarafta doğar
                 // (client rx_bytes yalnız hayatta-kalan-bayt vekili). ~500ms'te bir.
@@ -377,7 +418,10 @@ async fn serve_loop(sock: UdpSocket, start: Instant, quota_r: u32) -> Result<(),
                 let now = elapsed_ns(start);
                 let out = rx.on_datagram(RxDatagram { seq: full, unit_id, kind: RxKind::Data }, now);
                 if let Some(ack) = out.ack {
-                    let _ = sock.send_to(&ack.encode(), peer).await;
+                    let bytes = ack.encode();
+                    if gov.permit(bytes.len() as u64 + IPV4_UDP_OVERHEAD, now) {
+                        let _ = sock.send_to(&bytes, peer).await;
+                    }
                 }
             }
         }
@@ -387,7 +431,7 @@ async fn serve_loop(sock: UdpSocket, start: Instant, quota_r: u32) -> Result<(),
 impl BenchTransport for KamaTransport {
     async fn run_server(&self, cfg: ServerCfg) -> Result<(), BenchError> {
         let sock = UdpSocket::bind(cfg.bind).await?; // bind = setup hatası → Err (harness abort).
-        serve_loop(sock, Instant::now(), cfg.quota_r).await
+        serve_loop(sock, Instant::now(), cfg.quota_r, cfg.budget).await
     }
 
     async fn run_client(&self, cfg: ClientCfg) -> Result<RunOutput, BenchError> {
@@ -414,6 +458,7 @@ mod tests {
             profile: "loopback".to_string(),
             kama_arm: KamaArm::Arq,
             submit_interval: Duration::ZERO,
+            budget: BudgetMode::Unlimited,
         }
     }
 
@@ -421,12 +466,50 @@ mod tests {
     /// Arq default-OFF bırakır. Bu pin kırılırsa "ON kolu" sessizce OFF koşar (kampanya-geçersiz).
     #[test]
     fn kama_arm_flag_installs_validated_v1() {
-        assert!(!ClientRun::new(1, KamaArm::Arq)
+        assert!(!ClientRun::new(1, KamaArm::Arq, BudgetMode::Unlimited)
             .sender
             .tail_recovery_enabled());
-        assert!(ClientRun::new(1, KamaArm::TailV1)
+        assert!(ClientRun::new(1, KamaArm::TailV1, BudgetMode::Unlimited)
             .sender
             .tail_recovery_enabled());
+    }
+
+    /// [KAPI-1 W2] Forward bütçesi üründe packet-atomic: frame 155B → ip 183B; cap = 2×183+90 →
+    /// TAM 2 paket girer (3.'ye 90B yetmez — partial yok), kalan emisyonlar reddedilir ve sayılır.
+    /// Loopback kayıpsız → teslim == enjekte-edilen-DATA (girmeyen asla teslim olamaz).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn burst_budget_caps_injection_packet_atomically() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let saddr = server.local_addr().unwrap();
+        tokio::spawn(serve_loop(server, Instant::now(), 4, BudgetMode::Unlimited));
+
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut c = cfg(saddr, 10, 1500);
+        c.budget = BudgetMode::Burst {
+            cap_bytes: 2 * 183 + 90,
+        };
+        let out = client_loop(client, c, Instant::now()).await.unwrap();
+
+        let b = &out.meta.budget;
+        assert_eq!(
+            (b.injected_pkts, b.injected_bytes),
+            (2, 2 * 183),
+            "packet-atomic: tam 2 paket, overshoot yok"
+        );
+        assert!(b.refused_pkts > 0, "kalan emisyon denemeleri reddedilmeli");
+        assert!(
+            b.first_refusal_ns > 0,
+            "budget_exhaustion_time kayıtlı olmalı"
+        );
+        let delivered = out
+            .events
+            .iter()
+            .filter(|e| e.delivered_ns.is_some())
+            .count();
+        assert_eq!(
+            delivered, 2,
+            "teslim = enjekte edilen DATA (loopback kayıpsız)"
+        );
     }
 
     /// [KAPI-1 W3] paced workload pini: mesaj i'nin app-offer'ı (sent_ns) plana (i×interval)
@@ -436,7 +519,7 @@ mod tests {
     async fn paced_submission_stamps_app_offer_on_schedule() {
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let saddr = server.local_addr().unwrap();
-        tokio::spawn(serve_loop(server, Instant::now(), 4));
+        tokio::spawn(serve_loop(server, Instant::now(), 4, BudgetMode::Unlimited));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let mut c = cfg(saddr, 4, 3000);
@@ -481,7 +564,7 @@ mod tests {
         // 127.0.0.1 server+client, netem YOK → temiz yol → hepsi teslim + frame doğruluğu.
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let saddr = server.local_addr().unwrap();
-        tokio::spawn(serve_loop(server, Instant::now(), 4));
+        tokio::spawn(serve_loop(server, Instant::now(), 4, BudgetMode::Unlimited));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let out = client_loop(client, cfg(saddr, 10, 5000), Instant::now())
@@ -543,7 +626,7 @@ mod tests {
         // dwell'le saniyelere yayılırdı → completion kama lehine şişerdi (review CRITICAL regresyon guard).
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let saddr = server.local_addr().unwrap();
-        tokio::spawn(serve_loop(server, Instant::now(), 4));
+        tokio::spawn(serve_loop(server, Instant::now(), 4, BudgetMode::Unlimited));
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let out = client_loop(client, cfg(saddr, 200, 5000), Instant::now())
             .await

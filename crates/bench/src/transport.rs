@@ -75,6 +75,8 @@ pub struct ClientCfg {
     /// aynen). >0 = paced: mesaj i, t = i×interval'de sunulur; mesaj-başı deadline
     /// `submission_i + max_deadline`; koşu sonu = son-sunum + max_deadline. [KAPI-1 W3]
     pub submit_interval: Duration,
+    /// Forward-yön (client-egress) bütçesi — packet-atomic hard-cap (r5 §D). [KAPI-1 W2]
+    pub budget: crate::budget::BudgetMode,
 }
 
 /// Server koşu parametreleri.
@@ -86,6 +88,9 @@ pub struct ServerCfg {
     pub cc: Cc,
     /// [TUR-5 r3] Epizot-kotası R [CAL {4,8}] — ölçüm-matrisi (kama receiver'ına geçer).
     pub quota_r: u32,
+    /// Reverse-yön (server-egress: ACK/kontrol) bütçesi — yön-başına ayrı, aktarım YOK (r5 §D).
+    /// [KAPI-1 W2]
+    pub budget: crate::budget::BudgetMode,
 }
 
 /// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).

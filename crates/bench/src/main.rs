@@ -1,6 +1,7 @@
 //! Kama transport benchmark harness CLI (§4.4). SoC: `serve`/`client` HAM event üretir;
 //! `metrics` HESAP yapar (transport'a dokunmaz). quinn baseline (§4.4.1) + kama stub.
 
+mod budget;
 mod error;
 mod event;
 mod kama;
@@ -36,6 +37,18 @@ enum Cmd {
         /// [TUR-5 r3] Epizot-kotası R [CAL {4,8}] (kama receiver).
         #[arg(long, default_value_t = 4)]
         quota_r: u32,
+        /// [KAPI-1 W2] Reverse-yön burst hard-cap (IP byte; 0 = yok). Paced ile birlikte VERİLMEZ.
+        #[arg(long, default_value_t = 0)]
+        budget_burst_bytes: u64,
+        /// [KAPI-1 W2] Reverse-yön paced refill (IP byte/s; 0 = paced yok).
+        #[arg(long, default_value_t = 0)]
+        budget_refill_bytes_per_s: u64,
+        /// [KAPI-1 W2] Paced kova (IP byte; refill>0 iken ZORUNLU).
+        #[arg(long, default_value_t = 0)]
+        budget_bucket_bytes: u64,
+        /// [KAPI-1 W2] Paced kümülatif tavan (IP byte; 0 = tavansız).
+        #[arg(long, default_value_t = 0)]
+        budget_ceiling_bytes: u64,
     },
     /// Client: N mesaj gönder, ham event JSONL yaz.
     Client {
@@ -63,6 +76,18 @@ enum Cmd {
         /// Mesaj sunum aralığı ms (0 = burst; >0 = paced, mesaj i t=i×interval'de). [KAPI-1 W3]
         #[arg(long, default_value_t = 0)]
         submit_interval_ms: u64,
+        /// [KAPI-1 W2] Forward-yön burst hard-cap (IP byte; 0 = yok). Paced ile birlikte VERİLMEZ.
+        #[arg(long, default_value_t = 0)]
+        budget_burst_bytes: u64,
+        /// [KAPI-1 W2] Forward-yön paced refill (IP byte/s; 0 = paced yok).
+        #[arg(long, default_value_t = 0)]
+        budget_refill_bytes_per_s: u64,
+        /// [KAPI-1 W2] Paced kova (IP byte; refill>0 iken ZORUNLU).
+        #[arg(long, default_value_t = 0)]
+        budget_bucket_bytes: u64,
+        /// [KAPI-1 W2] Paced kümülatif tavan (IP byte; 0 = tavansız).
+        #[arg(long, default_value_t = 0)]
+        budget_ceiling_bytes: u64,
         #[arg(long)]
         out: PathBuf,
     },
@@ -103,6 +128,45 @@ enum KamaArmArg {
     TailV1,
 }
 
+/// [KAPI-1 W2] CLI bütçe argları → `BudgetMode` (doğrulamalı: burst XOR paced; sessiz yanlış
+/// kombinasyon YOK — kampanya-config hatası koşudan önce patlar).
+fn budget_mode(
+    burst: u64,
+    refill: u64,
+    bucket: u64,
+    ceiling: u64,
+) -> Result<budget::BudgetMode, BenchError> {
+    match (burst, refill) {
+        (0, 0) if bucket == 0 && ceiling == 0 => Ok(budget::BudgetMode::Unlimited),
+        (0, 0) => Err(BenchError::Other(
+            "bucket/ceiling yalnız --budget-refill-bytes-per-s ile anlamlı".into(),
+        )),
+        (b, 0) => {
+            if bucket != 0 || ceiling != 0 {
+                return Err(BenchError::Other(
+                    "burst ve paced bütçe birlikte verilemez (r5 D.1 workload-ayrık)".into(),
+                ));
+            }
+            Ok(budget::BudgetMode::Burst { cap_bytes: b })
+        }
+        (0, r) => {
+            if bucket == 0 {
+                return Err(BenchError::Other(
+                    "paced bütçe --budget-bucket-bytes ister (D6: 2 s × refill)".into(),
+                ));
+            }
+            Ok(budget::BudgetMode::Paced {
+                refill_bytes_per_s: r,
+                bucket_bytes: bucket,
+                ceiling_bytes: if ceiling == 0 { u64::MAX } else { ceiling },
+            })
+        }
+        _ => Err(BenchError::Other(
+            "burst ve paced bütçe birlikte verilemez (r5 D.1 workload-ayrık)".into(),
+        )),
+    }
+}
+
 impl From<KamaArmArg> for KamaArm {
     fn from(a: KamaArmArg) -> KamaArm {
         match a {
@@ -121,6 +185,10 @@ async fn main() -> Result<(), BenchError> {
             cc,
             transport,
             quota_r,
+            budget_burst_bytes,
+            budget_refill_bytes_per_s,
+            budget_bucket_bytes,
+            budget_ceiling_bytes,
         } => {
             run_server(
                 transport,
@@ -128,6 +196,12 @@ async fn main() -> Result<(), BenchError> {
                     bind,
                     cc: cc.into(),
                     quota_r,
+                    budget: budget_mode(
+                        budget_burst_bytes,
+                        budget_refill_bytes_per_s,
+                        budget_bucket_bytes,
+                        budget_ceiling_bytes,
+                    )?,
                 },
             )
             .await
@@ -144,6 +218,10 @@ async fn main() -> Result<(), BenchError> {
             transport,
             kama_arm,
             submit_interval_ms,
+            budget_burst_bytes,
+            budget_refill_bytes_per_s,
+            budget_bucket_bytes,
+            budget_ceiling_bytes,
             out,
         } => {
             let cfg = ClientCfg {
@@ -157,6 +235,12 @@ async fn main() -> Result<(), BenchError> {
                 profile,
                 kama_arm: kama_arm.into(),
                 submit_interval: Duration::from_millis(submit_interval_ms),
+                budget: budget_mode(
+                    budget_burst_bytes,
+                    budget_refill_bytes_per_s,
+                    budget_bucket_bytes,
+                    budget_ceiling_bytes,
+                )?,
             };
             let output = run_client(transport, cfg).await?;
             output.write_jsonl(&out)?;

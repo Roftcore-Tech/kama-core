@@ -64,6 +64,10 @@ pub struct RunMeta {
     /// Mesaj sunum aralığı ns (0 = burst; >0 = paced, r5 §G). Eski JSONL → 0. [KAPI-1 W3]
     #[serde(default)]
     pub submit_interval_ns: u64,
+    /// Forward-yön bütçe sayaçları (client-egress governor fotoğrafı; r5 D.5). Eski JSONL →
+    /// default (mode boş). [KAPI-1 W2]
+    #[serde(default)]
+    pub budget: crate::budget::BudgetSnapshot,
 }
 
 /// Bir koşunun tüm çıktısı: meta + ham eventler.
@@ -86,7 +90,9 @@ enum Line<'a> {
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum OwnedLine {
-    Meta(RunMeta),
+    // Box: RunMeta W2 bütçe fotoğrafıyla büyüdü → varyant-boyu farkı (clippy large_enum_variant).
+    // Satır-başına tek geçici alloc; JSON biçimi DEĞİŞMEZ (serde Box'ı şeffaf açar).
+    Meta(Box<RunMeta>),
     Event(RawEvent),
 }
 
@@ -118,7 +124,7 @@ impl RunOutput {
                 continue;
             }
             match serde_json::from_str::<OwnedLine>(line)? {
-                OwnedLine::Meta(m) => meta = Some(m),
+                OwnedLine::Meta(m) => meta = Some(*m),
                 OwnedLine::Event(e) => events.push(e),
             }
         }

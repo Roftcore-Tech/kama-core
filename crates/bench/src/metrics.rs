@@ -268,6 +268,7 @@ mod tests {
             tx: TxComponents::default(),
             kama_arm: String::new(),
             submit_interval_ns: 0,
+            budget: Default::default(),
         };
         let run = RunOutput {
             meta,
