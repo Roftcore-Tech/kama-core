@@ -61,6 +61,9 @@ pub struct RunMeta {
     /// alan yok → default boş string (geriye-uyumlu okuma). [KAPI-1 W4]
     #[serde(default)]
     pub kama_arm: String,
+    /// Mesaj sunum aralığı ns (0 = burst; >0 = paced, r5 §G). Eski JSONL → 0. [KAPI-1 W3]
+    #[serde(default)]
+    pub submit_interval_ns: u64,
 }
 
 /// Bir koşunun tüm çıktısı: meta + ham eventler.

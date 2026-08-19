@@ -60,6 +60,9 @@ enum Cmd {
         /// Kama kolu: arq (defaults, tail OFF) | tail-v1 (KAMA-TAIL-V1). quinn'de yok sayılır. [KAPI-1 W4]
         #[arg(long, value_enum, default_value_t = KamaArmArg::Arq)]
         kama_arm: KamaArmArg,
+        /// Mesaj sunum aralığı ms (0 = burst; >0 = paced, mesaj i t=i×interval'de). [KAPI-1 W3]
+        #[arg(long, default_value_t = 0)]
+        submit_interval_ms: u64,
         #[arg(long)]
         out: PathBuf,
     },
@@ -140,6 +143,7 @@ async fn main() -> Result<(), BenchError> {
             profile,
             transport,
             kama_arm,
+            submit_interval_ms,
             out,
         } => {
             let cfg = ClientCfg {
@@ -152,6 +156,7 @@ async fn main() -> Result<(), BenchError> {
                 repeat,
                 profile,
                 kama_arm: kama_arm.into(),
+                submit_interval: Duration::from_millis(submit_interval_ms),
             };
             let output = run_client(transport, cfg).await?;
             output.write_jsonl(&out)?;

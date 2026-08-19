@@ -71,6 +71,10 @@ pub struct ClientCfg {
     pub profile: String,
     /// Kama kolu (quinn'de yok sayılır). [KAPI-1 W4]
     pub kama_arm: KamaArm,
+    /// Mesaj sunum aralığı (workload ekseni, r5 §G). ZERO = burst (tümü t0'da — mevcut davranış
+    /// aynen). >0 = paced: mesaj i, t = i×interval'de sunulur; mesaj-başı deadline
+    /// `submission_i + max_deadline`; koşu sonu = son-sunum + max_deadline. [KAPI-1 W3]
+    pub submit_interval: Duration,
 }
 
 /// Server koşu parametreleri.

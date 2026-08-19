@@ -167,31 +167,45 @@ async fn client_loop(
     // quinn'in İÇ pacing'inden ÖNCE → latency quinn'in kuyruğunu İÇERİR). Kama da app-offer'da damgalar →
     // latency kama'nın pacing dwell'ini İÇERİR → elmalar-elmalar. (review CRITICAL: wire-emit'te damgalamak
     // dwell'i dışlar → completion kama lehine ŞİŞER; delivered_ns frame-bug sınıfının sent-tarafı ikizi.)
-    for id in 0..msg_count {
-        let now = elapsed_ns(start);
-        if let Some(slot) = run
-            .sent_ns
-            .get_mut(usize::try_from(id).unwrap_or(usize::MAX))
-        {
-            *slot = Some(now);
+    //
+    // [KAPI-1 W3] interval==0 (burst): bu yol AYNEN korunur. interval>0 (paced): sunumlar select
+    // döngüsünde zamanlanır (mesaj i → t=i×interval); sent_ns yine app-offer anı.
+    let interval_ns = u64::try_from(cfg.submit_interval.as_nanos()).unwrap_or(u64::MAX);
+    if interval_ns == 0 {
+        for id in 0..msg_count {
+            let now = elapsed_ns(start);
+            if let Some(slot) = run
+                .sent_ns
+                .get_mut(usize::try_from(id).unwrap_or(usize::MAX))
+            {
+                *slot = Some(now);
+            }
+            run.drive(
+                Event::AppData(OpaqueUnit {
+                    id,
+                    size: unit_size,
+                }),
+                now,
+                &sock,
+                cfg.server,
+                &payload,
+            )
+            .await;
         }
-        run.drive(
-            Event::AppData(OpaqueUnit {
-                id,
-                size: unit_size,
-            }),
-            now,
-            &sock,
-            cfg.server,
-            &payload,
-        )
-        .await;
     }
+    let mut next_submit: u64 = if interval_ns == 0 { msg_count } else { 0 };
 
     let mut pace = interval(PACE_TICK);
     let mut rtprop = interval(RTPROP_TICK);
     let mut buf = [0u8; CLIENT_RECV_BUF];
-    let deadline = tokio::time::sleep(cfg.max_deadline);
+    // Koşu sonu = son-sunum + max_deadline (r5 §G: test_end = last_submission + mission_deadline;
+    // burst'ta son-sunum ≈ t0 → mevcut semantik aynen). start'tan kalan süre olarak kurulur.
+    let total_deadline_ns = interval_ns
+        .saturating_mul(msg_count.saturating_sub(1))
+        .saturating_add(u64::try_from(cfg.max_deadline.as_nanos()).unwrap_or(u64::MAX));
+    let deadline = tokio::time::sleep(Duration::from_nanos(
+        total_deadline_ns.saturating_sub(elapsed_ns(start)),
+    ));
     tokio::pin!(deadline);
 
     // [TUR-A teşhis] rate-trajektori tap'ı (SALT-GÖZLEM; kaldırılabilir). floor→btlbw ramp kilidini ölç.
@@ -201,6 +215,30 @@ async fn client_loop(
     while run.delivered_count < msg_count {
         tokio::select! {
             () = &mut deadline => break,
+            // [KAPI-1 W3] paced sunum: mesaj i, t=i×interval'de app-offer edilir. Sleep her select
+            // yinelemesinde kalan-süreden yeniden kurulur (1ms pace tick'i döngüyü sürekli uyandırır
+            // → vade geldiğinde kalan=0, kol anında ateşler; sapma ≤ ~1ms ≪ aralıklar 1s+).
+            () = tokio::time::sleep(Duration::from_nanos(
+                interval_ns.saturating_mul(next_submit).saturating_sub(elapsed_ns(start)),
+            )), if next_submit < msg_count => {
+                let now = elapsed_ns(start);
+                let id = next_submit;
+                next_submit += 1;
+                if let Some(slot) = run
+                    .sent_ns
+                    .get_mut(usize::try_from(id).unwrap_or(usize::MAX))
+                {
+                    *slot = Some(now);
+                }
+                run.drive(
+                    Event::AppData(OpaqueUnit { id, size: unit_size }),
+                    now,
+                    &sock,
+                    cfg.server,
+                    &payload,
+                )
+                .await;
+            }
             _ = traj.tick() => {
                 let now = elapsed_ns(start);
                 let (st, btlbw, srtt_us, rate, infl) = run.sender.diag_rate();
@@ -289,6 +327,7 @@ async fn client_loop(
         },
         udp_rx_bytes: run.rx_bytes,
         kama_arm: cfg.kama_arm.label().to_string(),
+        submit_interval_ns: interval_ns,
     };
     Ok(RunOutput { meta, events })
 }
@@ -374,6 +413,7 @@ mod tests {
             repeat: 0,
             profile: "loopback".to_string(),
             kama_arm: KamaArm::Arq,
+            submit_interval: Duration::ZERO,
         }
     }
 
@@ -387,6 +427,40 @@ mod tests {
         assert!(ClientRun::new(1, KamaArm::TailV1)
             .sender
             .tail_recovery_enabled());
+    }
+
+    /// [KAPI-1 W3] paced workload pini: mesaj i'nin app-offer'ı (sent_ns) plana (i×interval)
+    /// göre damgalanmalı — ne öncesinde (plan ihlali) ne çok sonrasında (sunum kayması, latency'yi
+    /// sahte şişirir). Burst yolunun "dar t0 penceresi" pini ayrı testte aynen duruyor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paced_submission_stamps_app_offer_on_schedule() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let saddr = server.local_addr().unwrap();
+        tokio::spawn(serve_loop(server, Instant::now(), 4));
+
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut c = cfg(saddr, 4, 3000);
+        c.submit_interval = Duration::from_millis(100);
+        let out = client_loop(client, c, Instant::now()).await.unwrap();
+
+        assert_eq!(out.meta.submit_interval_ns, 100_000_000);
+        assert!(
+            out.events.iter().all(|e| e.delivered_ns.is_some()),
+            "temiz yol → tüm mesajlar teslim"
+        );
+        for (i, e) in out.events.iter().enumerate() {
+            let due = 100_000_000u64 * i as u64;
+            assert!(
+                e.sent_ns >= due,
+                "mesaj {i} planından ÖNCE sunuldu: {} < {due}",
+                e.sent_ns
+            );
+            assert!(
+                e.sent_ns < due + 80_000_000,
+                "mesaj {i} sunumu plandan çok kaydı: {} (due {due})",
+                e.sent_ns
+            );
+        }
     }
 
     #[test]

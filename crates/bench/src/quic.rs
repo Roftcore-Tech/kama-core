@@ -130,7 +130,15 @@ impl BenchTransport for QuinnTransport {
             let payload = Arc::clone(&payload);
             let deadline = cfg.max_deadline;
             let payload_bytes = cfg.payload_bytes;
+            // [KAPI-1 W3] paced: mesaj i, t=i×interval'de sunulur (kama ile aynı semantik);
+            // sent_ns sleep SONRASI damgalanır = sunum anı. ZERO → sleep yok (burst aynen).
+            let submit_at = cfg
+                .submit_interval
+                .saturating_mul(u32::try_from(msg_id).unwrap_or(u32::MAX));
             handles.push(tokio::spawn(async move {
+                if !submit_at.is_zero() {
+                    tokio::time::sleep(submit_at).await;
+                }
                 let sent_ns = start.elapsed().as_nanos() as u64;
                 let delivered_ns = send_one(&conn, &payload, deadline, start).await;
                 RawEvent {
@@ -168,6 +176,8 @@ impl BenchTransport for QuinnTransport {
                 udp_rx_bytes: stats.udp_rx.bytes,
                 tx: TxComponents::default(),
                 kama_arm: String::new(),
+                submit_interval_ns: u64::try_from(cfg.submit_interval.as_nanos())
+                    .unwrap_or(u64::MAX),
             },
             events,
         })
@@ -202,6 +212,7 @@ fn handshake_failed_output(cfg: &ClientCfg) -> RunOutput {
             udp_rx_bytes: 0,
             tx: TxComponents::default(),
             kama_arm: String::new(),
+            submit_interval_ns: u64::try_from(cfg.submit_interval.as_nanos()).unwrap_or(u64::MAX),
         },
         events,
     }
@@ -315,6 +326,7 @@ mod loopback_tests {
                 repeat: 0,
                 profile: "loopback".to_string(),
                 kama_arm: crate::transport::KamaArm::Arq,
+                submit_interval: Duration::ZERO,
             })
             .await
             .expect("client run (ALPN/provider/handshake OK)");
@@ -372,6 +384,7 @@ mod loopback_tests {
                 repeat: 0,
                 profile: "deadaddr".to_string(),
                 kama_arm: crate::transport::KamaArm::Arq,
+                submit_interval: Duration::ZERO,
             })
             .await
             .expect("bounded return, HANG değil");
