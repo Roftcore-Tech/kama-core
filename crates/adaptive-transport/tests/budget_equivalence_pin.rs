@@ -119,20 +119,30 @@ fn commit_w_turns(startup_pacing: bool) -> Vec<Vec<(u8, u64, u64)>> {
     let mut turns: Vec<Vec<(u8, u64, u64)>> = Vec::new();
     let rec = |out: &[TransmitDecision], t: &mut Vec<Vec<(u8, u64, u64)>>| {
         if !out.is_empty() {
-            t.push(out.iter().map(|d| (kind_tag(d.kind), d.seq, d.size)).collect());
+            t.push(
+                out.iter()
+                    .map(|d| (kind_tag(d.kind), d.seq, d.size))
+                    .collect(),
+            );
         }
     };
     let mut seqs = Vec::new();
     for i in 0..6u64 {
         let out = s.on_event(
-            Event::AppData(OpaqueUnit { id: 100 + i, size: 1200 }),
+            Event::AppData(OpaqueUnit {
+                id: 100 + i,
+                size: 1200,
+            }),
             i * MS,
         );
         seqs.extend(out.iter().map(|d| d.seq));
         rec(&out, &mut turns);
     }
     let out = s.on_event(
-        Event::AckReceived(AckInfo { acked_seqs: seqs, ack_delay: Duration::ZERO }),
+        Event::AckReceived(AckInfo {
+            acked_seqs: seqs,
+            ack_delay: Duration::ZERO,
+        }),
         7 * MS,
     );
     rec(&out, &mut turns);
@@ -192,7 +202,10 @@ fn leftover_equivalence_decision_stream_is_feature_invariant() {
 #[test]
 fn counts_and_byte_budget_are_invariant_to_startup_pacing() {
     for startup_pacing in [false, true] {
-        let flat: Vec<(u8, u64, u64)> = commit_w_turns(startup_pacing).into_iter().flatten().collect();
+        let flat: Vec<(u8, u64, u64)> = commit_w_turns(startup_pacing)
+            .into_iter()
+            .flatten()
+            .collect();
         let data = flat.iter().filter(|x| x.0 == 0).count();
         let parity = flat.iter().filter(|x| x.0 == 3).count();
         let bytes: u64 = flat.iter().map(|x| x.2).sum();
@@ -234,12 +247,19 @@ fn parity_never_precedes_its_own_block_source_on_the_authoritative_path() {
 
     let mut unacked: Vec<u64> = Vec::new();
     let collect = |out: &[TransmitDecision], u: &mut Vec<u64>| {
-        u.extend(out.iter().filter(|d| d.kind == TransmitKind::Data).map(|d| d.seq));
+        u.extend(
+            out.iter()
+                .filter(|d| d.kind == TransmitKind::Data)
+                .map(|d| d.seq),
+        );
     };
 
     for i in 0..K {
         let out = s.on_event(
-            Event::AppData(OpaqueUnit { id: 500 + i, size: 1200 }),
+            Event::AppData(OpaqueUnit {
+                id: 500 + i,
+                size: 1200,
+            }),
             i * MS,
         );
         check(&out, &mut source_emitted, &mut parity_seen);
@@ -252,7 +272,10 @@ fn parity_never_precedes_its_own_block_source_on_the_authoritative_path() {
         if !unacked.is_empty() {
             let acked = std::mem::take(&mut unacked);
             let out = s.on_event(
-                Event::AckReceived(AckInfo { acked_seqs: acked, ack_delay: Duration::ZERO }),
+                Event::AckReceived(AckInfo {
+                    acked_seqs: acked,
+                    ack_delay: Duration::ZERO,
+                }),
                 now,
             );
             check(&out, &mut source_emitted, &mut parity_seen);
@@ -268,6 +291,9 @@ fn parity_never_precedes_its_own_block_source_on_the_authoritative_path() {
                 .expect("authoritative close stages parity only after the block's sources");
         }
     }
-    assert!(closed, "block must close once its K sources are on the wire");
+    assert!(
+        closed,
+        "block must close once its K sources are on the wire"
+    );
     assert_eq!(parity_seen, 2, "both staged parity units must drain");
 }

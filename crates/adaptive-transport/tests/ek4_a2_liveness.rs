@@ -33,7 +33,10 @@ fn flow_with_outstanding_gap() -> (Sender, u64) {
     for i in 0..3u64 {
         now = i * 10 * MS;
         for d in s.on_event(
-            Event::AppData(OpaqueUnit { id: 1 + i, size: UNIT }),
+            Event::AppData(OpaqueUnit {
+                id: 1 + i,
+                size: UNIT,
+            }),
             now,
         ) {
             if d.kind == TransmitKind::Data {
@@ -168,8 +171,13 @@ fn external_pto_drives_loss_declaration_and_differs_from_empty_batch() {
         let mut now = 0u64;
         for i in 0..3u64 {
             now = i * 10 * MS;
-            for d in s.on_event_batch(now, vec![Event::AppData(OpaqueUnit { id: 1 + i, size: UNIT })])
-            {
+            for d in s.on_event_batch(
+                now,
+                vec![Event::AppData(OpaqueUnit {
+                    id: 1 + i,
+                    size: UNIT,
+                })],
+            ) {
                 if d.kind == TransmitKind::Data {
                     sent.push(d.seq);
                 }
@@ -191,7 +199,9 @@ fn external_pto_drives_loss_declaration_and_differs_from_empty_batch() {
         let tail: Vec<u64> = sent[1..].to_vec();
         s.on_event_batch(now, vec![ack(tail)]);
         // Advance to a point where the time-threshold is genuinely due.
-        let due = s.next_wakeup_ns().expect("outstanding gap ⇒ a wakeup exists");
+        let due = s
+            .next_wakeup_ns()
+            .expect("outstanding gap ⇒ a wakeup exists");
         (s, now, due)
     }
 
@@ -235,7 +245,13 @@ fn internal_and_external_pto_in_one_batch_do_not_double_process() {
     let mut now = 0u64;
     for i in 0..3u64 {
         now = i * 10 * MS;
-        for d in s.on_event_batch(now, vec![Event::AppData(OpaqueUnit { id: 1 + i, size: UNIT })]) {
+        for d in s.on_event_batch(
+            now,
+            vec![Event::AppData(OpaqueUnit {
+                id: 1 + i,
+                size: UNIT,
+            })],
+        ) {
             if d.kind == TransmitKind::Data {
                 sent.push(d.seq);
             }
@@ -270,7 +286,11 @@ fn internal_and_external_pto_in_one_batch_do_not_double_process() {
     let n = ids.len();
     ids.sort_unstable();
     ids.dedup();
-    assert_eq!(n, ids.len(), "duplicate recovery emission for the same unit in one batch");
+    assert_eq!(
+        n,
+        ids.len(),
+        "duplicate recovery emission for the same unit in one batch"
+    );
 
     // Seq numbers within the batch are unique (no nonce reuse / double plan).
     let mut seqs: Vec<u64> = out.iter().map(|d| d.seq).collect();
@@ -294,5 +314,9 @@ fn preconverge_still_freezes_time_threshold_declaration() {
         SenderState::PreConverge,
         "no ACK ⇒ PreConverge holds"
     );
-    assert_eq!(s.diag_loss().1, 0, "time-threshold declaration is frozen in PreConverge");
+    assert_eq!(
+        s.diag_loss().1,
+        0,
+        "time-threshold declaration is frozen in PreConverge"
+    );
 }

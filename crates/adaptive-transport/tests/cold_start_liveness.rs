@@ -195,7 +195,10 @@ fn cold_start_timeline_evidence_artifact() {
     // Content is verified AT the destination, wherever that is.
     let written = std::fs::read_to_string(format!("{dir}/summary.csv"))
         .expect("evidence summary must be readable at its destination");
-    assert_eq!(written, sum, "written evidence must match what was asserted");
+    assert_eq!(
+        written, sum,
+        "written evidence must match what was asserted"
+    );
     for size in [65u64, 300, 1200] {
         let t = std::fs::read_to_string(format!("{dir}/timeline-{size}B.csv"))
             .expect("per-size timeline must be readable at its destination");

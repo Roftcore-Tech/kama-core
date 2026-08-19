@@ -54,7 +54,6 @@ impl TokenBucket {
         self.tokens = self.tokens.saturating_add(add).min(self.burst_cap);
     }
 
-
     /// `size` byte'lık paket gönderilebilir mi; gönderilirse token düşer.
     pub fn try_send(&mut self, size: u64) -> bool {
         if self.tokens >= size {
