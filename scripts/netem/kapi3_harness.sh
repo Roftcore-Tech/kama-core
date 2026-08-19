@@ -127,18 +127,19 @@ kapi3_capture_start() { # $1=çıktı-dizini
   local d="$1"; mkdir -p "$d"
   # ÖNEMLİ fd-hijyeni: arka-plan süreçleri çağıranın stdout/stderr borusunu MİRAS ALMAMALI —
   # aksi hâlde script bitse bile boru EOF görmez, dıştaki tail/grep sonsuza dek bekler (yaşandı).
-  kapi3_a   python3 "$KAPI3_DIR/pkt_capture.py" va0 "$d/A_va0.jsonl"  > "$d/A_va0.ready"  2> "$d/A_va0.err"  < /dev/null & KAPI3_CAP1=$!
-  kapi3_mid python3 "$KAPI3_DIR/pkt_capture.py" ma0 "$d/MID_ma0.jsonl" > "$d/MID_ma0.ready" 2> "$d/MID_ma0.err" < /dev/null & KAPI3_CAP2=$!
-  kapi3_mid python3 "$KAPI3_DIR/pkt_capture.py" mb0 "$d/MID_mb0.jsonl" > "$d/MID_mb0.ready" 2> "$d/MID_mb0.err" < /dev/null & KAPI3_CAP3=$!
-  kapi3_b   python3 "$KAPI3_DIR/pkt_capture.py" vb0 "$d/B_vb0.jsonl"  > "$d/B_vb0.ready"  2> "$d/B_vb0.err"  < /dev/null & KAPI3_CAP4=$!
+  # DİKKAT: fonksiyon-sarmalıyı arka-plana ALMA (alt-kabuk fork → $! ≠ python; TERM ulaşmaz).
+  python3 "$KAPI3_DIR/pkt_capture.py" va0 "$d/A_va0.jsonl"  > "$d/A_va0.ready"  2> "$d/A_va0.err"  < /dev/null & KAPI3_CAP1=$!
+  nsenter -t "$MID" -n python3 "$KAPI3_DIR/pkt_capture.py" ma0 "$d/MID_ma0.jsonl" > "$d/MID_ma0.ready" 2> "$d/MID_ma0.err" < /dev/null & KAPI3_CAP2=$!
+  nsenter -t "$MID" -n python3 "$KAPI3_DIR/pkt_capture.py" mb0 "$d/MID_mb0.jsonl" > "$d/MID_mb0.ready" 2> "$d/MID_mb0.err" < /dev/null & KAPI3_CAP3=$!
+  nsenter -t "$CHLB" -n python3 "$KAPI3_DIR/pkt_capture.py" vb0 "$d/B_vb0.jsonl"  > "$d/B_vb0.ready"  2> "$d/B_vb0.err"  < /dev/null & KAPI3_CAP4=$!
   # READY bekle (yarışsız başlangıç).
   for f in A_va0 MID_ma0 MID_mb0 B_vb0; do
     for _ in $(seq 1 40); do grep -q READY "$d/$f.ready" 2>/dev/null && break; sleep 0.05; done
   done
   # tcpdump varsa pcap YANINA (dış-denetim katmanı).
   if command -v tcpdump >/dev/null 2>&1; then
-    kapi3_a   tcpdump -i va0 -w "$d/A_va0.pcap"  -U udp >/dev/null 2>&1 </dev/null & KAPI3_CAP5=$!
-    kapi3_b   tcpdump -i vb0 -w "$d/B_vb0.pcap"  -U udp >/dev/null 2>&1 </dev/null & KAPI3_CAP6=$!
+    tcpdump -i va0 -w "$d/A_va0.pcap"  -U udp >/dev/null 2>&1 </dev/null & KAPI3_CAP5=$!
+    nsenter -t "$CHLB" -n tcpdump -i vb0 -w "$d/B_vb0.pcap"  -U udp >/dev/null 2>&1 </dev/null & KAPI3_CAP6=$!
   fi
   export KAPI3_CAP1 KAPI3_CAP2 KAPI3_CAP3 KAPI3_CAP4
 }

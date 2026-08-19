@@ -82,7 +82,7 @@ if [ "${1:-}" = "--inner-run" ]; then
 
   kapi3_setup
   # [inceleme #29] Altyapı sağlığı: topoloji gerçekten forward ediyor mu (temiz ağda hızlı echo)?
-  kapi3_b python3 "$DIR/udp_echo.py" server 10.10.1.1 9990 > "$OUT/echo.ready" 2>/dev/null < /dev/null & ECHO=$!
+  nsenter -t "$CHLB" -n python3 "$DIR/udp_echo.py" server 10.10.1.1 9990 > "$OUT/echo.ready" 2>/dev/null < /dev/null & ECHO=$!
   for _ in $(seq 1 40); do grep -q READY "$OUT/echo.ready" 2>/dev/null && break; sleep 0.05; done
   HC=$(kapi3_a python3 "$DIR/udp_echo.py" client 10.10.1.1 9990 3 1.0 | jq .received)
   kill "$ECHO" 2>/dev/null
@@ -99,7 +99,8 @@ if [ "${1:-}" = "--inner-run" ]; then
   # (bayat .go → client beklemeden geçer, server erken arm eder). Her koşu taze gate'le başlar.
   rm -f "$GATE_E.ready" "$GATE_E.go" "$GATE_M.ready" "$GATE_M.go"
   # --gate-watch: reverse-bütçe arm'ı client'ın ölçüm-t0'ına senkron (warmup-ACK'leri muaf, r5 D.2).
-  kapi3_b "$BENCH" serve --bind 10.10.1.1:4433 --transport "$TRANSPORT" --quota-r "$QUOTA" \
+  # DİKKAT: fonksiyon-sarmalı ARKA-PLANA ALINMAZ (alt-kabuk fork → kill hedefe ulaşmaz, sızıntı).
+  nsenter -t "$CHLB" -n "$BENCH" serve --bind 10.10.1.1:4433 --transport "$TRANSPORT" --quota-r "$QUOTA" \
     $REV_BUDGET --gate-watch "$GATE_M" > "$OUT/server.log" 2>&1 < /dev/null & SRV=$!
   sleep 1
   if ! kill -0 "$SRV" 2>/dev/null; then
@@ -107,8 +108,10 @@ if [ "${1:-}" = "--inner-run" ]; then
     touch "$OUT/INVALID"; exit 1
   fi
 
+  # DİKKAT: kapi3_a sarmalısını arka-plana alma (alt-kabuk → kill CLI bench'e ulaşmaz);
+  # A = mevcut netns, doğrudan çalıştır. timeout TERM'i çocuğa iletir.
   # shellcheck disable=SC2086
-  kapi3_a timeout $(( DEADLINE + WARMUP * (INTERVAL>0 ? INTERVAL : 1000) / 1000 + (MSGS-1) * INTERVAL / 1000 + 90 )) \
+  timeout $(( DEADLINE + WARMUP * (INTERVAL>0 ? INTERVAL : 1000) / 1000 + (MSGS-1) * INTERVAL / 1000 + 90 )) \
     "$BENCH" client --server 10.10.1.1:4433 --transport "$TRANSPORT" --kama-arm "$KAMA_ARM" \
     --msgs "$MSGS" --payload "$PAYLOAD" --max-deadline-s "$DEADLINE" \
     --submit-interval-ms "$INTERVAL" --warmup-msgs "$WARMUP" \

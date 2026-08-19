@@ -26,7 +26,7 @@ kapi3_setup
 echo "offload: $KAPI3_OFFLOAD"
 
 # Echo server B'de.
-kapi3_b python3 "$DIR/udp_echo.py" server 10.10.1.1 9100 > "$TMP/echo.ready" 2> "$TMP/echo.err" < /dev/null &
+nsenter -t "$CHLB" -n python3 "$DIR/udp_echo.py" server 10.10.1.1 9100 > "$TMP/echo.ready" 2> "$TMP/echo.err" < /dev/null &
 for _ in $(seq 1 40); do grep -q READY "$TMP/echo.ready" 2>/dev/null && break; sleep 0.05; done
 
 # P1 — baseline
