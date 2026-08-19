@@ -6,6 +6,7 @@ mod error;
 mod event;
 mod kama;
 mod metrics;
+mod qdgram;
 mod quic;
 mod transport;
 
@@ -119,6 +120,8 @@ impl From<CcArg> for Cc {
 enum TransportArg {
     Quinn,
     Kama,
+    /// [KAPI-1 W1] quinn DATAGRAM + app-ARQ (Q-DGRAM-ARQ, FAZ-1 primary comparator).
+    Qdgram,
 }
 
 /// [KAPI-1 W4] CLI karşılığı — `transport::KamaArm`'a birebir eşlenir.
@@ -299,6 +302,7 @@ async fn run_server(t: TransportArg, cfg: ServerCfg) -> Result<(), BenchError> {
     match t {
         TransportArg::Quinn => quic::QuinnTransport.run_server(cfg).await,
         TransportArg::Kama => transport::KamaTransport.run_server(cfg).await,
+        TransportArg::Qdgram => qdgram::QdgramTransport.run_server(cfg).await,
     }
 }
 
@@ -306,5 +310,6 @@ async fn run_client(t: TransportArg, cfg: ClientCfg) -> Result<event::RunOutput,
     match t {
         TransportArg::Quinn => quic::QuinnTransport.run_client(cfg).await,
         TransportArg::Kama => transport::KamaTransport.run_client(cfg).await,
+        TransportArg::Qdgram => qdgram::QdgramTransport.run_client(cfg).await,
     }
 }

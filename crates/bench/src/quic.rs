@@ -30,23 +30,23 @@ pub struct QuinnTransport;
 /// [KAPI-1 W2] Governor tutamağı: sarmalayıcı socket'le AYNI saat tabanını (epoch) paylaşır —
 /// arm/permit aynı monotonic eksende akar (paced refill doğruluğu buna bağlı).
 #[derive(Debug, Clone)]
-struct GovHandle {
+pub(crate) struct GovHandle {
     gov: Arc<Mutex<BudgetGovernor>>,
     epoch: Instant,
 }
 
 impl GovHandle {
-    fn now_ns(&self) -> u64 {
+    pub(crate) fn now_ns(&self) -> u64 {
         u64::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(u64::MAX)
     }
 
     /// DÜZLEM-A t=0: bütçe uygulaması buradan başlar (öncesi = handshake, muaf + ayrı sayılır).
-    fn arm_now(&self) {
+    pub(crate) fn arm_now(&self) {
         let now = self.now_ns();
         self.gov.lock().expect("governor lock").arm(now);
     }
 
-    fn snapshot(&self) -> BudgetSnapshot {
+    pub(crate) fn snapshot(&self) -> BudgetSnapshot {
         self.gov.lock().expect("governor lock").snapshot()
     }
 }
@@ -122,7 +122,7 @@ impl AsyncUdpSocket for GovernedUdpSocket {
 
 /// Bütçeli/bütçesiz endpoint kuruluşu. `Unlimited` → quinn'in kendi yolu AYNEN (banked yolun
 /// sıfır-perturbasyonu); bütçeli → governed socket ile `new_with_abstract_socket`.
-fn build_endpoint(
+pub(crate) fn build_endpoint(
     bind: SocketAddr,
     server: Option<ServerConfig>,
     budget: BudgetMode,
@@ -156,7 +156,7 @@ fn build_endpoint(
     Ok((ep, Some(handle)))
 }
 
-const QUINN_VERSION: &str = "0.11.11";
+pub(crate) const QUINN_VERSION: &str = "0.11.11";
 const ALPN: &[u8] = b"kama-bench";
 
 fn transport_config(cc: Cc) -> Arc<TransportConfig> {
@@ -186,7 +186,7 @@ fn ensure_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-fn server_config(cc: Cc) -> Result<ServerConfig, BenchError> {
+pub(crate) fn server_config(cc: Cc) -> Result<ServerConfig, BenchError> {
     ensure_crypto_provider();
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
         .map_err(|e| BenchError::Tls(e.to_string()))?;
@@ -205,7 +205,7 @@ fn server_config(cc: Cc) -> Result<ServerConfig, BenchError> {
     Ok(sc)
 }
 
-fn client_config(cc: Cc) -> Result<ClientConfig, BenchError> {
+pub(crate) fn client_config(cc: Cc) -> Result<ClientConfig, BenchError> {
     ensure_crypto_provider();
     let mut crypto = rustls::ClientConfig::builder()
         .dangerous()
