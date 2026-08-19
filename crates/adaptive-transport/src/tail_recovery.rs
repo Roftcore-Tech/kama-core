@@ -35,6 +35,12 @@ pub struct TailRecoveryConfig {
 impl Default for TailRecoveryConfig {
     fn default() -> Self {
         // DEFAULT OFF. Bounds are conservative product defaults (ns).
+        //
+        // NOTE these bounds are NOT the validated ones: the DR-ARQ-PRODUCT-TAIL-1 grid ran
+        // [`Self::validated_v1`] (cap 3, 10 ms / 10 s / 30 s), and this default (cap 2, 1 ms /
+        // 60 s / 120 s) was never driven by any campaign. Enabling tail recovery therefore goes
+        // through `Sender::set_tail_recovery_config(TailRecoveryConfig::validated_v1())` — never
+        // by flipping `enabled` here, which would ship an unvalidated configuration.
         Self {
             enabled: false,
             min_pto_ns: 1_000_000,               // 1 ms floor
@@ -43,6 +49,35 @@ impl Default for TailRecoveryConfig {
             max_backoff_pto_ns: 120_000_000_000, // 120 s absolute backoff ceiling
             max_ack_delay_ns: 25_000_000,        // 25 ms
             max_tail_probes: 2,
+        }
+    }
+}
+
+impl TailRecoveryConfig {
+    /// KAMA-TAIL-V1 — the exact configuration the product validation ran, promoted to a named
+    /// product constant so enabling tail recovery cannot silently ship different bounds.
+    ///
+    /// Provenance: DR-ARQ-PRODUCT-TAIL-1, faithful two-netns/netem, 2290/2290 rows, verdict
+    /// `GO — MECHANISM CORRECT, POLICY/TUNING PENDING` (frozen grid config in
+    /// `examples/dr_arqtail_product.rs`; freeze record
+    /// `reports/dr-arq-product-tail-1/FIDELITY-AND-FREEZE.md`, source `c46e8fa3`, manifest
+    /// `bf849aba…`). Terminal tail: OFF 8/360 (2.2%) vs ON 329/360 (91.4%); global max
+    /// `probe_sent` = 3 = this cap; `inv_fail` = 0; `spurious` = 0.
+    ///
+    /// Known open tuning (recorded, NOT fixed here — the comparison campaign runs this config
+    /// as-is, per the handoff rule "do not post-hoc tune Tail-v1 before the comparison"):
+    /// `terminal-tail,10,med` exhausts the fixed cap before packet-threshold ARQ engages (0/30);
+    /// adaptive cap/backoff is product-v2 backlog.
+    #[must_use]
+    pub fn validated_v1() -> Self {
+        Self {
+            enabled: true,
+            min_pto_ns: 10_000_000,             // 10 ms floor
+            max_pto_ns: 10_000_000_000,         // 10 s base ceiling
+            initial_pto_ns: 1_000_000_000,      // 1 s when no RTT sample (Karn)
+            max_backoff_pto_ns: 30_000_000_000, // 30 s absolute backoff ceiling
+            max_ack_delay_ns: 25_000_000,       // 25 ms
+            max_tail_probes: 3,
         }
     }
 }
@@ -195,7 +230,8 @@ impl TailRecovery {
         // probe is due but un-emitted (no token), on_timer keeps returning ProbeDue without advancing the cap.
         self.probe_due_count = self.probe_due_count.saturating_add(1); // observation-only (§7 probe_due) — LEVEL.
         if !self.was_due {
-            self.probe_due_edge_count = self.probe_due_edge_count.saturating_add(1); // EDGE (demand).
+            self.probe_due_edge_count = self.probe_due_edge_count.saturating_add(1);
+            // EDGE (demand).
         }
         self.was_due = true;
         ProbeDecision::ProbeDue {
@@ -534,5 +570,41 @@ mod tests {
         assert_eq!(t.probe_bytes(), 202);
         assert_eq!(t.spurious_probe_count(), 1);
         assert_eq!(t.spurious_probe_bytes(), 101);
+    }
+
+    /// KAMA-TAIL-V1 pin: the named product constant must stay byte-equal to the configuration the
+    /// 2290-row validation grid actually ran (frozen in examples/dr_arqtail_product.rs). If this
+    /// fails, someone re-tuned the constant without a campaign — the exact drift the name exists
+    /// to prevent. The default stays distinct and OFF: enabling goes through validated_v1, never
+    /// through flipping the (never-validated) default bounds.
+    #[test]
+    fn validated_v1_pins_the_grid_config_and_default_stays_off() {
+        let v = TailRecoveryConfig::validated_v1();
+        assert!(v.enabled);
+        assert_eq!(
+            (
+                v.min_pto_ns,
+                v.max_pto_ns,
+                v.initial_pto_ns,
+                v.max_backoff_pto_ns,
+                v.max_ack_delay_ns,
+                v.max_tail_probes,
+            ),
+            (
+                10_000_000,
+                10_000_000_000,
+                1_000_000_000,
+                30_000_000_000,
+                25_000_000,
+                3,
+            ),
+            "KAMA-TAIL-V1 drifted from the validated grid config"
+        );
+        let d = TailRecoveryConfig::default();
+        assert!(!d.enabled, "shipping default must remain OFF");
+        assert_ne!(
+            d.max_tail_probes, v.max_tail_probes,
+            "the default (cap 2) was never validated; it must not silently converge on v1"
+        );
     }
 }

@@ -58,10 +58,10 @@ impl ClientSession {
     /// Construct with the shipped defaults.
     ///
     /// Those defaults are: startup pacing **ON**, bootstrap RTT **OFF**, tail recovery **OFF**,
-    /// FEC actuation `Manual { enabled: false }`. Enabling tail recovery is a call to
-    /// `Sender::set_tail_recovery_config` with a validated configuration — never a flip of
-    /// `TailRecoveryConfig::default()`, whose bounds differ from the ones the product grid
-    /// actually ran.
+    /// FEC actuation `Manual { enabled: false }`. Enabling tail recovery is
+    /// `sender_mut().set_tail_recovery_config(TailRecoveryConfig::validated_v1())` — the named
+    /// KAMA-TAIL-V1 constant the 2290-row product grid actually ran — never a flip of
+    /// `TailRecoveryConfig::default()`, whose bounds were never driven by any campaign.
     #[must_use]
     pub fn new() -> Self {
         Self {
