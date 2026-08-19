@@ -27,6 +27,29 @@ impl Cc {
     }
 }
 
+/// Kama kol seçimi (KAPI-1 §0 / W4). `Arq` = `Sender::new()` defaults (tail OFF); `TailV1` =
+/// KAMA-TAIL-V1 (`TailRecoveryConfig::validated_v1()` — 2290-satır grid'in koştuğu adlandırılmış
+/// sabit, post-hoc tuning yok). quinn kollarında yok sayılır.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KamaArm {
+    /// Ürün defaults'ları (tail recovery OFF).
+    #[default]
+    Arq,
+    /// Bounded tail recovery, doğrulanmış v1 konfigürasyonuyla ON.
+    TailV1,
+}
+
+impl KamaArm {
+    /// Rapor/manifest etiketi (RunMeta.kama_arm).
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Arq => "kama-arq",
+            Self::TailV1 => "kama-tail-v1",
+        }
+    }
+}
+
 /// Client koşu parametreleri.
 #[derive(Debug, Clone)]
 pub struct ClientCfg {
@@ -46,6 +69,8 @@ pub struct ClientCfg {
     pub repeat: u32,
     /// netem profil adı.
     pub profile: String,
+    /// Kama kolu (quinn'de yok sayılır). [KAPI-1 W4]
+    pub kama_arm: KamaArm,
 }
 
 /// Server koşu parametreleri.

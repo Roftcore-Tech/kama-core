@@ -266,6 +266,7 @@ mod tests {
             udp_tx_bytes: 1000,
             udp_rx_bytes: 200,
             tx: TxComponents::default(),
+            kama_arm: String::new(),
         };
         let run = RunOutput {
             meta,

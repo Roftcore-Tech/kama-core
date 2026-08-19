@@ -1475,6 +1475,13 @@ impl Sender {
         )
     }
 
+    /// Observation-only: whether the bounded tail-recovery mechanism is enabled. Exists so an
+    /// arm selector (bench KAPI-1 W4) can PIN that its config call took effect; reads no timers.
+    #[must_use]
+    pub fn tail_recovery_enabled(&self) -> bool {
+        self.tail_recovery.is_enabled()
+    }
+
     /// DR-ARQ-PRODUCT-TAIL-1 diagnostics (observation-only): (probes, probe_bytes, spurious, spurious_bytes).
     #[must_use]
     pub fn tail_probe_diag(&self) -> (u64, u64, u64, u64) {

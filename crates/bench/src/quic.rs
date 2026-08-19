@@ -167,6 +167,7 @@ impl BenchTransport for QuinnTransport {
                 udp_tx_bytes: stats.udp_tx.bytes,
                 udp_rx_bytes: stats.udp_rx.bytes,
                 tx: TxComponents::default(),
+                kama_arm: String::new(),
             },
             events,
         })
@@ -200,6 +201,7 @@ fn handshake_failed_output(cfg: &ClientCfg) -> RunOutput {
             udp_tx_bytes: 0,
             udp_rx_bytes: 0,
             tx: TxComponents::default(),
+            kama_arm: String::new(),
         },
         events,
     }
@@ -312,6 +314,7 @@ mod loopback_tests {
                 seed: 0,
                 repeat: 0,
                 profile: "loopback".to_string(),
+                kama_arm: crate::transport::KamaArm::Arq,
             })
             .await
             .expect("client run (ALPN/provider/handshake OK)");
@@ -368,6 +371,7 @@ mod loopback_tests {
                 seed: 0,
                 repeat: 0,
                 profile: "deadaddr".to_string(),
+                kama_arm: crate::transport::KamaArm::Arq,
             })
             .await
             .expect("bounded return, HANG değil");

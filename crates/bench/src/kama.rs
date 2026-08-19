@@ -27,7 +27,9 @@ use tokio::time::interval;
 
 use crate::error::BenchError;
 use crate::event::{RawEvent, RunMeta, RunOutput, TxComponents};
-use crate::transport::{BenchTransport, ClientCfg, KamaTransport, ServerCfg};
+use adaptive_transport::tail_recovery::TailRecoveryConfig;
+
+use crate::transport::{BenchTransport, ClientCfg, KamaArm, KamaTransport, ServerCfg};
 
 /// DATA frame_type (bench-local; ACK 0x10 ack.rs'te, FEC_SHARD 0x20 wire'da hiç görünmez).
 const FRAME_DATA: u8 = 0x00;
@@ -91,9 +93,15 @@ struct ClientRun {
 }
 
 impl ClientRun {
-    fn new(msg_count: usize) -> Self {
+    fn new(msg_count: usize, arm: KamaArm) -> Self {
+        // KAPI-1 W4: kol seçimi Sender kuruluşunda uygulanır. TailV1 = adlandırılmış doğrulanmış
+        // sabit; default bounds ile ENABLE ETME (o bounds hiç kampanya görmedi — tail_recovery.rs).
+        let mut sender = Sender::new();
+        if arm == KamaArm::TailV1 {
+            sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
+        }
         Self {
-            sender: Sender::new(),
+            sender,
             seq_to_unit: HashMap::new(),
             max_emitted_seq: 0,
             sent_ns: vec![None; msg_count],
@@ -150,7 +158,7 @@ async fn client_loop(
     let msg_count = cfg.msg_count;
     let payload = vec![0x5Au8; usize::try_from(cfg.payload_bytes).unwrap_or(0)];
     let unit_size = HDR_DATA as u64 + cfg.payload_bytes;
-    let mut run = ClientRun::new(usize::try_from(msg_count).unwrap_or(0));
+    let mut run = ClientRun::new(usize::try_from(msg_count).unwrap_or(0), cfg.kama_arm);
 
     // Tüm birimleri t0'da enqueue — engine'in İÇ pacing'i yayılımı belirlesin (yapay serileştirme değil;
     // her iki transport da aynı start'tan aynı max_deadline bütçesini alır → adil karşılaştırma).
@@ -280,6 +288,7 @@ async fn client_loop(
             dup: run.tx_dup,
         },
         udp_rx_bytes: run.rx_bytes,
+        kama_arm: cfg.kama_arm.label().to_string(),
     };
     Ok(RunOutput { meta, events })
 }
@@ -364,7 +373,20 @@ mod tests {
             seed: 0,
             repeat: 0,
             profile: "loopback".to_string(),
+            kama_arm: KamaArm::Arq,
         }
+    }
+
+    /// KAPI-1 W4 pin: kol bayrağı Sender'a gerçekten işlenmeli — TailV1 doğrulanmış sabiti kurar,
+    /// Arq default-OFF bırakır. Bu pin kırılırsa "ON kolu" sessizce OFF koşar (kampanya-geçersiz).
+    #[test]
+    fn kama_arm_flag_installs_validated_v1() {
+        assert!(!ClientRun::new(1, KamaArm::Arq)
+            .sender
+            .tail_recovery_enabled());
+        assert!(ClientRun::new(1, KamaArm::TailV1)
+            .sender
+            .tail_recovery_enabled());
     }
 
     #[test]

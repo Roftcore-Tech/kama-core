@@ -57,6 +57,10 @@ pub struct RunMeta {
     /// tx wire byte bileşen ayrımı (teşhis; kama doldurur, quinn=default). [D2]
     #[serde(default)]
     pub tx: TxComponents,
+    /// Kama kol etiketi ("kama-arq" | "kama-tail-v1"; quinn kollarında boş). Eski JSONL'lerde
+    /// alan yok → default boş string (geriye-uyumlu okuma). [KAPI-1 W4]
+    #[serde(default)]
+    pub kama_arm: String,
 }
 
 /// Bir koşunun tüm çıktısı: meta + ham eventler.

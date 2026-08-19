@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::BenchError;
-use crate::transport::{BenchTransport, Cc, ClientCfg, ServerCfg};
+use crate::transport::{BenchTransport, Cc, ClientCfg, KamaArm, ServerCfg};
 
 #[derive(Parser)]
 #[command(name = "bench", about = "Kama transport benchmark harness (§4.4)")]
@@ -57,6 +57,9 @@ enum Cmd {
         profile: String,
         #[arg(long, value_enum, default_value_t = TransportArg::Quinn)]
         transport: TransportArg,
+        /// Kama kolu: arq (defaults, tail OFF) | tail-v1 (KAMA-TAIL-V1). quinn'de yok sayılır. [KAPI-1 W4]
+        #[arg(long, value_enum, default_value_t = KamaArmArg::Arq)]
+        kama_arm: KamaArmArg,
         #[arg(long)]
         out: PathBuf,
     },
@@ -90,6 +93,22 @@ enum TransportArg {
     Kama,
 }
 
+/// [KAPI-1 W4] CLI karşılığı — `transport::KamaArm`'a birebir eşlenir.
+#[derive(Copy, Clone, ValueEnum)]
+enum KamaArmArg {
+    Arq,
+    TailV1,
+}
+
+impl From<KamaArmArg> for KamaArm {
+    fn from(a: KamaArmArg) -> KamaArm {
+        match a {
+            KamaArmArg::Arq => KamaArm::Arq,
+            KamaArmArg::TailV1 => KamaArm::TailV1,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), BenchError> {
     let cli = Cli::parse();
@@ -120,6 +139,7 @@ async fn main() -> Result<(), BenchError> {
             repeat,
             profile,
             transport,
+            kama_arm,
             out,
         } => {
             let cfg = ClientCfg {
@@ -131,6 +151,7 @@ async fn main() -> Result<(), BenchError> {
                 seed,
                 repeat,
                 profile,
+                kama_arm: kama_arm.into(),
             };
             let output = run_client(transport, cfg).await?;
             output.write_jsonl(&out)?;
