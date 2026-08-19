@@ -1,9 +1,12 @@
 # KAPI-1 — v2 Adverse-Network Benchmark Kampanyası: Tasarım Tabloları
 
-**Statü:** TASLAK → Abkarada onayı bekliyor. Otorite: `docs/tasks/v2-benchmark-gorev-r5-kosuya-hazir.md` (r5).
-Onay akışı (r5 §A): bu taslağın onayı **calibration** koşularını açar; FINAL onay + KAPI-2 ön-kayıt
-**evaluation/headline** koşularını açar. Bu belge kampanyanın TEK tasarım belgesidir (bitiş-dönemi
-süreç kuralı 1); tek karşıt inceleme = Abkarada kapı incelemesi.
+**Statü:** **TASLAK-ONAYLANDI (Abkarada, 2026-08-20)** — "planını onaylıyorum, iteratif şekilde
+hallet". Onayla birlikte §12 karar noktaları önerilen değerlerle KİLİTLENDİ: D1=Yol-A (`raptorq`) ·
+D2=u 0.75 · D3=headline A2 · D4=FAZ-1/FAZ-2 yapısı · D5=Düzlem-B ertelendi · D6=bucket 2 s.
+Otorite: `docs/tasks/v2-benchmark-gorev-r5-kosuya-hazir.md` (r5). Onay akışı (r5 §A): taslak onayı
+**calibration** koşularını açar (AÇIK); **evaluation/headline** için KAPI-1 FINAL + KAPI-2 ön-kayıt
+gerekmeye devam eder. Bu belge kampanyanın TEK tasarım belgesidir (bitiş-dönemi süreç kuralı 1);
+koşu-öncesi TEK karşıt inceleme harness bütünü üstünde yapılacak.
 
 **ADIM-0 sonucu (2026-08-19):** `origin/main`'de dalda olmayan commit **0** — spec otoritesi ağaçtaki
 güncel hal. Kampanyayı etkileyen wire/cert/INIT boyut değişikliği YOK: DÜZLEM-A established-session
