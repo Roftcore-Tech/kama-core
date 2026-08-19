@@ -77,6 +77,31 @@ pub struct ClientCfg {
     pub submit_interval: Duration,
     /// Forward-yön (client-egress) bütçesi — packet-atomic hard-cap (r5 §D). [KAPI-1 W2]
     pub budget: crate::budget::BudgetMode,
+    /// [KAPI-1 W6] Ölçüm-öncesi warmup mesajı sayısı (0 = warmup yok). Warmup trafiği aynı sınıf
+    /// akıştır; ölçüm kayıtlarına ve bütçeye GİRMEZ (governor pre-arm). A1/A2 farkını harness'ın
+    /// netem'i ne zaman uyguladığı belirler (r5 B.2).
+    pub warmup_msgs: u64,
+    /// [KAPI-1 W6] Barrier gate yolu: warmup+quiescence sonrası `<gate>.ready` yazılır,
+    /// `<gate>.go` beklenir; ölçüm-t0 = GO anı. None = gate yok (t0 ≈ koşu başı).
+    pub gate: Option<std::path::PathBuf>,
+}
+
+/// [KAPI-1 W6] Dosya-tabanlı barrier: `<gate>.ready` yaz → `<gate>.go` bekle (5 ms poll, 120 s
+/// tavan — harness ölmüşse koşu asılı kalmaz, tipli hata döner). Ortak t=0 harness'ın GO yazdığı
+/// andır; üç adaptör de AYNI protokolü kullanır (r5 B.2 "evaluation-trace başlangıcı AYNI").
+pub(crate) async fn gate_sync(gate: &std::path::Path) -> Result<(), crate::error::BenchError> {
+    let ready = format!("{}.ready", gate.display());
+    let go = format!("{}.go", gate.display());
+    std::fs::write(&ready, b"ready")?;
+    for _ in 0..24_000u32 {
+        if std::path::Path::new(&go).exists() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    Err(crate::error::BenchError::Other(format!(
+        "gate timeout (120 s): {go} hiç yazılmadı — harness barrier'ı ölü"
+    )))
 }
 
 /// Server koşu parametreleri.

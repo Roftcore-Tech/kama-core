@@ -14,7 +14,7 @@
 //! `max_deadline` ile bounded (dead server → all-None Ok, HANG yok). sent_ns'i wire-emit'te damgalamak
 //! kama'nın pacing dwell'ini latency'den dışlar → completion şişer (review CRITICAL, frame-bug sınıfı).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -51,6 +51,10 @@ const ACK_TICK: Duration = Duration::from_millis(20);
 const SERVER_RECV_BUF: usize = 65536;
 /// client recv buffer (yalnız küçük ACK frame'leri).
 const CLIENT_RECV_BUF: usize = 2048;
+/// [KAPI-1 W6] Warmup birim-id tabanı: ölçüm-dışı warmup birimleri bu ofsetle akar — sent/delivered
+/// vektörleri ölçüm-id'leriyle indekslendiğinden warmup id'leri kayıt yollarında YAPISAL olarak
+/// görünmez (get_mut(huge)→None); teslimleri ayrı sette izlenir.
+const WARMUP_BASE: u64 = 1 << 40;
 
 /// DATA frame'i canonical fixed-width big-endian kodlar (ADR-05; varint YASAK).
 fn encode_data(seq: u16, unit_id: u64, payload: &[u8]) -> Vec<u8> {
@@ -80,8 +84,8 @@ fn elapsed_ns(start: Instant) -> u64 {
 /// Client koşu durumu: sender engine + ölçüm muhasebesi (seq→unit join, sent/delivered damgaları, byte sayaçları).
 struct ClientRun {
     sender: Sender,
-    /// [KAPI-1 W2] forward-yön governor'ü. Kama'da handshake yok → kuruluşta arm(0)
-    /// (DÜZLEM-A t=0; W6 barrier'ı bu anı harness-t0'a bağlayacak).
+    /// [KAPI-1 W2] forward-yön governor'ü. [W6] Arm ölçüm-t0'da (gate sonrası) yapılır;
+    /// warmup trafiği pre_arm'da muaf kalır.
     gov: BudgetGovernor,
     seq_to_unit: HashMap<u64, u64>,
     max_emitted_seq: u64,
@@ -94,6 +98,8 @@ struct ClientRun {
     tx_data: u64,
     tx_retx: u64,
     tx_dup: u64,
+    /// [W6] Teslim edilen warmup birim-id'leri (ölçüm kayıtlarına girmez; faz-geçiş koşulu).
+    warmup_delivered: HashSet<u64>,
 }
 
 impl ClientRun {
@@ -104,11 +110,11 @@ impl ClientRun {
         if arm == KamaArm::TailV1 {
             sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
         }
-        let mut gov = BudgetGovernor::new(budget);
-        gov.arm(0);
+        // [W6] gov burada ARM EDİLMEZ: ölçüm-t0'da (client_loop, gate sonrası) arm edilir —
+        // warmup trafiği pre_arm'da görünür, bütçeden düşmez (DÜZLEM-A t=0 semantiği).
         Self {
             sender,
-            gov,
+            gov: BudgetGovernor::new(budget),
             seq_to_unit: HashMap::new(),
             max_emitted_seq: 0,
             sent_ns: vec![None; msg_count],
@@ -119,7 +125,61 @@ impl ClientRun {
             tx_data: 0,
             tx_retx: 0,
             tx_dup: 0,
+            warmup_delivered: HashSet::new(),
         }
+    }
+
+    /// [W6] Gelen datagramı işle: ACK ise teslim damgala (ölçüm-id'leri) + warmup-teslim izle +
+    /// sender'ı besle. Warmup ve ölçüm fazları AYNI yolu kullanır (kod-tekilliği; frame doğruluğu
+    /// tek yerde). ACK-dışı/bozuk frame yoksayılır.
+    async fn handle_datagram(
+        &mut self,
+        raw: &[u8],
+        now: u64,
+        sock: &UdpSocket,
+        server: SocketAddr,
+        payload: &[u8],
+    ) {
+        self.rx_bytes += raw.len() as u64;
+        // [TUR-1x] V2 (0x14, 256µs) + V1 (0x10, µs) kabul — decode versiyona göre çözer.
+        if raw.is_empty() || (raw[0] != FRAME_TYPE_ACK && raw[0] != FRAME_TYPE_ACK_V2) {
+            return;
+        }
+        let Ok(frame) = AckFrame::decode(raw) else {
+            return;
+        };
+        let acked = frame.acked_full(self.max_emitted_seq + 1);
+        // delivered_ns: birimin herhangi bir seq'i İLK kez acked → MUTLAK damga (ilk-ack-kazanır).
+        for s in &acked {
+            let Some(&unit) = self.seq_to_unit.get(s) else {
+                continue;
+            };
+            if unit >= WARMUP_BASE {
+                self.warmup_delivered.insert(unit);
+                continue;
+            }
+            if let Some(slot) = self
+                .delivered_ns
+                .get_mut(usize::try_from(unit).unwrap_or(usize::MAX))
+            {
+                if slot.is_none() {
+                    *slot = Some(now);
+                    self.delivered_count += 1;
+                }
+            }
+        }
+        // sender'ı besle: inflight boşalt + RTT/BW + ARQ/fwd recovery (bench delivered'ı KENDİ damgaladı).
+        self.drive(
+            Event::AckReceived(AckInfo {
+                acked_seqs: acked,
+                ack_delay: frame.ack_delay_duration(),
+            }),
+            now,
+            sock,
+            server,
+            payload,
+        )
+        .await;
     }
 
     /// Sender'ı bir olayla sürer + çıkan transmit kararlarını wire'a yazar. seq→unit map + max_emitted_seq
@@ -188,6 +248,86 @@ async fn client_loop(
     // [KAPI-1 W3] interval==0 (burst): bu yol AYNEN korunur. interval>0 (paced): sunumlar select
     // döngüsünde zamanlanır (mesaj i → t=i×interval); sent_ns yine app-offer anı.
     let interval_ns = u64::try_from(cfg.submit_interval.as_nanos()).unwrap_or(u64::MAX);
+
+    // ── [KAPI-1 W6] FAZ-0: warmup (ölçüm-DIŞI) + gate senkronu ─────────────────────────────
+    // Warmup birimleri WARMUP_BASE+i id'leriyle AYNI motor/soket yolundan akar; kayıt yollarına
+    // yapısal olarak girmez. Amaç: transport state'i (estimator/pacer/RTT) ölçümden önce oturt —
+    // A1'de temiz kanalda (converge), A2'de impairment altında (steady-state); farkı harness'ın
+    // netem'i NE ZAMAN uyguladığı belirler (r5 B.2). Sonra quiescence + gate: `<gate>.ready`
+    // yazılır, harness impairment/barrier işini bitirip `<gate>.go` dokunur; ölçüm-t0 = GO anı.
+    if cfg.warmup_msgs > 0 {
+        let warm_start = elapsed_ns(start);
+        let warm_cap_ns = interval_ns
+            .saturating_mul(cfg.warmup_msgs)
+            .saturating_add(30_000_000_000); // sunum-planı + 30 s tavan (bounded)
+        let mut wpace = interval(PACE_TICK);
+        let mut wrtprop = interval(RTPROP_TICK);
+        let mut wbuf = [0u8; CLIENT_RECV_BUF];
+        let mut wnext: u64 = 0;
+        let wdeadline = tokio::time::sleep(Duration::from_nanos(warm_cap_ns));
+        tokio::pin!(wdeadline);
+        while (run.warmup_delivered.len() as u64) < cfg.warmup_msgs {
+            tokio::select! {
+                () = &mut wdeadline => break,
+                () = tokio::time::sleep(Duration::from_nanos(
+                    warm_start
+                        .saturating_add(interval_ns.saturating_mul(wnext))
+                        .saturating_sub(elapsed_ns(start)),
+                )), if wnext < cfg.warmup_msgs => {
+                    let now = elapsed_ns(start);
+                    let id = WARMUP_BASE + wnext;
+                    wnext += 1;
+                    run.drive(
+                        Event::AppData(OpaqueUnit { id, size: unit_size }),
+                        now, &sock, cfg.server, &payload,
+                    ).await;
+                }
+                _ = wpace.tick() => {
+                    let now = elapsed_ns(start);
+                    run.drive(Event::TimerFired(Timer::Pto), now, &sock, cfg.server, &payload).await;
+                }
+                _ = wrtprop.tick() => {
+                    let now = elapsed_ns(start);
+                    run.drive(Event::TimerFired(Timer::RtpropProbe), now, &sock, cfg.server, &payload).await;
+                }
+                r = sock.recv_from(&mut wbuf) => {
+                    let Ok((n, _)) = r else { continue };
+                    let now = elapsed_ns(start);
+                    let raw = wbuf[..n].to_vec();
+                    run.handle_datagram(&raw, now, &sock, cfg.server, &payload).await;
+                }
+            }
+        }
+        // Quiescence: kısa oturma penceresi (in-flight ACK'leri toplansın; sunum yok).
+        let settle = tokio::time::sleep(Duration::from_millis(500));
+        tokio::pin!(settle);
+        loop {
+            let mut wbuf2 = [0u8; CLIENT_RECV_BUF];
+            tokio::select! {
+                () = &mut settle => break,
+                r = sock.recv_from(&mut wbuf2) => {
+                    let Ok((n, _)) = r else { continue };
+                    let now = elapsed_ns(start);
+                    let raw = wbuf2[..n].to_vec();
+                    run.handle_datagram(&raw, now, &sock, cfg.server, &payload).await;
+                }
+            }
+        }
+    }
+    if let Some(gate) = &cfg.gate {
+        crate::transport::gate_sync(gate).await?;
+    }
+
+    // ── Ölçüm-t0 (DÜZLEM-A): sayaçlar sıfırlanır, TRANSPORT STATE KORUNUR (r5 B.2
+    // counter_reset_without_state_reset), bütçe ARM edilir. Warmup/gate yoksa t0 ≈ 0 (eski yol).
+    let t0 = elapsed_ns(start);
+    run.gov.arm(t0);
+    run.tx_bytes = 0;
+    run.rx_bytes = 0;
+    run.tx_data = 0;
+    run.tx_retx = 0;
+    run.tx_dup = 0;
+
     if interval_ns == 0 {
         for id in 0..msg_count {
             let now = elapsed_ns(start);
@@ -216,9 +356,9 @@ async fn client_loop(
     let mut rtprop = interval(RTPROP_TICK);
     let mut buf = [0u8; CLIENT_RECV_BUF];
     // Koşu sonu = son-sunum + max_deadline (r5 §G: test_end = last_submission + mission_deadline;
-    // burst'ta son-sunum ≈ t0 → mevcut semantik aynen). start'tan kalan süre olarak kurulur.
-    let total_deadline_ns = interval_ns
-        .saturating_mul(msg_count.saturating_sub(1))
+    // burst'ta son-sunum ≈ t0 → mevcut semantik aynen). t0-göreli, start'tan kalan süre olarak.
+    let total_deadline_ns = t0
+        .saturating_add(interval_ns.saturating_mul(msg_count.saturating_sub(1)))
         .saturating_add(u64::try_from(cfg.max_deadline.as_nanos()).unwrap_or(u64::MAX));
     let deadline = tokio::time::sleep(Duration::from_nanos(
         total_deadline_ns.saturating_sub(elapsed_ns(start)),
@@ -236,7 +376,8 @@ async fn client_loop(
             // yinelemesinde kalan-süreden yeniden kurulur (1ms pace tick'i döngüyü sürekli uyandırır
             // → vade geldiğinde kalan=0, kol anında ateşler; sapma ≤ ~1ms ≪ aralıklar 1s+).
             () = tokio::time::sleep(Duration::from_nanos(
-                interval_ns.saturating_mul(next_submit).saturating_sub(elapsed_ns(start)),
+                t0.saturating_add(interval_ns.saturating_mul(next_submit))
+                    .saturating_sub(elapsed_ns(start)),
             )), if next_submit < msg_count => {
                 let now = elapsed_ns(start);
                 let id = next_submit;
@@ -287,29 +428,10 @@ async fn client_loop(
             }
             r = sock.recv_from(&mut buf) => {
                 let Ok((n, _from)) = r else { continue }; // recv hatası → yoksay (deadline sınırlar).
-                run.rx_bytes += n as u64;
-                // [TUR-1x] V2 (0x14, 256µs) + V1 (0x10, µs) kabul — decode versiyona göre çözer.
-                if n < 1 || (buf[0] != FRAME_TYPE_ACK && buf[0] != FRAME_TYPE_ACK_V2) {
-                    continue;
-                }
-                let Ok(frame) = AckFrame::decode(&buf[..n]) else { continue };
                 let now = elapsed_ns(start);
-                let acked = frame.acked_full(run.max_emitted_seq + 1);
-                // delivered_ns: birimin herhangi bir seq'i İLK kez acked → MUTLAK damga (ilk-ack-kazanır).
-                for s in &acked {
-                    let Some(&unit) = run.seq_to_unit.get(s) else { continue };
-                    if let Some(slot) = run.delivered_ns.get_mut(usize::try_from(unit).unwrap_or(usize::MAX)) {
-                        if slot.is_none() {
-                            *slot = Some(now);
-                            run.delivered_count += 1;
-                        }
-                    }
-                }
-                // sender'ı besle: inflight boşalt + RTT/BW + ARQ/fwd recovery (bench delivered'ı KENDİ damgaladı).
-                run.drive(
-                    Event::AckReceived(AckInfo { acked_seqs: acked, ack_delay: frame.ack_delay_duration() }),
-                    now, &sock, cfg.server, &payload,
-                ).await;
+                // [W6] tek ACK-yolu: warmup fazıyla AYNI kod (frame doğruluğu tek yerde).
+                let raw = buf[..n].to_vec();
+                run.handle_datagram(&raw, now, &sock, cfg.server, &payload).await;
             }
         }
     }
@@ -459,6 +581,8 @@ mod tests {
             kama_arm: KamaArm::Arq,
             submit_interval: Duration::ZERO,
             budget: BudgetMode::Unlimited,
+            warmup_msgs: 0,
+            gate: None,
         }
     }
 
@@ -510,6 +634,51 @@ mod tests {
             delivered, 2,
             "teslim = enjekte edilen DATA (loopback kayıpsız)"
         );
+    }
+
+    /// [KAPI-1 W6] İki-fazlı koşu pini: warmup ölçüm-DIŞI kalmalı — events yalnız ölçüm
+    /// mesajları, tx sayaçları t0'da sıfır (warmup byte'ı sızarsa bu test kırılır), gate
+    /// protokolü (ready→go) işler, aynı Sender iki fazda da yaşar (state korunur).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn warmup_and_gate_exclude_warmup_from_measurement() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let saddr = server.local_addr().unwrap();
+        tokio::spawn(serve_loop(server, Instant::now(), 4, BudgetMode::Unlimited));
+
+        let dir = std::env::temp_dir().join(format!("kapi-gate-kama-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gate = dir.join("g1");
+        let g2 = gate.clone();
+        // Harness rolü: ready'yi gör → go yaz (barrier'ın karşı ucu).
+        let harness = tokio::spawn(async move {
+            let ready = format!("{}.ready", g2.display());
+            for _ in 0..2000 {
+                if std::path::Path::new(&ready).exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            std::fs::write(format!("{}.go", g2.display()), b"go").unwrap();
+        });
+
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut c = cfg(saddr, 5, 5000);
+        c.warmup_msgs = 3;
+        c.gate = Some(gate.clone());
+        let out = client_loop(client, c, Instant::now()).await.unwrap();
+        harness.await.unwrap();
+
+        assert_eq!(out.events.len(), 5, "yalnız ölçüm mesajları kayıtta");
+        assert!(
+            out.events.iter().all(|e| e.delivered_ns.is_some()),
+            "temiz yol → 5/5 teslim"
+        );
+        let wire = (HDR_DATA as u64 + 128 + TAG_STUB as u64) * 5;
+        assert_eq!(
+            out.meta.tx.data, wire,
+            "tx.data tam 5 ölçüm-DATA'sı olmalı (warmup 3'ü t0-sıfırlamasıyla dışarıda)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// [KAPI-1 W3] paced workload pini: mesaj i'nin app-offer'ı (sent_ns) plana (i×interval)

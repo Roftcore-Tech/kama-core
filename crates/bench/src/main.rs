@@ -89,6 +89,12 @@ enum Cmd {
         /// [KAPI-1 W2] Paced kümülatif tavan (IP byte; 0 = tavansız).
         #[arg(long, default_value_t = 0)]
         budget_ceiling_bytes: u64,
+        /// [KAPI-1 W6] Ölçüm-öncesi warmup mesajı (0 = yok; ölçüme/bütçeye girmez).
+        #[arg(long, default_value_t = 0)]
+        warmup_msgs: u64,
+        /// [KAPI-1 W6] Barrier gate yolu (`<gate>.ready` yazılır, `<gate>.go` beklenir).
+        #[arg(long)]
+        gate: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -225,6 +231,8 @@ async fn main() -> Result<(), BenchError> {
             budget_refill_bytes_per_s,
             budget_bucket_bytes,
             budget_ceiling_bytes,
+            warmup_msgs,
+            gate,
             out,
         } => {
             let cfg = ClientCfg {
@@ -244,6 +252,8 @@ async fn main() -> Result<(), BenchError> {
                     budget_bucket_bytes,
                     budget_ceiling_bytes,
                 )?,
+                warmup_msgs,
+                gate,
             };
             let output = run_client(transport, cfg).await?;
             output.write_jsonl(&out)?;

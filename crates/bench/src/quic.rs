@@ -245,11 +245,38 @@ impl BenchTransport for QuinnTransport {
             Ok(Err(_handshake_err)) => return Ok(handshake_failed_output(&cfg, gov.as_ref())),
             Err(_timed_out) => return Ok(handshake_failed_output(&cfg, gov.as_ref())),
         };
-        // [KAPI-1 W2] DÜZLEM-A: bütçe established'dan itibaren uygulanır (handshake muaf, ayrı
-        // sayılır). W6 barrier'ı bu arm anını harness-t0'a rafine edecek.
+        // [KAPI-1 W6] Warmup (ölçüm-DIŞI): aynı bağlantıda W mesaj gönderilir (per-mesaj 10 s
+        // tavan) + kısa settle. A1: harness netem'i warmup SONRASI uygular (temiz-kanal converge);
+        // A2: netem zaten aktif (impaired steady-state). Sonra gate; ölçüm-t0 = GO anı.
+        if cfg.warmup_msgs > 0 {
+            let wstart = Instant::now();
+            let wpayload = Arc::new(vec![
+                0x5Au8;
+                usize::try_from(cfg.payload_bytes).unwrap_or(usize::MAX)
+            ]);
+            let mut hs = Vec::new();
+            for _ in 0..cfg.warmup_msgs {
+                let conn = conn.clone();
+                let p = Arc::clone(&wpayload);
+                hs.push(tokio::spawn(async move {
+                    send_one(&conn, &p, Duration::from_secs(10), wstart).await
+                }));
+            }
+            for h in hs {
+                let _ = h.await;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        if let Some(g) = &cfg.gate {
+            crate::transport::gate_sync(g).await?;
+        }
+        // Ölçüm-t0 (DÜZLEM-A): bütçe ARM (handshake+warmup pre_arm'da, muaf + ayrı sayılır);
+        // wire sayaçları t0-fotoğrafından DELTA alınır (r5 D.2: handshake/warmup byte'ları
+        // ölçüm-toplamına girmez; sayaç-reset-state-korunur, r5 B.2).
         if let Some(h) = &gov {
             h.arm_now();
         }
+        let stats0 = conn.stats();
 
         // Mesajlar EŞZAMANLI gönderilir: timeout'lu bir mesaj sonrakileri BLOKLAMAZ (aksi halde
         // %80 loss'ta koşu saatlerce sürerdi + sent_ns şişerdi). sent_ns/delivered_ns MUTLAK (start).
@@ -313,8 +340,8 @@ impl BenchTransport for QuinnTransport {
                 msg_count: cfg.msg_count,
                 payload_bytes: cfg.payload_bytes,
                 max_deadline_ns: cfg.max_deadline.as_nanos() as u64,
-                udp_tx_bytes: stats.udp_tx.bytes,
-                udp_rx_bytes: stats.udp_rx.bytes,
+                udp_tx_bytes: stats.udp_tx.bytes.saturating_sub(stats0.udp_tx.bytes),
+                udp_rx_bytes: stats.udp_rx.bytes.saturating_sub(stats0.udp_rx.bytes),
                 tx: TxComponents::default(),
                 kama_arm: String::new(),
                 submit_interval_ns: u64::try_from(cfg.submit_interval.as_nanos())
@@ -494,6 +521,8 @@ mod loopback_tests {
                 kama_arm: crate::transport::KamaArm::Arq,
                 submit_interval: Duration::ZERO,
                 budget: crate::budget::BudgetMode::Burst { cap_bytes: 60 },
+                warmup_msgs: 0,
+                gate: None,
             })
             .await
             .expect("governed run bounded Ok");
@@ -514,6 +543,60 @@ mod loopback_tests {
             .filter(|e| e.delivered_ns.is_some())
             .count();
         assert_eq!(delivered, 0, "veri enjekte edilemedi → teslim olamaz");
+    }
+
+    /// [KAPI-1 W6] İki-fazlı koşu: warmup stream'leri ölçüm kayıtlarına girmez; udp sayaçları
+    /// t0-delta (handshake+warmup hariç, r5 D.2); gate protokolü işler; ölçüm 3/3 teslim.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn warmup_and_gate_two_phase_run() {
+        let sc = server_config(Cc::Cubic).expect("server config");
+        let server_ep = Endpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("server bind");
+        let addr = server_ep.local_addr().expect("local addr");
+        tokio::spawn(run_server_loop(server_ep, None));
+
+        let dir = std::env::temp_dir().join(format!("kapi-gate-q-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gate = dir.join("g1");
+        let g2 = gate.clone();
+        let harness = tokio::spawn(async move {
+            let ready = format!("{}.ready", g2.display());
+            for _ in 0..2000 {
+                if std::path::Path::new(&ready).exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            std::fs::write(format!("{}.go", g2.display()), b"go").unwrap();
+        });
+
+        let out = QuinnTransport
+            .run_client(ClientCfg {
+                server: addr,
+                msg_count: 3,
+                payload_bytes: 128,
+                max_deadline: Duration::from_secs(10),
+                cc: Cc::Cubic,
+                seed: 0,
+                repeat: 0,
+                profile: "loopback-gate".to_string(),
+                kama_arm: crate::transport::KamaArm::Arq,
+                submit_interval: Duration::ZERO,
+                budget: crate::budget::BudgetMode::Unlimited,
+                warmup_msgs: 2,
+                gate: Some(gate.clone()),
+            })
+            .await
+            .expect("client run");
+        harness.await.unwrap();
+
+        assert_eq!(out.events.len(), 3, "yalnız ölçüm mesajları");
+        assert!(out.events.iter().all(|e| e.delivered_ns.is_some()));
+        assert!(
+            out.meta.udp_tx_bytes > 0 && out.meta.udp_tx_bytes < 10_000,
+            "udp_tx t0-delta olmalı (handshake ~KB'ler hariç): {}",
+            out.meta.udp_tx_bytes
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // Ölçüm aracının FRAME doğruluğunu KODA gömen guard (delivered_ns bug sınıfı + ALPN + provider).
@@ -540,6 +623,8 @@ mod loopback_tests {
                 kama_arm: crate::transport::KamaArm::Arq,
                 submit_interval: Duration::ZERO,
                 budget: crate::budget::BudgetMode::Unlimited,
+                warmup_msgs: 0,
+                gate: None,
             })
             .await
             .expect("client run (ALPN/provider/handshake OK)");
@@ -599,6 +684,8 @@ mod loopback_tests {
                 kama_arm: crate::transport::KamaArm::Arq,
                 submit_interval: Duration::ZERO,
                 budget: crate::budget::BudgetMode::Unlimited,
+                warmup_msgs: 0,
+                gate: None,
             })
             .await
             .expect("bounded return, HANG değil");
