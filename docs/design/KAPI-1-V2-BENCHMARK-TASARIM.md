@@ -421,6 +421,41 @@ implementasyonla örtüşür); FAZ-2 ≈ +1.5 hafta.** Rapor+white-paper R3'te.
 | D5 | DÜZLEM-B (h5) | FAZ-2 sonrası ayrı mini-parti |
 | D6 | paced bucket allowance | 2 s × refill (min 3×MTU) |
 
+## 13. Karşıt-inceleme sonucu ve amendment'lar (2026-08-20 — kampanyanın TEK incelemesi)
+
+3-mercek adversarial inceleme (ölçüm-çerçevesi / adalet / harness) + bulgu-başına doğrulama:
+40 bulgu → 33 doğrulandı (7 çürütüldü) → 17 ayrık kusur; TÜMÜ calibration'dan ÖNCE giderildi
+veya aşağıdaki amendment'larla ön-kayda bağlandı. Düzeltme özeti commit geçmişinde.
+
+**Amendment-1 — warmup-quiescence ve residue (§3.2/§3.3 günceller):** "in-flight=0" severe-loss'ta
+garanti edilemez (motor birim terk etmez). Yeni normatif kural: quiescence = sınırlı drain-denemesi
+(pif=0 hedefi, 3 s tavan); t0'daki artık `RunMeta.warmup_residue` olarak HER kolda ÖLÇÜLÜR ve
+raporlanır; `inflight_at_t0` alanı "0" değil "ölçülen residue" olur. Post-t0 residue davranışı
+transport-gerçeğidir: kama artığı taşımaya devam eder (motorun terk semantiği yok), quinn artık
+stream'leri RESET eder (QUIC'in gerçek iptal semantiği), qdgram DATAGRAM'ları zaten yeniden
+gönderilmez. Bu fark maskelenmez; residue alanıyla görünür kılınır ve raporda dipnotlanır.
+Warmup BİÇİMİ artık üç kolda AYNI: aynı-sınıf paced sunum (i×interval), sınırlı toparlama.
+
+**Amendment-2 — çift-düzlem byte muhasebesi (§2.3/§4.3 günceller):** quinn-proto udp_tx'i socket
+çağrısından ÖNCE saydığından, `RunMeta.udp_tx_bytes` üç kolda da **transport-DENEMESİ** düzlemi
+olarak tanımlanır (governor retleri DAHİL; kama da deneme sayar). Gerçek-ENJEKTE düzlem her kolda
+`budget.injected_bytes` (governor, packet-atomic, simetrik). Primary maliyet metriği enjekte
+düzlemden türer; bytes/delivered-msg ikincilinde 0-teslim → tanımsız (NaN, medyan-dışı; kapsam
+raporlanır). `budget.armed_at_ns` eklendi → budget_exhaustion_time t0-göreli normalize edilir.
+
+**Amendment-3 — barrier ölümcüllüğü (§3.1 günceller):** impairment-aktivasyonu İKİ yönde doğrulanır
+(trace'te uygulayıcı-canlılığı); doğrulanamayan koşu ölçülmez — client kesilir, hücre INVALID
+(exogenous, r5 J) işaretlenir, aggregation'a giremez ve nedeni raporlanır.
+
+**Amendment-4 — kayıt/saat hizalaması (§7 günceller):** RunMeta `t0_unix_ns` +
+`events_epoch_offset_ns`; pkt_capture kayıtlarında `t_unix_ns`; kapanışta AF_PACKET
+PACKET_STATISTICS drop sayacı (drops>0 → capture-eksik bayrağı). Kama server ACK'leri de +16B
+AEAD-tag-stub taşır (DATA ile simetrik wire modeli). quinn transport-config'i şema pinlerini
+gerçekten uygular (PMTUD off, initial_mtu 1452, GSO off, bi-stream kredisi 512 — warmup kredi
+tüketimi ölçümü kısıtlamasın). quinn mesaj-gözlem penceresi koşu-sonuna dek uzatıldı (geç teslim
+üç kolda simetrik kaydedilir; completion(D) tanımı değişmedi). qdgram app-ACK'ine kama R-kotası
+aynası sessizlik-re-ACK'i eklendi; server ölçüme geçişte warmup-id'lerini budar.
+
 **Bilinen zayıflıklar (dürüstlük kaydı):** (1) netem per-paket loss seed'lenemez → o profillerde
 trace-eşitliği yerine paired-seed+realized-log (r5 J endogenous kuralı bunu kapsıyor). (2) Kama
 security-stub (+16B tag) — byte-eş modelleme, kripto-gerçekliği değil; r5 L gereği CPU-iddiası yok.

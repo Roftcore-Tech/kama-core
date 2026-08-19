@@ -168,6 +168,14 @@ fn transport_config(cc: Cc) -> Arc<TransportConfig> {
             .try_into()
             .expect("300s valid idle timeout"),
     ));
+    // [inceleme #8/#21/#23] Ön-kayıtlı profil-şeması pinleri (kapi_manifest full_schema):
+    // pmtud_policy=off → MTU discovery kapalı; max_udp_payload=1452 → initial_mtu pini;
+    // message_coalescing=off → segmentation-offload kapalı (Unlimited/sarmalanmamış yolda da);
+    // warmup 10 bi-stream kredi tüketip burst-100 ölçümünü KISITLAMASIN → kredi 512.
+    t.mtu_discovery_config(None);
+    t.initial_mtu(1452);
+    t.enable_segmentation_offload(false);
+    t.max_concurrent_bidi_streams(512u32.into());
     match cc {
         Cc::Cubic => {
             t.congestion_controller_factory(Arc::new(CubicConfig::default()));
@@ -251,25 +259,34 @@ impl BenchTransport for QuinnTransport {
         if let Some(g) = &cfg.establish_gate {
             crate::transport::gate_sync(g).await?;
         }
-        // [KAPI-1 W6] Warmup (ölçüm-DIŞI): aynı bağlantıda W mesaj gönderilir (per-mesaj 10 s
-        // tavan) + kısa settle. A1: harness netem'i warmup SONRASI uygular (temiz-kanal converge);
-        // A2: netem zaten aktif (impaired steady-state). Sonra gate; ölçüm-t0 = GO anı.
+        // [KAPI-1 W6 + inceleme #0/#3] Warmup (ölçüm-DIŞI): aynı-sınıf PACED akış (kama ile aynı
+        // sunum planı, i×interval), per-mesaj 10 s tavan; tavanda stream RESET edilir → residue
+        // post-t0 retransmit ETMEZ (QUIC'in gerçek iptal semantiği; kama motoru birim terk edemez —
+        // fark warmup_residue alanında görünür + KAPI-1 §3.2 amendment'ında belgeli).
+        let mut warmup_residue: u64 = 0;
         if cfg.warmup_msgs > 0 {
-            let wstart = Instant::now();
             let wpayload = Arc::new(vec![
                 0x5Au8;
                 usize::try_from(cfg.payload_bytes).unwrap_or(usize::MAX)
             ]);
             let mut hs = Vec::new();
-            for _ in 0..cfg.warmup_msgs {
+            for i in 0..cfg.warmup_msgs {
                 let conn = conn.clone();
                 let p = Arc::clone(&wpayload);
+                let delay = cfg
+                    .submit_interval
+                    .saturating_mul(u32::try_from(i).unwrap_or(u32::MAX));
                 hs.push(tokio::spawn(async move {
-                    send_one(&conn, &p, Duration::from_secs(10), wstart).await
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    warmup_one(&conn, &p).await
                 }));
             }
             for h in hs {
-                let _ = h.await;
+                if !h.await.unwrap_or(false) {
+                    warmup_residue += 1;
+                }
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
@@ -283,6 +300,12 @@ impl BenchTransport for QuinnTransport {
             h.arm_now();
         }
         let stats0 = conn.stats();
+        let t0_unix_ns = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        )
+        .unwrap_or(0);
 
         // Mesajlar EŞZAMANLI gönderilir: timeout'lu bir mesaj sonrakileri BLOKLAMAZ (aksi halde
         // %80 loss'ta koşu saatlerce sürerdi + sent_ns şişerdi). sent_ns/delivered_ns MUTLAK (start).
@@ -302,7 +325,13 @@ impl BenchTransport for QuinnTransport {
         for msg_id in 0..cfg.msg_count {
             let conn = conn.clone();
             let payload = Arc::clone(&payload);
-            let deadline = cfg.max_deadline;
+            // [inceleme #12] Gözlem penceresi koşu-sonuna dek (D + kalan-sunum-süresi) — kama/qdgram
+            // gibi geç teslimler de KAYDEDİLİR (completion(D) yine yalnız latency≤D sayar; stale
+            // teslim bilgisi üç kolda simetrik toplanır).
+            let deadline = cfg.max_deadline.saturating_add(
+                cfg.submit_interval
+                    .saturating_mul(u32::try_from(cfg.msg_count - 1 - msg_id).unwrap_or(u32::MAX)),
+            );
             let payload_bytes = cfg.payload_bytes;
             // [KAPI-1 W3] paced: mesaj i, t=i×interval'de sunulur (kama ile aynı semantik);
             // sent_ns sleep SONRASI damgalanır = sunum anı. ZERO → sleep yok (burst aynen).
@@ -353,6 +382,9 @@ impl BenchTransport for QuinnTransport {
                 submit_interval_ns: u64::try_from(cfg.submit_interval.as_nanos())
                     .unwrap_or(u64::MAX),
                 budget: gov.as_ref().map(GovHandle::snapshot).unwrap_or_default(),
+                t0_unix_ns,
+                events_epoch_offset_ns: 0, // event'ler ölçüm-t0 epoch'unda
+                warmup_residue,
             },
             events,
         })
@@ -389,6 +421,9 @@ fn handshake_failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>) -> RunOutpu
             kama_arm: String::new(),
             submit_interval_ns: u64::try_from(cfg.submit_interval.as_nanos()).unwrap_or(u64::MAX),
             budget: gov.map(GovHandle::snapshot).unwrap_or_default(),
+            t0_unix_ns: 0,
+            events_epoch_offset_ns: 0,
+            warmup_residue: 0,
         },
         events,
     }
@@ -473,6 +508,28 @@ async fn send_one(
         Some(start.elapsed().as_nanos() as u64)
     };
     timeout(deadline, attempt).await.ok().flatten()
+}
+
+/// [inceleme #0] Warmup mesajı: teslim → true; 10 s tavanında stream RESET edilir (post-t0
+/// retransmit kalmaz) → false (residue). Ölçüm kayıtlarına hiçbir şey yazmaz.
+async fn warmup_one(conn: &quinn::Connection, payload: &[u8]) -> bool {
+    let Ok((mut send, mut recv)) = conn.open_bi().await else {
+        return false;
+    };
+    let attempt = async {
+        send.write_all(payload).await.ok()?;
+        send.finish().ok()?;
+        let mut ack = [0u8; 1];
+        recv.read_exact(&mut ack).await.ok()?;
+        Some(())
+    };
+    match timeout(Duration::from_secs(10), attempt).await {
+        Ok(Some(())) => true,
+        _ => {
+            let _ = send.reset(0u32.into());
+            false
+        }
+    }
 }
 
 /// Self-signed cert doğrulamasını ATLAYAN verifier — YALNIZ bench (güvenlik değil).

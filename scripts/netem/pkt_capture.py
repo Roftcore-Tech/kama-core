@@ -34,6 +34,14 @@ def main() -> int:
     f = open(out_path, "w", buffering=1)
 
     def term(_sig, _frm):
+        # AF_PACKET ring drop sayacı — kayıt bütünlüğü kanıtı (drops>0 → capture eksik) [#32]
+        try:
+            st = s.getsockopt(263, 6, 8)  # SOL_PACKET, PACKET_STATISTICS: (packets, drops) u32
+            pkts = int.from_bytes(st[0:4], sys.byteorder)
+            drops = int.from_bytes(st[4:8], sys.byteorder)
+            f.write(json.dumps({"capture_stats": {"packets": pkts, "drops": drops}}) + "\n")
+        except OSError:
+            pass
         f.flush()
         f.close()
         sys.exit(0)
@@ -51,6 +59,7 @@ def main() -> int:
         ip = data[14:]
         rec = {
             "t_ns": t,
+            "t_unix_ns": time.time_ns(),  # RunMeta.t0_unix_ns ile hizalama [inceleme #30]
             "dir": "out" if addr[2] == PACKET_OUTGOING else "in",
             "ip_len": (ip[2] << 8) | ip[3],
             "proto": ip[9],

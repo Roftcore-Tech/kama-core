@@ -33,6 +33,33 @@ if [ "${1:-}" = "--inner-run" ]; then
   REP=$(jqr .rep); PROFILE=$(jqr .profile.profile_id); QUOTA=$(jqr .quota_r)
   NET_FWD=$(jqr .profile.netem_fwd); NET_REV=$(jqr .profile.netem_rev)
   WORKLOAD=$(jqr .workload); PLANE=$(jqr .plane)
+  TRACE_WINDOWS=$(jq -r '.profile.trace_windows // empty' "$ROW_FILE")
+  # [inceleme #6] impairment uygulayıcı: statik profil → kapi3_netem; trace profil → manifest'e
+  # gömülü pencere planı kapi3_trace ile (AYNI plan her kola = trace-replay, r5 J). "trace"
+  # literalinin tc'ye sızması YASAK.
+  apply_impairment() {
+    if [ -n "$TRACE_WINDOWS" ]; then
+      printf '%s' "$TRACE_WINDOWS" > "$OUT/trace_plan.txt"
+      kapi3_trace "$OUT/trace_plan.txt"
+    else
+      kapi3_netem "$NET_FWD" "$NET_REV"
+    fi
+  }
+  # Barrier doğrulaması: statikte İKİ yön qdisc; trace'te uygulayıcı-PID canlı. [inceleme #5/#14]
+  verify_impairment() {
+    if [ -n "$TRACE_WINDOWS" ]; then
+      kill -0 "${KAPI3_TRACE_PID:-0}" 2>/dev/null && return 0
+      echo "BARRIER-FAIL: trace uygulayıcısı ölü" >> "$OUT/driver.log"; return 1
+    fi
+    local ok=0
+    if [ "$NET_FWD" != "none" ] && ! kapi3_mid tc qdisc show dev mb0 | grep -q netem; then
+      echo "BARRIER-FAIL: fwd netem kurulmamış" >> "$OUT/driver.log"; ok=1
+    fi
+    if [ "$NET_REV" != "none" ] && ! kapi3_mid tc qdisc show dev ma0 | grep -q netem; then
+      echo "BARRIER-FAIL: rev netem kurulmamış" >> "$OUT/driver.log"; ok=1
+    fi
+    return $ok
+  }
   if [ "$SMOKE" = 1 ]; then
     MSGS=8; PAYLOAD=64; DEADLINE=8; WARMUP=3
     [ "$INTERVAL" != 0 ] && INTERVAL=200
@@ -54,6 +81,15 @@ if [ "${1:-}" = "--inner-run" ]; then
   REV_BUDGET=$([ "$SMOKE" = 1 ] && echo "" || budget_args rev)
 
   kapi3_setup
+  # [inceleme #29] Altyapı sağlığı: topoloji gerçekten forward ediyor mu (temiz ağda hızlı echo)?
+  kapi3_b python3 "$DIR/udp_echo.py" server 10.10.1.1 9990 > "$OUT/echo.ready" 2>/dev/null < /dev/null & ECHO=$!
+  for _ in $(seq 1 40); do grep -q READY "$OUT/echo.ready" 2>/dev/null && break; sleep 0.05; done
+  HC=$(kapi3_a python3 "$DIR/udp_echo.py" client 10.10.1.1 9990 3 1.0 | jq .received)
+  kill "$ECHO" 2>/dev/null
+  if [ "${HC:-0}" -lt 3 ]; then
+    echo "INFRA-FAIL: temiz-ağ echo $HC/3 — topoloji bozuk" >> "$OUT/driver.log"
+    touch "$OUT/INVALID"; exit 1
+  fi
   # DÜZLEM-A: kuruluş TEMİZ ağda (netem HENÜZ yok; 14-alan tablosu session_establishment_network).
   kapi3_capture_start "$OUT/cap"
   kapi3_realized "$OUT" pre
@@ -66,6 +102,10 @@ if [ "${1:-}" = "--inner-run" ]; then
   kapi3_b "$BENCH" serve --bind 10.10.1.1:4433 --transport "$TRANSPORT" --quota-r "$QUOTA" \
     $REV_BUDGET --gate-watch "$GATE_M" > "$OUT/server.log" 2>&1 < /dev/null & SRV=$!
   sleep 1
+  if ! kill -0 "$SRV" 2>/dev/null; then
+    echo "INFRA-FAIL: server 1 s içinde öldü (bkz. server.log)" >> "$OUT/driver.log"
+    touch "$OUT/INVALID"; exit 1
+  fi
 
   # shellcheck disable=SC2086
   kapi3_a timeout $(( DEADLINE + WARMUP * (INTERVAL>0 ? INTERVAL : 1000) / 1000 + (MSGS-1) * INTERVAL / 1000 + 90 )) \
@@ -80,26 +120,28 @@ if [ "${1:-}" = "--inner-run" ]; then
   # (warmup impaired koşar); A1'de burada uygulanMAZ (warmup temiz — converge).
   for _ in $(seq 1 6000); do [ -e "$GATE_E.ready" ] && break; kill -0 "$CLI" 2>/dev/null || break; sleep 0.05; done
   if [ ! -e "$GATE_E.ready" ]; then
-    echo "FAIL: client kuruluş-ready yazmadan öldü (temiz ağda kuruluş başarısız olmamalı)" >> "$OUT/driver.log"
-  else
-    if [ "$PLANE" = "A2" ]; then kapi3_netem "$NET_FWD" "$NET_REV"; fi
-    kapi3_realized "$OUT" establish
-    touch "$GATE_E.go"
+    echo "INFRA-FAIL: client kuruluş-ready yazmadan öldü (temiz ağda kuruluş başarısız olmamalı)" >> "$OUT/driver.log"
+    touch "$OUT/INVALID"; kill "$CLI" "$SRV" 2>/dev/null; exit 1
   fi
+  if [ "$PLANE" = "A2" ]; then apply_impairment; fi
+  kapi3_realized "$OUT" establish
+  touch "$GATE_E.go"
 
   # SENKRON-2 (barrier, r5 B.2): warmup+quiescence bitti → A1'de netem BURADA uygulanır;
   # her iki düzlemde de aktivasyon DOĞRULANIR; .go = ölçüm-t0.
   for _ in $(seq 1 6000); do [ -e "$GATE_M.ready" ] && break; kill -0 "$CLI" 2>/dev/null || break; sleep 0.05; done
   if [ ! -e "$GATE_M.ready" ]; then
-    echo "FAIL: client ölçüm-ready yazmadan öldü" >> "$OUT/driver.log"
-  else
-    if [ "$PLANE" = "A1" ]; then kapi3_netem "$NET_FWD" "$NET_REV"; fi
-    if [ "$NET_FWD" != "none" ] && ! kapi3_mid tc qdisc show dev mb0 | grep -q netem; then
-      echo "FAIL: fwd netem kurulmamış (barrier ihlali)" >> "$OUT/driver.log"
-    fi
-    kapi3_realized "$OUT" barrier
-    touch "$GATE_M.go"   # ölçüm-t0
+    echo "INFRA-FAIL: client ölçüm-ready yazmadan öldü" >> "$OUT/driver.log"
+    touch "$OUT/INVALID"; kill "$CLI" "$SRV" 2>/dev/null; exit 1
   fi
+  if [ "$PLANE" = "A1" ]; then apply_impairment; fi
+  # [inceleme #5/#15/#25] Barrier ÖLÜMCÜL: doğrulanamayan impairment ile koşu ASLA ölçülmez —
+  # .go yazılmaz, client öldürülür, hücre INVALID işaretlenir (aggregation'a giremez).
+  if ! verify_impairment; then
+    touch "$OUT/INVALID"; kill "$CLI" "$SRV" 2>/dev/null; exit 1
+  fi
+  kapi3_realized "$OUT" barrier
+  touch "$GATE_M.go"   # ölçüm-t0
 
   wait "$CLI"; CLI_RC=$?
   echo "client rc=$CLI_RC" >> "$OUT/driver.log"
@@ -139,11 +181,14 @@ while IFS= read -r row; do
     OUT="$OUTDIR/$CELL/rep$REP/$ARM"
     [ -e "$OUT/out.jsonl" ] && { echo "SKIP (var): $OUT"; continue; }
     mkdir -p "$OUT"
+    rm -f "$OUT/INVALID"
     echo "$row" > "$OUT/row.json"
     echo "RUN: $CELL rep$REP $ARM"
     unshare -rnm bash "$0" --inner-run "$OUT/row.json" "$ARM" "$OUT" "$SMOKE" \
       > "$OUT/unshare.log" 2>&1 < /dev/null
-    if [ -e "$OUT/out.jsonl" ]; then echo "  OK: out.jsonl"; else echo "  FAIL: out.jsonl YOK (bkz. $OUT/*.log)"; fi
+    if [ -e "$OUT/out.jsonl" ]; then echo "  OK: out.jsonl"
+    elif [ -e "$OUT/INVALID" ]; then echo "  INVALID: altyapı/barrier hatası (bkz. $OUT/driver.log) — ölçüm sayılamaz"
+    else echo "  FAIL: out.jsonl YOK (bkz. $OUT/*.log)"; fi
   done
   COUNT=$((COUNT + 1))
   [ "$LIMIT" -gt 0 ] && [ "$COUNT" -ge "$LIMIT" ] && break

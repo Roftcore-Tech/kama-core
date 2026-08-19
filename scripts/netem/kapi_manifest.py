@@ -168,6 +168,7 @@ def full_schema(pid: str, prof: dict) -> dict:
         "netem_fwd": prof["fwd"],
         "netem_rev": prof["rev"],
         "trace_plan": prof.get("trace"),
+        "trace_windows": TRACE_PLANS.get(prof.get("trace", ""), None),
     }
 
 

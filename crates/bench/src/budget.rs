@@ -71,8 +71,12 @@ pub struct BudgetSnapshot {
     pub refused_bytes: u64,
     /// Reddedilen paket sayısı.
     pub refused_pkts: u64,
-    /// İlk ret anı ns (budget_exhaustion_time, r5 D.5); 0 = hiç ret olmadı.
+    /// İlk ret anı ns (budget_exhaustion_time, r5 D.5); 0 = hiç ret olmadı. Epoch kol-başına
+    /// farklıdır — t0-göreli değer için `first_refusal_ns − armed_at_ns` kullanın.
     pub first_refusal_ns: u64,
+    /// `arm()` anı (aynı epoch) — budget_exhaustion_time'ın t0-göreli normalizasyon tabanı.
+    /// [inceleme #18]
+    pub armed_at_ns: u64,
     /// Arm ÖNCESİ geçen IP byte (DÜZLEM-A handshake muafiyeti — bütçeye girmez, gizlenmez).
     pub pre_arm_bytes: u64,
     /// Arm öncesi paket sayısı.
@@ -92,6 +96,7 @@ pub struct BudgetGovernor {
     refused_bytes: u64,
     refused_pkts: u64,
     first_refusal_ns: Option<u64>,
+    armed_at_ns: u64,
     pre_arm_bytes: u64,
     pre_arm_pkts: u64,
 }
@@ -113,6 +118,7 @@ impl BudgetGovernor {
             refused_bytes: 0,
             refused_pkts: 0,
             first_refusal_ns: None,
+            armed_at_ns: 0,
             pre_arm_bytes: 0,
             pre_arm_pkts: 0,
         }
@@ -124,6 +130,7 @@ impl BudgetGovernor {
         if !self.armed {
             self.armed = true;
             self.last_refill_ns = now_ns;
+            self.armed_at_ns = now_ns;
         }
     }
 
@@ -195,6 +202,7 @@ impl BudgetGovernor {
             refused_bytes: self.refused_bytes,
             refused_pkts: self.refused_pkts,
             first_refusal_ns: self.first_refusal_ns.unwrap_or(0),
+            armed_at_ns: self.armed_at_ns,
             pre_arm_bytes: self.pre_arm_bytes,
             pre_arm_pkts: self.pre_arm_pkts,
         }

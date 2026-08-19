@@ -75,8 +75,15 @@ def main() -> int:
             for arm_dir in sorted(p for p in rep_dir.iterdir() if p.is_dir()):
                 r = load_run(arm_dir)
                 if r is None:
+                    kind = "INVALID" if (arm_dir / "INVALID").exists() else "MISSING"
                     runs.append(
-                        dict(cell=cell_dir.name, rep=rep_dir.name, arm=arm_dir.name, missing=1)
+                        dict(
+                            cell=cell_dir.name,
+                            rep=rep_dir.name,
+                            arm=arm_dir.name,
+                            missing=1,
+                            invalid_kind=kind,
+                        )
                     )
                     continue
                 meta, events = r
@@ -180,7 +187,12 @@ def main() -> int:
         w.writeheader()
         w.writerows(pair_rows)
 
-    print(f"runs={len(runs)} (missing={sum(1 for r in runs if r.get('missing'))})")
+    n_inv = sum(1 for r in runs if r.get("invalid_kind") == "INVALID")
+    n_mis = sum(1 for r in runs if r.get("missing")) - n_inv
+    print(f"runs={len(runs)} (INVALID={n_inv} exogenous, MISSING={n_mis})")
+    if n_mis:
+        print("  UYARI: MISSING satırlar sansür riskidir (survivorship) — nedenleri açıklanmadan"
+              " hücre raporlanamaz [inceleme #17]")
     for row in cell_rows:
         print(
             f"  {row['cell']:44s} {row['arm']:14s} n={row['n']:3d} "

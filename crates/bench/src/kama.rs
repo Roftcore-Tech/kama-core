@@ -145,7 +145,12 @@ impl ClientRun {
         if raw.is_empty() || (raw[0] != FRAME_TYPE_ACK && raw[0] != FRAME_TYPE_ACK_V2) {
             return;
         }
-        let Ok(frame) = AckFrame::decode(raw) else {
+        // [inceleme #2] server ACK'leri de +16B AEAD-tag-stub taşır (DATA ile simetrik wire
+        // modeli); decode'dan önce sondaki stub soyulur (bench çifti her zaman aynı binary).
+        if raw.len() <= TAG_STUB {
+            return;
+        }
+        let Ok(frame) = AckFrame::decode(&raw[..raw.len() - TAG_STUB]) else {
             return;
         };
         let acked = frame.acked_full(self.max_emitted_seq + 1);
@@ -198,24 +203,26 @@ impl ClientRun {
             // sent_ns burada DAMGALANMAZ — app-offer'da (enqueue) damgalanır (quinn frame'i, aşağıdaki
             // client_loop notu). Wire-emit'te damgalamak kama'nın pacing dwell'ini latency'den dışlardı.
             let frame = encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload);
+            // [inceleme #1] tx sayaçları TRANSPORT-DENEMESİ düzlemi: governor reddi DAHİL sayılır —
+            // quinn-proto stats'ı poll_transmit'te (socket'ten ÖNCE) saydığından üç kolun udp_tx'i
+            // ancak böyle aynı düzlemde olur. Gerçek-enjekte düzlem budget.injected_bytes'ta.
+            let n = frame.len() as u64;
+            self.tx_bytes += n;
+            match d.kind {
+                TransmitKind::Data => self.tx_data += n,
+                TransmitKind::Retransmit => self.tx_retx += n,
+                TransmitKind::Duplicate => self.tx_dup += n,
+                // FecParity emit-edilmez (§10 politika); CsProbe (DR-CS-1, yalnız
+                // experimental-cold-start feature'ıyla-var) bench-legacy-sürücüde sayılmaz.
+                _ => {}
+            }
             // [KAPI-1 W2] packet-atomic bütçe kapısı: ret = enjeksiyon yok (kanal-silinmesi
             // eşdeğeri; sender state'i ZATEN emisyonu işledi — INV-RATE-1 gereği rate düşmez,
             // kayıp kurtarma kolu normal işler). Governor bekletmez (pacing-nötr).
-            if !self.gov.permit(frame.len() as u64 + IPV4_UDP_OVERHEAD, now) {
+            if !self.gov.permit(n + IPV4_UDP_OVERHEAD, now) {
                 continue;
             }
-            if let Ok(n) = sock.send_to(&frame, server).await {
-                let n = n as u64;
-                self.tx_bytes += n;
-                match d.kind {
-                    TransmitKind::Data => self.tx_data += n,
-                    TransmitKind::Retransmit => self.tx_retx += n,
-                    TransmitKind::Duplicate => self.tx_dup += n,
-                    // FecParity emit-edilmez (§10 politika); CsProbe (DR-CS-1, yalnız
-                    // experimental-cold-start feature'ıyla-var) bench-legacy-sürücüde sayılmaz.
-                    _ => {}
-                }
-            }
+            let _ = sock.send_to(&frame, server).await;
         }
     }
 }
@@ -304,13 +311,24 @@ async fn client_loop(
                 }
             }
         }
-        // Quiescence: kısa oturma penceresi (in-flight ACK'leri toplansın; sunum yok).
-        let settle = tokio::time::sleep(Duration::from_millis(500));
-        tokio::pin!(settle);
+        // [inceleme #0] Quiescence: sabit-uyku DEĞİL — sınırlı drain-pompası: hedef in-flight=0
+        // (§3.2 ön-kayıt), ama severe-loss'ta bounded (3 s tavan; motor birim TERK ETMEZ → p3'te
+        // pif→0 ulaşılamayabilir). Kalan = residue; t0'da ÖLÇÜLÜR (RunMeta.warmup_residue) ve
+        // post-t0 residue trafiği TÜM kollarda simetrik olarak ölçüme dahildir.
+        let drain_cap = tokio::time::sleep(Duration::from_secs(3));
+        tokio::pin!(drain_cap);
+        let mut dpace = interval(PACE_TICK);
         loop {
+            if run.sender.diag_pif() == 0 {
+                break;
+            }
             let mut wbuf2 = [0u8; CLIENT_RECV_BUF];
             tokio::select! {
-                () = &mut settle => break,
+                () = &mut drain_cap => break,
+                _ = dpace.tick() => {
+                    let now = elapsed_ns(start);
+                    run.drive(Event::TimerFired(Timer::Pto), now, &sock, cfg.server, &payload).await;
+                }
                 r = sock.recv_from(&mut wbuf2) => {
                     let Ok((n, _)) = r else { continue };
                     let now = elapsed_ns(start);
@@ -327,6 +345,15 @@ async fn client_loop(
     // ── Ölçüm-t0 (DÜZLEM-A): sayaçlar sıfırlanır, TRANSPORT STATE KORUNUR (r5 B.2
     // counter_reset_without_state_reset), bütçe ARM edilir. Warmup/gate yoksa t0 ≈ 0 (eski yol).
     let t0 = elapsed_ns(start);
+    let t0_unix_ns = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos()),
+    )
+    .unwrap_or(0);
+    let warmup_residue = cfg
+        .warmup_msgs
+        .saturating_sub(run.warmup_delivered.len() as u64);
     run.gov.arm(t0);
     run.tx_bytes = 0;
     run.rx_bytes = 0;
@@ -474,6 +501,9 @@ async fn client_loop(
         kama_arm: cfg.kama_arm.label().to_string(),
         submit_interval_ns: interval_ns,
         budget: run.gov.snapshot(),
+        t0_unix_ns,
+        events_epoch_offset_ns: t0, // kama event'leri koşu-epoch'undan damgalanır
+        warmup_residue,
     };
     Ok(RunOutput { meta, events })
 }
@@ -516,7 +546,8 @@ async fn serve_loop(
                     .iter_mut()
                     .filter_map(|(peer, rx)| rx.on_ack_timer(now).map(|a| (*peer, a.encode())))
                     .collect();
-                for (peer, bytes) in acks {
+                for (peer, mut bytes) in acks {
+                    bytes.resize(bytes.len() + TAG_STUB, 0); // [inceleme #2] ACK'e de tag-stub
                     if gov.permit(bytes.len() as u64 + IPV4_UDP_OVERHEAD, now) {
                         let _ = sock.send_to(&bytes, peer).await;
                     }
@@ -559,7 +590,8 @@ async fn serve_loop(
                 let now = elapsed_ns(start);
                 let out = rx.on_datagram(RxDatagram { seq: full, unit_id, kind: RxKind::Data }, now);
                 if let Some(ack) = out.ack {
-                    let bytes = ack.encode();
+                    let mut bytes = ack.encode();
+                    bytes.resize(bytes.len() + TAG_STUB, 0); // [inceleme #2] ACK'e de tag-stub
                     if gov.permit(bytes.len() as u64 + IPV4_UDP_OVERHEAD, now) {
                         let _ = sock.send_to(&bytes, peer).await;
                     }

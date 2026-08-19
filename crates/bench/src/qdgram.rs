@@ -120,7 +120,7 @@ impl BenchTransport for QdgramTransport {
         let sc = server_config(cfg.cc)?;
         let (endpoint, gov) = build_endpoint(cfg.bind, Some(sc), cfg.budget)?;
         crate::quic::spawn_gate_watch(gov.clone(), cfg.gate_watch.clone());
-        serve_endpoint(endpoint, gov, cfg.gate_watch.is_some()).await;
+        serve_endpoint(endpoint, gov, cfg.gate_watch.is_some(), cfg.quota_r).await;
         Ok(())
     }
 
@@ -141,17 +141,19 @@ impl BenchTransport for QdgramTransport {
         if let Some(g) = &cfg.establish_gate {
             crate::transport::gate_sync(g).await?;
         }
-        // [KAPI-1 W6] warmup (ölçüm-DIŞI, ARQ'suz — amaç state-ısıtma; 10 s tavan) + gate.
-        if cfg.warmup_msgs > 0 {
-            warmup_pump(&cfg, &conn).await;
-        }
+        // [KAPI-1 W6] warmup (ölçüm-DIŞI; sınırlı-ARQ'lu paced ayna) + gate.
+        let warmup_residue = if cfg.warmup_msgs > 0 {
+            warmup_pump(&cfg, &conn).await
+        } else {
+            0
+        };
         if let Some(g) = &cfg.gate {
             crate::transport::gate_sync(g).await?;
         }
         if let Some(h) = &gov {
             h.arm_now(); // ölçüm-t0: bütçe ARM (handshake+warmup pre_arm'da muaf).
         }
-        let out = client_loop(&cfg, &conn, gov.as_ref()).await;
+        let out = client_loop(&cfg, &conn, gov.as_ref(), warmup_residue).await;
         conn.close(0u32.into(), b"done");
         let _ = timeout(Duration::from_secs(3), endpoint.wait_idle()).await;
         Ok(out)
@@ -160,7 +162,12 @@ impl BenchTransport for QdgramTransport {
 
 /// Server accept + per-bağlantı DATAGRAM servis döngüsü. Kümülatif ACK: her ACK_FREQ_N yeni
 /// DATA'da hemen + 20 ms timer'da (kirli ise). `send_datagram` hatası = kayıp (yoksay).
-pub(crate) async fn serve_endpoint(endpoint: Endpoint, gov: Option<GovHandle>, gate_watched: bool) {
+pub(crate) async fn serve_endpoint(
+    endpoint: Endpoint,
+    gov: Option<GovHandle>,
+    gate_watched: bool,
+    quota_r: u32,
+) {
     while let Some(incoming) = endpoint.accept().await {
         let Ok(conn) = incoming.await else { continue };
         if !gate_watched {
@@ -172,6 +179,12 @@ pub(crate) async fn serve_endpoint(endpoint: Endpoint, gov: Option<GovHandle>, g
             let mut received: BTreeSet<u64> = BTreeSet::new();
             let mut new_since_ack: u32 = 0;
             let mut dirty = false;
+            let mut pruned_warmup = false;
+            // [inceleme #13] Sessizlik re-ACK'i: kama receiver'ın epizot-kotası aynası — varıştan
+            // 2 s sessizlikte kümülatif ACK'i yeniden gönder, epizot başına quota_r hak; varış
+            // kotayı tazeler. (kama §2.1 R-kota ~2.1 s aralığının sınırlı app-düzeyi eşleniği.)
+            let mut requota: u32 = quota_r;
+            let mut last_arrival = Instant::now();
             let mut tick = interval(ACK_TICK);
             let max_ranges = conn
                 .max_datagram_size()
@@ -182,6 +195,14 @@ pub(crate) async fn serve_endpoint(endpoint: Endpoint, gov: Option<GovHandle>, g
                     d = conn.read_datagram() => {
                         let Ok(bytes) = d else { break }; // bağlantı öldü → task biter (reconnect YOK).
                         let Some(msg_id) = decode_dg_data(&bytes) else { continue };
+                        // [inceleme #4] İlk ölçüm-id'si gelince warmup id'leri budanır — kalıcı
+                        // (2^40,N) aralığı her ölçüm-ACK'ini şişirmesin (reverse-byte adaleti).
+                        if !pruned_warmup && msg_id < WARMUP_BASE {
+                            received.retain(|&id| id < WARMUP_BASE);
+                            pruned_warmup = true;
+                        }
+                        last_arrival = Instant::now();
+                        requota = quota_r;
                         if received.insert(msg_id) {
                             new_since_ack += 1;
                             dirty = true;
@@ -203,6 +224,16 @@ pub(crate) async fn serve_endpoint(endpoint: Endpoint, gov: Option<GovHandle>, g
                             );
                             new_since_ack = 0;
                             dirty = false;
+                        } else if requota > 0
+                            && !received.is_empty()
+                            && last_arrival.elapsed() >= Duration::from_secs(2)
+                        {
+                            // [inceleme #13] sessizlik re-ACK'i (epizot kotasından düşer).
+                            let _ = conn.send_datagram(
+                                encode_dg_ack(&to_ranges(&received, max_ranges)).into(),
+                            );
+                            requota -= 1;
+                            last_arrival = Instant::now();
                         }
                     }
                 }
@@ -215,19 +246,39 @@ pub(crate) async fn serve_endpoint(endpoint: Endpoint, gov: Option<GovHandle>, g
 /// ACK-aralıkları bu id'leri kapsasa da ölçüm vektörü `get_mut(huge)→None` ile yapısal korunur.
 const WARMUP_BASE: u64 = 1 << 40;
 
-/// [W6] Warmup: W datagram gönder, kümülatif ACK kapsayana ya da 10 s tavana dek bekle + settle.
-/// ARQ'suz (amaç teslim değil state-ısıtma: RTT örneği, path doğrulama, DATAGRAM akışı).
-async fn warmup_pump(cfg: &ClientCfg, conn: &Connection) {
+/// [W6 + inceleme #0/#3] Warmup: aynı-sınıf PACED akış (i×interval) + SINIRLI tek retransmit turu
+/// (kapsanmayanlara, +2 s'te) — ölçüm ARQ'sunun sınırlı bir aynası; tavanda (10 s) kalan =
+/// residue (döner, RunMeta.warmup_residue). DATAGRAM'lar iptal gerektirmez (retransmit YOK) →
+/// residue post-t0 maliyet taşımaz; fark KAPI-1 §3.2 amendment'ında belgeli.
+async fn warmup_pump(cfg: &ClientCfg, conn: &Connection) -> u64 {
     let payload = vec![0x5Au8; usize::try_from(cfg.payload_bytes).unwrap_or(0)];
-    for i in 0..cfg.warmup_msgs {
-        let _ = conn.send_datagram(encode_dg_data(WARMUP_BASE + i, &payload).into());
-    }
+    let start = Instant::now();
+    let interval = cfg.submit_interval;
     let mut covered: BTreeSet<u64> = BTreeSet::new();
-    let cap = tokio::time::sleep(Duration::from_secs(10));
+    let mut next: u64 = 0;
+    let mut retx_done = false;
+    let plan_ns = interval.saturating_mul(u32::try_from(cfg.warmup_msgs).unwrap_or(u32::MAX));
+    let cap = tokio::time::sleep(plan_ns.saturating_add(Duration::from_secs(10)));
     tokio::pin!(cap);
     while (covered.len() as u64) < cfg.warmup_msgs {
+        let submit_due = interval.saturating_mul(u32::try_from(next).unwrap_or(u32::MAX));
         tokio::select! {
             () = &mut cap => break,
+            () = tokio::time::sleep(submit_due.saturating_sub(start.elapsed())),
+                if next < cfg.warmup_msgs => {
+                let _ = conn.send_datagram(encode_dg_data(WARMUP_BASE + next, &payload).into());
+                next += 1;
+            }
+            () = tokio::time::sleep(
+                plan_ns.saturating_add(Duration::from_secs(2)).saturating_sub(start.elapsed()),
+            ), if next >= cfg.warmup_msgs && !retx_done => {
+                retx_done = true;
+                for i in 0..cfg.warmup_msgs {
+                    if !covered.contains(&(WARMUP_BASE + i)) {
+                        let _ = conn.send_datagram(encode_dg_data(WARMUP_BASE + i, &payload).into());
+                    }
+                }
+            }
             d = conn.read_datagram() => {
                 let Ok(bytes) = d else { break };
                 let Some(ranges) = decode_dg_ack(&bytes) else { continue };
@@ -242,6 +293,7 @@ async fn warmup_pump(cfg: &ClientCfg, conn: &Connection) {
         }
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
+    cfg.warmup_msgs.saturating_sub(covered.len() as u64)
 }
 
 /// Mesaj-başı ARQ durumu.
@@ -257,10 +309,21 @@ struct MsgState {
     attempt: u32,
 }
 
-async fn client_loop(cfg: &ClientCfg, conn: &Connection, gov: Option<&GovHandle>) -> RunOutput {
+async fn client_loop(
+    cfg: &ClientCfg,
+    conn: &Connection,
+    gov: Option<&GovHandle>,
+    warmup_residue: u64,
+) -> RunOutput {
     let start = Instant::now();
     // [W6] wire sayaçları ölçüm-t0 fotoğrafından DELTA (handshake/warmup r5 D.2 gereği hariç).
     let stats0 = conn.stats();
+    let t0_unix_ns = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos()),
+    )
+    .unwrap_or(0);
     let n = usize::try_from(cfg.msg_count).unwrap_or(0);
     let payload = vec![0x5Au8; usize::try_from(cfg.payload_bytes).unwrap_or(0)];
     let interval_ns = u64::try_from(cfg.submit_interval.as_nanos()).unwrap_or(u64::MAX);
@@ -412,6 +475,9 @@ async fn client_loop(cfg: &ClientCfg, conn: &Connection, gov: Option<&GovHandle>
             kama_arm: String::new(),
             submit_interval_ns: interval_ns,
             budget: gov.map(GovHandle::snapshot).unwrap_or_default(),
+            t0_unix_ns,
+            events_epoch_offset_ns: 0,
+            warmup_residue,
         },
         events,
     }
@@ -444,6 +510,9 @@ fn failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>) -> RunOutput {
             kama_arm: String::new(),
             submit_interval_ns: u64::try_from(cfg.submit_interval.as_nanos()).unwrap_or(u64::MAX),
             budget: gov.map(GovHandle::snapshot).unwrap_or_default(),
+            t0_unix_ns: 0,
+            events_epoch_offset_ns: 0,
+            warmup_residue: 0,
         },
         events,
     }
@@ -509,7 +578,7 @@ mod tests {
         let sc = server_config(Cc::Cubic).expect("server config");
         let server_ep = QEndpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("bind");
         let addr = server_ep.local_addr().expect("local addr");
-        tokio::spawn(serve_endpoint(server_ep, None, false));
+        tokio::spawn(serve_endpoint(server_ep, None, false, 4));
 
         let dir = std::env::temp_dir().join(format!("kapi-gate-qd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -544,7 +613,7 @@ mod tests {
         let sc = server_config(Cc::Cubic).expect("server config");
         let server_ep = QEndpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("bind");
         let addr = server_ep.local_addr().expect("local addr");
-        tokio::spawn(serve_endpoint(server_ep, None, false));
+        tokio::spawn(serve_endpoint(server_ep, None, false, 4));
 
         let out = QdgramTransport
             .run_client(cfg(addr, 10, 5000))
@@ -604,7 +673,7 @@ mod tests {
         let sc = server_config(Cc::Cubic).expect("server config");
         let server_ep = QEndpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("bind");
         let addr = server_ep.local_addr().expect("local addr");
-        tokio::spawn(serve_endpoint(server_ep, None, false));
+        tokio::spawn(serve_endpoint(server_ep, None, false, 4));
 
         let out = QdgramTransport
             .run_client(cfg(addr, 1, 2000))
