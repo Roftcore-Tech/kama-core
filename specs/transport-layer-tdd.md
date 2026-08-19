@@ -1,8 +1,8 @@
-# SafeRoom — Transport Layer TDD (Adaptive Hostile-Aware Transport)
+# Kama — Transport Layer TDD (Adaptive Hostile-Aware Transport)
 
-> **Tasarım ilkesi (TLS 1.3 dersi, NORMATİF):** Handshake sonrası bağ **byte'larda değil, anahtarda** kurulur. TLS established record'unda `connection_id`/`session_id`/`handshake_hash`/`cert_hash`/imza **yoktur** — yalnızca 16B AEAD tag vardır; tag handshake'ten türeyen key ile üretildiği için bağ kriptografiktir. SafeRoom aynı modeli benimser: established mesajda **yalnızca demux handle + seq + ciphertext + AEAD tag** bulunur. Per-mesaj imza, link_id, cert-ref, routing-info, length **TAŞINMAZ.**
+> **Tasarım ilkesi (TLS 1.3 dersi, NORMATİF):** Handshake sonrası bağ **byte'larda değil, anahtarda** kurulur. TLS established record'unda `connection_id`/`session_id`/`handshake_hash`/`cert_hash`/imza **yoktur** — yalnızca 16B AEAD tag vardır; tag handshake'ten türeyen key ile üretildiği için bağ kriptografiktir. Kama aynı modeli benimser: established mesajda **yalnızca demux handle + seq + ciphertext + AEAD tag** bulunur. Per-mesaj imza, link_id, cert-ref, routing-info, length **TAŞINMAZ.**
 > **Bağımlılık:** identity-and-trust-model.md (trust), ccr-format-spec.md (**§35 Session Model V3 — SESSION_INIT / SESSION_INIT_RESPONSE / SESSION_DATA / SIGNED_CONTROL canonical app-envelope byte'ları ve wire/session canonical semantiği orada**), routing-rendezvous-architecture.md (CAD-53/56/57), discovery-architecture.md.
-> **Çekirdek:** SafeRoom transport "KCP over UDP" değil, "QUIC clone" değildir. Async hot-path = **UDP üzerinde E2E-authenticated message envelope** + hub-routing handle. FEC/ARQ + SRC seçili modların araçlarıdır (adaptif motor koşula göre seçer), her mesajı saran zorunlu zarf değildir. **KCP çıkarıldı** (§4). QUIC = zorunlu benchmark referansı, bağımlılık değil (§4.1).
+> **Çekirdek:** Kama transport "KCP over UDP" değil, "QUIC clone" değildir. Async hot-path = **UDP üzerinde E2E-authenticated message envelope** + hub-routing handle. FEC/ARQ + SRC seçili modların araçlarıdır (adaptif motor koşula göre seçer), her mesajı saran zorunlu zarf değildir. **KCP çıkarıldı** (§4). QUIC = zorunlu benchmark referansı, bağımlılık değil (§4.1).
 
 ---
 
@@ -15,7 +15,7 @@ L3  E2E Session Model V3 envelope SESSION_INIT / SESSION_INIT_RESPONSE / SESSION
                                  (SESSION_DATA: seq16 2B + ciphertext + AEAD tag16) — hub OKUYAMAZ
 L4  Session crypto               Session Model V3 key schedule (ccr §35): INIT ss_e+ss_s authenticated
                                  one-way; RESPONSE responder ephemeral upgrade; established epoch/dir/
-                                 counter-bound AEAD (split() — SafeRoom-specific Noise-inspired, standart
+                                 counter-bound AEAD (split() — Kama-specific Noise-inspired, standart
                                  Noise N/IK/KK transcript DEĞİL)
 L5  Adaptive Recovery            FEC / ARQ / hybrid / none — fuzzy controller ölçülen bw/loss/jitter/queue/
                                  delivered-rate-confidence/path-health'e göre seçer. Transport application-role-blind.
@@ -176,7 +176,7 @@ ENGINE: TEK custom **adaptif transport motoru** (Rust-native, Tokio; C++/FFI ba�
 
 ### 4.2 Worst-Case Delivery Envelope (NORMATİF DÜRÜSTLÜK — KAT2-P2-04)
 
-> **İlke:** "5 bps'de çalışır" gibi bir **bps-floor** iddiası anlamsızdır — yeterince beklenirse her store-and-forward sistem teorik olarak 0.00001 bps'de bile bir şey ulaştırır (kurulum haftalar/aylar sürer). Doğru metrik **bounded operational envelope**'dur: belirli byte + loss + timeout + kullanıcı beklentisi içinde teslim. SafeRoom **bps floor yarışı yapmaz**; bounded store-and-forward teslim iddia eder.
+> **İlke:** "5 bps'de çalışır" gibi bir **bps-floor** iddiası anlamsızdır — yeterince beklenirse her store-and-forward sistem teorik olarak 0.00001 bps'de bile bir şey ulaştırır (kurulum haftalar/aylar sürer). Doğru metrik **bounded operational envelope**'dur: belirli byte + loss + timeout + kullanıcı beklentisi içinde teslim. Kama **bps floor yarışı yapmaz**; bounded store-and-forward teslim iddia eder.
 
 ```
 Rejim                          | Kurulum (SESSION_INIT_REF 149B) | Mesaj (SESSION_DATA ~65B) | Beklenti
@@ -195,18 +195,18 @@ iyi ağ                         | onboarding/discovery/prefetch    | anlık     
 
 ```
 RNS:       sovereign low-bitrate mesh/networking stack; physical-layer agnostic; ~5 bps floor;
-           anonim/otoritesiz. SafeRoom RNS'i physical-layer minimum bitrate yarışında GEÇMEYİ HEDEFLEMEZ.
-SafeRoom:  enterprise-controlled hostile-IP communication. Farklılaşma baseband DEĞİL:
+           anonim/otoritesiz. Kama RNS'i physical-layer minimum bitrate yarışında GEÇMEYİ HEDEFLEMEZ.
+Kama:  enterprise-controlled hostile-IP communication. Farklılaşma baseband DEĞİL:
            - PKI + revocation + admin control + auditability
            - always-online hub store-and-forward
            - app-level delivery semantics (offline recipient)
            RNS bu ekseni tasarım gereği hedeflemez (sovereign/anonim = ters yön).
 
 Signal/WhatsApp:  TCP+TLS live-session. Yüksek loss'ta TCP çöker (HoL blocking, retransmit storm,
-           handshake tamamlanamaz). SafeRoom'un ASIL kıyası budur: "Signal/WhatsApp sınıfı uygulamaların
+           handshake tamamlanamaz). Kama'nın ASIL kıyası budur: "Signal/WhatsApp sınıfı uygulamaların
            bağlantı kuramadığı hostile-IP rejimlerde bounded store-and-forward teslim." Bu SAVUNULABİLİR.
 ```
-> **Tek cümlelik konum:** *SafeRoom, RNS'i raw baseband'de geçmeyi hedeflemez; iddiası, kurumsal PKI/revocation/audit/admin-control gerektiren hostile-IP ortamlarında Signal/WhatsApp sınıfı uygulamaların bağlantı kuramadığı rejimlerde bounded store-and-forward teslim sağlamaktır.*
+> **Tek cümlelik konum:** *Kama, RNS'i raw baseband'de geçmeyi hedeflemez; iddiası, kurumsal PKI/revocation/audit/admin-control gerektiren hostile-IP ortamlarında Signal/WhatsApp sınıfı uygulamaların bağlantı kuramadığı rejimlerde bounded store-and-forward teslim sağlamaktır.*
 
 ---
 
@@ -219,13 +219,13 @@ Signal/WhatsApp:  TCP+TLS live-session. Yüksek loss'ta TCP çöker (HoL blockin
 ```
 İDDİA TÜRÜ (kilitli):
   RED  : marjinal üstünlük ("aynı işi %30 daha iyi") — BBR sürümüne kırılgan, operasyonel olarak anlamsız.
-  KABUL: yetenek eşiği ("QUIC=0% iken SafeRoom≥%90 bir koşul aralığı var").
-         QUIC orada FONKSİYON YOK (0); SafeRoom FONKSİYON VAR (1). Oran değil, ikili durum.
+  KABUL: yetenek eşiği ("QUIC=0% iken Kama≥%90 bir koşul aralığı var").
+         QUIC orada FONKSİYON YOK (0); Kama FONKSİYON VAR (1). Oran değil, ikili durum.
 
 KAZANMA (kategorik):
   Öyle bir koşul bölgesi [X, Y] var ki:
      quinn+BBR completion ≈ 0%   (handshake kuramıyor / oturum sürdüremiyor)
-     SafeRoom  completion ≥ %90
+     Kama  completion ≥ %90
   [X,Y] BOŞ DEĞİLSE → GO. Bölge GENİŞLİĞİ = value proposition'ın büyüklüğü (satılan şey bu).
 
 DÜŞÜRÜLEBİLİRLİK (dürüstlük şartı):
@@ -259,7 +259,7 @@ Aynı fiziksel koşul (tek değişken = transport):
 SECONDARY EVIDENCE / APPENDIX (GO kapısını BLOKE ETMEZ — scope disiplini):
   - TCP+TLS 1.3, ham KCP, Reticulum (RNS), Signal/WhatsApp sınıfı → ürün konumlandırma + appendix.
   - Layer-matched (RNS disiplini §4.3); "yendik" iddiası yalnız ÖLÇÜLMÜŞ delta ile.
-  - PRIMARY launch gate = SafeRoom custom UDP adaptive transport vs best-available QUIC — YALNIZCA bu.
+  - PRIMARY launch gate = Kama custom UDP adaptive transport vs best-available QUIC — YALNIZCA bu.
   - Ek baseline'lar Alpha freeze'i GECİKTİRMEZ (destekleyici kanıt, gate değil).
 ```
 
@@ -281,9 +281,9 @@ Kartezyen tam-matris pahalı → iki katman:
   (b) SPOT profiller: her köşe-senaryo (P_worst, P_high, P_bbr, blackout, reverse-path) derin ölçüm.
 
 ÖNCEDEN İLAN (hipotez — düşürülebilir):
-  P_worst {loss %80–95, jitter yüksek, bandwidth var} → SafeRoom NET üstün (ARQ-only cehennemi).
-  P_high  {loss %20–50}                                → SafeRoom üstün (FEC recovery, RTT-beklemeden).
-  P_blackout {intermittent kesinti}                    → SafeRoom üstün (session survival, QUIC re-handshake).
+  P_worst {loss %80–95, jitter yüksek, bandwidth var} → Kama NET üstün (ARQ-only cehennemi).
+  P_high  {loss %20–50}                                → Kama üstün (FEC recovery, RTT-beklemeden).
+  P_blackout {intermittent kesinti}                    → Kama üstün (session survival, QUIC re-handshake).
   P_bbr   {loss %2, düşük bant, jitter normal}         → QUIC kazanabilir; KABUL (§4.4.5).
 ```
 
@@ -295,23 +295,23 @@ Kartezyen tam-matris pahalı → iki katman:
 ① DEADLINE-BOUNDED COMPLETION RATE (%) — birincil
      VERİLEN DEADLINE İÇİNDE tam teslim edilen mesaj/dosya oranı. Bounded-delivery iddiası zaten zaman
      sınırı içerir → completion deadline'sız ölçülMEZ (2 dk'da giden ile 15 sn'de giden AYNI "success"
-     kovasına düşmemeli; aksi halde SafeRoom'un gerçek avantajı ölçülemez).
+     kovasına düşmemeli; aksi halde Kama'nın gerçek avantajı ölçülemez).
      QUIC handshake kuramıyorsa / deadline'ı aşıyorsa → o deadline'da completion = 0%.
 
 ② BLACKOUT SURVIVAL (ikili) — birincil
      N-sn TAM kesinti sonrası oturum YAŞIYOR mu (Noise session + link_id + hub route cache 7g, no-keepalive).
      QUIC: idle-timeout → yeni handshake (hostile'da çoğu kez tamamlanamaz) → oturum ölür.
-     SafeRoom: aynı oturumdan devam (state korunur).
+     Kama: aynı oturumdan devam (state korunur).
 
 ③ OPERATIONAL FLOOR — birincil (asıl kanıt)
      completion'ın %90 altına düştüğü koşul noktası.
         quinn+BBR floor  : loss = X_quic
-        SafeRoom  floor  : loss = Y_sr    (hedef: Y_sr ≫ X_quic)
-     Kazanç bölgesi = [X_quic, Y_sr]: "QUIC'in öldüğü ama SafeRoom'un çalıştığı aralık." Value proposition = bu aralık.
+        Kama  floor  : loss = Y_sr    (hedef: Y_sr ≫ X_quic)
+     Kazanç bölgesi = [X_quic, Y_sr]: "QUIC'in öldüğü ama Kama'nın çalıştığı aralık." Value proposition = bu aralık.
 
 ④ HANDSHAKE / FIRST-DELIVERY SUCCESS @ loss — birincil
      QUIC 1-RTT+ handshake %X loss'ta KURULABİLİYOR mu (kurulamıyorsa hiçbir metrik anlamlı değil).
-     SafeRoom zero-RTT first-message delivery (§3) — handshake-round beklemez.
+     Kama zero-RTT first-message delivery (§3) — handshake-round beklemez.
 
 SECONDARY-BUT-REQUIRED (Tier-2/Tier-3 kazanımını ölçer — §4.4.10; latency TAMAMEN dışlanMAZ):
      time-to-first-delivery; deadline-altı p50/p95 delivery latency; bytes-per-delivered-message;
@@ -349,7 +349,7 @@ ARQ EFFICIENCY:
 
 RECOVERY TIME (üstünlüğün fiziksel kaynağı):
   kayıp → reconstruct süresi.
-  QUIC: kayıp paketi RTT-bekle + retransmit. SafeRoom: FEC ile RTT-BEKLEMEDEN reconstruct → fark buradan.
+  QUIC: kayıp paketi RTT-bekle + retransmit. Kama: FEC ile RTT-BEKLEMEDEN reconstruct → fark buradan.
 
 FUZZY DETERMINISM (debuggability — ADR-17):
   aynı input snapshot → aynı output (golden vector). Non-deterministik ise transport debug edilemez.
@@ -363,13 +363,13 @@ FUZZY DETERMINISM (debuggability — ADR-17):
 P_bbr {loss ~%2, düşük bant, jitter normal}:
   BBR yıllarca optimize + ML-tabanlı varyantlar → QUIC marjinal daha iyi olabilir. KABUL.
   Ölçüt (magic-number DEĞİL — ölçülür ve rapora yazılır):
-    - SafeRoom "graceful": ÇÖKME YOK (completion yüksek kalır); QUIC'e göre fark ÖLÇÜLÜR, gizlenmez.
+    - Kama "graceful": ÇÖKME YOK (completion yüksek kalır); QUIC'e göre fark ÖLÇÜLÜR, gizlenmez.
     - O bölgede ADR-14 tetiklenir: quinn adopte (custom motor ısrarı YOK; doktrin "en iyiyi kullan").
-  Amaç: iki bölge farklı savaş — SafeRoom bölgesi [X,Y] (hostile), QUIC bölgesi [0,X] (iyi-ağ).
+  Amaç: iki bölge farklı savaş — Kama bölgesi [X,Y] (hostile), QUIC bölgesi [0,X] (iyi-ağ).
         Değerlendiriciye "her yerde kazanıyoruz" YALANINI söylemeyiz; sınırı biz çizeriz → güven.
 ```
 
-> **QUIC selected olduğunda semantik (NORMATİF — Option A):** Bir profilde QUIC adopte edilirse Session Model V3 **canonical semantics DEĞİŞMEZ**; değişen YALNIZCA substrate/reliability layer'dır. E2E envelope (Session V3 AEAD), replay/counter, hub_handle/session semantics **KORUNUR**. QUIC **FORK yapılmaz** — production QUIC library as-is kullanılır (ADR-14). SafeRoom kimlik/güven/rendezvous katmanı QUIC'ten bağımsız aynen çalışır; QUIC yalnız reliable taşımayı sağlar (adaptif custom motorun yerine geçer, semantiğin değil).
+> **QUIC selected olduğunda semantik (NORMATİF — Option A):** Bir profilde QUIC adopte edilirse Session Model V3 **canonical semantics DEĞİŞMEZ**; değişen YALNIZCA substrate/reliability layer'dır. E2E envelope (Session V3 AEAD), replay/counter, hub_handle/session semantics **KORUNUR**. QUIC **FORK yapılmaz** — production QUIC library as-is kullanılır (ADR-14). Kama kimlik/güven/rendezvous katmanı QUIC'ten bağımsız aynen çalışır; QUIC yalnız reliable taşımayı sağlar (adaptif custom motorun yerine geçer, semantiğin değil).
 
 ### 4.4.6 Kaynak Maliyeti — CPU / Bellek / Batarya / ARM (mobil & UAV bütçesi)
 
@@ -423,10 +423,10 @@ AMPLIFICATION / DoS:
 ```
 SIDE-BY-SIDE FIELD POC (1–2 gün, ölçülmüş rapor — satış metodolojisi):
   Gerçek hostile ağ: kırsal LTE/kenar hücre, jammer-sim, sınır/dağ senaryosu.
-  Signal/WhatsApp + QUIC vs SafeRoom PARALEL, aynı anda, aynı mesaj seti → ölçülmüş completion raporu.
+  Signal/WhatsApp + QUIC vs Kama PARALEL, aynı anda, aynı mesaj seti → ölçülmüş completion raporu.
 
 MIDDLEBOX / DPI SURVIVAL:
-  SafeRoom throttle/blok yeniyor mu; QUIC-benzeri fingerprint mi (DPI kategorize edip kısabilir mi).
+  Kama throttle/blok yeniyor mu; QUIC-benzeri fingerprint mi (DPI kategorize edip kısabilir mi).
 
 NAT TRAVERSAL + MTU DISCOVERY hostile path (fragmentation davranışı, §11).
 
@@ -460,14 +460,14 @@ GO (custom transport TUTULUR) — (A) EN AZ BİR kazanma tier'ı + (B) TÜM guar
 
   (A) KAZANMA — üç tier (en az biri; Tier-1 en güçlü):
       Tier-1 CATEGORICAL WIN:
-        [X,Y] boş DEĞİL — QUIC completion≈0 iken SafeRoom deadline-bounded completion ≥%90
+        [X,Y] boş DEĞİL — QUIC completion≈0 iken Kama deadline-bounded completion ≥%90
         (P_worst / P_high / P_blackout). En güçlü iddia; killer-chart bölgesi (§4.4.11).
       Tier-2 OPERATIONAL WIN:
         QUIC completion >0 olsa bile deadline/SLA İÇİNDE başarısız (ör. 2 dk'da teslim = geç),
-        SafeRoom deadline içinde ≥%90. VEYA QUIC handshake kuruyor ama blackout-survival /
-        offline-recipient store-and-forward semantiğini SAĞLAMIYOR, SafeRoom sağlıyor.
+        Kama deadline içinde ≥%90. VEYA QUIC handshake kuruyor ama blackout-survival /
+        offline-recipient store-and-forward semantiğini SAĞLAMIYOR, Kama sağlıyor.
       Tier-3 EFFICIENCY WIN:
-        İkisi de deadline içinde teslim ediyor ama SafeRoom aynı bounded envelope'ta ÖLÇÜLEBİLİR
+        İkisi de deadline içinde teslim ediyor ama Kama aynı bounded envelope'ta ÖLÇÜLEBİLİR
         biçimde daha düşük byte/ACK/energy bütçesiyle.
         NOT: Tier-3-ALONE custom motoru YALNIZCA verim OPERASYONEL olarak belirleyiciyse gerekçeler
         (ör. tactical bandwidth/energy bütçesi QUIC overhead'iyle AŞILIYOR, düşük-güç UAV/mobil kısıt) —
@@ -492,12 +492,12 @@ GLOBAL NO-GO (custom motor TÜMDEN):
 
 ```
 GRAFİK 1 — completion-vs-loss (iki eğri, İTİRAZ EDİLEMEZ):
-  x = loss% (0→95), y = completion%. quinn+BBR eğrisi bir noktada UÇURUMDAN düşer; SafeRoom eğrisi DEVAM eder.
+  x = loss% (0→95), y = completion%. quinn+BBR eğrisi bir noktada UÇURUMDAN düşer; Kama eğrisi DEVAM eder.
   İki eğri arasındaki ALAN = value proposition (görsel, tek slayt, biten tartışma).
 
 GRAFİK 2 — operational envelope map (2D):
   x = loss, y = jitter; renk = hangi transport %90 completion'ı SÜRDÜRÜYOR.
-  SafeRoom zarfı QUIC zarfını KAPSAR; fark alanı = SafeRoom'un tek başına ayakta olduğu bölge.
+  Kama zarfı QUIC zarfını KAPSAR; fark alanı = Kama'nın tek başına ayakta olduğu bölge.
 
 EKLER:
   - per-profile sonuç tablosu (completion/survival/floor + estimator accuracy + FEC efficiency).
@@ -708,7 +708,7 @@ Selective retransmit: SACK boşluğu → yalnız eksik seq'ler yeniden gönderil
 
 ```
 TLS/TCP/IPv4 established baseline ≈ 62B + payload.
-SafeRoom SESSION_DATA/UDP/IPv4 = 50B + payload → per-mesaj ~12B avantaj.
+Kama SESSION_DATA/UDP/IPv4 = 50B + payload → per-mesaj ~12B avantaj.
 Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 ```
 > **Dürüst çerçeve:** per-mesaj byte üstünlüğü TLS'e karşı mütevazı (~12B); asıl üstünlük yapısal — zero-RTT (handshake round-trip yok), store-and-forward (offline alıcı), always-on session (re-handshake/keepalive yok), per-mesaj imza yok. "TLS'i byte'ta ezdik" diye SATILMAZ.
@@ -864,4 +864,4 @@ Remaining non-freeze work:
   - implementation test vectors
 ```
 
-> **Sonuç (NORMATİF):** SafeRoom transport "KCP over UDP" / "QUIC clone" değildir; KCP ÇIKARILDI (tek adaptif transport motoru, Rust-native, ARQ+FEC içerir). Async hot-path = UDP üzerinde E2E-authenticated message envelope + kısa hub handle; bağ TLS gibi anahtarda; kripto katmanlama §0.1'de kilitli (Noise IK/KK setup + thin hot-path). FEC/ARQ/SRC seçili modların araçları; FEC/ARQ/CC kararı fuzzy (loss/jitter/bw). Paket kaybı fuzzy controller'ın ölçülen koşula göre SEÇTİĞİ recovery ile (ARQ / FEC / karma) kurtarılır — ne ARQ ne FEC sabittir; transport uygulama rolünü bilmez (SoC). QUIC = zorunlu benchmark referansı (iyiyse seçilir; custom motor yalnız QUIC'in çöktüğü lowband/high-loss rejiminde, QUIC'ten düşük banta inerek gerekçelenir; fork NO-GO). Tek savunulabilir lowband mimarisi: thin layer-collapsed envelope + tek adaptif ARQ/FEC motoru (koşula göre seçen) + fuzzy karar + QUIC-kıyaslı dürüstlük.
+> **Sonuç (NORMATİF):** Kama transport "KCP over UDP" / "QUIC clone" değildir; KCP ÇIKARILDI (tek adaptif transport motoru, Rust-native, ARQ+FEC içerir). Async hot-path = UDP üzerinde E2E-authenticated message envelope + kısa hub handle; bağ TLS gibi anahtarda; kripto katmanlama §0.1'de kilitli (Noise IK/KK setup + thin hot-path). FEC/ARQ/SRC seçili modların araçları; FEC/ARQ/CC kararı fuzzy (loss/jitter/bw). Paket kaybı fuzzy controller'ın ölçülen koşula göre SEÇTİĞİ recovery ile (ARQ / FEC / karma) kurtarılır — ne ARQ ne FEC sabittir; transport uygulama rolünü bilmez (SoC). QUIC = zorunlu benchmark referansı (iyiyse seçilir; custom motor yalnız QUIC'in çöktüğü lowband/high-loss rejiminde, QUIC'ten düşük banta inerek gerekçelenir; fork NO-GO). Tek savunulabilir lowband mimarisi: thin layer-collapsed envelope + tek adaptif ARQ/FEC motoru (koşula göre seçen) + fuzzy karar + QUIC-kıyaslı dürüstlük.

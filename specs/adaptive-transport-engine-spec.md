@@ -1,4 +1,4 @@
-# SafeRoom — Adaptive Transport Engine Spec (Implementable)
+# Kama — Adaptive Transport Engine Spec (Implementable)
 
 **Belge:** `adaptive-transport-engine-spec.md` v0.1 — Alpha
 **Statü:** IMPLEMENTATION SPEC (kod blueprint'i; `transport-layer-tdd.md` mimari/policy otoritesinin altında)
@@ -52,7 +52,7 @@ Sonuçlar (NORMATİF):
 
 > **INV-ENGINE-SOC:** Transport engine hiçbir AEAD/anahtar tutmaz; kripto = Noise + kompakt (ayrı katman). Transport **type-agnostic + crypto-agnostic**: yalnız opak birim iletir + metadata okur + ölçer + policy verir. Güvenlik birimi zaten güvenli teslim eder; transport "ne olursa olsun ulaştırmaya" çalışır.
 
-### 0.3 Rate-Control ailesi — SRC (SafeRoom Rate Control), model-based
+### 0.3 Rate-Control ailesi — SRC (Kama Rate Control), model-based
 
 ```
 SRC = BBR-türevi delivery-rate model çekirdek + FEC/ARQ füzyonu + forward-recovery.
@@ -115,7 +115,7 @@ transport-control frame ilk byte = frame_type:
 
 ## 2. ACK / SACK Frame Format (NORMATİF — fixed-width, ccr §35 varint YASAK)
 
-SafeRoom `seq` = transport hop seq, **u16** (TDD §2 SESSION_DATA seq 2B). ACK bu seq uzayında çalışır.
+Kama `seq` = transport hop seq, **u16** (TDD §2 SESSION_DATA seq 2B). ACK bu seq uzayında çalışır.
 
 ```
 ACK_FRAME {                     # içeriği transport üretir; client↔hub Noise-secured kanalda taşınır (güv. katmanı, §0.2)

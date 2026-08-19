@@ -1,8 +1,8 @@
-# SafeRoom — Application Protocol & RPC Spec
+# Kama — Application Protocol & RPC Spec
 
 **Durum:** Implementation-ready / freeze-ready Alpha.
 
-**Kritik mimari invariant (NORMATİF):** SafeRoom üç ayrı **düzlem** (plane) çalıştırır. App-RPC Control Plane, kurulu (established) Session Model V3 hot-path'ini (`SESSION_DATA`) **ASLA sarmalamaz**. Hot-path raw Session Message Data Plane üzerinden gider ve `transport-layer-tdd.md`'deki thin overhead (established ≈ `hub_handle4 + seq16 + ciphertext + tag16`) korunur. App-RPC framing yalnızca control-plane içindir.
+**Kritik mimari invariant (NORMATİF):** Kama üç ayrı **düzlem** (plane) çalıştırır. App-RPC Control Plane, kurulu (established) Session Model V3 hot-path'ini (`SESSION_DATA`) **ASLA sarmalamaz**. Hot-path raw Session Message Data Plane üzerinden gider ve `transport-layer-tdd.md`'deki thin overhead (established ≈ `hub_handle4 + seq16 + ciphertext + tag16`) korunur. App-RPC framing yalnızca control-plane içindir.
 
 Bu belge `identity-and-trust-model.md` (trust), `ccr-format-spec.md` (§35 Session Model V3 wire otoritesi), `routing-rendezvous-architecture.md` (hub-mesh + AHS), `discovery-architecture.md` (VOPRF), `transport-layer-tdd.md` (hot-path byte muhasebesi) ve `revocation-model.md` (freshness) ile %100 uyumludur.
 

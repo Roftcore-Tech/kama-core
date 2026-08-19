@@ -1,4 +1,4 @@
-//! TV-SRC: SRC (SafeRoom Rate Control) çekirdek denklemleri (engine §8.2).
+//! TV-SRC: SRC (Kama Rate Control) çekirdek denklemleri (engine §8.2).
 //!
 //! Bandwidth-model çekirdek: `send_rate = pacing_gain × BtlBw`, inflight-cap ≤ cwnd.
 //! Delay-tepkisi YAPISAL (fuzzy DEĞİL): `send_rate = min(pacing_rate, cwnd/srtt)` —

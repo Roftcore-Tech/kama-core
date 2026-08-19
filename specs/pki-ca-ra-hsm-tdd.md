@@ -1,4 +1,4 @@
-# SafeRoom — PKI / CA / RA / HSM TDD
+# Kama — PKI / CA / RA / HSM TDD
 
 **Durum:** Implementation-ready / freeze-ready Alpha.
 
@@ -133,7 +133,7 @@ Hub Identity:
 > **KRİTİK NÜANSLAR:**
 > - **CompactDeviceCert'i Identity/User key imzalar**, Intermediate DEĞİL (identity-model'de kilitli; ağda tek cert, lokal-imza, offline çalışma).
 > - **OrgEntitlementRecord'u License Authority imzalar** — Root DEĞİL (Root offline kalır), Intermediate DEĞİL (Intermediate kurum namespace omurgası; lisans global business authority'dir).
-> - License Authority **YALNIZCA** OrgEntitlementRecord imzalar; Identity/Device/Hub/AHS/DiscoveryEndpoint imzalayamaz (§13 CCR registry; ccr-format-spec.md cert_type 0x0A + EKU id-saferoom-license-authority ile enforce edilir).
+> - License Authority **YALNIZCA** OrgEntitlementRecord imzalar; Identity/Device/Hub/AHS/DiscoveryEndpoint imzalayamaz (§13 CCR registry; ccr-format-spec.md cert_type 0x0A + EKU id-kama-license-authority ile enforce edilir).
 
 ---
 
@@ -174,7 +174,7 @@ COMPROMISE durumunda:
 ```
 - Root-signed cert (ceremony).
 - online / HSM-backed sign-only key.
-- EKU = id-saferoom-license-authority.
+- EKU = id-kama-license-authority.
 - private key non-exportable.
 - validity 1-3 yıl (önerilen 2 yıl).
 - YALNIZCA OrgEntitlementRecord imzalar.
@@ -185,7 +185,7 @@ COMPROMISE durumunda:
 ```
 RA Identity Cert      : Intermediate-imzalı; online HSM-backed sign-only.
 Admin Server Cert     : Intermediate-imzalı; kurum yönetim makine identity (RA mTLS'te tanır); cert_type 0x0B.
-Hub Identity Cert     : Intermediate-imzalı; EKU id-saferoom-hub; SAN=DNS+IP (ANNOUNCE binding).
+Hub Identity Cert     : Intermediate-imzalı; EKU id-kama-hub; SAN=DNS+IP (ANNOUNCE binding).
 Hub Noise Cert        : Hub Identity-imzalı; X25519 keyAgreement.
 Discovery Endpoint    : DiscoveryEndpointRecord Intermediate-imzalı (pk_oprf + transport key).
 ```
@@ -198,7 +198,7 @@ Issuance:
   2. Private key kurum tarafında kalır; mümkünse non-exportable.
   3. Admin Server CSR, RoftCore ceremony/onboarding sırasında sunulur (operator_id + admin_server_id).
   4. RA operator_id + ceremony onayını doğrular.
-  5. Per-org Intermediate Admin Server Cert imzalar (cert_type 0x0B, EKU id-saferoom-admin-server,
+  5. Per-org Intermediate Admin Server Cert imzalar (cert_type 0x0B, EKU id-kama-admin-server,
      is_ca=FALSE, key_usage digitalSignature only, validity 1-3 yıl / Alpha önerisi 1 yıl; ccr §17.6).
   6. RA subject_key_id/admin_server_id'yi o operator_id için register eder (Admin↔RA mTLS peer allowlist).
 
@@ -216,7 +216,7 @@ Lifecycle:
 
 NORMATİF:
   - Admin Server Cert YALNIZCA Admin↔RA mTLS peer authentication (+ opsiyonel kendi control-request envelope imzası).
-  - Admin Server hiçbir canonical SafeRoom record/cert imzalamaz (HubList/AHS/DiscoveryEndpoint/Revocation/OrgEntitlement);
+  - Admin Server hiçbir canonical Kama record/cert imzalamaz (HubList/AHS/DiscoveryEndpoint/Revocation/OrgEntitlement);
     draft hazırlar, RA gate sonrası Intermediate imzalar (admin-control-plane-tdd.md §9).
   - Admin Server Intermediate'e DOĞRUDAN erişmez; RA tek runtime gateway'dir.
 ```
@@ -255,7 +255,7 @@ NORMATİF:
 7. Source IP TEK BAŞINA hiçbir zaman issuance sebebi olamaz
    (yalnız coarse pre-filter / rate-limit / anomaly detection / expected-SAN policy).
 
-8. Geçerse Intermediate Hub Identity Cert imzalar (cert_type 0x05, EKU id-saferoom-hub, SAN=DNS+IP).
+8. Geçerse Intermediate Hub Identity Cert imzalar (cert_type 0x05, EKU id-kama-hub, SAN=DNS+IP).
 
 9. Hub Noise keypair üretir; Hub Noise Cert Hub Identity Cert altında imzalanır
    (cert_type 0x06, X25519, keyAgreement, issuer = Hub Identity Cert).
@@ -521,7 +521,7 @@ Post-onboarding:
 |----------|---------------------------------------------------------|----------------------|------------|
 | R-PKI-1  | Root online compromise                                  | Closed               | Root offline ceremony-only HSM; production online signer değil. |
 | R-PKI-2  | Tek Intermediate cross-contamination                    | Closed               | per-org ayrı Intermediate key + RA allowlist gate. |
-| R-PKI-3  | License Authority Identity/Device imzalar (yetki aşımı) | Closed               | EKU id-saferoom-license-authority; CCR registry yalnız OrgEntitlement (§13/ccr patch). |
+| R-PKI-3  | License Authority Identity/Device imzalar (yetki aşımı) | Closed               | EKU id-kama-license-authority; CCR registry yalnız OrgEntitlement (§13/ccr patch). |
 | R-PKI-4  | Intermediate rollover sırasında trust kırılır           | Closed               | overlap rollover; iki Intermediate de pinned Root'a zincirler. |
 | R-PKI-5  | Lisans bitince Intermediate de bozulur (kâbus)          | Closed               | enforcement Identity/Device/HubList katmanında; Intermediate stabil. |
 | R-PKI-6  | RA seat limit bypass (sınırsız cert)                    | Closed               | Gate-1 cryptographic; CSR Intermediate'e hiç gitmez. |
@@ -576,7 +576,7 @@ AC-PKI-4:  Intermediate rollover overlap'tir; grace boyunca iki Intermediate de 
 AC-PKI-5:  OrgEntitlementRecord yalnız RoftCore License Authority tarafından imzalanır;
            Root ve Intermediate OrgEntitlementRecord imzalamaz.
 
-AC-PKI-6:  License Authority cert EKU = id-saferoom-license-authority; yalnız OrgEntitlementRecord imza yetkisi
+AC-PKI-6:  License Authority cert EKU = id-kama-license-authority; yalnız OrgEntitlementRecord imza yetkisi
            (Identity/Device/Hub/AHS/DiscoveryEndpoint imzalayamaz).
 
 AC-PKI-7:  CompactDeviceCert issuer_signature = Ed25519_Sign(sk_user_identity); Intermediate imzalamaz.

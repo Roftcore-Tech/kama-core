@@ -1,4 +1,4 @@
-# SafeRoom — Revocation Model
+# Kama — Revocation Model
 
 **Durum:** Implementation-ready / freeze-ready Alpha.
 
@@ -615,7 +615,7 @@ if hiçbir source erişilemez              → unknown/never-validated yeni trus
 ### 7.5 Known Contact Revocation Cache / Bounded-Stale Revocation Policy (NORMATİF — KAT1-P1-01 Option C)
 
 > **Amaç (availability/security tradeoff):** Hostile/blackout operasyonda (revocation refresh >24h imkânsız)
-> SafeRoom'un TÜM yeni known-contact konuşma yeteneğini kaybetmesini önler; unknown contact fail-closed kalır.
+> Kama'nın TÜM yeni known-contact konuşma yeteneğini kaybetmesini önler; unknown contact fail-closed kalır.
 > "Signal/WhatsApp'ın çalışamadığı yerde çalışır" değer önerisinin revocation güvenliğiyle dengelendiği nokta.
 
 **"Known contact" tanımı (NORMATİF — telefon rehberi kaydı DEĞİL):**
@@ -943,7 +943,7 @@ NORMATİF:
 RA, Admin↔RA admin-plane request kabul etmeden önce:
   1. Admin Server mTLS peer cert parse edilir.
   2. cert_type == 0x0B Admin Server.
-  3. EKU id-saferoom-admin-server.
+  3. EKU id-kama-admin-server.
   4. chain: Admin Server Cert → per-org Intermediate → ROOT_CA_SPKI_HASH.
   5. cert_hash = SHA-256(canonical_admin_server_ccr_tbs) hesaplanır.
   6. Revocation state fresh olmalı.

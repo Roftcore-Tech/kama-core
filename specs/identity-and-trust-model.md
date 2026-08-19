@@ -73,7 +73,7 @@
 | ID | Statement |
 |----|-----------|
 | INV-SM3-ASYNC | Bob, SESSION_INIT için online olmak zorunda DEĞİL. SESSION_INIT_RESPONSE ilk async mesajı okumak için GEREKLİ DEĞİL. |
-| INV-SM3-NOT-IKKK | Session Model V3 standart Noise IK/KK DEĞİL — SafeRoom-specific N-türevi authenticated one-way (ss_e + ss_s). |
+| INV-SM3-NOT-IKKK | Session Model V3 standart Noise IK/KK DEĞİL — Kama-specific N-türevi authenticated one-way (ss_e + ss_s). |
 | INV-SM3-WIRE | session_id_internal wire'da TAŞINMAZ (derived/AAD). SESSION_DATA app-envelope = seq16 + ciphertext + tag16 (18B); routing hub_handle (4B, L2). |
 | INV-SM3-DENIABILITY | Normal SESSION_DATA deniable + imzasız. Yalnızca SIGNED_CONTROL Ed25519 non-repudiation imzası taşır. |
 | INV-SM3-FS-LIMIT | Recipient static X25519 compromise, kuyruğa alınmış/geçmiş SESSION_INIT mesajlarını açığa çıkarabilir — kabul edilen Alpha tradeoff (hostile/offline operasyon için). |
@@ -82,11 +82,11 @@
 
 ## 1. Purpose / Amaç
 
-Bu doküman SafeRoom'un kimlik, PKI, certificate chain, trust model, authentication, **statik X25519 transport modeli (Haziran 2026, bkz. Section 0 ERRATA)**, Noise kullanım sınırları, anahtar sahipliği, anahtar saklama ve revocation davranışını **implementation-ready** seviyede tanımlar.
+Bu doküman Kama'nın kimlik, PKI, certificate chain, trust model, authentication, **statik X25519 transport modeli (Haziran 2026, bkz. Section 0 ERRATA)**, Noise kullanım sınırları, anahtar sahipliği, anahtar saklama ve revocation davranışını **implementation-ready** seviyede tanımlar.
 
 Bu dokümanı okuyan bir geliştirici Identity/Trust altsistemini **yeni hiçbir protokol, trust, lifecycle, validation, fallback, revocation veya state-machine tasarım kararı vermeden** implemente edebilmelidir. Hangi veriyi saklayacağını, ne göndereceğini, neyi imzalayacağını, neyi doğrulayacağını, ne zaman fetch/cache/reject/rotate/delete edeceğini, ne zaman fail-closed/fail-open olacağını bilir.
 
-SafeRoom aşırı düşük bant genişliği, aşırı paket kaybı, yüksek gecikme, hostile network ve untrusted hub koşullarında çalışır.
+Kama aşırı düşük bant genişliği, aşırı paket kaybı, yüksek gecikme, hostile network ve untrusted hub koşullarında çalışır.
 
 ---
 
@@ -139,7 +139,7 @@ Identity model, PKI hiyerarşisi, recursive chain validation, **CompactDeviceCer
 
 ### 3.1 Architectural Positioning / Non-Goals
 
-SafeRoom is **not** a permissionless Reticulum/RNS-style network. SafeRoom deliberately chooses an enterprise-governed trust model:
+Kama is **not** a permissionless Reticulum/RNS-style network. Kama deliberately chooses an enterprise-governed trust model:
 
 - RoftCore Root/Intermediate/RA are trusted Tier-0 components.
 - Organizations operate zero-trust hubs and an Admin Server.
@@ -187,7 +187,7 @@ RA, enrollment denetimi için `phone_number → identity_hash/dest_hash` mapping
 | CAD-11 | `identity_sk` yeni cihaza **transfer edilmez**; multi-device **kapsam dışı** (Alpha+Beta, limit=1) |
 | CAD-12 | Alpha bir Identity CA altında tek geçerli Device Cert (multi-device kapsam dışı) |
 | CAD-13 | Kayıp/compromise cihaz revocation ile ele alınır, active-state enforcement ile değil |
-| CAD-14 | CCR = **SafeRoom-native canonical compact certificate** (X.509 TBS projection DEĞİL) |
+| CAD-14 | CCR = **Kama-native canonical compact certificate** (X.509 TBS projection DEĞİL) |
 | CAD-15 | Wire doğrulama canonical CCR TBS byte'ları üzerinde: `signature = Sign(issuer_sk, canonical_ccr_tbs)` |
 | CAD-16 | **Stable routing identity Noise key'e bağlı DEĞİL.** `identity_hash = SHA-256(user_identity_ed25519_pub)` (32B); `dest_hash = SHA-256(identity_hash)` (32B); `routing_key = dest_hash[0:16]` (128-bit DHT key). Statik X25519 bunları etkilemez |
 | CAD-17 | **Device Cert lifetime = 90 gün.** Statik `pk_x25519` Device Cert içinde; ayrı prekey validity kuralı YOK |
@@ -327,7 +327,7 @@ RoftCore Root CA (Ed25519, offline HSM, 20 yıl, ROOT_CA_SPKI_HASH pinned)
    │  CA:TRUE, keyUsage: keyCertSign, cRLSign
    │
    └── Intermediate CA (Ed25519, operatör/kurum başına, 5 YIL)   ← NAMESPACE OMURGASI
-         │  CA:TRUE, pathLen:1, EKU: id-saferoom-intermediate
+         │  CA:TRUE, pathLen:1, EKU: id-kama-intermediate
          │  HER KURUMUN KENDİ Intermediate'i (cross-contamination yok)
          │  Lisans enforcement Intermediate expiry ile YAPILMAZ →
          │    OrgEntitlementRecord + RA license gate + Identity Cert renewal +
@@ -339,12 +339,12 @@ RoftCore Root CA (Ed25519, offline HSM, 20 yıl, ROOT_CA_SPKI_HASH pinned)
          ├── HubListRecord (Ed25519-imzalı, kurum hub bootstrap listesi, IP SAN'lı) → ccr-spec 21.5
          │
          └── Identity CA / User Identity Cert (Ed25519, 1 yıl, RA license gate ile yenilenir)
-               │  CA:TRUE, pathLen:0, EKU: id-saferoom-identity
-               │  nameConstraints: URI:saferoom://<dest_hash>/*  (türetilmiş dest_hash kontrol)
+               │  CA:TRUE, pathLen:0, EKU: id-kama-identity
+               │  nameConstraints: URI:kama://<dest_hash>/*  (türetilmiş dest_hash kontrol)
                │  issuer: Intermediate CA (RA üzerinden)
                │
                └── Device Cert / CompactDeviceCert (Ed25519, 90 gün, ~152B ağda tek cert)
-                     CA:FALSE, EKU: id-saferoom-device
+                     CA:FALSE, EKU: id-kama-device
                      İÇERİR: pk_ed25519 + pk_x25519 (STATİK transport key) + issuer_key_id + not_after
                      SAN URI ÇIKARILDI → dest_hash issuer Identity Cert key'inden türetilir (ccr-spec §13)
                      issuer: Identity CA/User Identity Cert
@@ -367,7 +367,7 @@ RoftCore Root CA (Ed25519, offline HSM, 20 yıl, ROOT_CA_SPKI_HASH pinned)
 > **Operasyon limiti (NORMATİF, KAT4-P2-03):** Device Cert (90 gün) client tarafından **lokal** yenilenir (ağ gerektirmez, hostile-OK). Ancak Identity CA/User Cert (1 yıl) yenileme RA license gate + Admin approval gerektirir (good-network). Bu nedenle **sürekli >1 yıl tam-offline deployment DESTEKLENMEZ** — yılda en az bir good-network renewal penceresi gerekir (bu, 90-günlük Device Cert varsayımının — E-6: "90 günde 1-2 gün iyi internet" — zaten çok içindedir). Identity Cert expire olursa Device Cert parent'ını aşamaz → routing durur (client yeniden onboarding gerektirir).
 - Chain validation yine Root CA'ya ulaşır.
 
-`nameConstraints` (URI:saferoom://<dest_hash>/*) Identity CA'nın yalnızca kendi namespace'inde Device Cert imzalamasını garanti eder. `dest_hash` stabil olduğu için (yalnızca `user_identity_ed25519_pub`'tan türer — `dest_hash = SHA-256(SHA-256(user_identity_ed25519_pub))`; statik X25519 ve device key DAHİL hiçbir şey etkilemez, CAD-16), Device Cert yenilense bile namespace/routing değişmez. CompactDeviceCert SAN URI taşımaz ve dest_hash device key'den türemez; doğrulayıcı issuer Identity Cert'in key'inden `dest_hash`'i türetip nameConstraints ile kontrol eder (ccr-spec §13).
+`nameConstraints` (URI:kama://<dest_hash>/*) Identity CA'nın yalnızca kendi namespace'inde Device Cert imzalamasını garanti eder. `dest_hash` stabil olduğu için (yalnızca `user_identity_ed25519_pub`'tan türer — `dest_hash = SHA-256(SHA-256(user_identity_ed25519_pub))`; statik X25519 ve device key DAHİL hiçbir şey etkilemez, CAD-16), Device Cert yenilense bile namespace/routing değişmez. CompactDeviceCert SAN URI taşımaz ve dest_hash device key'den türemez; doğrulayıcı issuer Identity Cert'in key'inden `dest_hash`'i türetip nameConstraints ile kontrol eder (ccr-spec §13).
 
 ### 6.3 Recursive Chain Validation
 
@@ -595,8 +595,8 @@ imzalı cert / HubListRecord → kuruma döner
 | Algorithm | Ed25519 |
 | basicConstraints | CA:TRUE, pathLen:0 |
 | keyUsage | keyCertSign, cRLSign, digitalSignature |
-| EKU | id-saferoom-identity |
-| nameConstraints | URI:saferoom://<dest_hash>/* |
+| EKU | id-kama-identity |
+| nameConstraints | URI:kama://<dest_hash>/* |
 | issuer | Intermediate CA (RA aracılığıyla) |
 | Ömür | **1 yıl** (RA license gate + Admin approval ile yenilenir) |
 | Ağda dolaşır | Chain refresh (her session değil) |
@@ -607,7 +607,7 @@ imzalı cert / HubListRecord → kuruma döner
 
 ```
 Hub Identity Cert (Ed25519, 3 yıl)
-   CA:TRUE, pathLen:0, EKU: id-saferoom-hub
+   CA:TRUE, pathLen:0, EKU: id-kama-hub
    nameConstraints: DNS:<hub-fqdn>, IP:<hub-ip>
    SAN: IP+DNS (zorunlu), issuer: Intermediate CA
    │
@@ -645,7 +645,7 @@ Intermediate CA yalnızca üst-seviye delegasyon sertifikalarını imzalar: Iden
 |------|-------|
 | Algorithm | Ed25519 |
 | basicConstraints | CA:TRUE, pathLen:1 |
-| EKU | id-saferoom-intermediate |
+| EKU | id-kama-intermediate |
 | Ömür | 5 yıl |
 | Encoding | CCR (native) |
 | Ağda dolaşır | Evet (zincir doğrulama, cache miss'te) |
@@ -657,8 +657,8 @@ Intermediate CA yalnızca üst-seviye delegasyon sertifikalarını imzalar: Iden
 |------|-------|
 | Algorithm | Ed25519 |
 | basicConstraints | CA:TRUE, pathLen:0 |
-| EKU | id-saferoom-identity |
-| nameConstraints | URI:saferoom://<dest_hash>/* |
+| EKU | id-kama-identity |
+| nameConstraints | URI:kama://<dest_hash>/* |
 | issuer | Intermediate CA (RA aracılığıyla) |
 | Ömür | **1 yıl** (RA license gate + Admin approval ile yenilenir) |
 | Ağda dolaşır | Chain refresh (her session değil) |
@@ -675,7 +675,7 @@ Intermediate CA yalnızca üst-seviye delegasyon sertifikalarını imzalar: Iden
 | Algorithm | Ed25519 (pk_ed25519 = pk_device) |
 | basicConstraints | CA:FALSE |
 | keyUsage / semantic usage | `pk_ed25519 → digitalSignature, nonRepudiation`; `pk_x25519 → keyAgreement`. **X.509 mirror/audit projection: usage mapping Ed25519 keyAgreement ima ETMEMELİ** (pk_ed25519 imza, pk_x25519 DH — ayrı keyler) |
-| EKU | id-saferoom-device |
+| EKU | id-kama-device |
 | SAN | **YOK** — `dest_hash` issuer Identity/User Cert key'inden türetilir (`SHA-256(SHA-256(user_identity_ed25519_pub))`, CAD-16; device key'den DEĞİL); namespace: issuer Identity Cert nameConstraints |
 | device_id | **cert'te YOK** — ayrı taşınır (lookup etiketi, Section 15.14) |
 | **pk_x25519** | **STATİK X25519 transport key (CAD-36); cert İÇİNDE; rotation YOK** |
@@ -705,7 +705,7 @@ Intermediate CA yalnızca üst-seviye delegasyon sertifikalarını imzalar: Iden
 |------|-------|
 | Algorithm | Ed25519 |
 | basicConstraints | CA:TRUE, pathLen:0 |
-| EKU | id-saferoom-hub |
+| EKU | id-kama-hub |
 | nameConstraints | DNS:<hub-fqdn>, IP:<hub-ip> |
 | SAN | IP, DNS (zorunlu) |
 | issuer | Intermediate CA (RA aracılığıyla) |
@@ -730,7 +730,7 @@ Intermediate CA yalnızca üst-seviye delegasyon sertifikalarını imzalar: Iden
 
 | Alan | Değer |
 |------|-------|
-| RA Identity | Ed25519, CA:TRUE pathLen:0, EKU:id-saferoom-ra, nameConstraints DNS+IP, 3 yıl, Intermediate imzalı |
+| RA Identity | Ed25519, CA:TRUE pathLen:0, EKU:id-kama-ra, nameConstraints DNS+IP, 3 yıl, Intermediate imzalı |
 | RA Noise | X25519, CA:FALSE, keyAgreement, 1 yıl, RA Identity imzalı |
 | Ağda dolaşır | Bootstrap bundle (pinned) |
 | Saklama | Hardened server; sk → HSM/KMS |
@@ -746,9 +746,9 @@ Intermediate CA yalnızca üst-seviye delegasyon sertifikalarını imzalar: Iden
 
 > `TODO(IMPL): CT Log signing key lifetime ve rotation ceremony → revocation-model.md ek.`
 
-### 7.9 CCR — SafeRoom-Native Compact Certificate
+### 7.9 CCR — Kama-Native Compact Certificate
 
-`Confirmed (CAD-14, CAD-15):` CCR, **SafeRoom-native canonical compact certificate** formatıdır. X.509 TBS projection **değildir**.
+`Confirmed (CAD-14, CAD-15):` CCR, **Kama-native canonical compact certificate** formatıdır. X.509 TBS projection **değildir**.
 
 ```
 İmza: signature = Ed25519_Sign(issuer_sk, canonical_ccr_tbs)
@@ -1094,7 +1094,7 @@ SIGNED_CONTROL:   "SSC1" || version || flags || session_id_internal || seq || ci
 ```
 fresh_crlite = get_or_refresh_crlite_once_per_connection()   # Section 15.1 (iyi internette)
 verify_hub_cert_chain(hub_*_ccr, fresh_crlite)               # Section 15.2/15.9
-+ EKU:id-saferoom-hub, SAN eşleşme, validity
++ EKU:id-kama-hub, SAN eşleşme, validity
 + rs = HubEntryV3.hub_noise_cert.public_key (HubListRecord cert-bound, ccr §21.5.4;
        Hub Noise Cert → Hub Identity → Root pin — raw alan DEĞİL, KAT5-P1-02)
 + provisioned hub carve-out (§11.3): fresh per-connection hub-revocation fetch YOKSA
@@ -1745,7 +1745,7 @@ verify_discovery_record(record) -> bool:
 ```
 verify_hub_cert_chain(hub_identity_ccr, hub_noise_ccr, fresh_crlite) -> bool:
   if NOT verify_chain_to_root(hub_identity_ccr, ROOT_CA_SPKI_HASH): return FALSE
-  if id-saferoom-hub NOT in hub_identity_ccr.eku: return FALSE
+  if id-kama-hub NOT in hub_identity_ccr.eku: return FALSE
   if NOT Ed25519_Verify(hub_identity_ccr.spki,
                         canonical_ccr_tbs(hub_noise_ccr),
                         hub_noise_ccr.signature): return FALSE
@@ -1760,7 +1760,7 @@ verify_hub_cert_chain(hub_identity_ccr, hub_noise_ccr, fresh_crlite) -> bool:
 verify_hub_announce(announce, fresh_crlite) -> bool:
   if NOT verify_chain_to_root(announce.hub_identity_ccr, ROOT_CA_SPKI_HASH):
     return FALSE
-  if id-saferoom-hub NOT in announce.hub_identity_ccr.eku: return FALSE
+  if id-kama-hub NOT in announce.hub_identity_ccr.eku: return FALSE
   if NOT Ed25519_Verify(announce.hub_identity_ccr.spki,
                         canonical_ccr_tbs(announce.hub_noise_ccr),
                         announce.hub_noise_ccr.signature): return FALSE
@@ -1829,7 +1829,7 @@ apply_admin_approval_gate(phone, cert_request, admin_server_notifications) -> bo
 verify_admin_server_cert(admin_cert, fresh_crlite) -> bool:
   # Admin Server kendi Intermediate-imzalı cert'i (kurum yönetim identity, CAD-48)
   if NOT verify_chain_to_root(admin_cert, fresh_crlite): return FALSE
-  if admin_cert.eku != id-saferoom-admin-server: return FALSE
+  if admin_cert.eku != id-kama-admin-server: return FALSE
   if admin_cert.operator_id != expected_org: return FALSE   # doğru kurumun Admin Server'ı mı
   # RA bu cert'i mTLS'te tanır; sahte Admin Server RA'ya bağlanamaz
   return TRUE

@@ -1,4 +1,4 @@
-# SafeRoom — Admin Control Plane TDD
+# Kama — Admin Control Plane TDD
 
 **Durum:** Implementation-ready / freeze-ready Alpha.
 
@@ -98,14 +98,14 @@ Bu belge CCR ve PKI'da şu patch'leri gerektirir (belge sonunda cross-doc patch 
 ```
 CCR (ccr-format-spec.md):
   cert_type:  0x0B Admin Server
-  EKU:        0x0008 id-saferoom-admin-server
+  EKU:        0x0008 id-kama-admin-server
 
   Admin Server CCR:
     cert_type       = 0x0B
     public_key_alg  = Ed25519
     is_ca           = FALSE
     key_usage       = digitalSignature only
-    eku_list        = [0x0008 id-saferoom-admin-server]
+    eku_list        = [0x0008 id-kama-admin-server]
     issuer          = per-org Intermediate CA
     validity        = 1-3 yıl (Alpha önerisi 1 yıl)
     extensions      = operator_id / admin_server_id / SAN
@@ -187,7 +187,7 @@ RA, Intermediate auto-sign'a tek runtime gateway'dir.
 ```
 Transport:
   - server-to-server mTLS/gRPC.
-  - SafeRoom custom Noise/KCP transport KULLANILMAZ (hot-path değil; "TLS kötü değil farklı problem").
+  - Kama custom Noise/KCP transport KULLANILMAZ (hot-path değil; "TLS kötü değil farklı problem").
   - Admin↔RA stabil datacenter/control-plane ağı varsayar.
   - RA↔Intermediate de RoftCore-iç izole mTLS/gRPC.
 
@@ -195,7 +195,7 @@ mTLS:
   - RA, RA Identity / RA server cert chain sunar.
   - Admin Server, Admin Server Cert sunar.
   - Her iki chain ROOT_CA_SPKI_HASH'e doğrulanır.
-  - RA ek olarak cert_type == Admin Server + EKU id-saferoom-admin-server enforce eder.
+  - RA ek olarak cert_type == Admin Server + EKU id-kama-admin-server enforce eder.
 ```
 
 RA kabul kuralı:
@@ -204,7 +204,7 @@ RA kabul kuralı:
 RA admin method'larını YALNIZCA şu koşullarda kabul eder:
   - mTLS peer cert geçerli Admin Server Cert.
   - cert_type == 0x0B Admin Server.
-  - EKU id-saferoom-admin-server mevcut.
+  - EKU id-kama-admin-server mevcut.
   - issuer chain = Admin Server Cert → per-org Intermediate → Root pin.
   - operator_id, request/operator scope ile eşleşir.
   - Admin Server cert subject_key_id, o operator_id için register edilmiş.
@@ -694,7 +694,7 @@ Admin panel YAPAMAZ:
   - crypto suite downgrade
   - revocation/audit log silme veya yeniden yazma
   - kendini Admin Server yetkisi yaratma
-  - canonical SafeRoom record'larını doğrudan imzalama
+  - canonical Kama record'larını doğrudan imzalama
   - Identity/User Cert doğrudan issue
   - CompactDeviceCert doğrudan issue
 ```
@@ -788,7 +788,7 @@ NORMATİF:
 | Kontrol                                                          | Statü | Bölüm |
 |------------------------------------------------------------------|-------|-------|
 | Admin Server identity certificate-based (self-declare değil)     | ✅    | §2    |
-| Admin Server Cert cert_type 0x0B / EKU id-saferoom-admin-server  | ✅    | §3    |
+| Admin Server Cert cert_type 0x0B / EKU id-kama-admin-server  | ✅    | §3    |
 | RA admin methodları yalnız validated Admin Server Cert'ten       | ✅    | §5    |
 | Admin actor identity makine kimliğinden ayrı                     | ✅    | §2    |
 | Admin→RA→Intermediate topoloji enforce                           | ✅    | §4    |
@@ -811,7 +811,7 @@ NORMATİF:
 ## 19. Acceptance Criteria
 
 ```
-AC-ADM-1:  Geçerli Intermediate-imzalı Admin Server Cert (cert_type 0x0B, EKU id-saferoom-admin-server, mTLS)
+AC-ADM-1:  Geçerli Intermediate-imzalı Admin Server Cert (cert_type 0x0B, EKU id-kama-admin-server, mTLS)
            sunmayan hiçbir sunucu Admin Server olarak işlem görmez.
 
 AC-ADM-2:  Admin Server Cert subject_key_id/admin_server_id RA'da o operator_id için register olmalı.
@@ -889,7 +889,7 @@ Final Status:
 
 Frozen (kilitli):
   - Admin Server Cert-tabanlı identity (self-declare yasak)
-  - cert_type 0x0B / EKU id-saferoom-admin-server cross-doc requirement
+  - cert_type 0x0B / EKU id-kama-admin-server cross-doc requirement
   - Admin↔RA mTLS/gRPC
   - Admin→RA→Intermediate topoloji
   - AdminControlRequest/Response envelope (SRAC/SRAR)
@@ -908,7 +908,7 @@ Deferred (ertelenen):
 Cross-doc patches required:
   ccr-format-spec.md:
     - cert_type 0x0B Admin Server
-    - EKU 0x0008 id-saferoom-admin-server
+    - EKU 0x0008 id-kama-admin-server
     - Admin Server CCR validation section (§17.6)
   pki-ca-ra-hsm-tdd.md:
     - Admin Server Cert ceremony / CSR / lifecycle bölümü

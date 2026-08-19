@@ -1,4 +1,4 @@
-# SafeRoom — Teknoloji Stack ADR (Architecture Decision Record)
+# Kama — Teknoloji Stack ADR (Architecture Decision Record)
 
 **Belge:** `tech-stack-adr.md` v1.0 — Alpha
 **Statü:** ADR-01..ADR-19 KABUL (TÜMÜ KİLİTLİ — Temmuz 2026, insan onayıyla)
@@ -184,7 +184,7 @@ canonical'a çevrilir, admin-control-plane-tdd.md draft→RA-gate→Intermediate
 **Statü:** KABUL
 **Karar:**
 ```
-saferoom/
+kama/
   crates/
     ccr-codec/            # canonical encode/decode/verify (tek kaynak)
     crypto/               # libsodium FFI + dalek cross-check + registry
@@ -226,7 +226,7 @@ NORMATİF — Storage trait ZORUNLU (redb'ye kod GÖMÜLMEZ; takas trait üzerin
 
 ```
 KARAR: quinn (pure-Rust, Tokio-native). quiche GEREKSİZ (C FFI). QUIC fork hâlâ NO-GO.
-  quinn = benchmark harness + hub↔hub/RA iyi-ağ rejimi. QUIC SafeRoom'un hostile ana
+  quinn = benchmark harness + hub↔hub/RA iyi-ağ rejimi. QUIC Kama'nın hostile ana
   transport'u DEĞİL — kıyas referansı + iyi-ağ yolu.
 ```
 
@@ -234,7 +234,7 @@ KARAR: quinn (pure-Rust, Tokio-native). quiche GEREKSİZ (C FFI). QUIC fork hâl
 
 ```
 KARAR: UniFFI. Manuel JNI/Swift-C NO-GO (UniFFI hard-block çıkarmadıkça). Gerekçe: iki
-  platformda elle FFI = lifetime/memory/copy bug sınıfı — SafeRoom'daki en tehlikeli
+  platformda elle FFI = lifetime/memory/copy bug sınıfı — Kama'daki en tehlikeli
   risklerden biri; UniFFI bu sınıfı yok eder.
 
 NORMATİF — FFI boundary COARSE-GRAINED (packet-level FFI YASAK):
@@ -275,10 +275,10 @@ NORMATİF — Determinizm ZORUNLU:
 
 ```
 KARAR: Linux netem/tc + container'lı iki-uç harness. Bu "açık karar" değil ZORUNLU KALİTE
-  KAPISI statüsünde: SafeRoom'un iddiası "QUIC'in çöktüğü hostile-lowband rejimde daha düşük
+  KAPISI statüsünde: Kama'nın iddiası "QUIC'in çöktüğü hostile-lowband rejimde daha düşük
   bantta ayakta kalmak" — bunu göstermeden custom transport SAVUNULAMAZ (§4.1).
 
-NORMATİF — Minimum test profilleri (her profilde SafeRoom adaptive transport vs QUIC/quinn
+NORMATİF — Minimum test profilleri (her profilde Kama adaptive transport vs QUIC/quinn
 YAN YANA, nightly CI):
   - 0.025 kbps / yüksek gecikme / düşük loss
   - 0.1 kbps / %50 loss
@@ -298,7 +298,7 @@ KARAR: statik-link (musl) tek-binary + systemd (Alpha default). Container OPSİY
   kurumda koşuyor).
 
 NORMATİF — Her servis şunları sağlar:
-  --config /etc/saferoom/<service>.toml
+  --config /etc/kama/<service>.toml
   systemd hardening (sandbox direktifleri)
   journald + append-only audit export
   healthcheck endpoint

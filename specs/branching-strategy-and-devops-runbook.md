@@ -1,4 +1,4 @@
-# SafeRoom — Branching Stratejisi & DevOps Kurulum Runbook
+# Kama — Branching Stratejisi & DevOps Kurulum Runbook
 
 **Belge:** `branching-strategy-and-devops-runbook.md` v1.0
 **Kime:** Yaaz (DevOps Lead) + Abkarada (core) + Resul (media)
@@ -12,9 +12,9 @@
 ### A.1 Görev dağılımı (kilitli)
 
 ```
-Abkarada  → saferoom-core TAMAMI (solo): ccr-codec, crypto, adaptive-transport (reliability),
+Abkarada  → kama-core TAMAMI (solo): ccr-codec, crypto, adaptive-transport (reliability),
             hub-server, client-core, ra-ca, discovery, admin-server
-Resul     → saferoom-media: WebRTC fork transport (real-time; geç veri çöp; özel FEC/ARQ)
+Resul     → kama-media: WebRTC fork transport (real-time; geç veri çöp; özel FEC/ARQ)
 Hasan     → Lyra codec'i WebRTC'ye entegre + API tasarımı (media repo'da)
 Yaaz      → DevOps Lead (her iki repo, CI/CD, runner, harness)
 Hayri     → rebranding, logo, isimlendirme, UI/UX
@@ -26,9 +26,9 @@ Meriç     → UI/UX, branding
 ### A.2 Repo topolojisi
 
 ```
-saferoom-core     (Abkarada, SOLO)      Cargo workspace (ADR-12), private
-saferoom-media    (Resul + Hasan)       WebRTC fork + Rust FFI, private
-[saferoom-contract → ERTELENDİ]         transport quinn/custom kararı (§4.4) + signaling API
+kama-core     (Abkarada, SOLO)      Cargo workspace (ADR-12), private
+kama-media    (Resul + Hasan)       WebRTC fork + Rust FFI, private
+[kama-contract → ERTELENDİ]         transport quinn/custom kararı (§4.4) + signaling API
                                         stabilleşince eklenir. Şimdi tanımlamak erken optimizasyon.
 ```
 
@@ -59,7 +59,7 @@ TEKNİK BAĞLAMA (muhtemel yol):
 
 ZAMAN ÇİZELGESİ (bağlama EN SONDA — şimdi DEĞİL):
   ŞİMDİ (aylar)     : iki repo SIFIR temas; sen core, Resul media — birbirinizi beklemezsiniz.
-  transport kararı  : §4.4 benchmark quinn/custom → signaling API stabilleşir → saferoom-contract tanımlanır.
+  transport kararı  : §4.4 benchmark quinn/custom → signaling API stabilleşir → kama-contract tanımlanır.
   entegrasyon fazı  : app katmanında core+media kütüphaneleri import + signaling seam → uçtan uca arama.
 ```
 
@@ -155,11 +155,11 @@ Her milestone: git tag -a v0.1.0-alpha -m "..."
 Semver: 0.MINOR.PATCH-alpha (Alpha boyunca 0.x).
 ```
 
-### B.6 saferoom-media branching (Resul + Hasan)
+### B.6 kama-media branching (Resul + Hasan)
 
 ```
 main + kısa feature branch. 2 kişi → BİRBİRLERİNİ review eder (PR approval).
-WebRTC upstream PIN'li (§E.4); SafeRoom patch'leri patches/ altında ayrı tutulur.
+WebRTC upstream PIN'li (§E.4); Kama patch'leri patches/ altında ayrı tutulur.
 ```
 
 ---
@@ -247,7 +247,7 @@ GitHub → repo → Settings → Branches → Add rule → Branch name pattern: 
 ```
 `gh` ile (opsiyonel, tek komut):
 ```bash
-gh api -X PUT repos/OWNER/saferoom-core/branches/main/protection \
+gh api -X PUT repos/OWNER/kama-core/branches/main/protection \
   -f "required_status_checks[strict]=true" \
   -f "required_status_checks[contexts][]=quality" \
   -f "required_status_checks[contexts][]=security" \
@@ -273,7 +273,7 @@ services:
   hub:
     build: { context: ., dockerfile: harness/Dockerfile }
     cap_add: [NET_ADMIN]          # tc/netem için
-    command: ./target/release/hub-server --config /etc/saferoom/hub.toml
+    command: ./target/release/hub-server --config /etc/kama/hub.toml
   client:
     build: { context: ., dockerfile: harness/Dockerfile }
     cap_add: [NET_ADMIN]
@@ -316,11 +316,11 @@ rust-toolchain.toml zaten sürümü pinler; image bunu paketler.
 
 > Ön koşul: `git`, `gh` (GitHub CLI, `gh auth login`), `rustup`, `docker`. Sırayı takip et.
 
-### E.1 — saferoom-core repo (Abkarada) ⏱️ ~20 dk
+### E.1 — kama-core repo (Abkarada) ⏱️ ~20 dk
 
 ```bash
 # 1. Workspace iskeleti
-mkdir saferoom-core && cd saferoom-core
+mkdir kama-core && cd kama-core
 git init && git branch -M main
 
 # 2. Workspace Cargo.toml
@@ -383,7 +383,7 @@ cargo build --all
 git add -A && git commit -m "chore: workspace skeleton + toolchain/deny/gitignore"
 
 # 9. GitHub'a (PRIVATE — self-hosted runner güvenliği)
-gh repo create saferoom-core --private --source=. --remote=origin --push
+gh repo create kama-core --private --source=. --remote=origin --push
 ```
 
 ### E.2 — Core CI workflow ⏱️ ~10 dk
@@ -404,13 +404,13 @@ Sonra branch protection'ı kur (Bölüm C.4 — UI veya `gh api` komutu).
 
 ### E.3 — Self-hosted runner (senin makinen) ⏱️ ~15 dk
 
-GitHub → saferoom-core → Settings → Actions → Runners → **New self-hosted runner** → Linux.
+GitHub → kama-core → Settings → Actions → Runners → **New self-hosted runner** → Linux.
 GitHub sana TAM komutları verir (token gömülü); şuna benzer:
 ```bash
 mkdir actions-runner && cd actions-runner
 curl -o actions-runner-linux-x64.tar.gz -L <GITHUB'IN_VERDİĞİ_URL>
 tar xzf actions-runner-linux-x64.tar.gz
-./config.sh --url https://github.com/OWNER/saferoom-core --token <TOKEN> \
+./config.sh --url https://github.com/OWNER/kama-core --token <TOKEN> \
             --labels self-hosted,linux,bench --name bench-box
 # Servis olarak (arka planda sürekli):
 sudo ./svc.sh install
@@ -421,20 +421,20 @@ Doğrula: Settings → Runners'da "bench-box • Idle" görünmeli. Nightly work
 > **NORMATİF — Self-hosted runner hardening (ZORUNLU; runner = ciddi saldırı yüzeyi):**
 ```
 □ YALNIZ private repo (fork PR makinende kod çalıştıramaz — public'te asla).
-□ Repo-scoped runner (org-wide DEĞİL) — yalnız saferoom-core/bench repo'suna bağlı.
+□ Repo-scoped runner (org-wide DEĞİL) — yalnız kama-core/bench repo'suna bağlı.
 □ Normal PR CI self-hosted'da KOŞMAZ — yalnız nightly + workflow_dispatch bench.
   (bench-nightly.yml zaten schedule/dispatch; quality/security/miri GitHub-hosted'da kalır.)
-□ Ayrı Linux user (ör. `saferoom-runner`) veya ayrı VM/container — ana kullanıcıdan izole.
+□ Ayrı Linux user (ör. `kama-runner`) veya ayrı VM/container — ana kullanıcıdan izole.
 □ sudo YALNIZ netem script için, NOPASSWD allowlist ile (tüm sudo DEĞİL):
-    # /etc/sudoers.d/saferoom-runner
-    saferoom-runner ALL=(root) NOPASSWD: /opt/saferoom/harness/run-netem-profiles.sh
+    # /etc/sudoers.d/kama-runner
+    kama-runner ALL=(root) NOPASSWD: /opt/kama/harness/run-netem-profiles.sh
 □ GitHub token/secrets MİNİMUM — bench için gereken dışında secret verme.
 □ Runner labels: self-hosted, linux, bench (workflow bu üçüyle eşleşir; yanlış job düşmez).
 □ Runner makinesi ağ-izole tercih (bench trafiği dış ağa sızmasın).
 ```
 Kısaca: privileged netem gücü yalnız gece bench'e, ayrı user altında, dar sudo ile; PR CI'ı asla bu makinede koşmaz.
 
-### E.4 — saferoom-media + WebRTC FORK (Resul; henüz yapılmadı) ⏱️ ~30 dk kurulum + uzun ilk build
+### E.4 — kama-media + WebRTC FORK (Resul; henüz yapılmadı) ⏱️ ~30 dk kurulum + uzun ilk build
 
 WebRTC'yi olduğu gibi commit'lemeyiz (milyonlarca satır). **RingRTC modeli:** sürümü PIN'le, depot_tools ile fetch et, patch'leri üstte tut.
 
@@ -449,7 +449,7 @@ fetch --nohooks webrtc
 gclient sync
 cd src
 # Belirlediğiniz milestone'a geç (branch-heads/XXXX = seçilen sürüm):
-git checkout -b saferoom-fork branch-heads/<PINNED_MILESTONE>
+git checkout -b kama-fork branch-heads/<PINNED_MILESTONE>
 gclient sync -D          # o sürümün bağımlılıklarını çek
 
 # 3. İlk build testi (gn + ninja) — bu UZUN sürer (ilk sefer saatler)
@@ -458,8 +458,8 @@ ninja -C out/Default
 ```
 
 ```bash
-# 4. saferoom-media repo iskeleti (thin — WebRTC'yi PIN'le, tree'yi commit ETME)
-cd ../.. && mkdir saferoom-media && cd saferoom-media && git init && git branch -M main
+# 4. kama-media repo iskeleti (thin — WebRTC'yi PIN'le, tree'yi commit ETME)
+cd ../.. && mkdir kama-media && cd kama-media && git init && git branch -M main
 echo "branch-heads/<PINNED_MILESTONE>" > webrtc.version   # TEK doğruluk kaynağı
 mkdir -p patches src bin
 cat > bin/fetch-webrtc.sh <<'EOF'
@@ -476,13 +476,13 @@ cat > .gitignore <<'EOF'
 /target
 EOF
 git add -A && git commit -m "chore: media skeleton + pinned webrtc.version (RingRTC-style)"
-gh repo create saferoom-media --private --source=. --remote=origin --push
+gh repo create kama-media --private --source=. --remote=origin --push
 ```
 
 ```
-saferoom-media/
+kama-media/
   webrtc.version        # PIN'li sürüm (commit'li, tek kaynak)
-  patches/              # SafeRoom özel FEC/ARQ/codec patch'leri (Resul + Hasan)
+  patches/              # Kama özel FEC/ARQ/codec patch'leri (Resul + Hasan)
   src/                  # Rust FFI wrapper (RingRTC modeli)
   bin/fetch-webrtc.sh   # depot_tools fetch + checkout + apply patches
 ```
@@ -491,7 +491,7 @@ Böylece repo İNCE kalır; WebRTC pin'li sürümden fetch edilir. Hasan Lyra'y�
 ### E.5 — netem harness iskeleti (Yaaz) ⏱️ ~20 dk
 
 ```bash
-cd saferoom-core
+cd kama-core
 mkdir -p harness scripts
 # Bölüm D.1 dosyalarını yaz: harness/docker-compose.yml, harness/Dockerfile, harness/run-netem-profiles.sh
 chmod +x harness/run-netem-profiles.sh
@@ -524,7 +524,7 @@ Bu akıştan sonra tüm geliştirme aynı döngü: kısa branch → CI yeşil �
 Contract repo/API ertelendi (§A.2) ama **sıfır temas riskli** — media aylarca ayrı gidip signaling seam'e bağlanınca lifecycle uyuşmazlığı çıkar. Çözüm: API dondurmayan, yalnız **minimal seam varsayımını** yazan bir doc'u ŞİMDİ aç (ayrı `docs/signaling-seam-v0.md` dosyası; runbook'la birlikte teslim edildi).
 
 ```bash
-cd saferoom-core && mkdir -p docs
+cd kama-core && mkdir -p docs
 cp <teslim>/signaling-seam-v0.md docs/     # aşağıda üretilen dosya
 git checkout -b docs/signaling-seam-v0
 git add docs && git commit -m "docs: signaling seam v0 (minimal assumptions, API NOT frozen)"
@@ -541,10 +541,10 @@ Media ekibi bu doc'u okur → SDP/ICE lifecycle varsayımını core'unkiyle hiza
 ```
 MUST TONIGHT (dar, kesin biter)                     KİM        SÜRE
 ────────────────────────────────────────────────────────────────────
- 1  saferoom-core workspace + push (E.1)            Abkarada   20 dk
+ 1  kama-core workspace + push (E.1)            Abkarada   20 dk
  2  Basic core CI + PR merge (E.2)                   Abkarada   10 dk
  3  Branch protection (C.4)                          Abkarada   5 dk
- 4  saferoom-media repo SKELETON (E.4/4)             Resul      15 dk
+ 4  kama-media repo SKELETON (E.4/4)             Resul      15 dk
  5  WebRTC version PIN (webrtc.version) (E.4/2)      Resul      5 dk
 ────────────────────────────────────────────────────────────────────
  → Sonuç: iki repo ayakta, core CI yeşil, branch protection aktif, media iskeleti + sürüm pin'li.

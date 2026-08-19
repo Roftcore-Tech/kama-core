@@ -1,8 +1,8 @@
-# SafeRoom — Signaling Seam v0 (Minimal Assumptions)
+# Kama — Signaling Seam v0 (Minimal Assumptions)
 
 **Belge:** `docs/signaling-seam-v0.md` v0
-**Repo:** `saferoom-core` (signaling'i core taşır) — media ekibi (Resul/Hasan) referans alır.
-**Amaç:** `saferoom-core` (reliable transport) ile `saferoom-media` (WebRTC fork, real-time) arasındaki buluşma noktasının **minimal varsayımını** kayıt altına almak.
+**Repo:** `kama-core` (signaling'i core taşır) — media ekibi (Resul/Hasan) referans alır.
+**Amaç:** `kama-core` (reliable transport) ile `kama-media` (WebRTC fork, real-time) arasındaki buluşma noktasının **minimal varsayımını** kayıt altına almak.
 
 > **BU DOSYA API'Yİ DONDURMAZ.** Contract repo/imza, transport quinn/custom kararı (§4.4 benchmark) sonrasına ertelendi. Bu v0 yalnız iki ekibin **aynı zihinsel modeli** paylaşmasını sağlar → aylar sonra bağlanınca lifecycle uyuşmazlığı çıkmasın. Değerler değişebilir; niyet sabit.
 
@@ -60,7 +60,7 @@ on_signaling(peer_id, opaque_blob)     → core'dan: "bu peer'dan bu blob geldi"
 ## 5. Ne zaman contract'a terfi eder
 
 ```
-transport kararı (§4.4 quinn/custom) + signaling API stabil → saferoom-contract:
+transport kararı (§4.4 quinn/custom) + signaling API stabil → kama-contract:
   - send_signaling/on_signaling KESİN imzası (C ABI / .proto)
   - max_blob_size, ordering, retry KESİN değerleri (bu tablodan kalibre)
   - versioned; iki repo pin'ler.
