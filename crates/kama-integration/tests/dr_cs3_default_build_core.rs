@@ -110,7 +110,9 @@ fn default_build_bootstrap_rtt_unlocks_preconverge() {
     assert_eq!(got, probe_seq);
 
     let pending = c.take_pending_cs_echo(H).expect("typed echo action");
-    let echo = c.emit_cs_echo(H, pending, control_id, 1).expect("sealed echo");
+    let echo = c
+        .emit_cs_echo(H, pending, control_id, 1)
+        .expect("sealed echo");
     assert!(echo.len() <= dg.len(), "amplification ≤ 1");
 
     let opened = wire.open(&echo).expect("peer opens the sealed echo");
@@ -124,7 +126,11 @@ fn default_build_bootstrap_rtt_unlocks_preconverge() {
         panic!("expected CsEcho");
     };
     assert_eq!(echoed, probe_seq);
-    assert_eq!((seen_count, arrival_gap), (0, 0), "peer metadata ledger-only");
+    assert_eq!(
+        (seen_count, arrival_gap),
+        (0, 0),
+        "peer metadata ledger-only"
+    );
 
     s.on_event(
         Event::CsProbeEcho { probe_seq: echoed },
@@ -132,8 +138,15 @@ fn default_build_bootstrap_rtt_unlocks_preconverge() {
     );
     let d = s.bootstrap_rtt_diag();
     assert_eq!(d.echo_match_valid, 1);
-    assert_eq!(d.rtt_sample_ns, 1_000 * MS, "RTT from local timestamps only");
-    assert!(s.path_timing_snapshot().srtt_ns.is_some(), "srtt established");
+    assert_eq!(
+        d.rtt_sample_ns,
+        1_000 * MS,
+        "RTT from local timestamps only"
+    );
+    assert!(
+        s.path_timing_snapshot().srtt_ns.is_some(),
+        "srtt established"
+    );
 
     let mut left = false;
     for t in 7..=12u64 {
@@ -194,10 +207,16 @@ fn default_build_security_boundary() {
         c.ingest(H, &bad).unwrap(),
         CoreIngest::Rejected("aead verify failed")
     );
-    assert!(c.take_pending_cs_echo(H).is_none(), "no echo for unauthenticated");
+    assert!(
+        c.take_pending_cs_echo(H).is_none(),
+        "no echo for unauthenticated"
+    );
 
     // malformed/truncated
-    assert!(matches!(c.ingest(H, &[0u8; 8]), Ok(CoreIngest::Rejected(_)) | Err(_)));
+    assert!(matches!(
+        c.ingest(H, &[0u8; 8]),
+        Ok(CoreIngest::Rejected(_)) | Err(_)
+    ));
     assert!(c.take_pending_cs_echo(H).is_none());
 
     // authenticated probe then REPLAY of the same generation ⇒ exactly one echo
@@ -208,8 +227,14 @@ fn default_build_security_boundary() {
     c.emit_cs_echo(H, p, control_id, 1).unwrap();
     let replay = seal_probe(&mut wire, 1, 5);
     c.ingest(H, &replay).unwrap();
-    assert!(c.take_pending_cs_echo(H).is_none(), "replay ⇒ no extra action");
-    assert!(c.emit_cs_echo(H, 1, control_id, 2).is_err(), "replay ⇒ no extra echo");
+    assert!(
+        c.take_pending_cs_echo(H).is_none(),
+        "replay ⇒ no extra action"
+    );
+    assert!(
+        c.emit_cs_echo(H, 1, control_id, 2).is_err(),
+        "replay ⇒ no extra echo"
+    );
 }
 
 /// §9 scenario 5 + receiver budget: four unique generations, fifth refused, ≤172 B.
@@ -223,7 +248,9 @@ fn default_build_receiver_budget_and_generation_cap() {
             panic!("probe")
         };
         let p = c.take_pending_cs_echo(H).unwrap();
-        let e = c.emit_cs_echo(H, p, control_id, u64::from(g) + 100).unwrap();
+        let e = c
+            .emit_cs_echo(H, p, control_id, u64::from(g) + 100)
+            .unwrap();
         assert!(e.len() <= dg.len(), "echo ≤ probe");
     }
     let (count, bytes, budget) = c.echo_budget(H).unwrap();
@@ -232,7 +259,10 @@ fn default_build_receiver_budget_and_generation_cap() {
 
     let dg = seal_probe(&mut wire, 9, 200);
     c.ingest(H, &dg).unwrap();
-    assert!(c.take_pending_cs_echo(H).is_none(), "fifth generation refused");
+    assert!(
+        c.take_pending_cs_echo(H).is_none(),
+        "fifth generation refused"
+    );
     assert!(c.emit_cs_echo(H, 9, 1, 201).is_err());
 }
 
@@ -259,6 +289,9 @@ fn default_build_close_resets_responder_state() {
     assert!(c.take_pending_cs_echo(H).is_some());
     c.close_session(H);
     assert_eq!(c.session_count(), 0);
-    assert!(c.take_pending_cs_echo(H).is_none(), "state cleared on close");
+    assert!(
+        c.take_pending_cs_echo(H).is_none(),
+        "state cleared on close"
+    );
     assert!(c.echo_budget(H).is_none());
 }

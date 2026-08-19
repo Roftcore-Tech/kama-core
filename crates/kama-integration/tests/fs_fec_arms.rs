@@ -155,7 +155,10 @@ fn f0_cost_split_intervention_vs_total_outcome() {
 fn f0_cost_split_under_product_default() {
     let sealed = fs_sealed_len(64);
     let r = run_f0_paced(2, &[2, 5], 1_000_000, 20 * MS, None); // product default
-    assert_eq!(r.fec_decoded_sources, 2, "FEC must still complete the block");
+    assert_eq!(
+        r.fec_decoded_sources, 2,
+        "FEC must still complete the block"
+    );
     assert_eq!(
         r.realized_sealed_wire_bytes,
         2 * sealed,

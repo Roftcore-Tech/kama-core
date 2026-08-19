@@ -129,8 +129,8 @@ fn real_latch_emit_decode(
     // emit edildiğinde gerçek emisyon görünmez oluyordu (ölçüm kör noktası, ürün kusuru DEĞİL —
     // bkz. reports/dr-rate-ramp-2b/FEC-PARITY-OBSERVATION-CORRIGENDUM.md).
     let collect = |out: &[adaptive_transport::sender::TransmitDecision],
-                       emitted: &mut Vec<u16>,
-                       data_seqs: &mut Vec<u64>| {
+                   emitted: &mut Vec<u16>,
+                   data_seqs: &mut Vec<u64>| {
         for d in out {
             if d.kind == TransmitKind::FecParity {
                 if let Some(h) = d.send_record {

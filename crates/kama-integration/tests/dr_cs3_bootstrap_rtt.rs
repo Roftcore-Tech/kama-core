@@ -107,7 +107,10 @@ fn authenticated_bootstrap_rtt_unlocks_preconverge() {
     let probes = drive(&mut s, 5);
     assert!(!probes.is_empty(), "the ladder must emit a probe by t=5s");
     assert_eq!(s.state(), SenderState::PreConverge, "still cold");
-    assert!(s.path_timing_snapshot().srtt_ns.is_none(), "srtt is uninitialised");
+    assert!(
+        s.path_timing_snapshot().srtt_ns.is_none(),
+        "srtt is uninitialised"
+    );
     let (probe_seq, emit_ns) = probes[0];
 
     // (2) the probe reaches the receiver on the REAL authenticated path
@@ -122,10 +125,15 @@ fn authenticated_bootstrap_rtt_unlocks_preconverge() {
     let pending = host
         .take_pending_cs_echo(H_EXT)
         .expect("authenticated 0x19 must produce a typed echo action");
-    assert_eq!(pending, probe_seq, "the action carries the request correlation");
+    assert_eq!(
+        pending, probe_seq,
+        "the action carries the request correlation"
+    );
 
     // (4) the echo is emitted through the shipping outbound control path (sealed wire datagram)
-    let echo_dg = host.emit_cs_echo(H_EXT, pending, 1).expect("echo must seal");
+    let echo_dg = host
+        .emit_cs_echo(H_EXT, pending, 1)
+        .expect("echo must seal");
     assert!(
         echo_dg.len() <= dg.len(),
         "amplification: echo {} B must not exceed probe {} B",
@@ -148,7 +156,11 @@ fn authenticated_bootstrap_rtt_unlocks_preconverge() {
         panic!("expected CsEcho");
     };
     assert_eq!(echoed, probe_seq, "correlation returned unchanged");
-    assert_eq!((seen_count, arrival_gap), (0, 0), "peer metadata is ledger-only");
+    assert_eq!(
+        (seen_count, arrival_gap),
+        (0, 0),
+        "peer metadata is ledger-only"
+    );
 
     let arrival_ns = emit_ns + 1_000 * MS; // one RTT later, local clock
     s.on_event(Event::CsProbeEcho { probe_seq: echoed }, arrival_ns);
@@ -156,7 +168,11 @@ fn authenticated_bootstrap_rtt_unlocks_preconverge() {
     // (6) srtt goes 0 → positive, from (local arrival − local send)
     let d = s.bootstrap_rtt_diag();
     assert_eq!(d.echo_match_valid, 1, "exactly one valid match");
-    assert_eq!(d.rtt_sample_ns, 1_000 * MS, "RTT is the local timestamp delta");
+    assert_eq!(
+        d.rtt_sample_ns,
+        1_000 * MS,
+        "RTT is the local timestamp delta"
+    );
     assert!(
         s.path_timing_snapshot().srtt_ns.is_some(),
         "a valid echo must establish srtt"
@@ -198,7 +214,10 @@ fn lost_echo_advances_to_the_next_ladder_step() {
         "a lost echo must not stop the ladder (got {} probes)",
         probes.len()
     );
-    assert_ne!(probes[0].0, probes[1].0, "each step uses a fresh generation");
+    assert_ne!(
+        probes[0].0, probes[1].0,
+        "each step uses a fresh generation"
+    );
     assert!(s.path_timing_snapshot().srtt_ns.is_none(), "still no srtt");
 }
 
@@ -207,11 +226,18 @@ fn lost_echo_advances_to_the_next_ladder_step() {
 fn all_probes_lost_keeps_budget_and_gives_up() {
     let mut s = bootstrap_sender();
     let probes = drive(&mut s, 120); // far beyond the last step (45 s)
-    assert!(probes.len() <= 4, "at most four ladder steps, got {}", probes.len());
+    assert!(
+        probes.len() <= 4,
+        "at most four ladder steps, got {}",
+        probes.len()
+    );
     let d = s.bootstrap_rtt_diag();
     assert!(d.probe_wire_bytes <= 200, "sender budget ≤ 200 B");
     assert_eq!(d.budget_violation, 0);
-    assert!(s.path_timing_snapshot().srtt_ns.is_none(), "no RTT without an echo");
+    assert!(
+        s.path_timing_snapshot().srtt_ns.is_none(),
+        "no RTT without an echo"
+    );
 }
 
 // ── §6 receiver-side security / amplification / budget ───────────────────────────────────────
@@ -263,7 +289,9 @@ fn receiver_echo_is_bounded_by_generation_and_budget() {
         let dg = seal_probe(&mut wire, g, u64::from(g));
         host.on_datagram(0, &dg).unwrap();
         let p = host.take_pending_cs_echo(H_EXT).expect("fresh generation");
-        let e = host.emit_cs_echo(H_EXT, p, u64::from(g) + 100).expect("echo");
+        let e = host
+            .emit_cs_echo(H_EXT, p, u64::from(g) + 100)
+            .expect("echo");
         assert!(e.len() <= dg.len(), "echo must not exceed the probe");
         total += e.len();
     }
@@ -271,7 +299,10 @@ fn receiver_echo_is_bounded_by_generation_and_budget() {
     assert_eq!(count, 4, "four unique echoes");
     assert!(bytes <= budget, "receiver budget {bytes} > {budget}");
     assert_eq!(budget, 172, "4 x ECHO_WIRE_MAX(43)");
-    assert!(total <= 4 * 44, "aggregate echo wire stays under 4 x probe size");
+    assert!(
+        total <= 4 * 44,
+        "aggregate echo wire stays under 4 x probe size"
+    );
 
     // fifth generation → refused
     let dg = seal_probe(&mut wire, 4, 200);
@@ -292,7 +323,10 @@ fn receiver_echo_is_bounded_by_generation_and_budget() {
         host.take_pending_cs_echo(H_EXT).is_none(),
         "replayed generation must not produce a second action"
     );
-    assert!(host.emit_cs_echo(H_EXT, 0, 203).is_err(), "duplicate generation refused");
+    assert!(
+        host.emit_cs_echo(H_EXT, 0, 203).is_err(),
+        "duplicate generation refused"
+    );
     let (count2, bytes2, _) = host.cs_echo_budget(H_EXT).unwrap();
     assert_eq!((count2, bytes2), (count, bytes), "refusals change nothing");
 }
@@ -306,9 +340,16 @@ fn receiver_recognition_semantics_are_unchanged() {
     let mut wire = sender_protector();
     for g in 0..50u16 {
         let dg = seal_probe(&mut wire, g, u64::from(g));
-        assert_eq!(host.on_datagram(0, &dg).unwrap(), IngestOutcome::ProbeEchoed);
+        assert_eq!(
+            host.on_datagram(0, &dg).unwrap(),
+            IngestOutcome::ProbeEchoed
+        );
     }
-    assert_eq!(host.cs_echo_count(), 50, "recognition counting is unchanged");
+    assert_eq!(
+        host.cs_echo_count(),
+        50,
+        "recognition counting is unchanged"
+    );
     let (count, _, _) = host.cs_echo_budget(H_EXT).unwrap();
     assert!(count <= 4, "but at most four responses were ever prepared");
 }

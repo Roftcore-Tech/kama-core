@@ -40,14 +40,23 @@ fn k_other() -> Zeroizing<[u8; 32]> {
 }
 
 /// Peer (initiator) side: sends with `k_ab`, receives with `k_ba`.
-fn initiator(h: u32, send: &Zeroizing<[u8; 32]>, recv: &Zeroizing<[u8; 32]>) -> KamaNoiseWireProtector {
+fn initiator(
+    h: u32,
+    send: &Zeroizing<[u8; 32]>,
+    recv: &Zeroizing<[u8; 32]>,
+) -> KamaNoiseWireProtector {
     KamaNoiseWireProtector::new(h, send, recv)
 }
 
 /// Responder core: sends with `k_ba`, receives with `k_ab` (mirror of the initiator).
-fn core_with(h: u32, send: &Zeroizing<[u8; 32]>, recv: &Zeroizing<[u8; 32]>) -> ReceiverControlCore {
+fn core_with(
+    h: u32,
+    send: &Zeroizing<[u8; 32]>,
+    recv: &Zeroizing<[u8; 32]>,
+) -> ReceiverControlCore {
     let mut c = ReceiverControlCore::new();
-    c.install_session_with_directional_keys(h, send, recv).unwrap();
+    c.install_session_with_directional_keys(h, send, recv)
+        .unwrap();
     c
 }
 
@@ -78,7 +87,13 @@ fn bootstrap_sender() -> Sender {
 fn drive(s: &mut Sender, until_s: u64) -> Vec<(u16, u64)> {
     let mut v = Vec::new();
     for i in 1..=384u64 {
-        s.on_event(Event::AppData(OpaqueUnit { id: 1000 + i, size: 101 }), 0);
+        s.on_event(
+            Event::AppData(OpaqueUnit {
+                id: 1000 + i,
+                size: 101,
+            }),
+            0,
+        );
     }
     for t in 1..=until_s {
         let now = t * 1_000 * MS;
@@ -106,7 +121,11 @@ fn nonce_is_derived_from_wire_pn_only_and_never_from_control_id() {
     for pn in [0u64, 1, 7, 4096, u64::from(u32::MAX) + 9] {
         let n = nonce96(pn);
         assert_eq!(&n[0..4], &[0u8; 4], "nonce prefix must be 4 zero bytes");
-        assert_eq!(&n[4..12], &pn.to_le_bytes(), "nonce suffix must be LE64(wire_pn)");
+        assert_eq!(
+            &n[4..12],
+            &pn.to_le_bytes(),
+            "nonce suffix must be LE64(wire_pn)"
+        );
     }
 
     // (b) Two DIFFERENT control_ids at the same pn map to the SAME nonce — i.e. control_id has no
@@ -122,9 +141,16 @@ fn nonce_is_derived_from_wire_pn_only_and_never_from_control_id() {
             subtype: 0x01,
             probe_seq: 1,
         }),
-        SealArgs { wire_pn: 5, dh_epoch: 0, send_generation: 0 }, // … same pn
+        SealArgs {
+            wire_pn: 5,
+            dh_epoch: 0,
+            send_generation: 0,
+        }, // … same pn
     );
-    assert!(reuse.is_err(), "non-monotonic wire_pn must be refused (nonce-reuse guard)");
+    assert!(
+        reuse.is_err(),
+        "non-monotonic wire_pn must be refused (nonce-reuse guard)"
+    );
 }
 
 /// The same numeric `control_id` present in both directions cannot create a `(key, nonce)` collision:
@@ -148,7 +174,11 @@ fn same_control_id_in_both_directions_uses_different_keys_and_ciphertext() {
                 seen_count: 0,
                 arrival_gap: 0,
             }),
-            SealArgs { wire_pn: PN, dh_epoch: 0, send_generation: 0 },
+            SealArgs {
+                wire_pn: PN,
+                dh_epoch: 0,
+                send_generation: 0,
+            },
         )
         .unwrap()
         .bytes
@@ -157,14 +187,23 @@ fn same_control_id_in_both_directions_uses_different_keys_and_ciphertext() {
     let b_to_a = frame(&mut b);
 
     assert_eq!(a_to_b.len(), b_to_a.len(), "same plaintext ⇒ same length");
-    assert_ne!(a_to_b, b_to_a, "identical control_id + pn in opposite directions must NOT collide");
+    assert_ne!(
+        a_to_b, b_to_a,
+        "identical control_id + pn in opposite directions must NOT collide"
+    );
 
     // A cannot open its own outbound frame: that would require k_ab as a *recv* key.
     let mut a_again = initiator(H, &k_ab(), &k_ba());
-    assert!(a_again.open(&a_to_b).is_err(), "own-direction frame must not open on the recv cipher");
+    assert!(
+        a_again.open(&a_to_b).is_err(),
+        "own-direction frame must not open on the recv cipher"
+    );
     // The peer, holding the mirrored keys, opens it.
     let mut b_again = initiator(H, &k_ba(), &k_ab());
-    assert!(b_again.open(&a_to_b).is_ok(), "mirrored peer must open the frame");
+    assert!(
+        b_again.open(&a_to_b).is_ok(),
+        "mirrored peer must open the frame"
+    );
 }
 
 /// `probe_seq` is the authoritative correlation. The reflected `control_id` is never even delivered
@@ -177,23 +216,45 @@ fn probe_seq_is_the_authoritative_correlation_and_control_id_is_reflected_verbat
     let mut c = core_with(H, &k_ba(), &k_ab());
 
     let dg = seal_probe(&mut a, CID, 42, 1);
-    let CoreIngest::BootstrapProbe { probe_seq, control_id } = c.ingest(H, &dg).unwrap() else {
+    let CoreIngest::BootstrapProbe {
+        probe_seq,
+        control_id,
+    } = c.ingest(H, &dg).unwrap()
+    else {
         panic!("authenticated probe must be recognised");
     };
     assert_eq!(probe_seq, 42);
-    assert_eq!(control_id, CID, "the request's control_id is surfaced verbatim");
+    assert_eq!(
+        control_id, CID,
+        "the request's control_id is surfaced verbatim"
+    );
 
     let seq = c.take_pending_cs_echo(H).unwrap();
     let echo = c.emit_cs_echo(H, seq, control_id, 1).unwrap();
     let opened = a.open(&echo).unwrap();
-    let Some(Ok(Control::CsEcho { id, probe_seq: back, seen_count, arrival_gap, .. })) =
-        decode_control(opened.inner())
+    let Some(Ok(Control::CsEcho {
+        id,
+        probe_seq: back,
+        seen_count,
+        arrival_gap,
+        ..
+    })) = decode_control(opened.inner())
     else {
         panic!("echo must decode");
     };
-    assert_eq!(id, CID, "control_id is an idempotent request/response identity, echoed verbatim");
-    assert_eq!(back, 42, "probe_seq is the correlation the sender matches on");
-    assert_eq!((seen_count, arrival_gap), (0, 0), "ledger-only fields must never carry peer clock input");
+    assert_eq!(
+        id, CID,
+        "control_id is an idempotent request/response identity, echoed verbatim"
+    );
+    assert_eq!(
+        back, 42,
+        "probe_seq is the correlation the sender matches on"
+    );
+    assert_eq!(
+        (seen_count, arrival_gap),
+        (0, 0),
+        "ledger-only fields must never carry peer clock input"
+    );
 
     // Codepoint policy: probe/echo are NoRetry (§2.57 amendment) — they are not retried, and they
     // are not issuance/dedup identities.
@@ -210,25 +271,43 @@ fn replayed_probe_produces_no_additional_echo() {
     let mut c = core_with(H, &k_ba(), &k_ab());
 
     let dg = seal_probe(&mut a, 7, 0, 1);
-    assert!(matches!(c.ingest(H, &dg).unwrap(), CoreIngest::BootstrapProbe { .. }));
+    assert!(matches!(
+        c.ingest(H, &dg).unwrap(),
+        CoreIngest::BootstrapProbe { .. }
+    ));
     let seq = c.take_pending_cs_echo(H).unwrap();
     c.emit_cs_echo(H, seq, 7, 1).unwrap();
-    assert_eq!(c.echo_budget(H).unwrap(), (1, ECHO_WIRE as u64, ECHO_BUDGET_BYTES));
+    assert_eq!(
+        c.echo_budget(H).unwrap(),
+        (1, ECHO_WIRE as u64, ECHO_BUDGET_BYTES)
+    );
 
     // (a) byte-identical duplicate → AEAD replay window rejects it; zero side effect.
     assert!(matches!(c.ingest(H, &dg).unwrap(), CoreIngest::Rejected(_)));
     assert!(c.take_pending_cs_echo(H).is_none());
-    assert_eq!(c.echo_budget(H).unwrap(), (1, ECHO_WIRE as u64, ECHO_BUDGET_BYTES));
+    assert_eq!(
+        c.echo_budget(H).unwrap(),
+        (1, ECHO_WIRE as u64, ECHO_BUDGET_BYTES)
+    );
 
     // (b) same generation re-sent under a fresh pn → authenticates, but the responder refuses.
     let fresh = seal_probe(&mut a, 8, 0, 2);
-    assert!(matches!(c.ingest(H, &fresh).unwrap(), CoreIngest::BootstrapProbe { .. }));
-    assert!(c.take_pending_cs_echo(H).is_none(), "duplicate generation ⇒ no pending action");
+    assert!(matches!(
+        c.ingest(H, &fresh).unwrap(),
+        CoreIngest::BootstrapProbe { .. }
+    ));
+    assert!(
+        c.take_pending_cs_echo(H).is_none(),
+        "duplicate generation ⇒ no pending action"
+    );
     assert_eq!(
         c.emit_cs_echo(H, 0, 8, 3),
         Err(CoreError::ResponderRefused("duplicate generation"))
     );
-    assert_eq!(c.echo_budget(H).unwrap(), (1, ECHO_WIRE as u64, ECHO_BUDGET_BYTES));
+    assert_eq!(
+        c.echo_budget(H).unwrap(),
+        (1, ECHO_WIRE as u64, ECHO_BUDGET_BYTES)
+    );
 }
 
 /// A replayed echo produces no additional RTT sample: the outstanding slot is consumed exactly once,
@@ -242,18 +321,27 @@ fn replayed_echo_produces_no_additional_rtt_sample() {
     s.on_event(Event::CsProbeEcho { probe_seq: seq }, 4_000 * MS);
     let after_first = s.bootstrap_rtt_diag();
     assert_eq!(after_first.echo_match_valid, 1);
-    assert!(s.path_timing_snapshot().srtt_ns.is_some(), "first matched echo must produce srtt>0");
+    assert!(
+        s.path_timing_snapshot().srtt_ns.is_some(),
+        "first matched echo must produce srtt>0"
+    );
 
     for t in [4_500u64, 5_000, 5_500] {
         s.on_event(Event::CsProbeEcho { probe_seq: seq }, t * MS);
     }
     let after_replays = s.bootstrap_rtt_diag();
-    assert_eq!(after_replays.echo_match_valid, 1, "single consumption under replay");
+    assert_eq!(
+        after_replays.echo_match_valid, 1,
+        "single consumption under replay"
+    );
     assert_eq!(
         after_replays.rtt_sample_ns, after_first.rtt_sample_ns,
         "replays must not perturb the recorded sample"
     );
-    assert!(after_replays.echo_match_rejected >= 3, "each replay must be counted as rejected");
+    assert!(
+        after_replays.echo_match_rejected >= 3,
+        "each replay must be counted as rejected"
+    );
 }
 
 /// A mismatched `probe_seq` yields no RTT even though the reflected `control_id` would have matched:
@@ -264,13 +352,28 @@ fn wrong_probe_seq_produces_no_rtt() {
     let probes = drive(&mut s, 4);
     let (seq, _) = probes[0];
 
-    s.on_event(Event::CsProbeEcho { probe_seq: seq.wrapping_add(1) }, 4_000 * MS);
+    s.on_event(
+        Event::CsProbeEcho {
+            probe_seq: seq.wrapping_add(1),
+        },
+        4_000 * MS,
+    );
     let d = s.bootstrap_rtt_diag();
-    assert_eq!(d.echo_match_valid, 0, "wrong generation must not produce a sample");
+    assert_eq!(
+        d.echo_match_valid, 0,
+        "wrong generation must not produce a sample"
+    );
     assert_eq!(d.rtt_sample_ns, 0);
     assert!(d.echo_match_rejected >= 1);
-    assert!(s.path_timing_snapshot().srtt_ns.is_none(), "srtt must stay unset");
-    assert_eq!(s.state(), SenderState::PreConverge, "no RTT ⇒ no PreConverge exit");
+    assert!(
+        s.path_timing_snapshot().srtt_ns.is_none(),
+        "srtt must stay unset"
+    );
+    assert_eq!(
+        s.state(),
+        SenderState::PreConverge,
+        "no RTT ⇒ no PreConverge exit"
+    );
 }
 
 /// The same `probe_seq` under the wrong session produces nothing: the frame fails AEAD open against
@@ -279,12 +382,17 @@ fn wrong_probe_seq_produces_no_rtt() {
 fn same_probe_seq_wrong_session_produces_no_echo_and_no_state_change() {
     let mut a = initiator(H, &k_ab(), &k_ba());
     let mut c = ReceiverControlCore::new();
-    c.install_session_with_directional_keys(H, &k_ba(), &k_ab()).unwrap();
-    c.install_session_with_directional_keys(H2, &k_other(), &k_other()).unwrap();
+    c.install_session_with_directional_keys(H, &k_ba(), &k_ab())
+        .unwrap();
+    c.install_session_with_directional_keys(H2, &k_other(), &k_other())
+        .unwrap();
 
     let dg = seal_probe(&mut a, 5, 3, 1);
     // Delivered to the WRONG handle → verify-before-admission rejects it.
-    assert!(matches!(c.ingest(H2, &dg).unwrap(), CoreIngest::Rejected(_)));
+    assert!(matches!(
+        c.ingest(H2, &dg).unwrap(),
+        CoreIngest::Rejected(_)
+    ));
     assert!(c.take_pending_cs_echo(H2).is_none());
     assert_eq!(c.echo_budget(H2).unwrap(), (0, 0, ECHO_BUDGET_BYTES));
     // The correct session is untouched by the misdelivery.
@@ -306,18 +414,39 @@ fn fifth_generation_produces_no_echo() {
 
     for g in 0..MAX_ECHOES as u16 {
         let dg = seal_probe(&mut a, u32::from(g) + 1, g, u64::from(g) + 1);
-        assert!(matches!(c.ingest(H, &dg).unwrap(), CoreIngest::BootstrapProbe { .. }));
+        assert!(matches!(
+            c.ingest(H, &dg).unwrap(),
+            CoreIngest::BootstrapProbe { .. }
+        ));
         let seq = c.take_pending_cs_echo(H).unwrap();
-        let echo = c.emit_cs_echo(H, seq, u32::from(g) + 1, u64::from(g) + 1).unwrap();
-        assert_eq!(echo.len(), ECHO_WIRE, "echo must be exactly the pinned wire size");
+        let echo = c
+            .emit_cs_echo(H, seq, u32::from(g) + 1, u64::from(g) + 1)
+            .unwrap();
+        assert_eq!(
+            echo.len(),
+            ECHO_WIRE,
+            "echo must be exactly the pinned wire size"
+        );
     }
-    assert_eq!(c.echo_budget(H).unwrap(), (MAX_ECHOES, ECHO_BUDGET_BYTES, ECHO_BUDGET_BYTES));
+    assert_eq!(
+        c.echo_budget(H).unwrap(),
+        (MAX_ECHOES, ECHO_BUDGET_BYTES, ECHO_BUDGET_BYTES)
+    );
 
     // Fifth distinct generation: authenticates, but no pending action and no emission.
     let fifth = seal_probe(&mut a, 99, MAX_ECHOES as u16, 99);
-    assert!(matches!(c.ingest(H, &fifth).unwrap(), CoreIngest::BootstrapProbe { .. }));
-    assert!(c.take_pending_cs_echo(H).is_none(), "generation cap ⇒ no pending action");
-    assert!(c.emit_cs_echo(H, MAX_ECHOES as u16, 99, 99).is_err(), "generation cap ⇒ no emission");
+    assert!(matches!(
+        c.ingest(H, &fifth).unwrap(),
+        CoreIngest::BootstrapProbe { .. }
+    ));
+    assert!(
+        c.take_pending_cs_echo(H).is_none(),
+        "generation cap ⇒ no pending action"
+    );
+    assert!(
+        c.emit_cs_echo(H, MAX_ECHOES as u16, 99, 99).is_err(),
+        "generation cap ⇒ no emission"
+    );
     assert_eq!(
         c.echo_budget(H).unwrap(),
         (MAX_ECHOES, ECHO_BUDGET_BYTES, ECHO_BUDGET_BYTES),
@@ -332,9 +461,16 @@ fn sender_and_receiver_budgets_hold_with_amplification_below_one() {
     let mut s = bootstrap_sender();
     let probes = drive(&mut s, 60); // full ladder, every echo lost
     let d = s.bootstrap_rtt_diag();
-    assert!(d.probe_wire_bytes <= 200, "sender probe budget: {} B", d.probe_wire_bytes);
+    assert!(
+        d.probe_wire_bytes <= 200,
+        "sender probe budget: {} B",
+        d.probe_wire_bytes
+    );
     assert_eq!(d.budget_violation, 0);
-    assert!(probes.len() <= MAX_ECHOES, "at most one probe per ladder step");
+    assert!(
+        probes.len() <= MAX_ECHOES,
+        "at most one probe per ladder step"
+    );
 
     let mut a = initiator(H, &k_ab(), &k_ba());
     let mut c = core_with(H, &k_ba(), &k_ab());
@@ -344,12 +480,17 @@ fn sender_and_receiver_budgets_hold_with_amplification_below_one() {
         assert_eq!(dg.len(), PROBE_WIRE_EXACT, "probe wire size is pinned");
         let _ = c.ingest(H, &dg).unwrap();
         if let Some(seq) = c.take_pending_cs_echo(H) {
-            let echo = c.emit_cs_echo(H, seq, u32::from(g) + 1, u64::from(g) + 1).unwrap();
+            let echo = c
+                .emit_cs_echo(H, seq, u32::from(g) + 1, u64::from(g) + 1)
+                .unwrap();
             assert!(echo.len() < PROBE_WIRE_EXACT, "amplification must be < 1");
             echo_bytes += echo.len();
         }
     }
-    assert!(echo_bytes as u64 <= ECHO_BUDGET_BYTES, "receiver echo budget: {echo_bytes} B");
+    assert!(
+        echo_bytes as u64 <= ECHO_BUDGET_BYTES,
+        "receiver echo budget: {echo_bytes} B"
+    );
     let (gens, bytes, budget) = c.echo_budget(H).unwrap();
     assert_eq!(gens, MAX_ECHOES);
     assert_eq!(bytes, budget);
@@ -369,28 +510,36 @@ fn session_capacity_is_fail_closed_without_eviction() {
 
     let mut c = ReceiverControlCore::new();
     for i in 0..MAX_CORE_SESSIONS as u32 {
-        c.install_session_with_directional_keys(i, &k_ba(), &k_ab()).unwrap();
+        c.install_session_with_directional_keys(i, &k_ba(), &k_ab())
+            .unwrap();
     }
     assert_eq!(c.session_count(), MAX_CORE_SESSIONS);
 
     // Fail-closed: a NEW handle at capacity is a typed refusal, not an eviction.
     assert_eq!(
         c.install_session_with_directional_keys(9_999, &k_ba(), &k_ab()),
-        Err(CoreError::SessionCapacity { cap: MAX_CORE_SESSIONS })
+        Err(CoreError::SessionCapacity {
+            cap: MAX_CORE_SESSIONS
+        })
     );
     assert_eq!(c.session_count(), MAX_CORE_SESSIONS, "no eviction occurred");
 
     // Existing sessions keep working at capacity.
     let mut a = initiator(0, &k_ab(), &k_ba());
     let dg = seal_probe(&mut a, 1, 0, 1);
-    assert!(matches!(c.ingest(0, &dg).unwrap(), CoreIngest::BootstrapProbe { .. }));
+    assert!(matches!(
+        c.ingest(0, &dg).unwrap(),
+        CoreIngest::BootstrapProbe { .. }
+    ));
     let seq = c.take_pending_cs_echo(0).unwrap();
     assert!(c.emit_cs_echo(0, seq, 1, 1).is_ok());
 
     // Closing one frees exactly one slot — capacity is reclaimed only by explicit close.
     c.close_session(0);
     assert_eq!(c.session_count(), MAX_CORE_SESSIONS - 1);
-    assert!(c.install_session_with_directional_keys(9_999, &k_ba(), &k_ab()).is_ok());
+    assert!(c
+        .install_session_with_directional_keys(9_999, &k_ba(), &k_ab())
+        .is_ok());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -413,20 +562,31 @@ fn default_core_and_receiver_host_emit_byte_identical_echo() {
 
     let mut c = core_with(H, &k_ba(), &k_ab());
     let mut host = ReceiverHost::new();
-    host.install_session_with_directional_keys(H, &k_ba(), &k_ab()).unwrap();
+    host.install_session_with_directional_keys(H, &k_ba(), &k_ab())
+        .unwrap();
 
     // Same authenticated probe into both paths.
-    let CoreIngest::BootstrapProbe { probe_seq, control_id } = c.ingest(H, &dg).unwrap() else {
+    let CoreIngest::BootstrapProbe {
+        probe_seq,
+        control_id,
+    } = c.ingest(H, &dg).unwrap()
+    else {
         panic!("core must recognise the probe");
     };
-    assert_eq!(host.on_datagram(0, &dg).unwrap(), IngestOutcome::ProbeEchoed);
+    assert_eq!(
+        host.on_datagram(0, &dg).unwrap(),
+        IngestOutcome::ProbeEchoed
+    );
 
     assert_eq!(c.take_pending_cs_echo(H), Some(probe_seq));
     assert_eq!(host.take_pending_cs_echo(H), Some(probe_seq));
 
     let core_echo = c.emit_cs_echo(H, probe_seq, control_id, 1).unwrap();
     let host_echo = host.emit_cs_echo(H, probe_seq, 1).unwrap();
-    assert_eq!(core_echo, host_echo, "the two paths must emit a byte-identical echo");
+    assert_eq!(
+        core_echo, host_echo,
+        "the two paths must emit a byte-identical echo"
+    );
 
     // Identical bounded-policy accounting on both sides.
     assert_eq!(c.echo_budget(H), host.cs_echo_budget(H));
@@ -447,7 +607,8 @@ fn probe_echo_consume_no_control_id_issuance_budget() {
 
     let mut a = initiator(H, &k_ab(), &k_ba());
     let mut host = ReceiverHost::new();
-    host.install_session_with_directional_keys(H, &k_ba(), &k_ab()).unwrap();
+    host.install_session_with_directional_keys(H, &k_ba(), &k_ab())
+        .unwrap();
 
     // A Recovered emission before any probe, to sample the issued control-id.
     let first = host.emit_recovered(H, 1, vec![(0, 0)], 1).unwrap();

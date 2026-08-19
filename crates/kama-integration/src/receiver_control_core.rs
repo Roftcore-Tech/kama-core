@@ -15,9 +15,7 @@
 
 use kama_noise_wire::control::decode_control;
 use kama_noise_wire::inner::InnerPlain;
-use kama_noise_wire::{
-    Direction, KamaNoiseWireProtector, SealArgs, Session, SessionId,
-};
+use kama_noise_wire::{Direction, KamaNoiseWireProtector, SealArgs, Session, SessionId};
 use kama_transport_schema::control::Control;
 use kama_transport_schema::UnsealedTransportPacket;
 use std::collections::BTreeMap;

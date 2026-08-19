@@ -11,10 +11,15 @@
 mod dr_cs3_panel;
 
 use dr_cs3_panel::fs_cal2_gen::LossModel;
-use dr_cs3_panel::{channel_fate_divergence, echo_bounded_window, forward_key, reverse_key,
-    run_panel, scheduler_data_displacement, GeChain, PanelCfg};
+use dr_cs3_panel::{
+    channel_fate_divergence, echo_bounded_window, forward_key, reverse_key, run_panel,
+    scheduler_data_displacement, GeChain, PanelCfg,
+};
 
-const GE: LossModel = LossModel::Ge { p_ppm: 200_000, l: 10 };
+const GE: LossModel = LossModel::Ge {
+    p_ppm: 200_000,
+    l: 10,
+};
 const CELL: &str = "V2-STRUCT";
 const DOMAIN: &str = "DRCS3-V2-STRUCT";
 
@@ -74,12 +79,18 @@ fn packet_class_does_not_create_a_separate_channel_state() {
     // `a` is driven as if by one class; `b` interleaved as if by three. Same chain ⇒ same bits.
     let seq_a: Vec<bool> = (0..64).map(|_| a.next_drop()).collect();
     let seq_b: Vec<bool> = (0..64).map(|_| b.next_drop()).collect();
-    assert_eq!(seq_a, seq_b, "draw sequence must depend only on position in the chain");
+    assert_eq!(
+        seq_a, seq_b,
+        "draw sequence must depend only on position in the chain"
+    );
     assert_eq!(a.steps(), b.steps());
     // And the two DIRECTIONS must be independent of each other.
     let mut rev = GeChain::new(reverse_key(DOMAIN, CELL, 3), GE);
     let seq_rev: Vec<bool> = (0..64).map(|_| rev.next_drop()).collect();
-    assert_ne!(seq_a, seq_rev, "forward and reverse must be independent streams");
+    assert_ne!(
+        seq_a, seq_rev,
+        "forward and reverse must be independent streams"
+    );
 }
 
 /// **(4)** The same chronological traffic prefix yields the same draws in both arms. With bootstrap
@@ -116,11 +127,19 @@ fn treatment_free_prefix_has_identical_channel_state() {
     let pre_a: Vec<bool> = (0..20).map(|_| a.next_drop()).collect();
     let pre_b: Vec<bool> = (0..20).map(|_| b.next_drop()).collect();
     assert_eq!(pre_a, pre_b, "no divergence before any treatment packet");
-    assert_eq!(a.steps(), b.steps(), "no extra draw consumed by the treatment arm");
+    assert_eq!(
+        a.steps(),
+        b.steps(),
+        "no extra draw consumed by the treatment arm"
+    );
     // Now ONE probe traverses in arm `b` only — divergence from here on is REAL channel physics,
     // not a per-class artefact, and it is exactly one step.
     let _probe = b.next_drop();
-    assert_eq!(b.steps(), a.steps() + 1, "a probe costs exactly one chain step");
+    assert_eq!(
+        b.steps(),
+        a.steps() + 1,
+        "a probe costs exactly one chain step"
+    );
 }
 
 /// **(6)** Echoes spaced 6/12/24 s apart do NOT synthesise consecutive treatment-only draws. The
@@ -135,7 +154,11 @@ fn wall_clock_gaps_never_synthesise_draws() {
     for _ in 0..4 {
         let _ = c.next_drop();
     }
-    assert_eq!(c.steps(), before + 4, "four packet events ⇒ exactly four steps");
+    assert_eq!(
+        c.steps(),
+        before + 4,
+        "four packet events ⇒ exactly four steps"
+    );
 
     // In a real run the reverse chain is shared with ACKs, so four echoes can never occupy four
     // CONSECUTIVE draws unless no ACK was generated between them.
@@ -159,10 +182,19 @@ fn network_censored_is_separate_but_stays_in_the_denominator() {
     if r.probes_emitted > 0 {
         assert_eq!(r.outcome_class, "NETWORK-CENSORED");
         assert_eq!(r.probes_authenticated, 0, "no probe may reach the receiver");
-        assert_eq!(r.echo_match_valid, 0, "a censored run produces no RTT sample");
+        assert_eq!(
+            r.echo_match_valid, 0,
+            "a censored run produces no RTT sample"
+        );
         // It is a real run with real observations — it cannot be dropped from a denominator.
-        assert!(r.observation_epoch_ns > 0, "censored runs still complete and are counted");
-        assert_eq!(r.sender_budget_violation, 0, "censoring is not a safety failure");
+        assert!(
+            r.observation_epoch_ns > 0,
+            "censored runs still complete and are counted"
+        );
+        assert_eq!(
+            r.sender_budget_violation, 0,
+            "censoring is not a safety failure"
+        );
     }
 }
 
@@ -223,7 +255,11 @@ fn v1_private_class_stream_fails_the_shared_chain_property() {
         4,
         "4 reverse packets exist, but no single chain accounts for them under V1"
     );
-    assert_eq!(shared.steps(), 4, "V2: one chain accounts for all 4 reverse packets");
+    assert_eq!(
+        shared.steps(),
+        4,
+        "V2: one chain accounts for all 4 reverse packets"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -248,7 +284,11 @@ fn exactly_one_chain_instance_per_direction() {
             r.tx_data + r.tx_retx + r.tx_dup + r.probes_emitted,
             "bootstrap_on={on}"
         );
-        assert_eq!(r.reverse_steps, r.acks_generated + r.echoes_generated, "bootstrap_on={on}");
+        assert_eq!(
+            r.reverse_steps,
+            r.acks_generated + r.echoes_generated,
+            "bootstrap_on={on}"
+        );
     }
 }
 
@@ -258,10 +298,16 @@ fn exactly_one_chain_instance_per_direction() {
 #[test]
 fn same_turn_tie_break_is_deterministic_data_before_probe() {
     let r = run_panel(&cfg(41, true, LossModel::None));
-    assert!(!r.forward_order.is_empty(), "the run must emit forward datagrams");
+    assert!(
+        !r.forward_order.is_empty(),
+        "the run must emit forward datagrams"
+    );
     // Indices are strictly increasing and gap-free: one chain, one step per datagram.
     for (i, (_, idx)) in r.forward_order.iter().enumerate() {
-        assert_eq!(*idx, i as u64, "forward chain indices must be dense and in emission order");
+        assert_eq!(
+            *idx, i as u64,
+            "forward chain indices must be dense and in emission order"
+        );
     }
     // A Probe never takes an index that a DATA of the SAME turn should have had: since probes are
     // appended last, every probe index is greater than the index of every DATA emitted before it.
@@ -270,12 +316,18 @@ fn same_turn_tie_break_is_deterministic_data_before_probe() {
         if *kind == 'B' {
             last_probe = Some(*idx);
         } else if let Some(p) = last_probe {
-            assert!(*idx > p, "a DATA after a probe must take a later index, never reuse one");
+            assert!(
+                *idx > p,
+                "a DATA after a probe must take a later index, never reuse one"
+            );
         }
     }
     // And the ordering is reproducible.
     let r2 = run_panel(&cfg(41, true, LossModel::None));
-    assert_eq!(r.forward_order, r2.forward_order, "tie-break must be deterministic across runs");
+    assert_eq!(
+        r.forward_order, r2.forward_order,
+        "tie-break must be deterministic across runs"
+    );
 }
 
 /// **2.3 DATAGRAM INVENTORY.** `TransmitKind` is {Data, Retransmit, Duplicate, FecParity, CsProbe}.
@@ -293,7 +345,10 @@ fn every_datagram_type_traverses_a_chain_or_is_proven_impossible() {
                 r.channel_bypass_violations, 0,
                 "no datagram type may bypass both directional chains (FecParity must not occur)"
             );
-            assert_eq!(r.forward_steps, r.tx_data + r.tx_retx + r.tx_dup + r.probes_emitted);
+            assert_eq!(
+                r.forward_steps,
+                r.tx_data + r.tx_retx + r.tx_dup + r.probes_emitted
+            );
             assert_eq!(r.reverse_steps, r.acks_generated + r.echoes_generated);
         }
     }
@@ -345,7 +400,11 @@ fn without_extra_packets_the_whole_trace_is_identical() {
         let a = run_panel(&cfg(rep, false, LossModel::None));
         let b = run_panel(&cfg(rep, false, LossModel::None));
         assert_eq!(scheduler_data_displacement(&a, &b), 0);
-        assert_eq!(channel_fate_divergence(&a, &b), 0, "no probe ⇒ no divergence window at all");
+        assert_eq!(
+            channel_fate_divergence(&a, &b),
+            0,
+            "no probe ⇒ no divergence window at all"
+        );
         assert_eq!(a.data_emit_ticks, b.data_emit_ticks);
         assert_eq!(a.wire_digest, b.wire_digest);
     }
@@ -372,6 +431,10 @@ fn each_probe_advances_the_shared_chain_exactly_once() {
 fn echo_bounded_window_is_none_when_no_echo_arrives() {
     let t = run_panel(&cfg(16, true, LossModel::None)); // rep16: probes forward-dropped
     if t.echoes_arrived == 0 {
-        assert_eq!(echo_bounded_window(&t), None, "no echo ⇒ N/A, never u64::MAX as a horizon");
+        assert_eq!(
+            echo_bounded_window(&t),
+            None,
+            "no echo ⇒ N/A, never u64::MAX as a horizon"
+        );
     }
 }
