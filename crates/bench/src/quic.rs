@@ -223,7 +223,8 @@ impl BenchTransport for QuinnTransport {
     async fn run_server(&self, cfg: ServerCfg) -> Result<(), BenchError> {
         let sc = server_config(cfg.cc)?;
         let (endpoint, gov) = build_endpoint(cfg.bind, Some(sc), cfg.budget)?;
-        run_server_loop(endpoint, gov).await;
+        spawn_gate_watch(gov.clone(), cfg.gate_watch.clone());
+        run_server_loop(endpoint, gov, cfg.gate_watch.is_some()).await;
         Ok(())
     }
 
@@ -395,7 +396,21 @@ fn handshake_failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>) -> RunOutpu
 
 /// Server accept döngüsü (test edilebilirlik için ayrıldı): her bağlantı ayrı task,
 /// bi-stream oku → TAM okunursa 1-byte ack.
-async fn run_server_loop(endpoint: Endpoint, gov: Option<GovHandle>) {
+/// [W6] gate-watch: `<g>.go` belirince reverse governor'ü arm eden izleme task'i (5 ms poll).
+/// Warmup/handshake reverse-trafiği böylece pre_arm'da muaf kalır (r5 D.2, iki yönde de).
+pub(crate) fn spawn_gate_watch(gov: Option<GovHandle>, gate: Option<std::path::PathBuf>) {
+    if let (Some(h), Some(g)) = (gov, gate) {
+        let go = format!("{}.go", g.display());
+        tokio::spawn(async move {
+            while !std::path::Path::new(&go).exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            h.arm_now();
+        });
+    }
+}
+
+async fn run_server_loop(endpoint: Endpoint, gov: Option<GovHandle>, gate_watched: bool) {
     // [KAPI-1 W2] reverse-yön bütçe raporu: server RunOutput üretmez → periyodik BUDGET-REV satırı.
     if let Some(h) = gov.clone() {
         tokio::spawn(async move {
@@ -417,10 +432,12 @@ async fn run_server_loop(endpoint: Endpoint, gov: Option<GovHandle>) {
     }
     while let Some(incoming) = endpoint.accept().await {
         let Ok(conn) = incoming.await else { continue };
-        // [KAPI-1 W2] DÜZLEM-A: reverse bütçe ilk established bağlantıyla arm edilir (handshake
-        // muaf + pre_arm'da görünür). W6 barrier'ı bunu harness-t0'a rafine edecek.
-        if let Some(h) = &gov {
-            h.arm_now();
+        // [KAPI-1 W2+W6] reverse bütçe: gate-watch VARSA arm'ı izleme task'i yapar (ölçüm-t0);
+        // yoksa eski kural (ilk established bağlantıda arm).
+        if !gate_watched {
+            if let Some(h) = &gov {
+                h.arm_now();
+            }
         }
         tokio::spawn(async move {
             // Her STREAM ayrı task → HoL blocking YOK (workflow bulgusu #1/#3: bağlantı-başı
@@ -511,7 +528,7 @@ mod loopback_tests {
         let sc = server_config(Cc::Cubic).expect("server config");
         let server_ep = Endpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("server bind");
         let addr = server_ep.local_addr().expect("local addr");
-        tokio::spawn(run_server_loop(server_ep, None));
+        tokio::spawn(run_server_loop(server_ep, None, false));
 
         let out = QuinnTransport
             .run_client(ClientCfg {
@@ -558,7 +575,7 @@ mod loopback_tests {
         let sc = server_config(Cc::Cubic).expect("server config");
         let server_ep = Endpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("server bind");
         let addr = server_ep.local_addr().expect("local addr");
-        tokio::spawn(run_server_loop(server_ep, None));
+        tokio::spawn(run_server_loop(server_ep, None, false));
 
         let dir = std::env::temp_dir().join(format!("kapi-gate-q-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -615,7 +632,7 @@ mod loopback_tests {
         let sc = server_config(Cc::Cubic).expect("server config");
         let server_ep = Endpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("server bind");
         let addr = server_ep.local_addr().expect("local addr");
-        tokio::spawn(run_server_loop(server_ep, None));
+        tokio::spawn(run_server_loop(server_ep, None, false));
 
         let out = QuinnTransport
             .run_client(ClientCfg {

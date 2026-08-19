@@ -120,6 +120,11 @@ pub struct ServerCfg {
     /// Reverse-yön (server-egress: ACK/kontrol) bütçesi — yön-başına ayrı, aktarım YOK (r5 §D).
     /// [KAPI-1 W2]
     pub budget: crate::budget::BudgetMode,
+    /// [KAPI-1 W6] Reverse-bütçe arm senkronu: verilirse governor `<path>.go` dosyası BELİRENE
+    /// dek arm edilmez (handshake + warmup ACK'leri pre_arm'da muaf — r5 D.2 "warmup bütçeye
+    /// girmez" REVERSE yönde de). Dosya sistemi netns'ler arasında paylaşımlı (unshare yalnız -n),
+    /// bu yüzden server client'ın ölçüm-gate'ini izleyebilir. None = hemen arm (eski davranış).
+    pub gate_watch: Option<std::path::PathBuf>,
 }
 
 /// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).

@@ -50,6 +50,9 @@ enum Cmd {
         /// [KAPI-1 W2] Paced kümülatif tavan (IP byte; 0 = tavansız).
         #[arg(long, default_value_t = 0)]
         budget_ceiling_bytes: u64,
+        /// [KAPI-1 W6] Reverse-bütçe arm senkronu: `<path>.go` belirene dek arm etme.
+        #[arg(long)]
+        gate_watch: Option<PathBuf>,
     },
     /// Client: N mesaj gönder, ham event JSONL yaz.
     Client {
@@ -201,6 +204,7 @@ async fn main() -> Result<(), BenchError> {
             budget_refill_bytes_per_s,
             budget_bucket_bytes,
             budget_ceiling_bytes,
+            gate_watch,
         } => {
             run_server(
                 transport,
@@ -214,6 +218,7 @@ async fn main() -> Result<(), BenchError> {
                         budget_bucket_bytes,
                         budget_ceiling_bytes,
                     )?,
+                    gate_watch,
                 },
             )
             .await

@@ -486,19 +486,32 @@ async fn serve_loop(
     start: Instant,
     quota_r: u32,
     budget: BudgetMode,
+    gate_watch: Option<std::path::PathBuf>,
 ) -> Result<(), BenchError> {
     let mut peers: HashMap<SocketAddr, Receiver> = HashMap::new();
     let mut ack_timer = interval(ACK_TICK);
     let mut buf = vec![0u8; SERVER_RECV_BUF];
     let mut rtraj_tick: u32 = 0;
-    // [KAPI-1 W2] reverse-yön (ACK-egress) governor'ü — kama'da handshake yok → hemen arm.
-    // Server RunOutput üretmez; sayaçlar periyodik BUDGET-REV satırıyla görünür (TRAJ gibi).
+    // [KAPI-1 W2+W6] reverse-yön (ACK-egress) governor'ü. gate_watch verilirse arm, client'ın
+    // ölçüm-t0'ına (`<gate>.go` dosyası) senkronlanır — warmup ACK'leri pre_arm'da muaf (r5 D.2);
+    // verilmezse hemen arm (eski davranış). Server RunOutput üretmez; BUDGET-REV satırı raporlar.
     let mut gov = BudgetGovernor::new(budget);
-    gov.arm(elapsed_ns(start));
+    let go_file = gate_watch.map(|g| format!("{}.go", g.display()));
+    if go_file.is_none() {
+        gov.arm(elapsed_ns(start));
+    }
     loop {
         tokio::select! {
             _ = ack_timer.tick() => {
                 let now = elapsed_ns(start);
+                // [W6] gate-watch: .go belirince arm (20 ms poll — ölçüm-t0 sapması ≤ ACK_TICK).
+                if !gov.is_armed() {
+                    if let Some(f) = &go_file {
+                        if std::path::Path::new(f).exists() {
+                            gov.arm(now);
+                        }
+                    }
+                }
                 let acks: Vec<(SocketAddr, Vec<u8>)> = peers
                     .iter_mut()
                     .filter_map(|(peer, rx)| rx.on_ack_timer(now).map(|a| (*peer, a.encode())))
@@ -559,7 +572,14 @@ async fn serve_loop(
 impl BenchTransport for KamaTransport {
     async fn run_server(&self, cfg: ServerCfg) -> Result<(), BenchError> {
         let sock = UdpSocket::bind(cfg.bind).await?; // bind = setup hatası → Err (harness abort).
-        serve_loop(sock, Instant::now(), cfg.quota_r, cfg.budget).await
+        serve_loop(
+            sock,
+            Instant::now(),
+            cfg.quota_r,
+            cfg.budget,
+            cfg.gate_watch,
+        )
+        .await
     }
 
     async fn run_client(&self, cfg: ClientCfg) -> Result<RunOutput, BenchError> {
@@ -612,7 +632,13 @@ mod tests {
     async fn burst_budget_caps_injection_packet_atomically() {
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let saddr = server.local_addr().unwrap();
-        tokio::spawn(serve_loop(server, Instant::now(), 4, BudgetMode::Unlimited));
+        tokio::spawn(serve_loop(
+            server,
+            Instant::now(),
+            4,
+            BudgetMode::Unlimited,
+            None,
+        ));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let mut c = cfg(saddr, 10, 1500);
@@ -650,7 +676,13 @@ mod tests {
     async fn warmup_and_gate_exclude_warmup_from_measurement() {
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let saddr = server.local_addr().unwrap();
-        tokio::spawn(serve_loop(server, Instant::now(), 4, BudgetMode::Unlimited));
+        tokio::spawn(serve_loop(
+            server,
+            Instant::now(),
+            4,
+            BudgetMode::Unlimited,
+            None,
+        ));
 
         let dir = std::env::temp_dir().join(format!("kapi-gate-kama-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -695,7 +727,13 @@ mod tests {
     async fn paced_submission_stamps_app_offer_on_schedule() {
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let saddr = server.local_addr().unwrap();
-        tokio::spawn(serve_loop(server, Instant::now(), 4, BudgetMode::Unlimited));
+        tokio::spawn(serve_loop(
+            server,
+            Instant::now(),
+            4,
+            BudgetMode::Unlimited,
+            None,
+        ));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let mut c = cfg(saddr, 4, 3000);
@@ -740,7 +778,13 @@ mod tests {
         // 127.0.0.1 server+client, netem YOK → temiz yol → hepsi teslim + frame doğruluğu.
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let saddr = server.local_addr().unwrap();
-        tokio::spawn(serve_loop(server, Instant::now(), 4, BudgetMode::Unlimited));
+        tokio::spawn(serve_loop(
+            server,
+            Instant::now(),
+            4,
+            BudgetMode::Unlimited,
+            None,
+        ));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let out = client_loop(client, cfg(saddr, 10, 5000), Instant::now())
@@ -802,7 +846,13 @@ mod tests {
         // dwell'le saniyelere yayılırdı → completion kama lehine şişerdi (review CRITICAL regresyon guard).
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let saddr = server.local_addr().unwrap();
-        tokio::spawn(serve_loop(server, Instant::now(), 4, BudgetMode::Unlimited));
+        tokio::spawn(serve_loop(
+            server,
+            Instant::now(),
+            4,
+            BudgetMode::Unlimited,
+            None,
+        ));
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let out = client_loop(client, cfg(saddr, 200, 5000), Instant::now())
             .await

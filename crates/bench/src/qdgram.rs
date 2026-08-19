@@ -119,7 +119,8 @@ impl BenchTransport for QdgramTransport {
     async fn run_server(&self, cfg: ServerCfg) -> Result<(), BenchError> {
         let sc = server_config(cfg.cc)?;
         let (endpoint, gov) = build_endpoint(cfg.bind, Some(sc), cfg.budget)?;
-        serve_endpoint(endpoint, gov).await;
+        crate::quic::spawn_gate_watch(gov.clone(), cfg.gate_watch.clone());
+        serve_endpoint(endpoint, gov, cfg.gate_watch.is_some()).await;
         Ok(())
     }
 
@@ -159,11 +160,13 @@ impl BenchTransport for QdgramTransport {
 
 /// Server accept + per-bağlantı DATAGRAM servis döngüsü. Kümülatif ACK: her ACK_FREQ_N yeni
 /// DATA'da hemen + 20 ms timer'da (kirli ise). `send_datagram` hatası = kayıp (yoksay).
-pub(crate) async fn serve_endpoint(endpoint: Endpoint, gov: Option<GovHandle>) {
+pub(crate) async fn serve_endpoint(endpoint: Endpoint, gov: Option<GovHandle>, gate_watched: bool) {
     while let Some(incoming) = endpoint.accept().await {
         let Ok(conn) = incoming.await else { continue };
-        if let Some(h) = &gov {
-            h.arm_now(); // reverse bütçe ilk established ile başlar (quic.rs ile aynı kural).
+        if !gate_watched {
+            if let Some(h) = &gov {
+                h.arm_now(); // gate-watch yoksa eski kural: ilk established'da arm.
+            }
         }
         tokio::spawn(async move {
             let mut received: BTreeSet<u64> = BTreeSet::new();
@@ -506,7 +509,7 @@ mod tests {
         let sc = server_config(Cc::Cubic).expect("server config");
         let server_ep = QEndpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("bind");
         let addr = server_ep.local_addr().expect("local addr");
-        tokio::spawn(serve_endpoint(server_ep, None));
+        tokio::spawn(serve_endpoint(server_ep, None, false));
 
         let dir = std::env::temp_dir().join(format!("kapi-gate-qd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -541,7 +544,7 @@ mod tests {
         let sc = server_config(Cc::Cubic).expect("server config");
         let server_ep = QEndpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("bind");
         let addr = server_ep.local_addr().expect("local addr");
-        tokio::spawn(serve_endpoint(server_ep, None));
+        tokio::spawn(serve_endpoint(server_ep, None, false));
 
         let out = QdgramTransport
             .run_client(cfg(addr, 10, 5000))
@@ -601,7 +604,7 @@ mod tests {
         let sc = server_config(Cc::Cubic).expect("server config");
         let server_ep = QEndpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("bind");
         let addr = server_ep.local_addr().expect("local addr");
-        tokio::spawn(serve_endpoint(server_ep, None));
+        tokio::spawn(serve_endpoint(server_ep, None, false));
 
         let out = QdgramTransport
             .run_client(cfg(addr, 1, 2000))

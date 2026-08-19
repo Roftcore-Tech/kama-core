@@ -58,11 +58,12 @@ if [ "${1:-}" = "--inner-run" ]; then
   kapi3_capture_start "$OUT/cap"
   kapi3_realized "$OUT" pre
 
+  GATE_E="$OUT/gate_e"; GATE_M="$OUT/gate_m"
+  # --gate-watch: reverse-bütçe arm'ı client'ın ölçüm-t0'ına senkron (warmup-ACK'leri muaf, r5 D.2).
   kapi3_b "$BENCH" serve --bind 10.10.1.1:4433 --transport "$TRANSPORT" --quota-r "$QUOTA" \
-    $REV_BUDGET > "$OUT/server.log" 2>&1 < /dev/null & SRV=$!
+    $REV_BUDGET --gate-watch "$GATE_M" > "$OUT/server.log" 2>&1 < /dev/null & SRV=$!
   sleep 1
 
-  GATE_E="$OUT/gate_e"; GATE_M="$OUT/gate_m"
   # shellcheck disable=SC2086
   kapi3_a timeout $(( DEADLINE + WARMUP * (INTERVAL>0 ? INTERVAL : 1000) / 1000 + (MSGS-1) * INTERVAL / 1000 + 90 )) \
     "$BENCH" client --server 10.10.1.1:4433 --transport "$TRANSPORT" --kama-arm "$KAMA_ARM" \

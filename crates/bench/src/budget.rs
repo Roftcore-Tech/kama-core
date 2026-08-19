@@ -127,8 +127,7 @@ impl BudgetGovernor {
         }
     }
 
-    /// Test-gözlemi (ürün yolu arm-durumunu sorgulamaz; W6 barrier'ı yalnız `arm()` çağırır).
-    #[cfg(test)]
+    /// Arm-durumu (serve_loop gate-watch poll’u okur; testler de kullanır).
     #[must_use]
     pub fn is_armed(&self) -> bool {
         self.armed
