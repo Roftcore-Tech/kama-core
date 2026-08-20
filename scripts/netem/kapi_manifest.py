@@ -120,21 +120,33 @@ def h8(*parts: bytes) -> int:
     return int.from_bytes(d[:8], "big")
 
 
-def budgets(prof: dict, deadline_s: int, workload: str, msgs: int, interval_ms: int) -> dict:
-    """Kanal-türevli bütçe (yön-başına; aktarım YOK). Değerler IP-byte."""
+def budgets(
+    prof: dict,
+    deadline_s: int,
+    workload: str,
+    msgs: int,
+    interval_ms: int,
+    u: float = U_PRIMARY,
+    budget_deadline_s: int | None = None,
+) -> dict:
+    """Kanal-türevli bütçe (yön-başına; aktarım YOK). Değerler IP-byte.
+
+    `budget_deadline_s` (fixed-B ekseni, r5 D.1b): bütçe bu D'den türetilir; koşu deadline'ı
+    `deadline_s` farklı olabilir → byte sabit, süre değişir (SEC-3)."""
     c_fwd, c_rev = prof["cap_fwd"], prof["cap_rev"]
-    window_s = deadline_s + (msgs - 1) * interval_ms / 1000.0 if workload == "paced" else deadline_s
-    out = {"u": U_PRIMARY, "window_s": window_s}
+    bd = budget_deadline_s if budget_deadline_s is not None else deadline_s
+    window_s = bd + (msgs - 1) * interval_ms / 1000.0 if workload == "paced" else bd
+    out = {"u": u, "window_s": window_s, "budget_deadline_s": bd}
     if workload == "burst":
-        out["fwd"] = {"burst_bytes": int(c_fwd * deadline_s * U_PRIMARY / 8)}
-        out["rev"] = {"burst_bytes": int(c_rev * deadline_s * U_PRIMARY / 8)}
+        out["fwd"] = {"burst_bytes": int(c_fwd * bd * u / 8)}
+        out["rev"] = {"burst_bytes": int(c_rev * bd * u / 8)}
     else:
         for k, c in (("fwd", c_fwd), ("rev", c_rev)):
-            refill = int(c * U_PRIMARY / 8)
+            refill = int(c * u / 8)
             out[k] = {
                 "refill_bytes_per_s": refill,
                 "bucket_bytes": max(3 * MTU, 2 * refill),  # D6: 2 s × refill
-                "ceiling_bytes": int(c * window_s * U_PRIMARY / 8),
+                "ceiling_bytes": int(c * window_s * u / 8),
             }
     return out
 
@@ -181,18 +193,30 @@ def gen_rows(phase: str, drand_hex: str | None):
     elif phase == "evaluation":
         if not drand_hex:
             sys.exit("HATA: evaluation manifesti drand-randomness OLMADAN üretilemez (Model A kilidi)")
-        # FAZ-1 headline: primary aile × paced × A2 × n=30 (p2/p3 n=50) + sekonder eksenler KAPI-2'de.
-        cells = [(p, "paced", 50 if p in ("p2_loss80", "p3_loss95") else 30, 120)
-                 for p in ("p2_loss80", "p3_loss95", "p5_revpath")]
+        # KAPI-2 §4 matrisi (FAZ-1). Hücre: (pid, workload, n, D, plane, u, budget_D, parti).
+        fam = ("p2_loss80", "p3_loss95", "p5_revpath")
+        cells = [("p2_loss80", "paced", 50, 120, "A2", U_PRIMARY, None, "PRIMARY"),
+                 ("p3_loss95", "paced", 30, 120, "A2", U_PRIMARY, None, "PRIMARY"),
+                 ("p5_revpath", "paced", 60, 120, "A2", U_PRIMARY, None, "PRIMARY")]
+        cells += [(p, "burst", 10, 120, "A2", U_PRIMARY, None, "SEC1") for p in fam]
+        cells += [(p, "paced", 10, 120, "A1", U_PRIMARY, None, "SEC2") for p in fam]
+        cells += [("p2_loss80", "paced", 10, d, "A2", U_PRIMARY, 120, "SEC3") for d in (60, 300)]
+        cells += [("p2_loss80", "paced", 10, 120, "A2", u, None, "SEC4") for u in (0.50, 0.90)]
         ns_tag, salt = b"KAMA-V2-EVAL", bytes.fromhex(drand_hex)
     else:
         sys.exit(f"bilinmeyen faz: {phase}")
 
-    for pid, workload, n, deadline_s in cells:
+    for cell in cells:
+        if phase == "calibration":
+            pid, workload, n, deadline_s = cell
+            plane, u, budget_d, party = "A2", U_PRIMARY, None, "CAL"
+        else:
+            pid, workload, n, deadline_s, plane, u, budget_d, party = cell
         prof = PROFILES[pid]
         plan = CLASS_PLAN[prof["cls"]]
         interval = plan["paced_interval_ms"] if workload == "paced" else 0
-        cell_id = f"{phase}:{pid}:{workload}:d{deadline_s}"
+        cell_id = f"{phase}:{pid}:{workload}:{plane}:d{deadline_s}:u{u}" + (
+            f":bd{budget_d}" if budget_d else "")
         # Dengeli randomizasyon: 10-blokta 5/5 kama-önce; sıra cell-tohumundan (deterministik).
         order_seed = h8(salt, ns_tag, cell_id.encode(), b"order")
         for rep in range(n):
@@ -210,8 +234,8 @@ def gen_rows(phase: str, drand_hex: str | None):
                 "workload": workload, "submit_interval_ms": interval,
                 "msgs": plan["msgs"], "payload": plan["payload"],
                 "deadline_s": deadline_s,
-                "budget": budgets(prof, deadline_s, workload, plan["msgs"], interval),
-                "plane": "A2", "quota_r": 4,
+                "budget": budgets(prof, deadline_s, workload, plan["msgs"], interval, u, budget_d),
+                "plane": plane, "party": party, "quota_r": 4,
                 # KAPI-1 §3.2: warmup = max(10×RTT, 10 s) — paced Sınıf-I'de 10 msg ≈ 10 s.
                 "warmup_msgs": 10,
             }

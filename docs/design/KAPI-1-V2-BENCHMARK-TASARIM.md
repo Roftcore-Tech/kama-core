@@ -1,6 +1,6 @@
 # KAPI-1 — v2 Adverse-Network Benchmark Kampanyası: Tasarım Tabloları
 
-**Statü:** **TASLAK-ONAYLANDI (Abkarada, 2026-08-20)** — "planını onaylıyorum, iteratif şekilde
+**Statü:** **TASLAK-ONAYLANDI (2026-08-20) → FINAL-ONAY İSTENDİ (2026-08-21, KAPI-2 ile birlikte — bkz. KAPI-2-ON-KAYIT.md §7)** — "planını onaylıyorum, iteratif şekilde
 hallet". Onayla birlikte §12 karar noktaları önerilen değerlerle KİLİTLENDİ: D1=Yol-A (`raptorq`) ·
 D2=u 0.75 · D3=headline A2 · D4=FAZ-1/FAZ-2 yapısı · D5=Düzlem-B ertelendi · D6=bucket 2 s.
 Otorite: `docs/tasks/v2-benchmark-gorev-r5-kosuya-hazir.md` (r5). Onay akışı (r5 §A): taslak onayı
