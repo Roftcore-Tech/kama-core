@@ -1,6 +1,6 @@
 # KAPI-2 — v2 Benchmark Evaluation ÖN-KAYIT (FAZ-1)
 
-**Statü:** TASLAK → Abkarada **KAPI-1 FINAL + KAPI-2** onayı bekliyor (r5 §A: evaluation/headline
+**Statü:** **ONAYLANDI (Abkarada, 2026-08-21): F1+F2 onay · F3 n={50,30,60} · F4 exploratory primary-sonrası otomatik.** (önceki: TASLAK) (r5 §A: evaluation/headline
 koşuları ancak ikisi tamamlanınca). Bu belge commit edildiği anda configs-FREEZE başlar; onay
 sonrası drand-adımı (§6) çalıştırılır ve evaluation başlar. Tasarım otoritesi:
 `docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md` (TASLAK-ONAYLI + §13 amendment'ları).
