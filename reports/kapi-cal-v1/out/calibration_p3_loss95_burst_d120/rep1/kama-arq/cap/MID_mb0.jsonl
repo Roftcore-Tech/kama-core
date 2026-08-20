@@ -1,0 +1,9 @@
+{"t_ns": 53985623238709, "t_unix_ns": 1787206687715402351, "dir": "out", "ip_len": 311, "proto": 17, "sport": 41498, "dport": 4433}
+{"t_ns": 53985630778975, "t_unix_ns": 1787206687722938918, "dir": "in", "ip_len": 59, "proto": 17, "sport": 4433, "dport": 41498}
+{"t_ns": 53987731176163, "t_unix_ns": 1787206689823336492, "dir": "in", "ip_len": 59, "proto": 17, "sport": 4433, "dport": 41498}
+{"t_ns": 53989830547422, "t_unix_ns": 1787206691922706945, "dir": "in", "ip_len": 59, "proto": 17, "sport": 4433, "dport": 41498}
+{"t_ns": 53991930666833, "t_unix_ns": 1787206694022826663, "dir": "in", "ip_len": 59, "proto": 17, "sport": 4433, "dport": 41498}
+{"t_ns": 54000330770275, "t_unix_ns": 1787206702422933704, "dir": "in", "ip_len": 59, "proto": 17, "sport": 4433, "dport": 41498}
+{"t_ns": 54008730806937, "t_unix_ns": 1787206710822966563, "dir": "in", "ip_len": 59, "proto": 17, "sport": 4433, "dport": 41498}
+{"t_ns": 54017130343359, "t_unix_ns": 1787206719222505407, "dir": "in", "ip_len": 59, "proto": 17, "sport": 4433, "dport": 41498}
+{"capture_stats": {"packets": 21, "drops": 0}}
