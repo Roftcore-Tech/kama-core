@@ -1,0 +1,2815 @@
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep10 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep10 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep10 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep10 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep11 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep11 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep11 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep11 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep12 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep12 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep12 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep12 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep13 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep13 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep13 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep13 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep14 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep14 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep14 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep14 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep15 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep15 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep15 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep15 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep16 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep16 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep16 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep16 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep17 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep17 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep17 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep17 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep18 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep18 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep18 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep18 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep19 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep19 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep19 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep19 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep20 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep20 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep20 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep20 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep21 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep21 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep21 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep21 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep22 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep22 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep22 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep22 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep23 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep23 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep23 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep23 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep24 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep24 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep24 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep24 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep25 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep25 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep25 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep25 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep26 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep26 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep26 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep26 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep27 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep27 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep27 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep27 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep28 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep28 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep28 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep28 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep29 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep29 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep29 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep29 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep30 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep30 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep30 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep30 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep31 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep31 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep31 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep31 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep32 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep32 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep32 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep32 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep33 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep33 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep33 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep33 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep34 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep34 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep34 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep34 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep35 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep35 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep35 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep35 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep36 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep36 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep36 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep36 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep37 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep37 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep37 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep37 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep38 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep38 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep38 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep38 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep39 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep39 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep39 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep39 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep40 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep40 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep40 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep40 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep41 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep41 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep41 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep41 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep42 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep42 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep42 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep42 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep43 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep43 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep43 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep43 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep44 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep44 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep44 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep44 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep45 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep45 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep45 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep45 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep46 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep46 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep46 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep46 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep47 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep47 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep47 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep47 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep48 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep48 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep48 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep48 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep49 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep49 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep49 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.75 rep49 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep10 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep10 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep10 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep10 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep11 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep11 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep11 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep11 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep12 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep12 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep12 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep12 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep13 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep13 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep13 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep13 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep14 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep14 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep14 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep14 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep15 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep15 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep15 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep15 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep16 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep16 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep16 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep16 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep17 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep17 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep17 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep17 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep18 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep18 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep18 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep18 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep19 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep19 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep19 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep19 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep20 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep20 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep20 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep20 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep21 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep21 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep21 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep21 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep22 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep22 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep22 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep22 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep23 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep23 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep23 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep23 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep24 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep24 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep24 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep24 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep25 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep25 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep25 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep25 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep26 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep26 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep26 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep26 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep27 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep27 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep27 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep27 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep28 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep28 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep28 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep28 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep29 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep29 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep29 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A2_d120_u0.75 rep29 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep10 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep10 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep10 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep10 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep11 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep11 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep11 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep11 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep12 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep12 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep12 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep12 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep13 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep13 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep13 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep13 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep14 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep14 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep14 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep14 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep15 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep15 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep15 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep15 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep16 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep16 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep16 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep16 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep17 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep17 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep17 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep17 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep18 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep18 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep18 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep18 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep19 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep19 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep19 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep19 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep20 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep20 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep20 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep20 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep21 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep21 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep21 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep21 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep22 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep22 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep22 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep22 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep23 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep23 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep23 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep23 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep24 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep24 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep24 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep24 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep25 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep25 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep25 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep25 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep26 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep26 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep26 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep26 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep27 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep27 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep27 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep27 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep28 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep28 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep28 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep28 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep29 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep29 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep29 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep29 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep30 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep30 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep30 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep30 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep31 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep31 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep31 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep31 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep32 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep32 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep32 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep32 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep33 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep33 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep33 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep33 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep34 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep34 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep34 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep34 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep35 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep35 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep35 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep35 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep36 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep36 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep36 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep36 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep37 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep37 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep37 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep37 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep38 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep38 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep38 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep38 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep39 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep39 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep39 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep39 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep40 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep40 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep40 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep40 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep41 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep41 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep41 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep41 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep42 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep42 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep42 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep42 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep43 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep43 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep43 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep43 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep44 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep44 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep44 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep44 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep45 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep45 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep45 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep45 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep46 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep46 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep46 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep46 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep47 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep47 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep47 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep47 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep48 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep48 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep48 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep48 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep49 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep49 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep49 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep49 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep50 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep50 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep50 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep50 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep51 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep51 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep51 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep51 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep52 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep52 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep52 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep52 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep53 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep53 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep53 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep53 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep54 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep54 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep54 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep54 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep55 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep55 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep55 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep55 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep56 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep56 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep56 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep56 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep57 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep57 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep57 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep57 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep58 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep58 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep58 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep58 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep59 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep59 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep59 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A2_d120_u0.75 rep59 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_burst_A2_d120_u0.75 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_burst_A2_d120_u0.75 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_burst_A2_d120_u0.75 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A1_d120_u0.75 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p3_loss95_paced_A1_d120_u0.75 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p5_revpath_paced_A1_d120_u0.75 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d60_u0.75_bd120 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d300_u0.75_bd120 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep3 q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep0/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep0/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep0/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep0/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep1/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep1/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep1/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep1/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep2/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep2/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep2/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep2/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep3/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep3/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep3/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep3/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep4/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep4/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep4/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep4/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep5/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep5/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep5/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep5/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep6/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep6/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep6/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep6/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep7/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep7/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep7/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep7/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep8/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep8/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep8/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep8/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep9/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep9/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep9/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep9/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep10/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep10/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep10/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep10/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep11/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep11/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep11/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep11/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep12/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep12/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep12/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep12/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep13/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep13/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep13/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep13/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep14/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep14/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep14/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep14/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep15/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep15/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep15/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep15/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep16/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep16/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep16/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep16/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep17/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep17/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep17/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep17/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep18/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep18/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep18/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep18/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep19/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep19/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep19/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep19/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep20/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep20/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep20/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep20/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep21/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep21/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep21/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep21/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep22/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep22/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep22/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep22/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep23/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep23/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep23/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep23/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep24/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep24/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep24/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep24/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep25/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep25/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep25/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep25/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep26/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep26/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep26/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep26/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep27/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep27/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep27/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep27/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep28/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep28/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep28/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep28/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep29/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep29/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep29/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep29/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep30/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep30/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep30/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep30/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep31/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep31/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep31/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep31/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep32/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep32/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep32/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep32/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep33/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep33/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep33/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep33/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep34/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep34/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep34/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep34/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep35/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep35/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep35/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep35/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep36/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep36/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep36/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep36/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep37/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep37/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep37/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep37/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep38/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep38/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep38/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep38/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep39/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep39/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep39/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep39/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep40/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep40/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep40/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep40/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep41/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep41/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep41/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep41/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep42/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep42/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep42/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep42/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep43/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep43/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep43/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep43/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep44/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep44/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep44/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep44/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep45/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep45/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep45/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep45/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep46/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep46/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep46/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep46/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep47/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep47/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep47/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep47/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep48/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep48/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep48/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep48/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep49/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep49/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep49/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.75/rep49/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep0/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep0/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep0/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep0/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep1/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep1/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep1/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep1/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep2/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep2/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep2/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep2/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep3/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep3/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep3/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep3/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep4/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep4/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep4/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep4/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep5/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep5/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep5/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep5/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep6/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep6/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep6/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep6/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep7/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep7/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep7/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep7/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep8/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep8/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep8/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep8/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep9/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep9/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep9/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep9/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep10/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep10/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep10/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep10/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep11/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep11/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep11/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep11/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep12/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep12/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep12/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep12/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep13/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep13/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep13/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep13/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep14/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep14/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep14/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep14/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep15/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep15/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep15/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep15/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep16/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep16/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep16/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep16/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep17/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep17/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep17/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep17/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep18/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep18/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep18/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep18/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep19/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep19/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep19/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep19/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep20/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep20/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep20/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep20/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep21/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep21/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep21/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep21/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep22/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep22/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep22/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep22/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep23/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep23/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep23/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep23/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep24/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep24/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep24/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep24/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep25/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep25/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep25/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep25/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep26/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep26/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep26/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep26/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep27/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep27/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep27/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep27/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep28/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep28/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep28/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep28/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep29/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep29/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep29/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A2_d120_u0.75/rep29/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep0/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep0/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep0/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep0/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep1/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep1/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep1/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep1/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep2/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep2/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep2/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep2/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep3/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep3/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep3/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep3/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep4/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep4/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep4/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep4/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep5/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep5/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep5/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep5/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep6/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep6/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep6/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep6/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep7/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep7/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep7/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep7/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep8/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep8/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep8/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep8/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep9/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep9/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep9/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep9/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep10/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep10/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep10/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep10/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep11/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep11/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep11/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep11/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep12/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep12/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep12/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep12/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep13/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep13/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep13/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep13/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep14/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep14/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep14/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep14/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep15/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep15/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep15/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep15/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep16/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep16/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep16/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep16/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep17/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep17/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep17/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep17/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep18/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep18/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep18/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep18/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep19/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep19/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep19/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep19/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep20/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep20/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep20/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep20/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep21/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep21/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep21/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep21/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep22/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep22/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep22/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep22/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep23/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep23/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep23/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep23/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep24/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep24/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep24/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep24/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep25/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep25/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep25/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep25/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep26/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep26/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep26/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep26/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep27/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep27/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep27/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep27/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep28/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep28/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep28/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep28/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep29/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep29/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep29/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep29/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep30/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep30/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep30/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep30/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep31/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep31/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep31/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep31/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep32/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep32/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep32/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep32/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep33/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep33/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep33/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep33/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep34/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep34/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep34/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep34/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep35/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep35/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep35/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep35/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep36/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep36/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep36/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep36/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep37/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep37/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep37/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep37/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep38/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep38/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep38/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep38/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep39/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep39/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep39/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep39/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep40/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep40/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep40/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep40/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep41/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep41/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep41/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep41/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep42/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep42/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep42/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep42/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep43/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep43/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep43/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep43/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep44/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep44/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep44/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep44/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep45/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep45/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep45/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep45/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep46/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep46/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep46/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep46/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep47/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep47/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep47/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep47/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep48/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep48/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep48/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep48/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep49/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep49/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep49/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep49/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep50/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep50/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep50/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep50/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep51/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep51/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep51/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep51/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep52/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep52/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep52/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep52/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep53/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep53/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep53/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep53/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep54/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep54/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep54/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep54/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep55/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep55/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep55/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep55/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep56/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep56/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep56/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep56/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep57/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep57/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep57/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep57/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep58/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep58/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep58/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep58/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep59/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep59/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep59/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A2_d120_u0.75/rep59/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep0/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep0/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep0/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep0/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep1/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep1/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep1/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep1/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep2/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep2/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep2/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep2/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep3/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep3/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep3/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep3/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep4/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep4/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep4/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep4/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep5/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep5/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep5/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep5/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep6/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep6/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep6/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep6/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep7/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep7/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep7/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep7/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep8/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep8/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep8/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep8/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep9/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep9/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep9/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_burst_A2_d120_u0.75/rep9/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep0/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep0/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep0/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep0/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep1/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep1/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep1/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep1/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep2/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep2/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep2/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep2/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep3/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep3/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep3/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep3/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep4/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep4/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep4/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep4/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep5/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep5/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep5/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep5/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep6/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep6/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep6/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep6/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep7/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep7/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep7/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep7/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep8/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep8/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep8/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep8/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep9/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep9/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep9/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_burst_A2_d120_u0.75/rep9/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep0/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep0/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep0/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep0/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep1/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep1/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep1/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep1/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep2/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep2/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep2/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep2/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep3/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep3/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep3/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep3/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep4/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep4/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep4/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep4/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep5/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep5/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep5/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep5/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep6/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep6/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep6/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep6/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep7/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep7/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep7/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep7/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep8/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep8/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep8/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep8/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep9/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep9/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep9/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_burst_A2_d120_u0.75/rep9/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep0/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep0/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep0/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep0/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep1/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep1/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep1/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep1/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep2/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep2/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep2/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep2/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep3/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep3/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep3/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep3/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep4/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep4/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep4/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep4/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep5/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep5/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep5/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep5/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep6/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep6/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep6/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep6/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep7/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep7/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep7/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep7/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep8/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep8/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep8/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep8/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep9/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep9/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep9/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A1_d120_u0.75/rep9/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep0/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep0/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep0/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep0/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep1/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep1/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep1/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep1/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep2/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep2/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep2/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep2/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep3/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep3/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep3/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep3/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep4/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep4/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep4/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep4/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep5/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep5/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep5/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep5/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep6/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep6/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep6/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep6/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep7/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep7/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep7/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep7/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep8/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep8/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep8/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep8/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep9/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep9/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep9/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p3_loss95_paced_A1_d120_u0.75/rep9/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep0/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep0/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep0/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep0/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep1/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep1/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep1/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep1/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep2/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep2/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep2/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep2/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep3/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep3/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep3/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep3/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep4/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep4/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep4/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep4/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep5/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep5/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep5/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep5/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep6/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep6/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep6/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep6/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep7/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep7/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep7/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep7/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep8/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep8/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep8/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep8/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep9/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep9/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep9/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p5_revpath_paced_A1_d120_u0.75/rep9/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep0/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep0/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep0/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep0/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep1/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep1/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep1/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep1/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep2/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep2/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep2/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep2/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep3/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep3/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep3/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep3/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep4/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep4/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep4/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep4/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep5/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep5/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep5/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep5/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep6/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep6/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep6/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep6/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep7/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep7/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep7/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep7/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep8/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep8/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep8/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep8/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep9/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep9/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep9/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d60_u0.75_bd120/rep9/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep0/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep0/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep0/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep0/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep1/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep1/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep1/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep1/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep2/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep2/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep2/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep2/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep3/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep3/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep3/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep3/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep4/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep4/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep4/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep4/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep5/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep5/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep5/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep5/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep6/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep6/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep6/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep6/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep7/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep7/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep7/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep7/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep8/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep8/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep8/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep8/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep9/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep9/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep9/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep9/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep0/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep0/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep0/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep0/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep1/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep1/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep1/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep1/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep2/kama-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep2/kama-tail-v1
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep2/q-stream
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep2/q-dgram-arq
+SKIP (var): reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d120_u0.5/rep3/q-stream
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.5 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep0 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep0 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep1 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep1 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep2 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep2 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep3 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep3 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep4 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep4 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep5 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep5 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep6 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep6 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep7 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep7 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep8 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep8 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep9 kama-arq
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep9 q-stream
+  OK: out.jsonl
+RUN: evaluation_p2_loss80_paced_A2_d120_u0.9 rep9 q-dgram-arq
+  OK: out.jsonl
+BITTI: 240 manifest satırı işlendi → reports/kapi-eval-v1/out

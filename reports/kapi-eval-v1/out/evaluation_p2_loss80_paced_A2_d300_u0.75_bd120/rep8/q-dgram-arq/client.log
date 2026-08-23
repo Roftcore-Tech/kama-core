@@ -1,0 +1,2 @@
+QDGRAM-TERMINATION reason=timed out delivered=0/100
+wrote 100 events → reports/kapi-eval-v1/out/evaluation_p2_loss80_paced_A2_d300_u0.75_bd120/rep8/q-dgram-arq/out.jsonl

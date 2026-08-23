@@ -12,3 +12,5 @@ scratchbin/
 #   .nb-*         — per-commit target dirs used by the netem/benchmark worktree runs
 /.gate-target/
 /.nb-*/
+# kapi-eval-v1: capture katmanı diskte (167MB); bütünlüğü CAPS-SHA256SUMS.txt ile mühürlü
+reports/kapi-eval-v1/out/**/cap/

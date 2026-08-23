@@ -1,0 +1,14 @@
+cell,n_pairs,delta_completion_median,delta_completion_mean,discordant_b_kama_only,discordant_c_comp_only,discordant_rate,pair
+evaluation_p2_loss80_burst_A2_d120_u0.75,9,0.61,0.64,592,16,0.675556,kama-tail-v1 vs q-dgram-arq
+evaluation_p2_loss80_paced_A1_d120_u0.75,10,0.525,0.48,498,18,0.516,kama-tail-v1 vs q-dgram-arq
+evaluation_p2_loss80_paced_A2_d120_u0.5,10,0.295,0.266,321,55,0.376,kama-tail-v1 vs q-dgram-arq
+evaluation_p2_loss80_paced_A2_d120_u0.75,50,0.47,0.3838,2069,150,0.4438,kama-tail-v1 vs q-dgram-arq
+evaluation_p2_loss80_paced_A2_d120_u0.9,10,0.505,0.43,455,25,0.48,kama-tail-v1 vs q-dgram-arq
+evaluation_p2_loss80_paced_A2_d300_u0.75_bd120,10,0.545,0.522,539,17,0.556,kama-tail-v1 vs q-dgram-arq
+evaluation_p2_loss80_paced_A2_d60_u0.75_bd120,10,0.375,0.335,352,17,0.369,kama-tail-v1 vs q-dgram-arq
+evaluation_p3_loss95_burst_A2_d120_u0.75,10,0.0,0.025,29,4,0.033,kama-tail-v1 vs q-dgram-arq
+evaluation_p3_loss95_paced_A1_d120_u0.75,10,0.23,0.24,245,5,0.25,kama-tail-v1 vs q-dgram-arq
+evaluation_p3_loss95_paced_A2_d120_u0.75,30,0.0,0.033333,115,15,0.043333,kama-tail-v1 vs q-dgram-arq
+evaluation_p5_revpath_burst_A2_d120_u0.75,9,0.0,-0.111111,0,100,0.111111,kama-tail-v1 vs q-dgram-arq
+evaluation_p5_revpath_paced_A1_d120_u0.75,10,0.0,0.122,122,0,0.122,kama-tail-v1 vs q-dgram-arq
+evaluation_p5_revpath_paced_A2_d120_u0.75,60,0.0,0.120167,732,11,0.123833,kama-tail-v1 vs q-dgram-arq

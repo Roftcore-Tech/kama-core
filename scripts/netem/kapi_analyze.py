@@ -73,7 +73,9 @@ def main() -> int:
     for cell_dir in sorted(p for p in root.iterdir() if p.is_dir() and p.name != "analysis"):
         for rep_dir in sorted(cell_dir.glob("rep*")):
             for arm_dir in sorted(p for p in rep_dir.iterdir() if p.is_dir()):
-                r = load_run(arm_dir)
+                # Ön-kayıt §5: INVALID işareti out.jsonl VARKEN de geçerli (exogenous-tolerans
+                # ihlali sonradan tespit edilir; veri korunur ama aggregation'a girmez).
+                r = None if (arm_dir / "INVALID").exists() else load_run(arm_dir)
                 if r is None:
                     kind = "INVALID" if (arm_dir / "INVALID").exists() else "MISSING"
                     runs.append(
