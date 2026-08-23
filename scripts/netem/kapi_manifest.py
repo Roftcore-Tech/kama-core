@@ -190,6 +190,16 @@ def gen_rows(phase: str, drand_hex: str | None):
         cells = [(p, w, 10, 120) for p in ("p2_loss80", "p3_loss95", "p5_revpath")
                  for w in ("paced", "burst")]
         ns_tag, salt = b"KAMA-V2-CAL", b""
+    elif phase == "exploratory":
+        if not drand_hex:
+            sys.exit("HATA: exploratory manifesti drand-randomness OLMADAN üretilemez (Model A kilidi)")
+        # F4 (KAPI-2 §4): Grup-B + Grup-C süpürmesi, n=10, paced, A2, D=120 — "unadjusted
+        # exploratory" etiketli; tohum uzayı ayrı namespace, aynı kayıtlı drand.
+        expl = ["h1_ulra", "h2_cell", "h3a_burst40", "h3b_burst50", "h3c_burst60",
+                "h4p_periodic", "h4s_sustained", "h4a_revsevere", "h6_rtt20", "h6_rtt200"] + [
+            f"{pid}_l{lp}" for pid in ("p8", "p9", "p10") for lp in (0, 20, 40)]
+        cells = [(pid, "paced", 10, 120, "A2", U_PRIMARY, None, "EXPL") for pid in expl]
+        ns_tag, salt = b"KAMA-V2-EXPL", bytes.fromhex(drand_hex)
     elif phase == "evaluation":
         if not drand_hex:
             sys.exit("HATA: evaluation manifesti drand-randomness OLMADAN üretilemez (Model A kilidi)")
@@ -243,7 +253,7 @@ def gen_rows(phase: str, drand_hex: str | None):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["calibration", "evaluation", "profiles"])
+    ap.add_argument("mode", choices=["calibration", "evaluation", "exploratory", "profiles"])
     ap.add_argument("--out", default="-")
     ap.add_argument("--drand-randomness", default=None)
     a = ap.parse_args()
