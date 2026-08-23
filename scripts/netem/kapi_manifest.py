@@ -195,9 +195,12 @@ def gen_rows(phase: str, drand_hex: str | None):
             sys.exit("HATA: exploratory manifesti drand-randomness OLMADAN üretilemez (Model A kilidi)")
         # F4 (KAPI-2 §4): Grup-B + Grup-C süpürmesi, n=10, paced, A2, D=120 — "unadjusted
         # exploratory" etiketli; tohum uzayı ayrı namespace, aynı kayıtlı drand.
-        expl = ["h1_ulra", "h2_cell", "h3a_burst40", "h3b_burst50", "h3c_burst60",
-                "h4p_periodic", "h4s_sustained", "h4a_revsevere", "h6_rtt20", "h6_rtt200"] + [
-            f"{pid}_l{lp}" for pid in ("p8", "p9", "p10") for lp in (0, 20, 40)]
+        # F4-TRIM (Abkarada, 2026-08-23): sınıf-III hücreler (h1 + Grup-C sub-kbps) düşürüldü —
+        # donmuş sınıf-III kuralları (30 s aralık × 10 warmup) rep-başına ~12 dk üretip partiyi
+        # 4-5 güne şişiriyordu; sub-kbps süpürmesi FAZ-2 rapor-evresine ertelendi. Tutulan
+        # hücrelerin tohumları DEĞİŞMEZ (tohum cell_id-türevi).
+        expl = ["h2_cell", "h3a_burst40", "h3b_burst50", "h3c_burst60",
+                "h4p_periodic", "h4s_sustained", "h4a_revsevere", "h6_rtt20", "h6_rtt200"]
         cells = [(pid, "paced", 10, 120, "A2", U_PRIMARY, None, "EXPL") for pid in expl]
         ns_tag, salt = b"KAMA-V2-EXPL", bytes.fromhex(drand_hex)
     elif phase == "evaluation":
