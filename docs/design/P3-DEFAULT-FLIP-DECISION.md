@@ -20,7 +20,12 @@ Kanıt tek başına yeterli değil; kanıtın **mevcut motorda** geçerli olmas�
 | bootstrap-RTT | OFF | **OFF kalır** | §4 — kilitli panel 2/3 FAIL (rep14 GE-L10) |
 | FEC (Controller) | Manual{false} | **OFF kalır** | §5 — Q18 kalibrasyon kusuru Controller'ı yasaklıyor |
 
-## 2. Tail-recovery → ON (KOŞULLU) — kararın kalbi
+## 2. Tail-recovery → ON — **G1 KAPISI GEÇTİ (2026-08-24)**
+
+> **GÜNCELLEME:** §2.3 re-validation kapısı KOŞULDU ve YEŞİL çıktı
+> (`reports/g1-tail-revalidation/G1-CLOSURE.md`, `7de0a205`): burst tail-ON ≥ tail-OFF (h3b/h3c
+> medyan 1.000 vs 0.990), p2 no-harm (n=10), P0 primary-regresyon YOK (post-P0 0.523 ≈ banked 0.505).
+> **G2 (default-ON) artık Abkarada onayına hazır.** Aşağıdaki kanıt/gerekçe kaydı korunur.
 
 ### 2.1 Lehte kanıt
 
