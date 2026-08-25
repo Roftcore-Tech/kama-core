@@ -180,6 +180,10 @@ while IFS= read -r row; do
   KF=$(echo "$row" | jq -r .kama_first)
   if [ "$KF" = true ]; then ORDER="kama-arq kama-tail-v1 q-stream q-dgram-arq"
   else ORDER="q-stream q-dgram-arq kama-arq kama-tail-v1"; fi
+  # Manifest'in gerçek .arms'ına kesiştir: kısmi-kol manifestlerinde (ör. G1 re-validation, yalnız
+  # kama kolları) ORDER'daki eksik kollar --transport null → INFRA-FAIL artefaktı üretiyordu.
+  MANIFEST_ARMS=$(echo "$row" | jq -r '.arms | keys[]')
+  ORDER=$(for a in $ORDER; do echo "$MANIFEST_ARMS" | grep -qx "$a" && echo "$a"; done | tr '\n' ' ')
   for ARM in $ORDER; do
     OUT="$OUTDIR/$CELL/rep$REP/$ARM"
     [ -e "$OUT/out.jsonl" ] && { echo "SKIP (var): $OUT"; continue; }
