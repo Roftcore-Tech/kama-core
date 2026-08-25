@@ -100,6 +100,8 @@ struct ClientRun {
     tx_dup: u64,
     /// [W6] Teslim edilen warmup birim-id'leri (ölçüm kayıtlarına girmez; faz-geçiş koşulu).
     warmup_delivered: HashSet<u64>,
+    /// [P0 teşhis] KAMA_BENCH_TRACE=1 → stderr'e TX/ACK birim izi.
+    trace: bool,
 }
 
 impl ClientRun {
@@ -126,6 +128,7 @@ impl ClientRun {
             tx_retx: 0,
             tx_dup: 0,
             warmup_delivered: HashSet::new(),
+            trace: std::env::var_os("KAMA_BENCH_TRACE").is_some(),
         }
     }
 
@@ -154,6 +157,19 @@ impl ClientRun {
             return;
         };
         let acked = frame.acked_full(self.max_emitted_seq + 1);
+        if self.trace {
+            let units: Vec<String> = acked
+                .iter()
+                .map(|s| {
+                    format!(
+                        "{}:{}",
+                        s,
+                        self.seq_to_unit.get(s).map_or(-1i64, |u| *u as i64)
+                    )
+                })
+                .collect();
+            eprintln!("ACK t={now} seq:unit=[{}]", units.join(" "));
+        }
         // delivered_ns: birimin herhangi bir seq'i İLK kez acked → MUTLAK damga (ilk-ack-kazanır).
         for s in &acked {
             let Some(&unit) = self.seq_to_unit.get(s) else {
@@ -200,6 +216,13 @@ impl ClientRun {
         for d in self.sender.on_event(ev, now) {
             self.seq_to_unit.insert(d.seq, d.unit_id);
             self.max_emitted_seq = self.max_emitted_seq.max(d.seq);
+            // [P0 teşhis] birim-düzeyi TX izi (env-gated; ölçüm yoluna dokunmaz).
+            if self.trace {
+                eprintln!(
+                    "TX t={now} unit={} seq={} kind={:?}",
+                    d.unit_id, d.seq, d.kind
+                );
+            }
             // sent_ns burada DAMGALANMAZ — app-offer'da (enqueue) damgalanır (quinn frame'i, aşağıdaki
             // client_loop notu). Wire-emit'te damgalamak kama'nın pacing dwell'ini latency'den dışlardı.
             let frame = encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload);

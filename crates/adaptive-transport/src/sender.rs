@@ -2653,6 +2653,22 @@ impl Sender {
                 if p.origin == TransmitKind::Duplicate {
                     // [commit-B §3.7] Dup-kökenli kayıp tombstonesuz düşer → uçuş-sayısı burada.
                     self.bw_sampler.forget_in_flight();
+                    // [P0 burst-recovery] Forward-recovery kopyası kaybolduysa birim HÂLÂ
+                    // teslim edilmemiştir (ACK olsaydı on_ack inflight'tan siler + dup_queue.retain
+                    // kopyayı iptal ederdi; buraya ancak gerçekten-outstanding birim düşer). Recovery-
+                    // obsesif taban (§9.1 "veri ulaşsın"): SESSİZCE VAZGEÇME — birimin zaten planlı bir
+                    // kopyası yoksa GEOMETRİK (self-reschedule, ×2 backoff, ACK-ile-iptal) forward kopya
+                    // yeniden-kur. Mevcut saf-sessizlik/PreConverge makinesinin aynısı; INV-RATE-1'e
+                    // dokunmaz (dup_queue token-paced), loss METRİĞİNE dokunmaz. Kanıt: kapi-eval-v1
+                    // exploratory h3 (GE-burst); regresyon kapısı tests/burst_loss_recovery.rs.
+                    if !self.dup_queue.iter().any(|d| d.unit.id == p.unit.id) {
+                        let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
+                        self.dup_queue.push(DupRec {
+                            due_ns: now_ns.saturating_add(srtt_ns),
+                            unit: p.unit,
+                            interval_ns: srtt_ns.max(1), // >0 ⇒ drain_due_duplicates geometrik reschedule
+                        });
+                    }
                 }
                 if p.origin != TransmitKind::Duplicate {
                     // Observation-only loss evidence, ORIGINALS ONLY — symmetric with the success
