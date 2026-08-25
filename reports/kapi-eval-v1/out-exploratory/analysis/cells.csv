@@ -1,0 +1,17 @@
+cell,arm,n,completion_median,completion_q1,completion_q3,completion_min,completion_max,cost_median,refused_any
+exploratory_h2_cell_paced_A2_d120_u0.75,kama-arq,10,0.966667,0.966667,1.0,0.966667,1.0,0.380406,0
+exploratory_h2_cell_paced_A2_d120_u0.75,kama-tail-v1,10,1.0,1.0,1.0,0.966667,1.0,0.256102,0
+exploratory_h2_cell_paced_A2_d120_u0.75,q-dgram-arq,10,1.0,1.0,1.0,1.0,1.0,0.139983,0
+exploratory_h2_cell_paced_A2_d120_u0.75,q-stream,10,1.0,1.0,1.0,1.0,1.0,0.145609,0
+exploratory_h3a_burst40_paced_A2_d120_u0.75,kama-arq,10,0.91,0.87,0.95,0.87,0.96,0.35067,0
+exploratory_h3a_burst40_paced_A2_d120_u0.75,kama-tail-v1,10,0.97,0.9,0.99,0.41,0.99,0.274384,0
+exploratory_h3a_burst40_paced_A2_d120_u0.75,q-dgram-arq,10,1.0,1.0,1.0,1.0,1.0,0.246592,0
+exploratory_h3a_burst40_paced_A2_d120_u0.75,q-stream,10,1.0,1.0,1.0,1.0,1.0,0.213342,0
+exploratory_h3b_burst50_paced_A2_d120_u0.75,kama-arq,10,0.86,0.86,0.92,0.8,0.93,0.275451,0
+exploratory_h3b_burst50_paced_A2_d120_u0.75,kama-tail-v1,10,0.92,0.91,0.95,0.89,0.99,0.232967,0
+exploratory_h3b_burst50_paced_A2_d120_u0.75,q-dgram-arq,10,1.0,1.0,1.0,1.0,1.0,0.197277,0
+exploratory_h3b_burst50_paced_A2_d120_u0.75,q-stream,10,1.0,1.0,1.0,1.0,1.0,0.186698,0
+exploratory_h3c_burst60_paced_A2_d120_u0.75,kama-arq,9,0.86,0.79,0.9,0.08,0.92,0.254785,0
+exploratory_h3c_burst60_paced_A2_d120_u0.75,kama-tail-v1,9,0.92,0.9,0.95,0.86,0.98,0.23413,0
+exploratory_h3c_burst60_paced_A2_d120_u0.75,q-dgram-arq,9,1.0,1.0,1.0,1.0,1.0,0.180393,0
+exploratory_h3c_burst60_paced_A2_d120_u0.75,q-stream,9,1.0,1.0,1.0,1.0,1.0,0.172053,0

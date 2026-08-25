@@ -1,0 +1,5 @@
+cell,n_pairs,delta_completion_median,delta_completion_mean,discordant_b_kama_only,discordant_c_comp_only,discordant_rate,pair
+exploratory_h2_cell_paced_A2_d120_u0.75,10,0.0,-0.003333,0,1,0.003333,kama-tail-v1 vs q-dgram-arq
+exploratory_h3a_burst40_paced_A2_d120_u0.75,10,-0.025,-0.107,0,107,0.107,kama-tail-v1 vs q-dgram-arq
+exploratory_h3b_burst50_paced_A2_d120_u0.75,10,-0.07,-0.067,0,67,0.067,kama-tail-v1 vs q-dgram-arq
+exploratory_h3c_burst60_paced_A2_d120_u0.75,9,-0.08,-0.078889,0,71,0.078889,kama-tail-v1 vs q-dgram-arq

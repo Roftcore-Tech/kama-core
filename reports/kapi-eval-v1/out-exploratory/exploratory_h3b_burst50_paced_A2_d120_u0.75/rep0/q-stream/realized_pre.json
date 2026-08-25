@@ -1,0 +1,8 @@
+{"tag":"pre","t_ns":1787517409700789902,"offload":"ethtool-missing",
+"mid_qdisc":[{"kind":"noqueue","handle":"0:","dev":"lo","root":true,"refcnt":2,"options":{},"bytes":0,"packets":0,"drops":0,"overlimits":0,"requeues":0,"backlog":0,"qlen":0},{"kind":"noqueue","handle":"0:","dev":"ma0","root":true,"refcnt":2,"options":{},"bytes":0,"packets":0,"drops":0,"overlimits":0,"requeues":0,"backlog":0,"qlen":0},{"kind":"noqueue","handle":"0:","dev":"mb0","root":true,"refcnt":2,"options":{},"bytes":0,"packets":0,"drops":0,"overlimits":0,"requeues":0,"backlog":0,"qlen":0}],
+"neigh_a":"10.10.0.2 lladdr 1e:19:fc:3b:65:0a PERMANENT ;",
+"neigh_b":"10.10.1.2 lladdr 3e:0e:1d:67:5f:cd PERMANENT ;"}
+{"tag":"pre","t_ns":1787567582416867504,"offload":"ethtool-missing",
+"mid_qdisc":[{"kind":"noqueue","handle":"0:","dev":"lo","root":true,"refcnt":2,"options":{},"bytes":0,"packets":0,"drops":0,"overlimits":0,"requeues":0,"backlog":0,"qlen":0},{"kind":"noqueue","handle":"0:","dev":"ma0","root":true,"refcnt":2,"options":{},"bytes":0,"packets":0,"drops":0,"overlimits":0,"requeues":0,"backlog":0,"qlen":0},{"kind":"noqueue","handle":"0:","dev":"mb0","root":true,"refcnt":2,"options":{},"bytes":0,"packets":0,"drops":0,"overlimits":0,"requeues":0,"backlog":0,"qlen":0}],
+"neigh_a":"10.10.0.2 lladdr 2a:bc:c1:0e:ca:ac PERMANENT ;",
+"neigh_b":"10.10.1.2 lladdr 9a:d3:c4:c9:23:b6 PERMANENT ;"}

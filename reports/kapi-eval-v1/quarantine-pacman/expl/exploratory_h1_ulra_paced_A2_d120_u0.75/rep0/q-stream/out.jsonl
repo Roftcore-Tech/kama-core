@@ -1,0 +1,11 @@
+{"meta":{"profile":"h1_ulra","cc":"cubic","transport":"quinn","quinn_version":"0.11.11","seed":5394760903009533905,"repeat":0,"msg_count":10,"payload_bytes":32,"max_deadline_ns":120000000000,"udp_tx_bytes":1637,"udp_rx_bytes":554,"tx":{"data":0,"retx":0,"dup":0},"kama_arm":"","submit_interval_ns":30000000000,"budget":{"mode":"paced:18/4500/7312","injected_bytes":2637,"injected_pkts":34,"refused_bytes":0,"refused_pkts":0,"first_refusal_ns":0,"armed_at_ns":280393040835,"pre_arm_bytes":6640,"pre_arm_pkts":61},"t0_unix_ns":1787497228147801810,"events_epoch_offset_ns":0,"warmup_residue":10}}
+{"event":{"msg_id":0,"sent_ns":10091,"delivered_ns":303898210321,"payload_bytes":32}}
+{"event":{"msg_id":1,"sent_ns":30001451605,"delivered_ns":306778113210,"payload_bytes":32}}
+{"event":{"msg_id":2,"sent_ns":60001085266,"delivered_ns":328810173067,"payload_bytes":32}}
+{"event":{"msg_id":3,"sent_ns":90001302183,"delivered_ns":297938419995,"payload_bytes":32}}
+{"event":{"msg_id":4,"sent_ns":120001176245,"delivered_ns":129153210667,"payload_bytes":32}}
+{"event":{"msg_id":5,"sent_ns":150000856664,"delivered_ns":300818226052,"payload_bytes":32}}
+{"event":{"msg_id":6,"sent_ns":180000782024,"delivered_ns":303898177382,"payload_bytes":32}}
+{"event":{"msg_id":7,"sent_ns":210001114017,"delivered_ns":316258286362,"payload_bytes":32}}
+{"event":{"msg_id":8,"sent_ns":240001190809,"delivered_ns":328810192324,"payload_bytes":32}}
+{"event":{"msg_id":9,"sent_ns":270000391060,"delivered_ns":328810155298,"payload_bytes":32}}
