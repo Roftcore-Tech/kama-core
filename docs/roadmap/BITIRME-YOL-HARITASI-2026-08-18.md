@@ -153,21 +153,41 @@ packet-threshold ARQ devreye girmeden tükeniyor) tam burst imzası. Bu artık �
    SR-AUDIT-001 bounded-alloc; PARSER-02/03 kapalı.
 6. `kama-contract` yayımlanmış: API yüzeyi ürün ekibi (client/media/signaling) için dondurulmuş.
 
-## Sıralı iş (solo; 1 sprint ≈ 1 hafta)
+## SoC DÜZELTMESİ (2026-08-24, Abkarada): iki AYRI düzlem
+
+**INV-ENGINE-SOC (engine-spec §0.2, transport-tdd §0.1 — NORMATİF):** transport KRİPTOYLA
+İLGİLENMEZ; opak, güvenliği-zaten-sağlanmış birim taşır (tip-kilidi: `opaque_secured = ct||tag`,
+`aead_tag` alanı YOK). Noise handshake **güvenlik düzleminin** işi; transport TLS/Noise/PQC hangisi
+olursa olsun umursamaz. Önceki plan Noise'ı (P1) transport-kritik-yoluna koyarak bu ilkeyi ihlal
+etmişti — DÜZELTİLDİ.
+
+### A. TRANSPORT-KATMANI product-grade (BU workstream — kriptodan bağımsız)
 
 | # | iş | içerik | çıkış kriteri | sprint |
 |---|---|---|---|---|
-| **P0** | Burst-erasure kurtarma | GE-burst'ta teşhis (mevcut fs harness + tail probe diag); adaptif cap/backoff (product-v2 backlog kalemi) veya threshold-ARQ tetik düzeltmesi; regresyon kapısı = h3-benzeri netem hücresinde kama-tail ≥ q-dgram | kapı yeşil; pin testli | 1 |
-| **P1** | Sprint-6 Noise | `crypto` crate (3 satır→gerçek): libsodium X25519/ChaCha20-Poly1305 (pki §13 registry), Noise pattern (spec), Split → yön anahtarları; `kama-noise-wire` ile birleşir; CLOSURE-1B'nin TEST-ONLY anahtarı gerçek türevle değişir | cold-start hücre-iii PASS; A2 closure gerçek anahtarla tekrar | 1,5–2 |
-| **P2** | Runtime kabuğu | PRODUCT-RUNTIME 2–9: UDP loop, lifecycle, Sender↔ReceiverControlCore wiring, drain, e2e, shutdown/resource | süreç-düzeyi e2e netem'de yeşil; kaynak sınırı testli | 1,5 |
-| **P3** | Default-flip paketi | tail-v1 ON (kanıt: random-loss nötr, kuyrukta GO, P0 sonrası), startup-pacing (EK4-A2 kararı), bootstrap OFF kalır, FEC: OFF (structure-gate kalibrasyonu ürün-v2) | pinlenmiş defaults + değişim gerekçesi tek belge | 0,5 |
-| **P4** | Sertleştirme | PARSER-02/03, cargo-fuzz (ccr-codec, ack, fec-codec, noise-wire), bounded-buffer denetimi, CI'ya fuzz-smoke | CI yeşil, fuzz 0 crash (N saat) | 1 |
-| **P5** | kama-contract + API dondurma | transport API + signaling seam sözleşmesi; UniFFI yüzeyi taslağı (ADR-15) | belge + ürün ekibi onayı | 0,5 |
-| | **TOPLAM** | | | **~6 sprint** |
+| **P0** | Burst-erasure kurtarma | ✅ TAMAM (759d4aa8; netem-doğrulandı, CI-kapılı) | — | (bitti) |
+| **P1** | Runtime kabuğu (opak birim) | UDP loop, connection lifecycle, Sender↔ReceiverControlCore wiring, drain, shutdown/hata/kaynak-sınırı — HEPSİ opak birim taşır; güvenlik-seam'i identity/opak-stub ile (bench adaptörü gibi) | süreç-düzeyi e2e netem'de yeşil (opak-stub kripto); kaynak-sınırı testli | 1,5 |
+| **P2** | Default-flip | P3 kararı (tail-ON re-validation G1 sonucu; startup/bootstrap/FEC OFF) | pinlenmiş defaults + tek gerekçe belgesi | 0,5 |
+| **P3** | Sertleştirme | PARSER-02/03, cargo-fuzz (ccr-codec, ack, fec-codec framing), bounded-buffer denetimi, CI fuzz-smoke | CI yeşil, fuzz 0 crash | 1 |
+| **P4** | kama-contract (opak seam) | transport API + signaling-seam sözleşmesi (opak blob); güvenlik-düzlemi bu seam'e bağlanır; UniFFI taslağı (ADR-15) | belge + seam dondurma | 0,5 |
+| | **TOPLAM (transport)** | | | **~3,5 sprint** |
 
-Sıra gerekçesi: P0 ürünün en görünür zayıflığı (ölçüldü); P1 tek başına "PARTIAL" etiketini kapatır ve
-en belirsiz kalem (erken başlamalı); P2 P1'e bağımlı (anahtarlar); P3 P0+P2 sonrası anlamlı;
-P4/P5 paralel-doküman/CI işi, koşu gerektirmez.
+### B. GÜVENLİK DÜZLEMİ (AYRI workstream — transport-grade'i GATE ETMEZ)
+
+Sprint-6 (kaynak: `reports/dr-cs-3/PRODUCT-RUNTIME-INTEGRATION-PENDING.md` item 4-5; kama-noise-wire
++ crypto crate). Transport'un opak-seam'ine bağlanır; transport bunu BEKLEMEZ.
+
+| # | iş | içerik |
+|---|---|---|
+| S1 | crypto crate (3 satır→gerçek) | libsodium X25519 + ChaCha20-Poly1305 (pki §13 registry), dalek cross-check |
+| S2 | Noise handshake (güvenlik) | transport-tdd §0.1 IK/KK; Session Model V3 key schedule (ccr §35) |
+| S3 | Split → yön anahtarları | `install_session_with_directional_keys` seam'ine gerçek türev (şu an test-enjekte) |
+| S4 | Cold-start hücre-iii | gerçek-Noise handshake-derived Split → "PARTIAL" etiketi kapanır (bu GÜVENLİK-düzlemi gap'i, transport-engine gap'i DEĞİL) |
+| S5 | per-shard AEAD execution | FEC POLİTİKA transport'un, EXECUTION (RS-encode+per-shard AEAD) güvenlik-düzleminin (engine-spec §0.2/§708) |
+
+**Not:** "cold-start PARTIAL / hücre-iii" bir GÜVENLİK-düzlemi eksiğidir (gerçek Noise anahtarı);
+transport-engine'in cold-start'ı (PreConverge/rate-ramp) kriptodan bağımsız ve opak-birimle zaten
+çalışır. İki workstream paralel; buluşma noktası = opak seam (P4 kama-contract).
 
 ## BACKLOG (ürün-grade için gerekli DEĞİL; iddia-gücü/eksiksizlik)
 
