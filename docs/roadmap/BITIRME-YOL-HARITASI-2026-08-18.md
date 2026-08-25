@@ -121,3 +121,65 @@ FEC yapı-kapısı kalibrasyonu (estimator ayrımı bankada; Prereg-A enstrüman
 4. Bankadaki soruyu yeniden ölçme (el-devri §I: FS-1/R2A/product grid re-run YASAK).
 5. Makine güvenliği aynen: `-j2`, tek cargo, ağır kapılar hosted CI'da.
 6. Ön-kayıt yalnız result-bearing koşular için; enstrüman işi için değil.
+
+---
+
+# REVİZYON 2026-08-24 — ÜRÜN-GRADE PLANI (kanıt fazı kapandı; inşa fazı)
+
+## Neredeyiz (hedefe göre)
+
+**Hedef (Abkarada):** transport bir ARAÇ; ürün onun üstüne inşa edilecek → **product-grade ready**.
+
+| katman | durum |
+|---|---|
+| Motor mekanizmaları (ARQ/pacing/rate/tail/FEC-codec/estimator) | ✅ bileşen düzeyinde doğrulanmış |
+| **Kanıt fazı (r5 FAZ-1)** | ✅ **KAPANDI** — p2 KAMA-SUPERIOR +38pp (Holm), rapor `d677ab6b`, white-paper v0.1 |
+| Exploratory / u0.9 dolgusu / FAZ-2 / sub-kbps | ⏸️ BACKLOG (iddia-gücü işi, ürün-grade için gerekli DEĞİL) |
+| **Ürün-grade eksikleri** | ❌ aşağıdaki P0–P5 |
+
+**Bugünkü kritik bulgu:** exploratory h3 (250 kbit/s, GE-burst %40-60) → Kama %86-97 vs Quinn %100.
+Kama **patlamalı kayıpta rakibin gerisinde.** Mekanizma hipotezi: bankadaki bilinen tuning açığı
+(`DR-ARQ-PRODUCT-TAIL-1` "terminal-tail L10-med 0/30": sabit cap-3 probe, ardışık kayıpta
+packet-threshold ARQ devreye girmeden tükeniyor) tam burst imzası. Bu artık ürün P0'ı.
+
+## Ürün-grade READY tanımı (çıkış kriterleri — hepsi ölçülebilir)
+
+1. Gerçek Noise handshake uçtan uca + Split-türevi yön anahtarları (cold-start hücre-iii kapanır).
+2. Üretim UDP çalışma-zamanı: bağlantı yaşam-döngüsü, drain, shutdown/hata/kaynak-sınırı; süreç-düzeyi
+   e2e testi netem altında yeşil (PRODUCT-RUNTIME 2–9).
+3. Varsayılanlar kanıtla karara bağlanıp pinlenmiş (tail, startup-pacing, bootstrap, FEC).
+4. Burst-erasure regresyon kapısı yeşil (P0 düzeltmesi; r5 M: motor fix = yeni commit, kampanya re-run YOK).
+5. CI: fmt/clippy/test(default+all-features)/miri/deny/audit + fuzz-smoke yeşil; reachable `todo!()` sıfır;
+   SR-AUDIT-001 bounded-alloc; PARSER-02/03 kapalı.
+6. `kama-contract` yayımlanmış: API yüzeyi ürün ekibi (client/media/signaling) için dondurulmuş.
+
+## Sıralı iş (solo; 1 sprint ≈ 1 hafta)
+
+| # | iş | içerik | çıkış kriteri | sprint |
+|---|---|---|---|---|
+| **P0** | Burst-erasure kurtarma | GE-burst'ta teşhis (mevcut fs harness + tail probe diag); adaptif cap/backoff (product-v2 backlog kalemi) veya threshold-ARQ tetik düzeltmesi; regresyon kapısı = h3-benzeri netem hücresinde kama-tail ≥ q-dgram | kapı yeşil; pin testli | 1 |
+| **P1** | Sprint-6 Noise | `crypto` crate (3 satır→gerçek): libsodium X25519/ChaCha20-Poly1305 (pki §13 registry), Noise pattern (spec), Split → yön anahtarları; `kama-noise-wire` ile birleşir; CLOSURE-1B'nin TEST-ONLY anahtarı gerçek türevle değişir | cold-start hücre-iii PASS; A2 closure gerçek anahtarla tekrar | 1,5–2 |
+| **P2** | Runtime kabuğu | PRODUCT-RUNTIME 2–9: UDP loop, lifecycle, Sender↔ReceiverControlCore wiring, drain, e2e, shutdown/resource | süreç-düzeyi e2e netem'de yeşil; kaynak sınırı testli | 1,5 |
+| **P3** | Default-flip paketi | tail-v1 ON (kanıt: random-loss nötr, kuyrukta GO, P0 sonrası), startup-pacing (EK4-A2 kararı), bootstrap OFF kalır, FEC: OFF (structure-gate kalibrasyonu ürün-v2) | pinlenmiş defaults + değişim gerekçesi tek belge | 0,5 |
+| **P4** | Sertleştirme | PARSER-02/03, cargo-fuzz (ccr-codec, ack, fec-codec, noise-wire), bounded-buffer denetimi, CI'ya fuzz-smoke | CI yeşil, fuzz 0 crash (N saat) | 1 |
+| **P5** | kama-contract + API dondurma | transport API + signaling seam sözleşmesi; UniFFI yüzeyi taslağı (ADR-15) | belge + ürün ekibi onayı | 0,5 |
+| | **TOPLAM** | | | **~6 sprint** |
+
+Sıra gerekçesi: P0 ürünün en görünür zayıflığı (ölçüldü); P1 tek başına "PARTIAL" etiketini kapatır ve
+en belirsiz kalem (erken başlamalı); P2 P1'e bağımlı (anahtarlar); P3 P0+P2 sonrası anlamlı;
+P4/P5 paralel-doküman/CI işi, koşu gerektirmez.
+
+## BACKLOG (ürün-grade için gerekli DEĞİL; iddia-gücü/eksiksizlik)
+
+- Exploratory Grup-B tamamlama: 204 rep-kol (`manifest-exploratory.jsonl` resume; ~15 h) + u=0.9 karantina
+  dolgusu 14 koşu (`--only u0.9`). Makine stabilken tek gece.
+- FAZ-2 FEC kolları (KAMA-FEC-S, Q-FEC-ISOLATION `kama-fec-codec`, Q-FEC-REFERENCE `raptorq`) + E kapıları
+  — "QUIC mimarisine üstünlük" cümlesinin tek yolu; ~1,5 sprint; iş-değeri: pazarlama/hakem, ürün değil.
+- Sub-kbps süpürmesi (h1 + Grup-C 9 hücre; sınıf-III kuralları yavaş).
+- BENCH-01 blackout-survival ikili metriği (claim-gate).
+- FEC yapı-kapısı kalibrasyonu (Prereg-A + estimator'ü tüketen kural) — ürün-v2.
+- ADR-16 ↔ gerçek FEC crate uyuşmazlığı notu (reed-solomon-erasure yazıyor, kod reed-solomon-simd).
+
+## Süreç kuralı (uzamayı kesmek için)
+Her P-kalemi: tek belge (varsa) + tek regresyon kapısı + anında commit. Yeni kampanya YOK; ölçüm yalnız
+kapı-testi düzeyinde (dakikalar). Kanıt-fazı bitti; docs/feat oranı ters çevrilir.
