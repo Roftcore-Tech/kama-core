@@ -46,11 +46,20 @@ biçimde daha az IP-byte ile yapıyor (r5 D.5 düşük-maliyet gözlemi).
 
 ### İzinli iddia (FAZ-1 tavanı, r5 C.3)
 
-> Kama, preregistered Quinn 0.11.11 baseline'larını (Q-STREAM, Q-DGRAM-ARQ) p2_loss80 profilinde
-> eşit kanal-türevli IP-byte bütçesinde, Holm-düzeltmeli ön-kayıtlı testle geçti (+38.4pp,
-> %95 CI [+31.5, +44.9]). FAZ-1 FEC'siz olduğundan bu sonuç yalnız **recovery/transport-entegrasyon**
-> farkına atfedilir; "QUIC mimarisine üstünlük" iddiası FAZ-2 (ISOLATION+REFERENCE conjunctive)
-> koşulmadan YAPILAMAZ.
+> Kama, preregistered Quinn 0.11.11 **Q-DGRAM-ARQ primary comparison baseline**'ını p2_loss80
+> profilinde eşit kanal-türevli IP-byte bütçesinde, Holm-düzeltmeli ön-kayıtlı testle geçti
+> (ortalama eşleştirilmiş fark +38.4pp; medyan +47.0pp; %95 CI [+31.5, +44.9]; Holm-p 0.0003, n=50).
+> Q-STREAM YAN koldur — ön-kayıtta yalnız betimsel raporlanır (medyan 0.505 vs 0.020; paired-test/CI/
+> Holm-p HESAPLANMAZ, KAPI-2 §2). FAZ-1 FEC'siz olduğundan bu sonuç yalnız **recovery/transport-
+> entegrasyon** farkına atfedilir; "QUIC mimarisine üstünlük" iddiası FAZ-2 (ISOLATION+REFERENCE
+> conjunctive) koşulmadan YAPILAMAZ.
+
+**ERRATA (2026-08-24, iddia-dili denetimi):** Bu cümlenin ilk hali (`d677ab6b`) +38.4pp/Holm-p
+istatistiğini Q-STREAM ve Q-DGRAM-ARQ'nun İKİSİNE atfediyordu; ön-kayıt (KAPI-2 §2) primary testi
+YALNIZ `kama-tail-v1 − q-dgram-arq` olarak tanımlar, q-stream yan koldur ve paired-test/CI/Holm-p
+hesaplanmamıştır (`PRIMARY-VERDICTS.csv` tek karşılaştırıcı; `pairs.csv` q-stream satırı yok). Sayısal
+hüküm DEĞİŞMEDİ; yalnız yanlış-atfedilen karşılaştırıcı düzeltildi. Ayrıca +38.4pp'nin ORTALAMA
+eşleştirilmiş fark olduğu (medyan +47.0) netleştirildi.
 
 Dış araştırma-sorusu cevabı (r5 C.3 metni bağlamında): "The campaign tests whether Kama retains
 useful message-delivery capability in synthetic high-loss/high-delay/asymmetric/sub-kilobit IP
