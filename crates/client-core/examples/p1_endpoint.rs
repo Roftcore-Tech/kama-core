@@ -13,6 +13,19 @@ use std::time::Duration;
 use client_core::runtime::{ClientEndpoint, RuntimeConfig, ServerEndpoint};
 use client_core::seam::IdentitySeam;
 
+/// Süreç tepe-RSS'i (VmHWM, kB) — item 9 kaynak-sınırı kanıtı (CLOSURE-2 /proc deseni).
+fn peak_rss_kb() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|st| {
+            st.lines()
+                .find(|l| l.starts_with("VmHWM:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|v| v.parse().ok())
+        })
+        .unwrap_or(0)
+}
+
 fn arg(a: &[String], k: &str, d: &str) -> String {
     a.iter()
         .position(|x| x == k)
@@ -50,6 +63,7 @@ async fn main() {
             tokio::time::sleep(linger).await;
             let stats = srv.shutdown().await;
             eprintln!("P1-SERVER delivered={delivered}/{expect} stats={stats:?}");
+            eprintln!("P1-RSS kb={}", peak_rss_kb());
             u8::from(delivered < expect)
         }
         "client" => {
@@ -90,6 +104,7 @@ async fn main() {
             .await;
             let stats = cli.shutdown().await;
             eprintln!("P1-CLIENT acked={acked}/{units} stats={stats:?}");
+            eprintln!("P1-RSS kb={}", peak_rss_kb());
             u8::from(acked < units)
         }
         _ => {

@@ -23,5 +23,13 @@ sleep 1
 "$BIN" client --server 10.10.1.1:4600 --units "$UNITS" --interval-ms 50 --deadline-s "$DEADLINE" 2>client.err; CRC=$?
 wait "$SRV"; SRC=$?
 cat client.err server.err
+# Item 9 kaynak-sınırı: iki sürecin tepe-RSS'i < 64 MiB (CLOSURE-2 boundedness deseni).
+RSS_MAX=65536
+for f in client.err server.err; do
+  KB=$(grep -oE 'P1-RSS kb=[0-9]+' "$f" | grep -oE '[0-9]+' | head -1)
+  if [ -n "$KB" ] && [ "$KB" -gt "$RSS_MAX" ]; then
+    echo "P1-GATE: RED (RSS $KB kB > $RSS_MAX kB, $f)"; exit 1
+  fi
+done
 if [ "$CRC" -eq 0 ] && [ "$SRC" -eq 0 ]; then echo "P1-GATE: GREEN (units=$UNITS loss=$LOSS delay=$DELAY)"; exit 0
 else echo "P1-GATE: RED (client=$CRC server=$SRC)"; exit 1; fi

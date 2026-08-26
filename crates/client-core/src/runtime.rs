@@ -113,10 +113,16 @@ pub struct ClientStats {
     pub rx_datagrams: u64,
     /// `seam.open` reddi (doğrulanamayan gelen datagram — sessiz düşürüldü).
     pub open_failures: u64,
+    /// Açıldı ama tanınmayan çerçeve tipi (ne DATA ne ACK) — kontrol-düzlemi dal-noktası
+    /// (item 6, workstream B'de kama-noise-wire formatıyla bağlanır); sessiz yutulmaz, sayılır.
+    pub unknown_frames: u64,
     /// Payload'ı store'da bulunamayan (çoktan ACK'lenmiş birime geç karar) emisyon — kayıp sayıldı.
     pub stale_decisions: u64,
     /// Soket send hatası (kanal kaybı eşdeğeri, INV-RATE-1).
     pub send_errors: u64,
+    /// Shutdown anında offer-kuyruğunda kalmış, HİÇ işlenmemiş birim (app `Ok` almıştı ama
+    /// gönderim denenmedi — sessiz kayıp yerine sayaç; app kapanışta bunu okur).
+    pub unaccepted_offers: u64,
 }
 
 /// Server koşu istatistikleri.
@@ -132,6 +138,8 @@ pub struct ServerStats {
     pub retired_idle_peers: u64,
     pub rx_datagrams: u64,
     pub open_failures: u64,
+    /// Açıldı ama tanınmayan çerçeve (kontrol-düzlemi dal-noktası; bkz. ClientStats.unknown_frames).
+    pub unknown_frames: u64,
 }
 
 /// Teslim olayı: hangi eşten hangi birim, payload'ıyla.
@@ -292,9 +300,11 @@ async fn client_task(
         ($raw:expr, $now:expr) => {
             stats.rx_datagrams += 1;
             if let Some(plain) = seam.open($raw) {
-                if !plain.is_empty()
-                    && (plain[0] == FRAME_TYPE_ACK || plain[0] == FRAME_TYPE_ACK_V2)
+                if plain.is_empty()
+                    || (plain[0] != FRAME_TYPE_ACK && plain[0] != FRAME_TYPE_ACK_V2)
                 {
+                    stats.unknown_frames += 1;
+                } else {
                     if let Ok(frame) = AckFrame::decode(&plain) {
                         let acked = frame.acked_full(max_emitted_seq + 1);
                         for s in &acked {
@@ -350,6 +360,10 @@ async fn client_task(
         }
     }
 
+    // Kuyrukta kalan (hiç işlenmemiş) offer'lar sessizce kaybolmaz — sayılır.
+    while offer_rx.try_recv().is_ok() {
+        stats.unaccepted_offers += 1;
+    }
     // ── Drain (D8): motor birim terk etmez → pif→0 hedefi MUTLAKA süre-tavanlı. ──
     let deadline = tokio::time::Instant::now() + cfg.drain_cap;
     loop {
@@ -482,7 +496,10 @@ async fn server_task(
                     stats.open_failures += 1;
                     continue;
                 };
-                let Some((wire_seq, unit_id, payload)) = decode_data(&plain) else { continue };
+                let Some((wire_seq, unit_id, payload)) = decode_data(&plain) else {
+                    stats.unknown_frames += 1; // kontrol-düzlemi dal-noktası (item 6 / B-hattı).
+                    continue;
+                };
                 let now = elapsed_ns(start);
                 // Peer-cap FAIL-CLOSED (bench'in sınırsız tablosu SR-AUDIT ihlaliydi — D6):
                 // tablo doluyken YENİ peer typed-drop; mevcut peer'lar etkilenmez.

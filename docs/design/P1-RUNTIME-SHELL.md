@@ -44,7 +44,10 @@ runtime.rs  ClientEndpoint / ServerEndpoint + görev döngüleri + RuntimeError 
 2. **netem süreç-düzeyi kapısı:** `examples/p1_endpoint` (client/server rolleri) + iki-netns %5 kayıp
    + 40 ms RTT → N=100 birim %100 teslim (tail-ON kuyruk dahil), kaynak-sınırı ihlali yok.
 
-## Sıralama
+## Sıralama — SONUÇ (2026-08-26): FAZ-1 + FAZ-2 TAMAM (`reports/p1-runtime-shell/P1-CLOSURE.md`)
+Item-6 kararı: kontrol-düzlemi UDP-kablolaması B-hattı S3 ile tamamlanır (kapanış raporu §item-6;
+kütüphane-düzeyi kanıt CLOSURE-1B'de mevcut; v0'da dal-noktası `unknown_frames` ile görünür).
+
 FAZ-1 (bu commit dizisi): seam + wire + runtime (client+server) + loopback e2e + example + netem kapısı.
 FAZ-2: ReceiverControlCore kontrol-düzlemi dalı + patience/idle emeklilik incelikleri + shutdown/kaynak
 doğrulaması genişletmesi (item 9 tamamı) + kapanış raporu.

@@ -166,3 +166,155 @@ async fn peer_cap_is_fail_closed() {
     );
     assert_eq!(ss.delivered, 1);
 }
+
+/// Item 9 — ERROR yolu: server ORTA-KOŞUDA ölür; client asılı kalmaz, drain cap'lidir, residue
+/// typed görünür (bench "dead peer → bounded exit" disiplini, tasarım D8/D9).
+#[tokio::test(flavor = "multi_thread")]
+async fn client_survives_server_death_mid_run() {
+    let seam = Arc::new(IdentitySeam);
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        RuntimeConfig::default(),
+        seam.clone(),
+    )
+    .await
+    .expect("server bind");
+    let addr = server.local_addr();
+    let client = ClientEndpoint::connect(
+        addr,
+        RuntimeConfig {
+            drain_cap: Duration::from_millis(500),
+            ..RuntimeConfig::default()
+        },
+        seam,
+    )
+    .await
+    .expect("client connect");
+    for i in 0..10u64 {
+        client
+            .send(format!("pre-death-{i}").into_bytes())
+            .expect("offer");
+    }
+    // İlk teslimler aksın, sonra server ÖL (orta-koşu ölüm).
+    tokio::time::timeout(Duration::from_secs(10), server.next_delivery())
+        .await
+        .expect("ilk teslim")
+        .expect("delivery");
+    let _ = server.shutdown().await;
+    for i in 10..20u64 {
+        client
+            .send(format!("post-death-{i}").into_bytes())
+            .expect("offer (ölü hedefe de kabul)");
+    }
+    // Kapanış SINIRLI sürede dönmeli (drain_cap 500 ms + pay); asılı kalma = başarısızlık.
+    let t0 = std::time::Instant::now();
+    let stats = tokio::time::timeout(Duration::from_secs(5), client.shutdown())
+        .await
+        .expect("shutdown drain cap'li olmalı — asılı kaldı");
+    assert!(
+        t0.elapsed() < Duration::from_secs(3),
+        "drain cap aşıldı: {:?}",
+        t0.elapsed()
+    );
+    assert_eq!(
+        stats.offered + stats.unaccepted_offers,
+        20,
+        "kabul edilen her offer ya işlendi ya unaccepted sayacında: {stats:?}"
+    );
+    assert!(
+        stats.undelivered > 0,
+        "ölü server sonrası residue typed görünmeli: {stats:?}"
+    );
+}
+
+/// Item 9 — teslim-kanalı taşması: app drenaj yapmazken bellek BÜYÜMEZ, taşan teslim SAYILIR,
+/// app sonradan drenaja dönebilir (kanal bozulmaz).
+#[tokio::test(flavor = "multi_thread")]
+async fn delivery_overflow_is_counted_not_grown() {
+    let seam = Arc::new(IdentitySeam);
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        RuntimeConfig {
+            delivery_queue: 4,
+            ..RuntimeConfig::default()
+        },
+        seam.clone(),
+    )
+    .await
+    .expect("server bind");
+    let mut client = ClientEndpoint::connect(server.local_addr(), RuntimeConfig::default(), seam)
+        .await
+        .expect("client connect");
+    for i in 0..40u64 {
+        client
+            .send(format!("overflow-{i}").into_bytes())
+            .expect("offer");
+    }
+    // App teslimleri BİLEREK drenaj etmiyor; birimlerin ACK'lenmesini bekle (teslim ≠ drenaj).
+    let mut acked = 0u64;
+    let _ = tokio::time::timeout(Duration::from_secs(20), async {
+        while acked < 40 {
+            if client.acked().await.is_some() {
+                acked += 1;
+            }
+        }
+    })
+    .await;
+    assert_eq!(acked, 40, "teslim-kanalı taşması ACK yolunu ETKİLEMEMELİ");
+    // Şimdi drenaja dön: kanal hâlâ işler (ilk 4 bekliyor).
+    let d = tokio::time::timeout(Duration::from_secs(5), server.next_delivery())
+        .await
+        .expect("drenaj dönünce teslim akmalı")
+        .expect("delivery");
+    assert!(d.payload.starts_with(b"overflow-"));
+    client.shutdown().await;
+    let ss = server.shutdown().await;
+    assert!(
+        ss.delivery_dropped > 0,
+        "taşan teslim sayaçla görünmeli: {ss:?}"
+    );
+    assert!(
+        ss.delivered + ss.delivery_dropped >= 40,
+        "teslim + taşan ≥ 40 olmalı: {ss:?}"
+    );
+}
+
+/// Item 3 — idle-peer emekliliği: kısa idle_hold ile eş emekli edilir (sayaç), tablo boşalır ve
+/// AYNI eş yeniden gelirse yeni slot açılır (yaşam-döngüsü çevrimi).
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_peer_is_retired_and_slot_reusable() {
+    let seam = Arc::new(IdentitySeam);
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        RuntimeConfig {
+            idle_hold: Duration::from_millis(300),
+            ..RuntimeConfig::default()
+        },
+        seam.clone(),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(server.local_addr(), RuntimeConfig::default(), seam)
+        .await
+        .expect("client connect");
+    client.send(b"before-idle".to_vec()).expect("offer");
+    tokio::time::timeout(Duration::from_secs(10), server.next_delivery())
+        .await
+        .expect("teslim")
+        .expect("delivery");
+    // idle_hold + patience-tick payı: emeklilik gerçekleşsin.
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    // Aynı eş yeniden trafik üretir → yeni slot (yeni Receiver) açılmalı ve teslim akmalı.
+    client.send(b"after-idle".to_vec()).expect("offer 2");
+    let d = tokio::time::timeout(Duration::from_secs(10), server.next_delivery())
+        .await
+        .expect("emeklilik sonrası teslim")
+        .expect("delivery");
+    assert_eq!(d.payload, b"after-idle".to_vec());
+    client.shutdown().await;
+    let ss = server.shutdown().await;
+    assert!(
+        ss.retired_idle_peers >= 1,
+        "emeklilik sayaçla görünmeli: {ss:?}"
+    );
+}

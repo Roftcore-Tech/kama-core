@@ -41,3 +41,17 @@ matched local RTT → srtt>0 → PreConverge exit → startup pacing`.
 
 Also still pending, separately: the DR-CS-3 **locked/fresh panel validation** that gates
 `BootstrapRttConfig` default-ON.
+
+
+---
+
+## STATUS UPDATE — 2026-08-26 (P1 runtime shell, `ddc9ac94`+)
+
+Items **1, 2, 3(v0), 7, 8, 9**: CLOSED by `crates/client-core/{seam,wire,runtime}.rs` + gates
+(loopback 7/7 in CI; two-netns netem gate GREEN at 5%/20ms, 20%/40ms, sustained 500@10%/40ms with
+peak-RSS bound ~4 MB). Item **6**: PARTIAL — library-level wiring proven (CLOSURE-1B); UDP-level
+completion deliberately deferred to the security plane (workstream B, S3) because the control plane
+rides the kama-noise-wire sealed format; branch point visible via `unknown_frames`. Items **4, 5**:
+security plane (workstream B; SoC correction `1b38936d`). Forbidden-claims list REMAINS IN FORCE
+until items 4-6 close (no "deployable transport" / "Noise verified" claims; the runtime ships an
+IdentitySeam stub and claims no security).
