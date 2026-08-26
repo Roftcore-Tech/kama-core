@@ -117,6 +117,14 @@ const T_SPACING_NS: u64 = SACK_WIRE_BYTES * 1_000_000_000 / RETURN_BW_PRIOR;
 /// beklemede-yeni-bilgi varken timer-cadence = clamp(K_ARR×last_gap, T_SPACING, FLOOR).
 const K_ARR: u64 = 2;
 
+/// [SR-AUDIT-001 / P3] rx-set kayan-pencere tavanı: `received` en çok bu kadar ayrık seq tutar.
+/// 4096: gerçek reorder/inflight ufku (yüzlerce) × geniş güvenlik payı; `from_received` zaten yalnız
+/// [`crate::ack::MAX_ACK_RANGES`]=16 range üretir → daha büyük pencere DEDUP dışında işe yaramaz ama
+/// her SACK'in collect+sort maliyetini şişirirdi. 4096 → rx-state ~160KB'ta sabit + SACK ucuz. Düşman
+/// (ya da çok-uzun-ömürlü) ayrık-seq akışında en-eski seq O(log n) `pop_first` ile düşer; kümülatif
+/// SACK kaybı telafi eder (pencere-dışı çok-geç dup teorik — E2E envelope §4 + client-core dedup nihai).
+const RX_DEDUP_WINDOW: usize = 4096;
+
 /// Receiver state machine (§4). rx-set + SACK üretimi; `on_datagram` / `on_ack_timer` ile sürülür.
 pub struct Receiver {
     state: RxState,
@@ -397,6 +405,18 @@ impl Receiver {
                 self.largest_recv_ns = now_ns; // ack_delay largest'ın alımından ölçülür.
             }
         }
+        // [SR-AUDIT-001 / P3] rx-set SINIRLI kayan pencere. Aksi hâlde ayrık-seq akıtan bir eş
+        // `received`'i ömür-boyu şişirir (BTreeSet + her SACK'te O(n log n) collect+sort). SACK
+        // KÜMÜLATİF olduğundan `largest`'ın çok altındaki seq'ler dedup için gereksiz: en-eski seq
+        // O(log n) `pop_first` ile düşer (kap sabit). Pencere-dışı çok-geç bir dup "yeni" görünüp
+        // yeniden teslim edilebilir (E2E envelope §4 nihai dedup; client-core delivered-window da
+        // kapsar) — bir u16-wrap'lık pencere her gerçek reorder/inflight ufkunu fazlasıyla aşar.
+        while self.received.len() > RX_DEDUP_WINDOW {
+            self.received.pop_first();
+            if let Some(&first) = self.received.first() {
+                self.smallest_seq = first;
+            }
+        }
     }
 
     /// rx-set [smallest..largest] aralığında boşluk (gap) var mı → reorder/loss göstergesi.
@@ -491,6 +511,31 @@ impl Default for Receiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [P3 SR-AUDIT-001] Düşman ayrık-seq akışı rx-set'i sınırsız büyütemez: kap sabit.
+    #[test]
+    fn received_set_is_bounded_under_distinct_seq_flood() {
+        let mut rx = Receiver::new();
+        // Pencereyi rahatça aşan ayrık, artan seq besle (eviction devreye girsin).
+        let n = RX_DEDUP_WINDOW as u64 + 2000;
+        for i in 0..n {
+            let _ = rx.on_datagram(
+                RxDatagram {
+                    seq: i,
+                    unit_id: i,
+                    kind: RxKind::Data,
+                },
+                i * 1000,
+            );
+        }
+        assert!(
+            rx.received_count() <= RX_DEDUP_WINDOW,
+            "rx-set tavanı aşmamalı: {} > {RX_DEDUP_WINDOW}",
+            rx.received_count()
+        );
+        // En yüksek seq hâlâ izleniyor (pencere en yeniyi tutar).
+        assert_eq!(rx.largest_seq(), Some(n - 1));
+    }
 
     const MS: u64 = 1_000_000;
 
