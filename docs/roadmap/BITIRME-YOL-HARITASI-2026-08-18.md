@@ -151,7 +151,9 @@ packet-threshold ARQ devreye girmeden tükeniyor) tam burst imzası. Bu artık �
 4. Burst-erasure regresyon kapısı yeşil (P0 düzeltmesi; r5 M: motor fix = yeni commit, kampanya re-run YOK).
 5. CI: fmt/clippy/test(default+all-features)/miri/deny/audit + fuzz-smoke yeşil; reachable `todo!()` sıfır;
    SR-AUDIT-001 bounded-alloc; PARSER-02/03 kapalı.
-6. `kama-contract` yayımlanmış: API yüzeyi ürün ekibi (client/media/signaling) için dondurulmuş.
+6. **transport-API-v0 dondurulmuş** + yürütülebilir pin (`api_surface_v0`); `kama-contract` crate'i
+   (signaling KESİN imzası) `signaling-seam-v0.md` §5 + CLAUDE.md §10 gereği §4.4 substrat kararı +
+   signaling-API stabilizasyonuna ertelendi (transport-grade'i gate ETMEZ). Bkz. `docs/design/P4-TRANSPORT-API-FREEZE.md`.
 
 ## SoC DÜZELTMESİ (2026-08-24, Abkarada): iki AYRI düzlem
 
@@ -169,8 +171,8 @@ etmişti — DÜZELTİLDİ.
 | **P1** | Runtime kabuğu (opak birim) | UDP loop, connection lifecycle, Sender↔ReceiverControlCore wiring, drain, shutdown/hata/kaynak-sınırı — HEPSİ opak birim taşır; güvenlik-seam'i identity/opak-stub ile (bench adaptörü gibi) | süreç-düzeyi e2e netem'de yeşil (opak-stub kripto); kaynak-sınırı testli | 1,5 |
 | **P2** | Default-flip | P3 kararı (tail-ON re-validation G1 sonucu; startup/bootstrap/FEC OFF) | pinlenmiş defaults + tek gerekçe belgesi | 0,5 |
 | **P3** | Sertleştirme | PARSER-02/03, cargo-fuzz (ccr-codec, ack, fec-codec framing), bounded-buffer denetimi, CI fuzz-smoke | CI yeşil, fuzz 0 crash | 1 |
-| **P4** | kama-contract (opak seam) | transport API + signaling-seam sözleşmesi (opak blob); güvenlik-düzlemi bu seam'e bağlanır; UniFFI taslağı (ADR-15) | belge + seam dondurma | 0,5 |
-| | **TOPLAM (transport)** | | | **~3,5 sprint** |
+| **P4** | ✅ TAMAM — transport-API-v0 freeze | SecuritySeam opak sözleşmesi + runtime yüzeyi dondurma + `api_surface_v0` yürütülebilir pin + UniFFI TASLAĞI (ADR-15). **DÜZELTME:** `kama-contract` crate'i / signaling KESİN imzası spec §5/§10 gereği §4.4+signaling'e ERTELENDİ (roadmap'in önceki "kama-contract yayımlanmış" ifadesi spec'le çelişiyordu — düzeltildi). Bkz. `docs/design/P4-TRANSPORT-API-FREEZE.md` | belge + pin | (bitti) |
+| | **TOPLAM (transport)** | A-hattı P0–P4 ✅ KAPANDI | | **~3,5 sprint** |
 
 ### B. GÜVENLİK DÜZLEMİ (AYRI workstream — transport-grade'i GATE ETMEZ)
 

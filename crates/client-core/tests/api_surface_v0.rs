@@ -1,0 +1,149 @@
+//! transport-API-v0 YÜZEY PIN'i (P4 — kama-contract'ın transport-tarafı dondurulmuş alt-kümesi).
+//!
+//! Bu bir ÇALIŞMA doğrulaması DEĞİL, bir DERLEME kapısıdır. Dondurulmuş public imzalardan biri
+//! (isim/alan/varyant/imza) sessizce değişir veya silinirse bu dosya DERLENMEZ → CI RED.
+//! Gerekçe: KALICI-KURAL-3 — hash-kimliği ≠ sözleşme-uygunluğu; sözleşme yürütülebilir olmalı.
+//!
+//! KAPSAM (spec-uyumlu): yalnız KRİPTODAN BAĞIMSIZ transport-katmanı ürün yüzeyi. Signaling
+//! `send_signaling/on_signaling` KESİN imzası ve `kama-contract` crate'i BURADA DEĞİL — onlar
+//! `specs/signaling-seam-v0.md` §5 + CLAUDE.md §10 gereği §4.4 (quinn/custom) + signaling-API
+//! stabilizasyonuna kadar ERTELENDİ. Bkz. `docs/design/P4-TRANSPORT-API-FREEZE.md`.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+// Re-export yüzeyi (path-pin: bu yollar kaybolursa import derlenmez).
+use client_core::runtime::{
+    ClientEndpoint, ClientHandle, ClientStats, Delivery, RuntimeConfig, RuntimeError,
+    ServerEndpoint, ServerHandle, ServerStats,
+};
+use client_core::seam::{IdentitySeam, SecuritySeam, IDENTITY_TAG};
+use client_core::wire::{decode_data, encode_data, FRAME_DATA, HDR_DATA};
+use client_core::ClientSession;
+// Motor re-export'ları (yalnız yol/isim-pin; derinlemesine imza motorun kendi testlerinde).
+use client_core::{
+    admit_and_decode, EngineError, Event, OpaqueUnit, OpenedTransportShard, Sender,
+    TailRecoveryConfig, TransmitDecision, TransmitKind,
+};
+
+/// Değeri okunmayan tip-taşıyıcı: re-export'ların NAMEABLE olduğunu pinler (isim silinirse RED).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn _engine_reexport_names_are_frozen(
+    _e: EngineError,
+    _ev: Event,
+    _u: OpaqueUnit,
+    _o: OpenedTransportShard,
+    _s: Sender,
+    _t: TailRecoveryConfig,
+    _d: TransmitDecision,
+    _k: TransmitKind,
+) {
+    let _f: fn(Vec<OpenedTransportShard>, u8, u8) -> Result<Vec<u8>, EngineError> =
+        admit_and_decode;
+    let _ = _f;
+}
+
+/// Asla ÇALIŞMAZ (baştaki koşulsuz `return`) — gövde yalnız TİP-DENETİMİ için var. Her `.await`
+/// ve her imza burada dondurulmuş tiplere bağlanır; imza kayarsa derleme kırılır.
+#[tokio::test]
+#[allow(
+    unreachable_code,
+    unused_variables,
+    unused_mut,
+    clippy::diverging_sub_expression
+)]
+async fn transport_api_v0_surface_is_frozen() {
+    return;
+
+    let cfg: RuntimeConfig = RuntimeConfig::default();
+    let seam: Arc<dyn SecuritySeam> = Arc::new(IdentitySeam);
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+    // ── RuntimeConfig: TAM alan kümesi (eksiksiz destructure → alan ekle/sil = RED) ──
+    let RuntimeConfig {
+        max_inflight_units: _,
+        offer_queue: _,
+        delivery_queue: _,
+        max_unit_bytes: _,
+        max_peers: _,
+        quota_r: _,
+        drain_cap: _,
+        idle_hold: _,
+    } = cfg.clone();
+
+    // ── RuntimeError: TAM varyant kümesi (eksiksiz match, `_` yok → varyant ekle/sil = RED) ──
+    match RuntimeError::Closed {
+        RuntimeError::QueueFull => {}
+        RuntimeError::UnitTooLarge { got: _, cap: _ } => {}
+        RuntimeError::Closed => {}
+        RuntimeError::Io(_) => {}
+    }
+
+    // ── ClientEndpoint / ClientHandle imzaları ──
+    let ch: ClientHandle = ClientEndpoint::connect(addr, cfg.clone(), seam.clone())
+        .await
+        .unwrap();
+    let mut ch = ch;
+    let _: Result<(), RuntimeError> = ch.send(Vec::new());
+    let _: Option<u64> = ch.acked().await;
+    let _: ClientStats = ch.shutdown().await;
+
+    // ── ServerEndpoint / ServerHandle imzaları ──
+    let sh: ServerHandle = ServerEndpoint::bind(addr, cfg.clone(), seam.clone())
+        .await
+        .unwrap();
+    let mut sh = sh;
+    let _: SocketAddr = sh.local_addr();
+    let _: Option<Delivery> = sh.next_delivery().await;
+    let _: ServerStats = sh.shutdown().await;
+
+    // ── ClientStats / ServerStats / Delivery: TAM alan kümesi ──
+    let ClientStats {
+        offered: _,
+        acked: _,
+        undelivered: _,
+        tx_datagrams: _,
+        rx_datagrams: _,
+        open_failures: _,
+        unknown_frames: _,
+        stale_decisions: _,
+        send_errors: _,
+        unaccepted_offers: _,
+    } = ClientStats::default();
+    let ServerStats {
+        delivered: _,
+        delivery_dropped: _,
+        dropped_new_peers: _,
+        retired_idle_peers: _,
+        rx_datagrams: _,
+        open_failures: _,
+        unknown_frames: _,
+    } = ServerStats::default();
+    let Delivery {
+        peer: _,
+        unit_id: _,
+        payload: _,
+    } = Delivery {
+        peer: addr,
+        unit_id: 0,
+        payload: Vec::new(),
+    };
+
+    // ── SecuritySeam sözleşmesi (güvenlik-düzlemi bu 3 metoda takılır) ──
+    let s = IdentitySeam;
+    let _: Vec<u8> = s.seal(Vec::new());
+    let _: Option<Vec<u8>> = s.open(&[]);
+    let _: usize = s.overhead();
+    let _: usize = IDENTITY_TAG;
+    // dyn-uyumluluk (güvenlik-düzlemi Arc<dyn SecuritySeam> olarak takar):
+    let _dyn: Arc<dyn SecuritySeam> = Arc::new(IdentitySeam);
+
+    // ── wire-v0 codec imzaları (tag YOK — seam'in işi) ──
+    let _: Vec<u8> = encode_data(0u16, 0u64, &[]);
+    let _: Option<(u16, u64, &[u8])> = decode_data(&[]);
+    let _: u8 = FRAME_DATA;
+    let _: usize = HDR_DATA;
+
+    // ── ClientSession (G2 sevk yüzeyi — tail-ON validated_v1) ──
+    let _cs: ClientSession = ClientSession::new();
+}
