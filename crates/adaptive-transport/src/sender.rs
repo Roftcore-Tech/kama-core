@@ -903,6 +903,17 @@ enum ProbeExit {
 
 /// İlk RTT ölçülene kadar pacing/eşik için başlangıç RTT [CAL initial].
 const INITIAL_RTT: Duration = Duration::from_millis(100);
+/// [Q18-FIX] Yapı-gate alt kayıp-eşiği (ppm). Altında fuzzy'nin R1 `fec=0`'ı doğru (kayıp düşük,
+/// ARQ yeter); üstünde kayıp anlamlı ve yapı belirleyici. 100k = Q17 holdout'un IID/burst'ün
+/// ayrıştığı bandın tabanı (FS-FUSION-CAL-1 §5: 20_833..83_333 ARQ-tail Pareto; 200k FEC Pareto).
+const STRUCTURE_GATE_LOSS_MIN_PPM: u64 = 100_000;
+/// [Q18-FIX] Gate'in karar vermesi için pencerede gereken fate-known birim (kanıt-eşiği; azsa
+/// dokunmaz). 32 = Laplace p11/p01'in ±~30k ppm gürültü bandına inmesi için yeterli geçiş sayısı.
+const STRUCTURE_GATE_MIN_N: u32 = 32;
+/// [Q18-FIX] IID kabul-tavanı: `burst_delta = p11−p01 ≤ bu` → korelasyonsuz kayıp → FEC açılır.
+/// IID'de beklenen 0 (±gürültü); burst'te (GE-L3+) FATE2ARM ölçümü +567k ppm — boşluk ~433k.
+/// 50k = gürültü-üstü, burst-altı güvenli çizgi (fate_estimator'daki 25_000 pin'i geçer).
+const STRUCTURE_GATE_IID_MAX_DELTA_PPM: i64 = 50_000;
 /// STARTUP→STEADY plato: BtlBw N ardışık round Δ<ε ise plato [CAL].
 const STARTUP_PLATEAU_ROUNDS: u32 = 3;
 /// plato ε (per-mille): btlbw artışı < %5 → stabil.
@@ -1191,6 +1202,7 @@ pub struct Sender {
     diag_delivered_credited: u64, // [TUR-2c] kol-2 delivered-kredisi (byte)
     diag_qd_no_evidence: u64,    // [TUR-3a D-3/1] rtprop-yokken qd_ratio=0 sayısı
     diag_fuzzy_no_rule: u64,     // [TUR-4] sıfır-ağırlık fallback ateşleme sayısı
+    diag_structure_gate_opened: u64, // [Q18-FIX] yapı-gate'in fuzzy fec=0'ı açtığı event sayısı
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
@@ -1368,6 +1380,7 @@ impl Sender {
             diag_delivered_credited: 0,
             diag_qd_no_evidence: 0,
             diag_fuzzy_no_rule: 0,
+            diag_structure_gate_opened: 0,
             last_fusion_snapshot: None,
             fusion_event_index: 0,
             last_decision: FusionDecision {
@@ -2755,11 +2768,22 @@ impl Sender {
             qd_ratio_permille,
             ack_confidence_permille: self.ack_confidence_permille(now_ns),
         };
-        let d = self.fuzzy.decide(&inputs);
+        let mut d = self.fuzzy.decide(&inputs);
         // [TUR-4] sıfır-ağırlık fallback kanıt-sayacı (fallback çıktısı R1-baskın çıktıyla
         // bayt-özdeş — sayaçsız gözlemlenemez, workflow-bulgusu).
         if d.no_rule {
             self.diag_fuzzy_no_rule += 1;
+        }
+        // [Q18-FIX] YAPI-FARKINDA FEC GATE. Q17 holdout + FS-FUSION-CELL-1 iki bağımsız kanıt:
+        // kayıp-ORANI tek başına FEC'i kapılayamaz (aynı 200k ppm'de IID coding ister, burst ARQ
+        // ister). Fuzzy controller rate-only olduğundan %20 IID'de parity=0 planlıyordu — ölçümün
+        // "coding tek çalışan mekanizma" dediği rejimde. Fix diz'i kaydırmak DEĞİL (Q17 bunu
+        // yasaklar): fate_estimator'ın loss-YAPI sinyali (burst_delta = p11−p01) gate'e girer.
+        // Deterministik, RNG'siz (ADR-17); kanıt yetersizse (n < min) DOKUNMAZ → mevcut davranış
+        // byte-özdeş. Politika transport'ta kalır, RS-encode güvenlik-katmanında (INV-ENGINE-SOC).
+        if let Some(fec) = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm) {
+            d.fec_parity_ratio_permille = fec;
+            self.diag_structure_gate_opened += 1;
         }
         // Commit-D: CANONICAL-snapshot — aynı-`inputs`-DEĞERİ kopyalanır (ikinci-hesap-yok).
         // HÜKÜM (Commit-F-daraltması): "Semantic non-regression demonstrated; the diagnostic path
@@ -2776,6 +2800,27 @@ impl Sender {
             event_index: self.fusion_event_index,
         });
         d
+    }
+
+    /// [Q18-FIX] Yapı-farkında FEC gate. Yalnız fuzzy'nin `fec=0` bıraktığı ama kaybın anlamlı
+    /// olduğu Q18 bandında devreye girer; estimator IID-yapı gösteriyorsa (`burst_delta ≤ 0`:
+    /// kayıplar korelasyonsuz → retransmit de aynı oranla kaybolur → ileri-parity kazanır)
+    /// `fec_med` açar. Burst-yapı (`burst_delta` pozitif) → ARQ'ya bırakır (`None`, dokunmaz).
+    /// Kanıt-eşiği: pencerede `≥ STRUCTURE_GATE_MIN_N` fate-known birim; azsa `None`.
+    fn structure_gate_fec(&self, fuzzy_fec_permille: u32, loss_ppm: u64) -> Option<u32> {
+        if fuzzy_fec_permille != 0 || loss_ppm < STRUCTURE_GATE_LOSS_MIN_PPM {
+            return None;
+        }
+        let f = self.fate_estimator.snapshot();
+        if f.n < STRUCTURE_GATE_MIN_N {
+            return None;
+        }
+        // Laplace-yumuşatılmış p11−p01: IID'de ≈0 (örnekleme gürültüsü ±), burst'te belirgin pozitif.
+        if f.burst_delta_ppm <= STRUCTURE_GATE_IID_MAX_DELTA_PPM {
+            Some(self.fuzzy.config().fec_med)
+        } else {
+            None
+        }
     }
 
     /// Commit-D: controller'ın-son-gördüğü girdiler (canonical; harness-örneklemesi dışarıdan).
@@ -4551,6 +4596,12 @@ impl Sender {
     #[must_use]
     pub fn diag_btlbw_samples(&self) -> Vec<(u64, u64)> {
         self.btlbw.samples_snapshot()
+    }
+
+    /// [Q18-FIX] Yapı-gate'in fuzzy `fec=0`'ı `fec_med`'e açtığı event sayısı (gözlem).
+    #[must_use]
+    pub fn diag_structure_gate_opened(&self) -> u64 {
+        self.diag_structure_gate_opened
     }
 
     /// [TUR-4] Sıfır-ağırlık fuzzy-fallback sayacı (gözlemlenebilirlik).

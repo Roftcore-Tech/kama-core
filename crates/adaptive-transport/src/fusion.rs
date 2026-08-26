@@ -476,6 +476,13 @@ impl DeterministicFuzzyController {
             cfg: FuzzyConfig::fixture(),
         }
     }
+
+    /// Kurulu konfigürasyon (salt-okunur; [Q18-FIX] yapı-gate `fec_med` düzeyini buradan alır —
+    /// controller'ın kendi çıktısıyla aynı config, ikinci-kaynak yok).
+    #[must_use]
+    pub fn config(&self) -> &FuzzyConfig {
+        &self.cfg
+    }
 }
 
 impl FusionController for DeterministicFuzzyController {

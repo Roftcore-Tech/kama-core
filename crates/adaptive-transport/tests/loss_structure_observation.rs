@@ -194,11 +194,17 @@ fn estimator_has_exactly_one_reader() {
         .map(|(i, _)| &flat[i..(i + 80).min(flat.len())])
         .collect();
 
+    // [Q18-FIX] The estimator is now DELIBERATELY decision-carrying through exactly one decision
+    // consumer: `structure_gate_fec` (the structure-aware FEC gate). Q17 + FS-FUSION-CELL-1 both
+    // showed loss RATE cannot gate FEC and loss STRUCTURE is the missing input — this is that
+    // input being consumed. Readers pinned at exactly two: the diagnostic (`diag_loss_structure`)
+    // and the gate. A third reader is an unreviewed decision coupling → fails here.
     let snapshot_reads = uses.iter().filter(|u| u.contains(".snapshot()")).count();
     assert_eq!(
         snapshot_reads,
-        1,
-        "the estimator must be read in exactly one place (diag_loss_structure); found {} uses",
+        2,
+        "the estimator must be read in exactly two places (diag_loss_structure + \
+         structure_gate_fec); found {} uses",
         uses.len()
     );
     for u in &uses {
@@ -214,9 +220,10 @@ fn estimator_has_exactly_one_reader() {
         );
     }
     // Exactly the wiring: two evidence writes, one lifecycle advance, two S-0.7 correction
-    // hooks (tombstone kol-1 + un-loss, both originals-gated), and three observation-only reads
-    // (one snapshot + the correction-counter pair in diag_fate_corrections).
-    assert_eq!(uses.len(), 8, "estimator use count changed: {uses:?}");
+    // hooks (tombstone kol-1 + un-loss, both originals-gated), three observation-only reads
+    // (one snapshot + the correction-counter pair in diag_fate_corrections), and [Q18-FIX] the
+    // one decision-carrying snapshot read in `structure_gate_fec`.
+    assert_eq!(uses.len(), 9, "estimator use count changed: {uses:?}");
 }
 
 /// SOURCE-GROUNDING S-0.7 — ingest FIDELITY, not merely ingest presence.
