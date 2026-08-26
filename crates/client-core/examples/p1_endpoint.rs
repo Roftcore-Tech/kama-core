@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use client_core::runtime::{ClientEndpoint, RuntimeConfig, ServerEndpoint};
+use client_core::runtime::{ClientEndpoint, FecRuntimeConfig, RuntimeConfig, ServerEndpoint};
 use client_core::seam::IdentitySeam;
 
 /// Süreç tepe-RSS'i (VmHWM, kB) — item 9 kaynak-sınırı kanıtı (CLOSURE-2 /proc deseni).
@@ -34,6 +34,22 @@ fn arg(a: &[String], k: &str, d: &str) -> String {
         .unwrap_or_else(|| d.to_string())
 }
 
+/// [S1-GATE] FEC config'i CLI'dan: `--fec-r R` (R>0 statik-r) veya `--fec-adaptive` (Controller).
+/// İki uçta AYNI çağrılır. profil 0x03 (K8/R4/E64 → payload ≤48 B).
+fn build_cfg(a: &[String]) -> RuntimeConfig {
+    let r: u16 = arg(a, "--fec-r", "0").parse().unwrap_or(0);
+    let adaptive = a.iter().any(|x| x == "--fec-adaptive");
+    let mut c = RuntimeConfig::default();
+    if r > 0 || adaptive {
+        c.max_unit_bytes = 48;
+        c.fec = Some(FecRuntimeConfig {
+            profile_id: 0x03,
+            manual_r: if adaptive { None } else { Some(r) },
+        });
+    }
+    c
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let a: Vec<String> = std::env::args().collect();
@@ -44,7 +60,7 @@ async fn main() {
         "server" => {
             let bind = arg(&a, "--bind", "127.0.0.1:4600").parse().expect("bind");
             let expect: u64 = arg(&a, "--expect", "100").parse().expect("expect");
-            let mut srv = ServerEndpoint::bind(bind, RuntimeConfig::default(), seam)
+            let mut srv = ServerEndpoint::bind(bind, build_cfg(&a), seam)
                 .await
                 .expect("server bind");
             let linger = Duration::from_secs(arg(&a, "--linger-s", "5").parse().unwrap_or(5));
@@ -73,7 +89,7 @@ async fn main() {
             let units: u64 = arg(&a, "--units", "100").parse().expect("units");
             let interval =
                 Duration::from_millis(arg(&a, "--interval-ms", "50").parse().unwrap_or(50));
-            let mut cli = ClientEndpoint::connect(server, RuntimeConfig::default(), seam)
+            let mut cli = ClientEndpoint::connect(server, build_cfg(&a), seam)
                 .await
                 .expect("client connect");
             let mut acked = 0u64;
