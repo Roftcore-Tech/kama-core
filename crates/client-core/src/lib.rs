@@ -57,16 +57,22 @@ pub struct ClientSession {
 impl ClientSession {
     /// Construct with the shipped defaults.
     ///
-    /// Those defaults are: startup pacing **ON**, bootstrap RTT **OFF**, tail recovery **OFF**,
-    /// FEC actuation `Manual { enabled: false }`. Enabling tail recovery is
-    /// `sender_mut().set_tail_recovery_config(TailRecoveryConfig::validated_v1())` — the named
-    /// KAMA-TAIL-V1 constant the 2290-row product grid actually ran — never a flip of
-    /// `TailRecoveryConfig::default()`, whose bounds were never driven by any campaign.
+    /// Those defaults are: startup pacing **OFF** (DR-RATE-RAMP-2B revert; üçüncü blokör
+    /// `fuzzy_e2e` floor-vs-parity), bootstrap RTT **OFF** (kilitli panel 2/3), tail recovery
+    /// **ON** — `TailRecoveryConfig::validated_v1()`, the named KAMA-TAIL-V1 constant the
+    /// 2290-row product grid ran, re-validated post-P0 on burst + p2 no-harm (G1,
+    /// `reports/g1-tail-revalidation/G1-CLOSURE.md`) and flipped by Abkarada decision G2
+    /// (2026-08-24, `docs/design/P3-DEFAULT-FLIP-DECISION.md`) — and FEC actuation
+    /// `Manual { enabled: false }` (Q18 calibration defect).
+    ///
+    /// The flip is exactly this construction calling `validated_v1()`. It is deliberately
+    /// **never** a flip of `TailRecoveryConfig::default()`, whose bounds were never driven by
+    /// any campaign — the R1 rule: unvalidated default bounds do not ship.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            sender: Sender::new(),
-        }
+        let mut sender = Sender::new();
+        sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
+        Self { sender }
     }
 
     /// Egress: feed one event and take the resulting send decisions.
@@ -139,21 +145,43 @@ mod tests {
         );
     }
 
-    /// Guards the defaults this crate documents, so the doc comment cannot drift from the code
-    /// the way the startup-pacing rationale did (see sender.rs and commit 50cd8e35).
+    /// Converge a flow (first unit ACKed → RTT sample exists), then stall a second unit and
+    /// sweep the full worst-case probe horizon of the given config.
     ///
-    /// The observation horizon is **derived from the shipped config**, not chosen. A literal
-    /// here would encode a coverage claim that silently stops being true when a bound moves:
-    /// an earlier draft of this test drove 30 s and claimed to be "well past every tail-probe
-    /// deadline", while `max_backoff_pto_ns` is 120 s — it covered a quarter of the range it
-    /// asserted. Deriving the horizon makes the test track the config instead of a guess.
-    #[test]
-    fn shipped_defaults_are_what_the_docs_say() {
-        let cfg = TailRecoveryConfig::default();
+    /// The horizon is **derived from the config**, not chosen. A literal would encode a
+    /// coverage claim that silently stops being true when a bound moves: an earlier draft
+    /// drove 30 s and claimed to be "well past every tail-probe deadline", while
+    /// `max_backoff_pto_ns` was 120 s — it covered a quarter of the range it asserted.
+    fn probes_after_converge_then_stall(
+        drive: &mut dyn FnMut(Event, u64) -> Vec<TransmitDecision>,
+        cfg: &TailRecoveryConfig,
+    ) {
+        use adaptive_transport::sender::{AckInfo, Timer};
+        use std::time::Duration;
 
-        // Worst case the mechanism could reach if it were enabled: every permitted probe round
-        // waiting the maximum backed-off PTO, after the initial no-RTT PTO, plus the receiver's
-        // ACK-delay budget. Nothing here is a literal; each term names the bound it comes from.
+        const MS: u64 = 1_000_000;
+        // Converge: unit 1 emitted, ACKed one RTT later (probe-fresh after converge — the same
+        // shape the validated product harness used: warmup → converge, then measure).
+        let out = drive(Event::AppData(OpaqueUnit { id: 1, size: 101 }), 0);
+        let seq = out
+            .iter()
+            .find(|d| d.kind == TransmitKind::Data)
+            .expect("unit 1 must be planned")
+            .seq;
+        drive(
+            Event::AckReceived(AckInfo {
+                acked_seqs: vec![seq],
+                ack_delay: Duration::ZERO,
+            }),
+            40 * MS,
+        );
+        // Stall: unit 2 emitted, never ACKed, no later packets → only a PTO tail probe can act
+        // (time-threshold is blind at the tail: seq ≥ largest_acked).
+        let t0 = 50 * MS;
+        drive(Event::AppData(OpaqueUnit { id: 2, size: 101 }), t0);
+
+        // Worst case the mechanism could reach: every permitted probe round waiting the maximum
+        // backed-off PTO, after the initial no-RTT PTO, plus the receiver's ACK-delay budget.
         let horizon_ns = cfg
             .initial_pto_ns
             .saturating_add(cfg.max_ack_delay_ns)
@@ -161,30 +189,52 @@ mod tests {
                 cfg.max_backoff_pto_ns
                     .saturating_mul(u64::from(cfg.max_tail_probes) + 1),
             );
-
-        // One tick per base-PTO floor, so the sweep cannot step over a deadline. Bounded by the
-        // same arithmetic rather than by a chosen iteration count.
+        // One tick per base-PTO floor, so the sweep cannot step over a deadline.
         let step_ns = cfg.min_pto_ns.max(1);
         let ticks = horizon_ns / step_ns;
-
-        let mut s = ClientSession::new();
-        // Payload size is a genuinely arbitrary fixture: this test asserts nothing about bytes,
-        // only that a unit is outstanding so the tail path has something to probe for.
-        s.on_event(Event::AppData(OpaqueUnit { id: 1, size: 101 }), 0);
         for i in 1..=ticks {
-            s.on_event(
-                Event::TimerFired(adaptive_transport::sender::Timer::Pto),
-                i.saturating_mul(step_ns),
+            drive(
+                Event::TimerFired(Timer::Pto),
+                t0.saturating_add(i.saturating_mul(step_ns)),
             );
         }
+    }
 
-        let (probes, probe_bytes, spurious, _) = s.sender().tail_probe_diag();
+    /// Guards the G2 shipped default (P3-DEFAULT-FLIP-DECISION §2.3, Abkarada 2026-08-24):
+    /// `ClientSession::new()` ships tail recovery **ON** via `validated_v1()` — a converged
+    /// flow with a stalled tail unit MUST probe. Twin guard below pins that the raw engine
+    /// default stays OFF, so this flip lives in the construction, never in
+    /// `TailRecoveryConfig::default()` (R1 rule).
+    #[test]
+    fn shipped_default_tail_recovery_is_on_via_validated_v1() {
+        let mut s = ClientSession::new();
+        probes_after_converge_then_stall(
+            &mut |e, t| s.on_event(e, t),
+            &TailRecoveryConfig::validated_v1(),
+        );
+        let (probes, probe_bytes, _, _) = s.sender().tail_probe_diag();
+        assert!(
+            probes >= 1 && probe_bytes > 0,
+            "G2: ClientSession ships tail-ON (validated_v1); a converged flow with a stalled \
+             tail unit must emit at least one probe, got {probes}"
+        );
+    }
+
+    /// R1 rule, other direction: the ENGINE default (`Sender::new()`) keeps tail recovery OFF —
+    /// `TailRecoveryConfig::default()` bounds were never campaign-driven and must not ship.
+    /// The G2 flip is `ClientSession::new()` calling `validated_v1()`, nothing deeper.
+    #[test]
+    fn engine_default_tail_recovery_stays_off() {
+        let mut s = Sender::new();
+        probes_after_converge_then_stall(
+            &mut |e, t| s.on_event(e, t),
+            &TailRecoveryConfig::validated_v1(), // horizon: sweep the SAME range the ON test does
+        );
+        let (probes, probe_bytes, spurious, _) = s.tail_probe_diag();
         assert_eq!(
             (probes, probe_bytes, spurious),
             (0, 0, 0),
-            "tail recovery is default-OFF: a flow stalled for {horizon_ns} ns \
-             ({ticks} ticks, the full worst-case probe horizon of the shipped config) \
-             must emit no probe"
+            "engine default must stay tail-OFF (R1): same converge-then-stall sweep, no probes"
         );
     }
 }

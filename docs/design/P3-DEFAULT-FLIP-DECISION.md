@@ -1,6 +1,11 @@
 # P3 — Varsayılan-Açma (Default-Flip) Karar Belgesi
 
-**Statü:** KARAR TASLAĞI → Abkarada onayı + koşullu re-validation bekliyor. Otorite: yol haritası
+**Statü:** **G2 ONAYLANDI + UYGULANDI (Abkarada, 2026-08-24).** G1 kapısı yeşil (7de0a205);
+G2 flip'i `ClientSession::new()` → `set_tail_recovery_config(validated_v1())` olarak uygulandı
+(client-core; çift-yönlü pin: ClientSession tail-ON probe eder, `Sender::new()` motor-default'u
+OFF kalır — R1). G3 kabul (L10-med tuning ürün-v2). G4 onaylı: startup-pacing/bootstrap/FEC OFF
+kalır — her biri TEK somut blokör arkasında, mekanizmalar bankada (§3-§5); "boşuna" DEĞİL,
+tail'in bugün izlediği build→gate→flip hattının sırada bekleyen üyeleri. Otorite: yol haritası
 `BITIRME-YOL-HARITASI-2026-08-18.md` §"REVİZYON 2026-08-24" P3. Bağlam: tüm ürün-varsayılanları
 şu an **OFF** (tail · startup-pacing · bootstrap-RTT · FEC); flip'ler baştan beri "§4.4-benchmark-
 sonrası"na bağlıydı — o kanıt artık var (kapi-eval-v1 + P0).
