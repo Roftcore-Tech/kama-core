@@ -2783,6 +2783,12 @@ impl Sender {
         // byte-özdeş. Politika transport'ta kalır, RS-encode güvenlik-katmanında (INV-ENGINE-SOC).
         if let Some(fec) = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm) {
             d.fec_parity_ratio_permille = fec;
+            // Yapı-gate ateşlediyse bir KURAL ateşlemiş demektir (yapı-kuralı) → `no_rule`'u temizle.
+            // Aksi hâlde: fuzzy'nin rate-only kuralları yüksek-kayıpta hepsi `loss.low`=0'da sönüp
+            // no_rule-fallback'e düşüyor (fec=0); Controller-latch ise no_rule-snapshot'ı planned_r=0'a
+            // BASTIRIYOR — yani gate'in açtığı FEC latch'te yeniden sıfırlanırdı. Bu satır kompozisyonu
+            // tamamlar (fec_recovery_cell.rs, S1 sistem-kanıtı); gate ateşlemezse no_rule dokunulmaz.
+            d.no_rule = false;
             self.diag_structure_gate_opened += 1;
         }
         // Commit-D: CANONICAL-snapshot — aynı-`inputs`-DEĞERİ kopyalanır (ikinci-hesap-yok).
