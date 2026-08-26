@@ -377,9 +377,10 @@ async fn fec_static_r_recovers_permanently_erased_units_over_udp() {
     )
     .await
     .expect("server bind");
-    let client = ClientEndpoint::connect(server.local_addr(), fec_cfg(64), Arc::new(IdentitySeam))
-        .await
-        .expect("client connect");
+    let mut client =
+        ClientEndpoint::connect(server.local_addr(), fec_cfg(64), Arc::new(IdentitySeam))
+            .await
+            .expect("client connect");
 
     for i in 0..K {
         client
@@ -405,6 +406,16 @@ async fn fec_static_r_recovers_permanently_erased_units_over_udp() {
     .await
     .expect("20 s içinde 8/8 teslim (2'si FEC-kurtarım)");
     assert_eq!(delivered.len(), K as usize);
+    // App-tarafı teslim-teyidi 8/8: 6 ACK-yoluyla + 2 RECOVERED-control'le (acked() akışı ortak).
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut n = 0;
+        while n < K {
+            client.acked().await.expect("acked akışı");
+            n += 1;
+        }
+    })
+    .await
+    .expect("8/8 teslim-teyidi (ACK + RECOVERED)");
 
     let cs = client.shutdown().await;
     let ss = server.shutdown().await;
@@ -418,10 +429,15 @@ async fn fec_static_r_recovers_permanently_erased_units_over_udp() {
         "tam olarak silinen 2 birim FEC'le kurtarılmalı: {ss:?}"
     );
     assert_eq!(ss.delivered, K, "app 8/8 aldı: {ss:?}");
-    // Dürüst sınır (S2'ye kadar): kurtarılan birimlerin DATA-ACK'i yok (RECOVERED-control B-hattı)
-    // → client onları teslim-teyitsiz sayar. Bu, teslimin kendisini DEĞİŞTİRMEZ.
+    // RECOVERED-control: alıcı kurtardığını bildirdi → client o birimleri teslim-teyitli sayar,
+    // retransmit israfı biter, residue SIFIR.
     assert_eq!(
-        cs.undelivered, 2,
-        "RECOVERED-control öncesi bilinen sınır: {cs:?}"
+        cs.fec_recovered_ctrl_units, 2,
+        "2 birim RECOVERED ile teyitli: {cs:?}"
     );
+    assert!(
+        ss.fec_recovered_ctrl_tx >= 1,
+        "alıcı RECOVERED gönderdi: {ss:?}"
+    );
+    assert_eq!(cs.undelivered, 0, "RECOVERED sonrası residue yok: {cs:?}");
 }

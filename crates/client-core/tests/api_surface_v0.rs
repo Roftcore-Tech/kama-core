@@ -121,6 +121,7 @@ async fn transport_api_v0_surface_is_frozen() {
         fec_blocks_latched: _,
         fec_repairs_tx: _,
         fec_repair_missing: _,
+        fec_recovered_ctrl_units: _,
     } = ClientStats::default();
     let ServerStats {
         delivered: _,
@@ -134,6 +135,7 @@ async fn transport_api_v0_surface_is_frozen() {
         fec_recovered_units: _,
         fec_decode_failures: _,
         fec_blocks_evicted: _,
+        fec_recovered_ctrl_tx: _,
     } = ServerStats::default();
     let Delivery {
         peer: _,

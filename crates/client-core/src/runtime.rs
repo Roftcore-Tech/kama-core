@@ -23,7 +23,8 @@ use std::time::{Duration, Instant};
 use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
 use adaptive_transport::sender::{
-    AckInfo, Event, FecActuationMode, OpaqueUnit, SrLogicalRef, Timer, TransmitKind,
+    AckInfo, Event, FecActuationMode, OpaqueUnit, RecoveredInfo, RecoveredUnit, SrLogicalRef,
+    Timer, TransmitKind,
 };
 use adaptive_transport::seq::resolve_seq;
 use kama_fec_codec::{
@@ -38,7 +39,8 @@ use tokio::time::interval;
 
 use crate::seam::SecuritySeam;
 use crate::wire::{
-    decode_data, decode_fec, encode_data, encode_fec, FecFrameHeader, HDR_DATA, HDR_FEC,
+    decode_data, decode_fec, decode_recovered, encode_data, encode_fec, encode_recovered,
+    FecFrameHeader, FRAME_RECOVERED, HDR_DATA, HDR_FEC,
 };
 use crate::ClientSession;
 
@@ -178,6 +180,9 @@ pub struct ClientStats {
     pub fec_repairs_tx: u64,
     /// [S1] Repair-store'da bulunamayan FecParity kararı (evict/latch-0) — başlık-only gitti.
     pub fec_repair_missing: u64,
+    /// [S1] RECOVERED-control ile teslim-teyidi alan birim (alıcı FEC-kurtardı → retransmit iptal,
+    /// store'dan düşer, app `acked()` akışına girer).
+    pub fec_recovered_ctrl_units: u64,
 }
 
 /// Server koşu istatistikleri.
@@ -204,6 +209,8 @@ pub struct ServerStats {
     pub fec_decode_failures: u64,
     /// [S1] Kapasite gereği düşürülen en-eski blok (bounded birleştirici).
     pub fec_blocks_evicted: u64,
+    /// [S1] Wire'a yazılan RECOVERED-control çerçevesi (blok başına bir).
+    pub fec_recovered_ctrl_tx: u64,
 }
 
 /// Teslim olayı: hangi eşten hangi birim, payload'ıyla.
@@ -427,7 +434,34 @@ async fn client_task(
         ($raw:expr, $now:expr) => {
             stats.rx_datagrams += 1;
             if let Some(plain) = seam.open($raw) {
-                if plain.is_empty()
+                if plain.first() == Some(&FRAME_RECOVERED) {
+                    // [S1] RECOVERED-control: alıcı bu ESI'leri FEC ile kurtardı → birim teslim-
+                    // teyitli: store'dan düşer, app acked() akışına girer, motor saf-logical iptal
+                    // eder (retransmit israfı biter). unit_id = block*K + esi (deterministik atama).
+                    match (fec.as_ref(), decode_recovered(&plain)) {
+                        (Some(p), Some((block_id, esis))) => {
+                            let mut units = Vec::with_capacity(esis.len());
+                            for esi in esis {
+                                let unit =
+                                    u64::from(block_id) * u64::from(p.k_shape) + u64::from(esi);
+                                if store.remove(&unit).is_some() {
+                                    stats.fec_recovered_ctrl_units += 1;
+                                    let _ = acked_tx.try_send(unit);
+                                    for old in unit_seqs.remove(&unit).unwrap_or_default() {
+                                        seq_to_unit.remove(&old);
+                                    }
+                                }
+                                units.push(RecoveredUnit {
+                                    unit_id: unit,
+                                    block_id,
+                                    esi,
+                                });
+                            }
+                            drive!(Event::RecoveredControl(RecoveredInfo { units }), $now);
+                        }
+                        _ => stats.unknown_frames += 1,
+                    }
+                } else if plain.is_empty()
                     || (plain[0] != FRAME_TYPE_ACK && plain[0] != FRAME_TYPE_ACK_V2)
                 {
                     stats.unknown_frames += 1;
@@ -673,7 +707,8 @@ fn fec_ingest(
     esi: u16,
     symbol: Vec<u8>,
     is_repair: bool,
-) {
+) -> Vec<u16> {
+    let mut recovered_esis: Vec<u16> = Vec::new();
     let asm = slot.blocks.entry(block_id).or_insert_with(|| BlockAsm {
         k: k_actual,
         sources: BTreeMap::new(),
@@ -716,6 +751,7 @@ fn fec_ingest(
             Ok(recovered) => {
                 let k = slot.blocks.get(&block_id).map_or(k_actual, |a| a.k);
                 for r in recovered {
+                    recovered_esis.push(r.esi);
                     let unit_id = u64::from(block_id) * u64::from(k) + u64::from(r.esi);
                     let Ok(pfx) = SourcePrefix::parse(&r.bytes) else {
                         continue;
@@ -755,6 +791,7 @@ fn fec_ingest(
         slot.blocks.pop_first();
         stats.fec_blocks_evicted += 1;
     }
+    recovered_esis
 }
 
 /// Server görevi: bench `serve_loop` şekli + bounded peers + idle-emeklilik + teslim akışı.
@@ -900,7 +937,7 @@ async fn server_task(
                             };
                             let _ = pfx.serialize_symbol(payload, &mut sym);
                             let k = u8::try_from(p.k_shape).unwrap_or(255);
-                            fec_ingest(
+                            let rec = fec_ingest(
                                 &mut stats,
                                 &delivery_tx,
                                 peer,
@@ -912,6 +949,11 @@ async fn server_task(
                                 sym,
                                 false,
                             );
+                            if !rec.is_empty() {
+                                stats.fec_recovered_ctrl_tx += 1;
+                                let f = encode_recovered(block_id, &rec);
+                                let _ = sock.send_to(&seam.seal(f), peer).await;
+                            }
                         }
                     }
                     RxFrame::Fec { h, symbol } => {
@@ -943,7 +985,7 @@ async fn server_task(
                         if let Some(ack) = out.ack {
                             let _ = sock.send_to(&seam.seal(ack.encode()), peer).await;
                         }
-                        fec_ingest(
+                        let rec = fec_ingest(
                             &mut stats,
                             &delivery_tx,
                             peer,
@@ -955,6 +997,11 @@ async fn server_task(
                             symbol.to_vec(),
                             is_repair,
                         );
+                        if !rec.is_empty() {
+                            stats.fec_recovered_ctrl_tx += 1;
+                            let f = encode_recovered(h.block_id, &rec);
+                            let _ = sock.send_to(&seam.seal(f), peer).await;
+                        }
                     }
                 }
             }

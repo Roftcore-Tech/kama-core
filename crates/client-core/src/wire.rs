@@ -100,3 +100,49 @@ pub fn decode_fec(buf: &[u8]) -> Option<(FecFrameHeader, &[u8])> {
     }
     Some((h, &buf[HDR_FEC..]))
 }
+
+// ── [S1] RECOVERED-control çerçevesi ─────────────────────────────────────────────────────────
+//
+// Alıcı FEC-reconstruct ile kurtardığı ESI'leri bildirir; gönderici o birimleri ACK-cancel gibi
+// iptal eder (`Event::RecoveredControl`, saf-logical, pacer/rate'e girmez). Alan-hizası
+// kama-noise-wire `Control::Recovered{block_id, esi_ranges}` (0x12): burada esi-LİSTESİ (S2'de
+// range'e eşlenir). Bounded: ≤ RECOVERED_MAX_ESI (noise-wire RECOVERED_MAX_ESI_RANGES=16 hizası).
+
+/// RECOVERED-control frame_type.
+pub const FRAME_RECOVERED: u8 = 0x02;
+/// RECOVERED başlık boyu: type(1)+block_id u32(4)+count u8(1).
+pub const HDR_RECOVERED: usize = 6;
+/// Tek çerçevede bildirilebilen en çok ESI (bounded, fail-closed).
+pub const RECOVERED_MAX_ESI: usize = 16;
+
+/// RECOVERED çerçevesi kodlar; `esis` RECOVERED_MAX_ESI'ye kırpılır (bounded).
+#[must_use]
+pub fn encode_recovered(block_id: u32, esis: &[u16]) -> Vec<u8> {
+    let n = esis.len().min(RECOVERED_MAX_ESI);
+    let mut b = Vec::with_capacity(HDR_RECOVERED + 2 * n);
+    b.push(FRAME_RECOVERED);
+    b.extend_from_slice(&block_id.to_be_bytes());
+    b.push(n as u8);
+    for e in &esis[..n] {
+        b.extend_from_slice(&e.to_be_bytes());
+    }
+    b
+}
+
+/// RECOVERED çerçevesi çözer: `(block_id, esis)`. Bozuk/aşırı/kısa → `None` (fail-closed).
+#[must_use]
+pub fn decode_recovered(buf: &[u8]) -> Option<(u32, Vec<u16>)> {
+    if buf.len() < HDR_RECOVERED || buf[0] != FRAME_RECOVERED {
+        return None;
+    }
+    let block_id = u32::from_be_bytes(buf[1..5].try_into().ok()?);
+    let n = usize::from(buf[5]);
+    if n > RECOVERED_MAX_ESI || buf.len() != HDR_RECOVERED + 2 * n {
+        return None;
+    }
+    let esis = buf[HDR_RECOVERED..]
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
+    Some((block_id, esis))
+}
