@@ -95,3 +95,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p kama-noise-wire --features libsodium-oracle --test aead_differential -- --nocapture
+
+  # [P3] Fuzz-smoke: güvenilmeyen-girdi parser'ları (ack/fec/noise-wire/protector/wire-v0) —
+  # hedef başına 60 s libFuzzer. Yeni crash = gerçek parser kusuru = kapı düşer (SR-AUDIT-001).
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "fuzz -> target"
+      - run: cargo install cargo-fuzz --locked
+      - run: |
+          for t in ack_decode fec_decode noise_wire_decode protector_open wire_v0; do
+            cargo +nightly fuzz run "$t" -- -max_total_time=60 || exit 1
+          done

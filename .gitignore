@@ -15,3 +15,7 @@ scratchbin/
 # kapi-eval-v1: capture katmanı diskte (167MB); bütünlüğü CAPS-SHA256SUMS.txt ile mühürlü
 reports/kapi-eval-v1/out/**/cap/
 reports/kapi-eval-v1/out-exploratory/**/cap/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
+fuzz/target/
