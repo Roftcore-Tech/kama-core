@@ -189,6 +189,17 @@ Sprint-6 (kaynak: `reports/dr-cs-3/PRODUCT-RUNTIME-INTEGRATION-PENDING.md` item 
 transport-engine'in cold-start'ı (PreConverge/rate-ramp) kriptodan bağımsız ve opak-birimle zaten
 çalışır. İki workstream paralel; buluşma noktası = opak seam (P4 kama-contract).
 
+## BACKLOG — YÜKSEK ÖNCELİK: default-flip blokörleri (Abkarada, 2026-08-24)
+
+Üç mekanizma bitmiş+bankada; her biri TEK blokör arkasında OFF. Tail'in build→gate→flip hattı şablon.
+Sıralama önerisi: B1 (en küçük iş) → B2 → B3.
+
+| # | blokör | iş | flip hedefi |
+|---|---|---|---|
+| **B1** | startup-pacing: aktif floor `fuzzy_e2e`'de FEC r=2 parity emisyonunu boğuyor (0/4, 900 tick) | floor-vs-parity emisyon önceliği fix'i + fuzzy_e2e yeşil + EK4-A2 regresyonu yeşil kalarak | startup-pacing default-ON |
+| **B2** | bootstrap-RTT: kilitli panel 2/3 FAIL (rep14 GE-L10 reverse-echo, ladder [3,9,21,45]s'i aşıyor) | ladder yeniden-tasarımı YA DA gerekçeli panel-amendment; panel 3/3 | bootstrap default-ON (tail-ON ile değeri arttı: RTT'siz initial-PTO 1 s tahmin yerine ölçüm) |
+| **B3** | FEC controller: Q18 kalibrasyon kusuru (%20 kayıpta parity=0; diz 250k ppm) | structure-gate kalibrasyonu (estimator hazır, tüketen kural yok — Prereg-A hattı); FAZ-2 FEC kollarıyla birleşebilir | FEC otomatik-controller default-ON (manuel static-r zaten çalışıyor) |
+
 ## BACKLOG (ürün-grade için gerekli DEĞİL; iddia-gücü/eksiksizlik)
 
 - Exploratory Grup-B tamamlama: 204 rep-kol (`manifest-exploratory.jsonl` resume; ~15 h) + u=0.9 karantina
