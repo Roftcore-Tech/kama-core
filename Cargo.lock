@@ -271,6 +271,8 @@ dependencies = [
  "adaptive-transport",
  "kama-engine",
  "kama-noise-wire",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

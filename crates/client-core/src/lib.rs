@@ -38,6 +38,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod runtime;
+pub mod seam;
+pub mod wire;
+
 pub use adaptive_transport::sender::{Event, OpaqueUnit, Sender, TransmitDecision, TransmitKind};
 pub use adaptive_transport::tail_recovery::TailRecoveryConfig;
 pub use kama_engine::{admit_and_decode, EngineError};

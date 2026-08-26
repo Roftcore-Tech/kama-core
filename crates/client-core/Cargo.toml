@@ -23,3 +23,6 @@ kama-engine = { path = "../kama-engine" }
 # constructible via `protector.open()` (AEAD-verify), so INV-FEC-1's authenticate-before-decode
 # ordering is enforced by the type system rather than by convention.
 kama-noise-wire = { path = "../kama-noise-wire" }
+# P1 runtime kabuğu (item 2/3/6/7): tokio UDP döngüsü (ADR-02) + typed hatalar.
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
+thiserror.workspace = true
