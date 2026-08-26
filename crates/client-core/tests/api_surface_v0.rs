@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 // Re-export yüzeyi (path-pin: bu yollar kaybolursa import derlenmez).
 use client_core::runtime::{
-    ClientEndpoint, ClientHandle, ClientStats, Delivery, RuntimeConfig, RuntimeError,
-    ServerEndpoint, ServerHandle, ServerStats,
+    ClientEndpoint, ClientHandle, ClientStats, Delivery, FecRuntimeConfig, RuntimeConfig,
+    RuntimeError, ServerEndpoint, ServerHandle, ServerStats,
 };
 use client_core::seam::{IdentitySeam, SecuritySeam, IDENTITY_TAG};
 use client_core::wire::{decode_data, encode_data, FRAME_DATA, HDR_DATA};
@@ -69,7 +69,15 @@ async fn transport_api_v0_surface_is_frozen() {
         quota_r: _,
         drain_cap: _,
         idle_hold: _,
+        fec: _, // v0.1 (S1): minor-EKLEME — kasıtlı pin-güncellemesi, P4 belgesi §3
     } = cfg.clone();
+    let FecRuntimeConfig {
+        profile_id: _,
+        manual_r: _,
+    } = FecRuntimeConfig {
+        profile_id: 0,
+        manual_r: None,
+    };
 
     // ── RuntimeError: TAM varyant kümesi (eksiksiz match, `_` yok → varyant ekle/sil = RED) ──
     match RuntimeError::Closed {
@@ -77,6 +85,7 @@ async fn transport_api_v0_surface_is_frozen() {
         RuntimeError::UnitTooLarge { got: _, cap: _ } => {}
         RuntimeError::Closed => {}
         RuntimeError::Io(_) => {}
+        RuntimeError::FecConfig(_) => {} // v0.1 (S1)
     }
 
     // ── ClientEndpoint / ClientHandle imzaları ──
@@ -109,6 +118,9 @@ async fn transport_api_v0_surface_is_frozen() {
         stale_decisions: _,
         send_errors: _,
         unaccepted_offers: _,
+        fec_blocks_latched: _,
+        fec_repairs_tx: _,
+        fec_repair_missing: _,
     } = ClientStats::default();
     let ServerStats {
         delivered: _,
@@ -118,6 +130,10 @@ async fn transport_api_v0_surface_is_frozen() {
         rx_datagrams: _,
         open_failures: _,
         unknown_frames: _,
+        fec_repairs_rx: _,
+        fec_recovered_units: _,
+        fec_decode_failures: _,
+        fec_blocks_evicted: _,
     } = ServerStats::default();
     let Delivery {
         peer: _,

@@ -15,22 +15,31 @@
 //! ASLA sessiz-evict edilmez, boşalma idle-emeklilikle) · teslim kanalı bounded (`try_send`,
 //! taşan teslim sayaçla raporlanır — app drenaj sözleşmesi).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
-use adaptive_transport::sender::{AckInfo, Event, OpaqueUnit, Timer, TransmitKind};
+use adaptive_transport::sender::{
+    AckInfo, Event, FecActuationMode, OpaqueUnit, SrLogicalRef, Timer, TransmitKind,
+};
 use adaptive_transport::seq::resolve_seq;
+use kama_fec_codec::{
+    by_id, FecCodec, FecProfile, ReceivedSymbol, RepairSymbol, RsSimdCodec, SourceSymbol,
+};
+use kama_transport_schema::prefix::SourcePrefix;
+use kama_transport_schema::{inner_kind, SOURCE_PREFIX_LEN};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
 use crate::seam::SecuritySeam;
-use crate::wire::{decode_data, encode_data, HDR_DATA};
+use crate::wire::{
+    decode_data, decode_fec, encode_data, encode_fec, FecFrameHeader, HDR_DATA, HDR_FEC,
+};
 use crate::ClientSession;
 
 /// Pacing pompası (bench PACE_TICK): her tick §13 token drain + §5 zaman-eşiği loss; idempotent,
@@ -65,6 +74,23 @@ pub struct RuntimeConfig {
     pub drain_cap: Duration,
     /// Server idle-peer emeklilik eşiği (item 3; SESSION_IDLE_HOLD hizası 105 s).
     pub idle_hold: Duration,
+    /// [S1] FEC-runtime. `None` = KAPALI (sevk default'u; flip S1-GATE kanıtına bağlı — R1
+    /// disiplininin FEC karşılığı). `Some` = Controller-mode + yapı-gate (Q18-fix) + blok
+    /// yaşam-döngüsü + repair emisyonu/kurtarımı. İKİ UÇTA AYNI kurulmalı (blok/esi ataması
+    /// deterministik `unit_id`'den; PARAM-bootstrap bağlaması S2/B-hattı `kama_engine::param_state`).
+    pub fec: Option<FecRuntimeConfig>,
+}
+
+/// [S1] FEC-runtime parametreleri.
+#[derive(Debug, Clone, Copy)]
+pub struct FecRuntimeConfig {
+    /// `kama_fec_codec::by_id` profil kimliği (k_shape/r_code_max/e buradan; S1: tam-blok
+    /// k_actual = k_shape, known_zero = 0).
+    pub profile_id: u8,
+    /// `Some(r)` = STATİK-r modu (`Manual{enabled}` otorite + `close_fec_block_manual`):
+    /// her blokta sabit r repair — kampanyaların STATIC_R kolu / operatör-forced FEC.
+    /// `None` = Controller modu: yapı-gate (Q18-fix) kararı latch'e akar (adaptif).
+    pub manual_r: Option<u16>,
 }
 
 impl Default for RuntimeConfig {
@@ -78,8 +104,28 @@ impl Default for RuntimeConfig {
             quota_r: 4,
             drain_cap: Duration::from_secs(3),
             idle_hold: Duration::from_secs(105),
+            fec: None,
         }
     }
+}
+
+/// [S1] FEC-config doğrulaması (connect/bind, koşu-öncesi typed): profil bilinmeli ve kabul
+/// edilen en büyük payload canonical symbol'e sığmalı (prefix dahil) — aksi hâlde blok/esi
+/// hizası sessizce bozulurdu; bounds-before-run.
+fn validate_fec(cfg: &RuntimeConfig) -> Result<Option<FecProfile>, RuntimeError> {
+    let Some(f) = cfg.fec else { return Ok(None) };
+    let p = by_id(f.profile_id).ok_or(RuntimeError::FecConfig("unknown profile_id"))?;
+    if cfg.max_unit_bytes + SOURCE_PREFIX_LEN > p.e_usize() {
+        return Err(RuntimeError::FecConfig(
+            "max_unit_bytes + SOURCE_PREFIX_LEN > profile.e (payload symbol'e sığmıyor)",
+        ));
+    }
+    if let Some(r) = f.manual_r {
+        if r == 0 || r > p.r_code_max {
+            return Err(RuntimeError::FecConfig("manual_r 1..=r_code_max dışında"));
+        }
+    }
+    Ok(Some(p))
 }
 
 /// Typed çalışma-zamanı hataları — reachable `todo!()` YASAK; her sınır typed reddeder.
@@ -97,6 +143,9 @@ pub enum RuntimeError {
     /// Soket kuruluş hatası (bind/connect) — koşu-öncesi; koşu-içi send hataları kayıp sayılır.
     #[error("soket: {0}")]
     Io(#[from] std::io::Error),
+    /// [S1] FEC konfigürasyonu geçersiz (bilinmeyen profil / payload-tavanı symbol'e sığmıyor).
+    #[error("fec config: {0}")]
+    FecConfig(&'static str),
 }
 
 /// Client koşu istatistikleri (item 9 doğrulama yüzeyi; gözlem-amaçlı).
@@ -123,6 +172,12 @@ pub struct ClientStats {
     /// Shutdown anında offer-kuyruğunda kalmış, HİÇ işlenmemiş birim (app `Ok` almıştı ama
     /// gönderim denenmedi — sessiz kayıp yerine sayaç; app kapanışta bunu okur).
     pub unaccepted_offers: u64,
+    /// [S1] Latch'in parity planladığı (ve RS-encode edilen) blok sayısı.
+    pub fec_blocks_latched: u64,
+    /// [S1] Wire'a yazılan gerçek repair-shard.
+    pub fec_repairs_tx: u64,
+    /// [S1] Repair-store'da bulunamayan FecParity kararı (evict/latch-0) — başlık-only gitti.
+    pub fec_repair_missing: u64,
 }
 
 /// Server koşu istatistikleri.
@@ -140,6 +195,15 @@ pub struct ServerStats {
     pub open_failures: u64,
     /// Açıldı ama tanınmayan çerçeve (kontrol-düzlemi dal-noktası; bkz. ClientStats.unknown_frames).
     pub unknown_frames: u64,
+    /// [S1] Alınan repair-shard (blok-birleştiriciye girdi).
+    pub fec_repairs_rx: u64,
+    /// [S1] FEC-reconstruct ile kurtarılıp app'e teslim edilen birim (DATA'sı hiç gelmemişti).
+    pub fec_recovered_units: u64,
+    /// [S1] Hazır-görünen blokta reconstruct hatası (blok KORUNUR — shard'lar atılmaz; readiness
+    /// sayım-bug'ının düzeltilmiş davranışı).
+    pub fec_decode_failures: u64,
+    /// [S1] Kapasite gereği düşürülen en-eski blok (bounded birleştirici).
+    pub fec_blocks_evicted: u64,
 }
 
 /// Teslim olayı: hangi eşten hangi birim, payload'ıyla.
@@ -175,6 +239,7 @@ impl ClientEndpoint {
         cfg: RuntimeConfig,
         seam: Arc<dyn SecuritySeam>,
     ) -> Result<ClientHandle, RuntimeError> {
+        validate_fec(&cfg)?; // [S1] koşu-öncesi typed FEC-config doğrulaması
         let sock = UdpSocket::bind(match server {
             SocketAddr::V4(_) => "0.0.0.0:0",
             SocketAddr::V6(_) => "[::]:0",
@@ -245,6 +310,28 @@ async fn client_task(
     // default'u ON, bootstrap OFF, FEC Manual-off). Burada default'a dokunulmaz.
     let mut session = ClientSession::new();
     let mut stats = ClientStats::default();
+    // [S1] FEC-runtime kuruluşu (cfg.fec varsa): Controller-mode — yapı-gate'in (Q18) kararı
+    // latch'e ancak bu modda akar. validate_fec connect'te koştu; profil burada çözülür.
+    let fec: Option<FecProfile> = cfg.fec.and_then(|f| by_id(f.profile_id));
+    let fec_manual_r: Option<u16> = cfg.fec.and_then(|f| f.manual_r);
+    if fec.is_some() {
+        let mode = if fec_manual_r.is_some() {
+            FecActuationMode::Manual { enabled: true } // statik-r (STATIC_R kolu)
+        } else {
+            FecActuationMode::Controller // adaptif: yapı-gate (Q18) kararı latch'e akar
+        };
+        session
+            .sender_mut()
+            .set_fec_actuation_mode(mode)
+            .expect("taze Sender mode-set kabul eder");
+    }
+    // [S1] Ardışık-blok birikimi: unit_id → (block = id/K, esi = id%K) deterministik (iki uç da
+    // türetir); yalnız SON blok birikir. K dolunca same-event latch + gerçek RS-encode →
+    // bounded repair_store (en-eski düşer → o bloğun FecParity kararı başlık-only'e düşer).
+    let mut cur_block: Vec<Vec<u8>> = Vec::new();
+    let mut cur_block_id: u32 = 0;
+    let mut repair_store: BTreeMap<u32, Vec<RepairSymbol>> = BTreeMap::new();
+    const REPAIR_STORE_BLOCKS: usize = 64;
     // unit-store: unit_id → payload; varlık = outstanding. İlk-ACK'te düşer (sınır: cfg).
     let mut store: HashMap<u64, Vec<u8>> = HashMap::new();
     // seq → unit haritası + birim → seq'leri (ACK'te toplu budama — harita sınırlı kalır).
@@ -262,16 +349,56 @@ async fn client_task(
     macro_rules! drive {
         ($ev:expr, $now:expr) => {
             for d in session.on_event($ev, $now) {
-                seq_to_unit.insert(d.seq, d.unit_id);
-                unit_seqs.entry(d.unit_id).or_default().push(d.seq);
+                // Seq-uzayı takibi HER kararda (acked_full(max+1) doğruluğu — repair'ler de seq
+                // işgal eder); ama seq→unit haritası YALNIZ birim-taşıyan kararlarda: FecParity'nin
+                // unit_id'si ESI'dir (AYRI ad-uzayı) — haritaya girseydi repair-ACK'i gerçek bir
+                // birimin store'unu silerdi (S1'de yakalanan tuzak).
                 max_emitted_seq = max_emitted_seq.max(d.seq);
-                if !matches!(
+                let carries_unit = matches!(
                     d.kind,
                     TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate
-                ) {
-                    // FecParity: FEC Manual-off (Q18); CsProbe: bootstrap OFF. Sevk default'larında
-                    // üretilmezler; üretilirse (ileri konfig) shard/probe byte'ları güvenlik
-                    // düzleminden gelir — v0 kabuk bunları taşımaz, kayıp sayar (typed genişleme P2).
+                );
+                if carries_unit {
+                    seq_to_unit.insert(d.seq, d.unit_id);
+                    unit_seqs.entry(d.unit_id).or_default().push(d.seq);
+                } else {
+                    // [S1] FecParity (FEC-açıkken): repair-store'daki gerçek RS-repair →
+                    // FRAME_FEC → seam → wire. Bulunamazsa (evict/latch-0) başlık-only emisyon
+                    // (DATA store-miss gerekçesiyle aynı: motor her emisyonu inflight izler; hiç
+                    // göndermemek yapay kayıp sinyali üretirdi).
+                    if d.kind == TransmitKind::FecParity {
+                        if let (Some(p), Some(hint)) = (fec.as_ref(), d.send_record) {
+                            let SrLogicalRef::Fec { block_id, esi } = hint.logical_ref;
+                            let sym: Option<&[u8]> = repair_store
+                                .get(&block_id)
+                                .and_then(|rs| rs.iter().find(|r| r.esi == esi))
+                                .map(|r| r.bytes.as_slice());
+                            if sym.is_some() {
+                                stats.fec_repairs_tx += 1;
+                            } else {
+                                stats.fec_repair_missing += 1;
+                            }
+                            let frame = encode_fec(
+                                &FecFrameHeader {
+                                    kind: inner_kind::FEC_REPAIR,
+                                    profile_id: p.profile_id,
+                                    block_id,
+                                    esi,
+                                    k_actual: u8::try_from(p.k_shape).unwrap_or(255),
+                                    seq: (d.seq & 0xFFFF) as u16,
+                                },
+                                sym.unwrap_or(&[]),
+                            );
+                            let wire = seam.seal(frame);
+                            stats.tx_datagrams += 1;
+                            if sock.send(&wire).await.is_err() {
+                                stats.send_errors += 1;
+                            }
+                            continue;
+                        }
+                    }
+                    // CsProbe / FEC-kapalıyken FecParity: v0 kabuk taşımaz, sayar (bootstrap OFF;
+                    // sevk default'larında üretilmezler — typed genişleme noktası).
                     stats.stale_decisions += 1;
                     continue;
                 }
@@ -349,6 +476,69 @@ async fn client_task(
                 store.insert(id, payload);
                 let now = elapsed_ns(start);
                 drive!(Event::AppData(OpaqueUnit { id, size }), now);
+                // [S1] Blok birikimi + K'de SAME-EVENT latch: drive! az önce on_event koşturdu →
+                // snapshot.event_index taze; arada başka event YOK (tek-task sıralılık) → latch'in
+                // same-event-causality guard'ı geçer.
+                if let Some(p) = fec.as_ref() {
+                    let e = p.e_usize();
+                    let mut sym = vec![0u8; e];
+                    let payload_ref = store.get(&id).expect("az önce insert edildi");
+                    let pfx = SourcePrefix {
+                        message_id: (id & 0xFFFF_FFFF) as u32,
+                        chunk_offset: 0,
+                        actual_payload_len: payload_ref.len() as u16,
+                        source_flags: 0,
+                    };
+                    // validate_fec tavanı garantiledi; olmazsa iki uç da aynı sonucu türetir
+                    // (deterministik) — sıfır-symbol hizayı korur.
+                    let _ = pfx.serialize_symbol(payload_ref, &mut sym);
+                    debug_assert_eq!(cur_block.len() as u64, id % u64::from(p.k_shape));
+                    cur_block.push(sym);
+                    if cur_block.len() == p.k_shape_usize() {
+                        let parity_wire = (HDR_FEC + e + seam.overhead()) as u64;
+                        // Statik-r (Manual{true} + manuel-close) YA DA adaptif (Controller + latch).
+                        let planned_r: u16 = if let Some(r) = fec_manual_r {
+                            let auth = session.sender_mut().open_fec_block_authority();
+                            session
+                                .sender_mut()
+                                .close_fec_block_manual(auth, cur_block_id, r, parity_wire)
+                                .unwrap_or(0)
+                        } else {
+                            let snap = session.sender().controller_decision_snapshot();
+                            let auth = session.sender_mut().open_fec_block_authority();
+                            session
+                                .sender_mut()
+                                .fec_controller_latch(
+                                    auth,
+                                    snap,
+                                    u8::try_from(p.k_shape).unwrap_or(255),
+                                    p.r_code_max,
+                                    cur_block_id,
+                                    parity_wire,
+                                )
+                                .planned_r
+                        };
+                        if planned_r > 0 {
+                            let srcs: Vec<SourceSymbol> = cur_block
+                                .iter()
+                                .enumerate()
+                                .map(|(i, b)| SourceSymbol {
+                                    esi: i as u16,
+                                    bytes: b,
+                                })
+                                .collect();
+                            if let Ok(reps) = RsSimdCodec.encode(p, &srcs) {
+                                stats.fec_blocks_latched += 1;
+                                repair_store.insert(cur_block_id, reps);
+                                while repair_store.len() > REPAIR_STORE_BLOCKS {
+                                    repair_store.pop_first();
+                                }
+                            }
+                        }
+                        cur_block.clear();
+                        cur_block_id = cur_block_id.wrapping_add(1);
+                    }
+                }
             }
             _ = pace.tick() => { let now = elapsed_ns(start); drive!(Event::TimerFired(Timer::Pto), now); }
             _ = rtprop.tick() => { let now = elapsed_ns(start); drive!(Event::TimerFired(Timer::RtpropProbe), now); }
@@ -404,6 +594,7 @@ impl ServerEndpoint {
         cfg: RuntimeConfig,
         seam: Arc<dyn SecuritySeam>,
     ) -> Result<ServerHandle, RuntimeError> {
+        validate_fec(&cfg)?; // [S1] koşu-öncesi typed FEC-config doğrulaması
         let sock = UdpSocket::bind(bind).await?;
         let local_addr = sock.local_addr()?;
         let (delivery_tx, delivery_rx) = mpsc::channel(cfg.delivery_queue);
@@ -444,11 +635,126 @@ impl ServerHandle {
 /// teslim edilebilir — E2E envelope katmanı §4 nihai dedup otoritesidir).
 const DELIVERED_DEDUP_WINDOW: usize = 8192;
 
+/// [S1] Peer-başına FEC blok-birleştirme tavanı (bounded, SR-AUDIT-001; en-eski düşer + sayaç).
+const RX_BLOCKS_CAP: usize = 32;
+
+/// [S1] Blok-birleştirme durumu: esi→symbol. Source-symbol DATA payload'ından deterministik
+/// türetilir (TX ile aynı `SourcePrefix`); repair FRAME_FEC'ten gelir. BTreeMap = dup-ESI doğal
+/// dedup (codec DuplicateEsi reddine hiç düşülmez).
+struct BlockAsm {
+    k: u8,
+    sources: BTreeMap<u16, Vec<u8>>,
+    repairs: BTreeMap<u16, Vec<u8>>,
+}
+
 /// Eş yuvası: alıcı motoru + idle-emeklilik çapası (item 3) + teslim-dedup penceresi.
 struct PeerSlot {
     rx: Receiver,
     last_seen_ns: u64,
     delivered_seen: std::collections::BTreeSet<u64>,
+    /// [S1] FEC blok-birleştirici (bounded; yalnız FEC-açıkken dolar).
+    blocks: BTreeMap<u32, BlockAsm>,
+}
+
+/// [S1] Shard'ı peer'ın blok-birleştiricisine koyar; hazırsa reconstruct dener, kurtarılanları
+/// teslim eder. READINESS (receiver_host'taki sayım-bug'ının DÜZELTİLMİŞ hâli): yalnız
+/// eksik-source > 0 VE distinct(source)+distinct(repair) ≥ K iken denenir; reconstruct HATASI
+/// bloğu SİLMEZ (shard'lar korunur — sonraki shard tamamlayabilir). Tam blok (sources ≥ K) işi
+/// bitmiştir, düşülür. Kapasite aşımında en-eski blok düşer (sayaçla görünür).
+#[allow(clippy::too_many_arguments)]
+fn fec_ingest(
+    stats: &mut ServerStats,
+    delivery_tx: &mpsc::Sender<Delivery>,
+    peer: SocketAddr,
+    slot: &mut PeerSlot,
+    p: &FecProfile,
+    block_id: u32,
+    k_actual: u8,
+    esi: u16,
+    symbol: Vec<u8>,
+    is_repair: bool,
+) {
+    let asm = slot.blocks.entry(block_id).or_insert_with(|| BlockAsm {
+        k: k_actual,
+        sources: BTreeMap::new(),
+        repairs: BTreeMap::new(),
+    });
+    if is_repair {
+        asm.repairs.entry(esi).or_insert(symbol);
+    } else {
+        asm.sources.entry(esi).or_insert(symbol);
+    }
+    let (complete, ready) = {
+        let k = usize::from(asm.k);
+        (
+            asm.sources.len() >= k,
+            asm.sources.len() + asm.repairs.len() >= k,
+        )
+    };
+    if complete {
+        slot.blocks.remove(&block_id); // tüm source'lar geldi — kurtarılacak yok.
+    } else if ready {
+        let result = {
+            let asm = slot.blocks.get(&block_id).expect("entry az önce kuruldu");
+            let recv: Vec<ReceivedSymbol> = asm
+                .sources
+                .iter()
+                .map(|(e, b)| ReceivedSymbol {
+                    esi: *e,
+                    is_repair: false,
+                    bytes: b,
+                })
+                .chain(asm.repairs.iter().map(|(e, b)| ReceivedSymbol {
+                    esi: *e,
+                    is_repair: true,
+                    bytes: b,
+                }))
+                .collect();
+            RsSimdCodec.reconstruct(p, &recv, 0)
+        };
+        match result {
+            Ok(recovered) => {
+                let k = slot.blocks.get(&block_id).map_or(k_actual, |a| a.k);
+                for r in recovered {
+                    let unit_id = u64::from(block_id) * u64::from(k) + u64::from(r.esi);
+                    let Ok(pfx) = SourcePrefix::parse(&r.bytes) else {
+                        continue;
+                    };
+                    let len = usize::from(pfx.actual_payload_len);
+                    let Some(payload) = r.bytes.get(SOURCE_PREFIX_LEN..SOURCE_PREFIX_LEN + len)
+                    else {
+                        continue;
+                    };
+                    // İlk-teslim dedup penceresi DATA-yoluyla ORTAK: DATA sonra gelirse (geç
+                    // retransmit) çift-teslim edilmez; tersi de simetrik.
+                    if slot.delivered_seen.insert(unit_id) {
+                        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
+                            slot.delivered_seen.pop_first();
+                        }
+                        let d = Delivery {
+                            peer,
+                            unit_id,
+                            payload: payload.to_vec(),
+                        };
+                        if delivery_tx.try_send(d).is_ok() {
+                            stats.delivered += 1;
+                            stats.fec_recovered_units += 1;
+                        } else {
+                            stats.delivery_dropped += 1;
+                        }
+                    }
+                }
+                slot.blocks.remove(&block_id);
+            }
+            Err(_) => {
+                stats.fec_decode_failures += 1; // blok KORUNUR (bug-fix): shard atılmaz.
+            }
+        }
+    }
+    while slot.blocks.len() > RX_BLOCKS_CAP {
+        slot.blocks.pop_first();
+        stats.fec_blocks_evicted += 1;
+    }
 }
 
 /// Server görevi: bench `serve_loop` şekli + bounded peers + idle-emeklilik + teslim akışı.
@@ -461,6 +767,8 @@ async fn server_task(
 ) -> ServerStats {
     let start = Instant::now();
     let mut stats = ServerStats::default();
+    // [S1] FEC-runtime (cfg.fec varsa): repair-ingest + blok-birleştirme + kurtarım-teslimi.
+    let fec: Option<FecProfile> = cfg.fec.and_then(|f| by_id(f.profile_id));
     let mut peers: HashMap<SocketAddr, PeerSlot> = HashMap::new();
     let mut ack_timer = interval(ACK_TICK);
     let mut patience = interval(PATIENCE_TICK);
@@ -496,7 +804,28 @@ async fn server_task(
                     stats.open_failures += 1;
                     continue;
                 };
-                let Some((wire_seq, unit_id, payload)) = decode_data(&plain) else {
+                // [S1] Çerçeve ayrımı: DATA / FEC-shard. İkisi de peer-slot + motor-ACK yolundan
+                // geçer (repair de seq işgal eder — RxKind::FecShard motor tarafından ACK'lenir).
+                enum RxFrame<'a> {
+                    Data {
+                        wire_seq: u16,
+                        unit_id: u64,
+                        payload: &'a [u8],
+                    },
+                    Fec {
+                        h: FecFrameHeader,
+                        symbol: &'a [u8],
+                    },
+                }
+                let parsed = if let Some((wire_seq, unit_id, payload)) = decode_data(&plain) {
+                    RxFrame::Data {
+                        wire_seq,
+                        unit_id,
+                        payload,
+                    }
+                } else if let Some((h, symbol)) = decode_fec(&plain) {
+                    RxFrame::Fec { h, symbol }
+                } else {
                     stats.unknown_frames += 1; // kontrol-düzlemi dal-noktası (item 6 / B-hattı).
                     continue;
                 };
@@ -516,28 +845,117 @@ async fn server_task(
                             rx,
                             last_seen_ns: now,
                             delivered_seen: std::collections::BTreeSet::new(),
+                            blocks: BTreeMap::new(),
                         },
                     );
                 }
                 let Some(slot) = peers.get_mut(&peer) else { continue };
                 slot.last_seen_ns = now;
-                let expected = slot.rx.largest_seq().map_or(0, |m| m + 1);
-                let full = resolve_seq(expected, wire_seq);
-                let out = slot.rx.on_datagram(RxDatagram { seq: full, unit_id, kind: RxKind::Data }, now);
-                // İlk-teslim: seq-yeni VE birim-yeni (dedup penceresi) ise payload app'e akar.
-                if out.delivered.contains(&unit_id) && slot.delivered_seen.insert(unit_id) {
-                    if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
-                        slot.delivered_seen.pop_first();
+                match parsed {
+                    RxFrame::Data {
+                        wire_seq,
+                        unit_id,
+                        payload,
+                    } => {
+                        let expected = slot.rx.largest_seq().map_or(0, |m| m + 1);
+                        let full = resolve_seq(expected, wire_seq);
+                        let out = slot.rx.on_datagram(
+                            RxDatagram {
+                                seq: full,
+                                unit_id,
+                                kind: RxKind::Data,
+                            },
+                            now,
+                        );
+                        // İlk-teslim: seq-yeni VE birim-yeni (dedup penceresi) ise app'e akar.
+                        if out.delivered.contains(&unit_id) && slot.delivered_seen.insert(unit_id) {
+                            if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
+                                slot.delivered_seen.pop_first();
+                            }
+                            let d = Delivery {
+                                peer,
+                                unit_id,
+                                payload: payload.to_vec(),
+                            };
+                            if delivery_tx.try_send(d).is_ok() {
+                                stats.delivered += 1;
+                            } else {
+                                stats.delivery_dropped += 1; // bounded kanal; drenaj sözleşmesi.
+                            }
+                        }
+                        if let Some(ack) = out.ack {
+                            let _ = sock.send_to(&seam.seal(ack.encode()), peer).await;
+                        }
+                        // [S1] Source-symbol türetimi → blok-birleştirici (TX ile AYNI deterministik
+                        // SourcePrefix; block/esi unit_id'den türer — iki uç hizalı).
+                        if let Some(p) = fec.as_ref() {
+                            let block_id = (unit_id / u64::from(p.k_shape)) as u32;
+                            let esi = (unit_id % u64::from(p.k_shape)) as u16;
+                            let mut sym = vec![0u8; p.e_usize()];
+                            let pfx = SourcePrefix {
+                                message_id: (unit_id & 0xFFFF_FFFF) as u32,
+                                chunk_offset: 0,
+                                actual_payload_len: payload.len() as u16,
+                                source_flags: 0,
+                            };
+                            let _ = pfx.serialize_symbol(payload, &mut sym);
+                            let k = u8::try_from(p.k_shape).unwrap_or(255);
+                            fec_ingest(
+                                &mut stats,
+                                &delivery_tx,
+                                peer,
+                                slot,
+                                p,
+                                block_id,
+                                k,
+                                esi,
+                                sym,
+                                false,
+                            );
+                        }
                     }
-                    let d = Delivery { peer, unit_id, payload: payload.to_vec() };
-                    if delivery_tx.try_send(d).is_ok() {
-                        stats.delivered += 1;
-                    } else {
-                        stats.delivery_dropped += 1; // bounded kanal; app drenaj sözleşmesi.
+                    RxFrame::Fec { h, symbol } => {
+                        let Some(p) = fec.as_ref() else {
+                            stats.unknown_frames += 1; // FEC kapalı — çerçeve işlenemez, sayılır.
+                            continue;
+                        };
+                        if h.profile_id != p.profile_id || symbol.len() != p.e_usize() {
+                            stats.unknown_frames += 1; // profil/symbol uyumsuz — fail-closed.
+                            continue;
+                        }
+                        stats.fec_repairs_rx += 1;
+                        let expected = slot.rx.largest_seq().map_or(0, |m| m + 1);
+                        let full = resolve_seq(expected, h.seq);
+                        let is_repair = h.kind == inner_kind::FEC_REPAIR;
+                        let out = slot.rx.on_datagram(
+                            RxDatagram {
+                                seq: full,
+                                unit_id: u64::from(h.esi),
+                                kind: RxKind::FecShard {
+                                    block_id: h.block_id,
+                                    esi: h.esi,
+                                    k_actual: h.k_actual,
+                                    is_repair,
+                                },
+                            },
+                            now,
+                        );
+                        if let Some(ack) = out.ack {
+                            let _ = sock.send_to(&seam.seal(ack.encode()), peer).await;
+                        }
+                        fec_ingest(
+                            &mut stats,
+                            &delivery_tx,
+                            peer,
+                            slot,
+                            p,
+                            h.block_id,
+                            h.k_actual,
+                            h.esi,
+                            symbol.to_vec(),
+                            is_repair,
+                        );
                     }
-                }
-                if let Some(ack) = out.ack {
-                    let _ = sock.send_to(&seam.seal(ack.encode()), peer).await;
                 }
             }
         }

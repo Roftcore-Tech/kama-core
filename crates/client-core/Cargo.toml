@@ -19,6 +19,11 @@ publish.workspace = true
 [dependencies]
 adaptive-transport = { path = "../adaptive-transport" }
 kama-engine = { path = "../kama-engine" }
+# [S1] FEC-runtime: canonical source-symbol (SourcePrefix, §2.6 alan-hizası) + gerçek RS codec.
+# Wire-çerçeve alan-düzeni kama-noise-wire LogicalShardHeader ile birebir → S2 noise-wire
+# adopsiyonu seam-arkasında tek-nokta swap kalır (wire.rs D5 notu).
+kama-transport-schema = { path = "../kama-transport-schema" }
+kama-fec-codec = { path = "../kama-fec-codec" }
 # For `OpenedTransportShard`, which is the ingress witness type. It is deliberately only
 # constructible via `protector.open()` (AEAD-verify), so INV-FEC-1's authenticate-before-decode
 # ordering is enforced by the type system rather than by convention.

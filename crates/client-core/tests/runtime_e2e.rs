@@ -318,3 +318,110 @@ async fn idle_peer_is_retired_and_slot_reusable() {
         "emeklilik sayaçla görünmeli: {ss:?}"
     );
 }
+
+/// [S1] E2E FEC-kurtarım: gerçek UDP + KALICI erasure (seam, seçili DATA birimlerini retransmit
+/// DAHİL hep düşürür — ARQ'nun tek başına ASLA kurtaramayacağı kayıp sınıfı) → statik-r FEC
+/// (STATIC_R kolu) repair'lerle kurtarır, app 8/8 teslim alır. Repair çerçeveleri (FRAME_FEC)
+/// seam'den geçer; yalnız hedef DATA birimleri düşer. Bu, tezin ("coding, ARQ'nun sansürlediğini
+/// kurtarır") runtime-düzeyi e2e kanıtıdır — kompozisyon hücresinin (fec_recovery_cell) UDP ikizi.
+mod fec_seam {
+    use client_core::seam::{SecuritySeam, IDENTITY_TAG};
+    use client_core::wire::decode_data;
+
+    /// IdentitySeam + alıcı-yönlü kalıcı DATA-erasure (unit_id ∈ drop).
+    pub struct DropUnitsSeam(pub &'static [u64]);
+
+    impl SecuritySeam for DropUnitsSeam {
+        fn seal(&self, mut plain: Vec<u8>) -> Vec<u8> {
+            plain.resize(plain.len() + IDENTITY_TAG, 0);
+            plain
+        }
+        fn open(&self, wire: &[u8]) -> Option<Vec<u8>> {
+            if wire.len() <= IDENTITY_TAG {
+                return None;
+            }
+            let plain = &wire[..wire.len() - IDENTITY_TAG];
+            if let Some((_, unit_id, _)) = decode_data(plain) {
+                if self.0.contains(&unit_id) {
+                    return None; // kalıcı erasure: orijinal + TÜM retransmit'ler düşer.
+                }
+            }
+            Some(plain.to_vec())
+        }
+        fn overhead(&self) -> usize {
+            IDENTITY_TAG
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fec_static_r_recovers_permanently_erased_units_over_udp() {
+    use client_core::runtime::FecRuntimeConfig;
+    const K: u64 = 8;
+    let fec_cfg = |q| RuntimeConfig {
+        // Profil 0x03: K=8, R=4, E=64 → payload ≤ 64-11 = 53 B.
+        max_unit_bytes: 48,
+        fec: Some(FecRuntimeConfig {
+            profile_id: 0x03,
+            manual_r: Some(4),
+        }),
+        drain_cap: Duration::from_millis(300),
+        delivery_queue: q,
+        ..RuntimeConfig::default()
+    };
+    // Server-seam: unit 2 ve 5'in DATA'sı KALICI düşer (repair'ler FRAME_FEC — geçer).
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        fec_cfg(64),
+        Arc::new(fec_seam::DropUnitsSeam(&[2, 5])),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(server.local_addr(), fec_cfg(64), Arc::new(IdentitySeam))
+        .await
+        .expect("client connect");
+
+    for i in 0..K {
+        client
+            .send(format!("fec-unit-{i}").into_bytes())
+            .expect("offer");
+    }
+
+    // 8/8 teslim beklenir: 6 DATA-yoluyla + 2 FEC-reconstruct'la (payload byte-eş).
+    let delivered = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut got = std::collections::BTreeSet::new();
+        while got.len() < K as usize {
+            let d = server.next_delivery().await.expect("delivery akışı açık");
+            assert_eq!(
+                d.payload,
+                format!("fec-unit-{}", d.unit_id).into_bytes(),
+                "kurtarılan payload byte-eş olmalı (unit {})",
+                d.unit_id
+            );
+            got.insert(d.unit_id);
+        }
+        got
+    })
+    .await
+    .expect("20 s içinde 8/8 teslim (2'si FEC-kurtarım)");
+    assert_eq!(delivered.len(), K as usize);
+
+    let cs = client.shutdown().await;
+    let ss = server.shutdown().await;
+    assert_eq!(cs.fec_blocks_latched, 1, "tek K=8 blok latch'lendi: {cs:?}");
+    assert!(
+        cs.fec_repairs_tx >= 2,
+        "en az kurtarım için gereken repair wire'a çıkmalı: {cs:?}"
+    );
+    assert_eq!(
+        ss.fec_recovered_units, 2,
+        "tam olarak silinen 2 birim FEC'le kurtarılmalı: {ss:?}"
+    );
+    assert_eq!(ss.delivered, K, "app 8/8 aldı: {ss:?}");
+    // Dürüst sınır (S2'ye kadar): kurtarılan birimlerin DATA-ACK'i yok (RECOVERED-control B-hattı)
+    // → client onları teslim-teyitsiz sayar. Bu, teslimin kendisini DEĞİŞTİRMEZ.
+    assert_eq!(
+        cs.undelivered, 2,
+        "RECOVERED-control öncesi bilinen sınır: {cs:?}"
+    );
+}

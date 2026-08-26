@@ -133,6 +133,11 @@ derin imzaları kendi crate testlerinde; P4 yalnız re-export yolunun kararlıl�
 
 - **Ad:** `transport-API-v0`. Semver niyeti: bu yüzeyde alan/varyant EKLEME minor; SİLME/İMZA-DEĞİŞİMİ
   major. Major'da pin testi kasıtlı güncellenir + bu belge revize edilir (sessiz drift YASAK).
+- **v0.1 (S1, 2026-08-26 — minor-EKLEME, pin kasıtlı güncellendi):** `RuntimeConfig.fec:
+  Option<FecRuntimeConfig>` (default `None` = FEC KAPALI; flip S1-GATE kanıtına bağlı) ·
+  `RuntimeError::FecConfig` · ClientStats +3 / ServerStats +4 FEC sayacı · wire-v0'a `FRAME_FEC`
+  (alan-düzeni kama-noise-wire `LogicalShardHeader` §2.6 ile birebir — S2 noise-wire adopsiyonu
+  seam-arkasında tek-nokta swap). Mevcut hiçbir alan/imza DEĞİŞMEDİ.
 - Dondurulmuş **davranış-invariant'ları** (yüzeyle birlikte bağlayıcı): opak-birim taşıma
   (INV-ENGINE-SOC), typed-refuse (SR-AUDIT-001, reachable `todo!()` yok), loss→rate düşürmez
   (INV-RATE-1), bounded-buffer (P3).
