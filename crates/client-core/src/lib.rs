@@ -57,8 +57,10 @@ pub struct ClientSession {
 impl ClientSession {
     /// Construct with the shipped defaults.
     ///
-    /// Those defaults are: startup pacing **OFF** (DR-RATE-RAMP-2B revert; üçüncü blokör
-    /// `fuzzy_e2e` floor-vs-parity), bootstrap RTT **OFF** (kilitli panel 2/3), tail recovery
+    /// Those defaults are: startup pacing **ON** (engine default; `925dea66` restored it after
+    /// the fuzzy_e2e floor-vs-parity blocker was resolved — 5/5 green today; an earlier edit here
+    /// wrongly said OFF by mis-attributing BootstrapRttConfig's `enabled: false`), bootstrap RTT
+    /// **OFF** (kilitli panel 2/3), tail recovery
     /// **ON** — `TailRecoveryConfig::validated_v1()`, the named KAMA-TAIL-V1 constant the
     /// 2290-row product grid ran, re-validated post-P0 on burst + p2 no-harm (G1,
     /// `reports/g1-tail-revalidation/G1-CLOSURE.md`) and flipped by Abkarada decision G2

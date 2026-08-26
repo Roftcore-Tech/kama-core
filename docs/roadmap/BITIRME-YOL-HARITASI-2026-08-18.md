@@ -196,7 +196,7 @@ Sıralama önerisi: B1 (en küçük iş) → B2 → B3.
 
 | # | blokör | iş | flip hedefi |
 |---|---|---|---|
-| **B1** | startup-pacing: aktif floor `fuzzy_e2e`'de FEC r=2 parity emisyonunu boğuyor (0/4, 900 tick) | floor-vs-parity emisyon önceliği fix'i + fuzzy_e2e yeşil + EK4-A2 regresyonu yeşil kalarak | startup-pacing default-ON |
+| ~~B1~~ | **DÜZELTME (2026-08-26): ZATEN ÇÖZÜLMÜŞ** — startup-pacing motor default'u ON (`925dea66`, 2026-08-12); fuzzy_e2e bugün 5/5 yeşil. B1 satırının ilk hali hatalıydı (bayat kayıt + yanlış grep atfı) | — | (kapalı) |
 | **B2** | bootstrap-RTT: kilitli panel 2/3 FAIL (rep14 GE-L10 reverse-echo, ladder [3,9,21,45]s'i aşıyor) | ladder yeniden-tasarımı YA DA gerekçeli panel-amendment; panel 3/3 | bootstrap default-ON (tail-ON ile değeri arttı: RTT'siz initial-PTO 1 s tahmin yerine ölçüm) |
 | **B3** | FEC controller: Q18 kalibrasyon kusuru (%20 kayıpta parity=0; diz 250k ppm) | structure-gate kalibrasyonu (estimator hazır, tüketen kural yok — Prereg-A hattı); FAZ-2 FEC kollarıyla birleşebilir | FEC otomatik-controller default-ON (manuel static-r zaten çalışıyor) |
 

@@ -21,7 +21,7 @@ Kanıt tek başına yeterli değil; kanıtın **mevcut motorda** geçerli olmas�
 | aday | mevcut | ÖNERİ | gerekçe |
 |---|---|---|---|
 | **tail-recovery** | OFF | **ON (koşullu)** | §2 — kanıt lehte; P0-sonrası re-validation kapısına bağlı |
-| startup-pacing | OFF | **OFF kalır** | §3 — üçüncü blokör açık (aktif-floor → FEC parity sıfır-emisyon) |
+| startup-pacing | **ON (motor default'u)** | **ON — zaten açık** | §3 DÜZELTME — `925dea66` (2026-08-12) default-ON'u geri getirdi; fuzzy_e2e blokörü çözülmüş (bugün 5/5 yeşil). İlk taslaktaki "OFF" iddiası hatalıydı (BootstrapRtt'nin false'u yanlış atfedildi) |
 | bootstrap-RTT | OFF | **OFF kalır** | §4 — kilitli panel 2/3 FAIL (rep14 GE-L10) |
 | FEC (Controller) | Manual{false} | **OFF kalır** | §5 — Q18 kalibrasyon kusuru Controller'ı yasaklıyor |
 
@@ -72,14 +72,15 @@ Yani "flip" = ürün-kuruluşunun validated_v1 çağırması, default-struct'ın
 L10-med tuning açığı ürün-v2 backlog'unda kalır (adaptif cap/backoff); default-ON bunu bilerek kabul
 eder çünkü açık = "recover edemez" değil "daha az agresif recover eder" (mekanizma güvenli, bounded).
 
-## 3. Startup-pacing → OFF kalır
+## 3. Startup-pacing → ZATEN ON (DÜZELTME, 2026-08-26)
 
-EK4-A2 (next_wakeup_ns liveness blokörü) DÜZELDİ ve regresyon-mühürlü (tests/ek4_a2_liveness.rs).
-ANCAK default-ON denemesi ÜÇÜNCÜ blokörü açığa çıkardı: aktif başlangıç-floor'u ile
-`kama-engine/tests/fuzzy_e2e.rs` — controller r=2 parity planlarken (planned=4) floor AKTİF iken
-900 tick'te **sıfır** parity wire'a ulaşıyor (floor INAKTİF'te 4'ü de çıkıyor). Explicit FEC_R2
-runtime-executable kalmalı → bu default sevk edilseydi liveness kusurunu FEC-aktüatör kırıklığıyla
-takas ederdik. **OFF kalır; blokör: floor-vs-parity emisyon önceliği (ayrı kalem).**
+**Bu bölümün ilk hali hatalıydı.** Gerçek durum: `StartupPacingConfig::default()` = `enabled: true`
+— `925dea66` (2026-08-12, "restore startup pacing default-ON") EK4-A2 fix'i ve fuzzy_e2e
+floor-vs-parity blokörünün çözülmesi sonrası default'u geri açtı; satır-672 civarındaki OFF-revert
+yorumu TARİHSELdir (kayıt sonradan düzeltilmiş: "value was right, record was stale"). Bugünkü kanıt:
+`cargo test -p kama-engine --test fuzzy_e2e` 5/5 (r2_to_emission + partial_block dahil), EK4-A2
+regresyonu mühürlü. İlk taslağın hatasının kökü: `enabled: false` grep'inin BootstrapRttConfig'e
+ait satırı startup-pacing'e atfedilmesi + bayat hafıza kaydı. **Karar gerekmiyor; mekanizma sevk'te.**
 
 ## 4. Bootstrap-RTT → OFF kalır
 
