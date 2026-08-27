@@ -133,16 +133,27 @@ derin imzaları kendi crate testlerinde; P4 yalnız re-export yolunun kararlıl�
 
 - **Ad:** `transport-API-v0`. Semver niyeti: bu yüzeyde alan/varyant EKLEME minor; SİLME/İMZA-DEĞİŞİMİ
   major. Major'da pin testi kasıtlı güncellenir + bu belge revize edilir (sessiz drift YASAK).
-- **v0.1 (S1, 2026-08-26 — minor-EKLEME, pin kasıtlı güncellendi):** `RuntimeConfig.fec:
-  Option<FecRuntimeConfig>` (default `None` = FEC KAPALI; flip S1-GATE kanıtına bağlı) ·
-  `RuntimeError::FecConfig` · ClientStats +3 / ServerStats +4 FEC sayacı · wire-v0'a `FRAME_FEC`
-  (alan-düzeni kama-noise-wire `LogicalShardHeader` §2.6 ile birebir — S2 noise-wire adopsiyonu
-  seam-arkasında tek-nokta swap). Mevcut hiçbir alan/imza DEĞİŞMEDİ.
+- **v0.1 (S1, 2026-08-26 — minor-EKLEME, pin kasıtlı güncellendi; freeze-audit ile tamamlandı):**
+  `RuntimeConfig.fec: Option<FecRuntimeConfig{profile_id, manual_r}>` (default `None` = FEC KAPALI;
+  flip S1-GATE kanıtına bağlı) · `RuntimeError::FecConfig(&'static str)` · **ClientStats +4 /
+  ServerStats +5** FEC sayacı · wire-v0'a `FRAME_FEC` (0x01: FecFrameHeader{kind, profile_id,
+  block_id, esi, k_actual, seq} — alan-düzeni kama-noise-wire `LogicalShardHeader` §2.6 birebir)
+  **ve `FRAME_RECOVERED`** (0x02: block_id + esi-listesi ≤ RECOVERED_MAX_ESI=16; noise-wire
+  `Control::Recovered` hizası). Mevcut hiçbir alan/imza DEĞİŞMEDİ. Freeze-audit (2026-08-26,
+  3-denetçi): pin'in ilk v0.1 hâli FEC/RECOVERED codec yüzeyini ve ClientSession'ın 4 metot
+  imzasını KAPSAMIYORDU — kapatıldı (TAM alan-kümesi + fn-pointer imza-bağlama).
 - Dondurulmuş **davranış-invariant'ları** (yüzeyle birlikte bağlayıcı): opak-birim taşıma
   (INV-ENGINE-SOC), typed-refuse (SR-AUDIT-001, reachable `todo!()` yok), loss→rate düşürmez
   (INV-RATE-1), bounded-buffer (P3).
 - **v0 → v1 tetikleyicisi:** §4.4 substrat kararı VEYA güvenlik-düzlemi (Sprint-6) gerçek seam'i
-  takınca; ikisi de yüzey imzasını değiştirMEDEN takılacak şekilde tasarlandı (seam trait sabit).
+  takınca. **DÜZELTME (freeze-audit 2026-08-26):** "seam trait sabit" varsayımı ÇÜRÜDÜ — repo'nun
+  kendi gerçek Noise katmanı (kama-noise-wire) `SecuritySeam(seal/open/overhead)`'in taşıyamadığı
+  şeyler ister: fallible seal (`Result<SealedPacket, WireError>`), `SealArgs{wire_pn, dh_epoch,
+  send_generation}` girişi + `SealedPacketMeta` çıkışı (§0.5 send-record akışı), per-peer/session
+  anahtar seçimi (server tek `Arc<dyn SecuritySeam>` paylaşıyor), per-packet `sealed_len(p)`
+  (sabit `overhead()` değil), epoch/rekey yaşam-döngüsü. **S2'de seam imzası v1'e KASITLI major
+  ile genişler**; motor crate'i (adaptive-transport) bu geçişte SIFIR değişiklik görür
+  (`send_record` kancası hazır — audit-kanıtlı).
 
 ---
 

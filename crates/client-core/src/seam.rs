@@ -3,8 +3,10 @@
 //! Transport çalışma-zamanı datagram'ı OPAK taşır: dışarı çıkan her datagram `seal`'den, içeri
 //! giren her datagram `open`'dan geçer. Kripto BU trait'in ARKASINDADIR — bugün [`IdentitySeam`]
 //! (stub, bench TAG_STUB soyu: +16 B byte-eşdeğer sahte tag), yarın güvenlik düzlemi (workstream B,
-//! Sprint-6) gerçek Noise/AEAD implementasyonunu AYNI trait'e takar; çalışma-zamanı döngüsü
-//! DEĞİŞMEZ. `open` başarısızlığı sessiz düşürmedir (verify-before-admission: doğrulanamayan
+//! Sprint-6) gerçek Noise/AEAD implementasyonunu BU dikiş-NOKTASINA takar. DÜRÜST NOT (freeze-audit
+//! 2026-08-26): gerçek kama-noise-wire için trait İMZASI v1'e genişleyecek (fallible seal,
+//! SealArgs/SealedPacketMeta, per-peer seçim, per-packet sizer — P4 belgesi §3); SINIR sabittir,
+//! imza değil. `open` başarısızlığı sessiz düşürmedir (verify-before-admission: doğrulanamayan
 //! datagram transport durumuna DOKUNMADAN çöpe gider — INV-FEC-1'in alıcı yarısıyla aynı kural).
 //!
 //! GÜVENLİK İDDİASI YOK: `IdentitySeam` kimlik/ gizlilik/bütünlük SAĞLAMAZ; yalnız byte-eşdeğer

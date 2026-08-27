@@ -18,7 +18,11 @@ use client_core::runtime::{
     RuntimeError, ServerEndpoint, ServerHandle, ServerStats,
 };
 use client_core::seam::{IdentitySeam, SecuritySeam, IDENTITY_TAG};
-use client_core::wire::{decode_data, encode_data, FRAME_DATA, HDR_DATA};
+use client_core::wire::{
+    decode_data, decode_fec, decode_recovered, encode_data, encode_fec, encode_recovered,
+    FecFrameHeader, FRAME_DATA, FRAME_FEC, FRAME_RECOVERED, HDR_DATA, HDR_FEC, HDR_RECOVERED,
+    RECOVERED_MAX_ESI,
+};
 use client_core::ClientSession;
 // Motor re-export'ları (yalnız yol/isim-pin; derinlemesine imza motorun kendi testlerinde).
 use client_core::{
@@ -85,7 +89,9 @@ async fn transport_api_v0_surface_is_frozen() {
         RuntimeError::UnitTooLarge { got: _, cap: _ } => {}
         RuntimeError::Closed => {}
         RuntimeError::Io(_) => {}
-        RuntimeError::FecConfig(_) => {} // v0.1 (S1)
+        RuntimeError::FecConfig(m) => {
+            let _: &'static str = m; // payload-tipi pinli (v0.1)
+        }
     }
 
     // ── ClientEndpoint / ClientHandle imzaları ──
@@ -162,6 +168,43 @@ async fn transport_api_v0_surface_is_frozen() {
     let _: u8 = FRAME_DATA;
     let _: usize = HDR_DATA;
 
-    // ── ClientSession (G2 sevk yüzeyi — tail-ON validated_v1) ──
+    // ── wire-v0.1 FEC + RECOVERED codec imzaları (freeze-audit kapatması: TAM alan kümesi) ──
+    let fh = FecFrameHeader {
+        kind: 0,
+        profile_id: 0,
+        block_id: 0,
+        esi: 0,
+        k_actual: 1,
+        seq: 0,
+    };
+    let FecFrameHeader {
+        kind: _,
+        profile_id: _,
+        block_id: _,
+        esi: _,
+        k_actual: _,
+        seq: _,
+    } = fh;
+    let _: Vec<u8> = encode_fec(&fh, &[]);
+    let _: Option<(FecFrameHeader, &[u8])> = decode_fec(&[]);
+    let _: u8 = FRAME_FEC;
+    let _: usize = HDR_FEC;
+    let _: Vec<u8> = encode_recovered(0u32, &[]);
+    let _: Option<(u32, Vec<u16>)> = decode_recovered(&[]);
+    let _: u8 = FRAME_RECOVERED;
+    let _: usize = HDR_RECOVERED;
+    let _: usize = RECOVERED_MAX_ESI;
+
+    // ── ClientSession (G2 sevk yüzeyi — tail-ON validated_v1): 5 metot + Default imza-pinli ──
     let _cs: ClientSession = ClientSession::new();
+    let _cs2: ClientSession = ClientSession::default();
+    let _f: fn(&mut ClientSession, Event, u64) -> Vec<TransmitDecision> = ClientSession::on_event;
+    let _f2: fn(
+        &mut ClientSession,
+        Vec<OpenedTransportShard>,
+        u8,
+        u8,
+    ) -> Result<Vec<u8>, EngineError> = ClientSession::admit;
+    let _f3: fn(&ClientSession) -> &Sender = ClientSession::sender;
+    let _f4: fn(&mut ClientSession) -> &mut Sender = ClientSession::sender_mut;
 }
