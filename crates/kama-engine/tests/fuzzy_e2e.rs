@@ -317,35 +317,50 @@ fn e2e_real_fuzzy_zero_r1_source_only() {
     );
 }
 
-// ── 4.3 NO-RULE (loss-HIGH ∧ bw-düşük → 4-kural-sıfır) ──
+// ── 4.3 YAPI-GATE OVERRIDE (eski NO-RULE sınıfı) ──
+// [Q18-FIX GÜNCELLEMESİ, 2026-08-26] Bu sürüş (loss≈660k, IID-yapı, fuzzy-fec=0) eskiden
+// no_rule-fallback'e düşüp latch-LITERAL-0 mühürleniyordu. Yapı-gate (sender `structure_gate_fec`)
+// artık TAM bu sınıfta ateşler: fate_estimator IID-yapıyı görür → fec_med açılır → `no_rule`
+// temizlenir (gate = yapı-kuralı). Ölçüm-gerekçesi: FS-FUSION-CELL-1 — bu rejimde coding tek
+// tamamlayan mekanizma; eski davranış (parity=0) Q18 kusurunun kendisiydi. no_rule→LITERAL-0
+// mühürü UNIT-katmanda korunur (dr_1a_latch_guards/t27: latch no_rule-snapshot'ı planned=0'a
+// bastırır); bu E2E artık gate-açık uçtan-uca emisyon+decode'u mühürler.
 #[test]
-fn e2e_real_fuzzy_no_rule_literal_zero() {
+fn e2e_real_fuzzy_structure_gate_overrides_no_rule() {
     let mut s = controller_sender();
-    // Düşük-hacim (10ms-ara, tek-ACK→app-limited→btlbw-düşük) + ağır-kayıp ≥W_loss-süresi →
-    // ppm ≈ 833k×0.81 ≈ 670k ≥ 600k (loss.med=0, HIGH-plateau) ∧ bw.high=0 → 4-kural-sıfır.
     let t = drive_regime(&mut s, 10, 2, 2, 10, 10, 0); // hafif-warm (srtt-kur)
     let t = drive_regime(&mut s, 60, 6, 1, 10, 230, t); // %83-kayıp; teslim-seyrek (~17.4s)
     let snap = s.diag_fusion_input_snapshot().unwrap();
     eprintln!(
-        "[E2E-4.3] inputs: loss={} bw={} no_rule={}",
-        snap.loss_windowed_ppm, snap.bandwidth_bps, snap.no_rule
+        "[E2E-4.3] inputs: loss={} bw={} no_rule={} gate_opened={}",
+        snap.loss_windowed_ppm,
+        snap.bandwidth_bps,
+        snap.no_rule,
+        s.diag_structure_gate_opened()
     );
     assert!(
-        snap.no_rule,
-        "GERÇEK-inputs no_rule-sınıfında (zero-weight)"
+        s.diag_structure_gate_opened() > 0,
+        "yapı-gate bu sınıfta ateşlemeli (loss≥floor, IID, fuzzy-fec=0)"
     );
-    let (out, _ratio, planned, emitted) = real_latch_emit_decode(&mut s, 0x0A00_0003, 1, 8, t);
+    assert!(
+        !snap.no_rule,
+        "gate ateşledi → no_rule temizlenir (yapı-kuralı bir KURALDIR)"
+    );
+    let (out, ratio, planned, emitted) = real_latch_emit_decode(&mut s, 0x0A00_0003, 1, 8, t);
+    eprintln!("[E2E-4.3] ratio={ratio} planned={planned} emitted={emitted}");
+    assert!(ratio > 0, "gate fec_med açar (rate-only fuzzy 0 bırakırdı)");
+    let expect = ((u64::from(ratio) * 8 + 500) / 1000).min(4) as u16;
+    assert_eq!(planned, expect, "planned = ratio×k_actual-formülü");
     assert_eq!(
-        (planned, emitted),
-        (0, 0),
-        "no_rule → latch-LITERAL-0 (consequent-bağımsız)"
+        emitted,
+        u64::from(planned),
+        "planlanan parity gerçek-emisyona ulaşır"
     );
-    let d = s.diag_fec_actuation();
     assert_eq!(
-        d.last_latch.unwrap().suppression,
-        Some(FecSuppressionReason::NoRule)
+        out.unwrap(),
+        vec![0x33u8; common::PAYLOAD_CAP * 8],
+        "uçtan-uca decode (gate→latch→emisyon→seal→open→admit)"
     );
-    assert!(out.is_ok(), "kayıpsız-source-only");
 }
 
 // ── 4.5 PARTIAL (gerçek-fuzzy + k_actual=5) ──
