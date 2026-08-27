@@ -780,7 +780,13 @@ struct PeerSlot {
     tx_pn: u64,
     /// [v1/PARAM] Per-peer bound-param durumu (fail-closed admission-gate).
     param: ParamState,
+    /// [v1/PARAM] Bind-öncesi gelen FEC-shard'ların bounded bekletmesi (PreParamHold deseni;
+    /// DÜŞÜRME yarış-duyarlıydı: repair'ler yeniden-üretilmez — CI yavaş-runner'da yakalandı).
+    pre_param_fec: Vec<(FecFrameHeader, Vec<u8>)>,
 }
+
+/// [v1/PARAM] Per-peer pre-param hold tavanı (MAX_PREPARAM_SHARDS hizası, küçük: E≤1KB sınıfı).
+const PRE_PARAM_FEC_CAP: usize = 64;
 
 impl PeerSlot {
     fn next_pn(&mut self) -> u64 {
@@ -1029,6 +1035,7 @@ async fn server_task(
                             seam_peer,
                             tx_pn: 0,
                             param: ParamState::new(),
+                            pre_param_fec: Vec::new(),
                         },
                     );
                 }
@@ -1115,9 +1122,40 @@ async fn server_task(
                             stats.unknown_frames += 1; // FEC kapalı — çerçeve işlenemez, sayılır.
                             continue;
                         };
-                        // [v1/PARAM] fail-closed: bound-param yokken FEC-shard işlenmez (sayaçlı).
+                        // [v1/PARAM] fail-closed AMA bounded-HOLD: bind-öncesi shard decode/teslim
+                        // ALMAZ, bekletilir; bind'de drain edilir. (Düşürme yarış-duyarlıydı:
+                        // repair yeniden-üretilmediğinden kurtarım kalıcı kaybolurdu — CI'da yakalandı.)
                         if !slot.param.is_confirmed() {
-                            stats.fec_pre_param_dropped += 1;
+                            if slot.pre_param_fec.len() < PRE_PARAM_FEC_CAP {
+                                slot.pre_param_fec.push((h, symbol.to_vec()));
+                            } else {
+                                stats.fec_pre_param_dropped += 1; // taşan düşer (bounded).
+                            }
+                            // Motor-ACK'i yine verilir (seq işgal edildi; kayıp-sinyali üretme).
+                            let expected = slot.rx.largest_seq().map_or(0, |m| m + 1);
+                            let full = resolve_seq(expected, h.seq);
+                            let is_repair = h.kind == inner_kind::FEC_REPAIR;
+                            let out = slot.rx.on_datagram(
+                                RxDatagram {
+                                    seq: full,
+                                    unit_id: u64::from(h.esi),
+                                    kind: RxKind::FecShard {
+                                        block_id: h.block_id,
+                                        esi: h.esi,
+                                        k_actual: h.k_actual,
+                                        is_repair,
+                                    },
+                                },
+                                now,
+                            );
+                            if let Some(ack) = out.ack {
+                                let (sp, pn) = (slot.seam_peer, slot.next_pn());
+                                srv_seal_send(
+                                    &mut seam, &sock, &mut stats, peer, sp, pn,
+                                    ack.encode(),
+                                )
+                                .await;
+                            }
                             continue;
                         }
                         if h.profile_id != p.profile_id || symbol.len() != p.e_usize() {
@@ -1191,6 +1229,34 @@ async fn server_task(
                                 let f = encode_param_ack(&param_hash);
                                 let (sp, pn) = (slot.seam_peer, slot.next_pn());
                                 srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, f).await;
+                                // Bind: bekletilen shard'lar drain → normal ingest (kurtarımlar
+                                // RECOVERED ile bildirilir).
+                                if let Some(p) = fec.as_ref() {
+                                    for (fh, sym) in std::mem::take(&mut slot.pre_param_fec) {
+                                        let is_rep = fh.kind == inner_kind::FEC_REPAIR;
+                                        let rec = fec_ingest(
+                                            &mut stats,
+                                            &delivery_tx,
+                                            peer,
+                                            slot,
+                                            p,
+                                            fh.block_id,
+                                            fh.k_actual,
+                                            fh.esi,
+                                            sym,
+                                            is_rep,
+                                        );
+                                        if !rec.is_empty() {
+                                            stats.fec_recovered_ctrl_tx += 1;
+                                            let f2 = encode_recovered(fh.block_id, &rec);
+                                            let (sp2, pn2) = (slot.seam_peer, slot.next_pn());
+                                            srv_seal_send(
+                                                &mut seam, &sock, &mut stats, peer, sp2, pn2, f2,
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                }
                             }
                             Err(_) => stats.param_rejects += 1,
                         }
