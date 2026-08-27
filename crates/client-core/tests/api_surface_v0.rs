@@ -54,7 +54,8 @@ fn _engine_reexport_names_are_frozen(
     unreachable_code,
     unused_variables,
     unused_mut,
-    clippy::diverging_sub_expression
+    clippy::diverging_sub_expression,
+    clippy::type_complexity
 )]
 async fn transport_api_v0_surface_is_frozen() {
     return;
