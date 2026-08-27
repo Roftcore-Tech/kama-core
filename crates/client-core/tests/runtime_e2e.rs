@@ -3,7 +3,6 @@
 //! netem süreç-düzeyi kapısı (`scripts/netem/p1_e2e_gate.sh`) bunun iki-netns/kayıplı ikizidir;
 //! buradaki testler kayıpsız yolda TAM teslim + typed sınırlar + temiz kapanışı mühürler.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use client_core::runtime::{ClientEndpoint, RuntimeConfig, RuntimeError, ServerEndpoint};
@@ -13,17 +12,20 @@ use client_core::seam::IdentitySeam;
 #[tokio::test(flavor = "multi_thread")]
 async fn loopback_all_units_delivered_and_acked() {
     const N: u64 = 50;
-    let seam = Arc::new(IdentitySeam);
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         RuntimeConfig::default(),
-        seam.clone(),
+        Box::new(IdentitySeam),
     )
     .await
     .expect("server bind");
-    let mut client = ClientEndpoint::connect(server.local_addr(), RuntimeConfig::default(), seam)
-        .await
-        .expect("client connect");
+    let mut client = ClientEndpoint::connect(
+        server.local_addr(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("client connect");
 
     for i in 0..N {
         // Payload birim-özgü: teslim byte-eşliği içerikle doğrulanır (sabit-doku maskelemesin).
@@ -73,7 +75,7 @@ async fn offer_backpressure_is_typed_queue_full() {
     };
     // Ölü hedef (bağlı ama dinleyen yok): ACK gelmez → store boşalmaz → kuyruk dolar.
     let client =
-        ClientEndpoint::connect("127.0.0.1:9".parse().unwrap(), cfg, Arc::new(IdentitySeam))
+        ClientEndpoint::connect("127.0.0.1:9".parse().unwrap(), cfg, Box::new(IdentitySeam))
             .await
             .expect("connect");
     client.send(b"a".to_vec()).expect("1. birim store'a");
@@ -103,7 +105,7 @@ async fn oversized_unit_is_typed_refused() {
             drain_cap: Duration::from_millis(50),
             ..RuntimeConfig::default()
         },
-        Arc::new(IdentitySeam),
+        Box::new(IdentitySeam),
     )
     .await
     .expect("connect");
@@ -120,19 +122,18 @@ async fn oversized_unit_is_typed_refused() {
 /// Peer-cap FAIL-CLOSED: tablo doluyken İKİNCİ eş sessizce düşer (typed sayaç), İLK eş etkilenmez.
 #[tokio::test(flavor = "multi_thread")]
 async fn peer_cap_is_fail_closed() {
-    let seam = Arc::new(IdentitySeam);
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         RuntimeConfig {
             max_peers: 1,
             ..RuntimeConfig::default()
         },
-        seam.clone(),
+        Box::new(IdentitySeam),
     )
     .await
     .expect("server bind");
     let addr = server.local_addr();
-    let c1 = ClientEndpoint::connect(addr, RuntimeConfig::default(), seam.clone())
+    let c1 = ClientEndpoint::connect(addr, RuntimeConfig::default(), Box::new(IdentitySeam))
         .await
         .expect("c1");
     c1.send(b"first-peer".to_vec()).expect("offer");
@@ -147,7 +148,7 @@ async fn peer_cap_is_fail_closed() {
             drain_cap: Duration::from_millis(200),
             ..RuntimeConfig::default()
         },
-        seam,
+        Box::new(IdentitySeam),
     )
     .await
     .expect("c2");
@@ -171,11 +172,10 @@ async fn peer_cap_is_fail_closed() {
 /// typed görünür (bench "dead peer → bounded exit" disiplini, tasarım D8/D9).
 #[tokio::test(flavor = "multi_thread")]
 async fn client_survives_server_death_mid_run() {
-    let seam = Arc::new(IdentitySeam);
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         RuntimeConfig::default(),
-        seam.clone(),
+        Box::new(IdentitySeam),
     )
     .await
     .expect("server bind");
@@ -186,7 +186,7 @@ async fn client_survives_server_death_mid_run() {
             drain_cap: Duration::from_millis(500),
             ..RuntimeConfig::default()
         },
-        seam,
+        Box::new(IdentitySeam),
     )
     .await
     .expect("client connect");
@@ -231,20 +231,23 @@ async fn client_survives_server_death_mid_run() {
 /// app sonradan drenaja dönebilir (kanal bozulmaz).
 #[tokio::test(flavor = "multi_thread")]
 async fn delivery_overflow_is_counted_not_grown() {
-    let seam = Arc::new(IdentitySeam);
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         RuntimeConfig {
             delivery_queue: 4,
             ..RuntimeConfig::default()
         },
-        seam.clone(),
+        Box::new(IdentitySeam),
     )
     .await
     .expect("server bind");
-    let mut client = ClientEndpoint::connect(server.local_addr(), RuntimeConfig::default(), seam)
-        .await
-        .expect("client connect");
+    let mut client = ClientEndpoint::connect(
+        server.local_addr(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("client connect");
     for i in 0..40u64 {
         client
             .send(format!("overflow-{i}").into_bytes())
@@ -283,20 +286,23 @@ async fn delivery_overflow_is_counted_not_grown() {
 /// AYNI eş yeniden gelirse yeni slot açılır (yaşam-döngüsü çevrimi).
 #[tokio::test(flavor = "multi_thread")]
 async fn idle_peer_is_retired_and_slot_reusable() {
-    let seam = Arc::new(IdentitySeam);
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         RuntimeConfig {
             idle_hold: Duration::from_millis(300),
             ..RuntimeConfig::default()
         },
-        seam.clone(),
+        Box::new(IdentitySeam),
     )
     .await
     .expect("server bind");
-    let client = ClientEndpoint::connect(server.local_addr(), RuntimeConfig::default(), seam)
-        .await
-        .expect("client connect");
+    let client = ClientEndpoint::connect(
+        server.local_addr(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("client connect");
     client.send(b"before-idle".to_vec()).expect("offer");
     tokio::time::timeout(Duration::from_secs(10), server.next_delivery())
         .await
@@ -319,37 +325,52 @@ async fn idle_peer_is_retired_and_slot_reusable() {
     );
 }
 
-/// [S1] E2E FEC-kurtarım: gerçek UDP + KALICI erasure (seam, seçili DATA birimlerini retransmit
+/// [S1] E2E FEC-kurtarım: gerçek UDP + KALICI erasure (Box::new(IdentitySeam), seçili DATA birimlerini retransmit
 /// DAHİL hep düşürür — ARQ'nun tek başına ASLA kurtaramayacağı kayıp sınıfı) → statik-r FEC
 /// (STATIC_R kolu) repair'lerle kurtarır, app 8/8 teslim alır. Repair çerçeveleri (FRAME_FEC)
 /// seam'den geçer; yalnız hedef DATA birimleri düşer. Bu, tezin ("coding, ARQ'nun sansürlediğini
 /// kurtarır") runtime-düzeyi e2e kanıtıdır — kompozisyon hücresinin (fec_recovery_cell) UDP ikizi.
 mod fec_seam {
-    use client_core::seam::{SecuritySeam, IDENTITY_TAG};
+    use client_core::seam::{
+        OpenReject, OpenedDatagram, SealArgs, SealError, SealedDatagram, SeamPeer, SecuritySeam,
+        IDENTITY_TAG,
+    };
     use client_core::wire::decode_data;
 
     /// IdentitySeam + alıcı-yönlü kalıcı DATA-erasure (unit_id ∈ drop).
     pub struct DropUnitsSeam(pub &'static [u64]);
 
     impl SecuritySeam for DropUnitsSeam {
-        fn seal(&self, mut plain: Vec<u8>) -> Vec<u8> {
-            plain.resize(plain.len() + IDENTITY_TAG, 0);
-            plain
+        fn seal(
+            &mut self,
+            _peer: SeamPeer,
+            mut frame: Vec<u8>,
+            args: SealArgs,
+        ) -> Result<SealedDatagram, SealError> {
+            frame.resize(frame.len() + IDENTITY_TAG, 0);
+            Ok(SealedDatagram {
+                bytes: frame,
+                full_wire_pn: args.wire_pn,
+                dh_epoch: args.dh_epoch,
+            })
         }
-        fn open(&self, wire: &[u8]) -> Option<Vec<u8>> {
+        fn open(&mut self, wire: &[u8]) -> Result<OpenedDatagram, OpenReject> {
             if wire.len() <= IDENTITY_TAG {
-                return None;
+                return Err(OpenReject::Malformed);
             }
             let plain = &wire[..wire.len() - IDENTITY_TAG];
             if let Some((_, unit_id, _)) = decode_data(plain) {
                 if self.0.contains(&unit_id) {
-                    return None; // kalıcı erasure: orijinal + TÜM retransmit'ler düşer.
+                    return Err(OpenReject::AuthFail); // kalıcı erasure: retransmit'ler dahil.
                 }
             }
-            Some(plain.to_vec())
+            Ok(OpenedDatagram {
+                peer: 0,
+                plain: plain.to_vec(),
+            })
         }
-        fn overhead(&self) -> usize {
-            IDENTITY_TAG
+        fn sealed_len(&self, frame_len: usize) -> usize {
+            frame_len + IDENTITY_TAG
         }
     }
 }
@@ -373,12 +394,12 @@ async fn fec_static_r_recovers_permanently_erased_units_over_udp() {
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         fec_cfg(64),
-        Arc::new(fec_seam::DropUnitsSeam(&[2, 5])),
+        Box::new(fec_seam::DropUnitsSeam(&[2, 5])),
     )
     .await
     .expect("server bind");
     let mut client =
-        ClientEndpoint::connect(server.local_addr(), fec_cfg(64), Arc::new(IdentitySeam))
+        ClientEndpoint::connect(server.local_addr(), fec_cfg(64), Box::new(IdentitySeam))
             .await
             .expect("client connect");
 

@@ -146,3 +146,61 @@ pub fn decode_recovered(buf: &[u8]) -> Option<(u32, Vec<u16>)> {
         .collect();
     Some((block_id, esis))
 }
+
+// ── [S1→v1] PARAM bootstrap çerçeveleri ──────────────────────────────────────────────────────
+//
+// FEC-profil bağlaması: gönderici PARAM'ı yollar (B2: FEC-emisyonu ACK-BEKLEMEDEN akar), alıcı
+// yerel-beklenen `ParamFields` ile `ParamState::on_param_set` doğrulaması yapar (BLAKE2s param_hash,
+// §8 fail-closed) → admission açılır; ACK yalnız confirmation (retry-durdurur). Alan-hizası
+// `Control::ParamSet{param_hash, profile_id, code_suite_id}` — S2'de sealed-control'e taşınır.
+
+/// PARAM_SET frame_type.
+pub const FRAME_PARAM: u8 = 0x03;
+/// PARAM gövde boyu: type(1)+profile(1)+suite(1)+hash(32).
+pub const LEN_PARAM: usize = 35;
+/// PARAM_ACK frame_type (hash-echo; confirmation-only).
+pub const FRAME_PARAM_ACK: u8 = 0x04;
+/// PARAM_ACK boyu: type(1)+hash(32).
+pub const LEN_PARAM_ACK: usize = 33;
+
+/// PARAM çerçevesi kodlar.
+#[must_use]
+pub fn encode_param(profile_id: u8, code_suite_id: u8, param_hash: &[u8; 32]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(LEN_PARAM);
+    b.push(FRAME_PARAM);
+    b.push(profile_id);
+    b.push(code_suite_id);
+    b.extend_from_slice(param_hash);
+    b
+}
+
+/// PARAM çerçevesi çözer: `(profile_id, code_suite_id, param_hash)`. Bozuk → `None` (fail-closed).
+#[must_use]
+pub fn decode_param(buf: &[u8]) -> Option<(u8, u8, [u8; 32])> {
+    if buf.len() != LEN_PARAM || buf[0] != FRAME_PARAM {
+        return None;
+    }
+    let mut h = [0u8; 32];
+    h.copy_from_slice(&buf[3..35]);
+    Some((buf[1], buf[2], h))
+}
+
+/// PARAM_ACK kodlar (hash-echo).
+#[must_use]
+pub fn encode_param_ack(param_hash: &[u8; 32]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(LEN_PARAM_ACK);
+    b.push(FRAME_PARAM_ACK);
+    b.extend_from_slice(param_hash);
+    b
+}
+
+/// PARAM_ACK çözer: `param_hash`. Bozuk → `None`.
+#[must_use]
+pub fn decode_param_ack(buf: &[u8]) -> Option<[u8; 32]> {
+    if buf.len() != LEN_PARAM_ACK || buf[0] != FRAME_PARAM_ACK {
+        return None;
+    }
+    let mut h = [0u8; 32];
+    h.copy_from_slice(&buf[1..33]);
+    Some(h)
+}

@@ -7,7 +7,6 @@
 //! Çıkış: 0 = hedef tam (server: N teslim; client: N ACK), 1 = eksik (sayılar stderr'e).
 //! Ölçüm iddiası YOK — bu bir işlevsel kapıdır (teslim/kapanış/sınır), benchmark değildir.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use client_core::runtime::{ClientEndpoint, FecRuntimeConfig, RuntimeConfig, ServerEndpoint};
@@ -55,12 +54,11 @@ async fn main() {
     let a: Vec<String> = std::env::args().collect();
     let role = a.get(1).cloned().unwrap_or_default();
     let deadline = Duration::from_secs(arg(&a, "--deadline-s", "60").parse().unwrap_or(60));
-    let seam = Arc::new(IdentitySeam);
     let code = match role.as_str() {
         "server" => {
             let bind = arg(&a, "--bind", "127.0.0.1:4600").parse().expect("bind");
             let expect: u64 = arg(&a, "--expect", "100").parse().expect("expect");
-            let mut srv = ServerEndpoint::bind(bind, build_cfg(&a), seam)
+            let mut srv = ServerEndpoint::bind(bind, build_cfg(&a), Box::new(IdentitySeam))
                 .await
                 .expect("server bind");
             let linger = Duration::from_secs(arg(&a, "--linger-s", "5").parse().unwrap_or(5));
@@ -89,7 +87,7 @@ async fn main() {
             let units: u64 = arg(&a, "--units", "100").parse().expect("units");
             let interval =
                 Duration::from_millis(arg(&a, "--interval-ms", "50").parse().unwrap_or(50));
-            let mut cli = ClientEndpoint::connect(server, build_cfg(&a), seam)
+            let mut cli = ClientEndpoint::connect(server, build_cfg(&a), Box::new(IdentitySeam))
                 .await
                 .expect("client connect");
             let mut acked = 0u64;

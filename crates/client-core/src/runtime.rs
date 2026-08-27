@@ -17,7 +17,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
@@ -27,9 +26,12 @@ use adaptive_transport::sender::{
     Timer, TransmitKind,
 };
 use adaptive_transport::seq::resolve_seq;
+use kama_engine::{plan_param_bootstrap, ParamState};
 use kama_fec_codec::{
     by_id, FecCodec, FecProfile, ReceivedSymbol, RepairSymbol, RsSimdCodec, SourceSymbol,
 };
+use kama_transport_schema::control::Control;
+use kama_transport_schema::param::ParamFields;
 use kama_transport_schema::prefix::SourcePrefix;
 use kama_transport_schema::{inner_kind, SOURCE_PREFIX_LEN};
 use tokio::net::UdpSocket;
@@ -37,10 +39,11 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
-use crate::seam::SecuritySeam;
+use crate::seam::{SealArgs, SeamPeer, SecuritySeam};
 use crate::wire::{
-    decode_data, decode_fec, decode_recovered, encode_data, encode_fec, encode_recovered,
-    FecFrameHeader, FRAME_RECOVERED, HDR_DATA, HDR_FEC,
+    decode_data, decode_fec, decode_param, decode_param_ack, decode_recovered, encode_data,
+    encode_fec, encode_param, encode_param_ack, encode_recovered, FecFrameHeader, FRAME_PARAM_ACK,
+    FRAME_RECOVERED, HDR_DATA, HDR_FEC,
 };
 use crate::ClientSession;
 
@@ -130,6 +133,21 @@ fn validate_fec(cfg: &RuntimeConfig) -> Result<Option<FecProfile>, RuntimeError>
     Ok(Some(p))
 }
 
+/// [v1/PARAM] Profilden canonical `ParamFields` (§8; iki uç AYNI türetir — hash buna bağlanır).
+fn param_fields_for(p: &FecProfile) -> ParamFields {
+    ParamFields {
+        protocol_version: 1,
+        fec_version: 1,
+        code_suite_id: p.code_suite_id,
+        profile_id: p.profile_id,
+        k_shape: p.k_shape,
+        r_code_max: p.r_code_max,
+        e: p.e,
+        partial_policy: 0,
+        packet_scheduling_policy: 0,
+    }
+}
+
 /// Typed çalışma-zamanı hataları — reachable `todo!()` YASAK; her sınır typed reddeder.
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
@@ -183,6 +201,12 @@ pub struct ClientStats {
     /// [S1] RECOVERED-control ile teslim-teyidi alan birim (alıcı FEC-kurtardı → retransmit iptal,
     /// store'dan düşer, app `acked()` akışına girer).
     pub fec_recovered_ctrl_units: u64,
+    /// [v1] Typed seal-reddi (seam hazır-değil/PN) — emisyon kayıp sayıldı (INV-RATE-1).
+    pub seal_failures: u64,
+    /// [v1/PARAM] Gönderilen PARAM_SET çerçevesi (bounded retry).
+    pub param_sends: u64,
+    /// [v1/PARAM] PARAM_ACK hash-echo doğrulandı (0/1; B2: emisyon zaten akıyordu).
+    pub param_confirmed: u64,
 }
 
 /// Server koşu istatistikleri.
@@ -211,6 +235,14 @@ pub struct ServerStats {
     pub fec_blocks_evicted: u64,
     /// [S1] Wire'a yazılan RECOVERED-control çerçevesi (blok başına bir).
     pub fec_recovered_ctrl_tx: u64,
+    /// [v1] Typed seal-reddi (ACK/RECOVERED/PARAM_ACK dönüş yolu).
+    pub seal_failures: u64,
+    /// [v1/PARAM] PARAM_SET doğrulanıp bağlanan peer (ilk-bind başına 1).
+    pub param_bound_peers: u64,
+    /// [v1/PARAM] PARAM_SET doğrulama reddi (hash/profil-mismatch; fail-closed, bind YOK).
+    pub param_rejects: u64,
+    /// [v1/PARAM] PARAM-bağlanmadan gelen FEC-shard (fail-closed sayaçlı düşürme).
+    pub fec_pre_param_dropped: u64,
 }
 
 /// Teslim olayı: hangi eşten hangi birim, payload'ıyla.
@@ -244,7 +276,7 @@ impl ClientEndpoint {
     pub async fn connect(
         server: SocketAddr,
         cfg: RuntimeConfig,
-        seam: Arc<dyn SecuritySeam>,
+        seam: Box<dyn SecuritySeam>,
     ) -> Result<ClientHandle, RuntimeError> {
         validate_fec(&cfg)?; // [S1] koşu-öncesi typed FEC-config doğrulaması
         let sock = UdpSocket::bind(match server {
@@ -307,7 +339,7 @@ impl ClientHandle {
 async fn client_task(
     sock: UdpSocket,
     cfg: RuntimeConfig,
-    seam: Arc<dyn SecuritySeam>,
+    mut seam: Box<dyn SecuritySeam>,
     mut offer_rx: mpsc::Receiver<Vec<u8>>,
     acked_tx: mpsc::Sender<u64>,
     mut shutdown_rx: watch::Receiver<bool>,
@@ -332,6 +364,15 @@ async fn client_task(
             .set_fec_actuation_mode(mode)
             .expect("taze Sender mode-set kabul eder");
     }
+    // [v1] Seam-PN sayacı (per-endpoint; noise-wire caller-supplied sözleşmesi) + PARAM planı.
+    let mut tx_pn: u64 = 0;
+    const CLIENT_SEAM_PEER: SeamPeer = 0;
+    let param_plan = fec
+        .as_ref()
+        .and_then(|p| plan_param_bootstrap(1, &param_fields_for(p)).ok());
+    let mut param_confirmed = param_plan.is_none(); // FEC-yoksa PARAM-akışı yok.
+    let mut param_last_tick_ms: u64 = 0;
+    let mut param_tries: u32 = 0;
     // [S1] Ardışık-blok birikimi: unit_id → (block = id/K, esi = id%K) deterministik (iki uç da
     // türetir); yalnız SON blok birikir. K dolunca same-event latch + gerçek RS-encode →
     // bounded repair_store (en-eski düşer → o bloğun FecParity kararı başlık-only'e düşer).
@@ -353,6 +394,31 @@ async fn client_task(
     // Motoru bir olayla sürer + kararları mühürleyip wire'a yazar. seq→unit kaydı GÖNDERİMDEN
     // BAĞIMSIZ önce yapılır (acked_full(max_emitted+1) doğruluğu buna bağlı; refused/failed send
     // de seq'ini işgal eder). Send hatası = kanal kaybı (INV-RATE-1; abort YOK).
+    // [v1] Tek-nokta seal+send: typed seal-reddi sayılır, PN yalnız başarılı seal'de ilerler.
+    macro_rules! seal_send {
+        ($frame:expr) => {
+            match seam.seal(
+                CLIENT_SEAM_PEER,
+                $frame,
+                SealArgs {
+                    wire_pn: tx_pn,
+                    dh_epoch: 0,
+                    send_generation: 0,
+                },
+            ) {
+                Ok(sd) => {
+                    tx_pn = tx_pn.wrapping_add(1);
+                    stats.tx_datagrams += 1;
+                    if sock.send(&sd.bytes).await.is_err() {
+                        stats.send_errors += 1; // kayıp; asla geri itme (INV-RATE-1).
+                    }
+                }
+                Err(_) => {
+                    stats.seal_failures += 1; // typed-red; emisyon kayıp sayıldı.
+                }
+            }
+        };
+    }
     macro_rules! drive {
         ($ev:expr, $now:expr) => {
             for d in session.on_event($ev, $now) {
@@ -396,11 +462,7 @@ async fn client_task(
                                 },
                                 sym.unwrap_or(&[]),
                             );
-                            let wire = seam.seal(frame);
-                            stats.tx_datagrams += 1;
-                            if sock.send(&wire).await.is_err() {
-                                stats.send_errors += 1;
-                            }
+                            seal_send!(frame);
                             continue;
                         }
                     }
@@ -421,11 +483,7 @@ async fn client_task(
                     stats.stale_decisions += 1;
                 }
                 let frame = encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload);
-                let wire = seam.seal(frame);
-                stats.tx_datagrams += 1;
-                if sock.send(&wire).await.is_err() {
-                    stats.send_errors += 1; // kayıp; asla geri itme (INV-RATE-1).
-                }
+                seal_send!(frame);
             }
         };
     }
@@ -433,8 +491,19 @@ async fn client_task(
     macro_rules! handle_rx {
         ($raw:expr, $now:expr) => {
             stats.rx_datagrams += 1;
-            if let Some(plain) = seam.open($raw) {
-                if plain.first() == Some(&FRAME_RECOVERED) {
+            if let Ok(od) = seam.open($raw) {
+                let plain = od.plain;
+                if plain.first() == Some(&FRAME_PARAM_ACK) {
+                    // [v1/PARAM] hash-echo confirmation (B2: yalnız retry-durdurur; emisyon zaten akıyor).
+                    if let (Some(plan), Some(h)) = (param_plan.as_ref(), decode_param_ack(&plain)) {
+                        if h == plan.param_hash && !param_confirmed {
+                            param_confirmed = true;
+                            stats.param_confirmed = 1;
+                        }
+                    } else {
+                        stats.unknown_frames += 1;
+                    }
+                } else if plain.first() == Some(&FRAME_RECOVERED) {
                     // [S1] RECOVERED-control: alıcı bu ESI'leri FEC ile kurtardı → birim teslim-
                     // teyitli: store'dan düşer, app acked() akışına girer, motor saf-logical iptal
                     // eder (retransmit israfı biter). unit_id = block*K + esi (deterministik atama).
@@ -506,7 +575,7 @@ async fn client_task(
                 let id = next_unit;
                 next_unit += 1;
                 stats.offered += 1;
-                let size = (HDR_DATA + payload.len() + seam.overhead()) as u64;
+                let size = seam.sealed_len(HDR_DATA + payload.len()) as u64;
                 store.insert(id, payload);
                 let now = elapsed_ns(start);
                 drive!(Event::AppData(OpaqueUnit { id, size }), now);
@@ -529,7 +598,7 @@ async fn client_task(
                     debug_assert_eq!(cur_block.len() as u64, id % u64::from(p.k_shape));
                     cur_block.push(sym);
                     if cur_block.len() == p.k_shape_usize() {
-                        let parity_wire = (HDR_FEC + e + seam.overhead()) as u64;
+                        let parity_wire = seam.sealed_len(HDR_FEC + e) as u64;
                         // Statik-r (Manual{true} + manuel-close) YA DA adaptif (Controller + latch).
                         let planned_r: u16 = if let Some(r) = fec_manual_r {
                             let auth = session.sender_mut().open_fec_block_authority();
@@ -575,7 +644,24 @@ async fn client_task(
                 }
             }
             _ = pace.tick() => { let now = elapsed_ns(start); drive!(Event::TimerFired(Timer::Pto), now); }
-            _ = rtprop.tick() => { let now = elapsed_ns(start); drive!(Event::TimerFired(Timer::RtpropProbe), now); }
+            _ = rtprop.tick() => {
+                let now = elapsed_ns(start);
+                // [v1/PARAM] bounded retry (B2): confirmed olana dek her ≥200ms'de bir, ≤25 deneme.
+                if let Some(plan) = param_plan.as_ref() {
+                    let now_ms = now / 1_000_000;
+                    let due = param_tries == 0 || now_ms >= param_last_tick_ms + 200;
+                    if !param_confirmed && param_tries < 25 && due {
+                        if let (Some(p), Control::ParamSet { param_hash, .. }) = (fec.as_ref(), &plan.control) {
+                            let f = encode_param(p.profile_id, p.code_suite_id, param_hash);
+                            seal_send!(f);
+                            stats.param_sends += 1;
+                            param_tries += 1;
+                            param_last_tick_ms = now_ms;
+                        }
+                    }
+                }
+                drive!(Event::TimerFired(Timer::RtpropProbe), now);
+            }
             r = sock.recv(&mut buf) => {
                 let Ok(n) = r else { continue };
                 let now = elapsed_ns(start);
@@ -626,7 +712,7 @@ impl ServerEndpoint {
     pub async fn bind(
         bind: SocketAddr,
         cfg: RuntimeConfig,
-        seam: Arc<dyn SecuritySeam>,
+        seam: Box<dyn SecuritySeam>,
     ) -> Result<ServerHandle, RuntimeError> {
         validate_fec(&cfg)?; // [S1] koşu-öncesi typed FEC-config doğrulaması
         let sock = UdpSocket::bind(bind).await?;
@@ -688,6 +774,46 @@ struct PeerSlot {
     delivered_seen: std::collections::BTreeSet<u64>,
     /// [S1] FEC blok-birleştirici (bounded; yalnız FEC-açıkken dolar).
     blocks: BTreeMap<u32, BlockAsm>,
+    /// [v1] Seam-peer (open'ın kimliklendirdiği; dönüş-seal bu kimlikle).
+    seam_peer: SeamPeer,
+    /// [v1] Dönüş-yönü seam-PN sayacı (per-peer monoton).
+    tx_pn: u64,
+    /// [v1/PARAM] Per-peer bound-param durumu (fail-closed admission-gate).
+    param: ParamState,
+}
+
+impl PeerSlot {
+    fn next_pn(&mut self) -> u64 {
+        let v = self.tx_pn;
+        self.tx_pn = self.tx_pn.wrapping_add(1);
+        v
+    }
+}
+
+/// [v1] Server-yönü tek-nokta seal+send (typed seal-reddi sayılır).
+async fn srv_seal_send(
+    seam: &mut Box<dyn SecuritySeam>,
+    sock: &UdpSocket,
+    stats: &mut ServerStats,
+    peer: SocketAddr,
+    sp: SeamPeer,
+    pn: u64,
+    frame: Vec<u8>,
+) {
+    match seam.seal(
+        sp,
+        frame,
+        SealArgs {
+            wire_pn: pn,
+            dh_epoch: 0,
+            send_generation: 0,
+        },
+    ) {
+        Ok(sd) => {
+            let _ = sock.send_to(&sd.bytes, peer).await; // hata = kayıp.
+        }
+        Err(_) => stats.seal_failures += 1,
+    }
 }
 
 /// [S1] Shard'ı peer'ın blok-birleştiricisine koyar; hazırsa reconstruct dener, kurtarılanları
@@ -798,7 +924,7 @@ fn fec_ingest(
 async fn server_task(
     sock: UdpSocket,
     cfg: RuntimeConfig,
-    seam: Arc<dyn SecuritySeam>,
+    mut seam: Box<dyn SecuritySeam>,
     delivery_tx: mpsc::Sender<Delivery>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> ServerStats {
@@ -806,6 +932,8 @@ async fn server_task(
     let mut stats = ServerStats::default();
     // [S1] FEC-runtime (cfg.fec varsa): repair-ingest + blok-birleştirme + kurtarım-teslimi.
     let fec: Option<FecProfile> = cfg.fec.and_then(|f| by_id(f.profile_id));
+    // [v1/PARAM] yerel-beklenen canonical alanlar (fail-closed doğrulama tabanı).
+    let param_expected: Option<ParamFields> = fec.as_ref().map(param_fields_for);
     let mut peers: HashMap<SocketAddr, PeerSlot> = HashMap::new();
     let mut ack_timer = interval(ACK_TICK);
     let mut patience = interval(PATIENCE_TICK);
@@ -818,12 +946,15 @@ async fn server_task(
             _ = ack_timer.tick() => {
                 let now = elapsed_ns(start);
                 // ACK_FREQ_N'e ulaşamayan kuyruğu timer teyit eder (bench birebir).
-                let acks: Vec<(SocketAddr, Vec<u8>)> = peers
+                let acks: Vec<(SocketAddr, SeamPeer, u64, Vec<u8>)> = peers
                     .iter_mut()
-                    .filter_map(|(p, s)| s.rx.on_ack_timer(now).map(|a| (*p, a.encode())))
+                    .filter_map(|(p, s)| {
+                        s.rx.on_ack_timer(now)
+                            .map(|a| (*p, s.seam_peer, s.next_pn(), a.encode()))
+                    })
                     .collect();
-                for (peer, plain) in acks {
-                    let _ = sock.send_to(&seam.seal(plain), peer).await; // hata = kayıp.
+                for (peer, sp, pn, plain) in acks {
+                    srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, plain).await;
                 }
             }
             _ = patience.tick() => {
@@ -837,10 +968,11 @@ async fn server_task(
             r = sock.recv_from(&mut buf) => {
                 let Ok((n, peer)) = r else { continue };
                 stats.rx_datagrams += 1;
-                let Some(plain) = seam.open(&buf[..n]) else {
+                let Ok(od) = seam.open(&buf[..n]) else {
                     stats.open_failures += 1;
                     continue;
                 };
+                let (seam_peer, plain) = (od.peer, od.plain);
                 // [S1] Çerçeve ayrımı: DATA / FEC-shard. İkisi de peer-slot + motor-ACK yolundan
                 // geçer (repair de seq işgal eder — RxKind::FecShard motor tarafından ACK'lenir).
                 enum RxFrame<'a> {
@@ -853,6 +985,11 @@ async fn server_task(
                         h: FecFrameHeader,
                         symbol: &'a [u8],
                     },
+                    Param {
+                        profile_id: u8,
+                        code_suite_id: u8,
+                        param_hash: [u8; 32],
+                    },
                 }
                 let parsed = if let Some((wire_seq, unit_id, payload)) = decode_data(&plain) {
                     RxFrame::Data {
@@ -862,6 +999,12 @@ async fn server_task(
                     }
                 } else if let Some((h, symbol)) = decode_fec(&plain) {
                     RxFrame::Fec { h, symbol }
+                } else if let Some((profile_id, code_suite_id, param_hash)) = decode_param(&plain) {
+                    RxFrame::Param {
+                        profile_id,
+                        code_suite_id,
+                        param_hash,
+                    }
                 } else {
                     stats.unknown_frames += 1; // kontrol-düzlemi dal-noktası (item 6 / B-hattı).
                     continue;
@@ -883,6 +1026,9 @@ async fn server_task(
                             last_seen_ns: now,
                             delivered_seen: std::collections::BTreeSet::new(),
                             blocks: BTreeMap::new(),
+                            seam_peer,
+                            tx_pn: 0,
+                            param: ParamState::new(),
                         },
                     );
                 }
@@ -921,10 +1067,17 @@ async fn server_task(
                             }
                         }
                         if let Some(ack) = out.ack {
-                            let _ = sock.send_to(&seam.seal(ack.encode()), peer).await;
+                            let (sp, pn) = (slot.seam_peer, slot.next_pn());
+                            srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, ack.encode())
+                                .await;
                         }
                         // [S1] Source-symbol türetimi → blok-birleştirici (TX ile AYNI deterministik
                         // SourcePrefix; block/esi unit_id'den türer — iki uç hizalı).
+                        // [v1/PARAM] Source-türetimi param-GATE'SİZ: profil YEREL cfg'den (validate_fec
+                        // garantili), admission-semantiği yok, bounded (RX_BLOCKS_CAP) — bind'den önce
+                        // gelen DATA'ların symbol'leri kaybolursa blok repair-only kalır ve ASLA
+                        // tamamlanamazdı (ilk koşuda yakalanan yarış). Fail-closed gate YALNIZ
+                        // FEC-shard ingest'inde (mismatch/saldırı yüzeyi orası).
                         if let Some(p) = fec.as_ref() {
                             let block_id = (unit_id / u64::from(p.k_shape)) as u32;
                             let esi = (unit_id % u64::from(p.k_shape)) as u16;
@@ -952,7 +1105,8 @@ async fn server_task(
                             if !rec.is_empty() {
                                 stats.fec_recovered_ctrl_tx += 1;
                                 let f = encode_recovered(block_id, &rec);
-                                let _ = sock.send_to(&seam.seal(f), peer).await;
+                                let (sp, pn) = (slot.seam_peer, slot.next_pn());
+                                srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, f).await;
                             }
                         }
                     }
@@ -961,6 +1115,11 @@ async fn server_task(
                             stats.unknown_frames += 1; // FEC kapalı — çerçeve işlenemez, sayılır.
                             continue;
                         };
+                        // [v1/PARAM] fail-closed: bound-param yokken FEC-shard işlenmez (sayaçlı).
+                        if !slot.param.is_confirmed() {
+                            stats.fec_pre_param_dropped += 1;
+                            continue;
+                        }
                         if h.profile_id != p.profile_id || symbol.len() != p.e_usize() {
                             stats.unknown_frames += 1; // profil/symbol uyumsuz — fail-closed.
                             continue;
@@ -983,7 +1142,9 @@ async fn server_task(
                             now,
                         );
                         if let Some(ack) = out.ack {
-                            let _ = sock.send_to(&seam.seal(ack.encode()), peer).await;
+                            let (sp, pn) = (slot.seam_peer, slot.next_pn());
+                            srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, ack.encode())
+                                .await;
                         }
                         let rec = fec_ingest(
                             &mut stats,
@@ -1000,7 +1161,38 @@ async fn server_task(
                         if !rec.is_empty() {
                             stats.fec_recovered_ctrl_tx += 1;
                             let f = encode_recovered(h.block_id, &rec);
-                            let _ = sock.send_to(&seam.seal(f), peer).await;
+                            let (sp, pn) = (slot.seam_peer, slot.next_pn());
+                            srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, f).await;
+                        }
+                    }
+                    RxFrame::Param {
+                        profile_id,
+                        code_suite_id,
+                        param_hash,
+                    } => {
+                        // [v1/PARAM] §8 fail-closed doğrulama: yerel-beklenen alanlarla hash-verify
+                        // → bind (admission açılır); mismatch → red-sayaç, ACK YOK.
+                        let Some(exp) = param_expected.as_ref() else {
+                            stats.unknown_frames += 1; // FEC kapalı uçta PARAM işlenmez.
+                            continue;
+                        };
+                        let ctl = Control::ParamSet {
+                            id: 0,
+                            param_hash,
+                            profile_id,
+                            code_suite_id,
+                        };
+                        let was = slot.param.is_confirmed();
+                        match slot.param.on_param_set(&ctl, exp) {
+                            Ok(()) => {
+                                if !was {
+                                    stats.param_bound_peers += 1;
+                                }
+                                let f = encode_param_ack(&param_hash);
+                                let (sp, pn) = (slot.seam_peer, slot.next_pn());
+                                srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, f).await;
+                            }
+                            Err(_) => stats.param_rejects += 1,
                         }
                     }
                 }

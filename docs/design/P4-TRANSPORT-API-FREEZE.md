@@ -142,6 +142,17 @@ derin imzaları kendi crate testlerinde; P4 yalnız re-export yolunun kararlıl�
   `Control::Recovered` hizası). Mevcut hiçbir alan/imza DEĞİŞMEDİ. Freeze-audit (2026-08-26,
   3-denetçi): pin'in ilk v0.1 hâli FEC/RECOVERED codec yüzeyini ve ClientSession'ın 4 metot
   imzasını KAPSAMIYORDU — kapatıldı (TAM alan-kümesi + fn-pointer imza-bağlama).
+- **v1.0 (2026-08-26 — KASITLI MAJOR; Abkarada-onaylı):** (a) **SecuritySeam v1** (§2.2:
+  fallible `seal(peer, frame, SealArgs)→SealedDatagram`, self-demux typed `open`, per-packet
+  `sealed_len`; `Box<dyn>` sahiplik) — S2 kama-noise-wire'ı imza-değişimi OLMADAN takar. (b)
+  **`Control::Ack` yerinde-genişletme** (şema+noise-wire codec): `ack_delay_256us u16 · seen_count
+  u32 · arrival_rate u16` — motor AckFrame-V2 semantiği güvenli kontrol-düzlemine taşınabilir
+  (ack_delay RTT-düzeltmesi normatif; deployed-peer yok, legacy-yük yok). (c) **PARAM bootstrap
+  wire-v0'da**: `FRAME_PARAM`(0x03)/`FRAME_PARAM_ACK`(0x04) + per-peer `ParamState` fail-closed
+  bağlama (§8 BLAKE2s param_hash; B2: FEC-emisyon ACK-beklemez; bound-öncesi FEC-shard sayaçlı
+  düşer) — "iki-uç-aynı-config" örtük sözleşmesi doğrulanmış-bağlamaya dönüştü. Yeni sayaçlar:
+  Client{seal_failures, param_sends, param_confirmed} · Server{seal_failures, param_bound_peers,
+  param_rejects, fec_pre_param_dropped}.
 - Dondurulmuş **davranış-invariant'ları** (yüzeyle birlikte bağlayıcı): opak-birim taşıma
   (INV-ENGINE-SOC), typed-refuse (SR-AUDIT-001, reachable `todo!()` yok), loss→rate düşürmez
   (INV-RATE-1), bounded-buffer (P3).

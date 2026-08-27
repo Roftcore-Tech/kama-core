@@ -10,18 +10,21 @@
 //! stabilizasyonuna kadar ERTELENDİ. Bkz. `docs/design/P4-TRANSPORT-API-FREEZE.md`.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 // Re-export yüzeyi (path-pin: bu yollar kaybolursa import derlenmez).
 use client_core::runtime::{
     ClientEndpoint, ClientHandle, ClientStats, Delivery, FecRuntimeConfig, RuntimeConfig,
     RuntimeError, ServerEndpoint, ServerHandle, ServerStats,
 };
-use client_core::seam::{IdentitySeam, SecuritySeam, IDENTITY_TAG};
+use client_core::seam::{
+    IdentitySeam, OpenReject, OpenedDatagram, SealArgs, SealError, SealedDatagram, SeamPeer,
+    SecuritySeam, IDENTITY_TAG,
+};
 use client_core::wire::{
-    decode_data, decode_fec, decode_recovered, encode_data, encode_fec, encode_recovered,
-    FecFrameHeader, FRAME_DATA, FRAME_FEC, FRAME_RECOVERED, HDR_DATA, HDR_FEC, HDR_RECOVERED,
-    RECOVERED_MAX_ESI,
+    decode_data, decode_fec, decode_param, decode_param_ack, decode_recovered, encode_data,
+    encode_fec, encode_param, encode_param_ack, encode_recovered, FecFrameHeader, FRAME_DATA,
+    FRAME_FEC, FRAME_PARAM, FRAME_PARAM_ACK, FRAME_RECOVERED, HDR_DATA, HDR_FEC, HDR_RECOVERED,
+    LEN_PARAM, LEN_PARAM_ACK, RECOVERED_MAX_ESI,
 };
 use client_core::ClientSession;
 // Motor re-export'ları (yalnız yol/isim-pin; derinlemesine imza motorun kendi testlerinde).
@@ -61,7 +64,6 @@ async fn transport_api_v0_surface_is_frozen() {
     return;
 
     let cfg: RuntimeConfig = RuntimeConfig::default();
-    let seam: Arc<dyn SecuritySeam> = Arc::new(IdentitySeam);
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
     // ── RuntimeConfig: TAM alan kümesi (eksiksiz destructure → alan ekle/sil = RED) ──
@@ -96,7 +98,7 @@ async fn transport_api_v0_surface_is_frozen() {
     }
 
     // ── ClientEndpoint / ClientHandle imzaları ──
-    let ch: ClientHandle = ClientEndpoint::connect(addr, cfg.clone(), seam.clone())
+    let ch: ClientHandle = ClientEndpoint::connect(addr, cfg.clone(), Box::new(IdentitySeam))
         .await
         .unwrap();
     let mut ch = ch;
@@ -105,7 +107,7 @@ async fn transport_api_v0_surface_is_frozen() {
     let _: ClientStats = ch.shutdown().await;
 
     // ── ServerEndpoint / ServerHandle imzaları ──
-    let sh: ServerHandle = ServerEndpoint::bind(addr, cfg.clone(), seam.clone())
+    let sh: ServerHandle = ServerEndpoint::bind(addr, cfg.clone(), Box::new(IdentitySeam))
         .await
         .unwrap();
     let mut sh = sh;
@@ -125,6 +127,9 @@ async fn transport_api_v0_surface_is_frozen() {
         stale_decisions: _,
         send_errors: _,
         unaccepted_offers: _,
+        seal_failures: _,
+        param_sends: _,
+        param_confirmed: _,
         fec_blocks_latched: _,
         fec_repairs_tx: _,
         fec_repair_missing: _,
@@ -143,6 +148,10 @@ async fn transport_api_v0_surface_is_frozen() {
         fec_decode_failures: _,
         fec_blocks_evicted: _,
         fec_recovered_ctrl_tx: _,
+        seal_failures: _,
+        param_bound_peers: _,
+        param_rejects: _,
+        fec_pre_param_dropped: _,
     } = ServerStats::default();
     let Delivery {
         peer: _,
@@ -154,14 +163,40 @@ async fn transport_api_v0_surface_is_frozen() {
         payload: Vec::new(),
     };
 
-    // ── SecuritySeam sözleşmesi (güvenlik-düzlemi bu 3 metoda takılır) ──
-    let s = IdentitySeam;
-    let _: Vec<u8> = s.seal(Vec::new());
-    let _: Option<Vec<u8>> = s.open(&[]);
-    let _: usize = s.overhead();
+    // ── SecuritySeam v1 sözleşmesi (güvenlik-düzlemi bu dikişe takılır; imza noise-wire-hizalı) ──
+    let mut sm = IdentitySeam;
+    let SealArgs {
+        wire_pn: _,
+        dh_epoch: _,
+        send_generation: _,
+    } = SealArgs::default();
+    let sd: SealedDatagram = sm
+        .seal(0 as SeamPeer, Vec::new(), SealArgs::default())
+        .unwrap();
+    let SealedDatagram {
+        bytes: _,
+        full_wire_pn: _,
+        dh_epoch: _,
+    } = sd;
+    let od: Result<OpenedDatagram, OpenReject> = sm.open(&[0u8; 32]);
+    if let Ok(OpenedDatagram { peer: _, plain: _ }) = od {}
+    match OpenReject::Malformed {
+        OpenReject::AuthFail => {}
+        OpenReject::Replay => {}
+        OpenReject::UnknownPeer => {}
+        OpenReject::EpochNotAccepted => {}
+        OpenReject::Malformed => {}
+    }
+    match SealError::NotReady {
+        SealError::NotReady => {}
+        SealError::PnExhausted => {}
+        SealError::EpochKeysMissing => {}
+        SealError::Internal(_) => {}
+    }
+    let _: usize = sm.sealed_len(0);
     let _: usize = IDENTITY_TAG;
-    // dyn-uyumluluk (güvenlik-düzlemi Arc<dyn SecuritySeam> olarak takar):
-    let _dyn: Arc<dyn SecuritySeam> = Arc::new(IdentitySeam);
+    // dyn-uyumluluk (endpoint sahipliği): Box<dyn SecuritySeam>.
+    let _dyn: Box<dyn SecuritySeam> = Box::new(IdentitySeam);
 
     // ── wire-v0 codec imzaları (tag YOK — seam'in işi) ──
     let _: Vec<u8> = encode_data(0u16, 0u64, &[]);
@@ -195,6 +230,14 @@ async fn transport_api_v0_surface_is_frozen() {
     let _: u8 = FRAME_RECOVERED;
     let _: usize = HDR_RECOVERED;
     let _: usize = RECOVERED_MAX_ESI;
+    let _: Vec<u8> = encode_param(0, 0, &[0u8; 32]);
+    let _: Option<(u8, u8, [u8; 32])> = decode_param(&[]);
+    let _: Vec<u8> = encode_param_ack(&[0u8; 32]);
+    let _: Option<[u8; 32]> = decode_param_ack(&[]);
+    let _: u8 = FRAME_PARAM;
+    let _: u8 = FRAME_PARAM_ACK;
+    let _: usize = LEN_PARAM;
+    let _: usize = LEN_PARAM_ACK;
 
     // ── ClientSession (G2 sevk yüzeyi — tail-ON validated_v1): 5 metot + Default imza-pinli ──
     let _cs: ClientSession = ClientSession::new();
