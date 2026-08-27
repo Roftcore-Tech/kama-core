@@ -1,0 +1,13 @@
+# cell_id  netem_fwd|netem_rev|msgs interval_ms deadline_s arms
+# ── A: FEC-ON %90 sorusu (p2-eşdeğeri; kapi p2 = %80 iki-yön @200kbit, paced 1s, D=120) ──
+p2fec delay 0ms loss 80% rate 200kbit|delay 0ms loss 80% rate 200kbit|80 1000 120 kama-off,kama-fec,quinn
+# ── B: bölge-haritası (loss × RTT @200kbit; kısa-plan) ──
+l40d0    delay 0ms loss 40% rate 200kbit|delay 0ms loss 40% rate 200kbit|40 250 45 kama-fec,quinn
+l60d0    delay 0ms loss 60% rate 200kbit|delay 0ms loss 60% rate 200kbit|40 250 45 kama-fec,quinn
+l90d0    delay 0ms loss 90% rate 200kbit|delay 0ms loss 90% rate 200kbit|40 250 45 kama-fec,quinn
+l40d150  delay 150ms loss 40% rate 200kbit|delay 150ms loss 40% rate 200kbit|40 250 45 kama-fec,quinn
+l60d150  delay 150ms loss 60% rate 200kbit|delay 150ms loss 60% rate 200kbit|40 250 45 kama-fec,quinn
+l90d150  delay 150ms loss 90% rate 200kbit|delay 150ms loss 90% rate 200kbit|40 250 45 kama-fec,quinn
+# ── C: kullanıcı-rejimi (yüksek-bant + yüksek-kayıp + yüksek-gecikme; ilk kez ölçülüyor) ──
+hb40d300 delay 300ms loss 40% rate 5mbit|delay 300ms loss 40% rate 5mbit|40 250 45 kama-fec,quinn
+hb60d300 delay 300ms loss 60% rate 5mbit|delay 300ms loss 60% rate 5mbit|40 250 45 kama-fec,quinn
