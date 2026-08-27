@@ -42,6 +42,9 @@ fn cases() -> Vec<(&'static str, UnsealedTransportPacket)> {
             UnsealedTransportPacket::Control(Control::Ack {
                 id: 1,
                 acked_dh_epoch: 0,
+                ack_delay_256us: 0,
+                seen_count: 0,
+                arrival_rate: 0xFFFF,
                 ranges: vec![(0, 9), (12, 20), (30, 31), (40, 40)],
             }),
         ),

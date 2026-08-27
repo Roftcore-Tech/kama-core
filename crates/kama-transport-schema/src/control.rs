@@ -13,6 +13,13 @@ pub enum Control {
     Ack {
         id: ControlId,
         acked_dh_epoch: u8,
+        /// [ACK-V2 birleşimi, 2026-08-26 Abkarada-onayı] `largest` alımı→bu-ACK gönderimi gecikmesi,
+        /// 256µs birim (motor `FRAME_TYPE_ACK_V2` ile aynı; RTT-düzeltmesi normatif).
+        ack_delay_256us: u16,
+        /// Görülen toplam DATA datagram'ı (K3 cold-start yön-ayrımı; saturating).
+        seen_count: u32,
+        /// Receiver-gözlemli pencere-oranı; 0xFFFF = ölçüm-yok-sentinel (motor sözleşmesi).
+        arrival_rate: u16,
         ranges: Vec<(u64, u64)>,
     },
     /// 0x11 — gap-based SACK (epoch-scoped; ACK-eliciting-DEĞİL).

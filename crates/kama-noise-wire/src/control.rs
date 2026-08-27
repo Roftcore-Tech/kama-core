@@ -48,11 +48,17 @@ pub fn encode_control_body(c: &Control) -> Vec<u8> {
     match c {
         Control::Ack {
             acked_dh_epoch,
+            ack_delay_256us,
+            seen_count,
+            arrival_rate,
             ranges,
             ..
         } => {
             debug_assert!(ranges.len() <= ACK_MAX_RANGES);
             out.push(*acked_dh_epoch);
+            put_u16(&mut out, *ack_delay_256us);
+            put_u32(&mut out, *seen_count);
+            put_u16(&mut out, *arrival_rate);
             put_u16(&mut out, ranges.len() as u16);
             for (s, e) in ranges {
                 put_u64(&mut out, *s);
@@ -155,7 +161,8 @@ pub fn control_body_len(c: &Control) -> Result<usize, WireError> {
     let n = match c {
         Control::Ack { ranges, .. } => {
             cap_check(inner_kind::ACK, ranges.len(), ACK_MAX_RANGES)?;
-            1 + 2 + ranges.len() * 16
+            // epoch(1) + ack_delay(2) + seen_count(4) + arrival_rate(2) + count(2) + 16n
+            1 + 2 + 4 + 2 + 2 + ranges.len() * 16
         }
         Control::Sack { blocks, .. } => {
             cap_check(inner_kind::SACK, blocks.len(), SACK_MAX_GAP_BLOCKS)?;
@@ -196,6 +203,9 @@ pub fn split_for_send(c: &Control, mut next_id: impl FnMut() -> ControlId) -> Ve
         Control::Ack {
             id,
             acked_dh_epoch,
+            ack_delay_256us,
+            seen_count,
+            arrival_rate,
             ranges,
         } if ranges.len() > ACK_MAX_RANGES => ranges
             .chunks(ACK_MAX_RANGES)
@@ -203,6 +213,9 @@ pub fn split_for_send(c: &Control, mut next_id: impl FnMut() -> ControlId) -> Ve
             .map(|(i, ch)| Control::Ack {
                 id: if i == 0 { *id } else { next_id() },
                 acked_dh_epoch: *acked_dh_epoch,
+                ack_delay_256us: *ack_delay_256us,
+                seen_count: *seen_count,
+                arrival_rate: *arrival_rate,
                 ranges: ch.to_vec(),
             })
             .collect(),
@@ -319,6 +332,9 @@ pub fn decode_control_body(
     let c = match codepoint {
         ACK => {
             let acked_dh_epoch = r.u8()?;
+            let ack_delay_256us = r.u16()?;
+            let seen_count = r.u32()?;
+            let arrival_rate = r.u16()?;
             let count = usize::from(r.u16()?);
             cap_check(ACK, count, ACK_MAX_RANGES)?;
             let mut ranges = Vec::with_capacity(count);
@@ -333,6 +349,9 @@ pub fn decode_control_body(
             Control::Ack {
                 id: control_id,
                 acked_dh_epoch,
+                ack_delay_256us,
+                seen_count,
+                arrival_rate,
                 ranges,
             }
         }

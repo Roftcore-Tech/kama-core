@@ -33,6 +33,9 @@ fn all_controls() -> Vec<Control> {
         Control::Ack {
             id: 1,
             acked_dh_epoch: 1,
+            ack_delay_256us: 0,
+            seen_count: 0,
+            arrival_rate: 0xFFFF,
             ranges: vec![(10, 20), (30, 40)],
         },
         Control::Sack {
@@ -125,9 +128,15 @@ fn control_body_golden() {
     let ack = Control::Ack {
         id: 0,
         acked_dh_epoch: 1,
+        ack_delay_256us: 0,
+        seen_count: 0,
+        arrival_rate: 0xFFFF,
         ranges: vec![(0x0A, 0x14)],
     };
-    let mut expect = vec![0x01, 0x00, 0x01];
+    // v1.0 Ack-genişletmesi: epoch(1) + delay u16 + seen u32 + rate u16 + count u16.
+    let mut expect = vec![
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x01,
+    ];
     expect.extend_from_slice(&0x0Au64.to_be_bytes());
     expect.extend_from_slice(&0x14u64.to_be_bytes());
     assert_eq!(encode_control_body(&ack), expect);
@@ -154,6 +163,9 @@ fn incoming_ack_over_cap_rejected() {
     // Elle 33-range'lik ACK-body kur (tavan 32).
     let n = ACK_MAX_RANGES + 1;
     let mut body = vec![0u8]; // acked_dh_epoch
+    body.extend_from_slice(&0u16.to_be_bytes()); // ack_delay_256us
+    body.extend_from_slice(&0u32.to_be_bytes()); // seen_count
+    body.extend_from_slice(&0xFFFFu16.to_be_bytes()); // arrival_rate
     body.extend_from_slice(&(n as u16).to_be_bytes());
     for i in 0..n {
         body.extend_from_slice(&(i as u64).to_be_bytes());
@@ -193,6 +205,9 @@ fn outgoing_ack_over_cap_split() {
     let big = Control::Ack {
         id: 100,
         acked_dh_epoch: 0,
+        ack_delay_256us: 0,
+        seen_count: 0,
+        arrival_rate: 0xFFFF,
         ranges: ranges.clone(),
     };
     let mut next = 1000u32;
@@ -214,6 +229,9 @@ fn outgoing_ack_over_cap_split() {
             len <= control_body_len(&Control::Ack {
                 id: 0,
                 acked_dh_epoch: 0,
+                ack_delay_256us: 0,
+                seen_count: 0,
+                arrival_rate: 0xFFFF,
                 ranges: vec![(0, 0); ACK_MAX_RANGES]
             })
             .unwrap()

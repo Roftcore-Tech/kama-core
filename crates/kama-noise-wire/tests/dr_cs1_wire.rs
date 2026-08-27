@@ -318,6 +318,9 @@ fn g9_mixed_version_matrix() {
                 &UnsealedTransportPacket::Control(Control::Ack {
                     id: 9,
                     acked_dh_epoch: 0,
+                    ack_delay_256us: 0,
+                    seen_count: 0,
+                    arrival_rate: 0xFFFF,
                     ranges: vec![(1, 2)],
                 }),
                 SealArgs {

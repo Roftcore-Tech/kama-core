@@ -491,6 +491,9 @@ fn n8_recovered_is_logical_delivery_not_wire_credit() {
     let ack_ctl = Control::Ack {
         id: 21,
         acked_dh_epoch: 0,
+        ack_delay_256us: 0,
+        seen_count: 0,
+        arrival_rate: 0xFFFF,
         ranges: vec![(0, 4)],
     };
     // RECOVERED wire-katmanında BtlBw-credit ÜRETMEZ (§2.57; N8-invariant).

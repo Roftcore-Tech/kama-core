@@ -165,6 +165,9 @@ mod tests {
         let ack = Control::Ack {
             id: 1,
             acked_dh_epoch: 0,
+            ack_delay_256us: 0,
+            seen_count: 0,
+            arrival_rate: 0xFFFF,
             ranges: vec![(0, 1)],
         };
         assert_eq!(m.resolve(&ack), Err(EngineError::UnexpectedControl));

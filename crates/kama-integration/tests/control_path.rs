@@ -102,6 +102,9 @@ fn control_flow_end_to_end() {
     let ack = Control::Ack {
         id: 10,
         acked_dh_epoch: 0,
+        ack_delay_256us: 0,
+        seen_count: 0,
+        arrival_rate: 0xFFFF,
         ranges: vec![(0, 1)],
     };
     assert_eq!(
@@ -195,6 +198,9 @@ fn no_control_produces_credit() {
         Control::Ack {
             id: 1,
             acked_dh_epoch: 0,
+            ack_delay_256us: 0,
+            seen_count: 0,
+            arrival_rate: 0xFFFF,
             ranges: vec![],
         },
         Control::Sack {
