@@ -1,0 +1,2 @@
+P1-SERVER delivered=74/80 stats=ServerStats { delivered: 74, delivery_dropped: 0, dropped_new_peers: 0, retired_idle_peers: 0, rx_datagrams: 121, open_failures: 0, unknown_frames: 0, fec_repairs_rx: 11, fec_recovered_units: 8, fec_decode_failures: 0, fec_blocks_evicted: 0, fec_recovered_ctrl_tx: 6 }
+P1-RSS kb=13100

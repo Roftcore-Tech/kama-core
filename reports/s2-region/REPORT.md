@@ -52,3 +52,42 @@ var (cold-start/teyit-yolu — bilinen DR-CS hattı). n=3; yönlü-bulgu, kesin-
 Screening (ön-kayıtlı-eş değil); n=2-5; tek makine; kama=acked vs quinn=delivered metrik-asimetrisi
 (A-notu); l90 hücreleri kısa-planda taban. White-paper'da bu tablo "screening" etiketiyle ve
 kapi-eval-v1 formal sonuçlarının YANINDA kullanılmalı.
+
+
+---
+
+# EK — 3 AÇIK-KALEM KAPANIŞI + DR-EST-1 (2026-08-27; teşhis `diag/`, re-run `rt-fix/`)
+
+## K1 — %90-sorusu delivered-metriğiyle (kapandı: metrik-asimetrisi doğrulandı)
+Server-görüşü (delivered), n=3/kol: kama-FEC {74,78,60}=%88.4 · kama-OFF {68,73,72}=%88.75.
+Client-görüşü (acked) ~%78-82 idi → fark = reverse-%80'de TEYİT-zincirinin boğulması (metrik-artefaktı).
+Delivered'da da %90 kıl-payı altında ve FEC/OFF bu gevşek-D hücresinde ayrışmıyor (FEC-avantajı
+burst/deadline-bağlı). White-paper dili: "%80 çift-yön kayıpta uçtan-uca teslim ~%88-89; quinn 0".
+
+## K2 — SÜREKLİLİK-FIX'İ: DR-EST-1 kuruluş-denemesi (kapandı: yapısal-ölüm giderildi)
+**Teşhis (kesin):** tam-sıfır koşuda `tx_datagrams=10` (~12 s'de; başarılılarda 120-142), rx=0 —
+kök-neden `PRE_CONVERGE_FLOOR_BW=31 B/s`: ilk-ölçüm-öncesi pacer 31 B/s'e kilitli ve §3.3-B
+kuruluş-kopyası makinesi token-kapısında boğuluyor (tasarım-niyeti doğru, kompozisyon kusurlu).
+**Fix (motor):** `drain_establish_probe` — PreConverge'de global TEK-slot, exponential-backoff'lu
+(0.5 s→8 s tavan) TOKEN-MUAF kuruluş-kopyası; en-eski §3.3-B kopyasından beslenir, ilk teyitle
+söner; 1 kbps worst-corner'da ~10 s'de ≤4 datagram (~%4 — floor'un flood-gerekçesi korunur);
+INV-RATE-1'e dokunmaz; vade EK4-A2 uyandırma-kümesinde. 3 deterministik pin + 4 koreografi-enstrümanı
+gerekçeli izolasyon (semantik-çelişki YOK; Duplicate-ACK'inin orijinali düzeltmesi §S-0.7 tasarımı).
+**Re-run (rt60d300, sıkı-D=10 s, %60 çift-yön, 600 ms RTT, n=6):**
+| | önce | sonra |
+|---|---|---|
+| koşular | 33, **0**, 38, 26, **0**, 37 | 40, 40, 36, 37, 6, 37 |
+| tam-sıfır | **2/6** | **0/6** |
+| ortalama | %56 | **%82** |
+Kalan dürüst-not: en-kötü koşu 6/40 (bağ kuruldu ama bu aşırı-uçta tamamlanma-kuyruğu stokastik) —
+süreklilik hedefi (bağ HER koşuda kurulur) sağlandı.
+
+## K3 — quinn tam-sıfır mekanizması (kapandı: iki ölüm-sınıfı)
+qbl60d150 n=6 {0,40,40,35,0,33}: (a) **kuruluş-ölümü** — rep5 `udp_tx=0` (tek bayt çıkmamış);
+(b) **kuruluş-sonrası stall** — rep1 tx=5.2 KB/rx=1.4 KB (handshake geçmiş, stream ölmüş).
+White-paper nedensel cümle: quinn'in stokastik-ölümü hem bağlantı-kuruluşunda hem sonrasında.
+
+## Sınırlar
+Screening; K1 n=3, K2/K3 n=6; tek makine. fs_cal2 (untracked WIP, sahibi Abkarada) `rate_lock_seeds_
+escape_the_fixed_point` DR-EST-1-sonrası kırmızı — dosyalara dokunulmadı, sahibinin incelemesine not
+(PreConverge-emisyon-duyarlı rate-lock tohumlaması olası).
