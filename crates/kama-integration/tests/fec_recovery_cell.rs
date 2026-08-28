@@ -96,6 +96,11 @@ fn drive_until_gate_fires(
 #[test]
 fn structure_gated_fec_recovers_burst_erasure_that_arq_censors() {
     let mut s = Sender::new();
+    // [DR-EST-1 IZOLASYONU — 5. koreografi-enstrumani] Bu hucre S/L desenini scripted seq-ACK
+    // listeleriyle IMAL eder (alternating S/L, ACK'siz on-faz); kurulus-kopyalari araya seq sokup
+    // imalati bozar ve gate-ateslemesini kaydirir. Test edilen sey gate->latch->codec KOMPOZISYONU,
+    // kurulus-kolu degil; kolun kendi pinleri adaptive-transport/tests/establish_probe.rs'te.
+    s.set_establish_probe(false);
     s.set_fec_actuation_mode(FecActuationMode::Controller)
         .unwrap();
     let snap = drive_until_gate_fires(&mut s);
