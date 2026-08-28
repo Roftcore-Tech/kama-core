@@ -266,6 +266,12 @@ fn estimator_ingest_admits_only_originals() {
 #[test]
 fn declared_loss_disproven_by_late_ack_corrects_in_place_once() {
     let mut s = Sender::new();
+    // [DR-EST-1 IZOLASYONU] Bu test sabit seq-koreografisine kalibre bir GOZLEM-enstrumani
+    // (ACK-listeleri [2..6] vb. DR-EST-1-oncesi emitter-kumesinin seq-eslemesini varsayar).
+    // Kurulus-kopyalari araya yeni seq'ler sokar; ustelik bir Duplicate'in ACK'i orijinali
+    // duzeltmek ZORUNDADIR (S-0.7 tasarimi, sender correct_original_delivered dup-yolu) - yani
+    // kirilan sey semantik degil koreografidir. Kolun kendi pinleri tests/establish_probe.rs'te.
+    s.set_establish_probe(false);
     feed(&mut s, 12);
     for t in 1..=20u64 {
         s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS);
@@ -346,6 +352,12 @@ fn declared_loss_disproven_by_late_ack_corrects_in_place_once() {
 #[test]
 fn retransmit_ack_cannot_correct_the_originals_fate() {
     let mut s = Sender::new();
+    // [DR-EST-1 IZOLASYONU] Bu test sabit seq-koreografisine kalibre bir GOZLEM-enstrumani
+    // (ACK-listeleri [2..6] vb. DR-EST-1-oncesi emitter-kumesinin seq-eslemesini varsayar).
+    // Kurulus-kopyalari araya yeni seq'ler sokar; ustelik bir Duplicate'in ACK'i orijinali
+    // duzeltmek ZORUNDADIR (S-0.7 tasarimi, sender correct_original_delivered dup-yolu) - yani
+    // kirilan sey semantik degil koreografidir. Kolun kendi pinleri tests/establish_probe.rs'te.
+    s.set_establish_probe(false);
     feed(&mut s, 12);
     for t in 1..=20u64 {
         s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS);

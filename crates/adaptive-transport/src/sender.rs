@@ -926,6 +926,12 @@ const DEFAULT_DUP_SPACING: Duration = Duration::from_millis(20);
 /// §3.3-A en-kötü-köşe önsel pacing floor (B/s) — ürün floor'u ~0.25 kbps. min_rate fixture (Ek-B)
 /// PRE_CONVERGE'de UYGULANMAZ; bu taban kullanılır → 1 kbps kanalı floodlamaz. [CAL PLACEHOLDER]
 const PRE_CONVERGE_FLOOR_BW: u64 = 31;
+/// [DR-EST-1] PreConverge KURULUŞ-DENEMESİ backoff'u: ilk vade + tavan [CAL]. Floor (31 B/s)
+/// worst-corner gerekçesini KORUYARAK ilk-ölçüm-öncesi sürekliliği kurtarır (S2-REGION rt60d300
+/// teşhisi: sıkı-deadline + iki-yön-%60 + 600 ms RTT'de teyit-zinciri hiç kurulamıyordu → 0/40).
+/// Global TEK-slot + exponential-backoff ⇒ 1 kbps kanalda ~10 s'de ≤4 datagram (~%4) — logaritmik-güvenli.
+const ESTABLISH_PROBE_INITIAL_NS: u64 = 500_000_000;
+const ESTABLISH_PROBE_CAP_NS: u64 = 8_000_000_000;
 /// [TUR-1b D-1/2] Cadence-taban bileşenleri — receiver §2.1/§16.1 AYNA sabitleri (sender-yerel,
 /// deterministik). Beklenen ACK-frekansı (receiver ACK_FREQ_N) [CAL].
 const EXPECTED_ACK_FREQ_N: u64 = 2;
@@ -1068,6 +1074,15 @@ pub struct Sender {
     tail_probe_cancelled: u64, // observation-only (§7): due probes cancelled at emission (ACK-race: target no
     // longer outstanding). Distinct from token-starved (kept pending). Only mutated on the ON path.
     dup_queue: Vec<DupRec>, // §11 zamanlanmış forward-recovery kopyaları
+    /// [DR-EST-1] Kuruluş-kolu anahtarı (DEFAULT-ON — ürün-davranışı). Yalnız donmuş-enstrüman
+    /// testleri (Gate-5 structural-oracle: probe-vs-DATA çekişme-izolasyonu, DR-EST-1-öncesi
+    /// tasarım) kapatır; kolun KENDİ pinleri tests/establish_probe.rs'te default-ON koşar.
+    establish_probe_enabled: bool,
+    /// [DR-EST-1] Kuruluş-denemesi vadesi (0 = disarm; yalnız PreConverge'de kurulur).
+    establish_due_ns: u64,
+    establish_interval_ns: u64,
+    /// [DR-EST-1] gözlem: token-muaf kuruluş-kopyası emisyon sayısı.
+    establish_probe_emitted: u64,
     last_now_ns: u64,
 
     // ── FEC-emisyon (DR-S5-1; koşullu — guard-OFF'ta hot-path byte-değişmez) ──
@@ -1275,6 +1290,10 @@ impl Sender {
             tail_probe_pending: None,
             tail_probe_cancelled: 0,
             dup_queue: Vec::new(),
+            establish_probe_enabled: true,
+            establish_due_ns: 0,
+            establish_interval_ns: 0,
+            establish_probe_emitted: 0,
             last_now_ns: 0,
             fec_mode: FecActuationMode::Manual { enabled: false }, // default: mevcut-davranış-birebir
             // Commit-K: process-yerel-kimlik. Relaxed-yeterli (yalnız-uniqueness; ordering-anlamı-yok).
@@ -1886,6 +1905,15 @@ impl Sender {
                 })
                 .min(),
         );
+
+        // 3b. [DR-EST-1] Kuruluş-denemesi vadesi (yalnız PreConverge'de armed; token'sız kol
+        // olduğundan stale-busy-loop riski yok — vadesi gelince EMİT EDER ve yeniden kurar).
+        if self.establish_probe_enabled
+            && self.state == SenderState::PreConverge
+            && self.establish_due_ns > 0
+        {
+            best = earlier(best, Some(self.establish_due_ns));
+        }
 
         // 4. DR-CS-3 bootstrap merdiveni (config default OFF ⇒ aday yok).
         if self.bootstrap_rtt.enabled && !self.bs_done {
@@ -3161,6 +3189,12 @@ impl Sender {
         // DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → no-op): forced PTO tail probe, state-independent, after the
         // normal ARQ planner (so it never double-plans a seq the planner already superseded).
         self.emit_tail_probe(&mut out, now_ns);
+        // [DR-EST-1] PreConverge kuruluş-denemesi: §3.3-B kopya-makinesi ilk-ölçüm-öncesi
+        // PRE_CONVERGE_FLOOR_BW pacer'ına takılıp boğuluyordu (token-yok → break). Bu kol
+        // vadesi gelen EN-ESKİ kopyadan TEK datagram'ı token-MUAF geçirir; INV-RATE-1'e
+        // dokunmaz (send_rate/pacer-rate değişmez — ayrı bounded yan-kol), teyitle söner
+        // (PreConverge-çıkışı). EK4-A2: vadesi next_timer_deadline_ns kümesine DAHİL.
+        self.drain_establish_probe(&mut out, now_ns);
         self.drain_due_duplicates(&mut out, now_ns);
         // DR-S5-1/Commit-K: FEC-parity DATA/recovery SONRASI (DATA-ÖNCE-sıralaması mühürlü). Drain'de
         // mode-kapısı-YOK (üyelik=izin; girişte-kapılı) — buraya-drain-guard-EKLEME: Commit-K'nın
@@ -4288,6 +4322,76 @@ impl Sender {
     }
 
     /// Vadesi gelen duplicate kopyalarını pace ederek emit et (§11 spacing).
+    /// [DR-EST-1] Bkz. schedule_transmit'teki çağrı-yorumu. Tek-slot, backoff'lu, token-muaf.
+    fn drain_establish_probe(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        if !self.establish_probe_enabled {
+            return;
+        }
+        if self.state != SenderState::PreConverge {
+            self.establish_due_ns = 0; // teyit geldi / faz değişti → söner.
+            return;
+        }
+        if self.dup_queue.is_empty() {
+            return; // kaynak yok (ilk DATA henüz kopya planlamadı).
+        }
+        if self.establish_due_ns == 0 {
+            self.establish_interval_ns = ESTABLISH_PROBE_INITIAL_NS;
+            self.establish_due_ns = now_ns.saturating_add(self.establish_interval_ns);
+            return;
+        }
+        if now_ns < self.establish_due_ns {
+            return;
+        }
+        // En-eski vadeli §3.3-B kopyası; drain_due_duplicates gövdesinin try_send'siz tek-elemanlı
+        // ikizi — dup'ın KENDİ geometrik reschedule'ı aynen sürer (kopya-sayısı şişmez).
+        let Some(i) = self
+            .dup_queue
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, d)| d.due_ns)
+            .map(|(i, _)| i)
+        else {
+            return;
+        };
+        let dup = self.dup_queue.remove(i);
+        let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
+        out.push(TransmitDecision {
+            kind: TransmitKind::Duplicate,
+            seq,
+            unit_id: dup.unit.id,
+            size: dup.unit.size,
+            send_record: None,
+        });
+        if dup.interval_ns > 0 {
+            let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER);
+            self.dup_queue.push(DupRec {
+                due_ns: now_ns.saturating_add(next_interval),
+                unit: dup.unit,
+                interval_ns: next_interval,
+            });
+        }
+        self.establish_probe_emitted = self.establish_probe_emitted.saturating_add(1);
+        self.establish_interval_ns = self
+            .establish_interval_ns
+            .saturating_mul(2)
+            .min(ESTABLISH_PROBE_CAP_NS);
+        self.establish_due_ns = now_ns.saturating_add(self.establish_interval_ns);
+    }
+
+    /// [DR-EST-1] Kuruluş-kolu anahtarı (test-görünür; default-ON). Bkz. alan-doc'u.
+    pub fn set_establish_probe(&mut self, on: bool) {
+        self.establish_probe_enabled = on;
+        if !on {
+            self.establish_due_ns = 0;
+        }
+    }
+
+    /// [DR-EST-1] gözlem-sayacı.
+    #[must_use]
+    pub fn diag_establish_probe_emitted(&self) -> u64 {
+        self.establish_probe_emitted
+    }
+
     fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         let mut i = 0;
         while i < self.dup_queue.len() {

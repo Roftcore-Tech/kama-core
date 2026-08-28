@@ -41,6 +41,11 @@ fn pto(s: &mut Sender, t_ms: u64) {
 const SEQ_SPAN: u64 = 400;
 fn drive_until_loss_ack(units: u64, acked: Vec<u64>) -> (Sender, u64) {
     let mut s = Sender::new();
+    // [DR-EST-1 IZOLASYONU] Bu suruculer S/L yapisini SCRIPTED seq-ACK-listeleriyle IMAL eder
+    // (45 s ACK'siz PreConverge + cift-seq'ler). Kurulus-kopyalari araya seq sokup imal-edilen
+    // deseni bozar - test edilen sey GATE-MANTIGI (estimator->gate->decision), kopya-etkilesimi
+    // degil; urunde kopya-ACK'i gercek teslim-sinyalidir. Kolun pinleri tests/establish_probe.rs.
+    s.set_establish_probe(false);
     feed(&mut s, units);
     for t in 1..=20u64 {
         pto(&mut s, t * 200);

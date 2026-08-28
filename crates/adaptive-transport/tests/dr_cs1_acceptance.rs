@@ -149,11 +149,13 @@ fn f1_di12g_inbound_batch_completes_scheduling() {
         !out.is_empty(),
         "inbound-batch output-üretmeli (no-op-bastırması-yanlış-uygulanmış)"
     );
-    // F2A-sonrası: ilk-DATA-emisyonu CS-probe-merdivenini-armlar → next_wakeup = 3s-fire.
+    // F2A-sonrası: ilk-DATA-emisyonu CS-probe-merdivenini-armlar (3s-fire kümede kalır);
+    // [DR-EST-1] kuruluş-vadesi (500ms) artık DAHA-ERKEN uyandırma-adayı -> min = 500ms.
+    // Testin amacı (inbound-batch scheduling'i tamamlar + deadline expose edilir) korunur.
     assert_eq!(
         s.next_wakeup_ns(),
-        Some(3_000_000_000),
-        "arm-sonrası ilk-probe-fire-deadline'ı-expose"
+        Some(500_000_000),
+        "arm-sonrası en-erken deadline (DR-EST-1 kuruluş-vadesi) expose"
     );
 }
 

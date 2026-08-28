@@ -701,6 +701,11 @@ fn build_arm(
     parity: Option<(u64, u16)>,
 ) -> Arm {
     let mut s = Sender::new();
+    // [DR-EST-1 İZOLASYONU] Bu oracle, Gate-5'in probe-vs-DATA çekişmesini DR-EST-1-ÖNCESİ
+    // emitter-kümesiyle inşa eder (hücre-kurulumları o kümeye kalibre). Kuruluş-kolu ÜÇÜNCÜ bir
+    // emitter olarak hücre-koşullarını (tek-DATA-grant/recovery-aktif) bozar — mekanizmanın kendi
+    // pinleri tests/establish_probe.rs'te DEFAULT-ON koşar; burada bilinçli kapatılır.
+    s.set_establish_probe(false);
     // MANDATORY: StartupPacingConfig::default() is enabled=true (sender.rs:684).
     s.set_startup_pacing_init(StartupPacingConfig {
         enabled: startup_pacing,
