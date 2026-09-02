@@ -217,7 +217,12 @@ fn ack_range_accepts_a_single_pn_range() {
     // `s == e` TEK PN'lik geçerli bir aralıktır (bir paket ACK'lenmiş). `>=` olsaydı
     // her tek-paket ACK'i reddedilir ve düşük trafikte ACK kanalı tamamen kapanırdı.
     // (`err_paths_control.rs` bunu RECOVERED için pinliyor; bu ACK kolu.)
+    // [2026-09-02 uyarlama] ACK-V2 birleşimi gövdeye 8B ekledi; yerleşim otoritesi
+    // control.rs::control_body_len: epoch(1)+ack_delay(2)+seen(4)+arrival(2)+count(2)+16n.
     let mut body = vec![0u8]; // acked_dh_epoch
+    body.extend_from_slice(&0u16.to_be_bytes()); // ack_delay_256us
+    body.extend_from_slice(&0u32.to_be_bytes()); // seen_count
+    body.extend_from_slice(&0xFFFFu16.to_be_bytes()); // arrival_rate (ölçüm-yok sentineli)
     body.extend_from_slice(&1u16.to_be_bytes()); // count
     body.extend_from_slice(&7u64.to_be_bytes()); // start
     body.extend_from_slice(&7u64.to_be_bytes()); // end == start
