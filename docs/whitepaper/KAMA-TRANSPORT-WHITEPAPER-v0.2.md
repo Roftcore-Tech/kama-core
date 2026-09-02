@@ -1,5 +1,9 @@
 # Kama Transport — Düşman Ağlarda Mesaj Teslim Kapasitesi: Ön-Kayıtlı Karşılaştırma Kampanyası (FAZ-1)
 
+> **SUPERSEDED-BY: `KAMA-TRANSPORT-WHITEPAPER-v0.3.md` (2026-09-02).** v0.3 bu belgeyi mimari bölümü,
+> P0 düzeltme eki ve iki sayısal düzeltmeyle (p5 q-stream 0,890→1,000; +0,323 tanım-kapsamı uyarısı)
+> genişletir. Bu dosya tarihsel kayıt olarak aynen korunur; dış kullanım v0.3 üzerinden.
+
 **Sürüm:** v0.2 TASLAK (iç inceleme; dış dağıtım öncesi Abkarada onayı gerekir) · **Tarih:** 2026-08-24
 **Kanıt tabanı:** `reports/kapi-eval-v1/` (ham veri `ab946a33`, hükümler `1b39a4f0`, rapor `d677ab6b`)
 **Metodoloji otoritesi:** `docs/tasks/v2-benchmark-gorev-r5-kosuya-hazir.md` (r5); tasarım KAPI-1; ön-kayıt KAPI-2.
