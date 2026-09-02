@@ -23,6 +23,11 @@ edition = "2021"
 license = "Proprietary"
 publish = false
 
+# Kani biçimsel doğrulama `cfg(kani)` kullanır; `cargo test`/`clippy` bunu tanımadığı için
+# `-D warnings` altında `unexpected_cfgs` hatası verir. Burada tanıtılır.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [workspace.dependencies]
 thiserror = "2"
 blake2 = "0.10"

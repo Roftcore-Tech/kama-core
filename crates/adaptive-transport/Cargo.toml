@@ -29,3 +29,6 @@ diag-sched-telemetry = []
 [[example]]
 name = "udp_budget_runner"
 required-features = ["experimental-fec-budget"]
+
+[lints]
+workspace = true

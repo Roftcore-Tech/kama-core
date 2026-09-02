@@ -1,0 +1,129 @@
+{
+  "deadlines_s": [
+    10,
+    30,
+    120
+  ],
+  "profiles": {
+    "p7_bbr": {
+      "runs": 5,
+      "kama": {
+        "10": {
+          "median": 1.0,
+          "n": 5
+        },
+        "30": {
+          "median": 1.0,
+          "n": 5
+        },
+        "120": {
+          "median": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "p4_jitter": {
+      "runs": 5,
+      "kama": {
+        "10": {
+          "median": 1.0,
+          "n": 5
+        },
+        "30": {
+          "median": 1.0,
+          "n": 5
+        },
+        "120": {
+          "median": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "p6_blackout": {
+      "runs": 5,
+      "kama": {
+        "10": {
+          "median": 0.01,
+          "n": 5
+        },
+        "30": {
+          "median": 0.01,
+          "n": 5
+        },
+        "120": {
+          "median": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "p1_loss50": {
+      "runs": 5,
+      "kama": {
+        "10": {
+          "median": 0.02,
+          "n": 5
+        },
+        "30": {
+          "median": 0.38,
+          "n": 5
+        },
+        "120": {
+          "median": 0.96,
+          "n": 5
+        }
+      }
+    },
+    "p5_revpath": {
+      "runs": 5,
+      "kama": {
+        "10": {
+          "median": 0.0,
+          "n": 5
+        },
+        "30": {
+          "median": 0.0,
+          "n": 5
+        },
+        "120": {
+          "median": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "p2_loss80": {
+      "runs": 5,
+      "kama": {
+        "10": {
+          "median": 0.0,
+          "n": 5
+        },
+        "30": {
+          "median": 0.0,
+          "n": 5
+        },
+        "120": {
+          "median": 0.02,
+          "n": 5
+        }
+      }
+    },
+    "p3_loss95": {
+      "runs": 5,
+      "kama": {
+        "10": {
+          "median": 0.0,
+          "n": 5
+        },
+        "30": {
+          "median": 0.0,
+          "n": 5
+        },
+        "120": {
+          "median": 0.0,
+          "n": 5
+        }
+      }
+    }
+  },
+  "_note": "CI-07 baseline. compare.py --gate bu dosyaya karsi kosar. Tazeleme: compare.py --emit-baseline ile yeniden uret ve gerekcesiyle commit et."
+}
