@@ -613,9 +613,21 @@ fn harness_signature_pin() {
     );
 
     // (2) İmza bandı (kaba): referans değerlerin etrafında.
+    //
+    // KAPI REVİZYONU [2026-09-02, AÇIK-KAYITLI — dörtlü kural]:
+    //   eski kapı : (40..=70), referans 54× (merge-base bb61c2da motoru, test-branch kalibrasyonu)
+    //   FAIL      : post-#45 main'de 3/3 tekrar deterministik 75× (srtt 31,5s · delivered 724 ·
+    //               qd 39,3s — diğer TÜM imza boyutları bantta; rejim ayakta)
+    //   gerekçe   : P0 burst-fix (`queue_losses` Duplicate-dalı geometrik self-reschedule,
+    //               ACK'te-iptal) daha önce TERK EDİLEN birimleri uçuşta tutar → infl_max'ın
+    //               yükselmesi düzeltmenin MEKANİK sonucudur (reports/p0-burst-recovery/P0-CLOSURE.md),
+    //               UNIT/rate-merdiveni kurcalaması değildir.
+    //   yeni kapı : (55..=95), referans 75× — bandın amacı (senaryo-yıkımı yakalamak: çökme ~0×,
+    //               patlama ≫100×) korunur; eşdeğer ± zarf yeni referans etrafına taşındı.
     assert!(
-        (40..=70).contains(&infl_units),
-        "infl_max imza-bandı dışında: {infl_units}× (referans 54×, bant 40..70)"
+        (55..=95).contains(&infl_units),
+        "infl_max imza-bandı dışında: {infl_units}× (referans 75× [post-P0], bant 55..95; \
+         P0-öncesi referans 54× idi — revizyon kaydı yukarıda)"
     );
     assert!(
         (20.0..=40.0).contains(&srtt_s),

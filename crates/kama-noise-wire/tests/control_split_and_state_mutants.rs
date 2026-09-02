@@ -46,6 +46,11 @@ fn ack(n: usize) -> Control {
     Control::Ack {
         id: 100,
         acked_dh_epoch: 0,
+        // ACK-V2 birleşimi (2026-08-26) alanları; bu testler split/state davranışını ölçer,
+        // ölçüm-alanları nötr: delay 0, seen 0, arrival_rate = 0xFFFF ölçüm-yok-sentineli.
+        ack_delay_256us: 0,
+        seen_count: 0,
+        arrival_rate: 0xFFFF,
         ranges: (0..n).map(|i| (i as u64 * 10, i as u64 * 10 + 3)).collect(),
     }
 }
@@ -289,6 +294,9 @@ fn dedup_accessors_report_real_state_not_constants() {
         d.admit(&Control::Ack {
             id: 1,
             acked_dh_epoch: 0,
+            ack_delay_256us: 0,
+            seen_count: 0,
+            arrival_rate: 0xFFFF,
             ranges: vec![]
         }),
         InboundOutcome::Fresh

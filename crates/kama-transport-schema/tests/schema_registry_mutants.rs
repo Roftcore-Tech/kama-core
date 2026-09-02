@@ -119,6 +119,9 @@ fn control_codepoints_are_pinned_and_pairwise_distinct() {
             Control::Ack {
                 id: 1,
                 acked_dh_epoch: 0,
+                ack_delay_256us: 0,
+                seen_count: 0,
+                arrival_rate: 0xFFFF,
                 ranges: vec![],
             },
             inner_kind::ACK,

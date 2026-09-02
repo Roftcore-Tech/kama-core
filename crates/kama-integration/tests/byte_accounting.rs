@@ -117,16 +117,21 @@ fn payload_to_wire_expansion_is_pinned_per_profile() {
 #[test]
 fn control_sealed_len_is_overhead_plus_prefix_plus_body() {
     // §2.57: 26 (outer) + 6 (inner_version + inner_kind + control_id) + body.
-    // ACK gövdesi = acked_dh_epoch 1 + count 2 + ranges × 16.
+    // ACK gövdesi (ACK-V2 birleşimi, 2026-08-26) = acked_dh_epoch 1 + count 2 +
+    // ack_delay_256us 2 + seen_count 4 + arrival_rate 2 + ranges × 16
+    // (otorite: kama-noise-wire/src/control.rs::control_body_len).
     let p = protector();
     for n in [0usize, 1, 4] {
         let c = Control::Ack {
             id: 0x1122_3344,
             acked_dh_epoch: 0,
+            ack_delay_256us: 0,
+            seen_count: 0,
+            arrival_rate: 0xFFFF,
             ranges: (0..n).map(|i| (i as u64 * 10, i as u64 * 10 + 3)).collect(),
         };
         let pkt = UnsealedTransportPacket::Control(c);
-        let body = 1 + 2 + n * 16;
+        let body = 1 + 2 + 2 + 4 + 2 + n * 16;
         assert_eq!(
             p.sealed_len(&pkt).expect("sealed_len"),
             EXTENDED_OUTER_OVERHEAD + CONTROL_INNER_PREFIX_LEN + body,

@@ -111,6 +111,12 @@ fn resume_from_idle_goes_to_startup_not_back_to_preconverge() {
     let (mut s, mut now, _out) = converged();
 
     // Boşalt: her şeyi ACK'le, timer'larla ilerlet → Idle'a düş.
+    //
+    // [2026-09-02 uyarlama, açık-kayıtlı] Eski döngü YALNIZ Pto-çağrısının dönüşünü topluyordu;
+    // post-#45 motorda token-refill ACK anında tx_queue/dup drain'ini tetikleyip ACK-çağrısının
+    // DÖNÜŞÜNDEN de emisyon üretir. O emisyonlar düşürülünce hiç ACK'lenmiyor ve pif hiç
+    // sıfırlanmıyordu (SONDA ölçümü: pif=3→4, Idle'a meşru olarak inilemiyor). Kurulumun doğru
+    // biçimi: emisyon HANGİ olaydan dönerse dönsün toplanır ve bir sonraki adımda ACK'lenir.
     let mut pending: Vec<u64> = Vec::new();
     for _ in 0..30 {
         now += 100 * MS;
@@ -119,8 +125,10 @@ fn resume_from_idle_goes_to_startup_not_back_to_preconverge() {
         }
         if !pending.is_empty() {
             now += 20 * MS;
-            s.on_event(ack(pending.clone()), now);
-            pending.clear();
+            let acked = std::mem::take(&mut pending);
+            for d in s.on_event(ack(acked), now) {
+                pending.push(d.seq);
+            }
         }
     }
     assert_eq!(

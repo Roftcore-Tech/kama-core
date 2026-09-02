@@ -272,7 +272,8 @@ fn accepted_fec_roundtrips_all_header_fields() {
             symbol: s,
         } => {
             assert_eq!(h, header, "header alanları roundtrip'te değişti");
-            assert_eq!(s, symbol, "symbol roundtrip'te değişti");
+            // symbol artık SensitiveSymbolBytes (M7): byte-karşılaştırma borrow-only AsRef üzerinden.
+            assert_eq!(s.as_ref(), symbol.as_slice(), "symbol roundtrip'te değişti");
         }
         InnerPlain::Control { .. } => panic!("FEC beklendi"),
     }
