@@ -35,6 +35,12 @@ pub const ACK_DELAY_UNIT_US: u64 = 256;
 /// magic-number olmasın diye isimlendirildi (engine spec §2.1).
 pub const MAX_ACK_RANGES: usize = 16;
 
+/// [SR-AUDIT-001 / P3] Tek `acked_full` çağrısının döndürebileceği MAX seq sayısı (bounded transient).
+/// 17 blok × u16-len yasal olarak ~1.1M üretebilir; gerçek inflight-penceresi bunun çok altında.
+/// 65536 = bir tam u16-span: block0 tek başına asla aşamaz, yasal trafik yaklaşamaz, düşman `len`-
+/// şişirmesi 512KB'ta durur (kümülatif SACK kaybı telafi eder). Bkz. `acked_full`.
+pub const MAX_ACKED_SEQS: usize = 65536;
+
 /// Önceki bloğun altındaki ek (gap, len) acknowledgement bloğu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AckRange {
@@ -168,7 +174,8 @@ impl AckFrame {
         // block0 = [largest_full − block0_len + 1 ..= largest_full]
         let mut cursor = largest_full.saturating_sub(u64::from(self.block0_len) - 1);
         push_inclusive(&mut acked, cursor, largest_full);
-        // alt bloklar (descending, §2): cursor −= gap; block = [cursor−len+1 .. cursor]; cursor −= len.
+        acked.truncate(MAX_ACKED_SEQS); // block0 tek başına (≤65535) tavanı aşamaz; savunmacı.
+                                        // alt bloklar (descending, §2): cursor −= gap; block = [cursor−len+1 .. cursor]; cursor −= len.
         for r in &self.ranges {
             cursor = cursor.saturating_sub(u64::from(r.gap));
             if r.len == 0 {
@@ -177,6 +184,16 @@ impl AckFrame {
             let low = cursor.saturating_sub(u64::from(r.len) - 1);
             push_inclusive(&mut acked, low, cursor);
             cursor = cursor.saturating_sub(u64::from(r.len));
+            // [SR-AUDIT-001 / P3 derinlemesine-savunma] toplam çıktı tavanı: range_count decode'da
+            // ≤16 olsa da her `len` u16 (≤65535) → 17 blok yasal olarak ~1.1M seq üretebilir. Tek
+            // wire ACK'inin sender'a taşıdığı YENİ ack sayısı inflight-penceresiyle sınırlıdır;
+            // SACK KÜMÜLATİF olduğundan tavana çarpınca kesmek KAYIP DEĞİL (en yüksek/en yeni seq'ler
+            // önce — block0 descending — konur; kesilen en-eski seq'ler sonraki ACK'te yeniden kapsanır,
+            // bkz. bu fn'in doc'u). Düşman `len`-şişirmesini bounded transient'e indirger.
+            if acked.len() >= MAX_ACKED_SEQS {
+                acked.truncate(MAX_ACKED_SEQS);
+                break;
+            }
         }
         acked
     }
@@ -231,7 +248,17 @@ impl AckFrame {
         let ack_delay = r.u16_be()?;
         let block0_len = r.u16_be()?;
         let range_count = usize::from(r.u8()?);
-        let mut ranges = Vec::new(); // count untrusted → with_capacity yok (PARSER-02)
+        // [SR-AUDIT-001 / P3 sertleştirme] range_count PROTOKOL tavanıyla sınırlanır. Encode ≤16
+        // garanti eder (from_received clamp + encode debug_assert); doğrulanmamış range_count (u8→255)
+        // acked_full'de ~16.7M-girişlik Vec<u64> (~134MB) amplifikasyonuna yol açardı (fail-closed,
+        // decode reddi — with_capacity zaten yoktu ama asıl amplifikasyon acked_full'deydi).
+        if range_count > MAX_ACK_RANGES {
+            return Err(TransportError::TooManyAckRanges {
+                count: range_count,
+                max: MAX_ACK_RANGES,
+            });
+        }
+        let mut ranges = Vec::new(); // count doğrulandı → yine de with_capacity yok (savunmacı)
         for _ in 0..range_count {
             let gap = r.u16_be()?;
             let len = r.u16_be()?;
@@ -277,6 +304,66 @@ fn push_inclusive(out: &mut Vec<u64>, low: u64, high: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [P3 SR-AUDIT-001] Düşman çerçeve: range_count > MAX_ACK_RANGES decode'da typed reddedilir
+    /// (denetim bulgusu: doğrulanmamış range_count → acked_full ~134MB amplifikasyonu).
+    #[test]
+    fn decode_rejects_range_count_over_max() {
+        // 255 range bildiren ama gövdesi kısa/uzun fark etmez — reddin range_count'ta olması esas.
+        let mut buf = vec![FRAME_TYPE_ACK_V2, 0]; // ft, epoch
+        buf.extend_from_slice(&0xFFFFu16.to_be_bytes()); // largest_seq
+        buf.extend_from_slice(&0u16.to_be_bytes()); // ack_delay
+        buf.extend_from_slice(&0xFFFFu16.to_be_bytes()); // block0_len
+        buf.push(255); // range_count = 255 (> 16)
+        buf.extend(std::iter::repeat_n(0u8, 255 * 4)); // 255 range gövdesi
+        buf.extend_from_slice(&0u32.to_be_bytes()); // seen_count
+        buf.extend_from_slice(&0u16.to_be_bytes()); // arrival_rate
+        match AckFrame::decode(&buf) {
+            Err(TransportError::TooManyAckRanges {
+                count: 255,
+                max: 16,
+            }) => {}
+            other => panic!("255-range çerçeve reddedilmeliydi: {other:?}"),
+        }
+        // Sınır: tam 16 range GEÇERLİ (encode'un ürettiği maksimum).
+        let recv: Vec<u64> = (0..40).map(|i| i * 3).collect(); // 40 ayrık blok → 16'ya clamp
+        let f = AckFrame::from_received(&recv, 0, 0, 0, ARRIVAL_RATE_SENTINEL).expect("nonempty");
+        assert!(f.ranges.len() <= MAX_ACK_RANGES);
+        assert!(
+            AckFrame::decode(&f.encode()).is_ok(),
+            "16-range çerçeve geçerli olmalı"
+        );
+    }
+
+    /// [P3 SR-AUDIT-001] `acked_full` çıktısı, geçerli range sayısında bile dev `len` alanlarıyla
+    /// MAX_ACKED_SEQS'i aşamaz (derinlemesine savunma; `len`-şişirme amplifikasyonu).
+    #[test]
+    fn acked_full_is_bounded_against_len_inflation() {
+        // 16 range, her biri gap=0 len=0xFFFF; block0_len=0xFFFF; büyük expected tabanı.
+        let ranges = vec![
+            AckRange {
+                gap: 0,
+                len: 0xFFFF
+            };
+            MAX_ACK_RANGES
+        ];
+        let f = AckFrame {
+            ack_epoch: 0,
+            largest_seq: 0xFFFF,
+            ack_delay: 0,
+            block0_len: 0xFFFF,
+            ranges,
+            v2: true,
+            seen_count: 0,
+            arrival_rate: 0,
+        };
+        let acked = f.acked_full(u64::MAX / 2); // büyük taban → tüm bloklar dolar
+        assert!(
+            acked.len() <= MAX_ACKED_SEQS,
+            "acked_full tavanı aşmamalı: {} > {MAX_ACKED_SEQS}",
+            acked.len()
+        );
+    }
 
     #[test]
     fn acked_full_roundtrips_from_received() {

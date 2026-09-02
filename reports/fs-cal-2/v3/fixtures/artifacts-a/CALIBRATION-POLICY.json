@@ -1,0 +1,14 @@
+{
+  "activation_threshold_scaled": 500000,
+  "artifact": "FecActivationCalibrationV1_R0R2_LossBurst",
+  "burst_a_ppm": -200000,
+  "burst_b_ppm": 0,
+  "fixture_mode": true,
+  "identifiability_overall_pass": false,
+  "loss_a_ppm": 0,
+  "loss_b_ppm": 100000,
+  "schema_version": "FS-CAL-2-POLICY-v1",
+  "status": "FIXTURE-PIPELINE-OUTPUT \u2014 NOT a calibration (YETK\u0130-2 fits the real artifact)",
+  "support_bitmap_sha256": "cfcf4378a66620c73829e10838231626e424a2557b83bb0dd44fd8b7a9fec718",
+  "training_dataset_sha256": "60156154b75fc1abc8ddb7ba0c6908205866272f410998c8577674e276c825c1"
+}

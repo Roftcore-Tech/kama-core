@@ -1,0 +1,8 @@
+run_id=pin2-d2-r2-hyb-2
+policy=leftover
+receiver_events=560
+finalized_blocks=50
+pending_blocks=0
+ledger_path=/home/ryuzaki/Desktop/kama-core/reports/d1-exit/data/fec-pins/pin2-d2-r2-hyb-2-rxledger.csv
+ledger_checksum=f4275465254b3a42
+clean_shutdown=true

@@ -1,0 +1,49 @@
+# [P3] Fuzz kabuğu — güvenilmeyen-girdi parser'ları (SR-AUDIT-001 sertleştirme kapısı).
+# Workspace'ten AYRIK ([workspace] boş): nightly+libfuzzer yalnız burada; üretim grafiğine girmez.
+[package]
+name = "kama-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+adaptive-transport = { path = "../crates/adaptive-transport" }
+kama-noise-wire = { path = "../crates/kama-noise-wire" }
+client-core = { path = "../crates/client-core" }
+zeroize = "1"
+
+[workspace]
+
+[[bin]]
+name = "ack_decode"
+path = "fuzz_targets/ack_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fec_decode"
+path = "fuzz_targets/fec_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "noise_wire_decode"
+path = "fuzz_targets/noise_wire_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "protector_open"
+path = "fuzz_targets/protector_open.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "wire_v0"
+path = "fuzz_targets/wire_v0.rs"
+test = false
+doc = false

@@ -5,6 +5,10 @@ use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum WireError {
+    /// A-4 (DR-CS-1b/A2): send-state retired (drop_send_state-sonrası seal-denemesi; Closing/grace).
+    #[cfg(feature = "experimental-cold-start")]
+    #[error("send state retired: h_ext {0:#010x}")]
+    SendStateRetired(u32),
     /// Datagram EXTENDED-minimum'dan kısa (26B outer) veya ct-boyu tutarsız.
     #[error("datagram too short: {got} < {min}")]
     DatagramTooShort { got: usize, min: usize },
@@ -48,6 +52,12 @@ pub enum WireError {
     /// Session tombstone/closed (SESSION_CLOSE sonrası bounded-grace; data-admit-etmez).
     #[error("session closed (tombstone) h_ext={0:#010x}")]
     SessionClosed(u32),
+    /// PARAM_SET alan-sınırı ihlali (§8 B4; canonical_hash_input fail-closed).
+    #[error("param invalid: {0}")]
+    ParamInvalid(&'static str),
+    /// Gelen PARAM_SET.param_hash yerel-hesapla eşleşmiyor (§8 fail-closed; profil-bağı reddi).
+    #[error("param_hash mismatch (fail-closed)")]
+    ParamHashMismatch,
 }
 
 /// §4 precheck reddi — hangi-kural düştüğü (window-ilerletmeden).

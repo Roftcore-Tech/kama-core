@@ -1,4 +1,4 @@
-# SafeRoom — Teknoloji Stack ADR (Architecture Decision Record)
+# Kama — Teknoloji Stack ADR (Architecture Decision Record)
 
 **Belge:** `tech-stack-adr.md` v1.0 — Alpha
 **Statü:** ADR-01..ADR-19 KABUL (TÜMÜ KİLİTLİ — Temmuz 2026, insan onayıyla)
@@ -97,6 +97,22 @@ RFC-8439-resmi-vector'ları + random-{key,nonce,AAD,pt}-corpus-eşitliği.
 
 **ESKİ-KARAR (libsodium-primary AEAD):** SUPERSEDED — erken-dönem-varsayımı; proje-saf-Rust'a-evrildi.
 
+### ADR-03 AMENDMENT-2 — Hash Backend (BLAKE2s-256 / param_hash) [GÜNCELLENDİ: 2026-07, DR-S5-5]
+
+**KARAR:** `param_hash = BLAKE2s-256(DS ‖ fields)` (noise-wire-tdd §8) üretim-backend'i = RustCrypto `blake2` v0.10
+(`Blake2s256`). Üretim-home = `kama-noise-wire` (kripto-katmanı). Schema kripto-free KALIR (yalnız canonical-byte-üretir);
+adaptive-transport crypto-agnostik KALIR (INV-ENGINE-SOC).
+
+**GEREKÇE:** BLAKE2s-256 pki §13 registry'de (cipher_suite 0x0001). ADR-03-üst-kararı BLAKE2s'i libsodium'a atamıştı
+AMA libsodium `crypto_generichash` = BLAKE2b ≠ BLAKE2s (256-bit BLAKE2s'i doğrudan expose-etmez) → libsodium-BLAKE2s-yolu
+uygulanamaz. DR-5 emsali (production-crypto = RustCrypto; libsodium yalnız test-oracle) + golden-vektör zaten RustCrypto
+`blake2` ile üretiliyor → drift-gate kesintisiz.
+
+**ZORUNLU-UYGULAMA-KISITLARI:** üretim-tip AÇIKÇA `blake2::Blake2s256` (256-bit; BLAKE2b/uzunluk-varyantı-karıştırılmaz) ·
+exact-version + checksum Cargo.lock'tan · golden-eşitlik-gate (`bind_transport_parameters` == `golden_param_blake2s_hash`
+byte-özdeş) · runtime-backend-switching YOK · public CryptoProvider-abstraction YOK. AEAD-backend (DR-5, RustCrypto
+chacha20poly1305) DEĞİŞMEZ. Gelecek Noise HKDF-BLAKE2s aynı-backend'e yönelir (tutarlılık; bu-amendment onu implemente-etmez).
+
 ### ADR-04 — VOPRF: ristretto255-SHA512 (RFC 9497), libsodium ristretto üzerinde
 
 **Statü:** KABUL (discovery-architecture.md ile aynı; suite 0x0001)
@@ -168,7 +184,7 @@ canonical'a çevrilir, admin-control-plane-tdd.md draft→RA-gate→Intermediate
 **Statü:** KABUL
 **Karar:**
 ```
-saferoom/
+kama/
   crates/
     ccr-codec/            # canonical encode/decode/verify (tek kaynak)
     crypto/               # libsodium FFI + dalek cross-check + registry
@@ -210,7 +226,7 @@ NORMATİF — Storage trait ZORUNLU (redb'ye kod GÖMÜLMEZ; takas trait üzerin
 
 ```
 KARAR: quinn (pure-Rust, Tokio-native). quiche GEREKSİZ (C FFI). QUIC fork hâlâ NO-GO.
-  quinn = benchmark harness + hub↔hub/RA iyi-ağ rejimi. QUIC SafeRoom'un hostile ana
+  quinn = benchmark harness + hub↔hub/RA iyi-ağ rejimi. QUIC Kama'nın hostile ana
   transport'u DEĞİL — kıyas referansı + iyi-ağ yolu.
 ```
 
@@ -218,7 +234,7 @@ KARAR: quinn (pure-Rust, Tokio-native). quiche GEREKSİZ (C FFI). QUIC fork hâl
 
 ```
 KARAR: UniFFI. Manuel JNI/Swift-C NO-GO (UniFFI hard-block çıkarmadıkça). Gerekçe: iki
-  platformda elle FFI = lifetime/memory/copy bug sınıfı — SafeRoom'daki en tehlikeli
+  platformda elle FFI = lifetime/memory/copy bug sınıfı — Kama'daki en tehlikeli
   risklerden biri; UniFFI bu sınıfı yok eder.
 
 NORMATİF — FFI boundary COARSE-GRAINED (packet-level FFI YASAK):
@@ -259,10 +275,10 @@ NORMATİF — Determinizm ZORUNLU:
 
 ```
 KARAR: Linux netem/tc + container'lı iki-uç harness. Bu "açık karar" değil ZORUNLU KALİTE
-  KAPISI statüsünde: SafeRoom'un iddiası "QUIC'in çöktüğü hostile-lowband rejimde daha düşük
+  KAPISI statüsünde: Kama'nın iddiası "QUIC'in çöktüğü hostile-lowband rejimde daha düşük
   bantta ayakta kalmak" — bunu göstermeden custom transport SAVUNULAMAZ (§4.1).
 
-NORMATİF — Minimum test profilleri (her profilde SafeRoom adaptive transport vs QUIC/quinn
+NORMATİF — Minimum test profilleri (her profilde Kama adaptive transport vs QUIC/quinn
 YAN YANA, nightly CI):
   - 0.025 kbps / yüksek gecikme / düşük loss
   - 0.1 kbps / %50 loss
@@ -282,7 +298,7 @@ KARAR: statik-link (musl) tek-binary + systemd (Alpha default). Container OPSİY
   kurumda koşuyor).
 
 NORMATİF — Her servis şunları sağlar:
-  --config /etc/saferoom/<service>.toml
+  --config /etc/kama/<service>.toml
   systemd hardening (sandbox direktifleri)
   journald + append-only audit export
   healthcheck endpoint

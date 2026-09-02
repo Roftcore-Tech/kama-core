@@ -1,0 +1,11 @@
+profile,policy,n,emit_med,ndisp_med,rdisp_med,tk_on_med,rx_n,dl_op_med,complete_med
+c_blackout30,f10,8,148,1200,0,37,8,0.9737,0.9737
+c_blackout30,f15,8,148,1800,0,37,8,0.9737,0.9737
+c_blackout30,leftover,8,148,0,0,0,8,0.9737,0.9737
+c_blackout30,p15,8,148,0,0,0,8,0.9737,0.9737
+c_lowbw30k,f15,8,100,0,0,25,8,1.0000,1.0000
+c_lowbw30k,leftover,8,100,0,0,0,8,1.0000,1.0000
+c_lowbw30k,p15,8,100,600,0,0,8,1.0000,1.0000
+c_offered_c,f15,8,197,600,0,50,0,NA,NA
+c_offered_c,leftover,8,197,0,0,0,0,NA,NA
+c_offered_c,p15,8,197,600,0,0,0,NA,NA

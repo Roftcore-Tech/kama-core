@@ -1,0 +1,14 @@
+{
+  "artifact": "DR-ARQ-TAIL-2-PRODUCT-REPORT",
+  "fit_use": "FORBIDDEN",
+  "notes": [
+    "Gated on FAZ 2 PASS.",
+    "Target: fixed max_tail_probes=3 vs the L10-med cell."
+  ],
+  "phase": "FAZ-3",
+  "product_behavior_changed_by_this_artifact": false,
+  "reason": "turn ended after FAZ 1 completed and passed; no further behaviour phase was entered",
+  "result_bearing_calibration_runs": 0,
+  "scope": "state-conditional bounded tail recovery",
+  "status": "NOT STARTED"
+}

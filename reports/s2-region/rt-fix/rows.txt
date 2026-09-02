@@ -1,0 +1,6 @@
+rt60d300 kama-fec 1 40 40
+rt60d300 kama-fec 2 40 40
+rt60d300 kama-fec 3 36 40
+rt60d300 kama-fec 4 37 40
+rt60d300 kama-fec 5 6 40
+rt60d300 kama-fec 6 37 40

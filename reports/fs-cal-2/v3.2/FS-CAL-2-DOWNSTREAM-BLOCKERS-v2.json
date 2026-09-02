@@ -1,0 +1,53 @@
+{
+  "arq_contract_pass": true,
+  "blockers": {
+    "DR-CS-2": {
+      "runs": 0,
+      "scope_question": "OPEN \u2014 needs a product decision, not another experiment",
+      "state": "SIZING NOT EXECUTED",
+      "verdict": "LADDER-NOT-ISOLATABLE"
+    },
+    "DR-RATE-RAMP-1": {
+      "conditionality": "RAMP-LOSS-CONDITIONAL",
+      "fix_applied": false,
+      "fresh_class": "INSUFFICIENT-EVENTS (n_lock=1 < 4)",
+      "fresh_highloss_locked": 1,
+      "fresh_lowloss_locked": 0,
+      "mechanism_class": "RAMP-ESTIMATOR-NOT-RESEEDED + RAMP-TOKEN-DEADLOCK (coupled)",
+      "state": "ROOT-CAUSED"
+    }
+  },
+  "commit_push_pr": false,
+  "contract_corrigendum": "FS-CAL-2-PRODUCT-CONTRACT-v3.json records a stale fs_cal2_spine.rs sha256; regenerate",
+  "file": "FS-CAL-2-DOWNSTREAM-BLOCKERS-v2",
+  "fs_cal_yetki_2": "NOT AUTHORIZED",
+  "invalidated_if_sender_changes": [
+    "arq_contract_id",
+    "product contract",
+    "golden traces",
+    "M1/M2",
+    "DATA-PROCESSABLE",
+    "S0",
+    "\u00a74.2b"
+  ],
+  "mandatory_order": [
+    "product fix",
+    "re-run YETK\u0130-1 grounding chain",
+    "fresh S0",
+    "fresh \u00a74.2b",
+    "FS-CAL YETK\u0130-2 only on PASS"
+  ],
+  "product_behavior_changed": false,
+  "product_estimator_integration": {
+    "is_pass": false,
+    "remaining": [
+      "real product caller",
+      "ordinal counter",
+      "grounded telemetry operand (FusionObservation::telemetry_age_ns has no producer outside a cfg(test) fixture)"
+    ],
+    "status": "FEASIBLE"
+  },
+  "result_bearing_calibration_runs": 0,
+  "telemetry_staleness_usable_as_architecture_finding": false,
+  "v32_final_freeze_allowed": false
+}

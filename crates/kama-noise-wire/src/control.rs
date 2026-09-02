@@ -20,6 +20,16 @@ pub const SACK_MAX_GAP_BLOCKS: usize = 32;
 /// RECOVERED esi-range üst-sınırı (DR-1).
 pub const RECOVERED_MAX_ESI_RANGES: usize = 16;
 
+// ── DR-CS-1 (§2.57-amendman; EXACT — spec-dondurulmuş) ──
+/// CS-probe pad uzunluğu (amp≤1: probe_wire=44B ≥ echo_wire=43B).
+pub const CS_PROBE_PAD_LEN: usize = 9;
+/// CS-probe body = subtype(1)+probe_seq(2)+pad(9) = 12B → wire 26+6+12 = 44B.
+pub const CS_PROBE_BODY_LEN: usize = 12;
+/// CS-echo body = subtype(1)+probe_seq(2)+seen_count(4)+arrival_gap(4) = 11B → wire 26+6+11 = 43B.
+pub const CS_ECHO_BODY_LEN: usize = 11;
+/// Tek-geçerli subtype (cold-start); diğerleri reserved → FAIL-CLOSED-reject.
+pub const CS_SUBTYPE_COLD_START: u8 = 0x01;
+
 fn put_u16(out: &mut Vec<u8>, v: u16) {
     out.extend_from_slice(&v.to_be_bytes());
 }
@@ -38,11 +48,17 @@ pub fn encode_control_body(c: &Control) -> Vec<u8> {
     match c {
         Control::Ack {
             acked_dh_epoch,
+            ack_delay_256us,
+            seen_count,
+            arrival_rate,
             ranges,
             ..
         } => {
             debug_assert!(ranges.len() <= ACK_MAX_RANGES);
             out.push(*acked_dh_epoch);
+            put_u16(&mut out, *ack_delay_256us);
+            put_u32(&mut out, *seen_count);
+            put_u16(&mut out, *arrival_rate);
             put_u16(&mut out, ranges.len() as u16);
             for (s, e) in ranges {
                 put_u64(&mut out, *s);
@@ -113,6 +129,26 @@ pub fn encode_control_body(c: &Control) -> Vec<u8> {
             out.push(*reason_code);
             out.push(*renew_hint);
         }
+        // DR-CS-1 (§2.57-amendman): EXACT-layout — spec-önce-donduruldu, kod-uygular.
+        Control::CsProbe {
+            subtype, probe_seq, ..
+        } => {
+            out.push(*subtype);
+            put_u16(&mut out, *probe_seq);
+            out.extend_from_slice(&[0u8; CS_PROBE_PAD_LEN]); // pad=0x00 (amp≤1: probe≥echo)
+        }
+        Control::CsEcho {
+            subtype,
+            probe_seq,
+            seen_count,
+            arrival_gap,
+            ..
+        } => {
+            out.push(*subtype);
+            put_u16(&mut out, *probe_seq);
+            put_u32(&mut out, *seen_count);
+            put_u32(&mut out, *arrival_gap);
+        }
     }
     out
 }
@@ -125,7 +161,8 @@ pub fn control_body_len(c: &Control) -> Result<usize, WireError> {
     let n = match c {
         Control::Ack { ranges, .. } => {
             cap_check(inner_kind::ACK, ranges.len(), ACK_MAX_RANGES)?;
-            1 + 2 + ranges.len() * 16
+            // epoch(1) + ack_delay(2) + seen_count(4) + arrival_rate(2) + count(2) + 16n
+            1 + 2 + 4 + 2 + 2 + ranges.len() * 16
         }
         Control::Sack { blocks, .. } => {
             cap_check(inner_kind::SACK, blocks.len(), SACK_MAX_GAP_BLOCKS)?;
@@ -145,6 +182,8 @@ pub fn control_body_len(c: &Control) -> Result<usize, WireError> {
         Control::BlockAbort { .. } => 5,
         Control::SessionClose { .. } => 1,
         Control::SessionRenewRequired { .. } => 2,
+        Control::CsProbe { .. } => CS_PROBE_BODY_LEN, // DR-CS-1: 12B (wire 44B)
+        Control::CsEcho { .. } => CS_ECHO_BODY_LEN,   // DR-CS-1: 11B (wire 43B)
     };
     Ok(n)
 }
@@ -164,6 +203,9 @@ pub fn split_for_send(c: &Control, mut next_id: impl FnMut() -> ControlId) -> Ve
         Control::Ack {
             id,
             acked_dh_epoch,
+            ack_delay_256us,
+            seen_count,
+            arrival_rate,
             ranges,
         } if ranges.len() > ACK_MAX_RANGES => ranges
             .chunks(ACK_MAX_RANGES)
@@ -171,6 +213,9 @@ pub fn split_for_send(c: &Control, mut next_id: impl FnMut() -> ControlId) -> Ve
             .map(|(i, ch)| Control::Ack {
                 id: if i == 0 { *id } else { next_id() },
                 acked_dh_epoch: *acked_dh_epoch,
+                ack_delay_256us: *ack_delay_256us,
+                seen_count: *seen_count,
+                arrival_rate: *arrival_rate,
                 ranges: ch.to_vec(),
             })
             .collect(),
@@ -287,6 +332,9 @@ pub fn decode_control_body(
     let c = match codepoint {
         ACK => {
             let acked_dh_epoch = r.u8()?;
+            let ack_delay_256us = r.u16()?;
+            let seen_count = r.u32()?;
+            let arrival_rate = r.u16()?;
             let count = usize::from(r.u16()?);
             cap_check(ACK, count, ACK_MAX_RANGES)?;
             let mut ranges = Vec::with_capacity(count);
@@ -301,6 +349,9 @@ pub fn decode_control_body(
             Control::Ack {
                 id: control_id,
                 acked_dh_epoch,
+                ack_delay_256us,
+                seen_count,
+                arrival_rate,
                 ranges,
             }
         }
@@ -385,6 +436,40 @@ pub fn decode_control_body(
                 id: control_id,
                 reason_code,
                 renew_hint,
+            }
+        }
+        CTRL_CS_PROBE => {
+            // DR-CS-1 §2.57: subtype(=0x01) + probe_seq + pad[9]=0x00 (reserved-nonzero → reject).
+            let subtype = r.u8()?;
+            if subtype != CS_SUBTYPE_COLD_START {
+                return Err(WireError::ControlDecode("cs-probe reserved subtype"));
+            }
+            let probe_seq = r.u16()?;
+            for _ in 0..CS_PROBE_PAD_LEN {
+                if r.u8()? != 0 {
+                    return Err(WireError::ControlDecode("cs-probe nonzero pad"));
+                }
+            }
+            Control::CsProbe {
+                id: control_id,
+                subtype,
+                probe_seq,
+            }
+        }
+        CTRL_CS_ECHO => {
+            let subtype = r.u8()?;
+            if subtype != CS_SUBTYPE_COLD_START {
+                return Err(WireError::ControlDecode("cs-echo reserved subtype"));
+            }
+            let probe_seq = r.u16()?;
+            let seen_count = r.u32()?;
+            let arrival_gap = r.u32()?;
+            Control::CsEcho {
+                id: control_id,
+                subtype,
+                probe_seq,
+                seen_count,
+                arrival_gap,
             }
         }
         _ => return Err(WireError::ControlDecode("non-control codepoint")),

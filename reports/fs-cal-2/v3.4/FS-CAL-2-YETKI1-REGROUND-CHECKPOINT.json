@@ -1,0 +1,17 @@
+{
+  "artifact": "FS-CAL-2-YETKI1-REGROUND-CHECKPOINT",
+  "fit_use": "FORBIDDEN",
+  "notes": [
+    "Gated on all accepted product changes being complete.",
+    "MUST re-run after FAZ 1: the product baseline changed (StartupPacingConfig default OFF->ON), which invalidates arq_contract_id, product contract, golden traces, M1/M2, DATA-PROCESSABLE, S0 and \u00a74.2b.",
+    "Contract remains CONTRACT-STALE-PENDING-FINAL-REGROUND.",
+    "Fresh \u00a74.2b must re-check the recorded eligibility side-effect from FAZ 1.",
+    "FS-CAL YETKI-2 NOT RUN."
+  ],
+  "phase": "FAZ-5",
+  "product_behavior_changed_by_this_artifact": false,
+  "reason": "turn ended after FAZ 1 completed and passed; no further behaviour phase was entered",
+  "result_bearing_calibration_runs": 0,
+  "scope": "single bulk YETKI-1 re-grounding",
+  "status": "NOT STARTED"
+}

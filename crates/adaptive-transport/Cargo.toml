@@ -11,3 +11,21 @@ tokio.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["time", "rt", "macros", "test-util"] }
+
+[features]
+# Commit-V: test-only/non-default CANLI-BÜTÇE-PROTOTİPİ (CONDITIONAL-GO).
+# OFF (default): FloorCap-kodu-üretim-yoluna-BAĞLANMAZ; derlenmiş-yol-baseline-özdeş.
+experimental-fec-budget = []
+# DR-CS-1 (MINIMAL BOOTSTRAP): cold-start batch-API + CS-probe merdiveni. DEFAULT-OFF; flag
+# yalnız-LOCAL (M7); OFF'ta adapter-devre-dışı + legacy-tekil-yol byte-for-byte (INV-CS-5).
+experimental-cold-start = []
+# DR-CS-2 / DR-RATE-RAMP-1 diagnostic telemetry. DEFAULT-OFF. OBSERVATION-ONLY: adds saturating
+# counters at existing decision points ONLY — no control flow, no ordering, no token/pacing change.
+# Separates due-poll / due-EDGE / enqueued / scheduler-selected / token-denied / wire-emitted per
+# traffic class (DATA · ARQ retransmit · geometric copy · tail probe · cold-start probe · FEC parity),
+# so a single aggregate probe counter can never again be read as emission demand.
+diag-sched-telemetry = []
+
+[[example]]
+name = "udp_budget_runner"
+required-features = ["experimental-fec-budget"]

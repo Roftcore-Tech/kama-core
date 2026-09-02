@@ -1,0 +1,6 @@
+# Model A public-randomness kaydı (KAPI-2 §6; onay: Abkarada 2026-08-21 F1-F4)
+fetched_at_utc=2026-08-20T19:28:43Z
+source=https://api.drand.sh/public/latest
+round=6394102
+randomness=a179a3f26fbe27cf8de8c9486813c3c23d7f52e708354e6287d39812060ca5f8
+signature=8b650fe1c07d31a1dbb1e281637cfddcb3c0bb1469aa53168e0fdffbc8d68715a72d9d63946073325f0163dead0146a30030dc5728a256f80b85eb67e0f6a94c9d923b41adf6d26c2e1520d193cdf6648c03d6dd6df93073f5a321053fe46d49

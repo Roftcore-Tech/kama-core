@@ -144,6 +144,64 @@ impl VarThresholds {
     }
 }
 
+/// DR-1e-v2: config-doğrulama hataları (typed; panik-yok). Her-varyant hangi-alan +
+/// hangi-invariant'ın ihlal-edildiğini taşır (§13.4: yalnız YAPISAL/matematiksel + spec-invariant;
+/// consequent-SIRALAMASI politika-kısıtı olduğundan ENFORCE-EDİLMEZ).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FuzzyConfigError {
+    /// Trapezoid a≤b≤c≤d ihlali (yapısal: trap_permille-öngereksinimi).
+    #[error("trapezoid order violated: {var}.{band} (a<=b<=c<=d)")]
+    TrapOrder {
+        var: &'static str,
+        band: &'static str,
+    },
+    /// [TUR-4] covers_domain spec-invariant ihlali (sol-omuz-LOW + sağ-omuz-HIGH + kesin-örtüşme).
+    #[error("coverage invariant violated: {var} (left-shoulder LOW, right-shoulder HIGH, strict overlap)")]
+    Coverage { var: &'static str },
+    /// Girdi-domain sınırı: loss-eşikleri ppm-tanım-alanında (≤1_000_000; oran≤%100).
+    #[error("loss threshold {got} exceeds ppm domain (<=1_000_000)")]
+    LossPpmDomain { got: u64 },
+    /// Girdi-domain sınırı: ack_confidence permille-tanım-alanında (≤1000).
+    #[error("ack_confidence threshold {got} exceeds permille domain (<=1000)")]
+    AckPermilleDomain { got: u64 },
+    /// Bandwidth-eşikleri log2_fp-DOMAİNİNDE olmalı (≤ log2_fp(u64::MAX)=16383; raw-byte-değeri
+    /// verilmesi tipik-hata — domain-tür-uyumu).
+    #[error("bandwidth threshold {got} not in log2_fp domain (<=16383; raw bytes/sec given?)")]
+    BandwidthDomain { got: u64 },
+    /// Consequent permille-aralık ihlali (≤1000).
+    #[error("consequent {field}={got} exceeds permille (<=1000)")]
+    ConsequentRange { field: &'static str, got: u32 },
+}
+
+/// DR-1e-v2: doğrulanmış-config newtype — `Sender::try_with_fuzzy_config` sözleşme-tipi.
+/// Tek-üretim-yolu [`FuzzyConfig::validate`] (yapısal-güvence tip-düzeyinde).
+///
+/// Compile-time-yapısal-kanıt (Commit-F): dış-koddan raw-kuruluş DERLENMEZ (private-alan):
+/// ```compile_fail
+/// let c = adaptive_transport::fusion::FuzzyConfig::fixture();
+/// let _v = adaptive_transport::fusion::ValidatedFuzzyConfig(c); // E0423: private-alan
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct ValidatedFuzzyConfig(FuzzyConfig);
+
+impl ValidatedFuzzyConfig {
+    /// İç-config (crate-içi tüketim; motor-ctor'una geçirilir).
+    #[must_use]
+    pub(crate) fn into_inner(self) -> FuzzyConfig {
+        self.0
+    }
+
+    /// Commit-F (invariant-sertleştirme): built-in-fixture'ın GÜVENİLİR-sarmalayıcısı — internal-ctor
+    /// sınırı yalnız `ValidatedFuzzyConfig` kabul-eder; genel-caller-validation-bypass'ı YOK
+    /// (pub(crate); tek-meşru-kullanım `Sender::new`). Runtime-validate/unwrap/expect YOK (panik-siz);
+    /// fixture-geçerliliği CI-invariantı: `tv_fusion::dr_1e_validation::fixture_validates`
+    /// (fixture-invalid-olursa CI-kırılır).
+    #[must_use]
+    pub(crate) fn trusted_fixture() -> Self {
+        Self(FuzzyConfig::fixture())
+    }
+}
+
 /// Fuzzy motor yapılandırması — 5 girdinin membership eşikleri + consequent seviyeleri.
 #[derive(Debug, Clone, Copy)]
 pub struct FuzzyConfig {
@@ -183,6 +241,78 @@ pub struct FuzzyConfig {
 impl FuzzyConfig {
     /// **KALİBRE DEĞİL** fixture — gerçek eşikler netem baseline'dan (§598). Golden
     /// yalnız motor matematiğini + kural tablosunu kilitler; hiçbir eşik iddia edilmez.
+    /// DR-1e-v2 §13.4: yapısal/matematiksel + spec-invariant doğrulaması. Consequent-
+    /// SIRALAMASI (fec_zero<=med<=high vb.) POLİTİKA-kısıtıdır — bilinçli-ENFORCE-EDİLMEZ
+    /// (kalibrasyon-uzayını-daraltır; deneysel-kötü ≠ yapısal-invalid).
+    ///
+    /// # Errors
+    /// [`FuzzyConfigError`] — ihlal-edilen alan+invariant varyantta.
+    pub fn validate(self) -> Result<ValidatedFuzzyConfig, FuzzyConfigError> {
+        const LOG2_FP_MAX: u64 = 16383; // log2_fp(u64::MAX)
+        fn traps(var: &'static str, v: &VarThresholds) -> Result<(), FuzzyConfigError> {
+            for (band, t) in [("low", &v.low), ("med", &v.med), ("high", &v.high)] {
+                if !(t.a <= t.b && t.b <= t.c && t.c <= t.d) {
+                    return Err(FuzzyConfigError::TrapOrder { var, band });
+                }
+            }
+            if !v.covers_domain() {
+                return Err(FuzzyConfigError::Coverage { var });
+            }
+            Ok(())
+        }
+        traps("loss", &self.loss)?;
+        traps("bandwidth", &self.bandwidth)?;
+        traps("jitter", &self.jitter)?;
+        traps("queue_delay", &self.queue_delay)?;
+        traps("ack_confidence", &self.ack_confidence)?;
+        // Girdi-domain sınırları (tanım-alanı-tür-uyumu; sonlu-eşikler denetlenir — omuz-MAX'ları hariç).
+        for t in [&self.loss.low, &self.loss.med, &self.loss.high] {
+            for &x in &[t.a, t.b, t.c, t.d] {
+                if x != u64::MAX && x > 1_000_000 {
+                    return Err(FuzzyConfigError::LossPpmDomain { got: x });
+                }
+            }
+        }
+        for t in [
+            &self.ack_confidence.low,
+            &self.ack_confidence.med,
+            &self.ack_confidence.high,
+        ] {
+            for &x in &[t.a, t.b, t.c, t.d] {
+                if x != u64::MAX && x > 1000 {
+                    return Err(FuzzyConfigError::AckPermilleDomain { got: x });
+                }
+            }
+        }
+        for t in [
+            &self.bandwidth.low,
+            &self.bandwidth.med,
+            &self.bandwidth.high,
+        ] {
+            for &x in &[t.a, t.b, t.c, t.d] {
+                if x != u64::MAX && x > LOG2_FP_MAX {
+                    return Err(FuzzyConfigError::BandwidthDomain { got: x });
+                }
+            }
+        }
+        for (field, v) in [
+            ("fec_zero", self.fec_zero),
+            ("fec_med", self.fec_med),
+            ("fec_high", self.fec_high),
+            ("arq_light", self.arq_light),
+            ("arq_med", self.arq_med),
+            ("arq_moderate", self.arq_moderate),
+            ("sr_low", self.sr_low),
+            ("sr_med", self.sr_med),
+            ("sr_high", self.sr_high),
+        ] {
+            if v > PERMILLE {
+                return Err(FuzzyConfigError::ConsequentRange { field, got: v });
+            }
+        }
+        Ok(ValidatedFuzzyConfig(self))
+    }
+
     #[must_use]
     pub fn fixture() -> Self {
         // Kısayol: sol-omuz LOW, orta MED, sağ-omuz HIGH.
@@ -260,6 +390,38 @@ pub struct FusionInputs {
     pub ack_confidence_permille: u64,
 }
 
+/// Commit-D (FusionInputs-gözlemlenebilirliği): controller'ın GERÇEKTEN-gördüğü girdilerin
+/// olay-anı-anlık-görüntüsü. CANONICAL-TEK-KAYNAK: `fuzzy_evaluate`in kurduğu `FusionInputs`
+/// DEĞERİNİN kopyası (ikinci-formülle-hesap-YOK); + karar-bağlamı (no_rule, event_index).
+/// Alan-tipleri FusionInputs ile HİZALI (u64). Environment-knob ≠ bu-değerler (kesit-1-audit-§9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FusionInputSnapshot {
+    pub loss_windowed_ppm: u64,
+    pub bandwidth_bps: u64,
+    pub jitter_ppm: u64,
+    pub qd_ratio_permille: u64,
+    pub ack_confidence_permille: u64,
+    /// Bu-girdilerle-üretilen kararın sıfır-ağırlık-fallback bayrağı.
+    pub no_rule: bool,
+    /// fuzzy_evaluate-çağrı-index'i (deterministik olay-sayacı; ADR-17 — duvar-saati-değil).
+    pub event_index: u64,
+}
+
+impl FusionInputSnapshot {
+    /// Snapshot'tan FusionInputs (offline-replay/decide-yeniden-üretimi; active-rule-weights
+    /// bu-inputs+config ile offline-yeniden-üretilebilir — ek-alan-gerekmez).
+    #[must_use]
+    pub fn to_inputs(&self) -> FusionInputs {
+        FusionInputs {
+            loss_ppm: self.loss_windowed_ppm,
+            bandwidth_bps: self.bandwidth_bps,
+            jitter_ppm: self.jitter_ppm,
+            qd_ratio_permille: self.qd_ratio_permille,
+            ack_confidence_permille: self.ack_confidence_permille,
+        }
+    }
+}
+
 /// Recovery/pacing modu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -313,6 +475,13 @@ impl DeterministicFuzzyController {
         Self {
             cfg: FuzzyConfig::fixture(),
         }
+    }
+
+    /// Kurulu konfigürasyon (salt-okunur; [Q18-FIX] yapı-gate `fec_med` düzeyini buradan alır —
+    /// controller'ın kendi çıktısıyla aynı config, ikinci-kaynak yok).
+    #[must_use]
+    pub fn config(&self) -> &FuzzyConfig {
+        &self.cfg
     }
 }
 

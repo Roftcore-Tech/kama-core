@@ -1,0 +1,53 @@
+{
+  "RESULT": "RATE-RAMP FIXED \u00b7 DEFAULT-ON \u00b7 SUPERSESSION VALID",
+  "axis_is_real_explicit_off_differs": true,
+  "bounded_change": {
+    "frozen_42b_stall_seeds_identical": "8/8",
+    "new_packet_type": false,
+    "new_timer": false,
+    "noloss_wire_delta": 0,
+    "ordering_change": false,
+    "wire_format_change": false
+  },
+  "commit_push_pr": false,
+  "default_equals_explicit": true,
+  "default_state": "ON",
+  "defects_found_by_new_tests": [
+    "hard ceiling was applied only at arming -> now clamped at EVERY application (shrinking cap shrinks floor)",
+    "release signal unobservable (plateau_reached consumed by update_state; base_is_startup re-armed while state==Startup) -> phase-based release + armed_once latch"
+  ],
+  "new_invariant_tests": 7,
+  "panel_rerun": {
+    "delivery_worse_pairs": 0,
+    "floor_values": [
+      4796,
+      19137,
+      94469
+    ],
+    "floors_unreleased": 0,
+    "locked_base": 3,
+    "locked_fix": 0,
+    "namespace": "reports/fs-cal-2/v3.5/panel",
+    "noloss_tx_delta": 0,
+    "pairs": 115,
+    "reason": "release condition changed semantically in 1A.2",
+    "runs": 260,
+    "synthetic_samples": 0
+  },
+  "phase": "FAZ-1A",
+  "recorded_side_effect": "estimator eligibility 59->57/80 (ge rep2 via known delivery-drain defect; iid rep17 loss-tr 10->7); re-check in fresh \u00a74.2b",
+  "result_bearing_calibration_runs": 0,
+  "study": "DR-RATE-RAMP-2",
+  "suites": {
+    "adaptive_transport_lib": "135/135",
+    "clippy": "clean x3",
+    "fs_cal2_pins": "33/33"
+  },
+  "supersession": {
+    "json_sha256": "1b716d3540bb39f487afd3e5dff30c6efb46484ad263590a1d5a88a24d2db03c",
+    "md_sha256": "38a3fc74eb935a9aee5b2e6cdcf346d957a7b5653f72876a80a7aabd67e3d131",
+    "old_test": "preserved verbatim, re-scoped to floor-INACTIVE legacy path",
+    "weakened_to_ge": false,
+    "written_before_test_edit": true
+  }
+}

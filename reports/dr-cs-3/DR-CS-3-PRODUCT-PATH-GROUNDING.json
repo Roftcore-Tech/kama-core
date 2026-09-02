@@ -1,0 +1,60 @@
+{
+  "artifact": "DR-CS-3-PRODUCT-PATH-GROUNDING",
+  "blocks_grounding": false,
+  "checklist_1_4": {
+    "both_ends_product": true,
+    "bounded_additive_allowance": true,
+    "no_amplification": true,
+    "runtime_on_off_one_binary": true,
+    "timer_separable_from_arq": true,
+    "unambiguous_correlation": true
+  },
+  "disqualified_not_reused": [
+    "on_event->on_event_batch reroute",
+    "BootstrapPto->Timer::Pto",
+    "ARQ loss-declaration schedule change",
+    "compile-time two-binary treatment"
+  ],
+  "inbound_chain": [
+    "ReceiverHost::ingest receiver_host.rs:290",
+    "h_ext session demux (connection binding)",
+    "slot.session.protector_mut().open(datagram) :318 \u2014 AEAD verify-before-admission",
+    "Err => IngestOutcome::Dropped('aead verify failed') :320",
+    "opened.inner() :325 authenticated plaintext",
+    "InnerPlain::Control :326",
+    "inner_kind 0x19/0x1A :331 \u2014 POST-authentication, connection-bound"
+  ],
+  "outbound_pattern": {
+    "batch_reset": "end_emission_batch(h_ext)",
+    "bench_writer_used": false,
+    "model": "ReceiverHost::emit_recovered receiver_host.rs:431-463",
+    "steps": [
+      "sessions.get_mut(h_ext) => UnknownSession",
+      "slot.issue_gate.issue() (monotonic ControlId, burst-enforced)",
+      "Control::Recovered{..} typed action",
+      "slot.session.seal(Control, SealArgs{wire_pn,..})",
+      "Ok(sealed.bytes)"
+    ]
+  },
+  "sender_chain_buildable_without_disqualified_pipeline": true,
+  "validation_architecture_finding": [
+    {
+      "detail": "fs_cal2_spine.rs references ReceiverHost 0 times; it models the peer abstractly (Chan + ack queue, no AEAD/session). Locked/fresh panels can validate the SENDER machine with a harness peer mirroring the product responder \u2014 legitimate ONLY because the responder will exist and be independently tested (the precise difference from the DR-CS-2B rejection).",
+      "id": "SPINE-HAS-NO-RECEIVERHOST"
+    },
+    {
+      "detail": "crates/crypto/src/lib.rs is a 3-line skeleton; 0 refs to x25519/snow/Handshake. ReceiverHost::open_session takes INJECTED directional keys ('Product: ger\u00e7ek-handshake-Split()'). A faithful two-netns run is therefore possible only with test-injected keys; the authenticated path is real but key establishment is not. Bounds any \u00a78.4/\u00a79 end-to-end claim; gated on Sprint-6.",
+      "id": "NO-REAL-NOISE-HANDSHAKE-IN-REPO"
+    }
+  ],
+  "verdict": "PRODUCT-BOOTSTRAP-PROBE-PATH-GROUNDED",
+  "wire_format": {
+    "CsEcho": "control.rs:67-75 {id, subtype, probe_seq, seen_count, arrival_gap}; ECHO_WIRE_MAX=43B",
+    "CsProbe": "control.rs:60-66 {id, subtype, probe_seq}; PROBE_WIRE_EXACT=44B",
+    "amplification_ratio_le_1": true,
+    "cfg_gated_in_schema_crate": false,
+    "codepoints": "inner_kind.rs:23,25 (accepted at :81-82)",
+    "correlation_field": "probe_seq (sender-session-monotonic, INV-CS-7)",
+    "shipping": true
+  }
+}

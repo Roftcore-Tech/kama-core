@@ -1,0 +1,108 @@
+{
+  "artifact": "FS-1-RAW-SCHEMA-v2",
+  "campaign": "v1.3.2",
+  "supersedes": "FS-1-RAW-SCHEMA-v1 (c7ac2a85; field-NAME list only — no executable type contract; PRESERVED)",
+  "authority": "OPT-X2/HYBRID GO (schema definition amendment). Outcome-blind. Does NOT narrow analysis-spec/oracle-map scientific questions. Lossless raw representation preferred over aggregate/hash-only. Experiment-defining hashes (manifest 12fc0a75 / prereg / execution-order / analysis-spec 6e2056ba / oracle-map 0bee78db / kernel pins) UNCHANGED.",
+  "null_semantics": "JSON null = field is typed-optional and the observed value is absent (e.g. completion_ns when censored). null is NEVER used as a sentinel for zero/empty. Numeric zero and empty-array are distinct real values. Optional=true fields MAY be null; Optional=false fields MUST be present and non-null.",
+  "canonical_serialization": {
+    "encoding": "UTF-8, LF line endings, one JSON object per record file",
+    "key_order": "exact declaration order in field_order[] below (mechanically fixed; documented per KALICI-KURAL-3)",
+    "integer": "decimal, no leading zeros, no exponent; unsigned unless sign noted",
+    "null": "literal null",
+    "array": "JSON array preserving element order as produced by the kernel event stream",
+    "bool": "true/false",
+    "float": "NONE — no field is a formatted float; all timings are integer nanoseconds"
+  },
+  "unknown_field_policy": "REJECT — a record containing any key not in field_order[] fails validation (fail-closed).",
+  "record_count_contract": "exactly the fields in field_order[]; validator asserts set-equality with produced record keys.",
+  "field_order": [
+    "run_id","attempt_index","pairing_group_id","arm","base_cell_id","repetition_index",
+    "freeze_lock_sha256","prereg_sha256","final_manifest_sha256","coverage_sha256","analysis_spec_sha256","oracle_map_sha256","execution_binary_sha256","execution_source_commit","cargo_lock_sha256","toolchain_identity",
+    "typed_manifest_row","base_cell_semantics_hash","run_execution_semantics_hash","resolved_behavior_semantics_hash","configured_schedule_hash",
+    "configured_forward_hash","configured_reverse_hash","observed_forward_event_hash","observed_reverse_event_hash","initial_source_decisions","intervention_decisions","retransmission_decisions","actual_forward_event_count","actual_reverse_event_count",
+    "t_first_source_offer","t_final_source_wire_complete","t_redundancy_lifecycle","t_repair_usable","t_arq_lifecycle","t_full_workload_complete","deadline_ms","observation_horizon_ms","censor_time_ns",
+    "validity_class","completion_or_censoring","deadline_hit","delivered_fragments","delivered_bytes","reassembly_equal","completion_cause","remaining_fragments","tail_status",
+    "base_source_bytes","proactive_intervention_bytes","arq_retransmit_bytes","control_bytes","total_outcome_bytes","spurious_retransmissions",
+    "fec_decoded_sources","retransmits","result_bearing"
+  ],
+  "enums": {
+    "validity_class": ["INVALID","VALID_COMPLETE","VALID_CENSORED"],
+    "completion_status": ["completed","censored"],
+    "completion_cause": ["INITIAL_SOURCE","ARQ_RETRANSMIT","FEC_DECODE","NOT_COMPLETED"],
+    "tail_status": ["NO_TAIL_ERASURE","REAL_TAIL_ERASURE","NOT_APPLICABLE"],
+    "decision_action": ["PASS","DROP"],
+    "transmission_role": ["InitialSource","RetransmitSource","Duplicate","Repair","Control"]
+  },
+  "typed_shapes": {
+    "decision_event": {"role":"transmission_role","block_id":"u32","esi":"u16","attempt":"u16","emit_time_ns":"u64","action":"decision_action"},
+    "redundancy_lifecycle_record": {"block_id":"u32","redundancy_kind":"string|null","t_eligible":"u64|null","t_enqueued":"u64|null","t_wire":"u64|null","t_arrival":"u64|null"},
+    "arq_lifecycle_record": {"block_id":"u32","t_eligible":"u64|null","t_wire":"u64|null","t_arrival":"u64|null"},
+    "completion_or_censoring": {"status":"completion_status","time_ns":"u64"}
+  },
+  "fields": {
+    "run_id":{"type":"string","optional":false,"source":"run context (manifest/execution-order)","validation":"non-empty; == manifest row run_id","analysis_use":"identity/traceability"},
+    "attempt_index":{"type":"u8","optional":false,"source":"executor","validation":"0..=2","analysis_use":"retry lineage"},
+    "pairing_group_id":{"type":"string","optional":false,"source":"manifest","validation":"pg--<cell>--rep<n>","analysis_use":"pairing"},
+    "arm":{"type":"string","optional":false,"source":"SpineResult.arm","validation":"in {A0,A1-EARLY,F0,F3}","analysis_use":"arm"},
+    "base_cell_id":{"type":"string","optional":false,"source":"manifest/config","validation":"one of 12 cells","analysis_use":"cell stratum"},
+    "repetition_index":{"type":"u8","optional":false,"source":"executor","validation":"0..=4","analysis_use":"lineage"},
+
+    "freeze_lock_sha256":{"type":"hex64","optional":false,"source":"provenance (v1.3.2 freeze-lock file sha)","validation":"64 lowercase hex","analysis_use":"provenance"},
+    "prereg_sha256":{"type":"hex64","optional":false,"source":"provenance constant (unchanged c12b2bee)","validation":"64 hex","analysis_use":"provenance"},
+    "final_manifest_sha256":{"type":"hex64","optional":false,"source":"provenance constant (unchanged 12fc0a75)","validation":"64 hex","analysis_use":"provenance"},
+    "coverage_sha256":{"type":"hex64","optional":false,"source":"provenance constant (unchanged 3c80c685)","validation":"64 hex","analysis_use":"provenance"},
+    "analysis_spec_sha256":{"type":"hex64","optional":false,"source":"provenance constant (unchanged 6e2056ba)","validation":"64 hex","analysis_use":"provenance"},
+    "oracle_map_sha256":{"type":"hex64","optional":false,"source":"provenance constant (unchanged 0bee78db)","validation":"64 hex","analysis_use":"provenance"},
+    "execution_binary_sha256":{"type":"hex64","optional":false,"source":"provenance (v1.3.2 instrumented executor binary)","validation":"64 hex","analysis_use":"provenance"},
+    "execution_source_commit":{"type":"hex40","optional":false,"source":"provenance (full 40-hex; §5)","validation":"40 lowercase hex","analysis_use":"provenance"},
+    "cargo_lock_sha256":{"type":"hex64","optional":false,"source":"provenance constant","validation":"64 hex","analysis_use":"provenance"},
+    "toolchain_identity":{"type":"string","optional":false,"source":"provenance constant","validation":"non-empty","analysis_use":"provenance"},
+
+    "typed_manifest_row":{"type":"object","optional":false,"source":"frozen v1.3.1 manifest row (12fc0a75) for this run_id","validation":"json object; run_id matches","analysis_use":"configuration"},
+    "base_cell_semantics_hash":{"type":"hex_u64","optional":false,"source":"row_hashes.base (fs_cell)","validation":"0x + 16 hex","analysis_use":"cell identity"},
+    "run_execution_semantics_hash":{"type":"hex_u64","optional":false,"source":"row_hashes.exec","validation":"0x16hex","analysis_use":"run identity"},
+    "resolved_behavior_semantics_hash":{"type":"hex_u64","optional":false,"source":"row_hashes.behav","validation":"0x16hex","analysis_use":"behavior identity"},
+    "configured_schedule_hash":{"type":"hex_u64","optional":false,"source":"SpineResult.configured_schedule_hash","validation":"0x16hex","analysis_use":"pairing identity"},
+
+    "configured_forward_hash":{"type":"hex_u64","optional":false,"source":"SpineResult.forward_schedule_id (configured forward spec identity)","validation":"0x16hex","analysis_use":"trace/pairing"},
+    "configured_reverse_hash":{"type":"hex_u64","optional":false,"source":"SpineResult.reverse_schedule_id","validation":"0x16hex","analysis_use":"trace/pairing"},
+    "observed_forward_event_hash":{"type":"hex_u64","optional":false,"source":"INSTRUMENTATION: SpineResult.observed_forward_event_hash = TraceChannel.decision_log_hash() (rolling FNV over realized forward decisions). MUST equal fnv-recompute over initial_source_decisions+intervention_decisions+retransmission_decisions event stream.","validation":"0x16hex; == recomputed hash from decision vectors","analysis_use":"mechanism/trace faithfulness"},
+    "observed_reverse_event_hash":{"type":"hex_u64","optional":false,"source":"SpineResult.reverse_event_hash (TraceChannel.reverse_decision_log_hash())","validation":"0x16hex","analysis_use":"reverse-path state"},
+    "initial_source_decisions":{"type":"array<decision_event>","optional":false,"source":"INSTRUMENTATION: TraceChannel retained decision events, role=InitialSource (append-only; lossless per-event).","validation":"each element decision_event; roles==InitialSource; count == source initial transmissions","analysis_use":"realized initial-source erasure (lossless)"},
+    "intervention_decisions":{"type":"array<decision_event>","optional":false,"source":"INSTRUMENTATION: retained decision events, role in {Duplicate,Repair} (proactive intervention).","validation":"each decision_event; roles in {Duplicate,Repair}","analysis_use":"mechanism: duplicate hit/miss, parity emission"},
+    "retransmission_decisions":{"type":"array<decision_event>","optional":false,"source":"INSTRUMENTATION: retained decision events, role=RetransmitSource (ARQ).","validation":"each decision_event; role==RetransmitSource","analysis_use":"mechanism: ARQ recovery"},
+    "actual_forward_event_count":{"type":"u64","optional":false,"source":"INSTRUMENTATION: TraceChannel.counts().0 (forward decided count).","validation":">=48; == len(initial_source_decisions)+len(intervention_decisions)+len(retransmission_decisions)+forward Control events","analysis_use":"trace completeness"},
+    "actual_reverse_event_count":{"type":"u64","optional":false,"source":"SpineResult.reverse_event_count","validation":">=0","analysis_use":"reverse-path"},
+
+    "t_first_source_offer":{"type":"u64","optional":true,"source":"SpineResult.t_first_source_offer","validation":"ns; null only if no source offered","analysis_use":"timing anchor"},
+    "t_final_source_wire_complete":{"type":"u64","optional":true,"source":"SpineResult.t_final_source_wire_complete","validation":"ns","analysis_use":"source-wire timing"},
+    "t_redundancy_lifecycle":{"type":"array<redundancy_lifecycle_record>","optional":false,"source":"INSTRUMENTATION: separate per-block observation ledger (parallel to aggregate res.timing; does NOT alter res.timing or spurious computation). One record per source block with the block's redundancy eligible/enqueued/wire/arrival timestamps.","validation":"len == source_block_count; block_id unique 0..count-1; each timestamp ns|null","analysis_use":"repair-usable/redundancy lifecycle (per-block; aggregation applied by analysis rule)"},
+    "t_repair_usable":{"type":"u64","optional":true,"source":"SpineResult.t_first_repair_usable","validation":"ns; null if no repair usable","analysis_use":"LATENCY repair-usable-time"},
+    "t_arq_lifecycle":{"type":"array<arq_lifecycle_record>","optional":false,"source":"INSTRUMENTATION: per-block observation ledger; one record per block with ARQ eligible/wire/arrival timestamps.","validation":"len == source_block_count; block_id unique","analysis_use":"LATENCY ARQ-recovery-time (per-block)"},
+    "t_full_workload_complete":{"type":"u64","optional":true,"source":"SpineResult.t_full_workload_complete","validation":"ns; null iff censored","analysis_use":"LATENCY full-completion-time (canonical; replaces legacy completion_ns)"},
+    "deadline_ms":{"type":"u32","optional":false,"source":"manifest/config deadline_ms_for(rtt)","validation":"in {199,599,2099}","analysis_use":"deadline"},
+    "observation_horizon_ms":{"type":"u32","optional":false,"source":"config observation_horizon_ms(rtt)","validation":"in {699,2499,9249}","analysis_use":"censoring horizon"},
+    "censor_time_ns":{"type":"u64","optional":true,"source":"observation_horizon_ms*1e6 when !completed else null","validation":"ns; non-null iff censored","analysis_use":"censoring anchor (NOT a latency value)"},
+
+    "validity_class":{"type":"enum:validity_class","optional":false,"source":"classify(SpineResult)","validation":"in enum","analysis_use":"validity"},
+    "completion_or_censoring":{"type":"completion_or_censoring","optional":false,"source":"{status: completed if full_workload_complete else censored; time_ns: t_full_workload_complete if completed else censor_time_ns}","validation":"status in enum; time_ns present","analysis_use":"terminal state + time"},
+    "deadline_hit":{"type":"bool","optional":false,"source":"completed && t_full_workload_complete <= deadline_ns","validation":"bool","analysis_use":"deadline"},
+    "delivered_fragments":{"type":"u16","optional":false,"source":"SpineResult.delivered_source_symbols","validation":"0..=48","analysis_use":"reliability"},
+    "delivered_bytes":{"type":"u32","optional":false,"source":"SpineResult.delivered_app_bytes","validation":">=0","analysis_use":"reliability"},
+    "reassembly_equal":{"type":"bool","optional":false,"source":"SpineResult.reassembly_equal","validation":"bool","analysis_use":"reliability"},
+    "completion_cause":{"type":"enum:completion_cause","optional":false,"source":"INSTRUMENTATION: captured at the terminal-completion event = delivery mechanism (role) of the last source unit whose arrival made full_workload_complete true. NOT inferred from post-hoc counts. NOT_COMPLETED iff censored.","validation":"in enum; NOT_COMPLETED iff validity_class==VALID_CENSORED","analysis_use":"MECHANISM completion-cause"},
+    "remaining_fragments":{"type":"u16","optional":false,"source":"source_symbol_count - delivered_source_symbols (both kernel-provided)","validation":"0..=48; == 48-delivered_fragments","analysis_use":"reliability@horizon"},
+    "tail_status":{"type":"enum:tail_status","optional":false,"source":"DERIVED (pre-run frozen rule B_REAL_TAIL_ERASURE): let terminal_source_id = source_symbol_count - 1 (NOT a literal; computed per record from the kernel's source_symbol_count). REAL_TAIL_ERASURE iff terminal_source_id is in the frozen realized initial-source erasure set — the ARQ-unrecoverable tail (no RTO/TLP; no subsequent source transmission to trigger recovery). NO_TAIL_ERASURE if initial-source erasures exist but none is terminal_source_id. NOT_APPLICABLE if the initial-source erasure set is empty. An executable pin (tail_terminal_id_pin) asserts source_symbol_count==48 (⇒ terminal_source_id==47) for every FS-1 base cell; the literal 47 is never used directly. Lossless raw erasure vector retained in initial_source_decisions.","validation":"in enum; terminal_source_id==source_symbol_count-1; consistent with initial_source_decisions DROP set","analysis_use":"tail stratum (§9)"},
+
+    "base_source_bytes":{"type":"u64","optional":false,"source":"SpineResult.base_source_bytes","validation":">=0","analysis_use":"cost baseline"},
+    "proactive_intervention_bytes":{"type":"u64","optional":false,"source":"SpineResult.intervention_bytes (legacy name intervention_bytes -> canonical)","validation":">=0","analysis_use":"COST intervention (C-P4 fairness)"},
+    "arq_retransmit_bytes":{"type":"u64","optional":false,"source":"SpineResult.arq_retransmit_bytes","validation":">=0","analysis_use":"COST ARQ"},
+    "control_bytes":{"type":"u64","optional":false,"source":"INSTRUMENTATION: sum of serialized bytes of Control-class (role=Control; ACK/CS) forward+reverse frames actually emitted during the attempt. EXCLUDES source payload, proactive FEC payload, ARQ-retransmitted source payload. Observation counter only; does not alter transmission behavior. Control frame types counted (exhaustive, pre-run): reverse ACK frames.","validation":">=0","analysis_use":"COST control"},
+    "total_outcome_bytes":{"type":"u64","optional":false,"source":"SpineResult.total_outcome_bytes","validation":">=base_source_bytes","analysis_use":"COST total (Pareto)"},
+    "spurious_retransmissions":{"type":"u64","optional":false,"source":"SpineResult.spurious_retransmits (legacy name spurious_retransmits -> canonical spurious_retransmissions)","validation":">=0","analysis_use":"COST spurious"},
+
+    "fec_decoded_sources":{"type":"usize","optional":false,"source":"SpineResult.fec_decoded_sources (canonical typed field; MECHANISM FEC-recovered-source-count)","validation":">=0","analysis_use":"MECHANISM (retained; was 'extra' in v1)"},
+    "retransmits":{"type":"u64","optional":false,"source":"SpineResult.retransmits (canonical typed count; distinct from retransmission_decisions vector)","validation":">=0","analysis_use":"MECHANISM (retained)"},
+    "result_bearing":{"type":"bool","optional":false,"source":"executor constant true (provenance flag)","validation":"== true","analysis_use":"provenance (retained typed)"}
+  }
+}

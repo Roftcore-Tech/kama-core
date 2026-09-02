@@ -1,0 +1,8 @@
+run_id=pin4-d5-r4-iso-2
+policy=leftover
+receiver_events=1194
+finalized_blocks=20
+pending_blocks=30
+ledger_path=/home/ryuzaki/Desktop/kama-core/reports/d1-exit/data/fec-pins/pin4-d5-r4-iso-2-rxledger.csv
+ledger_checksum=991042e9ba52d1e4
+clean_shutdown=true

@@ -5,14 +5,88 @@ edition = "2021"
 license = "Proprietary"
 publish = false
 
-# ENGINE-SEVİYESİ cross-crate integration harness (Sprint-5a). fec-codec + schema + noise-wire'ı
-# uçtan-uca birleştirir (mock-key; paylaşılan adaptive-transport-koduna DOKUNMAZ). Bu-crate hiçbir
-# production-crate'e BAĞLANMAZ (yalnız-test/harness; bench-emsali).
+# Sprint-5a: ENGINE-SEVİYESİ cross-crate integration harness (tests/). DR-CS-1b/A2 (Abkarada D-1):
+# bu crate ÜRETİMLEŞTİRİLİYOR — ReceiverHost composition-root burada doğar (feature-gated, DEFAULT-OFF;
+# flag-OFF'ta eski-harness-rolü aynen). adaptive-transport prod-dep'i F1'de (kompozisyon-doldurma) gelir.
+
+[features]
+# DR-CS-1b/A2: ReceiverHost composition-root (K-9 global-ledger sahibi). DEFAULT-OFF.
+# CLOSURE-1B: bayrak, dev-dep adaptive-transport'un cold-start-yüzeyini de İLERİ-taşır (yalnız-test
+# derlemesi; flag-OFF'ta forward-YOK → adaptive-transport default → workspace flag-OFF byte-özdeş,
+# INV-CS-5 + adaptive-transport'un-kendi-flag-OFF-380/0-pini bozulmaz).
+experimental-cold-start = [
+    "kama-engine/experimental-cold-start",
+    "kama-noise-wire/experimental-cold-start",
+    "adaptive-transport/experimental-cold-start",
+]
+# DR-CS-2 / DR-RATE-RAMP-1: observation-only scheduler telemetry (default OFF).
+diag-sched-telemetry = ["adaptive-transport/diag-sched-telemetry"]
+
+# DR-FEC-FS-1 FS-HARNESS-A: F0 closed-loop (real Sender FEC-authority + real RsSimdCodec + BottleneckChannel).
+# YALNIZ test-derlemesi (dev-dep adaptive-transport + mevcut-prod-dep kama-fec-codec). Production lib-grafiği
+# GENİŞLEMEZ (kama-fec-codec zaten-prod-dep; adaptive-transport dev-only). flag-OFF forward-YOK.
+experimental-fs-harness = [
+    "adaptive-transport/experimental-fec-budget",
+    "adaptive-transport/experimental-cold-start",
+]
 
 [dependencies]
+thiserror.workspace = true
+zeroize = "1"
+kama-engine = { path = "../kama-engine" }
 kama-transport-schema = { path = "../kama-transport-schema" }
 kama-fec-codec = { path = "../kama-fec-codec" }
 kama-noise-wire = { path = "../kama-noise-wire" }
 
 [dev-dependencies]
 zeroize = "1"
+# CLOSURE-1B (DR-CS-1b/A2): birleşik 65B-heal testi için sender-tarafı. Cold-start-yüzeyi feature-
+# forward ile açılır (üstteki [features]); flag-OFF derlemede feature-OFF → workspace-pin korunur.
+adaptive-transport = { path = "../adaptive-transport" }
+
+# CLOSURE-2 (DR-CS-1b/A2): A2-RX netem runner (gerçek ReceiverHost product-path + /proc/self/statm RSS).
+[[example]]
+name = "a2_rx_netem_runner"
+required-features = ["experimental-cold-start"]
+
+# DR-FEC-FS-1 FS-HARNESS-A: fs_runner CLI (A0/A1 via adaptive-transport run_arm + F0 via shared codec-loop).
+# Machine-readable KEY=VALUE; result-bearing DEĞİL (harness-smoke). FS-1 v1.2-freeze-SONRASI ayrı-tur.
+[[example]]
+name = "fs_runner"
+required-features = ["experimental-fs-harness"]
+
+# DR-FEC-FS-1 S5-C: manifest-driven FS-1 runner (frozen execution-baseline binary). Default EXECUTABILITY_ONLY;
+# result-bearing YALNIZ --result-bearing flag + valid-provenance ile. Reproducible-build (deterministic; §S5-C.2).
+[[example]]
+name = "fs1_runner"
+required-features = ["experimental-fs-harness"]
+
+[[example]]
+name = "fs1_runner_v2"
+required-features = ["experimental-fs-harness"]
+
+[[example]]
+name = "fs_compare_v2"
+
+[[example]]
+name = "fs_analyze_v2"
+required-features = ["experimental-fs-harness"]
+
+[[example]]
+name = "dr_arqtail_r1"
+required-features = ["experimental-fs-harness"]
+
+[[example]]
+name = "dr_arqtail_r2a"
+required-features = ["experimental-fs-harness"]
+
+# FS-FUSION-CELL-1: the (tail-capable ARQ, r>0) cell and the ARQ-cost attribution that goes with it.
+# Both drive the fs_campaign spine, so they need the same feature the other spine runners need —
+# without this, `cargo build --all-targets` on the default feature set fails to resolve fs_harness.
+[[example]]
+name = "fs_fusion_cell"
+required-features = ["experimental-fs-harness"]
+
+[[example]]
+name = "fs_arq_contribution"
+required-features = ["experimental-fs-harness"]

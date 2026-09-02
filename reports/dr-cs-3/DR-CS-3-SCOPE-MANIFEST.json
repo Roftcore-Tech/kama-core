@@ -1,0 +1,38 @@
+{
+  "failed_duplicate_credit_restored": false,
+  "head_at_start": "4aa11a93af44b2b9e884461e8db3d1ed576c8b4f",
+  "immutable": [
+    "fs-cal-2/v3 (82)",
+    "fs-cal-2/v3.1 (56)",
+    "fs-cal-2/v3.2 (99)",
+    "reports/dr-cs-2/*"
+  ],
+  "namespace": "reports/dr-cs-3/",
+  "phase": "DR-CS-3",
+  "preserve_faz1a_rate_ramp": true,
+  "rules": {
+    "calibration_result_bearing_runs": 0,
+    "change_fec_tail_estimator": false,
+    "change_preconverge_floor": false,
+    "commit_push_pr": false,
+    "new_wire_codepoint": false,
+    "relax_karn": false,
+    "remove_srtt_from_preconverge_exit": false,
+    "rtt_from_duplicate": false
+  },
+  "scope_product_repair": {
+    "crates/adaptive-transport/Cargo.toml": "ba17f4a2033790b727b19fae048912f94d17dfd5c0f4b0db1a004a5fa6d81bdf",
+    "crates/adaptive-transport/src/bw.rs": "667264bbc4645ca54c7b964f4effd09d2cd119a8c85a04bbe249ffd3c1836b94",
+    "crates/adaptive-transport/src/lib.rs": "903882982318e60d165023d89ad3eafb33b0e171058705eceab7fb0edd759ec5",
+    "crates/adaptive-transport/src/pacer.rs": "5363dbf7aa35e711e5b3ff5c1643525cba75571078938c22471620534d2a9667",
+    "crates/adaptive-transport/src/sender.rs": "3ebf128a58b0d4d6fdedd602c0600c775b2ce3131945b0f012387c24e838ee7b",
+    "crates/adaptive-transport/src/tail_recovery.rs": "e785263721a96deb8688efa375910332e546cb61285b57d996e30babc8296712",
+    "crates/kama-integration/Cargo.toml": "55aac3b0af918a2c680ab1b31511ab1366c241abf3ff4c178d0b29c507fabdf6"
+  },
+  "scope_user_wip_DO_NOT_TOUCH": [
+    "reports/d1-exit/data/cold-start/timeline-1200B.csv",
+    "reports/d1-exit/data/cold-start/timeline-300B.csv",
+    "reports/d1-exit/data/cold-start/timeline-65B.csv"
+  ],
+  "tracked_modified": 10
+}

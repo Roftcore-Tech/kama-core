@@ -1,0 +1,18 @@
+BUDGET-REV t=0.0 injected=0B/0p refused=0B/0p first_refusal_ns=0
+RTRAJ t=0.5 ep=0 quota=0 accel=0 emit_total=0
+RTRAJ t=1.0 ep=0 quota=0 accel=0 emit_total=0
+RTRAJ t=1.5 ep=1 quota=1 accel=0 emit_total=1
+RTRAJ t=2.0 ep=1 quota=1 accel=0 emit_total=1
+RTRAJ t=2.5 ep=1 quota=1 accel=0 emit_total=1
+RTRAJ t=3.0 ep=1 quota=1 accel=0 emit_total=1
+RTRAJ t=3.5 ep=1 quota=2 accel=0 emit_total=2
+RTRAJ t=4.0 ep=1 quota=2 accel=0 emit_total=2
+RTRAJ t=4.5 ep=1 quota=2 accel=0 emit_total=2
+RTRAJ t=5.0 ep=1 quota=2 accel=0 emit_total=2
+RTRAJ t=5.5 ep=1 quota=4 accel=0 emit_total=6
+RTRAJ t=6.0 ep=1 quota=4 accel=0 emit_total=14
+RTRAJ t=6.5 ep=2 quota=8 accel=0 emit_total=24
+RTRAJ t=7.0 ep=2 quota=8 accel=0 emit_total=33
+RTRAJ t=7.5 ep=2 quota=8 accel=0 emit_total=43
+RTRAJ t=8.0 ep=2 quota=8 accel=0 emit_total=52
+RTRAJ t=8.5 ep=2 quota=8 accel=0 emit_total=62

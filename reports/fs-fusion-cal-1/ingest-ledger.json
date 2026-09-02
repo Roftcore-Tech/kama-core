@@ -1,0 +1,36 @@
+{
+  "canonical_rows": 10930,
+  "canonical_sha256": "d30964547aff1c760401ccd281f1df47a87923ed48d1a7df8ee8db817569835f",
+  "excluded_count": 0,
+  "excluded_sources_never_read": [
+    "reports/fs-1/raw/v1.3.1 (SUPERSEDED-INCOMPLETE-SCHEMA)",
+    "commit 44e0c50 dataset (INVALIDATED arm-label bug)"
+  ],
+  "exclusions": [],
+  "rows_by_domain": {
+    "FS1_IN_PROCESS": 240,
+    "PRODUCT_NETNS": 2290,
+    "R2A_IN_PROCESS": 8400
+  },
+  "rows_by_domain_action": {
+    "FS1_IN_PROCESS|ARQ_FROZEN": 60,
+    "FS1_IN_PROCESS|BLIND_DUP": 60,
+    "FS1_IN_PROCESS|FEC_R2": 60,
+    "FS1_IN_PROCESS|FEC_R4": 60,
+    "PRODUCT_NETNS|ARQ_FROZEN": 1145,
+    "PRODUCT_NETNS|ARQ_TAIL": 1145,
+    "R2A_IN_PROCESS|ARQ_FROZEN": 2100,
+    "R2A_IN_PROCESS|ARQ_TAIL": 2100,
+    "R2A_IN_PROCESS|BLIND_DUP": 2100,
+    "R2A_IN_PROCESS|FEC_R2": 2100
+  },
+  "runtime_features_absent_rows": 10930,
+  "runtime_features_present_rows": 0,
+  "schema_version": "FS-FUSION-CAL-1-CANONICAL-v1",
+  "source_rows_seen": {
+    "FS1_IN_PROCESS": 240,
+    "PRODUCT_NETNS": 2290,
+    "R2A_IN_PROCESS": 8400
+  },
+  "source_rows_total": 10930
+}

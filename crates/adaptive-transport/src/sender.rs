@@ -23,6 +23,8 @@
 //! **Kapsam (Artım 1+3):** state machine + ölçüm + karar pipeline + DATA pacing + recovery İCRA
 //! (ARQ retransmit / forward duplication). Receiver (§4) = sonraki artım.
 
+#[cfg(feature = "experimental-cold-start")]
+use std::collections::BTreeSet;
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
@@ -37,12 +39,14 @@ use crate::emergency::{
     RecoveryAction, RecoveryModeController,
 };
 use crate::fusion::{
-    DeterministicFuzzyController, FusionController, FusionDecision, FusionInputs, Mode,
+    DeterministicFuzzyController, FusionController, FusionDecision, FusionInputSnapshot,
+    FusionInputs, FuzzyConfig, FuzzyConfigError, Mode, ValidatedFuzzyConfig,
 };
 use crate::loss::{LossDetector, ThresholdLossDetector};
 use crate::pacer::{TokenBucket, DEFAULT_BURST_CAP};
-use crate::rate::{effective_send_rate, PacingPhase, SrcConfig, DEFAULT_MTU};
+use crate::rate::{bdp_bytes, effective_send_rate, Gain, PacingPhase, SrcConfig, DEFAULT_MTU};
 use crate::rtt::{apply_ack_delay, RttEstimator};
+use crate::tail_recovery::{ProbeDecision, TailRecovery, TailRecoveryConfig};
 
 /// Sender durumları (§3). Geçişler event-driven + deterministik.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +92,463 @@ pub enum Event {
     AckReceived(AckInfo),
     /// Timer ateşlendi (§12).
     TimerFired(Timer),
+    /// DR-S5-4: RECOVERED-control (engine block_id/esi→unit_id-çevrimi SONRASI). SAF-LOGICAL olay:
+    /// retransmit-cancel + retention-release + logical-defter; **rate/pacing/schedule yoluna GİRMEZ**
+    /// (emit-üretmez; N8: recovered≠ACK — BtlBw/delivered-kredi-yolu AÇILMAZ).
+    RecoveredControl(RecoveredInfo),
+    /// DR-CS-1 M1 (EK5-i): `Tick` ≡ `on_event_batch{now_ns, inbound=[]}` — tek-giriş-noktası,
+    /// çift-semantik-yok. Adapter CS-wakeup'larında üretir. E2: due-exposed-timer VE bekleyen-
+    /// scheduling-işi yoksa EXACT-NO-OP (schedule_transmit/drain çağrılmaz).
+    #[cfg(feature = "experimental-cold-start")]
+    Tick,
+    /// DR-CS-1 M3 (F2B): authenticated CS-probe-echo (CTRL_CS_ECHO 0x1A; güvenlik-katmanı-açtı,
+    /// engine/runner çevirdi). YALNIZ bootstrap-RTT: `(probe_seq)`-lookup → tek-tüketim →
+    /// rtt-estimator (matematik-değişmez). cwnd/BtlBw/delivery/loss/ack-conf'a DOKUNMAZ (N8-spot).
+    /// seen_count/arrival_gap SENDER'A-TAŞINMAZ (ledger-only alıcı/harness-defterinde; karar-
+    /// girdisi-yapılamaz — amendman-§3).
+    /// DR-CS-3: UNGATED — the `0x1A` codepoint already ships in `kama-transport-schema`.
+    CsProbeEcho {
+        /// Yansıtılan probe_seq (INV-CS-7 namespace).
+        probe_seq: u16,
+    },
+}
+
+/// DR-CS-1 M1: exposed-timer türleri (`next_wakeup_ns` sözleşmesine bağlı küme). Scope: CS-probe/
+/// CS-giveup/(d)-PTO (F2A/F2B'de eklenir) + TEST-ONLY hook (F1 atomiklik-kanıtı; üretim-yolu-değil).
+#[cfg(feature = "experimental-cold-start")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CsTimerKind {
+    /// TEST-ONLY (DI-12E/F/G F1-sürümleri): fire-kaydı üretir, başka-etkisi-yok.
+    TestHook(u8),
+    /// M2 CS-probe merdiveni fire'ı (idx 0..N_PROBE; fire-anları 3/9/21/45s arm'dan-itibaren).
+    CsProbe(u8),
+    /// (d)-kapsamı: bootstrap-sonrası MEVCUT time-threshold makinesinin bir-sonraki deadline'ı
+    /// (EK4-A2 yaşam-döngüsü: her-batch faz-2'de canlı-loss-state'ten yeniden-türetilir; fire =
+    /// mevcut `Timer::Pto` core-yolu — YENİ-retransmit-yolu-YOK, INV-CS-4).
+    /// SUPERSESSION (DR-ARQ-PRODUCT-TAIL-1, versioned TDD): `Timer::Pto` MAY now emit a bounded tail-loss probe
+    /// (`emit_tail_probe`) — but ONLY when `TailRecovery` is explicitly enabled (product-config, default OFF). With
+    /// the default OFF config this INV-CS-4 "no-Pto-retransmit" invariant holds byte-for-byte; the supersession is
+    /// gated + additive, not silent. See docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4.
+    BootstrapPto,
+    /// M5 (F3): cold-start giveup deadline (T_COLD_GIVEUP; son-probe+RTT_MAX sonrası). Fire →
+    /// resolved-değilse TimedOut-terminal + epoch-kapanışı.
+    CsGiveup,
+}
+
+/// DR-CS-1 M5 (F3): cold-start bootstrap TERMINAL sonucu (INV-CS-3; output-API — input-Event'ten
+/// AYRI). Epoch-başına EN-FAZLA-bir terminal (ResolvedBy*/TimedOut); TimedOut-sonrası DATA-ACK-
+/// kurtarması `PostTimeoutRecovery` (İKİNCİ-terminal-DEĞİL). `take_cs_terminal` ile drain.
+#[cfg(feature = "experimental-cold-start")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsTerminal {
+    /// Hayatta-kalan DATA-ACK bootstrap-srtt kurdu.
+    ResolvedByDataAck,
+    /// CS-probe-echo bootstrap-srtt kurdu.
+    ResolvedByProbeEcho,
+    /// Giveup-deadline'a kadar çözülmedi (terminal-bildirim; oturum-zorunlu-kapanmaz).
+    TimedOut,
+    /// TimedOut-SONRASI DATA-ACK-kurtarması (ikinci-terminal-değil; heal-bildirimi).
+    PostTimeoutRecovery,
+}
+
+/// K-8/F4: post-timeout recovery-kanıt türü (PostTimeoutNotice.cause).
+#[cfg(feature = "experimental-cold-start")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostTimeoutCause {
+    /// TimedOut-sonrası DATA-ACK-clocked kurtarma (300/1200B rejimi).
+    DataAckClocked,
+    /// TimedOut-sonrası §11 forward-recovery RECOVERED-control (65B-sınıfı ACK-bağımsız heal; B1-amendman).
+    RecoveredControl,
+}
+
+/// K-8/F4 SENDER-tarafı POST-TIMEOUT NOTIFICATION CONTRACT: ürün-katmanına TimedOut-terminali-ALDIKTAN
+/// SONRA bloğun kurtarıldığını bildirir (ikinci-terminal DEĞİL; CsTerminal DEĞİŞMEZ). one-slot (NOTICE_BOUND=1;
+/// first-valid-proof-wins; duplicate/stale no-op). N8: BtlBw/credit'e SIFIR etki (SALT-LOGICAL bildirim).
+#[cfg(feature = "experimental-cold-start")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostTimeoutNotice {
+    /// Aktif bootstrap cold-epoch (MAX_ACTIVE_COLD_EPOCHS_PER_SESSION_DIRECTION=1).
+    pub cold_epoch: u32,
+    /// Kurtarılan BootstrapColdBlock (MAX_COLD_BLOCKS_PER_EPOCH=1).
+    pub block_id: u32,
+    /// İlk-geçerli-kanıt türü (first-valid-proof-wins).
+    pub cause: PostTimeoutCause,
+    /// Kanıt-zamanı (receiver-monotonic ns; teşhis).
+    pub proof_time_ns: u64,
+}
+
+/// DR-CS-1 (F2B): bootstrap-srtt'nin kaynağı (INV-CS-3 terminal-sınıflandırma + diag).
+#[cfg(feature = "experimental-cold-start")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsSrttSource {
+    /// Hayatta-kalan DATA-ACK srtt'yi kurdu (ResolvedByDataAck).
+    DataAck,
+    /// CS-probe-echo srtt'yi kurdu (ResolvedByProbeEcho).
+    ProbeEcho,
+}
+
+// ── DR-CS-1 M2 [CAL] sabitleri (F2A) ──
+#[cfg(feature = "experimental-cold-start")]
+const CS_PROBE_FIRES_NS: [u64; 4] = [3_000_000_000, 9_000_000_000, 21_000_000_000, 45_000_000_000];
+#[cfg(feature = "experimental-cold-start")]
+const CS_PROBE_WIRE_MAX: u64 = 44; // amp≤1 pad dahil (ECHO_WIRE_MAX=43B → probe≥43; F0-tespit-(i))
+#[cfg(feature = "experimental-cold-start")]
+const CS_PROBE_TX_HARD_BUDGET: u64 = 200; // nominal 4×44=176B (INV-CS-2; YALNIZ-forward-probe)
+#[cfg(feature = "experimental-cold-start")]
+const CS_GIVEUP_NS: u64 = 60_000_000_000; // T_COLD_GIVEUP=60s (son-probe-45s + RTT_MAX-5s + marj)
+
+/// DR-S5-4: RECOVERED-control'ün sender-girdisi. Engine, Control::Recovered'ın logical (block_id,
+/// esi_ranges) referanslarını kendi send-record'undan native `unit_id`'ye ÇEVİRİP verir (SoC:
+/// çevrim engine'de; sender ACK-cancel/retention-release ile AYNI unit_id-mekanizmasını kullanır).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveredInfo {
+    /// Kurtarılan (receiver-FEC-decode) birimler.
+    pub units: Vec<RecoveredUnit>,
+}
+
+/// Tek kurtarılan-birim: native unit_id + logical-kimlik (defter-kaydı için).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveredUnit {
+    /// Transport-native birim kimliği (cancel-anahtarı; ACK-cancel ile aynı).
+    pub unit_id: u64,
+    /// Logical-kimlik (confirmed_logical defter-kaydı; SrLogicalRef::Fec).
+    pub block_id: u32,
+    /// Logical ESI.
+    pub esi: u16,
+}
+
+/// FS-5A (DR-FEC-FS-1) — PATH-TIMING SALT-GÖZLEM snapshot. Engine'in ZATEN ölçtüğü RTT/path-timing
+/// state'inin ([`crate::rtt::RttEstimator`]) MUTLAK-DEĞER görünümü. `FusionInputs` yalnız ORAN taşıdığından
+/// (jitter=rttvar/srtt, qd_ratio=queue_delay/rtprop) mutlak-magnitude FEC-selector'a ulaşmıyordu — bu
+/// snapshot o PLUMBING-GAP'i kapatır (**yeni-ölçüm YOK; salt-forward**). Case-A(base≈220,qd düşük) vs
+/// Case-B(base≈30,qd yüksek) AYNI-srtt'de `min_rtt_ns`+`queue_delay_ns` ile AYRIŞIR. **Production-policy
+/// DEĞİŞMEZ:** fusion/`FusionInputs`/wire dokunulmadı; salt-okuma — experimental FEC-selector + FS-harness
+/// girdisi. Üretim-çağıranı YOK (flag-OFF byte-özdeş; INV-CS-5-ruhu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathTimingState {
+    /// Smoothed RTT (ns); henüz RTT-sample yoksa `None`.
+    pub srtt_ns: Option<u64>,
+    /// min/base RTT = RTprop (pencereli-min; ns); henüz sample yoksa `None`.
+    pub min_rtt_ns: Option<u64>,
+    /// RTT varyansı (ns).
+    pub rttvar_ns: u64,
+    /// Ayakta-kuyruk gecikmesi = min_W_qd(rtt) − rtprop (ns; ≥0; congestion sinyali, loss DEĞİL).
+    pub queue_delay_ns: u64,
+    /// Confidence: en az bir RTT-sample işlendi mi (srtt mevcut).
+    pub sample_present: bool,
+    /// Freshness: rtprop-min-örneği taze mi (yaş < pencere/2 → taze; kanal-saatli).
+    pub rtprop_fresh: bool,
+}
+
+/// Commit-G (DR-1a): FEC-aktüasyon TEK-OTORİTESİ. Ayrı `fec_enabled: bool` KALDIRILDI
+/// (gizli-ikinci-state-yok); Manual-enabled enum-İÇİNDE. Default: `Manual { enabled: false }`
+/// (mevcut-davranış-birebir). Geçişler block-boundary-etkin (çağıran-kontratı: engine mode-değişimini
+/// blok-sınırında-çağırır; authority yalnız blok-granüler-noktalarda-okunur — enqueue-anı/latch-anı).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FecActuationMode {
+    /// Manuel-otorite: `enabled` emisyon-kapısı (DR-S5-1-davranışı).
+    Manual { enabled: bool },
+    /// Controller-otorite: FEC-açıklığı latch'lenen-ratio'dan türer; manuel-toggle typed-hata.
+    Controller,
+}
+
+/// Commit-K (authority-continuity): BLOK-OTORİTE-WITNESS'ı — blok-AÇILIŞINDA aktif-mode'u + sender-
+/// kimliğini + monoton-generation'ı YAKALAR. Bloğun-otorite-tüketimi (Controller-latch VEYA manuel-
+/// close) witness'ı BY-VALUE-tüketir → **tek-kullanım COMPILE-TIME** (Clone/Copy/Default/serde YOK;
+/// ikinci-tüketim E0382). Private-alan + private-ctor → forge/elle-kurulum-derlenmez. Yabancı-Sender'da
+/// tüketim TYPED-red (instance-eşleşmesi runtime; test-kanıtlı). Pending-state-YOK → idle-transition-
+/// hemen; drop-without-consume = blok-terk (sender-tarafı-state-yok, sızıntı-imkansız; Drop-gözlemi
+/// bilinçli-eklenmedi — normal-tüketimde-de-ateşlenirdi, gürültü).
+///
+/// Tek-kullanım kanıtı (E0382 — Copy-OLMADIĞININ-da-negatif-kanıtı; Copy-olsaydı-derlenirdi):
+/// ```compile_fail,E0382
+/// use adaptive_transport::sender::Sender;
+/// let mut s = Sender::new();
+/// let a = s.open_fec_block_authority();
+/// let _ = s.fec_controller_latch(a, None, 8, 4, 1, 64);
+/// let _ = s.fec_controller_latch(a, None, 8, 4, 2, 64); // ikinci-tüketim: use-after-move
+/// ```
+/// Clone-yok kanıtı (E0599):
+/// ```compile_fail,E0599
+/// use adaptive_transport::sender::Sender;
+/// let mut s = Sender::new();
+/// let a = s.open_fec_block_authority();
+/// let _b = a.clone();
+/// ```
+/// Pozitif-kontrol (DERLENİR — stable-rustdoc compile_fail-hata-kodunu-doğrulamaz; bu-blok API-rename/
+/// arity-değişiminde-kırılarak yukarıdaki-negatif-kanıtların-vakumlaşmasını-CI'da-yakalar):
+/// ```
+/// use adaptive_transport::sender::Sender;
+/// let mut s = Sender::new();
+/// let a = s.open_fec_block_authority();
+/// let _ = s.fec_controller_latch(a, None, 8, 4, 1, 64);
+/// ```
+#[derive(Debug)]
+pub struct FecBlockAuthority {
+    /// Üreten-Sender'ın process-yerel-kimliği (yabancı-Sender-reddi anahtarı).
+    instance_id: u64,
+    /// Sender-başına monoton açılış-generation'ı (saturating; teşhis + gelecek-engine-binding-anahtarı).
+    generation: u64,
+    mode: FecActuationMode,
+}
+
+impl FecBlockAuthority {
+    /// Bu-bloğun-otorite-mode'u (blok-açılış-anı-yakalaması).
+    #[must_use]
+    pub fn mode(&self) -> FecActuationMode {
+        self.mode
+    }
+    /// Açılış-generation'ı (monoton; teşhis/uniqueness-testi).
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+/// Commit-G: otorite-API hataları (sessiz-no-op-YASAK).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum FecAuthorityError {
+    /// Controller-mode'da manuel-FEC-toggle/manuel-close çağrıldı (state-DEĞİŞMEDİ; typed-red).
+    #[error("manual FEC toggle rejected: authority is Controller (NotInManualMode)")]
+    NotInManualMode,
+    /// Commit-K: witness başka-Sender'a ait (instance-eşleşmedi; typed-red + sayaç). Manuel-close-
+    /// yolunda kuyruk/plan-state-değişmez; latch-yolunda red BİLİNÇLİ-görünür-kayıt-bırakır
+    /// (last_latch + latch_event_index — testli) ama kuyruk/plan-DEĞİŞMEZ.
+    #[error("authority rejected: witness belongs to a different Sender instance")]
+    ForeignAuthority,
+}
+
+/// Commit-G: controller-karar-anlık-görüntüsü (same-event-causality-guard girdisi).
+/// `event_index` = üretildiği `fusion_event_index` (Commit-D-sayacı).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControllerDecisionSnapshot {
+    pub ratio_permille: u32,
+    pub event_index: u64,
+    pub no_rule: bool,
+    pub emergency: bool,
+}
+
+/// Commit-G: latch-baskılama nedenleri (named; kalibrasyon-dışı-hücre-işaretleri).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FecSuppressionReason {
+    NoRule,
+    NoEligibleDecision,
+    DecisionEventMismatch,
+    /// "Temporary safety interlock pending 1b/1d arbitration" — ürün-politikası/kalibrasyon-sonucu-DEĞİL.
+    EmergencyPendingArbitration,
+    ManualDisabled,
+    /// Commit-K: witness başka-Sender'a ait — kimlik-reddi (guard-önceliği: mode-semantiğinden-ÖNCE).
+    ForeignAuthority,
+}
+
+/// Commit-G: latch-sonucu (saf-karar-zinciri çıktısı; her-adım-görünür).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FecLatchResult {
+    pub requested_ratio_permille: u32,
+    pub computed_r: u16,
+    pub clamped_r: u16,
+    /// Enqueue-hedefi (baskılamada 0; requested/computed telemetride-görünür-kalır).
+    pub planned_r: u16,
+    pub same_event_eligible: bool,
+    pub suppression: Option<FecSuppressionReason>,
+}
+
+/// Commit-G/H: FEC-aktüasyon teşhisi (named-struct; tuple-YASAK). Sender yalnız SON-latch +
+/// bounded-sayaç tutar (per-block-tam-kayıt harness/test-yolunda; alloc/unbounded-log-yok).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FecActuationDiag {
+    pub authority_mode: FecActuationMode,
+    pub last_latch: Option<FecLatchResult>,
+    pub latch_event_index: u64,
+    pub no_eligible_decision_count: u64,
+    pub decision_event_mismatch_count: u64,
+    pub no_rule_zero_count: u64,
+    pub manual_toggle_rejected_count: u64,
+    /// Kümülatif kuyruğa-KABUL-edilen parity (requested→enqueued-zinciri; reddedilen-SAYILMAZ).
+    pub enqueued_r_total: u64,
+    /// Kümülatif wire'a-çıkan FecParity-decision (enqueued→emitted-zinciri).
+    pub emitted_r_total: u64,
+    /// Commit-K CORRIGENDUM: RECOVERED'la-iptal-edilen KUYRUKTA-BEKLEYEN-PARITY adedi (önce bu-alan
+    /// diag_recovered_cancels'a-bağlıydı = DATA-retransmit-iptalleri — "_r_"-adıyla-YANILTICI-etiket;
+    /// retransmit-iptalleri `diag_recovered_cancels()`-API'sinde-kalır, M1-metriği-değişmedi).
+    pub canceled_r_total: u64,
+    /// Commit-K: emisyon-izinsiz (Manual{false}-aktif) legacy-enqueue-reddi (kuyruk-üyeliği=emisyon-izni
+    /// invariantının-kapısı; sessiz-DEĞİL — sayaç+doc-görünür).
+    pub parity_enqueue_rejected_count: u64,
+    /// Commit-K: yabancı-Sender-witness tüketim-reddi (latch-suppression + manuel-close-Err toplamı).
+    pub foreign_authority_rejected_count: u64,
+    /// §8.1-EXACT-TANIM: SON-plan_fec_parity-token-REDDİ-anında-kuyrukta-bekleyen-parity-adedi
+    /// (GAUGE — kümülatif-DEĞİL; requested−emitted-DEĞİL; clamp/suppression/mode-disabled-farkları
+    /// token-denial-SAYILMAZ; yalnız-pacer-token-reddi). 1b-tasarım-girdisi.
+    pub token_denied_r_gauge: u64,
+    /// Commit-I: son-mode-transition-isteğinin event-index'i.
+    pub last_transition_event_index: u64,
+    /// Commit-I: uygulanan-transition-sayısı (saturating; wrap-yok).
+    pub transition_applied_count: u64,
+}
+
+/// Commit-N (1b-evidence): SON-token-denial anlık-görüntüsü — SALT-TEŞHİS (politika-değişikliği-YOK).
+/// TOKEN-DENIAL-KESİN-TANIMI: "emisyon-İZNİ-olan (kuyruklu) parity'nin mevcut-token-şartını
+/// (`pacer.try_send`) sağlayamadığı PLANLAMA-anı". ŞUNLAR-DENIAL-DEĞİL (bu-yapıya-YAZILMAZ):
+/// ratio-clamp · no-rule/emergency/ManualDisabled/ForeignAuthority-suppression · legacy-enqueue-reddi ·
+/// RECOVERED-cancellation · mode-transition · blok-terk. Her-denial-TAM-overwrite (carryover-yok);
+/// unbounded-history/alloc/IO/format/RNG-yok (Copy-alanlar). `token_balance_before` mevcut-READ-ONLY
+/// `TokenBucket::tokens()`-erişimcisinden (mühürlü-TokenBucket'a-DOKUNULMADI); token-maliyeti =
+/// denied-item-boyutu (try_send-argümanı). Per-block-emitted-ledger'ı SENDER-TUTMAZ (bounded-model);
+/// `emitted_r_total_at_denial` global-sayaç-anıdır — blok-düzeyi-ledger harness/test-collector'da.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FecTokenDenialSnapshot {
+    /// Denial-anındaki fusion-event-index (planlama-anı-attribution'u).
+    pub denial_event_index: u64,
+    /// Reddedilen (kuyruk-önü) item'ın bloğu.
+    pub block_id: u32,
+    /// Item'ın staging-otoritesi-generation'ı (legacy-enqueue: None).
+    pub authority_generation: Option<u64>,
+    /// Item'ın staging-anı-kaynak-otoritesi.
+    pub authority_mode: FecActuationMode,
+    /// Denial-anı-kuyruk-uzunluğu (toplam-bekleyen-parity).
+    pub pending_parity_total: u64,
+    /// Aynı-bloğun-kuyruktaki-item-adedi (interleaved-blok-ayrıştırması).
+    pub pending_for_block: u64,
+    /// Reddedilen-item-boyutu = token-maliyeti (try_send-argümanı).
+    pub parity_size_bytes: u64,
+    /// Denial-anı-pacer-token-bakiyesi (READ-ONLY-erişimci).
+    pub token_balance_before: u64,
+    /// Item'ın-bloğunun-planned/manual-r'ı (otorite-staging-tag'i; legacy: None).
+    pub planned_r: Option<u16>,
+    /// Denial-anı-global-emitted-sayacı (per-block-DEĞİL — bounded-model; ledger-harness'ta).
+    pub emitted_r_total_at_denial: u64,
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// Commit-V: EXPERIMENTAL-FEC-BUDGET (cargo-feature `experimental-fec-budget`; DEFAULT-OFF).
+// OFF: aşağıdaki-HİÇBİR-öğe-derlenmez → üretim-yolu-baseline-BYTE-ÖZDEŞ. ON+LeftoverOnly:
+// rezervasyon=0/ticket-yok/kernel-çağrılmaz → karar-dizisi-baseline-özdeş (Commit-W-testli).
+// Product/admin-activation-YOK: politika-yalnız-test/harness `set_budget_policy`-ile-seçer.
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+/// Deneysel-bütçe-politikası (yalnız-test/harness-seçer; default-HER-KOŞULDA-LeftoverOnly).
+#[cfg(feature = "experimental-fec-budget")]
+#[derive(Debug, Clone, Copy)]
+pub enum BudgetPolicy {
+    /// Baseline: mevcut-leftover-davranışı-birebir (rezervasyon/ticket/kernel-yok).
+    LeftoverOnly,
+    /// R-sınıfı-pay (ticket'sız).
+    ProtectedShareExperimental(crate::budget_kernel::PolicyParams),
+    /// R + F2-ticket + C1-cap.
+    FloorCapExperimental(crate::budget_kernel::PolicyParams),
+}
+
+#[cfg(feature = "experimental-fec-budget")]
+impl Default for BudgetPolicy {
+    // derive(Default)-yerine-açık-impl: default=LeftoverOnly-sözleşmesi-görünür-kalsın.
+    #[allow(clippy::derivable_impls)]
+    fn default() -> Self {
+        BudgetPolicy::LeftoverOnly
+    }
+}
+
+/// U6: policy-geçişi yalnız-boş-kuyrukta (Busy-guard).
+#[cfg(feature = "experimental-fec-budget")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BudgetPolicyTransitionError {
+    #[error("budget policy busy: pending tickets/bulk parity/reservation outstanding")]
+    Busy,
+}
+
+/// U4: floor-ticket (kimlik=(block,generation); missed-tam-1-kez).
+#[cfg(feature = "experimental-fec-budget")]
+#[derive(Debug, Clone, Copy)]
+struct FloorTicket {
+    block_id: u32,
+    generation: u64,
+    deadline_ns: u64,
+    missed: bool,
+}
+
+/// U4-miss-teşhisi (tam-overwrite).
+#[cfg(feature = "experimental-fec-budget")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FloorMissSnapshot {
+    pub block_id: u32,
+    pub generation: u64,
+    pub event_index: u64,
+    pub pending_items: u64,
+    pub pending_tickets: u64,
+    pub cap_suppressed: bool,
+}
+
+#[cfg(feature = "experimental-fec-budget")]
+#[derive(Debug, Default)]
+struct BudgetExt {
+    policy: BudgetPolicy,
+    state: crate::budget_kernel::BudgetPolicyState,
+    tickets: VecDeque<FloorTicket>,
+    reserved_now: u64,
+    parity_budget_left: Option<u64>, // C1-canlı-enforcement: None=Leftover-sınırsız; Some=kernel-limit-kalanı
+    pending_decision: Option<crate::budget_kernel::BudgetDecision>,
+    spent_this_opportunity: u64,
+    last_opportunity_ns: u64,
+    profile_parity_size: u64, // U11: F2-size-sabitliği (0=henüz-görülmedi)
+    // U4-lifecycle-sayaçları (saturating):
+    tk_rejected: u64,
+    tk_admitted: u64,
+    tk_on_time: u64,
+    tk_late: u64,
+    tk_missed_unique: u64,
+    tk_cancel_before: u64,
+    tk_cancel_after: u64,
+    bulk_admission_rejected: u64, // staging-cap-reddi (admitted_r < planned_r kaynağı)
+    last_floor_miss: Option<FloorMissSnapshot>,
+    reservation_waste_total: u64,
+    new_data_displaced: u64,
+    retx_displaced: u64,
+    cap_suppressed_events: u64,
+    rate_zero_events: u64,
+}
+
+/// Canlı-telemetri (U-EK-§17-alt-kümesi; salt-gözlem).
+#[cfg(feature = "experimental-fec-budget")]
+#[derive(Debug, Clone, Copy)]
+pub struct BudgetDiag {
+    pub entitlement_credit: u64,
+    pub hardcap_credit: u64,
+    pub reserved_now: u64,
+    pub tickets_pending: u64,
+    pub tk_rejected: u64,
+    pub tk_admitted: u64,
+    pub tk_on_time: u64,
+    pub tk_late: u64,
+    pub tk_missed_unique: u64,
+    pub tk_cancel_before: u64,
+    pub tk_cancel_after: u64,
+    pub bulk_admission_rejected: u64,
+    pub last_floor_miss: Option<FloorMissSnapshot>,
+    pub reservation_waste_total: u64,
+    pub new_data_displaced: u64,
+    pub retx_displaced: u64,
+    pub cap_suppressed_events: u64,
+    pub rate_zero_events: u64,
+}
+
+/// Commit-G: ratio→r SAF-hesabı (§8). Half-up; float/RNG/platform-rounding-YOK; overflow-kanıtı:
+/// ratio≤1000 ∧ k_actual≤255 → çarpım ≤255_000 « u64. `R_ENQUEUE_CAP`-YOK (tek-clamp profile-bound).
+#[must_use]
+pub fn compute_requested_r(ratio_permille: u32, k_actual: u8, r_code_max: u16) -> (u16, u16) {
+    let unclamped = (u64::from(ratio_permille) * u64::from(k_actual) + 500) / 1000;
+    // k_actual≤255 → unclamped≤255 → u16-güvenli (checked-dönüşüm-gereksiz-kanıtlı; yine-de-min-yolu):
+    let computed = u16::try_from(unclamped).unwrap_or(u16::MAX);
+    (computed, computed.min(r_code_max))
+}
+
+/// DR-S5-4: confirmed_logical defter-girişinin teyit-KAYNAĞI. M1 "FEC-kurtardığını-retransmit-etmiyor"
+/// ayrımı: Recovered-teslim (FEC) vs WireAck-teslim. Kredi-anlamı YOK (defter salt-logical).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmSource {
+    /// Gerçek wire-ACK teyidi (DR-S5-3 yolu).
+    WireAck,
+    /// RECOVERED-control teyidi (FEC-decode; kredi-ÜRETMEZ — N8).
+    Recovered,
 }
 
 /// §2 ACK rekonstrüksiyonunun ÇIKTISI (transport-control codec ayrı; burada çözülmüş girdi).
@@ -108,6 +569,196 @@ pub enum Timer {
     RtpropProbe,
 }
 
+/// DR-CS-3 (§FAZ-2) product config: shipping bootstrap RTT probe. DEFAULT OFF ⇒ inert and
+/// byte-identical to the FAZ-1A baseline.
+///
+/// Contract: reports/dr-cs-3/DR-CS-3-BOOTSTRAP-RTT-CONTRACT.md (frozen before implementation).
+/// Mechanism: while `PreConverge && srtt.is_none()`, fire at most one `0x19` probe per authoritative
+/// ladder step, on an ADDITIVE allowance (no DATA token, no pacer debt), and turn the matching
+/// authenticated `0x1A` echo into a real RTT sample via the existing `RttEstimator::observe`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootstrapRttConfig {
+    /// Master gate. Default false → inert.
+    pub enabled: bool,
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for BootstrapRttConfig {
+    fn default() -> Self {
+        // DEFAULT OFF — pending locked/fresh panel validation (DR-CS-3 §9).
+        Self { enabled: false }
+    }
+}
+
+/// DR-CS-3 authoritative ladder (absolute offsets from the bootstrap arm instant).
+/// Same values as the legacy `CS_PROBE_FIRES_NS`; no new constant.
+const BS_FIRES_NS: [u64; 4] = [3_000_000_000, 9_000_000_000, 21_000_000_000, 45_000_000_000];
+/// Exact `CsProbe` wire size (schema `control.rs:60`: PROBE_WIRE_EXACT = 44 B).
+const BS_PROBE_WIRE_EXACT: u64 = 44;
+/// Total sender probe budget (legacy `CS_PROBE_TX_HARD_BUDGET`): 4 × 44 = 176 B ≤ 200 B.
+const BS_TX_HARD_BUDGET: u64 = 200;
+
+/// DR-CS-3 observation-only bootstrap lineage (always compiled; counters only).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BootstrapRttDiag {
+    /// Ladder armed (once per bootstrap epoch).
+    pub arm: u64,
+    /// `not-due → due` step transitions (unique demand; NEVER a poll count).
+    pub step_edge: u64,
+    /// A step that had already fired was refused.
+    pub duplicate_step_denied: u64,
+    /// Probes actually emitted to the wire.
+    pub probe_emitted: u64,
+    /// Probe wire bytes emitted.
+    pub probe_wire_bytes: u64,
+    /// Echoes handed to the sender.
+    pub echo_ingested: u64,
+    /// Echoes that matched an outstanding generation.
+    pub echo_match_valid: u64,
+    /// Echoes rejected (unsolicited / wrong generation / duplicate / already resolved).
+    pub echo_match_rejected: u64,
+    /// The accepted RTT sample (ns); 0 if none.
+    pub rtt_sample_ns: u64,
+    /// Ladder cancelled after the first valid sample.
+    pub cancelled: u64,
+    /// MUST stay 0: a probe was emitted after the ladder resolved.
+    pub probe_after_success_violation: u64,
+    /// MUST stay 0: budget exceeded.
+    pub budget_violation: u64,
+}
+
+/// `bytes / srtt` → bytes/sec. u128-widened, saturating (ADR-17: integer only, no float).
+fn rate_per_srtt(bytes: u64, srtt_ns: u64) -> u64 {
+    if srtt_ns == 0 {
+        return 0;
+    }
+    u64::try_from(u128::from(bytes) * 1_000_000_000u128 / u128::from(srtt_ns)).unwrap_or(u64::MAX)
+}
+
+/// DR-RATE-RAMP-2 (§FAZ-1) product config: startup pacing INITIALIZATION at the PreConverge→Startup
+/// transition. DEFAULT OFF ⇒ mechanism inert and the pacing path is byte-identical to the baseline.
+///
+/// Rationale. Leaving `PreConverge` requires a valid SACK, so an `srtt` measurement exists — but `BtlBw`
+/// at that instant is seeded from a sample taken under the 31 B/s floor (one sealed unit per RTT). The
+/// pacing rate therefore starts at `gain × BtlBw ≈ 288 B/s`, which reproduces one-unit-per-RTT samples and
+/// re-derives the same low `BtlBw`: a self-clocked fixed point (DR-RATE-RAMP-1).
+///
+/// This does NOT write synthetic samples into the BtlBw max-filter and does NOT change `app_limited`
+/// semantics or add an in-flight gate. It only initializes the PACER to the minimum-pipe rate the
+/// product's OWN cwnd policy already permits, and only for the bootstrap window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupPacingConfig {
+    /// Master gate. Default false → inert.
+    pub enabled: bool,
+}
+
+// The manual impl is deliberate: it carries the load-bearing rationale for why the default is OFF
+// (the sealed INV-RATE-1 lock-golden). A bare `#[derive(Default)]` would strip that record.
+#[allow(clippy::derivable_impls)]
+impl Default for StartupPacingConfig {
+    fn default() -> Self {
+        // DR-RATE-RAMP-2 §FAZ-1: the treatment PASSED its paired single-axis validation (260 runs:
+        // locked-replay / GE-L10-p20 / IID-p5 / no-loss{50,250,1000}; locked fixed points 3 -> 0;
+        // delivery worse in 0/115 pairs; no-loss wire byte-identical; no synthetic BtlBw samples).
+        //
+        // DR-RATE-RAMP-2 §FAZ-1A: **DEFAULT ON**. The treatment passed its six frozen PASS criteria
+        // (260 paired single-axis runs) and the INV-RATE-1 lock-golden was formally superseded, not
+        // silently rewritten: see reports/fs-cal-2/v3.5/INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md
+        // (recorded and hashed BEFORE any test edit). The old golden is preserved verbatim and re-scoped
+        // to the floor-INACTIVE legacy path; the active-floor contract is sealed by six new tests
+        // (arming only on the PreConverge exit, loss can neither arm nor raise it, cwnd/srtt has the last
+        // word at every application, no synthetic BtlBw samples, deterministic permanent release).
+        //
+        // DR-RATE-RAMP-2B §A3.2/§A4 reverted this to OFF. EK4-A2 (the liveness blocker) is now FIXED
+        // and regression-sealed (tests/ek4_a2_liveness.rs; reports/ek4-a2/), and restoring the default
+        // to ON was attempted here — but it exposed a THIRD, separate blocker:
+        //
+        //   kama-engine/tests/fuzzy_e2e.rs::{e2e_real_fuzzy_nonzero_r2_to_emission,
+        //   e2e_real_fuzzy_partial_block} -- the controller plans r=2 parity (ratio=800, planned=4)
+        //   and with the floor ACTIVE **zero** parity units reach the wire in 900 ticks (9 s virtual),
+        //   while with the floor INACTIVE all 4 emit. Isolated by toggling ONLY this axis.
+        //
+        // Explicit FEC_R2 must stay runtime-executable, so shipping this default would have traded a
+        // fixed liveness defect for a broken FEC actuator.
+        //
+        // RESOLVED 2026-08-15 — the FEC-actuator blocker above no longer reproduces, so the default is
+        // ON (restored by 925dea66). Re-measured with the floor ACTIVE, i.e. through this very default,
+        // on the exact scenario the paragraph above names:
+        //
+        //   kama-engine/tests/fuzzy_e2e.rs  ->  5/5 pass
+        //     e2e_real_fuzzy_nonzero_r2_to_emission : ratio=800 planned=4 emitted=4
+        //     e2e_real_fuzzy_partial_block         : ratio=800 planned=4 emitted=4
+        //
+        // Same ratio and same planned count the blocker cites; emitted is 4, not the 0 it reported.
+        // The assertion is `emitted == planned` with planned=4, so it is non-vacuous — a zero-parity
+        // regression would fail it rather than pass trivially.
+        //
+        // Until this line the comment said "Default stays OFF" while the code returned true: 925dea66
+        // flipped the value and left the rationale from 68165aca in place. The value was right and the
+        // record was stale; the record is now corrected rather than the behaviour.
+        //
+        // The mechanism remains fully available via `set_startup_pacing_init`.
+        Self { enabled: true }
+    }
+}
+
+/// DR-CS-2 / DR-RATE-RAMP-1 observation-only scheduler telemetry (feature `diag-sched-telemetry`,
+/// DEFAULT OFF). Every field is a saturating counter incremented AT an existing decision point; nothing
+/// here participates in control flow, ordering, token accounting or pacing.
+///
+/// Vocabulary (deliberately disaggregated — an aggregate `probe_due` counter is a POLL counter and MUST
+/// NOT be read as emission demand):
+/// * `*_due_poll`      — the due-predicate was evaluated and held (level-triggered; grows with tick rate).
+/// * `*_due_edge`      — a `not-due → due` TRANSITION (this, not `due_poll`, is "a probe was wanted").
+/// * `*_enqueued`      — accepted into the class's pending queue/plan.
+/// * `*_selected`      — the scheduler reached this class and attempted an emission this pass.
+/// * `*_token_denied`  — the attempt was refused by the pacer/token check.
+/// * `*_wire_emitted`  — a `TransmitDecision` was actually produced.
+#[cfg(feature = "diag-sched-telemetry")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SchedDiag {
+    /// DATA (fresh original source) — scheduler reached the tx_queue front.
+    pub data_selected: u64,
+    /// DATA refused by the token check.
+    pub data_token_denied: u64,
+    /// DATA `TransmitDecision` emitted.
+    pub data_wire_emitted: u64,
+    /// `Event::AppData` accepted into `tx_queue`.
+    pub data_enqueued: u64,
+    /// ARQ selective retransmit — scheduler reached a `pending_lost` record.
+    pub arq_retransmit_selected: u64,
+    /// ARQ retransmit refused by the token check.
+    pub arq_retransmit_token_denied: u64,
+    /// ARQ retransmit emitted.
+    pub arq_retransmit_wire_emitted: u64,
+    /// §3.3-B geometric copy — scheduler reached a due `dup_queue` entry.
+    pub dup_selected: u64,
+    /// Geometric copy refused by the token check.
+    pub dup_token_denied: u64,
+    /// Geometric copy emitted.
+    pub dup_wire_emitted: u64,
+    /// Bounded tail probe — `emit_tail_probe` had a pending target and reached the token check.
+    pub tail_probe_selected: u64,
+    /// Tail probe refused by the token check (stays pending; cap NOT consumed).
+    pub tail_probe_token_denied: u64,
+    /// Tail probe emitted to the wire.
+    pub tail_probe_wire_emitted: u64,
+    /// Tail probe pending-target set by the PTO handler (`not-pending → pending` transition).
+    pub tail_probe_enqueued: u64,
+    /// Cold-start ladder probe — reached the token check in `drain_cs_probes`.
+    pub cs_probe_selected: u64,
+    /// Cold-start probe refused by the token check.
+    pub cs_probe_token_denied: u64,
+    /// Cold-start probe emitted to the wire.
+    pub cs_probe_wire_emitted: u64,
+    /// Cold-start probe pushed onto `cs_probe_pending` by a due ladder timer.
+    pub cs_probe_enqueued: u64,
+    /// FEC parity refused by the token check.
+    pub fec_parity_token_denied: u64,
+    /// FEC parity emitted.
+    pub fec_parity_wire_emitted: u64,
+}
+
 /// Transmit kararı — çağıran `unit_id`'yi gerçekten yollar (güvenlik katmanı AEAD uygular, socket gönderir).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransmitDecision {
@@ -119,7 +770,64 @@ pub struct TransmitDecision {
     pub unit_id: u64,
     /// Wire boyutu.
     pub size: u64,
+    /// Send-record hook'u (§0.5 P0-4; DR-S5-1). YALNIZ FEC/control-emisyonunda `Some`; DATA/retx/dup için
+    /// `None` (mevcut-davranış korunur). Engine bunu noise-wire `SealedPacketMeta`'ya tamamlar (seal-sonrası
+    /// full_wire_pn/dh_epoch/sealed_len eklenir). SoC: transport-core NoiseState-TİPİ-TUTMAZ → kendi-hint-tipi.
+    pub send_record: Option<SendRecordHint>,
 }
+
+/// Send-record hint'i (transport-tarafı; §0.5). Engine noise-wire-SealedPacketMeta'ya eşler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendRecordHint {
+    /// Logical referans (FEC: block_id+esi).
+    pub logical_ref: SrLogicalRef,
+    /// Paket-sınıfı.
+    pub packet_class: SrPacketClass,
+    /// Retransmit-generation (§0.5 send_generation).
+    pub send_generation: u32,
+}
+
+/// Transport-tarafı logical-ref (noise-wire LogicalPacketRef'e engine'de eşlenir; SoC-bağımsız).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrLogicalRef {
+    /// FEC shard: block_id + esi.
+    Fec { block_id: u32, esi: u16 },
+}
+
+/// Transport-tarafı paket-sınıfı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrPacketClass {
+    Source,
+    Repair,
+    Control,
+}
+
+/// Bekleyen FEC-parity (engine FEC-encode-sonrası enqueue eder; sender pace-eder — DR-S5-1).
+#[derive(Debug, Clone, Copy)]
+struct PendingFecParity {
+    block_id: u32,
+    esi: u16,
+    size: u64,
+    // ── Commit-N (1b-evidence; SALT-TEŞHİS — davranışa-etkisiz attribution-tag'leri) ──
+    authority_generation: Option<u64>, // otorite-bağlı-staging: witness-gen; legacy-enqueue: None
+    authority_mode: FecActuationMode, // staging-anı-kaynak-otorite (witness / current-mode-snapshot)
+    planned_r: Option<u16>,           // otorite-bağlı: bloğun-planned/manual-r; legacy: None
+}
+
+/// confirmed_logical üst-sınırı (DR-S5-3; SR-AUDIT-001 unbounded-alloc-yok). Engine
+/// `take_confirmed_logical` ile drenaj yapmasa-da defter bounded: cap-dolunca en-eski-teyit düşer
+/// (memory-hijyen; mühürlü-DEĞİL — logical-ledger'ın hiçbir mühürlü-muhasebeye etkisi yok).
+const CONFIRMED_LOGICAL_CAP: usize = 4096;
+
+/// sent_logical üst-sınırı (DR-S5-6; SR-AUDIT-001). GEREKÇE (M1-doğruluk-şartı, Abkarada şart-2):
+/// eviction ancak "kayıt ACK-dönmeden düşerse" M1-delivery'yi yapay-düşürür. Kalıcı-büyüme kaynağı
+/// in-flight DEĞİL (SACK-range'ler toplu-remove eder), KAYIP-ve-kurtarılmamış sızıntısıdır:
+/// ~fwd_loss × rate × süre. 16384 ≈ 120s-M1-hücresi × %15-loss × ~910 pkt/s'e kadar SIFIR-eviction
+/// (M1-hostile-profilleri bunun-altında). M1-HÜCRE-İŞARETLEME-KURALI: **YALNIZ evicted>0**
+/// (sessiz-eğilme-yok). `ack_miss` işaretleme-kuralına GİRMEZ — miss>0 ∧ evicted==0 beklenen
+/// Recovered→geç-ACK yarışıdır (RECOVERED kaydı-teyit-etti, geciken-wire-ACK sonra-geldi; artefakt
+/// DEĞİL — adversarial-ÇÜRÜT-1 bulgusu). Gerekirse özgüllük-seti (recovered_then_acked) M1-sonrası.
+const SENT_LOGICAL_CAP: usize = 16384;
 
 /// Transmit türü.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,8 +838,15 @@ pub enum TransmitKind {
     Retransmit,
     /// forward-recovery duplication (§11) — ACK-bağımsız redundant kopya.
     Duplicate,
-    /// FEC parity shard (§10) — POLİTİKA; transport üretmez (güvenlik katmanı encode eder). Emit EDİLMEZ.
+    /// FEC parity shard (§10; DR-S5-1) — KOŞULLU-emit (fec_enabled). Shard-byte'ları güvenlik-katmanı
+    /// encode-eder; sender YALNIZ pace-eder + send-record-hint üretir. fec_enabled=OFF → emit-EDİLMEZ.
     FecParity,
+    /// DR-CS-1 M2 (F2A): cold-start CS-probe (CTRL_PATH_PROBE cold-start-varyantı; ≤44B; amp≤1).
+    /// `seq`-alanı = probe_seq (AYRI-namespace; INV-CS-7); data-seq/loss-ledger'a GİRMEZ (units=0-
+    /// muadili: track_sent-ÇAĞRILMAZ). Encode güvenlik/harness-katmanında (§11.1-layout).
+    /// DR-CS-3: UNGATED — the `0x19` codepoint already ships in `kama-transport-schema`; this is the
+    /// internal signal that the shipping bootstrap emitter produced one.
+    CsProbe,
 }
 
 /// Bir gönderilmiş paketin muhasebe kaydı (RTT/BW/loss + retransmit).
@@ -188,6 +903,17 @@ enum ProbeExit {
 
 /// İlk RTT ölçülene kadar pacing/eşik için başlangıç RTT [CAL initial].
 const INITIAL_RTT: Duration = Duration::from_millis(100);
+/// [Q18-FIX] Yapı-gate alt kayıp-eşiği (ppm). Altında fuzzy'nin R1 `fec=0`'ı doğru (kayıp düşük,
+/// ARQ yeter); üstünde kayıp anlamlı ve yapı belirleyici. 100k = Q17 holdout'un IID/burst'ün
+/// ayrıştığı bandın tabanı (FS-FUSION-CAL-1 §5: 20_833..83_333 ARQ-tail Pareto; 200k FEC Pareto).
+const STRUCTURE_GATE_LOSS_MIN_PPM: u64 = 100_000;
+/// [Q18-FIX] Gate'in karar vermesi için pencerede gereken fate-known birim (kanıt-eşiği; azsa
+/// dokunmaz). 32 = Laplace p11/p01'in ±~30k ppm gürültü bandına inmesi için yeterli geçiş sayısı.
+const STRUCTURE_GATE_MIN_N: u32 = 32;
+/// [Q18-FIX] IID kabul-tavanı: `burst_delta = p11−p01 ≤ bu` → korelasyonsuz kayıp → FEC açılır.
+/// IID'de beklenen 0 (±gürültü); burst'te (GE-L3+) FATE2ARM ölçümü +567k ppm — boşluk ~433k.
+/// 50k = gürültü-üstü, burst-altı güvenli çizgi (fate_estimator'daki 25_000 pin'i geçer).
+const STRUCTURE_GATE_IID_MAX_DELTA_PPM: i64 = 50_000;
 /// STARTUP→STEADY plato: BtlBw N ardışık round Δ<ε ise plato [CAL].
 const STARTUP_PLATEAU_ROUNDS: u32 = 3;
 /// plato ε (per-mille): btlbw artışı < %5 → stabil.
@@ -200,6 +926,12 @@ const DEFAULT_DUP_SPACING: Duration = Duration::from_millis(20);
 /// §3.3-A en-kötü-köşe önsel pacing floor (B/s) — ürün floor'u ~0.25 kbps. min_rate fixture (Ek-B)
 /// PRE_CONVERGE'de UYGULANMAZ; bu taban kullanılır → 1 kbps kanalı floodlamaz. [CAL PLACEHOLDER]
 const PRE_CONVERGE_FLOOR_BW: u64 = 31;
+/// [DR-EST-1] PreConverge KURULUŞ-DENEMESİ backoff'u: ilk vade + tavan [CAL]. Floor (31 B/s)
+/// worst-corner gerekçesini KORUYARAK ilk-ölçüm-öncesi sürekliliği kurtarır (S2-REGION rt60d300
+/// teşhisi: sıkı-deadline + iki-yön-%60 + 600 ms RTT'de teyit-zinciri hiç kurulamıyordu → 0/40).
+/// Global TEK-slot + exponential-backoff ⇒ 1 kbps kanalda ~10 s'de ≤4 datagram (~%4) — logaritmik-güvenli.
+const ESTABLISH_PROBE_INITIAL_NS: u64 = 500_000_000;
+const ESTABLISH_PROBE_CAP_NS: u64 = 8_000_000_000;
 /// [TUR-1b D-1/2] Cadence-taban bileşenleri — receiver §2.1/§16.1 AYNA sabitleri (sender-yerel,
 /// deterministik). Beklenen ACK-frekansı (receiver ACK_FREQ_N) [CAL].
 const EXPECTED_ACK_FREQ_N: u64 = 2;
@@ -210,6 +942,10 @@ const EAI_RETURN_BW_PRIOR: u64 = 31;
 /// K_c cadence çarpanı = 3/2 (1.5) [CAL kalibrasyon-matrisi {1.25, 1.5, 2.0}].
 const CADENCE_KC_NUM: u64 = 3;
 const CADENCE_KC_DEN: u64 = 2;
+/// Commit-K: process-yerel Sender-instance-sayacı (witness yabancı-Sender-reddi anahtarı).
+/// Determinizm-notu: kimlik hiçbir-emisyon/wire/golden/M1-çıktısına-girmez; yalnız-reddetme-karşılaştırması.
+static NEXT_SENDER_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// [TUR-2a D-1/5] W_loss ledger-penceresi çarpanı: W_loss = K_wl × ack_epoch [CAL]
 /// (K_bw/K_rtprop merkezi 8 ile hizalı başlangıç; saat-sınıfı: kanal-türevi, ZM-2).
 const K_WL: u32 = 8;
@@ -294,10 +1030,130 @@ pub struct Sender {
     next_seq: u64,
     inflight_bytes: u64,
     inflight: BTreeMap<u64, InflightPacket>,
+    /// FS-CAL-2 v3 §3 loss-STRUCTURE estimator. OBSERVATION-ONLY: it is fed by the same events the
+    /// engine already processes and is read by nothing except `diag_loss_structure`. No decision,
+    /// no ordering, no byte on the wire depends on it. It exists because Q17 and FS-FUSION-CELL-1
+    /// both showed that loss RATE cannot gate FEC and loss STRUCTURE is the missing input.
+    fate_estimator: crate::fate_estimator::FateEstimator,
     tx_queue: VecDeque<OpaqueUnit>,
     pending_lost: VecDeque<LostRec>, // §5 kayıp seq'ler → RECOVER_ARQ retransmit / RECOVER_FWD dup
-    dup_queue: Vec<DupRec>,          // §11 zamanlanmış forward-recovery kopyaları
+    // DR-ARQ-PRODUCT-TAIL-1: bounded tail-loss recovery (default OFF; INV-CS-4 supersession). Decision logic lives
+    // in crate::tail_recovery; the sender only bridges live ACK/RTT/inflight state to it and emits via the ARQ path.
+    tail_recovery: TailRecovery,
+    // DR-RATE-RAMP-2 (§FAZ-1): startup pacing initialization (default OFF).
+    startup_pacing: StartupPacingConfig,
+    // Active bootstrap pacing floor (B/s). 0 = inactive. Bootstrap-only: released on startup plateau or
+    // as soon as the naturally-computed rate catches up. NEVER a permanent minimum rate.
+    startup_pacing_floor_bps: u64,
+    // Latch: the bootstrap floor may arm AT MOST ONCE per sender. Once released it can never re-arm
+    // (no Plateau/ProbeBW re-entry). §1A.2 binding contract.
+    startup_floor_armed_once: bool,
+    // Latch: the Startup ramp base has been entered at least once since the floor armed. The floor may
+    // only be released by the ramp-END condition AFTER the ramp has actually begun.
+    startup_base_seen: bool,
+    // ── DR-CS-3 shipping bootstrap RTT probe ───────────────────────────────────────────────
+    bootstrap_rtt: BootstrapRttConfig,
+    /// Arm instant; ladder offsets are absolute from here. `None` ⇒ not armed.
+    bs_armed_ns: Option<u64>,
+    /// Next ladder step index (0..4). Edge-only: a step can fire at most once.
+    bs_next_step: u8,
+    /// Session-monotonic probe generation (`probe_seq`, INV-CS-7).
+    bs_seq_next: u16,
+    /// The single outstanding generation: `(probe_seq, local monotonic send instant)`.
+    /// Fixed-size (one slot) — never a growing map.
+    bs_outstanding: Option<(u16, u64)>,
+    /// Probe wire bytes spent this bootstrap epoch (budget `BS_TX_HARD_BUDGET`).
+    bs_bytes: u64,
+    /// The ladder has resolved (first valid sample) or been cleared; no further probes.
+    bs_done: bool,
+    bs_diag: BootstrapRttDiag,
+    // DR-CS-2 / DR-RATE-RAMP-1 (feature-gated, default OFF): observation-only scheduler telemetry.
+    #[cfg(feature = "diag-sched-telemetry")]
+    sched_diag: SchedDiag,
+    tail_probe_pending: Option<u64>, // oldest-inflight seq a PTO probe is due for (un-emitted); None ⇒ none.
+    tail_probe_cancelled: u64, // observation-only (§7): due probes cancelled at emission (ACK-race: target no
+    // longer outstanding). Distinct from token-starved (kept pending). Only mutated on the ON path.
+    dup_queue: Vec<DupRec>, // §11 zamanlanmış forward-recovery kopyaları
+    /// [DR-EST-1] Kuruluş-kolu anahtarı (DEFAULT-ON — ürün-davranışı). Yalnız donmuş-enstrüman
+    /// testleri (Gate-5 structural-oracle: probe-vs-DATA çekişme-izolasyonu, DR-EST-1-öncesi
+    /// tasarım) kapatır; kolun KENDİ pinleri tests/establish_probe.rs'te default-ON koşar.
+    establish_probe_enabled: bool,
+    /// [DR-EST-1] Kuruluş-denemesi vadesi (0 = disarm; yalnız PreConverge'de kurulur).
+    establish_due_ns: u64,
+    establish_interval_ns: u64,
+    /// [DR-EST-1] gözlem: token-muaf kuruluş-kopyası emisyon sayısı.
+    establish_probe_emitted: u64,
     last_now_ns: u64,
+
+    // ── FEC-emisyon (DR-S5-1; koşullu — guard-OFF'ta hot-path byte-değişmez) ──
+    fec_mode: FecActuationMode, // Commit-G TEK-otorite (ayrı-bool-YOK); Manual{false}=DR-S5-1-default
+    instance_id: u64,           // Commit-K: process-yerel Sender-kimliği (yabancı-witness-reddi)
+    fec_authority_generation: u64, // Commit-K: monoton açılış-generation (saturating)
+    last_latch: Option<FecLatchResult>,
+    latch_event_index: u64,
+    no_eligible_decision_count: u64,
+    decision_event_mismatch_count: u64,
+    no_rule_zero_count: u64,
+    manual_toggle_rejected_count: u64,
+    parity_enqueued_total: u64,
+    parity_emitted_total: u64,
+    parity_canceled_total: u64, // Commit-K: RECOVERED-parity-iptalleri (canceled_r_total-corrigendum)
+    parity_enqueue_rejected_count: u64, // Commit-K: izinsiz-legacy-enqueue-reddi
+    foreign_authority_rejected_count: u64, // Commit-K: yabancı-witness-reddi
+    token_denied_r_gauge: u64,  // Commit-J-rename (eski: budget_denied_r_gauge) — §8.1-exact-tanım
+    #[cfg(feature = "experimental-fec-budget")]
+    budget_ext: BudgetExt, // Commit-V (OFF'ta-derlenmez; ON+LeftoverOnly-inert)
+    last_token_denial: Option<FecTokenDenialSnapshot>, // Commit-N: son-denial TAM-overwrite (salt-teşhis)
+    token_denial_count_total: u64, // Commit-N: kümülatif-denial-OLAYI-sayısı (saturating)
+    last_transition_event_index: u64, // Commit-I
+    transition_applied_count: u64, // Commit-I: saturating
+    pending_fec: VecDeque<PendingFecParity>, // engine FEC-encode-sonrası enqueue; sender pace-eder
+    // ── DR-CS-1 M1 (cfg-gated; flag-OFF'ta derlenmez → struct byte-özdeş) ──
+    #[cfg(feature = "experimental-cold-start")]
+    cs_wakeup: Vec<(u64, CsTimerKind)>, // exposed-timer kümesi (deadline_ns, kind); retire-on-fire
+    #[cfg(feature = "experimental-cold-start")]
+    cs_hook_fired: Vec<(u64, u8)>, // TEST-ONLY gözlem: hook-timer fire-kayıtları (now_ns, id)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_armed_once: bool, // M2: merdiven epoch-başına-BİR-kez arm (yeniden-arm-YOK)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_disarmed: bool, // srtt/state-çıkışı-disarm (kalan-fire'lar + pending iptal)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_seq_next: u16, // INV-CS-7: session-monoton; yeniden-kullanım-YOK
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_seq_wrapped: u64, // wrap → probe-YOK + typed-diag (saturating-sayaç)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_pending: VecDeque<u16>, // fire-edilmiş, pacer-bekleyen probe'lar (probe_seq)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_emitted: u64, // wire-emission-sayısı (INV-CS-1 kanıtı)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_tx_bytes: u64, // cold_probe_tx_bytes (INV-CS-2; C4: YALNIZ-forward-probe)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_outstanding: Vec<(u16, u64)>, // emit-edilmiş, echo-bekleyen (probe_seq, emit_ns); ≤N_PROBE
+    #[cfg(feature = "experimental-cold-start")]
+    cs_resolved: Option<CsSrttSource>, // ilk-bootstrap-sonucu (INV-CS-3; tam-bir-kez)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_epoch_timed_out: bool, // M5 (F3): TimedOut-terminal → post-timeout-echo-yok-sayma (koşul-5)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_induced_units: BTreeSet<u64>, // bootstrap-anı-outstanding unit_id'ler (induced-retx-atfı; bounded)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_induced_retx_bytes: u64, // bootstrap_induced_retransmit_bytes (C4; §2.4-a)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_srtt_reported: bool, // M5: bootstrap-srtt-terminal bir-kez-raporlandı (PostTimeout ayrı)
+    #[cfg(feature = "experimental-cold-start")]
+    cs_terminal: Option<CsTerminal>, // M5 output-API (drain: take_cs_terminal)
+    // ── K-8/F4: PostTimeoutNotice (SENDER-tarafı; ColdRxState/Host TUTMAZ). one-slot NOTICE_BOUND=1;
+    //    MAX_ACTIVE_COLD_EPOCHS=1 (tek cs_cold_epoch); SALT-LOGICAL (BtlBw'ye SIFIR satır — N8). ──
+    #[cfg(feature = "experimental-cold-start")]
+    cs_cold_epoch: u32, // aktif bootstrap cold-epoch (F4-slice: tek-epoch; MAX_ACTIVE_COLD_EPOCHS=1)
+    #[cfg(feature = "experimental-cold-start")]
+    post_timeout_notice: Option<PostTimeoutNotice>, // one-slot; first-valid-proof-wins
+
+    // ── send-record ↔ ACK-eşleme (DR-S5-3; SALT-LOGICAL — BtlBw/delivered'e BESLENMEZ) ──
+    sent_logical: BTreeMap<u64, SrLogicalRef>, // wire-seq → logical (FEC-parity plan_fec_parity-içi; DATA engine-post-emit register_sent_logical — DR-S5-6)
+    confirmed_logical: VecDeque<(u64, SrLogicalRef, ConfirmSource)>, // teyit-logical (WireAck|Recovered — DR-S5-4); BOUNDED
+    diag_recovered_cancels: u64, // DR-S5-4: RECOVERED ile iptal-edilen bekleyen-retransmit sayısı (K2/M1-sinyali)
+    diag_sent_logical_evicted: u64, // DR-S5-6: cap-eviction sayısı (M1-guard: hücrede 0-olmalı)
+    diag_confirmed_logical_miss: u64, // DR-S5-6: ACK-teyidi kayıtsız-seq'e geldi (M1'de tüm-emisyon-register'lıyken = eviction-artefaktı)
 
     // ── ack_confidence (RECOVER_FWD tetiği): sessizlik-tabanlı ──
     last_ack_ns: Option<u64>,
@@ -361,16 +1217,41 @@ pub struct Sender {
     diag_delivered_credited: u64, // [TUR-2c] kol-2 delivered-kredisi (byte)
     diag_qd_no_evidence: u64,    // [TUR-3a D-3/1] rtprop-yokken qd_ratio=0 sayısı
     diag_fuzzy_no_rule: u64,     // [TUR-4] sıfır-ağırlık fallback ateşleme sayısı
+    diag_structure_gate_opened: u64, // [Q18-FIX] yapı-gate'in fuzzy fec=0'ı açtığı event sayısı
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
+    // Commit-D: canonical-girdi-anlık-görüntüsü (fuzzy_evaluate-kopyası; salt-teşhis, davranışsız).
+    last_fusion_snapshot: Option<FusionInputSnapshot>,
+    fusion_event_index: u64,
     last_recovery: RecoveryAction,
 }
 
 impl Sender {
     /// Fixture config ile (KALİBRE DEĞİL — golden/motor testi; gerçek değerler netem'den).
+    /// DR-1e-v2: ortak-internal-ctor'a delege; fixture VALIDATE-EDİLMEDEN geçirilir (mevcut-
+    /// davranış-birebir; panik-yolu-YOK — fixture-geçerliliği ayrı-test-time-invariant:
+    /// `tv_fusion::fixture_validates`).
     #[must_use]
     pub fn new() -> Self {
+        Self::new_internal(ValidatedFuzzyConfig::trusted_fixture())
+    }
+
+    /// DR-1e-v2: dışarıdan-verilen fuzzy-config ile (validate-İÇERİDE; typed-hata — panik-yok).
+    /// Kalibrasyon = config-değişikliği (kod-değil). Yalnız fuzzy-config (god-config-yok).
+    ///
+    /// # Errors
+    /// [`FuzzyConfigError`] — yapısal/spec-invariant ihlali (fusion.rs §13.4-tablosu).
+    pub fn try_with_fuzzy_config(config: FuzzyConfig) -> Result<Self, FuzzyConfigError> {
+        let validated = config.validate()?;
+        Ok(Self::new_internal(validated))
+    }
+
+    /// Ortak-internal-ctor (DR-1e-v2): her-iki-public-ctor buraya-delege. Motor-matematiği/
+    /// diğer-fixture'lar DEĞİŞMEZ; yalnız fuzzy-config-parametrik.
+    /// Commit-F-invariant: TEK-gerçek-ctor YALNIZ `ValidatedFuzzyConfig` kabul-eder (raw-`FuzzyConfig`-
+    /// overload-YOK) — "Sender-yalnız-validated/trusted-config'le-kurulur" tip-düzeyi-sınırı.
+    fn new_internal(fuzzy_cfg: ValidatedFuzzyConfig) -> Self {
         let budget_cfg = BudgetConfig::fixture();
         Self {
             state: SenderState::Idle,
@@ -378,7 +1259,7 @@ impl Sender {
             rtt: RttEstimator::new(),
             bw_sampler: DeliveryRateSampler::new(),
             btlbw: BtlBwFilter::new(),
-            fuzzy: DeterministicFuzzyController::fixture(),
+            fuzzy: DeterministicFuzzyController::new(fuzzy_cfg.into_inner()),
             src_cfg: SrcConfig::default(),
             budget_cfg,
             emergency: HysteresisController::new(HysteresisConfig::fixture(), EmergencyLevel::Arq),
@@ -388,10 +1269,97 @@ impl Sender {
             next_seq: 0,
             inflight_bytes: 0,
             inflight: BTreeMap::new(),
+            fate_estimator: crate::fate_estimator::FateEstimator::new(),
             tx_queue: VecDeque::new(),
             pending_lost: VecDeque::new(),
+            tail_recovery: TailRecovery::new(TailRecoveryConfig::default()), // default OFF
+            startup_pacing: StartupPacingConfig::default(),                  // default OFF
+            startup_pacing_floor_bps: 0,
+            startup_floor_armed_once: false,
+            startup_base_seen: false,
+            bootstrap_rtt: BootstrapRttConfig::default(), // default OFF
+            bs_armed_ns: None,
+            bs_next_step: 0,
+            bs_seq_next: 0,
+            bs_outstanding: None,
+            bs_bytes: 0,
+            bs_done: false,
+            bs_diag: BootstrapRttDiag::default(),
+            #[cfg(feature = "diag-sched-telemetry")]
+            sched_diag: SchedDiag::default(),
+            tail_probe_pending: None,
+            tail_probe_cancelled: 0,
             dup_queue: Vec::new(),
+            establish_probe_enabled: true,
+            establish_due_ns: 0,
+            establish_interval_ns: 0,
+            establish_probe_emitted: 0,
             last_now_ns: 0,
+            fec_mode: FecActuationMode::Manual { enabled: false }, // default: mevcut-davranış-birebir
+            // Commit-K: process-yerel-kimlik. Relaxed-yeterli (yalnız-uniqueness; ordering-anlamı-yok).
+            // Wrap 2^64-kuruluşta (ulaşılamaz-inşa-gereği; belgeli). Wire/golden/M1-çıktılarına-GİRMEZ.
+            instance_id: NEXT_SENDER_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            fec_authority_generation: 0,
+            last_latch: None,
+            latch_event_index: 0,
+            no_eligible_decision_count: 0,
+            decision_event_mismatch_count: 0,
+            no_rule_zero_count: 0,
+            manual_toggle_rejected_count: 0,
+            parity_enqueued_total: 0,
+            parity_emitted_total: 0,
+            parity_canceled_total: 0,
+            parity_enqueue_rejected_count: 0,
+            foreign_authority_rejected_count: 0,
+            token_denied_r_gauge: 0,
+            #[cfg(feature = "experimental-fec-budget")]
+            budget_ext: BudgetExt::default(),
+            last_token_denial: None,
+            token_denial_count_total: 0,
+            last_transition_event_index: 0,
+            transition_applied_count: 0,
+            pending_fec: VecDeque::new(),
+            #[cfg(feature = "experimental-cold-start")]
+            cs_wakeup: Vec::new(),
+            #[cfg(feature = "experimental-cold-start")]
+            cs_hook_fired: Vec::new(),
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_armed_once: false,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_disarmed: false,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_seq_next: 0,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_seq_wrapped: 0,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_pending: VecDeque::new(),
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_emitted: 0,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_tx_bytes: 0,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_probe_outstanding: Vec::new(),
+            #[cfg(feature = "experimental-cold-start")]
+            cs_resolved: None,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_epoch_timed_out: false,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_induced_units: BTreeSet::new(),
+            #[cfg(feature = "experimental-cold-start")]
+            cs_induced_retx_bytes: 0,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_srtt_reported: false,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_terminal: None,
+            #[cfg(feature = "experimental-cold-start")]
+            cs_cold_epoch: 0,
+            #[cfg(feature = "experimental-cold-start")]
+            post_timeout_notice: None,
+            sent_logical: BTreeMap::new(), // DR-S5-3
+            confirmed_logical: VecDeque::new(),
+            diag_recovered_cancels: 0,      // DR-S5-4
+            diag_sent_logical_evicted: 0,   // DR-S5-6
+            diag_confirmed_logical_miss: 0, // DR-S5-6
             last_ack_ns: None,
             first_send_ns: None,
             drain_rtprop_entry_ns: None,
@@ -431,6 +1399,9 @@ impl Sender {
             diag_delivered_credited: 0,
             diag_qd_no_evidence: 0,
             diag_fuzzy_no_rule: 0,
+            diag_structure_gate_opened: 0,
+            last_fusion_snapshot: None,
+            fusion_event_index: 0,
             last_decision: FusionDecision {
                 fec_parity_ratio_permille: 0,
                 arq_aggressiveness_permille: 0,
@@ -443,15 +1414,187 @@ impl Sender {
         }
     }
 
+    /// DR-CS-2 / DR-RATE-RAMP-1 (feature-gated): observation-only scheduler telemetry snapshot.
+    #[cfg(feature = "diag-sched-telemetry")]
+    #[must_use]
+    pub fn sched_diag(&self) -> SchedDiag {
+        self.sched_diag
+    }
+
+    /// DR-CS-3: product config — shipping bootstrap RTT probe (default OFF).
+    pub fn set_bootstrap_rtt(&mut self, cfg: BootstrapRttConfig) {
+        self.bootstrap_rtt = cfg;
+    }
+
+    /// DR-CS-3 observation-only bootstrap lineage.
+    #[must_use]
+    pub fn bootstrap_rtt_diag(&self) -> BootstrapRttDiag {
+        self.bs_diag
+    }
+
+    /// DR-CS-3 observation-only: remaining sender probe budget (bytes).
+    #[must_use]
+    pub fn bootstrap_budget_remaining(&self) -> u64 {
+        BS_TX_HARD_BUDGET.saturating_sub(self.bs_bytes)
+    }
+
+    /// DR-RATE-RAMP-2 (§FAZ-1): product config — startup pacing initialization (default OFF).
+    pub fn set_startup_pacing_init(&mut self, cfg: StartupPacingConfig) {
+        self.startup_pacing = cfg;
+    }
+
+    /// DR-RATE-RAMP-2 observation-only: the active bootstrap pacing floor (B/s); 0 = inactive.
+    #[must_use]
+    pub fn startup_pacing_floor_bps(&self) -> u64 {
+        self.startup_pacing_floor_bps
+    }
+
+    /// DR-RATE-RAMP-1 (observation-only): `(pacer_rate_bps, tokens, burst_cap)`.
+    #[must_use]
+    pub fn diag_pacer(&self) -> (u64, u64, u64) {
+        (
+            self.pacer.rate(),
+            self.pacer.tokens(),
+            self.pacer.burst_cap(),
+        )
+    }
+
+    /// DR-RATE-RAMP-1 (observation-only): BtlBw filter acceptance lineage
+    /// `(offered, accepted, rejected_invalid, rejected_interval, rejected_app_limited)`.
+    #[cfg(feature = "diag-sched-telemetry")]
+    #[must_use]
+    pub fn diag_bw_accept(&self) -> (u64, u64, u64, u64, u64) {
+        self.btlbw.diag_accept()
+    }
+
+    /// DR-CS-2 (observation-only): tail-probe `not-due → due` TRANSITION count. `tail_probe_diag*`
+    /// exposes a LEVEL poll counter which must never be read as emission demand; this is the demand signal.
+    #[must_use]
+    pub fn tail_probe_due_edge_count(&self) -> u64 {
+        self.tail_recovery.probe_due_edge_count()
+    }
+
+    /// DR-ARQ-PRODUCT-TAIL-1: product config — enable/tune the bounded tail-recovery mechanism (default OFF).
+    /// Additive; does not touch any other sender state. INV-CS-4 supersession (docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD).
+    pub fn set_tail_recovery_config(&mut self, cfg: TailRecoveryConfig) {
+        self.tail_recovery = TailRecovery::new(cfg);
+        self.tail_probe_pending = None;
+        self.tail_probe_cancelled = 0;
+    }
+
+    /// FS-CAL-2 v3 §3 loss-STRUCTURE snapshot (observation-only).
+    ///
+    /// Returns the estimator's current window features. `burst_delta_ppm = p11 - p01` is the
+    /// quantity Q17 proved is missing from the FEC gate: at one loss RATE, IID structure wants
+    /// coding and burst structure wants ARQ, so a rate-only threshold cannot separate them.
+    ///
+    /// Nothing in the engine reads this. It is exposed so the input exists and can be measured
+    /// before any rule is allowed to consume it — see reports/fs-fusion-cell-1/Q18-CALIBRATION-DEFECT.md.
+    #[must_use]
+    pub fn diag_loss_structure(&self) -> crate::fate_estimator::WindowFeatures {
+        self.fate_estimator.snapshot()
+    }
+
+    /// S-0.7 correction-leg diagnostics (observation-only):
+    /// `(late_ack_corrections, spurious_loss_corrections, loss_to_success_corrections)`.
+    #[must_use]
+    pub fn diag_fate_corrections(&self) -> (u64, u64, u64) {
+        let (late, spurious) = self.fate_estimator.corrections();
+        (
+            late,
+            spurious,
+            self.fate_estimator.loss_to_success_corrections(),
+        )
+    }
+
+    /// Observation-only: whether the bounded tail-recovery mechanism is enabled. Exists so an
+    /// arm selector (bench KAPI-1 W4) can PIN that its config call took effect; reads no timers.
+    #[must_use]
+    pub fn tail_recovery_enabled(&self) -> bool {
+        self.tail_recovery.is_enabled()
+    }
+
+    /// DR-ARQ-PRODUCT-TAIL-1 diagnostics (observation-only): (probes, probe_bytes, spurious, spurious_bytes).
+    #[must_use]
+    pub fn tail_probe_diag(&self) -> (u64, u64, u64, u64) {
+        (
+            self.tail_recovery.probe_count(),
+            self.tail_recovery.probe_bytes(),
+            self.tail_recovery.spurious_probe_count(),
+            self.tail_recovery.spurious_probe_bytes(),
+        )
+    }
+
+    /// DR-ARQ-PRODUCT-TAIL-1 extended diagnostics (observation-only, §7 separable probe accounting):
+    /// (probe_due, probe_sent, probe_cancelled, probe_bytes, spurious_count, timer_fire_count).
+    /// `probe_due` = eligible; `probe_sent` = emitted (cap-consuming); `probe_cancelled` = ACK-race cancels;
+    /// `probe_due - probe_sent - probe_cancelled` = token-starved (kept pending). Never affects wire/decisions.
+    #[must_use]
+    pub fn tail_probe_diag_ext(&self) -> (u64, u64, u64, u64, u64, u64) {
+        (
+            self.tail_recovery.probe_due_count(),
+            self.tail_recovery.probe_count(),
+            self.tail_probe_cancelled,
+            self.tail_recovery.probe_bytes(),
+            self.tail_recovery.spurious_probe_count(),
+            self.tail_recovery.timer_fire_count(),
+        )
+    }
+
     /// Ana döngü (§3): olay işle → FuzzyEvaluate → state → send_rate → UpdatePacing → ScheduleTransmit.
+    ///
+    /// DR-CS-1 (EK5-v): flag-ON'da tekil `on_event` = adapter'ın batch-of-1 sarmalaması (TÜM
+    /// olaylar dört-faz-pipeline'dan geçer; Tick ≡ boş-batch). Flag-OFF = legacy-yol BİREBİR.
     pub fn on_event(&mut self, event: Event, now_ns: u64) -> Vec<TransmitDecision> {
+        #[cfg(feature = "experimental-cold-start")]
+        {
+            let inbound = if matches!(event, Event::Tick) {
+                Vec::new()
+            } else {
+                vec![event]
+            };
+            self.on_event_batch(now_ns, inbound)
+        }
+        #[cfg(not(feature = "experimental-cold-start"))]
+        {
+            // DR-S5-4 SAF-LOGICAL erken-dönüş: RECOVERED-control pacer-saatine/fuzzy/rate/schedule'a
+            // HİÇ girmez (emit-yok, kredi-yok, saat-ilerletme-yok — N8-bit-özdeşliğin yapısal-tabanı).
+            if let Event::RecoveredControl(info) = &event {
+                self.on_recovered_control(info);
+                return Vec::new();
+            }
+            self.on_event_core(event, now_ns);
+            self.schedule_transmit(now_ns)
+        }
+    }
+
+    /// on_event çekirdeği: dispatch + fuzzy + state + rate/burst — `schedule_transmit`-HARİÇ.
+    /// DR-CS-1 M1 batch-girişi bu çekirdeği paylaşır; flag-OFF davranışı BİREBİR (salt-dikiş-
+    /// refaktörü; tek-output-seam schedule_transmit'te kalır).
+    fn on_event_core(&mut self, event: Event, now_ns: u64) {
         let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
         self.pacer.refill(dt);
         self.last_now_ns = now_ns;
+        // FS-CAL-2 v3 §3 lifecycle (design: docs/design/ESTIMATOR-LIFECYCLE.md). Finalize
+        // guard-elapsed provisional losses at the engine clock, BEFORE this event's evidence is
+        // fed: an ACK arriving at now >= expiry is late by the module contract (the fate sealed at
+        // expiry), and advance-first realises exactly that — feed-first would silently extend the
+        // guard to "the next event". Evidence fed later in THIS event gets expiry = now + guard
+        // > now, so it cannot be finalized prematurely by this call. TimerFired flows through this
+        // core, so a flow that goes silent after losses still finalizes on PTO ticks — the exact
+        // degenerate case S-ANSWERS recorded (advance had zero product callers; the product window
+        // held successes only and n10+n11 was structurally zero). RecoveredControl never reaches
+        // this core, preserving its documented clock isolation. Observation-only: nothing reads
+        // the estimator except diag_loss_structure (pinned by loss_structure_observation.rs).
+        self.fate_estimator.advance(now_ns);
 
         match event {
             Event::AppData(unit) => {
                 self.tx_queue.push_back(unit);
+                #[cfg(feature = "diag-sched-telemetry")]
+                {
+                    self.sched_diag.data_enqueued += 1;
+                }
                 if self.state == SenderState::Idle {
                     // §3.3 cold-start YALNIZ ilk sefer (hiç ölçüm yok). Ölçüm varsa (rtt.srtt Some) önsel
                     // zaten tahliye edilmiş → Idle→Startup (normal resume), PreConverge'e geri DÖNÜLMEZ.
@@ -464,13 +1607,42 @@ impl Sender {
             }
             Event::AckReceived(ack) => self.on_ack_received(&ack, now_ns),
             Event::TimerFired(timer) => self.on_timer(timer, now_ns),
+            // Yukarıda erken-dönüşle işlendi (defensive no-op; exhaustiveness için).
+            Event::RecoveredControl(_) => {}
+            // on_event/on_event_batch girişinde ele-alınır (buraya ulaşmaz; exhaustiveness).
+            #[cfg(feature = "experimental-cold-start")]
+            Event::Tick => {}
+            // DR-CS-1 M3: echo-ingest (yalnız-RTT; N8-spot-izolasyon) → pipeline-devamı state'i
+            // doğal-PreConverge→Startup geçirir (mevcut srtt.is_some kapısı).
+            // DR-CS-3: UNGATED — authenticated `0x1A` echo ingest on the shipping path.
+            Event::CsProbeEcho { probe_seq } => {
+                #[cfg(feature = "experimental-cold-start")]
+                self.cs_on_probe_echo(probe_seq, now_ns);
+                self.bs_on_echo(probe_seq, now_ns);
+            }
         }
 
         let decision = self.fuzzy_evaluate(now_ns);
         self.last_decision = decision;
         let prev_state = self.state;
         self.update_state(&decision, now_ns);
-        let send_rate = self.compute_send_rate(&decision);
+        // DR-RATE-RAMP-2 (§FAZ-1, default OFF): arm the bootstrap pacing floor at the PreConverge exit.
+        if self.startup_pacing.enabled
+            && !self.startup_floor_armed_once
+            && prev_state == SenderState::PreConverge
+            && self.state != SenderState::PreConverge
+        {
+            self.startup_pacing_floor_bps = self.grounded_startup_rate();
+            self.startup_floor_armed_once = true; // may never arm again (§1A.2)
+        }
+        let natural_rate = self.compute_send_rate(&decision);
+        // §1A.2: the structural HARD ceiling `cwnd/srtt` has the LAST WORD at every application, not just
+        // at arming — so if the congestion/safety cap SHRINKS (e.g. after loss), the floor shrinks with it
+        // and can never push the sender past the current cap.
+        let effective_floor = self.startup_pacing_floor_bps.min(self.cwnd_over_srtt());
+        // Bootstrap floor: a low self-clocked sample may not immediately drag the freshly initialized
+        // pacing rate back down. `natural_rate` is left untouched so the release test below is honest.
+        let send_rate = natural_rate.max(effective_floor);
         self.pacer.set_rate(send_rate);
         // [R3/ADIM-6] KANAL-TÜREVLİ burst cap: max(1 birim, rate·pencere), üstten ~2×MTU. Bant-kör 2400B
         // sabiti yerine → PreConverge floor'da 1-birim (self-congestion/backlog-spike yok), Startup+'ta
@@ -485,8 +1657,631 @@ impl Sender {
             // küçük burst'le boşalır — bu birimler STARTUP'ta emit → §3.3-B geometrik kopya ALMAZ).
             self.pacer.fill_to_cap();
         }
+        // DR-RATE-RAMP-2: BOOTSTRAP-ONLY. Release the floor permanently once EITHER the existing Startup
+        // exit condition has fired (the ramp ended: `base_is_startup` cleared at the plateau, `sender.rs`
+        // update_state) OR the naturally derived rate has caught up on its own. Never a permanent minimum.
+        //
+        // NOTE: `plateau_reached` must NOT be used here — `update_state` CONSUMES it in the same call
+        // (Startup→Drain sets it back to false), so it is not observable at this point. `base_is_startup`
+        // is the durable "ramp finished" signal. Pinned by
+        // `startup_floor_release_is_deterministic_and_permanent`.
+        // The bootstrap window is over once the sender has left the Startup ramp (and its
+        // recovery overlays) for a post-ramp phase — Drain / Steady / ProbeUp / DrainRtprop.
+        // NOTE: neither `plateau_reached` nor `base_is_startup` works as the release signal:
+        // `update_state` CONSUMES `plateau_reached` in the same call (Startup→Drain resets it), and it
+        // RE-ARMS `base_is_startup` on every event while `state == Startup`. The phase itself is the
+        // only durable signal. Pinned by `startup_floor_release_is_deterministic_and_permanent`.
+        let in_startup_ramp = matches!(
+            self.state,
+            SenderState::PreConverge
+                | SenderState::Startup
+                | SenderState::RecoverArq
+                | SenderState::RecoverFwd
+        );
+        // The latch keys on the ACTUAL Startup ramp (not PreConverge, and not a recovery overlay that
+        // may be entered before the ramp ever starts): only once the sender is genuinely ramping can
+        // "the ramp has ended" become a meaningful release signal.
+        if self.state == SenderState::Startup {
+            self.startup_base_seen = true;
+        }
+        if self.startup_pacing_floor_bps > 0
+            && ((self.startup_base_seen && !in_startup_ramp)
+                || natural_rate >= self.startup_pacing_floor_bps)
+        {
+            self.startup_pacing_floor_bps = 0; // permanent: `startup_floor_armed_once` blocks re-arming
+        }
+    }
 
-        self.schedule_transmit(now_ns)
+    /// DR-RATE-RAMP-2 (§FAZ-1) grounded startup pacing rate, from EXISTING product constants only:
+    ///
+    /// ```text
+    /// grounded = min( STARTUP_gain × (min_cwnd / srtt),   // instructed initialization
+    ///                 cwnd / srtt )                        // rate.rs structural HARD ceiling
+    /// ```
+    ///
+    /// `min_cwnd = SrcConfig::min_cwnd` (4×DEFAULT_MTU) and `STARTUP_gain = Gain::STARTUP` (2885/1000)
+    /// are the shipping values — no new constant is introduced. The second term is mandatory: `cwnd/srtt`
+    /// is documented in `rate.rs` as the structural hard ceiling ("son söz"), so the initialization must
+    /// not exceed the rate the product's own cwnd policy already permits. In the observed lock the
+    /// ceiling BINDS (it is the smaller term). All arithmetic is u128-widened and saturating.
+    fn grounded_startup_rate(&self) -> u64 {
+        let Some(srtt) = self.rtt.srtt() else {
+            return 0; // no measurement ⇒ no grounded rate ⇒ mechanism inert
+        };
+        let srtt_ns = dur_ns(srtt);
+        if srtt_ns == 0 {
+            return 0;
+        }
+        let initialized = Gain::STARTUP.apply(rate_per_srtt(self.src_cfg.min_cwnd, srtt_ns));
+        initialized.min(self.cwnd_over_srtt())
+    }
+
+    /// §1A.2 structural HARD ceiling `cwnd/srtt` (`rate.rs`: "son söz"), evaluated at the CURRENT
+    /// congestion state. `cwnd = max(cwnd_gain × BDP, min_cwnd)`. 0 when no RTT sample exists.
+    fn cwnd_over_srtt(&self) -> u64 {
+        let Some(srtt) = self.rtt.srtt() else {
+            return 0;
+        };
+        let srtt_ns = dur_ns(srtt);
+        if srtt_ns == 0 {
+            return 0;
+        }
+        let bdp = bdp_bytes(self.btlbw.btlbw(), self.rtt.rtprop().unwrap_or(INITIAL_RTT));
+        let cwnd = self
+            .src_cfg
+            .cwnd_gain
+            .saturating_mul(bdp)
+            .max(self.src_cfg.min_cwnd);
+        rate_per_srtt(cwnd, srtt_ns)
+    }
+
+    // ── DR-CS-1 M1 (EK5): ATOMİK BATCH GİRİŞİ + next_wakeup_ns + faz-makinesi ────────────────
+    // Flag-OFF'ta bu blok DERLENMEZ (INV-CS-5: legacy tekil-yol byte-for-byte). Scope: bağlanan
+    // timer'lar = CS-probe/CS-giveup/(d)-PTO (F2A/F2B'de eklenir) + TEST-ONLY hook (F1-atomiklik-
+    // kanıtları). Genel-tam-wakeup-API iddiası YOK.
+
+    /// DR-CS-1 M1 — TEK atomik giriş noktası (EK5-E1). Dört faz sırayla, tek çağrıda:
+    /// 1) authenticated-inbound işle (tip-önceliği: DATA-ACK → [probe-echo F2B] → varış-sırası)
+    /// 2) state-resolution / cancellation / disarm
+    /// 3) due exposed-timer'lar BİR KEZ (retire-on-fire)
+    /// 4) output-scheduling (tek schedule_transmit)
+    ///
+    /// Post-condition (C2, NORMATİF): dönüşte due exposed-timer kalmaz; `next_wakeup_ns()` ∈
+    /// {None, gelecek} (busy-loop yapısal-imkansız). `Event::Tick` ≡ boş-batch; E2: boş-batch +
+    /// due-yok + bekleyen-iş-yok → EXACT-NO-OP. RecoveredControl-only batch = legacy-özdeş
+    /// saf-logical (saat/schedule-ilerletmez; N8-tabanı) — due-timer-yoksa boş döner.
+    #[cfg(feature = "experimental-cold-start")]
+    pub fn on_event_batch(
+        &mut self,
+        now_ns: u64,
+        mut inbound: Vec<Event>,
+    ) -> Vec<TransmitDecision> {
+        let any_due = self.cs_any_due(now_ns);
+        // E2 exact-no-op: yalnız boş-batch (Tick) + due-yok + bekleyen-scheduling-işi-yok.
+        if inbound.is_empty() && !any_due && !self.cs_has_pending_work() {
+            return Vec::new();
+        }
+        let was_empty = inbound.is_empty();
+        // Faz-1: tip-önceliği (EK5-iv; stable-sort → aynı-tip varış-sırası korunur).
+        inbound.sort_by_key(Self::cs_type_priority);
+        let mut had_pipeline_inbound = false; // RecoveredControl/Tick pipeline'a girmez
+        for ev in inbound {
+            if let Event::RecoveredControl(info) = &ev {
+                self.on_recovered_control(info); // saf-logical (DR-S5-4; N8-tabanı)
+                continue;
+            }
+            if matches!(ev, Event::Tick) {
+                continue; // batch-içi Tick anlamsız (boş-batch-eşdeğeri); yut
+            }
+            had_pipeline_inbound = true;
+            self.on_event_core(ev, now_ns);
+        }
+        if !had_pipeline_inbound {
+            // İki-durum: boş-batch (Tick) veya RecoveredControl-only.
+            if !any_due && !was_empty {
+                // RecoveredControl-only + due-yok → legacy-özdeşlik: RecoveredControl tek-başına
+                // saat-ilerletmez/emisyon-yaratamaz (N8) — iş-olsa-bile boş döner.
+                return Vec::new();
+            }
+            if !any_due && !self.cs_has_pending_work() {
+                return Vec::new(); // savunmacı (E2'de-yakalanmıştı)
+            }
+            // Tick+iş VEYA due-timer-var → saat/refill ilerlet (core-refill muadili) → faz-2..4.
+            let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
+            self.pacer.refill(dt);
+            self.last_now_ns = now_ns;
+        }
+        // Faz-2: state-resolution / cancellation / disarm (F1: CS-state-yok; F2A/F2B genişletir).
+        self.cs_phase2_resolve(now_ns);
+        // Faz-3: due exposed-timer'lar BİR KEZ (retire-on-fire; deadline+ekleme-sırası).
+        self.cs_phase3_fire_due(now_ns);
+        // Faz-4: output-scheduling (tek-seam).
+        let out = self.schedule_transmit(now_ns);
+        // §2.4-a/C4: bootstrap-induced-retransmit atfı — bootstrap-anı-outstanding birimin
+        // Retransmit-emisyonu (unit_id-eşleşme; birim-başına-BİR-kez; bounded).
+        for d in &out {
+            if d.kind == TransmitKind::Retransmit && self.cs_induced_units.remove(&d.unit_id) {
+                self.cs_induced_retx_bytes += d.size;
+            }
+        }
+        // C2 post-condition: batch-sınırında due-kalmadı.
+        // C2 (NORMATİF, ORİJİNAL KÜMESİYLE KORUNDU): dönüşte due **CS exposed-timer** kalmaz —
+        // `cs_wakeup` retire-on-fire disiplininin özelliğidir. EK4-A2 sonrası `next_wakeup_ns()`
+        // daha GENİŞ bir şeydir (ARQ/dup/bootstrap/tail deadline'ları + pacer-token'a bağlı due-now
+        // iş); bunlar batch dönüşünde meşru olarak due olabilir (ör. token-denied dup kaydı), bu
+        // yüzden C2'nin kümesi GENİŞLETİLMEZ.
+        debug_assert!(
+            self.cs_wakeup
+                .iter()
+                .map(|&(d, _)| d)
+                .min()
+                .is_none_or(|w| w > now_ns),
+            "C2-ihlali: batch-dönüşünde due-exposed-timer kaldı"
+        );
+        out
+    }
+
+    /// EK4-A2 — **EVENT-LOOP WAKEUP DEADLINE** (ns). Artık DEFAULT BUILD'de.
+    ///
+    /// Sözleşme (`EK4-A2-NEXT-WAKEUP-CONTRACT`, md `d59212b2…`): belgelenmiş immediate-output drain
+    /// SONRASINDA timer-güdümlü bekleyen iş veya internal future deadline varsa **`None` DÖNMEZ**.
+    /// `None` YALNIZ: terminal/closed · gerçekten idle · immediate output yok · internal deadline yok
+    /// · ilerleme yalnız dış network input'una bağlı.
+    ///
+    /// Due-now iş varsa `Some(now)` döner — gizli "hemen tekrar poll et" `None` ASLA.
+    /// Busy-loop kurulamaz: `Some(now)` yalnız gerçekten due iş varken döner ve iş tüketilince
+    /// kendiliğinden düşer (kaynaklar tükendiğinde aday üretmezler).
+    ///
+    /// **YENİ TIMER İCAT ETMEZ; İKİNCİ TRUTH-SOURCE DEĞİL.** Yalnız MEVCUT authoritative
+    /// kaynakların en erken deadline'ını toplar (§1.2 envanteri):
+    ///   1. `cs_wakeup` (CS-probe/giveup/BootstrapPto) — feature-gated; kapalıyken aday üretmez
+    ///   2. ARQ time-threshold loss deadline (`loss.next_time_loss_deadline_ns`)
+    ///   3. §3.3-B geometrik kopyalar (`dup_queue[*].due_ns`)
+    ///   4. DR-CS-3 bootstrap merdiveni (`bs_armed_ns + BS_FIRES_NS[bs_next_step]`)
+    ///   5. Tail-recovery PTO (`armed_at_ns + current_pto_ns`)
+    ///   6. Pacer token yenilenmesi — bekleyen iş VARSA (`tx_queue|pending_lost|dup_queue|pending_fec`)
+    ///      en küçük bekleyen birimin gönderilebilir olacağı an
+    #[must_use]
+    pub fn next_wakeup_ns(&self) -> Option<u64> {
+        // Kaynak 1-5 (timer'lar) + kaynak 6 (pacer-token'a bağlı due-now iş).
+        Self::earlier(self.next_timer_deadline_ns(), self.pending_work_ready_ns())
+    }
+
+    fn earlier(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+        match (a, b) {
+            (Some(x), Some(y)) => Some(x.min(y)),
+            (x, None) => x,
+            (None, y) => y,
+        }
+    }
+
+    /// EK4-A2 kaynak 1-5: yalnız **TIMER** deadline'ları (immediate-readiness HARİÇ).
+    ///
+    /// C2 post-condition (`on_event_batch` dönüşünde due exposed-timer kalmaz) BU kümeye bağlıdır ve
+    /// anlamı DEĞİŞMEZ. Immediate-readiness (kaynak 6) bir timer değildir — pacer token'ı bekleyen
+    /// due-now iştir — bu yüzden C2'yi ihlal etmez, ama `next_wakeup_ns()`'e dahil olmak ZORUNDADIR
+    /// (yoksa event-loop uyanmaz: EK4-A2'nin kök nedeni tam olarak buydu).
+    #[must_use]
+    fn next_timer_deadline_ns(&self) -> Option<u64> {
+        let earlier = Self::earlier;
+        let mut best: Option<u64> = None;
+
+        // 1. CS exposed-timer kümesi (flag-OFF'ta bu blok derlenmez → aday yok).
+        #[cfg(feature = "experimental-cold-start")]
+        {
+            best = earlier(best, self.cs_wakeup.iter().map(|&(d, _)| d).min());
+        }
+
+        // 2. ARQ time-threshold loss deadline (aynı çağrı (d)-kapsamının kullandığı).
+        if let Some(srtt) = self.rtt.srtt() {
+            best = earlier(
+                best,
+                self.loss
+                    .next_time_loss_deadline_ns(srtt, self.cadence_loss_floor()),
+            );
+        }
+
+        // 3. §3.3-B zamanlanmış geometrik kopyalar — ELIGIBILITY + EMISSION birlikte.
+        //
+        // `due_ns` yalnız NE ZAMAN uygun olduğunu söyler; emisyon ayrıca pacer token'ına bağlıdır
+        // (`drain_due_duplicates` → `try_send`). due geçmiş ama token yetmiyorsa kayıt kuyrukta
+        // kalır ve `due_ns` DEĞİŞMEZ → stale değeri tekrar tekrar raporlamak ilerlemesiz uyanış
+        // (busy-loop) üretir. Bu yüzden raporlanan an, scheduler'ın GERÇEKTEN işleyebileceği andır:
+        //   due gelecekte  → `due_ns`
+        //   due geçmiş     → token'ın yeteceği an
+        // (Yeni timer YOK: her iki girdi de mevcut authoritative durumdan okunur.)
+        best = earlier(
+            best,
+            self.dup_queue
+                .iter()
+                .filter_map(|r| {
+                    if r.due_ns > self.last_now_ns {
+                        Some(r.due_ns)
+                    } else {
+                        self.pacer
+                            .ns_until_sendable(r.unit.size)
+                            .map(|dt| self.last_now_ns.saturating_add(dt))
+                    }
+                })
+                .min(),
+        );
+
+        // 3b. [DR-EST-1] Kuruluş-denemesi vadesi (yalnız PreConverge'de armed; token'sız kol
+        // olduğundan stale-busy-loop riski yok — vadesi gelince EMİT EDER ve yeniden kurar).
+        if self.establish_probe_enabled
+            && self.state == SenderState::PreConverge
+            && self.establish_due_ns > 0
+        {
+            best = earlier(best, Some(self.establish_due_ns));
+        }
+
+        // 4. DR-CS-3 bootstrap merdiveni (config default OFF ⇒ aday yok).
+        if self.bootstrap_rtt.enabled && !self.bs_done {
+            if let (Some(armed), Some(&off)) = (
+                self.bs_armed_ns,
+                BS_FIRES_NS.get(self.bs_next_step as usize),
+            ) {
+                best = earlier(best, Some(armed.saturating_add(off)));
+            }
+        }
+
+        // 5. Tail-recovery PTO (config default OFF ⇒ aday yok).
+        best = earlier(best, self.tail_probe_deadline_ns());
+
+        // NOT: `LostRec.deadline_ns` BİLEREK kaynak DEĞİL. `arq.rs:110-111` normatif: "deadline YALNIZ
+        // SIRA — expired seq DROP EDİLMEZ, planda kalır" ⇒ o bir TESLİM-önceliği anahtarıdır, zamanlayıcı
+        // değil. Wakeup kaynağı yapmak ilerlemesiz uyanış üretirdi. `pending_lost` zaten `update_state`
+        // ile RecoverArq'a geçer ve her turda planlanır; onu bekleten tek şey token'dır (kaynak 6).
+
+        best
+    }
+
+    /// EK4-A2 kaynak-5: tail-recovery PTO deadline'ı (SALT-OKUMA; mevcut state'ten türetilir).
+    fn tail_probe_deadline_ns(&self) -> Option<u64> {
+        if !self.tail_recovery.is_enabled() {
+            return None;
+        }
+        let armed = self.tail_recovery.armed_at_ns()?;
+        let pt = self.path_timing_snapshot();
+        Some(armed.saturating_add(self.tail_recovery.current_pto_ns(pt.srtt_ns, pt.rttvar_ns)))
+    }
+
+    /// EK4-A2 kaynak-6: pacer-token'a bağlı bekleyen iş için ilerleme anı (SALT-OKUMA).
+    ///
+    /// Bekleyen küme = her turda KOŞULSUZ drain edilen sınıflar (`tx_queue`, `pending_fec`). Bu iş
+    /// "due"dur — onu bekleten tek şey pacer token'ıdır, bir timer değil. Bu
+    /// yüzden ilerleme anı `pacer.ns_until_sendable(en_küçük_bekleyen_birim)`'dir; token zaten
+    /// yeterliyse `Some(now)` (immediate readiness).
+    ///
+    /// `None`: bekleyen iş yok, YA DA hiçbir bekleyen birim token'la gönderilemez (rate 0 /
+    /// birim > burst_cap) — ikincisinde ilerleme zamana değil dış olaya bağlıdır, bu yüzden
+    /// deadline uydurmak yanlış olur.
+    fn pending_work_ready_ns(&self) -> Option<u64> {
+        // Her turda planlanabilen sınıflar: `drain_new_data`, `plan_fec_parity` ve `pending_lost`
+        // (`update_state` `pending_lost` boş değilken RecoverArq'a geçer ⇒ `plan_arq_retransmits`
+        // aynı turda çalışır; onu bekleten tek şey token'dır). `dup_queue` BİLEREK dışarıda: kendi
+        // `due_ns` deadline'ı var (kaynak 3).
+        let smallest = self
+            .tx_queue
+            .iter()
+            .map(|u| u.size)
+            .chain(self.pending_fec.iter().map(|p| p.size))
+            .chain(self.pending_lost.iter().map(|r| r.unit.size))
+            .min()?;
+        let dt = self.pacer.ns_until_sendable(smallest)?;
+        Some(self.last_now_ns.saturating_add(dt))
+    }
+
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_type_priority(e: &Event) -> u8 {
+        match e {
+            Event::AckReceived(_) => 0,     // DATA-ACK önce (EK5-iv)
+            Event::CsProbeEcho { .. } => 1, // probe-echo ikinci
+            _ => 2,                         // aynı-tip-varış-sırası (stable-sort)
+        }
+    }
+
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_any_due(&self, now_ns: u64) -> bool {
+        self.cs_wakeup.iter().any(|&(d, _)| d <= now_ns)
+    }
+
+    /// "Önceden-oluşmuş bekleyen scheduling-işi" (E2): kuyruklarda drain-bekleyen-iş var mı.
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_has_pending_work(&self) -> bool {
+        !self.tx_queue.is_empty()
+            || !self.pending_lost.is_empty()
+            || !self.dup_queue.is_empty()
+            || !self.pending_fec.is_empty()
+    }
+
+    /// DR-CS-1 M3 (F2B) — echo-ingest: `(probe_seq)`-lookup → TEK-TÜKETİM → YALNIZ rtt-estimator
+    /// (matematik-değişmez; `source=ProbeEcho` etiketi diag'ta). LATE-ECHO-YOK-SAYMA (5-koşul):
+    /// (1) data-ACK-srtt-oluşturduysa (2) seq-outstanding-değilse (3) session_generation/epoch-
+    /// değiştiyse (in-instance-yeniden-giriş-İMKANSIZ — F0-tespit-(v); yeni-instance=yeni-namespace)
+    /// (4) echo-zaten-işlendiyse (tek-tüketim=aynı-koşul-2-yolu) (5) epoch-TimedOut-kapandıysa.
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_on_probe_echo(&mut self, probe_seq: u16, now_ns: u64) {
+        if self.cs_epoch_timed_out {
+            return; // koşul-5: post-timeout-echo YOK-SAYILIR (Seçenek-A; probe_seq'ler-retire'lı)
+        }
+        if self.rtt.srtt().is_some() {
+            return; // koşul-1 (data-ACK-önce-kurdu) — koşul-4'ü-de-kapsar (ilk-echo-sonrası)
+        }
+        let Some(pos) = self
+            .cs_probe_outstanding
+            .iter()
+            .position(|&(s, _)| s == probe_seq)
+        else {
+            return; // koşul-2/4: outstanding-değil (hiç-emit-edilmedi / zaten-tüketildi / retire'lı)
+        };
+        let (_, emit_ns) = self.cs_probe_outstanding.swap_remove(pos); // TEK-TÜKETİM
+        let sample = Duration::from_nanos(now_ns.saturating_sub(emit_ns));
+        // Bootstrap-anı-outstanding DATA kümesi (induced-retx-atfı §2.4-a; bounded=inflight).
+        self.cs_induced_units = self.inflight.values().map(|p| p.unit.id).collect();
+        // YALNIZ RTT-estimator (mevcut observe; matematik-değişmez). cwnd/BtlBw/delivery/loss/
+        // ack-conf'a DOKUNULMAZ (N8-spot-testli).
+        self.rtt.observe(now_ns, sample);
+        self.cs_resolved = Some(CsSrttSource::ProbeEcho);
+    }
+
+    /// Faz-2: state-resolution/cancellation/disarm. (a) srtt-oluştuysa CS-probe-merdiveni DISARM
+    /// (kalan-fire'lar + pending iptal; C3: ACK/echo-önce-işlendiği-için aynı-batch'te fire-
+    /// edilmeden-disarm) + INV-CS-3 terminal-kaynağı (DataAck-yolu burada-yakalanır) + outstanding-
+    /// probe-retire. (b) (d)/EK4-A2: BootstrapPto-exposure canlı-loss-state'ten yeniden-türetilir
+    /// (retire-all + re-register; ACK/recovery-temizliği-otomatik).
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_phase2_resolve(&mut self, _now_ns: u64) {
+        // (a) ilk-srtt → ladder/pending/outstanding-disarm + kaynak-belirle (echo-yolu cs_resolved'ı
+        //     zaten-ProbeEcho-yaptı; aksi DataAck).
+        if self.cs_probe_armed_once && !self.cs_probe_disarmed && self.rtt.srtt().is_some() {
+            self.cs_probe_disarmed = true;
+            self.cs_wakeup
+                .retain(|&(_, k)| !matches!(k, CsTimerKind::CsProbe(_)));
+            self.cs_probe_pending.clear();
+            self.cs_probe_outstanding.clear(); // epoch-kapanışı: outstanding-probe KESİN-retire
+            if self.cs_resolved.is_none() {
+                self.cs_resolved = Some(CsSrttSource::DataAck); // ResolvedByDataAck
+            }
+        }
+        // (b) M5 terminal-raporlama (bir-kez; C3: ACK/echo faz-2 → giveup faz-3'te fire-etmez çünkü
+        //     giveup burada-retire). TimedOut-sonrası-srtt → PostTimeoutRecovery (ikinci-terminal-değil).
+        if self.cs_probe_armed_once && !self.cs_srtt_reported && self.rtt.srtt().is_some() {
+            self.cs_srtt_reported = true;
+            self.cs_wakeup
+                .retain(|&(_, k)| !matches!(k, CsTimerKind::CsGiveup));
+            self.cs_terminal = Some(if self.cs_epoch_timed_out {
+                // K-8/F4 TETİK-2a: TimedOut-sonrası DATA-ACK-clocked heal → PostTimeoutNotice
+                // (first-valid-proof; SALT-LOGICAL N8). block_id=cs_cold_epoch-bootstrap (F4-slice tek-block).
+                self.record_post_timeout_notice(
+                    0, // F4-slice bootstrap-block (tek-block; MAX_COLD_BLOCKS_PER_EPOCH=1)
+                    PostTimeoutCause::DataAckClocked,
+                    _now_ns,
+                );
+                CsTerminal::PostTimeoutRecovery
+            } else {
+                match self.cs_resolved {
+                    Some(CsSrttSource::ProbeEcho) => CsTerminal::ResolvedByProbeEcho,
+                    _ => CsTerminal::ResolvedByDataAck,
+                }
+            });
+        }
+        // (d)/EK4-A2: bootstrap-sonrası MEVCUT time-threshold deadline'ı expose (yaşam-döngüsü:
+        // her-batch yeniden-türet → re-arm/ACK-retire otomatik; C2: overdue-ise-aynı-batch-faz-3).
+        if self.cs_resolved.is_some() {
+            self.cs_wakeup
+                .retain(|&(_, k)| !matches!(k, CsTimerKind::BootstrapPto));
+            if let Some(srtt) = self.rtt.srtt() {
+                if let Some(d) = self
+                    .loss
+                    .next_time_loss_deadline_ns(srtt, self.cadence_loss_floor())
+                {
+                    self.cs_wakeup.push((d, CsTimerKind::BootstrapPto));
+                }
+            }
+        }
+    }
+
+    /// Faz-3: due exposed-timer'ları ateşle (retire-on-fire; deadline-sırası). Dış-döngü:
+    /// fire-yan-etkisi (BootstrapPto-re-arm floor-kayması-edge'i) yeni-due-üretirse AYNI-batch'te
+    /// tüketilir (C2: geleceğe-erteleme-YASAK; ilerleme-garantili — her-tur-birim-declare-eder;
+    /// güvenlik-tavanı debug_assert'li).
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_phase3_fire_due(&mut self, now_ns: u64) {
+        let mut guard = 0u32;
+        while self.cs_any_due(now_ns) {
+            guard += 1;
+            debug_assert!(guard <= 64, "faz-3 due-döngüsü ilerleme-kaybı");
+            if guard > 64 {
+                break; // release-güvenlik: kalan-due bir-sonraki-batch'te (anomali-korunması)
+            }
+            self.cs_phase3_fire_due_once(now_ns);
+        }
+    }
+
+    #[cfg(feature = "experimental-cold-start")]
+    fn cs_phase3_fire_due_once(&mut self, now_ns: u64) {
+        // deadline-sırası deterministik (stable: eşit-deadline'da ekleme-sırası).
+        let mut due: Vec<(u64, CsTimerKind)> = Vec::new();
+        self.cs_wakeup.retain(|&(d, k)| {
+            if d <= now_ns {
+                due.push((d, k));
+                false // retire-on-fire
+            } else {
+                true
+            }
+        });
+        due.sort_by_key(|&(d, _)| d);
+        for (_, kind) in due {
+            match kind {
+                CsTimerKind::TestHook(id) => self.cs_hook_fired.push((now_ns, id)),
+                CsTimerKind::CsGiveup => {
+                    // M5: resolved-değilse (faz-2 srtt-raporlamadıysa) TimedOut-terminal + epoch-
+                    // kapanışı (INV-CS-3 tek-terminal; C3: aynı-batch'te-çözüm-olsaydı-giveup-faz-2'de-
+                    // retire-edilirdi → buraya-ulaşmaz). outstanding-probe KESİN-retire (post-timeout-
+                    // echo cs_epoch_timed_out-guard'ıyla-yok-sayılır).
+                    if !self.cs_srtt_reported && !self.cs_epoch_timed_out {
+                        self.cs_epoch_timed_out = true;
+                        self.cs_terminal = Some(CsTerminal::TimedOut);
+                        self.cs_probe_disarmed = true;
+                        self.cs_wakeup
+                            .retain(|&(_, k)| !matches!(k, CsTimerKind::CsProbe(_)));
+                        self.cs_probe_pending.clear();
+                        self.cs_probe_outstanding.clear();
+                    }
+                }
+                CsTimerKind::BootstrapPto => {
+                    // (d)-fire: MEVCUT Pto-core-yolu (dispatch+fuzzy+state — pending_lost-oluşursa
+                    // update_state RecoverArq'a-geçer → faz-4 plan_arq AYNI-batch'te emit-eder;
+                    // DI-1A "ek-RTT/ek-network-event-beklemez"). INV-CS-4: yeni-retransmit-yolu-YOK.
+                    self.on_event_core(Event::TimerFired(Timer::Pto), now_ns);
+                    // EK4-A2 re-arm: kalan-eligible-birim-varsa YENİ-deadline (zorunlu-gelecek:
+                    // az-önce-fire-edilen-eşik-altı-birimler declare-edilip-inflight'tan-düştü).
+                    if let Some(srtt) = self.rtt.srtt() {
+                        if let Some(d) = self
+                            .loss
+                            .next_time_loss_deadline_ns(srtt, self.cadence_loss_floor())
+                        {
+                            self.cs_wakeup.push((d, CsTimerKind::BootstrapPto));
+                        }
+                    }
+                }
+                CsTimerKind::CsProbe(_idx) => {
+                    // M2 fire: probe_seq ata (INV-CS-7 monoton; wrap→probe-YOK+typed-diag) +
+                    // bütçe-kontrol (INV-CS-2 hard) → pacer-bekleyen-pending'e.
+                    if self.cs_probe_disarmed {
+                        continue;
+                    }
+                    if self.cs_probe_tx_bytes.saturating_add(CS_PROBE_WIRE_MAX)
+                        > CS_PROBE_TX_HARD_BUDGET
+                    {
+                        continue; // hard-bütçe: emisyon-yok (nominal-176B zaten-altında)
+                    }
+                    if self.cs_probe_seq_next == u16::MAX {
+                        self.cs_probe_seq_wrapped = self.cs_probe_seq_wrapped.saturating_add(1);
+                        continue; // wrap → yeni-probe-YOK (typed-diag-sayacı)
+                    }
+                    let pseq = self.cs_probe_seq_next;
+                    self.cs_probe_seq_next += 1;
+                    #[cfg(feature = "diag-sched-telemetry")]
+                    {
+                        self.sched_diag.cs_probe_enqueued += 1;
+                    }
+                    self.cs_probe_pending.push_back(pseq);
+                }
+            }
+        }
+    }
+
+    /// M2 emisyon-pass'i (F2A): pacer-bekleyen probe'ları paced-emit et. `schedule_transmit`'in
+    /// SONUNA-eklenir (budget_settle-sonrası) → mühürlü-DATA-önce-sıralama + FEC-budget-penceresi
+    /// DOKUNULMAZ (F0-tespit-(vii) ekleme-noktası). Plain `pacer.try_send` (44B) — TokenBucket-
+    /// değişikliği-YOK; probe kendi-bütçesiyle-sınırlı (≤200B-toplam).
+    #[cfg(feature = "experimental-cold-start")]
+    fn drain_cs_probes(&mut self, out: &mut Vec<TransmitDecision>) {
+        while let Some(&pseq) = self.cs_probe_pending.front() {
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.cs_probe_selected += 1;
+            }
+            if !self.pacer.try_send(CS_PROBE_WIRE_MAX) {
+                #[cfg(feature = "diag-sched-telemetry")]
+                {
+                    self.sched_diag.cs_probe_token_denied += 1;
+                }
+                break; // token-yok → sonraki-event'te (pending-korunur)
+            }
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.cs_probe_wire_emitted += 1;
+            }
+            self.cs_probe_pending.pop_front();
+            self.cs_probe_emitted += 1;
+            self.cs_probe_tx_bytes += CS_PROBE_WIRE_MAX;
+            // F2B: echo-korelasyonu-için outstanding-kayıt (probe_seq, emit_ns=RTT-t0).
+            self.cs_probe_outstanding.push((pseq, self.last_now_ns));
+            out.push(TransmitDecision {
+                kind: TransmitKind::CsProbe,
+                seq: u64::from(pseq), // probe_seq (AYRI-namespace; data-seq-DEĞİL)
+                unit_id: 0,
+                size: CS_PROBE_WIRE_MAX,
+                send_record: None,
+            });
+        }
+    }
+
+    /// DR-CS-1 diag (INV-CS-1/2 kanıt-sayaçları): (emitted, cold_probe_tx_bytes, seq_wrapped,
+    /// pending_len, armed, disarmed).
+    #[cfg(feature = "experimental-cold-start")]
+    #[must_use]
+    pub fn diag_cold_start(&self) -> (u64, u64, u64, usize, bool, bool) {
+        (
+            self.cs_probe_emitted,
+            self.cs_probe_tx_bytes,
+            self.cs_probe_seq_wrapped,
+            self.cs_probe_pending.len(),
+            self.cs_probe_armed_once,
+            self.cs_probe_disarmed,
+        )
+    }
+
+    /// DR-CS-1 M5 (F3) output-API: cold-start terminal-sonucunu DRAIN et (input-Event'ten-AYRI;
+    /// epoch-başına-en-fazla-bir ResolvedBy*/TimedOut + ayrı PostTimeoutRecovery). Tek-tüketim.
+    #[cfg(feature = "experimental-cold-start")]
+    pub fn take_cs_terminal(&mut self) -> Option<CsTerminal> {
+        self.cs_terminal.take()
+    }
+
+    /// K-8/F4: PostTimeoutNotice one-slot kaydı (first-valid-proof-wins). NOTICE_BOUND=1: slot-doluysa
+    /// idempotent no-op (duplicate/sonraki-kanıt). SALT-LOGICAL — BtlBw/pacer/rate'e SIFIR-satır (N8).
+    /// same-epoch/farklı-block: MAX_COLD_BLOCKS_PER_EPOCH=1 varsayımı (F4-slice tek-block); farklı-block
+    /// gelirse slot-doluluğuyla no-op (invariant F5-pre-reg'de test-pinlenir).
+    #[cfg(feature = "experimental-cold-start")]
+    fn record_post_timeout_notice(&mut self, block_id: u32, cause: PostTimeoutCause, now_ns: u64) {
+        if self.post_timeout_notice.is_none() {
+            self.post_timeout_notice = Some(PostTimeoutNotice {
+                cold_epoch: self.cs_cold_epoch,
+                block_id,
+                cause,
+                proof_time_ns: now_ns,
+            });
+        }
+    }
+
+    /// K-8/F4: PostTimeoutNotice drain (ürün-katmanı pull-API; take = tek-tüketim).
+    #[cfg(feature = "experimental-cold-start")]
+    pub fn take_post_timeout_notice(&mut self) -> Option<PostTimeoutNotice> {
+        self.post_timeout_notice.take()
+    }
+
+    /// DR-CS-1 F2B diag: (bootstrap-sonucu-kaynağı, outstanding-probe-sayısı,
+    /// bootstrap_induced_retransmit_bytes, epoch_timed_out).
+    #[cfg(feature = "experimental-cold-start")]
+    #[must_use]
+    pub fn diag_cs_bootstrap(&self) -> (Option<CsSrttSource>, usize, u64, bool) {
+        (
+            self.cs_resolved,
+            self.cs_probe_outstanding.len(),
+            self.cs_induced_retx_bytes,
+            self.cs_epoch_timed_out,
+        )
+    }
+
+    /// TEST-ONLY (F1 atomiklik-kanıtları; DI-12E/F/G F1-sürümleri): exposed-timer-hook arm.
+    /// Üretim-yolu-değil (feature default-OFF + doc-hidden).
+    #[cfg(feature = "experimental-cold-start")]
+    #[doc(hidden)]
+    pub fn cs_test_arm_hook_timer(&mut self, deadline_ns: u64, id: u8) {
+        self.cs_wakeup
+            .push((deadline_ns, CsTimerKind::TestHook(id)));
+    }
+
+    /// TEST-ONLY: hook-fire kayıtları (now_ns, id).
+    #[cfg(feature = "experimental-cold-start")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn cs_test_hook_fired(&self) -> &[(u64, u8)] {
+        &self.cs_hook_fired
     }
 
     /// §3.2 OnAckReceived: inflight boşalt + RTT/BW/loss güncelle.
@@ -495,6 +2290,9 @@ impl Sender {
             return;
         }
         self.last_ack_ns = Some(now_ns);
+        // DR-ARQ-PRODUCT-TAIL-1: snapshot inflight to detect REAL progress (new ack-eliciting data acked) vs a
+        // duplicate/stale ACK that removes nothing. Only real progress resets the tail timer (§4).
+        let inflight_before = self.inflight.len();
 
         // [TUR-3a D-2/1] Kanal-türevi estimator pencereleri — örnekler işlenmeden ÖNCE, bir
         // önceki srtt'yle yazılır (deterministik; 10s [STD] tabanı setter'larda).
@@ -541,7 +2339,16 @@ impl Sender {
             }
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                // Observation-only success evidence, ORIGINALS ONLY — the same Karn discipline the
+                // RTT sampler applies two lines below. A retransmit or duplicate proves nothing
+                // about the original's fate, and feeding one would corrupt the structure counters.
+                if p.origin == TransmitKind::Data {
+                    self.fate_estimator.on_original_ack(p.unit.id);
+                }
                 acked_units.push(p.unit.id); // §3.3-B stop koşulu: teyit edilen birimin kopyaları iptal
+                                             // DR-S5-3 [SALT-LOGICAL — BtlBw'ye DEĞMEZ]: wire-ACK hangi-logical-paketi teyit-etti?
+                                             // Ayrı-defter (bounded); bw_sampler/btlbw'yi OKUMAZ/YAZMAZ (N8: recovered≠ACK tabanı).
+                self.record_confirmed_logical(seq);
                 let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);
                 self.btlbw.update(sample, now_ns, sample.delivered > 0);
                 self.bw_sampled_since_round = true; // [TUR-A ölçüm-#1] plato round'u bw-örneğiyle sayılır
@@ -555,6 +2362,13 @@ impl Sender {
                 // prune edilmişse buraya düşmez (Expired/Unknown — örneksiz).
                 self.diag_tomb_hits += 1;
                 acked_units.push(t.unit.id); // teslim teyidi → bekleyen kopyaları iptal et
+                                             // S-0.7 correction leg (ESTIMATOR-LIFECYCLE §6.1): the ORIGINAL's own seq was
+                                             // late-acked — the product just disproved the loss it declared, so the estimator's
+                                             // fate is corrected in place. ORIGINALS ONLY: a superseded transmission's late ACK
+                                             // (kol-2, origin Retransmit) proves nothing about the original's fate.
+                if t.origin == TransmitKind::Data {
+                    self.fate_estimator.correct_original_delivered(t.unit.id);
+                }
                 if t.retx_count == 0 {
                     // kol-1 (tek gönderim, belirsizlik yok): BW-örneği NORMAL üretilir.
                     let sample = self.bw_sampler.on_ack(now_ns, t.bw_sample);
@@ -609,7 +2423,15 @@ impl Sender {
                 }
                 self.diag_unloss += 1;
                 acked_units.push(rec.unit.id); // kopyaları aşağıdaki ortak iptale kat
-                                               // §9.3: gözlenen reorder mesafesiyle toleransı yükselt (küçülmez).
+                                               // S-0.7 correction leg: un-loss = the declared-lost seq itself was acked, the loss
+                                               // hypothesis is withdrawn. retx_count == 0 ⟺ this record is the ORIGINAL emission
+                                               // (a lost retransmit re-enters pending_lost with retx_count ≥ 1 and its ACK proves
+                                               // only the retransmit's delivery). Exactly-once is carried by the estimator method:
+                                               // the same late ACK can hit both the tombstone branch and this drain in one event.
+                if rec.retx_count == 0 {
+                    self.fate_estimator.correct_original_delivered(rec.unit.id);
+                }
+                // §9.3: gözlenen reorder mesafesiyle toleransı yükselt (küçülmez).
                 self.reorder
                     .note_spurious(u32::try_from(la.saturating_sub(rec.seq)).unwrap_or(u32::MAX));
                 // kol-1: retransmit HENÜZ gönderilmedi → orijinal RTT örneği GEÇERLİ.
@@ -654,6 +2476,16 @@ impl Sender {
             self.queue_losses(&lost, now_ns);
             // [TUR-A teşhis] loss-atıflama: packet-threshold (§5a) kaynaklı kuyruklanan kayıp sayısı.
             self.diag_loss_pkt += (self.pending_lost.len() - before) as u64;
+        }
+        // DR-ARQ-PRODUCT-TAIL-1 (gated): real ACK progress (inflight shrank) resets the tail timer + clears backoff;
+        // a drained inflight disarms. Duplicate/stale ACKs that remove nothing do NOT reset (§4).
+        if self.tail_recovery.is_enabled() {
+            if self.inflight.len() < inflight_before {
+                self.tail_recovery.on_ack_progress(now_ns);
+            }
+            if self.inflight.is_empty() {
+                self.tail_recovery.disarm();
+            }
         }
     }
 
@@ -705,8 +2537,110 @@ impl Sender {
                         Some(_) => break,
                     }
                 }
+                // DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → skipped, OFF-mode byte-identical): a PTO with
+                // outstanding data and no ACK progress for a PTO interval makes the OLDEST inflight probe-eligible.
+                // Emission (token + re-verify) happens in plan_arq_retransmits; the attempt is spent only on a real
+                // emission (§3 probe-due ≠ probe-sent).
+                if self.tail_recovery.is_enabled() {
+                    let oldest = self.inflight.keys().next().copied();
+                    let srtt = self.rtt.srtt().map(dur_ns);
+                    let rttvar = dur_ns(self.rtt.rttvar());
+                    if let ProbeDecision::ProbeDue { target_seq, .. } =
+                        self.tail_recovery.on_timer(now_ns, srtt, rttvar, oldest)
+                    {
+                        #[cfg(feature = "diag-sched-telemetry")]
+                        if self.tail_probe_pending.is_none() {
+                            self.sched_diag.tail_probe_enqueued += 1;
+                        }
+                        self.tail_probe_pending = Some(target_seq);
+                    }
+                }
             }
         }
+    }
+
+    /// DR-CS-3: emit at most one bootstrap `0x19` probe per authoritative ladder step.
+    ///
+    /// **ADDITIVE, NOT PACED**: this deliberately does NOT call `try_send_pre_parity` / `pacer.try_send`
+    /// and creates NO pacer debt — the DR-CS-2 failure proved a debit only reallocates the DATA budget.
+    /// It is bounded instead by three independent limits: one generation per step, four steps, and a
+    /// total wire budget of `BS_TX_HARD_BUDGET` (200 B; 4 × 44 = 176 B worst case).
+    ///
+    /// **NO DISPLACEMENT**: called at the very END of `schedule_transmit`, after DATA, recovery and
+    /// parity have already been planned in the same turn, so it can only ever *append* — it can never
+    /// take a slot a normal DATA emission would have used.
+    fn drain_bootstrap_probes(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        if !self.bootstrap_rtt.enabled || self.bs_done {
+            return;
+        }
+        // Gate: PreConverge with no RTT measurement yet (contract §1).
+        if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {
+            return;
+        }
+        let Some(armed) = self.bs_armed_ns else {
+            return;
+        };
+        let step = self.bs_next_step as usize;
+        if step >= BS_FIRES_NS.len() {
+            return; // ladder exhausted
+        }
+        if now_ns.saturating_sub(armed) < BS_FIRES_NS[step] {
+            return; // not yet due — NOT an edge, and NOT counted
+        }
+        // EDGE: this step transitions not-due → due exactly once (bs_next_step advances below), so a
+        // repeated poll of the same due state can never mint a second generation.
+        self.bs_diag.step_edge += 1;
+        self.bs_next_step += 1;
+        if self.bs_bytes + BS_PROBE_WIRE_EXACT > BS_TX_HARD_BUDGET {
+            self.bs_diag.budget_violation += 0; // budget respected by refusing, not by exceeding
+            return;
+        }
+        let probe_seq = self.bs_seq_next;
+        self.bs_seq_next = self.bs_seq_next.saturating_add(1);
+        // Single outstanding slot: a new probe supersedes the previous unanswered one.
+        self.bs_outstanding = Some((probe_seq, now_ns));
+        self.bs_bytes += BS_PROBE_WIRE_EXACT;
+        self.bs_diag.probe_emitted += 1;
+        self.bs_diag.probe_wire_bytes += BS_PROBE_WIRE_EXACT;
+        out.push(TransmitDecision {
+            kind: TransmitKind::CsProbe,
+            seq: u64::from(probe_seq), // separate namespace: NOT a DATA seq, NOT inflight-tracked
+            unit_id: 0,
+            size: BS_PROBE_WIRE_EXACT,
+            send_record: None,
+        });
+    }
+
+    /// DR-CS-3: ingest an authenticated `0x1A` echo. The ONLY path that may produce a bootstrap RTT
+    /// sample, and only from LOCAL monotonic timestamps: `now_ns − local_probe_send_ns`.
+    /// Peer-carried `seen_count`/`arrival_gap` are ledger-only and are never used here.
+    fn bs_on_echo(&mut self, probe_seq: u16, now_ns: u64) {
+        if !self.bootstrap_rtt.enabled {
+            return;
+        }
+        self.bs_diag.echo_ingested += 1;
+        if self.bs_done || self.rtt.srtt().is_some() {
+            self.bs_diag.echo_match_rejected += 1; // already resolved (covers duplicate-after-success)
+            return;
+        }
+        let Some((seq, send_ns)) = self.bs_outstanding else {
+            self.bs_diag.echo_match_rejected += 1; // unsolicited / already consumed
+            return;
+        };
+        if seq != probe_seq {
+            self.bs_diag.echo_match_rejected += 1; // wrong generation
+            return;
+        }
+        self.bs_outstanding = None; // SINGLE consumption
+        let sample = Duration::from_nanos(now_ns.saturating_sub(send_ns));
+        self.bs_diag.echo_match_valid += 1;
+        self.bs_diag.rtt_sample_ns = dur_ns(sample);
+        // Existing estimator API — no synthetic write, no estimator rewrite.
+        self.rtt.observe(now_ns, sample);
+        // First valid sample cancels the ladder permanently (contract §25/§26).
+        self.bs_done = true;
+        self.bs_armed_ns = None;
+        self.bs_diag.cancelled += 1;
     }
 
     /// [TUR-1b D-1/2] Cadence-farkında loss-eşiği TABANI = K_c × beklenen-ACK-aralığı (EAI).
@@ -760,8 +2694,43 @@ impl Sender {
                 if p.origin == TransmitKind::Duplicate {
                     // [commit-B §3.7] Dup-kökenli kayıp tombstonesuz düşer → uçuş-sayısı burada.
                     self.bw_sampler.forget_in_flight();
+                    // [P0 burst-recovery] Forward-recovery kopyası kaybolduysa birim HÂLÂ
+                    // teslim edilmemiştir (ACK olsaydı on_ack inflight'tan siler + dup_queue.retain
+                    // kopyayı iptal ederdi; buraya ancak gerçekten-outstanding birim düşer). Recovery-
+                    // obsesif taban (§9.1 "veri ulaşsın"): SESSİZCE VAZGEÇME — birimin zaten planlı bir
+                    // kopyası yoksa GEOMETRİK (self-reschedule, ×2 backoff, ACK-ile-iptal) forward kopya
+                    // yeniden-kur. Mevcut saf-sessizlik/PreConverge makinesinin aynısı; INV-RATE-1'e
+                    // dokunmaz (dup_queue token-paced), loss METRİĞİNE dokunmaz. Kanıt: kapi-eval-v1
+                    // exploratory h3 (GE-burst); regresyon kapısı tests/burst_loss_recovery.rs.
+                    if !self.dup_queue.iter().any(|d| d.unit.id == p.unit.id) {
+                        let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
+                        self.dup_queue.push(DupRec {
+                            due_ns: now_ns.saturating_add(srtt_ns),
+                            unit: p.unit,
+                            interval_ns: srtt_ns.max(1), // >0 ⇒ drain_due_duplicates geometrik reschedule
+                        });
+                    }
                 }
                 if p.origin != TransmitKind::Duplicate {
+                    // Observation-only loss evidence, ORIGINALS ONLY — symmetric with the success
+                    // side in on_ack_received. The enclosing branch admits everything that is not
+                    // a Duplicate, which also lets Retransmit and FecParity through, and parity
+                    // carries `unit_id: u64::from(p.esi)` (sender.rs, plan_fec_parity): an ESI is a
+                    // small integer in a DIFFERENT namespace from source logical ids. Feeding it
+                    // would inject foreign ids into a window defined over logical source order and
+                    // could fabricate `id`/`id+1` adjacency or collide with a real source id.
+                    //
+                    // The estimator's contract is the fate of an ORIGINAL transmission, so only
+                    // TransmitKind::Data may feed either side. Found by SOURCE-GROUNDING S-0.7,
+                    // which asks the question this wiring had not been asked: ingest existing is
+                    // not the same as ingest being faithful.
+                    if p.origin == TransmitKind::Data {
+                        let guard = self
+                            .tail_recovery
+                            .base_pto_ns(self.rtt.srtt().map(dur_ns), dur_ns(self.rtt.rttvar()));
+                        self.fate_estimator
+                            .on_loss_evidence(p.unit.id, now_ns, guard);
+                    }
                     self.pending_lost.push_back(LostRec {
                         seq,
                         unit: p.unit,
@@ -827,13 +2796,72 @@ impl Sender {
             qd_ratio_permille,
             ack_confidence_permille: self.ack_confidence_permille(now_ns),
         };
-        let d = self.fuzzy.decide(&inputs);
+        let mut d = self.fuzzy.decide(&inputs);
         // [TUR-4] sıfır-ağırlık fallback kanıt-sayacı (fallback çıktısı R1-baskın çıktıyla
         // bayt-özdeş — sayaçsız gözlemlenemez, workflow-bulgusu).
         if d.no_rule {
             self.diag_fuzzy_no_rule += 1;
         }
+        // [Q18-FIX] YAPI-FARKINDA FEC GATE. Q17 holdout + FS-FUSION-CELL-1 iki bağımsız kanıt:
+        // kayıp-ORANI tek başına FEC'i kapılayamaz (aynı 200k ppm'de IID coding ister, burst ARQ
+        // ister). Fuzzy controller rate-only olduğundan %20 IID'de parity=0 planlıyordu — ölçümün
+        // "coding tek çalışan mekanizma" dediği rejimde. Fix diz'i kaydırmak DEĞİL (Q17 bunu
+        // yasaklar): fate_estimator'ın loss-YAPI sinyali (burst_delta = p11−p01) gate'e girer.
+        // Deterministik, RNG'siz (ADR-17); kanıt yetersizse (n < min) DOKUNMAZ → mevcut davranış
+        // byte-özdeş. Politika transport'ta kalır, RS-encode güvenlik-katmanında (INV-ENGINE-SOC).
+        if let Some(fec) = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm) {
+            d.fec_parity_ratio_permille = fec;
+            // Yapı-gate ateşlediyse bir KURAL ateşlemiş demektir (yapı-kuralı) → `no_rule`'u temizle.
+            // Aksi hâlde: fuzzy'nin rate-only kuralları yüksek-kayıpta hepsi `loss.low`=0'da sönüp
+            // no_rule-fallback'e düşüyor (fec=0); Controller-latch ise no_rule-snapshot'ı planned_r=0'a
+            // BASTIRIYOR — yani gate'in açtığı FEC latch'te yeniden sıfırlanırdı. Bu satır kompozisyonu
+            // tamamlar (fec_recovery_cell.rs, S1 sistem-kanıtı); gate ateşlemezse no_rule dokunulmaz.
+            d.no_rule = false;
+            self.diag_structure_gate_opened += 1;
+        }
+        // Commit-D: CANONICAL-snapshot — aynı-`inputs`-DEĞERİ kopyalanır (ikinci-hesap-yok).
+        // HÜKÜM (Commit-F-daraltması): "Semantic non-regression demonstrated; the diagnostic path
+        // adds one fixed-size Copy assignment with no allocation, I/O or formatting. Performance
+        // neutrality has not been independently benchmarked." (benchmark 1a-blocker-DEĞİL.)
+        self.fusion_event_index += 1;
+        self.last_fusion_snapshot = Some(FusionInputSnapshot {
+            loss_windowed_ppm: inputs.loss_ppm,
+            bandwidth_bps: inputs.bandwidth_bps,
+            jitter_ppm: inputs.jitter_ppm,
+            qd_ratio_permille: inputs.qd_ratio_permille,
+            ack_confidence_permille: inputs.ack_confidence_permille,
+            no_rule: d.no_rule,
+            event_index: self.fusion_event_index,
+        });
         d
+    }
+
+    /// [Q18-FIX] Yapı-farkında FEC gate. Yalnız fuzzy'nin `fec=0` bıraktığı ama kaybın anlamlı
+    /// olduğu Q18 bandında devreye girer; estimator IID-yapı gösteriyorsa (`burst_delta ≤ 0`:
+    /// kayıplar korelasyonsuz → retransmit de aynı oranla kaybolur → ileri-parity kazanır)
+    /// `fec_med` açar. Burst-yapı (`burst_delta` pozitif) → ARQ'ya bırakır (`None`, dokunmaz).
+    /// Kanıt-eşiği: pencerede `≥ STRUCTURE_GATE_MIN_N` fate-known birim; azsa `None`.
+    fn structure_gate_fec(&self, fuzzy_fec_permille: u32, loss_ppm: u64) -> Option<u32> {
+        if fuzzy_fec_permille != 0 || loss_ppm < STRUCTURE_GATE_LOSS_MIN_PPM {
+            return None;
+        }
+        let f = self.fate_estimator.snapshot();
+        if f.n < STRUCTURE_GATE_MIN_N {
+            return None;
+        }
+        // Laplace-yumuşatılmış p11−p01: IID'de ≈0 (örnekleme gürültüsü ±), burst'te belirgin pozitif.
+        if f.burst_delta_ppm <= STRUCTURE_GATE_IID_MAX_DELTA_PPM {
+            Some(self.fuzzy.config().fec_med)
+        } else {
+            None
+        }
+    }
+
+    /// Commit-D: controller'ın-son-gördüğü girdiler (canonical; harness-örneklemesi dışarıdan).
+    /// `None` = henüz-hiç-fuzzy_evaluate-koşmadı.
+    #[must_use]
+    pub fn diag_fusion_input_snapshot(&self) -> Option<FusionInputSnapshot> {
+        self.last_fusion_snapshot
     }
 
     /// §3 state geçişleri. Öncelik: IDLE (iş yok) → RECOVER_FWD (ack_confidence LOW, her fazdan) →
@@ -1139,6 +3167,10 @@ impl Sender {
     /// Hepsi tek pacer'ı (token bucket) paylaşır (§9/§13): recovery fırtınası rate'i patlatamaz.
     fn schedule_transmit(&mut self, now_ns: u64) -> Vec<TransmitDecision> {
         let mut out = Vec::new();
+        // Commit-V (U12-atomik-plan-adım-1..5): pre-parity-drain'lerden-ÖNCE exact-emittable-kuantum-
+        // rezervasyonu (OFF'ta-derlenmez; LeftoverOnly'de-no-op → karar-dizisi-baseline-özdeş).
+        #[cfg(feature = "experimental-fec-budget")]
+        self.budget_reserve(now_ns);
         // [TUR-7 β2] ARQ token-payı: her K_ARQ_SHARE'inci grant'te retx ÖNCE dener (BOŞ-NÖBET
         // biter — retx fiilen wire'a çıkar); diğer grant'ler DATA-önce (ölçülü-karar korunur).
         self.arq_share_tick = self.arq_share_tick.wrapping_add(1);
@@ -1154,11 +3186,917 @@ impl Sender {
             SenderState::RecoverFwd => self.plan_forward_duplication(now_ns),
             _ => {}
         }
+        // DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → no-op): forced PTO tail probe, state-independent, after the
+        // normal ARQ planner (so it never double-plans a seq the planner already superseded).
+        self.emit_tail_probe(&mut out, now_ns);
+        // [DR-EST-1] PreConverge kuruluş-denemesi: §3.3-B kopya-makinesi ilk-ölçüm-öncesi
+        // PRE_CONVERGE_FLOOR_BW pacer'ına takılıp boğuluyordu (token-yok → break). Bu kol
+        // vadesi gelen EN-ESKİ kopyadan TEK datagram'ı token-MUAF geçirir; INV-RATE-1'e
+        // dokunmaz (send_rate/pacer-rate değişmez — ayrı bounded yan-kol), teyitle söner
+        // (PreConverge-çıkışı). EK4-A2: vadesi next_timer_deadline_ns kümesine DAHİL.
+        self.drain_establish_probe(&mut out, now_ns);
         self.drain_due_duplicates(&mut out, now_ns);
+        // DR-S5-1/Commit-K: FEC-parity DATA/recovery SONRASI (DATA-ÖNCE-sıralaması mühürlü). Drain'de
+        // mode-kapısı-YOK (üyelik=izin; girişte-kapılı) — buraya-drain-guard-EKLEME: Commit-K'nın
+        // kaldırdığı suppression-bug'ını-geri-getirir.
+        self.plan_fec_parity(&mut out, now_ns);
+        // Commit-V (U12-adım-8): gerçek-harcama-settle + waste-denetimi (normal-yolda-waste=0).
+        #[cfg(feature = "experimental-fec-budget")]
+        self.budget_settle();
+        // DR-CS-1 M2 (F2A): CS-probe pass'i EN-SONDA (F0-tespit-(vii) ekleme-noktası) — mühürlü
+        // DATA-önce-sıralama + FEC-budget-penceresi dokunulmaz; flag-OFF'ta derlenmez.
+        // DR-CS-3 SUPERSESSION: the legacy experimental ladder and the shipping bootstrap mechanism
+        // are two implementations of the SAME 0x19/0x1A protocol. When the shipping mechanism is
+        // enabled it is authoritative and the legacy pass is skipped, so a feature-enabled build can
+        // never run both ladders and emit duplicate generations.
+        #[cfg(feature = "experimental-cold-start")]
+        if !self.bootstrap_rtt.enabled {
+            self.drain_cs_probes(&mut out);
+        }
+        // DR-CS-3: bootstrap probe LAST — DATA, recovery and parity for this turn are already planned,
+        // so this can only append. It never occupies a slot a DATA emission would have used.
+        self.drain_bootstrap_probes(&mut out, now_ns);
         out
     }
 
+    /// FEC-emisyonu aç/kapa (DR-S5-1 guard). Engine FEC-etkinken açar; kapalı=mühürlü-hot-path.
+    /// Commit-G/K: otorite-mode-ayarı. Geçiş BLOCK-BOUNDARY-etkin ve otorite-bağlı-yolda-YAPISAL:
+    /// planlama witness'tan (Commit-I) + kuyruklu-parity üyelik=izin (Commit-K) → aktif-mode-değişimi
+    /// ne-açık-bloğun-planını ne-kuyruklu-parity'sinin-emisyonunu-etkiler; yalnız-SONRAKİ-open'ı-etkiler.
+    /// Immediate-global-emission-kill BU-API-DEĞİL (bilinçli; §7 safety-disable AYRI-DR-gerektirir).
+    /// Şimdilik-hatasız (Result-imza ileri-uyum).
+    pub fn set_fec_actuation_mode(
+        &mut self,
+        mode: FecActuationMode,
+    ) -> Result<(), FecAuthorityError> {
+        self.fec_mode = mode;
+        self.last_transition_event_index = self.fusion_event_index;
+        self.transition_applied_count = self.transition_applied_count.saturating_add(1);
+        Ok(())
+    }
+
+    /// Commit-I/K: blok-AÇILIŞINDA çağrılır — o-anki-aktif-mode + sender-kimliği + monoton-generation
+    /// witness'a-yakalanır. Bloğun-otorite-tüketimi (latch/manuel-close) bu-witness'la (yapısal
+    /// open-mode==close-mode; tek-kullanım-by-value). Generation `saturating_add` — u64::MAX'ta
+    /// (2^64-açılış; ulaşılamaz) uniqueness-durur, tek-kullanım-ownership'i-ETKİLENMEZ (belgeli).
+    #[must_use]
+    pub fn open_fec_block_authority(&mut self) -> FecBlockAuthority {
+        self.fec_authority_generation = self.fec_authority_generation.saturating_add(1);
+        FecBlockAuthority {
+            instance_id: self.instance_id,
+            generation: self.fec_authority_generation,
+            mode: self.fec_mode,
+        }
+    }
+
+    /// Commit-G: manuel-FEC-toggle — YALNIZ Manual-mode'da. Controller'da TYPED-red (sessiz-no-op-YASAK;
+    /// state-DEĞİŞMEZ; sayaç-artar).
+    ///
+    /// # Errors
+    /// [`FecAuthorityError::NotInManualMode`] — otorite-Controller'dayken.
+    pub fn set_manual_fec_enabled(&mut self, enabled: bool) -> Result<(), FecAuthorityError> {
+        match self.fec_mode {
+            FecActuationMode::Manual { .. } => {
+                self.fec_mode = FecActuationMode::Manual { enabled };
+                Ok(())
+            }
+            FecActuationMode::Controller => {
+                self.manual_toggle_rejected_count =
+                    self.manual_toggle_rejected_count.saturating_add(1);
+                Err(FecAuthorityError::NotInManualMode)
+            }
+        }
+    }
+
+    /// Commit-K: emisyon-İZİN-kapısı KUYRUK-GİRİŞİNE-taşındı (drain'den-kaldırıldı) — kuyruk-üyeliği=
+    /// kalıcı-emisyon-izni invariantı ("membership-as-permission"): izinsiz-item-hiç-girmez → current-
+    /// global-mode eski-bloğun-kuyruklu-parity'sini-BASTIRAMAZ (block-stable, Seçenek-1) + head-of-line-
+    /// contamination-imkansız. Yalnız-legacy-raw-enqueue bu-kapıyı-kullanır; otorite-bağlı-close'lar
+    /// izni-witness'tan-türetir.
+    fn fec_emission_enabled(&self) -> bool {
+        match self.fec_mode {
+            FecActuationMode::Manual { enabled } => enabled,
+            FecActuationMode::Controller => true,
+        }
+    }
+
+    /// Commit-K: OTORİTE-DOĞRULANMIŞ kuyruk-girişi (iç-yol; izin-kapısı-atlanır çünkü izin witness/
+    /// latch-kararından-türedi). Tek push-noktası: enqueued-sayacı-burada. Commit-N: attribution-
+    /// tag'leri (salt-teşhis; davranışa-etkisiz).
+    fn push_parity_authorized(
+        &mut self,
+        block_id: u32,
+        esi: u16,
+        size: u64,
+        authority_generation: Option<u64>,
+        authority_mode: FecActuationMode,
+        planned_r: Option<u16>,
+    ) {
+        self.parity_enqueued_total = self.parity_enqueued_total.saturating_add(1);
+        self.pending_fec.push_back(PendingFecParity {
+            block_id,
+            esi,
+            size,
+            authority_generation,
+            authority_mode,
+            planned_r,
+        });
+    }
+
+    /// Commit-K: MANUEL blok-KAPANIŞI — witness'ı BY-VALUE-TÜKETİR (tek-kullanım). Manual{true}-witness
+    /// → `manual_r`-adet parity kuyruklanır (esi 0..r; izin-witness'tan → sonraki-mode-değişimi-
+    /// bastıramaz); Manual{false}-witness → Ok(0) parity-yok (meşru-kapanış, hata-değil). Manuel-r-
+    /// politikası (değer-seçimi/clamp) çağıranın — production-block-owner-entegrasyonu DEFERRED.
+    ///
+    /// # Errors
+    /// [`FecAuthorityError::ForeignAuthority`] — witness-başka-Sender'ın (kimlik-reddi, mode'dan-ÖNCE).
+    /// [`FecAuthorityError::NotInManualMode`] — Controller-witness manuel-close'a-verildi.
+    pub fn close_fec_block_manual(
+        &mut self,
+        authority: FecBlockAuthority,
+        block_id: u32,
+        manual_r: u16,
+        parity_size: u64,
+    ) -> Result<u16, FecAuthorityError> {
+        if authority.instance_id != self.instance_id {
+            self.foreign_authority_rejected_count =
+                self.foreign_authority_rejected_count.saturating_add(1);
+            return Err(FecAuthorityError::ForeignAuthority);
+        }
+        match authority.mode {
+            FecActuationMode::Manual { enabled: true } => {
+                for esi in 0..manual_r {
+                    self.push_parity_authorized(
+                        block_id,
+                        esi,
+                        parity_size,
+                        Some(authority.generation),
+                        authority.mode,
+                        Some(manual_r),
+                    );
+                }
+                #[cfg(feature = "experimental-fec-budget")]
+                if manual_r > 0 {
+                    self.budget_admit_block(block_id, authority.generation, parity_size);
+                }
+                Ok(manual_r)
+            }
+            FecActuationMode::Manual { enabled: false } => Ok(0),
+            FecActuationMode::Controller => Err(FecAuthorityError::NotInManualMode),
+        }
+    }
+
+    /// Commit-G: controller-karar-anlık-görüntüsü (same-event-guard-girdisi; engine latch-öncesi-okur).
+    #[must_use]
+    pub fn controller_decision_snapshot(&self) -> Option<ControllerDecisionSnapshot> {
+        self.last_fusion_snapshot
+            .map(|s| ControllerDecisionSnapshot {
+                ratio_permille: self.last_decision.fec_parity_ratio_permille,
+                event_index: s.event_index,
+                no_rule: s.no_rule,
+                emergency: self.last_decision.mode == Mode::EmergencyForwardRedundancy,
+            })
+    }
+
+    /// Commit-G/K: block-close-LATCH — otorite-TÜKETİMİ + saf-karar-zinciri (§9) + planned-parity-
+    /// STAGING tek-atomik-operasyonda: fusion→same-event-eligibility→no-rule/initial-guard→ratio→
+    /// k_actual-r→profile-clamp→emergency-suppression→planned→(planned>0 ise esi 0..planned kuyruklanır,
+    /// izin-witness'tan → block-stable). Witness by-value-TÜKETİLİR (tek-kullanım E0382); yabancı-
+    /// Sender-witness'ı kimlik-guard'ıyla-reddedilir (mode-semantiğinden-ÖNCE). Her-adım
+    /// FecLatchResult'ta-görünür. Baskılamalar LITERAL-0 (config-bağımsız).
+    pub fn fec_controller_latch(
+        &mut self,
+        authority: FecBlockAuthority,
+        snapshot: Option<ControllerDecisionSnapshot>,
+        k_actual: u8,
+        profile_r_max: u16,
+        block_id: u32,
+        parity_size: u64,
+    ) -> FecLatchResult {
+        self.latch_event_index = self.fusion_event_index;
+        let zero = |ratio, why, same_ev| FecLatchResult {
+            requested_ratio_permille: ratio,
+            computed_r: 0,
+            clamped_r: 0,
+            planned_r: 0,
+            same_event_eligible: same_ev,
+            suppression: Some(why),
+        };
+        // Commit-K GUARD-ÖNCELİĞİ-1: kimlik (yabancı-witness) — otorite-semantiğinden-ÖNCE.
+        if authority.instance_id != self.instance_id {
+            self.foreign_authority_rejected_count =
+                self.foreign_authority_rejected_count.saturating_add(1);
+            let r = zero(0, FecSuppressionReason::ForeignAuthority, false);
+            self.last_latch = Some(r);
+            return r;
+        }
+        // Commit-I: otorite = WITNESS-mode (blok-açılış-yakalaması) — aktif-mode-DEĞİL.
+        let r = match authority.mode {
+            FecActuationMode::Manual { .. } => zero(0, FecSuppressionReason::ManualDisabled, false),
+            FecActuationMode::Controller => match snapshot {
+                None => {
+                    self.no_eligible_decision_count =
+                        self.no_eligible_decision_count.saturating_add(1);
+                    zero(0, FecSuppressionReason::NoEligibleDecision, false)
+                }
+                Some(s) if s.event_index != self.fusion_event_index => {
+                    // SAME-EVENT-CAUSALITY-GUARD (addendum-onaylı-ad): önceki-event-kararı yeni-bloğa
+                    // UYGULANMAZ; fail-closed LITERAL-0. (Ağ-staleness-politikası-DEĞİL — ayrı-faz.)
+                    self.decision_event_mismatch_count =
+                        self.decision_event_mismatch_count.saturating_add(1);
+                    zero(
+                        s.ratio_permille,
+                        FecSuppressionReason::DecisionEventMismatch,
+                        false,
+                    )
+                }
+                Some(s) if s.no_rule => {
+                    self.no_rule_zero_count = self.no_rule_zero_count.saturating_add(1);
+                    zero(0, FecSuppressionReason::NoRule, true) // LITERAL-0 (fec_zero-config'e-BAĞLI-DEĞİL)
+                }
+                Some(s) => {
+                    let (computed, clamped) =
+                        compute_requested_r(s.ratio_permille, k_actual, profile_r_max);
+                    if s.emergency {
+                        // Temporary safety interlock pending 1b/1d arbitration: requested-GÖRÜNÜR, planned=0.
+                        FecLatchResult {
+                            requested_ratio_permille: s.ratio_permille,
+                            computed_r: computed,
+                            clamped_r: clamped,
+                            planned_r: 0,
+                            same_event_eligible: true,
+                            suppression: Some(FecSuppressionReason::EmergencyPendingArbitration),
+                        }
+                    } else {
+                        FecLatchResult {
+                            requested_ratio_permille: s.ratio_permille,
+                            computed_r: computed,
+                            clamped_r: clamped,
+                            planned_r: clamped,
+                            same_event_eligible: true,
+                            suppression: None,
+                        }
+                    }
+                }
+            },
+        };
+        // Commit-K: STAGING — planned-parity witness-otoritesiyle-kuyruklanır (izin-kaynağı=bu-latch;
+        // sonraki-global-mode-değişimi-bastıramaz). planned_r=0 → kuyruk-dokunulmaz.
+        for esi in 0..r.planned_r {
+            self.push_parity_authorized(
+                block_id,
+                esi,
+                parity_size,
+                Some(authority.generation),
+                authority.mode,
+                Some(r.planned_r),
+            );
+        }
+        #[cfg(feature = "experimental-fec-budget")]
+        if r.planned_r > 0 {
+            self.budget_admit_block(block_id, authority.generation, parity_size);
+        }
+        self.last_latch = Some(r);
+        r
+    }
+
+    /// Commit-N: token-denial-teşhisi — `(son-denial-snapshot, kümülatif-denial-olay-sayısı)`.
+    /// SALT-GÖZLEM; §8.1-gauge'dan-ayrı (gauge=pending-adet; bu=attribution).
+    #[must_use]
+    pub fn diag_token_denial(&self) -> (Option<FecTokenDenialSnapshot>, u64) {
+        (self.last_token_denial, self.token_denial_count_total)
+    }
+
+    /// Commit-G/H: aktüasyon-teşhisi (named; son-latch + bounded-sayaçlar).
+    #[must_use]
+    pub fn diag_fec_actuation(&self) -> FecActuationDiag {
+        FecActuationDiag {
+            authority_mode: self.fec_mode,
+            last_latch: self.last_latch,
+            latch_event_index: self.latch_event_index,
+            no_eligible_decision_count: self.no_eligible_decision_count,
+            decision_event_mismatch_count: self.decision_event_mismatch_count,
+            no_rule_zero_count: self.no_rule_zero_count,
+            manual_toggle_rejected_count: self.manual_toggle_rejected_count,
+            enqueued_r_total: self.parity_enqueued_total,
+            emitted_r_total: self.parity_emitted_total,
+            // Commit-K-corrigendum: parity-iptalleri (retransmit-iptalleri diag_recovered_cancels'ta).
+            canceled_r_total: self.parity_canceled_total,
+            parity_enqueue_rejected_count: self.parity_enqueue_rejected_count,
+            foreign_authority_rejected_count: self.foreign_authority_rejected_count,
+            token_denied_r_gauge: self.token_denied_r_gauge,
+            last_transition_event_index: self.last_transition_event_index,
+            transition_applied_count: self.transition_applied_count,
+        }
+    }
+
+    /// LEGACY/test-sınıfı raw-enqueue (DR-S5-1-kökenli; TEST-HARNESS-yolu — üretim-block-owner otorite-
+    /// bağlı-close-API'lerini KULLANMALI: `fec_controller_latch`/`close_fec_block_manual`).
+    /// Commit-K izin-kapısı: emisyon-izni ENQUEUE-ANINDA-karara-bağlanır (aktif-mode-snapshot'ı) —
+    /// izinsiz (Manual{false}-aktif) çağrı KUYRUĞA-GİRMEZ (sayaç+diag-görünür; kuyruk-üyeliği=kalıcı-
+    /// emisyon-izni invariantı korunur). DAVRANIŞ-DEĞİŞİMİ (bilinçli, Seçenek-1): eski "OFF'ta-kuyrukta-
+    /// beklet, re-enable'da-devam" pause/resume-semantiği KALDIRILDI — izin artık-kaynak-anında-kalıcı.
+    /// SINIF-UYARISI (adversarial-bulgu m3): Controller-aktifken bu-yol KARARSIZ-battaniye-kabuldür
+    /// (`fec_emission_enabled()` Controller-kolu=true; latch-emergency-interlock'unu-atlar) —
+    /// deprecation product-reachability-sınıflandırmasının KOD-DÜZEYİ-enforcementıdır.
+    #[deprecated(
+        note = "legacy test-harness yolu — üretim-block-owner otorite-bağlı-close kullanmalı: \
+                fec_controller_latch / close_fec_block_manual (Commit-K)"
+    )]
+    pub fn enqueue_fec_parity(&mut self, block_id: u32, esi: u16, size: u64) {
+        if !self.fec_emission_enabled() {
+            self.parity_enqueue_rejected_count =
+                self.parity_enqueue_rejected_count.saturating_add(1);
+            return;
+        }
+        let mode = self.fec_mode;
+        self.push_parity_authorized(block_id, esi, size, None, mode, None);
+    }
+
+    /// DR-S5-3: wire-ACK'lenen seq'in logical-teyidini ayrı-deftere yazar (BOUNDED). **SALT-LOGICAL —
+    /// bw_sampler/btlbw/delivered'e DOKUNMAZ.** sent_logical'da-yoksa (DATA/bilinmeyen) NO-OP.
+    fn record_confirmed_logical(&mut self, seq: u64) {
+        if let Some(lref) = self.sent_logical.remove(&seq) {
+            if self.confirmed_logical.len() >= CONFIRMED_LOGICAL_CAP {
+                self.confirmed_logical.pop_front(); // bounded: drain-yoksa en-eski düşer (SR-AUDIT-001)
+            }
+            self.confirmed_logical
+                .push_back((seq, lref, ConfirmSource::WireAck));
+        } else {
+            // DR-S5-6: kayıtsız-seq'e ACK-teyidi (salt-teşhis). Normal-akışta zararsız (register-
+            // edilmemiş-DATA). M1'de-bile TEK-BAŞINA artefakt-göstergesi DEĞİL: miss>0 ∧ evicted==0
+            // beklenen Recovered→geç-ACK yarışıdır (RECOVERED kaydı-önce-teyit-etti). M1-hücre-
+            // işaretleme YALNIZ evicted>0 ile (SENT_LOGICAL_CAP yorumu; adversarial-ÇÜRÜT-1).
+            self.diag_confirmed_logical_miss += 1;
+        }
+    }
+
+    /// DR-S5-6: sent_logical'a BOUNDED-insert (SR-AUDIT-001). Seq'ler monoton → en-eski = en-küçük-seq
+    /// (`pop_first`). Eviction M1-artefakt-riski taşır → audit-sayaç (M1-guard: hücrede 0-olmalı).
+    fn insert_sent_logical(&mut self, seq: u64, lref: SrLogicalRef) {
+        if !self.sent_logical.contains_key(&seq) && self.sent_logical.len() >= SENT_LOGICAL_CAP {
+            self.sent_logical.pop_first(); // en-eski-seq düşer
+            self.diag_sent_logical_evicted += 1;
+        }
+        self.sent_logical.insert(seq, lref);
+    }
+
+    /// DR-S5-6 (M1-adalet; N8-v2 Not-2 kapanışı): engine, emit-edilmiş bir seq'in logical-kimliğini
+    /// deftere kaydeder — DATA-source için (FEC-parity `plan_fec_parity`'de zaten-kayıtlı). Transport
+    /// DATA'nın block/esi'sini BİLMEZ (SoC); çevrim-bilgisi engine'de, kayıt post-emit (TransmitDecision
+    /// pub seq üzerinden). **SALT-DEFTER — bw_sampler/btlbw/pacer/schedule'a DOKUNMAZ.**
+    pub fn register_sent_logical(&mut self, seq: u64, lref: SrLogicalRef) {
+        self.insert_sent_logical(seq, lref);
+    }
+
+    /// DR-S5-6 teşhis: (sent_logical-len, cap-evicted, ack-teyit-kayıtsız-miss). M1-guard:
+    /// hücre-koşusunda evicted==0 olmalı (aksi eviction-artefaktı → hücre-işaretlenir).
+    #[must_use]
+    pub fn diag_sent_logical(&self) -> (usize, u64, u64) {
+        (
+            self.sent_logical.len(),
+            self.diag_sent_logical_evicted,
+            self.diag_confirmed_logical_miss,
+        )
+    }
+
+    /// DR-S5-4 [SALT-LOGICAL — N8-firewall]: RECOVERED-control işle. YALNIZ pending_lost/dup_queue/
+    /// confirmed_logical'a dokunur; **bw_sampler/btlbw/credit_delivered/pacer'a SIFIR-satır**
+    /// (recovered≠ACK — kredi-yolu AÇILMAZ; §0 yasak-6-blok). Emit-üretmez (saf-state; on_event
+    /// erken-dönüşle schedule_transmit'i ATLAR).
+    fn on_recovered_control(&mut self, info: &RecoveredInfo) {
+        // K-8/F4 TETİK-2b: TimedOut-SONRASI §11 forward-recovery RECOVERED → PostTimeoutNotice
+        // (65B-sınıfı ACK-bağımsız heal; B1-amendman). SALT-LOGICAL (N8: BtlBw'ye dokunmaz). first-valid-
+        // proof-wins (slot-doluysa no-op). Yalnız TimedOut-terminali-alınmışsa (post-timeout).
+        #[cfg(feature = "experimental-cold-start")]
+        if self.cs_epoch_timed_out {
+            if let Some(ru) = info.units.first() {
+                let now = self.last_now_ns;
+                self.record_post_timeout_notice(
+                    ru.block_id,
+                    PostTimeoutCause::RecoveredControl,
+                    now,
+                );
+            }
+        }
+        for ru in &info.units {
+            // (i) retransmit-CANCEL: kurtarılan-unit'in bekleyen ARQ-retransmit'i iptal — FEC
+            // ana-avantajı (K2/M1: kurtardığını-retransmit-etmeme). Saf VecDeque-filtre;
+            // pacer yalnız retransmit-ATTEMPT'te okunur → cancel attempt'i hiç-başlatmaz.
+            let before = self.pending_lost.len();
+            self.pending_lost.retain(|r| r.unit.id != ru.unit_id);
+            self.diag_recovered_cancels += (before - self.pending_lost.len()) as u64;
+            // (ii) retention-RELEASE: bekleyen forward-dup kopyaları iptal (mevcut acked-cancel
+            // `dup_queue.retain(!acked_units.contains)` mekanizmasının birebir-paraleli).
+            self.dup_queue.retain(|d| d.unit.id != ru.unit_id);
+            // (iii) logical-defter: recovered-teyit (ConfirmSource::Recovered; SALT-LOGICAL).
+            self.record_recovered_logical(ru.block_id, ru.esi);
+            // (iv) Commit-K parity-CANCEL: blok-decode-edildi (RS all-or-nothing) → o-bloğun-kuyruklu-
+            // parity'si-anlamsız; block_id-bazlı-retain (sıra-korunur; authority-binding-cancel'i-
+            // BOZMAZ — üyelik-izni-iptalle-çelişmez, iptal=iş-yok-oldu). bw/pacer'a-SIFIR-satır (N8).
+            let before_fec = self.pending_fec.len();
+            self.pending_fec.retain(|p| p.block_id != ru.block_id);
+            self.parity_canceled_total = self
+                .parity_canceled_total
+                .saturating_add((before_fec - self.pending_fec.len()) as u64);
+            // Commit-V/U4: ticket-CanceledMoot (deadline-öncesi≠miss; sonrası-miss-zaten-1-kez-sayıldı).
+            #[cfg(feature = "experimental-fec-budget")]
+            {
+                let now = self.last_now_ns;
+                let mut before_cnt = 0u64;
+                let mut after_cnt = 0u64;
+                self.budget_ext.tickets.retain(|t| {
+                    if t.block_id == ru.block_id {
+                        if t.missed || now > t.deadline_ns {
+                            after_cnt += 1;
+                        } else {
+                            before_cnt += 1;
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
+                self.budget_ext.tk_cancel_before =
+                    self.budget_ext.tk_cancel_before.saturating_add(before_cnt);
+                self.budget_ext.tk_cancel_after =
+                    self.budget_ext.tk_cancel_after.saturating_add(after_cnt);
+            }
+        }
+    }
+
+    /// DR-S5-4: recovered-logical'ı defter'e yaz (ConfirmSource::Recovered). sent_logical'da kayıtlı
+    /// bir emisyonu (block_id, esi) varsa onu teyit-eder (kayıtsız-recovered → NO-OP; bilinmeyen-logical
+    /// teyit-edilmez — record_confirmed_logical'ın unknown-seq-NO-OP'uyla simetrik). **bw'ye DOKUNMAZ.**
+    fn record_recovered_logical(&mut self, block_id: u32, esi: u16) {
+        let found = self
+            .sent_logical
+            .iter()
+            .find(|(_, lref)| {
+                matches!(lref, SrLogicalRef::Fec { block_id: b, esi: e } if *b == block_id && *e == esi)
+            })
+            .map(|(&seq, _)| seq);
+        if let Some(seq) = found {
+            if let Some(lref) = self.sent_logical.remove(&seq) {
+                if self.confirmed_logical.len() >= CONFIRMED_LOGICAL_CAP {
+                    self.confirmed_logical.pop_front(); // bounded (SR-AUDIT-001)
+                }
+                self.confirmed_logical
+                    .push_back((seq, lref, ConfirmSource::Recovered));
+            }
+        }
+    }
+
+    /// Engine teyit-edilen logical-paketleri drenajlar (ARQ-cancel/retention; DR-S5-3 + DR-S5-4
+    /// ConfirmSource-marker). Salt-logical defter; BtlBw/rate ile ilgisi YOK.
+    pub fn take_confirmed_logical(&mut self) -> Vec<(u64, SrLogicalRef, ConfirmSource)> {
+        self.confirmed_logical.drain(..).collect()
+    }
+
+    /// DR-S5-4 (K2/M1-sinyali): RECOVERED ile iptal-edilen bekleyen-retransmit sayısı. M1'de
+    /// FEC-arm-metriği olarak okunur ("FEC kurtardığını-retransmit-etmiyor"un ölçülebilir-kanıtı).
+    #[must_use]
+    pub fn diag_recovered_cancels(&self) -> u64 {
+        self.diag_recovered_cancels
+    }
+
+    /// Teyit-edilen-logical defter uzunluğu (teşhis/test; DR-S5-3).
+    #[must_use]
+    pub fn diag_confirmed_logical_count(&self) -> usize {
+        self.confirmed_logical.len()
+    }
+
+    /// Bekleyen FEC-parity'yi pace-ederek emit et (DR-S5-1/Commit-K). Kuyruk-üyeliği=emisyon-izni
+    /// (izin-kapısı-girişte) → drain'de-mode-kontrolü-YOK: current-global-mode eski-bloğun-kuyruklu-
+    /// parity'sini-BASTIRAMAZ (block-stable). FEC-off-hot-path: kuyruk-boş → while-hiç-girmez,
+    /// allocation-yok (C-kuralı byte-değişmez). Pacing: mevcut `pacer.try_send` (TokenBucket-internals'a
+    /// DOKUNMAZ; data/retx ile aynı-API). send-record-hint üretir.
+    fn plan_fec_parity(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        // Commit-V/F2: FloorCap'te ticket'lı-blokların-İLK-parity'si-önce (parity-İÇİ-seçim; onaylı-scope).
+        #[cfg(feature = "experimental-fec-budget")]
+        self.budget_service_tickets(out, now_ns);
+        while let Some(&p) = self.pending_fec.front() {
+            #[cfg(feature = "experimental-fec-budget")]
+            if !self.budget_parity_allows(p.size) {
+                break; // C1-canlı: kernel-limit (Leftover'da-None → hiç-girmez; baseline-özdeş)
+            }
+            let balance_before = self.pacer.tokens(); // READ-ONLY (mühürlü-TokenBucket'a-dokunulmaz)
+            if !self.pacer.try_send(p.size) {
+                // Commit-G: budget-denied-GÖRÜNÜRLÜĞÜ (gauge; 1b-tasarım-girdisi — politika-DEĞİŞMEDİ).
+                self.token_denied_r_gauge = self.pending_fec.len() as u64;
+                // Commit-N: attribution-snapshot (TAM-overwrite; yalnız-GERÇEK-token-denial-yolu).
+                self.token_denial_count_total = self.token_denial_count_total.saturating_add(1);
+                self.last_token_denial = Some(FecTokenDenialSnapshot {
+                    denial_event_index: self.fusion_event_index,
+                    block_id: p.block_id,
+                    authority_generation: p.authority_generation,
+                    authority_mode: p.authority_mode,
+                    pending_parity_total: self.pending_fec.len() as u64,
+                    pending_for_block: self
+                        .pending_fec
+                        .iter()
+                        .filter(|q| q.block_id == p.block_id)
+                        .count() as u64,
+                    parity_size_bytes: p.size,
+                    token_balance_before: balance_before,
+                    planned_r: p.planned_r,
+                    emitted_r_total_at_denial: self.parity_emitted_total,
+                });
+                break; // token yok → sonraki tick (data/retx ile aynı pacing-davranışı).
+            }
+            let _sz = self.emit_parity_at(0, out, now_ns);
+            #[cfg(feature = "experimental-fec-budget")]
+            self.budget_parity_spend(_sz);
+        }
+    }
+
+    /// Parity-emisyon-gövdesi (Commit-V-refaktörü; davranış-birebir — try_send-BAŞARISI-sonrası-çağrılır).
+    /// idx: kuyruk-konumu (bulk=0; F2-ticket-servisi-hedef-blok-item'ı). Döner: emit-edilen-boyut.
+    fn emit_parity_at(&mut self, idx: usize, out: &mut Vec<TransmitDecision>, now_ns: u64) -> u64 {
+        let p = self
+            .pending_fec
+            .remove(idx)
+            .expect("emit_parity_at: idx-geçerli");
+        self.parity_emitted_total = self.parity_emitted_total.saturating_add(1);
+        let seq = self.track_sent(
+            OpaqueUnit {
+                id: u64::from(p.esi),
+                size: p.size,
+            },
+            now_ns,
+            0,
+            TransmitKind::FecParity,
+        );
+        // DR-S5-3: emit-anında seq→logical kaydı (ACK-teyidinde eşlenecek; SALT-LOGICAL).
+        // DR-S5-6: bounded-helper'dan (cap-altında davranış-özdeş).
+        self.insert_sent_logical(
+            seq,
+            SrLogicalRef::Fec {
+                block_id: p.block_id,
+                esi: p.esi,
+            },
+        );
+        out.push(TransmitDecision {
+            kind: TransmitKind::FecParity,
+            seq,
+            unit_id: u64::from(p.esi),
+            size: p.size,
+            send_record: Some(SendRecordHint {
+                logical_ref: SrLogicalRef::Fec {
+                    block_id: p.block_id,
+                    esi: p.esi,
+                },
+                packet_class: SrPacketClass::Repair,
+                send_generation: 0,
+            }),
+        });
+        p.size
+    }
+
+    // ── Commit-V: EXPERIMENTAL-BUDGET metodları (cfg; OFF'ta-derlenmez) ──
+
+    /// U6: policy-geçişi — Busy-guard (ticket/bulk/rezerv-boşken); başarıda credit-reset,
+    /// kümülatif-sayaçlar-KORUNUR, gauge'lar-sıfır (last_floor_miss-KORUNUR — dokümante).
+    #[cfg(feature = "experimental-fec-budget")]
+    pub fn set_budget_policy(
+        &mut self,
+        policy: BudgetPolicy,
+    ) -> Result<(), BudgetPolicyTransitionError> {
+        if !self.budget_ext.tickets.is_empty()
+            || !self.pending_fec.is_empty()
+            || self.budget_ext.reserved_now > 0
+        {
+            return Err(BudgetPolicyTransitionError::Busy);
+        }
+        self.budget_ext.policy = policy;
+        self.budget_ext.state.reset();
+        self.budget_ext.reserved_now = 0;
+        self.budget_ext.pending_decision = None;
+        self.budget_ext.spent_this_opportunity = 0;
+        self.budget_ext.profile_parity_size = 0;
+        Ok(())
+    }
+
+    /// Canlı-telemetri (salt-gözlem).
+    #[cfg(feature = "experimental-fec-budget")]
+    #[must_use]
+    pub fn diag_budget(&self) -> BudgetDiag {
+        let b = &self.budget_ext;
+        BudgetDiag {
+            entitlement_credit: b.state.entitlement_credit,
+            hardcap_credit: b.state.hardcap_credit,
+            reserved_now: b.reserved_now,
+            tickets_pending: b.tickets.len() as u64,
+            tk_rejected: b.tk_rejected,
+            tk_admitted: b.tk_admitted,
+            tk_on_time: b.tk_on_time,
+            tk_late: b.tk_late,
+            tk_missed_unique: b.tk_missed_unique,
+            tk_cancel_before: b.tk_cancel_before,
+            tk_cancel_after: b.tk_cancel_after,
+            bulk_admission_rejected: b.bulk_admission_rejected,
+            last_floor_miss: b.last_floor_miss,
+            reservation_waste_total: b.reservation_waste_total,
+            new_data_displaced: b.new_data_displaced,
+            retx_displaced: b.retx_displaced,
+            cap_suppressed_events: b.cap_suppressed_events,
+            rate_zero_events: b.rate_zero_events,
+        }
+    }
+
+    #[cfg(feature = "experimental-fec-budget")]
+    fn budget_kind_params(
+        &self,
+    ) -> Option<(
+        crate::budget_kernel::PolicyKind,
+        crate::budget_kernel::PolicyParams,
+    )> {
+        match self.budget_ext.policy {
+            BudgetPolicy::LeftoverOnly => None,
+            BudgetPolicy::ProtectedShareExperimental(p) => {
+                Some((crate::budget_kernel::PolicyKind::ProtectedShare, p))
+            }
+            BudgetPolicy::FloorCapExperimental(p) => {
+                Some((crate::budget_kernel::PolicyKind::FloorCap, p))
+            }
+        }
+    }
+
+    /// U12-atomik-rezervasyon: yalnız-AYNI-opportunity'de-gerçekten-emit-edilebilir-TAM-kuantum.
+    /// (RECOVERED-cancel'ler kendi-event'lerinde-önce-işlenmiştir — moot-item-rezervi-yapısal-yok.)
+    #[cfg(feature = "experimental-fec-budget")]
+    #[allow(clippy::cast_possible_truncation)]
+    fn budget_reserve(&mut self, now_ns: u64) {
+        self.budget_ext.spent_this_opportunity = 0;
+        let Some((kind, params)) = self.budget_kind_params() else {
+            self.budget_ext.reserved_now = 0; // LeftoverOnly: inert (baseline-özdeş)
+            self.budget_ext.parity_budget_left = None;
+            return;
+        };
+        let elapsed = now_ns.saturating_sub(self.budget_ext.last_opportunity_ns);
+        self.budget_ext.last_opportunity_ns = now_ns;
+        let rate = self.pacer.rate();
+        if rate == 0 {
+            // U7: SuspendedNoRate (üretim-yolu-pratik-erişilmez; ölçülür).
+            self.budget_ext.rate_zero_events = self.budget_ext.rate_zero_events.saturating_add(1);
+            self.budget_ext.reserved_now = 0;
+            return;
+        }
+        // U4-miss-taraması: deadline-İLK-aşımı → missed-tam-1-kez + snapshot-overwrite.
+        let ev = self.fusion_event_index;
+        let pend_items = self.pending_fec.len() as u64;
+        let pend_tickets = self.budget_ext.tickets.len() as u64;
+        for t in &mut self.budget_ext.tickets {
+            if !t.missed && now_ns > t.deadline_ns {
+                t.missed = true;
+                self.budget_ext.tk_missed_unique =
+                    self.budget_ext.tk_missed_unique.saturating_add(1);
+                self.budget_ext.last_floor_miss = Some(FloorMissSnapshot {
+                    block_id: t.block_id,
+                    generation: t.generation,
+                    event_index: ev,
+                    pending_items: pend_items,
+                    pending_tickets: pend_tickets,
+                    cap_suppressed: false,
+                });
+            }
+        }
+        // Talepler (bounded-hesap; teşhis-sınıfı — erken-kesme available+psize-üstünde).
+        let avail = self.pacer.tokens();
+        let cutoff = avail.saturating_add(4 * DEFAULT_MTU);
+        let mut data_demand = 0u64;
+        for u in &self.tx_queue {
+            data_demand += u.size;
+            if data_demand > cutoff {
+                break;
+            }
+        }
+        let mut arq_demand = 0u64;
+        for r in &self.pending_lost {
+            arq_demand += r.unit.size;
+            if arq_demand > cutoff {
+                break;
+            }
+        }
+        let psize = self
+            .pending_fec
+            .front()
+            .map_or(self.budget_ext.profile_parity_size, |x| x.size);
+        let bulk_bytes: u64 = self.pending_fec.iter().map(|x| x.size).sum();
+        let n_tickets = self.budget_ext.tickets.len() as u32;
+        let bulk_minus_tickets =
+            bulk_bytes.saturating_sub(u64::from(n_tickets).saturating_mul(psize));
+        let oldest_age = self.budget_ext.tickets.front().map_or(0, |t| {
+            now_ns
+                .saturating_sub(t.deadline_ns.saturating_sub(0))
+                .min(now_ns)
+        });
+        let ctx = crate::budget_kernel::BudgetContext {
+            elapsed_ns: elapsed,
+            pacing_rate_bps: rate,
+            available_tokens: avail,
+            data_demand_bytes: data_demand,
+            arq_demand_bytes: arq_demand,
+            bulk_parity_demand_bytes: bulk_minus_tickets,
+            floor_tickets: n_tickets,
+            oldest_ticket_age_ns: oldest_age,
+            parity_size: psize,
+            srtt_ns: self.rtt.srtt().map_or(0, dur_ns),
+        };
+        let mut st = self.budget_ext.state;
+        let d = crate::budget_kernel::step(kind, &params, &mut st, &ctx);
+        self.budget_ext.state = st;
+        if d.cap_suppressed {
+            self.budget_ext.cap_suppressed_events =
+                self.budget_ext.cap_suppressed_events.saturating_add(1);
+        }
+        // U12-EXACT-kuantum: rezerv = tam-emit-edilebilir-birimler (limit, pacer-toplamı, pending).
+        let reserved = d.parity_token_limit.checked_div(psize).map_or(0, |units| {
+            units
+                .min(avail / psize)
+                .min(self.pending_fec.len() as u64)
+                .saturating_mul(psize)
+        });
+        self.budget_ext.pending_decision = Some(d);
+        self.budget_ext.reserved_now = reserved;
+        self.budget_ext.parity_budget_left = Some(d.parity_token_limit);
+    }
+
+    /// C1-canlı-enforcement: parity-harcaması kernel-limitini-aşamaz (Leftover: None=sınırsız-baseline).
+    #[cfg(feature = "experimental-fec-budget")]
+    fn budget_parity_allows(&self, size: u64) -> bool {
+        self.budget_ext
+            .parity_budget_left
+            .is_none_or(|left| left >= size)
+    }
+
+    #[cfg(feature = "experimental-fec-budget")]
+    fn budget_parity_spend(&mut self, size: u64) {
+        if let Some(left) = self.budget_ext.parity_budget_left.as_mut() {
+            *left = left.saturating_sub(size);
+        }
+        self.budget_ext.spent_this_opportunity =
+            self.budget_ext.spent_this_opportunity.saturating_add(size);
+    }
+
+    /// F2-ticket-servisi (FloorCap): ticket-FIFO-önünden; hedef-bloğun-İLK-pending-item'ı (bounded-scan).
+    #[cfg(feature = "experimental-fec-budget")]
+    fn budget_service_tickets(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        if !matches!(
+            self.budget_ext.policy,
+            BudgetPolicy::FloorCapExperimental(_)
+        ) {
+            return;
+        }
+        while let Some(t) = self.budget_ext.tickets.front().copied() {
+            let Some(idx) = self
+                .pending_fec
+                .iter()
+                .position(|q| q.block_id == t.block_id)
+            else {
+                // Item-yok (yarış-artığı): ticket-düş (cancel-muhasebesi RECOVERED-yolunda yapılır).
+                self.budget_ext.tickets.pop_front();
+                continue;
+            };
+            let size = self.pending_fec[idx].size;
+            if !self.budget_parity_allows(size) {
+                break; // C1: kernel-parity-limiti (hardcap-dahil) aşılamaz → miss-adayı (teşhisli)
+            }
+            if !self.pacer.try_send(size) {
+                break; // token-yok → sonraki-opportunity (miss-taraması-rezervde)
+            }
+            let sz = self.emit_parity_at(idx, out, now_ns);
+            self.budget_parity_spend(sz);
+            self.budget_ext.tickets.pop_front();
+            if t.missed || now_ns > t.deadline_ns {
+                self.budget_ext.tk_late = self.budget_ext.tk_late.saturating_add(1);
+            } else {
+                self.budget_ext.tk_on_time = self.budget_ext.tk_on_time.saturating_add(1);
+            }
+        }
+    }
+
+    /// U12-adım-8: settle + waste-denetimi (normal-deterministik-yolda waste=0 — kabul-kriteri).
+    #[cfg(feature = "experimental-fec-budget")]
+    fn budget_settle(&mut self) {
+        let Some(d) = self.budget_ext.pending_decision.take() else {
+            self.budget_ext.reserved_now = 0;
+            return;
+        };
+        let Some((kind, params)) = self.budget_kind_params() else {
+            self.budget_ext.reserved_now = 0;
+            return;
+        };
+        // C1-canlı-enforcement-sonrası spent ≤ limit YAPISAL (clamp-maskesi-yok; kernel-assert-gerçek).
+        let spent = self.budget_ext.spent_this_opportunity;
+        if self.budget_ext.reserved_now > spent {
+            self.budget_ext.reservation_waste_total = self
+                .budget_ext
+                .reservation_waste_total
+                .saturating_add(self.budget_ext.reserved_now - spent);
+        }
+        let mut st = self.budget_ext.state;
+        let _borrowed = crate::budget_kernel::settle(kind, &params, &mut st, &d, spent);
+        self.budget_ext.state = st;
+        self.budget_ext.reserved_now = 0;
+        self.budget_ext.parity_budget_left = None;
+        self.budget_ext.spent_this_opportunity = 0;
+    }
+
+    /// U-staging-hook: otorite-bağlı-staging-sonrası ticket-admission + bulk-cap (yalnız-experimental-
+    /// policy'de; LeftoverOnly'de-çağrı-inert). U11: size-sabitliği-enforce (≠profil → ticket-yok).
+    #[cfg(feature = "experimental-fec-budget")]
+    fn budget_admit_block(&mut self, block_id: u32, generation: u64, parity_size: u64) {
+        let Some((kind, params)) = self.budget_kind_params() else {
+            return;
+        };
+        if kind != crate::budget_kernel::PolicyKind::FloorCap {
+            return;
+        }
+        if self.budget_ext.profile_parity_size == 0 {
+            self.budget_ext.profile_parity_size = parity_size;
+        }
+        let caps = crate::budget_kernel::AdmissionCaps {
+            pending_items_cap: 64,
+            pending_bytes_cap: 64 * self.budget_ext.profile_parity_size.max(1),
+            floor_ticket_cap: 8,
+            per_block_admitted_cap: 8,
+            parity_size_max: 2 * DEFAULT_MTU,
+        };
+        let has_ticket = self
+            .budget_ext
+            .tickets
+            .iter()
+            .any(|t| t.block_id == block_id);
+        let size_ok = parity_size == self.budget_ext.profile_parity_size;
+        let res = crate::budget_kernel::admit(
+            &caps,
+            self.pending_fec.len() as u32,
+            self.pending_fec.iter().map(|x| x.size).sum(),
+            self.budget_ext.tickets.len() as u32,
+            0,
+            parity_size,
+            true,
+            has_ticket,
+            size_ok, // size≠profil → bulk-only (U11 strict-FIFO-güvencesi)
+        );
+        match res {
+            crate::budget_kernel::AdmissionResult::AdmittedWithFloorTicket => {
+                let rate = self.pacer.rate();
+                let srtt = self.rtt.srtt().map_or(0, dur_ns);
+                let delta =
+                    match crate::budget_kernel::floor_timing(&params, srtt, parity_size, rate) {
+                        crate::budget_kernel::FloorTiming::Eligible { deadline_delta_ns } => {
+                            deadline_delta_ns
+                        }
+                        _ => {
+                            // U7: rate=0 → askıda; deadline-ilk-pozitif-rate'te-başlar (burada: uzak-işaret).
+                            self.budget_ext.rate_zero_events =
+                                self.budget_ext.rate_zero_events.saturating_add(1);
+                            u64::MAX / 2
+                        }
+                    };
+                self.budget_ext.tickets.push_back(FloorTicket {
+                    block_id,
+                    generation,
+                    deadline_ns: self.last_now_ns.saturating_add(delta),
+                    missed: false,
+                });
+                self.budget_ext.tk_admitted = self.budget_ext.tk_admitted.saturating_add(1);
+            }
+            crate::budget_kernel::AdmissionResult::AdmittedBulkOnly => {}
+            _ => {
+                self.budget_ext.tk_rejected = self.budget_ext.tk_rejected.saturating_add(1);
+            }
+        }
+    }
+
     /// RECOVER_ARQ (§9): ACK-güdümlü selective retransmit. arq_aggressiveness=0 → baskıla (fec-dominant).
+    /// Commit-V: pre-parity-token-kapısı. OFF: saf-try_send (inline; byte-özdeş). ON: rezerv-korunur —
+    /// `tokens < size + reserved` → red (yalnız-tokens≥size-iken-displacement-sayılır: "would-have-sent").
+    #[inline]
+    fn try_send_pre_parity(&mut self, size: u64, is_retx: bool) -> bool {
+        #[cfg(feature = "experimental-fec-budget")]
+        {
+            let r = self.budget_ext.reserved_now;
+            if r > 0 && self.pacer.tokens() < size.saturating_add(r) {
+                if self.pacer.tokens() >= size {
+                    if is_retx {
+                        self.budget_ext.retx_displaced =
+                            self.budget_ext.retx_displaced.saturating_add(size);
+                    } else {
+                        self.budget_ext.new_data_displaced =
+                            self.budget_ext.new_data_displaced.saturating_add(size);
+                    }
+                }
+                return false;
+            }
+        }
+        #[cfg(not(feature = "experimental-fec-budget"))]
+        let _ = is_retx;
+        self.pacer.try_send(size)
+    }
+
     fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         let lost: Vec<LostSeq> = self
             .pending_lost
@@ -1179,8 +4117,20 @@ impl Sender {
                         continue;
                     };
                     let rec = self.pending_lost[pos];
-                    if !self.pacer.try_send(rec.unit.size) {
+                    #[cfg(feature = "diag-sched-telemetry")]
+                    {
+                        self.sched_diag.arq_retransmit_selected += 1;
+                    }
+                    if !self.try_send_pre_parity(rec.unit.size, true) {
+                        #[cfg(feature = "diag-sched-telemetry")]
+                        {
+                            self.sched_diag.arq_retransmit_token_denied += 1;
+                        }
                         break; // token yok → sonraki tick'te (deadline plandan düşmez, §9).
+                    }
+                    #[cfg(feature = "diag-sched-telemetry")]
+                    {
+                        self.sched_diag.arq_retransmit_wire_emitted += 1;
                     }
                     self.pending_lost.remove(pos);
                     // [TUR-2c D-1/3 kol-2] Orijinalin tombstone'u SUPERSEDED: retx-sonrası-
@@ -1197,6 +4147,7 @@ impl Sender {
                         seq: new_seq,
                         unit_id: rec.unit.id,
                         size: rec.unit.size,
+                        send_record: None,
                     });
                 }
                 RetxDecision::CapExceeded { seq, policy } => {
@@ -1218,6 +4169,103 @@ impl Sender {
                 }
             }
         }
+    }
+
+    /// DR-ARQ-PRODUCT-TAIL-1 (gated; ON-only — never reached when disabled): retire a still-outstanding `seq` from
+    /// inflight into a bounded tombstone WITHOUT declaring loss (no pending_lost push, no loss-counter mutation —
+    /// INV-RATE-1). Used by the PTO tail probe to supersede the original before retransmitting a probe copy, so a
+    /// late ACK of the ORIGINAL seq is disambiguated (Karn) and its bytes are not double-counted in inflight.
+    /// Mirrors the Data/Duplicate tombstone bookkeeping of `queue_losses` (same expiry clock, bounded eviction,
+    /// bw in-flight accounting) minus the loss semantics. OFF-mode is unaffected (this is unreachable when disabled).
+    fn retire_inflight_to_tombstone(&mut self, seq: u64, now_ns: u64) {
+        let Some(p) = self.inflight.remove(&seq) else {
+            return;
+        };
+        self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+        if p.origin == TransmitKind::Duplicate {
+            // Dup-origin: no tombstone (matches queue_losses) — drop the in-flight count here.
+            self.bw_sampler.forget_in_flight();
+            return;
+        }
+        let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+        let t_loss_ns = (dur_ns(srtt) * 9 / 8).max(dur_ns(self.cadence_loss_floor()));
+        let expiry_ns = now_ns.saturating_add(t_loss_ns.saturating_mul(u64::from(K_TOMB)));
+        while self.tombstones.len() >= TOMBSTONE_MAX {
+            match self.tombstone_order.pop_front() {
+                Some(old) => {
+                    if self.tombstones.remove(&old).is_some() {
+                        self.tombstone_evicted += 1;
+                        self.bw_sampler.forget_in_flight();
+                    }
+                }
+                None => break,
+            }
+        }
+        self.tombstone_order.push_back(seq);
+        self.tombstones.insert(
+            seq,
+            TombstoneRec {
+                unit: p.unit,
+                send_ns: p.send_ns,
+                bw_sample: p.bw_sample,
+                retx_count: p.retx_count,
+                origin: p.origin,
+                expiry_ns,
+            },
+        );
+    }
+
+    /// DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → no-op): emit at most one forced PTO tail probe. Called from
+    /// schedule_transmit AFTER the normal ARQ planner and REGARDLESS of sender state (a PTO probe is independent of
+    /// the RecoverArq state machine). ARQ-eligibility override ONLY — emission still uses the safe token
+    /// (try_send_pre_parity) + track_sent path (no pacing/wire-format bypass). Re-verifies the target is still
+    /// outstanding at emission time (ACK race / already-retransmitted ⇒ absent from inflight ⇒ cancelled, attempt NOT
+    /// consumed). Declares NO "confirmed loss" (pending_lost/loss counters untouched — INV-RATE-1). Karn: the probe
+    /// copy is emitted as a Retransmit (origin ≠ Data ⇒ excluded from RTT sampling) and the superseded original's
+    /// tombstone retx_count is bumped so its late ACK is Karn-excluded too. Cap spent only on a real emission (§3).
+    fn emit_tail_probe(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        if !self.tail_recovery.is_enabled() {
+            return;
+        }
+        let Some(target) = self.tail_probe_pending.take() else {
+            return;
+        };
+        let Some((unit, retx_count)) = self.inflight.get(&target).map(|r| (r.unit, r.retx_count))
+        else {
+            // target no longer outstanding (ACK race / already retransmitted) → cancelled; attempt NOT consumed.
+            self.tail_probe_cancelled = self.tail_probe_cancelled.saturating_add(1);
+            return;
+        };
+        #[cfg(feature = "diag-sched-telemetry")]
+        {
+            self.sched_diag.tail_probe_selected += 1;
+        }
+        if !self.try_send_pre_parity(unit.size, true) {
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.tail_probe_token_denied += 1;
+            }
+            self.tail_probe_pending = Some(target); // no token → keep pending; cap NOT consumed.
+            return;
+        }
+        #[cfg(feature = "diag-sched-telemetry")]
+        {
+            self.sched_diag.tail_probe_wire_emitted += 1;
+        }
+        // Supersede the still-outstanding original: retire it inflight→tombstone (no loss declaration), then bump
+        // the tombstone so the original's late ACK is Karn-excluded, then emit the probe copy under a fresh seq.
+        self.retire_inflight_to_tombstone(target, now_ns);
+        self.mark_tombstone_superseded(target);
+        let new_seq = self.track_sent(unit, now_ns, retx_count + 1, TransmitKind::Retransmit);
+        out.push(TransmitDecision {
+            kind: TransmitKind::Retransmit,
+            seq: new_seq,
+            unit_id: unit.id,
+            size: unit.size,
+            send_record: None,
+        });
+        self.tail_recovery.on_probe_sent(now_ns); // spend the attempt only on a real emission.
+        self.tail_recovery.record_probe(unit.size, false);
     }
 
     /// RECOVER_FWD (§11): ACK-BAĞIMSIZ forward duplication. Kayıp birimleri `factor` kez zaman-aralıklı
@@ -1274,6 +4322,76 @@ impl Sender {
     }
 
     /// Vadesi gelen duplicate kopyalarını pace ederek emit et (§11 spacing).
+    /// [DR-EST-1] Bkz. schedule_transmit'teki çağrı-yorumu. Tek-slot, backoff'lu, token-muaf.
+    fn drain_establish_probe(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        if !self.establish_probe_enabled {
+            return;
+        }
+        if self.state != SenderState::PreConverge {
+            self.establish_due_ns = 0; // teyit geldi / faz değişti → söner.
+            return;
+        }
+        if self.dup_queue.is_empty() {
+            return; // kaynak yok (ilk DATA henüz kopya planlamadı).
+        }
+        if self.establish_due_ns == 0 {
+            self.establish_interval_ns = ESTABLISH_PROBE_INITIAL_NS;
+            self.establish_due_ns = now_ns.saturating_add(self.establish_interval_ns);
+            return;
+        }
+        if now_ns < self.establish_due_ns {
+            return;
+        }
+        // En-eski vadeli §3.3-B kopyası; drain_due_duplicates gövdesinin try_send'siz tek-elemanlı
+        // ikizi — dup'ın KENDİ geometrik reschedule'ı aynen sürer (kopya-sayısı şişmez).
+        let Some(i) = self
+            .dup_queue
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, d)| d.due_ns)
+            .map(|(i, _)| i)
+        else {
+            return;
+        };
+        let dup = self.dup_queue.remove(i);
+        let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
+        out.push(TransmitDecision {
+            kind: TransmitKind::Duplicate,
+            seq,
+            unit_id: dup.unit.id,
+            size: dup.unit.size,
+            send_record: None,
+        });
+        if dup.interval_ns > 0 {
+            let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER);
+            self.dup_queue.push(DupRec {
+                due_ns: now_ns.saturating_add(next_interval),
+                unit: dup.unit,
+                interval_ns: next_interval,
+            });
+        }
+        self.establish_probe_emitted = self.establish_probe_emitted.saturating_add(1);
+        self.establish_interval_ns = self
+            .establish_interval_ns
+            .saturating_mul(2)
+            .min(ESTABLISH_PROBE_CAP_NS);
+        self.establish_due_ns = now_ns.saturating_add(self.establish_interval_ns);
+    }
+
+    /// [DR-EST-1] Kuruluş-kolu anahtarı (test-görünür; default-ON). Bkz. alan-doc'u.
+    pub fn set_establish_probe(&mut self, on: bool) {
+        self.establish_probe_enabled = on;
+        if !on {
+            self.establish_due_ns = 0;
+        }
+    }
+
+    /// [DR-EST-1] gözlem-sayacı.
+    #[must_use]
+    pub fn diag_establish_probe_emitted(&self) -> u64 {
+        self.establish_probe_emitted
+    }
+
     fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         let mut i = 0;
         while i < self.dup_queue.len() {
@@ -1281,8 +4399,20 @@ impl Sender {
                 i += 1;
                 continue; // henüz vadesi gelmedi.
             }
-            if !self.pacer.try_send(self.dup_queue[i].unit.size) {
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.dup_selected += 1;
+            }
+            if !self.try_send_pre_parity(self.dup_queue[i].unit.size, true) {
+                #[cfg(feature = "diag-sched-telemetry")]
+                {
+                    self.sched_diag.dup_token_denied += 1;
+                }
                 break; // token yok.
+            }
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.dup_wire_emitted += 1;
             }
             let dup = self.dup_queue.remove(i);
             let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
@@ -1291,6 +4421,7 @@ impl Sender {
                 seq,
                 unit_id: dup.unit.id,
                 size: dup.unit.size,
+                send_record: None,
             });
             // §3.3-B geometrik reschedule: interval_ns>0 (PRE_CONVERGE kopyası) → sonraki kopya
             // ×COPY_MULTIPLIER (sayı-tavanı YOK, deadline'a dek; teyit gelince §3.3-B stop ile iptal).
@@ -1310,8 +4441,20 @@ impl Sender {
         while let Some(front) = self.tx_queue.front().copied() {
             // [R3/ADIM-6] Burst clamp artık pipeline'da kanal-türevli set_burst_cap ile (PreConverge floor
             // rate → burst_cap = 1 birim). Ayrı PreConverge özel-durumu GEREKMEZ (tek kapı, tüm state'ler).
-            if !self.pacer.try_send(front.size) {
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.data_selected += 1;
+            }
+            if !self.try_send_pre_parity(front.size, false) {
+                #[cfg(feature = "diag-sched-telemetry")]
+                {
+                    self.sched_diag.data_token_denied += 1;
+                }
                 break;
+            }
+            #[cfg(feature = "diag-sched-telemetry")]
+            {
+                self.sched_diag.data_wire_emitted += 1;
             }
             self.tx_queue.pop_front();
             let seq = self.track_sent(front, now_ns, 0, TransmitKind::Data);
@@ -1320,6 +4463,7 @@ impl Sender {
                 seq,
                 unit_id: front.id,
                 size: front.size,
+                send_record: None,
             });
             if self.state == SenderState::RecoverFwd {
                 let (factor, spacing) = self.dup_params();
@@ -1345,6 +4489,29 @@ impl Sender {
                     unit: front,
                     interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
                 });
+                // DR-CS-3 ARM: PreConverge + srtt=None + FIRST DATA wire emission (t₀ = this instant,
+                // i.e. the unit passed try_send and is on the wire). Once per bootstrap epoch.
+                if self.bootstrap_rtt.enabled
+                    && !self.bs_done
+                    && self.bs_armed_ns.is_none()
+                    && self.rtt.srtt().is_none()
+                {
+                    self.bs_armed_ns = Some(now_ns);
+                    self.bs_diag.arm += 1;
+                }
+                // DR-CS-1 M2 ARM (F2A): PreConverge + srtt=None + İLK-DATA-wire-emisyonu (try_send-
+                // geçti = t₀) → CS-probe merdiveni epoch-başına-BİR-kez arm (fire 3/9/21/45s).
+                #[cfg(feature = "experimental-cold-start")]
+                if !self.cs_probe_armed_once && self.rtt.srtt().is_none() {
+                    self.cs_probe_armed_once = true;
+                    for (i, off) in CS_PROBE_FIRES_NS.iter().enumerate() {
+                        self.cs_wakeup
+                            .push((now_ns.saturating_add(*off), CsTimerKind::CsProbe(i as u8)));
+                    }
+                    // M5: giveup-deadline (epoch-başına-bir; T_COLD_GIVEUP).
+                    self.cs_wakeup
+                        .push((now_ns.saturating_add(CS_GIVEUP_NS), CsTimerKind::CsGiveup));
+                }
             }
         }
     }
@@ -1507,6 +4674,28 @@ impl Sender {
             self.rtt.queue_delay().as_micros() as u64,
         )
     }
+
+    /// FS-5A (DR-FEC-FS-1) — PATH-TIMING SALT-GÖZLEM snapshot: engine'in ZATEN-ölçtüğü mutlak RTT/path-
+    /// timing state'i (srtt · min_rtt/rtprop · rttvar · queue_delay + confidence/freshness). `FusionInputs`
+    /// yalnız-oran taşıdığından FEC-selector'a ulaşmayan MUTLAK-magnitude'ı salt-forward eder (yeni-ölçüm
+    /// YOK). **Production-policy/`FusionInputs`/wire DEĞİŞMEZ** — experimental FEC-selector + FS-harness
+    /// (Case-A/B rejim-ayrımı) girdisi. Freshness kanal-saatli (`last_now_ns`).
+    #[must_use]
+    pub fn path_timing_snapshot(&self) -> PathTimingState {
+        let now = self.last_now_ns;
+        let rtprop_fresh = self
+            .rtt
+            .rtprop_age_ns(now)
+            .is_some_and(|age| age < self.rtt.rtprop_window_ns() / 2);
+        PathTimingState {
+            srtt_ns: self.rtt.srtt().map(dur_ns),
+            min_rtt_ns: self.rtt.rtprop().map(dur_ns),
+            rttvar_ns: dur_ns(self.rtt.rttvar()),
+            queue_delay_ns: dur_ns(self.rtt.queue_delay()),
+            sample_present: self.rtt.srtt().is_some(),
+            rtprop_fresh,
+        }
+    }
     /// [Y3-sim SALT-GÖZLEM] (last_full_bw, window_ns) — (b)-bug-arayışı.
     #[must_use]
     pub fn diag_wbtlbw(&self) -> (u64, u64) {
@@ -1517,6 +4706,12 @@ impl Sender {
     #[must_use]
     pub fn diag_btlbw_samples(&self) -> Vec<(u64, u64)> {
         self.btlbw.samples_snapshot()
+    }
+
+    /// [Q18-FIX] Yapı-gate'in fuzzy `fec=0`'ı `fec_med`'e açtığı event sayısı (gözlem).
+    #[must_use]
+    pub fn diag_structure_gate_opened(&self) -> u64 {
+        self.diag_structure_gate_opened
     }
 
     /// [TUR-4] Sıfır-ağırlık fuzzy-fallback sayacı (gözlemlenebilirlik).
@@ -1630,6 +4825,922 @@ mod tests {
         );
     }
 
+    // ── DR-S5-3 N8-SPOT: send-record↔ACK-eşleme BtlBw'ye SIZMAZ (sayısal bit-özdeşlik) ──
+    // Aynı DATA-senaryosu iki-kez: (ref) sent_logical-boş → mapping NO-OP · (mapped) acked-seq'ler
+    // sent_logical'a konur → record_confirmed_logical FIRES. BtlBw BİT-ÖZDEŞ olmalı (eşleme BtlBw-yolunu
+    // değiştirmez; yeni-satır yalnız ayrı-defter). Sender ACK-yolu deterministik (BTreeMap; HashSet-YOK).
+    fn warmup_btlbw(map_acked: bool) -> (u64, usize) {
+        let mut s = Sender::new();
+        for i in 0..8u64 {
+            let out = s.on_event(Event::AppData(unit(i)), i * 10 * MS);
+            let seqs: Vec<u64> = out.iter().map(|d| d.seq).collect();
+            if map_acked {
+                // mapping'i ateşle: bu seq'leri logical-deftere kaydet (ACK'te record_confirmed_logical firar).
+                for &sq in &seqs {
+                    s.sent_logical.insert(
+                        sq,
+                        SrLogicalRef::Fec {
+                            block_id: 1,
+                            esi: 0,
+                        },
+                    );
+                }
+            }
+            if !seqs.is_empty() {
+                s.on_event(ack(&seqs), i * 10 * MS + 5 * MS);
+            }
+        }
+        (s.diag_rate().1, s.diag_confirmed_logical_count())
+    }
+
+    #[test]
+    fn dr_s5_3_mapping_does_not_change_btlbw() {
+        let (btlbw_ref, cl_ref) = warmup_btlbw(false); // mapping NO-OP
+        let (btlbw_mapped, cl_mapped) = warmup_btlbw(true); // mapping FIRES
+        assert_eq!(
+            btlbw_ref, btlbw_mapped,
+            "N8: send-record↔ACK-eşleme BtlBw'yi DEĞİŞTİRMEZ (bit-özdeş: {btlbw_ref} == {btlbw_mapped})"
+        );
+        assert_eq!(
+            cl_ref, 0,
+            "ref: mapping-fire-etmedi (confirmed_logical boş)"
+        );
+        assert!(
+            cl_mapped > 0,
+            "mapped: mapping-fire-etti (confirmed_logical dolu) → yine BtlBw-özdeş"
+        );
+    }
+
+    // ── DR-S5-3: confirmed_logical yalnız FEC/control-teyidi (DATA-değil) + drenaj ──
+    #[test]
+    fn dr_s5_3_confirmed_logical_take() {
+        let mut s = Sender::new();
+        // Data emit et, GERÇEK emitted-seq'leri yakala, onları logical-deftere koy + ACK'le.
+        let mut emitted: Vec<u64> = Vec::new();
+        for i in 0..4u64 {
+            let out = s.on_event(Event::AppData(unit(i)), i * 10 * MS);
+            emitted.extend(out.iter().map(|d| d.seq));
+        }
+        assert!(!emitted.is_empty(), "en-az-bir seq emit");
+        for &sq in &emitted {
+            s.sent_logical.insert(
+                sq,
+                SrLogicalRef::Fec {
+                    block_id: 7,
+                    esi: sq as u16,
+                },
+            );
+        }
+        s.on_event(ack(&emitted), 100 * MS);
+        let taken = s.take_confirmed_logical();
+        assert_eq!(
+            taken.len(),
+            emitted.len(),
+            "her acked-emitted logical-teyit"
+        );
+        assert!(taken.iter().all(|(_, r, src)| {
+            matches!(r, SrLogicalRef::Fec { block_id: 7, .. }) && *src == ConfirmSource::WireAck
+        }));
+        assert_eq!(s.diag_confirmed_logical_count(), 0, "take drenajladı");
+    }
+
+    // ── DR-S5-3 BOUNDED: drain-yoksa cap'te en-eski düşer (SR-AUDIT-001 unbounded-alloc-yok) ──
+    #[test]
+    fn dr_s5_3_confirmed_logical_bounded() {
+        let mut s = Sender::new();
+        // CAP+50 kez ateşle (drenaj YOK) → len tavanı-aşmaz.
+        for seq in 0..(CONFIRMED_LOGICAL_CAP as u64 + 50) {
+            s.sent_logical.insert(
+                seq,
+                SrLogicalRef::Fec {
+                    block_id: 0,
+                    esi: 0,
+                },
+            );
+            s.record_confirmed_logical(seq);
+        }
+        assert_eq!(
+            s.diag_confirmed_logical_count(),
+            CONFIRMED_LOGICAL_CAP,
+            "bounded: cap-aşılmaz (drain-yoksa en-eski düşer)"
+        );
+    }
+
+    // ── DR-S5-4: RECOVERED → retransmit-cancel + retention-release + Recovered-marker'lı defter ──
+    #[test]
+    fn dr_s5_4_recovered_cancels_and_ledger() {
+        let mut s = Sender::new();
+        // pending-retransmit + bekleyen-dup + sent_logical kaydı olan bir unit kur (direct-state).
+        s.pending_lost.push_back(LostRec {
+            seq: 5,
+            unit: OpaqueUnit { id: 42, size: 1200 },
+            deadline_ns: 0,
+            retx_count: 0,
+            send_ns: 0,
+        });
+        s.dup_queue.push(DupRec {
+            due_ns: 0,
+            unit: OpaqueUnit { id: 42, size: 1200 },
+            interval_ns: 0,
+        });
+        s.sent_logical.insert(
+            5,
+            SrLogicalRef::Fec {
+                block_id: 9,
+                esi: 2,
+            },
+        );
+
+        let out = s.on_event(
+            Event::RecoveredControl(RecoveredInfo {
+                units: vec![RecoveredUnit {
+                    unit_id: 42,
+                    block_id: 9,
+                    esi: 2,
+                }],
+            }),
+            77 * MS,
+        );
+        assert!(out.is_empty(), "saf-state: RECOVERED emit-üretmez");
+        assert!(s.pending_lost.is_empty(), "(i) retransmit-CANCEL");
+        assert!(s.dup_queue.is_empty(), "(ii) retention-RELEASE");
+        assert_eq!(s.diag_recovered_cancels(), 1, "K2/M1-sinyali saydı");
+        let taken = s.take_confirmed_logical();
+        assert_eq!(
+            taken,
+            vec![(
+                5,
+                SrLogicalRef::Fec {
+                    block_id: 9,
+                    esi: 2
+                },
+                ConfirmSource::Recovered
+            )],
+            "(iii) defter Recovered-marker'lı (WireAck'ten ayrık)"
+        );
+        // Kayıtsız-recovered (sent_logical'da olmayan) → defter-NO-OP, cancel-sayacı-artmaz.
+        s.on_event(
+            Event::RecoveredControl(RecoveredInfo {
+                units: vec![RecoveredUnit {
+                    unit_id: 999,
+                    block_id: 1,
+                    esi: 0,
+                }],
+            }),
+            78 * MS,
+        );
+        assert_eq!(
+            s.diag_recovered_cancels(),
+            1,
+            "bilinmeyen-unit cancel-saymaz"
+        );
+        assert_eq!(
+            s.diag_confirmed_logical_count(),
+            0,
+            "bilinmeyen-logical defter-NO-OP"
+        );
+    }
+
+    // ── DR-S5-4 §3 N8-BİT-ÖZDEŞLİK (ZORUNLU): recovered fires-vs-noop → BtlBw BİT-ÖZDEŞ ──
+    /// Aynı DATA+loss senaryosu; `fires` → sondaki RECOVERED-olayı ateşlenir. Dönen:
+    /// (btlbw, recovered_cancels, confirmed_logical_len, pending_lost_önce).
+    fn warmup_recovered(fires: bool) -> (u64, u64, usize, usize) {
+        let mut s = Sender::new();
+        // Faz-1: temiz warm-up (BtlBw kurulsun; tüm-emitted ACK'lenir).
+        for i in 0..30u64 {
+            let out = s.on_event(Event::AppData(unit(i)), i * 10 * MS);
+            let acks: Vec<u64> = out.iter().map(|d| d.seq).collect();
+            if !acks.is_empty() {
+                s.on_event(ack(&acks), i * 10 * MS + 5 * MS);
+            }
+        }
+        // Faz-2: kuyruk-sonu-kayıp — 10 unit emit, YALNIZ-en-yüksek-seq ACK'lenir →
+        // packet-threshold öncekileri kayıp-ilan eder; pacer-burst yalnız-birkaçını hemen-retransmit
+        // eder → kalanlar pending_lost'ta (deterministik; iki-koşuda özdeş).
+        let mut tail: Vec<u64> = Vec::new();
+        for j in 0..10u64 {
+            let out = s.on_event(Event::AppData(unit(100 + j)), (300 + j) * MS);
+            tail.extend(out.iter().map(|d| d.seq));
+        }
+        if let Some(&top) = tail.iter().max() {
+            s.on_event(ack(&[top]), 315 * MS);
+        }
+        // İki-koşuda da AYNI ön-durum: pending_lost'taki unit'ler + sent_logical kayıtları.
+        let lost: Vec<(u64, u64)> = s.pending_lost.iter().map(|r| (r.seq, r.unit.id)).collect();
+        let units: Vec<RecoveredUnit> = lost
+            .iter()
+            .enumerate()
+            .map(|(k, &(sq, uid))| {
+                s.sent_logical.insert(
+                    sq,
+                    SrLogicalRef::Fec {
+                        block_id: 1,
+                        esi: k as u16,
+                    },
+                );
+                RecoveredUnit {
+                    unit_id: uid,
+                    block_id: 1,
+                    esi: k as u16,
+                }
+            })
+            .collect();
+        let pending_before = s.pending_lost.len();
+        if fires {
+            s.on_event(Event::RecoveredControl(RecoveredInfo { units }), 305 * MS);
+        }
+        // Post-fire saf-tick'ler (ACK-yok → btlbw iki-kolda-da değişmemeli).
+        for t in 0..5u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), (310 + t * 10) * MS);
+        }
+        (
+            s.diag_rate().1,
+            s.diag_recovered_cancels(),
+            s.diag_confirmed_logical_count(),
+            pending_before,
+        )
+    }
+
+    // ── DR-S5-6: register_sent_logical (DATA-defter) — bounded/evict/miss + WireAck-teyit ──
+    #[test]
+    fn dr_s5_6_register_bounded_evict_miss() {
+        let mut s = Sender::new();
+        // CAP+50 register (drenajsız) → len==CAP, evicted==50; en-eski (en-küçük-seq) düştü.
+        for seq in 0..(SENT_LOGICAL_CAP as u64 + 50) {
+            s.register_sent_logical(
+                seq,
+                SrLogicalRef::Fec {
+                    block_id: 1,
+                    esi: 0,
+                },
+            );
+        }
+        let (len, evicted, miss0) = s.diag_sent_logical();
+        assert_eq!(len, SENT_LOGICAL_CAP, "bounded: cap-aşılmaz");
+        assert_eq!(evicted, 50, "aşan-50 en-eski-drop (audit)");
+        assert_eq!(miss0, 0);
+        // Evict-edilmiş seq'e (0..50) teyit-denemesi → defter-girişi YOK + miss-artefakt-sayacı artar
+        // (şart-2: M1 bu-artefaktı GÖRÜR, sessizce-eğilmez).
+        s.record_confirmed_logical(10); // evicted-bölge
+        assert_eq!(
+            s.diag_confirmed_logical_count(),
+            0,
+            "evicted-seq teyit-alamaz"
+        );
+        assert_eq!(s.diag_sent_logical().2, 1, "miss-artefakt sayıldı");
+        // Yaşayan-seq teyit-alır (WireAck).
+        s.record_confirmed_logical(SENT_LOGICAL_CAP as u64 + 10);
+        assert_eq!(s.diag_confirmed_logical_count(), 1);
+    }
+
+    // ── DR-S5-6 ŞART-1: N8-bit-özdeşlik DATA-versiyonu — register-fires-vs-noop → BtlBw BİT-ÖZDEŞ ──
+    /// Aynı DATA+ACK senaryosu; `fires` → her-DATA-emisyonu PUBLIC register_sent_logical ile deftere
+    /// kaydedilir (engine-post-emit örüntüsü). Dönen: (btlbw, WireAck-girişi-sayısı).
+    fn warmup_data_register(fires: bool) -> (u64, usize) {
+        let mut s = Sender::new();
+        for i in 0..8u64 {
+            let out = s.on_event(Event::AppData(unit(i)), i * 10 * MS);
+            let seqs: Vec<u64> = out.iter().map(|d| d.seq).collect();
+            if fires {
+                for &sq in &seqs {
+                    // engine-post-emit: DATA-source logical-kimliği (block=2, esi=seq).
+                    s.register_sent_logical(
+                        sq,
+                        SrLogicalRef::Fec {
+                            block_id: 2,
+                            esi: sq as u16,
+                        },
+                    );
+                }
+            }
+            if !seqs.is_empty() {
+                s.on_event(ack(&seqs), i * 10 * MS + 5 * MS);
+            }
+        }
+        let wireack = s
+            .take_confirmed_logical()
+            .iter()
+            .filter(|(_, _, src)| *src == ConfirmSource::WireAck)
+            .count();
+        (s.diag_rate().1, wireack)
+    }
+
+    #[test]
+    fn dr_s5_6_n8_data_register_does_not_change_btlbw() {
+        let (btlbw_noop, wa_noop) = warmup_data_register(false);
+        let (btlbw_fires, wa_fires) = warmup_data_register(true);
+        assert_eq!(wa_noop, 0, "noop: defter-girişi yok");
+        assert!(
+            wa_fires > 0,
+            "fires: DATA-teyitleri deftere girdi (WireAck)"
+        );
+        assert!(
+            btlbw_noop > 0,
+            "dejenerasyon-guard: 0==0 trivial-eşitlik değil (BtlBw kuruldu)"
+        );
+        // ŞART-1 HÜKMÜ: DATA-send-record da (FEC-parity gibi) BtlBw'ye SIZMAZ — bit-özdeş.
+        // (S5-3/DR-S5-4 N8-spot ailesinin DATA-üyesi.)
+        assert_eq!(
+            btlbw_fires, btlbw_noop,
+            "N8-DATA: register_sent_logical BtlBw'yi DEĞİŞTİRMEZ ({btlbw_fires} == {btlbw_noop})"
+        );
+    }
+
+    #[test]
+    fn dr_s5_4_n8_recovered_does_not_change_btlbw() {
+        let (btlbw_noop, canc_noop, cl_noop, pend_noop) = warmup_recovered(false);
+        let (btlbw_fires, canc_fires, cl_fires, pend_fires) = warmup_recovered(true);
+        // Vacuity-korumaları: senaryo gerçekten kayıp-üretti (iki-koşuda aynı ön-durum).
+        assert!(
+            pend_noop > 0 && pend_fires > 0,
+            "pending_lost dolu (kayıp gerçek)"
+        );
+        assert_eq!(
+            pend_noop, pend_fires,
+            "iki-koşu aynı ön-durum (deterministik)"
+        );
+        // fires: cancel gerçekleşti + defter doldu; noop: hiçbiri.
+        assert!(canc_fires > 0, "fires: retransmit-cancel gerçekleşti");
+        assert_eq!(canc_noop, 0, "noop: cancel-yok");
+        assert!(
+            cl_fires > cl_noop,
+            "fires: recovered→confirmed_logical DOLDU (muhasebe)"
+        );
+        // §3 HÜKÜM: recovered-fires BtlBw'yi DEĞİŞTİRMEZ (kredi-yolu AÇILMADI — bit-özdeş).
+        assert_eq!(
+            btlbw_fires, btlbw_noop,
+            "N8: RECOVERED BtlBw'ye bit-eklemez (bit-özdeş: {btlbw_fires} == {btlbw_noop})"
+        );
+    }
+
+    // ══ Commit-G (DR-1a): ratio→r golden/property + same-event-guard + otorite-API + ordering ══
+
+    #[test]
+    fn dr_1a_ratio_to_r_golden_k8() {
+        // §8/§16: K=8 boundary-golden (transition-öncesi / exact-half / sonrası + uçlar + clamp).
+        // r_unclamped=(ratio*8+500)/1000; half-up: ratio=62→(496+500)/1000=0; 63→(504+500)=1.004→1.
+        let cases: [(u32, u16); 12] = [
+            (0, 0),
+            (62, 0),
+            (63, 1),
+            (187, 1),
+            (188, 2),
+            (437, 3),
+            (438, 4),
+            (562, 4),
+            (563, 5),
+            (937, 7),
+            (938, 8),
+            (1000, 8),
+        ];
+        for (ratio, want_computed) in cases {
+            let (computed, clamped) = compute_requested_r(ratio, 8, 4);
+            assert_eq!(computed, want_computed, "ratio={ratio}");
+            assert_eq!(clamped, want_computed.min(4), "clamp@Rmax=4 ratio={ratio}");
+        }
+        // Profil-clamp-başlangıcı: computed>4 ilk-nokta ratio=563 (r=5→clamp-4).
+        assert_eq!(compute_requested_r(563, 8, 4), (5, 4));
+        // ratio=1000 → min(k_actual, r_max).
+        assert_eq!(compute_requested_r(1000, 8, 4), (8, 4));
+        assert_eq!(compute_requested_r(1000, 3, 4), (3, 3));
+    }
+
+    #[test]
+    fn dr_1a_ratio_to_r_property_exhaustive() {
+        // Property (deterministik-tam-tarama; RNG-yok): ∀ratio∈[0,1000], k∈{1..=8,255}:
+        // formül-eş + monoton + clamp + ratio0→0 + ratio1000→min(k,rmax) + overflow-yok.
+        for k in (1u8..=8).chain([255]) {
+            let mut prev = 0u16;
+            for ratio in 0u32..=1000 {
+                let (computed, clamped) = compute_requested_r(ratio, k, 4);
+                let want = ((u64::from(ratio) * u64::from(k) + 500) / 1000) as u16;
+                assert_eq!(computed, want);
+                assert!(computed >= prev, "monoton k={k} ratio={ratio}");
+                assert!(clamped <= 4);
+                prev = computed;
+            }
+            assert_eq!(compute_requested_r(0, k, 4).1, 0);
+            assert_eq!(compute_requested_r(1000, k, 4).1, u16::from(k).min(4));
+        }
+        // k_actual=1 / K-1 / K kenarları (partial-block-formülü nominal-K-KULLANMAZ):
+        assert_eq!(compute_requested_r(500, 1, 4), (1, 1)); // (500+500)/1000=1
+        assert_eq!(compute_requested_r(500, 7, 4), (4, 4)); // (3500+500)/1000=4
+        assert_eq!(compute_requested_r(500, 8, 4), (4, 4)); // 4500/1000=4 (exact; clamp-örneği 563→(5,4)-üstte)
+    }
+
+    #[test]
+    fn dr_1a_authority_api_and_manual_reject() {
+        let mut s = Sender::new();
+        // Default: Manual{enabled:false} (mevcut-davranış).
+        assert_eq!(
+            s.diag_fec_actuation().authority_mode,
+            FecActuationMode::Manual { enabled: false }
+        );
+        // Manual'da toggle Ok.
+        s.set_manual_fec_enabled(true).unwrap();
+        assert_eq!(
+            s.diag_fec_actuation().authority_mode,
+            FecActuationMode::Manual { enabled: true }
+        );
+        // Controller'a geçiş; manuel-toggle TYPED-red + state-DEĞİŞMEZ + sayaç.
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        assert_eq!(
+            s.set_manual_fec_enabled(false),
+            Err(FecAuthorityError::NotInManualMode)
+        );
+        assert_eq!(
+            s.diag_fec_actuation().authority_mode,
+            FecActuationMode::Controller
+        );
+        assert_eq!(s.diag_fec_actuation().manual_toggle_rejected_count, 1);
+        // Controller→Manual{false}: açık-belirtim (gizli-eski-state-yok).
+        s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: false })
+            .unwrap();
+        s.set_manual_fec_enabled(true).unwrap();
+    }
+
+    #[test]
+    fn dr_1a_latch_guards_initial_mismatch_norule_emergency() {
+        let mut s = Sender::new();
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        // 4.3 INITIAL: hiç-decision-yok → LITERAL-0 + sayaç.
+        let a1 = s.open_fec_block_authority();
+        let r = s.fec_controller_latch(a1, None, 8, 4, 1, 64);
+        assert_eq!(
+            (r.planned_r, r.suppression),
+            (0, Some(FecSuppressionReason::NoEligibleDecision))
+        );
+        assert_eq!(s.diag_fec_actuation().no_eligible_decision_count, 1);
+        // Canlı-decision üret (event-sür).
+        s.on_event(Event::AppData(unit(0)), 0);
+        let snap = s.controller_decision_snapshot().unwrap();
+        // 4.2 EVENT-MISMATCH: bilerek-eski-index → LITERAL-0 + sayaç + panik-yok + eski-karar-kullanılmaz.
+        let stale = ControllerDecisionSnapshot {
+            event_index: snap.event_index.wrapping_sub(1),
+            ..snap
+        };
+        let a2 = s.open_fec_block_authority();
+        let r = s.fec_controller_latch(a2, Some(stale), 8, 4, 2, 64);
+        assert_eq!(
+            (r.planned_r, r.suppression),
+            (0, Some(FecSuppressionReason::DecisionEventMismatch))
+        );
+        assert!(!r.same_event_eligible);
+        assert_eq!(s.diag_fec_actuation().decision_event_mismatch_count, 1);
+        // 4.4 NO-RULE: literal-0 (fec_zero-config'e-BAĞLI-DEĞİL) + NoRule-reason.
+        let nr = ControllerDecisionSnapshot {
+            no_rule: true,
+            ..snap
+        };
+        let a3 = s.open_fec_block_authority();
+        let r = s.fec_controller_latch(a3, Some(nr), 8, 4, 3, 64);
+        assert_eq!(
+            (r.planned_r, r.suppression),
+            (0, Some(FecSuppressionReason::NoRule))
+        );
+        // EMERGENCY-interlock: requested-GÖRÜNÜR, planned=0.
+        let em = ControllerDecisionSnapshot {
+            emergency: true,
+            ratio_permille: 500,
+            ..snap
+        };
+        let a4 = s.open_fec_block_authority();
+        let r = s.fec_controller_latch(a4, Some(em), 8, 4, 4, 64);
+        assert_eq!(r.computed_r, 4);
+        assert_eq!(r.planned_r, 0);
+        assert_eq!(
+            r.suppression,
+            Some(FecSuppressionReason::EmergencyPendingArbitration)
+        );
+        // 4.1 NORMAL: same-event → planned=clamped.
+        let ok = ControllerDecisionSnapshot {
+            ratio_permille: 500,
+            ..snap
+        };
+        let a5 = s.open_fec_block_authority();
+        let r = s.fec_controller_latch(a5, Some(ok), 8, 4, 5, 64);
+        assert!(r.same_event_eligible);
+        assert_eq!((r.computed_r, r.planned_r, r.suppression), (4, 4, None));
+        // ManualDisabled: Manual-mode'da-latch → 0.
+        s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: true })
+            .unwrap();
+        let a6 = s.open_fec_block_authority();
+        let r = s.fec_controller_latch(a6, Some(ok), 8, 4, 6, 64);
+        assert_eq!(
+            (r.planned_r, r.suppression),
+            (0, Some(FecSuppressionReason::ManualDisabled))
+        );
+    }
+
+    #[test]
+    fn dr_1a_ordering_fuzzy_before_emission_and_recovered_cannot_close() {
+        // §4 ORDERING: on_event → fuzzy(index++/snapshot) → ... → schedule(emisyon). Kanıt:
+        // event-sonrası snapshot.event_index == fusion-index VE aynı-index'le-latch eligible.
+        let mut s = Sender::new();
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        let out = s.on_event(Event::AppData(unit(0)), 0);
+        let _ = out; // emisyonlar-bu-event'te; block-close engine-tarafı-AYNI-bağlamda.
+        let snap = s.controller_decision_snapshot().unwrap();
+        let a7 = s.open_fec_block_authority();
+        let r = s.fec_controller_latch(a7, Some(snap), 8, 4, 7, 64);
+        assert!(
+            r.same_event_eligible,
+            "fuzzy latch'ten-ÖNCE koştu (aynı-event-index)"
+        );
+        // §4.5 RecoveredControl: fuzzy-KOŞMAZ (index-değişmez) VE emisyon-ÜRETMEZ → blok-KAPATAMAZ
+        // (block-close yalnız-emisyon-decision'larından türer; boş-dönüş → latch-tetiklenemez).
+        let idx_before = s.controller_decision_snapshot().unwrap().event_index;
+        let out = s.on_event(
+            Event::RecoveredControl(RecoveredInfo { units: vec![] }),
+            10 * MS,
+        );
+        assert!(
+            out.is_empty(),
+            "RecoveredControl emisyon-üretmez → blok-kapatamaz"
+        );
+        assert_eq!(
+            s.controller_decision_snapshot().unwrap().event_index,
+            idx_before,
+            "RecoveredControl fuzzy-koşturmaz (index-sabit)"
+        );
+        // Ve-o-bağlamda-latch-yapılsaydı-bile: snapshot-hala-önceki-event'in → guard-değerlendirmesi
+        // index-eşitliğiyle: eşit (yeni-fuzzy-yok) → normal-akış-zararsız; guard anormal-yolları-hedefler.
+    }
+
+    // ── Commit-I §8.2: counter-saturation (wrap-YOK; debug/release-özdeş) ──
+    #[test]
+    fn dr_1a_counter_saturation_boundary() {
+        let mut s = Sender::new();
+        s.transition_applied_count = u64::MAX - 1;
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        assert_eq!(s.diag_fec_actuation().transition_applied_count, u64::MAX);
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        assert_eq!(
+            s.diag_fec_actuation().transition_applied_count,
+            u64::MAX,
+            "saturating: MAX'ta-kalır"
+        );
+        s.no_rule_zero_count = u64::MAX;
+        let snap = ControllerDecisionSnapshot {
+            ratio_permille: 0,
+            event_index: s.fusion_event_index,
+            no_rule: true,
+            emergency: false,
+        };
+        let a8 = s.open_fec_block_authority();
+        let _ = s.fec_controller_latch(a8, Some(snap), 8, 4, 8, 64);
+        // Manual-default'ta ManualDisabled-dalı no_rule-sayacına-girmez; Controller'a-alıp-tekrar:
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        let a9 = s.open_fec_block_authority();
+        let _ = s.fec_controller_latch(a9, Some(snap), 8, 4, 9, 64);
+        assert_eq!(
+            s.diag_fec_actuation().no_rule_zero_count,
+            u64::MAX,
+            "no-wrap"
+        );
+    }
+
+    // ── Commit-J §8.3: last_latch TAM-ÖZDEŞ-overwrite (carryover-YOK) ──
+    #[test]
+    fn dr_1a_last_latch_full_overwrite_no_carryover() {
+        let mut s = Sender::new();
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        s.on_event(Event::AppData(unit(0)), 0);
+        let snap = s.controller_decision_snapshot().unwrap();
+        // 1. latch: SUPPRESSED (NoRule; requested-görünür).
+        let nr = ControllerDecisionSnapshot {
+            no_rule: true,
+            ratio_permille: 700,
+            ..snap
+        };
+        let a10 = s.open_fec_block_authority();
+        let r1 = s.fec_controller_latch(a10, Some(nr), 8, 4, 10, 64);
+        assert_eq!(r1.suppression, Some(FecSuppressionReason::NoRule));
+        assert_eq!(s.diag_fec_actuation().last_latch, Some(r1));
+        // 2. latch: TEMİZ — last_latch TAM-yeni-değer; suppression-carryover-YOK.
+        let ok = ControllerDecisionSnapshot {
+            ratio_permille: 500,
+            ..snap
+        };
+        let a11 = s.open_fec_block_authority();
+        let r2 = s.fec_controller_latch(a11, Some(ok), 8, 4, 11, 64);
+        assert_eq!(r2.suppression, None, "temiz-latch");
+        assert_eq!(
+            s.diag_fec_actuation().last_latch,
+            Some(r2),
+            "TAM-overwrite: alan-alan-yeni-latch (önceki-suppression/ratio-taşınmadı)"
+        );
+        assert_ne!(r1, r2, "iki-latch-farklı → overwrite-gözlemlenebilir");
+        // 3. latch: tekrar-SUPPRESSED — yine-tam-yeni (çift-yönlü-kanıt).
+        let a12 = s.open_fec_block_authority();
+        let r3 = s.fec_controller_latch(a12, Some(nr), 8, 4, 12, 64);
+        assert_eq!(s.diag_fec_actuation().last_latch, Some(r3));
+        assert_eq!(r3.suppression, Some(FecSuppressionReason::NoRule));
+    }
+
+    // ── Commit-K: yabancı-witness-reddi (latch+manuel-close) + manuel-close-dalları ──
+    #[test]
+    fn commit_k_foreign_authority_and_manual_close() {
+        let mut a = Sender::new();
+        let mut b = Sender::new();
+        b.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        // Yabancı-witness latch: kimlik-guard mode-semantiğinden-ÖNCE → suppression + sayaç + kuyruk-boş.
+        let wa = a.open_fec_block_authority();
+        let r = b.fec_controller_latch(wa, None, 8, 4, 1, 64);
+        assert_eq!(
+            (r.planned_r, r.suppression),
+            (0, Some(FecSuppressionReason::ForeignAuthority))
+        );
+        let d = b.diag_fec_actuation();
+        assert_eq!(
+            (d.foreign_authority_rejected_count, d.enqueued_r_total),
+            (1, 0)
+        );
+        assert_eq!(d.last_latch, Some(r), "red-de-latch-kaydı-görünür");
+        // Yabancı-witness manuel-close: typed-Err + state-değişmez.
+        let wa2 = a.open_fec_block_authority();
+        assert_eq!(
+            b.close_fec_block_manual(wa2, 1, 2, 64),
+            Err(FecAuthorityError::ForeignAuthority)
+        );
+        let d2 = b.diag_fec_actuation();
+        assert_eq!(d2.foreign_authority_rejected_count, 2);
+        assert_eq!(
+            d2.enqueued_r_total, 0,
+            "foreign-manuel-close: kuyruk-boş-kalır"
+        );
+        // Controller-witness manuel-close'a: NotInManualMode (typed).
+        a.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        let wc = a.open_fec_block_authority();
+        assert_eq!(
+            a.close_fec_block_manual(wc, 1, 2, 64),
+            Err(FecAuthorityError::NotInManualMode)
+        );
+        // Manual{true}-witness: r-kuyruklanır; Manual{false}-witness: Ok(0) (meşru, hata-değil).
+        let mut m = Sender::new();
+        m.set_manual_fec_enabled(true).unwrap();
+        let w1 = m.open_fec_block_authority();
+        assert_eq!(m.close_fec_block_manual(w1, 5, 3, 64), Ok(3));
+        assert_eq!(m.diag_fec_actuation().enqueued_r_total, 3);
+        m.set_manual_fec_enabled(false).unwrap();
+        let w0 = m.open_fec_block_authority();
+        assert_eq!(m.close_fec_block_manual(w0, 6, 3, 64), Ok(0));
+        assert_eq!(
+            m.diag_fec_actuation().enqueued_r_total,
+            3,
+            "false-witness: parity-yok"
+        );
+    }
+
+    // ── Commit-K: legacy-enqueue izin-kapısı (üyelik=izin) + generation-monotonluğu ──
+    #[test]
+    #[allow(deprecated)] // deprecated-legacy-yolun-kapısını-test-eder
+    fn commit_k_enqueue_permission_gate_and_generation() {
+        let mut s = Sender::new(); // default Manual{false}
+        s.enqueue_fec_parity(1, 0, 64); // izinsiz → kuyruğa-GİRMEZ (sayaçla-görünür-red)
+        let d = s.diag_fec_actuation();
+        assert_eq!(
+            (d.enqueued_r_total, d.parity_enqueue_rejected_count),
+            (0, 1)
+        );
+        s.set_manual_fec_enabled(true).unwrap();
+        s.enqueue_fec_parity(1, 0, 64);
+        assert_eq!(s.diag_fec_actuation().enqueued_r_total, 1);
+        // Generation monoton (witness-uniqueness; saturating-belgeli).
+        let g1 = s.open_fec_block_authority().generation();
+        let g2 = s.open_fec_block_authority().generation();
+        assert!(g2 > g1, "monoton-generation");
+    }
+
+    // ── Commit-N: token-denial ATTRIBUTION (blok/event/generation) + kesin-semantik-ayrım ──
+    #[test]
+    #[allow(deprecated)] // legacy-enqueue-reddi≠denial-dalını-da-test-eder
+    fn commit_n_token_denial_attribution_and_semantics() {
+        let mut s = Sender::new();
+        s.set_manual_fec_enabled(true).unwrap();
+        // (a) DENIAL-DEĞİL-yolları snapshot-YAZMAZ: legacy-enqueue-reddi + suppression'lar + clamp.
+        s.set_manual_fec_enabled(false).unwrap();
+        s.enqueue_fec_parity(9, 0, 64); // izinsiz-red
+        assert_eq!(s.diag_token_denial(), (None, 0), "enqueue-reddi≠denial");
+        s.set_fec_actuation_mode(FecActuationMode::Controller)
+            .unwrap();
+        s.on_event(Event::AppData(unit(0)), 0);
+        let snap = s.controller_decision_snapshot().unwrap();
+        let nr = ControllerDecisionSnapshot {
+            no_rule: true,
+            ..snap
+        };
+        let aa = s.open_fec_block_authority();
+        let _ = s.fec_controller_latch(aa, Some(nr), 8, 4, 30, 64);
+        let em = ControllerDecisionSnapshot {
+            emergency: true,
+            ratio_permille: 500,
+            ..snap
+        };
+        let ab = s.open_fec_block_authority();
+        let _ = s.fec_controller_latch(ab, Some(em), 8, 4, 31, 64);
+        let clamp = ControllerDecisionSnapshot {
+            ratio_permille: 1000,
+            ..snap
+        }; // computed-8→clamp-4
+        let ac = s.open_fec_block_authority();
+        let l = s.fec_controller_latch(ac, Some(clamp), 8, 4, 32, 100_000);
+        assert_eq!((l.computed_r, l.planned_r), (8, 4), "clamp-oldu");
+        assert_eq!(
+            s.diag_token_denial().0,
+            None,
+            "no-rule/emergency/clamp≠denial (emisyon-denenmedi)"
+        );
+        // (b) GERÇEK-denial: 100kB-item try_send-red → snapshot TAM-attribution.
+        let out = s.on_event(Event::TimerFired(Timer::Pto), MS);
+        let _ = out;
+        let (d, n) = s.diag_token_denial();
+        let d = d.expect("gerçek-token-denial-kaydedildi");
+        assert!(n >= 1);
+        assert_eq!(d.block_id, 32, "denied-item-bloğu");
+        assert_eq!(
+            d.authority_mode,
+            FecActuationMode::Controller,
+            "staging-otoritesi"
+        );
+        assert!(
+            d.authority_generation.is_some(),
+            "otorite-bağlı-staging: gen-attribution"
+        );
+        assert_eq!(d.planned_r, Some(4), "bloğun-planned_r-tag'i");
+        assert_eq!(d.parity_size_bytes, 100_000);
+        assert!(
+            d.token_balance_before < 100_000,
+            "bakiye<maliyet (denial-tutarlı)"
+        );
+        assert_eq!(d.pending_for_block, 4, "aynı-blok-4-item-kuyrukta");
+        assert_eq!(d.pending_parity_total, 4);
+        assert_eq!(
+            d.denial_event_index,
+            s.diag_fusion_input_snapshot().unwrap().event_index,
+            "planlama-anı-event-attribution"
+        );
+        // (c) RECOVERED-cancellation DENIAL-SAYILMAZ: blok-32-cancel → sayaç/snapshot-DEĞİŞMEZ.
+        let n_before = s.diag_token_denial().1;
+        s.on_event(
+            Event::RecoveredControl(RecoveredInfo {
+                units: vec![RecoveredUnit {
+                    unit_id: 3200,
+                    block_id: 32,
+                    esi: 0,
+                }],
+            }),
+            2 * MS,
+        );
+        assert_eq!(
+            s.diag_token_denial().1,
+            n_before,
+            "cancel≠denial (sayaç-sabit)"
+        );
+        assert_eq!(
+            s.diag_fec_actuation().canceled_r_total,
+            4,
+            "4-item-cancel-edildi"
+        );
+    }
+
+    // ── Commit-N: interleaved-blok-denial-ayrıştırması + TAM-overwrite (carryover-yok) + saturation ──
+    #[test]
+    #[allow(deprecated)] // legacy-enqueue None-attribution-dalını-da-test-eder
+    fn commit_n_interleaved_denial_overwrite_and_saturation() {
+        let mut s = Sender::new();
+        s.set_manual_fec_enabled(true).unwrap();
+        // Blok-40 (otorite-bağlı; küçük-64B → emit-edilebilir) + blok-41 (legacy; 100kB → hep-denied).
+        let w = s.open_fec_block_authority();
+        let g40 = w.generation();
+        assert_eq!(s.close_fec_block_manual(w, 40, 1, 64), Ok(1));
+        s.enqueue_fec_parity(41, 0, 100_000); // legacy: gen=None, planned=None
+                                              // İlk-tick'ler: 64B-emit-olana-kadar (önde) — sonra-41-öne-geçer-ve-denial-41'e-atfedilir.
+        let mut denial_41_seen = false;
+        for t in 1..400u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), t * 10 * MS);
+            if let (Some(d), _) = s.diag_token_denial() {
+                if d.block_id == 41 {
+                    denial_41_seen = true;
+                    assert_eq!(
+                        d.authority_generation, None,
+                        "legacy-item: gen-attribution-None"
+                    );
+                    assert_eq!(d.planned_r, None, "legacy-item: planned-None");
+                    assert_eq!(d.authority_mode, FecActuationMode::Manual { enabled: true });
+                    break;
+                }
+                // 41'den-önce-görülen-denial-varsa-40'a-ait-olmalı (interleaved-ayrışma):
+                assert_eq!(d.block_id, 40);
+                assert_eq!(
+                    d.authority_generation,
+                    Some(g40),
+                    "blok-40-denial: witness-gen"
+                );
+            }
+        }
+        assert!(denial_41_seen, "blok-41-denial-atfedildi");
+        assert_eq!(
+            s.diag_fec_actuation().emitted_r_total,
+            1,
+            "blok-40-emit-oldu (ayrışma-kanıtı)"
+        );
+        // TAM-overwrite/carryover-yok: son-snapshot-41'in (Some-gen-carryover-YOK — None-üzerine-yazıldı).
+        let (d, _) = s.diag_token_denial();
+        assert_eq!(
+            d.unwrap().authority_generation,
+            None,
+            "overwrite: önceki-Some(gen)-taşınmadı"
+        );
+        // Saturation: denial-sayacı-MAX'ta-kalır.
+        s.token_denial_count_total = u64::MAX - 1;
+        s.on_event(Event::TimerFired(Timer::Pto), 5000 * MS);
+        assert_eq!(s.diag_token_denial().1, u64::MAX);
+        s.on_event(Event::TimerFired(Timer::Pto), 5001 * MS);
+        assert_eq!(s.diag_token_denial().1, u64::MAX, "saturating: wrap-yok");
+    }
+
+    // ── Commit-D §4.3: snapshot = controller-input CANONICAL-eşitliği ──
+    #[test]
+    fn fusion_snapshot_equals_controller_input() {
+        let mut s = Sender::new();
+        assert!(s.diag_fusion_input_snapshot().is_none(), "başlangıç: None");
+        // Birkaç-event sür (loss/qd/ackconf-yolları-dolaşsın).
+        for i in 0..6u64 {
+            let out = s.on_event(Event::AppData(unit(i)), i * 10 * MS);
+            let seqs: Vec<u64> = out.iter().map(|d| d.seq).collect();
+            if i % 2 == 0 && !seqs.is_empty() {
+                s.on_event(ack(&seqs), i * 10 * MS + 5 * MS);
+            }
+        }
+        let snap = s.diag_fusion_input_snapshot().expect("evaluate-koştu");
+        // CANONICAL-kanıt: snapshot-inputs'uyla decide → last_decision BİT-ÖZDEŞ
+        // (iki-bağımsız-hesap-değil; aynı-değerin-kopyası olduğunun-fonksiyonel-kanıtı).
+        let replay = DeterministicFuzzyController::fixture().decide(&snap.to_inputs());
+        assert_eq!(
+            replay,
+            s.last_decision(),
+            "snapshot→decide == last_decision"
+        );
+        assert_eq!(snap.no_rule, s.last_decision().no_rule);
+        assert!(snap.event_index > 0);
+        // Default-nötrlük: snapshot-okuma state-değiştirmez (ikinci-okuma-özdeş).
+        assert_eq!(s.diag_fusion_input_snapshot(), Some(snap));
+    }
+
+    // ── DR-1e-v2 §3.1: default-equivalence — new() ≡ try_with_fuzzy_config(fixture) ──
+    #[test]
+    fn dr_1e_default_constructor_equivalence() {
+        let mut a = Sender::new();
+        let mut b = Sender::try_with_fuzzy_config(FuzzyConfig::fixture()).unwrap();
+        let mut all_a: Vec<TransmitDecision> = Vec::new();
+        let mut all_b: Vec<TransmitDecision> = Vec::new();
+        // Aynı-event-dizisi: DATA + kuyruk-sonu-kayıp + ACK + Pto (fusion/rate/mode-yollarını gezer).
+        for i in 0..12u64 {
+            let (oa, ob) = (
+                a.on_event(Event::AppData(unit(i)), i * 10 * MS),
+                b.on_event(Event::AppData(unit(i)), i * 10 * MS),
+            );
+            let seqs: Vec<u64> = oa.iter().map(|d| d.seq).collect();
+            all_a.extend(oa);
+            all_b.extend(ob);
+            if i % 3 != 2 && !seqs.is_empty() {
+                all_a.extend(a.on_event(ack(&seqs), i * 10 * MS + 5 * MS));
+                all_b.extend(b.on_event(ack(&seqs), i * 10 * MS + 5 * MS));
+            }
+        }
+        for t in 0..20u64 {
+            all_a.extend(a.on_event(Event::TimerFired(Timer::Pto), (200 + t * 50) * MS));
+            all_b.extend(b.on_event(Event::TimerFired(Timer::Pto), (200 + t * 50) * MS));
+        }
+        // Kararlar + emisyon-dizisi + sayaçlar BİT-ÖZDEŞ (davranışsal-özdeşlik-kümesi).
+        assert_eq!(
+            all_a, all_b,
+            "TransmitDecision-dizisi (scheduling/pacing) özdeş"
+        );
+        assert_eq!(
+            a.last_decision(),
+            b.last_decision(),
+            "fusion-decision özdeş"
+        );
+        assert_eq!(a.diag_rate(), b.diag_rate(), "rate/btlbw/pif özdeş");
+        assert_eq!(a.diag_loss(), b.diag_loss(), "loss-sayaçları özdeş");
+        assert_eq!(
+            a.diag_fuzzy_no_rule(),
+            b.diag_fuzzy_no_rule(),
+            "no_rule-sayacı özdeş"
+        );
+    }
+
     #[test]
     fn ack_frees_inflight_and_updates_rtt() {
         let mut s = Sender::new();
@@ -1710,6 +5821,258 @@ mod tests {
             s.last_decision().arq_aggressiveness_permille
         );
         assert_eq!(s.state(), SenderState::RecoverArq);
+    }
+
+    // ── DR-ARQ-PRODUCT-TAIL-1 integration (default-OFF exactness + ON path) ──
+    fn tail_cfg_on() -> TailRecoveryConfig {
+        TailRecoveryConfig {
+            enabled: true,
+            min_pto_ns: MS,
+            max_pto_ns: 1000 * MS,
+            initial_pto_ns: MS,
+            max_backoff_pto_ns: 100_000 * MS,
+            max_ack_delay_ns: 0,
+            max_tail_probes: 2,
+        }
+    }
+
+    #[test]
+    fn tail_probe_off_never_probes() {
+        // default OFF: outstanding tail + repeated PTO ⇒ 0 tail probes (INV-CS-4 baseline preserved).
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS);
+        s.on_event(Event::AppData(small(99)), 20 * MS); // unacked tail
+        for t in 1..=20u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS);
+        }
+        assert_eq!(s.tail_probe_diag().0, 0, "OFF must never probe");
+    }
+
+    #[test]
+    fn tail_probe_on_no_loss_zero_probe() {
+        // ON but everything acked (inflight drains) ⇒ disarmed ⇒ 0 probes, 0 added bytes.
+        let mut s = Sender::new();
+        s.set_tail_recovery_config(tail_cfg_on());
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS);
+        s.on_event(Event::AppData(small(1)), 20 * MS);
+        s.on_event(ack(&[1]), 30 * MS); // acked → inflight drains
+        for t in 1..=20u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), (30 + t * 100) * MS);
+        }
+        let (probes, bytes, _, _) = s.tail_probe_diag();
+        assert_eq!(probes, 0, "no-loss ON ⇒ 0 probe");
+        assert_eq!(bytes, 0, "no-loss ON ⇒ 0 added probe bytes");
+    }
+
+    #[test]
+    fn tail_probe_mid_stream_loss_no_same_tick_double_plan() {
+        // Mid-stream loss (later packets exist) IS detectable by the existing packet-threshold ARQ: the lost seq
+        // moves to pending_lost (out of inflight) and RECOVER_ARQ retransmits it. The probe targets the oldest
+        // INFLIGHT seq, which by construction EXCLUDES anything just moved to pending_lost (detect_time_losses runs
+        // before the probe arm in the same Pto tick). §1b/§3 invariant: within ONE tick, the normal ARQ and the
+        // probe never BOTH retransmit the same unit. (The probe MAY later recover the retransmission if it in turn
+        // becomes an unacked terminal tail — that is correct bounded recovery, not a duplicate.)
+        let mut s = Sender::new();
+        s.set_tail_recovery_config(tail_cfg_on());
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS); // srtt + BtlBw/tokens.
+        for i in 1..=5u64 {
+            s.on_event(Event::AppData(small(i)), (10 + i) * MS);
+        }
+        let mut retx = 0usize;
+        let mut ticks: Vec<Vec<TransmitDecision>> = Vec::new();
+        ticks.push(s.on_event(ack(&[2, 3, 4, 5]), 30 * MS)); // seq 1 lost → normal ARQ recovers.
+        for t in 1..=20u64 {
+            ticks.push(s.on_event(Event::TimerFired(Timer::Pto), (30 + t * 100) * MS));
+        }
+        for out in &ticks {
+            let mut retx_unit_ids: Vec<u64> = out
+                .iter()
+                .filter(|d| d.kind == TransmitKind::Retransmit)
+                .map(|d| d.unit_id)
+                .collect();
+            retx += retx_unit_ids.len();
+            let before = retx_unit_ids.len();
+            retx_unit_ids.sort_unstable();
+            retx_unit_ids.dedup();
+            assert_eq!(
+                retx_unit_ids.len(),
+                before,
+                "no unit retransmitted twice in a single tick (no ARQ+probe double-plan)"
+            );
+        }
+        assert!(retx >= 1, "mid-stream loss recovered (retx={retx})");
+        assert!(
+            s.tail_probe_diag().0 <= 2,
+            "any follow-on tail probe stays bounded by max_tail_probes"
+        );
+    }
+
+    #[test]
+    fn tail_probe_terminal_tail_bounded_recovery() {
+        // Terminal tail = the LAST outstanding source unit, nothing sent after it. The existing ARQ is BLIND to it
+        // (no later packet ⇒ no packet-threshold; time-threshold has no later-acked reference either — this is the
+        // classic tail-loss hole INV-CS-4 left open). PROVEN: with tail_probe OFF this seq stays stuck in inflight,
+        // 0 retransmits. With the bounded probe ON, at most max_tail_probes probes recover it — no more.
+        // Warm-up first so srtt + BtlBw/tokens exist (a probe respects pacing; a cold PreConverge floor is
+        // deliberately too token-starved to probe — that is correct pacing behaviour, not a mechanism failure).
+        let recover = |on: bool| {
+            let mut s = Sender::new();
+            if on {
+                s.set_tail_recovery_config(tail_cfg_on());
+            }
+            s.on_event(Event::AppData(unit(200)), 0);
+            s.on_event(ack(&[0]), 10 * MS); // srtt + BtlBw + leaves PreConverge.
+            s.on_event(Event::AppData(small(99)), 20 * MS); // the terminal tail (never acked).
+            let mut probe_retx = 0usize;
+            for t in 1..=40u64 {
+                probe_retx += s
+                    .on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS)
+                    .iter()
+                    .filter(|d| d.kind == TransmitKind::Retransmit)
+                    .count();
+            }
+            (probe_retx, s.tail_probe_diag(), s.pending_lost.len())
+        };
+        // OFF: normal ARQ is blind to the pure tail → 0 retransmits (the hole).
+        let (off_retx, off_diag, _) = recover(false);
+        assert_eq!(
+            off_retx, 0,
+            "normal ARQ is blind to a pure tail (OFF ⇒ 0 retx)"
+        );
+        assert_eq!(off_diag.0, 0, "OFF ⇒ 0 probes");
+        // ON: bounded probe recovers it (1..=max_tail_probes), each surfaced as a Retransmit decision.
+        let (on_retx, on_diag, _) = recover(true);
+        let (probes, bytes, spurious, _) = on_diag;
+        assert!(probes >= 1, "tail probe ON ⇒ ≥1 probe (got {probes})");
+        assert!(probes <= 2, "bounded by max_tail_probes (got {probes})");
+        assert!(bytes >= 1, "probe emitted real bytes");
+        assert_eq!(
+            on_retx as u64, probes,
+            "every probe surfaced as a Retransmit decision"
+        );
+        // no spurious accounting on a genuinely-lost tail (unit was never acked).
+        assert_eq!(spurious, 0, "genuinely lost tail ⇒ not spurious");
+    }
+
+    #[test]
+    fn tail_probe_token_unavailable_cap_not_consumed() {
+        // §3 probe-due ≠ probe-sent: a cold PreConverge floor is deliberately token-starved (~1.5 B/tick), so a
+        // 100 B probe is DUE every tick but can never be emitted. The attempt/cap must NOT be consumed on a due-but-
+        // un-emitted probe — the target stays pending so a later token can still send it (bounded once, not spent).
+        let mut s = Sender::new();
+        s.set_tail_recovery_config(tail_cfg_on());
+        s.on_event(Event::AppData(small(99)), 0); // cold start: no srtt, floor pacing, no ACK.
+        for t in 1..=20u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), t * 50 * MS);
+        }
+        assert_eq!(
+            s.tail_probe_diag().0,
+            0,
+            "token-starved ⇒ 0 emissions ⇒ cap not consumed"
+        );
+        assert!(
+            s.tail_probe_pending.is_some(),
+            "probe stays pending (due) while token-starved — not dropped, not spent"
+        );
+        assert_eq!(
+            s.inflight.keys().next().copied(),
+            Some(0),
+            "the outstanding tail is still un-recovered (held for a future token)"
+        );
+    }
+
+    #[test]
+    fn tail_probe_ack_race_cancels_without_consuming_cap() {
+        // §3 re-verify-at-emission: a probe is DUE and pending (token-starved) when a real ACK drains the target
+        // first. At emission the target is no longer inflight ⇒ the probe CANCELS (attempt NOT consumed, no wire
+        // bytes), and the pending slot clears. No spurious retransmission of already-delivered data.
+        let mut s = Sender::new();
+        s.set_tail_recovery_config(tail_cfg_on());
+        s.on_event(Event::AppData(small(99)), 0);
+        for t in 1..=6u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), t * 50 * MS);
+        }
+        assert_eq!(s.tail_probe_pending, Some(0), "probe due+pending pre-ACK");
+        // the ACK for seq 0 arrives before the probe could ever get a token → target drains.
+        let out = s.on_event(ack(&[0]), 400 * MS);
+        assert_eq!(
+            out.iter()
+                .filter(|d| d.kind == TransmitKind::Retransmit)
+                .count(),
+            0,
+            "ACK-race ⇒ no probe retransmit emitted"
+        );
+        assert_eq!(s.tail_probe_diag().0, 0, "ACK-race ⇒ cap not consumed");
+        assert_eq!(s.tail_probe_pending, None, "cancelled probe slot cleared");
+        assert!(
+            s.inflight.is_empty(),
+            "target delivered, nothing outstanding"
+        );
+    }
+
+    #[test]
+    fn tail_probe_ack_is_karn_excluded_from_rtt() {
+        // Karn: an ACK of a PROBE (origin = Retransmit) must NEVER feed the RTT estimator (send-time ambiguity).
+        // The sender samples RTT only for origin == Data (sender.rs); probes emit as Retransmit, so acking them
+        // leaves srtt untouched. Proven by capturing srtt after the probe fires, then acking the probe seqs.
+        let mut s = Sender::new();
+        s.set_tail_recovery_config(tail_cfg_on());
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS); // the ONLY Data RTT sample → srtt fixed here.
+        s.on_event(Event::AppData(small(99)), 20 * MS);
+        for t in 1..=40u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS);
+        }
+        assert!(s.tail_probe_diag().0 >= 1, "probe fired (precondition)");
+        let srtt_before = s.rtt.srtt();
+        // every currently-outstanding seq is a probe retransmit (origin = Retransmit).
+        let probe_seqs: Vec<u64> = s.inflight.keys().copied().collect();
+        assert!(!probe_seqs.is_empty(), "probe retransmits outstanding");
+        s.on_event(
+            Event::AckReceived(AckInfo {
+                acked_seqs: probe_seqs,
+                ack_delay: Duration::ZERO,
+            }),
+            5_000 * MS,
+        );
+        assert_eq!(
+            s.rtt.srtt(),
+            srtt_before,
+            "probe ACK is Karn-excluded — srtt must not move"
+        );
+    }
+
+    #[test]
+    fn tail_probe_determinism_two_senders() {
+        // Deterministic (RNG-free): two independent senders driven by the identical event sequence produce
+        // byte-identical outputs AND identical probe accounting.
+        let drive = || {
+            let mut s = Sender::new();
+            s.set_tail_recovery_config(tail_cfg_on());
+            let mut trace: Vec<(TransmitKind, u64, u64)> = Vec::new();
+            let push = |out: Vec<TransmitDecision>, trace: &mut Vec<(TransmitKind, u64, u64)>| {
+                for d in out {
+                    trace.push((d.kind, d.seq, d.size));
+                }
+            };
+            push(s.on_event(Event::AppData(unit(200)), 0), &mut trace);
+            push(s.on_event(ack(&[0]), 10 * MS), &mut trace);
+            push(s.on_event(Event::AppData(small(99)), 20 * MS), &mut trace);
+            for t in 1..=40u64 {
+                push(
+                    s.on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS),
+                    &mut trace,
+                );
+            }
+            (trace, s.tail_probe_diag())
+        };
+        let a = drive();
+        let b = drive();
+        assert_eq!(a.0, b.0, "identical event stream ⇒ identical output trace");
+        assert_eq!(a.1, b.1, "identical probe accounting");
     }
 
     #[test]
@@ -1967,7 +6330,14 @@ mod tests {
         // recovery-DAHİL: Startup-rampı sırasında kayıp-ilanı (pending>0 → RecoverArq-overlay)
         // faz-gain'ini DEĞİŞTİRMEZ — rate 2.885×btlbw KALIR (eski-dünya: 1.0×'a düşerdi;
         // fiili ×2.885 rate-kesimi = INV-RATE-1 kör-noktası, cift-kilit-v1 §0-ÖN/S1).
+        //
+        // [DR-RATE-RAMP-2 SUPERSESSION — INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md] This golden is
+        // PRESERVED VERBATIM (name, fixture, both exact equalities) and RE-SCOPED to the authoritative
+        // LEGACY FLOOR-INACTIVE path: with the bootstrap startup floor disabled, the old rate law must
+        // still hold EXACTLY. The active-floor contract is pinned separately by
+        // `inv_rate_1_active_floor_loss_does_not_reduce_rate` (no assertion was weakened).
         let mut s = Sender::new();
+        s.set_startup_pacing_init(StartupPacingConfig { enabled: false });
         s.on_event(Event::AppData(unit(200)), 0);
         s.on_event(ack(&[0]), 500 * MS); // btlbw≈2400; PreConverge→Startup (base=Startup)
         for i in 1..=8u64 {
@@ -2003,6 +6373,414 @@ mod tests {
             s.state(),
             SenderState::Startup,
             "recovery-çıkışı base'e döner"
+        );
+    }
+
+    // ── DR-RATE-RAMP-2 §1A.2: binding contract for the bootstrap startup floor ──────────────
+    // Supersession record: reports/fs-cal-2/v3.5/INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md
+
+    fn floor_on() -> Sender {
+        let mut s = Sender::new();
+        s.set_startup_pacing_init(StartupPacingConfig { enabled: true });
+        s
+    }
+
+    /// Drive the golden fixture up to "Startup ramp in progress, emissions done".
+    fn ramping(s: &mut Sender) {
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 500 * MS); // btlbw≈2400; PreConverge→Startup
+        for i in 1..=8u64 {
+            s.on_event(Event::AppData(unit(i)), (500 + i) * MS);
+        }
+        for t in [700u64, 900, 1_100] {
+            s.on_event(Event::TimerFired(Timer::Pto), t * MS);
+        }
+    }
+
+    #[test]
+    fn inv_rate_1_active_floor_loss_does_not_reduce_rate() {
+        // SUPERSEDING LOCK: with the floor ACTIVE the safety purpose is re-asserted with EXACT equality
+        // against the safe composition max(phase_rate, floor) — not a loose `>=`.
+        let mut s = floor_on();
+        ramping(&mut s);
+        assert!(s.base_is_startup, "kurulum: ramp sürüyor");
+        let floor = s.startup_pacing_floor_bps();
+        assert!(floor > 0, "floor must be armed on the PreConverge exit");
+        let btlbw = s.btlbw.btlbw();
+        let expect_before = crate::rate::Gain::STARTUP.apply(btlbw).max(floor);
+        let rate_before = s.pacer.rate();
+        assert_eq!(
+            rate_before, expect_before,
+            "kurulum: max(phase_rate, floor) exact"
+        );
+        // loss declaration
+        s.on_event(ack(&[2, 3, 4]), 1_200 * MS);
+        assert_eq!(
+            s.state(),
+            SenderState::RecoverArq,
+            "kayıp-ilanı → recovery-overlay"
+        );
+        let btlbw_after = s.btlbw.btlbw();
+        let floor_after = s.startup_pacing_floor_bps();
+        let expect_after = crate::rate::Gain::STARTUP
+            .apply(btlbw_after)
+            .max(floor_after.min(s.cwnd_over_srtt()));
+        assert_eq!(
+            s.pacer.rate(),
+            expect_after,
+            "KİLİT: kayıp-ilanı faz-gain'ini DEĞİŞTİRMEZ (rate = max(2.885×btlbw, floor) KALIR)"
+        );
+        assert!(
+            s.pacer.rate() >= rate_before.min(expect_after),
+            "loss must never CUT the rate"
+        );
+        // recovery exit still returns to the Startup BASE (ramp not killed)
+        s.on_event(ack(&[1]), 1_300 * MS);
+        assert_eq!(
+            s.state(),
+            SenderState::Startup,
+            "recovery-çıkışı base'e döner"
+        );
+    }
+
+    #[test]
+    fn startup_floor_arms_only_on_preconverge_exit() {
+        let mut s = floor_on();
+        s.on_event(Event::AppData(unit(200)), 0);
+        assert_eq!(s.state(), SenderState::PreConverge);
+        assert_eq!(
+            s.startup_pacing_floor_bps(),
+            0,
+            "not armed while in PreConverge"
+        );
+        s.on_event(ack(&[0]), 500 * MS); // the ONLY arming transition
+        assert!(
+            s.startup_pacing_floor_bps() > 0,
+            "armed exactly on PreConverge→Startup"
+        );
+    }
+
+    #[test]
+    fn startup_floor_not_armed_or_raised_by_loss() {
+        // A loss declaration alone must neither arm nor raise the floor.
+        let mut s = floor_on();
+        ramping(&mut s);
+        let before = s.startup_pacing_floor_bps();
+        s.on_event(ack(&[2, 3, 4]), 1_200 * MS); // packet-threshold loss declaration
+        assert_eq!(s.state(), SenderState::RecoverArq);
+        assert!(
+            s.startup_pacing_floor_bps() <= before,
+            "loss must never RAISE the floor ({before} -> {})",
+            s.startup_pacing_floor_bps()
+        );
+    }
+
+    #[test]
+    fn startup_floor_never_exceeds_cwnd_over_srtt() {
+        // The structural HARD ceiling has the last word at EVERY application, including after loss.
+        let mut s = floor_on();
+        ramping(&mut s);
+        for t in [1_200u64, 1_300, 1_400] {
+            s.on_event(ack(&[2, 3, 4]), t * MS);
+            let ceiling = s.cwnd_over_srtt();
+            assert!(
+                s.pacer.rate() <= ceiling.max(crate::rate::Gain::STARTUP.apply(s.btlbw.btlbw())),
+                "rate must never exceed the composition of the hard ceiling and the phase rate"
+            );
+            assert!(
+                s.startup_pacing_floor_bps().min(ceiling) <= ceiling,
+                "effective floor is clamped to the CURRENT cwnd/srtt"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_floor_writes_no_synthetic_btlbw_samples() {
+        // The floor must not inject anything into the BtlBw max-filter: the sample set is identical
+        // to the floor-inactive run.
+        let mut a = Sender::new();
+        a.set_startup_pacing_init(StartupPacingConfig { enabled: false });
+        let mut b = floor_on();
+        a.on_event(Event::AppData(unit(200)), 0);
+        b.on_event(Event::AppData(unit(200)), 0);
+        a.on_event(ack(&[0]), 500 * MS);
+        b.on_event(ack(&[0]), 500 * MS);
+        assert_eq!(
+            a.diag_btlbw_samples().len(),
+            b.diag_btlbw_samples().len(),
+            "floor must not add samples to the max-filter"
+        );
+        assert_eq!(
+            a.btlbw.btlbw(),
+            b.btlbw.btlbw(),
+            "floor must not alter the BtlBw estimate itself"
+        );
+    }
+
+    #[test]
+    fn startup_floor_release_is_deterministic_and_permanent() {
+        let mut s = floor_on();
+        ramping(&mut s);
+        assert!(s.startup_pacing_floor_bps() > 0, "armed");
+        // RELEASE BRANCH 1 (deterministic): the Startup/plateau exit condition fires.
+        // (RELEASE BRANCH 2 — "the natural rate catches up" — is pinned end-to-end on a real flow by
+        //  kama-integration `startup_pacing_floor_is_bootstrap_only_and_released`.)
+        let t = 1_400u64;
+        assert!(
+            s.base_is_startup,
+            "ramp is in progress while the floor is armed"
+        );
+        // Fire the EXISTING Startup exit condition: plateau ⇒ update_state moves Startup → Drain.
+        s.plateau_reached = true;
+        s.on_event(Event::TimerFired(Timer::Pto), t * MS);
+        assert_eq!(
+            s.state(),
+            SenderState::Drain,
+            "startup ramp must have ended (post-ramp phase)"
+        );
+        assert_eq!(
+            s.startup_pacing_floor_bps(),
+            0,
+            "floor must be released deterministically"
+        );
+        // and it may NEVER re-arm (no Plateau/ProbeBW re-entry)
+        for i in 0..50u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), (t + 100 + i * 10) * MS);
+            assert_eq!(s.startup_pacing_floor_bps(), 0, "floor must never re-arm");
+        }
+    }
+
+    // ── DR-CS-3 §6: shipping bootstrap RTT probe — sender-side security/budget contract ──────
+    // Contract: reports/dr-cs-3/DR-CS-3-BOOTSTRAP-RTT-CONTRACT.md
+
+    fn bs_on() -> Sender {
+        let mut s = Sender::new();
+        s.set_bootstrap_rtt(BootstrapRttConfig { enabled: true });
+        s
+    }
+
+    /// PreConverge flow whose DATA is never ACKed: the ladder arms and steps come due.
+    fn bs_stalled(s: &mut Sender, until_s: u64) -> Vec<TransmitDecision> {
+        let mut all = Vec::new();
+        for i in 1..=384u64 {
+            all.extend(s.on_event(
+                Event::AppData(OpaqueUnit {
+                    id: 1000 + i,
+                    size: 101,
+                }),
+                0,
+            ));
+        }
+        for t in 1..=until_s {
+            all.extend(s.on_event(Event::TimerFired(Timer::Pto), t * 1_000 * MS));
+        }
+        all
+    }
+
+    fn probes(v: &[TransmitDecision]) -> Vec<&TransmitDecision> {
+        v.iter()
+            .filter(|d| d.kind == TransmitKind::CsProbe)
+            .collect()
+    }
+
+    #[test]
+    fn bootstrap_off_is_inert() {
+        let mut s = Sender::new(); // default OFF
+        let out = bs_stalled(&mut s, 60);
+        // Assert on the DR-CS-3 counters, not on raw probe presence: in an
+        // `experimental-cold-start` build the LEGACY experimental ladder is a different
+        // implementation of the same protocol and still runs when DR-CS-3 is OFF.
+        assert_eq!(s.bootstrap_rtt_diag().arm, 0, "OFF must never arm");
+        assert_eq!(
+            s.bootstrap_rtt_diag().probe_emitted,
+            0,
+            "OFF must never emit"
+        );
+        assert_eq!(s.bootstrap_budget_remaining(), BS_TX_HARD_BUDGET);
+        #[cfg(not(feature = "experimental-cold-start"))]
+        assert!(
+            probes(&out).is_empty(),
+            "shipping build: OFF emits no probe at all"
+        );
+        let _ = out;
+    }
+
+    #[test]
+    fn bootstrap_ladder_is_edge_only_and_bounded() {
+        let mut s = bs_on();
+        let out = bs_stalled(&mut s, 60);
+        let d = s.bootstrap_rtt_diag();
+        let p = probes(&out);
+        assert_eq!(d.arm, 1, "armed exactly once");
+        assert!(
+            p.len() <= BS_FIRES_NS.len(),
+            "at most one probe per ladder step"
+        );
+        assert_eq!(d.probe_emitted as usize, p.len());
+        // poll/mint separation: the PTO tick fired 60 times, the ladder minted at most 4
+        assert!(
+            d.step_edge <= BS_FIRES_NS.len() as u64,
+            "edge count is bounded by the ladder"
+        );
+        // every probe carries a DISTINCT monotonic generation
+        let mut seqs: Vec<u64> = p.iter().map(|d| d.seq).collect();
+        let n = seqs.len();
+        seqs.sort_unstable();
+        seqs.dedup();
+        assert_eq!(seqs.len(), n, "probe_seq generations must be unique");
+    }
+
+    #[test]
+    fn bootstrap_sender_budget_never_exceeds_200_bytes() {
+        let mut s = bs_on();
+        let out = bs_stalled(&mut s, 120); // far past the last ladder step
+        let bytes: u64 = probes(&out).iter().map(|d| d.size).sum();
+        assert!(
+            bytes <= BS_TX_HARD_BUDGET,
+            "sender probe wire {bytes} B exceeds the 200 B budget"
+        );
+        assert_eq!(s.bootstrap_rtt_diag().probe_wire_bytes, bytes);
+        assert_eq!(s.bootstrap_rtt_diag().budget_violation, 0);
+        assert!(bytes <= 4 * 44, "4 x PROBE_WIRE_EXACT worst case");
+    }
+
+    /// Scoped to the SHIPPING build: under `experimental-cold-start` the OFF arm runs the legacy
+    /// ladder, which DOES consume DATA tokens (`pacer.try_send`), so its DATA prefix is not a valid
+    /// baseline for an additive comparison. DR-CS-3 targets the default build.
+    #[cfg(not(feature = "experimental-cold-start"))]
+    #[test]
+    fn bootstrap_probe_is_additive_not_paced() {
+        // The probe must NOT consume a DATA token: with the ladder ON, the DATA emissions in the
+        // same window are IDENTICAL to the OFF baseline (no displacement), and only probes are added.
+        let mut off = Sender::new();
+        let mut on = bs_on();
+        let a = bs_stalled(&mut off, 60);
+        let b = bs_stalled(&mut on, 60);
+        let data_a: Vec<u64> = a
+            .iter()
+            .filter(|d| d.kind == TransmitKind::Data)
+            .map(|d| d.unit_id)
+            .collect();
+        let data_b: Vec<u64> = b
+            .iter()
+            .filter(|d| d.kind == TransmitKind::Data)
+            .map(|d| d.unit_id)
+            .collect();
+        assert_eq!(
+            data_a, data_b,
+            "no DATA displacement: source prefix must be identical"
+        );
+        assert!(
+            !probes(&b).is_empty(),
+            "the treatment must actually add probes"
+        );
+    }
+
+    #[test]
+    fn bootstrap_unsolicited_echo_yields_no_rtt() {
+        let mut s = bs_on();
+        bs_stalled(&mut s, 2); // armed, but no probe is due yet at t=2s
+        s.on_event(Event::CsProbeEcho { probe_seq: 999 }, 2_500 * MS);
+        assert!(
+            s.rtt.srtt().is_none(),
+            "unsolicited echo must not establish srtt"
+        );
+        assert_eq!(s.bootstrap_rtt_diag().echo_match_valid, 0);
+        assert!(s.bootstrap_rtt_diag().echo_match_rejected >= 1);
+    }
+
+    #[test]
+    fn bootstrap_wrong_generation_echo_yields_no_rtt() {
+        let mut s = bs_on();
+        let out = bs_stalled(&mut s, 5); // step 0 (3 s) has fired
+        let p = probes(&out);
+        assert!(!p.is_empty(), "a probe must have been emitted");
+        let good = p[0].seq as u16;
+        s.on_event(
+            Event::CsProbeEcho {
+                probe_seq: good.wrapping_add(7),
+            },
+            6_000 * MS,
+        );
+        assert!(
+            s.rtt.srtt().is_none(),
+            "wrong generation must not establish srtt"
+        );
+        assert_eq!(s.bootstrap_rtt_diag().echo_match_valid, 0);
+    }
+
+    #[test]
+    fn bootstrap_valid_echo_yields_rtt_from_local_timestamps_only() {
+        let mut s = bs_on();
+        let out = bs_stalled(&mut s, 5);
+        let p = probes(&out);
+        let seq = p[0].seq as u16;
+        assert!(s.rtt.srtt().is_none(), "no srtt before the echo");
+        // echo arrives 1 s after the probe was emitted at t = 3 s
+        s.on_event(Event::CsProbeEcho { probe_seq: seq }, 4_000 * MS);
+        let d = s.bootstrap_rtt_diag();
+        assert_eq!(d.echo_match_valid, 1);
+        assert!(s.rtt.srtt().is_some(), "valid echo must establish srtt");
+        assert_eq!(
+            d.rtt_sample_ns,
+            1_000 * MS,
+            "RTT = local arrival - local send"
+        );
+        assert_eq!(d.cancelled, 1, "the first valid sample cancels the ladder");
+    }
+
+    #[test]
+    fn bootstrap_duplicate_echo_yields_at_most_one_sample() {
+        let mut s = bs_on();
+        let out = bs_stalled(&mut s, 5);
+        let seq = probes(&out)[0].seq as u16;
+        s.on_event(Event::CsProbeEcho { probe_seq: seq }, 4_000 * MS);
+        s.on_event(Event::CsProbeEcho { probe_seq: seq }, 4_500 * MS);
+        s.on_event(Event::CsProbeEcho { probe_seq: seq }, 5_000 * MS);
+        assert_eq!(
+            s.bootstrap_rtt_diag().echo_match_valid,
+            1,
+            "single consumption"
+        );
+    }
+
+    #[test]
+    fn bootstrap_no_probe_after_success() {
+        let mut s = bs_on();
+        let out1 = bs_stalled(&mut s, 5);
+        let seq = probes(&out1)[0].seq as u16;
+        s.on_event(Event::CsProbeEcho { probe_seq: seq }, 4_000 * MS);
+        let before = s.bootstrap_rtt_diag().probe_emitted;
+        // drive well past every remaining ladder step
+        let mut later = Vec::new();
+        for t in 6..=60u64 {
+            later.extend(s.on_event(Event::TimerFired(Timer::Pto), t * 1_000 * MS));
+        }
+        assert!(
+            probes(&later).is_empty(),
+            "no probe may be emitted after success"
+        );
+        assert_eq!(s.bootstrap_rtt_diag().probe_emitted, before);
+        assert_eq!(s.bootstrap_rtt_diag().probe_after_success_violation, 0);
+    }
+
+    #[test]
+    fn bootstrap_does_not_relax_karn_or_touch_arq_timing() {
+        // A duplicate/retransmit ACK must still yield no RTT sample (Karn), with the ladder ON.
+        let mut on = bs_on();
+        let mut off = Sender::new();
+        for s in [&mut on, &mut off] {
+            s.on_event(Event::AppData(unit(200)), 0);
+        }
+        // identical ARQ-relevant driving; compare loss/PTO diagnostics
+        for t in [700u64, 900, 1_100] {
+            on.on_event(Event::TimerFired(Timer::Pto), t * MS);
+            off.on_event(Event::TimerFired(Timer::Pto), t * MS);
+        }
+        assert_eq!(
+            on.diag_loss(),
+            off.diag_loss(),
+            "ARQ loss-declaration accounting must be unchanged before any echo"
         );
     }
 

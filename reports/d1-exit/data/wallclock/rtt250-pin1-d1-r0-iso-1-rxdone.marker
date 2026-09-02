@@ -1,0 +1,8 @@
+run_id=rtt250-pin1-d1-r0-iso-1
+policy=leftover
+receiver_events=294
+finalized_blocks=15
+pending_blocks=15
+ledger_path=/home/ryuzaki/Desktop/kama-core/reports/d1-exit/data/wallclock/rtt250-pin1-d1-r0-iso-1-rxledger.csv
+ledger_checksum=d641ab5f1b355357
+clean_shutdown=true

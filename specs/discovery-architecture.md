@@ -1,4 +1,4 @@
-# SafeRoom — Discovery Architecture (Contact Discovery, VOPRF, Discovery Server)
+# Kama — Discovery Architecture (Contact Discovery, VOPRF, Discovery Server)
 
 > **Statü:** Implementation-ready (Alpha). Bu belge `identity-and-trust-model.md` v1.5 (semantik otorite) ve `ccr-format-spec.md` (byte-level projeksiyon) ile %100 tutarlıdır. DiscoveryRecord byte layout'u ccr-spec §21'de canonical'dır; bu belge VOPRF mekaniğini, Discovery Server'ı, bootstrap'ı, publish/fetch akışlarını ve cache modelini tanımlar.
 > **Bağımlılık:** identity-and-trust-model.md (CAD-16, CAD-53), ccr-format-spec.md (§21 DiscoveryRecord, §13 CompactDeviceCert, §21.5 HubListRecord, §35 Session Model V3), routing-rendezvous-architecture.md (RoutingRecord, hub-mesh DHT).
@@ -24,7 +24,7 @@ Group              : ristretto255 (prime-order; Curve25519 ailesi — Ed25519/X2
 Hash               : SHA-512
 ```
 
-> **NORMATİF (suite tutarlılığı):** SafeRoom'un tüm kripto hattı Curve25519 ailesindedir (Ed25519 imza, X25519 DH). VOPRF de aynı aileden `ristretto255` seçilir (prime-order grup → cofactor sorunu yok; libsodium/dalek desteği mevcut). **P-256 (NIST/FIPS/CNSA) Alpha'da implement EDİLMEZ** — gelecekteki "FIPS compatibility profile" olarak Section 12'de rezerve edilir. İkinci kripto ailesi sokmak Alpha'da gereksiz validasyon/serialization/test yükü demektir.
+> **NORMATİF (suite tutarlılığı):** Kama'nın tüm kripto hattı Curve25519 ailesindedir (Ed25519 imza, X25519 DH). VOPRF de aynı aileden `ristretto255` seçilir (prime-order grup → cofactor sorunu yok; libsodium/dalek desteği mevcut). **P-256 (NIST/FIPS/CNSA) Alpha'da implement EDİLMEZ** — gelecekteki "FIPS compatibility profile" olarak Section 12'de rezerve edilir. İkinci kripto ailesi sokmak Alpha'da gereksiz validasyon/serialization/test yükü demektir.
 
 ---
 
@@ -32,7 +32,7 @@ Hash               : SHA-512
 
 ### 1.1 Bu belge neyi çözer
 
-Discovery, **"bu telefon numarası kime ait, kimliği (dest_hash) ne, statik X25519'u ne"** sorusunu cevaplar (contact discovery). Çıktı: Alice'in rehberindeki SafeRoom kullanıcılarının `DiscoveryRecord`'ları (dest_hash + cert + statik X25519), hostile ağa girmeden önce toplu çekilip cache'lenir.
+Discovery, **"bu telefon numarası kime ait, kimliği (dest_hash) ne, statik X25519'u ne"** sorusunu cevaplar (contact discovery). Çıktı: Alice'in rehberindeki Kama kullanıcılarının `DiscoveryRecord`'ları (dest_hash + cert + statik X25519), hostile ağa girmeden önce toplu çekilip cache'lenir.
 
 ### 1.2 Bu belge neyi ÇÖZMEZ (Non-Goals)
 

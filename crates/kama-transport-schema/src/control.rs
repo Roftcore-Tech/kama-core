@@ -13,6 +13,13 @@ pub enum Control {
     Ack {
         id: ControlId,
         acked_dh_epoch: u8,
+        /// [ACK-V2 birleşimi, 2026-08-26 Abkarada-onayı] `largest` alımı→bu-ACK gönderimi gecikmesi,
+        /// 256µs birim (motor `FRAME_TYPE_ACK_V2` ile aynı; RTT-düzeltmesi normatif).
+        ack_delay_256us: u16,
+        /// Görülen toplam DATA datagram'ı (K3 cold-start yön-ayrımı; saturating).
+        seen_count: u32,
+        /// Receiver-gözlemli pencere-oranı; 0xFFFF = ölçüm-yok-sentinel (motor sözleşmesi).
+        arrival_rate: u16,
         ranges: Vec<(u64, u64)>,
     },
     /// 0x11 — gap-based SACK (epoch-scoped; ACK-eliciting-DEĞİL).
@@ -57,6 +64,22 @@ pub enum Control {
         reason_code: u8,
         renew_hint: u8,
     },
+    /// 0x19 [DR-CS-1] — cold-start CS-probe (subtype=0x01; pad=9B-sıfır wire-codec'te; amp≤1:
+    /// PROBE_WIRE_EXACT=44B). probe_seq: sender-session-monoton (INV-CS-7). RETRY-EDİLMEZ.
+    CsProbe {
+        id: ControlId,
+        subtype: u8,
+        probe_seq: u16,
+    },
+    /// 0x1A [DR-CS-1] — cold-start probe-echo (idempotent-stateless; ECHO_WIRE_MAX=43B).
+    /// seen_count/arrival_gap YALNIZ-LEDGER (karar-girdisi-YAPILAMAZ — amendman-§3).
+    CsEcho {
+        id: ControlId,
+        subtype: u8,
+        probe_seq: u16,
+        seen_count: u32,
+        arrival_gap: u32,
+    },
 }
 
 impl Control {
@@ -74,6 +97,8 @@ impl Control {
             Control::BlockAbort { .. } => BLOCK_ABORT,
             Control::SessionClose { .. } => SESSION_CLOSE,
             Control::SessionRenewRequired { .. } => SESSION_RENEW_REQUIRED,
+            Control::CsProbe { .. } => CTRL_CS_PROBE,
+            Control::CsEcho { .. } => CTRL_CS_ECHO,
         }
     }
 
@@ -89,7 +114,9 @@ impl Control {
             | Control::ParamAck { id, .. }
             | Control::BlockAbort { id, .. }
             | Control::SessionClose { id, .. }
-            | Control::SessionRenewRequired { id, .. } => *id,
+            | Control::SessionRenewRequired { id, .. }
+            | Control::CsProbe { id, .. }
+            | Control::CsEcho { id, .. } => *id,
         }
     }
 }

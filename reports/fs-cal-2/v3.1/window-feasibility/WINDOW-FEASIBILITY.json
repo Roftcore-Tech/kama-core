@@ -1,0 +1,855 @@
+{
+  "analysis": "FS-CAL-2 v3.2 OUTCOME-BLIND estimator-window feasibility",
+  "bootstrap_B": 2000,
+  "inputs_explicitly_NOT_used": [
+    "calibration outcomes",
+    "R0/R2 completion difference",
+    "any treatment effect",
+    "any holdout"
+  ],
+  "inputs_used": [
+    "S0 synthetic fate-bit traces (frozen seed domain FSFC2-S0)",
+    "FSFC2-DIAG-CS-V32 fate-known time series (estimator telemetry only)"
+  ],
+  "outcome_blind": true,
+  "seed": 20260805,
+  "selection_rule": "NO window is selected here. Any change to the pinned window (256), warm-up length (384) or the eligibility thresholds requires a NEW design version frozen BEFORE data, plus a fresh S0 and a fresh \u00a74.2b re-qualification run (design \u00a73.4, \u00a74.2b).",
+  "windows": {
+    "128": {
+      "all_auc_bars_met": true,
+      "all_bias_within_50000": true,
+      "burst_delta_bias_variance": {
+        "MARKOV-BD-b15_p10": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": 14845.0,
+          "iqr_ppm": 134869.0,
+          "median_burst_delta_ppm": 164845.0,
+          "stdev_ppm": 95379.3
+        },
+        "MARKOV-BD-b15_p20": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -4.0,
+          "iqr_ppm": 120727.5,
+          "median_burst_delta_ppm": 149996.0,
+          "stdev_ppm": 92578.0
+        },
+        "MARKOV-BD-b15_p30": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -11003.0,
+          "iqr_ppm": 118715.2,
+          "median_burst_delta_ppm": 138997.0,
+          "stdev_ppm": 86738.6
+        },
+        "MARKOV-BD-b35_p10": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -23172.0,
+          "iqr_ppm": 167218.0,
+          "median_burst_delta_ppm": 326828.0,
+          "stdev_ppm": 120528.6
+        },
+        "MARKOV-BD-b35_p20": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -11616.0,
+          "iqr_ppm": 128387.0,
+          "median_burst_delta_ppm": 338384.0,
+          "stdev_ppm": 96916.3
+        },
+        "MARKOV-BD-b35_p30": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -18508.5,
+          "iqr_ppm": 120285.8,
+          "median_burst_delta_ppm": 331491.5,
+          "stdev_ppm": 86962.3
+        }
+      },
+      "cost": {
+        "note": "w \u00d7 (u64 logical id + 1 byte fate). Counter update is O(1) per resolution; snapshot is O(w). Cost is linear in w and negligible at every candidate.",
+        "window_state_bytes": 1152
+      },
+      "discrimination": {
+        "IID_vs_GE-L10_p10": {
+          "auc": 1.0,
+          "auc_lo95": 1.0,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L10_p20": {
+          "auc": 0.9999,
+          "auc_lo95": 0.9998,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L10_p30": {
+          "auc": 1.0,
+          "auc_lo95": 1.0,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L3_p10": {
+          "auc": 0.9988,
+          "auc_lo95": 0.9979,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L3_p20": {
+          "auc": 0.9991,
+          "auc_lo95": 0.998,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L3_p30": {
+          "auc": 0.9999,
+          "auc_lo95": 0.9998,
+          "meets_0.90_bar": true
+        }
+      },
+      "discrimination_min_lo95": 0.9979,
+      "fate_known_timing_observed": {
+        "fraction_reaching_w": 0.8333,
+        "runs_considered": 48,
+        "runs_reaching_w": 40,
+        "time_to_w_ms_max": 50900.0,
+        "time_to_w_ms_median": 9400.0,
+        "time_to_w_ms_min": 8200.0
+      },
+      "markov_bd_min_coverage_pinned": 0.814,
+      "max_abs_bias_ppm": 23172.0,
+      "mean_stdev_ppm": 96517.2,
+      "pinned_thresholds": {
+        "loss_tr": 8,
+        "nonloss_tr": 32
+      },
+      "prefix_causal": true,
+      "prefix_causality_note": "Unchanged by w: a fate is finalized only by ACK evidence or by loss-declaration after the reordering guard, and the window holds only already-finalized fates. Shrinking w removes OLD fates, never adds future information.",
+      "scaled_thresholds": {
+        "loss_tr": 4,
+        "nonloss_tr": 16
+      },
+      "threshold_coverage": {
+        "GE-L10_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.526,
+          "scaled_thresholds_frac": 0.666
+        },
+        "GE-L10_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.842,
+          "scaled_thresholds_frac": 0.914
+        },
+        "GE-L10_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.972,
+          "scaled_thresholds_frac": 0.992
+        },
+        "GE-L10_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.312,
+          "scaled_thresholds_frac": 0.412
+        },
+        "GE-L3_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.734,
+          "scaled_thresholds_frac": 0.914
+        },
+        "GE-L3_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.982,
+          "scaled_thresholds_frac": 1.0
+        },
+        "GE-L3_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "GE-L3_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.378,
+          "scaled_thresholds_frac": 0.644
+        },
+        "IID_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.938,
+          "scaled_thresholds_frac": 0.998
+        },
+        "IID_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "IID_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "IID_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.286,
+          "scaled_thresholds_frac": 0.876
+        },
+        "MARKOV-BD-b15_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.928,
+          "scaled_thresholds_frac": 0.998
+        },
+        "MARKOV-BD-b15_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b15_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b15_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.296,
+          "scaled_thresholds_frac": 0.848
+        },
+        "MARKOV-BD-b35_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.814,
+          "scaled_thresholds_frac": 0.986
+        },
+        "MARKOV-BD-b35_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b35_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b35_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.312,
+          "scaled_thresholds_frac": 0.754
+        }
+      },
+      "window": 128
+    },
+    "192": {
+      "all_auc_bars_met": true,
+      "all_bias_within_50000": true,
+      "burst_delta_bias_variance": {
+        "MARKOV-BD-b15_p10": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": 6804.0,
+          "iqr_ppm": 122359.5,
+          "median_burst_delta_ppm": 156804.0,
+          "stdev_ppm": 84799.7
+        },
+        "MARKOV-BD-b15_p20": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": 327.0,
+          "iqr_ppm": 99400.8,
+          "median_burst_delta_ppm": 150327.0,
+          "stdev_ppm": 74251.0
+        },
+        "MARKOV-BD-b15_p30": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -8566.0,
+          "iqr_ppm": 104637.5,
+          "median_burst_delta_ppm": 141434.0,
+          "stdev_ppm": 73670.6
+        },
+        "MARKOV-BD-b35_p10": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -15681.0,
+          "iqr_ppm": 148324.5,
+          "median_burst_delta_ppm": 334319.0,
+          "stdev_ppm": 104378.9
+        },
+        "MARKOV-BD-b35_p20": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -4707.5,
+          "iqr_ppm": 112048.0,
+          "median_burst_delta_ppm": 345292.5,
+          "stdev_ppm": 83237.1
+        },
+        "MARKOV-BD-b35_p30": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -13265.0,
+          "iqr_ppm": 93357.2,
+          "median_burst_delta_ppm": 336735.0,
+          "stdev_ppm": 69656.6
+        }
+      },
+      "cost": {
+        "note": "w \u00d7 (u64 logical id + 1 byte fate). Counter update is O(1) per resolution; snapshot is O(w). Cost is linear in w and negligible at every candidate.",
+        "window_state_bytes": 1728
+      },
+      "discrimination": {
+        "IID_vs_GE-L10_p10": {
+          "auc": 1.0,
+          "auc_lo95": 0.9999,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L10_p20": {
+          "auc": 1.0,
+          "auc_lo95": 1.0,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L10_p30": {
+          "auc": 1.0,
+          "auc_lo95": 1.0,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L3_p10": {
+          "auc": 0.9993,
+          "auc_lo95": 0.9987,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L3_p20": {
+          "auc": 1.0,
+          "auc_lo95": 1.0,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L3_p30": {
+          "auc": 1.0,
+          "auc_lo95": 1.0,
+          "meets_0.90_bar": true
+        }
+      },
+      "discrimination_min_lo95": 0.9987,
+      "fate_known_timing_observed": {
+        "fraction_reaching_w": 0.8333,
+        "runs_considered": 48,
+        "runs_reaching_w": 40,
+        "time_to_w_ms_max": 51800.0,
+        "time_to_w_ms_median": 10300.0,
+        "time_to_w_ms_min": 9100.0
+      },
+      "markov_bd_min_coverage_pinned": 0.992,
+      "max_abs_bias_ppm": 15681.0,
+      "mean_stdev_ppm": 81665.6,
+      "pinned_thresholds": {
+        "loss_tr": 8,
+        "nonloss_tr": 32
+      },
+      "prefix_causal": true,
+      "prefix_causality_note": "Unchanged by w: a fate is finalized only by ACK evidence or by loss-declaration after the reordering guard, and the window holds only already-finalized fates. Shrinking w removes OLD fates, never adds future information.",
+      "scaled_thresholds": {
+        "loss_tr": 6,
+        "nonloss_tr": 24
+      },
+      "threshold_coverage": {
+        "GE-L10_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.714,
+          "scaled_thresholds_frac": 0.758
+        },
+        "GE-L10_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.942,
+          "scaled_thresholds_frac": 0.962
+        },
+        "GE-L10_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "GE-L10_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.434,
+          "scaled_thresholds_frac": 0.49
+        },
+        "GE-L3_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.924,
+          "scaled_thresholds_frac": 0.956
+        },
+        "GE-L3_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "GE-L3_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "GE-L3_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.58,
+          "scaled_thresholds_frac": 0.716
+        },
+        "IID_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.992,
+          "scaled_thresholds_frac": 1.0
+        },
+        "IID_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "IID_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "IID_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.744,
+          "scaled_thresholds_frac": 0.942
+        },
+        "MARKOV-BD-b15_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b15_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b15_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b15_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.728,
+          "scaled_thresholds_frac": 0.89
+        },
+        "MARKOV-BD-b35_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.992,
+          "scaled_thresholds_frac": 0.996
+        },
+        "MARKOV-BD-b35_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b35_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b35_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.628,
+          "scaled_thresholds_frac": 0.83
+        }
+      },
+      "window": 192
+    },
+    "256": {
+      "all_auc_bars_met": true,
+      "all_bias_within_50000": true,
+      "burst_delta_bias_variance": {
+        "MARKOV-BD-b15_p10": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -1336.0,
+          "iqr_ppm": 113100.0,
+          "median_burst_delta_ppm": 148664.0,
+          "stdev_ppm": 75872.0
+        },
+        "MARKOV-BD-b15_p20": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": 4021.0,
+          "iqr_ppm": 86505.8,
+          "median_burst_delta_ppm": 154021.0,
+          "stdev_ppm": 66089.5
+        },
+        "MARKOV-BD-b15_p30": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -6630.0,
+          "iqr_ppm": 91607.0,
+          "median_burst_delta_ppm": 143370.0,
+          "stdev_ppm": 64661.7
+        },
+        "MARKOV-BD-b35_p10": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -10417.0,
+          "iqr_ppm": 127326.5,
+          "median_burst_delta_ppm": 339583.0,
+          "stdev_ppm": 91449.8
+        },
+        "MARKOV-BD-b35_p20": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -341.0,
+          "iqr_ppm": 100877.8,
+          "median_burst_delta_ppm": 349659.0,
+          "stdev_ppm": 72114.7
+        },
+        "MARKOV-BD-b35_p30": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -10782.0,
+          "iqr_ppm": 83388.0,
+          "median_burst_delta_ppm": 339218.0,
+          "stdev_ppm": 61225.3
+        }
+      },
+      "cost": {
+        "note": "w \u00d7 (u64 logical id + 1 byte fate). Counter update is O(1) per resolution; snapshot is O(w). Cost is linear in w and negligible at every candidate.",
+        "window_state_bytes": 2304
+      },
+      "discrimination": {
+        "IID_vs_GE-L10_p10": {
+          "auc": 1.0,
+          "auc_lo95": 1.0,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L10_p20": {
+          "auc": 1.0,
+          "auc_lo95": 1.0,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L10_p30": {
+          "auc": 1.0,
+          "auc_lo95": 1.0,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L3_p10": {
+          "auc": 0.9996,
+          "auc_lo95": 0.9989,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L3_p20": {
+          "auc": 1.0,
+          "auc_lo95": 1.0,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L3_p30": {
+          "auc": 1.0,
+          "auc_lo95": 1.0,
+          "meets_0.90_bar": true
+        }
+      },
+      "discrimination_min_lo95": 0.9989,
+      "fate_known_timing_observed": {
+        "fraction_reaching_w": 0.8333,
+        "runs_considered": 48,
+        "runs_reaching_w": 40,
+        "time_to_w_ms_max": 52700.0,
+        "time_to_w_ms_median": 11000.0,
+        "time_to_w_ms_min": 9700.0
+      },
+      "markov_bd_min_coverage_pinned": 0.996,
+      "max_abs_bias_ppm": 10782.0,
+      "mean_stdev_ppm": 71902.2,
+      "pinned_thresholds": {
+        "loss_tr": 8,
+        "nonloss_tr": 32
+      },
+      "prefix_causal": true,
+      "prefix_causality_note": "Unchanged by w: a fate is finalized only by ACK evidence or by loss-declaration after the reordering guard, and the window holds only already-finalized fates. Shrinking w removes OLD fates, never adds future information.",
+      "scaled_thresholds": {
+        "loss_tr": 8,
+        "nonloss_tr": 32
+      },
+      "threshold_coverage": {
+        "GE-L10_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.81,
+          "scaled_thresholds_frac": 0.81
+        },
+        "GE-L10_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.986,
+          "scaled_thresholds_frac": 0.986
+        },
+        "GE-L10_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "GE-L10_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.564,
+          "scaled_thresholds_frac": 0.564
+        },
+        "GE-L3_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.978,
+          "scaled_thresholds_frac": 0.978
+        },
+        "GE-L3_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "GE-L3_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "GE-L3_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.728,
+          "scaled_thresholds_frac": 0.728
+        },
+        "IID_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "IID_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "IID_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "IID_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.944,
+          "scaled_thresholds_frac": 0.944
+        },
+        "MARKOV-BD-b15_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b15_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b15_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b15_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.922,
+          "scaled_thresholds_frac": 0.922
+        },
+        "MARKOV-BD-b35_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.996,
+          "scaled_thresholds_frac": 0.996
+        },
+        "MARKOV-BD-b35_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b35_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 1.0,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b35_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.86,
+          "scaled_thresholds_frac": 0.86
+        }
+      },
+      "window": 256
+    },
+    "64": {
+      "all_auc_bars_met": true,
+      "all_bias_within_50000": true,
+      "burst_delta_bias_variance": {
+        "MARKOV-BD-b15_p10": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": 36508.0,
+          "iqr_ppm": 166557.0,
+          "median_burst_delta_ppm": 186508.0,
+          "stdev_ppm": 121225.9
+        },
+        "MARKOV-BD-b15_p20": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -8974.0,
+          "iqr_ppm": 167152.5,
+          "median_burst_delta_ppm": 141026.0,
+          "stdev_ppm": 121218.5
+        },
+        "MARKOV-BD-b15_p30": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -19021.0,
+          "iqr_ppm": 153360.2,
+          "median_burst_delta_ppm": 130979.0,
+          "stdev_ppm": 120111.8
+        },
+        "MARKOV-BD-b35_p10": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -16303.5,
+          "iqr_ppm": 229823.0,
+          "median_burst_delta_ppm": 333696.5,
+          "stdev_ppm": 140676.4
+        },
+        "MARKOV-BD-b35_p20": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -18020.0,
+          "iqr_ppm": 175814.0,
+          "median_burst_delta_ppm": 331980.0,
+          "stdev_ppm": 132759.1
+        },
+        "MARKOV-BD-b35_p30": {
+          "abs_bias_within_50000": true,
+          "bias_ppm": -36888.0,
+          "iqr_ppm": 157677.0,
+          "median_burst_delta_ppm": 313112.0,
+          "stdev_ppm": 121516.8
+        }
+      },
+      "cost": {
+        "note": "w \u00d7 (u64 logical id + 1 byte fate). Counter update is O(1) per resolution; snapshot is O(w). Cost is linear in w and negligible at every candidate.",
+        "window_state_bytes": 576
+      },
+      "discrimination": {
+        "IID_vs_GE-L10_p10": {
+          "auc": 0.9976,
+          "auc_lo95": 0.9952,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L10_p20": {
+          "auc": 0.9997,
+          "auc_lo95": 0.9994,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L10_p30": {
+          "auc": 0.9999,
+          "auc_lo95": 0.9997,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L3_p10": {
+          "auc": 0.9836,
+          "auc_lo95": 0.9771,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L3_p20": {
+          "auc": 0.9934,
+          "auc_lo95": 0.99,
+          "meets_0.90_bar": true
+        },
+        "IID_vs_GE-L3_p30": {
+          "auc": 0.9961,
+          "auc_lo95": 0.9938,
+          "meets_0.90_bar": true
+        }
+      },
+      "discrimination_min_lo95": 0.9771,
+      "fate_known_timing_observed": {
+        "fraction_reaching_w": 0.8333,
+        "runs_considered": 48,
+        "runs_reaching_w": 40,
+        "time_to_w_ms_max": 49400.0,
+        "time_to_w_ms_median": 7850.0,
+        "time_to_w_ms_min": 7000.0
+      },
+      "markov_bd_min_coverage_pinned": 0.294,
+      "max_abs_bias_ppm": 36888.0,
+      "mean_stdev_ppm": 126251.4,
+      "pinned_thresholds": {
+        "loss_tr": 8,
+        "nonloss_tr": 32
+      },
+      "prefix_causal": true,
+      "prefix_causality_note": "Unchanged by w: a fate is finalized only by ACK evidence or by loss-declaration after the reordering guard, and the window holds only already-finalized fates. Shrinking w removes OLD fates, never adds future information.",
+      "scaled_thresholds": {
+        "loss_tr": 2,
+        "nonloss_tr": 8
+      },
+      "threshold_coverage": {
+        "GE-L10_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.286,
+          "scaled_thresholds_frac": 0.52
+        },
+        "GE-L10_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.508,
+          "scaled_thresholds_frac": 0.804
+        },
+        "GE-L10_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.604,
+          "scaled_thresholds_frac": 0.924
+        },
+        "GE-L10_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.172,
+          "scaled_thresholds_frac": 0.306
+        },
+        "GE-L3_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.304,
+          "scaled_thresholds_frac": 0.818
+        },
+        "GE-L3_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.778,
+          "scaled_thresholds_frac": 0.992
+        },
+        "GE-L3_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.94,
+          "scaled_thresholds_frac": 1.0
+        },
+        "GE-L3_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.148,
+          "scaled_thresholds_frac": 0.554
+        },
+        "IID_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.254,
+          "scaled_thresholds_frac": 0.988
+        },
+        "IID_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.976,
+          "scaled_thresholds_frac": 1.0
+        },
+        "IID_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.998,
+          "scaled_thresholds_frac": 1.0
+        },
+        "IID_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.016,
+          "scaled_thresholds_frac": 0.854
+        },
+        "MARKOV-BD-b15_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.294,
+          "scaled_thresholds_frac": 0.988
+        },
+        "MARKOV-BD-b15_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.914,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b15_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.998,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b15_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.028,
+          "scaled_thresholds_frac": 0.788
+        },
+        "MARKOV-BD-b35_p10": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.304,
+          "scaled_thresholds_frac": 0.946
+        },
+        "MARKOV-BD-b35_p20": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.88,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b35_p30": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.972,
+          "scaled_thresholds_frac": 1.0
+        },
+        "MARKOV-BD-b35_p5": {
+          "n": 500,
+          "pinned_thresholds_frac": 0.06,
+          "scaled_thresholds_frac": 0.672
+        }
+      },
+      "window": 64
+    }
+  }
+}

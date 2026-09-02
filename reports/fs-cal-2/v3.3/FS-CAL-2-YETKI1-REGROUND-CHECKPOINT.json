@@ -1,0 +1,15 @@
+{
+  "artifact": "FS-CAL-2-YETKI1-REGROUND-CHECKPOINT",
+  "fit_use": "FORBIDDEN",
+  "notes": [
+    "Contract remains CONTRACT-STALE-PENDING-FINAL-REGROUND by design (FAZ 0.3).",
+    "Fresh S0 and fresh \u00a74.2b NOT run.",
+    "FS-CAL YETKI-2 NOT RUN."
+  ],
+  "phase": "FAZ-6",
+  "product_behavior_changed": false,
+  "reason": "Not reached; no accepted product change exists to re-ground.",
+  "result_bearing_calibration_runs": 0,
+  "scope": "single bulk YETKI-1 re-grounding",
+  "status": "NOT STARTED"
+}

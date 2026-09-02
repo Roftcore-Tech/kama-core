@@ -1,0 +1,11 @@
+=== RTT ACCEPTANCE PINS (symmetric) ===
+PASS rtt100: configured-RTT=100ms measured-min=100ms (tol±20)
+PASS rtt1s: configured-RTT=1000ms measured-min=1000ms (tol±150)
+PASS rtt2500: configured-RTT=2500ms measured-min=2500ms (tol±375)
+=== DIRECTION ISOLATION ===
+PASS fwd-only: (delay 500ms | delay 1ms) → RTT-min=501ms (≈500)
+PASS rev-only: (delay 1ms | delay 500ms) → RTT-min=501ms (≈500)
+=== BLACKOUT + RECOVERY (reverse 100% loss → restore) ===
+pre=2 during-blackout=0 post-recovery=3
+PASS blackout-recovery
+=== SONUÇ: PASS=6 FAIL=0 ===

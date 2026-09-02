@@ -1,0 +1,108 @@
+{
+  "artifact": "DR-CS-3-REPLACEMENT-PANEL-PREREG",
+  "frozen_before_any_seed_search": true,
+  "on_arm_result_exists_at_writing": false,
+  "why": {
+    "gate1": "UNEVALUABLE - FROZEN CHALLENGE PHENOTYPE NOT REPRODUCED UNDER V2",
+    "measured_cause": "key re-domaining; first 20 forward draws for rep9/14/17 are 20 drops under InitialSource and all-good under V2Forward, i.e. absent from draw 0 before any interleaving",
+    "key_not_changed": "both keys conform to C2 clause 5, so the choice may not be made on outcome grounds"
+  },
+  "universe": {
+    "domain": "DRCS3-V2-CHALLENGE",
+    "cell": "P2-GE20L10-RTT1000",
+    "rtt_ms": 1000,
+    "forward": "GE p=200000 ppm L=10",
+    "reverse": "lossless (primary continuity)",
+    "repetitions": "[0, 512)",
+    "size_fixed_here": true,
+    "never_widened_post_hoc": true,
+    "justification": {
+      "p_first_packet_bad": 0.2,
+      "p_stay_bad": 0.9,
+      "preconverge_window_packets": 20,
+      "p_run_covers_20_given_bad": 0.1351,
+      "p_start_bad_and_covers_20": 0.027,
+      "per_seed_rate": "~2.7% (lower bound)",
+      "expected_qualifying_in_512": 13.8
+    }
+  },
+  "phenotype": {
+    "preconverge_exit_ns": null,
+    "ack_batches": 0,
+    "delivered_src_at_epoch": 0,
+    "epoch_trigger": "TIMEOUT",
+    "weaker_variant_admissible": false
+  },
+  "selection": [
+    "run OFF arm only over the whole universe; ON arm not built, run or read",
+    "collect qualifying seeds in ascending repetition order",
+    "take the first 3 as the challenge set (deterministic, lexicographic-by-index)",
+    "take the next 3 as a disjoint confirmation set",
+    "write both lists to the ledger and HASH them before any ON arm runs",
+    "if fewer than 3 qualify: do NOT widen, weaken or re-domain; report CHANNEL-MODEL-PROPERTY / DEFAULT PROMOTION BLOCKED and apply C1"
+  ],
+  "gates_unchanged": {
+    "challenge_recovery": "3/3",
+    "new_stalls": 0,
+    "fresh_primary_n40_first_valid_ack": "38/40",
+    "other_c2_gates": "as frozen",
+    "network_censored": "stays in the denominator",
+    "empty_pass_rule": "a gate the OFF arm already meets is MECHANISM-UNEVALUABLE (NON-HARM ONLY), not PASS"
+  },
+  "prohibited": [
+    "seed shopping",
+    "reading ON results during selection",
+    "widening the universe after seeing counts",
+    "weakening the phenotype",
+    "changing the seed domain to obtain stalls",
+    "post-hoc exclusion of NETWORK-CENSORED",
+    "altering any C2 threshold"
+  ],
+  "addendum": {
+    "A1_rate_is_assumption": {
+      "value": "0.2 * 0.9^19 ~= 0.027017",
+      "basis": "channel parameters + 20-packet PreConverge window",
+      "equivalence_to_exact_phenotype_demonstrated": false,
+      "status": "sizing rationale only",
+      "if_exact_or_lower_bound": {
+        "N": 512,
+        "E_X": 13.83,
+        "P_X_ge_6": 0.9943
+      },
+      "universe_stays": 512
+    },
+    "A2_window_sensitivity": {
+      "20_packets": 13.8,
+      "30_packets": 4.8,
+      "35_packets": 2.8,
+      "selection_run_records": "observed forward-packet-count distribution (no extra cost)",
+      "attribution_if_under_3": {
+        "observed_window_near_20": "CHANNEL-MODEL-PROPERTY",
+        "observed_window_much_greater": "SIZING-ASSUMPTION-MISMATCH"
+      },
+      "mismatch_remedy": "a NEW preregistration with a corrected window - NOT enlarging this universe",
+      "packet_count_alone_conclusive": false
+    },
+    "A3_confirmation_is_holdout": [
+      "first three qualifying = challenge set",
+      "next three = confirmation holdout",
+      "both lists hashed before any ON arm runs",
+      "challenge ON runs first",
+      "confirmation not opened until challenge is 3/3",
+      "product fixes allowed against challenge; each fix requires challenge 3/3 again",
+      "confirmation opens ONCE, after challenge 3/3 and the final product commit is frozen",
+      "default promotion requires confirmation 3/3 as well",
+      "if the product changes after the confirmation result is seen, that set is no longer a holdout and may not be reused for a PASS",
+      "confirmation failure BLOCKS M2 and requires \u00a74 lineage / C1"
+    ],
+    "A4_selection_enrichment": {
+      "old_locked": "3 stalls in 8 seeds = 37.5%",
+      "analytic_base": "~2.7%",
+      "enrichment": "~14x",
+      "replacement_has_same_property": "three seeds chosen from 512 are by definition worst cases",
+      "binding": "3/3 recovered is MECHANISM evidence, NOT PREVALENCE evidence",
+      "phrasing": "the mechanism recovers the selected stall phenotype - NOT cold start is solved",
+      "prevalence_only_from": "an unselected sample (the fresh panel)"
+    }
+  }
+}

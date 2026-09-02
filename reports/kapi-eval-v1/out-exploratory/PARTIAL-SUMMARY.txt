@@ -1,0 +1,22 @@
+runs=157 (INVALID=0 exogenous, MISSING=1)
+  UYARI: MISSING satırlar sansür riskidir (survivorship) — nedenleri açıklanmadan hücre raporlanamaz [inceleme #17]
+  exploratory_h2_cell_paced_A2_d120_u0.75      kama-arq       n= 10 comp med=0.967 [0.967,1.000] cost med=0.3804
+  exploratory_h2_cell_paced_A2_d120_u0.75      kama-tail-v1   n= 10 comp med=1.000 [0.967,1.000] cost med=0.2561
+  exploratory_h2_cell_paced_A2_d120_u0.75      q-dgram-arq    n= 10 comp med=1.000 [1.000,1.000] cost med=0.1400
+  exploratory_h2_cell_paced_A2_d120_u0.75      q-stream       n= 10 comp med=1.000 [1.000,1.000] cost med=0.1456
+  exploratory_h3a_burst40_paced_A2_d120_u0.75  kama-arq       n= 10 comp med=0.910 [0.870,0.960] cost med=0.3507
+  exploratory_h3a_burst40_paced_A2_d120_u0.75  kama-tail-v1   n= 10 comp med=0.970 [0.410,0.990] cost med=0.2744
+  exploratory_h3a_burst40_paced_A2_d120_u0.75  q-dgram-arq    n= 10 comp med=1.000 [1.000,1.000] cost med=0.2466
+  exploratory_h3a_burst40_paced_A2_d120_u0.75  q-stream       n= 10 comp med=1.000 [1.000,1.000] cost med=0.2133
+  exploratory_h3b_burst50_paced_A2_d120_u0.75  kama-arq       n= 10 comp med=0.860 [0.800,0.930] cost med=0.2755
+  exploratory_h3b_burst50_paced_A2_d120_u0.75  kama-tail-v1   n= 10 comp med=0.920 [0.890,0.990] cost med=0.2330
+  exploratory_h3b_burst50_paced_A2_d120_u0.75  q-dgram-arq    n= 10 comp med=1.000 [1.000,1.000] cost med=0.1973
+  exploratory_h3b_burst50_paced_A2_d120_u0.75  q-stream       n= 10 comp med=1.000 [1.000,1.000] cost med=0.1867
+  exploratory_h3c_burst60_paced_A2_d120_u0.75  kama-arq       n=  9 comp med=0.860 [0.080,0.920] cost med=0.2548
+  exploratory_h3c_burst60_paced_A2_d120_u0.75  kama-tail-v1   n=  9 comp med=0.920 [0.860,0.980] cost med=0.2341
+  exploratory_h3c_burst60_paced_A2_d120_u0.75  q-dgram-arq    n=  9 comp med=1.000 [1.000,1.000] cost med=0.1804
+  exploratory_h3c_burst60_paced_A2_d120_u0.75  q-stream       n=  9 comp med=1.000 [1.000,1.000] cost med=0.1721
+  PAIR exploratory_h2_cell_paced_A2_d120_u0.75  Δcomp med=+0.000 discordant b=0 c=1 rate=0.0033
+  PAIR exploratory_h3a_burst40_paced_A2_d120_u0.75 Δcomp med=-0.025 discordant b=0 c=107 rate=0.1070
+  PAIR exploratory_h3b_burst50_paced_A2_d120_u0.75 Δcomp med=-0.070 discordant b=0 c=67 rate=0.0670
+  PAIR exploratory_h3c_burst60_paced_A2_d120_u0.75 Δcomp med=-0.080 discordant b=0 c=71 rate=0.0789

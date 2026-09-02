@@ -77,15 +77,17 @@ pub fn run_metrics(run: &RunOutput, deadlines: &[Duration]) -> RunMetrics {
         })
         .collect();
 
-    let delivered = ev
-        .iter()
-        .filter(|e| e.delivered_ns.is_some())
-        .count()
-        .max(1);
+    let delivered = ev.iter().filter(|e| e.delivered_ns.is_some()).count();
     let payload_total = ev.iter().map(|e| e.payload_bytes).sum::<u64>().max(1);
     RunMetrics {
         per_deadline,
-        bytes_per_delivered_msg: run.meta.udp_tx_bytes as f64 / delivered as f64,
+        // 0-teslim → NaN (tanımsız; §5.2 "yalnız ≥1-teslimde ikincil"). .max(1) tüm tx'i tek
+        // mesaja yazıp medyanı kirletiyordu (severe-loss hücrelerinde tam isabet). [inceleme #9]
+        bytes_per_delivered_msg: if delivered == 0 {
+            f64::NAN
+        } else {
+            run.meta.udp_tx_bytes as f64 / delivered as f64
+        },
         ack_overhead_ratio: run.meta.udp_rx_bytes as f64 / payload_total as f64,
     }
 }
@@ -146,7 +148,12 @@ pub struct SecondaryAgg {
 /// Secondary metriklerin koşular arası medyanı (varyansa dayanıklı).
 #[must_use]
 pub fn aggregate_secondary(runs: &[RunMetrics]) -> SecondaryAgg {
-    let mut b: Vec<f64> = runs.iter().map(|r| r.bytes_per_delivered_msg).collect();
+    // NaN (0-teslim) satırları medyana GİRMEZ (tanımsız gizlenmez: kapsam runs.len()−b.len()).
+    let mut b: Vec<f64> = runs
+        .iter()
+        .map(|r| r.bytes_per_delivered_msg)
+        .filter(|v| v.is_finite())
+        .collect();
     let mut a: Vec<f64> = runs.iter().map(|r| r.ack_overhead_ratio).collect();
     b.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
     a.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
@@ -266,6 +273,12 @@ mod tests {
             udp_tx_bytes: 1000,
             udp_rx_bytes: 200,
             tx: TxComponents::default(),
+            kama_arm: String::new(),
+            submit_interval_ns: 0,
+            budget: Default::default(),
+            t0_unix_ns: 0,
+            events_epoch_offset_ns: 0,
+            warmup_residue: 0,
         };
         let run = RunOutput {
             meta,

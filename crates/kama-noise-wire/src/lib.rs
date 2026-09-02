@@ -15,6 +15,12 @@
 
 pub mod aad;
 pub mod control;
+/// F3 (DR-CS-1b/A2): control-id fixed-window dedup (CONTROL_DEDUP_WINDOW). Feature-gated.
+#[cfg(feature = "experimental-cold-start")]
+pub mod control_dedup_window;
+/// F-CID-0 (DR-CS-1b/A2): control-id merkezi issuance-gate + CAL-10 dedup-window. Feature-gated.
+#[cfg(feature = "experimental-cold-start")]
+pub mod control_id_gate;
 pub mod demux;
 pub mod epoch_machine;
 pub mod error;
@@ -25,6 +31,7 @@ pub mod inner;
 pub mod legacy;
 pub mod opened;
 pub mod outer;
+pub mod param_bind;
 pub mod pn;
 pub mod protector;
 pub mod restart;
@@ -35,6 +42,14 @@ pub use control::{
     decode_control_body, encode_control_body, split_for_send, ACK_MAX_RANGES,
     RECOVERED_MAX_ESI_RANGES, SACK_MAX_GAP_BLOCKS,
 };
+#[cfg(feature = "experimental-cold-start")]
+pub use control_dedup_window::{ControlDedupWindow, DedupDecision};
+#[cfg(feature = "experimental-cold-start")]
+pub use control_id_gate::{
+    ControlIdIssueError, ControlIdIssueGate, CONTROL_DEDUP_WINDOW, MAX_CONTROL_ID_BURST,
+    MAX_CONTROL_ID_ISSUE_RATE_PER_DIRECTION, MAX_CONTROL_REORDER_ALLOWANCE,
+    MAX_RETRY_REORDER_HORIZON_S,
+};
 pub use demux::{HandleClass, HandleRouter};
 pub use epoch_machine::{DhEpochMachine, EpochAction, RecvEpoch0, Role, GRACE_MIN_PACKETS};
 pub use error::{PnReject, WireError};
@@ -44,7 +59,7 @@ pub use init_flight::{
     AntiAmplification, InitAdmission, InitFlight, InitReceiver, InitReplayIdentity,
     InitRetryConfig, RetransmitOutcome,
 };
-pub use inner::InnerPlain;
+pub use inner::{InnerPlain, SensitiveSymbolBytes};
 pub use legacy::{
     build_legacy_aad, LegacyDirection, LegacySessionProtector, LEGACY_AAD_LEN, LEGACY_OVERHEAD,
     SESSION_DATA_MAGIC,
@@ -60,5 +75,7 @@ pub use restart::{
     early_data_policy, resume_allowed_after_restart, EarlyDataPolicy, InitCounterStore,
     PersistentReplayGuard, ReplayOutcome,
 };
+#[cfg(feature = "experimental-cold-start")]
+pub use restart::{RECENT_CAP_PER_PAIR, REPLAY_PAIR_CAP};
 pub use retry::{InboundControlDedup, InboundOutcome, RetryClass};
 pub use session::{Direction, Session, SessionId, SessionLifecycle, SessionManager};

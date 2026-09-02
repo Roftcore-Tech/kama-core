@@ -1,0 +1,7 @@
+git_commit=70ea2de
+dirty=14
+kernel=7.0.12-arch1-1
+tc=tc utility, iproute2-7.0.0, libbpf 1.7.0
+netns=parent:net:[4026532871] child:net:[4026533183]
+acceptance_rtt100_min_ms=100
+scenario=W-2B-R3; A+C-bounds; size-scaled-horizon 65:30s/300:85s/1200:45s(NO_COMPLETION_BY_45S)

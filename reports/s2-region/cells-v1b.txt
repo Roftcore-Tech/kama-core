@@ -1,0 +1,10 @@
+# v1b tamamlayıcı (koşu-öncesi gerekçeler PRE-REG-LITE ekinde): rep-güçlendirme + sıkı-deadline
+# A': p2fec kama-kolları +3 rep (v1 varyansı büyüktü; %90-sorusu netleşsin)
+p2fec2 delay 0ms loss 80% rate 200kbit|delay 0ms loss 80% rate 200kbit|80 1000 120 kama-off,kama-fec
+# B': quinn-bimodallik hücreleri +3 rep (0/40-veya-40/40 deseni n=2'yle iddia edilmez)
+qbl40d0   delay 0ms loss 40% rate 200kbit|delay 0ms loss 40% rate 200kbit|40 250 45 quinn
+qbl60d0   delay 0ms loss 60% rate 200kbit|delay 0ms loss 60% rate 200kbit|40 250 45 quinn
+qbl60d150 delay 150ms loss 60% rate 200kbit|delay 150ms loss 60% rate 200kbit|40 250 45 quinn
+# C': kullanıcı-rejimi SIKI-deadline (gerçek-zamanlı: D=10s, 100ms sunum) — gevşek D=45 quinn'i kurtarmıştı
+rt40d300 delay 300ms loss 40% rate 5mbit|delay 300ms loss 40% rate 5mbit|40 100 10 kama-fec,quinn
+rt60d300 delay 300ms loss 60% rate 5mbit|delay 300ms loss 60% rate 5mbit|40 100 10 kama-fec,quinn

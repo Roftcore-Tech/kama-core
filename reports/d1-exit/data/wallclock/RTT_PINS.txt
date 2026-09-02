@@ -1,0 +1,3 @@
+rtt250 one-way=125ms measured-RTT-min=250.092ms (configured 250)
+rtt1000 one-way=500ms measured-RTT-min=1000.181ms (configured 1000)
+rtt2500 one-way=1250ms measured-RTT-min=2500.329ms (configured 2500)

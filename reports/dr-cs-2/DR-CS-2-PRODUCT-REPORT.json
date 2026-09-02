@@ -1,0 +1,80 @@
+{
+  "RESULT": "FAIL",
+  "commit_push_pr": false,
+  "contract_sha256": {
+    "json": "5e221666ceb947a1ef5b8e31d9706dbf85c49d43fb21cf588e47c8c3433979e3",
+    "md": "1ebb23a63a8316acf915cf0225abcd0496353a577fd913f5133ab2ed45289aea"
+  },
+  "defaults": {
+    "BoundedRecoveryCreditConfig": "OFF",
+    "StartupPacingConfig": "ON",
+    "TailRecoveryConfig": "OFF"
+  },
+  "failure_classes": [
+    {
+      "evidence": "rep9 CREDIT-ON: first_delivery 8.533s, first_ack 9.033s, ack_batches 2, max srtt_us 0, state_changes [[0,PreConverge]]",
+      "id": "CREDIT-DELIVERED-AND-ACKED-BUT-KARN-EXCLUDED",
+      "root": "credited emission is TransmitKind::Duplicate; RTT sampling gated at sender.rs:2060 on p.origin==Data (Karn); PreConverge exit requires srtt",
+      "structural": true
+    },
+    {
+      "evidence": "tx_data 20->18, tx_duplicate 0->2",
+      "id": "CREDIT-IS-NET-NEUTRAL-UNDER-DEBIT",
+      "root": "a pacing debit reallocates rather than adds under total token starvation"
+    },
+    {
+      "evidence": "rep39 pc_exit 62904ms -> None",
+      "id": "NEW-STALL-PRODUCED",
+      "root": "202 B debit = 6.52 s of PreConverge allowance"
+    }
+  ],
+  "locked_regression": {
+    "baseline_stalls": 3,
+    "converged_runs_delayed_ms": 6516,
+    "credited_per_run": 2,
+    "debit_bytes": 202,
+    "new_stall_seed": 39,
+    "new_stalls": 1,
+    "panels": [
+      "P0-tail-OFF",
+      "P1-tail-ON"
+    ],
+    "permits_per_run": 2,
+    "rescued": 0,
+    "seeds": 8
+  },
+  "not_done_per_fail_discipline": [
+    "new timer",
+    "PreConverge floor change",
+    "scheduler priority change",
+    "retry tuning",
+    "CsProbe/echo",
+    "tail cap change",
+    "FEC change",
+    "second stacked treatment"
+  ],
+  "phase": "FAZ-2",
+  "predicates": {
+    "END_TO_END_RECOVERY_SUCCESS": "FAIL",
+    "MECHANISM_SUCCESS": "PASS",
+    "SAFETY_PASS": "PASS"
+  },
+  "preflight": "Durum A \u2014 starvation present in P0 shipped tail-OFF baseline",
+  "product_behavior_changed_by_FAZ2": false,
+  "result_bearing_calibration_runs": 0,
+  "safety": {
+    "accounting_invariant_failure": 0,
+    "budget": 2,
+    "credited_with_config_off": 0,
+    "data_permit_violation": 0,
+    "duplicate_mints_denied": "~5M",
+    "max_credited_per_run": 2,
+    "parity_permit_violation": 0
+  },
+  "study": "DR-CS-2",
+  "suites": {
+    "adaptive_transport_lib": "142/142",
+    "clippy": "clean x3",
+    "fs_cal2_pins": "33/33"
+  }
+}

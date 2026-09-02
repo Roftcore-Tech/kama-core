@@ -1,0 +1,12 @@
+{
+  "artifact": "DR-CS-3-RESPONDER-CLAIM-CORRIGENDUM",
+  "cold_start_fixed_verdict_issued": false,
+  "corrects": {
+    "file": "DR-CS-3-IMPLEMENTATION-REPORT.md",
+    "preserved_unchanged": true,
+    "sha256_prefix": "0122b4d3826927a1"
+  },
+  "now": "RESPONDER IMPLEMENTED AND TESTED, BUT NOT YET PRESENT IN SHIPPING DEFAULT BUILD",
+  "reason": "kama_integration::receiver_host is cfg(experimental-cold-start) (lib.rs:14-18); ReceiverHost and emit_cs_echo do not exist in the default product build",
+  "was": "Authenticated ReceiverHost responder written"
+}

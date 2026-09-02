@@ -1,0 +1,2 @@
+P1-CLIENT acked=77/80 stats=ClientStats { offered: 80, acked: 73, undelivered: 3, tx_datagrams: 1166, rx_datagrams: 157, open_failures: 0, unknown_frames: 0, stale_decisions: 732, send_errors: 0, unaccepted_offers: 0, fec_blocks_latched: 10, fec_repairs_tx: 40, fec_repair_missing: 0, fec_recovered_ctrl_units: 4 }
+P1-RSS kb=12964

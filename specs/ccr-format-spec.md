@@ -10,7 +10,7 @@
 
 ## 1. Purpose / Amaç
 
-Bu doküman SafeRoom'un kimlik/PKI nesnelerinin **kesin canonical binary formatını** tanımlar. Hedef: bir Java RA/CA implementasyonu, bir Rust parser/validator ve bir C++/Rust client/hub implementasyonunun **birebir aynı byte'ları üretmesi ve aynı imzaları doğrulaması**.
+Bu doküman Kama'nın kimlik/PKI nesnelerinin **kesin canonical binary formatını** tanımlar. Hedef: bir Java RA/CA implementasyonu, bir Rust parser/validator ve bir C++/Rust client/hub implementasyonunun **birebir aynı byte'ları üretmesi ve aynı imzaları doğrulaması**.
 
 Bu doküman şunları tanımlar:
 - CCR sertifikalarının binary layout'u
@@ -79,12 +79,12 @@ Bu doküman şunları tanımlar:
 
 ```
 RA Server → Intermediate CA Server: izole mTLS (opsiyonel gRPC over mTLS)
-SafeRoom custom adaptive transport RA→CA'da KULLANILMAZ. (KCP çıkarıldı; hiçbir aktif CCR nesnesi KCP'ye bağlı değil.)
-SafeRoom custom transport edge/public yollar için:
+Kama custom adaptive transport RA→CA'da KULLANILMAZ. (KCP çıkarıldı; hiçbir aktif CCR nesnesi KCP'ye bağlı değil.)
+Kama custom transport edge/public yollar için:
   Client→RA, Hub→RA, Client→Hub, Hub→Hub, Client↔Client (hub relay).
 ```
 
-Bu doküman canonical byte'ları tanımlar; bu byte'lar gRPC/mTLS ile sarmalanabilir (RA→CA) veya SafeRoom adaptive transport / Noise-based transport envelope ile taşınabilir (edge), ama **sarmalayıcı ne olursa olsun içerideki imzalı byte'lar bu dokümandaki canonical formattır.**
+Bu doküman canonical byte'ları tanımlar; bu byte'lar gRPC/mTLS ile sarmalanabilir (RA→CA) veya Kama adaptive transport / Noise-based transport envelope ile taşınabilir (edge), ama **sarmalayıcı ne olursa olsun içerideki imzalı byte'lar bu dokümandaki canonical formattır.**
 
 ---
 
@@ -95,7 +95,7 @@ Bu doküman canonical byte'ları tanımlar; bu byte'lar gRPC/mTLS ile sarmalanab
 | Byte order | Unsigned fixed-width **big-endian** (network byte order) |
 | Varint | **Yasak** (LEB128/bit-level variable-width; canonical imzalı yapılarda). Fixed-width length-prefix u16_be/u32_be varint DEĞİLDİR — Section 4.4 |
 | Platform-endian | **Yasak** |
-| Canonical signing input | SafeRoom-native binary; JSON/protobuf/ASN.1-DER **değil** |
+| Canonical signing input | Kama-native binary; JSON/protobuf/ASN.1-DER **değil** |
 | Field order | Sabit, deterministik |
 | Optional reordering | Yasak |
 | Duplicate fields | Yasak |
@@ -104,7 +104,7 @@ Bu doküman canonical byte'ları tanımlar; bu byte'lar gRPC/mTLS ile sarmalanab
 | Signature | Ed25519 |
 | String | Protokol sabitleri ASCII |
 
-`Confirmed:` CCR SafeRoom-native'dir, X.509 TBS projection **değildir**. Wire doğrulama canonical CCR TBS byte'ları üzerinde yapılır.
+`Confirmed:` CCR Kama-native'dir, X.509 TBS projection **değildir**. Wire doğrulama canonical CCR TBS byte'ları üzerinde yapılır.
 
 ---
 
@@ -122,7 +122,7 @@ No unordered maps.
 No JSON as canonical signing input.
 No protobuf encoding as canonical signing input.
 No ASN.1 DER as canonical signing input.
-CCR is SafeRoom-native, not X.509 TBS projection.
+CCR is Kama-native, not X.509 TBS projection.
 ```
 
 ### 4.1 String Encoding
@@ -255,14 +255,14 @@ bits 5-15      reserved (0 olmalı; aksi → reject)
 ### 6.5 EKU constants (u16_be, eku_list içinde)
 
 ```
-0x0001 id-saferoom-intermediate
-0x0002 id-saferoom-identity
-0x0003 id-saferoom-device
-0x0004 id-saferoom-hub
-0x0005 id-saferoom-ra
-0x0006 id-saferoom-ct-log
-0x0007 id-saferoom-license-authority
-0x0008 id-saferoom-admin-server
+0x0001 id-kama-intermediate
+0x0002 id-kama-identity
+0x0003 id-kama-device
+0x0004 id-kama-hub
+0x0005 id-kama-ra
+0x0006 id-kama-ct-log
+0x0007 id-kama-license-authority
+0x0008 id-kama-admin-server
 (Root CA: EKU yok — eku_count=0)
 ```
 
@@ -273,7 +273,7 @@ bits 5-15      reserved (0 olmalı; aksi → reject)
 0x0002 subjectAltName (SAN)
 0x0003 deviceId
 0x0004 ctLogMetadata
-0x0005 safeRoomNamespace
+0x0005 kamaNamespace
 0x0100-0x7FFF reserved (standard)
 0x8000-0xFFFF reserved (operator/experimental)
 ```
@@ -473,7 +473,7 @@ Her cert_type için: required fields, forbidden fields, allowed algorithms, key 
 | public_key_alg | 0x01 (Ed25519) |
 | is_ca | TRUE, path_len_present=TRUE, path_len=1 |
 | key_usage | 0x0006 + digitalSignature(0x0001) = 0x0007 |
-| eku_list | [0x0001 id-saferoom-intermediate] |
+| eku_list | [0x0001 id-kama-intermediate] |
 | issuer | Root CA |
 | validity | max 5 yıl |
 
@@ -492,8 +492,8 @@ Her cert_type için: required fields, forbidden fields, allowed algorithms, key 
 | public_key | `user_identity_ed25519_pub` |
 | is_ca | TRUE, path_len=0 |
 | key_usage | 0x0007 |
-| eku_list | [0x0002 id-saferoom-identity] |
-| extensions | nameConstraints (0x0001) zorunlu: URI `saferoom://<dest_hash>/*` |
+| eku_list | [0x0002 id-kama-identity] |
+| extensions | nameConstraints (0x0001) zorunlu: URI `kama://<dest_hash>/*` |
 | issuer | Intermediate CA (RA aracılığıyla) |
 | validity | **max 1 yıl** (RA license gate + Admin approval ile yenilenir; `not_after <= OrgEntitlementRecord.license_not_after` — identity v1.5 E-11) |
 
@@ -684,7 +684,7 @@ verify_compact_device_cert(compact_cert, identity_cert, org_entitlement, revocat
 | public_key_alg | 0x01 (Ed25519) |
 | is_ca | TRUE, path_len=0 |
 | key_usage | 0x0007 |
-| eku_list | [0x0004 id-saferoom-hub] |
+| eku_list | [0x0004 id-kama-hub] |
 | extensions | nameConstraints (0x0001): DNS + IP; SAN (0x0002): DNS + IP (zorunlu) |
 | issuer | Intermediate CA (RA aracılığıyla) |
 | validity | **max 3 yıl** (Intermediate altyapısı, **lisanstan bağımsız**; lisans enforcement hub cert expiry ile YAPILMAZ) |
@@ -721,7 +721,7 @@ verify_compact_device_cert(compact_cert, identity_cert, org_entitlement, revocat
 | public_key_alg | 0x01 (Ed25519) |
 | is_ca | TRUE, path_len=0 (RA Noise CCR imzaladığı için) |
 | key_usage | 0x0007 |
-| eku_list | [0x0005 id-saferoom-ra] |
+| eku_list | [0x0005 id-kama-ra] |
 | extensions | nameConstraints + SAN: DNS/IP |
 | issuer | Intermediate CA |
 | validity | max 3 yıl |
@@ -739,7 +739,7 @@ verify_compact_device_cert(compact_cert, identity_cert, org_entitlement, revocat
 
 **Confirmed (v1.5 CA/RA izolasyon):**
 - RA, Intermediate CA ile **izole mTLS** (opsiyonel gRPC over mTLS) üzerinden konuşur.
-- RA→CA'da SafeRoom custom adaptive transport **kullanılmaz** (izole mTLS/gRPC).
+- RA→CA'da Kama custom adaptive transport **kullanılmaz** (izole mTLS/gRPC).
 - Client/Hub yalnızca RA ile konuşur; Intermediate CA veya Root CA ile **asla doğrudan** konuşmaz.
 - Client/Hub Intermediate CA'nın IP/konumunu bilmez; Root CA'yı yalnızca pinned `ROOT_CA_SPKI_HASH` olarak bilir.
 - RA Noise CCR client→RA Noise NK handshake'inde `rs` olarak kullanılır (bootstrap bundle'dan pinned).
@@ -754,7 +754,7 @@ verify_compact_device_cert(compact_cert, identity_cert, org_entitlement, revocat
 | public_key_alg | 0x01 (Ed25519) |
 | is_ca | FALSE |
 | key_usage | digitalSignature(0x0001) |
-| eku_list | [0x0006 id-saferoom-ct-log] |
+| eku_list | [0x0006 id-kama-ct-log] |
 | issuer | Root CA veya Intermediate CA |
 | validity | Root/Intermediate'ten kısa |
 
@@ -773,7 +773,7 @@ RoftCore'un online/HSM-backed lisans imza anahtarı. Root CA offline kalır; Org
 | is_ca | FALSE |
 | path_len_present | FALSE |
 | key_usage | digitalSignature(0x0001) only |
-| eku_list | [0x0007 id-saferoom-license-authority] |
+| eku_list | [0x0007 id-kama-license-authority] |
 | issuer | Root CA |
 | validity | 1-3 yıl, önerilen 2 yıl |
 
@@ -785,7 +785,7 @@ RoftCore'un online/HSM-backed lisans imza anahtarı. Root CA offline kalır; Org
 - is_ca == FALSE
 - path_len_present == FALSE
 - key_usage TAM OLARAK digitalSignature (0x0001); keyCertSign/cRLSign/keyAgreement/nonRepudiation varsa → reject
-- eku_list, id-saferoom-license-authority (0x0007) içermeli; license-authority dışı signing capability vermez
+- eku_list, id-kama-license-authority (0x0007) içermeli; license-authority dışı signing capability vermez
 - issuer chain → Root CA, ROOT_CA_SPKI_HASH pinli (recursive verify_chain)
 - now validity aralığında
 - revoked değil
@@ -819,7 +819,7 @@ License Authority → CT checkpoint / STH
 
 ## 17.6 Admin Server CCR
 
-Kurumun Admin Server'ının makine kimliği. Admin↔RA mTLS peer authentication için kullanılır (admin-control-plane-tdd.md). Per-org Intermediate tarafından imzalanır. Admin Server **hiçbir canonical SafeRoom record/cert imzalamaz** — yalnız mTLS peer kimliği (+ opsiyonel kendi control-request envelope imzası).
+Kurumun Admin Server'ının makine kimliği. Admin↔RA mTLS peer authentication için kullanılır (admin-control-plane-tdd.md). Per-org Intermediate tarafından imzalanır. Admin Server **hiçbir canonical Kama record/cert imzalamaz** — yalnız mTLS peer kimliği (+ opsiyonel kendi control-request envelope imzası).
 
 | Alan | Değer |
 |------|-------|
@@ -828,7 +828,7 @@ Kurumun Admin Server'ının makine kimliği. Admin↔RA mTLS peer authentication
 | is_ca | FALSE |
 | path_len_present | FALSE |
 | key_usage | digitalSignature(0x0001) only |
-| eku_list | [0x0008 id-saferoom-admin-server] |
+| eku_list | [0x0008 id-kama-admin-server] |
 | issuer | per-org Intermediate CA |
 | validity | 1-3 yıl (Alpha önerisi 1 yıl) |
 | extensions | operator_id / admin_server_id / SAN |
@@ -841,7 +841,7 @@ Kurumun Admin Server'ının makine kimliği. Admin↔RA mTLS peer authentication
 - is_ca == FALSE
 - path_len_present == FALSE
 - key_usage TAM OLARAK digitalSignature (0x0001); keyCertSign/cRLSign/keyAgreement varsa → reject
-- eku_list, id-saferoom-admin-server (0x0008) içermeli
+- eku_list, id-kama-admin-server (0x0008) içermeli
 - issuer chain → per-org Intermediate → Root, ROOT_CA_SPKI_HASH pinli (recursive verify_chain)
 - operator_id, request/operator scope ile eşleşir
 - subject_key_id/admin_server_id RA'da o operator_id için register edilmiş
@@ -1119,7 +1119,7 @@ HubEntryV3 {
   hub_id              : bytes16                     # hub kimliği (RoutingRecord ile eşleşir)
   address_count       : u8                          # 1..N
   addresses           : HubAddress[address_count]   # AddrEntry ≡ HubAddress (aşağıda)
-  hub_identity_cert   : varbytes16                  # CCR envelope, cert_type=0x05 Hub Identity (Ed25519, EKU id-saferoom-hub)
+  hub_identity_cert   : varbytes16                  # CCR envelope, cert_type=0x05 Hub Identity (Ed25519, EKU id-kama-hub)
   hub_noise_cert      : varbytes16                  # CCR envelope, cert_type=0x06 Hub Noise (X25519 keyAgreement, issuer=Hub Identity)
   hub_priority        : u8                          # 0=primary tercih, artan=fallback (çok-hub self-healing)
 }
@@ -1185,7 +1185,7 @@ validate_hub_entry(entry, ROOT_CA_SPKI_HASH, now):
   1.  parse exact; trailing byte YOK.
   2.  hub_identity_cert.cert_type == 0x05 (HUB_IDENTITY_CERT).
   3.  hub_identity_cert.public_key_alg == Ed25519.
-  4.  hub_identity_cert EKU id-saferoom-hub içerir.
+  4.  hub_identity_cert EKU id-kama-hub içerir.
   5.  verify_chain(hub_identity_cert, ROOT_CA_SPKI_HASH): Hub Identity → Intermediate → Root pin.
   6.  hub_noise_cert.cert_type == 0x06 (HUB_NOISE_CERT).
   7.  hub_noise_cert.public_key_alg == X25519.
@@ -1214,7 +1214,7 @@ validate_hub_entry(entry, ROOT_CA_SPKI_HASH, now):
 
 ## 21.6 OrgEntitlementRecord (Lisans Kaydı)
 
-> **Mimari bağlam (Haziran 2026, identity v1.5 §7.14 / CAD-51; signer netleştirme):** Business model'i kriptografiye gömen lisans kaydı. **RoftCore License Authority (cert_type 0x0A, EKU `id-saferoom-license-authority`) tarafından imzalanır** — Root CA değil (Root offline kalır), Intermediate CA değil (Intermediate kurum namespace omurgası; lisans global business authority'dir). License Authority cert'i Root tarafından ceremony ile imzalanır; online HSM-backed sign-only; **YALNIZCA OrgEntitlementRecord imzalama yetkisi vardır** (Identity/Device/Hub/RA/AHS/DiscoveryEndpoint imzalayamaz — pki-ca-ra-hsm-tdd.md §4). RA, sertifika basmadan önce bu kaydı doğrular (license gate, identity v1.5 §15.11). **Intermediate CA ömrünü bozmaz** (Intermediate 5 yıl namespace omurgası; lisans Intermediate expiry ile DEĞİL, bu kayıt + Identity Cert 1 yıl yenileme ile enforce edilir — identity v1.5 E-11). Bu kayıt ağda client'a dolaşmaz; RA↔RoftCore ve RA iç doğrulamasında kullanılır (RA gate). Yine de canonical byte formatı interop için burada tanımlıdır (RA implementasyonu Java/Rust/C++ tutarlı doğrulamalı).
+> **Mimari bağlam (Haziran 2026, identity v1.5 §7.14 / CAD-51; signer netleştirme):** Business model'i kriptografiye gömen lisans kaydı. **RoftCore License Authority (cert_type 0x0A, EKU `id-kama-license-authority`) tarafından imzalanır** — Root CA değil (Root offline kalır), Intermediate CA değil (Intermediate kurum namespace omurgası; lisans global business authority'dir). License Authority cert'i Root tarafından ceremony ile imzalanır; online HSM-backed sign-only; **YALNIZCA OrgEntitlementRecord imzalama yetkisi vardır** (Identity/Device/Hub/RA/AHS/DiscoveryEndpoint imzalayamaz — pki-ca-ra-hsm-tdd.md §4). RA, sertifika basmadan önce bu kaydı doğrular (license gate, identity v1.5 §15.11). **Intermediate CA ömrünü bozmaz** (Intermediate 5 yıl namespace omurgası; lisans Intermediate expiry ile DEĞİL, bu kayıt + Identity Cert 1 yıl yenileme ile enforce edilir — identity v1.5 E-11). Bu kayıt ağda client'a dolaşmaz; RA↔RoftCore ve RA iç doğrulamasında kullanılır (RA gate). Yine de canonical byte formatı interop için burada tanımlıdır (RA implementasyonu Java/Rust/C++ tutarlı doğrulamalı).
 
 ### 21.6.1 Wire Format
 
@@ -1244,7 +1244,7 @@ canonical_entitlement_tbs =
 
 signature = Ed25519_Sign(sk_license_authority, canonical_entitlement_tbs)
 ```
-`signature` TBS'e **dahil değildir** (ama `issuer_key_id` TBS'e DAHİLDİR → hangi License Authority key'inin imzaladığı signed context'e bind edilir; key rotation / çoklu License Authority durumunda belirsizlik elenir). Magic-in-TBS disiplini (Section 1) geçerli. İmzalayan = **RoftCore License Authority** (cert_type 0x0A, EKU `id-saferoom-license-authority`; Root-signed, online HSM sign-only). `issuer_key_id` = License Authority CCR `subject_key_id[0:16]`. Bu key Root'tan ve Intermediate'ten bağımsızdır; key_id RA'da pinli. Lisans otoritesi RoftCore'da, Identity/Device/Hub namespace'inden ayrıdır.
+`signature` TBS'e **dahil değildir** (ama `issuer_key_id` TBS'e DAHİLDİR → hangi License Authority key'inin imzaladığı signed context'e bind edilir; key rotation / çoklu License Authority durumunda belirsizlik elenir). Magic-in-TBS disiplini (Section 1) geçerli. İmzalayan = **RoftCore License Authority** (cert_type 0x0A, EKU `id-kama-license-authority`; Root-signed, online HSM sign-only). `issuer_key_id` = License Authority CCR `subject_key_id[0:16]`. Bu key Root'tan ve Intermediate'ten bağımsızdır; key_id RA'da pinli. Lisans otoritesi RoftCore'da, Identity/Device/Hub namespace'inden ayrıdır.
 
 ### 21.6.3 Validation (RA tarafı, identity v1.5 §15.11 apply_license_gate)
 
@@ -1254,7 +1254,7 @@ verify_org_entitlement_record(oer, ROOT_CA_SPKI_HASH):
   2. issuer_key_id ile License Authority CCR çöz (RA'da pinli/cache).
   3. License Authority CCR doğrula (Section 17.5):
        cert_type == 0x0A
-       EKU id-saferoom-license-authority (0x0007)
+       EKU id-kama-license-authority (0x0007)
        key_usage == digitalSignature only (keyCertSign/cRLSign/keyAgreement varsa reject)
        is_ca == FALSE
        chain → Root, ROOT_CA_SPKI_HASH pinli (recursive verify_chain)
@@ -1319,7 +1319,7 @@ DiscoveryEndpointRecord {
 }
 
 DiscoveryEndpointEntry {
-  transport_type      : u8          # 0x01=https, 0x02=saferoom-hub-proxy
+  transport_type      : u8          # 0x01=https, 0x02=kama-hub-proxy
   endpoint_len        : u16_be      # 1..512 (Section 6.7 max DISCOVERY_ENDPOINT_LEN = 512)
   endpoint            : bytes[endpoint_len]   # ASCII/UTF-8 canonical endpoint string (URL veya hub-proxy hedefi)
   priority            : u8          # 0=primary tercih, artan=fallback
@@ -1451,7 +1451,7 @@ RAServerEntry {
   ra_server_id         : bytes16
   address_count        : u8
   addresses            : HubAddress[address_count]   # AddrEntry ≡ HubAddress (§21.5.1)
-  ra_identity_cert     : varbytes16  # CCR envelope, cert_type=0x07 RA Identity (Ed25519, EKU id-saferoom-ra)
+  ra_identity_cert     : varbytes16  # CCR envelope, cert_type=0x07 RA Identity (Ed25519, EKU id-kama-ra)
   ra_noise_cert        : varbytes16  # CCR envelope, cert_type=0x08 RA Noise (X25519 keyAgreement, issuer=RA Identity)
 }
 # Türetilen (raw alan TAŞINMAZ):
@@ -1483,7 +1483,7 @@ signature = Ed25519_Sign(sk_intermediate, canonical_bootstrap_bundle_tbs)
 validate_ra_server_entry(entry, ROOT_CA_SPKI_HASH, now):
   1.  ra_identity_cert.cert_type == 0x07 (RA_IDENTITY_CERT).
   2.  ra_identity_cert.public_key_alg == Ed25519.
-  3.  ra_identity_cert EKU id-saferoom-ra içerir.
+  3.  ra_identity_cert EKU id-kama-ra içerir.
   4.  verify_chain(ra_identity_cert, ROOT_CA_SPKI_HASH): RA Identity → Intermediate → Root pin.
   5.  ra_noise_cert.cert_type == 0x08 (RA_NOISE_CERT).
   6.  ra_noise_cert.public_key_alg == X25519.
@@ -1635,7 +1635,7 @@ NameConstraintEntry {
 }
 ```
 
-**URI dest_hash encoding:** `saferoom://<dest_hash_hex>/*` — `<dest_hash_hex>` = dest_hash'in **lowercase base16** (64 ASCII hex karakter). Validation: URI'den çıkarılan dest_hash, `SHA-256(SHA-256(subject_public_key))` ile eşleşmeli (Identity CA için).
+**URI dest_hash encoding:** `kama://<dest_hash_hex>/*` — `<dest_hash_hex>` = dest_hash'in **lowercase base16** (64 ASCII hex karakter). Validation: URI'den çıkarılan dest_hash, `SHA-256(SHA-256(subject_public_key))` ile eşleşmeli (Identity CA için).
 
 **DNS/IP:** ASCII; IP IPv4 (4 byte) veya IPv6 (16 byte) için kanonik string formu. entries ascending `type` sonra `value` byte sırasıyla; duplicate → reject.
 
@@ -1716,7 +1716,7 @@ Extension {
 | 0x0002 | subjectAltName | SAN entries (NameConstraintEntry ile aynı tip yapısı) |
 | 0x0003 | deviceId | bytes16 (tam 16 byte) |
 | 0x0004 | ctLogMetadata | opaque (CT docs) |
-| 0x0005 | safeRoomNamespace | opaque (reserved) |
+| 0x0005 | kamaNamespace | opaque (reserved) |
 
 ---
 
@@ -1819,7 +1819,7 @@ public_key_alg   : 01
 public_key       : <user_identity_ed25519_pub 32B>
 key_usage        : 00 07
 eku_count        : 01
-eku_list         : 00 02                                    # id-saferoom-identity
+eku_list         : 00 02                                    # id-kama-identity
 basic_constraints: 01 01 00                                 # CA:TRUE, pathLen=0
 extension_count  : 00 01
 ext[0]:
@@ -1827,7 +1827,7 @@ ext[0]:
   critical       : 01
   value_len      : 00 4A                                    # 74 byte
   value          : 00 01 00 01 00 46 73 61 66 65 72 6F 6F 6D ...
-                   # entry_count=1, type=URI, len=70, "saferoom://<64hex>/*"
+                   # entry_count=1, type=URI, len=70, "kama://<64hex>/*"
 ```
 
 ### 30.4 CompactDeviceCertV1 Golden Vector (152B) — AĞDA DOLAŞAN TEK CERT (Section 13)
@@ -2038,7 +2038,7 @@ Her fuzz hedefi şunları assert eder:
 ```
 - Java RA/CA, Rust validator ile birebir aynı canonical CCR byte'larını üretir.
 - Java RA/CA, RA→CA internal iletişiminde gRPC over izole mTLS kullanabilir.
-- RA→CA SafeRoom custom adaptive transport KULLANMAZ (izole mTLS/gRPC).
+- RA→CA Kama custom adaptive transport KULLANMAZ (izole mTLS/gRPC).
 - Rust validator Java-üretimi CCR'ı doğrular.
 - C++ hub/client CCR/Session Model V3'yi OPAQUE byte olarak taşır; yalnızca Rust validation
   layer çağrılırken yorumlanır.
@@ -2090,7 +2090,7 @@ C++ (hub/client): canonical byte'ları TAŞIR (adaptive transport/Noise), Rust'a
 | AC-08 | İmzalı yapılarda varint yok |
 | AC-09 | Parser rejection kuralları tam (Section 29) |
 | AC-10 | Identity v1.5 validation algoritmaları bu formatı **yeni tasarım kararı olmadan** tüketebilir |
-| AC-11 | RA→CA boundary net: izole mTLS/gRPC, SafeRoom custom adaptive transport değil |
+| AC-11 | RA→CA boundary net: izole mTLS/gRPC, Kama custom adaptive transport değil |
 | AC-12 | identity_hash (ham key) vs subject_key_id (spki) ayrımı net, karıştırılamaz |
 | AC-13 | CompactDeviceCertV1 tam 152B encode/decode (device_ed25519_pub+device_x25519_pub+issuer_key_id+not_after+issuer_signature); imzalayan Identity/User Cert (Intermediate DEĞİL); SAN/deviceId/serial YOK; dest_hash issuer Identity key'inden türetilir (device key'den DEĞİL) |
 | AC-14 | Session Model V3 AAD (SESSION_DATA exact byte layout "SSD1", session_context_v1 binding) Section 35.6/35.9 ile tutarlı encode edilir |
@@ -2118,13 +2118,13 @@ C++ (hub/client): canonical byte'ları TAŞIR (adaptive transport/Noise), Rust'a
 | AC-A10 | policy_sequence key schedule'dan çıkarılmıştır; Alpha profile_id+cipher_suite_id sabit, downgrade yüzeyi yok (Section 35.7) |
 | AC-A11 | deprecated SRAM/Noise N implementation path aktif parser/validator'da kabul edilmez (negative corpus, Section 30) |
 | AC-LA-1 | CCR parser cert_type 0x0A License Authority'yi tanır (Section 17.5) |
-| AC-LA-2 | License Authority CCR validation: is_ca=FALSE, key_usage=digitalSignature only, EKU=id-saferoom-license-authority, issuer=Root enforce edilir |
+| AC-LA-2 | License Authority CCR validation: is_ca=FALSE, key_usage=digitalSignature only, EKU=id-kama-license-authority, issuer=Root enforce edilir |
 | AC-LA-3 | OrgEntitlementRecord signature yalnız License Authority public key'iyle doğrulanır (issuer_key_id → LA CCR çözümü) |
 | AC-LA-4 | Root veya Intermediate ile imzalı OrgEntitlementRecord KABUL EDİLMEZ |
 | AC-LA-5 | License Authority key'i OrgEntitlementRecord DIŞI object/cert imzasında kullanılırsa verifier reject eder (kritik authorization bug) |
 | AC-LA-6 | License Authority cert Root'a, ROOT_CA_SPKI_HASH pinine kadar doğrulanır |
 | AC-AS-1 | CCR parser cert_type 0x0B Admin Server'ı tanır (Section 17.6) |
-| AC-AS-2 | Admin Server CCR validation: is_ca=FALSE, key_usage=digitalSignature only, EKU=id-saferoom-admin-server, issuer=per-org Intermediate enforce edilir |
+| AC-AS-2 | Admin Server CCR validation: is_ca=FALSE, key_usage=digitalSignature only, EKU=id-kama-admin-server, issuer=per-org Intermediate enforce edilir |
 | AC-AS-3 | Admin Server Cert yalnız Admin↔RA mTLS peer authentication için; canonical record/cert imzalayamaz |
 | AC-AS-4 | Admin Server public key'iyle HubList/AHS/DiscoveryEndpoint/Revocation/OrgEntitlement imzası kabul edilirse verifier reject eder (kritik authorization bug) |
 
@@ -2176,10 +2176,10 @@ C++ (hub/client): canonical byte'ları TAŞIR (adaptive transport/Noise), Rust'a
 
 ### 35.0 TLS 1.3 Dersi (NORMATİF ilke)
 
-**Handshake sonrası bağ byte'larda değil, anahtardadır.** TLS established record her mesajda `connection_id`, `cert_hash`, `handshake_hash`, public key, CertificateVerify, imza veya certificate chain TAŞIMAZ — bağ, handshake transcript'ten türeyen application traffic key'dedir (16B AEAD tag). SafeRoom aynı modeli benimser.
+**Handshake sonrası bağ byte'larda değil, anahtardadır.** TLS established record her mesajda `connection_id`, `cert_hash`, `handshake_hash`, public key, CertificateVerify, imza veya certificate chain TAŞIMAZ — bağ, handshake transcript'ten türeyen application traffic key'dedir (16B AEAD tag). Kama aynı modeli benimser.
 
 ```
-SafeRoom established SESSION_DATA TAŞIMAZ:
+Kama established SESSION_DATA TAŞIMAZ:
   - per-message cert-ref          - per-message length
   - per-message link_id           - outer transport AEAD tag
   - per-message Ed25519 imza      - FEC header (block/shard framing dışında)
@@ -2206,7 +2206,7 @@ SIGNED_CONTROL         : SESSION_DATA + Ed25519(64B) + signed_control_context. N
 
 Saf Noise N (sender anonim → ayrı imza) YERİNE authenticated one-way: sender authentication AEAD key derivation'a gömülü, ayrı per-message imza YOK.
 
-> **NORMATİF (Noise-inspired, generic Noise pattern DEĞİL):** SafeRoom Session Model V3, **N-türevi authenticated one-way DH schedule** kullanır (`ss_e` FS + `ss_s` sender auth). Generic bir Noise pattern transcript'i DEĞİLDİR ve **interaktif KK/IK DEĞİLDİR** (tek-yön, tek mesaj, Bob offline olabilir). cert-ref ≈ Noise K-benzeri, cert-inline ≈ Noise X-benzeri — ama standart Noise library transcript'i değil; bu bölümdeki canonical key schedule **otoriterdir**. (Senkron PTT/voice için interaktif IK/KK = Beta, ayrı konu. Beta'da formal Noise pattern mapping yapılabilir.)
+> **NORMATİF (Noise-inspired, generic Noise pattern DEĞİL):** Kama Session Model V3, **N-türevi authenticated one-way DH schedule** kullanır (`ss_e` FS + `ss_s` sender auth). Generic bir Noise pattern transcript'i DEĞİLDİR ve **interaktif KK/IK DEĞİLDİR** (tek-yön, tek mesaj, Bob offline olabilir). cert-ref ≈ Noise K-benzeri, cert-inline ≈ Noise X-benzeri — ama standart Noise library transcript'i değil; bu bölümdeki canonical key schedule **otoriterdir**. (Senkron PTT/voice için interaktif IK/KK = Beta, ayrı konu. Beta'da formal Noise pattern mapping yapılabilir.)
 >
 > **İMZA/DEST_HASH (Section 13 + 35.4 ile tutarlı):** `sender_cert_ref = SHA-256(canonical_compact_device_cert)`; CompactDeviceCert'i **Identity/User Cert (sk_user_identity)** imzalar. `recipient_dest_hash = SHA-256(SHA-256(identity_cert.user_identity_ed25519_pub))` — Identity key'den, device key'den DEĞİL.
 
@@ -2412,10 +2412,10 @@ LAYER ACCOUNTING:
 **TLS established kıyas (layer-matched, NORMATİF dürüstlük):**
 ```
 TLS record ~22B + TCP/IPv4 40B           = 62B + payload
-SafeRoom SESSION_DATA / UDP / IPv4        = 50B + payload
+Kama SESSION_DATA / UDP / IPv4        = 50B + payload
 Δ ≈ 12B daha iyi/paket.
 
-SafeRoom TLS'i byte'ta EZMİYOR; established data path'te ~12B avantaj. ASIL avantaj YAPISAL:
+Kama TLS'i byte'ta EZMİYOR; established data path'te ~12B avantaj. ASIL avantaj YAPISAL:
 zero-RTT/session amortization, offline/store-and-forward, no per-message signature, no per-message
 cert, no re-handshake, no stream dependency.
 ```
@@ -2515,7 +2515,7 @@ Kurallar:
   - rare / command / receipt / legally-significant action için. Hot-path DEĞİL.
 ```
 
-### 35.11 Substrate Pozisyonu (TLS / QUIC / SafeRoom adaptive transport — §35 notu)
+### 35.11 Substrate Pozisyonu (TLS / QUIC / Kama adaptive transport — §35 notu)
 
 ```
 TLS:  Mature connection-oriented reliable byte-stream. RA/onboarding/admin/API için kullanılabilir.
@@ -2524,8 +2524,8 @@ TLS:  Mature connection-oriented reliable byte-stream. RA/onboarding/admin/API i
 QUIC: FORKLENMEZ. Normal/iyi ağlarda (hub↔hub / RA / onboarding) kullanılabilir.
       QUIC = ZORUNLU benchmark referansı; bir rejimde QUIC daha iyiyse o rejimde QUIC seçilir.
       YERİNE GEÇMEZ (normal ağda).
-SafeRoom adaptive transport:
-      KCP çıkarıldı. SafeRoom transport = TEK adaptif transport engine.
+Kama adaptive transport:
+      KCP çıkarıldı. Kama transport = TEK adaptif transport engine.
       Engine ARQ ve FEC mekanizmalarını İÇERİR. Recovery stratejisi fuzzy controller ile seçilir:
         ARQ / FEC / hybrid / none.
       Seçim ölçülen bandwidth, packet loss, jitter, queue delay, delivered-rate confidence ve
@@ -2663,7 +2663,7 @@ On LINK_ROUTE_MISS (hub restart / TTL expiry / unknown hub_handle):
 | ID | Statement |
 |----|-----------|
 | INV-FLAGS-1 | SESSION_INIT.flags canonical bit allocation; reserved bitler 0 OLMALI; cert_mode=11/init_variant≠00/reserved≠0 → reject. |
-| INV-NO-NOISE-PATTERN-FLAG | SESSION_INIT.flags generic Noise KK/IK pattern SEÇMEZ; Section 35.2 SafeRoom SM3 key schedule otoriter. |
+| INV-NO-NOISE-PATTERN-FLAG | SESSION_INIT.flags generic Noise KK/IK pattern SEÇMEZ; Section 35.2 Kama SM3 key schedule otoriter. |
 | INV-MAGIC-1 | Aktif Session Model V3 yalnızca SSI1/SSR1/SSD1/SSC1 kullanır. SAI1/SAA1/SAD1/SAC1 deprecated reject-only. |
 | INV-BATCH-1 | Session Model V3 LEB128/protobuf varint KULLANMAZ (encrypted batch subframe dahil). |
 | INV-RESUME-1 | Alpha ayrı lightweight SESSION_RESUME wire object TANIMLAMAZ; LINK_ROUTE_MISS recovery = SESSION_INIT_REF rebind. |
@@ -2674,7 +2674,7 @@ On LINK_ROUTE_MISS (hub restart / TTL expiry / unknown hub_handle):
 ### 35.18 Final Target Statement + Status (NORMATİF)
 
 ```
-SafeRoom async hot-path "KCP over UDP" DEĞİL, "QUIC clone" DEĞİL, "TLS reimplementation" DEĞİL.
+Kama async hot-path "KCP over UDP" DEĞİL, "QUIC clone" DEĞİL, "TLS reimplementation" DEĞİL.
 
 SESSION_INIT     : one-time authenticated bootstrap; cert/reference-first; static X25519 possession;
                    endpoint-verified; hub-untrusted.
@@ -2715,7 +2715,7 @@ CROSS-DOC: identity-and-trust-model.md bazı bölümlerde hâlâ historical Asyn
 
 **Doküman sonu — CCR Format Specification v1.0**
 
-Bu doküman `identity-and-trust-model.md` v1.5'in (Haziran 2026 ERRATA, statik X25519 canonical) tanımladığı tüm kimlik/PKI nesnelerinin kesin canonical binary formatını verir: CCR envelope + cert tipleri (Root 20y / Intermediate 5y namespace omurgası / Identity 1y / Device 90g), canonical_ccr_tbs, **CompactDeviceCert** (~152B, statik pk_x25519, SAN/deviceId yok, dest_hash türetilir, Section 13), DeviceCertBundle (unsigned container), **DiscoveryRecord** (current_device_x25519 binding, KONUM taşımaz/home_hub_id KALDIRILDI, magic SRDR, Section 21), **HubListRecord** (Intermediate-imzalı IP SAN bootstrap, magic SRHL, Section 21.5), **OrgEntitlementRecord** (RoftCore-imzalı lisans kaydı + lifetime clamp, magic SROE, Section 21.6), **Session Model V3** (SESSION_INIT/SESSION_INIT_RESPONSE/SESSION_DATA/SIGNED_CONTROL, TLS-dersi key-binding, 18B SESSION_DATA hot-path, magic SSI1/SSR1/SSD1/SSC1, Section 35; eski Async V2 SA?1 + tek-yapı SRAM/Noise N DEPRECATED Section 35-DEPRECATED/V2). Lisans enforcement Intermediate expiry ile DEĞİL — OrgEntitlementRecord + RA license gate + Identity 1 yıl + clamp (identity v1.5 E-11). [SignedNoisePrekey/PrekeyBundle statik X25519 kararıyla DEPRECATED / MUST NOT IMPLEMENT, Section 18-19.] Tüm integer big-endian fixed-width; imzalı yapılarda varint yok; canonical input SafeRoom-native (JSON/protobuf/DER değil). Magic domain separation (SRCR/SRDR/SRHL/SROE + Session V3: SSI1/SSR1/SSD1/SSC1 + routing: SRRR/SRAN/SRAH; SRAM + Async V2 SA?1 DEPRECATED) cross-protocol signature confusion'ı önler. Hash girdileri kesin (identity_hash ham key, subject_key_id/ROOT_CA_SPKI_HASH spki). Parser rejection kuralları tam; libFuzzer hedefleri + Java/Rust/C++ differential interop tanımlı. RA→CA boundary korunur (izole mTLS/gRPC, custom transport değil). v1.5 ile tek bilinçli fark: TBS'e domain-separation magic eklenmesi (semantik değişmez, açıkça not edildi). Mimari hiçbir karar bu dokümanda yeniden tasarlanmadı — identity-and-trust-model.md semantik otorite, bu doküman byte-level projeksiyonu.
+Bu doküman `identity-and-trust-model.md` v1.5'in (Haziran 2026 ERRATA, statik X25519 canonical) tanımladığı tüm kimlik/PKI nesnelerinin kesin canonical binary formatını verir: CCR envelope + cert tipleri (Root 20y / Intermediate 5y namespace omurgası / Identity 1y / Device 90g), canonical_ccr_tbs, **CompactDeviceCert** (~152B, statik pk_x25519, SAN/deviceId yok, dest_hash türetilir, Section 13), DeviceCertBundle (unsigned container), **DiscoveryRecord** (current_device_x25519 binding, KONUM taşımaz/home_hub_id KALDIRILDI, magic SRDR, Section 21), **HubListRecord** (Intermediate-imzalı IP SAN bootstrap, magic SRHL, Section 21.5), **OrgEntitlementRecord** (RoftCore-imzalı lisans kaydı + lifetime clamp, magic SROE, Section 21.6), **Session Model V3** (SESSION_INIT/SESSION_INIT_RESPONSE/SESSION_DATA/SIGNED_CONTROL, TLS-dersi key-binding, 18B SESSION_DATA hot-path, magic SSI1/SSR1/SSD1/SSC1, Section 35; eski Async V2 SA?1 + tek-yapı SRAM/Noise N DEPRECATED Section 35-DEPRECATED/V2). Lisans enforcement Intermediate expiry ile DEĞİL — OrgEntitlementRecord + RA license gate + Identity 1 yıl + clamp (identity v1.5 E-11). [SignedNoisePrekey/PrekeyBundle statik X25519 kararıyla DEPRECATED / MUST NOT IMPLEMENT, Section 18-19.] Tüm integer big-endian fixed-width; imzalı yapılarda varint yok; canonical input Kama-native (JSON/protobuf/DER değil). Magic domain separation (SRCR/SRDR/SRHL/SROE + Session V3: SSI1/SSR1/SSD1/SSC1 + routing: SRRR/SRAN/SRAH; SRAM + Async V2 SA?1 DEPRECATED) cross-protocol signature confusion'ı önler. Hash girdileri kesin (identity_hash ham key, subject_key_id/ROOT_CA_SPKI_HASH spki). Parser rejection kuralları tam; libFuzzer hedefleri + Java/Rust/C++ differential interop tanımlı. RA→CA boundary korunur (izole mTLS/gRPC, custom transport değil). v1.5 ile tek bilinçli fark: TBS'e domain-separation magic eklenmesi (semantik değişmez, açıkça not edildi). Mimari hiçbir karar bu dokümanda yeniden tasarlanmadı — identity-and-trust-model.md semantik otorite, bu doküman byte-level projeksiyonu.
 
 ---
 
@@ -2728,7 +2728,7 @@ Bu doküman `identity-and-trust-model.md` v1.5'in (Haziran 2026 ERRATA, statik X
 
 **[DEPRECATED] Eski AsyncMessage (Asenkron Store-and-Forward Mesaj)**
 
-> **Mimari bağlam (Haziran 2026):** SafeRoom Alpha mesajlaşması ASENKRON store-and-forward'dur (zero-trust + hostile-optimized). Alice mesajı hub'a bırakır (tek yönlü, round-trip YOK), Bob istediği zaman çeker. Handshake YOK — Alice, Bob'un statik `pk_device_x25519`'unu discovery'de aldığı için Noise N one-way ile sıfır-RTT şifreli mesaj gönderir. Zero-RTT async delivery, ilk mesaj öncesi interaktif session setup (TLS handshake gibi) gereksinimini ortadan kaldırır — hostile ağda interaktif 2-RTT handshake tamamlanamayacağı için kritik.
+> **Mimari bağlam (Haziran 2026):** Kama Alpha mesajlaşması ASENKRON store-and-forward'dur (zero-trust + hostile-optimized). Alice mesajı hub'a bırakır (tek yönlü, round-trip YOK), Bob istediği zaman çeker. Handshake YOK — Alice, Bob'un statik `pk_device_x25519`'unu discovery'de aldığı için Noise N one-way ile sıfır-RTT şifreli mesaj gönderir. Zero-RTT async delivery, ilk mesaj öncesi interaktif session setup (TLS handshake gibi) gereksinimini ortadan kaldırır — hostile ağda interaktif 2-RTT handshake tamamlanamayacağı için kritik.
 
 ### D1.1 Wire Format
 
@@ -2918,7 +2918,7 @@ SIGNED_CONTROL_MESSAGE (magic "SAC1"): non-repudiation gereken kritik mesaj (Sec
 
 ### D2.2 Authenticated One-Way Key Schedule (CAD-55)
 
-Saf Noise N (sender anonim → ayrı 64B imza) YERİNE SafeRoom **authenticated one-way** key schedule. Sender authentication AEAD key derivation'a gömülür; ayrı per-message imza YOK.
+Saf Noise N (sender anonim → ayrı 64B imza) YERİNE Kama **authenticated one-way** key schedule. Sender authentication AEAD key derivation'a gömülür; ayrı per-message imza YOK.
 
 ```
 # ASYNC_INIT root (Alice → Bob):
@@ -3113,7 +3113,7 @@ AAD = "SAD1" || flags || link_id || seq    # flags epoch+direction içerir → e
 ### D2.7 Downgrade Protection (NORMATİF, CAD-55/56)
 
 ```
-Protocol profile selection DETERMİNİSTİK: signed SafeRoom policy + signed recipient
+Protocol profile selection DETERMİNİSTİK: signed Kama policy + signed recipient
 capabilities + local implementation rules'tan. KULLANICI/HUB/PEER kararı DEĞİL,
 müzakere EDİLEMEZ.
 
@@ -3285,12 +3285,12 @@ RNS established link GERÇEK overhead: ~19B header + HMAC-SHA256 32B = ~51B (ct 
   ("19-35B" rakamı çıplak routing header; HMAC/encryption/framing dahil DEĞİL.)
 RNS link setup: ~297B (3 paket, 1 kez — public-key maliyeti bir kez ödenir).
 
-SafeRoom ASYNC_DATA app-envelope (≈39B, AEAD tag dahil) RNS established encrypted packet
+Kama ASYNC_DATA app-envelope (≈39B, AEAD tag dahil) RNS established encrypted packet
 overhead ile AYNI SINIFTA, potansiyel olarak DAHA KÜÇÜK olabilir. ANCAK kesin wire kıyası
 İKİ TARAFTA da transport/PDP/KCP/UDP/FEC/link-layer maliyetlerini dahil etmeyi GEREKTİRİR.
-"SafeRoom RNS'i kesin geçti" hükmü verilemez — katman-eşleşmeli ölçüm şart.
+"Kama RNS'i kesin geçti" hükmü verilemez — katman-eşleşmeli ölçüm şart.
 
-SafeRoom'un RNS'e göre mimari avantajı: always-on hub'lar route/mailbox state tutar →
+Kama'nın RNS'e göre mimari avantajı: always-on hub'lar route/mailbox state tutar →
 client keep-alive ödemez (RNS'te link state uçlarda, keepalive şart). Bu byte değil,
 state-yönetimi avantajıdır.
 ```

@@ -73,7 +73,7 @@ fn wire_golden_opens_back() {
             assert_eq!(header.esi, 3);
             assert_eq!(header.k_actual, 8);
             assert_eq!(header.profile_id, 0x03);
-            assert_eq!(symbol, &(0..64u8).collect::<Vec<_>>());
+            assert_eq!(&symbol[..], &(0..64u8).collect::<Vec<_>>()[..]);
         }
         InnerPlain::Control { .. } => panic!("FEC beklendi"),
     }

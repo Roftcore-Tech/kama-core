@@ -1,0 +1,49 @@
+{
+  "bounds": {
+    "ECHO_BUDGET_BYTES": 172,
+    "ECHO_WIRE_MAX": 43,
+    "MAX_CORE_SESSIONS": 1024,
+    "MAX_ECHOES": 4,
+    "probe_wire": 44
+  },
+  "gates": {
+    "adaptive_transport_lib": "145/145 default \u00b7 144/144 experimental",
+    "clippy": "clean x3",
+    "default_build_integration": "7/7",
+    "default_suites_failed": 0,
+    "experimental_suites_failed": 0,
+    "feature_build_integration": "6/6",
+    "fs_cal2_pins": "33/33",
+    "off_zero_diff": "192/192 PASS"
+  },
+  "internal_cfg_feature_count": 0,
+  "module": "crates/kama-integration/src/receiver_control_core.rs",
+  "not_owns": [
+    "socket",
+    "receive loop",
+    "process lifecycle",
+    "connection lifecycle",
+    "Noise handshake",
+    "ColdRxState",
+    "GlobalColdLedger",
+    "TombstoneRegistry",
+    "DedupDecision pipeline",
+    "legacy ladder",
+    "bench runner"
+  ],
+  "owns": [
+    "session lookup",
+    "AEAD open",
+    "authenticated control decode",
+    "typed pending action",
+    "session seal",
+    "fixed-size bootstrap responder state",
+    "sealed outbound datagram return"
+  ],
+  "single_source": {
+    "BootstrapEchoResponder_definitions": 1,
+    "ReceiverHost_delegates": true,
+    "parallel_impls": 0
+  },
+  "ungated": true
+}

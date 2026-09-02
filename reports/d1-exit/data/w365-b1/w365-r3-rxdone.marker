@@ -1,0 +1,16 @@
+run_id=w365-r3
+policy=leftover
+receiver_events=9
+finalized_blocks=1
+pending_blocks=0
+ledger_path=/home/ryuzaki/Desktop/kama-core/reports/d1-exit/data/w365-b1/w365-r3-rxledger.csv
+ledger_checksum=1e6acb1a3e31ff43
+clean_shutdown=true
+recovery_observation=RecoveredByForwardRecoveryControl
+cs_probe_rx=0
+cs_echo_tx=0
+cs_echo_tx_bytes=0
+cs_echo_suppressed=0
+cs_dup_deliveries=0
+cs_first_sack_dropped=false
+cs_rxcap_diag=0

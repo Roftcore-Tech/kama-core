@@ -1,0 +1,481 @@
+RUN: calibration_p2_loss80_paced_d120 rep0 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep0 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep1 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep1 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep2 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep2 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep3 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep3 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep4 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep4 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep5 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep5 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep6 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep6 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep7 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep7 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep8 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep8 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep9 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep9 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_paced_d120 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep0 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep0 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep1 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep1 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep2 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep2 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep3 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep3 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep4 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep4 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep5 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep5 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep6 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep6 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep7 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep7 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep8 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep8 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep9 q-stream
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep9 kama-arq
+  OK: out.jsonl
+RUN: calibration_p2_loss80_burst_d120 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep0 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep0 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep1 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep1 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep2 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep2 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep3 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep3 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep4 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep4 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep5 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep5 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep6 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep6 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep7 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep7 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep8 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep8 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep9 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep9 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_paced_d120 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep0 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep0 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep1 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep1 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep2 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep2 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep3 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep3 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep4 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep4 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep5 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep5 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep6 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep6 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep7 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep7 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep8 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep8 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep9 q-stream
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep9 kama-arq
+  OK: out.jsonl
+RUN: calibration_p3_loss95_burst_d120 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep0 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep0 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep1 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep1 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep2 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep2 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep3 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep3 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep4 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep4 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep5 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep5 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep6 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep6 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep7 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep7 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep8 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep8 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep9 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep9 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_paced_d120 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep0 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep0 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep1 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep1 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep2 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep2 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep3 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep3 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep4 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep4 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep5 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep5 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep6 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep6 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep7 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep7 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep8 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep8 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep9 kama-arq
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep9 q-stream
+  OK: out.jsonl
+RUN: calibration_p5_revpath_burst_d120 rep9 q-dgram-arq
+  OK: out.jsonl
+BITTI: 60 manifest satırı işlendi → reports/kapi-cal-v1/out

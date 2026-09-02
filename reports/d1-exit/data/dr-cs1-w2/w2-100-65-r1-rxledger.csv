@@ -1,0 +1,2 @@
+run_id,block,first_ms,complete_ms,rel_ms,dl_op,deficit_applied,decode_via,first_repair_ms,repair_kind,arq_repair_ms
+w2-100-65-r1,0,0,469,469,1,0,0,-1,0,-1

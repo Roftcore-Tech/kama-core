@@ -37,6 +37,17 @@ pub enum TransportError {
         r: u8,
     },
 
+    /// ACK range sayısı protokol tavanını ([`crate::ack::MAX_ACK_RANGES`]) aşıyor. Encode ≤16
+    /// garanti eder (from_received clamp + encode debug_assert); >16 ⇒ bozuk/düşman çerçeve.
+    /// Decode'da zorlanır (SR-AUDIT-001: doğrulanmamış range_count → acked_full amplifikasyonu).
+    #[error("ACK range sayısı MAX_ACK_RANGES'i aşıyor: {count} > {max}")]
+    TooManyAckRanges {
+        /// Wire'da bildirilen range sayısı.
+        count: usize,
+        /// Protokol tavanı.
+        max: usize,
+    },
+
     /// Bir özellik tanımlı ama henüz uygulanmadı (typed stub, asla panik değil).
     #[error("feature not implemented: {0}")]
     FeatureNotImplemented(&'static str),

@@ -1,0 +1,25 @@
+{
+  "also_pending": "DR-CS-3 locked/fresh panel validation gating BootstrapRttConfig default-ON",
+  "component_ready": true,
+  "forbidden_claims": [
+    "SHIPPING RECEIVER COMPLETE",
+    "FULL PRODUCT END-TO-END PASS",
+    "DEPLOYABLE TRANSPORT",
+    "TRANSPORT PRODUCT READY",
+    "PRODUCT COLD-START FULLY FIXED"
+  ],
+  "missing": [
+    "product crate/binary owner",
+    "UDP receive/send loop",
+    "connection lifecycle",
+    "Noise handshake",
+    "Split-derived directional keys",
+    "Sender<->core wiring",
+    "outbound datagram drain",
+    "process-level end-to-end test",
+    "shutdown/error/resource-bound validation"
+  ],
+  "next_phase": "PRODUCT-RUNTIME-INTEGRATION (not started)",
+  "product_ready": false,
+  "status": "OPEN \u2014 binding technical debt"
+}

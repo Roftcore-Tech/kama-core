@@ -1,0 +1,45 @@
+{
+  "VERDICT": "LADDER-NOT-ISOLATABLE",
+  "calibration_use": "FORBIDDEN",
+  "consequence": "Per the frozen preregistration the 80-run sizing diagnostic was NOT executed. No CS scope class (CS-SMALL / CS-MEDIUM / CS-SCHEDULING-ARCH / CS-NO-SIGNAL) is claimed.",
+  "disqualifying_findings": [
+    {
+      "evidence": "all cs_* items are #[cfg(feature=\"experimental-cold-start\")]; no arm/disarm public API",
+      "finding": "No runtime switch \u2014 the ladder is compile-time only, so CS-BASELINE and CS-LADDER-ONLY would be two DIFFERENT BINARIES.",
+      "id": 1
+    },
+    {
+      "evidence": "sender.rs:1184 (ON branch) vs :1193 (OFF legacy branch); on_event_batch at :1276",
+      "finding": "Enabling it REROUTES the whole event pipeline: on_event -> on_event_batch (four-phase) instead of on_event_core + schedule_transmit, with early-return paths that skip pacer.refill()/clock advance under conditions the OFF build does not have.",
+      "id": 2
+    },
+    {
+      "evidence": "sender.rs:1588 self.on_event_core(Event::TimerFired(Timer::Pto), now_ns) inside CsTimerKind::BootstrapPto (verified independently)",
+      "finding": "It makes the sender SELF-GENERATE Timer::Pto fires (CsTimerKind::BootstrapPto), changing the ARQ loss-declaration and tail-probe FIRING SCHEDULE \u2014 a second axis.",
+      "id": 3
+    },
+    {
+      "evidence": "sender.rs drain_cs_probes -> self.pacer.try_send(CS_PROBE_WIRE_MAX)",
+      "finding": "Ladder probes consume the SAME token bucket as DATA (pacer.try_send), so the ladder cannot be evaluated independently of the pacing axis under test.",
+      "id": 4
+    },
+    {
+      "evidence": "grep CsProbe receiver.rs = 0 hits; udp_runner.rs = 11 hits; udp_runner.rs:1-4 module doc",
+      "finding": "There is NO echo responder on the product RECEIVE path \u2014 receiver.rs contains ZERO CsProbe references. The 0x19->0x1A echo exists only in udp_runner.rs, whose own module doc says 'BENCH-RUNNER ... URETIM-YOLUNA-BAGLI-DEGIL' (not connected to the production path). Modelling that echo in the FS-CAL harness would be exactly the forbidden fake harness probe, and without it srtt can never resolve via probe echo.",
+      "id": 5
+    }
+  ],
+  "executed": false,
+  "fit_use": "FORBIDDEN",
+  "gate": "A1 (blocking) \u2014 the ladder EXISTS as real product code but enabling it is NOT a single-axis change",
+  "harness_note": "A CsProbe carry + peer-echo path WAS implemented in the harness before this verdict (feature `dr-cs-2-ladder`). It is left in place but is NOT FAITHFUL (it models a peer capability the product receiver does not implement) and was NOT used to produce any verdict. Do not use it for science.",
+  "result_bearing": false,
+  "runs": 0,
+  "study": "DR-CS-2-SIZING-V1",
+  "what_would_unblock": [
+    "A runtime arm/disarm switch so both arms share ONE binary.",
+    "Either an event-pipeline equivalence proof (ON-with-ladder-disarmed == OFF, byte-identical incl. pacer.refill/clock advance and Timer::Pto firing schedule), or decoupling BootstrapPto from the ladder.",
+    "A product-path echo responder (receiver.rs), so the probe can resolve srtt without a bench-only peer.",
+    "A decision on whether ladder probes should share the DATA token bucket."
+  ]
+}

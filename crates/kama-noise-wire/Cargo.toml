@@ -6,6 +6,8 @@ license = "UNLICENSED"
 publish = false
 
 [features]
+# DR-CS-1b/A2: urun-alici cold-start dar-dilimleri (unregister/tombstone/A-4). DEFAULT-OFF.
+experimental-cold-start = []
 # K-WIRE-SEALED-TYPE-1: test-constructor'ı dış-crate entegrasyon-testlerine açar (production-build'de KAPALI).
 test-util = []
 # KATMAN-3 (DR-5): RustCrypto==libsodium AEAD differential-oracle. TEST-ONLY, DEFAULT-KAPALI →
@@ -18,6 +20,8 @@ kama-transport-schema = { path = "../kama-transport-schema" }
 thiserror.workspace = true
 # AEAD production-backend: RustCrypto ChaCha20-Poly1305 IETF (RFC 8439; ADR-03/DR-5; pki-§13 primitif).
 chacha20poly1305 = "0.10"
+# param_hash production-backend: RustCrypto BLAKE2s-256 (noise-wire-tdd §8; ADR-03/DR-S5-5; pki-§13 primitif).
+blake2 = "0.10"
 zeroize = "1"
 # libsodium IETF-ChaCha20-Poly1305 independent-oracle — YALNIZ `libsodium-oracle` feature'ıyla (test-only).
 # PIN (=0.2.7): differential-oracle sürümü sabit (libsodium-sys bundled-libsodium build; Cargo.lock-teyitli).

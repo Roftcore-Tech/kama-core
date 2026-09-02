@@ -1,0 +1,61 @@
+{
+  "freeze_id": "FS-FUSION-CAL-1-PRE-HOLDOUT-FREEZE-v1",
+  "frozen_before_holdout_execution": true,
+  "engine_and_code": {
+    "source_commit": "96278dbe",
+    "policy_module": "crates/adaptive-transport/src/fusion_policy.rs",
+    "calibration_artifact": "reports/fs-fusion-cal-1/calibration-v1.json",
+    "calibration_sha256": "0197445ec66aa7062dbae6c38cda2dcedb65f338aec08d8c1f7ae08f8c6006a6",
+    "canonical_dataset_sha256": "d30964547aff1c760401ccd281f1df47a87923ed48d1a7df8ee8db817569835f",
+    "toolchain": "rustc 1.96.0",
+    "cargo_lock_sha256": "47893d24b4ea9b80cb1198f653931a09b8a15c8a4767a24375beb4337b046ad4",
+    "zero_diff_modules": ["sender.rs", "arq.rs", "loss.rs", "rtt.rs", "fusion.rs", "tail_recovery.rs"],
+    "local_tests_green": "fusion_policy 15/15; adaptive-transport lib 113/113",
+    "hosted_ci": "launched on 96278dbe (result recorded in FINAL-REPORT)"
+  },
+
+  "why_no_wire_level_product_holdout": {
+    "finding": "Product FEC actuation is POLICY-ONLY: there is no product send-path FEC encoder (a decode path exists but is default-OFF and unreachable from any product sender). The fusion ARQ output is also inert — arq.plan uses arq_aggressiveness_permille only as an ==0 gate and the fixture guarantees >=200.",
+    "consequence": "A wire-level product holdout comparing calibrated-ON vs OFF would be BYTE-IDENTICAL in every run and would measure nothing. Executing one would manufacture the appearance of product validation without any product effect.",
+    "decision": "Run a GROUPED DECISION-REPLAY HOLDOUT instead, and cap the verdict at CALIBRATION-GO — EXPERIMENTAL/LIMITED. A wire-level product holdout becomes meaningful only after a real product FEC actuator exists."
+  },
+
+  "holdout_design": {
+    "type": "grouped decision-replay holdout over authoritative cells",
+    "grouping_unit": "cell_id (which carries its seed lineage); row-random splitting is FORBIDDEN",
+    "split_rule": "GROUP-DISJOINT BY RTT STRATUM. TRAIN = every cell whose configured RTT is 50 ms or 250 ms. HOLDOUT = every cell whose configured RTT is 1000 ms. No cell, seed lineage or pairing group appears on both sides.",
+    "training_use": "the calibrated loss boundary is RE-DERIVED from TRAIN cells only, then evaluated on HOLDOUT cells",
+    "holdout_opened_after_freeze": true,
+    "adaptive_stopping": "none",
+    "retuning_on_holdout": "FORBIDDEN — a valid holdout failure is reported honestly as LIMITED/NO-GO"
+  },
+
+  "pre_specified_acceptance_criteria": {
+    "primary_safety_criterion": "ZERO HARMFUL FALSE-POSITIVE FEC recommendations on held-out cells. A harmful false positive is a held-out cell where the policy recommends FecAssist but the Pareto analysis prefers an ARQ action (i.e. the recommendation would add cost without a completion benefit).",
+    "secondary_sensitivity": "the policy SHOULD recommend FecAssist on held-out cells whose Pareto-preferred action is FEC_R2. Missing such a cell is a FALSE NEGATIVE.",
+    "verdict_mapping": {
+      "CALIBRATION-GO — EXPERIMENTAL/LIMITED": "zero harmful false positives AND no safety/invariant failure. False negatives are permitted and reported (conservative behaviour is safe).",
+      "CALIBRATION-NO-GO": "any harmful false positive, any safety/invariant failure, any unbounded cost, any leakage, or any dependence on a runtime-unobservable feature.",
+      "CALIBRATION-GO — PRODUCT-VALIDATED": "UNREACHABLE this turn — requires a real product FEC actuator and a faithful wire-level holdout."
+    },
+    "note": "No accuracy percentage threshold is invented. The criterion is asymmetric and safety-grounded: false positives (harmful) are disqualifying, false negatives (conservative) are not."
+  },
+
+  "metrics_reported": [
+    "per-held-out-cell: Pareto-preferred action, policy recommendation, match/false-positive/false-negative",
+    "confusion matrix over held-out cells",
+    "oracle regret (completion and wire) of following the policy vs the per-cell hindsight optimum",
+    "fallback/abstention counts by reason",
+    "safety/invariant status"
+  ],
+  "exact_commands": {
+    "canonical": "python3 scripts/fusion-cal/build_canonical.py",
+    "regions": "python3 scripts/fusion-cal/analyze_regions.py",
+    "calibration": "python3 scripts/fusion-cal/build_calibration.py",
+    "holdout": "python3 scripts/fusion-cal/holdout_replay.py"
+  },
+  "outputs": [
+    "reports/fs-fusion-cal-1/holdout-policy-results.csv",
+    "reports/fs-fusion-cal-1/holdout-cell-results.json"
+  ]
+}

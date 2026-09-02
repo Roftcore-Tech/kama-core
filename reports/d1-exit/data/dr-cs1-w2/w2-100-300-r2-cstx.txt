@@ -1,0 +1,7 @@
+cs_probe_emitted=0
+cs_probe_tx_bytes=0
+cs_probe_seq_wrapped=0
+cs_armed=true
+cs_disarmed=true
+cs_terminals=ResolvedByDataAck@188ms
+bootstrap_induced_retransmit_bytes=0

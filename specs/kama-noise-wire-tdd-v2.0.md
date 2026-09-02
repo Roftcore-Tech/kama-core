@@ -66,6 +66,23 @@ ccr §35'te-MÜHÜRLÜ + test-vektörlü — noise-wire-onu-OKUR; FEC-shard-seal
 D0-N1-N10-raporları bu-mevcut-yapıyı-ENVANTERLER (değiştirmez); wire-değişikliği-GEREKİYORSA (örn seq-2B→32-bit-PN)
 → AYRI-DECISION + Abkarada-onayı + mühürlü-handshake/probe-testleri-yeniden. Sessiz-L4-değişikliği-YASAK.
 
+**DR-CS-1b-A2-AMENDMAN A-4 [Abkarada-onaylı; dar-kapsam — protector send-state-retirement]:** Session-close
+tombstone/grace-yaşam-döngüsü (K-1: "send-cipher grace'te YAŞAMAZ; recv-cipher yalnız-grace") için
+`KamaNoiseWireProtector`'a YALNIZ şu additive cfg-gated API eklenir: **`drop_send_state()`**. Normatif
+postcondition'lar (Abkarada; aynen):
+```text
+- yalnız lifecycle=Closing altında çağrılır
+- tüm send-direction secret/key/cipher state zeroize edilir
+- tüm send PN/nonce allocation state irreversibly retired edilir
+- recv cipher ve recv ReplayWindow byte-for-byte korunur
+- sonraki seal denemesi typed SendStateRetired döndürür
+- sessiz reinitialization yasaktır
+- tekrar çağrı idempotent veya typed AlreadyRetired olur
+```
+Yalnız `send_cipher=None` yazmak YETMEZ — **retired-state yapısal olarak temsil edilir** (typed-durum;
+sessiz-reinit yapısal-imkansız). Wire-layout, codepoint, AEAD-algoritması ve **receive-path DEĞİŞMEZ**;
+bu amendman §0.9-mühürlü-kripto listesindeki hiçbir kalemi yeniden-tanımlamaz.
+
 ## 0.7 HANDSHAKE-PAKET-SURVIVAL HOSTILE-AÇIĞI (beşinci-geçiş-§10 — YENİ-P0; handshake-PATTERN-DEĞİL) [NORMATİF]
 
 **ÖNEMLİ-AYRIM (Abkarada-düzeltmesi — iki-farklı-katman-KARIŞTIRILMAZ):**
@@ -256,9 +273,16 @@ INNER_KIND-CODEPOINT'leri (çakışmasız):
   0x10 ACK                   0x11 SACK                0x12 RECOVERED          0x13 BLOCK_COMPLETE
   0x14 PARAM_SET             0x15 PARAM_ACK           0x16 BLOCK_ABORT        0x17 SESSION_CLOSE
   0x18 SESSION_RENEW_REQUIRED
-  0x00 reserved(reject) · 0x03..0x0F reserved-FEC-range · 0x19..0xFF reserved(reject)
-EXTENDED_V1 wire_format=0x01. Bilinmeyen-inner_kind → FAIL-CLOSED-reject.
+  0x19 CTRL_CS_PROBE [DR-CS-1-AMENDMAN]   0x1A CTRL_CS_ECHO [DR-CS-1-AMENDMAN]
+  0x00 reserved(reject) · 0x03..0x0F reserved-FEC-range · 0x1B..0xFF reserved(reject)
+EXTENDED_V1 wire_format=0x01. Bilinmeyen-inner_kind → FAIL-CLOSED-reject (frame-seviyesi; session-yaşar —
+eski-peer'ın 0x19/0x1A-safe-ignore-tabanı; mixed-version-§DR-CS-1).
 ```
+**DR-CS-1-AMENDMAN-NOTU [Abkarada-onaylı; dar-kapsam]:** 0x19/0x1A cold-start-minimal-bootstrap kontrol-
+çifti için reserved-alandan K-WIRE-CTRL-1-prosedürüyle açıldı. Engine-spec'in eski `0x12=CTRL_PATH_PROBE`
+kaydı CANCELLED/SUPERSEDED (0x12=RECOVERED-kilidi-korunur; runtime-assert). Bu-amendman mevcut-
+codepoint'lerin anlamını/layout'unu/parser-davranışını DEĞİŞTİRMEZ; başka-codepoint/subtype/alan-ekleme
+= DUR-B.
 FEC-source/repair variant_body = §2.6-FEC-inner (profile_id..symbol_bytes). Control variant_body = §2.7-control-body.
 
 ## 2.57 CONTROL-BODY-LAYOUT'LARI [NORMATİF — MADDE-4/5, exact] (§2.56-inner_kind-sonrası-body)
@@ -277,6 +301,14 @@ PARAM_ACK (0x15): param_hash[32]  (aynı-hash-echo; ACK-eliciting-DEĞİL)
 BLOCK_ABORT(0x16): block_id u32_be · reason_code u8
 SESSION_CLOSE(0x17): reason_code u8
 SESSION_RENEW_REQUIRED(0x18): reason_code u8 · renew_hint u8   (cap/wrap-yaklaşımı; yeni-handshake-tetiği §5)
+CTRL_CS_PROBE(0x19) [DR-CS-1]: subtype u8 (=0x01 cold-start) · probe_seq u16_be · pad u8[9] (=0x00; amp≤1:
+                 probe_wire ≥ echo_wire) — body=12B → EXACT-WIRE = 26+6+12 = **44B** (PROBE_WIRE_EXACT).
+                 probe_seq: sender-session-monoton, yeniden-KULLANILMAZ (INV-CS-7); wrap→yeni-probe-YOK.
+CTRL_CS_ECHO (0x1A) [DR-CS-1]: subtype u8 (=0x01) · probe_seq u16_be (yansıtılan) · seen_count u32_be ·
+                 arrival_gap u32_be — body=11B → EXACT-WIRE = 26+6+11 = **43B** (ECHO_WIRE_MAX).
+                 seen_count/arrival_gap YALNIZ-LEDGER (karar-girdisi-YAPILAMAZ — DR-CS-1-karar-§3).
+                 Echo: alıcı-flow-state'inden idempotent-stateless; per-probe-uzun-ömürlü-allocation-YOK;
+                 rate-limit T_ECHO_MIN/akış; hedefli-retransmit/yeni-ACK-semantiği-EKLENEMEZ.
 ```
 Kurallar: her-count-profile'da-BOUNDED (max_ack_ranges/max_sack_blocks/max_recovered_ranges) · oversized/invalid-
 range/unknown-reason → FAIL-CLOSED · reserved-alan-nonzero → reject · **cleartext-feedback-YOK** (hepsi-EXTENDED-
@@ -290,10 +322,32 @@ BLOCK_COMPLETE          │ → KENDİ-wire-PN'leri network-ACK (0x10/0x11) tara
 SESSION_CLOSE           │   kadar-retry. (PARAM_ACK-BUNLARI-onaylamaz — yalnız-PARAM_SET-hash'ini.)
 SESSION_RENEW_REQUIRED  ┘
 ACK / SACK / RECOVERED  → RETRY-EDİLMEZ (pure-feedback, en-güncel-durum-taşır)
+CTRL_CS_PROBE / CTRL_CS_ECHO [DR-CS-1] → RETRY-EDİLMEZ (probe-retry = merdivenin-kendisi 3/9/21/45s;
+                          echo = idempotent-stateless-yanıt). Replay: EXTENDED-outer-pn32-window +
+                          control_id-dedup OTOMATİK (yeni-zarf-YOK, yeni-plaintext-yol-YOK).
 ```
 · **SESSION_CLOSE-alan-taraf** ACK-gönderebilmek-için kısa-**TOMBSTONE/GRACE-state** tutar (session-state-silinse-de
   gelen-CLOSE-retry'larına-ACK-üretebilsin; bounded-süre-sonra-tombstone-discard). · Receiver TÜM-tekrarları
   **control_id-ile-idempotent** işler (aynı-id-ikinci-kez-app/state-side-effect-YOK; yalnız-ACK-yeniden-üretilebilir).
+
+**DR-CS-1b-A2-AMENDMAN A-2 [Abkarada-onaylı; dar-kapsam — davranış-açıklama-notu]:** CTRL_CS_PROBE/
+CTRL_CS_ECHO (0x19/0x1A) **control_id-dedup-set'ine GİRMEZ** — alıcı bunları demux'ta dedup-ÖNCESİ
+stateless-echo-yoluna ayırır (caller-dispatch; DI-10/g10c: dedup-girişi unbounded-büyüme-anti-pattern'i).
+Yukarıdaki "control_id-dedup OTOMATİK" ifadesi probe/echo için YALNIZ outer-pn-window kripto-replay-katmanını
+ifade eder; echo idempotent-stateless olduğundan logical-dedup'un önleyeceği side-effect yoktur. Bu not
+wire-layout/codepoint-anlamı DEĞİŞTİRMEZ.
+
+**DR-CS-1b-A2-AMENDMAN A-3 [Abkarada-onaylı; dar-kapsam — control_id-atama-kontratı]:**
+```
+control_id MUST be monotonically allocated per session and direction.
+Retries MUST retain the original control_id.
+A control_id MUST NOT be reused within the same session/direction.
+```
+Wrap-semantiği: **control_id wrap olmadan önce session-renewal ZORUNLU** (modular-wrap-karşılaştırması
+TANIMLANMAZ; wrap'a-ulaşmadan-renewal). Receiver-dedup fixed-window/high-water modeliyle uygulanabilir;
+window-altına-düşen-id → yanıt `DuplicateAckOnly` + **ayrık teşhis `ControlIdBelowDedupWindow`** (window-
+sizing-varsayımı-bozulması sessizce-"duplicate"-sanılmaz). Bu kontrat dedup/replay-semantiğinin ve peer-
+interoperability'nin parçasıdır; wire-layout DEĞİŞMEZ.
 
 ## 2.6 FINAL-BYTE-LAYOUT [NORMATİF — KİLİTLİ] (tek-otorite: bu-tablo + schema-crate)
 ```
@@ -511,6 +565,16 @@ Noise-channel-İÇİNDE-authenticated-binding). [DURUM-A (prologue-binding) = RE
   admission-kapısı-DEĞİL); yalnız-KALICI-hash-mismatch → SESSION_CLOSE.
 · Unsupported/hash-mismatch → downgrade-olarak-FAIL-CLOSED-reddedilir. Generic-negotiation/provider-sistemi-DEĞİL. **DOWNGRADE-KORUMASI:** seçili-suite/profile Noise-transcript/channel-
 binding'e-bağlı. Genel-provider-API-DEĞİL.
+
+**DR-CS-1b-A2-AMENDMAN A-1 [Abkarada-onaylı; dar-kapsam — pre-param-hold aşım-politikası]:** Ürün-alıcı
+yolunda pre-param bounded-hold'un aşım-davranışı **"aşımda-en-eski-drop" DEĞİL, rezervasyon-katmanı
+TYPED-REJECT'tir** (INV-CS-RX-RESOURCE: "cap aşımı sessiz eviction değil typed diagnostic"). Admission
+alt-kapısı: `RX_PREPARAM_SHARD_CAP_PER_SESSION = min(RX_COLD_TOTAL_SHARD_CAP_PER_SESSION,
+MAX_PREPARAM_SHARDS)` — pre-PARAM admission preparam-cap VE total-cold-cap'i BİRDEN kontrol eder; hold'un
+fiziksel kapasitesi aşılamadığından hold-içi en-eski-drop dalı ÖLÜ-KOD-PİNLİ kalır. `MAX_PREPARAM_SHARDS`
+artırılacaksa engine-fiziksel-kapasitesi ve preparam-cap AYNI isimli-dilimde birlikte yükseltilir.
+Yukarıdaki "(max_preparam_shards, küçük; aşımda-en-eski-drop)" ifadesi bu amendmanla ürün-yolunda
+SUPERSEDE edilir (metin tarihsel-kayıt olarak korunur); wire-layout/PARAM-akışı DEĞİŞMEZ.
 
 ## 9. NOISE-GÜVENLİK-SINIRI (go/no-go-§3.6) [NORMATİF]
 "Kama-wire kullanılan-N-türevi-handshake'in-EPOCH-BAZLI-özelliklerini-miras-alır: dh-epoch-0 = klasik-FS-DEĞİL (per-INIT-ephemeral-confidentiality; recipient-static-ele-geçerse-epoch-0-initial-çözülür), dh-epoch-1 = FULL-FS (SESSION_INIT_RESPONSE-sonrası). Profil-bunun-ÖTESİNDE-ek-FS/PCS-mekanizması-EKLEMEZ; REKEY-Alpha'da-cap→re-handshake (§5)." Modülerlik ≠ şifresiz-production-modu: "FEC-Noise'dan-bağımsız-olması production-Kama'nın-şifresiz-mod-sunması-

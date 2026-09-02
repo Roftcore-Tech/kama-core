@@ -50,13 +50,38 @@ pub struct RunMeta {
     pub payload_bytes: u64,
     /// Maksimum deadline (ns) — client bu kadar bekler.
     pub max_deadline_ns: u64,
-    /// Toplam UDP tx byte (wire; bytes/msg + overhead metriği).
+    /// Toplam UDP tx byte — TRANSPORT-DENEMESİ düzlemi (governor reddettikleri DAHİL; üç kol da
+    /// aynı kural — inceleme #1 simetri düzeltmesi). Gerçek-ENJEKTE düzlem `budget.injected_bytes`.
     pub udp_tx_bytes: u64,
     /// Toplam UDP rx byte (dönüş yolu yükü).
     pub udp_rx_bytes: u64,
     /// tx wire byte bileşen ayrımı (teşhis; kama doldurur, quinn=default). [D2]
     #[serde(default)]
     pub tx: TxComponents,
+    /// Kama kol etiketi ("kama-arq" | "kama-tail-v1"; quinn kollarında boş). Eski JSONL'lerde
+    /// alan yok → default boş string (geriye-uyumlu okuma). [KAPI-1 W4]
+    #[serde(default)]
+    pub kama_arm: String,
+    /// Mesaj sunum aralığı ns (0 = burst; >0 = paced, r5 §G). Eski JSONL → 0. [KAPI-1 W3]
+    #[serde(default)]
+    pub submit_interval_ns: u64,
+    /// Forward-yön bütçe sayaçları (client-egress governor fotoğrafı; r5 D.5). Eski JSONL →
+    /// default (mode boş). [KAPI-1 W2]
+    #[serde(default)]
+    pub budget: crate::budget::BudgetSnapshot,
+    /// Ölçüm-t0'ın CLOCK_REALTIME damgası (ns) — pkt_capture (unix alanı) ve realized-log ile
+    /// hizalama tabanı. 0 = kaydedilmedi (eski kayıt). [inceleme #7/#30]
+    #[serde(default)]
+    pub t0_unix_ns: u64,
+    /// Event damgalarının (sent/delivered) koşu-epoch'una göre t0 ofseti (ns). kama: t0 (event'ler
+    /// koşu-başından); quinn/qdgram: 0 (event'ler zaten t0-tabanlı). Analiz normalize eder.
+    #[serde(default)]
+    pub events_epoch_offset_ns: u64,
+    /// t0 anında hâlâ teslim-edilmemiş warmup birimi sayısı (residue). Severe-loss'ta 0 garanti
+    /// edilemez; TÜM kollarda simetrik ölçülür+raporlanır; post-t0 residue trafiği her kolda
+    /// ölçüme dahildir (steady-state semantiği). [inceleme #0 çözümü]
+    #[serde(default)]
+    pub warmup_residue: u64,
 }
 
 /// Bir koşunun tüm çıktısı: meta + ham eventler.
@@ -79,7 +104,9 @@ enum Line<'a> {
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum OwnedLine {
-    Meta(RunMeta),
+    // Box: RunMeta W2 bütçe fotoğrafıyla büyüdü → varyant-boyu farkı (clippy large_enum_variant).
+    // Satır-başına tek geçici alloc; JSON biçimi DEĞİŞMEZ (serde Box'ı şeffaf açar).
+    Meta(Box<RunMeta>),
     Event(RawEvent),
 }
 
@@ -89,12 +116,18 @@ impl RunOutput {
     /// # Errors
     /// Dosya/serileştirme hatası.
     pub fn write_jsonl(&self, path: &Path) -> Result<(), BenchError> {
-        let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
-        writeln!(f, "{}", serde_json::to_string(&Line::Meta(&self.meta))?)?;
-        for e in &self.events {
-            writeln!(f, "{}", serde_json::to_string(&Line::Event(e))?)?;
+        // Atomik: tmp'ye yaz + rename — yarıda ölen client bozuk out.jsonl BIRAKAMAZ (sürücünün
+        // resume kontrolü varlık-tabanlı; kısmi dosya "tamamlanmış koşu" sayılırdı). [inceleme #28]
+        let tmp = path.with_extension("jsonl.tmp");
+        {
+            let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+            writeln!(f, "{}", serde_json::to_string(&Line::Meta(&self.meta))?)?;
+            for e in &self.events {
+                writeln!(f, "{}", serde_json::to_string(&Line::Event(e))?)?;
+            }
+            f.flush()?;
         }
-        f.flush()?;
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
 
@@ -111,7 +144,7 @@ impl RunOutput {
                 continue;
             }
             match serde_json::from_str::<OwnedLine>(line)? {
-                OwnedLine::Meta(m) => meta = Some(m),
+                OwnedLine::Meta(m) => meta = Some(*m),
                 OwnedLine::Event(e) => events.push(e),
             }
         }

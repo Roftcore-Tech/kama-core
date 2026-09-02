@@ -1,0 +1,43 @@
+{
+  "artifact": "DR-CS-3-DISPLACEMENT-SEMANTICS-GROUNDING",
+  "resolved_before_implementation": true,
+  "contract_text_changed": false,
+  "verdict": "SEMANTICS A - DIRECT SCHEDULING DELAY (contended grant/token)",
+  "definition": "a treatment packet consumed a pacing/budget opportunity that an eligible, queued DATA would otherwise have taken, in the same finite grant",
+  "binding_sources": [
+    {
+      "rank": 1,
+      "source": "sender.rs:2427-2434 product doc",
+      "quote": "ADDITIVE, NOT PACED: does NOT call try_send_pre_parity / pacer.try_send and creates NO pacer debt; NO DISPLACEMENT: called at the very END of schedule_transmit, after DATA, recovery and parity, so it can only ever append - it can never take a slot a normal DATA emission would have used",
+      "note": "states the concept AND its falsification condition; that is A verbatim"
+    },
+    {
+      "rank": 2,
+      "source": "structural code verification",
+      "drain_bootstrap_probes_try_send_calls": 0,
+      "drain_new_data_try_send_calls": 4,
+      "note": "probes never enter the token path and are planned after DATA/recovery/parity, so under A displacement is structurally impossible"
+    },
+    {
+      "rank": 3,
+      "source": "DR-CS-2 CREDIT-IS-NET-NEUTRAL-UNDER-DEBIT",
+      "observation": "tx_data 20->18, tx_duplicate 0->2 under total token starvation",
+      "note": "immediate reallocation of one finite budget within the run - an A-shaped observation"
+    }
+  ],
+  "B_ruled_out": "would require terminal/deadline-horizon loss; the precedent counted displacement at the moment of substitution with no horizon, no binding source defines one, and B would be weaker than the precedent that established the gate",
+  "C_ruled_out": "requires a binding horizon (grant interval, PTO, N ticks, latency/deadline bound); no frozen contract, referenced document or shipping constant supplies one, and a horizon may not be invented, chosen against results, or derived from a panel",
+  "measurement": {
+    "source": "scheduler arbitration record, per grant",
+    "questions": [
+      "was a DATA eligible AND queued at this decision point",
+      "did the Probe consume the pacing/budget opportunity that DATA would have taken",
+      "which DATA identity was affected and by how many ticks/grants was it deferred"
+    ],
+    "expected_value": 0,
+    "non_zero_means": "a real defect - exactly what gate 5 polices",
+    "claim_limit": "proves only directly observed Probe-over-DATA arbitration; never attributes long downstream trajectory divergence to the Probe"
+  },
+  "contract_semantics_blocked": false,
+  "user_decision_required": false
+}

@@ -24,12 +24,25 @@
 pub mod ack;
 pub mod arq;
 pub mod budget;
+pub mod budget_kernel;
 pub mod bw;
 pub mod clock;
 pub mod emergency;
 pub mod error;
+/// FS-CAL-2 v3 §3 — prefix-causal loss-structure fate estimator (pure/deterministic/integer-only;
+/// observation-only: no product caller; guard grounded to `tail_recovery::base_pto_ns`).
+pub mod fate_estimator;
 pub mod fec;
+/// DR-FEC-FS-1 FS-HARNESS-A — A1-EARLY duplication emitter + redundancy cost-accounting (PIN-A/PIN-E).
+#[cfg(feature = "experimental-fec-budget")]
+pub mod fs_harness;
+/// DR-FEC-FS-1 FS-HARNESS-A — trace-driven paired replay channel (pin-2 pairing semantics).
+#[cfg(feature = "experimental-fec-budget")]
+pub mod fs_trace;
 pub mod fusion;
+/// FS-FUSION-CAL-1 — versioned calibration + pure fusion policy + independent safety validator
+/// (default OFF; advisory only; every failure mode degrades to ArqOnly).
+pub mod fusion_policy;
 pub mod loss;
 pub mod pacer;
 pub mod rate;
@@ -38,6 +51,10 @@ pub mod rtt;
 pub mod sender;
 pub mod seq;
 pub mod sim;
+/// DR-ARQ-PRODUCT-TAIL-1 — bounded tail-loss recovery state machine (default OFF; INV-CS-4 supersession TDD).
+pub mod tail_recovery;
+#[cfg(feature = "experimental-fec-budget")]
+pub mod udp_runner;
 
 // Internal: ack/fec ortak bounds-checked reader (ADR-05 → ccr-codec).
 mod read;

@@ -1,0 +1,4 @@
+cell,n,delta_mean,delta_median,ci_lo,ci_hi,p_boot,holm_p,verdict,cost_delta_mean,cost_ci_lo,cost_ci_hi
+evaluation_p2_loss80_paced_A2_d120_u0.75,50,0.3838,0.47,0.3154,0.4486,0.0001,0.0003,KAMA-SUPERIOR,0.0543,0.0399,0.0683
+evaluation_p3_loss95_paced_A2_d120_u0.75,30,0.0333,0.0,0.0077,0.0623,0.0062,0.0062,SEPARATION-NO-CLAIM,0.0015,-0.0085,0.0111
+evaluation_p5_revpath_paced_A2_d120_u0.75,60,0.1202,0.0,0.0685,0.177,0.0001,0.0003,SEPARATION-NO-CLAIM,0.3229,0.3001,0.3468

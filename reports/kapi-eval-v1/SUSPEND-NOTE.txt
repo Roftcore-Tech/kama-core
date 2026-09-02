@@ -1,0 +1,10 @@
+# Uyku-boşluğu kaydı (bütünlük-geçişi için işaret; 2026-08-22 22:57)
+# Makine iki kez uykuya girdi (~0.9 h + ~7.5 h). CLOCK_MONOTONIC uykuda durduğundan
+# (tokio/netem/bench zamanlayıcıları dahil) deney-çerçevesi uykuyu "görmez"; yine de
+# uykuyu KAPSAYAN iki koşu analiz-öncesi bütünlük geçişinde ayrıca incelenecek
+# (realized/capture toleransları + t0_unix hizalama boşluğu):
+evaluation_p3_loss95_burst_A2_d120_u0.75/rep9/kama-tail-v1
+evaluation_p3_loss95_paced_A1_d120_u0.75/rep3/q-stream
+# Sonuç: 0 FAIL / 0 INVALID — hiçbir koşu kaybolmadı; kampanya yalnız bekledi.
+# 3. uyku penceresi (~12:33-13:37, ~64 dk) — uykuyu kapsayan koşu (bütünlük-geçişinde incelenecek):
+evaluation_p2_loss80_paced_A2_d120_u0.5/rep5/kama-arq

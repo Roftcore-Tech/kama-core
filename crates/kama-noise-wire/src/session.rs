@@ -34,6 +34,9 @@ pub enum SessionLifecycle {
     Active,
     /// Kapatıldı (SESSION_CLOSE / cap→renewal) — data-admit-ETMEZ; bounded-grace'te yalnız-tombstone.
     Closed,
+    /// A2 iade-zinciri: Closing = yeni-cold-alloc-yasak + send-retired; recv/grace YAŞAR (Closed-değil).
+    #[cfg(feature = "experimental-cold-start")]
+    Closing,
 }
 
 /// Bir E2E session'ın durumu: kimlik + yön + protector (h_ext + anahtarlar + PN-state).
@@ -79,6 +82,15 @@ impl Session {
     /// SESSION_CLOSE / cap→renewal: session'ı kapatır (data-admit-etmez; §5).
     pub fn close(&mut self) {
         self.lifecycle = SessionLifecycle::Closed;
+    }
+
+    /// A2 iade-zinciri adım-(1)+(2b): lifecycle=Closing + A-4 send-state-retirement (İDEMPOTENT).
+    /// Yapısal-pin: `drop_send_state` pub(crate) — Closing-dışı çağrı-yolu YOK (A-4 postcondition-1).
+    /// Recv-yolu grace boyunca YAŞAR (open Closing'de çalışır; yalnız Closed reddeder).
+    #[cfg(feature = "experimental-cold-start")]
+    pub fn begin_close(&mut self) {
+        self.lifecycle = SessionLifecycle::Closing;
+        self.protector.drop_send_state();
     }
 
     #[must_use]

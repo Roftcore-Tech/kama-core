@@ -1,0 +1,229 @@
+{
+  "actuation_state": {
+    "consequence": "verdict class is capped at CALIBRATION-GO \u2014 EXPERIMENTAL/LIMITED",
+    "default": "OFF \u2014 production keeps FuzzyConfig::fixture(); enabling is explicit and versioned",
+    "product_fec_actuation": "POLICY-ONLY: no product send-path FEC encoder exists (a decode path exists but is default-OFF and unreachable from any product sender). A calibrated FEC recommendation therefore CANNOT be actuated in product today."
+  },
+  "authoritative_sources": {
+    "FS1_IN_PROCESS": "reports/fs-1/raw/v1.3.2 (240)",
+    "PRODUCT_NETNS": "reports/dr-arq-product-tail-1/v1/result.csv (2290)",
+    "R2A_IN_PROCESS": "reports/dr-arq-tail-1/v1/raw (8400)"
+  },
+  "calibration_id": "FS-FUSION-CAL-1",
+  "calibration_version": "calibration-v1",
+  "created_from_source_commit": "1e8fe0ba (FS-FUSION-CAL-1 Phases B-D)",
+  "feature_schema_version": "FusionInputs-v1(loss_ppm,bandwidth_bps,jitter_ppm,qd_ratio_permille,ack_confidence_permille)",
+  "membership": {
+    "ack_confidence": {
+      "reason": "not varied as an independent factor",
+      "retained_from": "FuzzyConfig::fixture()",
+      "status": "UNCALIBRATED_RETAINED"
+    },
+    "bandwidth": {
+      "reason": "The authoritative data has NO bandwidth variation (every cell ran a 1 Mbit bottleneck with a 0.80C = 800 kbps pacer). Calibrating this dimension would be unfounded.",
+      "retained_from": "FuzzyConfig::fixture() (log2_fp domain: 50k/100k/150k/200k B/s)",
+      "status": "UNCALIBRATED_RETAINED"
+    },
+    "jitter": {
+      "reason": "No jitter sweep in the in-process authoritative data; the product grid has a single jitter adversarial slice (n=10), insufficient to calibrate three membership bands.",
+      "retained_from": "FuzzyConfig::fixture()",
+      "runtime_hazard": "rtt.rs bootstrap sets rttvar = srtt/2 on the FIRST sample => jitter_ppm = 500_000, which lands in the fixture jitter HIGH shoulder (400k-500k). Any jitter-conditioned rule is therefore untrustworthy until >=2 RTT samples exist. Encoded below as a low-confidence precondition.",
+      "status": "UNCALIBRATED_RETAINED"
+    },
+    "loss": {
+      "defect_corrected": "The fixture makes mu_LOW = 1.0 at 200_000 ppm, i.e. 20 % loss is classified fully LOW, so rule R1 (loss LOW -> fec_zero) fires and FEC is never recommended in exactly the region where the authoritative data shows FEC_R2 Pareto-dominates.",
+      "evidence_arq_side": {
+        "cells": [
+          "burst/10/low",
+          "burst/10/med",
+          "burst/2/low",
+          "burst/20/high",
+          "burst/20/low",
+          "burst/5/low",
+          "burst/5/med",
+          "iid/10/low",
+          "iid/10/med",
+          "iid/2/low",
+          "iid/20/low",
+          "iid/20/med",
+          "iid/5/low",
+          "iid/5/med",
+          "jitter/0/med",
+          "noloss/0/low",
+          "terminal-tail/10/high",
+          "terminal-tail/10/low",
+          "terminal-tail/2/high",
+          "terminal-tail/2/low",
+          "terminal-tail/2/med",
+          "terminal-tail/20/high",
+          "terminal-tail/20/low",
+          "terminal-tail/20/med",
+          "terminal-tail/5/high",
+          "terminal-tail/5/low",
+          "terminal-tail/5/med",
+          "s1-rtt1000-d1",
+          "s1-rtt1000-d2",
+          "s1-rtt250-d1",
+          "s1-rtt250-d2",
+          "s1-rtt250-d4",
+          "s1-rtt50-d1",
+          "s1-rtt50-d2",
+          "s1-rtt50-d4",
+          "s2-rtt1000-d2",
+          "s2-rtt1000-d4",
+          "s2-rtt250-d1",
+          "s2-rtt250-d2",
+          "s2-rtt250-d4",
+          "s2-rtt50-d1",
+          "s2-rtt50-d2",
+          "s2-rtt50-d4"
+        ],
+        "loss_ppm_range": [
+          20833,
+          83333
+        ]
+      },
+      "evidence_fec_side": {
+        "cells": [
+          "s1-rtt1000-d4",
+          "s3-rtt1000-iid20",
+          "s3-rtt250-iid20",
+          "s3-rtt50-iid20"
+        ],
+        "loss_ppm": 200000
+      },
+      "fixture_was": {
+        "high": [
+          500000,
+          600000,
+          "U64_MAX",
+          "U64_MAX"
+        ],
+        "low": [
+          0,
+          0,
+          200000,
+          300000
+        ],
+        "med": [
+          200000,
+          300000,
+          500000,
+          600000
+        ]
+      },
+      "high": {
+        "a": 160000,
+        "b": 200000,
+        "c": "U64_MAX",
+        "d": "U64_MAX"
+      },
+      "low": {
+        "a": 0,
+        "b": 0,
+        "c": 90000,
+        "d": 140000
+      },
+      "med": {
+        "a": 90000,
+        "b": 140000,
+        "c": 160000,
+        "d": 200000
+      },
+      "status": "CALIBRATED",
+      "unit": "ppm"
+    },
+    "queue_delay": {
+      "reason": "no queue-delay variation in the authoritative data",
+      "retained_from": "FuzzyConfig::fixture()",
+      "status": "UNCALIBRATED_RETAINED"
+    }
+  },
+  "rollback_target": "FIXTURE_UNCALIBRATED (FuzzyConfig::fixture(); the current production default)",
+  "rule_table": {
+    "STRUCTURAL_LIMITATION": "R2 (the only rule that can raise FEC to fec_high) is conjoined with 'bw HIGH', a dimension the authoritative data never varied and which the fixture places at 150-200 kB/s. The tested regime (~125 kB/s bottleneck) does not reach bw HIGH, so even with the corrected loss membership the calibrated policy CANNOT reach fec_high in the supported region. Correcting the loss membership is a NECESSARY but not SUFFICIENT condition for FEC activation. Changing R2's antecedent is a rule-structure change that this calibration deliberately does NOT make without evidence over bandwidth; it is recorded as backlog.",
+    "consequents_retained": {
+      "arq_light": 200,
+      "arq_med": 500,
+      "arq_moderate": 600,
+      "fec_high": 800,
+      "fec_med": 500,
+      "fec_zero": 0,
+      "sr_high": 1000,
+      "sr_low": 500,
+      "sr_med": 750
+    },
+    "rules": [
+      "R1: loss LOW -> (fec_zero, arq_light)",
+      "R2: loss HIGH & bw HIGH & jitter LOW -> (fec_high, arq_moderate)",
+      "R3: loss MED & bw MED -> (fec_med, arq_med)",
+      "R4: loss LOW & jitter HIGH -> (fec_zero, arq_light)",
+      "SR1: bw LOW & qd HIGH -> sr_low, complement -> sr_high",
+      "EMERGENCY: loss HIGH & bw LOW & ack_conf LOW"
+    ],
+    "status": "STRUCTURALLY_UNCHANGED"
+  },
+  "safety_requirements": {
+    "note": "Hard caps live in an INDEPENDENT safety configuration; this calibration artifact can never raise them.",
+    "required": [
+      "version mismatch -> FallbackArq",
+      "unsupported region -> FallbackArq",
+      "low confidence / stale telemetry -> FallbackArq",
+      "cold-start without valid observability -> FallbackArq",
+      "invalid input (NaN/Inf/out-of-domain/unknown enum) -> FallbackArq",
+      "FEC bytes <= hard_fec_budget; combined overhead <= hard_combined_cap",
+      "policy never mutates ARQ/ACK/loss/RTT/PTO state"
+    ]
+  },
+  "source_dataset_hashes": {
+    "analysis-method.json": "04b21db33cbc723800ddc0ca99d1561085417c944e8b063d72da04cd38e2f5b3",
+    "canonical-calibration-data.csv": "d30964547aff1c760401ccd281f1df47a87923ed48d1a7df8ee8db817569835f",
+    "decision-regions.csv": "0c9cbecfe017cf1bb04c36fd84087000ce270ec2a9f75b43298ecba3b1893ca1"
+  },
+  "supported_region": {
+    "bandwidth_bps_bytes_per_sec": {
+      "approx_max": 125000,
+      "approx_min": 100000,
+      "note": "the single tested regime"
+    },
+    "flow_state": "CONVERGED only (>=2 RTT samples; srtt present)",
+    "loss_ppm": {
+      "max": 200000,
+      "min": 0,
+      "note": "calibrated boundary evidence at 20_833-83_333 (ARQ_TAIL) and 200_000 (FEC_R2)"
+    },
+    "rtt_ms": [
+      50,
+      250,
+      1000
+    ],
+    "workload_bytes": 4848
+  },
+  "unsupported_regions": [
+    {
+      "action": "ArqOnly",
+      "reason": "burstiness / run-length / gap statistics are NOT computed anywhere in adaptive-transport; loss structure is not runtime-observable",
+      "region": "loss STRUCTURE (IID vs burst vs terminal-tail)"
+    },
+    {
+      "action": "ArqOnly",
+      "reason": "no authoritative evidence above the IID 20 % point",
+      "region": "loss_ppm > 200000"
+    },
+    {
+      "action": "ArqOnly",
+      "reason": "never varied in the authoritative data",
+      "region": "bandwidth outside ~100-125 kB/s"
+    },
+    {
+      "action": "ArqOnly",
+      "reason": "jitter bootstrap artifact (rttvar=srtt/2 -> 500_000 ppm) + pacer floor token starvation",
+      "region": "cold-start / PreConverge (no srtt, <2 RTT samples)"
+    },
+    {
+      "action": "ArqOnly",
+      "reason": "NO authoritative arm combines tail-capable ARQ with proactive FEC; FUSION_DOMINANT is unreachable from existing data",
+      "region": "simultaneous ARQ+FEC fusion"
+    }
+  ]
+}

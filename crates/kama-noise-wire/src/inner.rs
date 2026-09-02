@@ -8,6 +8,69 @@
 use crate::error::WireError;
 use kama_transport_schema::inner_kind::{self, InnerKind};
 use kama_transport_schema::{LogicalShardHeader, INNER_V1};
+#[cfg(feature = "experimental-cold-start")]
+use zeroize::Zeroize;
+
+/// A-5 (DR-CS-1b/A2; spec-§0.9-amendmanı): plaintext FEC-symbol'ün TEK-KANONİK-SAHİBİ.
+/// - Drop öncesinde payload allocation'ını (Vec-capacity dahil) ZEROIZE eder.
+/// - `InnerPlain → OpenedTransportShard → admission/decode` yolunda MOVE edilir (KOPYALANMAZ).
+/// - borrow yalnız `&[u8]` / `AsRef<[u8]>` biçiminde (ham mutable-Vec dışarı verilmez).
+/// - **Clone DEĞİLDİR** (zeroize-edilmeyen-kopya yapısal-imkansız; source ve repair aynı sözleşme).
+/// - Debug payload YAZMAZ (yalnız uzunluk).
+/// - Zeroize (payload sıfırlama) `experimental-cold-start` arkasında; flag-OFF: önceki-davranış (INV-CS-5).
+pub struct SensitiveSymbolBytes(Vec<u8>);
+
+impl SensitiveSymbolBytes {
+    pub(crate) fn from_vec(v: Vec<u8>) -> Self {
+        Self(v)
+    }
+}
+
+/// Vec ownership'ı İÇERİ-alır (dışarı-vermez); admission-reconstruct'ta recovered-symbol'ü sarmak için
+/// (A-5: reconstructed-symbol da zeroize-sahibi olur). Ham-Vec dışarı-çıkışı bu tipte YOKtur.
+impl From<Vec<u8>> for SensitiveSymbolBytes {
+    fn from(v: Vec<u8>) -> Self {
+        Self(v)
+    }
+}
+
+impl core::ops::Deref for SensitiveSymbolBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for SensitiveSymbolBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl PartialEq for SensitiveSymbolBytes {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl Eq for SensitiveSymbolBytes {}
+
+impl core::fmt::Debug for SensitiveSymbolBytes {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Payload SIZDIRMAZ: yalnız metadata (uzunluk).
+        f.debug_struct("SensitiveSymbolBytes")
+            .field("len", &self.0.len())
+            .finish()
+    }
+}
+
+impl Drop for SensitiveSymbolBytes {
+    fn drop(&mut self) {
+        // A-5: terminal-state zeroize (parse-error/evict/deadline/release/decode-sonrası tüm-yollar).
+        // flag-OFF: Vec normal-drop (önceki-davranış; INV-CS-5).
+        #[cfg(feature = "experimental-cold-start")]
+        self.0.zeroize();
+    }
+}
 
 /// FEC-inner sabit header boyu (§2.6): 1+1+1+1+4+2+1 = 11B (symbol hariç).
 pub const FEC_INNER_HDR_LEN: usize = 11;
@@ -15,11 +78,13 @@ pub const FEC_INNER_HDR_LEN: usize = 11;
 pub const CONTROL_INNER_PREFIX_LEN: usize = 6;
 
 /// Decrypt-sonrası sınıflandırılmış inner (§4-ORDER adım-7 çıktısı).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// NOT (A-5): `Clone` DERIVE KALDIRILDI — `SensitiveSymbolBytes` non-Clone (zeroize-edilmeyen-kopya
+/// yasağı). InnerPlain.clone() üretimde/testte HİÇ çağrılmıyordu (yalnız-derive; salt-API-daralması).
+#[derive(Debug, PartialEq, Eq)]
 pub enum InnerPlain {
     FecShard {
         header: LogicalShardHeader,
-        symbol: Vec<u8>,
+        symbol: SensitiveSymbolBytes,
     },
     /// Control: typed-body-decode Sprint-2'de (§2.57); burada bounds-checked ham gövde.
     Control {
@@ -95,7 +160,7 @@ pub fn parse_inner(plain: &[u8]) -> Result<InnerPlain, WireError> {
                     esi,
                     k_actual,
                 },
-                symbol,
+                symbol: SensitiveSymbolBytes::from_vec(symbol),
             })
         }
         InnerKind::Control(_) => {

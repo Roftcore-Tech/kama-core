@@ -1,0 +1,23 @@
+BU ANALİZ ARQ-vs-FEC DEĞİL: ARQ/substrat bütün-kollarda-aktif; ölçülen marjinal-proaktif-FEC-faydası.
+
+pin   def r  mode N    comp  pend  via0  via1  rk:arq/dup/none  feas  class
+------------------------------------------------------------------------------------------------------------------------
+pin1  1   0  hyb  60   60    0     60    0     60/0/0           no    HybridResidualArqRequired(FEC+substrate)
+pin1  1   0  iso  60   0     60    0     0     0/0/0            no    FecInsufficient_isolation_pending
+pin1  1   1  hyb  60   60    0     60    0     60/0/0           YES   NoMarginalFecUtility_thisCondition(substrate_completes;lowRTT)
+pin1  1   1  iso  60   60    0     0     60    0/0/60           YES   MarginalFecDecodable_isolation
+pin2  2   1  hyb  60   60    0     60    0     60/0/0           no    HybridResidualArqRequired(FEC+substrate)
+pin2  2   1  iso  60   0     60    0     0     0/0/0            no    FecInsufficient_isolation_pending
+pin2  2   2  hyb  60   60    0     60    0     60/0/0           YES   NoMarginalFecUtility_thisCondition(substrate_completes;lowRTT)
+pin2  2   2  iso  60   60    0     0     60    0/0/60           YES   MarginalFecDecodable_isolation
+pin3  4   2  hyb  60   60    0     60    0     60/0/0           no    HybridResidualArqRequired(FEC+substrate)
+pin3  4   2  iso  60   0     60    0     0     0/0/0            no    FecInsufficient_isolation_pending
+pin3  4   4  hyb  60   60    0     60    0     60/0/0           YES   NoMarginalFecUtility_thisCondition(substrate_completes;lowRTT)
+pin3  4   4  iso  60   60    0     0     60    0/0/60           YES   MarginalFecDecodable_isolation
+pin4  5   4  hyb  60   60    0     31    29    60/0/0           no    HybridResidualArqRequired(FEC+substrate)
+pin4  5   4  iso  60   0     60    0     0     0/0/0            no    FecInsufficient_isolation_pending
+
+=== PIN-AYRIŞMA ÖZETİ (FEC-IZOLASYON; mekanik-ayrışma kapısı) ===
+  pin1 deficit=1: r=0(ARQ+0) pending=60/comp=0 | r=1(ARQ+1) comp=60/pend=0 → SEPARATES ✓
+  pin2 deficit=2: r=1(ARQ+1) pending=60/comp=0 | r=2(ARQ+2) comp=60/pend=0 → SEPARATES ✓
+  pin3 deficit=4: r=2(ARQ+2) pending=60/comp=0 | r=4(ARQ+4) comp=60/pend=0 → SEPARATES ✓

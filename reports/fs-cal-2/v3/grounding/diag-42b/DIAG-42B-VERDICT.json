@@ -1,0 +1,26 @@
+{
+  "cells": {
+    "P1-IID30-RTT1000": {
+      "eligible": 10,
+      "eligible_fraction": 0.25,
+      "invariant_failures": 0,
+      "n": 40,
+      "pass": false,
+      "runtime_features_present_fraction": 1.0,
+      "schema_failures": 0
+    },
+    "P2-GE20L10-RTT1000": {
+      "eligible": 19,
+      "eligible_fraction": 0.475,
+      "invariant_failures": 0,
+      "n": 40,
+      "pass": false,
+      "runtime_features_present_fraction": 1.0,
+      "schema_failures": 0
+    }
+  },
+  "note": "estimator-only diagnostic; NOT result-bearing; not part of training/holdout/fit",
+  "overall_pass": false,
+  "phase": "DIAG_42B",
+  "total_runs": 80
+}

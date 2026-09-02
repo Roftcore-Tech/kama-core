@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "/home/ryuzaki/Desktop/kama-core/scripts/netem/pkt_capture.py", line 76, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/home/ryuzaki/Desktop/kama-core/scripts/netem/pkt_capture.py", line 55, in main
+    data, addr = s.recvfrom(65535)
+                 ~~~~~~~~~~^^^^^^^
+  File "/home/ryuzaki/Desktop/kama-core/scripts/netem/pkt_capture.py", line 42, in term
+    f.write(json.dumps({"capture_stats": {"packets": pkts, "drops": drops}}) + "\n")
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ryuzaki/Desktop/kama-core/scripts/netem/pkt_capture.py", line 42, in term
+    f.write(json.dumps({"capture_stats": {"packets": pkts, "drops": drops}}) + "\n")
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: reentrant call inside <_io.BufferedWriter name='reports/kapi-eval-v1/out-exploratory/exploratory_h1_ulra_paced_A2_d120_u0.75/rep0/q-dgram-arq/cap/MID_ma0.jsonl'>

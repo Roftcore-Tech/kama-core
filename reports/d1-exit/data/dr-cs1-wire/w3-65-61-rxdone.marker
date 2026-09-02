@@ -1,0 +1,15 @@
+run_id=w3-65-61
+policy=leftover
+receiver_events=2
+finalized_blocks=0
+pending_blocks=1
+ledger_path=/home/ryuzaki/Desktop/kama-core/reports/d1-exit/data/dr-cs1-wire/w3-65-61-rxledger.csv
+ledger_checksum=477c7453b599b5fe
+clean_shutdown=true
+cs_probe_rx=0
+cs_echo_tx=0
+cs_echo_tx_bytes=0
+cs_echo_suppressed=0
+cs_dup_deliveries=0
+cs_first_sack_dropped=false
+cs_rxcap_diag=0

@@ -1,0 +1,106 @@
+{
+  "VERDICT": "FIXED (mechanism validated); DEFAULT PROMOTION BLOCKED",
+  "bootstrap_only": true,
+  "bounded_change": {
+    "frozen_42b_stall_seeds_identical": "8/8",
+    "new_packet_type": false,
+    "new_timer": false,
+    "noloss_wire_delta": 0,
+    "ordering_change": false,
+    "wire_format_change": false
+  },
+  "default_promotion_blocker": {
+    "action_taken": "default reverted to OFF; golden NOT rewritten",
+    "invariant_actually_violated": false,
+    "nature": "sealed INV-RATE-1 lock-golden (Abkarada karar-2)",
+    "needs": "explicit authorization + a decision on that golden",
+    "reason": "INV-RATE-1 forbids loss REDUCING send_rate; the floor only raises it",
+    "test": "sender::tests::inv_rate_1_loss_declaration_preserves_phase_gain",
+    "what_fails": "SETUP asserts bootstrap rate == Gain::STARTUP*btlbw (6924); the floor raises it to 9600"
+  },
+  "default_state": "OFF (inert until Sender::set_startup_pacing_init)",
+  "deviation_from_instruction": "instructed formula alone = 13837 B/s would breach rate.rs cwnd/srtt HARD ceiling; clamped to the ceiling => realized floor 4796 B/s at srtt~1s",
+  "grounded_constants": {
+    "Gain::STARTUP": "2885/1000",
+    "SrcConfig::min_cwnd": "4*DEFAULT_MTU=4800",
+    "cwnd_gain": 2
+  },
+  "mechanism": "pacer initialization at PreConverge->Startup = min(Gain::STARTUP*(min_cwnd/srtt), cwnd/srtt)",
+  "not_done": [
+    "synthetic BtlBw samples",
+    "app_limited semantics change",
+    "in-flight/cwnd gate",
+    "estimator/max-filter/pacing-gain/ACK/PreConverge/tail/cold-start changes"
+  ],
+  "pass_criteria": {
+    "healthy_lowloss_noloss_no_regression": true,
+    "invariant_failures": 0,
+    "locked_seeds_escape": true,
+    "no_synthetic_samples": true,
+    "pacing_grows_mechanically": true,
+    "wire_and_safety_caps_respected": true
+  },
+  "phase": "FAZ-1",
+  "promoted_to_default": false,
+  "recorded_side_effect": {
+    "estimator_eligibility_net": "59->57 of 80",
+    "ge_rep2": "identical N/transitions; fails only via the KNOWN delivery-drain warm-up defect",
+    "iid_rep17": "loss transitions 10->7 vs pinned bar 8 (window composition)",
+    "materiality": "estimator observability, not transport; must be re-checked in the fresh \u00a74.2b (FAZ 5)"
+  },
+  "regression_pins": [
+    "rate_lock_seeds_escape_the_fixed_point",
+    "startup_pacing_floor_is_bootstrap_only_and_released"
+  ],
+  "released_on": [
+    "plateau_reached",
+    "natural rate catches up"
+  ],
+  "study": "DR-RATE-RAMP-2",
+  "suites_green_with_default_off": {
+    "adaptive_transport_lib": "129/129",
+    "fs_cal2_pins": "31/31"
+  },
+  "test_suite": "fs_cal2_pins 31/31 PASS",
+  "validation": {
+    "axis": "Sender::set_startup_pacing_init",
+    "binary": "single",
+    "layers": {
+      "ge": {
+        "locked_base": 1,
+        "locked_fix": 0,
+        "median_epoch_ms": [
+          14029,
+          8567
+        ],
+        "pairs": 40,
+        "tx_worse": 0
+      },
+      "iid": {
+        "locked_base": 0,
+        "locked_fix": 0,
+        "median_epoch_ms": [
+          11427,
+          7017
+        ],
+        "pairs": 40,
+        "tx_worse": 0
+      },
+      "locked": {
+        "locked_base": 2,
+        "locked_fix": 0,
+        "pairs": 5,
+        "tx_worse": 0
+      },
+      "noloss": {
+        "median_epoch_ms": [
+          2446,
+          1427
+        ],
+        "pairs": 30,
+        "tx_delta": 0
+      }
+    },
+    "paired_runs": 260
+  }
+}

@@ -1,0 +1,7 @@
+cell,n_pairs,delta_completion_median,delta_completion_mean,discordant_b_kama_only,discordant_c_comp_only,discordant_rate,pair
+calibration_p2_loss80_burst_d120,10,0.51,0.413,486,73,0.559,kama-tail-v1 vs q-dgram-arq
+calibration_p2_loss80_paced_d120,10,0.41,0.392,409,17,0.426,kama-tail-v1 vs q-dgram-arq
+calibration_p3_loss95_burst_d120,10,0.0,0.12,131,11,0.142,kama-tail-v1 vs q-dgram-arq
+calibration_p3_loss95_paced_d120,10,0.0,0.028,34,6,0.04,kama-tail-v1 vs q-dgram-arq
+calibration_p5_revpath_burst_d120,10,0.0,0.047,147,100,0.247,kama-tail-v1 vs q-dgram-arq
+calibration_p5_revpath_paced_d120,10,0.07,0.313,317,4,0.321,kama-tail-v1 vs q-dgram-arq

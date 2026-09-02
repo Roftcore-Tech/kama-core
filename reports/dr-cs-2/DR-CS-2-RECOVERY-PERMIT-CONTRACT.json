@@ -1,0 +1,55 @@
+{
+  "accounting": {
+    "pacing": "bounded pacing DEBIT \u2014 TokenBucket::debit(size); every later refill repays debt before granting tokens",
+    "wire_and_inflight": "normal track_sent + TransmitDecision path (unchanged)"
+  },
+  "arm_conditions": [
+    "state==PreConverge",
+    "due_ns<=now",
+    "try_send_pre_parity==false",
+    "no permit outstanding",
+    "id not previously granted",
+    "budget not exhausted"
+  ],
+  "bounds": [
+    "at most one permit outstanding",
+    "at most one permit per DupRec.id",
+    "session budget MAX_RECOVERY_PERMITS derived from TailRecoveryConfig::default().max_tail_probes"
+  ],
+  "cancel_on": "ACK progress (inflight shrank) clears the slot and the granted-id memory",
+  "consume": "immediately, exactly one TransmitKind::Duplicate for that DupRec, same call",
+  "contract": "DR-CS-2-RECOVERY-PERMIT-CONTRACT",
+  "eligible_recovery_class": {
+    "class": "\u00a73.3-B geometric source copy (DupRec)",
+    "grounding": "sender.rs drain_new_data pushes DupRec on every PreConverge DATA wire-emit; pending_lost stays empty in PreConverge (loss declaration gated in on_ack_received and on_timer); tail probe absent in the shipped tail-OFF default",
+    "runtime_evidence_P0": {
+      "dup_selected": 30113898,
+      "dup_token_denied": 30113896,
+      "dup_wire_emitted": 2
+    },
+    "state_gate": "PreConverge only"
+  },
+  "frozen_before_code_change": true,
+  "frozen_predicates": [
+    "STALL(65s)",
+    "ZERO_TX_STALL",
+    "MECHANISM-SUCCESS",
+    "END-TO-END-RECOVERY-SUCCESS",
+    "SAFETY-PASS"
+  ],
+  "no_second_permit_for_same_due": "mint keyed on DupRec.id + bounded granted-set (defence against poll inflation)",
+  "not_eligible": [
+    "new DATA",
+    "FEC/parity",
+    "control packets",
+    "CsProbe",
+    "tail probe",
+    "post-PreConverge classes"
+  ],
+  "pacer_refusal_site": "drain_due_duplicates -> try_send_pre_parity(size, is_retx=true) false branch",
+  "permit_bound_to": "DupRec.id (monotonic generation)",
+  "preflight_verdict": "Durum A \u2014 starvation present in P0 shipped baseline (tail OFF)",
+  "structural_exclusion": "permit reachable only inside drain_due_duplicates; drain_new_data and plan_fec_parity have no call path to the mint",
+  "unique_mint_event": "first time a specific DupRec is due AND refused by the normal pacer",
+  "work_item_invalidation": "DupRec removed (unit ACKed / epoch change) -> slot cleared, no emission"
+}

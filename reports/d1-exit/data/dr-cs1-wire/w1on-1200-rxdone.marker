@@ -1,0 +1,15 @@
+run_id=w1on-1200
+policy=leftover
+receiver_events=18
+finalized_blocks=2
+pending_blocks=0
+ledger_path=/home/ryuzaki/Desktop/kama-core/reports/d1-exit/data/dr-cs1-wire/w1on-1200-rxledger.csv
+ledger_checksum=c6822926c96bf3bf
+clean_shutdown=true
+cs_probe_rx=1
+cs_echo_tx=1
+cs_echo_tx_bytes=43
+cs_echo_suppressed=0
+cs_dup_deliveries=0
+cs_first_sack_dropped=false
+cs_rxcap_diag=0

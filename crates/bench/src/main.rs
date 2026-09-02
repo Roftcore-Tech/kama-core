@@ -1,10 +1,12 @@
 //! Kama transport benchmark harness CLI (§4.4). SoC: `serve`/`client` HAM event üretir;
 //! `metrics` HESAP yapar (transport'a dokunmaz). quinn baseline (§4.4.1) + kama stub.
 
+mod budget;
 mod error;
 mod event;
 mod kama;
 mod metrics;
+mod qdgram;
 mod quic;
 mod transport;
 
@@ -14,7 +16,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::BenchError;
-use crate::transport::{BenchTransport, Cc, ClientCfg, ServerCfg};
+use crate::transport::{BenchTransport, Cc, ClientCfg, KamaArm, ServerCfg};
 
 #[derive(Parser)]
 #[command(name = "bench", about = "Kama transport benchmark harness (§4.4)")]
@@ -36,6 +38,21 @@ enum Cmd {
         /// [TUR-5 r3] Epizot-kotası R [CAL {4,8}] (kama receiver).
         #[arg(long, default_value_t = 4)]
         quota_r: u32,
+        /// [KAPI-1 W2] Reverse-yön burst hard-cap (IP byte; 0 = yok). Paced ile birlikte VERİLMEZ.
+        #[arg(long, default_value_t = 0)]
+        budget_burst_bytes: u64,
+        /// [KAPI-1 W2] Reverse-yön paced refill (IP byte/s; 0 = paced yok).
+        #[arg(long, default_value_t = 0)]
+        budget_refill_bytes_per_s: u64,
+        /// [KAPI-1 W2] Paced kova (IP byte; refill>0 iken ZORUNLU).
+        #[arg(long, default_value_t = 0)]
+        budget_bucket_bytes: u64,
+        /// [KAPI-1 W2] Paced kümülatif tavan (IP byte; 0 = tavansız).
+        #[arg(long, default_value_t = 0)]
+        budget_ceiling_bytes: u64,
+        /// [KAPI-1 W6] Reverse-bütçe arm senkronu: `<path>.go` belirene dek arm etme.
+        #[arg(long)]
+        gate_watch: Option<PathBuf>,
     },
     /// Client: N mesaj gönder, ham event JSONL yaz.
     Client {
@@ -57,6 +74,33 @@ enum Cmd {
         profile: String,
         #[arg(long, value_enum, default_value_t = TransportArg::Quinn)]
         transport: TransportArg,
+        /// Kama kolu: arq (defaults, tail OFF) | tail-v1 (KAMA-TAIL-V1). quinn'de yok sayılır. [KAPI-1 W4]
+        #[arg(long, value_enum, default_value_t = KamaArmArg::Arq)]
+        kama_arm: KamaArmArg,
+        /// Mesaj sunum aralığı ms (0 = burst; >0 = paced, mesaj i t=i×interval'de). [KAPI-1 W3]
+        #[arg(long, default_value_t = 0)]
+        submit_interval_ms: u64,
+        /// [KAPI-1 W2] Forward-yön burst hard-cap (IP byte; 0 = yok). Paced ile birlikte VERİLMEZ.
+        #[arg(long, default_value_t = 0)]
+        budget_burst_bytes: u64,
+        /// [KAPI-1 W2] Forward-yön paced refill (IP byte/s; 0 = paced yok).
+        #[arg(long, default_value_t = 0)]
+        budget_refill_bytes_per_s: u64,
+        /// [KAPI-1 W2] Paced kova (IP byte; refill>0 iken ZORUNLU).
+        #[arg(long, default_value_t = 0)]
+        budget_bucket_bytes: u64,
+        /// [KAPI-1 W2] Paced kümülatif tavan (IP byte; 0 = tavansız).
+        #[arg(long, default_value_t = 0)]
+        budget_ceiling_bytes: u64,
+        /// [KAPI-1 W6] Ölçüm-öncesi warmup mesajı (0 = yok; ölçüme/bütçeye girmez).
+        #[arg(long, default_value_t = 0)]
+        warmup_msgs: u64,
+        /// [KAPI-1 W6] Barrier gate yolu (`<gate>.ready` yazılır, `<gate>.go` beklenir).
+        #[arg(long)]
+        gate: Option<PathBuf>,
+        /// [KAPI-1 W6] Kuruluş-gate'i (bağlantı kurulunca ready; netem uygulanınca go → warmup).
+        #[arg(long)]
+        establish_gate: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -88,6 +132,63 @@ impl From<CcArg> for Cc {
 enum TransportArg {
     Quinn,
     Kama,
+    /// [KAPI-1 W1] quinn DATAGRAM + app-ARQ (Q-DGRAM-ARQ, FAZ-1 primary comparator).
+    Qdgram,
+}
+
+/// [KAPI-1 W4] CLI karşılığı — `transport::KamaArm`'a birebir eşlenir.
+#[derive(Copy, Clone, ValueEnum)]
+enum KamaArmArg {
+    Arq,
+    TailV1,
+}
+
+/// [KAPI-1 W2] CLI bütçe argları → `BudgetMode` (doğrulamalı: burst XOR paced; sessiz yanlış
+/// kombinasyon YOK — kampanya-config hatası koşudan önce patlar).
+fn budget_mode(
+    burst: u64,
+    refill: u64,
+    bucket: u64,
+    ceiling: u64,
+) -> Result<budget::BudgetMode, BenchError> {
+    match (burst, refill) {
+        (0, 0) if bucket == 0 && ceiling == 0 => Ok(budget::BudgetMode::Unlimited),
+        (0, 0) => Err(BenchError::Other(
+            "bucket/ceiling yalnız --budget-refill-bytes-per-s ile anlamlı".into(),
+        )),
+        (b, 0) => {
+            if bucket != 0 || ceiling != 0 {
+                return Err(BenchError::Other(
+                    "burst ve paced bütçe birlikte verilemez (r5 D.1 workload-ayrık)".into(),
+                ));
+            }
+            Ok(budget::BudgetMode::Burst { cap_bytes: b })
+        }
+        (0, r) => {
+            if bucket == 0 {
+                return Err(BenchError::Other(
+                    "paced bütçe --budget-bucket-bytes ister (D6: 2 s × refill)".into(),
+                ));
+            }
+            Ok(budget::BudgetMode::Paced {
+                refill_bytes_per_s: r,
+                bucket_bytes: bucket,
+                ceiling_bytes: if ceiling == 0 { u64::MAX } else { ceiling },
+            })
+        }
+        _ => Err(BenchError::Other(
+            "burst ve paced bütçe birlikte verilemez (r5 D.1 workload-ayrık)".into(),
+        )),
+    }
+}
+
+impl From<KamaArmArg> for KamaArm {
+    fn from(a: KamaArmArg) -> KamaArm {
+        match a {
+            KamaArmArg::Arq => KamaArm::Arq,
+            KamaArmArg::TailV1 => KamaArm::TailV1,
+        }
+    }
 }
 
 #[tokio::main]
@@ -99,6 +200,11 @@ async fn main() -> Result<(), BenchError> {
             cc,
             transport,
             quota_r,
+            budget_burst_bytes,
+            budget_refill_bytes_per_s,
+            budget_bucket_bytes,
+            budget_ceiling_bytes,
+            gate_watch,
         } => {
             run_server(
                 transport,
@@ -106,6 +212,13 @@ async fn main() -> Result<(), BenchError> {
                     bind,
                     cc: cc.into(),
                     quota_r,
+                    budget: budget_mode(
+                        budget_burst_bytes,
+                        budget_refill_bytes_per_s,
+                        budget_bucket_bytes,
+                        budget_ceiling_bytes,
+                    )?,
+                    gate_watch,
                 },
             )
             .await
@@ -120,6 +233,15 @@ async fn main() -> Result<(), BenchError> {
             repeat,
             profile,
             transport,
+            kama_arm,
+            submit_interval_ms,
+            budget_burst_bytes,
+            budget_refill_bytes_per_s,
+            budget_bucket_bytes,
+            budget_ceiling_bytes,
+            warmup_msgs,
+            gate,
+            establish_gate,
             out,
         } => {
             let cfg = ClientCfg {
@@ -131,6 +253,17 @@ async fn main() -> Result<(), BenchError> {
                 seed,
                 repeat,
                 profile,
+                kama_arm: kama_arm.into(),
+                submit_interval: Duration::from_millis(submit_interval_ms),
+                budget: budget_mode(
+                    budget_burst_bytes,
+                    budget_refill_bytes_per_s,
+                    budget_bucket_bytes,
+                    budget_ceiling_bytes,
+                )?,
+                warmup_msgs,
+                gate,
+                establish_gate,
             };
             let output = run_client(transport, cfg).await?;
             output.write_jsonl(&out)?;
@@ -189,6 +322,7 @@ async fn run_server(t: TransportArg, cfg: ServerCfg) -> Result<(), BenchError> {
     match t {
         TransportArg::Quinn => quic::QuinnTransport.run_server(cfg).await,
         TransportArg::Kama => transport::KamaTransport.run_server(cfg).await,
+        TransportArg::Qdgram => qdgram::QdgramTransport.run_server(cfg).await,
     }
 }
 
@@ -196,5 +330,6 @@ async fn run_client(t: TransportArg, cfg: ClientCfg) -> Result<event::RunOutput,
     match t {
         TransportArg::Quinn => quic::QuinnTransport.run_client(cfg).await,
         TransportArg::Kama => transport::KamaTransport.run_client(cfg).await,
+        TransportArg::Qdgram => qdgram::QdgramTransport.run_client(cfg).await,
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! **Deterministik çekirdek (ADR-17):** datagram metadata'sı girer → teslim + ACK çıkar. Kripto
 //! DIŞINDA (INV-ENGINE-SOC): güvenlik katmanı (Noise+kompakt, §0.2) datagram'ı çözer/verify eder;
-//! Receiver VERIFIED opak birim + metadata (seq/block_id/shard_index) ALIR. verify FAIL → güvenlik
+//! Receiver VERIFIED opak birim + metadata (seq/block_id/esi/k_actual — schema §2.6) ALIR. verify FAIL → güvenlik
 //! katmanı silent drop (transport hiç görmez). Receiver seq metadata OKUR, rx-set tutar, SACK üretir
 //! ([`crate::ack`]). per-shard AEAD + RS-decode GÜVENLİK katmanında (authenticate-before-decode, INV-FEC-1).
 //!
@@ -36,15 +36,17 @@ pub enum RxKind {
     /// SESSION_DATA — E2E opak birim teslim edilir.
     Data,
     /// FEC_SHARD — block/shard; reconstruction güvenlik katmanında (transport buffer'lar + ACK'ler).
+    /// **Genişlik schema §2.6 ile hizalı (DR-S5-2, N8/N3-düzeltme):** block_id u32 · esi u16 · k_actual u8 ·
+    /// is_repair (source/repair-ayrımı). r-alanı KALKTI (R_code_max profile/code-space'ten; §4 R-üçlü).
     FecShard {
-        /// FEC block kimliği.
-        block_id: u64,
-        /// Shard indeksi (0..k+r).
-        shard_index: u16,
-        /// Data shard sayısı.
-        k: u16,
-        /// Parity shard sayısı.
-        r: u16,
+        /// FEC block kimliği (schema §2.6: session+direction-scoped u32).
+        block_id: u32,
+        /// Encoding Symbol ID (schema §2.6: esi u16).
+        esi: u16,
+        /// Bloktaki gerçek source-shard sayısı (schema §2.6: k_actual u8; B4: 1≤k_actual≤255).
+        k_actual: u8,
+        /// source/repair ayrımı (schema ShardKind).
+        is_repair: bool,
     },
 }
 
@@ -114,6 +116,14 @@ const T_SPACING_NS: u64 = SACK_WIRE_BYTES * 1_000_000_000 / RETURN_BW_PRIOR;
 /// [r3 §3] §3.3-E MİNİMAL-TABAN çarpanı [CAL {2,4}] ({1} elendi: yapısal paket-başı-ACK):
 /// beklemede-yeni-bilgi varken timer-cadence = clamp(K_ARR×last_gap, T_SPACING, FLOOR).
 const K_ARR: u64 = 2;
+
+/// [SR-AUDIT-001 / P3] rx-set kayan-pencere tavanı: `received` en çok bu kadar ayrık seq tutar.
+/// 4096: gerçek reorder/inflight ufku (yüzlerce) × geniş güvenlik payı; `from_received` zaten yalnız
+/// [`crate::ack::MAX_ACK_RANGES`]=16 range üretir → daha büyük pencere DEDUP dışında işe yaramaz ama
+/// her SACK'in collect+sort maliyetini şişirirdi. 4096 → rx-state ~160KB'ta sabit + SACK ucuz. Düşman
+/// (ya da çok-uzun-ömürlü) ayrık-seq akışında en-eski seq O(log n) `pop_first` ile düşer; kümülatif
+/// SACK kaybı telafi eder (pencere-dışı çok-geç dup teorik — E2E envelope §4 + client-core dedup nihai).
+const RX_DEDUP_WINDOW: usize = 4096;
 
 /// Receiver state machine (§4). rx-set + SACK üretimi; `on_datagram` / `on_ack_timer` ile sürülür.
 pub struct Receiver {
@@ -225,8 +235,12 @@ impl Receiver {
         let (delivered, is_shard) = match d.kind {
             RxKind::Data => (vec![d.unit_id], false),
             RxKind::FecShard { .. } => {
-                // Shard buffer'lanır + ACK'lenir; RS-decode + reconstruction GÜVENLİK katmanında
-                // (authenticate-before-decode, INV-FEC-1). Transport birimi burada teslim ETMEZ.
+                // ADMISSION-KÖPRÜSÜ (DR-S5-2): RxDatagram ZATEN open-edilmiş/authenticated (güvenlik-katmanı
+                // AEAD-verify etti — INV-FEC-1 authenticate-before-decode). Buraya YALNIZ sealed-type'tan-gelen
+                // shard ulaşır (forged-shard bu-noktaya ERİŞEMEZ). Shard buffer'lanır + ACK'lenir; RS-decode +
+                // reconstruction GÜVENLİK/engine-katmanında (opened-shard → fec-codec; kama-integration-pipeline).
+                // Transport birimi burada teslim ETMEZ. **N8: shard-admission BtlBw/credit-YOLU-AÇMAZ** (kredi
+                // yalnız gerçek-wire-ACK'ten, sender.bw.rs; RECOVERED logical-ACK≠credit).
                 (Vec::new(), true)
             }
         };
@@ -391,6 +405,18 @@ impl Receiver {
                 self.largest_recv_ns = now_ns; // ack_delay largest'ın alımından ölçülür.
             }
         }
+        // [SR-AUDIT-001 / P3] rx-set SINIRLI kayan pencere. Aksi hâlde ayrık-seq akıtan bir eş
+        // `received`'i ömür-boyu şişirir (BTreeSet + her SACK'te O(n log n) collect+sort). SACK
+        // KÜMÜLATİF olduğundan `largest`'ın çok altındaki seq'ler dedup için gereksiz: en-eski seq
+        // O(log n) `pop_first` ile düşer (kap sabit). Pencere-dışı çok-geç bir dup "yeni" görünüp
+        // yeniden teslim edilebilir (E2E envelope §4 nihai dedup; client-core delivered-window da
+        // kapsar) — bir u16-wrap'lık pencere her gerçek reorder/inflight ufkunu fazlasıyla aşar.
+        while self.received.len() > RX_DEDUP_WINDOW {
+            self.received.pop_first();
+            if let Some(&first) = self.received.first() {
+                self.smallest_seq = first;
+            }
+        }
     }
 
     /// rx-set [smallest..largest] aralığında boşluk (gap) var mı → reorder/loss göstergesi.
@@ -485,6 +511,31 @@ impl Default for Receiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [P3 SR-AUDIT-001] Düşman ayrık-seq akışı rx-set'i sınırsız büyütemez: kap sabit.
+    #[test]
+    fn received_set_is_bounded_under_distinct_seq_flood() {
+        let mut rx = Receiver::new();
+        // Pencereyi rahatça aşan ayrık, artan seq besle (eviction devreye girsin).
+        let n = RX_DEDUP_WINDOW as u64 + 2000;
+        for i in 0..n {
+            let _ = rx.on_datagram(
+                RxDatagram {
+                    seq: i,
+                    unit_id: i,
+                    kind: RxKind::Data,
+                },
+                i * 1000,
+            );
+        }
+        assert!(
+            rx.received_count() <= RX_DEDUP_WINDOW,
+            "rx-set tavanı aşmamalı: {} > {RX_DEDUP_WINDOW}",
+            rx.received_count()
+        );
+        // En yüksek seq hâlâ izleniyor (pencere en yeniyi tutar).
+        assert_eq!(rx.largest_seq(), Some(n - 1));
+    }
 
     const MS: u64 = 1_000_000;
 
@@ -647,9 +698,9 @@ mod tests {
             unit_id: 100,
             kind: RxKind::FecShard {
                 block_id: 7,
-                shard_index: 0,
-                k: 4,
-                r: 2,
+                esi: 0,
+                k_actual: 4,
+                is_repair: false,
             },
         };
         let o = r.on_datagram(shard, 0);
@@ -659,6 +710,30 @@ mod tests {
         );
         assert_eq!(r.state(), RxState::FecDecode);
         assert_eq!(r.received_count(), 1, "shard ACK için rx-set'e girer");
+    }
+
+    // DR-S5-2: repair-shard da buffer+ACK, teslim-YOK (is_repair ayrımı + INV-FEC-1 korunur).
+    #[test]
+    fn repair_shard_buffered_not_delivered() {
+        let mut r = Receiver::new();
+        let shard = RxDatagram {
+            seq: 1,
+            unit_id: 200,
+            kind: RxKind::FecShard {
+                block_id: 7,
+                esi: 0,
+                k_actual: 4,
+                is_repair: true, // repair
+            },
+        };
+        let o = r.on_datagram(shard, 0);
+        assert!(
+            o.delivered.is_empty(),
+            "repair-shard teslim-YOK (INV-FEC-1)"
+        );
+        assert_eq!(r.state(), RxState::FecDecode);
+        // N8: shard-admission ACK-üretir (SACK) ama BtlBw-credit-YOLU-AÇMAZ (kredi sender.bw.rs'te, gerçek-wire-ACK).
+        assert_eq!(r.received_count(), 1);
     }
 }
 

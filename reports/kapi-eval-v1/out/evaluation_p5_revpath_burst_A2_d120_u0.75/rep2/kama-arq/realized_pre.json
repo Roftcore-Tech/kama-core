@@ -1,0 +1,4 @@
+{"tag":"pre","t_ns":1787386983463412804,"offload":"ethtool-missing",
+"mid_qdisc":[{"kind":"noqueue","handle":"0:","dev":"lo","root":true,"refcnt":2,"options":{},"bytes":0,"packets":0,"drops":0,"overlimits":0,"requeues":0,"backlog":0,"qlen":0},{"kind":"noqueue","handle":"0:","dev":"ma0","root":true,"refcnt":2,"options":{},"bytes":0,"packets":0,"drops":0,"overlimits":0,"requeues":0,"backlog":0,"qlen":0},{"kind":"noqueue","handle":"0:","dev":"mb0","root":true,"refcnt":2,"options":{},"bytes":0,"packets":0,"drops":0,"overlimits":0,"requeues":0,"backlog":0,"qlen":0}],
+"neigh_a":"10.10.0.2 lladdr ca:a6:24:b6:11:0b PERMANENT ;",
+"neigh_b":"10.10.1.2 lladdr 6a:70:0c:8e:c3:e9 PERMANENT ;"}

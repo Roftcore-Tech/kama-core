@@ -1,0 +1,15 @@
+{
+  "artifact": "PRODUCT-ESTIMATOR-INTEGRATION-CHECKPOINT",
+  "fit_use": "FORBIDDEN",
+  "notes": [
+    "Gated on FAZ 1-3 PASS.",
+    "Status remains FEASIBLE, which is NOT a PASS.",
+    "telemetry_age_ns still has no product producer outside a cfg(test) fixture."
+  ],
+  "phase": "FAZ-4",
+  "product_behavior_changed_by_this_artifact": false,
+  "reason": "turn ended after FAZ 1 completed and passed; no further behaviour phase was entered",
+  "result_bearing_calibration_runs": 0,
+  "scope": "estimator wiring + telemetry grounding",
+  "status": "NOT STARTED"
+}

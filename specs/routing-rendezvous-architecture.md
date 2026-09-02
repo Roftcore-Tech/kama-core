@@ -1,4 +1,4 @@
-# SafeRoom — Routing & Rendezvous Architecture (Hub-Mesh DHT)
+# Kama — Routing & Rendezvous Architecture (Hub-Mesh DHT)
 
 **Durum:** Implementation-ready / freeze-ready (Alpha) — yalnız hub-to-hub RPC payload byte-level test vektörleri bekliyor.
 **Semantik otorite:** `identity-and-trust-model.md` v1.5 + `ccr-format-spec.md`
@@ -73,7 +73,7 @@ Client                 = DHT / RoutingRecord / AuthorizedHubSet GÖRMEZ; hostile
 
 ## 2. Mimari Konum — Client Sadece dest_hash Bilir
 
-SafeRoom dağıtık bir sistemdir ama **karmaşıklık client'tan tamamen gizlenir.** Client'ın routing dünyası tek cümledir: *"dest_hash'i kendi hub'ıma ver."*
+Kama dağıtık bir sistemdir ama **karmaşıklık client'tan tamamen gizlenir.** Client'ın routing dünyası tek cümledir: *"dest_hash'i kendi hub'ıma ver."*
 
 ```
 KATMANLAR:
@@ -278,8 +278,8 @@ verify_announce(ann, ROOT_CA_SPKI_HASH, fresh_crl, now):
   if ann.hub_noise_cert.public_key_alg != X25519: DROP
   if ann.hub_noise_cert.key_usage != keyAgreement: DROP
   if ann.hub_noise_cert.issuer_key_id != ann.hub_identity_cert.subject_key_id: DROP
-  # 5. EKU: hub_identity_cert EKU id-saferoom-hub içermeli
-  if id-saferoom-hub NOT in ann.hub_identity_cert.eku: DROP
+  # 5. EKU: hub_identity_cert EKU id-kama-hub içermeli
+  if id-kama-hub NOT in ann.hub_identity_cert.eku: DROP
   # 6. SAN + ADDRESS EŞLEŞME: cert SAN'daki IP'ler ANNOUNCE addresses ile eşleşmeli (Section 3.5)
   if NOT san_matches_addresses(ann.hub_identity_cert.san, ann.addresses): DROP
   # 7. CRL: hub_identity_cert ve hub_noise_cert revoke değil (fail-closed)
@@ -353,7 +353,7 @@ Client-facing `HubEntryV3` / HubListRecord (ccr §21.5) ve hub-mesh ANNOUNCE **a
 
 ```
 Hub Identity Cert (cert_type 0x05):
-  - Ed25519; hub_id / SAN / EKU id-saferoom-hub binding
+  - Ed25519; hub_id / SAN / EKU id-kama-hub binding
   - Intermediate → Root pin chain
 Hub Noise Cert (cert_type 0x06):
   - X25519 keyAgreement; issuer = Hub Identity Cert
@@ -567,7 +567,7 @@ verify_routing_record(rr, fresh_crl, now):
 
   # 8. Hub cert doğrula:
   if verify_chain(hub_cert, ROOT_CA_SPKI_HASH) == FALSE: DROP
-  if id-saferoom-hub NOT in hub_cert.eku: DROP
+  if id-kama-hub NOT in hub_cert.eku: DROP
   if fresh_crl.contains(hub_cert): DROP                                       # fail-closed
   if now > hub_cert.not_after: DROP
 
@@ -788,8 +788,8 @@ Kaçınılmaz (DHT/UDP doğası — kabul edilen sınır, identity v1.5 §3.1/§
   - Hub→hub gönderen/alıcı IP (UDP).
   - Mesaj zamanlaması.
   - "Hub A, Hub B ile bir şey konuştu" (ne konuştuğu değil).
-  Bu, SafeRoom'un kabul ettiği routing-level metadata sınırıdır (Signal/Tor da çözememiştir).
-  SafeRoom iddiası metadata gizliliği DEĞİL, extrem-düşük-bant + yüksek-kayıpta İLETİŞİMİN SÜRMESİ.
+  Bu, Kama'nın kabul ettiği routing-level metadata sınırıdır (Signal/Tor da çözememiştir).
+  Kama iddiası metadata gizliliği DEĞİL, extrem-düşük-bant + yüksek-kayıpta İLETİŞİMİN SÜRMESİ.
   Cover traffic Beta+.
 ```
 
@@ -797,7 +797,7 @@ Kaçınılmaz (DHT/UDP doğası — kabul edilen sınır, identity v1.5 §3.1/§
 
 ## 7. Hub-to-Hub RPC Envanteri
 
-Tüm hub-to-hub RPC'ler Section 6 Noise transport üzerinden taşınır (ilk ANNOUNCE hariç plaintext). RPC payload encoding: SafeRoom-native fixed-width (ccr-spec primitive kuralları; JSON/protobuf değil). Her RPC bir `method_id` (u8) taşır.
+Tüm hub-to-hub RPC'ler Section 6 Noise transport üzerinden taşınır (ilk ANNOUNCE hariç plaintext). RPC payload encoding: Kama-native fixed-width (ccr-spec primitive kuralları; JSON/protobuf değil). Her RPC bir `method_id` (u8) taşır.
 
 ### 7.1 method_id Tablosu
 
@@ -979,7 +979,7 @@ R-5b (authorized-but-malicious suppression): Authorized hub Bob'a giden mesajı 
 R-10 (eclipse): Küçük mesh'te (savunma sanayi 10-50 hub) Kademlia'nın büyük-ağ varsayımları
   tam geçerli değil. Kademlia eviction + Intermediate-imzalı katılım (Sybil zorlaştırır) kısmi.
   Beta: node diversity + bucket çeşitlendirme. KABUL (Alpha mesh küçük + Intermediate-gated).
-R-11 (IP metadata): Signal/Tor da çözememiştir; SafeRoom iddiası bu değil. KABUL.
+R-11 (IP metadata): Signal/Tor da çözememiştir; Kama iddiası bu değil. KABUL.
 ```
 
 ---

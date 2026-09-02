@@ -171,8 +171,13 @@ fn inner_kind_registry() {
     assert_eq!(classify(0x02).unwrap(), InnerKind::Fec(ShardKind::Repair));
     assert_eq!(classify(0x10).unwrap(), InnerKind::Control(0x10));
     assert_eq!(classify(0x18).unwrap(), InnerKind::Control(0x18));
-    // fail-closed reserved codepoint'ler (§2.56)
-    for cp in [0x00u8, 0x03, 0x0F, 0x19, 0xFF] {
+    // DR-CS-1-AMENDMAN (§2.56; f175a14): 0x19/0x1A cold-start kontrol-çifti = KABUL.
+    // [DUR-B-SCHEMA-GOLDEN-1 consistency-repair: stale-golden mühürlü-karara hizalandı;
+    // codepoint-anlamı/wire-layout DEĞİŞMEDİ.]
+    assert_eq!(classify(0x19).unwrap(), InnerKind::Control(0x19));
+    assert_eq!(classify(0x1A).unwrap(), InnerKind::Control(0x1A));
+    // fail-closed reserved codepoint'ler (§2.56; 0x1B = amendman-sonrası ilk-unassigned sınır).
+    for cp in [0x00u8, 0x03, 0x0F, 0x1B, 0xFF] {
         assert!(
             matches!(classify(cp), Err(SchemaError::UnknownInnerKind(_))),
             "cp {cp:#04x} reject"

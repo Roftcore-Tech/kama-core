@@ -1,0 +1,19 @@
+{"t_ns": 57578894278337, "t_unix_ns": 1787210280986442765, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57587475305951, "t_unix_ns": 1787210289567467546, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57596088267621, "t_unix_ns": 1787210298180431211, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57604701783590, "t_unix_ns": 1787210306793948166, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57613314583478, "t_unix_ns": 1787210315406746585, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57621926731947, "t_unix_ns": 1787210324018893044, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57630539539915, "t_unix_ns": 1787210332631702519, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57639153525622, "t_unix_ns": 1787210341245686154, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57647765937115, "t_unix_ns": 1787210349858100982, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57656378907109, "t_unix_ns": 1787210358471067253, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57664991443641, "t_unix_ns": 1787210367083605646, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57673604621911, "t_unix_ns": 1787210375696785011, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57682217934789, "t_unix_ns": 1787210384310096862, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57690830453738, "t_unix_ns": 1787210392922618410, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57699443425622, "t_unix_ns": 1787210401535589406, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57708056054611, "t_unix_ns": 1787210410148217178, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57716669485558, "t_unix_ns": 1787210418761647869, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"t_ns": 57725281503066, "t_unix_ns": 1787210427373667130, "dir": "out", "ip_len": 311, "proto": 17, "sport": 48280, "dport": 4433}
+{"capture_stats": {"packets": 30, "drops": 0}}

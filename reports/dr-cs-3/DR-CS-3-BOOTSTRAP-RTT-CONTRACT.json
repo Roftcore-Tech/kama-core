@@ -1,0 +1,89 @@
+{
+  "contract": "DR-CS-3-BOOTSTRAP-RTT-CONTRACT",
+  "displacement_prohibition": [
+    "adding a bootstrap frame must not drop DATA the baseline would emit in the same turn",
+    "before the first valid echo, non-bootstrap source-prefix must equal baseline (interleave only)",
+    "global DATA/recovery/parity priority model not redesigned"
+  ],
+  "frozen_before_code": true,
+  "frozen_predicates": [
+    "STALL(65s)",
+    "ZERO_TX_STALL"
+  ],
+  "grounding_ref": "DR-CS-3-PRODUCT-PATH-GROUNDING.md (PRODUCT-BOOTSTRAP-PROBE-PATH-GROUNDED)",
+  "off_zero_diff_required": [
+    "wire digest",
+    "non-bootstrap source-prefix",
+    "state digest",
+    "timer schedule",
+    "result"
+  ],
+  "receiver": {
+    "auth_boundary": "receiver_host.rs:318 AEAD open, then :331 inside the h_ext slot",
+    "budget_bytes": 172,
+    "echo_size_le_request": true,
+    "echo_wire_max": 43,
+    "fixed_size_state": true,
+    "never_trusts_remote_timestamp": true,
+    "one_echo_per_unique_generation": true,
+    "probe_wire_exact": 44,
+    "responds_only_to": "authenticated + valid + connection-bound 0x19",
+    "returns_correlation": "request probe_seq",
+    "seen_count_arrival_gap": "LEDGER-ONLY (control.rs:68)"
+  },
+  "required_rescue_lineage": [
+    "probe edge",
+    "sender emission",
+    "receiver authenticated arrival",
+    "echo action",
+    "echo emission",
+    "sender match",
+    "RTT sample",
+    "srtt>0",
+    "PreConverge exit"
+  ],
+  "sender": {
+    "accounting": [
+      "total wire",
+      "separate bootstrap-control account"
+    ],
+    "allowance": "ADDITIVE \u2014 no DATA token, no pacer debt",
+    "allowance_exclusive_to_bootstrap": true,
+    "arq_pto_equivalent_until_echo": true,
+    "edge_only_no_poll_creation": true,
+    "first_sample_cancels_ladder": true,
+    "first_sample_sets_srtt_via_existing_estimator": true,
+    "four_probes_bytes": 176,
+    "gate": "PreConverge && srtt.is_none()",
+    "karn_unchanged": true,
+    "ladder_ns": [
+      3000000000,
+      9000000000,
+      21000000000,
+      45000000000
+    ],
+    "never_reduces_data_budget": true,
+    "no_sample_on": [
+      "duplicate",
+      "replay",
+      "unsolicited",
+      "mismatched"
+    ],
+    "not_data_inflight": true,
+    "one_generation_per_step": true,
+    "one_sample_per_generation": true,
+    "peer_timestamp_never_rtt": true,
+    "probe_wire_exact": 44,
+    "rtt_only_from_matching_outstanding_generation": true,
+    "rtt_source": "local monotonic (echo_arrival - probe_send)",
+    "state_cleared_on": [
+      "preconverge exit",
+      "close",
+      "give-up"
+    ],
+    "steps_absolute_from_arm": true,
+    "tail_fec_unchanged": true,
+    "total_budget_bytes": 200
+  },
+  "single_config": "BootstrapRttConfig (one runtime config, one binary, one cohesive mechanism)"
+}

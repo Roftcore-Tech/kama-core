@@ -1,0 +1,18 @@
+========================================================================
+32x18 OBSERVATION NEUTRALITY  (baseline d510070d  vs  instrumented 08fe39a0)
+========================================================================
+records compared : 32
+fields per record: 18
+field mismatches : 0
+missing records  : 0
+extra records    : 0
+
+RESULT: PASS — instrumentation is observation-only
+
+LINEAGE
+  baseline     : d510070d (pre-instrumentation dr_cs3_panel.rs, 839 lines, git worktree)
+  instrumented : 08fe39a0 (channel event log, 3684 lines)
+  runs         : locked --reverse none | locked --reverse ge, on BOTH trees
+  records      : 16 per run (8 reps x 2 tail configs P0-tail-OFF/P1-tail-ON); 32 per tree
+  exclusion    : new event-log fields excluded by a FIXED NAME LIST, never 'whatever differs'
+  comparator   : scratchpad/neut_compare.py

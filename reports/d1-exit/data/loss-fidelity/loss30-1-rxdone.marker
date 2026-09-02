@@ -1,0 +1,8 @@
+run_id=loss30-1
+policy=leftover
+receiver_events=399
+finalized_blocks=49
+pending_blocks=1
+ledger_path=/home/ryuzaki/Desktop/kama-core/reports/d1-exit/data/loss-fidelity/loss30-1-rxledger.csv
+ledger_checksum=80f76d5286af233d
+clean_shutdown=true

@@ -1,0 +1,13 @@
+variable,band,empirical_support_frac,mean_degree
+ack,high,1.0000,1.0000
+ack,low,0.0000,0.0000
+ack,med,0.0000,0.0000
+bw,high,0.9762,0.9619
+bw,low,0.0228,0.0177
+bw,med,0.1887,0.0203
+jit,high,0.0085,0.0084
+jit,low,0.9914,0.9910
+jit,med,0.0047,0.0007
+loss,high,0.0000,0.0000
+loss,low,1.0000,1.0000
+loss,med,0.0000,0.0000

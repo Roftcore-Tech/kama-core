@@ -1,0 +1,37 @@
+{
+  "VERDICT": "MIN-PIPE-MAPPING-NOT-GROUNDED",
+  "disqualifications": [
+    "A MinPipeCwnd analog already exists (SrcConfig::min_cwnd = 4*DEFAULT_MTU = 4800 B) and is already non-binding on send_rate by 48x",
+    "The proposed 'four source-unit' floor (4*101=404 B) is 11.9x SMALLER than the shipping min_cwnd (4800 B)"
+  ],
+  "grounding": {
+    "authoritative_inflight_volume_gate_exists": false,
+    "burst_cap": "token-bucket burst quantum (pacer.rs); clamp(send_rate*BURST_WINDOW_NS, front_size, max(front_size,2*DEFAULT_MTU))",
+    "burst_cap_is_inflight_volume_cap": false,
+    "cwnd_role": "rate.rs converts cwnd to a RATE: send_rate = min(pacing_rate, cwnd/srtt); no inflight_bytes-vs-cwnd gate exists",
+    "only_emission_gate": "pacer token bucket (try_send_pre_parity -> pacer.try_send)"
+  },
+  "measured_locked_run": {
+    "bdp_bytes": 100,
+    "btlbw_bps": 100,
+    "burst_cap_bytes": 101,
+    "cwnd_bytes": 4800,
+    "cwnd_ceiling_slack_factor": 48.0,
+    "inflight_cap_rate_bps": 4796,
+    "min_cwnd_binds_cwnd": true,
+    "min_cwnd_binds_send_rate": false,
+    "send_rate_bps": 100,
+    "srtt_s": 1.0008
+  },
+  "next_step": "separate design checkpoint; candidate axes: real in-flight gate | max-filter sample exclusion | BtlBw reseed at PreConverge exit",
+  "phase": "FAZ-2",
+  "phase_safety": "FAZ 3/4/5/6 behaviour phases NOT started (a phase PASS criterion failed)",
+  "phase_stopped_at": "\u00a72.1 grounding",
+  "product_behavior_changed": false,
+  "section_2_2_compliance": {
+    "app_limited_reinterpreted": false,
+    "model_limited_maxfilter_exclusion_applied": false
+  },
+  "study": "DR-RATE-RAMP-2",
+  "treatment_implemented": false
+}

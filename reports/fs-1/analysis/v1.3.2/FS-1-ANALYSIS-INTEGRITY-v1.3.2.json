@@ -1,0 +1,1 @@
+{"artifact":"FS-1-ANALYSIS-INTEGRITY-v1.3.2","records":240,"complete":176,"censored":64,"cells":12,"arms":4,"pairing_groups":60,"invalid":0,"schema":"FS-1-RAW-SCHEMA-v2","invariance_vs_v1_3_1":"PASS (fs_compare_v2; shared-field mismatch=0; 176/64)"}

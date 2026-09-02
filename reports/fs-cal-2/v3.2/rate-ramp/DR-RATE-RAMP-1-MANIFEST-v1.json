@@ -1,0 +1,52 @@
+{
+  "T_EVAL_ns": 65000000000,
+  "calibration_use": "FORBIDDEN",
+  "cold_start_ladder": "OFF",
+  "fit_use": "FORBIDDEN",
+  "layers": {
+    "RR1": {
+      "cell": "P2-GE20L10-RTT1000",
+      "n": 3,
+      "purpose": "deterministic replay (debug only)",
+      "reps": [
+        2,
+        31,
+        16
+      ],
+      "scope_limit": "MECHANISM only \u2014 no prevalence, no generalization",
+      "seed_domain": "FSFC2-DIAG-CS-V32"
+    },
+    "RR2": {
+      "cell": "RR-GE20L10-RTT1000",
+      "n": 40,
+      "p_ppm": 200000,
+      "purpose": "fresh high-loss",
+      "rtt_ms": 1000,
+      "seed_domain": "DR-RATE-RAMP-1-HIGHLOSS-V1",
+      "structure": "GE-L10"
+    },
+    "RR3": {
+      "cell": "RR-IID5-RTT1000",
+      "n": 40,
+      "p_ppm": 50000,
+      "purpose": "fresh low-loss control",
+      "rtt_ms": 1000,
+      "seed_domain": "DR-RATE-RAMP-1-LOWLOSS-V1",
+      "structure": "IID"
+    }
+  },
+  "lock_predicate": "left PreConverge AND max(burst_cap) == SEALED(101)",
+  "manifest": "DR-RATE-RAMP-1",
+  "minimum_event_gate": ">=4 fresh lock events required for a fresh-cell class",
+  "provenance": {
+    "source_commit_40hex": "4aa11a93af44b2b9e884461e8db3d1ed576c8b4f",
+    "source_sha256": {
+      "crates/adaptive-transport/src/bw.rs": "667264bbc4645ca54c7b964f4effd09d2cd119a8c85a04bbe249ffd3c1836b94",
+      "crates/adaptive-transport/src/pacer.rs": "e9fea2a9120483a0707c283c503a9107b6f2be1cc0befa7346993874b9632c2d",
+      "crates/adaptive-transport/src/sender.rs": "3548fcbd2006a7385c3339f5738bd7882cd039b123e24465dd8e94cee5774945",
+      "crates/kama-integration/tests/common/fs_cal2_spine.rs": "ebb81dd41f1e0b902da4a00a32caeb04ec2c4e3bfa2e0443677c5223f41c59ef"
+    }
+  },
+  "result_bearing": false,
+  "sample_period_ns": 100000000
+}

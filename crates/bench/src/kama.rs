@@ -14,7 +14,7 @@
 //! `max_deadline` ile bounded (dead server → all-None Ok, HANG yok). sent_ns'i wire-emit'te damgalamak
 //! kama'nın pacing dwell'ini latency'den dışlar → completion şişer (review CRITICAL, frame-bug sınıfı).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -25,9 +25,12 @@ use adaptive_transport::seq::resolve_seq;
 use tokio::net::UdpSocket;
 use tokio::time::interval;
 
+use crate::budget::{BudgetGovernor, BudgetMode, IPV4_UDP_OVERHEAD};
 use crate::error::BenchError;
 use crate::event::{RawEvent, RunMeta, RunOutput, TxComponents};
-use crate::transport::{BenchTransport, ClientCfg, KamaTransport, ServerCfg};
+use adaptive_transport::tail_recovery::TailRecoveryConfig;
+
+use crate::transport::{BenchTransport, ClientCfg, KamaArm, KamaTransport, ServerCfg};
 
 /// DATA frame_type (bench-local; ACK 0x10 ack.rs'te, FEC_SHARD 0x20 wire'da hiç görünmez).
 const FRAME_DATA: u8 = 0x00;
@@ -48,6 +51,10 @@ const ACK_TICK: Duration = Duration::from_millis(20);
 const SERVER_RECV_BUF: usize = 65536;
 /// client recv buffer (yalnız küçük ACK frame'leri).
 const CLIENT_RECV_BUF: usize = 2048;
+/// [KAPI-1 W6] Warmup birim-id tabanı: ölçüm-dışı warmup birimleri bu ofsetle akar — sent/delivered
+/// vektörleri ölçüm-id'leriyle indekslendiğinden warmup id'leri kayıt yollarında YAPISAL olarak
+/// görünmez (get_mut(huge)→None); teslimleri ayrı sette izlenir.
+const WARMUP_BASE: u64 = 1 << 40;
 
 /// DATA frame'i canonical fixed-width big-endian kodlar (ADR-05; varint YASAK).
 fn encode_data(seq: u16, unit_id: u64, payload: &[u8]) -> Vec<u8> {
@@ -77,6 +84,9 @@ fn elapsed_ns(start: Instant) -> u64 {
 /// Client koşu durumu: sender engine + ölçüm muhasebesi (seq→unit join, sent/delivered damgaları, byte sayaçları).
 struct ClientRun {
     sender: Sender,
+    /// [KAPI-1 W2] forward-yön governor'ü. [W6] Arm ölçüm-t0'da (gate sonrası) yapılır;
+    /// warmup trafiği pre_arm'da muaf kalır.
+    gov: BudgetGovernor,
     seq_to_unit: HashMap<u64, u64>,
     max_emitted_seq: u64,
     sent_ns: Vec<Option<u64>>,
@@ -88,12 +98,25 @@ struct ClientRun {
     tx_data: u64,
     tx_retx: u64,
     tx_dup: u64,
+    /// [W6] Teslim edilen warmup birim-id'leri (ölçüm kayıtlarına girmez; faz-geçiş koşulu).
+    warmup_delivered: HashSet<u64>,
+    /// [P0 teşhis] KAMA_BENCH_TRACE=1 → stderr'e TX/ACK birim izi.
+    trace: bool,
 }
 
 impl ClientRun {
-    fn new(msg_count: usize) -> Self {
+    fn new(msg_count: usize, arm: KamaArm, budget: BudgetMode) -> Self {
+        // KAPI-1 W4: kol seçimi Sender kuruluşunda uygulanır. TailV1 = adlandırılmış doğrulanmış
+        // sabit; default bounds ile ENABLE ETME (o bounds hiç kampanya görmedi — tail_recovery.rs).
+        let mut sender = Sender::new();
+        if arm == KamaArm::TailV1 {
+            sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
+        }
+        // [W6] gov burada ARM EDİLMEZ: ölçüm-t0'da (client_loop, gate sonrası) arm edilir —
+        // warmup trafiği pre_arm'da görünür, bütçeden düşmez (DÜZLEM-A t=0 semantiği).
         Self {
-            sender: Sender::new(),
+            sender,
+            gov: BudgetGovernor::new(budget),
             seq_to_unit: HashMap::new(),
             max_emitted_seq: 0,
             sent_ns: vec![None; msg_count],
@@ -104,7 +127,80 @@ impl ClientRun {
             tx_data: 0,
             tx_retx: 0,
             tx_dup: 0,
+            warmup_delivered: HashSet::new(),
+            trace: std::env::var_os("KAMA_BENCH_TRACE").is_some(),
         }
+    }
+
+    /// [W6] Gelen datagramı işle: ACK ise teslim damgala (ölçüm-id'leri) + warmup-teslim izle +
+    /// sender'ı besle. Warmup ve ölçüm fazları AYNI yolu kullanır (kod-tekilliği; frame doğruluğu
+    /// tek yerde). ACK-dışı/bozuk frame yoksayılır.
+    async fn handle_datagram(
+        &mut self,
+        raw: &[u8],
+        now: u64,
+        sock: &UdpSocket,
+        server: SocketAddr,
+        payload: &[u8],
+    ) {
+        self.rx_bytes += raw.len() as u64;
+        // [TUR-1x] V2 (0x14, 256µs) + V1 (0x10, µs) kabul — decode versiyona göre çözer.
+        if raw.is_empty() || (raw[0] != FRAME_TYPE_ACK && raw[0] != FRAME_TYPE_ACK_V2) {
+            return;
+        }
+        // [inceleme #2] server ACK'leri de +16B AEAD-tag-stub taşır (DATA ile simetrik wire
+        // modeli); decode'dan önce sondaki stub soyulur (bench çifti her zaman aynı binary).
+        if raw.len() <= TAG_STUB {
+            return;
+        }
+        let Ok(frame) = AckFrame::decode(&raw[..raw.len() - TAG_STUB]) else {
+            return;
+        };
+        let acked = frame.acked_full(self.max_emitted_seq + 1);
+        if self.trace {
+            let units: Vec<String> = acked
+                .iter()
+                .map(|s| {
+                    format!(
+                        "{}:{}",
+                        s,
+                        self.seq_to_unit.get(s).map_or(-1i64, |u| *u as i64)
+                    )
+                })
+                .collect();
+            eprintln!("ACK t={now} seq:unit=[{}]", units.join(" "));
+        }
+        // delivered_ns: birimin herhangi bir seq'i İLK kez acked → MUTLAK damga (ilk-ack-kazanır).
+        for s in &acked {
+            let Some(&unit) = self.seq_to_unit.get(s) else {
+                continue;
+            };
+            if unit >= WARMUP_BASE {
+                self.warmup_delivered.insert(unit);
+                continue;
+            }
+            if let Some(slot) = self
+                .delivered_ns
+                .get_mut(usize::try_from(unit).unwrap_or(usize::MAX))
+            {
+                if slot.is_none() {
+                    *slot = Some(now);
+                    self.delivered_count += 1;
+                }
+            }
+        }
+        // sender'ı besle: inflight boşalt + RTT/BW + ARQ/fwd recovery (bench delivered'ı KENDİ damgaladı).
+        self.drive(
+            Event::AckReceived(AckInfo {
+                acked_seqs: acked,
+                ack_delay: frame.ack_delay_duration(),
+            }),
+            now,
+            sock,
+            server,
+            payload,
+        )
+        .await;
     }
 
     /// Sender'ı bir olayla sürer + çıkan transmit kararlarını wire'a yazar. seq→unit map + max_emitted_seq
@@ -120,19 +216,36 @@ impl ClientRun {
         for d in self.sender.on_event(ev, now) {
             self.seq_to_unit.insert(d.seq, d.unit_id);
             self.max_emitted_seq = self.max_emitted_seq.max(d.seq);
+            // [P0 teşhis] birim-düzeyi TX izi (env-gated; ölçüm yoluna dokunmaz).
+            if self.trace {
+                eprintln!(
+                    "TX t={now} unit={} seq={} kind={:?}",
+                    d.unit_id, d.seq, d.kind
+                );
+            }
             // sent_ns burada DAMGALANMAZ — app-offer'da (enqueue) damgalanır (quinn frame'i, aşağıdaki
             // client_loop notu). Wire-emit'te damgalamak kama'nın pacing dwell'ini latency'den dışlardı.
             let frame = encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload);
-            if let Ok(n) = sock.send_to(&frame, server).await {
-                let n = n as u64;
-                self.tx_bytes += n;
-                match d.kind {
-                    TransmitKind::Data => self.tx_data += n,
-                    TransmitKind::Retransmit => self.tx_retx += n,
-                    TransmitKind::Duplicate => self.tx_dup += n,
-                    TransmitKind::FecParity => {} // emit edilmez (§10 politika)
-                }
+            // [inceleme #1] tx sayaçları TRANSPORT-DENEMESİ düzlemi: governor reddi DAHİL sayılır —
+            // quinn-proto stats'ı poll_transmit'te (socket'ten ÖNCE) saydığından üç kolun udp_tx'i
+            // ancak böyle aynı düzlemde olur. Gerçek-enjekte düzlem budget.injected_bytes'ta.
+            let n = frame.len() as u64;
+            self.tx_bytes += n;
+            match d.kind {
+                TransmitKind::Data => self.tx_data += n,
+                TransmitKind::Retransmit => self.tx_retx += n,
+                TransmitKind::Duplicate => self.tx_dup += n,
+                // FecParity emit-edilmez (§10 politika); CsProbe (DR-CS-1, yalnız
+                // experimental-cold-start feature'ıyla-var) bench-legacy-sürücüde sayılmaz.
+                _ => {}
             }
+            // [KAPI-1 W2] packet-atomic bütçe kapısı: ret = enjeksiyon yok (kanal-silinmesi
+            // eşdeğeri; sender state'i ZATEN emisyonu işledi — INV-RATE-1 gereği rate düşmez,
+            // kayıp kurtarma kolu normal işler). Governor bekletmez (pacing-nötr).
+            if !self.gov.permit(n + IPV4_UDP_OVERHEAD, now) {
+                continue;
+            }
+            let _ = sock.send_to(&frame, server).await;
         }
     }
 }
@@ -148,7 +261,11 @@ async fn client_loop(
     let msg_count = cfg.msg_count;
     let payload = vec![0x5Au8; usize::try_from(cfg.payload_bytes).unwrap_or(0)];
     let unit_size = HDR_DATA as u64 + cfg.payload_bytes;
-    let mut run = ClientRun::new(usize::try_from(msg_count).unwrap_or(0));
+    let mut run = ClientRun::new(
+        usize::try_from(msg_count).unwrap_or(0),
+        cfg.kama_arm,
+        cfg.budget,
+    );
 
     // Tüm birimleri t0'da enqueue — engine'in İÇ pacing'i yayılımı belirlesin (yapay serileştirme değil;
     // her iki transport da aynı start'tan aynı max_deadline bütçesini alır → adil karşılaştırma).
@@ -157,31 +274,151 @@ async fn client_loop(
     // quinn'in İÇ pacing'inden ÖNCE → latency quinn'in kuyruğunu İÇERİR). Kama da app-offer'da damgalar →
     // latency kama'nın pacing dwell'ini İÇERİR → elmalar-elmalar. (review CRITICAL: wire-emit'te damgalamak
     // dwell'i dışlar → completion kama lehine ŞİŞER; delivered_ns frame-bug sınıfının sent-tarafı ikizi.)
-    for id in 0..msg_count {
-        let now = elapsed_ns(start);
-        if let Some(slot) = run
-            .sent_ns
-            .get_mut(usize::try_from(id).unwrap_or(usize::MAX))
-        {
-            *slot = Some(now);
-        }
-        run.drive(
-            Event::AppData(OpaqueUnit {
-                id,
-                size: unit_size,
-            }),
-            now,
-            &sock,
-            cfg.server,
-            &payload,
-        )
-        .await;
+    //
+    // [KAPI-1 W3] interval==0 (burst): bu yol AYNEN korunur. interval>0 (paced): sunumlar select
+    // döngüsünde zamanlanır (mesaj i → t=i×interval); sent_ns yine app-offer anı.
+    let interval_ns = u64::try_from(cfg.submit_interval.as_nanos()).unwrap_or(u64::MAX);
+
+    // [W6] Kuruluş-gate'i: kama'da handshake yok → soket bağlanır bağlanmaz "kurulu" (DÜZLEM-A
+    // temiz-ağ kuruluş alanı). Harness bu noktada (A2) netem'i uygular; warmup impaired koşar.
+    if let Some(g) = &cfg.establish_gate {
+        crate::transport::gate_sync(g).await?;
     }
+
+    // ── [KAPI-1 W6] FAZ-0: warmup (ölçüm-DIŞI) + gate senkronu ─────────────────────────────
+    // Warmup birimleri WARMUP_BASE+i id'leriyle AYNI motor/soket yolundan akar; kayıt yollarına
+    // yapısal olarak girmez. Amaç: transport state'i (estimator/pacer/RTT) ölçümden önce oturt —
+    // A1'de temiz kanalda (converge), A2'de impairment altında (steady-state); farkı harness'ın
+    // netem'i NE ZAMAN uyguladığı belirler (r5 B.2). Sonra quiescence + gate: `<gate>.ready`
+    // yazılır, harness impairment/barrier işini bitirip `<gate>.go` dokunur; ölçüm-t0 = GO anı.
+    if cfg.warmup_msgs > 0 {
+        let warm_start = elapsed_ns(start);
+        let warm_cap_ns = interval_ns
+            .saturating_mul(cfg.warmup_msgs)
+            .saturating_add(30_000_000_000); // sunum-planı + 30 s tavan (bounded)
+        let mut wpace = interval(PACE_TICK);
+        let mut wrtprop = interval(RTPROP_TICK);
+        let mut wbuf = [0u8; CLIENT_RECV_BUF];
+        let mut wnext: u64 = 0;
+        let wdeadline = tokio::time::sleep(Duration::from_nanos(warm_cap_ns));
+        tokio::pin!(wdeadline);
+        while (run.warmup_delivered.len() as u64) < cfg.warmup_msgs {
+            tokio::select! {
+                () = &mut wdeadline => break,
+                () = tokio::time::sleep(Duration::from_nanos(
+                    warm_start
+                        .saturating_add(interval_ns.saturating_mul(wnext))
+                        .saturating_sub(elapsed_ns(start)),
+                )), if wnext < cfg.warmup_msgs => {
+                    let now = elapsed_ns(start);
+                    let id = WARMUP_BASE + wnext;
+                    wnext += 1;
+                    run.drive(
+                        Event::AppData(OpaqueUnit { id, size: unit_size }),
+                        now, &sock, cfg.server, &payload,
+                    ).await;
+                }
+                _ = wpace.tick() => {
+                    let now = elapsed_ns(start);
+                    run.drive(Event::TimerFired(Timer::Pto), now, &sock, cfg.server, &payload).await;
+                }
+                _ = wrtprop.tick() => {
+                    let now = elapsed_ns(start);
+                    run.drive(Event::TimerFired(Timer::RtpropProbe), now, &sock, cfg.server, &payload).await;
+                }
+                r = sock.recv_from(&mut wbuf) => {
+                    let Ok((n, _)) = r else { continue };
+                    let now = elapsed_ns(start);
+                    let raw = wbuf[..n].to_vec();
+                    run.handle_datagram(&raw, now, &sock, cfg.server, &payload).await;
+                }
+            }
+        }
+        // [inceleme #0] Quiescence: sabit-uyku DEĞİL — sınırlı drain-pompası: hedef in-flight=0
+        // (§3.2 ön-kayıt), ama severe-loss'ta bounded (3 s tavan; motor birim TERK ETMEZ → p3'te
+        // pif→0 ulaşılamayabilir). Kalan = residue; t0'da ÖLÇÜLÜR (RunMeta.warmup_residue) ve
+        // post-t0 residue trafiği TÜM kollarda simetrik olarak ölçüme dahildir.
+        let drain_cap = tokio::time::sleep(Duration::from_secs(3));
+        tokio::pin!(drain_cap);
+        let mut dpace = interval(PACE_TICK);
+        loop {
+            if run.sender.diag_pif() == 0 {
+                break;
+            }
+            let mut wbuf2 = [0u8; CLIENT_RECV_BUF];
+            tokio::select! {
+                () = &mut drain_cap => break,
+                _ = dpace.tick() => {
+                    let now = elapsed_ns(start);
+                    run.drive(Event::TimerFired(Timer::Pto), now, &sock, cfg.server, &payload).await;
+                }
+                r = sock.recv_from(&mut wbuf2) => {
+                    let Ok((n, _)) = r else { continue };
+                    let now = elapsed_ns(start);
+                    let raw = wbuf2[..n].to_vec();
+                    run.handle_datagram(&raw, now, &sock, cfg.server, &payload).await;
+                }
+            }
+        }
+    }
+    if let Some(gate) = &cfg.gate {
+        crate::transport::gate_sync(gate).await?;
+    }
+
+    // ── Ölçüm-t0 (DÜZLEM-A): sayaçlar sıfırlanır, TRANSPORT STATE KORUNUR (r5 B.2
+    // counter_reset_without_state_reset), bütçe ARM edilir. Warmup/gate yoksa t0 ≈ 0 (eski yol).
+    let t0 = elapsed_ns(start);
+    let t0_unix_ns = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos()),
+    )
+    .unwrap_or(0);
+    let warmup_residue = cfg
+        .warmup_msgs
+        .saturating_sub(run.warmup_delivered.len() as u64);
+    run.gov.arm(t0);
+    run.tx_bytes = 0;
+    run.rx_bytes = 0;
+    run.tx_data = 0;
+    run.tx_retx = 0;
+    run.tx_dup = 0;
+
+    if interval_ns == 0 {
+        for id in 0..msg_count {
+            let now = elapsed_ns(start);
+            if let Some(slot) = run
+                .sent_ns
+                .get_mut(usize::try_from(id).unwrap_or(usize::MAX))
+            {
+                *slot = Some(now);
+            }
+            run.drive(
+                Event::AppData(OpaqueUnit {
+                    id,
+                    size: unit_size,
+                }),
+                now,
+                &sock,
+                cfg.server,
+                &payload,
+            )
+            .await;
+        }
+    }
+    let mut next_submit: u64 = if interval_ns == 0 { msg_count } else { 0 };
 
     let mut pace = interval(PACE_TICK);
     let mut rtprop = interval(RTPROP_TICK);
     let mut buf = [0u8; CLIENT_RECV_BUF];
-    let deadline = tokio::time::sleep(cfg.max_deadline);
+    // Koşu sonu = son-sunum + max_deadline (r5 §G: test_end = last_submission + mission_deadline;
+    // burst'ta son-sunum ≈ t0 → mevcut semantik aynen). t0-göreli, start'tan kalan süre olarak.
+    let total_deadline_ns = t0
+        .saturating_add(interval_ns.saturating_mul(msg_count.saturating_sub(1)))
+        .saturating_add(u64::try_from(cfg.max_deadline.as_nanos()).unwrap_or(u64::MAX));
+    let deadline = tokio::time::sleep(Duration::from_nanos(
+        total_deadline_ns.saturating_sub(elapsed_ns(start)),
+    ));
     tokio::pin!(deadline);
 
     // [TUR-A teşhis] rate-trajektori tap'ı (SALT-GÖZLEM; kaldırılabilir). floor→btlbw ramp kilidini ölç.
@@ -191,6 +428,31 @@ async fn client_loop(
     while run.delivered_count < msg_count {
         tokio::select! {
             () = &mut deadline => break,
+            // [KAPI-1 W3] paced sunum: mesaj i, t=i×interval'de app-offer edilir. Sleep her select
+            // yinelemesinde kalan-süreden yeniden kurulur (1ms pace tick'i döngüyü sürekli uyandırır
+            // → vade geldiğinde kalan=0, kol anında ateşler; sapma ≤ ~1ms ≪ aralıklar 1s+).
+            () = tokio::time::sleep(Duration::from_nanos(
+                t0.saturating_add(interval_ns.saturating_mul(next_submit))
+                    .saturating_sub(elapsed_ns(start)),
+            )), if next_submit < msg_count => {
+                let now = elapsed_ns(start);
+                let id = next_submit;
+                next_submit += 1;
+                if let Some(slot) = run
+                    .sent_ns
+                    .get_mut(usize::try_from(id).unwrap_or(usize::MAX))
+                {
+                    *slot = Some(now);
+                }
+                run.drive(
+                    Event::AppData(OpaqueUnit { id, size: unit_size }),
+                    now,
+                    &sock,
+                    cfg.server,
+                    &payload,
+                )
+                .await;
+            }
             _ = traj.tick() => {
                 let now = elapsed_ns(start);
                 let (st, btlbw, srtt_us, rate, infl) = run.sender.diag_rate();
@@ -222,29 +484,10 @@ async fn client_loop(
             }
             r = sock.recv_from(&mut buf) => {
                 let Ok((n, _from)) = r else { continue }; // recv hatası → yoksay (deadline sınırlar).
-                run.rx_bytes += n as u64;
-                // [TUR-1x] V2 (0x14, 256µs) + V1 (0x10, µs) kabul — decode versiyona göre çözer.
-                if n < 1 || (buf[0] != FRAME_TYPE_ACK && buf[0] != FRAME_TYPE_ACK_V2) {
-                    continue;
-                }
-                let Ok(frame) = AckFrame::decode(&buf[..n]) else { continue };
                 let now = elapsed_ns(start);
-                let acked = frame.acked_full(run.max_emitted_seq + 1);
-                // delivered_ns: birimin herhangi bir seq'i İLK kez acked → MUTLAK damga (ilk-ack-kazanır).
-                for s in &acked {
-                    let Some(&unit) = run.seq_to_unit.get(s) else { continue };
-                    if let Some(slot) = run.delivered_ns.get_mut(usize::try_from(unit).unwrap_or(usize::MAX)) {
-                        if slot.is_none() {
-                            *slot = Some(now);
-                            run.delivered_count += 1;
-                        }
-                    }
-                }
-                // sender'ı besle: inflight boşalt + RTT/BW + ARQ/fwd recovery (bench delivered'ı KENDİ damgaladı).
-                run.drive(
-                    Event::AckReceived(AckInfo { acked_seqs: acked, ack_delay: frame.ack_delay_duration() }),
-                    now, &sock, cfg.server, &payload,
-                ).await;
+                // [W6] tek ACK-yolu: warmup fazıyla AYNI kod (frame doğruluğu tek yerde).
+                let raw = buf[..n].to_vec();
+                run.handle_datagram(&raw, now, &sock, cfg.server, &payload).await;
             }
         }
     }
@@ -278,6 +521,12 @@ async fn client_loop(
             dup: run.tx_dup,
         },
         udp_rx_bytes: run.rx_bytes,
+        kama_arm: cfg.kama_arm.label().to_string(),
+        submit_interval_ns: interval_ns,
+        budget: run.gov.snapshot(),
+        t0_unix_ns,
+        events_epoch_offset_ns: t0, // kama event'leri koşu-epoch'undan damgalanır
+        warmup_residue,
     };
     Ok(RunOutput { meta, events })
 }
@@ -285,21 +534,58 @@ async fn client_loop(
 /// Server event pump (§4 receiver): per-peer `Receiver`; select{ DATA→on_datagram→SACK / ACK-timer→SACK }.
 /// quinn accept-loop gibi sonsuz (harness process'i öldürür). Tek O(1) recv döngüsü per-mesaj izolasyonu
 /// verir → quinn'in stream-başı task fan-out'una gerek yok (HoL yok).
-async fn serve_loop(sock: UdpSocket, start: Instant, quota_r: u32) -> Result<(), BenchError> {
+async fn serve_loop(
+    sock: UdpSocket,
+    start: Instant,
+    quota_r: u32,
+    budget: BudgetMode,
+    gate_watch: Option<std::path::PathBuf>,
+) -> Result<(), BenchError> {
     let mut peers: HashMap<SocketAddr, Receiver> = HashMap::new();
     let mut ack_timer = interval(ACK_TICK);
     let mut buf = vec![0u8; SERVER_RECV_BUF];
     let mut rtraj_tick: u32 = 0;
+    // [KAPI-1 W2+W6] reverse-yön (ACK-egress) governor'ü. gate_watch verilirse arm, client'ın
+    // ölçüm-t0'ına (`<gate>.go` dosyası) senkronlanır — warmup ACK'leri pre_arm'da muaf (r5 D.2);
+    // verilmezse hemen arm (eski davranış). Server RunOutput üretmez; BUDGET-REV satırı raporlar.
+    let mut gov = BudgetGovernor::new(budget);
+    let go_file = gate_watch.map(|g| format!("{}.go", g.display()));
+    if go_file.is_none() {
+        gov.arm(elapsed_ns(start));
+    }
     loop {
         tokio::select! {
             _ = ack_timer.tick() => {
                 let now = elapsed_ns(start);
+                // [W6] gate-watch: .go belirince arm (20 ms poll — ölçüm-t0 sapması ≤ ACK_TICK).
+                if !gov.is_armed() {
+                    if let Some(f) = &go_file {
+                        if std::path::Path::new(f).exists() {
+                            gov.arm(now);
+                        }
+                    }
+                }
                 let acks: Vec<(SocketAddr, Vec<u8>)> = peers
                     .iter_mut()
                     .filter_map(|(peer, rx)| rx.on_ack_timer(now).map(|a| (*peer, a.encode())))
                     .collect();
-                for (peer, bytes) in acks {
-                    let _ = sock.send_to(&bytes, peer).await;
+                for (peer, mut bytes) in acks {
+                    bytes.resize(bytes.len() + TAG_STUB, 0); // [inceleme #2] ACK'e de tag-stub
+                    if gov.permit(bytes.len() as u64 + IPV4_UDP_OVERHEAD, now) {
+                        let _ = sock.send_to(&bytes, peer).await;
+                    }
+                }
+                if budget != BudgetMode::Unlimited && rtraj_tick.is_multiple_of(500) {
+                    let s = gov.snapshot();
+                    eprintln!(
+                        "BUDGET-REV t={:.1} injected={}B/{}p refused={}B/{}p first_refusal_ns={}",
+                        now as f64 / 1e9,
+                        s.injected_bytes,
+                        s.injected_pkts,
+                        s.refused_bytes,
+                        s.refused_pkts,
+                        s.first_refusal_ns
+                    );
                 }
                 // [TUR-5 r3 §6] RTRAJ ölçüm-kanalı: K-4 invariant+diagnostic server-tarafta doğar
                 // (client rx_bytes yalnız hayatta-kalan-bayt vekili). ~500ms'te bir.
@@ -327,7 +613,11 @@ async fn serve_loop(sock: UdpSocket, start: Instant, quota_r: u32) -> Result<(),
                 let now = elapsed_ns(start);
                 let out = rx.on_datagram(RxDatagram { seq: full, unit_id, kind: RxKind::Data }, now);
                 if let Some(ack) = out.ack {
-                    let _ = sock.send_to(&ack.encode(), peer).await;
+                    let mut bytes = ack.encode();
+                    bytes.resize(bytes.len() + TAG_STUB, 0); // [inceleme #2] ACK'e de tag-stub
+                    if gov.permit(bytes.len() as u64 + IPV4_UDP_OVERHEAD, now) {
+                        let _ = sock.send_to(&bytes, peer).await;
+                    }
                 }
             }
         }
@@ -337,7 +627,14 @@ async fn serve_loop(sock: UdpSocket, start: Instant, quota_r: u32) -> Result<(),
 impl BenchTransport for KamaTransport {
     async fn run_server(&self, cfg: ServerCfg) -> Result<(), BenchError> {
         let sock = UdpSocket::bind(cfg.bind).await?; // bind = setup hatası → Err (harness abort).
-        serve_loop(sock, Instant::now(), cfg.quota_r).await
+        serve_loop(
+            sock,
+            Instant::now(),
+            cfg.quota_r,
+            cfg.budget,
+            cfg.gate_watch,
+        )
+        .await
     }
 
     async fn run_client(&self, cfg: ClientCfg) -> Result<RunOutput, BenchError> {
@@ -362,6 +659,159 @@ mod tests {
             seed: 0,
             repeat: 0,
             profile: "loopback".to_string(),
+            kama_arm: KamaArm::Arq,
+            submit_interval: Duration::ZERO,
+            budget: BudgetMode::Unlimited,
+            warmup_msgs: 0,
+            gate: None,
+            establish_gate: None,
+        }
+    }
+
+    /// KAPI-1 W4 pin: kol bayrağı Sender'a gerçekten işlenmeli — TailV1 doğrulanmış sabiti kurar,
+    /// Arq default-OFF bırakır. Bu pin kırılırsa "ON kolu" sessizce OFF koşar (kampanya-geçersiz).
+    #[test]
+    fn kama_arm_flag_installs_validated_v1() {
+        assert!(!ClientRun::new(1, KamaArm::Arq, BudgetMode::Unlimited)
+            .sender
+            .tail_recovery_enabled());
+        assert!(ClientRun::new(1, KamaArm::TailV1, BudgetMode::Unlimited)
+            .sender
+            .tail_recovery_enabled());
+    }
+
+    /// [KAPI-1 W2] Forward bütçesi üründe packet-atomic: frame 155B → ip 183B; cap = 2×183+90 →
+    /// TAM 2 paket girer (3.'ye 90B yetmez — partial yok), kalan emisyonlar reddedilir ve sayılır.
+    /// Loopback kayıpsız → teslim == enjekte-edilen-DATA (girmeyen asla teslim olamaz).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn burst_budget_caps_injection_packet_atomically() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let saddr = server.local_addr().unwrap();
+        tokio::spawn(serve_loop(
+            server,
+            Instant::now(),
+            4,
+            BudgetMode::Unlimited,
+            None,
+        ));
+
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut c = cfg(saddr, 10, 1500);
+        c.budget = BudgetMode::Burst {
+            cap_bytes: 2 * 183 + 90,
+        };
+        let out = client_loop(client, c, Instant::now()).await.unwrap();
+
+        let b = &out.meta.budget;
+        assert_eq!(
+            (b.injected_pkts, b.injected_bytes),
+            (2, 2 * 183),
+            "packet-atomic: tam 2 paket, overshoot yok"
+        );
+        assert!(b.refused_pkts > 0, "kalan emisyon denemeleri reddedilmeli");
+        assert!(
+            b.first_refusal_ns > 0,
+            "budget_exhaustion_time kayıtlı olmalı"
+        );
+        let delivered = out
+            .events
+            .iter()
+            .filter(|e| e.delivered_ns.is_some())
+            .count();
+        assert_eq!(
+            delivered, 2,
+            "teslim = enjekte edilen DATA (loopback kayıpsız)"
+        );
+    }
+
+    /// [KAPI-1 W6] İki-fazlı koşu pini: warmup ölçüm-DIŞI kalmalı — events yalnız ölçüm
+    /// mesajları, tx sayaçları t0'da sıfır (warmup byte'ı sızarsa bu test kırılır), gate
+    /// protokolü (ready→go) işler, aynı Sender iki fazda da yaşar (state korunur).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn warmup_and_gate_exclude_warmup_from_measurement() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let saddr = server.local_addr().unwrap();
+        tokio::spawn(serve_loop(
+            server,
+            Instant::now(),
+            4,
+            BudgetMode::Unlimited,
+            None,
+        ));
+
+        let dir = std::env::temp_dir().join(format!("kapi-gate-kama-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gate = dir.join("g1");
+        let g2 = gate.clone();
+        // Harness rolü: ready'yi gör → go yaz (barrier'ın karşı ucu).
+        let harness = tokio::spawn(async move {
+            let ready = format!("{}.ready", g2.display());
+            for _ in 0..2000 {
+                if std::path::Path::new(&ready).exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            std::fs::write(format!("{}.go", g2.display()), b"go").unwrap();
+        });
+
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut c = cfg(saddr, 5, 5000);
+        c.warmup_msgs = 3;
+        c.gate = Some(gate.clone());
+        let out = client_loop(client, c, Instant::now()).await.unwrap();
+        harness.await.unwrap();
+
+        assert_eq!(out.events.len(), 5, "yalnız ölçüm mesajları kayıtta");
+        assert!(
+            out.events.iter().all(|e| e.delivered_ns.is_some()),
+            "temiz yol → 5/5 teslim"
+        );
+        let wire = (HDR_DATA as u64 + 128 + TAG_STUB as u64) * 5;
+        assert_eq!(
+            out.meta.tx.data, wire,
+            "tx.data tam 5 ölçüm-DATA'sı olmalı (warmup 3'ü t0-sıfırlamasıyla dışarıda)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// [KAPI-1 W3] paced workload pini: mesaj i'nin app-offer'ı (sent_ns) plana (i×interval)
+    /// göre damgalanmalı — ne öncesinde (plan ihlali) ne çok sonrasında (sunum kayması, latency'yi
+    /// sahte şişirir). Burst yolunun "dar t0 penceresi" pini ayrı testte aynen duruyor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paced_submission_stamps_app_offer_on_schedule() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let saddr = server.local_addr().unwrap();
+        tokio::spawn(serve_loop(
+            server,
+            Instant::now(),
+            4,
+            BudgetMode::Unlimited,
+            None,
+        ));
+
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut c = cfg(saddr, 4, 3000);
+        c.submit_interval = Duration::from_millis(100);
+        let out = client_loop(client, c, Instant::now()).await.unwrap();
+
+        assert_eq!(out.meta.submit_interval_ns, 100_000_000);
+        assert!(
+            out.events.iter().all(|e| e.delivered_ns.is_some()),
+            "temiz yol → tüm mesajlar teslim"
+        );
+        for (i, e) in out.events.iter().enumerate() {
+            let due = 100_000_000u64 * i as u64;
+            assert!(
+                e.sent_ns >= due,
+                "mesaj {i} planından ÖNCE sunuldu: {} < {due}",
+                e.sent_ns
+            );
+            assert!(
+                e.sent_ns < due + 80_000_000,
+                "mesaj {i} sunumu plandan çok kaydı: {} (due {due})",
+                e.sent_ns
+            );
         }
     }
 
@@ -383,7 +833,13 @@ mod tests {
         // 127.0.0.1 server+client, netem YOK → temiz yol → hepsi teslim + frame doğruluğu.
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let saddr = server.local_addr().unwrap();
-        tokio::spawn(serve_loop(server, Instant::now(), 4));
+        tokio::spawn(serve_loop(
+            server,
+            Instant::now(),
+            4,
+            BudgetMode::Unlimited,
+            None,
+        ));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let out = client_loop(client, cfg(saddr, 10, 5000), Instant::now())
@@ -445,7 +901,13 @@ mod tests {
         // dwell'le saniyelere yayılırdı → completion kama lehine şişerdi (review CRITICAL regresyon guard).
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let saddr = server.local_addr().unwrap();
-        tokio::spawn(serve_loop(server, Instant::now(), 4));
+        tokio::spawn(serve_loop(
+            server,
+            Instant::now(),
+            4,
+            BudgetMode::Unlimited,
+            None,
+        ));
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let out = client_loop(client, cfg(saddr, 200, 5000), Instant::now())
             .await

@@ -1,0 +1,15 @@
+run_id=di2b-300
+policy=leftover
+receiver_events=6
+finalized_blocks=0
+pending_blocks=1
+ledger_path=/home/ryuzaki/Desktop/kama-core/reports/d1-exit/data/dr-cs1-wire/di2b-300-rxledger.csv
+ledger_checksum=b038bdccd2bcc92
+clean_shutdown=true
+cs_probe_rx=4
+cs_echo_tx=4
+cs_echo_tx_bytes=172
+cs_echo_suppressed=0
+cs_dup_deliveries=0
+cs_first_sack_dropped=false
+cs_rxcap_diag=0

@@ -85,9 +85,43 @@ impl TokenBucket {
         self.tokens
     }
 
+    /// Güncel burst kapasitesi (bytes) — SALT-GÖZLEM (teşhis).
+    #[must_use]
+    pub fn burst_cap(&self) -> u64 {
+        self.burst_cap
+    }
+
     /// Güncel pacing rate (bytes/sec) — SALT-GÖZLEM (teşhis).
     #[must_use]
     pub fn rate(&self) -> u64 {
         self.rate_bps
+    }
+
+    /// EK4-A2 (event-loop liveness): `size` byte'ın gönderilebilir olmasına kalan süre (ns).
+    ///
+    /// **SALT-OKUMA — yeni timer DEĞİL.** Mevcut `tokens/rate/refill_rem/burst_cap` durumundan
+    /// `refill()`'in TAM tersini hesaplar (aynı sub-byte fixed-point aritmetiği; ADR-17: float yok):
+    /// `refill` `tokens += (rate·dt + rem) / 1e9` yaptığı için, gereken `dt` en küçük tamsayıdır ki
+    /// `rate·dt + rem ≥ need·1e9`.
+    ///
+    /// * `Some(0)`  — şimdi gönderilebilir.
+    /// * `Some(ns)` — token yenilenmesiyle bu kadar sonra gönderilebilir.
+    /// * `None`     — ASLA gönderilemez (rate 0, ya da `size > burst_cap` ⇒ token hiç yetişemez).
+    ///   Çağıran bunu deadline olarak KULLANMAMALI; ilerleme başka bir olaya bağlıdır.
+    #[must_use]
+    pub fn ns_until_sendable(&self, size: u64) -> Option<u64> {
+        if self.tokens >= size {
+            return Some(0);
+        }
+        if self.rate_bps == 0 || size > self.burst_cap {
+            return None; // token bu boyuta hiçbir zaman yetişmez → zaman-güdümlü ilerleme yok
+        }
+        let need = u128::from(size - self.tokens) * 1_000_000_000u128;
+        let rem = u128::from(self.refill_rem);
+        let deficit = need.saturating_sub(rem);
+        let rate = u128::from(self.rate_bps);
+        // ceil(deficit / rate) — tamsayı, yukarı yuvarlama (erken uyanma yok).
+        let dt = deficit.div_ceil(rate);
+        Some(u64::try_from(dt).unwrap_or(u64::MAX))
     }
 }

@@ -1,0 +1,23 @@
+{
+  "core_placement": "kama-integration is the dependency LEAF \u21d2 no cycle; does NOT make it the runtime owner",
+  "kama_integration_bins": 0,
+  "noise_handshake": "absent (crypto/src/lib.rs = 3 lines)",
+  "product_bins": [
+    "crates/bench"
+  ],
+  "stub_crates": {
+    "admin-server": 3,
+    "ccr-codec": 3,
+    "client-core": 3,
+    "crypto": 3,
+    "discovery": 3,
+    "hub-server": 3,
+    "ra-ca": 3
+  },
+  "udp_socket_owners": [
+    "crates/bench/src/kama.rs",
+    "adaptive-transport/src/udp_runner.rs (bench runner, gated)",
+    "2 examples"
+  ],
+  "verdict": "NO product runtime consumer exists"
+}

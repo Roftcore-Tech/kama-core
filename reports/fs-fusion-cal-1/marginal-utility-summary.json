@@ -1,0 +1,36 @@
+{
+  "coverage_gap": "(tail-capable ARQ, r>0) \u2014 the true fusion cell \u2014 is absent from every authoritative dataset; marginal FEC utility ON TOP OF tail-capable ARQ is therefore UNMEASURED",
+  "framing": "ARQ is ACTIVE IN EVERY ARM. Measured quantity = MARGINAL UTILITY of proactive redundancy (r) on top of always-on ARQ. 'ARQ-vs-FEC' rival framing is forbidden and is NOT used.",
+  "invalid_contrast_explicitly_excluded": "(tail,r0) vs (frozen,r2) \u2014 changes BOTH axes; this was the flawed basis of the earlier NO-GO and is never computed here",
+  "rows": 110,
+  "valid_single_axis_contrasts": [
+    "marginal_proactive_fec_r0_to_r2",
+    "marginal_more_redundancy_r2_to_r4",
+    "marginal_tail_capability_at_r0"
+  ],
+  "verdicts": {
+    "FS1_IN_PROCESS|marginal_more_redundancy_r2_to_r4": {
+      "INDETERMINATE": 1,
+      "NO_COMPLETION_CHANGE": 11
+    },
+    "FS1_IN_PROCESS|marginal_proactive_fec_r0_to_r2": {
+      "INDETERMINATE": 6,
+      "NO_COMPLETION_CHANGE": 6
+    },
+    "PRODUCT_NETNS|marginal_tail_capability_at_r0": {
+      "INDETERMINATE": 23,
+      "NO_COMPLETION_CHANGE": 3,
+      "POSITIVE_MARGINAL_UTILITY": 18
+    },
+    "R2A_IN_PROCESS|marginal_proactive_fec_r0_to_r2": {
+      "INDETERMINATE": 1,
+      "NO_COMPLETION_CHANGE": 5,
+      "POSITIVE_MARGINAL_UTILITY": 15
+    },
+    "R2A_IN_PROCESS|marginal_tail_capability_at_r0": {
+      "INDETERMINATE": 2,
+      "NO_COMPLETION_CHANGE": 2,
+      "POSITIVE_MARGINAL_UTILITY": 17
+    }
+  }
+}

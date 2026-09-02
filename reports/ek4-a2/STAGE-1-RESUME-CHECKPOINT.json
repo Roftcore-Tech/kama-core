@@ -1,0 +1,99 @@
+{
+  "artifact": "STAGE-1-RESUME-CHECKPOINT",
+  "stage": "ASAMA 1 (EK4-A2)",
+  "status": "IN PROGRESS - root cause CONFIRMED and now EXPOSED by the new API; acceptance NOT met",
+  "startup_pacing_default": "OFF (not restored - Stage-1 acceptance not met)",
+  "head": "4aa11a93af44b2b9e884461e8db3d1ed576c8b4f",
+  "commit": false,
+  "push": false,
+  "pr": false,
+  "calibration_result_bearing_runs": 0,
+  "s1_2_inventory": {
+    "done": true,
+    "hashed_before_code_change": true,
+    "md": "d59212b2a40ebb1281b16c5eaa35d10541f2a83885e15f205c941719ae909f01",
+    "json": "18dffa487e6cb3abfca69f4a2e7b6e059c6ca83df53b2e37775d2177685612fd",
+    "root_cause": "next_wakeup_ns() was cfg(experimental-cold-start) and returned min(cs_wakeup) - 1 of 6 sources, absent from the default build. In EK4-A2 the unit had been declared lost (moved from loss.inflight to pending_lost), so next_time_loss_deadline_ns returned None, BootstrapPto was never pushed, cs_wakeup was empty => None while work outstanding."
+  },
+  "s1_4_fix_implemented": {
+    "pacer.rs": "read-only ns_until_sendable(size): exact integer inverse of refill(), same sub-byte fixed point; None when tokens can never reach size",
+    "tail_recovery.rs": "read-only armed_at_ns() accessor",
+    "sender.rs": "next_wakeup_ns() UN-GATED (default build) = earliest across existing authoritative sources; split into next_timer_deadline_ns() (sources 1-5 + LostRec.deadline_ns) and pending_work_ready_ns() (source 6, restricted to unconditionally-drained classes tx_queue/pending_fec)",
+    "no_new_timer": true,
+    "no_second_truth_source": true,
+    "unchanged": [
+      "PTO backoff",
+      "retry counts",
+      "startup pacing formula",
+      "FEC/tail/bootstrap behaviour"
+    ],
+    "c2_scope": "kept at cs_wakeup only (extending it was my error, reverted)"
+  },
+  "my_own_defects_found_and_fixed": [
+    {
+      "id": 1,
+      "defect": "source 6 initially included pending_lost, whose emission is state-gated (plan_arq_retransmits only in RecoverArq) => progress-free wakeups = the busy-loop \u00a71.1 forbids",
+      "fix": "report pending_lost via its own authoritative LostRec.deadline_ns"
+    },
+    {
+      "id": 2,
+      "defect": "test helper asserted wk >= t; an overdue deadline is legitimate ('due now')",
+      "fix": "advance to max(wk, now) + eps"
+    }
+  ],
+  "test_state": {
+    "default": {
+      "passed": 244,
+      "failed": 0
+    },
+    "experimental-fec-budget": {
+      "passed": 291,
+      "failed": 0
+    },
+    "diag-sched-telemetry": {
+      "passed": 244,
+      "failed": 0
+    },
+    "experimental-cold-start": {
+      "passed": 158,
+      "failed": 1
+    },
+    "all-features": {
+      "passed": 198,
+      "failed": 1
+    },
+    "clippy_adaptive_transport_all_targets": "clean",
+    "ek4_family_now_passing": [
+      "f2b_di1",
+      "f2b_di1a",
+      "f2b_di2"
+    ]
+  },
+  "open_item": {
+    "test": "dr_cs1_acceptance::f2b_di1c_rearmed_pto_lifecycle_exposure",
+    "symptom": "wakeup-driven driver (no periodic tick, empty batches) follows up to 64 successive next_wakeup_ns() deadlines and the retransmit of unit 1 never fires",
+    "reporting_gap_closed": true,
+    "progress_gap_open": true,
+    "leading_hypothesis": "pending_lost exposes LostRec.deadline_ns, but plan_arq_retransmits only runs when state == RecoverArq (or on the K_ARQ_SHARE tick), so waking exactly at that deadline yields no emission and the deadline is re-reported unchanged - a REAL liveness gap, precisely what EK4-A2 exists to catch",
+    "compliant_fix_direction": "make the reported deadline reflect the instant the item can actually be PLANNED (derive from the same state the planner gates on); do NOT add a timer, relax the planner's state gate, or reintroduce a periodic tick"
+  },
+  "not_yet_started_in_stage_1": [
+    "\u00a71.3 standalone reference-runtime driver artifact",
+    "\u00a71.5 full battery",
+    "\u00a71.6 default restoration"
+  ],
+  "defaults": {
+    "startup_pacing": "OFF",
+    "bootstrap_rtt": "OFF",
+    "tail_recovery": "OFF",
+    "fec_adaptive_policy": "OFF"
+  },
+  "decisions_made_do_not_reask": [
+    "next_wakeup_ns() is the general event-loop deadline API and lives in the default build",
+    "it aggregates the EARLIEST of existing authoritative sources; never invents a timer",
+    "C2 stays scoped to cs_wakeup",
+    "immediate readiness is Some(now); a driver that drains then re-queries must converge",
+    "source 6 covers only unconditionally-drained classes; state-gated classes report via their own deadlines"
+  ],
+  "stages_2_to_13": "not started; all gated behind ASAMA 1 acceptance"
+}

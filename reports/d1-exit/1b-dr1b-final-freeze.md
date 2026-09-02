@@ -1,0 +1,27 @@
+# FB — DR-1b FINAL FREEZE [production-default-LeftoverOnly; bağlayıcı-kayıt]
+
+> **BAĞLAYICI-ÇERÇEVE (zorunlu-başlık):** Bu deney ARQ ile FEC'i KARŞILAŞTIRMAZ. ARQ bütün-kollarda
+> AKTİFTİR (aynı-impl/ACK-NACK/retransmit-zamanlayıcı/retry-semantiği); değişen-tek-değişken ARQ-substrate'ı
+> ÜZERİNE eklenen PROAKTİF-FEC-repair-miktarıdır (r0=ARQ+0, r1=ARQ+1, r2=ARQ+2, r4=ARQ+4). Ölçülen =
+> **ARQ-substrate üzerine PROAKTİF-FEC'in MARJİNAL-FAYDASI** (marginal-FEC-utility-over-ARQ). FEC hiçbir-
+> kolda ARQ'nun-yerine-geçmez; FEC'in-kapatamadığı-residual-deficit her-zaman-ARQ'yla-tamamlanır.
+
+
+> Phase-A (FA-graceful-shutdown) offered≈C SIGTERM-race'i-kapattı: rx FINISH-marker'la-temiz-çıkar,
+> done-marker+checksum-yazar (clean_shutdown=true). Önceki-eşitlik-hükmü (netem-AH: outcome-policy-
+> bağımsız) FA-marker'lı-rerun'da-KORUNDU: **offered_c 32/32-run clean_shutdown=true done-marker** (SIGTERM-race-KAPANDI; complete-ledger; oracle-r0≡r4-dl_op=1.0 → çelişki-YOK, eşitlik-teyit).
+
+## Bağlayıcı-kayıtlar (freeze)
+1. **Production/default = `BudgetPolicy::LeftoverOnly`** (DEĞİŞMEDİ).
+2. F15/P15 = yalnız `experimental-fec-budget`-feature-arkası; default-DEĞİL; product/admin-activation-YOK.
+3. Deterministic-F15-advantage = **model-fidelity-diagnostic** (production-policy-selection-evidence-DEĞİL).
+4. Real-UDP/netem-outcome = test-edilen-profillerde **policy-independent** (Leftover=P15=F15 dl_op-özdeş).
+5. F15-mekanizma-SAFE-ama-outcome-benefit-UNPROVEN (regresyon-yok; harm-yok).
+
+## REOPEN-condition (exact; hepsi-gerçek-stack'te-kanıtlanmalı)
+```
+requested_r > 0  ∧  enqueued_r > 0  ∧  emitted_r/requested_r-DÜŞÜK
+∧ düşük-emission GERÇEK decode/deadline/retransmission-KAYBINA-yol-açıyor
+∧ ProtectedShare/FloorCap aynı-trace/profil-ailesinde outcome'u-İYİLEŞTİRİYOR
+```
+Yalnız-düşük-realization / yalnız-token-denial / yalnız-deterministic-model YETERLİ-DEĞİL.

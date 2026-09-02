@@ -1,0 +1,362 @@
+{
+  "ledger": "TRANSPORT-BASELINE-CLOSURE-EXECUTION-STATE",
+  "branch": "transport-baseline-closure",
+  "main_head": "3e6dfa30",
+  "main_is_ancestor": true,
+  "main_advanced": true,
+  "ff_only_possible_when_m1_passes": true,
+  "calibration_result_bearing_runs": 0,
+  "remote_push": false,
+  "remote_pr": false,
+  "commits": [
+    "68165aca fix(transport): keep startup pacing default-OFF pending FEC-parity starvation",
+    "56f196c5 ci: add semantic feature matrix with visible test counts",
+    "412ff8d8 test(transport): track the restored startup-pacing default in FS-CAL pins",
+    "b7b15ddc fix(transport): report wakeups the scheduler can actually act on, and restore startup pacing",
+    "ee5075d3 docs(transport): add canonical execution-state ledger",
+    "a4e9b33b docs(transport): record baseline contracts, panels and supersessions",
+    "41838ab9 test(transport): validate authenticated bootstrap RTT path",
+    "29dc1a10 feat(transport): add bounded bootstrap RTT sender and receiver core",
+    "d76d36aa fix(transport): make wakeup deadlines liveness-complete",
+    "0b9f6f36 test(transport): expose default-build and semantic feature configurations"
+  ],
+  "milestones": {
+    "M1": "PASS merged",
+    "M2a": "PASS merged",
+    "M2": "IN PROGRESS",
+    "M3": "not started",
+    "M4": "not started",
+    "M5": "not started",
+    "M6": "not started",
+    "M7": "not started"
+  },
+  "merged_to_main": [
+    "M1 baseline liveness (ff-only, local)"
+  ],
+  "ek4_a2": {
+    "status": "CLOSED",
+    "checkpoint_hypothesis": "REFUTED - on_event_core routes TimerFired to on_timer (sender.rs:1506) and detect_time_losses is already invoked there",
+    "real_root_cause": "source 3 (dup_queue): next_wakeup_ns reported a scheduled geometric copy's due_ns verbatim; once passed but pacer-unaffordable, drain_due_duplicates leaves it queued and due_ns never advances, so the same overdue instant was reported forever",
+    "measured": {
+      "cs": 79096246294,
+      "arq": 79096246294,
+      "tail": null,
+      "pend": null,
+      "dup": 61209677418,
+      "now": 68300000000
+    },
+    "fix": "dup source reports due_ns when still future, else the instant the pacer can afford the unit; both from existing authoritative state",
+    "not_done": [
+      "new timer",
+      "second truth source",
+      "periodic tick",
+      "ARQ share change",
+      "PTO backoff change",
+      "retry count change",
+      "startup pacing formula change"
+    ],
+    "regressions_sealed": "crates/adaptive-transport/tests/ek4_a2_liveness.rs, 7 tests green"
+  },
+  "ci_semantic_matrix": {
+    "status": "DONE",
+    "job": "semantic-matrix",
+    "configurations": [
+      "default workspace",
+      "all-features",
+      "experimental-cold-start",
+      "experimental-fec-budget",
+      "diagnostic"
+    ],
+    "per_config_visible": [
+      "test binaries compiled",
+      "tests run",
+      "tests ignored",
+      "tests filtered out",
+      "exit status"
+    ],
+    "fails_if": "a configuration compiled no test binary",
+    "extra_job": "fs-cal-pins in the DEFAULT build",
+    "product_wire_behaviour_changed": false
+  },
+  "blocking_gate": {
+    "status": "RESOLVED",
+    "see": "m1_blockers_resolved"
+  },
+  "next_step_exact": {
+    "goal": "root-cause why the startup pacing floor starves plan_fec_parity",
+    "established_facts": [
+      "plan_fec_parity runs unconditionally each turn after DATA/recovery",
+      "it drains pending_fec only while pacer.try_send(p.size) succeeds",
+      "this scenario feeds NO AppData - only Timer::Pto - so parity is the only pending work and cannot be starved by DATA competition",
+      "the floor RAISES send_rate, which should increase tokens, so the mechanism is counter-intuitive and must be measured"
+    ],
+    "method": "instrument pacer.tokens()/rate()/burst_cap() per tick with the floor ON vs OFF and identify which blocks try_send",
+    "prime_suspect": "set_burst_cap clamping (tokens = min(tokens, burst_cap)) interacting with the floor-driven rate",
+    "forbidden_fixes": [
+      "disabling FEC",
+      "relaxing the parity path",
+      "changing the floor formula",
+      "adding a tick"
+    ]
+  },
+  "test_matrix": {
+    "scope": "CLEAN WORKTREE, committed content only",
+    "no_run_gate": "exit 0",
+    "workspace_default": {
+      "passed": 472,
+      "failed": 0
+    },
+    "workspace_all_features": {
+      "passed": 826,
+      "failed": 0
+    },
+    "adaptive_transport": {
+      "experimental-cold-start": 258,
+      "experimental-fec-budget": 280,
+      "diag-sched-telemetry": 233
+    },
+    "fuzzy_e2e": {
+      "passed": 5,
+      "failed": 0,
+      "fec_r2": "planned=4 emitted=4"
+    },
+    "fs_fec_arms": {
+      "passed": 4,
+      "failed": 0
+    },
+    "ek4_a2_liveness": {
+      "default": 5,
+      "experimental-cold-start": 7
+    },
+    "budget_equivalence_pin": {
+      "passed": 5,
+      "failed": 0
+    },
+    "startup_floor_seals": {
+      "passed": 5,
+      "failed": 0
+    },
+    "inv_rate_1_seals": {
+      "passed": 2,
+      "failed": 0
+    },
+    "clippy_scopes": "clean x4",
+    "note": "lower than the earlier dirty-tree 521/874 because fs_cal2_pins.rs and the panel harness are deferred; this is the honest committed-content baseline"
+  },
+  "defaults": {
+    "startup_pacing": "ON",
+    "bootstrap_rtt": "OFF",
+    "tail_recovery": "OFF",
+    "fec_adaptive_policy": "OFF"
+  },
+  "invariants_not_to_change": [
+    "arq.rs deadline-as-ordering-key",
+    "C2 scoped to cs_wakeup",
+    "no new timer / second truth source",
+    "no periodic safety tick",
+    "PTO backoff and retry counts",
+    "startup pacing formula",
+    "FEC drain and scheduler call order",
+    "per-turn and per-block DATA-before-PARITY",
+    "Karn exclusion",
+    "no synthetic RTT",
+    "explicit FEC_R2 must stay runtime-executable"
+  ],
+  "decisions_do_not_reask": [
+    "next_wakeup_ns() is the general event-loop deadline API, in the default build, aggregating the EARLIEST of existing authoritative sources; never invents a timer",
+    "C2 stays scoped to cs_wakeup",
+    "immediate readiness is Some(now); a driver that drains then re-queries must converge",
+    "a source whose emission is token-gated must report the instant the scheduler can act, not a stale eligibility timestamp",
+    "LostRec.deadline_ns is an ordering key and is never a wakeup source",
+    "a timer wakeup means the event loop delivers Timer::Pto at that instant - timer-driven, not a periodic tick",
+    "default-tracking pins follow whatever the default is; their assertions never weaken"
+  ],
+  "user_wip_manifest_correction": {
+    "wrongly_classified_as_user_wip": [
+      "reports/d1-exit/data/cold-start/timeline-65B.csv",
+      "reports/d1-exit/data/cold-start/timeline-300B.csv",
+      "reports/d1-exit/data/cold-start/timeline-1200B.csv",
+      "reports/d1-exit/data/cold-start/summary.csv"
+    ],
+    "actual_nature": "test-generated evidence artifacts",
+    "writer": "crates/adaptive-transport/tests/cold_start_liveness.rs::cold_start_timeline_evidence_artifact (:132-174) writes them into the repo tree via std::fs::write on every run",
+    "consequence": "any workspace test run rewrites them; a cargo test --all in this turn did so",
+    "recoverable": false,
+    "hand_authored_content_lost": false,
+    "why_no_loss": "the earlier modified state was itself drift from a previous run, present in this session's first git status before any of my changes; the files now match HEAD exactly",
+    "still_excluded_from_commits": true,
+    "genuine_user_wip": [
+      "docs/design/*",
+      "docs/tasks/*",
+      "reports/d1-exit/data/*.log",
+      "reports/d1-exit/data/netem-a2/console.txt",
+      "crates/adaptive-transport/src/fate_estimator.rs",
+      "crates/kama-integration/examples/fs_cal2_runner.rs",
+      "crates/kama-integration/tests/common/fs_cal2_*.rs",
+      "reports/fs-cal-2/",
+      "scripts/fs-cal-2/"
+    ]
+  },
+  "m1_blockers_resolved": [
+    {
+      "n": 1,
+      "blocker": "EK4-A2 event-loop liveness",
+      "resolution": "fixed (b7b15ddc); stale dup_queue due_ns replaced by the instant the scheduler can act; 7 regressions sealed"
+    },
+    {
+      "n": 2,
+      "blocker": "FEC-ordering trajectory constant",
+      "resolution": "formal supersession; per-turn and per-block DATA-before-PARITY hold with 0 violations"
+    },
+    {
+      "n": 3,
+      "blocker": "apparent FEC parity starvation",
+      "resolution": "WITHDRAWN - never a product defect; both arms emit 4/4 parity, floor ON 25 ms earlier; harness counted only the Timer::Pto return and discarded the ACK return; corrigendum 3bfd4a9d"
+    },
+    {
+      "n": 4,
+      "blocker": "D2/R2 spurious-retransmit assertion",
+      "resolution": "supersession 7718b94f; floor removes the late-parity leak (spurious 0); original preserved verbatim and re-scoped; companion test seals the default"
+    }
+  ],
+  "clean_checkout_defect": {
+    "error": "E0583 file not found for module `fate_estimator` at crates/adaptive-transport/src/lib.rs:34",
+    "cause": "commit 29dc1a10 committed lib.rs carrying a PRE-EXISTING uncommitted `pub mod fate_estimator;` line while fate_estimator.rs stayed untracked (excluded as user WIP)",
+    "my_error": true,
+    "detected_by": "the mandated clean-worktree verification, but AFTER the merge had been announced",
+    "main_restored_to": "bb61c2da via git branch -f (pointer move only; no reset --hard, no working tree or user file touched)",
+    "branch_intact_at": "48ec9d4d",
+    "untracked_files_committed_code_needs": [
+      {
+        "file": "crates/adaptive-transport/src/fate_estimator.rs",
+        "needed_by": "lib.rs:34 (product library)"
+      },
+      {
+        "file": "crates/kama-integration/tests/common/fs_cal2_schema.rs",
+        "needed_by": "fs_cal2_pins.rs"
+      },
+      {
+        "file": "crates/kama-integration/tests/common/fs_cal2_spine.rs",
+        "needed_by": "fs_cal2_schema.rs"
+      },
+      {
+        "file": "crates/kama-integration/tests/common/fs_cal2_gen.rs",
+        "needed_by": "fs_cal2_spine.rs, dr_cs3_panel.rs"
+      },
+      {
+        "file": "crates/kama-integration/tests/common/fs_cal2_policy.rs",
+        "needed_by": "fs_cal2_spine.rs"
+      },
+      {
+        "file": "crates/kama-integration/examples/fs_cal2_runner.rs",
+        "needed_by": "reports/tooling"
+      },
+      {
+        "file": "crates/kama-integration/tests/common/fs_exec.rs",
+        "needed_by": "fs_cal2_gen.rs (verify)"
+      }
+    ],
+    "green_results_still_valid_for": "the working tree; they were never a clean-checkout claim",
+    "next_steps": [
+      "enumerate the full untracked closure via cargo build --all in a fresh worktree",
+      "decide per file from the code: fate_estimator.rs is required product source; FS-CAL harness files are required by committed tests",
+      "commit them single-purpose, or revert the lib.rs hunk if fate_estimator is not meant to ship yet",
+      "RE-VERIFY cargo build --all and cargo test --all in a FRESH worktree BEFORE merging - the clean check must GATE the merge, not follow it"
+    ],
+    "main_bb61c2da_compiled_before_and_now": true,
+    "claim_main_was_broken": "NOT MADE - main@bb61c2da builds clean, re-verified exit 0",
+    "what_was_broken": "the commit closure of transport-baseline-closure after 29dc1a10",
+    "masking": "untracked files in the dirty working tree masked the missing commits, so in-tree gates passed while a clean checkout could not build",
+    "merge_reverted": "branch pointer restored with git branch -f (pointer move only)",
+    "repair_commit": "15a82531",
+    "repair_decisions": [
+      {
+        "item": "pub mod fate_estimator;",
+        "stage": "A\u015eAMA 6 / M3",
+        "decision": "hunk reverted (committed early); file untouched on disk"
+      },
+      {
+        "item": "fs_cal2_pins.rs",
+        "stage": "FS-CAL-2 YETK\u0130-1",
+        "decision": "untracked again; whole fs_cal2_* harness is untracked; only committed user of fate_estimator"
+      },
+      {
+        "item": "dr_cs3_panel.rs, dr_cs3_panel_runner.rs",
+        "stage": "M2",
+        "decision": "untracked again; need fs_cal2_gen.rs, land in M2 with it"
+      },
+      {
+        "item": "fs-cal-pins CI job",
+        "stage": "-",
+        "decision": "removed with the suite it invoked"
+      }
+    ],
+    "nothing_lost_from_disk": "git rm --cached restores the prior untracked state",
+    "clean_worktree_no_run_gate": "exit 0",
+    "binding_process_rule": "the clean-worktree gate must PRECEDE the merge"
+  },
+  "rate_ramp_coverage_correction": {
+    "earlier_claim": "deferring fs_cal2_pins.rs removed the startup-floor regressions from M1",
+    "status": "WRONG - caused by a bad test filter",
+    "reality": "the full active-floor contract is in the adaptive-transport lib under startup_floor_* / inv_rate_1_* names and all of it passes",
+    "actually_deferred": "only the panel-level seeded replay rate_lock_seeds_escape_the_fixed_point"
+  },
+  "post_test_cleanliness_caveat": {
+    "observed": "reports/d1-exit/data/cold-start/timeline-*.csv modified after a test run in the CLEAN worktree",
+    "cause": "crates/adaptive-transport/tests/cold_start_liveness.rs writes evidence artifacts into the repo tree via std::fs::write",
+    "classification": "repo-hygiene issue, not a product defect and not an unexplained change"
+  },
+  "post_merge_verification": {
+    "worktree": "second clean worktree from merged main",
+    "no_run": "exit 0",
+    "workspace_default": {
+      "passed": 472,
+      "failed": 0
+    },
+    "workspace_all_features": {
+      "passed": 826,
+      "failed": 0
+    },
+    "fuzzy_e2e": {
+      "passed": 5,
+      "failed": 0
+    },
+    "ek4_a2_liveness": {
+      "passed": 5,
+      "failed": 0
+    },
+    "verdict_withheld_until_exit_codes_read": true
+  },
+  "m2_progress": {
+    "step0_closure": "DONE e39b587e gate 12/12",
+    "step1_c2_contract": "DONE f742afd9; committed bytes match 0abbb114/353311bf; committed before harness change",
+    "step1b_v1_bound": "DONE f742afd9",
+    "step2_v2_channel": "DONE 595814ba",
+    "step3_structural_tests": "DONE - 8 contract clauses + 4 \u00a72 items (2.1 cardinality, 2.2 tie-break, 2.3 inventory, 2.4 default cfg)",
+    "step4_gate": "NOT RUN since V2 change",
+    "step5_panels": "NOT STARTED",
+    "v2_semantics_clarification": "each real packet advances its direction chain exactly once; four echoes = four draws is CORRECT; the V1 defect was Echo on a treatment-only stream separated from ACK; post-treatment divergence is real packet-domain physics, only the pre-treatment prefix must match",
+    "pairing_language": "NOT a paired comparison on the same trace; correct phrasing is shared seed + bit-identical pre-treatment prefix + real packet-domain divergence. Gates are absolute so this is not blocking.",
+    "rep14_pre_analysis": {
+      "source": "frozen preflight--P0-tail-OFF--rep14.json, inspection only",
+      "ack_batches": 0,
+      "first_ack_ns": null,
+      "delivered_src_at_epoch": 0,
+      "acks_before_each_echo": 0,
+      "branch": "ZERO - shared reverse chain leaves echo draw positions at 0,1,2,3, same as a private chain",
+      "v2_effect_comes_only_from": [
+        "the forward chain (probes now share DATA chain)",
+        "the reverse model itself: in the PRIMARY panel reverse is lossless for both ACK and Echo, so the V1 failure mode (4/4 echoes reverse-dropped) is structurally impossible there"
+      ],
+      "primary_panel_rep14_depends_on": "whether at least one Probe survives the forward chain",
+      "inference_sharpened": "if rep14 recovers in primary, that is largely attributable to the reverse model, NOT proof the mechanism handles reverse loss; a bidirectional censored outcome stays NETWORK-CENSORED in the denominator",
+      "changes_no_gate": true
+    }
+  },
+  "gate_negative_controls": {
+    "compile": "exit 1, step 1 FAIL (cargo error not masked)",
+    "failing_test": "pending",
+    "dirty_worktree": "pending"
+  },
+  "gate_cost_note": "gate.sh ~355 s because structural tests drive real panels; cost item, not a defect"
+}

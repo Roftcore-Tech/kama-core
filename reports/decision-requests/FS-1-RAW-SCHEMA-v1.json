@@ -1,0 +1,39 @@
+{
+  "artifact": "FS-1-RAW-SCHEMA-v1",
+  "note": "Result-bearing attempt raw-record schema (S5-A; frozen). Her attempt bu alanları kaydeder. append-only; immutable; checksummed. S5'te HİÇBİR raw-record ÜRETİLMEZ (0/240).",
+  "schema_version": 1,
+  "field_groups": {
+    "identity": [
+      "run_id", "attempt_index", "pairing_group_id", "arm", "base_cell_id", "repetition_index"
+    ],
+    "freeze_provenance": [
+      "freeze_lock_sha256", "prereg_sha256", "final_manifest_sha256", "coverage_sha256",
+      "analysis_spec_sha256", "oracle_map_sha256", "execution_binary_sha256", "execution_source_commit",
+      "cargo_lock_sha256", "toolchain_identity"
+    ],
+    "configuration": [
+      "typed_manifest_row", "base_cell_semantics_hash", "run_execution_semantics_hash",
+      "resolved_behavior_semantics_hash", "configured_schedule_hash"
+    ],
+    "trace": [
+      "configured_forward_hash", "configured_reverse_hash", "observed_forward_event_hash",
+      "observed_reverse_event_hash", "initial_source_decisions", "intervention_decisions",
+      "retransmission_decisions", "actual_forward_event_count", "actual_reverse_event_count"
+    ],
+    "timing": [
+      "t_first_source_offer", "t_final_source_wire_complete", "t_redundancy_lifecycle",
+      "t_repair_usable", "t_arq_lifecycle", "t_full_workload_complete", "deadline_ms",
+      "observation_horizon_ms", "censor_time_ns"
+    ],
+    "outcome": [
+      "validity_class", "completion_or_censoring", "deadline_hit", "delivered_fragments",
+      "delivered_bytes", "reassembly_equal", "completion_cause", "remaining_fragments", "tail_status"
+    ],
+    "cost": [
+      "base_source_bytes", "proactive_intervention_bytes", "arq_retransmit_bytes", "control_bytes",
+      "total_outcome_bytes", "spurious_retransmissions"
+    ]
+  },
+  "validity_class_domain": ["INVALID", "VALID_COMPLETE", "VALID_CENSORED"],
+  "result_bearing_note": "S5 firewall: no raw-record populated; all outcome fields null pre-execution; 0 run_ids spent."
+}

@@ -1,0 +1,6 @@
+git_commit=a6d199b
+dirty=10
+kernel=7.0.12-arch1-1
+tc=tc utility, iproute2-7.0.0, libbpf 1.7.0
+netns=parent:net:[4026532871] child:net:[4026533182]
+acceptance_rtt100_min_ms=100

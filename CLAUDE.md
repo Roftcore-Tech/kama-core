@@ -1,18 +1,18 @@
-# SafeRoom Core — CLAUDE.md
+# Kama Core — CLAUDE.md
 
 > Bu dosya Claude Code'un kalıcı proje bağlamıdır. Kod yazmadan önce OKU. Otorite belgeler `docs/specs/` altında; çelişkide **spec kazanır**.
 
 ## 1. Proje nedir
 
-SafeRoom = hostile ağlar (yüksek paket kaybı, düşük bant, DPI/throttle, EW jamming) için federe, egemen-IP güvenli haberleşme platformu. Hedef müşteri: Türk savunma sanayii (ASELSAN kanal-partner; Baykar UAV, JÖH/PÖH, AFAD son-kullanıcı). Konum: "tactical resilient comms layer" (Signal'le yarışmaz; onun düştüğü yerde ayakta kalır).
+Kama = hostile ağlar (yüksek paket kaybı, düşük bant, DPI/throttle, EW jamming) için federe, egemen-IP güvenli haberleşme platformu. Hedef müşteri: Türk savunma sanayii (ASELSAN kanal-partner; Baykar UAV, JÖH/PÖH, AFAD son-kullanıcı). Konum: "tactical resilient comms layer" (Signal'le yarışmaz; onun düştüğü yerde ayakta kalır).
 
-## 2. Bu repo (saferoom-core) kapsamı — SOLO (Abkarada)
+## 2. Bu repo (kama-core) kapsamı — SOLO (Abkarada)
 
 Rust workspace (ADR-12). 8 crate:
 ```
 crypto · ccr-codec · adaptive-transport · hub-server · client-core · ra-ca · discovery · admin-server
 ```
-**Bu repoda medya YOK.** Real-time medya (WebRTC fork, SRTP, Lyra) ayrı repo `saferoom-media`'da (Resul+Hasan). İki transport zıt taban: core = recovery-obsesif ("veri ULAŞSIN"); media = latency-obsesif ("geç paket çöp"). Buluşma noktası tek: signaling seam (bkz. `docs/specs/signaling-seam-v0.md`), entegrasyon en sonda.
+**Bu repoda medya YOK.** Real-time medya (WebRTC fork, SRTP, Lyra) ayrı repo `kama-media`'da (Resul+Hasan). İki transport zıt taban: core = recovery-obsesif ("veri ULAŞSIN"); media = latency-obsesif ("geç paket çöp"). Buluşma noktası tek: signaling seam (bkz. `docs/specs/signaling-seam-v0.md`), entegrasyon en sonda.
 
 ## 3. Otorite belgeler (donmuş spec'ler — `docs/specs/`)
 
@@ -120,7 +120,7 @@ Precise engineering. Tüm iddialar lab-verifiable. Abartı yok. Türkçe yorum/d
 PARSER-02  alloc-before-check OOM → bounds-check before alloc, take(MAX 4096).
 PARSER-03  time overflow → checked_sub, not_after upper bound year 2100.
 KRITIK-02  identity_hash algorithm-prefix → PQC ikinci algoritma EKLENMEDEN önce (şimdi Ed25519 tek, güvenli).
-saferoom-contract  transport quinn/custom kararı (§4.4) + signaling API stabilleşince yazılır.
+kama-contract  transport quinn/custom kararı (§4.4) + signaling API stabilleşince yazılır.
 BENCH-01   blackout survival İKİLİ metriği (oturum N-sn kesintiyi sağ atlattı mı) — ADIM-3 ÖNCESİ.
            Şimdi p6_blackout completion PROXY (idle 300s sonrası gerçek recovery ölçülüyor, prematüre
            ölüm değil). Ama §4.4 Tier-2 kazanma kriteri "QUIC handshake kurar, blackout sonrası session

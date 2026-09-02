@@ -1,0 +1,4 @@
+cell_id,n_pairs,r0_complete,r2_complete,r0_wilson95,r2_wilson95,delta_completion_point,delta_ci_low,delta_ci_high,discordant_r2_only,discordant_r0_only,mcnemar_exact_p,p_bootstrap_r2_preferred,label_boundary_flag,preferred_action,r0_rmst_ms,r2_rmst_ms,mean_r0_wire,mean_r2_wire
+FX-GE20L10-RTT50,5,5/5,5/5,[0.5655,1.0000],[0.5655,1.0000],0.0,0.0,0.0,0,0,1.0,0.0,False,R0_PREFERRED,103.104,52.926,1070.6,1252.4
+FX-IID30-RTT50,5,4/5,4/5,[0.3755,0.9638],[0.3755,0.9638],0.0,0.0,0.0,0,0,1.0,0.0,False,R0_PREFERRED,409.79,186.43,888.8,929.2
+FX-TAIL2-RTT50,5,5/5,5/5,[0.5655,1.0000],[0.5655,1.0000],0.0,0.0,0.0,0,0,1.0,0.0,False,R0_PREFERRED,630.59,33.08,1010.0,1010.0

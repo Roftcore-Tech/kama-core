@@ -1,0 +1,23 @@
+{"t_ns": 279354240772149, "t_unix_ns": 1787499315066115419, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"t_ns": 279356634945776, "t_unix_ns": 1787499317460295038, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"t_ns": 279357302794766, "t_unix_ns": 1787499318128139615, "dir": "out", "ip_len": 59, "proto": 17, "sport": 4433, "dport": 58060}
+{"t_ns": 279359054695605, "t_unix_ns": 1787499319880040883, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"t_ns": 279359188367501, "t_unix_ns": 1787499320013710371, "dir": "out", "ip_len": 59, "proto": 17, "sport": 4433, "dport": 58060}
+{"t_ns": 279361473758650, "t_unix_ns": 1787499322299101364, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"t_ns": 279361692230075, "t_unix_ns": 1787499322517574902, "dir": "out", "ip_len": 63, "proto": 17, "sport": 4433, "dport": 58060}
+{"t_ns": 279363893288704, "t_unix_ns": 1787499324718632372, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"t_ns": 279366312277719, "t_unix_ns": 1787499327137623568, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"t_ns": 279366419701890, "t_unix_ns": 1787499327245044129, "dir": "out", "ip_len": 63, "proto": 17, "sport": 4433, "dport": 58060}
+{"t_ns": 279368731601480, "t_unix_ns": 1787499329556944109, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"t_ns": 279370867696845, "t_unix_ns": 1787499331693041657, "dir": "out", "ip_len": 67, "proto": 17, "sport": 4433, "dport": 58060}
+{"t_ns": 279370867850654, "t_unix_ns": 1787499331693192442, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"t_ns": 279372926255196, "t_unix_ns": 1787499333751601635, "dir": "out", "ip_len": 67, "proto": 17, "sport": 4433, "dport": 58060}
+{"t_ns": 279374240904823, "t_unix_ns": 1787499335066249020, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"t_ns": 279379240522389, "t_unix_ns": 1787499340065865407, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"t_ns": 279379393318953, "t_unix_ns": 1787499340218664409, "dir": "out", "ip_len": 67, "proto": 17, "sport": 4433, "dport": 58060}
+{"t_ns": 279384240899625, "t_unix_ns": 1787499345066242573, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"t_ns": 279385168725205, "t_unix_ns": 1787499345994067554, "dir": "out", "ip_len": 67, "proto": 17, "sport": 4433, "dport": 58060}
+{"t_ns": 279389241170151, "t_unix_ns": 1787499350066514188, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"t_ns": 279393560666947, "t_unix_ns": 1787499354386012086, "dir": "out", "ip_len": 67, "proto": 17, "sport": 4433, "dport": 58060}
+{"t_ns": 279394240503943, "t_unix_ns": 1787499355065849430, "dir": "in", "ip_len": 119, "proto": 17, "sport": 58060, "dport": 4433}
+{"capture_stats": {"packets": 36, "drops": 0}}

@@ -1,0 +1,163 @@
+{
+  "artifact": "DR-RATE-RAMP-2B-A4-VALIDATION",
+  "result": "A4 DOES NOT PASS",
+  "consequence": "startup pacing reverted to default=false; FAZ B NOT ENTERED",
+  "governing_rule": "A3.2 'Belirsizlik varsa supersession yapma; default startup pacing'i gecici OFF'a al ve DUR' + A4 'PASS olmazsa startup pacing default-OFF'a donmeli ve burada DUR edilmeli. FAZ B'ye gecme.'",
+  "a1_pin_visibility": {
+    "hidden_by_cfg_error": true,
+    "second_break_found": {
+      "file": "crates/adaptive-transport/src/udp_runner.rs",
+      "line": 1102,
+      "effect": "the LIB itself failed to compile under --features experimental-fec-budget alone"
+    },
+    "ci_can_silently_exclude": {
+      "answer": true,
+      "reason": ".github/workflows/ci.yml:18 runs only `cargo test --all --all-features`; the DEFAULT feature build is never tested, so default-only breakage is invisible by construction",
+      "note": "the --all-features combination WOULD have caught both failures; they went unnoticed because nothing has been committed since 4aa11a93"
+    },
+    "compile_matrix_after_repairs": {
+      "combinations": 7,
+      "compiling": 7
+    },
+    "test_counts": {
+      "before_startup_pacing_on": {
+        "default": {
+          "passed": 244,
+          "failed_targets": 1
+        },
+        "experimental-cold-start": {
+          "passed": 158,
+          "failed_targets": 1,
+          "note": "run aborted early"
+        },
+        "diag-sched-telemetry": {
+          "passed": 244,
+          "failed_targets": 1
+        },
+        "experimental-fec-budget": "LIB DID NOT COMPILE",
+        "all-features": {
+          "passed": 198,
+          "failed_targets": 1
+        }
+      },
+      "after_default_off": {
+        "default": {
+          "passed": 244,
+          "failed": 0
+        },
+        "experimental-cold-start": {
+          "passed": 267,
+          "failed": 0
+        },
+        "diag-sched-telemetry": {
+          "passed": 244,
+          "failed": 0
+        },
+        "experimental-fec-budget": {
+          "passed": 291,
+          "failed": 0
+        },
+        "all-features": {
+          "passed": 316,
+          "failed": 0
+        }
+      }
+    },
+    "hidden_or_non_running_pin_remains": false
+  },
+  "a4_battery": {
+    "budget_equivalence_pin": "5/5 PASS (1 original re-scoped + 4 new sealing tests)",
+    "data_before_parity_exact_pins": "PASS (per-turn 0 violations with pacing ON and OFF; block-level parity-after-close PASS)",
+    "fec_r0_r2_scheduler_and_unit_tests": "PASS",
+    "rate_ramp_locked_replay": "PASS (rate_lock_seeds_escape_the_fixed_point)",
+    "rate_ramp_260_paired_panel": "not required - product SEMANTICS did not change; explicit ON and OFF arms are byte-identical to v3.5, only the default moved",
+    "no_loss_wire_check": {
+      "result": "PASS",
+      "pairs": 30,
+      "wire_digest_identical": 30,
+      "source_prefix_digest_identical": 30,
+      "delivered_identical": 30,
+      "inv_fail": 0,
+      "conclusion": "the default flip is wire-neutral under no loss"
+    },
+    "adaptive_transport_suite": "PASS (244/267/244/291/316, 0 failed)",
+    "fs_cal_pins": "33/33 PASS",
+    "kama_integration_suites": "71 default / 109 experimental-cold-start, 0 failed",
+    "feature_compile_matrix": "PASS 7/7",
+    "scoped_clippy_D": "clean x4"
+  },
+  "acceptance": {
+    "rate_lock_fixed_points_resolved": "PASS",
+    "sealed_fec_ordering_invariant": "PASS",
+    "fec_r2_executable": "PASS",
+    "total_data_parity_byte_budget_unchanged": "PASS",
+    "no_loss_completion_wire_regression": "PASS",
+    "no_hidden_or_non_running_pin": "PASS",
+    "suite_green_with_startup_pacing_default_ON": "FAIL"
+  },
+  "blocking_finding": {
+    "id": "EK4-A2",
+    "test": "dr_cs1_acceptance::f2b_di1c_rearmed_pto_lifecycle_exposure",
+    "is_a_different_invariant_from_fec_ordering": true,
+    "covered_by_ordering_supersession": false,
+    "failure_point": "expect_retransmit_via_wakeup -> s.next_wakeup_ns().expect('(d)-deadline expose-edilmeli (EK4-A2)') returns None while unit 1 is still outstanding",
+    "isolation": "toggling ONLY the startup-pacing axis; file restored with cp (never git checkout), git diff empty",
+    "measured": {
+      "emissions_before_ack": {
+        "off": "Data seq0=u1, CsProbe, Data seq1=u2",
+        "on": "identical"
+      },
+      "ack_batch": {
+        "off": "emits nothing",
+        "on": "additionally emits Data seq2 = u3"
+      },
+      "next_wakeup_after_ack": {
+        "off": 7307010999,
+        "on": null
+      },
+      "u1_retransmitted_on_idle_ticks": {
+        "off_ms": 7500,
+        "on_ms": 4500
+      }
+    },
+    "retransmit_lost": false,
+    "why_not_waved_through": "next_wakeup_ns() is the accessor a real event loop uses to decide how long to sleep; None while a unit is outstanding tells a runtime nothing is scheduled. The probe drove ticks unconditionally, so it shows the retransmit fires WHEN TICKS ARE DRIVEN - not that an idle sleep-until-next-wakeup runtime would ever wake.",
+    "resolution_needs": "either a product change (expose the re-derived deadline) or an authority ruling that None is correct when the retransmit is already due - neither in this turn's scope"
+  },
+  "changes": [
+    {
+      "file": "crates/adaptive-transport/src/udp_runner.rs",
+      "change": "un-gate TransmitKind::CsProbe match arm (0x19 unchanged)",
+      "class": "compile-visibility repair",
+      "semantic_effect": "none"
+    },
+    {
+      "file": "crates/adaptive-transport/src/sender.rs",
+      "change": "StartupPacingConfig::default() -> enabled: false with inline reason",
+      "class": "default revert per A3.2/A4"
+    },
+    {
+      "file": "crates/adaptive-transport/tests/budget_equivalence_pin.rs",
+      "change": "original pin preserved verbatim + explicitly re-scoped to pacing-OFF; 4 new sealing tests",
+      "class": "test"
+    },
+    {
+      "file": "crates/kama-integration/tests/fs_cal2_pins.rs",
+      "change": "the two default-encoding pins now track the default; assertions unchanged",
+      "class": "test"
+    },
+    {
+      "file": "crates/kama-integration/tests/dr_cs3_default_build_core.rs + dr_cs3_bootstrap_rtt.rs",
+      "change": "bootstrap senders set the startup-pacing axis explicitly instead of relying on the default",
+      "class": "test"
+    }
+  ],
+  "untouched": [
+    "startup pacing mechanism and formula",
+    "FEC drain",
+    "pacer",
+    "scheduler call order"
+  ],
+  "mechanism_still_available_via": "set_startup_pacing_init",
+  "faz_b_entered": false
+}

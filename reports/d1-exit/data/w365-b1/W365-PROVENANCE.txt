@@ -1,0 +1,7 @@
+git_commit=1b88336
+dirty=12
+kernel=7.0.12-arch1-1
+tc=tc utility, iproute2-7.0.0, libbpf 1.7.0
+netns=parent:net:[4026532881] child:net:[4026533184]
+acceptance_rtt100_min_ms=100
+scenario=W-3-65-B1; restore=61s; no-settle-exit; OBSERVATION_HORIZON=120s; RX_TEST_PATIENCE=130s

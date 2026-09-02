@@ -1,0 +1,13 @@
+{
+  "artifact": "DR-ARQ-TAIL-2-REPORT",
+  "fit_use": "FORBIDDEN",
+  "notes": [
+    "Target cell L10-med remains an open tuning-pending item from DR-ARQ-PRODUCT-TAIL-1."
+  ],
+  "phase": "FAZ-4",
+  "product_behavior_changed": false,
+  "reason": "Explicitly gated: 'FAZ 2 ve FAZ 3 PASS olmadan baslama.' Neither passed.",
+  "result_bearing_calibration_runs": 0,
+  "scope": "state-conditional bounded tail recovery",
+  "status": "NOT STARTED"
+}
