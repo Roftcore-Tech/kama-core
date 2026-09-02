@@ -39,9 +39,12 @@ fn fec_codepoints_are_rejected_by_the_control_decoder() {
 
 #[test]
 fn every_codepoint_outside_the_control_registry_is_rejected() {
-    // §2.57 registry: 0x10..0x18. Tüm 256 codepoint taranır; registry dışı olan her biri
+    // §2.57 registry: 0x10..0x1A. Tüm 256 codepoint taranır; registry dışı olan her biri
     // aynı sınıfta reddedilmeli. Bu tarama, registry'ye sessizce bir codepoint eklenirse
     // (ve §2.57 güncellenmezse) kırmızı yanar.
+    // [2026-09-02] Tarama TASARLANDIĞI GİBİ yandı: 0x19/0x1A (CTRL_CS_PROBE/CTRL_CS_ECHO)
+    // DR-CS-3 ile registry'ye MEŞRU olarak girmişti (schema inner_kind + noise-wire decoder);
+    // liste güncel registry'ye eşitlendi.
     let control_cps = [
         inner_kind::ACK,
         inner_kind::SACK,
@@ -52,6 +55,8 @@ fn every_codepoint_outside_the_control_registry_is_rejected() {
         inner_kind::BLOCK_ABORT,
         inner_kind::SESSION_CLOSE,
         inner_kind::SESSION_RENEW_REQUIRED,
+        inner_kind::CTRL_CS_PROBE,
+        inner_kind::CTRL_CS_ECHO,
     ];
     let body = [0u8; 64];
     let mut rejected = 0usize;
