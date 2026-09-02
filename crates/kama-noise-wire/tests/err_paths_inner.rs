@@ -90,7 +90,9 @@ fn unknown_inner_version_is_rejected() {
 
 #[test]
 fn unknown_inner_kind_codepoint_is_rejected() {
-    // §2.56 registry: 0x01/0x02 (FEC) + 0x10..0x18 (control). Kalan tüm codepoint'ler reserved.
+    // §2.56 registry: 0x01/0x02 (FEC) + 0x10..0x1A (control). Kalan tüm codepoint'ler reserved.
+    // [2026-09-02] 0x19/0x1A (CTRL_CS_PROBE/ECHO) DR-CS-3 ile registry'ye meşru girdi —
+    // liste güncel inner_kind'a eşitlendi (err_paths_control.rs taramasıyla aynı olay).
     let known: Vec<u8> = vec![
         inner_kind::FEC_SOURCE,
         inner_kind::FEC_REPAIR,
@@ -103,6 +105,8 @@ fn unknown_inner_kind_codepoint_is_rejected() {
         inner_kind::BLOCK_ABORT,
         inner_kind::SESSION_CLOSE,
         inner_kind::SESSION_RENEW_REQUIRED,
+        inner_kind::CTRL_CS_PROBE,
+        inner_kind::CTRL_CS_ECHO,
     ];
     // Tüm 256 codepoint'i tara: registry dışındaki her biri reddedilmeli.
     let mut plain = valid_fec(64);
