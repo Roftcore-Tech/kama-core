@@ -195,7 +195,10 @@ jobs:
   # geçici — ilk yeşil ölçümden sonra bu satır kaldırılıp eşik güncellenmeli).
   coverage:
     runs-on: ubuntu-latest
-    timeout-minutes: 45           # CI-09
+    # CI-09; ÖLÇÜLDÜ 2026-09-03: llvm-cov instrümanlı workspace 46m sürdü ve 45m limitinde
+    # kesildi (run 33782994561). Sınır ölçüme göre yükseltildi; komşu semantic-matrix
+    # bacakları da 50-58m bandında.
+    timeout-minutes: 120
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -256,7 +259,7 @@ jobs:
                    fuzz_inner_parse fuzz_open fuzz_control_decode \
                    fuzz_ack_decode fuzz_prefix fuzz_fec_decode; do
             echo "::group::$t"
-            cargo +nightly fuzz run "$t" -- \
+            cargo +nightly fuzz run --target x86_64-unknown-linux-gnu "$t" -- \
               -max_total_time=60 -rss_limit_mb=2048 -print_final_stats=1
             echo "::endgroup::"
           done
