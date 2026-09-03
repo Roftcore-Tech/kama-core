@@ -1,0 +1,161 @@
+name: core-nightly
+
+# SR-STR-CORE-001 §6: CI-07 (netem kalite kapısı) + CI-08 (derin fuzz) + branch-coverage ölçümü.
+#
+#   CI-07  BUL-01 — ADR-18 ve CLAUDE.md §7'nin "ZORUNLU KALİTE KAPISI" dediği nightly netem
+#          karşılaştırması CI'da HİÇ MEVCUT DEĞİLDİ ve .gitignore'daki `/results` satırı nedeniyle
+#          karşılaştırılacak baseline depoda yoktu ([ÖLÇÜLDÜ] 0 adet .jsonl, üç özet JSON eksik).
+#          Ürünün en güçlü iddiası regresyon korumasızdı. Docker + NET_ADMIN yetkili runner gerekir.
+#   CI-08  BUL-04 — hedef başına 30 dk; corpus commit'lenir ve regresyon koruması oluşur.
+#   branch BUL-06 — branch kapsamı %81,21, CI'da hiç ölçülmüyordu. Nightly'de ölçülür + eşiklenir.
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── CI-08: derin fuzz + corpus biriktirme ──
+  fuzz-deep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_inner_parse      # TC-08 — BUL-04'ün çekirdeği (AEAD-baypaslı parser)
+          - fuzz_open             # TC-09
+          - fuzz_control_decode   # TC-09
+          - fuzz_ack_decode       # TC-09
+          - fuzz_prefix           # TC-10
+          - fuzz_fec_decode       # TC-10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-fuzz
+
+      # Önceki gecenin corpus'unu geri yükle — sıfırdan başlamak regresyon korumasını yok eder.
+      - name: restore corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      - name: fuzz 30 min
+        run: >
+          cargo +nightly fuzz run ${{ matrix.target }} --
+          -max_total_time=1800 -rss_limit_mb=2048 -print_final_stats=1
+
+      # Corpus'u minimize et (cmin) — sınırsız büyümeyi engeller, kapsamı korur.
+      - name: minimize corpus
+        if: success()
+        run: cargo +nightly fuzz cmin ${{ matrix.target }}
+
+      - name: save corpus
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+
+      - name: upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+
+  # ── BUL-06: branch kapsamı (nightly + eşik) ──
+  branch-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # [ÖLÇÜLDÜ] mevcut branch %81,21 (660 branch, 124 missed). Eşik 78 — gürültü kırmızı
+      # üretmesin, geri gidiş yakalansın. Ratchet: yeni testler eşiği yükselttikçe bu satır artar.
+      - name: branch coverage gate
+        run: >
+          cargo +nightly llvm-cov --workspace --all-features
+          --branch --fail-under-branches 78 --summary-only
+
+  # ── desen1 nightly varyantı ──
+  # [ÖLÇÜLDÜ] `recalibrate_cadence` 8,67 s — deponun en ağır sim varyantı, assertion yok.
+  # CI'da koşan dört sim testi ci.yml quality job'ındadır (TC-16).
+  sim-nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p adaptive-transport --test desen1_sim -- --ignored --nocapture
+
+  # ── CI-07: ADR-18 ZORUNLU KALİTE KAPISI (netem) ──
+  # Self-hosted TERCİH EDİLİYOR, teknik zorunluluk DEĞİL. GitHub-hosted runner'da tc netem
+  # muhtemelen çalışır (passwordless sudo + rootful Docker + cap_add NET_ADMIN).
+  # Gerekçe ÖLÇÜM GEÇERLİLİĞİ: kapı ±%3 mutlak / ±%5 göreli toleransla çalışıyor; GitHub-hosted
+  # runner'lar paylaşımlı VM'ler ve koşumlar arası CPU/IO değişkenliği bu toleranstan büyük
+  # OLABİLİR. Ölçülmedi. [BEKLİYOR — Yaaz: GH-hosted 3× vs self-hosted 3× yayılım karşılaştırması;
+  # GH-hosted yayılım < %3 çıkarsa bu job ubuntu-latest'e taşınır ve runner sökülür.]
+  # Ayrıca: baseline ile gate AYNI platformda üretilmelidir (§4.4.9 reproducible).
+  netem-gate:
+    runs-on: [self-hosted, linux, netem]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: preflight (docker + sch_netem)
+        run: |
+          set -e
+          docker info > /dev/null || { echo "::error::Docker daemon yok — netem kapisi kosturulamaz"; exit 1; }
+          lsmod | grep -q sch_netem || modprobe sch_netem
+          test -f results/baseline/kama-baseline.json \
+            || { echo "::error::baseline yok: results/baseline/kama-baseline.json (BUL-01)"; exit 1; }
+
+      - name: build bench image
+        run: docker compose -f harness/docker-compose.yml build
+
+      - name: run kama matrix (7 profil x 5 repeat)
+        env:
+          REPEATS: "5"
+        run: bash harness/run-kama-matrix.sh
+
+      # compare.py --gate: baseline'a karşı regresyon kapısı. Tolerans ve regresyon eşiği
+      # harness/compare.py içinde tek kaynaktan tanımlıdır.
+      - name: netem quality gate
+        run: python3 harness/compare.py --gate results/baseline/kama-baseline.json
+
+      - name: upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: netem-results
+          path: |
+            results/*.jsonl
+            results/kama-vs-quinn.json
+            results/gate-report.json
+  
+  kani:
+    name: kani (bicimsel dogrulama - pn.rs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true   # K-1 duzeltilene kadar KASTEN kirmizi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install --locked kani-verifier
+      - run: cargo kani setup
+      - name: kani proofs
+        run: cargo kani -p kama-noise-wire --tests

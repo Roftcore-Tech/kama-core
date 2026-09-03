@@ -1,8 +1,14 @@
 /target
 **/*.rs.bk
 Cargo.lock.orig
-/results
 scratchbin/
+
+# netem koşum çıktıları ham (büyük, geçici) — ancak CI-07 kalite kapısının karşılaştırdığı
+# BASELINE depoda DURMALIDIR (BUL-01: baseline yoksa karşılaştırılacak bir şey yoktur).
+# Not: `/results` yerine `/results/*` yazılır — git, ATILMIŞ bir dizinin içindeki dosyayı geri
+# alamaz; dizinin kendisi hariç tutulmamalı ki alt dizin `!` ile geri alınabilsin.
+/results/*
+!/results/baseline/
 
 # Alternate CARGO_TARGET_DIRs. `/target` was ignored but these were not, so build output
 # counted as untracked: .gate-target alone was 61286 files, and scripts/gate.sh step 8
@@ -15,7 +21,12 @@ scratchbin/
 # kapi-eval-v1: capture katmanı diskte (167MB); bütünlüğü CAPS-SHA256SUMS.txt ile mühürlü
 reports/kapi-eval-v1/out/**/cap/
 reports/kapi-eval-v1/out-exploratory/**/cap/
-fuzz/corpus/
-fuzz/artifacts/
-fuzz/coverage/
-fuzz/target/
+
+# cargo-fuzz: build çıktısı ve crash artifact'ları izlenmez; corpus KASITEN izlenir
+# (BUL-04 / TC-09: corpus commit edilmezse her koşum sıfırdan başlar, regresyon koruması oluşmaz).
+/fuzz/target
+/fuzz/artifacts
+/fuzz/coverage
+# cargo-mutants çıktısı — her koşumda binlerce diff üretir, izlenmemeli
+/mutants.out/
+/mutants.out.old/

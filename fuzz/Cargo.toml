@@ -1,4 +1,5 @@
-# [P3] Fuzz kabuğu — güvenilmeyen-girdi parser'ları (SR-AUDIT-001 sertleştirme kapısı).
+# [P3] Fuzz kabuğu — güvenilmeyen-girdi parser'ları (SR-AUDIT-001 sertleştirme kapısı) +
+# SR-STR-CORE-001 §5.2 (TC-08/TC-09/TC-10) hedefleri. İki fuzz seti birleşimidir (main 5 + test 6 = 11 hedef).
 # Workspace'ten AYRIK ([workspace] boş): nightly+libfuzzer yalnız burada; üretim grafiğine girmez.
 [package]
 name = "kama-fuzz"
@@ -11,13 +12,20 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
 adaptive-transport = { path = "../crates/adaptive-transport" }
 kama-noise-wire = { path = "../crates/kama-noise-wire" }
 client-core = { path = "../crates/client-core" }
+kama-transport-schema = { path = "../crates/kama-transport-schema" }
+kama-fec-codec = { path = "../crates/kama-fec-codec" }
 zeroize = "1"
 
 [workspace]
 
+[profile.release]
+debug = 1
+
+# ── main (P3) hedefleri ──
 [[bin]]
 name = "ack_decode"
 path = "fuzz_targets/ack_decode.rs"
@@ -47,3 +55,47 @@ name = "wire_v0"
 path = "fuzz_targets/wire_v0.rs"
 test = false
 doc = false
+
+# ── SR-STR-CORE-001 hedefleri (test branch) ──
+# TC-08: AEAD-baypaslı inner-parser hedefi (BUL-04'ün çekirdeği)
+[[bin]]
+name = "fuzz_inner_parse"
+path = "fuzz_targets/fuzz_inner_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_open"
+path = "fuzz_targets/fuzz_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_control_decode"
+path = "fuzz_targets/fuzz_control_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ack_decode"
+path = "fuzz_targets/fuzz_ack_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_prefix"
+path = "fuzz_targets/fuzz_prefix.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_fec_decode"
+path = "fuzz_targets/fuzz_fec_decode.rs"
+test = false
+doc = false
+bench = false

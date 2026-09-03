@@ -1,0 +1,7 @@
+target
+artifacts
+coverage
+
+# NOT: `corpus/` KASITEN izlenir (cargo-fuzz varsayılanının aksine).
+# TC-09 / BUL-04: corpus commit edilmezse her fuzz koşumu sıfırdan başlar ve regresyon koruması
+# oluşmaz. Bugünkü değer bir hata bulmak değil, ölçülen temiz durumu kilitlemektir.

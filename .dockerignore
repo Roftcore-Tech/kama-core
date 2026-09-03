@@ -1,0 +1,24 @@
+# harness/Dockerfile `COPY . .` yapar ve docker-compose.yml `context: ..` verir → build context
+# depo KÖKÜDÜR. .dockerignore olmadan target/ (2,1 GB) ve .git dahil her şey daemon'a gönderilir.
+# [ÖLÇÜLDÜ] include_str!/include_bytes! kullanımı YOK → derleme için yalnız manifest + crates/ şart.
+
+# Build çıktıları — imaj kendi derlemesini yapar
+target
+fuzz/target
+**/*.rs.bk
+
+# Sürüm kontrolü ve CI
+.git
+.github
+
+# GÜVENLİK: self-hosted runner dizini repo dışında olmalı; yine de kapıyı kapat.
+# .credentials / .credentials_rsakey kalıcı runner auth anahtarlarıdır ve imaja GİRMEMELİDİR.
+actions-runner
+**/.credentials
+**/.credentials_rsakey
+
+# Ölçüm çıktıları ve dokümantasyon — bench derlemesi bunlara dokunmaz
+results
+docs
+reports
+specs

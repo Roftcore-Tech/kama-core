@@ -30,3 +30,5 @@ sodiumoxide = { version = "=0.2.7", optional = true }
 [dev-dependencies]
 proptest = "1"
 trybuild = "1"
+[lints]
+workspace = true
