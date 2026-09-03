@@ -31,7 +31,9 @@
 //!
 //! Koş: `cargo test -p adaptive-transport --test sender_loss_path`
 
-use adaptive_transport::sender::{AckInfo, Event, OpaqueUnit, Sender, SenderState, Timer, TransmitKind};
+use adaptive_transport::sender::{
+    AckInfo, Event, OpaqueUnit, Sender, SenderState, Timer, TransmitKind,
+};
 use std::time::Duration;
 
 const MS: u64 = 1_000_000;
@@ -219,9 +221,7 @@ fn late_ack_converts_a_declared_loss_into_spurious() {
     let rest: Vec<u64> = out[2..].to_vec();
     now += 50 * MS;
     let acts = s.on_event(ack(rest), now);
-    let drained_in_call = acts
-        .iter()
-        .any(|d| d.kind == TransmitKind::Retransmit);
+    let drained_in_call = acts.iter().any(|d| d.kind == TransmitKind::Retransmit);
 
     let tomb_before = s.diag_tombstone().0;
     assert_eq!(tomb_before, 2);
