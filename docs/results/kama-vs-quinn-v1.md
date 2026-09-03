@@ -1,5 +1,13 @@
 # Kama vs quinn — §4.4 Killer-Chart (v1)
 
+> ⛔ **RETRAKSİYON BANDI (2026-09-02; orijinal metin aşağıda AYNEN korunmuştur):**
+> **(1) p5_revpath başlığı (Kama 1,00 vs quinn 0,00) GERİ ÇEKİLMİŞTİR** — sonradan false-loss fırtınasının
+> PARAZİT recovery'si olduğu ölçüldü (TUR-1a: parazit sökülünce p5 24/100; kayıt `docs/design/time-model-v1.md`
+> §0.7; meşru geri kazanım TUR-7 P5-GATE mührü). Bu hücrenin v1 sayısı hiçbir raporda kullanılamaz.
+> **(2)** v1-dönemi mutlak sub-kbps sayıları ARP-pinleme öncesi enstrüman artefaktı taşır (simetrik; kıyas
+> yönü ayakta, mutlak değer taşınmaz). **(3)** Bu belgenin kalıcı değeri rejim YAPISIDIR; güncel ön-kayıtlı
+> banka `reports/kapi-eval-v1/` (r5 FAZ-1) + `docs/whitepaper/KAMA-TRANSPORT-WHITEPAPER-v0.3.md`'dir.
+
 > **Tez:** Kama, QUIC'le *yarışmaz*; QUIC'in **düştüğü** yerde ayakta kalır ("tactical resilient comms
 > layer"). Bu belge onu **ölçer**: aynı netem profilleri, aynı metrik kodu, 5 repeat, elmalar-elmalar.
 >
