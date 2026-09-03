@@ -21,6 +21,9 @@ use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
+/// [BURST-FUSION] Motorun yapı-gate politikası — `RuntimeConfig` alanının tipi. Çağıran ayrıca
+/// adaptive-transport'a bağımlı olmasın diye buradan yeniden dışa verilir.
+pub use adaptive_transport::sender::FecStructurePolicy;
 use adaptive_transport::sender::{
     AckInfo, Event, FecActuationMode, OpaqueUnit, RecoveredInfo, RecoveredUnit, SrLogicalRef,
     Timer, TransmitKind,
@@ -91,6 +94,10 @@ pub struct RuntimeConfig {
     pub drain_cap: Duration,
     /// Server idle-peer emeklilik eşiği (item 3; SESSION_IDLE_HOLD hizası 105 s).
     pub idle_hold: Duration,
+    /// [BURST-FUSION] Yapı-gate'inin burst-dalı politikası (motor `FecStructurePolicy`).
+    /// Default = sevk davranışı (`Q18Iid`: burst → parity yok). `BurstFusion` KALİBRE
+    /// EDİLMEMİŞTİR — flip ölçüm ister; bkz. `adaptive_transport::sender::FecStructurePolicy`.
+    pub fec_structure_policy: FecStructurePolicy,
     /// [S1] FEC-runtime. `None` = KAPALI (sevk default'u; flip S1-GATE kanıtına bağlı — R1
     /// disiplininin FEC karşılığı). `Some` = Controller-mode + yapı-gate (Q18-fix) + blok
     /// yaşam-döngüsü + repair emisyonu/kurtarımı. İKİ UÇTA AYNI kurulmalı (blok/esi ataması
@@ -123,6 +130,7 @@ impl Default for RuntimeConfig {
             quota_r: 4,
             drain_cap: Duration::from_secs(3),
             idle_hold: Duration::from_secs(105),
+            fec_structure_policy: FecStructurePolicy::default(),
             fec: None,
         }
     }
@@ -243,6 +251,39 @@ enum TxClass {
     Ctrl,
 }
 
+/// [TEŞHİS] Yapı-gate'in KARAR TABANI — koşu sonunda fate-penceresinin fotoğrafı.
+///
+/// Neden ürün yüzeyinde: `structure_gate_fec` kararını `burst_delta`ya dayandırır, ama o değer
+/// Laplace-yumuşatılmıştır ve geçiş sayaçları boşken tamamen PRIOR'dan gelir (sıfır geçiş →
+/// p11=p01=500_000 → delta=0 → "IID"). Sayaçlar görünmeden "gate neden açmadı/açtı" sorusu
+/// cevaplanamaz; bu kusur sınıfı repoda daha önce de vakum-sayaç olarak yaşandı. Alanlar
+/// `adaptive_transport::fate_estimator::WindowFeatures`'ın karar-taşıyan alt kümesidir.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FateWindowDiag {
+    /// Penceredeki fate-known birim sayısı.
+    pub n: u32,
+    /// Bunların kaçı KAYIP.
+    pub lost: u32,
+    /// Ardışık-id geçiş sayaçları (S→S, S→L, L→S, L→L). Toplamı 0 ise yapı sinyali PRIOR'dır.
+    pub n00: u32,
+    pub n01: u32,
+    pub n10: u32,
+    pub n11: u32,
+    /// `p11 − p01` (ppm, signed) — gate'in okuduğu yapı sinyali.
+    pub burst_delta_ppm: i64,
+    /// Yapı-gate'in fuzzy `fec=0`'ı açtığı event sayısı (0 = hiç açmadı).
+    pub structure_gate_opened: u64,
+    /// Ledger'ın pencereli kayıp oranı (ppm) — gate'in KAYIP önkoşulu bu değeri okur
+    /// (`STRUCTURE_GATE_LOSS_MIN_PPM = 100_000`), fate-penceresinin `lost/n`'ini DEĞİL.
+    ///
+    /// **UYARI — bu bir ANLIK ÖLÇER, kapanış anında örneklenir.** Ledger trafik durunca DECAY
+    /// eder (gate'in "bayat-FEC yok" tasarımı bunu ister), dolayısıyla buradaki 0 değeri
+    /// *"koşu boyunca hiç 100_000'i geçmedi"* ile *"geçti ama kapanışa dek söndü"* arasında
+    /// AYRIM YAPMAZ. Koşu boyunca geçerli tek sonuç `structure_gate_opened`'dır: o monoton bir
+    /// sayaçtır, 0 ise gate koşunun HİÇBİR anında açmamıştır.
+    pub ledger_loss_ppm: u64,
+}
+
 /// Client koşu istatistikleri (item 9 doğrulama yüzeyi; gözlem-amaçlı).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ClientStats {
@@ -308,6 +349,8 @@ pub struct ClientStats {
     /// [S1B] Canonical symbol serialize hatası — ULAŞILAMAZ olmalı (bounds koşu-öncesi typed).
     /// Sıfırdan farklıysa blok/esi hizası bozulmuştur; sessiz bozulma yerine görünür sayaç.
     pub frag_encode_failures: u64,
+    /// [TEŞHİS] Yapı-gate'in karar tabanı (kapanış anındaki fotoğraf) — bkz. [`FateWindowDiag`].
+    pub fate: FateWindowDiag,
 }
 
 /// Server koşu istatistikleri.
@@ -543,6 +586,10 @@ async fn client_task(
     // G2 sevk default'ları TEK kaynaktan: ClientSession (tail-ON validated_v1, startup-pacing motor
     // default'u ON, bootstrap OFF, FEC Manual-off). Burada default'a dokunulmaz.
     let mut session = ClientSession::new();
+    // [BURST-FUSION] Yapı-gate politikası config'ten; default sevk davranışıdır (byte-özdeş).
+    session
+        .sender_mut()
+        .set_fec_structure_policy(cfg.fec_structure_policy);
     let mut stats = ClientStats::default();
     // [S1] FEC-runtime kuruluşu (cfg.fec varsa): Controller-mode — yapı-gate'in (Q18) kararı
     // latch'e ancak bu modda akar. validate_fec connect'te koştu; profil burada çözülür.
@@ -1019,6 +1066,20 @@ async fn client_task(
         }
     }
     stats.undelivered = store.len() as u64;
+    // [TEŞHİS] Yapı-gate'in karar tabanını kapanışta fotoğrafla (gözlem-amaçlı; motor durumunu
+    // DEĞİŞTİRMEZ). Bunlar görünmeden "gate neden açmadı" sorusu cevaplanamıyordu.
+    let f = session.sender().diag_loss_structure();
+    stats.fate = FateWindowDiag {
+        n: f.n,
+        lost: f.lost,
+        n00: f.n00,
+        n01: f.n01,
+        n10: f.n10,
+        n11: f.n11,
+        burst_delta_ppm: f.burst_delta_ppm,
+        structure_gate_opened: session.sender().diag_structure_gate_opened(),
+        ledger_loss_ppm: session.sender().diag_ledger().1,
+    };
     stats
 }
 

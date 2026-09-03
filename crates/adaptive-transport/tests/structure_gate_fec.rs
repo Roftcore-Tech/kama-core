@@ -140,6 +140,15 @@ fn iid_loss_opens_fec_through_structure_gate_then_closes_on_decay() {
 
 /// Burst: ilk yarı tamamen ACK, ikinci yarı bitişik kayıp → LLLL… → n11 yüksek → p11 ≫ p01 →
 /// burst_delta belirgin POZİTİF → gate burst okur → DOKUNMAZ (ARQ'ya bırakır): fec kalır 0.
+///
+/// **[AÇIK KAYIT — bu pin VAKUMDUR, sonucu doğru ama gerekçesi yanlış.]** Sürücü bitişik bir
+/// ÖN-EK'i ACK'liyor (`1..40`), yani ACK-ufkunun ALTINDA boşluk kalmıyor ve HİÇ kayıp ilan
+/// edilmiyor: ölçülen `ledger_loss=0`, `fate_loss_ppm=0`. Okunan `burst_delta=+475_610` gerçek
+/// burst yapısı değil, Laplace prior'ının kendisidir (p11=(0+1)/(0+2)=500_000). Yani gate burst
+/// dalına HİÇ ULAŞMIYOR — kayıp-eşiğinde duruyor. Pin korunuyor (davranış sözleşmesi hâlâ
+/// geçerli: bu girdide fec 0 kalmalı), ama YAPI dalının gerçek kanıtı aşağıdaki
+/// `evidenced_burst_*` testlerindedir. Bulgu prior-as-evidence kusurunu ortaya çıkardı
+/// (bkz. `structure_gate_fec`'teki DEFECT-FIX notu).
 #[test]
 fn burst_loss_leaves_fec_to_arq() {
     let acked: Vec<u64> = (1..40u64).collect();
@@ -178,4 +187,148 @@ fn low_loss_is_untouched_by_the_gate() {
     );
     assert_eq!(s.diag_structure_gate_opened(), 0);
     assert_eq!(s.last_decision().fec_parity_ratio_permille, 0);
+}
+
+// ── [BURST-FUSION] Burst dalının alternatif politikası ───────────────────────────────────────
+//
+// `burst_loss_leaves_fec_to_arq` (üstte) SEVK davranışını pinler ve geçerli kalır: default
+// `FecStructurePolicy::Q18Iid`. Aşağıdakiler opt-in `BurstFusion` politikasını pinler — burst
+// rejiminde parity SIFIRLANMAZ, ölçülen silme oranını emniyet paylı takip eder ve artakalanı
+// ARQ taşır (§8.4 füzyon).
+//
+// Gerekçe ölçülü: `client-core/examples/fec_arm_compare.rs` GE-burst hücresinde adaptif kol
+// `fec_bytes=0 / blocks=0 / repairs=0` üretiyor — yani ürünün ayırt edici mekanizması hostile
+// rejimde HİÇ devreye girmiyor. Eşik KALİBRE EDİLMEMİŞTİR; default flip netem kanıtı ister.
+
+/// Default politika `Q18Iid`'dir — sevk davranışı opt-in olmadan DEĞİŞMEZ.
+#[test]
+fn default_structure_policy_is_the_shipped_one() {
+    let s = Sender::new();
+    assert_eq!(s.fec_structure_policy(), FecStructurePolicy::Q18Iid);
+}
+
+// ── Gerçek KANITLI burst penceresi ───────────────────────────────────────────────────────────
+//
+// Yukarıdaki vakum pinin aksine burada ACK-ufku yüksek bir seq'e taşınır (199) ve ufkun ALTINDA
+// bitişik boşluk RUN'ları bırakılır → gerçekten kayıp ilan edilir, `n10+n11` kanıt eşiğini geçer
+// ve `burst_delta` prior'dan değil VERİDEN gelir.
+
+/// 6 adet 8'lik bitişik kayıp run'u (48/200 ≈ 240k ppm) — hem Q18 kayıp bandını hem de
+/// `MIN_LOSS_TRANSITIONS` kanıt eşiğini geçer.
+fn evidenced_burst_acks() -> Vec<u64> {
+    let holes: Vec<u64> = (0..6u64)
+        .flat_map(|r| (0..8u64).map(move |j| 30 + r * 25 + j))
+        .collect();
+    (1..200u64).filter(|q| !holes.contains(q)).collect()
+}
+
+/// Kanıtlı burst + SEVK politikası → parity 0 (yapı dalı gerçekten koşar ve ARQ'ya bırakır).
+#[test]
+fn evidenced_burst_leaves_fec_to_arq_under_shipped_policy() {
+    let (mut s, t_ack) = drive_until_loss_ack(200, evidenced_burst_acks());
+    let fired = pump_until_gate_opens(&mut s, t_ack, 60);
+    let f = s.diag_loss_structure();
+    assert!(
+        f.n10 + f.n11 >= 8,
+        "önkoşul: kayıp-geçişi kanıt eşiği geçilmeli (prior değil VERİ); got n10={} n11={} ({f:?})",
+        f.n10,
+        f.n11
+    );
+    assert!(
+        f.measured_loss_ppm > 0,
+        "önkoşul: pencerede GERÇEK kayıp olmalı; got {} ({f:?})",
+        f.measured_loss_ppm
+    );
+    assert!(
+        f.burst_delta_ppm > 50_000,
+        "önkoşul: desen BURST okunmalı; got {} ({f:?})",
+        f.burst_delta_ppm
+    );
+    assert!(fired.is_none(), "sevk politikası burst'te parity açmaz");
+    assert_eq!(s.last_decision().fec_parity_ratio_permille, 0);
+}
+
+/// AYNI kanıtlı burst + `BurstFusion` → parity AÇILIR (tek fark politikadır).
+#[test]
+fn evidenced_burst_opens_parity_under_burst_fusion_policy() {
+    let (mut s, t_ack) = drive_until_loss_ack(200, evidenced_burst_acks());
+    s.set_fec_structure_policy(FecStructurePolicy::BurstFusion);
+    let fired = pump_until_gate_opens(&mut s, t_ack, 60);
+    let f = s.diag_loss_structure();
+    assert!(f.n10 + f.n11 >= 8, "önkoşul: kanıt eşiği ({f:?})");
+    let d = fired.expect("BurstFusion kanıtlı burst'te parity AÇMALI");
+    assert!(
+        d.fec_parity_ratio_permille > 0,
+        "burst'te parity sıfırlanmamalı (füzyon); got {}",
+        d.fec_parity_ratio_permille
+    );
+    assert!(s.diag_structure_gate_opened() >= 1, "gate sayacı artmalı");
+}
+
+/// **[AÇIK BORÇ PİNİ — prior-as-evidence].** Bu test bir kusuru KAYDEDER, gizlemez.
+///
+/// IID sürücüsü %95 ledger-kaybı üretir ama fate-penceresinde HİÇ geçiş yoktur
+/// (`n00=n01=n10=n11=0`) → p11 = p01 = 500_000 → `burst_delta = 0`. Sevk politikası bunu "IID"
+/// okuyup FEC'i AÇAR: karar tamamen Laplace prior'ından gelir, ölçümden değil. Aynı mekanizma
+/// ters yönde de çalışır (yalnız kayıpsız geçişlerde delta ≈ +475k → "burst" → FEC kapanır).
+///
+/// Sevk davranışı BİLEREK değiştirilmedi (kampanya görmüş bir dalı tek taraflı kaydırmak R1'e
+/// aykırı; flip ölçüm ister). Opt-in `BurstFusion` ise kanıt eşiğini uygular ve karar VERMEZ.
+/// Bu asimetri kasıtlıdır ve owner kararı bekler.
+#[test]
+fn shipped_policy_decides_on_the_laplace_prior_while_burst_fusion_refuses() {
+    let iid_acks: Vec<u64> = (1..SEQ_SPAN).filter(|q| q % 2 == 0).collect();
+
+    let (mut shipped, t_ack) = drive_until_loss_ack(80, iid_acks.clone());
+    let shipped_fired = pump_until_gate_opens(&mut shipped, t_ack, 60);
+    let f = shipped.diag_loss_structure();
+    assert_eq!(
+        (f.n00, f.n01, f.n10, f.n11),
+        (0, 0, 0, 0),
+        "önkoşul: pencerede HİÇ geçiş kanıtı yok ({f:?})"
+    );
+    assert_eq!(
+        f.burst_delta_ppm, 0,
+        "sıfır-geçişte delta prior'dan 0 gelir (p11=p01=500_000) ({f:?})"
+    );
+    assert!(
+        shipped_fired.is_some(),
+        "AÇIK BORÇ: sevk politikası kanıtsız pencerede FEC açıyor (prior kararı)"
+    );
+
+    let (mut fused, t_ack) = drive_until_loss_ack(80, iid_acks);
+    fused.set_fec_structure_policy(FecStructurePolicy::BurstFusion);
+    assert!(
+        pump_until_gate_opens(&mut fused, t_ack, 60).is_none(),
+        "BurstFusion kanıt eşiğinin altında yapısal karar VERMEMELİ"
+    );
+    assert_eq!(fused.diag_structure_gate_opened(), 0);
+}
+
+/// Kayıpsız pencere: prior tek başına +475k "burst" görüntüsü verir; hiçbir politika bu girdide
+/// yapısal karar vermemeli (sevk yolu zaten kayıp-eşiğinde duruyor, BurstFusion kanıt eşiğinde).
+#[test]
+fn evidence_free_window_is_not_classified_as_burst() {
+    let acked: Vec<u64> = (1..40u64).collect(); // bitişik ön-ek → HİÇ kayıp ilan edilmez
+    for policy in [FecStructurePolicy::Q18Iid, FecStructurePolicy::BurstFusion] {
+        let (mut s, t_ack) = drive_until_loss_ack(80, acked.clone());
+        s.set_fec_structure_policy(policy);
+        let fired = pump_until_gate_opens(&mut s, t_ack, 60);
+        let f = s.diag_loss_structure();
+        assert_eq!(
+            f.n10 + f.n11,
+            0,
+            "önkoşul: pencerede kayıp geçişi OLMAMALI ({f:?})"
+        );
+        assert!(
+            f.burst_delta_ppm > 50_000,
+            "prior tek başına 'burst' görüntüsü verir — düzeltilen tuzak buydu; got {}",
+            f.burst_delta_ppm
+        );
+        assert!(
+            fired.is_none(),
+            "kanıtsız pencerede yapısal karar verilmemeli (politika {policy:?})"
+        );
+        assert_eq!(s.diag_structure_gate_opened(), 0);
+    }
 }

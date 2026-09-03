@@ -78,6 +78,7 @@ async fn transport_api_v0_surface_is_frozen() {
         quota_r: _,
         drain_cap: _,
         idle_hold: _,
+        fec_structure_policy: _, // v0.3 (BURST-FUSION): minor-EKLEME, kasıtlı pin-güncellemesi
         fec: _, // v0.1 (S1): minor-EKLEME — kasıtlı pin-güncellemesi, P4 belgesi §3
     } = cfg.clone();
     let FecRuntimeConfig {
@@ -149,6 +150,8 @@ async fn transport_api_v0_surface_is_frozen() {
         // [S1B] fragmenter: mesaj-granülü ACK + canonical-serialize hata sayacı.
         messages_acked: _,
         frag_encode_failures: _,
+        // [TEŞHİS] yapı-gate karar tabanı (FateWindowDiag).
+        fate: _,
     } = ClientStats::default();
     let ServerStats {
         delivered: _,

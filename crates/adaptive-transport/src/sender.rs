@@ -252,6 +252,33 @@ pub enum FecActuationMode {
     Controller,
 }
 
+/// [BURST-FUSION] Yapı-gate'inin **burst** dalındaki politikası.
+///
+/// Sorun: `Q18Iid` (mevcut sevk davranışı) burst-yapı görünce parity'yi SIFIR bırakıp işi tamamen
+/// ARQ'ya devreder. Ürün runtime'ında ölçüldü (`client-core/examples/fec_arm_compare.rs`,
+/// GE p_gb=3% / p_bg=20% / loss_bad=60%): adaptif kol o kanalda `fec_bytes=0, blocks=0,
+/// repairs=0` üretir — yani kodlama HİÇ devreye girmez ve kol, mekanizma olarak FEC-kapalı kolun
+/// aynısı olur. Hostile ağ tam olarak o rejim olduğundan, ürünün ayırt edici mekanizması tam
+/// ihtiyaç duyulan yerde kapalı kalıyor.
+///
+/// Gerekçenin diğer yarısı da gerçek: uzun bir burst tek bloktaki `r` sınırını aşarsa parity
+/// israf olur. Ama doğru cevap "hiç kodlama" değil, **füzyon**dur (§8.4): parity ölçülen silme
+/// oranını paylı biçimde takip eder, artakalanı ARQ taşır.
+///
+/// **KALİBRE EDİLMEMİŞ — default `Q18Iid`.** R1 disiplini: kampanya görmemiş bir eşik sevk
+/// edilmez. `BurstFusion`'a geçmek netem matrisinde ölçülmüş bir kanıt ister; flip edilene kadar
+/// davranış ve wire byte-özdeştir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FecStructurePolicy {
+    /// Sevk davranışı: yalnız IID-yapıda (`burst_delta ≤ 50k ppm`) FEC açılır; burst → ARQ.
+    #[default]
+    Q18Iid,
+    /// Burst dalında da kodlama açılır ve seviye ölçülen silme oranından (emniyet paylı)
+    /// seçilir: pay'lı oran `fec_med`'e sığıyorsa `fec_med`, aşıyorsa `fec_high`. Kodlama
+    /// tek başına yetmediğinde bile parity SIFIRLANMAZ — kalanı ARQ taşır (füzyon).
+    BurstFusion,
+}
+
 /// Commit-K (authority-continuity): BLOK-OTORİTE-WITNESS'ı — blok-AÇILIŞINDA aktif-mode'u + sender-
 /// kimliğini + monoton-generation'ı YAKALAR. Bloğun-otorite-tüketimi (Controller-latch VEYA manuel-
 /// close) witness'ı BY-VALUE-tüketir → **tek-kullanım COMPILE-TIME** (Clone/Copy/Default/serde YOK;
@@ -914,6 +941,12 @@ const STRUCTURE_GATE_MIN_N: u32 = 32;
 /// IID'de beklenen 0 (±gürültü); burst'te (GE-L3+) FATE2ARM ölçümü +567k ppm — boşluk ~433k.
 /// 50k = gürültü-üstü, burst-altı güvenli çizgi (fate_estimator'daki 25_000 pin'i geçer).
 const STRUCTURE_GATE_IID_MAX_DELTA_PPM: i64 = 50_000;
+/// [BURST-FUSION] Ölçülen silme oranının üzerine konan emniyet payı (pay/payda). Bir RS bloğu
+/// ancak parity oranı blok-içi silme oranını AŞARSA kurtarır; ölçülen oran ortalamadır, burst
+/// varyansı blok-içi oranı ortalamanın üstüne çıkarır → paysız seçim sistematik olarak yetersiz
+/// kodlar. 3/2 = %50 pay (kalibre-EDİLMEMİŞ başlangıç; bkz. `FecStructurePolicy::BurstFusion`).
+const BURST_FUSION_MARGIN_NUM: u64 = 3;
+const BURST_FUSION_MARGIN_DEN: u64 = 2;
 /// STARTUP→STEADY plato: BtlBw N ardışık round Δ<ε ise plato [CAL].
 const STARTUP_PLATEAU_ROUNDS: u32 = 3;
 /// plato ε (per-mille): btlbw artışı < %5 → stabil.
@@ -1218,6 +1251,8 @@ pub struct Sender {
     diag_qd_no_evidence: u64,    // [TUR-3a D-3/1] rtprop-yokken qd_ratio=0 sayısı
     diag_fuzzy_no_rule: u64,     // [TUR-4] sıfır-ağırlık fallback ateşleme sayısı
     diag_structure_gate_opened: u64, // [Q18-FIX] yapı-gate'in fuzzy fec=0'ı açtığı event sayısı
+    /// [BURST-FUSION] Yapı-gate'in burst dalındaki politikası (default = sevk davranışı).
+    fec_structure_policy: FecStructurePolicy,
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
@@ -1400,6 +1435,7 @@ impl Sender {
             diag_qd_no_evidence: 0,
             diag_fuzzy_no_rule: 0,
             diag_structure_gate_opened: 0,
+            fec_structure_policy: FecStructurePolicy::Q18Iid,
             last_fusion_snapshot: None,
             fusion_event_index: 0,
             last_decision: FusionDecision {
@@ -2849,11 +2885,57 @@ impl Sender {
         if f.n < STRUCTURE_GATE_MIN_N {
             return None;
         }
-        // Laplace-yumuşatılmış p11−p01: IID'de ≈0 (örnekleme gürültüsü ±), burst'te belirgin pozitif.
-        if f.burst_delta_ppm <= STRUCTURE_GATE_IID_MAX_DELTA_PPM {
-            Some(self.fuzzy.config().fec_med)
-        } else {
-            None
+        // [BULGU — prior-as-evidence; AÇIK KAYIT, default DAVRANIŞ DEĞİŞMEDİ]
+        //
+        // `burst_delta` Laplace-yumuşatılmıştır ve kayıp-GEÇİŞİ sayaçları boşken tamamen
+        // PRIOR'dan gelir:
+        //   • hiç geçiş yok (n00=n01=n10=n11=0) → p11 = p01 = (0+1)/(0+2) = 500_000 → delta = 0
+        //     → "IID" okunur ve FEC AÇILIR;
+        //   • yalnız kayıpsız geçişler → p11 = 500_000, p01 ≈ 0 → delta ≈ +475_000
+        //     → "burst" okunur ve FEC KAPANIR.
+        // Yani her iki dal da kanıt yokken prior tarafından belirlenir. Estimator'ın kendi §3.4
+        // sözleşmesi bunu zaten yasaklıyor (`WindowFeatures::eligible` → `n10+n11 ≥ 8`;
+        // `fate_estimator.rs::laplace_no_loss_window_ineligible` testinin yorumu birebir bunu
+        // söyler) — gate o sözleşmenin DIŞINDA okuyor.
+        //
+        // Ölçülen kanıt: `tests/structure_gate_fec.rs` içindeki sevk pinlerinin İKİSİ de
+        // (`iid_loss_opens_fec_*`, `burst_loss_leaves_fec_to_arq`) sıfır-geçişli pencerelerde
+        // koşuyor — sonuçları doğru ama gerekçeleri prior. Kanıt eşiği default yola eklendiğinde
+        // `iid_loss_opens_fec_*` RED veriyor, yani Q18-FIX'in IID dalı bugün prior'la ateşliyor.
+        //
+        // KARAR: default (`Q18Iid`) yol DEĞİŞTİRİLMEDİ — kampanya görmüş bir davranışı tek
+        // taraflı kaydırmak R1 disiplinine aykırı ve sonuçları ölçülmemiş olurdu. Kanıt eşiği
+        // opt-in `BurstFusion` politikasının parçasıdır; o politika zaten kalibrasyon bekliyor.
+        // Bu bir AÇIK BORÇTUR (owner kararı gerekir), gizlenmiş bir kusur değil.
+        let evidenced = f.n10 + f.n11 >= crate::fate_estimator::MIN_LOSS_TRANSITIONS;
+        let iid_structure = f.burst_delta_ppm <= STRUCTURE_GATE_IID_MAX_DELTA_PPM;
+        match self.fec_structure_policy {
+            FecStructurePolicy::Q18Iid => {
+                // SEVK DAVRANIŞI, byte-özdeş: IID → fec_med; burst → ARQ'ya bırak.
+                iid_structure.then(|| self.fuzzy.config().fec_med)
+            }
+            FecStructurePolicy::BurstFusion => {
+                // Kanıtsız pencerede yapısal karar YOK (prior veri sayılmaz).
+                if !evidenced {
+                    return None;
+                }
+                let c = self.fuzzy.config();
+                if iid_structure {
+                    return Some(c.fec_med);
+                }
+                // BURST dalı: kodlama açılır, seviye ölçülen silme oranını emniyet paylı takip
+                // eder. Profil-bağımsız (INV-ENGINE-SOC: motor K/E bilmez) — oran permille
+                // emit edilir, r'ye çevrimi latch profille birlikte yapar. Kodlama tek başına
+                // yetmese bile parity SIFIRLANMAZ: kalanı ARQ taşır (§8.4 füzyon).
+                let needed_permille = loss_ppm.saturating_mul(BURST_FUSION_MARGIN_NUM)
+                    / BURST_FUSION_MARGIN_DEN
+                    / 1_000;
+                Some(if needed_permille <= u64::from(c.fec_med) {
+                    c.fec_med
+                } else {
+                    c.fec_high
+                })
+            }
         }
     }
 
@@ -3233,6 +3315,18 @@ impl Sender {
         self.last_transition_event_index = self.fusion_event_index;
         self.transition_applied_count = self.transition_applied_count.saturating_add(1);
         Ok(())
+    }
+
+    /// [BURST-FUSION] Yapı-gate'inin burst-dalı politikasını seçer. Default [`FecStructurePolicy::Q18Iid`]
+    /// = sevk davranışı (burst → parity yok). Bkz. [`FecStructurePolicy`]; flip KALİBRASYON ister.
+    pub fn set_fec_structure_policy(&mut self, policy: FecStructurePolicy) {
+        self.fec_structure_policy = policy;
+    }
+
+    /// Kurulu yapı-gate politikası (gözlem/test).
+    #[must_use]
+    pub fn fec_structure_policy(&self) -> FecStructurePolicy {
+        self.fec_structure_policy
     }
 
     /// Commit-I/K: blok-AÇILIŞINDA çağrılır — o-anki-aktif-mode + sender-kimliği + monoton-generation
