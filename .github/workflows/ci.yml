@@ -203,7 +203,9 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
       - name: line coverage gate
         run: cargo llvm-cov --workspace --all-features --fail-under-lines 92
 
@@ -215,8 +217,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-deny
-      - uses: taiki-e/install-action@cargo-audit
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit
       # BUL-14: sodiumoxide 0.2.7 → RUSTSEC-2021-0137 (unmaintained). AÇIK-2 kararına dek warning.
       - run: cargo audit
       - run: cargo deny check
@@ -243,7 +246,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "fuzz -> target"
-      - uses: taiki-e/install-action@cargo-fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
       - name: fuzz smoke (60 s / hedef)
         run: |
           set -e

@@ -36,7 +36,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
 
       # Önceki gecenin corpus'unu geri yükle — sıfırdan başlamak regresyon korumasını yok eder.
       - name: restore corpus
@@ -80,7 +82,9 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
       # [ÖLÇÜLDÜ] mevcut branch %81,21 (660 branch, 124 missed). Eşik 78 — gürültü kırmızı
       # üretmesin, geri gidiş yakalansın. Ratchet: yeni testler eşiği yükselttikçe bu satır artar.
       - name: branch coverage gate
