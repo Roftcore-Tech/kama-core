@@ -282,6 +282,25 @@ pub struct FateWindowDiag {
     /// AYRIM YAPMAZ. Koşu boyunca geçerli tek sonuç `structure_gate_opened`'dır: o monoton bir
     /// sayaçtır, 0 ise gate koşunun HİÇBİR anında açmamıştır.
     pub ledger_loss_ppm: u64,
+    /// Ledger pencereli kaybının koşu-boyu **TEPESİ** (ppm). `ledger_loss_ppm`'in aksine
+    /// decay'den etkilenmez → gate'in kayıp önkoşulunu (`≥ 100_000`) koşu boyunca HİÇ görüp
+    /// görmediğini bu değer söyler.
+    pub ledger_loss_ppm_peak: u64,
+    /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
+    /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
+    /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI. "Açmadı" gözleminin NEDENİ buradadır.
+    pub gate_outcomes: [u64; 6],
+    /// Ledger'ın GERİ ALDIĞI (un-loss / Spurious) birim toplamı. Yüksekse: kayıplar ilan edildi
+    /// ama geç-ACK ufkunda çürütüldü — yani ARQ onları ufuk içinde kurtardı ve `loss_windowed_ppm`
+    /// TASARIM GEREĞİ sıfıra yakın kalır. Bu, ledger kusuru ile "hızlı yolda ARQ zaten yetiyor"
+    /// durumunu ayırt eden tek ucuz sinyaldir (loopback'te RTT≈0 → ikincisi beklenir).
+    pub ledger_spurious_units: u64,
+    /// `diag_unloss` — geç-ACK ile geri alınan kayıp ilanı sayısı.
+    pub ledger_unloss: u64,
+    /// Paket-eşiği ile ilan edilen kayıp sayısı (`diag_loss_pkt`).
+    pub loss_declared_pkt: u64,
+    /// Zaman-eşiği ile ilan edilen kayıp sayısı (`diag_loss_time`).
+    pub loss_declared_time: u64,
 }
 
 /// Client koşu istatistikleri (item 9 doğrulama yüzeyi; gözlem-amaçlı).
@@ -1079,6 +1098,12 @@ async fn client_task(
         burst_delta_ppm: f.burst_delta_ppm,
         structure_gate_opened: session.sender().diag_structure_gate_opened(),
         ledger_loss_ppm: session.sender().diag_ledger().1,
+        ledger_loss_ppm_peak: session.sender().diag_loss_ppm_peak(),
+        gate_outcomes: session.sender().diag_gate_outcomes(),
+        ledger_spurious_units: session.sender().diag_ledger().2,
+        ledger_unloss: session.sender().diag_ledger().0,
+        loss_declared_pkt: session.sender().diag_loss().0,
+        loss_declared_time: session.sender().diag_loss().1,
     };
     stats
 }

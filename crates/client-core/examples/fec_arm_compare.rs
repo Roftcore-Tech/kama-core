@@ -10,6 +10,33 @@
 //! diğerinden belirgin ayrıştığını GÖSTERİR, ürün-düzeyi bir üstünlük İDDİA ETMEZ. Ön-kayıtlı
 //! doğrulama netem matrisinde yapılır.
 //!
+//! ## [ARACIN KENDİ SINIRI — ÖNCE BUNU OKU] Loopback'te kayıp girdisi YAPISAL OLARAK ÖLÜDÜR
+//!
+//! Bu araçla koşulan ilk hücrede ölçüldü (200×256 B, GE p_gb=3% / p_bg=20% / loss_bad=60%):
+//!
+//! ```text
+//! ilan_pkt=82   un_loss=0   spurious_units=0      → 82 kayıp İLAN EDİLDİ, hiçbiri geri alınmadı
+//! peak_ppm=0                                       → ama loss_windowed_ppm koşu boyunca TEPEDE 0
+//! gate: kayıp<band = değerlendirmelerin %100'ü     → yapı-gate hep KAYIP ÖNKOŞULUNDA durdu
+//! ```
+//!
+//! En tutarlı açıklama (doğrudan ölçülmedi, aritmetik gereklilik): ledger penceresi
+//! `W_loss = K_WL(8) × ack_epoch`, `ack_epoch = max(srtt, EAI)`. Loopback'te srtt ~onlarca µs ve
+//! pacer hızı çok yüksek olduğundan `W_loss` ~sub-millisecond'a iner; `fuzzy_evaluate` ise PACE
+//! tick'iyle ~1 ms'de bir koşar. `ledger_tick` önce süre-dolduranı ATAR, sonra confirm eder →
+//! her olay iki tick arasında `declared_ns < cutoff` olup düşer ve HİÇBİRİ `Confirmed` olamaz.
+//! `confirm_age = 1.5×EAI` kısa olmasına rağmen sonuç değişmez: sıra atma-sonra-confirm'dir.
+//!
+//! **Sonuç:** bu hücrede kayıp-BAĞIMLI hiçbir fuzzy kuralı (FEC dahil) ateşleyemez. Yani araç
+//! "hangi FEC kolu daha iyi" sorusunu YANITLAYAMAZ; yalnız YAPISAL soruları yanıtlar
+//! ("kodlama devreye girdi mi", "gate hangi önkoşulda durdu", "prior mı veri mi"). Kol
+//! karşılaştırması için GERÇEK RTT gerekir (netem). Bunu ölçmeden bu aracın teslim/ms/byte
+//! sütunlarından performans hükmü ÇIKARMA.
+//!
+//! Bu bir ÜRÜN KUSURU İDDİASI DEĞİLDİR: gerçek ağda `ack_epoch ≈ srtt` (ms mertebesi) olduğundan
+//! `W_loss` ~onlarca ms olur ve olaylar confirm'e yetişir. Kusur mu artefakt mı olduğu ancak
+//! RTT'li bir hücrede ayrılır.
+//!
 //! Determinizm (ADR-17): kanal RNG'si seed'den türeyen saf-tamsayı LCG; aynı seed → aynı silme
 //! deseni → üç kol AYNI kanalı görür. Kol karşılaştırması bu eşleştirmeye dayanır.
 //!
@@ -342,6 +369,37 @@ async fn main() {
             r.fate.burst_delta_ppm,
             r.fate.structure_gate_opened,
             r.fate.ledger_loss_ppm,
+        );
+    }
+    // Karar-yolu histogramı: "gate açmadı" gözleminin NEDENİ.
+    println!("\n# yapı-gate karar yolu (neden açmadı/açtı) + ledger kaybının TEPESİ:");
+    println!(
+        "{:<32} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8} {:>12}",
+        "kol",
+        "kapsamdışı",
+        "kayıp<band",
+        "pencere<32",
+        "kanıt<8",
+        "burst→ARQ",
+        "AÇILDI",
+        "peak_ppm"
+    );
+    for r in &out {
+        let g = r.fate.gate_outcomes;
+        println!(
+            "{:<32} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8} {:>12}",
+            r.label, g[0], g[1], g[2], g[3], g[4], g[5], r.fate.ledger_loss_ppm_peak
+        );
+    }
+    println!("\n# ledger un-loss muhasebesi (kayıp ilan edildi mi, geri mi alındı?):");
+    for r in &out {
+        println!(
+            "{:<32} ilan_pkt={:<6} ilan_time={:<6} un_loss={:<6} spurious_units={}",
+            r.label,
+            r.fate.loss_declared_pkt,
+            r.fate.loss_declared_time,
+            r.fate.ledger_unloss,
+            r.fate.ledger_spurious_units
         );
     }
     println!(

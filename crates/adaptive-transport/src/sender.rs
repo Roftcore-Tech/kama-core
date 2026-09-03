@@ -252,6 +252,42 @@ pub enum FecActuationMode {
     Controller,
 }
 
+/// [TEŞHİS] Yapı-gate'in karar yolu. `None`/`Some` ikilisi "açmadı"yı tek bir kovaya
+/// yığıyordu; NEDEN'i ayırt etmek için her çıkış noktası adlandırıldı. Sayımı çağıran yapar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateOutcome {
+    /// Fuzzy zaten parity planlamış — gate devreye girmez (kapsam dışı).
+    NotApplicable,
+    /// Ledger'ın pencereli kaybı Q18 bandının altında (`< STRUCTURE_GATE_LOSS_MIN_PPM`).
+    BlockedLossBelowBand,
+    /// Fate penceresi çok küçük (`n < STRUCTURE_GATE_MIN_N`).
+    BlockedWindowTooSmall,
+    /// Kayıp-geçişi kanıtı yetersiz (`n10+n11 < MIN_LOSS_TRANSITIONS`) — yalnız `BurstFusion`.
+    BlockedNoTransitionEvidence,
+    /// Burst yapı okundu ve sevk politikası işi ARQ'ya bıraktı.
+    BlockedBurstLeftToArq,
+    /// Gate açtı; taşınan değer parity oranı (permille).
+    Opened(u32),
+}
+
+impl GateOutcome {
+    /// Histogram indeksi (0..[`GATE_OUTCOME_KINDS`]).
+    #[must_use]
+    pub fn index(self) -> usize {
+        match self {
+            Self::NotApplicable => 0,
+            Self::BlockedLossBelowBand => 1,
+            Self::BlockedWindowTooSmall => 2,
+            Self::BlockedNoTransitionEvidence => 3,
+            Self::BlockedBurstLeftToArq => 4,
+            Self::Opened(_) => 5,
+        }
+    }
+}
+
+/// [`GateOutcome`] histogramının kova sayısı.
+pub const GATE_OUTCOME_KINDS: usize = 6;
+
 /// [BURST-FUSION] Yapı-gate'inin **burst** dalındaki politikası.
 ///
 /// Sorun: `Q18Iid` (mevcut sevk davranışı) burst-yapı görünce parity'yi SIFIR bırakıp işi tamamen
@@ -1253,6 +1289,10 @@ pub struct Sender {
     diag_structure_gate_opened: u64, // [Q18-FIX] yapı-gate'in fuzzy fec=0'ı açtığı event sayısı
     /// [BURST-FUSION] Yapı-gate'in burst dalındaki politikası (default = sevk davranışı).
     fec_structure_policy: FecStructurePolicy,
+    /// [TEŞHİS] Yapı-gate karar-yolu histogramı (bkz. `GateOutcome`).
+    diag_gate_outcomes: [u64; GATE_OUTCOME_KINDS],
+    /// [TEŞHİS] Ledger pencereli kaybının koşu-boyu TEPESİ (ppm) — anlık ölçer decay eder.
+    diag_loss_ppm_peak: u64,
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
@@ -1436,6 +1476,8 @@ impl Sender {
             diag_fuzzy_no_rule: 0,
             diag_structure_gate_opened: 0,
             fec_structure_policy: FecStructurePolicy::Q18Iid,
+            diag_gate_outcomes: [0; GATE_OUTCOME_KINDS],
+            diag_loss_ppm_peak: 0,
             last_fusion_snapshot: None,
             fusion_event_index: 0,
             last_decision: FusionDecision {
@@ -2845,7 +2887,14 @@ impl Sender {
         // yasaklar): fate_estimator'ın loss-YAPI sinyali (burst_delta = p11−p01) gate'e girer.
         // Deterministik, RNG'siz (ADR-17); kanıt yetersizse (n < min) DOKUNMAZ → mevcut davranış
         // byte-özdeş. Politika transport'ta kalır, RS-encode güvenlik-katmanında (INV-ENGINE-SOC).
-        if let Some(fec) = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm) {
+        let outcome = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm);
+        // [TEŞHİS] Karar-yolu histogramı: gate'in HANGİ önkoşulda durduğu sayılır. "Açmadı"
+        // gözlemi tek başına nedensiz kalıyordu; bu sayaçlar olmadan ledger-eşiği mi, pencere
+        // mi, kanıt mı, yoksa burst-dalı mı kapattı ayırt EDİLEMEZ (vakum-sayaç sınıfı).
+        self.diag_gate_outcomes[outcome.index()] += 1;
+        // Ledger kaybının koşu-boyu TEPESİ (anlık ölçer decay ettiğinden kapanış örneği yanıltır).
+        self.diag_loss_ppm_peak = self.diag_loss_ppm_peak.max(inputs.loss_ppm);
+        if let GateOutcome::Opened(fec) = outcome {
             d.fec_parity_ratio_permille = fec;
             // Yapı-gate ateşlediyse bir KURAL ateşlemiş demektir (yapı-kuralı) → `no_rule`'u temizle.
             // Aksi hâlde: fuzzy'nin rate-only kuralları yüksek-kayıpta hepsi `loss.low`=0'da sönüp
@@ -2877,13 +2926,16 @@ impl Sender {
     /// kayıplar korelasyonsuz → retransmit de aynı oranla kaybolur → ileri-parity kazanır)
     /// `fec_med` açar. Burst-yapı (`burst_delta` pozitif) → ARQ'ya bırakır (`None`, dokunmaz).
     /// Kanıt-eşiği: pencerede `≥ STRUCTURE_GATE_MIN_N` fate-known birim; azsa `None`.
-    fn structure_gate_fec(&self, fuzzy_fec_permille: u32, loss_ppm: u64) -> Option<u32> {
-        if fuzzy_fec_permille != 0 || loss_ppm < STRUCTURE_GATE_LOSS_MIN_PPM {
-            return None;
+    fn structure_gate_fec(&self, fuzzy_fec_permille: u32, loss_ppm: u64) -> GateOutcome {
+        if fuzzy_fec_permille != 0 {
+            return GateOutcome::NotApplicable;
+        }
+        if loss_ppm < STRUCTURE_GATE_LOSS_MIN_PPM {
+            return GateOutcome::BlockedLossBelowBand;
         }
         let f = self.fate_estimator.snapshot();
         if f.n < STRUCTURE_GATE_MIN_N {
-            return None;
+            return GateOutcome::BlockedWindowTooSmall;
         }
         // [BULGU — prior-as-evidence; AÇIK KAYIT, default DAVRANIŞ DEĞİŞMEDİ]
         //
@@ -2912,16 +2964,20 @@ impl Sender {
         match self.fec_structure_policy {
             FecStructurePolicy::Q18Iid => {
                 // SEVK DAVRANIŞI, byte-özdeş: IID → fec_med; burst → ARQ'ya bırak.
-                iid_structure.then(|| self.fuzzy.config().fec_med)
+                if iid_structure {
+                    GateOutcome::Opened(self.fuzzy.config().fec_med)
+                } else {
+                    GateOutcome::BlockedBurstLeftToArq
+                }
             }
             FecStructurePolicy::BurstFusion => {
                 // Kanıtsız pencerede yapısal karar YOK (prior veri sayılmaz).
                 if !evidenced {
-                    return None;
+                    return GateOutcome::BlockedNoTransitionEvidence;
                 }
                 let c = self.fuzzy.config();
                 if iid_structure {
-                    return Some(c.fec_med);
+                    return GateOutcome::Opened(c.fec_med);
                 }
                 // BURST dalı: kodlama açılır, seviye ölçülen silme oranını emniyet paylı takip
                 // eder. Profil-bağımsız (INV-ENGINE-SOC: motor K/E bilmez) — oran permille
@@ -2930,7 +2986,7 @@ impl Sender {
                 let needed_permille = loss_ppm.saturating_mul(BURST_FUSION_MARGIN_NUM)
                     / BURST_FUSION_MARGIN_DEN
                     / 1_000;
-                Some(if needed_permille <= u64::from(c.fec_med) {
+                GateOutcome::Opened(if needed_permille <= u64::from(c.fec_med) {
                     c.fec_med
                 } else {
                     c.fec_high
@@ -4806,6 +4862,19 @@ impl Sender {
     #[must_use]
     pub fn diag_structure_gate_opened(&self) -> u64 {
         self.diag_structure_gate_opened
+    }
+
+    /// [TEŞHİS] Yapı-gate karar-yolu histogramı — indeksler [`GateOutcome::index`].
+    #[must_use]
+    pub fn diag_gate_outcomes(&self) -> [u64; GATE_OUTCOME_KINDS] {
+        self.diag_gate_outcomes
+    }
+
+    /// [TEŞHİS] Ledger pencereli kaybının koşu-boyu tepesi (ppm). Kapanış anındaki anlık değer
+    /// decay etmiş olabileceğinden önkoşul teşhisi için TEK geçerli okuma budur.
+    #[must_use]
+    pub fn diag_loss_ppm_peak(&self) -> u64 {
+        self.diag_loss_ppm_peak
     }
 
     /// [TUR-4] Sıfır-ağırlık fuzzy-fallback sayacı (gözlemlenebilirlik).
