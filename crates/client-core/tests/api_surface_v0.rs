@@ -21,10 +21,11 @@ use client_core::seam::{
     SecuritySeam, IDENTITY_TAG,
 };
 use client_core::wire::{
-    decode_data, decode_fec, decode_param, decode_param_ack, decode_recovered, encode_data,
-    encode_fec, encode_param, encode_param_ack, encode_recovered, FecFrameHeader, FRAME_DATA,
-    FRAME_FEC, FRAME_PARAM, FRAME_PARAM_ACK, FRAME_RECOVERED, HDR_DATA, HDR_FEC, HDR_RECOVERED,
-    LEN_PARAM, LEN_PARAM_ACK, RECOVERED_MAX_ESI,
+    decode_data, decode_data_frag, decode_fec, decode_param, decode_param_ack, decode_recovered,
+    encode_data, encode_data_frag, encode_fec, encode_param, encode_param_ack, encode_recovered,
+    FecFrameHeader, FRAME_DATA, FRAME_DATA_FRAG, FRAME_FEC, FRAME_PARAM, FRAME_PARAM_ACK,
+    FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG, HDR_FEC, HDR_RECOVERED, LEN_PARAM, LEN_PARAM_ACK,
+    RECOVERED_MAX_ESI,
 };
 use client_core::ClientSession;
 // Motor re-export'ları (yalnız yol/isim-pin; derinlemesine imza motorun kendi testlerinde).
@@ -72,6 +73,7 @@ async fn transport_api_v0_surface_is_frozen() {
         offer_queue: _,
         delivery_queue: _,
         max_unit_bytes: _,
+        max_message_bytes: _, // v0.2 (S1B fragmenter): minor-EKLEME, kasıtlı pin-güncellemesi
         max_peers: _,
         quota_r: _,
         drain_cap: _,
@@ -144,6 +146,9 @@ async fn transport_api_v0_surface_is_frozen() {
         tx_ctrl_bytes: _,
         egress_refused_pkts: _,
         egress_refused_bytes: _,
+        // [S1B] fragmenter: mesaj-granülü ACK + canonical-serialize hata sayacı.
+        messages_acked: _,
+        frag_encode_failures: _,
     } = ClientStats::default();
     let ServerStats {
         delivered: _,
@@ -168,6 +173,11 @@ async fn transport_api_v0_surface_is_frozen() {
         rx_bytes: _,
         egress_refused_pkts: _,
         egress_refused_bytes: _,
+        // [S1B] fragmenter: chunk birleştirme muhasebesi.
+        frag_chunks_rx: _,
+        msgs_reassembled: _,
+        frag_chunk_dropped: _,
+        msg_asm_evicted: _,
     } = ServerStats::default();
     let Delivery {
         peer: _,
@@ -219,6 +229,11 @@ async fn transport_api_v0_surface_is_frozen() {
     let _: Option<(u16, u64, &[u8])> = decode_data(&[]);
     let _: u8 = FRAME_DATA;
     let _: usize = HDR_DATA;
+    // [S1B] fragmentli DATA (0x05): gövde = canonical SourcePrefix ‖ payload.
+    let _: Vec<u8> = encode_data_frag(0u16, 0u64, &[]);
+    let _: Option<(u16, u64, client_core::SourcePrefix, &[u8])> = decode_data_frag(&[]);
+    let _: u8 = FRAME_DATA_FRAG;
+    let _: usize = HDR_DATA_FRAG;
 
     // ── wire-v0.1 FEC + RECOVERED codec imzaları (freeze-audit kapatması: TAM alan kümesi) ──
     let fh = FecFrameHeader {

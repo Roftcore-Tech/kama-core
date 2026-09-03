@@ -46,6 +46,9 @@ pub use adaptive_transport::sender::{Event, OpaqueUnit, Sender, TransmitDecision
 pub use adaptive_transport::tail_recovery::TailRecoveryConfig;
 pub use kama_engine::{admit_and_decode, EngineError};
 pub use kama_noise_wire::opened::OpenedTransportShard;
+/// [S1B] Fragmenter'ın chunk metadata tipi — `wire::decode_data_frag` bunu döndürür, app/harness
+/// tarafı ayrıca kama-transport-schema'ya bağımlı olmasın diye buradan da erişilebilir.
+pub use kama_transport_schema::prefix::SourcePrefix;
 
 /// Owns the egress decision engine and drives the ingress decode path.
 ///

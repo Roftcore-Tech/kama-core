@@ -462,3 +462,178 @@ async fn fec_static_r_recovers_permanently_erased_units_over_udp() {
     );
     assert_eq!(cs.undelivered, 0, "RECOVERED sonrası residue yok: {cs:?}");
 }
+
+// ── [S1B] Production fragmenter ──────────────────────────────────────────────────────────────
+//
+// Fragmenter'dan ÖNCE: FEC yolu tek symbol'e sığmayan mesajı TAŞIYAMIYORDU (profil 0x03'te 53 B
+// tavan; `chunk_offset` sabit 0'dı). Bu yüzden 256 B'lık benchmark yükü FEC ile hiç koşulamadı.
+// Aşağıdaki testler tavanın kalktığını ve mesaj bütünlüğünün korunduğunu mühürler.
+
+/// Profil 0x03'te (E=64, chunk 48 B) 1000 B'lık mesaj = 21 chunk. Mesaj TAM ve BYTE-EŞ teslim
+/// edilmeli; app'e ACK yalnız TÜM chunk'lar teyitlendiğinde bir kez gelmeli.
+#[tokio::test(flavor = "multi_thread")]
+async fn fragmenter_carries_a_message_far_larger_than_one_fec_symbol() {
+    use client_core::runtime::FecRuntimeConfig;
+    const MSG_LEN: usize = 1000;
+    let cfg = || RuntimeConfig {
+        max_unit_bytes: 48,            // 48 + 11 = 59 ≤ E(64)
+        max_message_bytes: Some(4096), // > max_unit_bytes ⇒ fragmenter AÇIK
+        fec: Some(FecRuntimeConfig {
+            profile_id: 0x03,
+            manual_r: Some(4),
+        }),
+        drain_cap: Duration::from_millis(300),
+        ..RuntimeConfig::default()
+    };
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("server bind");
+    let mut client = ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam))
+        .await
+        .expect("client connect");
+
+    // Deterministik, konum-duyarlı desen: yanlış sırada birleşen bir mesaj EŞİT ÇIKAMAZ.
+    let msg: Vec<u8> = (0..MSG_LEN).map(|i| (i % 251) as u8).collect();
+    client.send(msg.clone()).expect("offer");
+
+    let got = tokio::time::timeout(Duration::from_secs(10), server.next_delivery())
+        .await
+        .expect("teslim zaman aşımı")
+        .expect("teslim kanalı kapandı");
+    assert_eq!(
+        got.payload.len(),
+        MSG_LEN,
+        "mesaj TAM boyuyla teslim edilmeli (yarım mesaj asla akmamalı)"
+    );
+    assert_eq!(got.payload, msg, "byte-eş yeniden birleştirme");
+    assert_eq!(
+        got.unit_id, 0,
+        "fragmentasyonda teslim kimliği MESAJ id'sidir"
+    );
+
+    let acked = tokio::time::timeout(Duration::from_secs(10), client.acked())
+        .await
+        .expect("ACK zaman aşımı")
+        .expect("ACK akışı kapandı");
+    assert_eq!(acked, 0, "app'e ACK mesaj granülünde (id 0) gelir");
+
+    let cs = client.shutdown().await;
+    let ss = server.shutdown().await;
+    assert_eq!(cs.offered, 1, "app TEK mesaj sundu: {cs:?}");
+    assert_eq!(cs.messages_acked, 1, "TEK mesaj ACK'i: {cs:?}");
+    assert_eq!(
+        cs.frag_encode_failures, 0,
+        "canonical serialize hatası olmamalı: {cs:?}"
+    );
+    // 1000 B / 48 B = 21 chunk → 21 birim ACK'i, tek mesaj ACK'i.
+    assert_eq!(cs.acked, 21, "chunk sayısı kadar birim ACK'i: {cs:?}");
+    assert_eq!(ss.msgs_reassembled, 1, "bir mesaj birleştirildi: {ss:?}");
+    assert_eq!(ss.frag_chunks_rx, 21, "21 chunk alındı: {ss:?}");
+    assert_eq!(
+        ss.delivered, 1,
+        "app'e TEK teslim (chunk başına değil): {ss:?}"
+    );
+}
+
+/// Fragmenter + FEC kurtarımı BİRLİKTE: bir chunk'ın DATA'sı kalıcı düşse bile mesaj
+/// repair'lerden kurtarılıp TAM teslim edilmeli — kurtarılan symbol'ün prefix'i mesaj
+/// kimliğini ve offset'ini taşıdığı için birleştirici onu normal chunk gibi kabul eder.
+#[tokio::test(flavor = "multi_thread")]
+async fn fragmenter_message_survives_a_permanently_erased_chunk_via_fec() {
+    use client_core::runtime::FecRuntimeConfig;
+    const MSG_LEN: usize = 300; // 48 B chunk → 7 chunk (son chunk 12 B)
+    let cfg = || RuntimeConfig {
+        max_unit_bytes: 48,
+        max_message_bytes: Some(4096),
+        fec: Some(FecRuntimeConfig {
+            profile_id: 0x03,
+            manual_r: Some(4),
+        }),
+        drain_cap: Duration::from_millis(300),
+        ..RuntimeConfig::default()
+    };
+    // unit 3'ün DATA'sı KALICI düşer; repair'ler (FRAME_FEC) geçer → RS kurtarmalı.
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg(),
+        Box::new(fec_seam::DropUnitsSeam(&[3])),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam))
+        .await
+        .expect("client connect");
+
+    let msg: Vec<u8> = (0..MSG_LEN).map(|i| (i % 251) as u8).collect();
+    client.send(msg.clone()).expect("offer");
+    // Blok K=8'e ulaşsın diye ikinci bir mesaj (7 + 7 = 14 birim → ilk blok dolar, latch koşar).
+    client.send(msg.clone()).expect("offer 2");
+
+    let got = tokio::time::timeout(Duration::from_secs(15), server.next_delivery())
+        .await
+        .expect("teslim zaman aşımı")
+        .expect("teslim kanalı kapandı");
+    assert_eq!(got.payload, msg, "silinen chunk'a rağmen byte-eş mesaj");
+
+    let cs = client.shutdown().await;
+    let ss = server.shutdown().await;
+    assert!(
+        ss.fec_recovered_units >= 1 || cs.acked >= 14,
+        "kayıp chunk ya FEC ile kurtarıldı ya ARQ ile tamamlandı: server={ss:?} client={cs:?}"
+    );
+    assert_eq!(ss.frag_chunk_dropped, 0, "sınır ihlali olmamalı: {ss:?}");
+}
+
+/// Mesaj tavanı bounds-before-alloc: tavanı aşan offer typed reddedilir (fragmenter sınırsız
+/// bellek tüketmez), ve `max_message_bytes < max_unit_bytes` kurulumu koşu-öncesi reddedilir.
+#[tokio::test(flavor = "multi_thread")]
+async fn fragmenter_bounds_are_typed_and_enforced_before_the_run() {
+    let cfg = RuntimeConfig {
+        max_unit_bytes: 48,
+        max_message_bytes: Some(256),
+        ..RuntimeConfig::default()
+    };
+    let server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg.clone(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(server.local_addr(), cfg, Box::new(IdentitySeam))
+        .await
+        .expect("client connect");
+    match client.send(vec![0u8; 257]) {
+        Err(RuntimeError::UnitTooLarge { got, cap }) => {
+            assert_eq!(got, 257);
+            assert_eq!(cap, 256, "tavan MESAJ tavanıdır (birim tavanı değil)");
+        }
+        other => panic!("tavan aşımı typed reddedilmeliydi, alınan: {other:?}"),
+    }
+    client
+        .send(vec![0u8; 256])
+        .expect("tavandaki mesaj kabul edilmeli");
+    let _ = client.shutdown().await;
+    let _ = server.shutdown().await;
+
+    // Tutarsız kurulum: mesaj tavanı birim tavanının ALTINDA olamaz.
+    let bad = RuntimeConfig {
+        max_unit_bytes: 100,
+        max_message_bytes: Some(50),
+        ..RuntimeConfig::default()
+    };
+    match ServerEndpoint::bind("127.0.0.1:0".parse().unwrap(), bad, Box::new(IdentitySeam)).await {
+        Err(RuntimeError::FecConfig(m)) => {
+            assert!(
+                m.contains("max_message_bytes"),
+                "gerekçe alanı adlandırmalı: {m}"
+            );
+        }
+        Err(other) => panic!("yanlış typed red: {other:?}"),
+        Ok(_) => panic!("tutarsız fragmenter kurulumu koşu-öncesi reddedilmeliydi"),
+    }
+}

@@ -32,7 +32,7 @@ use kama_fec_codec::{
 };
 use kama_transport_schema::control::Control;
 use kama_transport_schema::param::ParamFields;
-use kama_transport_schema::prefix::SourcePrefix;
+use kama_transport_schema::prefix::{SourcePrefix, SOURCE_FLAG_FINAL};
 use kama_transport_schema::{inner_kind, SOURCE_PREFIX_LEN};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -41,9 +41,9 @@ use tokio::time::interval;
 
 use crate::seam::{SealArgs, SeamPeer, SecuritySeam};
 use crate::wire::{
-    decode_data, decode_fec, decode_param, decode_param_ack, decode_recovered, encode_data,
-    encode_fec, encode_param, encode_param_ack, encode_recovered, FecFrameHeader, FRAME_PARAM_ACK,
-    FRAME_RECOVERED, HDR_DATA, HDR_FEC,
+    decode_data, decode_data_frag, decode_fec, decode_param, decode_param_ack, decode_recovered,
+    encode_data, encode_data_frag, encode_fec, encode_param, encode_param_ack, encode_recovered,
+    FecFrameHeader, FRAME_PARAM_ACK, FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG, HDR_FEC,
 };
 use crate::ClientSession;
 
@@ -69,8 +69,20 @@ pub struct RuntimeConfig {
     pub offer_queue: usize,
     /// Transport→app teslim kuyruğu (bounded mpsc; taşan teslim sayılır).
     pub delivery_queue: usize,
-    /// Birim payload tavanı (bounds-before-alloc: büyük payload typed reddedilir).
+    /// **Birim (wire chunk)** payload tavanı — tek bir DATA çerçevesinin taşıdığı en çok byte.
+    /// FEC açıkken `max_unit_bytes + SOURCE_PREFIX_LEN ≤ profile.e` olmak ZORUNDA (symbol-hizası).
     pub max_unit_bytes: usize,
+    /// [S1B] Fragmenter — **AÇIK OPT-IN**. `None` (default) = fragmentasyon YOK: mesaj = birim,
+    /// app tavanı `max_unit_bytes`, wire 0x00 DATA ile birebir aynı (mevcut tüm kurulumlar ve
+    /// bankadaki ölçümler etkilenmez). `Some(n)` = fragmentasyon AÇIK, app mesaj tavanı `n`
+    /// (bounds-before-alloc; `n ≥ max_unit_bytes` olmak zorunda): mesaj `max_unit_bytes`lik
+    /// ardışık chunk'lara bölünür, her chunk kendi birim-id'sini/ARQ izlemesini/FEC symbol
+    /// yuvasını alır, alıcı yeniden birleştirip TAM mesajı teslim eder.
+    ///
+    /// Eşitsizlikten TÜREMEZ: `max_unit_bytes`i küçülten bir config (ör. FEC profilinin symbol
+    /// tavanına inmek) fragmentasyonu KAZAYLA açamaz — wire formatı değişikliği ancak açık
+    /// niyetle olur.
+    pub max_message_bytes: Option<usize>,
     /// Server eş-tablosu tavanı (fail-closed; SESSION_COUNT_CAP=64 hizası).
     pub max_peers: usize,
     /// Alıcı R-kotası (sessizlik re-ACK bütçesi).
@@ -105,6 +117,8 @@ impl Default for RuntimeConfig {
             offer_queue: 1024,
             delivery_queue: 1024,
             max_unit_bytes: 1200,
+            // Fragmenter KAPALI (mesaj = birim; eski davranış birebir).
+            max_message_bytes: None,
             max_peers: 64,
             quota_r: 4,
             drain_cap: Duration::from_secs(3),
@@ -118,6 +132,18 @@ impl Default for RuntimeConfig {
 /// edilen en büyük payload canonical symbol'e sığmalı (prefix dahil) — aksi hâlde blok/esi
 /// hizası sessizce bozulurdu; bounds-before-run.
 fn validate_fec(cfg: &RuntimeConfig) -> Result<Option<FecProfile>, RuntimeError> {
+    // [S1B] Fragmenter sınırı: mesaj tavanı birim tavanının ALTINDA olamaz (chunk'lama tanımsız
+    // kalırdı) ve birim tavanı sıfır olamaz (bölme/sonsuz-döngü). Koşu-öncesi typed.
+    if cfg.max_unit_bytes == 0 {
+        return Err(RuntimeError::FecConfig("max_unit_bytes 0 olamaz"));
+    }
+    if let Some(m) = cfg.max_message_bytes {
+        if m < cfg.max_unit_bytes {
+            return Err(RuntimeError::FecConfig(
+                "max_message_bytes < max_unit_bytes (mesaj birimden küçük olamaz)",
+            ));
+        }
+    }
     let Some(f) = cfg.fec else { return Ok(None) };
     let p = by_id(f.profile_id).ok_or(RuntimeError::FecConfig("unknown profile_id"))?;
     if cfg.max_unit_bytes + SOURCE_PREFIX_LEN > p.e_usize() {
@@ -131,6 +157,17 @@ fn validate_fec(cfg: &RuntimeConfig) -> Result<Option<FecProfile>, RuntimeError>
         }
     }
     Ok(Some(p))
+}
+
+/// [S1B] Bir FEC profilinin **chunk kapasitesi**: `E − SOURCE_PREFIX_LEN`, yani tek bir
+/// canonical source-symbol'ün taşıyabildiği en çok app byte'ı. `max_unit_bytes` bunu AŞAMAZ;
+/// daha büyük mesajlar fragmenter ile bu boyda chunk'lara bölünür. Bilinmeyen profil → `None`.
+///
+/// Çağıran (harness/app) config'i bu değere göre kurar; böylece profil katalogunun `E`'sini
+/// kendi kopyalamak zorunda kalmaz (tek-kaynak).
+#[must_use]
+pub fn fec_chunk_capacity(profile_id: u8) -> Option<usize> {
+    by_id(profile_id).map(|p| p.e_usize().saturating_sub(SOURCE_PREFIX_LEN))
 }
 
 /// [v1/PARAM] Profilden canonical `ParamFields` (§8; iki uç AYNI türetir — hash buna bağlanır).
@@ -265,6 +302,12 @@ pub struct ClientStats {
     pub egress_refused_pkts: u64,
     /// Reddedilen byte toplamı.
     pub egress_refused_bytes: u64,
+    /// [S1B] TÜM chunk'ları teyitlenip app'e ACK'i verilen mesaj (yalnız fragmentasyon açıkken;
+    /// kapalıyken birim=mesaj olduğundan `acked` ile aynıdır ve bu sayaç 0 kalır).
+    pub messages_acked: u64,
+    /// [S1B] Canonical symbol serialize hatası — ULAŞILAMAZ olmalı (bounds koşu-öncesi typed).
+    /// Sıfırdan farklıysa blok/esi hizası bozulmuştur; sessiz bozulma yerine görünür sayaç.
+    pub frag_encode_failures: u64,
 }
 
 /// Server koşu istatistikleri.
@@ -293,6 +336,15 @@ pub struct ServerStats {
     pub fec_blocks_evicted: u64,
     /// [S1] Wire'a yazılan RECOVERED-control çerçevesi (blok başına bir).
     pub fec_recovered_ctrl_tx: u64,
+    /// [S1B] Birleştiriciye giren chunk (DATA + FEC-kurtarma; yalnız fragmentasyon açıkken).
+    pub frag_chunks_rx: u64,
+    /// [S1B] Tam olarak yeniden kurulup app'e teslim edilen mesaj.
+    pub msgs_reassembled: u64,
+    /// [S1B] Mesaj tavanını aşacağı için reddedilen chunk (bounds-before-alloc; bozuk/kötücül
+    /// FINAL'in belleği şişirmesi engellendi).
+    pub frag_chunk_dropped: u64,
+    /// [S1B] Kapasite gereği düşürülen en-eski yarım mesaj (bounded birleştirici).
+    pub msg_asm_evicted: u64,
     /// [v1] Typed seal-reddi (ACK/RECOVERED/PARAM_ACK dönüş yolu).
     pub seal_failures: u64,
     /// [v1/PARAM] PARAM_SET doğrulanıp bağlanan peer (ilk-bind başına 1).
@@ -345,19 +397,22 @@ pub struct ClientHandle {
 #[derive(Clone)]
 pub struct ClientSender {
     offer_tx: mpsc::Sender<Vec<u8>>,
-    max_unit_bytes: usize,
+    /// [S1B] App-yüzü tavan MESAJ tavanıdır; birim (chunk) tavanı fragmenter'ın içinde kalır.
+    max_message_bytes: usize,
 }
 
 impl ClientSender {
-    /// Bir birim sun (non-blocking; bounded). Dolu kuyruk → typed `QueueFull` (transport bloklamaz).
+    /// Bir MESAJ sun (non-blocking; bounded). Dolu kuyruk → typed `QueueFull` (transport
+    /// bloklamaz). Mesaj `max_unit_bytes`ten büyükse fragmenter chunk'lara böler; app bunu
+    /// GÖRMEZ — teslim ve ACK yine mesaj granülünde olur.
     ///
     /// # Errors
-    /// `UnitTooLarge` (bounds-before-alloc) · `QueueFull` (backpressure) · `Closed`.
+    /// `UnitTooLarge` (bounds-before-alloc; cap = `max_message_bytes`) · `QueueFull` · `Closed`.
     pub fn send(&self, payload: Vec<u8>) -> Result<(), RuntimeError> {
-        if payload.len() > self.max_unit_bytes {
+        if payload.len() > self.max_message_bytes {
             return Err(RuntimeError::UnitTooLarge {
                 got: payload.len(),
-                cap: self.max_unit_bytes,
+                cap: self.max_message_bytes,
             });
         }
         self.offer_tx.try_send(payload).map_err(|e| match e {
@@ -403,7 +458,7 @@ impl ClientEndpoint {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         // Kapasite 1 + onay-oneshot: mark_t0 görev işleyene dek bekler (ölçüm sözleşmesi).
         let (t0_tx, t0_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
-        let max_unit_bytes = cfg.max_unit_bytes;
+        let max_message_bytes = cfg.max_message_bytes.unwrap_or(cfg.max_unit_bytes);
         let task = tokio::spawn(client_task(
             sock,
             cfg,
@@ -417,7 +472,7 @@ impl ClientEndpoint {
         Ok(ClientHandle {
             offer: ClientSender {
                 offer_tx,
-                max_unit_bytes,
+                max_message_bytes,
             },
             acked_rx,
             shutdown_tx,
@@ -513,6 +568,14 @@ async fn client_task(
     let mut param_confirmed = param_plan.is_none(); // FEC-yoksa PARAM-akışı yok.
     let mut param_last_tick_ms: u64 = 0;
     let mut param_tries: u32 = 0;
+    // [S1B] Fragmenter durumu. `frag_on` = mesaj tavanı birim tavanından BÜYÜK. Kapalıyken bu
+    // haritalar hiç dokunulmaz ve gönderim yolu 0x00 DATA ile birebir aynıdır (bankadaki tüm
+    // ölçümler geçerli kalır); açıkken mesaj ardışık chunk-birimlere bölünür ve app'e ACK
+    // MESAJ tamamlanınca verilir.
+    let frag_on = cfg.max_message_bytes.is_some();
+    let mut next_message: u32 = 0;
+    let mut unit_msg: HashMap<u64, u32> = HashMap::new();
+    let mut msg_pending: HashMap<u32, u32> = HashMap::new();
     // [S1] Ardışık-blok birikimi: unit_id → (block = id/K, esi = id%K) deterministik (iki uç da
     // türetir); yalnız SON blok birikir. K dolunca same-event latch + gerçek RS-encode →
     // bounded repair_store (en-eski düşer → o bloğun FecParity kararı başlık-only'e düşer).
@@ -644,7 +707,18 @@ async fn client_task(
                 if stale {
                     stats.stale_decisions += 1;
                 }
-                let frame = encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload);
+                // [S1B] store WIRE GÖVDESİNİ tutar: frag açıkken `prefix ‖ payload`, kapalıyken
+                // düz payload — emisyon tek şekilli kalır, prefix burada YENİDEN kurulmaz.
+                // Stale (store-miss) emisyonda gövde boştur; frag çerçevesi ≥11 B ister, bu yüzden
+                // canonical sıfır-prefix konur: alıcı çözer, seq ACK'lenir, birleştiriciye
+                // len=0 katkısıyla girer (aynı esi'de gerçek symbol first-wins ile korunur).
+                let stale_body: [u8; SOURCE_PREFIX_LEN] = [0; SOURCE_PREFIX_LEN];
+                let frame = if frag_on {
+                    let body = if stale { &stale_body[..] } else { payload };
+                    encode_data_frag((d.seq & 0xFFFF) as u16, d.unit_id, body)
+                } else {
+                    encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload)
+                };
                 // Sınıf ayrımı motorun karar tipinden: ilk emisyon / ARQ retransmit / §11 dup.
                 let class = match d.kind {
                     TransmitKind::Retransmit => TxClass::Retx,
@@ -652,6 +726,31 @@ async fn client_task(
                     _ => TxClass::Data,
                 };
                 seal_send!(frame, class, $now);
+            }
+        };
+    }
+    // [S1B] Bir BİRİMİN teslim-teyidi app'e nasıl yansır.
+    //
+    // Fragmentasyon KAPALIYKEN birim = mesaj → id doğrudan akar (eski davranış birebir).
+    // AÇIKKEN app mesaj granülünde konuşur: birim ACK'i mesajın kalan-chunk sayacını düşürür ve
+    // ACK yalnız SON chunk teyitlendiğinde verilir — yarım mesaj "teslim edildi" diye
+    // raporlanamaz. ACK ve FEC-RECOVERED yolları BU tek noktayı paylaşır.
+    macro_rules! unit_acked {
+        ($unit:expr) => {
+            if frag_on {
+                if let Some(m) = unit_msg.remove(&$unit) {
+                    if let Some(rem) = msg_pending.get_mut(&m) {
+                        *rem = rem.saturating_sub(1);
+                        if *rem == 0 {
+                            msg_pending.remove(&m);
+                            stats.messages_acked += 1;
+                            let _ = acked_tx.try_send(u64::from(m));
+                        }
+                    }
+                }
+            } else {
+                // app drenajı; taşarsa olay düşer, teslim durumu store'da zaten kesin.
+                let _ = acked_tx.try_send($unit);
             }
         };
     }
@@ -685,7 +784,7 @@ async fn client_task(
                                     u64::from(block_id) * u64::from(p.k_shape) + u64::from(esi);
                                 if store.remove(&unit).is_some() {
                                     stats.fec_recovered_ctrl_units += 1;
-                                    let _ = acked_tx.try_send(unit);
+                                    unit_acked!(unit);
                                     for old in unit_seqs.remove(&unit).unwrap_or_default() {
                                         seq_to_unit.remove(&old);
                                     }
@@ -711,7 +810,7 @@ async fn client_task(
                             let Some(&unit) = seq_to_unit.get(s) else { continue };
                             if store.remove(&unit).is_some() {
                                 stats.acked += 1;
-                                let _ = acked_tx.try_send(unit); // app drenajı; taşarsa olay düşer, teslim durumu store'da zaten kesin.
+                                unit_acked!(unit);
                                 // Birimin TÜM seq kayıtları budanır — haritalar store disipliniyle sınırlı kalır.
                                 for old in unit_seqs.remove(&unit).unwrap_or_default() {
                                     seq_to_unit.remove(&old);
@@ -760,30 +859,69 @@ async fn client_task(
             }
             // Offer YALNIZ store'da yer varken alınır (bounds-before-alloc: kanal + store çift sınır).
             maybe = offer_rx.recv(), if store.len() < cfg.max_inflight_units => {
-                let Some(payload) = maybe else { break }; // tüm handle'lar düştü → drain'e geç.
-                let id = next_unit;
-                next_unit += 1;
+                let Some(message) = maybe else { break }; // tüm handle'lar düştü → drain'e geç.
                 stats.offered += 1;
-                let size = seam.sealed_len(HDR_DATA + payload.len()) as u64;
-                store.insert(id, payload);
                 let now = elapsed_ns(start);
-                drive!(Event::AppData(OpaqueUnit { id, size }), now);
+                // [S1B] FRAGMENTER. Mesaj `max_unit_bytes`lik ardışık chunk'lara bölünür; her
+                // chunk KENDİ birim-id'sini alır → ARQ izlemesi, FEC blok/esi yuvası ve pacing
+                // muhasebesi chunk granülünde kalır (mesaj katmanı motora GÖRÜNMEZ — SoC).
+                // Fragmentasyon kapalıyken n_chunks daima 1'dir ve bu döngü eski kodun aynısıdır.
+                let msg_id = next_message;
+                next_message = next_message.wrapping_add(1);
+                let chunk_cap = cfg.max_unit_bytes; // validate_fec: > 0 garantili
+                let n_chunks = message.len().div_ceil(chunk_cap).max(1); // boş mesaj = 1 chunk
+                if frag_on {
+                    msg_pending.insert(msg_id, u32::try_from(n_chunks).unwrap_or(u32::MAX));
+                }
+                for ci in 0..n_chunks {
+                    let off = ci * chunk_cap;
+                    let chunk = &message[off..(off + chunk_cap).min(message.len())];
+                    let id = next_unit;
+                    next_unit += 1;
+                    // Canonical source-symbol prefix'i (§2.6). Fragmentasyon KAPALIYKEN alanlar
+                    // eski değerlerini korur (message_id = unit_id, offset 0, flags 0) — alıcı
+                    // onları türetir ve wire'da prefix TAŞINMAZ. AÇIKKEN prefix wire'a yazılır.
+                    let pfx = SourcePrefix {
+                        message_id: if frag_on { msg_id } else { (id & 0xFFFF_FFFF) as u32 },
+                        chunk_offset: if frag_on { u32::try_from(off).unwrap_or(u32::MAX) } else { 0 },
+                        actual_payload_len: u16::try_from(chunk.len()).unwrap_or(u16::MAX),
+                        source_flags: if frag_on && ci + 1 == n_chunks { SOURCE_FLAG_FINAL } else { 0 },
+                    };
+                    // Gövde = prefix ‖ payload, TEK KAYNAK canonical serializer'dan (pad'siz boy).
+                    // FEC symbol'ü de wire gövdesi de bundan türer → iki uçtaki symbol byte-eşit.
+                    let mut body = vec![0u8; SOURCE_PREFIX_LEN + chunk.len()];
+                    if pfx.serialize_symbol(chunk, &mut body).is_err() {
+                        stats.frag_encode_failures += 1; // bounds koşu-öncesi doğrulandı; sessiz kalmaz
+                        continue;
+                    }
+                    // FEC symbol'ü gövdeden: `body ‖ canonical_zero_pad` (pad zaten sıfır).
+                    let sym: Option<Vec<u8>> = fec.as_ref().and_then(|p| {
+                        let mut s = vec![0u8; p.e_usize()];
+                        if body.len() > s.len() {
+                            return None; // validate_fec engelledi; savunmacı
+                        }
+                        s[..body.len()].copy_from_slice(&body);
+                        Some(s)
+                    });
+                    let hdr = if frag_on { HDR_DATA_FRAG } else { HDR_DATA };
+                    let size = seam.sealed_len(hdr + chunk.len()) as u64;
+                    // store WIRE GÖVDESİNİ tutar (frag: prefix‖payload, düz: payload).
+                    store.insert(id, if frag_on { body } else { chunk.to_vec() });
+                    if frag_on {
+                        unit_msg.insert(id, msg_id);
+                    }
+                    drive!(Event::AppData(OpaqueUnit { id, size }), now);
                 // [S1] Blok birikimi + K'de SAME-EVENT latch: drive! az önce on_event koşturdu →
                 // snapshot.event_index taze; arada başka event YOK (tek-task sıralılık) → latch'in
                 // same-event-causality guard'ı geçer.
                 if let Some(p) = fec.as_ref() {
                     let e = p.e_usize();
-                    let mut sym = vec![0u8; e];
-                    let payload_ref = store.get(&id).expect("az önce insert edildi");
-                    let pfx = SourcePrefix {
-                        message_id: (id & 0xFFFF_FFFF) as u32,
-                        chunk_offset: 0,
-                        actual_payload_len: payload_ref.len() as u16,
-                        source_flags: 0,
+                    let Some(sym) = sym else {
+                        // Ulaşılamaz (validate_fec body ≤ E garantiler); sessiz blok-desenkronu
+                        // yerine sayaç — hizanın bozulduğu ANDA görünür.
+                        stats.frag_encode_failures += 1;
+                        continue;
                     };
-                    // validate_fec tavanı garantiledi; olmazsa iki uç da aynı sonucu türetir
-                    // (deterministik) — sıfır-symbol hizayı korur.
-                    let _ = pfx.serialize_symbol(payload_ref, &mut sym);
                     debug_assert_eq!(cur_block.len() as u64, id % u64::from(p.k_shape));
                     cur_block.push(sym);
                     if cur_block.len() == p.k_shape_usize() {
@@ -831,6 +969,7 @@ async fn client_task(
                         cur_block_id = cur_block_id.wrapping_add(1);
                     }
                 }
+                } // [S1B] chunk döngüsü sonu
             }
             _ = pace.tick() => { let now = elapsed_ns(start); drive!(Event::TimerFired(Timer::Pto), now); }
             _ = rtprop.tick() => {
@@ -994,6 +1133,163 @@ struct BlockAsm {
     repairs: BTreeMap<u16, Vec<u8>>,
 }
 
+/// [S1B] Peer-başına aynı anda birleştirilen mesaj tavanı (bounded, SR-AUDIT-001; en-eski
+/// düşer + sayaç — yarım kalan mesajlar belleği süresiz tutamaz).
+const MSG_ASM_CAP: usize = 64;
+
+/// [S1B] Bir mesajın yeniden-birleştirme durumu.
+///
+/// Chunk'lar DATA yolundan da FEC-kurtarmadan da gelebilir; ikisi de aynı `SourcePrefix`'i
+/// taşıdığından burada ayrım YOKTUR (kurtarılmış chunk ile alınmış chunk eşdeğerdir — §11
+/// forward-recovery'nin mesaj katmanındaki karşılığı).
+struct MsgAsm {
+    /// `chunk_offset` → payload. BTreeMap: sıra doğal, aynı offset'in tekrarı doğal dedup
+    /// (retransmit + FEC-kurtarma aynı chunk'ı iki kez getirebilir; ilk-kazanır).
+    chunks: BTreeMap<u32, Vec<u8>>,
+    /// FINAL chunk görüldüyse mesajın toplam boyu (`offset + len`).
+    total_len: Option<usize>,
+    /// Tamponlanan byte (per-mesaj sınır kontrolü).
+    buffered: usize,
+}
+
+impl MsgAsm {
+    fn new() -> Self {
+        Self {
+            chunks: BTreeMap::new(),
+            total_len: None,
+            buffered: 0,
+        }
+    }
+
+    /// Chunk'ı ekler. `false` = REDDEDİLDİ (mesaj tavanı aşılıyor — bounds-before-alloc;
+    /// bozuk/kötücül bir FINAL'in belleği şişirmesi engellenir).
+    fn insert(&mut self, offset: u32, payload: &[u8], is_final: bool, cap: usize) -> bool {
+        let off = offset as usize;
+        let end = off.saturating_add(payload.len());
+        if end > cap {
+            return false;
+        }
+        if is_final {
+            self.total_len = Some(end);
+        }
+        if self.chunks.contains_key(&offset) {
+            return true; // ilk-kazanır; tekrar sessizce yutulmaz ama bellek de büyümez
+        }
+        self.buffered = self.buffered.saturating_add(payload.len());
+        if self.buffered > cap {
+            return false;
+        }
+        self.chunks.insert(offset, payload.to_vec());
+        true
+    }
+
+    /// Mesaj TAMAMLANDIYSA birleştirilmiş payload. Tamamlanma = FINAL görüldü **ve** `0..total_len`
+    /// BOŞLUKSUZ kaplandı. Boşluk/örtüşme varsa `None` (fail-closed: yarım mesaj asla teslim
+    /// edilmez — app'e eksik payload vermek sessiz veri bozulmasıdır).
+    fn take_if_complete(&self) -> Option<Vec<u8>> {
+        let total = self.total_len?;
+        let mut out = Vec::with_capacity(total);
+        for (&off, data) in &self.chunks {
+            if off as usize != out.len() {
+                return None; // boşluk veya örtüşme
+            }
+            out.extend_from_slice(data);
+        }
+        (out.len() == total).then_some(out)
+    }
+}
+
+/// Teslim kanalına bir mesaj koyar (bounded; taşan teslim sayılır — app drenaj sözleşmesi).
+fn push_delivery(
+    stats: &mut ServerStats,
+    delivery_tx: &mpsc::Sender<Delivery>,
+    peer: SocketAddr,
+    unit_id: u64,
+    payload: Vec<u8>,
+    from_fec: bool,
+) {
+    let d = Delivery {
+        peer,
+        unit_id,
+        payload,
+    };
+    if delivery_tx.try_send(d).is_ok() {
+        stats.delivered += 1;
+        if from_fec {
+            stats.fec_recovered_units += 1;
+        }
+    } else {
+        stats.delivery_dropped += 1;
+    }
+}
+
+/// [S1B] Alınan bir chunk'ı app'e teslim yoluna koyar — DATA ve FEC-kurtarma ORTAK kapısı.
+///
+/// Fragmentasyon KAPALIYKEN: chunk = mesaj → doğrudan teslim, ilk-teslim dedup'ı `unit_id`
+/// üzerinde (eski davranış birebir).
+/// AÇIKKEN: prefix'teki `(message_id, chunk_offset, FINAL)` ile birleştiriciye girer; mesaj
+/// tamamlanınca TAM payload TEK `Delivery` olarak akar ve dedup `message_id` üzerinde olur.
+#[allow(clippy::too_many_arguments)]
+fn admit_chunk(
+    stats: &mut ServerStats,
+    delivery_tx: &mpsc::Sender<Delivery>,
+    peer: SocketAddr,
+    slot: &mut PeerSlot,
+    frag_on: bool,
+    max_message_bytes: usize,
+    unit_id: u64,
+    pfx: &SourcePrefix,
+    payload: &[u8],
+    from_fec: bool,
+) {
+    if !frag_on {
+        if !slot.delivered_seen.insert(unit_id) {
+            return; // birim çoktan teslim edildi (DATA/FEC ortak pencere)
+        }
+        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
+            slot.delivered_seen.pop_first();
+        }
+        push_delivery(
+            stats,
+            delivery_tx,
+            peer,
+            unit_id,
+            payload.to_vec(),
+            from_fec,
+        );
+        return;
+    }
+    let mid = u64::from(pfx.message_id);
+    if slot.delivered_seen.contains(&mid) {
+        return; // mesaj çoktan teslim edildi; geç chunk'lar (retransmit/kurtarma) yutulur
+    }
+    stats.frag_chunks_rx += 1;
+    let complete = {
+        let asm = slot.msgs.entry(pfx.message_id).or_insert_with(MsgAsm::new);
+        if !asm.insert(
+            pfx.chunk_offset,
+            payload,
+            pfx.source_flags & SOURCE_FLAG_FINAL != 0,
+            max_message_bytes,
+        ) {
+            stats.frag_chunk_dropped += 1;
+        }
+        asm.take_if_complete()
+    };
+    if let Some(full) = complete {
+        slot.msgs.remove(&pfx.message_id);
+        slot.delivered_seen.insert(mid);
+        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
+            slot.delivered_seen.pop_first();
+        }
+        stats.msgs_reassembled += 1;
+        push_delivery(stats, delivery_tx, peer, mid, full, from_fec);
+    } else if slot.msgs.len() > MSG_ASM_CAP {
+        slot.msgs.pop_first();
+        stats.msg_asm_evicted += 1;
+    }
+}
+
 /// Eş yuvası: alıcı motoru + idle-emeklilik çapası (item 3) + teslim-dedup penceresi.
 struct PeerSlot {
     rx: Receiver,
@@ -1001,6 +1297,8 @@ struct PeerSlot {
     delivered_seen: std::collections::BTreeSet<u64>,
     /// [S1] FEC blok-birleştirici (bounded; yalnız FEC-açıkken dolar).
     blocks: BTreeMap<u32, BlockAsm>,
+    /// [S1B] Mesaj yeniden-birleştirici (bounded `MSG_ASM_CAP`; yalnız fragmentasyon açıkken dolar).
+    msgs: BTreeMap<u32, MsgAsm>,
     /// [v1] Seam-peer (open'ın kimliklendirdiği; dönüş-seal bu kimlikle).
     seam_peer: SeamPeer,
     /// [v1] Dönüş-yönü seam-PN sayacı (per-peer monoton).
@@ -1089,6 +1387,9 @@ fn fec_ingest(
     esi: u16,
     symbol: Vec<u8>,
     is_repair: bool,
+    // [S1B] Kurtarılan chunk'ların teslim kapısı için gereken fragmenter bağlamı.
+    frag_on: bool,
+    max_message_bytes: usize,
 ) -> Vec<u16> {
     let mut recovered_esis: Vec<u16> = Vec::new();
     let asm = slot.blocks.entry(block_id).or_insert_with(|| BlockAsm {
@@ -1143,24 +1444,22 @@ fn fec_ingest(
                     else {
                         continue;
                     };
-                    // İlk-teslim dedup penceresi DATA-yoluyla ORTAK: DATA sonra gelirse (geç
-                    // retransmit) çift-teslim edilmez; tersi de simetrik.
-                    if slot.delivered_seen.insert(unit_id) {
-                        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
-                            slot.delivered_seen.pop_first();
-                        }
-                        let d = Delivery {
-                            peer,
-                            unit_id,
-                            payload: payload.to_vec(),
-                        };
-                        if delivery_tx.try_send(d).is_ok() {
-                            stats.delivered += 1;
-                            stats.fec_recovered_units += 1;
-                        } else {
-                            stats.delivery_dropped += 1;
-                        }
-                    }
+                    // [S1B] Kurtarılan chunk DATA ile AYNI kapıdan geçer: fragmentasyon kapalıysa
+                    // doğrudan teslim, açıksa birleştiriciye girer — yani FEC kurtarımı ÇOK
+                    // PARÇALI mesajlarda da işe yarar (kurtarılan symbol'ün prefix'i mesaj
+                    // kimliğini ve offset'ini zaten taşır). İlk-teslim dedup penceresi ORTAK.
+                    admit_chunk(
+                        stats,
+                        delivery_tx,
+                        peer,
+                        slot,
+                        frag_on,
+                        max_message_bytes,
+                        unit_id,
+                        &pfx,
+                        payload,
+                        true,
+                    );
                 }
                 slot.blocks.remove(&block_id);
             }
@@ -1193,6 +1492,12 @@ async fn server_task(
         start,
     };
     let mut stats = ServerStats::default();
+    // [S1B] Fragmentasyon İKİ UÇTA AYNI config'ten türetilir (wire'da bayrak taşınmaz): gönderici
+    // 0x05 çerçevesi basıyorsa alıcı da fragmentasyon modundadır. Uyumsuz kurulumda 0x05
+    // çerçeveleri decode edilir ama teslim birim granülünde kalır — sessiz bozulma değil,
+    // gözlemlenebilir davranış farkı.
+    let frag_on = cfg.max_message_bytes.is_some();
+    let msg_cap = cfg.max_message_bytes.unwrap_or(cfg.max_unit_bytes);
     // [S1] FEC-runtime (cfg.fec varsa): repair-ingest + blok-birleştirme + kurtarım-teslimi.
     let fec: Option<FecProfile> = cfg.fec.and_then(|f| by_id(f.profile_id));
     // [v1/PARAM] yerel-beklenen canonical alanlar (fail-closed doğrulama tabanı).
@@ -1257,6 +1562,14 @@ async fn server_task(
                         unit_id: u64,
                         payload: &'a [u8],
                     },
+                    /// [S1B] Fragmentli DATA: chunk metadata'sı wire'dan AÇIKÇA gelir.
+                    /// `body` = prefix ‖ payload (canonical symbol'ün başı).
+                    DataFrag {
+                        wire_seq: u16,
+                        unit_id: u64,
+                        pfx: SourcePrefix,
+                        body: &'a [u8],
+                    },
                     Fec {
                         h: FecFrameHeader,
                         symbol: &'a [u8],
@@ -1272,6 +1585,13 @@ async fn server_task(
                         wire_seq,
                         unit_id,
                         payload,
+                    }
+                } else if let Some((wire_seq, unit_id, pfx, body)) = decode_data_frag(&plain) {
+                    RxFrame::DataFrag {
+                        wire_seq,
+                        unit_id,
+                        pfx,
+                        body,
                     }
                 } else if let Some((h, symbol)) = decode_fec(&plain) {
                     RxFrame::Fec { h, symbol }
@@ -1302,6 +1622,7 @@ async fn server_task(
                             last_seen_ns: now,
                             delivered_seen: std::collections::BTreeSet::new(),
                             blocks: BTreeMap::new(),
+                            msgs: BTreeMap::new(),
                             seam_peer,
                             tx_pn: 0,
                             param: ParamState::new(),
@@ -1312,11 +1633,45 @@ async fn server_task(
                 let Some(slot) = peers.get_mut(&peer) else { continue };
                 slot.last_seen_ns = now;
                 match parsed {
-                    RxFrame::Data {
-                        wire_seq,
-                        unit_id,
-                        payload,
-                    } => {
+                    // [S1B] İki DATA çerçevesi TEK kolda işlenir. Fark yalnızca chunk
+                    // metadata'sının NEREDEN geldiğidir:
+                    //   0x00 DATA      → prefix `unit_id`'den TÜRETİLİR (mesaj = birim),
+                    //   0x05 DATA-FRAG → prefix WIRE'DAN gelir (mesaj = ardışık chunk'lar).
+                    // Sonrasındaki her şey — motor beslemesi, ACK, symbol ingest, teslim —
+                    // ortaktır; iki ayrı kopya bakım-zamanlı ayrışma riskiydi.
+                    RxFrame::Data { .. } | RxFrame::DataFrag { .. } => {
+                        let (wire_seq, unit_id, pfx, payload, body) = match parsed {
+                            RxFrame::Data {
+                                wire_seq,
+                                unit_id,
+                                payload,
+                            } => (
+                                wire_seq,
+                                unit_id,
+                                SourcePrefix {
+                                    message_id: (unit_id & 0xFFFF_FFFF) as u32,
+                                    chunk_offset: 0,
+                                    actual_payload_len: u16::try_from(payload.len())
+                                        .unwrap_or(u16::MAX),
+                                    source_flags: 0,
+                                },
+                                payload,
+                                None,
+                            ),
+                            RxFrame::DataFrag {
+                                wire_seq,
+                                unit_id,
+                                pfx,
+                                body,
+                            } => (
+                                wire_seq,
+                                unit_id,
+                                pfx,
+                                &body[SOURCE_PREFIX_LEN..],
+                                Some(body),
+                            ),
+                            _ => unreachable!("dış match yalnız iki DATA varyantını seçti"),
+                        };
                         let expected = slot.rx.largest_seq().map_or(0, |m| m + 1);
                         let full = resolve_seq(expected, wire_seq);
                         let out = slot.rx.on_datagram(
@@ -1327,29 +1682,31 @@ async fn server_task(
                             },
                             now,
                         );
-                        // İlk-teslim: seq-yeni VE birim-yeni (dedup penceresi) ise app'e akar.
-                        if out.delivered.contains(&unit_id) && slot.delivered_seen.insert(unit_id) {
-                            if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
-                                slot.delivered_seen.pop_first();
-                            }
-                            let d = Delivery {
+                        // İlk-teslim: seq-yeni ise chunk teslim kapısına girer (dedup orada:
+                        // fragmentasyon kapalı→birim-id, açık→mesaj-id).
+                        if out.delivered.contains(&unit_id) {
+                            admit_chunk(
+                                &mut stats,
+                                &delivery_tx,
                                 peer,
+                                slot,
+                                frag_on,
+                                msg_cap,
                                 unit_id,
-                                payload: payload.to_vec(),
-                            };
-                            if delivery_tx.try_send(d).is_ok() {
-                                stats.delivered += 1;
-                            } else {
-                                stats.delivery_dropped += 1; // bounded kanal; drenaj sözleşmesi.
-                            }
+                                &pfx,
+                                payload,
+                                false,
+                            );
                         }
                         if let Some(ack) = out.ack {
                             let (sp, pn) = (slot.seam_peer, slot.next_pn());
                             srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, pn, ack.encode())
                                 .await;
                         }
-                        // [S1] Source-symbol türetimi → blok-birleştirici (TX ile AYNI deterministik
-                        // SourcePrefix; block/esi unit_id'den türer — iki uç hizalı).
+                        // [S1] Source-symbol → blok-birleştirici. 0x00'da symbol TÜRETİLİR (TX ile
+                        // aynı deterministik prefix); 0x05'te wire gövdesi ZATEN canonical symbol'ün
+                        // başıdır → yalnız pad eklenir, yeniden türetme YOK (byte-eşitlik yapısal).
+                        // block/esi her iki durumda da unit_id'den türer — iki uç hizalı.
                         // [v1/PARAM] Source-türetimi param-GATE'SİZ: profil YEREL cfg'den (validate_fec
                         // garantili), admission-semantiği yok, bounded (RX_BLOCKS_CAP) — bind'den önce
                         // gelen DATA'ların symbol'leri kaybolursa blok repair-only kalır ve ASLA
@@ -1359,13 +1716,18 @@ async fn server_task(
                             let block_id = (unit_id / u64::from(p.k_shape)) as u32;
                             let esi = (unit_id % u64::from(p.k_shape)) as u16;
                             let mut sym = vec![0u8; p.e_usize()];
-                            let pfx = SourcePrefix {
-                                message_id: (unit_id & 0xFFFF_FFFF) as u32,
-                                chunk_offset: 0,
-                                actual_payload_len: payload.len() as u16,
-                                source_flags: 0,
-                            };
-                            let _ = pfx.serialize_symbol(payload, &mut sym);
+                            match body {
+                                Some(b) if b.len() <= sym.len() => {
+                                    sym[..b.len()].copy_from_slice(b);
+                                }
+                                Some(_) => {
+                                    stats.unknown_frames += 1; // gövde E'yi aşıyor — fail-closed
+                                    continue;
+                                }
+                                None => {
+                                    let _ = pfx.serialize_symbol(payload, &mut sym);
+                                }
+                            }
                             let k = u8::try_from(p.k_shape).unwrap_or(255);
                             let rec = fec_ingest(
                                 &mut stats,
@@ -1378,6 +1740,8 @@ async fn server_task(
                                 esi,
                                 sym,
                                 false,
+                                frag_on,
+                                msg_cap,
                             );
                             if !rec.is_empty() {
                                 stats.fec_recovered_ctrl_tx += 1;
@@ -1465,6 +1829,8 @@ async fn server_task(
                             h.esi,
                             symbol.to_vec(),
                             is_repair,
+                            frag_on,
+                            msg_cap,
                         );
                         if !rec.is_empty() {
                             stats.fec_recovered_ctrl_tx += 1;
@@ -1515,6 +1881,8 @@ async fn server_task(
                                             fh.esi,
                                             sym,
                                             is_rep,
+                                            frag_on,
+                                            msg_cap,
                                         );
                                         if !rec.is_empty() {
                                             stats.fec_recovered_ctrl_tx += 1;

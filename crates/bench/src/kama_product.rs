@@ -34,8 +34,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use client_core::runtime::{
-    ClientEndpoint, ClientSender, EgressPolicy, FecRuntimeConfig, RuntimeConfig, RuntimeError,
-    ServerEndpoint,
+    fec_chunk_capacity, ClientEndpoint, ClientSender, EgressPolicy, FecRuntimeConfig,
+    RuntimeConfig, RuntimeError, ServerEndpoint,
 };
 use client_core::seam::IdentitySeam;
 use tokio::time::interval;
@@ -66,9 +66,7 @@ impl EgressPolicy for BudgetEgress {
         let ip_len = len as u64 + IPV4_UDP_OVERHEAD;
         // Zehirli kilit = koşu geçersiz; sessizce "geçir" demek bütçeyi sessizce kaldırırdı.
         // Panik yerine REDDET: fail-closed, sayaçlar donar, anomali ölçümde görünür.
-        self.0
-            .lock()
-            .is_ok_and(|mut g| g.permit(ip_len, now_ns))
+        self.0.lock().is_ok_and(|mut g| g.permit(ip_len, now_ns))
     }
 
     fn arm(&mut self, now_ns: u64) {
@@ -78,14 +76,32 @@ impl EgressPolicy for BudgetEgress {
     }
 }
 
-/// [`FecArm`] → ürün `RuntimeConfig`. `payload_bytes` birim tavanına birebir bağlanır; FEC
-/// açıkken `payload + SOURCE_PREFIX_LEN ≤ profile.e` koşulunu `connect`/`bind` typed doğrular.
+/// [`FecArm`] → ürün `RuntimeConfig`.
+///
+/// **[S1B] Birim vs mesaj.** FEC açıkken bir chunk en çok `E − SOURCE_PREFIX_LEN` byte taşır
+/// (profil 0x03'te 53 B). Benchmark yükü bundan büyükse (256 B, 1200 B …) fragmenter AÇILIR:
+/// `max_unit_bytes` = symbol kapasitesi, `max_message_bytes` = tam mesaj. Böylece **FEC kolu
+/// gerçek mesaj boylarında koşabilir** — fragmenter'dan önce bu yapısal olarak imkânsızdı ve
+/// FEC ölçümleri 48 B'lık yapay bir yüke hapsolmuştu.
+///
+/// FEC kapalıyken mesaj = birim (fragmentasyon YOK), yani wire eski kollarla birebir aynıdır.
 ///
 /// `drain_cap = 0`: bench'te kapanış-drenajı YOKTUR — aksi hâlde deadline SONRASI akan
 /// retransmit'ler `tx_bytes`'a girer ve ölçüm penceresini sessizce genişletirdi.
 fn runtime_cfg(payload_bytes: u64, quota_r: u32, fec: FecArm) -> RuntimeConfig {
+    let payload = usize::try_from(payload_bytes).unwrap_or(usize::MAX);
+    let profile_id = match fec {
+        FecArm::Off => None,
+        FecArm::StaticR { profile_id, .. } | FecArm::Adaptive { profile_id } => Some(profile_id),
+    };
+    // Bilinmeyen profil: birim tavanını kısıtlama — `validate_fec` koşu-öncesi typed reddedecek.
+    let unit = profile_id
+        .and_then(fec_chunk_capacity)
+        .map_or(payload, |cap| payload.min(cap));
     RuntimeConfig {
-        max_unit_bytes: usize::try_from(payload_bytes).unwrap_or(usize::MAX),
+        max_unit_bytes: unit.max(1),
+        // Mesaj chunk'a sığmıyorsa fragmenter AÇIK (açık opt-in; eşitsizlikten türemez).
+        max_message_bytes: (payload > unit).then_some(payload),
         quota_r,
         drain_cap: Duration::ZERO,
         fec: match fec {
@@ -503,28 +519,79 @@ mod tests {
         assert_eq!(f.manual_r, None, "adaptif = Controller modu (manual_r yok)");
     }
 
-    /// FEC-config sınırı koşudan ÖNCE typed reddedilir: profil 0x03'te E=64, prefix 11 B →
-    /// 53 B'tan büyük payload kabul EDİLEMEZ. (Sprint-B fragmenter'ının gerekçesi.)
-    #[tokio::test]
-    async fn oversized_payload_with_fec_is_rejected_before_the_run() {
-        let mut c = cfg(
-            "127.0.0.1:9".parse().unwrap(),
-            1,
-            50,
+    /// [S1B] Symbol'e sığmayan yük artık FRAGMENTER'a düşer, reddedilmez: profil 0x03'te chunk
+    /// kapasitesi 53 B'tır; 256 B'lık benchmark yükü 53 B'lık chunk'lara bölünür ve mesaj
+    /// tavanı 256 B olur. Fragmenter'dan önce bu kurulum koşu-öncesi typed REDDEDİLİYORDU —
+    /// FEC ölçümlerini 48 B'lık yapay yüke hapseden duvar buydu.
+    #[test]
+    fn benchmark_payload_now_fragments_instead_of_being_refused() {
+        let cap = fec_chunk_capacity(0x03).expect("profil 0x03 bilinmeli");
+        assert_eq!(cap, 53, "E(64) − SOURCE_PREFIX_LEN(11)");
+
+        let c = runtime_cfg(
+            256,
+            4,
             FecArm::StaticR {
                 profile_id: 0x03,
                 r: 4,
             },
         );
-        c.payload_bytes = 256; // 256 + 11 > 64
-        let err = KamaProductTransport
-            .run_client(c)
-            .await
-            .expect_err("symbol'e sığmayan payload typed reddedilmeli");
-        let msg = err.to_string();
+        assert_eq!(c.max_unit_bytes, 53, "birim symbol kapasitesine kilitlenir");
+        assert_eq!(
+            c.max_message_bytes,
+            Some(256),
+            "tam benchmark mesajı taşınır (fragmenter AÇIK)"
+        );
+
+        // Chunk'a sığan yükte fragmenter AÇILMAZ (gereksiz 11 B/chunk ödenmez).
+        let small = runtime_cfg(
+            48,
+            4,
+            FecArm::StaticR {
+                profile_id: 0x03,
+                r: 4,
+            },
+        );
+        assert_eq!(small.max_unit_bytes, 48);
+        assert_eq!(small.max_message_bytes, None, "48 ≤ 53 → fragmentasyon yok");
+    }
+
+    /// Ve gerçekten koşar: 256 B × 8 mesaj, FEC açık, uçtan uca TAM teslim + wire'da repair.
+    #[tokio::test]
+    async fn fec_arm_runs_at_the_256b_benchmark_payload_end_to_end() {
+        let arm = FecArm::StaticR {
+            profile_id: 0x03,
+            r: 4,
+        };
+        let srv = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            runtime_cfg(256, 4, arm),
+            Box::new(IdentitySeam),
+        )
+        .await
+        .expect("bind");
+        let addr = srv.local_addr();
+        let pump = tokio::spawn(async move {
+            let mut srv = srv;
+            while srv.next_delivery().await.is_some() {}
+        });
+
+        let mut c = cfg(addr, 8, 8_000, arm);
+        c.payload_bytes = 256;
+        let out = KamaProductTransport.run_client(c).await.expect("koşu");
+        pump.abort();
+
+        let delivered = out
+            .events
+            .iter()
+            .filter(|e| e.delivered_ns.is_some())
+            .count();
+        assert_eq!(delivered, 8, "256 B mesajların hepsi teslim edilmeli");
+        assert_eq!(out.meta.payload_bytes, 256);
         assert!(
-            msg.contains("fec config"),
-            "typed FEC-config reddi bekleniyor, alınan: {msg}"
+            out.meta.tx.fec > 0,
+            "256 B yükte de repair akmalı: {:?}",
+            out.meta.tx
         );
     }
 

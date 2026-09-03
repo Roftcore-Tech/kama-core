@@ -8,6 +8,9 @@
 //! ccr §35 SESSION_DATA finalizasyonu güvenlik-düzlemi entegrasyonunda yapılır (tasarım D5);
 //! v0 çerçevesi dikişin arkasında olduğundan swap noktası tek yerdir.
 
+use kama_transport_schema::prefix::SourcePrefix;
+use kama_transport_schema::SOURCE_PREFIX_LEN;
+
 /// DATA frame_type.
 pub const FRAME_DATA: u8 = 0x00;
 /// DATA başlık boyu: type(1) + seq u16(2) + unit_id u64(8).
@@ -33,6 +36,59 @@ pub fn decode_data(buf: &[u8]) -> Option<(u16, u64, &[u8])> {
     let seq = u16::from_be_bytes([buf[1], buf[2]]);
     let unit_id = u64::from_be_bytes(buf[3..11].try_into().ok()?);
     Some((seq, unit_id, &buf[HDR_DATA..]))
+}
+
+// ── [S1B] Fragmentli DATA çerçevesi ──────────────────────────────────────────────────────────
+//
+// Neden ayrı bir codepoint: 0x00 DATA'da chunk metadata'sı YOKTUR, alıcı source-symbol'ün
+// prefix'ini `unit_id`'den TÜRETİR (message_id = unit_id, chunk_offset = 0). Bu, bir mesajın tek
+// bir symbol'e sığmasını zorunlu kılar (profil 0x03'te 53 B) — production fragmenter'ın önündeki
+// duvar buydu. 0x05 çerçevesi canonical `SourcePrefix`'i (§2.6, 11 B) wire'da AÇIKÇA taşır:
+//
+//   [0x05][seq u16][unit_id u64][ SourcePrefix 11B ‖ payload ]
+//                                └──────── gövde = canonical symbol'ün BAŞI ────────┘
+//
+// Alıcı symbol'ü `gövde ‖ canonical_zero_pad` olarak kurar — hiçbir alan yeniden türetilmez,
+// dolayısıyla iki uçtaki symbol'lerin byte-eşitliği YAPISALDIR (türetme-uyumsuzluğu bug sınıfı
+// kapanır; RS reconstruct'ın sessizce bozulduğu tek yer orasıydı). Fazladan maliyet 11 B/chunk
+// ve YALNIZ fragmentasyon açıkken ödenir — kapalıyken wire 0x00 ile birebir aynıdır.
+
+/// [S1B] Fragmentli DATA frame_type.
+pub const FRAME_DATA_FRAG: u8 = 0x05;
+/// [S1B] Fragmentli DATA başlık boyu: type(1)+seq u16(2)+unit_id u64(8) + SourcePrefix(11) = 22 B.
+pub const HDR_DATA_FRAG: usize = HDR_DATA + SOURCE_PREFIX_LEN;
+
+/// [S1B] Fragmentli DATA kodlar. `body` = `SourcePrefix::serialize_symbol` çıktısının
+/// pad'siz başı (prefix ‖ payload) — çağıran onu canonical serializer'dan üretir, bu fonksiyon
+/// alan düzenini YENİDEN YAZMAZ (tek-kaynak kuralı).
+#[must_use]
+pub fn encode_data_frag(seq: u16, unit_id: u64, body: &[u8]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(HDR_DATA + body.len());
+    b.push(FRAME_DATA_FRAG);
+    b.extend_from_slice(&seq.to_be_bytes());
+    b.extend_from_slice(&unit_id.to_be_bytes());
+    b.extend_from_slice(body);
+    b
+}
+
+/// [S1B] Fragmentli DATA çözer: `(wire_seq, unit_id, prefix, body)`.
+///
+/// `body` = prefix ‖ payload (canonical symbol'ün başı; alıcı yalnız pad ekler).
+/// FAIL-CLOSED: prefix parse edilemezse VEYA `actual_payload_len` gerçek payload boyuyla
+/// UYUŞMAZSA `None` — uzunluk alanı gövdeyle çapraz-doğrulanır, körü körüne güvenilmez.
+#[must_use]
+pub fn decode_data_frag(buf: &[u8]) -> Option<(u16, u64, SourcePrefix, &[u8])> {
+    if buf.len() < HDR_DATA_FRAG || buf[0] != FRAME_DATA_FRAG {
+        return None;
+    }
+    let seq = u16::from_be_bytes([buf[1], buf[2]]);
+    let unit_id = u64::from_be_bytes(buf[3..11].try_into().ok()?);
+    let body = &buf[HDR_DATA..];
+    let pfx = SourcePrefix::parse(body).ok()?;
+    if usize::from(pfx.actual_payload_len) != body.len() - SOURCE_PREFIX_LEN {
+        return None;
+    }
+    Some((seq, unit_id, pfx, body))
 }
 
 // ── [S1] FEC-shard çerçevesi ──────────────────────────────────────────────────────────────────
