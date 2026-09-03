@@ -1,0 +1,4 @@
+cell,n,mean_delta,median_delta,ci_lo,ci_hi,boot_p,verdict,cost_mean_delta,cost_ci_lo,cost_ci_hi,tail_mean_delta,tail_ci_lo,tail_ci_hi
+exploratory_h3a_burst40_paced_A2_d120_u0.75,10,-0.022,-0.02,-0.036,-0.009,0.0004,STILL-WORSE,0.0331,0.0143,0.0522,0.013,-0.003,0.03
+exploratory_h3b_burst50_paced_A2_d120_u0.75,10,-0.08,-0.01,-0.215,-0.006,0.0001,STILL-WORSE,0.0549,0.0247,0.0873,0.02,-0.179,0.222
+exploratory_h3c_burst60_paced_A2_d120_u0.75,10,-0.011,-0.01,-0.018,-0.005,0.0002,STILL-WORSE,0.0526,0.0368,0.0697,0.12,0.006,0.319

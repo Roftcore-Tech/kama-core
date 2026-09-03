@@ -1,0 +1,258 @@
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep0 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep0 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep1 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep1 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep2 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep2 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep3 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep3 kama-arq
+=== RESUME 2026-09-03 17:09:42 binary=fed8a2f8 (byte-identical rebuild @f8b7bca2) ===
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep0/q-stream
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep0/q-dgram-arq
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep0/kama-arq
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep0/kama-tail-v1
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep1/kama-arq
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep1/kama-tail-v1
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep1/q-stream
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep1/q-dgram-arq
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep2/kama-arq
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep2/kama-tail-v1
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep2/q-stream
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep2/q-dgram-arq
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep3/q-stream
+SKIP (var): reports/burst-reproof-v1/out/exploratory_h3a_burst40_paced_A2_d120_u0.75/rep3/q-dgram-arq
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep3 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep4 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep4 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep5 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep5 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep6 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep6 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep7 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep7 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep8 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep8 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep9 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep9 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3a_burst40_paced_A2_d120_u0.75 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep0 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep0 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep1 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep1 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep2 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep2 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep3 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep3 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep4 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep4 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep5 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep5 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep6 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep6 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep7 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep7 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep8 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep8 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep9 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep9 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep9 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3b_burst50_paced_A2_d120_u0.75 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep0 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep0 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep0 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep0 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep1 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep1 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep1 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep1 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep2 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep2 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep2 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep2 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep3 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep3 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep3 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep3 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep4 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep4 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep4 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep4 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep5 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep5 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep5 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep5 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep6 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep6 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep6 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep6 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep7 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep7 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep7 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep7 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep8 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep8 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep8 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep8 kama-tail-v1
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep9 q-stream
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep9 q-dgram-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep9 kama-arq
+  OK: out.jsonl
+RUN: exploratory_h3c_burst60_paced_A2_d120_u0.75 rep9 kama-tail-v1
+  OK: out.jsonl
+BITTI: 30 manifest satırı işlendi → reports/burst-reproof-v1/out
+CALRUN_EXIT=0

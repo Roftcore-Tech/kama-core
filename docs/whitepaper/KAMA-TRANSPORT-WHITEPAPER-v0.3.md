@@ -34,10 +34,13 @@ olarak kullanılmadı.
 
 **Negatif bulgu ve düzeltmesi:** 250 kbit/s Gilbert-Elliott patlamalı-kayıp hücrelerinde (h3a/b/c, gerçekleşen
 kayıp ≈%60) Quinn referansları medyan %100 iken `kama-tail-v1` %92-97 — **Kama patlamalı kayıpta geride** (v0.2
-bulgusu). Kök-neden birim-izinden kanıtlandı ve P0 düzeltmesi yazıldı; aynı seed'lerle netem yeniden-ölçümünde
-h3b açığı **−7,3 → −1,7 puana** küçüldü (Ek B). **Dürüstlük kaydı:** hücre hâlâ kaybediliyor; tam yeniden-kanıt
-için dondurulan `burst-reproof-v1` ön-kaydı 15/120 koşuda yarıda kaldı ve NOT-WORSE/STILL-WORSE hükmü
-üretilmedi — bu, kapatılması gereken açık bir ön-kayıt borcudur.
+bulgusu). Kök-neden birim-izinden kanıtlandı ve P0 düzeltmesi yazıldı (Ek B). **Tam yeniden-kanıt
+2026-09-03'te TAMAMLANDI** (`burst-reproof-v1`, 120/120 rep-kol, 0 INVALID, frozen binary byte-özdeş):
+dondurulmuş hüküm üç profilde de **STILL-WORSE** (Δ̂ −0,011 / −0,080 / −0,022; üç %95 CI de tamamen
+sıfırın altında). Medyan fark 1–2 puana indi (kama-tail-v1 0,98–0,99 vs quinn 1,000) ve Kama aynı
+hücrelerde byte-verimi bakımından üstün; ama ön-kayıtlı **"eşitlik" barı geçilemedi** — ortalamayı
+nadir ama tam çöken tekrarlar sürüyor (quinn hiç çökmüyor). Ön-kayıtlı yönlendirme: bu rejim için
+**V2 (FEC ileri-kurtarma)** endike. Ayrıntı ve sınırlar: Ek B.1.
 
 Bu kampanya FEC kolları içermez; bulgular yalnız **kurtarma / transport-entegrasyon** farkına atfedilir.
 "QUIC mimarisine üstünlük" iddiası yapılmamaktadır (§7). TCP/KCP kolları hiç koşulmamıştır; bu belgede
@@ -244,10 +247,35 @@ Primary kolun q-dgram'a açığı **−7,3 → −1,7 puan.** G1 yeniden-doğrul
 (n=3) ve p2 tail-ON ort. 0,523 ≈ banked 0,505 → **banked +38pp hükmü sarsılmadı** (mühendislik doğrulaması;
 ön-kayıtlı test değildir).
 
-**Açık dürüstlük kaydı:** hücre hâlâ Quinn'in gerisindedir; dondurulmuş `burst-reproof-v1` ön-kaydı
-(NOT-WORSE/STILL-WORSE karar kuralıyla, n=10×3-hücre×4-kol) 15/120 koşuda kesildi ve hükümsüz kaldı —
-tamamlanana dek "patlamalı kayıpta artık geri değiliz" CÜMLESİ KURULAMAZ. Ön-kaydın kendi çıtası da dürüsttü:
-bu rejimde Quinn zaten ≈1,000 çalışıyor; hedef üstünlük değil, negatif bulguyu nötrlemek.
+### Ek B.1 — Yeniden-kanıt TAMAMLANDI (2026-09-03): hüküm **STILL-WORSE**
+
+v0.3'ün ilk sürümünde "yarıda kalmış ön-kayıt borcu" olarak kaydedilen `burst-reproof-v1` kampanyası
+tamamlandı: **120/120 rep-kol, 0 INVALID, 0 MISSING**; binary frozen sha'da byte-özdeş yeniden üretildi;
+seed'ler banked exploratory ile aynı. Dondurulmuş karar kuralı (CI alt-sınır ≥ 0 → NOT-WORSE ·
+CI üst-sınır < 0 → STILL-WORSE) uygulandı:
+
+| profil | n | Δ̂ (kama-tail-v1 − q-dgram-arq) | %95 CI | hüküm |
+|---|---|---|---|---|
+| h3a burst40 | 10 | −0,022 | [−0,036, −0,009] | **STILL-WORSE** |
+| h3b burst50 | 10 | −0,080 | [−0,215, −0,006] | **STILL-WORSE** |
+| h3c burst60 | 10 | −0,011 | [−0,018, −0,005] | **STILL-WORSE** |
+
+**Yani: "patlamalı kayıpta artık geri değiliz" cümlesi KURULAMAZ — hâlâ gerideyiz.** Ancak büyüklük
+değişti: medyan completion 0,92–0,93'ten **0,98–0,99'a** çıktı (quinn 1,000), yani tipik koşuda fark
+1–2 puana indi; ortalamayı aşağı çeken şey **nadir ama tam çöken tekrarlar**dır (h3b rep9: 0,34 —
+diğer dokuz tekrar 0,94–1,00; quinn hiç çökmüyor). Fix'in eşli ölçülen etkisi medyanda her hücrede
+pozitif, h3c/tail-ON'da CI sıfırı dışlıyor (+0,066 [+0,038, +0,091]). Aynı hücrelerde Kama **byte-verimi
+bakımından üstün** (+0,033…+0,055, üç CI de sıfırın üstünde).
+
+**Ön-kayıtlı yönlendirme:** STILL-WORSE kolu → **V2 = FEC ileri-kurtarma** bu rejim için endike.
+Bu kampanyada FEC kolu YOKTU; S1-GATE screening'inin static-r4 ile h3b'de 5/5 %100 vermesi bir
+screening sinyalidir, kanıt değil — kanıt ayrı ön-kayıtlı bir V2 kampanyası gerektirir.
+Yeni açık kalem: **burst rejiminde nadir-çöküş modu** (kök-neden bilinmiyor; bu turda bilerek teşhis
+edilmedi — dondurulmuş kampanyada sonuç-güdümlü tuning yasak). Tam rapor:
+`reports/burst-reproof-v1/FINAL-REPORT.md`.
+
+Ön-kaydın çıtası baştan dürüsttü: bu rejimde Quinn zaten ≈1,000 çalışıyor; hedef üstünlük değil,
+negatif bulguyu nötrlemekti — ve **nötrlenemedi**.
 
 ## Ek C — Screening Haritası (ön-kayıtlı DEĞİL; yalnız yön gösterir)
 

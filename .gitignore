@@ -30,3 +30,6 @@ reports/kapi-eval-v1/out-exploratory/**/cap/
 # cargo-mutants çıktısı — her koşumda binlerce diff üretir, izlenmemeli
 /mutants.out/
 /mutants.out.old/
+# burst-reproof-v1: capture katmanı diskte (80MB); bütünlük CAPS-SHA256SUMS.txt ile mühürlü
+# (kapi-eval-v1 emsali — ham JSONL/log/realized verisi izlenir, yalnız pcap katmanı hariç)
+reports/burst-reproof-v1/out/**/cap/

@@ -134,6 +134,17 @@ baseline temiz auto-merge. Riskler: kapsam eşikleri (%92/%78) merge-base'e gör
 yüzeyinde doğrulanmadan kapı yapılmamalı; Kani ispatları ve 207 test, eski API imzalarına karşı derleniyor —
 merge sonrası derleme/uyarlama gerekebilir.
 
+## 5.7 Ek koşu kaydı — burst-reproof-v1 (2026-09-03, netem)
+
+Dondurulmuş yeniden-kanıt kampanyası tamamlandı: **120/120 rep-kol · 0 INVALID (exogenous) · 0 MISSING**;
+3 GE-burst profili × 10 tekrar × 4 kol; gerçek 3-netns netem; frozen binary `fed8a2f8…` koşu öncesi
+`-j2` ile **byte-özdeş** yeniden üretilerek doğrulandı; manifest sha değişmedi; harness betiği f8b7bca2'den
+beri diff-boş. Analiz komparatörü repoda izlenir (`scripts/netem/burst_reproof_stats.py`) ve bootstrap'ı
+`kapi_eval_stats.py::boot`'tan **import eder** (yöntem-özdeşliği; B=10.000, tohum SHA256("KAPI2-BOOT"‖cell)).
+**Hüküm: üç profilde de STILL-WORSE** — ayrıntı `reports/burst-reproof-v1/FINAL-REPORT.md`.
+Kesinti dürüstlüğü: 15 rep-kol 2026-08-26 oturumundan resume-SKIP ile devralındı; iki oturum arasında
+ürün kodu değişmedi (binary sha özdeşliği kanıt).
+
 ## 6. Bilinen açık kalemler (test-kanıt perspektifinden)
 
 1. K-1 / K-2 ürün kodunda **hâlâ açık** (test branch'i yalnız ispatları getiriyor; karar owner'da).

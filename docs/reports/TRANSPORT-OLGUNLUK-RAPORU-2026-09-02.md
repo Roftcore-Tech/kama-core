@@ -55,10 +55,14 @@ Holm-p 0,0003, n=50) · DR-ARQ-PRODUCT-TAIL-1 GO (terminal-tail OFF 8/360 → ON
 2. **§4.4 GO/NO-GO kapısı AÇIK.** En savunulabilir hücre p2: 0,505 — asimetrik üstünlük ama %90 kategorik
    barın altında ve **FEC kapalıyken** ölçüldü. "QUIC mimarisine üstünlük" iddiasının tek yolu (FAZ-2
    ISOLATION+REFERENCE conjunctive) hiç koşulmadı.
-3. **Patlamalı kayıp (h3) hâlâ geride.** P0 düzeltmesi doğrulandı (h3b: 0,927→0,983; açık −7,3→−1,7pp) ama
-   hücre hâlâ kaybediliyor; kama-arq kolunun ayrı terk-yolu teşhis kuyruğunda; **burst-reproof-v1 dondurulmuş
-   ön-kaydı 15/120'de yarıda kaldı** — NOT-WORSE/STILL-WORSE hükmü üretilmedi (kayıtlı ön-kayıt-bütünlüğü
-   ihlali; tamamlanması gerekir).
+3. **Patlamalı kayıp (h3): ön-kayıt borcu KAPANDI, hüküm STILL-WORSE** *(güncelleme 2026-09-03)*.
+   `burst-reproof-v1` tamamlandı (120/120, 0 INVALID, frozen binary byte-özdeş); dondurulmuş karar
+   kuralıyla üç profilde de **STILL-WORSE** (Δ̂ −0,022 / −0,080 / −0,011; üç CI de tamamen <0).
+   Medyanlar 0,98–0,99'a çıktı (quinn 1,000) ve byte-verimi Kama lehine, ama "eşitlik" barı geçilemedi.
+   Ön-kayıtlı yönlendirme: **V2 = FEC ileri-kurtarma** bu rejim için endike (bu kampanyada FEC kolu YOK).
+   Yeni açık kalem: **burst'te nadir-çöküş modu** (rep-düzeyi ~0,30–0,34 completion; kök-neden bilinmiyor,
+   bilerek teşhis edilmedi). kama-arq'ın ayrı terk-yolu hâlâ teşhis kuyruğunda.
+   Rapor: `reports/burst-reproof-v1/FINAL-REPORT.md`.
 4. **TCP/KCP kıyası HİÇ koşulmadı.** Kollar planlandı, kod yazılmadı (`crates/bench`'te TCP/KCP izi yok).
    "Kama beats TCP/KCP" sınıfı hiçbir cümle kurulamaz.
 5. **Sürekli-blackout metriği (BENCH-01) yok.** p6 "intermittent" proxy'dir; "QUIC session-survival kaybeder"
@@ -97,7 +101,9 @@ mühendisliği demektir.
 
 ## 3. Geliştirme adayları (öncelik önerisiyle; karar owner'ın)
 
-1. **Burst-reproof-v1'i tamamla** (dondurulmuş ön-kayıt yarım — bütünlük borcu + tek kayıp hücrenin hükmü).
+1. ~~Burst-reproof-v1'i tamamla~~ **YAPILDI 2026-09-03 → STILL-WORSE.** Yerine geçen kalem:
+   **V2 burst-FEC kampanyası** (ön-kayıtlı; FEC-ON kolu + aynı GE hücreleri + aynı bütçe) ve
+   **nadir-çöküş modunun unit-izi teşhisi** (P0'ın kullandığı yöntem).
 2. **Test branch'ini birleştir** (CI kör noktalarını kapatır: gerçek miri, asan/msan, coverage kapısı, netem
    gate; K-1/K-2 kararını owner'a getirir). 5 dosyalık çakışma çözümü + eşik yeniden-kalibrasyonu gerekir.
 3. **Sprint-6 Noise** — owner'ın A1-A10 spec kararları geldiğinde (G2 kapısının ve gerçek E2E'nin ön şartı).
