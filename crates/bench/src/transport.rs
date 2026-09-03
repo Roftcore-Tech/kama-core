@@ -50,6 +50,53 @@ impl KamaArm {
     }
 }
 
+/// [SPRINT-A] Ürün-runtime kolunun (`kama-product`) FEC ayarı. Diğer kollarda YOK SAYILIR.
+///
+/// İKİ UÇTA AYNI kurulmalıdır: blok/ESI ataması `unit_id`'den deterministik türetilir ve alıcı
+/// PARAM_SET hash'iyle fail-closed doğrular — uyumsuz kurulum shard'ların düşürülmesine yol açar
+/// (sessiz bozulma değil, sayaçlı ret).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FecArm {
+    /// FEC KAPALI. Ürün sevk default'u: kol yalnız ARQ + tail-recovery + fuzzy pacing koşar.
+    #[default]
+    Off,
+    /// Statik-r: her blokta sabit `r` repair (`FecActuationMode::Manual` + manuel-close).
+    /// Operatör-forced FEC / kampanyaların STATIC_R kolu.
+    StaticR {
+        /// `kama_fec_codec::by_id` profil kimliği (ör. 0x03 = K8/R4/E64).
+        profile_id: u8,
+        /// Blok başına repair sayısı (1..=`r_code_max`).
+        r: u16,
+    },
+    /// Adaptif: `FecActuationMode::Controller` — yapı-gate (Q18-fix) kararı latch'e akar.
+    Adaptive {
+        /// `kama_fec_codec::by_id` profil kimliği.
+        profile_id: u8,
+    },
+}
+
+impl FecArm {
+    /// CLI argümanlarından çözer: `profile_id == 0` → `Off`; `r == 0` → `Adaptive`; aksi `StaticR`.
+    #[must_use]
+    pub fn from_args(profile_id: u8, r: u16) -> Self {
+        match (profile_id, r) {
+            (0, _) => Self::Off,
+            (p, 0) => Self::Adaptive { profile_id: p },
+            (p, r) => Self::StaticR { profile_id: p, r },
+        }
+    }
+
+    /// Rapor/manifest etiketi (RunMeta.kama_arm'ın kuyruğuna girer).
+    #[must_use]
+    pub fn label(self) -> String {
+        match self {
+            Self::Off => "fec-off".to_string(),
+            Self::StaticR { profile_id, r } => format!("fec-static-r{r}-p{profile_id:#04x}"),
+            Self::Adaptive { profile_id } => format!("fec-adaptive-p{profile_id:#04x}"),
+        }
+    }
+}
+
 /// Client koşu parametreleri.
 #[derive(Debug, Clone)]
 pub struct ClientCfg {
@@ -88,6 +135,8 @@ pub struct ClientCfg {
     /// noktası — bağlantı kurulunca `<g>.ready`, harness netem'i (A2: burada; A1: ölçüm-gate'inde)
     /// uygulayıp `<g>.go` yazar; warmup ancak ondan sonra başlar. None = senkronsuz.
     pub establish_gate: Option<std::path::PathBuf>,
+    /// [SPRINT-A] Ürün-runtime kolunun FEC ayarı; diğer kollarda yok sayılır.
+    pub fec: FecArm,
 }
 
 /// [KAPI-1 W6] Dosya-tabanlı barrier: `<gate>.ready` yaz → `<gate>.go` bekle (5 ms poll, 120 s
@@ -125,6 +174,11 @@ pub struct ServerCfg {
     /// girmez" REVERSE yönde de). Dosya sistemi netns'ler arasında paylaşımlı (unshare yalnız -n),
     /// bu yüzden server client'ın ölçüm-gate'ini izleyebilir. None = hemen arm (eski davranış).
     pub gate_watch: Option<std::path::PathBuf>,
+    /// [SPRINT-A] Ürün-runtime kolunun FEC ayarı — İSTEMCİYLE AYNI olmalı (bkz. [`FecArm`]).
+    pub fec: FecArm,
+    /// [SPRINT-A] Alıcı birim-payload tavanı (ürün-runtime `max_unit_bytes`); FEC açıkken
+    /// `payload + SOURCE_PREFIX_LEN ≤ profile.e` koşulunu koşu-öncesi typed doğrular.
+    pub payload_bytes: u64,
 }
 
 /// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).

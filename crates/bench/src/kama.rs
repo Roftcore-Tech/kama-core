@@ -519,6 +519,10 @@ async fn client_loop(
             data: run.tx_data,
             retx: run.tx_retx,
             dup: run.tx_dup,
+            // Bu kol security-stub'dır: FEC parity emit ETMEZ, PARAM akışı YOKTUR (dosya
+            // başlığındaki INV-FEC-1 gerekçesi) → iki sınıf de yapısal olarak sıfırdır.
+            fec: 0,
+            ctrl: 0,
         },
         udp_rx_bytes: run.rx_bytes,
         kama_arm: cfg.kama_arm.label().to_string(),
@@ -665,6 +669,8 @@ mod tests {
             warmup_msgs: 0,
             gate: None,
             establish_gate: None,
+            // Bu kolda FEC yok (yalnız kama-product kolu okur).
+            fec: crate::transport::FecArm::Off,
         }
     }
 

@@ -5,6 +5,7 @@ mod budget;
 mod error;
 mod event;
 mod kama;
+mod kama_product;
 mod metrics;
 mod qdgram;
 mod quic;
@@ -16,7 +17,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::BenchError;
-use crate::transport::{BenchTransport, Cc, ClientCfg, KamaArm, ServerCfg};
+use crate::transport::{BenchTransport, Cc, ClientCfg, FecArm, KamaArm, ServerCfg};
 
 #[derive(Parser)]
 #[command(name = "bench", about = "Kama transport benchmark harness (§4.4)")]
@@ -53,6 +54,16 @@ enum Cmd {
         /// [KAPI-1 W6] Reverse-bütçe arm senkronu: `<path>.go` belirene dek arm etme.
         #[arg(long)]
         gate_watch: Option<PathBuf>,
+        /// [SPRINT-A] FEC profil kimliği (0 = FEC kapalı). `kama-product` dışında yok sayılır.
+        /// İSTEMCİYLE AYNI verilmelidir. Örn. 3 = K8/R4/E64 (payload ≤ 53 B).
+        #[arg(long, default_value_t = 0)]
+        fec_profile: u8,
+        /// [SPRINT-A] Blok başına sabit repair sayısı (0 = adaptif/Controller modu).
+        #[arg(long, default_value_t = 0)]
+        fec_r: u16,
+        /// [SPRINT-A] Alıcı birim-payload tavanı — client `--payload` ile AYNI olmalı.
+        #[arg(long, default_value_t = 256)]
+        payload: u64,
     },
     /// Client: N mesaj gönder, ham event JSONL yaz.
     Client {
@@ -101,6 +112,13 @@ enum Cmd {
         /// [KAPI-1 W6] Kuruluş-gate'i (bağlantı kurulunca ready; netem uygulanınca go → warmup).
         #[arg(long)]
         establish_gate: Option<PathBuf>,
+        /// [SPRINT-A] FEC profil kimliği (0 = FEC kapalı). `kama-product` dışında yok sayılır.
+        /// SUNUCUYLA AYNI verilmelidir. Örn. 3 = K8/R4/E64 (payload ≤ 53 B).
+        #[arg(long, default_value_t = 0)]
+        fec_profile: u8,
+        /// [SPRINT-A] Blok başına sabit repair sayısı (0 = adaptif/Controller modu).
+        #[arg(long, default_value_t = 0)]
+        fec_r: u16,
         #[arg(long)]
         out: PathBuf,
     },
@@ -131,9 +149,13 @@ impl From<CcArg> for Cc {
 #[derive(Copy, Clone, ValueEnum, PartialEq)]
 enum TransportArg {
     Quinn,
+    /// Security-stub sürücüsü (FEC parity YAPISAL olarak emit edilemez — bkz. src/kama.rs).
     Kama,
     /// [KAPI-1 W1] quinn DATAGRAM + app-ARQ (Q-DGRAM-ARQ, FAZ-1 primary comparator).
     Qdgram,
+    /// [SPRINT-A] GERÇEK ÜRÜN runtime'ı (client-core): FEC+ARQ füzyonu, tail-recovery,
+    /// fuzzy kontrolcü, PARAM bootstrap, handshake-siz kuruluş.
+    KamaProduct,
 }
 
 /// [KAPI-1 W4] CLI karşılığı — `transport::KamaArm`'a birebir eşlenir.
@@ -205,6 +227,9 @@ async fn main() -> Result<(), BenchError> {
             budget_bucket_bytes,
             budget_ceiling_bytes,
             gate_watch,
+            fec_profile,
+            fec_r,
+            payload,
         } => {
             run_server(
                 transport,
@@ -219,6 +244,8 @@ async fn main() -> Result<(), BenchError> {
                         budget_ceiling_bytes,
                     )?,
                     gate_watch,
+                    fec: FecArm::from_args(fec_profile, fec_r),
+                    payload_bytes: payload,
                 },
             )
             .await
@@ -242,6 +269,8 @@ async fn main() -> Result<(), BenchError> {
             warmup_msgs,
             gate,
             establish_gate,
+            fec_profile,
+            fec_r,
             out,
         } => {
             let cfg = ClientCfg {
@@ -264,6 +293,7 @@ async fn main() -> Result<(), BenchError> {
                 warmup_msgs,
                 gate,
                 establish_gate,
+                fec: FecArm::from_args(fec_profile, fec_r),
             };
             let output = run_client(transport, cfg).await?;
             output.write_jsonl(&out)?;
@@ -323,6 +353,7 @@ async fn run_server(t: TransportArg, cfg: ServerCfg) -> Result<(), BenchError> {
         TransportArg::Quinn => quic::QuinnTransport.run_server(cfg).await,
         TransportArg::Kama => transport::KamaTransport.run_server(cfg).await,
         TransportArg::Qdgram => qdgram::QdgramTransport.run_server(cfg).await,
+        TransportArg::KamaProduct => kama_product::KamaProductTransport.run_server(cfg).await,
     }
 }
 
@@ -331,5 +362,6 @@ async fn run_client(t: TransportArg, cfg: ClientCfg) -> Result<event::RunOutput,
         TransportArg::Quinn => quic::QuinnTransport.run_client(cfg).await,
         TransportArg::Kama => transport::KamaTransport.run_client(cfg).await,
         TransportArg::Qdgram => qdgram::QdgramTransport.run_client(cfg).await,
+        TransportArg::KamaProduct => kama_product::KamaProductTransport.run_client(cfg).await,
     }
 }

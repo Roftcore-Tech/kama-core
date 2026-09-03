@@ -35,7 +35,7 @@ use kama_transport_schema::param::ParamFields;
 use kama_transport_schema::prefix::SourcePrefix;
 use kama_transport_schema::{inner_kind, SOURCE_PREFIX_LEN};
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
@@ -168,6 +168,44 @@ pub enum RuntimeError {
     FecConfig(&'static str),
 }
 
+/// Egress kapı-dikişi (opsiyonel; üretim default'u `None` — hiçbir kapı yok).
+///
+/// **SoC:** politika datagram'ın NE taşıdığını bilmez — yalnız mühürlü uzunluğu ve endpoint
+/// koşu-saatini görür. Transport↔security körlüğünün egress tarafı: kapı içeriğe BAKMAZ.
+///
+/// `admit` `false` dönerse datagram sokete YAZILMAZ ve bu **kanal-kaybı eşdeğeridir**: motor
+/// durumu emisyonu ZATEN işledi, karar geri itilmez, send_rate'e dokunulmaz (INV-RATE-1).
+/// Politika ASLA geciktirmez/kuyruk tutmaz — ret ya da geçir (paket-atomik).
+///
+/// Kullanım: benchmark harness'ının yön-başına bütçe governor'ü; ileride operatör kotası.
+/// `Arc<Mutex<_>>` ile sarılırsa çağıran koşu sonunda politikanın kendi sayaçlarını okur.
+pub trait EgressPolicy: Send {
+    /// Bu datagram kanala enjekte edilebilir mi? `len` = mühürlü UDP payload byte'ı;
+    /// `now_ns` = endpoint koşu-saati (monoton, `connect`/`bind` anından itibaren).
+    fn admit(&mut self, len: usize, now_ns: u64) -> bool;
+
+    /// Arm işareti ([`ClientHandle::mark_t0`] / [`ServerHandle::mark_t0`]): bu andan ÖNCESİ
+    /// politikadan muaftır (kuruluş/warmup). Default: no-op.
+    fn arm(&mut self, now_ns: u64) {
+        let _ = now_ns;
+    }
+}
+
+/// tx byte'ının sınıf etiketi — YALNIZ sayaç ayrımı için; wire'a hiçbir şey yazmaz.
+#[derive(Clone, Copy)]
+enum TxClass {
+    /// Yeni DATA (ilk emisyon).
+    Data,
+    /// ARQ retransmit (§9).
+    Retx,
+    /// §11 forward duplication.
+    Dup,
+    /// FEC repair-shard.
+    Fec,
+    /// Kontrol düzlemi (PARAM_SET / PARAM_ACK / RECOVERED / ACK).
+    Ctrl,
+}
+
 /// Client koşu istatistikleri (item 9 doğrulama yüzeyi; gözlem-amaçlı).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ClientStats {
@@ -207,6 +245,26 @@ pub struct ClientStats {
     pub param_sends: u64,
     /// [v1/PARAM] PARAM_ACK hash-echo doğrulandı (0/1; B2: emisyon zaten akıyordu).
     pub param_confirmed: u64,
+    /// Wire'a yazılmak üzere ÜRETİLEN mühürlü UDP payload byte'ı — DENEME düzlemi
+    /// ([`EgressPolicy`] reddettikleri DAHİL; gerçek-enjekte düzlem politikanın kendi
+    /// sayacındadır). Alt-sınıf ayrımı `tx_*_bytes` alanlarında; toplamları bu değere eşittir.
+    pub tx_bytes: u64,
+    /// Wire'dan okunan UDP payload byte'ı.
+    pub rx_bytes: u64,
+    /// Yeni DATA byte'ı.
+    pub tx_data_bytes: u64,
+    /// ARQ retransmit byte'ı (§9).
+    pub tx_retx_bytes: u64,
+    /// §11 forward duplication byte'ı.
+    pub tx_dup_bytes: u64,
+    /// FEC repair-shard byte'ı.
+    pub tx_fec_bytes: u64,
+    /// Kontrol-düzlemi byte'ı (PARAM_SET).
+    pub tx_ctrl_bytes: u64,
+    /// [`EgressPolicy`] reddi: hiç enjekte edilmeyen datagram/byte (kanal-kaybı eşdeğeri).
+    pub egress_refused_pkts: u64,
+    /// Reddedilen byte toplamı.
+    pub egress_refused_bytes: u64,
 }
 
 /// Server koşu istatistikleri.
@@ -243,6 +301,17 @@ pub struct ServerStats {
     pub param_rejects: u64,
     /// [v1/PARAM] PARAM-bağlanmadan gelen FEC-shard (fail-closed sayaçlı düşürme).
     pub fec_pre_param_dropped: u64,
+    /// Dönüş yönünde üretilen datagram (ACK/RECOVERED/PARAM_ACK) — DENEME düzlemi.
+    pub tx_datagrams: u64,
+    /// Dönüş yönünde üretilen mühürlü UDP payload byte'ı — DENEME düzlemi ([`EgressPolicy`]
+    /// reddettikleri DAHİL; client tarafındaki `tx_bytes` ile aynı sözleşme).
+    pub tx_bytes: u64,
+    /// Wire'dan okunan UDP payload byte'ı.
+    pub rx_bytes: u64,
+    /// [`EgressPolicy`] reddi: hiç enjekte edilmeyen datagram/byte.
+    pub egress_refused_pkts: u64,
+    /// Reddedilen byte toplamı.
+    pub egress_refused_bytes: u64,
 }
 
 /// Teslim olayı: hangi eşten hangi birim, payload'ıyla.
@@ -264,51 +333,26 @@ pub struct ClientEndpoint;
 
 /// Client tutamağı: bounded offer + ACK olay akışı + kontrollü kapanış.
 pub struct ClientHandle {
-    offer_tx: mpsc::Sender<Vec<u8>>,
+    offer: ClientSender,
     acked_rx: mpsc::Receiver<u64>,
     shutdown_tx: watch::Sender<bool>,
+    t0_tx: mpsc::Sender<oneshot::Sender<()>>,
     task: JoinHandle<ClientStats>,
+}
+
+/// Çok-üreticili offer tutamağı ([`ClientHandle::sender`]). ACK akışını `&mut` ile tutan
+/// döngüden BAĞIMSIZ ödünç alınabilir (aynı `select!` içinde hem sunmak hem ACK drenajı).
+#[derive(Clone)]
+pub struct ClientSender {
+    offer_tx: mpsc::Sender<Vec<u8>>,
     max_unit_bytes: usize,
 }
 
-impl ClientEndpoint {
-    /// Bağlan ve görevi başlat. `seam` = güvenlik dikişi (stub: [`crate::seam::IdentitySeam`]).
-    pub async fn connect(
-        server: SocketAddr,
-        cfg: RuntimeConfig,
-        seam: Box<dyn SecuritySeam>,
-    ) -> Result<ClientHandle, RuntimeError> {
-        validate_fec(&cfg)?; // [S1] koşu-öncesi typed FEC-config doğrulaması
-        let sock = UdpSocket::bind(match server {
-            SocketAddr::V4(_) => "0.0.0.0:0",
-            SocketAddr::V6(_) => "[::]:0",
-        })
-        .await?;
-        sock.connect(server).await?;
-        let (offer_tx, offer_rx) = mpsc::channel(cfg.offer_queue);
-        let (acked_tx, acked_rx) = mpsc::channel(cfg.offer_queue.max(cfg.max_inflight_units));
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let max_unit_bytes = cfg.max_unit_bytes;
-        let task = tokio::spawn(client_task(
-            sock,
-            cfg,
-            seam,
-            offer_rx,
-            acked_tx,
-            shutdown_rx,
-        ));
-        Ok(ClientHandle {
-            offer_tx,
-            acked_rx,
-            shutdown_tx,
-            task,
-            max_unit_bytes,
-        })
-    }
-}
-
-impl ClientHandle {
+impl ClientSender {
     /// Bir birim sun (non-blocking; bounded). Dolu kuyruk → typed `QueueFull` (transport bloklamaz).
+    ///
+    /// # Errors
+    /// `UnitTooLarge` (bounds-before-alloc) · `QueueFull` (backpressure) · `Closed`.
     pub fn send(&self, payload: Vec<u8>) -> Result<(), RuntimeError> {
         if payload.len() > self.max_unit_bytes {
             return Err(RuntimeError::UnitTooLarge {
@@ -320,6 +364,99 @@ impl ClientHandle {
             mpsc::error::TrySendError::Full(_) => RuntimeError::QueueFull,
             mpsc::error::TrySendError::Closed(_) => RuntimeError::Closed,
         })
+    }
+}
+
+impl ClientEndpoint {
+    /// Bağlan ve görevi başlat. `seam` = güvenlik dikişi (stub: [`crate::seam::IdentitySeam`]).
+    ///
+    /// # Errors
+    /// FEC-config reddi (koşu-öncesi typed) veya soket bind/connect hatası.
+    pub async fn connect(
+        server: SocketAddr,
+        cfg: RuntimeConfig,
+        seam: Box<dyn SecuritySeam>,
+    ) -> Result<ClientHandle, RuntimeError> {
+        Self::connect_with_policy(server, cfg, seam, None).await
+    }
+
+    /// [`connect`](Self::connect) + opsiyonel egress kapısı ([`EgressPolicy`]). Politika `None`
+    /// iken davranış `connect` ile BİREBİR aynıdır (kapı kodu hiç çalışmaz).
+    ///
+    /// # Errors
+    /// FEC-config reddi (koşu-öncesi typed) veya soket bind/connect hatası.
+    pub async fn connect_with_policy(
+        server: SocketAddr,
+        cfg: RuntimeConfig,
+        seam: Box<dyn SecuritySeam>,
+        egress: Option<Box<dyn EgressPolicy>>,
+    ) -> Result<ClientHandle, RuntimeError> {
+        validate_fec(&cfg)?; // [S1] koşu-öncesi typed FEC-config doğrulaması
+        let sock = UdpSocket::bind(match server {
+            SocketAddr::V4(_) => "0.0.0.0:0",
+            SocketAddr::V6(_) => "[::]:0",
+        })
+        .await?;
+        sock.connect(server).await?;
+        let (offer_tx, offer_rx) = mpsc::channel(cfg.offer_queue);
+        let (acked_tx, acked_rx) = mpsc::channel(cfg.offer_queue.max(cfg.max_inflight_units));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        // Kapasite 1 + onay-oneshot: mark_t0 görev işleyene dek bekler (ölçüm sözleşmesi).
+        let (t0_tx, t0_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
+        let max_unit_bytes = cfg.max_unit_bytes;
+        let task = tokio::spawn(client_task(
+            sock,
+            cfg,
+            seam,
+            egress,
+            offer_rx,
+            acked_tx,
+            shutdown_rx,
+            t0_rx,
+        ));
+        Ok(ClientHandle {
+            offer: ClientSender {
+                offer_tx,
+                max_unit_bytes,
+            },
+            acked_rx,
+            shutdown_tx,
+            t0_tx,
+            task,
+        })
+    }
+}
+
+impl ClientHandle {
+    /// Bir birim sun (non-blocking; bounded). Dolu kuyruk → typed `QueueFull` (transport bloklamaz).
+    ///
+    /// # Errors
+    /// `UnitTooLarge` · `QueueFull` · `Closed` — bkz. [`ClientSender::send`].
+    pub fn send(&self, payload: Vec<u8>) -> Result<(), RuntimeError> {
+        self.offer.send(payload)
+    }
+
+    /// Klonlanabilir offer tutamağı (bkz. [`ClientSender`]).
+    #[must_use]
+    pub fn sender(&self) -> ClientSender {
+        self.offer.clone()
+    }
+
+    /// Ölçüm-t0 işareti: **wire sayaçları sıfırlanır, TRANSPORT DURUMU KORUNUR**
+    /// (counter-reset-without-state-reset) ve varsa [`EgressPolicy`] arm edilir — bu andan
+    /// öncesi (kuruluş/warmup) kapıdan muaftır. App-düzeyi sayaçlara (`offered`/`acked`/FEC)
+    /// DOKUNMAZ.
+    ///
+    /// **Görev İŞLEYENE KADAR bekler.** Bu bir kolaylık değil, ölçüm sözleşmesidir: dönüşten
+    /// sonra sunulan HİÇBİR birim arm-öncesi muafiyetten yararlanamaz. (Ateşle-unut bir işaret
+    /// bunu garanti edemezdi — `select!` t0 ile bekleyen bir offer arasında rastgele seçer ve
+    /// ilk datagram bütçesiz kaçardı; sıfır-bütçe kolunda bir teslim olarak yakalandı.)
+    /// Görev ölmüşse sessizce döner.
+    pub async fn mark_t0(&self) {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self.t0_tx.send(ack_tx).await.is_ok() {
+            let _ = ack_rx.await;
+        }
     }
 
     /// İlk-ACK olay akışı (birim id'leri; ilk-ack-kazanır).
@@ -336,13 +473,16 @@ impl ClientHandle {
 }
 
 /// Client görevi: bench `client_loop` şekli, ölçüm makinesi çıkarılmış, sınırlar eklenmiş hâli.
+#[allow(clippy::too_many_arguments)]
 async fn client_task(
     sock: UdpSocket,
     cfg: RuntimeConfig,
     mut seam: Box<dyn SecuritySeam>,
+    mut egress: Option<Box<dyn EgressPolicy>>,
     mut offer_rx: mpsc::Receiver<Vec<u8>>,
     acked_tx: mpsc::Sender<u64>,
     mut shutdown_rx: watch::Receiver<bool>,
+    mut t0_rx: mpsc::Receiver<oneshot::Sender<()>>,
 ) -> ClientStats {
     let start = Instant::now();
     // G2 sevk default'ları TEK kaynaktan: ClientSession (tail-ON validated_v1, startup-pacing motor
@@ -396,7 +536,7 @@ async fn client_task(
     // de seq'ini işgal eder). Send hatası = kanal kaybı (INV-RATE-1; abort YOK).
     // [v1] Tek-nokta seal+send: typed seal-reddi sayılır, PN yalnız başarılı seal'de ilerler.
     macro_rules! seal_send {
-        ($frame:expr) => {
+        ($frame:expr, $class:expr, $now:expr) => {
             match seam.seal(
                 CLIENT_SEAM_PEER,
                 $frame,
@@ -408,9 +548,31 @@ async fn client_task(
             ) {
                 Ok(sd) => {
                     tx_pn = tx_pn.wrapping_add(1);
+                    let n = sd.bytes.len();
+                    let n64 = n as u64;
+                    // DENEME düzlemi: kapı reddetse de üretilen byte sayılır (sınıf ayrımıyla).
                     stats.tx_datagrams += 1;
-                    if sock.send(&sd.bytes).await.is_err() {
-                        stats.send_errors += 1; // kayıp; asla geri itme (INV-RATE-1).
+                    stats.tx_bytes += n64;
+                    match $class {
+                        TxClass::Data => stats.tx_data_bytes += n64,
+                        TxClass::Retx => stats.tx_retx_bytes += n64,
+                        TxClass::Dup => stats.tx_dup_bytes += n64,
+                        TxClass::Fec => stats.tx_fec_bytes += n64,
+                        TxClass::Ctrl => stats.tx_ctrl_bytes += n64,
+                    }
+                    // Egress kapısı: ret = kanal-kaybı eşdeğeri. Motor durumu emisyonu ZATEN
+                    // işledi; geri itilmez, rate'e dokunulmaz (INV-RATE-1).
+                    let permitted = match egress.as_mut() {
+                        Some(p) => p.admit(n, $now),
+                        None => true,
+                    };
+                    if permitted {
+                        if sock.send(&sd.bytes).await.is_err() {
+                            stats.send_errors += 1; // kayıp; asla geri itme (INV-RATE-1).
+                        }
+                    } else {
+                        stats.egress_refused_pkts += 1;
+                        stats.egress_refused_bytes += n64;
                     }
                 }
                 Err(_) => {
@@ -462,7 +624,7 @@ async fn client_task(
                                 },
                                 sym.unwrap_or(&[]),
                             );
-                            seal_send!(frame);
+                            seal_send!(frame, TxClass::Fec, $now);
                             continue;
                         }
                     }
@@ -483,15 +645,23 @@ async fn client_task(
                     stats.stale_decisions += 1;
                 }
                 let frame = encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload);
-                seal_send!(frame);
+                // Sınıf ayrımı motorun karar tipinden: ilk emisyon / ARQ retransmit / §11 dup.
+                let class = match d.kind {
+                    TransmitKind::Retransmit => TxClass::Retx,
+                    TransmitKind::Duplicate => TxClass::Dup,
+                    _ => TxClass::Data,
+                };
+                seal_send!(frame, class, $now);
             }
         };
     }
     // Gelen datagram: seam.open → ACK (V1 0x10 / V2 0x14) → ilk-ACK damgası + motor beslemesi.
     macro_rules! handle_rx {
         ($raw:expr, $now:expr) => {
+            let raw: &[u8] = $raw;
             stats.rx_datagrams += 1;
-            if let Ok(od) = seam.open($raw) {
+            stats.rx_bytes += raw.len() as u64;
+            if let Ok(od) = seam.open(raw) {
                 let plain = od.plain;
                 if plain.first() == Some(&FRAME_PARAM_ACK) {
                     // [v1/PARAM] hash-echo confirmation (B2: yalnız retry-durdurur; emisyon zaten akıyor).
@@ -569,6 +739,25 @@ async fn client_task(
     loop {
         tokio::select! {
             _ = shutdown_rx.changed() => break,
+            // Ölçüm-t0 işareti (ClientHandle::mark_t0): wire sayaçları sıfırlanır, MOTOR DURUMU
+            // KORUNUR (counter-reset-without-state-reset) ve egress kapısı arm edilir. Onay
+            // gönderilene dek çağıran bekler → t0'dan SONRAKİ hiçbir sunum arm-öncesi kalmaz.
+            Some(ack) = t0_rx.recv() => {
+                let now = elapsed_ns(start);
+                if let Some(p) = egress.as_mut() { p.arm(now); }
+                stats.tx_datagrams = 0;
+                stats.rx_datagrams = 0;
+                stats.tx_bytes = 0;
+                stats.rx_bytes = 0;
+                stats.tx_data_bytes = 0;
+                stats.tx_retx_bytes = 0;
+                stats.tx_dup_bytes = 0;
+                stats.tx_fec_bytes = 0;
+                stats.tx_ctrl_bytes = 0;
+                stats.egress_refused_pkts = 0;
+                stats.egress_refused_bytes = 0;
+                let _ = ack.send(()); // çağıran serbest: bundan sonrası ölçüm penceresi
+            }
             // Offer YALNIZ store'da yer varken alınır (bounds-before-alloc: kanal + store çift sınır).
             maybe = offer_rx.recv(), if store.len() < cfg.max_inflight_units => {
                 let Some(payload) = maybe else { break }; // tüm handle'lar düştü → drain'e geç.
@@ -653,7 +842,7 @@ async fn client_task(
                     if !param_confirmed && param_tries < 25 && due {
                         if let (Some(p), Control::ParamSet { param_hash, .. }) = (fec.as_ref(), &plan.control) {
                             let f = encode_param(p.profile_id, p.code_suite_id, param_hash);
-                            seal_send!(f);
+                            seal_send!(f, TxClass::Ctrl, now);
                             stats.param_sends += 1;
                             param_tries += 1;
                             param_last_tick_ms = now_ms;
@@ -703,26 +892,55 @@ pub struct ServerEndpoint;
 pub struct ServerHandle {
     delivery_rx: mpsc::Receiver<Delivery>,
     shutdown_tx: watch::Sender<bool>,
+    t0_tx: mpsc::Sender<oneshot::Sender<()>>,
     task: JoinHandle<ServerStats>,
     local_addr: SocketAddr,
 }
 
 impl ServerEndpoint {
     /// Bağla ve görevi başlat.
+    ///
+    /// # Errors
+    /// FEC-config reddi (koşu-öncesi typed) veya soket bind hatası.
     pub async fn bind(
         bind: SocketAddr,
         cfg: RuntimeConfig,
         seam: Box<dyn SecuritySeam>,
+    ) -> Result<ServerHandle, RuntimeError> {
+        Self::bind_with_policy(bind, cfg, seam, None).await
+    }
+
+    /// [`bind`](Self::bind) + opsiyonel dönüş-yönü egress kapısı ([`EgressPolicy`]). Politika
+    /// `None` iken davranış `bind` ile BİREBİR aynıdır.
+    ///
+    /// # Errors
+    /// FEC-config reddi (koşu-öncesi typed) veya soket bind hatası.
+    pub async fn bind_with_policy(
+        bind: SocketAddr,
+        cfg: RuntimeConfig,
+        seam: Box<dyn SecuritySeam>,
+        egress: Option<Box<dyn EgressPolicy>>,
     ) -> Result<ServerHandle, RuntimeError> {
         validate_fec(&cfg)?; // [S1] koşu-öncesi typed FEC-config doğrulaması
         let sock = UdpSocket::bind(bind).await?;
         let local_addr = sock.local_addr()?;
         let (delivery_tx, delivery_rx) = mpsc::channel(cfg.delivery_queue);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let task = tokio::spawn(server_task(sock, cfg, seam, delivery_tx, shutdown_rx));
+        // Kapasite 1 + onay-oneshot: mark_t0 görev işleyene dek bekler (ölçüm sözleşmesi).
+        let (t0_tx, t0_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
+        let task = tokio::spawn(server_task(
+            sock,
+            cfg,
+            seam,
+            egress,
+            delivery_tx,
+            shutdown_rx,
+            t0_rx,
+        ));
         Ok(ServerHandle {
             delivery_rx,
             shutdown_tx,
+            t0_tx,
             task,
             local_addr,
         })
@@ -739,6 +957,15 @@ impl ServerHandle {
     /// Sıradaki teslim (ilk-teslim dedup'lu; kanal bounded).
     pub async fn next_delivery(&mut self) -> Option<Delivery> {
         self.delivery_rx.recv().await
+    }
+
+    /// Ölçüm-t0 işareti (dönüş yönü): wire sayaçları sıfırlanır, ALICI DURUMU KORUNUR ve varsa
+    /// [`EgressPolicy`] arm edilir. Görev işleyene dek bekler — bkz. [`ClientHandle::mark_t0`].
+    pub async fn mark_t0(&self) {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self.t0_tx.send(ack_tx).await.is_ok() {
+            let _ = ack_rx.await;
+        }
     }
 
     /// Kapanış → istatistik.
@@ -796,9 +1023,19 @@ impl PeerSlot {
     }
 }
 
-/// [v1] Server-yönü tek-nokta seal+send (typed seal-reddi sayılır).
+/// [v1] Server dönüş-yönü emisyon bağlamı: güvenlik dikişi + opsiyonel egress kapısı + koşu
+/// saati. Tek yerde toplanır — böylece `srv_seal_send`'in dokuz çağrı-yeri saati/kapıyı elden
+/// ele taşımaz (ve yeni bir çağrı-yeri kapıyı ATLAYAMAZ: tek geçit).
+struct SrvTx {
+    seam: Box<dyn SecuritySeam>,
+    egress: Option<Box<dyn EgressPolicy>>,
+    start: Instant,
+}
+
+/// [v1] Server-yönü tek-nokta seal+send (typed seal-reddi sayılır). Egress kapısı reddederse
+/// datagram enjekte EDİLMEZ (kanal-kaybı eşdeğeri; alıcı durumu geri itilmez).
 async fn srv_seal_send(
-    seam: &mut Box<dyn SecuritySeam>,
+    tx: &mut SrvTx,
     sock: &UdpSocket,
     stats: &mut ServerStats,
     peer: SocketAddr,
@@ -806,7 +1043,7 @@ async fn srv_seal_send(
     pn: u64,
     frame: Vec<u8>,
 ) {
-    match seam.seal(
+    match tx.seam.seal(
         sp,
         frame,
         SealArgs {
@@ -816,7 +1053,20 @@ async fn srv_seal_send(
         },
     ) {
         Ok(sd) => {
-            let _ = sock.send_to(&sd.bytes, peer).await; // hata = kayıp.
+            let n = sd.bytes.len();
+            // DENEME düzlemi (client `tx_bytes` ile aynı sözleşme: ret dahil).
+            stats.tx_datagrams += 1;
+            stats.tx_bytes += n as u64;
+            let permitted = match tx.egress.as_mut() {
+                Some(p) => p.admit(n, elapsed_ns(tx.start)),
+                None => true,
+            };
+            if permitted {
+                let _ = sock.send_to(&sd.bytes, peer).await; // hata = kayıp.
+            } else {
+                stats.egress_refused_pkts += 1;
+                stats.egress_refused_bytes += n as u64;
+            }
         }
         Err(_) => stats.seal_failures += 1,
     }
@@ -930,11 +1180,18 @@ fn fec_ingest(
 async fn server_task(
     sock: UdpSocket,
     cfg: RuntimeConfig,
-    mut seam: Box<dyn SecuritySeam>,
+    seam: Box<dyn SecuritySeam>,
+    egress: Option<Box<dyn EgressPolicy>>,
     delivery_tx: mpsc::Sender<Delivery>,
     mut shutdown_rx: watch::Receiver<bool>,
+    mut t0_rx: mpsc::Receiver<oneshot::Sender<()>>,
 ) -> ServerStats {
     let start = Instant::now();
+    let mut tx = SrvTx {
+        seam,
+        egress,
+        start,
+    };
     let mut stats = ServerStats::default();
     // [S1] FEC-runtime (cfg.fec varsa): repair-ingest + blok-birleştirme + kurtarım-teslimi.
     let fec: Option<FecProfile> = cfg.fec.and_then(|f| by_id(f.profile_id));
@@ -949,6 +1206,18 @@ async fn server_task(
     loop {
         tokio::select! {
             _ = shutdown_rx.changed() => break,
+            // Ölçüm-t0 (ServerHandle::mark_t0): wire sayaçları sıfır, ALICI DURUMU KORUNUR.
+            Some(ack) = t0_rx.recv() => {
+                let now = elapsed_ns(start);
+                if let Some(p) = tx.egress.as_mut() { p.arm(now); }
+                stats.tx_datagrams = 0;
+                stats.rx_datagrams = 0;
+                stats.tx_bytes = 0;
+                stats.rx_bytes = 0;
+                stats.egress_refused_pkts = 0;
+                stats.egress_refused_bytes = 0;
+                let _ = ack.send(());
+            }
             _ = ack_timer.tick() => {
                 let now = elapsed_ns(start);
                 // ACK_FREQ_N'e ulaşamayan kuyruğu timer teyit eder (bench birebir).
@@ -960,7 +1229,7 @@ async fn server_task(
                     })
                     .collect();
                 for (peer, sp, pn, plain) in acks {
-                    srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, plain).await;
+                    srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, pn, plain).await;
                 }
             }
             _ = patience.tick() => {
@@ -974,7 +1243,8 @@ async fn server_task(
             r = sock.recv_from(&mut buf) => {
                 let Ok((n, peer)) = r else { continue };
                 stats.rx_datagrams += 1;
-                let Ok(od) = seam.open(&buf[..n]) else {
+                stats.rx_bytes += n as u64;
+                let Ok(od) = tx.seam.open(&buf[..n]) else {
                     stats.open_failures += 1;
                     continue;
                 };
@@ -1075,7 +1345,7 @@ async fn server_task(
                         }
                         if let Some(ack) = out.ack {
                             let (sp, pn) = (slot.seam_peer, slot.next_pn());
-                            srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, ack.encode())
+                            srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, pn, ack.encode())
                                 .await;
                         }
                         // [S1] Source-symbol türetimi → blok-birleştirici (TX ile AYNI deterministik
@@ -1113,7 +1383,7 @@ async fn server_task(
                                 stats.fec_recovered_ctrl_tx += 1;
                                 let f = encode_recovered(block_id, &rec);
                                 let (sp, pn) = (slot.seam_peer, slot.next_pn());
-                                srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, f).await;
+                                srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, pn, f).await;
                             }
                         }
                     }
@@ -1151,7 +1421,7 @@ async fn server_task(
                             if let Some(ack) = out.ack {
                                 let (sp, pn) = (slot.seam_peer, slot.next_pn());
                                 srv_seal_send(
-                                    &mut seam, &sock, &mut stats, peer, sp, pn,
+                                    &mut tx, &sock, &mut stats, peer, sp, pn,
                                     ack.encode(),
                                 )
                                 .await;
@@ -1181,7 +1451,7 @@ async fn server_task(
                         );
                         if let Some(ack) = out.ack {
                             let (sp, pn) = (slot.seam_peer, slot.next_pn());
-                            srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, ack.encode())
+                            srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, pn, ack.encode())
                                 .await;
                         }
                         let rec = fec_ingest(
@@ -1200,7 +1470,7 @@ async fn server_task(
                             stats.fec_recovered_ctrl_tx += 1;
                             let f = encode_recovered(h.block_id, &rec);
                             let (sp, pn) = (slot.seam_peer, slot.next_pn());
-                            srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, f).await;
+                            srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, pn, f).await;
                         }
                     }
                     RxFrame::Param {
@@ -1228,7 +1498,7 @@ async fn server_task(
                                 }
                                 let f = encode_param_ack(&param_hash);
                                 let (sp, pn) = (slot.seam_peer, slot.next_pn());
-                                srv_seal_send(&mut seam, &sock, &mut stats, peer, sp, pn, f).await;
+                                srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, pn, f).await;
                                 // Bind: bekletilen shard'lar drain → normal ingest (kurtarımlar
                                 // RECOVERED ile bildirilir).
                                 if let Some(p) = fec.as_ref() {
@@ -1251,7 +1521,7 @@ async fn server_task(
                                             let f2 = encode_recovered(fh.block_id, &rec);
                                             let (sp2, pn2) = (slot.seam_peer, slot.next_pn());
                                             srv_seal_send(
-                                                &mut seam, &sock, &mut stats, peer, sp2, pn2, f2,
+                                                &mut tx, &sock, &mut stats, peer, sp2, pn2, f2,
                                             )
                                             .await;
                                         }

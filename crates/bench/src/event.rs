@@ -20,13 +20,20 @@ pub struct RawEvent {
 }
 
 /// tx wire byte'larının bileşen ayrımı (teşhis dekompozisyonu — D2: fix ÖNCESİ/SONRASI aynı format).
-/// `data`=yeni DATA, `retx`=ARQ retransmit (§9), `dup`=forward duplication (§11). Toplam = udp_tx_bytes.
-/// quinn bunu ayırt etmez → `default()` (tümü 0); yalnız kama doldurur.
+/// `data`=yeni DATA, `retx`=ARQ retransmit (§9), `dup`=forward duplication (§11),
+/// `fec`=FEC repair-shard (§8), `ctrl`=kontrol düzlemi (PARAM_SET vb.).
+/// Toplam = udp_tx_bytes. quinn bunu ayırt etmez → `default()` (tümü 0).
+/// `fec`/`ctrl` yalnız ürün-runtime kolunda (`kama-product`) dolar; eski JSONL'lerde alan yok →
+/// serde default 0 (geriye-uyumlu okuma), o kayıtlarda toplam data+retx+dup olarak kapanır.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TxComponents {
     pub data: u64,
     pub retx: u64,
     pub dup: u64,
+    #[serde(default)]
+    pub fec: u64,
+    #[serde(default)]
+    pub ctrl: u64,
 }
 
 /// Bir koşunun (profil × CC × seed × repeat) metadata + connection-level wire sayaçları.

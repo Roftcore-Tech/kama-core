@@ -134,6 +134,16 @@ async fn transport_api_v0_surface_is_frozen() {
         fec_repairs_tx: _,
         fec_repair_missing: _,
         fec_recovered_ctrl_units: _,
+        // [egress-seam] wire byte muhasebesi + EgressPolicy reddi (DENEME düzlemi: ret dahil).
+        tx_bytes: _,
+        rx_bytes: _,
+        tx_data_bytes: _,
+        tx_retx_bytes: _,
+        tx_dup_bytes: _,
+        tx_fec_bytes: _,
+        tx_ctrl_bytes: _,
+        egress_refused_pkts: _,
+        egress_refused_bytes: _,
     } = ClientStats::default();
     let ServerStats {
         delivered: _,
@@ -152,6 +162,12 @@ async fn transport_api_v0_surface_is_frozen() {
         param_bound_peers: _,
         param_rejects: _,
         fec_pre_param_dropped: _,
+        // [egress-seam] dönüş-yönü wire byte muhasebesi + EgressPolicy reddi.
+        tx_datagrams: _,
+        tx_bytes: _,
+        rx_bytes: _,
+        egress_refused_pkts: _,
+        egress_refused_bytes: _,
     } = ServerStats::default();
     let Delivery {
         peer: _,

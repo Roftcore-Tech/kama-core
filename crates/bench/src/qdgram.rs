@@ -471,6 +471,9 @@ async fn client_loop(
                 data: tx_data,
                 retx: tx_retx,
                 dup: 0,
+                // Q-DGRAM-ARQ'da FEC ve PARAM düzlemi YOK.
+                fec: 0,
+                ctrl: 0,
             },
             kama_arm: String::new(),
             submit_interval_ns: interval_ns,
@@ -568,6 +571,8 @@ mod tests {
             warmup_msgs: 0,
             gate: None,
             establish_gate: None,
+            // Bu kolda FEC yok (yalnız kama-product kolu okur).
+            fec: crate::transport::FecArm::Off,
         }
     }
 
