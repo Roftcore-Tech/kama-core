@@ -332,3 +332,51 @@ fn evidence_free_window_is_not_classified_as_burst() {
         assert_eq!(s.diag_structure_gate_opened(), 0);
     }
 }
+
+// ── [KURULUŞ-GUARD] Ölçüm olmadan yapısal FEC kararı YOK ─────────────────────────────────────
+//
+// İlke: FEC bir ÖLÇÜME dayanmalıdır. PreConverge oturumun kurulmadığı fazdır — RTT/BtlBw örneği
+// yoktur, kayıp-ledger'ı güvenilmezdir. Orada parity açmak önyargıya dayanır ve somut zararı
+// ÖLÇÜLDÜ: burst-fusion politikası PreConverge'de parity açıyor, parity kıt token bütçesinde
+// ORİJİNALLERLE yarışıyor ve ilk-uçuş orijinal sayısını düşürerek kuruluşu kırıyordu
+// (kuruluş yalnız orijinal DATA'nın RTT örneğiyle olur) → netem'de EN KÖTÜ koldu (v2: 5/12).
+
+/// Sürücü PreConverge'i hiç terk etmez (ACK yok) → gate HER İKİ politikada da karar VERMEZ,
+/// ve nedeni histogramda `BlockedPreConverge` olarak görünür (sessiz sıfır değil).
+#[test]
+fn structure_gate_never_decides_before_the_session_is_established() {
+    for policy in [FecStructurePolicy::Q18Iid, FecStructurePolicy::BurstFusion] {
+        let mut s = Sender::new();
+        s.set_establish_probe(false);
+        s.set_fec_structure_policy(policy);
+        // ACK ASLA verilmez → srtt None → PreConverge kalıcı.
+        for i in 0..80u64 {
+            s.on_event(
+                Event::AppData(OpaqueUnit {
+                    id: 1000 + i,
+                    size: 101,
+                }),
+                0,
+            );
+        }
+        for t in 1..=200u64 {
+            s.on_event(Event::TimerFired(Timer::Pto), t * 200 * 1_000_000);
+        }
+        assert_eq!(
+            s.diag_structure_gate_opened(),
+            0,
+            "kurulmamış oturumda parity açılmamalı (politika {policy:?})"
+        );
+        assert_eq!(
+            s.last_decision().fec_parity_ratio_permille,
+            0,
+            "politika {policy:?}"
+        );
+        let g = s.diag_gate_outcomes();
+        assert!(
+            g[6] > 0,
+            "engelin NEDENİ histogramda görünmeli (BlockedPreConverge); histogram={g:?}"
+        );
+        assert_eq!(g[5], 0, "hiç açılmamalı; histogram={g:?}");
+    }
+}

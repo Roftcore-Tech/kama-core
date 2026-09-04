@@ -309,8 +309,9 @@ pub struct FateWindowDiag {
     pub ledger_loss_ppm_peak: u64,
     /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
     /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
-    /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI. "Açmadı" gözleminin NEDENİ buradadır.
-    pub gate_outcomes: [u64; 6],
+    /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI · 6=oturum-kurulmadı(PreConverge).
+    /// "Açmadı" gözleminin NEDENİ buradadır.
+    pub gate_outcomes: [u64; 7],
     /// Ledger'ın GERİ ALDIĞI (un-loss / Spurious) birim toplamı. Yüksekse: kayıplar ilan edildi
     /// ama geç-ACK ufkunda çürütüldü — yani ARQ onları ufuk içinde kurtardı ve `loss_windowed_ppm`
     /// TASARIM GEREĞİ sıfıra yakın kalır. Bu, ledger kusuru ile "hızlı yolda ARQ zaten yetiyor"

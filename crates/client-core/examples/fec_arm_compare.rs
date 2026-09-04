@@ -388,7 +388,7 @@ async fn main() {
         let g = r.fate.gate_outcomes;
         println!(
             "{:<32} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8} {:>12}",
-            r.label, g[0], g[1], g[2], g[3], g[4], g[5], r.fate.ledger_loss_ppm_peak
+            r.label, g[0], g[1], g[2], g[3], g[4], g[5], g[6]
         );
     }
     println!("\n# ledger un-loss muhasebesi (kayıp ilan edildi mi, geri mi alındı?):");

@@ -260,6 +260,8 @@ pub enum GateOutcome {
     NotApplicable,
     /// Ledger'ın pencereli kaybı Q18 bandının altında (`< STRUCTURE_GATE_LOSS_MIN_PPM`).
     BlockedLossBelowBand,
+    /// [KURULUŞ-GUARD] Oturum henüz kurulmadı (PreConverge) → ölçüm yok → yapısal karar YOK.
+    BlockedPreConverge,
     /// Fate penceresi çok küçük (`n < STRUCTURE_GATE_MIN_N`).
     BlockedWindowTooSmall,
     /// Kayıp-geçişi kanıtı yetersiz (`n10+n11 < MIN_LOSS_TRANSITIONS`) — yalnız `BurstFusion`.
@@ -281,12 +283,13 @@ impl GateOutcome {
             Self::BlockedNoTransitionEvidence => 3,
             Self::BlockedBurstLeftToArq => 4,
             Self::Opened(_) => 5,
+            Self::BlockedPreConverge => 6,
         }
     }
 }
 
 /// [`GateOutcome`] histogramının kova sayısı.
-pub const GATE_OUTCOME_KINDS: usize = 6;
+pub const GATE_OUTCOME_KINDS: usize = 7;
 
 /// [IW] PreConverge **ilk-uçuş penceresi** (initial window).
 ///
@@ -3010,6 +3013,20 @@ impl Sender {
     fn structure_gate_fec(&self, fuzzy_fec_permille: u32, loss_ppm: u64) -> GateOutcome {
         if fuzzy_fec_permille != 0 {
             return GateOutcome::NotApplicable;
+        }
+        // [KURULUŞ-GUARD] PreConverge'de HİÇBİR yapısal FEC kararı verilmez.
+        //
+        // İlke: FEC ölçüm olmadan aksiyon almaz. PreConverge oturumun kurulmadığı, dolayısıyla
+        // RTT/BtlBw örneği OLMADIĞI ve kayıp-ledger'ının güvenilmez (bkz. loopback bulgusu)
+        // olduğu fazdır — orada parity açmak ölçüme değil önyargıya dayanır ("sürekli açık FEC
+        // bant israfıdır" ilkesinin ihlali). Somut zarar ölçüldü: burst-fusion politikası
+        // PreConverge'de parity açıyordu, parity kıt token bütçesinde ORİJİNALLERLE yarışıyor ve
+        // ilk-uçuş orijinal sayısını düşürerek kuruluş olasılığını kırıyordu (kuruluş yalnız
+        // orijinal DATA'nın RTT örneğiyle olur — cold-start-wiring bulgusu). Sonuç: burst-fusion
+        // kolu netem'de EN KÖTÜ koldu (v2 5/12 çöküş). Kuruluş bittikten sonra (Startup+) gate
+        // gerçek ölçümle çalışır; guard yalnız kurulmamış oturumu korur.
+        if self.state == SenderState::PreConverge {
+            return GateOutcome::BlockedPreConverge;
         }
         if loss_ppm < STRUCTURE_GATE_LOSS_MIN_PPM {
             return GateOutcome::BlockedLossBelowBand;
