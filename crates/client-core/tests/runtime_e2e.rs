@@ -753,3 +753,30 @@ async fn bootstrap_rtt_probe_and_echo_traverse_the_product_wire() {
     );
     assert_eq!(off_s.cs_probes_rx, 0, "alıcı da görmemeli: {off_s:?}");
 }
+
+/// [IW] Sevk default'u ARTIK ilk-uçuş penceresini AÇIK gönderir — bu bir clamp hatasının
+/// düzeltilmesidir (pacer kovası zaten `DEFAULT_BURST_CAP` kredisiyle dolu başlıyordu, clamp
+/// onu tek birime kırpıp atıyordu). Ölçüm: sevk davranışı netem'de 6/12 çöküyordu, pencere
+/// açıkken 0/12.
+#[test]
+fn shipped_default_now_carries_an_initial_window() {
+    let d = RuntimeConfig::default();
+    assert_eq!(
+        d.initial_window_bytes,
+        adaptive_transport::pacer::DEFAULT_BURST_CAP,
+        "ilk-uçuş penceresi pacer'ın kendi başlangıç kredisi olmalı (yeni sabit DEĞİL)"
+    );
+    assert!(
+        d.initial_window_bytes > 1200,
+        "tek pakete kırpılmış bir pencere kuruluşu yazı-turaya çevirir"
+    );
+    // Diğer ayırt edici mekanizmalar KALİBRASYON beklediği için opt-in kalır (R1).
+    assert!(
+        !d.bootstrap_rtt,
+        "bootstrap merdiveni kalibre değil → opt-in"
+    );
+    assert!(
+        d.fec.is_none(),
+        "FEC default'u ürün-katmanı kampanyası bekliyor"
+    );
+}

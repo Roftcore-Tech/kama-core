@@ -96,10 +96,21 @@ pub struct RuntimeConfig {
     pub drain_cap: Duration,
     /// Server idle-peer emeklilik eşiği (item 3; SESSION_IDLE_HOLD hizası 105 s).
     pub idle_hold: Duration,
-    /// [IW] PreConverge ilk-uçuş penceresi (byte). 0 (default) = sevk davranışı: ilk uçuş TEK
-    /// paket. PreConverge'den çıkış yalnız bir RTT örneğiyle olur ve örnek yalnız ORİJİNAL DATA
-    /// emisyonlarından gelir (Karn) → ilk uçuştaki orijinal sayısı kuruluş olasılığını doğrudan
-    /// belirler. Bkz. `adaptive_transport::sender::InitialWindowConfig`. KALİBRE EDİLMEMİŞ.
+    /// [IW] PreConverge ilk-uçuş penceresi (byte). **DEFAULT AÇIK** (`DEFAULT_BURST_CAP` = 2×MTU).
+    ///
+    /// Neden default: bu bir EŞİK SEÇİMİ değil, bir CLAMP HATASININ düzeltilmesidir.
+    /// `TokenBucket::new` kovayı zaten `DEFAULT_BURST_CAP` kredisiyle DOLU başlatır; PreConverge'de
+    /// pacing 31 B/s olduğundan `set_burst_cap` o krediyi `front_size`'a kırpıp ATIYORDU → ilk uçuş
+    /// TEK paket. Buradaki değer yeni bir sabit değil, pacer'ın kendi başlangıç kredisidir.
+    ///
+    /// Neden önemli: PreConverge'den çıkış YALNIZ bir RTT örneğiyle olur ve örnek YALNIZ ORİJİNAL
+    /// DATA emisyonlarından gelir (Karn) → ilk uçuştaki orijinal sayısı N, kuruluş olasılığını
+    /// doğrudan belirler (`p_loss^N`). N=1 + %50 kayıp = yazı-tura.
+    ///
+    /// Ölçüm (netem 200 ms RTT / %50 kayıp, n=6/hücre, 2 hücre): sevk davranışı 6/12 çöküş
+    /// (teslim < 50); ilk pencere açıkken 0/12. Sevk default'u ÖLÇÜLÜ BOZUKTU; düzeltmenin kanıtı
+    /// n=6 diye bozuk default'u korumak yanlış risk takasıdır. Ön-kayıtlı doğrulama borç olarak
+    /// kayıtlı. `0` = eski davranış (clamp geri gelir).
     pub initial_window_bytes: u64,
     /// [KURULUŞ] `bootstrap_rtt` açıkken merdiven seçimi. `false` (default) = sevk varsayılanı
     /// (3/9/21/45 s — BLACKOUT için kalibre edilmiştir, kuruluş için değil). `true` =
@@ -148,7 +159,8 @@ impl Default for RuntimeConfig {
             quota_r: 4,
             drain_cap: Duration::from_secs(3),
             idle_hold: Duration::from_secs(105),
-            initial_window_bytes: 0,
+            // [IW] Pacer'ın KENDİ başlangıç kredisi — yeni bir sabit değil (bkz. alan dokümanı).
+            initial_window_bytes: adaptive_transport::pacer::DEFAULT_BURST_CAP,
             bootstrap_rtt: false,
             bootstrap_fast_ladder: false,
             fec_structure_policy: FecStructurePolicy::default(),

@@ -1032,8 +1032,27 @@ enum ProbeExit {
 /// İlk RTT ölçülene kadar pacing/eşik için başlangıç RTT [CAL initial].
 const INITIAL_RTT: Duration = Duration::from_millis(100);
 /// [Q18-FIX] Yapı-gate alt kayıp-eşiği (ppm). Altında fuzzy'nin R1 `fec=0`'ı doğru (kayıp düşük,
-/// ARQ yeter); üstünde kayıp anlamlı ve yapı belirleyici. 100k = Q17 holdout'un IID/burst'ün
-/// ayrıştığı bandın tabanı (FS-FUSION-CAL-1 §5: 20_833..83_333 ARQ-tail Pareto; 200k FEC Pareto).
+/// ARQ yeter); üstünde kayıp anlamlı ve yapı belirleyici.
+///
+/// **[DAYANAK BORCU — 2026-09-04] BU SAYININ ARKASINDA GEÇERLİ BİR KAMPANYA YOK.**
+/// Eski gerekçe "100k = Q17 holdout'un IID/burst'ün ayrıştığı bandın tabanı (FS-FUSION-CAL-1 §5:
+/// 20_833..83_333 ARQ-tail Pareto; 200k FEC Pareto)" idi. İki ayrı sebeple çöktü:
+///
+/// 1. **Q17 holdout'u FORMEL OLARAK GEÇERSİZ.** `reports/fs-fusion-cal-1/FRAMING-CORRIGENDUM.md`
+///    :73 `holdout-*` dosyalarını "**VOID** — evaluated the withdrawn rival-framing policy" ilan
+///    eder; :29-31 kritik cümle: holdout'un "burst ARQ ister" tarafını üreten zararlı
+///    false-positive hücresi `PRODUCT_NETNS`'ten gelir ve o veri seti **HİÇ FEC KOLU
+///    İÇERMEZ** (iki kol da r0) → "A conclusion about FEC could not legitimately be drawn from it."
+/// 2. **Bandın ppm değerleri türetilemez.** R2A grid'i loss ORANINI loss YAPISIYLA karıştırır
+///    (S1/S2 = pozisyonel silme, 48 symbol'ün %2-8'i; S3 = IID %20) ve nominal ppm'ler jeneratör
+///    artefaktıdır (20_833 = 1/48, 41_666 = 2/48, 83_333 = 4/48). Raporun kendi hükmü: "a
+///    production FEC-activation threshold cannot be derived from loss_ppm alone from R2A."
+///
+/// `SPEC-GAP-REGISTRY-2026-08-27.md:302-305` bu sabiti zaten "unsanctioned magic constant …
+/// exactly the uncalibrated-knee class" olarak kaydetmişti.
+///
+/// SABİT DEĞİŞTİRİLMEDİ: kampanya görmemiş bir eşiği kampanyasız BAŞKA bir sayıyla değiştirmek
+/// aynı hatadır. Kayıt açık; doğru kapanış, ürün-katmanında FEC kollu ön-kayıtlı bir grid.
 const STRUCTURE_GATE_LOSS_MIN_PPM: u64 = 100_000;
 /// [Q18-FIX] Gate'in karar vermesi için pencerede gereken fate-known birim (kanıt-eşiği; azsa
 /// dokunmaz). 32 = Laplace p11/p01'in ±~30k ppm gürültü bandına inmesi için yeterli geçiş sayısı.
@@ -1041,6 +1060,13 @@ const STRUCTURE_GATE_MIN_N: u32 = 32;
 /// [Q18-FIX] IID kabul-tavanı: `burst_delta = p11−p01 ≤ bu` → korelasyonsuz kayıp → FEC açılır.
 /// IID'de beklenen 0 (±gürültü); burst'te (GE-L3+) FATE2ARM ölçümü +567k ppm — boşluk ~433k.
 /// 50k = gürültü-üstü, burst-altı güvenli çizgi (fate_estimator'daki 25_000 pin'i geçer).
+///
+/// **[DAYANAK BORCU — 2026-09-04]** Ayrım eşiğinin KONUMU (50k) gürültü-payı argümanıyla
+/// savunulabilir, ama bu eşiğin arkasındaki POLİTİKA — "burst → ARQ'ya bırak" — geçersiz
+/// Q17 holdout'una dayanıyordu (bkz. `STRUCTURE_GATE_LOSS_MIN_PPM`). Burst rejiminde FEC'in
+/// zararlı olduğuna dair GEÇERLİ bir ölçüm yoktur: o iddiayı üreten hücrede hiç FEC kolu yoktu.
+/// Politikanın kendisi `FecStructurePolicy` ile opt-in hâle getirildi; ölçüm gelene dek
+/// default davranış korunuyor.
 const STRUCTURE_GATE_IID_MAX_DELTA_PPM: i64 = 50_000;
 /// [BURST-FUSION] Ölçülen silme oranının üzerine konan emniyet payı (pay/payda). Bir RS bloğu
 /// ancak parity oranı blok-içi silme oranını AŞARSA kurtarır; ölçülen oran ortalamadır, burst
@@ -2991,7 +3017,11 @@ impl Sender {
         if d.no_rule {
             self.diag_fuzzy_no_rule += 1;
         }
-        // [Q18-FIX] YAPI-FARKINDA FEC GATE. Q17 holdout + FS-FUSION-CELL-1 iki bağımsız kanıt:
+        // [Q18-FIX] YAPI-FARKINDA FEC GATE.
+        // [DAYANAK DÜZELTMESİ 2026-09-04] Bu blok eskiden "Q17 holdout + FS-FUSION-CELL-1 iki
+        // BAĞIMSIZ kanıt" diyordu. Q17 holdout'u formel olarak GEÇERSİZDİR (FRAMING-CORRIGENDUM
+        // :73 VOID; :29-31 zararlı-FP hücresinde HİÇ FEC KOLU YOK) → geriye tek kaynak kalır ve
+        // "iki bağımsız kanıt" ifadesi doğru değildir. Kalan tek gözlem:
         // kayıp-ORANI tek başına FEC'i kapılayamaz (aynı 200k ppm'de IID coding ister, burst ARQ
         // ister). Fuzzy controller rate-only olduğundan %20 IID'de parity=0 planlıyordu — ölçümün
         // "coding tek çalışan mekanizma" dediği rejimde. Fix diz'i kaydırmak DEĞİL (Q17 bunu

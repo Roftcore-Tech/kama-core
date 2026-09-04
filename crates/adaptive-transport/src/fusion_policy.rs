@@ -250,7 +250,21 @@ impl FusionPolicy {
                 version: 1,
                 feature_schema: FEATURE_SCHEMA_V1,
             },
-            // Evidence: ARQ_TAIL Pareto-dominant at 20_833..83_333 ppm; FEC_R2 Pareto-dominant at 200_000 ppm.
+            // **[DAYANAK BORCU — 2026-09-04] BU BANT KENARLARI TÜRETİLEMEZ.**
+            // Eski gerekçe: "ARQ_TAIL Pareto-dominant at 20_833..83_333 ppm; FEC_R2
+            // Pareto-dominant at 200_000 ppm". İki sebeple çöktü:
+            //  1. O kıyas (ARQ_TAIL r0) vs (FEC_R2, DONMUŞ tail-kör ARQ) — İKİ ORTOGONAL EKSENİ
+            //     aynı anda değiştirir ve `FRAMING-CORRIGENDUM.md:24-28` uyarınca "not a valid
+            //     contrast under any framing"; §2 decision-regions SUPERSEDED işaretli.
+            //  2. Kaynak grid (R2A) loss ORANINI loss YAPISIYLA karıştırır: S1/S2 pozisyonel
+            //     silme (48 symbol'ün %2-8'i), S3 IID %20. Nominal ppm'ler jeneratör
+            //     artefaktıdır (20_833 = 1/48, 41_666 = 2/48, 83_333 = 4/48). Raporun kendi
+            //     hükmü: "a production FEC-activation threshold cannot be derived from
+            //     loss_ppm alone from R2A."
+            // Sonuç: aşağıdaki dört kenar (90k/140k/160k/200k) ÖLÇÜLMÜŞ bir geçiş noktasını
+            // temsil ETMEZ. Politika opt-in ve default `disabled()` olduğu için sevk edilen
+            // davranış etkilenmez; bu kalibrasyon ancak ürün-katmanında FEC kollu, oran×yapı
+            // çaprazlanmış bir grid'den YENİDEN türetildikten sonra açılabilir.
             loss: LossBoundary {
                 low_full_ppm: 90_000,
                 low_zero_ppm: 140_000,
