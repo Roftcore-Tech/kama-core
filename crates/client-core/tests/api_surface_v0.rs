@@ -84,6 +84,9 @@ async fn transport_api_v0_surface_is_frozen() {
         bootstrap_fast_ladder: _, // v0.6 (kuruluş merdiveni): kasıtlı pin-güncellemesi // v0.4 (DR-CS-3 kablolama): minor-EKLEME, kasıtlı pin-güncellemesi
         fec_structure_policy: _,  // v0.3 (BURST-FUSION): minor-EKLEME, kasıtlı pin-güncellemesi
         fec: _, // v0.1 (S1): minor-EKLEME — kasıtlı pin-güncellemesi, P4 belgesi §3
+        // v0.7 (DEADLINE-EKSENİ): minor-EKLEME, kasıtlı pin-güncellemesi. `None` = sevk
+        // davranışı (yapı-gate koşar); `Some` = kalibre politika otoritedir.
+        fusion_policy: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,

@@ -9,7 +9,10 @@
 //! Bu dosya kabloyu pinler: politika KAPALIYKEN davranış byte-özdeş, AÇIKKEN oran onun
 //! otoritesinde, ve her ret sebebi histogramda GÖRÜNÜR (sessiz sıfır yok).
 
-use adaptive_transport::fusion_policy::{FusionAction, FusionPolicy, FUSION_ACTION_KINDS};
+use adaptive_transport::fusion_policy::{
+    FallbackReason, FusionAction, FusionObservation, FusionPolicy, FusionSafetyConfig,
+    FUSION_ACTION_KINDS,
+};
 use adaptive_transport::sender::*;
 use std::time::Duration;
 
@@ -122,6 +125,7 @@ fn safety_bounds_are_independent_of_the_calibration() {
         telemetry_age_ns: 0,
         converged: true,
         fec_actuation_available: true,
+        deadline_over_srtt_permille: None, // v1 bu ekseni ölçmedi → kararı etkilemez
     };
     // Kalibrasyon bu noktada FEC ister…
     let permissive = FusionPolicy::calibration_v1();
@@ -161,10 +165,130 @@ fn cold_start_degrades_to_arq_not_to_something_more_aggressive() {
         telemetry_age_ns: 0,
         converged: false, // ← kurulmamış oturum
         fec_actuation_available: true,
+        deadline_over_srtt_permille: None,
     };
     let a = FusionPolicy::calibration_v1().decide(&obs, 1200);
     assert!(
         a.is_arq_only(),
         "kurulmamış oturumda ArqOnly'ye düşmeli; got {a:?}"
     );
+}
+
+// ── [DEADLINE-EKSENİ] calibration_v2_deadline ────────────────────────────────────────────────
+//
+// Bu testler tek bir şeyi savunuyor: FEC-MARGINAL-R v1+v2'nin ÖLÇTÜĞÜ kutu ile kodun AÇTIĞI kutu
+// aynı kalsın. Bu repo daha önce ölçülmemiş bölgede parity açan bir kapı sevk etti; tekrarını
+// mekanik olarak engelliyoruz.
+
+fn dl_obs(loss_ppm: u64, deadline_permille: Option<u32>) -> FusionObservation {
+    FusionObservation {
+        feature_schema: adaptive_transport::fusion_policy::FEATURE_SCHEMA_V2,
+        inputs: adaptive_transport::fusion::FusionInputs {
+            loss_ppm,
+            // [ÖLÇÜLDÜ] Kalibrasyon hücrelerinde motorun bildirdiği BtlBw 35–58 kB/s bandında.
+            // `calibration_v1`'in varsaydığı 110 kB/s (= link kapasitesi) ürün yolunda HİÇ
+            // gözlenmez; testin o değeri kullanması bölge kapısını sahte-geçirirdi.
+            bandwidth_bps: 40_000,
+            jitter_ppm: 0,
+            qd_ratio_permille: 0,
+            ack_confidence_permille: 1000,
+        },
+        rtt_sample_count: 8,
+        telemetry_age_ns: 0,
+        converged: true,
+        fec_actuation_available: true,
+        deadline_over_srtt_permille: deadline_permille,
+    }
+}
+
+/// Kayıp ölçülen noktada (%20) ve bölge içinde — v1 mantığı burada FEC açardı. v2 AÇMAZ:
+/// kararın dayandığı eksen bildirilmemiş. Kayıp oranından açmak ölçümün çürüttüğü davranıştır.
+#[test]
+fn v2_bildirilmemis_deadline_ile_parity_acmaz() {
+    let a = FusionPolicy::calibration_v2_deadline().decide(&dl_obs(200_000, None), 1200);
+    assert_eq!(
+        a,
+        FusionAction::FallbackArq(FallbackReason::NoDeadlineDeclared)
+    );
+}
+
+/// 4×RTT = 4000‰. Ölçümde bu noktada kazanç ≈0, iid20/r2'de NEGATİF (v1 FINAL-REPORT Bulgu 2).
+#[test]
+fn v2_gevsek_deadline_ile_parity_acmaz() {
+    let a = FusionPolicy::calibration_v2_deadline().decide(&dl_obs(200_000, Some(4_000)), 1200);
+    assert_eq!(
+        a,
+        FusionAction::FallbackArq(FallbackReason::DeadlineTooLoose)
+    );
+}
+
+/// d_msg = 2×RTT (2000‰), kayıp %20 → ölçülen fayda noktası: +10.4 pp (iid20) / +19.2 pp (cor20),
+/// her ikisi de CI-ayrık. Seviye r=2 @ K=8 = 250‰; v1 ölçtü ki r=4 iki katı parity ile AYNI
+/// kurtarmayı verir (781 vs 782 birim), yani verim yarıya düşer.
+#[test]
+fn v2_olculen_kutuda_r2_seviyesini_ister() {
+    match FusionPolicy::calibration_v2_deadline().decide(&dl_obs(200_000, Some(2_000)), 1200) {
+        FusionAction::FecAssist {
+            redundancy_permille,
+            ..
+        } => assert_eq!(redundancy_permille, 250),
+        other => panic!("ölçülen kutuda FecAssist beklenirdi, gelen: {other:?}"),
+    }
+}
+
+/// %30 kayıp HİÇ ölçülmedi → bölge dışı, fail-safe.
+#[test]
+fn v2_bolge_disi_kayipta_parity_acmaz() {
+    let a = FusionPolicy::calibration_v2_deadline().decide(&dl_obs(300_000, Some(2_000)), 1200);
+    assert_eq!(
+        a,
+        FusionAction::FallbackArq(FallbackReason::UnsupportedRegion)
+    );
+}
+
+/// v1 bu ekseni hiç ölçmedi; kısıtsız kalmalı — yoksa geçmiş davranışı sessizce değiştirmiş olurduk.
+#[test]
+fn v1_kalibrasyonu_deadline_ekseninden_etkilenmez() {
+    let mut with = dl_obs(200_000, Some(9_999));
+    let mut without = dl_obs(200_000, None);
+    with.feature_schema = 1;
+    without.feature_schema = 1;
+    let p = FusionPolicy::calibration_v1();
+    assert_eq!(p.decide(&with, 1200), p.decide(&without, 1200));
+}
+
+/// Kuruluş kapısı deadline kapısından ÖNCE gelmeli: srtt yokken oran zaten türetilemez.
+#[test]
+fn v2_kurulmamis_oturumda_cold_start_sebebini_verir() {
+    let mut obs = dl_obs(200_000, None);
+    obs.converged = false;
+    let a = FusionPolicy::calibration_v2_deadline().decide(&obs, 1200);
+    assert_eq!(a, FusionAction::FallbackArq(FallbackReason::ColdStart));
+}
+
+/// Bağımsız güvenlik doğrulayıcısı hâlâ üstte: kalibrasyon 250‰ isterken sert tavan 0 ise açtırmaz.
+#[test]
+fn v2_dogrulayici_kalibrasyondan_fazlasini_veremez() {
+    let clamped = FusionPolicy::calibration_v2_deadline().with_safety(FusionSafetyConfig {
+        hard_max_redundancy_permille: 0,
+        ..FusionSafetyConfig::default()
+    });
+    assert!(clamped
+        .decide(&dl_obs(200_000, Some(2_000)), 1200)
+        .is_arq_only());
+}
+
+/// Her yeni ret sebebi histogramda AYRI kova almalı — sessiz sıfır yok.
+#[test]
+fn yeni_ret_sebepleri_histogramda_ayrisir() {
+    let p = FusionPolicy::calibration_v2_deadline();
+    let i_none = p.decide(&dl_obs(200_000, None), 1200).index();
+    let i_loose = p.decide(&dl_obs(200_000, Some(4_000)), 1200).index();
+    let i_region = p.decide(&dl_obs(300_000, Some(2_000)), 1200).index();
+    assert_ne!(i_none, i_loose);
+    assert_ne!(i_none, i_region);
+    assert_ne!(i_loose, i_region);
+    for i in [i_none, i_loose, i_region] {
+        assert!(i < FUSION_ACTION_KINDS, "kova {i} histogram dışında");
+    }
 }

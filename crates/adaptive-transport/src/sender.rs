@@ -1390,6 +1390,21 @@ pub struct Sender {
     rtt_sample_count: u32,
     /// [FUSION-POLICY] Telemetriyi besleyen son örnek anı (`telemetry_age_ns` tabanı).
     last_telemetry_ns: u64,
+    /// [DEADLINE-EKSENİ] Politikaya giden SON gözlemin ham fotoğrafı (teşhis). Politika
+    /// ateşlemediğinde "hangi değer kapıyı kapattı" sorusu bu olmadan cevaplanamaz — histogram
+    /// KOVAYI söyler, DEĞERİ söylemez, ve kalibrasyon sınırının mı yoksa motorun mu yanlış
+    /// olduğu ancak değere bakılarak ayrılır.
+    diag_last_obs: Option<(u64, u64, u64, u32, Option<u32>)>,
+    /// [TEŞHİS] Politikanın GÖRDÜĞÜ `bandwidth_bps` aralığı (min, max). Bölge sınırı ancak
+    /// motorun gerçekten ürettiği büyüklükle ifade edilirse fence olur; link kapasitesiyle
+    /// yazılmış bir sınır sessizce HER ZAMAN reddeder (v1 kalibrasyonunda tam bu oldu).
+    diag_obs_bw_range: Option<(u64, u64)>,
+    /// [TEŞHİS] Politikanın GÖRDÜĞÜ `loss_ppm` aralığı (min, max). Kalibrasyonun kayıp ekseni
+    /// ancak motorun ürettiği ölçekte ifade edilirse kapı olur.
+    diag_obs_loss_range: Option<(u64, u64)>,
+    /// [DEADLINE-EKSENİ] Uygulamanın bildirdiği EN SIKI teslim bütçesi (ns). `None` = bildirim yok.
+    /// Bu bir POLİTİKA girdisidir; ARQ/pacing/loss/RTT durumuna DOKUNMAZ (INV-RATE-1 korunur).
+    tightest_deadline_ns: Option<u64>,
     /// [FUSION-POLICY/TEŞHİS] Füzyon aksiyon histogramı — "neden ateşlemedi" bu sayaçsız
     /// cevapsız kalırdı (yapı-gate dersi).
     diag_fusion_actions: [u64; crate::fusion_policy::FUSION_ACTION_KINDS],
@@ -1584,6 +1599,10 @@ impl Sender {
             fusion_policy: crate::fusion_policy::FusionPolicy::disabled(),
             rtt_sample_count: 0,
             last_telemetry_ns: 0,
+            tightest_deadline_ns: None,
+            diag_last_obs: None,
+            diag_obs_bw_range: None,
+            diag_obs_loss_range: None,
             diag_fusion_actions: [0; crate::fusion_policy::FUSION_ACTION_KINDS],
             diag_gate_outcomes: [0; GATE_OUTCOME_KINDS],
             diag_loss_ppm_peak: 0,
@@ -3054,9 +3073,28 @@ impl Sender {
                     self.fec_mode,
                     FecActuationMode::Manual { enabled: false }
                 ),
+                // [DEADLINE-EKSENİ] Uçuştaki EN SIKI teslim bütçesi / srtt. App bildirmediyse None.
+                deadline_over_srtt_permille: self.tightest_deadline_over_srtt(),
             };
             // Karar-başına payload: kuyruğun önündeki birim (yoksa MTU) — bütçe tavanı buna göre.
             let payload = self.tx_queue.front().map_or(DEFAULT_MTU, |u| u.size);
+            self.diag_last_obs = Some((
+                obs.inputs.loss_ppm,
+                obs.inputs.bandwidth_bps,
+                obs.telemetry_age_ns,
+                obs.rtt_sample_count,
+                obs.deadline_over_srtt_permille,
+            ));
+            let lp = obs.inputs.loss_ppm;
+            self.diag_obs_loss_range = Some(match self.diag_obs_loss_range {
+                Some((lo, hi)) => (lo.min(lp), hi.max(lp)),
+                None => (lp, lp),
+            });
+            let bw = obs.inputs.bandwidth_bps;
+            self.diag_obs_bw_range = Some(match self.diag_obs_bw_range {
+                Some((lo, hi)) => (lo.min(bw), hi.max(bw)),
+                None => (bw, bw),
+            });
             let action = self.fusion_policy.decide(&obs, payload);
             self.diag_fusion_actions[action.index()] += 1;
             d.fec_parity_ratio_permille = match action {
@@ -3579,6 +3617,74 @@ impl Sender {
         self.last_transition_event_index = self.fusion_event_index;
         self.transition_applied_count = self.transition_applied_count.saturating_add(1);
         Ok(())
+    }
+
+    /// [DEADLINE-EKSENİ] Uygulamanın teslim bütçesini bildirir (mesaj-başı; en sıkı olan tutulur).
+    ///
+    /// Ölçüm (FEC-MARGINAL-R v1+v2, 480 rep) proaktif redundancy'nin değerinin KAYIP ORANINA
+    /// DEĞİL bu bütçenin RTT'ye oranına bağlı olduğunu gösterdi. Transport bu bilgiyi kendi
+    /// başına TÜRETEMEZ — aynı kanalda aynı kayıpta, sıkı bütçeli trafik için parity kazanç,
+    /// gevşek bütçeli trafik için israftır. Bildirilmezse politika `NoDeadlineDeclared` ile
+    /// ArqOnly'ye düşer; sessizce kayıp oranından karar VERMEZ.
+    pub fn declare_delivery_deadline(&mut self, deadline_ns: u64) {
+        self.tightest_deadline_ns = Some(match self.tightest_deadline_ns {
+            Some(cur) => cur.min(deadline_ns),
+            None => deadline_ns,
+        });
+    }
+
+    /// [DEADLINE-EKSENİ] Bildirilen en sıkı bütçenin srtt'ye oranı (per-mille). srtt yoksa
+    /// (kuruluş öncesi) `None` — zaten `ColdStart` kapısı orada devreye girer.
+    fn tightest_deadline_over_srtt(&self) -> Option<u32> {
+        let d = self.tightest_deadline_ns?;
+        let srtt = dur_ns(self.rtt.srtt()?);
+        if srtt == 0 {
+            return None;
+        }
+        Some(u32::try_from(d.saturating_mul(1000) / srtt).unwrap_or(u32::MAX))
+    }
+
+    /// [TEŞHİS] Politikaya giden son gözlem: (loss_ppm, bandwidth_bps, telemetry_age_ns,
+    /// rtt_sample_count, deadline_over_srtt_permille).
+    #[must_use]
+    pub fn diag_last_fusion_obs(&self) -> Option<(u64, u64, u64, u32, Option<u32>)> {
+        self.diag_last_obs
+    }
+
+    /// [TEŞHİS] Politikanın gördüğü `bandwidth_bps` aralığı (min, max).
+    #[must_use]
+    pub fn diag_fusion_bw_range(&self) -> Option<(u64, u64)> {
+        self.diag_obs_bw_range
+    }
+
+    /// [TEŞHİS] Politikanın gördüğü `loss_ppm` aralığı (min, max).
+    #[must_use]
+    pub fn diag_fusion_loss_range(&self) -> Option<(u64, u64)> {
+        self.diag_obs_loss_range
+    }
+
+    /// [TEŞHİS] Kayıp-defteri iç durumu — bkz. `ThresholdLossDetector::diag_ledger_internals`.
+    #[must_use]
+    pub fn diag_ledger_internals(&self) -> (u64, u64, u64, u64, u64) {
+        self.loss.diag_ledger_internals()
+    }
+
+    /// [TEŞHİS] Confirm-yolu — bkz. `ThresholdLossDetector::diag_confirm_path`.
+    #[must_use]
+    pub fn diag_confirm_path(&self) -> (u64, u64, u64, u64) {
+        self.loss.diag_confirm_path()
+    }
+
+    /// [TEŞHİS] Ledger tick kapsamı — bkz. `ThresholdLossDetector::diag_tick_span`.
+    #[must_use]
+    pub fn diag_ledger_tick_span(&self) -> (u64, u64) {
+        self.loss.diag_tick_span()
+    }
+
+    /// Bildirilen en sıkı teslim bütçesi (gözlem/test).
+    #[must_use]
+    pub fn diag_tightest_deadline_ns(&self) -> Option<u64> {
+        self.tightest_deadline_ns
     }
 
     /// [FUSION-POLICY] Kalibre edilmiş füzyon politikasını kurar. Default `disabled()` = her

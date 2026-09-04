@@ -132,6 +132,14 @@ pub struct RuntimeConfig {
     /// yaşam-döngüsü + repair emisyonu/kurtarımı. İKİ UÇTA AYNI kurulmalı (blok/esi ataması
     /// deterministik `unit_id`'den; PARAM-bootstrap bağlaması S2/B-hattı `kama_engine::param_state`).
     pub fec: Option<FecRuntimeConfig>,
+    /// [DEADLINE-EKSENİ] Kalibre füzyon politikası. `None` = KAPALI (sevk default'u; yapı-gate
+    /// koşar). `Some` = politika karar otoritesi (yapı-gate SUSAR — çift-otorite gözlemlenemez
+    /// davranış üretir).
+    ///
+    /// `FusionPolicy::calibration_v2_deadline()` FEC-MARGINAL-R v1+v2'den TÜREDİ ve fail-safe'tir:
+    /// app bütçe bildirmezse ArqOnly → wire byte-özdeş. Yani AÇMAK, bütçe bildirmeyen uygulamalar
+    /// için davranışı değiştirmez; yalnız ölçülen kutuda parity açar.
+    pub fusion_policy: Option<adaptive_transport::fusion_policy::FusionPolicy>,
 }
 
 /// [S1] FEC-runtime parametreleri.
@@ -165,6 +173,9 @@ impl Default for RuntimeConfig {
             bootstrap_fast_ladder: false,
             fec_structure_policy: FecStructurePolicy::default(),
             fec: None,
+            // Sevk default'u KAPALI: kalibrasyon opt-in kalır (ürün default kararı ayrı bir
+            // ölçüm kapısıdır; bkz. reports/fec-policy-arm-v1/).
+            fusion_policy: None,
         }
     }
 }
@@ -337,6 +348,30 @@ pub struct FateWindowDiag {
     pub rtt_samples: u32,
     /// [GÖRÜNÜRLÜK] Kuruluş-denemesi (establish probe) emisyon sayısı.
     pub establish_probes_tx: u64,
+    /// [DEADLINE-EKSENİ] Uygulamanın bildirdiği EN SIKI teslim bütçesi (ns), kapanış anında.
+    /// `None` = hiçbir offer bütçe bildirmedi → kalibre politika `NoDeadlineDeclared` ile
+    /// ArqOnly'ye düşer. Bu alan olmadan "app bütçe bildirdi mi, motora ULAŞTI mı" sorusu
+    /// ürün yolundan cevaplanamıyordu (kablolamanın kendisi gözlemlenemezdi).
+    pub declared_deadline_ns: Option<u64>,
+    /// [DEADLINE-EKSENİ] Füzyon politikası aksiyon histogramı
+    /// (`adaptive_transport::fusion_policy::FusionAction::index` kovaları). Politika kapalıysa
+    /// tamamı sıfır. Ret sebebi görünmeden "politika neden FEC açmadı" cevaplanamaz.
+    pub fusion_actions: [u64; adaptive_transport::fusion_policy::FUSION_ACTION_KINDS],
+    /// [TEŞHİS] Politikaya giden SON gözlemin ham değerleri:
+    /// `(loss_ppm, bandwidth_bps, telemetry_age_ns, rtt_sample_count, deadline_over_srtt_permille)`.
+    pub last_fusion_obs: Option<(u64, u64, u64, u32, Option<u32>)>,
+    /// [TEŞHİS] Politikanın gördüğü `bandwidth_bps` aralığı (min, max).
+    pub fusion_bw_range: Option<(u64, u64)>,
+    /// [TEŞHİS] Politikanın gördüğü `loss_ppm` aralığı (min, max).
+    pub fusion_loss_range: Option<(u64, u64)>,
+    /// [TEŞHİS] Kayıp-defteri iç durumu:
+    /// `(lost_units, events_len, suspected_units, confirmed_units, sent_window_units)`.
+    pub ledger_internals: (u64, u64, u64, u64, u64),
+    /// [TEŞHİS] Confirm-yolu:
+    /// `(confirmed_total, max_suspected_age_ns, confirm_threshold_ns, expire_threshold_ns)`.
+    pub ledger_confirm_path: (u64, u64, u64, u64),
+    /// [TEŞHİS] Ledger tick kapsamı: `(tick_count, tick_span_ns)`.
+    pub ledger_tick_span: (u64, u64),
     /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
     /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
     /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI · 6=oturum-kurulmadı(PreConverge).
@@ -518,7 +553,7 @@ pub struct ClientHandle {
 /// döngüden BAĞIMSIZ ödünç alınabilir (aynı `select!` içinde hem sunmak hem ACK drenajı).
 #[derive(Clone)]
 pub struct ClientSender {
-    offer_tx: mpsc::Sender<Vec<u8>>,
+    offer_tx: mpsc::Sender<(Vec<u8>, Option<u64>)>,
     /// [S1B] App-yüzü tavan MESAJ tavanıdır; birim (chunk) tavanı fragmenter'ın içinde kalır.
     max_message_bytes: usize,
 }
@@ -531,16 +566,41 @@ impl ClientSender {
     /// # Errors
     /// `UnitTooLarge` (bounds-before-alloc; cap = `max_message_bytes`) · `QueueFull` · `Closed`.
     pub fn send(&self, payload: Vec<u8>) -> Result<(), RuntimeError> {
+        self.send_with_deadline(payload, None)
+    }
+
+    /// [DEADLINE-EKSENİ] Bir mesajı **teslim bütçesiyle** sunar.
+    ///
+    /// `deadline_ns` = bu mesajın app için hâlâ değerli olduğu süre (sunum anından itibaren).
+    /// `None` = bütçe bildirilmedi (en iyi çaba).
+    ///
+    /// NEDEN VAR: FEC-MARGINAL-R v1+v2 (480 rep, ön-kayıtlı, replikasyonlu) ölçtü ki proaktif
+    /// redundancy'nin değeri **kayıp oranına değil bu bütçenin RTT'ye oranına** bağlıdır. AYNI
+    /// kanalda, AYNI %20 kayıpta: bütçe 2×RTT iken +10..+19 pp completion, 16×RTT iken ≈0 veya
+    /// negatif — yani transport bu bilgiyi kendi başına TÜREMEZ, ve hiçbir kayıp eşiği kararı
+    /// veremez. Bildirilmezse politika `NoDeadlineDeclared` ile ArqOnly'ye düşer.
+    ///
+    /// Bu bir POLİTİKA girdisidir: ARQ'yu, pacing'i, loss/RTT durumunu DEĞİŞTİRMEZ.
+    ///
+    /// # Errors
+    /// `UnitTooLarge` · `QueueFull` · `Closed`.
+    pub fn send_with_deadline(
+        &self,
+        payload: Vec<u8>,
+        deadline_ns: Option<u64>,
+    ) -> Result<(), RuntimeError> {
         if payload.len() > self.max_message_bytes {
             return Err(RuntimeError::UnitTooLarge {
                 got: payload.len(),
                 cap: self.max_message_bytes,
             });
         }
-        self.offer_tx.try_send(payload).map_err(|e| match e {
-            mpsc::error::TrySendError::Full(_) => RuntimeError::QueueFull,
-            mpsc::error::TrySendError::Closed(_) => RuntimeError::Closed,
-        })
+        self.offer_tx
+            .try_send((payload, deadline_ns))
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => RuntimeError::QueueFull,
+                mpsc::error::TrySendError::Closed(_) => RuntimeError::Closed,
+            })
     }
 }
 
@@ -575,7 +635,7 @@ impl ClientEndpoint {
         })
         .await?;
         sock.connect(server).await?;
-        let (offer_tx, offer_rx) = mpsc::channel(cfg.offer_queue);
+        let (offer_tx, offer_rx) = mpsc::channel::<(Vec<u8>, Option<u64>)>(cfg.offer_queue);
         let (acked_tx, acked_rx) = mpsc::channel(cfg.offer_queue.max(cfg.max_inflight_units));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         // Kapasite 1 + onay-oneshot: mark_t0 görev işleyene dek bekler (ölçüm sözleşmesi).
@@ -611,6 +671,18 @@ impl ClientHandle {
     /// `UnitTooLarge` · `QueueFull` · `Closed` — bkz. [`ClientSender::send`].
     pub fn send(&self, payload: Vec<u8>) -> Result<(), RuntimeError> {
         self.offer.send(payload)
+    }
+
+    /// [DEADLINE-EKSENİ] Bkz. [`ClientSender::send_with_deadline`].
+    ///
+    /// # Errors
+    /// `UnitTooLarge` · `QueueFull` · `Closed`.
+    pub fn send_with_deadline(
+        &self,
+        payload: Vec<u8>,
+        deadline_ns: Option<u64>,
+    ) -> Result<(), RuntimeError> {
+        self.offer.send_with_deadline(payload, deadline_ns)
     }
 
     /// Klonlanabilir offer tutamağı (bkz. [`ClientSender`]).
@@ -656,7 +728,7 @@ async fn client_task(
     cfg: RuntimeConfig,
     mut seam: Box<dyn SecuritySeam>,
     mut egress: Option<Box<dyn EgressPolicy>>,
-    mut offer_rx: mpsc::Receiver<Vec<u8>>,
+    mut offer_rx: mpsc::Receiver<(Vec<u8>, Option<u64>)>,
     acked_tx: mpsc::Sender<u64>,
     mut shutdown_rx: watch::Receiver<bool>,
     mut t0_rx: mpsc::Receiver<oneshot::Sender<()>>,
@@ -684,6 +756,11 @@ async fn client_task(
         } else {
             BootstrapRttConfig::default()
         });
+    // [DEADLINE-EKSENİ] Kalibre politika (opt-in). Kablolanmamış bir karar katmanı bu reponun
+    // kronik kusuruydu: `fusion_policy` üretimde SIFIR çağıranla duruyordu. Burası o kablodur.
+    if let Some(p) = cfg.fusion_policy {
+        session.sender_mut().set_fusion_policy(p);
+    }
     // [IW] İlk-uçuş penceresi (0 = sevk davranışı, clamp'e dokunulmaz).
     session
         .sender_mut()
@@ -1026,8 +1103,12 @@ async fn client_task(
             }
             // Offer YALNIZ store'da yer varken alınır (bounds-before-alloc: kanal + store çift sınır).
             maybe = offer_rx.recv(), if store.len() < cfg.max_inflight_units => {
-                let Some(message) = maybe else { break }; // tüm handle'lar düştü → drain'e geç.
+                let Some((message, deadline_ns)) = maybe else { break }; // handle'lar düştü → drain
                 stats.offered += 1;
+                // [DEADLINE-EKSENİ] Politika girdisi; ARQ/pacing/loss durumuna DOKUNMAZ.
+                if let Some(d) = deadline_ns {
+                    session.sender_mut().declare_delivery_deadline(d);
+                }
                 let now = elapsed_ns(start);
                 // [S1B] FRAGMENTER. Mesaj `max_unit_bytes`lik ardışık chunk'lara bölünür; her
                 // chunk KENDİ birim-id'sini alır → ARQ izlemesi, FEC blok/esi yuvası ve pacing
@@ -1219,6 +1300,14 @@ async fn client_task(
         left_preconverge: session.sender().diag_rtt_sample_count() > 0,
         rtt_samples: session.sender().diag_rtt_sample_count(),
         establish_probes_tx: session.sender().diag_establish_probe_emitted(),
+        declared_deadline_ns: session.sender().diag_tightest_deadline_ns(),
+        fusion_actions: session.sender().diag_fusion_actions(),
+        last_fusion_obs: session.sender().diag_last_fusion_obs(),
+        fusion_bw_range: session.sender().diag_fusion_bw_range(),
+        fusion_loss_range: session.sender().diag_fusion_loss_range(),
+        ledger_internals: session.sender().diag_ledger_internals(),
+        ledger_confirm_path: session.sender().diag_confirm_path(),
+        ledger_tick_span: session.sender().diag_ledger_tick_span(),
         structure_gate_opened: session.sender().diag_structure_gate_opened(),
         ledger_loss_ppm: session.sender().diag_ledger().1,
         ledger_loss_ppm_peak: session.sender().diag_loss_ppm_peak(),

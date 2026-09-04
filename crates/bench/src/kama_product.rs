@@ -101,7 +101,9 @@ fn runtime_cfg(
     let payload = usize::try_from(payload_bytes).unwrap_or(usize::MAX);
     let profile_id = match fec {
         FecArm::Off => None,
-        FecArm::StaticR { profile_id, .. } | FecArm::Adaptive { profile_id } => Some(profile_id),
+        FecArm::StaticR { profile_id, .. }
+        | FecArm::Adaptive { profile_id }
+        | FecArm::PolicyV2Deadline { profile_id, .. } => Some(profile_id),
     };
     // Bilinmeyen profil: birim tavanını kısıtlama — `validate_fec` koşu-öncesi typed reddedecek.
     let unit = profile_id
@@ -131,11 +133,17 @@ fn runtime_cfg(
                 profile_id,
                 manual_r: Some(r),
             }),
-            FecArm::Adaptive { profile_id } => Some(FecRuntimeConfig {
-                profile_id,
-                manual_r: None,
-            }),
+            FecArm::Adaptive { profile_id } | FecArm::PolicyV2Deadline { profile_id, .. } => {
+                Some(FecRuntimeConfig {
+                    profile_id,
+                    manual_r: None,
+                })
+            }
         },
+        // [DEADLINE-EKSENİ] Politika kolu kalibrasyonu KURAR; diğer kollarda `None` (yapı-gate
+        // koşar, sevk davranışı). Politika fail-safe'tir: bütçe bildirilmezse ArqOnly.
+        fusion_policy: matches!(fec, FecArm::PolicyV2Deadline { .. })
+            .then(adaptive_transport::fusion_policy::FusionPolicy::calibration_v2_deadline),
         ..RuntimeConfig::default()
     }
 }
@@ -153,9 +161,13 @@ fn elapsed_ns(start: Instant) -> u64 {
 /// `Closed`/`UnitTooLarge` = koşu GEÇERSİZ: birim id'leri offer sırasına bire bir bağlıdır
 /// (`unit_id = warmup_msgs + msg_id`), sessizce atlanan bir offer tüm eşlemeyi kaydırırdı.
 /// Bu yüzden typed hata yutulmaz, koşuyu düşürür.
-async fn offer(tx: &ClientSender, payload: &[u8]) -> Result<(), BenchError> {
+async fn offer(
+    tx: &ClientSender,
+    payload: &[u8],
+    deadline_ns: Option<u64>,
+) -> Result<(), BenchError> {
     loop {
-        match tx.send(payload.to_vec()) {
+        match tx.send_with_deadline(payload.to_vec(), deadline_ns) {
             Ok(()) => return Ok(()),
             Err(RuntimeError::QueueFull) => tokio::time::sleep(OFFER_RETRY).await,
             Err(e) => return Err(rt_err("offer", e)),
@@ -305,6 +317,12 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     .map_err(|e| rt_err("connect", e))?;
     // Offer tutamağı AYRI: `acked()` `&mut cli` ödünç alır, sunum aynı `select!` içinde sürsün.
     let tx = cli.sender();
+    // [DEADLINE-EKSENİ] Politika kolunda her offer teslim bütçesini bildirir; diğer kollarda
+    // `None` → politika zaten kapalı, wire byte-özdeş.
+    let deadline_ns: Option<u64> = match cfg.fec {
+        FecArm::PolicyV2Deadline { deadline_ns, .. } => Some(deadline_ns),
+        _ => None,
+    };
 
     // [W6] Kuruluş-gate'i: Kama'da handshake YOK → soket bağlanır bağlanmaz "kurulu"
     // (DÜZLEM-A temiz-ağ kuruluş alanı). Harness burada (A2) netem'i uygular.
@@ -331,7 +349,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
                         .saturating_add(interval_ns.saturating_mul(wnext))
                         .saturating_sub(elapsed_ns(start)),
                 )), if wnext < cfg.warmup_msgs => {
-                    offer(&tx, &payload).await?;
+                    offer(&tx, &payload, deadline_ns).await?;
                     wnext += 1;
                 }
                 a = cli.acked() => {
@@ -372,7 +390,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         // burst: tümü t0'da sunulur (mevcut kolların davranışıyla aynı).
         for slot in &mut sent_ns {
             *slot = Some(elapsed_ns(start));
-            offer(&tx, &payload).await?;
+            offer(&tx, &payload, deadline_ns).await?;
         }
         next_submit = msg_count;
     }
@@ -399,7 +417,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
                     *slot = Some(elapsed_ns(start));
                 }
                 next_submit += 1;
-                offer(&tx, &payload).await?;
+                offer(&tx, &payload, deadline_ns).await?;
             }
             a = cli.acked() => {
                 let Some(unit) = a else { break }; // endpoint öldü → deadline'a kadar beklemeye gerek yok
@@ -438,7 +456,8 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
          tx={}B(data={} retx={} dup={} fec={} ctrl={}) rx={}B refused={}B/{}pkt \
          fec_blocks={} fec_repairs_tx={} fec_recovered_ctrl={} param_confirmed={} \
          seal_fail={} send_err={} stale={} cs_probe_tx={} cs_echo_rx={} \
-         state={} left_preconv={} establish_tx={}",
+         state={} left_preconv={} establish_tx={} \
+         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?}",
         stats.tx_bytes,
         stats.tx_data_bytes,
         stats.tx_retx_bytes,
@@ -460,6 +479,20 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         stats.fate.sender_state,
         stats.fate.left_preconverge,
         stats.fate.establish_probes_tx,
+        // [DEADLINE-EKSENİ] Politika kolunda NULL sonuç teşhis edilebilir olmalı: bütçe motora
+        // ulaştı mı, ve politika hangi kovada reddetti. Bu iki alan olmadan "politika FEC açmadı"
+        // gözlemi ile "politika hiç koşmadı" gözlemi AYIRT EDİLEMEZ (vakum-sayaç tuzağı).
+        stats.fate.declared_deadline_ns,
+        stats.fate.fusion_actions,
+        stats.fate.last_fusion_obs,
+        stats.fate.fusion_bw_range,
+        stats.fate.fusion_loss_range,
+        stats.fate.ledger_loss_ppm_peak,
+        stats.fate.ledger_loss_ppm,
+        stats.fate.structure_gate_opened,
+        stats.fate.ledger_internals,
+        stats.fate.ledger_confirm_path,
+        stats.fate.ledger_tick_span,
     );
 
     let meta = RunMeta {
@@ -573,15 +606,15 @@ mod tests {
     fn static_r0_control_arm_is_reachable_and_keeps_fragmentation() {
         use crate::transport::FecModeArg::{Adaptive, Static};
         // Profil 0 = FEC tamamen kapalı (fragmenter de kapalı) — kontrol kolu BU DEĞİL.
-        assert_eq!(FecArm::from_args(0, 4, Static), FecArm::Off);
-        assert_eq!(FecArm::from_args(0, 0, Adaptive), FecArm::Off);
+        assert_eq!(FecArm::from_args(0, 4, Static, 0), FecArm::Off);
+        assert_eq!(FecArm::from_args(0, 0, Adaptive, 0), FecArm::Off);
         // Mod ORTOGONAL: aynı r ile iki farklı kol.
         assert_eq!(
-            FecArm::from_args(0x03, 0, Adaptive),
+            FecArm::from_args(0x03, 0, Adaptive, 0),
             FecArm::Adaptive { profile_id: 0x03 }
         );
         assert_eq!(
-            FecArm::from_args(0x03, 0, Static),
+            FecArm::from_args(0x03, 0, Static, 0),
             FecArm::StaticR {
                 profile_id: 0x03,
                 r: 0
@@ -589,7 +622,7 @@ mod tests {
             "statik r=0 ULAŞILABİLİR olmalı — tek-eksenli kontrol kolu budur"
         );
         assert_eq!(
-            FecArm::from_args(0x03, 4, Static),
+            FecArm::from_args(0x03, 4, Static, 0),
             FecArm::StaticR {
                 profile_id: 0x03,
                 r: 4
@@ -598,23 +631,41 @@ mod tests {
 
         // VE kritik özellik: r=0 kolu fragmentasyonu KORUR, yani DATA çerçeveleme FEC
         // kollarıyla byte-özdeş kalır; tek fark parity çerçevelerinin varlığıdır.
-        let ctrl = runtime_cfg(256, 4, FecArm::from_args(0x03, 0, Static), false, false, 0, false);
-        let r2 = runtime_cfg(
+        let ctrl = runtime_cfg(
             256,
             4,
-            FecArm::from_args(0x03, 2, Static),
+            FecArm::from_args(0x03, 0, Static, 0),
             false,
             false,
             0,
             false,
         );
-        assert_eq!(ctrl.max_unit_bytes, r2.max_unit_bytes, "birim granülü AYNI olmalı");
+        let r2 = runtime_cfg(
+            256,
+            4,
+            FecArm::from_args(0x03, 2, Static, 0),
+            false,
+            false,
+            0,
+            false,
+        );
+        assert_eq!(
+            ctrl.max_unit_bytes, r2.max_unit_bytes,
+            "birim granülü AYNI olmalı"
+        );
         assert_eq!(
             ctrl.max_message_bytes, r2.max_message_bytes,
             "fragmentasyon AYNI olmalı"
         );
-        assert!(ctrl.fec.is_some(), "profil kurulu kalmalı (fragmentasyon için)");
-        assert_eq!(ctrl.fec.unwrap().manual_r, Some(0), "kontrol kolunda parity YOK");
+        assert!(
+            ctrl.fec.is_some(),
+            "profil kurulu kalmalı (fragmentasyon için)"
+        );
+        assert_eq!(
+            ctrl.fec.unwrap().manual_r,
+            Some(0),
+            "kontrol kolunda parity YOK"
+        );
 
         // Kıyas: profil 0 kullanılsaydı granül kayardı — kaçınılan confound.
         let naive_off = runtime_cfg(256, 4, FecArm::Off, false, false, 0, false);

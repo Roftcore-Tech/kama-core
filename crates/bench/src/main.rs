@@ -67,6 +67,11 @@ enum Cmd {
         /// temsil edilemez kılıyordu.
         #[arg(long, value_enum, default_value_t = FecModeCli::Static)]
         fec_mode: FecModeCli,
+        /// [DEADLINE-EKSENİ] `--fec-mode policy` kolunda her offer'la bildirilen teslim bütçesi
+        /// (ms). Kalibre politika kararını bu bütçenin srtt'ye ORANINDAN verir; bildirilmezse
+        /// (0) `NoDeadlineDeclared` ile ArqOnly'ye düşer — sessiz varsayılan YOK.
+        #[arg(long, default_value_t = 0)]
+        fec_deadline_ms: u64,
         /// [SPRINT-A] Alıcı birim-payload tavanı — client `--payload` ile AYNI olmalı.
         #[arg(long, default_value_t = 256)]
         payload: u64,
@@ -144,6 +149,11 @@ enum Cmd {
         /// temsil edilemez kılıyordu.
         #[arg(long, value_enum, default_value_t = FecModeCli::Static)]
         fec_mode: FecModeCli,
+        /// [DEADLINE-EKSENİ] `--fec-mode policy` kolunda her offer'la bildirilen teslim bütçesi
+        /// (ms). Kalibre politika kararını bu bütçenin srtt'ye ORANINDAN verir; bildirilmezse
+        /// (0) `NoDeadlineDeclared` ile ArqOnly'ye düşer — sessiz varsayılan YOK.
+        #[arg(long, default_value_t = 0)]
+        fec_deadline_ms: u64,
         /// [BURST-FUSION] Bkz. `serve --fec-burst-fusion`. SUNUCUYLA AYNI verilmelidir.
         #[arg(long, default_value_t = false)]
         fec_burst_fusion: bool,
@@ -173,6 +183,8 @@ enum Cmd {
 enum FecModeCli {
     Static,
     Adaptive,
+    /// [DEADLINE-EKSENİ] Kalibre füzyon politikası karar verir; `--fec-deadline-ms` zorunlu.
+    Policy,
 }
 
 impl From<FecModeCli> for FecModeArg {
@@ -180,6 +192,7 @@ impl From<FecModeCli> for FecModeArg {
         match m {
             FecModeCli::Static => FecModeArg::Static,
             FecModeCli::Adaptive => FecModeArg::Adaptive,
+            FecModeCli::Policy => FecModeArg::Policy,
         }
     }
 }
@@ -283,6 +296,7 @@ async fn main() -> Result<(), BenchError> {
             fec_profile,
             fec_r,
             fec_mode,
+            fec_deadline_ms,
             payload,
             fec_burst_fusion,
             bootstrap_rtt,
@@ -302,7 +316,7 @@ async fn main() -> Result<(), BenchError> {
                         budget_ceiling_bytes,
                     )?,
                     gate_watch,
-                    fec: FecArm::from_args(fec_profile, fec_r, fec_mode.into()),
+                    fec: FecArm::from_args(fec_profile, fec_r, fec_mode.into(), fec_deadline_ms),
                     payload_bytes: payload,
                     burst_fusion: fec_burst_fusion,
                     bootstrap_rtt,
@@ -334,6 +348,7 @@ async fn main() -> Result<(), BenchError> {
             fec_profile,
             fec_r,
             fec_mode,
+            fec_deadline_ms,
             fec_burst_fusion,
             bootstrap_rtt,
             initial_window_bytes,
@@ -360,7 +375,7 @@ async fn main() -> Result<(), BenchError> {
                 warmup_msgs,
                 gate,
                 establish_gate,
-                fec: FecArm::from_args(fec_profile, fec_r, fec_mode.into()),
+                fec: FecArm::from_args(fec_profile, fec_r, fec_mode.into(), fec_deadline_ms),
                 burst_fusion: fec_burst_fusion,
                 bootstrap_rtt,
                 initial_window_bytes,

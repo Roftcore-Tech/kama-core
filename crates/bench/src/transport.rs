@@ -63,6 +63,11 @@ pub enum FecModeArg {
     Static,
     /// Controller/adaptif (yapı-gate + fuzzy; `r` yok sayılır).
     Adaptive,
+    /// [DEADLINE-EKSENİ] Kalibre füzyon politikası (`calibration_v2_deadline`) karar otoritesi;
+    /// yapı-gate SUSAR, `r` yok sayılır. Bu kol ÜRÜN POLİTİKASINI ölçer — v1/v2 kampanyaları
+    /// statik-r ile politikayı BYPASS ediyordu ve raporun "cevaplanmadı" listesinin ilk maddesi
+    /// tam olarak buydu.
+    Policy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -83,6 +88,14 @@ pub enum FecArm {
         /// `kama_fec_codec::by_id` profil kimliği.
         profile_id: u8,
     },
+    /// [DEADLINE-EKSENİ] Kalibre politika kolu: `FusionPolicy::calibration_v2_deadline()` karar
+    /// verir (yapı-gate susar) ve istemci her offer'da teslim bütçesini BİLDİRİR.
+    PolicyV2Deadline {
+        /// `kama_fec_codec::by_id` profil kimliği.
+        profile_id: u8,
+        /// Bildirilecek teslim bütçesi (ns). Kampanya bunu RTT'nin katı olarak verir.
+        deadline_ns: u64,
+    },
 }
 
 impl FecArm {
@@ -99,11 +112,15 @@ impl FecArm {
     /// fragmentasyon ve wire çerçevesi (0x05 + `SourcePrefix`) FEC kollarıyla BYTE-ÖZDEŞ kalır.
     /// Yani gerçek tek-eksenli kontrol budur.
     #[must_use]
-    pub fn from_args(profile_id: u8, r: u16, mode: FecModeArg) -> Self {
+    pub fn from_args(profile_id: u8, r: u16, mode: FecModeArg, deadline_ms: u64) -> Self {
         match (profile_id, mode) {
             (0, _) => Self::Off,
             (p, FecModeArg::Adaptive) => Self::Adaptive { profile_id: p },
             (p, FecModeArg::Static) => Self::StaticR { profile_id: p, r },
+            (p, FecModeArg::Policy) => Self::PolicyV2Deadline {
+                profile_id: p,
+                deadline_ns: deadline_ms.saturating_mul(1_000_000),
+            },
         }
     }
 
@@ -114,6 +131,13 @@ impl FecArm {
             Self::Off => "fec-off".to_string(),
             Self::StaticR { profile_id, r } => format!("fec-static-r{r}-p{profile_id:#04x}"),
             Self::Adaptive { profile_id } => format!("fec-adaptive-p{profile_id:#04x}"),
+            Self::PolicyV2Deadline {
+                profile_id,
+                deadline_ns,
+            } => format!(
+                "fec-policy-v2d{}ms-p{profile_id:#04x}",
+                deadline_ns / 1_000_000
+            ),
         }
     }
 }

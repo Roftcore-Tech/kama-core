@@ -139,6 +139,13 @@ pub struct ThresholdLossDetector {
     have_acked: bool,
     sent_units: u64,
     lost_units: u64,
+    diag_confirmed_total: u64,
+    diag_tick_count: u64,
+    diag_first_tick_ns: u64,
+    diag_last_tick_ns: u64,
+    diag_max_susp_age_ns: u64,
+    diag_confirm_threshold_ns: u64,
+    diag_expire_threshold_ns: u64,
     unrecovered_units: u64,
     // ── [TUR-2a D-1/3, D-1/5] olay-ledger + pencere-türetimli loss_ppm ──
     events: VecDeque<LossEvent>, // declared_ns artan; LEDGER_MAX bounded
@@ -229,10 +236,24 @@ impl ThresholdLossDetector {
             self.sent_window_units = self.sent_window_units.saturating_sub(s.units);
         }
         let conf_ns = confirm_age.as_nanos() as u64;
+        // [TEŞHİS] Confirm hiç ateşlemediğinde sebep üç adaydan biridir: olaylar genç · eşik
+        // ulaşılamaz · tick geç. `diag_max_susp_age_ns` (en yaşlı Suspected) ile `conf_ns`
+        // yan yana okunmadan bu ayrım YAPILAMAZ.
+        self.diag_tick_count += 1;
+        if self.diag_first_tick_ns == 0 {
+            self.diag_first_tick_ns = now_ns;
+        }
+        self.diag_last_tick_ns = now_ns;
+        self.diag_confirm_threshold_ns = conf_ns;
+        self.diag_expire_threshold_ns = w_loss.as_nanos() as u64;
         for e in &mut self.events {
-            if e.state == LedgerState::Suspected && now_ns.saturating_sub(e.declared_ns) >= conf_ns
-            {
+            let age = now_ns.saturating_sub(e.declared_ns);
+            if e.state == LedgerState::Suspected {
+                self.diag_max_susp_age_ns = self.diag_max_susp_age_ns.max(age);
+            }
+            if e.state == LedgerState::Suspected && age >= conf_ns {
                 e.state = LedgerState::Confirmed;
+                self.diag_confirmed_total += 1;
             }
         }
     }
@@ -248,6 +269,54 @@ impl ThresholdLossDetector {
             .map(|e| e.units)
             .sum();
         ratio_ppm(confirmed, self.sent_window_units)
+    }
+
+    /// [TEŞHİS] Ledger iç durumu: `(lost_units, events_len, suspected_units, confirmed_units,
+    /// sent_window_units)`. `loss_windowed_ppm` sıfır geldiğinde "hiç olay yok" · "hepsi
+    /// Suspected'ta takılı" · "payda sıfır" birbirinden ancak bu ayrımla ayrılır — tek bir
+    /// sıfır üç FARKLI arızayı gizler.
+    #[must_use]
+    pub fn diag_ledger_internals(&self) -> (u64, u64, u64, u64, u64) {
+        let mut susp = 0;
+        let mut conf = 0;
+        for e in &self.events {
+            match e.state {
+                LedgerState::Suspected => susp += e.units,
+                LedgerState::Confirmed => conf += e.units,
+                LedgerState::Spurious => {}
+            }
+        }
+        (
+            self.lost_units,
+            self.events.len() as u64,
+            susp,
+            conf,
+            self.sent_window_units,
+        )
+    }
+
+    /// [TEŞHİS] Confirm-yolu: `(confirmed_total, max_suspected_age_ns, confirm_threshold_ns,
+    /// expire_threshold_ns)`.
+    #[must_use]
+    pub fn diag_confirm_path(&self) -> (u64, u64, u64, u64) {
+        (
+            self.diag_confirmed_total,
+            self.diag_max_susp_age_ns,
+            self.diag_confirm_threshold_ns,
+            self.diag_expire_threshold_ns,
+        )
+    }
+
+    /// [TEŞHİS] Tick kapsamı: `(tick_count, tick_span_ns)`. Confirm eşiği koşunun AKTİF
+    /// tick penceresinden uzunsa hiçbir olay o eşiğe ULAŞAMAZ — bu ayrım tick kapsamı
+    /// görünmeden yapılamaz.
+    #[must_use]
+    pub fn diag_tick_span(&self) -> (u64, u64) {
+        (
+            self.diag_tick_count,
+            self.diag_last_tick_ns
+                .saturating_sub(self.diag_first_tick_ns),
+        )
     }
 
     /// Audit: toplam geri-alınan (Spurious) birim.

@@ -838,3 +838,106 @@ async fn run_reports_whether_the_session_ever_established() {
     );
     assert_eq!(bad.fate.sender_state, "PreConverge", "{:?}", bad.fate);
 }
+
+// ── [DEADLINE-EKSENİ] uçtan uca kablolama ────────────────────────────────────────────────────
+//
+// NEDEN BU TEST VAR: bu reponun kronik kusuru "kod var, kablo yok" — `fusion_policy.rs` 659
+// satırlık kalibre bir karar katmanıydı ve ÜRETİMDE SIFIR çağıranı vardı. Aynı şeyin deadline
+// ekseninde tekrar etmemesi için, app'in bildirdiği bütçenin MOTORA ULAŞTIĞI ürün yolundan
+// gözlemleniyor. Birim testi politikayı doğrular; bu test KABLOYU doğrular.
+
+/// `send_with_deadline` ile bildirilen bütçe motora ulaşır ve kapanış diyagnostiğinde görünür;
+/// birden çok bildirimde EN SIKI olan tutulur (politika en kısıtlayıcı gereksinimi görmeli).
+#[tokio::test(flavor = "multi_thread")]
+async fn declared_deadline_reaches_the_engine_and_keeps_the_tightest() {
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(
+        server.local_addr(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("client connect");
+
+    client
+        .send_with_deadline(b"gevsek".to_vec(), Some(900_000_000))
+        .expect("offer");
+    client
+        .send_with_deadline(b"siki".to_vec(), Some(400_000_000))
+        .expect("offer");
+    client.send(b"bildirimsiz".to_vec()).expect("offer");
+
+    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut d = 0u64;
+        while d < 3 {
+            if server.next_delivery().await.is_some() {
+                d += 1;
+            }
+        }
+    })
+    .await;
+
+    let stats = tokio::time::timeout(Duration::from_secs(10), client.shutdown())
+        .await
+        .expect("shutdown");
+    assert_eq!(
+        stats.fate.declared_deadline_ns,
+        Some(400_000_000),
+        "en sıkı bütçe tutulmalı (bildirimsiz offer bunu GEVŞETMEMELİ): {:?}",
+        stats.fate.declared_deadline_ns
+    );
+    let _ = server.shutdown().await;
+}
+
+/// Hiç bütçe bildirilmezse alan `None` kalır — sessizce bir varsayılan UYDURULMAZ. Bu, kalibre
+/// politikanın `NoDeadlineDeclared` ile ArqOnly'ye düşmesinin ürün-yolu önkoşuludur: ölçüm,
+/// bütçe bilinmeden kayıp oranından FEC açmanın YANLIŞ olduğunu gösterdi.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_declaration_stays_none_rather_than_inventing_a_default() {
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(
+        server.local_addr(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("client connect");
+
+    for i in 0..4u32 {
+        client
+            .send(format!("bildirimsiz-{i}").into_bytes())
+            .expect("offer");
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut d = 0u32;
+        while d < 4 {
+            if server.next_delivery().await.is_some() {
+                d += 1;
+            }
+        }
+    })
+    .await;
+
+    let stats = tokio::time::timeout(Duration::from_secs(10), client.shutdown())
+        .await
+        .expect("shutdown");
+    assert_eq!(stats.fate.declared_deadline_ns, None);
+    assert!(
+        stats.fate.fusion_actions.iter().all(|&c| c == 0),
+        "politika varsayılan KAPALI olmalı (kalibrasyon opt-in): {:?}",
+        stats.fate.fusion_actions
+    );
+    let _ = server.shutdown().await;
+}
