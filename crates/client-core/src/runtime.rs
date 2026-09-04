@@ -193,8 +193,14 @@ fn validate_fec(cfg: &RuntimeConfig) -> Result<Option<FecProfile>, RuntimeError>
         ));
     }
     if let Some(r) = f.manual_r {
-        if r == 0 || r > p.r_code_max {
-            return Err(RuntimeError::FecConfig("manual_r 1..=r_code_max dışında"));
+        // [KAMPANYA-KRİTİK] r == 0 GEÇERLİDİR ve anlamlıdır: profil kurulu kalır (fragmentasyon,
+        // 0x05 wire çerçevesi ve `SourcePrefix` FEC kollarıyla BYTE-ÖZDEŞ) ama parity ÜRETİLMEZ.
+        // Tek-eksenli kontrol kolu budur. `close_fec_block_manual`'ın `for esi in 0..r` döngüsü
+        // r=0'da no-op'tur ve `Ok(0)` döner. Eskiden burada reddediliyordu, dolayısıyla kontrol
+        // kolu için `profile_id = 0` kullanmak zorunlu kalıyor, o da fragmentasyonu kapatıp
+        // birim granülünü (256 B vs 53 B) İKİNCİ BİR EKSEN hâline getiriyordu.
+        if r > p.r_code_max {
+            return Err(RuntimeError::FecConfig("manual_r > r_code_max"));
         }
     }
     Ok(Some(p))

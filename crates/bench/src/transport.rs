@@ -55,6 +55,16 @@ impl KamaArm {
 /// İKİ UÇTA AYNI kurulmalıdır: blok/ESI ataması `unit_id`'den deterministik türetilir ve alıcı
 /// PARAM_SET hash'iyle fail-closed doğrular — uyumsuz kurulum shard'ların düşürülmesine yol açar
 /// (sessiz bozulma değil, sayaçlı ret).
+/// [KAMPANYA-KRİTİK] FEC aktüasyon modu — `r`'den ORTOGONAL seçici. Bkz. [`FecArm::from_args`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FecModeArg {
+    /// Statik-r (`r` kadar repair; **r=0 geçerli ve tek-eksenli kontrol koludur**).
+    #[default]
+    Static,
+    /// Controller/adaptif (yapı-gate + fuzzy; `r` yok sayılır).
+    Adaptive,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FecArm {
     /// FEC KAPALI. Ürün sevk default'u: kol yalnız ARQ + tail-recovery + fuzzy pacing koşar.
@@ -76,13 +86,24 @@ pub enum FecArm {
 }
 
 impl FecArm {
-    /// CLI argümanlarından çözer: `profile_id == 0` → `Off`; `r == 0` → `Adaptive`; aksi `StaticR`.
+    /// CLI argümanlarından çözer.
+    ///
+    /// **[KAMPANYA-KRİTİK]** `mode` seçicisi `r`'den ORTOGONALDİR. Eski iki-argüman biçiminde
+    /// `r == 0` "adaptif" demekti ve **statik r=0 kolu TEMSİL EDİLEMİYORDU**: `--fec-profile 0`
+    /// fragmenter'ı da kapatıyor (`runtime_cfg`'de profil yoksa `unit = payload`), dolayısıyla
+    /// FEC-kapalı kol 256 B birim, FEC-açık kol 53 B chunk kullanıyor ve **birim granülü ikinci
+    /// bir eksen olarak kayıyordu** — tam da kontrol edilmesi gereken confound.
+    ///
+    /// `StaticR { r: 0 }` geçerli ve anlamlıdır: `close_fec_block_manual`'ın `for esi in 0..r`
+    /// döngüsü r=0'da no-op'tur ve `Ok(0)` döner → parity YOK, ama profil kurulu olduğu için
+    /// fragmentasyon ve wire çerçevesi (0x05 + `SourcePrefix`) FEC kollarıyla BYTE-ÖZDEŞ kalır.
+    /// Yani gerçek tek-eksenli kontrol budur.
     #[must_use]
-    pub fn from_args(profile_id: u8, r: u16) -> Self {
-        match (profile_id, r) {
+    pub fn from_args(profile_id: u8, r: u16, mode: FecModeArg) -> Self {
+        match (profile_id, mode) {
             (0, _) => Self::Off,
-            (p, 0) => Self::Adaptive { profile_id: p },
-            (p, r) => Self::StaticR { profile_id: p, r },
+            (p, FecModeArg::Adaptive) => Self::Adaptive { profile_id: p },
+            (p, FecModeArg::Static) => Self::StaticR { profile_id: p, r },
         }
     }
 

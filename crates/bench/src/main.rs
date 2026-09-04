@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::BenchError;
-use crate::transport::{BenchTransport, Cc, ClientCfg, FecArm, KamaArm, ServerCfg};
+use crate::transport::{BenchTransport, Cc, ClientCfg, FecArm, FecModeArg, KamaArm, ServerCfg};
 
 #[derive(Parser)]
 #[command(name = "bench", about = "Kama transport benchmark harness (§4.4)")]
@@ -58,9 +58,15 @@ enum Cmd {
         /// İSTEMCİYLE AYNI verilmelidir. Örn. 3 = K8/R4/E64 (payload ≤ 53 B).
         #[arg(long, default_value_t = 0)]
         fec_profile: u8,
-        /// [SPRINT-A] Blok başına sabit repair sayısı (0 = adaptif/Controller modu).
+        /// [SPRINT-A] Blok başına sabit repair sayısı. `--fec-mode static` ile birlikte
+        /// **r=0 GEÇERLİDİR** ve tek-eksenli kontrol kolunu verir (fragmentasyon açık, parity yok).
         #[arg(long, default_value_t = 0)]
         fec_r: u16,
+        /// [KAMPANYA-KRİTİK] FEC modu: `static` (r kadar repair, r=0 = kontrol) | `adaptive`
+        /// (Controller). `r`'den ORTOGONAL — eski `r==0 ⇒ adaptif` kısayolu statik-r0 kolunu
+        /// temsil edilemez kılıyordu.
+        #[arg(long, value_enum, default_value_t = FecModeCli::Static)]
+        fec_mode: FecModeCli,
         /// [SPRINT-A] Alıcı birim-payload tavanı — client `--payload` ile AYNI olmalı.
         #[arg(long, default_value_t = 256)]
         payload: u64,
@@ -129,9 +135,15 @@ enum Cmd {
         /// SUNUCUYLA AYNI verilmelidir. Örn. 3 = K8/R4/E64 (payload ≤ 53 B).
         #[arg(long, default_value_t = 0)]
         fec_profile: u8,
-        /// [SPRINT-A] Blok başına sabit repair sayısı (0 = adaptif/Controller modu).
+        /// [SPRINT-A] Blok başına sabit repair sayısı. `--fec-mode static` ile birlikte
+        /// **r=0 GEÇERLİDİR** ve tek-eksenli kontrol kolunu verir (fragmentasyon açık, parity yok).
         #[arg(long, default_value_t = 0)]
         fec_r: u16,
+        /// [KAMPANYA-KRİTİK] FEC modu: `static` (r kadar repair, r=0 = kontrol) | `adaptive`
+        /// (Controller). `r`'den ORTOGONAL — eski `r==0 ⇒ adaptif` kısayolu statik-r0 kolunu
+        /// temsil edilemez kılıyordu.
+        #[arg(long, value_enum, default_value_t = FecModeCli::Static)]
+        fec_mode: FecModeCli,
         /// [BURST-FUSION] Bkz. `serve --fec-burst-fusion`. SUNUCUYLA AYNI verilmelidir.
         #[arg(long, default_value_t = false)]
         fec_burst_fusion: bool,
@@ -154,6 +166,22 @@ enum Cmd {
         #[arg(long, value_delimiter = ',', default_value = "10,30,120")]
         deadlines_s: Vec<u64>,
     },
+}
+
+/// CLI karşılığı — `transport::FecModeArg`'a birebir eşlenir.
+#[derive(Copy, Clone, ValueEnum, PartialEq)]
+enum FecModeCli {
+    Static,
+    Adaptive,
+}
+
+impl From<FecModeCli> for FecModeArg {
+    fn from(m: FecModeCli) -> Self {
+        match m {
+            FecModeCli::Static => FecModeArg::Static,
+            FecModeCli::Adaptive => FecModeArg::Adaptive,
+        }
+    }
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -254,6 +282,7 @@ async fn main() -> Result<(), BenchError> {
             gate_watch,
             fec_profile,
             fec_r,
+            fec_mode,
             payload,
             fec_burst_fusion,
             bootstrap_rtt,
@@ -273,7 +302,7 @@ async fn main() -> Result<(), BenchError> {
                         budget_ceiling_bytes,
                     )?,
                     gate_watch,
-                    fec: FecArm::from_args(fec_profile, fec_r),
+                    fec: FecArm::from_args(fec_profile, fec_r, fec_mode.into()),
                     payload_bytes: payload,
                     burst_fusion: fec_burst_fusion,
                     bootstrap_rtt,
@@ -304,6 +333,7 @@ async fn main() -> Result<(), BenchError> {
             establish_gate,
             fec_profile,
             fec_r,
+            fec_mode,
             fec_burst_fusion,
             bootstrap_rtt,
             initial_window_bytes,
@@ -330,7 +360,7 @@ async fn main() -> Result<(), BenchError> {
                 warmup_msgs,
                 gate,
                 establish_gate,
-                fec: FecArm::from_args(fec_profile, fec_r),
+                fec: FecArm::from_args(fec_profile, fec_r, fec_mode.into()),
                 burst_fusion: fec_burst_fusion,
                 bootstrap_rtt,
                 initial_window_bytes,

@@ -562,21 +562,65 @@ mod tests {
         }
     }
 
-    /// FecArm CLI çözümü: 0 profil = kapalı; r=0 = adaptif; aksi statik.
+    /// [KAMPANYA-KRİTİK] FecArm CLI çözümü: mod seçicisi `r`'den ORTOGONAL.
+    ///
+    /// Eski biçimde `r == 0` "adaptif" demekti ve **statik r=0 kolu TEMSİL EDİLEMİYORDU**.
+    /// Sonuç: tek-eksenli kontrol için `--fec-profile 0` kullanmak gerekiyordu, o da fragmenter'ı
+    /// kapatıp birim granülünü (256 B vs 53 B) ikinci bir eksen hâline getiriyordu — kampanyanın
+    /// kontrol etmesi gereken confound'un ta kendisi. Adversaryal tasarım incelemesinin
+    /// kill-shot'ı buydu; koşudan ÖNCE yakalandı.
     #[test]
-    fn fec_arm_from_args_maps_all_three_modes() {
-        assert_eq!(FecArm::from_args(0, 4), FecArm::Off);
-        assert_eq!(FecArm::from_args(0, 0), FecArm::Off);
+    fn static_r0_control_arm_is_reachable_and_keeps_fragmentation() {
+        use crate::transport::FecModeArg::{Adaptive, Static};
+        // Profil 0 = FEC tamamen kapalı (fragmenter de kapalı) — kontrol kolu BU DEĞİL.
+        assert_eq!(FecArm::from_args(0, 4, Static), FecArm::Off);
+        assert_eq!(FecArm::from_args(0, 0, Adaptive), FecArm::Off);
+        // Mod ORTOGONAL: aynı r ile iki farklı kol.
         assert_eq!(
-            FecArm::from_args(0x03, 0),
+            FecArm::from_args(0x03, 0, Adaptive),
             FecArm::Adaptive { profile_id: 0x03 }
         );
         assert_eq!(
-            FecArm::from_args(0x03, 4),
+            FecArm::from_args(0x03, 0, Static),
+            FecArm::StaticR {
+                profile_id: 0x03,
+                r: 0
+            },
+            "statik r=0 ULAŞILABİLİR olmalı — tek-eksenli kontrol kolu budur"
+        );
+        assert_eq!(
+            FecArm::from_args(0x03, 4, Static),
             FecArm::StaticR {
                 profile_id: 0x03,
                 r: 4
             }
+        );
+
+        // VE kritik özellik: r=0 kolu fragmentasyonu KORUR, yani DATA çerçeveleme FEC
+        // kollarıyla byte-özdeş kalır; tek fark parity çerçevelerinin varlığıdır.
+        let ctrl = runtime_cfg(256, 4, FecArm::from_args(0x03, 0, Static), false, false, 0, false);
+        let r2 = runtime_cfg(
+            256,
+            4,
+            FecArm::from_args(0x03, 2, Static),
+            false,
+            false,
+            0,
+            false,
+        );
+        assert_eq!(ctrl.max_unit_bytes, r2.max_unit_bytes, "birim granülü AYNI olmalı");
+        assert_eq!(
+            ctrl.max_message_bytes, r2.max_message_bytes,
+            "fragmentasyon AYNI olmalı"
+        );
+        assert!(ctrl.fec.is_some(), "profil kurulu kalmalı (fragmentasyon için)");
+        assert_eq!(ctrl.fec.unwrap().manual_r, Some(0), "kontrol kolunda parity YOK");
+
+        // Kıyas: profil 0 kullanılsaydı granül kayardı — kaçınılan confound.
+        let naive_off = runtime_cfg(256, 4, FecArm::Off, false, false, 0, false);
+        assert_ne!(
+            naive_off.max_unit_bytes, r2.max_unit_bytes,
+            "profil-0 kontrolü birim granülünü kaydırır (bu yüzden kullanılmaz)"
         );
     }
 
