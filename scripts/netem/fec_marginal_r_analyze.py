@@ -148,11 +148,21 @@ def completion_at(rec, d_msg_ns, n_msgs):
 def main():
     root = sys.argv[1]
     rtt_ms = float(sys.argv[2]) if len(sys.argv) > 2 else 200.0
-    primary_mult = 4
+    # [v2] Birincil skorlama eşiği ile ÇÖKÜŞ ÇIPASI ayrıdır.
+    #
+    # v1'de ikisi de 4×RTT'ydi ve bu, completion'ın ~1.0 civarında toplandığı bir noktada
+    # sorunsuzdu (çöküş = "rep hiç çalışmadı", bimodal). 2×RTT'de ise r0 completion'ı ~0.53 —
+    # yani 0.5 eşiği dağılımın TAM ORTASINA düşer ve "çöküş" artık kuruluş başarısızlığını değil
+    # deadline'ı kaçırmayı ölçer; iki parçalı tahmin edici orada kararsızdır ve iki farklı olguyu
+    # karıştırır. Bu yüzden: ÇÖKÜŞ = GEVŞEK eşikte (16×RTT) başarısızlık (= "rep hiç işlemedi"),
+    # BİRİNCİL = sıkı eşikte completion, işleyen repler arasında.
+    primary_mult = float(os.environ.get("PRIMARY_MULT", "4"))
+    collapse_mult = float(os.environ.get("COLLAPSE_MULT", str(primary_mult)))
     grid = [1, 2, 4, 8, 16]
     cells = sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)))
     print(f"# {TAG}  RTT={rtt_ms} ms  birincil d_msg = {primary_mult}×RTT = {primary_mult*rtt_ms:.0f} ms")
-    print(f"# birim = REP · kollar eşleştirilmemiş · çöküş eşiği = completion < {COLLAPSE}")
+    print(f"# çöküş çıpası = {collapse_mult}×RTT ({collapse_mult*rtt_ms:.0f} ms) altında completion < {COLLAPSE}")
+    print(f"# birim = REP · kollar eşleştirilmemiş")
 
     data = defaultdict(list)
     invalid = defaultdict(lambda: defaultdict(int))
@@ -201,13 +211,16 @@ def main():
     print(f"\n## birincil: ALICI teslim @ d_msg={primary_mult}×RTT")
     n_msgs = 96
     d_primary = int(primary_mult * rtt_ms * 1e6)
+    d_collapse = int(collapse_mult * rtt_ms * 1e6)
     summary = {}
     for (cell, arm), recs in sorted(data.items()):
         comps = [completion_at(x, d_primary, n_msgs) for x in recs]
+        anchors = [completion_at(x, d_collapse, n_msgs) for x in recs]
         srv = [(x["srv_delivered"] or 0) / n_msgs for x in recs]
-        ncol = sum(1 for c in comps if c < COLLAPSE)
+        ncol = sum(1 for a in anchors if a < COLLAPSE)
         lo, hi = clopper_pearson(ncol, len(comps)) if comps else (float("nan"),) * 2
-        good = [c for c in comps if c >= COLLAPSE]
+        # İşleyen repler = ÇIPADA çökmeyenler; birincil skor onlar arasında SIKI eşikte.
+        good = [c for c, a in zip(comps, anchors) if a >= COLLAPSE]
         blo, bhi = boot_ci(good, f"{TAG}|{cell}|{arm}".encode())
         bytes_per = [
             (x["meta"]["udp_tx_bytes"] / max(1, x["srv_delivered"] or 1)) for x in recs

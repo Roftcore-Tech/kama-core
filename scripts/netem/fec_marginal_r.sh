@@ -15,7 +15,7 @@ BENCH="$REPO/target/release/bench"
 # ── Ön-kayıtlı parametreler (§4, §3) ──────────────────────────────────────────────────────────
 MSGS=96; PAYLOAD=256; INTERVAL_MS=20; D_RUN_GRACE_S=20; PROFILE=3
 OWD_MS=100; FWD_LOSS=20; REV_LOSS=2; RATE=1mbit
-ARMS="0 2 4"          # --fec-r; mod hepsinde static
+ARMS="${ARMS_OVERRIDE:-0 2 4}"   # --fec-r; mod hepsinde static (v2: "0 2")
 CELLS="iid20 cor20"
 
 if [ -z "${FMR_INNER:-}" ]; then
