@@ -1,0 +1,1 @@
+r=2 port=5673 common=--transport kama-product --fec-mode static --fec-profile 3 --fec-r 2
