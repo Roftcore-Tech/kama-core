@@ -573,6 +573,10 @@ mod tests {
             establish_gate: None,
             // Bu kolda FEC yok (yalnız kama-product kolu okur).
             fec: crate::transport::FecArm::Off,
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
         }
     }
 

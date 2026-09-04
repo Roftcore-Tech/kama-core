@@ -25,8 +25,8 @@ use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
 /// adaptive-transport'a bağımlı olmasın diye buradan yeniden dışa verilir.
 pub use adaptive_transport::sender::FecStructurePolicy;
 use adaptive_transport::sender::{
-    AckInfo, Event, FecActuationMode, OpaqueUnit, RecoveredInfo, RecoveredUnit, SrLogicalRef,
-    Timer, TransmitKind,
+    AckInfo, BootstrapRttConfig, Event, FecActuationMode, InitialWindowConfig, OpaqueUnit,
+    RecoveredInfo, RecoveredUnit, SrLogicalRef, Timer, TransmitKind,
 };
 use adaptive_transport::seq::resolve_seq;
 use kama_engine::{plan_param_bootstrap, ParamState};
@@ -44,9 +44,11 @@ use tokio::time::interval;
 
 use crate::seam::{SealArgs, SeamPeer, SecuritySeam};
 use crate::wire::{
-    decode_data, decode_data_frag, decode_fec, decode_param, decode_param_ack, decode_recovered,
-    encode_data, encode_data_frag, encode_fec, encode_param, encode_param_ack, encode_recovered,
-    FecFrameHeader, FRAME_PARAM_ACK, FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG, HDR_FEC,
+    decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec, decode_param,
+    decode_param_ack, decode_recovered, encode_cs_echo, encode_cs_probe, encode_data,
+    encode_data_frag, encode_fec, encode_param, encode_param_ack, encode_recovered, FecFrameHeader,
+    CS_PROBE_SUBTYPE, FRAME_CS_ECHO, FRAME_PARAM_ACK, FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG,
+    HDR_FEC, LEN_CS_PROBE,
 };
 use crate::ClientSession;
 
@@ -94,6 +96,22 @@ pub struct RuntimeConfig {
     pub drain_cap: Duration,
     /// Server idle-peer emeklilik eşiği (item 3; SESSION_IDLE_HOLD hizası 105 s).
     pub idle_hold: Duration,
+    /// [IW] PreConverge ilk-uçuş penceresi (byte). 0 (default) = sevk davranışı: ilk uçuş TEK
+    /// paket. PreConverge'den çıkış yalnız bir RTT örneğiyle olur ve örnek yalnız ORİJİNAL DATA
+    /// emisyonlarından gelir (Karn) → ilk uçuştaki orijinal sayısı kuruluş olasılığını doğrudan
+    /// belirler. Bkz. `adaptive_transport::sender::InitialWindowConfig`. KALİBRE EDİLMEMİŞ.
+    pub initial_window_bytes: u64,
+    /// [KURULUŞ] `bootstrap_rtt` açıkken merdiven seçimi. `false` (default) = sevk varsayılanı
+    /// (3/9/21/45 s — BLACKOUT için kalibre edilmiştir, kuruluş için değil). `true` =
+    /// kuruluş-hızlı (0.2/0.6/1.8/5.4 s; ilk basamak 2×`INITIAL_RTT`). Probe BÜTÇESİ değişmez
+    /// (4 × 44 B ≤ 200 B) — merdiven yalnız aynı bütçeyi erken harcar, trafik ŞİŞİRMEZ.
+    pub bootstrap_fast_ladder: bool,
+    /// [DR-CS-3] Cold-start bootstrap-RTT merdiveni. `false` (default) = sevk davranışı: motor
+    /// probe PLANLAMAZ ve oturum, ilk ACK gelene dek PreConverge'de kalır. `true` = motor
+    /// `BS_FIRES_NS` merdiveninde (3/9/21/45 s, toplam ≤200 B) 44 B'lik CS-probe planlar; alıcı
+    /// 43 B echo döner; gönderen RTT örneğini KENDİ yerel damgalarından türetip PreConverge'den
+    /// çıkar. KALİBRE EDİLMEMİŞ — default flip ölçüm ister (DR-CS-3 §9 kilitli panel).
+    pub bootstrap_rtt: bool,
     /// [BURST-FUSION] Yapı-gate'inin burst-dalı politikası (motor `FecStructurePolicy`).
     /// Default = sevk davranışı (`Q18Iid`: burst → parity yok). `BurstFusion` KALİBRE
     /// EDİLMEMİŞTİR — flip ölçüm ister; bkz. `adaptive_transport::sender::FecStructurePolicy`.
@@ -130,6 +148,9 @@ impl Default for RuntimeConfig {
             quota_r: 4,
             drain_cap: Duration::from_secs(3),
             idle_hold: Duration::from_secs(105),
+            initial_window_bytes: 0,
+            bootstrap_rtt: false,
+            bootstrap_fast_ladder: false,
             fec_structure_policy: FecStructurePolicy::default(),
             fec: None,
         }
@@ -370,6 +391,10 @@ pub struct ClientStats {
     pub frag_encode_failures: u64,
     /// [TEŞHİS] Yapı-gate'in karar tabanı (kapanış anındaki fotoğraf) — bkz. [`FateWindowDiag`].
     pub fate: FateWindowDiag,
+    /// [DR-CS-3] Wire'a yazılan CS-probe (0 = bootstrap kapalı VEYA PreConverge hiç yaşanmadı).
+    pub cs_probes_tx: u64,
+    /// [DR-CS-3] Alınan ve motora beslenen CS-echo — RTT örneğinin tek kaynağı.
+    pub cs_echoes_rx: u64,
 }
 
 /// Server koşu istatistikleri.
@@ -407,6 +432,10 @@ pub struct ServerStats {
     pub frag_chunk_dropped: u64,
     /// [S1B] Kapasite gereği düşürülen en-eski yarım mesaj (bounded birleştirici).
     pub msg_asm_evicted: u64,
+    /// [DR-CS-3] Alınan CS-probe.
+    pub cs_probes_rx: u64,
+    /// [DR-CS-3] Dönülen CS-echo (probe'dan KÜÇÜK — amp≤1).
+    pub cs_echoes_tx: u64,
     /// [v1] Typed seal-reddi (ACK/RECOVERED/PARAM_ACK dönüş yolu).
     pub seal_failures: u64,
     /// [v1/PARAM] PARAM_SET doğrulanıp bağlanan peer (ilk-bind başına 1).
@@ -609,6 +638,27 @@ async fn client_task(
     session
         .sender_mut()
         .set_fec_structure_policy(cfg.fec_structure_policy);
+    // [DR-CS-3] Bootstrap-RTT merdiveni: emitter motorun sevk yolunda ZATEN var, yalnız bu
+    // bayrağa bağlıydı ve hiçbir üretim çağıranı yoktu (7 çağrı yerinin hepsi testti).
+    session
+        .sender_mut()
+        .set_bootstrap_rtt(if cfg.bootstrap_rtt {
+            let mut c = if cfg.bootstrap_fast_ladder {
+                BootstrapRttConfig::establishment_fast()
+            } else {
+                BootstrapRttConfig::default()
+            };
+            c.enabled = true;
+            c
+        } else {
+            BootstrapRttConfig::default()
+        });
+    // [IW] İlk-uçuş penceresi (0 = sevk davranışı, clamp'e dokunulmaz).
+    session
+        .sender_mut()
+        .set_initial_window(InitialWindowConfig {
+            bytes: cfg.initial_window_bytes,
+        });
     let mut stats = ClientStats::default();
     // [S1] FEC-runtime kuruluşu (cfg.fec varsa): Controller-mode — yapı-gate'in (Q18) kararı
     // latch'e ancak bu modda akar. validate_fec connect'te koştu; profil burada çözülür.
@@ -757,7 +807,17 @@ async fn client_task(
                             continue;
                         }
                     }
-                    // CsProbe / FEC-kapalıyken FecParity: v0 kabuk taşımaz, sayar (bootstrap OFF;
+                    // [DR-CS-3] CS-probe: motor PreConverge'de RTT örneği üretmek için planlar.
+                    // probe_seq AYRI ad-uzayındadır (`bs_maybe_emit_probe`: "NOT a DATA seq, NOT
+                    // inflight-tracked") — seq→unit haritasına GİRMEZ, yukarıdaki carries_unit
+                    // dalı bunu zaten dışlıyor.
+                    if d.kind == TransmitKind::CsProbe {
+                        let f = encode_cs_probe(CS_PROBE_SUBTYPE, (d.seq & 0xFFFF) as u16);
+                        stats.cs_probes_tx += 1;
+                        seal_send!(f, TxClass::Ctrl, $now);
+                        continue;
+                    }
+                    // FEC-kapalıyken FecParity: v0 kabuk taşımaz, sayar (bootstrap OFF;
                     // sevk default'larında üretilmezler — typed genişleme noktası).
                     stats.stale_decisions += 1;
                     continue;
@@ -828,7 +888,17 @@ async fn client_task(
             stats.rx_bytes += raw.len() as u64;
             if let Ok(od) = seam.open(raw) {
                 let plain = od.plain;
-                if plain.first() == Some(&FRAME_PARAM_ACK) {
+                if plain.first() == Some(&FRAME_CS_ECHO) {
+                    // [DR-CS-3] Echo → RTT örneği. Peer'in taşıdığı seen_count/arrival_gap
+                    // YALNIZ-LEDGER'dır (şema amendman-§3): motor örneği KENDİ yerel
+                    // damgalarından türetir, bu alanlar karar girdisi YAPILMAZ.
+                    if let Some((_sub, probe_seq, _seen, _gap)) = decode_cs_echo(&plain) {
+                        stats.cs_echoes_rx += 1;
+                        drive!(Event::CsProbeEcho { probe_seq }, $now);
+                    } else {
+                        stats.unknown_frames += 1;
+                    }
+                } else if plain.first() == Some(&FRAME_PARAM_ACK) {
                     // [v1/PARAM] hash-echo confirmation (B2: yalnız retry-durdurur; emisyon zaten akıyor).
                     if let (Some(plan), Some(h)) = (param_plan.as_ref(), decode_param_ack(&plain)) {
                         if h == plan.param_hash && !param_confirmed {
@@ -1665,6 +1735,9 @@ async fn server_task(
                         code_suite_id: u8,
                         param_hash: [u8; 32],
                     },
+                    /// [DR-CS-3] Cold-start probe — oturum durumu GEREKTİRMEZ, idempotent
+                    /// echo ile cevaplanır (gönderenin RTT örneği buradan doğar).
+                    CsProbe { subtype: u8, probe_seq: u16 },
                 }
                 let parsed = if let Some((wire_seq, unit_id, payload)) = decode_data(&plain) {
                     RxFrame::Data {
@@ -1681,6 +1754,8 @@ async fn server_task(
                     }
                 } else if let Some((h, symbol)) = decode_fec(&plain) {
                     RxFrame::Fec { h, symbol }
+                } else if let Some((subtype, probe_seq)) = decode_cs_probe(&plain) {
+                    RxFrame::CsProbe { subtype, probe_seq }
                 } else if let Some((profile_id, code_suite_id, param_hash)) = decode_param(&plain) {
                     RxFrame::Param {
                         profile_id,
@@ -1924,6 +1999,19 @@ async fn server_task(
                             let (sp, pn) = (slot.seam_peer, slot.next_pn());
                             srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, pn, f).await;
                         }
+                    }
+                    RxFrame::CsProbe { subtype, probe_seq } => {
+                        // [DR-CS-3] IDEMPOTENT-STATELESS echo. Alıcı motoruna BESLENMEZ: probe
+                        // ayrı ad-uzayındadır, DATA seq'i işgal etmez ve ACK üretmez.
+                        // seen_count/arrival_gap 0 gönderilir — şema onları yalnız-ledger ilan
+                        // eder (karar girdisi yapılamaz) ve durum tutmak stateless sözleşmesini
+                        // bozardı. ANTİ-AMPLİFİKASYON: echo 43 B < probe 44 B (amp ≤ 1).
+                        stats.cs_probes_rx += 1;
+                        let f = encode_cs_echo(subtype, probe_seq, 0, 0);
+                        debug_assert!(f.len() < LEN_CS_PROBE, "echo probe'dan küçük olmalı (amp≤1)");
+                        let (sp, pn) = (slot.seam_peer, slot.next_pn());
+                        stats.cs_echoes_tx += 1;
+                        srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, pn, f).await;
                     }
                     RxFrame::Param {
                         profile_id,

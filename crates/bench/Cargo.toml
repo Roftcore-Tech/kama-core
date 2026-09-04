@@ -15,7 +15,7 @@ client-core = { path = "../client-core" }
 quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.13"                                      # bench-içi self-signed cert
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "io-util", "sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "io-util", "sync", "time", "signal"] }
 thiserror.workspace = true
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

@@ -203,6 +203,82 @@ pub fn decode_recovered(buf: &[u8]) -> Option<(u32, Vec<u16>)> {
     Some((block_id, esis))
 }
 
+// ── [DR-CS-3] Cold-start probe/echo çerçeveleri ──────────────────────────────────────────────
+//
+// NEDEN BURADA YOKTU (kablolama boşluğu): motor `TransmitKind::CsProbe` kararını ÜRETİYOR
+// (`sender.rs::bs_maybe_emit_probe`, cargo-feature'sız, sevk yolunda) ve echo'yu İŞLİYOR
+// (`bs_on_echo`, DR-CS-3 "UNGATED"). Şema codepoint'leri de var (`inner_kind::CTRL_CS_PROBE`
+// 0x19 / `CTRL_CS_ECHO` 0x1A, `Control::CsProbe/CsEcho`). Ama v0 kabuğunda TAŞIYICI ÇERÇEVE
+// yoktu: runtime `CsProbe` kararını `stale_decisions`'a düşürüp sessizce atıyordu. Sonuç: probe
+// hiç wire'a çıkmadığından echo da hiç gelemiyordu ve "ungated echo ingest" üretimde ölü koddu.
+// Yani mekanizma iki uçta da yazılıydı, ORTASI bağlı değildi.
+//
+// Boyutlar şemanın normatif sayılarına KİLİTLİ (motor bütçesi `BS_PROBE_WIRE_EXACT = 44`'ü sayar;
+// mühür +16 B ekler → gövdeler 28/27 seçildi):
+//   probe: mühürlü 28+16 = 44 B = PROBE_WIRE_EXACT
+//   echo : mühürlü 27+16 = 43 B = ECHO_WIRE_MAX
+// ANTİ-AMPLİFİKASYON (§DR-CS-1 amp≤1): echo (43) < probe (44) — doğrulanmamış bir eşe cevap
+// vermek asla trafiği BÜYÜTEMEZ. Bu bir güvenlik özelliğidir, boyutlar keyfi değildir.
+
+/// [DR-CS-3] Cold-start probe frame_type (şema `CTRL_CS_PROBE` 0x19 alan-hizası).
+pub const FRAME_CS_PROBE: u8 = 0x06;
+/// Probe gövde boyu: type(1)+subtype(1)+probe_seq u16(2)+canonical-zero-pad(24) = 28 B.
+pub const LEN_CS_PROBE: usize = 28;
+/// [DR-CS-3] Cold-start echo frame_type (şema `CTRL_CS_ECHO` 0x1A alan-hizası).
+pub const FRAME_CS_ECHO: u8 = 0x07;
+/// Echo gövde boyu: type(1)+subtype(1)+probe_seq u16(2)+seen_count u32(4)+arrival_gap u32(4)
+/// +canonical-zero-pad(15) = 27 B. Probe'dan KÜÇÜK olmak zorunda (amp≤1).
+pub const LEN_CS_ECHO: usize = 27;
+/// DR-CS-1 probe subtype (şema: `subtype = 0x01`).
+pub const CS_PROBE_SUBTYPE: u8 = 0x01;
+
+/// CS-probe çerçevesi kodlar (sabit boy; pad canonical sıfır).
+#[must_use]
+pub fn encode_cs_probe(subtype: u8, probe_seq: u16) -> Vec<u8> {
+    let mut b = vec![0u8; LEN_CS_PROBE];
+    b[0] = FRAME_CS_PROBE;
+    b[1] = subtype;
+    b[2..4].copy_from_slice(&probe_seq.to_be_bytes());
+    b
+}
+
+/// CS-probe çözer: `(subtype, probe_seq)`. Boy TAM eşleşmezse `None` (fail-closed — sabit-boy
+/// çerçevede uzunluk esnekliği amplifikasyon yüzeyidir).
+#[must_use]
+pub fn decode_cs_probe(buf: &[u8]) -> Option<(u8, u16)> {
+    if buf.len() != LEN_CS_PROBE || buf[0] != FRAME_CS_PROBE {
+        return None;
+    }
+    Some((buf[1], u16::from_be_bytes([buf[2], buf[3]])))
+}
+
+/// CS-echo çerçevesi kodlar. `seen_count`/`arrival_gap` YALNIZ-LEDGER'dır (şema amendman-§3:
+/// karar girdisi YAPILAMAZ) — RTT örneği yalnız gönderenin YEREL damgalarından türer.
+#[must_use]
+pub fn encode_cs_echo(subtype: u8, probe_seq: u16, seen_count: u32, arrival_gap: u32) -> Vec<u8> {
+    let mut b = vec![0u8; LEN_CS_ECHO];
+    b[0] = FRAME_CS_ECHO;
+    b[1] = subtype;
+    b[2..4].copy_from_slice(&probe_seq.to_be_bytes());
+    b[4..8].copy_from_slice(&seen_count.to_be_bytes());
+    b[8..12].copy_from_slice(&arrival_gap.to_be_bytes());
+    b
+}
+
+/// CS-echo çözer: `(subtype, probe_seq, seen_count, arrival_gap)`. Boy TAM eşleşmezse `None`.
+#[must_use]
+pub fn decode_cs_echo(buf: &[u8]) -> Option<(u8, u16, u32, u32)> {
+    if buf.len() != LEN_CS_ECHO || buf[0] != FRAME_CS_ECHO {
+        return None;
+    }
+    Some((
+        buf[1],
+        u16::from_be_bytes([buf[2], buf[3]]),
+        u32::from_be_bytes(buf[4..8].try_into().ok()?),
+        u32::from_be_bytes(buf[8..12].try_into().ok()?),
+    ))
+}
+
 // ── [S1→v1] PARAM bootstrap çerçeveleri ──────────────────────────────────────────────────────
 //
 // FEC-profil bağlaması: gönderici PARAM'ı yollar (B2: FEC-emisyonu ACK-BEKLEMEDEN akar), alıcı

@@ -64,6 +64,19 @@ enum Cmd {
         /// [SPRINT-A] Alıcı birim-payload tavanı — client `--payload` ile AYNI olmalı.
         #[arg(long, default_value_t = 256)]
         payload: u64,
+        /// [BURST-FUSION] Yapı-gate'in burst dalında da kodlama açmasına izin ver (opt-in;
+        /// KALİBRE EDİLMEMİŞ). Verilmezse sevk davranışı (burst → parity yok). İKİ UÇTA AYNI.
+        #[arg(long, default_value_t = false)]
+        fec_burst_fusion: bool,
+        /// [DR-CS-3] Cold-start bootstrap-RTT merdivenini aç (opt-in). İKİ UÇTA AYNI.
+        #[arg(long, default_value_t = false)]
+        bootstrap_rtt: bool,
+        /// [IW] PreConverge ilk-uçuş penceresi (byte; 0 = sevk davranışı, tek paket).
+        #[arg(long, default_value_t = 0)]
+        initial_window_bytes: u64,
+        /// [KURULUŞ] Bootstrap merdivenini kuruluş-hızlı yap (0.2/0.6/1.8/5.4 s). Bütçe değişmez.
+        #[arg(long, default_value_t = false)]
+        bootstrap_fast: bool,
     },
     /// Client: N mesaj gönder, ham event JSONL yaz.
     Client {
@@ -119,6 +132,18 @@ enum Cmd {
         /// [SPRINT-A] Blok başına sabit repair sayısı (0 = adaptif/Controller modu).
         #[arg(long, default_value_t = 0)]
         fec_r: u16,
+        /// [BURST-FUSION] Bkz. `serve --fec-burst-fusion`. SUNUCUYLA AYNI verilmelidir.
+        #[arg(long, default_value_t = false)]
+        fec_burst_fusion: bool,
+        /// [DR-CS-3] Bkz. `serve --bootstrap-rtt`. SUNUCUYLA AYNI verilmelidir.
+        #[arg(long, default_value_t = false)]
+        bootstrap_rtt: bool,
+        /// [IW] PreConverge ilk-uçuş penceresi (byte; 0 = sevk davranışı, tek paket).
+        #[arg(long, default_value_t = 0)]
+        initial_window_bytes: u64,
+        /// [KURULUŞ] Bkz. `serve --bootstrap-fast`. SUNUCUYLA AYNI verilmelidir.
+        #[arg(long, default_value_t = false)]
+        bootstrap_fast: bool,
         #[arg(long)]
         out: PathBuf,
     },
@@ -230,6 +255,10 @@ async fn main() -> Result<(), BenchError> {
             fec_profile,
             fec_r,
             payload,
+            fec_burst_fusion,
+            bootstrap_rtt,
+            initial_window_bytes,
+            bootstrap_fast,
         } => {
             run_server(
                 transport,
@@ -246,6 +275,10 @@ async fn main() -> Result<(), BenchError> {
                     gate_watch,
                     fec: FecArm::from_args(fec_profile, fec_r),
                     payload_bytes: payload,
+                    burst_fusion: fec_burst_fusion,
+                    bootstrap_rtt,
+                    initial_window_bytes,
+                    bootstrap_fast,
                 },
             )
             .await
@@ -271,6 +304,10 @@ async fn main() -> Result<(), BenchError> {
             establish_gate,
             fec_profile,
             fec_r,
+            fec_burst_fusion,
+            bootstrap_rtt,
+            initial_window_bytes,
+            bootstrap_fast,
             out,
         } => {
             let cfg = ClientCfg {
@@ -294,6 +331,10 @@ async fn main() -> Result<(), BenchError> {
                 gate,
                 establish_gate,
                 fec: FecArm::from_args(fec_profile, fec_r),
+                burst_fusion: fec_burst_fusion,
+                bootstrap_rtt,
+                initial_window_bytes,
+                bootstrap_fast,
             };
             let output = run_client(transport, cfg).await?;
             output.write_jsonl(&out)?;

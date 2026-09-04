@@ -605,6 +605,10 @@ mod loopback_tests {
                 establish_gate: None,
                 // Bu kolda FEC yok (yalnız kama-product kolu okur).
                 fec: crate::transport::FecArm::Off,
+                burst_fusion: false,
+                bootstrap_rtt: false,
+                initial_window_bytes: 0,
+                bootstrap_fast: false,
             })
             .await
             .expect("governed run bounded Ok");
@@ -669,6 +673,10 @@ mod loopback_tests {
                 establish_gate: None,
                 // Bu kolda FEC yok (yalnız kama-product kolu okur).
                 fec: crate::transport::FecArm::Off,
+                burst_fusion: false,
+                bootstrap_rtt: false,
+                initial_window_bytes: 0,
+                bootstrap_fast: false,
             })
             .await
             .expect("client run");
@@ -713,6 +721,10 @@ mod loopback_tests {
                 establish_gate: None,
                 // Bu kolda FEC yok (yalnız kama-product kolu okur).
                 fec: crate::transport::FecArm::Off,
+                burst_fusion: false,
+                bootstrap_rtt: false,
+                initial_window_bytes: 0,
+                bootstrap_fast: false,
             })
             .await
             .expect("client run (ALPN/provider/handshake OK)");
@@ -777,6 +789,10 @@ mod loopback_tests {
                 establish_gate: None,
                 // Bu kolda FEC yok (yalnız kama-product kolu okur).
                 fec: crate::transport::FecArm::Off,
+                burst_fusion: false,
+                bootstrap_rtt: false,
+                initial_window_bytes: 0,
+                bootstrap_fast: false,
             })
             .await
             .expect("bounded return, HANG değil");

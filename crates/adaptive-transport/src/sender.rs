@@ -288,6 +288,32 @@ impl GateOutcome {
 /// [`GateOutcome`] histogramının kova sayısı.
 pub const GATE_OUTCOME_KINDS: usize = 6;
 
+/// [IW] PreConverge **ilk-uçuş penceresi** (initial window).
+///
+/// SORUN: PreConverge'de pacing hızı `PRE_CONVERGE_FLOOR_BW` (31 B/s) olduğundan
+/// `window_bytes = rate × BURST_WINDOW_NS` ≈ 1 B çıkar ve burst-cap `front_size`'a clamp'lenir
+/// → **ilk uçuş TAM BİR PAKET**. Oysa `TokenBucket::new` kovayı `DEFAULT_BURST_CAP` (2400 B)
+/// kredisiyle DOLU başlatır; `set_burst_cap` o krediyi tek birime kırpıp ATAR.
+///
+/// Bu, handshake'sizliğin bedeli DEĞİLDİR — bir pacer clamp'idir. QUIC'in IW=10 (RFC 9002 §7.2,
+/// ≤14720 B) seçimi de congestion-control tercihidir, handshake ürünü değil. Kritik sonuç:
+/// PreConverge'den çıkış YALNIZ bir RTT örneğiyle olur ve örnek YALNIZ `TransmitKind::Data`
+/// emisyonlarından gelir (Karn, `on_ack` `p.origin == Data` kapısı) → ilk uçuştaki ORİJİNAL
+/// sayısı, kuruluş olasılığını doğrudan belirler: N orijinalle örnek alamama olasılığı
+/// `p_loss^N`. Tek pakette %50 kayıpta bu 0.5; on pakette ~0.001.
+///
+/// `bytes == 0` (DEFAULT) = mevcut davranış BİREBİR (clamp'e dokunulmaz). `>0` = PreConverge'de
+/// burst-cap tabanı bu değere yükseltilir; kova zaten dolu başladığından ilk uçuş bir-kerelik bu
+/// bütçeyi kullanır, SONRASINDA 31 B/s tabanı aynen geçerlidir (floor'un gerekçesi —
+/// "1 kbps kanalı floodlamaz" — SÜRDÜRÜLEN hız hakkındadır, ilk uçuş hakkında değil).
+///
+/// KALİBRE EDİLMEMİŞ: default flip ölçüm ister.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InitialWindowConfig {
+    /// İlk-uçuş bütçesi (byte). 0 = kapalı (sevk davranışı).
+    pub bytes: u64,
+}
+
 /// [BURST-FUSION] Yapı-gate'inin **burst** dalındaki politikası.
 ///
 /// Sorun: `Q18Iid` (mevcut sevk davranışı) burst-yapı görünce parity'yi SIFIR bırakıp işi tamamen
@@ -643,13 +669,49 @@ pub enum Timer {
 pub struct BootstrapRttConfig {
     /// Master gate. Default false → inert.
     pub enabled: bool,
+    /// [KURULUŞ-KALİBRASYONU] Probe merdiveni (ns, arm anına göre). `None` = `BS_FIRES_NS`
+    /// varsayılanı (3/9/21/45 s).
+    ///
+    /// O varsayılan BLACKOUT için kalibre edildi (uzun sessizlikten sonra hattı yoklamak), KURULUŞ
+    /// için değil. Kuruluşta beklenen gecikme `INITIAL_RTT` (100 ms) mertebesindedir; ilk basamağın
+    /// 3 s olması, kilidin çözülmesini üç saniye geciktirir ve dar deadline'lı hücrelerde koşu
+    /// biter. `Some(..)` ile kuruluş-hızlı bir merdiven verilebilir (bkz.
+    /// [`BootstrapRttConfig::establishment_fast`]).
+    ///
+    /// Bütçe DEĞİŞMEZ: `BS_TX_HARD_BUDGET` (200 B) her hâlde geçerlidir, yani merdiven ne kadar
+    /// sıkı olursa olsun toplam 4 probe × 44 B tavanı aşılamaz — hızlandırma trafik ŞİŞİRMEZ,
+    /// yalnız aynı bütçeyi erken harcar.
+    pub fires_ns: Option<[u64; 4]>,
+}
+
+impl BootstrapRttConfig {
+    /// KURULUŞ için merdiven: ilk basamak 2×`INITIAL_RTT` (200 ms), sonra ×3 büyüme
+    /// (0.2 / 0.6 / 1.8 / 5.4 s). Gerekçe: kuruluş kilidi bir RTT örneğinin YOKLUĞUDUR ve
+    /// beklenen RTT `INITIAL_RTT` mertebesindedir; ilk yoklamayı bir RTT-turu ötesine koymak
+    /// gereksiz gecikmedir. KALİBRE EDİLMEMİŞ — ölçümle doğrulanmalı.
+    #[must_use]
+    pub fn establishment_fast() -> Self {
+        Self {
+            enabled: true,
+            fires_ns: Some([200_000_000, 600_000_000, 1_800_000_000, 5_400_000_000]),
+        }
+    }
+
+    /// Etkin merdiven (config verilmemişse sevk varsayılanı).
+    #[must_use]
+    pub fn ladder(&self) -> [u64; 4] {
+        self.fires_ns.unwrap_or(BS_FIRES_NS)
+    }
 }
 
 #[allow(clippy::derivable_impls)]
 impl Default for BootstrapRttConfig {
     fn default() -> Self {
         // DEFAULT OFF — pending locked/fresh panel validation (DR-CS-3 §9).
-        Self { enabled: false }
+        Self {
+            enabled: false,
+            fires_ns: None,
+        }
     }
 }
 
@@ -1289,6 +1351,8 @@ pub struct Sender {
     diag_structure_gate_opened: u64, // [Q18-FIX] yapı-gate'in fuzzy fec=0'ı açtığı event sayısı
     /// [BURST-FUSION] Yapı-gate'in burst dalındaki politikası (default = sevk davranışı).
     fec_structure_policy: FecStructurePolicy,
+    /// [IW] PreConverge ilk-uçuş penceresi (0 = kapalı, sevk davranışı).
+    initial_window: InitialWindowConfig,
     /// [TEŞHİS] Yapı-gate karar-yolu histogramı (bkz. `GateOutcome`).
     diag_gate_outcomes: [u64; GATE_OUTCOME_KINDS],
     /// [TEŞHİS] Ledger pencereli kaybının koşu-boyu TEPESİ (ppm) — anlık ölçer decay eder.
@@ -1476,6 +1540,7 @@ impl Sender {
             diag_fuzzy_no_rule: 0,
             diag_structure_gate_opened: 0,
             fec_structure_policy: FecStructurePolicy::Q18Iid,
+            initial_window: InitialWindowConfig::default(),
             diag_gate_outcomes: [0; GATE_OUTCOME_KINDS],
             diag_loss_ppm_peak: 0,
             last_fusion_snapshot: None,
@@ -1727,9 +1792,20 @@ impl Sender {
         // ölçülen bw'ye orantılı micro-burst. front yoksa MTU (güvenli 1-paket tabanı).
         let front_size = self.tx_queue.front().map_or(DEFAULT_MTU, |u| u.size);
         let window_bytes = send_rate.saturating_mul(BURST_WINDOW_NS) / 1_000_000_000;
-        let burst_hi = front_size.max(2 * DEFAULT_MTU);
+        // [IW] PreConverge'de ilk-uçuş tabanı: açıkken clamp'in ALT sınırı `front_size` yerine
+        // ilk-uçuş bütçesidir (üst sınır da onu kapsayacak şekilde yükselir), böylece
+        // `TokenBucket::new`'in DOLU başlattığı kredi tek birime kırpılıp ATILMAZ. Kapalıyken
+        // (bytes == 0) ifade eskisiyle BİREBİR aynıdır. Yalnız PreConverge'i etkiler: ölçüm
+        // geldikten sonra pencere zaten kanal-türevlidir.
+        let iw = if self.state == SenderState::PreConverge {
+            self.initial_window.bytes
+        } else {
+            0
+        };
+        let burst_lo = front_size.max(iw);
+        let burst_hi = front_size.max(2 * DEFAULT_MTU).max(iw);
         self.pacer
-            .set_burst_cap(window_bytes.clamp(front_size, burst_hi));
+            .set_burst_cap(window_bytes.clamp(burst_lo, burst_hi));
         if prev_state == SenderState::PreConverge && self.state != SenderState::PreConverge {
             // §3.3-D cold-start çıkışı: kanal-türevli micro-burst grant (STARTUP probing; kuyruk kanal-uygun
             // küçük burst'le boşalır — bu birimler STARTUP'ta emit → §3.3-B geometrik kopya ALMAZ).
@@ -1997,7 +2073,11 @@ impl Sender {
         if self.bootstrap_rtt.enabled && !self.bs_done {
             if let (Some(armed), Some(&off)) = (
                 self.bs_armed_ns,
-                BS_FIRES_NS.get(self.bs_next_step as usize),
+                self.bootstrap_rtt
+                    .ladder()
+                    .get(self.bs_next_step as usize)
+                    .copied()
+                    .as_ref(),
             ) {
                 best = earlier(best, Some(armed.saturating_add(off)));
             }
@@ -2659,10 +2739,11 @@ impl Sender {
             return;
         };
         let step = self.bs_next_step as usize;
-        if step >= BS_FIRES_NS.len() {
+        let ladder = self.bootstrap_rtt.ladder();
+        if step >= ladder.len() {
             return; // ladder exhausted
         }
-        if now_ns.saturating_sub(armed) < BS_FIRES_NS[step] {
+        if now_ns.saturating_sub(armed) < ladder[step] {
             return; // not yet due — NOT an edge, and NOT counted
         }
         // EDGE: this step transitions not-due → due exactly once (bs_next_step advances below), so a
@@ -3371,6 +3452,18 @@ impl Sender {
         self.last_transition_event_index = self.fusion_event_index;
         self.transition_applied_count = self.transition_applied_count.saturating_add(1);
         Ok(())
+    }
+
+    /// [IW] PreConverge ilk-uçuş penceresini kurar. `bytes == 0` = kapalı (sevk davranışı).
+    /// Bkz. [`InitialWindowConfig`]; KALİBRE EDİLMEMİŞ.
+    pub fn set_initial_window(&mut self, cfg: InitialWindowConfig) {
+        self.initial_window = cfg;
+    }
+
+    /// Kurulu ilk-uçuş penceresi (gözlem/test).
+    #[must_use]
+    pub fn initial_window(&self) -> InitialWindowConfig {
+        self.initial_window
     }
 
     /// [BURST-FUSION] Yapı-gate'inin burst-dalı politikasını seçer. Default [`FecStructurePolicy::Q18Iid`]
@@ -6718,7 +6811,10 @@ mod tests {
 
     fn bs_on() -> Sender {
         let mut s = Sender::new();
-        s.set_bootstrap_rtt(BootstrapRttConfig { enabled: true });
+        s.set_bootstrap_rtt(BootstrapRttConfig {
+            enabled: true,
+            fires_ns: None,
+        });
         s
     }
 

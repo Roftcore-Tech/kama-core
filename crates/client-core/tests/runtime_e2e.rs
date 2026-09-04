@@ -637,3 +637,119 @@ async fn fragmenter_bounds_are_typed_and_enforced_before_the_run() {
         Ok(_) => panic!("tutarsız fragmenter kurulumu koşu-öncesi reddedilmeliydi"),
     }
 }
+
+// ── [DR-CS-3] Cold-start bootstrap-RTT kablolaması ───────────────────────────────────────────
+//
+// Kablolama boşluğu: motor CS-probe kararını ZATEN üretiyordu (`bs_maybe_emit_probe`, sevk
+// yolunda, cargo-feature'sız) ve echo'yu ZATEN işliyordu (`bs_on_echo`, UNGATED) — ama v0 wire
+// kabuğunda taşıyıcı çerçeve yoktu, karar `stale_decisions`'a düşüp atılıyordu. Yani mekanizma
+// iki uçta yazılı, ortası kopuktu; `set_bootstrap_rtt`'nin yedi çağrı yerinin hepsi TESTTİ.
+
+mod cs_seam {
+    use client_core::seam::{
+        OpenReject, OpenedDatagram, SealArgs, SealError, SealedDatagram, SeamPeer, SecuritySeam,
+        IDENTITY_TAG,
+    };
+    use client_core::wire::{FRAME_CS_ECHO, FRAME_CS_PROBE};
+
+    /// IdentitySeam + "DATA yolu tamamen ölü" kanalı: yalnız CS-probe/echo geçer.
+    /// Böylece ACK ASLA gelmez → oturum ancak bootstrap-RTT ile PreConverge'den çıkabilir.
+    pub struct OnlyCsSeam;
+
+    impl SecuritySeam for OnlyCsSeam {
+        fn seal(
+            &mut self,
+            _peer: SeamPeer,
+            mut frame: Vec<u8>,
+            args: SealArgs,
+        ) -> Result<SealedDatagram, SealError> {
+            frame.resize(frame.len() + IDENTITY_TAG, 0);
+            Ok(SealedDatagram {
+                bytes: frame,
+                full_wire_pn: args.wire_pn,
+                dh_epoch: args.dh_epoch,
+            })
+        }
+        fn open(&mut self, wire: &[u8]) -> Result<OpenedDatagram, OpenReject> {
+            if wire.len() <= IDENTITY_TAG {
+                return Err(OpenReject::Malformed);
+            }
+            let plain = &wire[..wire.len() - IDENTITY_TAG];
+            match plain.first() {
+                Some(&FRAME_CS_PROBE) | Some(&FRAME_CS_ECHO) => Ok(OpenedDatagram {
+                    peer: 0,
+                    plain: plain.to_vec(),
+                }),
+                _ => Err(OpenReject::AuthFail), // DATA/ACK: kalıcı silme
+            }
+        }
+        fn sealed_len(&self, frame_len: usize) -> usize {
+            frame_len + IDENTITY_TAG
+        }
+    }
+}
+
+/// Kablolama kanıtı: ACK'in ASLA gelmediği bir kanalda, bootstrap AÇIKKEN probe wire'a çıkar,
+/// alıcı echo döner ve gönderen echo'yu motora besler. KAPALIYKEN hiçbiri olmaz (sevk davranışı).
+///
+/// Merdivenin ilk basamağı 3 s (`BS_FIRES_NS[0]`), bu yüzden test ~5 s koşar.
+#[tokio::test(flavor = "multi_thread")]
+async fn bootstrap_rtt_probe_and_echo_traverse_the_product_wire() {
+    let cfg = |bootstrap: bool| RuntimeConfig {
+        bootstrap_rtt: bootstrap,
+        drain_cap: Duration::from_millis(100),
+        ..RuntimeConfig::default()
+    };
+
+    // ── Kol 1: bootstrap AÇIK ──
+    let server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg(true),
+        Box::new(cs_seam::OnlyCsSeam),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(server.local_addr(), cfg(true), Box::new(IdentitySeam))
+        .await
+        .expect("client connect");
+    client.send(b"tetikleyici".to_vec()).expect("offer"); // PreConverge'i başlatır
+    tokio::time::sleep(Duration::from_millis(5_000)).await;
+    let on_c = client.shutdown().await;
+    let on_s = server.shutdown().await;
+
+    assert!(
+        on_c.cs_probes_tx > 0,
+        "bootstrap AÇIKKEN probe wire'a çıkmalı (eskiden stale_decisions'a düşüyordu): {on_c:?}"
+    );
+    assert!(on_s.cs_probes_rx > 0, "alıcı probe'u görmeli: {on_s:?}");
+    assert_eq!(
+        on_s.cs_echoes_tx, on_s.cs_probes_rx,
+        "her probe'a tam bir echo (idempotent-stateless): {on_s:?}"
+    );
+    assert!(
+        on_c.cs_echoes_rx > 0,
+        "gönderen echo'yu almalı — RTT örneğinin TEK kaynağı: {on_c:?}"
+    );
+    assert_eq!(on_c.acked, 0, "önkoşul: bu kanalda ACK yolu ölü olmalı");
+
+    // ── Kol 2: bootstrap KAPALI (sevk davranışı) — hiçbir probe üretilmemeli ──
+    let server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg(false),
+        Box::new(cs_seam::OnlyCsSeam),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(server.local_addr(), cfg(false), Box::new(IdentitySeam))
+        .await
+        .expect("client connect");
+    client.send(b"tetikleyici".to_vec()).expect("offer");
+    tokio::time::sleep(Duration::from_millis(5_000)).await;
+    let off_c = client.shutdown().await;
+    let off_s = server.shutdown().await;
+    assert_eq!(
+        off_c.cs_probes_tx, 0,
+        "bootstrap KAPALIYKEN probe olmamalı: {off_c:?}"
+    );
+    assert_eq!(off_s.cs_probes_rx, 0, "alıcı da görmemeli: {off_s:?}");
+}

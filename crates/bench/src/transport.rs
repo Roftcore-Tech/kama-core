@@ -137,6 +137,15 @@ pub struct ClientCfg {
     pub establish_gate: Option<std::path::PathBuf>,
     /// [SPRINT-A] Ürün-runtime kolunun FEC ayarı; diğer kollarda yok sayılır.
     pub fec: FecArm,
+    /// [BURST-FUSION] Yapı-gate'in burst dalı politikası (opt-in, KALİBRE EDİLMEMİŞ).
+    /// İKİ UÇTA AYNI kurulmalıdır. Diğer kollarda yok sayılır.
+    pub burst_fusion: bool,
+    /// [DR-CS-3] Cold-start bootstrap-RTT merdiveni (opt-in). İKİ UÇTA AYNI.
+    pub bootstrap_rtt: bool,
+    /// [IW] PreConverge ilk-uçuş penceresi (byte; 0 = sevk davranışı).
+    pub initial_window_bytes: u64,
+    /// [KURULUŞ] Bootstrap merdiveni kuruluş-hızlı mı (bkz. `RuntimeConfig::bootstrap_fast_ladder`).
+    pub bootstrap_fast: bool,
 }
 
 /// [KAPI-1 W6] Dosya-tabanlı barrier: `<gate>.ready` yaz → `<gate>.go` bekle (5 ms poll, 120 s
@@ -179,6 +188,14 @@ pub struct ServerCfg {
     /// [SPRINT-A] Alıcı birim-payload tavanı (ürün-runtime `max_unit_bytes`); FEC açıkken
     /// `payload + SOURCE_PREFIX_LEN ≤ profile.e` koşulunu koşu-öncesi typed doğrular.
     pub payload_bytes: u64,
+    /// [BURST-FUSION] Bkz. [`ClientCfg::burst_fusion`]; İSTEMCİYLE AYNI olmalı.
+    pub burst_fusion: bool,
+    /// [DR-CS-3] Bkz. [`ClientCfg::bootstrap_rtt`]; İSTEMCİYLE AYNI olmalı.
+    pub bootstrap_rtt: bool,
+    /// [IW] Bkz. [`ClientCfg::initial_window_bytes`] (alıcıda etkisiz; simetri için taşınır).
+    pub initial_window_bytes: u64,
+    /// [KURULUŞ] Bkz. [`ClientCfg::bootstrap_fast`] (alıcıda etkisiz; simetri için taşınır).
+    pub bootstrap_fast: bool,
 }
 
 /// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).
