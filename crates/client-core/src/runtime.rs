@@ -319,6 +319,18 @@ pub struct FateWindowDiag {
     /// decay'den etkilenmez → gate'in kayıp önkoşulunu (`≥ 100_000`) koşu boyunca HİÇ görüp
     /// görmediğini bu değer söyler.
     pub ledger_loss_ppm_peak: u64,
+    /// [GÖRÜNÜRLÜK] Kapanış anındaki motor fazı (`SenderState`), metin olarak. Cold-start
+    /// koşusunda EN KARAR-VERİCİ olgu buydu ve ürün yolunda hiç okunmuyordu: bir koşunun
+    /// PreConverge'de takılı kalıp kalmadığı, teslim sayısına bakarak AYIRT EDİLEMİYORDU.
+    pub sender_state: &'static str,
+    /// [GÖRÜNÜRLÜK] Oturum KURULDU mu = bir RTT örneği alındı mı. PreConverge'den çıkışın motor
+    /// içindeki TEK koşulu budur, dolayısıyla bu bir vekil değil TANIMDIR. `false` = oturum hiç
+    /// kurulamadı → o koşunun teslim sayısı bir FEC/ARQ sonucu DEĞİLDİR, kuruluş başarısızlığıdır.
+    pub left_preconverge: bool,
+    /// [GÖRÜNÜRLÜK] Alınan RTT örneği sayısı (monoton).
+    pub rtt_samples: u32,
+    /// [GÖRÜNÜRLÜK] Kuruluş-denemesi (establish probe) emisyon sayısı.
+    pub establish_probes_tx: u64,
     /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
     /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
     /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI · 6=oturum-kurulmadı(PreConverge).
@@ -1120,7 +1132,10 @@ async fn client_task(
                 }
                 } // [S1B] chunk döngüsü sonu
             }
-            _ = pace.tick() => { let now = elapsed_ns(start); drive!(Event::TimerFired(Timer::Pto), now); }
+            _ = pace.tick() => {
+                let now = elapsed_ns(start);
+                drive!(Event::TimerFired(Timer::Pto), now);
+            }
             _ = rtprop.tick() => {
                 let now = elapsed_ns(start);
                 // [v1/PARAM] bounded retry (B2): confirmed olana dek her ≥200ms'de bir, ≤25 deneme.
@@ -1179,6 +1194,25 @@ async fn client_task(
         n10: f.n10,
         n11: f.n11,
         burst_delta_ppm: f.burst_delta_ppm,
+        sender_state: match session.sender().state() {
+            adaptive_transport::sender::SenderState::Idle => "Idle",
+            adaptive_transport::sender::SenderState::PreConverge => "PreConverge",
+            adaptive_transport::sender::SenderState::Startup => "Startup",
+            adaptive_transport::sender::SenderState::Drain => "Drain",
+            adaptive_transport::sender::SenderState::DrainRtprop => "DrainRtprop",
+            adaptive_transport::sender::SenderState::ProbeUp => "ProbeUp",
+            adaptive_transport::sender::SenderState::Steady => "Steady",
+            adaptive_transport::sender::SenderState::RecoverArq => "RecoverArq",
+            adaptive_transport::sender::SenderState::RecoverFwd => "RecoverFwd",
+        },
+        // [GÖRÜNÜRLÜK] Kuruluşun TANIMI: bir RTT örneği alınmış olması. PreConverge'den çıkışın
+        // motor içindeki tek koşulu budur (`rtt.srtt().is_some()`). Faz ADINA bakmak yanlış bir
+        // vekildi: tek-mesajlık bir koşuda motor PreConverge → Idle geçiyor, Startup'a hiç
+        // uğramıyor, ve faz-tabanlı bayrak kuruluşu KAÇIRIYOR (test bunu yakaladı). Sayaç
+        // monotondur → kapanış-anı örneklemesinden bağımsız.
+        left_preconverge: session.sender().diag_rtt_sample_count() > 0,
+        rtt_samples: session.sender().diag_rtt_sample_count(),
+        establish_probes_tx: session.sender().diag_establish_probe_emitted(),
         structure_gate_opened: session.sender().diag_structure_gate_opened(),
         ledger_loss_ppm: session.sender().diag_ledger().1,
         ledger_loss_ppm_peak: session.sender().diag_loss_ppm_peak(),

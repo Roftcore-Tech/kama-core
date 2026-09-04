@@ -780,3 +780,61 @@ fn shipped_default_now_carries_an_initial_window() {
         "FEC default'u ürün-katmanı kampanyası bekliyor"
     );
 }
+
+/// [GÖRÜNÜRLÜK] Bir koşunun oturumu KURUP kurmadığı artık ürün istatistiğinden okunabilir.
+/// Bu ayrım olmadan bir "düşük teslim" sonucu, FEC/ARQ performansı mı yoksa kuruluş başarısızlığı
+/// mı olduğu AYIRT EDİLEMİYORDU — iki ayın yanlış sonuçlarının bir kısmı tam bu körlükten geldi.
+/// `left_preconverge` MONOTONdur, dolayısıyla kapanış-anı örneklemesinden bağımsızdır.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_reports_whether_the_session_ever_established() {
+    // Kurulabilen oturum: gerçek sunucu.
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("bind");
+    let client = ClientEndpoint::connect(
+        server.local_addr(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("connect");
+    client.send(b"kurulus".to_vec()).expect("offer");
+    let _ = tokio::time::timeout(Duration::from_secs(5), server.next_delivery()).await;
+    let ok = client.shutdown().await;
+    let _ = server.shutdown().await;
+    assert!(
+        ok.fate.left_preconverge,
+        "ACK alan bir koşu PreConverge'den ÇIKMIŞ olmalı: {:?}",
+        ok.fate
+    );
+    assert_ne!(
+        ok.fate.sender_state, "PreConverge",
+        "kapanışta faz PreConverge olmamalı: {:?}",
+        ok.fate
+    );
+
+    // Kurulamayan oturum: ölü hedef → faz PreConverge'de kalır.
+    let dead = ClientEndpoint::connect(
+        "127.0.0.1:9".parse().unwrap(),
+        RuntimeConfig {
+            drain_cap: Duration::from_millis(50),
+            ..RuntimeConfig::default()
+        },
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("connect");
+    dead.send(b"olu-hedef".to_vec()).expect("offer");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let bad = dead.shutdown().await;
+    assert!(
+        !bad.fate.left_preconverge,
+        "ACK'siz koşu kuruluşu TAMAMLAMAMIŞ olmalı: {:?}",
+        bad.fate
+    );
+    assert_eq!(bad.fate.sender_state, "PreConverge", "{:?}", bad.fate);
+}

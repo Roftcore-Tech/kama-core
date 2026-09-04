@@ -437,7 +437,8 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         "KP-CLIENT delivered={delivered_count}/{msg_count} warm_ack={warm_acked} residue={warmup_residue} \
          tx={}B(data={} retx={} dup={} fec={} ctrl={}) rx={}B refused={}B/{}pkt \
          fec_blocks={} fec_repairs_tx={} fec_recovered_ctrl={} param_confirmed={} \
-         seal_fail={} send_err={} stale={} cs_probe_tx={} cs_echo_rx={}",
+         seal_fail={} send_err={} stale={} cs_probe_tx={} cs_echo_rx={} \
+         state={} left_preconv={} establish_tx={}",
         stats.tx_bytes,
         stats.tx_data_bytes,
         stats.tx_retx_bytes,
@@ -456,6 +457,9 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         stats.stale_decisions,
         stats.cs_probes_tx,
         stats.cs_echoes_rx,
+        stats.fate.sender_state,
+        stats.fate.left_preconverge,
+        stats.fate.establish_probes_tx,
     );
 
     let meta = RunMeta {
