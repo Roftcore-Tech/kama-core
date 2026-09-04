@@ -1356,6 +1356,17 @@ pub struct Sender {
     fec_structure_policy: FecStructurePolicy,
     /// [IW] PreConverge ilk-uçuş penceresi (0 = kapalı, sevk davranışı).
     initial_window: InitialWindowConfig,
+    /// [FUSION-POLICY] Kalibre edilmiş füzyon karar katmanı (default `disabled()` → ArqOnly).
+    fusion_policy: crate::fusion_policy::FusionPolicy,
+    /// [FUSION-POLICY] Alınan RTT örneği sayısı. `FusionObservation.rtt_sample_count` kaynağı;
+    /// güvenlik doğrulayıcısı `min_rtt_samples`(2) altında `LowConfidence`'a düşer — rtt.rs ilk
+    /// örnekte `rttvar = srtt/2` bootstrap'lar, jitter yapay olarak HIGH okunur.
+    rtt_sample_count: u32,
+    /// [FUSION-POLICY] Telemetriyi besleyen son örnek anı (`telemetry_age_ns` tabanı).
+    last_telemetry_ns: u64,
+    /// [FUSION-POLICY/TEŞHİS] Füzyon aksiyon histogramı — "neden ateşlemedi" bu sayaçsız
+    /// cevapsız kalırdı (yapı-gate dersi).
+    diag_fusion_actions: [u64; crate::fusion_policy::FUSION_ACTION_KINDS],
     /// [TEŞHİS] Yapı-gate karar-yolu histogramı (bkz. `GateOutcome`).
     diag_gate_outcomes: [u64; GATE_OUTCOME_KINDS],
     /// [TEŞHİS] Ledger pencereli kaybının koşu-boyu TEPESİ (ppm) — anlık ölçer decay eder.
@@ -1544,6 +1555,10 @@ impl Sender {
             diag_structure_gate_opened: 0,
             fec_structure_policy: FecStructurePolicy::Q18Iid,
             initial_window: InitialWindowConfig::default(),
+            fusion_policy: crate::fusion_policy::FusionPolicy::disabled(),
+            rtt_sample_count: 0,
+            last_telemetry_ns: 0,
+            diag_fusion_actions: [0; crate::fusion_policy::FUSION_ACTION_KINDS],
             diag_gate_outcomes: [0; GATE_OUTCOME_KINDS],
             diag_loss_ppm_peak: 0,
             last_fusion_snapshot: None,
@@ -2183,6 +2198,10 @@ impl Sender {
         // YALNIZ RTT-estimator (mevcut observe; matematik-değişmez). cwnd/BtlBw/delivery/loss/
         // ack-conf'a DOKUNULMAZ (N8-spot-testli).
         self.rtt.observe(now_ns, sample);
+        // [FUSION-POLICY] Örnek sayacı + telemetri damgası: güvenlik doğrulayıcısının güven ve
+        // tazelik kapıları bunlara bakar (min_rtt_samples / max_telemetry_age_ns).
+        self.rtt_sample_count = self.rtt_sample_count.saturating_add(1);
+        self.last_telemetry_ns = now_ns;
         self.cs_resolved = Some(CsSrttSource::ProbeEcho);
     }
 
@@ -2621,6 +2640,10 @@ impl Sender {
                 self.diag_rtt_rejected += 1; // §7.3 ack_delay_untrusted (düzeltme reddi; raw işlendi)
             }
             self.rtt.observe(now_ns, sample);
+            // [FUSION-POLICY] Örnek sayacı + telemetri damgası: güvenlik doğrulayıcısının güven ve
+            // tazelik kapıları bunlara bakar (min_rtt_samples / max_telemetry_age_ns).
+            self.rtt_sample_count = self.rtt_sample_count.saturating_add(1);
+            self.last_telemetry_ns = now_ns;
             // [TUR-3b D-2/3] DrainRtprop dwell'i içinde gelen rtt-örneği = qualifying.
             if self.state == SenderState::DrainRtprop {
                 self.drain_rtprop_qualifying = true;
@@ -2799,6 +2822,10 @@ impl Sender {
         self.bs_diag.rtt_sample_ns = dur_ns(sample);
         // Existing estimator API — no synthetic write, no estimator rewrite.
         self.rtt.observe(now_ns, sample);
+        // [FUSION-POLICY] Örnek sayacı + telemetri damgası: güvenlik doğrulayıcısının güven ve
+        // tazelik kapıları bunlara bakar (min_rtt_samples / max_telemetry_age_ns).
+        self.rtt_sample_count = self.rtt_sample_count.saturating_add(1);
+        self.last_telemetry_ns = now_ns;
         // First valid sample cancels the ladder permanently (contract §25/§26).
         self.bs_done = true;
         self.bs_armed_ns = None;
@@ -2971,6 +2998,59 @@ impl Sender {
         // yasaklar): fate_estimator'ın loss-YAPI sinyali (burst_delta = p11−p01) gate'e girer.
         // Deterministik, RNG'siz (ADR-17); kanıt yetersizse (n < min) DOKUNMAZ → mevcut davranış
         // byte-özdeş. Politika transport'ta kalır, RS-encode güvenlik-katmanında (INV-ENGINE-SOC).
+        // [FUSION-POLICY] KALİBRE EDİLMİŞ KATMAN — enabled ise FEC oranının OTORİTESİDİR.
+        //
+        // Neden burada ve neden otorite: `fuzzy` katmanı `ValidatedFuzzyConfig::trusted_fixture()`
+        // ile koşar ve o fixture kodda açıkça "KALİBRE DEĞİL" etiketlidir (Q18 kusuru: %20 IID
+        // kaybı tam LOW okuyup parity=0 planlıyor — ölçümün coding istediği rejimde). `fusion_policy`
+        // ise FS-FUSION-CAL-1 artefaktından türer ve BAĞIMSIZ bir güvenlik doğrulayıcısından geçer:
+        // sürüm uyumsuzluğu · desteklenmeyen bölge · düşük güven (min_rtt_samples) · bayat telemetri
+        // · COLD-START · geçersiz girdi → hepsi `FallbackArq`'a düşer, ASLA daha agresif bir
+        // aksiyona değil. Kalibrasyon yalnız DAHA AZ isteyebilir; sert tavanlar ondan bağımsızdır.
+        //
+        // Yapı-gate (Q18-FIX) yalnız politika KAPALIYKEN koşar: ikisi de aynı alanı yazsaydı hangi
+        // katmanın karar verdiği gözlemlenemezdi (çift-otorite = teşhis edilemez davranış).
+        //
+        // NOT: `!converged → ColdStart` kuralı, elle eklediğim PreConverge guard'ının tasarlanmış
+        // hâlidir — politika açıkken guard bu katmandan gelir.
+        if self.fusion_policy.is_enabled() {
+            let obs = crate::fusion_policy::FusionObservation {
+                feature_schema: self.fusion_policy.version().feature_schema,
+                inputs,
+                rtt_sample_count: self.rtt_sample_count,
+                telemetry_age_ns: now_ns.saturating_sub(self.last_telemetry_ns),
+                converged: self.state != SenderState::PreConverge,
+                fec_actuation_available: !matches!(
+                    self.fec_mode,
+                    FecActuationMode::Manual { enabled: false }
+                ),
+            };
+            // Karar-başına payload: kuyruğun önündeki birim (yoksa MTU) — bütçe tavanı buna göre.
+            let payload = self.tx_queue.front().map_or(DEFAULT_MTU, |u| u.size);
+            let action = self.fusion_policy.decide(&obs, payload);
+            self.diag_fusion_actions[action.index()] += 1;
+            d.fec_parity_ratio_permille = match action {
+                crate::fusion_policy::FusionAction::FecAssist {
+                    redundancy_permille,
+                    ..
+                } => {
+                    d.no_rule = false; // kalibre bir kural ateşledi
+                    redundancy_permille
+                }
+                _ => 0,
+            };
+            self.fusion_event_index += 1;
+            self.last_fusion_snapshot = Some(FusionInputSnapshot {
+                loss_windowed_ppm: inputs.loss_ppm,
+                bandwidth_bps: inputs.bandwidth_bps,
+                jitter_ppm: inputs.jitter_ppm,
+                qd_ratio_permille: inputs.qd_ratio_permille,
+                ack_confidence_permille: inputs.ack_confidence_permille,
+                no_rule: d.no_rule,
+                event_index: self.fusion_event_index,
+            });
+            return d;
+        }
         let outcome = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm);
         // [TEŞHİS] Karar-yolu histogramı: gate'in HANGİ önkoşulda durduğu sayılır. "Açmadı"
         // gözlemi tek başına nedensiz kalıyordu; bu sayaçlar olmadan ledger-eşiği mi, pencere
@@ -3469,6 +3549,26 @@ impl Sender {
         self.last_transition_event_index = self.fusion_event_index;
         self.transition_applied_count = self.transition_applied_count.saturating_add(1);
         Ok(())
+    }
+
+    /// [FUSION-POLICY] Kalibre edilmiş füzyon politikasını kurar. Default `disabled()` = her
+    /// girdide `ArqOnly` → ürün yolu byte-özdeş. `calibration_v1()` OPT-IN ve VERSİYONLU;
+    /// güvenlik sınırları kalibrasyondan BAĞIMSIZDIR — bir kalibrasyon yalnız DAHA AZ
+    /// isteyebilir, daha fazlasını asla.
+    pub fn set_fusion_policy(&mut self, policy: crate::fusion_policy::FusionPolicy) {
+        self.fusion_policy = policy;
+    }
+
+    /// [FUSION-POLICY/TEŞHİS] Füzyon aksiyon histogramı.
+    #[must_use]
+    pub fn diag_fusion_actions(&self) -> [u64; crate::fusion_policy::FUSION_ACTION_KINDS] {
+        self.diag_fusion_actions
+    }
+
+    /// [FUSION-POLICY] Alınan RTT örneği sayısı (gözlem/test).
+    #[must_use]
+    pub fn diag_rtt_sample_count(&self) -> u32 {
+        self.rtt_sample_count
     }
 
     /// [IW] PreConverge ilk-uçuş penceresini kurar. `bytes == 0` = kapalı (sevk davranışı).

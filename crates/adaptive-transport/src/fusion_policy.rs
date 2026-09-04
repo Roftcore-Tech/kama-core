@@ -109,6 +109,36 @@ pub enum FusionAction {
     FallbackArq(FallbackReason),
 }
 
+/// [TEŞHİS] `FusionAction` histogram kovaları. "Politika neden ateşlemedi" sorusu, ret
+/// sebebi sayılmadan cevaplanamaz — bu repoda aynı hata yapı-gate'te bir kez yaşandı
+/// (tek kovaya yığılan ret, vakum sayaç).
+pub const FUSION_ACTION_KINDS: usize = 10;
+
+impl FusionAction {
+    /// Histogram indeksi: 0=ArqOnly · 1=FecAssist · 2..=9 fallback sebepleri.
+    #[must_use]
+    pub fn index(&self) -> usize {
+        match self {
+            Self::ArqOnly => 0,
+            Self::FecAssist { .. } => 1,
+            Self::FallbackArq(r) => 2 + Self::reason_index(*r),
+        }
+    }
+
+    fn reason_index(r: FallbackReason) -> usize {
+        match r {
+            FallbackReason::PolicyDisabled => 0,
+            FallbackReason::VersionMismatch => 1,
+            FallbackReason::UnsupportedRegion => 2,
+            FallbackReason::LowConfidence => 3,
+            FallbackReason::StaleTelemetry => 4,
+            FallbackReason::ColdStart => 5,
+            FallbackReason::InvalidInput => 6,
+            FallbackReason::SafetyRejected | FallbackReason::FecUnavailable => 7,
+        }
+    }
+}
+
 impl FusionAction {
     /// True when the action leaves the wire byte-identical to ARQ-only behaviour.
     #[must_use]
