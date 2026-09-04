@@ -1,0 +1,2 @@
+KP-CLIENT delivered=96/96 warm_ack=0 residue=0 tx=59832B(data=42816 retx=5887 dup=38 fec=11040 ctrl=51) rx=29051B refused=0B/0pkt fec_blocks=60 fec_repairs_tx=120 fec_recovered_ctrl=27 param_confirmed=1 seal_fail=0 send_err=0 stale=17 cs_probe_tx=0 cs_echo_rx=0 state=Steady left_preconv=true establish_tx=0
+wrote 96 events → reports/fec-marginal-r-v2/runs/cor20/r2/rep49/out.jsonl
