@@ -292,3 +292,91 @@ fn yeni_ret_sebepleri_histogramda_ayrisir() {
         assert!(i < FUSION_ACTION_KINDS, "kova {i} histogram dışında");
     }
 }
+
+// ── [ONAY UFKU] Kayıp-defteri confirm ufku kolu ──────────────────────────────────────────────
+//
+// NEDEN BU TESTLER VAR: sevk edilen ufuk ürün yolunda ölçüldü ve HİÇ ateşlemiyordu
+// (3 koşu, ~13k tick, confirmed_total = 0) → loss_ppm yapısal olarak sıfır → kayıp tüketen
+// HER mekanizma kör. Kol default KAPALI; bu testler iki şeyi pinler: (a) default gerçekten
+// sevk davranışı, (b) açık kolda ufuk ÖLÇÜLEN srtt ile ORANTILI, sabit bir prior'dan değil.
+
+/// `drive` ile aynı akış, ama sender dışarıdan verilir (kol kurulumu sürüşten ÖNCE olmalı).
+fn drive_sender(mut s: Sender, units: u64, acked: Vec<u64>) -> Sender {
+    for i in 0..units {
+        s.on_event(
+            Event::AppData(OpaqueUnit {
+                id: 1000 + i,
+                size: 101,
+            }),
+            0,
+        );
+    }
+    for t in 1..=20u64 {
+        s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::ZERO,
+        }),
+        4_100 * MS,
+    );
+    for t in 21..=220u64 {
+        s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: acked,
+            ack_delay: Duration::ZERO,
+        }),
+        45_000 * MS,
+    );
+    for t in 221..=320u64 {
+        s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    s
+}
+
+fn ufuk_ns(k: Option<u32>, acked: Vec<u64>) -> u64 {
+    let mut s = Sender::new();
+    s.set_establish_probe(false);
+    if let Some(k) = k {
+        s.set_loss_confirm_horizon(LossConfirmHorizon::ChannelDerived { k_permille: k });
+    }
+    drive_sender(s, 80, acked).diag_confirm_path().2
+}
+
+/// Default sevk davranışıdır. Bir "ölçüm kolu" sessizce varsayılan olursa kolun kendisi
+/// ölçülemez hâle gelir.
+#[test]
+fn onay_ufku_varsayilani_sevk_davranisidir() {
+    assert_eq!(
+        Sender::new().loss_confirm_horizon(),
+        LossConfirmHorizon::CadenceLegacy
+    );
+}
+
+/// Kanal-türevli ufuk legacy'den FARKLI olmalı — aksi hâlde kol hiçbir şey değiştirmiyor demektir
+/// (vakum kol). Legacy ufuk cadence-tabandan gelir ve içinde kanaldan BAĞIMSIZ
+/// `EAI_SACK_WIRE_BYTES / EAI_RETURN_BW_PRIOR` = 65 B / 31 B·s⁻¹ ≈ 2.097 s sabiti vardır.
+#[test]
+fn kanal_turevli_ufuk_legacyden_farklidir() {
+    let acked: Vec<u64> = (1..400).filter(|q| q % 2 == 0).collect();
+    let legacy = ufuk_ns(None, acked.clone());
+    let kanal = ufuk_ns(Some(2000), acked);
+    assert!(legacy > 0 && kanal > 0, "iki kolda da tick koşmalı");
+    assert_ne!(legacy, kanal);
+}
+
+/// Ufuk srtt ile ORANTILI: k iki katına çıkınca ufuk da iki katına çıkar. Bu, ufkun gerçekten
+/// ÖLÇÜLEN kanaldan türediğinin testidir — sabit bir prior k'dan etkilenmezdi.
+#[test]
+fn kanal_turevli_ufuk_k_ile_olceklenir() {
+    let acked: Vec<u64> = (1..400).filter(|q| q % 2 == 0).collect();
+    let k1 = ufuk_ns(Some(1000), acked.clone());
+    let k2 = ufuk_ns(Some(2000), acked.clone());
+    let k4 = ufuk_ns(Some(4000), acked);
+    assert!(k1 > 0, "srtt ölçülmüş olmalı (yoksa legacy'ye düşerdi)");
+    assert_eq!(k2, k1 * 2, "ufuk k ile lineer ölçeklenmeli");
+    assert_eq!(k4, k1 * 4);
+}

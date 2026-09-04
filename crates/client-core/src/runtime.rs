@@ -21,13 +21,13 @@ use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
-/// [BURST-FUSION] Motorun yapı-gate politikası — `RuntimeConfig` alanının tipi. Çağıran ayrıca
-/// adaptive-transport'a bağımlı olmasın diye buradan yeniden dışa verilir.
-pub use adaptive_transport::sender::FecStructurePolicy;
 use adaptive_transport::sender::{
     AckInfo, BootstrapRttConfig, Event, FecActuationMode, InitialWindowConfig, OpaqueUnit,
     RecoveredInfo, RecoveredUnit, SrLogicalRef, Timer, TransmitKind,
 };
+/// [BURST-FUSION] Motorun yapı-gate politikası — `RuntimeConfig` alanının tipi. Çağıran ayrıca
+/// adaptive-transport'a bağımlı olmasın diye buradan yeniden dışa verilir.
+pub use adaptive_transport::sender::{FecStructurePolicy, LossConfirmHorizon};
 use adaptive_transport::seq::resolve_seq;
 use kama_engine::{plan_param_bootstrap, ParamState};
 use kama_fec_codec::{
@@ -140,6 +140,10 @@ pub struct RuntimeConfig {
     /// app bütçe bildirmezse ArqOnly → wire byte-özdeş. Yani AÇMAK, bütçe bildirmeyen uygulamalar
     /// için davranışı değiştirmez; yalnız ölçülen kutuda parity açar.
     pub fusion_policy: Option<adaptive_transport::fusion_policy::FusionPolicy>,
+    /// [ONAY UFKU] Kayıp-defteri `Suspected → Confirmed` ufku. Default = sevk davranışı
+    /// (byte-özdeş). `ChannelDerived` bir ÖLÇÜM KOLUDUR, düzeltme değil — bkz.
+    /// `reports/loss-ledger-confirm-defect/FINDING.md`.
+    pub loss_confirm_horizon: LossConfirmHorizon,
 }
 
 /// [S1] FEC-runtime parametreleri.
@@ -176,6 +180,7 @@ impl Default for RuntimeConfig {
             // Sevk default'u KAPALI: kalibrasyon opt-in kalır (ürün default kararı ayrı bir
             // ölçüm kapısıdır; bkz. reports/fec-policy-arm-v1/).
             fusion_policy: None,
+            loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,
         }
     }
 }
@@ -372,6 +377,15 @@ pub struct FateWindowDiag {
     pub ledger_confirm_path: (u64, u64, u64, u64),
     /// [TEŞHİS] Ledger tick kapsamı: `(tick_count, tick_span_ns)`.
     pub ledger_tick_span: (u64, u64),
+    /// [TEŞHİS] Geri-alınan (Spurious) toplam birim — kısa confirm ufkunun YANLIŞ-confirm
+    /// bedeli bu sayaç olmadan ölçülemez. Un-loss `Confirmed`'ı da çürütür (kanıt kanıttır).
+    pub spurious_units: u64,
+    /// [TEŞHİS] Controller-mode FEC latch bastırma sayaçları:
+    /// `(no_eligible_decision, decision_event_mismatch, no_rule_zero, enqueued_r, emitted_r)`.
+    /// Politika `FecAssist` isteyip de wire'da parity görünmediğinde kopuk halka buradadır.
+    pub fec_latch_diag: (u64, u64, u64, u64, u64),
+    /// [TEŞHİS] Son latch sonucu, metinsel bastırma sebebi (`None` = latch hiç koşmadı).
+    pub fec_last_suppression: Option<&'static str>,
     /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
     /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
     /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI · 6=oturum-kurulmadı(PreConverge).
@@ -756,6 +770,10 @@ async fn client_task(
         } else {
             BootstrapRttConfig::default()
         });
+    // [ONAY UFKU] Ledger confirm ufku kolu; default sevk davranışı (byte-özdeş).
+    session
+        .sender_mut()
+        .set_loss_confirm_horizon(cfg.loss_confirm_horizon);
     // [DEADLINE-EKSENİ] Kalibre politika (opt-in). Kablolanmamış bir karar katmanı bu reponun
     // kronik kusuruydu: `fusion_policy` üretimde SIFIR çağıranla duruyordu. Burası o kablodur.
     if let Some(p) = cfg.fusion_policy {
@@ -1308,6 +1326,38 @@ async fn client_task(
         ledger_internals: session.sender().diag_ledger_internals(),
         ledger_confirm_path: session.sender().diag_confirm_path(),
         ledger_tick_span: session.sender().diag_ledger_tick_span(),
+        spurious_units: session.sender().diag_ledger().2,
+        fec_latch_diag: {
+            let d = session.sender().diag_fec_actuation();
+            (
+                d.no_eligible_decision_count,
+                d.decision_event_mismatch_count,
+                d.no_rule_zero_count,
+                d.enqueued_r_total,
+                d.emitted_r_total,
+            )
+        },
+        fec_last_suppression: session
+            .sender()
+            .diag_fec_actuation()
+            .last_latch
+            .and_then(|l| l.suppression)
+            .map(|r| match r {
+                adaptive_transport::sender::FecSuppressionReason::ManualDisabled => {
+                    "ManualDisabled"
+                }
+                adaptive_transport::sender::FecSuppressionReason::NoEligibleDecision => {
+                    "NoEligibleDecision"
+                }
+                adaptive_transport::sender::FecSuppressionReason::DecisionEventMismatch => {
+                    "DecisionEventMismatch"
+                }
+                adaptive_transport::sender::FecSuppressionReason::NoRule => "NoRule",
+                other => {
+                    let _ = other;
+                    "Diger"
+                }
+            }),
         structure_gate_opened: session.sender().diag_structure_gate_opened(),
         ledger_loss_ppm: session.sender().diag_ledger().1,
         ledger_loss_ppm_peak: session.sender().diag_loss_ppm_peak(),

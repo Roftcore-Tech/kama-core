@@ -191,6 +191,10 @@ pub struct ClientCfg {
     pub initial_window_bytes: u64,
     /// [KURULUŞ] Bootstrap merdiveni kuruluş-hızlı mı (bkz. `RuntimeConfig::bootstrap_fast_ladder`).
     pub bootstrap_fast: bool,
+    /// [ONAY UFKU] Kayıp-defteri confirm ufku: `0` = sevk davranışı (cadence-legacy),
+    /// `>0` = kanal-türevli `k × srtt` per-mille. ÖLÇÜM KOLU — bkz.
+    /// `reports/loss-ledger-confirm-defect/FINDING.md`.
+    pub loss_confirm_k: u32,
 }
 
 /// [KAPI-1 W6] Dosya-tabanlı barrier: `<gate>.ready` yaz → `<gate>.go` bekle (5 ms poll, 120 s
@@ -241,6 +245,10 @@ pub struct ServerCfg {
     pub initial_window_bytes: u64,
     /// [KURULUŞ] Bkz. [`ClientCfg::bootstrap_fast`] (alıcıda etkisiz; simetri için taşınır).
     pub bootstrap_fast: bool,
+    /// [ONAY UFKU] Kayıp-defteri confirm ufku: `0` = sevk davranışı (cadence-legacy),
+    /// `>0` = kanal-türevli `k × srtt` per-mille. ÖLÇÜM KOLU — bkz.
+    /// `reports/loss-ledger-confirm-defect/FINDING.md`.
+    pub loss_confirm_k: u32,
 }
 
 /// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).

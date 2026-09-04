@@ -577,6 +577,7 @@ mod tests {
             bootstrap_rtt: false,
             initial_window_bytes: 0,
             bootstrap_fast: false,
+            loss_confirm_k: 0,
         }
     }
 

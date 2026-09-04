@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use client_core::runtime::{
     fec_chunk_capacity, ClientEndpoint, ClientSender, EgressPolicy, FecRuntimeConfig,
-    FecStructurePolicy, RuntimeConfig, RuntimeError, ServerEndpoint,
+    FecStructurePolicy, LossConfirmHorizon, RuntimeConfig, RuntimeError, ServerEndpoint,
 };
 use client_core::seam::IdentitySeam;
 use tokio::signal::unix::{signal, SignalKind};
@@ -89,7 +89,8 @@ impl EgressPolicy for BudgetEgress {
 ///
 /// `drain_cap = 0`: bench'te kapanış-drenajı YOKTUR — aksi hâlde deadline SONRASI akan
 /// retransmit'ler `tx_bytes`'a girer ve ölçüm penceresini sessizce genişletirdi.
-fn runtime_cfg(
+#[derive(Debug, Clone, Copy)]
+struct ArmCfg {
     payload_bytes: u64,
     quota_r: u32,
     fec: FecArm,
@@ -97,7 +98,20 @@ fn runtime_cfg(
     bootstrap_rtt: bool,
     initial_window_bytes: u64,
     bootstrap_fast: bool,
-) -> RuntimeConfig {
+    loss_confirm_k: u32,
+}
+
+fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
+    let ArmCfg {
+        payload_bytes,
+        quota_r,
+        fec,
+        burst_fusion,
+        bootstrap_rtt,
+        initial_window_bytes,
+        bootstrap_fast,
+        loss_confirm_k,
+    } = a;
     let payload = usize::try_from(payload_bytes).unwrap_or(usize::MAX);
     let profile_id = match fec {
         FecArm::Off => None,
@@ -138,6 +152,14 @@ fn runtime_cfg(
                     profile_id,
                     manual_r: None,
                 })
+            }
+        },
+        // [ONAY UFKU] Ölçüm kolu: 0 = sevk davranışı (byte-özdeş), >0 = k×srtt per-mille.
+        loss_confirm_horizon: if loss_confirm_k == 0 {
+            LossConfirmHorizon::CadenceLegacy
+        } else {
+            LossConfirmHorizon::ChannelDerived {
+                k_permille: loss_confirm_k,
             }
         },
         // [DEADLINE-EKSENİ] Politika kolu kalibrasyonu KURAR; diğer kollarda `None` (yapı-gate
@@ -202,15 +224,16 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
     let policy: Box<dyn EgressPolicy> = Box::new(BudgetEgress(Arc::clone(&gov)));
     let mut srv = ServerEndpoint::bind_with_policy(
         cfg.bind,
-        runtime_cfg(
-            cfg.payload_bytes,
-            cfg.quota_r,
-            cfg.fec,
-            cfg.burst_fusion,
-            cfg.bootstrap_rtt,
-            cfg.initial_window_bytes,
-            cfg.bootstrap_fast,
-        ),
+        runtime_cfg(ArmCfg {
+            payload_bytes: cfg.payload_bytes,
+            quota_r: cfg.quota_r,
+            fec: cfg.fec,
+            burst_fusion: cfg.burst_fusion,
+            bootstrap_rtt: cfg.bootstrap_rtt,
+            initial_window_bytes: cfg.initial_window_bytes,
+            bootstrap_fast: cfg.bootstrap_fast,
+            loss_confirm_k: cfg.loss_confirm_k,
+        }),
         Box::new(IdentitySeam),
         Some(policy),
     )
@@ -301,15 +324,16 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     let policy: Box<dyn EgressPolicy> = Box::new(BudgetEgress(Arc::clone(&gov)));
     let mut cli = ClientEndpoint::connect_with_policy(
         cfg.server,
-        runtime_cfg(
-            cfg.payload_bytes,
-            4,
-            cfg.fec,
-            cfg.burst_fusion,
-            cfg.bootstrap_rtt,
-            cfg.initial_window_bytes,
-            cfg.bootstrap_fast,
-        ),
+        runtime_cfg(ArmCfg {
+            payload_bytes: cfg.payload_bytes,
+            quota_r: 4,
+            fec: cfg.fec,
+            burst_fusion: cfg.burst_fusion,
+            bootstrap_rtt: cfg.bootstrap_rtt,
+            initial_window_bytes: cfg.initial_window_bytes,
+            bootstrap_fast: cfg.bootstrap_fast,
+            loss_confirm_k: cfg.loss_confirm_k,
+        }),
         Box::new(IdentitySeam),
         Some(policy),
     )
@@ -457,7 +481,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
          fec_blocks={} fec_repairs_tx={} fec_recovered_ctrl={} param_confirmed={} \
          seal_fail={} send_err={} stale={} cs_probe_tx={} cs_echo_rx={} \
          state={} left_preconv={} establish_tx={} \
-         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?}",
+         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?} spurious={} confirm_k={:?} latch={:?} suppress={:?}",
         stats.tx_bytes,
         stats.tx_data_bytes,
         stats.tx_retx_bytes,
@@ -493,6 +517,10 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         stats.fate.ledger_internals,
         stats.fate.ledger_confirm_path,
         stats.fate.ledger_tick_span,
+        stats.fate.spurious_units,
+        cfg.loss_confirm_k,
+        stats.fate.fec_latch_diag,
+        stats.fate.fec_last_suppression,
     );
 
     let meta = RunMeta {
@@ -576,6 +604,7 @@ mod tests {
             bootstrap_rtt: false,
             initial_window_bytes: 0,
             bootstrap_fast: false,
+            loss_confirm_k: 0,
         }
     }
 
@@ -592,6 +621,7 @@ mod tests {
             bootstrap_rtt: false,
             initial_window_bytes: 0,
             bootstrap_fast: false,
+            loss_confirm_k: 0,
         }
     }
 
@@ -631,24 +661,26 @@ mod tests {
 
         // VE kritik özellik: r=0 kolu fragmentasyonu KORUR, yani DATA çerçeveleme FEC
         // kollarıyla byte-özdeş kalır; tek fark parity çerçevelerinin varlığıdır.
-        let ctrl = runtime_cfg(
-            256,
-            4,
-            FecArm::from_args(0x03, 0, Static, 0),
-            false,
-            false,
-            0,
-            false,
-        );
-        let r2 = runtime_cfg(
-            256,
-            4,
-            FecArm::from_args(0x03, 2, Static, 0),
-            false,
-            false,
-            0,
-            false,
-        );
+        let ctrl = runtime_cfg(ArmCfg {
+            payload_bytes: 256,
+            quota_r: 4,
+            fec: FecArm::from_args(0x03, 0, Static, 0),
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+        });
+        let r2 = runtime_cfg(ArmCfg {
+            payload_bytes: 256,
+            quota_r: 4,
+            fec: FecArm::from_args(0x03, 2, Static, 0),
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+        });
         assert_eq!(
             ctrl.max_unit_bytes, r2.max_unit_bytes,
             "birim granülü AYNI olmalı"
@@ -668,7 +700,16 @@ mod tests {
         );
 
         // Kıyas: profil 0 kullanılsaydı granül kayardı — kaçınılan confound.
-        let naive_off = runtime_cfg(256, 4, FecArm::Off, false, false, 0, false);
+        let naive_off = runtime_cfg(ArmCfg {
+            payload_bytes: 256,
+            quota_r: 4,
+            fec: FecArm::Off,
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+        });
         assert_ne!(
             naive_off.max_unit_bytes, r2.max_unit_bytes,
             "profil-0 kontrolü birim granülünü kaydırır (bu yüzden kullanılmaz)"
@@ -678,37 +719,48 @@ mod tests {
     /// `runtime_cfg` FEC ayarını ürün config'ine birebir taşır ve drenajı kapatır.
     #[test]
     fn runtime_cfg_carries_fec_and_disables_drain() {
-        let off = runtime_cfg(48, 4, FecArm::Off, false, false, 0, false);
+        let off = runtime_cfg(ArmCfg {
+            payload_bytes: 48,
+            quota_r: 4,
+            fec: FecArm::Off,
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+        });
         assert!(off.fec.is_none());
         assert_eq!(off.max_unit_bytes, 48);
         assert_eq!(off.drain_cap, Duration::ZERO);
 
-        let st = runtime_cfg(
-            48,
-            8,
-            FecArm::StaticR {
+        let st = runtime_cfg(ArmCfg {
+            payload_bytes: 48,
+            quota_r: 8,
+            fec: FecArm::StaticR {
                 profile_id: 0x03,
                 r: 4,
             },
-            false,
-            false,
-            0,
-            false,
-        );
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+        });
         let f = st.fec.expect("statik-r FEC config üretmeli");
         assert_eq!(f.profile_id, 0x03);
         assert_eq!(f.manual_r, Some(4));
         assert_eq!(st.quota_r, 8);
 
-        let ad = runtime_cfg(
-            48,
-            4,
-            FecArm::Adaptive { profile_id: 0x05 },
-            false,
-            false,
-            0,
-            false,
-        );
+        let ad = runtime_cfg(ArmCfg {
+            payload_bytes: 48,
+            quota_r: 4,
+            fec: FecArm::Adaptive { profile_id: 0x05 },
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+        });
         let f = ad.fec.expect("adaptif FEC config üretmeli");
         assert_eq!(f.profile_id, 0x05);
         assert_eq!(f.manual_r, None, "adaptif = Controller modu (manual_r yok)");
@@ -723,18 +775,19 @@ mod tests {
         let cap = fec_chunk_capacity(0x03).expect("profil 0x03 bilinmeli");
         assert_eq!(cap, 53, "E(64) − SOURCE_PREFIX_LEN(11)");
 
-        let c = runtime_cfg(
-            256,
-            4,
-            FecArm::StaticR {
+        let c = runtime_cfg(ArmCfg {
+            payload_bytes: 256,
+            quota_r: 4,
+            fec: FecArm::StaticR {
                 profile_id: 0x03,
                 r: 4,
             },
-            false,
-            false,
-            0,
-            false,
-        );
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+        });
         assert_eq!(c.max_unit_bytes, 53, "birim symbol kapasitesine kilitlenir");
         assert_eq!(
             c.max_message_bytes,
@@ -743,18 +796,19 @@ mod tests {
         );
 
         // Chunk'a sığan yükte fragmenter AÇILMAZ (gereksiz 11 B/chunk ödenmez).
-        let small = runtime_cfg(
-            48,
-            4,
-            FecArm::StaticR {
+        let small = runtime_cfg(ArmCfg {
+            payload_bytes: 48,
+            quota_r: 4,
+            fec: FecArm::StaticR {
                 profile_id: 0x03,
                 r: 4,
             },
-            false,
-            false,
-            0,
-            false,
-        );
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+        });
         assert_eq!(small.max_unit_bytes, 48);
         assert_eq!(small.max_message_bytes, None, "48 ≤ 53 → fragmentasyon yok");
     }
@@ -768,7 +822,16 @@ mod tests {
         };
         let srv = ServerEndpoint::bind(
             "127.0.0.1:0".parse().unwrap(),
-            runtime_cfg(256, 4, arm, false, false, 0, false),
+            runtime_cfg(ArmCfg {
+                payload_bytes: 256,
+                quota_r: 4,
+                fec: arm,
+                burst_fusion: false,
+                bootstrap_rtt: false,
+                initial_window_bytes: 0,
+                bootstrap_fast: false,
+                loss_confirm_k: 0,
+            }),
             Box::new(IdentitySeam),
         )
         .await
@@ -806,7 +869,16 @@ mod tests {
         // yüzden testler endpoint'i doğrudan kurar; ölçülen kol yine client tarafıdır.
         let srv = ServerEndpoint::bind(
             "127.0.0.1:0".parse().unwrap(),
-            runtime_cfg(48, 4, FecArm::Off, false, false, 0, false),
+            runtime_cfg(ArmCfg {
+                payload_bytes: 48,
+                quota_r: 4,
+                fec: FecArm::Off,
+                burst_fusion: false,
+                bootstrap_rtt: false,
+                initial_window_bytes: 0,
+                bootstrap_fast: false,
+                loss_confirm_k: 0,
+            }),
             Box::new(IdentitySeam),
         )
         .await
@@ -858,7 +930,16 @@ mod tests {
         };
         let srv = ServerEndpoint::bind(
             "127.0.0.1:0".parse().unwrap(),
-            runtime_cfg(48, 4, arm, false, false, 0, false),
+            runtime_cfg(ArmCfg {
+                payload_bytes: 48,
+                quota_r: 4,
+                fec: arm,
+                burst_fusion: false,
+                bootstrap_rtt: false,
+                initial_window_bytes: 0,
+                bootstrap_fast: false,
+                loss_confirm_k: 0,
+            }),
             Box::new(IdentitySeam),
         )
         .await
@@ -932,7 +1013,16 @@ mod tests {
     async fn zero_budget_refuses_every_datagram_after_arm() {
         let srv = ServerEndpoint::bind(
             "127.0.0.1:0".parse().unwrap(),
-            runtime_cfg(48, 4, FecArm::Off, false, false, 0, false),
+            runtime_cfg(ArmCfg {
+                payload_bytes: 48,
+                quota_r: 4,
+                fec: FecArm::Off,
+                burst_fusion: false,
+                bootstrap_rtt: false,
+                initial_window_bytes: 0,
+                bootstrap_fast: false,
+                loss_confirm_k: 0,
+            }),
             Box::new(IdentitySeam),
         )
         .await

@@ -87,6 +87,9 @@ async fn transport_api_v0_surface_is_frozen() {
         // v0.7 (DEADLINE-EKSENİ): minor-EKLEME, kasıtlı pin-güncellemesi. `None` = sevk
         // davranışı (yapı-gate koşar); `Some` = kalibre politika otoritedir.
         fusion_policy: _,
+        // v0.8 (ONAY UFKU): minor-EKLEME, kasıtlı pin-güncellemesi. Default = sevk davranışı;
+        // `ChannelDerived` bir ÖLÇÜM KOLUDUR (reports/loss-ledger-confirm-defect/).
+        loss_confirm_horizon: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,

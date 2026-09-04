@@ -333,6 +333,31 @@ pub struct InitialWindowConfig {
 /// **KALİBRE EDİLMEMİŞ — default `Q18Iid`.** R1 disiplini: kampanya görmemiş bir eşik sevk
 /// edilmez. `BurstFusion`'a geçmek netem matrisinde ölçülmüş bir kanıt ister; flip edilene kadar
 /// davranış ve wire byte-özdeştir.
+/// [KAYIP-DEFTERİ ONAY UFKU] `Suspected → Confirmed` geçişinin bekleme ufku.
+///
+/// **NEDEN AYRI BİR KOL VAR:** ölçüldü ki sevk edilen ufuk ürün yolunda HİÇ ateşlemiyor
+/// (3 koşu, ~13k tick, `confirmed_total = 0`). `loss_windowed_ppm` yalnız `Confirmed` saydığı
+/// için kayıp sinyali yapısal olarak sıfır kalıyor ve kayıp tüketen HER mekanizma (fuzzy
+/// controller, Q18 yapı-gate, kalibre füzyon politikası) kör kalıyor.
+/// Bkz. `reports/loss-ledger-confirm-defect/FINDING.md`.
+///
+/// Bu enum bir DÜZELTME DEĞİL, bir ÖLÇÜM KOLUDUR. Default sevk davranışıdır ve byte-özdeştir;
+/// alternatif kol yalnız ölçüm için açılır. Hangi ufkun doğru olduğu ölçülmeden sevk edilmez.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LossConfirmHorizon {
+    /// Sevk davranışı: `cadence_loss_floor()` = 1.5 × EAI. EAI'nin içinde
+    /// `EAI_SACK_WIRE_BYTES / EAI_RETURN_BW_PRIOR` = 65 B / 31 B·s⁻¹ ≈ **2.097 s** vardır ve bu
+    /// terim ÖLÇÜLEN KANALDAN BAĞIMSIZDIR — 200 ms RTT'li yolda ufku ~3.2 s = 16×RTT'ye çiviler.
+    #[default]
+    CadenceLegacy,
+    /// Kanal-türevli: `k_permille × srtt / 1000`. srtt yoksa (kuruluş öncesi) legacy'ye düşer —
+    /// ölçüm yokken sabit uydurmak, düzeltmeye çalıştığımız kusurun ta kendisidir.
+    ChannelDerived {
+        /// Ufuk = k × srtt, per-mille (`2000` = 2×srtt).
+        k_permille: u32,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FecStructurePolicy {
     /// Sevk davranışı: yalnız IID-yapıda (`burst_delta ≤ 50k ppm`) FEC açılır; burst → ARQ.
@@ -1380,6 +1405,8 @@ pub struct Sender {
     diag_structure_gate_opened: u64, // [Q18-FIX] yapı-gate'in fuzzy fec=0'ı açtığı event sayısı
     /// [BURST-FUSION] Yapı-gate'in burst dalındaki politikası (default = sevk davranışı).
     fec_structure_policy: FecStructurePolicy,
+    /// [ONAY UFKU] Ledger confirm ufku kolu — default sevk davranışı.
+    loss_confirm_horizon: LossConfirmHorizon,
     /// [IW] PreConverge ilk-uçuş penceresi (0 = kapalı, sevk davranışı).
     initial_window: InitialWindowConfig,
     /// [FUSION-POLICY] Kalibre edilmiş füzyon karar katmanı (default `disabled()` → ArqOnly).
@@ -1595,6 +1622,7 @@ impl Sender {
             diag_fuzzy_no_rule: 0,
             diag_structure_gate_opened: 0,
             fec_structure_policy: FecStructurePolicy::Q18Iid,
+            loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,
             initial_window: InitialWindowConfig::default(),
             fusion_policy: crate::fusion_policy::FusionPolicy::disabled(),
             rtt_sample_count: 0,
@@ -3008,8 +3036,20 @@ impl Sender {
     fn fuzzy_evaluate(&mut self, now_ns: u64) -> FusionDecision {
         let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
         let ack_epoch = srtt.max(self.expected_ack_interval()); // D-2/1 tanımı
+                                                                // [ONAY UFKU] Kol seçimi. Legacy = sevk davranışı. Kanal-türevli kolda srtt ÖLÇÜLMÜŞ
+                                                                // olmalı: `self.rtt.srtt()` None iken `INITIAL_RTT` bir prior'dır ve prior'dan ufuk
+                                                                // türetmek tam da düzeltilmek istenen kusurdur → o durumda legacy'ye düşer.
+        let confirm_horizon = match self.loss_confirm_horizon {
+            LossConfirmHorizon::CadenceLegacy => self.cadence_loss_floor(),
+            LossConfirmHorizon::ChannelDerived { k_permille } => match self.rtt.srtt() {
+                Some(measured) => Duration::from_nanos(
+                    dur_ns(measured).saturating_mul(u64::from(k_permille)) / 1000,
+                ),
+                None => self.cadence_loss_floor(),
+            },
+        };
         self.loss
-            .ledger_tick(now_ns, ack_epoch * K_WL, self.cadence_loss_floor());
+            .ledger_tick(now_ns, ack_epoch * K_WL, confirm_horizon);
         let jitter_ppm = dur_ns(self.rtt.rttvar())
             .saturating_mul(1_000_000)
             .checked_div(dur_ns(srtt))
@@ -3721,6 +3761,21 @@ impl Sender {
 
     /// [BURST-FUSION] Yapı-gate'inin burst-dalı politikasını seçer. Default [`FecStructurePolicy::Q18Iid`]
     /// = sevk davranışı (burst → parity yok). Bkz. [`FecStructurePolicy`]; flip KALİBRASYON ister.
+    /// [ONAY UFKU] Ledger confirm ufku kolunu kurar. Default = sevk davranışı (byte-özdeş).
+    ///
+    /// TEK DEĞİŞKEN: yalnız `ledger_tick`'in confirm argümanını etkiler. Kayıp TESPİTİ
+    /// (`detect_time_losses` zaman-eşiği, packet-threshold) ve expire penceresi (`w_loss`)
+    /// DEĞİŞMEZ — aksi hâlde kol iki eksende birden kayardı ve ölçüm yorumlanamazdı.
+    pub fn set_loss_confirm_horizon(&mut self, h: LossConfirmHorizon) {
+        self.loss_confirm_horizon = h;
+    }
+
+    /// [ONAY UFKU] Yürürlükteki confirm ufku (gözlem/test).
+    #[must_use]
+    pub fn loss_confirm_horizon(&self) -> LossConfirmHorizon {
+        self.loss_confirm_horizon
+    }
+
     pub fn set_fec_structure_policy(&mut self, policy: FecStructurePolicy) {
         self.fec_structure_policy = policy;
     }
