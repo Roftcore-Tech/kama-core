@@ -492,7 +492,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
          fec_blocks={} fec_repairs_tx={} fec_recovered_ctrl={} param_confirmed={} \
          seal_fail={} send_err={} stale={} cs_probe_tx={} cs_echo_rx={} \
          state={} left_preconv={} establish_tx={} \
-         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?} spurious={} confirm_k={:?} latch={:?} suppress={:?} risk_t={:?} risk_ppm={:?}",
+         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?} spurious={} confirm_k={:?} latch={:?} suppress={:?} risk_t={:?} risk_ppm={:?} flow_end={}",
         stats.tx_bytes,
         stats.tx_data_bytes,
         stats.tx_retx_bytes,
@@ -534,6 +534,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         stats.fate.fec_last_suppression,
         stats.fate.fec_risk_times,
         stats.fate.fec_risk_ppm,
+        stats.flow_end_ns,
     );
 
     let meta = RunMeta {

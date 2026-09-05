@@ -416,6 +416,9 @@ pub struct FateWindowDiag {
 /// Client koşu istatistikleri (item 9 doğrulama yüzeyi; gözlem-amaçlı).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ClientStats {
+    /// [KISA-AKIŞ ENSTRÜMANI] Ana döngünün bittiği an (ns), sender damgalarıyla AYNI saat
+    /// tabanında. `t_flow_start` bu tabanda tanım gereği 0'dır → `flow_end_ns == flow_duration`.
+    pub flow_end_ns: u64,
     /// App'ten kabul edilen birim.
     pub offered: u64,
     /// İlk-ACK'i görülen birim (ilk-ack-kazanır dedup).
@@ -1283,6 +1286,11 @@ async fn client_task(
         stats.unaccepted_offers += 1;
     }
     // ── Drain (D8): motor birim terk etmez → pif→0 hedefi MUTLAKA süre-tavanlı. ──
+    // [KISA-AKIŞ ENSTRÜMANI] AKIŞ SONU = ana döngünün çıkışı (drenajdan ÖNCE), sender'ın
+    // damgalarıyla AYNI saat tabanında (`elapsed_ns(start)`). Kısa-akış hipotezinin tüm sorusu
+    // "kayıp bilgisi akış HÂLÂ CANLIYKEN geldi mi" olduğundan, bu damga olmadan
+    // `t_first_confirmed` gibi değerler bir eşikle KIYASLANAMAZ. Salt gözlem.
+    stats.flow_end_ns = elapsed_ns(start);
     let deadline = tokio::time::Instant::now() + cfg.drain_cap;
     loop {
         if store.is_empty() && session.sender().diag_pif() == 0 {

@@ -168,6 +168,9 @@ async fn transport_api_v0_surface_is_frozen() {
         // [DR-CS-3] cold-start probe/echo muhasebesi.
         cs_probes_tx: _,
         cs_echoes_rx: _,
+        // v0.10 (KISA-AKIŞ ENSTRÜMANI): minor-EKLEME, kasıtlı pin-güncellemesi. Salt gözlem —
+        // ana döngü çıkış anı, sender damgalarıyla aynı saat tabanında.
+        flow_end_ns: _,
     } = ClientStats::default();
     let ServerStats {
         delivered: _,
