@@ -31,6 +31,9 @@ def parse(path):
         conf_peak=g(r"ledger_peak=(\d+)"),
         fec=g(r"fec=(\d+) "), retx=g(r"retx=(\d+) "), tx=g(r"tx=(\d+)B"),
         spurious=g(r"spurious=(\d+)"),
+        arb=[int(x) for x in re.search(r"arb=\[([0-9, ]*)\]", t).group(1).split(",")] if re.search(r"arb=\[", t) else [0]*7,
+        lvl=[int(x) for x in re.search(r"lvl=\[([0-9, ]*)\]", t).group(1).split(",")] if re.search(r"lvl=\[", t) else [0]*3,
+        spec=[int(x) for x in re.search(r"spec=\(([0-9, ]*)\)", t).group(1).split(",")] if re.search(r"spec=\(", t) else [0]*5,
     )
 
 def ms(v):
@@ -144,3 +147,28 @@ if d_risk:
 if d_conf:
     print(f"  KIYAS 2  t_onay − t_kuşku : n={len(d_conf)}  min={min(d_conf)/1e6:.0f} ms  "
           f"medyan={statistics.median(d_conf)/1e6:.0f} ms  max={max(d_conf)/1e6:.0f} ms")
+
+print()
+print("=" * 132)
+print("ARBİTER — hücre başına sebep histogramı (toplam) · seviye (L0/L1/L2) · persistent tepe · reorder baskısı tepe")
+print("  sebep sırası: None · ConfFuzzy · ConfPolicy · StructGate · SpecBoot · SpecPersist · DeadlineAsst")
+print("=" * 132)
+for c in order:
+    rs = cells[c]
+    arb = [sum(r["arb"][i] for r in rs) for i in range(7)]
+    lvl = [sum(r["lvl"][i] for r in rs) for i in range(3)]
+    pers = statistics.median([r["spec"][0] for r in rs])
+    rpk = max(r["spec"][2] for r in rs)
+    print("%4d%% %4s  arb=%-40s lvl=%-22s pers_peak=%7.0f rp_peak=%4d‰" % (loss_of(c), flag_of(c), arb, lvl, pers, rpk))
+
+print()
+print("=" * 132)
+print("WIRE AMPLİFİKASYONU — ON toplam tx / OFF toplam tx (medyan), hücre başına")
+print("=" * 132)
+by_loss = {}
+for c in order:
+    by_loss.setdefault(loss_of(c), {})[flag_of(c)] = statistics.median([r["tx"] for r in cells[c]])
+for L in sorted(by_loss):
+    if "OFF" in by_loss[L] and "ON" in by_loss[L] and by_loss[L]["OFF"]:
+        amp = (by_loss[L]["ON"] - by_loss[L]["OFF"]) / by_loss[L]["OFF"] * 100
+        print("  seviye %2d%%  OFF=%7.0f B  ON=%7.0f B  fark=%+5.2f%%" % (L, by_loss[L]["OFF"], by_loss[L]["ON"], amp))

@@ -45,6 +45,19 @@ fn scale_duration(d: Duration, num: u64, den: u64) -> Duration {
     Duration::from_nanos(ns as u64)
 }
 
+/// [FEC-RISK v2] Spekülatif kolun girdileri (bkz. [`ThresholdLossDetector::fec_loss_risk_split`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RiskSplit {
+    /// Yaş-ağırlıklı Suspected + Confirmed (ppm) — anlık risk.
+    pub instant_ppm: u64,
+    /// Yalnız ≥ persist_min yaşamış Suspected + Confirmed (ppm) — kalıcı risk.
+    pub persistent_ppm: u64,
+    /// Penceredeki Spurious birim / tüm olay birimleri (per-mille) — reorder baskısı.
+    pub reorder_pressure_permille: u32,
+    /// reorder_pressure'ın paydası (küçük-n koruması için).
+    pub declared_units: u64,
+}
+
 /// [FEC-RISK] `Suspected` bir olayın, YAŞINA göre "gerçekten kayıp" güven ağırlığı (per-mille).
 ///
 /// **KALİBRE EDİLMEMİŞ — deneysel.** Bu eğrinin doğru şekli ölçümle belirlenecek; şimdilik
@@ -332,6 +345,75 @@ impl ThresholdLossDetector {
             .map(|e| e.units)
             .sum();
         ratio_ppm(confirmed, self.sent_window_units)
+    }
+
+    /// [FEC-RISK v2] Spekülatif kolun ÜÇ girdisi tek geçişte — instant · persistent · reorder.
+    ///
+    /// Neden tek sayı yetmiyor (ölçüldü, A2 vs kısa-akış): saf reorder'da instant risk tepesi
+    /// 195k ppm'e çıkarken %20 gerçek kayıpta ~180k — yani `risk > X → FEC` biçimindeki HER
+    /// tek-eşik kural reorder'ı kayıp sanar. Ayrım BÜYÜKLÜKTE değil, ZAMANDA: gerçek kayıp gap'i
+    /// yaşamaya devam eder (yaşlanır → Confirmed); reorder gap'i kısa sürede dolar (→ Spurious).
+    ///
+    /// * `instant_ppm`    — [`Self::fec_loss_risk_ppm`] ile aynı (yaş-ağırlıklı Suspected + Confirmed)
+    /// * `persistent_ppm` — YALNIZ `age ≥ persist_min` yaşamış Suspected (tam ağırlık) + Confirmed;
+    ///   `persist_min = srtt × persist_srtt_permille / 1000`. Reorder'ı elemek için kullanılır.
+    /// * `reorder_pressure_permille` — pencerede `Spurious` birim / tüm olay birimleri. "Son
+    ///   gördüğüm gap'lerin ne kadarı sonradan doldu?" Bir DISCOUNT'tur, veto değil.
+    /// * `declared_units` — reorder_pressure'ın paydası; küçük-n koruması çağıranda.
+    ///
+    /// Payda ve pencere kanonikle AYNI; ek depolama YOK (Spurious olaylar zaten deque'te kalır).
+    /// `srtt_ns == 0` → Suspected'a güven verilmez, persistent = Confirmed'a eşit.
+    #[must_use]
+    pub fn fec_loss_risk_split(
+        &self,
+        now_ns: u64,
+        srtt_ns: u64,
+        weights: SuspectConfidence,
+        persist_srtt_permille: u32,
+    ) -> RiskSplit {
+        let persist_min_ns = srtt_ns.saturating_mul(u64::from(persist_srtt_permille)) / 1000;
+        let mut inst_milli: u128 = 0;
+        let mut pers_units: u128 = 0;
+        let mut spur_units: u64 = 0;
+        let mut all_units: u64 = 0;
+        for e in &self.events {
+            all_units = all_units.saturating_add(e.units);
+            match e.state {
+                LedgerState::Confirmed => {
+                    inst_milli += u128::from(e.units) * 1000;
+                    pers_units += u128::from(e.units);
+                }
+                LedgerState::Spurious => spur_units = spur_units.saturating_add(e.units),
+                LedgerState::Suspected => {
+                    if srtt_ns != 0 {
+                        let age = now_ns.saturating_sub(e.declared_ns);
+                        inst_milli +=
+                            u128::from(e.units) * u128::from(weights.for_age(age, srtt_ns));
+                        if age >= persist_min_ns {
+                            pers_units += u128::from(e.units);
+                        }
+                    }
+                }
+            }
+        }
+        let den = u128::from(self.sent_window_units);
+        let to_ppm = |num_milli: u128| -> u64 {
+            if den == 0 {
+                0
+            } else {
+                u64::try_from(num_milli * 1_000_000 / (den * 1000)).unwrap_or(u64::MAX)
+            }
+        };
+        RiskSplit {
+            instant_ppm: to_ppm(inst_milli),
+            persistent_ppm: to_ppm(pers_units * 1000),
+            reorder_pressure_permille: if all_units == 0 {
+                0
+            } else {
+                u32::try_from(u128::from(spur_units) * 1000 / u128::from(all_units)).unwrap_or(1000)
+            },
+            declared_units: all_units,
+        }
     }
 
     /// [FEC-RISK] **FEC'e özgü kayıp-RİSKİ** (ppm) — kanonik kayıptan AYRI bir okuma.

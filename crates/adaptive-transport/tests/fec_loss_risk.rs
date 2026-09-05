@@ -10,6 +10,9 @@
 
 use adaptive_transport::loss::{LossDetector, SuspectConfidence, ThresholdLossDetector};
 use adaptive_transport::sender::*;
+use adaptive_transport::sender::{
+    fec_arbiter, FecArbiterReason, SpeculativeLevel, SpeculativeProposal,
+};
 use std::time::Duration;
 
 const MS: u64 = 1_000_000;
@@ -210,5 +213,194 @@ fn kanonik_kayip_yeniden_tanimlanmadi() {
     assert!(
         d.fec_loss_risk_ppm(50 * MS, srtt, w) > 0,
         "risk metriği ise Suspected'ı görmeli — iki metrik AYRI sorular sorar"
+    );
+}
+
+// ── [FEC-RISK v2] ARBİTER + SINIRLI SPEKÜLATİF BOOTSTRAP ────────────────────────────────────
+//
+// Owner tasarımı (2026-09-05): "belirsizliği bekleyerek çözme; belirsizlik arttıkça eylemin
+// büyüklüğünü sınırla." Kollar yalnız ÖNERİR; parity'yi tek yer (arbiter) yazar; max, toplama değil.
+
+fn sp(level: SpeculativeLevel, ratio: u32, dl: bool) -> SpeculativeProposal {
+    SpeculativeProposal {
+        level,
+        ratio_permille: ratio,
+        deadline_assisted: dl,
+    }
+}
+
+/// max, TOPLAMA DEĞİL: iki kol aynı kaybı görüp parity'yi iki kez sayamaz.
+#[test]
+fn arbiter_max_alir_toplamaz() {
+    let c = (250, FecArbiterReason::ConfirmedFuzzy);
+    let s = sp(SpeculativeLevel::L2Persistent, 250, false);
+    let (r, why) = fec_arbiter(c, 200, s);
+    assert_eq!(r, 250, "toplam olsaydı 700 olurdu");
+    assert_eq!(
+        why,
+        FecArbiterReason::ConfirmedFuzzy,
+        "eşitlikte yerleşik yol kazanır"
+    );
+}
+
+/// Sebep atfı doğru kolu gösterir; spekülatif L1/L2 ve deadline ayrışır.
+#[test]
+fn arbiter_sebep_atfi_dogru() {
+    let none = (0, FecArbiterReason::ConfirmedFuzzy);
+    assert_eq!(
+        fec_arbiter(none, 0, sp(SpeculativeLevel::L0None, 0, false)).1,
+        FecArbiterReason::None
+    );
+    assert_eq!(
+        fec_arbiter(none, 500, sp(SpeculativeLevel::L0None, 0, false)).1,
+        FecArbiterReason::StructureGate
+    );
+    assert_eq!(
+        fec_arbiter(none, 0, sp(SpeculativeLevel::L1Bootstrap, 125, false)).1,
+        FecArbiterReason::SpeculativeBootstrap
+    );
+    assert_eq!(
+        fec_arbiter(none, 0, sp(SpeculativeLevel::L2Persistent, 250, false)).1,
+        FecArbiterReason::SpeculativePersistent
+    );
+    assert_eq!(
+        fec_arbiter(none, 0, sp(SpeculativeLevel::L1Bootstrap, 250, true)).1,
+        FecArbiterReason::DeadlineAssisted
+    );
+    assert_eq!(
+        fec_arbiter(
+            (100, FecArbiterReason::ConfirmedPolicy),
+            0,
+            sp(SpeculativeLevel::L0None, 0, false)
+        )
+        .1,
+        FecArbiterReason::ConfirmedPolicy
+    );
+}
+
+/// Temiz yol: hiç olay yokken split sıfırdır → spekülatif kol hiçbir şey öneremez.
+/// Tahminci kayıp İCAT EDEMEZ — yalnız declare()'ın ürettiği olayları ağırlıklandırır.
+#[test]
+fn temiz_yolda_split_sifir() {
+    let d = ThresholdLossDetector::default();
+    let r = d.fec_loss_risk_split(1_000 * MS, 200 * MS, SuspectConfidence::default(), 500);
+    assert_eq!(
+        (
+            r.instant_ppm,
+            r.persistent_ppm,
+            r.reorder_pressure_permille,
+            r.declared_units
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+/// Persistence gerçek kaybı reorder'dan ZAMANLA ayırır: taze gap persistent'a girmez, yaşlanınca girer.
+#[test]
+fn persistence_yasla_devreye_girer() {
+    let w = SuspectConfidence::default();
+    let srtt = 200 * MS;
+    let mut d = ThresholdLossDetector::default();
+    for seq in 1..=8u64 {
+        d.on_sent(seq, 0, 1);
+    }
+    let _ = d.on_ack(&[8], 0);
+    let _ = d.detect_time_losses(MS, Duration::from_millis(1), Duration::from_millis(1));
+    let fresh = d.fec_loss_risk_split(20 * MS, srtt, w, 500); // yaş 20 ms < 100 ms
+    assert!(
+        fresh.instant_ppm > 0 && fresh.persistent_ppm == 0,
+        "taze gap: instant>0, persistent=0: {fresh:?}"
+    );
+    let aged = d.fec_loss_risk_split(150 * MS, srtt, w, 500); // yaş 150 ms ≥ 100 ms
+    assert!(
+        aged.persistent_ppm > 0,
+        "yaşlanan gap persistent'a girmeli: {aged:?}"
+    );
+    assert!(
+        aged.instant_ppm >= fresh.instant_ppm,
+        "instant yaşla düşmez"
+    );
+}
+
+/// Reorder baskısı: geç ACK gelen olaylar Spurious olur → reorder_pressure yükselir, instant düşer.
+#[test]
+fn spurious_reorder_baskisini_yukseltir() {
+    let w = SuspectConfidence::default();
+    let srtt = 200 * MS;
+    let mut d = ThresholdLossDetector::default();
+    for seq in 1..=8u64 {
+        d.on_sent(seq, 0, 1);
+    }
+    let _ = d.on_ack(&[8], 0);
+    let _ = d.detect_time_losses(MS, Duration::from_millis(1), Duration::from_millis(1));
+    let before = d.fec_loss_risk_split(50 * MS, srtt, w, 500);
+    assert_eq!(before.reorder_pressure_permille, 0);
+    let _ = d.on_ack(&[1, 2, 3, 4, 5, 6, 7], 60 * MS);
+    let after = d.fec_loss_risk_split(70 * MS, srtt, w, 500);
+    assert_eq!(
+        after.reorder_pressure_permille, 1000,
+        "tüm gap'ler doldu → tam baskı"
+    );
+    assert_eq!(after.instant_ppm, 0, "Spurious katkı vermez");
+    assert_eq!(
+        after.declared_units, before.declared_units,
+        "payda pencereyle aynı kalır"
+    );
+}
+
+/// Sender-düzeyi: reorder indirimi TAVANI düşürür ama ASLA sıfırlamaz (discount, veto değil).
+/// Doğrudan config aritmetiğiyle: rp=1000, discount_max=500 → cap × 0.5.
+#[test]
+fn reorder_indirimi_veto_degil() {
+    // Tavanın yarısına inmesini config aritmetiği garanti eder; sınır değerini pinliyoruz.
+    let cfg = FecLossRiskConfig::default();
+    let disc = u64::from(1000u32) * u64::from(cfg.reorder_discount_max_permille) / 1000;
+    let capped = u64::from(cfg.bootstrap_cap_permille) * (1000 - disc.min(999)) / 1000;
+    assert!(capped > 0, "tam baskıda bile tavan > 0 olmalı");
+    assert_eq!(capped, u64::from(cfg.bootstrap_cap_permille) / 2);
+}
+
+/// Kol AÇIK + kayıp deseni → spekülatif seviyeler ve arbiter sebepleri histogramda görünür;
+/// kanonik yol (mode/arq/state/pacing/ledger/onay) OFF ile ÖZDEŞ kalır (izolasyon v2).
+#[test]
+fn v2_izolasyon_ve_gorunurluk() {
+    let off = drive(Sender::new(), 80, gap_pattern());
+    let mut on_s = Sender::new();
+    on_s.set_fec_loss_risk(FecLossRiskConfig::experimental_v1());
+    let on = drive(on_s, 80, gap_pattern());
+
+    let lv = on.diag_spec_levels();
+    assert!(
+        lv[1] + lv[2] > 0,
+        "önkoşul: spekülatif kol öneri üretmeli: {lv:?}"
+    );
+    let arb = on.diag_arbiter_reasons();
+    assert!(
+        arb.iter().sum::<u64>() > 0,
+        "arbiter her karar için sebep sayar"
+    );
+
+    assert_eq!(off.state(), on.state());
+    assert_eq!(
+        off.diag_rate(),
+        on.diag_rate(),
+        "hız düzlemi değişmez (INV-RATE-1)"
+    );
+    assert_eq!(
+        off.diag_ledger(),
+        on.diag_ledger(),
+        "kanonik defter değişmez"
+    );
+    assert_eq!(
+        off.diag_confirm_path(),
+        on.diag_confirm_path(),
+        "onay yolu değişmez"
+    );
+    // OFF kolunda arbiter yalnız kanonik sebepleri sayar, spekülatif sebep SIFIR.
+    let arb_off = off.diag_arbiter_reasons();
+    assert_eq!(
+        arb_off[4] + arb_off[5] + arb_off[6],
+        0,
+        "OFF: spekülatif sebep olamaz: {arb_off:?}"
     );
 }

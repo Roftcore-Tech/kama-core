@@ -342,22 +342,163 @@ pub struct InitialWindowConfig {
 ///
 /// Kanonik kayıp YENİDEN TANIMLANMAZ. `Suspected + Confirmed` toplamı kanonik metrik OLMAZ;
 /// bu ayrı bir olasılıksal okumadır ve TEK tüketicisi FEC karar yoludur.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FecLossRiskConfig {
     /// `false` (default) = kapalı; FEC girdisi kanonik `Confirmed` oranıdır.
     pub enabled: bool,
     /// `Suspected` olayların yaş→güven eğrisi. **KALİBRE EDİLMEMİŞ** — ölçümle belirlenecek.
     pub weights: crate::loss::SuspectConfidence,
+    /// [CAL] L1 (bootstrap) parity tavanı, per-mille. Default 125‰ = K=8'de **1 repair**.
+    /// Belirsiz kanıta ucuz eylem: yanlış reorder sinyali en fazla bunu öder.
+    pub bootstrap_cap_permille: u32,
+    /// [CAL] L2 (persistent) tavanı, per-mille. Default 250‰ = K=8'de 2 repair — FEC-MARGINAL-R
+    /// v1/v2'nin ölçtüğü verimli nokta (r=4 iki katı byte'a AYNI kurtarmayı verdi).
+    pub persistent_cap_permille: u32,
+    /// [CAL] Persistence eşiği: `age ≥ srtt × bu / 1000` yaşamış Suspected "kalıcı" sayılır.
+    /// Default 500 = 0.5×srtt. UYARI: test hücresinin netem reorder gecikmesi (100±20 ms @
+    /// srtt 200 ms) tam bu sınırda — süpürülmeden kalibre sayılmaz.
+    pub persist_srtt_permille: u32,
+    /// [CAL] L1'in ateşlemesi için asgari instant risk (ppm). Gürültü tabanı; default 10 000.
+    pub l1_min_instant_ppm: u64,
+    /// [CAL] L2'nin ateşlemesi için asgari persistent risk (ppm). Default 10 000.
+    pub l2_min_persistent_ppm: u64,
+    /// [CAL] reorder_pressure'ın uygulanması için pencerede asgari olay birimi (küçük-n koruması).
+    pub reorder_min_evidence_units: u64,
+    /// [CAL] Tam reorder baskısında (1000‰) tavana uygulanan AZAMİ indirim, per-mille.
+    /// Default 500 → tavan en fazla yarıya iner. **Asla sıfıra inmez: discount, veto değil.**
+    pub reorder_discount_max_permille: u32,
+    /// [CAL] `deadline/srtt ≤ bu` ise bütçe SIKI → L1 bile persistent tavanı kullanır
+    /// (DEADLINE_ASSISTED). Default 2500 = `calibration_v2_deadline`'ın ölçülen kutusu.
+    pub tight_budget_permille: u32,
+    /// Kanonik tahmin "olgun" sayılır (`confirmed_total ≥ bu`) → spekülatif kol L1 tavanına
+    /// sınırlanır (steady-state devri; ani kapatma DEĞİL).
+    pub mature_confirmed_min: u64,
+}
+
+impl Default for FecLossRiskConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            weights: crate::loss::SuspectConfidence::default(),
+            bootstrap_cap_permille: 125,
+            persistent_cap_permille: 250,
+            persist_srtt_permille: 500,
+            l1_min_instant_ppm: 10_000,
+            l2_min_persistent_ppm: 10_000,
+            reorder_min_evidence_units: 8,
+            reorder_discount_max_permille: 500,
+            tight_budget_permille: 2_500,
+            mature_confirmed_min: 1,
+        }
+    }
 }
 
 impl FecLossRiskConfig {
-    /// Deneysel kol AÇIK, ilk `[CAL]` eğrisiyle (0.20/0.40/0.70).
+    /// Deneysel kol AÇIK: arbiter + sınırlı spekülatif bootstrap (v2). `[CAL]` default'larla.
     #[must_use]
     pub fn experimental_v1() -> Self {
         Self {
             enabled: true,
-            weights: crate::loss::SuspectConfidence::default(),
+            ..Self::default()
         }
+    }
+}
+
+/// [FEC-RISK v2] Spekülatif kolun güven seviyesi. Belirsizlik arttıkça EYLEM küçülür.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeculativeLevel {
+    /// Kanıt yok → parity yok.
+    L0None,
+    /// Suspected var, kalıcılık yok → küçük bootstrap tavanı.
+    L1Bootstrap,
+    /// Gap'ler ≥ persist_min yaşamış → daha yüksek tavan.
+    L2Persistent,
+}
+
+/// [FEC-RISK v2] Spekülatif kolun ÖNERİSİ (arbiter girdisi; tek başına otorite DEĞİL).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpeculativeProposal {
+    pub level: SpeculativeLevel,
+    /// Önerilen parity oranı (per-mille), tavan ve indirimler uygulanmış.
+    pub ratio_permille: u32,
+    /// Bütçe sıkı olduğu için tavan yükseltildi mi.
+    pub deadline_assisted: bool,
+}
+
+impl SpeculativeProposal {
+    const NONE: Self = Self {
+        level: SpeculativeLevel::L0None,
+        ratio_permille: 0,
+        deadline_assisted: false,
+    };
+}
+
+/// [FEC-RISK v2] TEK FEC ARBİTER'inin hüküm sebebi — "parity NEDEN bu miktarda" sorusu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FecArbiterReason {
+    /// Hiçbir kol parity önermedi.
+    None,
+    /// Kanonik fuzzy/Q18 (Confirmed-taban) kazandı.
+    ConfirmedFuzzy,
+    /// Kalibre füzyon politikası (Confirmed-taban) kazandı.
+    ConfirmedPolicy,
+    /// Yapı-gate (Confirmed-taban, loss-yapı sinyali) kazandı.
+    StructureGate,
+    /// Spekülatif L1 kazandı.
+    SpeculativeBootstrap,
+    /// Spekülatif L2 kazandı.
+    SpeculativePersistent,
+    /// Spekülatif kol kazandı ve tavanı sıkı deadline yükseltmişti.
+    DeadlineAssisted,
+}
+
+/// [TEŞHİS] Arbiter sebep histogramı kova sayısı.
+pub const ARBITER_REASON_KINDS: usize = 7;
+
+impl FecArbiterReason {
+    #[must_use]
+    pub fn index(self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::ConfirmedFuzzy => 1,
+            Self::ConfirmedPolicy => 2,
+            Self::StructureGate => 3,
+            Self::SpeculativeBootstrap => 4,
+            Self::SpeculativePersistent => 5,
+            Self::DeadlineAssisted => 6,
+        }
+    }
+}
+
+/// [FEC-RISK v2] TEK FEC ARBİTER'i: kollar yalnız ÖNERİR, parity miktarına burası karar verir.
+///
+/// `final = max(confirmed, structure, speculative)` — **TOPLAMA YOK**: iki kol aynı kaybı görüp
+/// parity'yi iki kez sayamaz. Eşitlikte öncelik confirmed > structure > speculative (sebep
+/// atfı yerleşik yolu tercih eder). Salt fonksiyon; deterministik (ADR-17).
+#[must_use]
+pub fn fec_arbiter(
+    confirmed: (u32, FecArbiterReason),
+    structure: u32,
+    spec: SpeculativeProposal,
+) -> (u32, FecArbiterReason) {
+    let mut best = (confirmed.0, confirmed.1);
+    if structure > best.0 {
+        best = (structure, FecArbiterReason::StructureGate);
+    }
+    if spec.ratio_permille > best.0 {
+        let reason = if spec.deadline_assisted {
+            FecArbiterReason::DeadlineAssisted
+        } else if spec.level == SpeculativeLevel::L2Persistent {
+            FecArbiterReason::SpeculativePersistent
+        } else {
+            FecArbiterReason::SpeculativeBootstrap
+        };
+        best = (spec.ratio_permille, reason);
+    }
+    if best.0 == 0 {
+        (0, FecArbiterReason::None)
+    } else {
+        best
     }
 }
 
@@ -1444,6 +1585,16 @@ pub struct Sender {
     /// [FEC-RISK ENSTRÜMAN] Son hesaplanan risk (ppm) ve koşu-boyu TEPESİ.
     diag_risk_ppm_last: u64,
     diag_risk_ppm_peak: u64,
+    /// [FEC-RISK v2 ENSTRÜMAN] Arbiter sebep histogramı · spekülatif seviye histogramı (L0/L1/L2).
+    diag_arbiter_reasons: [u64; ARBITER_REASON_KINDS],
+    diag_spec_levels: [u64; 3],
+    /// [FEC-RISK v2 ENSTRÜMAN] persistent risk tepesi · reorder baskısı (son, tepe).
+    diag_persistent_ppm_peak: u64,
+    diag_reorder_pressure_last: u32,
+    diag_reorder_pressure_peak: u32,
+    /// [FEC-RISK v2 ENSTRÜMAN] İlk L1 / L2 önerisinin anı (ns, 0 = hiç).
+    diag_t_first_l1_ns: u64,
+    diag_t_first_l2_ns: u64,
     /// [IW] PreConverge ilk-uçuş penceresi (0 = kapalı, sevk davranışı).
     initial_window: InitialWindowConfig,
     /// [FUSION-POLICY] Kalibre edilmiş füzyon karar katmanı (default `disabled()` → ArqOnly).
@@ -1665,6 +1816,13 @@ impl Sender {
             diag_t_first_parity_ns: 0,
             diag_risk_ppm_last: 0,
             diag_risk_ppm_peak: 0,
+            diag_arbiter_reasons: [0; ARBITER_REASON_KINDS],
+            diag_spec_levels: [0; 3],
+            diag_persistent_ppm_peak: 0,
+            diag_reorder_pressure_last: 0,
+            diag_reorder_pressure_peak: 0,
+            diag_t_first_l1_ns: 0,
+            diag_t_first_l2_ns: 0,
             initial_window: InitialWindowConfig::default(),
             fusion_policy: crate::fusion_policy::FusionPolicy::disabled(),
             rtt_sample_count: 0,
@@ -3118,43 +3276,58 @@ impl Sender {
         if d.no_rule {
             self.diag_fuzzy_no_rule += 1;
         }
-        // ── [FEC-RISK] Deneysel kol: FEC oranını RİSK sinyaliyle yeniden karar bağla ──────────
+        // ── [FEC-RISK v2] SPEKÜLATİF KOL — yalnız ÖNERİ üretir, karar arbiter'ındır ────────────
         //
-        // İZOLASYON SÖZLEŞMESİ (bu bloğun tamamının gerekçesi): kanonik `d` YUKARIDA `inputs`
-        // (= `Confirmed` oranı) ile hesaplandı ve `mode` · `arq_aggressiveness_permille` ile
-        // birlikte state-machine, pacing, cwnd ve retransmit yollarını beslemeye DEVAM EDER.
-        // Aşağıdaki ikinci karar YALNIZ iki alanı devralır: `fec_parity_ratio_permille` (FEC
-        // oranı) ve `no_rule` (FEC latch'inin bastırma kapısı). Yani risk sinyalinin ürün
-        // yolundaki tek etkisi parity miktarıdır.
-        //
-        // Neden ikinci bir `decide()` ve fuzzy'yi değiştirmemek: kontrolcü deterministik ve
-        // alloc'suzdur (ADR-17), aynı girdi → aynı çıktı. Tek alanı içeriden dallandırmak
-        // kuralların birbirine bağlı ağırlıklarını bozardı; dışarıdan çağırmak etkinin
-        // KANITLANABİLİR biçimde iki alanla sınırlı kalmasını sağlar.
-        let loss_for_fec = if self.fec_loss_risk.enabled {
-            // srtt ölçülmemişse `fec_loss_risk_ppm` Suspected'lara güven VERMEZ → kanonikle özdeş.
+        // KONTRAT: kanonik `d` YUKARIDA `inputs` (= Confirmed) ile hesaplandı ve `mode` ·
+        // `arq_aggressiveness_permille` ile state-machine, pacing, cwnd, retransmit yollarını
+        // beslemeye DEVAM EDER. Spekülatif kol fuzzy'den GEÇMEZ (fuzzy'nin ≈200k dizi tam olarak
+        // erken sinyali öldüren şeydir); kendi eşlemesi var ve TAVANLIDIR. Risk sinyalinin ürün
+        // yolundaki tek etkisi arbiter üzerinden parity MİKTARIDIR.
+        let spec = if self.fec_loss_risk.enabled {
+            // srtt ölçülmemişse Suspected'a güven verilmez → split kanonikle özdeş.
             let srtt_ns = self.rtt.srtt().map_or(0, dur_ns);
-            let risk = self
-                .loss
-                .fec_loss_risk_ppm(now_ns, srtt_ns, self.fec_loss_risk.weights);
-            self.diag_risk_ppm_last = risk;
-            self.diag_risk_ppm_peak = self.diag_risk_ppm_peak.max(risk);
-            if risk > 0 && self.diag_t_first_risk_ns == 0 {
+            let split = self.loss.fec_loss_risk_split(
+                now_ns,
+                srtt_ns,
+                self.fec_loss_risk.weights,
+                self.fec_loss_risk.persist_srtt_permille,
+            );
+            self.diag_risk_ppm_last = split.instant_ppm;
+            self.diag_risk_ppm_peak = self.diag_risk_ppm_peak.max(split.instant_ppm);
+            self.diag_persistent_ppm_peak = self.diag_persistent_ppm_peak.max(split.persistent_ppm);
+            self.diag_reorder_pressure_last = split.reorder_pressure_permille;
+            self.diag_reorder_pressure_peak = self
+                .diag_reorder_pressure_peak
+                .max(split.reorder_pressure_permille);
+            if split.instant_ppm > 0 && self.diag_t_first_risk_ns == 0 {
                 self.diag_t_first_risk_ns = now_ns;
             }
-            if risk != inputs.loss_ppm {
-                let risk_inputs = FusionInputs {
-                    loss_ppm: risk,
-                    ..inputs
-                };
-                let rd = self.fuzzy.decide(&risk_inputs);
-                d.fec_parity_ratio_permille = rd.fec_parity_ratio_permille;
-                d.no_rule = rd.no_rule;
+            let p = self.speculative_propose(split);
+            match p.level {
+                SpeculativeLevel::L0None => self.diag_spec_levels[0] += 1,
+                SpeculativeLevel::L1Bootstrap => {
+                    self.diag_spec_levels[1] += 1;
+                    if self.diag_t_first_l1_ns == 0 {
+                        self.diag_t_first_l1_ns = now_ns;
+                    }
+                }
+                SpeculativeLevel::L2Persistent => {
+                    self.diag_spec_levels[2] += 1;
+                    if self.diag_t_first_l2_ns == 0 {
+                        self.diag_t_first_l2_ns = now_ns;
+                    }
+                }
             }
-            risk
+            p
         } else {
-            inputs.loss_ppm
+            SpeculativeProposal::NONE
         };
+        // Kanonik (Confirmed-taban) öneri: fuzzy'nin oranı. Politika açıksa aşağıda onunla değişir.
+        let mut confirmed: (u32, FecArbiterReason) = (
+            d.fec_parity_ratio_permille,
+            FecArbiterReason::ConfirmedFuzzy,
+        );
+        let mut structure: u32 = 0;
         // [Q18-FIX] YAPI-FARKINDA FEC GATE.
         // [DAYANAK DÜZELTMESİ 2026-09-04] Bu blok eskiden "Q17 holdout + FS-FUSION-CELL-1 iki
         // BAĞIMSIZ kanıt" diyordu. Q17 holdout'u formel olarak GEÇERSİZDİR (FRAMING-CORRIGENDUM
@@ -3184,12 +3357,8 @@ impl Sender {
         if self.fusion_policy.is_enabled() {
             let obs = crate::fusion_policy::FusionObservation {
                 feature_schema: self.fusion_policy.version().feature_schema,
-                // [FEC-RISK] Kalibre politika da bir FEC karar katmanıdır → FEC girdisini okur.
-                // Kol kapalıyken bu `inputs` ile birebir aynıdır (byte-özdeş davranış).
-                inputs: FusionInputs {
-                    loss_ppm: loss_for_fec,
-                    ..inputs
-                },
+                // Kalibre politika Confirmed-taban bir karar katmanıdır → KANONİK girdiyi okur.
+                inputs,
                 rtt_sample_count: self.rtt_sample_count,
                 telemetry_age_ns: now_ns.saturating_sub(self.last_telemetry_ns),
                 converged: self.state != SenderState::PreConverge,
@@ -3221,46 +3390,41 @@ impl Sender {
             });
             let action = self.fusion_policy.decide(&obs, payload);
             self.diag_fusion_actions[action.index()] += 1;
-            d.fec_parity_ratio_permille = match action {
+            // Politika açıkken Confirmed-taban öneri ONUNDUR (fuzzy'nin değil): yapı-gate susar,
+            // çift-otorite yok. Öneri arbiter'a gider; parity'yi tek yer yazar.
+            confirmed = match action {
                 crate::fusion_policy::FusionAction::FecAssist {
                     redundancy_permille,
                     ..
-                } => {
-                    d.no_rule = false; // kalibre bir kural ateşledi
-                    redundancy_permille
-                }
-                _ => 0,
+                } => (redundancy_permille, FecArbiterReason::ConfirmedPolicy),
+                _ => (0, FecArbiterReason::ConfirmedPolicy),
             };
-            self.fusion_event_index += 1;
-            self.last_fusion_snapshot = Some(FusionInputSnapshot {
-                loss_windowed_ppm: inputs.loss_ppm,
-                bandwidth_bps: inputs.bandwidth_bps,
-                jitter_ppm: inputs.jitter_ppm,
-                qd_ratio_permille: inputs.qd_ratio_permille,
-                ack_confidence_permille: inputs.ack_confidence_permille,
-                no_rule: d.no_rule,
-                event_index: self.fusion_event_index,
-            });
-            return d;
+        } else {
+            // Yapı-gate Confirmed-taban bir kapıdır → KANONİK kaybı okur (loss-yapı sinyali).
+            // Yalnız politika KAPALIYKEN koşar (çift-otorite yok). Artık doğrudan parity YAZMAZ:
+            // önerir, arbiter karar verir. Kol kapalıyken `max(fuzzy, gate)` eski davranışla
+            // özdeştir çünkü gate yalnız fuzzy==0 iken `Opened` döner.
+            let outcome = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm);
+            // [TEŞHİS] Karar-yolu histogramı: gate'in HANGİ önkoşulda durduğu sayılır.
+            self.diag_gate_outcomes[outcome.index()] += 1;
+            if let GateOutcome::Opened(fec) = outcome {
+                structure = fec;
+                self.diag_structure_gate_opened += 1;
+            }
         }
-        // [FEC-RISK] Yapı-gate bir FEC karar kapısıdır → kayıp önkoşulunu FEC girdisinden okur
-        // (kol kapalıyken `loss_for_fec == inputs.loss_ppm`, yani davranış özdeş).
-        let outcome = self.structure_gate_fec(d.fec_parity_ratio_permille, loss_for_fec);
-        // [TEŞHİS] Karar-yolu histogramı: gate'in HANGİ önkoşulda durduğu sayılır. "Açmadı"
-        // gözlemi tek başına nedensiz kalıyordu; bu sayaçlar olmadan ledger-eşiği mi, pencere
-        // mi, kanıt mı, yoksa burst-dalı mı kapattı ayırt EDİLEMEZ (vakum-sayaç sınıfı).
-        self.diag_gate_outcomes[outcome.index()] += 1;
-        // Ledger kaybının koşu-boyu TEPESİ (anlık ölçer decay ettiğinden kapanış örneği yanıltır).
+        // Ledger kaybının koşu-boyu TEPESİ — artık HER iki dalda yazılır (eskiden politika açıkken
+        // yapısal sıfırdı → vakum sayaç; CORRIGENDUM 6fa81b4e).
         self.diag_loss_ppm_peak = self.diag_loss_ppm_peak.max(inputs.loss_ppm);
-        if let GateOutcome::Opened(fec) = outcome {
-            d.fec_parity_ratio_permille = fec;
-            // Yapı-gate ateşlediyse bir KURAL ateşlemiş demektir (yapı-kuralı) → `no_rule`'u temizle.
-            // Aksi hâlde: fuzzy'nin rate-only kuralları yüksek-kayıpta hepsi `loss.low`=0'da sönüp
-            // no_rule-fallback'e düşüyor (fec=0); Controller-latch ise no_rule-snapshot'ı planned_r=0'a
-            // BASTIRIYOR — yani gate'in açtığı FEC latch'te yeniden sıfırlanırdı. Bu satır kompozisyonu
-            // tamamlar (fec_recovery_cell.rs, S1 sistem-kanıtı); gate ateşlemezse no_rule dokunulmaz.
+        // ── TEK FEC ARBİTER ───────────────────────────────────────────────────────────────
+        // final = max(confirmed, structure, speculative). Toplama YOK. Parity'yi yazan tek yer.
+        let (final_ratio, reason) = fec_arbiter(confirmed, structure, spec);
+        self.diag_arbiter_reasons[reason.index()] += 1;
+        d.fec_parity_ratio_permille = final_ratio;
+        if final_ratio > 0 {
+            // Bir kol parity önerdiyse bir KURAL ateşlemiştir → latch'in no_rule bastırması kalkar.
+            // Eski davranışla özdeş: fuzzy>0 ⟹ no_rule zaten false (fec_zero=0); gate/politika
+            // açtığında eskiden de false yapılıyordu.
             d.no_rule = false;
-            self.diag_structure_gate_opened += 1;
         }
         // Commit-D: CANONICAL-snapshot — aynı-`inputs`-DEĞERİ kopyalanır (ikinci-hesap-yok).
         // HÜKÜM (Commit-F-daraltması): "Semantic non-regression demonstrated; the diagnostic path
@@ -3879,6 +4043,80 @@ impl Sender {
     #[must_use]
     pub fn diag_risk_ppm(&self) -> (u64, u64) {
         (self.diag_risk_ppm_last, self.diag_risk_ppm_peak)
+    }
+
+    /// [FEC-RISK v2 ENSTRÜMAN] Arbiter sebep histogramı (`FecArbiterReason::index`).
+    #[must_use]
+    pub fn diag_arbiter_reasons(&self) -> [u64; ARBITER_REASON_KINDS] {
+        self.diag_arbiter_reasons
+    }
+
+    /// [FEC-RISK v2 ENSTRÜMAN] `(L0, L1, L2)` öneri sayıları.
+    #[must_use]
+    pub fn diag_spec_levels(&self) -> [u64; 3] {
+        self.diag_spec_levels
+    }
+
+    /// [FEC-RISK v2 ENSTRÜMAN] `(persistent_ppm_peak, reorder_pressure_last, reorder_pressure_peak,
+    /// t_first_l1_ns, t_first_l2_ns)`.
+    #[must_use]
+    pub fn diag_spec_signals(&self) -> (u64, u32, u32, u64, u64) {
+        (
+            self.diag_persistent_ppm_peak,
+            self.diag_reorder_pressure_last,
+            self.diag_reorder_pressure_peak,
+            self.diag_t_first_l1_ns,
+            self.diag_t_first_l2_ns,
+        )
+    }
+
+    /// [FEC-RISK v2] Spekülatif kolun ÖNERİSİ. Belirsizliği bekleyerek çözmez; belirsizlik
+    /// arttıkça eylemin BÜYÜKLÜĞÜNÜ sınırlar.
+    ///
+    /// ```text
+    /// L0  instant < l1_min                      → 0
+    /// L1  instant ≥ l1_min, persistent < l2_min → bootstrap_cap   (t_risk == t_suspected KORUNUR)
+    /// L2  persistent ≥ l2_min                   → persistent_cap
+    /// deadline/srtt ≤ tight_budget              → L1 de persistent_cap (DEADLINE_ASSISTED)
+    /// kanonik olgun (confirmed_total ≥ N)       → tavan bootstrap_cap'e iner (steady-state devri)
+    /// reorder_pressure (yeterli kanıtla)        → tavan × (1 − rp × discount_max)   [asla 0'a değil]
+    /// ```
+    fn speculative_propose(&self, split: crate::loss::RiskSplit) -> SpeculativeProposal {
+        let c = self.fec_loss_risk;
+        if split.instant_ppm < c.l1_min_instant_ppm {
+            return SpeculativeProposal::NONE;
+        }
+        let level = if split.persistent_ppm >= c.l2_min_persistent_ppm {
+            SpeculativeLevel::L2Persistent
+        } else {
+            SpeculativeLevel::L1Bootstrap
+        };
+        // Bütçe sıkıysa ARQ'nun tekrar-deneme fırsatı yok → belirsiz kanıta daha büyük tepki
+        // meşru. Bildirilmemiş bütçe = sıkı DEĞİL (varsayılan uydurulmaz).
+        let tight = self
+            .tightest_deadline_over_srtt()
+            .is_some_and(|b| b <= c.tight_budget_permille);
+        let mut cap = match level {
+            SpeculativeLevel::L2Persistent => c.persistent_cap_permille,
+            SpeculativeLevel::L1Bootstrap if tight => c.persistent_cap_permille,
+            _ => c.bootstrap_cap_permille,
+        };
+        // Steady-state devri: kanonik tahmin olgunlaşınca spekülatif kol bootstrap tavanına iner.
+        if self.loss.diag_confirm_path().0 >= c.mature_confirmed_min {
+            cap = cap.min(c.bootstrap_cap_permille);
+        }
+        // Reorder indirimi — yalnız yeterli kanıtla, ve ASLA veto değil.
+        if split.declared_units >= c.reorder_min_evidence_units {
+            let disc = u64::from(split.reorder_pressure_permille)
+                * u64::from(c.reorder_discount_max_permille)
+                / 1000; // 0..=discount_max
+            cap = u32::try_from(u64::from(cap) * (1000 - disc.min(999)) / 1000).unwrap_or(cap);
+        }
+        SpeculativeProposal {
+            level,
+            ratio_permille: cap,
+            deadline_assisted: tight && level == SpeculativeLevel::L1Bootstrap,
+        }
     }
 
     /// [ONAY UFKU] Ledger confirm ufku kolunu kurar. Default = sevk davranışı (byte-özdeş).

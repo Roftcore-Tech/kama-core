@@ -27,7 +27,10 @@ use adaptive_transport::sender::{
 };
 /// [BURST-FUSION] Motorun yapı-gate politikası — `RuntimeConfig` alanının tipi. Çağıran ayrıca
 /// adaptive-transport'a bağımlı olmasın diye buradan yeniden dışa verilir.
-pub use adaptive_transport::sender::{FecLossRiskConfig, FecStructurePolicy, LossConfirmHorizon};
+pub use adaptive_transport::sender::{
+    FecArbiterReason, FecLossRiskConfig, FecStructurePolicy, LossConfirmHorizon,
+    ARBITER_REASON_KINDS,
+};
 use adaptive_transport::seq::resolve_seq;
 use kama_engine::{plan_param_bootstrap, ParamState};
 use kama_fec_codec::{
@@ -395,6 +398,15 @@ pub struct FateWindowDiag {
     pub fec_risk_times: (u64, u64, u64, u64),
     /// [FEC-RISK ENSTRÜMAN] `(son_risk_ppm, tepe_risk_ppm)`.
     pub fec_risk_ppm: (u64, u64),
+    /// [FEC-RISK v2 ENSTRÜMAN] Arbiter sebep histogramı (`FecArbiterReason::index`):
+    /// None · ConfirmedFuzzy · ConfirmedPolicy · StructureGate · SpecBootstrap · SpecPersistent ·
+    /// DeadlineAssisted. "Parity NEDEN bu miktarda" sorusunun tek kaynağı.
+    pub fec_arbiter_reasons: [u64; ARBITER_REASON_KINDS],
+    /// [FEC-RISK v2 ENSTRÜMAN] Spekülatif seviye histogramı `(L0, L1, L2)`.
+    pub fec_spec_levels: [u64; 3],
+    /// [FEC-RISK v2 ENSTRÜMAN] `(persistent_ppm_peak, reorder_pressure_last‰, reorder_pressure_peak‰,
+    /// t_first_l1_ns, t_first_l2_ns)`.
+    pub fec_spec_signals: (u64, u32, u32, u64, u64),
     /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
     /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
     /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI · 6=oturum-kurulmadı(PreConverge).
@@ -1348,6 +1360,9 @@ async fn client_task(
         spurious_units: session.sender().diag_ledger().2,
         fec_risk_times: session.sender().diag_fec_risk_times(),
         fec_risk_ppm: session.sender().diag_risk_ppm(),
+        fec_arbiter_reasons: session.sender().diag_arbiter_reasons(),
+        fec_spec_levels: session.sender().diag_spec_levels(),
+        fec_spec_signals: session.sender().diag_spec_signals(),
         fec_latch_diag: {
             let d = session.sender().diag_fec_actuation();
             (
