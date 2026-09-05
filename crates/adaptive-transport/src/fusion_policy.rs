@@ -367,6 +367,14 @@ impl FusionPolicy {
         }
     }
 
+    /// Bağımsız sert tavan (per-mille). [FEC-RISK v2] Arbiter bunu SPEKÜLATİF kola da uygular:
+    /// kalibre politika açıkken hiçbir kol politikanın sert tavanını aşamaz ("kalibrasyon yalnız
+    /// DAHA AZ isteyebilir; sert tavan üstte" sözleşmesi lane'ler arası da geçerli).
+    #[must_use]
+    pub fn hard_max_redundancy_permille(&self) -> u32 {
+        self.safety.hard_max_redundancy_permille
+    }
+
     /// Override the independent safety bounds (safety configuration, not calibration).
     #[must_use]
     pub fn with_safety(mut self, safety: FusionSafetyConfig) -> Self {

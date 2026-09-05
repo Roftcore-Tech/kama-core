@@ -176,3 +176,23 @@ okunmamalıdır.
 * Ağırlık eğrisi (200/400/700) **kalibre edilmedi** — sadece ilk deneysel şekil.
 * Kısa akış (96 mesaj) bu ailelerde koşulmadı; tahmincinin asıl hedefi orasıdır.
 * Kalibre politika kolu (`--fec-mode policy`) bu ailelerde koşulmadı; aileler adaptif kolla koştu.
+
+
+---
+
+# ERRATUM — 2026-09-05 (adversaryal denetim sonrası)
+
+**§9-b / §9-c "≈200 200 ppm Q18 dizi" cümleleri bu bant rejiminde YANLIŞ.** Denetim (fusion.rs
+formül replikasyonu + 106 koşunun yeniden ayrıştırılması): ölçülen 1 mbit hücresinde BtlBw ≤ 50 kB/s
+→ fuzzy'nin `bw.med ≈ 0` → R3 kuralı ölü → **hiçbir ölçülen koşuda fuzzy `fec > 0` üretmedi.**
+Parity üreten her koşuda oran tam **500‰ = fec_med = YAPI-GATE** (100 000 ppm önkoşulu).
+Yani: "risk 195k'ya çıktı ama parity üretmedi çünkü dizler yüksek" cümlesi doğru mekanizmayı
+yanlış katmana atfediyor — engel fuzzy dizi değil, gate'in 100k önkoşulu + fuzzy'nin bant üyeliği.
+
+**§9-a "sevk yolu güvenilmez"** stall ile karışık: ilk-kuşku zamanı bimodal (≈425 ms
+packet-threshold vs ≈3 134 ms = 1.5×65 B/31 B·s⁻¹ cadence tabanı) + aykırılar (3 706/4 920/
+6 999 ms); parity basmayan OFF koşuları bu stall sınıfındandır. Gecikme/tepki iddialarında
+`t_susp > 1 s` koşuları ayrı raporlanmalıdır.
+
+**"reorder 195k vs loss 137k"** tepe-vs-plato ve yükler-arası kıyastı; ham tepeler 100 000 /
+290 666 (n=2), akış sonunda `risk_last = 0`. Tepe ayırt edici istatistik değildir.

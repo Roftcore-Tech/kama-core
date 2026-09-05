@@ -1,0 +1,144 @@
+====================================================================================================================================
+HAM TABLO — kısa akış (96 mesaj).  Damgalar ns→ms, akış başlangıcı = 0.  'asla' = olay hiç olmadı
+====================================================================================================================================
+kayıp  kol   rep    süre   kuşku    risk    onay  parity  risk<son  onay<son  par<son  parity_B  retx_B    tx_B
+------------------------------------------------------------------------------------------------------------------------------------
+   0%  OFF  rep1    2120    asla    asla    asla    asla         -         -        -         0       0   42918
+   0%  OFF  rep2    2119    asla    asla    asla    asla         -         -        -         0       0   42867
+   0%  OFF  rep3    2120    asla    asla    asla    asla         -         -        -         0       0   42867
+   0%  OFF  rep4    2121    asla    asla    asla    asla         -         -        -         0       0   42918
+   0%  OFF  rep5    2120    asla    asla    asla    asla         -         -        -         0       0   42918
+   0%   ON  rep1    2119    asla    asla    asla    asla         -         -        -         0       0   42918
+   0%   ON  rep2    2120    asla    asla    asla    asla         -         -        -         0       0   42918
+   0%   ON  rep3    2120    asla    asla    asla    asla         -         -        -         0       0   42918
+   0%   ON  rep4    2121    asla    asla    asla    asla         -         -        -         0       0   42918
+   0%   ON  rep5    2121    asla    asla    asla    asla         -         -        -         0       0   42867
+   2%  OFF  rep1    2319     425    asla    asla    asla         -         -        -         0     892   43810
+   2%  OFF  rep2    2179     550    asla    asla    asla         -         -        -         0     983   43850
+   2%  OFF  rep3    2121     475    asla    asla    asla         -         -        -         0     992   43859
+   2%  OFF  rep4    2192     425    asla    asla    asla         -         -        -         0    1247   44114
+   2%  OFF  rep5    2120     819    asla    asla    asla         -         -        -         0     446   43313
+   2%   ON  rep1    2107     454     454    asla     758      EVET         -     EVET      7728    1244   51839
+   2%   ON  rep2    2240     505     505    asla    asla      EVET         -        -         0     719   43637
+   2%   ON  rep3    2108     469     469    asla     753      EVET         -     EVET      3772     868   47507
+   2%   ON  rep4    2107     582     582    asla     881      EVET         -     EVET      5888    1044   49799
+   2%   ON  rep5    2181     561     561    asla    asla      EVET         -        -         0     610   43477
+   5%  OFF  rep1    2320     429    asla    asla    asla         -         -        -         0    2594   45512
+   5%  OFF  rep2    2281     650    asla    asla    asla         -         -        -         0    1848   44715
+   5%  OFF  rep3    2681     537    asla    asla    asla         -         -        -         0    1675   44542
+   5%  OFF  rep4    2340     435    asla    asla    asla         -         -        -         0    3168   46035
+   5%  OFF  rep5    2308     434    asla    asla    asla         -         -        -         0    2203   45121
+   5%   ON  rep1    2110     429     429    asla     762      EVET         -     EVET      7452    2103   52473
+   5%   ON  rep2    5281    3140    3140    asla    asla      EVET         -        -         0    1904   44953
+   5%   ON  rep3    2109     432     432    asla     773      EVET         -     EVET      8096    2015   52978
+   5%   ON  rep4    3981    2460    2460    asla    asla      EVET         -        -         0    2139   45239
+   5%   ON  rep5    2108     451     451    asla     778      EVET         -     EVET      8004    2432   53354
+  10%  OFF  rep1    5001    3140    asla    asla    asla         -         -        -         0    5107   48207
+  10%  OFF  rep2    2380     430    asla    asla    asla         -         -        -         0    4196   47114
+  10%  OFF  rep3    2599     430    asla    asla    asla         -         -        -         0    5543   48461
+  10%  OFF  rep4    3279     425    asla    asla    asla         -         -        -         0    5707   48625
+  10%  OFF  rep5    2423     467    asla    asla    asla         -         -        -         0    4396   47314
+  10%   ON  rep1    2107     432     432    asla     776      EVET         -     EVET      8096    4056   55019
+  10%   ON  rep2    2240     431     431    asla     756      EVET         -     EVET      7544    4558   55020
+  10%   ON  rep3    2108     458     458    asla     795      EVET         -     EVET      8004    5092   55963
+  10%   ON  rep4    2110     583     583    asla     820      EVET         -     EVET      7176    3728   53771
+  10%   ON  rep5    2108     428     428    asla     814      EVET         -     EVET      8188    5044   56150
+  15%  OFF  rep1    2900     443    asla    asla    asla         -         -        -         0    5916   48783
+  15%  OFF  rep2    2799     430    asla    asla    asla         -         -        -         0    7164   50082
+  15%  OFF  rep3    2900     460    asla    asla    asla         -         -        -         0    6808   49726
+  15%  OFF  rep4    2289     425    asla    asla    asla         -         -        -         0    5716   48685
+  15%  OFF  rep5    2321     458    asla    asla    asla         -         -        -         0    7090   50059
+  15%   ON  rep1    2110     429     429    asla     898      EVET         -     EVET      8188    7670   58725
+  15%   ON  rep2    4900    3139    3139    asla    asla      EVET         -        -         0    7674   50774
+  15%   ON  rep3    6401    3706    3706    asla    asla      EVET         -        -         0    7392   50634
+  15%   ON  rep4    2271     428     428    asla     893      EVET         -     EVET      8280    7244   58442
+  15%   ON  rep5    2170     436     436    asla     898      EVET         -     EVET      8280    7491   58689
+  20%  OFF  rep1    2521     423    asla    asla    asla         -         -        -         0    9493   52462
+  20%  OFF  rep2    3541     431    asla    asla    asla         -         -        -         0   11450   54368
+  20%  OFF  rep3    3022     425    asla    asla    asla         -         -        -         0   10468   53477
+  20%  OFF  rep4    2760     426    asla    asla    asla         -         -        -         0    9175   52175
+  20%  OFF  rep5    4280     428    asla    3580    asla         -      EVET        -         0   10376   53376
+  20%   ON  rep1    2139     424     424    asla     960      EVET         -     EVET      8280   10935   62082
+  20%   ON  rep2    2601     429     429    asla     981      EVET         -     EVET      8280   11807   63107
+  20%   ON  rep3    2207     425     425    asla     897      EVET         -     EVET      8188    9433   60539
+  20%   ON  rep4    2289     428     428    asla     840      EVET         -     EVET      8188    9652   60707
+  20%   ON  rep5    2319     428     428    asla     832      EVET         -     EVET      8096   10846   62031
+  25%  OFF  rep1    6440    3139    asla    6288    asla         -      EVET        -         0   14848   58494
+  25%  OFF  rep2    2599     425    asla    asla    asla         -         -        -         0   16521   59572
+  25%  OFF  rep3    2639     427    asla    asla    asla         -         -        -         0   15101   58050
+  25%  OFF  rep4    5476    3139    asla    asla    asla         -         -        -         0   15402   58584
+  25%  OFF  rep5   11594    3820    asla    7707    asla         -      EVET        -         0   11223   54454
+  25%   ON  rep1    2290     425     425    asla     980      EVET         -     EVET      8188   13096   64318
+  25%   ON  rep2    6782    3705    3705    asla    asla      EVET         -        -         0   15247   58926
+  25%   ON  rep3    2231     423     423    asla     901      EVET         -     EVET      8188   13138   64396
+  25%   ON  rep4    7661    4919    4919    asla    asla      EVET         -        -         0   13491   56705
+  25%   ON  rep5    2108     428     428    asla     956      EVET         -     EVET      8188   13293   64348
+
+====================================================================================================================================
+ÖZET — oranlar payda = o hücrenin rep sayısı.  'X/n' biçimi: gizlenen koşu YOK
+====================================================================================================================================
+kayıp  kol  n  risk>0  onay>0  parity>0  risk<son  onay<son  PAR<SON  med_süre  med_risk  med_onay  med_par  risk_ppm  med_par_B  med_tx_B
+------------------------------------------------------------------------------------------------------------------------------------
+   0%  OFF  5     0/5     0/5       0/5       0/5       0/5      0/5      2120      asla      asla     asla         0          0     42918
+   0%   ON  5     0/5     0/5       0/5       0/5       0/5      0/5      2120      asla      asla     asla         0          0     42918
+   2%  OFF  5     5/5     0/5       0/5       0/5       0/5      0/5      2179      asla      asla     asla         0          0     43850
+   2%   ON  5     5/5     0/5       3/5       5/5       0/5      3/5      2108       505      asla      758     14583       3772     47507
+   5%  OFF  5     5/5     0/5       0/5       0/5       0/5      0/5      2320      asla      asla     asla         0          0     45121
+   5%   ON  5     5/5     0/5       3/5       5/5       0/5      3/5      2110       451      asla      773     34791       7452     52473
+  10%  OFF  5     5/5     0/5       0/5       0/5       0/5      0/5      2599      asla      asla     asla         0          0     48207
+  10%   ON  5     5/5     0/5       5/5       5/5       0/5      5/5      2108       432      asla      795     64166       8004     55020
+  15%  OFF  5     5/5     0/5       0/5       0/5       0/5      0/5      2799      asla      asla     asla         0          0     49726
+  15%   ON  5     5/5     0/5       3/5       5/5       0/5      3/5      2271       436      asla      898    103541       8188     58442
+  20%  OFF  5     5/5     1/5       0/5       0/5       1/5      0/5      3022      asla      3580     asla         0          0     53376
+  20%   ON  5     5/5     0/5       5/5       5/5       0/5      5/5      2289       428      asla      897    141458       8188     62031
+  25%  OFF  5     5/5     2/5       0/5       0/5       2/5      0/5      5476      asla      6997     asla         0          0     58494
+  25%   ON  5     5/5     0/5       3/5       5/5       0/5      3/5      2290       428      asla      956    172083       8188     64318
+
+====================================================================================================================================
+KIYAS 3 — KISA-AKIŞ KANITI:  risk < akış_sonu < onay  (tahmincinin varoluş gerekçesi)
+====================================================================================================================================
+  kayıp  0%  ON:  0/5 rep'te  risk < akış_sonu < onay
+  kayıp  2%  ON:  5/5 rep'te  risk < akış_sonu < onay
+  kayıp  5%  ON:  5/5 rep'te  risk < akış_sonu < onay
+  kayıp 10%  ON:  5/5 rep'te  risk < akış_sonu < onay
+  kayıp 15%  ON:  5/5 rep'te  risk < akış_sonu < onay
+  kayıp 20%  ON:  5/5 rep'te  risk < akış_sonu < onay
+  kayıp 25%  ON:  5/5 rep'te  risk < akış_sonu < onay
+
+  TOPLAM (kayıplı hücreler): 30/30
+
+====================================================================================================================================
+KIYAS 1 & 2 — tahminci gecikmesi ve kanonik onay ufku (ARQ semantiği değişmedi mi?)
+====================================================================================================================================
+  KIYAS 1  t_risk − t_kuşku : n=30  min=0.000 ms  medyan=0.000 ms  max=0.000 ms
+  KIYAS 2  t_onay − t_kuşku : n=3  min=3148 ms  medyan=3153 ms  max=3887 ms
+
+====================================================================================================================================
+ARBİTER — hücre başına sebep histogramı (toplam) · seviye (L0/L1/L2) · persistent tepe · reorder baskısı tepe
+  sebep sırası: None · ConfFuzzy · ConfPolicy · StructGate · SpecBoot · SpecPersist · DeadlineAsst
+====================================================================================================================================
+   0%  OFF  arb=[14404, 0, 0, 0, 0, 0, 0]                lvl=[0, 0, 0]              pers_peak=      0 rp_peak=   0‰
+   0%   ON  arb=[14407, 0, 0, 0, 0, 0, 0]                lvl=[14407, 0, 0]          pers_peak=      0 rp_peak=   0‰
+   2%  OFF  arb=[14723, 0, 0, 0, 0, 0, 0]                lvl=[0, 0, 0]              pers_peak=      0 rp_peak=   0‰
+   2%   ON  arb=[9294, 0, 0, 0, 91, 5222, 0]             lvl=[9294, 91, 5222]       pers_peak=  20833 rp_peak=   0‰
+   5%  OFF  arb=[15736, 0, 0, 0, 0, 0, 0]                lvl=[0, 0, 0]              pers_peak=      0 rp_peak=   0‰
+   5%   ON  arb=[9062, 0, 0, 0, 320, 10078, 0]           lvl=[9062, 320, 10078]     pers_peak=  45833 rp_peak=   0‰
+  10%  OFF  arb=[19479, 0, 0, 0, 0, 0, 0]                lvl=[0, 0, 0]              pers_peak=      0 rp_peak=   0‰
+  10%   ON  arb=[3654, 0, 0, 0, 239, 10741, 0]           lvl=[3654, 239, 10741]     pers_peak=  91666 rp_peak=   0‰
+  15%  OFF  arb=[17003, 0, 0, 0, 0, 0, 0]                lvl=[0, 0, 0]              pers_peak=      0 rp_peak=   0‰
+  15%   ON  arb=[9630, 0, 0, 0, 657, 11457, 0]           lvl=[9630, 657, 11457]     pers_peak= 147916 rp_peak=   0‰
+  20%  OFF  arb=[19915, 0, 0, 0, 0, 0, 0]                lvl=[0, 0, 0]              pers_peak=      0 rp_peak=   0‰
+  20%   ON  arb=[3071, 0, 0, 0, 341, 12115, 0]           lvl=[3071, 341, 12115]     pers_peak= 202083 rp_peak=   0‰
+  25%  OFF  arb=[32559, 0, 0, 0, 0, 0, 0]                lvl=[0, 0, 0]              pers_peak=      0 rp_peak=   0‰
+  25%   ON  arb=[11447, 0, 0, 0, 604, 12905, 0]          lvl=[11447, 604, 12905]    pers_peak= 245833 rp_peak=   0‰
+
+====================================================================================================================================
+WIRE AMPLİFİKASYONU — ON toplam tx / OFF toplam tx (medyan), hücre başına
+====================================================================================================================================
+  seviye  0%  OFF=  42918 B  ON=  42918 B  fark=+0.00%
+  seviye  2%  OFF=  43850 B  ON=  47507 B  fark=+8.34%
+  seviye  5%  OFF=  45121 B  ON=  52473 B  fark=+16.29%
+  seviye 10%  OFF=  48207 B  ON=  55020 B  fark=+14.13%
+  seviye 15%  OFF=  49726 B  ON=  58442 B  fark=+17.53%
+  seviye 20%  OFF=  53376 B  ON=  62031 B  fark=+16.22%
+  seviye 25%  OFF=  58494 B  ON=  64318 B  fark=+9.96%

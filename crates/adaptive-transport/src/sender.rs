@@ -370,9 +370,12 @@ pub struct FecLossRiskConfig {
     /// [CAL] `deadline/srtt ≤ bu` ise bütçe SIKI → L1 bile persistent tavanı kullanır
     /// (DEADLINE_ASSISTED). Default 2500 = `calibration_v2_deadline`'ın ölçülen kutusu.
     pub tight_budget_permille: u32,
-    /// Kanonik tahmin "olgun" sayılır (`confirmed_total ≥ bu`) → spekülatif kol L1 tavanına
-    /// sınırlanır (steady-state devri; ani kapatma DEĞİL).
-    pub mature_confirmed_min: u64,
+    /// [YAPISAL] Spekülatif önerinin alt sınırı (per-mille) — indirimden SONRA uygulanır.
+    /// Denetim bulgusu: K=8'de `125‰ × 0.5 = 62‰` → `compute_requested_r` = **0** repair, yani
+    /// "indirim" yuvarlamayla VETO'ya dönüyordu. 63‰ = `ceil(1000/8)`: K≤8 profillerde ≥1 repair
+    /// garantisi. Motor K bilmez (INV-ENGINE-SOC) — bu yüzden sabit, profil-bağımsız bir taban;
+    /// K>8 profilde 1 repair için daha küçük ‰ yeterdi, taban yalnız ihtiyatlıdır.
+    pub spec_min_permille: u32,
 }
 
 impl Default for FecLossRiskConfig {
@@ -388,7 +391,7 @@ impl Default for FecLossRiskConfig {
             reorder_min_evidence_units: 8,
             reorder_discount_max_permille: 500,
             tight_budget_permille: 2_500,
-            mature_confirmed_min: 1,
+            spec_min_permille: 63,
         }
     }
 }
@@ -3283,7 +3286,12 @@ impl Sender {
         // beslemeye DEVAM EDER. Spekülatif kol fuzzy'den GEÇMEZ (fuzzy'nin ≈200k dizi tam olarak
         // erken sinyali öldüren şeydir); kendi eşlemesi var ve TAVANLIDIR. Risk sinyalinin ürün
         // yolundaki tek etkisi arbiter üzerinden parity MİKTARIDIR.
-        let spec = if self.fec_loss_risk.enabled {
+        //
+        // SIRALAMA: split burada hesaplanır (enstrümanlar dahil), ÖNERİ ise politika kararından
+        // SONRA üretilir — çünkü kalibre politika açıkken spekülatif kolun TAVANI politikadır
+        // (denetim BLOCKER'ı: lane'ler arası max() politikanın "asla daha agresif değil"
+        // sözleşmesini bozardı).
+        let spec_split = if self.fec_loss_risk.enabled {
             // srtt ölçülmemişse Suspected'a güven verilmez → split kanonikle özdeş.
             let srtt_ns = self.rtt.srtt().map_or(0, dur_ns);
             let split = self.loss.fec_loss_risk_split(
@@ -3302,25 +3310,9 @@ impl Sender {
             if split.instant_ppm > 0 && self.diag_t_first_risk_ns == 0 {
                 self.diag_t_first_risk_ns = now_ns;
             }
-            let p = self.speculative_propose(split);
-            match p.level {
-                SpeculativeLevel::L0None => self.diag_spec_levels[0] += 1,
-                SpeculativeLevel::L1Bootstrap => {
-                    self.diag_spec_levels[1] += 1;
-                    if self.diag_t_first_l1_ns == 0 {
-                        self.diag_t_first_l1_ns = now_ns;
-                    }
-                }
-                SpeculativeLevel::L2Persistent => {
-                    self.diag_spec_levels[2] += 1;
-                    if self.diag_t_first_l2_ns == 0 {
-                        self.diag_t_first_l2_ns = now_ns;
-                    }
-                }
-            }
-            p
+            Some(split)
         } else {
-            SpeculativeProposal::NONE
+            None
         };
         // Kanonik (Confirmed-taban) öneri: fuzzy'nin oranı. Politika açıksa aşağıda onunla değişir.
         let mut confirmed: (u32, FecArbiterReason) = (
@@ -3328,32 +3320,8 @@ impl Sender {
             FecArbiterReason::ConfirmedFuzzy,
         );
         let mut structure: u32 = 0;
-        // [Q18-FIX] YAPI-FARKINDA FEC GATE.
-        // [DAYANAK DÜZELTMESİ 2026-09-04] Bu blok eskiden "Q17 holdout + FS-FUSION-CELL-1 iki
-        // BAĞIMSIZ kanıt" diyordu. Q17 holdout'u formel olarak GEÇERSİZDİR (FRAMING-CORRIGENDUM
-        // :73 VOID; :29-31 zararlı-FP hücresinde HİÇ FEC KOLU YOK) → geriye tek kaynak kalır ve
-        // "iki bağımsız kanıt" ifadesi doğru değildir. Kalan tek gözlem:
-        // kayıp-ORANI tek başına FEC'i kapılayamaz (aynı 200k ppm'de IID coding ister, burst ARQ
-        // ister). Fuzzy controller rate-only olduğundan %20 IID'de parity=0 planlıyordu — ölçümün
-        // "coding tek çalışan mekanizma" dediği rejimde. Fix diz'i kaydırmak DEĞİL (Q17 bunu
-        // yasaklar): fate_estimator'ın loss-YAPI sinyali (burst_delta = p11−p01) gate'e girer.
-        // Deterministik, RNG'siz (ADR-17); kanıt yetersizse (n < min) DOKUNMAZ → mevcut davranış
-        // byte-özdeş. Politika transport'ta kalır, RS-encode güvenlik-katmanında (INV-ENGINE-SOC).
-        // [FUSION-POLICY] KALİBRE EDİLMİŞ KATMAN — enabled ise FEC oranının OTORİTESİDİR.
-        //
-        // Neden burada ve neden otorite: `fuzzy` katmanı `ValidatedFuzzyConfig::trusted_fixture()`
-        // ile koşar ve o fixture kodda açıkça "KALİBRE DEĞİL" etiketlidir (Q18 kusuru: %20 IID
-        // kaybı tam LOW okuyup parity=0 planlıyor — ölçümün coding istediği rejimde). `fusion_policy`
-        // ise FS-FUSION-CAL-1 artefaktından türer ve BAĞIMSIZ bir güvenlik doğrulayıcısından geçer:
-        // sürüm uyumsuzluğu · desteklenmeyen bölge · düşük güven (min_rtt_samples) · bayat telemetri
-        // · COLD-START · geçersiz girdi → hepsi `FallbackArq`'a düşer, ASLA daha agresif bir
-        // aksiyona değil. Kalibrasyon yalnız DAHA AZ isteyebilir; sert tavanlar ondan bağımsızdır.
-        //
-        // Yapı-gate (Q18-FIX) yalnız politika KAPALIYKEN koşar: ikisi de aynı alanı yazsaydı hangi
-        // katmanın karar verdiği gözlemlenemezdi (çift-otorite = teşhis edilemez davranış).
-        //
-        // NOT: `!converged → ColdStart` kuralı, elle eklediğim PreConverge guard'ının tasarlanmış
-        // hâlidir — politika açıkken guard bu katmandan gelir.
+        // Politika AÇIKKEN spekülatif kolun üst sınırı (None = politika kapalı).
+        let mut policy_ceiling: Option<u32> = None;
         if self.fusion_policy.is_enabled() {
             let obs = crate::fusion_policy::FusionObservation {
                 feature_schema: self.fusion_policy.version().feature_schema,
@@ -3399,6 +3367,18 @@ impl Sender {
                 } => (redundancy_permille, FecArbiterReason::ConfirmedPolicy),
                 _ => (0, FecArbiterReason::ConfirmedPolicy),
             };
+            // Spekülatif kolun tavanı: KANIT-YOKLUĞU geri dönüşleri (ColdStart · LowConfidence ·
+            // NoDeadlineDeclared) bootstrap'ın tam hedefidir → sert tavana kadar serbest; FecAssist
+            // → sert tavan; diğer her geri dönüş GÜVENLİK sebebidir (bölge dışı, bayat telemetri,
+            // gevşek deadline = ölçülü israf, …) → spekülatif kol SUSAR.
+            use crate::fusion_policy::{FallbackReason as FR, FusionAction as FA};
+            policy_ceiling = Some(match action {
+                FA::FecAssist { .. }
+                | FA::FallbackArq(FR::ColdStart | FR::LowConfidence | FR::NoDeadlineDeclared) => {
+                    self.fusion_policy.hard_max_redundancy_permille()
+                }
+                _ => 0,
+            });
         } else {
             // Yapı-gate Confirmed-taban bir kapıdır → KANONİK kaybı okur (loss-yapı sinyali).
             // Yalnız politika KAPALIYKEN koşar (çift-otorite yok). Artık doğrudan parity YAZMAZ:
@@ -3412,6 +3392,29 @@ impl Sender {
                 self.diag_structure_gate_opened += 1;
             }
         }
+        // Spekülatif ÖNERİ — tavan artık bilinir.
+        let spec = match spec_split {
+            Some(split) => {
+                let p = self.speculative_propose(split, policy_ceiling);
+                match p.level {
+                    SpeculativeLevel::L0None => self.diag_spec_levels[0] += 1,
+                    SpeculativeLevel::L1Bootstrap => {
+                        self.diag_spec_levels[1] += 1;
+                        if self.diag_t_first_l1_ns == 0 {
+                            self.diag_t_first_l1_ns = now_ns;
+                        }
+                    }
+                    SpeculativeLevel::L2Persistent => {
+                        self.diag_spec_levels[2] += 1;
+                        if self.diag_t_first_l2_ns == 0 {
+                            self.diag_t_first_l2_ns = now_ns;
+                        }
+                    }
+                }
+                p
+            }
+            None => SpeculativeProposal::NONE,
+        };
         // Ledger kaybının koşu-boyu TEPESİ — artık HER iki dalda yazılır (eskiden politika açıkken
         // yapısal sıfırdı → vakum sayaç; CORRIGENDUM 6fa81b4e).
         self.diag_loss_ppm_peak = self.diag_loss_ppm_peak.max(inputs.loss_ppm);
@@ -4078,12 +4081,22 @@ impl Sender {
     /// L1  instant ≥ l1_min, persistent < l2_min → bootstrap_cap   (t_risk == t_suspected KORUNUR)
     /// L2  persistent ≥ l2_min                   → persistent_cap
     /// deadline/srtt ≤ tight_budget              → L1 de persistent_cap (DEADLINE_ASSISTED)
-    /// kanonik olgun (confirmed_total ≥ N)       → tavan bootstrap_cap'e iner (steady-state devri)
+    /// kanonik pencerede görünür (windowed>0)   → tavan bootstrap_cap'e iner (steady-state devri)
     /// reorder_pressure (yeterli kanıtla)        → tavan × (1 − rp × discount_max)   [asla 0'a değil]
     /// ```
-    fn speculative_propose(&self, split: crate::loss::RiskSplit) -> SpeculativeProposal {
+    /// `policy_ceiling`: kalibre politika AÇIKKEN spekülatif kola izin verilen ÜST SINIR —
+    /// `Some(0)` = politika güvenlik sebebiyle ArqOnly dedi, spekülatif kol SUSAR;
+    /// `Some(hard_max)` = politika kanıt-yokluğu (ColdStart/LowConfidence/NoDeadline) bildirdi
+    /// ya da FecAssist verdi → spekülatif kol en çok sert tavana kadar; `None` = politika kapalı.
+    /// Bu, denetimin bulduğu "max() kalibre politikanın 'asla daha agresif değil' sözleşmesini
+    /// bozar" kusurunun kapanışıdır: lane'ler arası kompozisyon max değil, politika = tavan.
+    fn speculative_propose(
+        &self,
+        split: crate::loss::RiskSplit,
+        policy_ceiling: Option<u32>,
+    ) -> SpeculativeProposal {
         let c = self.fec_loss_risk;
-        if split.instant_ppm < c.l1_min_instant_ppm {
+        if policy_ceiling == Some(0) || split.instant_ppm < c.l1_min_instant_ppm {
             return SpeculativeProposal::NONE;
         }
         let level = if split.persistent_ppm >= c.l2_min_persistent_ppm {
@@ -4101,8 +4114,11 @@ impl Sender {
             SpeculativeLevel::L1Bootstrap if tight => c.persistent_cap_permille,
             _ => c.bootstrap_cap_permille,
         };
-        // Steady-state devri: kanonik tahmin olgunlaşınca spekülatif kol bootstrap tavanına iner.
-        if self.loss.diag_confirm_path().0 >= c.mature_confirmed_min {
+        // Steady-state devri: kanonik tahmin PENCEREDE görünür olunca (Confirmed birim > 0,
+        // `W_loss` içinde — kendiliğinden sıfırlanır, epizot-başına) spekülatif kol bootstrap
+        // tavanına iner. Ömür-boyu monoton sayaç KULLANILMAZ: o, TUR-2a'nın öldürdüğü "lifetime
+        // ratchet" sınıfıdır ve `diag_` sayaçları davranış girdisi olamaz (denetim bulgusu).
+        if self.loss.loss_windowed_ppm() > 0 {
             cap = cap.min(c.bootstrap_cap_permille);
         }
         // Reorder indirimi — yalnız yeterli kanıtla, ve ASLA veto değil.
@@ -4111,6 +4127,11 @@ impl Sender {
                 * u64::from(c.reorder_discount_max_permille)
                 / 1000; // 0..=discount_max
             cap = u32::try_from(u64::from(cap) * (1000 - disc.min(999)) / 1000).unwrap_or(cap);
+        }
+        // İndirim VETO olamaz: yuvarlama tabanının altına inmez (K=8'de ≥1 repair).
+        cap = cap.max(c.spec_min_permille);
+        if let Some(ceil) = policy_ceiling {
+            cap = cap.min(ceil);
         }
         SpeculativeProposal {
             level,

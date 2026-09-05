@@ -170,6 +170,14 @@ fn risk_sinyali_arq_cc_ve_pacing_yollarina_sizmaz() {
 
     // Önkoşul: kol gerçekten çalıştı (aksi hâlde test vakum olurdu).
     assert!(on.diag_risk_ppm().1 > 0, "önkoşul: risk sinyali üretilmeli");
+    // KAPSAM (denetim bulgusu): bu sürücüde FEC profili YOK → parity hiç emit edilmez; eşitlikler
+    // "AKTÜASYONSUZ mekanik izolasyon"u pinler. Parity gerçekten emit edildiğinde hız düzlemi
+    // eşitliği yapısal olarak tutamaz (parity inflight'a girer) — o, FEC'in doğal bedelidir.
+    assert_eq!(
+        on.diag_fec_actuation().emitted_r_total,
+        0,
+        "kapsam: aktüasyonsuz sürüş"
+    );
 
     assert_eq!(
         off.state(),
@@ -348,16 +356,28 @@ fn spurious_reorder_baskisini_yukseltir() {
     );
 }
 
-/// Sender-düzeyi: reorder indirimi TAVANI düşürür ama ASLA sıfırlamaz (discount, veto değil).
-/// Doğrudan config aritmetiğiyle: rp=1000, discount_max=500 → cap × 0.5.
+/// Reorder indirimi TAVANI düşürür ama K=8'de bile ≥1 repair'e YUVARLANIR (discount, veto değil).
+/// Denetim bulgusu: eski test yalnız permille>0 pinliyordu; `125×0.5=62‰` r=0'a yuvarlanıyordu.
 #[test]
 fn reorder_indirimi_veto_degil() {
-    // Tavanın yarısına inmesini config aritmetiği garanti eder; sınır değerini pinliyoruz.
     let cfg = FecLossRiskConfig::default();
     let disc = u64::from(1000u32) * u64::from(cfg.reorder_discount_max_permille) / 1000;
-    let capped = u64::from(cfg.bootstrap_cap_permille) * (1000 - disc.min(999)) / 1000;
-    assert!(capped > 0, "tam baskıda bile tavan > 0 olmalı");
-    assert_eq!(capped, u64::from(cfg.bootstrap_cap_permille) / 2);
+    let discounted =
+        u32::try_from(u64::from(cfg.bootstrap_cap_permille) * (1000 - disc.min(999)) / 1000)
+            .unwrap();
+    let floored = discounted.max(cfg.spec_min_permille);
+    assert!(
+        discounted < cfg.spec_min_permille,
+        "önkoşul: taban olmasa yuvarlama 0 verirdi ({discounted}‰)"
+    );
+    assert!(
+        compute_requested_r(discounted, 8, 4).1 == 0,
+        "tabansız: K=8'de VETO"
+    );
+    assert!(
+        compute_requested_r(floored, 8, 4).1 >= 1,
+        "tabanlı: K=8'de ≥1 repair ({floored}‰)"
+    );
 }
 
 /// Kol AÇIK + kayıp deseni → spekülatif seviyeler ve arbiter sebepleri histogramda görünür;
@@ -402,5 +422,65 @@ fn v2_izolasyon_ve_gorunurluk() {
         arb_off[4] + arb_off[5] + arb_off[6],
         0,
         "OFF: spekülatif sebep olamaz: {arb_off:?}"
+    );
+}
+
+/// Politika AÇIKKEN spekülatif kol politikanın sert tavanını AŞAMAZ ve güvenlik geri dönüşünde
+/// SUSAR — lane'ler arası max() politikanın "asla daha agresif değil" sözleşmesini bozamaz.
+/// Kanıt: politika `hard_max=0` ile açık → spekülatif sebep histogramda SIFIR.
+#[test]
+fn politika_acikken_spekulatif_kol_tavani_asamaz() {
+    use adaptive_transport::fusion_policy::{FusionPolicy, FusionSafetyConfig};
+    let mut s = Sender::new();
+    s.set_fec_loss_risk(FecLossRiskConfig::experimental_v1());
+    s.set_fusion_policy(
+        FusionPolicy::calibration_v2_deadline().with_safety(FusionSafetyConfig {
+            hard_max_redundancy_permille: 0,
+            ..FusionSafetyConfig::default()
+        }),
+    );
+    let s = drive(s, 80, gap_pattern());
+    let lv = s.diag_spec_levels();
+    assert!(lv[0] > 0, "önkoşul: kol koştu");
+    let arb = s.diag_arbiter_reasons();
+    assert_eq!(
+        arb[4] + arb[5] + arb[6],
+        0,
+        "sert tavan 0 → spekülatif kol parity öneremez: {arb:?}"
+    );
+    assert_eq!(s.last_decision().fec_parity_ratio_permille, 0);
+}
+
+/// Politika AÇIK + risk KAPALI: arbiter politikanın kararını BİREBİR geçirir (eski erken-return
+/// yolunun byte-özdeşliği). Politika `diag_fusion_actions` ile sayılır (arbiter sıfır kararı
+/// tasarım gereği `None` kovasına yazar — `ConfirmedPolicy` yalnız FecAssist'te görünür);
+/// spekülatif/gate/fuzzy sebebi SIFIR; oran politikanın {0, 250} kümesinden.
+#[test]
+fn politika_acik_risk_kapali_arbiter_politikayi_birebir_gecirir() {
+    use adaptive_transport::fusion_policy::FusionPolicy;
+    let mut s = Sender::new();
+    s.set_fusion_policy(FusionPolicy::calibration_v2_deadline());
+    s.declare_delivery_deadline(400_000_000);
+    let s = drive(s, 80, gap_pattern());
+    let fa = s.diag_fusion_actions();
+    assert!(
+        fa.iter().sum::<u64>() > 0,
+        "önkoşul: politika her karar için sayıldı: {fa:?}"
+    );
+    let arb = s.diag_arbiter_reasons();
+    assert_eq!(
+        arb[1] + arb[3] + arb[4] + arb[5] + arb[6],
+        0,
+        "politika açıkken fuzzy/gate/spekülatif sebep olamaz: {arb:?}"
+    );
+    assert_eq!(
+        arb[0] + arb[2],
+        arb.iter().sum::<u64>(),
+        "yalnız None ya da ConfirmedPolicy"
+    );
+    let r = s.last_decision().fec_parity_ratio_permille;
+    assert!(
+        r == 0 || r == 250,
+        "oran politikanın {{0, 250}} kümesinden olmalı: {r}"
     );
 }

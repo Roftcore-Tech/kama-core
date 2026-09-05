@@ -1,0 +1,79 @@
+====================================================================================================================================
+HAM TABLO — kısa akış (96 mesaj).  Damgalar ns→ms, akış başlangıcı = 0.  'asla' = olay hiç olmadı
+====================================================================================================================================
+kayıp  kol   rep    süre   kuşku    risk    onay  parity  risk<son  onay<son  par<son  parity_B  retx_B    tx_B
+------------------------------------------------------------------------------------------------------------------------------------
+   0%  OFF  rep1    2107    asla    asla    asla    asla         -         -        -         0       0   42867
+   0%  OFF  rep2    2119    asla    asla    asla    asla         -         -        -         0       0   42867
+   0%  OFF  rep3    2120    asla    asla    asla    asla         -         -        -         0       0   42867
+   0%   ON  rep1    2120    asla    asla    asla    asla         -         -        -         0       0   42867
+   0%   ON  rep2    2120    asla    asla    asla    asla         -         -        -         0       0   42867
+   0%   ON  rep3    2120    asla    asla    asla    asla         -         -        -         0       0   42918
+   5%  OFF  rep1    2120    asla    asla    asla    asla         -         -        -         0       0   42867
+   5%  OFF  rep2    2140    asla    asla    asla    asla         -         -        -         0       0   42867
+   5%  OFF  rep3    2123    asla    asla    asla    asla         -         -        -         0       0   42867
+   5%   ON  rep1    2112    asla    asla    asla    asla         -         -        -         0       0   42867
+   5%   ON  rep2    2120    asla    asla    asla    asla         -         -        -         0       0   42867
+   5%   ON  rep3    2119    asla    asla    asla    asla         -         -        -         0       0   42918
+  15%  OFF  rep1    2140     778    asla    asla    asla         -         -        -         0    2412   45330
+  15%  OFF  rep2    2140     405    asla    asla    asla         -         -        -         0     719   43586
+  15%  OFF  rep3    2116     817    asla    asla    asla         -         -        -         0     883   43801
+  15%   ON  rep1    2117     744     744    asla     942      EVET         -     EVET       276     446   43640
+  15%   ON  rep2    2140    1408    1408    asla    1433      EVET         -     EVET       184    2321   45372
+  15%   ON  rep3    2105     962     962    asla    1059      EVET         -     EVET       184    3222   46324
+  30%  OFF  rep1    2119     375    asla    asla    asla         -         -        -         0     628   43495
+  30%  OFF  rep2    2115     370    asla    asla    asla         -         -        -         0     619   43537
+  30%  OFF  rep3    2120     321    asla    asla    asla         -         -        -         0     355   43222
+  30%   ON  rep1    2140     384     384    asla     999      EVET         -     EVET       276     610   43753
+  30%   ON  rep2    2118     407     407    asla     855      EVET         -     EVET       184     783   43885
+  30%   ON  rep3    2120     353     353    asla     958      EVET         -     EVET       552     446   43916
+
+====================================================================================================================================
+ÖZET — oranlar payda = o hücrenin rep sayısı.  'X/n' biçimi: gizlenen koşu YOK
+====================================================================================================================================
+kayıp  kol  n  risk>0  onay>0  parity>0  risk<son  onay<son  PAR<SON  med_süre  med_risk  med_onay  med_par  risk_ppm  med_par_B  med_tx_B
+------------------------------------------------------------------------------------------------------------------------------------
+   0%  OFF  3     0/3     0/3       0/3       0/3       0/3      0/3      2119      asla      asla     asla         0          0     42867
+   0%   ON  3     0/3     0/3       0/3       0/3       0/3      0/3      2120      asla      asla     asla         0          0     42867
+   5%  OFF  3     0/3     0/3       0/3       0/3       0/3      0/3      2123      asla      asla     asla         0          0     42867
+   5%   ON  3     0/3     0/3       0/3       0/3       0/3      0/3      2119      asla      asla     asla         0          0     42867
+  15%  OFF  3     3/3     0/3       0/3       0/3       0/3      0/3      2140      asla      asla     asla         0          0     43801
+  15%   ON  3     3/3     0/3       3/3       3/3       0/3      3/3      2117       962      asla     1059     34042        184     45372
+  30%  OFF  3     3/3     0/3       0/3       0/3       0/3      0/3      2119      asla      asla     asla         0          0     43495
+  30%   ON  3     3/3     0/3       3/3       3/3       0/3      3/3      2120       384      asla      958    100000        276     43885
+
+====================================================================================================================================
+KIYAS 3 — KISA-AKIŞ KANITI:  risk < akış_sonu < onay  (tahmincinin varoluş gerekçesi)
+====================================================================================================================================
+  kayıp  0%  ON:  0/3 rep'te  risk < akış_sonu < onay
+  kayıp  5%  ON:  0/3 rep'te  risk < akış_sonu < onay
+  kayıp 15%  ON:  3/3 rep'te  risk < akış_sonu < onay
+  kayıp 30%  ON:  3/3 rep'te  risk < akış_sonu < onay
+
+  TOPLAM (kayıplı hücreler): 6/9
+
+====================================================================================================================================
+KIYAS 1 & 2 — tahminci gecikmesi ve kanonik onay ufku (ARQ semantiği değişmedi mi?)
+====================================================================================================================================
+  KIYAS 1  t_risk − t_kuşku : n=6  min=0.000 ms  medyan=0.000 ms  max=0.000 ms
+
+====================================================================================================================================
+ARBİTER — hücre başına sebep histogramı (toplam) · seviye (L0/L1/L2) · persistent tepe · reorder baskısı tepe
+  sebep sırası: None · ConfFuzzy · ConfPolicy · StructGate · SpecBoot · SpecPersist · DeadlineAsst
+====================================================================================================================================
+   0%  OFF  arb=[8621, 0, 0, 0, 0, 0, 0]                 lvl=[0, 0, 0]              pers_peak=      0 rp_peak=   0‰
+   0%   ON  arb=[8645, 0, 0, 0, 0, 0, 0]                 lvl=[8645, 0, 0]           pers_peak=      0 rp_peak=   0‰
+   5%  OFF  arb=[8654, 0, 0, 0, 0, 0, 0]                 lvl=[0, 0, 0]              pers_peak=      0 rp_peak=   0‰
+   5%   ON  arb=[8623, 0, 0, 0, 0, 0, 0]                 lvl=[8623, 0, 0]           pers_peak=      0 rp_peak=   0‰
+  15%  OFF  arb=[8688, 0, 0, 0, 0, 0, 0]                 lvl=[0, 0, 0]              pers_peak=      0 rp_peak=   0‰
+  15%   ON  arb=[8349, 0, 0, 0, 304, 3, 0]               lvl=[8349, 304, 3]         pers_peak=  11363 rp_peak=1000‰
+  30%  OFF  arb=[8640, 0, 0, 0, 0, 0, 0]                 lvl=[0, 0, 0]              pers_peak=      0 rp_peak=   0‰
+  30%   ON  arb=[8253, 0, 0, 0, 341, 75, 0]              lvl=[8253, 341, 75]        pers_peak=  74626 rp_peak=1000‰
+
+====================================================================================================================================
+WIRE AMPLİFİKASYONU — ON toplam tx / OFF toplam tx (medyan), hücre başına
+====================================================================================================================================
+  seviye  0%  OFF=  42867 B  ON=  42867 B  fark=+0.00%
+  seviye  5%  OFF=  42867 B  ON=  42867 B  fark=+0.00%
+  seviye 15%  OFF=  43801 B  ON=  45372 B  fark=+3.59%
+  seviye 30%  OFF=  43495 B  ON=  43885 B  fark=+0.90%
