@@ -195,6 +195,8 @@ pub struct ClientCfg {
     /// `>0` = kanal-türevli `k × srtt` per-mille. ÖLÇÜM KOLU — bkz.
     /// `reports/loss-ledger-confirm-defect/FINDING.md`.
     pub loss_confirm_k: u32,
+    /// [FEC-RISK] Deneysel FEC kayıp-riski tahmincisi (`false` = sevk davranışı).
+    pub fec_risk: bool,
 }
 
 /// [KAPI-1 W6] Dosya-tabanlı barrier: `<gate>.ready` yaz → `<gate>.go` bekle (5 ms poll, 120 s
@@ -249,6 +251,8 @@ pub struct ServerCfg {
     /// `>0` = kanal-türevli `k × srtt` per-mille. ÖLÇÜM KOLU — bkz.
     /// `reports/loss-ledger-confirm-defect/FINDING.md`.
     pub loss_confirm_k: u32,
+    /// [FEC-RISK] Deneysel FEC kayıp-riski tahmincisi (`false` = sevk davranışı).
+    pub fec_risk: bool,
 }
 
 /// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).

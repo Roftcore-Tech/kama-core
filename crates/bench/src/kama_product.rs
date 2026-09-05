@@ -34,8 +34,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use client_core::runtime::{
-    fec_chunk_capacity, ClientEndpoint, ClientSender, EgressPolicy, FecRuntimeConfig,
-    FecStructurePolicy, LossConfirmHorizon, RuntimeConfig, RuntimeError, ServerEndpoint,
+    fec_chunk_capacity, ClientEndpoint, ClientSender, EgressPolicy, FecLossRiskConfig,
+    FecRuntimeConfig, FecStructurePolicy, LossConfirmHorizon, RuntimeConfig, RuntimeError,
+    ServerEndpoint,
 };
 use client_core::seam::IdentitySeam;
 use tokio::signal::unix::{signal, SignalKind};
@@ -99,6 +100,7 @@ struct ArmCfg {
     initial_window_bytes: u64,
     bootstrap_fast: bool,
     loss_confirm_k: u32,
+    fec_risk: bool,
 }
 
 fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
@@ -111,6 +113,7 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
         initial_window_bytes,
         bootstrap_fast,
         loss_confirm_k,
+        fec_risk,
     } = a;
     let payload = usize::try_from(payload_bytes).unwrap_or(usize::MAX);
     let profile_id = match fec {
@@ -161,6 +164,12 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
             LossConfirmHorizon::ChannelDerived {
                 k_permille: loss_confirm_k,
             }
+        },
+        // [FEC-RISK] Deneysel kol; false = sevk davranışı (semantik özdeş).
+        fec_loss_risk: if fec_risk {
+            FecLossRiskConfig::experimental_v1()
+        } else {
+            FecLossRiskConfig::default()
         },
         // [DEADLINE-EKSENİ] Politika kolu kalibrasyonu KURAR; diğer kollarda `None` (yapı-gate
         // koşar, sevk davranışı). Politika fail-safe'tir: bütçe bildirilmezse ArqOnly.
@@ -233,6 +242,7 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
             initial_window_bytes: cfg.initial_window_bytes,
             bootstrap_fast: cfg.bootstrap_fast,
             loss_confirm_k: cfg.loss_confirm_k,
+            fec_risk: cfg.fec_risk,
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -333,6 +343,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
             initial_window_bytes: cfg.initial_window_bytes,
             bootstrap_fast: cfg.bootstrap_fast,
             loss_confirm_k: cfg.loss_confirm_k,
+            fec_risk: cfg.fec_risk,
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -481,7 +492,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
          fec_blocks={} fec_repairs_tx={} fec_recovered_ctrl={} param_confirmed={} \
          seal_fail={} send_err={} stale={} cs_probe_tx={} cs_echo_rx={} \
          state={} left_preconv={} establish_tx={} \
-         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?} spurious={} confirm_k={:?} latch={:?} suppress={:?}",
+         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?} spurious={} confirm_k={:?} latch={:?} suppress={:?} risk_t={:?} risk_ppm={:?}",
         stats.tx_bytes,
         stats.tx_data_bytes,
         stats.tx_retx_bytes,
@@ -521,6 +532,8 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         cfg.loss_confirm_k,
         stats.fate.fec_latch_diag,
         stats.fate.fec_last_suppression,
+        stats.fate.fec_risk_times,
+        stats.fate.fec_risk_ppm,
     );
 
     let meta = RunMeta {
@@ -605,6 +618,7 @@ mod tests {
             initial_window_bytes: 0,
             bootstrap_fast: false,
             loss_confirm_k: 0,
+            fec_risk: false,
         }
     }
 
@@ -622,6 +636,7 @@ mod tests {
             initial_window_bytes: 0,
             bootstrap_fast: false,
             loss_confirm_k: 0,
+            fec_risk: false,
         }
     }
 
@@ -670,6 +685,7 @@ mod tests {
             initial_window_bytes: 0,
             bootstrap_fast: false,
             loss_confirm_k: 0,
+            fec_risk: false,
         });
         let r2 = runtime_cfg(ArmCfg {
             payload_bytes: 256,
@@ -680,6 +696,7 @@ mod tests {
             initial_window_bytes: 0,
             bootstrap_fast: false,
             loss_confirm_k: 0,
+            fec_risk: false,
         });
         assert_eq!(
             ctrl.max_unit_bytes, r2.max_unit_bytes,
@@ -709,6 +726,7 @@ mod tests {
             initial_window_bytes: 0,
             bootstrap_fast: false,
             loss_confirm_k: 0,
+            fec_risk: false,
         });
         assert_ne!(
             naive_off.max_unit_bytes, r2.max_unit_bytes,
@@ -728,6 +746,7 @@ mod tests {
             initial_window_bytes: 0,
             bootstrap_fast: false,
             loss_confirm_k: 0,
+            fec_risk: false,
         });
         assert!(off.fec.is_none());
         assert_eq!(off.max_unit_bytes, 48);
@@ -745,6 +764,7 @@ mod tests {
             initial_window_bytes: 0,
             bootstrap_fast: false,
             loss_confirm_k: 0,
+            fec_risk: false,
         });
         let f = st.fec.expect("statik-r FEC config üretmeli");
         assert_eq!(f.profile_id, 0x03);
@@ -760,6 +780,7 @@ mod tests {
             initial_window_bytes: 0,
             bootstrap_fast: false,
             loss_confirm_k: 0,
+            fec_risk: false,
         });
         let f = ad.fec.expect("adaptif FEC config üretmeli");
         assert_eq!(f.profile_id, 0x05);
@@ -787,6 +808,7 @@ mod tests {
             initial_window_bytes: 0,
             bootstrap_fast: false,
             loss_confirm_k: 0,
+            fec_risk: false,
         });
         assert_eq!(c.max_unit_bytes, 53, "birim symbol kapasitesine kilitlenir");
         assert_eq!(
@@ -808,6 +830,7 @@ mod tests {
             initial_window_bytes: 0,
             bootstrap_fast: false,
             loss_confirm_k: 0,
+            fec_risk: false,
         });
         assert_eq!(small.max_unit_bytes, 48);
         assert_eq!(small.max_message_bytes, None, "48 ≤ 53 → fragmentasyon yok");
@@ -831,6 +854,7 @@ mod tests {
                 initial_window_bytes: 0,
                 bootstrap_fast: false,
                 loss_confirm_k: 0,
+                fec_risk: false,
             }),
             Box::new(IdentitySeam),
         )
@@ -878,6 +902,7 @@ mod tests {
                 initial_window_bytes: 0,
                 bootstrap_fast: false,
                 loss_confirm_k: 0,
+                fec_risk: false,
             }),
             Box::new(IdentitySeam),
         )
@@ -939,6 +964,7 @@ mod tests {
                 initial_window_bytes: 0,
                 bootstrap_fast: false,
                 loss_confirm_k: 0,
+                fec_risk: false,
             }),
             Box::new(IdentitySeam),
         )
@@ -1022,6 +1048,7 @@ mod tests {
                 initial_window_bytes: 0,
                 bootstrap_fast: false,
                 loss_confirm_k: 0,
+                fec_risk: false,
             }),
             Box::new(IdentitySeam),
         )

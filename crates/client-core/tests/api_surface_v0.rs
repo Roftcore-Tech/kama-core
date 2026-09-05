@@ -90,6 +90,9 @@ async fn transport_api_v0_surface_is_frozen() {
         // v0.8 (ONAY UFKU): minor-EKLEME, kasıtlı pin-güncellemesi. Default = sevk davranışı;
         // `ChannelDerived` bir ÖLÇÜM KOLUDUR (reports/loss-ledger-confirm-defect/).
         loss_confirm_horizon: _,
+        // v0.9 (FEC-RISK): minor-EKLEME, kasıtlı pin-güncellemesi. Default KAPALI; AÇIKKEN
+        // tek tüketici FEC oranı kararıdır (CC/pacing/ARQ dokunulmaz).
+        fec_loss_risk: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,

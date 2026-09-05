@@ -77,6 +77,10 @@ enum Cmd {
         /// per-mille (`2000` = 2×srtt). ÖLÇÜM KOLU.
         #[arg(long, default_value_t = 0)]
         loss_confirm_k: u32,
+        /// [FEC-RISK] Deneysel FEC kayıp-riski tahmincisi (Suspected olaylara yaş-ağırlıklı
+        /// güven). KAPALI = sevk davranışı. TEK tüketici FEC oranı kararıdır.
+        #[arg(long, default_value_t = false)]
+        fec_risk: bool,
         /// [SPRINT-A] Alıcı birim-payload tavanı — client `--payload` ile AYNI olmalı.
         #[arg(long, default_value_t = 256)]
         payload: u64,
@@ -164,6 +168,10 @@ enum Cmd {
         /// per-mille (`2000` = 2×srtt). ÖLÇÜM KOLU.
         #[arg(long, default_value_t = 0)]
         loss_confirm_k: u32,
+        /// [FEC-RISK] Deneysel FEC kayıp-riski tahmincisi (Suspected olaylara yaş-ağırlıklı
+        /// güven). KAPALI = sevk davranışı. TEK tüketici FEC oranı kararıdır.
+        #[arg(long, default_value_t = false)]
+        fec_risk: bool,
         /// [BURST-FUSION] Bkz. `serve --fec-burst-fusion`. SUNUCUYLA AYNI verilmelidir.
         #[arg(long, default_value_t = false)]
         fec_burst_fusion: bool,
@@ -308,6 +316,7 @@ async fn main() -> Result<(), BenchError> {
             fec_mode,
             fec_deadline_ms,
             loss_confirm_k,
+            fec_risk,
             payload,
             fec_burst_fusion,
             bootstrap_rtt,
@@ -329,6 +338,7 @@ async fn main() -> Result<(), BenchError> {
                     gate_watch,
                     fec: FecArm::from_args(fec_profile, fec_r, fec_mode.into(), fec_deadline_ms),
                     loss_confirm_k,
+                    fec_risk,
                     payload_bytes: payload,
                     burst_fusion: fec_burst_fusion,
                     bootstrap_rtt,
@@ -362,6 +372,7 @@ async fn main() -> Result<(), BenchError> {
             fec_mode,
             fec_deadline_ms,
             loss_confirm_k,
+            fec_risk,
             fec_burst_fusion,
             bootstrap_rtt,
             initial_window_bytes,
@@ -390,6 +401,7 @@ async fn main() -> Result<(), BenchError> {
                 establish_gate,
                 fec: FecArm::from_args(fec_profile, fec_r, fec_mode.into(), fec_deadline_ms),
                 loss_confirm_k,
+                fec_risk,
                 burst_fusion: fec_burst_fusion,
                 bootstrap_rtt,
                 initial_window_bytes,

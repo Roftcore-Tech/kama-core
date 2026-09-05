@@ -333,6 +333,34 @@ pub struct InitialWindowConfig {
 /// **KALİBRE EDİLMEMİŞ — default `Q18Iid`.** R1 disiplini: kampanya görmemiş bir eşik sevk
 /// edilmez. `BurstFusion`'a geçmek netem matrisinde ölçülmüş bir kanıt ister; flip edilene kadar
 /// davranış ve wire byte-özdeştir.
+/// [FEC-RISK] **Deneysel** FEC kayıp-riski tahmincisi. Default **KAPALI** → davranış bugünküyle
+/// semantik olarak özdeş (kanonik `loss_windowed_ppm` tek girdi kalır).
+///
+/// NEDEN AYRI BİR SİNYAL: ARQ ile FEC farklı soru sorar.
+/// * ARQ: *"kaybolduğundan yeterince emin miyim?"* — gereksiz retransmit pahalı → `Confirmed` bekle
+/// * FEC: *"parity ekleyecek vaktim varken şu an ne kadar risk var?"* — blok tele çıkarken karar
+///
+/// Kanonik kayıp YENİDEN TANIMLANMAZ. `Suspected + Confirmed` toplamı kanonik metrik OLMAZ;
+/// bu ayrı bir olasılıksal okumadır ve TEK tüketicisi FEC karar yoludur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FecLossRiskConfig {
+    /// `false` (default) = kapalı; FEC girdisi kanonik `Confirmed` oranıdır.
+    pub enabled: bool,
+    /// `Suspected` olayların yaş→güven eğrisi. **KALİBRE EDİLMEMİŞ** — ölçümle belirlenecek.
+    pub weights: crate::loss::SuspectConfidence,
+}
+
+impl FecLossRiskConfig {
+    /// Deneysel kol AÇIK, ilk `[CAL]` eğrisiyle (0.20/0.40/0.70).
+    #[must_use]
+    pub fn experimental_v1() -> Self {
+        Self {
+            enabled: true,
+            weights: crate::loss::SuspectConfidence::default(),
+        }
+    }
+}
+
 /// [KAYIP-DEFTERİ ONAY UFKU] `Suspected → Confirmed` geçişinin bekleme ufku.
 ///
 /// **NEDEN AYRI BİR KOL VAR:** ölçüldü ki sevk edilen ufuk ürün yolunda HİÇ ateşlemiyor
@@ -1407,6 +1435,15 @@ pub struct Sender {
     fec_structure_policy: FecStructurePolicy,
     /// [ONAY UFKU] Ledger confirm ufku kolu — default sevk davranışı.
     loss_confirm_horizon: LossConfirmHorizon,
+    /// [FEC-RISK] Deneysel FEC kayıp-riski kolu — default KAPALI.
+    fec_loss_risk: FecLossRiskConfig,
+    /// [FEC-RISK ENSTRÜMAN] `fec_loss_risk_ppm` ilk kez > 0 olduğu an (ns, 0 = hiç).
+    diag_t_first_risk_ns: u64,
+    /// [FEC-RISK ENSTRÜMAN] İlk parity emisyonu anı (ns, 0 = hiç).
+    diag_t_first_parity_ns: u64,
+    /// [FEC-RISK ENSTRÜMAN] Son hesaplanan risk (ppm) ve koşu-boyu TEPESİ.
+    diag_risk_ppm_last: u64,
+    diag_risk_ppm_peak: u64,
     /// [IW] PreConverge ilk-uçuş penceresi (0 = kapalı, sevk davranışı).
     initial_window: InitialWindowConfig,
     /// [FUSION-POLICY] Kalibre edilmiş füzyon karar katmanı (default `disabled()` → ArqOnly).
@@ -1623,6 +1660,11 @@ impl Sender {
             diag_structure_gate_opened: 0,
             fec_structure_policy: FecStructurePolicy::Q18Iid,
             loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,
+            fec_loss_risk: FecLossRiskConfig::default(),
+            diag_t_first_risk_ns: 0,
+            diag_t_first_parity_ns: 0,
+            diag_risk_ppm_last: 0,
+            diag_risk_ppm_peak: 0,
             initial_window: InitialWindowConfig::default(),
             fusion_policy: crate::fusion_policy::FusionPolicy::disabled(),
             rtt_sample_count: 0,
@@ -3076,6 +3118,43 @@ impl Sender {
         if d.no_rule {
             self.diag_fuzzy_no_rule += 1;
         }
+        // ── [FEC-RISK] Deneysel kol: FEC oranını RİSK sinyaliyle yeniden karar bağla ──────────
+        //
+        // İZOLASYON SÖZLEŞMESİ (bu bloğun tamamının gerekçesi): kanonik `d` YUKARIDA `inputs`
+        // (= `Confirmed` oranı) ile hesaplandı ve `mode` · `arq_aggressiveness_permille` ile
+        // birlikte state-machine, pacing, cwnd ve retransmit yollarını beslemeye DEVAM EDER.
+        // Aşağıdaki ikinci karar YALNIZ iki alanı devralır: `fec_parity_ratio_permille` (FEC
+        // oranı) ve `no_rule` (FEC latch'inin bastırma kapısı). Yani risk sinyalinin ürün
+        // yolundaki tek etkisi parity miktarıdır.
+        //
+        // Neden ikinci bir `decide()` ve fuzzy'yi değiştirmemek: kontrolcü deterministik ve
+        // alloc'suzdur (ADR-17), aynı girdi → aynı çıktı. Tek alanı içeriden dallandırmak
+        // kuralların birbirine bağlı ağırlıklarını bozardı; dışarıdan çağırmak etkinin
+        // KANITLANABİLİR biçimde iki alanla sınırlı kalmasını sağlar.
+        let loss_for_fec = if self.fec_loss_risk.enabled {
+            // srtt ölçülmemişse `fec_loss_risk_ppm` Suspected'lara güven VERMEZ → kanonikle özdeş.
+            let srtt_ns = self.rtt.srtt().map_or(0, dur_ns);
+            let risk = self
+                .loss
+                .fec_loss_risk_ppm(now_ns, srtt_ns, self.fec_loss_risk.weights);
+            self.diag_risk_ppm_last = risk;
+            self.diag_risk_ppm_peak = self.diag_risk_ppm_peak.max(risk);
+            if risk > 0 && self.diag_t_first_risk_ns == 0 {
+                self.diag_t_first_risk_ns = now_ns;
+            }
+            if risk != inputs.loss_ppm {
+                let risk_inputs = FusionInputs {
+                    loss_ppm: risk,
+                    ..inputs
+                };
+                let rd = self.fuzzy.decide(&risk_inputs);
+                d.fec_parity_ratio_permille = rd.fec_parity_ratio_permille;
+                d.no_rule = rd.no_rule;
+            }
+            risk
+        } else {
+            inputs.loss_ppm
+        };
         // [Q18-FIX] YAPI-FARKINDA FEC GATE.
         // [DAYANAK DÜZELTMESİ 2026-09-04] Bu blok eskiden "Q17 holdout + FS-FUSION-CELL-1 iki
         // BAĞIMSIZ kanıt" diyordu. Q17 holdout'u formel olarak GEÇERSİZDİR (FRAMING-CORRIGENDUM
@@ -3105,7 +3184,12 @@ impl Sender {
         if self.fusion_policy.is_enabled() {
             let obs = crate::fusion_policy::FusionObservation {
                 feature_schema: self.fusion_policy.version().feature_schema,
-                inputs,
+                // [FEC-RISK] Kalibre politika da bir FEC karar katmanıdır → FEC girdisini okur.
+                // Kol kapalıyken bu `inputs` ile birebir aynıdır (byte-özdeş davranış).
+                inputs: FusionInputs {
+                    loss_ppm: loss_for_fec,
+                    ..inputs
+                },
                 rtt_sample_count: self.rtt_sample_count,
                 telemetry_age_ns: now_ns.saturating_sub(self.last_telemetry_ns),
                 converged: self.state != SenderState::PreConverge,
@@ -3159,7 +3243,9 @@ impl Sender {
             });
             return d;
         }
-        let outcome = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm);
+        // [FEC-RISK] Yapı-gate bir FEC karar kapısıdır → kayıp önkoşulunu FEC girdisinden okur
+        // (kol kapalıyken `loss_for_fec == inputs.loss_ppm`, yani davranış özdeş).
+        let outcome = self.structure_gate_fec(d.fec_parity_ratio_permille, loss_for_fec);
         // [TEŞHİS] Karar-yolu histogramı: gate'in HANGİ önkoşulda durduğu sayılır. "Açmadı"
         // gözlemi tek başına nedensiz kalıyordu; bu sayaçlar olmadan ledger-eşiği mi, pencere
         // mi, kanıt mı, yoksa burst-dalı mı kapattı ayırt EDİLEMEZ (vakum-sayaç sınıfı).
@@ -3761,6 +3847,40 @@ impl Sender {
 
     /// [BURST-FUSION] Yapı-gate'inin burst-dalı politikasını seçer. Default [`FecStructurePolicy::Q18Iid`]
     /// = sevk davranışı (burst → parity yok). Bkz. [`FecStructurePolicy`]; flip KALİBRASYON ister.
+    /// [FEC-RISK] Deneysel FEC kayıp-riski kolunu kurar. Default KAPALI.
+    ///
+    /// AÇIKKEN sinyalin TEK tüketicisi FEC oranı kararıdır: `mode`, `arq_aggressiveness`,
+    /// pacing, cwnd, state-machine geçişleri ve retransmit tetikleme KANONİK `Confirmed`
+    /// oranını okumaya devam eder (bkz. `fuzzy_evaluate`'teki çift-karar ayrımı).
+    pub fn set_fec_loss_risk(&mut self, cfg: FecLossRiskConfig) {
+        self.fec_loss_risk = cfg;
+    }
+
+    /// [FEC-RISK] Yürürlükteki kol (gözlem/test).
+    #[must_use]
+    pub fn fec_loss_risk_config(&self) -> FecLossRiskConfig {
+        self.fec_loss_risk
+    }
+
+    /// [FEC-RISK ENSTRÜMAN] `(t_first_suspected, t_first_confirmed, t_first_risk, t_first_parity)`
+    /// ns cinsinden; 0 = hiç olmadı. Kolun tüm amacı bu dört damganın arasındaki farktır.
+    #[must_use]
+    pub fn diag_fec_risk_times(&self) -> (u64, u64, u64, u64) {
+        let (susp, conf) = self.loss.diag_first_loss_times();
+        (
+            susp,
+            conf,
+            self.diag_t_first_risk_ns,
+            self.diag_t_first_parity_ns,
+        )
+    }
+
+    /// [FEC-RISK ENSTRÜMAN] `(son_risk_ppm, tepe_risk_ppm)`.
+    #[must_use]
+    pub fn diag_risk_ppm(&self) -> (u64, u64) {
+        (self.diag_risk_ppm_last, self.diag_risk_ppm_peak)
+    }
+
     /// [ONAY UFKU] Ledger confirm ufku kolunu kurar. Default = sevk davranışı (byte-özdeş).
     ///
     /// TEK DEĞİŞKEN: yalnız `ledger_tick`'in confirm argümanını etkiler. Kayıp TESPİTİ
@@ -4269,6 +4389,11 @@ impl Sender {
             .remove(idx)
             .expect("emit_parity_at: idx-geçerli");
         self.parity_emitted_total = self.parity_emitted_total.saturating_add(1);
+        // [FEC-RISK ENSTRÜMAN] İlk parity'nin TELE ÇIKTIĞI an — kolun asıl ölçtüğü büyüklük
+        // `t_first_parity − t_first_suspected` (FEC'in tepki gecikmesi).
+        if self.diag_t_first_parity_ns == 0 {
+            self.diag_t_first_parity_ns = now_ns;
+        }
         let seq = self.track_sent(
             OpaqueUnit {
                 id: u64::from(p.esi),

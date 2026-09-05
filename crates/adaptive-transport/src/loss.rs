@@ -45,6 +45,58 @@ fn scale_duration(d: Duration, num: u64, den: u64) -> Duration {
     Duration::from_nanos(ns as u64)
 }
 
+/// [FEC-RISK] `Suspected` bir olayın, YAŞINA göre "gerçekten kayıp" güven ağırlığı (per-mille).
+///
+/// **KALİBRE EDİLMEMİŞ — deneysel.** Bu eğrinin doğru şekli ölçümle belirlenecek; şimdilik
+/// basamak fonksiyonu, `[CAL]`. Spec'e YAZILMADI (ölçüm öncesi normatifleştirme yasak).
+///
+/// Yaş srtt'ye oranlanır: bir paketin geç gelmesi için gereken süre kanalın turudur, bant
+/// genişliği değil. Bu ayrım kasıtlıdır — bant çökmesi kayıp KANITI değildir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SuspectConfidence {
+    /// `age < q25_num/q25_den × srtt` iken ağırlık (per-mille).
+    pub w_lt_quarter: u32,
+    /// `age < srtt/2` iken ağırlık.
+    pub w_lt_half: u32,
+    /// `age < srtt` iken ağırlık.
+    pub w_lt_one: u32,
+    /// `age >= srtt` (ama henüz Confirmed değil) iken ağırlık.
+    pub w_ge_one: u32,
+}
+
+impl Default for SuspectConfidence {
+    /// İlk deneysel şekil (`[CAL]`, kalibre EDİLMEMİŞ): 0.20 / 0.40 / 0.70 / 0.70.
+    ///
+    /// `age ≥ srtt` bandı `w_lt_one` ile aynı tutulur: olay orada zaten confirm ufkuna doğru
+    /// yaşlanıyordur ve onay geldiğinde 1.0'a çıkar. Aradaki bandı 1.0'a çekmek, onay
+    /// semantiğini arka kapıdan taklit etmek olurdu.
+    fn default() -> Self {
+        Self {
+            w_lt_quarter: 200,
+            w_lt_half: 400,
+            w_lt_one: 700,
+            w_ge_one: 700,
+        }
+    }
+}
+
+impl SuspectConfidence {
+    /// Yaş → ağırlık (per-mille). `srtt_ns > 0` çağıran tarafından garanti edilir.
+    #[must_use]
+    pub fn for_age(self, age_ns: u64, srtt_ns: u64) -> u32 {
+        // Tamsayı karşılaştırma: 4×age < srtt  ⟺  age < srtt/4 (bölme yok, taşma yok).
+        if age_ns.saturating_mul(4) < srtt_ns {
+            self.w_lt_quarter
+        } else if age_ns.saturating_mul(2) < srtt_ns {
+            self.w_lt_half
+        } else if age_ns < srtt_ns {
+            self.w_lt_one
+        } else {
+            self.w_ge_one
+        }
+    }
+}
+
 fn ratio_ppm(num: u64, den: u64) -> u64 {
     if den == 0 {
         return 0;
@@ -140,6 +192,11 @@ pub struct ThresholdLossDetector {
     sent_units: u64,
     lost_units: u64,
     diag_confirmed_total: u64,
+    /// [FEC-RISK ENSTRÜMAN] İlk `Suspected` ilanının anı (ns, 0 = hiç). Kayıp KUŞKUSUNUN
+    /// ilk anı — FEC'in en erken tepki verebileceği zaman tabanı.
+    diag_t_first_suspected_ns: u64,
+    /// [FEC-RISK ENSTRÜMAN] İlk `Suspected → Confirmed` geçişinin anı (ns, 0 = hiç).
+    diag_t_first_confirmed_ns: u64,
     diag_tick_count: u64,
     diag_first_tick_ns: u64,
     diag_last_tick_ns: u64,
@@ -193,6 +250,9 @@ impl ThresholdLossDetector {
 
     /// Kayıp-ilanını ledger'a Suspected olarak yazar (bounded; en-eski-önce eviction + audit).
     fn declare(&mut self, seq: u64, units: u64, declared_ns: u64) {
+        if self.diag_t_first_suspected_ns == 0 {
+            self.diag_t_first_suspected_ns = declared_ns;
+        }
         if self.events.len() >= LEDGER_MAX {
             self.events.pop_front();
             self.ledger_evicted_total += 1;
@@ -254,6 +314,9 @@ impl ThresholdLossDetector {
             if e.state == LedgerState::Suspected && age >= conf_ns {
                 e.state = LedgerState::Confirmed;
                 self.diag_confirmed_total += 1;
+                if self.diag_t_first_confirmed_ns == 0 {
+                    self.diag_t_first_confirmed_ns = now_ns;
+                }
             }
         }
     }
@@ -269,6 +332,49 @@ impl ThresholdLossDetector {
             .map(|e| e.units)
             .sum();
         ratio_ppm(confirmed, self.sent_window_units)
+    }
+
+    /// [FEC-RISK] **FEC'e özgü kayıp-RİSKİ** (ppm) — kanonik kayıptan AYRI bir okuma.
+    ///
+    /// İki farklı soru vardır ve aynı sayıyla cevaplanamaz:
+    /// * ARQ: *"Bu paketin kaybolduğundan yeterince EMİN miyim?"* → [`Self::loss_windowed_ppm`]
+    ///   (yalnız `Confirmed`; reorder'ı bekler, çünkü gereksiz retransmit pahalıdır)
+    /// * FEC: *"Parity ekleyecek vaktim varken ŞU AN ne kadar kayıp riski var?"* → bu fonksiyon
+    ///
+    /// FEC kararı blok tele çıkarken verilmek ZORUNDA. Bir şüphenin onaya dönmesini beklemek
+    /// sinyali birden çok RTT geciktirir ve kısa akışlarda tahmin tamamen işe yaramaz hâle gelir.
+    ///
+    /// Ağırlıklandırma: `Confirmed` = 1.0, `Spurious` = 0.0, `Suspected` = yaşına göre kısmi
+    /// güven (srtt'ye oranlı; `weights` ile verilir). Geç ACK gelince olay `Spurious` olur ve
+    /// katkısı KENDİLİĞİNDEN sıfırlanır — yani tahmin kendi hatasını düzeltir.
+    ///
+    /// Payda kanonik metrikle AYNI (`sent_window_units`), pencere AYNI rolling `W_loss`
+    /// penceresidir — ayrı/sınırsız bir tarihçe tutulmaz.
+    ///
+    /// `srtt_ns == 0` (henüz ölçüm yok) → `Suspected` olaylara güven verilmez; yalnız `Confirmed`
+    /// sayılır, yani sonuç kanonik metrikle ÖZDEŞ olur. Ölçüm yokken risk uydurulmaz.
+    #[must_use]
+    pub fn fec_loss_risk_ppm(&self, now_ns: u64, srtt_ns: u64, weights: SuspectConfidence) -> u64 {
+        let mut num_milli: u128 = 0; // birim × 1000 (tamsayı; RNG/float yok — ADR-17)
+        for e in &self.events {
+            let w = match e.state {
+                LedgerState::Confirmed => 1000,
+                LedgerState::Spurious => 0,
+                LedgerState::Suspected => {
+                    if srtt_ns == 0 {
+                        0
+                    } else {
+                        weights.for_age(now_ns.saturating_sub(e.declared_ns), srtt_ns)
+                    }
+                }
+            };
+            num_milli += u128::from(e.units) * u128::from(w);
+        }
+        if self.sent_window_units == 0 {
+            return 0;
+        }
+        let ppm = num_milli * 1_000_000 / (u128::from(self.sent_window_units) * 1000);
+        u64::try_from(ppm).unwrap_or(u64::MAX)
     }
 
     /// [TEŞHİS] Ledger iç durumu: `(lost_units, events_len, suspected_units, confirmed_units,
@@ -316,6 +422,16 @@ impl ThresholdLossDetector {
             self.diag_tick_count,
             self.diag_last_tick_ns
                 .saturating_sub(self.diag_first_tick_ns),
+        )
+    }
+
+    /// [FEC-RISK ENSTRÜMAN] `(t_first_suspected_ns, t_first_confirmed_ns)`; 0 = hiç olmadı.
+    /// Aradaki fark, kanonik kayıp sinyalinin ÖLÜ ZAMANIDIR.
+    #[must_use]
+    pub fn diag_first_loss_times(&self) -> (u64, u64) {
+        (
+            self.diag_t_first_suspected_ns,
+            self.diag_t_first_confirmed_ns,
         )
     }
 
