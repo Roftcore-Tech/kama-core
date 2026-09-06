@@ -1,0 +1,35 @@
+================================================================================================================================
+HANDOFF — rep başına: t_conf; final_ratio ort. (‰) pre/post1/post3; hüküm sebebi; teslim≤2×RTT pre/post
+================================================================================================================================
+hücre          rep  t_conf   süre fin_pre  fin_p1  fin_p3 spec_pre spec_p1 gate_p3   sebep_pre    sebep_p1    sebep_p3 del_pre  del_p1  del_p3  fec_B
+--------------------------------------------------------------------------------------------------------------------------------
+m400_l5_r1       1    3577   8188     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    1.00    1.00    0.99  43056
+m400_l5_r1       2    3803   8188     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    1.00    0.98    0.99  41584
+m400_l5_r1       3    3619   8360     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    0.98    1.00    1.00  42412
+m400_l10_r1      1    3578   8348     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    0.88    0.88    0.95  43148
+m400_l10_r1      2    3591   8361     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    0.94    0.94    0.92  43056
+m400_l10_r1      3    6288   8190     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    0.98    0.98    0.86  27600
+m400_l20_r1      1    3582   8369     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    0.76    0.70    0.64  43884
+m400_l20_r1      2    6287   8390     250     250     341      250     250     182 SpecPersist SpecPersist SpecPersist    0.72    0.60    0.60  27600
+m400_l20_r1      3    3575   8187     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    0.70    0.76    0.66  46644
+m1000_l5_r1      1    3581  20192     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    1.00    1.00    0.99 111228
+m1000_l5_r1      2    3614  20408     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    1.00    1.00    1.00 111320
+m1000_l5_r1      3    3581  20188     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    1.00    1.00    0.99 111504
+m1000_l10_r1     1    3576  20201     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    0.94    0.96    0.90 125488
+m1000_l10_r1     2    3577  20367     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    0.94    0.90    0.93 127052
+m1000_l10_r1     3    3579  20341     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    0.90    0.98    0.92 124936
+m1000_l20_r1     1    3575  20390     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    0.64    0.70    0.62 147844
+m1000_l20_r1     2    3584  20371     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    0.70    0.66    0.69 143796
+m1000_l20_r1     3    3577  20278     250     250     250      250     250       0 SpecPersist SpecPersist SpecPersist    0.72    0.70    0.77 152444
+
+================================================================================================================================
+ÖZET (medyan) — İNVARYANT: kanonik sinyal gelince final parity ve teslim SEBEPSİZ DÜŞMEMELİ
+================================================================================================================================
+hücre           n fin_pre  fin_p1  fin_p3   Δ_p1   Δ_p3 del_pre  del_p1  del_p3  Δdel_p1                  HÜKÜM
+--------------------------------------------------------------------------------------------------------------------------------
+m400_l5_r1      3     250     250     250     +0     +0    1.00    1.00    0.99    +0.00                    düz
+m400_l10_r1     3     250     250     250     +0     +0    0.94    0.94    0.92    +0.00                    düz
+m400_l20_r1     3     250     250     250     +0     +0    0.72    0.70    0.64    -0.02                    düz
+m1000_l5_r1     3     250     250     250     +0     +0    1.00    1.00    0.99    +0.00                    düz
+m1000_l10_r1    3     250     250     250     +0     +0    0.94    0.96    0.92    +0.02                    düz
+m1000_l20_r1    3     250     250     250     +0     +0    0.70    0.70    0.69    +0.00                    düz

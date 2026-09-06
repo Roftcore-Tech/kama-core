@@ -484,3 +484,84 @@ fn politika_acik_risk_kapali_arbiter_politikayi_birebir_gecirir() {
         "oran politikanın {{0, 250}} kümesinden olmalı: {r}"
     );
 }
+
+/// [HANDOFF İNVARYANTI] Kanonik lane hiçbir şey ÖNERMİYORKEN ilk Confirmed'ın gelmesi spekülatif
+/// öneriyi DÜŞÜREMEZ. Ölçüldü (handoff ailesi, n=3): eski klamp t_conf'ta 250→125‰ uçurumu üretiyordu.
+///
+/// Desen BURST (ardışık kayıp): yapı-gate `BlockedBurstLeftToArq` → structure=0; fuzzy bu sürüşte 0.
+/// Böylece "kanonik önermiyor" önkoşulu sağlanır (IID desende gate açılır, test sonuçsuz olurdu).
+/// İddia örnek-başına koşulludur ve vakum-olmama şartı vardır.
+#[test]
+fn handoff_devralan_yoksa_spekulatif_dusmez() {
+    let mut s = Sender::new();
+    s.set_establish_probe(false);
+    s.set_fec_loss_risk(FecLossRiskConfig::experimental_v1());
+    // burst: 40..120 arası ardışık kayıp, gerisi ACK.
+    let acked: Vec<u64> = (1..400).filter(|q| !(40..120).contains(q)).collect();
+    let mut samples = Vec::new();
+    let mut step = |s: &mut Sender, ev: Event, t: u64| {
+        s.on_event(ev, t);
+        samples.push(s.diag_ts_sample());
+    };
+    for i in 0..80u64 {
+        step(
+            &mut s,
+            Event::AppData(OpaqueUnit {
+                id: 1000 + i,
+                size: 101,
+            }),
+            0,
+        );
+    }
+    for t in 1..=20u64 {
+        step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    step(
+        &mut s,
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::ZERO,
+        }),
+        4_100 * MS,
+    );
+    for t in 21..=220u64 {
+        step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    step(
+        &mut s,
+        Event::AckReceived(AckInfo {
+            acked_seqs: acked,
+            ack_delay: Duration::ZERO,
+        }),
+        45_000 * MS,
+    );
+    for t in 221..=320u64 {
+        step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    let first_conf = samples
+        .iter()
+        .position(|x| x.confirmed_ppm > 0)
+        .expect("önkoşul: Confirmed gelmeli");
+    let pre_max = samples[..first_conf]
+        .iter()
+        .map(|x| x.spec_prop)
+        .max()
+        .unwrap_or(0);
+    assert!(pre_max > 0, "önkoşul: onaydan önce spekülatif öneri > 0");
+    // Onay sonrası, kanonik lane ÖNERMEZKEN ve seviye L2 iken alınan örnekler:
+    let quiet: Vec<u32> = samples[first_conf..]
+        .iter()
+        .filter(|x| x.confirmed_prop == 0 && x.structure_prop == 0 && x.level_idx == 2)
+        .map(|x| x.spec_prop)
+        .collect();
+    assert!(
+        quiet.len() >= 8,
+        "vakum: onay sonrası 'kanonik önermiyor ∧ L2' örneği yok ({} adet)",
+        quiet.len()
+    );
+    let post_min = *quiet.iter().min().unwrap();
+    assert!(
+        post_min >= pre_max,
+        "HANDOFF CLIFF: kanonik lane önermezken onay sonrası L2 önerisi düştü: pre_max={pre_max} post_min={post_min}"
+    );
+}

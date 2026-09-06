@@ -3418,7 +3418,7 @@ impl Sender {
         // Spekülatif ÖNERİ — tavan artık bilinir.
         let spec = match spec_split {
             Some(split) => {
-                let p = self.speculative_propose(split, policy_ceiling);
+                let p = self.speculative_propose(split, policy_ceiling, confirmed.0.max(structure));
                 match p.level {
                     SpeculativeLevel::L0None => self.diag_spec_levels[0] += 1,
                     SpeculativeLevel::L1Bootstrap => {
@@ -4137,10 +4137,14 @@ impl Sender {
     /// ya da FecAssist verdi → spekülatif kol en çok sert tavana kadar; `None` = politika kapalı.
     /// Bu, denetimin bulduğu "max() kalibre politikanın 'asla daha agresif değil' sözleşmesini
     /// bozar" kusurunun kapanışıdır: lane'ler arası kompozisyon max değil, politika = tavan.
+    /// `canonical_prop`: kanonik lane'in (fuzzy/politika + yapı-gate) fiili ÖNERİSİ (‰). Devir
+    /// teslim ancak devralan biri VARSA olur: kanonik lane bir şey öneriyorsa spekülatif kol
+    /// bootstrap tavanına iner; önermiyorsa kanıt neyi destekliyorsa o kalır.
     fn speculative_propose(
         &self,
         split: crate::loss::RiskSplit,
         policy_ceiling: Option<u32>,
+        canonical_prop: u32,
     ) -> SpeculativeProposal {
         let c = self.fec_loss_risk;
         if policy_ceiling == Some(0) || split.instant_ppm < c.l1_min_instant_ppm {
@@ -4161,11 +4165,15 @@ impl Sender {
             SpeculativeLevel::L1Bootstrap if tight => c.persistent_cap_permille,
             _ => c.bootstrap_cap_permille,
         };
-        // Steady-state devri: kanonik tahmin PENCEREDE görünür olunca (Confirmed birim > 0,
-        // `W_loss` içinde — kendiliğinden sıfırlanır, epizot-başına) spekülatif kol bootstrap
-        // tavanına iner. Ömür-boyu monoton sayaç KULLANILMAZ: o, TUR-2a'nın öldürdüğü "lifetime
-        // ratchet" sınıfıdır ve `diag_` sayaçları davranış girdisi olamaz (denetim bulgusu).
-        if self.loss.loss_windowed_ppm() > 0 {
+        // Steady-state devri — HANDOFF AİLESİ ÖLÇÜMÜYLE DÜZELTİLDİ (reports/…/handoff/):
+        // eski kural "pencerede bir Confirmed var → L1'e in" kanıtın değişmesine değil bir onayın
+        // VAR OLMASINA tepki veriyordu; kanonik lane bu bant rejiminde hiçbir şey önermezken
+        // (fuzzy 0, gate ≥100k'a ulaşmıyor) spekülatif kol yine de düşüyor → t_conf'ta r=2→r=1
+        // uçurumu, teslim ≤2×RTT −10…−21 pp (n=3, 400/1000 msg, %10-20). Doğru kural: otorite
+        // ancak DEVRALAN biri varsa devredilir — kanonik lane fiilen öneriyorsa bootstrap tavanı,
+        // aksi hâlde persistent kanıt neyi destekliyorsa o. `max()` kanonik öneri büyükse zaten
+        // onu seçer; klamp yalnız "kanonik küçük ama var" durumunda frenler.
+        if canonical_prop > 0 {
             cap = cap.min(c.bootstrap_cap_permille);
         }
         // Reorder indirimi — yalnız yeterli kanıtla, ve ASLA veto değil.
