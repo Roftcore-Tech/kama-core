@@ -611,6 +611,7 @@ mod loopback_tests {
                 bootstrap_fast: false,
                 loss_confirm_k: 0,
                 fec_risk: false,
+                ts_out: None,
             })
             .await
             .expect("governed run bounded Ok");
@@ -681,6 +682,7 @@ mod loopback_tests {
                 bootstrap_fast: false,
                 loss_confirm_k: 0,
                 fec_risk: false,
+                ts_out: None,
             })
             .await
             .expect("client run");
@@ -731,6 +733,7 @@ mod loopback_tests {
                 bootstrap_fast: false,
                 loss_confirm_k: 0,
                 fec_risk: false,
+                ts_out: None,
             })
             .await
             .expect("client run (ALPN/provider/handshake OK)");
@@ -801,6 +804,7 @@ mod loopback_tests {
                 bootstrap_fast: false,
                 loss_confirm_k: 0,
                 fec_risk: false,
+                ts_out: None,
             })
             .await
             .expect("bounded return, HANG değil");

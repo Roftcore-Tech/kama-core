@@ -677,6 +677,7 @@ mod tests {
             bootstrap_fast: false,
             loss_confirm_k: 0,
             fec_risk: false,
+            ts_out: None,
         }
     }
 

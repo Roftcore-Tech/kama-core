@@ -197,6 +197,8 @@ pub struct ClientCfg {
     pub loss_confirm_k: u32,
     /// [FEC-RISK] Deneysel FEC kayıp-riski tahmincisi (`false` = sevk davranışı).
     pub fec_risk: bool,
+    /// [HANDOFF ENSTRÜMANI] Zaman-serisi CSV yolu (`Some` → 50 ms örnekleme). Server'da yok sayılır.
+    pub ts_out: Option<std::path::PathBuf>,
 }
 
 /// [KAPI-1 W6] Dosya-tabanlı barrier: `<gate>.ready` yaz → `<gate>.go` bekle (5 ms poll, 120 s
@@ -253,6 +255,8 @@ pub struct ServerCfg {
     pub loss_confirm_k: u32,
     /// [FEC-RISK] Deneysel FEC kayıp-riski tahmincisi (`false` = sevk davranışı).
     pub fec_risk: bool,
+    /// [HANDOFF ENSTRÜMANI] Zaman-serisi CSV yolu (`Some` → 50 ms örnekleme). Server'da yok sayılır.
+    pub ts_out: Option<std::path::PathBuf>,
 }
 
 /// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).

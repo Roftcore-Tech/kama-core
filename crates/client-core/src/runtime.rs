@@ -28,7 +28,7 @@ use adaptive_transport::sender::{
 /// [BURST-FUSION] Motorun yapı-gate politikası — `RuntimeConfig` alanının tipi. Çağıran ayrıca
 /// adaptive-transport'a bağımlı olmasın diye buradan yeniden dışa verilir.
 pub use adaptive_transport::sender::{
-    FecArbiterReason, FecLossRiskConfig, FecStructurePolicy, LossConfirmHorizon,
+    FecArbiterReason, FecLossRiskConfig, FecStructurePolicy, LossConfirmHorizon, TsSample,
     ARBITER_REASON_KINDS,
 };
 use adaptive_transport::seq::resolve_seq;
@@ -150,7 +150,14 @@ pub struct RuntimeConfig {
     /// [FEC-RISK] Deneysel FEC kayıp-riski tahmincisi. Default KAPALI → davranış bugünküyle
     /// semantik özdeş. AÇIKKEN tek tüketici FEC oranı kararıdır; CC/pacing/ARQ dokunulmaz.
     pub fec_loss_risk: FecLossRiskConfig,
+    /// [HANDOFF ENSTRÜMANI] Zaman-serisi örnekleme periyodu (ns). `None` (default) = kapalı.
+    /// Açıkken pace tick'lerinde en çok [`TS_CAP`] örnek toplanır (bounded; SR-AUDIT-001).
+    /// Salt gözlem — motor durumuna dokunmaz.
+    pub ts_sample_period_ns: Option<u64>,
 }
+
+/// [HANDOFF ENSTRÜMANI] Zaman-serisi örnek tavanı (50 ms periyotta ≈ 205 s).
+pub const TS_CAP: usize = 4096;
 
 /// [S1] FEC-runtime parametreleri.
 #[derive(Debug, Clone, Copy)]
@@ -188,6 +195,7 @@ impl Default for RuntimeConfig {
             fusion_policy: None,
             loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,
             fec_loss_risk: FecLossRiskConfig::default(),
+            ts_sample_period_ns: None,
         }
     }
 }
@@ -426,11 +434,14 @@ pub struct FateWindowDiag {
 }
 
 /// Client koşu istatistikleri (item 9 doğrulama yüzeyi; gözlem-amaçlı).
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct ClientStats {
     /// [KISA-AKIŞ ENSTRÜMANI] Ana döngünün bittiği an (ns), sender damgalarıyla AYNI saat
     /// tabanında. `t_flow_start` bu tabanda tanım gereği 0'dır → `flow_end_ns == flow_duration`.
     pub flow_end_ns: u64,
+    /// [HANDOFF ENSTRÜMANI] `(t_ns, örnek)` zaman serisi; yalnız `ts_sample_period_ns` açıkken dolar,
+    /// en çok [`TS_CAP`] örnek. Salt gözlem.
+    pub ts: Vec<(u64, TsSample)>,
     /// App'ten kabul edilen birim.
     pub offered: u64,
     /// İlk-ACK'i görülen birim (ilk-ack-kazanır dedup).
@@ -812,6 +823,7 @@ async fn client_task(
             bytes: cfg.initial_window_bytes,
         });
     let mut stats = ClientStats::default();
+    let mut ts_last_ns: u64 = 0;
     // [S1] FEC-runtime kuruluşu (cfg.fec varsa): Controller-mode — yapı-gate'in (Q18) kararı
     // latch'e ancak bu modda akar. validate_fec connect'te koştu; profil burada çözülür.
     let fec: Option<FecProfile> = cfg.fec.and_then(|f| by_id(f.profile_id));
@@ -1310,7 +1322,17 @@ async fn client_task(
         }
         tokio::select! {
             () = tokio::time::sleep_until(deadline) => break,
-            _ = pace.tick() => { let now = elapsed_ns(start); drive!(Event::TimerFired(Timer::Pto), now); }
+            _ = pace.tick() => {
+                let now = elapsed_ns(start);
+                drive!(Event::TimerFired(Timer::Pto), now);
+                // [HANDOFF ENSTRÜMANI] bounded örnekleme (salt gözlem).
+                if let Some(p) = cfg.ts_sample_period_ns {
+                    if now.saturating_sub(ts_last_ns) >= p && stats.ts.len() < TS_CAP {
+                        stats.ts.push((now, session.sender().diag_ts_sample()));
+                        ts_last_ns = now;
+                    }
+                }
+            }
             r = sock.recv(&mut buf) => {
                 let Ok(n) = r else { continue };
                 let now = elapsed_ns(start);

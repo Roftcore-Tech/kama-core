@@ -101,6 +101,7 @@ struct ArmCfg {
     bootstrap_fast: bool,
     loss_confirm_k: u32,
     fec_risk: bool,
+    ts_sample: bool,
 }
 
 fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
@@ -114,6 +115,7 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
         bootstrap_fast,
         loss_confirm_k,
         fec_risk,
+        ts_sample,
     } = a;
     let payload = usize::try_from(payload_bytes).unwrap_or(usize::MAX);
     let profile_id = match fec {
@@ -171,6 +173,8 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
         } else {
             FecLossRiskConfig::default()
         },
+        // [HANDOFF ENSTRÜMANI] 50 ms zaman serisi (salt gözlem); None = kapalı.
+        ts_sample_period_ns: ts_sample.then_some(50_000_000),
         // [DEADLINE-EKSENİ] Politika kolu kalibrasyonu KURAR; diğer kollarda `None` (yapı-gate
         // koşar, sevk davranışı). Politika fail-safe'tir: bütçe bildirilmezse ArqOnly.
         fusion_policy: matches!(fec, FecArm::PolicyV2Deadline { .. })
@@ -243,6 +247,7 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
             bootstrap_fast: cfg.bootstrap_fast,
             loss_confirm_k: cfg.loss_confirm_k,
             fec_risk: cfg.fec_risk,
+            ts_sample: false,
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -344,6 +349,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
             bootstrap_fast: cfg.bootstrap_fast,
             loss_confirm_k: cfg.loss_confirm_k,
             fec_risk: cfg.fec_risk,
+            ts_sample: false,
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -539,6 +545,31 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         stats.fate.fec_spec_levels,
         stats.fate.fec_spec_signals,
     );
+    // [HANDOFF ENSTRÜMANI] zaman serisini CSV'ye dök (varsa).
+    if let Some(path) = cfg.ts_out.as_ref() {
+        let mut csv = String::from(
+            "t_ms,instant_ppm,persistent_ppm,rp_permille,confirmed_ppm,confirmed_prop,structure_prop,spec_prop,final_ratio,reason_idx,level_idx\n",
+        );
+        for (t, x) in &stats.ts {
+            csv.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{},{},{}\n",
+                t / 1_000_000,
+                x.instant_ppm,
+                x.persistent_ppm,
+                x.reorder_pressure_permille,
+                x.confirmed_ppm,
+                x.confirmed_prop,
+                x.structure_prop,
+                x.spec_prop,
+                x.final_ratio,
+                x.reason_idx,
+                x.level_idx
+            ));
+        }
+        if let Err(e) = std::fs::write(path, csv) {
+            eprintln!("ts-out yazılamadı: {e}");
+        }
+    }
 
     let meta = RunMeta {
         profile: cfg.profile,
@@ -623,6 +654,7 @@ mod tests {
             bootstrap_fast: false,
             loss_confirm_k: 0,
             fec_risk: false,
+            ts_out: None,
         }
     }
 
@@ -641,6 +673,7 @@ mod tests {
             bootstrap_fast: false,
             loss_confirm_k: 0,
             fec_risk: false,
+            ts_out: None,
         }
     }
 
@@ -690,6 +723,7 @@ mod tests {
             bootstrap_fast: false,
             loss_confirm_k: 0,
             fec_risk: false,
+            ts_sample: false,
         });
         let r2 = runtime_cfg(ArmCfg {
             payload_bytes: 256,
@@ -701,6 +735,7 @@ mod tests {
             bootstrap_fast: false,
             loss_confirm_k: 0,
             fec_risk: false,
+            ts_sample: false,
         });
         assert_eq!(
             ctrl.max_unit_bytes, r2.max_unit_bytes,
@@ -731,6 +766,7 @@ mod tests {
             bootstrap_fast: false,
             loss_confirm_k: 0,
             fec_risk: false,
+            ts_sample: false,
         });
         assert_ne!(
             naive_off.max_unit_bytes, r2.max_unit_bytes,
@@ -751,6 +787,7 @@ mod tests {
             bootstrap_fast: false,
             loss_confirm_k: 0,
             fec_risk: false,
+            ts_sample: false,
         });
         assert!(off.fec.is_none());
         assert_eq!(off.max_unit_bytes, 48);
@@ -769,6 +806,7 @@ mod tests {
             bootstrap_fast: false,
             loss_confirm_k: 0,
             fec_risk: false,
+            ts_sample: false,
         });
         let f = st.fec.expect("statik-r FEC config üretmeli");
         assert_eq!(f.profile_id, 0x03);
@@ -785,6 +823,7 @@ mod tests {
             bootstrap_fast: false,
             loss_confirm_k: 0,
             fec_risk: false,
+            ts_sample: false,
         });
         let f = ad.fec.expect("adaptif FEC config üretmeli");
         assert_eq!(f.profile_id, 0x05);
@@ -813,6 +852,7 @@ mod tests {
             bootstrap_fast: false,
             loss_confirm_k: 0,
             fec_risk: false,
+            ts_sample: false,
         });
         assert_eq!(c.max_unit_bytes, 53, "birim symbol kapasitesine kilitlenir");
         assert_eq!(
@@ -835,6 +875,7 @@ mod tests {
             bootstrap_fast: false,
             loss_confirm_k: 0,
             fec_risk: false,
+            ts_sample: false,
         });
         assert_eq!(small.max_unit_bytes, 48);
         assert_eq!(small.max_message_bytes, None, "48 ≤ 53 → fragmentasyon yok");
@@ -859,6 +900,7 @@ mod tests {
                 bootstrap_fast: false,
                 loss_confirm_k: 0,
                 fec_risk: false,
+                ts_sample: false,
             }),
             Box::new(IdentitySeam),
         )
@@ -907,6 +949,7 @@ mod tests {
                 bootstrap_fast: false,
                 loss_confirm_k: 0,
                 fec_risk: false,
+                ts_sample: false,
             }),
             Box::new(IdentitySeam),
         )
@@ -969,6 +1012,7 @@ mod tests {
                 bootstrap_fast: false,
                 loss_confirm_k: 0,
                 fec_risk: false,
+                ts_sample: false,
             }),
             Box::new(IdentitySeam),
         )
@@ -1053,6 +1097,7 @@ mod tests {
                 bootstrap_fast: false,
                 loss_confirm_k: 0,
                 fec_risk: false,
+                ts_sample: false,
             }),
             Box::new(IdentitySeam),
         )

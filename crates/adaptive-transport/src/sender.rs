@@ -455,6 +455,26 @@ pub enum FecArbiterReason {
     DeadlineAssisted,
 }
 
+/// [HANDOFF ENSTRÜMANI] Bir `fuzzy_evaluate` kararının anlık görüntüsü — zaman serisi için.
+/// Salt gözlem; sabit boyutlu `Copy`. Alanların hepsi karar anında zaten hesaplanmış değerlerdir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TsSample {
+    /// Spekülatif girdi: instant / persistent risk (ppm), reorder baskısı (‰). Kol kapalıysa 0.
+    pub instant_ppm: u64,
+    pub persistent_ppm: u64,
+    pub reorder_pressure_permille: u32,
+    /// Kanonik `loss_windowed_ppm` (Confirmed).
+    pub confirmed_ppm: u64,
+    /// Üç kolun ÖNERİSİ (‰) ve arbiter'ın HÜKMÜ (‰).
+    pub confirmed_prop: u32,
+    pub structure_prop: u32,
+    pub spec_prop: u32,
+    pub final_ratio: u32,
+    /// `FecArbiterReason::index` · spekülatif seviye (0/1/2).
+    pub reason_idx: u8,
+    pub level_idx: u8,
+}
+
 /// [TEŞHİS] Arbiter sebep histogramı kova sayısı.
 pub const ARBITER_REASON_KINDS: usize = 7;
 
@@ -1598,6 +1618,8 @@ pub struct Sender {
     /// [FEC-RISK v2 ENSTRÜMAN] İlk L1 / L2 önerisinin anı (ns, 0 = hiç).
     diag_t_first_l1_ns: u64,
     diag_t_first_l2_ns: u64,
+    /// [HANDOFF ENSTRÜMANI] Son kararın anlık görüntüsü (zaman serisi örnekleyici okur).
+    diag_last_ts: TsSample,
     /// [IW] PreConverge ilk-uçuş penceresi (0 = kapalı, sevk davranışı).
     initial_window: InitialWindowConfig,
     /// [FUSION-POLICY] Kalibre edilmiş füzyon karar katmanı (default `disabled()` → ArqOnly).
@@ -1826,6 +1848,7 @@ impl Sender {
             diag_reorder_pressure_peak: 0,
             diag_t_first_l1_ns: 0,
             diag_t_first_l2_ns: 0,
+            diag_last_ts: TsSample::default(),
             initial_window: InitialWindowConfig::default(),
             fusion_policy: crate::fusion_policy::FusionPolicy::disabled(),
             rtt_sample_count: 0,
@@ -3422,6 +3445,24 @@ impl Sender {
         // final = max(confirmed, structure, speculative). Toplama YOK. Parity'yi yazan tek yer.
         let (final_ratio, reason) = fec_arbiter(confirmed, structure, spec);
         self.diag_arbiter_reasons[reason.index()] += 1;
+        // [HANDOFF ENSTRÜMANI] Kararın anlık görüntüsü — "canonical geldiğinde parity düştü mü"
+        // sorusu bu seri olmadan sorulamaz. Salt gözlem, sabit boyut.
+        self.diag_last_ts = TsSample {
+            instant_ppm: spec_split.map_or(0, |x| x.instant_ppm),
+            persistent_ppm: spec_split.map_or(0, |x| x.persistent_ppm),
+            reorder_pressure_permille: spec_split.map_or(0, |x| x.reorder_pressure_permille),
+            confirmed_ppm: inputs.loss_ppm,
+            confirmed_prop: confirmed.0,
+            structure_prop: structure,
+            spec_prop: spec.ratio_permille,
+            final_ratio,
+            reason_idx: u8::try_from(reason.index()).unwrap_or(u8::MAX),
+            level_idx: match spec.level {
+                SpeculativeLevel::L0None => 0,
+                SpeculativeLevel::L1Bootstrap => 1,
+                SpeculativeLevel::L2Persistent => 2,
+            },
+        };
         d.fec_parity_ratio_permille = final_ratio;
         if final_ratio > 0 {
             // Bir kol parity önerdiyse bir KURAL ateşlemiştir → latch'in no_rule bastırması kalkar.
@@ -4058,6 +4099,12 @@ impl Sender {
     #[must_use]
     pub fn diag_spec_levels(&self) -> [u64; 3] {
         self.diag_spec_levels
+    }
+
+    /// [HANDOFF ENSTRÜMANI] Son `fuzzy_evaluate` kararının anlık görüntüsü.
+    #[must_use]
+    pub fn diag_ts_sample(&self) -> TsSample {
+        self.diag_last_ts
     }
 
     /// [FEC-RISK v2 ENSTRÜMAN] `(persistent_ppm_peak, reorder_pressure_last, reorder_pressure_peak,

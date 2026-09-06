@@ -93,6 +93,8 @@ async fn transport_api_v0_surface_is_frozen() {
         // v0.9 (FEC-RISK): minor-EKLEME, kasıtlı pin-güncellemesi. Default KAPALI; AÇIKKEN
         // tek tüketici FEC oranı kararıdır (CC/pacing/ARQ dokunulmaz).
         fec_loss_risk: _,
+        // v0.11 (HANDOFF ENSTRÜMANI): minor-EKLEME, kasıtlı pin-güncellemesi. Default None; salt gözlem.
+        ts_sample_period_ns: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,
@@ -171,6 +173,8 @@ async fn transport_api_v0_surface_is_frozen() {
         // v0.10 (KISA-AKIŞ ENSTRÜMANI): minor-EKLEME, kasıtlı pin-güncellemesi. Salt gözlem —
         // ana döngü çıkış anı, sender damgalarıyla aynı saat tabanında.
         flow_end_ns: _,
+        // v0.11: bounded zaman serisi (yalnız örnekleme açıkken dolar).
+        ts: _,
     } = ClientStats::default();
     let ServerStats {
         delivered: _,
