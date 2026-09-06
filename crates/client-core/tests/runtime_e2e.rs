@@ -941,3 +941,55 @@ async fn no_declaration_stays_none_rather_than_inventing_a_default() {
     );
     let _ = server.shutdown().await;
 }
+
+/// [HANDOFF ENSTRÜMANI] Örnekleme açıkken zaman serisi DOLMALI — "inert örnekleyici" sınıfı
+/// (handoff ailesinde ts.csv yalnız başlıkla çıktı) burada yakalanır. Kapalıyken boş kalır.
+#[tokio::test(flavor = "multi_thread")]
+async fn ts_sampler_fills_when_enabled_and_stays_empty_when_disabled() {
+    for (period, expect_nonempty) in [(Some(1_000_000u64), true), (None, false)] {
+        let mut server = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            RuntimeConfig::default(),
+            Box::new(IdentitySeam),
+        )
+        .await
+        .expect("server bind");
+        let cfg = RuntimeConfig {
+            ts_sample_period_ns: period,
+            ..RuntimeConfig::default()
+        };
+        let client = ClientEndpoint::connect(server.local_addr(), cfg, Box::new(IdentitySeam))
+            .await
+            .expect("client connect");
+        for i in 0..8u32 {
+            client.send(format!("ts-{i}").into_bytes()).expect("offer");
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut d = 0;
+            while d < 8 {
+                if server.next_delivery().await.is_some() {
+                    d += 1;
+                }
+            }
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let stats = tokio::time::timeout(Duration::from_secs(5), client.shutdown())
+            .await
+            .expect("shutdown");
+        assert_eq!(
+            !stats.ts.is_empty(),
+            expect_nonempty,
+            "period={period:?} → ts.len()={}",
+            stats.ts.len()
+        );
+        if expect_nonempty {
+            assert!(stats.ts.len() <= client_core::runtime::TS_CAP);
+            assert!(
+                stats.ts.windows(2).all(|w| w[1].0 >= w[0].0),
+                "zaman monoton olmalı"
+            );
+        }
+        let _ = server.shutdown().await;
+    }
+}

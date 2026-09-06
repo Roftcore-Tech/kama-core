@@ -247,7 +247,7 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
             bootstrap_fast: cfg.bootstrap_fast,
             loss_confirm_k: cfg.loss_confirm_k,
             fec_risk: cfg.fec_risk,
-            ts_sample: false,
+            ts_sample: cfg.ts_out.is_some(),
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -349,7 +349,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
             bootstrap_fast: cfg.bootstrap_fast,
             loss_confirm_k: cfg.loss_confirm_k,
             fec_risk: cfg.fec_risk,
-            ts_sample: false,
+            ts_sample: cfg.ts_out.is_some(),
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -771,6 +771,33 @@ mod tests {
         assert_ne!(
             naive_off.max_unit_bytes, r2.max_unit_bytes,
             "profil-0 kontrolü birim granülünü kaydırır (bu yüzden kullanılmaz)"
+        );
+    }
+
+    /// [HANDOFF ENSTRÜMANI] `ts_sample` → 50 ms örnekleme periyodu; kapalıyken `None`.
+    /// (Smoke kapısı bunun ÜRÜN yolundaki kablosunu ayrıca doğrular: ts.csv > 10 satır.)
+    #[test]
+    fn ts_sample_maps_to_50ms_period() {
+        let base = ArmCfg {
+            payload_bytes: 256,
+            quota_r: 4,
+            fec: FecArm::Off,
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+            fec_risk: false,
+            ts_sample: false,
+        };
+        assert_eq!(runtime_cfg(base).ts_sample_period_ns, None);
+        assert_eq!(
+            runtime_cfg(ArmCfg {
+                ts_sample: true,
+                ..base
+            })
+            .ts_sample_period_ns,
+            Some(50_000_000)
         );
     }
 

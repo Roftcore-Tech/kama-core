@@ -1019,6 +1019,18 @@ async fn client_task(
             }
         };
     }
+    // [HANDOFF ENSTRÜMANI] bounded zaman-serisi örnekleme — HER pace tick'inde (ana döngü + drenaj).
+    // Period-kapılı: aynı tick'te iki çağrı ikinci örnek üretmez. Salt gözlem.
+    macro_rules! ts_sample {
+        ($now:expr) => {
+            if let Some(p) = cfg.ts_sample_period_ns {
+                if $now.saturating_sub(ts_last_ns) >= p && stats.ts.len() < TS_CAP {
+                    stats.ts.push(($now, session.sender().diag_ts_sample()));
+                    ts_last_ns = $now;
+                }
+            }
+        };
+    }
     // [S1B] Bir BİRİMİN teslim-teyidi app'e nasıl yansır.
     //
     // Fragmentasyon KAPALIYKEN birim = mesaj → id doğrudan akar (eski davranış birebir).
@@ -1277,7 +1289,7 @@ async fn client_task(
             }
             _ = pace.tick() => {
                 let now = elapsed_ns(start);
-                drive!(Event::TimerFired(Timer::Pto), now);
+                drive!(Event::TimerFired(Timer::Pto), now); ts_sample!(now);
             }
             _ = rtprop.tick() => {
                 let now = elapsed_ns(start);
@@ -1324,14 +1336,7 @@ async fn client_task(
             () = tokio::time::sleep_until(deadline) => break,
             _ = pace.tick() => {
                 let now = elapsed_ns(start);
-                drive!(Event::TimerFired(Timer::Pto), now);
-                // [HANDOFF ENSTRÜMANI] bounded örnekleme (salt gözlem).
-                if let Some(p) = cfg.ts_sample_period_ns {
-                    if now.saturating_sub(ts_last_ns) >= p && stats.ts.len() < TS_CAP {
-                        stats.ts.push((now, session.sender().diag_ts_sample()));
-                        ts_last_ns = now;
-                    }
-                }
+                drive!(Event::TimerFired(Timer::Pto), now); ts_sample!(now);
             }
             r = sock.recv(&mut buf) => {
                 let Ok(n) = r else { continue };

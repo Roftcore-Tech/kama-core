@@ -26,10 +26,10 @@ run() {
     --max-deadline-s 20 --out "$d/out.jsonl" --ts-out "$d/ts.csv" 2>"$d/c.err" >/dev/null
   echo "rc=$?" > "$d/rc"; kill "$sp" 2>/dev/null; wait "$sp" 2>/dev/null || true
 }
-echo "== HANDOFF AİLESİ reps=$REPS  msgs={96,400,1000} × kayıp={5,10,20} × {OFF,ON}  RTT=200ms 1mbit =="
+echo "== HANDOFF AİLESİ reps=$REPS  msgs={${MSGS_LIST:-96 400 1000}} × kayıp={${LOSS_LIST:-5 10 20}} × kollar={${ARMS_LIST:-0 1}}  RTT=200ms 1mbit =="
 START=$(date +%s)
 for rep in $(seq 1 "$REPS"); do
-  for M in 96 400 1000; do for L in 5 10 20; do for R in 0 1; do
+  for M in ${MSGS_LIST:-96 400 1000}; do for L in ${LOSS_LIST:-5 10 20}; do for R in ${ARMS_LIST:-0 1}; do
     run "$OUT/m${M}_l${L}_r${R}/rep$rep" "$R" "$L" "$M"
   done; done; done
   echo "  rep $rep/$REPS bitti (t=$(( $(date +%s) - START ))s)"
