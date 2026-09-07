@@ -95,6 +95,8 @@ async fn transport_api_v0_surface_is_frozen() {
         fec_loss_risk: _,
         // v0.11 (HANDOFF ENSTRÜMANI): minor-EKLEME, kasıtlı pin-güncellemesi. Default None; salt gözlem.
         ts_sample_period_ns: _,
+        // v0.12 (R-SWEEP): gate seviyesi override'ı; default None = sevk.
+        structure_gate_level_permille: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,

@@ -199,6 +199,10 @@ pub struct ClientCfg {
     pub fec_risk: bool,
     /// [HANDOFF ENSTRÜMANI] Zaman-serisi CSV yolu (`Some` → 50 ms örnekleme). Server'da yok sayılır.
     pub ts_out: Option<std::path::PathBuf>,
+    /// [R-SWEEP] Spekülatif L1/L2 tavanı ve yapı-gate seviyesi override'ları (‰); None = default.
+    pub spec_l1_permille: Option<u32>,
+    pub spec_l2_permille: Option<u32>,
+    pub gate_permille: Option<u32>,
 }
 
 /// [KAPI-1 W6] Dosya-tabanlı barrier: `<gate>.ready` yaz → `<gate>.go` bekle (5 ms poll, 120 s
@@ -257,6 +261,10 @@ pub struct ServerCfg {
     pub fec_risk: bool,
     /// [HANDOFF ENSTRÜMANI] Zaman-serisi CSV yolu (`Some` → 50 ms örnekleme). Server'da yok sayılır.
     pub ts_out: Option<std::path::PathBuf>,
+    /// [R-SWEEP] Spekülatif L1/L2 tavanı ve yapı-gate seviyesi override'ları (‰); None = default.
+    pub spec_l1_permille: Option<u32>,
+    pub spec_l2_permille: Option<u32>,
+    pub gate_permille: Option<u32>,
 }
 
 /// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).

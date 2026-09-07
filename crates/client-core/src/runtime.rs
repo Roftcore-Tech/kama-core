@@ -154,6 +154,9 @@ pub struct RuntimeConfig {
     /// Açıkken pace tick'lerinde en çok [`TS_CAP`] örnek toplanır (bounded; SR-AUDIT-001).
     /// Salt gözlem — motor durumuna dokunmaz.
     pub ts_sample_period_ns: Option<u64>,
+    /// [R-SWEEP] Yapı-gate parity seviyesi override'ı (‰). `None` (default) = motor `fec_med`
+    /// (sevk davranışı, byte-özdeş). Kalibrasyon kolu.
+    pub structure_gate_level_permille: Option<u32>,
 }
 
 /// [HANDOFF ENSTRÜMANI] Zaman-serisi örnek tavanı (50 ms periyotta ≈ 205 s).
@@ -196,6 +199,7 @@ impl Default for RuntimeConfig {
             loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,
             fec_loss_risk: FecLossRiskConfig::default(),
             ts_sample_period_ns: None,
+            structure_gate_level_permille: None,
         }
     }
 }
@@ -811,6 +815,10 @@ async fn client_task(
         .set_loss_confirm_horizon(cfg.loss_confirm_horizon);
     // [FEC-RISK] Deneysel risk tahmincisi; default KAPALI (semantik özdeş).
     session.sender_mut().set_fec_loss_risk(cfg.fec_loss_risk);
+    // [R-SWEEP] gate seviyesi override'ı (None = sevk).
+    session
+        .sender_mut()
+        .set_structure_gate_level(cfg.structure_gate_level_permille);
     // [DEADLINE-EKSENİ] Kalibre politika (opt-in). Kablolanmamış bir karar katmanı bu reponun
     // kronik kusuruydu: `fusion_policy` üretimde SIFIR çağıranla duruyordu. Burası o kablodur.
     if let Some(p) = cfg.fusion_policy {

@@ -380,3 +380,14 @@ fn structure_gate_never_decides_before_the_session_is_established() {
         assert_eq!(g[5], 0, "hiç açılmamalı; histogram={g:?}");
     }
 }
+
+/// [R-SWEEP] Gate seviyesi override'ı: `None` = `fec_med` (sevk, byte-özdeş); `Some(v)` = v.
+#[test]
+fn gate_level_override_defaults_to_fec_med() {
+    let mut s = Sender::new();
+    assert_eq!(s.gate_level_permille(), s.fuzzy_config_fec_med_for_test());
+    s.set_structure_gate_level(Some(250));
+    assert_eq!(s.gate_level_permille(), 250);
+    s.set_structure_gate_level(None);
+    assert_eq!(s.gate_level_permille(), s.fuzzy_config_fec_med_for_test());
+}

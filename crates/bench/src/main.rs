@@ -85,6 +85,15 @@ enum Cmd {
         /// confirmed,cprop,sprop,specprop,final,reason,level. 50 ms örnekleme, ≤4096 satır.
         #[arg(long)]
         ts_out: Option<std::path::PathBuf>,
+        /// [R-SWEEP] Spekülatif L1 tavanı (‰; K=8'de 125=r1, 250=r2, 375=r3). None = default 125.
+        #[arg(long)]
+        spec_l1_permille: Option<u32>,
+        /// [R-SWEEP] Spekülatif L2 tavanı (‰). None = default 250.
+        #[arg(long)]
+        spec_l2_permille: Option<u32>,
+        /// [R-SWEEP] Yapı-gate seviyesi (‰; 500 = sevk r4). None = motor default (fec_med).
+        #[arg(long)]
+        gate_permille: Option<u32>,
         /// [SPRINT-A] Alıcı birim-payload tavanı — client `--payload` ile AYNI olmalı.
         #[arg(long, default_value_t = 256)]
         payload: u64,
@@ -180,6 +189,15 @@ enum Cmd {
         /// confirmed,cprop,sprop,specprop,final,reason,level. 50 ms örnekleme, ≤4096 satır.
         #[arg(long)]
         ts_out: Option<std::path::PathBuf>,
+        /// [R-SWEEP] Spekülatif L1 tavanı (‰; K=8'de 125=r1, 250=r2, 375=r3). None = default 125.
+        #[arg(long)]
+        spec_l1_permille: Option<u32>,
+        /// [R-SWEEP] Spekülatif L2 tavanı (‰). None = default 250.
+        #[arg(long)]
+        spec_l2_permille: Option<u32>,
+        /// [R-SWEEP] Yapı-gate seviyesi (‰; 500 = sevk r4). None = motor default (fec_med).
+        #[arg(long)]
+        gate_permille: Option<u32>,
         /// [BURST-FUSION] Bkz. `serve --fec-burst-fusion`. SUNUCUYLA AYNI verilmelidir.
         #[arg(long, default_value_t = false)]
         fec_burst_fusion: bool,
@@ -326,6 +344,9 @@ async fn main() -> Result<(), BenchError> {
             loss_confirm_k,
             fec_risk,
             ts_out: _,
+            spec_l1_permille,
+            spec_l2_permille,
+            gate_permille,
             payload,
             fec_burst_fusion,
             bootstrap_rtt,
@@ -349,6 +370,9 @@ async fn main() -> Result<(), BenchError> {
                     loss_confirm_k,
                     fec_risk,
                     ts_out: None,
+                    gate_permille,
+                    spec_l2_permille,
+                    spec_l1_permille,
                     payload_bytes: payload,
                     burst_fusion: fec_burst_fusion,
                     bootstrap_rtt,
@@ -384,6 +408,9 @@ async fn main() -> Result<(), BenchError> {
             loss_confirm_k,
             fec_risk,
             ts_out,
+            spec_l1_permille,
+            spec_l2_permille,
+            gate_permille,
             fec_burst_fusion,
             bootstrap_rtt,
             initial_window_bytes,
@@ -414,6 +441,9 @@ async fn main() -> Result<(), BenchError> {
                 loss_confirm_k,
                 fec_risk,
                 ts_out,
+                gate_permille,
+                spec_l2_permille,
+                spec_l1_permille,
                 burst_fusion: fec_burst_fusion,
                 bootstrap_rtt,
                 initial_window_bytes,

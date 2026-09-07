@@ -102,6 +102,9 @@ struct ArmCfg {
     loss_confirm_k: u32,
     fec_risk: bool,
     ts_sample: bool,
+    spec_l1: Option<u32>,
+    spec_l2: Option<u32>,
+    gate: Option<u32>,
 }
 
 fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
@@ -116,6 +119,9 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
         loss_confirm_k,
         fec_risk,
         ts_sample,
+        spec_l1,
+        spec_l2,
+        gate,
     } = a;
     let payload = usize::try_from(payload_bytes).unwrap_or(usize::MAX);
     let profile_id = match fec {
@@ -168,11 +174,23 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
             }
         },
         // [FEC-RISK] Deneysel kol; false = sevk davranışı (semantik özdeş).
-        fec_loss_risk: if fec_risk {
-            FecLossRiskConfig::experimental_v1()
-        } else {
-            FecLossRiskConfig::default()
+        fec_loss_risk: {
+            let mut c = if fec_risk {
+                FecLossRiskConfig::experimental_v1()
+            } else {
+                FecLossRiskConfig::default()
+            };
+            // [R-SWEEP] tavan override'ları (None = [CAL] default'lar: 125/250).
+            if let Some(v) = spec_l1 {
+                c.bootstrap_cap_permille = v;
+            }
+            if let Some(v) = spec_l2 {
+                c.persistent_cap_permille = v;
+            }
+            c
         },
+        // [R-SWEEP] gate seviyesi (None = motor fec_med = 500 sevk).
+        structure_gate_level_permille: gate,
         // [HANDOFF ENSTRÜMANI] 50 ms zaman serisi (salt gözlem); None = kapalı.
         ts_sample_period_ns: ts_sample.then_some(50_000_000),
         // [DEADLINE-EKSENİ] Politika kolu kalibrasyonu KURAR; diğer kollarda `None` (yapı-gate
@@ -248,6 +266,9 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
             loss_confirm_k: cfg.loss_confirm_k,
             fec_risk: cfg.fec_risk,
             ts_sample: cfg.ts_out.is_some(),
+            spec_l1: cfg.spec_l1_permille,
+            spec_l2: cfg.spec_l2_permille,
+            gate: cfg.gate_permille,
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -350,6 +371,9 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
             loss_confirm_k: cfg.loss_confirm_k,
             fec_risk: cfg.fec_risk,
             ts_sample: cfg.ts_out.is_some(),
+            spec_l1: cfg.spec_l1_permille,
+            spec_l2: cfg.spec_l2_permille,
+            gate: cfg.gate_permille,
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -655,6 +679,9 @@ mod tests {
             loss_confirm_k: 0,
             fec_risk: false,
             ts_out: None,
+            gate_permille: None,
+            spec_l2_permille: None,
+            spec_l1_permille: None,
         }
     }
 
@@ -674,6 +701,9 @@ mod tests {
             loss_confirm_k: 0,
             fec_risk: false,
             ts_out: None,
+            gate_permille: None,
+            spec_l2_permille: None,
+            spec_l1_permille: None,
         }
     }
 
@@ -724,6 +754,9 @@ mod tests {
             loss_confirm_k: 0,
             fec_risk: false,
             ts_sample: false,
+            gate: None,
+            spec_l2: None,
+            spec_l1: None,
         });
         let r2 = runtime_cfg(ArmCfg {
             payload_bytes: 256,
@@ -736,6 +769,9 @@ mod tests {
             loss_confirm_k: 0,
             fec_risk: false,
             ts_sample: false,
+            gate: None,
+            spec_l2: None,
+            spec_l1: None,
         });
         assert_eq!(
             ctrl.max_unit_bytes, r2.max_unit_bytes,
@@ -767,11 +803,47 @@ mod tests {
             loss_confirm_k: 0,
             fec_risk: false,
             ts_sample: false,
+            gate: None,
+            spec_l2: None,
+            spec_l1: None,
         });
         assert_ne!(
             naive_off.max_unit_bytes, r2.max_unit_bytes,
             "profil-0 kontrolü birim granülünü kaydırır (bu yüzden kullanılmaz)"
         );
+    }
+
+    /// [R-SWEEP] Tavan/gate override'ları RuntimeConfig'e akar; None = default'lar (125/250/None).
+    #[test]
+    fn rsweep_caps_flow_to_runtime() {
+        let base = ArmCfg {
+            payload_bytes: 256,
+            quota_r: 4,
+            fec: FecArm::Off,
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+            fec_risk: true,
+            ts_sample: false,
+            spec_l1: None,
+            spec_l2: None,
+            gate: None,
+        };
+        let d = runtime_cfg(base);
+        assert_eq!(d.fec_loss_risk.bootstrap_cap_permille, 125);
+        assert_eq!(d.fec_loss_risk.persistent_cap_permille, 250);
+        assert_eq!(d.structure_gate_level_permille, None);
+        let o = runtime_cfg(ArmCfg {
+            spec_l1: Some(250),
+            spec_l2: Some(375),
+            gate: Some(250),
+            ..base
+        });
+        assert_eq!(o.fec_loss_risk.bootstrap_cap_permille, 250);
+        assert_eq!(o.fec_loss_risk.persistent_cap_permille, 375);
+        assert_eq!(o.structure_gate_level_permille, Some(250));
     }
 
     /// [HANDOFF ENSTRÜMANI] `ts_sample` → 50 ms örnekleme periyodu; kapalıyken `None`.
@@ -789,11 +861,17 @@ mod tests {
             loss_confirm_k: 0,
             fec_risk: false,
             ts_sample: false,
+            gate: None,
+            spec_l2: None,
+            spec_l1: None,
         };
         assert_eq!(runtime_cfg(base).ts_sample_period_ns, None);
         assert_eq!(
             runtime_cfg(ArmCfg {
                 ts_sample: true,
+                gate: None,
+                spec_l2: None,
+                spec_l1: None,
                 ..base
             })
             .ts_sample_period_ns,
@@ -815,6 +893,9 @@ mod tests {
             loss_confirm_k: 0,
             fec_risk: false,
             ts_sample: false,
+            gate: None,
+            spec_l2: None,
+            spec_l1: None,
         });
         assert!(off.fec.is_none());
         assert_eq!(off.max_unit_bytes, 48);
@@ -834,6 +915,9 @@ mod tests {
             loss_confirm_k: 0,
             fec_risk: false,
             ts_sample: false,
+            gate: None,
+            spec_l2: None,
+            spec_l1: None,
         });
         let f = st.fec.expect("statik-r FEC config üretmeli");
         assert_eq!(f.profile_id, 0x03);
@@ -851,6 +935,9 @@ mod tests {
             loss_confirm_k: 0,
             fec_risk: false,
             ts_sample: false,
+            gate: None,
+            spec_l2: None,
+            spec_l1: None,
         });
         let f = ad.fec.expect("adaptif FEC config üretmeli");
         assert_eq!(f.profile_id, 0x05);
@@ -880,6 +967,9 @@ mod tests {
             loss_confirm_k: 0,
             fec_risk: false,
             ts_sample: false,
+            gate: None,
+            spec_l2: None,
+            spec_l1: None,
         });
         assert_eq!(c.max_unit_bytes, 53, "birim symbol kapasitesine kilitlenir");
         assert_eq!(
@@ -903,6 +993,9 @@ mod tests {
             loss_confirm_k: 0,
             fec_risk: false,
             ts_sample: false,
+            gate: None,
+            spec_l2: None,
+            spec_l1: None,
         });
         assert_eq!(small.max_unit_bytes, 48);
         assert_eq!(small.max_message_bytes, None, "48 ≤ 53 → fragmentasyon yok");
@@ -928,6 +1021,9 @@ mod tests {
                 loss_confirm_k: 0,
                 fec_risk: false,
                 ts_sample: false,
+                gate: None,
+                spec_l2: None,
+                spec_l1: None,
             }),
             Box::new(IdentitySeam),
         )
@@ -977,6 +1073,9 @@ mod tests {
                 loss_confirm_k: 0,
                 fec_risk: false,
                 ts_sample: false,
+                gate: None,
+                spec_l2: None,
+                spec_l1: None,
             }),
             Box::new(IdentitySeam),
         )
@@ -1040,6 +1139,9 @@ mod tests {
                 loss_confirm_k: 0,
                 fec_risk: false,
                 ts_sample: false,
+                gate: None,
+                spec_l2: None,
+                spec_l1: None,
             }),
             Box::new(IdentitySeam),
         )
@@ -1125,6 +1227,9 @@ mod tests {
                 loss_confirm_k: 0,
                 fec_risk: false,
                 ts_sample: false,
+                gate: None,
+                spec_l2: None,
+                spec_l1: None,
             }),
             Box::new(IdentitySeam),
         )

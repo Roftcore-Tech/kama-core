@@ -1597,6 +1597,10 @@ pub struct Sender {
     diag_structure_gate_opened: u64, // [Q18-FIX] yapı-gate'in fuzzy fec=0'ı açtığı event sayısı
     /// [BURST-FUSION] Yapı-gate'in burst dalındaki politikası (default = sevk davranışı).
     fec_structure_policy: FecStructurePolicy,
+    /// [R-SWEEP] Yapı-gate'in açtığı parity seviyesi (‰) override'ı. `None` (default) = fuzzy
+    /// config'in `fec_med`'i (sevk davranışı, byte-özdeş). Kalibrasyon kolu — gate'in 500‰=r4
+    /// seviyesi kampanyada r=2'ye eşit kurtarma/2× byte ölçülmüştü; ekonomik seviye süpürülür.
+    structure_gate_level_permille: Option<u32>,
     /// [ONAY UFKU] Ledger confirm ufku kolu — default sevk davranışı.
     loss_confirm_horizon: LossConfirmHorizon,
     /// [FEC-RISK] Deneysel FEC kayıp-riski kolu — default KAPALI.
@@ -1835,6 +1839,7 @@ impl Sender {
             diag_fuzzy_no_rule: 0,
             diag_structure_gate_opened: 0,
             fec_structure_policy: FecStructurePolicy::Q18Iid,
+            structure_gate_level_permille: None,
             loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,
             fec_loss_risk: FecLossRiskConfig::default(),
             diag_t_first_risk_ns: 0,
@@ -3545,7 +3550,7 @@ impl Sender {
             FecStructurePolicy::Q18Iid => {
                 // SEVK DAVRANIŞI, byte-özdeş: IID → fec_med; burst → ARQ'ya bırak.
                 if iid_structure {
-                    GateOutcome::Opened(self.fuzzy.config().fec_med)
+                    GateOutcome::Opened(self.gate_level_permille())
                 } else {
                     GateOutcome::BlockedBurstLeftToArq
                 }
@@ -3557,7 +3562,7 @@ impl Sender {
                 }
                 let c = self.fuzzy.config();
                 if iid_structure {
-                    return GateOutcome::Opened(c.fec_med);
+                    return GateOutcome::Opened(self.gate_level_permille());
                 }
                 // BURST dalı: kodlama açılır, seviye ölçülen silme oranını emniyet paylı takip
                 // eder. Profil-bağımsız (INV-ENGINE-SOC: motor K/E bilmez) — oran permille
@@ -3566,8 +3571,9 @@ impl Sender {
                 let needed_permille = loss_ppm.saturating_mul(BURST_FUSION_MARGIN_NUM)
                     / BURST_FUSION_MARGIN_DEN
                     / 1_000;
-                GateOutcome::Opened(if needed_permille <= u64::from(c.fec_med) {
-                    c.fec_med
+                let lvl = self.gate_level_permille();
+                GateOutcome::Opened(if needed_permille <= u64::from(lvl) {
+                    lvl
                 } else {
                     c.fec_high
                 })
@@ -4208,6 +4214,24 @@ impl Sender {
     #[must_use]
     pub fn loss_confirm_horizon(&self) -> LossConfirmHorizon {
         self.loss_confirm_horizon
+    }
+
+    /// [R-SWEEP] Yapı-gate seviyesi override'ı; `None` = `fec_med` (sevk, byte-özdeş).
+    pub fn set_structure_gate_level(&mut self, level_permille: Option<u32>) {
+        self.structure_gate_level_permille = level_permille;
+    }
+
+    /// [R-SWEEP/TEST] Fuzzy config'in `fec_med`'i (gate default'unun kaynağı).
+    #[must_use]
+    pub fn fuzzy_config_fec_med_for_test(&self) -> u32 {
+        self.fuzzy.config().fec_med
+    }
+
+    /// [R-SWEEP] Yürürlükteki gate seviyesi (‰).
+    #[must_use]
+    pub fn gate_level_permille(&self) -> u32 {
+        self.structure_gate_level_permille
+            .unwrap_or(self.fuzzy.config().fec_med)
     }
 
     pub fn set_fec_structure_policy(&mut self, policy: FecStructurePolicy) {
