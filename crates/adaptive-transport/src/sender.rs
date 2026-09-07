@@ -424,6 +424,27 @@ impl FecLossRiskConfig {
             ..Self::default()
         }
     }
+
+    /// **FEC v1 sınırlı politikası (kapanış kararı):** aday A = 250-250-250 (L1 = L2 = 250‰; yapı-gate
+    /// seviyesi client-core `RuntimeConfig`'te `Some(250)`), persistence P2 (öğrenilen Q95 spurious-yaş
+    /// ufku × 1.25, taban 0.5×srtt) ve C4 guard'ı G1 (`reorder_pressure ≥ 300‰ ∧ declared ≥ 8` ⇒ öneri
+    /// yok). Ölçüldü (reports/fec-loss-risk-v1/closure): loss-only 20 % +23 pp teslim; karışık
+    /// kayıp+reorder (C4) n=20 OFF'a eşit/üstü (+0.04), tel +6 %; temiz yolda parity 0. Transport
+    /// `default()` NÖTR (kapalı) kalır; ürün default'u client-core'dadır.
+    #[must_use]
+    pub fn bounded_v1() -> Self {
+        Self {
+            enabled: true,
+            bootstrap_cap_permille: 250,
+            persistent_cap_permille: 250,
+            persist_mode: PersistMode::LearnedSpuriousAge,
+            persist_srtt_permille: 500,
+            persist_rho_permille: 1250,
+            persist_q_permille: 950,
+            reorder_suppress_permille: 300,
+            ..Self::default()
+        }
+    }
 }
 
 /// [PERSIST] Persistence ufkunun kaynağı.

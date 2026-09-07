@@ -993,3 +993,28 @@ async fn ts_sampler_fills_when_enabled_and_stays_empty_when_disabled() {
         let _ = server.shutdown().await;
     }
 }
+
+/// [FEC v1] Ürün default'u sınırlı politikadır (A 250-250-250 + P2 + G1); `fec: None` ile inert.
+#[test]
+fn fec_v1_urun_defaultu_sinirli_politika() {
+    let cfg = RuntimeConfig::default();
+    assert!(
+        cfg.fec.is_none(),
+        "FEC'in kendisi default kapalı (lane inert)"
+    );
+    let b = cfg.fec_loss_risk;
+    assert!(b.enabled);
+    assert_eq!(
+        (
+            b.bootstrap_cap_permille,
+            b.persistent_cap_permille,
+            b.reorder_suppress_permille
+        ),
+        (250, 250, 300)
+    );
+    assert_eq!(
+        b.persist_mode,
+        client_core::runtime::PersistMode::LearnedSpuriousAge
+    );
+    assert_eq!(cfg.structure_gate_level_permille, Some(250));
+}

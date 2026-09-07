@@ -147,15 +147,19 @@ pub struct RuntimeConfig {
     /// (byte-özdeş). `ChannelDerived` bir ÖLÇÜM KOLUDUR, düzeltme değil — bkz.
     /// `reports/loss-ledger-confirm-defect/FINDING.md`.
     pub loss_confirm_horizon: LossConfirmHorizon,
-    /// [FEC-RISK] Deneysel FEC kayıp-riski tahmincisi. Default KAPALI → davranış bugünküyle
-    /// semantik özdeş. AÇIKKEN tek tüketici FEC oranı kararıdır; CC/pacing/ARQ dokunulmaz.
+    /// [FEC v1] Spekülatif FEC kayıp-riski lane'i. **Ürün default'u `FecLossRiskConfig::bounded_v1()`**
+    /// (aday A 250-250-250 + persistence P2 + C4 guard'ı G1; bkz. `reports/fec-loss-risk-v1/closure`).
+    /// `fec: None` iken (default) İNERT — oran hesaplanır, hiçbir aktüasyon yolu çalışmaz (tümü
+    /// `fec.as_ref()`'e kapılı) → FEC'siz yol byte-özdeş. Tek tüketici FEC oranı kararıdır;
+    /// CC/pacing/ARQ/kanonik kayıp dokunulmaz. Kapatmak için `FecLossRiskConfig::default()`.
     pub fec_loss_risk: FecLossRiskConfig,
     /// [HANDOFF ENSTRÜMANI] Zaman-serisi örnekleme periyodu (ns). `None` (default) = kapalı.
     /// Açıkken pace tick'lerinde en çok [`TS_CAP`] örnek toplanır (bounded; SR-AUDIT-001).
     /// Salt gözlem — motor durumuna dokunmaz.
     pub ts_sample_period_ns: Option<u64>,
-    /// [R-SWEEP] Yapı-gate parity seviyesi override'ı (‰). `None` (default) = motor `fec_med`
-    /// (sevk davranışı, byte-özdeş). Kalibrasyon kolu.
+    /// [FEC v1] Yapı-gate parity seviyesi (‰). **Ürün default'u `Some(250)`** (aday A'nın gate
+    /// bileşeni; r-sweep: 500‰/r4 15–20 % kayıpta israflı). `None` = motor `fec_med` (500). Yalnız
+    /// `fec: Some(..)` iken etkili.
     pub structure_gate_level_permille: Option<u32>,
 }
 
@@ -197,9 +201,9 @@ impl Default for RuntimeConfig {
             // ölçüm kapısıdır; bkz. reports/fec-policy-arm-v1/).
             fusion_policy: None,
             loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,
-            fec_loss_risk: FecLossRiskConfig::default(),
+            fec_loss_risk: FecLossRiskConfig::bounded_v1(),
             ts_sample_period_ns: None,
-            structure_gate_level_permille: None,
+            structure_gate_level_permille: Some(250),
         }
     }
 }

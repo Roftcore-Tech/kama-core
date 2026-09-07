@@ -749,3 +749,138 @@ fn evidence_gecis_enstrumani_dolu() {
     assert!(l2.2 >= 10_000, "ilk L2'de persistent ≥ l2_min: {l2:?}");
     assert!(l2.0 >= l1.0, "kütle L1'den L2'ye azalmaz (aynı uçuş)");
 }
+
+// ═══════════════ [FEC v1] sınırlı politika + C4 guard'ı G1 ═══════════════
+
+/// Ürün politikası değerleri (kapanış kararı): A 250-250-250 + P2 + G1(300‰). Transport default'u nötr kalır.
+#[test]
+fn bounded_v1_degerleri_ve_default_notr() {
+    let b = FecLossRiskConfig::bounded_v1();
+    assert!(b.enabled);
+    assert_eq!(b.bootstrap_cap_permille, 250);
+    assert_eq!(b.persistent_cap_permille, 250);
+    assert_eq!(b.persist_mode, PersistMode::LearnedSpuriousAge);
+    assert_eq!(
+        (
+            b.persist_srtt_permille,
+            b.persist_rho_permille,
+            b.persist_q_permille
+        ),
+        (500, 1250, 950)
+    );
+    assert_eq!(b.reorder_suppress_permille, 300);
+    let d = FecLossRiskConfig::default();
+    assert!(!d.enabled);
+    assert_eq!(
+        d.reorder_suppress_permille,
+        u32::MAX,
+        "default: G1 kapalı (nötr)"
+    );
+}
+
+/// G1: kısmi geç-ACK (Spurious) ile reorder-baskısı ≥ 300‰ olunca spekülatif ÖNERİ susar; risk
+/// hesabı, `t_first_risk` ve ilk L1 anı DEĞİŞMEZ (yalnız öneri bastırılır). Eşik kapalıyken öneri sürer.
+#[test]
+fn g1_reorder_baskisi_oneriyi_bastirir_riski_degistirmez() {
+    fn scenario(cfg: FecLossRiskConfig) -> (Sender, Vec<TsSample>) {
+        let mut s = Sender::new();
+        s.set_establish_probe(false);
+        s.set_fec_loss_risk(cfg);
+        let mut samples = Vec::new();
+        let mut step = |s: &mut Sender, ev: Event, t: u64| {
+            s.on_event(ev, t);
+            samples.push((t, s.diag_ts_sample()));
+        };
+        for i in 0..80u64 {
+            step(
+                &mut s,
+                Event::AppData(OpaqueUnit {
+                    id: 1000 + i,
+                    size: 101,
+                }),
+                0,
+            );
+        }
+        for t in 1..=20u64 {
+            step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+        }
+        // RTT örneği: yalnız 0 ACK'lenir → 1..79 Suspected (declared ≥ 8).
+        step(
+            &mut s,
+            Event::AckReceived(AckInfo {
+                acked_seqs: vec![0],
+                ack_delay: Duration::ZERO,
+            }),
+            4_100 * MS,
+        );
+        for t in 21..=25u64 {
+            step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+        }
+        // Kısmi geç-ACK: 1..39 Spurious (reorder), 40..79 Suspected kalır → rp ≈ 39/79 ≈ 494‰.
+        step(
+            &mut s,
+            Event::AckReceived(AckInfo {
+                acked_seqs: (1..40).collect(),
+                ack_delay: Duration::ZERO,
+            }),
+            5_200 * MS,
+        );
+        for t in 27..=60u64 {
+            step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+        }
+        let out: Vec<TsSample> = samples.iter().map(|(_, x)| *x).collect();
+        (s, out)
+    }
+    let (g1, s_g1) = scenario(FecLossRiskConfig::bounded_v1());
+    let (open, s_open) = scenario(FecLossRiskConfig {
+        reorder_suppress_permille: u32::MAX,
+        ..FecLossRiskConfig::bounded_v1()
+    });
+    // Ön-koşul: geç-ACK'ten sonra reorder baskısı eşiğin üstünde ve risk hâlâ var.
+    let late = |v: &[TsSample]| -> Vec<TsSample> { v[v.len() - 30..].to_vec() };
+    assert!(
+        late(&s_open)
+            .iter()
+            .all(|x| x.reorder_pressure_permille >= 300 && x.instant_ppm >= 10_000),
+        "önkoşul: rp ≥ 300‰ ∧ instant ≥ l1_min: {:?}",
+        late(&s_open).last()
+    );
+    assert!(
+        late(&s_open)
+            .iter()
+            .all(|x| x.spec_prop > 0 && x.level_idx >= 1),
+        "eşik kapalı: öneri sürer"
+    );
+    assert!(
+        late(&s_g1)
+            .iter()
+            .all(|x| x.spec_prop == 0 && x.level_idx == 0),
+        "G1: öneri bastırılır (L0)"
+    );
+    // Risk hesabı ve zaman damgaları özdeş: G1 yalnız öneriyi bastırır.
+    assert!(
+        s_g1.iter()
+            .zip(&s_open)
+            .all(|(a, b)| a.instant_ppm == b.instant_ppm
+                && a.persistent_ppm == b.persistent_ppm
+                && a.reorder_pressure_permille == b.reorder_pressure_permille),
+        "tahminci G1'den bağımsız"
+    );
+    assert_eq!(
+        g1.diag_fec_risk_times().2,
+        open.diag_fec_risk_times().2,
+        "t_first_risk değişmez"
+    );
+    assert_eq!(
+        g1.diag_spec_signals().3,
+        open.diag_spec_signals().3,
+        "ilk L1 anı değişmez (geç-ACK'ten önce)"
+    );
+    assert!(g1.diag_spec_signals().3 > 0, "önkoşul: L1 ateşledi");
+    // Geç-ACK'ten ÖNCE öneriler özdeş (guard rp yokken inert).
+    let cut = s_open
+        .iter()
+        .position(|x| x.reorder_pressure_permille > 0)
+        .expect("spurious gelmeli");
+    assert_eq!(&s_g1[..cut], &s_open[..cut], "rp = 0 iken byte-özdeş");
+}
