@@ -4,7 +4,7 @@
 **`75d8990a`** (PR #50 squash: dev/product-transport-fusion @ 46291974). Rollback noktası.
 
 ## 2. Final C4 dalı SHA
-_(push sonrası: `fix/fec-mixed-loss-reorder-final` HEAD)_ — Provenance: atıf/G1/bounded_v1 işi, CI beklenirken checkpoint ucundan açılan yerel
+**`87077502`** (`fix/fec-mixed-loss-reorder-final` = main `75d8990a` + 5 cherry-pick; ağaç `b7226127…` wip/c4-attrib ile özdeş; PR #51). — Provenance: atıf/G1/bounded_v1 işi, CI beklenirken checkpoint ucundan açılan yerel
 `wip/c4-attrib` dalında yapıldı; `fix/fec-mixed-loss-reorder-final` main'den açılıp aynı 4 commit cherry-pick edilir;
 iki ağacın `git rev-parse HEAD^{tree}` hash'i özdeş olduğu doğrulanır (kapı ve ölçümler birebir aktarılır).
 
