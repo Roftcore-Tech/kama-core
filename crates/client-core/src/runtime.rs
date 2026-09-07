@@ -423,6 +423,10 @@ pub struct FateWindowDiag {
     pub fec_persist: (u64, u64, usize),
     /// [EVIDENCE ENSTRÜMANI] İlk L1 / ilk L2 anında `(sent_window_units, instant_ppm, persistent_ppm)`.
     pub fec_spec_transitions: ((u64, u64, u64), (u64, u64, u64)),
+    /// [C4-ATIF] Zamanlayıcı sınıf sayaçları (yalnız `diag-sched-telemetry` feature'ında dolu, aksi 0):
+    /// `[data_sel, data_denied, data_emit, retx_sel, retx_denied, retx_emit, dup_sel, dup_denied,
+    /// dup_emit, parity_denied, parity_emit, tail_probe_emit]`.
+    pub sched: [u64; 12],
     /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
     /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
     /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI · 6=oturum-kurulmadı(PreConverge).
@@ -544,6 +548,17 @@ pub struct ServerStats {
     pub fec_decode_failures: u64,
     /// [S1] Kapasite gereği düşürülen en-eski blok (bounded birleştirici).
     pub fec_blocks_evicted: u64,
+    /// [C4-ATIF] Alınan repair'lerin kesişimsiz akıbeti: blok KAYNAKLARLA tamamlandığında elde tutulan
+    /// repair'ler (ARQ/geç-orijinal parity'yi yendi → boşa), evict anında tutulanlar (boşa), başarılı
+    /// decode'da tutulanlar (faydalı). Kalan = kapanışta hâlâ açık bloklarda.
+    pub fec_repairs_wasted_complete: u64,
+    pub fec_repairs_wasted_evicted: u64,
+    pub fec_repairs_useful: u64,
+    /// [C4-ATIF] Blok akıbetleri: kaynaklarla tamamlanan (repair tutan / tutmayan), decode edilen,
+    /// evict edilen (repair tutan / hayalet = repair'siz ve kaynak < K).
+    pub fec_blocks_complete_with_repairs: u64,
+    pub fec_blocks_decoded: u64,
+    pub fec_blocks_evicted_with_repairs: u64,
     /// [S1] Wire'a yazılan RECOVERED-control çerçevesi (blok başına bir).
     pub fec_recovered_ctrl_tx: u64,
     /// [S1B] Birleştiriciye giren chunk (DATA + FEC-kurtarma; yalnız fragmentasyon açıkken).
@@ -1407,6 +1422,7 @@ async fn client_task(
         fec_spec_signals: session.sender().diag_spec_signals(),
         fec_persist: session.sender().diag_persist(),
         fec_spec_transitions: session.sender().diag_spec_transitions(),
+        sched: session.sender().diag_sched_summary(),
         fec_latch_diag: {
             let d = session.sender().diag_fec_actuation();
             (
@@ -1838,7 +1854,14 @@ fn fec_ingest(
         )
     };
     if complete {
-        slot.blocks.remove(&block_id); // tüm source'lar geldi — kurtarılacak yok.
+        // [C4-ATIF] Kaynaklar parity'yi yendi: tutulan repair'ler boşa gitti.
+        if let Some(a) = slot.blocks.remove(&block_id) {
+            let held = a.repairs.len() as u64;
+            if held > 0 {
+                stats.fec_repairs_wasted_complete += held;
+                stats.fec_blocks_complete_with_repairs += 1;
+            }
+        }
     } else if ready {
         let result = {
             let asm = slot.blocks.get(&block_id).expect("entry az önce kuruldu");
@@ -1889,7 +1912,10 @@ fn fec_ingest(
                         true,
                     );
                 }
-                slot.blocks.remove(&block_id);
+                if let Some(a) = slot.blocks.remove(&block_id) {
+                    stats.fec_repairs_useful += a.repairs.len() as u64;
+                    stats.fec_blocks_decoded += 1;
+                }
             }
             Err(_) => {
                 stats.fec_decode_failures += 1; // blok KORUNUR (bug-fix): shard atılmaz.
@@ -1897,7 +1923,13 @@ fn fec_ingest(
         }
     }
     while slot.blocks.len() > RX_BLOCKS_CAP {
-        slot.blocks.pop_first();
+        if let Some((_, a)) = slot.blocks.pop_first() {
+            let held = a.repairs.len() as u64;
+            if held > 0 {
+                stats.fec_repairs_wasted_evicted += held;
+                stats.fec_blocks_evicted_with_repairs += 1;
+            }
+        }
         stats.fec_blocks_evicted += 1;
     }
     recovered_esis

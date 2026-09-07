@@ -555,7 +555,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
          fec_blocks={} fec_repairs_tx={} fec_recovered_ctrl={} param_confirmed={} \
          seal_fail={} send_err={} stale={} cs_probe_tx={} cs_echo_rx={} \
          state={} left_preconv={} establish_tx={} \
-         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?} spurious={} confirm_k={:?} latch={:?} suppress={:?} risk_t={:?} risk_ppm={:?} flow_end={} arb={:?} lvl={:?} spec={:?} persist={:?} em_l1={:?} em_l2={:?}",
+         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?} spurious={} confirm_k={:?} latch={:?} suppress={:?} risk_t={:?} risk_ppm={:?} flow_end={} arb={:?} lvl={:?} spec={:?} persist={:?} em_l1={:?} em_l2={:?} sched={:?}",
         stats.tx_bytes,
         stats.tx_data_bytes,
         stats.tx_retx_bytes,
@@ -604,15 +604,16 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         stats.fate.fec_persist,
         stats.fate.fec_spec_transitions.0,
         stats.fate.fec_spec_transitions.1,
+        stats.fate.sched,
     );
     // [HANDOFF ENSTRÜMANI] zaman serisini CSV'ye dök (varsa).
     if let Some(path) = cfg.ts_out.as_ref() {
         let mut csv = String::from(
-            "t_ms,instant_ppm,persistent_ppm,rp_permille,confirmed_ppm,confirmed_prop,structure_prop,spec_prop,final_ratio,reason_idx,level_idx,evidence_mass,declared_units\n",
+            "t_ms,instant_ppm,persistent_ppm,rp_permille,confirmed_ppm,confirmed_prop,structure_prop,spec_prop,final_ratio,reason_idx,level_idx,evidence_mass,declared_units,pacer_tokens,pending_parity,pending_lost,data_denied,retx_denied,parity_denied,retx_emitted,parity_emitted,data_emitted\n",
         );
         for (t, x) in &stats.ts {
             csv.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 t / 1_000_000,
                 x.instant_ppm,
                 x.persistent_ppm,
@@ -625,7 +626,16 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
                 x.reason_idx,
                 x.level_idx,
                 x.evidence_mass,
-                x.declared_units
+                x.declared_units,
+                x.pacer_tokens,
+                x.pending_parity,
+                x.pending_lost,
+                x.sched_data_denied,
+                x.sched_retx_denied,
+                x.sched_parity_denied,
+                x.sched_retx_emitted,
+                x.sched_parity_emitted,
+                x.sched_data_emitted
             ));
         }
         if let Err(e) = std::fs::write(path, csv) {

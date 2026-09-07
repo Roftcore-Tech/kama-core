@@ -31,3 +31,7 @@ kama-noise-wire = { path = "../kama-noise-wire" }
 # P1 runtime kabuğu (item 2/3/6/7): tokio UDP döngüsü (ADR-02) + typed hatalar.
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
 thiserror.workspace = true
+
+[features]
+# [C4-ATIF] salt-gözlem zamanlayıcı telemetrisi (default OFF; ürün davranışı değişmez).
+diag-sched-telemetry = ["adaptive-transport/diag-sched-telemetry"]

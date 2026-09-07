@@ -515,6 +515,17 @@ pub struct TsSample {
     /// [EVIDENCE] `sent_window_units` (ham) ve `declared_units` karar anında.
     pub evidence_mass: u64,
     pub declared_units: u64,
+    /// [C4-ATIF] Karar anındaki bütçe/kuyruk durumu: pacer token bakiyesi, bekleyen parity, bekleyen
+    /// kayıp (retx adayı) sayısı; kümülatif sınıf sayaçları (telemetri feature'ı kapalıyken 0).
+    pub pacer_tokens: u64,
+    pub pending_parity: u64,
+    pub pending_lost: u64,
+    pub sched_data_denied: u64,
+    pub sched_retx_denied: u64,
+    pub sched_parity_denied: u64,
+    pub sched_retx_emitted: u64,
+    pub sched_parity_emitted: u64,
+    pub sched_data_emitted: u64,
 }
 
 /// [TEŞHİS] Arbiter sebep histogramı kova sayısı.
@@ -3570,6 +3581,15 @@ impl Sender {
             },
             evidence_mass: spec_split.map_or(0, |x| x.sent_window_units),
             declared_units: spec_split.map_or(0, |x| x.declared_units),
+            pacer_tokens: self.pacer.tokens(),
+            pending_parity: self.pending_fec.len() as u64,
+            pending_lost: self.pending_lost.len() as u64,
+            sched_data_denied: self.diag_sched_summary()[1],
+            sched_retx_denied: self.diag_sched_summary()[4],
+            sched_parity_denied: self.diag_sched_summary()[9],
+            sched_retx_emitted: self.diag_sched_summary()[5],
+            sched_parity_emitted: self.diag_sched_summary()[10],
+            sched_data_emitted: self.diag_sched_summary()[2],
         };
         d.fec_parity_ratio_permille = final_ratio;
         if final_ratio > 0 {
@@ -4311,6 +4331,35 @@ impl Sender {
             level,
             ratio_permille: cap,
             deadline_assisted: tight && level == SpeculativeLevel::L1Bootstrap,
+        }
+    }
+
+    /// [C4-ATIF] Zamanlayıcı sınıf sayaçlarının sabit-boyutlu özeti (feature kapalıyken sıfır):
+    /// `[data_sel, data_denied, data_emit, retx_sel, retx_denied, retx_emit, dup_sel, dup_denied,
+    /// dup_emit, parity_denied, parity_emit, tail_probe_emit]`. Salt gözlem.
+    #[must_use]
+    pub fn diag_sched_summary(&self) -> [u64; 12] {
+        #[cfg(feature = "diag-sched-telemetry")]
+        {
+            let d = self.sched_diag;
+            [
+                d.data_selected,
+                d.data_token_denied,
+                d.data_wire_emitted,
+                d.arq_retransmit_selected,
+                d.arq_retransmit_token_denied,
+                d.arq_retransmit_wire_emitted,
+                d.dup_selected,
+                d.dup_token_denied,
+                d.dup_wire_emitted,
+                d.fec_parity_token_denied,
+                d.fec_parity_wire_emitted,
+                d.tail_probe_wire_emitted,
+            ]
+        }
+        #[cfg(not(feature = "diag-sched-telemetry"))]
+        {
+            [0; 12]
         }
     }
 
