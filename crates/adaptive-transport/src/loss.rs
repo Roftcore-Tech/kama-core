@@ -45,6 +45,79 @@ fn scale_duration(d: Duration, num: u64, den: u64) -> Duration {
     Duration::from_nanos(ns as u64)
 }
 
+/// [PERSIST] Spurious-yaş halkası boyu (bounded; SR-AUDIT-001). 32: `[u64; N]` için `Default`
+/// türetilebilir üst sınır; Q95 için rank 31 → yeterli çözünürlük.
+pub const SPURIOUS_AGE_RING: usize = 32;
+
+/// [FEC-RISK v2] Spekülatif kolun girdileri (bkz. [`ThresholdLossDetector::fec_loss_risk_split`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RiskSplit {
+    /// Yaş-ağırlıklı Suspected + Confirmed (ppm) — anlık risk.
+    pub instant_ppm: u64,
+    /// Yalnız ≥ persist_min yaşamış Suspected + Confirmed (ppm) — kalıcı risk.
+    pub persistent_ppm: u64,
+    /// Penceredeki Spurious birim / tüm olay birimleri (per-mille) — reorder baskısı.
+    pub reorder_pressure_permille: u32,
+    /// reorder_pressure'ın paydası (küçük-n koruması için).
+    pub declared_units: u64,
+    /// [EVIDENCE] Ham kanıt kütlesi = paydanın KENDİSİ (`sent_window_units`): rolling W_loss
+    /// penceresinde GÖNDERİLMİŞ birimler. Fate'i henüz bilinmeyen (in-flight) birimleri de
+    /// İÇERİR; olay üretmiş birimler `declared_units`'tir. Dönüştürülmez, tabanlanmaz.
+    pub sent_window_units: u64,
+}
+
+/// [FEC-RISK] `Suspected` bir olayın, YAŞINA göre "gerçekten kayıp" güven ağırlığı (per-mille).
+///
+/// **KALİBRE EDİLMEMİŞ — deneysel.** Bu eğrinin doğru şekli ölçümle belirlenecek; şimdilik
+/// basamak fonksiyonu, `[CAL]`. Spec'e YAZILMADI (ölçüm öncesi normatifleştirme yasak).
+///
+/// Yaş srtt'ye oranlanır: bir paketin geç gelmesi için gereken süre kanalın turudur, bant
+/// genişliği değil. Bu ayrım kasıtlıdır — bant çökmesi kayıp KANITI değildir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SuspectConfidence {
+    /// `age < q25_num/q25_den × srtt` iken ağırlık (per-mille).
+    pub w_lt_quarter: u32,
+    /// `age < srtt/2` iken ağırlık.
+    pub w_lt_half: u32,
+    /// `age < srtt` iken ağırlık.
+    pub w_lt_one: u32,
+    /// `age >= srtt` (ama henüz Confirmed değil) iken ağırlık.
+    pub w_ge_one: u32,
+}
+
+impl Default for SuspectConfidence {
+    /// İlk deneysel şekil (`[CAL]`, kalibre EDİLMEMİŞ): 0.20 / 0.40 / 0.70 / 0.70.
+    ///
+    /// `age ≥ srtt` bandı `w_lt_one` ile aynı tutulur: olay orada zaten confirm ufkuna doğru
+    /// yaşlanıyordur ve onay geldiğinde 1.0'a çıkar. Aradaki bandı 1.0'a çekmek, onay
+    /// semantiğini arka kapıdan taklit etmek olurdu.
+    fn default() -> Self {
+        Self {
+            w_lt_quarter: 200,
+            w_lt_half: 400,
+            w_lt_one: 700,
+            w_ge_one: 700,
+        }
+    }
+}
+
+impl SuspectConfidence {
+    /// Yaş → ağırlık (per-mille). `srtt_ns > 0` çağıran tarafından garanti edilir.
+    #[must_use]
+    pub fn for_age(self, age_ns: u64, srtt_ns: u64) -> u32 {
+        // Tamsayı karşılaştırma: 4×age < srtt  ⟺  age < srtt/4 (bölme yok, taşma yok).
+        if age_ns.saturating_mul(4) < srtt_ns {
+            self.w_lt_quarter
+        } else if age_ns.saturating_mul(2) < srtt_ns {
+            self.w_lt_half
+        } else if age_ns < srtt_ns {
+            self.w_lt_one
+        } else {
+            self.w_ge_one
+        }
+    }
+}
+
 fn ratio_ppm(num: u64, den: u64) -> u64 {
     if den == 0 {
         return 0;
@@ -139,6 +212,24 @@ pub struct ThresholdLossDetector {
     have_acked: bool,
     sent_units: u64,
     lost_units: u64,
+    diag_confirmed_total: u64,
+    /// [FEC-RISK ENSTRÜMAN] İlk `Suspected` ilanının anı (ns, 0 = hiç). Kayıp KUŞKUSUNUN
+    /// ilk anı — FEC'in en erken tepki verebileceği zaman tabanı.
+    diag_t_first_suspected_ns: u64,
+    /// [FEC-RISK ENSTRÜMAN] İlk `Suspected → Confirmed` geçişinin anı (ns, 0 = hiç).
+    diag_t_first_confirmed_ns: u64,
+    /// [PERSIST] Un-loss anındaki olay yaşları (declared→Spurious), bounded halka. Reorder
+    /// ömrünün ÖLÇÜLEN dağılımı; öğrenilen persistence ufkunun tek kaynağı. Gerçek kayıp asla
+    /// Spurious olmadığından bu dağılıma karışmaz.
+    spurious_ages: [u64; SPURIOUS_AGE_RING],
+    spurious_age_len: usize,
+    spurious_age_idx: usize,
+    diag_tick_count: u64,
+    diag_first_tick_ns: u64,
+    diag_last_tick_ns: u64,
+    diag_max_susp_age_ns: u64,
+    diag_confirm_threshold_ns: u64,
+    diag_expire_threshold_ns: u64,
     unrecovered_units: u64,
     // ── [TUR-2a D-1/3, D-1/5] olay-ledger + pencere-türetimli loss_ppm ──
     events: VecDeque<LossEvent>, // declared_ns artan; LEDGER_MAX bounded
@@ -186,6 +277,9 @@ impl ThresholdLossDetector {
 
     /// Kayıp-ilanını ledger'a Suspected olarak yazar (bounded; en-eski-önce eviction + audit).
     fn declare(&mut self, seq: u64, units: u64, declared_ns: u64) {
+        if self.diag_t_first_suspected_ns == 0 {
+            self.diag_t_first_suspected_ns = declared_ns;
+        }
         if self.events.len() >= LEDGER_MAX {
             self.events.pop_front();
             self.ledger_evicted_total += 1;
@@ -229,10 +323,27 @@ impl ThresholdLossDetector {
             self.sent_window_units = self.sent_window_units.saturating_sub(s.units);
         }
         let conf_ns = confirm_age.as_nanos() as u64;
+        // [TEŞHİS] Confirm hiç ateşlemediğinde sebep üç adaydan biridir: olaylar genç · eşik
+        // ulaşılamaz · tick geç. `diag_max_susp_age_ns` (en yaşlı Suspected) ile `conf_ns`
+        // yan yana okunmadan bu ayrım YAPILAMAZ.
+        self.diag_tick_count += 1;
+        if self.diag_first_tick_ns == 0 {
+            self.diag_first_tick_ns = now_ns;
+        }
+        self.diag_last_tick_ns = now_ns;
+        self.diag_confirm_threshold_ns = conf_ns;
+        self.diag_expire_threshold_ns = w_loss.as_nanos() as u64;
         for e in &mut self.events {
-            if e.state == LedgerState::Suspected && now_ns.saturating_sub(e.declared_ns) >= conf_ns
-            {
+            let age = now_ns.saturating_sub(e.declared_ns);
+            if e.state == LedgerState::Suspected {
+                self.diag_max_susp_age_ns = self.diag_max_susp_age_ns.max(age);
+            }
+            if e.state == LedgerState::Suspected && age >= conf_ns {
                 e.state = LedgerState::Confirmed;
+                self.diag_confirmed_total += 1;
+                if self.diag_t_first_confirmed_ns == 0 {
+                    self.diag_t_first_confirmed_ns = now_ns;
+                }
             }
         }
     }
@@ -248,6 +359,199 @@ impl ThresholdLossDetector {
             .map(|e| e.units)
             .sum();
         ratio_ppm(confirmed, self.sent_window_units)
+    }
+
+    /// [PERSIST] Ölçülen spurious (reorder) yaşlarının `q_permille` quantile'ı (ns); örnek yoksa
+    /// `None`. Deterministik: bounded halkanın kopyası sıralanır, rank = ceil(len·q) (ADR-17).
+    /// Küçük n'de üst quantile ≈ maksimum → ihtiyatlı (daha uzun ufuk = daha az yanlış L2).
+    #[must_use]
+    pub fn spurious_age_quantile(&self, q_permille: u32) -> Option<u64> {
+        let len = self.spurious_age_len;
+        if len == 0 {
+            return None;
+        }
+        let mut buf = [0u64; SPURIOUS_AGE_RING];
+        buf[..len].copy_from_slice(&self.spurious_ages[..len]);
+        buf[..len].sort_unstable();
+        let q = u64::from(q_permille.min(1000));
+        let rank = ((len as u64 * q).div_ceil(1000)).clamp(1, len as u64);
+        Some(buf[rank as usize - 1])
+    }
+
+    /// [PERSIST] Halkadaki spurious-yaş örneği sayısı (≤ [`SPURIOUS_AGE_RING`]).
+    #[must_use]
+    pub fn spurious_age_samples(&self) -> usize {
+        self.spurious_age_len
+    }
+
+    /// [FEC-RISK v2] Spekülatif kolun ÜÇ girdisi tek geçişte — instant · persistent · reorder.
+    ///
+    /// Neden tek sayı yetmiyor (ölçüldü, A2 vs kısa-akış): saf reorder'da instant risk tepesi
+    /// 195k ppm'e çıkarken %20 gerçek kayıpta ~180k — yani `risk > X → FEC` biçimindeki HER
+    /// tek-eşik kural reorder'ı kayıp sanar. Ayrım BÜYÜKLÜKTE değil, ZAMANDA: gerçek kayıp gap'i
+    /// yaşamaya devam eder (yaşlanır → Confirmed); reorder gap'i kısa sürede dolar (→ Spurious).
+    ///
+    /// * `instant_ppm`    — [`Self::fec_loss_risk_ppm`] ile aynı (yaş-ağırlıklı Suspected + Confirmed)
+    /// * `persistent_ppm` — YALNIZ `age ≥ persist_min` yaşamış Suspected (tam ağırlık) + Confirmed;
+    ///   `persist_min = srtt × persist_srtt_permille / 1000`. Reorder'ı elemek için kullanılır.
+    /// * `reorder_pressure_permille` — pencerede `Spurious` birim / tüm olay birimleri. "Son
+    ///   gördüğüm gap'lerin ne kadarı sonradan doldu?" Bir DISCOUNT'tur, veto değil.
+    /// * `declared_units` — reorder_pressure'ın paydası; küçük-n koruması çağıranda.
+    ///
+    /// Payda ve pencere kanonikle AYNI; ek depolama YOK (Spurious olaylar zaten deque'te kalır).
+    /// `srtt_ns == 0` → Suspected'a güven verilmez, persistent = Confirmed'a eşit.
+    #[must_use]
+    pub fn fec_loss_risk_split(
+        &self,
+        now_ns: u64,
+        srtt_ns: u64,
+        weights: SuspectConfidence,
+        persist_min_ns: u64,
+    ) -> RiskSplit {
+        let mut inst_milli: u128 = 0;
+        let mut pers_units: u128 = 0;
+        let mut spur_units: u64 = 0;
+        let mut all_units: u64 = 0;
+        for e in &self.events {
+            all_units = all_units.saturating_add(e.units);
+            match e.state {
+                LedgerState::Confirmed => {
+                    inst_milli += u128::from(e.units) * 1000;
+                    pers_units += u128::from(e.units);
+                }
+                LedgerState::Spurious => spur_units = spur_units.saturating_add(e.units),
+                LedgerState::Suspected => {
+                    if srtt_ns != 0 {
+                        let age = now_ns.saturating_sub(e.declared_ns);
+                        inst_milli +=
+                            u128::from(e.units) * u128::from(weights.for_age(age, srtt_ns));
+                        if age >= persist_min_ns {
+                            pers_units += u128::from(e.units);
+                        }
+                    }
+                }
+            }
+        }
+        let den = u128::from(self.sent_window_units);
+        let to_ppm = |num_milli: u128| -> u64 {
+            if den == 0 {
+                0
+            } else {
+                u64::try_from(num_milli * 1_000_000 / (den * 1000)).unwrap_or(u64::MAX)
+            }
+        };
+        RiskSplit {
+            instant_ppm: to_ppm(inst_milli),
+            persistent_ppm: to_ppm(pers_units * 1000),
+            reorder_pressure_permille: if all_units == 0 {
+                0
+            } else {
+                u32::try_from(u128::from(spur_units) * 1000 / u128::from(all_units)).unwrap_or(1000)
+            },
+            declared_units: all_units,
+            sent_window_units: self.sent_window_units,
+        }
+    }
+
+    /// [FEC-RISK] **FEC'e özgü kayıp-RİSKİ** (ppm) — kanonik kayıptan AYRI bir okuma.
+    ///
+    /// İki farklı soru vardır ve aynı sayıyla cevaplanamaz:
+    /// * ARQ: *"Bu paketin kaybolduğundan yeterince EMİN miyim?"* → [`Self::loss_windowed_ppm`]
+    ///   (yalnız `Confirmed`; reorder'ı bekler, çünkü gereksiz retransmit pahalıdır)
+    /// * FEC: *"Parity ekleyecek vaktim varken ŞU AN ne kadar kayıp riski var?"* → bu fonksiyon
+    ///
+    /// FEC kararı blok tele çıkarken verilmek ZORUNDA. Bir şüphenin onaya dönmesini beklemek
+    /// sinyali birden çok RTT geciktirir ve kısa akışlarda tahmin tamamen işe yaramaz hâle gelir.
+    ///
+    /// Ağırlıklandırma: `Confirmed` = 1.0, `Spurious` = 0.0, `Suspected` = yaşına göre kısmi
+    /// güven (srtt'ye oranlı; `weights` ile verilir). Geç ACK gelince olay `Spurious` olur ve
+    /// katkısı KENDİLİĞİNDEN sıfırlanır — yani tahmin kendi hatasını düzeltir.
+    ///
+    /// Payda kanonik metrikle AYNI (`sent_window_units`), pencere AYNI rolling `W_loss`
+    /// penceresidir — ayrı/sınırsız bir tarihçe tutulmaz.
+    ///
+    /// `srtt_ns == 0` (henüz ölçüm yok) → `Suspected` olaylara güven verilmez; yalnız `Confirmed`
+    /// sayılır, yani sonuç kanonik metrikle ÖZDEŞ olur. Ölçüm yokken risk uydurulmaz.
+    #[must_use]
+    pub fn fec_loss_risk_ppm(&self, now_ns: u64, srtt_ns: u64, weights: SuspectConfidence) -> u64 {
+        let mut num_milli: u128 = 0; // birim × 1000 (tamsayı; RNG/float yok — ADR-17)
+        for e in &self.events {
+            let w = match e.state {
+                LedgerState::Confirmed => 1000,
+                LedgerState::Spurious => 0,
+                LedgerState::Suspected => {
+                    if srtt_ns == 0 {
+                        0
+                    } else {
+                        weights.for_age(now_ns.saturating_sub(e.declared_ns), srtt_ns)
+                    }
+                }
+            };
+            num_milli += u128::from(e.units) * u128::from(w);
+        }
+        if self.sent_window_units == 0 {
+            return 0;
+        }
+        let ppm = num_milli * 1_000_000 / (u128::from(self.sent_window_units) * 1000);
+        u64::try_from(ppm).unwrap_or(u64::MAX)
+    }
+
+    /// [TEŞHİS] Ledger iç durumu: `(lost_units, events_len, suspected_units, confirmed_units,
+    /// sent_window_units)`. `loss_windowed_ppm` sıfır geldiğinde "hiç olay yok" · "hepsi
+    /// Suspected'ta takılı" · "payda sıfır" birbirinden ancak bu ayrımla ayrılır — tek bir
+    /// sıfır üç FARKLI arızayı gizler.
+    #[must_use]
+    pub fn diag_ledger_internals(&self) -> (u64, u64, u64, u64, u64) {
+        let mut susp = 0;
+        let mut conf = 0;
+        for e in &self.events {
+            match e.state {
+                LedgerState::Suspected => susp += e.units,
+                LedgerState::Confirmed => conf += e.units,
+                LedgerState::Spurious => {}
+            }
+        }
+        (
+            self.lost_units,
+            self.events.len() as u64,
+            susp,
+            conf,
+            self.sent_window_units,
+        )
+    }
+
+    /// [TEŞHİS] Confirm-yolu: `(confirmed_total, max_suspected_age_ns, confirm_threshold_ns,
+    /// expire_threshold_ns)`.
+    #[must_use]
+    pub fn diag_confirm_path(&self) -> (u64, u64, u64, u64) {
+        (
+            self.diag_confirmed_total,
+            self.diag_max_susp_age_ns,
+            self.diag_confirm_threshold_ns,
+            self.diag_expire_threshold_ns,
+        )
+    }
+
+    /// [TEŞHİS] Tick kapsamı: `(tick_count, tick_span_ns)`. Confirm eşiği koşunun AKTİF
+    /// tick penceresinden uzunsa hiçbir olay o eşiğe ULAŞAMAZ — bu ayrım tick kapsamı
+    /// görünmeden yapılamaz.
+    #[must_use]
+    pub fn diag_tick_span(&self) -> (u64, u64) {
+        (
+            self.diag_tick_count,
+            self.diag_last_tick_ns
+                .saturating_sub(self.diag_first_tick_ns),
+        )
+    }
+
+    /// [FEC-RISK ENSTRÜMAN] `(t_first_suspected_ns, t_first_confirmed_ns)`; 0 = hiç olmadı.
+    /// Aradaki fark, kanonik kayıp sinyalinin ÖLÜ ZAMANIDIR.
+    #[must_use]
+    pub fn diag_first_loss_times(&self) -> (u64, u64) {
+        (
+            self.diag_t_first_suspected_ns,
+            self.diag_t_first_confirmed_ns,
+        )
     }
 
     /// Audit: toplam geri-alınan (Spurious) birim.
@@ -327,6 +631,11 @@ impl LossDetector for ThresholdLossDetector {
             {
                 ev.state = LedgerState::Spurious;
                 self.spurious_units_total += ev.units;
+                // [PERSIST] reorder ömrü örneği: ilan → un-loss süresi (bounded halka).
+                let age = now_ns.saturating_sub(ev.declared_ns);
+                self.spurious_ages[self.spurious_age_idx] = age;
+                self.spurious_age_idx = (self.spurious_age_idx + 1) % SPURIOUS_AGE_RING;
+                self.spurious_age_len = (self.spurious_age_len + 1).min(SPURIOUS_AGE_RING);
                 self.unlossed.push(seq);
             }
             if !self.have_acked || seq > self.largest_acked {

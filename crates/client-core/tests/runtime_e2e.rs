@@ -462,3 +462,534 @@ async fn fec_static_r_recovers_permanently_erased_units_over_udp() {
     );
     assert_eq!(cs.undelivered, 0, "RECOVERED sonrası residue yok: {cs:?}");
 }
+
+// ── [S1B] Production fragmenter ──────────────────────────────────────────────────────────────
+//
+// Fragmenter'dan ÖNCE: FEC yolu tek symbol'e sığmayan mesajı TAŞIYAMIYORDU (profil 0x03'te 53 B
+// tavan; `chunk_offset` sabit 0'dı). Bu yüzden 256 B'lık benchmark yükü FEC ile hiç koşulamadı.
+// Aşağıdaki testler tavanın kalktığını ve mesaj bütünlüğünün korunduğunu mühürler.
+
+/// Profil 0x03'te (E=64, chunk 48 B) 1000 B'lık mesaj = 21 chunk. Mesaj TAM ve BYTE-EŞ teslim
+/// edilmeli; app'e ACK yalnız TÜM chunk'lar teyitlendiğinde bir kez gelmeli.
+#[tokio::test(flavor = "multi_thread")]
+async fn fragmenter_carries_a_message_far_larger_than_one_fec_symbol() {
+    use client_core::runtime::FecRuntimeConfig;
+    const MSG_LEN: usize = 1000;
+    let cfg = || RuntimeConfig {
+        max_unit_bytes: 48,            // 48 + 11 = 59 ≤ E(64)
+        max_message_bytes: Some(4096), // > max_unit_bytes ⇒ fragmenter AÇIK
+        fec: Some(FecRuntimeConfig {
+            profile_id: 0x03,
+            manual_r: Some(4),
+        }),
+        drain_cap: Duration::from_millis(300),
+        ..RuntimeConfig::default()
+    };
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("server bind");
+    let mut client = ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam))
+        .await
+        .expect("client connect");
+
+    // Deterministik, konum-duyarlı desen: yanlış sırada birleşen bir mesaj EŞİT ÇIKAMAZ.
+    let msg: Vec<u8> = (0..MSG_LEN).map(|i| (i % 251) as u8).collect();
+    client.send(msg.clone()).expect("offer");
+
+    let got = tokio::time::timeout(Duration::from_secs(10), server.next_delivery())
+        .await
+        .expect("teslim zaman aşımı")
+        .expect("teslim kanalı kapandı");
+    assert_eq!(
+        got.payload.len(),
+        MSG_LEN,
+        "mesaj TAM boyuyla teslim edilmeli (yarım mesaj asla akmamalı)"
+    );
+    assert_eq!(got.payload, msg, "byte-eş yeniden birleştirme");
+    assert_eq!(
+        got.unit_id, 0,
+        "fragmentasyonda teslim kimliği MESAJ id'sidir"
+    );
+
+    let acked = tokio::time::timeout(Duration::from_secs(10), client.acked())
+        .await
+        .expect("ACK zaman aşımı")
+        .expect("ACK akışı kapandı");
+    assert_eq!(acked, 0, "app'e ACK mesaj granülünde (id 0) gelir");
+
+    let cs = client.shutdown().await;
+    let ss = server.shutdown().await;
+    assert_eq!(cs.offered, 1, "app TEK mesaj sundu: {cs:?}");
+    assert_eq!(cs.messages_acked, 1, "TEK mesaj ACK'i: {cs:?}");
+    assert_eq!(
+        cs.frag_encode_failures, 0,
+        "canonical serialize hatası olmamalı: {cs:?}"
+    );
+    // 1000 B / 48 B = 21 chunk → 21 birim ACK'i, tek mesaj ACK'i.
+    assert_eq!(cs.acked, 21, "chunk sayısı kadar birim ACK'i: {cs:?}");
+    assert_eq!(ss.msgs_reassembled, 1, "bir mesaj birleştirildi: {ss:?}");
+    assert_eq!(ss.frag_chunks_rx, 21, "21 chunk alındı: {ss:?}");
+    assert_eq!(
+        ss.delivered, 1,
+        "app'e TEK teslim (chunk başına değil): {ss:?}"
+    );
+}
+
+/// Fragmenter + FEC kurtarımı BİRLİKTE: bir chunk'ın DATA'sı kalıcı düşse bile mesaj
+/// repair'lerden kurtarılıp TAM teslim edilmeli — kurtarılan symbol'ün prefix'i mesaj
+/// kimliğini ve offset'ini taşıdığı için birleştirici onu normal chunk gibi kabul eder.
+#[tokio::test(flavor = "multi_thread")]
+async fn fragmenter_message_survives_a_permanently_erased_chunk_via_fec() {
+    use client_core::runtime::FecRuntimeConfig;
+    const MSG_LEN: usize = 300; // 48 B chunk → 7 chunk (son chunk 12 B)
+    let cfg = || RuntimeConfig {
+        max_unit_bytes: 48,
+        max_message_bytes: Some(4096),
+        fec: Some(FecRuntimeConfig {
+            profile_id: 0x03,
+            manual_r: Some(4),
+        }),
+        drain_cap: Duration::from_millis(300),
+        ..RuntimeConfig::default()
+    };
+    // unit 3'ün DATA'sı KALICI düşer; repair'ler (FRAME_FEC) geçer → RS kurtarmalı.
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg(),
+        Box::new(fec_seam::DropUnitsSeam(&[3])),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam))
+        .await
+        .expect("client connect");
+
+    let msg: Vec<u8> = (0..MSG_LEN).map(|i| (i % 251) as u8).collect();
+    client.send(msg.clone()).expect("offer");
+    // Blok K=8'e ulaşsın diye ikinci bir mesaj (7 + 7 = 14 birim → ilk blok dolar, latch koşar).
+    client.send(msg.clone()).expect("offer 2");
+
+    let got = tokio::time::timeout(Duration::from_secs(15), server.next_delivery())
+        .await
+        .expect("teslim zaman aşımı")
+        .expect("teslim kanalı kapandı");
+    assert_eq!(got.payload, msg, "silinen chunk'a rağmen byte-eş mesaj");
+
+    let cs = client.shutdown().await;
+    let ss = server.shutdown().await;
+    assert!(
+        ss.fec_recovered_units >= 1 || cs.acked >= 14,
+        "kayıp chunk ya FEC ile kurtarıldı ya ARQ ile tamamlandı: server={ss:?} client={cs:?}"
+    );
+    assert_eq!(ss.frag_chunk_dropped, 0, "sınır ihlali olmamalı: {ss:?}");
+}
+
+/// Mesaj tavanı bounds-before-alloc: tavanı aşan offer typed reddedilir (fragmenter sınırsız
+/// bellek tüketmez), ve `max_message_bytes < max_unit_bytes` kurulumu koşu-öncesi reddedilir.
+#[tokio::test(flavor = "multi_thread")]
+async fn fragmenter_bounds_are_typed_and_enforced_before_the_run() {
+    let cfg = RuntimeConfig {
+        max_unit_bytes: 48,
+        max_message_bytes: Some(256),
+        ..RuntimeConfig::default()
+    };
+    let server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg.clone(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(server.local_addr(), cfg, Box::new(IdentitySeam))
+        .await
+        .expect("client connect");
+    match client.send(vec![0u8; 257]) {
+        Err(RuntimeError::UnitTooLarge { got, cap }) => {
+            assert_eq!(got, 257);
+            assert_eq!(cap, 256, "tavan MESAJ tavanıdır (birim tavanı değil)");
+        }
+        other => panic!("tavan aşımı typed reddedilmeliydi, alınan: {other:?}"),
+    }
+    client
+        .send(vec![0u8; 256])
+        .expect("tavandaki mesaj kabul edilmeli");
+    let _ = client.shutdown().await;
+    let _ = server.shutdown().await;
+
+    // Tutarsız kurulum: mesaj tavanı birim tavanının ALTINDA olamaz.
+    let bad = RuntimeConfig {
+        max_unit_bytes: 100,
+        max_message_bytes: Some(50),
+        ..RuntimeConfig::default()
+    };
+    match ServerEndpoint::bind("127.0.0.1:0".parse().unwrap(), bad, Box::new(IdentitySeam)).await {
+        Err(RuntimeError::FecConfig(m)) => {
+            assert!(
+                m.contains("max_message_bytes"),
+                "gerekçe alanı adlandırmalı: {m}"
+            );
+        }
+        Err(other) => panic!("yanlış typed red: {other:?}"),
+        Ok(_) => panic!("tutarsız fragmenter kurulumu koşu-öncesi reddedilmeliydi"),
+    }
+}
+
+// ── [DR-CS-3] Cold-start bootstrap-RTT kablolaması ───────────────────────────────────────────
+//
+// Kablolama boşluğu: motor CS-probe kararını ZATEN üretiyordu (`bs_maybe_emit_probe`, sevk
+// yolunda, cargo-feature'sız) ve echo'yu ZATEN işliyordu (`bs_on_echo`, UNGATED) — ama v0 wire
+// kabuğunda taşıyıcı çerçeve yoktu, karar `stale_decisions`'a düşüp atılıyordu. Yani mekanizma
+// iki uçta yazılı, ortası kopuktu; `set_bootstrap_rtt`'nin yedi çağrı yerinin hepsi TESTTİ.
+
+mod cs_seam {
+    use client_core::seam::{
+        OpenReject, OpenedDatagram, SealArgs, SealError, SealedDatagram, SeamPeer, SecuritySeam,
+        IDENTITY_TAG,
+    };
+    use client_core::wire::{FRAME_CS_ECHO, FRAME_CS_PROBE};
+
+    /// IdentitySeam + "DATA yolu tamamen ölü" kanalı: yalnız CS-probe/echo geçer.
+    /// Böylece ACK ASLA gelmez → oturum ancak bootstrap-RTT ile PreConverge'den çıkabilir.
+    pub struct OnlyCsSeam;
+
+    impl SecuritySeam for OnlyCsSeam {
+        fn seal(
+            &mut self,
+            _peer: SeamPeer,
+            mut frame: Vec<u8>,
+            args: SealArgs,
+        ) -> Result<SealedDatagram, SealError> {
+            frame.resize(frame.len() + IDENTITY_TAG, 0);
+            Ok(SealedDatagram {
+                bytes: frame,
+                full_wire_pn: args.wire_pn,
+                dh_epoch: args.dh_epoch,
+            })
+        }
+        fn open(&mut self, wire: &[u8]) -> Result<OpenedDatagram, OpenReject> {
+            if wire.len() <= IDENTITY_TAG {
+                return Err(OpenReject::Malformed);
+            }
+            let plain = &wire[..wire.len() - IDENTITY_TAG];
+            match plain.first() {
+                Some(&FRAME_CS_PROBE) | Some(&FRAME_CS_ECHO) => Ok(OpenedDatagram {
+                    peer: 0,
+                    plain: plain.to_vec(),
+                }),
+                _ => Err(OpenReject::AuthFail), // DATA/ACK: kalıcı silme
+            }
+        }
+        fn sealed_len(&self, frame_len: usize) -> usize {
+            frame_len + IDENTITY_TAG
+        }
+    }
+}
+
+/// Kablolama kanıtı: ACK'in ASLA gelmediği bir kanalda, bootstrap AÇIKKEN probe wire'a çıkar,
+/// alıcı echo döner ve gönderen echo'yu motora besler. KAPALIYKEN hiçbiri olmaz (sevk davranışı).
+///
+/// Merdivenin ilk basamağı 3 s (`BS_FIRES_NS[0]`), bu yüzden test ~5 s koşar.
+#[tokio::test(flavor = "multi_thread")]
+async fn bootstrap_rtt_probe_and_echo_traverse_the_product_wire() {
+    let cfg = |bootstrap: bool| RuntimeConfig {
+        bootstrap_rtt: bootstrap,
+        drain_cap: Duration::from_millis(100),
+        ..RuntimeConfig::default()
+    };
+
+    // ── Kol 1: bootstrap AÇIK ──
+    let server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg(true),
+        Box::new(cs_seam::OnlyCsSeam),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(server.local_addr(), cfg(true), Box::new(IdentitySeam))
+        .await
+        .expect("client connect");
+    client.send(b"tetikleyici".to_vec()).expect("offer"); // PreConverge'i başlatır
+    tokio::time::sleep(Duration::from_millis(5_000)).await;
+    let on_c = client.shutdown().await;
+    let on_s = server.shutdown().await;
+
+    assert!(
+        on_c.cs_probes_tx > 0,
+        "bootstrap AÇIKKEN probe wire'a çıkmalı (eskiden stale_decisions'a düşüyordu): {on_c:?}"
+    );
+    assert!(on_s.cs_probes_rx > 0, "alıcı probe'u görmeli: {on_s:?}");
+    assert_eq!(
+        on_s.cs_echoes_tx, on_s.cs_probes_rx,
+        "her probe'a tam bir echo (idempotent-stateless): {on_s:?}"
+    );
+    assert!(
+        on_c.cs_echoes_rx > 0,
+        "gönderen echo'yu almalı — RTT örneğinin TEK kaynağı: {on_c:?}"
+    );
+    assert_eq!(on_c.acked, 0, "önkoşul: bu kanalda ACK yolu ölü olmalı");
+
+    // ── Kol 2: bootstrap KAPALI (sevk davranışı) — hiçbir probe üretilmemeli ──
+    let server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg(false),
+        Box::new(cs_seam::OnlyCsSeam),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(server.local_addr(), cfg(false), Box::new(IdentitySeam))
+        .await
+        .expect("client connect");
+    client.send(b"tetikleyici".to_vec()).expect("offer");
+    tokio::time::sleep(Duration::from_millis(5_000)).await;
+    let off_c = client.shutdown().await;
+    let off_s = server.shutdown().await;
+    assert_eq!(
+        off_c.cs_probes_tx, 0,
+        "bootstrap KAPALIYKEN probe olmamalı: {off_c:?}"
+    );
+    assert_eq!(off_s.cs_probes_rx, 0, "alıcı da görmemeli: {off_s:?}");
+}
+
+/// [IW] Sevk default'u ARTIK ilk-uçuş penceresini AÇIK gönderir — bu bir clamp hatasının
+/// düzeltilmesidir (pacer kovası zaten `DEFAULT_BURST_CAP` kredisiyle dolu başlıyordu, clamp
+/// onu tek birime kırpıp atıyordu). Ölçüm: sevk davranışı netem'de 6/12 çöküyordu, pencere
+/// açıkken 0/12.
+#[test]
+fn shipped_default_now_carries_an_initial_window() {
+    let d = RuntimeConfig::default();
+    assert_eq!(
+        d.initial_window_bytes,
+        adaptive_transport::pacer::DEFAULT_BURST_CAP,
+        "ilk-uçuş penceresi pacer'ın kendi başlangıç kredisi olmalı (yeni sabit DEĞİL)"
+    );
+    assert!(
+        d.initial_window_bytes > 1200,
+        "tek pakete kırpılmış bir pencere kuruluşu yazı-turaya çevirir"
+    );
+    // Diğer ayırt edici mekanizmalar KALİBRASYON beklediği için opt-in kalır (R1).
+    assert!(
+        !d.bootstrap_rtt,
+        "bootstrap merdiveni kalibre değil → opt-in"
+    );
+    assert!(
+        d.fec.is_none(),
+        "FEC default'u ürün-katmanı kampanyası bekliyor"
+    );
+}
+
+/// [GÖRÜNÜRLÜK] Bir koşunun oturumu KURUP kurmadığı artık ürün istatistiğinden okunabilir.
+/// Bu ayrım olmadan bir "düşük teslim" sonucu, FEC/ARQ performansı mı yoksa kuruluş başarısızlığı
+/// mı olduğu AYIRT EDİLEMİYORDU — iki ayın yanlış sonuçlarının bir kısmı tam bu körlükten geldi.
+/// `left_preconverge` MONOTONdur, dolayısıyla kapanış-anı örneklemesinden bağımsızdır.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_reports_whether_the_session_ever_established() {
+    // Kurulabilen oturum: gerçek sunucu.
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("bind");
+    let client = ClientEndpoint::connect(
+        server.local_addr(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("connect");
+    client.send(b"kurulus".to_vec()).expect("offer");
+    let _ = tokio::time::timeout(Duration::from_secs(5), server.next_delivery()).await;
+    let ok = client.shutdown().await;
+    let _ = server.shutdown().await;
+    assert!(
+        ok.fate.left_preconverge,
+        "ACK alan bir koşu PreConverge'den ÇIKMIŞ olmalı: {:?}",
+        ok.fate
+    );
+    assert_ne!(
+        ok.fate.sender_state, "PreConverge",
+        "kapanışta faz PreConverge olmamalı: {:?}",
+        ok.fate
+    );
+
+    // Kurulamayan oturum: ölü hedef → faz PreConverge'de kalır.
+    let dead = ClientEndpoint::connect(
+        "127.0.0.1:9".parse().unwrap(),
+        RuntimeConfig {
+            drain_cap: Duration::from_millis(50),
+            ..RuntimeConfig::default()
+        },
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("connect");
+    dead.send(b"olu-hedef".to_vec()).expect("offer");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let bad = dead.shutdown().await;
+    assert!(
+        !bad.fate.left_preconverge,
+        "ACK'siz koşu kuruluşu TAMAMLAMAMIŞ olmalı: {:?}",
+        bad.fate
+    );
+    assert_eq!(bad.fate.sender_state, "PreConverge", "{:?}", bad.fate);
+}
+
+// ── [DEADLINE-EKSENİ] uçtan uca kablolama ────────────────────────────────────────────────────
+//
+// NEDEN BU TEST VAR: bu reponun kronik kusuru "kod var, kablo yok" — `fusion_policy.rs` 659
+// satırlık kalibre bir karar katmanıydı ve ÜRETİMDE SIFIR çağıranı vardı. Aynı şeyin deadline
+// ekseninde tekrar etmemesi için, app'in bildirdiği bütçenin MOTORA ULAŞTIĞI ürün yolundan
+// gözlemleniyor. Birim testi politikayı doğrular; bu test KABLOYU doğrular.
+
+/// `send_with_deadline` ile bildirilen bütçe motora ulaşır ve kapanış diyagnostiğinde görünür;
+/// birden çok bildirimde EN SIKI olan tutulur (politika en kısıtlayıcı gereksinimi görmeli).
+#[tokio::test(flavor = "multi_thread")]
+async fn declared_deadline_reaches_the_engine_and_keeps_the_tightest() {
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(
+        server.local_addr(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("client connect");
+
+    client
+        .send_with_deadline(b"gevsek".to_vec(), Some(900_000_000))
+        .expect("offer");
+    client
+        .send_with_deadline(b"siki".to_vec(), Some(400_000_000))
+        .expect("offer");
+    client.send(b"bildirimsiz".to_vec()).expect("offer");
+
+    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut d = 0u64;
+        while d < 3 {
+            if server.next_delivery().await.is_some() {
+                d += 1;
+            }
+        }
+    })
+    .await;
+
+    let stats = tokio::time::timeout(Duration::from_secs(10), client.shutdown())
+        .await
+        .expect("shutdown");
+    assert_eq!(
+        stats.fate.declared_deadline_ns,
+        Some(400_000_000),
+        "en sıkı bütçe tutulmalı (bildirimsiz offer bunu GEVŞETMEMELİ): {:?}",
+        stats.fate.declared_deadline_ns
+    );
+    let _ = server.shutdown().await;
+}
+
+/// Hiç bütçe bildirilmezse alan `None` kalır — sessizce bir varsayılan UYDURULMAZ. Bu, kalibre
+/// politikanın `NoDeadlineDeclared` ile ArqOnly'ye düşmesinin ürün-yolu önkoşuludur: ölçüm,
+/// bütçe bilinmeden kayıp oranından FEC açmanın YANLIŞ olduğunu gösterdi.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_declaration_stays_none_rather_than_inventing_a_default() {
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(
+        server.local_addr(),
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam),
+    )
+    .await
+    .expect("client connect");
+
+    for i in 0..4u32 {
+        client
+            .send(format!("bildirimsiz-{i}").into_bytes())
+            .expect("offer");
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut d = 0u32;
+        while d < 4 {
+            if server.next_delivery().await.is_some() {
+                d += 1;
+            }
+        }
+    })
+    .await;
+
+    let stats = tokio::time::timeout(Duration::from_secs(10), client.shutdown())
+        .await
+        .expect("shutdown");
+    assert_eq!(stats.fate.declared_deadline_ns, None);
+    assert!(
+        stats.fate.fusion_actions.iter().all(|&c| c == 0),
+        "politika varsayılan KAPALI olmalı (kalibrasyon opt-in): {:?}",
+        stats.fate.fusion_actions
+    );
+    let _ = server.shutdown().await;
+}
+
+/// [HANDOFF ENSTRÜMANI] Örnekleme açıkken zaman serisi DOLMALI — "inert örnekleyici" sınıfı
+/// (handoff ailesinde ts.csv yalnız başlıkla çıktı) burada yakalanır. Kapalıyken boş kalır.
+#[tokio::test(flavor = "multi_thread")]
+async fn ts_sampler_fills_when_enabled_and_stays_empty_when_disabled() {
+    for (period, expect_nonempty) in [(Some(1_000_000u64), true), (None, false)] {
+        let mut server = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            RuntimeConfig::default(),
+            Box::new(IdentitySeam),
+        )
+        .await
+        .expect("server bind");
+        let cfg = RuntimeConfig {
+            ts_sample_period_ns: period,
+            ..RuntimeConfig::default()
+        };
+        let client = ClientEndpoint::connect(server.local_addr(), cfg, Box::new(IdentitySeam))
+            .await
+            .expect("client connect");
+        for i in 0..8u32 {
+            client.send(format!("ts-{i}").into_bytes()).expect("offer");
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut d = 0;
+            while d < 8 {
+                if server.next_delivery().await.is_some() {
+                    d += 1;
+                }
+            }
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let stats = tokio::time::timeout(Duration::from_secs(5), client.shutdown())
+            .await
+            .expect("shutdown");
+        assert_eq!(
+            !stats.ts.is_empty(),
+            expect_nonempty,
+            "period={period:?} → ts.len()={}",
+            stats.ts.len()
+        );
+        if expect_nonempty {
+            assert!(stats.ts.len() <= client_core::runtime::TS_CAP);
+            assert!(
+                stats.ts.windows(2).all(|w| w[1].0 >= w[0].0),
+                "zaman monoton olmalı"
+            );
+        }
+        let _ = server.shutdown().await;
+    }
+}

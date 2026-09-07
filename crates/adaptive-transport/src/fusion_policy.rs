@@ -39,6 +39,16 @@ pub struct CalibrationVersion {
 
 /// The feature schema this build produces observations for.
 pub const FEATURE_SCHEMA_V1: u32 = 1;
+/// [DEADLINE-EKSENİ] v2: `FusionObservation` teslim-bütçesi/srtt oranını taşır.
+///
+/// NEDEN YENİ ŞEMA: FEC-MARGINAL-R v1+v2 (480 rep, ön-kayıtlı, replikasyonlu) ölçtü ki proaktif
+/// redundancy'nin değeri **kayıp oranına değil, teslim bütçesinin RTT'ye oranına** bağlıdır.
+/// AYNI kanalda (%20 kayıp), aynı kol, aynı byte: bütçe 2×RTT iken +10..+19 pp, 4×RTT iken
+/// +1.0..+1.5 pp, 16×RTT iken ≈0 veya negatif. Sebep mekanik: ARQ'nun her kurtarma turu ≥1 RTT;
+/// bütçe birkaç RTT ise ARQ yetişir ve parity israftır, ~2 RTT'ye inince ARQ'nun turu SIĞMAZ.
+/// Dolayısıyla hiçbir kayıp eşiği bu kararı veremez — v1 kolları da bunu doğruladı (aynı %20'de
+/// zıt cevaplar). Bu eksen olmadan kalibrasyon YANLIŞ DEĞİŞKENİ ölçer.
+pub const FEATURE_SCHEMA_V2: u32 = 2;
 
 /// Reason a bounded fallback was taken (observation-only; every variant ⇒ `ArqOnly` behaviour).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +61,11 @@ pub enum FallbackReason {
     StaleTelemetry,
     /// Flow has not converged (no RTT samples) — jitter/PTO inputs untrustworthy.
     ColdStart,
+    /// [DEADLINE-EKSENİ] Uygulama teslim bütçesi BİLDİRMEDİ → kararın dayanacağı eksen yok.
+    /// Kayıp oranından FEC açmak ölçümün ÇÜRÜTTÜĞÜ şeydir; bilgi yoksa ArqOnly.
+    NoDeadlineDeclared,
+    /// [DEADLINE-EKSENİ] Bütçe kalibre edilen sıkılık bandının DIŞINDA (çok gevşek) → parity israf.
+    DeadlineTooLoose,
     /// Observation outside the calibrated supported region.
     UnsupportedRegion,
     /// Observation inside the region but with insufficient confidence.
@@ -79,6 +94,11 @@ pub struct FusionObservation {
     pub converged: bool,
     /// True when a product FEC send path is actually available to actuate.
     pub fec_actuation_available: bool,
+    /// [DEADLINE-EKSENİ] Uçuştaki en SIKI teslim bütçesinin srtt'ye oranı, per-mille
+    /// (`1000` = bütçe tam bir srtt; `2000` = iki srtt). `None` = uygulama bütçe bildirmedi.
+    ///
+    /// Prefix-kausal: bütçe app'ten OFFER anında gelir, srtt zaten ölçülüdür. Gelecek bilgisi yok.
+    pub deadline_over_srtt_permille: Option<u32>,
 }
 
 /// What the policy would like to do (advisory; not yet safety-checked).
@@ -107,6 +127,38 @@ pub enum FusionAction {
     },
     /// Safe fallback with an attributed reason.
     FallbackArq(FallbackReason),
+}
+
+/// [TEŞHİS] `FusionAction` histogram kovaları. "Politika neden ateşlemedi" sorusu, ret
+/// sebebi sayılmadan cevaplanamaz — bu repoda aynı hata yapı-gate'te bir kez yaşandı
+/// (tek kovaya yığılan ret, vakum sayaç).
+pub const FUSION_ACTION_KINDS: usize = 12;
+
+impl FusionAction {
+    /// Histogram indeksi: 0=ArqOnly · 1=FecAssist · 2..=11 fallback sebepleri.
+    #[must_use]
+    pub fn index(&self) -> usize {
+        match self {
+            Self::ArqOnly => 0,
+            Self::FecAssist { .. } => 1,
+            Self::FallbackArq(r) => 2 + Self::reason_index(*r),
+        }
+    }
+
+    fn reason_index(r: FallbackReason) -> usize {
+        match r {
+            FallbackReason::PolicyDisabled => 0,
+            FallbackReason::VersionMismatch => 1,
+            FallbackReason::UnsupportedRegion => 2,
+            FallbackReason::LowConfidence => 3,
+            FallbackReason::StaleTelemetry => 4,
+            FallbackReason::ColdStart => 5,
+            FallbackReason::InvalidInput => 6,
+            FallbackReason::SafetyRejected | FallbackReason::FecUnavailable => 7,
+            FallbackReason::NoDeadlineDeclared => 8,
+            FallbackReason::DeadlineTooLoose => 9,
+        }
+    }
 }
 
 impl FusionAction {
@@ -156,6 +208,10 @@ pub struct SupportedRegion {
     pub bandwidth_bps_min: u64,
     /// Inclusive bandwidth bounds (bytes/sec) of the tested regime.
     pub bandwidth_bps_max: u64,
+    /// [DEADLINE-EKSENİ] Kalibrasyonun geçerli olduğu SIKILIK tavanı (per-mille).
+    /// Bütçe/srtt bunun ÜSTÜNDEYSE (daha gevşek) parity ölçülü olarak israftır → `DeadlineTooLoose`.
+    /// `u32::MAX` = bu eksende kısıt yok (v1 kalibrasyonları; ekseni hiç ölçmemişlerdi).
+    pub deadline_over_srtt_permille_max: u32,
 }
 
 /// Calibrated loss membership boundary (per calibration-v1). Integer, deterministic, no RNG.
@@ -204,6 +260,7 @@ impl FusionPolicy {
                 loss_ppm_max: 0,
                 bandwidth_bps_min: 1,
                 bandwidth_bps_max: 0,
+                deadline_over_srtt_permille_max: u32::MAX,
             },
             fec_high_permille: 0,
             safety: FusionSafetyConfig::default(),
@@ -220,7 +277,21 @@ impl FusionPolicy {
                 version: 1,
                 feature_schema: FEATURE_SCHEMA_V1,
             },
-            // Evidence: ARQ_TAIL Pareto-dominant at 20_833..83_333 ppm; FEC_R2 Pareto-dominant at 200_000 ppm.
+            // **[DAYANAK BORCU — 2026-09-04] BU BANT KENARLARI TÜRETİLEMEZ.**
+            // Eski gerekçe: "ARQ_TAIL Pareto-dominant at 20_833..83_333 ppm; FEC_R2
+            // Pareto-dominant at 200_000 ppm". İki sebeple çöktü:
+            //  1. O kıyas (ARQ_TAIL r0) vs (FEC_R2, DONMUŞ tail-kör ARQ) — İKİ ORTOGONAL EKSENİ
+            //     aynı anda değiştirir ve `FRAMING-CORRIGENDUM.md:24-28` uyarınca "not a valid
+            //     contrast under any framing"; §2 decision-regions SUPERSEDED işaretli.
+            //  2. Kaynak grid (R2A) loss ORANINI loss YAPISIYLA karıştırır: S1/S2 pozisyonel
+            //     silme (48 symbol'ün %2-8'i), S3 IID %20. Nominal ppm'ler jeneratör
+            //     artefaktıdır (20_833 = 1/48, 41_666 = 2/48, 83_333 = 4/48). Raporun kendi
+            //     hükmü: "a production FEC-activation threshold cannot be derived from
+            //     loss_ppm alone from R2A."
+            // Sonuç: aşağıdaki dört kenar (90k/140k/160k/200k) ÖLÇÜLMÜŞ bir geçiş noktasını
+            // temsil ETMEZ. Politika opt-in ve default `disabled()` olduğu için sevk edilen
+            // davranış etkilenmez; bu kalibrasyon ancak ürün-katmanında FEC kollu, oran×yapı
+            // çaprazlanmış bir grid'den YENİDEN türetildikten sonra açılabilir.
             loss: LossBoundary {
                 low_full_ppm: 90_000,
                 low_zero_ppm: 140_000,
@@ -231,10 +302,77 @@ impl FusionPolicy {
                 loss_ppm_max: 200_000,
                 bandwidth_bps_min: 100_000,
                 bandwidth_bps_max: 125_000,
+                // v1 bu ekseni HİÇ ölçmedi → kısıt yok (ve bu yüzden yanlış değişkeni kalibre etti).
+                deadline_over_srtt_permille_max: u32::MAX,
             },
             fec_high_permille: 800,
             safety: FusionSafetyConfig::default(),
         }
+    }
+
+    /// [DEADLINE-EKSENİ] `calibration-v2-deadline` — FEC-MARGINAL-R v1+v2'den TÜRETİLDİ.
+    ///
+    /// KANIT (480 rep, iki ön-kayıtlı kampanya, ikincisi birincinin REPLİKASYONU):
+    /// `reports/fec-marginal-r-v1/FINAL-REPORT.md`, `.../v2/FINAL-REPORT.md`.
+    /// Birincil uç nokta d_msg = 2×RTT, alıcı-taraflı teslim, n=60/(kol×hücre):
+    ///   iid20  r0 0.569 [0.534,0.596] → r2 0.673 [0.601,0.736]  Δ=+10.4 pp  CI-AYRIK
+    ///   cor20  r0 0.555 [0.505,0.596] → r2 0.747 [0.702,0.780]  Δ=+19.2 pp  CI-AYRIK
+    /// Çöküş oranı hiçbir kolda CI-ayrık artmadı. Maliyet +23/+24% byte/teslim.
+    ///
+    /// SEVİYE: `r = 2` (K=8'de 250‰). v1 ölçtü ki r=4, r=2'nin üstüne kurtarma EKLEMEZ
+    /// (781 vs 782 birim) ama iki katı parity gönderir → verim 0.16'dan 0.08'e düşer.
+    ///
+    /// BÖLGE DAR ve bilerek öyle: ölçüm TEK kayıp noktası (%20), TEK RTT (200 ms), TEK bant
+    /// (1 mbit), TEK yük (256 B) içerir. Bölge dışında doğrulayıcı `UnsupportedRegion` /
+    /// `DeadlineTooLoose` ile `ArqOnly`'ye düşer — yani ölçülmemiş hiçbir yerde parity açılmaz.
+    /// Bölgeyi genişletmek yeni kampanya ister.
+    #[must_use]
+    pub fn calibration_v2_deadline() -> Self {
+        Self {
+            enabled: true,
+            version: CalibrationVersion {
+                id: "FEC-MARGINAL-R-V2",
+                version: 2,
+                feature_schema: FEATURE_SCHEMA_V2,
+            },
+            // Kayıp ekseni artık KAPI değil, yalnız "kurtarılacak bir şey var mı" tabanı:
+            // ölçüm %20'de yapıldı; çok düşük kayıpta kurtarılacak bir şey olmadığından LOW kalır.
+            loss: LossBoundary {
+                low_full_ppm: 50_000,
+                low_zero_ppm: 120_000,
+                high_start_ppm: 150_000,
+                high_full_ppm: 200_000,
+            },
+            region: SupportedRegion {
+                loss_ppm_max: 250_000,
+                // [ÖLÇÜLDÜ 2026-09-04] Bu eksen LİNK KAPASİTESİ DEĞİL, motorun bildirdiği
+                // TESLİM hızıdır (`btlbw.btlbw()`). `calibration_v1` bu ayrımı kaçırdı: sınırını
+                // 1 mbit'in B/s karşılığı [100_000, 125_000] ile yazdı, motor ise aynı hücrede
+                // 35–58 kB/s bildiriyor → v1 bölgesi ürün yolunda HER ZAMAN `UnsupportedRegion`
+                // veriyordu (politika kablolansa bile ateşleyemezdi; pilot bunu doğruladı).
+                //
+                // Pilot ölçümü (3 koşu, iid20 + cor20, 1 mbit, %20 kayıp): gözlenen BtlBw
+                // aralığı (0, 57_664] B/s. Tavan ~1.4× marjla 80_000; üstü, kalibre edilenden
+                // maddi olarak HIZLI bir linktir → fence devreye girer. Taban 1: BtlBw = 0
+                // "henüz teslim sinyali yok" demektir ve zaten ColdStart/LowConfidence kapsar.
+                bandwidth_bps_min: 1,
+                bandwidth_bps_max: 80_000,
+                // ÖLÇÜLEN SIKILIK: d_msg = 2×RTT'de fayda, 4×RTT'de marjinal, 16×RTT'de israf.
+                // Tavanı 2.5×srtt'de tutuyoruz — ölçülen faydalı noktanın hemen üstü, ölçülen
+                // israf noktasının (4×) altı. Aradaki bant ölçülmedi, o yüzden kapalı.
+                deadline_over_srtt_permille_max: 2_500,
+            },
+            fec_high_permille: 250, // r = 2 @ K = 8
+            safety: FusionSafetyConfig::default(),
+        }
+    }
+
+    /// Bağımsız sert tavan (per-mille). [FEC-RISK v2] Arbiter bunu SPEKÜLATİF kola da uygular:
+    /// kalibre politika açıkken hiçbir kol politikanın sert tavanını aşamaz ("kalibrasyon yalnız
+    /// DAHA AZ isteyebilir; sert tavan üstte" sözleşmesi lane'ler arası da geçerli).
+    #[must_use]
+    pub fn hard_max_redundancy_permille(&self) -> u32 {
+        self.safety.hard_max_redundancy_permille
     }
 
     /// Override the independent safety bounds (safety configuration, not calibration).
@@ -363,6 +501,18 @@ impl FusionSafetyValidator {
         {
             return FusionAction::FallbackArq(R::UnsupportedRegion);
         }
+        // [DEADLINE-EKSENİ] Kalibrasyon bu ekseni kısıtlıyorsa, bütçe BİLDİRİLMİŞ ve ölçülen
+        // sıkılık bandının İÇİNDE olmalıdır. Bildirilmemişse karar dayanağı yoktur (kayıp
+        // oranından açmak ölçümün çürüttüğü şeydir); çok gevşekse parity ÖLÇÜLÜ olarak israftır.
+        if self.region.deadline_over_srtt_permille_max != u32::MAX {
+            match obs.deadline_over_srtt_permille {
+                None => return FusionAction::FallbackArq(R::NoDeadlineDeclared),
+                Some(d) if d > self.region.deadline_over_srtt_permille_max => {
+                    return FusionAction::FallbackArq(R::DeadlineTooLoose)
+                }
+                Some(_) => {}
+            }
+        }
         match policy.advise(obs) {
             FusionAdvice::ArqOnly => FusionAction::ArqOnly,
             FusionAdvice::FecAssist {
@@ -410,6 +560,8 @@ mod tests {
             telemetry_age_ns: 1_000_000,
             converged: true,
             fec_actuation_available: true,
+            // v1 şeması bu ekseni ölçmedi; v1 bölgesi kısıtsız olduğundan kararı etkilemez.
+            deadline_over_srtt_permille: None,
         }
     }
 

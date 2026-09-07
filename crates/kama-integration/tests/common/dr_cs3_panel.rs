@@ -2116,6 +2116,7 @@ fn run_panel_inner(
     }
     s.set_bootstrap_rtt(BootstrapRttConfig {
         enabled: cfg.bootstrap_on,
+        fires_ns: None,
     });
 
     // ── real authenticated control component with TEST-INJECTED directional keys ────────────

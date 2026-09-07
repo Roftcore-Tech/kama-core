@@ -712,6 +712,7 @@ fn build_arm(
     });
     s.set_bootstrap_rtt(BootstrapRttConfig {
         enabled: bootstrap_on,
+        fires_ns: None,
     });
     if parity.is_some() {
         s.set_manual_fec_enabled(true)

@@ -252,6 +252,357 @@ pub enum FecActuationMode {
     Controller,
 }
 
+/// [TEŞHİS] Yapı-gate'in karar yolu. `None`/`Some` ikilisi "açmadı"yı tek bir kovaya
+/// yığıyordu; NEDEN'i ayırt etmek için her çıkış noktası adlandırıldı. Sayımı çağıran yapar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateOutcome {
+    /// Fuzzy zaten parity planlamış — gate devreye girmez (kapsam dışı).
+    NotApplicable,
+    /// Ledger'ın pencereli kaybı Q18 bandının altında (`< STRUCTURE_GATE_LOSS_MIN_PPM`).
+    BlockedLossBelowBand,
+    /// [KURULUŞ-GUARD] Oturum henüz kurulmadı (PreConverge) → ölçüm yok → yapısal karar YOK.
+    BlockedPreConverge,
+    /// Fate penceresi çok küçük (`n < STRUCTURE_GATE_MIN_N`).
+    BlockedWindowTooSmall,
+    /// Kayıp-geçişi kanıtı yetersiz (`n10+n11 < MIN_LOSS_TRANSITIONS`) — yalnız `BurstFusion`.
+    BlockedNoTransitionEvidence,
+    /// Burst yapı okundu ve sevk politikası işi ARQ'ya bıraktı.
+    BlockedBurstLeftToArq,
+    /// Gate açtı; taşınan değer parity oranı (permille).
+    Opened(u32),
+}
+
+impl GateOutcome {
+    /// Histogram indeksi (0..[`GATE_OUTCOME_KINDS`]).
+    #[must_use]
+    pub fn index(self) -> usize {
+        match self {
+            Self::NotApplicable => 0,
+            Self::BlockedLossBelowBand => 1,
+            Self::BlockedWindowTooSmall => 2,
+            Self::BlockedNoTransitionEvidence => 3,
+            Self::BlockedBurstLeftToArq => 4,
+            Self::Opened(_) => 5,
+            Self::BlockedPreConverge => 6,
+        }
+    }
+}
+
+/// [`GateOutcome`] histogramının kova sayısı.
+pub const GATE_OUTCOME_KINDS: usize = 7;
+
+/// [IW] PreConverge **ilk-uçuş penceresi** (initial window).
+///
+/// SORUN: PreConverge'de pacing hızı `PRE_CONVERGE_FLOOR_BW` (31 B/s) olduğundan
+/// `window_bytes = rate × BURST_WINDOW_NS` ≈ 1 B çıkar ve burst-cap `front_size`'a clamp'lenir
+/// → **ilk uçuş TAM BİR PAKET**. Oysa `TokenBucket::new` kovayı `DEFAULT_BURST_CAP` (2400 B)
+/// kredisiyle DOLU başlatır; `set_burst_cap` o krediyi tek birime kırpıp ATAR.
+///
+/// Bu, handshake'sizliğin bedeli DEĞİLDİR — bir pacer clamp'idir. QUIC'in IW=10 (RFC 9002 §7.2,
+/// ≤14720 B) seçimi de congestion-control tercihidir, handshake ürünü değil. Kritik sonuç:
+/// PreConverge'den çıkış YALNIZ bir RTT örneğiyle olur ve örnek YALNIZ `TransmitKind::Data`
+/// emisyonlarından gelir (Karn, `on_ack` `p.origin == Data` kapısı) → ilk uçuştaki ORİJİNAL
+/// sayısı, kuruluş olasılığını doğrudan belirler: N orijinalle örnek alamama olasılığı
+/// `p_loss^N`. Tek pakette %50 kayıpta bu 0.5; on pakette ~0.001.
+///
+/// `bytes == 0` (DEFAULT) = mevcut davranış BİREBİR (clamp'e dokunulmaz). `>0` = PreConverge'de
+/// burst-cap tabanı bu değere yükseltilir; kova zaten dolu başladığından ilk uçuş bir-kerelik bu
+/// bütçeyi kullanır, SONRASINDA 31 B/s tabanı aynen geçerlidir (floor'un gerekçesi —
+/// "1 kbps kanalı floodlamaz" — SÜRDÜRÜLEN hız hakkındadır, ilk uçuş hakkında değil).
+///
+/// KALİBRE EDİLMEMİŞ: default flip ölçüm ister.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InitialWindowConfig {
+    /// İlk-uçuş bütçesi (byte). 0 = kapalı (sevk davranışı).
+    pub bytes: u64,
+}
+
+/// [BURST-FUSION] Yapı-gate'inin **burst** dalındaki politikası.
+///
+/// Sorun: `Q18Iid` (mevcut sevk davranışı) burst-yapı görünce parity'yi SIFIR bırakıp işi tamamen
+/// ARQ'ya devreder. Ürün runtime'ında ölçüldü (`client-core/examples/fec_arm_compare.rs`,
+/// GE p_gb=3% / p_bg=20% / loss_bad=60%): adaptif kol o kanalda `fec_bytes=0, blocks=0,
+/// repairs=0` üretir — yani kodlama HİÇ devreye girmez ve kol, mekanizma olarak FEC-kapalı kolun
+/// aynısı olur. Hostile ağ tam olarak o rejim olduğundan, ürünün ayırt edici mekanizması tam
+/// ihtiyaç duyulan yerde kapalı kalıyor.
+///
+/// Gerekçenin diğer yarısı da gerçek: uzun bir burst tek bloktaki `r` sınırını aşarsa parity
+/// israf olur. Ama doğru cevap "hiç kodlama" değil, **füzyon**dur (§8.4): parity ölçülen silme
+/// oranını paylı biçimde takip eder, artakalanı ARQ taşır.
+///
+/// **KALİBRE EDİLMEMİŞ — default `Q18Iid`.** R1 disiplini: kampanya görmemiş bir eşik sevk
+/// edilmez. `BurstFusion`'a geçmek netem matrisinde ölçülmüş bir kanıt ister; flip edilene kadar
+/// davranış ve wire byte-özdeştir.
+/// [FEC-RISK] **Deneysel** FEC kayıp-riski tahmincisi. Default **KAPALI** → davranış bugünküyle
+/// semantik olarak özdeş (kanonik `loss_windowed_ppm` tek girdi kalır).
+///
+/// NEDEN AYRI BİR SİNYAL: ARQ ile FEC farklı soru sorar.
+/// * ARQ: *"kaybolduğundan yeterince emin miyim?"* — gereksiz retransmit pahalı → `Confirmed` bekle
+/// * FEC: *"parity ekleyecek vaktim varken şu an ne kadar risk var?"* — blok tele çıkarken karar
+///
+/// Kanonik kayıp YENİDEN TANIMLANMAZ. `Suspected + Confirmed` toplamı kanonik metrik OLMAZ;
+/// bu ayrı bir olasılıksal okumadır ve TEK tüketicisi FEC karar yoludur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FecLossRiskConfig {
+    /// `false` (default) = kapalı; FEC girdisi kanonik `Confirmed` oranıdır.
+    pub enabled: bool,
+    /// `Suspected` olayların yaş→güven eğrisi. **KALİBRE EDİLMEMİŞ** — ölçümle belirlenecek.
+    pub weights: crate::loss::SuspectConfidence,
+    /// [CAL] L1 (bootstrap) parity tavanı, per-mille. Default 125‰ = K=8'de **1 repair**.
+    /// Belirsiz kanıta ucuz eylem: yanlış reorder sinyali en fazla bunu öder.
+    pub bootstrap_cap_permille: u32,
+    /// [CAL] L2 (persistent) tavanı, per-mille. Default 250‰ = K=8'de 2 repair — FEC-MARGINAL-R
+    /// v1/v2'nin ölçtüğü verimli nokta (r=4 iki katı byte'a AYNI kurtarmayı verdi).
+    pub persistent_cap_permille: u32,
+    /// [CAL] Persistence TABANI (ve `Fixed` modda eşiğin kendisi): `age ≥ srtt × bu / 1000`.
+    /// Default 500 = 0.5×srtt. ÖLÇÜLDÜ: test hücresinde reorder ömrü OWD'ye bağlı (0.5×RTT) —
+    /// çakışma tesadüf değil inşa gereği; sabit srtt-oranı reorder'ı modellemez.
+    pub persist_srtt_permille: u32,
+    /// [PERSIST] Ufuk modu: `FixedSrtt` (sevk, `persist_srtt_permille`) ya da
+    /// `LearnedSpuriousAge` = max(taban, ρ × Q_q(ölçülen spurious yaşı)); örnek yoksa taban.
+    pub persist_mode: PersistMode,
+    /// [CAL] Öğrenilen ufukta pay: ρ (per-mille, 1250 = ×1.25).
+    pub persist_rho_permille: u32,
+    /// [CAL] Öğrenilen ufukta quantile (per-mille, 950 = Q95). Ortalama DEĞİL: reorder kuyruklu.
+    pub persist_q_permille: u32,
+    /// [CAL] Ufuk tavanı (srtt per-mille; `u32::MAX` = tavan yok). Kuyruklanma geç ACK'leri
+    /// "spurious" gösterip ufku şişirebilir (tıkanıklıkta L2 gecikir) — bu sweep'te ÖLÇÜLMEDİ.
+    pub persist_cap_srtt_permille: u32,
+    /// [CAL] L1'in ateşlemesi için asgari instant risk (ppm). Gürültü tabanı; default 10 000.
+    pub l1_min_instant_ppm: u64,
+    /// [CAL] L2'nin ateşlemesi için asgari persistent risk (ppm). Default 10 000.
+    pub l2_min_persistent_ppm: u64,
+    /// [CAL] reorder_pressure'ın uygulanması için pencerede asgari olay birimi (küçük-n koruması).
+    pub reorder_min_evidence_units: u64,
+    /// [CAL] Tam reorder baskısında (1000‰) tavana uygulanan AZAMİ indirim, per-mille.
+    /// Default 500 → tavan en fazla yarıya iner. **Asla sıfıra inmez: discount, veto değil.**
+    pub reorder_discount_max_permille: u32,
+    /// [CAL] `deadline/srtt ≤ bu` ise bütçe SIKI → L1 bile persistent tavanı kullanır
+    /// (DEADLINE_ASSISTED). Default 2500 = `calibration_v2_deadline`'ın ölçülen kutusu.
+    pub tight_budget_permille: u32,
+    /// [YAPISAL] Spekülatif önerinin alt sınırı (per-mille) — indirimden SONRA uygulanır.
+    /// Denetim bulgusu: K=8'de `125‰ × 0.5 = 62‰` → `compute_requested_r` = **0** repair, yani
+    /// "indirim" yuvarlamayla VETO'ya dönüyordu. 63‰ = `ceil(1000/8)`: K≤8 profillerde ≥1 repair
+    /// garantisi. Motor K bilmez (INV-ENGINE-SOC) — bu yüzden sabit, profil-bağımsız bir taban;
+    /// K>8 profilde 1 repair için daha küçük ‰ yeterdi, taban yalnız ihtiyatlıdır.
+    pub spec_min_permille: u32,
+}
+
+impl Default for FecLossRiskConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            weights: crate::loss::SuspectConfidence::default(),
+            bootstrap_cap_permille: 125,
+            persistent_cap_permille: 250,
+            persist_srtt_permille: 500,
+            persist_mode: PersistMode::FixedSrtt,
+            persist_rho_permille: 1250,
+            persist_q_permille: 950,
+            persist_cap_srtt_permille: u32::MAX,
+            l1_min_instant_ppm: 10_000,
+            l2_min_persistent_ppm: 10_000,
+            reorder_min_evidence_units: 8,
+            reorder_discount_max_permille: 500,
+            tight_budget_permille: 2_500,
+            spec_min_permille: 63,
+        }
+    }
+}
+
+impl FecLossRiskConfig {
+    /// Deneysel kol AÇIK: arbiter + sınırlı spekülatif bootstrap (v2). `[CAL]` default'larla.
+    #[must_use]
+    pub fn experimental_v1() -> Self {
+        Self {
+            enabled: true,
+            ..Self::default()
+        }
+    }
+}
+
+/// [PERSIST] Persistence ufkunun kaynağı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PersistMode {
+    /// Sevk: sabit `persist_srtt_permille × srtt`.
+    #[default]
+    FixedSrtt,
+    /// Kanal-türevli: `max(taban, ρ × Q_q(spurious yaşı))`; örnek yoksa taban. Yalnız L2
+    /// tırmanışını frenler — L1 anında kalır (cold-start yapısal olarak korunur).
+    LearnedSpuriousAge,
+}
+
+/// [PERSIST] Öğrenilen ufuk (salt fonksiyon, deterministik): `max(floor, q×ρ/1000)`, tavanlı.
+#[must_use]
+pub fn learned_persist_min_ns(
+    floor_ns: u64,
+    quantile_ns: Option<u64>,
+    rho_permille: u32,
+    cap_ns: Option<u64>,
+) -> u64 {
+    let learned = quantile_ns.map_or(floor_ns, |q| {
+        floor_ns.max(q.saturating_mul(u64::from(rho_permille)) / 1000)
+    });
+    cap_ns.map_or(learned, |c| learned.min(c))
+}
+
+/// [FEC-RISK v2] Spekülatif kolun güven seviyesi. Belirsizlik arttıkça EYLEM küçülür.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeculativeLevel {
+    /// Kanıt yok → parity yok.
+    L0None,
+    /// Suspected var, kalıcılık yok → küçük bootstrap tavanı.
+    L1Bootstrap,
+    /// Gap'ler ≥ persist_min yaşamış → daha yüksek tavan.
+    L2Persistent,
+}
+
+/// [FEC-RISK v2] Spekülatif kolun ÖNERİSİ (arbiter girdisi; tek başına otorite DEĞİL).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpeculativeProposal {
+    pub level: SpeculativeLevel,
+    /// Önerilen parity oranı (per-mille), tavan ve indirimler uygulanmış.
+    pub ratio_permille: u32,
+    /// Bütçe sıkı olduğu için tavan yükseltildi mi.
+    pub deadline_assisted: bool,
+}
+
+impl SpeculativeProposal {
+    const NONE: Self = Self {
+        level: SpeculativeLevel::L0None,
+        ratio_permille: 0,
+        deadline_assisted: false,
+    };
+}
+
+/// [FEC-RISK v2] TEK FEC ARBİTER'inin hüküm sebebi — "parity NEDEN bu miktarda" sorusu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FecArbiterReason {
+    /// Hiçbir kol parity önermedi.
+    None,
+    /// Kanonik fuzzy/Q18 (Confirmed-taban) kazandı.
+    ConfirmedFuzzy,
+    /// Kalibre füzyon politikası (Confirmed-taban) kazandı.
+    ConfirmedPolicy,
+    /// Yapı-gate (Confirmed-taban, loss-yapı sinyali) kazandı.
+    StructureGate,
+    /// Spekülatif L1 kazandı.
+    SpeculativeBootstrap,
+    /// Spekülatif L2 kazandı.
+    SpeculativePersistent,
+    /// Spekülatif kol kazandı ve tavanı sıkı deadline yükseltmişti.
+    DeadlineAssisted,
+}
+
+/// [HANDOFF ENSTRÜMANI] Bir `fuzzy_evaluate` kararının anlık görüntüsü — zaman serisi için.
+/// Salt gözlem; sabit boyutlu `Copy`. Alanların hepsi karar anında zaten hesaplanmış değerlerdir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TsSample {
+    /// Spekülatif girdi: instant / persistent risk (ppm), reorder baskısı (‰). Kol kapalıysa 0.
+    pub instant_ppm: u64,
+    pub persistent_ppm: u64,
+    pub reorder_pressure_permille: u32,
+    /// Kanonik `loss_windowed_ppm` (Confirmed).
+    pub confirmed_ppm: u64,
+    /// Üç kolun ÖNERİSİ (‰) ve arbiter'ın HÜKMÜ (‰).
+    pub confirmed_prop: u32,
+    pub structure_prop: u32,
+    pub spec_prop: u32,
+    pub final_ratio: u32,
+    /// `FecArbiterReason::index` · spekülatif seviye (0/1/2).
+    pub reason_idx: u8,
+    pub level_idx: u8,
+    /// [EVIDENCE] `sent_window_units` (ham) ve `declared_units` karar anında.
+    pub evidence_mass: u64,
+    pub declared_units: u64,
+}
+
+/// [TEŞHİS] Arbiter sebep histogramı kova sayısı.
+pub const ARBITER_REASON_KINDS: usize = 7;
+
+impl FecArbiterReason {
+    #[must_use]
+    pub fn index(self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::ConfirmedFuzzy => 1,
+            Self::ConfirmedPolicy => 2,
+            Self::StructureGate => 3,
+            Self::SpeculativeBootstrap => 4,
+            Self::SpeculativePersistent => 5,
+            Self::DeadlineAssisted => 6,
+        }
+    }
+}
+
+/// [FEC-RISK v2] TEK FEC ARBİTER'i: kollar yalnız ÖNERİR, parity miktarına burası karar verir.
+///
+/// `final = max(confirmed, structure, speculative)` — **TOPLAMA YOK**: iki kol aynı kaybı görüp
+/// parity'yi iki kez sayamaz. Eşitlikte öncelik confirmed > structure > speculative (sebep
+/// atfı yerleşik yolu tercih eder). Salt fonksiyon; deterministik (ADR-17).
+#[must_use]
+pub fn fec_arbiter(
+    confirmed: (u32, FecArbiterReason),
+    structure: u32,
+    spec: SpeculativeProposal,
+) -> (u32, FecArbiterReason) {
+    let mut best = (confirmed.0, confirmed.1);
+    if structure > best.0 {
+        best = (structure, FecArbiterReason::StructureGate);
+    }
+    if spec.ratio_permille > best.0 {
+        let reason = if spec.deadline_assisted {
+            FecArbiterReason::DeadlineAssisted
+        } else if spec.level == SpeculativeLevel::L2Persistent {
+            FecArbiterReason::SpeculativePersistent
+        } else {
+            FecArbiterReason::SpeculativeBootstrap
+        };
+        best = (spec.ratio_permille, reason);
+    }
+    if best.0 == 0 {
+        (0, FecArbiterReason::None)
+    } else {
+        best
+    }
+}
+
+/// [KAYIP-DEFTERİ ONAY UFKU] `Suspected → Confirmed` geçişinin bekleme ufku.
+///
+/// **NEDEN AYRI BİR KOL VAR:** ölçüldü ki sevk edilen ufuk ürün yolunda HİÇ ateşlemiyor
+/// (3 koşu, ~13k tick, `confirmed_total = 0`). `loss_windowed_ppm` yalnız `Confirmed` saydığı
+/// için kayıp sinyali yapısal olarak sıfır kalıyor ve kayıp tüketen HER mekanizma (fuzzy
+/// controller, Q18 yapı-gate, kalibre füzyon politikası) kör kalıyor.
+/// Bkz. `reports/loss-ledger-confirm-defect/FINDING.md`.
+///
+/// Bu enum bir DÜZELTME DEĞİL, bir ÖLÇÜM KOLUDUR. Default sevk davranışıdır ve byte-özdeştir;
+/// alternatif kol yalnız ölçüm için açılır. Hangi ufkun doğru olduğu ölçülmeden sevk edilmez.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LossConfirmHorizon {
+    /// Sevk davranışı: `cadence_loss_floor()` = 1.5 × EAI. EAI'nin içinde
+    /// `EAI_SACK_WIRE_BYTES / EAI_RETURN_BW_PRIOR` = 65 B / 31 B·s⁻¹ ≈ **2.097 s** vardır ve bu
+    /// terim ÖLÇÜLEN KANALDAN BAĞIMSIZDIR — 200 ms RTT'li yolda ufku ~3.2 s = 16×RTT'ye çiviler.
+    #[default]
+    CadenceLegacy,
+    /// Kanal-türevli: `k_permille × srtt / 1000`. srtt yoksa (kuruluş öncesi) legacy'ye düşer —
+    /// ölçüm yokken sabit uydurmak, düzeltmeye çalıştığımız kusurun ta kendisidir.
+    ChannelDerived {
+        /// Ufuk = k × srtt, per-mille (`2000` = 2×srtt).
+        k_permille: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FecStructurePolicy {
+    /// Sevk davranışı: yalnız IID-yapıda (`burst_delta ≤ 50k ppm`) FEC açılır; burst → ARQ.
+    #[default]
+    Q18Iid,
+    /// Burst dalında da kodlama açılır ve seviye ölçülen silme oranından (emniyet paylı)
+    /// seçilir: pay'lı oran `fec_med`'e sığıyorsa `fec_med`, aşıyorsa `fec_high`. Kodlama
+    /// tek başına yetmediğinde bile parity SIFIRLANMAZ — kalanı ARQ taşır (füzyon).
+    BurstFusion,
+}
+
 /// Commit-K (authority-continuity): BLOK-OTORİTE-WITNESS'ı — blok-AÇILIŞINDA aktif-mode'u + sender-
 /// kimliğini + monoton-generation'ı YAKALAR. Bloğun-otorite-tüketimi (Controller-latch VEYA manuel-
 /// close) witness'ı BY-VALUE-tüketir → **tek-kullanım COMPILE-TIME** (Clone/Copy/Default/serde YOK;
@@ -580,13 +931,49 @@ pub enum Timer {
 pub struct BootstrapRttConfig {
     /// Master gate. Default false → inert.
     pub enabled: bool,
+    /// [KURULUŞ-KALİBRASYONU] Probe merdiveni (ns, arm anına göre). `None` = `BS_FIRES_NS`
+    /// varsayılanı (3/9/21/45 s).
+    ///
+    /// O varsayılan BLACKOUT için kalibre edildi (uzun sessizlikten sonra hattı yoklamak), KURULUŞ
+    /// için değil. Kuruluşta beklenen gecikme `INITIAL_RTT` (100 ms) mertebesindedir; ilk basamağın
+    /// 3 s olması, kilidin çözülmesini üç saniye geciktirir ve dar deadline'lı hücrelerde koşu
+    /// biter. `Some(..)` ile kuruluş-hızlı bir merdiven verilebilir (bkz.
+    /// [`BootstrapRttConfig::establishment_fast`]).
+    ///
+    /// Bütçe DEĞİŞMEZ: `BS_TX_HARD_BUDGET` (200 B) her hâlde geçerlidir, yani merdiven ne kadar
+    /// sıkı olursa olsun toplam 4 probe × 44 B tavanı aşılamaz — hızlandırma trafik ŞİŞİRMEZ,
+    /// yalnız aynı bütçeyi erken harcar.
+    pub fires_ns: Option<[u64; 4]>,
+}
+
+impl BootstrapRttConfig {
+    /// KURULUŞ için merdiven: ilk basamak 2×`INITIAL_RTT` (200 ms), sonra ×3 büyüme
+    /// (0.2 / 0.6 / 1.8 / 5.4 s). Gerekçe: kuruluş kilidi bir RTT örneğinin YOKLUĞUDUR ve
+    /// beklenen RTT `INITIAL_RTT` mertebesindedir; ilk yoklamayı bir RTT-turu ötesine koymak
+    /// gereksiz gecikmedir. KALİBRE EDİLMEMİŞ — ölçümle doğrulanmalı.
+    #[must_use]
+    pub fn establishment_fast() -> Self {
+        Self {
+            enabled: true,
+            fires_ns: Some([200_000_000, 600_000_000, 1_800_000_000, 5_400_000_000]),
+        }
+    }
+
+    /// Etkin merdiven (config verilmemişse sevk varsayılanı).
+    #[must_use]
+    pub fn ladder(&self) -> [u64; 4] {
+        self.fires_ns.unwrap_or(BS_FIRES_NS)
+    }
 }
 
 #[allow(clippy::derivable_impls)]
 impl Default for BootstrapRttConfig {
     fn default() -> Self {
         // DEFAULT OFF — pending locked/fresh panel validation (DR-CS-3 §9).
-        Self { enabled: false }
+        Self {
+            enabled: false,
+            fires_ns: None,
+        }
     }
 }
 
@@ -904,8 +1291,27 @@ enum ProbeExit {
 /// İlk RTT ölçülene kadar pacing/eşik için başlangıç RTT [CAL initial].
 const INITIAL_RTT: Duration = Duration::from_millis(100);
 /// [Q18-FIX] Yapı-gate alt kayıp-eşiği (ppm). Altında fuzzy'nin R1 `fec=0`'ı doğru (kayıp düşük,
-/// ARQ yeter); üstünde kayıp anlamlı ve yapı belirleyici. 100k = Q17 holdout'un IID/burst'ün
-/// ayrıştığı bandın tabanı (FS-FUSION-CAL-1 §5: 20_833..83_333 ARQ-tail Pareto; 200k FEC Pareto).
+/// ARQ yeter); üstünde kayıp anlamlı ve yapı belirleyici.
+///
+/// **[DAYANAK BORCU — 2026-09-04] BU SAYININ ARKASINDA GEÇERLİ BİR KAMPANYA YOK.**
+/// Eski gerekçe "100k = Q17 holdout'un IID/burst'ün ayrıştığı bandın tabanı (FS-FUSION-CAL-1 §5:
+/// 20_833..83_333 ARQ-tail Pareto; 200k FEC Pareto)" idi. İki ayrı sebeple çöktü:
+///
+/// 1. **Q17 holdout'u FORMEL OLARAK GEÇERSİZ.** `reports/fs-fusion-cal-1/FRAMING-CORRIGENDUM.md`
+///    :73 `holdout-*` dosyalarını "**VOID** — evaluated the withdrawn rival-framing policy" ilan
+///    eder; :29-31 kritik cümle: holdout'un "burst ARQ ister" tarafını üreten zararlı
+///    false-positive hücresi `PRODUCT_NETNS`'ten gelir ve o veri seti **HİÇ FEC KOLU
+///    İÇERMEZ** (iki kol da r0) → "A conclusion about FEC could not legitimately be drawn from it."
+/// 2. **Bandın ppm değerleri türetilemez.** R2A grid'i loss ORANINI loss YAPISIYLA karıştırır
+///    (S1/S2 = pozisyonel silme, 48 symbol'ün %2-8'i; S3 = IID %20) ve nominal ppm'ler jeneratör
+///    artefaktıdır (20_833 = 1/48, 41_666 = 2/48, 83_333 = 4/48). Raporun kendi hükmü: "a
+///    production FEC-activation threshold cannot be derived from loss_ppm alone from R2A."
+///
+/// `SPEC-GAP-REGISTRY-2026-08-27.md:302-305` bu sabiti zaten "unsanctioned magic constant …
+/// exactly the uncalibrated-knee class" olarak kaydetmişti.
+///
+/// SABİT DEĞİŞTİRİLMEDİ: kampanya görmemiş bir eşiği kampanyasız BAŞKA bir sayıyla değiştirmek
+/// aynı hatadır. Kayıt açık; doğru kapanış, ürün-katmanında FEC kollu ön-kayıtlı bir grid.
 const STRUCTURE_GATE_LOSS_MIN_PPM: u64 = 100_000;
 /// [Q18-FIX] Gate'in karar vermesi için pencerede gereken fate-known birim (kanıt-eşiği; azsa
 /// dokunmaz). 32 = Laplace p11/p01'in ±~30k ppm gürültü bandına inmesi için yeterli geçiş sayısı.
@@ -913,7 +1319,20 @@ const STRUCTURE_GATE_MIN_N: u32 = 32;
 /// [Q18-FIX] IID kabul-tavanı: `burst_delta = p11−p01 ≤ bu` → korelasyonsuz kayıp → FEC açılır.
 /// IID'de beklenen 0 (±gürültü); burst'te (GE-L3+) FATE2ARM ölçümü +567k ppm — boşluk ~433k.
 /// 50k = gürültü-üstü, burst-altı güvenli çizgi (fate_estimator'daki 25_000 pin'i geçer).
+///
+/// **[DAYANAK BORCU — 2026-09-04]** Ayrım eşiğinin KONUMU (50k) gürültü-payı argümanıyla
+/// savunulabilir, ama bu eşiğin arkasındaki POLİTİKA — "burst → ARQ'ya bırak" — geçersiz
+/// Q17 holdout'una dayanıyordu (bkz. `STRUCTURE_GATE_LOSS_MIN_PPM`). Burst rejiminde FEC'in
+/// zararlı olduğuna dair GEÇERLİ bir ölçüm yoktur: o iddiayı üreten hücrede hiç FEC kolu yoktu.
+/// Politikanın kendisi `FecStructurePolicy` ile opt-in hâle getirildi; ölçüm gelene dek
+/// default davranış korunuyor.
 const STRUCTURE_GATE_IID_MAX_DELTA_PPM: i64 = 50_000;
+/// [BURST-FUSION] Ölçülen silme oranının üzerine konan emniyet payı (pay/payda). Bir RS bloğu
+/// ancak parity oranı blok-içi silme oranını AŞARSA kurtarır; ölçülen oran ortalamadır, burst
+/// varyansı blok-içi oranı ortalamanın üstüne çıkarır → paysız seçim sistematik olarak yetersiz
+/// kodlar. 3/2 = %50 pay (kalibre-EDİLMEMİŞ başlangıç; bkz. `FecStructurePolicy::BurstFusion`).
+const BURST_FUSION_MARGIN_NUM: u64 = 3;
+const BURST_FUSION_MARGIN_DEN: u64 = 2;
 /// STARTUP→STEADY plato: BtlBw N ardışık round Δ<ε ise plato [CAL].
 const STARTUP_PLATEAU_ROUNDS: u32 = 3;
 /// plato ε (per-mille): btlbw artışı < %5 → stabil.
@@ -1115,6 +1534,10 @@ pub struct Sender {
     cs_hook_fired: Vec<(u64, u8)>, // TEST-ONLY gözlem: hook-timer fire-kayıtları (now_ns, id)
     #[cfg(feature = "experimental-cold-start")]
     cs_probe_armed_once: bool, // M2: merdiven epoch-başına-BİR-kez arm (yeniden-arm-YOK)
+    /// [OFF = OFF] F2A lane'inin ürün anahtarı. Feature-default `true` (setter'ı çağırmayan DR-CS-1 ve
+    /// kama-integration panel testleri değişmez); ürün runtime'ı `set_cs_probe_lane(false)` ile KAPATIR.
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_lane_enabled: bool,
     #[cfg(feature = "experimental-cold-start")]
     cs_probe_disarmed: bool, // srtt/state-çıkışı-disarm (kalan-fire'lar + pending iptal)
     #[cfg(feature = "experimental-cold-start")]
@@ -1218,6 +1641,72 @@ pub struct Sender {
     diag_qd_no_evidence: u64,    // [TUR-3a D-3/1] rtprop-yokken qd_ratio=0 sayısı
     diag_fuzzy_no_rule: u64,     // [TUR-4] sıfır-ağırlık fallback ateşleme sayısı
     diag_structure_gate_opened: u64, // [Q18-FIX] yapı-gate'in fuzzy fec=0'ı açtığı event sayısı
+    /// [BURST-FUSION] Yapı-gate'in burst dalındaki politikası (default = sevk davranışı).
+    fec_structure_policy: FecStructurePolicy,
+    /// [R-SWEEP] Yapı-gate'in açtığı parity seviyesi (‰) override'ı. `None` (default) = fuzzy
+    /// config'in `fec_med`'i (sevk davranışı, byte-özdeş). Kalibrasyon kolu — gate'in 500‰=r4
+    /// seviyesi kampanyada r=2'ye eşit kurtarma/2× byte ölçülmüştü; ekonomik seviye süpürülür.
+    structure_gate_level_permille: Option<u32>,
+    /// [ONAY UFKU] Ledger confirm ufku kolu — default sevk davranışı.
+    loss_confirm_horizon: LossConfirmHorizon,
+    /// [FEC-RISK] Deneysel FEC kayıp-riski kolu — default KAPALI.
+    fec_loss_risk: FecLossRiskConfig,
+    /// [FEC-RISK ENSTRÜMAN] `fec_loss_risk_ppm` ilk kez > 0 olduğu an (ns, 0 = hiç).
+    diag_t_first_risk_ns: u64,
+    /// [FEC-RISK ENSTRÜMAN] İlk parity emisyonu anı (ns, 0 = hiç).
+    diag_t_first_parity_ns: u64,
+    /// [FEC-RISK ENSTRÜMAN] Son hesaplanan risk (ppm) ve koşu-boyu TEPESİ.
+    diag_risk_ppm_last: u64,
+    diag_risk_ppm_peak: u64,
+    /// [FEC-RISK v2 ENSTRÜMAN] Arbiter sebep histogramı · spekülatif seviye histogramı (L0/L1/L2).
+    diag_arbiter_reasons: [u64; ARBITER_REASON_KINDS],
+    diag_spec_levels: [u64; 3],
+    /// [FEC-RISK v2 ENSTRÜMAN] persistent risk tepesi · reorder baskısı (son, tepe).
+    diag_persistent_ppm_peak: u64,
+    diag_reorder_pressure_last: u32,
+    diag_reorder_pressure_peak: u32,
+    /// [FEC-RISK v2 ENSTRÜMAN] İlk L1 / L2 önerisinin anı (ns, 0 = hiç).
+    diag_t_first_l1_ns: u64,
+    diag_t_first_l2_ns: u64,
+    diag_first_l1_ctx: (u64, u64, u64), // [EVIDENCE] (em, instant, persistent) ilk L1'de
+    diag_first_l2_ctx: (u64, u64, u64), // [EVIDENCE] ilk L2'de
+    /// [HANDOFF ENSTRÜMANI] Son kararın anlık görüntüsü (zaman serisi örnekleyici okur).
+    diag_last_ts: TsSample,
+    /// [PERSIST ENSTRÜMANI] Yürürlükteki persistence ufku (son, tepe) ns.
+    diag_persist_min_last_ns: u64,
+    diag_persist_min_peak_ns: u64,
+    /// [IW] PreConverge ilk-uçuş penceresi (0 = kapalı, sevk davranışı).
+    initial_window: InitialWindowConfig,
+    /// [FUSION-POLICY] Kalibre edilmiş füzyon karar katmanı (default `disabled()` → ArqOnly).
+    fusion_policy: crate::fusion_policy::FusionPolicy,
+    /// [FUSION-POLICY] Alınan RTT örneği sayısı. `FusionObservation.rtt_sample_count` kaynağı;
+    /// güvenlik doğrulayıcısı `min_rtt_samples`(2) altında `LowConfidence`'a düşer — rtt.rs ilk
+    /// örnekte `rttvar = srtt/2` bootstrap'lar, jitter yapay olarak HIGH okunur.
+    rtt_sample_count: u32,
+    /// [FUSION-POLICY] Telemetriyi besleyen son örnek anı (`telemetry_age_ns` tabanı).
+    last_telemetry_ns: u64,
+    /// [DEADLINE-EKSENİ] Politikaya giden SON gözlemin ham fotoğrafı (teşhis). Politika
+    /// ateşlemediğinde "hangi değer kapıyı kapattı" sorusu bu olmadan cevaplanamaz — histogram
+    /// KOVAYI söyler, DEĞERİ söylemez, ve kalibrasyon sınırının mı yoksa motorun mu yanlış
+    /// olduğu ancak değere bakılarak ayrılır.
+    diag_last_obs: Option<(u64, u64, u64, u32, Option<u32>)>,
+    /// [TEŞHİS] Politikanın GÖRDÜĞÜ `bandwidth_bps` aralığı (min, max). Bölge sınırı ancak
+    /// motorun gerçekten ürettiği büyüklükle ifade edilirse fence olur; link kapasitesiyle
+    /// yazılmış bir sınır sessizce HER ZAMAN reddeder (v1 kalibrasyonunda tam bu oldu).
+    diag_obs_bw_range: Option<(u64, u64)>,
+    /// [TEŞHİS] Politikanın GÖRDÜĞÜ `loss_ppm` aralığı (min, max). Kalibrasyonun kayıp ekseni
+    /// ancak motorun ürettiği ölçekte ifade edilirse kapı olur.
+    diag_obs_loss_range: Option<(u64, u64)>,
+    /// [DEADLINE-EKSENİ] Uygulamanın bildirdiği EN SIKI teslim bütçesi (ns). `None` = bildirim yok.
+    /// Bu bir POLİTİKA girdisidir; ARQ/pacing/loss/RTT durumuna DOKUNMAZ (INV-RATE-1 korunur).
+    tightest_deadline_ns: Option<u64>,
+    /// [FUSION-POLICY/TEŞHİS] Füzyon aksiyon histogramı — "neden ateşlemedi" bu sayaçsız
+    /// cevapsız kalırdı (yapı-gate dersi).
+    diag_fusion_actions: [u64; crate::fusion_policy::FUSION_ACTION_KINDS],
+    /// [TEŞHİS] Yapı-gate karar-yolu histogramı (bkz. `GateOutcome`).
+    diag_gate_outcomes: [u64; GATE_OUTCOME_KINDS],
+    /// [TEŞHİS] Ledger pencereli kaybının koşu-boyu TEPESİ (ppm) — anlık ölçer decay eder.
+    diag_loss_ppm_peak: u64,
 
     // ── gözlemlenebilir son kararlar ──
     last_decision: FusionDecision,
@@ -1326,6 +1815,8 @@ impl Sender {
             #[cfg(feature = "experimental-cold-start")]
             cs_probe_armed_once: false,
             #[cfg(feature = "experimental-cold-start")]
+            cs_probe_lane_enabled: true,
+            #[cfg(feature = "experimental-cold-start")]
             cs_probe_disarmed: false,
             #[cfg(feature = "experimental-cold-start")]
             cs_probe_seq_next: 0,
@@ -1400,6 +1891,37 @@ impl Sender {
             diag_qd_no_evidence: 0,
             diag_fuzzy_no_rule: 0,
             diag_structure_gate_opened: 0,
+            fec_structure_policy: FecStructurePolicy::Q18Iid,
+            structure_gate_level_permille: None,
+            loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,
+            fec_loss_risk: FecLossRiskConfig::default(),
+            diag_t_first_risk_ns: 0,
+            diag_t_first_parity_ns: 0,
+            diag_risk_ppm_last: 0,
+            diag_risk_ppm_peak: 0,
+            diag_arbiter_reasons: [0; ARBITER_REASON_KINDS],
+            diag_spec_levels: [0; 3],
+            diag_persistent_ppm_peak: 0,
+            diag_reorder_pressure_last: 0,
+            diag_reorder_pressure_peak: 0,
+            diag_t_first_l1_ns: 0,
+            diag_t_first_l2_ns: 0,
+            diag_first_l1_ctx: (0, 0, 0),
+            diag_first_l2_ctx: (0, 0, 0),
+            diag_last_ts: TsSample::default(),
+            diag_persist_min_last_ns: 0,
+            diag_persist_min_peak_ns: 0,
+            initial_window: InitialWindowConfig::default(),
+            fusion_policy: crate::fusion_policy::FusionPolicy::disabled(),
+            rtt_sample_count: 0,
+            last_telemetry_ns: 0,
+            tightest_deadline_ns: None,
+            diag_last_obs: None,
+            diag_obs_bw_range: None,
+            diag_obs_loss_range: None,
+            diag_fusion_actions: [0; crate::fusion_policy::FUSION_ACTION_KINDS],
+            diag_gate_outcomes: [0; GATE_OUTCOME_KINDS],
+            diag_loss_ppm_peak: 0,
             last_fusion_snapshot: None,
             fusion_event_index: 0,
             last_decision: FusionDecision {
@@ -1421,9 +1943,27 @@ impl Sender {
         self.sched_diag
     }
 
-    /// DR-CS-3: product config — shipping bootstrap RTT probe (default OFF).
+    /// DR-CS-3: product config — shipping bootstrap RTT probe (default OFF). YALNIZ DR-CS-3
+    /// merdivenini anahtarlar (kama-integration DR-CS-3 paneli legacy F2A ladder'ı kontrol kolu olarak
+    /// bundan bağımsız kullanır) — ürün OFF'u için bkz. [`Self::set_cs_probe_lane`].
     pub fn set_bootstrap_rtt(&mut self, cfg: BootstrapRttConfig) {
         self.bootstrap_rtt = cfg;
+    }
+
+    /// [OFF = OFF] DR-CS-1 M2 (F2A) CS-probe lane'inin ÜRÜN anahtarı; feature derlenmemişse no-op.
+    /// client-core runtime `RuntimeConfig.bootstrap_rtt`'yi buraya da yansıtır: belgelenmiş
+    /// "`bootstrap_rtt: false` ⇒ motor probe PLANLAMAZ" HER cold-start lane'i kapsar. Aksi hâlde
+    /// `--all-features` derlemesinde F2A merdiveni ilk DATA emisyonunda koşulsuz arm oluyordu
+    /// (client-core `bootstrap_rtt_probe_and_echo_traverse_the_product_wire` OFF kolu).
+    pub fn set_cs_probe_lane(&mut self, on: bool) {
+        #[cfg(feature = "experimental-cold-start")]
+        {
+            self.cs_probe_lane_enabled = on;
+        }
+        #[cfg(not(feature = "experimental-cold-start"))]
+        {
+            let _ = on;
+        }
     }
 
     /// DR-CS-3 observation-only bootstrap lineage.
@@ -1649,9 +2189,20 @@ impl Sender {
         // ölçülen bw'ye orantılı micro-burst. front yoksa MTU (güvenli 1-paket tabanı).
         let front_size = self.tx_queue.front().map_or(DEFAULT_MTU, |u| u.size);
         let window_bytes = send_rate.saturating_mul(BURST_WINDOW_NS) / 1_000_000_000;
-        let burst_hi = front_size.max(2 * DEFAULT_MTU);
+        // [IW] PreConverge'de ilk-uçuş tabanı: açıkken clamp'in ALT sınırı `front_size` yerine
+        // ilk-uçuş bütçesidir (üst sınır da onu kapsayacak şekilde yükselir), böylece
+        // `TokenBucket::new`'in DOLU başlattığı kredi tek birime kırpılıp ATILMAZ. Kapalıyken
+        // (bytes == 0) ifade eskisiyle BİREBİR aynıdır. Yalnız PreConverge'i etkiler: ölçüm
+        // geldikten sonra pencere zaten kanal-türevlidir.
+        let iw = if self.state == SenderState::PreConverge {
+            self.initial_window.bytes
+        } else {
+            0
+        };
+        let burst_lo = front_size.max(iw);
+        let burst_hi = front_size.max(2 * DEFAULT_MTU).max(iw);
         self.pacer
-            .set_burst_cap(window_bytes.clamp(front_size, burst_hi));
+            .set_burst_cap(window_bytes.clamp(burst_lo, burst_hi));
         if prev_state == SenderState::PreConverge && self.state != SenderState::PreConverge {
             // §3.3-D cold-start çıkışı: kanal-türevli micro-burst grant (STARTUP probing; kuyruk kanal-uygun
             // küçük burst'le boşalır — bu birimler STARTUP'ta emit → §3.3-B geometrik kopya ALMAZ).
@@ -1919,7 +2470,11 @@ impl Sender {
         if self.bootstrap_rtt.enabled && !self.bs_done {
             if let (Some(armed), Some(&off)) = (
                 self.bs_armed_ns,
-                BS_FIRES_NS.get(self.bs_next_step as usize),
+                self.bootstrap_rtt
+                    .ladder()
+                    .get(self.bs_next_step as usize)
+                    .copied()
+                    .as_ref(),
             ) {
                 best = earlier(best, Some(armed.saturating_add(off)));
             }
@@ -2022,6 +2577,10 @@ impl Sender {
         // YALNIZ RTT-estimator (mevcut observe; matematik-değişmez). cwnd/BtlBw/delivery/loss/
         // ack-conf'a DOKUNULMAZ (N8-spot-testli).
         self.rtt.observe(now_ns, sample);
+        // [FUSION-POLICY] Örnek sayacı + telemetri damgası: güvenlik doğrulayıcısının güven ve
+        // tazelik kapıları bunlara bakar (min_rtt_samples / max_telemetry_age_ns).
+        self.rtt_sample_count = self.rtt_sample_count.saturating_add(1);
+        self.last_telemetry_ns = now_ns;
         self.cs_resolved = Some(CsSrttSource::ProbeEcho);
     }
 
@@ -2460,6 +3019,10 @@ impl Sender {
                 self.diag_rtt_rejected += 1; // §7.3 ack_delay_untrusted (düzeltme reddi; raw işlendi)
             }
             self.rtt.observe(now_ns, sample);
+            // [FUSION-POLICY] Örnek sayacı + telemetri damgası: güvenlik doğrulayıcısının güven ve
+            // tazelik kapıları bunlara bakar (min_rtt_samples / max_telemetry_age_ns).
+            self.rtt_sample_count = self.rtt_sample_count.saturating_add(1);
+            self.last_telemetry_ns = now_ns;
             // [TUR-3b D-2/3] DrainRtprop dwell'i içinde gelen rtt-örneği = qualifying.
             if self.state == SenderState::DrainRtprop {
                 self.drain_rtprop_qualifying = true;
@@ -2581,10 +3144,11 @@ impl Sender {
             return;
         };
         let step = self.bs_next_step as usize;
-        if step >= BS_FIRES_NS.len() {
+        let ladder = self.bootstrap_rtt.ladder();
+        if step >= ladder.len() {
             return; // ladder exhausted
         }
-        if now_ns.saturating_sub(armed) < BS_FIRES_NS[step] {
+        if now_ns.saturating_sub(armed) < ladder[step] {
             return; // not yet due — NOT an edge, and NOT counted
         }
         // EDGE: this step transitions not-due → due exactly once (bs_next_step advances below), so a
@@ -2637,6 +3201,10 @@ impl Sender {
         self.bs_diag.rtt_sample_ns = dur_ns(sample);
         // Existing estimator API — no synthetic write, no estimator rewrite.
         self.rtt.observe(now_ns, sample);
+        // [FUSION-POLICY] Örnek sayacı + telemetri damgası: güvenlik doğrulayıcısının güven ve
+        // tazelik kapıları bunlara bakar (min_rtt_samples / max_telemetry_age_ns).
+        self.rtt_sample_count = self.rtt_sample_count.saturating_add(1);
+        self.last_telemetry_ns = now_ns;
         // First valid sample cancels the ladder permanently (contract §25/§26).
         self.bs_done = true;
         self.bs_armed_ns = None;
@@ -2774,8 +3342,20 @@ impl Sender {
     fn fuzzy_evaluate(&mut self, now_ns: u64) -> FusionDecision {
         let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
         let ack_epoch = srtt.max(self.expected_ack_interval()); // D-2/1 tanımı
+                                                                // [ONAY UFKU] Kol seçimi. Legacy = sevk davranışı. Kanal-türevli kolda srtt ÖLÇÜLMÜŞ
+                                                                // olmalı: `self.rtt.srtt()` None iken `INITIAL_RTT` bir prior'dır ve prior'dan ufuk
+                                                                // türetmek tam da düzeltilmek istenen kusurdur → o durumda legacy'ye düşer.
+        let confirm_horizon = match self.loss_confirm_horizon {
+            LossConfirmHorizon::CadenceLegacy => self.cadence_loss_floor(),
+            LossConfirmHorizon::ChannelDerived { k_permille } => match self.rtt.srtt() {
+                Some(measured) => Duration::from_nanos(
+                    dur_ns(measured).saturating_mul(u64::from(k_permille)) / 1000,
+                ),
+                None => self.cadence_loss_floor(),
+            },
+        };
         self.loss
-            .ledger_tick(now_ns, ack_epoch * K_WL, self.cadence_loss_floor());
+            .ledger_tick(now_ns, ack_epoch * K_WL, confirm_horizon);
         let jitter_ppm = dur_ns(self.rtt.rttvar())
             .saturating_mul(1_000_000)
             .checked_div(dur_ns(srtt))
@@ -2802,22 +3382,201 @@ impl Sender {
         if d.no_rule {
             self.diag_fuzzy_no_rule += 1;
         }
-        // [Q18-FIX] YAPI-FARKINDA FEC GATE. Q17 holdout + FS-FUSION-CELL-1 iki bağımsız kanıt:
-        // kayıp-ORANI tek başına FEC'i kapılayamaz (aynı 200k ppm'de IID coding ister, burst ARQ
-        // ister). Fuzzy controller rate-only olduğundan %20 IID'de parity=0 planlıyordu — ölçümün
-        // "coding tek çalışan mekanizma" dediği rejimde. Fix diz'i kaydırmak DEĞİL (Q17 bunu
-        // yasaklar): fate_estimator'ın loss-YAPI sinyali (burst_delta = p11−p01) gate'e girer.
-        // Deterministik, RNG'siz (ADR-17); kanıt yetersizse (n < min) DOKUNMAZ → mevcut davranış
-        // byte-özdeş. Politika transport'ta kalır, RS-encode güvenlik-katmanında (INV-ENGINE-SOC).
-        if let Some(fec) = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm) {
-            d.fec_parity_ratio_permille = fec;
-            // Yapı-gate ateşlediyse bir KURAL ateşlemiş demektir (yapı-kuralı) → `no_rule`'u temizle.
-            // Aksi hâlde: fuzzy'nin rate-only kuralları yüksek-kayıpta hepsi `loss.low`=0'da sönüp
-            // no_rule-fallback'e düşüyor (fec=0); Controller-latch ise no_rule-snapshot'ı planned_r=0'a
-            // BASTIRIYOR — yani gate'in açtığı FEC latch'te yeniden sıfırlanırdı. Bu satır kompozisyonu
-            // tamamlar (fec_recovery_cell.rs, S1 sistem-kanıtı); gate ateşlemezse no_rule dokunulmaz.
+        // ── [FEC-RISK v2] SPEKÜLATİF KOL — yalnız ÖNERİ üretir, karar arbiter'ındır ────────────
+        //
+        // KONTRAT: kanonik `d` YUKARIDA `inputs` (= Confirmed) ile hesaplandı ve `mode` ·
+        // `arq_aggressiveness_permille` ile state-machine, pacing, cwnd, retransmit yollarını
+        // beslemeye DEVAM EDER. Spekülatif kol fuzzy'den GEÇMEZ (fuzzy'nin ≈200k dizi tam olarak
+        // erken sinyali öldüren şeydir); kendi eşlemesi var ve TAVANLIDIR. Risk sinyalinin ürün
+        // yolundaki tek etkisi arbiter üzerinden parity MİKTARIDIR.
+        //
+        // SIRALAMA: split burada hesaplanır (enstrümanlar dahil), ÖNERİ ise politika kararından
+        // SONRA üretilir — çünkü kalibre politika açıkken spekülatif kolun TAVANI politikadır
+        // (denetim BLOCKER'ı: lane'ler arası max() politikanın "asla daha agresif değil"
+        // sözleşmesini bozardı).
+        let spec_split = if self.fec_loss_risk.enabled {
+            // srtt ölçülmemişse Suspected'a güven verilmez → split kanonikle özdeş.
+            let srtt_ns = self.rtt.srtt().map_or(0, dur_ns);
+            // [PERSIST] Ufuk: taban α·srtt; Learned modda ölçülen spurious yaşının Q_q'su × ρ.
+            let c = self.fec_loss_risk;
+            let floor_ns = srtt_ns.saturating_mul(u64::from(c.persist_srtt_permille)) / 1000;
+            let persist_min_ns = match c.persist_mode {
+                PersistMode::FixedSrtt => floor_ns,
+                PersistMode::LearnedSpuriousAge => learned_persist_min_ns(
+                    floor_ns,
+                    self.loss.spurious_age_quantile(c.persist_q_permille),
+                    c.persist_rho_permille,
+                    (c.persist_cap_srtt_permille != u32::MAX).then(|| {
+                        srtt_ns.saturating_mul(u64::from(c.persist_cap_srtt_permille)) / 1000
+                    }),
+                ),
+            };
+            self.diag_persist_min_last_ns = persist_min_ns;
+            self.diag_persist_min_peak_ns = self.diag_persist_min_peak_ns.max(persist_min_ns);
+            let split = self.loss.fec_loss_risk_split(
+                now_ns,
+                srtt_ns,
+                self.fec_loss_risk.weights,
+                persist_min_ns,
+            );
+            self.diag_risk_ppm_last = split.instant_ppm;
+            self.diag_risk_ppm_peak = self.diag_risk_ppm_peak.max(split.instant_ppm);
+            self.diag_persistent_ppm_peak = self.diag_persistent_ppm_peak.max(split.persistent_ppm);
+            self.diag_reorder_pressure_last = split.reorder_pressure_permille;
+            self.diag_reorder_pressure_peak = self
+                .diag_reorder_pressure_peak
+                .max(split.reorder_pressure_permille);
+            if split.instant_ppm > 0 && self.diag_t_first_risk_ns == 0 {
+                self.diag_t_first_risk_ns = now_ns;
+            }
+            Some(split)
+        } else {
+            None
+        };
+        // Kanonik (Confirmed-taban) öneri: fuzzy'nin oranı. Politika açıksa aşağıda onunla değişir.
+        let mut confirmed: (u32, FecArbiterReason) = (
+            d.fec_parity_ratio_permille,
+            FecArbiterReason::ConfirmedFuzzy,
+        );
+        let mut structure: u32 = 0;
+        // Politika AÇIKKEN spekülatif kolun üst sınırı (None = politika kapalı).
+        let mut policy_ceiling: Option<u32> = None;
+        if self.fusion_policy.is_enabled() {
+            let obs = crate::fusion_policy::FusionObservation {
+                feature_schema: self.fusion_policy.version().feature_schema,
+                // Kalibre politika Confirmed-taban bir karar katmanıdır → KANONİK girdiyi okur.
+                inputs,
+                rtt_sample_count: self.rtt_sample_count,
+                telemetry_age_ns: now_ns.saturating_sub(self.last_telemetry_ns),
+                converged: self.state != SenderState::PreConverge,
+                fec_actuation_available: !matches!(
+                    self.fec_mode,
+                    FecActuationMode::Manual { enabled: false }
+                ),
+                // [DEADLINE-EKSENİ] Uçuştaki EN SIKI teslim bütçesi / srtt. App bildirmediyse None.
+                deadline_over_srtt_permille: self.tightest_deadline_over_srtt(),
+            };
+            // Karar-başına payload: kuyruğun önündeki birim (yoksa MTU) — bütçe tavanı buna göre.
+            let payload = self.tx_queue.front().map_or(DEFAULT_MTU, |u| u.size);
+            self.diag_last_obs = Some((
+                obs.inputs.loss_ppm,
+                obs.inputs.bandwidth_bps,
+                obs.telemetry_age_ns,
+                obs.rtt_sample_count,
+                obs.deadline_over_srtt_permille,
+            ));
+            let lp = obs.inputs.loss_ppm;
+            self.diag_obs_loss_range = Some(match self.diag_obs_loss_range {
+                Some((lo, hi)) => (lo.min(lp), hi.max(lp)),
+                None => (lp, lp),
+            });
+            let bw = obs.inputs.bandwidth_bps;
+            self.diag_obs_bw_range = Some(match self.diag_obs_bw_range {
+                Some((lo, hi)) => (lo.min(bw), hi.max(bw)),
+                None => (bw, bw),
+            });
+            let action = self.fusion_policy.decide(&obs, payload);
+            self.diag_fusion_actions[action.index()] += 1;
+            // Politika açıkken Confirmed-taban öneri ONUNDUR (fuzzy'nin değil): yapı-gate susar,
+            // çift-otorite yok. Öneri arbiter'a gider; parity'yi tek yer yazar.
+            confirmed = match action {
+                crate::fusion_policy::FusionAction::FecAssist {
+                    redundancy_permille,
+                    ..
+                } => (redundancy_permille, FecArbiterReason::ConfirmedPolicy),
+                _ => (0, FecArbiterReason::ConfirmedPolicy),
+            };
+            // Spekülatif kolun tavanı: KANIT-YOKLUĞU geri dönüşleri (ColdStart · LowConfidence ·
+            // NoDeadlineDeclared) bootstrap'ın tam hedefidir → sert tavana kadar serbest; FecAssist
+            // → sert tavan; diğer her geri dönüş GÜVENLİK sebebidir (bölge dışı, bayat telemetri,
+            // gevşek deadline = ölçülü israf, …) → spekülatif kol SUSAR.
+            use crate::fusion_policy::{FallbackReason as FR, FusionAction as FA};
+            policy_ceiling = Some(match action {
+                FA::FecAssist { .. }
+                | FA::FallbackArq(FR::ColdStart | FR::LowConfidence | FR::NoDeadlineDeclared) => {
+                    self.fusion_policy.hard_max_redundancy_permille()
+                }
+                _ => 0,
+            });
+        } else {
+            // Yapı-gate Confirmed-taban bir kapıdır → KANONİK kaybı okur (loss-yapı sinyali).
+            // Yalnız politika KAPALIYKEN koşar (çift-otorite yok). Artık doğrudan parity YAZMAZ:
+            // önerir, arbiter karar verir. Kol kapalıyken `max(fuzzy, gate)` eski davranışla
+            // özdeştir çünkü gate yalnız fuzzy==0 iken `Opened` döner.
+            let outcome = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm);
+            // [TEŞHİS] Karar-yolu histogramı: gate'in HANGİ önkoşulda durduğu sayılır.
+            self.diag_gate_outcomes[outcome.index()] += 1;
+            if let GateOutcome::Opened(fec) = outcome {
+                structure = fec;
+                self.diag_structure_gate_opened += 1;
+            }
+        }
+        // Spekülatif ÖNERİ — tavan artık bilinir.
+        let spec = match spec_split {
+            Some(split) => {
+                let p = self.speculative_propose(split, policy_ceiling, confirmed.0.max(structure));
+                match p.level {
+                    SpeculativeLevel::L0None => self.diag_spec_levels[0] += 1,
+                    SpeculativeLevel::L1Bootstrap => {
+                        self.diag_spec_levels[1] += 1;
+                        if self.diag_t_first_l1_ns == 0 {
+                            self.diag_t_first_l1_ns = now_ns;
+                            self.diag_first_l1_ctx = (
+                                split.sent_window_units,
+                                split.instant_ppm,
+                                split.persistent_ppm,
+                            );
+                        }
+                    }
+                    SpeculativeLevel::L2Persistent => {
+                        self.diag_spec_levels[2] += 1;
+                        if self.diag_t_first_l2_ns == 0 {
+                            self.diag_t_first_l2_ns = now_ns;
+                            self.diag_first_l2_ctx = (
+                                split.sent_window_units,
+                                split.instant_ppm,
+                                split.persistent_ppm,
+                            );
+                        }
+                    }
+                }
+                p
+            }
+            None => SpeculativeProposal::NONE,
+        };
+        // Ledger kaybının koşu-boyu TEPESİ — artık HER iki dalda yazılır (eskiden politika açıkken
+        // yapısal sıfırdı → vakum sayaç; CORRIGENDUM 6fa81b4e).
+        self.diag_loss_ppm_peak = self.diag_loss_ppm_peak.max(inputs.loss_ppm);
+        // ── TEK FEC ARBİTER ───────────────────────────────────────────────────────────────
+        // final = max(confirmed, structure, speculative). Toplama YOK. Parity'yi yazan tek yer.
+        let (final_ratio, reason) = fec_arbiter(confirmed, structure, spec);
+        self.diag_arbiter_reasons[reason.index()] += 1;
+        // [HANDOFF ENSTRÜMANI] Kararın anlık görüntüsü — "canonical geldiğinde parity düştü mü"
+        // sorusu bu seri olmadan sorulamaz. Salt gözlem, sabit boyut.
+        self.diag_last_ts = TsSample {
+            instant_ppm: spec_split.map_or(0, |x| x.instant_ppm),
+            persistent_ppm: spec_split.map_or(0, |x| x.persistent_ppm),
+            reorder_pressure_permille: spec_split.map_or(0, |x| x.reorder_pressure_permille),
+            confirmed_ppm: inputs.loss_ppm,
+            confirmed_prop: confirmed.0,
+            structure_prop: structure,
+            spec_prop: spec.ratio_permille,
+            final_ratio,
+            reason_idx: u8::try_from(reason.index()).unwrap_or(u8::MAX),
+            level_idx: match spec.level {
+                SpeculativeLevel::L0None => 0,
+                SpeculativeLevel::L1Bootstrap => 1,
+                SpeculativeLevel::L2Persistent => 2,
+            },
+            evidence_mass: spec_split.map_or(0, |x| x.sent_window_units),
+            declared_units: spec_split.map_or(0, |x| x.declared_units),
+        };
+        d.fec_parity_ratio_permille = final_ratio;
+        if final_ratio > 0 {
+            // Bir kol parity önerdiyse bir KURAL ateşlemiştir → latch'in no_rule bastırması kalkar.
+            // Eski davranışla özdeş: fuzzy>0 ⟹ no_rule zaten false (fec_zero=0); gate/politika
+            // açtığında eskiden de false yapılıyordu.
             d.no_rule = false;
-            self.diag_structure_gate_opened += 1;
         }
         // Commit-D: CANONICAL-snapshot — aynı-`inputs`-DEĞERİ kopyalanır (ikinci-hesap-yok).
         // HÜKÜM (Commit-F-daraltması): "Semantic non-regression demonstrated; the diagnostic path
@@ -2841,19 +3600,87 @@ impl Sender {
     /// kayıplar korelasyonsuz → retransmit de aynı oranla kaybolur → ileri-parity kazanır)
     /// `fec_med` açar. Burst-yapı (`burst_delta` pozitif) → ARQ'ya bırakır (`None`, dokunmaz).
     /// Kanıt-eşiği: pencerede `≥ STRUCTURE_GATE_MIN_N` fate-known birim; azsa `None`.
-    fn structure_gate_fec(&self, fuzzy_fec_permille: u32, loss_ppm: u64) -> Option<u32> {
-        if fuzzy_fec_permille != 0 || loss_ppm < STRUCTURE_GATE_LOSS_MIN_PPM {
-            return None;
+    fn structure_gate_fec(&self, fuzzy_fec_permille: u32, loss_ppm: u64) -> GateOutcome {
+        if fuzzy_fec_permille != 0 {
+            return GateOutcome::NotApplicable;
+        }
+        // [KURULUŞ-GUARD] PreConverge'de HİÇBİR yapısal FEC kararı verilmez.
+        //
+        // İlke: FEC ölçüm olmadan aksiyon almaz. PreConverge oturumun kurulmadığı, dolayısıyla
+        // RTT/BtlBw örneği OLMADIĞI ve kayıp-ledger'ının güvenilmez (bkz. loopback bulgusu)
+        // olduğu fazdır — orada parity açmak ölçüme değil önyargıya dayanır ("sürekli açık FEC
+        // bant israfıdır" ilkesinin ihlali). Somut zarar ölçüldü: burst-fusion politikası
+        // PreConverge'de parity açıyordu, parity kıt token bütçesinde ORİJİNALLERLE yarışıyor ve
+        // ilk-uçuş orijinal sayısını düşürerek kuruluş olasılığını kırıyordu (kuruluş yalnız
+        // orijinal DATA'nın RTT örneğiyle olur — cold-start-wiring bulgusu). Sonuç: burst-fusion
+        // kolu netem'de EN KÖTÜ koldu (v2 5/12 çöküş). Kuruluş bittikten sonra (Startup+) gate
+        // gerçek ölçümle çalışır; guard yalnız kurulmamış oturumu korur.
+        if self.state == SenderState::PreConverge {
+            return GateOutcome::BlockedPreConverge;
+        }
+        if loss_ppm < STRUCTURE_GATE_LOSS_MIN_PPM {
+            return GateOutcome::BlockedLossBelowBand;
         }
         let f = self.fate_estimator.snapshot();
         if f.n < STRUCTURE_GATE_MIN_N {
-            return None;
+            return GateOutcome::BlockedWindowTooSmall;
         }
-        // Laplace-yumuşatılmış p11−p01: IID'de ≈0 (örnekleme gürültüsü ±), burst'te belirgin pozitif.
-        if f.burst_delta_ppm <= STRUCTURE_GATE_IID_MAX_DELTA_PPM {
-            Some(self.fuzzy.config().fec_med)
-        } else {
-            None
+        // [BULGU — prior-as-evidence; AÇIK KAYIT, default DAVRANIŞ DEĞİŞMEDİ]
+        //
+        // `burst_delta` Laplace-yumuşatılmıştır ve kayıp-GEÇİŞİ sayaçları boşken tamamen
+        // PRIOR'dan gelir:
+        //   • hiç geçiş yok (n00=n01=n10=n11=0) → p11 = p01 = (0+1)/(0+2) = 500_000 → delta = 0
+        //     → "IID" okunur ve FEC AÇILIR;
+        //   • yalnız kayıpsız geçişler → p11 = 500_000, p01 ≈ 0 → delta ≈ +475_000
+        //     → "burst" okunur ve FEC KAPANIR.
+        // Yani her iki dal da kanıt yokken prior tarafından belirlenir. Estimator'ın kendi §3.4
+        // sözleşmesi bunu zaten yasaklıyor (`WindowFeatures::eligible` → `n10+n11 ≥ 8`;
+        // `fate_estimator.rs::laplace_no_loss_window_ineligible` testinin yorumu birebir bunu
+        // söyler) — gate o sözleşmenin DIŞINDA okuyor.
+        //
+        // Ölçülen kanıt: `tests/structure_gate_fec.rs` içindeki sevk pinlerinin İKİSİ de
+        // (`iid_loss_opens_fec_*`, `burst_loss_leaves_fec_to_arq`) sıfır-geçişli pencerelerde
+        // koşuyor — sonuçları doğru ama gerekçeleri prior. Kanıt eşiği default yola eklendiğinde
+        // `iid_loss_opens_fec_*` RED veriyor, yani Q18-FIX'in IID dalı bugün prior'la ateşliyor.
+        //
+        // KARAR: default (`Q18Iid`) yol DEĞİŞTİRİLMEDİ — kampanya görmüş bir davranışı tek
+        // taraflı kaydırmak R1 disiplinine aykırı ve sonuçları ölçülmemiş olurdu. Kanıt eşiği
+        // opt-in `BurstFusion` politikasının parçasıdır; o politika zaten kalibrasyon bekliyor.
+        // Bu bir AÇIK BORÇTUR (owner kararı gerekir), gizlenmiş bir kusur değil.
+        let evidenced = f.n10 + f.n11 >= crate::fate_estimator::MIN_LOSS_TRANSITIONS;
+        let iid_structure = f.burst_delta_ppm <= STRUCTURE_GATE_IID_MAX_DELTA_PPM;
+        match self.fec_structure_policy {
+            FecStructurePolicy::Q18Iid => {
+                // SEVK DAVRANIŞI, byte-özdeş: IID → fec_med; burst → ARQ'ya bırak.
+                if iid_structure {
+                    GateOutcome::Opened(self.gate_level_permille())
+                } else {
+                    GateOutcome::BlockedBurstLeftToArq
+                }
+            }
+            FecStructurePolicy::BurstFusion => {
+                // Kanıtsız pencerede yapısal karar YOK (prior veri sayılmaz).
+                if !evidenced {
+                    return GateOutcome::BlockedNoTransitionEvidence;
+                }
+                let c = self.fuzzy.config();
+                if iid_structure {
+                    return GateOutcome::Opened(self.gate_level_permille());
+                }
+                // BURST dalı: kodlama açılır, seviye ölçülen silme oranını emniyet paylı takip
+                // eder. Profil-bağımsız (INV-ENGINE-SOC: motor K/E bilmez) — oran permille
+                // emit edilir, r'ye çevrimi latch profille birlikte yapar. Kodlama tek başına
+                // yetmese bile parity SIFIRLANMAZ: kalanı ARQ taşır (§8.4 füzyon).
+                let needed_permille = loss_ppm.saturating_mul(BURST_FUSION_MARGIN_NUM)
+                    / BURST_FUSION_MARGIN_DEN
+                    / 1_000;
+                let lvl = self.gate_level_permille();
+                GateOutcome::Opened(if needed_permille <= u64::from(lvl) {
+                    lvl
+                } else {
+                    c.fec_high
+                })
+            }
         }
     }
 
@@ -3233,6 +4060,308 @@ impl Sender {
         self.last_transition_event_index = self.fusion_event_index;
         self.transition_applied_count = self.transition_applied_count.saturating_add(1);
         Ok(())
+    }
+
+    /// [DEADLINE-EKSENİ] Uygulamanın teslim bütçesini bildirir (mesaj-başı; en sıkı olan tutulur).
+    ///
+    /// Ölçüm (FEC-MARGINAL-R v1+v2, 480 rep) proaktif redundancy'nin değerinin KAYIP ORANINA
+    /// DEĞİL bu bütçenin RTT'ye oranına bağlı olduğunu gösterdi. Transport bu bilgiyi kendi
+    /// başına TÜRETEMEZ — aynı kanalda aynı kayıpta, sıkı bütçeli trafik için parity kazanç,
+    /// gevşek bütçeli trafik için israftır. Bildirilmezse politika `NoDeadlineDeclared` ile
+    /// ArqOnly'ye düşer; sessizce kayıp oranından karar VERMEZ.
+    pub fn declare_delivery_deadline(&mut self, deadline_ns: u64) {
+        self.tightest_deadline_ns = Some(match self.tightest_deadline_ns {
+            Some(cur) => cur.min(deadline_ns),
+            None => deadline_ns,
+        });
+    }
+
+    /// [DEADLINE-EKSENİ] Bildirilen en sıkı bütçenin srtt'ye oranı (per-mille). srtt yoksa
+    /// (kuruluş öncesi) `None` — zaten `ColdStart` kapısı orada devreye girer.
+    fn tightest_deadline_over_srtt(&self) -> Option<u32> {
+        let d = self.tightest_deadline_ns?;
+        let srtt = dur_ns(self.rtt.srtt()?);
+        if srtt == 0 {
+            return None;
+        }
+        Some(u32::try_from(d.saturating_mul(1000) / srtt).unwrap_or(u32::MAX))
+    }
+
+    /// [TEŞHİS] Politikaya giden son gözlem: (loss_ppm, bandwidth_bps, telemetry_age_ns,
+    /// rtt_sample_count, deadline_over_srtt_permille).
+    #[must_use]
+    pub fn diag_last_fusion_obs(&self) -> Option<(u64, u64, u64, u32, Option<u32>)> {
+        self.diag_last_obs
+    }
+
+    /// [TEŞHİS] Politikanın gördüğü `bandwidth_bps` aralığı (min, max).
+    #[must_use]
+    pub fn diag_fusion_bw_range(&self) -> Option<(u64, u64)> {
+        self.diag_obs_bw_range
+    }
+
+    /// [TEŞHİS] Politikanın gördüğü `loss_ppm` aralığı (min, max).
+    #[must_use]
+    pub fn diag_fusion_loss_range(&self) -> Option<(u64, u64)> {
+        self.diag_obs_loss_range
+    }
+
+    /// [TEŞHİS] Kayıp-defteri iç durumu — bkz. `ThresholdLossDetector::diag_ledger_internals`.
+    #[must_use]
+    pub fn diag_ledger_internals(&self) -> (u64, u64, u64, u64, u64) {
+        self.loss.diag_ledger_internals()
+    }
+
+    /// [TEŞHİS] Confirm-yolu — bkz. `ThresholdLossDetector::diag_confirm_path`.
+    #[must_use]
+    pub fn diag_confirm_path(&self) -> (u64, u64, u64, u64) {
+        self.loss.diag_confirm_path()
+    }
+
+    /// [TEŞHİS] Ledger tick kapsamı — bkz. `ThresholdLossDetector::diag_tick_span`.
+    #[must_use]
+    pub fn diag_ledger_tick_span(&self) -> (u64, u64) {
+        self.loss.diag_tick_span()
+    }
+
+    /// Bildirilen en sıkı teslim bütçesi (gözlem/test).
+    #[must_use]
+    pub fn diag_tightest_deadline_ns(&self) -> Option<u64> {
+        self.tightest_deadline_ns
+    }
+
+    /// [FUSION-POLICY] Kalibre edilmiş füzyon politikasını kurar. Default `disabled()` = her
+    /// girdide `ArqOnly` → ürün yolu byte-özdeş. `calibration_v1()` OPT-IN ve VERSİYONLU;
+    /// güvenlik sınırları kalibrasyondan BAĞIMSIZDIR — bir kalibrasyon yalnız DAHA AZ
+    /// isteyebilir, daha fazlasını asla.
+    pub fn set_fusion_policy(&mut self, policy: crate::fusion_policy::FusionPolicy) {
+        self.fusion_policy = policy;
+    }
+
+    /// [FUSION-POLICY/TEŞHİS] Füzyon aksiyon histogramı.
+    #[must_use]
+    pub fn diag_fusion_actions(&self) -> [u64; crate::fusion_policy::FUSION_ACTION_KINDS] {
+        self.diag_fusion_actions
+    }
+
+    /// [FUSION-POLICY] Alınan RTT örneği sayısı (gözlem/test).
+    #[must_use]
+    pub fn diag_rtt_sample_count(&self) -> u32 {
+        self.rtt_sample_count
+    }
+
+    /// [IW] PreConverge ilk-uçuş penceresini kurar. `bytes == 0` = kapalı (sevk davranışı).
+    /// Bkz. [`InitialWindowConfig`]; KALİBRE EDİLMEMİŞ.
+    pub fn set_initial_window(&mut self, cfg: InitialWindowConfig) {
+        self.initial_window = cfg;
+    }
+
+    /// Kurulu ilk-uçuş penceresi (gözlem/test).
+    #[must_use]
+    pub fn initial_window(&self) -> InitialWindowConfig {
+        self.initial_window
+    }
+
+    /// [BURST-FUSION] Yapı-gate'inin burst-dalı politikasını seçer. Default [`FecStructurePolicy::Q18Iid`]
+    /// = sevk davranışı (burst → parity yok). Bkz. [`FecStructurePolicy`]; flip KALİBRASYON ister.
+    /// [FEC-RISK] Deneysel FEC kayıp-riski kolunu kurar. Default KAPALI.
+    ///
+    /// AÇIKKEN sinyalin TEK tüketicisi FEC oranı kararıdır: `mode`, `arq_aggressiveness`,
+    /// pacing, cwnd, state-machine geçişleri ve retransmit tetikleme KANONİK `Confirmed`
+    /// oranını okumaya devam eder (bkz. `fuzzy_evaluate`'teki çift-karar ayrımı).
+    pub fn set_fec_loss_risk(&mut self, cfg: FecLossRiskConfig) {
+        self.fec_loss_risk = cfg;
+    }
+
+    /// [FEC-RISK] Yürürlükteki kol (gözlem/test).
+    #[must_use]
+    pub fn fec_loss_risk_config(&self) -> FecLossRiskConfig {
+        self.fec_loss_risk
+    }
+
+    /// [FEC-RISK ENSTRÜMAN] `(t_first_suspected, t_first_confirmed, t_first_risk, t_first_parity)`
+    /// ns cinsinden; 0 = hiç olmadı. Kolun tüm amacı bu dört damganın arasındaki farktır.
+    #[must_use]
+    pub fn diag_fec_risk_times(&self) -> (u64, u64, u64, u64) {
+        let (susp, conf) = self.loss.diag_first_loss_times();
+        (
+            susp,
+            conf,
+            self.diag_t_first_risk_ns,
+            self.diag_t_first_parity_ns,
+        )
+    }
+
+    /// [FEC-RISK ENSTRÜMAN] `(son_risk_ppm, tepe_risk_ppm)`.
+    #[must_use]
+    pub fn diag_risk_ppm(&self) -> (u64, u64) {
+        (self.diag_risk_ppm_last, self.diag_risk_ppm_peak)
+    }
+
+    /// [FEC-RISK v2 ENSTRÜMAN] Arbiter sebep histogramı (`FecArbiterReason::index`).
+    #[must_use]
+    pub fn diag_arbiter_reasons(&self) -> [u64; ARBITER_REASON_KINDS] {
+        self.diag_arbiter_reasons
+    }
+
+    /// [FEC-RISK v2 ENSTRÜMAN] `(L0, L1, L2)` öneri sayıları.
+    #[must_use]
+    pub fn diag_spec_levels(&self) -> [u64; 3] {
+        self.diag_spec_levels
+    }
+
+    /// [PERSIST ENSTRÜMANI] `(ufuk_son_ns, ufuk_tepe_ns, spurious_örnek_sayısı)`.
+    #[must_use]
+    pub fn diag_persist(&self) -> (u64, u64, usize) {
+        (
+            self.diag_persist_min_last_ns,
+            self.diag_persist_min_peak_ns,
+            self.loss.spurious_age_samples(),
+        )
+    }
+
+    /// [HANDOFF ENSTRÜMANI] Son `fuzzy_evaluate` kararının anlık görüntüsü.
+    #[must_use]
+    pub fn diag_ts_sample(&self) -> TsSample {
+        self.diag_last_ts
+    }
+
+    /// [FEC-RISK v2 ENSTRÜMAN] `(persistent_ppm_peak, reorder_pressure_last, reorder_pressure_peak,
+    /// t_first_l1_ns, t_first_l2_ns)`.
+    #[must_use]
+    pub fn diag_spec_signals(&self) -> (u64, u32, u32, u64, u64) {
+        (
+            self.diag_persistent_ppm_peak,
+            self.diag_reorder_pressure_last,
+            self.diag_reorder_pressure_peak,
+            self.diag_t_first_l1_ns,
+            self.diag_t_first_l2_ns,
+        )
+    }
+
+    /// [FEC-RISK v2] Spekülatif kolun ÖNERİSİ. Belirsizliği bekleyerek çözmez; belirsizlik
+    /// arttıkça eylemin BÜYÜKLÜĞÜNÜ sınırlar.
+    ///
+    /// ```text
+    /// L0  instant < l1_min                      → 0
+    /// L1  instant ≥ l1_min, persistent < l2_min → bootstrap_cap   (t_risk == t_suspected KORUNUR)
+    /// L2  persistent ≥ l2_min                   → persistent_cap
+    /// deadline/srtt ≤ tight_budget              → L1 de persistent_cap (DEADLINE_ASSISTED)
+    /// kanonik pencerede görünür (windowed>0)   → tavan bootstrap_cap'e iner (steady-state devri)
+    /// reorder_pressure (yeterli kanıtla)        → tavan × (1 − rp × discount_max)   [asla 0'a değil]
+    /// ```
+    /// `policy_ceiling`: kalibre politika AÇIKKEN spekülatif kola izin verilen ÜST SINIR —
+    /// `Some(0)` = politika güvenlik sebebiyle ArqOnly dedi, spekülatif kol SUSAR;
+    /// `Some(hard_max)` = politika kanıt-yokluğu (ColdStart/LowConfidence/NoDeadline) bildirdi
+    /// ya da FecAssist verdi → spekülatif kol en çok sert tavana kadar; `None` = politika kapalı.
+    /// Bu, denetimin bulduğu "max() kalibre politikanın 'asla daha agresif değil' sözleşmesini
+    /// bozar" kusurunun kapanışıdır: lane'ler arası kompozisyon max değil, politika = tavan.
+    /// `canonical_prop`: kanonik lane'in (fuzzy/politika + yapı-gate) fiili ÖNERİSİ (‰). Devir
+    /// teslim ancak devralan biri VARSA olur: kanonik lane bir şey öneriyorsa spekülatif kol
+    /// bootstrap tavanına iner; önermiyorsa kanıt neyi destekliyorsa o kalır.
+    fn speculative_propose(
+        &self,
+        split: crate::loss::RiskSplit,
+        policy_ceiling: Option<u32>,
+        canonical_prop: u32,
+    ) -> SpeculativeProposal {
+        let c = self.fec_loss_risk;
+        if policy_ceiling == Some(0) || split.instant_ppm < c.l1_min_instant_ppm {
+            return SpeculativeProposal::NONE;
+        }
+        let level = if split.persistent_ppm >= c.l2_min_persistent_ppm {
+            SpeculativeLevel::L2Persistent
+        } else {
+            SpeculativeLevel::L1Bootstrap
+        };
+        // Bütçe sıkıysa ARQ'nun tekrar-deneme fırsatı yok → belirsiz kanıta daha büyük tepki
+        // meşru. Bildirilmemiş bütçe = sıkı DEĞİL (varsayılan uydurulmaz).
+        let tight = self
+            .tightest_deadline_over_srtt()
+            .is_some_and(|b| b <= c.tight_budget_permille);
+        let mut cap = match level {
+            SpeculativeLevel::L2Persistent => c.persistent_cap_permille,
+            SpeculativeLevel::L1Bootstrap if tight => c.persistent_cap_permille,
+            _ => c.bootstrap_cap_permille,
+        };
+        // Steady-state devri — HANDOFF AİLESİ ÖLÇÜMÜYLE DÜZELTİLDİ (reports/…/handoff/):
+        // eski kural "pencerede bir Confirmed var → L1'e in" kanıtın değişmesine değil bir onayın
+        // VAR OLMASINA tepki veriyordu; kanonik lane bu bant rejiminde hiçbir şey önermezken
+        // (fuzzy 0, gate ≥100k'a ulaşmıyor) spekülatif kol yine de düşüyor → t_conf'ta r=2→r=1
+        // uçurumu, teslim ≤2×RTT −10…−21 pp (n=3, 400/1000 msg, %10-20). Doğru kural: otorite
+        // ancak DEVRALAN biri varsa devredilir — kanonik lane fiilen öneriyorsa bootstrap tavanı,
+        // aksi hâlde persistent kanıt neyi destekliyorsa o. `max()` kanonik öneri büyükse zaten
+        // onu seçer; klamp yalnız "kanonik küçük ama var" durumunda frenler.
+        if canonical_prop > 0 {
+            cap = cap.min(c.bootstrap_cap_permille);
+        }
+        // Reorder indirimi — yalnız yeterli kanıtla, ve ASLA veto değil.
+        if split.declared_units >= c.reorder_min_evidence_units {
+            let disc = u64::from(split.reorder_pressure_permille)
+                * u64::from(c.reorder_discount_max_permille)
+                / 1000; // 0..=discount_max
+            cap = u32::try_from(u64::from(cap) * (1000 - disc.min(999)) / 1000).unwrap_or(cap);
+        }
+        // İndirim VETO olamaz: yuvarlama tabanının altına inmez (K=8'de ≥1 repair).
+        cap = cap.max(c.spec_min_permille);
+        if let Some(ceil) = policy_ceiling {
+            cap = cap.min(ceil);
+        }
+        SpeculativeProposal {
+            level,
+            ratio_permille: cap,
+            deadline_assisted: tight && level == SpeculativeLevel::L1Bootstrap,
+        }
+    }
+
+    /// [EVIDENCE ENSTRÜMAN] İlk L1 ve ilk L2 anındaki `(sent_window_units, instant_ppm,
+    /// persistent_ppm)`; `(0,0,0)` = hiç olmadı.
+    #[must_use]
+    pub fn diag_spec_transitions(&self) -> ((u64, u64, u64), (u64, u64, u64)) {
+        (self.diag_first_l1_ctx, self.diag_first_l2_ctx)
+    }
+
+    /// [ONAY UFKU] Ledger confirm ufku kolunu kurar. Default = sevk davranışı (byte-özdeş).
+    ///
+    /// TEK DEĞİŞKEN: yalnız `ledger_tick`'in confirm argümanını etkiler. Kayıp TESPİTİ
+    /// (`detect_time_losses` zaman-eşiği, packet-threshold) ve expire penceresi (`w_loss`)
+    /// DEĞİŞMEZ — aksi hâlde kol iki eksende birden kayardı ve ölçüm yorumlanamazdı.
+    pub fn set_loss_confirm_horizon(&mut self, h: LossConfirmHorizon) {
+        self.loss_confirm_horizon = h;
+    }
+
+    /// [ONAY UFKU] Yürürlükteki confirm ufku (gözlem/test).
+    #[must_use]
+    pub fn loss_confirm_horizon(&self) -> LossConfirmHorizon {
+        self.loss_confirm_horizon
+    }
+
+    /// [R-SWEEP] Yapı-gate seviyesi override'ı; `None` = `fec_med` (sevk, byte-özdeş).
+    pub fn set_structure_gate_level(&mut self, level_permille: Option<u32>) {
+        self.structure_gate_level_permille = level_permille;
+    }
+
+    /// [R-SWEEP/TEST] Fuzzy config'in `fec_med`'i (gate default'unun kaynağı).
+    #[must_use]
+    pub fn fuzzy_config_fec_med_for_test(&self) -> u32 {
+        self.fuzzy.config().fec_med
+    }
+
+    /// [R-SWEEP] Yürürlükteki gate seviyesi (‰).
+    #[must_use]
+    pub fn gate_level_permille(&self) -> u32 {
+        self.structure_gate_level_permille
+            .unwrap_or(self.fuzzy.config().fec_med)
+    }
+
+    pub fn set_fec_structure_policy(&mut self, policy: FecStructurePolicy) {
+        self.fec_structure_policy = policy;
+    }
+
+    /// Kurulu yapı-gate politikası (gözlem/test).
+    #[must_use]
+    pub fn fec_structure_policy(&self) -> FecStructurePolicy {
+        self.fec_structure_policy
     }
 
     /// Commit-I/K: blok-AÇILIŞINDA çağrılır — o-anki-aktif-mode + sender-kimliği + monoton-generation
@@ -3718,6 +4847,11 @@ impl Sender {
             .remove(idx)
             .expect("emit_parity_at: idx-geçerli");
         self.parity_emitted_total = self.parity_emitted_total.saturating_add(1);
+        // [FEC-RISK ENSTRÜMAN] İlk parity'nin TELE ÇIKTIĞI an — kolun asıl ölçtüğü büyüklük
+        // `t_first_parity − t_first_suspected` (FEC'in tepki gecikmesi).
+        if self.diag_t_first_parity_ns == 0 {
+            self.diag_t_first_parity_ns = now_ns;
+        }
         let seq = self.track_sent(
             OpaqueUnit {
                 id: u64::from(p.esi),
@@ -4502,7 +5636,10 @@ impl Sender {
                 // DR-CS-1 M2 ARM (F2A): PreConverge + srtt=None + İLK-DATA-wire-emisyonu (try_send-
                 // geçti = t₀) → CS-probe merdiveni epoch-başına-BİR-kez arm (fire 3/9/21/45s).
                 #[cfg(feature = "experimental-cold-start")]
-                if !self.cs_probe_armed_once && self.rtt.srtt().is_none() {
+                if self.cs_probe_lane_enabled
+                    && !self.cs_probe_armed_once
+                    && self.rtt.srtt().is_none()
+                {
                     self.cs_probe_armed_once = true;
                     for (i, off) in CS_PROBE_FIRES_NS.iter().enumerate() {
                         self.cs_wakeup
@@ -4712,6 +5849,19 @@ impl Sender {
     #[must_use]
     pub fn diag_structure_gate_opened(&self) -> u64 {
         self.diag_structure_gate_opened
+    }
+
+    /// [TEŞHİS] Yapı-gate karar-yolu histogramı — indeksler [`GateOutcome::index`].
+    #[must_use]
+    pub fn diag_gate_outcomes(&self) -> [u64; GATE_OUTCOME_KINDS] {
+        self.diag_gate_outcomes
+    }
+
+    /// [TEŞHİS] Ledger pencereli kaybının koşu-boyu tepesi (ppm). Kapanış anındaki anlık değer
+    /// decay etmiş olabileceğinden önkoşul teşhisi için TEK geçerli okuma budur.
+    #[must_use]
+    pub fn diag_loss_ppm_peak(&self) -> u64 {
+        self.diag_loss_ppm_peak
     }
 
     /// [TUR-4] Sıfır-ağırlık fuzzy-fallback sayacı (gözlemlenebilirlik).
@@ -6555,7 +7705,10 @@ mod tests {
 
     fn bs_on() -> Sender {
         let mut s = Sender::new();
-        s.set_bootstrap_rtt(BootstrapRttConfig { enabled: true });
+        s.set_bootstrap_rtt(BootstrapRttConfig {
+            enabled: true,
+            fires_ns: None,
+        });
         s
     }
 

@@ -1,0 +1,28 @@
+# FEC-MARGINAL-R-V1  RTT=200.0 ms  birincil d_msg = 2.0×RTT = 400 ms
+# çöküş çıpası = 16.0×RTT (3200 ms) altında completion < 0.5
+# birim = REP · kollar eşleştirilmemiş
+
+## kol canlılığı ve geçerlilik
+  cor20  r0  n_valid= 60 geçersiz={} repairs_tx=0 repairs_rx=0 recovered=0 miss=0
+  cor20  r2  n_valid= 60 geçersiz={} repairs_tx=7200 repairs_rx=6418 recovered=1237 miss=0
+  iid20  r0  n_valid= 60 geçersiz={} repairs_tx=0 repairs_rx=0 recovered=0 miss=0
+  iid20  r2  n_valid= 60 geçersiz={} repairs_tx=7200 repairs_rx=6432 recovered=1140 miss=0
+
+## birincil: ALICI teslim @ d_msg=2.0×RTT
+  cor20  r0  n= 60  çöküş=3/60 CP95=[0.01,0.14]  koşullu-completion=0.555 boot95=[0.505,0.596]  srv_deliv=1.000 byte/teslim=496
+  cor20  r2  n= 60  çöküş=4/60 CP95=[0.02,0.16]  koşullu-completion=0.747 boot95=[0.702,0.780]  srv_deliv=1.000 byte/teslim=615
+  iid20  r0  n= 60  çöküş=1/60 CP95=[0.00,0.09]  koşullu-completion=0.569 boot95=[0.534,0.596]  srv_deliv=1.000 byte/teslim=500
+  iid20  r2  n= 60  çöküş=3/60 CP95=[0.01,0.14]  koşullu-completion=0.673 boot95=[0.601,0.736]  srv_deliv=1.000 byte/teslim=617
+
+## güç (rep-düzeyi sd → %80-güç MDE, kabaca 2.8·sd·sqrt(2/n))
+  cor20  r0  sd=0.1779 n=57 → MDE≈9.3 pp
+  cor20  r2  sd=0.1498 n=56 → MDE≈7.9 pp
+  iid20  r0  sd=0.1227 n=59 → MDE≈6.3 pp
+  iid20  r2  sd=0.2626 n=57 → MDE≈13.8 pp
+
+## completion-vs-deadline (post-hoc, d_msg = k×RTT)
+  hücre  kol       1×       2×       4×       8×      16×
+  cor20  r0     0.000    0.527    0.855    0.867    0.922
+  cor20  r2     0.000    0.698    0.893    0.900    0.926
+  iid20  r0     0.000    0.559    0.929    0.950    0.976
+  iid20  r2     0.000    0.639    0.825    0.833    0.900

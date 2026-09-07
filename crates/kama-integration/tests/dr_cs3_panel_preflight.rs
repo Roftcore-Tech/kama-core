@@ -79,7 +79,10 @@ fn seal_probe(p: &mut KamaNoiseWireProtector, control_id: u32, probe_seq: u16, p
 
 fn bootstrap_sender() -> Sender {
     let mut s = Sender::new();
-    s.set_bootstrap_rtt(BootstrapRttConfig { enabled: true });
+    s.set_bootstrap_rtt(BootstrapRttConfig {
+        enabled: true,
+        fires_ns: None,
+    });
     s
 }
 

@@ -1,0 +1,46 @@
+=== FEC KAMPANYA ÖN-UÇUŞ KAPISI  2026-09-04T10:36:12Z ===
+repo=b927525b1d1058329e99d168ab8f568818bddd63  dirty=17
+
+[G1] kol temsil edilebilirliği (kill-shot: statik r=0 ulaşılamazdı)
+  PASS  --fec-mode seçicisi var (r'den ortogonal)
+
+[G2] MDS fizibilitesi (P(blok çözülebilir) ≥ eşik)
+  iid15    p= 15%  r=2: 82.0%  r=4: 97.6%
+  iid20    p= 20%  r=2: 67.8%  r=4: 92.7%
+  iid30    p= 30%  r=2: 38.3%  r=4: 72.4%
+  iid50    p= 50%  r=2:  5.5%  r=4: 19.4%
+  eşik=25% — aday hücreler (iid15/20/30) eşiği geçmeli
+  PASS  MDS fizibilitesi
+
+[G3] blok hizası (kısa blok FLUSH EDİLMİYOR → artık birimler korumasız)
+  N=96 payload=256B chunk_cap=53B → 5 chunk/mesaj, 480 birim, K=8
+  artık birim = 0
+  PASS  blok hizası tam (son mesaj korumasız kalmıyor)
+
+[G4] deadline semantiği (d_msg skorlanan, d_run_grace koşu ufku)
+  max(d_msg)=3200 ms   d_run_grace=20000 ms
+  PASS  d_msg ≤ d_run_grace (skorlama ufkun içinde)
+
+[G5] harness sadakati (ölçülen RTT + ölçülen drop)
+
+[G6] pilot: kollar koşuyor ve farklılaşıyor mu
+  PASS  r=0 kolu koştu ve beklendiği gibi farklılaştı (fec_repairs_tx=0)
+  PASS  r=2 kolu koştu ve beklendiği gibi farklılaştı (fec_repairs_tx=120)
+
+SONUC=PASS — kampanya dondurulabilir
+sha256(preflight)=325644a06837a0b0c97300d18ac273ef60627d032831ef369387d9938e96cbf7
+  PASS  --fec-mode seçicisi var (r'den ortogonal)
+  PASS  MDS fizibilitesi
+  PASS  blok hizası tam (son mesaj korumasız kalmıyor)
+  PASS  d_msg ≤ d_run_grace (skorlama ufkun içinde)
+[G5] harness sadakati (ölçülen RTT + ölçülen drop)
+  PASS  ölçülen RTT beklenen 200 ms ile uyumlu
+  PASS  netem kaybı gerçekten uyguluyor
+[G6] pilot: kollar koşuyor ve farklılaşıyor mu
+  PASS  r=0 kolu koştu ve beklendiği gibi farklılaştı (fec_repairs_tx=0)
+  PASS  r=2 kolu koştu ve beklendiği gibi farklılaştı (fec_repairs_tx=120)
+
+[G6] pilot: kollar koşuyor ve farklılaşıyor mu
+
+SONUC=PASS — kampanya dondurulabilir
+sha256(preflight)=5793764a61385a149c4a958d3bd469d7c514984bba7c37e6bdf7be12c6a2b2ec

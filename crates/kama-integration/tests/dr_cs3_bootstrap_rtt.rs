@@ -63,7 +63,10 @@ fn seal_probe(p: &mut KamaNoiseWireProtector, probe_seq: u16, pn: u64) -> Vec<u8
 
 fn bootstrap_sender() -> Sender {
     let mut s = Sender::new();
-    s.set_bootstrap_rtt(BootstrapRttConfig { enabled: true });
+    s.set_bootstrap_rtt(BootstrapRttConfig {
+        enabled: true,
+        fires_ns: None,
+    });
     // DR-RATE-RAMP-2B: startup pacing is a SEPARATE axis and is now default-OFF; the lineage
     // below asserts the handoff INTO it, so enable it explicitly.
     s.set_startup_pacing_init(StartupPacingConfig { enabled: true });

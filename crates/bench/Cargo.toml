@@ -8,11 +8,14 @@ publish.workspace = true
 [dependencies]
 # Kama adaptive-transport engine (§3/§4 state machines) — KamaTransport bunu UDP üstünde sürer (ADIM-5).
 adaptive-transport = { path = "../adaptive-transport" }
+# [SPRINT-A] ÜRÜN runtime'ı — `kama-product` kolu quinn'in karşısına stub'ı değil BUNU koyar
+# (FEC + ARQ füzyonu, tail-recovery, fuzzy, PARAM bootstrap; bkz. src/kama_product.rs).
+client-core = { path = "../client-core" }
 # best-available QUIC baseline (§4.4.1) — VERSİYON Cargo.lock ile pinli (quinn 0.11.11).
 quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.13"                                      # bench-içi self-signed cert
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "io-util", "sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "io-util", "sync", "time", "signal"] }
 thiserror.workspace = true
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

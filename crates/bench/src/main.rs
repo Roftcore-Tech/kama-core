@@ -5,6 +5,7 @@ mod budget;
 mod error;
 mod event;
 mod kama;
+mod kama_product;
 mod metrics;
 mod qdgram;
 mod quic;
@@ -16,7 +17,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::BenchError;
-use crate::transport::{BenchTransport, Cc, ClientCfg, KamaArm, ServerCfg};
+use crate::transport::{BenchTransport, Cc, ClientCfg, FecArm, FecModeArg, KamaArm, ServerCfg};
 
 #[derive(Parser)]
 #[command(name = "bench", about = "Kama transport benchmark harness (§4.4)")]
@@ -53,6 +54,74 @@ enum Cmd {
         /// [KAPI-1 W6] Reverse-bütçe arm senkronu: `<path>.go` belirene dek arm etme.
         #[arg(long)]
         gate_watch: Option<PathBuf>,
+        /// [SPRINT-A] FEC profil kimliği (0 = FEC kapalı). `kama-product` dışında yok sayılır.
+        /// İSTEMCİYLE AYNI verilmelidir. Örn. 3 = K8/R4/E64 (payload ≤ 53 B).
+        #[arg(long, default_value_t = 0)]
+        fec_profile: u8,
+        /// [SPRINT-A] Blok başına sabit repair sayısı. `--fec-mode static` ile birlikte
+        /// **r=0 GEÇERLİDİR** ve tek-eksenli kontrol kolunu verir (fragmentasyon açık, parity yok).
+        #[arg(long, default_value_t = 0)]
+        fec_r: u16,
+        /// [KAMPANYA-KRİTİK] FEC modu: `static` (r kadar repair, r=0 = kontrol) | `adaptive`
+        /// (Controller). `r`'den ORTOGONAL — eski `r==0 ⇒ adaptif` kısayolu statik-r0 kolunu
+        /// temsil edilemez kılıyordu.
+        #[arg(long, value_enum, default_value_t = FecModeCli::Static)]
+        fec_mode: FecModeCli,
+        /// [DEADLINE-EKSENİ] `--fec-mode policy` kolunda her offer'la bildirilen teslim bütçesi
+        /// (ms). Kalibre politika kararını bu bütçenin srtt'ye ORANINDAN verir; bildirilmezse
+        /// (0) `NoDeadlineDeclared` ile ArqOnly'ye düşer — sessiz varsayılan YOK.
+        #[arg(long, default_value_t = 0)]
+        fec_deadline_ms: u64,
+        /// [ONAY UFKU] Kayıp-defteri `Suspected → Confirmed` ufku: `0` = sevk davranışı
+        /// (cadence-legacy, ölçüldü ki HİÇ ateşlemiyor), `>0` = kanal-türevli `k × srtt`
+        /// per-mille (`2000` = 2×srtt). ÖLÇÜM KOLU.
+        #[arg(long, default_value_t = 0)]
+        loss_confirm_k: u32,
+        /// [FEC-RISK] Deneysel FEC kayıp-riski tahmincisi (Suspected olaylara yaş-ağırlıklı
+        /// güven). KAPALI = sevk davranışı. TEK tüketici FEC oranı kararıdır.
+        #[arg(long, default_value_t = false)]
+        fec_risk: bool,
+        /// [HANDOFF ENSTRÜMANI] Zaman-serisi CSV çıktısı (client): t_ms,instant,persistent,rp,
+        /// confirmed,cprop,sprop,specprop,final,reason,level. 50 ms örnekleme, ≤4096 satır.
+        #[arg(long)]
+        ts_out: Option<std::path::PathBuf>,
+        /// [R-SWEEP] Spekülatif L1 tavanı (‰; K=8'de 125=r1, 250=r2, 375=r3). None = default 125.
+        #[arg(long)]
+        spec_l1_permille: Option<u32>,
+        /// [R-SWEEP] Spekülatif L2 tavanı (‰). None = default 250.
+        #[arg(long)]
+        spec_l2_permille: Option<u32>,
+        /// [R-SWEEP] Yapı-gate seviyesi (‰; 500 = sevk r4). None = motor default (fec_med).
+        #[arg(long)]
+        gate_permille: Option<u32>,
+        /// [PERSIST] Ufuk modu: fixed (sevk 0.5×srtt) | learned (max(α·srtt, ρ·Q_q(spurious yaşı))).
+        #[arg(long)]
+        persist_mode: Option<String>,
+        /// [PERSIST] Taban α (‰ srtt; fixed modda eşiğin kendisi). None = 500.
+        #[arg(long)]
+        persist_alpha: Option<u32>,
+        /// [PERSIST] ρ (‰). None = 1250.
+        #[arg(long)]
+        persist_rho: Option<u32>,
+        /// [PERSIST] quantile (‰). None = 950.
+        #[arg(long)]
+        persist_q: Option<u32>,
+        /// [SPRINT-A] Alıcı birim-payload tavanı — client `--payload` ile AYNI olmalı.
+        #[arg(long, default_value_t = 256)]
+        payload: u64,
+        /// [BURST-FUSION] Yapı-gate'in burst dalında da kodlama açmasına izin ver (opt-in;
+        /// KALİBRE EDİLMEMİŞ). Verilmezse sevk davranışı (burst → parity yok). İKİ UÇTA AYNI.
+        #[arg(long, default_value_t = false)]
+        fec_burst_fusion: bool,
+        /// [DR-CS-3] Cold-start bootstrap-RTT merdivenini aç (opt-in). İKİ UÇTA AYNI.
+        #[arg(long, default_value_t = false)]
+        bootstrap_rtt: bool,
+        /// [IW] PreConverge ilk-uçuş penceresi (byte; 0 = sevk davranışı, tek paket).
+        #[arg(long, default_value_t = 0)]
+        initial_window_bytes: u64,
+        /// [KURULUŞ] Bootstrap merdivenini kuruluş-hızlı yap (0.2/0.6/1.8/5.4 s). Bütçe değişmez.
+        #[arg(long, default_value_t = false)]
+        bootstrap_fast: bool,
     },
     /// Client: N mesaj gönder, ham event JSONL yaz.
     Client {
@@ -101,6 +170,70 @@ enum Cmd {
         /// [KAPI-1 W6] Kuruluş-gate'i (bağlantı kurulunca ready; netem uygulanınca go → warmup).
         #[arg(long)]
         establish_gate: Option<PathBuf>,
+        /// [SPRINT-A] FEC profil kimliği (0 = FEC kapalı). `kama-product` dışında yok sayılır.
+        /// SUNUCUYLA AYNI verilmelidir. Örn. 3 = K8/R4/E64 (payload ≤ 53 B).
+        #[arg(long, default_value_t = 0)]
+        fec_profile: u8,
+        /// [SPRINT-A] Blok başına sabit repair sayısı. `--fec-mode static` ile birlikte
+        /// **r=0 GEÇERLİDİR** ve tek-eksenli kontrol kolunu verir (fragmentasyon açık, parity yok).
+        #[arg(long, default_value_t = 0)]
+        fec_r: u16,
+        /// [KAMPANYA-KRİTİK] FEC modu: `static` (r kadar repair, r=0 = kontrol) | `adaptive`
+        /// (Controller). `r`'den ORTOGONAL — eski `r==0 ⇒ adaptif` kısayolu statik-r0 kolunu
+        /// temsil edilemez kılıyordu.
+        #[arg(long, value_enum, default_value_t = FecModeCli::Static)]
+        fec_mode: FecModeCli,
+        /// [DEADLINE-EKSENİ] `--fec-mode policy` kolunda her offer'la bildirilen teslim bütçesi
+        /// (ms). Kalibre politika kararını bu bütçenin srtt'ye ORANINDAN verir; bildirilmezse
+        /// (0) `NoDeadlineDeclared` ile ArqOnly'ye düşer — sessiz varsayılan YOK.
+        #[arg(long, default_value_t = 0)]
+        fec_deadline_ms: u64,
+        /// [ONAY UFKU] Kayıp-defteri `Suspected → Confirmed` ufku: `0` = sevk davranışı
+        /// (cadence-legacy, ölçüldü ki HİÇ ateşlemiyor), `>0` = kanal-türevli `k × srtt`
+        /// per-mille (`2000` = 2×srtt). ÖLÇÜM KOLU.
+        #[arg(long, default_value_t = 0)]
+        loss_confirm_k: u32,
+        /// [FEC-RISK] Deneysel FEC kayıp-riski tahmincisi (Suspected olaylara yaş-ağırlıklı
+        /// güven). KAPALI = sevk davranışı. TEK tüketici FEC oranı kararıdır.
+        #[arg(long, default_value_t = false)]
+        fec_risk: bool,
+        /// [HANDOFF ENSTRÜMANI] Zaman-serisi CSV çıktısı (client): t_ms,instant,persistent,rp,
+        /// confirmed,cprop,sprop,specprop,final,reason,level. 50 ms örnekleme, ≤4096 satır.
+        #[arg(long)]
+        ts_out: Option<std::path::PathBuf>,
+        /// [R-SWEEP] Spekülatif L1 tavanı (‰; K=8'de 125=r1, 250=r2, 375=r3). None = default 125.
+        #[arg(long)]
+        spec_l1_permille: Option<u32>,
+        /// [R-SWEEP] Spekülatif L2 tavanı (‰). None = default 250.
+        #[arg(long)]
+        spec_l2_permille: Option<u32>,
+        /// [R-SWEEP] Yapı-gate seviyesi (‰; 500 = sevk r4). None = motor default (fec_med).
+        #[arg(long)]
+        gate_permille: Option<u32>,
+        /// [PERSIST] Ufuk modu: fixed (sevk 0.5×srtt) | learned (max(α·srtt, ρ·Q_q(spurious yaşı))).
+        #[arg(long)]
+        persist_mode: Option<String>,
+        /// [PERSIST] Taban α (‰ srtt; fixed modda eşiğin kendisi). None = 500.
+        #[arg(long)]
+        persist_alpha: Option<u32>,
+        /// [PERSIST] ρ (‰). None = 1250.
+        #[arg(long)]
+        persist_rho: Option<u32>,
+        /// [PERSIST] quantile (‰). None = 950.
+        #[arg(long)]
+        persist_q: Option<u32>,
+        /// [BURST-FUSION] Bkz. `serve --fec-burst-fusion`. SUNUCUYLA AYNI verilmelidir.
+        #[arg(long, default_value_t = false)]
+        fec_burst_fusion: bool,
+        /// [DR-CS-3] Bkz. `serve --bootstrap-rtt`. SUNUCUYLA AYNI verilmelidir.
+        #[arg(long, default_value_t = false)]
+        bootstrap_rtt: bool,
+        /// [IW] PreConverge ilk-uçuş penceresi (byte; 0 = sevk davranışı, tek paket).
+        #[arg(long, default_value_t = 0)]
+        initial_window_bytes: u64,
+        /// [KURULUŞ] Bkz. `serve --bootstrap-fast`. SUNUCUYLA AYNI verilmelidir.
+        #[arg(long, default_value_t = false)]
+        bootstrap_fast: bool,
         #[arg(long)]
         out: PathBuf,
     },
@@ -111,6 +244,25 @@ enum Cmd {
         #[arg(long, value_delimiter = ',', default_value = "10,30,120")]
         deadlines_s: Vec<u64>,
     },
+}
+
+/// CLI karşılığı — `transport::FecModeArg`'a birebir eşlenir.
+#[derive(Copy, Clone, ValueEnum, PartialEq)]
+enum FecModeCli {
+    Static,
+    Adaptive,
+    /// [DEADLINE-EKSENİ] Kalibre füzyon politikası karar verir; `--fec-deadline-ms` zorunlu.
+    Policy,
+}
+
+impl From<FecModeCli> for FecModeArg {
+    fn from(m: FecModeCli) -> Self {
+        match m {
+            FecModeCli::Static => FecModeArg::Static,
+            FecModeCli::Adaptive => FecModeArg::Adaptive,
+            FecModeCli::Policy => FecModeArg::Policy,
+        }
+    }
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -131,9 +283,13 @@ impl From<CcArg> for Cc {
 #[derive(Copy, Clone, ValueEnum, PartialEq)]
 enum TransportArg {
     Quinn,
+    /// Security-stub sürücüsü (FEC parity YAPISAL olarak emit edilemez — bkz. src/kama.rs).
     Kama,
     /// [KAPI-1 W1] quinn DATAGRAM + app-ARQ (Q-DGRAM-ARQ, FAZ-1 primary comparator).
     Qdgram,
+    /// [SPRINT-A] GERÇEK ÜRÜN runtime'ı (client-core): FEC+ARQ füzyonu, tail-recovery,
+    /// fuzzy kontrolcü, PARAM bootstrap, handshake-siz kuruluş.
+    KamaProduct,
 }
 
 /// [KAPI-1 W4] CLI karşılığı — `transport::KamaArm`'a birebir eşlenir.
@@ -205,6 +361,25 @@ async fn main() -> Result<(), BenchError> {
             budget_bucket_bytes,
             budget_ceiling_bytes,
             gate_watch,
+            fec_profile,
+            fec_r,
+            fec_mode,
+            fec_deadline_ms,
+            loss_confirm_k,
+            fec_risk,
+            ts_out: _,
+            spec_l1_permille,
+            spec_l2_permille,
+            gate_permille,
+            persist_mode,
+            persist_alpha,
+            persist_rho,
+            persist_q,
+            payload,
+            fec_burst_fusion,
+            bootstrap_rtt,
+            initial_window_bytes,
+            bootstrap_fast,
         } => {
             run_server(
                 transport,
@@ -219,6 +394,22 @@ async fn main() -> Result<(), BenchError> {
                         budget_ceiling_bytes,
                     )?,
                     gate_watch,
+                    fec: FecArm::from_args(fec_profile, fec_r, fec_mode.into(), fec_deadline_ms),
+                    loss_confirm_k,
+                    fec_risk,
+                    ts_out: None,
+                    gate_permille,
+                    persist_mode,
+                    persist_alpha,
+                    persist_rho,
+                    persist_q,
+                    spec_l2_permille,
+                    spec_l1_permille,
+                    payload_bytes: payload,
+                    burst_fusion: fec_burst_fusion,
+                    bootstrap_rtt,
+                    initial_window_bytes,
+                    bootstrap_fast,
                 },
             )
             .await
@@ -242,6 +433,24 @@ async fn main() -> Result<(), BenchError> {
             warmup_msgs,
             gate,
             establish_gate,
+            fec_profile,
+            fec_r,
+            fec_mode,
+            fec_deadline_ms,
+            loss_confirm_k,
+            fec_risk,
+            ts_out,
+            spec_l1_permille,
+            spec_l2_permille,
+            gate_permille,
+            persist_mode,
+            persist_alpha,
+            persist_rho,
+            persist_q,
+            fec_burst_fusion,
+            bootstrap_rtt,
+            initial_window_bytes,
+            bootstrap_fast,
             out,
         } => {
             let cfg = ClientCfg {
@@ -264,6 +473,21 @@ async fn main() -> Result<(), BenchError> {
                 warmup_msgs,
                 gate,
                 establish_gate,
+                fec: FecArm::from_args(fec_profile, fec_r, fec_mode.into(), fec_deadline_ms),
+                loss_confirm_k,
+                fec_risk,
+                ts_out,
+                gate_permille,
+                persist_mode,
+                persist_alpha,
+                persist_rho,
+                persist_q,
+                spec_l2_permille,
+                spec_l1_permille,
+                burst_fusion: fec_burst_fusion,
+                bootstrap_rtt,
+                initial_window_bytes,
+                bootstrap_fast,
             };
             let output = run_client(transport, cfg).await?;
             output.write_jsonl(&out)?;
@@ -323,6 +547,7 @@ async fn run_server(t: TransportArg, cfg: ServerCfg) -> Result<(), BenchError> {
         TransportArg::Quinn => quic::QuinnTransport.run_server(cfg).await,
         TransportArg::Kama => transport::KamaTransport.run_server(cfg).await,
         TransportArg::Qdgram => qdgram::QdgramTransport.run_server(cfg).await,
+        TransportArg::KamaProduct => kama_product::KamaProductTransport.run_server(cfg).await,
     }
 }
 
@@ -331,5 +556,6 @@ async fn run_client(t: TransportArg, cfg: ClientCfg) -> Result<event::RunOutput,
         TransportArg::Quinn => quic::QuinnTransport.run_client(cfg).await,
         TransportArg::Kama => transport::KamaTransport.run_client(cfg).await,
         TransportArg::Qdgram => qdgram::QdgramTransport.run_client(cfg).await,
+        TransportArg::KamaProduct => kama_product::KamaProductTransport.run_client(cfg).await,
     }
 }

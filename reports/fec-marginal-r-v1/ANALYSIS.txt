@@ -1,0 +1,35 @@
+# FEC-MARGINAL-R-V1  RTT=200.0 ms  birincil d_msg = 4×RTT = 800 ms
+# birim = REP · kollar eşleştirilmemiş · çöküş eşiği = completion < 0.5
+
+## kol canlılığı ve geçerlilik
+  cor20  r0  n_valid= 40 geçersiz={} repairs_tx=0 repairs_rx=0 recovered=0 miss=0
+  cor20  r2  n_valid= 40 geçersiz={} repairs_tx=4800 repairs_rx=4305 recovered=782 miss=0
+  cor20  r4  n_valid= 40 geçersiz={} repairs_tx=9600 repairs_rx=8615 recovered=781 miss=0
+  iid20  r0  n_valid= 40 geçersiz={} repairs_tx=0 repairs_rx=0 recovered=0 miss=0
+  iid20  r2  n_valid= 40 geçersiz={} repairs_tx=4800 repairs_rx=4297 recovered=767 miss=0
+  iid20  r4  n_valid= 40 geçersiz={} repairs_tx=9600 repairs_rx=8625 recovered=737 miss=0
+
+## birincil: ALICI teslim @ d_msg=4×RTT
+  cor20  r0  n= 40  çöküş=3/40 CP95=[0.02,0.20]  koşullu-completion=0.979 boot95=[0.973,0.984]  srv_deliv=1.000 byte/teslim=500
+  cor20  r2  n= 40  çöküş=4/40 CP95=[0.03,0.24]  koşullu-completion=0.988 boot95=[0.984,0.992]  srv_deliv=1.000 byte/teslim=616
+  cor20  r4  n= 40  çöküş=1/40 CP95=[0.00,0.13]  koşullu-completion=0.990 boot95=[0.986,0.994]  srv_deliv=1.000 byte/teslim=736
+  iid20  r0  n= 40  çöküş=5/40 CP95=[0.04,0.27]  koşullu-completion=0.979 boot95=[0.974,0.984]  srv_deliv=1.000 byte/teslim=498
+  iid20  r2  n= 40  çöküş=6/40 CP95=[0.06,0.30]  koşullu-completion=0.994 boot95=[0.991,0.996]  srv_deliv=1.000 byte/teslim=615
+  iid20  r4  n= 40  çöküş=5/40 CP95=[0.04,0.27]  koşullu-completion=0.988 boot95=[0.982,0.993]  srv_deliv=1.000 byte/teslim=738
+
+## güç (rep-düzeyi sd → %80-güç MDE, kabaca 2.8·sd·sqrt(2/n))
+  cor20  r0  sd=0.0174 n=37 → MDE≈1.1 pp
+  cor20  r2  sd=0.0127 n=36 → MDE≈0.8 pp
+  cor20  r4  sd=0.0120 n=39 → MDE≈0.8 pp
+  iid20  r0  sd=0.0149 n=35 → MDE≈1.0 pp
+  iid20  r2  sd=0.0073 n=34 → MDE≈0.5 pp
+  iid20  r4  sd=0.0156 n=35 → MDE≈1.0 pp
+
+## completion-vs-deadline (post-hoc, d_msg = k×RTT)
+  hücre  kol       1×       2×       4×       8×      16×
+  cor20  r0     0.000    0.555    0.905    0.925    0.953
+  cor20  r2     0.000    0.699    0.889    0.900    0.914
+  cor20  r4     0.000    0.776    0.966    0.975    0.989
+  iid20  r0     0.000    0.530    0.857    0.875    0.941
+  iid20  r2     0.000    0.667    0.845    0.850    0.920
+  iid20  r4     0.000    0.680    0.865    0.875    0.917

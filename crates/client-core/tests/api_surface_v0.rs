@@ -21,10 +21,12 @@ use client_core::seam::{
     SecuritySeam, IDENTITY_TAG,
 };
 use client_core::wire::{
-    decode_data, decode_fec, decode_param, decode_param_ack, decode_recovered, encode_data,
-    encode_fec, encode_param, encode_param_ack, encode_recovered, FecFrameHeader, FRAME_DATA,
-    FRAME_FEC, FRAME_PARAM, FRAME_PARAM_ACK, FRAME_RECOVERED, HDR_DATA, HDR_FEC, HDR_RECOVERED,
-    LEN_PARAM, LEN_PARAM_ACK, RECOVERED_MAX_ESI,
+    decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec, decode_param,
+    decode_param_ack, decode_recovered, encode_cs_echo, encode_cs_probe, encode_data,
+    encode_data_frag, encode_fec, encode_param, encode_param_ack, encode_recovered, FecFrameHeader,
+    CS_PROBE_SUBTYPE, FRAME_CS_ECHO, FRAME_CS_PROBE, FRAME_DATA, FRAME_DATA_FRAG, FRAME_FEC,
+    FRAME_PARAM, FRAME_PARAM_ACK, FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG, HDR_FEC, HDR_RECOVERED,
+    LEN_CS_ECHO, LEN_CS_PROBE, LEN_PARAM, LEN_PARAM_ACK, RECOVERED_MAX_ESI,
 };
 use client_core::ClientSession;
 // Motor re-export'ları (yalnız yol/isim-pin; derinlemesine imza motorun kendi testlerinde).
@@ -72,11 +74,29 @@ async fn transport_api_v0_surface_is_frozen() {
         offer_queue: _,
         delivery_queue: _,
         max_unit_bytes: _,
+        max_message_bytes: _, // v0.2 (S1B fragmenter): minor-EKLEME, kasıtlı pin-güncellemesi
         max_peers: _,
         quota_r: _,
         drain_cap: _,
         idle_hold: _,
+        initial_window_bytes: _, // v0.5 (IW): minor-EKLEME, kasıtlı pin-güncellemesi
+        bootstrap_rtt: _,
+        bootstrap_fast_ladder: _, // v0.6 (kuruluş merdiveni): kasıtlı pin-güncellemesi // v0.4 (DR-CS-3 kablolama): minor-EKLEME, kasıtlı pin-güncellemesi
+        fec_structure_policy: _,  // v0.3 (BURST-FUSION): minor-EKLEME, kasıtlı pin-güncellemesi
         fec: _, // v0.1 (S1): minor-EKLEME — kasıtlı pin-güncellemesi, P4 belgesi §3
+        // v0.7 (DEADLINE-EKSENİ): minor-EKLEME, kasıtlı pin-güncellemesi. `None` = sevk
+        // davranışı (yapı-gate koşar); `Some` = kalibre politika otoritedir.
+        fusion_policy: _,
+        // v0.8 (ONAY UFKU): minor-EKLEME, kasıtlı pin-güncellemesi. Default = sevk davranışı;
+        // `ChannelDerived` bir ÖLÇÜM KOLUDUR (reports/loss-ledger-confirm-defect/).
+        loss_confirm_horizon: _,
+        // v0.9 (FEC-RISK): minor-EKLEME, kasıtlı pin-güncellemesi. Default KAPALI; AÇIKKEN
+        // tek tüketici FEC oranı kararıdır (CC/pacing/ARQ dokunulmaz).
+        fec_loss_risk: _,
+        // v0.11 (HANDOFF ENSTRÜMANI): minor-EKLEME, kasıtlı pin-güncellemesi. Default None; salt gözlem.
+        ts_sample_period_ns: _,
+        // v0.12 (R-SWEEP): gate seviyesi override'ı; default None = sevk.
+        structure_gate_level_permille: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,
@@ -134,6 +154,29 @@ async fn transport_api_v0_surface_is_frozen() {
         fec_repairs_tx: _,
         fec_repair_missing: _,
         fec_recovered_ctrl_units: _,
+        // [egress-seam] wire byte muhasebesi + EgressPolicy reddi (DENEME düzlemi: ret dahil).
+        tx_bytes: _,
+        rx_bytes: _,
+        tx_data_bytes: _,
+        tx_retx_bytes: _,
+        tx_dup_bytes: _,
+        tx_fec_bytes: _,
+        tx_ctrl_bytes: _,
+        egress_refused_pkts: _,
+        egress_refused_bytes: _,
+        // [S1B] fragmenter: mesaj-granülü ACK + canonical-serialize hata sayacı.
+        messages_acked: _,
+        frag_encode_failures: _,
+        // [TEŞHİS] yapı-gate karar tabanı + karar-yolu histogramı + kuruluş görünürlüğü.
+        fate: _,
+        // [DR-CS-3] cold-start probe/echo muhasebesi.
+        cs_probes_tx: _,
+        cs_echoes_rx: _,
+        // v0.10 (KISA-AKIŞ ENSTRÜMANI): minor-EKLEME, kasıtlı pin-güncellemesi. Salt gözlem —
+        // ana döngü çıkış anı, sender damgalarıyla aynı saat tabanında.
+        flow_end_ns: _,
+        // v0.11: bounded zaman serisi (yalnız örnekleme açıkken dolar).
+        ts: _,
     } = ClientStats::default();
     let ServerStats {
         delivered: _,
@@ -152,6 +195,20 @@ async fn transport_api_v0_surface_is_frozen() {
         param_bound_peers: _,
         param_rejects: _,
         fec_pre_param_dropped: _,
+        // [egress-seam] dönüş-yönü wire byte muhasebesi + EgressPolicy reddi.
+        tx_datagrams: _,
+        tx_bytes: _,
+        rx_bytes: _,
+        egress_refused_pkts: _,
+        egress_refused_bytes: _,
+        // [S1B] fragmenter: chunk birleştirme muhasebesi.
+        frag_chunks_rx: _,
+        msgs_reassembled: _,
+        frag_chunk_dropped: _,
+        msg_asm_evicted: _,
+        // [DR-CS-3] cold-start probe/echo muhasebesi.
+        cs_probes_rx: _,
+        cs_echoes_tx: _,
     } = ServerStats::default();
     let Delivery {
         peer: _,
@@ -203,6 +260,22 @@ async fn transport_api_v0_surface_is_frozen() {
     let _: Option<(u16, u64, &[u8])> = decode_data(&[]);
     let _: u8 = FRAME_DATA;
     let _: usize = HDR_DATA;
+    // [S1B] fragmentli DATA (0x05): gövde = canonical SourcePrefix ‖ payload.
+    let _: Vec<u8> = encode_data_frag(0u16, 0u64, &[]);
+    let _: Option<(u16, u64, client_core::SourcePrefix, &[u8])> = decode_data_frag(&[]);
+    let _: u8 = FRAME_DATA_FRAG;
+    let _: usize = HDR_DATA_FRAG;
+    // [DR-CS-3] cold-start probe/echo (0x06/0x07; şema 0x19/0x1A alan-hizası, amp≤1).
+    let _: Vec<u8> = encode_cs_probe(CS_PROBE_SUBTYPE, 0u16);
+    let _: Option<(u8, u16)> = decode_cs_probe(&[]);
+    let _: Vec<u8> = encode_cs_echo(CS_PROBE_SUBTYPE, 0u16, 0u32, 0u32);
+    let _: Option<(u8, u16, u32, u32)> = decode_cs_echo(&[]);
+    let _: u8 = FRAME_CS_PROBE;
+    let _: u8 = FRAME_CS_ECHO;
+    // ANTİ-AMPLİFİKASYON, DERLEME-ZAMANI: echo probe'dan küçük olmak ZORUNDA (amp ≤ 1).
+    // `const _` formu boyutlar kayarsa CI'ı derlemede kırar — runtime assert'i bu dosyada
+    // (koşulsuz `return` gövdesi) hiç çalışmazdı.
+    const _: () = assert!(LEN_CS_ECHO < LEN_CS_PROBE);
 
     // ── wire-v0.1 FEC + RECOVERED codec imzaları (freeze-audit kapatması: TAM alan kümesi) ──
     let fh = FecFrameHeader {
