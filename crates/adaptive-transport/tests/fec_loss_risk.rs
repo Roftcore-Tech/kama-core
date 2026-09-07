@@ -667,3 +667,209 @@ fn persist_varsayilani_sevk() {
     assert_eq!(c.persist_srtt_permille, 500);
     assert_eq!(c.persist_cap_srtt_permille, u32::MAX);
 }
+
+// ═══════════════════════════════ [EVIDENCE] kanıt-kütlesi kolu ═══════════════════════════════
+
+/// Burst zaman çizgisi (handoff ailesiyle aynı): 80 birim, RTT örneği 4.1 s, 40..120 ardışık kayıp.
+/// L2 (persistent) onaydan ÖNCE oluşur; `sent_window_units` = 80 (tek uçuş).
+fn burst_drive(mut s: Sender) -> (Sender, Vec<TsSample>) {
+    s.set_establish_probe(false);
+    let acked: Vec<u64> = (1..400).filter(|q| !(40..120).contains(q)).collect();
+    let mut samples = Vec::new();
+    let mut step = |s: &mut Sender, ev: Event, t: u64| {
+        s.on_event(ev, t);
+        samples.push(s.diag_ts_sample());
+    };
+    for i in 0..80u64 {
+        step(
+            &mut s,
+            Event::AppData(OpaqueUnit {
+                id: 1000 + i,
+                size: 101,
+            }),
+            0,
+        );
+    }
+    for t in 1..=20u64 {
+        step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    step(
+        &mut s,
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::ZERO,
+        }),
+        4_100 * MS,
+    );
+    for t in 21..=220u64 {
+        step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    step(
+        &mut s,
+        Event::AckReceived(AckInfo {
+            acked_seqs: acked,
+            ack_delay: Duration::ZERO,
+        }),
+        45_000 * MS,
+    );
+    for t in 221..=320u64 {
+        step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+    }
+    (s, samples)
+}
+
+fn with_evidence(mode: EvidenceMode, min: u64, full: u64) -> Sender {
+    let mut s = Sender::new();
+    s.set_fec_loss_risk(FecLossRiskConfig {
+        evidence_mode: mode,
+        evidence_min_units: min,
+        evidence_full_units: full,
+        ..FecLossRiskConfig::experimental_v1()
+    });
+    s
+}
+
+/// Default sevk: kanıt kütlesi OKUNMAZ.
+#[test]
+fn evidence_varsayilani_off() {
+    assert_eq!(
+        FecLossRiskConfig::default().evidence_mode,
+        EvidenceMode::Off
+    );
+    assert_eq!(
+        FecLossRiskConfig::experimental_v1().evidence_mode,
+        EvidenceMode::Off
+    );
+}
+
+/// Off'ta knob'lar inert: örnek dizisi ve seviye sayaçları knob'dan bağımsız ÖZDEŞ.
+#[test]
+fn evidence_off_knoblari_okumaz() {
+    let (a, sa) = burst_drive(with_evidence(EvidenceMode::Off, 32, 64));
+    let (b, sb) = burst_drive(with_evidence(EvidenceMode::Off, 1_000_000, 1));
+    assert_eq!(sa, sb, "Off'ta knob'lar çıktıyı değiştiremez");
+    assert_eq!(a.diag_spec_levels(), b.diag_spec_levels());
+    assert!(a.diag_spec_signals().4 > 0, "önkoşul: burst L2 üretir");
+}
+
+/// M1 taban: kütle < min ⇒ L2 UYGUN DEĞİL → L1; L1 anı ve instant risk DEĞİŞMEZ. min ≤ kütle ⇒ Off'a özdeş.
+#[test]
+fn evidence_floor_l2_yi_l1_e_indirir_l1_dokunulmaz() {
+    let (off, s_off) = burst_drive(with_evidence(EvidenceMode::Off, 32, 64));
+    let (fl, s_fl) = burst_drive(with_evidence(EvidenceMode::L2Floor, 10_000, 64));
+    let (fl1, s_fl1) = burst_drive(with_evidence(EvidenceMode::L2Floor, 1, 64));
+    let (_, _, _, t1_off, t2_off) = off.diag_spec_signals();
+    let (_, _, _, t1_fl, t2_fl) = fl.diag_spec_signals();
+    assert!(t2_off > 0, "önkoşul: Off'ta L2 var");
+    assert_eq!(t1_off, t1_fl, "L1 anı kütleden bağımsız");
+    assert_eq!(t2_fl, 0, "kütle 80 < 10 000 ⇒ L2 hiç uygun değil");
+    assert_eq!(fl.diag_spec_levels()[2], 0);
+    assert!(
+        s_off
+            .iter()
+            .zip(&s_fl)
+            .all(|(x, y)| x.instant_ppm == y.instant_ppm
+                && x.persistent_ppm == y.persistent_ppm
+                && x.evidence_mass == y.evidence_mass),
+        "tahminci (instant/persistent/kütle) politikadan bağımsız"
+    );
+    // Taban altında kalan L2 örnekleri L1 tavanına iner (125), asla sıfıra değil.
+    let demoted: Vec<(u32, u32)> = s_off
+        .iter()
+        .zip(&s_fl)
+        .filter(|(x, _)| x.level_idx == 2)
+        .map(|(x, y)| (x.spec_prop, y.spec_prop))
+        .collect();
+    assert!(!demoted.is_empty());
+    assert!(
+        demoted.iter().all(|&(o, f)| f > 0 && f <= o),
+        "indirilen öneri >0 ve ≤ Off: {demoted:?}"
+    );
+    assert_eq!(s_off, s_fl1, "min=1 ⇒ Off'a byte-özdeş");
+    assert_eq!(fl1.diag_spec_levels(), off.diag_spec_levels());
+}
+
+/// M2 aritmetiği: `l1 + (l2−l1)·min(em, full)/full` — tamsayı; Off/Floor'da l2 sabit.
+#[test]
+fn evidence_scaled_tavan_dogrusal_tamsayi() {
+    let s = with_evidence(EvidenceMode::L2Scaled, 32, 64);
+    assert_eq!(s.l2_cap_with_evidence(0), 125);
+    assert_eq!(s.l2_cap_with_evidence(32), 187);
+    assert_eq!(s.l2_cap_with_evidence(64), 250);
+    assert_eq!(s.l2_cap_with_evidence(1_000), 250);
+    assert_eq!(
+        with_evidence(EvidenceMode::Off, 32, 64).l2_cap_with_evidence(0),
+        250
+    );
+    assert_eq!(
+        with_evidence(EvidenceMode::L2Floor, 32, 64).l2_cap_with_evidence(0),
+        250
+    );
+    assert_eq!(
+        with_evidence(EvidenceMode::L2Scaled, 32, 0).l2_cap_with_evidence(0),
+        250,
+        "full=0 → değişmez"
+    );
+}
+
+/// M2 uçtan uca: full ≫ kütle ⇒ L2 örnekleri L1 tavanına ölçeklenir; seviye L2 KALIR; L1 anı değişmez.
+#[test]
+fn evidence_scaled_l2_yetkisini_olcekler_seviyeyi_korur() {
+    let (off, s_off) = burst_drive(with_evidence(EvidenceMode::Off, 32, 64));
+    let (sc, s_sc) = burst_drive(with_evidence(EvidenceMode::L2Scaled, 32, 1_000_000));
+    assert_eq!(
+        off.diag_spec_signals().3,
+        sc.diag_spec_signals().3,
+        "L1 anı"
+    );
+    assert_eq!(
+        off.diag_spec_signals().4,
+        sc.diag_spec_signals().4,
+        "L2 anı (seviye korunur)"
+    );
+    assert_eq!(off.diag_spec_levels(), sc.diag_spec_levels());
+    let pairs: Vec<(u32, u32)> = s_off
+        .iter()
+        .zip(&s_sc)
+        .filter(|(x, _)| x.level_idx == 2 && x.confirmed_prop == 0 && x.structure_prop == 0)
+        .map(|(x, y)| (x.spec_prop, y.spec_prop))
+        .collect();
+    assert!(!pairs.is_empty(), "vakum: L2 ∧ kanonik sessiz örneği yok");
+    assert!(
+        pairs.iter().all(|&(o, s)| s < o && s > 0),
+        "ölçekli < Off, >0: {pairs:?}"
+    );
+}
+
+/// Temiz yol: kayıp yoksa hiçbir modda L1/L2 yok, risk 0.
+#[test]
+fn evidence_temiz_yolda_hicbir_mod_ateslemez() {
+    for (m, min, full) in [
+        (EvidenceMode::Off, 32, 64),
+        (EvidenceMode::L2Floor, 1, 64),
+        (EvidenceMode::L2Scaled, 32, 1),
+    ] {
+        let s = drive(with_evidence(m, min, full), 80, (0..400).collect());
+        assert_eq!(s.diag_spec_levels()[1], 0, "{m:?}: L1 yok");
+        assert_eq!(s.diag_spec_levels()[2], 0, "{m:?}: L2 yok");
+        assert_eq!(s.diag_risk_ppm().0, 0, "{m:?}: risk 0");
+    }
+}
+
+/// Geçiş enstrümanı: ilk L1/L2 anındaki (kütle, instant, persistent) dolu ve tutarlı.
+#[test]
+fn evidence_gecis_enstrumani_dolu() {
+    let (s, samples) = burst_drive(with_evidence(EvidenceMode::Off, 32, 64));
+    let (l1, l2) = s.diag_spec_transitions();
+    eprintln!("gecis: L1={l1:?} L2={l2:?}");
+    // Kütle = o anda pencerede GÖNDERİLMİŞ birimler (sunulan 80 değil; pacing ilk uçuşu sınırlar).
+    let first_l1 = samples.iter().find(|x| x.level_idx == 1).expect("önkoşul: L1 örneği");
+    let first_l2 = samples.iter().find(|x| x.level_idx == 2).expect("önkoşul: L2 örneği");
+    assert!(l1.0 > 0 && l1.0 <= 80, "ilk L1'de kütle (0, 80]: {l1:?}");
+    assert_eq!(l1.0, first_l1.evidence_mass, "geçiş-diag'ı ile ts örneği tutarlı (L1)");
+    assert_eq!(l1.1, first_l1.instant_ppm);
+    assert!(l1.1 >= 10_000, "ilk L1'de instant ≥ l1_min: {l1:?}");
+    assert_eq!(l2.0, first_l2.evidence_mass, "geçiş-diag'ı ile ts örneği tutarlı (L2)");
+    assert!(l2.2 >= 10_000, "ilk L2'de persistent ≥ l2_min: {l2:?}");
+    assert!(l2.0 >= l1.0, "kütle L1'den L2'ye azalmaz (aynı uçuş)");
+}

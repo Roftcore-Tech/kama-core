@@ -617,6 +617,9 @@ mod loopback_tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                em_mode: None,
+                em_min: None,
+                em_full: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
             })
@@ -695,6 +698,9 @@ mod loopback_tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                em_mode: None,
+                em_min: None,
+                em_full: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
             })
@@ -753,6 +759,9 @@ mod loopback_tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                em_mode: None,
+                em_min: None,
+                em_full: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
             })
@@ -831,6 +840,9 @@ mod loopback_tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                em_mode: None,
+                em_min: None,
+                em_full: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
             })

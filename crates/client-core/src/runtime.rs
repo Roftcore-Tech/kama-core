@@ -28,8 +28,8 @@ use adaptive_transport::sender::{
 /// [BURST-FUSION] Motorun yapı-gate politikası — `RuntimeConfig` alanının tipi. Çağıran ayrıca
 /// adaptive-transport'a bağımlı olmasın diye buradan yeniden dışa verilir.
 pub use adaptive_transport::sender::{
-    FecArbiterReason, FecLossRiskConfig, FecStructurePolicy, LossConfirmHorizon, PersistMode,
-    TsSample, ARBITER_REASON_KINDS,
+    EvidenceMode, FecArbiterReason, FecLossRiskConfig, FecStructurePolicy, LossConfirmHorizon,
+    PersistMode, TsSample, ARBITER_REASON_KINDS,
 };
 use adaptive_transport::seq::resolve_seq;
 use kama_engine::{plan_param_bootstrap, ParamState};
@@ -421,6 +421,8 @@ pub struct FateWindowDiag {
     pub fec_spec_signals: (u64, u32, u32, u64, u64),
     /// [PERSIST ENSTRÜMANI] `(ufuk_son_ns, ufuk_tepe_ns, spurious_örnek)`.
     pub fec_persist: (u64, u64, usize),
+    /// [EVIDENCE ENSTRÜMANI] İlk L1 / ilk L2 anında `(sent_window_units, instant_ppm, persistent_ppm)`.
+    pub fec_spec_transitions: ((u64, u64, u64), (u64, u64, u64)),
     /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
     /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
     /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI · 6=oturum-kurulmadı(PreConverge).
@@ -1401,6 +1403,7 @@ async fn client_task(
         fec_spec_levels: session.sender().diag_spec_levels(),
         fec_spec_signals: session.sender().diag_spec_signals(),
         fec_persist: session.sender().diag_persist(),
+        fec_spec_transitions: session.sender().diag_spec_transitions(),
         fec_latch_diag: {
             let d = session.sender().diag_fec_actuation();
             (

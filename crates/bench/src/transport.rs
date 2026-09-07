@@ -208,6 +208,9 @@ pub struct ClientCfg {
     pub persist_alpha: Option<u32>,
     pub persist_rho: Option<u32>,
     pub persist_q: Option<u32>,
+    pub em_mode: Option<String>,
+    pub em_min: Option<u64>,
+    pub em_full: Option<u64>,
 }
 
 /// [KAPI-1 W6] Dosya-tabanlı barrier: `<gate>.ready` yaz → `<gate>.go` bekle (5 ms poll, 120 s
@@ -275,6 +278,9 @@ pub struct ServerCfg {
     pub persist_alpha: Option<u32>,
     pub persist_rho: Option<u32>,
     pub persist_q: Option<u32>,
+    pub em_mode: Option<String>,
+    pub em_min: Option<u64>,
+    pub em_full: Option<u64>,
 }
 
 /// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).

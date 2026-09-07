@@ -60,6 +60,10 @@ pub struct RiskSplit {
     pub reorder_pressure_permille: u32,
     /// reorder_pressure'ın paydası (küçük-n koruması için).
     pub declared_units: u64,
+    /// [EVIDENCE] Ham kanıt kütlesi = paydanın KENDİSİ (`sent_window_units`): rolling W_loss
+    /// penceresinde GÖNDERİLMİŞ birimler. Fate'i henüz bilinmeyen (in-flight) birimleri de
+    /// İÇERİR; olay üretmiş birimler `declared_units`'tir. Dönüştürülmez, tabanlanmaz.
+    pub sent_window_units: u64,
 }
 
 /// [FEC-RISK] `Suspected` bir olayın, YAŞINA göre "gerçekten kayıp" güven ağırlığı (per-mille).
@@ -445,6 +449,7 @@ impl ThresholdLossDetector {
                 u32::try_from(u128::from(spur_units) * 1000 / u128::from(all_units)).unwrap_or(1000)
             },
             declared_units: all_units,
+            sent_window_units: self.sent_window_units,
         }
     }
 

@@ -106,6 +106,15 @@ enum Cmd {
         /// [PERSIST] quantile (‰). None = 950.
         #[arg(long)]
         persist_q: Option<u32>,
+        /// [EVIDENCE] kanıt-kütlesi modu: off | floor | scaled. None = off (sevk).
+        #[arg(long)]
+        em_mode: Option<String>,
+        /// [EVIDENCE M1] L2 için asgari sent_window_units.
+        #[arg(long)]
+        em_min: Option<u64>,
+        /// [EVIDENCE M2] L2 tam-yetki sent_window_units.
+        #[arg(long)]
+        em_full: Option<u64>,
         /// [SPRINT-A] Alıcı birim-payload tavanı — client `--payload` ile AYNI olmalı.
         #[arg(long, default_value_t = 256)]
         payload: u64,
@@ -222,6 +231,15 @@ enum Cmd {
         /// [PERSIST] quantile (‰). None = 950.
         #[arg(long)]
         persist_q: Option<u32>,
+        /// [EVIDENCE] kanıt-kütlesi modu: off | floor | scaled. None = off (sevk).
+        #[arg(long)]
+        em_mode: Option<String>,
+        /// [EVIDENCE M1] L2 için asgari sent_window_units.
+        #[arg(long)]
+        em_min: Option<u64>,
+        /// [EVIDENCE M2] L2 tam-yetki sent_window_units.
+        #[arg(long)]
+        em_full: Option<u64>,
         /// [BURST-FUSION] Bkz. `serve --fec-burst-fusion`. SUNUCUYLA AYNI verilmelidir.
         #[arg(long, default_value_t = false)]
         fec_burst_fusion: bool,
@@ -375,6 +393,9 @@ async fn main() -> Result<(), BenchError> {
             persist_alpha,
             persist_rho,
             persist_q,
+            em_mode,
+            em_min,
+            em_full,
             payload,
             fec_burst_fusion,
             bootstrap_rtt,
@@ -403,6 +424,9 @@ async fn main() -> Result<(), BenchError> {
                     persist_alpha,
                     persist_rho,
                     persist_q,
+                    em_mode,
+                    em_min,
+                    em_full,
                     spec_l2_permille,
                     spec_l1_permille,
                     payload_bytes: payload,
@@ -447,6 +471,9 @@ async fn main() -> Result<(), BenchError> {
             persist_alpha,
             persist_rho,
             persist_q,
+            em_mode,
+            em_min,
+            em_full,
             fec_burst_fusion,
             bootstrap_rtt,
             initial_window_bytes,
@@ -482,6 +509,9 @@ async fn main() -> Result<(), BenchError> {
                 persist_alpha,
                 persist_rho,
                 persist_q,
+                em_mode,
+                em_min,
+                em_full,
                 spec_l2_permille,
                 spec_l1_permille,
                 burst_fusion: fec_burst_fusion,

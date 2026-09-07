@@ -386,6 +386,12 @@ pub struct FecLossRiskConfig {
     /// garantisi. Motor K bilmez (INV-ENGINE-SOC) — bu yüzden sabit, profil-bağımsız bir taban;
     /// K>8 profilde 1 repair için daha küçük ‰ yeterdi, taban yalnız ihtiyatlıdır.
     pub spec_min_permille: u32,
+    /// [EVIDENCE] Kanıt-kütlesi politikası — YALNIZ spekülatif L2 yetkisini kısar. `Off` = sevk.
+    pub evidence_mode: EvidenceMode,
+    /// [EVIDENCE M1] L2 uygunluğu için asgari `sent_window_units` (`[CAL]`; Off/Scaled okumaz).
+    pub evidence_min_units: u64,
+    /// [EVIDENCE M2] L2 yetkisinin tam olduğu `sent_window_units` (`[CAL]`; Off/Floor okumaz).
+    pub evidence_full_units: u64,
 }
 
 impl Default for FecLossRiskConfig {
@@ -406,6 +412,9 @@ impl Default for FecLossRiskConfig {
             reorder_discount_max_permille: 500,
             tight_budget_permille: 2_500,
             spec_min_permille: 63,
+            evidence_mode: EvidenceMode::Off,
+            evidence_min_units: 32,
+            evidence_full_units: 64,
         }
     }
 }
@@ -422,6 +431,18 @@ impl FecLossRiskConfig {
 }
 
 /// [PERSIST] Persistence ufkunun kaynağı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EvidenceMode {
+    /// Kanıt kütlesi okunmaz (sevk; byte-özdeş).
+    #[default]
+    Off,
+    /// M1: `sent_window_units < evidence_min_units` iken L2 UYGUN DEĞİL → L1 (L1 zamanı değişmez).
+    L2Floor,
+    /// M2: L2 tavanı `l1 + (l2−l1)·min(em, full)/full` ile doğrusal ölçeklenir (tamsayı).
+    L2Scaled,
+}
+
+/// [PERSIST] Persistence ufku modu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PersistMode {
     /// Sevk: sabit `persist_srtt_permille × srtt`.
@@ -512,6 +533,9 @@ pub struct TsSample {
     /// `FecArbiterReason::index` · spekülatif seviye (0/1/2).
     pub reason_idx: u8,
     pub level_idx: u8,
+    /// [EVIDENCE] `sent_window_units` (ham) ve `declared_units` karar anında.
+    pub evidence_mass: u64,
+    pub declared_units: u64,
 }
 
 /// [TEŞHİS] Arbiter sebep histogramı kova sayısı.
@@ -1661,6 +1685,8 @@ pub struct Sender {
     /// [FEC-RISK v2 ENSTRÜMAN] İlk L1 / L2 önerisinin anı (ns, 0 = hiç).
     diag_t_first_l1_ns: u64,
     diag_t_first_l2_ns: u64,
+    diag_first_l1_ctx: (u64, u64, u64), // [EVIDENCE] (em, instant, persistent) ilk L1'de
+    diag_first_l2_ctx: (u64, u64, u64), // [EVIDENCE] ilk L2'de
     /// [HANDOFF ENSTRÜMANI] Son kararın anlık görüntüsü (zaman serisi örnekleyici okur).
     diag_last_ts: TsSample,
     /// [PERSIST ENSTRÜMANI] Yürürlükteki persistence ufku (son, tepe) ns.
@@ -1895,6 +1921,8 @@ impl Sender {
             diag_reorder_pressure_peak: 0,
             diag_t_first_l1_ns: 0,
             diag_t_first_l2_ns: 0,
+            diag_first_l1_ctx: (0, 0, 0),
+            diag_first_l2_ctx: (0, 0, 0),
             diag_last_ts: TsSample::default(),
             diag_persist_min_last_ns: 0,
             diag_persist_min_peak_ns: 0,
@@ -3490,12 +3518,22 @@ impl Sender {
                         self.diag_spec_levels[1] += 1;
                         if self.diag_t_first_l1_ns == 0 {
                             self.diag_t_first_l1_ns = now_ns;
+                            self.diag_first_l1_ctx = (
+                                split.sent_window_units,
+                                split.instant_ppm,
+                                split.persistent_ppm,
+                            );
                         }
                     }
                     SpeculativeLevel::L2Persistent => {
                         self.diag_spec_levels[2] += 1;
                         if self.diag_t_first_l2_ns == 0 {
                             self.diag_t_first_l2_ns = now_ns;
+                            self.diag_first_l2_ctx = (
+                                split.sent_window_units,
+                                split.instant_ppm,
+                                split.persistent_ppm,
+                            );
                         }
                     }
                 }
@@ -3527,6 +3565,8 @@ impl Sender {
                 SpeculativeLevel::L1Bootstrap => 1,
                 SpeculativeLevel::L2Persistent => 2,
             },
+            evidence_mass: spec_split.map_or(0, |x| x.sent_window_units),
+            declared_units: spec_split.map_or(0, |x| x.declared_units),
         };
         d.fec_parity_ratio_permille = final_ratio;
         if final_ratio > 0 {
@@ -4231,13 +4271,23 @@ impl Sender {
         } else {
             SpeculativeLevel::L1Bootstrap
         };
+        // [EVIDENCE M1] Kanıt tabanı: kütle küçükken L2 UYGUN DEĞİL → L1. L0/L1 kararı kütleyi
+        // OKUMAZ (cold-start dokunulmaz); Off'ta blok inert.
+        let level = if level == SpeculativeLevel::L2Persistent
+            && c.evidence_mode == EvidenceMode::L2Floor
+            && split.sent_window_units < c.evidence_min_units
+        {
+            SpeculativeLevel::L1Bootstrap
+        } else {
+            level
+        };
         // Bütçe sıkıysa ARQ'nun tekrar-deneme fırsatı yok → belirsiz kanıta daha büyük tepki
         // meşru. Bildirilmemiş bütçe = sıkı DEĞİL (varsayılan uydurulmaz).
         let tight = self
             .tightest_deadline_over_srtt()
             .is_some_and(|b| b <= c.tight_budget_permille);
         let mut cap = match level {
-            SpeculativeLevel::L2Persistent => c.persistent_cap_permille,
+            SpeculativeLevel::L2Persistent => self.l2_cap_with_evidence(split.sent_window_units),
             SpeculativeLevel::L1Bootstrap if tight => c.persistent_cap_permille,
             _ => c.bootstrap_cap_permille,
         };
@@ -4269,6 +4319,31 @@ impl Sender {
             ratio_permille: cap,
             deadline_assisted: tight && level == SpeculativeLevel::L1Bootstrap,
         }
+    }
+
+    /// [EVIDENCE M2] L2 tavanı kanıt kütlesiyle: `l1 + (l2−l1)·min(em, full)/full` (tamsayı, ADR-17).
+    /// Off/L2Floor'da ve `full == 0` ya da `l2 ≤ l1`'de = `persistent_cap_permille` (değişmez).
+    #[must_use]
+    pub fn l2_cap_with_evidence(&self, em: u64) -> u32 {
+        let c = self.fec_loss_risk;
+        if c.evidence_mode != EvidenceMode::L2Scaled || c.evidence_full_units == 0 {
+            return c.persistent_cap_permille;
+        }
+        let l1 = u64::from(c.bootstrap_cap_permille);
+        let l2 = u64::from(c.persistent_cap_permille);
+        if l2 <= l1 {
+            return c.persistent_cap_permille;
+        }
+        let g = em.min(c.evidence_full_units);
+        u32::try_from(l1 + (l2 - l1) * g / c.evidence_full_units)
+            .unwrap_or(c.persistent_cap_permille)
+    }
+
+    /// [EVIDENCE ENSTRÜMAN] İlk L1 ve ilk L2 anındaki `(sent_window_units, instant_ppm,
+    /// persistent_ppm)`; `(0,0,0)` = hiç olmadı.
+    #[must_use]
+    pub fn diag_spec_transitions(&self) -> ((u64, u64, u64), (u64, u64, u64)) {
+        (self.diag_first_l1_ctx, self.diag_first_l2_ctx)
     }
 
     /// [ONAY UFKU] Ledger confirm ufku kolunu kurar. Default = sevk davranışı (byte-özdeş).
