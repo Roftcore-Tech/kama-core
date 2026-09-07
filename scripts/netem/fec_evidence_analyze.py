@@ -3,15 +3,19 @@
 d2 = ≤2×RTT teslim. Saf-reorder hücrelerinde (E2) L2'lerin TAMAMI yanlıştır.
 Ek: em@L1 / em@L2 / risk@L1 / pers@L2 (geçiş-diag), t_risk==t_susp invaryantı, ts.csv'den
 instant tepe + tepe anındaki (em, seviye, final) ve em yörüngesi (0.5/1/2 s).
-Kullanım: fec_evidence_analyze.py ROOT [--all]   (--all: stall-dışı yerine tüm rep medyanı da basar)
+Kullanım: fec_evidence_analyze.py ROOT [ROOT2 ...]  (kökler birleştirilir: off/M0 ile M1/M2 aynı tabloda;
+M1/M2 kolları set etiketi alır: B-M1@85 = em_min 85, B-M2@170 = em_full 170)
 """
 import sys, glob, re, json, statistics, os
-root = sys.argv[1]
+roots = [a for a in sys.argv[1:] if not a.startswith("--")]
 def parse(d):
     if not all(os.path.exists(f"{d}/{f}") for f in ("rc", "c.err", "out.jsonl", "argv.txt")):
         return None
     a = open(f"{d}/argv.txt").read()
     cell = re.search(r"cell=(\S+)", a).group(1); arm = re.search(r"arm=(\S+)", a).group(1)
+    emn = re.search(r"em_min=(\d+)", a); emf = re.search(r"em_full=(\d+)", a)
+    if arm.endswith("-M1") and emn: arm = f"{arm}@{emn.group(1)}"
+    if arm.endswith("-M2") and emf: arm = f"{arm}@{emf.group(1)}"
     msgs = int(re.search(r"msgs=(\d+)", a).group(1)); rtt = int(re.search(r"rtt=(\d+)", a).group(1))
     t = open(f"{d}/c.err", errors="replace").read()
     g = lambda p, x=0: int(re.search(p, t).group(1)) if re.search(p, t) else x
@@ -43,14 +47,15 @@ def parse(d):
                 em_l2=int(e2.group(1)) if e2 else 0, pers_l2=int(e2.group(3)) if e2 else 0,
                 pk=pk, traj=traj,
                 stall=(t_susp == 0 or t_susp > 1_000_000_000), lossy=("loss" in a))
-runs = [r for r in (parse(d) for d in sorted(glob.glob(f"{root}/*/rep*"))) if r]
+runs = [r for r in (parse(d) for root in roots for d in sorted(glob.glob(f"{root}/*/rep*"))) if r]
 cells = {}
 for r in runs: cells.setdefault((r["cell"], r["msgs"]), {}).setdefault(r["arm"], []).append(r)
 def med(v): return statistics.median(v) if v else float("nan")
 ms = lambda v: "asla" if not v else f"{v/1e6:.0f}"
 def order(a):
-    if a == "off": return (0, "")
-    return (1 if a.startswith("A") else 2, a)
+    if a == "off": return (0, "", 0)
+    base, _, tag = a.partition("@")
+    return (1 if base.startswith("A") else 2, base, int(tag) if tag else 0)
 inv_bad = []; inv_n = 0
 for (cell, msgs) in sorted(cells, key=lambda k: (k[0], k[1])):
     arms = cells[(cell, msgs)]
@@ -59,7 +64,7 @@ for (cell, msgs) in sorted(cells, key=lambda k: (k[0], k[1])):
     print("=" * 172)
     print(f"HÜCRE {cell} · {msgs} msg · RTT {off[0]['rtt'] if off else '?'} ms · {'KAYIPLI' if lossy else 'KAYIPSIZ (her L2 YANLIŞ)'}")
     print("=" * 172)
-    print(f"{'kol':>6s} {'n':>2s} {'stall':>5s} {'n_ok':>4s} {'d2_all':>6s} {'d2_ok':>6s} {'wireΔ%':>7s} {'parity':>7s} {'retx':>6s} {'L1':>5s} {'L2':>5s} {'spur':>5s} {'t_susp':>6s} {'t_L1':>6s} {'t_L2':>6s} {'em@L1':>5s} {'rsk@L1k':>7s} {'em@L2':>5s} {'prs@L2k':>7s} {'pk_k':>5s} {'em@pk':>5s} {'lvl@pk':>6s} {'em.5s':>5s} {'em1s':>5s} {'em2s':>5s}")
+    print(f"{'kol':>9s} {'n':>2s} {'stall':>5s} {'n_ok':>4s} {'d2_all':>6s} {'d2_ok':>6s} {'wireΔ%':>7s} {'parity':>7s} {'retx':>6s} {'L1':>5s} {'L2':>5s} {'spur':>5s} {'t_susp':>6s} {'t_L1':>6s} {'t_L2':>6s} {'em@L1':>5s} {'rsk@L1k':>7s} {'em@L2':>5s} {'prs@L2k':>7s} {'pk_k':>5s} {'em@pk':>5s} {'lvl@pk':>6s} {'em.5s':>5s} {'em1s':>5s} {'em2s':>5s}")
     print("-" * 172)
     off_tx = med([r["tx"] for r in off]) if off else float("nan")
     for arm in sorted(arms, key=order):
@@ -74,7 +79,7 @@ for (cell, msgs) in sorted(cells, key=lambda k: (k[0], k[1])):
         w = (med([r["tx"] for r in ok]) - off_tx) / off_tx * 100 if off and off_tx else 0.0
         l2s = [r for r in ok if r["t_l2"] > 0]; l1s = [r for r in ok if r["t_l1"] > 0]
         pks = [r["pk"] for r in ok if r["pk"]["inst"] > 0]
-        print(f"{arm:>6s} {len(rs_all):>2d} {stalls:>5d} {len(ok):>4d} {med([r['d2'] for r in rs_all]):>6.3f} {med([r['d2'] for r in ok]):>6.3f} {w:>+7.2f} "
+        print(f"{arm:>9s} {len(rs_all):>2d} {stalls:>5d} {len(ok):>4d} {med([r['d2'] for r in rs_all]):>6.3f} {med([r['d2'] for r in ok]):>6.3f} {w:>+7.2f} "
               f"{med([r['fec'] for r in ok]):>7.0f} {med([r['retx'] for r in ok]):>6.0f} {med([r['l1'] for r in ok]):>5.0f} {med([r['l2'] for r in ok]):>5.0f} "
               f"{med([r['spurious'] for r in ok]):>5.0f} {ms(med([r['t_susp'] for r in ok if r['t_susp']>0])) if any(r['t_susp']>0 for r in ok) else 'asla':>6s} "
               f"{ms(med([r['t_l1'] for r in l1s])) if l1s else 'asla':>6s} {ms(med([r['t_l2'] for r in l2s])) if l2s else 'asla':>6s} "

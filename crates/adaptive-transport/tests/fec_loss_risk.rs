@@ -863,13 +863,25 @@ fn evidence_gecis_enstrumani_dolu() {
     let (l1, l2) = s.diag_spec_transitions();
     eprintln!("gecis: L1={l1:?} L2={l2:?}");
     // Kütle = o anda pencerede GÖNDERİLMİŞ birimler (sunulan 80 değil; pacing ilk uçuşu sınırlar).
-    let first_l1 = samples.iter().find(|x| x.level_idx == 1).expect("önkoşul: L1 örneği");
-    let first_l2 = samples.iter().find(|x| x.level_idx == 2).expect("önkoşul: L2 örneği");
+    let first_l1 = samples
+        .iter()
+        .find(|x| x.level_idx == 1)
+        .expect("önkoşul: L1 örneği");
+    let first_l2 = samples
+        .iter()
+        .find(|x| x.level_idx == 2)
+        .expect("önkoşul: L2 örneği");
     assert!(l1.0 > 0 && l1.0 <= 80, "ilk L1'de kütle (0, 80]: {l1:?}");
-    assert_eq!(l1.0, first_l1.evidence_mass, "geçiş-diag'ı ile ts örneği tutarlı (L1)");
+    assert_eq!(
+        l1.0, first_l1.evidence_mass,
+        "geçiş-diag'ı ile ts örneği tutarlı (L1)"
+    );
     assert_eq!(l1.1, first_l1.instant_ppm);
     assert!(l1.1 >= 10_000, "ilk L1'de instant ≥ l1_min: {l1:?}");
-    assert_eq!(l2.0, first_l2.evidence_mass, "geçiş-diag'ı ile ts örneği tutarlı (L2)");
+    assert_eq!(
+        l2.0, first_l2.evidence_mass,
+        "geçiş-diag'ı ile ts örneği tutarlı (L2)"
+    );
     assert!(l2.2 >= 10_000, "ilk L2'de persistent ≥ l2_min: {l2:?}");
     assert!(l2.0 >= l1.0, "kütle L1'den L2'ye azalmaz (aynı uçuş)");
 }

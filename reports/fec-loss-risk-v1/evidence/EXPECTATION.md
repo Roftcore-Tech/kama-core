@@ -57,3 +57,27 @@ t_L1 ve t_risk her modda M0'a özdeş.
 mesaj≠birim (fragmenter) — enstrüman okuması düzeltilir, politika yorumu değil. (3) tepe anında L2 görülürse
 → persistent'ın yaş eşiği srtt=0 başlangıcında tetikleniyor (öngörü hatası + olası kusur). (5) tutmazsa →
 kalıntı yanlış-L2'ler geç (Q95 kuyruğu) → kütle tabanı işe yaramaz (Case B).
+
+## EK — Faz-2 eşikleri (faz-1 verisinden, KOŞUDAN ÖNCE) + erratum
+
+**Erratum (kural §3):** E_hi için "Q90" yazılmıştı; parantezdeki tanım ("gerçek L2'lerin ≥ %90'ını koruyan
+en büyük değer") bir tabanın altında kalmaması gereken değerdir = **Q10**. Niyet nettir; Q10 kullanılır.
+
+**Faz-1 dağılımları:** em@L2 · E1 ≥15 % (gerçek): n=21 min 84 Q10 85 med 88 Q90 94 max 97 · E2 (yanlış):
+n=15 min 10 Q25 25 med 25 Q75 55 max 80 · E3: 66–77. ⇒ **E_lo = 26**, **E_hi = 85**; E_lo ≤ E_hi ⇒ iki
+set: `26:52` ve `85:170` (M2 full = 2×E_min). Kollar A-M1 A-M2 B-M1 B-M2, P2, n=5, 10 hücre. E3 ek: 7 kol ×
+n=10 (stall-payı %40–60 → stall-dışı n≥4 için), set 85:170.
+
+**Öngörüler (koddan + faz-1):**
+1. **A kollarında M1/M2 yapısal olarak inert** (L1 tavanı = L2 tavanı = 250): parity/tel/d2 = A-M0 ± netem
+   gürültüsü; yalnız L2 sayacı düşer (M1). Bu kollar gürültü-tabanı kontrolüdür.
+2. **Set 26:52 pratikte inert:** E2'de floor 26 ilk-L2'yi 1–2 tick (≤ 50 ms) geciktirir; E1/E3'te em@L2 ≥ 66 → hiç.
+   B-M1/M2(26) ≈ B-M0.
+3. **Set 85:170, B:** E2-C1b yanlış L2 zaten 0 → 0; E2-C3p 20 → ~10–14 (em 85'e ~330 ms'de ulaşılır, sonrası
+   Q95 kuyruğu kalır), parity 276 → ~184 B (−0.2 % tel). E1: em@L2 min 84 → ≤ 1/10 koşuda L2 bir tick geç;
+   d2 değişmez (±0.03). E3: L2 ~45 ms geç (em 70 → 85 ≈ 15 birim ≈ 45 ms), d2 gürültü içinde; stall'lar hâkim.
+   M2(170): B'de L2 tavanı em=88'de 250+125·88/170 ≈ 315‰ (r2.5 → K=8'de r3'e yuvarlanır mı: (315·8+500)/1000
+   = 3.02 → r3) → **M2(170) E1'de pratikte M0 ile aynı r** (yuvarlama), C3p'de em 25'te 268‰ → r2 (M0 r3).
+4. **İnvaryant/L1:** t_risk == t_susp (stall-dışı) ve t_L1 her modda M0'a özdeş.
+5. **Hüküm öngörüsü:** Case B (kütle az değer katar) + Case D (E1 tepeleri zararsız). Case C riski: E3'te
+   85 tabanı gerçek-kayıp L2'sini geciktirir ama n küçük → "materyal" iddiası kurulamaz.
