@@ -1534,6 +1534,11 @@ pub struct Sender {
     cs_hook_fired: Vec<(u64, u8)>, // TEST-ONLY gözlem: hook-timer fire-kayıtları (now_ns, id)
     #[cfg(feature = "experimental-cold-start")]
     cs_probe_armed_once: bool, // M2: merdiven epoch-başına-BİR-kez arm (yeniden-arm-YOK)
+    /// [OFF = OFF] F2A lane'inin ürün anahtarı. Feature-default `true` (setter'ı çağırmayan DR-CS-1
+    /// testleri değişmez); ürün runtime'ı `set_bootstrap_rtt(enabled=false)` ile KAPATIR — belge:
+    /// "`bootstrap_rtt: false` ⇒ motor probe PLANLAMAZ" HER cold-start lane'i için geçerli.
+    #[cfg(feature = "experimental-cold-start")]
+    cs_probe_lane_enabled: bool,
     #[cfg(feature = "experimental-cold-start")]
     cs_probe_disarmed: bool, // srtt/state-çıkışı-disarm (kalan-fire'lar + pending iptal)
     #[cfg(feature = "experimental-cold-start")]
@@ -1811,6 +1816,8 @@ impl Sender {
             #[cfg(feature = "experimental-cold-start")]
             cs_probe_armed_once: false,
             #[cfg(feature = "experimental-cold-start")]
+            cs_probe_lane_enabled: true,
+            #[cfg(feature = "experimental-cold-start")]
             cs_probe_disarmed: false,
             #[cfg(feature = "experimental-cold-start")]
             cs_probe_seq_next: 0,
@@ -1938,7 +1945,16 @@ impl Sender {
     }
 
     /// DR-CS-3: product config — shipping bootstrap RTT probe (default OFF).
+    ///
+    /// [OFF = OFF] `enabled == false` ürün anahtarıdır: DR-CS-3 merdiveni GİBİ DR-CS-1 M2 (F2A)
+    /// CS-probe lane'i de planlanmaz (feature derlenmiş olsa bile). Aksi hâlde `--all-features`
+    /// derlemesinde `bootstrap_rtt: false` belgelenmiş "motor probe PLANLAMAZ" davranışını ihlal
+    /// ediyordu (client-core `bootstrap_rtt_probe_and_echo_traverse_the_product_wire` OFF kolu).
     pub fn set_bootstrap_rtt(&mut self, cfg: BootstrapRttConfig) {
+        #[cfg(feature = "experimental-cold-start")]
+        {
+            self.cs_probe_lane_enabled = cfg.enabled;
+        }
         self.bootstrap_rtt = cfg;
     }
 
@@ -5612,7 +5628,10 @@ impl Sender {
                 // DR-CS-1 M2 ARM (F2A): PreConverge + srtt=None + İLK-DATA-wire-emisyonu (try_send-
                 // geçti = t₀) → CS-probe merdiveni epoch-başına-BİR-kez arm (fire 3/9/21/45s).
                 #[cfg(feature = "experimental-cold-start")]
-                if !self.cs_probe_armed_once && self.rtt.srtt().is_none() {
+                if self.cs_probe_lane_enabled
+                    && !self.cs_probe_armed_once
+                    && self.rtt.srtt().is_none()
+                {
                     self.cs_probe_armed_once = true;
                     for (i, off) in CS_PROBE_FIRES_NS.iter().enumerate() {
                         self.cs_wakeup
