@@ -51,8 +51,17 @@ P3 tutmaz (C4'te denial oranı belirgin yüksek) → bütçe rekabeti gerçek ve
 Ön-atıf (mevcut veri, `ev1`/`ev3_e3sup` KP-SERVER): C4'te parity alıcıya ulaşıyor (repairs_rx 62–94)
 ama kurtarma 6–8 birim (loss-only C1: 30–38; verim 0.06–0.20 vs 0.34–0.41), decode_fail 0, evict benzer, enq≈emit.
 
-## 7. Minimal düzeltme
-_(varsa)_
+## 7. Minimal düzeltme — tek sınırlı deneme (G1), KOŞUDAN ÖNCE kayıt
+**Aday (yalnız mevcut sinyal):** `speculative_propose` içinde `declared_units ≥ reorder_min_evidence_units (8)
+∧ reorder_pressure_permille ≥ R` ⇒ spekülatif öneri YOK (L0). `R = 300‰` (`[CAL]`, default kapalı=u32::MAX).
+Gerekçe: offline C4 verisinde parity-planlanan tick'lerin %43–55'i rp ≥ 300‰ (≥ 500‰ yalnız %17–19); rp yörüngesi
+0.5 s'de 590–670‰ → 2 s'de 150–175‰; C1'de rp ≡ 0 → guard yapısal olarak inert (loss-only fayda korunur);
+`t_first_risk` değişmez (risk hesaplanır, yalnız öneri bastırılır). Daha düşük R gerçek-kayıpla seyrelmiş
+rp'ye biner ve "reorder varsa FEC kapalı"ya dönüşür (yasak şekil).
+**Tahmin (KOŞUDAN ÖNCE):** G1 C4 parity'sini ~%40–55 azaltır, tel +13/+23 % → ~+7/+12 %; fayda ≈ 0 olduğu için
+d2 OFF'un hâlâ 2–5 pp ALTINDA kalır → kabul kriteri 4 ("≥ OFF, gürültü payında") SAĞLANMAZ; C1'de A+G1 ≡ A,
+B+G1 ≡ B (rp = 0); E2'de parity'nin çoğu kesilir (tel −1…−2 %). Kabul: C4 n=20'de d2(G1) ≥ d2(OFF) − 0.02 VE
+C1 n=10'da d2(A+G1) ≥ d2(A) − 0.03. Beklenen sonuç: **Path B**.
 
 ## 8. Temiz / loss-only / reorder-only / C4 sonuçları
 ## 9. all-runs vs stall-free

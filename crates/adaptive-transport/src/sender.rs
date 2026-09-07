@@ -386,6 +386,10 @@ pub struct FecLossRiskConfig {
     /// garantisi. Motor K bilmez (INV-ENGINE-SOC) — bu yüzden sabit, profil-bağımsız bir taban;
     /// K>8 profilde 1 repair için daha küçük ‰ yeterdi, taban yalnız ihtiyatlıdır.
     pub spec_min_permille: u32,
+    /// [C4 G1 `[CAL]`] Reorder-belirsiz rejim guard'ı: `declared_units ≥ reorder_min_evidence_units ∧
+    /// reorder_pressure_permille ≥ bu eşik` ⇒ spekülatif öneri YOK. `u32::MAX` = kapalı (sevk).
+    /// Yalnız MEVCUT sinyal (spurious/olay oranı); risk hesabı ve `t_first_risk` değişmez.
+    pub reorder_suppress_permille: u32,
 }
 
 impl Default for FecLossRiskConfig {
@@ -406,6 +410,7 @@ impl Default for FecLossRiskConfig {
             reorder_discount_max_permille: 500,
             tight_budget_permille: 2_500,
             spec_min_permille: 63,
+            reorder_suppress_permille: u32::MAX,
         }
     }
 }
@@ -4287,6 +4292,13 @@ impl Sender {
     ) -> SpeculativeProposal {
         let c = self.fec_loss_risk;
         if policy_ceiling == Some(0) || split.instant_ppm < c.l1_min_instant_ppm {
+            return SpeculativeProposal::NONE;
+        }
+        // [C4 G1] Reorder-belirsiz rejim: son olayların ≥R‰'i Spurious çıktıysa spekülatif parity'nin
+        // ölçülü faydası ≈0 (alıcıda blok zaten kapanmış oluyor) → öneri yok. Kapalıyken (u32::MAX) inert.
+        if split.declared_units >= c.reorder_min_evidence_units
+            && split.reorder_pressure_permille >= c.reorder_suppress_permille
+        {
             return SpeculativeProposal::NONE;
         }
         let level = if split.persistent_ppm >= c.l2_min_persistent_ppm {

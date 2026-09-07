@@ -109,6 +109,7 @@ struct ArmCfg {
     persist_alpha: Option<u32>,
     persist_rho: Option<u32>,
     persist_q: Option<u32>,
+    rp_suppress: Option<u32>,
 }
 
 fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
@@ -130,6 +131,7 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
         persist_alpha,
         persist_rho,
         persist_q,
+        rp_suppress,
     } = a;
     let payload = usize::try_from(payload_bytes).unwrap_or(usize::MAX);
     let profile_id = match fec {
@@ -211,6 +213,10 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
             }
             if let Some(v) = persist_q {
                 c.persist_q_permille = v;
+            }
+            // [C4 G1] reorder-baskısı guard eşiği (None = kapalı = sevk).
+            if let Some(v) = rp_suppress {
+                c.reorder_suppress_permille = v;
             }
             c
         },
@@ -298,6 +304,7 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
             persist_alpha: cfg.persist_alpha,
             persist_rho: cfg.persist_rho,
             persist_q: cfg.persist_q,
+            rp_suppress: cfg.rp_suppress,
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -407,6 +414,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
             persist_alpha: cfg.persist_alpha,
             persist_rho: cfg.persist_rho,
             persist_q: cfg.persist_q,
+            rp_suppress: cfg.rp_suppress,
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -722,6 +730,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             establish_gate: None,
             fec,
             burst_fusion: false,
@@ -758,6 +767,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2_permille: None,
             spec_l1_permille: None,
         }
@@ -815,6 +825,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -834,6 +845,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -872,6 +884,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -902,6 +915,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
         };
         let d = runtime_cfg(base.clone());
         assert_eq!(d.fec_loss_risk.bootstrap_cap_permille, 125);
@@ -938,6 +952,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         };
@@ -950,6 +965,7 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2: None,
                 spec_l1: None,
                 ..base
@@ -978,6 +994,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1004,6 +1021,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1028,6 +1046,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1064,6 +1083,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1094,6 +1114,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1126,6 +1147,7 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2: None,
                 spec_l1: None,
             }),
@@ -1182,6 +1204,7 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2: None,
                 spec_l1: None,
             }),
@@ -1252,6 +1275,7 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2: None,
                 spec_l1: None,
             }),
@@ -1344,6 +1368,7 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2: None,
                 spec_l1: None,
             }),

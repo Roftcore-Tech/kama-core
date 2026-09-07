@@ -106,6 +106,9 @@ enum Cmd {
         /// [PERSIST] quantile (‰). None = 950.
         #[arg(long)]
         persist_q: Option<u32>,
+        /// [C4 G1] reorder-baskısı eşiği (‰): rp ≥ N ⇒ spekülatif öneri yok. None = kapalı.
+        #[arg(long)]
+        rp_suppress: Option<u32>,
         /// [SPRINT-A] Alıcı birim-payload tavanı — client `--payload` ile AYNI olmalı.
         #[arg(long, default_value_t = 256)]
         payload: u64,
@@ -222,6 +225,9 @@ enum Cmd {
         /// [PERSIST] quantile (‰). None = 950.
         #[arg(long)]
         persist_q: Option<u32>,
+        /// [C4 G1] reorder-baskısı eşiği (‰): rp ≥ N ⇒ spekülatif öneri yok. None = kapalı.
+        #[arg(long)]
+        rp_suppress: Option<u32>,
         /// [BURST-FUSION] Bkz. `serve --fec-burst-fusion`. SUNUCUYLA AYNI verilmelidir.
         #[arg(long, default_value_t = false)]
         fec_burst_fusion: bool,
@@ -375,6 +381,7 @@ async fn main() -> Result<(), BenchError> {
             persist_alpha,
             persist_rho,
             persist_q,
+            rp_suppress,
             payload,
             fec_burst_fusion,
             bootstrap_rtt,
@@ -403,6 +410,7 @@ async fn main() -> Result<(), BenchError> {
                     persist_alpha,
                     persist_rho,
                     persist_q,
+                    rp_suppress,
                     spec_l2_permille,
                     spec_l1_permille,
                     payload_bytes: payload,
@@ -447,6 +455,7 @@ async fn main() -> Result<(), BenchError> {
             persist_alpha,
             persist_rho,
             persist_q,
+            rp_suppress,
             fec_burst_fusion,
             bootstrap_rtt,
             initial_window_bytes,
@@ -482,6 +491,7 @@ async fn main() -> Result<(), BenchError> {
                 persist_alpha,
                 persist_rho,
                 persist_q,
+                rp_suppress,
                 spec_l2_permille,
                 spec_l1_permille,
                 burst_fusion: fec_burst_fusion,

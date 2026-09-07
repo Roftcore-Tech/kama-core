@@ -585,6 +585,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2_permille: None,
             spec_l1_permille: None,
         }
