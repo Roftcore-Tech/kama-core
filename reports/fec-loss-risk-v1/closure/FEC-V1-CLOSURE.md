@@ -1,10 +1,12 @@
 # FEC v1 — KAPANIŞ RAPORU
 
 ## 1. Main checkpoint SHA
-_(merge sonrası doldurulur)_
+**`75d8990a`** (PR #50 squash: dev/product-transport-fusion @ 46291974). Rollback noktası.
 
 ## 2. Final C4 dalı SHA
-_(Faz-2 sonunda)_
+_(push sonrası: `fix/fec-mixed-loss-reorder-final` HEAD)_ — Provenance: atıf/G1/bounded_v1 işi, CI beklenirken checkpoint ucundan açılan yerel
+`wip/c4-attrib` dalında yapıldı; `fix/fec-mixed-loss-reorder-final` main'den açılıp aynı 4 commit cherry-pick edilir;
+iki ağacın `git rev-parse HEAD^{tree}` hash'i özdeş olduğu doğrulanır (kapı ve ölçümler birebir aktarılır).
 
 ## 3. Evidence-politika temizliği
 `f2f5e68b`: `EvidenceMode::{L2Floor, L2Scaled}`, `evidence_min_units/evidence_full_units`, `speculative_propose`
@@ -26,6 +28,10 @@ DR-CS-1 M2 (F2A) CS-probe merdiveni ilk DATA emisyonunda koşulsuz arm oluyordu 
 DR-CS-3'ü anahtarlar (kama-integration DR-CS-3 paneli legacy-ladder kontrol fixture'ı korunur — ilk deneme
 fdfacbd2 bunu kırmıştı: "legacy ladder compiled but did not fire"). Test yarışı DEĞİL; ürün semantiği belgeyle
 hizalandı. Server-death flake'i (`client_survives_server_death_mid_run`) ayrı tutuldu; yerel kapılarda yeşil.
+**PR #50 hosted CI:** quality (2 sa 24 dk) / semantic-matrix ×5 / security / msan / miri / asan / aead-differential **yeşil**; `coverage` 45 dk'da
+CANCELLED (llvm-cov altında panel binary'leri; job zaman aşımı) ve `fuzz-smoke` FAILURE (`error: no such command: fuzz` —
+install-action/nightly cargo uyumsuzluğu; job rerun'ında aynı). İkisi de **PR #47'de (owner merge'i, 2026-09-03) aynı durumda** → bu PR'dan
+bağımsız, önceden var olan altyapı kırmızıları; fuzz hedefleri dalda değişmedi, yerelde `ack_decode` 60 s temiz (385k exec).
 **Fail-fast bulgusu:** `cargo test` ilk kırmızı binary'de durur → önceki "tam kapı" sayıları kesikti; gerçek
 `--all-features` ≈ 730 test / 94 binary (kama-integration `dr_cs3_v2_channel` 1 212 s).
 
@@ -111,12 +117,17 @@ yüksek-rp fazında yoğunlaştığını gösterdi (reorder deliklerinin parity'
 | C1 loss-only 20 % (E1-L20) | 10 | 0.250 | 0.526 | 0.490 (≡ M0, rp=0) | 0.594 | 0.615 |
 | C2 reorder-only 30 % (E2-C1b) | 5 | 0.854 | 0.823 | 0.802 | 0.792 | 0.833 — parity ≤ 736 B, retx-gürültüsü |
 | **C4 karışık 20 %+30 %** | **20** | **0.281** | 0.188 | **0.333** | 0.302 | **0.318** |
+| C4 **teyit** (final-içerik ağacı) | 20 | 0.271 | — | 0.292 | — | 0.292 |
+| C4 **havuz** (n=40, ortalama) | 40 | 0.264 | — | **0.302** (+0.038, p=0.060) | — | **0.299** (+0.036, p=0.074) |
 
 ## 9. all-runs vs stall-free (C4 n=20 · C1 n=10)
 C4 stall 3/5/3/3/4 (OFF/A/A+G1/B/B+G1). Ortalamalar stall-dışı → tüm-koşu: OFF 0.262 → 0.222 · A 0.183 → 0.138 ·
 A+G1 0.301 → 0.256 · B 0.262 → 0.223 · B+G1 0.320 → 0.256. Permütasyon (kol > OFF, tek-yönlü): A p=0.997 (gerileme
 anlamlı), A+G1 p=0.139, B p=0.496, B+G1 p=0.030; tüm-koşu: A+G1 p=0.227, B+G1 p=0.228. C1: stall 5/2/1/3/1; OFF'un
 stall-dışı n=5. Stall politikadan bağımsız; koşular silinmedi (`runs-g1-falsification.tar.gz`).
+**Teyit + havuz (`c4-confirm-pooled.txt`, `runs-c4-confirm-n20.tar.gz`):** teyit n=20 stall OFF 7 / A+G1 6 / B+G1 2 (OFF stall-dışı n=13);
+havuz n=40: stall-dışı OFF 0.264 (n=30) → A+G1 0.302 (+0.038, p=0.060) · B+G1 0.299 (+0.036, p=0.074); tüm-koşu OFF 0.198 →
+A+G1 0.234 (+0.036, p=0.136) · B+G1 0.254 (+0.057, p=0.038). İki bağımsız örnekte de işaret pozitif; gerileme yok.
 
 ## 10. Tel / parity / retx etkileri (C4, stall-dışı medyan)
 | kol | tel B | Δtel | parity B | retx B | repairs rx → useful |
@@ -126,18 +137,19 @@ stall-dışı n=5. Stall politikadan bağımsız; koşular silinmedi (`runs-g1-f
 | **A+G1** | 57 326 | **+6.4 %** | 4 232 | 10 318 | 36 → 10 (0.25) |
 | B | 65 074 | +20.8 % | 10 764 | 11 539 | 93 → 9 (0.10) |
 | **B+G1** | 59 494 | **+10.4 %** | 5 888 | 11 420 | 50 → 14 (0.23) |
-C1: A+G1 tel +15 % (≡ A), B+G1 +22 % (≡ B) — loss-only bedeli değişmedi. "Büyük pozitif tel + negatif teslim" C4'te
+Havuz n=40 (C4): A+G1 tel **+7.3 %** (parity 4.4 kB), B+G1 **+12.4 %** (6.4 kB). C1: A+G1 tel +15 % (≡ A), B+G1 +22 % (≡ B) —
+loss-only bedeli değişmedi. "Büyük pozitif tel + negatif teslim" C4'te
 artık normal sonuç DEĞİL: +6/+10 % tel, teslim ≥ OFF.
 
 ## 11. Cold-start invaryantı
-`t_first_risk == t_first_suspected`: G1 ailesi 200 koşuda **0 ihlal** (stall dâhil); atıf ailesi 60 koşuda 1 ihlal,
+`t_first_risk == t_first_suspected`: G1 ailesi 200 + teyit 60 koşuda **0 ihlal** (stall dâhil); atıf ailesi 60 koşuda 1 ihlal,
 stall'da (srtt=0 kuralı). `t_L1 − t_susp` medyanı C4'te her ON kolda 0 ms (n=15–17): G1 ilk L1'i geciktirmez
 (rp ilk spurious deklarasyonuna kadar 0). Birim testi `g1_reorder_baskisi_oneriyi_bastirir_riski_degistirmez`:
 tahminci/t_first_risk/ilk-L1 özdeş, yalnız öneri bastırılır; rp = 0 iken byte-özdeş.
 
 ## 12. Handoff invaryantı
 Handoff klampı (`canonical_prop > 0`) dokunulmadı; G1 `speculative_propose`'da klamptan ÖNCE yalnız reorder-belirsiz
-rejimde öneriyi sıfırlar. `handoff_devralan_yoksa_spekulatif_dusmez` testi yeşil (fec_loss_risk 24/24).
+rejimde öneriyi sıfırlar. `handoff_devralan_yoksa_spekulatif_dusmez` testi yeşil (fec_loss_risk 25/25).
 
 ## 13. A/B kararı
 B, C4'te A ile eş (0.320 vs 0.301, gürültü içinde) ve loss-only'de +11 pp (0.61 vs 0.51) ama +7 % daha çok tel →
@@ -145,4 +157,14 @@ Pareto-üstün DEĞİL. Kural gereği ekonomik aday **A = 250-250-250** v1 polit
 alternatifi olarak kalibrasyon borcu (kayıp ≥ 15 %'te +9…+15 pp, tel +7–8 %).
 
 ## 14. FEC v1 KARARI
-_(final)_
+**Path A.** C4'ün kök nedeni ölçüldü (reaktif parity, retransmit/geç-orijinal yarışını kaybedip blok kapandıktan sonra
+varıyor; bu sırada bütçeyi tüketip retransmiti geciktiriyor) ve MEVCUT sinyalle (reorder baskısı ≥ 300‰, ≥ 8 olay)
+sınırlı guard G1 bunu kapatıyor: C4 n=20'de teslim OFF'a eşit/üstü (A+G1 +0.04, B+G1 +0.06; A'nın −0.08
+gerilemesi kapandı), tel +15/+21 % → +6/+10 %; loss-only fayda (+23/+34 pp) yapısal olarak dokunulmadı (rp ≡ 0);
+temiz yol parity 0; `t_first_risk == t_first_suspected` 0 ihlal; ilk L1 anı değişmedi; handoff klampı dokunulmadı;
+kanonik ARQ/kayıp onayı/pacing/wire/ACK-SACK değişmedi. Ürün politikası `FecLossRiskConfig::bounded_v1()`
+(A 250-250-250 + P2 + G1) client-core `RuntimeConfig::default()`'ta; `fec: None` iken inert. Seçilmeyen: B (kalibrasyon
+borcu). Açık borçlar (FEC dışı): kuruluş stall'ı (%13–40, politikadan bağımsız), server-death test yarışı, nightly
+kırmızısı (main'de önceden var). Tahminim (Path B) yanlış çıktı; sapma dekompozisyonu §7'de.
+
+**FEC v1 CLOSED — speculative FEC enabled with bounded C4-safe policy.**
