@@ -28,8 +28,8 @@ use adaptive_transport::sender::{
 /// [BURST-FUSION] Motorun yapı-gate politikası — `RuntimeConfig` alanının tipi. Çağıran ayrıca
 /// adaptive-transport'a bağımlı olmasın diye buradan yeniden dışa verilir.
 pub use adaptive_transport::sender::{
-    EvidenceMode, FecArbiterReason, FecLossRiskConfig, FecStructurePolicy, LossConfirmHorizon,
-    PersistMode, TsSample, ARBITER_REASON_KINDS,
+    FecArbiterReason, FecLossRiskConfig, FecStructurePolicy, LossConfirmHorizon, PersistMode,
+    TsSample, ARBITER_REASON_KINDS,
 };
 use adaptive_transport::seq::resolve_seq;
 use kama_engine::{plan_param_bootstrap, ParamState};

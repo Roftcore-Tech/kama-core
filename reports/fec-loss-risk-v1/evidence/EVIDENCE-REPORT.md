@@ -197,7 +197,9 @@ kadar iyileştiriyor mu? **Cevap: HAYIR — Case B (az değer) + Case D (tepe za
 
 **Karar önerisi:** kanıt kütlesi POLİTİKA GİRDİSİ OLMASIN. Enstrüman (ts kolonları, geçiş-diag'ı) kalsın —
 ucuz ve bilgilendirici. `EvidenceMode::{L2Floor, L2Scaled}` kolu default OFF (byte-özdeş); ölü knob
-bırakmamak için takip commit'inde KALDIRILMASI önerilir (owner kararı; bu görevde kaldırılmadı).
+bırakmamak için takip commit'inde KALDIRILMASI önerilir. **KALDIRILDI** (FEC v1 kapanışı, owner talimatı):
+`EvidenceMode/evidence_min_units/evidence_full_units`, `speculative_propose` dalları, `l2_cap_with_evidence`, bench
+`--em-*` bayrakları ve politika testleri; enstrüman (`sent_window_units`, ts kolonları, geçiş-diag'ı) KALDI.
 A/B kararı verilmedi (kütle hiçbirini ayırt etmiyor). P2 etkileşimi: taban ve P2 zamanda tamamlayıcı (C3p) —
 ama P2 tek başına bedeli zaten sınırlıyor; persistence kalibrasyonuna dokunulmadı.
 

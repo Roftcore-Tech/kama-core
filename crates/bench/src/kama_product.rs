@@ -34,9 +34,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use client_core::runtime::{
-    fec_chunk_capacity, ClientEndpoint, ClientSender, EgressPolicy, EvidenceMode,
-    FecLossRiskConfig, FecRuntimeConfig, FecStructurePolicy, LossConfirmHorizon, PersistMode,
-    RuntimeConfig, RuntimeError, ServerEndpoint,
+    fec_chunk_capacity, ClientEndpoint, ClientSender, EgressPolicy, FecLossRiskConfig,
+    FecRuntimeConfig, FecStructurePolicy, LossConfirmHorizon, PersistMode, RuntimeConfig,
+    RuntimeError, ServerEndpoint,
 };
 use client_core::seam::IdentitySeam;
 use tokio::signal::unix::{signal, SignalKind};
@@ -109,9 +109,6 @@ struct ArmCfg {
     persist_alpha: Option<u32>,
     persist_rho: Option<u32>,
     persist_q: Option<u32>,
-    em_mode: Option<String>,
-    em_min: Option<u64>,
-    em_full: Option<u64>,
 }
 
 fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
@@ -133,9 +130,6 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
         persist_alpha,
         persist_rho,
         persist_q,
-        em_mode,
-        em_min,
-        em_full,
     } = a;
     let payload = usize::try_from(payload_bytes).unwrap_or(usize::MAX);
     let profile_id = match fec {
@@ -217,20 +211,6 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
             }
             if let Some(v) = persist_q {
                 c.persist_q_permille = v;
-            }
-            // [EVIDENCE] kanıt-kütlesi modu ve knob'ları (None = Off = sevk).
-            if let Some(m) = em_mode.as_deref() {
-                c.evidence_mode = match m {
-                    "floor" => EvidenceMode::L2Floor,
-                    "scaled" => EvidenceMode::L2Scaled,
-                    _ => EvidenceMode::Off,
-                };
-            }
-            if let Some(v) = em_min {
-                c.evidence_min_units = v;
-            }
-            if let Some(v) = em_full {
-                c.evidence_full_units = v;
             }
             c
         },
@@ -318,9 +298,6 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
             persist_alpha: cfg.persist_alpha,
             persist_rho: cfg.persist_rho,
             persist_q: cfg.persist_q,
-            em_mode: cfg.em_mode.clone(),
-            em_min: cfg.em_min,
-            em_full: cfg.em_full,
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -430,9 +407,6 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
             persist_alpha: cfg.persist_alpha,
             persist_rho: cfg.persist_rho,
             persist_q: cfg.persist_q,
-            em_mode: cfg.em_mode.clone(),
-            em_min: cfg.em_min,
-            em_full: cfg.em_full,
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -738,9 +712,6 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
             establish_gate: None,
             fec,
             burst_fusion: false,
@@ -777,9 +748,6 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
             spec_l2_permille: None,
             spec_l1_permille: None,
         }
@@ -837,9 +805,6 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -859,9 +824,6 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -900,9 +862,6 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -933,9 +892,6 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
         };
         let d = runtime_cfg(base.clone());
         assert_eq!(d.fec_loss_risk.bootstrap_cap_permille, 125);
@@ -950,49 +906,6 @@ mod tests {
         assert_eq!(o.fec_loss_risk.bootstrap_cap_permille, 250);
         assert_eq!(o.fec_loss_risk.persistent_cap_permille, 375);
         assert_eq!(o.structure_gate_level_permille, Some(250));
-    }
-
-    /// [EVIDENCE] `--em-mode/--em-min/--em-full` RuntimeConfig'e akar; None = Off (sevk).
-    #[test]
-    fn em_flags_flow_to_runtime() {
-        let base = ArmCfg {
-            payload_bytes: 256,
-            quota_r: 4,
-            fec: FecArm::Off,
-            burst_fusion: false,
-            bootstrap_rtt: false,
-            initial_window_bytes: 0,
-            bootstrap_fast: false,
-            loss_confirm_k: 0,
-            fec_risk: true,
-            ts_sample: false,
-            spec_l1: None,
-            spec_l2: None,
-            gate: None,
-            persist_mode: None,
-            persist_alpha: None,
-            persist_rho: None,
-            persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
-        };
-        let d = runtime_cfg(base.clone());
-        assert_eq!(d.fec_loss_risk.evidence_mode, EvidenceMode::Off);
-        let f = runtime_cfg(ArmCfg {
-            em_mode: Some("floor".into()),
-            em_min: Some(24),
-            ..base.clone()
-        });
-        assert_eq!(f.fec_loss_risk.evidence_mode, EvidenceMode::L2Floor);
-        assert_eq!(f.fec_loss_risk.evidence_min_units, 24);
-        let s = runtime_cfg(ArmCfg {
-            em_mode: Some("scaled".into()),
-            em_full: Some(48),
-            ..base
-        });
-        assert_eq!(s.fec_loss_risk.evidence_mode, EvidenceMode::L2Scaled);
-        assert_eq!(s.fec_loss_risk.evidence_full_units, 48);
     }
 
     /// [HANDOFF ENSTRÜMANI] `ts_sample` → 50 ms örnekleme periyodu; kapalıyken `None`.
@@ -1015,9 +928,6 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
             spec_l2: None,
             spec_l1: None,
         };
@@ -1030,9 +940,6 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
-                em_mode: None,
-                em_min: None,
-                em_full: None,
                 spec_l2: None,
                 spec_l1: None,
                 ..base
@@ -1061,9 +968,6 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1090,9 +994,6 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1117,9 +1018,6 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1156,9 +1054,6 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1189,9 +1084,6 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
-            em_mode: None,
-            em_min: None,
-            em_full: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1224,9 +1116,6 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
-                em_mode: None,
-                em_min: None,
-                em_full: None,
                 spec_l2: None,
                 spec_l1: None,
             }),
@@ -1283,9 +1172,6 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
-                em_mode: None,
-                em_min: None,
-                em_full: None,
                 spec_l2: None,
                 spec_l1: None,
             }),
@@ -1356,9 +1242,6 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
-                em_mode: None,
-                em_min: None,
-                em_full: None,
                 spec_l2: None,
                 spec_l1: None,
             }),
@@ -1451,9 +1334,6 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
-                em_mode: None,
-                em_min: None,
-                em_full: None,
                 spec_l2: None,
                 spec_l1: None,
             }),

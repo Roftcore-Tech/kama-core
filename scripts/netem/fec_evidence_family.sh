@@ -3,7 +3,7 @@
 # Soru: "kütle küçükken (kısa akış başı) L2 yetkisini kısmak yanlış-L2/tel maliyetini düşürür mü,
 #        gerçek kayıpta 2×RTT teslimi düşürmeden ve L1'i geciktirmeden?"
 # Persistence P2 (learned Q95×1.25) sabit; politikalar A=250-250-250 · B=250-375-375 (yeniden kalibre YOK).
-# Modlar: M0 sevk (kütle okunmaz) · M1 floor (--em-mode floor --em-min N) · M2 scaled (--em-mode scaled --em-full N).
+# Modlar: yalnız M0 (kanıt-kütlesi politika kolu KALDIRILDI; enstrüman kalır). Aile C4 atfı için de kullanılır.
 # Hücreler: E1-L{0,2,5,10,15,20,25} kayıp-only RTT200 (rsweep tabanı) · E2-C1b reorder 30% (ömür 0.5 srtt) ·
 #           E2-C3p asimetrik reorder (ömür 0.9 srtt, va0 aşaması) · E3-C4 kayıp 20% + reorder 30%.
 set -u
@@ -26,11 +26,9 @@ FWD[E2-C3p]="rate 1mbit"; REV[E2-C3p]="delay 5ms rate 1mbit"; RTT[E2-C3p]=45; SN
 FWD[E3-C4]="delay 100ms 20ms loss 20% reorder 30% 50% rate 1mbit"; REV[E3-C4]="delay 100ms loss 2% rate 1mbit"; RTT[E3-C4]=200
 POL_A="250-250-250"; POL_B="250-375-375"
 P2="--persist-mode learned --persist-alpha 500 --persist-rho 1250 --persist-q 950"
-EM_MIN="${EM_MIN:-32}"; EM_FULL="${EM_FULL:-64}"
-mode_args() { case "$1" in
-  M0) echo "";;
-  M1) echo "--em-mode floor --em-min $EM_MIN";;
-  M2) echo "--em-mode scaled --em-full $EM_FULL";; esac; }
+# M1/M2 (evidence floor/scaled) KALDIRILDI — kampanya Case B+D ile kapandı; yalnız M0 (mevcut davranış).
+EM_MIN="-"; EM_FULL="-"
+mode_args() { case "$1" in M0) echo "";; *) echo "bilinmeyen mod: $1" >&2; exit 4;; esac; }
 ARMS="${ARMS_LIST:-off A-M0 B-M0}"
 run() { # $1=dir $2=cell $3=arm $4=msgs
   local d="$1" cell="$2" arm="$3" M="$4"; mkdir -p "$d"; P=$((P+1))
