@@ -1534,9 +1534,8 @@ pub struct Sender {
     cs_hook_fired: Vec<(u64, u8)>, // TEST-ONLY gözlem: hook-timer fire-kayıtları (now_ns, id)
     #[cfg(feature = "experimental-cold-start")]
     cs_probe_armed_once: bool, // M2: merdiven epoch-başına-BİR-kez arm (yeniden-arm-YOK)
-    /// [OFF = OFF] F2A lane'inin ürün anahtarı. Feature-default `true` (setter'ı çağırmayan DR-CS-1
-    /// testleri değişmez); ürün runtime'ı `set_bootstrap_rtt(enabled=false)` ile KAPATIR — belge:
-    /// "`bootstrap_rtt: false` ⇒ motor probe PLANLAMAZ" HER cold-start lane'i için geçerli.
+    /// [OFF = OFF] F2A lane'inin ürün anahtarı. Feature-default `true` (setter'ı çağırmayan DR-CS-1 ve
+    /// kama-integration panel testleri değişmez); ürün runtime'ı `set_cs_probe_lane(false)` ile KAPATIR.
     #[cfg(feature = "experimental-cold-start")]
     cs_probe_lane_enabled: bool,
     #[cfg(feature = "experimental-cold-start")]
@@ -1944,18 +1943,27 @@ impl Sender {
         self.sched_diag
     }
 
-    /// DR-CS-3: product config — shipping bootstrap RTT probe (default OFF).
-    ///
-    /// [OFF = OFF] `enabled == false` ürün anahtarıdır: DR-CS-3 merdiveni GİBİ DR-CS-1 M2 (F2A)
-    /// CS-probe lane'i de planlanmaz (feature derlenmiş olsa bile). Aksi hâlde `--all-features`
-    /// derlemesinde `bootstrap_rtt: false` belgelenmiş "motor probe PLANLAMAZ" davranışını ihlal
-    /// ediyordu (client-core `bootstrap_rtt_probe_and_echo_traverse_the_product_wire` OFF kolu).
+    /// DR-CS-3: product config — shipping bootstrap RTT probe (default OFF). YALNIZ DR-CS-3
+    /// merdivenini anahtarlar (kama-integration DR-CS-3 paneli legacy F2A ladder'ı kontrol kolu olarak
+    /// bundan bağımsız kullanır) — ürün OFF'u için bkz. [`Self::set_cs_probe_lane`].
     pub fn set_bootstrap_rtt(&mut self, cfg: BootstrapRttConfig) {
+        self.bootstrap_rtt = cfg;
+    }
+
+    /// [OFF = OFF] DR-CS-1 M2 (F2A) CS-probe lane'inin ÜRÜN anahtarı; feature derlenmemişse no-op.
+    /// client-core runtime `RuntimeConfig.bootstrap_rtt`'yi buraya da yansıtır: belgelenmiş
+    /// "`bootstrap_rtt: false` ⇒ motor probe PLANLAMAZ" HER cold-start lane'i kapsar. Aksi hâlde
+    /// `--all-features` derlemesinde F2A merdiveni ilk DATA emisyonunda koşulsuz arm oluyordu
+    /// (client-core `bootstrap_rtt_probe_and_echo_traverse_the_product_wire` OFF kolu).
+    pub fn set_cs_probe_lane(&mut self, on: bool) {
         #[cfg(feature = "experimental-cold-start")]
         {
-            self.cs_probe_lane_enabled = cfg.enabled;
+            self.cs_probe_lane_enabled = on;
         }
-        self.bootstrap_rtt = cfg;
+        #[cfg(not(feature = "experimental-cold-start"))]
+        {
+            let _ = on;
+        }
     }
 
     /// DR-CS-3 observation-only bootstrap lineage.

@@ -813,6 +813,9 @@ async fn client_task(
         } else {
             BootstrapRttConfig::default()
         });
+    // [OFF = OFF] Ürün anahtarı HER cold-start probe lane'ini kapsar: DR-CS-1 M2 (F2A) merdiveni de
+    // (feature derlenmişse) `bootstrap_rtt` ile açılır/kapanır. Belge: "false ⇒ motor probe PLANLAMAZ".
+    session.sender_mut().set_cs_probe_lane(cfg.bootstrap_rtt);
     // [ONAY UFKU] Ledger confirm ufku kolu; default sevk davranışı (byte-özdeş).
     session
         .sender_mut()
