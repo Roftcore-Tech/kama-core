@@ -782,14 +782,16 @@ fn bounded_v1_degerleri_ve_default_notr() {
 /// hesabı, `t_first_risk` ve ilk L1 anı DEĞİŞMEZ (yalnız öneri bastırılır). Eşik kapalıyken öneri sürer.
 #[test]
 fn g1_reorder_baskisi_oneriyi_bastirir_riski_degistirmez() {
-    fn scenario(cfg: FecLossRiskConfig) -> (Sender, Vec<TsSample>) {
+    fn scenario(cfg: FecLossRiskConfig, late_upto: u64) -> (Sender, Vec<TsSample>) {
+        // Zaman çizgisi handoff ailesiyle aynı: PreConverge ilk ACK'e kadar yalnız seq 0'ı gönderir;
+        // 80 birim ancak 4.1 s'deki ACK'ten sonra 44 s'ye kadar tele çıkar.
         let mut s = Sender::new();
         s.set_establish_probe(false);
         s.set_fec_loss_risk(cfg);
         let mut samples = Vec::new();
         let mut step = |s: &mut Sender, ev: Event, t: u64| {
             s.on_event(ev, t);
-            samples.push((t, s.diag_ts_sample()));
+            samples.push(s.diag_ts_sample());
         };
         for i in 0..80u64 {
             step(
@@ -804,7 +806,6 @@ fn g1_reorder_baskisi_oneriyi_bastirir_riski_degistirmez() {
         for t in 1..=20u64 {
             step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
         }
-        // RTT örneği: yalnız 0 ACK'lenir → 1..79 Suspected (declared ≥ 8).
         step(
             &mut s,
             Event::AckReceived(AckInfo {
@@ -813,49 +814,76 @@ fn g1_reorder_baskisi_oneriyi_bastirir_riski_degistirmez() {
             }),
             4_100 * MS,
         );
-        for t in 21..=25u64 {
+        for t in 21..=220u64 {
             step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
         }
-        // Kısmi geç-ACK: 1..39 Spurious (reorder), 40..79 Suspected kalır → rp ≈ 39/79 ≈ 494‰.
+        // 41..79 ACK → 1..40 paket-eşiğiyle Suspected (declared ≥ 8).
         step(
             &mut s,
             Event::AckReceived(AckInfo {
-                acked_seqs: (1..40).collect(),
+                acked_seqs: (41..80).collect(),
                 ack_delay: Duration::ZERO,
             }),
-            5_200 * MS,
+            45_000 * MS,
         );
-        for t in 27..=60u64 {
+        for t in 226..=230u64 {
             step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
         }
-        let out: Vec<TsSample> = samples.iter().map(|(_, x)| *x).collect();
-        (s, out)
+        // Geç-ACK: 1..late_upto Spurious (reorder), kalanı Suspected → rp = spurious/declared, risk sürer.
+        step(
+            &mut s,
+            Event::AckReceived(AckInfo {
+                acked_seqs: (1..late_upto).collect(),
+                ack_delay: Duration::ZERO,
+            }),
+            46_200 * MS,
+        );
+        for t in 232..=400u64 {
+            step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+        }
+        (s, samples)
     }
-    let (g1, s_g1) = scenario(FecLossRiskConfig::bounded_v1());
-    let (open, s_open) = scenario(FecLossRiskConfig {
-        reorder_suppress_permille: u32::MAX,
-        ..FecLossRiskConfig::bounded_v1()
-    });
-    // Ön-koşul: geç-ACK'ten sonra reorder baskısı eşiğin üstünde ve risk hâlâ var.
-    let late = |v: &[TsSample]| -> Vec<TsSample> { v[v.len() - 30..].to_vec() };
+    let (g1, s_g1) = scenario(FecLossRiskConfig::bounded_v1(), 21);
+    let (open, s_open) = scenario(
+        FecLossRiskConfig {
+            reorder_suppress_permille: u32::MAX,
+            ..FecLossRiskConfig::bounded_v1()
+        },
+        21,
+    );
+    // Geç-ACK anı: ilk rp > 0 örneği. Pencere zamanla kayar (W_loss) → spurious kanıtı SONRA yaşlanır ve
+    // rp tekrar 0'a iner; bu yüzden guard'ın etkisi geç-ACK'i izleyen örneklerde sınanır.
+    let cut = s_open
+        .iter()
+        .position(|x| x.reorder_pressure_permille > 0)
+        .expect("önkoşul: spurious gelmeli (rp > 0)");
+    let win = |v: &[TsSample]| -> Vec<TsSample> { v[cut..(cut + 6).min(v.len())].to_vec() };
+    eprintln!(
+        "g1 pencere: {:?}",
+        win(&s_open)
+            .iter()
+            .map(|x| (x.reorder_pressure_permille, x.instant_ppm, x.spec_prop))
+            .collect::<Vec<_>>()
+    );
     assert!(
-        late(&s_open)
+        win(&s_open)
             .iter()
             .all(|x| x.reorder_pressure_permille >= 300 && x.instant_ppm >= 10_000),
         "önkoşul: rp ≥ 300‰ ∧ instant ≥ l1_min: {:?}",
-        late(&s_open).last()
+        win(&s_open)
     );
     assert!(
-        late(&s_open)
+        win(&s_open)
             .iter()
             .all(|x| x.spec_prop > 0 && x.level_idx >= 1),
         "eşik kapalı: öneri sürer"
     );
     assert!(
-        late(&s_g1)
+        win(&s_g1)
             .iter()
             .all(|x| x.spec_prop == 0 && x.level_idx == 0),
-        "G1: öneri bastırılır (L0)"
+        "G1: öneri bastırılır (L0): {:?}",
+        win(&s_g1)
     );
     // Risk hesabı ve zaman damgaları özdeş: G1 yalnız öneriyi bastırır.
     assert!(
@@ -878,9 +906,25 @@ fn g1_reorder_baskisi_oneriyi_bastirir_riski_degistirmez() {
     );
     assert!(g1.diag_spec_signals().3 > 0, "önkoşul: L1 ateşledi");
     // Geç-ACK'ten ÖNCE öneriler özdeş (guard rp yokken inert).
-    let cut = s_open
-        .iter()
-        .position(|x| x.reorder_pressure_permille > 0)
-        .expect("spurious gelmeli");
     assert_eq!(&s_g1[..cut], &s_open[..cut], "rp = 0 iken byte-özdeş");
+    // Eşik semantiği: spurious payı eşiğin ALTINDA (1..10 → rp = 250‰ < 300) ⇒ guard bastırmaz; seri
+    // eşiği kapalı kolla özdeş. Guard salt mevcut split'in fonksiyonu (latch/tarihçe yok).
+    let (_, s_g1_low) = scenario(FecLossRiskConfig::bounded_v1(), 11);
+    let (_, s_open_low) = scenario(
+        FecLossRiskConfig {
+            reorder_suppress_permille: u32::MAX,
+            ..FecLossRiskConfig::bounded_v1()
+        },
+        11,
+    );
+    let rp_low = s_open_low
+        .iter()
+        .map(|x| x.reorder_pressure_permille)
+        .max()
+        .unwrap_or(0);
+    assert!(
+        rp_low > 0 && rp_low < 300,
+        "önkoşul: 0 < rp < 300‰ ({rp_low})"
+    );
+    assert_eq!(s_g1_low, s_open_low, "eşik altında G1 byte-özdeş");
 }
