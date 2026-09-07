@@ -354,10 +354,20 @@ pub struct FecLossRiskConfig {
     /// [CAL] L2 (persistent) tavanı, per-mille. Default 250‰ = K=8'de 2 repair — FEC-MARGINAL-R
     /// v1/v2'nin ölçtüğü verimli nokta (r=4 iki katı byte'a AYNI kurtarmayı verdi).
     pub persistent_cap_permille: u32,
-    /// [CAL] Persistence eşiği: `age ≥ srtt × bu / 1000` yaşamış Suspected "kalıcı" sayılır.
-    /// Default 500 = 0.5×srtt. UYARI: test hücresinin netem reorder gecikmesi (100±20 ms @
-    /// srtt 200 ms) tam bu sınırda — süpürülmeden kalibre sayılmaz.
+    /// [CAL] Persistence TABANI (ve `Fixed` modda eşiğin kendisi): `age ≥ srtt × bu / 1000`.
+    /// Default 500 = 0.5×srtt. ÖLÇÜLDÜ: test hücresinde reorder ömrü OWD'ye bağlı (0.5×RTT) —
+    /// çakışma tesadüf değil inşa gereği; sabit srtt-oranı reorder'ı modellemez.
     pub persist_srtt_permille: u32,
+    /// [PERSIST] Ufuk modu: `FixedSrtt` (sevk, `persist_srtt_permille`) ya da
+    /// `LearnedSpuriousAge` = max(taban, ρ × Q_q(ölçülen spurious yaşı)); örnek yoksa taban.
+    pub persist_mode: PersistMode,
+    /// [CAL] Öğrenilen ufukta pay: ρ (per-mille, 1250 = ×1.25).
+    pub persist_rho_permille: u32,
+    /// [CAL] Öğrenilen ufukta quantile (per-mille, 950 = Q95). Ortalama DEĞİL: reorder kuyruklu.
+    pub persist_q_permille: u32,
+    /// [CAL] Ufuk tavanı (srtt per-mille; `u32::MAX` = tavan yok). Kuyruklanma geç ACK'leri
+    /// "spurious" gösterip ufku şişirebilir (tıkanıklıkta L2 gecikir) — bu sweep'te ÖLÇÜLMEDİ.
+    pub persist_cap_srtt_permille: u32,
     /// [CAL] L1'in ateşlemesi için asgari instant risk (ppm). Gürültü tabanı; default 10 000.
     pub l1_min_instant_ppm: u64,
     /// [CAL] L2'nin ateşlemesi için asgari persistent risk (ppm). Default 10 000.
@@ -386,6 +396,10 @@ impl Default for FecLossRiskConfig {
             bootstrap_cap_permille: 125,
             persistent_cap_permille: 250,
             persist_srtt_permille: 500,
+            persist_mode: PersistMode::FixedSrtt,
+            persist_rho_permille: 1250,
+            persist_q_permille: 950,
+            persist_cap_srtt_permille: u32::MAX,
             l1_min_instant_ppm: 10_000,
             l2_min_persistent_ppm: 10_000,
             reorder_min_evidence_units: 8,
@@ -405,6 +419,31 @@ impl FecLossRiskConfig {
             ..Self::default()
         }
     }
+}
+
+/// [PERSIST] Persistence ufkunun kaynağı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PersistMode {
+    /// Sevk: sabit `persist_srtt_permille × srtt`.
+    #[default]
+    FixedSrtt,
+    /// Kanal-türevli: `max(taban, ρ × Q_q(spurious yaşı))`; örnek yoksa taban. Yalnız L2
+    /// tırmanışını frenler — L1 anında kalır (cold-start yapısal olarak korunur).
+    LearnedSpuriousAge,
+}
+
+/// [PERSIST] Öğrenilen ufuk (salt fonksiyon, deterministik): `max(floor, q×ρ/1000)`, tavanlı.
+#[must_use]
+pub fn learned_persist_min_ns(
+    floor_ns: u64,
+    quantile_ns: Option<u64>,
+    rho_permille: u32,
+    cap_ns: Option<u64>,
+) -> u64 {
+    let learned = quantile_ns.map_or(floor_ns, |q| {
+        floor_ns.max(q.saturating_mul(u64::from(rho_permille)) / 1000)
+    });
+    cap_ns.map_or(learned, |c| learned.min(c))
 }
 
 /// [FEC-RISK v2] Spekülatif kolun güven seviyesi. Belirsizlik arttıkça EYLEM küçülür.
@@ -1624,6 +1663,9 @@ pub struct Sender {
     diag_t_first_l2_ns: u64,
     /// [HANDOFF ENSTRÜMANI] Son kararın anlık görüntüsü (zaman serisi örnekleyici okur).
     diag_last_ts: TsSample,
+    /// [PERSIST ENSTRÜMANI] Yürürlükteki persistence ufku (son, tepe) ns.
+    diag_persist_min_last_ns: u64,
+    diag_persist_min_peak_ns: u64,
     /// [IW] PreConverge ilk-uçuş penceresi (0 = kapalı, sevk davranışı).
     initial_window: InitialWindowConfig,
     /// [FUSION-POLICY] Kalibre edilmiş füzyon karar katmanı (default `disabled()` → ArqOnly).
@@ -1854,6 +1896,8 @@ impl Sender {
             diag_t_first_l1_ns: 0,
             diag_t_first_l2_ns: 0,
             diag_last_ts: TsSample::default(),
+            diag_persist_min_last_ns: 0,
+            diag_persist_min_peak_ns: 0,
             initial_window: InitialWindowConfig::default(),
             fusion_policy: crate::fusion_policy::FusionPolicy::disabled(),
             rtt_sample_count: 0,
@@ -3322,11 +3366,27 @@ impl Sender {
         let spec_split = if self.fec_loss_risk.enabled {
             // srtt ölçülmemişse Suspected'a güven verilmez → split kanonikle özdeş.
             let srtt_ns = self.rtt.srtt().map_or(0, dur_ns);
+            // [PERSIST] Ufuk: taban α·srtt; Learned modda ölçülen spurious yaşının Q_q'su × ρ.
+            let c = self.fec_loss_risk;
+            let floor_ns = srtt_ns.saturating_mul(u64::from(c.persist_srtt_permille)) / 1000;
+            let persist_min_ns = match c.persist_mode {
+                PersistMode::FixedSrtt => floor_ns,
+                PersistMode::LearnedSpuriousAge => learned_persist_min_ns(
+                    floor_ns,
+                    self.loss.spurious_age_quantile(c.persist_q_permille),
+                    c.persist_rho_permille,
+                    (c.persist_cap_srtt_permille != u32::MAX).then(|| {
+                        srtt_ns.saturating_mul(u64::from(c.persist_cap_srtt_permille)) / 1000
+                    }),
+                ),
+            };
+            self.diag_persist_min_last_ns = persist_min_ns;
+            self.diag_persist_min_peak_ns = self.diag_persist_min_peak_ns.max(persist_min_ns);
             let split = self.loss.fec_loss_risk_split(
                 now_ns,
                 srtt_ns,
                 self.fec_loss_risk.weights,
-                self.fec_loss_risk.persist_srtt_permille,
+                persist_min_ns,
             );
             self.diag_risk_ppm_last = split.instant_ppm;
             self.diag_risk_ppm_peak = self.diag_risk_ppm_peak.max(split.instant_ppm);
@@ -4105,6 +4165,16 @@ impl Sender {
     #[must_use]
     pub fn diag_spec_levels(&self) -> [u64; 3] {
         self.diag_spec_levels
+    }
+
+    /// [PERSIST ENSTRÜMANI] `(ufuk_son_ns, ufuk_tepe_ns, spurious_örnek_sayısı)`.
+    #[must_use]
+    pub fn diag_persist(&self) -> (u64, u64, usize) {
+        (
+            self.diag_persist_min_last_ns,
+            self.diag_persist_min_peak_ns,
+            self.loss.spurious_age_samples(),
+        )
     }
 
     /// [HANDOFF ENSTRÜMANI] Son `fuzzy_evaluate` kararının anlık görüntüsü.

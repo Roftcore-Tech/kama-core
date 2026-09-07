@@ -35,8 +35,8 @@ use std::time::{Duration, Instant};
 
 use client_core::runtime::{
     fec_chunk_capacity, ClientEndpoint, ClientSender, EgressPolicy, FecLossRiskConfig,
-    FecRuntimeConfig, FecStructurePolicy, LossConfirmHorizon, RuntimeConfig, RuntimeError,
-    ServerEndpoint,
+    FecRuntimeConfig, FecStructurePolicy, LossConfirmHorizon, PersistMode, RuntimeConfig,
+    RuntimeError, ServerEndpoint,
 };
 use client_core::seam::IdentitySeam;
 use tokio::signal::unix::{signal, SignalKind};
@@ -90,7 +90,7 @@ impl EgressPolicy for BudgetEgress {
 ///
 /// `drain_cap = 0`: bench'te kapanış-drenajı YOKTUR — aksi hâlde deadline SONRASI akan
 /// retransmit'ler `tx_bytes`'a girer ve ölçüm penceresini sessizce genişletirdi.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ArmCfg {
     payload_bytes: u64,
     quota_r: u32,
@@ -105,6 +105,10 @@ struct ArmCfg {
     spec_l1: Option<u32>,
     spec_l2: Option<u32>,
     gate: Option<u32>,
+    persist_mode: Option<String>,
+    persist_alpha: Option<u32>,
+    persist_rho: Option<u32>,
+    persist_q: Option<u32>,
 }
 
 fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
@@ -122,6 +126,10 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
         spec_l1,
         spec_l2,
         gate,
+        persist_mode,
+        persist_alpha,
+        persist_rho,
+        persist_q,
     } = a;
     let payload = usize::try_from(payload_bytes).unwrap_or(usize::MAX);
     let profile_id = match fec {
@@ -186,6 +194,23 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
             }
             if let Some(v) = spec_l2 {
                 c.persistent_cap_permille = v;
+            }
+            // [PERSIST] ufuk modu ve knob'ları (None = sevk default'ları).
+            if let Some(m) = persist_mode.as_deref() {
+                c.persist_mode = if m == "learned" {
+                    PersistMode::LearnedSpuriousAge
+                } else {
+                    PersistMode::FixedSrtt
+                };
+            }
+            if let Some(v) = persist_alpha {
+                c.persist_srtt_permille = v;
+            }
+            if let Some(v) = persist_rho {
+                c.persist_rho_permille = v;
+            }
+            if let Some(v) = persist_q {
+                c.persist_q_permille = v;
             }
             c
         },
@@ -269,6 +294,10 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
             spec_l1: cfg.spec_l1_permille,
             spec_l2: cfg.spec_l2_permille,
             gate: cfg.gate_permille,
+            persist_mode: cfg.persist_mode.clone(),
+            persist_alpha: cfg.persist_alpha,
+            persist_rho: cfg.persist_rho,
+            persist_q: cfg.persist_q,
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -374,6 +403,10 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
             spec_l1: cfg.spec_l1_permille,
             spec_l2: cfg.spec_l2_permille,
             gate: cfg.gate_permille,
+            persist_mode: cfg.persist_mode.clone(),
+            persist_alpha: cfg.persist_alpha,
+            persist_rho: cfg.persist_rho,
+            persist_q: cfg.persist_q,
         }),
         Box::new(IdentitySeam),
         Some(policy),
@@ -522,7 +555,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
          fec_blocks={} fec_repairs_tx={} fec_recovered_ctrl={} param_confirmed={} \
          seal_fail={} send_err={} stale={} cs_probe_tx={} cs_echo_rx={} \
          state={} left_preconv={} establish_tx={} \
-         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?} spurious={} confirm_k={:?} latch={:?} suppress={:?} risk_t={:?} risk_ppm={:?} flow_end={} arb={:?} lvl={:?} spec={:?}",
+         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?} spurious={} confirm_k={:?} latch={:?} suppress={:?} risk_t={:?} risk_ppm={:?} flow_end={} arb={:?} lvl={:?} spec={:?} persist={:?}",
         stats.tx_bytes,
         stats.tx_data_bytes,
         stats.tx_retx_bytes,
@@ -568,6 +601,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         stats.fate.fec_arbiter_reasons,
         stats.fate.fec_spec_levels,
         stats.fate.fec_spec_signals,
+        stats.fate.fec_persist,
     );
     // [HANDOFF ENSTRÜMANI] zaman serisini CSV'ye dök (varsa).
     if let Some(path) = cfg.ts_out.as_ref() {
@@ -670,6 +704,10 @@ mod tests {
             budget: BudgetMode::Unlimited,
             warmup_msgs: 0,
             gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
             establish_gate: None,
             fec,
             burst_fusion: false,
@@ -702,6 +740,10 @@ mod tests {
             fec_risk: false,
             ts_out: None,
             gate_permille: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
             spec_l2_permille: None,
             spec_l1_permille: None,
         }
@@ -755,6 +797,10 @@ mod tests {
             fec_risk: false,
             ts_sample: false,
             gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -770,6 +816,10 @@ mod tests {
             fec_risk: false,
             ts_sample: false,
             gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -804,6 +854,10 @@ mod tests {
             fec_risk: false,
             ts_sample: false,
             gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -830,8 +884,12 @@ mod tests {
             spec_l1: None,
             spec_l2: None,
             gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
         };
-        let d = runtime_cfg(base);
+        let d = runtime_cfg(base.clone());
         assert_eq!(d.fec_loss_risk.bootstrap_cap_permille, 125);
         assert_eq!(d.fec_loss_risk.persistent_cap_permille, 250);
         assert_eq!(d.structure_gate_level_permille, None);
@@ -839,7 +897,7 @@ mod tests {
             spec_l1: Some(250),
             spec_l2: Some(375),
             gate: Some(250),
-            ..base
+            ..base.clone()
         });
         assert_eq!(o.fec_loss_risk.bootstrap_cap_permille, 250);
         assert_eq!(o.fec_loss_risk.persistent_cap_permille, 375);
@@ -862,14 +920,22 @@ mod tests {
             fec_risk: false,
             ts_sample: false,
             gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
             spec_l2: None,
             spec_l1: None,
         };
-        assert_eq!(runtime_cfg(base).ts_sample_period_ns, None);
+        assert_eq!(runtime_cfg(base.clone()).ts_sample_period_ns, None);
         assert_eq!(
             runtime_cfg(ArmCfg {
                 ts_sample: true,
                 gate: None,
+                persist_mode: None,
+                persist_alpha: None,
+                persist_rho: None,
+                persist_q: None,
                 spec_l2: None,
                 spec_l1: None,
                 ..base
@@ -894,6 +960,10 @@ mod tests {
             fec_risk: false,
             ts_sample: false,
             gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -916,6 +986,10 @@ mod tests {
             fec_risk: false,
             ts_sample: false,
             gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -936,6 +1010,10 @@ mod tests {
             fec_risk: false,
             ts_sample: false,
             gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -968,6 +1046,10 @@ mod tests {
             fec_risk: false,
             ts_sample: false,
             gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -994,6 +1076,10 @@ mod tests {
             fec_risk: false,
             ts_sample: false,
             gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1022,6 +1108,10 @@ mod tests {
                 fec_risk: false,
                 ts_sample: false,
                 gate: None,
+                persist_mode: None,
+                persist_alpha: None,
+                persist_rho: None,
+                persist_q: None,
                 spec_l2: None,
                 spec_l1: None,
             }),
@@ -1074,6 +1164,10 @@ mod tests {
                 fec_risk: false,
                 ts_sample: false,
                 gate: None,
+                persist_mode: None,
+                persist_alpha: None,
+                persist_rho: None,
+                persist_q: None,
                 spec_l2: None,
                 spec_l1: None,
             }),
@@ -1140,6 +1234,10 @@ mod tests {
                 fec_risk: false,
                 ts_sample: false,
                 gate: None,
+                persist_mode: None,
+                persist_alpha: None,
+                persist_rho: None,
+                persist_q: None,
                 spec_l2: None,
                 spec_l1: None,
             }),
@@ -1228,6 +1326,10 @@ mod tests {
                 fec_risk: false,
                 ts_sample: false,
                 gate: None,
+                persist_mode: None,
+                persist_alpha: None,
+                persist_rho: None,
+                persist_q: None,
                 spec_l2: None,
                 spec_l1: None,
             }),

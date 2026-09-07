@@ -613,6 +613,10 @@ mod loopback_tests {
                 fec_risk: false,
                 ts_out: None,
                 gate_permille: None,
+                persist_mode: None,
+                persist_alpha: None,
+                persist_rho: None,
+                persist_q: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
             })
@@ -687,6 +691,10 @@ mod loopback_tests {
                 fec_risk: false,
                 ts_out: None,
                 gate_permille: None,
+                persist_mode: None,
+                persist_alpha: None,
+                persist_rho: None,
+                persist_q: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
             })
@@ -741,6 +749,10 @@ mod loopback_tests {
                 fec_risk: false,
                 ts_out: None,
                 gate_permille: None,
+                persist_mode: None,
+                persist_alpha: None,
+                persist_rho: None,
+                persist_q: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
             })
@@ -815,6 +827,10 @@ mod loopback_tests {
                 fec_risk: false,
                 ts_out: None,
                 gate_permille: None,
+                persist_mode: None,
+                persist_alpha: None,
+                persist_rho: None,
+                persist_q: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
             })

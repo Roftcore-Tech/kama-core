@@ -11,7 +11,8 @@
 use adaptive_transport::loss::{LossDetector, SuspectConfidence, ThresholdLossDetector};
 use adaptive_transport::sender::*;
 use adaptive_transport::sender::{
-    fec_arbiter, FecArbiterReason, SpeculativeLevel, SpeculativeProposal,
+    fec_arbiter, learned_persist_min_ns, FecArbiterReason, PersistMode, SpeculativeLevel,
+    SpeculativeProposal,
 };
 use std::time::Duration;
 
@@ -291,7 +292,7 @@ fn arbiter_sebep_atfi_dogru() {
 #[test]
 fn temiz_yolda_split_sifir() {
     let d = ThresholdLossDetector::default();
-    let r = d.fec_loss_risk_split(1_000 * MS, 200 * MS, SuspectConfidence::default(), 500);
+    let r = d.fec_loss_risk_split(1_000 * MS, 200 * MS, SuspectConfidence::default(), 100 * MS);
     assert_eq!(
         (
             r.instant_ppm,
@@ -314,12 +315,12 @@ fn persistence_yasla_devreye_girer() {
     }
     let _ = d.on_ack(&[8], 0);
     let _ = d.detect_time_losses(MS, Duration::from_millis(1), Duration::from_millis(1));
-    let fresh = d.fec_loss_risk_split(20 * MS, srtt, w, 500); // yaş 20 ms < 100 ms
+    let fresh = d.fec_loss_risk_split(20 * MS, srtt, w, srtt / 2); // yaş 20 ms < 100 ms
     assert!(
         fresh.instant_ppm > 0 && fresh.persistent_ppm == 0,
         "taze gap: instant>0, persistent=0: {fresh:?}"
     );
-    let aged = d.fec_loss_risk_split(150 * MS, srtt, w, 500); // yaş 150 ms ≥ 100 ms
+    let aged = d.fec_loss_risk_split(150 * MS, srtt, w, srtt / 2); // yaş 150 ms ≥ 100 ms
     assert!(
         aged.persistent_ppm > 0,
         "yaşlanan gap persistent'a girmeli: {aged:?}"
@@ -341,10 +342,10 @@ fn spurious_reorder_baskisini_yukseltir() {
     }
     let _ = d.on_ack(&[8], 0);
     let _ = d.detect_time_losses(MS, Duration::from_millis(1), Duration::from_millis(1));
-    let before = d.fec_loss_risk_split(50 * MS, srtt, w, 500);
+    let before = d.fec_loss_risk_split(50 * MS, srtt, w, srtt / 2);
     assert_eq!(before.reorder_pressure_permille, 0);
     let _ = d.on_ack(&[1, 2, 3, 4, 5, 6, 7], 60 * MS);
-    let after = d.fec_loss_risk_split(70 * MS, srtt, w, 500);
+    let after = d.fec_loss_risk_split(70 * MS, srtt, w, srtt / 2);
     assert_eq!(
         after.reorder_pressure_permille, 1000,
         "tüm gap'ler doldu → tam baskı"
@@ -564,4 +565,105 @@ fn handoff_devralan_yoksa_spekulatif_dusmez() {
         post_min >= pre_max,
         "HANDOFF CLIFF: kanonik lane önermezken onay sonrası L2 önerisi düştü: pre_max={pre_max} post_min={post_min}"
     );
+}
+
+// ── [PERSIST] Öğrenilen reorder ufku ─────────────────────────────────────────────────────────
+//
+// Ölçüldü (saf reorder, RTT 200): spurious yaşları 91–131 ms, sabit eşik 100–110 ms → çakışma
+// inşa gereği (netem'de reorder ömrü OWD'ye bağlı). Ufuk kanal-türevli olmalı; L1 anında kalmalı.
+
+/// Quantile deterministik: yaşlar ilan→un-loss ile üretilir (test-özel API yok).
+/// ack(8) packet-threshold (K=3) ile yalnız seq 1..5'i ilan eder (6,7 gap<3; time-threshold 1.125 ms
+/// > 1 ms geçen süre) → 5 olay. Un-loss zamanları = yaşlar: 80,90,100,110,120 ms.
+#[test]
+fn spurious_yas_quantile_deterministik() {
+    let mut d = ThresholdLossDetector::default();
+    for seq in 1..=8u64 {
+        d.on_sent(seq, 0, 1);
+    }
+    let _ = d.on_ack(&[8], 0);
+    let _ = d.detect_time_losses(MS, Duration::from_millis(1), Duration::from_millis(1));
+    assert_eq!(d.spurious_age_quantile(950), None, "örnek yokken None");
+    for (i, seq) in (1..=5u64).enumerate() {
+        let _ = d.on_ack(&[seq], (80 + 10 * i as u64) * MS);
+    }
+    assert_eq!(d.spurious_age_samples(), 5);
+    assert_eq!(
+        d.spurious_age_quantile(500),
+        Some(100 * MS),
+        "medyan: rank ceil(2.5)=3 → 100 ms"
+    );
+    assert_eq!(
+        d.spurious_age_quantile(950),
+        Some(120 * MS),
+        "Q95 küçük n'de ≈ maksimum"
+    );
+    assert_eq!(d.spurious_age_quantile(1000), Some(120 * MS));
+    assert_eq!(
+        d.spurious_age_quantile(200),
+        Some(80 * MS),
+        "Q20: rank ceil(1.0)=1 → 80 ms"
+    );
+}
+
+/// Ufuk = max(taban, ρ·Q); örnek yoksa taban; tavan varsa tavan.
+#[test]
+fn ogrenilen_ufuk_taban_rho_tavan() {
+    let floor = 50 * MS;
+    assert_eq!(
+        learned_persist_min_ns(floor, None, 1250, None),
+        floor,
+        "örnek yok → taban"
+    );
+    assert_eq!(
+        learned_persist_min_ns(floor, Some(20 * MS), 1250, None),
+        floor,
+        "küçük Q → taban"
+    );
+    assert_eq!(
+        learned_persist_min_ns(floor, Some(120 * MS), 1250, None),
+        150 * MS,
+        "ρ×Q"
+    );
+    assert_eq!(
+        learned_persist_min_ns(floor, Some(120 * MS), 1250, Some(100 * MS)),
+        100 * MS,
+        "tavan"
+    );
+}
+
+/// COLD-START KAPISI: persistence modu L1'in İLK ateşleme anını DEĞİŞTİREMEZ (L1 anında kalır).
+#[test]
+fn persist_modu_l1_zamanlamasini_degistirmez() {
+    let mut fixed = Sender::new();
+    fixed.set_fec_loss_risk(FecLossRiskConfig::experimental_v1());
+    let fixed = drive(fixed, 80, gap_pattern());
+    let mut learned = Sender::new();
+    learned.set_fec_loss_risk(FecLossRiskConfig {
+        persist_mode: PersistMode::LearnedSpuriousAge,
+        persist_srtt_permille: 250,
+        ..FecLossRiskConfig::experimental_v1()
+    });
+    let learned = drive(learned, 80, gap_pattern());
+    let (_, _, _, t1_fixed, _) = fixed.diag_spec_signals();
+    let (_, _, _, t1_learned, _) = learned.diag_spec_signals();
+    assert!(t1_fixed > 0, "önkoşul: L1 ateşledi");
+    assert_eq!(
+        t1_fixed, t1_learned,
+        "L1 anı persistence modundan bağımsız olmalı"
+    );
+    assert_eq!(
+        fixed.diag_risk_ppm(),
+        learned.diag_risk_ppm(),
+        "instant risk moddan bağımsız"
+    );
+}
+
+/// Default config sevk davranışıdır: FixedSrtt, 0.5×srtt, tavan yok.
+#[test]
+fn persist_varsayilani_sevk() {
+    let c = FecLossRiskConfig::default();
+    assert_eq!(c.persist_mode, PersistMode::FixedSrtt);
+    assert_eq!(c.persist_srtt_permille, 500);
+    assert_eq!(c.persist_cap_srtt_permille, u32::MAX);
 }

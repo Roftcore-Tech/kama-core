@@ -203,6 +203,11 @@ pub struct ClientCfg {
     pub spec_l1_permille: Option<u32>,
     pub spec_l2_permille: Option<u32>,
     pub gate_permille: Option<u32>,
+    /// [PERSIST] Ufuk modu ("fixed"|"learned"), taban α (‰ srtt), ρ (‰), quantile (‰). None = default.
+    pub persist_mode: Option<String>,
+    pub persist_alpha: Option<u32>,
+    pub persist_rho: Option<u32>,
+    pub persist_q: Option<u32>,
 }
 
 /// [KAPI-1 W6] Dosya-tabanlı barrier: `<gate>.ready` yaz → `<gate>.go` bekle (5 ms poll, 120 s
@@ -265,6 +270,11 @@ pub struct ServerCfg {
     pub spec_l1_permille: Option<u32>,
     pub spec_l2_permille: Option<u32>,
     pub gate_permille: Option<u32>,
+    /// [PERSIST] Ufuk modu ("fixed"|"learned"), taban α (‰ srtt), ρ (‰), quantile (‰). None = default.
+    pub persist_mode: Option<String>,
+    pub persist_alpha: Option<u32>,
+    pub persist_rho: Option<u32>,
+    pub persist_q: Option<u32>,
 }
 
 /// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).

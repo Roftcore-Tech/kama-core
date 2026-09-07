@@ -94,6 +94,18 @@ enum Cmd {
         /// [R-SWEEP] Yapı-gate seviyesi (‰; 500 = sevk r4). None = motor default (fec_med).
         #[arg(long)]
         gate_permille: Option<u32>,
+        /// [PERSIST] Ufuk modu: fixed (sevk 0.5×srtt) | learned (max(α·srtt, ρ·Q_q(spurious yaşı))).
+        #[arg(long)]
+        persist_mode: Option<String>,
+        /// [PERSIST] Taban α (‰ srtt; fixed modda eşiğin kendisi). None = 500.
+        #[arg(long)]
+        persist_alpha: Option<u32>,
+        /// [PERSIST] ρ (‰). None = 1250.
+        #[arg(long)]
+        persist_rho: Option<u32>,
+        /// [PERSIST] quantile (‰). None = 950.
+        #[arg(long)]
+        persist_q: Option<u32>,
         /// [SPRINT-A] Alıcı birim-payload tavanı — client `--payload` ile AYNI olmalı.
         #[arg(long, default_value_t = 256)]
         payload: u64,
@@ -198,6 +210,18 @@ enum Cmd {
         /// [R-SWEEP] Yapı-gate seviyesi (‰; 500 = sevk r4). None = motor default (fec_med).
         #[arg(long)]
         gate_permille: Option<u32>,
+        /// [PERSIST] Ufuk modu: fixed (sevk 0.5×srtt) | learned (max(α·srtt, ρ·Q_q(spurious yaşı))).
+        #[arg(long)]
+        persist_mode: Option<String>,
+        /// [PERSIST] Taban α (‰ srtt; fixed modda eşiğin kendisi). None = 500.
+        #[arg(long)]
+        persist_alpha: Option<u32>,
+        /// [PERSIST] ρ (‰). None = 1250.
+        #[arg(long)]
+        persist_rho: Option<u32>,
+        /// [PERSIST] quantile (‰). None = 950.
+        #[arg(long)]
+        persist_q: Option<u32>,
         /// [BURST-FUSION] Bkz. `serve --fec-burst-fusion`. SUNUCUYLA AYNI verilmelidir.
         #[arg(long, default_value_t = false)]
         fec_burst_fusion: bool,
@@ -347,6 +371,10 @@ async fn main() -> Result<(), BenchError> {
             spec_l1_permille,
             spec_l2_permille,
             gate_permille,
+            persist_mode,
+            persist_alpha,
+            persist_rho,
+            persist_q,
             payload,
             fec_burst_fusion,
             bootstrap_rtt,
@@ -371,6 +399,10 @@ async fn main() -> Result<(), BenchError> {
                     fec_risk,
                     ts_out: None,
                     gate_permille,
+                    persist_mode,
+                    persist_alpha,
+                    persist_rho,
+                    persist_q,
                     spec_l2_permille,
                     spec_l1_permille,
                     payload_bytes: payload,
@@ -411,6 +443,10 @@ async fn main() -> Result<(), BenchError> {
             spec_l1_permille,
             spec_l2_permille,
             gate_permille,
+            persist_mode,
+            persist_alpha,
+            persist_rho,
+            persist_q,
             fec_burst_fusion,
             bootstrap_rtt,
             initial_window_bytes,
@@ -442,6 +478,10 @@ async fn main() -> Result<(), BenchError> {
                 fec_risk,
                 ts_out,
                 gate_permille,
+                persist_mode,
+                persist_alpha,
+                persist_rho,
+                persist_q,
                 spec_l2_permille,
                 spec_l1_permille,
                 burst_fusion: fec_burst_fusion,

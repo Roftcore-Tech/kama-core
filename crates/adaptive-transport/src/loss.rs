@@ -45,6 +45,10 @@ fn scale_duration(d: Duration, num: u64, den: u64) -> Duration {
     Duration::from_nanos(ns as u64)
 }
 
+/// [PERSIST] Spurious-yaş halkası boyu (bounded; SR-AUDIT-001). 32: `[u64; N]` için `Default`
+/// türetilebilir üst sınır; Q95 için rank 31 → yeterli çözünürlük.
+pub const SPURIOUS_AGE_RING: usize = 32;
+
 /// [FEC-RISK v2] Spekülatif kolun girdileri (bkz. [`ThresholdLossDetector::fec_loss_risk_split`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RiskSplit {
@@ -210,6 +214,12 @@ pub struct ThresholdLossDetector {
     diag_t_first_suspected_ns: u64,
     /// [FEC-RISK ENSTRÜMAN] İlk `Suspected → Confirmed` geçişinin anı (ns, 0 = hiç).
     diag_t_first_confirmed_ns: u64,
+    /// [PERSIST] Un-loss anındaki olay yaşları (declared→Spurious), bounded halka. Reorder
+    /// ömrünün ÖLÇÜLEN dağılımı; öğrenilen persistence ufkunun tek kaynağı. Gerçek kayıp asla
+    /// Spurious olmadığından bu dağılıma karışmaz.
+    spurious_ages: [u64; SPURIOUS_AGE_RING],
+    spurious_age_len: usize,
+    spurious_age_idx: usize,
     diag_tick_count: u64,
     diag_first_tick_ns: u64,
     diag_last_tick_ns: u64,
@@ -347,6 +357,29 @@ impl ThresholdLossDetector {
         ratio_ppm(confirmed, self.sent_window_units)
     }
 
+    /// [PERSIST] Ölçülen spurious (reorder) yaşlarının `q_permille` quantile'ı (ns); örnek yoksa
+    /// `None`. Deterministik: bounded halkanın kopyası sıralanır, rank = ceil(len·q) (ADR-17).
+    /// Küçük n'de üst quantile ≈ maksimum → ihtiyatlı (daha uzun ufuk = daha az yanlış L2).
+    #[must_use]
+    pub fn spurious_age_quantile(&self, q_permille: u32) -> Option<u64> {
+        let len = self.spurious_age_len;
+        if len == 0 {
+            return None;
+        }
+        let mut buf = [0u64; SPURIOUS_AGE_RING];
+        buf[..len].copy_from_slice(&self.spurious_ages[..len]);
+        buf[..len].sort_unstable();
+        let q = u64::from(q_permille.min(1000));
+        let rank = ((len as u64 * q).div_ceil(1000)).clamp(1, len as u64);
+        Some(buf[rank as usize - 1])
+    }
+
+    /// [PERSIST] Halkadaki spurious-yaş örneği sayısı (≤ [`SPURIOUS_AGE_RING`]).
+    #[must_use]
+    pub fn spurious_age_samples(&self) -> usize {
+        self.spurious_age_len
+    }
+
     /// [FEC-RISK v2] Spekülatif kolun ÜÇ girdisi tek geçişte — instant · persistent · reorder.
     ///
     /// Neden tek sayı yetmiyor (ölçüldü, A2 vs kısa-akış): saf reorder'da instant risk tepesi
@@ -369,9 +402,8 @@ impl ThresholdLossDetector {
         now_ns: u64,
         srtt_ns: u64,
         weights: SuspectConfidence,
-        persist_srtt_permille: u32,
+        persist_min_ns: u64,
     ) -> RiskSplit {
-        let persist_min_ns = srtt_ns.saturating_mul(u64::from(persist_srtt_permille)) / 1000;
         let mut inst_milli: u128 = 0;
         let mut pers_units: u128 = 0;
         let mut spur_units: u64 = 0;
@@ -594,6 +626,11 @@ impl LossDetector for ThresholdLossDetector {
             {
                 ev.state = LedgerState::Spurious;
                 self.spurious_units_total += ev.units;
+                // [PERSIST] reorder ömrü örneği: ilan → un-loss süresi (bounded halka).
+                let age = now_ns.saturating_sub(ev.declared_ns);
+                self.spurious_ages[self.spurious_age_idx] = age;
+                self.spurious_age_idx = (self.spurious_age_idx + 1) % SPURIOUS_AGE_RING;
+                self.spurious_age_len = (self.spurious_age_len + 1).min(SPURIOUS_AGE_RING);
                 self.unlossed.push(seq);
             }
             if !self.have_acked || seq > self.largest_acked {
