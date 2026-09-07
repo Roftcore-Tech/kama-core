@@ -17,8 +17,12 @@ declare -A FWD REV RTT
 FWD[C0]="delay 100ms rate 1mbit";                                REV[C0]="delay 100ms rate 1mbit";          RTT[C0]=200
 FWD[C1a]="delay 100ms 20ms reorder 15% 50% rate 1mbit";          REV[C1a]="delay 100ms rate 1mbit";         RTT[C1a]=200
 FWD[C1b]="delay 100ms 20ms reorder 30% 50% rate 1mbit";          REV[C1b]="delay 100ms rate 1mbit";         RTT[C1b]=200
-FWD[C2]="delay 100ms 60ms rate 1mbit";                           REV[C2]="delay 100ms rate 1mbit";          RTT[C2]=200
-FWD[C3]="delay 25ms 40ms rate 1mbit";                            REV[C3]="delay 25ms rate 1mbit";           RTT[C3]=50
+# C2/C3 (jitter-only) VAKUM ÇIKTI: netem `rate` gönderim zamanlarını monoton kılar, jitter reorder üretmez.
+# İki-aşamalı: reorder aşaması GÖNDERİCİ tarafında (va0, rate'siz) → ömür = aşamanın base delay'i;
+# gecikme+rate MID'de. Ömür ≤ OWD_fwd ≤ 0.5×RTT (simetrik); ömür > 0.5×srtt yalnız ASİMETRİK yolda.
+declare -A SND
+FWD[C2p]="delay 80ms rate 1mbit";   REV[C2p]="delay 100ms rate 1mbit"; RTT[C2p]=200; SND[C2p]="delay 20ms 15ms reorder 30% 50%"   # ömür ~20 ms = 0.1 srtt
+FWD[C3p]="rate 1mbit";              REV[C3p]="delay 5ms rate 1mbit";   RTT[C3p]=45;  SND[C3p]="delay 40ms 10ms reorder 30% 50%"   # asimetrik: ömür ~40 ms = 0.9 srtt
 FWD[C4]="delay 100ms 20ms loss 20% reorder 30% 50% rate 1mbit";  REV[C4]="delay 100ms loss 2% rate 1mbit";  RTT[C4]=200
 FWD[C5]="delay 100ms loss 20% rate 1mbit";                       REV[C5]="delay 100ms loss 2% rate 1mbit";  RTT[C5]=200
 POL_A="250-250-250"; POL_B="250-375-375"
@@ -31,13 +35,15 @@ arms_for() { if [ "$1" = "C0" ]; then echo "off A-P0"; else echo "off A-P0 A-P1 
 run() { # $1=dir $2=cell $3=arm $4=msgs
   local d="$1" cell="$2" arm="$3" M="$4"; mkdir -p "$d"; P=$((P+1))
   kapi3_netem "${FWD[$cell]}" "${REV[$cell]}"
+  # gönderici-tarafı reorder aşaması (varsa); yoksa temizle
+  if [ -n "${SND[$cell]:-}" ]; then tc qdisc replace dev va0 root netem ${SND[$cell]}; else tc qdisc del dev va0 root 2>/dev/null || true; fi
   local c="--transport kama-product --fec-profile 3 --payload 256 --fec-mode adaptive --loss-confirm-k 0"
   if [ "$arm" != "off" ]; then
     local pol="${arm%-*}" mode="${arm#*-}"; local trip; [ "$pol" = "A" ] && trip=$POL_A || trip=$POL_B
     IFS=- read -r l1 l2 g <<< "$trip"
     c="$c --fec-risk --spec-l1-permille $l1 --spec-l2-permille $l2 --gate-permille $g $(mode_args $mode)"
   fi
-  printf 'cell=%s arm=%s msgs=%s rtt=%s fwd=[%s]\n' "$cell" "$arm" "$M" "${RTT[$cell]}" "${FWD[$cell]}" > "$d/argv.txt"
+  printf 'cell=%s arm=%s msgs=%s rtt=%s fwd=[%s] snd=[%s]\n' "$cell" "$arm" "$M" "${RTT[$cell]}" "${FWD[$cell]}" "${SND[$cell]:-}" > "$d/argv.txt"
   # shellcheck disable=SC2086
   nsenter -t "$CHLB" -n "$BENCH" serve --bind "10.10.1.1:$P" $c 2>"$d/s.err" >/dev/null &
   local sp=$!; sleep 1
@@ -46,7 +52,7 @@ run() { # $1=dir $2=cell $3=arm $4=msgs
     --max-deadline-s 20 --out "$d/out.jsonl" 2>"$d/c.err" >/dev/null
   echo "rc=$?" > "$d/rc"; kill "$sp" 2>/dev/null; wait "$sp" 2>/dev/null || true
 }
-CELLS="${CELLS_LIST:-C0 C1a C1b C2 C3 C4 C5}"; TOTAL=0
+CELLS="${CELLS_LIST:-C0 C1a C1b C2p C3p C4 C5}"; TOTAL=0
 for cell in $CELLS; do for M in ${MSGS_LIST:-96 400}; do for a in $(arms_for $cell); do TOTAL=$((TOTAL+1)); done; done; done
 echo "== PERSIST AİLESİ reps=$REPS hücre×akış×kol=$TOTAL toplam=$((TOTAL*REPS)) =="
 START=$(date +%s); DONE=0

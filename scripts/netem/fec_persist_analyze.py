@@ -5,7 +5,11 @@ Cold-start kapısı: aynı politikada t_first_L1 persistence modundan bağımsı
 """
 import sys, glob, re, json, statistics
 root = sys.argv[1]
+import os
 def parse(d):
+    # Tamamlanmamış koşu (rc/c.err/out.jsonl yok) → atla; kısmi analiz mümkün olsun.
+    if not all(os.path.exists(f"{d}/{f}") for f in ("rc", "c.err", "out.jsonl", "argv.txt")):
+        return None
     a = open(f"{d}/argv.txt").read()
     cell = re.search(r"cell=(\S+)", a).group(1); arm = re.search(r"arm=(\S+)", a).group(1)
     msgs = int(re.search(r"msgs=(\d+)", a).group(1)); rtt = int(re.search(r"rtt=(\d+)", a).group(1))
@@ -14,6 +18,7 @@ def parse(d):
     dl = re.search(r"delivered=(\d+)/(\d+)", t); rt = re.search(r"risk_t=\((\d+), (\d+), (\d+), (\d+)\)", t)
     lv = re.search(r"lvl=\[(\d+), (\d+), (\d+)\]", t); sp = re.search(r"spec=\((\d+), (\d+), (\d+), (\d+), (\d+)\)", t)
     pe = re.search(r"persist=\((\d+), (\d+), (\d+)\)", t)
+    la = re.search(r"latch=\((\d+), (\d+), (\d+), (\d+), (\d+)\)", t)
     if not (dl and rt and lv and sp): return None
     D = 2 * rtt * 1_000_000; n = ok = 0
     for i, line in enumerate(open(f"{d}/out.jsonl")):
@@ -26,7 +31,8 @@ def parse(d):
                 l1=int(lv.group(2)), l2=int(lv.group(3)), spurious=g(r"spurious=(\d+)"),
                 t_l1=int(sp.group(4)), t_l2=int(sp.group(5)), t_susp=t_susp,
                 p_last=int(pe.group(1)) if pe else 0, p_peak=int(pe.group(2)) if pe else 0, p_n=int(pe.group(3)) if pe else 0,
-                stall=(t_susp == 0 or t_susp > 1_000_000_000), lossy=("loss" in a))
+                stall=(t_susp == 0 or t_susp > 1_000_000_000), lossy=("loss" in a),
+                enq=int(la.group(4)) if la else 0, emit=int(la.group(5)) if la else 0)
 runs = [r for r in (parse(d) for d in sorted(glob.glob(f"{root}/*/rep*"))) if r]
 cells = {}
 for r in runs: cells.setdefault((r["cell"], r["msgs"]), {}).setdefault(r["arm"], []).append(r)
@@ -40,7 +46,7 @@ for (cell, msgs) in sorted(cells, key=lambda k: (k[0], k[1])):
     print("=" * 150)
     print(f"HÜCRE {cell} · {msgs} msg · RTT {off[0]['rtt'] if off else '?'} ms · {'KAYIPLI' if lossy else 'KAYIPSIZ (her L2 YANLIŞ)'}   fwd={open(glob.glob(f'{root}/{cell}_m{msgs}_off/rep1/argv.txt')[0]).read().split('fwd=')[1].strip()}")
     print("=" * 150)
-    print(f"{'kol':>6s} {'n':>2s} {'stall':>5s} {'n_ok':>4s} {'d2_all':>6s} {'d2_ok':>6s} {'wireΔ%':>7s} {'parity':>7s} {'retx':>6s} {'L1':>5s} {'L2':>5s} {'spur':>5s} {'t_L1':>6s} {'t_L2':>6s} {'ufuk_ms':>7s} {'örnek':>5s}")
+    print(f"{'kol':>6s} {'n':>2s} {'stall':>5s} {'n_ok':>4s} {'d2_all':>6s} {'d2_ok':>6s} {'wireΔ%':>7s} {'parity':>7s} {'retx':>6s} {'L1':>5s} {'L2':>5s} {'spur':>5s} {'t_L1':>6s} {'t_L2':>6s} {'ufuk_ms':>7s} {'ufuk_pk':>7s} {'örnek':>5s} {'emit/enq':>9s}")
     print("-" * 150)
     off_ok = [r for r in off if not (lossy and r["stall"])] or off
     off_tx = med([r["tx"] for r in off_ok]) if off else float("nan")
@@ -53,15 +59,18 @@ for (cell, msgs) in sorted(cells, key=lambda k: (k[0], k[1])):
         print(f"{a:>6s} {len(rs):>2d} {stalls:>5d} {len(ok):>4d} {med([r['d2'] for r in rs]):>6.3f} {med([r['d2'] for r in ok]):>6.3f} {wd:>+7.2f} "
               f"{med([r['fec'] for r in ok]):>7.0f} {med([r['retx'] for r in ok]):>6.0f} {med([r['l1'] for r in ok]):>5.0f} {med([r['l2'] for r in ok]):>5.0f} "
               f"{med([r['spurious'] for r in ok]):>5.0f} {ms(med([r['t_l1'] for r in ok])):>6s} {ms(med([r['t_l2'] for r in ok])):>6s} "
-              f"{med([r['p_last'] for r in ok])/1e6:>7.0f} {med([r['p_n'] for r in ok]):>5.0f}")
+              f"{med([r['p_last'] for r in ok])/1e6:>7.0f} {med([r['p_peak'] for r in ok])/1e6:>7.0f} {med([r['p_n'] for r in ok]):>5.0f} "
+              f"{med([r['emit'] for r in ok]):>4.0f}/{med([r['enq'] for r in ok]):<4.0f}")
     print()
 print("=" * 150)
-print("COLD-START KAPISI — aynı politika, farklı persistence modu: t_first_L1 medyanı (ms) DEĞİŞMEMELİ")
+print("COLD-START KAPISI — aynı politika, farklı persistence modu: STALL-DIŞI rep'lerde (t_first_L1 − t_first_kuşku) medyanı (ms)")
+print("  L1 kod yolu persistence'ı OKUMAZ (birim testi pinler); bu tablo yalnız netem sağlaması. Mutlak t_L1 stall'a duyarlı, ofset değil.")
 print("=" * 150)
 for (cell, msgs) in sorted(cells, key=lambda k: (k[0], k[1])):
     arms = cells[(cell, msgs)]
     for pol in ("A", "B"):
-        vals = {m: med([r["t_l1"] for r in arms.get(f"{pol}-{m}", []) if r["t_l1"]]) for m in ("P0","P1","P2","P3")}
+        vals = {m: med([r["t_l1"] - r["t_susp"] for r in arms.get(f"{pol}-{m}", []) if r["t_l1"] and r["t_susp"] and not r["stall"]]) for m in ("P0","P1","P2","P3")}
+        nok = {m: sum(1 for r in arms.get(f"{pol}-{m}", []) if r["t_l1"] and r["t_susp"] and not r["stall"]) for m in ("P0","P1","P2","P3")}
         if all(v == v for v in vals.values()) and vals:
             spread = max(vals.values()) - min(vals.values())
-            print(f"  {cell:>4s} {msgs:>4d} {pol}: " + "  ".join(f"{m}={v/1e6:.0f}" for m, v in vals.items()) + f"   yayılım={spread/1e6:.0f} ms  → {'OK' if spread <= 60e6 else 'İNCELE'}")
+            print(f"  {cell:>4s} {msgs:>4d} {pol}: " + "  ".join(f"{m}={v/1e6:.0f}(n{nok[m]})" for m, v in vals.items()) + f"   yayılım={spread/1e6:.0f} ms  → {'OK' if spread <= 60e6 else 'İNCELE'}")
