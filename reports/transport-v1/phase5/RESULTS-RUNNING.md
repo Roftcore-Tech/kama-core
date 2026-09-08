@@ -467,3 +467,60 @@ Faz-6 / gelecek kampanya girdisi.
 ### T5 HÜKMÜ: **COMPARABLE / PARITY** *(asimetri ekseni için ZAYIF kanıt)*
 Kıyas geçerlidir ve parite üretmiştir; ancak bu hücre **"Kama asimetrik yolları iyi yönetiyor"
 iddiasını DESTEKLEMEZ** — çünkü hiçbir kolu zorlamamıştır. Böyle bir iddia bu veriden KURULMAZ.
+
+---
+
+## T6 — BOZUK DÖNÜŞ YOLU (`p5_revpath`: fwd `loss 5% rate 100kbit` / rev `loss 80% rate 100kbit`) · N=30 · D=20s
+
+> **Kama'nın BİRİNCİL ürün iddiasının hücresi:** bozuk geri beslemeyi ileri DATA kaybından
+> ayırt edip teslime devam edebiliyor mu?
+
+| kol | completion(20s) medyan | IQR | **CI** | ≥0.99 | <0.50 | outcome |
+|---|---|---|---|---|---|---|
+| kama-v1-full | **1.000** | [1.000,1.000] | **[1.000,1.000]** | **28/30** | **0/30** | blackout=20 completed=8 deadline-miss=2 |
+| quinn-reliable-stream | 0.740 | [0.000,1.000] | **[0.210,0.990]** | 10/30 | 11/30 | blackout=10 completed=3 **conn-fail=9** deadline-miss=8 |
+| tcp-default | 0.060 | [0.030,0.880] | **[0.050,0.630]** | 7/30 | 19/30 | blackout=24 conn-fail=1 timeout=5 |
+
+**Kama'nın güven aralığı her iki rakiple de ÖRTÜŞMÜYOR** — birincil metrikte temiz istatistiksel
+ayrışma. `P(kama > quinn) = 0.817` · `P(kama > tcp) = 0.866`.
+Deadline eğrisi: **5 s** kama 0.990 / quinn 0.700 / tcp 0.030 — **20 s** 1.000 / 0.740 / 0.060.
+
+quinn 30 koşunun **9'unda bağlantıyı hiç kuramadı**: ACK'lerin %80'i kaybolduğunda QUIC el
+sıkışması tamamlanamıyor.
+
+### Yön ayrımı — BİRİNCİL İDDİA DOĞRULANDI (N=30)
+
+| nicelik | enjekte edilen | Kama'nın ÖLÇTÜĞÜ (medyan) |
+|---|---|---|
+| ileri kayıp | %5 (50‰) | **45.5‰** |
+| dönüş ACK kaybı | %80 (800‰) | **793.0‰** |
+
+İki tahmin de gerçek değere isabetli. Örnek tanı satırları: `fwd_loss=44‰ ret_impair=778‰
+ret_ack_loss=825‰ dir_ev=true conf=1000‰ **Dead**`.
+
+**Kama, dönüş yolu "Dead" ilan edilmişken bile teslimi sürdürdü (medyan 1.000).** Bozuk geri
+besleme ileri DATA kaybı gibi okunmadı; INV-RETURN-1 ve INV-RATE-1 birlikte ayakta.
+Ön-kayıt §11'deki çürütme ölçütü (*"fwd_loss yükselirse → WIRING/IMPLEMENTATION BLOCKER"*)
+**gerçekleşmedi.**
+
+### Aktivasyon ve tel
+`parity=3 denied=81 retx=20.5 probes=17 recover_arq=3` · srtt=487 ms · btlbw=11.2 kB/s.
+Tel: kama 28.3 kB data + 5.3 kB retx + 3.2 kB parity ≈ **36.8 kB** ↔ quinn **33.7 kB** (+%9).
+Kama %9 fazla tel harcayarak completion'ı 0.740 → 1.000'e çıkardı.
+
+### Beyan: blackout sayıları bu hücrede kollar arası DOĞRUDAN kıyaslanamaz
+Kama 20/30 blackout, quinn 10/30 — ama quinn'in 9 koşusu `connection-failure`, 8'i
+`deadline-miss`. Blackout tanımı *"teslim bekleyen iş varken teslim durdu"* der; hiç bağlanamamış
+bir koşu blackout üretmez. quinn'in düşük blackout sayısı **daha iyi süreklilik değil, daha az
+teslim** demektir. Sonuç sınıfı dağılımı bu yüzden blackout sayısıyla BİRLİKTE okunmalıdır.
+
+### Anlam farkı (NON-NORMALIZED)
+Rakipler tam sıralı akış garantisi veriyor, Kama mesaj granülünde sırasız. Bozuk dönüş yolunda
+sıralı akışın dezavantajı büyür (ACK kaybı hem tıkanıklık sinyali sanılır hem HoL bloklar).
+Fark normalize EDİLMEMİŞTİR.
+
+### T6 HÜKMÜ: **KAMA DOMINATES**
+Birincil metrikte **örtüşmeyen güven aralıklarıyla** her iki rakibi de geçiyor (1.000 ↔ 0.740 ↔
+0.060), felaket koşusu **0/30** (quinn 11/30, TCP 19/30), ve üstünlüğün mekanizması telemetriyle
+**doğrudan kanıtlanmış** durumda: yön ayrımı ölçülen değerlerle çalışıyor.
+**Bu, Faz-5'in ürün tezini en doğrudan doğrulayan hücresidir.**
