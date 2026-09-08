@@ -419,3 +419,51 @@ Bu hücre pratikte **ikinci bir kontrol koşuludur**: yüksek RTT'nin *tek baş�
 olmadığını, ancak kayıpla birleştiğinde (T1c, T2b) ayrıştırıcı olduğunu gösterir.
 
 ### T4 HÜKMÜ: **COMPARABLE / PARITY**
+
+---
+
+## T5 — ASİMETRİK YOL (`r_returnpath R3`: fwd `delay 100ms rate 1mbit` / rev `delay 100ms rate 64kbit`) · N=30 · D=20s
+
+| kol | completion(5/10/20 s) | min | outcome | blackout | stall |
+|---|---|---|---|---|---|
+| kama-v1-full | 1.000 / 1.000 / 1.000 | 1.000 | completed=30 | 0/30 | 0/30 CI[0.000,0.116] |
+| quinn-reliable-stream | 1.000 / 1.000 / 1.000 | 1.000 | completed=30 | 0/30 | 0/30 CI[0.000,0.116] |
+| tcp-default | 1.000 / 1.000 / 1.000 | 1.000 | completed=30 | 0/30 | 0/30 CI[0.000,0.116] |
+
+`P = 0.500` her iki rakibe karşı. Kama tel: 28.3 kB (retx 0, parity 0) ↔ quinn 35.4 kB.
+
+### ⚠ ÖN-KAYITLI HÜCRE ASİMETRİ EKSENİNİ ZORLAMADI — kaydedilen test-tasarımı sınırı
+
+Sözleşme T5 için şunu şart koşuyor: *"uygulanan ileri bozulma ≠ uygulanan dönüş bozulması **VE**
+runtime telemetrisi tek bir simetrik vekil yerine yönlü gözlem göstermeli."*
+
+**Birinci şart sağlandı:** gerçekleşen netem `fwd: rate 1Mbit` ↔ `rev: rate 64Kbit` (arşivli).
+
+**İkinci şart bu hücrede GÖSTERİLEMEDİ.** Kama'nın dönüş-yolu tanısı, **simetrik** T4 hücresiyle
+neredeyse birebir aynı:
+
+| | T5 (asimetrik 1Mbit/64Kbit) | T4 (simetrik 10Mbit/10Mbit) |
+|---|---|---|
+| ölçülen dönüş bw | 281 B/s | 280 B/s |
+| ACK aralığı | 113 ms | 114 ms |
+| `ret_impair` | 0‰ | 0‰ |
+| health | Healthy (n=51/51) | Healthy (n=51/51) |
+
+**Sebep ölçülebilir ve bu bir kablolama hatası DEĞİLDİR:** dönüş yolunda fiilen akan ACK trafiği
+**281 B/s**, dönüş kapasitesi ise 64 kbit = **8 000 B/s**. Kullanım oranı **≈ %3.5**. Dönüş yolu
+hiç doyuma girmedi, dolayısıyla gözlenecek bir asimetri sinyali OLUŞMADI. Telde var olan
+asimetri, bu yükte operasyonel olarak görünmezdir.
+
+**Kablolamanın sağlam olduğunun kanıtı başka hücreden gelir:** Aşama A'da T6'da dönüş yolunun
+%82'si kaybolurken ileri kayıp tahmini 68‰'de kaldı (`ret_ack_loss=824‰` ↔ `fwd_loss=68‰`) —
+yön ayrımı, gözlenecek bir sinyal VARKEN çalışıyor. Sözleşmenin yönlü-gözlem şartı bu yüzden
+**T6 tarafından karşılanmaktadır, T5 tarafından değil.**
+
+Hücre tanımı sonuçlara bakıldıktan sonra **DEĞİŞTİRİLMEDİ** (sözleşme yasağı). Sınır olduğu gibi
+kaydedilmiştir: *ileri/dönüş **bant** asimetrisini zorlayan bir hücre, ACK trafiğini dönüş
+kapasitesine yaklaştıracak bir yük geometrisi gerektirir* — mevcut 100×256 B yükü bunu yapmıyor.
+Faz-6 / gelecek kampanya girdisi.
+
+### T5 HÜKMÜ: **COMPARABLE / PARITY** *(asimetri ekseni için ZAYIF kanıt)*
+Kıyas geçerlidir ve parite üretmiştir; ancak bu hücre **"Kama asimetrik yolları iyi yönetiyor"
+iddiasını DESTEKLEMEZ** — çünkü hiçbir kolu zorlamamıştır. Böyle bir iddia bu veriden KURULMAZ.
