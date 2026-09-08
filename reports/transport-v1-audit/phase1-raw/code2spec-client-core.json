@@ -1,0 +1,1252 @@
+{
+ "module": "client-core",
+ "items": [
+  {
+   "symbol": "ClientSession",
+   "path_line": "crates/client-core/src/lib.rs:62",
+   "kind": "struct",
+   "purpose": "Composition root holding the adaptive_transport::Sender; applies the shipped tail-recovery default.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/lib.rs:62 pub struct ClientSession { sender: Sender }",
+    "crates/client-core/src/runtime.rs:56 use crate::ClientSession;",
+    "crates/client-core/src/runtime.rs:874 let mut session = ClientSession::new();"
+   ],
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:874"
+   ]
+  },
+  {
+   "symbol": "ClientSession::new",
+   "path_line": "crates/client-core/src/lib.rs:83",
+   "kind": "fn",
+   "purpose": "Constructs Sender::new() then installs TailRecoveryConfig::validated_v1() — the G2 tail-ON flip lives here, not in TailRecoveryConfig::default().",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/lib.rs:85 sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());",
+    "crates/client-core/src/runtime.rs:874 (only product call site)",
+    "crates/client-core/src/lib.rs:196 test engine_default_tail_recovery_stays_off pins Sender::new() OFF (R1 rule)"
+   ],
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:874"
+   ],
+   "spec_ref_or_none": "docs/design/P3-DEFAULT-FLIP-DECISION.md §2.3 (G2, 2026-08-24)"
+  },
+  {
+   "symbol": "ClientSession::on_event",
+   "path_line": "crates/client-core/src/lib.rs:93",
+   "kind": "fn",
+   "purpose": "The one egress entry point: Event -> Vec<TransmitDecision>.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1021 for d in session.on_event($ev, $now) (drive! macro)",
+    "drive! is invoked at runtime.rs:1173, 1200, 1226, 1385, 1403, 1432"
+   ],
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1021"
+   ]
+  },
+  {
+   "symbol": "ClientSession::admit",
+   "path_line": "crates/client-core/src/lib.rs:104",
+   "kind": "fn",
+   "purpose": "Declared ingress: kama_engine::admit_and_decode over Vec<OpenedTransportShard> (type-enforced authenticate-before-decode).",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "evidence": [
+    "grep -rn \"admit_and_decode\" shows ZERO call sites in crates/client-core/src/runtime.rs",
+    "crates/client-core/src/lib.rs:152 (own #[cfg(test)]) and crates/client-core/tests/api_surface_v0.rs:330 are the only references",
+    "crates/client-core/src/runtime.rs:1927 RsSimdCodec.reconstruct(p, &recv, 0) — the product server decodes FEC itself, bypassing kama-engine entirely",
+    "crates/client-core/src/lib.rs:9-11 crate doc claims this is the ingress half of the production graph"
+   ],
+   "spec_ref_or_none": "INV-FEC-1 (authenticate-before-decode); ordering IS preserved via seam.open() first, but the type-level witness never reaches the runtime"
+  },
+  {
+   "symbol": "ClientSession::sender / sender_mut",
+   "path_line": "crates/client-core/src/lib.rs:115",
+   "kind": "fn",
+   "purpose": "Read-only and mutable engine access used by client_task for every set_* and diag_* call.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:877-933 sender_mut() chain (set_fec_structure_policy/set_bootstrap_rtt/set_cs_probe_lane/set_loss_confirm_horizon/set_fec_loss_risk/set_structure_gate_level/set_fusion_policy/set_initial_window/set_fec_actuation_mode)",
+    "crates/client-core/src/runtime.rs:1443-1527 sender() diagnostics snapshot"
+   ]
+  },
+  {
+   "symbol": "impl Default for ClientSession",
+   "path_line": "crates/client-core/src/lib.rs:126",
+   "kind": "fn",
+   "purpose": "Default ctor delegating to new().",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "crates/client-core/tests/api_surface_v0.rs:323 let _cs2: ClientSession = ClientSession::default(); — the only call site in the workspace"
+   ]
+  },
+  {
+   "symbol": "pub use kama_engine::{admit_and_decode, EngineError}",
+   "path_line": "crates/client-core/src/lib.rs:47",
+   "kind": "module",
+   "purpose": "Re-export of the engine ingress function.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "evidence": [
+    "crates/client-core/tests/api_surface_v0.rs:34,51 are the only consumers of the re-export",
+    "crates/client-core/src/runtime.rs never imports kama_engine::admit_and_decode (imports only plan_param_bootstrap, ParamState at runtime.rs:34)"
+   ]
+  },
+  {
+   "symbol": "pub use kama_noise_wire::opened::OpenedTransportShard",
+   "path_line": "crates/client-core/src/lib.rs:48",
+   "kind": "module",
+   "purpose": "Ingress witness type whose only constructor is protector.open(); intended to make unauthenticated decode type-impossible.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "evidence": [
+    "Only appearance outside lib.rs is crates/client-core/tests/api_surface_v0.rs:34",
+    "crates/client-core/src/runtime.rs FEC ingest takes plain Vec<u8> symbols: runtime.rs:2316 symbol.to_vec() into fec_ingest, runtime.rs:1886 fn fec_ingest(.., symbol: Vec<u8>, ..)",
+    "kama-noise-wire is a production dependency of client-core (Cargo.toml:31) used only for this unused re-export"
+   ]
+  },
+  {
+   "symbol": "KamaV1Profile",
+   "path_line": "crates/client-core/src/runtime.rs:199",
+   "kind": "struct",
+   "purpose": "Single source of truth for the v1 ship configuration; RuntimeConfig::default() delegates to it and bench starts from it.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:263-268 impl Default for RuntimeConfig { KamaV1Profile::runtime_config() }",
+    "crates/bench/src/kama_product.rs:152 let v1 = KamaV1Profile::runtime_config();",
+    "crates/client-core/tests/product_profile_v1.rs pins every field",
+    "NOTE: this symbol exists only in the UNCOMMITTED working tree; it is absent at 35f60f80 / HEAD 15133be4"
+   ],
+   "gate": "working-tree-only (uncommitted)"
+  },
+  {
+   "symbol": "KamaV1Profile::FEC_PROFILE_ID = 0x05",
+   "path_line": "crates/client-core/src/runtime.rs:208",
+   "kind": "const-knob",
+   "purpose": "Ship FEC profile: K_shape=8, r_code_max=4, E=1024.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/kama-fec-codec/src/profile.rs:86-91 { profile_id: 0x05, k_shape: 8, r_code_max: 4, e: 1024 }",
+    "crates/client-core/src/runtime.rs:250 fec: Some(FecRuntimeConfig { profile_id: Self::FEC_PROFILE_ID, manual_r: None })"
+   ]
+  },
+  {
+   "symbol": "KamaV1Profile::MAX_UNIT_BYTES = 1024 - SOURCE_PREFIX_LEN (1013)",
+   "path_line": "crates/client-core/src/runtime.rs:213",
+   "kind": "const-knob",
+   "purpose": "Per-unit wire chunk cap, locked to the FEC symbol capacity.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:288 validate_fec: max_unit_bytes + SOURCE_PREFIX_LEN > p.e_usize() -> FecConfig error",
+    "crates/client-core/tests/product_profile_v1.rs:44-55 fec_v1_profile_is_symbol_aligned",
+    "BREAKING vs 35f60f80: the committed default was max_unit_bytes: 1200; app messages of 1014..1200 B now get RuntimeError::UnitTooLarge unless max_message_bytes is set"
+   ]
+  },
+  {
+   "symbol": "KamaV1Profile::INITIAL_WINDOW_BYTES = pacer::DEFAULT_BURST_CAP (2400)",
+   "path_line": "crates/client-core/src/runtime.rs:216",
+   "kind": "const-knob",
+   "purpose": "PreConverge first-flight credit; restores the pacer's own initial credit that set_burst_cap was clamping away.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/adaptive-transport/src/pacer.rs:9 pub const DEFAULT_BURST_CAP: u64 = 2 * crate::rate::DEFAULT_MTU;",
+    "crates/client-core/src/runtime.rs:913-917 set_initial_window(InitialWindowConfig { bytes: cfg.initial_window_bytes })",
+    "crates/client-core/tests/product_profile_v1.rs:63 assert_eq!(c.initial_window_bytes, 2400)"
+   ]
+  },
+  {
+   "symbol": "KamaV1Profile::STRUCTURE_GATE_LEVEL_PERMILLE = 250",
+   "path_line": "crates/client-core/src/runtime.rs:220",
+   "kind": "const-knob",
+   "purpose": "Parity level the structure gate requests when it opens (r=2 @ K=8).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:904-906 set_structure_gate_level(cfg.structure_gate_level_permille)",
+    "only effective while cfg.fec is Some — runtime.rs:161-163 field doc"
+   ]
+  },
+  {
+   "symbol": "RuntimeConfig::max_inflight_units",
+   "path_line": "crates/client-core/src/runtime.rs:75",
+   "kind": "config-field",
+   "purpose": "Unit-store bound; offers are refused (natural backpressure) when the store is full.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1266 maybe = offer_rx.recv(), if store.len() < cfg.max_inflight_units",
+    "crates/client-core/src/runtime.rs:774 sizes the acked channel"
+   ],
+   "spec_ref_or_none": "SR-AUDIT-001 bounds-before-alloc"
+  },
+  {
+   "symbol": "RuntimeConfig::offer_queue",
+   "path_line": "crates/client-core/src/runtime.rs:77",
+   "kind": "config-field",
+   "purpose": "Bounded app->transport mpsc depth.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:773 mpsc::channel::<(Vec<u8>, Option<u64>)>(cfg.offer_queue)"
+   ]
+  },
+  {
+   "symbol": "RuntimeConfig::delivery_queue",
+   "path_line": "crates/client-core/src/runtime.rs:79",
+   "kind": "config-field",
+   "purpose": "Bounded transport->app delivery mpsc; overflow counted as delivery_dropped.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1573 mpsc::channel(cfg.delivery_queue)",
+    "crates/client-core/src/runtime.rs:1729 stats.delivery_dropped += 1 on try_send failure"
+   ]
+  },
+  {
+   "symbol": "RuntimeConfig::max_unit_bytes",
+   "path_line": "crates/client-core/src/runtime.rs:82",
+   "kind": "config-field",
+   "purpose": "Wire chunk payload cap; drives the fragmenter chunk size and the FEC symbol alignment check.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1280 let chunk_cap = cfg.max_unit_bytes;",
+    "crates/client-core/src/runtime.rs:276,288 validate_fec bounds checks"
+   ]
+  },
+  {
+   "symbol": "RuntimeConfig::max_message_bytes",
+   "path_line": "crates/client-core/src/runtime.rs:93",
+   "kind": "config-field",
+   "purpose": "Fragmenter master switch (None = OFF). Some(n) turns on 0x05 DATA_FRAG frames and message-granular ACK/delivery.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:948 let frag_on = cfg.max_message_bytes.is_some(); (client)",
+    "crates/client-core/src/runtime.rs:2022 same on server",
+    "default is None: crates/client-core/src/runtime.rs:243 max_message_bytes: None",
+    "crates/bench/src/kama_product.rs:156 max_message_bytes: (payload > unit).then_some(payload) — bench turns it on"
+   ],
+   "gate": "RuntimeConfig.max_message_bytes = None by default (opt-in; wire format changes visibly)"
+  },
+  {
+   "symbol": "RuntimeConfig::max_peers",
+   "path_line": "crates/client-core/src/runtime.rs:95",
+   "kind": "config-field",
+   "purpose": "Fail-closed server peer-table cap; new peers typed-dropped when full, active peers never evicted.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:2140 if peers.len() >= cfg.max_peers { stats.dropped_new_peers += 1; continue; }"
+   ],
+   "spec_ref_or_none": "SESSION_COUNT_CAP=64 alignment (runtime.rs:94 doc)"
+  },
+  {
+   "symbol": "RuntimeConfig::quota_r",
+   "path_line": "crates/client-core/src/runtime.rs:97",
+   "kind": "config-field",
+   "purpose": "Receiver silence re-ACK budget, pushed into Receiver::set_quota_r on peer creation.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:2145 rx.set_quota_r(cfg.quota_r);"
+   ]
+  },
+  {
+   "symbol": "RuntimeConfig::drain_cap",
+   "path_line": "crates/client-core/src/runtime.rs:99",
+   "kind": "config-field",
+   "purpose": "Shutdown drain time cap (the engine never abandons units, so drain must be time-bounded).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1423 let deadline = tokio::time::Instant::now() + cfg.drain_cap;"
+   ]
+  },
+  {
+   "symbol": "RuntimeConfig::idle_hold",
+   "path_line": "crates/client-core/src/runtime.rs:101",
+   "kind": "config-field",
+   "purpose": "Server idle-peer retirement threshold (the only path that shrinks the peer table).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:2032 let idle_hold_ns = ...cfg.idle_hold...",
+    "crates/client-core/src/runtime.rs:2067 peers.retain(|_, s| now.saturating_sub(s.last_seen_ns) < idle_hold_ns)"
+   ]
+  },
+  {
+   "symbol": "RuntimeConfig::initial_window_bytes",
+   "path_line": "crates/client-core/src/runtime.rs:117",
+   "kind": "config-field",
+   "purpose": "First-flight window; 0 restores the old clamp behaviour.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:913-917 session.sender_mut().set_initial_window(InitialWindowConfig { bytes: cfg.initial_window_bytes })"
+   ]
+  },
+  {
+   "symbol": "RuntimeConfig::bootstrap_rtt",
+   "path_line": "crates/client-core/src/runtime.rs:128",
+   "kind": "config-field",
+   "purpose": "DR-CS-3 bootstrap-RTT probe ladder master switch; also mirrored onto the F2A cold-start lane.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "default false: crates/client-core/src/runtime.rs:245 bootstrap_rtt: false",
+    "crates/client-core/src/runtime.rs:881-895 set_bootstrap_rtt(...c.enabled = true...) else BootstrapRttConfig::default()",
+    "crates/adaptive-transport/src/sender.rs:1007-1015 BootstrapRttConfig::default() { enabled: false }",
+    "crates/client-core/tests/product_profile_v1.rs:73 assert!(!c.bootstrap_rtt, \"DR-CS-3 merdiveni kalibre edilmemiş\")"
+   ],
+   "gate": "RuntimeConfig.bootstrap_rtt = false (uncalibrated; flip requires measurement — DR-CS-3 §9)"
+  },
+  {
+   "symbol": "RuntimeConfig::bootstrap_fast_ladder",
+   "path_line": "crates/client-core/src/runtime.rs:122",
+   "kind": "config-field",
+   "purpose": "Selects establishment_fast() ladder (0.2/0.6/1.8/5.4 s) instead of the blackout ladder.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:884 read ONLY inside the bootstrap_rtt==true branch — inert whenever bootstrap_rtt is false",
+    "default false: crates/client-core/src/runtime.rs:246"
+   ],
+   "gate": "only reachable when bootstrap_rtt = true (itself default OFF)"
+  },
+  {
+   "symbol": "RuntimeConfig::fec_structure_policy",
+   "path_line": "crates/client-core/src/runtime.rs:132",
+   "kind": "config-field",
+   "purpose": "Structure-gate burst branch policy; default Q18Iid (burst -> no parity), BurstFusion uncalibrated.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:876-878 set_fec_structure_policy(cfg.fec_structure_policy)",
+    "crates/client-core/tests/product_profile_v1.rs:79 assert_eq!(c.fec_structure_policy, FecStructurePolicy::Q18Iid)"
+   ],
+   "gate": "FecStructurePolicy::BurstFusion variant is the KEEP-EXPERIMENTAL half (uncalibrated)"
+  },
+  {
+   "symbol": "RuntimeConfig::fec",
+   "path_line": "crates/client-core/src/runtime.rs:137",
+   "kind": "config-field",
+   "purpose": "FEC runtime master switch: profile resolution, PARAM bootstrap, block latch, repair emission and receive-side reconstruct all key off it.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "WORKING TREE default = Some: crates/client-core/src/runtime.rs:250-253 fec: Some(FecRuntimeConfig { profile_id: 0x05, manual_r: None })",
+    "AT 35f60f80/HEAD default = None (audit target); the flip is uncommitted",
+    "crates/client-core/src/runtime.rs:922-935 client-side profile + actuation mode; 2025 server-side",
+    "gates PARAM plan (runtime.rs:939-941), repair store, RECOVERED emission (runtime.rs:2276)"
+   ],
+   "gate": "was None at 35f60f80; Some(0x05) in the working tree"
+  },
+  {
+   "symbol": "FecRuntimeConfig::manual_r",
+   "path_line": "crates/client-core/src/runtime.rs:178",
+   "kind": "config-field",
+   "purpose": "Some(r) = STATIC_R arm (Manual authority + close_fec_block_manual); None = Controller (adaptive, arbiter decides).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:923 let fec_manual_r = cfg.fec.and_then(|f| f.manual_r);",
+    "crates/client-core/src/runtime.rs:926-930 mode selection Manual{enabled:true} vs Controller",
+    "crates/client-core/src/runtime.rs:1339-1358 the two block-close paths",
+    "product default is None (adaptive) — runtime.rs:252"
+   ]
+  },
+  {
+   "symbol": "RuntimeConfig::fusion_policy",
+   "path_line": "crates/client-core/src/runtime.rs:145",
+   "kind": "config-field",
+   "purpose": "Calibrated deadline-axis fusion policy. When Some it becomes the FEC decision authority and the structure gate goes silent.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "default None: crates/client-core/src/runtime.rs:254 fusion_policy: None",
+    "crates/client-core/src/runtime.rs:909-911 if let Some(p) = cfg.fusion_policy { set_fusion_policy(p) }",
+    "crates/bench/src/kama_product.rs:243-244 only enabled for FecArm::PolicyV2Deadline",
+    "crates/client-core/tests/product_profile_v1.rs:76 assert!(c.fusion_policy.is_none())"
+   ],
+   "gate": "RuntimeConfig.fusion_policy = None (opt-in measurement gate)"
+  },
+  {
+   "symbol": "RuntimeConfig::loss_confirm_horizon",
+   "path_line": "crates/client-core/src/runtime.rs:149",
+   "kind": "config-field",
+   "purpose": "Loss-ledger Suspected->Confirmed horizon; CadenceLegacy is ship, ChannelDerived is a measurement arm.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "default CadenceLegacy: crates/client-core/src/runtime.rs:255",
+    "crates/client-core/src/runtime.rs:898-900 set_loss_confirm_horizon(cfg.loss_confirm_horizon)",
+    "crates/bench/src/kama_product.rs:190-197 builds ChannelDerived { k_permille } only when --loss-confirm-k is set"
+   ],
+   "gate": "LossConfirmHorizon::ChannelDerived is the non-default arm"
+  },
+  {
+   "symbol": "RuntimeConfig::fec_loss_risk",
+   "path_line": "crates/client-core/src/runtime.rs:155",
+   "kind": "config-field",
+   "purpose": "Speculative FEC loss-risk lane (arbiter's third proposer). Product default bounded_v1(): enabled, A 250-250-250, PersistMode::LearnedSpuriousAge, reorder guard G1 300.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:256 fec_loss_risk: FecLossRiskConfig::bounded_v1()",
+    "crates/adaptive-transport/src/sender.rs:435-447 bounded_v1() { enabled: true, bootstrap_cap_permille: 250, persistent_cap_permille: 250, persist_mode: LearnedSpuriousAge, reorder_suppress_permille: 300, .. }",
+    "crates/adaptive-transport/src/sender.rs:395-416 default() { enabled: false, .. } is the OFF form",
+    "crates/client-core/src/runtime.rs:902 set_fec_loss_risk(cfg.fec_loss_risk)",
+    "INERT while fec is None (runtime.rs:157-158 field doc) — at 35f60f80 that was the shipped state: a configuration zombie"
+   ]
+  },
+  {
+   "symbol": "RuntimeConfig::ts_sample_period_ns",
+   "path_line": "crates/client-core/src/runtime.rs:159",
+   "kind": "config-field",
+   "purpose": "Handoff time-series sampler period; observation-only, bounded at TS_CAP.",
+   "called_from_product": true,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "default None: crates/client-core/src/runtime.rs:257",
+    "crates/client-core/src/runtime.rs:1117-1125 ts_sample! macro, called only from the two pace-tick arms (1385, 1432)",
+    "crates/bench/src/kama_product.rs:240 ts_sample_period_ns: ts_sample.then_some(50_000_000)",
+    "crates/bench/src/kama_product.rs:636 for (t, x) in &stats.ts — sole consumer"
+   ],
+   "gate": "RuntimeConfig.ts_sample_period_ns = None (instrument, not a mechanism)"
+  },
+  {
+   "symbol": "RuntimeConfig::structure_gate_level_permille",
+   "path_line": "crates/client-core/src/runtime.rs:163",
+   "kind": "config-field",
+   "purpose": "Overrides the engine's fec_med (500) gate level with the calibrated 250.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:258 structure_gate_level_permille: Some(Self::STRUCTURE_GATE_LEVEL_PERMILLE)",
+    "crates/client-core/src/runtime.rs:904-906 set_structure_gate_level(...)"
+   ]
+  },
+  {
+   "symbol": "TS_CAP",
+   "path_line": "crates/client-core/src/runtime.rs:167",
+   "kind": "const-knob",
+   "purpose": "4096-sample ceiling on the time-series instrument (bounded alloc).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1120 stats.ts.len() < TS_CAP",
+    "only external reference is a test bound: crates/client-core/tests/runtime_e2e.rs:989"
+   ]
+  },
+  {
+   "symbol": "validate_fec",
+   "path_line": "crates/client-core/src/runtime.rs:273",
+   "kind": "fn",
+   "purpose": "Pre-run typed config validation (bounds-before-run) executed by both connect and bind.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:764 validate_fec(&cfg)? in connect_with_policy",
+    "crates/client-core/src/runtime.rs:1570 validate_fec(&cfg)? in bind_with_policy",
+    "accepts manual_r == 0 deliberately (runtime.rs:292-303) as the single-axis control arm"
+   ]
+  },
+  {
+   "symbol": "fec_chunk_capacity",
+   "path_line": "crates/client-core/src/runtime.rs:314",
+   "kind": "fn",
+   "purpose": "Public helper: E - SOURCE_PREFIX_LEN for a profile id, so callers do not copy the catalogue's E.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:146 .and_then(fec_chunk_capacity)",
+    "crates/client-core/tests/product_profile_v1.rs:44 and crates/client-core/examples/fec_arm_compare.rs:207",
+    "not called anywhere inside runtime.rs itself — it is a config-construction helper for callers"
+   ]
+  },
+  {
+   "symbol": "param_fields_for",
+   "path_line": "crates/client-core/src/runtime.rs:319",
+   "kind": "fn",
+   "purpose": "Derives the canonical ParamFields both ends hash for the PARAM bootstrap binding.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:941 plan_param_bootstrap(1, &param_fields_for(p)) (client)",
+    "crates/client-core/src/runtime.rs:2027 let param_expected = fec.as_ref().map(param_fields_for); (server)",
+    "reachable only when cfg.fec is Some"
+   ]
+  },
+  {
+   "symbol": "RuntimeError::{QueueFull, UnitTooLarge, Closed, Io, FecConfig}",
+   "path_line": "crates/client-core/src/runtime.rs:335",
+   "kind": "enum-variant",
+   "purpose": "Typed boundary errors replacing reachable todo!().",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "QueueFull/Closed: crates/client-core/src/runtime.rs:734-738 map_err on try_send",
+    "UnitTooLarge: crates/client-core/src/runtime.rs:728-731",
+    "Io: #[from] std::io::Error at runtime.rs:348, produced by UdpSocket::bind/connect (runtime.rs:765-771, 1571)",
+    "FecConfig: runtime.rs:277,281,287,289,299",
+    "no todo!()/unimplemented!()/FeatureNotImplemented anywhere in crates/client-core/"
+   ]
+  },
+  {
+   "symbol": "EgressPolicy (trait)",
+   "path_line": "crates/client-core/src/runtime.rs:364",
+   "kind": "module",
+   "purpose": "Optional per-direction egress gate; refusal is channel-loss-equivalent (engine state not rolled back, INV-RATE-1).",
+   "called_from_product": true,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "default None: connect/bind pass None (runtime.rs:756, 1557)",
+    "only implementor in the workspace: crates/bench/src/kama_product.rs:66 impl EgressPolicy for BudgetEgress",
+    "invoked at runtime.rs:1002 (client) and runtime.rs:1866 (server)",
+    "runtime.rs:362 doc: \"Kullanım: benchmark harness'ının yön-başına bütçe governor'ü\""
+   ],
+   "gate": "passed as None by ClientEndpoint::connect / ServerEndpoint::bind"
+  },
+  {
+   "symbol": "EgressPolicy::arm (default no-op)",
+   "path_line": "crates/client-core/src/runtime.rs:371",
+   "kind": "fn",
+   "purpose": "Marks the measurement t0 so pre-t0 traffic is exempt from the budget.",
+   "called_from_product": true,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1249 and 2039 if let Some(p) = egress.as_mut() { p.arm(now); }",
+    "overridden only by crates/bench/src/kama_product.rs:74-78"
+   ]
+  },
+  {
+   "symbol": "TxClass::{Data, Retx, Dup, Fec, Ctrl}",
+   "path_line": "crates/client-core/src/runtime.rs:378",
+   "kind": "enum-variant",
+   "purpose": "Byte-accounting class label; writes nothing to the wire.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:993-999 the five accumulator arms",
+    "Dup is reachable in the default build: crates/adaptive-transport/src/sender.rs:5573,5634 emit TransmitKind::Duplicate from dup_queue (DR-EST-1 establish probe is default ON)",
+    "Ctrl carries CS-probe and PARAM_SET only (runtime.rs:1095, 1394)"
+   ]
+  },
+  {
+   "symbol": "FateWindowDiag",
+   "path_line": "crates/client-core/src/runtime.rs:399",
+   "kind": "struct",
+   "purpose": "End-of-run photograph of the structure gate's decision base plus ~30 engine diagnostics.",
+   "called_from_product": true,
+   "only_from": "diagnostic-only",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "populated once at shutdown: crates/client-core/src/runtime.rs:1443-1527",
+    "every field is read via session.sender().diag_* — observation only, no engine mutation",
+    "consumers are crates/bench/src/kama_product.rs:744-774 and crates/client-core/examples/fec_arm_compare.rs:363-402"
+   ]
+  },
+  {
+   "symbol": "FateWindowDiag::rtt_samples",
+   "path_line": "crates/client-core/src/runtime.rs:435",
+   "kind": "config-field",
+   "purpose": "Count of RTT samples taken (the definition of establishment).",
+   "called_from_product": true,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "evidence": [
+    "grep -rn \"fate.rtt_samples\" across crates/ returns ZERO consumers (bench=0, tests=0, examples=0)",
+    "written at crates/client-core/src/runtime.rs:1479 rtt_samples: session.sender().diag_rtt_sample_count()",
+    "the same source already feeds left_preconverge at runtime.rs:1478, which IS consumed"
+   ]
+  },
+  {
+   "symbol": "FateWindowDiag::spurious_units vs ledger_spurious_units",
+   "path_line": "crates/client-core/src/runtime.rs:464",
+   "kind": "config-field",
+   "purpose": "Two public fields carrying the identical value.",
+   "called_from_product": true,
+   "only_from": "diagnostic-only",
+   "classification": "DELETE",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1480 spurious_units: session.sender().diag_ledger().2",
+    "crates/client-core/src/runtime.rs:1524 ledger_spurious_units: session.sender().diag_ledger().2",
+    "identical expression; spurious_units read by bench (kama_product.rs:761), ledger_spurious_units read only by examples/fec_arm_compare.rs:402"
+   ]
+  },
+  {
+   "symbol": "FateWindowDiag::sched ([u64; 12])",
+   "path_line": "crates/client-core/src/runtime.rs:492",
+   "kind": "feature-gated-block",
+   "purpose": "Scheduler class counters (data/retx/dup/parity/tail-probe select-deny-emit).",
+   "called_from_product": true,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1493 sched: session.sender().diag_sched_summary()",
+    "crates/adaptive-transport/src/sender.rs:4370-4374 doc: \"feature kapalıyken sıfır\" — the array is all-zero in a default build",
+    "crates/client-core/Cargo.toml:37 diag-sched-telemetry = [\"adaptive-transport/diag-sched-telemetry\"] — default OFF",
+    "crates/bench/src/kama_product.rs:362-365 prints \"n/a(diag-sched-telemetry gerekli)\" when the feature is off"
+   ],
+   "gate": "cargo feature diag-sched-telemetry (default OFF) — VACUOUS-ZERO in the shipped build, not absent"
+  },
+  {
+   "symbol": "ClientStats::{tx_datagrams, rx_datagrams, unknown_frames, fec_repair_missing, param_sends}",
+   "path_line": "crates/client-core/src/runtime.rs:527",
+   "kind": "config-field",
+   "purpose": "Counters incremented on the hot path but never read.",
+   "called_from_product": true,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "evidence": [
+    "written: runtime.rs:990 tx_datagrams, 1155 rx_datagrams, 1168/1178/1205/1210 unknown_frames, 1050 fec_repair_missing, 1397 param_sends",
+    "the only external appearance of all five is the `_`-binding exhaustiveness pin: crates/client-core/tests/api_surface_v0.rs:143,144,146,151,155",
+    "fec_repair_missing in particular is the silent-corruption alarm for repair-store eviction/latch-0 and nothing reads it"
+   ]
+  },
+  {
+   "symbol": "ClientStats::{fec_blocks_latched, fec_repairs_tx, fec_recovered_ctrl_units, param_confirmed, seal_failures, stale_decisions, send_errors, egress_refused_*}",
+   "path_line": "crates/client-core/src/runtime.rs:542",
+   "kind": "config-field",
+   "purpose": "FEC/control/egress accounting actually consumed by the benchmark arm.",
+   "called_from_product": true,
+   "only_from": "bench",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/bench/src/kama_product.rs reads fec_blocks_latched, fec_repairs_tx, fec_recovered_ctrl_units, param_confirmed, seal_failures, stale_decisions, send_errors, egress_refused_pkts/bytes (one site each)",
+    "tx_data_bytes/tx_retx_bytes/tx_dup_bytes/tx_fec_bytes/tx_ctrl_bytes read at kama_product.rs:684 TxComponents"
+   ]
+  },
+  {
+   "symbol": "ServerStats::{fec_repairs_wasted_complete, fec_repairs_wasted_evicted, fec_repairs_useful, fec_blocks_complete_with_repairs, fec_blocks_decoded, fec_blocks_evicted_with_repairs}",
+   "path_line": "crates/client-core/src/runtime.rs:617",
+   "kind": "config-field",
+   "purpose": "[C4-ATIF] repair-attribution counters: did parity actually do the recovering, or did sources win the race.",
+   "called_from_product": true,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "evidence": [
+    "written at runtime.rs:1935-1941 (complete branch), 1972-1975 (decoded branch), 1979-1988 (evict branch)",
+    "grep for wasted|repairs_useful|blocks_decoded|complete_with_repairs|evicted_with_repairs across crates/ finds ONLY crates/client-core/tests/api_surface_v0.rs:193-198 (`_` pins)",
+    "crates/bench/src/kama_product.rs never reads ServerStats at all — its server task discards it into a debug print (kama_product.rs:539 stats={stats:?})"
+   ]
+  },
+  {
+   "symbol": "ServerStats::{rx_datagrams, unknown_frames, fec_repairs_rx, fec_decode_failures, fec_blocks_evicted, msg_asm_evicted, param_bound_peers, param_rejects, fec_pre_param_dropped}",
+   "path_line": "crates/client-core/src/runtime.rs:601",
+   "kind": "config-field",
+   "purpose": "Server-side fail-closed / eviction / PARAM-binding counters.",
+   "called_from_product": true,
+   "only_from": "nowhere",
+   "classification": "WIRE",
+   "evidence": [
+    "no consumer outside crates/client-core/tests/api_surface_v0.rs `_` pins",
+    "param_rejects (runtime.rs:2431) and fec_pre_param_dropped (runtime.rs:2293) are the only signals that PARAM binding failed or that shards were dropped pre-bind; nothing surfaces them",
+    "the whole ServerStats struct only reaches a Debug print in bench: crates/bench/src/kama_product.rs:539"
+   ]
+  },
+  {
+   "symbol": "Delivery::peer",
+   "path_line": "crates/client-core/src/runtime.rs:664",
+   "kind": "config-field",
+   "purpose": "Source address of a delivered message.",
+   "called_from_product": true,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "evidence": [
+    "set at runtime.rs:1716; no reader in crates/bench/src/kama_product.rs, crates/client-core/tests/ or crates/client-core/examples/",
+    "every consumer drains deliveries and discards the value: kama_product.rs:513-515, examples/p1_endpoint.rs:68, examples/fec_arm_compare.rs:249"
+   ]
+  },
+  {
+   "symbol": "ClientEndpoint::connect",
+   "path_line": "crates/client-core/src/runtime.rs:747",
+   "kind": "fn",
+   "purpose": "Thin convenience wrapper delegating to connect_with_policy(.., None).",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:756 Self::connect_with_policy(server, cfg, seam, None).await",
+    "bench never calls it — crates/bench/src/kama_product.rs:555 uses connect_with_policy",
+    "called from crates/client-core/tests/runtime_e2e.rs (12 sites) and examples/"
+   ]
+  },
+  {
+   "symbol": "ClientEndpoint::connect_with_policy",
+   "path_line": "crates/client-core/src/runtime.rs:760",
+   "kind": "fn",
+   "purpose": "Real client construction: validate_fec, UDP bind+connect, channel setup, spawn client_task.",
+   "called_from_product": true,
+   "only_from": "bench",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:764-799",
+    "crates/bench/src/kama_product.rs:555 the only workspace caller outside client-core's own tests"
+   ]
+  },
+  {
+   "symbol": "ServerEndpoint::bind / bind_with_policy",
+   "path_line": "crates/client-core/src/runtime.rs:1551",
+   "kind": "fn",
+   "purpose": "Server construction: validate_fec, UDP bind, delivery channel, spawn server_task.",
+   "called_from_product": true,
+   "only_from": "bench",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1570-1593",
+    "crates/bench/src/kama_product.rs:444 bind_with_policy is the only non-test caller; plain bind is tests/examples only"
+   ]
+  },
+  {
+   "symbol": "ClientSender::send_with_deadline",
+   "path_line": "crates/client-core/src/runtime.rs:722",
+   "kind": "fn",
+   "purpose": "Deadline-axis app API; the declared budget is the only input the transport cannot derive itself.",
+   "called_from_product": true,
+   "only_from": "bench",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1269-1272 if let Some(d) = deadline_ns { session.sender_mut().declare_delivery_deadline(d) }",
+    "crates/bench/src/kama_product.rs:411 tx.send_with_deadline(payload.to_vec(), deadline_ns)",
+    "with fusion_policy = None (default) the deadline is recorded and surfaces only in diagnostics (fate.declared_deadline_ns) — it changes no emission"
+   ]
+  },
+  {
+   "symbol": "ClientSender::send / ClientHandle::send",
+   "path_line": "crates/client-core/src/runtime.rs:703",
+   "kind": "fn",
+   "purpose": "No-deadline app send.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:704 delegates to send_with_deadline(payload, None)",
+    "called only from crates/client-core/tests/runtime_e2e.rs and examples; bench uses the deadline form"
+   ]
+  },
+  {
+   "symbol": "ClientHandle::mark_t0 / ServerHandle::mark_t0",
+   "path_line": "crates/client-core/src/runtime.rs:839",
+   "kind": "fn",
+   "purpose": "Measurement-t0: resets wire counters WITHOUT resetting transport state and arms the egress policy; waits for the task to acknowledge.",
+   "called_from_product": true,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1245-1263 (client t0 arm) and 2036-2047 (server)",
+    "only callers: crates/bench/src/kama_product.rs:482, 507, 646",
+    "this is a measurement contract, not a transport mechanism — it mutates ClientStats/ServerStats only"
+   ]
+  },
+  {
+   "symbol": "ClientHandle::acked",
+   "path_line": "crates/client-core/src/runtime.rs:847",
+   "kind": "fn",
+   "purpose": "First-ACK event stream. Emits unit_id when the fragmenter is off, message_id when it is on.",
+   "called_from_product": true,
+   "only_from": "bench",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1133-1150 unit_acked! macro — two different id spaces on the same channel",
+    "crates/bench/src/kama_product.rs:621, 688 a = cli.acked()"
+   ]
+  },
+  {
+   "symbol": "seal_send! macro",
+   "path_line": "crates/client-core/src/runtime.rs:974",
+   "kind": "branch",
+   "purpose": "Single client egress choke point: seal -> byte accounting -> egress gate -> socket. PN advances only on successful seal; send error counted as channel loss, never pushed back.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1006-1008 send error -> stats.send_errors += 1 (INV-RATE-1: no rollback)",
+    "crates/client-core/src/runtime.rs:1015 seal Err -> stats.seal_failures += 1",
+    "invoked at runtime.rs:1090, 1096, 1114, 1394"
+   ],
+   "spec_ref_or_none": "INV-RATE-1 (loss must not reduce send_rate)"
+  },
+  {
+   "symbol": "drive! macro",
+   "path_line": "crates/client-core/src/runtime.rs:1020",
+   "kind": "branch",
+   "purpose": "Engine step + decision dispatch. Records seq->unit only for unit-carrying kinds, so a FecParity ACK can never delete a real unit's store entry.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1026-1033 carries_unit gate (Data|Retransmit|Duplicate)",
+    "crates/client-core/src/runtime.rs:1091 fallthrough: any unhandled non-unit decision becomes stale_decisions",
+    "all five TransmitKind variants have an arm: Data/Retransmit/Duplicate (1103-1113), FecParity (1040-1063), CsProbe (1088-1097)"
+   ]
+  },
+  {
+   "symbol": "TransmitKind::CsProbe branch + wire::{encode_cs_probe, decode_cs_probe, encode_cs_echo, decode_cs_echo} + Event::CsProbeEcho + RxFrame::CsProbe",
+   "path_line": "crates/client-core/src/runtime.rs:1088",
+   "kind": "feature-gated-block",
+   "purpose": "DR-CS-3 cold-start probe/echo carrier frames (44 B probe / 43 B echo, amp<=1).",
+   "called_from_product": true,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "emission gate 1: crates/adaptive-transport/src/sender.rs:5715 if self.bootstrap_rtt.enabled ... (RuntimeConfig.bootstrap_rtt default false)",
+    "emission gate 2: crates/adaptive-transport/src/sender.rs:2776 #[cfg(feature = \"experimental-cold-start\")] fn drain_cs_probes",
+    "in the default v1 build NEITHER gate holds, so the whole probe/echo cluster (runtime.rs:1088-1097, 1157-1172, 2363-2377, wire.rs:224-283) is unreachable",
+    "client-core does NOT forward experimental-cold-start: crates/client-core/Cargo.toml:37 lists only diag-sched-telemetry"
+   ],
+   "gate": "RuntimeConfig.bootstrap_rtt=false AND cargo feature experimental-cold-start (default OFF, not even forwarded by client-core)"
+  },
+  {
+   "symbol": "set_cs_probe_lane call",
+   "path_line": "crates/client-core/src/runtime.rs:896",
+   "kind": "fn",
+   "purpose": "Mirrors bootstrap_rtt onto the DR-CS-1 F2A lane so \"OFF means OFF\" covers every cold-start lane.",
+   "called_from_product": true,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1995-2003 the body is #[cfg(feature = \"experimental-cold-start\")]; otherwise `let _ = on;`",
+    "this is the ONLY call site in the workspace: grep -rn \".set_cs_probe_lane(\" -> crates/client-core/src/runtime.rs:896",
+    "in a default build it is a no-op; it exists to keep --all-features builds honest"
+   ],
+   "gate": "cargo feature experimental-cold-start (default OFF)"
+  },
+  {
+   "symbol": "PARAM bootstrap (param_plan / param_confirmed / rtprop retry / RxFrame::Param / ParamState admission gate)",
+   "path_line": "crates/client-core/src/runtime.rs:939",
+   "kind": "branch",
+   "purpose": "FEC profile binding: sender pushes PARAM_SET (bounded 25 retries @200 ms), receiver hash-verifies against locally-derived ParamFields and opens FEC-shard admission; pre-bind shards are held bounded, not dropped.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:939-944 plan only when fec.is_some(); param_confirmed = param_plan.is_none() when FEC is off",
+    "crates/client-core/src/runtime.rs:1389-1400 bounded retry loop",
+    "crates/client-core/src/runtime.rs:2286-2320 fail-closed-but-held admission gate (slot.pre_param_fec, PRE_PARAM_FEC_CAP=64)",
+    "crates/client-core/src/runtime.rs:2380-2440 server verify + PARAM_ACK + drain",
+    "AT 35f60f80 this whole path was dead by default (fec: None); the uncommitted fec: Some default makes PARAM_SET frames wire-visible by default"
+   ],
+   "gate": "reachable only when cfg.fec is Some"
+  },
+  {
+   "symbol": "RECOVERED control path (encode_recovered / decode_recovered / Event::RecoveredControl)",
+   "path_line": "crates/client-core/src/runtime.rs:1181",
+   "kind": "branch",
+   "purpose": "Receiver announces FEC-recovered ESIs; sender cancels those units logically (no pacer/rate effect) and releases them to the app.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "server emission: crates/client-core/src/runtime.rs:2274-2279 and 2344-2349 and 2422-2429",
+    "client ingest: crates/client-core/src/runtime.rs:1181-1206, drive!(Event::RecoveredControl(...)) at 1203",
+    "bounded at wire.rs:172 RECOVERED_MAX_ESI = 16",
+    "reachable only when cfg.fec is Some (runtime.rs:1184 match (fec.as_ref(), ...))"
+   ],
+   "spec_ref_or_none": "§11 forward-recovery, message-layer equivalent"
+  },
+  {
+   "symbol": "Fragmenter (frag_on / MsgAsm / admit_chunk / 0x05 frames)",
+   "path_line": "crates/client-core/src/runtime.rs:1274",
+   "kind": "branch",
+   "purpose": "Splits a message into max_unit_bytes chunks, each with its own unit id / ARQ tracking / FEC symbol slot; receiver reassembles gap-free-or-nothing.",
+   "called_from_product": true,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "gated on cfg.max_message_bytes.is_some(): runtime.rs:948 (client), 2022 (server)",
+    "default None -> byte-identical to the 0x00 path (runtime.rs:84-92 field doc)",
+    "MsgAsm::take_if_complete is fail-closed on gaps: runtime.rs:1696-1707",
+    "only production-adjacent enabler is crates/bench/src/kama_product.rs:156"
+   ],
+   "gate": "RuntimeConfig.max_message_bytes = None by default"
+  },
+  {
+   "symbol": "fec_ingest",
+   "path_line": "crates/client-core/src/runtime.rs:1886",
+   "kind": "fn",
+   "purpose": "Server block assembly + RS reconstruct + recovered-chunk delivery. Readiness = missing_sources>0 AND distinct(src)+distinct(rep)>=K; a reconstruct error keeps the block.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "called from runtime.rs:2260 (source path), 2331 (repair path), 2408 (pre-param drain)",
+    "crates/client-core/src/runtime.rs:1927 RsSimdCodec.reconstruct(p, &recv, 0) — the product decoder, NOT kama_engine::admit_and_decode",
+    "crates/client-core/src/runtime.rs:1976-1978 Err -> fec_decode_failures, block preserved"
+   ]
+  },
+  {
+   "symbol": "SecuritySeam trait (seal/open/sealed_len)",
+   "path_line": "crates/client-core/src/seam.rs:88",
+   "kind": "module",
+   "purpose": "The runtime crypto boundary: every outbound datagram passes seal, every inbound passes open. INV-ENGINE-SOC's runtime edge.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:976 seam.seal(...) client, 1851 tx.seam.seal(...) server",
+    "crates/client-core/src/runtime.rs:1159 seam.open(raw) client, 2110 tx.seam.open(&buf[..n]) server",
+    "sealed_len drives pacing size accounting: runtime.rs:1316, 1337"
+   ],
+   "spec_ref_or_none": "INV-ENGINE-SOC (transport holds no AEAD/keys)"
+  },
+  {
+   "symbol": "IdentitySeam",
+   "path_line": "crates/client-core/src/seam.rs:111",
+   "kind": "struct",
+   "purpose": "+16 B zero-tag stub: byte-equivalent cost model with NO security property. The only SecuritySeam implementation in the workspace.",
+   "called_from_product": true,
+   "only_from": "bench",
+   "classification": "WIRE",
+   "evidence": [
+    "crates/client-core/src/seam.rs:116-144 the only impl SecuritySeam in crates/ (grep 'impl SecuritySeam' -> seam.rs plus two fault-injection test/example seams)",
+    "constructed at crates/bench/src/kama_product.rs, crates/client-core/examples/p1_endpoint.rs:61,90, examples/fec_arm_compare.rs:229 and 12 sites in tests/runtime_e2e.rs",
+    "crates/client-core/src/lib.rs:26-31 records items 4 (Noise handshake) and 5 (Split-derived keys) as still missing",
+    "seam.open() always returns peer 0 (seam.rs:135) -> the server's per-peer key selection is structurally untested"
+   ],
+   "gate": "S2 kama-noise-wire swap is the v1 blocker; every measurement to date ran with no crypto"
+  },
+  {
+   "symbol": "SealError::{NotReady, PnExhausted, EpochKeysMissing, Internal}",
+   "path_line": "crates/client-core/src/seam.rs:56",
+   "kind": "enum-variant",
+   "purpose": "Typed seal rejections the real Noise layer will produce.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "no implementation anywhere constructs any of the four: IdentitySeam::seal always returns Ok (crates/client-core/src/seam.rs:117-129)",
+    "only appearance is the exhaustiveness pin crates/client-core/tests/api_surface_v0.rs:253-257",
+    "the consumer side IS wired: runtime.rs:1015 and 1874 count seal_failures, so the branch will light up when S2 lands"
+   ]
+  },
+  {
+   "symbol": "OpenReject::{Replay, UnknownPeer, EpochNotAccepted}",
+   "path_line": "crates/client-core/src/seam.rs:73",
+   "kind": "enum-variant",
+   "purpose": "Typed open rejections for replay/peer/epoch failures.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "never constructed by any code in crates/: only crates/client-core/tests/api_surface_v0.rs:248-250 name them",
+    "IdentitySeam::open returns only Malformed (seam.rs:133); AuthFail is produced solely by test/example fault-injection seams (runtime_e2e.rs:364,683; fec_arm_compare.rs:165)"
+   ]
+  },
+  {
+   "symbol": "SealedDatagram::{full_wire_pn, dh_epoch}",
+   "path_line": "crates/client-core/src/seam.rs:40",
+   "kind": "config-field",
+   "purpose": "Return-channel meta for the engine's send-record completion (§0.5).",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "WIRE",
+   "evidence": [
+    "runtime consumes ONLY sd.bytes: crates/client-core/src/runtime.rs:987, 1006 (client) and 1861, 1870 (server) — grep 'sd\\.' shows no other field access",
+    "written by every impl (seam.rs:126-127; runtime_e2e.rs:353; fec_arm_compare.rs:153)",
+    "the sealed PN never flows back into the engine's send-record, so the §0.5 send-record loop is open at the client-core seam"
+   ],
+   "spec_ref_or_none": "kama-noise-wire §0.5 send-record"
+  },
+  {
+   "symbol": "SealArgs::{dh_epoch, send_generation}",
+   "path_line": "crates/client-core/src/seam.rs:29",
+   "kind": "config-field",
+   "purpose": "Epoch and retransmit-generation inputs for the real Noise sealer.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "WIRE",
+   "evidence": [
+    "hard-coded to 0 at both call sites: crates/client-core/src/runtime.rs:980-981 and 1855-1856 (dh_epoch: 0, send_generation: 0)",
+    "the engine DOES track retx_count (crates/adaptive-transport/src/sender.rs:1281) but the runtime never forwards it as send_generation",
+    "rekey (dh_epoch != 0) is S2"
+   ]
+  },
+  {
+   "symbol": "wire::{encode_data, decode_data} (0x00)",
+   "path_line": "crates/client-core/src/wire.rs:21",
+   "kind": "fn",
+   "purpose": "Unfragmented DATA frame: [0x00][seq u16][unit_id u64][payload], 11 B header, no tag (seam adds it).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "encode: crates/client-core/src/runtime.rs:1099 (frag off branch)",
+    "decode: crates/client-core/src/runtime.rs:2101 first arm of the server parse chain",
+    "ADR-05 fixed-width big-endian, no varint"
+   ],
+   "spec_ref_or_none": "ADR-05"
+  },
+  {
+   "symbol": "wire::{encode_data_frag, decode_data_frag} (0x05)",
+   "path_line": "crates/client-core/src/wire.rs:65",
+   "kind": "fn",
+   "purpose": "Fragmented DATA carrying the canonical 11-byte SourcePrefix explicitly, so both ends' symbols are byte-identical by construction.",
+   "called_from_product": true,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "encode reached only when frag_on: crates/client-core/src/runtime.rs:1097",
+    "decode_data_frag cross-validates actual_payload_len against the body length (wire.rs:87-89, fail-closed)",
+    "default RuntimeConfig has max_message_bytes: None, so the 0x05 codepoint never appears on the wire in the shipped profile"
+   ],
+   "gate": "RuntimeConfig.max_message_bytes"
+  },
+  {
+   "symbol": "wire::{encode_fec, decode_fec, FecFrameHeader} (0x01)",
+   "path_line": "crates/client-core/src/wire.rs:126",
+   "kind": "fn",
+   "purpose": "FEC shard frame, field-aligned with kama-noise-wire LogicalShardHeader (§2.6) so the S2 swap is a single point.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "encode: crates/client-core/src/runtime.rs:1052-1062 (repair emission)",
+    "decode: crates/client-core/src/runtime.rs:2107",
+    "decode_fec is fail-closed on k_actual == 0 (wire.rs:151-153)",
+    "reachable only when cfg.fec is Some"
+   ]
+  },
+  {
+   "symbol": "wire::{encode_recovered, decode_recovered} (0x02)",
+   "path_line": "crates/client-core/src/wire.rs:176",
+   "kind": "fn",
+   "purpose": "Bounded RECOVERED control frame (<=16 ESIs), truncating on encode and length-exact on decode.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "encode: crates/client-core/src/runtime.rs:2276, 2346, 2424",
+    "decode: crates/client-core/src/runtime.rs:1184",
+    "wire.rs:193-195 fail-closed: n > RECOVERED_MAX_ESI or wrong total length -> None"
+   ]
+  },
+  {
+   "symbol": "wire::{encode_param, decode_param, encode_param_ack, decode_param_ack} (0x03/0x04)",
+   "path_line": "crates/client-core/src/wire.rs:300",
+   "kind": "fn",
+   "purpose": "PARAM_SET / PARAM_ACK bootstrap frames, fixed 35 B / 33 B.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "encode_param: crates/client-core/src/runtime.rs:1393; decode_param: 2114",
+    "encode_param_ack: crates/client-core/src/runtime.rs:2401; decode_param_ack: 1176",
+    "all four are exact-length fail-closed (wire.rs:312, 323, 332)",
+    "dead whenever cfg.fec is None — i.e. dead in the 35f60f80 shipped default"
+   ]
+  },
+  {
+   "symbol": "wire pub consts {FRAME_DATA, FRAME_DATA_FRAG, FRAME_FEC, FRAME_PARAM, HDR_RECOVERED, RECOVERED_MAX_ESI, LEN_PARAM, LEN_PARAM_ACK, LEN_CS_ECHO}",
+   "path_line": "crates/client-core/src/wire.rs:15",
+   "kind": "const-knob",
+   "purpose": "Codepoints and sizes used inside wire.rs's own encode/decode; exported for the frozen API surface.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "all are consumed inside wire.rs itself (e.g. FRAME_DATA at wire.rs:24,33; RECOVERED_MAX_ESI at 177,193; LEN_PARAM at 300,312)",
+    "outside client-core/src their ONLY appearance is the pin test crates/client-core/tests/api_surface_v0.rs:267-319 — the pub export is API-freeze surface, not a live dependency",
+    "crates/bench/src/kama.rs:36 defines its OWN const FRAME_DATA: u8 = 0x00 rather than importing this one"
+   ]
+  },
+  {
+   "symbol": "Timer/tick constants: PACE_TICK 1 ms, RTPROP_TICK 200 ms, ACK_TICK 20 ms, PATIENCE_TICK 1 s",
+   "path_line": "crates/client-core/src/runtime.rs:60",
+   "kind": "const-knob",
+   "purpose": "The four wakeup sources; PACE is the primary idempotent pump (D3, EK4-A2 lesson — no next_wakeup_ns single-source sleep).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "pace: crates/client-core/src/runtime.rs:1383-1386 and 1429-1433 (drain loop)",
+    "rtprop: runtime.rs:1387-1403 (also carries the PARAM retry)",
+    "ack: runtime.rs:2048-2060; patience: runtime.rs:2062-2069",
+    "not exposed as RuntimeConfig fields — hard-coded per-side, identical to the bench stub arm's constants (crates/bench/src/kama.rs:45-49)"
+   ],
+   "spec_ref_or_none": "§13 token drain, §5 time-threshold loss, §8.3 RTprop, §2.1 ACK_TIMER_T"
+  },
+  {
+   "symbol": "CLIENT_RECV_BUF = 2048 / SERVER_RECV_BUF = 65536",
+   "path_line": "crates/client-core/src/runtime.rs:68",
+   "kind": "const-knob",
+   "purpose": "Fixed recv buffers; the client only ever expects small ACK/control frames.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:970 let mut buf = vec![0u8; CLIENT_RECV_BUF]; runtime.rs:2031 SERVER_RECV_BUF",
+    "a >2048 B server->client datagram would be silently truncated by recv() and land in open_failures/unknown_frames; nothing in the return direction currently exceeds it (ACK, RECOVERED<=38 B, PARAM_ACK 49 B, CS echo 43 B)"
+   ]
+  },
+  {
+   "symbol": "Bounded-store constants: DELIVERED_DEDUP_WINDOW 8192, RX_BLOCKS_CAP 32, MSG_ASM_CAP 64, PRE_PARAM_FEC_CAP 64, REPAIR_STORE_BLOCKS 64",
+   "path_line": "crates/client-core/src/runtime.rs:1629",
+   "kind": "const-knob",
+   "purpose": "SR-AUDIT-001 bounds: every per-peer map has an oldest-drops eviction plus a counter.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "evidence": [
+    "runtime.rs:1755-1757 and 1789-1791 delivered_seen.pop_first()",
+    "runtime.rs:1980-1989 blocks.pop_first() + fec_blocks_evicted",
+    "runtime.rs:1793-1795 msgs.pop_first() + msg_asm_evicted",
+    "runtime.rs:1371-1374 repair_store.pop_first()",
+    "runtime.rs:2290-2293 pre_param_fec cap + fec_pre_param_dropped"
+   ],
+   "spec_ref_or_none": "SR-AUDIT-001"
+  },
+  {
+   "symbol": "server_task (no adaptive_transport::Sender)",
+   "path_line": "crates/client-core/src/runtime.rs:2002",
+   "kind": "fn",
+   "purpose": "Receive-only server: per-peer Receiver, ACK timer, idle retirement, FEC ingest.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "WIRE",
+   "evidence": [
+    "grep '\\bSender\\b' crates/client-core/src/runtime.rs — every hit in the server half is tokio mpsc/watch/oneshot (lines 1540,1541,1576,1712,1742,1888,2007,2009); there is no adaptive_transport Sender",
+    "return-direction frames (ACK, RECOVERED, PARAM_ACK, CS echo) go straight to the socket via srv_seal_send (runtime.rs:1842) with no pacing, no congestion control, no ARQ and no loss ledger",
+    "the product runtime is therefore unidirectional: no server->client DATA plane exists"
+   ],
+   "spec_ref_or_none": "specs/application-protocol-and-rpc-spec.md (3-plane client<->hub RPC) — the response plane is unimplemented"
+  },
+  {
+   "symbol": "Receiver diagnostics never surfaced: diag_return_supply, state, received_count, ack_delay_saturated",
+   "path_line": "crates/adaptive-transport/src/receiver.rs:384",
+   "kind": "fn",
+   "purpose": "Receiver-side ACK-policy observability.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "evidence": [
+    "the runtime uses only Receiver::new (2143), on_datagram (2196, 2299, 2331-area), on_ack_timer (2054), set_quota_r (2145), largest_seq (2194)",
+    "diag_return_supply callers: crates/adaptive-transport/tests/receiver_ack_policy.rs:180,236 and receiver.rs's own #[cfg(test)]",
+    "ack_delay_saturated and received_count: only receiver.rs #[cfg(test)] and receiver_ack_policy.rs",
+    "ServerStats carries no receiver-state field, so ACK-policy behaviour is unobservable from the product runtime"
+   ]
+  },
+  {
+   "symbol": "Sender setters never called from client-core: set_startup_pacing_init, set_manual_fec_enabled, set_budget_policy, set_establish_probe",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2019",
+   "kind": "fn",
+   "purpose": "Engine knobs with no RuntimeConfig field.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "set_startup_pacing_init (sender.rs:2019): callers are tests only (budget_equivalence_pin.rs, dr_cs3_structural_oracle.rs:710, kama-integration tests, sender.rs #[cfg(test)]). The product therefore rides the engine default StartupPacingConfig{enabled:true} (sender.rs:1125) — note the field doc at sender.rs:1075 and the setter doc at sender.rs:2018 both still say \"default OFF\", contradicting the code",
+    "set_manual_fec_enabled (sender.rs:4468): client-core uses set_fec_actuation_mode(Manual{enabled:true}) at runtime.rs:927 instead; the setter's non-test callers are crates/adaptive-transport/src/udp_runner.rs:641 only",
+    "set_budget_policy (sender.rs:4977): callers are udp_runner.rs:642 and budget/policy sweep tests — the experimental-fec-budget kernel has no path into client-core",
+    "set_establish_probe (sender.rs:5598): 13 call sites, all tests, all passing false. The product cannot disable DR-EST-1; it ships ON by engine default"
+   ],
+   "gate": "no RuntimeConfig field exists for any of the four"
+  },
+  {
+   "symbol": "cargo feature diag-sched-telemetry (client-core)",
+   "path_line": "crates/client-core/Cargo.toml:37",
+   "kind": "feature-gated-block",
+   "purpose": "Forwards the engine's observation-only scheduler telemetry.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "crates/client-core/Cargo.toml:37 diag-sched-telemetry = [\"adaptive-transport/diag-sched-telemetry\"] — default OFF, and the ONLY feature client-core declares",
+    "crates/bench/Cargo.toml:26 chains it through",
+    "experimental-cold-start and experimental-fec-budget are NOT forwarded, so those two engine lanes are unreachable from the product crate regardless of RuntimeConfig"
+   ],
+   "gate": "default OFF"
+  },
+  {
+   "symbol": "Event::Tick",
+   "path_line": "crates/adaptive-transport/src/sender.rs:103",
+   "kind": "enum-variant",
+   "purpose": "Empty-batch engine step.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "the runtime drives only AppData, AckReceived, TimerFired(Pto), TimerFired(RtpropProbe), RecoveredControl and CsProbeEcho — grep 'Event::' in crates/client-core/src/runtime.rs",
+    "only workspace caller: crates/adaptive-transport/tests/dr_cs1_acceptance.rs:68,77",
+    "sender.rs:2191 Event::Tick => {} is a no-op arm"
+   ]
+  }
+ ],
+ "cal_markers": [
+  "NONE — grep -rn \"\\[CAL\\]\" crates/client-core/ returns zero hits across src/, tests/ and examples/.",
+  "Nearest in-scope equivalents are calibration-pending prose, NOT [CAL] tokens: crates/client-core/src/runtime.rs:127 (\"KALİBRE EDİLMEMİŞ — default flip ölçüm ister (DR-CS-3 §9 kilitli panel)\"); crates/client-core/src/runtime.rs:130-131 (\"`BurstFusion` KALİBRE EDİLMEMİŞTİR — flip ölçüm ister\"); crates/client-core/src/runtime.rs:195-198 (KamaV1Profile \"Kapalı (bilinçli)\" list); crates/client-core/src/lib.rs:77 (\"FEC actuation Manual { enabled: false } (Q18 calibration defect)\" — now stale, see notes).",
+  "The [CAL]-tagged knobs the product runtime actually installs live one crate away: crates/adaptive-transport/src/sender.rs:419 (\"Deneysel kol AÇIK: arbiter + sınırlı spekülatif bootstrap (v2). `[CAL]` default'larla\") is the doc for FecLossRiskConfig::bounded_v1(), which crates/client-core/src/runtime.rs:256 ships as the product default."
+ ],
+ "todo_wiring": [
+  "crates/client-core/src/lib.rs:20-35 — explicit \"What this crate is NOT, yet\" table naming reports/dr-cs-3/PRODUCT-RUNTIME-INTEGRATION-PENDING.md items still missing. Items 2/3/7 are now done (runtime.rs), but items 4 (Noise handshake), 5 (Split-derived directional keys), 8 (process-level end-to-end test) and 9 (shutdown/error/resource-bound validation) are still open and the doc has not been updated to say so.",
+  "crates/client-core/src/runtime.rs:2133 — `stats.unknown_frames += 1; // kontrol-düzlemi dal-noktası (item 6 / B-hattı).` The server's catch-all parse failure is the declared extension point for the control plane; nothing consumes unknown_frames (see ServerStats finding), so a control-plane frame arriving today is indistinguishable from corruption.",
+  "crates/client-core/src/seam.rs:5-6 — \"bugün IdentitySeam (stub, +16 B byte-eşdeğer sahte tag), S2'de kama-noise-wire aynı dikiş-noktasına takılır\". The seam boundary is frozen; the implementation swap is the outstanding work.",
+  "crates/client-core/src/wire.rs:8-9 — \"ccr §35 SESSION_DATA finalizasyonu güvenlik-düzlemi entegrasyonunda yapılır (tasarım D5); v0 çerçevesi dikişin arkasında olduğundan swap noktası tek yerdir.\" The v0 frame format is explicitly provisional.",
+  "crates/client-core/src/runtime.rs:1090-1092 — FecParity decisions with no repair symbol and no product carrier fall through to `stats.stale_decisions += 1` and are silently dropped: \"v0 kabuk taşımaz, sayar ... typed genişleme noktası\".",
+  "No literal TODO/FIXME/XXX/HACK and no todo!()/unimplemented!()/FeatureNotImplemented exists anywhere in crates/client-core/ (verified by grep over src/, tests/, examples/) — every boundary rejects with a typed RuntimeError, per CLAUDE.md §6."
+ ],
+ "duplicate_control_loops": [
+  "INGRESS DECODE — two independent implementations. crates/client-core/src/lib.rs:104 ClientSession::admit delegates to kama_engine::admit_and_decode over the type-gated OpenedTransportShard, and is called from NO product site. The live product decoder is crates/client-core/src/runtime.rs:1927 RsSimdCodec.reconstruct(p, &recv, 0) inside fec_ingest, operating on plain Vec<u8>. The crate doc (lib.rs:9-11) advertises the first as the ingress half of the production graph.",
+  "WIRE CODEC + RUNTIME LOOP — crates/bench/src/kama.rs is a second, complete copy of crates/client-core/src/wire.rs plus the client/server loops: its own FRAME_DATA 0x00 (kama.rs:36), HDR_DATA 11 (kama.rs:38), encode_data/decode_data (kama.rs:60,71), TAG_STUB 16 inlined into encode (kama.rs:41), and identical PACE_TICK/RTPROP_TICK/ACK_TICK/SERVER_RECV_BUF/CLIENT_RECV_BUF constants (kama.rs:45-53) mirroring runtime.rs:60-69. It ships as the bench arm named \"kama\" (kama.rs:510) alongside \"kama-product\" (kama_product.rs:850). DELETE candidate once the product arm is the only measured one.",
+  "DUPLICATE DIAGNOSTIC FIELD — FateWindowDiag.spurious_units (runtime.rs:464, set at 1480) and FateWindowDiag.ledger_spurious_units (runtime.rs:502, set at 1524) are the same expression session.sender().diag_ledger().2, read by two different consumers.",
+  "FOUR-LAYER DEDUP for one question (\"seen already?\"): Receiver seq-dedup inside the engine; runtime PeerSlot.delivered_seen over unit_id or message_id (runtime.rs:1745-1757, 1769-1791); MsgAsm.chunks BTreeMap offset first-wins (runtime.rs:1682-1684); BlockAsm sources/repairs BTreeMap ESI first-wins (runtime.rs:1900-1904). runtime.rs:1624-1628 records that the engine layer alone provably fails (26 duplicate deliveries in the first netem gate run).",
+  "TWO COMPLETION AUTHORITIES for the same unit — the ACK path (runtime.rs:1220-1230, seq->unit->store.remove) and the RECOVERED-control path (runtime.rs:1190-1199, block*K+esi->store.remove). They are serialised only by store.remove(..).is_some(); whichever arrives first wins and the other becomes a no-op.",
+  "TWO FEC BLOCK-CLOSE AUTHORITIES in one function — close_fec_block_manual (runtime.rs:1343, STATIC_R arm) vs fec_controller_latch (runtime.rs:1350, Controller/adaptive arm), selected by fec_manual_r.is_some(). Mutually exclusive per run, but they are two distinct parity-planning code paths behind one config field.",
+  "TWO FEC RATE AUTHORITIES at the engine boundary — cfg.fusion_policy (runtime.rs:909, calibrated policy) silences the structure gate when installed; runtime.rs:145-147 states \"çift-otorite gözlemlenemez davranış üretir\". Both are proposers into the same arbiter max(); only the config discipline keeps one of them quiet.",
+  "TWO SOURCE-SYMBOL DERIVATIONS — TX builds the canonical symbol from `body` (runtime.rs:1309-1316), while the server either copies the 0x05 body verbatim (runtime.rs:2249-2251) or re-serialises the prefix for 0x00 (runtime.rs:2256-2258). wire.rs:44-52 records that derivation mismatch is exactly the bug class that silently broke RS reconstruct."
+ ],
+ "notes": "BRANCH/COMMIT DISCREPANCY (read first). The task named wip/c4-attrib @ 35f60f80 as the audit target. HEAD is 15133be4 on branch audit/transport-v1-closure; `git diff --stat 35f60f80 HEAD -- crates/client-core/` is EMPTY, so the committed content matches the target. But the working tree carries UNCOMMITTED edits to crates/client-core/src/{lib.rs,runtime.rs} and tests/runtime_e2e.rs plus a new untracked crates/client-core/tests/product_profile_v1.rs. All file:line evidence above is against the ON-DISK working tree (what a reader opening the file sees). The delta changes the DEFAULT STATE and contradicts the task's KNOWN CONTEXT in four ways: (1) `fec: None` -> `fec: Some(FecRuntimeConfig { profile_id: 0x05, manual_r: None })` at runtime.rs:250-253, tagged `[DENETİM B-1 DÜZELTMESİ]`; (2) `max_unit_bytes: 1200` -> `KamaV1Profile::MAX_UNIT_BYTES` = 1013 at runtime.rs:247; (3) new `KamaV1Profile` type (runtime.rs:181-261) with `impl Default for RuntimeConfig` now delegating to it (runtime.rs:263-268); (4) new `pub use runtime::KamaV1Profile` at lib.rs:53. Everything else in KNOWN CONTEXT verified true in both states: bootstrap_rtt=false (runtime.rs:245), fec_loss_risk=bounded_v1() (runtime.rs:256), structure_gate_level_permille=Some(250) (runtime.rs:258), loss_confirm_horizon=CadenceLegacy (runtime.rs:255), fusion_policy=None (runtime.rs:254).\n\nCONSEQUENCES OF THE UNCOMMITTED fec DEFAULT FLIP, if it is kept. (a) PARAM_SET frames become wire-visible by default (runtime.rs:939-944 plans them whenever fec.is_some(); bounded 25 retries at 200 ms, runtime.rs:1391). (b) The server's FEC-shard admission gate `slot.param.is_confirmed()` (runtime.rs:2286) becomes live by default, so both ends MUST run the same RuntimeConfig or shards sit in pre_param_fec until the 64-entry cap drops them (runtime.rs:2290-2293). (c) `fec_loss_risk: bounded_v1()` stops being inert — at 35f60f80 the speculative lane was enabled while the subsystem it steers was absent (the configuration-zombie the B-1 note names). (d) App-visible: the message cap drops 1200 -> 1013 B and payloads in 1014..1200 now return RuntimeError::UnitTooLarge unless max_message_bytes is set. (e) crates/client-core/src/lib.rs:77 still documents the shipped default as \"FEC actuation Manual { enabled: false } (Q18 calibration defect)\" — that line is now stale against runtime.rs:250.\n\nBIGGEST STRUCTURAL FINDING. The crate calls itself the product runtime, but its only non-test consumer in the whole workspace is the benchmark: `grep -rn \"client-core\" --include=Cargo.toml crates/` returns exactly crates/bench/Cargo.toml:13. There is no binary, no hub-server or client binary depending on it. So \"product path\" today means \"the path bench drives\". Everything classified SHIP is SHIP-shaped and exercised, but it is exercised by crates/bench/src/kama_product.rs, crates/client-core/tests/runtime_e2e.rs and two examples — not by a shipping application.\n\nSECOND STRUCTURAL FINDING. The runtime is UNIDIRECTIONAL. server_task holds no adaptive_transport::Sender (verified: every `Sender` hit in the server half is a tokio channel type). Return-direction frames — ACK, RECOVERED, PARAM_ACK, CS echo — are written straight to the socket through srv_seal_send (runtime.rs:1842) with no pacing, no congestion control, no ARQ, no loss ledger and no retry. Any claim of the form \"Kama transport beats X\" currently covers one direction of data only.\n\nTHIRD. Every measurement to date ran with IdentitySeam (seam.rs:111): a +16 B zero tag with no confidentiality, no integrity, no per-peer identity (open always returns peer 0, seam.rs:135). The seam boundary looks S2-ready (fallible seal, SealArgs/meta, sealed_len contract) but four SealError variants and three OpenReject variants have zero constructors anywhere, and SealedDatagram.full_wire_pn/dh_epoch are written by every impl and read by none — the §0.5 send-record return path is open at this seam.\n\nCOUNTER HYGIENE. Five ClientStats fields and six [C4-ATIF] ServerStats attribution counters are incremented on the hot path and read by nothing but `_`-bindings in the API-surface pin test; FateWindowDiag.rtt_samples has zero readers of any kind; FateWindowDiag.sched is a 12-element array that is all zeros in the default build because diag-sched-telemetry is OFF (crates/adaptive-transport/src/sender.rs:4370). That last one is the vacuous-counter shape: it reports zeros rather than being absent, so a reader cannot tell \"no denials\" from \"telemetry not compiled\" without checking the feature flag.\n\nDOC-vs-CODE CONTRADICTION worth a one-line fix (adaptive-transport, adjacent to scope): StartupPacingConfig's field doc (sender.rs:1075 \"Default false -> inert\") and set_startup_pacing_init's doc (sender.rs:2018 \"default OFF\") both contradict the actual value, sender.rs:1125 `Self { enabled: true }`. client-core never calls the setter, so the product rides that ON default; crates/client-core/src/lib.rs:70-72 states the correct value and even records that an earlier edit got it wrong.\n\nBOUNDS NOTE (low severity, not filed as an item). `unit_seqs.entry(d.unit_id).or_default().push(d.seq)` (runtime.rs:1031) has no per-unit cap in client-core; it is bounded only indirectly by the engine's arq_retx_cap = 3 (crates/adaptive-transport/src/arq.rs:73) and TailRecoveryConfig::max_tail_probes. If either engine bound moves, this Vec grows without a client-core-side limit, which is the shape SR-AUDIT-001 forbids.\n\nMETHOD. Every classification was decided by grepping the symbol across crates/ and labelling each call site product / bench / test / example, then reading the gating expression. No classification was inferred from a name or comment; where a comment and the code disagreed (startup pacing, lib.rs:77 FEC default) the code was taken as authoritative and the disagreement reported."
+}

@@ -1,0 +1,1403 @@
+{
+ "module": "at-harness",
+ "items": [
+  {
+   "symbol": "crate kama-integration (whole crate)",
+   "path_line": "crates/kama-integration/Cargo.toml:1",
+   "kind": "module",
+   "purpose": "Cross-crate integration harness + (feature-gated) 'product receiver composition root'. Ships receiver_control_core (ungated) and receiver_host (gated).",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:1046 (names ReceiverHost as the product-receiver composition root)",
+   "evidence": [
+    "grep -rn 'kama-integration' crates/*/Cargo.toml -> only crates/kama-integration/Cargo.toml:2 (self). ZERO dependent crates in the workspace.",
+    "crates/kama-integration/Cargo.toml:34-38 deps = kama-engine/schema/fec-codec/noise-wire only; adaptive-transport is [dev-dependencies] at :45",
+    "crates/kama-integration/src/lib.rs:1-4 '//! kama-integration — cross-crate integration + ÜRÜN-ALICI COMPOSITION-ROOT ... test-harness (tests/; mock-key)'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "crate kama-engine (whole crate)",
+   "path_line": "crates/kama-engine/Cargo.toml:1",
+   "kind": "module",
+   "purpose": "Composition/orchestration node: noise-wire + fec-codec + schema. This IS a production dependency of client-core.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (crate-level)",
+   "evidence": [
+    "crates/client-core/Cargo.toml:21 'kama-engine = { path = \"../kama-engine\" }' (production [dependencies])",
+    "crates/kama-engine/Cargo.toml:23 adaptive-transport is [dev-dependencies] only -> engine never drives the transport in a product build",
+    "Only 4 symbols reach product: crates/client-core/src/lib.rs:47 (admit_and_decode, EngineError), crates/client-core/src/runtime.rs:35 (plan_param_bootstrap, ParamState)"
+   ],
+   "product_call_sites": [
+    "crates/client-core/src/lib.rs:47",
+    "crates/client-core/src/runtime.rs:35"
+   ]
+  },
+  {
+   "symbol": "pub mod udp_runner",
+   "path_line": "crates/adaptive-transport/src/lib.rs:56-57",
+   "kind": "feature-gated-block",
+   "purpose": "Policy-aware UDP bench runner (real UdpSocket + real Sender budget path). 1119 lines.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "cargo feature experimental-fec-budget (crates/adaptive-transport/Cargo.toml:18, default OFF)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/lib.rs:56 '#[cfg(feature = \"experimental-fec-budget\")]' immediately above 'pub mod udp_runner;'",
+    "crates/adaptive-transport/src/udp_runner.rs:1-2 '//! Commit-AB — POLICY-AWARE UDP BENCH-RUNNER (feature-gated; ÜRETİM-YOLUNA-BAĞLI-DEĞİL...'",
+    "Only consumers: crates/adaptive-transport/examples/udp_budget_runner.rs:8 and crates/adaptive-transport/tests/udp_runner_smoke.rs:5"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "udp_runner::UNIT",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:17",
+   "kind": "const-knob",
+   "purpose": "pub const UNIT: usize = 1200 — nominal datagram unit size.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "gate": "experimental-fec-budget",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -n '\\bUNIT\\b' crates/adaptive-transport/src/udp_runner.rs -> 17 (def), 85 (comment only), 87 (comment only). No code reference.",
+    "grep -rn 'udp_runner::UNIT' --include=*.rs crates/ -> 0 hits"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "udp_runner::cold_admit_new_block",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:26",
+   "kind": "fn",
+   "purpose": "RX incomplete-block hard cap decision (reject NEW block when open_incomplete >= cap; no eviction).",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/udp_runner.rs:361 internal use, guarded by cfg.cold_block_cap>0 at :356",
+    "crates/adaptive-transport/tests/dr_cs1_acceptance.rs:951-953 '#[cfg(feature = \"experimental-fec-budget\")] // cold_admit_new_block udp_runner'da (fec-budget-gated harness).'",
+    "DIVERGENT DUPLICATE: the shipped product uses the OPPOSITE policy — evict-oldest, not reject-new: crates/client-core/src/runtime.rs:1632 'const RX_BLOCKS_CAP: usize = 32;' and :1988 'while slot.blocks.len() > RX_BLOCKS_CAP { ... pop_first()'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "udp_runner::w2b_scan_tx",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:36",
+   "kind": "fn",
+   "purpose": "TUR-A1 W-2B observation-only scan of TransmitDecision list (probe/pto/dup wire timestamps).",
+   "called_from_product": false,
+   "only_from": "diagnostic-only",
+   "gate": "experimental-fec-budget AND experimental-cold-start (both default OFF)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/udp_runner.rs:35 '#[cfg(feature = \"experimental-cold-start\")]'",
+    "crates/adaptive-transport/src/udp_runner.rs:33-34 '//! Salt-gözlem; mekanizmaya DOKUNMAZ (production-code-DEĞİL).'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "udp_runner::RunnerCfg",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:62",
+   "kind": "struct",
+   "purpose": "Bench runner config; ~25 fields incl. explicitly TEST-ONLY erasure/suppression knobs.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/examples/udp_budget_runner.rs:19 'let cfg = RunnerCfg {' (only non-test constructor)",
+    "crates/adaptive-transport/tests/udp_runner_smoke.rs:9,46,85,92,131,159,170 (test constructors)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "RunnerCfg::deficit / deficit_from_block / drop_repair",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:80-82",
+   "kind": "config-field",
+   "purpose": "TEST-ONLY exact-source-erasure at rx ingress + suppression of the substrate repair (ARQ 0x01 / dup 0x03) so a block can only be healed by FEC.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/udp_runner.rs:80 'pub deficit: u16, // FK: TEST-ONLY exact-source-erasure (rx-ingress; per-block-ilk-N-source-esi düşür)'",
+    "crates/adaptive-transport/src/udp_runner.rs:82 'pub drop_repair: bool, // FK: FEC-IZOLASYON — silinen-esi'nin substrat-onarımını ... da düşür'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "RunnerCfg::drop_first_sack / no_settle_exit / suppress_data_acks",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:86-91",
+   "kind": "config-field",
+   "purpose": "TEST-ONLY ACK-starvation instrumentation (suppress first SACK / all matching DATA-ACKs; disable settle-exit).",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/udp_runner.rs:86 'pub drop_first_sack: bool, // FC-closure W-2 TEST-ONLY: İLK-SACK-emisyonunu exact-once-suppress'",
+    "crates/adaptive-transport/src/udp_runner.rs:88 '// ── TUR-A1 test-only knob'ları (harness; PRODUCTION-CODE-DEĞİL) ──'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "RunnerCfg::ticket_cap",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:68",
+   "kind": "config-field",
+   "purpose": "Declared as informational only — the kernel AdmissionCaps is hard-coded 8; the knob only appears in the config dump.",
+   "called_from_product": false,
+   "only_from": "diagnostic-only",
+   "gate": "experimental-fec-budget",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/udp_runner.rs:68 'pub ticket_cap: u32, // bilgi-amaçlı (kernel-AdmissionCaps-sabit-8; dump'ta-görünür)'",
+    "crates/adaptive-transport/src/udp_runner.rs:113-124 to_policy() never reads self.ticket_cap"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "RunnerCfg::to_policy (\"f10\"/\"f15\"/\"f20\" aliases)",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:123",
+   "kind": "branch",
+   "purpose": "Policy string -> BudgetPolicy. Three distinct-looking policy names collapse to the identical variant; the numeric suffix is never read.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/udp_runner.rs:123 '\"f15\" | \"f10\" | \"f20\" => Ok(BudgetPolicy::FloorCapExperimental(p)),' — suffix carries no semantics, params come from separate CLI fields"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "BudgetPolicy::ProtectedShareExperimental / FloorCapExperimental (set only by udp_runner)",
+   "path_line": "crates/adaptive-transport/src/sender.rs:825-827",
+   "kind": "enum-variant",
+   "purpose": "Non-default FEC budget policies (R-share / R+F2-ticket+C1-cap).",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/udp_runner.rs:122-123 are the ONLY non-test constructors",
+    "grep -rn 'BudgetPolicy' crates/client-core/src crates/bench/src -> 0 hits (zero product/bench-arm setters)",
+    "crates/adaptive-transport/src/sender.rs:830-836 Default impl = LeftoverOnly"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "udp_runner::CsBatchAdapter (+ new/push/stamp/drain)",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:134-162",
+   "kind": "struct",
+   "purpose": "DR-CS-1 M1 batch adapter: sample clock once per poll iteration, stamp all inbound with the same now_ns, one on_event_batch call.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget AND experimental-cold-start (both default OFF)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/udp_runner.rs:133 '#[cfg(feature = \"experimental-cold-start\")]'",
+    "Only callers: crates/adaptive-transport/src/udp_runner.rs:680 (internal) and crates/adaptive-transport/tests/dr_cs1_acceptance.rs:122-123"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "udp_runner::enc",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:164",
+   "kind": "fn",
+   "purpose": "Harness datagram encoder: [kind u8][seq u64][unit u64][block u32][esi u16] + zero padding.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/udp_runner.rs:163 '/// Datagram: [kind u8][seq u64][unit u64][block u32][esi u16] + dolgu (size-temsili).'",
+    "SUBSTRATE MISMATCH vs product: this is cleartext with zero-pad, NOT the noise-wire sealed frame; product goes through crates/client-core/src/seam.rs (IdentitySeam) and crates/client-core/src/wire.rs encoders",
+    "crates/adaptive-transport/src/udp_runner.rs:1079-1083 CS-probe path writes a hand-built 44B plaintext ('harness-plaintext-temsili')"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "udp_runner::run_rx",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:175",
+   "kind": "fn",
+   "purpose": "Receiver-side bench loop: count arrivals, cumulative SACK, MDS decode, RECOVERED report.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/examples/udp_budget_runner.rs:58 '\"rx\" => run_rx(&cfg, deadline),'",
+    "crates/adaptive-transport/tests/udp_runner_smoke.rs:51,97,137,175 test callers",
+    "grep -rn 'run_rx' crates/client-core crates/bench -> 0 hits"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "udp_runner::run_tx",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:635",
+   "kind": "fn",
+   "purpose": "Sender-side bench loop driving the real Sender over a real UdpSocket.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/examples/udp_budget_runner.rs:57 '\"tx\" => run_tx(&cfg, deadline),'",
+    "crates/adaptive-transport/tests/udp_runner_smoke.rs:53,99,177"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "udp_runner: 36 x #[cfg(experimental-cold-start)] + 8 x #[cfg(not(...))] blocks",
+   "path_line": "crates/adaptive-transport/src/udp_runner.rs:35",
+   "kind": "feature-gated-block",
+   "purpose": "Second-level feature gating inside an already-gated module (cold-start probe ladder, echo ledger, idle-abandon horizon 105s vs 8s).",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget AND experimental-cold-start",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -c 'cfg(feature = \"experimental-cold-start\")' crates/adaptive-transport/src/udp_runner.rs -> 36",
+    "grep -c 'cfg(not(feature = \"experimental-cold-start\"))' -> 8",
+    "crates/adaptive-transport/src/udp_runner.rs:252-255 idle_abandon = 105s (ON) vs 8s (OFF) — behavior differs by 13x between builds"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "pub mod fs_harness",
+   "path_line": "crates/adaptive-transport/src/lib.rs:37-38",
+   "kind": "feature-gated-block",
+   "purpose": "DR-FEC-FS-1 FS-HARNESS-A: A1-EARLY duplication emitter + closed-loop runner + redundancy cost accounting. 1601 lines.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget (default OFF); consumers reach it via kama-integration feature experimental-fs-harness (Cargo.toml:28-31)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/lib.rs:37 '#[cfg(feature = \"experimental-fec-budget\")]'",
+    "All external consumers are kama-integration tests/examples: crates/kama-integration/tests/common/fs_f0.rs:5, tests/common/fs_spine.rs:19, tests/fs_s3r3_pins.rs:7, examples/fs_runner.rs:21",
+    "grep -rn 'fs_harness' crates/client-core crates/bench -> 0 hits"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::FS_SHARD_FRAMING_BYTES",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:51",
+   "kind": "const-knob",
+   "purpose": "Sealed-wire framing overhead 37 = 26 + 11, hand-mirrored from kama-noise-wire.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/kama-noise-wire-tdd-v2.0.md (sealed_len contract; mirrored not imported)",
+   "evidence": [
+    "crates/adaptive-transport/src/fs_harness.rs:51 'pub const FS_SHARD_FRAMING_BYTES: u64 = 37;'",
+    "AUTHORITY it duplicates: crates/kama-transport-schema/src/lib.rs:41 'pub const EXTENDED_OUTER_OVERHEAD: usize = 26;' + crates/kama-noise-wire/src/inner.rs:76 'pub const FEC_INNER_HDR_LEN: usize = 11;'",
+    "crates/kama-noise-wire/src/protector.rs:363 'Ok(EXTENDED_OUTER_OVERHEAD + FEC_INNER_HDR_LEN + symbol.len())' — the real computation; the harness literal can drift silently (no compile-time assert links them)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::fs_sealed_len",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:57",
+   "kind": "fn",
+   "purpose": "symbol_e + 37 -> sealed datagram length used for all harness egress accounting.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/tests/fs_f0_closed_loop.rs:8, tests/common/fs_cell.rs:18, tests/common/fs_spine.rs:21, tests/fs_fec_arms.rs:10"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::PacketSink (trait)",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:62",
+   "kind": "struct",
+   "purpose": "Egress sink abstraction for A1EarlyEmitter duplicate emission.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Only impl anywhere: crates/adaptive-transport/src/fs_harness.rs:1006 'impl PacketSink for CountingSink' — inside the module's own '#[cfg(test)]' block (starts at :987)",
+    "grep -rn 'PacketSink' --include=*.rs crates/ | grep -v fs_harness.rs -> 0 hits"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::A1EarlyEmitter (+ new/target_set/maybe_emit_duplicate/cost)",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:111-163",
+   "kind": "struct",
+   "purpose": "A1-EARLY block-total source-duplication emitter (deficit-independent target set).",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Only constructors: crates/adaptive-transport/src/fs_harness.rs:1055, 1074, 1096 — all inside the module's own '#[cfg(test)]' block (:987)",
+    "grep -rn 'A1EarlyEmitter' --include=*.rs crates/ | grep -v fs_harness.rs -> 0 hits (the spine reimplements duplication via run_arm/a1_duplicate_target_set instead)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::RedundancyEmissionPolicy",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:167",
+   "kind": "enum-variant",
+   "purpose": "Single-variant enum (PerSourceAdjacentEarly) parameterising a1_emission_order.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Single variant; crates/adaptive-transport/src/fs_harness.rs:180 'let RedundancyEmissionPolicy::PerSourceAdjacentEarly = policy;' — irrefutable destructure, the parameter carries no information",
+    "Only uses at :1146, :1151 — inside the module's own '#[cfg(test)]' block"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::a1_emission_order",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:175",
+   "kind": "fn",
+   "purpose": "Deterministic A1 emission ordering (source_i -> dup_i -> source_i+1).",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Only callers: crates/adaptive-transport/src/fs_harness.rs:1143, 1148 — inside the module's own '#[cfg(test)]' block (:987)",
+    "grep -rn 'a1_emission_order' --include=*.rs crates/ | grep -v fs_harness.rs -> 0 hits"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::a1_duplicate_target_set",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:89",
+   "kind": "fn",
+   "purpose": "Deterministic, deficit-independent selection of the r sources that get one duplicate each.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/tests/common/fs_spine.rs:21 (import) and :350 (call)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::domain_seed",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:79",
+   "kind": "fn",
+   "purpose": "FNV-1a domain-separated seed derivation (e.g. \"A1_DUP_TARGET\" vs \"LOSS\").",
+   "called_from_product": false,
+   "only_from": "bench",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/examples/fs_runner.rs:41 'let dup_seed = adaptive_transport::fs_harness::domain_seed(seed, \"A1_DUP_TARGET\");'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::RedundancyCost / RedundancyKind",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:24,37",
+   "kind": "struct",
+   "purpose": "Redundancy accounting record; realized_sealed_wire_bytes is the C-P4 fairness metric.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/tests/common/fs_f0.rs:7 imports RedundancyKind; :179 'timing.record_redundancy(RedundancyKind::FecRepair, 0, 0, 0, None);'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::BlockTiming (+ record_redundancy)",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:203,309",
+   "kind": "struct",
+   "purpose": "Arm-neutral redundancy timing ledger (t_source_loss / t_parity_* / t_redundancy_* / t_repair_usable).",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/fs_harness.rs:203-222 'SALT-GÖZLEM' (observation-only) per doc comment at :198-200",
+    "crates/kama-integration/tests/common/fs_f0.rs:66,179; tests/common/fs_spine.rs:22"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::ParityDelayClass + BlockTiming::parity_delay_class",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:227,239",
+   "kind": "enum-variant",
+   "purpose": "Classifies why parity was late (NotEligible / EligibleNotEnqueued / EnqueuedNotWire / UsableBeforeArq / WireButLate).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Only consumers: crates/kama-integration/examples/fs_runner.rs:123 and :175 (println! only — pure reporting)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::BottleneckChannel (+ new/offer/serialized_bytes)",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:333,343,355,368",
+   "kind": "struct",
+   "purpose": "In-process bottleneck link model (link_bps + prop delay) wrapping a TraceChannel; the harness 'wire'.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/tests/common/fs_f0.rs:5,103; tests/common/fs_spine.rs:19",
+    "NOT a real socket — contrast udp_runner which uses std::net::UdpSocket (crates/adaptive-transport/src/udp_runner.rs:14)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::BottleneckChannel::recomputed_trace_hash",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:272",
+   "kind": "fn",
+   "purpose": "Recompute the decision-log hash from the retained events (determinism cross-check).",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Single external caller: crates/kama-integration/tests/common/fs_spine.rs:1041"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::DeficitPosition + classify_deficit_position",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:380,806",
+   "kind": "fn",
+   "purpose": "Classify erasure position (None/Head/Middle/Tail/Mixed) to separate tail-erasure from universal FEC advantage.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Only caller: crates/adaptive-transport/src/fs_harness.rs:767 inside run_arm (module-internal)",
+    "grep -rn 'classify_deficit_position' --include=*.rs crates/ | grep -v fs_harness.rs -> 0 hits"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::TailRecoveryPath",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:396",
+   "kind": "enum-variant",
+   "purpose": "Records whether a tail erasure was healed by ARQ, by duplicate, or stalled. Observation-only ('Sender-fix YOK').",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/fs_harness.rs:393 '/// **B2 — tail-erasure'ın hangi yolla (varsa) kurtarıldığı** (yalnız-gözlem; Sender-fix YOK).'",
+    "Written at :771-775, read only at :1384,:1405 (own #[cfg(test)]); 0 external references"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::Arm (A0 / A1{r})",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:410",
+   "kind": "enum-variant",
+   "purpose": "Measured experiment arm: ARQ-only vs ARQ + early source duplication.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/examples/fs_runner.rs:21 imports Arm; :89 'run_config_hash(arm, &cfg)'; :151 'run_config_hash(Arm::A0, &cfg) ^ 0xF0'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::RunCfg / RunResult / PathTimingLedger / PerRunInstrument",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:419,478,436,447",
+   "kind": "struct",
+   "purpose": "Closed-loop run configuration, result record, path-timing ledger (explicitly decision-free) and per-run validity instrument.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/fs_harness.rs:434 '/// Path-timing snapshot ledger-only (A0/A1/F0 KARAR-İÇİN-TÜKETMEZ; yalnız gözlem).'",
+    "crates/kama-integration/tests/common/fs_f0.rs:7,68,128,361; tests/common/fs_dryrun.rs:379; examples/fs_runner.rs:232"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::run_arm",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:601",
+   "kind": "fn",
+   "purpose": "Main closed-loop harness entry: drives the real Sender against BottleneckChannel for one arm.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/examples/fs_runner.rs:21 'use adaptive_transport::fs_harness::{run_arm, run_config_hash, Arm, RunCfg};'",
+    "Other callers all inside crates/adaptive-transport/src/fs_harness.rs #[cfg(test)] (:1232,1242,1257,1258,1278)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::run_dup_target",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:591",
+   "kind": "fn",
+   "purpose": "Public wrapper exposing the arm's duplicate target set.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Non-test caller: crates/adaptive-transport/src/fs_harness.rs:606 (inside run_arm). Test callers :1254,:1275,:1319,:1340.",
+    "grep -rn 'run_dup_target' --include=*.rs crates/ | grep -v fs_harness.rs -> 0 hits (pub but unused externally)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::ParityWireModel + pin_c_classify + PinCResult",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:860,892,881",
+   "kind": "fn",
+   "purpose": "PIN-C: models parity wire time as data_before_parity x serialize_ns and classifies whether a candidate mechanism actually advanced parity on the wire vs only advanced eligibility.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "engine-spec §10 parity ordering (referenced in-code as 'sender.rs:2290 mühürlü')",
+   "evidence": [
+    "crates/kama-integration/tests/fs_fec_arms.rs:10,15-16,51,114 (only consumer)",
+    "crates/adaptive-transport/src/fs_harness.rs:855-858 model doc names the product ordering it mirrors ('plan_fec_parity, DATA-drain SONRASI — sender.rs:2290 mühürlü; pacer-token-gated') — a MODEL of product behaviour, not the product code"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::fs_effective_source_bps / fs_t_serialize_source_ns / fs_deadline_ms",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:906,913,924",
+   "kind": "fn",
+   "purpose": "§17/§18 deadline geometry: effective egress bps, source serialization envelope, and arm-independent deadline = T_ser + N_recovery x RTT + M_fixed.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none (harness-local §17/§18; explicitly marked 'v1.3-DONDURULMADI' at fs_harness.rs:900)",
+   "evidence": [
+    "crates/adaptive-transport/src/fs_harness.rs:925-926 'const N_RECOVERY: u64 = 2; const M_FIXED_MS: u64 = 50;' — hardcoded design constants ('OUTCOME-BLIND inherited design-constants' :921)",
+    "Consumers: crates/kama-integration/tests/fs_s3r3_pins.rs:8,77,84,90,95,100 and tests/common/fs_manifest.rs:11,170,422",
+    "SEPARATE from product deadline path: crates/client-core/src/runtime.rs:1271 'session.sender_mut().declare_delivery_deadline(d);' -> crates/adaptive-transport/src/sender.rs:4118 — the product deadline is supplied by config, never by this formula"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::CodecK (+ k / profile_id) and F4_K_COLD",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:937,945,954,964",
+   "kind": "enum-variant",
+   "purpose": "Codec-realisable block-K values {2,4,8} and their E=64 profile ids {0x01,0x02,0x03}; F4_K_COLD = conservative pre-confidence K.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/fec-core-tdd-v3.0.md profile catalogue (mirrored ids, not imported)",
+   "evidence": [
+    "crates/kama-integration/tests/common/fs_spine.rs:22,359 (CodecK); F4_K_COLD has 0 external references (crates/adaptive-transport/src/fs_harness.rs:975,978 internal + :1557 own test)",
+    "PROFILE MISMATCH vs product: the shipped runtime uses profile 0x05 with K_shape 8 — crates/client-core/src/runtime.rs:202 'Sevk FEC profili: kama_fec_codec 0x05 — K_shape 8, R_code_max 4, E = 1024'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_harness::f4_select_k",
+   "path_line": "crates/adaptive-transport/src/fs_harness.rs:973",
+   "kind": "fn",
+   "purpose": "F4 adaptive block-K selector driven by base RTT regions (<50ms->K2, 50-150ms->K4, >=150ms->K8), with a confidence gate falling back to K_COLD. Consumes the PRODUCT type sender::PathTimingState.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none — in-code marked 'MECHANISTIC/EXPLORATORY ... discriminative-validity/online-selectability/controller-readiness KURMAZ (FS-5B)' (fs_harness.rs:970-971)",
+   "evidence": [
+    "Only callers: crates/kama-integration/tests/common/fs_spine.rs:21 (import), :376 (call inside f4_decide_k)",
+    "Reads a real product estimator type: crates/adaptive-transport/src/fs_harness.rs:973 'pub fn f4_select_k(pt: &crate::sender::PathTimingState) -> CodecK'",
+    "SECOND, UNWIRED K CONTROLLER: the product picks K statically from the configured FEC profile — crates/client-core/src/runtime.rs:922 'let fec: Option<FecProfile> = cfg.fec.and_then(|f| by_id(f.profile_id));' with no RTT-driven K selection anywhere"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "pub mod fs_trace",
+   "path_line": "crates/adaptive-transport/src/lib.rs:40-41",
+   "kind": "feature-gated-block",
+   "purpose": "Trace-driven paired replay channel with frozen pairing semantics (semantic key = source_id + role + attempt). 744 lines.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget (default OFF)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/adaptive-transport/src/lib.rs:40 '#[cfg(feature = \"experimental-fec-budget\")]'",
+    "External consumers are all kama-integration test/example files: tests/fs_s3r1_pins.rs:9, tests/common/fs_f0.rs:10, tests/common/fs_serialize_v2.rs:7, tests/common/fs_dryrun.rs:11, tests/fs_s3r2_pins.rs:9, tests/common/fs_spine.rs:24, examples/fs_runner.rs:50,56"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_trace::TransmissionRole",
+   "path_line": "crates/adaptive-transport/src/fs_trace.rs:25",
+   "kind": "enum-variant",
+   "purpose": "InitialSource / RetransmitSource / Duplicate / Repair / Control — the axis that makes deficit mean 'initial transmission erasure', not 'source identity erasure'.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/tests/common/fs_serialize_v2.rs:7, tests/common/fs_f0.rs:10, tests/fs_s3r2_pins.rs:9"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_trace::TracePacketId (+ initial_source)",
+   "path_line": "crates/adaptive-transport/src/fs_trace.rs:40,50",
+   "kind": "struct",
+   "purpose": "Semantic packet identity (source_id, role, attempt) replacing wire ordinals for cross-arm pairing.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/tests/fs_s3r2_pins.rs:9; crates/adaptive-transport/src/fs_harness.rs:19 (internal import)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_trace::TraceSpec::NaturalBurst",
+   "path_line": "crates/adaptive-transport/src/fs_trace.rs:82",
+   "kind": "enum-variant",
+   "purpose": "Arm-independent time-domain drop intervals [lo,hi) ns.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -rn 'TraceSpec::NaturalBurst' --include=*.rs crates/ -> 4 hits, ALL in crates/adaptive-transport/src/fs_trace.rs (:146 and :278 are impl match arms; :553 and :670 are inside the module's own #[cfg(test)] block which starts at :418)",
+    "No consumer in kama-integration ever constructs it — no campaign uses burst channels through this API"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_trace::RedundancyPolicy::Iid",
+   "path_line": "crates/adaptive-transport/src/fs_trace.rs:68",
+   "kind": "enum-variant",
+   "purpose": "Independent scripted deterministic loss applied to redundancy attempts (separate channel from the deficit set).",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -rn 'RedundancyPolicy::Iid' --include=*.rs crates/ -> 3 hits, all in crates/adaptive-transport/src/fs_trace.rs (:128,:265 impl arms; :513 inside own #[cfg(test)] at :418)",
+    "Every external consumer uses RedundancyPolicy::PassAll instead (3 external hits)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_trace::TraceSpec::ExactDeficit / NaturalIid",
+   "path_line": "crates/adaptive-transport/src/fs_trace.rs:72,79",
+   "kind": "enum-variant",
+   "purpose": "Deficit replay (drop only role=InitialSource attempt=0) and deterministic per-(id,role,attempt) iid loss.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "ExactDeficit: 3 external hits; NaturalIid: 7 external hits (e.g. crates/kama-integration/tests/fs_s3r2_pins.rs:9 and crates/adaptive-transport/src/fs_harness.rs:843)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_trace::ReverseSpec (Clear / Scheduled)",
+   "path_line": "crates/adaptive-transport/src/fs_trace.rs:88,92,96",
+   "kind": "enum-variant",
+   "purpose": "B1 reverse-path (ACK direction) impairment schedule: blackout intervals + ordinal-keyed reverse loss. Ground truth is the schedule itself, never inferred from missing ACKs.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/tests/fs_s3r1_pins.rs:9; examples/fs_runner.rs:50 (Scheduled), :56 (Clear)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_trace::TraceChannel (+ new/with_reverse/decide/counts/decide_reverse)",
+   "path_line": "crates/adaptive-transport/src/fs_trace.rs:217,232,238,253,340,348",
+   "kind": "struct",
+   "purpose": "Deterministic replay channel: pure hash-keyed drop decisions with an event log; RNG-free (ADR-17).",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/tech-stack-adr.md ADR-17 (deterministic, no RNG)",
+   "evidence": [
+    "crates/kama-integration/tests/fs_s3r2_pins.rs:9, tests/common/fs_f0.rs:10, tests/common/fs_spine.rs:24; crates/adaptive-transport/src/fs_harness.rs:19,343 (wrapped by BottleneckChannel)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_trace::TraceChannel::recomputed_decision_log_hash",
+   "path_line": "crates/adaptive-transport/src/fs_trace.rs:321",
+   "kind": "fn",
+   "purpose": "Recompute the forward decision-log hash from retained DecisionEvents.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "0 direct external callers; reached only via the fs_harness wrapper crates/adaptive-transport/src/fs_harness.rs:272-275, whose single caller is crates/kama-integration/tests/common/fs_spine.rs:1041"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "fs_trace::hash_forward_spec / hash_reverse_spec / role_disc / keyed / fnv1a",
+   "path_line": "crates/adaptive-transport/src/fs_trace.rs:114,158,179,190,103",
+   "kind": "fn",
+   "purpose": "Private deterministic hashing of the frozen channel specification (config identity for freeze provenance).",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-fec-budget",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/tech-stack-adr.md ADR-17",
+   "evidence": [
+    "All private (no `pub`); consumed by TraceChannel::configured_schedule_hash (crates/adaptive-transport/src/fs_trace.rs:411) which has 26 external references"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "kama_engine::admission::admit_and_decode",
+   "path_line": "crates/kama-engine/src/admission.rs:26",
+   "kind": "fn",
+   "purpose": "INV-FEC-1 production closure: type-gated (OpenedTransportShard = AEAD witness) FEC decode + canonical-prefix reassembly. The specified authenticate-before-decode ingress.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "spec_ref_or_none": "CLAUDE.md INV-FEC-1 (authenticate-before-decode); crates/kama-engine/src/admission.rs:1-10 declares itself the production successor of the pipeline test",
+   "evidence": [
+    "Only non-test caller is the thin wrapper crates/client-core/src/lib.rs:107-110 'pub fn admit(...) { admit_and_decode(shards, bound_profile_id, k_actual) }'",
+    "That wrapper has ZERO product callers: grep -rn 'ClientSession' crates/ shows construction only at crates/client-core/src/runtime.rs:874 (used for the EGRESS Sender), and 'grep -n \"\\.admit(\" crates/client-core/src/runtime.rs' returns only :1002 and :1866 which are Pacer::admit, not session.admit",
+    "THE PRODUCT USES A DIFFERENT PATH: crates/client-core/src/runtime.rs:1886 'fn fec_ingest(...)' -> :1945 'RsSimdCodec.reconstruct(p, &recv, 0)' -> :1954-1961 its own SourcePrefix::parse + payload slice. Raw Vec<u8> symbols, no OpenedTransportShard, no type gate.",
+    "Root cause: the product seam is a stub with no AEAD — crates/client-core/src/seam.rs:4-5 'bugün IdentitySeam (stub, +16 B byte-eşdeğer sahte tag), S2'de kama-noise-wire aynı dikiş-noktasına takılır' and :15 'GÜVENLİK İDDİASI YOK'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "kama_engine::EngineError",
+   "path_line": "crates/kama-engine/src/error.rs:8",
+   "kind": "enum-variant",
+   "purpose": "Engine typed error enum (thiserror), re-exported by client-core.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "CLAUDE.md §6 (typed errors, no reachable todo!())",
+   "evidence": [
+    "crates/client-core/src/lib.rs:47 'pub use kama_engine::{admit_and_decode, EngineError};'"
+   ],
+   "product_call_sites": [
+    "crates/client-core/src/lib.rs:47",
+    "crates/client-core/src/lib.rs:111 (return type of ClientSession::admit)"
+   ]
+  },
+  {
+   "symbol": "EngineError::FeatureNotImplemented",
+   "path_line": "crates/kama-engine/src/error.rs:33-36",
+   "kind": "enum-variant",
+   "purpose": "Typed stub for the unimplemented A2 phase, per the 'reachable todo!() forbidden' rule.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "gate": "experimental-cold-start (crates/kama-engine/Cargo.toml:13, default OFF)",
+   "classification": "DELETE",
+   "spec_ref_or_none": "CLAUDE.md §6 typed-error stub rule",
+   "evidence": [
+    "grep -rn 'FeatureNotImplemented' --include=*.rs crates/ -> 4 hits, all DEFINITIONS (crates/adaptive-transport/src/error.rs:4 comment + :53 def, crates/kama-integration/src/receiver_host.rs:78 def, crates/kama-engine/src/error.rs:36 def). ZERO construction sites anywhere.",
+    "The A2 phase it stubs was implemented (crates/kama-integration/src/receiver_host.rs:308 on_datagram is real) — the stub is now vestigial"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "EngineError::ParamNotConfirmed",
+   "path_line": "crates/kama-engine/src/error.rs:18-20",
+   "kind": "enum-variant",
+   "purpose": "'PARAM not confirmed, admission gate closed' error.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -rn 'EngineError::ParamNotConfirmed' --include=*.rs crates/ (excluding the definition file) -> 0 hits. Never constructed.",
+    "The gate it names is implemented elsewhere as a bool: crates/client-core/src/runtime.rs:2290 'if !slot.param.is_confirmed()'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "EngineError::ParamNeverArrived",
+   "path_line": "crates/kama-engine/src/error.rs:46-49",
+   "kind": "enum-variant",
+   "purpose": "'PARAM never arrived; pre-PARAM block evicted at deadline (P-6)'.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "gate": "experimental-cold-start",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -rn 'EngineError::ParamNeverArrived' --include=*.rs crates/ (excluding definition) -> 0 hits. Never constructed."
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "kama_engine::plan_param_bootstrap",
+   "path_line": "crates/kama-engine/src/param_bootstrap.rs:28",
+   "kind": "fn",
+   "purpose": "B2 PARAM bootstrap plan: BLAKE2s param_hash bind + proactive-emit directive (start FEC without waiting for PARAM_ACK).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/kama-noise-wire-tdd-v2.0.md §8 (param_bind / param_hash)",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:35 'use kama_engine::{plan_param_bootstrap, ParamState};'",
+    "crates/client-core/src/runtime.rs:881 '.and_then(|p| plan_param_bootstrap(1, &param_fields_for(p)).ok());'",
+    "Result consumed at runtime.rs:1172-1176 (hash echo check) and :1390-1394 (PARAM_SET emission)"
+   ],
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:881",
+    "crates/client-core/src/runtime.rs:1390"
+   ]
+  },
+  {
+   "symbol": "ParamSetPlan::start_fec_immediately",
+   "path_line": "crates/kama-engine/src/param_bootstrap.rs:18",
+   "kind": "config-field",
+   "purpose": "B2 directive telling the caller to call sender.set_manual_fec_enabled(true) immediately, without waiting for PARAM_ACK.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -rn 'start_fec_immediately' --include=*.rs crates/ -> only crates/kama-engine/src/param_bootstrap.rs:18 (def) and :40 (set to true). NEVER READ.",
+    "The product independently implements the same policy without consulting the field: crates/client-core/src/runtime.rs:930-935 sets FecActuationMode at session setup, before any PARAM exchange"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "kama_engine::ParamAckTracker (+ on_param_ack, is_confirmed)",
+   "path_line": "crates/kama-engine/src/param_bootstrap.rs:47,62,80",
+   "kind": "struct",
+   "purpose": "PARAM_ACK confirmation tracker: verify the hash echo against the local hash, mark confirmed, never gate emission.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Only callers: crates/kama-engine/tests/param_bootstrap_5d1.rs:9,68,82,100,108,112,118 — all tests",
+    "DUPLICATE: the product reimplements the identical logic inline with a bare bool — crates/client-core/src/runtime.rs:941 'let mut param_confirmed = param_plan.is_none();' and :1172-1176 'if h == plan.param_hash && !param_confirmed { param_confirmed = true; stats.param_confirmed = 1; }'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "kama_engine::ParamState (+ on_param_set, is_confirmed)",
+   "path_line": "crates/kama-engine/src/param_state.rs:22,38,71",
+   "kind": "struct",
+   "purpose": "Receiver-side bound-param state with fail-closed §8 hash verification; admission gate.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/kama-noise-wire-tdd-v2.0.md §8 (verify_param_hash fail-closed)",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1755 'param: ParamState,' (PeerSlot field); :2097 'param: ParamState::new(),'",
+    "crates/client-core/src/runtime.rs:2290 'if !slot.param.is_confirmed()'; :2400-2402 'let was = slot.param.is_confirmed(); match slot.param.on_param_set(&ctl, exp)'"
+   ],
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:2097",
+    "crates/client-core/src/runtime.rs:2290",
+    "crates/client-core/src/runtime.rs:2400",
+    "crates/client-core/src/runtime.rs:2401"
+   ]
+  },
+  {
+   "symbol": "ParamState::bound_profile_id",
+   "path_line": "crates/kama-engine/src/param_state.rs:77",
+   "kind": "fn",
+   "purpose": "Return the bound profile_id for resolving the decode profile.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Only caller: crates/kama-engine/tests/param_bootstrap_5d1.rs:135 'assert_eq!(st.bound_profile_id(), Some(3));'",
+    "The product resolves the profile from its own config instead: crates/client-core/src/runtime.rs:2025 'let fec: Option<FecProfile> = cfg.fec.and_then(|f| by_id(f.profile_id));'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "ParamState::bound / BoundParam",
+   "path_line": "crates/kama-engine/src/param_state.rs:83,14",
+   "kind": "fn",
+   "purpose": "Accessor returning the bound parameters ('teşhis/test' per its own doc).",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -rn '\\.bound()' --include=*.rs crates/ -> 0 hits",
+    "grep -rn '\\bBoundParam\\b' --include=*.rs crates/ excluding crates/kama-engine/src -> 0 hits; the type is only re-exported at crates/kama-engine/src/lib.rs:40 and never named by any consumer",
+    "crates/kama-engine/src/param_state.rs:81 doc: '/// Bağlı parametreler (teşhis/test).'"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "kama_engine::PreParamHold + MAX_PREPARAM_SHARDS",
+   "path_line": "crates/kama-engine/src/preparam_hold.rs:17,13",
+   "kind": "struct",
+   "purpose": "Bounded pre-PARAM hold of AUTHENTICATED shards (oldest-drop at 256, audit counter) per SR-AUDIT-001 bounds-before-alloc.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "spec_ref_or_none": "CLAUDE.md §9 SR-AUDIT-001 (bounded buffers)",
+   "evidence": [
+    "Only callers: crates/kama-engine/tests/param_bootstrap_5d1.rs:9,173,177,184,189",
+    "DUPLICATE with a different cap and a different element type: crates/client-core/src/runtime.rs:1815-1817 'pre_param_fec: Vec<(FecFrameHeader, Vec<u8>)>' with the comment 'PreParamHold deseni', and :1820-1821 'const PRE_PARAM_FEC_CAP: usize = 64;' — 64 vs 256, and raw (header, bytes) instead of OpenedTransportShard, so the 'only authenticated shards are held' property the engine module guarantees does not hold in the product"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "kama_engine::RecoveredMap + ResolvedRecovered + RECOVERED_MAP_CAP",
+   "path_line": "crates/kama-engine/src/recovered_map.rs:26,18,13",
+   "kind": "struct",
+   "purpose": "DR-S5-4: the engine-side (block_id,esi) -> unit_id ledger recorded at emit time, plus the RECOVERED-control resolver, bounded at 4096 with an eviction audit counter.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "spec_ref_or_none": "specs/kama-noise-wire-tdd-v2.0.md §2.56 (0x12 RECOVERED codepoint)",
+   "evidence": [
+    "Only callers: crates/kama-engine/tests/n8_v2.rs:18,39,51; crates/kama-engine/tests/m1_reverse_nis.rs:21; crates/kama-integration/tests/a2_c1b_unified_heal.rs:24,120,121,136",
+    "DUPLICATE with a structurally different mapping: the product derives unit_id arithmetically instead of from a ledger — crates/client-core/src/runtime.rs:1189-1191 'let unit = u64::from(block_id) * u64::from(p.k_shape) + u64::from(esi);' and again at :1953 'let unit_id = u64::from(block_id) * u64::from(k) + u64::from(r.esi);'",
+    "ResolvedRecovered and RECOVERED_MAP_CAP have 0 references outside crates/kama-engine/src"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "kama_engine::cold_rx_state (module)",
+   "path_line": "crates/kama-engine/src/lib.rs:24-25",
+   "kind": "feature-gated-block",
+   "purpose": "A2-F1-A session-local cold admission/resource ledger with [CAL]-SEALED caps. 516 lines.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "cargo feature experimental-cold-start (crates/kama-engine/Cargo.toml:13, default OFF)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:1046 (ZM-3 clock-class record naming ColdRxState)",
+   "evidence": [
+    "crates/kama-engine/src/lib.rs:24 '#[cfg(feature = \"experimental-cold-start\")]'",
+    "crates/kama-engine/src/cold_rx_state.rs:24 '//! [CAL]-SEALED sabitler (freeze-r2, sha256=5b298244…): TUNING/GEVŞETME YASAK.'",
+    "Non-test consumer is only crates/kama-integration/src/receiver_host.rs:21-24, itself gated and in a crate with zero dependents"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "cold_rx_state [CAL]-SEALED caps (9 consts)",
+   "path_line": "crates/kama-engine/src/cold_rx_state.rs:35-54",
+   "kind": "const-knob",
+   "purpose": "RX_COLD_OPEN_BLOCK_CAP_PER_SESSION=8 · RX_COLD_SHARDS_PER_BLOCK_CAP=24 · MAX_SHARDS_BY_BLOCK_SHAPE=192 · RX_COLD_TOTAL_SHARD_CAP_PER_SESSION=192 · RX_PREPARAM_SHARD_CAP_PER_SESSION=192 · RX_COLD_RETAINED_BYTE_CAP_PER_SESSION=480KiB · GLOBAL_COLD_RETAINED_MEMORY_BUDGET=15MiB · GLOBAL_COLD_BYTE_CAP=15MiB · SESSION_COUNT_CAP=64 · TOMBSTONE_REGISTRY_CAP=64.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-cold-start",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "freeze-r2 §3 (referenced by sha256=5b298244… in-code; not a specs/ file)",
+   "evidence": [
+    "crates/kama-engine/src/cold_rx_state.rs:32 '// ---- [CAL]-SEALED sabitler (freeze-r2 §3 birebir) ----'",
+    "crates/kama-engine/src/cold_rx_state.rs:57-61 four compile-time consistency asserts pin the derivations",
+    "No product build ever compiles these: crates/client-core/Cargo.toml:35-37 declares only diag-sched-telemetry — it never forwards experimental-cold-start"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "cold_rx_state::TombstoneRegistry / TombstoneReservationToken / CommittedTombstoneLease",
+   "path_line": "crates/kama-engine/src/cold_rx_state.rs:166,213,246",
+   "kind": "struct",
+   "purpose": "RAII reserve->commit/cancel tombstone slot accounting with Drop-based automatic return.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-cold-start",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "TombstoneReservationToken has 0 references outside crates/kama-engine/src (never named by any consumer)",
+    "CommittedTombstoneLease: only crates/kama-integration/src/receiver_host.rs:22,163,651",
+    "TombstoneRegistry: only receiver_host.rs:23,171,189 + kama-engine/kama-integration tests"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "cold_rx_state::GlobalColdLedger / ColdRxState (+ admit_cold_shard, release_block, release_session)",
+   "path_line": "crates/kama-engine/src/cold_rx_state.rs:271,317,341,463,507",
+   "kind": "struct",
+   "purpose": "Two-level (global + session) atomic cold-admission ledger: read-only checks then a single commit point, typed reject instead of silent eviction.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-cold-start",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:1046 (ZM-3: 'kama-engine::ColdRxState saat TUTMAZ — now_ns enjekte')",
+   "evidence": [
+    "Only non-test consumer: crates/kama-integration/src/receiver_host.rs:136,169,188,281 (gated crate with zero dependents)",
+    "grep -rn 'ColdRxState' crates/client-core -> 0 hits"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "kama_integration::receiver_control_core (module)",
+   "path_line": "crates/kama-integration/src/lib.rs:13-15",
+   "kind": "module",
+   "purpose": "DR-CS-3 DEFAULT-BUILD authenticated receive control core: session-bound AEAD open/seal, authenticated control decode, bounded responder state, typed outbound actions. 306 lines. Explicitly a library component, not a runtime.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "spec_ref_or_none": "reports/dr-cs-3/PRODUCT-RUNTIME-INTEGRATION-PENDING.md (named in-code at receiver_control_core.rs:9)",
+   "evidence": [
+    "crates/kama-integration/src/receiver_control_core.rs:7-9 'It deliberately does NOT own: UDP sockets, a receive/send loop, process lifecycle, connection lifecycle, or the Noise handshake. Those belong to a future product runtime consumer (PRODUCT-RUNTIME-INTEGRATION-PENDING.md). Nothing here can be run by a user on its own.'",
+    "Ungated (crates/kama-integration/src/lib.rs:15 'pub mod receiver_control_core;' — no cfg) but the crate has zero dependents, so it compiles into nothing shipped",
+    "Only consumers: crates/kama-integration/tests/dr_cs3_default_build_core.rs:19, tests/dr_cs3_panel_preflight.rs:17-18, and crates/kama-integration/src/receiver_host.rs:20"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "receiver_control_core::BootstrapEchoResponder (+ on_authenticated_probe/take_pending/commit/echo_control/budget)",
+   "path_line": "crates/kama-integration/src/receiver_control_core.rs:86,98,112,120,138,150",
+   "kind": "struct",
+   "purpose": "The single-source bounded CS-probe echo responder: at most MAX_ECHOES=4 unique echoes, ECHO_BUDGET_BYTES=172 anti-amplification budget, duplicate-generation refusal.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "spec_ref_or_none": "specs/kama-noise-wire-tdd-v2.0.md §2.56 (0x19 CS_PROBE / 0x1A echo codepoints)",
+   "evidence": [
+    "crates/kama-integration/src/receiver_control_core.rs:27 'pub const MAX_ECHOES: usize = 4;' :30 'pub const ECHO_WIRE_MAX: u64 = 43;' :32 'pub const ECHO_BUDGET_BYTES: u64 = MAX_ECHOES as u64 * ECHO_WIRE_MAX;'",
+    "THE PRODUCT SHIPS A THIRD, UNBOUNDED ECHO PATH: crates/client-core/src/runtime.rs:2370-2381 emits one echo per arriving probe with no count cap — 'stats.cs_probes_rx += 1; let f = encode_cs_echo(subtype, probe_seq, 0, 0); ... stats.cs_echoes_tx += 1;'. Only the per-packet size amp<=1 is asserted (:2378 debug_assert), never MAX_ECHOES.",
+    "Product frame builder is a separate raw encoder: crates/client-core/src/wire.rs:258 'pub fn encode_cs_echo(subtype: u8, probe_seq: u16, seen_count: u32, arrival_gap: u32) -> Vec<u8>' vs the Control-schema builder at receiver_control_core.rs:138"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "BootstrapEchoResponder::reset",
+   "path_line": "crates/kama-integration/src/receiver_control_core.rs:159",
+   "kind": "fn",
+   "purpose": "Clear bootstrap responder state.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -rn 'reset(' crates/kama-integration --include=*.rs -> only the definition at crates/kama-integration/src/receiver_control_core.rs:159. Zero call sites in src/, tests/ or examples/.",
+    "ReceiverControlCore::close_session (:297) drops the whole CoreSession rather than calling reset"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "receiver_control_core::ReceiverControlCore (+ ingest/emit_cs_echo/take_pending_cs_echo/echo_budget/close_session/session_count)",
+   "path_line": "crates/kama-integration/src/receiver_control_core.rs:170,222,264,253,292,297,303",
+   "kind": "struct",
+   "purpose": "Bounded (MAX_CORE_SESSIONS=1024) session table performing AEAD open -> authenticated control decode -> typed CoreIngest, plus sealed echo emission.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "spec_ref_or_none": "reports/dr-cs-3/PRODUCT-RUNTIME-INTEGRATION-PENDING.md",
+   "evidence": [
+    "crates/kama-integration/tests/dr_cs3_default_build_core.rs:35-36, tests/dr_cs3_panel_preflight.rs:56-57 — only constructors",
+    "grep -rn 'ReceiverControlCore' crates/client-core crates/bench -> 0 hits",
+    "The product instead demuxes raw frame bytes: crates/client-core/src/runtime.rs:2075 'let Ok(od) = tx.seam.open(&buf[..n])' then :2109-2126 first-byte dispatch (decode_data/decode_data_frag/decode_fec/decode_cs_probe/decode_param) — no Control schema, no decode_control"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "receiver_control_core::MAX_CORE_SESSIONS",
+   "path_line": "crates/kama-integration/src/receiver_control_core.rs:34",
+   "kind": "const-knob",
+   "purpose": "Session table cap = 1024; over-cap is a typed reject with no eviction.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "spec_ref_or_none": "CLAUDE.md §9 SR-AUDIT-001",
+   "evidence": [
+    "crates/kama-integration/src/receiver_control_core.rs:200-202 enforcement; crates/kama-integration/tests/dr_cs3_panel_preflight.rs:512-528 ('no eviction occurred')",
+    "The product server has NO session-count cap: crates/client-core/src/runtime.rs PeerSlot map is keyed by SocketAddr with no equivalent constant (only RX_BLOCKS_CAP=32 per peer at :1632)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "kama_integration::receiver_host (module)",
+   "path_line": "crates/kama-integration/src/lib.rs:18-20",
+   "kind": "feature-gated-block",
+   "purpose": "DR-CS-1b/A2 product-receiver composition root: K-9 process-wide cold-resource owner, real noise-wire Session, two-level cold admission, block assembly, K-decode delivery, RECOVERED emission, two-phase close with tombstones. 671 lines.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "cargo feature experimental-cold-start (crates/kama-integration/Cargo.toml:17-21, default OFF)",
+   "classification": "WIRE",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:1046 '...kompozisyon-kökü `ReceiverHost`'ta örneklenir...' — the spec names this as the product receiver's clock-sampling composition root",
+   "evidence": [
+    "crates/kama-integration/src/lib.rs:18-19 '#[cfg(feature = \"experimental-cold-start\")] pub mod receiver_host;'",
+    "The crate has zero dependents, so even with the flag ON nothing product-facing links it",
+    "THE SHIPPED PRODUCT IS A SEPARATE, SECOND RECEIVER: crates/client-core/src/runtime.rs:1886 fn fec_ingest, whose doc at :1881-1882 explicitly supersedes this one — 'READINESS (receiver_host'taki sayım-bug'ının DÜZELTİLMİŞ hâli)' ('the FIXED version of receiver_host's counting bug')"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "receiver_host constants (BOOTSTRAP_PROFILE_ID, SHARD_RETAINED_COST_E64, RX_COLD_ABANDON_SMALL_NS, SESSION_IDLE_HOLD_NS, TOMBSTONE_GRACE_NS)",
+   "path_line": "crates/kama-integration/src/receiver_host.rs:43,45,49,51,53",
+   "kind": "const-knob",
+   "purpose": "0x03 bootstrap profile (K=8/R=4/E=64), 336B retained cost model, 75s patience, 105s idle hold [CAL], 30s tombstone grace.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "experimental-cold-start",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:1046 ZM-3 record (RX_COLD_ABANDON / SESSION_IDLE_HOLD / TOMBSTONE_GRACE named as [CAL] candidates requiring 4-decade ZM-2 validation)",
+   "evidence": [
+    "crates/kama-integration/src/receiver_host.rs:50 '/// SESSION_IDLE_HOLD [CAL] konservatif profil-türevi (F2; ≥ en-büyük per-block deadline).'",
+    "crates/kama-integration/src/receiver_host.rs:54 'const _: () = assert!(TOMBSTONE_GRACE_NS <= SESSION_IDLE_HOLD_NS);' (compile-time invariant pin)",
+    "PROFILE DIVERGENCE from shipped product: receiver_host uses 0x03 (E=64) at :43 while crates/client-core/src/runtime.rs:202 ships 0x05 (E=1024)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "HostError::FeatureNotImplemented",
+   "path_line": "crates/kama-integration/src/receiver_host.rs:76-78",
+   "kind": "enum-variant",
+   "purpose": "Typed stub for the not-yet-implemented A2 phase.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "gate": "experimental-cold-start",
+   "classification": "DELETE",
+   "spec_ref_or_none": "CLAUDE.md §6",
+   "evidence": [
+    "grep -rn 'FeatureNotImplemented' --include=*.rs crates/ -> only definitions; zero construction sites",
+    "The phase it stubbed is implemented: crates/kama-integration/src/receiver_host.rs:308 'pub fn on_datagram(' is a full implementation, contradicting the file header at :15-17 'Bu dosya A2-F0 iskeletidir: sahiplik-alanları + typed-stub imzalar' (stale doc)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "ReceiverHost::insert_active_session_for_test",
+   "path_line": "crates/kama-integration/src/receiver_host.rs:244",
+   "kind": "fn",
+   "purpose": "Install an active session slot with a hardcoded mock key ([0x11u8; 32]).",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-cold-start",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/src/receiver_host.rs:245 'self.install_session_with_keys(h_ext, &Zeroizing::new([0x11u8; 32]))' — a hardcoded key on a non-#[cfg(test)] public API surface",
+    "7 external callers, all in crates/kama-integration/tests/*",
+    "Should be #[cfg(test)] or moved to a test helper; as written it is a shipped-surface backdoor whenever the feature is enabled"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "ReceiverHost::tombstone_grace_deadline_ns",
+   "path_line": "crates/kama-integration/src/receiver_host.rs:238",
+   "kind": "fn",
+   "purpose": "Return the grace deadline for a given tombstone.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "gate": "experimental-cold-start",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -rn 'tombstone_grace_deadline_ns' --include=*.rs crates/ -> 1 hit total: crates/kama-integration/src/receiver_host.rs:238 (the definition). Zero callers anywhere."
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "ReceiverHost::on_datagram",
+   "path_line": "crates/kama-integration/src/receiver_host.rs:308",
+   "kind": "fn",
+   "purpose": "Real ingest flow: AEAD open -> inner demux -> {stateless echo | ParamState/profile gate -> two-level cold admission -> block assembly -> K-decode delivery}.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-cold-start",
+   "classification": "WIRE",
+   "spec_ref_or_none": "CLAUDE.md INV-FEC-1 (this is the path that actually enforces authenticate-before-decode)",
+   "evidence": [
+    "crates/kama-integration/src/receiver_host.rs:430 'match admit_and_decode(asm.shards, BOOTSTRAP_PROFILE_ID, asm.k_actual)' — the only non-test caller of the type-gated decoder",
+    "All callers are kama-integration tests/examples: tests/a2_f0_receiver_host.rs, a2_f2_product_ingest.rs, a2_f3_control_ingest.rs, a2_f5_plateau_product.rs, a2_c1b_unified_heal.rs, dr_cs3_bootstrap_rtt.rs, dr_cs3_panel_preflight.rs, examples/a2_rx_netem_runner.rs",
+    "The 'on_datagram' hits in crates/client-core/src/runtime.rs:2205,2300,2331 are a DIFFERENT method — 'slot.rx.on_datagram(' = adaptive_transport::receiver::Receiver::on_datagram (crates/adaptive-transport/src/receiver.rs:193)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "ReceiverHost::emit_recovered",
+   "path_line": "crates/kama-integration/src/receiver_host.rs:457",
+   "kind": "fn",
+   "purpose": "Emit an AEAD-sealed Control::Recovered with a monotonic control_id from ControlIdIssueGate (SACK-return-supply budget share).",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-cold-start",
+   "classification": "WIRE",
+   "spec_ref_or_none": "specs/kama-noise-wire-tdd-v2.0.md §2.56 (0x12 = RECOVERED); specs/adaptive-transport-engine-spec.md:804 confirms 0x12=RECOVERED authority",
+   "evidence": [
+    "6 external callers, all kama-integration tests",
+    "DUPLICATE with a different wire shape and no control-id gate in the product: crates/client-core/src/wire.rs:176 'pub fn encode_recovered(block_id: u32, esis: &[u16]) -> Vec<u8>' (flat esi LIST) called at crates/client-core/src/runtime.rs:2276, :2365, :2430 — vs Control::Recovered{id, block_id, esi_ranges} (esi RANGES) at receiver_host.rs:475-479",
+    "The product path never consumes ControlIdIssueGate: grep -rln 'ControlIdIssueGate' --include=*.rs crates/ -> no client-core file"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "ReceiverHost::take_pending_cs_echo / emit_cs_echo / cs_echo_budget / end_emission_batch",
+   "path_line": "crates/kama-integration/src/receiver_host.rs:494,508,537,542",
+   "kind": "fn",
+   "purpose": "Drain the typed pending echo action, emit the bounded sealed 0x1A echo, expose the observation-only budget triple, and close the emission batch (resets RECOVERED burst + control-id gate counters).",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-cold-start",
+   "classification": "WIRE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "end_emission_batch: 1 external caller (test); cs_echo_budget/take_pending_cs_echo/emit_cs_echo: kama-integration tests only",
+    "The product has no batch boundary and no echo budget — crates/client-core/src/runtime.rs:2370-2381 emits directly on each probe"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "ReceiverHost::on_patience_tick / close_session / expire_tombstone",
+   "path_line": "crates/kama-integration/src/receiver_host.rs:553,599,656",
+   "kind": "fn",
+   "purpose": "Non-renewable per-block patience deadline sweep, two-phase close (precompute sealed CLOSE-ACK, reserve tombstone, then destructive teardown), and grace expiry.",
+   "called_from_product": false,
+   "only_from": "test",
+   "gate": "experimental-cold-start",
+   "classification": "WIRE",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:1046 (ZM-3 lists per-block patience-deadline / SESSION_IDLE_HOLD / TOMBSTONE_GRACE as receiver-monotonic mechanisms)",
+   "evidence": [
+    "on_patience_tick 5 external callers, expire_tombstone 4, close_session 18 — all kama-integration tests",
+    "The shipped product has NO patience/tombstone/close lifecycle at all: crates/client-core/src/runtime.rs only evicts blocks by count at :1988 (RX_BLOCKS_CAP) with no time-based abandonment"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "ReceiverHost diagnostics (cs_echo_count, delivered_count, global_cold, session_count, tombstone_count, tombstone_registry_count, default_grace_deadline_ns)",
+   "path_line": "crates/kama-integration/src/receiver_host.rs:201,297,214,220,226,232,208",
+   "kind": "fn",
+   "purpose": "Observation-only accessors for cold-ledger/lifecycle state.",
+   "called_from_product": false,
+   "only_from": "diagnostic-only",
+   "gate": "experimental-cold-start",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/src/receiver_host.rs:296 '/// Teslim-edilen app-payload sayısı (product-gözlem; F2-kabul).'",
+    "All callers are kama-integration tests (global_cold 20, tombstone_count 13, delivered_count 5, cs_echo_count 5, default_grace_deadline_ns 1)"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "kama-integration examples fs_compare_v2 / dr_cs3_panel_runner (default-build, no required-features)",
+   "path_line": "crates/kama-integration/Cargo.toml:69",
+   "kind": "module",
+   "purpose": "Analysis comparator and DR-CS-3 panel runner. Both build in the default feature set; dr_cs3_panel_runner is not even declared in Cargo.toml (auto-discovered) and #[path]-includes a tests/common module.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/kama-integration/Cargo.toml:68-69 '[[example]] name = \"fs_compare_v2\"' with NO required-features line (contrast :52-53, :57-58, etc.)",
+    "grep -n 'dr_cs3_panel_runner' crates/kama-integration/Cargo.toml -> no match; the file exists at crates/kama-integration/examples/dr_cs3_panel_runner.rs",
+    "crates/kama-integration/examples/dr_cs3_panel_runner.rs:13-14 '#[path = \"../tests/common/dr_cs3_panel.rs\"] mod dr_cs3_panel;' — test harness code compiled into a default-build example"
+   ],
+   "product_call_sites": []
+  },
+  {
+   "symbol": "kama-integration tests/ + examples/ tree (24 test files, 11 examples, tests/common/*)",
+   "path_line": "crates/kama-integration/tests/pipeline.rs:1",
+   "kind": "module",
+   "purpose": "The FS-1 / DR-CS / DR-ARQ campaign spines, pins, dry-run and manifest machinery.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/Kama_M2_Claude_Code_Atomik_Yurutme_Plani_2026-08-15.md:356-358 (names fs_cal2 spine/schema/pins files)",
+   "evidence": [
+    "crates/kama-integration/Cargo.toml:8-10 '// Sprint-5a: ENGINE-SEVİYESİ cross-crate integration harness (tests/).'",
+    "adaptive-transport is [dev-dependencies] (crates/kama-integration/Cargo.toml:45), so every test that drives a real Sender does so only in test builds"
+   ],
+   "product_call_sites": []
+  }
+ ],
+ "cal_markers": [
+  "crates/kama-engine/src/lib.rs:22 — '/// DR-CS-1b/A2 — SESSION-LOCAL cold-rx state (K-8/K-9 sahiplik-sınırlarıyla; [CAL]-SEALED sabitler).'",
+  "crates/kama-engine/src/cold_rx_state.rs:24 — '//! [CAL]-SEALED sabitler (freeze-r2, sha256=5b298244…): TUNING/GEVŞETME YASAK.'",
+  "crates/kama-engine/src/cold_rx_state.rs:25 — '//! CONTROL_DEDUP_WINDOW BURADA YOK (CANDIDATE; CAL-10/F-CID-0; noise-wire).'",
+  "crates/kama-engine/src/cold_rx_state.rs:32 — '// ---- [CAL]-SEALED sabitler (freeze-r2 §3 birebir) ----' (governs the 9 caps at :35-54)",
+  "crates/kama-engine/src/error.rs:37 — '/// Cold-cap aşımı: sessiz-eviction YOK, typed-reject (INV-CS-RX-RESOURCE; [CAL]-freeze-r2).'",
+  "crates/kama-integration/src/receiver_host.rs:50 — '/// SESSION_IDLE_HOLD [CAL] konservatif profil-türevi (F2; ≥ en-büyük per-block deadline).'",
+  "NOTE: zero literal [CAL] markers in crates/adaptive-transport/src/{udp_runner.rs,fs_harness.rs,fs_trace.rs}. Their calibration-adjacent frozen constants are marked with other words and are listed here for completeness: crates/adaptive-transport/src/fs_harness.rs:900 '§17/§18 DEADLINE GEOMETRY (arm-independent; ratified formula; v1.3-DONDURULMADI)'; :921 'N_recovery=2, M_fixed=50ms (OUTCOME-BLIND inherited design-constants; §19)' realised at :925-926; :963 'F4 confidence-öncesi FROZEN muhafazakâr-K'; :1496 '§17/§18 DEADLINE-GEOMETRY pin (v1.3-aday; frozen-DEĞİL)'; :1517 'F4 mechanism pin (PIN-D) ... (frozen-kural)'"
+ ],
+ "todo_wiring": [
+  "crates/kama-integration/src/receiver_control_core.rs:8-9 — 'Those belong to a future product runtime consumer (PRODUCT-RUNTIME-INTEGRATION-PENDING.md). Nothing here can be run by a user on its own.' Backing debt doc exists at reports/dr-cs-3/PRODUCT-RUNTIME-INTEGRATION-PENDING.md.",
+  "crates/kama-integration/Cargo.toml:10 — 'adaptive-transport prod-dep'i F1'de (kompozisyon-doldurma) gelir.' Still unmet: adaptive-transport remains [dev-dependencies] at crates/kama-integration/Cargo.toml:45.",
+  "crates/kama-integration/src/receiver_host.rs:15-17 — 'Bu dosya A2-F0 iskeletidir: sahiplik-alanları + typed-stub imzalar. Gerçek ingest-akışı (open-demux → cold-gate → transport-Receiver) A2-F1'de kablolanır; adaptive-transport prod-dep'i o dilimde eklenir.' STALE: on_datagram at :308 is fully implemented, yet the promised prod-dep never landed.",
+  "crates/kama-engine/src/error.rs:33 — '/// A2-fazı henüz uygulanmadı (typed-stub; reachable todo!() YASAK — CLAUDE.md §6).' The variant is never constructed anywhere.",
+  "crates/kama-integration/src/receiver_host.rs:76 — '/// A2-fazı henüz uygulanmadı (typed-stub).' Same: never constructed.",
+  "crates/kama-integration/src/receiver_host.rs:288-290 — '// Product: gerçek-handshake-Split() directional-key'leri (Sprint-6); burada test-only directional key-injection (gerçek-handshake İDDİA EDİLMEZ).' Handshake wiring deferred to Sprint-6.",
+  "crates/client-core/src/seam.rs:4-5 + :15 — 'bugün IdentitySeam (stub, +16 B byte-eşdeğer sahte tag), S2'de kama-noise-wire aynı dikiş-noktasına takılır' / 'GÜVENLİK İDDİASI YOK'. This is the reason the product ingress cannot use kama_engine::admit_and_decode's OpenedTransportShard type-gate.",
+  "crates/client-core/src/runtime.rs:136 — 'PARAM-bootstrap bağlaması S2/B-hattı kama_engine::param_state' — deferred binding note on the product PARAM path.",
+  "crates/kama-engine/src/recovered_map.rs:15-16 — 'engine-üretimi adaptive-transport'a bağlanmaz — kompozisyon-kökü/test eşler.' The composition root (client-core) does not use it; only tests do."
+ ],
+ "duplicate_control_loops": [
+  "FEC INGRESS / REASSEMBLY — three independent implementations of the same quantity. (1) SPECIFIED, type-gated: kama_engine::admit_and_decode (crates/kama-engine/src/admission.rs:26), reachable only via the wrapper crates/client-core/src/lib.rs:107-110 which has zero product callers. (2) FEATURE-GATED HARNESS: crates/kama-integration/src/receiver_host.rs:427-430. (3) SHIPPED: crates/client-core/src/runtime.rs:1886 fn fec_ingest -> :1945 RsSimdCodec.reconstruct(p, &recv, 0) + its own SourcePrefix parse at :1954-1961. The shipped one takes raw Vec<u8> and therefore bypasses the OpenedTransportShard AEAD witness that INV-FEC-1 relies on. runtime.rs:1881-1882 openly calls itself 'receiver_host'taki sayım-bug'ının DÜZELTİLMİŞ hâli'.",
+  "RX BLOCK CAP — opposite policies for the same resource. Harness: crates/adaptive-transport/src/udp_runner.rs:26 cold_admit_new_block REJECTS a new block, never evicts ('sessiz-eviction-yok'). Engine (gated): crates/kama-engine/src/cold_rx_state.rs:35-46 typed-reject caps. Shipped: crates/client-core/src/runtime.rs:1632 RX_BLOCKS_CAP=32 + :1988-1996 while-loop EVICTING the oldest block. The shipped product does exactly what the other two forbid.",
+  "PRE-PARAM HOLD — kama_engine::PreParamHold (crates/kama-engine/src/preparam_hold.rs:17, cap 256, holds OpenedTransportShard) vs the shipped crates/client-core/src/runtime.rs:1817 'pre_param_fec: Vec<(FecFrameHeader, Vec<u8>)>' with :1821 PRE_PARAM_FEC_CAP=64. Different cap, different element type; the engine version's 'only authenticated shards are buffered' guarantee is absent from the product.",
+  "PARAM_ACK CONFIRMATION — kama_engine::ParamAckTracker (crates/kama-engine/src/param_bootstrap.rs:47-82) vs the inline bool in the product at crates/client-core/src/runtime.rs:941 and :1172-1176. Identical semantics, zero shared code; the engine version has zero product callers.",
+  "RECOVERED (block,esi)->unit_id RESOLUTION — kama_engine::RecoveredMap ledger with bounded eviction (crates/kama-engine/src/recovered_map.rs:26,44,63, cap 4096) vs the product's arithmetic derivation at crates/client-core/src/runtime.rs:1189-1191 and :1953. Also two different RECOVERED wire encodings: Control::Recovered{esi_ranges} + control-id gate at crates/kama-integration/src/receiver_host.rs:475-479 vs the flat esi-list frame crates/client-core/src/wire.rs:176 used at runtime.rs:2276/2365/2430.",
+  "CS-PROBE ECHO RESPONDER — three implementations. Bounded, Control-schema, AEAD-sealed: crates/kama-integration/src/receiver_control_core.rs:86-162 (MAX_ECHOES=4, ECHO_BUDGET_BYTES=172). Gated overlay delegating to it: crates/kama-integration/src/receiver_host.rs:508-534. Shipped, UNBOUNDED, raw-byte: crates/client-core/src/wire.rs:258 encode_cs_echo driven at crates/client-core/src/runtime.rs:2377 with only a per-packet size assert (:2378) and no echo-count cap.",
+  "ADAPTIVE BLOCK-K SELECTION — crates/adaptive-transport/src/fs_harness.rs:973 f4_select_k reads the real sender::PathTimingState and picks K in {2,4,8} by RTT region, but is called only from crates/kama-integration/tests/common/fs_spine.rs:376. The shipped product has no K controller at all: crates/client-core/src/runtime.rs:922/2025 resolves a single static profile via by_id(f.profile_id), shipping 0x05/K_shape 8 (runtime.rs:202) while the harness models 0x01/0x02/0x03 at E=64 (fs_harness.rs:954-960).",
+  "SEALED-FRAME OVERHEAD CONSTANT — crates/adaptive-transport/src/fs_harness.rs:51 FS_SHARD_FRAMING_BYTES=37 is a hand-copied mirror of crates/kama-transport-schema/src/lib.rs:41 EXTENDED_OUTER_OVERHEAD=26 + crates/kama-noise-wire/src/inner.rs:76 FEC_INNER_HDR_LEN=11, which the authority computes at crates/kama-noise-wire/src/protector.rs:363. No compile-time assert links the two; every FS-1 byte-budget claim rests on the mirror staying in sync.",
+  "DELIVERY DEADLINE — crates/adaptive-transport/src/fs_harness.rs:924 fs_deadline_ms computes T_serialize + 2xRTT + 50ms from channel geometry (test-only). The product deadline arrives from config through crates/client-core/src/runtime.rs:1271 declare_delivery_deadline -> crates/adaptive-transport/src/sender.rs:4118. Two unrelated notions of 'the deadline' with no shared derivation.",
+  "SESSION / CONTROL-PLANE BOOKKEEPING — ControlDedupWindow, ControlIdIssueGate, HandleRouter, SessionManager, SessionLifecycle, DedupDecision and decode_control are consumed ONLY by crates/kama-integration/src/{receiver_host.rs,receiver_control_core.rs} and by tests (grep -rln over crates/ returns no client-core file for any of them). The shipped runtime substitutes its own crates/client-core/src/seam.rs IdentitySeam plus first-byte frame dispatch at crates/client-core/src/runtime.rs:2109-2126."
+ ],
+ "notes": "SCOPE VERIFICATION: HEAD (audit/transport-v1-closure @ 15133be4) is byte-identical to wip/c4-attrib for every in-scope path — `git diff --stat HEAD wip/c4-attrib -- <scope>` returns empty. Read-only audit; no cargo invoked, no files modified.\n\nHEADLINE 1 — ALL THREE adaptive-transport scope modules are excluded from the default build. crates/adaptive-transport/src/lib.rs:37, :40 and :56 each carry `#[cfg(feature = \"experimental-fec-budget\")]`, and that feature is declared empty/default-OFF at crates/adaptive-transport/Cargo.toml:18. 3464 lines (udp_runner 1119 + fs_harness 1601 + fs_trace 744) never compile into a product build. Zero product call sites exist for any symbol in them; every consumer is an example or a test in crates/adaptive-transport/{examples,tests} or crates/kama-integration/{examples,tests}.\n\nHEADLINE 2 — crates/kama-integration has ZERO dependents. `grep -rn \"kama-integration\" crates/*/Cargo.toml` returns only its own manifest line. The whole crate — including the UNGATED receiver_control_core (crates/kama-integration/src/lib.rs:15) — is unreachable from any shipped binary. Only crates/bench declares a [[bin]] (crates/bench/Cargo.toml:29-31). receiver_control_core.rs:9 states this itself: \"Nothing here can be run by a user on its own.\"\n\nHEADLINE 3 — crates/kama-engine IS on the product path (crates/client-core/Cargo.toml:21), but only 4 of its 12 public exports are reached, and the most important one is not. Reached: EngineError, plan_param_bootstrap, ParamState (+ on_param_set/is_confirmed). NOT reached from the product runtime: admit_and_decode (only via the never-called ClientSession::admit wrapper), ParamAckTracker, ParamSetPlan.start_fec_immediately, BoundParam, ParamState::bound/bound_profile_id, PreParamHold, MAX_PREPARAM_SHARDS, RecoveredMap, ResolvedRecovered, RECOVERED_MAP_CAP, and the entire cold_rx_state module. crates/kama-engine/Cargo.toml:23 keeps adaptive-transport as a dev-dependency, so the engine never drives the transport in a product build by design.\n\nHEADLINE 4 — the single most consequential finding for v1: the product ingress does NOT go through the INV-FEC-1 type gate. kama_engine::admit_and_decode is the specified authenticate-before-decode boundary (its only argument type, OpenedTransportShard, is constructible solely via protector.open()). The shipped runtime instead reassembles raw `Vec<u8>` symbols at crates/client-core/src/runtime.rs:1886-1996. The root cause is upstream of this module: crates/client-core/src/seam.rs ships IdentitySeam, a stub with \"GÜVENLİK İDDİASI YOK\" (:15) and a fake 16-byte tag, so there is no AEAD witness to gate on. Closing this is the Sprint-6 Noise work; until then no INV-FEC-1 claim can be made about the product path, only about the receiver_host/kama-engine path that is compiled out.\n\nFEATURE MATRIX (all default OFF): adaptive-transport {experimental-fec-budget :18, experimental-cold-start :21, diag-sched-telemetry :27}; kama-engine {experimental-cold-start :13}; kama-integration {experimental-cold-start :17, diag-sched-telemetry :23, experimental-fs-harness :28}; client-core {diag-sched-telemetry :37 only — it never forwards experimental-cold-start or experimental-fec-budget, so no product build can reach cold_rx_state, receiver_host, fs_harness, fs_trace or udp_runner}. Notably udp_runner contains 36 nested `#[cfg(feature = \"experimental-cold-start\")]` blocks plus 8 `cfg(not(...))` counterparts, and the two builds differ behaviourally by 13x on one horizon (crates/adaptive-transport/src/udp_runner.rs:252-255, idle_abandon 105s vs 8s) — that module is effectively two programs.\n\nCLASSIFICATION SUMMARY: SHIP 4 (kama-engine crate edge, EngineError, plan_param_bootstrap, ParamState). WIRE 8 (admit_and_decode; receiver_control_core module + BootstrapEchoResponder + ReceiverControlCore + MAX_CORE_SESSIONS; receiver_host module + on_datagram + emit_recovered + echo/lifecycle methods) — every one is required by the architecture or named by a spec/debt doc yet disconnected. DELETE 16 (udp_runner::UNIT, RunnerCfg::ticket_cap, the f10/f15/f20 alias branch, fs_harness::{PacketSink, A1EarlyEmitter, RedundancyEmissionPolicy, a1_emission_order}, fs_trace::{TraceSpec::NaturalBurst, RedundancyPolicy::Iid}, EngineError::{FeatureNotImplemented, ParamNotConfirmed, ParamNeverArrived}, HostError::FeatureNotImplemented, ParamSetPlan::start_fec_immediately, ParamAckTracker, PreParamHold, RecoveredMap, ParamState::{bound, bound_profile_id}, BootstrapEchoResponder::reset, ReceiverHost::{insert_active_session_for_test, tombstone_grace_deadline_ns}). The rest is KEEP-EXPERIMENTAL and correctly default-OFF.\n\nSEVERITY FLAG on ReceiverHost::insert_active_session_for_test (crates/kama-integration/src/receiver_host.rs:244-246): a non-#[cfg(test)] public method that installs a session with the hardcoded key [0x11u8; 32]. Harmless today because the crate has no dependents and the method is behind experimental-cold-start, but it must not survive into any product composition root.\n\nITEMS THAT ARE COMPUTED-BUT-NEVER-CONSUMED: ParamSetPlan.start_fec_immediately (set true at param_bootstrap.rs:40, never read); RunnerCfg.ticket_cap (declared \"bilgi-amaçlı\", never read by to_policy); PathTimingLedger (fs_harness.rs:434 doc: \"KARAR-İÇİN-TÜKETMEZ; yalnız gözlem\"); TailRecoveryPath (fs_harness.rs:393: \"yalnız-gözlem; Sender-fix YOK\"); BlockTiming/ParityDelayClass (reported only via println! in examples/fs_runner.rs:123,175)."
+}

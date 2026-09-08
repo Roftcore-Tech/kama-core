@@ -1,0 +1,1674 @@
+{
+ "module": "sender-a (crates/adaptive-transport/src/sender.rs lines 1-2800: types, configs, constants, Sender fields/new, event dispatch, cold-start/cs_* code)",
+ "items": [
+  {
+   "symbol": "SenderState",
+   "path_line": "crates/adaptive-transport/src/sender.rs:53",
+   "kind": "enum-variant",
+   "purpose": "9-state sender FSM (Idle/PreConverge/Startup/Drain/ProbeUp/Steady/RecoverArq/RecoverFwd/DrainRtprop).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:200-228 §3 (state list + ACTIVE set + priority)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1395-1403 (state() -> string mapping, all 9 variants matched)"
+   ],
+   "evidence": [
+    "sender.rs:53 pub enum SenderState",
+    "internal use counts (lines <6000): PreConverge 18, Steady 9, Startup 9, RecoverArq 6, ProbeUp 6, DrainRtprop 5, Drain 5, RecoverFwd 4, Idle 4",
+    "client-core/src/runtime.rs:1395 adaptive_transport::sender::SenderState::Idle => \"Idle\" ... :1403 RecoverFwd"
+   ]
+  },
+  {
+   "symbol": "OpaqueUnit",
+   "path_line": "crates/adaptive-transport/src/sender.rs:78",
+   "kind": "struct",
+   "purpose": "Opaque unit identity+size (INV-ENGINE-SOC: transport holds no bytes/AEAD).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:27-29 §0.2 Transport⟂Kripto SoC",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1322 drive!(Event::AppData(OpaqueUnit { id, size }), now)"
+   ],
+   "evidence": [
+    "sender.rs:78 pub struct OpaqueUnit",
+    "client-core/src/lib.rs:45 pub use adaptive_transport::sender::{Event, OpaqueUnit, Sender, TransmitDecision, TransmitKind}"
+   ]
+  },
+  {
+   "symbol": "Event::AppData / AckReceived / TimerFired / RecoveredControl",
+   "path_line": "crates/adaptive-transport/src/sender.rs:88",
+   "kind": "enum-variant",
+   "purpose": "Main-loop input events (§3).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:246 §3 event dispatch",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1322 Event::AppData",
+    "crates/client-core/src/runtime.rs:1228 Event::AckReceived",
+    "crates/client-core/src/runtime.rs:1326/1344/1373 Event::TimerFired(Timer::Pto|RtpropProbe)",
+    "crates/client-core/src/runtime.rs:1203 Event::RecoveredControl"
+   ],
+   "evidence": [
+    "sender.rs:88 pub enum Event",
+    "sender.rs:2169-2199 on_event_core match arms"
+   ]
+  },
+  {
+   "symbol": "Event::Tick",
+   "path_line": "crates/adaptive-transport/src/sender.rs:101 (cfg at :100)",
+   "kind": "feature-gated-block",
+   "purpose": "Empty-batch tick for the DR-CS-1 cold-start batch API; Tick ≡ on_event_batch{inbound=[]}.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "cargo feature experimental-cold-start (default OFF; declared crates/adaptive-transport/Cargo.toml:20-22; NOT enabled by client-core or bench)",
+   "spec_ref_or_none": "none (DR-CS-1 M1 design note, not in specs/)",
+   "evidence": [
+    "sender.rs:100-102 #[cfg(feature = \"experimental-cold-start\")] Tick",
+    "producers repo-wide: only crates/adaptive-transport/tests/dr_cs1_acceptance.rs:68,77",
+    "sender.rs:2128 matches!(event, Event::Tick) inside cfg block; :2191 Event::Tick => {}"
+   ]
+  },
+  {
+   "symbol": "Event::CsProbeEcho",
+   "path_line": "crates/adaptive-transport/src/sender.rs:108",
+   "kind": "enum-variant",
+   "purpose": "Authenticated 0x1A CS-echo ingest -> bootstrap RTT sample. Explicitly UNGATED (codepoint ships in kama-transport-schema).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:801-850 §11.1 (0x19 CTRL_CS_PROBE / 0x1A CTRL_CS_ECHO, DR-CS-1 supersession of 0x12)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1107 drive!(Event::CsProbeEcho { probe_seq }, $now)",
+    "crates/client-core/src/runtime.rs:2311 RxFrame::CsProbe decode arm"
+   ],
+   "evidence": [
+    "sender.rs:108-111 CsProbeEcho { probe_seq } (doc: DR-CS-3: UNGATED)",
+    "sender.rs:2196-2198 dispatch calls cs_on_probe_echo (cfg) AND bs_on_echo (always)"
+   ]
+  },
+  {
+   "symbol": "CsTimerKind",
+   "path_line": "crates/adaptive-transport/src/sender.rs:120 (cfg at :118)",
+   "kind": "enum-variant",
+   "purpose": "Exposed-timer kinds for the cold-start batch machine: TestHook / CsProbe / BootstrapPto / CsGiveup.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "experimental-cold-start (default OFF)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:118 #[cfg(feature = \"experimental-cold-start\")] enum CsTimerKind",
+    "CsTimerKind::TestHook doc at :121 says 'TEST-ONLY (DI-12E/F/G)'; fired only into cs_hook_fired (sender.rs:2716)"
+   ]
+  },
+  {
+   "symbol": "CsTimerKind::TestHook",
+   "path_line": "crates/adaptive-transport/src/sender.rs:122",
+   "kind": "enum-variant",
+   "purpose": "Test-only timer that records a fire and does nothing else.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "experimental-cold-start (default OFF)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:122 /// TEST-ONLY (DI-12E/F/G F1-sürümleri): fire-kaydı üretir, başka-etkisi-yok.",
+    "armed only via cs_test_arm_hook_timer (sender.rs:2870, #[doc(hidden)])",
+    "sole callers: crates/adaptive-transport/tests/dr_cs1_acceptance.rs:76,96,137,167"
+   ]
+  },
+  {
+   "symbol": "CsTerminal",
+   "path_line": "crates/adaptive-transport/src/sender.rs:143 (cfg at :141)",
+   "kind": "enum-variant",
+   "purpose": "Cold-start bootstrap terminal outcome (ResolvedByDataAck/ResolvedByProbeEcho/TimedOut/PostTimeoutRecovery).",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "experimental-cold-start (default OFF)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:141-143",
+    "drained by take_cs_terminal (sender.rs:2827); consumers: crates/adaptive-transport/src/udp_runner.rs:893 (itself behind experimental-fec-budget, lib.rs:56-57) + tests only",
+    "no client-core / kama-engine caller"
+   ]
+  },
+  {
+   "symbol": "PostTimeoutCause / PostTimeoutNotice",
+   "path_line": "crates/adaptive-transport/src/sender.rs:157 / :169 (cfg at :155/:167)",
+   "kind": "struct",
+   "purpose": "One-slot post-TimedOut recovery notice (DataAckClocked | RecoveredControl) for the product layer.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "experimental-cold-start (default OFF)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:155-176",
+    "written by record_post_timeout_notice (sender.rs:2836), drained by take_post_timeout_notice (sender.rs:2849)",
+    "take_post_timeout_notice external callers: only crates/adaptive-transport/tests/a2_f4_post_timeout_notice.rs (18 hits, all tests) — doc calls it 'ürün-katmanı pull-API' but there is no product caller"
+   ]
+  },
+  {
+   "symbol": "CsSrttSource",
+   "path_line": "crates/adaptive-transport/src/sender.rs:183 (cfg at :181)",
+   "kind": "enum-variant",
+   "purpose": "Which path established bootstrap srtt (DataAck | ProbeEcho).",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "experimental-cold-start (default OFF)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:181-189",
+    "read only by diag_cs_bootstrap (sender.rs:2857) -> udp_runner.rs:886,1012 + tests"
+   ]
+  },
+  {
+   "symbol": "CS_PROBE_FIRES_NS / CS_PROBE_WIRE_MAX / CS_PROBE_TX_HARD_BUDGET / CS_GIVEUP_NS",
+   "path_line": "crates/adaptive-transport/src/sender.rs:192 / :194 / :196 / :198",
+   "kind": "const-knob",
+   "purpose": "Legacy DR-CS-1 F2A cold-start ladder constants (3/9/21/45 s; 44 B; 200 B; 60 s giveup).",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "experimental-cold-start (default OFF)",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:801-850 §11.1 (probe/echo semantics); numeric ladder is a [CAL] design-note value, not in spec",
+   "evidence": [
+    "sender.rs:190 '── DR-CS-1 M2 [CAL] sabitleri (F2A) ──'",
+    "consumers: CS_PROBE_FIRES_NS:5726, CS_PROBE_WIRE_MAX:2751,2783,2796,2803, CS_PROBE_TX_HARD_BUDGET:2752, CS_GIVEUP_NS:5732 — all inside cfg blocks",
+    "byte-identical duplicate of the shipping BS_FIRES_NS (sender.rs:1019) — see duplicate_control_loops"
+   ]
+  },
+  {
+   "symbol": "RecoveredInfo / RecoveredUnit",
+   "path_line": "crates/adaptive-transport/src/sender.rs:204 / :211",
+   "kind": "struct",
+   "purpose": "RECOVERED-control input: engine-translated unit_id + logical (block_id, esi) for retransmit-cancel and the logical ledger.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none in specs/ (DR-S5-4); adjacent to specs/adaptive-transport-engine-spec.md:102-103 0x12 RECOVERED codepoint",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1138 units.push(RecoveredUnit {...})",
+    "crates/client-core/src/runtime.rs:1144/1203 drive!(Event::RecoveredControl(RecoveredInfo { units }))"
+   ],
+   "evidence": [
+    "sender.rs:204,211",
+    "crates/kama-engine/src/recovered_map.rs:15 maps engine refs to transport RecoveredUnit"
+   ]
+  },
+  {
+   "symbol": "PathTimingState / Sender::path_timing_snapshot",
+   "path_line": "crates/adaptive-transport/src/sender.rs:228 (type) / :5903 (accessor)",
+   "kind": "struct",
+   "purpose": "Absolute-magnitude RTT/queue-delay snapshot forwarded to the experimental FEC selector; FusionInputs only carries ratios.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none (FS-5A / DR-FEC-FS-1 design note)",
+   "evidence": [
+    "sender.rs:234-235 doc: 'Üretim-çağıranı YOK (flag-OFF byte-özdeş)'",
+    "only internal caller: sender.rs:2537 inside tail_probe_deadline_ns",
+    "tail_probe_deadline_ns (sender.rs:2532) is called only from next_timer_deadline_ns:2521, which is called only from next_wakeup_ns:2433 — and next_wakeup_ns has ZERO product callers (see next_wakeup_ns item)",
+    "other consumers: crates/adaptive-transport/src/fs_harness.rs:756,1026,973 (module behind experimental-fec-budget, lib.rs:40-41) + tests"
+   ]
+  },
+  {
+   "symbol": "FecActuationMode",
+   "path_line": "crates/adaptive-transport/src/sender.rs:248",
+   "kind": "enum-variant",
+   "purpose": "Single FEC actuation authority: Manual{enabled} | Controller. Default Manual{false}.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:645-661 §8.4 (FEC policy) — mode enum itself is Commit-G, not in spec",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:864-877 set_fec_actuation_mode(Manual{enabled:true} | Controller) when cfg.fec.is_some()"
+   ],
+   "evidence": [
+    "sender.rs:248-256",
+    "sender.rs:1823 new_internal: fec_mode: FecActuationMode::Manual { enabled: false }",
+    "product default RuntimeConfig::default().fec = None (client-core/src/runtime.rs:199) ⇒ mode stays Manual{false} on the default path"
+   ]
+  },
+  {
+   "symbol": "GateOutcome + GateOutcome::index + GATE_OUTCOME_KINDS",
+   "path_line": "crates/adaptive-transport/src/sender.rs:258 / :278 / :292",
+   "kind": "enum-variant",
+   "purpose": "Named exit points of the Q18 structure gate, for a 7-bucket histogram.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (Q18-FIX; specs/ has no 'structure gate' at all — grep over specs/*.md returns 0 hits)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1523 gate_outcomes: session.sender().diag_gate_outcomes()",
+    "crates/client-core/src/runtime.rs:434 doc reference to GateOutcome::index"
+   ],
+   "evidence": [
+    "sender.rs:3542 self.diag_gate_outcomes[outcome.index()] += 1 (inside fuzzy_evaluate, product-reachable via on_event_core:2199)",
+    "sender.rs:3649 fn structure_gate_fec(..) -> GateOutcome",
+    "diagnostic-only: no decision reads the histogram"
+   ]
+  },
+  {
+   "symbol": "InitialWindowConfig",
+   "path_line": "crates/adaptive-transport/src/sender.rs:315",
+   "kind": "config-field",
+   "purpose": "PreConverge first-flight burst-cap floor (fixes a pacer clamp that threw away TokenBucket's initial DEFAULT_BURST_CAP credit).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:301-314 §3.3 (R3 channel-derived restore-burst / micro-burst cap) — the IW floor itself is not in spec",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:855-858 set_initial_window(InitialWindowConfig { bytes: cfg.initial_window_bytes })",
+    "crates/client-core/src/runtime.rs:195 default initial_window_bytes = adaptive_transport::pacer::DEFAULT_BURST_CAP (ON in product)"
+   ],
+   "evidence": [
+    "sender.rs:315-318 struct; derive(Default) ⇒ transport default bytes=0 = OFF",
+    "sender.rs:1716 initial_window field; :1951 initial_window: InitialWindowConfig::default() (engine default OFF)",
+    "consumed at sender.rs:2237-2247 (burst_lo/burst_hi clamp, PreConverge only)",
+    "sender.rs:313 marker 'KALİBRE EDİLMEMİŞ: default flip ölçüm ister' — yet the product HAS flipped it ON"
+   ]
+  },
+  {
+   "symbol": "FecLossRiskConfig",
+   "path_line": "crates/adaptive-transport/src/sender.rs:346",
+   "kind": "config-field",
+   "purpose": "Speculative FEC loss-risk lane (Suspected-weighted risk -> L0/L1/L2 proposal). 15 knobs.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (specs/ contains no 'speculative'/'spekülatif' FEC lane; §8.4 only defines fuzzy fec_parity_ratio)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:843 session.sender_mut().set_fec_loss_risk(cfg.fec_loss_risk)",
+    "crates/client-core/src/runtime.rs:204 RuntimeConfig::default().fec_loss_risk = FecLossRiskConfig::bounded_v1()"
+   ],
+   "evidence": [
+    "sender.rs:346-393 struct; :396-416 Default (enabled: false)",
+    "sender.rs:1690 field; :1932 fec_loss_risk: FecLossRiskConfig::default() (engine default OFF)",
+    "consumed sender.rs:3440-3448 (persist horizon), 4315-4359 (speculative_proposal)",
+    "INERT unless cfg.fec is Some — product default fec: None (runtime.rs:199)"
+   ]
+  },
+  {
+   "symbol": "FecLossRiskConfig::bounded_v1",
+   "path_line": "crates/adaptive-transport/src/sender.rs:435",
+   "kind": "fn",
+   "purpose": "FEC v1 closure policy: A 250-250-250 + persistence P2 (LearnedSpuriousAge) + C4 guard G1 (reorder_suppress 300‰).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (reports/fec-loss-risk-v1/closure)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:204 fec_loss_risk: FecLossRiskConfig::bounded_v1()"
+   ],
+   "evidence": [
+    "sender.rs:435-448",
+    "grep -rn bounded_v1 crates/bench/ -> 0 hits: the bench 'kama-product' arm NEVER runs the shipped default; it overrides with experimental_v1() or default() at crates/bench/src/kama_product.rs:189-191",
+    "product pin: crates/client-core/tests/product_profile_v1.rs:65 asserts reorder_suppress_permille == 300"
+   ]
+  },
+  {
+   "symbol": "FecLossRiskConfig::experimental_v1",
+   "path_line": "crates/adaptive-transport/src/sender.rs:421",
+   "kind": "fn",
+   "purpose": "Research arm: enabled=true with all [CAL] defaults (125/250, FixedSrtt, no G1 guard).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:421-427",
+    "sole non-test caller: crates/bench/src/kama_product.rs:189 FecLossRiskConfig::experimental_v1()",
+    "superseded for product by bounded_v1 (sender.rs:435)"
+   ]
+  },
+  {
+   "symbol": "FecLossRiskConfig knobs never set by the product runtime",
+   "path_line": "crates/adaptive-transport/src/sender.rs:368-388",
+   "kind": "const-knob",
+   "purpose": "persist_cap_srtt_permille, l1_min_instant_ppm, l2_min_persistent_ppm, reorder_min_evidence_units, reorder_discount_max_permille, tight_budget_permille, spec_min_permille — all consumed by the decision, none reachable from RuntimeConfig.",
+   "called_from_product": false,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:406-412 defaults (u32::MAX, 10_000, 10_000, 8, 500, 2_500, 63)",
+    "consumed sender.rs:3446-3447, 4315, 4320-4321, 4325, 4334, 4352-4359",
+    "crates/client-core/src/runtime.rs RuntimeConfig exposes only the whole FecLossRiskConfig; bench overrides only bootstrap_cap/persistent_cap/persist_mode/persist_srtt/persist_rho/persist_q/reorder_suppress (kama_product.rs:193-220) — the seven above are NEVER set by any caller"
+   ]
+  },
+  {
+   "symbol": "PersistMode",
+   "path_line": "crates/adaptive-transport/src/sender.rs:452",
+   "kind": "enum-variant",
+   "purpose": "Persistence-horizon source: FixedSrtt (ship) | LearnedSpuriousAge (max(floor, rho x Q95 spurious age)).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:31 re-export; bounded_v1 sets LearnedSpuriousAge (sender.rs:441) which IS the product default"
+   ],
+   "evidence": [
+    "sender.rs:452-461",
+    "sender.rs:3442 PersistMode::LearnedSpuriousAge => learned_persist_min_ns(...)",
+    "bench override: crates/bench/src/kama_product.rs:200-206"
+   ]
+  },
+  {
+   "symbol": "learned_persist_min_ns",
+   "path_line": "crates/adaptive-transport/src/sender.rs:463",
+   "kind": "fn",
+   "purpose": "Pure: max(floor, quantile x rho/1000), capped.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "reached from client-core via Sender::on_event -> fuzzy_evaluate -> sender.rs:3442"
+   ],
+   "evidence": [
+    "sender.rs:463-475",
+    "sender.rs:3442 sole internal call site",
+    "tests: crates/adaptive-transport/tests/fec_loss_risk.rs:614-629"
+   ]
+  },
+  {
+   "symbol": "SpeculativeLevel / SpeculativeProposal (+ ::NONE)",
+   "path_line": "crates/adaptive-transport/src/sender.rs:477 / :488 / :497",
+   "kind": "struct",
+   "purpose": "Speculative arm's confidence level and proposal (ratio, deadline_assisted) fed to the arbiter.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "reached via Sender::on_event -> fuzzy_evaluate -> speculative_proposal (sender.rs:~4300) -> fec_arbiter (sender.rs:3589)"
+   ],
+   "evidence": [
+    "sender.rs:477-503",
+    "sender.rs:3556-3568 diag_spec_levels histogram by level",
+    "sender.rs:4363-4367 SpeculativeProposal constructed"
+   ]
+  },
+  {
+   "symbol": "FecArbiterReason + index + ARBITER_REASON_KINDS",
+   "path_line": "crates/adaptive-transport/src/sender.rs:506 / :562 / :558",
+   "kind": "enum-variant",
+   "purpose": "Attribution for 'why this much parity' (7 buckets).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (specs/ has no 'arbiter')",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1483 fec_arbiter_reasons: session.sender().diag_arbiter_reasons()",
+    "crates/client-core/src/runtime.rs:420 pub fec_arbiter_reasons: [u64; ARBITER_REASON_KINDS]"
+   ],
+   "evidence": [
+    "sender.rs:506-524, 558, 560-575",
+    "sender.rs:3474-3524 confirmed reason assignment; :3589 arbiter verdict"
+   ]
+  },
+  {
+   "symbol": "TsSample",
+   "path_line": "crates/adaptive-transport/src/sender.rs:526",
+   "kind": "struct",
+   "purpose": "Fixed-size Copy snapshot of one fuzzy_evaluate decision for the handoff time-series instrument.",
+   "called_from_product": true,
+   "only_from": "diagnostic-only",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "RuntimeConfig::ts_sample_period_ns, default None (crates/client-core/src/runtime.rs:206)",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1121 stats.ts.push(($now, session.sender().diag_ts_sample()))",
+    "crates/client-core/src/runtime.rs:460 pub ts: Vec<(u64, TsSample)>"
+   ],
+   "evidence": [
+    "sender.rs:526-556",
+    "sender.rs:3593 self.diag_last_ts = TsSample {...} (written unconditionally on every decision)",
+    "sender.rs:1711 diag_last_ts field",
+    "bench enables it only with --ts-sample: crates/bench/src/kama_product.rs:226 ts_sample.then_some(50_000_000)"
+   ]
+  },
+  {
+   "symbol": "fec_arbiter",
+   "path_line": "crates/adaptive-transport/src/sender.rs:581",
+   "kind": "fn",
+   "purpose": "SINGLE FEC authority: final = max(confirmed, structure, speculative); no summation; ties prefer confirmed > structure > speculative.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:645-661 §8.4 defines parity_final = min(fuzzy_parity, budget_cap, profile_cap) — the max()-of-three-proposers arbiter is NOT in spec",
+   "product_call_sites": [
+    "reached from client-core via Sender::on_event -> on_event_core:2199 fuzzy_evaluate -> sender.rs:3589"
+   ],
+   "evidence": [
+    "sender.rs:581-605",
+    "sender.rs:3589 let (final_ratio, reason) = fec_arbiter(confirmed, structure, spec);"
+   ]
+  },
+  {
+   "symbol": "LossConfirmHorizon",
+   "path_line": "crates/adaptive-transport/src/sender.rs:618",
+   "kind": "enum-variant",
+   "purpose": "Suspected->Confirmed wait horizon. CadenceLegacy (ship, contains the channel-independent 65B/31 B·s⁻¹ ≈ 2.097 s term) vs ChannelDerived{k x srtt} (measurement arm).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:458-462 §5 (loss_windowed_ppm = Confirmed_units / window); the horizon alternative is not in spec",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:840-842 set_loss_confirm_horizon(cfg.loss_confirm_horizon)",
+    "crates/client-core/src/runtime.rs:203 default CadenceLegacy"
+   ],
+   "evidence": [
+    "sender.rs:618-631; :1688 field; :1930 default CadenceLegacy",
+    "doc :607-616 records the measured defect: 3 runs, ~13k ticks, confirmed_total = 0 on the product path",
+    "ChannelDerived reachable only from bench: crates/bench/src/kama_product.rs:182-185"
+   ]
+  },
+  {
+   "symbol": "FecStructurePolicy",
+   "path_line": "crates/adaptive-transport/src/sender.rs:633",
+   "kind": "enum-variant",
+   "purpose": "Structure-gate burst branch: Q18Iid (ship: burst -> ARQ, parity 0) vs BurstFusion (code on measured erasure rate + 3/2 margin).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:817-819 set_fec_structure_policy(cfg.fec_structure_policy)",
+    "crates/client-core/src/runtime.rs:198 default FecStructurePolicy::default() = Q18Iid"
+   ],
+   "evidence": [
+    "sender.rs:633-641; :1682 field; :1926 default Q18Iid",
+    "sender.rs:3697-3724 consumed by structure_gate_fec",
+    "BurstFusion selectable only from bench: crates/bench/src/kama_product.rs:154",
+    "marker sender.rs:333 'KALİBRE EDİLMEMİŞ — default Q18Iid'"
+   ]
+  },
+  {
+   "symbol": "FecBlockAuthority (+ mode(), generation())",
+   "path_line": "crates/adaptive-transport/src/sender.rs:675 / :686 / :691",
+   "kind": "struct",
+   "purpose": "Single-use, non-Copy/non-Clone block-authority witness; compile-fail doctests prove E0382/E0599.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (Commit-K)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1281 open_fec_block_authority()",
+    "crates/client-core/src/runtime.rs:1288 open_fec_block_authority()"
+   ],
+   "evidence": [
+    "sender.rs:675-695",
+    "accessors mode()/generation() have NO product callers: only crates/kama-engine/tests/{mode_boundary.rs:50,195,219,251,290; emission_continuity.rs:89,189,312} and crates/adaptive-transport/tests/policy_outcome_sweep.rs:330, crates/kama-engine/tests/micro_sweep_1b.rs:341"
+   ]
+  },
+  {
+   "symbol": "FecAuthorityError",
+   "path_line": "crates/adaptive-transport/src/sender.rs:698",
+   "kind": "enum-variant",
+   "purpose": "Typed rejection for manual toggle in Controller mode / foreign-Sender witness (no silent no-op).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "CLAUDE.md §6 typed-error rule",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:876 .set_fec_actuation_mode(mode).expect(\"taze Sender mode-set kabul eder\")"
+   ],
+   "evidence": [
+    "sender.rs:698-708",
+    "sender.rs:4101 set_fec_actuation_mode / :4468 set_manual_fec_enabled return it",
+    "note: sender.rs contains NO reachable todo!()/unimplemented!()/TransportError::FeatureNotImplemented (grep 'TransportError' in sender.rs -> 0 hits)"
+   ]
+  },
+  {
+   "symbol": "ControllerDecisionSnapshot",
+   "path_line": "crates/adaptive-transport/src/sender.rs:712",
+   "kind": "struct",
+   "purpose": "Same-event-causality guard input for the FEC latch.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (Commit-G)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1287 let snap = session.sender().controller_decision_snapshot()"
+   ],
+   "evidence": [
+    "sender.rs:712-718"
+   ]
+  },
+  {
+   "symbol": "FecSuppressionReason",
+   "path_line": "crates/adaptive-transport/src/sender.rs:721",
+   "kind": "enum-variant",
+   "purpose": "Named latch-suppression causes; EmergencyPendingArbitration is explicitly labelled a temporary interlock, not policy.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (Commit-G)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1446-1455 (ManualDisabled / NoEligibleDecision / DecisionEventMismatch / NoRule mapped to strings)"
+   ],
+   "evidence": [
+    "sender.rs:721-732",
+    "variants EmergencyPendingArbitration and ForeignAuthority are NOT matched by the product mapping at runtime.rs:1446-1455 (fall into the catch-all)"
+   ]
+  },
+  {
+   "symbol": "FecLatchResult",
+   "path_line": "crates/adaptive-transport/src/sender.rs:734",
+   "kind": "struct",
+   "purpose": "Pure decision-chain output of the FEC latch (requested/computed/clamped/planned r + suppression).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (Commit-G)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1431-1442 via diag_fec_actuation().last_latch"
+   ],
+   "evidence": [
+    "sender.rs:734-745; :1626 last_latch field"
+   ]
+  },
+  {
+   "symbol": "FecActuationDiag",
+   "path_line": "crates/adaptive-transport/src/sender.rs:747",
+   "kind": "struct",
+   "purpose": "FEC actuation telemetry (15 counters incl. enqueued/emitted/canceled r totals, token_denied_r_gauge).",
+   "called_from_product": true,
+   "only_from": "diagnostic-only",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (Commit-G/H/I/K)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1431 let d = session.sender().diag_fec_actuation()",
+    "crates/client-core/src/runtime.rs:1442 .diag_fec_actuation()"
+   ],
+   "evidence": [
+    "sender.rs:747-786; accessor sender.rs:4683"
+   ]
+  },
+  {
+   "symbol": "FecTokenDenialSnapshot",
+   "path_line": "crates/adaptive-transport/src/sender.rs:788",
+   "kind": "struct",
+   "purpose": "Last pacer-token denial of a queued parity item (full overwrite, no history).",
+   "called_from_product": false,
+   "only_from": "diagnostic-only",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none (Commit-N, 1b-evidence)",
+   "evidence": [
+    "sender.rs:788-818; :1562 last_token_denial field",
+    "no client-core / kama-engine caller of diag_token_denial(); external references are tests only (crates/adaptive-transport/tests/dr_cs3_structural_oracle.rs:2801)"
+   ]
+  },
+  {
+   "symbol": "BudgetPolicy / BudgetPolicyTransitionError / FloorTicket / FloorMissSnapshot / BudgetExt / BudgetDiag",
+   "path_line": "crates/adaptive-transport/src/sender.rs:821 / :842 / :850 / :860 / :871 / :901 (cfg at :819/:840/:848/:858/:869/:899)",
+   "kind": "feature-gated-block",
+   "purpose": "Commit-V experimental live FEC-budget prototype (LeftoverOnly | ProtectedShare | FloorCap + tickets + C1 cap + 18-field telemetry).",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "cargo feature experimental-fec-budget (default OFF; crates/adaptive-transport/Cargo.toml:16-18)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:812-816 header comment: 'Product/admin-activation-YOK: politika-yalnız-test/harness set_budget_policy-ile-seçer'",
+    "set_budget_policy (sender.rs:4977) callers: crates/adaptive-transport/src/udp_runner.rs:642 (itself feature-gated) + tests budget_live_tests.rs / live_budget_sweep.rs / policy_outcome_sweep.rs",
+    "sender.rs:1561 budget_ext field is #[cfg]-gated ⇒ struct byte-identical when OFF"
+   ]
+  },
+  {
+   "symbol": "compute_requested_r",
+   "path_line": "crates/adaptive-transport/src/sender.rs:925",
+   "kind": "fn",
+   "purpose": "Pure ratio_permille x k_actual -> (computed_r, clamped_r), half-up integer, no float/RNG.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:661 §8.4 parity_final = min(fuzzy_parity, budget_cap, profile_cap)",
+   "product_call_sites": [
+    "reached from client-core via fec_controller_latch -> sender.rs:4630"
+   ],
+   "evidence": [
+    "sender.rs:925-931; :4630 sole internal call site",
+    "sender.rs:384-388 records the audit finding that 125‰ x 0.5 = 62‰ rounded to 0 repairs -> spec_min_permille = 63 floor"
+   ]
+  },
+  {
+   "symbol": "ConfirmSource + take_confirmed_logical",
+   "path_line": "crates/adaptive-transport/src/sender.rs:935 / :4863",
+   "kind": "enum-variant",
+   "purpose": "Logical ledger confirm source (WireAck | Recovered) — the M1 'FEC did not retransmit what it recovered' separation.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "spec_ref_or_none": "none (DR-S5-4)",
+   "evidence": [
+    "sender.rs:935-942; ledger written at :4735 (WireAck) and :4856 (Recovered)",
+    "take_confirmed_logical external callers: exactly one, crates/kama-engine/tests/n8_v2.rs:142 — no product drain",
+    "sender.rs:1242-1243 acknowledges the ledger is bounded precisely because the engine may never drain it (CONFIRMED_LOGICAL_CAP eviction)"
+   ]
+  },
+  {
+   "symbol": "AckInfo",
+   "path_line": "crates/adaptive-transport/src/sender.rs:944",
+   "kind": "struct",
+   "purpose": "Reconstructed ACK input (acked_seqs + ack_delay).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:116-195 §2/§2.2 (ACK_FRAME / ACK_FRAME_V2)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1228 Event::AckReceived(AckInfo {...})"
+   ],
+   "evidence": [
+    "sender.rs:944-951",
+    "client-core/src/runtime.rs:22 imports AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2"
+   ]
+  },
+  {
+   "symbol": "Timer::Pto / Timer::RtpropProbe",
+   "path_line": "crates/adaptive-transport/src/sender.rs:953",
+   "kind": "enum-variant",
+   "purpose": "The two engine timer kinds (§12).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:868-873 §12 PTO; :527 DRAIN_RTPROP probe",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1326,1373 Timer::Pto (PACE_TICK 1 ms pump)",
+    "crates/client-core/src/runtime.rs:1344 Timer::RtpropProbe (RTPROP_TICK 200 ms)"
+   ],
+   "evidence": [
+    "sender.rs:953-959",
+    "client-core/src/runtime.rs:58-59 const PACE_TICK: Duration = Duration::from_millis(1)"
+   ]
+  },
+  {
+   "symbol": "BootstrapRttConfig",
+   "path_line": "crates/adaptive-transport/src/sender.rs:968",
+   "kind": "config-field",
+   "purpose": "DR-CS-3 shipping bootstrap-RTT probe ladder (enabled + optional fires_ns override). Default OFF.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "BootstrapRttConfig::default().enabled = false (sender.rs:1008-1015) AND RuntimeConfig::default().bootstrap_rtt = false (crates/client-core/src/runtime.rs:196)",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:801-850 §11.1 (probe/echo, 0x19/0x1A)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:824-834 set_bootstrap_rtt(...)"
+   ],
+   "evidence": [
+    "sender.rs:968-985; Default at :1007-1017 with comment 'DEFAULT OFF — pending locked/fresh panel validation (DR-CS-3 §9)'",
+    "sender.rs:1511 bootstrap_rtt field; :1810 BootstrapRttConfig::default()",
+    "the wiring itself is recent: crates/client-core/tests/runtime_e2e.rs:646 'set_bootstrap_rtt'nin yedi çağrı yerinin hepsi TESTTİ'"
+   ]
+  },
+  {
+   "symbol": "BootstrapRttConfig::establishment_fast",
+   "path_line": "crates/adaptive-transport/src/sender.rs:992",
+   "kind": "fn",
+   "purpose": "Establishment-tuned ladder 0.2/0.6/1.8/5.4 s (vs blackout-tuned 3/9/21/45 s); same 200 B budget.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "RuntimeConfig::bootstrap_fast_ladder default false (crates/client-core/src/runtime.rs:197) AND only effective when bootstrap_rtt is true (also default false)",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:826 BootstrapRttConfig::establishment_fast()"
+   ],
+   "evidence": [
+    "sender.rs:992-998; marker at :990 'KALİBRE EDİLMEMİŞ — ölçümle doğrulanmalı'",
+    "double-gated: unreachable in the default product build"
+   ]
+  },
+  {
+   "symbol": "BootstrapRttConfig::ladder",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1001",
+   "kind": "fn",
+   "purpose": "Effective ladder (override or BS_FIRES_NS).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "reached from client-core through Sender::on_event -> drain_bootstrap_probes (sender.rs:3182) and next_timer_deadline_ns (sender.rs:2510)"
+   ],
+   "evidence": [
+    "sender.rs:1001-1004; call sites sender.rs:2510, 3182"
+   ]
+  },
+  {
+   "symbol": "BS_FIRES_NS / BS_PROBE_WIRE_EXACT / BS_TX_HARD_BUDGET",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1019 / :1021 / :1023",
+   "kind": "const-knob",
+   "purpose": "Shipping bootstrap ladder + exact 44 B probe wire size + 200 B hard budget.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:818-841 §11.1 (probe wire layout, amp<=1 pad)",
+   "product_call_sites": [
+    "reached via Sender::on_event -> schedule_transmit -> drain_bootstrap_probes (sender.rs:3195-3210)"
+   ],
+   "evidence": [
+    "consumers: BS_FIRES_NS 971,1002,2428; BS_PROBE_WIRE_EXACT 1021,3195,3203,3205,3210; BS_TX_HARD_BUDGET 980,1023,1521,2015,3167,3195",
+    "BS_FIRES_NS is byte-identical to the legacy CS_PROBE_FIRES_NS (sender.rs:192) — doc at :1018 says 'Same values as the legacy CS_PROBE_FIRES_NS; no new constant'"
+   ]
+  },
+  {
+   "symbol": "BootstrapRttDiag",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1027",
+   "kind": "struct",
+   "purpose": "Always-compiled observation-only bootstrap lineage (12 counters).",
+   "called_from_product": false,
+   "only_from": "diagnostic-only",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:1027-1053; :1525 bs_diag field",
+    "accessor bootstrap_rtt_diag (sender.rs:2008) has ZERO product callers — all hits are crates/adaptive-transport/tests/dr_cs3_structural_oracle.rs and crates/kama-integration/tests/dr_cs3_*"
+   ]
+  },
+  {
+   "symbol": "BootstrapRttDiag::duplicate_step_denied",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1033",
+   "kind": "config-field",
+   "purpose": "Documented as 'A step that had already fired was refused'.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -n 'bs_diag\\.' sender.rs (lines<6000) -> 3193 step_edge, 3196 budget_violation, 3204 probe_emitted, 3205 probe_wire_bytes, 3222 echo_ingested, 3224/3228/3232 echo_match_rejected, 3237 echo_match_valid, 3238 rtt_sample_ns, 3248 cancelled, 5716 arm",
+    "duplicate_step_denied appears in NO write site: it is永 0"
+   ]
+  },
+  {
+   "symbol": "BootstrapRttDiag::probe_after_success_violation",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1049",
+   "kind": "config-field",
+   "purpose": "Documented as 'MUST stay 0: a probe was emitted after the ladder resolved'.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "no write site in sender.rs (see bs_diag write list above)",
+    "tests assert it == 0, e.g. crates/adaptive-transport/src/sender.rs:7999 assert_eq!(s.bootstrap_rtt_diag().probe_after_success_violation, 0) — a vacuous assertion: the field can never be non-zero"
+   ]
+  },
+  {
+   "symbol": "BootstrapRttDiag::budget_violation",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1051",
+   "kind": "config-field",
+   "purpose": "Documented as 'MUST stay 0: budget exceeded'.",
+   "called_from_product": false,
+   "only_from": "diagnostic-only",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:3196 self.bs_diag.budget_violation += 0; // budget respected by refusing, not by exceeding",
+    "a += 0 is a no-op: the only write site cannot change the value; sender.rs:7878 assert_eq!(s.bootstrap_rtt_diag().budget_violation, 0) is therefore vacuous"
+   ]
+  },
+  {
+   "symbol": "rate_per_srtt",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1055",
+   "kind": "fn",
+   "purpose": "bytes/srtt -> bytes/sec, u128-widened saturating (ADR-17 integer-only).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "ADR-17 (specs/tech-stack-adr.md) deterministic, no float",
+   "product_call_sites": [
+    "reached via Sender::on_event -> on_event_core:2213 effective_floor -> cwnd_over_srtt (sender.rs:2323)"
+   ],
+   "evidence": [
+    "sender.rs:1055-1060; call sites sender.rs:2303 (grounded_startup_rate), 2323 (cwnd_over_srtt)"
+   ]
+  },
+  {
+   "symbol": "StartupPacingConfig",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1074",
+   "kind": "config-field",
+   "purpose": "DR-RATE-RAMP-2 startup pacing initialization at the PreConverge->Startup transition.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:298-314 §3.3 [R8]/[R2]/[R3] pacing floor; the bootstrap floor itself is a supersession recorded in reports/fs-cal-2/v3.5/INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md",
+   "product_call_sites": [
+    "engine default: sender.rs:1801 startup_pacing: StartupPacingConfig::default() and Default returns { enabled: true } (sender.rs:1126) ⇒ ACTIVE on the product path with no setter call"
+   ],
+   "evidence": [
+    "sender.rs:1074-1078 struct; :1083-1127 Default impl ending 'Self { enabled: true }'",
+    "MISLEADING COMMENT: sender.rs:1801 reads `startup_pacing: StartupPacingConfig::default(),                  // default OFF` while the Default is ON — same for sender.rs:1073 doc 'DEFAULT OFF ⇒ mechanism inert'",
+    "setter set_startup_pacing_init (sender.rs:2019) has NO product caller: hits are sender.rs:7572/7616/7734 (#[cfg(test)], mod tests starts at :6000), crates/adaptive-transport/tests/{budget_equivalence_pin.rs:31,115; dr_cs3_structural_oracle.rs:710}, crates/kama-integration/tests/{common/fs_f0.rs:106; dr_cs3_bootstrap_rtt.rs:72; dr_cs3_default_build_core.rs:66}"
+   ]
+  },
+  {
+   "symbol": "Sender::set_startup_pacing_init",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2019",
+   "kind": "fn",
+   "purpose": "Product config setter for the startup pacing floor.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:2019-2021",
+    "zero product/bench callers (see StartupPacingConfig evidence); RuntimeConfig has no corresponding field",
+    "the mechanism ships via the Default impl, so the setter is a test-only override lever"
+   ]
+  },
+  {
+   "symbol": "SchedDiag",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1143 (cfg at :1141)",
+   "kind": "feature-gated-block",
+   "purpose": "Observation-only per-class scheduler telemetry (due-poll / due-EDGE / enqueued / selected / token-denied / wire-emitted).",
+   "called_from_product": true,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "cargo feature diag-sched-telemetry (default OFF; adaptive-transport/Cargo.toml:26; opt-in via client-core/Cargo.toml:38 and bench/Cargo.toml)",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1488 sched: session.sender().diag_sched_summary() (returns [0;12] when the feature is off, sender.rs:4393)"
+   ],
+   "evidence": [
+    "sender.rs:1141-1187 struct; :1528 field",
+    "sender.rs:4374-4392 diag_sched_summary exposes only 12 of the 20 fields"
+   ]
+  },
+  {
+   "symbol": "SchedDiag write-only fields (8)",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1151, 1165, 1167, 1171, 1173, 1175, 1177, 1179",
+   "kind": "config-field",
+   "purpose": "data_enqueued, tail_probe_selected, tail_probe_token_denied, tail_probe_enqueued, cs_probe_selected, cs_probe_token_denied, cs_probe_wire_emitted, cs_probe_enqueued — incremented but never readable.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "diag-sched-telemetry (default OFF)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "writes at sender.rs:2173 (data_enqueued), 2764 (cs_probe_enqueued), 2781/2786/2792 (cs_probe_*), 3153 (tail_probe_enqueued), 5457/5462 (tail_probe_selected/token_denied)",
+    "the only reader of the struct is diag_sched_summary (sender.rs:4374) which omits all eight",
+    "the raw accessor Sender::sched_diag (sender.rs:1979) has ZERO callers repo-wide outside its own definition (grep -rn sched_diag excluding sender.rs -> 0 external hits)"
+   ]
+  },
+  {
+   "symbol": "Sender::sched_diag",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1979",
+   "kind": "fn",
+   "purpose": "Feature-gated raw SchedDiag accessor.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "diag-sched-telemetry (default OFF)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -rn '\\bsched_diag\\b' --include=*.rs crates/ excluding sender.rs -> 0 external hits",
+    "superseded by diag_sched_summary (sender.rs:4374), which the product does call"
+   ]
+  },
+  {
+   "symbol": "TransmitDecision",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1188",
+   "kind": "struct",
+   "purpose": "The engine's sole output: kind/seq/unit_id/size + optional send_record hint.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:246-262 §3 (ScheduleTransmit / OnPacketSent)",
+   "product_call_sites": [
+    "crates/client-core/src/lib.rs:45 re-export; runtime.rs:971-1049 consumes kind/seq/unit_id/size/send_record"
+   ],
+   "evidence": [
+    "sender.rs:1188-1202"
+   ]
+  },
+  {
+   "symbol": "SendRecordHint",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1205",
+   "kind": "struct",
+   "purpose": "Transport-side send-record hint mapped by the engine to noise-wire SealedPacketMeta.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none in specs/adaptive-transport-engine-spec.md; kama-noise-wire-tdd-v2.0 §0.5",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:982 if let (Some(p), Some(hint)) = (fec.as_ref(), d.send_record)",
+    "crates/client-core/src/runtime.rs:983 let SrLogicalRef::Fec { block_id, esi } = hint.logical_ref"
+   ],
+   "evidence": [
+    "sender.rs:1205-1213; constructed only at sender.rs:4960"
+   ]
+  },
+  {
+   "symbol": "SendRecordHint::packet_class / ::send_generation",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1209 / :1211",
+   "kind": "config-field",
+   "purpose": "Packet class (Source/Repair/Control) and retransmit generation carried alongside logical_ref.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "spec_ref_or_none": "kama-noise-wire-tdd-v2.0 §0.5 (send-record)",
+   "evidence": [
+    "product reads only hint.logical_ref (crates/client-core/src/runtime.rs:983) and hard-codes its own SealArgs send_generation: 0 (crates/client-core/src/runtime.rs:923, :1798)",
+    "packet_class consumers repo-wide: crates/adaptive-transport/tests/sprint5c_fec_emit.rs:56 and crates/kama-noise-wire/src/protector.rs:64 (a DIFFERENT type, PacketClass) — no product bridge",
+    "the seam is documented as the future mapping point at crates/client-core/src/seam.rs:9,31"
+   ]
+  },
+  {
+   "symbol": "SrLogicalRef / SrPacketClass",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1216 / :1223",
+   "kind": "enum-variant",
+   "purpose": "Transport-side logical reference (Fec{block_id,esi}) and packet class.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:26 import; :983 destructure SrLogicalRef::Fec"
+   ],
+   "evidence": [
+    "sender.rs:1216-1229",
+    "SrPacketClass::{Source, Control} are constructed nowhere: only SrPacketClass::Repair at sender.rs:4965 — two of three variants are unreachable"
+   ]
+  },
+  {
+   "symbol": "PendingFecParity",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1231",
+   "kind": "struct",
+   "purpose": "Queued FEC parity item + Commit-N attribution tags (authority_generation / authority_mode / planned_r).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:645-661 §8.4 (FEC policy only; parity BYTES are produced by the security layer per INV-FEC-1)",
+   "evidence": [
+    "sender.rs:1231-1242; :1566 pending_fec field",
+    "the three attribution tags are diagnostic-only (documented 'SALT-TEŞHİS — davranışa-etkisiz attribution-tag'leri', sender.rs:1236) and surface only through FecTokenDenialSnapshot, which has no product reader"
+   ]
+  },
+  {
+   "symbol": "CONFIRMED_LOGICAL_CAP / SENT_LOGICAL_CAP",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1244 / :1254",
+   "kind": "const-knob",
+   "purpose": "SR-AUDIT-001 bounds on the logical ledgers (4096 / 16384) with oldest-first eviction and an audit counter.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "CLAUDE.md SR-AUDIT-001 (bounded buffer, bounds-before-alloc)",
+   "evidence": [
+    "consumers: CONFIRMED_LOGICAL_CAP sender.rs:4731,4852; SENT_LOGICAL_CAP sender.rs:4740,4748",
+    "eviction audited via diag_sent_logical_evicted (sender.rs:1615)"
+   ]
+  },
+  {
+   "symbol": "TransmitKind",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1258",
+   "kind": "enum-variant",
+   "purpose": "Data / Retransmit / Duplicate / FecParity / CsProbe.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md §9 (ARQ retransmit), §11 (duplication), §10/§8.4 (parity), §11.1 (CS probe)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:971 Data|Retransmit|Duplicate",
+    "crates/client-core/src/runtime.rs:981 FecParity",
+    "crates/client-core/src/runtime.rs:1012 CsProbe"
+   ],
+   "evidence": [
+    "sender.rs:1258-1276",
+    "all five variants handled by the product dispatch"
+   ]
+  },
+  {
+   "symbol": "InflightPacket / LostRec / TombstoneRec / DupRec",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1277 / :1287 / :1302 / :1313",
+   "kind": "struct",
+   "purpose": "Private accounting records: in-flight, declared-lost, late-ACK tombstone, scheduled forward-recovery copy.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:408-467 §5 (loss), :689 §9.2, :992 §16.1 K_TOMB (TTL formula, one-armed ZEYL)",
+   "evidence": [
+    "sender.rs:1277-1321",
+    "fields consumed: sender.rs:1497 pending_lost, :1607 tombstones/tombstone_order, :1531 dup_queue",
+    "TombstoneRec TTL formula is a spec ZEYL (one-armed): the approved min(message-deadline, ...) arm cannot be implemented in the engine (sender.rs:1408-1410)"
+   ]
+  },
+  {
+   "symbol": "ProbeExit",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1323",
+   "kind": "enum-variant",
+   "purpose": "ProbeUp failure exit kinds (Abort | Timeout), reported separately by contract.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:220,229 §3 (PROBE_UP success|abort|timeout|preempt; preempt is the 4th kind, accounted separately)",
+   "evidence": [
+    "sender.rs:1323-1327; consumed sender.rs:3866,3868,3957,3961-3962",
+    "the 4th exit (preempt) is NOT a ProbeExit variant — counted separately at sender.rs:1671 diag_probe_preempt"
+   ]
+  },
+  {
+   "symbol": "STRUCTURE_GATE_LOSS_MIN_PPM",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1352",
+   "kind": "const-knob",
+   "purpose": "Structure-gate lower loss band (100_000 ppm). Below it fuzzy's fec=0 is accepted.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none — the doc itself records SPEC-GAP-REGISTRY-2026-08-27.md:302-305 'unsanctioned magic constant … exactly the uncalibrated-knee class'",
+   "product_call_sites": [
+    "reached via Sender::on_event -> fuzzy_evaluate -> structure_gate_fec (sender.rs:3667)"
+   ],
+   "evidence": [
+    "sender.rs:1330-1352; doc block :1333-1351 '[DAYANAK BORCU — 2026-09-04] BU SAYININ ARKASINDA GEÇERLİ BİR KAMPANYA YOK' with two named reasons (Q17 holdout VOID; band ppm values are generator artefacts 1/48, 2/48, 4/48)",
+    "consumed sender.rs:3667"
+   ]
+  },
+  {
+   "symbol": "STRUCTURE_GATE_MIN_N / STRUCTURE_GATE_IID_MAX_DELTA_PPM",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1355 / :1366",
+   "kind": "const-knob",
+   "purpose": "Evidence threshold (n>=32) and IID acceptance ceiling (burst_delta <= 50k ppm).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "sender.rs:3648, 3671 (MIN_N); sender.rs:3697 (IID_MAX_DELTA)"
+   ],
+   "evidence": [
+    "sender.rs:1360-1366 '[DAYANAK BORCU — 2026-09-04] … burst rejiminde FEC'in zararlı olduğuna dair GEÇERLİ bir ölçüm yoktur'"
+   ]
+  },
+  {
+   "symbol": "BURST_FUSION_MARGIN_NUM / _DEN",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1371 / :1372",
+   "kind": "const-knob",
+   "purpose": "3/2 safety margin over the measured erasure rate in the BurstFusion branch.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "reachable only under FecStructurePolicy::BurstFusion, which the product default never selects (crates/client-core/src/runtime.rs:198 = Q18Iid)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:1367-1372 doc 'kalibre-EDİLMEMİŞ başlangıç'",
+    "sole consumer sender.rs:3720 inside the BurstFusion arm",
+    "BurstFusion selected only at crates/bench/src/kama_product.rs:154"
+   ]
+  },
+  {
+   "symbol": "PRE_CONVERGE_FLOOR_BW",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1384",
+   "kind": "const-knob",
+   "purpose": "Worst-corner cold-start pacing floor, 31 B/s.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:298 §3.3 [R8] and :980-982 §16.1 (31.25 B/s; min_rate_bps MUST-NOT-APPLY in PRE_CONVERGE)",
+   "product_call_sites": [
+    "reached via Sender::on_event -> compute_send_rate (sender.rs:4007, 4066) and the geometric-copy path (sender.rs:5700)"
+   ],
+   "evidence": [
+    "sender.rs:1382-1384 marked [CAL PLACEHOLDER]",
+    "consumers sender.rs:4007, 4066, 5700"
+   ]
+  },
+  {
+   "symbol": "ESTABLISH_PROBE_INITIAL_NS / ESTABLISH_PROBE_CAP_NS (DR-EST-1)",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1389 / :1390",
+   "kind": "const-knob",
+   "purpose": "PreConverge establishment-attempt backoff (0.5 s initial, 8 s cap), single global slot, token-exempt.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (DR-EST-1); adjacent to specs §3.3-B geometric copy",
+   "product_call_sites": [
+    "reached via Sender::on_event -> schedule_transmit:4070 -> drain_establish_probe (sender.rs:5542-5595)"
+   ],
+   "evidence": [
+    "sender.rs:1385-1390; consumers sender.rs:5554, 5593",
+    "field establish_probe_enabled defaults to true (sender.rs:1819) ⇒ DEFAULT ON on the product path",
+    "setter set_establish_probe (sender.rs:5598) has zero product callers — only tests turn it OFF (dr_cs3_structural_oracle.rs:708, loss_structure_observation.rs:274,360, structure_gate_fec.rs:48,350, initial_window.rs:23, fusion_policy_wiring.rs:25,342, fec_loss_risk.rs:23,498,676,789, kama-integration/tests/fec_recovery_cell.rs:103)"
+   ]
+  },
+  {
+   "symbol": "EXPECTED_ACK_FREQ_N / EAI_SACK_WIRE_BYTES / EAI_RETURN_BW_PRIOR / CADENCE_KC_NUM / CADENCE_KC_DEN",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1393 / :1395 / :1397 / :1399 / :1400",
+   "kind": "const-knob",
+   "purpose": "Sender-local mirror of the receiver ACK cadence (EAI) used as the loss-confirm floor.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:363-425 §3.3-E and :972-982 §16.1 (return_bw prior; '§3.3-E-FULL ölçülen return_bw ile değiştirecek')",
+   "product_call_sites": [
+    "reached via Sender::on_event -> cadence_loss_floor (sender.rs:3258-3271) -> loss detector"
+   ],
+   "evidence": [
+    "consumers sender.rs:3258, 3270, 3271",
+    "sender.rs:620 documents the measured defect this constant pair causes: 65 B / 31 B·s⁻¹ ≈ 2.097 s is channel-independent and pins the horizon at ~16xRTT on a 200 ms path"
+   ]
+  },
+  {
+   "symbol": "K_WL / K_TOMB / K_BW / K_RTPROP / K_QD / K_ARQ_SHARE / K_CONF_EAI / K_CONV",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1407 / :1411 / :1416 / :1417 / :1419 / :1434 / :1444 / :1447",
+   "kind": "const-knob",
+   "purpose": "Channel-clocked window/share multipliers (all [CAL], ZM-2/ZM-3/ZM-4 clock classes).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:992-1006 §16.1 table (K_TOMB 8; W_BTLBW derivation) and :1022 §16.2 clock-class inventory",
+   "product_call_sites": [
+    "reached via Sender::on_event: K_WL:3395, K_TOMB:3284/3287/5408, K_BW:2898/2899/2913, K_RTPROP:2914, K_QD:2920, K_ARQ_SHARE:4047/4052, K_CONF_EAI:5808/5811, K_CONV:2923"
+   ],
+   "evidence": [
+    "all eight have live consumers (verified by per-constant grep)",
+    "specs/adaptive-transport-engine-spec.md:1006 records an OPEN DEBT against the W_BTLBW shrink branch ('[TUR-D1 EK-3 AÇIK-BORÇ]', S1-deferred), mirrored in sender.rs just past this scope (~:2897)"
+   ]
+  },
+  {
+   "symbol": "K_PROBE_PERIOD_EPOCH / PROBE_MAX_DWELL_EPOCH / PROBE_VOLUME_EPOCH / PROBE_SUCCESS_EPS_PERMILLE / PROBE_QD_ABORT_PERMILLE",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1436-1440",
+   "kind": "const-knob",
+   "purpose": "ProbeUp contract constants (period, dwell, volume, success epsilon, qd abort).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:213,220,229 §3 PROBE_UP",
+   "product_call_sites": [
+    "sender.rs:3849, 3859, 3860, 3862, 3882, 3884"
+   ],
+   "evidence": [
+    "sender.rs:1425-1440; :1437 marked '[onaylı placeholder]', :1439 [CAL]"
+   ]
+  },
+  {
+   "symbol": "TOMBSTONE_MAX / BURST_WINDOW_NS / UNIT_SIZE_HINT / PC_SACK_WIRE / PC_KBASE_NUM / PC_KBASE_DEN / PC_COPY_MULTIPLIER / INITIAL_RTT / STARTUP_PLATEAU_ROUNDS / STARTUP_PLATEAU_EPS_PERMILLE / ACK_SILENCE_SRTT_MULT / DEFAULT_DUP_FACTOR / DEFAULT_DUP_SPACING / DRAIN_*_DWELL_EPOCH",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1452 / :1462 / :1449 / :1455 / :1456 / :1457 / :1458 / :1329 / :1374 / :1376 / :1378 / :1380 / :1381 / :1421-1424",
+   "kind": "const-knob",
+   "purpose": "Bounded tombstone store, channel-derived burst window, geometric-copy schedule, plateau/ack-silence/drain thresholds.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:301-350 §3.3-B/-D (geometric copy, restore burst), :478 §5.1 [R14] ack_confidence, :992 §16.1",
+   "product_call_sites": [
+    "every one has a live consumer: TOMBSTONE_MAX 3347/5409; BURST_WINDOW_NS 2228; UNIT_SIZE_HINT 2909; PC_SACK_WIRE 5698; PC_KBASE_* 5702; PC_COPY_MULTIPLIER 5582/5645; INITIAL_RTT 26 sites; STARTUP_PLATEAU_ROUNDS 3998; STARTUP_PLATEAU_EPS_PERMILLE 3991; ACK_SILENCE_SRTT_MULT 5810; DEFAULT_DUP_* 5742; DRAIN_* 3812/3832/3833"
+   ],
+   "evidence": [
+    "per-constant grep confirms >=1 non-test consumer for each; no orphan constants in scope"
+   ]
+  },
+  {
+   "symbol": "NEXT_SENDER_INSTANCE (static AtomicU64)",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1403",
+   "kind": "const-knob",
+   "purpose": "Process-local Sender identity counter, the foreign-witness rejection key.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (Commit-K)",
+   "evidence": [
+    "sender.rs:1401-1403; consumed sender.rs:1827 instance_id: NEXT_SENDER_INSTANCE.fetch_add(1, Relaxed)",
+    "doc explicitly states the identity never enters wire/golden/M1 output — determinism (ADR-17) preserved"
+   ]
+  },
+  {
+   "symbol": "Sender.fate_estimator",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1493",
+   "kind": "config-field",
+   "purpose": "FS-CAL-2 v3 §3 loss-STRUCTURE estimator (burst_delta_ppm = p11 - p01).",
+   "called_from_product": true,
+   "only_from": "diagnostic-only",
+   "classification": "WIRE",
+   "spec_ref_or_none": "none (specs/ has no structure estimator; Q17/FS-FUSION-CELL-1 showed loss RATE cannot gate FEC)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1385 let f = session.sender().diag_loss_structure()"
+   ],
+   "evidence": [
+    "sender.rs:1486-1493 doc: 'OBSERVATION-ONLY: … read by nothing except diag_loss_structure. No decision, no ordering, no byte on the wire depends on it.'",
+    "sender.rs:2165 advance() called on the engine clock in on_event_core",
+    "BUT sender.rs:3648/3671/3697 (structure_gate_fec) DOES read window features (n, burst_delta) — verify whether that read is the same estimator; the field doc claiming 'nothing reads it' is at minimum stale relative to the gate"
+   ]
+  },
+  {
+   "symbol": "Sender.tail_recovery + set_tail_recovery_config + tail_recovery_enabled",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1498 / :2056 / :2090",
+   "kind": "fn",
+   "purpose": "DR-ARQ-PRODUCT-TAIL-1 bounded tail-loss probe (INV-CS-4 supersession, gated + additive).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none in specs/; docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 (versioned TDD referenced from sender.rs:132-135)",
+   "product_call_sites": [
+    "crates/client-core/src/lib.rs:83 sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1()) inside ClientSession::new() ⇒ DEFAULT ON in product",
+    "crates/client-core/src/lib.rs:224,242 tail_probe_diag()"
+   ],
+   "evidence": [
+    "sender.rs:1798 TailRecovery::new(TailRecoveryConfig::default()) // default OFF at the engine level",
+    "product flip is the ClientSession::new() call to validated_v1() (crates/client-core/src/lib.rs:83), documented at lib.rs:64-80",
+    "tail_recovery_enabled (sender.rs:2090) is bench-only: crates/bench/src/kama.rs:698,701"
+   ]
+  },
+  {
+   "symbol": "Sender::tail_probe_due_edge_count",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2050",
+   "kind": "fn",
+   "purpose": "DR-CS-2 not-due -> due TRANSITION count, introduced explicitly so a level poll counter could never be read as emission demand.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -rn '\\btail_probe_due_edge_count\\b' --include=*.rs crates/ excluding sender.rs -> 0 external hits",
+    "sender.rs:2050-2052 is the only occurrence besides its own doc at :2047"
+   ]
+  },
+  {
+   "symbol": "Sender::diag_bw_accept",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2043",
+   "kind": "fn",
+   "purpose": "BtlBw acceptance lineage (offered/accepted/rejected_invalid/rejected_interval/rejected_app_limited).",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "diag-sched-telemetry (default OFF)",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:578 §7.3 sample validity",
+   "evidence": [
+    "grep -rn '\\bdiag_bw_accept\\b' --include=*.rs crates/ excluding sender.rs -> 0 external hits"
+   ]
+  },
+  {
+   "symbol": "Sender::bootstrap_budget_remaining",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2014",
+   "kind": "fn",
+   "purpose": "Remaining DR-CS-3 probe budget (bytes).",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "grep -rn '\\bbootstrap_budget_remaining\\b' --include=*.rs crates/ excluding sender.rs -> 0 external hits"
+   ]
+  },
+  {
+   "symbol": "Sender::diag_fate_corrections",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2078",
+   "kind": "fn",
+   "purpose": "S-0.7 correction-leg counters (late_ack / spurious_loss / loss_to_success).",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "external callers: crates/adaptive-transport/tests/loss_structure_observation.rs:308,331,342 only",
+    "no client-core / bench consumer"
+   ]
+  },
+  {
+   "symbol": "Sender::tail_probe_diag_ext",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2110",
+   "kind": "fn",
+   "purpose": "Separable tail-probe accounting (due/sent/cancelled/bytes/spurious/timer_fires) — the §7 due-minus-sent-minus-cancelled = token-starved identity.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §7",
+   "evidence": [
+    "external callers: crates/adaptive-transport/examples/dr_arqtail_product.rs:276,301,345 and crates/kama-integration/tests/common/dr_cs3_panel.rs:2610",
+    "product uses the narrower tail_probe_diag (crates/client-core/src/lib.rs:224,242) instead"
+   ]
+  },
+  {
+   "symbol": "Sender::diag_pacer / Sender::startup_pacing_floor_bps",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2031 / :2025",
+   "kind": "fn",
+   "purpose": "Observation-only pacer state (rate, tokens, burst_cap) and the active bootstrap floor.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "diag_pacer external callers: crates/adaptive-transport/tests/dr_cs3_structural_oracle.rs (361, 613, plus doc lines) only",
+    "startup_pacing_floor_bps external callers: crates/kama-integration/tests/{common/dr_cs3_panel.rs:2349, dr_cs3_bootstrap_rtt.rs:195, dr_cs3_default_build_core.rs:164} only"
+   ]
+  },
+  {
+   "symbol": "Sender::new / new_internal / try_with_fuzzy_config",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1762 / :1780 / :1771",
+   "kind": "fn",
+   "purpose": "Constructors. new() uses ValidatedFuzzyConfig::trusted_fixture(); try_with_fuzzy_config validates externally supplied config (typed error, no panic).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "ADR-17 (deterministic fuzzy, config-not-code calibration)",
+   "product_call_sites": [
+    "crates/client-core/src/lib.rs:82 let mut sender = Sender::new()"
+   ],
+   "evidence": [
+    "sender.rs:1756-1791",
+    "try_with_fuzzy_config external callers: crates/kama-engine/tests/fuzzy_e2e.rs:229 only — the validated-config path has NO product caller; the product always takes the trusted fixture",
+    "sender.rs:1757 doc: 'Fixture config ile (KALİBRE DEĞİL — golden/motor testi; gerçek değerler netem'den)' — i.e. the product ships an explicitly non-calibrated fuzzy fixture"
+   ]
+  },
+  {
+   "symbol": "Sender::set_bootstrap_rtt",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1986",
+   "kind": "fn",
+   "purpose": "Product config for the DR-CS-3 ladder.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:824"
+   ],
+   "evidence": [
+    "sender.rs:1986-1988",
+    "effect is inert at product default (RuntimeConfig::bootstrap_rtt = false, crates/client-core/src/runtime.rs:196)"
+   ]
+  },
+  {
+   "symbol": "Sender::set_cs_probe_lane",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1995",
+   "kind": "fn",
+   "purpose": "Product OFF switch for the legacy DR-CS-1 F2A probe lane; compiled to a no-op when the feature is absent.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "body is #[cfg(feature = \"experimental-cold-start\")]; the #[cfg(not(...))] arm is `let _ = on;`",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:837 session.sender_mut().set_cs_probe_lane(cfg.bootstrap_rtt)"
+   ],
+   "evidence": [
+    "sender.rs:1995-2005",
+    "sender.rs:1989-1993 records the defect it fixes: under --all-features the F2A ladder armed unconditionally on the first DATA emission",
+    "in the DEFAULT build this product call is a literal no-op"
+   ]
+  },
+  {
+   "symbol": "Sender::on_event",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2125",
+   "kind": "fn",
+   "purpose": "The single product entry point: event -> transmit decisions. Under the cold-start feature it wraps into on_event_batch; otherwise legacy singular path.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:240-252 §3 main loop",
+   "product_call_sites": [
+    "crates/client-core/src/lib.rs:91 pub fn on_event(&mut self, event, now_ns) -> self.sender.on_event(...)",
+    "crates/client-core/src/runtime.rs drive! macro"
+   ],
+   "evidence": [
+    "sender.rs:2125-2146",
+    "sender.rs:2138-2142 RecoveredControl early-return keeps the pure-logical path off the pacer clock (N8)"
+   ]
+  },
+  {
+   "symbol": "Sender::on_event_core",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2151",
+   "kind": "fn",
+   "purpose": "Dispatch + fate advance + fuzzy + state + rate/burst; schedule_transmit excluded (single output seam).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:246-252 §3",
+   "evidence": [
+    "sender.rs:2151-2285",
+    "called from on_event:2143, on_event_batch:2368, cs_phase3_fire_due_once:2740"
+   ]
+  },
+  {
+   "symbol": "Sender::grounded_startup_rate / cwnd_over_srtt",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2295 / :2309",
+   "kind": "fn",
+   "purpose": "min(STARTUP_gain x min_cwnd/srtt, cwnd/srtt) bootstrap floor; cwnd/srtt is the structural hard ceiling with the last word at every application.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:608-663 §8 SRC (rate ceiling); the DR-RATE-RAMP-2 floor is a supersession, not spec text",
+   "product_call_sites": [
+    "reached via on_event_core:2205 (arm) and :2213 (effective_floor = floor.min(cwnd_over_srtt()))"
+   ],
+   "evidence": [
+    "sender.rs:2295-2325",
+    "no new constant: uses SrcConfig::min_cwnd and Gain::STARTUP (rate.rs)"
+   ]
+  },
+  {
+   "symbol": "Sender::on_event_batch",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2342 (cfg at :2341)",
+   "kind": "feature-gated-block",
+   "purpose": "DR-CS-1 M1 atomic 4-phase batch entry with the C2 no-due-timer post-condition.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "experimental-cold-start (default OFF)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:2341-2410",
+    "non-test callers: crates/adaptive-transport/src/udp_runner.rs:840,863 (that module is itself behind experimental-fec-budget) and sender.rs:2133 inside the same cfg block",
+    "no client-core caller"
+   ]
+  },
+  {
+   "symbol": "Sender::next_wakeup_ns (+ earlier, next_timer_deadline_ns, tail_probe_deadline_ns, pending_work_ready_ns)",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2433 / :2438 / :2453 / :2532 / :2551",
+   "kind": "fn",
+   "purpose": "EK4-A2 event-loop wakeup deadline: earliest of 6 authoritative sources (CS timers, ARQ time-threshold, dup queue, bootstrap ladder, tail PTO, pacer-token readiness).",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "WIRE",
+   "spec_ref_or_none": "none in specs/; contract EK4-A2-NEXT-WAKEUP-CONTRACT (md d59212b2…) cited at sender.rs:2415",
+   "evidence": [
+    "sender.rs:2412 doc: 'Artık DEFAULT BUILD'de' — it is compiled, but nothing in the product calls it",
+    "non-test callers repo-wide: only crates/adaptive-transport/src/udp_runner.rs:862 (behind experimental-fec-budget)",
+    "the product deliberately uses a 1 ms pump instead: crates/client-core/src/runtime.rs:6 '`next_wakeup_ns()`'e tek-kaynak-uyku YOK (D3, EK4-A2 tarihi): pompa idempotent + kanıtlı' and runtime.rs:58-59 PACE_TICK = 1 ms",
+    "consequence: the entire 6-source deadline aggregation, plus path_timing_snapshot and tail_probe_deadline_ns, are unreachable from the product runtime"
+   ]
+  },
+  {
+   "symbol": "cs_type_priority / cs_any_due / cs_has_pending_work",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2568 / :2577 / :2583",
+   "kind": "fn",
+   "purpose": "Batch ordering (ACK -> echo -> rest) and the E2 exact-no-op predicates.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "experimental-cold-start (default OFF)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:2567-2594; callers sender.rs:2347, 2349, 2354, 2374, 2688 — all inside cfg blocks"
+   ]
+  },
+  {
+   "symbol": "cs_on_probe_echo",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2596",
+   "kind": "fn",
+   "purpose": "Legacy F2A echo ingest: 5-condition late-echo rejection, single-consumption, RTT-estimator only (no cwnd/BtlBw/delivery/loss/ack-conf touch).",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "experimental-cold-start (default OFF)",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:849 §11.1(iv) (authenticated echo may unlock the RTT/loss lock)",
+   "evidence": [
+    "sender.rs:2595-2628; sole caller sender.rs:2197 (inside the same cfg)",
+    "superseded on the shipping path by bs_on_echo (sender.rs:3218), which is called unconditionally at sender.rs:2198"
+   ]
+  },
+  {
+   "symbol": "cs_phase2_resolve / cs_phase3_fire_due / cs_phase3_fire_due_once / drain_cs_probes",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2630 / :2686 / :2699 / :2777",
+   "kind": "feature-gated-block",
+   "purpose": "Legacy F2A ladder lifecycle: disarm-on-srtt, terminal reporting, retire-on-fire timer firing, paced probe emission.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "experimental-cold-start (default OFF)",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md:801-850 §11.1",
+   "evidence": [
+    "sender.rs:2630, 2686, 2699, 2777 all under #[cfg(feature = \"experimental-cold-start\")]",
+    "drain_cs_probes called at sender.rs:4087 (inside cfg); emits TransmitKind::CsProbe with size CS_PROBE_WIRE_MAX = 44 — the same wire kind and size the shipping drain_bootstrap_probes emits (sender.rs:3206-3212)"
+   ]
+  },
+  {
+   "symbol": "record_post_timeout_notice",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2836",
+   "kind": "fn",
+   "purpose": "One-slot, first-valid-proof-wins PostTimeoutNotice recorder (NOTICE_BOUND=1).",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "experimental-cold-start (default OFF)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:2836-2846; callers sender.rs:2652 (cs_phase2_resolve) and :4786 — both inside cfg blocks",
+    "its drain (take_post_timeout_notice) has no product consumer"
+   ]
+  },
+  {
+   "symbol": "diag_cold_start / diag_cs_bootstrap / take_cs_terminal",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2813 / :2857 / :2827",
+   "kind": "fn",
+   "purpose": "INV-CS-1/2/3 proof counters and the terminal drain.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "experimental-cold-start (default OFF)",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "consumers: crates/adaptive-transport/src/udp_runner.rs:915,1013 (diag_cold_start), :886,1012 (diag_cs_bootstrap), :893 (take_cs_terminal) — udp_runner is itself feature-gated (crates/adaptive-transport/src/lib.rs:56-57) and self-described as a BENCH-RUNNER 'ÜRETİM-YOLUNA-BAĞLI-DEĞİL' (udp_runner.rs:1)",
+    "no client-core / kama-engine caller"
+   ]
+  },
+  {
+   "symbol": "cs_test_arm_hook_timer / cs_test_hook_fired",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2870 / :2879",
+   "kind": "fn",
+   "purpose": "#[doc(hidden)] test-only exposed-timer hook for F1 atomicity proofs.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "experimental-cold-start (default OFF) + #[doc(hidden)]",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sender.rs:2866-2882 doc: 'TEST-ONLY … Üretim-yolu-değil (feature default-OFF + doc-hidden)'",
+    "sole external callers: crates/adaptive-transport/tests/dr_cs1_acceptance.rs:76,96,137,167 and :79,103,139,170",
+    "public API surface exposed purely for one test file"
+   ]
+  },
+  {
+   "symbol": "Sender.startup_pacing_floor_bps / startup_floor_armed_once / startup_base_seen",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1503 / :1506 / :1509",
+   "kind": "config-field",
+   "purpose": "Bootstrap floor value + arm-once latch + ramp-entered latch (deterministic permanent release).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "spec_ref_or_none": "none (reports/fs-cal-2/v3.5/INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md)",
+   "product_call_sites": [
+    "reached from client-core via Sender::on_event -> on_event_core:2204-2285"
+   ],
+   "evidence": [
+    "sender.rs:2204-2210 arm at the PreConverge exit; :2258-2285 release",
+    "sender.rs:2265-2273 records two rejected release signals (plateau_reached is consumed in the same call; base_is_startup re-arms every event) — the phase itself is the durable signal"
+   ]
+  },
+  {
+   "symbol": "Sender.sent_logical / confirmed_logical / diag_recovered_cancels / diag_sent_logical_evicted / diag_confirmed_logical_miss",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1612-1616",
+   "kind": "config-field",
+   "purpose": "DR-S5-3/4/6 pure-logical send-record<->ACK ledger, explicitly NOT fed into BtlBw/delivered.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "spec_ref_or_none": "none (DR-S5-3/4/6)",
+   "evidence": [
+    "sender.rs:1612-1616",
+    "register_sent_logical (sender.rs:4759) external callers are tests only: crates/adaptive-transport/tests/{live_budget_sweep.rs:163, policy_outcome_sweep.rs:256}, crates/kama-engine/tests/{m1_reverse_nis.rs:324, micro_sweep_1b.rs:263}",
+    "take_confirmed_logical (sender.rs:4863) external caller: crates/kama-engine/tests/n8_v2.rs:142 only",
+    "the product never registers DATA send-records and never drains the confirm ledger ⇒ the M1 'recovered vs wire-acked' separation is measurable only in tests"
+   ]
+  }
+ ],
+ "cal_markers": [
+  "sender.rs:190 // ── DR-CS-1 M2 [CAL] sabitleri (F2A) ──",
+  "sender.rs:313 KALİBRE EDİLMEMİŞ: default flip ölçüm ister. (InitialWindowConfig)",
+  "sender.rs:333 **KALİBRE EDİLMEMİŞ — default `Q18Iid`.** R1 disiplini: kampanya görmemiş bir eşik sevk edilmez (FecStructurePolicy::BurstFusion)",
+  "sender.rs:349 **KALİBRE EDİLMEMİŞ** — ölçümle belirlenecek (FecLossRiskConfig.weights / SuspectConfidence)",
+  "sender.rs:351 [CAL] L1 (bootstrap) parity tavanı, per-mille (bootstrap_cap_permille = 125)",
+  "sender.rs:354 [CAL] L2 (persistent) tavanı, per-mille (persistent_cap_permille = 250)",
+  "sender.rs:357 [CAL] Persistence TABANI (persist_srtt_permille = 500)",
+  "sender.rs:364 [CAL] Öğrenilen ufukta pay: ρ (persist_rho_permille = 1250)",
+  "sender.rs:366 [CAL] Öğrenilen ufukta quantile (persist_q_permille = 950 = Q95)",
+  "sender.rs:368 [CAL] Ufuk tavanı (persist_cap_srtt_permille = u32::MAX; 'bu sweep'te ÖLÇÜLMEDİ')",
+  "sender.rs:371 [CAL] L1 asgari instant risk (l1_min_instant_ppm = 10_000)",
+  "sender.rs:373 [CAL] L2 asgari persistent risk (l2_min_persistent_ppm = 10_000)",
+  "sender.rs:375 [CAL] reorder_min_evidence_units = 8",
+  "sender.rs:377 [CAL] reorder_discount_max_permille = 500",
+  "sender.rs:380 [CAL] tight_budget_permille = 2500 (DEADLINE_ASSISTED)",
+  "sender.rs:389 [C4 G1 `[CAL]`] reorder_suppress_permille (u32::MAX = kapalı; bounded_v1 = 300)",
+  "sender.rs:419 Deneysel kol AÇIK: arbiter + sınırlı spekülatif bootstrap (v2). `[CAL]` default'larla (experimental_v1)",
+  "sender.rs:971 [KURULUŞ-KALİBRASYONU] Probe merdiveni (BootstrapRttConfig.fires_ns)",
+  "sender.rs:990 KALİBRE EDİLMEMİŞ — ölçümle doğrulanmalı (establishment_fast 0.2/0.6/1.8/5.4 s)",
+  "sender.rs:1328 [CAL initial] INITIAL_RTT = 100 ms",
+  "sender.rs:1333 **[DAYANAK BORCU — 2026-09-04] BU SAYININ ARKASINDA GEÇERLİ BİR KAMPANYA YOK** (STRUCTURE_GATE_LOSS_MIN_PPM = 100_000)",
+  "sender.rs:1350 kampanya görmemiş bir eşiği kampanyasız BAŞKA bir sayıyla değiştirmek aynı hatadır",
+  "sender.rs:1360 **[DAYANAK BORCU — 2026-09-04]** (STRUCTURE_GATE_IID_MAX_DELTA_PPM = 50_000; 'burst → ARQ' politikası geçersiz Q17 holdout'una dayanıyordu)",
+  "sender.rs:1370 kalibre-EDİLMEMİŞ başlangıç (BURST_FUSION_MARGIN 3/2)",
+  "sender.rs:1373 [CAL] STARTUP_PLATEAU_ROUNDS = 3",
+  "sender.rs:1377 [CAL] ACK_SILENCE_SRTT_MULT = 3",
+  "sender.rs:1379 [CAL] DEFAULT_DUP_FACTOR / DEFAULT_DUP_SPACING",
+  "sender.rs:1383 [CAL PLACEHOLDER] PRE_CONVERGE_FLOOR_BW = 31 B/s",
+  "sender.rs:1385 [CAL] DR-EST-1 ESTABLISH_PROBE_INITIAL_NS / _CAP_NS",
+  "sender.rs:1392 [CAL] EXPECTED_ACK_FREQ_N = 2 (receiver ACK_FREQ_N mirror)",
+  "sender.rs:1396 [CAL] EAI_RETURN_BW_PRIOR = 31 (§3.3-E-FULL ölçülen return_bw ile değiştirecek)",
+  "sender.rs:1398 [CAL kalibrasyon-matrisi {1.25, 1.5, 2.0}] CADENCE_KC = 3/2",
+  "sender.rs:1405 [CAL] K_WL = 8 (W_loss ledger penceresi)",
+  "sender.rs:1408 [CAL] K_TOMB = 8 (tombstone TTL; onaylı formülün min(mesaj-deadline,…) kolu motorda UYGULANAMAZ → tek-kollu ZEYL)",
+  "sender.rs:1412 [CAL, matris {6,8,10}] K_BW = K_RTPROP = 8",
+  "sender.rs:1418 [CAL matris {1,2,4}] K_QD = 2",
+  "sender.rs:1420 [CAL] DRAIN_RTPROP_MIN/MAX_DWELL_EPOCH = 1/3",
+  "sender.rs:1423 [CAL {2,3,4}] DRAIN_MAX_DWELL_EPOCH = 3",
+  "sender.rs:1425 [CAL, golden'a girmez] ProbeUp sözleşme-sabitleri",
+  "sender.rs:1429 [CAL {4,8}] K_ARQ_SHARE = 4",
+  "sender.rs:1436 [CAL {2,4,8}] K_PROBE_PERIOD_EPOCH = 4",
+  "sender.rs:1437 [onaylı placeholder] PROBE_MAX_DWELL_EPOCH = 4",
+  "sender.rs:1439 [CAL] PROBE_SUCCESS_EPS_PERMILLE = 25",
+  "sender.rs:1441 [CAL {1,2,3}] K_CONF_EAI = 2",
+  "sender.rs:1445 [CAL matris {2,4,8}] K_CONV = 4",
+  "sender.rs:1450 [CAL] TOMBSTONE_MAX = 4096",
+  "sender.rs:1454 [CAL PLACEHOLDER] PC_KBASE = 3/2 geometrik kopya",
+  "sender.rs:1459 [CAL] BURST_WINDOW_NS = 40 ms",
+  "sender.rs:1757 KALİBRE DEĞİL — golden/motor testi; gerçek değerler netem'den (Sender::new fuzzy fixture — this is the config the PRODUCT ships)"
+ ],
+ "todo_wiring": [
+  "NO literal TODO/FIXME/XXX/HACK/todo!()/unimplemented!() anywhere in sender.rs lines 1-2800 (awk sweep over the range returned zero matches).",
+  "NO typed FeatureNotImplemented stub in sender.rs: `grep -n 'TransportError\\|crate::error' crates/adaptive-transport/src/sender.rs` -> 0 hits. The crate's typed stub error exists at crates/adaptive-transport/src/error.rs:53 but sender.rs never imports it. Typed rejection in scope is done instead with FecAuthorityError (sender.rs:698) and BudgetPolicyTransitionError (sender.rs:842).",
+  "sender.rs:1333-1351 [DAYANAK BORCU — 2026-09-04]: STRUCTURE_GATE_LOSS_MIN_PPM (100_000) has no valid campaign behind it; the Q17 holdout that justified it is declared VOID (reports/fs-fusion-cal-1/FRAMING-CORRIGENDUM.md:73) and the ppm band values are generator artefacts (1/48, 2/48, 4/48). Recorded, not fixed. Also logged as SPEC-GAP-REGISTRY-2026-08-27.md:302-305 'unsanctioned magic constant'.",
+  "sender.rs:1360-1365 [DAYANAK BORCU — 2026-09-04]: the 'burst -> leave it to ARQ' POLICY behind STRUCTURE_GATE_IID_MAX_DELTA_PPM rests on the same void holdout; the cell that produced the claim contained no FEC arm at all. Made opt-in via FecStructurePolicy instead of fixed.",
+  "sender.rs:1396-1397 EAI_RETURN_BW_PRIOR is explicitly a placeholder to be replaced by the measured return_bw of engine-spec §3.3-E-FULL. This 31 B/s constant plus EAI_SACK_WIRE_BYTES=65 is the source of the ~2.097 s channel-independent term documented at sender.rs:620 as pinning the loss-confirm horizon at ~16xRTT.",
+  "sender.rs:1408-1410 K_TOMB: the approved TTL formula's min(message-deadline, ...) arm CANNOT be implemented in the engine (per-unit deadline is not carried into transport) -> single-armed TTL, recorded as a spec ZEYL (specs/adaptive-transport-engine-spec.md:992).",
+  "sender.rs:1073 + :1801: StartupPacingConfig doc says 'DEFAULT OFF => mechanism inert' and the field initializer carries the trailing comment '// default OFF', but Default returns { enabled: true } (sender.rs:1126). The record is stale, not the behaviour; this is the same stale-record failure the Default impl itself documents at sender.rs:1120-1123.",
+  "sender.rs:1486-1493 fate_estimator doc asserts 'read by nothing except diag_loss_structure', yet structure_gate_fec reads window features at sender.rs:3648/3671/3697. Either the doc is stale or the two are distinct windows — worth a one-line verification before quoting the observation-only claim.",
+  "sender.rs:234-235 PathTimingState doc 'Üretim-çağıranı YOK' is true only because next_wakeup_ns has no product caller; there IS an in-crate caller at sender.rs:2537. If next_wakeup_ns is ever wired (the EK4-A2 contract expects it), this doc becomes false.",
+  "specs/adaptive-transport-engine-spec.md:1006 [TUR-D1 EK-3 AÇIK-BORÇ] W_BTLBW shrink-regime anti-fix is recorded as an OPEN DEBT (S1-deferred); the mirroring comment sits just past this scope at sender.rs ~:2893."
+ ],
+ "duplicate_control_loops": [
+  "TWO cold-start probe ladders with byte-identical schedules. Legacy DR-CS-1 F2A: CS_PROBE_FIRES_NS (sender.rs:192) = [3,9,21,45] s, CS_PROBE_WIRE_MAX=44 (sender.rs:194), budget 200 B (sender.rs:196), armed at sender.rs:5722-5725, emitted by drain_cs_probes (sender.rs:2777). Shipping DR-CS-3: BS_FIRES_NS (sender.rs:1019) = the same [3,9,21,45] s, BS_PROBE_WIRE_EXACT=44 (sender.rs:1021), budget 200 B (sender.rs:1023), armed at sender.rs:5711-5716, emitted by drain_bootstrap_probes (sender.rs:3172). Both push TransmitKind::CsProbe. Under --all-features BOTH arm; the product must call set_cs_probe_lane(false) (crates/client-core/src/runtime.rs:837) to suppress the legacy one — sender.rs:1989-1993 records that without it the F2A ladder armed unconditionally on the first DATA emission.",
+  "TWO echo-ingest paths on ONE event. sender.rs:2196-2198 dispatches Event::CsProbeEcho into cs_on_probe_echo (cfg-gated, sender.rs:2596) AND unconditionally into bs_on_echo (sender.rs:3218). Their probe_seq namespaces are independent counters that BOTH start at 0 (cs_probe_seq_next sender.rs:1857 vs bs_seq_next sender.rs:1806), so in an --all-features build one wire echo is offered to two matchers whose generation spaces overlap. Each is individually guarded (srtt.is_some() early-returns), but the two-matcher structure is a duplicate.",
+  "TWO wakeup/scheduling authorities, one of them dead. Sender::next_wakeup_ns (sender.rs:2433) aggregates six authoritative deadline sources per the EK4-A2 contract, and its doc says it is 'Artık DEFAULT BUILD'de'. The product does not use it: crates/client-core/src/runtime.rs:6 states '`next_wakeup_ns()`'e tek-kaynak-uyku YOK (D3, EK4-A2 tarihi)' and runtime.rs:58-59 drives the engine with a 1 ms PACE_TICK pump instead. Its only non-test caller is crates/adaptive-transport/src/udp_runner.rs:862 (feature-gated bench runner). Consequence: next_timer_deadline_ns, tail_probe_deadline_ns, pending_work_ready_ns and path_timing_snapshot are all product-unreachable.",
+  "FOUR proposers for ONE quantity (parity ratio), resolved by a single arbiter. fuzzy controller (d.fec_parity_ratio_permille, sender.rs:3474), calibrated fusion policy (sender.rs:3521-3524), Q18 structure gate (sender.rs:3541-3548), speculative loss-risk lane (sender.rs:4315-4367). Not a live double-count: fusion_policy and structure gate are mutually exclusive (if/else at sender.rs:3481 vs :3539), and fec_arbiter takes max() with no summation (sender.rs:581-605). But it is four independent config surfaces (fusion_policy, fec_structure_policy + structure_gate_level_permille, fec_loss_risk, fuzzy fixture) governing one output.",
+  "TWO rate authorities in the same statement. on_event_core computes natural_rate = compute_send_rate(&decision) (sender.rs:2211) and startup_pacing_floor_bps (sender.rs:2205), then send_rate = natural_rate.max(effective_floor) where effective_floor = floor.min(cwnd_over_srtt()) (sender.rs:2213-2216). Resolved deterministically (max then hard-ceiling min), and the floor is bootstrap-only with a permanent release (sender.rs:2258-2285) — a designed override rather than a defect, but it means the pacer rate has two writers within one event.",
+  "TWO tail-probe diagnostic surfaces with different field sets: tail_probe_diag (sender.rs:2096, 4-tuple) is what the product reads (crates/client-core/src/lib.rs:224,242); tail_probe_diag_ext (sender.rs:2110, 6-tuple, the separable §7 accounting) is read only by an example and one integration-test helper. tail_probe_due_edge_count (sender.rs:2050), added specifically so a level poll could never be misread as demand, has zero callers anywhere."
+ ],
+ "notes": "SCOPE/BRANCH NOTE: the working tree is on branch audit/transport-v1-closure @ 15133be4, not wip/c4-attrib. `git diff --stat 35f60f80 HEAD -- crates/adaptive-transport/src/sender.rs` is EMPTY, so the audited file content is byte-identical to the specified 35f60f80. Read-only; no cargo run.\n\nTEST-BOUNDARY RULE USED: `#[cfg(test)] mod tests` in sender.rs begins at line 6000 (grep -n '^#\\[cfg(test)\\]'). Every sender.rs hit at line >= 6000 was classified as TEST, not product. crates/adaptive-transport/src/udp_runner.rs and fs_harness.rs/fs_trace.rs are NOT product: they are declared `#[cfg(feature = \"experimental-fec-budget\")]` in crates/adaptive-transport/src/lib.rs:37-41 and 56-57, and udp_runner.rs:1 self-describes as a \"POLICY-AWARE UDP BENCH-RUNNER (feature-gated; ÜRETİM-YOLUNA-BAĞLI-DEĞİL)\".\n\nFEATURE STATE VERIFIED (crates/adaptive-transport/Cargo.toml:15-27): experimental-fec-budget, experimental-cold-start, diag-sched-telemetry all default OFF and all with empty dependency lists. crates/client-core/Cargo.toml:36-38 enables ONLY diag-sched-telemetry (opt-in). crates/bench/Cargo.toml enables ONLY diag-sched-telemetry. NOTHING in the workspace turns on experimental-cold-start or experimental-fec-budget outside tests. So every `#[cfg(feature = \"experimental-cold-start\")]` item in this scope (Event::Tick, CsTimerKind, CsTerminal, PostTimeoutNotice, CsSrttSource, the four CS_* constants, on_event_batch, all cs_* functions, 17 Sender fields) is uncompiled in the product build.\n\nDEFAULT-STATE CONFIRMATIONS (the \"KNOWN CONTEXT\" checked against source):\n- RuntimeConfig::default() crates/client-core/src/runtime.rs:190-210 — fec: None (:199), bootstrap_rtt: false (:196), bootstrap_fast_ladder: false (:197), fec_loss_risk: FecLossRiskConfig::bounded_v1() (:204), structure_gate_level_permille: Some(250) (:207), loss_confirm_horizon: CadenceLegacy (:203), fusion_policy: None (:202), ts_sample_period_ns: None (:206), initial_window_bytes: DEFAULT_BURST_CAP (:195, i.e. IW is ON in product), fec_structure_policy: Q18Iid (:198). All CONFIRMED.\n- Transport-level defaults DIFFER from product defaults in three places: FecLossRiskConfig::default() has enabled=false (sender.rs:398) vs product bounded_v1 enabled=true; InitialWindowConfig::default() has bytes=0 = OFF (derive at sender.rs:314) vs product DEFAULT_BURST_CAP; TailRecoveryConfig::default() is OFF (sender.rs:1798) vs product validated_v1() ON (crates/client-core/src/lib.rs:83).\n- ONE \"KNOWN CONTEXT\" ITEM IS WRONG AS STATED: StartupPacingConfig::default() returns { enabled: true } (sender.rs:1126), i.e. startup pacing is DEFAULT ON in the engine and therefore in the product, even though sender.rs:1073 and sender.rs:1801 both still say \"default OFF\". The Default impl's own comment chain (sender.rs:1083-1125) documents the ON/OFF/ON history and the stale record.\n- DR-EST-1 establish probe DEFAULT ON confirmed: sender.rs:1819 establish_probe_enabled: true; only tests ever call set_establish_probe(false).\n\nBENCH-vs-PRODUCT DEFAULT DIVERGENCE (material for any \"product arm\" claim): crates/bench/src/kama_product.rs builds RuntimeConfig with `..RuntimeConfig::default()` but EXPLICITLY overrides fec_loss_risk with experimental_v1() or default() (:186-221) — grep for bounded_v1 across crates/bench returns ZERO hits. It also passes structure_gate_level_permille straight from the CLI `gate` option (:224), so an unset flag yields None (engine fec_med = 500), not the product's Some(250). The bench \"PRODUCT arm\" therefore does not exercise the shipped FEC v1 policy unless those flags are set by hand.\n\nSTRONGEST DELETE CANDIDATES (zero callers repo-wide, verified by grep excluding sender.rs itself): Sender::tail_probe_due_edge_count (sender.rs:2050), Sender::diag_bw_accept (sender.rs:2043), Sender::bootstrap_budget_remaining (sender.rs:2014), Sender::sched_diag (sender.rs:1979). Plus three never-written / vacuously-written diagnostic fields: BootstrapRttDiag::duplicate_step_denied (:1033, no write site at all), ::probe_after_success_violation (:1049, no write site — tests assert ==0 vacuously at sender.rs:7999), ::budget_violation (:1051, only write is `+= 0` at sender.rs:3196 — sender.rs:7878's assert_eq!(..,0) can never fail). Plus eight SchedDiag counters that are incremented but unreadable because their only accessor has no callers (:1151, :1165, :1167, :1171, :1173, :1175, :1177, :1179).\n\nSPEC COVERAGE OF THIS SCOPE: specs/adaptive-transport-engine-spec.md covers the state machine (§3, lines 200-262), PRE_CONVERGE cold-start (§3.3, lines 279-376), the CS probe/echo frames (§11.1, lines 801-850, with 0x12 CANCELLED and superseded by 0x19/0x1A), loss detection (§5, 408-467), ack_confidence (§5.1, 468-500), PTO (§12, 868-873), FEC/ARQ fusion (§8.4, 645-679) and the [CAL] constant tables (§16.1/§16.2, 972-1150). It contains NO text for: the Q18 structure gate, the FEC arbiter's max()-of-three rule, the speculative loss-risk lane, LossConfirmHorizon, InitialWindowConfig, StartupPacingConfig/DR-RATE-RAMP-2, tail recovery, or DR-EST-1 (grep over specs/*.md for \"structure gate|arbiter|speculative|spekülatif\" returns exactly one unrelated hit at line 420). Those seven mechanisms live only in docs/design/* and reports/*, so any v1 claim that leans on them is claiming beyond the frozen spec — and §8.4's own rule (parity_final = min(fuzzy_parity, budget_cap, profile_cap), line 661) is narrower than what fec_arbiter actually does.\n\nINVARIANT SPOT-CHECKS PASSED IN SCOPE: INV-ENGINE-SOC — no AEAD/key type appears in sender.rs 1-2800; OpaqueUnit carries id+size only (:78-85), and parity bytes are explicitly the security layer's (:13-16). INV-RATE-1 — loss never writes the pacing phase: base_is_startup is documented and pinned as changeable only by channel-measurement events (:1656-1661), and the recovery states keep Steady gain. ADR-17 — no float, no RNG in scope; rate_per_srtt is u128-widened saturating integer (:1055) and compute_requested_r is half-up integer (:925). ADR-05 — no varint anywhere in scope. SR-AUDIT-001 — every growing container in the Sender struct is capped: tombstones/TOMBSTONE_MAX (:1452), sent_logical/SENT_LOGICAL_CAP (:1254), confirmed_logical/CONFIRMED_LOGICAL_CAP (:1244), cs_probe_outstanding <= N_PROBE (:1591), post_timeout_notice one-slot (:1607), bs_outstanding one-slot (:1518)."
+}

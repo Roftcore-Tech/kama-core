@@ -1,0 +1,1573 @@
+{
+ "module": "at-controllers (crates/adaptive-transport/src/{fusion, fusion_policy, budget_kernel, fate_estimator, emergency, tail_recovery, arq, rate, bw, rtt, pacer, loss, ack, fec, receiver}.rs)",
+ "items": [
+  {
+   "symbol": "DeterministicFuzzyController::decide (impl FusionController)",
+   "path_line": "crates/adaptive-transport/src/fusion.rs:488",
+   "kind": "fn",
+   "purpose": "Mamdani fuzzy controller: 5 crisp inputs -> (fec_ratio, arq_aggr, send_rate_gain, compress, mode, no_rule).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none (always runs)",
+   "spec_ref_or_none": "transport-layer-tdd §5 INV-FUZZY-1 / AC-5; engine §8.4,§15",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:3416 (fuzzy_evaluate)",
+    "crates/adaptive-transport/src/sender.rs:2202 (on_event -> fuzzy_evaluate)",
+    "crates/client-core/src/runtime.rs:963 (drive! -> session.on_event)"
+   ],
+   "evidence": [
+    "sender.rs:3416 `let mut d = self.fuzzy.decide(&inputs);`",
+    "sender.rs:2202 `let decision = self.fuzzy_evaluate(now_ns);`",
+    "sender.rs:1788 `fuzzy: DeterministicFuzzyController::new(fuzzy_cfg.into_inner())`"
+   ]
+  },
+  {
+   "symbol": "FusionDecision.compress",
+   "path_line": "crates/adaptive-transport/src/fusion.rs:444",
+   "kind": "config-field",
+   "purpose": "Fuzzy output bit: enable compression when bw LOW dominant or emergency.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "gate": "none",
+   "spec_ref_or_none": "transport-layer-tdd:738 INV-COMPRESS-1; :769 AC-5; :772 AC-8 (compress=on); :652 (zstd)",
+   "product_call_sites": [],
+   "evidence": [
+    "fusion.rs:551 `let compress = bw.low > PERMILLE / 2 || mode == Mode::EmergencyForwardRedundancy;` — computed",
+    "grep `compress` across crates: only fusion.rs (compute), sender.rs:1968 (struct init `compress: false`), tests/tv_fusion.rs:54,95, tests/fusion_thresholds.rs:152,167",
+    "no read of `.compress` anywhere in sender.rs<6000 or client-core"
+   ]
+  },
+  {
+   "symbol": "FusionDecision.arq_aggressiveness_permille",
+   "path_line": "crates/adaptive-transport/src/fusion.rs:440",
+   "kind": "config-field",
+   "purpose": "ARQ aggressiveness fed to the selective-retransmit planner.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "engine §9",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:5328 `.plan(&lost, self.last_decision.arq_aggressiveness_permille)`"
+   ],
+   "evidence": [
+    "sender.rs:5328 `.plan(&lost, self.last_decision.arq_aggressiveness_permille);`"
+   ]
+  },
+  {
+   "symbol": "FusionDecision.send_rate_gain_permille",
+   "path_line": "crates/adaptive-transport/src/fusion.rs:442",
+   "kind": "config-field",
+   "purpose": "Soft-drain gain applied on top of BBR pacing gain (loss-blind, INV-RATE-1).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "transport-layer-tdd §5.4; engine §8.2",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:4030 (effective_send_rate arg)"
+   ],
+   "evidence": [
+    "sender.rs:4024-4031 `let fuzzy_rate = effective_send_rate(... decision.send_rate_gain_permille);`"
+   ]
+  },
+  {
+   "symbol": "FusionDecision.fec_parity_ratio_permille",
+   "path_line": "crates/adaptive-transport/src/fusion.rs:438",
+   "kind": "config-field",
+   "purpose": "Parity ratio proposal; one of four arbiter inputs.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "WIRE",
+   "gate": "actuation gated by RuntimeConfig.fec (default None) + FecActuationMode::Manual{enabled:false}",
+   "spec_ref_or_none": "engine §8.4/§10",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:3475 (arbiter confirmed lane)",
+    "crates/adaptive-transport/src/sender.rs:3620 `d.fec_parity_ratio_permille = final_ratio;`",
+    "crates/adaptive-transport/src/sender.rs:4565 (controller_decision_snapshot)"
+   ],
+   "evidence": [
+    "sender.rs:1824 `fec_mode: FecActuationMode::Manual { enabled: false }` — engine default",
+    "sender.rs:4606 `FecActuationMode::Manual { .. } => zero(0, FecSuppressionReason::ManualDisabled, false)`",
+    "client-core/src/runtime.rs:199 `fec: None` in RuntimeConfig::default()",
+    "client-core/src/runtime.rs:1326 `if let Some(p) = fec.as_ref() {` gates the whole latch/emit block — with fec:None no parity is ever emitted"
+   ]
+  },
+  {
+   "symbol": "FusionDecision.mode / Mode::EmergencyForwardRedundancy",
+   "path_line": "crates/adaptive-transport/src/fusion.rs:427",
+   "kind": "enum-variant",
+   "purpose": "§11 emergency forward-recovery trigger from the fuzzy rule R(loss HIGH ∧ bw LOW ∧ ackc LOW).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "transport-layer-tdd:772 AC-8; engine §11",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:3753 `level > EmergencyLevel::Arq || decision.mode == Mode::EmergencyForwardRedundancy`",
+    "crates/adaptive-transport/src/sender.rs:3774 `} else if emergency_active {`",
+    "crates/adaptive-transport/src/sender.rs:4568 (snapshot.emergency)"
+   ],
+   "evidence": [
+    "sender.rs:3752-3753 emergency_active computation",
+    "sender.rs:3774 state-machine branch on emergency_active"
+   ]
+  },
+  {
+   "symbol": "FuzzyConfig::validate / ValidatedFuzzyConfig",
+   "path_line": "crates/adaptive-transport/src/fusion.rs:250",
+   "kind": "fn",
+   "purpose": "Structural/spec-invariant validation of the fuzzy config; type-level 'only validated config constructs a Sender'.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "gate": "reachable only via Sender::try_with_fuzzy_config",
+   "spec_ref_or_none": "DR-1e-v2 §13.4",
+   "product_call_sites": [],
+   "evidence": [
+    "sender.rs:1766 `Self::new_internal(ValidatedFuzzyConfig::trusted_fixture())` — the product ctor BYPASSES validate()",
+    "sender.rs:1771 `pub fn try_with_fuzzy_config(...)` — only callers: sender.rs:6936 (#[cfg(test)]), crates/kama-engine/tests/fuzzy_e2e.rs:229",
+    "fusion.rs:201 `Self(FuzzyConfig::fixture())` inside trusted_fixture"
+   ]
+  },
+  {
+   "symbol": "Sender::try_with_fuzzy_config",
+   "path_line": "crates/adaptive-transport/src/sender.rs:1771",
+   "kind": "fn",
+   "purpose": "Only entry point for a caller-supplied (calibrated) fuzzy config.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `try_with_fuzzy_config`: sender.rs:1771 (def), sender.rs:6936 (cfg(test)), crates/kama-engine/tests/fuzzy_e2e.rs:229",
+    "client-core never calls it: ClientSession::new uses `Sender::new()` (client-core/src/lib.rs:83)"
+   ]
+  },
+  {
+   "symbol": "FuzzyConfig.sr_med",
+   "path_line": "crates/adaptive-transport/src/fusion.rs:236",
+   "kind": "config-field",
+   "purpose": "send_rate_gain consequent MED — doc says 'ileride MED rate kuralı için' (for a future MED rate rule).",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "fusion.rs:236 field decl; fusion.rs:306 validated in `validate()`; fusion.rs:371 `sr_med: 750` in fixture",
+    "fusion.rs:536-537 `weighted_average([(sr1, c.sr_low), (sr_default, c.sr_high)]...)` — only sr_low and sr_high are read by decide()",
+    "grep `sr_med` across crates: only those 3 sites, zero reads"
+   ]
+  },
+  {
+   "symbol": "FuzzyConfig::fixture",
+   "path_line": "crates/adaptive-transport/src/fusion.rs:317",
+   "kind": "fn",
+   "purpose": "The shipped fuzzy membership thresholds and consequents.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "engine §8.4 [CAL:netem]",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/fusion.rs:201 (ValidatedFuzzyConfig::trusted_fixture) <- sender.rs:1766 Sender::new"
+   ],
+   "evidence": [
+    "fusion.rs:5 `//! Membership eşikleri [CAL:netem] — burada FuzzyConfig::fixture KALİBRE DEĞİL`",
+    "fusion.rs:317 `/// **KALİBRE DEĞİL** fixture` — the uncalibrated fixture IS the shipped config"
+   ]
+  },
+  {
+   "symbol": "FusionInputSnapshot::to_inputs",
+   "path_line": "crates/adaptive-transport/src/fusion.rs:414",
+   "kind": "fn",
+   "purpose": "Offline replay: snapshot -> FusionInputs for decide() re-derivation.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `to_inputs`: fusion.rs:414 (def), sender.rs:6920 (inside #[cfg(test)] region, line >6000)"
+   ]
+  },
+  {
+   "symbol": "VarThresholds::covers_domain",
+   "path_line": "crates/adaptive-transport/src/fusion.rs:140",
+   "kind": "fn",
+   "purpose": "TUR-4 domain-coverage invariant (no zero-weight hole).",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "reachable only through validate()",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "fusion.rs:258 `if !v.covers_domain() {` inside `validate()`, which never runs on the product path (see FuzzyConfig::validate item)"
+   ]
+  },
+  {
+   "symbol": "FuzzyConfigError (7 variants)",
+   "path_line": "crates/adaptive-transport/src/fusion.rs:151",
+   "kind": "enum-variant",
+   "purpose": "Typed config-validation errors.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "produced only by validate()",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "all construction sites are inside fusion.rs `validate()` (fusion.rs:272, :310, ...), which is unreachable from the product ctor"
+   ]
+  },
+  {
+   "symbol": "FusionPolicy (whole module: calibrated deadline-axis policy)",
+   "path_line": "crates/adaptive-transport/src/fusion_policy.rs:232",
+   "kind": "module",
+   "purpose": "Second, calibrated authority for the FEC redundancy decision; silences the structure gate when enabled.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "RuntimeConfig.fusion_policy: Option<FusionPolicy> = None (default)",
+   "spec_ref_or_none": "none (post-spec calibration artifact; competes with INV-FUZZY-1 authority)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:851 `session.sender_mut().set_fusion_policy(p)` (only inside `if let Some(p) = cfg.fusion_policy`)",
+    "crates/adaptive-transport/src/sender.rs:3481 `if self.fusion_policy.is_enabled()`"
+   ],
+   "evidence": [
+    "client-core/src/runtime.rs:202 `fusion_policy: None,` in RuntimeConfig::default()",
+    "sender.rs:1952 `fusion_policy: crate::fusion_policy::FusionPolicy::disabled()` — engine default",
+    "bench sets it: crates/bench/src/kama_product.rs:229-230 `matches!(fec, FecArm::PolicyV2Deadline{..}).then(FusionPolicy::calibration_v2_deadline)`"
+   ]
+  },
+  {
+   "symbol": "FusionPolicy::calibration_v1",
+   "path_line": "crates/adaptive-transport/src/fusion_policy.rs:272",
+   "kind": "fn",
+   "purpose": "v1 calibration artifact (loss-axis).",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `calibration_v1`: fusion_policy.rs:272 (def), 14 sites inside fusion_policy.rs #[cfg(test)] (>545), 5 in crates/*/tests/",
+    "zero bench and zero client-core call sites; superseded by calibration_v2_deadline (which bench uses)"
+   ]
+  },
+  {
+   "symbol": "FusionPolicy::calibration_v2_deadline",
+   "path_line": "crates/adaptive-transport/src/fusion_policy.rs:330",
+   "kind": "fn",
+   "purpose": "v2 (deadline-axis) calibration artifact; fail-safe to ArqOnly when app declares no deadline.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "RuntimeConfig.fusion_policy default None",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "crates/bench/src/kama_product.rs:230 `adaptive_transport::fusion_policy::FusionPolicy::calibration_v2_deadline`",
+    "client-core/src/runtime.rs:202 `fusion_policy: None`"
+   ]
+  },
+  {
+   "symbol": "FusionPolicy::with_safety",
+   "path_line": "crates/adaptive-transport/src/fusion_policy.rs:380",
+   "kind": "fn",
+   "purpose": "Builder to override the independent safety bounds.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `with_safety`: fusion_policy.rs:380 (def), 2 sites >545 (#[cfg(test)]), 3 in crates/*/tests/; zero product/bench"
+   ]
+  },
+  {
+   "symbol": "FusionAction::is_arq_only",
+   "path_line": "crates/adaptive-transport/src/fusion_policy.rs:167",
+   "kind": "fn",
+   "purpose": "'this action leaves the wire byte-identical' predicate.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `is_arq_only`: fusion_policy.rs:167 (def), 3 sites >545 (#[cfg(test)]), 3 in crates/*/tests/"
+   ]
+  },
+  {
+   "symbol": "FusionAction::FecAssist.byte_budget",
+   "path_line": "crates/adaptive-transport/src/fusion_policy.rs:126",
+   "kind": "config-field",
+   "purpose": "Hard per-decision byte ceiling produced by the independent safety validator.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "fusion_policy.rs:529-539 computes `budget = want.min(hard_fec_byte_budget).min(hard_combined_byte_cap)`",
+    "sender.rs:3520-3524 `crate::fusion_policy::FusionAction::FecAssist { redundancy_permille, .. } => (redundancy_permille, FecArbiterReason::ConfirmedPolicy)` — `..` DISCARDS byte_budget",
+    "only reads of byte_budget are fusion_policy.rs test asserts (615,618,728,731,745,787)"
+   ]
+  },
+  {
+   "symbol": "FusionSafetyConfig.hard_fec_byte_budget / .hard_combined_byte_cap",
+   "path_line": "crates/adaptive-transport/src/fusion_policy.rs:179",
+   "kind": "config-field",
+   "purpose": "Absolute byte ceilings 'regardless of calibration'.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "fusion_policy.rs:531-532 only feed `byte_budget`, which the actuator discards (previous item)",
+    "sender.rs:3534 only `hard_max_redundancy_permille()` is read by the product (as the speculative-lane ceiling)"
+   ]
+  },
+  {
+   "symbol": "FallbackReason::SafetyRejected",
+   "path_line": "crates/adaptive-transport/src/fusion_policy.rs:76",
+   "kind": "enum-variant",
+   "purpose": "'requested action failed an independent safety check'.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `SafetyRejected` repo-wide: fusion_policy.rs:76 (decl) and fusion_policy.rs:157 (histogram index) ONLY — never constructed",
+    "fusion_policy.rs:157 `FallbackReason::SafetyRejected | FallbackReason::FecUnavailable => 7` — also collides with FecUnavailable in the diag histogram the product reads (runtime.rs:1473)"
+   ]
+  },
+  {
+   "symbol": "FEATURE_SCHEMA_V1",
+   "path_line": "crates/adaptive-transport/src/fusion_policy.rs:41",
+   "kind": "const-knob",
+   "purpose": "v1 feature-schema id.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "fusion_policy.rs:251,278 (inside disabled()/calibration_v1()), :551,:697 (#[cfg(test)])",
+    "the only product-reachable policy (calibration_v2_deadline) uses FEATURE_SCHEMA_V2 (fusion_policy.rs:336)"
+   ]
+  },
+  {
+   "symbol": "FusionPolicy::advise",
+   "path_line": "crates/adaptive-transport/src/fusion_policy.rs:415",
+   "kind": "fn",
+   "purpose": "Pre-safety advisory (ArqOnly / FecAssist).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "inherits fusion_policy default-OFF",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/fusion_policy.rs:516 (inside FusionSafetyValidator::validate <- FusionPolicy::decide <- sender.rs:3515)"
+   ],
+   "evidence": [
+    "fusion_policy.rs:516 `match policy.advise(obs) {`",
+    "fusion_policy.rs:439 `FusionSafetyValidator::new(...).validate(`; sender.rs:3515 `let action = self.fusion_policy.decide(&obs, payload);`",
+    "pub but has no external caller — internal-only despite public visibility"
+   ]
+  },
+  {
+   "symbol": "FUSION_ACTION_KINDS / FusionAction::index",
+   "path_line": "crates/adaptive-transport/src/fusion_policy.rs:135",
+   "kind": "const-knob",
+   "purpose": "12-bucket policy-outcome histogram exposed to the product runtime.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none (counters always sized; only filled when policy enabled)",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:446 `pub fusion_actions: [u64; adaptive_transport::fusion_policy::FUSION_ACTION_KINDS]`",
+    "crates/client-core/src/runtime.rs:1473 `fusion_actions: session.sender().diag_fusion_actions()`"
+   ],
+   "evidence": [
+    "runtime.rs:446 and 1473",
+    "sender.rs:3516 `self.diag_fusion_actions[action.index()] += 1;`"
+   ]
+  },
+  {
+   "symbol": "budget_kernel (entire module)",
+   "path_line": "crates/adaptive-transport/src/budget_kernel.rs:1",
+   "kind": "module",
+   "purpose": "Pure candidate token-allocation policy kernel (classes L/R/B) for FEC parity budgeting.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "cargo feature `experimental-fec-budget` (default OFF; enabled ONLY by crates/kama-integration)",
+   "spec_ref_or_none": "none (module header: 'DENEYSEL; ÜRETİM-YOLUNA-BAĞLI-DEĞİL')",
+   "product_call_sites": [],
+   "evidence": [
+    "budget_kernel.rs:1-3 `//! ... **DENEYSEL; ÜRETİM-YOLUNA-BAĞLI-DEĞİL.** Bu-modül ... KABLOLANMAMIŞTIR; hiçbir-üretim-yolu-çağırmaz`",
+    "every sender call site is gated: sender.rs:4976,4997,5023,5043,5142,5149,5159,5196,5224 all `#[cfg(feature = \"experimental-fec-budget\")]`",
+    "crates/adaptive-transport/Cargo.toml:18 `experimental-fec-budget = []` (no default); grep across Cargo.toml: only crates/kama-integration/Cargo.toml:29 enables it"
+   ]
+  },
+  {
+   "symbol": "PolicyKind::BoundedDebtFloor",
+   "path_line": "crates/adaptive-transport/src/budget_kernel.rs:33",
+   "kind": "enum-variant",
+   "purpose": "Class-B bounded-overdraft policy.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "cargo feature experimental-fec-budget + not selectable via BudgetPolicy",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "sender.rs:5030-5037 `budget_kind_params()` maps ONLY LeftoverOnly->None, ProtectedShareExperimental->ProtectedShare, FloorCapExperimental->FloorCap — no BoundedDebtFloor mapping",
+    "sender.rs:823-828 `enum BudgetPolicy` has only LeftoverOnly / ProtectedShareExperimental / FloorCapExperimental"
+   ]
+  },
+  {
+   "symbol": "FloorTiming::SuspendedNoOpportunity",
+   "path_line": "crates/adaptive-transport/src/budget_kernel.rs:217",
+   "kind": "enum-variant",
+   "purpose": "'no scheduling-opportunity stream' floor-suspension class.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `SuspendedNoOpportunity` repo-wide: budget_kernel.rs:217 (decl) ONLY — never constructed",
+    "budget_kernel.rs:222-238 `floor_timing()` returns only SuspendedNoRate or Eligible"
+   ]
+  },
+  {
+   "symbol": "BudgetDecision.data_token_limit / .floor_grants / .next_wakeup_hint_ns",
+   "path_line": "crates/adaptive-transport/src/budget_kernel.rs:127",
+   "kind": "config-field",
+   "purpose": "Kernel outputs for DATA/ARQ token limit, floor tickets to serve this round, and next-wakeup hint.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "cargo feature experimental-fec-budget",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep in sender.rs+udp_runner.rs for `next_wakeup_hint_ns|floor_grants|data_token_limit`: zero hits",
+    "sender.rs only reads `d.cap_suppressed` (5125), `d.parity_token_limit` (5138/5139) from the BudgetDecision"
+   ]
+  },
+  {
+   "symbol": "budget_kernel::settle return value",
+   "path_line": "crates/adaptive-transport/src/budget_kernel.rs:382",
+   "kind": "fn",
+   "purpose": "Second-phase accounting; returns realized debt (diagnostic).",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "cargo feature experimental-fec-budget",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "sender.rs:5215 `let _borrowed = crate::budget_kernel::settle(kind, &params, &mut st, &d, spent);` — return value discarded",
+    "budget_kernel.rs:387-403 contains two `assert!` (panic) contracts inside a library function"
+   ]
+  },
+  {
+   "symbol": "budget_kernel::admit / AdmissionResult (9 variants)",
+   "path_line": "crates/adaptive-transport/src/budget_kernel.rs:169",
+   "kind": "fn",
+   "purpose": "Pure admission feasibility for parity tickets.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "cargo feature experimental-fec-budget; and sender.rs:5229 further restricts to PolicyKind::FloorCap",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "sender.rs:5248 `let res = crate::budget_kernel::admit(` under `#[cfg(feature = \"experimental-fec-budget\")]` (5224)",
+    "sender.rs:5229 `if kind != crate::budget_kernel::PolicyKind::FloorCap {` early return — admit is dead for ProtectedShare too"
+   ]
+  },
+  {
+   "symbol": "PolicyParams::defaults",
+   "path_line": "crates/adaptive-transport/src/budget_kernel.rs:63",
+   "kind": "fn",
+   "purpose": "[CAL] sim-swept kernel parameter defaults.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "cargo feature experimental-fec-budget",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "budget_kernel.rs:36 `/// Kernel-parametreleri (tümü [CAL]; ...)`",
+    "only caller outside tests: crates/adaptive-transport/src/udp_runner.rs:114 (also feature-gated, lib.rs:57)"
+   ]
+  },
+  {
+   "symbol": "FateEstimator (snapshot/advance/on_original_ack/on_loss_evidence/correct_original_delivered)",
+   "path_line": "crates/adaptive-transport/src/fate_estimator.rs:168",
+   "kind": "struct",
+   "purpose": "Prefix-causal loss-structure (burst vs IID) estimator feeding the Q18 structure gate.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none — runs whenever fusion_policy is disabled (the default)",
+   "spec_ref_or_none": "FS-CAL-2 v3 §3",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:3670 `let f = self.fate_estimator.snapshot();` (structure_gate_fec)",
+    "crates/adaptive-transport/src/sender.rs:2166 advance, :2942 on_original_ack, :2966/:3028 correct_original_delivered, :3336 on_loss_evidence"
+   ],
+   "evidence": [
+    "sender.rs:3670 and 3696 consume snapshot fields in the gate decision",
+    "sender.rs:3543 `let outcome = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm);` on the else (policy-disabled = default) branch"
+   ]
+  },
+  {
+   "symbol": "lib.rs doc: fate_estimator 'observation-only: no product caller'",
+   "path_line": "crates/adaptive-transport/src/lib.rs:31",
+   "kind": "module",
+   "purpose": "Module-level claim that the estimator has no product caller.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:3670"
+   ],
+   "evidence": [
+    "lib.rs:31-32 `/// FS-CAL-2 v3 §3 — ... observation-only: no product caller; guard grounded to tail_recovery::base_pto_ns`",
+    "sender.rs:3670 IS a product caller (structure_gate_fec is on the default decision path) — the doc comment is stale/misleading and must be corrected"
+   ]
+  },
+  {
+   "symbol": "fate_estimator::reordering_guard_ns",
+   "path_line": "crates/adaptive-transport/src/fate_estimator.rs:47",
+   "kind": "fn",
+   "purpose": "Reordering guard for loss-evidence ingestion, derived from TailRecoveryConfig.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `reordering_guard_ns`: fate_estimator.rs:47 (def) + 3 sites >335 (#[cfg(test)]); zero product/bench",
+    "the product computes the same quantity inline: sender.rs:3333-3336 `self.tail_recovery.base_pto_ns(...)` then `on_loss_evidence(p.unit.id, now_ns, guard)` — duplicate of the same guard formula"
+   ]
+  },
+  {
+   "symbol": "WindowFeatures::eligible",
+   "path_line": "crates/adaptive-transport/src/fate_estimator.rs:94",
+   "kind": "fn",
+   "purpose": "§3.4 evidence contract: window is usable only when n10+n11>=8 AND n00+n01>=32.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "gate": "none",
+   "spec_ref_or_none": "FS-CAL-2 v3 §3.4",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `eligible`: fate_estimator.rs:94 (def) + 5 sites >335 (#[cfg(test)]) + 2 in crates/*/tests; zero product",
+    "sender.rs:3684-3695 documents the bypass verbatim: `gate o sözleşmenin DIŞINDA okuyor` and `Q18-FIX'in IID dalı bugün prior'la ateşliyor` — the default gate reads Laplace-prior values as evidence",
+    "sender.rs:3696 uses only `MIN_LOSS_TRANSITIONS` and only in the opt-in BurstFusion branch (3700-3707)"
+   ]
+  },
+  {
+   "symbol": "MIN_NONLOSS_TRANSITIONS",
+   "path_line": "crates/adaptive-transport/src/fate_estimator.rs:39",
+   "kind": "const-knob",
+   "purpose": "Half of the §3.4 eligibility contract.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "gate": "none",
+   "spec_ref_or_none": "FS-CAL-2 v3 §3.4",
+   "product_call_sites": [],
+   "evidence": [
+    "fate_estimator.rs:102 only use is inside `eligible()` (unreachable from product); sender.rs references only MIN_LOSS_TRANSITIONS (3696)"
+   ]
+  },
+  {
+   "symbol": "features_from_fate_bits",
+   "path_line": "crates/adaptive-transport/src/fate_estimator.rs:114",
+   "kind": "fn",
+   "purpose": "Build WindowFeatures from a raw fate bit vector (test/replay helper).",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `features_from_fate_bits`: fate_estimator.rs:114 (def) + 3 sites >335 (#[cfg(test)])"
+   ]
+  },
+  {
+   "symbol": "FateEstimator::drop_unresolved_as_unknown",
+   "path_line": "crates/adaptive-transport/src/fate_estimator.rs:295",
+   "kind": "fn",
+   "purpose": "Flush pending unresolved fates as unknown.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `drop_unresolved_as_unknown`: fate_estimator.rs:295 (def) + 1 site >335 (#[cfg(test)])"
+   ]
+  },
+  {
+   "symbol": "FateEstimator::fate_known / ::pending",
+   "path_line": "crates/adaptive-transport/src/fate_estimator.rs:301",
+   "kind": "fn",
+   "purpose": "Window-occupancy accessors.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "`.fate_known()`/`.pending()` callers: fate_estimator.rs #[cfg(test)] (388,493) + crates/adaptive-transport/tests/loss_structure_observation.rs:102-114 only"
+   ]
+  },
+  {
+   "symbol": "HysteresisController + emergency::action(Framing::Tiny)",
+   "path_line": "crates/adaptive-transport/src/emergency.rs:139",
+   "kind": "struct",
+   "purpose": "§11 asymmetric Schmitt retreat hysteresis -> duplication level.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "transport-layer-tdd:772 AC-8; engine §11 (amended)",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:3745 `let level = self.emergency.update(health, now_ns);`",
+    "crates/adaptive-transport/src/sender.rs:3746 `self.last_recovery = emergency::action(level, Framing::Tiny, &self.emergency_cfg);`",
+    "crates/adaptive-transport/src/sender.rs:5511/5377 dup_queue population"
+   ],
+   "evidence": [
+    "sender.rs:3745-3746",
+    "sender.rs:5740-5743 `dup_params()` reads RecoveryAction::Duplication{factor,spacing}"
+   ]
+  },
+  {
+   "symbol": "Framing::SegmentBlock",
+   "path_line": "crates/adaptive-transport/src/emergency.rs:58",
+   "kind": "enum-variant",
+   "purpose": "Multi-shard framing class selecting the minimal-parity emergency action.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "none — sender hardcodes Framing::Tiny",
+   "spec_ref_or_none": "engine §11",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `Framing::` in sender.rs<6000: exactly one hit, sender.rs:3746 `emergency::action(level, Framing::Tiny, &self.emergency_cfg)`",
+    "emergency.rs:194,197 SegmentBlock arms are therefore structurally unreachable in the product"
+   ]
+  },
+  {
+   "symbol": "RecoveryAction::MinimalParity",
+   "path_line": "crates/adaptive-transport/src/emergency.rs:76",
+   "kind": "enum-variant",
+   "purpose": "Low-rate forward parity for segment-block framing (§11).",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "unreachable behind Framing::SegmentBlock",
+   "spec_ref_or_none": "transport-layer-tdd:772 AC-8 ('block→minimal parity')",
+   "product_call_sites": [],
+   "evidence": [
+    "only constructed at emergency.rs:194 and :197, both under Framing::SegmentBlock",
+    "sender.rs:5740-5743 `dup_params()` matches only `RecoveryAction::Duplication{..}` and falls through `_ =>` to DEFAULT_DUP_FACTOR/SPACING — MinimalParity would be silently treated as default duplication"
+   ]
+  },
+  {
+   "symbol": "EmergencyConfig.block_parity_dup2_permille / .block_parity_dup3_permille",
+   "path_line": "crates/adaptive-transport/src/emergency.rs:110",
+   "kind": "config-field",
+   "purpose": "Minimal-parity ratios for the SegmentBlock emergency arms.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "unreachable (Framing::SegmentBlock)",
+   "spec_ref_or_none": "engine §11",
+   "product_call_sites": [],
+   "evidence": [
+    "emergency.rs:195,198 are the only reads; both inside unreachable SegmentBlock arms"
+   ]
+  },
+  {
+   "symbol": "emergency::ack_decimation",
+   "path_line": "crates/adaptive-transport/src/emergency.rs:205",
+   "kind": "fn",
+   "purpose": "§11 sparse-ACK policy in emergency (true for any level above Arq).",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "gate": "none",
+   "spec_ref_or_none": "transport-layer-tdd:772 AC-8 ('sparse cumulative ACK'); :690 (ACK decimation)",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `ack_decimation` repo-wide: emergency.rs:205 (def) + 4 sites in crates/adaptive-transport/tests/tv_emergency.rs",
+    "receiver.rs never imports emergency; the receiver's ACK cadence is driven only by ACK_FREQ_N / ACK_CADENCE_FLOOR_NS / quota, with no emergency input"
+   ]
+  },
+  {
+   "symbol": "HysteresisConfig::fixture / EmergencyConfig::fixture",
+   "path_line": "crates/adaptive-transport/src/emergency.rs:91",
+   "kind": "fn",
+   "purpose": "[CAL] uncalibrated hysteresis and duplication constants; the shipped values.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "WIRE",
+   "gate": "no product setter exists on Sender",
+   "spec_ref_or_none": "engine §11 [CAL]",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:1791 `HysteresisController::new(HysteresisConfig::fixture(), EmergencyLevel::Arq)`",
+    "crates/adaptive-transport/src/sender.rs:1792 `emergency_cfg: EmergencyConfig::fixture()`"
+   ],
+   "evidence": [
+    "emergency.rs:77 `/// Retreat hysteresis yapılandırması. **[CAL] fixture** (netem'e).` and emergency.rs:90 `/// **KALİBRE DEĞİL** fixture.`",
+    "grep for a setter: no `set_emergency_config`/`set_hysteresis_config` in sender.rs; RuntimeConfig has no emergency field — the uncalibrated fixture is unconditionally shipped and cannot be tuned"
+   ]
+  },
+  {
+   "symbol": "RecoveryModeController::level / Sender::emergency_level",
+   "path_line": "crates/adaptive-transport/src/emergency.rs:134",
+   "kind": "fn",
+   "purpose": "Read the current emergency level.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "`.level()` callers: crates/adaptive-transport/tests/tv_emergency.rs:141 and sender.rs:5986 (`Sender::emergency_level`)",
+    "`emergency_level()` callers: sender.rs:7011 only (inside #[cfg(test)] region >6000) — no product/bench consumer"
+   ]
+  },
+  {
+   "symbol": "Sender::last_recovery accessor",
+   "path_line": "crates/adaptive-transport/src/sender.rs:5980",
+   "kind": "fn",
+   "purpose": "Expose the last computed emergency::RecoveryAction.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `last_recovery()` across crates/, tests/, fuzz/: zero hits (only the definition at sender.rs:5980)"
+   ]
+  },
+  {
+   "symbol": "health input = ack_confidence only (residual_loss missing)",
+   "path_line": "crates/adaptive-transport/src/sender.rs:3744",
+   "kind": "branch",
+   "purpose": "Emergency controller input. Trait doc says health = ack_confidence↑ / residual_loss↓.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "WIRE",
+   "gate": "none",
+   "spec_ref_or_none": "engine §11",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:3744-3745"
+   ],
+   "evidence": [
+    "sender.rs:3744 `let health = u32::try_from(self.ack_confidence_permille(now_ns)).unwrap_or(u32::MAX);` — residual_loss is not in the expression",
+    "emergency.rs:131-132 `/// `health` (ack_confidence↑ / residual_loss↓, per-mille)` — doc/impl mismatch, because LossDetector::residual_loss_ppm has no product caller (see loss.rs items)"
+   ]
+  },
+  {
+   "symbol": "TailRecovery (on_timer / base_pto_ns / on_ack_progress / disarm / on_probe_sent)",
+   "path_line": "crates/adaptive-transport/src/tail_recovery.rs:96",
+   "kind": "struct",
+   "purpose": "Bounded PTO-driven tail-loss probe state machine.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "TailRecoveryConfig.enabled — turned ON in the product by ClientSession::new",
+   "spec_ref_or_none": "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 (INV-CS-4 supersession)",
+   "product_call_sites": [
+    "crates/client-core/src/lib.rs:85 `sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());`",
+    "crates/adaptive-transport/src/sender.rs:3149 on_timer, :3084 on_ack_progress, :3087 disarm, :2536 armed_at_ns, :2538 current_pto_ns, :5483 on_probe_sent"
+   ],
+   "evidence": [
+    "client-core/src/lib.rs:83-86 ClientSession::new",
+    "sender.rs:3144-3152 `if self.tail_recovery.is_enabled() { ... ProbeDecision::ProbeDue { target_seq, .. } = self.tail_recovery.on_timer(...)`"
+   ]
+  },
+  {
+   "symbol": "TailRecoveryConfig::default",
+   "path_line": "crates/adaptive-transport/src/tail_recovery.rs:35",
+   "kind": "fn",
+   "purpose": "Default-OFF, explicitly NEVER-VALIDATED bounds (cap 2, 1 ms / 60 s / 120 s).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "enabled:false",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:1801 `tail_recovery: TailRecovery::new(TailRecoveryConfig::default()), // default OFF`"
+   ],
+   "evidence": [
+    "tail_recovery.rs:37-42 `// NOTE these bounds are NOT the validated ones: ... this default (cap 2, 1 ms / 60 s / 120 s) was never driven by any campaign. Enabling tail recovery therefore goes through set_tail_recovery_config(validated_v1()) — never by flipping `enabled` here, which would ship an unvalidated configuration.`"
+   ]
+  },
+  {
+   "symbol": "TailRecovery::record_probe(spurious) — spurious hardcoded false",
+   "path_line": "crates/adaptive-transport/src/tail_recovery.rs:260",
+   "kind": "branch",
+   "purpose": "Record probe outcome; `spurious` = the unit would have arrived without the probe.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "WIRE",
+   "gate": "none",
+   "spec_ref_or_none": "DR-ARQ-PRODUCT-TAIL-1 §7",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:5484 `self.tail_recovery.record_probe(unit.size, false);`"
+   ],
+   "evidence": [
+    "sender.rs:5484 passes literal `false` — the only product call site",
+    "grep `record_probe(` repo-wide: tail_recovery.rs:260 (def), tail_recovery.rs:567/568 (#[cfg(test)]), sender.rs:5484 (false), plus a DIFFERENT harness type crates/kama-integration/tests/common/fs_tailprobe.rs:100",
+    "consequence: spurious_probe_count / spurious_probe_bytes are structurally always 0 in the product build — a vacuous counter, not a measurement"
+   ]
+  },
+  {
+   "symbol": "TailRecovery::spurious_probe_count / ::spurious_probe_bytes",
+   "path_line": "crates/adaptive-transport/src/tail_recovery.rs:278",
+   "kind": "fn",
+   "purpose": "Spurious-probe accounting.",
+   "called_from_product": true,
+   "only_from": "diagnostic-only",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:2100/2116 (tail_probe_diag / tail_probe_diag_ext)"
+   ],
+   "evidence": [
+    "tail_recovery.rs:263-267 only incremented when `spurious == true`, which never happens in product (previous item)",
+    "the exposing accessors Sender::tail_probe_diag / tail_probe_diag_ext are not read by client-core (grep `tail_probe_diag` in crates/client-core/src/runtime.rs: zero hits); only crates/bench/src/kama.rs:698/701 reads tail_recovery_enabled()"
+   ]
+  },
+  {
+   "symbol": "TailRecovery::probe_index accessor",
+   "path_line": "crates/adaptive-transport/src/tail_recovery.rs:295",
+   "kind": "fn",
+   "purpose": "Current probe round index.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "`.probe_index()` callers: tail_recovery.rs:328,415,432,454,540 — all inside the #[cfg(test)] region (>300)"
+   ]
+  },
+  {
+   "symbol": "DeadlineArqScheduler::plan",
+   "path_line": "crates/adaptive-transport/src/arq.rs:105",
+   "kind": "fn",
+   "purpose": "Deadline-priority selective retransmit plan (no expired-drop).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "engine §9/§12",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:5328 `.plan(&lost, self.last_decision.arq_aggressiveness_permille)`"
+   ],
+   "evidence": [
+    "sender.rs:5317-5331 builds `Vec<LostSeq>` and consumes RetxDecision::Retransmit"
+   ]
+  },
+  {
+   "symbol": "DeadlineArqScheduler::plan — arq_aggressiveness==0 suppression branch",
+   "path_line": "crates/adaptive-transport/src/arq.rs:106",
+   "kind": "branch",
+   "purpose": "'fec-dominant' suppression: empty plan when fuzzy asks for zero ARQ.",
+   "called_from_product": true,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "engine §9 (contract note added to spec)",
+   "product_call_sites": [],
+   "evidence": [
+    "arq.rs:106-108 `if arq_aggressiveness_permille == 0 { return Vec::new(); }`",
+    "fusion.rs:518-520 `// BEYAN: arq consequent'leri ≥arq_light olduğundan arq==0 artık üretilemez — arq.plan()'ın ==0 baskılama-dalı yapısal-erişilmez (§9 sözleşme-notu spec'te).` — documented structurally-unreachable branch"
+   ]
+  },
+  {
+   "symbol": "CapExceedPolicy::ConnectionFail",
+   "path_line": "crates/adaptive-transport/src/arq.rs:32",
+   "kind": "enum-variant",
+   "purpose": "§9.1 alternative: fail the connection closed once ARQ_RETX_CAP is exceeded.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "WIRE",
+   "gate": "RetxConfig::fixture() hardcodes HandToForward",
+   "spec_ref_or_none": "engine §9.1",
+   "product_call_sites": [],
+   "evidence": [
+    "arq.rs:77 `cap_exceed: CapExceedPolicy::HandToForward` — the only construction of RetxConfig in the product (sender.rs:1794/1919)",
+    "sender.rs:5372 `if policy == CapExceedPolicy::HandToForward {` and sender.rs:5384 `// ConnectionFail: spine'da düşür; gerçek impl bağlantı-fail sinyali verir.` — the ConnectionFail path silently drops the unit instead of signalling; explicit unimplemented wiring note"
+   ]
+  },
+  {
+   "symbol": "RetxConfig::fixture (arq_retx_cap / reorder_k / reorder_rho_*)",
+   "path_line": "crates/adaptive-transport/src/arq.rs:71",
+   "kind": "config-field",
+   "purpose": "[CAL] uncalibrated ARQ bounds; the shipped values.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "WIRE",
+   "gate": "no product setter",
+   "spec_ref_or_none": "engine §9.1/§9.3 [CAL]",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:1794 `arq: DeadlineArqScheduler::new(RetxConfig::fixture())`",
+    "crates/adaptive-transport/src/sender.rs:1919 `retx_cfg: RetxConfig::fixture()`"
+   ],
+   "evidence": [
+    "arq.rs:53 `/// ARQ yapılandırması. **[CAL] fixture** (netem'e).` and arq.rs:69 `/// **KALİBRE DEĞİL** fixture.`",
+    "no `set_retx_config` in sender.rs; RuntimeConfig (client-core/src/runtime.rs:73-164) has no ARQ field"
+   ]
+  },
+  {
+   "symbol": "ReorderTracker::recent_max_reorder accessor",
+   "path_line": "crates/adaptive-transport/src/arq.rs:160",
+   "kind": "fn",
+   "purpose": "Read the adaptive reorder ceiling.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "all `recent_max_reorder` hits are inside arq.rs (133,146,155,160,161) — the field is used internally by reorder_thresh(); the pub accessor has no caller in crates/ at all"
+   ]
+  },
+  {
+   "symbol": "ReorderTracker::note_spurious / ::reorder_thresh",
+   "path_line": "crates/adaptive-transport/src/arq.rs:145",
+   "kind": "fn",
+   "purpose": "§9.3 adaptive reorder tolerance driven by observed spurious retransmits.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "engine §5/§9.3",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:2993 and :3032 note_spurious",
+    "crates/adaptive-transport/src/sender.rs:3003 `.set_packet_threshold(u64::from(self.reorder.reorder_thresh(&self.retx_cfg)))`"
+   ],
+   "evidence": [
+    "sender.rs:3003, 2993, 3032"
+   ]
+  },
+  {
+   "symbol": "rate::evaluate + SrcDecision",
+   "path_line": "crates/adaptive-transport/src/rate.rs:137",
+   "kind": "fn",
+   "purpose": "§8.2 SRC core: bdp/cwnd/pacing_rate/send_rate = min(pacing, cwnd/srtt).",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "engine §8.2",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `evaluate`: rate.rs:137 (def), 1 site >6000 in sender (#[cfg(test)]), 12 sites in crates/adaptive-transport/tests/ — zero product callers",
+    "the product computes the same quantity via a SECOND implementation: rate.rs:164 `effective_send_rate` (sender.rs:4024). SrcDecision (rate.rs:108) is likewise never constructed outside evaluate()"
+   ]
+  },
+  {
+   "symbol": "rate::effective_send_rate",
+   "path_line": "crates/adaptive-transport/src/rate.rs:164",
+   "kind": "fn",
+   "purpose": "Product send-rate: min(pacing_gain × fuzzy_gain × BtlBw, cwnd/srtt).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "engine §8.2 + transport-layer-tdd §5.4",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:4024"
+   ],
+   "evidence": [
+    "sender.rs:4024-4032 `let fuzzy_rate = effective_send_rate(&self.src_cfg, btlbw, rtprop, srtt, phase.gain(), decision.send_rate_gain_permille); budget::send_rate_final(...)`"
+   ]
+  },
+  {
+   "symbol": "SrcConfig (cwnd_gain / min_cwnd)",
+   "path_line": "crates/adaptive-transport/src/rate.rs:90",
+   "kind": "config-field",
+   "purpose": "[STD]/[CAL] SRC bounds.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "WIRE",
+   "gate": "no product setter",
+   "spec_ref_or_none": "engine §8.2; rate.rs:93 `MIN_CWND ... [CAL] rafine sonra`",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:1789 `src_cfg: SrcConfig::default()`"
+   ],
+   "evidence": [
+    "rate.rs:97-103 Default impl; sender.rs:1789 is the only construction; no `set_src_config` exists and RuntimeConfig exposes no SRC knob"
+   ]
+  },
+  {
+   "symbol": "PacingPhase (5 variants) + Gain constants",
+   "path_line": "crates/adaptive-transport/src/rate.rs:61",
+   "kind": "enum-variant",
+   "purpose": "Phase→gain mapping (BBR STARTUP/DRAIN/STEADY/PROBE_UP/PROBE_DOWN).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "engine §8.3 [STD:BBR]",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:4010-4019 (SenderState -> PacingPhase)"
+   ],
+   "evidence": [
+    "sender.rs:4010 Startup, :4011 Drain, :4012 ProbeUp, :4013 DrainRtprop->ProbeDown, :4017/:4019 Startup/Steady — every variant is constructed"
+   ]
+  },
+  {
+   "symbol": "BtlBwFilter::diag_accept",
+   "path_line": "crates/adaptive-transport/src/bw.rs:263",
+   "kind": "fn",
+   "purpose": "Windowed-max acceptance diagnostics (5-tuple).",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "bw.rs:263 (def) -> sender.rs:2044 `self.btlbw.diag_accept()` inside `Sender::diag_bw_accept` (sender.rs:2043)",
+    "grep `diag_bw_accept` across crates/, tests/, fuzz/: only sender.rs:2043 (its own definition) — zero callers, so the whole chain is dead"
+   ]
+  },
+  {
+   "symbol": "DeliveryRateSampler::packets_in_flight accessor",
+   "path_line": "crates/adaptive-transport/src/bw.rs:126",
+   "kind": "fn",
+   "purpose": "Expose in-flight packet count.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "all `packets_in_flight` hits are inside bw.rs (61,80,84,101,126,127,132,136,146) — the field drives the pipe-empty test internally; the pub accessor has no caller anywhere in crates/"
+   ]
+  },
+  {
+   "symbol": "BtlBwFilter::samples_snapshot",
+   "path_line": "crates/adaptive-transport/src/bw.rs:295",
+   "kind": "fn",
+   "purpose": "Windowed sample trace (Vec alloc) for mechanism calibration.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "bw.rs:295 -> sender.rs:5927 `Sender::diag_btlbw_samples`; callers of diag_btlbw_samples: crates/adaptive-transport/tests/desen1_sim.rs:260, tests/sender_diag_contract.rs:148,203 only — never client-core or bench"
+   ]
+  },
+  {
+   "symbol": "DeliveryRateSampler / BtlBwFilter core (on_sent/on_ack/update/credit_delivered/forget_in_flight/set_window)",
+   "path_line": "crates/adaptive-transport/src/bw.rs:57",
+   "kind": "struct",
+   "purpose": "BBR delivery-rate sampling + windowed-max BtlBw filter.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "engine §7; transport-layer-tdd:540 (sampling validity)",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:2948/2970 on_ack, :2949/2971 update, :2984 credit_delivered, :3135/3301/3352/5403/5414 forget_in_flight, :2913 set_window, :5769 on_sent"
+   ],
+   "evidence": [
+    "sender.rs:2948-2949, 2970-2971, 2984, 5769"
+   ]
+  },
+  {
+   "symbol": "rtt::rtt_sample",
+   "path_line": "crates/adaptive-transport/src/rtt.rs:225",
+   "kind": "fn",
+   "purpose": "§6 rtt_sample = raw_rtt − ack_delay, None on underflow (untrusted).",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "engine §6/§7.3",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `rtt_sample` (word): rtt.rs:225 (def) + 3 sites in crates/adaptive-transport/tests/ — zero product/internal callers",
+    "superseded by the SECOND implementation rtt.rs:239 `apply_ack_delay` (Option-A min-RTT guard, never skips the sample), used at sender.rs:3054. rtt.rs:236-238 documents the replacement"
+   ]
+  },
+  {
+   "symbol": "rtt::apply_ack_delay + RttEstimator (observe/srtt/rttvar/rtprop/queue_delay/windows)",
+   "path_line": "crates/adaptive-transport/src/rtt.rs:65",
+   "kind": "struct",
+   "purpose": "SRTT/RTTVAR EWMA + rtprop/qd min-filters with self-tuned windows.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "engine §6/§7",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:3054 apply_ack_delay, :2616/:3058/:3240 observe, :2913-2923 set_rtprop_window/set_qd_window/set_conv_interval, :3101 rtprop_age_ns, :3942 queue_delay"
+   ],
+   "evidence": [
+    "sender.rs:3054 `let (sample, corrected) = apply_ack_delay(raw, ack.ack_delay, self.rtt.rtprop());`",
+    "sender.rs:2913-2923 window self-tuning block"
+   ]
+  },
+  {
+   "symbol": "pacer::TokenBucket (new/set_rate/refill/try_send/set_burst_cap/fill_to_cap/ns_until_sendable) + DEFAULT_BURST_CAP",
+   "path_line": "crates/adaptive-transport/src/pacer.rs:17",
+   "kind": "struct",
+   "purpose": "§13 single shared pacing token bucket (DATA + ARQ + parity + probes).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "engine §13",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:195 `initial_window_bytes: adaptive_transport::pacer::DEFAULT_BURST_CAP` and runtime.rs:216",
+    "crates/adaptive-transport/src/sender.rs:2223 set_rate, :2153/:2379 refill, :2242 set_burst_cap, :2246 fill_to_cap, :2490/:2563 ns_until_sendable, :4895/:5181/:5313/:2783 try_send"
+   ],
+   "evidence": [
+    "runtime.rs:195, 216",
+    "sender.rs:2223, 2242-2246, 5313"
+   ]
+  },
+  {
+   "symbol": "ThresholdLossDetector::with_config + LossConfig",
+   "path_line": "crates/adaptive-transport/src/loss.rs:253",
+   "kind": "fn",
+   "purpose": "Construct the loss detector with non-default packet/time thresholds and min_delay [CAL].",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "gate": "none",
+   "spec_ref_or_none": "engine §5 [CAL] min_delay",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `with_config`: loss.rs:253 (def) + 4 sites in crates/adaptive-transport/tests/ — zero product/bench",
+    "sender.rs:1784 `loss: ThresholdLossDetector::new()` uses LossConfig::default(); RuntimeConfig has no loss-threshold knob — LossConfig is a config struct the runtime can never set (only packet_threshold is later overwritten at runtime by reorder_thresh, sender.rs:3003)"
+   ]
+  },
+  {
+   "symbol": "LossDetector::loss_pre_fec_ppm",
+   "path_line": "crates/adaptive-transport/src/loss.rs:150",
+   "kind": "fn",
+   "purpose": "loss_pre_fec = lifetime lost/sent (ppm) — the §5 quantity the fuzzy controller is specified to read.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "engine §5; transport-layer-tdd §5 (fuzzy loss input)",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `loss_pre_fec_ppm`: loss.rs:150 (trait decl), loss.rs:709 (impl), 1 site >6000 in sender (#[cfg(test)]), 4 in crates/*/tests — zero product callers",
+    "the product reads a SECOND, different loss estimator: sender.rs:3410 `loss_ppm: self.loss.loss_windowed_ppm()` (windowed ledger, loss.rs:354)"
+   ]
+  },
+  {
+   "symbol": "LossDetector::residual_loss_ppm + LossDetector::on_unrecovered",
+   "path_line": "crates/adaptive-transport/src/loss.rs:148",
+   "kind": "fn",
+   "purpose": "residual_loss = unrecovered/sent after recovery; feeds §11 emergency health.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "gate": "none",
+   "spec_ref_or_none": "engine §5/§11 (health = ack_confidence↑ / residual_loss↓)",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `on_unrecovered`: loss.rs:148 (trait), loss.rs:705 (impl), 4 sites in crates/*/tests — NO sender call site, so `unrecovered_units` is permanently 0 in the product",
+    "grep `residual_loss_ppm`: loss.rs:152 (trait), loss.rs:713 (impl), 4 in tests — never called from product; consequently sender.rs:3744 computes health from ack_confidence alone"
+   ]
+  },
+  {
+   "symbol": "ThresholdLossDetector::fec_loss_risk_ppm",
+   "path_line": "crates/adaptive-transport/src/loss.rs:476",
+   "kind": "fn",
+   "purpose": "Scalar speculative loss-risk (ppm) from the Suspected/Confirmed ledger.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `fec_loss_risk_ppm`: loss.rs:476 (def) + 4 sites in crates/adaptive-transport/tests/fec_loss_risk.rs — zero product callers",
+    "superseded by the split form used in production: loss.rs:404 `fec_loss_risk_split` called at sender.rs:3453 (the FEC v1 speculative lane)"
+   ]
+  },
+  {
+   "symbol": "ThresholdLossDetector::fec_loss_risk_split + SuspectConfidence",
+   "path_line": "crates/adaptive-transport/src/loss.rs:404",
+   "kind": "fn",
+   "purpose": "Instant/persistent/reorder-pressure risk split driving the speculative FEC lane.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "FecLossRiskConfig.enabled — product default `bounded_v1()` = ON, but INERT while RuntimeConfig.fec is None",
+   "spec_ref_or_none": "none (FEC v1 closure decision)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:843 `session.sender_mut().set_fec_loss_risk(cfg.fec_loss_risk)`",
+    "crates/adaptive-transport/src/sender.rs:3453 `let split = self.loss.fec_loss_risk_split(`"
+   ],
+   "evidence": [
+    "runtime.rs:204 `fec_loss_risk: FecLossRiskConfig::bounded_v1(),` (default)",
+    "sender.rs:3438 `let spec_split = if self.fec_loss_risk.enabled {`",
+    "runtime.rs:150-155 documents the inertness: `fec: None iken (default) İNERT — oran hesaplanır, hiçbir aktüasyon yolu çalışmaz (tümü fec.as_ref()'e kapılı)`",
+    "loss.rs:88-102 SuspectConfidence Default is `[CAL]` uncalibrated (loss.rs:89 `İlk deneysel şekil ([CAL], kalibre EDİLMEMİŞ): 0.20 / 0.40 / 0.70 / 0.70`)"
+   ]
+  },
+  {
+   "symbol": "ThresholdLossDetector::sent_units / ::lost_units / ::unrecovered_units / ::ledger_evicted_total",
+   "path_line": "crates/adaptive-transport/src/loss.rs:262",
+   "kind": "fn",
+   "purpose": "Raw ledger counters.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "`.sent_units()` external callers: tests/tv_loss.rs:157 only",
+    "`.lost_units()`: tests/tv_loss.rs:31,56,133,158 only",
+    "`.unrecovered_units()`: tests/emergency_and_accessors.rs:222,237,244,247 only",
+    "`.ledger_evicted_total()`: tests/emergency_and_accessors.rs:265,276 only"
+   ]
+  },
+  {
+   "symbol": "ThresholdLossDetector core (on_sent/on_ack/detect_time_losses/ledger_tick/take_unlossed/loss_windowed_ppm/next_time_loss_deadline_ns/spurious_age_quantile/LedgerState)",
+   "path_line": "crates/adaptive-transport/src/loss.rs:208",
+   "kind": "struct",
+   "purpose": "RFC9002-derived packet/time-threshold detector with the Suspected→Confirmed|Spurious ledger.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "loss_confirm_horizon knob default CadenceLegacy",
+   "spec_ref_or_none": "engine §5; TUR-2a D-1/3",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/sender.rs:5771 on_sent, :3004 on_ack, :3117 detect_time_losses, :3395 ledger_tick, :3008 take_unlossed, :3410 loss_windowed_ppm, :2468/:2673/:2739 next_time_loss_deadline_ns, :3444 spurious_age_quantile",
+    "crates/client-core/src/runtime.rs:840-842 set_loss_confirm_horizon"
+   ],
+   "evidence": [
+    "sender.rs:3004, 3117, 3395, 3410",
+    "runtime.rs:203 `loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy` (default = shipping behaviour; runtime.rs:146-149 marks ChannelDerived as a MEASUREMENT ARM, not a fix)"
+   ]
+  },
+  {
+   "symbol": "AckFrame.seen_count / AckFrame.arrival_rate (§2.2 V2 measurement extension)",
+   "path_line": "crates/adaptive-transport/src/ack.rs:74",
+   "kind": "config-field",
+   "purpose": "Receiver-side seen-datagram count and observed arrival rate, for K3 forward-vs-return loss direction split.",
+   "called_from_product": true,
+   "only_from": "diagnostic-only",
+   "classification": "WIRE",
+   "gate": "none — emitted on every V2 ACK",
+   "spec_ref_or_none": "engine §2.2",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/receiver.rs:472-477 (encoded into every ACK)",
+    "crates/client-core/src/runtime.rs:1212 AckFrame::decode"
+   ],
+   "evidence": [
+    "ack.rs:72-77 doc: `Sender kendi gönderdiğiyle kıyaslar: seen≪sent = forward-loss, seen≈sent ama SACK yok = return-loss (K3 cold-start yön-ayrımı)`",
+    "ack.rs:227 `out.extend_from_slice(&self.arrival_rate.to_be_bytes());` — 6 bytes/ACK on the wire",
+    "client-core/src/runtime.rs:1226-1230 builds `AckInfo { acked_seqs, ack_delay }` ONLY; sender.rs:944-949 AckInfo has no seen_count/arrival_rate field — grep `.seen_count`/`.arrival_rate` in sender.rs<6000: zero hits. Encoded but never consumed."
+   ]
+  },
+  {
+   "symbol": "AckFrame.ack_epoch",
+   "path_line": "crates/adaptive-transport/src/ack.rs:57",
+   "kind": "config-field",
+   "purpose": "Rekey / counter-wrap epoch carrying largest_seq.",
+   "called_from_product": true,
+   "only_from": "diagnostic-only",
+   "classification": "WIRE",
+   "gate": "none",
+   "spec_ref_or_none": "engine §2.1",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/receiver.rs:474 (always self.ack_epoch, initialised to 0 at receiver.rs:170 and never advanced)"
+   ],
+   "evidence": [
+    "grep `.ack_epoch` repo-wide: ack.rs:215 (encode) and receiver.rs:474 (build) ONLY — no reader",
+    "receiver.rs:170 `ack_epoch: 0,` with no mutation site; sender.rs:2912 `let _ = ack_epoch;` refers to an unrelated local (its own W_loss epoch)"
+   ]
+  },
+  {
+   "symbol": "AckFrame core (from_received/encode/decode/acked_full/ack_delay_duration) + MAX_ACK_RANGES/MAX_ACKED_SEQS",
+   "path_line": "crates/adaptive-transport/src/ack.rs:83",
+   "kind": "struct",
+   "purpose": "§2 SACK codec with bounded range clamp (SR-AUDIT-001).",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "engine §2.1/§2.2; MAX_ACK_RANGES [CAL]",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1212 decode, :1213 acked_full, :1230 ack_delay_duration, :1208 FRAME_TYPE_ACK/_V2 discrimination",
+    "crates/adaptive-transport/src/receiver.rs:472 from_received; runtime.rs ~2010 encode"
+   ],
+   "evidence": [
+    "runtime.rs:1212-1230",
+    "ack.rs:34 `/// ACK range üst sınırı. `[CAL]` — netem baseline'dan (ADR-18) kalibre edilecek;`"
+   ]
+  },
+  {
+   "symbol": "FRAME_TYPE_ACK (0x10 / V1)",
+   "path_line": "crates/adaptive-transport/src/ack.rs:26",
+   "kind": "const-knob",
+   "purpose": "Legacy V1 ACK frame type; decode-compatibility only.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "emit is always V2",
+   "spec_ref_or_none": "engine §2 (TUR-1x)",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1208 (accepted on ingress)"
+   ],
+   "evidence": [
+    "ack.rs:139 `v2: true, // [TUR-1x] emit daima V2 (0x14, 15B gövde §2.2); V1 yalnız decode-uyumluluk.`",
+    "runtime.rs:1208 still accepts 0x10 — a receive-side compatibility surface with no emitter in the workspace"
+   ]
+  },
+  {
+   "symbol": "fec.rs — FecShardFrame / FRAME_TYPE_FEC_SHARD (0x20) / SHARD_TAG_LEN",
+   "path_line": "crates/adaptive-transport/src/fec.rs:36",
+   "kind": "module",
+   "purpose": "Legacy §10.1 cleartext FEC_SHARD framing codec.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "#[deprecated] attribute",
+   "spec_ref_or_none": "engine §10.1 — superseded by kama-noise-wire EXTENDED §2.6 (D1 Sprint-3)",
+   "product_call_sites": [],
+   "evidence": [
+    "fec.rs:1-9 `//! ... **DEPRECATED / MUST NOT IMPLEMENT (D1-migrasyon)** ... METADATA-LEAK-01 ... Beta+ tam-kaldırma.`",
+    "fec.rs:31-34 `#[deprecated(since=\"0.1.0\", note=\"legacy 0x20 cleartext-framing (METADATA-LEAK-01); use kama-noise-wire EXTENDED seal (§2.6)\")]`",
+    "grep `FecShardFrame`: fec.rs only + 9 sites in crates/adaptive-transport/tests/tv_fec.rs. The product FEC wire is crates/client-core/src/wire.rs `encode_fec/decode_fec` (HDR_FEC 0x05, runtime.rs:1372)",
+    "grep `crate::fec` in sender.rs: zero hits — sender does not import this module at all"
+   ]
+  },
+  {
+   "symbol": "Receiver core (new/on_datagram/on_ack_timer/set_quota_r/largest_seq)",
+   "path_line": "crates/adaptive-transport/src/receiver.rs:129",
+   "kind": "struct",
+   "purpose": "§4 receiver state machine: dedup / reorder / FEC-buffer + SACK generation with episode/quota cadence.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "SHIP",
+   "gate": "none",
+   "spec_ref_or_none": "engine §4/§2.1/§12",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:2085 Receiver::new, :2145 set_quota_r, :2146/:2241/:2272 on_datagram, :1996 on_ack_timer, :2144/:2238/:2269 largest_seq"
+   ],
+   "evidence": [
+    "runtime.rs:1996 `s.rx.on_ack_timer(now)`, runtime.rs:2146 `let out = slot.rx.on_datagram(`"
+   ]
+  },
+  {
+   "symbol": "RxState + Receiver::state accessor",
+   "path_line": "crates/adaptive-transport/src/receiver.rs:22",
+   "kind": "enum-variant",
+   "purpose": "Informational receiver phase (Normal / Reorder / FecDecode / DupSuppress).",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "engine §4 (declared informational)",
+   "product_call_sites": [],
+   "evidence": [
+    "`Receiver::state()` callers: receiver.rs:557,575,585,711,734 — all inside the #[cfg(test)] region (>511). No product/bench caller.",
+    "receiver.rs:10 `//! RX_REORDER durumu burada bilgilendiricidir.` — the field is written on every datagram (receiver.rs:224,248-253) but never read outside the module's own tests"
+   ]
+  },
+  {
+   "symbol": "RxOutput.was_duplicate",
+   "path_line": "crates/adaptive-transport/src/receiver.rs:72",
+   "kind": "config-field",
+   "purpose": "Signal that the datagram was a RX_DUP_SUPPRESS duplicate.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "gate": "none",
+   "spec_ref_or_none": "engine §9.4",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `was_duplicate` repo-wide: receiver.rs:72 (decl), :229 (true), :260 (false) — never read",
+    "client-core/src/runtime.rs reads only `out.delivered` (2215) and `out.ack` (2229, 2313, 2344)"
+   ]
+  },
+  {
+   "symbol": "Receiver::received_count / ::ack_delay_saturated / ::diag_return_supply",
+   "path_line": "crates/adaptive-transport/src/receiver.rs:490",
+   "kind": "fn",
+   "purpose": "rx-set size, ack_delay saturation audit, and return-supply (episode/quota/accel/emit) diagnostics.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "none",
+   "spec_ref_or_none": "none",
+   "product_call_sites": [],
+   "evidence": [
+    "`.received_count()` external callers: receiver.rs:532/534 (internal debug_assert), :577,:712,:736 (#[cfg(test)]), tests/emergency_and_accessors.rs:330",
+    "`.ack_delay_saturated()` callers: receiver.rs:606,617,621 (#[cfg(test)]) only",
+    "`diag_return_supply` callers: 1 bench + receiver's own tests + crates/*/tests — client-core never reads any of the three"
+   ]
+  },
+  {
+   "symbol": "receiver RETURN_BW_PRIOR / ACK_CADENCE_FLOOR_NS (static return-bandwidth prior)",
+   "path_line": "crates/adaptive-transport/src/receiver.rs:88",
+   "kind": "const-knob",
+   "purpose": "Cold-start return-path bandwidth prior (31 B/s) deriving the 8.39 s timer-SACK cadence floor.",
+   "called_from_product": true,
+   "only_from": "product",
+   "classification": "WIRE",
+   "gate": "none — always active",
+   "spec_ref_or_none": "engine §3.3-E / §16.1 / §12",
+   "product_call_sites": [
+    "crates/adaptive-transport/src/receiver.rs:92 (ACK_CADENCE_FLOOR_NS), :112 (T_SPACING_NS) -> on_ack_timer cadence gating"
+   ],
+   "evidence": [
+    "receiver.rs:110-112 `/// Kota-modu emisyon-aralığı ... STATİK-ÖNSEL-TÜREVİ (dürüst-etiket; E-FULL'de ölçülen return_bw'ye bağlanır — §3.7 statik-prior borcunun yeni-tüketicisi).`",
+    "receiver.rs:88 `[K2/§3.3-E] cold-start return_bw önseli (B/s); worst-corner 0.25 kbps = 31.25 B/s → 31` — the measured-return_bw replacement is explicitly recorded as outstanding debt"
+   ]
+  },
+  {
+   "symbol": "TransportError::FeatureNotImplemented",
+   "path_line": "crates/adaptive-transport/src/error.rs:53",
+   "kind": "enum-variant",
+   "purpose": "CLAUDE.md §6 typed stub in place of reachable todo!().",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "none",
+   "spec_ref_or_none": "CLAUDE.md §6",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `FeatureNotImplemented` across crates/adaptive-transport/src and crates/client-core/src: error.rs:4 (doc) and error.rs:53 (decl) ONLY — never constructed. No reachable todo!()/unimplemented!() exists either (same grep returned none)."
+   ]
+  },
+  {
+   "symbol": "Sender::tail_probe_diag / ::tail_probe_diag_ext / ::tail_recovery_enabled",
+   "path_line": "crates/adaptive-transport/src/sender.rs:2098",
+   "kind": "fn",
+   "purpose": "Tail-recovery observation surface exposing tail_recovery.rs counters.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "none",
+   "spec_ref_or_none": "DR-ARQ-PRODUCT-TAIL-1 §7",
+   "product_call_sites": [],
+   "evidence": [
+    "grep `tail_probe_diag|tail_recovery_enabled` in crates/client-core/src/runtime.rs: zero hits (the ClientStats builder at runtime.rs:1469-1527 lists 30+ diag_* reads, none of them tail)",
+    "only bench reads: crates/bench/src/kama.rs:698,701 `.tail_recovery_enabled()` — and that is the OLD stub arm `kama`, not `kama-product`"
+   ]
+  }
+ ],
+ "cal_markers": [
+  "crates/adaptive-transport/src/fusion.rs:5 — `//! Membership eşikleri [CAL:netem] — burada FuzzyConfig::fixture KALİBRE DEĞİL`",
+  "crates/adaptive-transport/src/fusion.rs:354 — `// qd_ratio per-mille [CAL placeholder]: <0.25×rtprop rahat; >1.5-2×rtprop congested.`",
+  "crates/adaptive-transport/src/budget_kernel.rs:36 — `/// Kernel-parametreleri (tümü [CAL]; sim-taramasında-sabitlenen-varsayılanlar new()-içinde).`",
+  "crates/adaptive-transport/src/budget_kernel.rs:60 — `/// Sim-varsayılanları [CAL]: share %20, entitlement-cap 4×1200, hardcap %30/8×1200,`",
+  "crates/adaptive-transport/src/emergency.rs:6 — `//! **Retreat hysteresis (spec §11 amended — osilasyon önlemi, [CAL] marjlar netem'e):**`",
+  "crates/adaptive-transport/src/emergency.rs:77 — `/// Retreat hysteresis yapılandırması. **[CAL] fixture** (netem'e).`",
+  "crates/adaptive-transport/src/emergency.rs:100 — `/// Emergency davranış yapılandırması. **[CAL] fixture** (netem'e).`",
+  "crates/adaptive-transport/src/arq.rs:53 — `/// ARQ yapılandırması. **[CAL] fixture** (netem'e).`",
+  "crates/adaptive-transport/src/arq.rs:60 — `/// ρ pay — reorder_thresh = max(K, ρ×recent_max_reorder) [CAL].`",
+  "crates/adaptive-transport/src/arq.rs:62 — `/// ρ payda [CAL].`",
+  "crates/adaptive-transport/src/rate.rs:10 — `//! ZAMANLAMASI (PROBE_BW_PERIOD [CAL] §8.3), state-machine geçişleri (§3), MIN_RATE`",
+  "crates/adaptive-transport/src/rate.rs:11 — `//! floor (§8.5 [CAL]) ve fuzzy/FEC/ARQ (§8.4/§9/§10) sonraki adımlarda.`",
+  "crates/adaptive-transport/src/rate.rs:58 — `/// Pacing fazı — probe MEKANİZMASI (faz→gain). Faz GEÇİŞLERİ (PROBE_BW_PERIOD [CAL]`",
+  "crates/adaptive-transport/src/rate.rs:93 — `/// MIN_CWND (bytes) [STD:policy 4×MTU]; [CAL] rafine sonra.`",
+  "crates/adaptive-transport/src/rtt.rs:7 — `//! (reordering_score [CAL] içerir).`",
+  "crates/adaptive-transport/src/pacer.rs:8 — `/// BURST_CAP (bytes) ≈ 2×MTU [STD §13 \"≈1-2×MTU\"]; [CAL] rafine sonra.`",
+  "crates/adaptive-transport/src/loss.rs:3 — `//! (9/8·srtt [STD], min_delay [CAL] parametre). loss_pre_fec (recovery ÖNCESİ) ve`",
+  "crates/adaptive-transport/src/loss.rs:8 — `//! (§9/§10) + W_loss sliding window (§5 [CAL]) sonraki adımlarda.`",
+  "crates/adaptive-transport/src/loss.rs:15 — `/// [TUR-2a D-1/3] Ledger + sent-pencere kayıt tavanı [CAL] — SR-AUDIT-001 bounded`",
+  "crates/adaptive-transport/src/loss.rs:31 — `/// min_delay [CAL] parametre — reordering tail + tiny-srtt koruması.`",
+  "crates/adaptive-transport/src/loss.rs:72 — `/// basamak fonksiyonu, [CAL]. Spec'e YAZILMADI (ölçüm öncesi normatifleştirme yasak).`",
+  "crates/adaptive-transport/src/loss.rs:89 — `/// İlk deneysel şekil ([CAL], kalibre EDİLMEMİŞ): 0.20 / 0.40 / 0.70 / 0.70.`",
+  "crates/adaptive-transport/src/loss.rs:164 — `/// min_delay [CAL] parametre (default = RFC kGranularity ~1ms floor).`",
+  "crates/adaptive-transport/src/ack.rs:34 — `/// ACK range üst sınırı. [CAL] — netem baseline'dan (ADR-18) kalibre edilecek;`",
+  "crates/adaptive-transport/src/receiver.rs:75 — `/// §2.1 ACK_FREQ_N — bu kadar DATA alınınca ACK üret [CAL] (netem'den kalibre).`",
+  "crates/adaptive-transport/src/receiver.rs:95 — `/// [TUR-3b commit-C, karar-a DAR-PARÇA] Tail-muafiyeti çarpanı [CAL {1,2,4}]`",
+  "crates/adaptive-transport/src/receiver.rs:103 — `/// [CAL {3,4}] (ZM-yasağı mutlak-ZAMAN sabitleridir; boyutsuz oran izinli) — K_EPISODE`",
+  "crates/adaptive-transport/src/receiver.rs:107 — `/// [r3 §1a] Ritim-penceresi boyu [CAL {3,5}] — robust-baseline (max→median) örnek sayısı.`",
+  "crates/adaptive-transport/src/receiver.rs:109 — `/// [r3 §2] Epizot-başı SACK-tekrar kredisi (muaf-ilk DAHİL toplam) [CAL {4,8}]`",
+  "crates/adaptive-transport/src/receiver.rs:116 — `/// [r3 §3] §3.3-E MİNİMAL-TABAN çarpanı [CAL {2,4}]` (K_ARR)",
+  "crates/adaptive-transport/src/receiver.rs:146 — `quota_r: u32, // R [CAL {4,8}] — bench ölçüm-matrisi set_quota_r ile`",
+  "crates/adaptive-transport/src/receiver.rs:372 — `/// [r3] Bench ölçüm-matrisi: R [CAL {4,8}] koşu-başı ayarı.`"
+ ],
+ "todo_wiring": [
+  "crates/adaptive-transport/src/sender.rs:5384 — `// ConnectionFail: spine'da düşür; gerçek impl bağlantı-fail sinyali verir.` — arq::CapExceedPolicy::ConnectionFail has no implementation; the unit is silently dropped.",
+  "crates/adaptive-transport/src/sender.rs:3684-3695 — recorded open debt: the Q18 structure gate reads fate_estimator features OUTSIDE the estimator's own §3.4 evidence contract (`gate o sözleşmenin DIŞINDA okuyor`); `Kanıt eşiği default yola eklendiğinde iid_loss_opens_fec_* RED veriyor, yani Q18-FIX'in IID dalı bugün prior'la ateşliyor. ... Bu bir AÇIK BORÇTUR (owner kararı gerekir)`.",
+  "crates/adaptive-transport/src/lib.rs:31 — stale doc: fate_estimator described as `observation-only: no product caller` while sender.rs:3670 is a product caller.",
+  "crates/adaptive-transport/src/receiver.rs:110-112 — `STATİK-ÖNSEL-TÜREVİ (dürüst-etiket; E-FULL'de ölçülen return_bw'ye bağlanır — §3.7 statik-prior borcunun yeni-tüketicisi)` — T_SPACING_NS/ACK_CADENCE_FLOOR_NS still on the 31 B/s static prior.",
+  "crates/adaptive-transport/src/rate.rs:10-11 — `PROBE_BW_PERIOD [CAL] §8.3, state-machine geçişleri (§3), MIN_RATE floor (§8.5 [CAL]) ... sonraki adımlarda` (deferred).",
+  "crates/adaptive-transport/src/rate.rs:59 — `Faz GEÇİŞLERİ (PROBE_BW_PERIOD [CAL] §8.3, state machine §3) ertelendi.`",
+  "crates/adaptive-transport/src/rtt.rs:6 — `jitter_score / reordering_score fuzzy adımına (§8) ertelendi`.",
+  "crates/adaptive-transport/src/loss.rs:8 — `(§9/§10) + W_loss sliding window (§5 [CAL]) sonraki adımlarda.`",
+  "crates/adaptive-transport/src/fec.rs:8 — `Beta+ tam-kaldırma.` (deprecated 0x20 codec removal deferred).",
+  "crates/adaptive-transport/tests/sender_diag_contract.rs:294 — `// [BEKLİYOR — Abkarada] DeterministicFuzzyController kural tablosunda boşluk var mı,` (open owner question on fuzzy rule coverage).",
+  "crates/adaptive-transport/src/fusion.rs:236 — `send_rate_gain consequent: orta (ileride MED rate kuralı için).` — sr_med defined for a rule that was never written.",
+  "crates/adaptive-transport/src/ack.rs:34 — `[CAL] — netem baseline'dan (ADR-18) kalibre edilecek` (MAX_ACK_RANGES=16 uncalibrated)."
+ ],
+ "duplicate_control_loops": [
+  "FEC PARITY RATIO — four producers arbitrated by max() at sender.rs:3588 `let (final_ratio, reason) = fec_arbiter(confirmed, structure, spec);`: (1) fusion::DeterministicFuzzyController::decide (fusion.rs:488 -> sender.rs:3416), (2) fusion_policy::FusionPolicy::decide (fusion_policy.rs:438 -> sender.rs:3515), (3) sender::structure_gate_fec/Q18 reading fate_estimator (sender.rs:3543/3670), (4) speculative lane from loss::fec_loss_risk_split (loss.rs:404 -> sender.rs:3453). (2) and (3) are mutually exclusive (`if self.fusion_policy.is_enabled()` / else, sender.rs:3481/3538) but (1),(3),(4) all coexist on the default path.",
+  "FEC PARITY RATIO, fifth disconnected producer — emergency::action -> RecoveryAction::MinimalParity{permille} (emergency.rs:194,197) computes a parity ratio for §11 that is structurally unreachable (sender.rs:3746 always passes Framing::Tiny) and would be silently misread as duplication by dup_params (sender.rs:5740-5743 `_ =>` arm).",
+  "FEC PARITY BUDGET — two ceiling systems, neither binding: fusion_policy::FusionSafetyValidator computes FecAssist.byte_budget (fusion_policy.rs:529-539) which sender.rs:3520 discards via `..`; budget_kernel computes parity_token_limit (budget_kernel.rs:264) but every call site is behind cargo feature `experimental-fec-budget` (default OFF).",
+  "SEND RATE — two implementations of the §8.2 equation: rate::evaluate -> SrcDecision.send_rate (rate.rs:137, TEST-ONLY, 12 test call sites, 0 product) and rate::effective_send_rate (rate.rs:164, product, sender.rs:4024). They differ (evaluate has no fuzzy gain term) and can silently diverge.",
+  "LOSS RATE — two estimators over the same events: loss::loss_pre_fec_ppm (loss.rs:709, lifetime lost/sent, NEVER called from product) and loss::loss_windowed_ppm (loss.rs:354, ledger-windowed, the one the fuzzy controller reads at sender.rs:3410). The spec-named quantity (loss_pre_fec) is the dead one.",
+  "SPECULATIVE LOSS RISK — two forms: loss::fec_loss_risk_ppm (loss.rs:476, scalar, test-only) superseded by loss::fec_loss_risk_split (loss.rs:404, sender.rs:3453). Both remain public.",
+  "REORDERING GUARD — two derivations of the same guard: fate_estimator::reordering_guard_ns (fate_estimator.rs:47, test-only, wraps TailRecovery::new(*cfg).base_pto_ns) and the inline product form at sender.rs:3333-3336 `self.tail_recovery.base_pto_ns(...)`.",
+  "ACK_DELAY CORRECTION — two functions: rtt::rtt_sample (rtt.rs:225, test-only, skips the sample on underflow) and rtt::apply_ack_delay (rtt.rs:239, product, sender.rs:3054, Option-A min-RTT guard that never skips). rtt.rs:236-238 records that the first was falsified by measurement, but it is still exported.",
+  "EMERGENCY HEALTH — the RecoveryModeController contract (emergency.rs:131-132) specifies health from ack_confidence AND residual_loss, but sender.rs:3744 supplies ack_confidence only, because LossDetector::on_unrecovered/residual_loss_ppm have no product caller."
+ ],
+ "notes": "BRANCH: audited at HEAD = 15133be4 on branch `audit/transport-v1-closure`, NOT `wip/c4-attrib`. Verified content-equivalent for the audited scope: `git diff --stat 35f60f80 HEAD -- crates/adaptive-transport crates/client-core crates/bench` is EMPTY, so every file:line above is valid for 35f60f80. Read-only; no cargo run.\n\nMETHOD / TEST-BOUNDARY MAP used to judge \"product reachability\" (lines >= the boundary are #[cfg(test)] and were excluded): sender.rs:6000, receiver.rs:511, tail_recovery.rs:300, fate_estimator.rs:335, fusion_policy.rs:545, budget_kernel.rs:408, ack.rs:304, fs_harness.rs:987, fs_trace.rs:418, client-core/src/lib.rs:132. client-core/src/runtime.rs, wire.rs and seam.rs contain NO #[cfg(test)] — all of runtime.rs is product. fusion.rs, arq.rs, rate.rs, bw.rs, rtt.rs, pacer.rs, loss.rs, emergency.rs, fec.rs have no in-file test module (their tests live in crates/adaptive-transport/tests/).\n\nHEADLINE 1 — THE FEC DECISION STACK IS COMPUTED BUT INERT BY DEFAULT. Four controllers, one arbiter, a safety validator and a speculative lane all run on every fuzzy_evaluate, but no parity byte can reach the wire in the default product build: client-core/src/runtime.rs:199 `fec: None`, and runtime.rs:1326 `if let Some(p) = fec.as_ref() {` gates the entire block-close/latch/emit path. Independently, sender.rs:1824 defaults `fec_mode: FecActuationMode::Manual { enabled: false }` and sender.rs:4606 turns that into `zero(0, FecSuppressionReason::ManualDisabled, ..)`. So the arbiter output is, today, a diagnostic (runtime.rs:1483-1487 reads the histograms). Any claim about FEC behaviour in the product default is a claim about counters, not wire.\n\nHEADLINE 2 — CARGO FEATURES VERIFIED DEFAULT-OFF AND NOT ENABLED BY ANY PRODUCT CRATE. `grep -rn 'experimental-fec-budget|experimental-cold-start|diag-sched-telemetry' --include=Cargo.toml .`: `experimental-fec-budget` is enabled ONLY by crates/kama-integration/Cargo.toml:29 (a test crate) and by the `udp_budget_runner` example's required-features; `experimental-cold-start` only by kama-integration:20 and kama-noise-wire/kama-engine (also test-driven); `diag-sched-telemetry` is opt-in from client-core:37 and bench:26. client-core declares no other feature. So budget_kernel (all of it), udp_runner, fs_harness and fs_trace are outside the default product build entirely (lib.rs:44,47,58 are `#[cfg(feature = \"experimental-fec-budget\")]`).\n\nHEADLINE 3 — VACUOUS COUNTER (measurement-instrument trap). tail_recovery spurious-probe accounting cannot ever be non-zero in the product: the only product call site, sender.rs:5484, passes the literal `false` for the `spurious` argument. A \"spurious = 0\" result reported from a product-arm run is structurally guaranteed, not measured. (The kama-integration harness type crates/kama-integration/tests/common/fs_tailprobe.rs:100 has its own record_probe that DOES compute spurious — different type, different accounting.)\n\nHEADLINE 4 — UNCONSUMED WIRE BYTES. ack.rs V2 (0x14) frames always carry `seen_count` (u32) + `arrival_rate` (u16) = 6 bytes per ACK (ack.rs:227, receiver.rs:472-477), plus `ack_epoch` (u8, always 0). None of the three has a reader: client-core/src/runtime.rs:1226-1230 constructs `AckInfo { acked_seqs, ack_delay }` and sender.rs:944-949 AckInfo has no other field. The K3 forward-vs-return loss direction split the fields were added for (ack.rs:72-77) is unimplemented.\n\nHEADLINE 5 — THE SHIPPED CONFIG IS THE UNCALIBRATED FIXTURE, AND IT IS UNREACHABLE FOR TUNING. Sender::new (sender.rs:1766) constructs from `ValidatedFuzzyConfig::trusted_fixture()`, which bypasses `FuzzyConfig::validate()` entirely; the only validating ctor, `try_with_fuzzy_config` (sender.rs:1771), has zero product callers. The same pattern holds for RetxConfig::fixture (arq), HysteresisConfig::fixture + EmergencyConfig::fixture (emergency), SrcConfig::default (rate) and LossConfig::default (loss): all five are explicitly marked KALİBRE DEĞİL / [CAL] and none is settable from RuntimeConfig or any Sender setter. RuntimeConfig (client-core/src/runtime.rs:73-164) exposes 18 fields, none of which touch these.\n\nPRODUCT-PATH SETTER INVENTORY (client-core/src/runtime.rs:815-880, the complete list of what the runtime configures on the engine): set_fec_structure_policy(818), set_bootstrap_rtt(823), set_cs_probe_lane(837), set_loss_confirm_horizon(840), set_fec_loss_risk(843), set_structure_gate_level(846), set_fusion_policy(851, conditional), set_initial_window(855), set_fec_actuation_mode(872, only when cfg.fec is Some), plus set_tail_recovery_config from client-core/src/lib.rs:85. Everything else in the engine runs on hard-coded fixtures.\n\nDIAGNOSTIC SURFACE ACTUALLY READ BY THE PRODUCT: runtime.rs:1469-1527 reads ~35 `diag_*` accessors. NOT read by the product (bench/test only): tail_probe_diag, tail_probe_diag_ext, tail_recovery_enabled, diag_bw_accept (zero callers anywhere), last_recovery (zero callers anywhere), emergency_level (sender's own tests only), diag_btlbw_samples, diag_wbtlbw, diag_fusion_input_snapshot, diag_return_supply, Receiver::state/received_count/ack_delay_saturated.\n\nCAVEAT ON \"PRODUCT\": crates/client-core has no binary and no non-test dependents other than crates/bench and fuzz/ (`grep -rn client-core --include=Cargo.toml .` -> workspace member, bench:13, fuzz:18). The \"product path\" as defined by this task exists and is a real call chain, but nothing ships it yet; every measurement of it to date was driven by crates/bench/src/kama_product.rs.\n\nONE PRODUCTION-CODE-RULE CONCERN (feature-gated, so not a v1 blocker): budget_kernel::settle (budget_kernel.rs:387, :403) and step contain `assert!` panics inside library functions (\"spent≤limit-sözleşmesi\", \"cap-aşımı-yasak (C1)\"). If experimental-fec-budget is ever flipped on, these become reachable panics on the product path."
+}

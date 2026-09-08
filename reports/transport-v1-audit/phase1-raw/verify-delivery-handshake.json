@@ -1,0 +1,601 @@
+{
+ "cluster": "delivery-handshake",
+ "verdicts": [
+  {
+   "mechanism": "__cluster-wide__",
+   "claim": "Findings were derived against the stated audit target (branch wip/c4-attrib @ 35f60f80) and its line citations are accurate.",
+   "verdict": "corrected",
+   "corrected_value": "Substance matches 35f60f80; line numbers are systematically low by 1–10. Also: the checkout is NOT the stated target — HEAD is audit/transport-v1-closure @ 15133be4 with runtime.rs/kama_product.rs/lib.rs MODIFIED, and the working tree has since grown a `KamaV1Profile` (runtime.rs:181 in-tree) that re-homes the defaults. Every default claim below is verified against 35f60f80 only.",
+   "evidence": [
+    "`git rev-parse --abbrev-ref HEAD` → audit/transport-v1-closure; `git rev-parse HEAD` → 15133be4429f1934b35d45db62b425a254a20aaf",
+    "`git diff --stat 35f60f80 -- crates/client-core/src/runtime.rs crates/bench/src/kama_product.rs` → 241 insertions, 22 deletions",
+    "35f60f80:crates/client-core/src/runtime.rs is 2389 lines; working tree is 2448",
+    "Drift samples (finding → actual @35f60f80): `let mut next_unit` 899→906; seq_to_unit/unit_seqs/max_emitted_seq 893-895→903-905; `let mut store` 897→901; try_send 676→675; drain_cap default 190→192; fusion_policy: None 200→202; bootstrap_rtt: false 195→196; max_message_bytes: None 186→189; acked_full 1150→1154; resolve_seq seq.rs:24→seq.rs:21"
+   ],
+   "note": "Drift is uniform and small; it does not invalidate any substantive claim, but every file:line in the findings must be re-anchored before it is quoted as evidence."
+  },
+  {
+   "mechanism": "App offer intake — bounded offer queue + typed QueueFull backpressure",
+   "claim": "Product call chain app → ClientSender::send_with_deadline → try_send on bounded mpsc → client_task select! arm → stats.offered → drive!(Event::AppData) → Sender::on_event is real.",
+   "verdict": "confirmed",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:663 `pub fn send_with_deadline(`",
+    "35f60f80:crates/client-core/src/runtime.rs:675-678 `.try_send((payload, deadline_ns)).map_err(|e| match e { mpsc::error::TrySendError::Full(_) => RuntimeError::QueueFull, mpsc::error::TrySendError::Closed(_) => RuntimeError::Closed })`",
+    "35f60f80:crates/client-core/src/runtime.rs:714 `let (offer_tx, offer_rx) = mpsc::channel::<(Vec<u8>, Option<u64>)>(cfg.offer_queue);`",
+    "35f60f80:crates/client-core/src/runtime.rs:1207 `maybe = offer_rx.recv(), if store.len() < cfg.max_inflight_units => {`",
+    "35f60f80:crates/client-core/src/runtime.rs:1209 `stats.offered += 1;`",
+    "35f60f80:crates/client-core/src/runtime.rs:1263 `drive!(Event::AppData(OpaqueUnit { id, size }), now);`"
+   ],
+   "note": "Every hop is a non-test call site inside crates/client-core. Chain holds."
+  },
+  {
+   "mechanism": "App offer intake — bounded offer queue + typed QueueFull backpressure",
+   "claim": "offer_queue default = 1024 and QueueFull/Closed are typed.",
+   "verdict": "confirmed",
+   "corrected_value": "runtime.rs:185 (not :184)",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:185 `offer_queue: 1024,`",
+    "35f60f80:crates/client-core/src/runtime.rs:279 `QueueFull,`",
+    "35f60f80:crates/client-core/src/runtime.rs:677 `mpsc::error::TrySendError::Full(_) => RuntimeError::QueueFull,`"
+   ],
+   "note": ""
+  },
+  {
+   "mechanism": "App offer intake — bounded offer queue + typed QueueFull backpressure",
+   "claim": "Telemetry: neither ClientStats.offered nor unaccepted_offers is printed by KP-CLIENT.",
+   "verdict": "confirmed",
+   "evidence": [
+    "35f60f80:crates/bench/src/kama_product.rs:562-571 KP-CLIENT format string — contains `delivered=`, `tx=`, `rx=`, `fec_blocks=`, `param_confirmed=`, `stale=`, `cs_probe_tx=`, `state=`, `flow_end=`; contains no `offered`, `unaccepted`, `acked=`, `messages_acked`, or `undelivered` token",
+    "35f60f80:crates/bench/src/kama_product.rs:572-611 argument list — `stats.offered`/`stats.unaccepted_offers`/`stats.acked` absent"
+   ],
+   "note": ""
+  },
+  {
+   "mechanism": "App offer intake — bounded offer queue + typed QueueFull backpressure",
+   "claim": "Bench masks backpressure by retrying on QueueFull rather than dropping.",
+   "verdict": "confirmed",
+   "corrected_value": "kama_product.rs:253-258 (not :248/:256)",
+   "evidence": [
+    "35f60f80:crates/bench/src/kama_product.rs:253-258 `loop { match tx.send_with_deadline(payload.to_vec(), deadline_ns) { Ok(()) => return Ok(()), Err(RuntimeError::QueueFull) => tokio::time::sleep(OFFER_RETRY).await, Err(e) => return Err(rt_err(\"offer\", e)), } }`",
+    "35f60f80:crates/bench/src/kama_product.rs:55 `const OFFER_RETRY: Duration = Duration::from_millis(1);`"
+   ],
+   "note": ""
+  },
+  {
+   "mechanism": "Unit-store inflight admission gate (max_inflight_units)",
+   "claim": "Default 4096 units; select! arm disabled while store.len() ≥ cap; store shrinks only on first-ACK or RECOVERED.",
+   "verdict": "confirmed",
+   "corrected_value": "default at runtime.rs:184; RECOVERED store.remove at :1131; ACK store.remove at :1157",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:184 `max_inflight_units: 4096,`",
+    "35f60f80:crates/client-core/src/runtime.rs:1207 select! guard",
+    "35f60f80:crates/client-core/src/runtime.rs:1131 `if store.remove(&unit).is_some() { stats.fec_recovered_ctrl_units += 1;` (RECOVERED path)",
+    "35f60f80:crates/client-core/src/runtime.rs:1157-1158 `if store.remove(&unit).is_some() { stats.acked += 1;` (ACK path)",
+    "35f60f80:crates/client-core/src/runtime.rs:1381 `stats.undelivered = store.len() as u64;`"
+   ],
+   "note": "The note that spec §14 bounds the pool in BYTES while the code bounds it in unit COUNT is correct: specs/adaptive-transport-engine-spec.md:904 reads `tx_unacked_pool: ≤ TX_POOL_MAX bytes ... aşılırsa app back-pressure. [CAL]`."
+  },
+  {
+   "mechanism": "Unit identity assignment (unit_id, u64 monotonic, offer-order-bound)",
+   "claim": "Per-chunk monotonic id from next_unit; carried as u64 BE in wire header; receiver dedups on it; FEC block/esi derived arithmetically from unit_id on both ends.",
+   "verdict": "confirmed",
+   "corrected_value": "next_unit init at runtime.rs:906; id assignment at :1229-1230; receiver-side block/esi derivation at :2184-2185",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:906 `let mut next_unit: u64 = 0;`",
+    "35f60f80:crates/client-core/src/runtime.rs:1229-1230 `let id = next_unit; next_unit += 1;`",
+    "35f60f80:crates/client-core/src/runtime.rs:2184-2185 `let block_id = (unit_id / u64::from(p.k_shape)) as u32; let esi = (unit_id % u64::from(p.k_shape)) as u16;`",
+    "35f60f80:crates/client-core/src/runtime.rs:1893 `let unit_id = u64::from(block_id) * u64::from(k) + u64::from(r.esi);`",
+    "35f60f80:crates/client-core/src/runtime.rs:890 `let mut next_message: u32 = 0;` (message_id is a separate counter — the finding's distinction is correct)"
+   ],
+   "note": "Receiver-side reconstruction uses `let k = slot.blocks.get(&block_id).map_or(k_actual, |a| a.k)` — the WIRE-declared k_actual, not the local profile k_shape. The sender derives with p.k_shape. A k mismatch therefore mis-numbers recovered units; the findings did not note this asymmetry."
+  },
+  {
+   "mechanism": "Wire sequence identity — u16 truncated seq + full-counter reconstruction (resolve_seq)",
+   "claim": "Sender truncates d.seq to u16 on emit; receiver resolves against largest_seq+1; sender resolves ACK against max_emitted_seq+1; ±32768 windows; FEC repairs share the seq space, CS_PROBE does not.",
+   "verdict": "confirmed",
+   "corrected_value": "resolve_seq at seq.rs:21; truncation at runtime.rs:1000 (FEC), :1013 (CsProbe), :1042 (DATA_FRAG), :1044 (DATA); receiver resolve at :2141; sender acked_full at :1154",
+   "evidence": [
+    "35f60f80:crates/adaptive-transport/src/seq.rs:21 `pub fn resolve_seq(expected: u64, wire: u16) -> u64 {`; :23-24 `let win: u64 = 1u64 << SEQ_BITS; let hwin: u64 = win / 2;`",
+    "35f60f80:crates/client-core/src/runtime.rs:2141-2142 `let expected = slot.rx.largest_seq().map_or(0, |m| m + 1); let full = resolve_seq(expected, wire_seq);`",
+    "35f60f80:crates/client-core/src/runtime.rs:1154 `let acked = frame.acked_full(max_emitted_seq + 1);`",
+    "35f60f80:crates/client-core/src/runtime.rs:968 `max_emitted_seq = max_emitted_seq.max(d.seq);` — runs for EVERY decision including FecParity/CsProbe",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:3207-3208 `seq: u64::from(probe_seq), // separate namespace: NOT a DATA seq, NOT inflight-tracked`",
+    "specs/transport-layer-tdd.md:95-96 `seq 2B : ... Tam transport counter receiver'da seq ile reconstruct edilir`; :736 INV-NONCE-1"
+   ],
+   "note": "One correction to the finding's own note: max_emitted_seq is advanced by CsProbe decisions too (runtime.rs:968 is outside the `carries_unit` branch), so the probe namespace is NOT fully separate on the sender's ACK-resolution baseline — it inflates max_emitted_seq. Bounded and harmless today (probe seqs start at 0 and are few), but the 'separate namespace' claim is only true for seq→unit mapping, not for the acked_full baseline."
+  },
+  {
+   "mechanism": "seq→unit attribution map + unit_seqs pruning (ACK→delivery accounting)",
+   "claim": "seq→unit recorded only for Data/Retransmit/Duplicate; FecParity deliberately excluded because its unit_id is the ESI; pruning on ACK/RECOVERED.",
+   "verdict": "confirmed",
+   "corrected_value": "drive! recording at runtime.rs:969-976; ACK prune at :1161-1162; RECOVERED prune at :1134-1135",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:969-976 `let carries_unit = matches!(d.kind, TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate); if carries_unit { seq_to_unit.insert(d.seq, d.unit_id); unit_seqs.entry(d.unit_id).or_default().push(d.seq); }`",
+    "35f60f80:crates/client-core/src/runtime.rs:965-967 comment `seq→unit haritası YALNIZ birim-taşıyan kararlarda: FecParity'nin unit_id'si ESI'dir (AYRI ad-uzayı)`",
+    "35f60f80:crates/client-core/src/runtime.rs:1161-1162 `for old in unit_seqs.remove(&unit).unwrap_or_default() { seq_to_unit.remove(&old); }`"
+   ],
+   "note": "The open question the finding raises is real: a unit retransmitted N times and never acked accumulates N seq_to_unit entries with no independent cap. The only bound is max_inflight_units × emissions-per-unit."
+  },
+  {
+   "mechanism": "First-ACK-wins delivery confirmation (sender-side delivery accounting)",
+   "claim": "Bench `delivered_ns` is the sender's ACK-arrival timestamp; completion in every kama-product run is delivery-confirmation-at-sender.",
+   "verdict": "corrected",
+   "corrected_value": "It is the sender's ACK-arrival OR RECOVERED-control-arrival timestamp. The acked() stream is fed from two distinct receive paths, not one.",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:1133 `unit_acked!(unit);` inside the `FRAME_RECOVERED` branch",
+    "35f60f80:crates/client-core/src/runtime.rs:1159 `unit_acked!(unit);` inside the ACK branch",
+    "35f60f80:crates/client-core/src/runtime.rs:1090 `let _ = acked_tx.try_send($unit);`",
+    "35f60f80:crates/bench/src/kama_product.rs:530 comment `// Teslim-teyidi ACK'ten de FEC-RECOVERED'dan da gelebilir; ikisi de aynı akış.`",
+    "35f60f80:crates/bench/src/kama_product.rs:532 `let Some(idx) = unit.checked_sub(base_id) else { continue };`"
+   ],
+   "note": "The sender-side-timestamp caveat stands. But the finding's framing ('the ACK branch is the completion metric') hides that FEC recovery is confirmed by a separate 0x02 RECOVERED frame — a mechanism the findings never list (see missed_mechanisms)."
+  },
+  {
+   "mechanism": "First-ACK-wins delivery confirmation (sender-side delivery accounting)",
+   "claim": "store.remove(&unit).is_some() is the idempotence latch; acked channel depth = max(offer_queue, max_inflight_units).",
+   "verdict": "confirmed",
+   "corrected_value": "latch at runtime.rs:1157; channel at :715",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:1157-1159 `if store.remove(&unit).is_some() { stats.acked += 1; unit_acked!(unit);`",
+    "35f60f80:crates/client-core/src/runtime.rs:715 `let (acked_tx, acked_rx) = mpsc::channel(cfg.offer_queue.max(cfg.max_inflight_units));`"
+   ],
+   "note": ""
+  },
+  {
+   "mechanism": "Message-level ACK aggregation (fragmented mode: msg_pending / messages_acked)",
+   "claim": "Default OFF (max_message_bytes: None); bench enables implicitly when payload > FEC chunk capacity; classification SHIP.",
+   "verdict": "corrected",
+   "corrected_value": "Default state and gate CONFIRMED (runtime.rs:189, kama_product.rs:150). Classification SHIP is not defensible under the stated rubric: the mechanism cannot execute a single line in the shipped default configuration.",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:188-189 `// Fragmenter KAPALI (mesaj = birim; eski davranış birebir).` / `max_message_bytes: None,`",
+    "35f60f80:crates/client-core/src/runtime.rs:886 `let frag_on = cfg.max_message_bytes.is_some();`",
+    "35f60f80:crates/client-core/src/runtime.rs:1074-1092 `macro_rules! unit_acked { ($unit:expr) => { if frag_on { ... stats.messages_acked += 1; ... } else { let _ = acked_tx.try_send($unit); } } }`",
+    "35f60f80:crates/bench/src/kama_product.rs:150 `max_message_bytes: (payload > unit).then_some(payload),`",
+    "In-tree KamaV1Profile doc (working copy runtime.rs:194) lists the fragmenter under `**Kapalı (bilinçli):** ... fragmenter (max_message_bytes, açık opt-in — wire formatı görünür değişir)` — owner-declared outside the shipped default"
+   ],
+   "note": "See corrected_classifications."
+  },
+  {
+   "mechanism": "Store-miss / stale-decision header-only emission",
+   "claim": "stale_decisions is incremented in two places, making it ambiguous; the second is 'a FecParity decision when FEC is off'.",
+   "verdict": "corrected",
+   "corrected_value": "Ambiguity CONFIRMED but under-stated. runtime.rs:1020 is the catch-all tail of the NON-unit-carrying branch: it fires for FecParity when fec is None, for FecParity when `d.send_record` is None (even with FEC on), and for any future non-unit TransmitKind that is not FecParity/CsProbe — not only 'FEC off'.",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:977-1022 else-branch: FecParity handled only `if let (Some(p), Some(hint)) = (fec.as_ref(), d.send_record)`; CsProbe handled at :1011-1016 with `continue`; then :1019-1021 `// FEC-kapalıyken FecParity: v0 kabuk taşımaz, sayar` / `stats.stale_decisions += 1; continue;`",
+    "35f60f80:crates/client-core/src/runtime.rs:1026-1033 `let (payload, stale): (&[u8], bool) = match store.get(&d.unit_id) { Some(p) => (p.as_slice(), false), None => (&[], true) }; if stale { stats.stale_decisions += 1; }`",
+    "35f60f80:crates/bench/src/kama_product.rs:583 `stats.stale_decisions,` (printed as `stale=`)"
+   ],
+   "note": "With FEC ON, a FecParity decision carrying no send_record falls through to :1020 and is counted as a 'stale decision' even though no store-miss occurred. The counter is therefore ambiguous in the FEC arms, not merely in the FEC-off arms."
+  },
+  {
+   "mechanism": "Store-miss / stale-decision header-only emission",
+   "claim": "In fragmented mode a stale emission carries an ALL-ZERO 11-byte SourcePrefix that can seed msg_asm entry 0 on a peer that has never seen message 0.",
+   "verdict": "confirmed",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:1036-1043 `let stale_body: [u8; SOURCE_PREFIX_LEN] = [0; SOURCE_PREFIX_LEN]; let frame = if frag_on { let body = if stale { &stale_body[..] } else { payload }; encode_data_frag(...)`",
+    "35f60f80:crates/client-core/src/runtime.rs:1712-1727 admit_chunk frag branch: `slot.msgs.entry(pfx.message_id).or_insert_with(MsgAsm::new)` then `asm.insert(pfx.chunk_offset, payload, ...)` — message_id 0, offset 0, len 0, no FINAL flag",
+    "35f60f80:crates/client-core/src/runtime.rs:1637-1638 `fn take_if_complete(&self) -> Option<Vec<u8>> { let total = self.total_len?;` — without FINAL, total_len is None → never completes, entry lingers until MSG_ASM_CAP eviction"
+   ],
+   "note": "Consequence the finding stops short of: the zero-prefix entry never completes (no FINAL), so it occupies an MsgAsm slot until MSG_ASM_CAP eviction — and since it has the LOWEST message_id (0), `slot.msgs.pop_first()` will evict IT first, which is the benign outcome. Reachable only in frag mode, which is default OFF."
+  },
+  {
+   "mechanism": "Shutdown drain (pif→0 or drain_cap) + undelivered residue",
+   "claim": "drain_cap default 3 s; bench sets Duration::ZERO so the product drain is disabled in every benchmark run; flow_end_ns is stamped BEFORE the drain.",
+   "verdict": "confirmed",
+   "corrected_value": "drain_cap default at runtime.rs:192; bench override at kama_product.rs:164; flow_end_ns at runtime.rs:1362; break condition at :1365-1367; undelivered at :1381",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:192 `drain_cap: Duration::from_secs(3),`",
+    "35f60f80:crates/bench/src/kama_product.rs:164 `drain_cap: Duration::ZERO,`",
+    "35f60f80:crates/bench/src/kama_product.rs:91 doc `\\`drain_cap = 0\\`: bench'te kapanış-drenajı YOKTUR`",
+    "35f60f80:crates/client-core/src/runtime.rs:1362 `stats.flow_end_ns = elapsed_ns(start);` — immediately before `let deadline = tokio::time::Instant::now() + cfg.drain_cap;`",
+    "35f60f80:crates/client-core/src/runtime.rs:1365-1367 `if store.is_empty() && session.sender().diag_pif() == 0 { break; }`",
+    "35f60f80:crates/bench/src/kama_product.rs:1003 `assert_eq!(off.drain_cap, Duration::ZERO);`"
+   ],
+   "note": "Strictly, with drain_cap=0 the loop still runs its first iteration and breaks immediately either on the empty-store check or on the already-elapsed sleep_until. Net effect as claimed: no benchmark result has exercised the product drain."
+  },
+  {
+   "mechanism": "Unaccepted-offer accounting at shutdown",
+   "claim": "while offer_rx.try_recv().is_ok() { stats.unaccepted_offers += 1 } after main-loop break; asserted in tests.",
+   "verdict": "confirmed",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:1355-1357 `while offer_rx.try_recv().is_ok() { stats.unaccepted_offers += 1; }`",
+    "35f60f80:crates/client-core/src/runtime.rs:481 `pub unaccepted_offers: u64,`",
+    "35f60f80:crates/client-core/tests/runtime_e2e.rs:220 `stats.offered + stats.unaccepted_offers,`"
+   ],
+   "note": "Reachability caveat: the drain loop at :1364-1379 runs AFTER this, and it never re-drains offer_rx — so an offer that arrives during the drain window is neither counted nor delivered. Bounded (handles are dropped at shutdown) but not zero-risk."
+  },
+  {
+   "mechanism": "Receiver delivery channel — bounded try_send + delivery_dropped",
+   "claim": "push_delivery try_sends into a bounded channel (default 1024); overflow increments delivery_dropped; delivered_seen is marked BEFORE push_delivery so an under-draining app loses the payload permanently.",
+   "verdict": "confirmed",
+   "corrected_value": "push_delivery at runtime.rs:1651; try_send/drop at :1664-1671; delivery_queue default at :186; channel at :1513",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:1664-1671 `if delivery_tx.try_send(d).is_ok() { stats.delivered += 1; if from_fec { stats.fec_recovered_units += 1; } } else { stats.delivery_dropped += 1; }`",
+    "35f60f80:crates/client-core/src/runtime.rs:186 `delivery_queue: 1024,`",
+    "35f60f80:crates/client-core/src/runtime.rs:1694-1701 `if !slot.delivered_seen.insert(unit_id) { return; } ... push_delivery(` — insert precedes push",
+    "35f60f80:crates/client-core/src/runtime.rs:1729-1734 `slot.delivered_seen.insert(mid); ... stats.msgs_reassembled += 1; push_delivery(` — insert precedes push",
+    "35f60f80:crates/client-core/tests/runtime_e2e.rs:233 `async fn delivery_overflow_is_counted_not_grown() {`"
+   ],
+   "note": ""
+  },
+  {
+   "mechanism": "Receiver first-delivery dedup window (delivered_seen, DELIVERED_DEDUP_WINDOW)",
+   "claim": "8192-id BTreeSet per peer; pop_first evicts the numerically smallest id; message_id wraps so eviction order inverts after 2^32 messages.",
+   "verdict": "confirmed",
+   "corrected_value": "const at runtime.rs:1570; non-frag path :1694-1699; frag path :1711/:1729-1732",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:1570 `const DELIVERED_DEDUP_WINDOW: usize = 8192;`",
+    "35f60f80:crates/client-core/src/runtime.rs:1694-1699 `if !slot.delivered_seen.insert(unit_id) { return; } if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW { slot.delivered_seen.pop_first(); }`",
+    "35f60f80:crates/client-core/src/runtime.rs:1711 `if slot.delivered_seen.contains(&mid) { return; }`",
+    "35f60f80:crates/client-core/src/runtime.rs:1745 `delivered_seen: std::collections::BTreeSet<u64>,`",
+    "35f60f80:crates/client-core/src/runtime.rs:1220 `next_message = next_message.wrapping_add(1);`"
+   ],
+   "note": "One extra: the same BTreeSet<u64> holds unit_ids in non-frag mode and u64::from(message_id) in frag mode. frag_on is fixed for the life of a task, so no cross-domain collision occurs — but the set's key domain is mode-dependent and untyped."
+  },
+  {
+   "mechanism": "Receiver seq dedup + bounded rx-set (RX_DEDUP_WINDOW, RX_DUP_SUPPRESS)",
+   "claim": "RX_DEDUP_WINDOW=4096; duplicate → DupSuppress + forced ACK + empty delivered; was_duplicate is computed and discarded at the product boundary.",
+   "verdict": "confirmed",
+   "corrected_value": "const at receiver.rs:126; duplicate branch at :223-230; pop_first at :414-415; runtime consumes only out.delivered/out.ack",
+   "evidence": [
+    "35f60f80:crates/adaptive-transport/src/receiver.rs:126 `const RX_DEDUP_WINDOW: usize = 4096;`",
+    "35f60f80:crates/adaptive-transport/src/receiver.rs:223-229 `if self.received.contains(&d.seq) { self.state = RxState::DupSuppress; ... was_duplicate: true,`",
+    "35f60f80:crates/adaptive-transport/src/receiver.rs:414-415 `while self.received.len() > RX_DEDUP_WINDOW { self.received.pop_first();`",
+    "`grep -n was_duplicate` over crates/client-core/src/runtime.rs → ZERO hits (only receiver.rs:72/229/260 and receiver.rs:573 in #[cfg(test)])",
+    "35f60f80:crates/client-core/src/runtime.rs:2152 `if out.delivered.contains(&unit_id) {`",
+    "specs/adaptive-transport-engine-spec.md:698-700 §9.4 `rx zaten-teslim seq alırsa: teslim ETME (RX_DUP_SUPPRESS); ACK'i teyit et`"
+   ],
+   "note": "The negative claim (was_duplicate never surfaces in ServerStats) holds under a full-file grep of runtime.rs."
+  },
+  {
+   "mechanism": "Declared delivery deadline (app budget) → deadline/sRTT ratio (2×RTT calibration endpoint)",
+   "claim": "Classification SHIP.",
+   "verdict": "refuted",
+   "corrected_value": "KEEP-EXPERIMENTAL. In RuntimeConfig::default() the sole behavioural consumer (FusionPolicy) is None, so the declared deadline terminates in a diagnostic-only field — which the task's own definition explicitly excludes from 'wired'.",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:200-202 `// Sevk default'u KAPALI: kalibrasyon opt-in kalır (ürün default kararı ayrı bir ölçüm kapısıdır; bkz. reports/fec-policy-arm-v1/).` / `fusion_policy: None,`",
+    "35f60f80:crates/client-core/src/runtime.rs:850-852 `if let Some(p) = cfg.fusion_policy { session.sender_mut().set_fusion_policy(p); }` — the ONLY consumer wiring, conditional",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:4118-4123 `pub fn declare_delivery_deadline(&mut self, deadline_ns: u64) { self.tightest_deadline_ns = Some(...` — stores only",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:4175-4176 `pub fn diag_tightest_deadline_ns(&self) -> Option<u64> { self.tightest_deadline_ns }` — diagnostic accessor",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:3494 `deadline_over_srtt_permille: self.tightest_deadline_over_srtt(),` inside the FusionObservation build",
+    "Finding's own text: `default_state: fusion_policy: None → the declared deadline is recorded and observable but has NO consumer`; `feature_off_behavior: no behavioural effect, wire byte-identical`"
+   ],
+   "note": "The finding states the disqualifying fact itself and then classifies SHIP anyway. Its other sub-claims (region cap 2500‰, bench policy arm) are independently confirmed: fusion_policy.rs:330 `pub fn calibration_v2_deadline()`, :363 `deadline_over_srtt_permille_max: 2_500,`, :507-510 region check; kama_product.rs:428-431 `FecArm::PolicyV2Deadline { deadline_ns, .. } => Some(deadline_ns)`."
+  },
+  {
+   "mechanism": "Measurement t0 marker (counter-reset-without-state-reset) + egress arm",
+   "claim": "Classification SHIP, with spec_requires_v1 = 'optional'.",
+   "verdict": "refuted",
+   "corrected_value": "KEEP-EXPERIMENTAL. The finding's own spec_requires_v1 field says 'optional', and the stated SHIP rubric requires 'required for v1'. The two are mutually exclusive.",
+   "evidence": [
+    "Finding text: `spec_requires_v1: \"optional\"` and `notes: It is not required by any spec for v1; it is product surface area that exists solely for benchmarking.`",
+    "35f60f80:crates/client-core/src/runtime.rs:780-786 `pub async fn mark_t0(&self) { let (ack_tx, ack_rx) = oneshot::channel(); if self.t0_tx.send(ack_tx).await.is_ok() { let _ = ack_rx.await; } }`",
+    "35f60f80:crates/client-core/src/runtime.rs:1190-1204 client t0 arm: zeroes tx_bytes/rx_bytes/tx_data_bytes/tx_retx_bytes/tx_dup_bytes/tx_fec_bytes/tx_ctrl_bytes/egress_refused_* then `let _ = ack.send(());`",
+    "35f60f80:crates/client-core/src/runtime.rs:1551 + :1979 server-side twin",
+    "35f60f80:crates/bench/src/kama_product.rs:486 `cli.mark_t0().await;`; :323 `srv.mark_t0().await;`"
+   ],
+   "note": "Mechanism and call chain are real; only the classification is wrong. It is default-inert (never fires unless called), which satisfies KEEP-EXPERIMENTAL's default-OFF requirement."
+  },
+  {
+   "mechanism": "Production fragmenter — message → chunk split with canonical SourcePrefix (0x05 DATA_FRAG)",
+   "claim": "Classification SHIP; default OFF; wire byte-identical to 0x00 DATA when off; fragmentation is not signalled on the wire.",
+   "verdict": "corrected",
+   "corrected_value": "All factual sub-claims CONFIRMED. Classification corrected to KEEP-EXPERIMENTAL: default OFF, explicit opt-in, no wire negotiation, and owner-declared 'Kapalı (bilinçli)' in the in-tree v1 profile.",
+   "evidence": [
+    "35f60f80:crates/client-core/src/wire.rs:57 `pub const FRAME_DATA_FRAG: u8 = 0x05;`; :59 `pub const HDR_DATA_FRAG: usize = HDR_DATA + SOURCE_PREFIX_LEN;`",
+    "35f60f80:crates/client-core/src/runtime.rs:189 `max_message_bytes: None,`",
+    "35f60f80:crates/client-core/src/runtime.rs:1248-1251 `if pfx.serialize_symbol(chunk, &mut body).is_err() { stats.frag_encode_failures += 1; continue; }`",
+    "35f60f80:crates/client-core/src/runtime.rs:1242-1247 SourcePrefix built with `if frag_on { msg_id } else { (id & 0xFFFF_FFFF) as u32 }` — off-path derives, on-path transmits",
+    "35f60f80:crates/client-core/tests/runtime_e2e.rs:475 `async fn fragmenter_carries_a_message_far_larger_than_one_fec_symbol() {`",
+    "specs/kama-noise-wire-tdd-v2.0.md:363 `CANONICAL-SOURCE-SYMBOL-PREFIX (RS-kodlanır — kayıpta-metadata-reconstruct; boyut = E): message_id u32_be · chunk_offset u32_be · actual_payload_len u16_be · source_flags u8 (final/end-of-message)`",
+    "In-tree KamaV1Profile doc lists `fragmenter (max_message_bytes, açık opt-in — wire formatı görünür değişir)` under **Kapalı (bilinçli)**"
+   ],
+   "note": "The un-negotiated-on-the-wire property is the strongest argument against SHIP: two peers configured differently produce an observable behaviour difference with no protocol signal, which is a v1-interop hazard rather than a shipped feature."
+  },
+  {
+   "mechanism": "Message reassembly (MsgAsm insert / take_if_complete, fail-closed on gaps)",
+   "claim": "take_if_complete is fail-closed on gaps AND overlaps; duplicate offsets are first-wins.",
+   "verdict": "confirmed",
+   "corrected_value": "MsgAsm at runtime.rs:1593-1647; insert at :1614; take_if_complete at :1637",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:1637-1647 `fn take_if_complete(&self) -> Option<Vec<u8>> { let total = self.total_len?; let mut out = Vec::with_capacity(total); for (&off, data) in &self.chunks { if off as usize != out.len() { return None; } out.extend_from_slice(data); } (out.len() == total).then_some(out) }`",
+    "35f60f80:crates/client-core/src/runtime.rs:1623-1625 `if self.chunks.contains_key(&offset) { return true; // ilk-kazanır`",
+    "35f60f80:crates/client-core/tests/runtime_e2e.rs:546 `async fn fragmenter_message_survives_a_permanently_erased_chunk_via_fec() {`"
+   ],
+   "note": "`Vec::with_capacity(total)` where total = the peer-supplied FINAL end offset is an alloc sized by remote input — but it is bounds-checked first at :1616-1618 (`if end > cap { return false; }`) so PARSER-02 is satisfied. Classification correction mirrors the fragmenter's (gate default OFF)."
+  },
+  {
+   "mechanism": "msg_asm eviction (MSG_ASM_CAP, bounded half-message buffer)",
+   "claim": "MSG_ASM_CAP=64; pop_first evicts the lowest message_id, not the oldest arrival; eviction runs only in the not-complete branch; never asserted by any test.",
+   "verdict": "confirmed",
+   "corrected_value": "const at runtime.rs:1586; eviction at :1735-1738",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:1586 `const MSG_ASM_CAP: usize = 64;`",
+    "35f60f80:crates/client-core/src/runtime.rs:1735-1738 `} else if slot.msgs.len() > MSG_ASM_CAP { slot.msgs.pop_first(); stats.msg_asm_evicted += 1; }`",
+    "35f60f80:crates/client-core/src/runtime.rs:1749 `msgs: BTreeMap<u32, MsgAsm>,`",
+    "`git grep -n msg_asm_evicted 35f60f80` → runtime.rs:576 (field), runtime.rs:1737 (increment), tests/api_surface_v0.rs:214 (destructure only) — no assertion anywhere"
+   ],
+   "note": "Add: the effective cap is 65 entries (`>` not `>=`), and only ONE entry is evicted per non-completing chunk, so a burst can transiently exceed the cap. Bounded overall because each call inserts at most one."
+  },
+  {
+   "mechanism": "Per-message byte bound before allocation (frag_chunk_dropped)",
+   "claim": "Rejects if offset+len > cap or cumulative buffered > cap; only the negative case (==0) is asserted; the hostile-oversized-FINAL rejection path has no test.",
+   "verdict": "confirmed",
+   "corrected_value": "bounds at runtime.rs:1616-1618 and :1626-1629",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:1616-1618 `let off = offset as usize; let end = off.saturating_add(payload.len()); if end > cap { return false; }`",
+    "35f60f80:crates/client-core/src/runtime.rs:1626-1629 `self.buffered = self.buffered.saturating_add(payload.len()); if self.buffered > cap { return false; }`",
+    "35f60f80:crates/client-core/tests/runtime_e2e.rs:588 `assert_eq!(ss.frag_chunk_dropped, 0, \"sınır ihlali olmamalı: {ss:?}\");`",
+    "specs/transport-layer-tdd.md:749 `PARSER-02: untrusted length ile asla with_capacity; take(MAX); bounds-check alloc'tan önce.`"
+   ],
+   "note": "Ordering defect the finding missed: `if is_final { self.total_len = Some(end); }` at :1619-1621 runs BEFORE the buffered-cap check at :1626-1629. A FINAL whose payload pushes `buffered` over cap sets total_len and then returns false — the assembly is left with a total_len it can never satisfy, so it can never complete and lingers until MSG_ASM_CAP eviction. Bounded, but it is a state-corrupting partial write on the reject path."
+  },
+  {
+   "mechanism": "FEC-recovered chunk joins the SAME delivery admission gate (recovery↔reassembly join)",
+   "claim": "Recovered symbols go through admit_chunk with from_fec=true; the type-gated architectural path (kama_engine::admit_and_decode / ClientSession::admit) is NOT used by the runtime.",
+   "verdict": "confirmed",
+   "corrected_value": "admit_chunk(from_fec=true) at runtime.rs:1907-1918; reconstruct at :1887; fec_ingest at :1827",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:1887 `RsSimdCodec.reconstruct(p, &recv, 0)`",
+    "35f60f80:crates/client-core/src/runtime.rs:1907-1918 `admit_chunk(stats, delivery_tx, peer, slot, frag_on, max_message_bytes, unit_id, &pfx, payload, true,)`",
+    "`git grep -n \"admit_and_decode\" 35f60f80 -- '*.rs'` → client-core/src/lib.rs:47 (re-export), lib.rs:108 (ClientSession::admit body), kama-engine/src/admission.rs:26 (def), kama-engine/src/lib.rs:32 (re-export), plus ONLY test files (kama-engine/tests/admission_5d2.rs, client-core/tests/api_surface_v0.rs, client-core/src/lib.rs:150 #[cfg(test)]). ZERO call sites in crates/client-core/src/runtime.rs",
+    "35f60f80:crates/client-core/src/runtime.rs:199 `fec: None,` — the gate is default OFF"
+   ],
+   "note": "The INV-FEC-1 observation is sharper than the finding states: seam.open() at runtime.rs:2019 is IdentitySeam, which authenticates nothing (`if datagram.len() <= IDENTITY_TAG { Err(Malformed) } else { Ok(...) }`, seam.rs:131-137). So authenticate-before-decode is today satisfied only nominally — there is no authentication to perform. Classification SHIP is not defensible for a mechanism whose gate (`fec: None`) is default OFF; see corrected_classifications."
+  },
+  {
+   "mechanism": "Zero-handshake session establishment (first application payload with no transport establishment RTT)",
+   "claim": "'there is no handshake code to disable'; the first UDP datagram on the wire carries application payload.",
+   "verdict": "refuted",
+   "corrected_value": "The no-transport-handshake property holds ONLY with fec: None. With FEC enabled the product runs a real control-plane handshake on the wire: PARAM_SET (0x03) / PARAM_ACK (0x04), with bounded retry (≤25 attempts, ≥200 ms apart) and a receiver-side fail-closed admission gate that HOLDS FEC shards until bind.",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:879-882 `let param_plan = fec.as_ref().and_then(|p| plan_param_bootstrap(1, &param_fields_for(p)).ok()); let mut param_confirmed = param_plan.is_none();`",
+    "35f60f80:crates/client-core/src/runtime.rs:1330-1341 `// [v1/PARAM] bounded retry (B2): confirmed olana dek her ≥200ms'de bir, ≤25 deneme.` ... `let f = encode_param(p.profile_id, p.code_suite_id, param_hash); seal_send!(f, TxClass::Ctrl, now); stats.param_sends += 1;`",
+    "35f60f80:crates/client-core/src/runtime.rs:1111-1117 PARAM_ACK ingest → `param_confirmed = true; stats.param_confirmed = 1;`",
+    "35f60f80:crates/client-core/src/runtime.rs:2231-2236 `if !slot.param.is_confirmed() { if slot.pre_param_fec.len() < PRE_PARAM_FEC_CAP { slot.pre_param_fec.push((h, symbol.to_vec())); } else { stats.fec_pre_param_dropped += 1; } }` — FEC shards are NOT decoded before bind",
+    "35f60f80:crates/client-core/src/wire.rs:290 `pub const FRAME_PARAM: u8 = 0x03;`; :294 `pub const FRAME_PARAM_ACK: u8 = 0x04;`",
+    "35f60f80:crates/bench/src/kama_product.rs:566 KP-CLIENT prints `param_confirmed={}`"
+   ],
+   "note": "The DATA path is genuinely 0-RTT (sock.connect then first send, runtime.rs:707-712) — that half is confirmed. But 'no handshake code to disable' is false, and the FEC-recovery capability is gated behind a round trip. The finding's deeper caveat is also confirmed and should be the headline: the product path is handshake-free because it is key-free — client-core/src/lib.rs:24-32 lists Noise handshake and split-derived directional keys as still missing, and IdentitySeam (seam.rs:110-142) is a +16 B zero-tag stub with no authentication."
+  },
+  {
+   "mechanism": "Establish probe (DR-EST-1) — PreConverge establishment retry via §3.3-B copy",
+   "claim": "Default ON at Sender::new; NO product call site for set_establish_probe (test-only); token-EXEMPT, which contradicts engine-spec §3.3-B's 'no pacer-bypassing send path'.",
+   "verdict": "confirmed",
+   "corrected_value": "Test-only call-site list is INCOMPLETE in the finding — it omits adaptive-transport/tests/structure_gate_fec.rs (:48, :350) and kama-integration/tests/fec_recovery_cell.rs:103. Conclusion unchanged: 13 call sites, all in tests/.",
+   "evidence": [
+    "35f60f80:crates/adaptive-transport/src/sender.rs:1819 `establish_probe_enabled: true,`",
+    "`git grep -n set_establish_probe 35f60f80 -- '*.rs'` → sender.rs:5598 (def) + 12 sites, ALL under crates/*/tests/",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:5543-5551 `if !self.establish_probe_enabled { return; } if self.state != SenderState::PreConverge { self.establish_due_ns = 0; return; } if self.dup_queue.is_empty() { return; }`",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:1389-1390 `const ESTABLISH_PROBE_INITIAL_NS: u64 = 500_000_000; const ESTABLISH_PROBE_CAP_NS: u64 = 8_000_000_000;`",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:4064-4070 call site comment `Bu kol vadesi gelen EN-ESKİ kopyadan TEK datagram'ı token-MUAF geçirir` then `self.drain_establish_probe(&mut out, now_ns);` — pushes directly into `out`, no pacer consultation",
+    "specs/adaptive-transport-engine-spec.md:332-333 `Kopyalar da AYNI pacer'dan geçer (§13); pacer'ı baypas eden gönderim yolu YOK (DATA/retransmit/kopya tek token bucket'ı paylaşır).`",
+    "35f60f80:crates/client-core/src/runtime.rs:1413 `establish_probes_tx: session.sender().diag_establish_probe_emitted(),`; kama_product.rs:587 prints `establish_tx=`"
+   ],
+   "note": "The spec conflict is real and NORMATIVE — spec line 333 is unqualified. This is the only default-ON establishment mechanism in the product and it is the one that violates a frozen spec invariant. Classification SHIP survives (wired, default-ON, spec-required function under §3.3-B) but it must ship with a recorded spec deviation, not silently."
+  },
+  {
+   "mechanism": "Bootstrap RTT ladder (DR-CS-3) — CS_PROBE emission",
+   "claim": "Default OFF (bootstrap_rtt: false); BS_FIRES_NS [3,9,21,45]s; budget BS_TX_HARD_BUDGET; set_cs_probe_lane mirrors the switch to the legacy F2A lane; classification KEEP-EXPERIMENTAL.",
+   "verdict": "confirmed",
+   "corrected_value": "default at runtime.rs:196; BootstrapRttConfig::default() enabled:false at sender.rs:1007-1015; BS_TX_HARD_BUDGET = 200 B at sender.rs:1023",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:196 `bootstrap_rtt: false,`",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:1008-1014 `// DEFAULT OFF — pending locked/fresh panel validation (DR-CS-3 §9).` / `Self { enabled: false, fires_ns: None }`",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:1019 `const BS_FIRES_NS: [u64; 4] = [3_000_000_000, 9_000_000_000, 21_000_000_000, 45_000_000_000];`; :1021 `const BS_PROBE_WIRE_EXACT: u64 = 44;`; :1023 `const BS_TX_HARD_BUDGET: u64 = 200;`",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:3177-3195 gate `if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() { return; }` ... `if self.bs_bytes + BS_PROBE_WIRE_EXACT > BS_TX_HARD_BUDGET { ... return; }`",
+    "35f60f80:crates/client-core/src/runtime.rs:837 `session.sender_mut().set_cs_probe_lane(cfg.bootstrap_rtt);`",
+    "35f60f80:crates/client-core/src/runtime.rs:1011-1015 CsProbe emission arm → `encode_cs_probe(CS_PROBE_SUBTYPE, (d.seq & 0xFFFF) as u16); stats.cs_probes_tx += 1; seal_send!(f, TxClass::Ctrl, $now);`",
+    "35f60f80:crates/client-core/tests/runtime_e2e.rs:697 `async fn bootstrap_rtt_probe_and_echo_traverse_the_product_wire() {`"
+   ],
+   "note": "Classification KEEP-EXPERIMENTAL is the one classification in this cluster that is fully defensible as written."
+  },
+  {
+   "mechanism": "Bootstrap RTT ladder (DR-CS-3) — CS_PROBE emission",
+   "claim": "WIRE MISMATCH: engine budgets exactly 44 B/probe but the v0 shell is 28 B body + IdentitySeam's 16 B tag = 44 B only by coincidence.",
+   "verdict": "confirmed",
+   "evidence": [
+    "35f60f80:crates/adaptive-transport/src/sender.rs:1021 `const BS_PROBE_WIRE_EXACT: u64 = 44;`",
+    "35f60f80:crates/client-core/src/wire.rs:226 `pub const LEN_CS_PROBE: usize = 28;`",
+    "35f60f80:crates/client-core/src/seam.rs:113 `pub const IDENTITY_TAG: usize = 16;`; :141-143 `fn sealed_len(&self, frame_len: usize) -> usize { frame_len + IDENTITY_TAG }`",
+    "specs/kama-noise-wire-tdd-v2.0.md:304-305 `CTRL_CS_PROBE(0x19) ... body=12B → EXACT-WIRE = 26+6+12 = **44B** (PROBE_WIRE_EXACT).`"
+   ],
+   "note": "Sharper than stated: the spec's 44 B decomposes as 26 (Noise envelope) + 6 (header) + 12 (body); the code's 44 B decomposes as 28 (v0 body) + 16 (stub tag). The two agree on the total and on nothing else. Any real seam changes the wire cost while sender.rs:3203 `self.bs_bytes += BS_PROBE_WIRE_EXACT;` keeps charging 44."
+  },
+  {
+   "mechanism": "CS_ECHO responder (idempotent-stateless echo, anti-amplification)",
+   "claim": "Classification WIRE.",
+   "verdict": "refuted",
+   "corrected_value": "WIRE is not defensible. WIRE requires spec-required + disconnected/v1-blocker. The probe/echo subsystem is explicitly spec-OPTIONAL ('Probe hızlandırıcıdır; hiçbir şeyi bloklamaz ... yokluğunda sistem yalnız daha yavaş öğrenir'), so it cannot be a v1 blocker; and the responder is not disconnected — it is fully wired and unconditionally live. Correct class: KEEP-EXPERIMENTAL, failing its default-OFF requirement.",
+   "evidence": [
+    "specs/adaptive-transport-engine-spec.md:849-850 `Statü: \"Probe hızlandırıcıdır; hiçbir şeyi bloklamaz, receiver'da YENİ state açmaz, yokluğu VEYA geçersizliği otoriter sonuç doğurmaz. Yokluğunda sistem yalnız daha yavaş öğrenir.\"`",
+    "specs/adaptive-transport-engine-spec.md:806 `... artık noise-wire-§2.57'dedir (PROBE_WIRE_EXACT=44B; ECHO_WIRE_MAX=43B). Bu bölüm ARŞİVDİR` — the finding cites eng §11.1, an ARCHIVED section, as its normative source",
+    "35f60f80:crates/client-core/src/runtime.rs:2310-2325 responder arm: `stats.cs_probes_rx += 1; let f = encode_cs_echo(subtype, probe_seq, 0, 0); debug_assert!(f.len() < LEN_CS_PROBE, ...); ... srv_seal_send(...)` — no gate, no rate limiter",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:3219-3221 `fn bs_on_echo(&mut self, probe_seq: u16, now_ns: u64) { if !self.bootstrap_rtt.enabled { return; }` — client-side ingest gated OFF by default",
+    "35f60f80:crates/client-core/src/runtime.rs:196 `bootstrap_rtt: false,`"
+   ],
+   "note": "The finding's underlying observation — that the normative responder rate-limit is absent — is CONFIRMED (specs/kama-noise-wire-tdd-v2.0.md:311 `rate-limit T_ECHO_MIN/akış`; no per-flow echo throttle exists anywhere in crates/client-core/src). Only the classification is wrong."
+  },
+  {
+   "mechanism": "CS_ECHO responder (idempotent-stateless echo, anti-amplification)",
+   "claim": "'Anti-amplification (43 < 44) holds ... an attacker still gets an unbounded per-packet reflector once a real seam is installed only if it opens the frame.'",
+   "verdict": "refuted",
+   "corrected_value": "The conditional is backwards. TODAY, with the only seam the product runtime uses, the reflector is already unauthenticated: IdentitySeam::open accepts every datagram longer than 16 bytes. Spec (i) 'silent-drop — geçersiz/AEAD-çözülemeyen probe'a TEK BYTE cevap yok' is vacuous, not satisfied. A real seam would IMPROVE this, not create the exposure.",
+   "evidence": [
+    "35f60f80:crates/client-core/src/seam.rs:131-139 `fn open(&mut self, datagram: &[u8]) -> Result<OpenedDatagram, OpenReject> { if datagram.len() <= IDENTITY_TAG { return Err(OpenReject::Malformed); } Ok(OpenedDatagram { peer: 0, plain: datagram[..datagram.len() - IDENTITY_TAG].to_vec() }) }`",
+    "35f60f80:crates/client-core/src/seam.rs:109 doc `Peer-ayrımı YOK (daima 0) — güvenlik iddiası olmayan stub.`",
+    "`git grep -n IdentitySeam 35f60f80 -- '*.rs'` → the only SecuritySeam impl passed to ClientEndpoint::connect / ServerEndpoint::bind anywhere outside tests (kama_product.rs:309, :419)",
+    "specs/adaptive-transport-engine-spec.md:844 `(i) silent-drop — geçersiz/AEAD-çözülemeyen probe'a TEK BYTE cevap yok (aktif-tarama savunması AEAD-doğrulaması).`"
+   ],
+   "note": ""
+  },
+  {
+   "mechanism": "CS_ECHO responder (idempotent-stateless echo, anti-amplification)",
+   "claim": "The responder is 'idempotent-stateless' per spec.",
+   "verdict": "refuted",
+   "corrected_value": "It is not stateless. A CS_PROBE from an unknown source address allocates a full PeerSlot (Receiver, two BTreeSets/Maps, ParamState, pre_param_fec Vec) before the frame is dispatched, and that slot persists until idle_hold (105 s) retires it. This violates both engine-spec §11.1 statü ('receiver'da YENİ state açmaz') and noise-wire §2.57 ('per-probe-uzun-ömürlü-allocation-YOK').",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:2078-2100 peer-slot creation runs for ALL parsed frames, including `RxFrame::CsProbe`, BEFORE the `match parsed` at :2104 — `if !peers.contains_key(&peer) { if peers.len() >= cfg.max_peers { stats.dropped_new_peers += 1; continue; } let mut rx = Receiver::new(); rx.set_quota_r(cfg.quota_r); peers.insert(peer, PeerSlot { rx, last_seen_ns: now, delivered_seen: BTreeSet::new(), blocks: BTreeMap::new(), msgs: BTreeMap::new(), seam_peer, tx_pn: 0, param: ParamState::new(), pre_param_fec: Vec::new() }); }`",
+    "35f60f80:crates/client-core/src/runtime.rs:2311-2315 the CsProbe arm's own comment claims `IDEMPOTENT-STATELESS echo. Alıcı motoruna BESLENMEZ` — true of the engine feed, false of the slot allocation that already happened",
+    "35f60f80:crates/client-core/src/runtime.rs:190 `max_peers: 64,`; :193 `idle_hold: Duration::from_secs(105),`; :2009 `peers.retain(|_, s| now.saturating_sub(s.last_seen_ns) < idle_hold_ns);`",
+    "specs/kama-noise-wire-tdd-v2.0.md:311 `Echo: alıcı-flow-state'inden idempotent-stateless; per-probe-uzun-ömürlü-allocation-YOK;`"
+   ],
+   "note": "Bounded (64 slots, 105 s TTL) so it is a degradation, not an unbounded DoS — but combined with the missing rate limit and the no-op seam, 64 spoofed source addresses can occupy the entire peer table for 105 s and lock out legitimate new peers via the fail-closed dropped_new_peers path. This is the strongest defect in the cluster and the findings missed it."
+  },
+  {
+   "mechanism": "PreConverge exit / establishment observability (left_preconverge, rtt_samples)",
+   "claim": "left_preconverge is definitional (an RTT sample exists), not a phase-name proxy; sampled at shutdown.",
+   "verdict": "confirmed",
+   "corrected_value": "fill at runtime.rs:1407-1409; docs at :437-441",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:1407-1409 `left_preconverge: session.sender().diag_rtt_sample_count() > 0, rtt_samples: session.sender().diag_rtt_sample_count(), establish_probes_tx: session.sender().diag_establish_probe_emitted(),`",
+    "35f60f80:crates/client-core/src/runtime.rs:1395-1406 `sender_state: match session.sender().state() { ... }`",
+    "35f60f80:crates/client-core/tests/runtime_e2e.rs:789 `async fn run_reports_whether_the_session_ever_established() {`",
+    "35f60f80:crates/bench/src/kama_product.rs:585-587 prints `state={} left_preconv={} establish_tx={}`"
+   ],
+   "note": "Pure observation; no behavioural path. It is diagnostic-only by construction, so SHIP is a stretch under the strict 'wired' definition — but it is required to make §4.4.3 ④ measurable, so I do not contest it."
+  },
+  {
+   "mechanism": "Initial-flight window (IW) — PreConverge burst clamp correction",
+   "claim": "spec_refs cite engine-spec §3.3-A [K-D2] as the requirement this mechanism implements.",
+   "verdict": "refuted",
+   "corrected_value": "§3.3-A [K-D2] mandates the OPPOSITE. It is a NORMATIVE requirement that PreConverge burst be clamped to a single unit; the shipped default (initial_window_bytes = DEFAULT_BURST_CAP = 2×1200 = 2400 B) is precisely the behaviour that line forbids, and the code itself is marked KALİBRE EDİLMEMİŞ.",
+   "evidence": [
+    "specs/adaptive-transport-engine-spec.md:301-304 `[K-D2] **BURST clamp da ZORUNLU** (yalnız rate DEĞİL): token-bucket DEFAULT_BURST_CAP (2×MTU) t0'da tüm kuyruğu tek hamlede wire'a çıkarır → floor'u baypas eder (self-congestion + §3.3-B kopyalar temiz kanalda spurious ateşler ...). PRE_CONVERGE'de burst tek-birime clamp'lenir → ilk birim t=0'da gider, kalanı floor-refill yayar.`",
+    "35f60f80:crates/client-core/src/runtime.rs:195 `initial_window_bytes: adaptive_transport::pacer::DEFAULT_BURST_CAP,`",
+    "35f60f80:crates/adaptive-transport/src/pacer.rs:9 `pub const DEFAULT_BURST_CAP: u64 = 2 * crate::rate::DEFAULT_MTU;`; rate.rs:18 `pub const DEFAULT_MTU: u64 = 1200;` → 2400 B",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:313 `/// KALİBRE EDİLMEMİŞ: default flip ölçüm ister.` immediately above `pub struct InitialWindowConfig`",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:4200-4203 `/// Bkz. [InitialWindowConfig]; KALİBRE EDİLMEMİŞ. pub fn set_initial_window(&mut self, cfg: InitialWindowConfig) { self.initial_window = cfg; }`"
+   ],
+   "note": "The spec's own rationale for the clamp is that DEFAULT_BURST_CAP — the exact value now shipped as the default — bypasses the PreConverge pacing floor. The finding cites the prohibition as if it were the authorization."
+  },
+  {
+   "mechanism": "Initial-flight window (IW) — PreConverge burst clamp correction",
+   "claim": "'NOTE the bench default may be 0 depending on the CLI default — verify per invocation.'",
+   "verdict": "corrected",
+   "corrected_value": "Resolved: the bench CLI default IS 0, on both subcommands. The product's shipped IW default (2400 B) has therefore never been exercised by any benchmark run that did not pass --initial-window-bytes explicitly.",
+   "evidence": [
+    "35f60f80:crates/bench/src/main.rs:122-124 (`serve`) `/// [IW] PreConverge ilk-uçuş penceresi (byte; 0 = sevk davranışı, tek paket).` / `#[arg(long, default_value_t = 0)]` / `initial_window_bytes: u64,`",
+    "35f60f80:crates/bench/src/main.rs:237-239 (`client`) identical `#[arg(long, default_value_t = 0)]`",
+    "35f60f80:crates/bench/src/kama_product.rs:295 + :405 `initial_window_bytes: cfg.initial_window_bytes,` — straight passthrough, no product-default fallback",
+    "35f60f80:crates/adaptive-transport/src/sender.rs:1951 `initial_window: InitialWindowConfig::default(),` with `#[derive(..., Default)]` at :314 → engine default bytes = 0 (OFF); the ON state comes only from client-core's RuntimeConfig",
+    "35f60f80:crates/client-core/src/runtime.rs:855-859 `session.sender_mut().set_initial_window(InitialWindowConfig { bytes: cfg.initial_window_bytes });` — unconditional"
+   ],
+   "note": "This is the same class of defect the in-tree audit records as B-5 ('bench profili elle kurduğu için ürün default'ları benchmark'a HİÇ ulaşmamış'). The finding's 'confidence: medium' hedge should be replaced by a firm negative: default IW is unmeasured."
+  }
+ ],
+ "missed_mechanisms": [
+  {
+   "name": "PARAM_SET / PARAM_ACK bootstrap handshake (0x03 / 0x04) — sender side, bounded retry",
+   "evidence": "35f60f80:crates/client-core/src/wire.rs:290 `pub const FRAME_PARAM: u8 = 0x03;`, :292 `pub const LEN_PARAM: usize = 35;`, :294 `pub const FRAME_PARAM_ACK: u8 = 0x04;`, :296 `pub const LEN_PARAM_ACK: usize = 33;`, :300 `pub fn encode_param(profile_id: u8, code_suite_id: u8, param_hash: &[u8; 32]) -> Vec<u8>`. Product chain: runtime.rs:879-881 `let param_plan = fec.as_ref().and_then(|p| plan_param_bootstrap(1, &param_fields_for(p)).ok());` → runtime.rs:1330-1341 rtprop-tick arm `if !param_confirmed && param_tries < 25 && due { ... encode_param(...); seal_send!(f, TxClass::Ctrl, now); stats.param_sends += 1; param_tries += 1; param_last_tick_ms = now_ms; }` → runtime.rs:1111-1117 `else if plain.first() == Some(&FRAME_PARAM_ACK) { if let (Some(plan), Some(h)) = (param_plan.as_ref(), decode_param_ack(&plain)) { if h == plan.param_hash && !param_confirmed { param_confirmed = true; stats.param_confirmed = 1; } } }`. Gate: `fec: Some(..)` (runtime.rs:882 `let mut param_confirmed = param_plan.is_none();` — FEC off ⇒ no PARAM flow). Telemetry: ClientStats.param_sends (runtime.rs:493) + param_confirmed (:496); KP-CLIENT prints `param_confirmed={}` (kama_product.rs:566/580).",
+   "suggested_classification": "KEEP-EXPERIMENTAL (gate `fec: None` is default OFF at runtime.rs:199). Directly refutes the 'no handshake code to disable' claim in the zero-handshake mechanism."
+  },
+  {
+   "name": "PARAM receiver-side fail-closed admission bind (ParamState per peer)",
+   "evidence": "35f60f80:crates/client-core/src/runtime.rs:1968 `let param_expected: Option<ParamFields> = fec.as_ref().map(param_fields_for);` → runtime.rs:2331-2348 `let Some(exp) = param_expected.as_ref() else { stats.unknown_frames += 1; continue; }; ... let was = slot.param.is_confirmed(); match slot.param.on_param_set(&ctl, exp) { Ok(()) => { if !was { stats.param_bound_peers += 1; } let f = encode_param_ack(&param_hash); ... srv_seal_send(...) }` and :2381 `Err(_) => stats.param_rejects += 1,`. State lives in PeerSlot (runtime.rs:1756 `param: ParamState,`). Telemetry: ServerStats.param_bound_peers (:584), param_rejects (:586) — inside KP-SERVER's `stats={stats:?}` Debug dump (kama_product.rs:380).",
+   "suggested_classification": "KEEP-EXPERIMENTAL (only reachable when fec is Some on both ends). This is the receiver half of the handshake the cluster is named for."
+  },
+  {
+   "name": "PreParamHold — bounded pre-bind FEC shard buffer (PRE_PARAM_FEC_CAP)",
+   "evidence": "35f60f80:crates/client-core/src/runtime.rs:1762 `const PRE_PARAM_FEC_CAP: usize = 64;` · :1758 `pre_param_fec: Vec<(FecFrameHeader, Vec<u8>)>,` · :2228-2237 `// [v1/PARAM] fail-closed AMA bounded-HOLD: bind-öncesi shard decode/teslim ALMAZ, bekletilir; bind'de drain edilir.` / `if !slot.param.is_confirmed() { if slot.pre_param_fec.len() < PRE_PARAM_FEC_CAP { slot.pre_param_fec.push((h, symbol.to_vec())); } else { stats.fec_pre_param_dropped += 1; } ... }` · drain at :2352-2379 `for (fh, sym) in std::mem::take(&mut slot.pre_param_fec) { ... fec_ingest(...) ... }`. Counter: ServerStats.fec_pre_param_dropped.",
+   "suggested_classification": "KEEP-EXPERIMENTAL (same fec gate). It is a delivery-admission mechanism with its own bound and its own drop counter, and it decides whether early FEC repairs survive the handshake window."
+  },
+  {
+   "name": "RECOVERED control frame (0x02) — receiver→sender FEC-recovery delivery confirmation",
+   "evidence": "35f60f80:crates/client-core/src/wire.rs:168 `pub const FRAME_RECOVERED: u8 = 0x02;` · sender ingest runtime.rs:1119-1146 `else if plain.first() == Some(&FRAME_RECOVERED) { ... let unit = u64::from(block_id) * u64::from(p.k_shape) + u64::from(esi); if store.remove(&unit).is_some() { stats.fec_recovered_ctrl_units += 1; unit_acked!(unit); for old in unit_seqs.remove(&unit)... } ... drive!(Event::RecoveredControl(RecoveredInfo { units }), $now); }` · receiver emit runtime.rs:2215-2220 `if !rec.is_empty() { stats.fec_recovered_ctrl_tx += 1; let f = encode_recovered(block_id, &rec); ... srv_seal_send(...) }` (and again at :2361-2377 on the PARAM-bind drain path). Telemetry: KP-CLIENT prints `fec_recovered_ctrl={}` (kama_product.rs:565/577).",
+   "suggested_classification": "KEEP-EXPERIMENTAL (gate `fec: None` default OFF). This is the SECOND delivery-confirmation path feeding ClientHandle::acked() and the bench's delivered_ns — the findings' 'First-ACK-wins' mechanism silently absorbs it."
+  },
+  {
+   "name": "Peer-table fail-closed admission cap (max_peers, dropped_new_peers)",
+   "evidence": "35f60f80:crates/client-core/src/runtime.rs:190 `max_peers: 64,` · :2079-2083 `// Peer-cap FAIL-CLOSED (bench'in sınırsız tablosu SR-AUDIT ihlaliydi — D6): tablo doluyken YENİ peer typed-drop; mevcut peer'lar etkilenmez.` / `if !peers.contains_key(&peer) { if peers.len() >= cfg.max_peers { stats.dropped_new_peers += 1; continue; }` · ServerStats.dropped_new_peers at :539. Spec: specs/adaptive-transport-engine-spec.md:904-907 §14 bounded pools / SR-AUDIT-001.",
+   "suggested_classification": "SHIP (default-enabled, wired, spec-required bounded pool, exercised on every server datagram from a new source)."
+  },
+  {
+   "name": "Receiver ACK quota wiring (quota_r → Receiver::set_quota_r)",
+   "evidence": "35f60f80:crates/client-core/src/runtime.rs:191 `quota_r: 4,` · :2085-2086 `let mut rx = Receiver::new(); rx.set_quota_r(cfg.quota_r);` — applied at peer-slot construction, before any datagram is processed. Spec: specs/transport-layer-tdd.md:688-690 §12 `N-mesaj ACK penceresi; ACK range/SACK compression; piggyback; ACK decimation; per-profil ACK budget. Per-paket ACK KULLANILMAZ`.",
+   "suggested_classification": "SHIP (default-enabled, wired, spec-required; it is the only product knob controlling ACK cadence and it directly sets the reverse-path load that every completion number depends on)."
+  },
+  {
+   "name": "Idle peer retirement (idle_hold, retired_idle_peers)",
+   "evidence": "35f60f80:crates/client-core/src/runtime.rs:193 `idle_hold: Duration::from_secs(105),` · :1973 `let idle_hold_ns = u64::try_from(cfg.idle_hold.as_nanos()).unwrap_or(u64::MAX);` · :2009-2010 `peers.retain(|_, s| now.saturating_sub(s.last_seen_ns) < idle_hold_ns); stats.retired_idle_peers += (before - peers.len()) as u64;` · :2103 `slot.last_seen_ns = now;` · ServerStats.retired_idle_peers at :541.",
+   "suggested_classification": "SHIP (default-enabled, wired). It is also the only thing that reclaims the peer slots a spoofed CS_PROBE flood allocates — so it is load-bearing for the responder defect above."
+  },
+  {
+   "name": "App-facing message size bound (RuntimeError::UnitTooLarge, bounds-before-alloc)",
+   "evidence": "35f60f80:crates/client-core/src/runtime.rs:282 `UnitTooLarge { got: usize, cap: usize },` · :668-673 `if payload.len() > self.max_message_bytes { return Err(RuntimeError::UnitTooLarge { got: payload.len(), cap: self.max_message_bytes }); }` · cap set at :718 `let max_message_bytes = cfg.max_message_bytes.unwrap_or(cfg.max_unit_bytes);` · pre-run typed validation at :214-226 `fn validate_fec(cfg: &RuntimeConfig)` with `RuntimeError::FecConfig(\"max_unit_bytes 0 olamaz\")`. Bench treats it as run-invalidating: kama_product.rs:246-248 doc `Closed/UnitTooLarge = koşu GEÇERSİZ`. Spec: specs/transport-layer-tdd.md:749 PARSER-02.",
+   "suggested_classification": "SHIP (default-enabled, wired, spec-required). The findings' offer-intake mechanism covers only the queue bound and omits the size bound entirely."
+  },
+  {
+   "name": "EgressPolicy budget gate (egress_refused_pkts / egress_refused_bytes)",
+   "evidence": "35f60f80:crates/client-core/src/runtime.rs:305-308 `pub trait EgressPolicy: Send { ... fn admit(&mut self, len: usize, now_ns: u64) -> bool; }` · client emit path :943 `Some(p) => p.admit(n, $now),` then :951-952 `stats.egress_refused_pkts += 1; stats.egress_refused_bytes += n64;` · server return path :1807 `Some(p) => p.admit(n, elapsed_ns(tx.start)),` then :1813-1814 · armed/zeroed at t0 (:1202-1203, :1986-1987). Default: `connect()` delegates to `connect_with_policy(server, cfg, seam, None)` (runtime.rs:692-698) → policy None ⇒ gate code never runs. Bench installs one: kama_product.rs BudgetGovernor + `admit` impl at :66.",
+   "suggested_classification": "KEEP-EXPERIMENTAL (default None). Notable because a mechanism in the product API can suppress real datagrams — a measurement-plane hook on the shipped send path, not just an observer."
+  },
+  {
+   "name": "Typed emission-failure accounting (seal_failures, send_errors) and unknown_frames fail-closed branch",
+   "evidence": "35f60f80:crates/client-core/src/runtime.rs:948 `stats.send_errors += 1; // kayıp; asla geri itme (INV-RATE-1).` · :956 `stats.seal_failures += 1; // typed-red; emisyon kayıp sayıldı.` · server side :1817 `Err(_) => stats.seal_failures += 1,` · unknown_frames increments at :1109, :1119, :1146, :1151 (client) and :2073, :2225, :2199, :2333 (server); fields at :474/:478/:492 and :544/:582. KP-CLIENT prints `seal_fail={} send_err={}` (kama_product.rs:565/578-579).",
+   "suggested_classification": "SHIP (default-enabled, wired). These are the only counters distinguishing 'the channel lost it' from 'we never emitted it', which every completion claim in this cluster rests on."
+  },
+  {
+   "name": "Per-peer seam packet-number counter (tx_pn / PeerSlot::next_pn) — INV-NONCE-1 caller-supplied contract",
+   "evidence": "35f60f80:crates/client-core/src/runtime.rs:875-877 `// [v1] Seam-PN sayacı (per-endpoint; noise-wire caller-supplied sözleşmesi) + PARAM planı.` / `let mut tx_pn: u64 = 0;` · :1753-1754 `/// [v1] Dönüş-yönü seam-PN sayacı (per-peer monoton).` / `tx_pn: u64,` · :1765 `fn next_pn(&mut self) -> u64 {` · consumed at every server emission, e.g. :2171 `let (sp, pn) = (slot.seam_peer, slot.next_pn());`, :2322, :2347, :2373. Spec: specs/transport-layer-tdd.md:736 `INV-NONCE-1 | Transport counter monoton; 2B seq wire'da; receiver reconstruct; wrap→rekey; reuse imkansız.`",
+   "suggested_classification": "WIRE. The counter is monotonic and per-peer, but there is no wrap→rekey handling anywhere on this path (grep for `rekey` in crates/client-core/src returns nothing), and IdentitySeam ignores `args.wire_pn` entirely (seam.rs:117-128 stores it into SealedDatagram and never uses it). The invariant is prepared for, not enforced."
+  }
+ ],
+ "corrected_classifications": [
+  {
+   "mechanism": "Declared delivery deadline (app budget) → deadline/sRTT ratio (2×RTT calibration endpoint)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "reason": "Its only behavioural consumer is gated by RuntimeConfig::fusion_policy, which is None in default() (runtime.rs:202, with the in-code note 'Sevk default'u KAPALI: kalibrasyon opt-in kalır'). With the default, declare_delivery_deadline stores a value that reaches only diag_tightest_deadline_ns (sender.rs:4175) — a diagnostic-only field, which the task's 'wired' definition explicitly excludes. Default OFF, opt-in, wire byte-identical when off: KEEP-EXPERIMENTAL. The app-facing send_with_deadline API itself is fine to ship; the deadline→behaviour mechanism is not v1."
+  },
+  {
+   "mechanism": "Measurement t0 marker (counter-reset-without-state-reset) + egress arm",
+   "classification": "KEEP-EXPERIMENTAL",
+   "reason": "The finding records spec_requires_v1 = 'optional' and notes it 'is not required by any spec for v1; it is product surface area that exists solely for benchmarking'. SHIP requires 'required for v1'. It is default-inert (fires only on an explicit call, runtime.rs:780/1551) and state-preserving, which satisfies KEEP-EXPERIMENTAL's default-OFF requirement."
+  },
+  {
+   "mechanism": "CS_ECHO responder (idempotent-stateless echo, anti-amplification)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "reason": "WIRE requires spec-required + v1-blocker; engine-spec §11.1 statü (line 849) declares the probe/echo subsystem non-blocking and its absence non-authoritative, so it cannot block v1 — and it is not disconnected, it is unconditionally live. It belongs with its default-OFF client half (bootstrap_rtt: false, runtime.rs:196) — but it FAILS the default-OFF requirement: the responder answers any peer with no gate (runtime.rs:2310-2325), no rate limit (normative: kama-noise-wire §2.57 line 311 'rate-limit T_ECHO_MIN/akış'), no authentication under IdentitySeam (seam.rs:131-137), and it allocates a 105 s PeerSlot per new source address (runtime.rs:2079-2100) in violation of 'receiver'da YENİ state açmaz'. Correct disposition: KEEP-EXPERIMENTAL, with the responder gated behind cfg.bootstrap_rtt (or rate-limited) before v1."
+  },
+  {
+   "mechanism": "Production fragmenter — message → chunk split with canonical SourcePrefix (0x05 DATA_FRAG)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "reason": "max_message_bytes: None in default() (runtime.rs:189, comment 'Fragmenter KAPALI (mesaj = birim; eski davranış birebir)'); it is an explicit per-app opt-in that changes the wire frame type with NO on-wire negotiation (both ends must be configured identically — runtime.rs:1958-1962). The in-tree v1 profile doc lists it under '**Kapalı (bilinçli)** ... fragmenter (max_message_bytes, açık opt-in — wire formatı görünür değişir)'. Default OFF + intentionally outside v1 = KEEP-EXPERIMENTAL, not SHIP."
+  },
+  {
+   "mechanism": "Message-level ACK aggregation (fragmented mode: msg_pending / messages_acked)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "reason": "Entirely inside `if frag_on` (unit_acked! macro, runtime.rs:1074-1092) whose gate is default None. With the shipped default, messages_acked is structurally always 0 and the acked() stream carries unit ids. Cannot be SHIP — it executes zero lines in the default configuration."
+  },
+  {
+   "mechanism": "Message reassembly (MsgAsm insert / take_if_complete, fail-closed on gaps)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "reason": "Reached only through admit_chunk's frag branch (runtime.rs:1709-1738), gated by max_message_bytes = None by default; slot.msgs is 'never touched' when off (the finding's own feature_off_behavior). Same gate as the fragmenter, so it inherits the fragmenter's classification."
+  },
+  {
+   "mechanism": "msg_asm eviction (MSG_ASM_CAP, bounded half-message buffer)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "reason": "Same default-OFF gate; additionally it is asserted by no test anywhere (only destructured at tests/api_surface_v0.rs:214), and it has two unreviewed behaviours: pop_first evicts the LOWEST message_id rather than the oldest (wrong after the u32 message_id wraps at runtime.rs:1220), and the `>` comparison makes the effective cap 65. Not shippable as-is; not a v1 blocker either, since the feature it bounds is off."
+  },
+  {
+   "mechanism": "Per-message byte bound before allocation (frag_chunk_dropped)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "reason": "Same default-OFF gate (never runs with max_message_bytes = None). It also carries an ordering defect on its own reject path: `if is_final { self.total_len = Some(end); }` (runtime.rs:1619-1621) executes BEFORE the cumulative-buffer check at :1626-1629, so a rejected oversized FINAL still stamps an unsatisfiable total_len on the assembly. Only the ==0 case is asserted (runtime_e2e.rs:588); the hostile path is untested."
+  },
+  {
+   "mechanism": "FEC-recovered chunk joins the SAME delivery admission gate (recovery↔reassembly join)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "reason": "Gate is RuntimeConfig::fec, which is None in default() (runtime.rs:199); with FEC off the frames are counted as unknown_frames (runtime.rs:2224-2226) and no reconstruct path runs. The join logic is correct and well-tested, but it is not part of the shipped default configuration, and its architectural type-gate (kama_engine::admit_and_decode / OpenedTransportShard) is bypassed by the runtime, which feeds raw &[u8] into RsSimdCodec.reconstruct (runtime.rs:1887). Classify as KEEP-EXPERIMENTAL until the FEC default flips and the type-gate is restored."
+  },
+  {
+   "mechanism": "Initial-flight window (IW) — PreConverge burst clamp correction",
+   "classification": "WIRE",
+   "reason": "Default-ON in the product (runtime.rs:195, 2400 B) but it contradicts a NORMATIVE spec line: engine-spec §3.3-A [K-D2] (lines 301-304) requires 'PRE_CONVERGE'de burst tek-birime clamp'lenir' and names DEFAULT_BURST_CAP itself as the hazard. The code is marked KALİBRE EDİLMEMİŞ twice (sender.rs:313, :4200), and the bench CLI default is 0 on both subcommands (main.rs:123, :238), so the shipped default has never been measured against the profile matrix. A default-ON mechanism that violates a frozen invariant and carries zero measurement is a v1 blocker: either amend §3.3-A with the measurement that justifies the window, or restore the clamp. Not SHIP, not KEEP-EXPERIMENTAL (it is not default OFF)."
+  },
+  {
+   "mechanism": "Establish probe (DR-EST-1) — PreConverge establishment retry via §3.3-B copy",
+   "classification": "SHIP",
+   "reason": "Classification upheld — default-ON (sender.rs:1819), wired through Sender::schedule_transmit into the product drive! loop with no product override (all 12 set_establish_probe call sites are in tests/), and it serves the spec-required §3.3-B establishment-continuity function. But it must ship with a recorded deviation, not silently: it is token-EXEMPT (sender.rs:4064-4070 'token-MUAF'), and engine-spec line 333 states without qualification 'pacer'ı baypas eden gönderim yolu YOK (DATA/retransmit/kopya tek token bucket'ı paylaşır)'. This is the same class of unreviewed default-ON spec deviation as the IW; it differs only in that its function is spec-required."
+  }
+ ]
+}

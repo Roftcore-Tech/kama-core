@@ -1,0 +1,502 @@
+{
+ "cluster": "arq",
+ "verdicts": [
+  {
+   "mechanism": "RecoverArq sender state + recovery evaluation priority (§3 AMENDMENT-1)",
+   "claim": "Product call chain runtime.rs:963 on_event → sender.rs:2143 on_event_core → fuzzy_evaluate → update_state (RecoverArq when pending_lost non-empty) → 2144 schedule_transmit → 4058 plan_arq_retransmits is real",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:963 `for d in session.on_event($ev, $now) {`",
+    "crates/client-core/src/runtime.rs:815 `let mut session = ClientSession::new();`",
+    "crates/client-core/src/lib.rs:82-83 `let mut sender = Sender::new(); sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());`",
+    "crates/adaptive-transport/src/sender.rs:2125 `pub fn on_event(...)`; :2143 `self.on_event_core(event, now_ns);`; :2144 `self.schedule_transmit(now_ns)`",
+    "crates/adaptive-transport/src/sender.rs:2202-2205 `let decision = self.fuzzy_evaluate(now_ns); self.last_decision = decision; ... self.update_state(&decision, now_ns);`",
+    "crates/adaptive-transport/src/sender.rs:3777-3780 `} else if !self.pending_lost.is_empty() { ... SenderState::RecoverArq`",
+    "crates/adaptive-transport/src/sender.rs:4058 `SenderState::RecoverArq => self.plan_arq_retransmits(&mut out, now_ns),`"
+   ],
+   "note": "Every hop is a non-test call site in client-core or adaptive-transport src. Chain holds."
+  },
+  {
+   "mechanism": "RecoverArq sender state + recovery evaluation priority (§3 AMENDMENT-1)",
+   "claim": "impl_symbols line refs: SenderState RecoverArq L67, RecoverFwd L69",
+   "verdict": "corrected",
+   "corrected_value": "RecoverArq is sender.rs:68, RecoverFwd is sender.rs:70",
+   "evidence": [
+    "grep -n \"RecoverArq\\|RecoverFwd\" crates/adaptive-transport/src/sender.rs → `68:    RecoverArq,` and `70:    RecoverFwd,`"
+   ],
+   "note": "Off-by-one in the enum-variant refs only; all other cited sender.rs lines (3742/3766/3774/3777/3898-3906/4016-4020) verified exact."
+  },
+  {
+   "mechanism": "RecoverArq sender state + recovery evaluation priority (§3 AMENDMENT-1)",
+   "claim": "FWD is evaluated before ARQ; PreConverge branch bypasses recovery; recovery exit returns to base Startup|Steady; pacing gain taken from base",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3766-3773 PreConverge branch (srtt Some → Startup else PreConverge), evaluated before emergency/ARQ",
+    "crates/adaptive-transport/src/sender.rs:3774-3776 `} else if emergency_active { ... SenderState::RecoverFwd`",
+    "crates/adaptive-transport/src/sender.rs:3904-3909 `SenderState::RecoverArq | SenderState::RecoverFwd => { if self.base_is_startup { SenderState::Startup } else { SenderState::Steady } }`",
+    "crates/adaptive-transport/src/sender.rs:4016-4018 `SenderState::RecoverArq | SenderState::RecoverFwd if self.base_is_startup => { PacingPhase::Startup }`",
+    "specs/adaptive-transport-engine-spec.md:225-226 priority line; :232-237 [AMENDMENT-1]"
+   ],
+   "note": "Classification SHIP defensible: wired, unconditional, spec-required."
+  },
+  {
+   "mechanism": "RecoverFwd trigger — ack_confidence reverse-path silence signal (§5.1) + emergency_active gate",
+   "claim": "ack_confidence_permille returns 1000 in PreConverge (5792-5794); anchor uses `.or()` (5803); threshold = max(3·srtt, 2·EAI) (5810-5812)",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:5792-5793 `if self.state == SenderState::PreConverge { return 1000; }`",
+    "crates/adaptive-transport/src/sender.rs:5803 `let anchor = match self.last_ack_ns.or(self.first_send_ns) {`",
+    "crates/adaptive-transport/src/sender.rs:5810-5812 `let threshold = srtt.saturating_mul(u64::from(ACK_SILENCE_SRTT_MULT)).max(dur_ns(self.expected_ack_interval()).saturating_mul(u64::from(K_CONF_EAI)));`",
+    "crates/adaptive-transport/src/sender.rs:1378 `const ACK_SILENCE_SRTT_MULT: u32 = 3;`; :1444 `const K_CONF_EAI: u32 = 2;`",
+    "specs/adaptive-transport-engine-spec.md:1078 `| ack_confidence anchor `.or()` | sender.rs | — (semantik) | spec `max(last_ack, first_send)` DEĞİL → idle-resume'da bayat anchor → anında RecoverFwd |`"
+   ],
+   "note": "The §16.2 defect-row citation (L1078) is exact."
+  },
+  {
+   "mechanism": "RecoverFwd trigger — ack_confidence reverse-path silence signal (§5.1) + emergency_active gate",
+   "claim": "Sender::emergency_level() (5985) and last_recovery() (5980) have ZERO product callers → no RecoverFwd/emergency-level counter in product",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn \"emergency_level\\b|fn last_recovery\" crates --include=*.rs → crates/adaptive-transport/src/sender.rs:5980 (def), :5985 (def), :7011 (in-file test only)",
+    "No hit in crates/client-core, crates/bench, crates/kama-engine"
+   ],
+   "note": "Telemetry gap claim is real."
+  },
+  {
+   "mechanism": "RecoverFwd trigger — ack_confidence reverse-path silence signal (§5.1) + emergency_active gate",
+   "claim": "emergency_active = level > Arq || decision.mode == Emergency (3752-3753); HysteresisController initial level Arq; fixture 300/700/1000ms",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3752-3753 `let emergency_active = level > EmergencyLevel::Arq || decision.mode == Mode::EmergencyForwardRedundancy;`",
+    "crates/adaptive-transport/src/sender.rs:1791 `emergency: HysteresisController::new(HysteresisConfig::fixture(), EmergencyLevel::Arq),`",
+    "crates/adaptive-transport/src/emergency.rs:91-96 `escalate_permille: 300, deescalate_permille: 700, deescalate_dwell: Duration::from_millis(1000)`"
+   ]
+  },
+  {
+   "mechanism": "PRE_CONVERGE recovery freeze (§3.3-C)",
+   "claim": "All four freeze legs are implemented at the cited lines (3766-3773 bypass, 5792-5794 ackconf FULL, 3113 PTO loss skip, 3074-3079 queue_losses gate, 2169-2185 Idle→PreConverge only when srtt None)",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3074-3079 `if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() { ... self.queue_losses(&lost, now_ns); ... }`",
+    "crates/adaptive-transport/src/sender.rs:3113 `if self.state != SenderState::PreConverge {` inside `Timer::Pto` arm (3110)",
+    "crates/adaptive-transport/src/sender.rs:2175-2181 `self.state = if self.rtt.srtt().is_none() { SenderState::PreConverge } else { SenderState::Startup };`",
+    "crates/adaptive-transport/tests/sender_state_matrix.rs:317-328 `fn preconverge_never_enters_recovery()`",
+    "specs/adaptive-transport-engine-spec.md:337-352 §3.3-C bans 1-5"
+   ],
+   "note": "SHIP defensible."
+  },
+  {
+   "mechanism": "Selective retransmit execution — DeadlineArqScheduler::plan + plan_arq_retransmits (§9)",
+   "claim": "arq.rs line refs (83-88 trait, 104-128 plan, 55-79 RetxConfig fixture cap 3 / K 3 / ρ 2:1 / HandToForward) and sender.rs:5316-5388 plan_arq_retransmits with token 5340, remove 5351, superseded 5354, track_sent 5355-5360",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/arq.rs:83-88 `pub trait ArqScheduler { ... fn plan(&self, lost: &[LostSeq], arq_aggressiveness_permille: u32) -> Vec<RetxDecision>; }`",
+    "crates/adaptive-transport/src/arq.rs:104-127 impl with `ordered.sort_by_key(|l| l.deadline_ns)` at :113",
+    "crates/adaptive-transport/src/arq.rs:71-79 `fixture()` = arq_retx_cap 3, reorder_k 3, rho 2/1, cap_exceed HandToForward",
+    "crates/adaptive-transport/src/sender.rs:1794 `arq: DeadlineArqScheduler::new(RetxConfig::fixture()),`",
+    "crates/adaptive-transport/src/sender.rs:5316 `fn plan_arq_retransmits(...)`; :5326-5328 plan call; :5340 `if !self.try_send_pre_parity(rec.unit.size, true)`; :5351 `self.pending_lost.remove(pos);`; :5354 `self.mark_tombstone_superseded(seq);`; :5355-5360 `track_sent(..., rec.retx_count + 1, TransmitKind::Retransmit)`"
+   ]
+  },
+  {
+   "mechanism": "Selective retransmit execution — DeadlineArqScheduler::plan + plan_arq_retransmits (§9)",
+   "claim": "Telemetry: ts CSV retx_denied/retx_emitted/pending_lost (kama_product.rs:640-644)",
+   "verdict": "corrected",
+   "corrected_value": "pending_lost and pacer_tokens are real; the sched_* CSV columns (retx_denied/retx_emitted/data_*/parity_*) are structurally 0 in the default build — they are sourced from diag_sched_summary(), which is feature-gated",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3609 `pending_lost: self.pending_lost.len() as u64,` (real)",
+    "crates/adaptive-transport/src/sender.rs:3610-3615 `sched_data_denied: self.diag_sched_summary()[1], sched_retx_denied: self.diag_sched_summary()[4], ... sched_retx_emitted: self.diag_sched_summary()[5],`",
+    "crates/adaptive-transport/src/sender.rs:4374-4394 `diag_sched_summary` — real counters only under `#[cfg(feature = \"diag-sched-telemetry\")]`, else the `#[cfg(not(...))]` arm",
+    "crates/adaptive-transport/Cargo.toml:27 `diag-sched-telemetry = []` — not in any default feature set (no `default = [...]` key in [features], lines 15-27)"
+   ],
+   "note": "The finding does flag the feature gate for the `sched=` array but lists the ts CSV columns without the same caveat, which reads as if they are populated in the shipped bench build."
+  },
+  {
+   "mechanism": "Selective retransmit execution — DeadlineArqScheduler::plan + plan_arq_retransmits (§9)",
+   "claim": "There is no hard inflight_bytes ≤ cwnd gate in the ARQ scheduler; cwnd acts only through send_rate = min(pacing, cwnd/srtt) plus client-core max_inflight_units=4096",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:2309-2323 `fn cwnd_over_srtt(&self) -> u64 { ... let cwnd = self.src_cfg.cwnd_gain.saturating_mul(bdp).max(self.src_cfg.min_cwnd); rate_per_srtt(cwnd, srtt_ns) }`",
+    "crates/adaptive-transport/src/rate.rs:145-147 `let cwnd = cfg.cwnd_gain.saturating_mul(bdp).max(cfg.min_cwnd); let inflight_cap_rate = rate_from_window(cwnd, srtt);`",
+    "crates/client-core/src/runtime.rs:1207 `maybe = offer_rx.recv(), if store.len() < cfg.max_inflight_units =>`; :184 `max_inflight_units: 4096,`",
+    "crates/adaptive-transport/src/arq.rs:104-127 — plan() consults no inflight/cwnd state"
+   ]
+  },
+  {
+   "mechanism": "Retransmit-vs-DATA scheduling order + K_ARQ_SHARE token share (§13 / §16.1)",
+   "claim": "K_ARQ_SHARE=4; every 4th grant retx-first while RecoverArq ∧ pending_lost>0, otherwise DATA-first; order 4049→4056→4058/4059→4064→4070→4071→4075",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1434 `const K_ARQ_SHARE: u32 = 4;`",
+    "crates/adaptive-transport/src/sender.rs:4049-4054 `self.arq_share_tick = self.arq_share_tick.wrapping_add(1); if self.state == SenderState::RecoverArq && !self.pending_lost.is_empty() && self.arq_share_tick.is_multiple_of(K_ARQ_SHARE) { self.plan_arq_retransmits(&mut out, now_ns); }`",
+    "crates/adaptive-transport/src/sender.rs:4056 drain_new_data; :4058/:4059 recovery; :4064 emit_tail_probe; :4070 drain_establish_probe; :4071 drain_due_duplicates; :4075 plan_fec_parity"
+   ]
+  },
+  {
+   "mechanism": "Retransmit-vs-DATA scheduling order + K_ARQ_SHARE token share (§13 / §16.1)",
+   "claim": "Spec-internal inconsistency: §13 L899 says retransmit>FEC>DATA while §16.1 L1001 records DATA-first + K_ARQ_SHARE as the measured decision; code follows §16.1",
+   "verdict": "confirmed",
+   "evidence": [
+    "specs/adaptive-transport-engine-spec.md:899 `priority: retransmit(deadline) > FEC parity > yeni DATA > ACK-only (ACK-only ayrı küçük budget)`",
+    "specs/adaptive-transport-engine-spec.md:1001 `| `K_ARQ_SHARE` ARQ token-payı [TUR-7 β2] | pending>0 ∧ RecoverArq iken her K'inci schedule-grant retx-ÖNCE ... DATA-önce ölçülü-kararı diğer grant'lerde korunur | ... | 4 [CAL {4,8}] |`"
+   ]
+  },
+  {
+   "mechanism": "ARQ_RETX_CAP exhaustion → CapExceeded HandToForward (§9.1)",
+   "claim": "arq.rs:117-121 CapExceeded at retx_count ≥ cap; sender.rs:5376-5381 marks superseded and pushes fire-once DupRec{interval_ns: 0}",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/arq.rs:117-121 `if l.retx_count >= self.cfg.arq_retx_cap { RetxDecision::CapExceeded { seq: l.seq, policy: self.cfg.cap_exceed } }`",
+    "crates/adaptive-transport/src/sender.rs:5376-5381 `self.mark_tombstone_superseded(rec.seq); self.dup_queue.push(DupRec { due_ns: now_ns, unit: rec.unit, interval_ns: 0, // emergency: fire-once });`",
+    "crates/adaptive-transport/src/sender.rs:5371 `let rec = self.pending_lost.remove(pos).expect(\"pos geçerli\");` — removal precedes the policy match",
+    "crates/adaptive-transport/tests/tv_arq.rs:56-58 `fn tv_arq_g3_retx_cap_and_policy()`"
+   ]
+  },
+  {
+   "mechanism": "CapExceedPolicy::ConnectionFail",
+   "claim": "Dead variant: no product call chain, only tv_arq.rs:85/:100 select it; the arm has no code so a unit would be silently discarded",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn \"CapExceedPolicy::ConnectionFail\" crates --include=*.rs → only crates/adaptive-transport/tests/tv_arq.rs:85 and :100",
+    "crates/adaptive-transport/src/arq.rs:77 `cap_exceed: CapExceedPolicy::HandToForward,` in fixture()",
+    "crates/adaptive-transport/src/sender.rs:5383 `// ConnectionFail: spine'da düşür; gerçek impl bağlantı-fail sinyali verir.` — no statement in the arm; record already removed at :5371",
+    "No `RetxConfig` setter on Sender: `arq`/`retx_cfg` written only in new_internal (sender.rs:1794, :1918-1919)"
+   ],
+   "note": "DELETE classification defensible here (unlike the fec_dominant record)."
+  },
+  {
+   "mechanism": "fec_dominant retransmit suppression (arq_aggressiveness==0 → empty plan) (§9)",
+   "claim": "Classification DELETE — dead-by-construction branch",
+   "verdict": "refuted",
+   "corrected_value": "Not dead. The ==0 guard is reachable through the public constructor `Sender::try_with_fuzzy_config`, because FuzzyConfig::validate bounds consequents only from ABOVE",
+   "evidence": [
+    "crates/adaptive-transport/src/fusion.rs:298-311 `for (field, v) in [ ... (\"arq_light\", self.arq_light), (\"arq_med\", self.arq_med), (\"arq_moderate\", self.arq_moderate), ...] { if v > PERMILLE { return Err(FuzzyConfigError::ConsequentRange { field, got: v }); } }` — 0 is a VALID consequent",
+    "crates/adaptive-transport/src/sender.rs:1771 `pub fn try_with_fuzzy_config(config: FuzzyConfig) -> Result<Self, FuzzyConfigError>`",
+    "crates/adaptive-transport/src/sender.rs:1763 `Self::new_internal(ValidatedFuzzyConfig::trusted_fixture())` — the fixture (arq_light 200, fusion.rs:367) is what makes it inert, not the type system",
+    "specs/adaptive-transport-engine-spec.md:679 `if fec_dominant (fuzzy fec yüksek ∧ ackconf düşük): retransmit BASKILA — residual FEC ile kapanacak` (normative)",
+    "specs/adaptive-transport-engine-spec.md:1081 `... arq.plan()'ın ==0 fec-dominant baskılama-dalı (§9) yapısal-erişilmez — sözleşme-notu`"
+   ],
+   "note": "The spec itself records the branch as a CONTRACT NOTE (sözleşme-notu), i.e. defense-in-depth, not as dead code slated for removal. Deleting it would (a) break §9 conformance and (b) reintroduce the K-1 degeneracy the guard exists for if any caller supplies arq_light=0."
+  },
+  {
+   "mechanism": "fec_dominant retransmit suppression (arq_aggressiveness==0 → empty plan) (§9)",
+   "claim": "arq_aggressiveness_permille is never 0 under the shipped fuzzy fixture (weighted average of consequents ≥ 200; no_rule fallback → arq_light 200)",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/fusion.rs:367-369 `arq_light: 200, arq_med: 500, arq_moderate: 600,`",
+    "crates/adaptive-transport/src/fusion.rs:524-533 `let total_weight ... let no_rule = total_weight == 0; let (fec, arq) = if no_rule { (c.fec_zero, c.arq_light) } else { (weighted_average(...), weighted_average(...)) };`",
+    "crates/adaptive-transport/src/fusion.rs:519-521 the BEYAN comment",
+    "crates/adaptive-transport/src/sender.rs:1966 `arq_aggressiveness_permille: 0,` is only the pre-first-event `last_decision` seed; fuzzy_evaluate runs unconditionally before update_state/schedule_transmit (sender.rs:2202-2205, no early return in 3379-3600)"
+   ],
+   "note": "The unreachability claim is correct for the shipped configuration; only the DELETE conclusion is wrong."
+  },
+  {
+   "mechanism": "arq_aggressiveness fuzzy output actuation (§8.4/§5.2)",
+   "claim": "sender.rs:5328 is the sole consumer; the magnitude has no effect on retransmit timing, count, cap or reorder tolerance",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn \"arq_aggressiveness\" crates --include=*.rs (non-fusion.rs) → sender.rs:1966 (init), :3425 (comment), :4215 (comment), :5290 (comment), :5328 (only call), :7053 (in-file test); arq.rs:6/84/87/105/106/107 (definition + ==0 guard); tests only elsewhere",
+    "crates/adaptive-transport/src/sender.rs:5328 `.plan(&lost, self.last_decision.arq_aggressiveness_permille);`",
+    "crates/adaptive-transport/src/arq.rs:110-126 — after the ==0 check the value is unused (sort + cap check only)",
+    "crates/adaptive-transport/src/fusion.rs:513-515 R4 `(loss.low.min(jitter.high), c.fec_zero, c.arq_light)` — 'reorder-tolerant (RTO↑, fast-rtx↓)' has no code path"
+   ],
+   "note": "WIRE classification defensible: spec §5.2/§5.3/§8.4 define a continuous axis; code degenerates it to a constant-true boolean."
+  },
+  {
+   "mechanism": "Spurious retransmit detection + adaptive reorder threshold (§9.3)",
+   "claim": "reorder_thresh feeds loss.set_packet_threshold before every loss.on_ack; note_spurious wired from both the un-loss path and the tombstone kol-2 late-ACK path",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3002-3003 `self.loss.set_packet_threshold(u64::from(self.reorder.reorder_thresh(&self.retx_cfg)));` immediately before :3004 `let lost = self.loss.on_ack(&ack.acked_seqs, now_ns);`",
+    "crates/adaptive-transport/src/sender.rs:2991-2993 kol-2 `self.reorder.note_spurious(u32::try_from(la.saturating_sub(seq)).unwrap_or(u32::MAX));`",
+    "crates/adaptive-transport/src/arq.rs:145-149 `reorder_thresh` = max(K, ρ·recent_max_reorder); :154-156 `note_spurious` max-only",
+    "crates/adaptive-transport/src/loss.rs:309 `pub fn set_packet_threshold(&mut self, k: u64)`",
+    "crates/client-core/src/runtime.rs:1169-1174 `drive!(Event::AckReceived(AckInfo { acked_seqs: acked, ack_delay: frame.ack_delay_duration() }), $now);`"
+   ]
+  },
+  {
+   "mechanism": "Un-loss: late ACK of a declared-lost seq cancels the pending retransmit (§5 TUR-2a)",
+   "claim": "loss.rs take_unlossed drains and sender.rs:3008-3039 filters pending_lost; telemetry diag_ledger().0 captured at runtime.rs:1466 but not printed by bench",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/loss.rs:238 `unlossed: Vec<u64>,`; :297-298 `pub fn take_unlossed(&mut self) -> Vec<u64> { std::mem::take(&mut self.unlossed) }`",
+    "crates/adaptive-transport/src/sender.rs:3008 `let unlossed = self.loss.take_unlossed();`",
+    "crates/client-core/src/runtime.rs:1466 `ledger_unloss: session.sender().diag_ledger().0,`",
+    "grep of crates/bench/src/kama_product.rs KP-CLIENT format string (lines 560-616) — no ledger_unloss / loss_declared_pkt / loss_declared_time field"
+   ]
+  },
+  {
+   "mechanism": "Tombstone retained-transmission record + Karn 'superseded' marking (§5 TUR-2b/2c)",
+   "claim": "K_TOMB=8, TOMBSTONE_MAX=4096, kol-1/kol-2 split at retx_count==0, mark_tombstone_superseded called from ARQ(5354)/HandToForward(5376)/FWD dup(5520)/tail probe(5474); diag_tombstone has no product caller",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1411 `const K_TOMB: u32 = 8;`; :1452 `const TOMBSTONE_MAX: usize = 4096;`",
+    "crates/adaptive-transport/src/sender.rs:2968 `if t.retx_count == 0 {` (kol-1) vs :2978 else (kol-2)",
+    "crates/adaptive-transport/src/sender.rs:5534-5541 `fn mark_tombstone_superseded(&mut self, seq: u64) { if let Some(t) = self.tombstones.get_mut(&seq) { t.retx_count = t.retx_count.saturating_add(1); } }`",
+    "crates/adaptive-transport/src/sender.rs:3126-3139 TTL prune inside `Timer::Pto`",
+    "grep -rn diag_tombstone → only crates/bench/src/kama.rs:462 (stub arm) and tests; no client-core caller"
+   ]
+  },
+  {
+   "mechanism": "Emergency forward duplication of declared-lost units (§11) + RecoverFwd per-DATA extra copies",
+   "claim": "plan_forward_duplication lost-unit branch pushes `factor` copies at i·spacing with interval_ns 0; drain_new_data adds (factor−1) copies per new DATA in RecoverFwd; dup_params falls back to DEFAULT_DUP_FACTOR=2 / 20 ms",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:5514-5528 `let recs: Vec<LostRec> = self.pending_lost.drain(..).collect(); ... for i in 0..u64::from(factor) { self.dup_queue.push(DupRec { due_ns: now_ns + i.saturating_mul(dur_ns(spacing)), unit: rec.unit, interval_ns: 0 }) }`",
+    "crates/adaptive-transport/src/sender.rs:5684 `if self.state == SenderState::RecoverFwd {`",
+    "crates/adaptive-transport/src/sender.rs:5739-5744 `fn dup_params(&self) -> (u8, Duration) { match self.last_recovery { RecoveryAction::Duplication { factor, spacing } => (factor, spacing), _ => (DEFAULT_DUP_FACTOR, DEFAULT_DUP_SPACING) } }`",
+    "crates/adaptive-transport/src/sender.rs:1380-1381 `const DEFAULT_DUP_FACTOR: u8 = 2; const DEFAULT_DUP_SPACING: Duration = Duration::from_millis(20);`",
+    "crates/adaptive-transport/src/emergency.rs:186-193 Tiny → Duplication{dup2_factor 2 / dup3_factor 3, dup_spacing 20 ms}",
+    "specs/adaptive-transport-engine-spec.md:796 `duplication/parity yine available_redundancy_budget ile clamp (§8.5).`"
+   ]
+  },
+  {
+   "mechanism": "Pure-silence tail liveness: speculative geometric copies in RecoverFwd (§5(b))",
+   "claim": "pending_lost-empty branch pushes DupRec{due now, interval srtt} for Data-origin inflight units lacking a planned copy; ACK cancels at 3070-3072",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:5498-5512 `.filter(|p| p.origin == TransmitKind::Data) ... .filter(|u| !self.dup_queue.iter().any(|d| d.unit.id == u.id)) ... DupRec { due_ns: now_ns, unit, interval_ns: srtt_ns.max(1) }`",
+    "crates/adaptive-transport/src/sender.rs:3070-3072 `if !acked_units.is_empty() { self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id)); }`",
+    "crates/adaptive-transport/src/sender.rs:5644-5651 geometric reschedule `× PC_COPY_MULTIPLIER` (:1458 = 2)",
+    "specs/adaptive-transport-engine-spec.md:1084 `| geometrik kopya deadline'sızlığı | sender dup_queue | deadline-türevi AMA tavansız | ölü kanalda sonsuz reschedule (COPY_MAX_INTERVAL/RETRY_BUDGET kodda yok) |`"
+   ],
+   "note": "Finding's cited due_ns is `now_ns` (not now+srtt) — matches code exactly."
+  },
+  {
+   "mechanism": "Lost forward-copy geometric re-plan (P0 burst recovery)",
+   "claim": "queue_losses Duplicate-origin branch at 3298-3317 re-plans DupRec{due now+srtt, interval srtt}; Duplicate-origin losses take no tombstone and no pending_lost entry",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3299 `if p.origin == TransmitKind::Duplicate {`; :3309-3315 `if !self.dup_queue.iter().any(|d| d.unit.id == p.unit.id) { let srtt_ns = ...; self.dup_queue.push(DupRec { due_ns: now_ns.saturating_add(srtt_ns), unit: p.unit, interval_ns: srtt_ns.max(1) }); }`",
+    "crates/adaptive-transport/src/sender.rs:3318 `if p.origin != TransmitKind::Duplicate {` gates both the pending_lost push (:3340-3345) and the tombstone insert",
+    "crates/adaptive-transport/tests/burst_loss_recovery.rs exists (regression gate)"
+   ]
+  },
+  {
+   "mechanism": "PRE_CONVERGE programmed geometric copy schedule (§3.3-B) + first-SACK stop",
+   "claim": "drain_new_data PreConverge branch computes rtt_floor from (size+PC_SACK_WIRE 65)/PRE_CONVERGE_FLOOR_BW 31 and pushes DupRec with first_delay; PC_COPY_MULTIPLIER=2 reschedule; ACK stop",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:5698-5700 `let rtt_floor = (front.size + PC_SACK_WIRE) ... .checked_div(PRE_CONVERGE_FLOOR_BW)`",
+    "crates/adaptive-transport/src/sender.rs:1455 `const PC_SACK_WIRE: u64 = 65;`; :1458 `const PC_COPY_MULTIPLIER: u64 = 2;`; :1384 `const PRE_CONVERGE_FLOOR_BW: u64 = 31;`",
+    "crates/adaptive-transport/src/sender.rs:5645-5651 reschedule `saturating_mul(PC_COPY_MULTIPLIER)`",
+    "specs/adaptive-transport-engine-spec.md:321-334 §3.3-B including `Sayı-tavanı YOK` and the K-D2 paragraph"
+   ]
+  },
+  {
+   "mechanism": "DR-EST-1 establish probe — token-exempt single-slot PreConverge copy lane (default ON)",
+   "claim": "Default ON (sender.rs:1819), token-exempt (no try_send in drain_establish_probe), no RuntimeConfig knob, backoff 500 ms ×2 capped at 8 s, conflicts with §3.3-B [K-D2]",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1819 `establish_probe_enabled: true,`",
+    "crates/adaptive-transport/src/sender.rs:5572-5580 `let dup = self.dup_queue.remove(i); let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate); out.push(TransmitDecision { kind: TransmitKind::Duplicate, ... });` — no try_send_pre_parity anywhere in 5542-5595",
+    "crates/adaptive-transport/src/sender.rs:1389-1390 `const ESTABLISH_PROBE_INITIAL_NS: u64 = 500_000_000; const ESTABLISH_PROBE_CAP_NS: u64 = 8_000_000_000;`; :5589-5593 `.saturating_mul(2).min(ESTABLISH_PROBE_CAP_NS)`",
+    "grep -rn set_establish_probe crates → sender.rs:5598 (def) + 13 TEST call sites only; zero client-core/bench callers",
+    "specs/adaptive-transport-engine-spec.md:333 `Kopyalar da AYNI pacer'dan geçer (§13); pacer'ı baypas eden gönderim yolu YOK (DATA/retransmit/kopya tek token bucket'ı paylaşır).`",
+    "crates/client-core/src/runtime.rs:1412 `establish_probes_tx: session.sender().diag_establish_probe_emitted(),`"
+   ],
+   "note": "SHIP is defensible on the taxonomy (wired + default-enabled + reachable + exercised via bench), but the [K-D2] conflict is verbatim and unresolved. Also note 13 test files explicitly disable this lane, so much of the suite does not exercise the shipped default."
+  },
+  {
+   "mechanism": "Bounded tail-loss PTO probe (DR-ARQ-PRODUCT-TAIL-1 / KAMA-TAIL-V1)",
+   "claim": "Engine Sender::new() default OFF but PRODUCT ON via ClientSession::new → set_tail_recovery_config(validated_v1()); RuntimeConfig has no tail field; probe emitted as Retransmit with a new seq after retire+supersede; cap 3",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1801 `tail_recovery: TailRecovery::new(TailRecoveryConfig::default()), // default OFF`",
+    "crates/adaptive-transport/src/tail_recovery.rs:45-54 Default: `enabled: false, min_pto_ns: 1_000_000, max_pto_ns: 60_000_000_000, ... max_tail_probes: 2`",
+    "crates/adaptive-transport/src/tail_recovery.rs:74-83 validated_v1: `enabled: true, 10 ms / 10 s / 1 s / 30 s / 25 ms, max_tail_probes: 3`",
+    "crates/client-core/src/lib.rs:82-83 `let mut sender = Sender::new(); sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());`",
+    "crates/adaptive-transport/src/sender.rs:5473-5482 `self.retire_inflight_to_tombstone(target, now_ns); self.mark_tombstone_superseded(target); let new_seq = self.track_sent(unit, now_ns, retx_count + 1, TransmitKind::Retransmit);`",
+    "crates/client-core/src/runtime.rs:195-207 RuntimeConfig::default() — no tail field"
+   ]
+  },
+  {
+   "mechanism": "Bounded tail-loss PTO probe (DR-ARQ-PRODUCT-TAIL-1 / KAMA-TAIL-V1)",
+   "claim": "tail_probe_diag/_ext have no product/bench caller (only client-core lib.rs tests)",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn \"tail_probe_diag\" crates --include=*.rs → crates/client-core/src/lib.rs:224, :242 (inside #[cfg(test)] module), crates/adaptive-transport/examples/dr_arqtail_product.rs:276/301/345, crates/kama-integration/tests/common/dr_cs3_panel.rs:2610 — no crates/bench/src/kama_product.rs hit",
+    "crates/bench/src/kama_product.rs:560-616 KP-CLIENT format string carries no tail-probe field"
+   ]
+  },
+  {
+   "mechanism": "Bounded tail-loss PTO probe (DR-ARQ-PRODUCT-TAIL-1 / KAMA-TAIL-V1)",
+   "claim": "kama-product arm hardcodes tail ON and ignores --kama-arm; stub 'kama' arm honours it",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:673-674 `// Ürün kolunda tail-recovery KAPATILAMAZ (G2 sevk default'u) — etiket bunu ve FEC / ayarını birlikte taşır; `--kama-arm` bu kolda YOK SAYILIR.`; :679 `\"kama-product-tailv1-{}{}{}{}{}\"`",
+    "crates/bench/src/kama.rs:111-114 `let mut sender = Sender::new(); if arm == KamaArm::TailV1 { sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1()); }`"
+   ]
+  },
+  {
+   "mechanism": "Timer::Pto product pump (1 ms)",
+   "claim": "1 ms PACE_TICK drives Event::TimerFired(Timer::Pto) from both the main loop (1326) and the drain loop (1373); on_timer(Pto) does time-threshold scan + tombstone TTL prune + tail tick; the name is misleading (periodic scan, not an armed RFC-9002 PTO)",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:60 `const PACE_TICK: Duration = Duration::from_millis(1);`; :907 `let mut pace = interval(PACE_TICK);`; :1326 and :1373 `drive!(Event::TimerFired(Timer::Pto), now); ts_sample!(now);`",
+    "crates/adaptive-transport/src/sender.rs:3110-3157 `Timer::Pto =>` arm: :3113 PreConverge guard, :3114-3116 detect_time_losses, :3126-3139 tombstone TTL prune, :3143-3156 tail tick",
+    "crates/adaptive-transport/src/loss.rs:673-674 later-ACK precondition `if !self.have_acked { return Vec::new(); }` and :691 `seq < la && time_threshold_lost(...)`",
+    "specs/adaptive-transport-engine-spec.md:868-870 PTO formula + backoff — realized only by tail_recovery"
+   ],
+   "note": "Also found a stale comment: sender.rs:3141-3142 says \"Emission (token + re-verify) happens in plan_arq_retransmits\", but emission is emit_tail_probe (called at 4064), not the ARQ planner."
+  },
+  {
+   "mechanism": "Emergency retreat hysteresis controller (§11 Schmitt X/Y + dwell)",
+   "claim": "escalate is instant/per-call, de-escalate is dwell-locked at 1 s wall clock; fixture uncalibrated; no product telemetry",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/emergency.rs:159-161 `if health_permille < self.cfg.escalate_permille && self.level < EmergencyLevel::Dup3 { self.level = self.level.escalated(); }`",
+    "crates/adaptive-transport/src/emergency.rs:165-172 `let locked = self.last_deescalate_ns.is_some_and(|t| now_ns < t + dur_ns(self.cfg.deescalate_dwell)); if !locked { ... }`",
+    "crates/adaptive-transport/src/emergency.rs:88-89 `/// **KALİBRE DEĞİL** fixture.`",
+    "specs/adaptive-transport-engine-spec.md:1075-1076 escalate/dwell defect rows"
+   ]
+  },
+  {
+   "mechanism": "Fuzzy EMERGENCY_FORWARD_REDUNDANCY mode trigger (§8.4)",
+   "claim": "fusion.rs:542-547 emergency = min3(loss.high, bw.low, ackc.low) > 500‰; consumers sender.rs:3752-3753 and the FEC latch at 4631-4640; compute_send_rate has no emergency branch",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/fusion.rs:543-548 `let emergency = min3(loss.high, bw.low, ackc.low); let mode = if emergency > PERMILLE / 2 { Mode::EmergencyForwardRedundancy } else { Mode::Normal };`",
+    "crates/adaptive-transport/src/sender.rs:3752-3753 emergency_active",
+    "crates/adaptive-transport/src/sender.rs:4032 `budget::send_rate_final(fuzzy_rate, self.budget_cfg.min_rate_bps, u64::MAX)` — no emergency term",
+    "specs/adaptive-transport-engine-spec.md:772-773 §11 behaviour incl. `send_rate = minimal-reliable (MIN_RATE clamp; §8.5)`"
+   ],
+   "note": "send_rate_final call is at sender.rs:4032, not 4034."
+  },
+  {
+   "mechanism": "Segment-block emergency MinimalParity action + Framing::SegmentBlock (§11)",
+   "claim": "Unwired: framing hardcoded Tiny at sender.rs:3746 and RecoveryAction::MinimalParity has no non-test consumer",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3746 `self.last_recovery = emergency::action(level, Framing::Tiny, &self.emergency_cfg);`",
+    "grep -rn \"MinimalParity\" crates --include=*.rs → emergency.rs:71 (variant), :194, :197 (producer arms), sender.rs:13 (doc comment), tests/tv_emergency.rs:88, :92 — no consumer",
+    "crates/adaptive-transport/src/sender.rs:4631-4640 emergency → planned_r 0 (EmergencyPendingArbitration)",
+    "specs/adaptive-transport-engine-spec.md:768-769 `segment-block / multi-shard: → minimal parity shards (low-rate forward FEC), r/k düşük ama ACK-bağımsız.`"
+   ],
+   "note": "WIRE defensible."
+  },
+  {
+   "mechanism": "ACK decimation keyed on reverse-path impairment (§2.1/§11/§12)",
+   "claim": "emergency::ack_decimation has only test callers; receiver cadence is not keyed on emergency level or ack_confidence; ACK_FREQ_N is a fixed const",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn \"ack_decimation\" crates --include=*.rs → crates/adaptive-transport/src/emergency.rs:205 (def) and crates/adaptive-transport/tests/tv_emergency.rs:8, :96, :97, :98 only",
+    "crates/adaptive-transport/src/receiver.rs:76 `const ACK_FREQ_N: u32 = 2;` — no runtime setter",
+    "specs/adaptive-transport-engine-spec.md:167 `- Reverse-path impaired (ack_confidence LOW) → ACK decimation (§11): ACK_FREQ artar, ACK-only budget düşer.`",
+    "specs/adaptive-transport-engine-spec.md:861 `reverse-path impaired → ACK decimation: N ↑, budget ↓ (§11, §2.1).`",
+    "crates/adaptive-transport/src/ack.rs:55-77 AckFrame fields — no reverse-path/decimation signal"
+   ],
+   "note": "WIRE defensible."
+  },
+  {
+   "mechanism": "Receiver RX_DUP_SUPPRESS — seq-level duplicate drop + forced ACK (§9.4)",
+   "claim": "receiver.rs:222-231 dup branch; RX_DEDUP_WINDOW 4096; product server drives it via runtime.rs:2085-2086/2146-2156; no dup telemetry",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:222-231 `if self.received.contains(&d.seq) { self.state = RxState::DupSuppress; let ack = self.tick_ack(now_ns, true); return RxOutput { delivered: Vec::new(), ack, was_duplicate: true }; }`",
+    "crates/adaptive-transport/src/receiver.rs:126 `const RX_DEDUP_WINDOW: usize = 4096;`",
+    "crates/client-core/src/runtime.rs:2085-2086 `let mut rx = Receiver::new(); rx.set_quota_r(cfg.quota_r);`; :2146-2156 on_datagram + `if out.delivered.contains(&unit_id)`",
+    "crates/client-core/src/runtime.rs:533-580 ServerStats — no dup counter"
+   ],
+   "note": "Stronger than stated: `RxOutput.was_duplicate` has ZERO consumers anywhere outside receiver.rs (see missed mechanisms)."
+  },
+  {
+   "mechanism": "Unit-level first-delivery dedup window (client-core DELIVERED_DEDUP_WINDOW=8192)",
+   "claim": "runtime.rs:1570 const; 1694-1698 insert + pop_first eviction; 1711-1717 message-id dedup when fragmenting",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1570 `const DELIVERED_DEDUP_WINDOW: usize = 8192;`",
+    "crates/client-core/src/runtime.rs:1694 `if !slot.delivered_seen.insert(unit_id) {`; :1697-1698 `if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW { slot.delivered_seen.pop_first(); }`",
+    "crates/client-core/src/runtime.rs:1711 `if slot.delivered_seen.contains(&mid) {`; :1729-1731 same eviction for message ids"
+   ]
+  },
+  {
+   "mechanism": "Retransmit/copy cancellation on delivery confirmation — ACK stop + FEC RecoveredControl cancel",
+   "claim": "sender.rs:3070-3072 dup_queue.retain on ACK; on_recovered_control retains pending_lost and dup_queue; runtime.rs:1144 drives RecoveredControl; on_event early-returns without scheduling",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3070-3072 `if !acked_units.is_empty() { self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id)); }`",
+    "crates/adaptive-transport/src/sender.rs:2139-2142 `if let Event::RecoveredControl(info) = &event { self.on_recovered_control(info); return Vec::new(); }`",
+    "crates/client-core/src/runtime.rs:1144 `drive!(Event::RecoveredControl(RecoveredInfo { units }), $now);`",
+    "grep diag_recovered_cancels → only kama-engine tests (n8_v2.rs:148, m1_reverse_nis.rs:570-602) and policy_outcome_sweep.rs — no product caller"
+   ]
+  },
+  {
+   "mechanism": "Duplication redundancy-budget clamp (§8.5 / TDD §5.5-§5.6)",
+   "claim": "impl_symbols: 'sender.rs:1477 budget_cfg (used for send_rate_final 4034 and parity clamp)'",
+   "verdict": "refuted",
+   "corrected_value": "There is NO parity clamp either. `budget::budget_cap_permille` and `budget::parity_final` have zero callers in the entire workspace outside budget.rs and one test file. The only `budget::` call in the engine is send_rate_final at sender.rs:4032, and it passes `cap = u64::MAX` — so even the send-rate upper cap is disabled; only the min_rate floor applies.",
+   "evidence": [
+    "grep -rn \"budget_cap_permille|parity_final(\" crates --include=*.rs → crates/adaptive-transport/src/budget.rs:38 (def), :45 (def) only (plus crates/adaptive-transport/tests/tv_emergency.rs:4 import)",
+    "grep -n \"budget::\" crates/adaptive-transport/src/sender.rs → :35 `use crate::budget::{self, BudgetConfig};` and :4032 `budget::send_rate_final(fuzzy_rate, self.budget_cfg.min_rate_bps, u64::MAX)` — that is the ONLY budget:: call",
+    "grep -n \"budget_cfg\" crates/adaptive-transport/src/sender.rs → :1477 (field), :1781, :1790, :1793 (pacer min_rate), :4032 — never a parity clamp",
+    "specs/adaptive-transport-engine-spec.md:661 `parity_final = min(fuzzy_parity, budget_cap, profile_cap)`; :663 `send_rate_final = clamp(fuzzy_send_rate, [MIN_RATE, min(BtlBw_based_cap, profile_cap)])`; :796 `duplication/parity yine available_redundancy_budget ile clamp (§8.5).`"
+   ],
+   "note": "WIRE classification survives, but the scope is wider than stated: the whole §8.5 available_redundancy_budget mechanism is unwired, not just its duplication leg. See missed mechanism #2."
+  },
+  {
+   "mechanism": "DSACK-like receiver duplicate report in ACK (§9.3)",
+   "claim": "Not implemented — AckFrame carries no duplicate report",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/ack.rs:55-77 `pub struct AckFrame { ack_epoch, largest_seq, ack_delay, block0_len, ranges, v2, seen_count, arrival_rate }` — no dup/dsack field",
+    "grep -rni \"nack|dsack\" crates/adaptive-transport/src crates/client-core/src → no mechanism hits",
+    "specs/adaptive-transport-engine-spec.md:695 `DSACK-benzeri: rx duplicate aldığını ACK'te bildirir (§9.4) → sender spurious teyidi.`"
+   ],
+   "note": "The finding record was truncated in the input; verifying independently, the claim of absence holds."
+  }
+ ],
+ "missed_mechanisms": [
+  {
+   "name": "Stale-unit header-only re-emission on retransmit/duplicate (client-core product runtime)",
+   "evidence": "crates/client-core/src/runtime.rs:1026-1035 `let (payload, stale): (&[u8], bool) = match store.get(&d.unit_id) { Some(p) => (p.as_slice(), false), None => (&[], true) }; if stale { stats.stale_decisions += 1; }` — then the frame is still encoded and sent (`seal_send!(frame, class, $now)` at :1051). Comment at runtime.rs:1026-1029 states the policy explicitly: 'Store-miss = birim BAŞKA bir kopyasıyla çoktan teslim edilmiş, motor eski seq'in retransmit'ini istiyor. Emisyon YİNE wire'a çıkar (başlık-only)'. Source is removed on ACK at runtime.rs:1157 `if store.remove(&unit).is_some()`. Telemetry is printed: crates/bench/src/kama_product.rs:582 `stats.stale_decisions,` (KP-CLIENT `stale=`). With fragmentation on, an 11-byte canonical zero-prefix body is substituted (runtime.rs:1035-1043).",
+   "suggested_classification": "SHIP (product-wired, default-on, telemetried) — but the wasted-bytes cost of ARQ/duplication over already-delivered units is invisible in the ARQ records as written"
+  },
+  {
+   "name": "available_redundancy_budget parity clamp (§8.5 `parity_final = min(fuzzy_parity, budget_cap, profile_cap)`) — entirely unwired",
+   "evidence": "crates/adaptive-transport/src/budget.rs:38 `pub fn budget_cap_permille(...)` and :45 `pub fn parity_final(...)` have zero callers outside budget.rs (grep -rn over crates --include=*.rs; only crates/adaptive-transport/tests/tv_emergency.rs:4 imports them). crates/adaptive-transport/src/sender.rs:4032 is the sole `budget::` call and passes `u64::MAX` as the cap. specs/adaptive-transport-engine-spec.md:661-663 makes both clamps normative.",
+   "suggested_classification": "WIRE (spec-required §8.5 + disconnected). The findings assert this clamp is wired for parity; it is not."
+  },
+  {
+   "name": "RxOutput.was_duplicate — never consumed (vacuous RX_DUP_SUPPRESS observability)",
+   "evidence": "grep -rn \"was_duplicate\" crates --include=*.rs returns hits ONLY inside crates/adaptive-transport/src/receiver.rs (field decl :71-72, set at :229). The product server ignores it: crates/client-core/src/runtime.rs:2146-2156 only reads `out.delivered` and `out.ack`. crates/client-core/src/runtime.rs:533-580 ServerStats has no duplicate counter. §9.4's stated purpose ('Bu, spurious retransmit'i sender'a bildirir', specs/adaptive-transport-engine-spec.md:700-701) therefore has no product observability path.",
+   "suggested_classification": "DELETE (the field, as a misleading unused output) or WIRE (if the §9.4 reporting intent is to be honoured)"
+  },
+  {
+   "name": "RecoverFwd transition destroys the ARQ backlog and resets ARQ_RETX_CAP accounting",
+   "evidence": "crates/adaptive-transport/src/sender.rs:5514 `let recs: Vec<LostRec> = self.pending_lost.drain(..).collect();` — entering plan_forward_duplication drains the ENTIRE pending_lost. DupRec (sender.rs:1313-1321) carries no retx_count, and crates/adaptive-transport/src/sender.rs:5634 emits copies with `self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate)` — retx_count 0. A Duplicate-origin loss then never re-enters pending_lost (sender.rs:3318 `if p.origin != TransmitKind::Duplicate {` gates the push at :3340-3345). Net effect: any transient ack_confidence dip converts the ARQ queue into fire-once copies and erases per-unit retransmit history, so §9.1's ARQ_RETX_CAP is not a per-unit lifetime bound.",
+   "suggested_classification": "SHIP with an unrecorded semantic gap — belongs in the §9.1 cap record as a caveat, and is a candidate spec-amendment item"
+  },
+  {
+   "name": "MAX_ACK_RANGES=16 SACK clamp bounds the evidence the ARQ loss detector receives",
+   "evidence": "crates/adaptive-transport/src/ack.rs:36 `pub const MAX_ACK_RANGES: usize = 16;`; :129-130 `if ranges.len() == MAX_ACK_RANGES {` (build-time clamp, highest seqs kept, doc at :88-90 'en yüksek seq'ler korunacak şekilde MAX_ACK_RANGES ile clamp'lenir'); :255-258 decode-side typed rejection. Consumed by the ARQ path via crates/client-core/src/runtime.rs:1153 `let acked = frame.acked_full(max_emitted_seq + 1);` → sender.rs:3004 `self.loss.on_ack(&ack.acked_seqs, now_ns)`. Under heavy reordering, seqs whose ranges are clamped away are never reported acked and become packet/time-threshold loss candidates.",
+   "suggested_classification": "SHIP (wired, spec §2.1) — but its interaction with selective retransmit is not recorded in any ARQ finding"
+  },
+  {
+   "name": "Sender::last_decision() has exactly one non-test caller, and it is behind a default-OFF feature",
+   "evidence": "grep -rn \"last_decision()\" crates --include=*.rs → crates/adaptive-transport/src/udp_runner.rs:686 plus tests. crates/adaptive-transport/src/lib.rs:56-57 `#[cfg(feature = \"experimental-fec-budget\")] pub mod udp_runner;` and crates/adaptive-transport/Cargo.toml:16-18 shows experimental-fec-budget is not in any default set. This strengthens (rather than contradicts) the arq_aggressiveness WIRE record's observability claim.",
+   "suggested_classification": "n/a — supporting evidence for the arq_aggressiveness WIRE record"
+  }
+ ],
+ "corrected_classifications": [
+  {
+   "mechanism": "fec_dominant retransmit suppression (arq_aggressiveness==0 → empty plan) (§9)",
+   "classification": "SHIP",
+   "reason": "DELETE is not defensible. The guard is normative in specs/adaptive-transport-engine-spec.md:679 and is recorded by the spec itself at :1081 as a 'sözleşme-notu' (contract note) — an acknowledged defense-in-depth branch, not obsolete code. It is also genuinely reachable: FuzzyConfig::validate (crates/adaptive-transport/src/fusion.rs:298-311) bounds consequents only from above (`if v > PERMILLE`), so arq_light: 0 validates, and Sender::try_with_fuzzy_config (sender.rs:1771) is public. It is wired (its only consumer is the product path at sender.rs:5328) and exercised (tv_arq.rs:106). Inert-under-default-config is the same status as a bounds check, not death. Removing it would require amending §9 and would reopen the K-1 arq=0 degeneracy class."
+  },
+  {
+   "mechanism": "Duplication redundancy-budget clamp (§8.5 / §11 L796)",
+   "classification": "WIRE",
+   "reason": "Classification stands but the record understates the gap and misstates the impl. The finding says budget_cfg is 'used for send_rate_final 4034 and parity clamp'; there is no parity clamp — budget::budget_cap_permille and budget::parity_final have zero callers workspace-wide (budget.rs:38, :45), and the sole budget:: call is sender.rs:4032 send_rate_final with cap = u64::MAX. The correct scope is: the whole §8.5 available_redundancy_budget mechanism (parity clamp + BtlBw-derived send-rate cap) is disconnected, of which duplication is one leg."
+  },
+  {
+   "mechanism": "Receiver RX_DUP_SUPPRESS — seq-level duplicate drop + forced ACK (§9.4)",
+   "classification": "SHIP",
+   "reason": "Classification stands (drop + forced ACK are wired via runtime.rs:2146-2156), but the telemetry line should read stronger than 'none': the mechanism's own output field RxOutput.was_duplicate has zero consumers anywhere in the workspace outside receiver.rs, so §9.4's 'reports spurious retransmit to sender' intent has no product path at all — not merely no counter."
+  },
+  {
+   "mechanism": "DR-EST-1 establish probe — token-exempt single-slot PreConverge copy lane",
+   "classification": "SHIP",
+   "reason": "Classification stands on the taxonomy (implemented, wired, default ON at sender.rs:1819, reachable, telemetried at runtime.rs:1412), and the [K-D2] conflict (specs/adaptive-transport-engine-spec.md:333, verbatim 'pacer'ı baypas eden gönderim yolu YOK') is confirmed exactly as stated. One addition the record misses: 13 test files call set_establish_probe(false) (loss_structure_observation.rs, fec_loss_risk.rs, initial_window.rs, fusion_policy_wiring.rs, structure_gate_fec.rs, dr_cs3_structural_oracle.rs, kama-integration/fec_recovery_cell.rs), so the shipped default-ON lane is deliberately masked across much of the suite — 'exercised' rests on the bench arm, not on the unit/integration matrix."
+  }
+ ]
+}

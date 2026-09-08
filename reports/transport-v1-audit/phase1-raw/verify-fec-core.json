@@ -1,0 +1,486 @@
+{
+ "cluster": "fec-core",
+ "verdicts": [
+  {
+   "mechanism": "(audit meta) working tree identity",
+   "claim": "Audit was run on branch wip/c4-attrib @ 35f60f80",
+   "verdict": "corrected",
+   "corrected_value": "Repo HEAD is branch audit/transport-v1-closure @ 15133be4 ('docs(fec): kapanış raporu §2 — final dal SHA 87077502 (PR #51)'). I re-derived every line citation against this tree and they land exactly (spot-checked runtime.rs:199/204/206/483/1310/1886, sender.rs:1566/1824/1847/1932/4487), so the transport content is identical; only the branch label in the task prompt is wrong.",
+   "evidence": [
+    "git rev-parse HEAD → 15133be4; git branch --show-current → audit/transport-v1-closure",
+    "crates/client-core/src/runtime.rs:199 `fec: None,` (matches finding citation exactly)",
+    "crates/adaptive-transport/src/sender.rs:1824 `fec_mode: FecActuationMode::Manual { enabled: false },` (matches)"
+   ],
+   "note": "No finding is invalidated by the branch mismatch. Line-citation fidelity across the whole findings set is unusually high — I found no citation drift."
+  },
+  {
+   "mechanism": "RS erasure codec core (FecCodec/RsSimdCodec)",
+   "claim": "Product call chain: runtime.rs:1310 RsSimdCodec.encode → repair_store; runtime.rs:1886 RsSimdCodec.reconstruct → admit_chunk",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1310 `if let Ok(reps) = RsSimdCodec.encode(p, &srcs) {`",
+    "crates/client-core/src/runtime.rs:1886 `RsSimdCodec.reconstruct(p, &recv, 0)`",
+    "crates/client-core/src/runtime.rs:37 imports `RsSimdCodec` (not RsSimdEngine)",
+    "crates/client-core/src/runtime.rs:1311-1316 `stats.fec_blocks_latched += 1; repair_store.insert(cur_block_id, reps); while repair_store.len() > REPAIR_STORE_BLOCKS { repair_store.pop_first(); }`"
+   ],
+   "note": "Both hops are in client-core non-test code (fn client_task / fn fec_ingest). Chain is real."
+  },
+  {
+   "mechanism": "RS erasure codec core (FecCodec/RsSimdCodec)",
+   "claim": "RsSimdEngine and recompute_repair have no product caller",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn 'RsSimdEngine' crates --include=*.rs → only kama-fec-codec/src/{lib.rs:14,codec.rs}, kama-fec-codec/examples/measure.rs:9,94,97, kama-fec-codec/tests/{m4_timing.rs,err_paths_codec.rs}",
+    "grep -rn 'recompute_repair' → kama-fec-codec/examples/measure.rs:91, kama-fec-codec/tests/err_paths_codec.rs:142-155, golden.rs; zero call sites in crates/client-core or crates/adaptive-transport"
+   ],
+   "note": "Duplicates_or_dead field is accurate. Neither symbol is reachable from the product runtime."
+  },
+  {
+   "mechanism": "RS erasure codec core (FecCodec/RsSimdCodec)",
+   "claim": "Classification SHIP; ADR-16 deviation is only a 'notes' item",
+   "verdict": "corrected",
+   "corrected_value": "SHIP is defensible (wired + required + exercised), but the ADR-16 deviation is stronger than the notes field implies and belongs in the record proper: ADR-16's KARAR is reed-solomon-erasure with reed-solomon-simd explicitly deferred to 'Beta'da benchmark ile değerlendirilebilir', and its NORMATİF clause mandates a trait literally named ErasureCodec. The default build ships reed-solomon-simd 3.1.0 behind a trait named FecCodec. That is two documented-ADR deviations in the shipped default, unrecorded as such.",
+   "evidence": [
+    "specs/tech-stack-adr.md:247-258 `KARAR: reed-solomon-erasure (pure-Rust)... reed-solomon-simd Beta'da benchmark ile değerlendirilebilir.` + `NORMATİF — ErasureCodec trait ZORUNLU`",
+    "crates/kama-fec-codec/Cargo.toml:11 `reed-solomon-simd = \"3.1.0\"`",
+    "crates/kama-fec-codec/src/codec.rs:51 `pub trait FecCodec`"
+   ],
+   "note": "Not a reclassification — the mechanism is genuinely wired. It is a spec-conformance gap that the SHIP label currently hides."
+  },
+  {
+   "mechanism": "Enumerated FEC profile catalog + allowlist",
+   "claim": "PROFILES 0x01..0x06 with the stated K/R/E tuples; by_id is the allowlist; validate_fec rejects unknown ids",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/kama-fec-codec/src/profile.rs:70-97 profiles 0x03 (K8/R4/E64), 0x04 (K16/R8/E64), 0x05 (K8/R4/E1024), 0x06 (K16/R8/E1024)",
+    "crates/kama-fec-codec/src/profile.rs:121-126 `pub fn by_id(profile_id: u8) -> Option<FecProfile> { PROFILES.iter().copied().find(...) }`",
+    "crates/client-core/src/runtime.rs:228 `let p = by_id(f.profile_id).ok_or(RuntimeError::FecConfig(\"unknown profile_id\"))?;`",
+    "crates/kama-transport-schema/src/lib.rs:37 `pub const SOURCE_PREFIX_LEN: usize = 11;`"
+   ],
+   "note": "SHIP defensible."
+  },
+  {
+   "mechanism": "FEC runtime switch + typed pre-run config validation",
+   "claim": "RuntimeConfig::default() has fec: None; validate_fec called at connect and bind; manual_r == 0 is valid",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:199 `fec: None,`",
+    "crates/client-core/src/runtime.rs:235-243 comment `[KAMPANYA-KRİTİK] r == 0 GEÇERLİDİR` + only `if r > p.r_code_max` rejects",
+    "crates/client-core/src/runtime.rs:217-233 unit>0 / msg≥unit / by_id / unit+SOURCE_PREFIX_LEN ≤ E checks",
+    "crates/client-core/src/runtime.rs:245 `Ok(Some(p))`"
+   ],
+   "note": "All four stated bounds present, all typed (RuntimeError::FecConfig), all pre-run."
+  },
+  {
+   "mechanism": "FEC runtime switch + typed pre-run config validation",
+   "claim": "Other stated product defaults: bootstrap_rtt false, loss_confirm_horizon CadenceLegacy, fec_loss_risk bounded_v1, structure_gate_level_permille Some(250), fusion_policy None",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:196 `bootstrap_rtt: false,`",
+    "crates/client-core/src/runtime.rs:202 `fusion_policy: None,`",
+    "crates/client-core/src/runtime.rs:203 `loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,`",
+    "crates/client-core/src/runtime.rs:204 `fec_loss_risk: FecLossRiskConfig::bounded_v1(),`",
+    "crates/client-core/src/runtime.rs:206 `structure_gate_level_permille: Some(250),`"
+   ],
+   "note": "Every default in the KNOWN CONTEXT block verifies."
+  },
+  {
+   "mechanism": "FEC-OFF hot-path non-regression (K-FEC-OFF-1)",
+   "claim": "Sender::new defaults fec_mode to Manual{enabled:false} and pending_fec empty; runtime never sets actuation mode when fec None",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1824 `fec_mode: FecActuationMode::Manual { enabled: false },`",
+    "crates/adaptive-transport/src/sender.rs:1847 `pending_fec: VecDeque::new(),`",
+    "crates/client-core/src/runtime.rs:865 `if fec.is_some() {` gating set_fec_actuation_mode",
+    "crates/client-core/src/runtime.rs:1267 `if let Some(p) = fec.as_ref() {` gating block accumulation",
+    "crates/adaptive-transport/src/sender.rs:4487-4492 `fn fec_emission_enabled(&self) -> bool { match self.fec_mode { Manual { enabled } => enabled, Controller => true } }`"
+   ],
+   "note": "The transport-side defaults are also nested-neutral: sender.rs:1932 `structure_gate_level_permille: None` and 1934 `fec_loss_risk: FecLossRiskConfig::default()` (enabled:false) — i.e. the engine default is inert and the product default is the opt-in one, exactly as the findings state."
+  },
+  {
+   "mechanism": "FEC-OFF hot-path non-regression (K-FEC-OFF-1)",
+   "claim": "'FEC-off FecParity decision → stats.stale_decisions (unreachable in practice)' at runtime.rs:1018-1020",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1018-1020 comment `FEC-kapalıyken FecParity: v0 kabuk taşımaz, sayar (bootstrap OFF; sevk default'larında üretilmezler — typed genişleme noktası).` then `stats.stale_decisions += 1; continue;`",
+    "crates/adaptive-transport/src/sender.rs:4487-4492 Manual{false} → fec_emission_enabled false, so the legacy enqueue path cannot seed pending_fec either"
+   ],
+   "note": "The counter is shared with the DATA store-miss path (runtime.rs:1030-1032), so a nonzero stale_decisions is NOT attributable to the FEC-off branch. That ambiguity is not disclosed in the finding's telemetry field."
+  },
+  {
+   "mechanism": "Sender block accumulation + deterministic block/ESI assignment",
+   "claim": "Blocks are K consecutive units across message boundaries — DEVIATION from fec-core §3 PATCH-3 'cross-message-block-YASAK'",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1276-1277 `cur_block.push(sym); if cur_block.len() == p.k_shape_usize() {`",
+    "crates/client-core/src/runtime.rs:1275 `debug_assert_eq!(cur_block.len() as u64, id % u64::from(p.k_shape));` — block membership is a pure function of unit_id, never of message_id",
+    "crates/client-core/src/runtime.rs:1319-1320 `cur_block.clear(); cur_block_id = cur_block_id.wrapping_add(1);`",
+    "specs/fec-core-tdd-v3.0.md:169-171 `ALPHA-BLOCK-SINIRI [NORMATİF — KARAR-VERİLDİ, PATCH-3]: block-sınırı message/chunk-tabanlıdır. Bir-FEC-block birden-fazla-application-message-İÇEREMEZ ... cross-message-block-YASAK.`"
+   ],
+   "note": "I tried to refute this and could not. There is no message_id in the block-close condition anywhere on the path. With the fragmenter OFF (product default) one message = one unit, so a K=8 block spans exactly 8 application messages — the precise construct the spec forbids. The finding under-weights this: it is filed as a 'notes' deviation on a SHIP record, but it is a NORMATİF violation of a KARAR-VERİLDİ patch, i.e. the same severity class as the partial-block WIRE record it sits next to."
+  },
+  {
+   "mechanism": "Partial/final block coding (Model-A known-zero)",
+   "claim": "Not product-reachable: trailing block with < K units is never closed; product always passes known_zero=0 and writes k_actual = k_shape",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1277 `if cur_block.len() == p.k_shape_usize() {` — the ONLY close condition; no idle/flush/deadline alternative exists in client_task",
+    "crates/client-core/src/runtime.rs:1000 `k_actual: u8::try_from(p.k_shape).unwrap_or(255),` in the emitted FecFrameHeader",
+    "crates/client-core/src/runtime.rs:1886 `RsSimdCodec.reconstruct(p, &recv, 0)` — known_zero literal 0, sole product reconstruct call site",
+    "crates/client-core/src/runtime.rs:2199 source-path ingest passes `let k = u8::try_from(p.k_shape).unwrap_or(255);`",
+    "crates/kama-fec-codec/src/codec.rs:243-245 `let admitted = src.len() + rep.len(); if admitted + known_zero_count < k {` — codec supports Model-A, caller never uses it",
+    "specs/fec-core-tdd-v3.0.md:205-213 `MODEL-A KNOWN-ZERO-INJECTION ... [NORMATİF]` + mandatory POC tests `K_shape=8×{K_actual=1,7}`"
+   ],
+   "note": "WIRE is defensible and I could not refute it. Severity is understated in one respect the finding does not name: because block close is the ONLY trigger for encode, a flow shorter than K units emits ZERO parity no matter what the arbiter decides — the entire adaptive lane is structurally inert on short flows, which is the exact regime the loss-ledger dead-time memo already flags as blind."
+  },
+  {
+   "mechanism": "Controller-mode block-close latch (fec_controller_latch)",
+   "claim": "Product chain: Controller mode set at runtime.rs:869 → controller_decision_snapshot → open_fec_block_authority → fec_controller_latch → .planned_r",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:866-870 `FecActuationMode::Manual { enabled: true } // statik-r (STATIC_R kolu)` else `FecActuationMode::Controller`",
+    "crates/client-core/src/runtime.rs:1287-1298 `let snap = session.sender().controller_decision_snapshot(); let auth = session.sender_mut().open_fec_block_authority(); session.sender_mut().fec_controller_latch(auth, snap, ..., p.r_code_max, cur_block_id, parity_wire).planned_r`",
+    "crates/adaptive-transport/src/sender.rs:4578-4670 latch body: ForeignAuthority / ManualDisabled / NoEligibleDecision / DecisionEventMismatch / NoRule / EmergencyPendingArbitration branches, then `for esi in 0..r.planned_r { self.push_parity_authorized(...) }`",
+    "crates/adaptive-transport/src/sender.rs:4634-4635 `let (computed, clamped) = compute_requested_r(s.ratio_permille, k_actual, profile_r_max);`"
+   ],
+   "note": "All six suppression reasons and the staging loop verify. SHIP defensible."
+  },
+  {
+   "mechanism": "Controller-mode block-close latch (fec_controller_latch)",
+   "claim": "No client-core e2e test exercises Controller mode (all three FEC e2e tests use manual_r Some(4))",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -n 'manual_r' crates/client-core/tests/*.rs → runtime_e2e.rs:387, :483, :554 all `manual_r: Some(4),`; api_surface_v0.rs:103,106 are type pins only",
+    "grep -rn 'fec: Some' crates/client-core/tests/ → runtime_e2e.rs:385, :481, :552 only (three tests)",
+    "crates/client-core/examples/fec_arm_compare.rs:300 `manual_r: None,` — an example binary, not a test"
+   ],
+   "note": "Confirmed and materially important: the adaptive lane's only end-to-end product evidence lives in a non-CI example and in bench arms."
+  },
+  {
+   "mechanism": "Manual / static-r actuation mode",
+   "claim": "Classification KEEP-EXPERIMENTAL",
+   "verdict": "corrected",
+   "corrected_value": "KEEP-EXPERIMENTAL is the least-bad label but it fails the classification's own third clause. The definition requires 'not secretly needed for v1 claims'; static-r is the ONLY mode with a UDP end-to-end recovery proof in the repo, so every v1 'FEC recovers erased units on the product path' claim currently rests on it. Retain KEEP-EXPERIMENTAL only if that dependency is stated on the record; otherwise this is a WIRE-adjacent gap in the Controller lane, not a clean experimental arm.",
+   "evidence": [
+    "crates/client-core/tests/runtime_e2e.rs:379 `fec_static_r_recovers_permanently_erased_units_over_udp` (manual_r Some(4) @ :387)",
+    "crates/client-core/tests/runtime_e2e.rs:546 `fragmenter_message_survives_a_permanently_erased_chunk_via_fec` (manual_r Some(4) @ :554)",
+    "crates/bench/src/main.rs:68 `default_value_t = FecModeCli::Static` — static-r is the bench CLI default mode",
+    "crates/client-core/src/runtime.rs:866-867 product wiring is real, not disconnected"
+   ],
+   "note": "The finding's own notes field says exactly this ('it must not be used to back adaptive-FEC v1 claims') — my correction is that this belongs in the classification, not the notes, because the classification schema explicitly conditions on it."
+  },
+  {
+   "mechanism": "Parity-ratio decision handoff (fuzzy → policy/gate/speculative → fec_arbiter max())",
+   "claim": "fec_arbiter is max() with no summing; product wiring via set_fec_structure_policy / set_fec_loss_risk / set_structure_gate_level / set_fusion_policy",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:581-604 `pub fn fec_arbiter(...)` — `let mut best = (confirmed.0, confirmed.1); if structure > best.0 {...} if spec.ratio_permille > best.0 {...}` with doc `TOPLAMA YOK`",
+    "crates/adaptive-transport/src/sender.rs:3585 `let (final_ratio, reason) = fec_arbiter(confirmed, structure, spec);`",
+    "crates/adaptive-transport/src/sender.rs:3533-3536 comment `Politika açıkken Confirmed-taban öneri ONUNDUR (fuzzy'nin değil): yapı-gate susar, çift-otorite yok.` — structure gate genuinely silenced under fusion_policy"
+   ],
+   "note": "Arbiter semantics verify exactly as stated."
+  },
+  {
+   "mechanism": "Parity-ratio decision handoff (fuzzy → policy/gate/speculative → fec_arbiter max())",
+   "claim": "Gate activation condition = 'state≠PreConverge ∧ loss≥100k ppm ∧ fate window n≥32 ∧ IID structure'",
+   "verdict": "corrected",
+   "corrected_value": "Incomplete — the FIRST precondition is missing. structure_gate_fec returns GateOutcome::NotApplicable whenever the fuzzy controller already proposes a nonzero ratio, so the gate only ever runs when fuzzy_fec_permille == 0. Full condition: fuzzy_fec_permille == 0 ∧ fusion_policy disabled ∧ state ≠ PreConverge ∧ loss_ppm ≥ 100_000 ∧ fate n ≥ 32 ∧ burst_delta_ppm ≤ 50_000. Constants verify.",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3650-3652 `if fuzzy_fec_permille != 0 { return GateOutcome::NotApplicable; }`",
+    "crates/adaptive-transport/src/sender.rs:3665 `if self.state == SenderState::PreConverge { return GateOutcome::BlockedPreConverge; }`",
+    "crates/adaptive-transport/src/sender.rs:1352 `const STRUCTURE_GATE_LOSS_MIN_PPM: u64 = 100_000;`",
+    "crates/adaptive-transport/src/sender.rs:1355 `const STRUCTURE_GATE_MIN_N: u32 = 32;`",
+    "crates/adaptive-transport/src/sender.rs:1366 `const STRUCTURE_GATE_IID_MAX_DELTA_PPM: i64 = 50_000;`"
+   ],
+   "note": "The finding does quote the 'gate yalnız fuzzy==0 iken Opened döner' comment inside its impl_symbols, so it knew — but the structured activation_condition omits it, which is the field a reader would rely on."
+  },
+  {
+   "mechanism": "Parity-ratio decision handoff (fuzzy → policy/gate/speculative → fec_arbiter max())",
+   "claim": "Bench kama-product defaults diverge from product defaults on both the speculative lane (disabled vs bounded_v1) and gate level (500 vs 250)",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:188-191 `let mut c = if fec_risk { FecLossRiskConfig::experimental_v1() } else { FecLossRiskConfig::default() };`",
+    "crates/adaptive-transport/src/sender.rs:396-398 `impl Default for FecLossRiskConfig { fn default() -> Self { Self { enabled: false,` vs :436-437 `pub fn bounded_v1() -> Self { Self { enabled: true,`",
+    "crates/bench/src/kama_product.rs:223-224 comment `[R-SWEEP] gate seviyesi (None = motor fec_med = 500 sevk).` then `structure_gate_level_permille: gate,`",
+    "crates/bench/src/kama_product.rs:728,741 `gate: None,` and `fec_risk: false,` in the default cfg",
+    "crates/adaptive-transport/src/sender.rs:4434-4437 `pub fn gate_level_permille(&self) -> u32 { self.structure_gate_level_permille.unwrap_or(self.fuzzy.config().fec_med) }`",
+    "crates/adaptive-transport/src/fusion.rs:364-366 fec_med = 500"
+   ],
+   "note": "Confirmed on both axes. bounded_v1 also differs from default() in bootstrap_cap 250 vs 125, persist_mode LearnedSpuriousAge vs FixedSrtt, and reorder_suppress 300 vs u32::MAX (sender.rs:436-446) — so the bench 'default' arm diverges on five knobs, not two. Any campaign that calls the bench default arm 'the product default' is measuring a different configuration."
+  },
+  {
+   "mechanism": "§8.5 budget clamp of parity ratio",
+   "claim": "parity_final / budget_cap_permille have no caller outside tests; only send_rate_final is wired",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn 'parity_final|budget_cap_permille' crates --include=*.rs → crates/adaptive-transport/src/budget.rs:38,43,45 (definitions) and crates/adaptive-transport/tests/tv_emergency.rs:5,21-39 (only callers)",
+    "grep -n 'budget::' crates/adaptive-transport/src/sender.rs → sender.rs:35 (import) and sender.rs:4032 `budget::send_rate_final(fuzzy_rate, self.budget_cfg.min_rate_bps, u64::MAX)` — one use, rate only",
+    "crates/adaptive-transport/src/sender.rs:925-930 compute_requested_r clamps to profile_r_max only, no BtlBw term",
+    "specs/transport-layer-tdd.md:603-605 §5.5 `parity_final = min(fuzzy_parity, budget_cap, profile_cap)` marked NORMATİF",
+    "specs/adaptive-transport-engine-spec.md:658-664 §8.5 same formula"
+   ],
+   "note": "WIRE confirmed and correctly severity-rated. Note sender.rs:4032 passes `u64::MAX` as the cap, so even the wired half applies only the MIN_RATE floor, never a BtlBw-derived ceiling — the §8.5 clamp is absent in both of its terms, not just the parity one. The finding says 'send_rate_final part is wired' without that qualification."
+  },
+  {
+   "mechanism": "Parity queue, pacing and emission",
+   "claim": "Parity is pacer-admitted (no bypass, no separate unbounded queue) and emitted after DATA/ARQ/dup",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:4895 `if !self.pacer.try_send(p.size) {` in plan_fec_parity",
+    "crates/adaptive-transport/src/sender.rs:4926-4971 emit_parity_at → `self.track_sent(OpaqueUnit { id: u64::from(p.esi), size: p.size }, now_ns, 0, TransmitKind::FecParity)` + `send_record: Some(SendRecordHint { logical_ref: SrLogicalRef::Fec {...}, packet_class: SrPacketClass::Repair, ...})`",
+    "crates/client-core/src/runtime.rs:981-1004 FecParity branch → repair_store lookup → encode_fec(FEC_REPAIR) → `seal_send!(frame, TxClass::Fec, $now);`",
+    "crates/adaptive-transport/src/sender.rs:1566 `pending_fec: VecDeque<PendingFecParity>` — bounded by planned_r per block, not a separate unbounded lane"
+   ],
+   "note": "K-FEC-PACER-2 satisfied structurally. SHIP defensible."
+  },
+  {
+   "mechanism": "Parity queue, pacing and emission",
+   "claim": "Telemetry includes ClientStats.fec_repair_missing",
+   "verdict": "corrected",
+   "corrected_value": "The field exists and is populated in the product (runtime.rs:487 declaration, :991 increment), but it is NOT surfaced in any bench output — KP-CLIENT's eprintln! prints fec_blocks_latched, fec_repairs_tx, fec_recovered_ctrl_units and tx_fec_bytes but never fec_repair_missing. So the header-only-parity waste path the finding itself flags in its notes is unobservable in every campaign run to date.",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:487 `pub fec_repair_missing: u64,` and :991 `stats.fec_repair_missing += 1;`",
+    "grep -n 'fec_repair_missing' crates/bench/src/*.rs → zero hits",
+    "crates/bench/src/kama_product.rs:563 format string `fec_blocks={} fec_repairs_tx={} fec_recovered_ctrl={} param_confirmed={}` and :576-579 the matching args — fec_repair_missing absent",
+    "crates/client-core/src/runtime.rs:1002 `sym.unwrap_or(&[])` — the header-only emission",
+    "crates/client-core/src/runtime.rs:2264-2265 receiver `if h.profile_id != p.profile_id || symbol.len() != p.e_usize() { stats.unknown_frames += 1;` — the empty symbol is rejected there"
+   ],
+   "note": "Per the EVIDENCE RULE the telemetry claim is therefore only half true: populated in product, not exposed in bench. Wire bytes and pacer tokens are spent on frames the receiver discards, with no counter a campaign could read."
+  },
+  {
+   "mechanism": "Lost-parity accounting (parity seqs enter pending_lost and are ARQ-retransmitted as DATA under the ESI namespace)",
+   "claim": "pending_lost admits FecParity-origin records with no origin field, and plan_arq_retransmits re-emits them as Retransmit with unit_id = ESI",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3318 `if p.origin != TransmitKind::Duplicate {` — the only origin filter on the pending_lost push",
+    "crates/adaptive-transport/src/sender.rs:3339-3345 `self.pending_lost.push_back(LostRec { seq, unit: p.unit, deadline_ns: now_ns, retx_count: p.retx_count, send_ns: p.send_ns });`",
+    "crates/adaptive-transport/src/sender.rs:1287-1295 `struct LostRec { seq, unit, deadline_ns, retx_count, send_ns }` — no origin field",
+    "crates/adaptive-transport/src/sender.rs:4936-4940 parity track_sent uses `OpaqueUnit { id: u64::from(p.esi), size: p.size }`",
+    "crates/adaptive-transport/src/sender.rs:5360-5365 `out.push(TransmitDecision { kind: TransmitKind::Retransmit, seq: new_seq, unit_id: rec.unit.id, size: rec.unit.size, send_record: None });`",
+    "crates/adaptive-transport/src/sender.rs:5514 `let recs: Vec<LostRec> = self.pending_lost.drain(..).collect();` in plan_forward_duplication — drains regardless of origin",
+    "crates/adaptive-transport/src/sender.rs:5500-5501 tail-liveness branch DOES filter `.filter(|p| p.origin == TransmitKind::Data)` — proving the origin distinction exists and was applied selectively",
+    "crates/adaptive-transport/src/sender.rs:3329-3337 fate estimator guarded by `if p.origin == TransmitKind::Data`"
+   ],
+   "note": "I attacked this hardest and it survives intact. The asymmetry is the proof: three sites in the same file consult origin (fate estimator :3331, tail liveness :5501, dup re-queue :3318) and the two recovery planners do not. The in-file comment at :3320-3326 states the hazard verbatim and then the code below it does not act on it. WIRE is correct; if anything this is the most defensible finding in the set."
+  },
+  {
+   "mechanism": "Lost-parity accounting",
+   "claim": "Delivery-side effect: receiver maps the ESI-namespaced Retransmit onto the unit store and can deliver an empty payload after dedup-window eviction",
+   "verdict": "unverifiable",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:970-975 `TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate` → `seq_to_unit.insert(d.seq, d.unit_id); unit_seqs...`",
+    "crates/client-core/src/runtime.rs:1027-1032 store-miss → `stale_body: [u8; SOURCE_PREFIX_LEN] = [0; SOURCE_PREFIX_LEN]` emitted with `stats.stale_decisions += 1`",
+    "crates/client-core/src/runtime.rs:1570 `DELIVERED_DEDUP_WINDOW = 8192`"
+   ],
+   "note": "The mechanism up to the emission is confirmed; the claimed end state (an app-visible empty delivery after dedup eviction) requires an 8192-unit dedup window to roll over on a specific unit id, which I cannot establish by reading alone and which no test or counter in the tree pins. The finding itself says 'Severity of the delivery-side effect ... unmeasured' — I confirm it is unmeasured and mark the delivery claim unverifiable, while the sender-side namespace collision stands as confirmed."
+  },
+  {
+   "mechanism": "RECOVERED control feedback",
+   "claim": "Product chain server→client and cancellation of pending_lost/dup_queue/pending_fec with no bandwidth credit (N8 firewall)",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:2216-2221 `stats.fec_recovered_ctrl_tx += 1; let f = encode_recovered(block_id, &rec); ... srv_seal_send(...)`",
+    "crates/client-core/src/runtime.rs:1129 `u64::from(block_id) * u64::from(p.k_shape) + u64::from(esi)`",
+    "crates/adaptive-transport/src/sender.rs:2139-2142 `if let Event::RecoveredControl(info) = &event { self.on_recovered_control(info); return Vec::new(); }`",
+    "crates/adaptive-transport/src/sender.rs:4795-4812 `self.pending_lost.retain(...)`, `self.dup_queue.retain(...)`, `self.record_recovered_logical(...)`, `self.pending_fec.retain(|p| p.block_id != ru.block_id)`",
+    "crates/adaptive-transport/src/sender.rs:4778-4782 doc `YALNIZ pending_lost/dup_queue/confirmed_logical'a dokunur; bw_sampler/btlbw/credit_delivered/pacer'a SIFIR-satır`"
+   ],
+   "note": "One caveat the finding does not state: the early return at 2139 is inside `#[cfg(not(feature = \"experimental-cold-start\"))]`. With that feature ON (default OFF, so not the shipped path) RecoveredControl instead enters on_event_batch, a structurally different route. The N8 no-credit claim is verified for the default build only."
+  },
+  {
+   "mechanism": "Receiver FEC ingest (fec_ingest, BlockAsm, RX_BLOCKS_CAP)",
+   "claim": "Readiness rule, decode-failure block retention, eviction, and the DoS bounds as listed",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1853-1858 `(asm.sources.len() >= k, asm.sources.len() + asm.repairs.len() >= k)`",
+    "crates/client-core/src/runtime.rs:1925 `stats.fec_decode_failures += 1; // blok KORUNUR (bug-fix): shard atılmaz.`",
+    "crates/client-core/src/runtime.rs:1929-1938 `while slot.blocks.len() > RX_BLOCKS_CAP { ... }` (RX_BLOCKS_CAP = 32 @ :1573)",
+    "crates/client-core/src/runtime.rs:2263-2265 `if h.profile_id != p.profile_id || symbol.len() != p.e_usize() { stats.unknown_frames += 1; // profil/symbol uyumsuz — fail-closed.`",
+    "crates/client-core/src/runtime.rs:2231-2237 pre-param hold with PRE_PARAM_FEC_CAP = 64 (@ :1762), still ACKed"
+   ],
+   "note": "SHIP defensible. Missing-bounds list (no per-peer byte cap, no decode-attempt cap, no block idle TTL) also verifies against §13."
+  },
+  {
+   "mechanism": "Receiver FEC ingest (fec_ingest, BlockAsm, RX_BLOCKS_CAP)",
+   "claim": "BlockAsm.k is taken from the first shard and k_actual is never validated against k_shape",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1844-1848 `let asm = slot.blocks.entry(block_id).or_insert_with(|| BlockAsm { k: k_actual, sources: BTreeMap::new(), repairs: BTreeMap::new() });` — first writer wins, no bound check",
+    "crates/client-core/src/runtime.rs:2199-2201 source path passes `let k = u8::try_from(p.k_shape).unwrap_or(255);`",
+    "crates/client-core/src/runtime.rs:2288-2296 repair path passes `h.k_actual` straight from the wire"
+   ],
+   "note": "Harmlessness rests on the profile gate at :2263 plus k_actual > k_shape making `ready` unreachable — but only for repair-first blocks. A repair-first block whose wire k_actual is SMALLER than k_shape would make `ready` fire early and hand the codec a k it did not encode for; that sub-case is not covered by the finding's 'harmless' note and no test pins it."
+  },
+  {
+   "mechanism": "Canonical source-symbol prefix + metadata recoverability",
+   "claim": "11-byte SourcePrefix coded into the RS symbol on both ends; recovered symbol parsed back through SourcePrefix::parse",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/kama-transport-schema/src/lib.rs:37 `pub const SOURCE_PREFIX_LEN: usize = 11;`",
+    "crates/client-core/src/runtime.rs:1894-1900 `let Ok(pfx) = SourcePrefix::parse(&r.bytes) else { continue }; let len = usize::from(pfx.actual_payload_len); let Some(payload) = r.bytes.get(SOURCE_PREFIX_LEN..SOURCE_PREFIX_LEN + len)`",
+    "crates/client-core/src/runtime.rs:2186-2198 server 0x00 path `None => { let _ = pfx.serialize_symbol(payload, &mut sym); }`, 0x05 path copies wire body with `Some(_) => { stats.unknown_frames += 1; // gövde E'yi aşıyor — fail-closed`",
+    "crates/kama-fec-codec/tests/golden.rs:18-27 canonical_sym via SourcePrefix::serialize_symbol"
+   ],
+   "note": "SHIP defensible."
+  },
+  {
+   "mechanism": "Canonical source-symbol prefix + metadata recoverability",
+   "claim": "Golden vectors: 'metadata-recovery golden per K-FEC-WIRE-1 not verified in this audit'",
+   "verdict": "corrected",
+   "corrected_value": "Verifiable and partly present: crates/kama-fec-codec/tests/golden.rs does pin canonical-source → expected-repair bytes AND reconstructed metadata, satisfying K-FEC-WIRE-1 in shape. But it covers profile 0x01 (K=2,R=2,E=64) ONLY, while §5 requires golden vectors for every suite/profile — profiles 0x02..0x06, including both E=1024 profiles, are unpinned.",
+   "evidence": [
+    "crates/kama-fec-codec/tests/golden.rs:1-5 `//! Golden-vector (K-FEC-WIRE-1, §14): canonical-source → PINNED expected-repair-byte + reconstructed-METADATA` and `//! Profil 0x01 (K=2, R=2, E=64).`",
+    "crates/kama-fec-codec/tests/golden.rs:29 `// PINNED golden (reed-solomon-simd 3.1.0, CODE_SUITE_RS_SIMD_V1)`",
+    "specs/fec-core-tdd-v3.0.md:194-196 `GOLDEN-VECTOR-ZORUNLU: her-suite/profile canonical-source→expected-repair→kayıp→reconstruction + byte-order+padding+ESI-mapping; iki-bağımsız-impl-aynı-byte.`",
+    "crates/kama-fec-codec/src/profile.rs:72-97 six profiles in the catalog"
+   ],
+   "note": "Also note the file's own stated substitute for 'iki-bağımsız-impl' is a pinned byte sequence, not a second implementation — a documented weakening of the §5 requirement."
+  },
+  {
+   "mechanism": "Fragmenter + message reassembly",
+   "claim": "Opt-in via max_message_bytes (default None), DATA-FRAG 0x05, bounded MsgAsm, message-level ACK",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:188 `max_message_bytes: None,`",
+    "crates/client-core/src/runtime.rs:885 `let frag_on = cfg.max_message_bytes.is_some();`",
+    "crates/client-core/src/runtime.rs:1222 `let n_chunks = message.len().div_ceil(chunk_cap).max(1);`",
+    "crates/client-core/src/runtime.rs:219-224 validate rejects `m < cfg.max_unit_bytes`",
+    "crates/client-core/src/runtime.rs:1586 `MSG_ASM_CAP = 64`"
+   ],
+   "note": "SHIP defensible; fragmentation is not wire-negotiated, as stated."
+  },
+  {
+   "mechanism": "PARAM bootstrap binding",
+   "claim": "Bounded retry ≤25 tries at ≥200 ms; FEC repair ingest gated on ParamState, DATA-derived source ingest NOT gated",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1334 `if !param_confirmed && param_tries < 25 && due {` with `due = param_tries == 0 || now_ms >= param_last_tick_ms + 200`",
+    "crates/client-core/src/runtime.rs:2231 `if !slot.param.is_confirmed() {` on the RxFrame::Fec arm only",
+    "crates/client-core/src/runtime.rs:2179-2184 comment `[v1/PARAM] Source-türetimi param-GATE'SİZ: profil YEREL cfg'den ... Fail-closed gate YALNIZ FEC-shard ingest'inde`",
+    "crates/client-core/src/runtime.rs:882 `let mut param_confirmed = param_plan.is_none(); // FEC-yoksa PARAM-akışı yok.`",
+    "crates/kama-noise-wire/src/param_bind.rs:19-27 BLAKE2s-256 over canonical fields"
+   ],
+   "note": "SHIP defensible. The asymmetric gate is documented in-code with its race rationale."
+  },
+  {
+   "mechanism": "PARAM bootstrap binding",
+   "claim": "kama-engine PreParamHold, ParamAckTracker, RecoveredMap and ParamSetPlan.start_fec_immediately are unused by the runtime",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn 'RecoveredMap|PreParamHold|ParamAckTracker|start_fec_immediately' crates --include=*.rs, excluding kama-engine/src and tests/ → single hit: crates/client-core/src/runtime.rs:1756 a doc comment saying `PreParamHold deseni` (pattern reference, not a use)",
+    "crates/client-core/src/runtime.rs:35 imports only ParamState from kama-engine"
+   ],
+   "note": "Confirmed: the runtime re-implements the hold/ack inline and imports only ParamState + plan_param_bootstrap."
+  },
+  {
+   "mechanism": "INV-FEC-1 on the product wire (SecuritySeam / IdentitySeam)",
+   "claim": "Only IdentitySeam exists in src; no AEAD executes anywhere on the product path; all quinn comparisons are stub-crypto",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn 'impl SecuritySeam for' crates --include=*.rs → crates/client-core/src/seam.rs:116 (IdentitySeam) plus examples/fec_arm_compare.rs:143 (GeSeam) and tests/runtime_e2e.rs:343,659 (DropUnitsSeam, OnlyCsSeam) — no production impl beyond IdentitySeam",
+    "crates/client-core/src/seam.rs:123 `frame.resize(frame.len() + IDENTITY_TAG, 0);`",
+    "crates/bench/src/kama_product.rs:309 `Box::new(IdentitySeam),`"
+   ],
+   "note": "WIRE confirmed. The corollary the finding states — that forged repair frames reach RsSimdCodec.reconstruct today — follows directly from runtime.rs:2263-2265 being the only admission check (profile id + symbol length), neither of which is authentication."
+  },
+  {
+   "mechanism": "Type-gated decode bridge (kama-engine admit_and_decode / ClientSession::admit)",
+   "claim": "Zero calls from the product runtime; the only src caller is the client-core wrapper",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn 'admit_and_decode(' crates --include=*.rs → crates/kama-engine/src/admission.rs:26 (definition), crates/client-core/src/lib.rs:108 (wrapper), crates/kama-integration/src/receiver_host.rs:430, plus kama-engine/tests/*",
+    "grep for ClientSession::admit → only crates/client-core/tests/api_surface_v0.rs:330 (a type pin)",
+    "crates/client-core/src/runtime.rs:1886 the competing in-runtime decode `RsSimdCodec.reconstruct(p, &recv, 0)`"
+   ],
+   "note": "WIRE confirmed: spec-required (§12 ENGINE-ENTEGRASYON) and disconnected. Two decode pipelines with different admission semantics do coexist."
+  },
+  {
+   "mechanism": "kama-integration ReceiverHost",
+   "claim": "Not in the product dependency graph; used only by kama-integration tests/examples",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/Cargo.toml dependencies list kama-engine (:21) and kama-fec-codec (:26); no kama-integration entry anywhere in the file",
+    "grep -rn 'receiver_host|ReceiverHost' crates --include=*.rs, excluding kama-engine/tests and kama-integration tests/examples → only kama-integration/src/* and the runtime.rs:1822 comment referencing its fixed counting bug",
+    "crates/kama-integration/src/receiver_host.rs:1 `//! A2-F0 İSKELETİ — ReceiverHost: ürün-alıcı COMPOSITION-ROOT`"
+   ],
+   "note": "Factual basis confirmed; the classification drawn from it is where I disagree — see corrected_classifications."
+  },
+  {
+   "mechanism": "kama-integration ReceiverHost",
+   "claim": "Classification DELETE",
+   "verdict": "refuted",
+   "corrected_value": "KEEP-EXPERIMENTAL",
+   "evidence": [
+    "crates/client-core/Cargo.toml — kama-integration is absent, so it is already outside the product graph and cannot mislead a build",
+    "crates/kama-integration/src/lib.rs:19,25 `pub mod receiver_host;` / `pub use receiver_host::{CachedCloseAck, HostError, IngestOutcome, ReceiverHost, SlotLifecycle};` — an actively exported test-harness surface",
+    "crates/kama-engine/src/cold_rx_state.rs:5,15,164,269 — GlobalColdLedger's INSTANCE/LIFECYCLE owner is documented as ReceiverHost (K-9); deleting it orphans those types"
+   ],
+   "note": "DELETE requires 'dead/duplicate/obsolete/misleading'. It is a duplicate receiver, but it is neither dead (it is the harness for the A2/DR-CS campaign tests) nor buildable into the product. The finding's own notes concede deletion requires porting the cold-ledger bounds first and calls it an owner decision — that is the definition of KEEP-EXPERIMENTAL, not DELETE. Fixing the misleading '//! ürün-alıcı COMPOSITION-ROOT' header is a doc edit, not a deletion."
+  },
+  {
+   "mechanism": "Legacy 0x20 FEC_SHARD framing codec (adaptive-transport fec.rs)",
+   "claim": "(record truncated in the findings input) DEPRECATED / MUST NOT IMPLEMENT",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/fec.rs:1-10 `//! TV-FEC (§10.1): FEC_SHARD wire framing codec — **DEPRECATED / MUST NOT IMPLEMENT (D1-migrasyon)**` + `Production-FEC-wire artık noise-wire EXTENDED'dir`",
+    "crates/adaptive-transport/src/fec.rs:30-33 `#[deprecated(since = \"0.1.0\", note = \"legacy 0x20 cleartext-framing (METADATA-LEAK-01); use kama-noise-wire EXTENDED seal (§2.6)\")]`",
+    "grep -rn 'FecShardFrame|SHARD_TAG_LEN' outside fec.rs → crates/adaptive-transport/tests/tv_fec.rs only; zero product callers"
+   ],
+   "note": "I verified this independently since the record was cut off mid-sentence in the input. Correctly retained per CLAUDE.md §6 ('deprecated → appendix + MUST NOT IMPLEMENT, sessizce SİLME'), attribute-marked, and unreachable from the product. Whatever classification the truncated record carried, the evidence supports KEEP-EXPERIMENTAL/retained-deprecated rather than DELETE."
+  }
+ ],
+ "missed_mechanisms": [
+  {
+   "name": "R_esi_reserved_unique code-space accounting (fec-core §4 R-ÜÇLÜ, analiz-P0-4)",
+   "evidence": "Zero implementation repo-wide: `grep -rn \"esi_reserved|R_esi_reserved|reserved_unique\" crates --include=*.rs` returns NOTHING. The spec makes this NORMATİF and names it the fix for the reservation↔send race: specs/fec-core-tdd-v3.0.md:183-188 `R_SENT-TERİMİ-KALDIRILDI (analiz-P0-4 — reservation↔send-yarışı): code-space-hesabı R_esi_reserved_unique-üzerinden: remaining_code_space = R_code_max − R_esi_reserved_unique` with the chain `R_esi_reserved_unique → R_generated_unique → R_pacer_admitted → R_socket_submitted → R_acked/R_received_reported → R_useful  # HER-halka-AYRI-telemetry`. The product tracks none of these links: crates/adaptive-transport/src/sender.rs:925-930 compute_requested_r clamps against profile_r_max only, and the latch (sender.rs:4656-4666) always stages `for esi in 0..r.planned_r` starting from 0 with no persistent per-block reservation counter, so a second decision on the same block would re-reserve the same ESIs. The finding set cites §4 in the lost-parity record but never audits the counter itself.",
+   "suggested_classification": "WIRE"
+  },
+  {
+   "name": "On-demand repair from unsent ESI (fec-core §4 'on-demand-repair = önceden-sabit-code-space'teki-GÖNDERİLMEMİŞ-ESI, yeniden-encode-YASAK'; §9 residual)",
+   "evidence": "Structurally absent from the product. crates/client-core/src/runtime.rs:1291-1316 is the ONLY encode site and it fires exactly once per block, at close, staging esi 0..planned_r; there is no later path that raises r for an already-closed block. crates/adaptive-transport/src/sender.rs:4497 push_parity_authorized has callers only from fec_controller_latch (:4656) and close_fec_block_manual (:4525-4560), both block-close-time. So the §4 reserved-but-unsent ESI pool and the §9 hybrid residual arm (`targeted-source-retransmit VEYA unused-repair-ESI`) have no realization: residual loss after a block closes is served solely by ARQ retransmit of sources. Related to but distinct from the missing reservation counter.",
+   "suggested_classification": "WIRE"
+  },
+  {
+   "name": "Emergency parity interlock (FecSuppressionReason::EmergencyPendingArbitration)",
+   "evidence": "Product-reachable FEC kill switch that the findings mention only in a notes clause. crates/adaptive-transport/src/sender.rs:4568 `emergency: self.last_decision.mode == Mode::EmergencyForwardRedundancy` populates the snapshot the product latch reads; sender.rs:4631-4641 then forces `planned_r: 0` with `suppression: Some(FecSuppressionReason::EmergencyPendingArbitration)` regardless of the arbiter's ratio. The mode is set by the shipped fuzzy controller, not by a feature flag: crates/adaptive-transport/src/fusion.rs:545 assigns `Mode::EmergencyForwardRedundancy`. Net effect on the default product path: in the loss-HIGH ∧ bw-LOW ∧ ackconf-LOW regime — precisely the regime engine-spec §8.4 (specs/adaptive-transport-engine-spec.md:655) designates for forward redundancy — parity is set to zero. The in-code comment calls it a 'Temporary safety interlock pending 1b/1d arbitration', i.e. an acknowledged open item with no record in this audit.",
+   "suggested_classification": "WIRE"
+  },
+  {
+   "name": "Receiver-side FEC shard admission bridge (receiver.rs RxKind::FecShard → buffer + ACK, no delivery, no BtlBw credit)",
+   "evidence": "Real, wired, and entirely absent from the findings set. crates/adaptive-transport/src/receiver.rs:41-49 defines `RxKind::FecShard { block_id: u32, esi: u16, k_actual: u8, is_repair: bool }` aligned to schema §2.6; receiver.rs:237-244 handles it: `RxKind::FecShard { .. } => { ... (Vec::new(), true) }` with the doc `Shard buffer'lanır + ACK'lenir; RS-decode + reconstruction GÜVENLİK/engine-katmanında ... N8: shard-admission BtlBw/credit-YOLU-AÇMAZ`, then receiver.rs:249-250 sets `RxState::FecDecode`. Product call sites: crates/client-core/src/runtime.rs:2247-2255 (pre-param hold branch) and :2273-2283 (bound branch) both construct `RxKind::FecShard` and feed `slot.rx.on_datagram`. This is the mechanism that makes parity frames ACK-eliciting without crediting bandwidth — a load-bearing half of the K-FEC-CC-1 / N8 firewall that the RECOVERED record credits only to the sender side.",
+   "suggested_classification": "SHIP"
+  },
+  {
+   "name": "experimental-fec-budget parity ticket kernel (budget_kernel.rs, Commit-V FloorCap)",
+   "evidence": "Referenced twice as a 'separate feature-gated mechanism' / 'reorders parity under cfg' but never given a record with default-state evidence. crates/adaptive-transport/Cargo.toml:16-18 `# Commit-V: test-only/non-default CANLI-BÜTÇE-PROTOTİPİ (CONDITIONAL-GO). # OFF (default): FloorCap-kodu-üretim-yoluna-BAĞLANMAZ; derlenmiş-yol-baseline-özdeş.` and `experimental-fec-budget = []` (not in any default feature set; crates/client-core/Cargo.toml:35-37 forwards only diag-sched-telemetry). Its product-path touch points are all cfg-guarded: sender.rs:5296-5311 (try_send_pre_parity reservation), sender.rs:4667-4670 (budget_admit_block), sender.rs:4813+ (ticket CanceledMoot on RECOVERED). It matters to this cluster because it is the only live implementation of a parity budget — i.e. the §8.5 clamp's WIRE gap has a default-OFF prototype sitting next to it, which the budget-clamp record should say.",
+   "suggested_classification": "KEEP-EXPERIMENTAL"
+  },
+  {
+   "name": "Golden-vector coverage gap across the profile catalog (§5 GOLDEN-VECTOR-ZORUNLU)",
+   "evidence": "crates/kama-fec-codec/tests/golden.rs:5 `//! Profil 0x01 (K=2, R=2, E=64).` — the only profile pinned, against six in crates/kama-fec-codec/src/profile.rs:72-97. specs/fec-core-tdd-v3.0.md:194-196 requires golden vectors for `her-suite/profile`. Neither E=1024 profile (0x05, 0x06) has a byte-level pin, and those are exactly the profiles §11 designates for the bulk/sub-kbps regimes. The prefix record explicitly deferred this ('not verified in this audit'), so it is unowned.",
+   "suggested_classification": "WIRE"
+  }
+ ],
+ "corrected_classifications": [
+  {
+   "mechanism": "kama-integration ReceiverHost",
+   "classification": "KEEP-EXPERIMENTAL",
+   "reason": "DELETE is not defensible. It is already outside the product dependency graph (crates/client-core/Cargo.toml has no kama-integration entry), so it cannot mislead a build; it is not dead (it is the live harness for the A2/DR-CS campaign tests and examples); and crates/kama-engine/src/cold_rx_state.rs:5,164,269 designate it the INSTANCE/LIFECYCLE owner of GlobalColdLedger, so deletion orphans those types. The genuine defect is the misleading '//! A2-F0 İSKELETİ — ReceiverHost: ürün-alıcı COMPOSITION-ROOT' header at receiver_host.rs:1, which is a one-line doc correction. KEEP-EXPERIMENTAL with a required doc fix, plus the deferred port of the cold-ledger bounds into runtime.rs, matches the evidence."
+  },
+  {
+   "mechanism": "Sender block accumulation + deterministic block/ESI assignment",
+   "classification": "WIRE",
+   "reason": "SHIP is not defensible as filed. SHIP requires 'required for v1' AND correct-by-architecture; this mechanism violates a NORMATİF KARAR-VERİLDİ clause of the authority spec on every block it forms. specs/fec-core-tdd-v3.0.md:169-171 states `block-sınırı message/chunk-tabanlıdır. Bir-FEC-block birden-fazla-application-message-İÇEREMEZ ... cross-message-block-YASAK`, and crates/client-core/src/runtime.rs:1275-1277 derives block membership purely from `id % k_shape` with no message_id term — under the product default (fragmenter OFF, runtime.rs:188) a K=8 block spans 8 distinct application messages. The accumulation code is wired and works, so this is 'spec-required but incorrectly connected', which is the WIRE bucket, not SHIP-with-a-note. Downgrading also keeps it adjacent to the partial-block WIRE record, which is the same §3/§6 defect family (both stem from close-on-K-only)."
+  },
+  {
+   "mechanism": "Manual / static-r actuation mode",
+   "classification": "KEEP-EXPERIMENTAL",
+   "reason": "Label retained but conditionally: the classification's own clause 'not secretly needed for v1 claims' is currently violated, and that must be recorded rather than left in notes. All three client-core FEC e2e proofs use manual_r Some(4) (crates/client-core/tests/runtime_e2e.rs:387,483,554) and the sole Controller-mode end-to-end exercise lives in a non-CI example (crates/client-core/examples/fec_arm_compare.rs:300), so every 'FEC recovers erased units on the product path' claim rests on the experimental arm. KEEP-EXPERIMENTAL is correct as to default state (crates/client-core/src/runtime.rs:199 fec: None) but the record must carry the dependency, and closing it requires a Controller-mode e2e test, not a relabel."
+  },
+  {
+   "mechanism": "RS erasure codec core (FecCodec trait, RsSimdCodec)",
+   "classification": "SHIP",
+   "reason": "Classification upheld — the call chain, the requirement, and the exercise all verify — but the record must promote two ADR-16 deviations out of the notes field, because as filed a reader sees SHIP and infers conformance. specs/tech-stack-adr.md:247-258 decides reed-solomon-erasure with reed-solomon-simd deferred to Beta benchmark, and separately makes an `ErasureCodec` trait NORMATİF; the default build ships reed-solomon-simd 3.1.0 (crates/kama-fec-codec/Cargo.toml:11) behind `trait FecCodec` (crates/kama-fec-codec/src/codec.rs:51). Either the ADR is amended or the code is renamed/re-crated; silently shipping past a NORMATİF clause is what the SHIP label currently conceals."
+  }
+ ]
+}
