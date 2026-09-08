@@ -648,6 +648,18 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         rp_suppress: cfg.rp_suppress,
     });
     print_manifest("client", &rt_cfg);
+    // [FAZ-4 §1.3] PROFİL KİMLİĞİ — koddan türetilir (rt_cfg taşınmadan ÖNCE), operatör
+    // disiplinine bırakılmaz. Tek bir alan bile saparsa kimlik `kama-custom` olur.
+    let profile_delta_v = profile_delta(&rt_cfg);
+    let profile_id_label = if profile_delta_v.is_empty() {
+        "kama-v1-full".to_string()
+    } else {
+        "kama-custom".to_string()
+    };
+    // [FAZ-4 §M4] KURULUM MALİYETİ AYRI ÖLÇÜLÜR. Kama'da el sıkışma yoktur; bu süre soket
+    // bağlama + endpoint kurulumudur. Ölçüm-t0 aşağıda warmup/gate SONRASINDA konur → kurulum
+    // completion penceresinin DIŞINDADIR (üç kolun tamamıyla aynı). Sayı gizlenmez, raporlanır.
+    let setup_t0 = elapsed_ns(start);
     let mut cli = ClientEndpoint::connect_with_policy(
         cfg.server,
         rt_cfg,
@@ -656,6 +668,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     )
     .await
     .map_err(|e| rt_err("connect", e))?;
+    let setup_ns = elapsed_ns(start).saturating_sub(setup_t0);
     // Offer tutamağı AYRI: `acked()` `&mut cli` ödünç alır, sunum aynı `select!` içinde sürsün.
     let tx = cli.sender();
     // [DEADLINE-EKSENİ] Politika kolunda her offer teslim bütçesini bildirir; diğer kollarda
@@ -937,6 +950,33 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         t0_unix_ns,
         events_epoch_offset_ns: t0,
         warmup_residue,
+        // [FAZ-4] Ateşleme özeti manifeste taşınır: "yapılandırıldı" ile "ateşledi" bir daha
+        // karıştırılamaz (denetim: "FEC enabled" denip hiç ateşlememiş olması).
+        activation: Some(crate::manifest::ActivationSummary {
+            tail_configured: stats.fate.activation.tail_configured,
+            fec_configured: stats.fate.activation.fec_configured,
+            tail_probes: stats.fate.activation.tail_probes,
+            tail_cancelled: stats.fate.activation.tail_cancelled,
+            parity_emitted: stats.fate.activation.parity_emitted,
+            parity_token_denied: stats.fate.activation.parity_token_denied,
+            retransmits: stats.fate.activation.retransmits,
+            dups: stats.fate.activation.dups,
+            state_transitions: stats.fate.activation.state_transitions,
+            recover_arq_entries: stats.fate.activation.recover_arq_entries,
+            left_preconverge_ns: stats.fate.activation.left_preconverge_ns,
+            btlbw_bps: stats.fate.activation.btlbw_bps,
+            srtt_us: stats.fate.activation.srtt_us,
+            rtprop_us: stats.fate.activation.rtprop_us,
+            return_ack_loss_permille: stats.fate.return_path.return_ack_loss_permille,
+            return_forward_loss_permille: stats.fate.return_path.forward_loss_permille,
+            bytes_data: stats.tx_data_bytes,
+            bytes_retx: stats.tx_retx_bytes,
+            bytes_parity: stats.tx_fec_bytes,
+        }),
+        setup_ns,
+        setup_in_window: false,
+        profile_id: profile_id_label.clone(),
+        profile_delta: profile_delta_v.clone(),
     };
     Ok(RunOutput { meta, events })
 }
@@ -980,6 +1020,102 @@ mod tests {
             spec_l2_permille: None,
             spec_l1_permille: None,
         }
+    }
+
+    /// [FAZ-4 §22] RESMÎ KIYAS YOLU KANONİK CONSTRUCTOR'I KULLANIR.
+    ///
+    /// Denetim bulgusu: "sevk profili" etiketli kol ürünün sevk etmediği bir yapılandırmayı
+    /// ölçmüştü. Bu test benchmark'ın bayraksız yolunun `KamaV1Profile::runtime_config()`
+    /// ile ALAN ALAN aynı olduğunu kilitler — sapma listesi boş olmalıdır.
+    #[test]
+    fn bayraksiz_kiyas_yolu_kanonik_profildir() {
+        let bayraksiz = ArmCfg {
+            payload_bytes: 256,
+            quota_r: 4,
+            // BAYRAKSIZ CLI değeri: `--fec-profile` ürün sabitine bağlı, `--fec-mode` adaptif.
+            // `FecArm::Off` DEĞİL — o, FEC'i açıkça kapatan bir koldur.
+            fec: FecArm::from_args(
+                KamaV1Profile::FEC_PROFILE_ID,
+                0,
+                crate::transport::FecModeArg::Adaptive,
+                0,
+            ),
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0, // 0 = "verilmedi" → ürün değeri
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+            fec_risk: false, // bayrak yok → bounded_v1
+            ts_sample: false,
+            spec_l1: None,
+            spec_l2: None,
+            gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
+            rp_suppress: None,
+        };
+        let c = runtime_cfg(bayraksiz);
+        let d = profile_delta(&c);
+        assert!(d.is_empty(), "bayraksız yol ÜRÜN profili DEĞİL: {d:?}");
+        // Ve kimliğin kendisi de kanonik etiketi almalı.
+        // `FecRuntimeConfig` PartialEq türetmiyor (transport crate'ine dokunmamak için burada
+        // alan alan kıyaslıyoruz — Faz-4 transport kodunu DEĞİŞTİRMEZ).
+        let (a, b) = (
+            c.fec.expect("ürün profilinde FEC var"),
+            KamaV1Profile::runtime_config()
+                .fec
+                .expect("ürün profilinde FEC var"),
+        );
+        assert_eq!((a.profile_id, a.manual_r), (b.profile_id, b.manual_r));
+        assert_eq!(
+            c.initial_window_bytes,
+            KamaV1Profile::INITIAL_WINDOW_BYTES,
+            "iw=0 CLAMP hatasıydı; ürün değerine düşmeli"
+        );
+    }
+
+    /// [FAZ-4 §22] TEK alan sapması sapma listesine YANSIR (kimlik `kama-custom` olur).
+    #[test]
+    fn tek_alan_sapmasi_gorunur() {
+        let mut sapan = ArmCfg {
+            payload_bytes: 256,
+            quota_r: 4,
+            fec: FecArm::from_args(
+                KamaV1Profile::FEC_PROFILE_ID,
+                0,
+                crate::transport::FecModeArg::Adaptive,
+                0,
+            ),
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 1200, // ← TEK sapma
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+            fec_risk: false,
+            ts_sample: false,
+            spec_l1: None,
+            spec_l2: None,
+            gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
+            rp_suppress: None,
+        };
+        let d = profile_delta(&runtime_cfg(sapan.clone()));
+        assert_eq!(d.len(), 1, "yalnız bir sapma beklenirdi: {d:?}");
+        assert!(d[0].contains("initial_window_bytes"), "{d:?}");
+        // Yapı-gate seviyesinin sapması da görünür.
+        sapan.initial_window_bytes = 0;
+        sapan.gate = Some(500);
+        let d2 = profile_delta(&runtime_cfg(sapan));
+        assert!(
+            d2.iter()
+                .any(|x| x.contains("structure_gate_level_permille")),
+            "{d2:?}"
+        );
     }
 
     fn srv_cfg(bind: SocketAddr, fec: FecArm) -> ServerCfg {
@@ -1583,6 +1719,34 @@ mod tests {
         );
         // Dönüş yolu gerçekten kullanıldı (server ACK üretti) — tek yönlü sahte-yeşil değil.
         assert!(out.meta.udp_rx_bytes > 0, "ACK dönüş yolu ölçülmeli");
+
+        // [FAZ-4 §22] AKTİVASYON MANİFESTİ FAZ-3 TANILARINI GERÇEKTEN TÜKETİR.
+        // "yapılandırıldı ≠ ateşledi" ayrımı manifeste TAŞINMALI; alanlar vakum olmamalı.
+        let act = out
+            .meta
+            .activation
+            .as_ref()
+            .expect("aktivasyon manifesti YOK");
+        assert!(act.fec_configured, "bu kolda FEC yapılandırılmıştı");
+        assert!(act.tail_configured, "tail ürün profilinde AÇIK");
+        assert!(act.bytes_data > 0, "veri byte'ı taşınmalı: {act:?}");
+        assert_eq!(
+            act.bytes_parity, out.meta.tx.fec,
+            "parity byte'ı iki kaynakta AYNI olmalı (tanı ile wire sayacı ayrışamaz)"
+        );
+        assert_eq!(act.bytes_retx, out.meta.tx.retx);
+        // [FAZ-4 §1.3] KİMLİK CANLI KOŞUDA DA DOĞRU: bu kol statik r=4 / p0x03 kullanır,
+        // yani ÜRÜN PROFİLİ DEĞİLDİR. Manifest bunu `kama-custom` olarak etiketlemeli ve
+        // sapmayı adıyla saymalı — "sevk profili" diye raporlanması imkânsız olsun.
+        assert_eq!(
+            out.meta.profile_id, "kama-custom",
+            "statik-r kolu ürün profili DEĞİL"
+        );
+        assert!(
+            out.meta.profile_delta.iter().any(|d| d.contains("fec")),
+            "sapma FEC alanında görünmeli: {:?}",
+            out.meta.profile_delta
+        );
     }
 
     /// Egress kapısı gerçekten kapı: sıfır-bütçe burst modunda arm sonrası HİÇBİR datagram

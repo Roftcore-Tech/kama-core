@@ -6,15 +6,20 @@ mod error;
 mod event;
 mod kama;
 mod kama_product;
+mod manifest;
 mod metrics;
+mod outcome;
 mod qdgram;
 mod quic;
+mod tcp;
 mod transport;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use client_core::runtime::KamaV1Profile;
 
 use crate::error::BenchError;
 use crate::transport::{BenchTransport, Cc, ClientCfg, FecArm, FecModeArg, KamaArm, ServerCfg};
@@ -26,6 +31,9 @@ struct Cli {
     cmd: Cmd,
 }
 
+// [FAZ-4] CLI komut enum'u süreç başına BİR kez parse edilir; kutulamak ölçüme hiçbir şey
+// katmaz, yalnız arg tanımlarını dolaylı hale getirir. Boyut farkı kabul edilir.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Cmd {
     /// Transport server'ı çalıştır.
@@ -56,7 +64,9 @@ enum Cmd {
         gate_watch: Option<PathBuf>,
         /// [SPRINT-A] FEC profil kimliği (0 = FEC kapalı). `kama-product` dışında yok sayılır.
         /// İSTEMCİYLE AYNI verilmelidir. Örn. 3 = K8/R4/E64 (payload ≤ 53 B).
-        #[arg(long, default_value_t = 5)]
+        // [FAZ-4 §1.1] Bayraksız değer ÜRÜN PROFİLİNE BAĞLI. Literal `5` yazmak, profil
+        // sabiti değiştiğinde resmî kıyas yolunu sessizce ürün-dışı bırakırdı.
+        #[arg(long, default_value_t = KamaV1Profile::FEC_PROFILE_ID)]
         fec_profile: u8,
         /// [SPRINT-A] Blok başına sabit repair sayısı. `--fec-mode static` ile birlikte
         /// **r=0 GEÇERLİDİR** ve tek-eksenli kontrol kolunu verir (fragmentasyon açık, parity yok).
@@ -175,7 +185,9 @@ enum Cmd {
         establish_gate: Option<PathBuf>,
         /// [SPRINT-A] FEC profil kimliği (0 = FEC kapalı). `kama-product` dışında yok sayılır.
         /// SUNUCUYLA AYNI verilmelidir. Örn. 3 = K8/R4/E64 (payload ≤ 53 B).
-        #[arg(long, default_value_t = 5)]
+        // [FAZ-4 §1.1] Bayraksız değer ÜRÜN PROFİLİNE BAĞLI. Literal `5` yazmak, profil
+        // sabiti değiştiğinde resmî kıyas yolunu sessizce ürün-dışı bırakırdı.
+        #[arg(long, default_value_t = KamaV1Profile::FEC_PROFILE_ID)]
         fec_profile: u8,
         /// [SPRINT-A] Blok başına sabit repair sayısı. `--fec-mode static` ile birlikte
         /// **r=0 GEÇERLİDİR** ve tek-eksenli kontrol kolunu verir (fragmentasyon açık, parity yok).
@@ -225,6 +237,21 @@ enum Cmd {
         /// [PERSIST] quantile (‰). None = 950.
         #[arg(long)]
         persist_q: Option<u32>,
+        /// [FAZ-4] Koşu manifestini (JSON) bu yola yaz: kimlik + profil sapması + anlam +
+        /// bozulma + kurulum sınıfı + ateşleme özeti. Kıyas raporları BUNU okur.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+        /// [FAZ-4] İleri yol bozulması (netem dizesi) — manifeste AYNEN kaydedilir.
+        #[arg(long, default_value = "")]
+        fwd_impair: String,
+        /// [FAZ-4] Dönüş yolu bozulması (netem dizesi) — AYRI kaydedilir (asimetri hedefi).
+        #[arg(long, default_value = "")]
+        rev_impair: String,
+        /// [FAZ-4 §M4] Kurulum-sınıfı İDDİASI (opsiyonel): `cold-flow` | `setup-excluded`.
+        /// Bu bayrak ölçümü DEĞİŞTİRMEZ; harness'ın kendi yapısal gerçeğiyle KARŞILAŞTIRILIR.
+        /// Çelişirse koşu manifest yazmadan hata verir → sessiz kurulum-sınıfı karışımı imkânsız.
+        #[arg(long)]
+        setup_class: Option<String>,
         /// [C4 G1] reorder-baskısı eşiği (‰): rp ≥ N ⇒ spekülatif öneri yok. None = kapalı.
         #[arg(long)]
         rp_suppress: Option<u32>,
@@ -243,12 +270,33 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// [FAZ-4 §17] İki veya daha fazla koşu manifestini KIYAS-ADALETİ açısından denetle.
+    /// Fark bulunursa exit=2 → kıyas raporu `non-normalized` işaretlenmeden yayımlanamaz.
+    /// Bu komut PERFORMANS SAYISI ÜRETMEZ; yalnız kıyasın geçerli olup olmadığını söyler.
+    Fairness {
+        #[arg(long, num_args = 2.., required = true)]
+        manifests: Vec<PathBuf>,
+    },
     /// Ham JSONL koşularından metrik hesapla (A: varyans, B: deadline eğrisi).
     Metrics {
         #[arg(long, num_args = 1.., required = true)]
         runs: Vec<PathBuf>,
         #[arg(long, value_delimiter = ',', default_value = "10,30,120")]
         deadlines_s: Vec<u64>,
+        /// [FAZ-4 §7] Kurulum maliyeti görünümü. `steady-state` = harness'ın ölçtüğü
+        /// (kurulum pencere dışında); `cold-flow` = uçtan-uca (deadline'dan `setup_ns` düşülür).
+        /// İKİ GÖRÜNÜM KARIŞTIRILMAZ — her çıktı hangisinde olduğunu yazar.
+        #[arg(long, value_enum, default_value_t = SetupViewArg::SteadyState)]
+        setup_view: SetupViewArg,
+        /// [FAZ-4 §8] Blackout tarama penceresi (ms).
+        #[arg(long, default_value_t = 1000)]
+        blackout_window_ms: u64,
+        /// [FAZ-4 §8] Pencerenin kullanılabilir sayılması için asgari teslim.
+        #[arg(long, default_value_t = 1)]
+        blackout_min_deliveries: u64,
+        /// [FAZ-4 §12.3] Güven düzeyi (‰).
+        #[arg(long, default_value_t = outcome::DEFAULT_CI_PERMILLE)]
+        ci_permille: u32,
     },
 }
 
@@ -267,6 +315,22 @@ impl From<FecModeCli> for FecModeArg {
             FecModeCli::Static => FecModeArg::Static,
             FecModeCli::Adaptive => FecModeArg::Adaptive,
             FecModeCli::Policy => FecModeArg::Policy,
+        }
+    }
+}
+
+/// [FAZ-4 §7] CLI karşılığı — `outcome::SetupView`'a birebir eşlenir.
+#[derive(Copy, Clone, ValueEnum, PartialEq)]
+enum SetupViewArg {
+    SteadyState,
+    ColdFlow,
+}
+
+impl From<SetupViewArg> for outcome::SetupView {
+    fn from(v: SetupViewArg) -> Self {
+        match v {
+            SetupViewArg::SteadyState => Self::SteadyState,
+            SetupViewArg::ColdFlow => Self::ColdFlow,
         }
     }
 }
@@ -293,6 +357,9 @@ enum TransportArg {
     Kama,
     /// [KAPI-1 W1] quinn DATAGRAM + app-ARQ (Q-DGRAM-ARQ, FAZ-1 primary comparator).
     Qdgram,
+    /// [FAZ-4] TCP taban kolu (`tcp-default`): platformun normal TCP yığını, uygulama-düzeyi
+    /// ACK ile teslim ölçümü, minimum simetrik çerçeveleme. Denetim: TCP kolu YOKTU.
+    Tcp,
     /// [SPRINT-A] GERÇEK ÜRÜN runtime'ı (client-core): FEC+ARQ füzyonu, tail-recovery,
     /// fuzzy kontrolcü, PARAM bootstrap, handshake-siz kuruluş.
     KamaProduct,
@@ -423,6 +490,10 @@ async fn main() -> Result<(), BenchError> {
             .await
         }
         Cmd::Client {
+            manifest,
+            fwd_impair,
+            rev_impair,
+            setup_class,
             server,
             msgs,
             payload,
@@ -500,35 +571,207 @@ async fn main() -> Result<(), BenchError> {
                 bootstrap_fast,
             };
             let output = run_client(transport, cfg).await?;
+            // [FAZ-4] KOŞU MANİFESTİ — ölçümle BİRLİKTE, yapılandırılmış. Kıyas raporları
+            // profili/anlamı/bozulmayı buradan okur; serbest-metin yorumlara GÜVENİLMEZ.
+            // [FAZ-4 §M4] KURULUM SINIFI KOLUN KODUNDAN TÜRETİLİR. Operatörün `--setup-class`
+            // iddiası yalnız DENETLENİR; ölçümü etkilemez. Dört kolun tamamında kurulum maliyeti
+            // completion penceresinin DIŞINDA ölçülür ve `setup_ns` olarak ayrıca raporlanır.
+            let derived_setup_class = outcome::derived_setup_class(output.meta.setup_in_window);
+            outcome::check_setup_claim(setup_class.as_deref(), derived_setup_class).map_err(
+                |e| {
+                    BenchError::Other(format!(
+                        "{e} (setup_ns={}). Manifest YAZILMADI.",
+                        output.meta.setup_ns
+                    ))
+                },
+            )?;
+            if let Some(mp) = manifest.as_ref() {
+                let tr = output.meta.transport.clone();
+                // [FAZ-4 §1.3] Kimlik kolun KENDİ türetiminden gelir (RunMeta.profile_id).
+                // Boşsa (rakip kolları) taşıyıcı adı kullanılır.
+                // [§15] Boşsa (rakip kolları) BELİRSİZ taşıyıcı adı DEĞİL, hangi primitifin
+                // test edildiğini söyleyen açık kol adı kullanılır.
+                let arm = if output.meta.profile_id.is_empty() {
+                    manifest::arm_name(&tr).to_string()
+                } else {
+                    output.meta.profile_id.clone()
+                };
+                let m = manifest::RunManifest {
+                    schema: manifest::MANIFEST_SCHEMA.to_string(),
+                    commit: option_env!("KAMA_GIT_SHA").unwrap_or("unknown").to_string(),
+                    arm,
+                    transport: tr.clone(),
+                    profile_delta: output.meta.profile_delta.clone(),
+                    semantics: manifest::semantics_for(&tr),
+                    setup_class: derived_setup_class.to_string(),
+                    setup_ns: output.meta.setup_ns,
+                    impairment: manifest::Impairment {
+                        forward: fwd_impair.clone(),
+                        reverse: rev_impair.clone(),
+                    },
+                    payload_bytes: output.meta.payload_bytes,
+                    msg_count: output.meta.msg_count,
+                    deadline_ns: output.meta.max_deadline_ns,
+                    submit_interval_ns: output.meta.submit_interval_ns,
+                    seed: output.meta.seed,
+                    repeat: output.meta.repeat,
+                    wire_accounting_note: if tr == "tcp-default" {
+                        "app-layer bytes only; kernel TCP overhead invisible".to_string()
+                    } else {
+                        "full harness-observed wire bytes".to_string()
+                    },
+                    activation: output.meta.activation.clone().unwrap_or_default(),
+                };
+                manifest::write(mp, &m);
+            }
             output.write_jsonl(&out)?;
             eprintln!("wrote {} events → {}", output.events.len(), out.display());
             Ok(())
         }
-        Cmd::Metrics { runs, deadlines_s } => {
+        Cmd::Fairness { manifests } => {
+            let mut loaded: Vec<(PathBuf, manifest::RunManifest)> = Vec::new();
+            for p in &manifests {
+                let txt = std::fs::read_to_string(p)
+                    .map_err(|e| BenchError::Other(format!("{}: {e}", p.display())))?;
+                let m: manifest::RunManifest = serde_json::from_str(&txt)
+                    .map_err(|e| BenchError::Other(format!("{}: {e}", p.display())))?;
+                if m.schema != manifest::MANIFEST_SCHEMA {
+                    return Err(BenchError::Other(format!(
+                        "{}: bilinmeyen şema {}",
+                        p.display(),
+                        m.schema
+                    )));
+                }
+                loaded.push((p.clone(), m));
+            }
+            let mut invalid = 0usize;
+            let mut non_normalized = 0usize;
+            println!("# kıyas-adaleti denetimi — {} manifest", loaded.len());
+            // Aynı adlı manifestler farklı dizinlerde durur (netem rejim başına bir dizin).
+            // Yalnız dosya adı yazmak üç satırı ayırt edilemez kılardı.
+            let short = |p: &PathBuf| -> String {
+                let f = p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                p.parent()
+                    .and_then(|d| d.file_name())
+                    .map_or(f.clone(), |d| format!("{}/{f}", d.to_string_lossy()))
+            };
+            for (p, m) in &loaded {
+                // [FAZ-4 §1.3] Kanonik iddiası ile sapma listesi ÇELİŞEMEZ.
+                let canon = m.is_canonical_kama();
+                if m.arm == "kama-v1-full" && !canon {
+                    println!("INVALID {}: kama-v1-full etiketi ama sapma var", short(p));
+                    invalid += 1;
+                }
+                println!(
+                    "{:<28} arm={} canonical_kama={} setup={} delta={}",
+                    short(p),
+                    m.arm,
+                    canon,
+                    m.setup_class,
+                    m.profile_delta.len()
+                );
+            }
+            for i in 0..loaded.len() {
+                for j in (i + 1)..loaded.len() {
+                    let (pa, a) = &loaded[i];
+                    let (pb, b) = &loaded[j];
+                    let (na, nb) = (short(pa), short(pb));
+                    let r = a.fairness_diff(b);
+                    if !r.is_comparable() {
+                        invalid += 1;
+                        println!("BLOCKING       {na} vs {nb}: {}", r.blocking.join(" | "));
+                    } else if r.is_normalized() {
+                        println!("NORMALIZED     {na} ~ {nb}");
+                    } else {
+                        non_normalized += 1;
+                        println!("NON-NORMALIZED {na} ~ {nb} — `adil kıyas` etiketi ALAMAZ");
+                    }
+                    // Anlam farkı RAPORDA aynen beyan edilmek ZORUNDADIR (§16).
+                    for note in &r.non_normalized {
+                        println!("  semantics    {na} vs {nb}: {note}");
+                    }
+                }
+            }
+            if invalid > 0 {
+                eprintln!(
+                    "DENEY KOŞULU EŞLEŞMİYOR ({invalid} bulgu) — bu manifestlerden kıyas sayısı \
+                     ÜRETİLEMEZ"
+                );
+                std::process::exit(2);
+            }
+            if non_normalized > 0 {
+                // §16: sayı üretilebilir, ama etiket `non-normalized` olmak ZORUNDA.
+                println!(
+                    "comparison=non-normalized ({non_normalized} çift) — deney koşulları \
+                     eşleşiyor, ANLAMLAR eşleşmiyor; `semantics` satırları rapora AYNEN girer"
+                );
+                std::process::exit(1);
+            }
+            println!("comparison=normalized — koşul ve anlam eşleşiyor");
+            Ok(())
+        }
+        Cmd::Metrics {
+            runs,
+            deadlines_s,
+            setup_view,
+            blackout_window_ms,
+            blackout_min_deliveries,
+            ci_permille,
+        } => {
             let deadlines: Vec<Duration> = deadlines_s
                 .iter()
                 .map(|&s| Duration::from_secs(s))
                 .collect();
             // Eksik/bozuk koşu dosyasında ABORT etme (workflow bulgusu #4: harsh profilde bir
             // handshake fail'i dosya yazmaz → tüm agregasyon ölmemeli). Atla + uyar.
+            // [FAZ-4 §12.4] Okunamayan koşu SESSİZCE SİLİNMEZ. Dosya hiç yoksa altyapı
+            // (runner/netns) arızası; dosya var ama çözülemiyorsa harness arızası. İkisi de
+            // transport ölçümü DEĞİLDİR — agregadan dışlanır ama insidansı raporlanır.
+            let mut lost: Vec<outcome::Outcome> = Vec::new();
             let outputs: Vec<_> = runs
                 .iter()
                 .filter_map(|p| match event::RunOutput::read_jsonl(p) {
                     Ok(o) => Some(o),
                     Err(e) => {
-                        eprintln!("skip {}: {e}", p.display());
+                        let cls = if p.exists() {
+                            outcome::Outcome::HarnessFailure
+                        } else {
+                            outcome::Outcome::InfraFailure
+                        };
+                        eprintln!("skip {} [{}]: {e}", p.display(), cls.label());
+                        lost.push(cls);
                         None
                     }
                 })
                 .collect();
+            // [FAZ-4 §7] Görünüm ÖNCE seçilir; completion eğrisi de bu görünümde hesaplanır.
+            // Eğriyi kararlı-durumda bırakıp yalnız alt bloğu uçtan-uca hesaplamak, tam da
+            // yasaklanan "iki görünümü karıştırma" olurdu.
+            let view: outcome::SetupView = setup_view.into();
             let per_run: Vec<_> = outputs
                 .iter()
-                .map(|o| metrics::run_metrics(o, &deadlines))
+                .map(|o| {
+                    let eff: Vec<Duration> = deadlines
+                        .iter()
+                        .map(|&d| view.effective_deadline(d, o.meta.setup_ns))
+                        .collect();
+                    // Etiketler nominal deadline'da kalır; ÖLÇÜM efektif deadline'dadır.
+                    let mut m = metrics::run_metrics(o, &eff);
+                    for (slot, &d) in m.per_deadline.iter_mut().zip(deadlines.iter()) {
+                        slot.deadline = d;
+                    }
+                    m
+                })
                 .collect();
             let agg = metrics::aggregate(&per_run, &deadlines);
             println!(
-                "# completion vs deadline — {} koşu (A: varyans, B: eğri)",
-                per_run.len()
+                "# completion vs deadline — {} koşu (A: varyans, B: eğri) — görünüm: {}",
+                per_run.len(),
+                view.label()
             );
             for a in &agg {
                 println!(
@@ -547,6 +790,130 @@ async fn main() -> Result<(), BenchError> {
                 "# secondary (§4.4.3): bytes/delivered-msg median={:.1}  ACK-overhead median={:.3}",
                 sec.bytes_per_delivered_msg_median, sec.ack_overhead_ratio_median,
             );
+
+            // ── [FAZ-4 §9] TEL MALİYETİ DÖKÜMÜ — kalem kalem, kolun BEYAN EDİLEN sınırıyla ──
+            // Kama'nın parity/kontrol trafiğini sayıp rakibin transport ek yükünü dışlayarak
+            // "toplam maliyet" demek YASAK. TCP'de çekirdek trafiği görünmez; satır bunu YAZAR.
+            for o in &outputs {
+                let m = &o.meta;
+                let payload = m.msg_count.saturating_mul(m.payload_bytes);
+                let visibility = if m.transport == "tcp-default" {
+                    "UYGULAMA-KATMANI (çekirdek TCP ek yükü GÖRÜNMEZ)"
+                } else {
+                    "tam harness-gözlemli tel"
+                };
+                println!(
+                    "# wire (§9) {}: payload={payload}B tx={}B rx={}B \
+                     [data={}B retx={}B dup={}B fec={}B ctrl={}B] setup={}ns({}) — {visibility}",
+                    if m.profile_id.is_empty() {
+                        manifest::arm_name(&m.transport).to_string()
+                    } else {
+                        m.profile_id.clone()
+                    },
+                    m.udp_tx_bytes,
+                    m.udp_rx_bytes,
+                    m.tx.data,
+                    m.tx.retx,
+                    m.tx.dup,
+                    m.tx.fec,
+                    m.tx.ctrl,
+                    m.setup_ns,
+                    if m.setup_in_window {
+                        "pencere İÇİNDE"
+                    } else {
+                        "pencere DIŞINDA"
+                    },
+                );
+            }
+
+            // ── [FAZ-4 §8/§12/§13] SONUÇ SINIFI · BLACKOUT · KATMANLI İSTATİSTİK ──────────
+            // Bu blok PERFORMANS YORUMU YAPMAZ. Koşunun ne olduğunu sınıflandırır ve hangi
+            // iddia sınıfının mümkün olduğunu söyler.
+            let bspec = outcome::BlackoutSpec {
+                window: Duration::from_millis(blackout_window_ms.max(1)),
+                min_deliveries: blackout_min_deliveries,
+            };
+            let claim_deadline = deadlines
+                .last()
+                .copied()
+                .unwrap_or(Duration::from_secs(120));
+            println!(
+                "# setup view: {} | blackout: window={}ms min_deliveries={} | CI={}‰",
+                view.label(),
+                blackout_window_ms,
+                blackout_min_deliveries,
+                ci_permille
+            );
+            // Kayıp koşular sınıflandırılmış olarak agregaya GİRER (ölçüm sayılmazlar ama
+            // paydadan sessizce düşmezler).
+            let mut classified: Vec<(f64, outcome::Outcome)> =
+                lost.iter().map(|&c| (0.0, c)).collect();
+            let mut blackout_runs = 0usize;
+            let mut worst_blackout: Option<outcome::BlackoutReport> = None;
+            for o in &outputs {
+                let b = outcome::blackout_scan(o, &bspec);
+                // [§7] Uçtan-uca görünümde deadline kolun KENDİ ölçülen kurulum maliyeti kadar
+                // kısalır — her kol kendi maliyetini öder, simetrik.
+                let eff = view.effective_deadline(claim_deadline, o.meta.setup_ns);
+                let cls = outcome::classify(o, eff, &b);
+                if b.any {
+                    blackout_runs += 1;
+                    if worst_blackout.is_none_or(|w| b.longest_ns > w.longest_ns) {
+                        worst_blackout = Some(b);
+                    }
+                }
+                classified.push((metrics::completion(&o.events, eff), cls));
+            }
+            let mut by_class: std::collections::BTreeMap<&str, usize> =
+                std::collections::BTreeMap::new();
+            for (_, c) in &classified {
+                *by_class.entry(c.label()).or_default() += 1;
+            }
+            let classes = by_class
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            println!("# outcomes (§13): {classes}");
+            // [§8] İkili cevap + en kötü koşunun süresi ve kurtarma süresi. Kurtarma hiç
+            // gelmediyse `n/a` yazılır — 0 DEĞİL (0, "anında kurtardı" demek olurdu).
+            match worst_blackout {
+                None => println!("# blackout (§8): false — {}/{} koşu", 0, outputs.len()),
+                Some(w) => println!(
+                    "# blackout (§8): true — {blackout_runs}/{} koşu | en uzun={:.3}s \
+                     toplam={:.3}s kurtarma={}",
+                    outputs.len(),
+                    w.longest_ns as f64 / 1e9,
+                    w.total_ns as f64 / 1e9,
+                    w.time_to_recovery_ns.map_or_else(
+                        || "n/a (dönmedi)".to_string(),
+                        |r| format!("{:.3}s", r as f64 / 1e9)
+                    )
+                ),
+            }
+            let st = outcome::stratify(&classified, ci_permille);
+            let fmt = |s: &outcome::Stats| {
+                let ci = s.median_ci.map_or_else(
+                    || "CI=n/a(n<6)".to_string(),
+                    |(l, h)| format!("CI=[{l:.3},{h:.3}]"),
+                );
+                format!(
+                    "n={} median={:.3} IQR=[{:.3},{:.3}] {ci}",
+                    s.n, s.median, s.q1, s.q3
+                )
+            };
+            println!("# all-runs    (§12.4): {}", fmt(&st.all_runs));
+            println!("# stall-free  (§12.4): {}", fmt(&st.stall_free));
+            println!(
+                "# stall incidence: {}/{} CI=[{:.3},{:.3}] | ölçüm-dışı (harness/infra): {}",
+                st.stall_incidence.0,
+                st.stall_incidence.1,
+                st.stall_ci.0,
+                st.stall_ci.1,
+                st.non_measurement
+            );
+            // [§12.2] İddia sınıfı n'den TÜRETİLİR; operatör yükseltemez.
+            println!("# claim class (§12.2): {}", st.all_runs.claim.label());
             Ok(())
         }
     }
@@ -557,6 +924,7 @@ async fn run_server(t: TransportArg, cfg: ServerCfg) -> Result<(), BenchError> {
         TransportArg::Quinn => quic::QuinnTransport.run_server(cfg).await,
         TransportArg::Kama => transport::KamaTransport.run_server(cfg).await,
         TransportArg::Qdgram => qdgram::QdgramTransport.run_server(cfg).await,
+        TransportArg::Tcp => tcp::TcpTransport.run_server(cfg).await,
         TransportArg::KamaProduct => kama_product::KamaProductTransport.run_server(cfg).await,
     }
 }
@@ -566,6 +934,7 @@ async fn run_client(t: TransportArg, cfg: ClientCfg) -> Result<event::RunOutput,
         TransportArg::Quinn => quic::QuinnTransport.run_client(cfg).await,
         TransportArg::Kama => transport::KamaTransport.run_client(cfg).await,
         TransportArg::Qdgram => qdgram::QdgramTransport.run_client(cfg).await,
+        TransportArg::Tcp => tcp::TcpTransport.run_client(cfg).await,
         TransportArg::KamaProduct => kama_product::KamaProductTransport.run_client(cfg).await,
     }
 }

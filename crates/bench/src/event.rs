@@ -89,6 +89,24 @@ pub struct RunMeta {
     /// ölçüme dahildir (steady-state semantiği). [inceleme #0 çözümü]
     #[serde(default)]
     pub warmup_residue: u64,
+    /// [FAZ-4] Ateşleme özeti (yalnız Kama kolları doldurur; manifest bunu taşır).
+    #[serde(default)]
+    pub activation: Option<crate::manifest::ActivationSummary>,
+    /// [FAZ-4] Kurulum maliyeti (ns) ve sınıfı — kolların KARIŞTIRILMAMASI için.
+    #[serde(default)]
+    pub setup_ns: u64,
+    /// [FAZ-4 §M4] Kurulum maliyeti ÖLÇÜM PENCERESİ İÇİNDE mi? Bu, kolun KODUNDAN gelen yapısal
+    /// gerçektir — operatör bayrağı DEĞİL. Manifest `setup_class`'ı bundan TÜRETİR; operatörün
+    /// iddiası bununla çelişirse koşu manifest YAZMADAN hata verir (sessiz karışım imkânsız).
+    #[serde(default)]
+    pub setup_in_window: bool,
+    /// [FAZ-4] PROFİL KİMLİĞİ — `kama-v1-full` yalnız sapma YOKKEN yazılır; aksi hâlde
+    /// `kama-custom`. Yorum/operatör disiplinine DEĞİL, koddan türetilen farka dayanır.
+    #[serde(default)]
+    pub profile_id: String,
+    /// Kanonik ürün profilinden sapmalar (boşsa kimlik `kama-v1-full`).
+    #[serde(default)]
+    pub profile_delta: Vec<String>,
 }
 
 /// Bir koşunun tüm çıktısı: meta + ham eventler.
