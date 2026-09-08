@@ -1,0 +1,908 @@
+{
+ "cluster": "arq",
+ "mechanisms": [
+  {
+   "name": "RecoverArq sender state + recovery evaluation priority (§3 AMENDMENT-1)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3 L208 (RECOVER_ARQ), L222 (ACTIVE→RECOVER_ARQ), L225-228 (priority IDLE>PRE_CONVERGE>RECOVER_FWD>RECOVER_ARQ>phase)",
+    "engine-spec §3 AMENDMENT-1 L232-237 (recovery from every ACTIVE phase; FWD>ARQ)",
+    "engine-spec §9 L674 (RECOVER_ARQ: residual_loss>0 ∧ ackconf≥MED)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:53-70 SenderState (RecoverArq L67, RecoverFwd L69)",
+    "sender.rs:3742-3781 update_state (idle L3764 → PreConverge L3766 → emergency_active L3774 → pending_lost L3777-3780 RecoverArq → phase)",
+    "sender.rs:3898-3906 recovery exit returns to base Startup|Steady",
+    "sender.rs:4016-4020 compute_send_rate recovery-overlay gain from base"
+   ],
+   "product_call_chain": "client-core runtime.rs:815 ClientSession::new (client-core/src/lib.rs:82) → runtime.rs:963 drive!→session.on_event → sender.rs:2125 on_event → 2143 on_event_core → 3379 fuzzy_evaluate → 3742 update_state (L3777-3780 RecoverArq when pending_lost non-empty) → 2144 schedule_transmit (4041) → 4049-4058 plan_arq_retransmits",
+   "product_reachable": true,
+   "gate": "none (unconditional in Sender); only the PreConverge branch bypasses recovery (sender.rs:3766-3773)",
+   "default_state": "always on; Sender::new(): state Idle, pending_lost VecDeque::new() (sender.rs:1800)",
+   "activation_condition": "!idle ∧ state≠PreConverge ∧ !emergency_active ∧ !pending_lost.is_empty() (sender.rs:3748-3780); pending_lost is fed by queue_losses (3280) from packet-threshold losses (on_ack_received 3002-3004, 3074-3079) or time-threshold losses (on_timer Pto 3113-3122)",
+   "bench_exposure": "kama-product arm (bench main.rs:560/569 → client-core runtime) always; stub 'kama' arm (bench kama.rs:111 Sender::new) also",
+   "telemetry": "KP-CLIENT state= (runtime.rs:1394-1403 FateWindowDiag.sender_state, end-of-run snapshot only; kama_product.rs:565,584); ts CSV pending_lost (kama_product.rs:620-641 from TsSample); diag_loss() packet/time counts captured at runtime.rs:1467-1468 but not printed by bench (kama_product.rs: 0 hits); no RecoverArq-entry counter exists",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a (no flag)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3777-3780 `} else if !self.pending_lost.is_empty() { ... SenderState::RecoverArq`",
+    "sender.rs:3774-3776 `} else if emergency_active { ... SenderState::RecoverFwd` (FWD evaluated before ARQ)",
+    "crates/adaptive-transport/tests/sender_state_matrix.rs:75-76 (R2 emergency→RecoverFwd, R3 pending_lost→RecoverArq), :127-128 allowed-transition rows",
+    "sender.rs:7033-7057 test low_loss_with_healthy_acks_retransmits asserts state()==RecoverArq and retx>0",
+    "runtime.rs:963 `for d in session.on_event($ev, $now)`"
+   ],
+   "notes": "Recovery is an overlay on the base phase: exit returns to Startup if the ramp had not plateaued (sender.rs:3898-3906) and the pacing gain is taken from the base ([TUR-7 β1], INV-RATE-1 completion). RecoverArq re-evaluation happens on every event because update_state runs per event."
+  },
+  {
+   "name": "RecoverFwd trigger — ack_confidence reverse-path silence signal (§5.1) + emergency_active gate (§3/§11)",
+   "spec_refs": [
+    "engine-spec §3 L209 (RECOVER_FWD), L221 (ACTIVE→RECOVER_FWD on ackconf LOW), L237 (FWD>ARQ)",
+    "engine-spec §5.1 L468-500 (silence model: silence=now−max(last_ack, first_send); threshold; EAI floor)",
+    "engine-spec §3.3-C(4) L342-346 (ack_confidence FULL in PRE_CONVERGE)",
+    "engine-spec §16.2 L1078 (KNOWN DEFECT row: anchor `.or()` ≠ max(last_ack, first_send) → stale anchor on idle-resume → immediate RecoverFwd)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "sender.rs:5789-5824 ack_confidence_permille (PreConverge→1000 L5792-5794; active set L5795-5802; anchor L5803-5806; threshold=max(3·srtt, 2·EAI) L5810-5812)",
+    "sender.rs:1378 ACK_SILENCE_SRTT_MULT=3; 1444 K_CONF_EAI=2; 1619-1620 last_ack_ns/first_send_ns; writes at 2888 (on_ack) and 5756 (first track_sent)",
+    "sender.rs:3744-3746 health→emergency.update→last_recovery; 3752-3753 emergency_active = level>Arq || decision.mode==Emergency; 3774-3776 → RecoverFwd"
+   ],
+   "product_call_chain": "runtime.rs:963 on_event → sender.rs:2143 on_event_core → 3742 update_state: 3744 ack_confidence_permille → 3745 emergency.update → 3752 emergency_active → 3776 RecoverFwd → 2144 schedule_transmit: 4056 drain_new_data (5684-5692 extra copies) + 4059 plan_forward_duplication → 4071 drain_due_duplicates (5611) → TransmitDecision{Duplicate} → runtime.rs:1049 TxClass::Dup → seal_send! → sock.send (runtime.rs:948) + stats.tx_dup_bytes (936)",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on; HysteresisController initial level Arq (sender.rs:1791); fixture escalate<300‰ / de-escalate>700‰ / dwell 1000 ms (emergency.rs:91-97)",
+   "activation_condition": "active work (inflight|pending_lost|tx_queue|dup_queue non-empty) ∧ silence = now − last_ack_ns.or(first_send_ns) > max(3·srtt, 2·EAI) → confidence = threshold·1000/silence; health<300 → escalate (emergency.rs:159-161) OR fuzzy Mode::EmergencyForwardRedundancy (fusion.rs:542-547); never in PreConverge",
+   "bench_exposure": "kama-product always (no knob); reverse-path-impaired profiles (p5_revpath) exercise it",
+   "telemetry": "KP-CLIENT dup= bytes (stats.tx_dup_bytes) and state= snapshot only; Sender::emergency_level() (5985) and last_recovery() (5980) have ZERO product callers (grep: only sender.rs tests 7011) → no emergency-level/RecoverFwd-entry counter in product",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:5803 `let anchor = match self.last_ack_ns.or(self.first_send_ns)` (spec §16.2 L1078 lists this as a defect vs max())",
+    "sender.rs:5810-5812 threshold = srtt×3 .max(EAI×2)",
+    "sender.rs:6987-7025 test ack_confidence_low_enters_recover_fwd_and_duplicates (RecoverFwd + Duplicate emitted + escalate)",
+    "sender_state_matrix.rs:104 comment: measured `Idle → RecoverFwd` transition (long silence → emergency active)",
+    "sender.rs:8106 test ack_confidence_eai_floor_prevents_false_low"
+   ],
+   "notes": "Wired and exercised, but four spec-listed clock-class/calibration debts remain open (engine §16.2 L1075-1078): escalate is per-call (at the 1 ms Pto pump Arq→Dup3 takes 2 events → ladder effectively binary), de-escalate dwell is 1 s wall-clock, dup_spacing 20 ms wall-clock, anchor `.or()`. health = ack_confidence only (spec §11 L787: f(ack_confidence↑, residual_loss↓) — residual_loss is not part of health)."
+  },
+  {
+   "name": "PRE_CONVERGE recovery freeze (§3.3-C: no loss declaration, no emergency duplication, ack_confidence=FULL, no PTO)",
+   "spec_refs": [
+    "engine-spec §3.3-C L337-352 (bans 1-5)",
+    "engine-spec §3 L226 (PRE_CONVERGE not in ACTIVE)",
+    "engine-spec §16 TV-COLDSTART R14 L961 (state≠RECOVER_FWD ∧ emergency=OFF before first SACK)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "sender.rs:3766-3773 update_state PreConverge branch bypasses emergency/ARQ",
+    "sender.rs:5792-5794 ack_confidence_permille returns 1000 in PreConverge",
+    "sender.rs:3113 on_timer(Pto) skips time-threshold loss in PreConverge",
+    "sender.rs:3074-3079 queue_losses only when state≠PreConverge || srtt.is_some()",
+    "sender.rs:2169-2185 AppData: Idle→PreConverge only if srtt is None, else Startup"
+   ],
+   "product_call_chain": "same as RecoverArq record (update_state per event); exit PreConverge→Startup on first srtt sample (3769-3770)",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "state==PreConverge (first flight, no RTT sample yet)",
+   "bench_exposure": "kama-product every run start; KP-CLIENT left_preconv= (runtime.rs:1410)",
+   "telemetry": "KP-CLIENT left_preconv= and state=",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender_state_matrix.rs:317-328 preconverge_never_enters_recovery (asserts no PreConverge→RecoverArq/RecoverFwd)",
+    "crates/adaptive-transport/tests/sender_loss_path.rs:115 loss_declaration_is_frozen_until_the_first_sack",
+    "sender.rs:6034 preconverge_clean_no_spurious_recovery",
+    "sender.rs:3768 comment `emergency/ARQ/loss burada BYPASS edilir — recovery cold-start'ta DONDURULMUŞ (§3.3-C)`"
+   ],
+   "notes": "Exception: §3.3-B geometric copies and the DR-EST-1 establish probe DO emit Duplicate decisions in PreConverge (by design, spec §3.3-B), counted in tx_dup_bytes."
+  },
+  {
+   "name": "Selective retransmit execution — DeadlineArqScheduler::plan + plan_arq_retransmits (§9)",
+   "spec_refs": [
+    "engine-spec §9 L671-681 (RECOVER_ARQ: missing seqs, priority oldest-deadline, pacing bucket, inflight cap)",
+    "engine-spec §9.1 L683-687 (shared pacing budget, separate queue, ARQ_RETX_CAP [CAL])",
+    "transport-layer-tdd.md §12 L692 (selective retransmit of SACK gaps), L695",
+    "transport-layer-tdd.md §14 INV-ARQ-1 L731; AC-9 L773"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/arq.rs:83-88 ArqScheduler trait; 104-128 DeadlineArqScheduler::plan (sort_by_key deadline_ns; cap check)",
+    "arq.rs:55-79 RetxConfig + fixture (arq_retx_cap 3, reorder_k 3, ρ 2/1, HandToForward) — [CAL] uncalibrated",
+    "sender.rs:1483 arq field; 1794 `arq: DeadlineArqScheduler::new(RetxConfig::fixture())`",
+    "sender.rs:1287-1300 LostRec (deadline_ns, retx_count, send_ns); 3338-3344 push in queue_losses (deadline_ns: now_ns = declaration time)",
+    "sender.rs:5316-5388 plan_arq_retransmits (plan 5326-5328; token 5340; remove 5351; superseded 5354; track_sent Retransmit new seq 5355-5360; decision 5361-5367)"
+   ],
+   "product_call_chain": "runtime.rs:963 on_event → sender.rs:2144 schedule_transmit → 4049-4058 plan_arq_retransmits → TransmitDecision{Retransmit, new seq} → runtime.rs:969-971 carries_unit → seq_to_unit map → 1040-1046 encode_data(seq,unit_id,payload) → 1047-1051 TxClass::Retx → seal_send! (935 tx_retx_bytes) → sock.send; ACK of new seq: runtime.rs:1153-1176 AckFrame::decode → acked_full → Event::AckReceived(AckInfo) → sender.rs:2884 on_ack_received → 2936 inflight.remove",
+   "product_reachable": true,
+   "gate": "none; only fuzzy arq_aggressiveness_permille==0 would suppress (structurally impossible, see fec_dominant record)",
+   "default_state": "always on; arq_aggressiveness from fuzzy consequents arq_light 200 / arq_med 500 / arq_moderate 600 (fusion.rs:367-369)",
+   "activation_condition": "state==RecoverArq ∧ pending_lost non-empty ∧ pacer token available (try_send_pre_parity 5294-5314 → pacer.try_send)",
+   "bench_exposure": "kama-product always; KP-CLIENT retx= bytes (also includes tail probes emitted as Retransmit)",
+   "telemetry": "KP-CLIENT tx=(retx=) bytes (kama_product.rs:562,569 ← runtime.rs:935); ts CSV retx_denied/retx_emitted/pending_lost (kama_product.rs:640-644); sched=[3..5] arq_retransmit_selected/token_denied/wire_emitted only with feature diag-sched-telemetry (sender.rs:4374-4396; adaptive-transport/Cargo.toml:27 default OFF)",
+   "duplicates_or_dead": "none (bench stub kama.rs drives the same Sender directly — a bench duplicate of the runtime, not a mechanism duplicate)",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "arq.rs:112-113 `ordered.sort_by_key(|l| l.deadline_ns)`; arq.rs:8-11 deadline is priority only, no expired-drop",
+    "sender.rs:3341 `deadline_ns: now_ns,` (declaration time → FIFO by declaration)",
+    "sender.rs:5355-5360 track_sent(rec.unit, now_ns, rec.retx_count + 1, TransmitKind::Retransmit) → NEW seq",
+    "runtime.rs:1048 `TransmitKind::Retransmit => TxClass::Retx`",
+    "tests: crates/adaptive-transport/tests/tv_arq.rs:19-163 (g1 deadline priority, g5 paced, expired not dropped); sender.rs:7311 retransmit_references_same_unit_id; crates/adaptive-transport/tests/burst_loss_recovery.rs:108"
+   ],
+   "notes": "(1) Spec §9 'oldest deadline' is realized as oldest-declaration-first: per-unit app deadlines are not carried into LostRec (spec §5 zeyl L429-430 acknowledges); declare_delivery_deadline (sender.rs:4118) feeds only the fusion policy (3494). (2) Spec §9 'inflight cap'e tabi': there is no hard inflight_bytes≤cwnd gate in the scheduler — cwnd acts only through send_rate=min(pacing, cwnd/srtt) (rate.rs:158-176, sender.rs:2309-2323) plus client-core's max_inflight_units=4096 offer gate (runtime.rs:1207). (3) Retransmits carry a NEW seq, so receiver seq-dedup never recognizes them (runtime.rs:1565-1567); unit dedup is in client-core. (4) RetxConfig has no public setter on Sender → cap/K/ρ fixed at fixture in product."
+  },
+  {
+   "name": "Retransmit-vs-DATA scheduling order + K_ARQ_SHARE token share (§13 priority; §16.1 K_ARQ_SHARE row)",
+   "spec_refs": [
+    "engine-spec §13 L899 `priority: retransmit(deadline) > FEC parity > yeni DATA > ACK-only`",
+    "engine-spec §9.1 L685 (retransmits share DATA pacing budget, separate queue, deadline-priority)",
+    "engine-spec §3.3-B [K-D2] L333 (no pacer-bypassing send path; single token bucket)",
+    "engine-spec §16.1 L1001 K_ARQ_SHARE row ([TUR-7 β2]: DATA-first kept as measured decision; every K-th grant retx-first; 4 [CAL {4,8}])"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "sender.rs:4041-4093 schedule_transmit: 4049-4055 every K_ARQ_SHARE-th grant retx-first; 4056 drain_new_data; 4057-4061 RecoverArq/RecoverFwd; 4064 emit_tail_probe; 4070 drain_establish_probe; 4071 drain_due_duplicates; 4075 plan_fec_parity; 4085-4091 CS/bootstrap probes last",
+    "sender.rs:1434 K_ARQ_SHARE=4 (doc 1428-1433); 1653 arq_share_tick",
+    "sender.rs:5294-5314 try_send_pre_parity → single pacer.try_send for DATA/retx/dup/tail/FEC",
+    "sender.rs:4033-4039 doc: DATA-first rationale (completion-optimal)"
+   ],
+   "product_call_chain": "runtime.rs:963 on_event → sender.rs:2144 schedule_transmit (order above) → decisions in Vec order → runtime.rs:963 loop emits in that order",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "DATA-first; retx-first on every 4th schedule grant while RecoverArq ∧ pending_lost>0",
+   "activation_condition": "every schedule_transmit call (every event incl. 1 ms Pto pump runtime.rs:60,1326)",
+   "bench_exposure": "kama-product always",
+   "telemetry": "sched= array (diag_sched_summary) — zeros unless diag-sched-telemetry feature; ts CSV data_denied/retx_denied/retx_emitted/data_emitted",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:4050-4054 `if self.state == SenderState::RecoverArq && !self.pending_lost.is_empty() && self.arq_share_tick.is_multiple_of(K_ARQ_SHARE) { self.plan_arq_retransmits(&mut out, now_ns); }`",
+    "sender.rs:4056 `self.drain_new_data(&mut out, now_ns);` then 4057-4061 recovery",
+    "sender.rs:8023-8053 test arq_share_emits_retx_under_token_starvation",
+    "engine-spec L899 vs L1001: §13 text says retransmit>FEC>DATA while §16.1 row records DATA-first + K_ARQ_SHARE as the measured decision"
+   ],
+   "notes": "Spec-internal inconsistency: §13 priority sentence was not updated when §16.1 K_ARQ_SHARE row amended the order to DATA-first. Code follows §16.1. Two lanes bypass the shared bucket: DR-EST-1 establish probe (5542-5596, token-exempt) and DR-CS-3 bootstrap probe (3172, additive, default OFF)."
+  },
+  {
+   "name": "ARQ_RETX_CAP exhaustion → CapExceeded HandToForward (fire-once forward copy) (§9.1)",
+   "spec_refs": [
+    "engine-spec §9.1 L686 (ARQ_RETX_CAP; exceed → hand to FEC/forward or connection-fail) [CAL]",
+    "engine-spec §5 ZEYL-2 L449-451 (CapExceeded→HandToForward is a re-emission → superseded tombstone)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "arq.rs:27-34 CapExceedPolicy; 117-121 CapExceeded when retx_count ≥ arq_retx_cap (fixture 3, arq.rs:73)",
+    "sender.rs:5369-5384 CapExceeded arm: 5376 mark_tombstone_superseded; 5377-5381 dup_queue.push(DupRec{due now, interval_ns:0})",
+    "sender.rs:3342 LostRec.retx_count from InflightPacket; 5358 retx_count+1 per retransmit"
+   ],
+   "product_call_chain": "plan_arq_retransmits (5369-5384) → dup_queue → sender.rs:4071 drain_due_duplicates (5611-5652) → TransmitDecision{Duplicate} → runtime.rs:1049 TxClass::Dup → seal_send!",
+   "product_reachable": true,
+   "gate": "none; policy fixed by RetxConfig::fixture (HandToForward)",
+   "default_state": "cap 3 retransmits per unit, then forward copy",
+   "activation_condition": "a unit declared lost with retx_count ≥ 3 while in RecoverArq",
+   "bench_exposure": "kama-product (burst/hostile profiles)",
+   "telemetry": "tx_dup_bytes only (indistinguishable from emergency/geometric copies); sched= dup_* with feature",
+   "duplicates_or_dead": "CapExceedPolicy::ConnectionFail variant (separate record, dead)",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "arq.rs:117-121 `if l.retx_count >= self.cfg.arq_retx_cap { RetxDecision::CapExceeded {..} }`",
+    "sender.rs:5377-5381 `self.dup_queue.push(DupRec { due_ns: now_ns, unit: rec.unit, interval_ns: 0 })`",
+    "tv_arq.rs:57 tv_arq_g3_retx_cap_and_policy",
+    "burst_loss_recovery.rs:4 trace `Data → Retx → Retx → Retx → Duplicate` and :108 test"
+   ],
+   "notes": "After hand-off the unit is never abandoned: a lost fire-once copy re-enters via the queue_losses Duplicate branch (3298-3317) as a geometric copy. Cap value is an uncalibrated fixture."
+  },
+  {
+   "name": "CapExceedPolicy::ConnectionFail (cap-exceed alternative)",
+   "spec_refs": [
+    "engine-spec §9.1 L686 (`... veya connection-fail`)"
+   ],
+   "spec_requires_v1": "optional",
+   "implemented": false,
+   "impl_symbols": [
+    "arq.rs:32-33 variant ConnectionFail",
+    "sender.rs:5383 comment only: `// ConnectionFail: spine'da düşür; gerçek impl bağlantı-fail sinyali verir.` (record already removed at 5371 → silent drop)"
+   ],
+   "product_call_chain": "none — RetxConfig::fixture() selects HandToForward (arq.rs:77) and Sender has no RetxConfig setter (retx_cfg/arq set only in new_internal 1794/1919)",
+   "product_reachable": false,
+   "gate": "RetxConfig.cap_exceed (no product setter)",
+   "default_state": "HandToForward (never ConnectionFail)",
+   "activation_condition": "unreachable in product",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "duplicates_or_dead": "dead variant; only callers crates/adaptive-transport/tests/tv_arq.rs:85,100",
+   "feature_off_behavior": "n/a",
+   "classification": "DELETE",
+   "confidence": "high",
+   "evidence": [
+    "grep `CapExceedPolicy::ConnectionFail` → only tv_arq.rs:85, :100",
+    "sender.rs:5371-5383: record is removed from pending_lost before the policy match; ConnectionFail arm has no code → the unit is silently discarded with no typed error"
+   ],
+   "notes": "If ever selected it would silently drop a unit (violates recovery-obsessive base and CLAUDE.md §6 typed-error rule). Either delete the variant or replace with Err(TransportError::FeatureNotImplemented)."
+  },
+  {
+   "name": "fec_dominant retransmit suppression (arq_aggressiveness==0 → empty plan) (§9)",
+   "spec_refs": [
+    "engine-spec §9 L679 (`if fec_dominant: retransmit BASKILA`)",
+    "engine-spec §16.2 L1081 (fuzzy zero-weight fallback row: arq consequents ≥ arq_light ⇒ arq.plan() ==0 branch structurally unreachable — 'sözleşme-notu')"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "arq.rs:106-109 `if arq_aggressiveness_permille == 0 { return Vec::new(); }`",
+    "fusion.rs:505-527 rule consequents arq_light/arq_med/arq_moderate (200/500/600 fusion.rs:367-369); no_rule fallback → arq_light",
+    "sender.rs:5328 plan(&lost, self.last_decision.arq_aggressiveness_permille) — the ONLY consumer of arq_aggressiveness"
+   ],
+   "product_call_chain": "plan_arq_retransmits 5328 → plan(); but arq_aggressiveness_permille ≥ 200 always (weighted average of consequents ≥200; no_rule → 200) → branch never taken",
+   "product_reachable": false,
+   "gate": "fuzzy output (never 0 by construction)",
+   "default_state": "branch inert",
+   "activation_condition": "never in product; only via direct ArqScheduler::plan call (tv_arq.rs:106 g4)",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "duplicates_or_dead": "dead-by-construction branch, spec-acknowledged (§16.2 L1081)",
+   "feature_off_behavior": "n/a",
+   "classification": "DELETE",
+   "confidence": "medium",
+   "evidence": [
+    "fusion.rs:519-521 comment `BEYAN: arq consequent'leri ≥arq_light olduğundan arq==0 artık üretilemez — arq.plan()'ın ==0 baskılama-dalı yapısal-erişilmez`",
+    "grep arq_aggressiveness_permille in sender.rs → 1966 (init), 3425/4215/5290 comments, 5328 (plan call), 7053 (test) — no other actuation"
+   ],
+   "notes": "Broader finding: the fuzzy `arq_aggressiveness` [0..1] output (TDD §5.2 L545; engine §8.4 L648) has no actuation besides this ==0 test — see separate WIRE record. Deleting the branch would require amending the §9 sentence; alternatively keep as documented contract."
+  },
+  {
+   "name": "arq_aggressiveness fuzzy output actuation (§8.4/§5.2: light/med/moderate/reorder-tolerant ARQ)",
+   "spec_refs": [
+    "transport-layer-tdd.md §5.2 L545 `arq_aggressiveness [0..1]`; §5.3 L552-555 (arq=light/moderate/med/reorder-tolerant (RTO↑, fast-rtx↓))",
+    "engine-spec §8.4 L648-653 (same rules)",
+    "engine-spec §5 L463 (loss feeds fec_parity_ratio and arq_aggressiveness)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "fusion.rs:489-560 decide() computes arq_aggressiveness_permille (weighted average)",
+    "sender.rs:5328 sole consumer: passed to DeadlineArqScheduler::plan which only tests ==0 (arq.rs:107)"
+   ],
+   "product_call_chain": "fuzzy_evaluate 3379 → decide → last_decision.arq_aggressiveness_permille → plan() ==0 test only; value magnitude has no effect on retransmit timing, count, cap, or reorder tolerance",
+   "product_reachable": false,
+   "gate": "none",
+   "default_state": "computed every event, effectively unused",
+   "activation_condition": "n/a",
+   "bench_exposure": "none (value not printed)",
+   "telemetry": "none in product (last_decision() accessor 5836 unused by runtime)",
+   "duplicates_or_dead": "reorder tolerance is instead measurement-driven via ReorderTracker (§9.3) — a substitute for the 'reorder-tolerant' rule R4",
+   "feature_off_behavior": "n/a",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "grep `arq_aggressiveness_permille` crates/adaptive-transport/src/sender.rs → only 5328 consumes it",
+    "arq.rs:105-127 plan ignores the magnitude after the ==0 check",
+    "fusion.rs:513-515 R4 `loss LOW ∧ jitter HIGH → fec=0, arq=light` — 'RTO↑, fast-rtx↓' has no actuation path"
+   ],
+   "notes": "Spec defines a continuous ARQ-aggressiveness axis; code degenerates it to a constant-true boolean. Whether v1 needs a real actuation (e.g. retx cap / time-threshold multiplier) is a design decision for the owner; the ReorderTracker covers the reorder-tolerance intent partially."
+  },
+  {
+   "name": "Spurious retransmit detection + adaptive reorder threshold (§9.3, §5 reorder_thresh)",
+   "spec_refs": [
+    "engine-spec §9.3 L691-696 (reorder_thresh=max(K, ρ·recent_max_reorder); original ACK after retransmit → spurious → thresh↑)",
+    "engine-spec §5 L466 (adaptive reordering threshold), L426-431 (Spurious feeds note_spurious + packet-threshold), ZEYL-2 L449-451 (kol-2 late-ACK is canonical spurious confirmation)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "arq.rs:130-162 ReorderTracker (reorder_thresh L145-149; note_spurious L154-156 max-only)",
+    "sender.rs:1666-1667 reorder/retx_cfg; 1918-1919 init",
+    "sender.rs:3002-3003 loss.set_packet_threshold(reorder.reorder_thresh(&retx_cfg)) before every loss.on_ack (3004)",
+    "sender.rs:3031-3032 note_spurious on un-loss; 2991-2993 note_spurious on tombstone kol-2 late-ACK",
+    "crates/adaptive-transport/src/loss.rs:309 set_packet_threshold; 26-27 packet_threshold_lost"
+   ],
+   "product_call_chain": "runtime.rs:1169 Event::AckReceived → sender.rs:2884 on_ack_received → 2955-2996 tombstone hit (kol-2 → note_spurious) / 3008-3039 un-loss (→ note_spurious) → next ACK 3002-3004 packet threshold uses raised k",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "K=3, ρ=2/1 fixture (arq.rs:74-76); recent_max_reorder 0",
+   "activation_condition": "late ACK of a seq previously declared lost (before or after its retransmit)",
+   "bench_exposure": "kama-product (reorder/jitter profiles)",
+   "telemetry": "KP-CLIENT spurious= (runtime.rs:1421 fate.spurious_units ← diag_ledger().2); no reorder_thresh export",
+   "duplicates_or_dead": "spec §9.3 DSACK-like receiver report not implemented (separate record)",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3002-3003 `self.loss.set_packet_threshold(u64::from(self.reorder.reorder_thresh(&self.retx_cfg)));`",
+    "sender.rs:2991-2993 kol-2 `self.reorder.note_spurious(u32::try_from(la.saturating_sub(seq)) ...)`",
+    "tests: tv_arq.rs:43 g2; sender.rs:7399 unloss_cancels_pending_retransmit_and_raises_tolerance; sender_loss_path.rs:214 late_ack_converts_a_declared_loss_into_spurious"
+   ],
+   "notes": "Threshold only grows (arq.rs:153 'küçülmez'); ρ is an uncalibrated fixture."
+  },
+  {
+   "name": "Un-loss: late ACK of a declared-lost seq cancels the pending retransmit (§5 TUR-2a D-1/3)",
+   "spec_refs": [
+    "engine-spec §5 L426-431 (Spurious: pending-retransmit CANCEL + note_spurious + kol-1 RTT)",
+    "engine-spec §16.2 L1082 (loss ledger / UN-LOSS row FIXED [TUR-2a])"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "loss.rs:238 unlossed; 295-301 take_unlossed",
+    "sender.rs:3008-3039 drain pending_lost of unlossed seqs (3020 diag_unloss; 3021 acked_units push → copy cancel; 3027-3029 fate correction; 3031-3032 note_spurious; 3034-3036 kol-1 RTT candidate); 3041-3045 RTT merge"
+   ],
+   "product_call_chain": "runtime.rs:1169 AckReceived → on_ack_received 3004 loss.on_ack → 3008 take_unlossed → pending_lost filtered → no retransmit planned for that seq",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "ACK contains a seq currently in pending_lost (loss ledger Suspected→Spurious)",
+   "bench_exposure": "kama-product",
+   "telemetry": "diag_ledger().0 (unloss count) captured at runtime.rs:1466 into a client diag struct; not printed on the KP-CLIENT line (kama_product.rs grep: 0 hits); spurious= units printed",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3015-3019 `for rec in self.pending_lost.drain(..) { if !unlossed.contains(&rec.seq) { kept.push_back(rec); continue; }`",
+    "sender.rs:7399 test; sender_loss_path.rs:214"
+   ],
+   "notes": "Exactly-once correction of the fate estimator is guarded by retx_count==0 (3027)."
+  },
+  {
+   "name": "Tombstone retained-transmission record + Karn 'superseded' marking (§5 TUR-2b/2c, ZEYL-2/3)",
+   "spec_refs": [
+    "engine-spec §5 L432-458 (active-flight vs tombstone; TTL=K_tomb×T_loss; kol-1/kol-2; superseded marking uniform across ARQ/FWD/HandToForward)",
+    "engine-spec §16.2 K-1 closure L1095-1099"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "sender.rs:1302-1311 TombstoneRec; 1411 K_TOMB=8; 1452 TOMBSTONE_MAX=4096; 1671-1674 tombstones/order/evicted/hits",
+    "sender.rs:3285-3287 expiry; 3346-3373 insert + oldest-first eviction (queue_losses)",
+    "sender.rs:2955-2996 late-ACK hit: kol-1 (2968-2977 bw+RTT sample) / kol-2 (2978-2994 credit_delivered + note_spurious)",
+    "sender.rs:5534-5541 mark_tombstone_superseded; callers 5354 (ARQ), 5376 (HandToForward), 5520 (FWD dup), 5474 (tail probe)",
+    "sender.rs:3126-3139 TTL prune on Timer::Pto; 5396-5440 retire_inflight_to_tombstone (tail probe, no loss declared)"
+   ],
+   "product_call_chain": "queue_losses (from on_ack 3076 / on_timer 3119) → tombstone insert → later ACK runtime.rs:1169 → on_ack_received 2955 tombstones.remove → samples/credit",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on; cap 4096 records",
+   "activation_condition": "any Data/Retransmit-origin loss declaration (Duplicate-origin losses take no tombstone 3298-3300)",
+   "bench_exposure": "kama-product",
+   "telemetry": "diag_tombstone (5968) — product callers: none (only bench stub kama.rs:462); not in FateWindowDiag/KP-CLIENT",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5534-5541 `fn mark_tombstone_superseded ... t.retx_count = t.retx_count.saturating_add(1)`",
+    "sender.rs:2968 `if t.retx_count == 0 {` kol-1 vs 2978 else kol-2",
+    "tests sender.rs:8244 tombstone_recovers_bw_and_rtt_from_late_ack, 8283 karn_superseded_late_ack_credits_without_samples, 8328, 8361; sender_loss_path.rs:148"
+   ],
+   "notes": "TTL is single-arm (message deadline not carried into engine — spec §5 zeyl). Telemetry gap: tombstone hit/evict/ambiguous counters are not observable from the product runtime."
+  },
+  {
+   "name": "Emergency forward duplication of declared-lost units (§11 tiny → D× time-spaced) + RecoverFwd per-DATA extra copies",
+   "spec_refs": [
+    "engine-spec §11 L761-800 (trigger; tiny→duplication D=2..3 spaced; retreat)",
+    "transport-layer-tdd.md §5.6 L570-598; AC-8 L772",
+    "engine-spec §16.2 L1077 (dup_spacing=20 ms wall-clock defect row)",
+    "engine-spec §8.5 L796 / TDD §5.6 L598 (duplication clamped by available_redundancy_budget — see separate WIRE record)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "sender.rs:5514-5528 plan_forward_duplication lost-unit branch (drain pending_lost; factor copies at i·spacing; superseded 5520; interval 0 fire-once)",
+    "sender.rs:5684-5692 drain_new_data: (factor−1) extra copies per new DATA while RecoverFwd",
+    "sender.rs:5739-5745 dup_params (last_recovery Duplication else DEFAULT_DUP_FACTOR=2 / DEFAULT_DUP_SPACING=20 ms, 1380-1381)",
+    "crates/adaptive-transport/src/emergency.rs:183-201 action() (Tiny→Duplication dup2=2/dup3=3, spacing 20 ms fixture 118-126); sender.rs:3746 last_recovery = action(level, Framing::Tiny, ..)",
+    "sender.rs:5611-5652 drain_due_duplicates (token-paced 5622; track_sent Duplicate 5634); DupRec 1313-1321"
+   ],
+   "product_call_chain": "update_state 3776 RecoverFwd → schedule_transmit 4056 drain_new_data (5684-5692) / 4059 plan_forward_duplication (5514-5528) → dup_queue → 4071 drain_due_duplicates → TransmitDecision{Duplicate} → runtime.rs:1049 TxClass::Dup → seal_send! (936 tx_dup_bytes)",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "factor 2 (level Arq/Dup2) or 3 (Dup3); spacing 20 ms",
+   "activation_condition": "state==RecoverFwd (emergency_active) with pending_lost non-empty (lost-unit copies) or new DATA (extra copies)",
+   "bench_exposure": "kama-product (reverse-path / high-loss profiles)",
+   "telemetry": "KP-CLIENT dup= bytes; sched=[6..8] dup_selected/denied/emitted with feature",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5521-5526 `for i in 0..u64::from(factor) { self.dup_queue.push(DupRec { due_ns: now_ns + i.saturating_mul(dur_ns(spacing)), unit: rec.unit, interval_ns: 0 }) }`",
+    "sender.rs:5684-5692 `if self.state == SenderState::RecoverFwd { let (factor, spacing) = self.dup_params(); for i in 1..u64::from(factor) { ... } }`",
+    "sender.rs:6987-7025 test (dup_count>0 in RecoverFwd); tv_emergency.rs:63 g3 action mapping"
+   ],
+   "notes": "(a) Framing hardcoded Tiny (3746) — adequate for product default fec: None (runtime.rs:199) but the SegmentBlock branch is unwired (separate record). (b) With decision.mode==Emergency but level==Arq the default 2× applies (dup_params fallback). (c) Spacing 20 ms wall-clock (spec §16.2 L1077 defect). (d) No redundancy-budget clamp on duplication; only the shared pacer bounds bytes."
+  },
+  {
+   "name": "Pure-silence tail liveness: speculative geometric copies of un-acked inflight DATA in RecoverFwd (§5(b) TUR-1a D-1/1)",
+   "spec_refs": [
+    "engine-spec §5 L419-421 (silence does not raise loss; liveness may trigger probe/retransmit via §5.1 ackconf → RECOVER_FWD speculative copy, counted Duplicate)",
+    "engine-spec §5.1 L475",
+    "engine-spec §12 L877-887 (RETRY_BUDGET deadline-derived; total silence forbidden)",
+    "engine-spec §16.2 L1084 (geometric copy without deadline cap — open row)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "sender.rs:5495-5513 plan_forward_duplication pending_lost-empty branch: inflight Data units without a planned copy → DupRec{due now, interval srtt}",
+    "sender.rs:5644-5651 drain_due_duplicates geometric reschedule ×PC_COPY_MULTIPLIER(2)",
+    "sender.rs:3070-3072 ACK cancels planned copies of acked units"
+   ],
+   "product_call_chain": "RecoverFwd → 4059 plan_forward_duplication → dup_queue → 4071 drain_due_duplicates → Duplicate → TxClass::Dup",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on in RecoverFwd",
+   "activation_condition": "state==RecoverFwd ∧ pending_lost empty ∧ inflight has Data units without pending copy",
+   "bench_exposure": "kama-product (tail-loss/reverse-path profiles)",
+   "telemetry": "tx_dup_bytes only",
+   "duplicates_or_dead": "overlaps in intent with the bounded tail PTO probe (DR-ARQ-PRODUCT-TAIL-1) — both target un-acked tails; tail probe is bounded (cap 3, Retransmit class), this lane is unbounded geometric (Duplicate class)",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:5498-5504 filter `p.origin == TransmitKind::Data` and `!self.dup_queue.iter().any(|d| d.unit.id == u.id)`",
+    "sender.rs:5509 `interval_ns: srtt_ns.max(1), // geometrik reschedule`",
+    "sender.rs:7344 test tail_loss_liveness_without_loss_classification"
+   ],
+   "notes": "Loss metric untouched (spec-conformant). No COPY_MAX_INTERVAL/deadline cap (spec §12 RETRY_BUDGET; §16.2 L1084 open). dup_queue has no explicit SR-AUDIT-001 cap; bounded transitively (≤1 pending copy per inflight unit; inflight ≤ client-core max_inflight_units 4096, runtime.rs:1207)."
+  },
+  {
+   "name": "Lost forward-copy geometric re-plan (P0 burst recovery; queue_losses Duplicate-origin branch)",
+   "spec_refs": [
+    "not described in spec; principle engine-spec §9.1 L686 ('veri ulaşsın'), §12 L877-879 (no count cap, deadline-bounded), §3.3-B reschedule L328"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "sender.rs:3298-3317 queue_losses: Duplicate-origin loss → forget_in_flight; if no planned copy → DupRec{due now+srtt, interval srtt} (geometric via drain_due_duplicates 5644-5651)"
+   ],
+   "product_call_chain": "on_ack/on_timer → queue_losses 3280 → dup_queue → drain_due_duplicates → Duplicate → TxClass::Dup",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "a Duplicate-origin transmission is declared lost (packet/time threshold) and the unit has no pending copy",
+   "bench_exposure": "kama-product burst profiles (GE-burst)",
+   "telemetry": "tx_dup_bytes",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:3309-3315 `if !self.dup_queue.iter().any(|d| d.unit.id == p.unit.id) { ... self.dup_queue.push(DupRec { due_ns: now_ns.saturating_add(srtt_ns), unit: p.unit, interval_ns: srtt_ns.max(1) }) }`",
+    "crates/adaptive-transport/tests/burst_loss_recovery.rs:108 burst_kills_original_three_retx_and_forward_copy_unit_is_still_delivered; :140 tail_burst_is_recovered_by_pto_loop_without_later_packets"
+   ],
+   "notes": "Regression-gated but spec-silent; interval grows without cap (same §16.2 L1084 debt). Suggest a spec amendment note under §11/§12."
+  },
+  {
+   "name": "PRE_CONVERGE programmed geometric copy schedule (§3.3-B) + first-SACK stop",
+   "spec_refs": [
+    "engine-spec §3.3-B L321-334 (t=0 unit; copies at k_base·RTT_floor ×COPY_MULTIPLIER; stop on SACK; no count cap; t₀=wire-emit; copies share pacer)",
+    "engine-spec §3.3-C(5) L347-350 (geometric copy replaces PTO in PRE_CONVERGE)",
+    "engine-spec §12 L877-879 RETRY_BUDGET deadline-derived; §16.1; §16.2 L1084 (no COPY_MAX_INTERVAL in code)",
+    "engine-spec §16 TV-COLDSTART L959-963"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "sender.rs:5693-5707 drain_new_data PreConverge branch: rtt_floor=(size+PC_SACK_WIRE 65)·1e9/PRE_CONVERGE_FLOOR_BW 31; first_delay=3/2·rtt_floor; DupRec{interval=first_delay}",
+    "sender.rs:1384, 1455-1458 constants; 5644-5651 reschedule ×2 in drain_due_duplicates; 3070-3072 ACK stop; 2473-2492 next_timer_deadline_ns source 3",
+    "sender.rs:2169-2185 AppData Idle→PreConverge"
+   ],
+   "product_call_chain": "runtime.rs offer → drive!(Event::AppData) → drain_new_data 5693 → dup_queue → 4071 drain_due_duplicates → Duplicate → runtime.rs:1049 TxClass::Dup",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on for the first flight",
+   "activation_condition": "state==PreConverge at DATA wire-emit",
+   "bench_exposure": "kama-product every run; cold-start profiles",
+   "telemetry": "dup= bytes merged with other dup classes; sched= dup_* with feature",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5698-5707 rtt_floor/first_delay/DupRec push",
+    "sender.rs:5644-5651 `let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER);`",
+    "tests crates/adaptive-transport/tests/cold_start_liveness.rs:79 cold_start_first_loss_recovers_ack_free_but_state_pinned; sender.rs:6034 preconverge_clean_no_spurious_recovery"
+   ],
+   "notes": "COPY_MAX_INTERVAL / deadline-derived RETRY_BUDGET absent (§16.2 L1084 acknowledges). In practice bounded by PreConverge exit (first SACK → copies cancelled + state Startup) or DR-EST-1 lane. PRE_CONVERGE_FLOOR_BW=31 is a [CAL PLACEHOLDER] (1382-1384)."
+  },
+  {
+   "name": "DR-EST-1 establish probe — token-exempt single-slot PreConverge copy lane (default ON)",
+   "spec_refs": [
+    "not in spec; CONFLICTS with engine-spec §3.3-B [K-D2] L333 (`pacer'ı baypas eden gönderim yolu YOK`) and §13 L890-899 (single token bucket)",
+    "code rationale sender.rs:1385-1389 (S2-REGION rt60d300 0/40 establishment failure)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "sender.rs:1536-1541 fields; 1819 `establish_probe_enabled: true`; 1389-1390 ESTABLISH_PROBE_INITIAL_NS 500 ms / CAP 8 s",
+    "sender.rs:5542-5596 drain_establish_probe (no try_send; earliest-due §3.3-B copy; keeps geometric reschedule; backoff ×2 to 8 s)",
+    "sender.rs:5598-5604 set_establish_probe; 5607-5609 diag_establish_probe_emitted; 4070 call site; 2494-2500 wakeup source 3b"
+   ],
+   "product_call_chain": "schedule_transmit 4070 → drain_establish_probe → TransmitDecision{Duplicate} → runtime.rs:1049 TxClass::Dup → seal_send!",
+   "product_reachable": true,
+   "gate": "Sender::set_establish_probe(bool) — no RuntimeConfig field; runtime.rs has no caller → cannot be disabled from product config",
+   "default_state": "ON (sender.rs:1819)",
+   "activation_condition": "state==PreConverge ∧ dup_queue non-empty ∧ now ≥ establish_due_ns (first due 500 ms after first copy planned; then 1,2,4,8,8.. s)",
+   "bench_exposure": "kama-product always; KP-CLIENT establish_tx= (runtime.rs:1412 → kama_product.rs:565,587)",
+   "telemetry": "KP-CLIENT establish_tx= (diag_establish_probe_emitted)",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "if set_establish_probe(false): lane inert; §3.3-B copies then only via paced drain_due_duplicates",
+   "classification": "SHIP",
+   "confidence": "low",
+   "evidence": [
+    "sender.rs:5573-5581 emits without try_send: `let dup = self.dup_queue.remove(i); let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);`",
+    "sender.rs:4065-4069 comment `TEK datagram'ı token-MUAF geçirir; INV-RATE-1'e dokunmaz (send_rate/pacer-rate değişmez — ayrı bounded yan-kol)`",
+    "tests crates/adaptive-transport/tests/establish_probe.rs:34,57,85"
+   ],
+   "notes": "Implemented, wired, default ON and exercised — but it is a pacer-bypassing send path which §3.3-B [K-D2] explicitly forbids. Bounded (≤ ~4 datagrams per 10 s at 1 kbps). Needs either a spec amendment ([AMENDMENT-N] under §3.3-B) or a product knob. Classified SHIP only because it is the shipped default; the spec conflict is an open question."
+  },
+  {
+   "name": "Bounded tail-loss PTO probe (DR-ARQ-PRODUCT-TAIL-1 / KAMA-TAIL-V1) — realization of spec §12 PTO",
+   "spec_refs": [
+    "engine-spec §12 L868-873 (PTO = srtt + max(4·rttvar, min_pto) + max_ack_delay; exponential backoff; probe/retransmit; does not reduce rate)",
+    "engine-spec §3.1 L262 arm_pto_timer; §3.2 L274 reset_pto_timer; §3.3-C(5) L347-350 (no PTO in PRE_CONVERGE)",
+    "engine-spec §9.2 L689"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/tail_recovery.rs:18-33 TailRecoveryConfig; 36-55 Default (enabled:false); 72-84 validated_v1 (enabled:true, 10 ms/10 s/30 s, initial 1 s, cap 3); 148-167 base/current PTO; 192-244 on_timer; 253-257 on_probe_sent",
+    "sender.rs:1498 tail_recovery; 1801 default OFF; 2056 set_tail_recovery_config; 3144-3157 on_timer(Pto) → tail_probe_pending; 5442-5485 emit_tail_probe (token 5459; retire 5473; superseded 5474; Retransmit new seq 5475-5482; cap spent 5483); 3082-3089 ACK progress/disarm; 2532-2540 tail_probe_deadline_ns; 4064 call order",
+    "crates/client-core/src/lib.rs:82-83 ClientSession::new → set_tail_recovery_config(validated_v1())"
+   ],
+   "product_call_chain": "runtime.rs:815 ClientSession::new (lib.rs:82-83 tail ON) → 1 ms Pto pump (runtime.rs:60 PACE_TICK, 907, 1326, 1373) → sender.rs:3144 tail_recovery.on_timer → ProbeDue → 3155 tail_probe_pending → schedule_transmit 4064 emit_tail_probe → TransmitDecision{Retransmit} → runtime.rs:1048 TxClass::Retx → seal_send!; ACK progress via on_ack_received 3082-3089",
+   "product_reachable": true,
+   "gate": "TailRecoveryConfig.enabled via Sender::set_tail_recovery_config; product hard-codes validated_v1 in ClientSession::new (no RuntimeConfig field)",
+   "default_state": "PRODUCT ON (client-core lib.rs:83 validated_v1); engine Sender::new() OFF (sender.rs:1801; tail_recovery.rs:47); RuntimeConfig::default() has no tail field",
+   "activation_condition": "enabled ∧ oldest inflight seq exists ∧ now−last_progress ≥ PTO ∧ now−armed ≥ PTO ∧ probe_index < 3; PTO = clamp(srtt+4·rttvar+25 ms, 10 ms, 10 s)·2^n ≤ 30 s (1 s if no srtt)",
+   "bench_exposure": "kama-product: always ON, `--kama-arm` ignored (kama_product.rs:674-680, label 'kama-product-tailv1-…'); stub 'kama' arm: `--kama-arm arq` (default, OFF) | `tail-v1` (main.rs:150-151; transport.rs:30-40; kama.rs:111-114)",
+   "telemetry": "retx= bytes (merged with ARQ retransmits — not separable in product); tail_probe_diag/_ext (sender.rs:2096/2110) product callers: only client-core lib.rs tests 224/242; sched=[11] tail_probe_wire_emitted with feature; tail_probe_due_edge_count 2050 unused by runtime",
+   "duplicates_or_dead": "TailRecoveryConfig::default() bounds never campaign-driven (tail_recovery.rs:36-44) — kept as OFF baseline, must not be flipped",
+   "feature_off_behavior": "byte-identical: on_timer returns Idle (tail_recovery.rs:204-207), emit_tail_probe returns (sender.rs:5443-5445), deadline None (2533-2535)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "client-core/src/lib.rs:82-83 `let mut sender = Sender::new(); sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());`",
+    "runtime.rs:815 `let mut session = ClientSession::new();` (comment 813-814: G2 defaults tail-ON validated_v1)",
+    "sender.rs:5475 `let new_seq = self.track_sent(unit, now_ns, retx_count + 1, TransmitKind::Retransmit);`",
+    "tests: tail_recovery.rs:319-581; sender.rs:7072-7305 (OFF exactness, no double-plan, bounded, token cap, ACK race, Karn, determinism); client-core lib.rs:206-240 (R1 rule both directions); crates/kama-integration/tests/fs_arqtail_pins.rs:11-112; examples/dr_arqtail_product.rs"
+   ],
+   "notes": "Spec PTO formula puts min_pto inside max(4·rttvar, min_pto); code clamps the whole sum to [min,max] — minor deviation. Probe is a retransmit of the OLDEST inflight unit (not new data). Known tuning debt recorded at tail_recovery.rs:79-84 (terminal-tail,10,med exhausts cap before packet-threshold ARQ engages)."
+  },
+  {
+   "name": "Timer::Pto product pump (1 ms) — time-threshold loss scan + tombstone TTL prune + tail tick (spec PTO ≠ code Timer::Pto)",
+   "spec_refs": [
+    "engine-spec §12 L868-873 (PTO semantics); §5(b) L413-424 (time-threshold with later-ACK evidence + cadence floor); §3.1 L262"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "sender.rs:953-958 Timer enum (Pto doc: 'zaman-eşiği loss tespiti + probe')",
+    "sender.rs:3110-3158 on_timer(Pto): 3113-3122 detect_time_losses→queue_losses (skipped in PreConverge); 3126-3139 tombstone prune; 3144-3157 tail tick",
+    "loss.rs:667-695 detect_time_losses (seq < largest_acked precondition L673-674, 692); 584-600 next_time_loss_deadline_ns",
+    "runtime.rs:60 PACE_TICK=1 ms; 907 interval; 1326 & 1373 drive!(Event::TimerFired(Timer::Pto)); 62 RTPROP_TICK 200 ms; 1344"
+   ],
+   "product_call_chain": "runtime.rs:907 pace=interval(1 ms) → 1326/1373 drive!(TimerFired(Pto)) → sender.rs:2143 on_event_core → 3093 on_timer → 3110 Pto arm → queue_losses / tail → schedule_transmit",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "1 ms periodic (main loop and drain loop)",
+   "activation_condition": "every 1 ms tick",
+   "bench_exposure": "kama-product always",
+   "telemetry": "diag_loss().1 time-threshold count captured runtime.rs:1468 (not printed by bench); ts CSV sampled on each tick when ts_sample_period_ns set",
+   "duplicates_or_dead": "next_wakeup_ns (sender.rs:2433) exists but the product loop does not sleep on it (runtime.rs:4-6 'tek-kaynak-uyku YOK') — fixed pump instead",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "runtime.rs:60 `const PACE_TICK: Duration = Duration::from_millis(1);`",
+    "runtime.rs:1326 `drive!(Event::TimerFired(Timer::Pto), now); ts_sample!(now);`",
+    "sender.rs:3113 `if self.state != SenderState::PreConverge {` (loss scan frozen in cold-start)"
+   ],
+   "notes": "Naming is misleading: `Timer::Pto` is a periodic scan, not an armed RFC-9002 PTO. The spec's PTO (probe/retransmit trigger with backoff, arm/reset on send/ack) is realized only by the tail_recovery machine; spec §3.1/§3.2 arm/reset map to armed_at/on_ack_progress/disarm."
+  },
+  {
+   "name": "Emergency retreat hysteresis controller (§11 Schmitt X/Y + de-escalate dwell) → EmergencyLevel",
+   "spec_refs": [
+    "engine-spec §11 L781-795 (asymmetric Schmitt + dwell; margins [CAL])",
+    "transport-layer-tdd.md §5.6 L592-598; AC-8 L772",
+    "engine-spec §16 TV-EMERGENCY L954-956",
+    "engine-spec §16.2 L1075-1076 (escalate event-count; dwell 1 s wall-clock — defect rows)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "emergency.rs:79-98 HysteresisConfig fixture (300/700 ‰, dwell 1000 ms); 130-135 RecoveryModeController; 139-179 HysteresisController::update (escalate instant L159-161; de-escalate dwell L162-172); 21-47 EmergencyLevel",
+    "sender.rs:1478-1479 fields; 1791-1792 init (level Arq, fixture); 3744-3746 update per event; 3752 gate; 5985 emergency_level()"
+   ],
+   "product_call_chain": "every on_event → update_state 3745 emergency.update(health) → level → 3746 last_recovery=action(level, Tiny) → dup_params factor; 3752 emergency_active → RecoverFwd",
+   "product_reachable": true,
+   "gate": "none; fixture [CAL] uncalibrated (emergency.rs:89 'KALİBRE DEĞİL')",
+   "default_state": "level Arq; escalate <300 ‰, de-escalate >700 ‰, dwell 1 s",
+   "activation_condition": "health (= ack_confidence_permille) crosses thresholds",
+   "bench_exposure": "kama-product (no knob)",
+   "telemetry": "none in product (emergency_level() has 0 product callers)",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "emergency.rs:159-161 `if health_permille < self.cfg.escalate_permille && self.level < EmergencyLevel::Dup3 { self.level = self.level.escalated(); }`",
+    "emergency.rs:165-171 dwell lock on de-escalate",
+    "tests crates/adaptive-transport/tests/tv_emergency.rs:18-136; emergency_and_accessors.rs:49-136,395"
+   ],
+   "notes": "Spec §16.2 defects remain: escalate per call → at the 1 ms pump Arq→Dup3 in 2 events (ladder effectively binary); dwell 1 s wall-clock may be < 1 srtt on slow links (flap); health lacks residual_loss term."
+  },
+  {
+   "name": "Fuzzy EMERGENCY_FORWARD_REDUNDANCY mode trigger (§8.4 rule: loss HIGH ∧ bw LOW ∧ ackconf LOW) + consumers",
+   "spec_refs": [
+    "engine-spec §8.4 L655; §11 L763",
+    "transport-layer-tdd.md §5.3 L557-560; §5.6 L577-578"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/fusion.rs:542-547 emergency=min3(loss.high, bw.low, ackc.low) > 500 ‰ → Mode::EmergencyForwardRedundancy; 427-432 Mode; 551 compress",
+    "sender.rs:3752-3753 emergency_active consumer; 4568 ControllerDecisionSnapshot.emergency; 4631-4640 FEC latch: emergency → planned_r=0, FecSuppressionReason::EmergencyPendingArbitration"
+   ],
+   "product_call_chain": "fuzzy_evaluate 3379 → 3414 inputs.ack_confidence_permille → fuzzy.decide → last_decision.mode → update_state 3753 → RecoverFwd; and fec_controller_latch 4631 (only when FEC on)",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "Mode::Normal until rule fires",
+   "activation_condition": "loss_windowed_ppm HIGH ∧ log2 bw LOW ∧ ack_confidence LOW memberships (fusion config thresholds)",
+   "bench_exposure": "kama-product (hostile low-bw + reverse-path profiles)",
+   "telemetry": "KP-CLIENT suppress= (fate.fec_last_suppression) shows EmergencyPendingArbitration when FEC is on; no mode counter; last_decision() unused by runtime",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "fusion.rs:543-547 `let emergency = min3(loss.high, bw.low, ackc.low); let mode = if emergency > PERMILLE / 2 { Mode::EmergencyForwardRedundancy } else { Mode::Normal };`",
+    "sender.rs:4631-4640 `if s.emergency { // Temporary safety interlock pending 1b/1d arbitration: requested-GÖRÜNÜR, planned=0.`",
+    "crates/adaptive-transport/tests/tv_fusion.rs:83-93 tv_fusion_d_emergency_trigger"
+   ],
+   "notes": "Spec §11 also prescribes compress=ON and send_rate=minimal-reliable: compute_send_rate (4003-4034) has no emergency branch (rate from bw/qd only; floor via budget::send_rate_final min_rate 31 B/s) — consistent with INV-RATE-1; `compress` output has no transport consumer (app-layer). The FEC interlock is the inverse of spec §11 segment-block→minimal parity."
+  },
+  {
+   "name": "Segment-block emergency MinimalParity action + Framing::SegmentBlock (§11)",
+   "spec_refs": [
+    "engine-spec §11 L768-770 (segment-block/multi-shard → minimal parity shards, ACK-independent)",
+    "transport-layer-tdd.md §5.6 L585-586; AC-8 L772 (block→minimal parity)",
+    "engine-spec §16 TV-EMERGENCY L956 (framing-split RecoveryAction)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "emergency.rs:51-56 Framing; 70-74 RecoveryAction::MinimalParity; 194-199 action() arms (exist)",
+    "sender.rs:3746 `emergency::action(level, Framing::Tiny, ..)` — framing hardcoded Tiny",
+    "RecoveryAction::MinimalParity consumers: none (grep → only sender.rs:13 doc comment and tv_emergency.rs:87-92)",
+    "sender.rs:4631-4640 FEC latch suppresses parity in emergency (planned_r=0)"
+   ],
+   "product_call_chain": "none — MinimalParity is never produced (Tiny hardcoded) and would have no consumer; when FEC is on, emergency sets planned_r=0",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "unwired; product default fec: None (runtime.rs:199) means no block framing exists by default",
+   "activation_condition": "n/a",
+   "bench_exposure": "none (tv_emergency.rs unit test of action() only)",
+   "telemetry": "suppress=EmergencyPendingArbitration observable when FEC on",
+   "duplicates_or_dead": "FEC arbiter/structure gate/speculative lane decide parity in normal mode (FEC cluster) — emergency parity has no lane",
+   "feature_off_behavior": "n/a",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:3746 `self.last_recovery = emergency::action(level, Framing::Tiny, &self.emergency_cfg);`",
+    "grep `MinimalParity` crates → emergency.rs, sender.rs:13 (comment), tests/tv_emergency.rs:87-92 only",
+    "sender.rs:4631-4640 emergency → planned_r: 0"
+   ],
+   "notes": "Spec-required (AC-8) but the code currently does the opposite under emergency with FEC on ('Temporary safety interlock pending 1b/1d arbitration'). Not blocking for the default product (FEC off), blocking for the AC-8 claim. Do not conflate with the speculative FEC lane (closed)."
+  },
+  {
+   "name": "ACK decimation keyed on reverse-path impairment (§2.1/§11/TDD §5.6 sparse ACK)",
+   "spec_refs": [
+    "engine-spec §2.1 L167 (ack_confidence LOW → ACK decimation: ACK_FREQ↑, ACK-only budget↓)",
+    "engine-spec §12 L861 (reverse-path impaired → decimation N↑)",
+    "transport-layer-tdd.md §5.6 L587-590 (sparse cumulative/range ACK only)",
+    "engine-spec §16 TV-COLDSTART R14 L961 (decimation=OFF before first SACK)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "emergency.rs:203-207 ack_decimation(level) — callers: tests only (tv_emergency.rs:96-98)",
+    "receiver.rs:85-126 bandwidth-prior cadence (RETURN_BW_PRIOR 31, ACK_CADENCE_FLOOR_NS, T_SPACING, K_ARR) + 110-111/145-149/373 episode quota R — not keyed on emergency level or ack_confidence",
+    "ack.rs:55-81 AckFrame carries no reverse-path/decimation signal"
+   ],
+   "product_call_chain": "none for level-keyed decimation; receiver cadence path: runtime.rs:2085-2086 Receiver::new/set_quota_r → 1996 on_ack_timer / 2146 on_datagram → tick_ack",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "receiver: ACK_FREQ_N=2 fixed (receiver.rs:76), cadence floor from 31 B/s prior, quota_r=4 (RuntimeConfig::default quota_r runtime.rs:191)",
+   "activation_condition": "n/a",
+   "bench_exposure": "`--quota-r` bench matrix only",
+   "telemetry": "none",
+   "duplicates_or_dead": "emergency::ack_decimation() is a dead helper; receiver cadence/quota is a partial substitute (bandwidth-aware, not impairment-aware)",
+   "feature_off_behavior": "n/a",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "grep `ack_decimation(` crates → only tests/tv_emergency.rs:96-98",
+    "receiver.rs:76 `const ACK_FREQ_N: u32 = 2;` (no runtime adjustment path)",
+    "engine-spec L167 normative sentence with no code path"
+   ],
+   "notes": "Spec does not define how the sender-local ack_confidence would reach the receiver (no wire field); the receiver's own cadence floor already sparsifies ACKs on low return bw. Either amend the spec to accept cadence-based decimation or wire a receiver-side impairment signal."
+  },
+  {
+   "name": "Receiver RX_DUP_SUPPRESS — seq-level duplicate drop + forced ACK (§9.4/§4)",
+   "spec_refs": [
+    "engine-spec §9.4 L698-702",
+    "engine-spec §4 L385, L401 (RX_DUP_SUPPRESS)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/receiver.rs:22-31 RxState::DupSuppress; 222-231 on_datagram dup branch (no delivery, tick_ack(force)); 394-416 record_seq + RX_DEDUP_WINDOW 4096 (126); 431-443 tick_ack"
+   ],
+   "product_call_chain": "server runtime.rs:2085-2086 Receiver::new + set_quota_r → 2146-2153 on_datagram(RxDatagram{seq,unit_id,Data}) → 2156 `if out.delivered.contains(&unit_id)` → admit_chunk; 2168-2171 ack.encode → srv_seal_send; 1996 on_ack_timer",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on; dedup window 4096 seqs",
+   "activation_condition": "datagram whose full seq is already in `received`",
+   "bench_exposure": "kama-product server side",
+   "telemetry": "none (ServerStats runtime.rs:533-578 has no dup counter; RxOutput.was_duplicate not counted)",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "receiver.rs:222-231 `if self.received.contains(&d.seq) { self.state = RxState::DupSuppress; let ack = self.tick_ack(now_ns, true); return RxOutput { delivered: Vec::new(), ack, was_duplicate: true } }`",
+    "receiver.rs:568 test duplicate_suppressed_not_delivered",
+    "runtime.rs:2156 delivered gate"
+   ],
+   "notes": "Engine retransmits/duplicates use NEW seqs (sender.rs:5355-5360, 5634, 5475), so this path never fires for them — only for wire-level replays of the same seq. Unit-level first-delivery dedup lives in client-core (next record). Spec §9.4's 'reports spurious retransmit to sender' intent is realized instead by the original seq's late ACK (tombstone)."
+  },
+  {
+   "name": "Unit-level first-delivery dedup window (client-core DELIVERED_DEDUP_WINDOW=8192)",
+   "spec_refs": [
+    "not in transport spec (engine §4 L405: E2E envelope is final dedup; §9.4 assumes same-seq retransmit); rationale runtime.rs:1565-1569 (26 duplicate deliveries observed in first netem gate run)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "runtime.rs:1570 DELIVERED_DEDUP_WINDOW; 1694-1698 admit_chunk delivered_seen insert / pop_first eviction; 1711-1717 message-id dedup when fragmenting"
+   ],
+   "product_call_chain": "on_datagram delivered → runtime.rs:2156 → admit_chunk 1694 → delivery_tx (app)",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on; 8192 ids per peer",
+   "activation_condition": "unit_id (or message_id) already delivered",
+   "bench_exposure": "kama-product server side; delivered== count in KP-SERVER",
+   "telemetry": "none (no dedup counter)",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "runtime.rs:1694 `if !slot.delivered_seen.insert(unit_id) {`",
+    "runtime.rs:1697-1698 `if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW { slot.delivered_seen.pop_first(); }`",
+    "crates/client-core/tests/runtime_e2e.rs:13 loopback_all_units_delivered_and_acked (indirect)"
+   ],
+   "notes": "Bounded, oldest-evicted; a very late out-of-window duplicate could be re-delivered (E2E layer is final authority per spec §4)."
+  },
+  {
+   "name": "Retransmit/copy cancellation on delivery confirmation — ACK stop (§3.3-B) and FEC RecoveredControl cancel",
+   "spec_refs": [
+    "engine-spec §3.3-B L325 (copies stop when unit confirmed by SACK)",
+    "engine-spec §9 L675-678 (retransmit only missing seqs)",
+    "code contract sender.rs:4792-4794 (K2/M1: do not retransmit what FEC recovered)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "sender.rs:2944 acked_units.push (inflight), 2960 (tombstone hit), 3021 (un-loss); 3070-3072 dup_queue.retain(!acked)",
+    "sender.rs:4778-4804 on_recovered_control: 4796 pending_lost.retain; 4797 diag_recovered_cancels; 4802 dup_queue.retain; 2139-2142 on_event early return (no schedule)",
+    "runtime.rs:1144 drive!(Event::RecoveredControl(RecoveredInfo{units}))"
+   ],
+   "product_call_chain": "ACK: runtime.rs:1169 → on_ack_received → 3070-3072; FEC-RECOVERED control frame: runtime.rs:1144 → sender.rs:2139 on_recovered_control",
+   "product_reachable": true,
+   "gate": "none (RecoveredControl only arrives when FEC is on)",
+   "default_state": "always on",
+   "activation_condition": "ACK of a unit with pending copies; or RECOVERED control naming a unit with pending retransmit/copies",
+   "bench_exposure": "kama-product; FEC arms for RecoveredControl",
+   "telemetry": "KP-CLIENT fec_recovered_ctrl= (stats.fec_recovered_ctrl_units); diag_recovered_cancels (4870) has 0 product callers",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3070-3072 `if !acked_units.is_empty() { self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id)); }`",
+    "sender.rs:4796 `self.pending_lost.retain(|r| r.unit.id != ru.unit_id);`",
+    "sender.rs:6163 test dr_s5_4_recovered_cancels_and_ledger"
+   ],
+   "notes": "Cancellation is by unit id, so copies planned under any seq are cancelled."
+  },
+  {
+   "name": "Duplication redundancy-budget clamp (§8.5 / TDD §5.5-§5.6: duplication clamped by available_redundancy_budget)",
+   "spec_refs": [
+    "engine-spec §8.5 L658-663; §11 L796 (`duplication/parity yine available_redundancy_budget ile clamp`)",
+    "transport-layer-tdd.md §5.5 L603-604; §5.6 L598; §4.4.7 L415-416 and AC-QBENCH-7 L781 (forced-emergency DoS bounded by budget/emergency clamp)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/budget.rs:35-47 budget_cap_permille / parity_final (parity only); 49-54 send_rate_final",
+    "sender.rs:1477 budget_cfg (used for send_rate_final 4034 and parity clamp); no reference in plan_forward_duplication 5494-5528, drain_new_data 5684-5692, drain_due_duplicates 5611-5652"
+   ],
+   "product_call_chain": "none — duplication volume bounded only by the shared pacer token bucket (5622) and factor ≤3",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "no clamp",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "budget.rs:43-47 `parity_final(fuzzy_parity, budget_cap, profile_cap)` — no duplication counterpart",
+    "grep `budget` in plan_forward_duplication/drain_due_duplicates → none"
+   ],
+   "notes": "The pacer bounds total bytes (INV-RATE-1 safe) but not the redundancy fraction; AC-QBENCH-7's 'emergency clamp' claim has no dedicated mechanism for tiny-payload duplication. Matches memory note GAP-A."
+  },
+  {
+   "name": "DSACK-like receiver duplicate report in ACK (§9.3)",
+   "spec_refs": [
+    "engine-spec §9.3 L695 (`DSACK-benzeri: rx duplicate aldığını ACK'te bildirir`); §9.4 L701"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "ack.rs:46-81 AckFrame/AckRange fields — no duplicate indication; receiver.rs:225 only forces an ACK on same-seq duplicate"
+   ],
+   "product_call_chain": "none",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "absent",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "duplicates_or_dead": "obsolete under the per-transmission-seq design: receiver cannot recognize a retransmit (new seq) so a DSACK flag could never fire for engine retransmits; spurious confirmation is delivered by the original seq's late ACK (tombstone kol-2, sender.rs:2978-2994)",
+   "feature_off_behavior": "n/a",
+   "classification": "DELETE",
+   "confidence": "medium",
+   "evidence": [
+    "grep dsack/DSACK/dup in ack.rs → none",
+    "sender.rs:2987-2993 comment: kol-2 late-ACK is the canonical spurious confirmation"
+   ],
+   "notes": "Recommend a spec amendment note (§9.3) recording that DSACK semantics are superseded by tombstone late-ACK under seq-per-transmission; otherwise the sentence reads as an unimplemented requirement."
+  }
+ ],
+ "open_questions": [
+  "DR-EST-1 establish probe (sender.rs:5542-5596, default ON at 1819) bypasses the token bucket, which engine-spec §3.3-B [K-D2] L333 and §13 explicitly forbid ('pacer'ı baypas eden gönderim yolu YOK'); no RuntimeConfig knob exists to disable it. Spec amendment ([AMENDMENT-N] under §3.3-B) or re-gating required — which?",
+  "Scheduling priority: engine-spec §13 L899 says retransmit > FEC parity > new DATA, while §16.1 K_ARQ_SHARE row L1001 and sender.rs:4033-4056 implement DATA-first with retx-first on every 4th grant. Which sentence is authoritative for v1 conformance; should §13 be patched?",
+  "Emergency + FEC: sender.rs:4631-4640 sets planned_r=0 under Mode::EmergencyForwardRedundancy ('Temporary safety interlock pending 1b/1d arbitration') — the inverse of §11 segment-block→minimal parity (AC-8). Is the 1b/1d arbitration closed and where is its decision record?",
+  "fuzzy arq_aggressiveness (TDD §5.2/§8.4) has no actuation beyond the ==0 test (sender.rs:5328 → arq.rs:107) and can never be 0 (fusion.rs:519-527). Does v1 require a real ARQ-aggressiveness actuation (retx cap / time-threshold multiplier), or should the spec drop the axis?",
+  "dup_queue (Vec) and pending_lost (VecDeque) have no explicit SR-AUDIT-001 cap in sender.rs; bounded only transitively via inflight ≤ client-core max_inflight_units=4096 (runtime.rs:1207) × factor ≤3 (+1 geometric reschedule per unit). Is an explicit cap required?",
+  "Geometric copies (PreConverge §3.3-B, silence liveness, lost-Duplicate re-plan) have no COPY_MAX_INTERVAL / deadline-derived RETRY_BUDGET (spec §12 L877-879); engine-spec §16.2 L1084 lists this as open. v1 requirement or deferred?",
+  "ack_confidence anchor uses last_ack_ns.or(first_send_ns) (sender.rs:5803) vs spec §5.1 max(last_ack, first_send); §16.2 L1078 records idle-resume → immediate RecoverFwd; sender_state_matrix.rs:104 observed Idle→RecoverFwd. Still open — fix scheduled?",
+  "Emergency hysteresis fixture (300/700 ‰, 1 s dwell, 20 ms spacing) is uncalibrated ([CAL]) and has spec-listed clock-class defects (§16.2 L1075-1077: escalate per 1 ms event → effectively binary ladder). Is TV-EMERGENCY conformance considered met with fixture values?",
+  "Product telemetry gaps for this cluster: no emergency-level / RecoverFwd-entry / tombstone / tail-probe counters reach KP-CLIENT (accessors emergency_level 5985, last_recovery 5980, diag_tombstone 5968, tail_probe_diag 2096, diag_recovered_cancels 4870 have zero product callers); retx= bytes merge ARQ retransmits with tail probes. Is this acceptable for TDD §4.4.4 'ARQ EFFICIENCY' (L347-348 spurious/needless retransmit ratio)?",
+  "Spec §9 'inflight cap'e tabi' / §14 inflight_bytes ≤ cwnd: no hard inflight gate exists in the scheduler; cwnd acts only via send_rate=min(pacing, cwnd/srtt) (rate.rs:158-176). Cross-check with the rate cluster whether this satisfies §14.",
+  "fec_dominant suppression branch (arq.rs:106-109) is structurally unreachable by construction (spec §16.2 L1081 'sözleşme-notu'): delete the branch (requires §9 L679 amendment) or keep as documented contract?",
+  "Unverified: whether TsSample.sched_retx_denied/sched_retx_emitted (kama_product.rs:640-644, via Sender::diag_ts_sample sender.rs:4271) are populated without the diag-sched-telemetry feature; and which public struct receives ledger_unloss/loss_declared_pkt/time at runtime.rs:1462-1468 (no bench consumer found)."
+ ]
+}

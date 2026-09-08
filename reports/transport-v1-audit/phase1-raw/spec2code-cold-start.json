@@ -1,0 +1,754 @@
+{
+ "cluster": "cold-start",
+ "mechanisms": [
+  {
+   "name": "PreConverge cold-start state (Idle→PreConverge on first AppData; exit only on first RTT sample from an original-DATA SACK or authenticated CS echo)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3 state table L205, L217-218, L226-228, L246",
+    "specs/adaptive-transport-engine-spec.md §3.3 L279-290 (giriş/çıkış)",
+    "specs/adaptive-transport-engine-spec.md §3.3-D L349-355 (kademeli tahliye)",
+    "specs/adaptive-transport-engine-spec.md Ek-B L1134-1138"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:58 SenderState::PreConverge",
+    "crates/adaptive-transport/src/sender.rs:2170-2182 AppData: Idle→PreConverge iff rtt.srtt()==None else Startup",
+    "crates/adaptive-transport/src/sender.rs:2927-2951 Karn: RTT sample only from p.origin==TransmitKind::Data",
+    "crates/adaptive-transport/src/sender.rs:3058 rtt.observe",
+    "crates/adaptive-transport/src/sender.rs:3764-3773 update_state: PreConverge→Startup iff srtt.is_some()",
+    "crates/adaptive-transport/src/sender.rs:2195-2200 Event::CsProbeEcho ingest (ungated)",
+    "crates/client-core/src/lib.rs:81-84 ClientSession::new, :98 on_event"
+   ],
+   "product_call_chain": "runtime.rs:1263 drive!(Event::AppData) → lib.rs:98 ClientSession::on_event → sender.rs:2170-2182 state=PreConverge → sender.rs:4056 drain_new_data → TransmitDecision::Data → runtime encode_data + seal_send → UDP. Return: runtime.rs:1169 Event::AckReceived(AckInfo) → sender.rs:2927-3058 (Karn gate, rtt.observe) → sender.rs:3764-3773 Startup. Diag read at runtime.rs:1395-1411.",
+   "product_reachable": true,
+   "gate": "none (structural; no config)",
+   "default_state": "always active",
+   "activation_condition": "first AppData while state==Idle and rtt.srtt()==None",
+   "bench_exposure": "every kama-product run; KP-CLIENT prints state= and left_preconv= (crates/bench/src/kama_product.rs:565, 584-585)",
+   "telemetry": "FateWindowDiag.sender_state (runtime.rs:372, 1395-1404); left_preconverge = diag_rtt_sample_count()>0 (runtime.rs:375, 1410); rtt_samples (runtime.rs:1411); runtime_e2e.rs:789 run_reports_whether_the_session_ever_established",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:2175-2181 `self.state = if self.rtt.srtt().is_none() { PreConverge } else { Startup }`",
+    "sender.rs:3767-3772 `if self.rtt.srtt().is_some() { Startup } else { PreConverge }`",
+    "sender.rs:2941/2951 `p.origin == TransmitKind::Data` RTT gate",
+    "runtime.rs:1263 `drive!(Event::AppData(OpaqueUnit { id, size }), now)`",
+    "runtime.rs:1169 `Event::AckReceived(AckInfo {`",
+    "runtime.rs:1410 `left_preconverge: session.sender().diag_rtt_sample_count() > 0`"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a (no switch)",
+   "notes": "Deviation from the literal spec transition table: spec L217 says IDLE --data--> PRE_CONVERGE unconditionally; code re-enters Startup (not PreConverge) once an srtt exists (sender.rs:2175-2181 'PreConverge'e geri DÖNÜLMEZ'). Consistent with §3.3 principle 'HİÇ ölçüm yokken' but the table should be amended."
+  },
+  {
+   "name": "PreConverge pacing floor prior PRE_CONVERGE_FLOOR_BW=31 B/s ([R8]) + channel-survival min_rate in all states ([R2]) + sub-byte token refill ([R1])",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-A L292-318 ([R8], [R1], [R2])",
+    "specs/adaptive-transport-engine-spec.md §16.1 L976-984 (PRE_CONVERGE_FLOOR_BW, min_rate_bps rows, [CAL PLACEHOLDER])",
+    "specs/adaptive-transport-engine-spec.md Ek-B L1140-1143 (min_rate=10000 MUST-NOT-APPLY)",
+    "specs/adaptive-transport-engine-spec.md §8.2 L664-665"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:1382-1384 const PRE_CONVERGE_FLOOR_BW=31",
+    "crates/adaptive-transport/src/sender.rs:4001-4008 compute_send_rate early-return in PreConverge",
+    "crates/adaptive-transport/src/sender.rs:4032 budget::send_rate_final(min_rate_bps)",
+    "crates/adaptive-transport/src/budget.rs:26-29 BudgetConfig::fixture min_rate_bps=31 ([R2]; 10_000 CANCELLED)",
+    "crates/adaptive-transport/src/pacer.rs:15-23, 43-52 refill_rem sub-byte precision",
+    "crates/adaptive-transport/src/sender.rs:1793 TokenBucket::new(min_rate_bps, DEFAULT_BURST_CAP)"
+   ],
+   "product_call_chain": "runtime.rs on_event (every event) → sender.rs:2214-2220 compute_send_rate → pacer.set_rate → sender.rs:4056 drain_new_data try_send_pre_parity → wire",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always active (31 B/s in PreConverge; min_rate 31 B/s all states)",
+   "activation_condition": "state==PreConverge (floor); all states (min_rate)",
+   "bench_exposure": "every kama-product run; no direct print (Sender::diag_rate() at sender.rs:2028-2030 is not surfaced in KP-CLIENT)",
+   "telemetry": "Sender::diag_rate() (pacer_rate_bps, tokens, burst_cap) sender.rs:2028; not in ClientStats/FateWindowDiag",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:4006-4008 `if self.state == SenderState::PreConverge { return PRE_CONVERGE_FLOOR_BW; }`",
+    "budget.rs:29 `min_rate_bps: 31, // [R2] kanal-hayatta-kalma floor ... eski 10_000 CANCELLED`",
+    "pacer.rs:47-51 refill numer/1e9 with refill_rem carry",
+    "spec L980-982 rows PRE_CONVERGE_FLOOR_BW / min_rate_bps"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Constant is [CAL PLACEHOLDER] (sender.rs:1383; spec §16.1 says calibrate from netem lowband baseline) — never calibrated. Operator `bandwidth_class` prior override (§3.3-A L295) is not implemented (see separate record)."
+  },
+  {
+   "name": "Channel-derived burst cap ([R3/ADIM-6]) + PreConverge single-unit clamp ([K-D2]) + PreConverge-exit micro-burst grant (fill_to_cap)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-A [K-D2] L300-304",
+    "specs/adaptive-transport-engine-spec.md §3.3-A [R3] L314-317",
+    "specs/adaptive-transport-engine-spec.md §16.1 BURST_WINDOW row L983",
+    "specs/adaptive-transport-engine-spec.md §3.3-D L349-355"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:1459-1462 BURST_WINDOW_NS=40 ms",
+    "crates/adaptive-transport/src/sender.rs:2222-2242 window_bytes clamp(burst_lo, burst_hi) → pacer.set_burst_cap",
+    "crates/adaptive-transport/src/sender.rs:2243-2247 fill_to_cap on PreConverge exit",
+    "crates/adaptive-transport/src/pacer.rs:68-80 set_burst_cap / fill_to_cap"
+   ],
+   "product_call_chain": "runtime on_event → sender.rs:2226-2242 set_burst_cap → sender.rs:4056 drain_new_data (try_send) → wire; exit grant at 2243-2247",
+   "product_reachable": true,
+   "gate": "none — but the lower clamp bound is raised by initial_window.bytes in PreConverge (sender.rs:2234-2240), see [IW] record",
+   "default_state": "always active; single-unit PreConverge clamp effective ONLY when initial_window_bytes==0",
+   "activation_condition": "every event; PreConverge-exit grant once per transition",
+   "bench_exposure": "every kama-product run; bench default initial_window_bytes=0 ⇒ single-unit clamp active in bench (unlike product default)",
+   "telemetry": "Sender::diag_rate() burst_cap (sender.rs:2028); diag-sched-telemetry data_token_denied (sender.rs:5666-5669, feature only)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:2228 `let window_bytes = send_rate.saturating_mul(BURST_WINDOW_NS) / 1_000_000_000;`",
+    "sender.rs:2239-2242 `burst_lo = front_size.max(iw); burst_hi = front_size.max(2*DEFAULT_MTU).max(iw); set_burst_cap(window_bytes.clamp(burst_lo, burst_hi))`",
+    "sender.rs:2243-2247 `if prev_state == PreConverge && self.state != PreConverge { self.pacer.fill_to_cap(); }`",
+    "pacer.rs:70-71 `self.burst_cap = cap.max(1); self.tokens = self.tokens.min(self.burst_cap);`"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "With the product default IW=2400 B the [K-D2] single-unit PreConverge clamp is NOT in effect (burst_lo = max(front, 2400)); [K-D2] holds only with initial_window_bytes==0 (transport default and bench default)."
+  },
+  {
+   "name": "[IW] Initial window / first-flight budget in PreConverge (InitialWindowConfig, RuntimeConfig.initial_window_bytes)",
+   "spec_refs": [
+    "NOT SPECIFIED as a mechanism; CONFLICTS with specs/adaptive-transport-engine-spec.md §3.3-A [K-D2] L300-304 ('DEFAULT_BURST_CAP (2×MTU) t0'da tüm kuyruğu tek hamlede wire'a çıkarır → floor'u baypas eder ... BURST clamp da ZORUNLU ... PRE_CONVERGE'de burst tek-birime clamp'lenir')",
+    "specs/adaptive-transport-engine-spec.md §16 TV-COLDSTART-1 L959-962 (tx_wire ≤ 1.15×altsınır; no spurious first copy)"
+   ],
+   "spec_requires_v1": "obsolete",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:294-322 InitialWindowConfig (Default bytes=0; doc: 'KALİBRE EDİLMEMİŞ: default flip ölçüm ister')",
+    "crates/adaptive-transport/src/sender.rs:1716 field; :1951 InitialWindowConfig::default()",
+    "crates/adaptive-transport/src/sender.rs:2229-2242 IW as clamp lower bound in PreConverge",
+    "crates/adaptive-transport/src/sender.rs:4199-4209 set_initial_window / initial_window",
+    "crates/client-core/src/runtime.rs:102-117 RuntimeConfig.initial_window_bytes (doc: DEFAULT AÇIK; n=6/cell ×2 cells)",
+    "crates/client-core/src/runtime.rs:195 default = adaptive_transport::pacer::DEFAULT_BURST_CAP (pacer.rs:9 = 2×DEFAULT_MTU = 2400)",
+    "crates/client-core/src/runtime.rs:856-858 set_initial_window"
+   ],
+   "product_call_chain": "runtime.rs:856-858 session.sender_mut().set_initial_window(bytes) → sender.rs:2234-2242 burst_lo/burst_hi raised in PreConverge → pacer.set_burst_cap keeps the full initial token credit → sender.rs:4056 drain_new_data emits up to 2400 B of originals at t0 → wire",
+   "product_reachable": true,
+   "gate": "RuntimeConfig.initial_window_bytes (>0 = on)",
+   "default_state": "PRODUCT ON: 2400 B (runtime.rs:195). TRANSPORT OFF: 0 (sender.rs:1951). BENCH OFF: 0 (main.rs:122-124 default_value_t=0 → kama_product.rs:161 passthrough)",
+   "activation_condition": "state==PreConverge && initial_window.bytes>0; consumes only the pre-filled bucket once (31 B/s floor thereafter)",
+   "bench_exposure": "`--initial-window-bytes N` (main.rs:122-124, 237-239); default 0 ⇒ the kama-product bench arm does NOT exercise the shipping default; metadata tag '-iw{N}' (kama_product.rs:688-690)",
+   "telemetry": "none direct in runtime stats; tests/initial_window.rs first_flight_originals; client-core/tests/runtime_e2e.rs:762 shipped_default_now_carries_an_initial_window pins the default value only",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "medium",
+   "evidence": [
+    "spec L300-304 [K-D2] 'PRE_CONVERGE'de burst tek-birime clamp'lenir → ilk birim t=0'da gider, kalanı floor-refill yayar'",
+    "sender.rs:314-315 '`bytes == 0` (DEFAULT) = mevcut davranış BİREBİR ... KALİBRE EDİLMEMİŞ: default flip ölçüm ister'",
+    "runtime.rs:195 `initial_window_bytes: adaptive_transport::pacer::DEFAULT_BURST_CAP,`",
+    "runtime.rs:112-116 'Ölçüm (netem 200 ms RTT / %50 kayıp, n=6/hücre, 2 hücre)'",
+    "main.rs:123-124 `#[arg(long, default_value_t = 0)] initial_window_bytes: u64`",
+    "kama_product.rs:161 `initial_window_bytes,` (verbatim passthrough; :737-738 test cfgs use 0)"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "bytes=0 ⇒ clamp expression byte-identical to pre-IW behaviour (single-unit first flight per [K-D2])",
+   "notes": "Product default ON contradicts normative [K-D2] (spec wins per CLAUDE.md §3) and the transport crate's own 'KALİBRE EDİLMEMİŞ' doc; only n=6/cell evidence. Bench default (0) ≠ product default (2400) ⇒ all kama-product bench cold-start numbers measure a non-shipping first flight unless --initial-window-bytes 2400 is passed. Decision required: amend spec [K-D2] via D0→D1 amendment or flip RuntimeConfig default to 0."
+  },
+  {
+   "name": "§3.3-B programmed geometric copy schedule in PreConverge (forward-redundancy driver; stop on SACK)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-B L319-334",
+    "specs/adaptive-transport-engine-spec.md §3.3-C/5 L345-348",
+    "specs/adaptive-transport-engine-spec.md §12 L872-873, L876-877 (RETRY_BUDGET deadline-derived)",
+    "specs/adaptive-transport-engine-spec.md §16 TV-COLDSTART-1 L959-962"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:1453-1458 PC_SACK_WIRE=65, PC_KBASE=3/2, PC_COPY_MULTIPLIER=2 ([CAL PLACEHOLDER])",
+    "crates/adaptive-transport/src/sender.rs:1313-1319 DupRec.interval_ns",
+    "crates/adaptive-transport/src/sender.rs:5693-5707 first copy scheduled at wire-emit t0 ([K-D2])",
+    "crates/adaptive-transport/src/sender.rs:5613-5651 drain_due_duplicates (try_send_pre_parity gate at :5622; ×2 reschedule :5642-5651)",
+    "crates/adaptive-transport/src/sender.rs:3069-3072 stop-on-ACK (dup_queue.retain)",
+    "crates/adaptive-transport/src/sender.rs:2472-2480 next_timer_deadline candidate"
+   ],
+   "product_call_chain": "sender.rs:5693-5707 (in drain_new_data, PreConverge) → dup_queue → schedule_transmit sender.rs:4071 drain_due_duplicates → TransmitDecision::Duplicate → runtime encode_data + seal_send → wire; cancelled by runtime.rs:1169 AckReceived → sender.rs:3069-3072",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always active",
+   "activation_condition": "each original DATA wire emission while state==PreConverge; first copy at 1.5×(size+65)/31 s after emit; then ×2",
+   "bench_exposure": "every kama-product run; KP-CLIENT dup= (tx_dup_bytes, kama_product.rs:563, 573); diag-sched-telemetry dup_* (sender.rs:1158-1162) via FateWindowDiag.sched (runtime.rs:429-431)",
+   "telemetry": "ClientStats.tx_dup_bytes; sched[6..9] under diag-sched-telemetry; tests/cold_start_liveness.rs liveness bound",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5698-5706 rtt_floor=(size+65)/31 s; first_delay=rtt_floor×3/2; DupRec{interval_ns:first_delay}",
+    "sender.rs:5644-5651 `next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER)` (no cap)",
+    "sender.rs:3069-3072 `self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id));`",
+    "sender.rs:5622 `if !self.try_send_pre_parity(self.dup_queue[i].unit.size, true) { ... break; }` (copies go through the pacer)"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Spec items NOT implemented: COPY_MAX_INTERVAL cap and deadline-derived RETRY_BUDGET (§12 L876-877) — repo-wide grep COPY_MAX_INTERVAL/RETRY_BUDGET = 0 hits; interval grows ×2 unbounded (saturating). Constants are [CAL PLACEHOLDER], uncalibrated (spec §3.3-B: 'UYDURULMAZ')."
+  },
+  {
+   "name": "§3.3-C PreConverge freezes: no loss declaration (packet+time threshold), no PTO loss, no emergency/RECOVER_*, ack_confidence pinned to 1000 ([R14])",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-C L336-348",
+    "specs/adaptive-transport-engine-spec.md §5.1 [R14] L478-480",
+    "specs/adaptive-transport-engine-spec.md §12 L872-873",
+    "specs/adaptive-transport-engine-spec.md §3 L226-228 (PRE_CONVERGE not ACTIVE)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:2999-3001, 3074-3078 queue_losses gated on state!=PreConverge || srtt.is_some()",
+    "crates/adaptive-transport/src/sender.rs:3111-3120 Timer::Pto time-threshold skipped in PreConverge",
+    "crates/adaptive-transport/src/sender.rs:5790-5794 ack_confidence_permille returns 1000 in PreConverge",
+    "crates/adaptive-transport/src/sender.rs:3764-3773 update_state PreConverge branch bypasses emergency/pending_lost",
+    "crates/adaptive-transport/src/sender.rs:3488 converged flag to fusion policy"
+   ],
+   "product_call_chain": "runtime drive (AckReceived/TimerFired Pto every 1 ms PACE_TICK runtime.rs:60,907,1327) → sender on_ack_received / on_timer / fuzzy_evaluate → update_state",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always active",
+   "activation_condition": "state==PreConverge",
+   "bench_exposure": "every kama-product run (state= in KP-CLIENT)",
+   "telemetry": "FateWindowDiag.sender_state; diag_loss_pkt / diag_loss_time counters (sender.rs:3077, 3119)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3074 `if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() { ... queue_losses`",
+    "sender.rs:3113 `if self.state != SenderState::PreConverge { ... detect_time_losses`",
+    "sender.rs:5792-5794 `if self.state == SenderState::PreConverge { return 1000; }`",
+    "sender.rs:3766-3773 PreConverge branch precedes `emergency_active` / `pending_lost` branches"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "PTO timer itself is still driven (runtime pumps Timer::Pto at 1 ms); only its loss-declaration effect is frozen, matching spec §3.3-C/5 intent (schedule_transmit still runs)."
+  },
+  {
+   "name": "FEC structural gate BlockedPreConverge ([KURULUŞ-GUARD]; TDD §10 'kör FEC YOK' in cold start)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §10 L675-676",
+    "specs/adaptive-transport-engine-spec.md §3.3-D L349-355 (bw lock separate from RTT lock)",
+    "specs/fec-core-tdd-v3.0.md L430-431 (bootstrap-FEC rejected in Alpha; survival = PRE_CONVERGE work)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:263-264 GateOutcome::BlockedPreConverge; :286 index 6",
+    "crates/adaptive-transport/src/sender.rs:3653-3665 structure-gate early return in PreConverge",
+    "crates/client-core/src/runtime.rs:433-438 FateWindowDiag.gate_outcomes; :1464 diag_gate_outcomes()"
+   ],
+   "product_call_chain": "runtime on_event → sender fuzzy/structure gate (3653-3665) → GateOutcome::BlockedPreConverge → no parity latch → no FecParity decisions in PreConverge",
+   "product_reachable": true,
+   "gate": "effective only when RuntimeConfig.fec is Some (FEC path otherwise inert)",
+   "default_state": "always active when FEC on; RuntimeConfig.fec default None",
+   "activation_condition": "state==PreConverge at gate evaluation",
+   "bench_exposure": "FEC arms (`--fec-profile/--fec-r/--fec-mode`); histogram in FateWindowDiag.gate_outcomes[6] (runtime.rs:438, 1464) — not verified printed in the KP-CLIENT line",
+   "telemetry": "FateWindowDiag.gate_outcomes[6]",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3664-3665 `if self.state == SenderState::PreConverge { return GateOutcome::BlockedPreConverge; }`",
+    "sender.rs:3655-3659 rationale: parity competed with originals under the floor token budget",
+    "runtime.rs:436-437 '6=oturum-kurulmadı(PreConverge)'"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Whether the speculative FEC lane (fec_loss_risk bounded_v1) also respects PreConverge was not audited here (out of cluster; its research is closed)."
+  },
+  {
+   "name": "DR-EST-1 establish probe: token-exempt, exponential-backoff single-slot copy lane in PreConverge (default ON)",
+   "spec_refs": [
+    "NOT SPECIFIED (0 hits for 'establish'/'DR-EST' in specs/adaptive-transport-engine-spec.md)",
+    "CONFLICTS with specs/adaptive-transport-engine-spec.md §3.3-B L332-333 ('Kopyalar da AYNI pacer'dan geçer (§13); pacer'ı baypas eden gönderim yolu YOK') and §3.3-A [R8] L298-304"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:1385-1390 ESTABLISH_PROBE_INITIAL_NS=500 ms, ESTABLISH_PROBE_CAP_NS=8 s",
+    "crates/adaptive-transport/src/sender.rs:1532-1541 establish_probe_enabled / establish_due_ns / establish_interval_ns / establish_probe_emitted",
+    "crates/adaptive-transport/src/sender.rs:1819-1822 defaults (enabled=true)",
+    "crates/adaptive-transport/src/sender.rs:2497-2503 deadline included in next_timer_deadline_ns",
+    "crates/adaptive-transport/src/sender.rs:4065-4070 call site in schedule_transmit",
+    "crates/adaptive-transport/src/sender.rs:5540-5595 drain_establish_probe (no try_send; track_sent Duplicate; ×2 backoff)",
+    "crates/adaptive-transport/src/sender.rs:5598-5609 set_establish_probe / diag_establish_probe_emitted"
+   ],
+   "product_call_chain": "runtime drive (Pto pump 1 ms) → sender.rs:4070 drain_establish_probe → oldest due §3.3-B copy emitted WITHOUT pacer token (5567-5580) → TransmitDecision::Duplicate → runtime encode_data + seal_send → wire; extinguished when state!=PreConverge (5546-5549)",
+   "product_reachable": true,
+   "gate": "Sender.establish_probe_enabled (engine field, default true). NO RuntimeConfig knob; set_establish_probe has 13 call sites, ALL in tests",
+   "default_state": "ON (sender.rs:1819)",
+   "activation_condition": "state==PreConverge && dup_queue non-empty && now ≥ establish_due (0.5 s, 1 s, 2 s, 4 s, 8 s, 8 s ...)",
+   "bench_exposure": "always on in kama-product (no flag); KP-CLIENT establish_tx= (kama_product.rs:565, 587)",
+   "telemetry": "FateWindowDiag.establish_probes_tx (runtime.rs:378, 1412); tests/establish_probe.rs pins",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:5567-5580 dup removed from dup_queue and pushed as TransmitKind::Duplicate with no pacer check",
+    "sender.rs:5589-5594 backoff ×2 capped at ESTABLISH_PROBE_CAP_NS",
+    "sender.rs:1819 `establish_probe_enabled: true,`",
+    "grep set_establish_probe → tests only: fusion_policy_wiring.rs:25,342; dr_cs3_structural_oracle.rs:708; structure_gate_fec.rs:48,350; loss_structure_observation.rs:274,360; initial_window.rs:23; fec_loss_risk.rs:23,498,676,789; kama-integration/tests/fec_recovery_cell.rs:103",
+    "runtime.rs:1412 `establish_probes_tx: session.sender().diag_establish_probe_emitted(),`"
+   ],
+   "duplicates_or_dead": "none (distinct from §3.3-B paced copies; consumes the same dup_queue entries)",
+   "feature_off_behavior": "set_establish_probe(false) ⇒ due=0, lane inert (test-only path)",
+   "notes": "Bounded (≤~4 datagrams per 10 s at 1 kbps per sender.rs:1385-1388 doc) and grounded on S2-REGION rt60d300 (0/40 → fixed), but it is an unamended pacer-bypass lane contradicting §3.3-B; requires a spec amendment. Many transport tests disable it to isolate other mechanisms, so cold-start test baselines diverge from the product (ON). No product-level switch exists."
+  },
+  {
+   "name": "DR-CS-3 bootstrap RTT ladder: 0x19 CS-probe / 0x1A CS-echo with local-timestamp RTT sample (BootstrapRttConfig; default OFF)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-F L357-361 ('hızlandırıcı, opsiyonel'; 'hiçbir şeyi bloklamaz')",
+    "specs/adaptive-transport-engine-spec.md §3.3-D L350 (echo may open the RTT lock)",
+    "specs/adaptive-transport-engine-spec.md §11.1 L801-848 (ARCHIVED semantic source; 0x12 CANCELLED → noise-wire 0x19/0x1A)",
+    "specs/kama-noise-wire-tdd-v2.0.md §2.56/2.57 L274-281, L304-307, L325 (no retry), L333-335 (dedup-exempt)",
+    "specs/adaptive-transport-engine-spec.md §16 TV-COLDSTART-3/4/5 L964-968",
+    "reports/dr-cs-3/DR-CS-3-BOOTSTRAP-RTT-CONTRACT.md (sender §1-11,19-30; receiver §12-18)"
+   ],
+   "spec_requires_v1": "optional",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:964-1015 BootstrapRttConfig (+establishment_fast, ladder); :1007-1014 Default enabled=false",
+    "crates/adaptive-transport/src/sender.rs:1017-1023 BS_FIRES_NS 3/9/21/45 s, BS_PROBE_WIRE_EXACT=44, BS_TX_HARD_BUDGET=200",
+    "crates/adaptive-transport/src/sender.rs:1027-1052 BootstrapRttDiag",
+    "crates/adaptive-transport/src/sender.rs:1511-1525 bs_* fields; :1806-1813 defaults",
+    "crates/adaptive-transport/src/sender.rs:1986-1988 set_bootstrap_rtt; :2008-2016 bootstrap_rtt_diag/budget_remaining",
+    "crates/adaptive-transport/src/sender.rs:2507-2517 ladder deadline in next_timer_deadline_ns",
+    "crates/adaptive-transport/src/sender.rs:3162-3213 drain_bootstrap_probes (edge-only, additive, end-of-turn)",
+    "crates/adaptive-transport/src/sender.rs:3215-3249 bs_on_echo (single outstanding slot, local timestamps, cancels ladder)",
+    "crates/adaptive-transport/src/sender.rs:4089-4091 call at end of schedule_transmit; :5708-5716 ARM at first DATA wire emit",
+    "crates/adaptive-transport/src/sender.rs:1273 TransmitKind::CsProbe (ungated); :2195-2200 Event::CsProbeEcho (ungated)",
+    "crates/client-core/src/runtime.rs:118-128 bootstrap_rtt / bootstrap_fast_ladder; :196-197 defaults false; :820-834 set_bootstrap_rtt",
+    "crates/client-core/src/runtime.rs:1008-1016 encode_cs_probe + seal_send(TxClass::Ctrl); :1098-1108 decode_cs_echo → Event::CsProbeEcho",
+    "crates/client-core/src/runtime.rs:2048-2049, 2065-2066 RxFrame::CsProbe; :2311-2323 stateless echo encode_cs_echo(subtype, probe_seq, 0, 0)",
+    "crates/client-core/src/wire.rs:224-271 FRAME_CS_PROBE=0x06, LEN_CS_PROBE=28, FRAME_CS_ECHO=0x07, CS_PROBE_SUBTYPE=0x01"
+   ],
+   "product_call_chain": "runtime.rs:820-834 set_bootstrap_rtt(enabled) → sender.rs:5708-5716 arm on first DATA wire emit in PreConverge → sender.rs:3172-3213 drain_bootstrap_probes at ladder step (end of schedule_transmit 4089-4091) → TransmitDecision{CsProbe} → runtime.rs:1012-1016 encode_cs_probe + seal_send → UDP → server runtime.rs:2065-2066 decode_cs_probe → 2311-2323 encode_cs_echo + srv_seal_send → client runtime.rs:1098-1108 decode_cs_echo → drive!(Event::CsProbeEcho) → sender.rs:2195-2200 → bs_on_echo 3215-3249 rtt.observe → update_state 3764-3773 PreConverge→Startup",
+   "product_reachable": true,
+   "gate": "RuntimeConfig.bootstrap_rtt (→ BootstrapRttConfig.enabled) plus set_cs_probe_lane(cfg.bootstrap_rtt)",
+   "default_state": "OFF (runtime.rs:196; sender.rs:1007-1014); pending DR-CS-3 §9 locked panel",
+   "activation_condition": "bootstrap_rtt=true && state==PreConverge && srtt None && first DATA wire emission → probes at 3/9/21/45 s from arm, ≤4 generations, ≤200 B; RTT sample only for an echo matching the single outstanding probe_seq",
+   "bench_exposure": "`--bootstrap-rtt` on both ends (main.rs:119-121, 234-236 → kama_product.rs:159); default false; metadata '-bootstraprtt' (kama_product.rs:683-686); KP-CLIENT cs_probe_tx= cs_echo_rx= (564, 583-584); KP-SERVER stats Debug carries cs_probes_rx/cs_echoes_tx (kama_product.rs:380; runtime.rs:577-580)",
+   "telemetry": "ClientStats.cs_probes_tx / cs_echoes_rx (runtime.rs:525-528); ServerStats.cs_probes_rx / cs_echoes_tx (577-580); Sender::bootstrap_rtt_diag() (arm, step_edge, probe_emitted, echo_match_valid, rtt_sample_ns, cancelled, violations) NOT surfaced in runtime stats; outcome visible via left_preconverge/rtt_samples; client-core/tests/runtime_e2e.rs:697 bootstrap_rtt_probe_and_echo_traverse_the_product_wire",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:1010-1013 `Self { enabled: false, fires_ns: None }` (DEFAULT OFF — pending panel)",
+    "sender.rs:3173-3178 `if !self.bootstrap_rtt.enabled || self.bs_done { return; } if self.state != PreConverge || srtt.is_some() { return; }`",
+    "sender.rs:5710-5716 arm on first DATA wire emit",
+    "runtime.rs:824-834 set_bootstrap_rtt(if cfg.bootstrap_rtt {..enabled=true..} else {default})",
+    "runtime.rs:1012-1016 `if d.kind == TransmitKind::CsProbe { let f = encode_cs_probe(...); stats.cs_probes_tx += 1; seal_send!(f, TxClass::Ctrl, $now); }`",
+    "runtime.rs:2317-2323 stateless echo, `debug_assert!(f.len() < LEN_CS_PROBE)`",
+    "runtime_e2e.rs:697-758 asserts on_c.cs_probes_tx>0, on_s.cs_probes_rx>0, on_c.cs_echoes_rx>0, acked==0; off arm cs_probes_tx==0"
+   ],
+   "duplicates_or_dead": "legacy DR-CS-1 F2A lane (sender.rs:2777-2806, feature-gated) implements the same protocol; kama-integration ReceiverControlCore::BootstrapEchoResponder is a second responder outside the product graph",
+   "feature_off_behavior": "enabled=false ⇒ drain_bootstrap_probes returns (3173), bs_on_echo returns (3219); no probe planned; session leaves PreConverge only via a DATA SACK (runtime.rs:123-125)",
+   "notes": "(1) Product echo responder is stateless and enforces no per-session ≤4-echo/172 B budget (contract receiver §16-18); only the non-product ReceiverControlCore does. (2) v0 wire-shell codepoints 0x06/0x07 (client-core wire.rs) differ from the noise-wire registry 0x19/0x1A — S2 seam adoption pending. (3) Server-side RuntimeConfig.bootstrap_rtt is a no-op (echo unconditional at 2311); bench 'İKİ UÇTA AYNI' is convention only. (4) Default ladder is calibrated for blackout not establishment (sender.rs:973-978); default flip blocked on DR-CS-3 §9 locked panel."
+  },
+  {
+   "name": "DR-CS-3 establishment-fast ladder (bootstrap_fast_ladder → BootstrapRttConfig::establishment_fast 0.2/0.6/1.8/5.4 s)",
+   "spec_refs": [
+    "NOT SPECIFIED (spec ladder values are [CAL] placeholders: specs/adaptive-transport-engine-spec.md §16.1 L972-975; §3.3-F L357-361)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:986-999 BootstrapRttConfig::establishment_fast (first step 2×INITIAL_RTT; 'KALİBRE EDİLMEMİŞ')",
+    "crates/adaptive-transport/src/sender.rs:1000-1004 ladder()",
+    "crates/client-core/src/runtime.rs:118-122 bootstrap_fast_ladder; :197 default false; :825-829 selection",
+    "crates/bench/src/main.rs:125-127, 240-242 `--bootstrap-fast`; crates/bench/src/kama_product.rs:163, 693-696 '-fastladder'"
+   ],
+   "product_call_chain": "runtime.rs:825-829 (only when cfg.bootstrap_rtt) → BootstrapRttConfig{fires_ns:Some(..)} → sender.rs:3184 ladder() in drain_bootstrap_probes and 2510-2513 deadline",
+   "product_reachable": true,
+   "gate": "RuntimeConfig.bootstrap_fast_ladder, effective only with bootstrap_rtt=true",
+   "default_state": "OFF (runtime.rs:197)",
+   "activation_condition": "bootstrap_rtt=true && bootstrap_fast_ladder=true",
+   "bench_exposure": "`--bootstrap-fast` (default false); metadata '-fastladder'",
+   "telemetry": "same as ladder record (cs_probes_tx timing only via ts_sample/raw events)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:992-997 `fires_ns: Some([200_000_000, 600_000_000, 1_800_000_000, 5_400_000_000])`",
+    "runtime.rs:825-829 `if cfg.bootstrap_fast_ladder { BootstrapRttConfig::establishment_fast() } else { BootstrapRttConfig::default() }`",
+    "kama_product.rs:162-163 `bootstrap_fast_ladder: bootstrap_fast,`"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "falls back to BS_FIRES_NS 3/9/21/45 s",
+   "notes": "Budget unchanged (4×44 ≤ 200 B). Derived from the INITIAL_RTT prior; uncalibrated."
+  },
+  {
+   "name": "DR-CS-1 M2/F2A legacy CS-probe ladder lane (experimental-cold-start feature; cs_probe_lane_enabled, cs_wakeup timers, drain_cs_probes)",
+   "spec_refs": [
+    "specs/kama-noise-wire-tdd-v2.0.md §2.57 L276-281, L304-307 (protocol)",
+    "specs/adaptive-transport-engine-spec.md §11.1 L801-806 (ARCHIVED)",
+    "reports/dr-cs-2/BOOTSTRAP-PROBE-NOT-PRODUCT-GROUNDED.md (A1 audit: pipeline disqualified on 4 grounds)",
+    "crates/adaptive-transport/src/sender.rs:4081-4084 DR-CS-3 SUPERSESSION note"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:118-135 CsTimerKind (cfg-gated)",
+    "crates/adaptive-transport/src/sender.rs:190-198 CS_PROBE_FIRES_NS / CS_PROBE_WIRE_MAX=44 / CS_PROBE_TX_HARD_BUDGET=200 / CS_GIVEUP_NS=60 s",
+    "crates/adaptive-transport/src/sender.rs:1567-1600 cs_* fields; :1853-1875 defaults (cs_probe_lane_enabled=true when compiled)",
+    "crates/adaptive-transport/src/sender.rs:1995-2005 set_cs_probe_lane",
+    "crates/adaptive-transport/src/sender.rs:2597-2626 cs_on_probe_echo; :2629-2660 cs_phase2_resolve; :2700-2770 timer fire; :2777-2806 drain_cs_probes (pacer.try_send — consumes DATA tokens)",
+    "crates/adaptive-transport/src/sender.rs:4081-4088 skipped when bootstrap_rtt.enabled; :5718-5733 ARM",
+    "crates/adaptive-transport/src/sender.rs:2813-2823 diag_cold_start; :2857-2865 diag_cs_bootstrap",
+    "crates/adaptive-transport/src/udp_runner.rs:35-47, 1079-1083 (bench runner encode 0x19)"
+   ],
+   "product_call_chain": "NONE reachable. runtime.rs:835-837 set_cs_probe_lane(cfg.bootstrap_rtt): bootstrap_rtt=false ⇒ lane disabled ⇒ ARM at 5721 never runs; bootstrap_rtt=true ⇒ bootstrap_rtt.enabled ⇒ drain_cs_probes skipped at 4086-4088 ⇒ no emission in either configuration",
+   "product_reachable": false,
+   "gate": "cargo feature experimental-cold-start (adaptive-transport/Cargo.toml, default OFF; client-core/Cargo.toml does not forward it) AND Sender.cs_probe_lane_enabled",
+   "default_state": "not compiled in the default build; when compiled (workspace --all-features) product runtime disables it",
+   "activation_condition": "only in kama-integration DR-CS-3 panel (tests/common/dr_cs3_panel.rs), tests/dr_cs1_acceptance.rs, udp_runner example",
+   "bench_exposure": "none in the bench CLI (crates/bench/src/kama.rs:238-240 legacy arm does not count CsProbe); udp_runner is an adaptive-transport example, not the bench",
+   "telemetry": "diag_cold_start() / diag_cs_bootstrap() (sender.rs:2813, 2857); sched_diag.cs_probe_* (1172-1179, diag-sched-telemetry); udp_runner KEY=VALUE lines (udp_runner.rs:558-560, 1010-1020)",
+   "classification": "DELETE",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:4085-4088 `#[cfg(feature = \"experimental-cold-start\")] if !self.bootstrap_rtt.enabled { self.drain_cs_probes(&mut out); }`",
+    "runtime.rs:837 `session.sender_mut().set_cs_probe_lane(cfg.bootstrap_rtt);`",
+    "sender.rs:5721-5723 `if self.cs_probe_lane_enabled && !self.cs_probe_armed_once && self.rtt.srtt().is_none()`",
+    "sender.rs:1017-1018 'Same values as the legacy CS_PROBE_FIRES_NS; no new constant'",
+    "sender.rs:4081-4084 'two implementations of the SAME 0x19/0x1A protocol ... legacy pass is skipped'",
+    "reports/dr-cs-2/BOOTSTRAP-PROBE-NOT-PRODUCT-GROUNDED.md 'A1 audit disqualified that pipeline on four independent grounds'"
+   ],
+   "duplicates_or_dead": "duplicate of the shipping DR-CS-3 emitter (same protocol, same constants); dead in every product configuration",
+   "feature_off_behavior": "byte-identical (INV-CS-5; tests/cold_start_liveness.rs:15-17 pins)",
+   "notes": "Retained only as the DR-CS-3 panel control arm (sender.rs:1983-1985). With feature ON + bootstrap ON the cs timers still push ≤4 entries into cs_probe_pending that are never drained (bounded, harmless dead state). Removal requires re-targeting kama-integration/tests/common/dr_cs3_panel.rs, dr_cs1_acceptance.rs and udp_runner.rs."
+  },
+  {
+   "name": "DR-CS-1b/A2 cold-RX subsystem (kama-engine cold_rx_state: ColdRxState/GlobalColdLedger/TombstoneRegistry; kama-integration ReceiverHost composition root; experimental-cold-start)",
+   "spec_refs": [
+    "specs/kama-noise-wire-tdd-v2.0.md L333-335 (DR-CS-1b-A2 amendment: probe/echo dedup-exempt)",
+    "specs/fec-core-tdd-v3.0.md L430-431 (bootstrap-FEC rejected in Alpha; handshake-packet survival = PRE_CONVERGE work)",
+    "reports/dr-cs-2/BOOTSTRAP-PROBE-NOT-PRODUCT-GROUNDED.md (receiver_host.rs counts probe, never emits echo)"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/kama-engine/src/lib.rs:22-25, 33-36 (cfg-gated module + re-exports)",
+    "crates/kama-engine/src/cold_rx_state.rs (516 lines)",
+    "crates/kama-engine/src/error.rs:34-55 gated error variants",
+    "crates/kama-integration/src/lib.rs:18-24; crates/kama-integration/src/receiver_host.rs",
+    "crates/kama-engine/Cargo.toml [features] experimental-cold-start; crates/kama-integration/Cargo.toml [features] experimental-cold-start"
+   ],
+   "product_call_chain": "NONE. client-core/Cargo.toml depends on kama-engine WITHOUT the feature and does not depend on kama-integration; grep 'kama-integration' across crates/*/Cargo.toml → no dependents; ReceiverHost consumers are kama-integration src + tests only",
+   "product_reachable": false,
+   "gate": "cargo feature experimental-cold-start (kama-engine, kama-integration); default OFF",
+   "default_state": "not compiled",
+   "activation_condition": "kama-integration tests (a2_*.rs) and example a2_rx_netem_runner (required-features)",
+   "bench_exposure": "none (bench depends only on client-core + adaptive-transport)",
+   "telemetry": "ReceiverHost counters (tests only)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "kama-engine/src/lib.rs:24-25 `#[cfg(feature = \"experimental-cold-start\")] pub mod cold_rx_state;`",
+    "client-core/Cargo.toml [dependencies]: adaptive-transport, kama-engine, kama-transport-schema, kama-fec-codec, kama-noise-wire, tokio, thiserror; [features] only diag-sched-telemetry",
+    "grep -rn ReceiverHost --include=*.rs -l → only crates/kama-integration/{src,tests}",
+    "reports/dr-cs-3/DR-CS-3-PRODUCT-CONSUMER-INVENTORY.md 'NO product runtime consumer exists'"
+   ],
+   "duplicates_or_dead": "second receiver composition root vs the product ServerEndpoint in client-core/src/runtime.rs (~1900-2380)",
+   "feature_off_behavior": "module not compiled (INV-CS-5)",
+   "notes": "No v1 'product cold-RX' claim may cite this subsystem; the product receiver is client-core ServerEndpoint (stateless echo, admit_and_decode ingest)."
+  },
+  {
+   "name": "DR-CS-3 default-build ReceiverControlCore / BootstrapEchoResponder (kama-integration, ungated library component)",
+   "spec_refs": [
+    "reports/dr-cs-3/DR-CS-3-BOOTSTRAP-RTT-CONTRACT.md receiver §12-18 (≤1 echo per generation, 4×43=172 B budget, fixed-size state)",
+    "reports/dr-cs-3/DR-CS-3-DEFAULT-RECEIVER-CORE.md",
+    "reports/dr-cs-3/DR-CS-3-PRODUCT-CONSUMER-INVENTORY.md ('PRODUCT-RUNTIME-INTEGRATION-PENDING')"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/kama-integration/src/receiver_control_core.rs:1-40 (MAX_ECHOES=4, ECHO_WIRE_MAX=43, ECHO_BUDGET_BYTES=172, MAX_CORE_SESSIONS=1024)",
+    "crates/kama-integration/src/lib.rs:15, 21-22 re-exports"
+   ],
+   "product_call_chain": "NONE. Consumers: crates/kama-integration/tests/dr_cs3_panel_preflight.rs, dr_cs3_default_build_core.rs (tests). The product responder is client-core/src/runtime.rs:2311-2323 (independent implementation)",
+   "product_reachable": false,
+   "gate": "none (ungated) but outside the product dependency graph",
+   "default_state": "compiled in kama-integration only",
+   "activation_condition": "tests",
+   "bench_exposure": "none",
+   "telemetry": "echo_budget() (tests)",
+   "classification": "DELETE",
+   "confidence": "medium",
+   "evidence": [
+    "receiver_control_core.rs:3-9 'reusable library component, not a product runtime ... Nothing here can be run by a user on its own'",
+    "grep ReceiverControlCore → kama-integration/src + tests only",
+    "runtime.rs:2311-2323 product echo: stateless, no MAX_ECHOES budget"
+   ],
+   "duplicates_or_dead": "duplicates the product echo responder (runtime.rs:2311-2323) with a stricter (contract-conformant) budget",
+   "feature_off_behavior": "n/a",
+   "notes": "Either fold the bounded-responder policy (≤4 echoes / 172 B per session) into client-core ServerEndpoint before bootstrap_rtt could ever ship ON, or remove; two responders invite contract drift (the contract receiver §16-17 is currently unmet by the product)."
+  },
+  {
+   "name": "Startup pacing initialization floor (DR-RATE-RAMP-2 StartupPacingConfig; armed once at PreConverge exit; default ON)",
+   "spec_refs": [
+    "NOT SPECIFIED in specs/adaptive-transport-engine-spec.md (no startup-floor section); tension with §3.3-D L351-355 (bw lock stays prior-based until samples accumulate)",
+    "reports/ek4-a2/INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md (lock-golden superseded)",
+    "reports/dr-rate-ramp-2b/* (A4 validation, ordering supersession)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:1062-1125 StartupPacingConfig (Default enabled=true with rationale)",
+    "crates/adaptive-transport/src/sender.rs:1500-1509 startup_pacing / startup_pacing_floor_bps / startup_floor_armed_once / startup_base_seen",
+    "crates/adaptive-transport/src/sender.rs:1802-1805 defaults; :2019-2021 set_startup_pacing_init; :2025-2027 startup_pacing_floor_bps()",
+    "crates/adaptive-transport/src/sender.rs:2206-2213 arm at PreConverge exit; :2214-2221 effective_floor=min(floor, cwnd/srtt) → pacer.set_rate(max(natural, floor))",
+    "crates/adaptive-transport/src/sender.rs:2252-2281 permanent release; :2290-2306 grounded_startup_rate; :2308-2322 cwnd_over_srtt"
+   ],
+   "product_call_chain": "runtime on_event (any) → sender.rs:2206-2213 arm when prev==PreConverge && state!=PreConverge → 2218-2220 pacer.set_rate → drain_new_data; released at 2275-2280",
+   "product_reachable": true,
+   "gate": "StartupPacingConfig.enabled (engine default true). NO RuntimeConfig knob (runtime.rs:95-200; comment 813-814 'startup-pacing motor default'u ON'); set_startup_pacing_init call sites are ALL tests",
+   "default_state": "ON (sender.rs:1124 `Self { enabled: true }`)",
+   "activation_condition": "first PreConverge→(Startup/other) transition per Sender with srtt Some; floor = min(STARTUP_gain×min_cwnd/srtt, cwnd/srtt)",
+   "bench_exposure": "always ON in kama-product; no flag; nothing printed",
+   "telemetry": "Sender::startup_pacing_floor_bps() only — grep in runtime.rs → 0 hits (not in ClientStats/FateWindowDiag)",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:2207-2213 `if self.startup_pacing.enabled && !self.startup_floor_armed_once && prev_state == PreConverge && self.state != PreConverge { self.startup_pacing_floor_bps = self.grounded_startup_rate(); ... }`",
+    "sender.rs:2219-2221 `effective_floor = floor.min(cwnd_over_srtt()); send_rate = natural_rate.max(effective_floor); pacer.set_rate(send_rate)`",
+    "sender.rs:1124 `Self { enabled: true }`",
+    "grep set_startup_pacing_init → budget_equivalence_pin.rs:31,115; dr_cs3_structural_oracle.rs:710; kama-integration common/fs_f0.rs:106; dr_cs3_default_build_core.rs:66; dr_cs3_bootstrap_rtt.rs:72; sender.rs unit tests 7572-7734",
+    "lib.rs:67-70 ClientSession doc: 'startup pacing ON (engine default; 925dea66 restored it)'"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "enabled=false ⇒ floor never arms; pacing path byte-identical to baseline (sender.rs:1063-1064)",
+   "notes": "Validated (260 paired runs per sender.rs:1085-1088) but absent from the frozen spec; needs an amendment (INV-RATE-1 startup-floor supersession is only in reports). Floor value is not observable from the product runtime (telemetry gap)."
+  },
+  {
+   "name": "Return-path cold-start ACK cadence (receiver §3.3-E): RETURN_BW_PRIOR=31 B/s, ACK_CADENCE_FLOOR≈8.4 s, first timer-SACK cadence-exempt ([R1]), K_ARR minimal-taban",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-E L363-368",
+    "specs/adaptive-transport-engine-spec.md §12 L863-866",
+    "specs/adaptive-transport-engine-spec.md §16.1 K_ARR / T_SPACING rows L995-996",
+    "specs/adaptive-transport-engine-spec.md §3.3-B L326-328 (first SACK exempt cancels first copy)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/receiver.rs:82-94 SACK_WIRE_BYTES=65, RETURN_BUDGET_PERMIL=250, RETURN_BW_PRIOR=31, ACK_CADENCE_FLOOR_NS",
+    "crates/adaptive-transport/src/receiver.rs:113-117 T_SPACING_NS, K_ARR",
+    "crates/adaptive-transport/src/receiver.rs:264-320 on_ack_timer (first exempt; cadence_eff clamp)",
+    "crates/adaptive-transport/src/receiver.rs:431-433 frequency path; :446-458 record_ack_emit"
+   ],
+   "product_call_chain": "runtime.rs:64 ACK_TICK=20 ms; :1970 interval → runtime.rs:1991-1998 slot.rx.on_ack_timer(now) → a.encode() → seal → UDP; data path runtime.rs:2146/2241/2272 slot.rx.on_datagram → frequency ACK",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always active (constants)",
+   "activation_condition": "server timer tick with pending un-ACKed data; first timer-SACK immediate, subsequent ≥ cadence_eff",
+   "bench_exposure": "every kama-product run (server side); KP-SERVER stats Debug (kama_product.rs:380) — receiver diag_accel_emits (receiver.rs:150, 388) exposure in ServerStats not verified",
+   "telemetry": "receiver diag tuple incl. diag_accel_emits (receiver.rs:388)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "receiver.rs:93-94 `ACK_CADENCE_FLOOR_NS = SACK_WIRE_BYTES*1e9*1000/(RETURN_BUDGET_PERMIL*RETURN_BW_PRIOR)`",
+    "receiver.rs:264-266 'İLK SACK henüz yollanmadıysa cadence-exempt (hemen — client PRE_CONVERGE'den hızlı çıksın)'",
+    "receiver.rs:309-314 `cadence_eff = (K_ARR*last_gap).clamp(T_SPACING_NS, ACK_CADENCE_FLOOR_NS); if elapsed < cadence_eff { return None }`",
+    "runtime.rs:1996 `s.rx.on_ack_timer(now)`"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Static prior only; §3.3-E-FULL (measured return_bw, adaptive decimation) explicitly deferred (receiver.rs:91-92; spec L366-368 'ADIM-6 ana gövdesi'). T_SPACING is a static-prior derivative (spec §16.1 L995 debt)."
+  },
+  {
+   "name": "ACK_FRAME_V2 cold-start measurement extension consumer (seen_count direction-discriminated loss; arrival_rate first-bw hint) — K3 sender consumer",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §2.2 L170-196 (NORMATİF; zeyil L186-187: arrival_rate always sentinel until K3 consumer)",
+    "specs/adaptive-transport-engine-spec.md §16 TV-COLDSTART-2 L964 ('tek SACK'ten RTT + yön-ayrımlı loss (seen_count)')",
+    "specs/adaptive-transport-engine-spec.md §3.3-D L349-355 (bw lock opens with accumulated samples)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "EMIT ONLY: crates/adaptive-transport/src/ack.rs:29, 73-76 (V2 fields decode); crates/adaptive-transport/src/receiver.rs:194-195 (seen_count counted), :469 (arrival_rate = sentinel; receiver sees no datagram size)",
+    "NO CONSUMER: grep seen_count in sender.rs → comments only (:107, :3217); runtime.rs:1102, 2314 comments 'ledger-only'"
+   ],
+   "product_call_chain": "receiver → AckFrame V2 encode (runtime.rs:1997 a.encode()) → seal → client runtime.rs:1169 AckInfo → sender on_ack_received: seen_count/arrival_rate never read for any decision",
+   "product_reachable": false,
+   "gate": "none",
+   "default_state": "fields emitted on the wire; not consumed",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "spec L186-187 '[TUR-1x zeyli] Mevcut artımda receiver datagram BOYUTU görmez → daima sentinel emit edilir; gerçek pencere-oranı K3 tüketicisiyle bağlanır'",
+    "receiver.rs:469 'arrival_rate: receiver bu artımda BOYUT görmüyor (RxDatagram size taşımaz) → ölçüm YOK'",
+    "sender.rs:107 'seen_count/arrival_gap SENDER'A-TAŞINMAZ (ledger-only ...)'"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Spec's own zeyil admits the consumer is pending, but TV-COLDSTART-2 (D3) requires direction-discriminated loss from a single SACK. Owner decision needed on whether the K3 consumer (forward vs return loss from seen≪sent) is a v1 gate."
+  },
+  {
+   "name": "PARAM bootstrap: kama-engine plan_param_bootstrap → PARAM_SET / PARAM_ACK (B2 proactive FEC emission; receiver fail-closed bind + bounded pre-PARAM hold)",
+   "spec_refs": [
+    "specs/fec-core-tdd-v3.0.md §8 L266; closure table L459 (Parameter binding CLOSED), L463 (PARAM admission: PARAM_ACK=confirmation, kapı-değil)",
+    "specs/kama-noise-wire-tdd-v2.0.md §2.57 L299-300 (0x14/0x15 layout), L318-322 (retry), L543-565 (B2 decision, canonical BLAKE2s hash, bounded retry, authenticated pre-PARAM hold)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/kama-engine/src/param_bootstrap.rs:28-44 plan_param_bootstrap (bind_transport_parameters → ParamSetPlan)",
+    "crates/kama-engine/src/param_state.rs:38-63 ParamState::on_param_set (profile + hash verify, fail-closed)",
+    "crates/client-core/src/runtime.rs:35 import; :259 param_fields_for; :879-885 plan + param_confirmed init; :886-899 FEC actuation mode set immediately (B2)",
+    "crates/client-core/src/runtime.rs:1330-1342 bounded PARAM_SET retry (≥200 ms, ≤25 tries) on rtprop tick; :1111-1118 PARAM_ACK hash confirm",
+    "crates/client-core/src/runtime.rs:1754-1762 PeerSlot{param: ParamState, pre_param_fec}, PRE_PARAM_FEC_CAP=64; :1967 param_expected; :2065-2072 decode_param; :2228-2236 hold; :2329-2365 on_param_set → encode_param_ack → drain hold into fec_ingest"
+   ],
+   "product_call_chain": "runtime.rs:879-882 plan_param_bootstrap(1, param_fields_for(profile)) → runtime.rs:1330-1342 encode_param + seal_send(Ctrl) (retry) → UDP → server runtime.rs:2065-2072 decode_param → 2342 slot.param.on_param_set (param_state.rs:38-63) → encode_param_ack + srv_seal_send → client runtime.rs:1111-1118 param_confirmed=true (retry stops). Pre-bind shards: server 2228-2236 hold → 2353-2365 drain",
+   "product_reachable": true,
+   "gate": "RuntimeConfig.fec (Some) at both ends",
+   "default_state": "OFF (RuntimeConfig::default fec: None ⇒ no PARAM flow; param_confirmed trivially true at runtime.rs:882)",
+   "activation_condition": "FEC profile configured (validate_fec at connect); PARAM_SET sent at first rtprop tick and every ≥200 ms until PARAM_ACK or 25 tries",
+   "bench_exposure": "FEC arms via `--fec-profile/--fec-r/--fec-mode` (FecArm → kama_product.rs:164+); KP-CLIENT param_confirmed= (kama_product.rs:564, 578); KP-SERVER stats Debug param_bound_peers/param_rejected/fec_pre_param_dropped (runtime.rs:583-587)",
+   "telemetry": "ClientStats.param_sends (runtime.rs:493), param_confirmed (495); ServerStats.param_bound_peers (583), param_rejected (585), fec_pre_param_dropped (587)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "runtime.rs:881 `.and_then(|p| plan_param_bootstrap(1, &param_fields_for(p)).ok());`",
+    "runtime.rs:1333-1340 `if !param_confirmed && param_tries < 25 && due { ... encode_param(...); seal_send!(f, TxClass::Ctrl, now); ... }`",
+    "runtime.rs:2342 `match slot.param.on_param_set(&ctl, exp) { Ok(()) => { ... encode_param_ack(&param_hash) ...`",
+    "runtime.rs:2231-2235 bounded hold `if slot.pre_param_fec.len() < PRE_PARAM_FEC_CAP { push } else { stats.fec_pre_param_dropped += 1 }`",
+    "param_bootstrap.rs:42 `start_fec_immediately: true, // B2: proaktif`"
+   ],
+   "duplicates_or_dead": "kama-engine ParamAckTracker / PreParamHold / ParamSetPlan.start_fec_immediately have no product consumer (see next record)",
+   "feature_off_behavior": "fec: None ⇒ no PARAM frames; server counts inbound PARAM as unknown_frames (runtime.rs:2331-2333)",
+   "notes": "B2 semantics honored: FEC mode enabled at 886-899 before any ACK; retry stops after 25 tries while emission continues. control_id fixed=1 in the plan; the v0 wire shell carries no control_id (S2 seam pending)."
+  },
+  {
+   "name": "kama-engine PARAM helpers without product consumer: ParamAckTracker, PreParamHold (MAX_PREPARAM_SHARDS=256), ParamSetPlan.start_fec_immediately",
+   "spec_refs": [
+    "specs/kama-noise-wire-tdd-v2.0.md L553-555 (authenticated pre-PARAM hold), L563-565 (PARAM_ACK confirmation state machine)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/kama-engine/src/param_bootstrap.rs:47-80 ParamAckTracker",
+    "crates/kama-engine/src/preparam_hold.rs:17-62 PreParamHold (oldest-drop, cap 256)",
+    "crates/kama-engine/src/param_bootstrap.rs:19-20, 42 start_fec_immediately"
+   ],
+   "product_call_chain": "NONE. Consumers: crates/kama-engine/tests/param_bootstrap_5d1.rs:9, 58, 68, 100, 112, 173 only. client-core runtime re-implements both: inline hash compare runtime.rs:1113-1116; own Vec hold runtime.rs:1756-1762 (cap 64, refuse-new)",
+   "product_reachable": false,
+   "gate": "none",
+   "default_state": "compiled, unused",
+   "activation_condition": "tests",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "classification": "DELETE",
+   "confidence": "medium",
+   "evidence": [
+    "grep start_fec_immediately → only kama-engine/src/param_bootstrap.rs and kama-engine/tests/param_bootstrap_5d1.rs:58",
+    "grep PreParamHold → kama-engine src/tests + a doc comment in runtime.rs:1756 ('PreParamHold deseni')",
+    "grep on_param_ack / ParamAckTracker → kama-engine src/tests only"
+   ],
+   "duplicates_or_dead": "duplicates of runtime.rs:1113-1116 and 1756-1762 with different cap (256 vs 64) and drop policy (oldest-drop vs refuse-new)",
+   "feature_off_behavior": "n/a",
+   "notes": "Pick one implementation: either wire the runtime to the kama-engine types or delete them; two hold policies with different caps are a latent divergence."
+  },
+  {
+   "name": "INITIAL_RTT prior (100 ms) — bounded fallback only, not a cold-start srtt seed (Ek-B compliance)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md Ek-B L1134-1138 (CANCELLED: fixed INITIAL_RTT-seed cold-start model; MUST NOT IMPLEMENT)",
+    "specs/adaptive-transport-engine-spec.md §3.3-C/5 L345-348",
+    "specs/adaptive-transport-engine-spec.md §16.1 ZM class L1027 (INITIAL_RTT wall-clock listed as a measured defect example)"
+   ],
+   "spec_requires_v1": "obsolete",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:1329 const INITIAL_RTT=100 ms",
+    "fallback uses: sender.rs:2317 (bdp in cwnd ceiling), :2896-2910 (estimator windows on ACK, before observe), :3114 (PTO — inside state!=PreConverge guard), :3285 (queue_losses TTL — unreachable in PreConverge), :3380 (fuzzy_evaluate ack_epoch), :3802-3878, :4022-4023 (compute_send_rate after PreConverge early return), :5406, :5497, :5807 (ack_confidence after early return)",
+    "crates/adaptive-transport/src/sender.rs:986-999 establishment_fast ladder derives 2×INITIAL_RTT"
+   ],
+   "product_call_chain": "implicit in the above call sites via runtime on_event",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "constant",
+   "activation_condition": "rtt.srtt()/rtprop()==None",
+   "bench_exposure": "n/a",
+   "telemetry": "none",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:3113-3114 PTO loss detection guarded by `state != PreConverge` before `srtt.unwrap_or(INITIAL_RTT)`",
+    "sender.rs:4006-4008 PreConverge early return precedes `rtprop.unwrap_or(INITIAL_RTT)` at 4022",
+    "sender.rs:3380-3384 fuzzy_evaluate uses `srtt.unwrap_or(INITIAL_RTT)` for ack_epoch while loss declaration is frozen"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Ek-B is respected because loss/PTO/ack_confidence are frozen in PreConverge; residual PreConverge uses (fuzzy_evaluate W_loss/ack_epoch at 3380; first-ACK estimator window sizing at 2896-2910) are harmless but are prior-derived clocks of the ZM class — candidates for cleanup."
+  },
+  {
+   "name": "Cold-start no-ACK escalation → PATH_DEAD (TDD §10 'tekrarlı no-ACK → PATH_DEAD'; engine §12 PATH_DEAD_TIMER [R4])",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §10 L675-676",
+    "specs/adaptive-transport-engine-spec.md §12 L880 (PATH_DEAD_TIMER: no_ack(T) → PATH_DEAD; T separate from IDLE_TIMEOUT [CAL])",
+    "specs/adaptive-transport-engine-spec.md §16 TV-COLDSTART-5 L968 ([K6] 'tek-yol + echo'suz (failover yok)' variant)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [],
+   "product_call_chain": "none",
+   "product_reachable": false,
+   "gate": "none",
+   "default_state": "absent",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "classification": "WIRE",
+   "confidence": "low",
+   "evidence": [
+    "grep -rn 'PATH_DEAD|PathDead|path_dead' crates --include=*.rs → 0 hits (repo-wide)",
+    "only give-up logic in the tree is the feature-gated legacy lane CS_GIVEUP_NS=60 s (sender.rs:198, 2714-2727), product-unreachable",
+    "sender.rs:5644-5651 geometric copies continue unbounded (×2, saturating) with no deadline cutoff"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "In the product a never-ACKed PreConverge session keeps emitting §3.3-B copies + establish probes indefinitely with no PATH_DEAD/give-up state (session survival is a TDD goal, so this may be intended for a single-path v1 — [K6] variant). Owner decision required; classified WIRE only because both TDD §10 and engine §12 are normative."
+  },
+  {
+   "name": "Operator `bandwidth_class` prior override for PRE_CONVERGE_FLOOR_BW (§3.3-A)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-A L295 ('operatör bandwidth_class yalnız ÖNSELİ ezer, ölçümü ASLA')",
+    "specs/adaptive-transport-engine-spec.md §16.1 L980"
+   ],
+   "spec_requires_v1": "optional",
+   "implemented": false,
+   "impl_symbols": [],
+   "product_call_chain": "none",
+   "product_reachable": false,
+   "gate": "none",
+   "default_state": "absent (floor is a const)",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "classification": "WIRE",
+   "confidence": "low",
+   "evidence": [
+    "grep -rn bandwidth_class crates --include=*.rs → 0 hits (repo-wide)",
+    "sender.rs:1384 `const PRE_CONVERGE_FLOOR_BW: u64 = 31;` (not configurable)"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Optional operator knob; not a v1 blocker unless operator bandwidth profiles are in v1 scope. Listed for completeness of the spec→code map."
+  }
+ ],
+ "open_questions": [
+  "[IW] initial window: RuntimeConfig default ON (2400 B, runtime.rs:195) contradicts normative engine-spec §3.3-A [K-D2] L300-304 (single-unit PreConverge clamp) and the transport crate's own 'KALİBRE EDİLMEMİŞ' note (sender.rs:315), on n=6/cell evidence. Which is authoritative for v1: amend the spec (D0→D1) or flip the default to 0? Also: the bench kama-product arm defaults to 0 (main.rs:122-124), so every bench cold-start number measures a non-shipping first flight unless --initial-window-bytes 2400 is passed — which configuration is the 'v1 cold-start' under measurement?",
+  "DR-EST-1 establish probe is a token-exempt lane (sender.rs:5567-5580) contradicting §3.3-B L332-333 'pacer'ı baypas eden gönderim yolu YOK'; it ships default ON with no RuntimeConfig switch (set_establish_probe is test-only). Spec amendment and/or product knob required?",
+  "Startup pacing initialization floor (DR-RATE-RAMP-2) ships default ON (sender.rs:1124) but exists only in reports (ek4-a2 INV-RATE-1 supersession), not in the frozen spec; and startup_pacing_floor_bps is not surfaced in any product telemetry. Amend spec + expose in FateWindowDiag?",
+  "ACK_FRAME_V2 seen_count/arrival_rate: emitted but never consumed by the sender (K3 consumer pending per spec zeyil L186-187) while TV-COLDSTART-2 (L964) requires direction-discriminated loss from a single SACK. Is the K3 consumer a v1 gate?",
+  "PATH_DEAD / cold-start give-up: repo-wide 0 hits; product never gives up in PreConverge (copies ×2 unbounded, establish probe capped at 8 s interval). Is the [K6] single-path no-failover variant (TV-COLDSTART-5) the v1 target, making PATH_DEAD out of scope?",
+  "§3.3-B copy schedule: COPY_MAX_INTERVAL cap and deadline-derived RETRY_BUDGET (§12 L876-877) are not implemented (repo-wide grep 0 hits); interval grows ×2 with saturating arithmetic only. Acceptable for v1?",
+  "DR-CS-3 receiver side in the product (runtime.rs:2311-2323) is stateless and does not enforce contract receiver §16-18 (≤4 echoes / 172 B per session); only the non-product kama-integration ReceiverControlCore does. If bootstrap_rtt is ever flipped ON, must the product responder gain the budget first? Also server-side RuntimeConfig.bootstrap_rtt is a no-op (bench 'İKİ UÇTA AYNI' is convention only).",
+  "Wire codepoints: client-core v0 wire shell uses FRAME_CS_PROBE=0x06 / FRAME_CS_ECHO=0x07 (wire.rs:224-228) while the authoritative noise-wire registry is 0x19/0x1A. Confirm this is covered by the S2 seam swap plan and not a v1 wire mismatch.",
+  "Idle→Startup resume: code re-enters Startup (not PreConverge) once an srtt exists (sender.rs:2175-2181), whereas the spec transition table L217 says IDLE --data--> PRE_CONVERGE unconditionally. Amend the table?",
+  "§16 TV-COLDSTART golden vectors (L958-968): no tv_coldstart test exists (grep TV-COLDSTART/COLDSTART in crates → 0 hits; tests/cold_start_liveness.rs covers liveness only). Is the golden-vector gate a v1 requirement, and are PRE_CONVERGE_FLOOR_BW / PC_* [CAL PLACEHOLDER] constants (sender.rs:1383, 1453-1458) required to be calibrated before v1?",
+  "EK4-A2 next_wakeup_ns is not used by the product runtime (1 ms Pto pump; runtime.rs:6, 61) — cold-start timers (establish probe, ladder) rely on the pump. Acceptable, or must the runtime adopt the exposed-timer contract?",
+  "Legacy DR-CS-1 F2A lane (feature-gated) is product-unreachable in every configuration but is the control arm of kama-integration DR-CS-3 panel tests; deleting it requires re-targeting those tests — is that in scope?",
+  "Telemetry completeness: FateWindowDiag.gate_outcomes[6] (BlockedPreConverge) and Sender::bootstrap_rtt_diag() were not verified as printed in the KP-CLIENT line (kama_product.rs:562-600 format string); confirm before relying on them for activation proof.",
+  "Speculative FEC lane (fec_loss_risk bounded_v1, default ON) was not audited for PreConverge behaviour here (out of cluster, research closed); confirm it cannot propose parity before the session is established."
+ ]
+}

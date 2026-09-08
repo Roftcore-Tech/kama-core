@@ -1,0 +1,753 @@
+{
+ "cluster": "fec-decision",
+ "mechanisms": [
+  {
+   "name": "Fuzzy controller — canonical (Confirmed-based) FEC/ARQ decision lane (Q18)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §8.4 L645-656 (rules; outputs fec_parity_ratio/arq/send_rate_gain/compress)",
+    "specs/adaptive-transport-engine-spec.md §15 L918-937 (trapezoidal memberships, [CAL] netem, ADR-17 determinism, golden vectors)",
+    "specs/adaptive-transport-engine-spec.md §16 L950 TV-FUZZY",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1080 (bw log2_fp re-domaining, cut-points 50k/100k/150k/200k)",
+    "specs/transport-layer-tdd.md §5.1-5.4 L532-601; AC-5 L769",
+    "specs/transport-layer-tdd.md §18 L835/L862 ('fuzzy eşik kalibrasyonu' + 'FEC parity calibration' = freeze-dışı, pending)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/fusion.rs:207 FuzzyConfig; :317 fixture(); :364-366 fec_zero=0/fec_med=500/fec_high=800",
+    "crates/adaptive-transport/src/fusion.rs:461 DeterministicFuzzyController; :489 decide; :503-516 rules R1..R4; :525 no_rule; :543-547 emergency mode; :551 compress",
+    "crates/adaptive-transport/src/sender.rs:1762 Sender::new() -> ValidatedFuzzyConfig::trusted_fixture(); :1770 try_with_fuzzy_config (no product caller); :3379 fuzzy_evaluate; :3408-3416 FusionInputs; :3417 self.fuzzy.decide"
+   ],
+   "product_call_chain": "client-core runtime.rs:961 drive! -> client-core lib.rs:88 ClientSession::on_event -> sender.rs:2125 on_event -> :2202 fuzzy_evaluate -> fusion.rs:489 decide -> sender.rs:3589 fec_arbiter (confirmed lane input) -> :3620 d.fec_parity_ratio_permille -> :2203 last_decision -> :4562 controller_decision_snapshot -> runtime.rs:1291 fec_controller_latch -> :925 compute_requested_r -> :4497 push_parity_authorized -> :4885 plan_fec_parity -> :4926 emit_parity_at -> runtime.rs:981-1004 encode_fec/seal_send -> UDP. Other outputs: :5328 arq.plan(arq_aggressiveness), :4030 compute_send_rate(send_rate_gain), :3742 update_state(mode).",
+   "product_reachable": true,
+   "gate": "No flag: runs on every on_event. Its FEC output actuates only when RuntimeConfig.fec = Some(..) (Controller mode) — otherwise ratio is computed and dropped.",
+   "default_state": "Sender::new() = FuzzyConfig::fixture() (comment: 'KALİBRE DEĞİL'); ClientSession::new (client-core lib.rs:82-86) calls Sender::new(); no product path injects a calibrated FuzzyConfig. Thresholds: loss LOW≤200k-300k ppm, MED 200k-600k, HIGH≥500k-600k; bw LOW 50-100 kB/s, HIGH ≥150-200 kB/s.",
+   "activation_condition": "Parity>0 from fuzzy needs loss ≥ ~200k ppm AND bw MED/HIGH (≥50 kB/s delivered). Measured Q18 defect: at 10-20 % loss / sub-50 kB/s fuzzy plans fec=0 (tests/q18_check.rs:26); overlays (structure gate, speculative lane) supply parity there.",
+   "bench_exposure": "Every kama-product run evaluates it; FEC actuation only with --fec-profile N --fec-mode adaptive|policy (bench default fec_profile=0 = FEC off, main.rs:60). scripts/netem/product_vs_quinn.sh:75-85 has no adaptive arm (only kp-sevk fec-off and kp-static-r4).",
+   "telemetry": "FateWindowDiag.fec_arbiter_reasons[1]=ConfirmedFuzzy (runtime.rs:420; KP-CLIENT arb=), TsSample.confirmed_prop/confirmed_ppm, diag_fuzzy_no_rule, fec_latch_diag.no_rule_zero_count (runtime.rs:409), FusionInputSnapshot (sender.rs:3634).",
+   "duplicates_or_dead": "FusionDecision.compress is never consumed (only constructed fusion.rs:551 / sender.rs:1968). TDD §5.3 row 'bw LOW ∧ qd HIGH → fec CAP' has no fec-cap implementation (fusion.rs:537-540 affects rate gain only). try_with_fuzzy_config (calibration entry) has zero product callers.",
+   "feature_off_behavior": "n/a (always on).",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:2202 `let decision = self.fuzzy_evaluate(now_ns);` + :2203 `self.last_decision = decision;`",
+    "fusion.rs:503-516 rules array R1..R4 (loss LOW→0; loss HIGH∧bw HIGH∧jitter LOW→fec_high; loss MED∧bw MED→fec_med; loss LOW∧jitter HIGH→0)",
+    "fusion.rs:364-366 `fec_zero: 0, fec_med: 500, fec_high: 800`",
+    "sender.rs:1762-1763 `pub fn new() -> Self { Self::new_internal(ValidatedFuzzyConfig::trusted_fixture()) }`",
+    "tests/q18_check.rs:26 q18_shipped_controller_plans_zero_parity_where_fec_is_the_whole_mechanism; tests/tv_fusion.rs golden vectors; tests/rule_coverage_map.rs:90",
+    "reports/fec-loss-risk-v1/closure/FEC-V1-CLOSURE.md §5 Q4: arbiter winners in v1 cells are SpecPers/StructGate, not fuzzy"
+   ],
+   "notes": "Spec-required and wired, but its FEC consequent is effectively inert in the measured v1 regime because thresholds are uncalibrated fixture (spec §15 says [CAL] netem, 'UYDURULMAZ'). ARQ/rate/mode outputs are live. Calibration-by-config path exists but is unreachable from product."
+  },
+  {
+   "name": "Single FEC arbiter max(confirmed, structure, speculative)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §8.4 L645-656 (single fec_parity_ratio output; no multi-lane arbitration specified)",
+    "specs/adaptive-transport-engine-spec.md §10.2 L751-758 (r = round(ratio × k); k+r ≤ 255)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:581-609 fec_arbiter (pure fn; max, no sum; tie order confirmed>structure>speculative)",
+    "crates/adaptive-transport/src/sender.rs:502-520 FecArbiterReason; :555 ARBITER_REASON_KINDS=7",
+    "crates/adaptive-transport/src/sender.rs:3589 call; :3620 `d.fec_parity_ratio_permille = final_ratio`; :3621-3627 no_rule cleared if final>0"
+   ],
+   "product_call_chain": "sender.rs:3379 fuzzy_evaluate -> :3477 confirmed (fuzzy or policy) / :3543 structure / :3554 speculative -> :3589 fec_arbiter -> :3620 write ratio -> :2203 last_decision -> :4562 controller_decision_snapshot -> runtime.rs:1288-1298 fec_controller_latch -> :925 compute_requested_r -> pending_fec -> :4885 plan_fec_parity -> runtime.rs:981-1004 wire.",
+   "product_reachable": true,
+   "gate": "None; runs every fuzzy_evaluate. Actuation gated downstream by RuntimeConfig.fec.",
+   "default_state": "Always active (single writer of the parity ratio).",
+   "activation_condition": "Any lane proposes >0.",
+   "bench_exposure": "All kama-product runs; reason histogram printed as arb= in KP-CLIENT (kama_product.rs:609).",
+   "telemetry": "diag_arbiter_reasons (sender.rs:4249) -> FateWindowDiag.fec_arbiter_reasons (runtime.rs:420) -> KP-CLIENT arb=; TsSample.reason_idx/final_ratio (sender.rs:3593-3618) -> ts.csv.",
+   "duplicates_or_dead": "None found.",
+   "feature_off_behavior": "With speculative lane off and policy off: max(fuzzy, gate) == pre-arbiter behaviour (comment sender.rs:3541-3542).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:581 `pub fn fec_arbiter(confirmed: (u32, FecArbiterReason), structure: u32, spec: SpeculativeProposal) -> (u32, FecArbiterReason)`",
+    "sender.rs:3589 `let (final_ratio, reason) = fec_arbiter(confirmed, structure, spec);`",
+    "tests/fec_loss_risk.rs:243 arbiter_max_alir_toplamaz; :257 arbiter_sebep_atfi_dogru",
+    "commit 100aa5d2 feat(transport): FEC arbiter + sınırlı spekülatif bootstrap"
+   ],
+   "notes": "Owner design (3 lanes propose, one arbiter decides, no summation). Not in the frozen specs; part of the FEC v1 closure decision."
+  },
+  {
+   "name": "Structure gate — Q18Iid (IID-loss → fec at gate level; burst → ARQ), gate level 250‰",
+   "spec_refs": [
+    "not in specs (code-side Q18-FIX); closest: specs/adaptive-transport-engine-spec.md §8.4 L650 'loss MED ∧ bw MED → fec=med'",
+    "specs/fec-core-tdd-v3.0.md §0.5 L111 (IID/random-loss = GÜÇLÜ rejim; burst-R-aşan = FEC-kötü)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:3649-3732 structure_gate_fec; :1352 STRUCTURE_GATE_LOSS_MIN_PPM=100_000; :1355 STRUCTURE_GATE_MIN_N=32; :1366 STRUCTURE_GATE_IID_MAX_DELTA_PPM=50_000",
+    "crates/adaptive-transport/src/sender.rs:258-290 GateOutcome (7 buckets); :4422 set_structure_gate_level; :4434 gate_level_permille (None → fuzzy fec_med=500); :640-650 FecStructurePolicy (default Q18Iid)",
+    "crates/adaptive-transport/src/sender.rs:3543 call (only when fusion_policy disabled); fate feed :3336 fate_estimator.on_loss_evidence (DATA origin, guard=base_pto_ns), :2942 on_original_ack, :2166 advance; fate_estimator.rs:320 snapshot"
+   ],
+   "product_call_chain": "runtime.rs:847 set_structure_gate_level(cfg.structure_gate_level_permille) + :819 set_fec_structure_policy -> sender.rs:3543 structure_gate_fec(fuzzy_fec, loss_windowed_ppm) -> GateOutcome::Opened(level) -> :3589 arbiter -> :3620 -> latch -> wire (same chain as arbiter).",
+   "product_reachable": true,
+   "gate": "Runs only in the `else` branch of `if self.fusion_policy.is_enabled()` (sender.rs:3481/3541). Preconditions: fuzzy fec==0, state≠PreConverge, loss_ppm≥100k, fate n≥32, burst_delta≤50k ppm.",
+   "default_state": "Product: RuntimeConfig::default().structure_gate_level_permille = Some(250) (runtime.rs:206) with policy Q18Iid (runtime.rs:198). Transport-level default: None → 500 (sender.rs:1932, :4434).",
+   "activation_condition": "Confirmed windowed loss in [100k ppm, ~250k ppm) (band where fuzzy=0), ≥32 fate-known units, IID structure read (or Laplace prior when no loss transitions).",
+   "bench_exposure": "--gate-permille (main.rs:94; kama_product.rs:224). Bench default None → engine 500‰, NOT the product 250‰; product value only via explicit --gate-permille 250 (scripts/netem/fec_evidence_family.sh:43, fec_rsweep.sh:35). product_vs_quinn.sh never runs an adaptive arm.",
+   "telemetry": "diag_structure_gate_opened (sender.rs:5932) / diag_gate_outcomes (:5938) -> FateWindowDiag.structure_gate_opened (runtime.rs:353), gate_outcomes (:438), n/lost/n00..n11/burst_delta_ppm (:341-352) -> KP-CLIENT gate_opened=; fec_arbiter_reasons[3]=StructureGate; TsSample.structure_prop.",
+   "duplicates_or_dead": "Prior-as-evidence debt documented in code (sender.rs:3675-3695): Q18Iid decides on the Laplace prior when n10+n11 < MIN_LOSS_TRANSITIONS(8); shipped pins (tests/structure_gate_fec.rs) run on zero-transition windows. lib.rs:39-41 comment 'fate_estimator … no product caller' is stale (gate reads it in product).",
+   "feature_off_behavior": "With level None → 500‰ (fec_med). No off switch other than fusion_policy Some (which silences the gate).",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:3649 `fn structure_gate_fec(&self, fuzzy_fec_permille: u32, loss_ppm: u64) -> GateOutcome`; :3667 `if loss_ppm < STRUCTURE_GATE_LOSS_MIN_PPM`; :3671 `if f.n < STRUCTURE_GATE_MIN_N`; :3697 `let iid_structure = f.burst_delta_ppm <= STRUCTURE_GATE_IID_MAX_DELTA_PPM;`",
+    "sender.rs:4434-4436 `self.structure_gate_level_permille.unwrap_or(self.fuzzy.config().fec_med)`",
+    "runtime.rs:206 `structure_gate_level_permille: Some(250),`; runtime_e2e.rs:999 fec_v1_urun_defaultu_sinirli_politika asserts Some(250)",
+    "kama_product.rs:224 `structure_gate_level_permille: gate,` (None unless --gate-permille)",
+    "tests/structure_gate_fec.rs:94,153,174,205,227,347,386; kama-integration/tests/fec_recovery_cell.rs:97 structure_gated_fec_recovers_burst_erasure_that_arq_censors",
+    "reports/fec-loss-risk-v1/closure §13-14: candidate A = 250-250-250 includes gate 250"
+   ],
+   "notes": "Part of the FEC v1 closure config ('aday A'). Spec-unspecified compensation for the uncalibrated fuzzy. Open owner decision on the prior-as-evidence debt."
+  },
+  {
+   "name": "Structure gate — BurstFusion policy (burst branch also codes; evidence threshold n10+n11≥8)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §8.4 L645 ('FÜZYON' — fec+arq together)",
+    "specs/fec-core-tdd-v3.0.md §9 L297-300 HYBRID (proactive-R → residual ARQ)"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:640-650 FecStructurePolicy::BurstFusion; :3711-3730 burst branch (needed = loss×3/2; Opened(level) or fec_high=800); :1371-1372 BURST_FUSION_MARGIN 3/2; :4439 set_fec_structure_policy",
+    "crates/adaptive-transport/src/fate_estimator.rs:37 MIN_LOSS_TRANSITIONS=8 (evidence gate, BurstFusion only)"
+   ],
+   "product_call_chain": "runtime.rs:819 set_fec_structure_policy(cfg.fec_structure_policy) -> sender.rs:3703 match policy -> BurstFusion branch -> arbiter -> latch -> wire.",
+   "product_reachable": true,
+   "gate": "RuntimeConfig.fec_structure_policy == BurstFusion (opt-in).",
+   "default_state": "OFF: FecStructurePolicy::default() = Q18Iid (runtime.rs:198; sender.rs:1931).",
+   "activation_condition": "Policy set + gate preconditions + evidenced window (n10+n11≥8) + burst structure.",
+   "bench_exposure": "--fec-burst-fusion on both ends (main.rs:118, :233; kama_product.rs:153-156); label suffix -burstfusion (kama_product.rs:682).",
+   "telemetry": "gate_outcomes[3]=BlockedNoTransitionEvidence; Opened level (gate level or 800).",
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "Byte-identical to Q18Iid (default).",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:641-649 doc: 'Burst dalında da kodlama açılır … (BurstFusion)'; runtime.rs:129-131 'KALİBRE EDİLMEMİŞTİR — flip ölçüm ister'",
+    "sender.rs:3660-3663 comment: 'burst-fusion kolu netem'de EN KÖTÜ koldu (v2 5/12 çöküş)' (before PreConverge guard)",
+    "tests/structure_gate_fec.rs:253 evidenced_burst_opens_parity_under_burst_fusion_policy; :279; :311"
+   ],
+   "notes": "Uncalibrated opt-in; must stay default OFF. Not needed for v1 closure claims (closure ran Q18Iid)."
+  },
+  {
+   "name": "Speculative FEC loss-risk lane — core (Suspected age-weighted risk split, L0/L1/L2 levels, bootstrap/persistent caps)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §5 L427-431 (W_loss ledger Suspected→Confirmed|Spurious) and L448 'loss_pre_fec = Confirmed_units' (fuzzy input is Confirmed-only — speculative use of Suspected is not specified)",
+    "specs/fec-core-tdd-v3.0.md §8 L292-296 (multi-dimensional signal: q_raw · burst · reorder · feedback_age — proactive repair primary)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:346-393 FecLossRiskConfig; :395-416 Default (enabled=false, 125/250, FixedSrtt, G1 off, l1/l2 min 10k ppm, spec_min 63); :421 experimental_v1; :435-448 bounded_v1 (250/250, Learned, G1 300)",
+    "crates/adaptive-transport/src/sender.rs:481 SpeculativeLevel; :494 SpeculativeProposal; :4308-4370 speculative_propose; :3434-3473 split computation in fuzzy_evaluate; :3554 call; :4218 set_fec_loss_risk",
+    "crates/adaptive-transport/src/loss.rs:52-67 RiskSplit; :77-93 SuspectConfidence (200/400/700/700, '[CAL] kalibre EDİLMEMİŞ'); :107 for_age; :404-455 fec_loss_risk_split"
+   ],
+   "product_call_chain": "runtime.rs:843 session.sender_mut().set_fec_loss_risk(cfg.fec_loss_risk) -> sender.rs:3434 `if self.fec_loss_risk.enabled` -> loss.rs:404 fec_loss_risk_split -> sender.rs:4308 speculative_propose -> :3589 fec_arbiter -> :3620 -> :2203 last_decision -> runtime.rs:1288-1298 latch (only when cfg.fec Some) -> pending_fec -> :4885 plan_fec_parity -> runtime.rs:981-1004 encode_fec -> wire.",
+   "product_reachable": true,
+   "gate": "FecLossRiskConfig.enabled; effective only when RuntimeConfig.fec = Some (Controller latch). L1: instant_ppm ≥ l1_min (10k); L2: persistent_ppm ≥ l2_min (10k); srtt must be measured (else Suspected weight 0).",
+   "default_state": "Product: RuntimeConfig::default().fec_loss_risk = FecLossRiskConfig::bounded_v1() (enabled; runtime.rs:204) — but fec: None (runtime.rs:199) so the lane is inert in the shipped default ('oran hesaplanır, hiçbir aktüasyon yolu çalışmaz', runtime.rs:152-153). Transport default: disabled (sender.rs:1934).",
+   "activation_condition": "fec Some + Controller mode + Suspected loss events aged into the window; parity capped at bootstrap_cap (L1) / persistent_cap (L2).",
+   "bench_exposure": "NOT the product default: kama_product.rs:187-191 builds `if fec_risk { experimental_v1() } else { default() }` — --fec-risk yields 125/250, FixedSrtt, G1 off; without the flag the lane is OFF. bounded_v1 has zero bench callers. Product-equivalent arm needs `--fec-risk --spec-l1-permille 250 --spec-l2-permille 250 --persist-mode learned --persist-alpha 500 --persist-rho 1250 --persist-q 950 --rp-suppress 300 --gate-permille 250` (scripts/netem/fec_evidence_family.sh:28,32,43). product_vs_quinn.sh has no such arm.",
+   "telemetry": "diag_risk_ppm (sender.rs:4243), diag_fec_risk_times (:4231), diag_spec_levels (:4255), diag_spec_signals (:4278), diag_spec_transitions -> FateWindowDiag.fec_risk_times/fec_risk_ppm/fec_spec_levels/fec_spec_signals/fec_spec_transitions (runtime.rs:414-429) -> KP-CLIENT risk_t= risk_ppm= lvl= spec= em_l1= em_l2=; arb[4]=SpeculativeBootstrap, arb[5]=SpeculativePersistent; TsSample instant/persistent/spec_prop/level_idx.",
+   "duplicates_or_dead": "loss.rs:476 fec_loss_risk_ppm duplicates split.instant_ppm (tests only). RiskSplit.sent_window_units / TsSample.evidence_mass,declared_units / diag_spec_transitions are diagnostic residue of the removed evidence-mode policy (closure §3).",
+   "feature_off_behavior": "FecLossRiskConfig::default(): spec_split=None → SpeculativeProposal::NONE → arbiter = max(confirmed, structure); byte-identical (tests/fec_loss_risk.rs:66 kol_varsayilan_olarak_kapalidir, :75).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "runtime.rs:204 `fec_loss_risk: FecLossRiskConfig::bounded_v1(),`; runtime.rs:199 `fec: None,`",
+    "sender.rs:3434 `let spec_split = if self.fec_loss_risk.enabled {`; :3453 `let split = self.loss.fec_loss_risk_split(`; :3554 `let p = self.speculative_propose(split, policy_ceiling, confirmed.0.max(structure));`",
+    "kama_product.rs:188-192 `let mut c = if fec_risk { FecLossRiskConfig::experimental_v1() } else { FecLossRiskConfig::default() };`",
+    "client-core/tests/runtime_e2e.rs:999-1023 fec_v1_urun_defaultu_sinirli_politika (enabled, 250/250/300, Learned, gate 250)",
+    "reports/fec-loss-risk-v1/closure/FEC-V1-CLOSURE.md §14: 'Ürün politikası FecLossRiskConfig::bounded_v1() … client-core RuntimeConfig::default()'ta; fec: None iken inert' — 'FEC v1 CLOSED'"
+   ],
+   "notes": "FEC v1 closure decision (do not reopen). Product state audit: enabled-by-default config but inert because FEC actuation itself defaults OFF; the bench arm does not reproduce the product default without seven explicit flags."
+  },
+  {
+   "name": "Speculative lane — persistence P2 (LearnedSpuriousAge horizon: max(0.5×srtt, 1.25×Q95 spurious-age))",
+   "spec_refs": [
+    "not in specs (owner calibration; see reports/fec-loss-risk-v1/persist)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:456-465 PersistMode; :466-478 learned_persist_min_ns; :3439-3451 horizon computation (floor α·srtt; Learned: Q_q × ρ, capped)",
+    "crates/adaptive-transport/src/loss.rs:368 spurious_age_quantile; :383 spurious_age_samples",
+    "FecLossRiskConfig: persist_srtt_permille=500, persist_rho_permille=1250, persist_q_permille=950, persist_cap_srtt_permille=u32::MAX (sender.rs:395-416)"
+   ],
+   "product_call_chain": "runtime.rs:843 set_fec_loss_risk -> sender.rs:3441 `match c.persist_mode` -> loss.rs:368 spurious_age_quantile -> :466 learned_persist_min_ns -> loss.rs:404 fec_loss_risk_split(persist_min) -> persistent_ppm -> L2 level in speculative_propose:4325.",
+   "product_reachable": true,
+   "gate": "FecLossRiskConfig.persist_mode (LearnedSpuriousAge vs FixedSrtt); lane enabled; fec Some.",
+   "default_state": "Product bounded_v1: LearnedSpuriousAge (runtime.rs:204; sender.rs:441). Transport default FixedSrtt (sender.rs:401).",
+   "activation_condition": "Only affects the L1→L2 climb (L1 timing unchanged); with no spurious samples the floor 0.5×srtt applies.",
+   "bench_exposure": "--persist-mode learned --persist-alpha/--persist-rho/--persist-q (main.rs:99-108; kama_product.rs:200-213); bench default None → FixedSrtt (not product).",
+   "telemetry": "diag_persist (sender.rs:4261) -> FateWindowDiag.fec_persist (runtime.rs:427) -> KP-CLIENT persist=; fec_spec_signals persist_min last/peak.",
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "FixedSrtt: horizon = 0.5×srtt (measured false-L2 under reorder, memory fec-persistence-calibration).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:441 `persist_mode: PersistMode::LearnedSpuriousAge,` inside bounded_v1()",
+    "sender.rs:3441-3450 `PersistMode::LearnedSpuriousAge => learned_persist_min_ns(floor_ns, self.loss.spurious_age_quantile(c.persist_q_permille), c.persist_rho_permille, …)`",
+    "tests/fec_loss_risk.rs:579 spurious_yas_quantile_deterministik; :611 ogrenilen_ufuk_taban_rho_tavan; :637 persist_modu_l1_zamanlamasini_degistirmez; :664 persist_varsayilani_sevk",
+    "scripts/netem/fec_persist_family.sh:30-33 P0..P3 arms"
+   ],
+   "notes": "Sub-mechanism of the v1 closure config."
+  },
+  {
+   "name": "Speculative lane — C4 reorder guard G1 (reorder_pressure ≥ 300‰ ∧ declared ≥ 8 ⇒ no proposal)",
+   "spec_refs": [
+    "specs/fec-core-tdd-v3.0.md §14 K-FEC-NEG-1 L392-393 (FEC-bad regimes must be shown and FEC switched off/controlled split — the reorder case)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:4318-4323 guard in speculative_propose; :388-393 FecLossRiskConfig.reorder_suppress_permille; :445 bounded_v1 → 300; reorder_min_evidence_units=8 (:409)",
+    "crates/adaptive-transport/src/loss.rs:446-451 reorder_pressure_permille = Spurious units / all event units; :451 declared_units"
+   ],
+   "product_call_chain": "runtime.rs:843 set_fec_loss_risk -> sender.rs:4308 speculative_propose -> :4318 guard -> NONE -> arbiter falls back to confirmed/structure.",
+   "product_reachable": true,
+   "gate": "reorder_suppress_permille != u32::MAX (product 300); lane enabled; fec Some.",
+   "default_state": "Product bounded_v1: 300‰ (runtime.rs:204). Transport default u32::MAX (off).",
+   "activation_condition": "≥8 declared loss events in window and ≥30 % of them resolved Spurious.",
+   "bench_exposure": "--rp-suppress N (main.rs:111; kama_product.rs:217-219); bench default None → off. G1 arms: scripts/netem/fec_evidence_family.sh:32 `G1) echo \"--rp-suppress $RP_SUPPRESS\"`.",
+   "telemetry": "fec_spec_signals (reorder_pressure last/peak) and fec_spec_levels[0]; no dedicated 'suppressed-by-G1' counter (indistinguishable from L0 via instant<l1_min in histograms; only ts.csv rp column separates it).",
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "u32::MAX → guard inert (byte-identical when rp=0).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:4318-4323 `if split.declared_units >= c.reorder_min_evidence_units && split.reorder_pressure_permille >= c.reorder_suppress_permille { return SpeculativeProposal::NONE; }`",
+    "sender.rs:445 `reorder_suppress_permille: 300,` in bounded_v1()",
+    "tests/fec_loss_risk.rs:784 g1_reorder_baskisi_oneriyi_bastirir_riski_degistirmez; :757 bounded_v1_degerleri_ve_default_notr",
+    "reports/fec-loss-risk-v1/closure §7 (pre-registered) / §8 table (C4 n=20 A+G1 0.333 vs OFF 0.281) / §14 decision"
+   ],
+   "notes": "Measured C4-safety guard; part of the v1 closure."
+  },
+  {
+   "name": "Speculative lane — reorder discount (non-veto) + spec_min floor (63‰)",
+   "spec_refs": [
+    "not in specs"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:4353-4362 discount cap×(1−rp×discount_max) when declared≥8; :4363 `cap = cap.max(c.spec_min_permille)`; :372-386 spec_min_permille=63 rationale (K=8 ≥1 repair); reorder_discount_max_permille=500"
+   ],
+   "product_call_chain": "speculative_propose:4308 → applied after level/handoff, before policy ceiling → proposal → arbiter.",
+   "product_reachable": true,
+   "gate": "lane enabled; ≥8 declared units for discount; floor always.",
+   "default_state": "On when lane on (bounded_v1).",
+   "activation_condition": "Any reorder pressure with enough evidence.",
+   "bench_exposure": "Implicit in every --fec-risk run; no dedicated flag.",
+   "telemetry": "TsSample.spec_prop; no dedicated counter.",
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "n/a.",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:4353-4363 discount + `cap = cap.max(c.spec_min_permille);`",
+    "tests/fec_loss_risk.rs:363 reorder_indirimi_veto_degil"
+   ],
+   "notes": "Sub-mechanism; the 63‰ floor is profile-agnostic (engine does not know K)."
+  },
+  {
+   "name": "Speculative lane — handoff clamp (canonical_prop > 0 ⇒ cap ≤ bootstrap_cap)",
+   "spec_refs": [
+    "not in specs (owner fix, commit dc9bac04; reports/fec-loss-risk-v1/handoff)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:4340-4350 handoff rule + clamp; :3554 caller passes `confirmed.0.max(structure)`; :4305-4307 doc"
+   ],
+   "product_call_chain": "fuzzy_evaluate:3554 → speculative_propose(…, canonical_prop) → :4348 clamp → arbiter.",
+   "product_reachable": true,
+   "gate": "lane enabled.",
+   "default_state": "On (bounded_v1: bootstrap=persistent=250 so the clamp is value-neutral in the product config; only bites when caps differ, e.g. experimental_v1 125/250).",
+   "activation_condition": "Canonical lane (fuzzy/policy or gate) proposes >0 while speculative is at L2.",
+   "bench_exposure": "scripts/netem/fec_handoff_family.sh (--ts-out 50 ms series).",
+   "telemetry": "TsSample confirmed_prop/structure_prop/spec_prop/final_ratio time series (ts.csv).",
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "n/a.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:4348-4350 `if canonical_prop > 0 { cap = cap.min(c.bootstrap_cap_permille); }`",
+    "tests/fec_loss_risk.rs:496 handoff_devralan_yoksa_spekulatif_dusmez",
+    "git log dc9bac04 'handoff cliff — spekülatif otorite ancak DEVRALAN öneriyorsa devredilir'; closure §12 handoff invariant"
+   ],
+   "notes": "With bounded_v1 (250/250) the clamp cannot lower the proposal; it matters only for asymmetric caps."
+  },
+  {
+   "name": "Speculative lane — DEADLINE_ASSISTED (deadline/srtt ≤ 2.5 ⇒ L1 uses persistent cap)",
+   "spec_refs": [
+    "specs/fec-core-tdd-v3.0.md §8 L285-287 DEADLINE-HEDEFİ; §14 K-FEC-2 L371 'deadline-hedefli'; K-FEC-DEADLINE-1 L379"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:4330-4339 tight = tightest_deadline_over_srtt() ≤ tight_budget_permille; cap=persistent for L1; :4368 deadline_assisted flag; :519 FecArbiterReason::DeadlineAssisted; :384-386 tight_budget_permille=2500; :4127 tightest_deadline_over_srtt"
+   ],
+   "product_call_chain": "app ClientSender::send_with_deadline (runtime.rs:663) → offer → runtime.rs:1212 declare_delivery_deadline → sender.rs:4118 → :4127 → speculative_propose:4333 → arbiter (reason DeadlineAssisted) → latch → wire.",
+   "product_reachable": true,
+   "gate": "Requires an app-declared deadline (send_with_deadline(Some)), measured srtt, lane enabled, L1 level, fec Some.",
+   "default_state": "Inert by default: send() passes None (runtime.rs:645); no product component declares a deadline.",
+   "activation_condition": "deadline ≤ 2.5×srtt declared by app.",
+   "bench_exposure": "Only the policy arm passes a deadline (kama_product.rs:428-429 `FecArm::PolicyV2Deadline { deadline_ns, .. } => Some(deadline_ns)`), and there the policy ceiling applies. Adaptive arm never declares → arb[6] always 0 in all v1 closure runs.",
+   "telemetry": "fec_arbiter_reasons[6]=DeadlineAssisted; FateWindowDiag.declared_deadline_ns (runtime.rs:383) -> KP-CLIENT deadline_ns=.",
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "No deadline → tight=false → bootstrap cap.",
+   "classification": "SHIP",
+   "confidence": "low",
+   "evidence": [
+    "sender.rs:4330-4333 `let tight = self.tightest_deadline_over_srtt().is_some_and(|b| b <= c.tight_budget_permille);`",
+    "sender.rs:4334-4338 `SpeculativeLevel::L1Bootstrap if tight => c.persistent_cap_permille,`",
+    "tests/fec_loss_risk.rs:433-458 politika_acikken_spekulatif_kol_tavani_asamaz (declare 400 ms + policy)",
+    "kama_product.rs:428-431 deadline only for PolicyV2Deadline arm"
+   ],
+   "notes": "Wired and spec-aligned but never exercised outside unit tests; with bounded_v1 (250/250) the escalation is value-neutral anyway (persistent cap == bootstrap cap). Low confidence that it is 'exercised'."
+  },
+  {
+   "name": "Calibrated fusion policy — FusionPolicy::calibration_v2_deadline (+ policy-ceiling coupling onto speculative lane)",
+   "spec_refs": [
+    "specs/fec-core-tdd-v3.0.md §8 L279-283 CONTROLLER-FORMU (profile = choose_profile(q̂, burst, reorder, reverse_health, deadline, …)); L285-287 DEADLINE-HEDEFİ; §14 K-FEC-2/K-FEC-DEADLINE-1",
+    "specs/adaptive-transport-engine-spec.md §8.4 (fuzzy is the specified decision; policy is an overlay)",
+    "crates/adaptive-transport/src/lib.rs:51-53 'FS-FUSION-CAL-1 … default OFF; advisory only'"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/fusion_policy.rs:232 FusionPolicy; :245 disabled(); :330-369 calibration_v2_deadline (loss ramp 150k→200k; region loss≤250k, BtlBw 1..80_000 B/s, deadline/srtt≤2500‰; fec_high 250); :415 advise; :438 decide; :472-540 FusionSafetyValidator::validate; :175-197 FusionSafetyConfig (800‰, 4096 B, 8192 B, 2 s, min_rtt_samples 2)",
+    "crates/adaptive-transport/src/sender.rs:3481-3540 policy branch (obs build, decide, confirmed=(r,ConfirmedPolicy), policy_ceiling); :4183 set_fusion_policy; :4189 diag_fusion_actions"
+   ],
+   "product_call_chain": "runtime.rs:850-852 `if let Some(p) = cfg.fusion_policy { set_fusion_policy(p) }` -> sender.rs:3481 is_enabled -> :3515 decide -> :3520 FecAssist{redundancy_permille,..} -> confirmed -> :3531 policy_ceiling (hard_max 800 for FecAssist/ColdStart/LowConfidence/NoDeadlineDeclared, else 0) -> speculative_propose:4366 cap.min(ceil) -> :3589 arbiter -> latch -> wire.",
+   "product_reachable": true,
+   "gate": "RuntimeConfig.fusion_policy: Option<FusionPolicy>. Validator: converged, ≥2 RTT samples, telemetry age ≤2 s, region, deadline declared and ≤2.5×srtt, fec_actuation_available.",
+   "default_state": "OFF: RuntimeConfig::default().fusion_policy = None (runtime.rs:202; comment cites reports/fec-policy-arm-v1/ which does not exist) → Sender default FusionPolicy::disabled() (sender.rs:1952) → structure gate branch runs instead.",
+   "activation_condition": "Opt-in Some(calibration_v2_deadline()) + declared deadline + region (BtlBw ≤ 80 kB/s, loss ≤ 25 %).",
+   "bench_exposure": "--fec-mode policy --fec-deadline-ms N (main.rs:68-74; kama_product.rs:229-230); label fec-policy-v2d{ms}ms; not in product_vs_quinn.sh.",
+   "telemetry": "diag_fusion_actions (sender.rs:4189) -> FateWindowDiag.fusion_actions (runtime.rs:387), last_fusion_obs (:390), fusion_bw_range/loss_range -> KP-CLIENT fusion= last_obs= bw_range= loss_range=; arb[2]=ConfirmedPolicy.",
+   "duplicates_or_dead": "FusionAction::FecAssist.byte_budget is computed (fusion_policy.rs:531-538) but dropped at sender.rs:3520-3523 (`..`); no consumer anywhere. calibration_v1 is obsolete (see separate record). RuntimeConfig doc reference reports/fec-policy-arm-v1/ dangling.",
+   "feature_off_behavior": "None → byte-identical shipped path; structure gate active.",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "runtime.rs:200-202 `// Sevk default'u KAPALI: kalibrasyon opt-in kalır … bkz. reports/fec-policy-arm-v1/` + `fusion_policy: None,`",
+    "sender.rs:3481 `if self.fusion_policy.is_enabled() {`; :3515 `let action = self.fusion_policy.decide(&obs, payload);`; :3531-3539 policy_ceiling",
+    "fusion_policy.rs:507-513 deadline checks (NoDeadlineDeclared / DeadlineTooLoose)",
+    "tests/fusion_policy_wiring.rs:67 policy_is_disabled_by_default_and_records_no_decisions; :207-283 v2 tests; tests/fec_loss_risk.rs:460 politika_acik_risk_kapali_arbiter_politikayi_birebir_gecirir"
+   ],
+   "notes": "Fail-safe by construction (every fallback → ArqOnly). Not needed for v1 closure claims (closure ran policy OFF)."
+  },
+  {
+   "name": "FusionPolicy::calibration_v1 (obsolete calibration)",
+   "spec_refs": [
+    "n/a"
+   ],
+   "spec_requires_v1": "obsolete",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/fusion_policy.rs:272-328 calibration_v1 (bw region [100_000,125_000] B/s)"
+   ],
+   "product_call_chain": "None: callers only in-module #[cfg(test)] (fusion_policy.rs:584-724).",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "Unused.",
+   "activation_condition": "Never in product/bench.",
+   "bench_exposure": "None (bench only constructs calibration_v2_deadline, kama_product.rs:230).",
+   "telemetry": "n/a",
+   "duplicates_or_dead": "Superseded by v2; v2 comment (fusion_policy.rs:344-350) records that v1's bandwidth region never matches product BtlBw (35-58 kB/s) → always UnsupportedRegion → misleading.",
+   "feature_off_behavior": "n/a",
+   "classification": "DELETE",
+   "confidence": "medium",
+   "evidence": [
+    "grep `calibration_v1()` → only fusion_policy.rs:272 (def) and :584,:610,:627,:640,:656,:672,:695,:707,:724 (module tests)",
+    "fusion_policy.rs:344-350 '`calibration_v1` bu ayrımı kaçırdı … v1 bölgesi ürün yolunda HER ZAMAN `UnsupportedRegion` veriyordu'"
+   ],
+   "notes": "Keep only if the version-mismatch tests need a second identity; otherwise remove with its tests."
+  },
+  {
+   "name": "Delivery-deadline declaration API (send_with_deadline → declare_delivery_deadline → tightest_deadline_over_srtt)",
+   "spec_refs": [
+    "specs/fec-core-tdd-v3.0.md §8 L285-287 (deadline as controller input); §14 K-FEC-2, K-FEC-DEADLINE-1",
+    "specs/adaptive-transport-engine-spec.md §16.1 L992 (zeyl: per-unit deadline is NOT carried into the engine — bench/app layer)",
+    "specs/transport-layer-tdd.md §4.4.3 L295-299 deadline-bounded completion (metric, not mechanism)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/client-core/src/runtime.rs:663-690 ClientSender::send_with_deadline; :756-762 ClientHandle::send_with_deadline; :645 send() → None; :1210-1213 declare on offer",
+    "crates/adaptive-transport/src/sender.rs:4118-4123 declare_delivery_deadline (keeps min, never reset); :4127-4135 tightest_deadline_over_srtt; :4165 diag_tightest_deadline_ns"
+   ],
+   "product_call_chain": "app → runtime.rs:663 send_with_deadline → mpsc (payload, deadline) → client_task runtime.rs:1207-1213 → sender.rs:4118 → consumers: fusion_policy obs (sender.rs:3494) and speculative tight (:4333).",
+   "product_reachable": true,
+   "gate": "None; app must pass Some(deadline_ns).",
+   "default_state": "No deadline (send() → None) → policy NoDeadlineDeclared, speculative tight=false.",
+   "activation_condition": "Any send_with_deadline(Some) on the session.",
+   "bench_exposure": "kama_product.rs:254 offer(); deadline only in PolicyV2Deadline arm (:428-429).",
+   "telemetry": "FateWindowDiag.declared_deadline_ns (runtime.rs:383) -> KP-CLIENT deadline_ns=.",
+   "duplicates_or_dead": "Defect-class: tightest_deadline_ns is a session-sticky minimum — never expires or resets (sender.rs:4118-4123), so one tight message permanently tightens the policy/speculative inputs for the session; per-message semantics are not implemented (spec §16.1 zeyl acknowledges).",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "runtime.rs:1210-1213 `if let Some(d) = deadline_ns { session.sender_mut().declare_delivery_deadline(d); }`",
+    "sender.rs:4118-4123 `self.tightest_deadline_ns = Some(match … { Some(cur) => cur.min(deadline_ns), None => deadline_ns })`",
+    "client-core/tests/runtime_e2e.rs:852 declared_deadline_reaches_the_engine_and_keeps_the_tightest"
+   ],
+   "notes": "Plumbing is wired; only default-on consumer is the speculative tight-budget path, which no product component triggers."
+  },
+  {
+   "name": "FEC actuation chain — RuntimeConfig.fec → FecActuationMode::Controller → fec_controller_latch → compute_requested_r → pending_fec → plan_fec_parity → wire",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §10.2 L751-758 (r = round(ratio×k), k+r ≤ 255 via profile clamp)",
+    "specs/adaptive-transport-engine-spec.md §13 L899 priority 'retransmit > FEC parity > yeni DATA' (code: DATA first, sealed — deviation)",
+    "specs/fec-core-tdd-v3.0.md §4 L174-192 R-triple (R_code_max clamp); §8 L268-276 P0-1 (repair inside pacer, no bypass); §14 K-FEC-INV-1 L372-373, K-FEC-OFF-1 L386-391 (FEC-off hot path zero-alloc), K-FEC-2 L371 (q̂=0 → parity=0)",
+    "specs/transport-layer-tdd.md AC-7 L771 (FEC only with block/shard framing)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/client-core/src/runtime.rs:129-137 RuntimeConfig.fec; :171-177 FecRuntimeConfig{profile_id, manual_r}; :214-246 validate_fec; :863-875 mode selection (Controller vs Manual{true}); :1263-1300 K-th unit close → controller_decision_snapshot + open_fec_block_authority + fec_controller_latch; :981-1004 TransmitKind::FecParity → repair_store → encode_fec → seal_send!(TxClass::Fec)",
+    "crates/adaptive-transport/src/sender.rs:248 FecActuationMode (default Manual{enabled:false}); :4454 open_fec_block_authority; :4562 controller_decision_snapshot; :4578-4672 fec_controller_latch (guards: ForeignAuthority, ManualDisabled, NoEligibleDecision, DecisionEventMismatch same-event, NoRule literal-0, EmergencyPendingArbitration); :925 compute_requested_r (half-up, clamp r_code_max); :4497 push_parity_authorized; :4041-4085 schedule_transmit order (DATA→retx→dup→parity); :4885-4920 plan_fec_parity (pacer.try_send, token-denial snapshot); :4926 emit_parity_at; :4487 fec_emission_enabled"
+   ],
+   "product_call_chain": "runtime.rs:863-875 set_fec_actuation_mode(Controller) → runtime.rs:1263 (K-th chunk) `controller_decision_snapshot()` → :1281 `open_fec_block_authority()` → :1291 `fec_controller_latch(auth, snap, k, r_code_max, block_id, parity_wire)` → sender.rs:925 compute_requested_r → :4497 push_parity_authorized (pending_fec) → :2144 schedule_transmit → :4085 plan_fec_parity → :4894 pacer.try_send → :4926 emit_parity_at → TransmitDecision{FecParity} → runtime.rs:981-1004 RsSimdCodec repair (from repair_store, :1302-1312 encode at latch) → encode_fec → seal_send → UDP.",
+   "product_reachable": true,
+   "gate": "RuntimeConfig.fec: Option<FecRuntimeConfig> (None = OFF). manual_r None → Controller (adaptive); Some(r) → Manual{true} static.",
+   "default_state": "OFF: RuntimeConfig::default().fec = None (runtime.rs:199) → Sender stays Manual{enabled:false} (client-core lib.rs:74-75 'FEC actuation Manual{enabled:false} (Q18 calibration defect)'); latch never called; parity impossible. Flip is gated on 'S1-GATE kanıtı' (runtime.rs:133-135). No default profile.",
+   "activation_condition": "fec Some + profile known (validate_fec) + PARAM bootstrap confirmed on receiver + block fills K units + latch planned_r>0 + pacer tokens.",
+   "bench_exposure": "--fec-profile N (≠0) --fec-mode adaptive (main.rs:57-69; kama_product.rs:165-177; transport.rs:115 from_args); bench default fec_profile=0 → OFF. product_vs_quinn.sh:77,85 use static r4 only.",
+   "telemetry": "ClientStats.fec_blocks_latched/fec_repairs_tx/fec_repair_missing/fec_recovered_ctrl_units/tx_fec_bytes (runtime.rs:483-510); FateWindowDiag.fec_latch_diag (no_eligible, event_mismatch, no_rule, enqueued_r, emitted_r) (:409, :1430-1438) + fec_last_suppression (:411, :1440-1452) -> KP-CLIENT fec_blocks= fec_repairs_tx= latch= suppress=; diag_fec_actuation/diag_token_denial (sender.rs:4680-4700).",
+   "duplicates_or_dead": "Deprecated legacy enqueue_fec_parity (separate record). Scheduling priority deviates from spec §13 (DATA-first is a sealed decision, sender.rs:4034-4040). fec_last_suppression maps EmergencyPendingArbitration/ForeignAuthority to 'Diger' (lossy label, runtime.rs:1449-1452).",
+   "feature_off_behavior": "fec None: pending_fec empty → plan_fec_parity loop never enters (K-FEC-OFF-1); FecParity decisions counted as stale_decisions if ever produced (runtime.rs:1018-1022).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "runtime.rs:199 `fec: None,`; runtime.rs:133-135 '`None` = KAPALI (sevk default'u; flip S1-GATE kanıtına bağlı …)'",
+    "runtime.rs:1288-1298 `let snap = session.sender().controller_decision_snapshot(); let auth = session.sender_mut().open_fec_block_authority(); session.sender_mut().fec_controller_latch(auth, snap, …).planned_r`",
+    "sender.rs:4578 `pub fn fec_controller_latch(&mut self, authority: FecBlockAuthority, snapshot: Option<ControllerDecisionSnapshot>, k_actual: u8, profile_r_max: u16, block_id: u32, parity_size: u64) -> FecLatchResult`",
+    "sender.rs:925-931 compute_requested_r `(u64::from(ratio_permille) * u64::from(k_actual) + 500) / 1000` … `computed.min(r_code_max)`",
+    "runtime.rs:993-1004 `let frame = encode_fec(&FecFrameHeader { kind: inner_kind::FEC_REPAIR, …` → `seal_send!(frame, TxClass::Fec, $now);`",
+    "client-core/tests/runtime_e2e.rs:379 fec_static_r_recovers_permanently_erased_units_over_udp; :546 fragmenter_message_survives_a_permanently_erased_chunk_via_fec; kama-engine/tests/controller_actuation.rs; micro_sweep_1b.rs:357"
+   ],
+   "notes": "Mechanism is complete and product-wired, but the shipped default keeps FEC actuation OFF, which makes every FEC decision lane in this cluster inert in the default product. This is the single most consequential product-state fact of the cluster."
+  },
+  {
+   "name": "Static-r manual FEC mode (FecRuntimeConfig.manual_r → Manual{enabled:true} → close_fec_block_manual)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §5.3 L565-568 ('ne ARQ ne FEC sabit/default değildir' — fixed strategy is explicitly not the product doctrine)"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:4525-4560 close_fec_block_manual; :248 FecActuationMode::Manual",
+    "crates/client-core/src/runtime.rs:175-177 manual_r doc ('kampanyaların STATIC_R kolu / operatör-forced FEC'); :866-867; :1280-1285"
+   ],
+   "product_call_chain": "runtime.rs:866 Manual{enabled:true} → :1280-1285 close_fec_block_manual(auth, block, r, parity_wire) → push_parity_authorized → plan_fec_parity → wire.",
+   "product_reachable": true,
+   "gate": "RuntimeConfig.fec = Some(FecRuntimeConfig{manual_r: Some(r)}).",
+   "default_state": "OFF (fec None).",
+   "activation_condition": "Config with manual_r; r=0 is a valid framing-only control arm.",
+   "bench_exposure": "--fec-mode static --fec-r N (bench default mode is Static, main.rs:68; profile 0 keeps it off). product_vs_quinn.sh:77,85 kp-static-r4 arms.",
+   "telemetry": "fec_blocks_latched/fec_repairs_tx; latch diag not used (manual path).",
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "n/a",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "runtime.rs:866-867 `FecActuationMode::Manual { enabled: true } // statik-r (STATIC_R kolu)`",
+    "sender.rs:4525 `pub fn close_fec_block_manual(&mut self, authority: FecBlockAuthority, block_id: u32, manual_r: u16, parity_size: u64) -> Result<u16, FecAuthorityError>`",
+    "scripts/netem/product_vs_quinn.sh:77 `run_arm \"$cell\" \"kp-static-r4\" kama-product --fec-profile 3 --fec-r 4`"
+   ],
+   "notes": "Measurement control arm; adaptive mode is the v1 product mode. Note: the only FEC arms ever placed against quinn are static-r4."
+  },
+  {
+   "name": "Emergency forward-redundancy — FEC branch (segment-block MinimalParity) and latch emergency interlock",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §11 L761-798 (trigger loss HIGH ∧ bw LOW ∧ ackconf LOW; tiny→duplication D×; segment-block→minimal parity shards; hysteresis; budget clamp)",
+    "specs/adaptive-transport-engine-spec.md §8.4 L656 (row 6 → EMERGENCY)",
+    "specs/transport-layer-tdd.md §5.6 L570-598; AC-8 L772 ('block→minimal parity')",
+    "specs/transport-layer-tdd.md §5.3 L562 (row says jitter HIGH — inconsistent with §5.6/engine §11 ack_confidence LOW)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/emergency.rs:183-201 action() (Tiny→Duplication; SegmentBlock→MinimalParity 100/200‰); :102-135 EmergencyConfig fixture; :139 HysteresisController",
+    "crates/adaptive-transport/src/fusion.rs:543-547 emergency = min3(loss.high, bw.low, ackc.low) > 500 → Mode::EmergencyForwardRedundancy",
+    "crates/adaptive-transport/src/sender.rs:3746 `emergency::action(level, Framing::Tiny, &self.emergency_cfg)` (Tiny hard-coded); :3753 emergency_active; :4633-4643 latch EmergencyPendingArbitration → planned_r=0; :5739 dup_params (consumes Duplication only); :4562 snapshot.emergency"
+   ],
+   "product_call_chain": "Duplication branch (recovery cluster) is wired: fuzzy mode / hysteresis → update_state → RecoverFwd → plan_forward_duplication. FEC branch: controller_decision_snapshot.emergency → fec_controller_latch:4633 → suppression EmergencyPendingArbitration → planned_r = 0 → NO parity. RecoveryAction::MinimalParity has no producer (Framing::SegmentBlock only in tests/tv_emergency.rs:87-91) and no consumer.",
+   "product_reachable": true,
+   "gate": "Always-on interlock; no flag.",
+   "default_state": "Interlock on; framing hard-coded Tiny → MinimalParity structurally unreachable.",
+   "activation_condition": "Interlock: fuzzy emergency (Confirmed loss ≥ ~55 %, bw LOW, ack_confidence LOW).",
+   "bench_exposure": "No arm targets it; would surface as suppress='Diger' (label lossy).",
+   "telemetry": "fec_last_suppression → 'Diger' (runtime.rs:1449-1452 collapses EmergencyPendingArbitration); Sender::last_recovery()/emergency_level() (sender.rs:5980-5986) not exported to FateWindowDiag.",
+   "duplicates_or_dead": "RecoveryAction::MinimalParity + EmergencyConfig.block_parity_dup{2,3}_permille are dead in product (only tv_emergency tests). TDD §5.3 row 6 vs §5.6/engine §11 trigger inconsistency (jitter vs ack_confidence); code follows ack_confidence.",
+   "feature_off_behavior": "n/a",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:3746 `self.last_recovery = emergency::action(level, Framing::Tiny, &self.emergency_cfg);`",
+    "sender.rs:4633-4642 `if s.emergency { // Temporary safety interlock pending 1b/1d arbitration: requested-GÖRÜNÜR, planned=0. … suppression: Some(FecSuppressionReason::EmergencyPendingArbitration)`",
+    "emergency.rs:194-199 `(EmergencyLevel::Dup2, Framing::SegmentBlock) => RecoveryAction::MinimalParity { permille: cfg.block_parity_dup2_permille }`",
+    "grep Framing::SegmentBlock → only emergency.rs:194,197 and tests/tv_emergency.rs:87,91",
+    "TDD AC-8 L772: 'tiny→2×/3× duplication, block→minimal parity'"
+   ],
+   "notes": "Spec AC-8 requires block→minimal parity under emergency; code deliberately suppresses all parity there ('pending 1b/1d arbitration'). Needs an owner decision: either wire SegmentBlock framing + MinimalParity through the arbiter or amend the acceptance criterion. Duplication half is out of this cluster."
+  },
+  {
+   "name": "§8.5 redundancy budget clamp on parity ratio (budget::budget_cap_permille / parity_final)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §8.5 L658-668 ('parity_final = min(fuzzy_parity, budget_cap, profile_cap)', budget = f(BtlBw) [CAL])",
+    "specs/transport-layer-tdd.md §5.5 L603-605; AC-QBENCH-7 L781 ('FEC-on zorlamalı DoS budget/emergency clamp ile sınırlı'); §18 L835/L862 'FEC parity budget kalibrasyonu' pending",
+    "specs/fec-core-tdd-v3.0.md §8 L268-276 P0-1 (byte invariant — satisfied differently, see notes)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/budget.rs:10 BudgetConfig; :27 fixture (profile_cap 900‰, min_rate 31 B/s, budget_ref 125_000 B/s); :40 budget_cap_permille; :47 parity_final; :54 send_rate_final",
+    "crates/adaptive-transport/src/sender.rs:35 `use crate::budget::{self, BudgetConfig}`; :4032 only send_rate_final is called"
+   ],
+   "product_call_chain": "NONE for parity: budget_cap_permille/parity_final have no callers outside tests/tv_emergency.rs:21-39. Only send_rate_final (rate floor) is wired at sender.rs:4032.",
+   "product_reachable": false,
+   "gate": "n/a (not wired)",
+   "default_state": "Pure functions exist; never applied to the arbiter output.",
+   "activation_condition": "Never.",
+   "bench_exposure": "None.",
+   "telemetry": "None.",
+   "duplicates_or_dead": "Partial substitutes in product: profile_cap via compute_requested_r r_code_max clamp (sender.rs:925); byte-level admission via pacer.try_send in plan_fec_parity (:4894, leftover-only, satisfies fec-core K-FEC-INV-1); lane caps 250‰ (bounded_v1) and policy hard_max 800‰ + hard_fec_byte_budget 4096 B (policy only). No BtlBw-proportional ratio cap anywhere.",
+   "feature_off_behavior": "n/a",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "grep `parity_final\\|budget_cap_permille` → only budget.rs defs and tests/tv_emergency.rs:21-39",
+    "sender.rs:4032 `budget::send_rate_final(fuzzy_rate, self.budget_cfg.min_rate_bps, u64::MAX)` (the only budget:: use)",
+    "engine-spec L660 `parity_final = min(fuzzy_parity, budget_cap, profile_cap)`",
+    "budget.rs:1-2 '//! TV-EMERGENCY (§8.5): redundancy / rate budget clamp.'"
+   ],
+   "notes": "Normative clamp implemented as a pure function but never wired into the parity path. Whether pacer-leftover admission + bounded caps are accepted as the v1 substitute is an owner/spec decision; until then this is a spec gap."
+  },
+  {
+   "name": "Recovery budget kernel — experimental-fec-budget (budget_kernel ProtectedShare/FloorCap, tickets, reservation)",
+   "spec_refs": [
+    "specs/fec-core-tdd-v3.0.md §8 L268-276 (P0-1 wire budget; Model-A default = repair↑→source↓; Model-B 'kanıtlı-headroom' Alpha-DIŞI); CONTROL-RESERVE L288-290; §14 K-FEC-INV-1 L372"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/Cargo.toml:9-11 feature experimental-fec-budget (default OFF)",
+    "crates/adaptive-transport/src/budget_kernel.rs (step/settle/admit/floor_timing; used sender.rs:5123, :5215, :5248, :5264)",
+    "crates/adaptive-transport/src/sender.rs:816-841 BudgetPolicy (default LeftoverOnly); :873 BudgetExt; :4046 budget_reserve; :4078 budget_settle; :4551/:4668 budget_admit_block; :4888-4892 budget_service_tickets/budget_parity_allows; :4977 set_budget_policy; :5300-5318 try_send_pre_parity reservation guard"
+   ],
+   "product_call_chain": "None: set_budget_policy callers are tests/harness only (tests/budget_live_tests.rs, live_budget_sweep.rs, policy_outcome_sweep.rs, src/udp_runner.rs); comment sender.rs:822 'Product/admin-activation-YOK'. With feature ON but LeftoverOnly the hooks are no-ops.",
+   "product_reachable": false,
+   "gate": "cargo feature experimental-fec-budget AND runtime set_budget_policy(ProtectedShare|FloorCap).",
+   "default_state": "Feature OFF (not compiled); ON → LeftoverOnly (inert).",
+   "activation_condition": "Harness only.",
+   "bench_exposure": "None in crates/bench; example udp_budget_runner (required-features).",
+   "telemetry": "diag_budget (sender.rs:4998) — harness only.",
+   "duplicates_or_dead": "None; prototype status 'CONDITIONAL-GO' (Cargo.toml:8).",
+   "feature_off_behavior": "Not compiled → byte-identical baseline (tests/budget_equivalence_pin.rs).",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "Cargo.toml:7-11 '# Commit-V: test-only/non-default CANLI-BÜTÇE-PROTOTİPİ (CONDITIONAL-GO). OFF (default): FloorCap-kodu-üretim-yoluna-BAĞLANMAZ'",
+    "sender.rs:820-822 '// OFF: aşağıdaki-HİÇBİR-öğe-derlenmez … Product/admin-activation-YOK: politika-yalnız-test/harness `set_budget_policy`-ile-seçer.'",
+    "grep set_budget_policy( → tests + udp_runner only"
+   ],
+   "notes": "Must stay default OFF; not needed for v1 claims."
+  },
+  {
+   "name": "FS harness modules (fs_harness.rs, fs_trace.rs, udp_runner.rs — feature-gated DR-FEC-FS-1 harness inside the product crate)",
+   "spec_refs": [
+    "n/a (measurement harness; DR-FEC-FS-1)"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/lib.rs:44-49 `#[cfg(feature = \"experimental-fec-budget\")] pub mod fs_harness; … pub mod fs_trace;` :60-61 `pub mod udp_runner;`"
+   ],
+   "product_call_chain": "None (kama-integration fs_* tests and example udp_budget_runner only).",
+   "product_reachable": false,
+   "gate": "cargo feature experimental-fec-budget.",
+   "default_state": "Not compiled.",
+   "activation_condition": "Harness builds only.",
+   "bench_exposure": "None.",
+   "telemetry": "n/a",
+   "duplicates_or_dead": "Harness code living in the product crate; candidate for out-of-tree relocation (memory: mutation-test hygiene / out-of-tree standalone-crate discipline).",
+   "feature_off_behavior": "Not compiled.",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "lib.rs:44-49, :60-61 cfg(feature) module declarations",
+    "udp_runner.rs:759-760 `let a = s.open_fec_block_authority(); let _ = s.close_fec_block_manual(a, b, cfg.fixed_r, cfg.unit_bytes);` (harness driver)"
+   ],
+   "notes": "Outside product; listed because the task enumerated these files."
+  },
+  {
+   "name": "Legacy raw parity enqueue — Sender::enqueue_fec_parity (#[deprecated])",
+   "spec_refs": [
+    "n/a"
+   ],
+   "spec_requires_v1": "obsolete",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:4713-4730 #[deprecated] enqueue_fec_parity (bypasses latch guards incl. emergency interlock, comment :4706-4711)"
+   ],
+   "product_call_chain": "None: callers are tests only (adaptive-transport/tests/n8_reverify_emit.rs:40, budget_equivalence_pin.rs:72,150, sprint5c_fec_emit.rs:28-76, dr_cs3_structural_oracle.rs:737; kama-engine/tests/controller_actuation.rs:331).",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "Unused in product.",
+   "activation_condition": "Never.",
+   "bench_exposure": "None.",
+   "telemetry": "parity_enqueue_rejected_count (only this path).",
+   "duplicates_or_dead": "Duplicate of the authority-bound close APIs; explicitly deprecated as 'legacy test-harness yolu'.",
+   "feature_off_behavior": "n/a",
+   "classification": "DELETE",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:4713-4716 `#[deprecated(note = \"legacy test-harness yolu — üretim-block-owner otorite-bağlı-close kullanmalı: fec_controller_latch / close_fec_block_manual (Commit-K)\")]`",
+    "sender.rs:4706-4709 'Controller-aktifken bu-yol KARARSIZ-battaniye-kabuldür … latch-emergency-interlock'unu-atlar'"
+   ],
+   "notes": "Migrate the five test files to open_fec_block_authority + close_fec_block_manual, then remove."
+  },
+  {
+   "name": "ThresholdLossDetector::fec_loss_risk_ppm (single-number risk, superseded by fec_loss_risk_split)",
+   "spec_refs": [
+    "n/a"
+   ],
+   "spec_requires_v1": "obsolete",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/loss.rs:476-497 fec_loss_risk_ppm"
+   ],
+   "product_call_chain": "None: callers only tests/fec_loss_risk.rs:135,152,157,223. Product uses fec_loss_risk_split (sender.rs:3453).",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "Unused.",
+   "activation_condition": "Never.",
+   "bench_exposure": "None.",
+   "telemetry": "n/a",
+   "duplicates_or_dead": "Duplicates RiskSplit.instant_ppm (loss.rs:394 doc: 'instant_ppm — fec_loss_risk_ppm ile aynı').",
+   "feature_off_behavior": "n/a",
+   "classification": "DELETE",
+   "confidence": "high",
+   "evidence": [
+    "grep `fec_loss_risk_ppm(` → loss.rs:476 def + tests only",
+    "loss.rs:394 '* `instant_ppm` — [`Self::fec_loss_risk_ppm`] ile aynı'"
+   ],
+   "notes": "Port the four unit tests to split().instant_ppm."
+  },
+  {
+   "name": "Loss confirm horizon — LossConfirmHorizon::ChannelDerived measurement arm (feeds the canonical FEC lane's Confirmed loss input)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §16.1 L990 (confirm-ufku = K_c×EAI, 'ayrı sabit YOK' — legacy is the spec'd behaviour)",
+    "specs/adaptive-transport-engine-spec.md §5 L427-431 Suspected→Confirmed ledger"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:617-635 LossConfirmHorizon (CadenceLegacy default; ChannelDerived{k_permille}); :3386-3395 selection in fuzzy_evaluate; set_loss_confirm_horizon (sender.rs ~4405)",
+    "crates/client-core/src/runtime.rs:203 default CadenceLegacy; :839-841 set_loss_confirm_horizon"
+   ],
+   "product_call_chain": "runtime.rs:841 set_loss_confirm_horizon(cfg.loss_confirm_horizon) → sender.rs:3386 confirm_horizon → :3396 loss.ledger_tick → loss_windowed_ppm → fuzzy/gate/policy inputs.",
+   "product_reachable": true,
+   "gate": "RuntimeConfig.loss_confirm_horizon.",
+   "default_state": "CadenceLegacy (byte-identical shipping behaviour; measured dead time ≈16×RTT, reports/loss-ledger-confirm-defect).",
+   "activation_condition": "ChannelDerived{k} with measured srtt.",
+   "bench_exposure": "--loss-confirm-k N (main.rs:78-80; kama_product.rs:179-185); all FEC campaign scripts pass --loss-confirm-k 0.",
+   "telemetry": "FateWindowDiag.ledger_confirm_path/ledger_tick_span/ledger_internals -> KP-CLIENT confirm_k= confirm_path= tick_span=.",
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "Legacy = spec'd K_c×EAI.",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:625-629 doc: 'Bu enum bir DÜZELTME DEĞİL, bir ÖLÇÜM KOLUDUR. Default sevk davranışıdır ve byte-özdeştir'",
+    "runtime.rs:203 `loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,`",
+    "tests/fusion_policy_wiring.rs:344 ChannelDerived k sweep"
+   ],
+   "notes": "Included because the canonical FEC lane is structurally blind to loss for ~16×RTT under the default horizon (memory: loss-ledger-confirm-defect); the speculative lane exists to compensate. The spec-preferred fix is measured return_bw, not k×srtt."
+  },
+  {
+   "name": "FEC-decision diagnostics surface (FateWindowDiag counters, KP-CLIENT line, TsSample 50 ms time series / ts.csv)",
+   "spec_refs": [
+    "specs/fec-core-tdd-v3.0.md §8 R_SENT chain L285-288 (telemetry separated per link); §14 K-FEC-RSENT-1 L400-401",
+    "specs/transport-layer-tdd.md §4.4.4 L325-357 (mechanism-proof secondary metrics)"
+   ],
+   "spec_requires_v1": "optional",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/client-core/src/runtime.rs:330-446 FateWindowDiag (structure_gate_opened :353, fusion_actions :387, declared_deadline_ns :383, fec_latch_diag :409, fec_last_suppression :411, fec_risk_times :414, fec_risk_ppm :416, fec_arbiter_reasons :420, fec_spec_levels :422, fec_spec_signals :425, fec_persist :427, fec_spec_transitions :429, sched :433, gate_outcomes :438); population :1400-1470",
+    "crates/client-core/src/runtime.rs:157-159 ts_sample_period_ns; :205 default None; :460 ClientStats.ts; :1058-1066 ts_sample! macro; sender.rs:523 TsSample; :3593 write; :4271 diag_ts_sample",
+    "crates/bench/src/kama_product.rs:561-614 KP-CLIENT print; :618 ts_out writer (--ts-out, main.rs:87)"
+   ],
+   "product_call_chain": "Counters are written inside fuzzy_evaluate/latch/plan paths (observation-only, fixed-size Copy); read once at client_task shutdown (runtime.rs:1400-1470) into ClientStats.fate; bench prints them.",
+   "product_reachable": true,
+   "gate": "Counters: none. Time series: RuntimeConfig.ts_sample_period_ns (Some(50 ms) via bench --ts-out).",
+   "default_state": "Counters always on; ts sampling OFF (None).",
+   "activation_condition": "Any run (counters); --ts-out (series, ≤ TS_CAP samples).",
+   "bench_exposure": "KP-CLIENT line every kama-product client run; ts.csv with --ts-out (fec_handoff_family.sh:26).",
+   "telemetry": "Self.",
+   "duplicates_or_dead": "fec_last_suppression collapses EmergencyPendingArbitration/ForeignAuthority into 'Diger' (runtime.rs:1449-1452). Evidence-mode residue fields (evidence_mass/declared_units/fec_spec_transitions, bench em_l1/em_l2) kept after policy removal (closure §3).",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "runtime.rs:1424-1428 `fec_arbiter_reasons: session.sender().diag_arbiter_reasons(), fec_spec_levels: …, fec_spec_signals: …, fec_persist: …`",
+    "kama_product.rs:566 format string '… arb={:?} lvl={:?} spec={:?} persist={:?} em_l1={:?} em_l2={:?} sched={:?}'",
+    "runtime.rs:1058-1066 ts_sample! macro period-gated push of diag_ts_sample()"
+   ],
+   "notes": "This surface produced the v1 closure evidence; keep it. Fix the lossy suppression label."
+  },
+  {
+   "name": "diag-sched-telemetry parity counters (SchedDiag.fec_parity_token_denied / fec_parity_wire_emitted) — vacuum",
+   "spec_refs": [
+    "n/a"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": false,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:1181 fec_parity_token_denied; :1183 fec_parity_wire_emitted (fields); :4388-4389 read into diag_sched_summary[9],[10]; no write sites (writers exist only for data/arq/dup/tail at :2173,:3153,:5338-5349,:5457-5469,:5620-5631,:5662-5673)"
+   ],
+   "product_call_chain": "Read path only: diag_sched_summary → FateWindowDiag.sched[9..10] and TsSample.sched_parity_denied/sched_parity_emitted (sender.rs:3612-3614) → KP-CLIENT sched= / ts.csv — always 0.",
+   "product_reachable": true,
+   "gate": "cargo feature diag-sched-telemetry (client-core/bench forward it).",
+   "default_state": "Feature OFF → zeros; feature ON → still zeros (never incremented).",
+   "activation_condition": "Never increments.",
+   "bench_exposure": "Printed as sched=[…,0,0,…] in every telemetry build.",
+   "telemetry": "Self (vacuous).",
+   "duplicates_or_dead": "Vacuum counters; closure §6 erratum: 'SchedDiag.fec_parity_{token_denied, wire_emitted} parity yolunda yazılmıyor (0)'. Real parity emission is read from fec_repairs_tx/tx_fec_bytes and FecActuationDiag.token_denied_r_gauge/emitted_r_total instead.",
+   "feature_off_behavior": "Zeros.",
+   "classification": "DELETE",
+   "confidence": "high",
+   "evidence": [
+    "grep `fec_parity_token_denied\\|fec_parity_wire_emitted` → sender.rs:1181,1183 (defs) and :4388,4389 (reads) only",
+    "reports/fec-loss-risk-v1/closure/FEC-V1-CLOSURE.md §6 'Vakum sayaç: `SchedDiag.fec_parity_{token_denied, wire_emitted}` parity yolunda yazılmıyor (0)'"
+   ],
+   "notes": "Either add the two increments in plan_fec_parity (sender.rs:4894-4915: token-denied branch and after emit_parity_at) or remove the fields; as-is they are misleading in KP-CLIENT/ts.csv."
+  }
+ ],
+ "open_questions": [
+  "PRODUCT DEFAULT vs 'FEC v1 CLOSED': RuntimeConfig::default().fec = None (runtime.rs:199) keeps FecActuationMode::Manual{enabled:false}, so every FEC decision lane (fuzzy consequent, gate 250, bounded_v1 speculative lane, arbiter) is inert in the shipped default; the closure report (§14) says 'speculative FEC enabled'. Who owns the S1-GATE flip evidence referenced at runtime.rs:133-135, and what is the intended v1 default (profile id, adaptive)?",
+  "BENCH ≠ PRODUCT DEFAULT: bench kama-product builds fec_loss_risk from --fec-risk (experimental_v1 125/250/FixedSrtt/G1-off, kama_product.rs:187-191) and gate from --gate-permille (None → 500), never bounded_v1/250. The product-default arm exists only as an explicit 8-flag invocation (fec_evidence_family.sh:28,32,43). Should the bench pass through RuntimeConfig::default() so that an unflagged adaptive arm equals the product?",
+  "§4.4 QUIC comparisons never exercised the adaptive FEC decision lanes: scripts/netem/product_vs_quinn.sh:75-85 arms are fec-off (kp-sevk) and static r4 only. Is an adaptive/bounded_v1 arm required before any 'FEC v1' claim enters the quinn comparison?",
+  "§8.5 / TDD §5.5 budget clamp (budget::parity_final, budget_cap_permille = f(BtlBw)) is implemented but has zero product callers; product relies on r_code_max clamp + pacer-leftover admission + 250‰ lane caps. Is that accepted as the v1 substitute (spec amendment) or must the BtlBw-proportional cap be wired into the arbiter output?",
+  "Emergency FEC branch: AC-8 (TDD L772) requires 'block→minimal parity' under EMERGENCY_FORWARD_REDUNDANCY; code hard-codes Framing::Tiny (sender.rs:3746) and the latch suppresses ALL parity when emergency is set (EmergencyPendingArbitration, sender.rs:4633-4643, 'pending 1b/1d arbitration'). Owner decision needed: wire SegmentBlock/MinimalParity through the arbiter, or amend AC-8.",
+  "Spec-internal inconsistency: TDD §5.3 row 6 (L562) triggers EMERGENCY on 'loss HIGH, bw LOW, jitter HIGH' while TDD §5.6 (L580) and engine §8.4/§11 use 'ack_confidence LOW'; fusion.rs:543 follows ack_confidence. Which is authoritative (spec wins, but the spec disagrees with itself)?",
+  "Fuzzy thresholds remain FuzzyConfig::fixture() ('KALİBRE DEĞİL'); spec §15 says [CAL] netem and 'UYDURULMAZ'; TDD §18 lists fuzzy threshold + FEC parity budget calibration as pending. The Q18 defect (fuzzy plans 0 parity at 10-20 % loss) is patched by the structure gate + speculative lane rather than calibration, and try_with_fuzzy_config has no product caller (ClientSession::new → Sender::new). Is v1 shipping with fixture thresholds + overlays by decision, or is calibration still a blocker?",
+  "Structure gate prior-as-evidence debt (sender.rs:3675-3695): Q18Iid opens FEC on the Laplace prior when n10+n11 < 8; the evidence threshold is applied only under BurstFusion. Code says 'AÇIK BORÇ (owner kararı gerekir)'. Decision pending?",
+  "tightest_deadline_ns is a session-sticky minimum (sender.rs:4118-4123) that never expires; a single tight message permanently tightens the policy/speculative inputs. Intended, or should it expire with the message (engine §16.1 L992 zeyl says per-unit deadline is not carried into the engine)?",
+  "Dead outputs: FusionDecision.compress (fusion.rs:551) and FusionAction::FecAssist.byte_budget (fusion_policy.rs:531-538, dropped at sender.rs:3520-3523) have no consumers; TDD §5.3 'fec CAP under bw LOW ∧ qd HIGH' is not implemented. Remove from the decision structs or wire?",
+  "RuntimeConfig::default() comment for fusion_policy cites reports/fec-policy-arm-v1/ (runtime.rs:200-201) which does not exist in reports/. Which report is the actual authority for keeping the policy default OFF?",
+  "Scheduling priority: engine §13 L899 says 'retransmit(deadline) > FEC parity > yeni DATA'; schedule_transmit (sender.rs:4041-4085) is DATA-first then retx then parity and marks the order 'mühürlü'. Is the spec line superseded (amendment needed) or is the code deviating?",
+  "G1 suppression is not separately observable in counters (falls into L0 bucket); only ts.csv rp column separates it. Add a dedicated counter before any further C4 claims?",
+  "Stale doc: adaptive-transport lib.rs:39-41 says fate_estimator is 'observation-only: no product caller' — the structure gate reads it in product and sender.rs:3336 feeds on_loss_evidence. Update or is a different estimator intended for the gate?"
+ ]
+}

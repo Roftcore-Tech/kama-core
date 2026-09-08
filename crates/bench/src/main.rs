@@ -56,7 +56,7 @@ enum Cmd {
         gate_watch: Option<PathBuf>,
         /// [SPRINT-A] FEC profil kimliği (0 = FEC kapalı). `kama-product` dışında yok sayılır.
         /// İSTEMCİYLE AYNI verilmelidir. Örn. 3 = K8/R4/E64 (payload ≤ 53 B).
-        #[arg(long, default_value_t = 0)]
+        #[arg(long, default_value_t = 5)]
         fec_profile: u8,
         /// [SPRINT-A] Blok başına sabit repair sayısı. `--fec-mode static` ile birlikte
         /// **r=0 GEÇERLİDİR** ve tek-eksenli kontrol kolunu verir (fragmentasyon açık, parity yok).
@@ -65,7 +65,7 @@ enum Cmd {
         /// [KAMPANYA-KRİTİK] FEC modu: `static` (r kadar repair, r=0 = kontrol) | `adaptive`
         /// (Controller). `r`'den ORTOGONAL — eski `r==0 ⇒ adaptif` kısayolu statik-r0 kolunu
         /// temsil edilemez kılıyordu.
-        #[arg(long, value_enum, default_value_t = FecModeCli::Static)]
+        #[arg(long, value_enum, default_value_t = FecModeCli::Adaptive)]
         fec_mode: FecModeCli,
         /// [DEADLINE-EKSENİ] `--fec-mode policy` kolunda her offer'la bildirilen teslim bütçesi
         /// (ms). Kalibre politika kararını bu bütçenin srtt'ye ORANINDAN verir; bildirilmezse
@@ -175,7 +175,7 @@ enum Cmd {
         establish_gate: Option<PathBuf>,
         /// [SPRINT-A] FEC profil kimliği (0 = FEC kapalı). `kama-product` dışında yok sayılır.
         /// SUNUCUYLA AYNI verilmelidir. Örn. 3 = K8/R4/E64 (payload ≤ 53 B).
-        #[arg(long, default_value_t = 0)]
+        #[arg(long, default_value_t = 5)]
         fec_profile: u8,
         /// [SPRINT-A] Blok başına sabit repair sayısı. `--fec-mode static` ile birlikte
         /// **r=0 GEÇERLİDİR** ve tek-eksenli kontrol kolunu verir (fragmentasyon açık, parity yok).
@@ -184,7 +184,7 @@ enum Cmd {
         /// [KAMPANYA-KRİTİK] FEC modu: `static` (r kadar repair, r=0 = kontrol) | `adaptive`
         /// (Controller). `r`'den ORTOGONAL — eski `r==0 ⇒ adaptif` kısayolu statik-r0 kolunu
         /// temsil edilemez kılıyordu.
-        #[arg(long, value_enum, default_value_t = FecModeCli::Static)]
+        #[arg(long, value_enum, default_value_t = FecModeCli::Adaptive)]
         fec_mode: FecModeCli,
         /// [DEADLINE-EKSENİ] `--fec-mode policy` kolunda her offer'la bildirilen teslim bütçesi
         /// (ms). Kalibre politika kararını bu bütçenin srtt'ye ORANINDAN verir; bildirilmezse

@@ -1,0 +1,919 @@
+{
+ "cluster": "asymmetry",
+ "mechanisms": [
+  {
+   "name": "Receiver ACK cadence floor from static return-bw prior (RETURN_BW_PRIOR=31 B/s, RETURN_BUDGET_PERMIL=250 → ACK_CADENCE_FLOOR≈8.39 s)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-E lines 361-366 (ACK_CADENCE ≥ sack_wire/(RETURN_BUDGET_FRACTION × return_bw_önseli))",
+    "specs/adaptive-transport-engine-spec.md §12 lines 857-866 (BANDWIDTH-AWARE cadence, [R1] first SACK cadence-exempt)",
+    "specs/adaptive-transport-engine-spec.md §16.1 lines 1015-1016 (RETURN_BUDGET_FRACTION Y=0.20-0.30; ACK_CADENCE(return_bw) 0.25k≈8.3s)",
+    "specs/adaptive-transport-engine-spec.md §16.2 line 1071 (ACK_CADENCE_FLOOR row: 'kısmen-FIXED', permanent regime still static prior)",
+    "specs/transport-layer-tdd.md §12 lines 690-693 + INV-ACK-1 line 740 (ACK-only budgeted)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/receiver.rs:83 SACK_WIRE_BYTES=65",
+    "crates/adaptive-transport/src/receiver.rs:85 RETURN_BUDGET_PERMIL=250",
+    "crates/adaptive-transport/src/receiver.rs:87 RETURN_BW_PRIOR=31",
+    "crates/adaptive-transport/src/receiver.rs:93-94 ACK_CADENCE_FLOOR_NS",
+    "crates/adaptive-transport/src/receiver.rs:268 Receiver::on_ack_timer (gate at 309-321)",
+    "crates/adaptive-transport/src/receiver.rs:450 record_ack_emit"
+   ],
+   "product_call_chain": "ServerEndpoint loop runtime.rs:1970 `interval(ACK_TICK)` (ACK_TICK=20ms runtime.rs:64) → runtime.rs:1996 `s.rx.on_ack_timer(now)` → receiver.rs:268 on_ack_timer → cadence gate receiver.rs:309-316 (`elapsed < cadence_eff → None`, cadence_eff clamped to ACK_CADENCE_FLOOR_NS) → build_ack receiver.rs:459 → `a.encode()` runtime.rs:1997 → srv_seal_send runtime.rs:2003 → UDP → ClientEndpoint runtime.rs:1153 AckFrame::decode → runtime.rs:1169 Event::AckReceived → sender.rs:2884 on_ack_received",
+   "product_reachable": true,
+   "gate": "none (const; no config knob). Frequency path (tick_ack receiver.rs:434) is NOT cadence-gated; only timer path is.",
+   "default_state": "Always on in product server receiver (Receiver::new() runtime.rs:2085). Constants fixed: 65 B / 250‰ / 31 B/s → floor 8 387 096 774 ns.",
+   "activation_condition": "Every timer tick with have_recv=true and no tail_due and quota==0: timer-SACK suppressed until elapsed ≥ cadence_eff (≤ 8.39 s).",
+   "bench_exposure": "kama-product arm uses ServerEndpoint (kama_product.rs:281-291) → always active; also stub arm kama.rs. Exercised in all netem families (kapi3_harness fwd/rev cells).",
+   "telemetry": "None in product prints. `Receiver::diag_return_supply()` (receiver.rs:384, includes emit_total) printed only by stub arm crates/bench/src/kama.rs:600-603 (RTRAJ); KP-SERVER prints only ServerStats (runtime.rs:533-600, no cadence counters).",
+   "duplicates_or_dead": "Sender-side mirror constant EAI_RETURN_BW_PRIOR=31 (sender.rs:1397) duplicates the prior (two copies of the same [CAL] number, receiver.rs:87 vs sender.rs:1397).",
+   "feature_off_behavior": "n/a (no flag). Spec says measured return_bw replaces prior in E-FULL (not implemented — see E-FULL record).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "receiver.rs:93-94 `const ACK_CADENCE_FLOOR_NS: u64 = SACK_WIRE_BYTES * 1_000_000_000 * 1000 / (RETURN_BUDGET_PERMIL * RETURN_BW_PRIOR);`",
+    "receiver.rs:309-316 `let cadence_eff = if self.since_last_ack > 0 && self.last_gap_ns > 0 { (K_ARR*last_gap).clamp(T_SPACING_NS, ACK_CADENCE_FLOOR_NS) } else { ACK_CADENCE_FLOOR_NS }; if elapsed < cadence_eff { return None; }`",
+    "runtime.rs:1990-2003 ack_timer.tick() → s.rx.on_ack_timer(now) → srv_seal_send",
+    "receiver.rs:625-647 test ack_timer_first_exempt_then_cadence_throttled; tests/receiver_ack_policy.rs:114 ack_cadence_floor_brackets_the_timer_emission"
+   ],
+   "notes": "Spec labels the permanent-regime cadence 'statik-önsel' (E-FULL debt, §16.2:1071). Product server returns ACK/control only (client recv buffer 'yalnız ACK yönü' runtime.rs:66-67)."
+  },
+  {
+   "name": "Receiver episode quota R × T_SPACING decorrelated SACK re-emission (TUR-5 r3; return-path ACK-loss survival at session start / after blackout)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §16.1 line 997 (`R` epizot-kotası, quota_emits ≤ R×episode_count hard invariant, R=4)",
+    "specs/adaptive-transport-engine-spec.md §16.1 line 998 (`T_SPACING` = SACK_WIRE/RETURN_BW_PRIOR ≈ 2.1 s, STATİK-ÖNSEL-TÜREVİ)",
+    "specs/adaptive-transport-engine-spec.md §16.1 K_EPISODE row (line ~996) ",
+    "docs/design/time-model-v1.md §0.24 lines 648-668 (R=4 chosen; sensing precondition; E-FULL is the real fix)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/receiver.rs:106 K_EPISODE=4",
+    "crates/adaptive-transport/src/receiver.rs:108 EPISODE_WINDOW=3",
+    "crates/adaptive-transport/src/receiver.rs:111 QUOTA_R_DEFAULT=4",
+    "crates/adaptive-transport/src/receiver.rs:115 T_SPACING_NS",
+    "crates/adaptive-transport/src/receiver.rs:197-215 episode detection in on_datagram",
+    "crates/adaptive-transport/src/receiver.rs:293-305 quota-mode branch in on_ack_timer",
+    "crates/adaptive-transport/src/receiver.rs:332-347 open_episode/burn_quota",
+    "crates/adaptive-transport/src/receiver.rs:373 set_quota_r"
+   ],
+   "product_call_chain": "RuntimeConfig.quota_r (runtime.rs:97, default 4 at runtime.rs:191) → ServerEndpoint peer insert runtime.rs:2085-2086 `Receiver::new(); rx.set_quota_r(cfg.quota_r)` → on_datagram runtime.rs:2146 → receiver.rs:197-205 open_episode (first datagram / gap > K_EPISODE×baseline) → timer runtime.rs:1996 on_ack_timer → receiver.rs:298-305 (quota>0 ∧ (first_pending ∨ elapsed ≥ T_SPACING_NS)) → build_ack → encode → srv_seal_send → wire",
+   "product_reachable": true,
+   "gate": "RuntimeConfig.quota_r (u32); 0 disables quota mode (test receiver_ack_policy.rs:165 quota_zero_disables_episode_credit).",
+   "default_state": "quota_r=4 (RuntimeConfig::default runtime.rs:191; QUOTA_R_DEFAULT=4 receiver.rs:111).",
+   "activation_condition": "New episode: seen_total==1 or arrival gap > K_EPISODE×robust-baseline (receiver.rs:199-206); then up to R timer-SACK emissions spaced ≥ T_SPACING (2.097 s), first exempt.",
+   "bench_exposure": "bench `--quota-r` (main.rs:41-42, default 4) → ServerCfg.quota_r (transport.rs:240) → kama_product.rs:291 RuntimeConfig.quota_r. Active by default in kama-product.",
+   "telemetry": "receiver.rs:384 diag_return_supply() = (episode_count, quota_burn, accel_emits, emit_total); printed ONLY by stub arm crates/bench/src/kama.rs:600-603 (RTRAJ). Not exposed via ServerStats / KP-SERVER for kama-product.",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "quota_r=0 → falls through to cadence-floor/K_ARR path only (receiver.rs:298 `if self.quota > 0`).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "receiver.rs:115 `const T_SPACING_NS: u64 = SACK_WIRE_BYTES * 1_000_000_000 / RETURN_BW_PRIOR;`",
+    "receiver.rs:298-305 `if self.quota > 0 { if self.episode_first_pending || elapsed >= T_SPACING_NS { ... return self.build_ack(now_ns); } return None; }`",
+    "runtime.rs:2085-2086 `let mut rx = Receiver::new(); rx.set_quota_r(cfg.quota_r);`",
+    "receiver.rs:849-870 test quota_spacing_and_invariant (K-4 hard invariant); receiver.rs:829 dv2_blackout_opens_episode_and_quota"
+   ],
+   "notes": "T_SPACING is a second consumer of the static return prior (spec calls it 'statik-önsel-türevi' honest label). §0.24-karar-2: arrival-derived T_SPACING impossible until sensing distinguishes starvation from serialization."
+  },
+  {
+   "name": "Receiver K_ARR arrival-derived cadence acceleration (§3.3-E minimal floor: cadence_eff = clamp(K_ARR×last_gap, T_SPACING, FLOOR))",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-E line 365 ('DATA arrival-rate'iyle hızlanır')",
+    "specs/adaptive-transport-engine-spec.md §16.1 line 999 (`K_ARR`=2; structural shadowing declared: 0-4 accel emits/run)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/receiver.rs:118 K_ARR=2",
+    "crates/adaptive-transport/src/receiver.rs:307-321 bacak-2 branch in on_ack_timer",
+    "crates/adaptive-transport/src/receiver.rs:150 diag_accel_emits"
+   ],
+   "product_call_chain": "Same as cadence floor: runtime.rs:1996 on_ack_timer → receiver.rs:309-318 (since_last_ack>0 ∧ last_gap_ns>0 → cadence_eff = clamp(2×last_gap, 2.097 s, 8.39 s)) → build_ack → wire",
+   "product_reachable": true,
+   "gate": "none (const K_ARR)",
+   "default_state": "On; K_ARR=2",
+   "activation_condition": "Pending un-ACKed arrival (since_last_ack>0) and measured last_gap; only when quota==0 and not tail_due.",
+   "bench_exposure": "Active in kama-product by default; measured 0-4 accel emits/run (§16.1:999).",
+   "telemetry": "diag_accel_emits inside diag_return_supply() (receiver.rs:384) — stub arm only (kama.rs:600).",
+   "duplicates_or_dead": "Overlaps freq-path (ACK_FREQ_N=2) and tail-exemption (K_TAIL) — spec itself declares 'yapısal-gölgeleme' (§16.1:999).",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "receiver.rs:309-311 `(K_ARR.saturating_mul(self.last_gap_ns)).clamp(T_SPACING_NS, ACK_CADENCE_FLOOR_NS)`",
+    "receiver.rs:317-319 `if cadence_eff < ACK_CADENCE_FLOOR_NS { self.diag_accel_emits += 1; }`",
+    "receiver.rs:924 test arrival_rate_acceleration_mid_regime"
+   ],
+   "notes": "Lower clamp is T_SPACING (static prior) so acceleration never goes below 2.097 s on the timer path; fast channels rely on the freq path instead."
+  },
+  {
+   "name": "Receiver tail-exemption timer-SACK (K_TAIL: silence ≥ 2×last arrival gap with pending un-ACKed data → cadence-exempt SACK on own rhythm)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §16.2 (TUR-3b commit-C karar-a; row 'ack_confidence'/K_CONF_EAI pairing at sender.rs:1441-1444 doc)",
+    "specs/adaptive-transport-engine-spec.md §12 lines 857-859 (ACK_DELAY_TIMER max_ack_delay semantics)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/receiver.rs:100 K_TAIL=2",
+    "crates/adaptive-transport/src/receiver.rs:282-291 tail_due branch",
+    "crates/adaptive-transport/src/receiver.rs:156 last_tail_ack_ns"
+   ],
+   "product_call_chain": "runtime.rs:1996 on_ack_timer → receiver.rs:282-291 tail_due → burn_quota + build_ack → wire (bypasses cadence gate; does not reset cadence clock)",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "On; K_TAIL=2",
+   "activation_condition": "since_last_ack>0 ∧ last_gap_ns>0 ∧ now−last_arrival ≥ 2×last_gap ∧ now−last_tail_ack ≥ 2×last_gap",
+   "bench_exposure": "Active in kama-product by default.",
+   "telemetry": "None product-side (tail emissions counted in emit_total only).",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "receiver.rs:282-287 `let tail_due = self.since_last_ack > 0 && self.last_gap_ns > 0 && now−last_arrival >= last_gap*K_TAIL && now−last_tail_ack >= last_gap*K_TAIL;`",
+    "receiver.rs:650-679 test tail_pending_data_gets_cadence_exempt_sack"
+   ],
+   "notes": "Channel-derived (no ms constant, ZM-2). On sub-kbps channels gap ≥ cadence so exemption is inert (receiver.rs:96-99 comment)."
+  },
+  {
+   "name": "Batched ACK trigger ACK_FREQ_N=2 (INV-ACK-1, no per-packet ACK) + product ACK_TICK=20 ms timer backstop",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §2.1 lines 159-162 (ACK-tetik: max(ACK_FREQ_N DATA, ACK_TIMER_T) [CAL])",
+    "specs/adaptive-transport-engine-spec.md §12 lines 857-859",
+    "specs/transport-layer-tdd.md INV-ACK-1 line 740; §12 lines 690-693"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/receiver.rs:76 ACK_FREQ_N=2",
+    "crates/adaptive-transport/src/receiver.rs:434-444 tick_ack",
+    "crates/client-core/src/runtime.rs:64 ACK_TICK=20ms"
+   ],
+   "product_call_chain": "runtime.rs:2146 on_datagram → receiver.rs:257 tick_ack(now,false) (since_last_ack ≥ ack_freq → build_ack) → RxOutput.ack → runtime.rs:2170-2173 `if let Some(ack) = out.ack { srv_seal_send(... ack.encode()) }`; duplicates force an ACK (receiver.rs:224 tick_ack(now,true)). Timer path via runtime.rs:1970/1996.",
+   "product_reachable": true,
+   "gate": "none; `ack_freq` field has no setter (only set_quota_r exists, receiver.rs:373).",
+   "default_state": "ACK_FREQ_N=2; ACK_TICK=20 ms.",
+   "activation_condition": "Every 2nd DATA/shard arrival, or any duplicate arrival (force).",
+   "bench_exposure": "Always on in kama-product.",
+   "telemetry": "None product-side.",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "receiver.rs:434-438 `self.since_last_ack += 1; if force || self.since_last_ack >= self.ack_freq { ... self.build_ack(now_ns) }`",
+    "runtime.rs:2170-2173 ACK send on RxOutput.ack",
+    "tests/receiver_ack_policy.rs:72 ack_frequency_trigger_fires_every_second_data"
+   ],
+   "notes": "Spec marks ACK_FREQ_N [CAL] but code offers no runtime knob; freq path is not cadence-gated (self-limiting by DATA rate)."
+  },
+  {
+   "name": "SACK descending ranges (MAX_ACK_RANGES=16) with cumulative block0 — every SACK repeats the full rx-set, giving implicit redundancy against return-path ACK loss",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §2 lines 116-157 (ACK_FRAME layout, reconstruction, seq-wrap)",
+    "specs/adaptive-transport-engine-spec.md §2.1 line 160 (range_count ≤ MAX_ACK_RANGES ~16, newest blocks prioritized)",
+    "specs/transport-layer-tdd.md §12 line 692 (selective retransmit from SACK gaps)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/ack.rs:36 MAX_ACK_RANGES=16",
+    "crates/adaptive-transport/src/ack.rs:92-149 AckFrame::from_received",
+    "crates/adaptive-transport/src/ack.rs:168-200 acked_full",
+    "crates/adaptive-transport/src/ack.rs:204-291 encode/decode (range_count>16 typed reject at 255)",
+    "crates/adaptive-transport/src/receiver.rs:126 RX_DEDUP_WINDOW=4096 (rx-set bound)"
+   ],
+   "product_call_chain": "Server: receiver.rs:468-477 build_ack → AckFrame::from_received(&received,...) → encode → runtime.rs:2172 srv_seal_send. Client: runtime.rs:1153 `AckFrame::decode(&plain)` → 1154 `frame.acked_full(max_emitted_seq + 1)` → store removal + runtime.rs:1169 Event::AckReceived → sender.rs:2884 on_ack_received (inflight removal, loss ledger un-loss).",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "on",
+   "activation_condition": "every SACK",
+   "bench_exposure": "always on",
+   "telemetry": "None product-side; golden tests tests/tv_ack.rs:11-134.",
+   "duplicates_or_dead": "V1 frame 0x10 kept decode-only (ack.rs:26), emit always V2 (ack.rs:145).",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "ack.rs:130 `if ranges.len() == MAX_ACK_RANGES` clamp keeps highest seqs",
+    "ack.rs:255-259 decode rejects range_count > MAX_ACK_RANGES (SR-AUDIT-001)",
+    "runtime.rs:1153-1171 decode → acked_full → Event::AckReceived"
+   ],
+   "notes": "ACK-loss tolerance is structural (cumulative + up-to-16 ranges regenerated from the bounded BTreeSet each emission), not an explicit redundancy policy."
+  },
+  {
+   "name": "ack_delay V2 (256 µs floor-encoding, saturation audit counter) + sender min-rtt guard (RTT sample = raw − ack_delay only if ≥ rtprop, else raw processed)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §2.1 lines 161-166 (V2 encoding, floor, ack_delay_saturated)",
+    "specs/adaptive-transport-engine-spec.md §2.2 lines 170-195 (ACK_FRAME_V2 0x14)",
+    "specs/adaptive-transport-engine-spec.md §6 lines 502-511 (min-rtt guard, RFC 9002 §5.3; MIN_RTT_FLOOR=1ms CANCELLED)",
+    "specs/adaptive-transport-engine-spec.md §16.1 line 986-987; §16.2 line ~1070 (ack_delay row FIXED TUR-1x)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/receiver.rs:80 ACK_DELAY_ENC_MAX",
+    "crates/adaptive-transport/src/receiver.rs:459-467 build_ack (encode = min(delay_us/256, 65535); saturation counter)",
+    "crates/adaptive-transport/src/ack.rs:30-31 FRAME_TYPE_ACK_V2 / ACK_DELAY_UNIT_US",
+    "crates/adaptive-transport/src/ack.rs:154-156 ack_delay_duration",
+    "crates/adaptive-transport/src/rtt.rs:239-247 apply_ack_delay",
+    "crates/adaptive-transport/src/sender.rs:3045-3058 (apply_ack_delay + diag_rtt_rejected + rtt.observe)"
+   ],
+   "product_call_chain": "Server receiver.rs:459-467 build_ack (largest_recv_ns → encoded) → wire → Client runtime.rs:1171 `ack_delay: frame.ack_delay_duration()` → sender.rs:2884 on_ack_received → sender.rs:3053 `apply_ack_delay(raw, ack.ack_delay, self.rtt.rtprop())` → sender.rs:3057 `self.rtt.observe(now_ns, sample)` → srtt/rtprop/queue_delay → rate/pacer/loss thresholds",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "on (emit always V2)",
+   "activation_condition": "every RTT sample",
+   "bench_exposure": "always on in kama-product",
+   "telemetry": "Receiver::ack_delay_saturated() (receiver.rs:500) — not printed in product; Sender::diag_rtt() (sender.rs:5871) = (rtt_rejected, ack_delay_max_us) printed only by stub arm kama.rs:460; not in KP-CLIENT (kama_product.rs:561-575).",
+   "duplicates_or_dead": "rtt.rs:225 rtt_sample() (checked_sub → None) is an older helper superseded by apply_ack_delay in the sender path (still used by tests tv_rtt.rs:80).",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "receiver.rs:464-467 `let encoded = (delay_us / ACK_DELAY_UNIT_US).min(ACK_DELAY_ENC_MAX); if encoded == ACK_DELAY_ENC_MAX { self.ack_delay_saturated += 1; }`",
+    "rtt.rs:244-246 `match raw_rtt.checked_sub(ack_delay) { Some(c) if min_rtt.is_none_or(|m| c >= m) => (c, true), _ => (raw_rtt, false) }`",
+    "sender.rs:3055-3056 `if !corrected { self.diag_rtt_rejected += 1; }`",
+    "receiver.rs:610-622 test ack_delay_large_hold_not_saturated_and_saturation_counted"
+   ],
+   "notes": "This is the only per-direction correction in the RTT path: it removes receiver hold time so cadence-held ACKs do not inflate path RTT."
+  },
+  {
+   "name": "ACK_FRAME_V2 seen_count (receiver-observed datagram count for forward-loss vs return-loss discrimination)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §2.2 lines 187-188 (seen≪sent = forward-loss; seen≈sent but no SACK = return-loss, p5 ayrımı)",
+    "specs/adaptive-transport-engine-spec.md §16 TV line 963 (D3: yön-ayrımlı loss (seen_count) from single SACK at 95% loss)",
+    "specs/transport-layer-tdd.md §9 lines 667-669 (REVERSE_PATH diagnosis; 'No-ACK ≠ high-loss (forward/reverse/dead/delay ayrılır)')"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/receiver.rs:153 seen_total",
+    "crates/adaptive-transport/src/receiver.rs:194-196 seen_total increment",
+    "crates/adaptive-transport/src/receiver.rs:472-476 from_received(..., self.seen_total, ...)",
+    "crates/adaptive-transport/src/ack.rs:71-74 AckFrame.seen_count",
+    "crates/adaptive-transport/src/ack.rs:226 encode / 269-272 decode"
+   ],
+   "product_call_chain": "Wire half exists: receiver.rs:196 → build_ack → encode → wire → runtime.rs:1153 decode. Consumer half absent: runtime.rs:1154-1171 uses only acked_full()+ack_delay_duration(); AckInfo (sender) has no seen_count field; grep 'seen_count' in sender.rs returns only CS-echo comments (sender.rs:107, 3217). Chain ends at decoded-but-unused field.",
+   "product_reachable": false,
+   "gate": "none",
+   "default_state": "Emitted on every V2 SACK; never read.",
+   "activation_condition": "n/a (no consumer)",
+   "bench_exposure": "Field on wire in all kama-product runs; no arm reads it.",
+   "telemetry": "none",
+   "duplicates_or_dead": "Decoded field is dead on the client side (runtime.rs:1153-1171).",
+   "feature_off_behavior": "n/a",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "ack.rs:71-74 `/// [§2.2 V2 ölçüm eki] Görülen toplam DATA datagram'ı ... return-loss (K3 cold-start yön-ayrımı). V1 decode'da 0` `pub seen_count: u32`",
+    "receiver.rs:194-196 `// [§2.2 V2] seen_count: HER görülen datagram sayılır ... sender'ın \"seen vs sent\" yön-ayrımlı kayıp kıyası için (K3 cold-start).` `self.seen_total = self.seen_total.saturating_add(1);`",
+    "runtime.rs:1169-1172 `Event::AckReceived(AckInfo { acked_seqs: acked, ack_delay: frame.ack_delay_duration() })` — no seen_count",
+    "grep -rn seen_count crates/adaptive-transport/src/sender.rs → only lines 107, 3217 (CsProbeEcho ledger-only comments)"
+   ],
+   "notes": "Spec §2.2 names the consumer 'K3 tüketicisi'. Whether the K3 consumer is v1 scope is an open question; without it the product has NO forward/return loss discrimination (loss ledger only sees forward via later-ACK evidence; silence is attributed to ack_confidence)."
+  },
+  {
+   "name": "ACK_FRAME_V2 arrival_rate (receiver window-rate first bw hint) — always sentinel 0xFFFF",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §2.2 lines 189-193 (sentinel; zeyl: receiver does not see datagram size → always sentinel; bound with K3 consumer)"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": false,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/ack.rs:81 ARRIVAL_RATE_SENTINEL",
+    "crates/adaptive-transport/src/receiver.rs:469-477 (comment + sentinel emit)",
+    "crates/adaptive-transport/src/receiver.rs:55-63 RxDatagram (no size field)"
+   ],
+   "product_call_chain": "receiver.rs:476 `crate::ack::ARRIVAL_RATE_SENTINEL` → wire → runtime.rs:1153 decode → unused.",
+   "product_reachable": false,
+   "gate": "none",
+   "default_state": "sentinel always",
+   "activation_condition": "n/a",
+   "bench_exposure": "n/a",
+   "telemetry": "none",
+   "duplicates_or_dead": "Wire field carries 2 B of constant sentinel on every SACK.",
+   "feature_off_behavior": "n/a",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "receiver.rs:469-471 `// arrival_rate: receiver bu artımda BOYUT görmüyor (RxDatagram size taşımaz) → ölçüm YOK → sentinel`",
+    "ack.rs:80-81 `pub const ARRIVAL_RATE_SENTINEL: u16 = 0xFFFF;`",
+    "spec §2.2 line 191-192 '[TUR-1x zeyli] Mevcut artımda receiver datagram BOYUTU görmez → daima sentinel emit edilir'"
+   ],
+   "notes": "Spec-sanctioned deferral. Becomes WIRE if the K3 consumer is declared v1."
+  },
+  {
+   "name": "Sender EAI (expected ACK interval) with static return-bw prior — cadence-aware loss floor (K_c=1.5×EAI), ack_epoch=max(srtt,EAI), W_loss, ack_confidence threshold, ledger confirm horizon (CadenceLegacy)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §5 lines 419-426 (TUR-1b: TIME_THRESHOLD floor K_c×EAI; EAI formula with sack_wire/return_bw_önseli; 'SACK'i henüz gelmedi ≠ kayıp')",
+    "specs/adaptive-transport-engine-spec.md §5 lines 427-462 (W_loss = K_wl×ack_epoch; confirm horizon = cadence floor)",
+    "specs/adaptive-transport-engine-spec.md §16.1 lines 988-989 (K_c, K_wl rows; 'ölçülen return_bw gelince daralır')",
+    "specs/adaptive-transport-engine-spec.md §16.2 K-1 composition lines 1084-1097"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:1393-1400 EXPECTED_ACK_FREQ_N=2, EAI_SACK_WIRE_BYTES=65, EAI_RETURN_BW_PRIOR=31, CADENCE_KC_NUM/DEN=3/2",
+    "crates/adaptive-transport/src/sender.rs:3263-3272 expected_ack_interval",
+    "crates/adaptive-transport/src/sender.rs:3256-3258 cadence_loss_floor",
+    "crates/adaptive-transport/src/sender.rs:3381-3395 ack_epoch + ledger_tick(w_loss=ack_epoch*K_WL, confirm_horizon)",
+    "crates/adaptive-transport/src/sender.rs:618-623 LossConfirmHorizon::CadenceLegacy",
+    "crates/adaptive-transport/src/loss.rs:138-145, 587-592, 671-685 (floor = max(min_delay, cadence_floor))",
+    "crates/adaptive-transport/src/loss.rs:316 ledger_tick"
+   ],
+   "product_call_chain": "runtime.rs:1326/1373 `drive!(Event::TimerFired(Timer::Pto), now)` every PACE_TICK=1 ms → sender.rs:3110-3122 Timer::Pto → `self.loss.detect_time_losses(now_ns, srtt, self.cadence_loss_floor())` → queue_losses → pending_lost → RecoverArq → plan_arq_retransmits → TransmitKind::Retransmit → runtime seal_send. Also on ACK: sender.rs:2884 → 3381 ack_epoch → 3395 ledger_tick(..., confirm_horizon=cadence_loss_floor()). Also sender.rs:5811 ack_confidence threshold uses EAI.",
+   "product_reachable": true,
+   "gate": "LossConfirmHorizon (sender.rs:4411 set_loss_confirm_horizon; RuntimeConfig.loss_confirm_horizon runtime.rs:203) selects CadenceLegacy vs ChannelDerived{k_permille} for the CONFIRM horizon only; threshold floor itself is unconditional.",
+   "default_state": "CadenceLegacy (RuntimeConfig::default runtime.rs:203; Sender::new sender.rs:1933). EAI prior term = 65/31 s ≈ 2.097 s constant.",
+   "activation_condition": "Every Pto tick outside PreConverge; every ACK.",
+   "bench_exposure": "kama-product default; bench `--loss-confirm-k` (main.rs:76-79) switches confirm horizon to k×srtt (measurement arm).",
+   "telemetry": "KP-CLIENT prints ledger_int / confirm_path / tick_span / confirm_k (kama_product.rs:566, 599-601) from FateWindowDiag; loss.rs:526 diag_confirm_path includes confirm_threshold_ns.",
+   "duplicates_or_dead": "EAI_RETURN_BW_PRIOR duplicates receiver RETURN_BW_PRIOR (two [CAL] copies). LossConfirmHorizon::ChannelDerived is a bench-only alternative (default OFF).",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3270-3271 `let eai_ns = EXPECTED_ACK_FREQ_N * unit * 1_000_000_000 / rate + EAI_SACK_WIRE_BYTES * 1_000_000_000 / EAI_RETURN_BW_PRIOR;`",
+    "sender.rs:3257-3258 `Duration::from_nanos(dur_ns(self.expected_ack_interval()) * CADENCE_KC_NUM / CADENCE_KC_DEN)`",
+    "sender.rs:3385-3395 `let confirm_horizon = match self.loss_confirm_horizon { LossConfirmHorizon::CadenceLegacy => self.cadence_loss_floor(), ... }; ... ledger_tick(now_ns, ack_epoch * K_WL, confirm_horizon)`",
+    "sender.rs:3112-3114 `self.loss.detect_time_losses(now_ns, srtt, self.cadence_loss_floor())`"
+   ],
+   "notes": "Known consequence (memory: loss-ledger-confirm-defect): the 2.097 s static prior term puts a ≥3.1 s floor on loss confirmation even on fast channels; spec accepts this until E-FULL. Fix path per spec is measured return_bw, not k×srtt."
+  },
+  {
+   "name": "W_BTLBW delivered-EAI window with fixed return-prior term (w_epoch = 2×UNIT_SIZE_HINT/last_full_bw + 2.097 s; W = K_BW×w_epoch, also drives W_qd)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §16.1 line 1004 (Y3 K6R-mühürlü; return-prior 2.097s [CAL, E-FULL-borcu])",
+    "specs/adaptive-transport-engine-spec.md §6 lines 519-527 (W_rtprop/W_BTLBW channel-derived, keep-last)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:2902-2913 w_epoch computation (`Duration::from_nanos(2_097_000_000)`)",
+    "crates/adaptive-transport/src/sender.rs:2914 btlbw.set_window(w_epoch*K_BW)",
+    "crates/adaptive-transport/src/sender.rs:2921 rtt.set_qd_window(w_epoch*K_QD)",
+    "crates/adaptive-transport/src/sender.rs:1448-1449 UNIT_SIZE_HINT=267",
+    "crates/adaptive-transport/src/bw.rs:211-214 set_window (10 s floor)"
+   ],
+   "product_call_chain": "runtime.rs:1169 Event::AckReceived → sender.rs:2884 on_ack_received → 2895-2924 window block → bw.rs:213 set_window → bw.rs:220 update (max-filter pruning) → btlbw → rate/pacer",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "on; 2.097 s literal",
+   "activation_condition": "every ACK",
+   "bench_exposure": "kama-product default; KP-CLIENT bw_range (kama_product.rs:594) reflects btlbw.",
+   "telemetry": "FateWindowDiag fusion_bw_range; bw.rs diag acceptance lineage under diag-sched-telemetry feature (bw.rs:221-229).",
+   "duplicates_or_dead": "Literal 2_097_000_000 duplicates 65/31 derivation (third copy of the prior, hard-coded ns).",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:2909-2913 `let w_epoch = { let dbw = self.btlbw.last_sample_bw().max(1); let term1 = Duration::from_nanos(2 * UNIT_SIZE_HINT * 1_000_000_000 / dbw); (term1 + Duration::from_nanos(2_097_000_000)).max(INITIAL_RTT) };`",
+    "sender.rs:2914 `self.btlbw.set_window(w_epoch * K_BW);`"
+   ],
+   "notes": "Magic-constant form (memory rule: magic-constant yasak) — the same prior exists as EAI_RETURN_BW_PRIOR; a derived const would remove the duplication."
+  },
+  {
+   "name": "E-FULL measured return_bw (§3.3-E FULL / §12 bandwidth-aware ACK cadence from MEASURED return bandwidth; ADIM-6 main body)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-E lines 361-366 ('FULL adaptif decimation ... ADIM-6 ana gövdesi — burada yalnız minimal taban')",
+    "specs/adaptive-transport-engine-spec.md §12 lines 863-864 (cadence 'cold-start + genel' from return_bw)",
+    "specs/adaptive-transport-engine-spec.md §5 line 424-425 & §16.1 lines 988, 998, 1004, 1071 ('E-FULL'de ölçülen return_bw ile değişir/bağlanır' — debt registered)",
+    "docs/reports/TRANSPORT-OLGUNLUK-RAPORU-2026-09-02.md line 76 ('E-FULL ölçülen return_bw yok') and line 109 (M4/M5 sensing prerequisite)",
+    "docs/design/time-model-v1.md §0.24 karar-2 lines 655-659"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "(absent) — grep -rn -i 'return_bw' crates/adaptive-transport/src crates/client-core/src → only constants/comments: receiver.rs:84-115, sender.rs:620,1396-1397,3255,3271; no measurement, no field, no setter"
+   ],
+   "product_call_chain": "None. Receiver has no input for a measured return bandwidth (only set_quota_r setter, receiver.rs:373); sender EAI uses constant EAI_RETURN_BW_PRIOR (sender.rs:3271); no control frame carries return-path health (client-core wire.rs frame set: 0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07 — wire.rs:15-296).",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "n/a (static prior 31 B/s everywhere)",
+   "activation_condition": "n/a",
+   "bench_exposure": "Reverse-bandwidth cells exist (scripts/netem/fec_risk_families.sh:63-66 f4 rev 1mbit→300bit with kama-product; kapi_manifest.py p5_revpath/h4a_revsevere) but exercise only the static prior.",
+   "telemetry": "none",
+   "duplicates_or_dead": "Three copies of the same prior (receiver.rs:87, sender.rs:1397, sender.rs:2912 literal) would all need rebinding.",
+   "feature_off_behavior": "n/a",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "receiver.rs:91-92 doc: `return_bw öğrenilince FULL adaptif hızlanma D2 sonrası (§3.3-E)` — never happens in code",
+    "sender.rs:1396-1397 `/// Return-bw worst-corner önseli (§16.1; §3.3-E-FULL ölçülen return_bw ile değiştirecek) [CAL].` `const EAI_RETURN_BW_PRIOR: u64 = 31;`",
+    "TRANSPORT-OLGUNLUK-RAPORU line 76: 'E-FULL ölçülen `return_bw` yok — ACK kadansı / T_SPACING / K_c hâlâ statik-önsel 31 B/s türevi; arrival-türevi yapılamıyor çünkü sensing ön-şartı ... çözülmedi (M4/M5)'",
+    "spec §12:863-864 normative 'BANDWIDTH-AWARE cadence (cold-start + genel): ACK_CADENCE ≥ sack_wire/(RETURN_BUDGET_FRACTION × return_bw)'"
+   ],
+   "notes": "Spec is normative for measured return_bw but the same spec defers the FULL body to ADIM-6 and the owner's reports list it as an open debt gated on M4/M5 sensing. Classification WIRE reflects spec requirement; whether it is a v1 blocker vs a declared post-v1 debt is an open question for the owner. Fast channels today carry a ~2.1 s cadence/loss-floor penalty from the worst-corner prior (spec §16.1:988 accepts)."
+  },
+  {
+   "name": "ack_confidence — silence-based reverse-path liveness (per-mille; threshold = max(3×srtt, K_CONF_EAI×EAI); FULL=1000 when idle)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §5.1 lines 468-500 (AMENDMENT-2 silence model; ACK_SILENCE_MULT~3)",
+    "specs/adaptive-transport-engine-spec.md §3 line 228 (RECOVER_FWD(ack_confidence LOW) priority), line 583 (reverse_path_impaired := ack_confidence LOW)",
+    "specs/adaptive-transport-engine-spec.md §16.2 line ~1075 (row 'ack_confidence anchor .or()' SUSPECT)",
+    "specs/transport-layer-tdd.md §5.1 line 538, §5.6 line 575"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:5789-5822 ack_confidence_permille",
+    "crates/adaptive-transport/src/sender.rs:1378 ACK_SILENCE_SRTT_MULT=3",
+    "crates/adaptive-transport/src/sender.rs:1444 K_CONF_EAI=2",
+    "crates/adaptive-transport/src/sender.rs:2888 last_ack_ns update; 5755-5757 first_send_ns",
+    "crates/adaptive-transport/src/sender.rs:3414 FusionInputs.ack_confidence_permille",
+    "crates/adaptive-transport/src/sender.rs:3744 health for emergency.update"
+   ],
+   "product_call_chain": "runtime.rs drive! (Pto tick / ACK / AppData) → sender.rs:2125 on_event → on_event_core → fuzzy_evaluate (sender.rs:3414 inputs.ack_confidence_permille) → fusion.rs:499 fuzzify → fusion.rs:543-547 emergency mode; and update_state sender.rs:3744 `health = ack_confidence_permille(now)` → emergency.update → sender.rs:3752-3776 RecoverFwd → schedule_transmit sender.rs:4059 plan_forward_duplication → dup_queue → drain_due_duplicates sender.rs:5573-5576 TransmitKind::Duplicate → runtime.rs:1049 TxClass::Dup → seal_send → wire",
+   "product_reachable": true,
+   "gate": "none (PreConverge forces 1000; idle forces 1000)",
+   "default_state": "on; 3×srtt / 2×EAI; INITIAL_RTT=100 ms used when srtt absent (sender.rs:1329, 5807)",
+   "activation_condition": "Active work outstanding (inflight/pending_lost/tx_queue/dup_queue non-empty) and silence since max-anchor > threshold; decays as threshold/silence.",
+   "bench_exposure": "kama-product default; exercised in reverse-loss cells (product_vs_quinn iid50/burst50 rev loss 10%; fec_persist C4/C5 rev loss 2%).",
+   "telemetry": "Value itself never printed in product. Indirect: FateWindowDiag.sender_state 'RecoverFwd' (runtime.rs:1403) → KP-CLIENT state= (kama_product.rs:565,585); tx_dup_bytes (runtime.rs:936) → KP-CLIENT dup= (kama_product.rs:570). Tests: sender.rs:6987, 8106.",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5801-5804 `let anchor = match self.last_ack_ns.or(self.first_send_ns) { Some(a) => a, None => return 1000 }; let silence = now_ns.saturating_sub(anchor);`",
+    "sender.rs:5808-5811 `let threshold = srtt.saturating_mul(ACK_SILENCE_SRTT_MULT).max(dur_ns(self.expected_ack_interval()).saturating_mul(K_CONF_EAI));`",
+    "sender.rs:5792-5794 `if self.state == SenderState::PreConverge { return 1000; }`",
+    "sender.rs:3744-3746 `let health = u32::try_from(self.ack_confidence_permille(now_ns))...; let level = self.emergency.update(health, now_ns);`"
+   ],
+   "notes": "Anchor uses `.or()` not spec `max(last_ack, first_send)`; equivalent in practice because first_send_ns is set once before any ACK can exist (sender.rs:5755), but §16.2 still lists idle-resume re-base as SUSPECT. Spec §11 says health = f(ack_confidence↑, residual_loss↓); code passes ack_confidence only (residual_loss not folded in)."
+  },
+  {
+   "name": "PreConverge cold-start freezes for reverse-path false-positive suppression (R14: ack_confidence=1000 fixed; PTO not armed; loss declaration frozen; geometric copies instead)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-C lines 340-353 (yasak 1-5)",
+    "specs/adaptive-transport-engine-spec.md §5.1 lines 476-480 (R14 rationale: threshold≈300ms ≪ RTT_floor)",
+    "specs/adaptive-transport-engine-spec.md §12 lines 873-874"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:5790-5794 (PreConverge → 1000)",
+    "crates/adaptive-transport/src/sender.rs:3110-3113 (Timer::Pto skips loss detection in PreConverge)",
+    "crates/adaptive-transport/src/sender.rs:3764-3771 (PreConverge exit only on srtt)"
+   ],
+   "product_call_chain": "Sender::new() state PreConverge (ClientSession::new lib.rs:82) → runtime drive! → sender paths above; exit to Startup at sender.rs:3768-3770 when rtt.srtt().is_some()",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "on",
+   "activation_condition": "until first valid RTT sample",
+   "bench_exposure": "kama-product default; KP-CLIENT left_preconv= (kama_product.rs:565/586 via runtime.rs:1411 diag_rtt_sample_count()>0)",
+   "telemetry": "FateWindowDiag.left_preconverge; establish_tx",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5790-5794 PreConverge → return 1000",
+    "sender.rs:3110-3113 `if self.state != SenderState::PreConverge { ... detect_time_losses ... }`",
+    "tests/sender_loss_path.rs:116 comment '§3.3-C yasak: cold-start'ta sessizlik reverse-path çöküşü DEĞİL'"
+   ],
+   "notes": "Guards against mistaking low-bandwidth serialization silence for reverse-path collapse before any RTT exists."
+  },
+  {
+   "name": "Emergency hysteresis controller (asymmetric Schmitt escalate<300‰ / de-escalate>700‰, de-escalate dwell 1 s) mapping ack_confidence health → Arq/Dup2/Dup3",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §11 lines 781-800 (RETREAT HYSTERESIS, KİLİTLİ)",
+    "specs/transport-layer-tdd.md §5.6 lines 583-593, AC-8 line 772",
+    "specs/adaptive-transport-engine-spec.md §16.2 rows 'emergency escalate adımı' (event-count), 'deescalate_dwell=1s' (wall-clock), 'dup_spacing=20ms' (wall-clock) — SUSPECT"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/emergency.rs:79-97 HysteresisConfig::fixture (300/700/1000ms)",
+    "crates/adaptive-transport/src/emergency.rs:139-179 HysteresisController::update",
+    "crates/adaptive-transport/src/emergency.rs:102-129 EmergencyConfig::fixture (dup2=2, dup3=3, spacing 20ms, parity 100/200‰)",
+    "crates/adaptive-transport/src/sender.rs:1791-1792 (Sender::new installs fixtures)",
+    "crates/adaptive-transport/src/sender.rs:3744-3753 update_state"
+   ],
+   "product_call_chain": "sender.rs:3744 ack_confidence_permille → 3745 emergency.update(health) → 3746 last_recovery = emergency::action(level, Framing::Tiny, cfg) → 3752-3753 emergency_active → 3774-3776 state=RecoverFwd → 4059 plan_forward_duplication → dup_params (5738-5743) → dup_queue → wire (see RecoverFwd record)",
+   "product_reachable": true,
+   "gate": "none (fixtures hard-wired in Sender::new; no public setter found for HysteresisConfig in product runtime)",
+   "default_state": "fixture(): escalate 300‰, de-escalate 700‰, dwell 1 s; dup2=2, dup3=3, spacing 20 ms",
+   "activation_condition": "health < 300‰ → escalate immediately (Arq→Dup2→Dup3 one step per update call); health > 700‰ and dwell elapsed → de-escalate",
+   "bench_exposure": "kama-product default",
+   "telemetry": "Sender::emergency_level() (sender.rs:5985) — not printed by kama-product; tests/tv_emergency.rs, tests/emergency_and_accessors.rs",
+   "duplicates_or_dead": "Framing::SegmentBlock → MinimalParity branch (emergency.rs:194-199) unreachable in product: sender always passes Framing::Tiny (sender.rs:3746).",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "emergency.rs:158-171 `if health_permille < self.cfg.escalate_permille && self.level < Dup3 { self.level = self.level.escalated(); } else if health_permille > self.cfg.deescalate_permille && self.level > Arq { ... dwell ... }`",
+    "emergency.rs:91-96 fixture escalate_permille: 300, deescalate_permille: 700, deescalate_dwell: 1000ms",
+    "sender.rs:1791-1792 `emergency: HysteresisController::new(HysteresisConfig::fixture(), EmergencyLevel::Arq), emergency_cfg: EmergencyConfig::fixture(),`"
+   ],
+   "notes": "§16.2 marks three wall-clock/event-count SUSPECT rows (escalate step per call at 1 ms pump → ladder effectively binary; dwell 1 s < 1 srtt sub-kbps; 20 ms spacing ≪ serialization). Owner maturity report lists these under 'SUSPECT satırları koddan doğrulanacak' (line 78). [CAL] fixtures uncalibrated."
+  },
+  {
+   "name": "RecoverFwd forward duplication (§11 ACK-independent recovery): pending_lost re-emitted D× with spacing, plus pure-silence tail-liveness copies (geometric srtt reschedule)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §11 lines 761-780 (tiny → D=2..3 duplication; segment-block → minimal parity)",
+    "specs/adaptive-transport-engine-spec.md §3 line 228 (RECOVER_FWD priority) and §5 lines 429-432 (silence → RECOVER_FWD speculative copy counts as Duplicate, not loss)",
+    "specs/transport-layer-tdd.md §5.6 lines 568-593; AC-8 line 772"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:5494-5530 plan_forward_duplication",
+    "crates/adaptive-transport/src/sender.rs:5738-5743 dup_params (DEFAULT_DUP_FACTOR=2, DEFAULT_DUP_SPACING=20ms sender.rs:1380-1381)",
+    "crates/adaptive-transport/src/sender.rs:5555-5585 drain_due_duplicates (TransmitKind::Duplicate)",
+    "crates/adaptive-transport/src/sender.rs:3071 dup cancel on ACK",
+    "crates/adaptive-transport/src/sender.rs:4059 schedule_transmit RecoverFwd arm"
+   ],
+   "product_call_chain": "update_state sender.rs:3774-3776 RecoverFwd → schedule_transmit sender.rs:4059 plan_forward_duplication → dup_queue (5511-5527) → sender.rs:4068 drain_due_duplicates → 5573-5576 `TransmitDecision{kind: Duplicate}` → runtime.rs:971 carries_unit → runtime.rs:1049 TxClass::Dup → seal_send (runtime.rs:936 tx_dup_bytes) → UDP",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "on; factor 2/3, spacing 20 ms",
+   "activation_condition": "state==RecoverFwd (emergency level>Arq or fuzzy mode Emergency); pending_lost non-empty → D copies fire-once; pending_lost empty → inflight originals copied with interval=srtt (geometric ×PC_COPY_MULTIPLIER)",
+   "bench_exposure": "kama-product default; product_vs_quinn iid50/burst50 (rev loss 10%), kapi h4a_revsevere/p5_revpath profiles (stub arm in kapi-cal-v1)",
+   "telemetry": "KP-CLIENT `dup=` bytes (kama_product.rs:570 ← ClientStats.tx_dup_bytes runtime.rs:508/936); `state=RecoverFwd` snapshot at end (runtime.rs:1403). Test sender.rs:6987 ack_confidence_low_enters_recover_fwd_and_duplicates.",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5494-5527 plan_forward_duplication (both branches)",
+    "sender.rs:5573-5576 `let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate); out.push(TransmitDecision { kind: TransmitKind::Duplicate, ... })`",
+    "runtime.rs:1047-1051 `TransmitKind::Duplicate => TxClass::Dup` → seal_send!",
+    "sender.rs:3071 `self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id));`"
+   ],
+   "notes": "Copies are 'Duplicate' origin: excluded from RTT (Karn) and from loss accounting (sender.rs:3299-3320). dup_spacing 20 ms wall-clock — §16.2 SUSPECT (decorrelation dead at sub-kbps)."
+  },
+  {
+   "name": "Fuzzy emergency mode trigger (loss HIGH ∧ bandwidth LOW ∧ ack_confidence LOW → Mode::EmergencyForwardRedundancy; membership 300/500/700/900‰)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §11 lines 763-765 (Tetik), §8.4, §15",
+    "specs/transport-layer-tdd.md §5.6 lines 577-578, §5.1 line 538"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/fusion.rs:359-363 ack_confidence thresholds",
+    "crates/adaptive-transport/src/fusion.rs:499 fuzzify",
+    "crates/adaptive-transport/src/fusion.rs:542-547 emergency = min3(loss.high, bw.low, ackc.low) > 500‰",
+    "crates/adaptive-transport/src/sender.rs:3752-3753 emergency_active includes decision.mode"
+   ],
+   "product_call_chain": "sender.rs:3414 FusionInputs{ack_confidence_permille} → fusion.rs:489 decide → fusion.rs:543-547 mode → sender.rs:3752-3753 emergency_active → RecoverFwd → duplication → wire",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "on; thresholds low shoulder (300,500), high shoulder (700,900)",
+   "activation_condition": "conjunction > 500‰",
+   "bench_exposure": "kama-product default; KP-CLIENT fusion= / last_obs= (kama_product.rs:592-593)",
+   "telemetry": "FateWindowDiag.fusion_actions / last_fusion_obs; FEC suppression reason EmergencyPendingArbitration (sender.rs:4631-4639)",
+   "duplicates_or_dead": "Two parallel triggers for RecoverFwd (hysteresis on ack_confidence alone vs fuzzy conjunction) — by design per spec §3 vs §11; not a duplicate.",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "fusion.rs:543-547 `let emergency = min3(loss.high, bw.low, ackc.low); let mode = if emergency > PERMILLE / 2 { Mode::EmergencyForwardRedundancy } else { Mode::Normal };`",
+    "fusion.rs:359-363 ack_confidence VarThresholds low: shoulder_low(300,500) ... high: shoulder_high(700,900)"
+   ],
+   "notes": "Emergency mode also suppresses FEC parity emission (sender.rs:4631-4639) — interaction with FEC arbiter noted, not audited here."
+  },
+  {
+   "name": "ACK decimation under reverse-path impairment (§2.1/§11/§12: ack_confidence LOW → ACK_FREQ N↑, ACK-only budget ↓; sparse cumulative ACK)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §2.1 line 167",
+    "specs/adaptive-transport-engine-spec.md §12 line 862",
+    "specs/adaptive-transport-engine-spec.md §3.3-E line 365-366 ('FULL adaptif decimation (reverse-path-impaired N↑ eskalasyonu) ADIM-6 ana gövdesi')",
+    "specs/transport-layer-tdd.md §5.6 lines 587-589 (sparse cumulative/range ACK), §12 line 690"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/emergency.rs:203-207 ack_decimation(level) (predicate only)",
+    "(absent) receiver.rs has no decimation input: grep -rn -i decimat crates → only emergency.rs:4,203,205 and tests/tv_emergency.rs:95-98"
+   ],
+   "product_call_chain": "None. Receiver ack_freq is a const-initialized field with no setter (receiver.rs:138,172; only set_quota_r at 373). No wire frame conveys sender-side ack_confidence to the receiver (client-core wire.rs frames 0x00-0x07). emergency::ack_decimation() has no product caller.",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "n/a — ACK_FREQ_N fixed at 2 regardless of reverse-path state; only the static cadence floor limits ACK rate.",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "duplicates_or_dead": "emergency::ack_decimation() is dead outside tests (see next record).",
+   "feature_off_behavior": "n/a",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "grep -rn -i decimat crates --include=*.rs → emergency.rs:4, emergency.rs:203-205, tests/tv_emergency.rs:95-98 only",
+    "receiver.rs:138 `ack_freq: u32,` / receiver.rs:172 `ack_freq: ACK_FREQ_N,` — no mutation elsewhere (grep 'ack_freq =' → none)",
+    "spec §3.3-E:365-366 explicitly defers FULL decimation to ADIM-6"
+   ],
+   "notes": "Spec-normative but explicitly deferred by the spec itself (ADIM-6). Receiver cannot observe reverse-path health locally (sensing limitation, §0.24-karar-2). Whether ADIM-6 is inside v1 is an open question; if not, reclassify KEEP-EXPERIMENTAL (nothing to turn off)."
+  },
+  {
+   "name": "emergency::ack_decimation(level) helper predicate",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §11 (sparse ACK in emergency)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/emergency.rs:203-207"
+   ],
+   "product_call_chain": "No caller in crates/adaptive-transport/src, crates/client-core, crates/kama-engine, crates/bench; sole caller tests/tv_emergency.rs:96-98.",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "n/a",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "duplicates_or_dead": "Dead helper; result never consumed. Misleading: its presence + tv_emergency test suggests decimation exists.",
+   "feature_off_behavior": "n/a",
+   "classification": "DELETE",
+   "confidence": "medium",
+   "evidence": [
+    "emergency.rs:205-207 `pub fn ack_decimation(level: EmergencyLevel) -> bool { level != EmergencyLevel::Arq }`",
+    "grep -rn 'ack_decimation(' crates --include=*.rs → emergency.rs:205 (def), tests/tv_emergency.rs:96-98 (asserts) only"
+   ],
+   "notes": "Alternative to deletion: keep as the sender-side signal once a sender→receiver decimation channel exists (then it becomes part of the WIRE item). Deleting requires updating tests/tv_emergency.rs:95-98."
+  },
+  {
+   "name": "BtlBw sample validity flags for reverse-path (§7.3 reverse_path_impaired / ack_compression_score / estimator_confidence) — partial: only delivered>0, interval≥1 ms, app-limited gating; interval=max(ack_elapsed, send_elapsed)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §7.3 lines 578-596 (bw_sample invalid if reverse_path_impaired := ack_confidence LOW; ack_compression_score; estimator_confidence EWMA [CAL])",
+    "specs/transport-layer-tdd.md §5.1 line 540 (NORMATİF: ACK compression / reverse-path impaired samples MUST NOT inflate bw_est; estimator_confidence drops)",
+    "specs/adaptive-transport-engine-spec.md §8.1 line 615 (estimator_confidence state field)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/bw.rs:220 BtlBwFilter::update(sample, now, valid) (doc names the external flags)",
+    "crates/adaptive-transport/src/bw.rs:98-115 on_ack: interval = max(ack_elapsed, send_elapsed)",
+    "crates/adaptive-transport/src/sender.rs:2949, 2971 `self.btlbw.update(sample, now_ns, sample.delivered > 0)`",
+    "(absent) grep -rn 'reverse_path_impaired|ack_compression|estimator_confidence' crates --include=*.rs → comments/tests only (bw.rs:217, tests/tv_bw.rs:165)"
+   ],
+   "product_call_chain": "sender.rs:2884 on_ack_received → 2948-2949 bw_sampler.on_ack → btlbw.update(valid = delivered>0) → bw.rs:231 gate (valid ∧ interval≥MIN_RATE_INTERVAL ∧ app-limited rule). ack_confidence is NOT consulted on this path.",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "valid := sample.delivered > 0 (always true for a real ACK)",
+   "activation_condition": "n/a — reverse-path flag never false",
+   "bench_exposure": "n/a",
+   "telemetry": "bw.rs diag acceptance lineage only under `diag-sched-telemetry` (bw.rs:221-229, 244-248); not in default build.",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:2949 `self.btlbw.update(sample, now_ns, sample.delivered > 0);`",
+    "bw.rs:217 doc `valid=false (reverse_path_impaired / ack_delay_untrusted — §7.3 dış flag'ler)` — flag is documented, never passed",
+    "bw.rs:103-105 `let ack_elapsed = now_ns.saturating_sub(pkt.delivered_time_ns); let send_elapsed = ...; let interval_ns = ack_elapsed.max(send_elapsed);` (BBR-style ACK-compression defence)",
+    "docs/reports/TRANSPORT-OLGUNLUK-RAPORU-2026-09-02.md:31 claims 'BtlBw ... geçerlilik kapısı (app_limited / ack-compression / reverse-impaired reddi) ✅' — not matched by code for reverse-impaired/ack_compression_score"
+   ],
+   "notes": "Functional risk is bounded: lost return-path ACKs lengthen intervals (lower rate samples) and BtlBw is a max-filter, so impairment cannot inflate it; the BBR interval=max(...) rule already defends against compression. estimator_confidence (spec §7.3/§8.1) has no implementation at all. The maturity report's ✅ claim should be corrected or the flag wired."
+  },
+  {
+   "name": "Directional state model: RTT/RTprop/queue_delay/BtlBw are round-trip / single-direction quantities (no one-way delay, no per-direction latency or loss state)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §6 lines 502-546 (rtt_sample, RTprop, queue_delay all round-trip; no OWD anywhere in spec — grep OWD/one-way in spec → none in §6)",
+    "specs/adaptive-transport-engine-spec.md §8.1 SrcState lines 612-623 (single btlbw/rtprop/srtt; only ack_confidence is direction-specific)",
+    "specs/transport-layer-tdd.md §9 lines 664-669 (metric list: ack_loss_rate, ack_compression_score — not implemented)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rtt.rs:71-98 RttEstimator (srtt, rttvar, rtprop MinFilter, qd_min)",
+    "crates/adaptive-transport/src/rtt.rs:207-219 queue_delay = min_Wqd(rtt) − rtprop",
+    "crates/adaptive-transport/src/bw.rs:39-51 RateSample (delivered/interval only)",
+    "crates/adaptive-transport/src/sender.rs:358 (only 'OWD' mention: reorder lifetime comment)"
+   ],
+   "product_call_chain": "runtime.rs:1171 ack_delay → sender.rs:3053-3057 rtt.observe → rtt.rs:142 → rate.rs (cwnd/BDP) + pacer; queue_delay → fusion qd_ratio → send_rate gain. Reverse-path delay inflation is indistinguishable from forward queueing.",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "on",
+   "activation_condition": "always",
+   "bench_exposure": "Asymmetric-delay cells exist only in tests/harness (desen1_sim.rs:135-136 reverse link 1 MB/s vs stepped forward; fec_persist C3p rev delay 5 ms vs fwd 0).",
+   "telemetry": "n/a",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "rtt.rs:142 `pub fn observe(&mut self, now_ns: u64, sample: Duration)` — single round-trip input",
+    "rtt.rs:212-216 `match (self.qd_min.min(), self.rtprop.min()) { (Some(short_min), Some(rtprop)) => Duration::from_nanos(short_min.saturating_sub(rtprop)) ...`",
+    "grep -rn -i -E 'one.way|owd' crates/adaptive-transport/src → sender.rs:358 comment only"
+   ],
+   "notes": "Spec-conformant (spec defines no OWD). Consequence: reverse-path bufferbloat/serialization is attributed to queue_delay and lowers send_rate (INV-RATE-1 permits delay-based reduction) — an asymmetric-path blind spot that the spec does not address; only ack_delay subtraction removes receiver hold time."
+  },
+  {
+   "name": "Time-threshold loss requires later-ACK evidence (TUR-1a): pure ACK silence never increments loss; return-path ACK loss cannot poison loss_pre_fec",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §5 lines 413-419 (KANIT-ŞARTI; saf sessizlik loss metriğini ARTIRMAZ)",
+    "specs/transport-layer-tdd.md §9 line 669 (No-ACK ≠ high-loss)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/loss.rs:671-690 detect_time_losses (later-ACK evidence + cadence floor)",
+    "crates/adaptive-transport/src/loss.rs:587-592 (packet/time threshold floor)",
+    "crates/adaptive-transport/src/sender.rs:3110-3117 Timer::Pto branch"
+   ],
+   "product_call_chain": "runtime.rs:1326 Timer::Pto (1 ms pump) → sender.rs:3112-3114 detect_time_losses(now, srtt, cadence_loss_floor) → queue_losses → pending_lost → RecoverArq → Retransmit → wire",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "on",
+   "activation_condition": "seq < largest_acked ∧ age > max(9/8·srtt, min_delay, 1.5×EAI)",
+   "bench_exposure": "kama-product default; KP-CLIENT ledger_int/confirm_path",
+   "telemetry": "FateWindowDiag ledger_internals / ledger_loss_ppm (kama_product.rs:596-599); Sender diag_loss_time (sender.rs:3117)",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "loss.rs:677-685 comment + `let floor = cfg.min_delay.max(cadence_floor);` in detect_time_losses",
+    "sender.rs:3110-3117 Pto → detect_time_losses → queue_losses → diag_loss_time"
+   ],
+   "notes": "With seen_count unconsumed, this evidence rule is the only structural separation between forward loss and return-path silence in the product."
+  },
+  {
+   "name": "Bounded PTO tail-loss probe (tail_recovery, validated_v1 default ON) — liveness when the last ACK(s) are lost on the return path (no later-ACK evidence possible)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §12 lines 868-874 (PTO = srtt + max(4·rttvar, min_pto) + max_ack_delay; backoff; PTO does not reduce rate)",
+    "specs/adaptive-transport-engine-spec.md §5 line 416 (silence may trigger probe for liveness)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/tail_recovery.rs:18-33 TailRecoveryConfig; :72-81 validated_v1 (min 10 ms, max 10 s, initial 1 s, backoff cap 30 s, max_ack_delay 25 ms, 3 probes)",
+    "crates/adaptive-transport/src/tail_recovery.rs:148-165 base_pto_ns/current_pto_ns; :192-244 on_timer",
+    "crates/adaptive-transport/src/sender.rs:3144-3155 Pto → ProbeDue → tail_probe_pending; :5443-5484 emit_tail_probe",
+    "crates/client-core/src/lib.rs:82-84 ClientSession::new sets validated_v1()"
+   ],
+   "product_call_chain": "ClientSession::new lib.rs:83 set_tail_recovery_config(validated_v1) → runtime.rs:813 (G2 defaults) → runtime.rs:1326/1373 Timer::Pto pump → sender.rs:3144-3155 on_timer → schedule_transmit sender.rs:4064 emit_tail_probe → TransmitKind::Retransmit → runtime TxClass::Retx → wire; ACK progress sender.rs:3082-3087 on_ack_progress/disarm",
+   "product_reachable": true,
+   "gate": "TailRecoveryConfig (raw Sender::new default OFF sender.rs:1801; product flips ON in ClientSession::new)",
+   "default_state": "ON in product (validated_v1); OFF in bare Sender::new()",
+   "activation_condition": "outstanding data ∧ no ACK progress ≥ PTO ∧ probe_index < 3",
+   "bench_exposure": "kama-product default; bench `kama-tail-v1` arm name in kapi_manifest ARMS; KP-CLIENT tail counters via sched= (kama_product.rs:615)",
+   "telemetry": "Sender::tail_recovery diag (sender.rs:2098-2117: probe_count/bytes/spurious/timer_fire); FateWindowDiag.sched",
+   "duplicates_or_dead": "RecoverFwd pure-silence copies (sender.rs:5496-5511) also cover tail silence — two liveness paths (geometric dup vs bounded PTO probe) coexist.",
+   "feature_off_behavior": "OFF → Pto branch skipped (sender.rs:3144), byte-identical baseline.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "lib.rs:82-84 `let mut sender = Sender::new(); sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());`",
+    "tail_recovery.rs:148-156 base_pto = clamp(srtt + 4·rttvar + max_ack_delay_ns, min, max)",
+    "sender.rs:3144-3155 `if self.tail_recovery.is_enabled() { ... ProbeDecision::ProbeDue { target_seq, .. } => self.tail_probe_pending = Some(target_seq) }`"
+   ],
+   "notes": "Asymmetry gap: max_ack_delay_ns=25 ms wall-clock while the product receiver may legitimately hold a timer-SACK up to 8.39 s (cadence floor) or 2.1 s (T_SPACING); since srtt is ack_delay-corrected (path RTT), the PTO can fire before a cadence-held SACK arrives on sub-kbps paths → spurious tail probes (bounded by 3 probes + backoff). Not measured here — open question."
+  },
+  {
+   "name": "Path diagnosis PATH_DEAD vs REVERSE_PATH vs CHANNEL_LOSS (TDD §9) and PATH_DEAD_TIMER / T_PATH_DEAD (§12 R4)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §9 lines 667-669",
+    "specs/adaptive-transport-engine-spec.md §12 lines 879-885 (PATH_DEAD_TIMER, failover escalation, TAM SESSİZLİK YASAK)",
+    "specs/adaptive-transport-engine-spec.md §16.1 line 1013 (`T_PATH_DEAD` placeholder '—')"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "(absent) grep -rn -i 'PathDead|path_dead|PATH_DEAD' crates --include=*.rs → no hits",
+    "(absent) grep -rn -i 'ack_loss|ack_compression' crates --include=*.rs → only a test fn name (kama-integration fs_tailprobe.rs:153)"
+   ],
+   "product_call_chain": "None. Closest existing behaviour: Idle state (sender.rs:3757-3763) when no work; RecoverFwd geometric copies continue indefinitely on a dead channel (§16.2 row 'geometrik kopya deadline'sızlığı': COPY_MAX_INTERVAL/RETRY_BUDGET not in code).",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "n/a",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "WIRE",
+   "confidence": "low",
+   "evidence": [
+    "grep -rn -i -E 'PathDead|path_dead|PATH_DEAD' crates --include=*.rs → (empty)",
+    "spec §12:879-885 PATH_DEAD_TIMER normative; §16.1:1013 T_PATH_DEAD value '—' (uncalibrated)",
+    "spec §16.2 row: 'geometrik kopya deadline'sızlığı | sender dup_queue | deadline-türevi AMA tavansız | ölü kanalda sonsuz reschedule (COPY_MAX_INTERVAL/RETRY_BUDGET kodda yok)'"
+   ],
+   "notes": "PATH_DEAD escalates to hub failover (routing scope, not in this transport crate); no calibration value exists. Low confidence on v1-blocker status — owner decision needed. The REVERSE_PATH classifier additionally depends on seen_count consumption (see that record)."
+  },
+  {
+   "name": "Cold-start CS probe/echo seen_count/arrival_gap (DR-CS-3 bootstrap RTT; ledger-only by schema amendment; echo carries 0/0)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §11.1 lines 801-850 (CTRL_PATH_PROBE/echo; seen_count/arrival_gap fields)",
+    "specs/adaptive-transport-engine-spec.md §3.3-F lines 368-375 (probe = optional accelerator; no receiver state)"
+   ],
+   "spec_requires_v1": "optional",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/client-core/src/wire.rs:224-231 FRAME_CS_PROBE/ECHO; :258 encode_cs_echo; :268 decode",
+    "crates/client-core/src/runtime.rs:2310-2321 server stateless echo with seen_count=0, arrival_gap=0",
+    "crates/client-core/src/runtime.rs:1102-1108 client echo ingest → Event::CsProbeEcho{probe_seq}",
+    "crates/adaptive-transport/src/sender.rs:3213-3222 bs_on_echo (local timestamps only; gated by bootstrap_rtt.enabled)"
+   ],
+   "product_call_chain": "RuntimeConfig.bootstrap_rtt (default false runtime.rs:187) → sender bootstrap ladder → probe → server runtime.rs:2318 encode_cs_echo(subtype, probe_seq, 0, 0) → client runtime.rs:1105 decode_cs_echo → Event::CsProbeEcho → sender.rs:3217 bs_on_echo → rtt sample (if enabled)",
+   "product_reachable": true,
+   "gate": "RuntimeConfig.bootstrap_rtt (bench `--bootstrap-rtt`)",
+   "default_state": "OFF (bootstrap_rtt: false runtime.rs:187)",
+   "activation_condition": "opt-in only",
+   "bench_exposure": "product_vs_quinn.sh kp-bootstrap / kp-iw-bs arms (lines 28-31); KP-CLIENT cs_probe_tx= cs_echo_rx=",
+   "telemetry": "ClientStats cs_echoes_rx / ServerStats cs_probes_rx, cs_echoes_tx",
+   "duplicates_or_dead": "seen_count/arrival_gap fields are wire-carried but constant 0 and ignored (ledger-only) — direction-separation intent of §11.1 not realised.",
+   "feature_off_behavior": "No probes emitted; echo path inert.",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "runtime.rs:2314-2318 `// seen_count/arrival_gap 0 gönderilir — şema onları yalnız-ledger ilan eder` `let f = encode_cs_echo(subtype, probe_seq, 0, 0);`",
+    "runtime.rs:1102-1107 `// Peer'in taşıdığı seen_count/arrival_gap YALNIZ-LEDGER'dır ... if let Some((_sub, probe_seq, _seen, _gap)) = decode_cs_echo(&plain) { drive!(Event::CsProbeEcho { probe_seq }, $now); }`",
+    "sender.rs:3217 `/// Peer-carried seen_count/arrival_gap are ledger-only and are never used here.`"
+   ],
+   "notes": "Consistent with memory (FS-CAL-2: bootstrap_rtt kilitli panel 2/3, default OFF)."
+  },
+  {
+   "name": "Piggyback ACK on data (TDD §12) / bidirectional data path — not applicable: product runtime is unidirectional (client DATA egress; server ACK/control egress only)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §12 line 690 ('piggyback')",
+    "crates/client-core/src/lib.rs:53-59 (directions deliberately asymmetric: egress stateful Sender, ingress pure decode)"
+   ],
+   "spec_requires_v1": "optional",
+   "implemented": false,
+   "impl_symbols": [
+    "(absent) grep -rn -i piggyback crates --include=*.rs → only test/harness comments (tests/live_budget_sweep.rs:2, kama-engine/tests/m1_reverse_nis.rs:12,491)",
+    "crates/client-core/src/runtime.rs:66-67 CLIENT_RECV_BUF 'yalnız ACK yönü'",
+    "crates/client-core/src/runtime.rs:23,2085 Receiver constructed only in ServerEndpoint"
+   ],
+   "product_call_chain": "None; client never instantiates Receiver, server never instantiates Sender.",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "n/a",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "low",
+   "evidence": [
+    "runtime.rs:66-67 `/// Client recv tamponu (yalnız ACK yönü) / server recv tamponu (max UDP datagram).`",
+    "grep Receiver::new crates/client-core/src/runtime.rs → line 2085 (server loop) only",
+    "lib.rs:55-58 'The two directions are deliberately asymmetric ... egress is stateful ... ingress is a pure function'"
+   ],
+   "notes": "TDD lists piggyback as one of several ACK techniques, not a MUST. With a unidirectional flow model there is nothing to piggyback on; return-path cost is governed solely by cadence/budget. Classification low-confidence: could equally be 'not-specified for v1'."
+  },
+  {
+   "name": "Test/bench reverse-path impairment harnesses (fs_trace::ReverseSpec paired reverse blackout/loss; desen1_sim asymmetric links; kama-engine m1_reverse_nis; kapi3 fwd|rev netem cells; bench reverse-direction BudgetGovernor)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4 lines 276-283 (reverse-path SPOT profile required in matrix)",
+    "specs/tech-stack-adr.md ADR-18 line 287 ('reverse-path impaired ACK' mandatory profile)",
+    "specs/adaptive-transport-engine-spec.md §17 (QUIC comparison harness)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/fs_trace.rs:82-100 ReverseSpec; :348-380 decide_reverse (cfg experimental-fec-budget, lib.rs:36-42)",
+    "crates/adaptive-transport/src/fs_harness.rs:281-299, 686-690",
+    "crates/kama-integration/tests/common/fs_spine.rs:95,146,808; tests/fs_s3r1_pins.rs:101-160 (forward_reverse_domain_separation)",
+    "crates/adaptive-transport/tests/desen1_sim.rs:135-136",
+    "crates/kama-engine/tests/m1_reverse_nis.rs:1-13",
+    "scripts/netem/kapi3_harness.sh:95-118 kapi3_netem FWD REV; scripts/netem/kapi_manifest.py:49-51 p5_revpath (fwd loss 5% / rev loss 80%), :76-78 h4a_revsevere (10%/90%); scripts/netem/product_vs_quinn.sh:35-36 iid50/burst50 (rev loss 10%); scripts/netem/fec_risk_families.sh:63-66 f4 reverse-bw sweep 1mbit→300bit; scripts/netem/fec_persist_family.sh:17-27 C2p/C3p/C4/C5",
+    "crates/bench/src/budget.rs:1-40 BudgetGovernor; kama_product.rs:281-291 server reverse governor; main.rs:44-57 --budget-* / --gate-watch"
+   ],
+   "product_call_chain": "Not product. fs_trace/fs_harness compile only with `experimental-fec-budget` (default OFF, adaptive-transport/Cargo.toml:18); netem scripts drive the kama-product bench arm externally; BudgetGovernor wraps ServerEndpoint egress in bench only.",
+   "product_reachable": false,
+   "gate": "experimental-fec-budget (fs_trace); bench CLI flags; shell scripts",
+   "default_state": "OFF / external",
+   "activation_condition": "test/bench runs",
+   "bench_exposure": "kama-product exercised in asymmetric cells: product_vs_quinn iid50/burst50 (results under reports/product-vs-quinn-v3/{iid50,burst50}); fec_risk f4 rev-bw; fec_persist C4/C5. kapi-cal-v1 p5_revpath ran the STUB arm (kama-arq), not kama-product (reports/kapi-cal-v1/out/calibration_p5_revpath_paced_d120/rep0/kama-arq).",
+   "telemetry": "fs_harness instrument reverse_dropped/reverse_schedule_id (fs_harness.rs:461-466); bench budget snapshot refused_* (kama_product.rs:370-378)",
+   "duplicates_or_dead": "Two reverse-drop models (fs_trace ReverseSpec vs kama-engine m1_reverse_nis sim) — both test-only.",
+   "feature_off_behavior": "Not compiled / not run.",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "lib.rs:36-42 `#[cfg(feature = \"experimental-fec-budget\")] pub mod fs_harness; ... pub mod fs_trace;`",
+    "fs_trace.rs:82-86 'B1 — REVERSE-PATH (ACK/control yönü) deterministik impairment ŞEMASI ... GROUND-TRUTH'",
+    "kapi_manifest.py:49-51 `\"p5_revpath\": dict(... fwd=\"loss 5% rate 100kbit\", rev=\"loss 80% rate 100kbit\" ...)`",
+    "fec_risk_families.sh:64-66 `for BW in 1mbit 10kbit 1kbit 2kbit 300bit; do run \"$OUT/f4/rev${BW}\" 1 \"delay 100ms rate 1mbit\" \"delay 100ms rate ${BW}\"; done`",
+    "kapi_manifest.py:157 `\"duplex_model\": \"full\",  # netem çift-yön-ayrı; half-duplex telsiz TEMSİL EDİLMİYOR`"
+   ],
+   "notes": "ADR-18 reverse-path profile exists in the manifest; product-arm nightly coverage of p5_revpath/h4a_revsevere was not verified in this read-only pass (only stub-arm rows found for p5_revpath)."
+  }
+ ],
+ "open_questions": [
+  "Is ADIM-6 (E-FULL measured return_bw + full adaptive ACK decimation) inside v1 scope? Spec §12 is normative ('cold-start + genel') but §3.3-E defers the FULL body to ADIM-6 and docs/reports/TRANSPORT-OLGUNLUK-RAPORU-2026-09-02.md:76,109 record it as an open debt gated on M4/M5 sensing. Classification of the two WIRE records (E-FULL, ACK decimation) flips to KEEP-EXPERIMENTAL if the owner declares them post-v1.",
+  "Is the ACK_FRAME_V2 seen_count consumer ('K3 tüketicisi', spec §2.2:187 + TV D3 line 963) v1 scope? Without it the product has no forward-vs-return loss discrimination and TDD §9 REVERSE_PATH diagnosis cannot be built.",
+  "docs/reports/TRANSPORT-OLGUNLUK-RAPORU-2026-09-02.md:31 claims 'reverse-impaired reddi ✅' for the BtlBw validity gate; code passes valid=sample.delivered>0 only (sender.rs:2949,2971) and estimator_confidence (§7.3/§8.1) has no implementation — claim or code needs reconciliation.",
+  "tail_recovery max_ack_delay_ns=25 ms (validated_v1) vs receiver cadence hold up to T_SPACING 2.097 s / floor 8.39 s: does the PTO fire spuriously before cadence-held SACKs on sub-kbps paths (bounded by max_tail_probes=3 + backoff)? Not measured in this audit.",
+  "PATH_DEAD_TIMER / T_PATH_DEAD (§12 R4) absent and uncalibrated ('—' in §16.1:1013); failover belongs to hub-mesh routing — is any PATH_DEAD behaviour expected from the transport crate in v1?",
+  "Emergency health uses ack_confidence alone (sender.rs:3744); spec §11 defines health = f(ack_confidence↑, residual_loss↓). Intentional simplification or gap?",
+  "§16.2 SUSPECT rows tied to reverse-path recovery remain in code: dup_spacing=20 ms (sender.rs:1381, emergency.rs:124) and deescalate_dwell=1 s (emergency.rs:95) are wall-clock; escalate step is per update() call (1 ms pump → ladder effectively binary). Owner report line 78 lists them for verification — no channel-derived formula yet.",
+  "Framing::Tiny is hard-coded at sender.rs:3746, so the §11 segment-block 'minimal parity' emergency branch (emergency.rs:194-199) is unreachable in product even when FEC is configured — is that the intended v1 behaviour?",
+  "Product telemetry gaps for this cluster: Receiver::diag_return_supply()/ack_delay_saturated() and Sender::diag_rtt() (rtt_rejected, ack_delay_max_us) are printed only by the stub arm (crates/bench/src/kama.rs:460,600-603), not by kama-product KP-CLIENT/KP-SERVER; ack_confidence and emergency_level are never printed anywhere in product runs — activation of RecoverFwd is only inferable from dup= bytes and the end-of-run state= snapshot.",
+  "The static return prior 31 B/s exists as three separate copies (receiver.rs:87, sender.rs:1397, sender.rs:2912 literal 2_097_000_000); should these be unified into one derived constant before E-FULL rebinding?",
+  "Receiver ACK_FREQ_N is [CAL] per spec §2.1 but has no setter (receiver.rs:138/172); is a runtime knob expected for calibration campaigns?",
+  "Spec §16.1:1015 RETURN_BUDGET_FRACTION covers 'SACK+echo'; the stateless CS-echo path (runtime.rs:2318) is not counted against the receiver's cadence budget — acceptable given amp≤1 and bootstrap_rtt default OFF?",
+  "Product-arm (kama-product) coverage of the ADR-18 reverse-path profiles p5_revpath/h4a_revsevere: only stub-arm (kama-arq) rows were found under reports/kapi-cal-v1; product-arm asymmetric evidence found is product_vs_quinn iid50/burst50 (rev loss 10%) and fec_risk f4 (rev-bw sweep). Nightly product-arm reverse-path results not verified here.",
+  "kapi_manifest.py:157 declares duplex_model=full — half-duplex radio (shared forward/return capacity) is not represented in any netem cell; is that within the v1 asymmetry claims?"
+ ]
+}

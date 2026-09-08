@@ -775,9 +775,11 @@ fn shipped_default_now_carries_an_initial_window() {
         !d.bootstrap_rtt,
         "bootstrap merdiveni kalibre değil → opt-in"
     );
+    // [DENETİM B-1] FEC artık ürün profilinde AÇIK (adaptif, profil 0x05). Eski pin
+    // ("kampanya bekliyor") S1-GATE NO-HARM PASS'inden sonra bayatlamıştı.
     assert!(
-        d.fec.is_none(),
-        "FEC default'u ürün-katmanı kampanyası bekliyor"
+        d.fec.is_some_and(|f| f.manual_r.is_none()),
+        "FEC açık ve Controller/adaptif modda olmalı"
     );
 }
 
@@ -994,13 +996,18 @@ async fn ts_sampler_fills_when_enabled_and_stays_empty_when_disabled() {
     }
 }
 
-/// [FEC v1] Ürün default'u sınırlı politikadır (A 250-250-250 + P2 + G1); `fec: None` ile inert.
+/// [FEC v1] Ürün default'u sınırlı politikadır (A 250-250-250 + P2 + G1) ve FEC alt-sistemi AÇIKTIR.
+///
+/// DEĞİŞİKLİK (2026-09-08, transport-v1 denetimi B-1): burada eskiden `cfg.fec.is_none()`
+/// pinleniyordu. O pin bir sevk KARARINI değil, uygulanmamış bir kararı kodluyordu: spekülatif kol
+/// (`bounded_v1`) açıkken yönettiği alt-sistem ürün yolunda yoktu → parity hiç üretilemezdi.
+/// S1-GATE (2026-08-26) NO-HARM PASS vermişti. Kanonik profil pini: `tests/product_profile_v1.rs`.
 #[test]
 fn fec_v1_urun_defaultu_sinirli_politika() {
     let cfg = RuntimeConfig::default();
     assert!(
-        cfg.fec.is_none(),
-        "FEC'in kendisi default kapalı (lane inert)"
+        cfg.fec.is_some(),
+        "FEC alt-sistemi ürün profilinde AÇIK olmalı (denetim B-1)"
     );
     let b = cfg.fec_loss_risk;
     assert!(b.enabled);

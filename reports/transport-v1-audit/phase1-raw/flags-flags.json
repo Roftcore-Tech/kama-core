@@ -1,0 +1,1060 @@
+{
+ "flags": [
+  {
+   "flag": "cargo feature `experimental-fec-budget` (adaptive-transport)",
+   "location": "crates/adaptive-transport/Cargo.toml [features]; crates/adaptive-transport/src/lib.rs:37-57; crates/adaptive-transport/src/sender.rs:819-899",
+   "kind": "cargo-feature",
+   "default": "OFF (not in default features; no crate forwards it except kama-integration `experimental-fs-harness`)",
+   "mechanism": "Compiles BudgetPolicy {LeftoverOnly|ProtectedShareExperimental|FloorCapExperimental}, BudgetExt/FloorTicket/BudgetPolicyState (budget_kernel), Sender::set_budget_policy, and the harness modules fs_harness/fs_trace/udp_runner (lib.rs:37-57). Flag-OFF: none of it is compiled; product path byte-identical.",
+   "why_off_or_default": "experimental — Cargo.toml: 'Commit-V: test-only/non-default CANLI-BÜTÇE-PROTOTİPİ (CONDITIONAL-GO). OFF (default): FloorCap-kodu-üretim-yoluna-BAĞLANMAZ'. sender.rs:816-820: 'Product/admin-activation-YOK: politika-yalnız-test/harness set_budget_policy-ile-seçer'.",
+   "required_v1": "no",
+   "product_reachable": "NO. client-core Cargo.toml features = only diag-sched-telemetry; runtime.rs never calls set_budget_policy. Even when compiled, default BudgetPolicy::LeftoverOnly (sender.rs:830-836) = baseline.",
+   "bench_reachable": "NO. bench Cargo.toml [features] forwards only diag-sched-telemetry. set_budget_policy call sites: udp_runner.rs:642 (harness) + tests/{policy_outcome_sweep,live_budget_sweep,budget_live_tests}.rs only.",
+   "action": "keep (KEEP-EXPERIMENTAL); document that engine-spec §8.5 budget clamp is served by BudgetConfig::fixture()+budget_cap_permille, not by this feature",
+   "evidence": [
+    "crates/adaptive-transport/Cargo.toml: experimental-fec-budget = []",
+    "crates/adaptive-transport/src/lib.rs:37: #[cfg(feature = \"experimental-fec-budget\")] pub mod fs_harness",
+    "crates/adaptive-transport/src/sender.rs:830-836: impl Default for BudgetPolicy -> LeftoverOnly",
+    "grep .set_budget_policy( -> udp_runner.rs:642 + tests only; zero client-core/bench hits"
+   ]
+  },
+  {
+   "flag": "cargo feature `experimental-cold-start` (adaptive-transport + kama-engine + kama-noise-wire + kama-integration forward)",
+   "location": "crates/adaptive-transport/Cargo.toml; crates/kama-engine/Cargo.toml; crates/kama-noise-wire/Cargo.toml; crates/kama-integration/Cargo.toml; sender.rs:102-197,1568-1608,1848-1884,2126-2196,5720",
+   "kind": "cargo-feature",
+   "default": "OFF in every crate; client-core and bench do NOT forward it",
+   "mechanism": "DR-CS-1 M2 (F2A) cold-start batch API + CS_PROBE_FIRES_NS ladder (sender.rs:192-198), cs_* Sender fields (1848-1884), cs_probe_lane_enabled gate (1577/1855/5721), udp_runner cold paths, kama-engine cold_rx_state, noise-wire restart/tombstone slices. Flag-OFF: adapter absent, legacy path byte-for-byte (INV-CS-5).",
+   "why_off_or_default": "experimental — Cargo.toml: 'DR-CS-1 (MINIMAL BOOTSTRAP)... DEFAULT-OFF; flag yalnız-LOCAL (M7); OFF'ta adapter-devre-dışı + legacy-tekil-yol byte-for-byte (INV-CS-5)'. Superseded for product by the always-compiled DR-CS-3 BootstrapRttConfig (sender.rs:960-1024).",
+   "required_v1": "no",
+   "product_reachable": "NO in default build. When built --all-features (CI ci.yml:60), the lane is compiled with cs_probe_lane_enabled=true (sender.rs:1855) but client-core forces it to cfg.bootstrap_rtt (=false) at runtime.rs:837 via set_cs_probe_lane, so OFF=OFF.",
+   "bench_reachable": "NO (bench Cargo forwards no such feature).",
+   "action": "keep (KEEP-EXPERIMENTAL); document that the CI `--all-features` matrix relies on runtime.rs:837 to keep product OFF",
+   "evidence": [
+    "crates/adaptive-transport/Cargo.toml: experimental-cold-start = [] (DEFAULT-OFF; flag yalnız-LOCAL (M7))",
+    "crates/adaptive-transport/src/sender.rs:1855: cs_probe_lane_enabled: true (feature-gated field default)",
+    "crates/client-core/src/runtime.rs:837: session.sender_mut().set_cs_probe_lane(cfg.bootstrap_rtt);",
+    "crates/adaptive-transport/src/sender.rs:1995-2004: set_cs_probe_lane no-op without feature",
+    ".github/workflows/ci.yml:60: cargo test --workspace --all-features"
+   ]
+  },
+  {
+   "flag": "cargo feature `diag-sched-telemetry` (adaptive-transport; forwarded by client-core, bench, kama-integration)",
+   "location": "crates/adaptive-transport/Cargo.toml; crates/client-core/Cargo.toml; crates/bench/Cargo.toml; sender.rs:1130-1145,4374-4395; bw.rs:159-261",
+   "kind": "cargo-feature",
+   "default": "OFF everywhere",
+   "mechanism": "Compiles SchedDiag saturating counters (per traffic class selected/token_denied/wire_emitted) and BtlBw accept lineage; Sender::diag_sched_summary returns zeros when OFF (sender.rs:4393). Surfaces in ClientStats.sched (runtime.rs:433).",
+   "why_off_or_default": "benchmark-only / observation — Cargo.toml: 'OBSERVATION-ONLY: adds saturating counters at existing decision points ONLY — no control flow, no ordering, no token/pacing change'. client-core Cargo: '[C4-ATIF] salt-gözlem ... (default OFF; ürün davranışı değişmez)'.",
+   "required_v1": "no",
+   "product_reachable": "Compile-time opt-in via client-core feature; behaviour-neutral by construction (sender.rs:1130-1136).",
+   "bench_reachable": "YES: `cargo build -p bench --features diag-sched-telemetry` (bench Cargo.toml:25-26); bench prints sched=... (kama_product.rs:566).",
+   "action": "keep (KEEP-EXPERIMENTAL / diagnostic)",
+   "evidence": [
+    "crates/adaptive-transport/Cargo.toml: diag-sched-telemetry = []",
+    "crates/adaptive-transport/src/sender.rs:4374-4395: diag_sched_summary; #[cfg(not(feature))] -> [0;12]",
+    "crates/client-core/src/runtime.rs:430-433: pub sched: [u64; 12] ('yalnız diag-sched-telemetry feature'ında dolu, aksi 0')",
+    "crates/bench/Cargo.toml:26: diag-sched-telemetry = [\"client-core/diag-sched-telemetry\", ...]"
+   ]
+  },
+  {
+   "flag": "cargo feature `experimental-fs-harness` (kama-integration)",
+   "location": "crates/kama-integration/Cargo.toml [features]",
+   "kind": "cargo-feature",
+   "default": "OFF",
+   "mechanism": "Test-build-only feature that turns on adaptive-transport/experimental-fec-budget + experimental-cold-start for the DR-FEC-FS-1 F0 closed-loop harness (real Sender + RsSimdCodec + BottleneckChannel).",
+   "why_off_or_default": "experimental / benchmark-only — Cargo.toml: 'YALNIZ test-derlemesi ... Production lib-grafiği GENİŞLEMEZ ... flag-OFF forward-YOK'.",
+   "required_v1": "no",
+   "product_reachable": "NO (kama-integration is not a product dependency; adaptive-transport is dev-dep there).",
+   "bench_reachable": "NO",
+   "action": "keep (KEEP-EXPERIMENTAL)",
+   "evidence": [
+    "crates/kama-integration/Cargo.toml: experimental-fs-harness = [\"adaptive-transport/experimental-fec-budget\", \"adaptive-transport/experimental-cold-start\"]"
+   ]
+  },
+  {
+   "flag": "cargo features `test-util`, `libsodium-oracle` (kama-noise-wire)",
+   "location": "crates/kama-noise-wire/Cargo.toml [features]",
+   "kind": "cargo-feature",
+   "default": "OFF",
+   "mechanism": "test-util exposes a sealed-type test constructor to external integration tests; libsodium-oracle links sodiumoxide for an AEAD differential oracle (separate CI job ci.yml:233).",
+   "why_off_or_default": "benchmark/test-only — Cargo.toml: 'production-build'de KAPALI' / 'TEST-ONLY, DEFAULT-KAPALI → production-dependency-graph'ına GİRMEZ'. Not transport mechanisms; listed for completeness of the [features] sweep.",
+   "required_v1": "no",
+   "product_reachable": "NO",
+   "bench_reachable": "NO",
+   "action": "keep",
+   "evidence": [
+    "crates/kama-noise-wire/Cargo.toml: test-util = [] ; libsodium-oracle = [\"dep:sodiumoxide\"]",
+    ".github/workflows/ci.yml:233: cargo test -p kama-noise-wire --features libsodium-oracle"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.max_inflight_units",
+   "location": "crates/client-core/src/runtime.rs:75,184,715,1207",
+   "kind": "config-field",
+   "default": "4096",
+   "mechanism": "Unit-store cap: offer_rx is only polled while store.len() < cap (runtime.rs:1207); also sizes acked channel (715). Bounded buffer (SR-AUDIT-001).",
+   "why_off_or_default": "calibrated-default / intentionally-optional bound (no doc rationale beyond 'unit-store sınırı').",
+   "required_v1": "yes",
+   "product_reachable": "YES (runtime.rs:1207 back-pressure gate)",
+   "bench_reachable": "YES via ..RuntimeConfig::default() (kama_product.rs:231); no CLI flag",
+   "action": "keep",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:184: max_inflight_units: 4096",
+    "crates/client-core/src/runtime.rs:1207: maybe = offer_rx.recv(), if store.len() < cfg.max_inflight_units"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.offer_queue / delivery_queue",
+   "location": "crates/client-core/src/runtime.rs:77-79,185-186,715",
+   "kind": "config-field",
+   "default": "1024 / 1024",
+   "mechanism": "Bounded mpsc sizes app→transport and transport→app (overflowing deliveries are counted, not blocked).",
+   "why_off_or_default": "intentionally-optional bound",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES via default",
+   "action": "keep",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:185-186: offer_queue: 1024, delivery_queue: 1024",
+    "crates/client-core/src/runtime.rs:715: mpsc::channel(cfg.offer_queue.max(cfg.max_inflight_units))"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.max_unit_bytes",
+   "location": "crates/client-core/src/runtime.rs:80-82,187,719; validate_fec 216-235",
+   "kind": "config-field",
+   "default": "1200 (= DEFAULT_MTU, transport-layer-tdd §11 INV-MTU-1 path_mtu_target 1200B)",
+   "mechanism": "Per-DATA-frame payload cap; with FEC must satisfy max_unit_bytes + SOURCE_PREFIX_LEN ≤ profile.e (validate_fec). Bench lowers it to the FEC symbol capacity (kama_product.rs:144-148).",
+   "why_off_or_default": "calibrated-default per spec (TDD §11: 'default path_mtu_target = 1200B').",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES (derived from --payload and --fec-profile)",
+   "action": "keep",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:187: max_unit_bytes: 1200",
+    "specs/transport-layer-tdd.md:682: default path_mtu_target = 1200B",
+    "crates/bench/src/kama_product.rs:144-148: unit = profile_id.and_then(fec_chunk_capacity).map_or(payload, |cap| payload.min(cap))"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.max_message_bytes (S1B fragmenter)",
+   "location": "crates/client-core/src/runtime.rs:83-93,189,220,719,889,1963-1964",
+   "kind": "config-field",
+   "default": "None = fragmentation OFF (message = unit)",
+   "mechanism": "Some(n): messages split into max_unit_bytes chunks (0x05 DATA_FRAG frames), each with own unit id/ARQ/FEC slot; receiver reassembles; app ACK on full message (runtime.rs:889-892). None: wire identical to 0x00 DATA.",
+   "why_off_or_default": "compatibility-only / intentionally-optional — doc: 'AÇIK OPT-IN ... mevcut tüm kurulumlar ve bankadaki ölçümler etkilenmez ... Eşitsizlikten TÜREMEZ ... wire formatı değişikliği ancak açık niyetle olur'.",
+   "required_v1": "unclear",
+   "product_reachable": "YES when Some; product default OFF. Memory note: 'production fragmenter YOK' gate (fec-product-decision-gates) — code now exists behind opt-in.",
+   "bench_reachable": "YES: auto-enabled in kama-product arm when payload > FEC chunk capacity (kama_product.rs:150).",
+   "action": "document (decide v1 default: with fec:None and 1200B units it is not needed; with FEC profiles ≤53B payload it is mandatory)",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:189: max_message_bytes: None",
+    "crates/client-core/src/runtime.rs:889: let frag_on = cfg.max_message_bytes.is_some();",
+    "crates/bench/src/kama_product.rs:150: max_message_bytes: (payload > unit).then_some(payload)"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.max_peers",
+   "location": "crates/client-core/src/runtime.rs:94-95,190,2081",
+   "kind": "config-field",
+   "default": "64 (SESSION_COUNT_CAP alignment)",
+   "mechanism": "Server peer-table fail-closed cap (runtime.rs:2081).",
+   "why_off_or_default": "calibrated-default (spec SESSION_COUNT_CAP=64)",
+   "required_v1": "yes",
+   "product_reachable": "YES (server)",
+   "bench_reachable": "YES via default",
+   "action": "keep",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:190: max_peers: 64",
+    "crates/client-core/src/runtime.rs:2081: if peers.len() >= cfg.max_peers"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.quota_r (receiver episode quota R)",
+   "location": "crates/client-core/src/runtime.rs:96-97,191,2086; crates/adaptive-transport/src/receiver.rs:111,373-380",
+   "kind": "config-field",
+   "default": "4 (== QUOTA_R_DEFAULT=4 in receiver.rs:111)",
+   "mechanism": "Receiver silent re-ACK budget per episode: set_quota_r on peer insert (runtime.rs:2086). Engine-spec §16.1 row `R` epizot-kotası: 4 [CAL {4,8} — R=8 ELENDİ].",
+   "why_off_or_default": "calibrated-default — spec §16.1: 'R=8 ELENDİ: 0.25k dar-dönüş kota-doyumu 13/20'.",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES: `serve --quota-r` (main.rs:40-41); client side hardcoded 4 (kama_product.rs:401)",
+   "action": "keep",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:111: const QUOTA_R_DEFAULT: u32 = 4;",
+    "crates/client-core/src/runtime.rs:2086: rx.set_quota_r(cfg.quota_r);",
+    "specs/adaptive-transport-engine-spec.md:997: `R` epizot-kotası ... 4 [CAL {4,8} — R=8 ELENDİ]"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.drain_cap",
+   "location": "crates/client-core/src/runtime.rs:98-99,192,1364; crates/bench/src/kama_product.rs:91-92,164",
+   "kind": "config-field",
+   "default": "3 s (product); bench overrides to Duration::ZERO",
+   "mechanism": "Shutdown drain time cap; loop drives PTO ticks until store empty && pif==0 or deadline (runtime.rs:1364-1373).",
+   "why_off_or_default": "intentionally-optional; bench sets 0 because 'deadline SONRASI akan retransmit'ler tx_bytes'a girer ve ölçüm penceresini sessizce genişletirdi' (kama_product.rs:91-92).",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES (forced 0)",
+   "action": "keep; document bench/product divergence in run manifests",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:192: drain_cap: Duration::from_secs(3)",
+    "crates/bench/src/kama_product.rs:164: drain_cap: Duration::ZERO"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.idle_hold",
+   "location": "crates/client-core/src/runtime.rs:100-101,193,1973",
+   "kind": "config-field",
+   "default": "105 s (SESSION_IDLE_HOLD alignment)",
+   "mechanism": "Server idle-peer retirement threshold.",
+   "why_off_or_default": "calibrated-default (spec alignment)",
+   "required_v1": "yes",
+   "product_reachable": "YES (server)",
+   "bench_reachable": "YES via default",
+   "action": "keep",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:193: idle_hold: Duration::from_secs(105)",
+    "crates/client-core/src/runtime.rs:1973: let idle_hold_ns = ..cfg.idle_hold"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.initial_window_bytes ([IW] PreConverge first-flight window)",
+   "location": "crates/client-core/src/runtime.rs:102-117,195,855-858; crates/adaptive-transport/src/sender.rs:300-320,4201-4210,2235; pacer.rs:9",
+   "kind": "config-field",
+   "default": "PRODUCT: DEFAULT_BURST_CAP = 2×1200 = 2400 B (ON). TRANSPORT InitialWindowConfig::default() bytes=0 (OFF). BENCH `--initial-window-bytes` default 0 (OFF).",
+   "mechanism": "In PreConverge the burst-cap floor is raised to `bytes` so the pre-filled TokenBucket credit is not clamped to one packet; N originals in first flight → establishment probability 1-p_loss^N (sender.rs:2235 consumer). 0 = legacy clamp.",
+   "why_off_or_default": "Product ON: doc 'bu bir EŞİK SEÇİMİ değil, bir CLAMP HATASININ düzeltilmesidir ... Ölçüm (netem 200 ms RTT / %50 kayıp, n=6/hücre, 2 hücre): sevk davranışı 6/12 çöküş; ilk pencere açıkken 0/12 ... Ön-kayıtlı doğrulama borç olarak kayıtlı'. Transport default 0: sender.rs:313-314 'bytes == 0 (DEFAULT) = mevcut davranış BİREBİR ... KALİBRE EDİLMEMİŞ: default flip ölçüm ister'. Note engine-spec §3.3(A)[K-D2] says 'PRE_CONVERGE'de burst tek-birime clamp'lenir' — product default contradicts the frozen spec sentence.",
+   "required_v1": "unclear",
+   "product_reachable": "YES (runtime.rs:855-858 → sender.rs:2235)",
+   "bench_reachable": "YES, but bench default 0 ≠ product default 2400 → default bench kama-product runs do NOT exercise the product default.",
+   "action": "document + decide: either flip bench default to DEFAULT_BURST_CAP or record spec amendment for §3.3(A) burst clamp; pre-registered validation debt is open",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:195: initial_window_bytes: adaptive_transport::pacer::DEFAULT_BURST_CAP",
+    "crates/adaptive-transport/src/pacer.rs:9: pub const DEFAULT_BURST_CAP: u64 = 2 * crate::rate::DEFAULT_MTU;",
+    "crates/adaptive-transport/src/sender.rs:2235: self.initial_window.bytes (burst floor consumer)",
+    "crates/bench/src/main.rs:123-124: #[arg(long, default_value_t = 0)] initial_window_bytes",
+    "specs/adaptive-transport-engine-spec.md §3.3(A): 'PRE_CONVERGE'de burst tek-birime clamp'lenir → ilk birim t=0'da gider, kalanı floor-refill yayar'"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.bootstrap_rtt (DR-CS-3 bootstrap-RTT ladder, always compiled)",
+   "location": "crates/client-core/src/runtime.rs:123-128,196,820-837,1012-1016,2311-2321; crates/adaptive-transport/src/sender.rs:960-1024,1986-1988,2507,3173-3219,5710",
+   "kind": "runtime-bool",
+   "default": "false (engine BootstrapRttConfig::default() enabled=false)",
+   "mechanism": "While PreConverge && srtt none: emit 44 B CsProbe on ladder BS_FIRES_NS (3/9/21/45 s) under BS_TX_HARD_BUDGET 200 B; receiver echoes 43 B stateless (runtime.rs:2311-2321, echo served regardless of cfg); sender turns echo into RTT sample → leaves PreConverge. Also gates F2A lane via set_cs_probe_lane.",
+   "why_off_or_default": "unsafe-unvalidated — runtime.rs:127 'KALİBRE EDİLMEMİŞ — default flip ölçüm ister (DR-CS-3 §9 kilitli panel)'; sender.rs:1009 'DEFAULT OFF — pending locked/fresh panel validation (DR-CS-3 §9)'. Engine-spec §3.3(F): probe/echo is 'hızlandırıcı, opsiyonel'.",
+   "required_v1": "no",
+   "product_reachable": "YES when true (7 test call sites + runtime.rs:824 product wire)",
+   "bench_reachable": "YES: `--bootstrap-rtt` both ends (main.rs:120-121, 235-236)",
+   "action": "keep (KEEP-EXPERIMENTAL until DR-CS-3 §9 panel); document that echo responder is unconditional",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:196: bootstrap_rtt: false",
+    "crates/adaptive-transport/src/sender.rs:1007-1013: impl Default for BootstrapRttConfig { enabled: false, fires_ns: None }",
+    "crates/adaptive-transport/src/sender.rs:3173: if !self.bootstrap_rtt.enabled || self.bs_done { return }",
+    "crates/client-core/src/runtime.rs:2312: [DR-CS-3] IDEMPOTENT-STATELESS echo",
+    "specs/adaptive-transport-engine-spec.md:370-375 §3.3(F) 'Probe hızlandırıcıdır; hiçbir şeyi bloklamaz'"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.bootstrap_fast_ladder (BootstrapRttConfig::establishment_fast)",
+   "location": "crates/client-core/src/runtime.rs:118-122,197,825-829; crates/adaptive-transport/src/sender.rs:975-1000",
+   "kind": "runtime-bool",
+   "default": "false → BS_FIRES_NS 3/9/21/45 s; true → 0.2/0.6/1.8/5.4 s",
+   "mechanism": "Selects the probe ladder when bootstrap_rtt is on; same 200 B budget.",
+   "why_off_or_default": "unsafe-unvalidated — sender.rs:992-995 'KALİBRE EDİLMEMİŞ — ölçümle doğrulanmalı'; default ladder 'BLACKOUT için kalibre edildi, KURULUŞ için değil' (runtime.rs:119-120).",
+   "required_v1": "no",
+   "product_reachable": "YES (only effective with bootstrap_rtt=true)",
+   "bench_reachable": "YES: `--bootstrap-fast`",
+   "action": "keep (KEEP-EXPERIMENTAL)",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:197: bootstrap_fast_ladder: false",
+    "crates/adaptive-transport/src/sender.rs:992-997: establishment_fast() fires_ns: Some([200_000_000, 600_000_000, 1_800_000_000, 5_400_000_000])",
+    "crates/adaptive-transport/src/sender.rs:1019: const BS_FIRES_NS = [3s,9s,21s,45s]"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.fec_structure_policy (FecStructurePolicy Q18Iid | BurstFusion)",
+   "location": "crates/client-core/src/runtime.rs:129-132,198,817-819; crates/adaptive-transport/src/sender.rs:322-345,617-628,3698-3710,4439-4441,1352-1372",
+   "kind": "enum-mode",
+   "default": "Q18Iid (burst structure → parity 0, ARQ only)",
+   "mechanism": "Structure gate branch: IID (burst_delta ≤ 50k ppm) opens FEC at gate level; BurstFusion additionally codes in burst branch at measured erasure rate × 3/2 margin (fec_med or fec_high).",
+   "why_off_or_default": "unsafe-unvalidated — sender.rs:337-340 'KALİBRE EDİLMEMİŞ — default Q18Iid. R1 disiplini: kampanya görmemiş bir eşik sevk edilmez'. But sender.rs:325-332 measured that Q18Iid yields fec_bytes=0 on GE burst channels ('ürünün ayırt edici mekanizması tam ihtiyaç duyulan yerde kapalı') and sender.rs:1360-1366 records the underlying burst→ARQ policy rests on a VOID holdout. Engine-spec §8.4 fusion rule table has no 'burst→0 parity' rule.",
+   "required_v1": "unclear",
+   "product_reachable": "YES (only effective with fec: Some)",
+   "bench_reachable": "YES: `--fec-burst-fusion` both ends",
+   "action": "document (open [DAYANAK BORCU]); needs product-layer FEC-armed rate×structure grid before flip (memory: DR-FUSION-POLICY-1)",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:198: fec_structure_policy: FecStructurePolicy::default()",
+    "crates/adaptive-transport/src/sender.rs:617-628: #[default] Q18Iid",
+    "crates/adaptive-transport/src/sender.rs:3698-3710: match self.fec_structure_policy { ... BurstFusion => ... }",
+    "crates/adaptive-transport/src/sender.rs:1360-1366: '[DAYANAK BORCU — 2026-09-04] ... Burst rejiminde FEC'in zararlı olduğuna dair GEÇERLİ bir ölçüm yoktur'"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.fec (Option<FecRuntimeConfig{profile_id, manual_r}>)",
+   "location": "crates/client-core/src/runtime.rs:133-137,169-179,199,227,861-876,1965-1968; crates/adaptive-transport/src/sender.rs:248-253,4101-4113",
+   "kind": "config-field",
+   "default": "None = FEC runtime OFF (Sender stays FecActuationMode::Manual{enabled:false}, sender.rs:1822)",
+   "mechanism": "Some: resolves profile via kama_fec_codec::by_id, sets FecActuationMode::Controller (manual_r None) or Manual{enabled:true} (manual_r Some = static r), block lifecycle, RS encode, repair emission/ingest, PARAM bootstrap. Both ends must match.",
+   "why_off_or_default": "compatibility-only / gated — runtime.rs:133-134 'None = KAPALI (sevk default'u; flip S1-GATE kanıtına bağlı — R1 disiplininin FEC karşılığı)'. INV-FEC-1 and engine-spec §10/§8.4 make FEC the product's core mechanism; TDD §12: '\"hep ARQ\" veya \"hep FEC\" YANLIŞTIR'.",
+   "required_v1": "yes",
+   "product_reachable": "YES when Some (full chain runtime.rs:861-876 → sender FEC authority → wire 0x20/FEC frames)",
+   "bench_reachable": "YES: `--fec-profile N --fec-mode {static|adaptive|policy} --fec-r R` (0 = OFF by default)",
+   "action": "flip-default candidate blocked on S1-GATE evidence; document as the v1 blocker decision (WIRE-level: mechanism wired, default disables it)",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:199: fec: None",
+    "crates/client-core/src/runtime.rs:865-876: set_fec_actuation_mode(Manual{enabled:true}|Controller)",
+    "crates/adaptive-transport/src/sender.rs:1822: fec_mode: FecActuationMode::Manual { enabled: false }, // default: mevcut-davranış-birebir",
+    "specs/transport-layer-tdd.md:696: '\"hep ARQ\" veya \"hep FEC\" YANLIŞTIR'"
+   ]
+  },
+  {
+   "flag": "FecRuntimeConfig.manual_r (static-r vs Controller mode)",
+   "location": "crates/client-core/src/runtime.rs:175-178,864-871",
+   "kind": "enum-mode",
+   "default": "None (Controller/adaptive) when fec is Some",
+   "mechanism": "Some(r): FecActuationMode::Manual{enabled:true} + close_fec_block_manual with fixed r (campaign STATIC_R arm / operator-forced). None: structure-gate/arbiter decision latches.",
+   "why_off_or_default": "intentionally-optional — 'kampanyaların STATIC_R kolu / operatör-forced FEC'. Required-for-v1 status is unclear: it is an operator override, not a default mechanism.",
+   "required_v1": "unclear",
+   "product_reachable": "YES",
+   "bench_reachable": "YES: `--fec-mode static --fec-r R` (r=0 valid = control arm)",
+   "action": "keep",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:864: let fec_manual_r = cfg.fec.and_then(|f| f.manual_r)",
+    "crates/bench/src/kama_product.rs:167-170: FecArm::StaticR → manual_r: Some(r)"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.fusion_policy (Option<FusionPolicy>) — calibrated fusion policy authority",
+   "location": "crates/client-core/src/runtime.rs:138-145,200-202,848-852; crates/adaptive-transport/src/fusion_policy.rs:245-378; sender.rs:3481-3515,4183-4185,1922 (default disabled())",
+   "kind": "config-field",
+   "default": "None (Sender keeps FusionPolicy::disabled() → FallbackArq(PolicyDisabled), structure gate runs)",
+   "mechanism": "Some(p): policy becomes decision authority (structure gate silenced); calibration_v2_deadline requires declared per-message deadline (declare_delivery_deadline, runtime.rs:1211-1212), BtlBw ∈ [1, 80_000] B/s, loss ≤ 250k ppm, deadline/srtt ≤ 2.5 → fec 250‰ (r=2@K=8); outside → ArqOnly.",
+   "why_off_or_default": "unsafe-unvalidated / intentionally-optional — runtime.rs:200-201 'Sevk default'u KAPALI: kalibrasyon opt-in kalır (ürün default kararı ayrı bir ölçüm kapısıdır; bkz. reports/fec-policy-arm-v1/)'. lib.rs:43-45 'default OFF; advisory only; every failure mode degrades to ArqOnly'. Engine-spec §8.4 fusion is required, but this is one candidate implementation alongside fuzzy fixture + structure gate + speculative lane, hence 'unclear'.",
+   "required_v1": "unclear",
+   "product_reachable": "YES when Some (runtime.rs:848-852 is 'that wire'; doc notes it previously had ZERO product callers)",
+   "bench_reachable": "YES: `--fec-mode policy --fec-deadline-ms N` (kama_product.rs:229-230, 428-429)",
+   "action": "keep opt-in; document (DR-FUSION-POLICY-1 gate)",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:202: fusion_policy: None",
+    "crates/client-core/src/runtime.rs:850-852: if let Some(p) = cfg.fusion_policy { session.sender_mut().set_fusion_policy(p); }",
+    "crates/adaptive-transport/src/sender.rs:3481: if self.fusion_policy.is_enabled() {",
+    "crates/adaptive-transport/src/fusion_policy.rs:330-378: calibration_v2_deadline() region {loss_ppm_max 250_000, bandwidth 1..80_000, deadline_over_srtt 2_500}, fec_high 250"
+   ]
+  },
+  {
+   "flag": "FusionPolicy::calibration_v1()",
+   "location": "crates/adaptive-transport/src/fusion_policy.rs:270-328",
+   "kind": "config-field",
+   "default": "never selected (no product/bench constructor; only calibration_v2_deadline is wired)",
+   "mechanism": "Versioned loss-band policy (90k/140k/160k/200k ppm; bandwidth 100_000..125_000 B/s; fec_high 800‰).",
+   "why_off_or_default": "obsolete — fusion_policy.rs:281-300 '[DAYANAK BORCU — 2026-09-04] BU BANT KENARLARI TÜRETİLEMEZ ... dört kenar ÖLÇÜLMÜŞ bir geçiş noktasını temsil ETMEZ'; region written in link-bps not BtlBw so it 'ürün yolunda HER ZAMAN UnsupportedRegion veriyordu' (fusion_policy.rs:349-355).",
+   "required_v1": "no",
+   "product_reachable": "NO (grep calibration_v1( → definition + tests only; runtime.rs uses none)",
+   "bench_reachable": "NO (kama_product.rs:229-230 only calibration_v2_deadline)",
+   "action": "delete or move to appendix with MUST NOT USE (CLAUDE.md §6 deprecated-content rule)",
+   "evidence": [
+    "crates/adaptive-transport/src/fusion_policy.rs:281: '[DAYANAK BORCU — 2026-09-04] BU BANT KENARLARI TÜRETİLEMEZ.'",
+    "crates/adaptive-transport/src/fusion_policy.rs:349-355: 'v1 bölgesi ürün yolunda HER ZAMAN UnsupportedRegion veriyordu'",
+    "crates/bench/src/kama_product.rs:229-230: .then(FusionPolicy::calibration_v2_deadline)"
+   ]
+  },
+  {
+   "flag": "FusionSafetyConfig (hard bounds) + FusionPolicy::with_safety",
+   "location": "crates/adaptive-transport/src/fusion_policy.rs:170-199,380-383",
+   "kind": "const-knob",
+   "default": "hard_max_redundancy 800‰, hard_fec_byte_budget 4096, hard_combined_byte_cap 8192, max_telemetry_age 2 s, min_rtt_samples 2",
+   "mechanism": "Independent ceilings applied to policy AND (per sender.rs comment at fusion_policy.rs:365-370) to the speculative lane when a policy is enabled. with_safety is a setter-only override (no product/bench caller).",
+   "why_off_or_default": "calibrated-default / safety — 'NOT part of the calibration artifact — a calibration can request less, never more'. min_rtt_samples=2 rationale: rttvar bootstrap artifact. Required only when fusion_policy is on.",
+   "required_v1": "yes",
+   "product_reachable": "YES via FusionPolicy defaults; with_safety unreachable from product",
+   "bench_reachable": "defaults only",
+   "action": "keep",
+   "evidence": [
+    "crates/adaptive-transport/src/fusion_policy.rs:188-199: impl Default for FusionSafetyConfig",
+    "grep .with_safety( → no hits outside fusion_policy.rs"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.loss_confirm_horizon (LossConfirmHorizon CadenceLegacy | ChannelDerived{k_permille})",
+   "location": "crates/client-core/src/runtime.rs:146-149,203,839-841; crates/adaptive-transport/src/sender.rs:576-614,3387,4411-4413; consts EAI_SACK_WIRE_BYTES/EAI_RETURN_BW_PRIOR sender.rs:1395-1400",
+   "kind": "enum-mode",
+   "default": "CadenceLegacy = confirm horizon 1.5×EAI where EAI contains 65 B / 31 B·s⁻¹ ≈ 2.097 s channel-independent term",
+   "mechanism": "Only the Suspected→Confirmed argument of ledger_tick changes; ChannelDerived = k×srtt (falls back to legacy while srtt is None). Loss detection thresholds and W_loss untouched.",
+   "why_off_or_default": "compatibility-only measurement arm — sender.rs:583-586 'Bu enum bir DÜZELTME DEĞİL, bir ÖLÇÜM KOLUDUR. Default sevk davranışıdır ve byte-özdeştir'; measured defect: 'sevk edilen ufuk ürün yolunda HİÇ ateşlemiyor (3 koşu, ~13k tick, confirmed_total = 0)' (sender.rs:578-582; reports/loss-ledger-confirm-defect/FINDING.md). Engine-spec §16.1 row 'ledger confirm-ufku' = K_c×EAI with return_bw_önseli 'E-FULL ölçümle değişir' — spec pre-authorises measured return_bw, not k×srtt (memory: loss-ledger-confirm-defect). Required-for-v1 is unclear: the canonical loss signal feeding fuzzy/Q18/policy is required, but the current default leaves it structurally zero on short flows.",
+   "required_v1": "unclear",
+   "product_reachable": "YES",
+   "bench_reachable": "YES: `--loss-confirm-k` (0 = legacy)",
+   "action": "wire — implement measured return_bw (§3.3-E-FULL) in place of the 31 B/s prior; keep ChannelDerived as measurement arm only; do not flip to k×srtt",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:203: loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy",
+    "crates/adaptive-transport/src/sender.rs:589-596: CadenceLegacy doc: 65 B / 31 B·s⁻¹ ≈ 2.097 s ... 16×RTT",
+    "crates/adaptive-transport/src/sender.rs:1395-1397: const EAI_SACK_WIRE_BYTES = 65; const EAI_RETURN_BW_PRIOR = 31;",
+    "specs/adaptive-transport-engine-spec.md:990: ledger confirm-ufku = K_c×EAI (ayrı sabit YOK)",
+    "specs/adaptive-transport-engine-spec.md:988: return_bw_önseli(31 B/s [CAL], §3.3-E-FULL ölçümle değişir)"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.fec_loss_risk (FecLossRiskConfig — speculative FEC lane, FEC v1 closure)",
+   "location": "crates/client-core/src/runtime.rs:150-155,204,842-843; crates/adaptive-transport/src/sender.rs:346-448,1932,3434,4218-4220",
+   "kind": "config-field",
+   "default": "PRODUCT: FecLossRiskConfig::bounded_v1() (enabled=true, L1=L2=250‰, PersistMode::LearnedSpuriousAge ρ=1.25 Q95 floor 0.5×srtt, reorder_suppress 300‰). TRANSPORT Sender::new(): FecLossRiskConfig::default() (enabled=false). BENCH `--fec-risk` default false → FecLossRiskConfig::default() (OFF); `--fec-risk` true → experimental_v1() (125/250, FixedSrtt, no G1 guard) — NOT bounded_v1.",
+   "mechanism": "Age-weighted Suspected+Confirmed risk split (instant/persistent/reorder_pressure) → SpeculativeProposal L0/L1/L2 → fec_arbiter max(confirmed, structure, spec) (sender.rs:534-575). Inert when fec: None (all actuation gated on fec.as_ref()).",
+   "why_off_or_default": "calibrated-default (product) — runtime.rs:150-154 'Ürün default'u bounded_v1() ... bkz. reports/fec-loss-risk-v1/closure ... fec: None iken (default) İNERT'. Transport default OFF: sender.rs:439-441 'Transport default() NÖTR (kapalı) kalır; ürün default'u client-core'dadır'. Stale comment: runtime.rs:842 says '[FEC-RISK] Deneysel risk tahmincisi; default KAPALI' but product default is bounded_v1 (ON). This is the closure decision — not to be reopened.",
+   "required_v1": "yes",
+   "product_reachable": "YES (runtime.rs:843 → sender.rs:3434 gate → arbiter → fec ratio)",
+   "bench_reachable": "PARTIAL: reproducing product default requires `--fec-risk --spec-l1-permille 250 --spec-l2-permille 250 --gate-permille 250 --persist-mode learned --rp-suppress 300`; no single flag selects bounded_v1; bare `--fec-risk` selects experimental_v1.",
+   "action": "document + fix bench mapping: add a bench arm that uses RuntimeConfig::default() (bounded_v1) or map `--fec-risk` to bounded_v1; correct runtime.rs:842 comment",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:204: fec_loss_risk: FecLossRiskConfig::bounded_v1()",
+    "crates/adaptive-transport/src/sender.rs:395-412: impl Default for FecLossRiskConfig { enabled: false, bootstrap_cap 125, persistent_cap 250, persist_mode FixedSrtt, ... reorder_suppress u32::MAX }",
+    "crates/adaptive-transport/src/sender.rs:435-447: bounded_v1() { enabled: true, 250, 250, LearnedSpuriousAge, 500, 1250, 950, reorder_suppress 300 }",
+    "crates/bench/src/kama_product.rs:188-192: let mut c = if fec_risk { FecLossRiskConfig::experimental_v1() } else { FecLossRiskConfig::default() };",
+    "crates/adaptive-transport/src/sender.rs:3434: let spec_split = if self.fec_loss_risk.enabled {",
+    "crates/client-core/src/runtime.rs:842: // [FEC-RISK] Deneysel risk tahmincisi; default KAPALI (semantik özdeş).  <- stale"
+   ]
+  },
+  {
+   "flag": "FecLossRiskConfig.persist_mode (PersistMode FixedSrtt | LearnedSpuriousAge) + persist_srtt/rho/q/cap knobs",
+   "location": "crates/adaptive-transport/src/sender.rs:369-380,401-404,451-460,462-475 (learned_persist_min_ns)",
+   "kind": "enum-mode",
+   "default": "Transport default FixedSrtt (0.5×srtt); product bounded_v1 LearnedSpuriousAge ρ=1250‰ Q=950‰ floor 500‰; persist_cap_srtt_permille u32::MAX (no cap) in both",
+   "mechanism": "L2 persistence horizon = max(floor, ρ×Q_q(spurious age)) capped; only brakes L2 climb (L1 immediate).",
+   "why_off_or_default": "calibrated-default (P2 in closure; part of bounded_v1). persist_cap_srtt_permille unmeasured: sender.rs:378-380 'Kuyruklanma geç ACK'leri \"spurious\" gösterip ufku şişirebilir ... bu sweep'te ÖLÇÜLMEDİ'. Memory fec-persistence-calibration: fixed 0.5×srtt gave 15–117 false L2 under reorder.",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES: `--persist-mode fixed|learned --persist-alpha --persist-rho --persist-q` (no CLI for persist_cap)",
+   "action": "keep; document persist_cap as open [CAL] debt",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:451-460: enum PersistMode { #[default] FixedSrtt, LearnedSpuriousAge }",
+    "crates/adaptive-transport/src/sender.rs:378-380: persist_cap_srtt_permille doc 'bu sweep'te ÖLÇÜLMEDİ'",
+    "crates/bench/src/kama_product.rs:200-215: persist_mode/alpha/rho/q overrides"
+   ]
+  },
+  {
+   "flag": "FecLossRiskConfig.reorder_suppress_permille (C4 guard G1) + reorder_min_evidence_units + reorder_discount_max_permille + spec_min_permille",
+   "location": "crates/adaptive-transport/src/sender.rs:381-394,405-411,445",
+   "kind": "const-knob",
+   "default": "reorder_suppress: u32::MAX (OFF) in default(); 300‰ in bounded_v1; reorder_min_evidence 8; discount_max 500‰; spec_min 63‰",
+   "mechanism": "declared_units ≥ 8 ∧ reorder_pressure ≥ 300‰ ⇒ no speculative proposal (G1); otherwise cap discounted ≤50%, floored at 63‰ so K≤8 still gets ≥1 repair.",
+   "why_off_or_default": "calibrated-default — bounded_v1 doc: 'C4 guard'ı G1 ... karışık kayıp+reorder (C4) n=20 OFF'a eşit/üstü (+0.04), tel +6 %'. spec_min: audit finding '125‰ × 0.5 = 62‰ → compute_requested_r = 0 repair, yani indirim yuvarlamayla VETO'ya dönüyordu'.",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES: `--rp-suppress` (None = off ≠ product 300)",
+   "action": "keep",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:389-394: reorder_suppress_permille doc; u32::MAX = kapalı (sevk)",
+    "crates/adaptive-transport/src/sender.rs:445: reorder_suppress_permille: 300 (bounded_v1)",
+    "crates/adaptive-transport/src/sender.rs:381-388: spec_min_permille 63 = ceil(1000/8)"
+   ]
+  },
+  {
+   "flag": "FecLossRiskConfig.weights (loss::SuspectConfidence)",
+   "location": "crates/adaptive-transport/src/loss.rs:73-104",
+   "kind": "const-knob",
+   "default": "w_lt_quarter 200, w_lt_half 400, w_lt_one 700, w_ge_one 700 (‰)",
+   "mechanism": "Age→confidence step function for Suspected events feeding instant risk.",
+   "why_off_or_default": "unsafe-unvalidated shape (inside bounded_v1) — loss.rs:75-77 'KALİBRE EDİLMEMİŞ — deneysel ... [CAL]. Spec'e YAZILMADI (ölçüm öncesi normatifleştirme yasak)'.",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "no CLI override",
+   "action": "document as [CAL] debt inside the v1 closure",
+   "evidence": [
+    "crates/adaptive-transport/src/loss.rs:88-101: impl Default for SuspectConfidence { 200, 400, 700, 700 }"
+   ]
+  },
+  {
+   "flag": "FecLossRiskConfig.l1_min_instant_ppm / l2_min_persistent_ppm / tight_budget_permille",
+   "location": "crates/adaptive-transport/src/sender.rs:362-377,405-410",
+   "kind": "const-knob",
+   "default": "10_000 / 10_000 ppm; tight_budget 2_500‰",
+   "mechanism": "Noise floors for L1/L2 firing; deadline/srtt ≤ 2.5 ⇒ L1 uses persistent cap (DEADLINE_ASSISTED).",
+   "why_off_or_default": "calibrated-default ('Default 2500 = calibration_v2_deadline'ın ölçülen kutusu'); l1/l2 minima labelled [CAL] noise floor.",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "no CLI override",
+   "action": "keep",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:405-410: l1_min_instant_ppm: 10_000, l2_min_persistent_ppm: 10_000, tight_budget_permille: 2_500"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.ts_sample_period_ns (handoff time-series instrument) + TS_CAP",
+   "location": "crates/client-core/src/runtime.rs:156-159,166-167,205,1058-1062",
+   "kind": "bench-toggle",
+   "default": "None (OFF); TS_CAP = 4096 samples",
+   "mechanism": "On pace ticks push (t, Sender::diag_ts_sample()) into ClientStats.ts; observation-only.",
+   "why_off_or_default": "benchmark-only — 'Salt gözlem — motor durumuna dokunmaz'.",
+   "required_v1": "no",
+   "product_reachable": "YES (inert unless Some)",
+   "bench_reachable": "YES: `--ts-out <csv>` sets 50 ms period (kama_product.rs:226)",
+   "action": "keep",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:205: ts_sample_period_ns: None",
+    "crates/client-core/src/runtime.rs:1060: if let Some(p) = cfg.ts_sample_period_ns"
+   ]
+  },
+  {
+   "flag": "RuntimeConfig.structure_gate_level_permille",
+   "location": "crates/client-core/src/runtime.rs:160-163,206,844-847; crates/adaptive-transport/src/sender.rs:4422-4437; fusion.rs:365 (fec_med 500)",
+   "kind": "config-field",
+   "default": "PRODUCT Some(250) (r=2 @ K=8). TRANSPORT None → fuzzy fec_med = 500 (r=4). BENCH `--gate-permille` default None → 500.",
+   "mechanism": "Parity level the structure gate requests when it opens (arbiter input).",
+   "why_off_or_default": "calibrated-default — runtime.rs:160-162 'aday A'nın gate bileşeni; r-sweep: 500‰/r4 15–20 % kayıpta israflı'; FEC-MARGINAL-R: r=4 adds no recovery over r=2 (fusion_policy.rs:340-342).",
+   "required_v1": "yes",
+   "product_reachable": "YES (effective only with fec: Some)",
+   "bench_reachable": "YES but default None ≠ product Some(250) (divergence)",
+   "action": "document; align bench default with product or force explicit flag",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:206: structure_gate_level_permille: Some(250)",
+    "crates/adaptive-transport/src/sender.rs:4434-4437: gate_level_permille() = override.unwrap_or(fuzzy.config().fec_med)",
+    "crates/adaptive-transport/src/fusion.rs:365: fec_med: 500",
+    "crates/bench/src/kama_product.rs:224: structure_gate_level_permille: gate"
+   ]
+  },
+  {
+   "flag": "StartupPacingConfig (DR-RATE-RAMP-2 startup pacing floor) / Sender::set_startup_pacing_init",
+   "location": "crates/adaptive-transport/src/sender.rs:1058-1136,1802,2018-2021,2206-2215; crates/client-core/src/lib.rs:65-69",
+   "kind": "setter-only",
+   "default": "enabled: true (engine default ON since 925dea66)",
+   "mechanism": "At PreConverge→Startup exit, initialise pacer to min-pipe rate cwnd/srtt (no synthetic BtlBw samples); released deterministically.",
+   "why_off_or_default": "calibrated-default — sender.rs:1085-1135 records 260 paired runs PASS, INV-RATE-1 golden supersession (reports/fs-cal-2/v3.5/INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md), fuzzy_e2e blocker resolved 2026-08-15. STALE COMMENTS: sender.rs:1063 'DEFAULT OFF ⇒ mechanism inert', 1499 '(default OFF)', 1802 '// default OFF', 2018 '(default OFF)', 2206 '(§FAZ-1, default OFF)' all contradict the code (enabled: true).",
+   "required_v1": "yes",
+   "product_reachable": "YES (Sender::new default; product never calls the setter — grep: sender.rs internal tests + kama-integration tests only)",
+   "bench_reachable": "YES via default; no CLI flag",
+   "action": "document — fix the five stale 'default OFF' comments; no RuntimeConfig knob exists (setter-only) — acceptable",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1132-1135: 'RESOLVED 2026-08-15 ... the default is ON' → Self { enabled: true }",
+    "crates/adaptive-transport/src/sender.rs:1802: startup_pacing: StartupPacingConfig::default(), // default OFF  <- stale",
+    "crates/adaptive-transport/src/sender.rs:2207: if self.startup_pacing.enabled",
+    "grep .set_startup_pacing_init( → sender.rs tests 7572/7616/7734 + kama-integration/adaptive-transport tests only"
+   ]
+  },
+  {
+   "flag": "TailRecoveryConfig (Sender default OFF) vs TailRecoveryConfig::validated_v1() (ClientSession ON) / Sender::set_tail_recovery_config",
+   "location": "crates/adaptive-transport/src/tail_recovery.rs:15-93; crates/adaptive-transport/src/sender.rs:1801,2054-2060,2536,3084,3149; crates/client-core/src/lib.rs:65-85",
+   "kind": "setter-only",
+   "default": "Sender::new(): TailRecoveryConfig::default() enabled=false (cap 2, 1 ms/60 s/120 s — never campaigned). ClientSession::new() (product): validated_v1() enabled=true (cap 3, 10 ms/10 s/30 s, 25 ms ack delay).",
+   "mechanism": "Bounded PTO-driven tail probe of oldest outstanding seq; on_timer at sender.rs:3149, ack progress 3084. Engine-spec §12 PTO ('PTO firing → probe/retransmit').",
+   "why_off_or_default": "Sender default OFF: 'these bounds are NOT the validated ones ... Enabling ... goes through validated_v1() — never by flipping enabled here' (tail_recovery.rs:36-42). Product ON: G2 decision 2026-08-24 docs/design/P3-DEFAULT-FLIP-DECISION.md; DR-ARQ-PRODUCT-TAIL-1 2290/2290 rows, terminal tail OFF 2.2% vs ON 91.4% (tail_recovery.rs:72-84). Open tuning: 'terminal-tail,10,med exhausts the fixed cap before packet-threshold ARQ engages (0/30)'.",
+   "required_v1": "yes",
+   "product_reachable": "YES (client-core lib.rs:83 — no RuntimeConfig knob; hard-wired ON)",
+   "bench_reachable": "kama-product: always validated_v1 (ClientSession); `--kama-arm tail-v1|arq` only affects the obsolete `kama` stub arm (kama.rs:112) and is ignored by kama-product (kama_product.rs:724).",
+   "action": "keep (SHIP); document that `--kama-arm` is a no-op for kama-product and that TailRecoveryConfig::default() bounds are non-shippable",
+   "evidence": [
+    "crates/adaptive-transport/src/tail_recovery.rs:35-52: impl Default { enabled: false, ... max_tail_probes: 2 } with NOTE 'never driven by any campaign'",
+    "crates/adaptive-transport/src/tail_recovery.rs:72-93: validated_v1() { enabled: true, 10ms, 10s, 1s, 30s, 25ms, 3 }",
+    "crates/client-core/src/lib.rs:83: sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());",
+    "crates/bench/src/kama_product.rs:724: kama_arm: crate::transport::KamaArm::Arq, // bu kolda yok sayılır",
+    "crates/bench/src/kama.rs:112: if arm == KamaArm::TailV1 {"
+   ]
+  },
+  {
+   "flag": "Sender.establish_probe_enabled (DR-EST-1 establishment probe) / Sender::set_establish_probe",
+   "location": "crates/adaptive-transport/src/sender.rs:1389-1390,1536,1819,2499,5543-5604",
+   "kind": "setter-only",
+   "default": "true (ON); ESTABLISH_PROBE_INITIAL_NS 500 ms, ESTABLISH_PROBE_CAP_NS 8 s exponential backoff",
+   "mechanism": "In PreConverge, single-slot re-emission of a unit with exponential backoff to bootstrap the first RTT sample when no ACK arrives (≤4 datagrams/10 s on 1 kbps).",
+   "why_off_or_default": "calibrated-default — sender.rs:1385-1388: 'S2-REGION rt60d300 teşhisi: sıkı-deadline + iki-yön-%60 + 600 ms RTT'de teyit-zinciri hiç kurulamıyordu → 0/40'. Setter is test-visible only ('test-görünür; default-ON', sender.rs:5597).",
+   "required_v1": "yes",
+   "product_reachable": "YES (default ON; runtime never disables). ClientStats.establish_probes_tx exposes count (runtime.rs:1412).",
+   "bench_reachable": "YES via default; no CLI flag",
+   "action": "keep (SHIP)",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1819: establish_probe_enabled: true",
+    "crates/adaptive-transport/src/sender.rs:5597-5602: set_establish_probe (test-görünür; default-ON)",
+    "grep .set_establish_probe( → 12 hits, all under */tests/*"
+   ]
+  },
+  {
+   "flag": "Sender::set_cs_probe_lane (F2A cold-start probe lane product switch)",
+   "location": "crates/adaptive-transport/src/sender.rs:1990-2004,5721; crates/client-core/src/runtime.rs:833-837",
+   "kind": "runtime-bool",
+   "default": "feature OFF → no-op; feature ON → field default true, product sets cfg.bootstrap_rtt (false)",
+   "mechanism": "Gates the DR-CS-1 M2 F2A ladder arm on first DATA emission (sender.rs:5721).",
+   "why_off_or_default": "compatibility — sender.rs:1990-1994: 'Aksi hâlde --all-features derlemesinde F2A merdiveni ilk DATA emisyonunda koşulsuz arm oluyordu'.",
+   "required_v1": "no",
+   "product_reachable": "YES (runtime.rs:837, sole caller)",
+   "bench_reachable": "indirect via `--bootstrap-rtt` only in a feature build (bench never enables the feature)",
+   "action": "keep",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:837: session.sender_mut().set_cs_probe_lane(cfg.bootstrap_rtt);",
+    "crates/adaptive-transport/src/sender.rs:5721: if self.cs_probe_lane_enabled"
+   ]
+  },
+  {
+   "flag": "Sender::set_manual_fec_enabled (manual FEC emission toggle)",
+   "location": "crates/adaptive-transport/src/sender.rs:4462-4480; udp_runner.rs:641",
+   "kind": "setter-only",
+   "default": "Manual{enabled:false} (Sender::new)",
+   "mechanism": "Toggles emission gate only in Manual mode; typed error in Controller mode.",
+   "why_off_or_default": "compatibility-only — product uses set_fec_actuation_mode(Manual{enabled:true}|Controller) instead (runtime.rs:865-876); this setter is superseded in product.",
+   "required_v1": "no",
+   "product_reachable": "NO (callers: sender.rs internal tests, udp_runner.rs:641 [feature-gated harness], kama-integration/tests/common/fs_*.rs)",
+   "bench_reachable": "NO",
+   "action": "keep for harness; document as non-product API",
+   "evidence": [
+    "grep .set_manual_fec_enabled( → sender.rs:6472-6853 (#[cfg(test)]), udp_runner.rs:641, kama-integration/tests/common/{fs_spine.rs:465,fs_f0.rs:108}",
+    "crates/client-core/src/runtime.rs:872-875: set_fec_actuation_mode(mode)"
+   ]
+  },
+  {
+   "flag": "BudgetPolicy (feature-gated) / Sender::set_budget_policy",
+   "location": "crates/adaptive-transport/src/sender.rs:819-836,4977",
+   "kind": "setter-only",
+   "default": "LeftoverOnly (== baseline) when feature compiled; absent otherwise",
+   "mechanism": "ProtectedShare/FloorCap experimental reservation+tickets via budget_kernel.",
+   "why_off_or_default": "experimental — 'default-HER-KOŞULDA-LeftoverOnly' (sender.rs:829).",
+   "required_v1": "no",
+   "product_reachable": "NO",
+   "bench_reachable": "NO (only examples/udp_budget_runner.rs + tests)",
+   "action": "keep (KEEP-EXPERIMENTAL)",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:829-836: /// Deneysel-bütçe-politikası (yalnız-test/harness-seçer; default-HER-KOŞULDA-LeftoverOnly)",
+    "grep .set_budget_policy( → udp_runner.rs:642 + tests only"
+   ]
+  },
+  {
+   "flag": "FecActuationMode default Manual{enabled:false} (Sender::new)",
+   "location": "crates/adaptive-transport/src/sender.rs:248-253,1822; crates/client-core/src/lib.rs:73-74",
+   "kind": "enum-mode",
+   "default": "Manual{enabled:false} — FEC emission sealed until client-core sets mode (only when cfg.fec is Some)",
+   "mechanism": "Block authority witness captured at block open; Controller latches arbiter ratio; Manual uses fixed r.",
+   "why_off_or_default": "compatibility — sender.rs:1822 'default: mevcut-davranış-birebir'; ClientSession doc: 'FEC actuation Manual { enabled: false } (Q18 calibration defect)'. The mode machinery is required; the OFF default is the consequence of fec: None.",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES via --fec-mode",
+   "action": "keep; decision lives in RuntimeConfig.fec",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1822: fec_mode: FecActuationMode::Manual { enabled: false }",
+    "crates/client-core/src/lib.rs:73-74: 'FEC actuation Manual { enabled: false } (Q18 calibration defect)'"
+   ]
+  },
+  {
+   "flag": "FuzzyConfig::fixture() / ValidatedFuzzyConfig::trusted_fixture() (Sender::new) vs Sender::try_with_fuzzy_config",
+   "location": "crates/adaptive-transport/src/fusion.rs:200-202,317-370 (fec_med 500, fec_high 800); crates/adaptive-transport/src/sender.rs:1762-1776",
+   "kind": "const-knob",
+   "default": "Sender::new() always uses the trusted fixture; try_with_fuzzy_config has no product/bench caller (only kama-engine/tests/fuzzy_e2e.rs)",
+   "mechanism": "Deterministic trapezoidal fuzzy controller (engine-spec §15/§8.4, ADR-17). Consequents fec_med=500‰, fec_high=800‰.",
+   "why_off_or_default": "unsafe-unvalidated fixture — 'Kalibrasyon = config-değişikliği (kod-değil)' but no calibrated config is ever injected; memory q18-fec-gate-defect: controller plans zero parity at 20% loss. Required by engine-spec §8.4/§15 NORMATİF.",
+   "required_v1": "yes",
+   "product_reachable": "YES (fixture); calibrated-config path NOT wired",
+   "bench_reachable": "fixture only",
+   "action": "document (calibration injection path exists but is unused; Q18 gate + speculative lane currently compensate)",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1762-1764: pub fn new() -> Self { Self::new_internal(ValidatedFuzzyConfig::trusted_fixture()) }",
+    "grep try_with_fuzzy_config( → sender.rs (def+test) + kama-engine/tests/fuzzy_e2e.rs only",
+    "crates/adaptive-transport/src/fusion.rs:365-366: fec_med: 500, fec_high: 800"
+   ]
+  },
+  {
+   "flag": "BudgetConfig::fixture() (profile_cap 900‰, min_rate_bps 31, budget_ref_bps 125_000) — engine-spec §8.5 budget clamp",
+   "location": "crates/adaptive-transport/src/budget.rs:15-45; sender.rs:1780,1791 (pacer min rate)",
+   "kind": "const-knob",
+   "default": "fixture values; no setter",
+   "mechanism": "parity cap = min(profile_cap, BtlBw·1000/budget_ref); min_rate_bps=31 is the channel-survival pacing floor in all states (Ek-B: 10_000 CANCELLED).",
+   "why_off_or_default": "calibrated-default per spec §16.1 ('min_rate_bps [R2-ADIM6] ... 31 B/s'); marked 'KALİBRE DEĞİL fixture' for cap/ref.",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES",
+   "action": "keep; document budget_ref_bps 125_000 as [CAL] (memory GAP-A: duplication bandwidth clamp possibly still open)",
+   "evidence": [
+    "crates/adaptive-transport/src/budget.rs:26-31: fixture() { profile_cap_permille: 900, min_rate_bps: 31, budget_ref_bps: 125_000 }",
+    "specs/adaptive-transport-engine-spec.md:981: `min_rate_bps` [R2-ADIM6] ... CANCELLED: 10000 ... 31 B/s"
+   ]
+  },
+  {
+   "flag": "RetxConfig::fixture() (arq_retx_cap 3, reorder_k 3, ρ=2/1, CapExceedPolicy::HandToForward)",
+   "location": "crates/adaptive-transport/src/arq.rs:31-80; sender.rs:1919-1920 (retx_cfg), 3003 (set_packet_threshold from reorder_thresh)",
+   "kind": "const-knob",
+   "default": "fixture; no setter; cap-exceed hands to forward recovery",
+   "mechanism": "Selective retransmit plan (engine-spec §9), adaptive reorder threshold max(K, ρ×recent_max_reorder) fed to loss detector packet_threshold (sender.rs:3003).",
+   "why_off_or_default": "unsafe-unvalidated — arq.rs:56 '**[CAL] fixture** (netem'e)'; arq.rs:69 '**KALİBRE DEĞİL** fixture'. Spec §9.1 offers both cap policies; recovery-obsessive default chosen.",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES",
+   "action": "keep; document [CAL]",
+   "evidence": [
+    "crates/adaptive-transport/src/arq.rs:71-77: fixture() { arq_retx_cap: 3, reorder_k: 3, reorder_rho_num: 2, reorder_rho_den: 1, cap_exceed: HandToForward }",
+    "crates/adaptive-transport/src/sender.rs:3003: .set_packet_threshold(u64::from(self.reorder.reorder_thresh(&self.retx_cfg)))"
+   ]
+  },
+  {
+   "flag": "LossConfig::default() (PACKET_THRESHOLD 3, TIME_THRESH 9/8, min_delay 1 ms) + LEDGER_MAX 4096 + SPURIOUS_AGE_RING 32",
+   "location": "crates/adaptive-transport/src/loss.rs:14-21,50,155-175",
+   "kind": "const-knob",
+   "default": "RFC 9002 [STD] values; ledger cap 4096 (spec §16.1 LEDGER_MAX)",
+   "mechanism": "Loss detector thresholds (engine-spec §5(a)/(b)); bounded ledger; Q95 spurious-age ring for LearnedSpuriousAge.",
+   "why_off_or_default": "calibrated-default [STD]; min_delay [CAL] 1 ms.",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES",
+   "action": "keep",
+   "evidence": [
+    "crates/adaptive-transport/src/loss.rs:168-175: impl Default for LossConfig { PACKET_THRESHOLD, 9, 8, 1ms }",
+    "specs/adaptive-transport-engine-spec.md:989: `LEDGER_MAX` [TUR-2a] ... 4096"
+   ]
+  },
+  {
+   "flag": "SrcConfig::default() (cwnd_gain 2, min_cwnd 4×MTU=4800 B)",
+   "location": "crates/adaptive-transport/src/rate.rs:16-18,88-104",
+   "kind": "const-knob",
+   "default": "[STD:BBR 2]; min_cwnd '[CAL] rafine sonra'",
+   "mechanism": "cwnd = max(2×BDP, MIN_CWND); send_rate = min(pacing, cwnd/srtt) (engine-spec §8.2).",
+   "why_off_or_default": "calibrated-default [STD]; min_cwnd marked [CAL].",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES",
+   "action": "keep",
+   "evidence": [
+    "crates/adaptive-transport/src/rate.rs:97-104: impl Default for SrcConfig { cwnd_gain: CWND_GAIN, min_cwnd: 4 * DEFAULT_MTU }"
+   ]
+  },
+  {
+   "flag": "HysteresisConfig::fixture() / EmergencyConfig::fixture() (§11 emergency forward redundancy) + DEFAULT_DUP_FACTOR/SPACING",
+   "location": "crates/adaptive-transport/src/emergency.rs:80-135; sender.rs:1380-1381,1785-1786,3745,5742",
+   "kind": "const-knob",
+   "default": "escalate <300‰, de-escalate >700‰, dwell 1 s; dup2 ×2 / dup3 ×3, spacing 20 ms, block parity 100/200‰; initial level Arq. Always compiled, no switch.",
+   "mechanism": "Schmitt-trigger retreat hysteresis (engine-spec §11 NORMATİF, KİLİTLİ) drives duplication factor at sender.rs:5742 (dup_queue).",
+   "why_off_or_default": "unsafe-unvalidated fixture — emergency.rs:90/117 '**KALİBRE DEĞİL** fixture'; spec §11: 'Marjlar (X, Y, min_dwell) = [CAL] fixture (netem baseline'da kalibre)'. Required by spec §11 NORMATİF.",
+   "required_v1": "yes",
+   "product_reachable": "YES (sender.rs:3745 update; 5742 factor)",
+   "bench_reachable": "YES",
+   "action": "keep; document [CAL] debt",
+   "evidence": [
+    "crates/adaptive-transport/src/emergency.rs:91-97: HysteresisConfig::fixture { 300, 700, 1000 ms }",
+    "crates/adaptive-transport/src/emergency.rs:118-126: EmergencyConfig::fixture { 2, 3, 20 ms, 100, 200 }",
+    "crates/adaptive-transport/src/sender.rs:3745: let level = self.emergency.update(health, now_ns);",
+    "crates/adaptive-transport/src/sender.rs:5742: _ => (DEFAULT_DUP_FACTOR, DEFAULT_DUP_SPACING)"
+   ]
+  },
+  {
+   "flag": "PRE_CONVERGE geometric copy constants PC_KBASE 3/2, PC_COPY_MULTIPLIER 2, PC_SACK_WIRE 65, PRE_CONVERGE_FLOOR_BW 31, INITIAL_RTT 100 ms",
+   "location": "crates/adaptive-transport/src/sender.rs:1329,1382-1384,1453-1458,5582-5583,5645-5646",
+   "kind": "const-knob",
+   "default": "always on in PreConverge (engine-spec §3.3(A)/(B), §16.1 rows k_base 1.3-1.5, COPY_MULTIPLIER 2 [STD], PRE_CONVERGE_FLOOR_BW 31.25 B/s)",
+   "mechanism": "First unit at t=0; copies at k_base×RTT_floor, ×2 geometric; floor pacing 31 B/s until first valid SACK/echo.",
+   "why_off_or_default": "calibrated-default per spec (PLACEHOLDER marked '[CAL PLACEHOLDER]' in code; INITIAL_RTT retained only for ladder/est-probe math — Ek-B CANCELLED as loss seed).",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES",
+   "action": "keep; document INITIAL_RTT's remaining consumers vs Ek-B",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1382-1384: PRE_CONVERGE_FLOOR_BW = 31 [CAL PLACEHOLDER]",
+    "crates/adaptive-transport/src/sender.rs:1453-1458: PC_SACK_WIRE 65, PC_KBASE 3/2, PC_COPY_MULTIPLIER 2",
+    "specs/adaptive-transport-engine-spec.md §16.1: `k_base` 1.3-1.5; `COPY_MULTIPLIER` 2 [STD]; `PRE_CONVERGE_FLOOR_BW` 31.25 B/s"
+   ]
+  },
+  {
+   "flag": "Channel-derived estimator/scheduler multipliers K_WL 8, K_TOMB 8, K_BW 8, K_RTPROP 8, K_QD 2, K_CONV 4, K_CONF_EAI 2, K_ARQ_SHARE 4, CADENCE_KC 3/2, EXPECTED_ACK_FREQ_N 2, UNIT_SIZE_HINT 267, TOMBSTONE_MAX 4096, BURST_WINDOW_NS 40 ms, DRAIN/PROBE dwell consts",
+   "location": "crates/adaptive-transport/src/sender.rs:1393-1462; rtt.rs:12-16 (W_RTPROP 10 s); bw.rs:12-14 (W_BTLBW 10 s, MIN_RATE_INTERVAL 1 ms)",
+   "kind": "const-knob",
+   "default": "as listed; all marked [CAL matris {...}] and mirrored 1:1 in engine-spec §16.1 table",
+   "mechanism": "Window sizes, cadence floors, ARQ token share, probe cycle, burst window — the ZM-2 channel-clock family.",
+   "why_off_or_default": "calibrated-default — spec §16.1 rows carry each value with its matrix; RTT/BW windows keep 10 s [STD] floor (rtt.rs:113-117, bw.rs:211-213: 'küçültme yok').",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES (no overrides)",
+   "action": "keep",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1407-1447: K_WL/K_TOMB/K_BW/K_RTPROP/K_QD/K_ARQ_SHARE/K_CONF_EAI/K_CONV",
+    "crates/adaptive-transport/src/sender.rs:1462: BURST_WINDOW_NS = 40_000_000",
+    "specs/adaptive-transport-engine-spec.md:983-1020: §16.1 table rows K_c, K_wl, K_TOMB, K_bw/K_rtprop, K_QD, K_ARQ_SHARE, K_CONV, BURST_WINDOW"
+   ]
+  },
+  {
+   "flag": "Structure-gate constants STRUCTURE_GATE_LOSS_MIN_PPM 100_000, STRUCTURE_GATE_MIN_N 32, STRUCTURE_GATE_IID_MAX_DELTA_PPM 50_000, BURST_FUSION_MARGIN 3/2",
+   "location": "crates/adaptive-transport/src/sender.rs:1330-1372",
+   "kind": "const-knob",
+   "default": "as listed; no runtime override",
+   "mechanism": "Q18 gate: opens FEC only if confirmed loss ≥ 100k ppm, ≥32 fate-known units, and burst_delta ≤ 50k (IID).",
+   "why_off_or_default": "unsafe-unvalidated — sender.rs:1333-1350 '[DAYANAK BORCU — 2026-09-04] BU SAYININ ARKASINDA GEÇERLİ BİR KAMPANYA YOK ... SPEC-GAP-REGISTRY-2026-08-27.md:302-305 unsanctioned magic constant ... SABİT DEĞİŞTİRİLMEDİ'. Required-for-v1 unclear: the gate is a compensator for the uncalibrated fuzzy fixture and is not in the engine-spec §8.4 rule table.",
+   "required_v1": "unclear",
+   "product_reachable": "YES (with fec: Some)",
+   "bench_reachable": "YES",
+   "action": "document as open magic-constant debt (SPEC-GAP-REGISTRY); no flip without product-layer FEC-armed grid",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1352: const STRUCTURE_GATE_LOSS_MIN_PPM: u64 = 100_000;",
+    "crates/adaptive-transport/src/sender.rs:1333-1350: [DAYANAK BORCU] rationale",
+    "crates/adaptive-transport/src/sender.rs:1366: const STRUCTURE_GATE_IID_MAX_DELTA_PPM: i64 = 50_000;"
+   ]
+  },
+  {
+   "flag": "Receiver constants QUOTA_R_DEFAULT 4, ACK_FREQ_N 2, RETURN_BW_PRIOR 31, RETURN_BUDGET_PERMIL 250, T_SPACING 65/31≈2.1 s, K_TAIL 2, K_EPISODE 4, K_ARR 2, RX_DEDUP_WINDOW 4096",
+   "location": "crates/adaptive-transport/src/receiver.rs:76-126",
+   "kind": "const-knob",
+   "default": "as listed; only quota_r has a setter",
+   "mechanism": "ACK cadence floor sack_wire/(Y×return_bw_prior), episode quota schedule, tail exemption (engine-spec §2.1/§12/§16.1).",
+   "why_off_or_default": "calibrated-default with recorded debt — spec §16.1: T_SPACING 'STATİK-ÖNSEL-TÜREVİ ... E-FULL'de ölçülen return_bw'ye bağlanır (statik-prior borcunun yeni-tüketicisi)'.",
+   "required_v1": "yes",
+   "product_reachable": "YES",
+   "bench_reachable": "YES (quota_r via serve --quota-r)",
+   "action": "keep; wire measured return_bw (§3.3-E-FULL) as the same debt as loss_confirm_horizon",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:85-87: RETURN_BUDGET_PERMIL = 250; RETURN_BW_PRIOR = 31",
+    "crates/adaptive-transport/src/receiver.rs:115: T_SPACING_NS = SACK_WIRE_BYTES * 1e9 / RETURN_BW_PRIOR",
+    "specs/adaptive-transport-engine-spec.md:998: `T_SPACING` ... STATİK-ÖNSEL-TÜREVİ"
+   ]
+  },
+  {
+   "flag": "harness modules in adaptive-transport lib: udp_runner, fs_harness, fs_trace (feature-gated) and sim, fate_estimator (always compiled)",
+   "location": "crates/adaptive-transport/src/lib.rs:32-57; udp_runner.rs:1-4",
+   "kind": "cargo-feature",
+   "default": "udp_runner/fs_harness/fs_trace compiled only with experimental-fec-budget; sim always compiled (used only by tests); fate_estimator always compiled (observation-only in product: runtime.rs:1385 diag_loss_structure; also gate input sender.rs)",
+   "mechanism": "udp_runner: 'POLICY-AWARE UDP BENCH-RUNNER (feature-gated; ÜRETİM-YOLUNA-BAĞLI-DEĞİL)'. sim: deterministic fate script channel for tests.",
+   "why_off_or_default": "benchmark-only",
+   "required_v1": "no",
+   "product_reachable": "NO (sim: grep users → tests only; udp_runner: examples/tests only)",
+   "bench_reachable": "NO (bench crate has its own harness)",
+   "action": "keep behind feature; consider moving `sim` behind a feature or to tests (document)",
+   "evidence": [
+    "crates/adaptive-transport/src/lib.rs:56-57: #[cfg(feature = \"experimental-fec-budget\")] pub mod udp_runner;",
+    "crates/adaptive-transport/src/udp_runner.rs:1: //! Commit-AB — POLICY-AWARE UDP BENCH-RUNNER (feature-gated; ÜRETİM-YOLUNA-BAĞLI-DEĞİL ...)",
+    "grep adaptive_transport::sim → tests/estimator_sim_integration.rs, tests/sim_determinism.rs only",
+    "crates/adaptive-transport/src/lib.rs:32-33: fate_estimator 'observation-only: no product caller'"
+   ]
+  },
+  {
+   "flag": "env var KAMA_BENCH_TRACE",
+   "location": "crates/bench/src/kama.rs:131",
+   "kind": "env-var",
+   "default": "unset → trace=false",
+   "mechanism": "Enables verbose trace in the obsolete `kama` stub client (bench).",
+   "why_off_or_default": "benchmark-only",
+   "required_v1": "no",
+   "product_reachable": "NO",
+   "bench_reachable": "YES (only `--transport kama` stub arm)",
+   "action": "delete together with the stub arm, or document",
+   "evidence": [
+    "crates/bench/src/kama.rs:131: trace: std::env::var_os(\"KAMA_BENCH_TRACE\").is_some(),"
+   ]
+  },
+  {
+   "flag": "test-only env vars LBS_OUT, POS_OUT, BKS_OUT, RCM_OUT, MS1_OUT, COLD_START_EVIDENCE_REPO",
+   "location": "crates/adaptive-transport/tests/{live_budget_sweep.rs:485,policy_outcome_sweep.rs:689,budget_kernel_sim.rs:416,rule_coverage_map.rs:91,cold_start_liveness.rs:143}; crates/kama-engine/tests/micro_sweep_1b.rs:688",
+   "kind": "env-var",
+   "default": "unset (tests expect/skip)",
+   "mechanism": "Output directories / evidence regeneration switches for sweep tests.",
+   "why_off_or_default": "benchmark-only / test-only",
+   "required_v1": "no",
+   "product_reachable": "NO (no std::env::var in any src/ of transport, client-core, kama-engine)",
+   "bench_reachable": "NO",
+   "action": "keep",
+   "evidence": [
+    "grep std::env::var crates --include=*.rs → only tests/ paths + bench/src/kama.rs:131"
+   ]
+  },
+  {
+   "flag": "bench `--transport {quinn|kama|qdgram|kama-product}`",
+   "location": "crates/bench/src/main.rs:37-38,147-148,289-299,557-569",
+   "kind": "cli-flag",
+   "default": "Quinn (baseline comparator)",
+   "mechanism": "Selects comparator arm. `kama` = security-stub driver of adaptive-transport where 'FEC parity YAPISAL olarak emit edilemez' (kama.rs:7-8); `kama-product` = client-core runtime (product path).",
+   "why_off_or_default": "benchmark-only — default is the §4.4 baseline (transport-layer-tdd §4.4.1 fair comparator). The harness itself is required by ADR-18, but this flag is not a product mechanism.",
+   "required_v1": "no",
+   "product_reachable": "n/a",
+   "bench_reachable": "YES",
+   "action": "document; mark `kama` stub arm obsolete/misleading for FEC claims (memory: bench-stub-vs-product-runtime — all quinn comparisons ran FEC-less) — candidate DELETE after kama-product parity confirmed",
+   "evidence": [
+    "crates/bench/src/main.rs:292-293: /// Security-stub sürücüsü (FEC parity YAPISAL olarak emit edilemez — bkz. src/kama.rs).",
+    "crates/bench/src/main.rs:296-298: /// [SPRINT-A] GERÇEK ÜRÜN runtime'ı (client-core)",
+    "crates/bench/src/kama.rs:7-8: FEC parity ÜRETİLMEZ"
+   ]
+  },
+  {
+   "flag": "bench `--kama-arm {arq|tail-v1}`",
+   "location": "crates/bench/src/main.rs:149-151,350-351; kama.rs:112; kama_product.rs:724",
+   "kind": "cli-flag",
+   "default": "Arq (= Sender::new() defaults, tail OFF) — applies ONLY to the `kama` stub arm",
+   "mechanism": "Stub arm installs validated_v1 when TailV1; kama-product ignores it (always tail ON via ClientSession).",
+   "why_off_or_default": "benchmark-only; default mirrors bare Sender, NOT product (product is tail-ON).",
+   "required_v1": "no",
+   "product_reachable": "n/a",
+   "bench_reachable": "YES (stub only)",
+   "action": "document that kama-product ignores it; delete with stub arm",
+   "evidence": [
+    "crates/bench/src/main.rs:149: /// Kama kolu: arq (defaults, tail OFF) | tail-v1 (KAMA-TAIL-V1). quinn'de yok sayılır.",
+    "crates/bench/src/kama_product.rs:724: kama_arm: crate::transport::KamaArm::Arq, // bu kolda yok sayılır"
+   ]
+  },
+  {
+   "flag": "bench `--cc {cubic|bbr}`",
+   "location": "crates/bench/src/main.rs:35-36,139-140; kama_product.rs:656",
+   "kind": "cli-flag",
+   "default": "Cubic",
+   "mechanism": "quinn/qdgram congestion controller selection; for kama arms only a manifest label.",
+   "why_off_or_default": "benchmark-only (§4.4.1 'best-available QUIC (en güçlü mevcut CC)' — ADR-18 names quinn+BBR; default Cubic ≠ ADR-18 wording)",
+   "required_v1": "no",
+   "product_reachable": "n/a",
+   "bench_reachable": "YES",
+   "action": "document (campaign scripts must pass --cc bbr for the ADR-18 comparator)",
+   "evidence": [
+    "crates/bench/src/main.rs:35: #[arg(long, value_enum, default_value_t = CcArg::Cubic)]",
+    "CLAUDE.md ADR-18: 7 hostile profil vs quinn+BBR"
+   ]
+  },
+  {
+   "flag": "bench `--fec-profile` (u8, 0 = FEC off) + `--fec-r` (u16) + `--fec-mode {static|adaptive|policy}`",
+   "location": "crates/bench/src/main.rs:57-69,176-188; kama_product.rs:137-176",
+   "kind": "cli-flag",
+   "default": "fec_profile 0 → FecArm::Off → RuntimeConfig.fec None; fec_r 0; fec_mode Static",
+   "mechanism": "Maps to FecRuntimeConfig{profile_id, manual_r: Some(r)|None} and (policy) fusion_policy calibration_v2_deadline. Must match on both ends. r=0 with static = fragmentation-on/parity-off control arm.",
+   "why_off_or_default": "benchmark-only; default mirrors product default (fec: None).",
+   "required_v1": "no",
+   "product_reachable": "n/a",
+   "bench_reachable": "YES",
+   "action": "keep",
+   "evidence": [
+    "crates/bench/src/main.rs:59-60: #[arg(long, default_value_t = 0)] fec_profile: u8",
+    "crates/bench/src/main.rs:65-69: fec_mode default FecModeCli::Static; 'eski r==0 ⇒ adaptif kısayolu statik-r0 kolunu temsil edilemez kılıyordu'",
+    "crates/bench/src/kama_product.rs:165-176: fec: match fec { Off => None, StaticR => Some{manual_r: Some(r)}, Adaptive|PolicyV2Deadline => Some{manual_r: None} }"
+   ]
+  },
+  {
+   "flag": "bench `--fec-deadline-ms` (u64)",
+   "location": "crates/bench/src/main.rs:70-74,189-193; kama_product.rs:428-429,251-254; runtime.rs:1211-1212",
+   "kind": "cli-flag",
+   "default": "0 → no deadline declared → policy returns NoDeadlineDeclared → ArqOnly",
+   "mechanism": "Per-offer deadline passed via ClientSender::send_with_deadline → Sender::declare_delivery_deadline (tightest kept); policy decides from deadline/srtt.",
+   "why_off_or_default": "benchmark-only; 'bildirilmezse (0) NoDeadlineDeclared ile ArqOnly'ye düşer — sessiz varsayılan YOK'. The product app API send_with_deadline exists (runtime.rs:663-675) but no product caller supplies deadlines by default.",
+   "required_v1": "no",
+   "product_reachable": "product API exists; unused by default",
+   "bench_reachable": "YES (policy arm)",
+   "action": "keep; document that the app→transport deadline contract is part of the fusion-policy gate",
+   "evidence": [
+    "crates/bench/src/main.rs:70-74: fec_deadline_ms doc",
+    "crates/client-core/src/runtime.rs:1211-1212: if let Some(d) = deadline_ns { session.sender_mut().declare_delivery_deadline(d); }"
+   ]
+  },
+  {
+   "flag": "bench `--loss-confirm-k` (u32 ‰)",
+   "location": "crates/bench/src/main.rs:75-79,194-198; kama_product.rs:179-185",
+   "kind": "cli-flag",
+   "default": "0 → LossConfirmHorizon::CadenceLegacy (product default)",
+   "mechanism": ">0 → ChannelDerived{k_permille}.",
+   "why_off_or_default": "benchmark-only measurement arm ('ÖLÇÜM KOLU')",
+   "required_v1": "no",
+   "product_reachable": "n/a",
+   "bench_reachable": "YES",
+   "action": "keep",
+   "evidence": [
+    "crates/bench/src/main.rs:75-79",
+    "crates/bench/src/kama_product.rs:179-185"
+   ]
+  },
+  {
+   "flag": "bench `--fec-risk` (bool) + `--spec-l1-permille` `--spec-l2-permille` `--gate-permille` `--persist-mode` `--persist-alpha` `--persist-rho` `--persist-q` `--rp-suppress`",
+   "location": "crates/bench/src/main.rs:80-112,199-231; kama_product.rs:187-224",
+   "kind": "cli-flag",
+   "default": "fec_risk false → FecLossRiskConfig::default() (OFF); all Option knobs None → transport defaults (125/250, FixedSrtt, 500/1250/950, gate None→500, rp_suppress off)",
+   "mechanism": "Overrides fields of FecLossRiskConfig and structure gate level; `--fec-risk` alone selects experimental_v1 (NOT bounded_v1).",
+   "why_off_or_default": "benchmark-only sweep knobs; BUT the bench default arm therefore runs a config that is neither the transport default (fec:None makes it inert anyway) nor, when FEC is on, the product default (bounded_v1 + Some(250)). Doc strings say 'None = default 125' / 'None = motor default (fec_med)' — true for transport, false for product.",
+   "required_v1": "no",
+   "product_reachable": "n/a",
+   "bench_reachable": "YES",
+   "action": "fix/document: add `--fec-risk-profile {off|experimental-v1|bounded-v1}` or make kama-product use RuntimeConfig::default() unless overridden, so §4.4 runs measure the product default",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:188-192: if fec_risk { experimental_v1() } else { default() }",
+    "crates/bench/src/kama_product.rs:224: structure_gate_level_permille: gate (None → fec_med 500)",
+    "crates/client-core/src/runtime.rs:204-206: bounded_v1() + Some(250)",
+    "crates/bench/src/main.rs:89-96: 'None = default 125' / 'None = motor default (fec_med)'"
+   ]
+  },
+  {
+   "flag": "bench `--fec-burst-fusion`, `--bootstrap-rtt`, `--bootstrap-fast`, `--initial-window-bytes`",
+   "location": "crates/bench/src/main.rs:115-128,232-242; kama_product.rs:152-163",
+   "kind": "cli-flag",
+   "default": "false / false / false / 0",
+   "mechanism": "Direct mapping to RuntimeConfig.fec_structure_policy, bootstrap_rtt, bootstrap_fast_ladder, initial_window_bytes ('İKİ UÇTA AYNI').",
+   "why_off_or_default": "benchmark-only; first three mirror product defaults; `--initial-window-bytes 0` does NOT mirror product default 2400 (see initial_window_bytes entry).",
+   "required_v1": "no",
+   "product_reachable": "n/a",
+   "bench_reachable": "YES",
+   "action": "document; align IW default",
+   "evidence": [
+    "crates/bench/src/main.rs:123-124: #[arg(long, default_value_t = 0)] initial_window_bytes",
+    "crates/bench/src/kama_product.rs:161: initial_window_bytes,"
+   ]
+  },
+  {
+   "flag": "bench `--ts-out <path>`",
+   "location": "crates/bench/src/main.rs:84-87,203-206; kama_product.rs:226,299",
+   "kind": "bench-toggle",
+   "default": "None → ts_sample_period_ns None",
+   "mechanism": "Enables 50 ms time-series CSV (client).",
+   "why_off_or_default": "benchmark-only instrument",
+   "required_v1": "no",
+   "product_reachable": "n/a",
+   "bench_reachable": "YES",
+   "action": "keep",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:226: ts_sample_period_ns: ts_sample.then_some(50_000_000)"
+   ]
+  },
+  {
+   "flag": "bench serve `--quota-r` (u32) and `--payload` (u64)",
+   "location": "crates/bench/src/main.rs:39-41,113-114; kama_product.rs:291,401",
+   "kind": "cli-flag",
+   "default": "quota_r 4 (== product); payload 256 (must equal client --payload)",
+   "mechanism": "Server receiver quota + unit payload cap; client-side kama-product hardcodes quota_r 4.",
+   "why_off_or_default": "benchmark-only; R [CAL {4,8}] sweep knob",
+   "required_v1": "no",
+   "product_reachable": "n/a",
+   "bench_reachable": "YES",
+   "action": "keep",
+   "evidence": [
+    "crates/bench/src/main.rs:39-41",
+    "crates/bench/src/kama_product.rs:401: quota_r: 4,"
+   ]
+  },
+  {
+   "flag": "bench budget governor `--budget-burst-bytes` `--budget-refill-bytes-per-s` `--budget-bucket-bytes` `--budget-ceiling-bytes` (serve + client) and barrier/sync `--gate` `--establish-gate` `--gate-watch` `--warmup-msgs` `--submit-interval-ms`",
+   "location": "crates/bench/src/main.rs:42-56,152-175,308-330; crates/bench/src/budget.rs:22-40",
+   "kind": "bench-toggle",
+   "default": "all 0/None → BudgetMode::Unlimited, no gate, no warmup, burst submission",
+   "mechanism": "IP-level byte budget governor around the transport (KAPI-1 W2), netns barrier files (W6), paced offering (W3). Not transport config.",
+   "why_off_or_default": "benchmark-only (campaign envelope = realized_sealed_wire_bytes budget, memory experiment-statistics-conventions)",
+   "required_v1": "no",
+   "product_reachable": "NO",
+   "bench_reachable": "YES",
+   "action": "keep",
+   "evidence": [
+    "crates/bench/src/budget.rs:23-26: #[default] Unlimited",
+    "crates/bench/src/main.rs:316-317: (0, 0) if bucket == 0 && ceiling == 0 => Ok(BudgetMode::Unlimited)"
+   ]
+  },
+  {
+   "flag": "bench run-shape args `--bind` `--server` `--msgs` `--max-deadline-s` `--seed` `--repeat` `--profile` `--out`; metrics `--runs` `--deadlines-s`",
+   "location": "crates/bench/src/main.rs:33-34,131-146,243-251",
+   "kind": "bench-toggle",
+   "default": "[::]:4433; msgs 100; max_deadline 120 s; seed 0; repeat 0; profile 'default'; deadlines 10,30,120",
+   "mechanism": "Run identity/envelope and post-hoc deadline-bounded completion curve (§4.4.3).",
+   "why_off_or_default": "benchmark-only",
+   "required_v1": "no",
+   "product_reachable": "NO",
+   "bench_reachable": "YES",
+   "action": "keep",
+   "evidence": [
+    "crates/bench/src/main.rs:133-138",
+    "crates/bench/src/main.rs:250-251: deadlines_s default \"10,30,120\""
+   ]
+  },
+  {
+   "flag": "Sender::set_packet_threshold / RttEstimator::set_{rtprop_window,qd_window,conv_interval} / BtlBwFilter::set_window / TokenBucket::set_burst_cap",
+   "location": "crates/adaptive-transport/src/loss.rs:309; rtt.rs:113-131; bw.rs:211; pacer.rs:70; sender.rs:2242,2914-2923,3003",
+   "kind": "setter-only",
+   "default": "driven internally by Sender from channel-derived formulas (K_* consts); no product-level override",
+   "mechanism": "Internal plumbing setters; product cannot and should not set them directly.",
+   "why_off_or_default": "internal — all call sites are Sender internals or unit tests; required only as internals of the shipped estimators.",
+   "required_v1": "yes",
+   "product_reachable": "via Sender only",
+   "bench_reachable": "no",
+   "action": "keep; consider pub(crate) visibility (document)",
+   "evidence": [
+    "grep .set_rtprop_window( → sender.rs:2914 only",
+    "grep .set_burst_cap( → sender.rs:2242 + tests/tv_pace.rs",
+    "grep .set_packet_threshold( → sender.rs:3003 + tests/tv_loss.rs:140"
+   ]
+  }
+ ]
+}

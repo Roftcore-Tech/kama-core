@@ -178,33 +178,92 @@ pub struct FecRuntimeConfig {
     pub manual_r: Option<u16>,
 }
 
-impl Default for RuntimeConfig {
-    fn default() -> Self {
-        Self {
+/// [KAMA TRANSPORT v1 ÜRÜN PROFİLİ] — sevk yapılandırmasının **TEK doğruluk kaynağı**.
+///
+/// "Kama v1" adıyla ölçülebilecek tek konfigürasyon budur. `RuntimeConfig::default()` bu profile
+/// devreder; benchmark kolları da elle `RuntimeConfig { .. }` kurmak yerine [`Self::runtime_config`]
+/// ile başlayıp YALNIZ açık override uygular. Denetim bulgusu (2026-09-08,
+/// `reports/transport-v1-audit/CONFIRMED-FINDINGS.md` B-5): bench profili elle kurduğu için ürün
+/// default'ları (IW 2400, `bounded_v1`, gate 250) benchmark'a HİÇ ulaşmamış; "sevk" etiketli kol
+/// ürünün sevk etmediği bir yapılandırmayı ölçmüştü.
+///
+/// **Açık mekanizmalar:** ARQ + selective retransmit · tail-recovery (`validated_v1`, [`ClientSession`]
+/// kurar) · kuruluş probu (DR-EST-1) · ilk-uçuş penceresi 2400 B · adaptif FEC (profil 0x05, K=8,
+/// E=1024) · yapı-gate (seviye 250‰) · spekülatif FEC kolu `bounded_v1` (A 250-250-250 + P2 + C4
+/// guard'ı G1) · kayıp defteri (Suspected/Confirmed/Spurious).
+///
+/// **Kapalı (bilinçli):** DR-CS-3 bootstrap-RTT merdiveni (`bootstrap_rtt`, kalibre edilmemiş) ·
+/// kalibre füzyon politikası (`fusion_policy`, opt-in ölçüm kapısı) · `BurstFusion` yapı-gate dalı
+/// (kalibre edilmemiş) · fragmenter (`max_message_bytes`, açık opt-in — wire formatı görünür değişir) ·
+/// kanal-türevli confirm ufku (ölçüm kolu).
+pub struct KamaV1Profile;
+
+impl KamaV1Profile {
+    /// Sevk FEC profili: `kama_fec_codec` 0x05 — K_shape 8, R_code_max 4, **E = 1024**.
+    ///
+    /// Neden 0x05 (0x03 değil): symbol boyu E, birim tavanını `E − SOURCE_PREFIX_LEN` ile bağlar
+    /// (`validate_fec`). E=64 profilleri birimi 53 B'ye indirir (sabit-overhead %36.6); E=1024
+    /// birimi 1013 B'de tutar, mühürlü FEC-shard 26+11+1024 = 1061 B < 1280 PMTU tabanı,
+    /// sabit-overhead %3.5 — düşük-bant hedef rejimi için doğru takas (profile.rs:82-84).
+    pub const FEC_PROFILE_ID: u8 = 0x05;
+
+    /// Birim (chunk) tavanı = `fec_chunk_capacity(FEC_PROFILE_ID)` = E − `SOURCE_PREFIX_LEN`.
+    /// Bir birim tam olarak bir FEC source-symbol'üne oturur (§2.6 symbol_len kilidi).
+    /// `fec_v1_profile_is_symbol_aligned` testi bu sabiti katalogla eşler.
+    pub const MAX_UNIT_BYTES: usize = 1024 - SOURCE_PREFIX_LEN;
+
+    /// PreConverge ilk-uçuş kredisi (pacer burst cap). Eski `0` değeri bir CLAMP HATASIYDI.
+    pub const INITIAL_WINDOW_BYTES: u64 = adaptive_transport::pacer::DEFAULT_BURST_CAP;
+
+    /// Yapı-gate açıldığında istediği parity seviyesi (‰): r=2 @ K=8. r-sweep: 500‰/r4 15–20 %
+    /// kayıpta israflı (`reports/fec-loss-risk-v1/rsweep`).
+    pub const STRUCTURE_GATE_LEVEL_PERMILLE: u32 = 250;
+
+    /// v1 ürün profilinin `RuntimeConfig`'i. Değiştirmek = sevk davranışını değiştirmek;
+    /// `product_v1_profile_is_pinned` testi her alanı pinler.
+    #[must_use]
+    pub fn runtime_config() -> RuntimeConfig {
+        RuntimeConfig {
             max_inflight_units: 4096,
             offer_queue: 1024,
             delivery_queue: 1024,
-            max_unit_bytes: 1200,
-            // Fragmenter KAPALI (mesaj = birim; eski davranış birebir).
+            max_unit_bytes: Self::MAX_UNIT_BYTES,
+            // Fragmenter AÇIK OPT-IN kalır: açmak her DATA çerçevesine 11 B prefix ekler (wire
+            // görünür değişiklik) — düşük-bant hedefinde yanlış takas. >1013 B mesaj gönderen
+            // uygulama `max_message_bytes`i AÇIKÇA kurar.
             max_message_bytes: None,
             max_peers: 64,
             quota_r: 4,
             drain_cap: Duration::from_secs(3),
             idle_hold: Duration::from_secs(105),
-            // [IW] Pacer'ın KENDİ başlangıç kredisi — yeni bir sabit değil (bkz. alan dokümanı).
-            initial_window_bytes: adaptive_transport::pacer::DEFAULT_BURST_CAP,
+            initial_window_bytes: Self::INITIAL_WINDOW_BYTES,
             bootstrap_rtt: false,
             bootstrap_fast_ladder: false,
             fec_structure_policy: FecStructurePolicy::default(),
-            fec: None,
-            // Sevk default'u KAPALI: kalibrasyon opt-in kalır (ürün default kararı ayrı bir
-            // ölçüm kapısıdır; bkz. reports/fec-policy-arm-v1/).
+            // [DENETİM B-1 DÜZELTMESİ] FEC ürün profiline BAĞLANDI. Önceki `None` "gerektiğinde
+            // otomatik açılır" DEĞİL, "bu runtime'da FEC yok" demekti: `fec_loss_risk` kolu açık
+            // olmasına rağmen yönettiği alt-sistem ürün yolunda bulunmuyordu (configuration
+            // zombie). Sevk kapısı S1-GATE 2026-08-26'da geçilmişti (NO-HARM PASS; burst h3b
+            // FEC %100 vs ARQ-only %99) — eksik olan yeni kanıt değil, kararın default'a
+            // uygulanmasıydı. `manual_r: None` = Controller (adaptif): parity oranını arbiter
+            // belirler, temiz yolda 0'dır.
+            fec: Some(FecRuntimeConfig {
+                profile_id: Self::FEC_PROFILE_ID,
+                manual_r: None,
+            }),
             fusion_policy: None,
             loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,
             fec_loss_risk: FecLossRiskConfig::bounded_v1(),
             ts_sample_period_ns: None,
-            structure_gate_level_permille: Some(250),
+            structure_gate_level_permille: Some(Self::STRUCTURE_GATE_LEVEL_PERMILLE),
         }
+    }
+}
+
+impl Default for RuntimeConfig {
+    /// v1 ürün profili ([`KamaV1Profile`]).
+    fn default() -> Self {
+        KamaV1Profile::runtime_config()
     }
 }
 
