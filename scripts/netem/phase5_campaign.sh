@@ -21,6 +21,11 @@ shard_budget=$(( per_run * 3 * REPS + 300 ))
 
 running=0
 for cell in "${CELLS[@]}"; do
+  # [DEVAM] Tamamlanmış hücre YENİDEN KOŞULMAZ: sürücü ölürse elle yeniden başlatmak
+  # biten hücreleri korur (en fazla o an koşan tek hücre kaybolur).
+  if [ -f "$OUT/$cell/DONE" ]; then
+    echo "  ATLA $cell (zaten DONE)" | tee -a "$OUT/driver.log"; continue
+  fi
   while [ "$running" -ge "$MAXPAR" ]; do wait -n 2>/dev/null || true; running=$((running-1)); done
   (
     timeout "$shard_budget" bash "$DIR/phase5_cell.sh" "$cell" "$OUT" "$REPS" "$DEADLINE" \
