@@ -524,3 +524,31 @@ Birincil metrikte **örtüşmeyen güven aralıklarıyla** her iki rakibi de ge�
 0.060), felaket koşusu **0/30** (quinn 11/30, TCP 19/30), ve üstünlüğün mekanizması telemetriyle
 **doğrudan kanıtlanmış** durumda: yön ayrımı ölçülen değerlerle çalışıyor.
 **Bu, Faz-5'in ürün tezini en doğrudan doğrulayan hücresidir.**
+
+---
+
+## T7 — KAYIP + REORDER (`C4`: fwd `delay 100ms 20ms loss 20% reorder 30% 50% rate 1mbit` / rev `delay 100ms loss 2% rate 1mbit`) · N=30 · D=20s
+
+| kol | completion(5/10/20 s) | min | CI | blackout | stall |
+|---|---|---|---|---|---|
+| kama-v1-full | 1.000 / 1.000 / 1.000 | 0.990 | [1.000,1.000] | 6/30 (en uzun 2 s) | 6/30 CI[0.077,0.386] |
+| quinn-reliable-stream | 1.000 / 1.000 / 1.000 | 1.000 | [1.000,1.000] | 1/30 (1 s) | 1/30 CI[0.001,0.172] |
+| tcp-default | 1.000 / 1.000 / 1.000 | 1.000 | [1.000,1.000] | 4/30 (3 s) | 4/30 CI[0.038,0.307] |
+
+`P = 0.500` her iki rakibe karşı — üç kol da tavanda.
+
+### Kayıp / reorder ayrımı — hücrenin asıl sorusu
+`fwd_loss` **200.0‰** ölçüldü; enjekte edilen ileri kayıp **%20 = 200‰**. **Tam isabet** —
+üstelik yolda %30 reorder varken. Yani **reorder, kayıp tahminini şişirmedi.**
+`spurious = 1` (30 koşuda tek yanlış kayıp ilanı), `repair_not_arqed` 0–2.
+Reorder bastırma (`rp_suppress = 300‰`) amacına uygun çalışıyor.
+
+`parity=4.5 denied=2274 retx=25 recover_arq=17 clamp≈4300–6000 would_zero=0`.
+Tel: kama 28.3 kB + 6.7 kB retx + 4.7 kB parity ≈ **39.7 kB** ↔ quinn **44.6 kB** (Kama %11 az).
+
+**Kayıt:** Kama'nın blackout sayısı (6/30) quinn'inkinden (1/30) yüksek, ama süreler kısa
+(en uzun 2 s) ve completion üç kolda da 1.000 — yani kısa duraklamalar teslimi etkilemedi.
+
+### T7 HÜKMÜ: **COMPARABLE / PARITY**
+Ön-kayıtlı beklenti (*"parite; reorder bastırması sayesinde yanlış-spekülasyon düşük"*)
+**doğrulandı**: parite + `spurious = 1`.
