@@ -252,3 +252,54 @@ olmasıyla tutarlı. Ayarlama YAPILMADI.
 Birincil metrikte quinn ile ayrışma yok (`P = 0.438`, örtüşen CI). Kama TCP'yi geçiyor ve
 **hizmet sürekliliğinde quinn'i belirgin biçimde geçiyor** (örtüşmeyen stall CI'ları), ancak
 hüküm birincil metrik üzerinden **parite**dir.
+
+---
+
+## T2b — BURST LOSS / KORELASYON (`burst50`: fwd `delay 200ms loss 50% 50%` / rev `delay 200ms loss 10%`) · N=30 · D=20s
+
+> Bu hücre, denetimin n=6 koşusunda kurulan **"Kama burst'te quinn'i yeniyor"** iddiasının
+> ön-kayıtlı doğrulama yeridir (EXPECTATION §10.4: *"Kama üstünlüğü bekliyorum. Bu, Faz-5'in
+> doğrulamakla yükümlü olduğu tek önceden iddia edilmiş üstünlüktür."*).
+
+| kol | completion(20s) medyan | IQR | CI | ≥0.99 | <0.50 | blackout | stall + CI |
+|---|---|---|---|---|---|---|---|
+| kama-v1-full | **1.000** | [0.970,1.000] | [0.990,1.000] | 21/30 | 3/30 | 21/30 | 21/30 CI[0.506,0.853] |
+| quinn-reliable-stream | **1.000** | [0.790,1.000] | [0.970,1.000] | 19/30 | 5/30 | 22/30 | 24/30 CI[0.614,0.923] |
+| tcp-default | 0.430 | [0.140,1.000] | [0.300,0.920] | 8/30 | 15/30 | 27/30 | 29/30 CI[0.828,0.999] |
+
+`P(kama > quinn) = 0.533` · `P(kama > tcp) = 0.751`.
+Deadline eğrisi: **5 s** kama 0.940 / quinn 0.660 — **10 s** 0.980 / 0.940 — **20 s** 1.000 / 1.000.
+
+### ⚠ ÖN-KAYITLI BEKLENTİ **YANLIŞLANDI**
+
+| | denetim (n=6, ön-Faz-4) | Faz-5 (N=30, donmuş metodoloji) |
+|---|---|---|
+| quinn | 0.895 | **1.000** |
+| Kama | 0.995 (`kp-iw2400`) | **1.000** |
+| ayrışma | "Kama üstün" | **YOK** (`P = 0.533`, örtüşen CI) |
+
+**Denetimin n=6 sonucundaki Kama üstünlüğü N=30'da YENİDEN ÜRETİLEMEDİ.** Bu hücrede iki kol
+paritededir. Sebep büyük olasılıkla küçük örneklem: quinn'in N=30 IQR'si [0.790, 1.000] kadar
+geniş; 6 örneklik bir medyan bu dağılımdan kolayca 0.895'e düşer.
+
+Ön-kayıt §11'de bu durumu önceden şöyle taahhüt etmiştim: *"N≥30'da düşerse beklenti
+yanlışlanmış sayılır ve rapor bunu açıkça yazar."* **Yazılıyor: iddia geri çekilmiştir.**
+Hücre tanımı, deadline, N kuralı ya da metrik sonucu kurtarmak için DEĞİŞTİRİLMEDİ.
+
+### Yine de ölçülen gerçek: yakınsama hızı
+D = 5 s'te kama 0.940 ↔ quinn 0.660. Kama tavana çok daha erken varıyor; 20 s'lik bütçede fark
+kapanıyor. T1c'deki desenin aynısı — üstünlük **nihai teslimde değil, teslim zamanında**.
+Bu bir *üstünlük iddiası değil*, ölçülmüş bir davranış farkıdır.
+
+### Aktivasyon
+`parity = 1`, `denied = 141`, retx=86.5, recover_arq=21.5, srtt=407 ms, fwd_loss=498‰ (enjekte %50 ✔).
+Tel: kama 28.3 kB + 24.1 kB retx + 1.1 kB parity ≈ **53.5 kB** ↔ quinn **49.7 kB** (Kama %8 fazla).
+
+**T2a ile karşıtlık kaydı:** aynı "burst" ailesinde netem `gemodel` (T2a) yapı-gate'i açtı
+(parity 19, denied 1560), netem `loss 50% 50%` korelasyonu (T2b) neredeyse hiç açmadı
+(parity 1, denied 141). Kayıp *modeli* kodlama kararını belirgin biçimde değiştiriyor.
+Sınıflandırıldı, ayarlanmadı.
+
+### T2b HÜKMÜ: **COMPARABLE / PARITY**
+quinn ile ayrışma yok (`P = 0.533`, örtüşen CI, iki medyan da 1.000). TCP'ye karşı Kama açık
+üstün (medyan 1.000 ↔ 0.430, `P = 0.751`). **Önceki üstünlük iddiası bu hücrede geri çekildi.**
