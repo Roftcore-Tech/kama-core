@@ -221,9 +221,14 @@ async fn client_survives_server_death_mid_run() {
         20,
         "kabul edilen her offer ya işlendi ya unaccepted sayacında: {stats:?}"
     );
+    // [YARIŞ DÜZELTMESİ 2026-09-08, transport-v1 denetimi] Residue'nün HANGİ kovada göründüğü
+    // zamanlamaya bağlıdır: ölüm-sonrası offer'lar shutdown anında henüz ana döngüye alınmadıysa
+    // `unaccepted_offers`, alındıysa `undelivered` sayacına düşer. Testin iddiası kova seçimi
+    // değil, "residue TYPED görünür"dür — paralel yük altında ~1/8 kırmızı veren tek assertion
+    // buydu (ürün semantiği değişmedi; yukarıdaki toplam-muhasebe pini iddianın sertliğini korur).
     assert!(
-        stats.undelivered > 0,
-        "ölü server sonrası residue typed görünmeli: {stats:?}"
+        stats.undelivered + stats.unaccepted_offers > 0,
+        "ölü server sonrası residue typed görünmeli (undelivered VEYA unaccepted): {stats:?}"
     );
 }
 
