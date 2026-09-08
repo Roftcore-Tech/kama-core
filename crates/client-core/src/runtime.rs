@@ -498,6 +498,8 @@ pub struct FateWindowDiag {
     pub return_path: adaptive_transport::return_path::ReturnPathState,
     /// [FAZ-2] `(repair_loss_not_arqed, parity_budget_clamped, parity_budget_would_zero)`.
     pub fec_completeness: (u64, u64, u64),
+    /// [FAZ-3] Aktivasyon + tahminci yüzeyi: yapılandırıldı / ulaşılabilir / ateşledi ayrımı.
+    pub activation: adaptive_transport::sender::ActivationDiag,
     /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
     /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
     /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI · 6=oturum-kurulmadı(PreConverge).
@@ -1576,6 +1578,7 @@ async fn client_task(
         sched: session.sender().diag_sched_summary(),
         preconverge_parity_blocked: session.sender().diag_preconverge_parity_blocked(),
         return_path: session.sender().diag_return_path(elapsed_ns(start)),
+        activation: session.sender().diag_activation(),
         fec_completeness: (
             session.sender().diag_repair_loss_not_arqed(),
             session.sender().diag_parity_budget_clamped(),

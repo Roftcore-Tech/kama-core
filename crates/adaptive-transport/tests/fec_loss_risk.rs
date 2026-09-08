@@ -1261,3 +1261,62 @@ fn kalem2_bant_kaniti_yokken_clamp_parity_sifirlamaz() {
         s.diag_ts_sample()
     );
 }
+
+// ═══════════ [FAZ-3] RUNTIME TELEMETRİ — yapılandırıldı ≠ ulaşılabilir ≠ ateşledi ═══════════
+
+/// "Yapılandırıldı" ile "ateşledi" AYRI olgulardır: tail-recovery açıkken bile hiç probe
+/// çıkmayabilir. Telemetri ikisini karıştırmamalı (denetimin "kod var → koşmuştur" hatası).
+#[test]
+fn faz3_yapilandirildi_atesledi_ayrimi() {
+    use adaptive_transport::tail_recovery::TailRecoveryConfig;
+    // (a) tail KAPALI (Sender default'u): configured=false, ateşleme=0.
+    let off = Sender::new();
+    let a_off = off.diag_activation();
+    assert!(!a_off.tail_configured, "Sender default'unda tail KAPALI");
+    assert_eq!(a_off.tail_probes, 0);
+
+    // (b) tail AÇIK ama hiç sürülmedi: configured=true, ateşleme HÂLÂ 0.
+    let mut on = Sender::new();
+    on.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
+    let a_on = on.diag_activation();
+    assert!(a_on.tail_configured, "validated_v1 → configured");
+    assert_eq!(
+        a_on.tail_probes, 0,
+        "yapılandırma ATEŞLEME DEĞİLDİR: {a_on:?}"
+    );
+    assert_eq!(a_on.left_preconverge_ns, 0, "oturum kurulmadı");
+}
+
+/// Ulaşılabilirlik ve tahminciler: ACK'li bir akıştan sonra faz geçişleri sayılır, PreConverge'den
+/// çıkış anı damgalanır ve karar GİRDİLERİ (srtt/btlbw/pacer) ürün derlemesinde okunabilir olur.
+#[test]
+fn faz3_ulasilabilirlik_ve_tahminciler_dolu() {
+    let s = drive(Sender::new(), 80, gap_pattern());
+    let a = s.diag_activation();
+    assert!(
+        a.state_transitions > 0,
+        "faz geçişi olmalı (ulaşılabilirlik kanıtı): {a:?}"
+    );
+    assert!(
+        a.left_preconverge_ns > 0,
+        "ilk RTT örneğiyle PreConverge terk edilmeli: {a:?}"
+    );
+    assert!(a.srtt_us > 0, "srtt ölçülmeli: {a:?}");
+    assert!(a.pacer_rate_bps > 0, "pacer hızı okunabilmeli: {a:?}");
+    // Kayıp sürüşünde ARQ fazına girilmiş olmalı ve retransmit ateşlemiş olmalı.
+    assert!(
+        a.recover_arq_entries > 0 || a.retransmits > 0,
+        "kayıplı sürüşte ARQ kolu ateşlemeli: {a:?}"
+    );
+}
+
+/// Vakum koruması: FEC yapılandırılmamışken parity sayaçları SIFIR kalır — telemetri
+/// "ateşledi" diye yanlış kanıt üretmez.
+#[test]
+fn faz3_fec_yapilandirilmamisken_parity_sayaclari_sifir() {
+    let s = drive(Sender::new(), 80, gap_pattern());
+    let a = s.diag_activation();
+    assert!(!a.fec_configured, "bu sürüşte FEC aktüasyonu yok");
+    assert_eq!(a.parity_emitted, 0, "{a:?}");
+    assert_eq!(a.parity_token_denied, 0, "{a:?}");
+}

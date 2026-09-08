@@ -403,7 +403,10 @@ fn print_activation(stats: &client_core::runtime::ClientStats) {
          spec_levels={:?} arbiter={:?} gate_opened={} ledger_peak_ppm={} spurious={} \
          establish_probe={} bootstrap_probe={} tail_probe={} rtt_samples={} state={} \
          data_denied={} retx_denied={} preconv_parity_blocked={} \
-         return_path=[bw={}B/s ack_int={}ms silence={}ms cont={}‰ fwd_loss={}‰ ret_impair={}‰ ret_ack_loss={}‰ dpa={} dir_ev={} conf={}‰ {:?} n={}/{}] fec2=[repair_not_arqed={} clamp={} would_zero={} partial_blocks={}]",
+         return_path=[bw={}B/s ack_int={}ms silence={}ms cont={}‰ fwd_loss={}‰ ret_impair={}‰ ret_ack_loss={}‰ dpa={} dir_ev={} conf={}‰ {:?} n={}/{}] fec2=[repair_not_arqed={} clamp={} would_zero={} partial_blocks={}]\n\
+         KP-ACTIVATION cfg=[tail={} fec={}] fired=[tail_probe={}@{}ms tail_cancel={} parity={} parity_denied={} retx={} dup={}] \
+         reach=[transitions={} recover_arq={} recover_fwd={} probe_up={} left_preconv={}ms] \
+         est=[btlbw={}B/s srtt={}us rtprop={}us qdelay={}us pace={}B/s tokens={} inflight={}B]",
         stats.tx_retx_bytes,
         stats.tx_dup_bytes,
         stats.tx_fec_bytes,
@@ -439,6 +442,27 @@ fn print_activation(stats: &client_core::runtime::ClientStats) {
         f.fec_completeness.1,
         f.fec_completeness.2,
         stats.fec_partial_blocks_closed,
+        f.activation.tail_configured,
+        f.activation.fec_configured,
+        f.activation.tail_probes,
+        f.activation.tail_first_ns / 1_000_000,
+        f.activation.tail_cancelled,
+        f.activation.parity_emitted,
+        f.activation.parity_token_denied,
+        f.activation.retransmits,
+        f.activation.dups,
+        f.activation.state_transitions,
+        f.activation.recover_arq_entries,
+        f.activation.recover_fwd_entries,
+        f.activation.probe_up_entries,
+        f.activation.left_preconverge_ns / 1_000_000,
+        f.activation.btlbw_bps,
+        f.activation.srtt_us,
+        f.activation.rtprop_us,
+        f.activation.queue_delay_us,
+        f.activation.pacer_rate_bps,
+        f.activation.pacer_tokens,
+        f.activation.inflight_bytes,
     );
 }
 

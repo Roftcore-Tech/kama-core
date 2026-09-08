@@ -716,6 +716,47 @@ pub struct ControllerDecisionSnapshot {
     pub emergency: bool,
 }
 
+/// [FAZ-3 TELEMETRİ] Ürün derlemesinde HER ZAMAN dolu aktivasyon/tahminci yüzeyi.
+///
+/// Denetim tema C: sevk edilen ikilide "mekanizma ateşledi mi?" sorusu cevapsızdı — tail-probe
+/// emisyonu ve tahminci değerleri yalnız `diag-sched-telemetry` feature'ı altında görünüyordu.
+/// Bu yapı üç FARKLI olguyu ayırır: **yapılandırıldı** (`*_configured`), **ulaşılabilir**
+/// (kod yolu koştu: `state_transitions`, `*_entries`), **ateşledi** (emisyon sayaçları + ilk-an).
+/// Salt gözlem: hiçbir karar bu alanları OKUMAZ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ActivationDiag {
+    /// Tail-recovery yapılandırması açık mı (config; ateşleme DEĞİL).
+    pub tail_configured: bool,
+    /// FEC aktüasyonu yapılandırıldı mı (Controller ya da Manual{true}).
+    pub fec_configured: bool,
+    /// Tele çıkan tail-probe sayısı ve İLK ateşleme anı (ns; 0 = hiç).
+    pub tail_probes: u64,
+    pub tail_first_ns: u64,
+    /// Vadesi gelmişken emisyon anında iptal edilen probe (ACK yarışı).
+    pub tail_cancelled: u64,
+    /// Tele çıkan parity ve pacer'ın reddettiği parity denemesi.
+    pub parity_emitted: u64,
+    pub parity_token_denied: u64,
+    /// Sınıf-başına emisyon.
+    pub retransmits: u64,
+    pub dups: u64,
+    /// Faz geçişleri ve kritik faz girişleri (ulaşılabilirlik kanıtı).
+    pub state_transitions: u64,
+    pub recover_arq_entries: u64,
+    pub recover_fwd_entries: u64,
+    pub probe_up_entries: u64,
+    /// PreConverge'den çıkış anı (ns; 0 = hiç çıkılmadı = oturum kurulmadı).
+    pub left_preconverge_ns: u64,
+    /// Tahminciler — kararı ÜRETEN girdiler (neden-sorusunun cevabı).
+    pub btlbw_bps: u64,
+    pub srtt_us: u64,
+    pub rtprop_us: u64,
+    pub queue_delay_us: u64,
+    pub pacer_rate_bps: u64,
+    pub pacer_tokens: u64,
+    pub inflight_bytes: u64,
+}
+
 /// Commit-G: latch-baskılama nedenleri (named; kalibrasyon-dışı-hücre-işaretleri).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FecSuppressionReason {
@@ -1709,6 +1750,20 @@ pub struct Sender {
     diag_t_first_l2_ns: u64,
     diag_preconverge_parity_blocked: u64, // [KURULUŞ-GUARD] arbiter çıkışı PreConverge'de sıfırlandı
     repair_loss_not_arqed: u64, // [FAZ-2/3] ARQ'ya SOKULMAYAN kayıp repair sayısı (salt gözlem)
+    // [FAZ-3 TELEMETRİ] Ürün derlemesinde HER ZAMAN açık aktivasyon sayaçları. Bunlar eskiden
+    // yalnız `diag-sched-telemetry` feature'ı altında vardı → sevk edilen ikili dosyada
+    // "mekanizma ateşledi mi?" sorusu CEVAPSIZDI (denetim tema C).
+    act_tail_probe_emitted: u64,
+    act_tail_probe_first_ns: u64,
+    act_parity_emitted: u64,
+    act_parity_token_denied: u64,
+    act_retransmit_emitted: u64,
+    act_dup_emitted: u64,
+    act_state_transitions: u64,
+    act_recover_arq_entries: u64,
+    act_recover_fwd_entries: u64,
+    act_probe_up_entries: u64,
+    act_left_preconverge_ns: u64,
     diag_parity_budget_clamped: u64, // [FAZ-2/2] §8.5 bütçe clamp'inin bağladığı karar sayısı
     diag_parity_budget_would_zero: u64, // [FAZ-2/2] clamp parity'yi sıfırlayacaktı (§11 çelişkisi)
     diag_first_l1_ctx: (u64, u64, u64), // [EVIDENCE] (em, instant, persistent) ilk L1'de
@@ -1952,6 +2007,17 @@ impl Sender {
             diag_t_first_l2_ns: 0,
             diag_preconverge_parity_blocked: 0,
             repair_loss_not_arqed: 0,
+            act_tail_probe_emitted: 0,
+            act_tail_probe_first_ns: 0,
+            act_parity_emitted: 0,
+            act_parity_token_denied: 0,
+            act_retransmit_emitted: 0,
+            act_dup_emitted: 0,
+            act_state_transitions: 0,
+            act_recover_arq_entries: 0,
+            act_recover_fwd_entries: 0,
+            act_probe_up_entries: 0,
+            act_left_preconverge_ns: 0,
             diag_parity_budget_clamped: 0,
             diag_parity_budget_would_zero: 0,
             diag_first_l1_ctx: (0, 0, 0),
@@ -4021,6 +4087,26 @@ impl Sender {
             self.startup_round_complete = false;
             self.base_is_startup = true;
         }
+        // [FAZ-3 TELEMETRİ] Faz geçişleri: hangi mekanizmanın NE ZAMAN devreye girdiğini ürün
+        // derlemesinde kanıtlar (salt gözlem; kararı değiştirmez).
+        if self.state != prev_state {
+            self.act_state_transitions = self.act_state_transitions.saturating_add(1);
+            match self.state {
+                SenderState::RecoverArq => {
+                    self.act_recover_arq_entries = self.act_recover_arq_entries.saturating_add(1);
+                }
+                SenderState::RecoverFwd => {
+                    self.act_recover_fwd_entries = self.act_recover_fwd_entries.saturating_add(1);
+                }
+                SenderState::ProbeUp => {
+                    self.act_probe_up_entries = self.act_probe_up_entries.saturating_add(1);
+                }
+                _ => {}
+            }
+            if prev_state == SenderState::PreConverge && self.act_left_preconverge_ns == 0 {
+                self.act_left_preconverge_ns = now_ns;
+            }
+        }
     }
 
     /// [TUR-3c] qd_ratio (per-mille) — giriş-histerezisi + abort için tek-kaynak.
@@ -4500,6 +4586,35 @@ impl Sender {
                     Framing::Tiny
                 }
             }
+        }
+    }
+
+    /// [FAZ-3 TELEMETRİ] Aktivasyon + tahminci anlık görüntüsü (ürün derlemesinde her zaman dolu).
+    #[must_use]
+    pub fn diag_activation(&self) -> ActivationDiag {
+        let us = |d: Duration| u64::try_from(d.as_micros()).unwrap_or(u64::MAX);
+        ActivationDiag {
+            tail_configured: self.tail_recovery.config().enabled,
+            fec_configured: !matches!(self.fec_mode, FecActuationMode::Manual { enabled: false }),
+            tail_probes: self.act_tail_probe_emitted,
+            tail_first_ns: self.act_tail_probe_first_ns,
+            tail_cancelled: self.tail_probe_cancelled,
+            parity_emitted: self.act_parity_emitted,
+            parity_token_denied: self.act_parity_token_denied,
+            retransmits: self.act_retransmit_emitted,
+            dups: self.act_dup_emitted,
+            state_transitions: self.act_state_transitions,
+            recover_arq_entries: self.act_recover_arq_entries,
+            recover_fwd_entries: self.act_recover_fwd_entries,
+            probe_up_entries: self.act_probe_up_entries,
+            left_preconverge_ns: self.act_left_preconverge_ns,
+            btlbw_bps: self.btlbw.btlbw(),
+            srtt_us: self.rtt.srtt().map_or(0, us),
+            rtprop_us: self.rtt.rtprop().map_or(0, us),
+            queue_delay_us: us(self.rtt.queue_delay()),
+            pacer_rate_bps: self.pacer.rate(),
+            pacer_tokens: self.pacer.tokens(),
+            inflight_bytes: self.inflight_bytes,
         }
     }
 
@@ -5070,6 +5185,14 @@ impl Sender {
             if !self.pacer.try_send(p.size) {
                 // Commit-G: budget-denied-GÖRÜNÜRLÜĞÜ (gauge; 1b-tasarım-girdisi — politika-DEĞİŞMEDİ).
                 self.token_denied_r_gauge = self.pending_fec.len() as u64;
+                // [FAZ-3] parity token reddi — ürün derlemesinde görünür.
+                self.act_parity_token_denied = self.act_parity_token_denied.saturating_add(1);
+                // [FAZ-3] Denetim bulgusu: bu SchedDiag alanı DEKLARE edilmiş ama HİÇ yazılmıyordu
+                // (vakum sayaç). Feature'lı görünüm artık ürün sayacıyla tutarlı.
+                #[cfg(feature = "diag-sched-telemetry")]
+                {
+                    self.sched_diag.fec_parity_token_denied += 1;
+                }
                 // Commit-N: attribution-snapshot (TAM-overwrite; yalnız-GERÇEK-token-denial-yolu).
                 self.token_denial_count_total = self.token_denial_count_total.saturating_add(1);
                 self.last_token_denial = Some(FecTokenDenialSnapshot {
@@ -5104,6 +5227,12 @@ impl Sender {
             .remove(idx)
             .expect("emit_parity_at: idx-geçerli");
         self.parity_emitted_total = self.parity_emitted_total.saturating_add(1);
+        // [FAZ-3] Aktivasyon kanıtı: parity TELE ÇIKTI.
+        self.act_parity_emitted = self.act_parity_emitted.saturating_add(1);
+        #[cfg(feature = "diag-sched-telemetry")]
+        {
+            self.sched_diag.fec_parity_wire_emitted += 1;
+        }
         // [FEC-RISK ENSTRÜMAN] İlk parity'nin TELE ÇIKTIĞI an — kolun asıl ölçtüğü büyüklük
         // `t_first_parity − t_first_suspected` (FEC'in tepki gecikmesi).
         if self.diag_t_first_parity_ns == 0 {
@@ -5643,6 +5772,11 @@ impl Sender {
         {
             self.sched_diag.tail_probe_wire_emitted += 1;
         }
+        // [FAZ-3] Ürün derlemesinde de görünür (feature'sız).
+        self.act_tail_probe_emitted = self.act_tail_probe_emitted.saturating_add(1);
+        if self.act_tail_probe_first_ns == 0 {
+            self.act_tail_probe_first_ns = now_ns;
+        }
         // Supersede the still-outstanding original: retire it inflight→tombstone (no loss declaration), then bump
         // the tombstone so the original's late ACK is Karn-excluded, then emit the probe copy under a fresh seq.
         self.retire_inflight_to_tombstone(target, now_ns);
@@ -5942,6 +6076,16 @@ impl Sender {
         let bw_sample = self
             .bw_sampler
             .on_sent(now_ns, unit.size, !more_pending, gain_ge1);
+        // [FAZ-3] Sınıf-başına aktivasyon (ürün derlemesinde görünür).
+        match origin {
+            TransmitKind::Retransmit => {
+                self.act_retransmit_emitted = self.act_retransmit_emitted.saturating_add(1);
+            }
+            TransmitKind::Duplicate => {
+                self.act_dup_emitted = self.act_dup_emitted.saturating_add(1);
+            }
+            _ => {}
+        }
         let units = u64::from(origin == TransmitKind::Data); // yalnız orijinal DATA loss sayacına.
         self.loss.on_sent(seq, now_ns, units);
         self.inflight_bytes += unit.size;
