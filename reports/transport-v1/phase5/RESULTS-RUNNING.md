@@ -156,3 +156,46 @@ zarif bozulma göstermesinin beklenmesidir.
 ### T1b HÜKMÜ: **KAMA WINS** *(göreli; mutlak anlamda üç kol da başarısız)*
 Kama her iki rakibi de geçiyor (P≈0.73, max 0.900 ↔ 0.130) ama 22/30 koşuda %50'nin altında.
 Bu hücrenin ürettiği asıl değer bir üstünlük iddiası değil, **BULGU T1b-1**'dir.
+
+---
+
+## T1c — RANDOM LOSS + YÜKSEK RTT (`iid50`: fwd `delay 200ms loss 50%` / rev `delay 200ms loss 10%`) · N=30 · D=20s
+
+| kol | completion(20s) medyan | IQR | CI | ≥0.99 | <0.50 | blackout | stall |
+|---|---|---|---|---|---|---|---|
+| kama-v1-full | **1.000** | [1.000,1.000] | [1.000,1.000] | 27/30 | 1/30 | 23/30 | 23/30 CI[0.577,0.901] |
+| quinn-reliable-stream | **1.000** | [0.980,1.000] | [1.000,1.000] | 22/30 | 1/30 | 27/30 | 28/30 CI[0.779,0.992] |
+| tcp-default | 0.830 | [0.480,1.000] | [0.600,1.000] | 11/30 | 8/30 | 30/30 | 30/30 CI[0.884,1.000] |
+
+`P(kama > quinn) = 0.559` (0.5 = fark yok) · `P(kama > tcp) = 0.762`.
+
+### Deadline eğrisi — asıl ayrım BURADA
+
+| D | kama | quinn | tcp |
+|---|---|---|---|
+| 5 s | **0.960** | 0.590 | 0.200 |
+| 10 s | **0.990** | 0.890 | 0.370 |
+| 20 s | 1.000 | 1.000 | 0.830 |
+
+Kama ile quinn **20 s'te eşitleniyor**, ama Kama oraya çok daha erken varıyor: 5 s'te 0.96 ↔ 0.59.
+Yani üstünlük nihai teslim oranında değil, **teslim zamanında**. Dar deadline'lı taktik
+kullanımda bu fark operasyonel olarak anlamlıdır; 20 s'lik bir bütçede ise fark kapanıyor.
+
+### Ön-kayıtlı beklentiye karşı — **DOĞRULANDI**
+Ön-kayıt §10.3'te T1c için *"PARİTE bekliyorum, Kama üstünlüğü DEĞİL"* yazmıştım (denetimin
+n=6 sonucuna dayanarak: quinn 0.995 / kp-iw2400 0.990). D=20 s'te ölçülen tam olarak budur:
+her iki kol da medyan 1.000, `P = 0.559`.
+
+### Aktivasyon
+`parity = 0`, `denied = 0` — **üst üste üçüncü iid hücre.** retx=96.5, dup=9.5, recover_arq=21,
+srtt=410 ms (enjekte 2×200 ms ile tutarlı), fwd_loss=520‰ (enjekte %50 ✔),
+ret_ack_loss=337‰ (enjekte %10'un üstünde — ACK seyrekleşmesiyle birleşiyor).
+Tel: kama 28.3 kB data + 27.2 kB retx ≈ **55.5 kB** ↔ quinn **58.3 kB** (Kama %5 daha az).
+
+Kama'nın 1 koşusu 0.010'da kaldı — **BULGU T1b-1** ile aynı imza (sıfır-ACK soğuk başlangıç);
+bu rejimde 30 koşuda 1 kez görüldü.
+
+### T1c HÜKMÜ: **COMPARABLE / PARITY**
+Birincil deadline'da (20 s) Kama ile quinn ayrışmıyor (`P = 0.559`, iki medyan da 1.000).
+Kama TCP'yi açıkça geçiyor ve D ≤ 10 s'te her iki rakibin de önünde; ancak birincil metrik ve
+birincil deadline üstünden hüküm **parite**dir. Üstünlük iddiası KURULMAZ.
