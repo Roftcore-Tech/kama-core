@@ -1496,6 +1496,8 @@ pub struct Sender {
     // DR-ARQ-PRODUCT-TAIL-1: bounded tail-loss recovery (default OFF; INV-CS-4 supersession). Decision logic lives
     // in crate::tail_recovery; the sender only bridges live ACK/RTT/inflight state to it and emits via the ARQ path.
     tail_recovery: TailRecovery,
+    /// [FAZ-1] Dönüş-yolu gözlemcisi — SALT GÖZLEM (hiçbir kontrol yolu okumaz).
+    return_path: crate::return_path::ReturnPathObserver,
     // DR-RATE-RAMP-2 (§FAZ-1): startup pacing initialization (default OFF).
     startup_pacing: StartupPacingConfig,
     // Active bootstrap pacing floor (B/s). 0 = inactive. Bootstrap-only: released on startup plateau or
@@ -1800,7 +1802,8 @@ impl Sender {
             tx_queue: VecDeque::new(),
             pending_lost: VecDeque::new(),
             tail_recovery: TailRecovery::new(TailRecoveryConfig::default()), // default OFF
-            startup_pacing: StartupPacingConfig::default(),                  // default OFF
+            return_path: crate::return_path::ReturnPathObserver::default(),
+            startup_pacing: StartupPacingConfig::default(), // default OFF
             startup_pacing_floor_bps: 0,
             startup_floor_armed_once: false,
             startup_base_seen: false,
@@ -4412,6 +4415,20 @@ impl Sender {
         {
             [0; 12]
         }
+    }
+
+    /// [FAZ-1 DÖNÜŞ-YOLU] Bir ACK datagram'ı gözlendi. **Motor davranışını DEĞİŞTİRMEZ** —
+    /// yalnız `diag_return_path()` çıktısını besler. Ürün runtime'ı `Event::AckReceived`'dan
+    /// hemen ÖNCE çağırır; çağrılmaması motoru etkilemez (gözlem boş kalır).
+    pub fn observe_ack_feedback(&mut self, obs: crate::return_path::AckObservation, now_ns: u64) {
+        self.return_path.on_ack(obs, now_ns);
+    }
+
+    /// [FAZ-1 DÖNÜŞ-YOLU] Ölçülen dönüş-yolu durumu (ileri-yön kaybı ile dönüş bozulmasının
+    /// AYRIMI dâhil). `now_ns` sessizliği türetmek için gerekir.
+    #[must_use]
+    pub fn diag_return_path(&self, now_ns: u64) -> crate::return_path::ReturnPathState {
+        self.return_path.state(now_ns)
     }
 
     /// [KURULUŞ-GUARD] PreConverge'de arbiter çıkışının sıfırlandığı karar sayısı (salt gözlem).

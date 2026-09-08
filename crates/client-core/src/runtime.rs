@@ -492,6 +492,10 @@ pub struct FateWindowDiag {
     pub sched: [u64; 12],
     /// [KURULUŞ-GUARD] PreConverge'de arbiter çıkışının sıfırlandığı karar sayısı.
     pub preconverge_parity_blocked: u64,
+    /// [FAZ-1 DÖNÜŞ-YOLU] Ölçülen geri-bildirim durumu: `(measured_return_bw_bps, ack_interval_ns,
+    /// silence_ns, continuity‰, forward_loss‰, return_impairment‰, direction_evidence,
+    /// confidence‰, health, ack_samples, v2_samples)`.
+    pub return_path: adaptive_transport::return_path::ReturnPathState,
     /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
     /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
     /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI · 6=oturum-kurulmadı(PreConverge).
@@ -1212,6 +1216,19 @@ async fn client_task(
                     stats.unknown_frames += 1;
                 } else {
                     if let Ok(frame) = AckFrame::decode(&plain) {
+                        // [FAZ-1 DÖNÜŞ-YOLU] Gözlem girdisi: teldeki ACK boyu + alıcının GÖRDÜĞÜ
+                        // datagram sayısı (V2 `seen_count`) + göndericinin yolladığı sayı.
+                        // Motor davranışını DEĞİŞTİRMEZ; yön-ayrımını (ileri kayıp ↔ dönüş
+                        // bozulması) mümkün kılan tek kanıt budur.
+                        session.sender_mut().observe_ack_feedback(
+                            adaptive_transport::return_path::AckObservation {
+                                wire_bytes: raw.len() as u64,
+                                seen_count: frame.seen_count,
+                                v2: frame.v2,
+                                sent_datagrams: stats.tx_datagrams,
+                            },
+                            $now,
+                        );
                         let acked = frame.acked_full(max_emitted_seq + 1);
                         for s in &acked {
                             let Some(&unit) = seq_to_unit.get(s) else { continue };
@@ -1489,6 +1506,7 @@ async fn client_task(
         fec_spec_transitions: session.sender().diag_spec_transitions(),
         sched: session.sender().diag_sched_summary(),
         preconverge_parity_blocked: session.sender().diag_preconverge_parity_blocked(),
+        return_path: session.sender().diag_return_path(elapsed_ns(start)),
         fec_latch_diag: {
             let d = session.sender().diag_fec_actuation();
             (

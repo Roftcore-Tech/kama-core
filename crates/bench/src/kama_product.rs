@@ -402,7 +402,8 @@ fn print_activation(stats: &client_core::runtime::ClientStats) {
         "KP-ACTIVATED arq_retx={}B dup={}B fec_parity={}B fec_blocks={} fec_repairs_tx={} \
          spec_levels={:?} arbiter={:?} gate_opened={} ledger_peak_ppm={} spurious={} \
          establish_probe={} bootstrap_probe={} tail_probe={} rtt_samples={} state={} \
-         data_denied={} retx_denied={} preconv_parity_blocked={}",
+         data_denied={} retx_denied={} preconv_parity_blocked={} \
+         return_path=[bw={}B/s ack_int={}ms silence={}ms cont={}‰ fwd_loss={}‰ ret_impair={}‰ ret_ack_loss={}‰ dpa={} dir_ev={} conf={}‰ {:?} n={}/{}]",
         stats.tx_retx_bytes,
         stats.tx_dup_bytes,
         stats.tx_fec_bytes,
@@ -421,6 +422,19 @@ fn print_activation(stats: &client_core::runtime::ClientStats) {
         sched[1],
         sched[4],
         f.preconverge_parity_blocked,
+        f.return_path.measured_return_bw_bps,
+        f.return_path.ack_interval_ns / 1_000_000,
+        f.return_path.silence_ns / 1_000_000,
+        f.return_path.feedback_continuity_permille,
+        f.return_path.forward_loss_permille,
+        f.return_path.return_impairment_permille,
+        f.return_path.return_ack_loss_permille,
+        f.return_path.datagrams_per_ack_x100 / 100,
+        f.return_path.direction_evidence,
+        f.return_path.confidence_permille,
+        f.return_path.health,
+        f.return_path.ack_samples,
+        f.return_path.v2_samples,
     );
 }
 

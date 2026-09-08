@@ -1004,3 +1004,187 @@ fn kurulus_guard_sadece_preconverge_i_keser() {
         "kuruluş sonrası spekülatif kol ateşlemeli: {levels:?}"
     );
 }
+
+// ═══════════ [FAZ-1] DÖNÜŞ-YOLU GÖZLEMİ — ileri kayıp ≠ dönüş bozulması ═══════════
+
+use adaptive_transport::return_path::{AckObservation, ReturnPathHealth, ReturnPathObserver};
+
+fn obs(seen: u32, sent: u64) -> AckObservation {
+    AckObservation {
+        wire_bytes: 65,
+        seen_count: seen,
+        v2: true,
+        sent_datagrams: sent,
+    }
+}
+
+/// R1 — YALNIZ İLERİ-YÖN bozulması: ACK'ler ritminde akıyor (süreklilik tam) ama alıcı
+/// gönderilenin çok azını görüyor → `forward_loss` YÜKSEK, `return_impairment` SIFIR.
+#[test]
+fn r1_ileri_yon_kaybi_donus_bozulmasi_olarak_gorunmez() {
+    let mut o = ReturnPathObserver::default();
+    // Alıcının NOMİNAL ritmi (2 datagram/ACK) → dönüş yolu sağlıklı; ileri yönde %50 kayıp.
+    // (Fixture 20 datagram/ACK iken mutlak ölçü haklı olarak %90 dönüş-ACK kaybı bildiriyordu.)
+    let (mut sent, mut seen) = (0u64, 0u32);
+    for i in 0..10u64 {
+        sent += 2;
+        seen += 1;
+        o.on_ack(obs(seen, sent), (i + 1) * 100 * MS);
+    }
+    let s = o.state(10 * 100 * MS);
+    assert!(s.direction_evidence, "yön kanıtı oluşmalı");
+    // Bir-ACK gecikmeli kümülatif oran: sent_{n-1}=180, seen_n=100 → 444‰ (muhafazakâr: gerçek
+    // %50'nin altında, çünkü son pencerenin uçuşu henüz sayılmaz).
+    assert!(
+        (350..=550).contains(&s.forward_loss_permille),
+        "ileri kayıp ≈ %50 olmalı (gecikme yüzünden hafif düşük): {s:?}"
+    );
+    assert_eq!(
+        s.return_impairment_permille, 0,
+        "geri bildirim kesintisiz → dönüş bozulması SIFIR (INV-RETURN-1): {s:?}"
+    );
+    assert_eq!(s.health, ReturnPathHealth::Healthy);
+}
+
+/// R2 — YALNIZ DÖNÜŞ bozulması: alıcı gönderilenin TAMAMINI görüyor (ileri yön temiz) ama
+/// ACK'lerin çoğu dönüşte kayboluyor → `forward_loss` SIFIR, `return_impairment` YÜKSEK.
+#[test]
+fn r2_donus_yolu_bozulmasi_ileri_kayip_olarak_gorunmez() {
+    let mut o = ReturnPathObserver::default();
+    let (mut sent, mut seen) = (0u64, 0u32);
+    // İlk iki ACK ritmi kurar (100 ms), sonra ACK'ler 5 pencerede bir geliyor.
+    for i in 0..3u64 {
+        sent += 20;
+        seen += 20;
+        o.on_ack(obs(seen, sent), (i + 1) * 100 * MS);
+    }
+    let mut t = 300 * MS;
+    for _ in 0..6u64 {
+        t += 500 * MS; // 5 pencere = 4 kaçırılmış
+        sent += 100;
+        seen += 100;
+        o.on_ack(obs(seen, sent), t);
+    }
+    let s = o.state(t);
+    assert!(s.direction_evidence);
+    assert_eq!(
+        s.forward_loss_permille, 0,
+        "alıcı her şeyi gördü → ileri kayıp SIFIR: {s:?}"
+    );
+    // Ayırt edici üçlü (hepsi dönüş yolunu gösterir, hiçbiri ileri yönü suçlamaz):
+    assert!(
+        s.return_impairment_permille >= 300,
+        "kümülatif süreklilik kaybı görünmeli: {s:?}"
+    );
+    assert!(
+        s.ack_interval_ns >= 300 * MS,
+        "geri-bildirim ritmi yavaşladı: {s:?}"
+    );
+    assert!(
+        s.measured_return_bw_bps < 500,
+        "ölçülen dönüş debisi düştü (R0'da >1000 B/s): {s:?}"
+    );
+}
+
+/// R5 — geri bildirim ÖLDÜ: son ACK'ten sonra uzun sessizlik → `Dead`; ileri-yön ölçüsü
+/// (son bilinen `forward_loss`) bundan ETKİLENMEZ.
+#[test]
+fn r5_olu_geri_bildirim_dead_olur_ileri_olcuyu_bozmaz() {
+    let mut o = ReturnPathObserver::default();
+    let (mut sent, mut seen) = (0u64, 0u32);
+    for i in 0..5u64 {
+        sent += 2; // nominal ritim → dönüş yolu sağlıklı başlar
+        seen += 2;
+        o.on_ack(obs(seen, sent), (i + 1) * 100 * MS);
+    }
+    let healthy = o.state(520 * MS);
+    assert_eq!(healthy.health, ReturnPathHealth::Healthy);
+    let degraded = o.state(500 * MS + 350 * MS);
+    assert_eq!(degraded.health, ReturnPathHealth::Degraded);
+    let dead = o.state(500 * MS + 5_000 * MS);
+    assert_eq!(dead.health, ReturnPathHealth::Dead, "{dead:?}");
+    assert_eq!(dead.forward_loss_permille, healthy.forward_loss_permille);
+}
+
+/// R0 — sağlıklı simetrik: örnek biriktikçe güven artar, ölçülen dönüş bandı ÖNSELE (31 B/s)
+/// eşit DEĞİLDİR — ölçüm önselin yerine geçmez, onun yanında durur.
+#[test]
+fn r0_saglikli_yolda_olculen_donus_bandi_onselden_bagimsizdir() {
+    let mut o = ReturnPathObserver::default();
+    let (mut sent, mut seen) = (0u64, 0u32);
+    for i in 0..8u64 {
+        sent += 10;
+        seen += 10;
+        o.on_ack(obs(seen, sent), (i + 1) * 50 * MS);
+    }
+    let s = o.state(400 * MS);
+    assert_eq!(s.confidence_permille, 1000, "8 örnekte güven doyar");
+    // 65 B / 50 ms = 1300 B/s — 31 B/s önseliyle hiçbir ilgisi yok.
+    assert!(
+        s.measured_return_bw_bps > 1000,
+        "ölçülen dönüş bandı gerçek debiden gelir: {s:?}"
+    );
+    assert_eq!(s.ack_interval_ns, 50 * MS);
+}
+
+/// R5' — MUTLAK dönüş-ACK-kaybı: alıcının nominal ritmi (ACK_FREQ_N=2 datagram/ACK) referans
+/// alınır; ACK başına 30 datagram gözlenirse dönüşte ~%93 ACK kaybı vardır. Bu ölçü EWMA'nın
+/// yeni ritme uyum sağlamasından ETKİLENMEZ ve ileri-yön ölçüsünü BOZMAZ.
+#[test]
+fn r5b_mutlak_donus_ack_kaybi_ewma_uyumundan_etkilenmez() {
+    let mut o = ReturnPathObserver::default();
+    // 10 ACK, her biri 300 ms arayla; ACK başına 30 datagram (nominal 2) → ~933‰ ACK kaybı.
+    let (mut sent, mut seen) = (0u64, 0u32);
+    for i in 0..10u64 {
+        sent += 30;
+        seen += 30;
+        o.on_ack(obs(seen, sent), (i + 1) * 300 * MS);
+    }
+    let s = o.state(3_000 * MS);
+    assert_eq!(s.datagrams_per_ack_x100 / 100, 30, "{s:?}");
+    assert!(
+        s.return_ack_loss_permille >= 900,
+        "dönüş ACK kaybı ~933‰ olmalı: {s:?}"
+    );
+    assert_eq!(
+        s.forward_loss_permille, 0,
+        "ileri yol temiz — dönüş kaybı oraya YAZILMAZ (INV-RETURN-1): {s:?}"
+    );
+    assert_eq!(s.health, ReturnPathHealth::Dead, "{s:?}");
+}
+
+/// Sağlıklı ritim (2 datagram/ACK) mutlak ölçüde SIFIR kayıp verir — yanlış alarm yok.
+#[test]
+fn r0b_nominal_ritim_donus_kaybi_uretmez() {
+    let mut o = ReturnPathObserver::default();
+    let (mut sent, mut seen) = (0u64, 0u32);
+    for i in 0..12u64 {
+        sent += 2;
+        seen += 2;
+        o.on_ack(obs(seen, sent), (i + 1) * 40 * MS);
+    }
+    let s = o.state(480 * MS);
+    assert_eq!(s.return_ack_loss_permille, 0, "{s:?}");
+    assert_eq!(s.health, ReturnPathHealth::Healthy);
+}
+
+/// Kanıt eşiği: V1 (seen_count'suz) ACK'ler yön-ayrımı ÜRETMEZ — uydurulmuş sayı yayılmaz.
+#[test]
+fn v1_ack_yon_ayrimi_uretmez() {
+    let mut o = ReturnPathObserver::default();
+    for i in 0..6u64 {
+        o.on_ack(
+            AckObservation {
+                wire_bytes: 59,
+                seen_count: 0,
+                v2: false,
+                sent_datagrams: (i + 1) * 20,
+            },
+            (i + 1) * 100 * MS,
+        );
+    }
+    let s = o.state(600 * MS);
+    assert!(!s.direction_evidence, "V2 yoksa yön kanıtı YOK");
+    assert_eq!(s.forward_loss_permille, 0);
+    assert!(s.ack_samples == 6 && s.v2_samples == 0);
+}
