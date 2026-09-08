@@ -10,6 +10,16 @@ Otorite: `reports/transport-v1/BENCHMARK-METHODOLOGY.md` (Faz-4'te donduruldu).
 
 ---
 
+> **SUPERSESSION NOTU (ERRATUM-1, 2026-09-08):** Aşağıdaki §1 taban commit'i
+> `b1049e3956de6987b6f43adcaab291607ecc359e` idi. Aşama B'nin ilk koşumu blackout metriğinde
+> yönlü bir ölçüm yanlılığı ortaya çıkardı; düzeltildi ve kampanya
+> **`e3c1e8bb740bbc25acd2c9fc5a7fc478a3f15adc`** ile SIFIRDAN yeniden başlatıldı.
+> Bkz. [`ERRATUM-1-blackout-boundary.md`](ERRATUM-1-blackout-boundary.md).
+>
+> Bu not YALNIZCA taban commit kaydını günceller. Hücre tanımları, geometri, deadline, kurulum
+> görünümü, birincil/ikincil metrikler, beklenti tahminleri, çürütme ölçütleri, N kuralı ve
+> durdurma kuralları **DEĞİŞMEMİŞTİR** ve sonuçlara bakılarak değiştirilmeyecektir.
+
 ## 1. Taban commit
 
 ```
