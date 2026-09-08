@@ -147,12 +147,30 @@ jobs:
         run: cargo build --release -p bench --bin bench
       # [FAZ-5 KAPISI] Gerçek T0–T7 koşumu Benchmark Metodolojisi (Faz-4) kapanmadan ETKİNLEŞMEZ.
       # O ana dek shard yalnız harness'ın ve ÜRÜN PROFİLİNİN canlı olduğunu kanıtlar.
+      # [FAZ-4 §14] ADR-18 gecelik kolu KANONİK ÜRÜN PROFİLİNİ kurar (elle yeniden yazılmış
+      # sevk config'i YOK), yapılandırma + aktivasyon manifestini üretir ve sapma varsa
+      # "Kama v1" etiketini REDDEDER.
       - name: activation proof (ürün profili gerçekten koşuyor mu)
         run: |
           set -o pipefail
-          bash scripts/netem/v1_activation_proof.sh "$RUNNER_TEMP/act-${{ matrix.regime }}" 2>&1 | tee /tmp/act.txt
+          D="$RUNNER_TEMP/act-${{ matrix.regime }}"
+          bash scripts/netem/v1_activation_proof.sh "$D" 2>&1 | tee /tmp/act.txt
           grep -q "profile=kama-v1-full" /tmp/act.txt \
             || { echo "::error title=BENCHMARK_FAILURE::kosu urun profili DEGIL (kama-custom)"; exit 1; }
+      - name: manifest gate (§14 — sapma varsa Kama v1 etiketi REDDEDİLİR)
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/act-${{ matrix.regime }}"
+          n=$(find "$D" -name manifest.json | wc -l)
+          [ "$n" -ge 1 ] || { echo "::error title=BENCHMARK_FAILURE::kosu manifesti URETILMEDI"; exit 1; }
+          for m in $(find "$D" -name manifest.json); do
+            arm=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['arm'])" "$m")
+            delta=$(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['profile_delta']))" "$m")
+            act=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['activation']['fec_configured'])" "$m")
+            echo "$m arm=$arm delta=$delta fec_configured=$act"
+            [ "$arm" = "kama-v1-full" ] && [ "$delta" = "0" ] \
+              || { echo "::error title=BENCHMARK_FAILURE::$m urun profili DEGIL (arm=$arm delta=$delta)"; exit 1; }
+          done
       - name: upload results
         if: always()
         uses: actions/upload-artifact@v4
