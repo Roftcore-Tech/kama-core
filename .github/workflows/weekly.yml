@@ -1,0 +1,62 @@
+name: core-weekly
+
+# [CI-REPAIR 2026-09-08] Nightly'den taşınan, pahalı ve kapı OLMAYAN işler.
+# `kani` her gece kaynaktan kurulup ~45 dk harcıyordu ve `continue-on-error: true` olduğu için
+# hiçbir şeyi kapılamıyordu. Derin fuzz de burada (hedef başına 30 dk).
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: core-weekly
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  kani:
+    name: kani (bicimsel dogrulama - pn.rs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true   # K-1 duzeltilene kadar KASTEN kirmizi (kapi DEGIL)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install --locked kani-verifier
+      - run: cargo kani setup
+      - run: cargo kani -p kama-noise-wire --tests
+
+  fuzz-deep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fuzz_inner_parse, fuzz_open, fuzz_control_decode, fuzz_ack_decode, fuzz_prefix, fuzz_fec_decode]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "fuzz -> target"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: actions/cache/restore@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: fuzz 30 min
+        run: >
+          cargo +nightly fuzz run ${{ matrix.target }} --
+          -max_total_time=1800 -rss_limit_mb=2048 -print_final_stats=1
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-deep-${{ matrix.target }}
+          path: fuzz/artifacts/

@@ -1,0 +1,131 @@
+name: core-main
+
+# ── MERGE-SONRASI GENİŞ ENTEGRASYON (sınırlı) ─────────────────────────────────────────────────
+# [CI-REPAIR 2026-09-08] PR CI'dan taşınan yükler: DR-RATE-RAMP-2B §A1 / M1 semantic-matrix
+# sözleşmesi (5 konfigürasyon ayrı ayrı, görünür sayaçlarla — KALDIRILMAZ, yalnız merge başına
+# BİR kez koşar), ağır kama-integration panelleri (ölçüldü: dr_cs3_v2_channel 21.3 dk),
+# CI-04 release ve CI-05 no-default test setleri, soak.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'reports/**'
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+
+concurrency:
+  group: core-main-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ── TAM workspace (ağır entegrasyon panelleri DAHİL) ──
+  full-workspace:
+    name: full workspace (all-features + locked + no-default)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: test (default features, locked)
+        run: cargo test --workspace --locked
+      - name: test (all-features — kama-integration panelleri dahil)
+        run: cargo test --workspace --all-features
+      - name: test (no-default-features)
+        run: cargo test --workspace --no-default-features
+
+  # CI-04 — sevk edilen konfigürasyon (release: overflow wrap, debug_assert düşer)
+  release-and-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: test (all-features, release)
+        run: cargo test --workspace --all-features --release
+      - name: soak (uzun oturum bellek kararlılığı)
+        run: cargo test -p adaptive-transport --test soak_long_session --release
+
+  # DR-RATE-RAMP-2B §A1 / M1: `--all-features` default build'in vekili DEĞİLDİR.
+  semantic-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default-workspace
+            args: ""
+          - name: all-features
+            args: "--all-features"
+          - name: experimental-cold-start
+            args: "-p adaptive-transport -p kama-integration --features experimental-cold-start"
+          - name: experimental-fec-budget
+            args: "-p adaptive-transport --features experimental-fec-budget"
+          - name: diagnostic
+            args: "-p adaptive-transport -p kama-integration --features diag-sched-telemetry"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: "build (${{ matrix.name }})"
+        run: cargo build --all-targets ${{ matrix.args }}
+      - name: "clippy (${{ matrix.name }})"
+        run: cargo clippy --all-targets ${{ matrix.args }} -- -D warnings
+      - name: "test (${{ matrix.name }}) with visible counts"
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -o pipefail
+          cargo test ${{ matrix.args }} 2>&1 | tee /tmp/out.txt
+          echo "----- ${{ matrix.name }} summary -----"
+          COMPILED=$(grep -c 'Running ' /tmp/out.txt || true)
+          RUN=$(grep -oP '^test result: \w+\. \K[0-9]+' /tmp/out.txt | awk '{s+=$1} END {print s+0}')
+          FILTERED=$(grep -oP '; \K[0-9]+(?= filtered out)' /tmp/out.txt | awk '{s+=$1} END {print s+0}')
+          IGNORED=$(grep -oP '; \K[0-9]+(?= ignored)' /tmp/out.txt | awk '{s+=$1} END {print s+0}')
+          echo "test_binaries_compiled=$COMPILED"
+          echo "tests_run=$RUN"
+          echo "tests_ignored=$IGNORED"
+          echo "tests_filtered_out=$FILTERED"
+          if [ "$COMPILED" -eq 0 ]; then echo "::error title=TEST_FAILURE::no test binary compiled for ${{ matrix.name }}"; exit 1; fi
+
+  # ── [DENETİM] Ürün profili + mekanizma aktivasyonu (feature-OFF izolasyonu dahil) ──
+  product-profile:
+    name: KamaV1Profile invariants + feature-OFF isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: product profile pins
+        run: cargo test -p client-core --all-features --test product_profile_v1
+      - name: runtime e2e (ürün yolu)
+        run: cargo test -p client-core --all-features --test runtime_e2e
+      # [OFF = OFF] bootstrap/cold-start izolasyonu: feature derlenmiş olsa bile ürün anahtarı kapatır.
+      - name: feature-OFF isolation (experimental-cold-start derlenmişken)
+        run: cargo test -p client-core --features diag-sched-telemetry --test runtime_e2e -- bootstrap
+      - name: transport activation pins
+        run: cargo test -p adaptive-transport --all-features --test fec_loss_risk
+
+  main-verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [full-workspace, release-and-soak, semantic-matrix, product-profile]
+    if: always()
+    steps:
+      - run: |
+          R='${{ join(needs.*.result, ",") }}'
+          echo "job sonuçları: $R"
+          if [[ "$R" == *failure* ]]; then echo "::error title=TEST_FAILURE::main entegrasyon kapisi kirmizi"; exit 1; fi
+          if [[ "$R" == *cancelled* ]]; then echo "::warning title=INFRA_FAILURE::job iptal/timeout — transport hatasi DEGIL"; exit 1; fi
+          echo "main kapilari yesil"

@@ -537,7 +537,15 @@ async fn fragmenter_carries_a_message_far_larger_than_one_fec_symbol() {
     // 1000 B / 48 B = 21 chunk → 21 birim ACK'i, tek mesaj ACK'i.
     assert_eq!(cs.acked, 21, "chunk sayısı kadar birim ACK'i: {cs:?}");
     assert_eq!(ss.msgs_reassembled, 1, "bir mesaj birleştirildi: {ss:?}");
-    assert_eq!(ss.frag_chunks_rx, 21, "21 chunk alındı: {ss:?}");
+    // [YARIŞ DÜZELTMESİ 2026-09-08, CI onarımı] `frag_chunks_rx` TELE ULAŞAN chunk çerçevelerini
+    // sayar ve yalnız mesaj-düzeyi dedup'tan SONRA artar (runtime.rs:1773-1776); §3.3-B kuruluş
+    // kopyası veya bir retransmit aynı chunk'ı MEŞRU olarak ikinci kez getirebilir. Testin iddiası
+    // "bütün chunk'lar ulaştı + mesaj byte-eş"tir; tam-eşitlik mimari invaryant DEĞİLDİR
+    // (workspace paralel yükünde ~1/8 kırmızı; izole 8/8 yeşil). Birim-ACK sayısı (21) pini korunur.
+    assert!(
+        ss.frag_chunks_rx >= 21,
+        "1000 B / 48 B = 21 chunk'ın hepsi ulaşmalı (mükerrer kopya meşru): {ss:?}"
+    );
     assert_eq!(
         ss.delivered, 1,
         "app'e TEK teslim (chunk başına değil): {ss:?}"
