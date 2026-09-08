@@ -199,3 +199,56 @@ bu rejimde 30 koşuda 1 kez görüldü.
 Birincil deadline'da (20 s) Kama ile quinn ayrışmıyor (`P = 0.559`, iki medyan da 1.000).
 Kama TCP'yi açıkça geçiyor ve D ≤ 10 s'te her iki rakibin de önünde; ancak birincil metrik ve
 birincil deadline üstünden hüküm **parite**dir. Üstünlük iddiası KURULMAZ.
+
+---
+
+## T2a — BURST LOSS (`h3b_burst50`: fwd `loss gemodel 50% 25% 90% 10% rate 250kbit` / rev `rate 250kbit`) · N=30 · D=20s
+
+| kol | completion(20s) medyan | IQR | CI | ≥0.99 | <0.50 | blackout | stall + CI |
+|---|---|---|---|---|---|---|---|
+| kama-v1-full | **1.000** | [0.980,1.000] | [0.980,1.000] | 20/30 | **1/30** | **4/30** | **4/30 CI[0.038,0.307]** |
+| quinn-reliable-stream | **1.000** | [1.000,1.000] | [1.000,1.000] | 23/30 | 4/30 | 24/30 | 25/30 CI[0.653,0.944] |
+| tcp-default | 0.770 | [0.150,1.000] | [0.210,1.000] | 13/30 | 12/30 | 30/30 | 30/30 CI[0.884,1.000] |
+
+`P(kama > quinn) = 0.438` · `P(kama > tcp) = 0.684`.
+Deadline eğrisi: **5 s** kama 0.980 / quinn 0.900 — **10 s** 0.990 / 1.000 — **20 s** 1.000 / 1.000.
+
+### İki farklı okuma, ikisi de doğru
+
+* **Birincil metrikte (completion) ayrışma YOK.** İki medyan da 1.000, CI'lar örtüşüyor,
+  `P = 0.438` sıra bazında quinn'i hafifçe önde gösteriyor. Kama üstünlüğü İDDİA EDİLMEZ.
+* **Hizmet sürekliliğinde ayrışma KESKİN.** Kama 4/30 blackout (CI [0.038,0.307]), quinn 25/30
+  stall (CI [0.653,0.944]) — **güven aralıkları ÖRTÜŞMÜYOR.** Kama ayrıca felaket koşusunda da
+  daha tutarlı: 1/30 ↔ quinn 4/30 ↔ TCP 12/30.
+
+Yani bu hücrede quinn aynı nihai teslimi **çok daha fazla kesintiyle** elde ediyor.
+
+### T2 SORUSUNUN CEVABI — `parity_denied ≫ parity_emitted`
+
+Ölçülen (medyan): `parity_emitted = 19`, `parity_token_denied = 1560` (≈82:1),
+`parity_bytes = 19 988 B`, `retx = 143`, `dup = 32.5`.
+
+**Sözleşmenin A şıkkı: yüksek ret + GÜÇLÜ teslim → sınırlayıcı/koruyucu tahkim.**
+
+Destekleyen kanıt:
+1. Teslim zaten tavanda (medyan 1.000) — bastırılmış bir teslim açığı YOK.
+2. Kama üç kolun **en düşük blackout insidansına** sahip (4/30 ↔ 24/30 ↔ 30/30) — kesinti
+   yönünden de açlık belirtisi yok.
+3. Tel maliyeti: kama 28.3 kB data + 38.1 kB retx + 20.0 kB parity ≈ **86.4 kB** ↔ quinn
+   **74.8 kB**. Kama bu hücrede quinn'den **%16 DAHA FAZLA** tel harcıyor. Ret olmasaydı fark
+   büyürdü; oysa kazanılacak completion başlığı yok (zaten 1.000).
+
+**Beyan edilen çıkarım sınırı:** `parity_token_denied` *pacer token reddi* sayar, "engellenen
+faydalı onarım" değil. Karşı-olgusal ("ret olmasaydı ne olurdu") bu veriden KANITLANAMAZ.
+Sonuç, üç dolaylı kanıtla **desteklenmektedir**, ispatlanmış değildir.
+
+### Aktivasyon deseni doğrulandı
+Bu, parity'nin **fiilen ateşlediği ilk hücre** (19 emisyon, 20 kB). iid hücrelerde (T1a %50,
+T1b %80, T1c %50+RTT) yapı-gate hiç açılmamıştı. **Desen: gate korelasyonlu/gemodel kayıpta
+açılıyor, bağımsız kayıpta açılmıyor** — `Q18Iid` yapı politikasının bir IID-yapı dedektörü
+olmasıyla tutarlı. Ayarlama YAPILMADI.
+
+### T2a HÜKMÜ: **COMPARABLE / PARITY**
+Birincil metrikte quinn ile ayrışma yok (`P = 0.438`, örtüşen CI). Kama TCP'yi geçiyor ve
+**hizmet sürekliliğinde quinn'i belirgin biçimde geçiyor** (örtüşmeyen stall CI'ları), ancak
+hüküm birincil metrik üzerinden **parite**dir.
