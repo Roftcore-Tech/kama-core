@@ -1705,8 +1705,9 @@ pub struct Sender {
     /// [FEC-RISK v2 ENSTRÜMAN] İlk L1 / L2 önerisinin anı (ns, 0 = hiç).
     diag_t_first_l1_ns: u64,
     diag_t_first_l2_ns: u64,
-    diag_first_l1_ctx: (u64, u64, u64), // [EVIDENCE] (em, instant, persistent) ilk L1'de
-    diag_first_l2_ctx: (u64, u64, u64), // [EVIDENCE] ilk L2'de
+    diag_preconverge_parity_blocked: u64, // [KURULUŞ-GUARD] arbiter çıkışı PreConverge'de sıfırlandı
+    diag_first_l1_ctx: (u64, u64, u64),   // [EVIDENCE] (em, instant, persistent) ilk L1'de
+    diag_first_l2_ctx: (u64, u64, u64),   // [EVIDENCE] ilk L2'de
     /// [HANDOFF ENSTRÜMANI] Son kararın anlık görüntüsü (zaman serisi örnekleyici okur).
     diag_last_ts: TsSample,
     /// [PERSIST ENSTRÜMANI] Yürürlükteki persistence ufku (son, tepe) ns.
@@ -1943,6 +1944,7 @@ impl Sender {
             diag_reorder_pressure_peak: 0,
             diag_t_first_l1_ns: 0,
             diag_t_first_l2_ns: 0,
+            diag_preconverge_parity_blocked: 0,
             diag_first_l1_ctx: (0, 0, 0),
             diag_first_l2_ctx: (0, 0, 0),
             diag_last_ts: TsSample::default(),
@@ -3587,6 +3589,22 @@ impl Sender {
         // ── TEK FEC ARBİTER ───────────────────────────────────────────────────────────────
         // final = max(confirmed, structure, speculative). Toplama YOK. Parity'yi yazan tek yer.
         let (final_ratio, reason) = fec_arbiter(confirmed, structure, spec);
+        // [KURULUŞ-GUARD — ARBİTER KAPSAMI] (transport-v1 denetimi, 2026-09-08)
+        // Guard `structure_gate_fec` içinde vardı (`BlockedPreConverge`, :3664) ama YALNIZ yapı-gate
+        // kolunu kapsıyordu; spekülatif kol (`speculative_propose`) hiçbir `SenderState` kontrolü
+        // içermiyor. FEC ürün profilinde default AÇIK olduğundan (client-core `KamaV1Profile`) bu
+        // artık canlı bir yol: Karn-dışı bir ACK (retransmit belirsizliği) RTT örneği vermeden
+        // SACK boşluklarıyla kayıp ilan edebilir → risk > l1_min → PreConverge'de parity önerilir.
+        // Guard'ın belgelenmiş ilkesi kola değil TELE ÇIKAN PARITY'ye aittir (:3655-3659: "FEC ölçüm
+        // olmadan aksiyon almaz"; PreConverge'de parity kıt token bütçesinde ORİJİNALLERLE yarışır ve
+        // kuruluşu bozar). Bu yüzden guard arbiter ÇIKIŞINA uygulanır — üç kolu birden kapsar.
+        let (final_ratio, reason) = if self.state == SenderState::PreConverge && final_ratio > 0 {
+            self.diag_preconverge_parity_blocked =
+                self.diag_preconverge_parity_blocked.saturating_add(1);
+            (0, FecArbiterReason::None)
+        } else {
+            (final_ratio, reason)
+        };
         self.diag_arbiter_reasons[reason.index()] += 1;
         // [HANDOFF ENSTRÜMANI] Kararın anlık görüntüsü — "canonical geldiğinde parity düştü mü"
         // sorusu bu seri olmadan sorulamaz. Salt gözlem, sabit boyut.
@@ -4394,6 +4412,13 @@ impl Sender {
         {
             [0; 12]
         }
+    }
+
+    /// [KURULUŞ-GUARD] PreConverge'de arbiter çıkışının sıfırlandığı karar sayısı (salt gözlem).
+    /// `> 0` = kuruluş fazında parity önerildi ve guard tarafından tele çıkmadan kesildi.
+    #[must_use]
+    pub fn diag_preconverge_parity_blocked(&self) -> u64 {
+        self.diag_preconverge_parity_blocked
     }
 
     /// [EVIDENCE ENSTRÜMAN] İlk L1 ve ilk L2 anındaki `(sent_window_units, instant_ppm,

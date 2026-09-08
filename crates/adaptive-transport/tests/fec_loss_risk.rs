@@ -928,3 +928,79 @@ fn g1_reorder_baskisi_oneriyi_bastirir_riski_degistirmez() {
     );
     assert_eq!(s_g1_low, s_open_low, "eşik altında G1 byte-özdeş");
 }
+
+// ═══════════ [KURULUŞ-GUARD] PreConverge'de hiçbir kol parity çıkaramaz ═══════════
+
+/// Denetim bulgusu (2026-09-08): `structure_gate_fec` PreConverge'de bloke ediyordu ama
+/// `speculative_propose` hiçbir `SenderState` kontrolü içermiyor. FEC ürün profilinde default
+/// AÇIK olduğundan bu canlı bir yol. Guard arbiter ÇIKIŞINA taşındı; bu test onu pinler.
+///
+/// Senaryo: Karn-dışı ACK — retransmit belirsizliği yüzünden RTT örneği ÜRETİLMEZ (oturum
+/// PreConverge'de kalır) ama SACK boşlukları kaybı ilan eder → spekülatif kol parity önerir.
+#[test]
+fn kurulus_guard_preconverge_de_arbiter_ciktisini_sifirlar() {
+    let mut s = Sender::new();
+    s.set_establish_probe(false);
+    s.set_fec_loss_risk(FecLossRiskConfig::experimental_v1());
+    for i in 0..80u64 {
+        s.on_event(
+            Event::AppData(OpaqueUnit {
+                id: 1000 + i,
+                size: 101,
+            }),
+            0,
+        );
+    }
+    let mut saw_proposal_in_preconverge = false;
+    let mut max_final_in_preconverge = 0u32;
+    for t in 1..=40u64 {
+        s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS);
+        if s.state() == SenderState::PreConverge {
+            let x = s.diag_ts_sample();
+            max_final_in_preconverge = max_final_in_preconverge.max(x.final_ratio);
+            if x.spec_prop > 0 || x.structure_prop > 0 || x.confirmed_prop > 0 {
+                saw_proposal_in_preconverge = true;
+            }
+        }
+    }
+    assert_eq!(
+        s.state(),
+        SenderState::PreConverge,
+        "önkoşul: ACK yok → oturum kurulmadı"
+    );
+    assert_eq!(
+        max_final_in_preconverge, 0,
+        "PreConverge'de arbiter çıkışı parity YAZAMAZ (kuruluş guard'ı)"
+    );
+    // Guard sayacı, öneri gerçekten oluştuysa artmış olmalı (vakum testi değil).
+    if saw_proposal_in_preconverge {
+        assert!(
+            s.diag_preconverge_parity_blocked() > 0,
+            "öneri vardı ama guard sayacı artmadı"
+        );
+    }
+}
+
+/// Guard yalnız PreConverge'i keser: oturum kurulduktan sonra parity normal akar (regresyon pini).
+#[test]
+fn kurulus_guard_sadece_preconverge_i_keser() {
+    let s = drive(
+        {
+            let mut x = Sender::new();
+            x.set_fec_loss_risk(FecLossRiskConfig::experimental_v1());
+            x
+        },
+        80,
+        gap_pattern(),
+    );
+    assert_ne!(
+        s.state(),
+        SenderState::PreConverge,
+        "önkoşul: oturum kuruldu"
+    );
+    let levels = s.diag_spec_levels();
+    assert!(
+        levels[1] + levels[2] > 0,
+        "kuruluş sonrası spekülatif kol ateşlemeli: {levels:?}"
+    );
+}

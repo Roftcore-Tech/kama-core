@@ -402,7 +402,7 @@ fn print_activation(stats: &client_core::runtime::ClientStats) {
         "KP-ACTIVATED arq_retx={}B dup={}B fec_parity={}B fec_blocks={} fec_repairs_tx={} \
          spec_levels={:?} arbiter={:?} gate_opened={} ledger_peak_ppm={} spurious={} \
          establish_probe={} bootstrap_probe={} tail_probe={} rtt_samples={} state={} \
-         data_denied={} retx_denied={}",
+         data_denied={} retx_denied={} preconv_parity_blocked={}",
         stats.tx_retx_bytes,
         stats.tx_dup_bytes,
         stats.tx_fec_bytes,
@@ -420,6 +420,7 @@ fn print_activation(stats: &client_core::runtime::ClientStats) {
         f.sender_state,
         sched[1],
         sched[4],
+        f.preconverge_parity_blocked,
     );
 }
 

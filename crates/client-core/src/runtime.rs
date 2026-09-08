@@ -490,6 +490,8 @@ pub struct FateWindowDiag {
     /// `[data_sel, data_denied, data_emit, retx_sel, retx_denied, retx_emit, dup_sel, dup_denied,
     /// dup_emit, parity_denied, parity_emit, tail_probe_emit]`.
     pub sched: [u64; 12],
+    /// [KURULUŞ-GUARD] PreConverge'de arbiter çıkışının sıfırlandığı karar sayısı.
+    pub preconverge_parity_blocked: u64,
     /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
     /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
     /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI · 6=oturum-kurulmadı(PreConverge).
@@ -1486,6 +1488,7 @@ async fn client_task(
         fec_persist: session.sender().diag_persist(),
         fec_spec_transitions: session.sender().diag_spec_transitions(),
         sched: session.sender().diag_sched_summary(),
+        preconverge_parity_blocked: session.sender().diag_preconverge_parity_blocked(),
         fec_latch_diag: {
             let d = session.sender().diag_fec_actuation();
             (
