@@ -100,3 +100,59 @@ normalize EDİLMEMİŞTİR ve edilmemelidir; sonuç bu beyanla birlikte okunmal�
 Birincil metrikte üç deadline'da da her iki rakibi geçti; en kötü koşusu quinn'in medyanının
 üstünde, felaket koşusu yok (0/30 vs 8/30 ve 20/30). Üstünlük **kodlamadan değil, ARQ +
 mesaj-granülü tesliminden** geliyor — bu, hücrenin en önemli bulgusudur.
+
+---
+
+## T1b — RANDOM LOSS AŞIRI (`p2_loss80`: loss 80% rate 200kbit, çift yön) · N=30 · D=20s
+
+| kol | n | claim | completion(20s) medyan | IQR | CI | outcome | blackout | stall |
+|---|---|---|---|---|---|---|---|---|
+| kama-v1-full | 30 | final | **0.010** | [0.000,0.530] | [0.000,0.340] | blackout=19 timeout=11 | 30/30 | 30/30 CI[0.884,1.000] |
+| quinn-reliable-stream | 30 | final | 0.000 | [0.000,0.010] | [0.000,0.000] | blackout=8 conn-fail=17 timeout=5 | 13/30 | 30/30 CI[0.884,1.000] |
+| tcp-default | 30 | final | 0.000 | [0.000,0.000] | [0.000,0.000] | blackout=7 conn-fail=13 timeout=10 | 17/30 | 30/30 CI[0.884,1.000] |
+
+| | kama | quinn | tcp |
+|---|---|---|---|
+| min / medyan / max | 0.000 / **0.015** / **0.900** | 0.000 / 0.000 / 0.130 | 0.000 / 0.000 / 0.120 |
+| <0.50 olan koşu | 22/30 | 30/30 | 30/30 |
+
+`P(kama > quinn) = 0.729` · `P(kama > tcp) = 0.738`.
+
+**Mutlak anlamda ÜÇ KOL DA BAŞARISIZ.** Kama 30 koşunun 22'sinde %50'nin altında. Bu hücre
+hiçbir taşıyıcı için çalışır bir işletim noktası DEĞİLDİR; üstünlük görecelidir.
+
+### BULGU T1b-1 — sıfır-ACK soğuk başlangıcında kalıcı durma (ÇİFT MODLU)
+
+Koşular temiz biçimde iki gruba ayrılıyor:
+
+| grup | n | btlbw | srtt | gönderilen veri | retx | dönüş-yolu tanısı |
+|---|---|---|---|---|---|---|
+| **DÜŞÜK** (completion<0.1) | **18/30** | **0 B/s** | **0 ms** | **1 698 B** / 25 600 B | **0** | `n=0/0 conf=0‰ Unknown dir_ev=false` |
+| YÜKSEK (completion≥0.5) | 8/30 | 5 286 B/s | ölçüldü | 28 300 B (tam) | 100–240 | `n=7/7 … Dead` |
+
+Düşük grupta **hiç ACK dönmemiş** (`n=0/0`). Zincir: ACK yok → RTT örneği yok → yeniden-iletim
+zamanlayıcısı kurulamıyor → `retx = 0` ve `tail_probe = 0` → akış ilk pencerede (≈1 698 B, ürün
+`initial_window_bytes` = 2 400 B ile tutarlı) **kalıcı olarak duruyor** ve 20 s boyunca bir daha
+denemiyor. Yalnız 6 duplikasyon çıkmış.
+
+**Sınıflandırma (taksonomi #5'e komşu — ayarlama YAPILMADI):** bu rejim için tasarlanmış mekanizma
+mevcut ama ürün profilinde **bilinçli olarak KAPALI**: `bootstrap_rtt = false`,
+`bootstrap_fast_ladder = false`, koşu manifestinde `bootstrap_ladder=OFF(kalibre-değil)`
+(`crates/client-core/src/runtime.rs:195` bunu kayıtlı bir kapanış kararı olarak belgeliyor).
+Mekanizma *yanlışlıkla* kapalı değil, **kalibre edilmediği için** kapalı.
+
+Bu yüzden Faz-5 içinde **açılmadı**: Faz-5 sonucuna bakarak bir ürün default'unu değiştirmek
+sözleşmenin açıkça yasakladığı ayarlamadır. **Faz-6 girdisi olarak kaydediliyor:** v1, sıfır-ACK
+başlangıçta kalıcı duran bir soğuk-başlangıç yoluyla sevk edilecek mi? Bu bir sahip kararıdır.
+
+Rakipler de aynı hücrede kuruluş kaybediyor (quinn 17/30, TCP 13/30 `connection-failure`), yani
+davranış türü karşılaştırılabilir; fark, Kama'nın "el sıkışma yok" mimari iddiası gereği burada
+zarif bozulma göstermesinin beklenmesidir.
+
+### Aktivasyon
+`parity = 0`, `denied = 0` — T1a ile aynı desen: **iid kayıpta yapı-gate hiç açılmıyor.**
+%80 kayıpta bile sıfır parity önerisi. (T1a %50 → 0, T2a gemodel → 22.)
+
+### T1b HÜKMÜ: **KAMA WINS** *(göreli; mutlak anlamda üç kol da başarısız)*
+Kama her iki rakibi de geçiyor (P≈0.73, max 0.900 ↔ 0.130) ama 22/30 koşuda %50'nin altında.
+Bu hücrenin ürettiği asıl değer bir üstünlük iddiası değil, **BULGU T1b-1**'dir.
