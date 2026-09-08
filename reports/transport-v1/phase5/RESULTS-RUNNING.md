@@ -396,3 +396,26 @@ bırakıyor mu, (b) aktivasyon manifesti bu ayrımı taşımalı mı?
 
 Yukarıdaki T1a / T1c / T3a bölümlerindeki *"gate hiç açılmadı"* cümleleri bu bölümle
 **SUPERSEDE** edilmiştir. Ölçümler değişmedi; değişen yalnız benim yorumumdur.
+
+---
+
+## T4 — YÜKSEK GECİKME (`h6_rtt200`: `delay 100ms loss 1% rate 10mbit`, çift yön) · N=30 · D=20s
+
+| kol | completion(5/10/20 s) | min | CI | outcome | blackout | stall |
+|---|---|---|---|---|---|---|
+| kama-v1-full | **1.000 / 1.000 / 1.000** | 1.000 | [1.000,1.000] | completed=30 | 0/30 | 0/30 CI[0.000,0.116] |
+| quinn-reliable-stream | **1.000 / 1.000 / 1.000** | 1.000 | [1.000,1.000] | completed=30 | 0/30 | 0/30 CI[0.000,0.116] |
+| tcp-default | **1.000 / 1.000 / 1.000** | 1.000 | [1.000,1.000] | completed=30 | 0/30 | 0/30 CI[0.000,0.116] |
+
+`P(kama > quinn) = 0.500` · `P(kama > tcp) = 0.500` — **tam eşitlik**, üç kolun da 30/30 koşusu
+her deadline'da kusursuz.
+
+### Ön-kayıtlı beklentiye karşı
+Ön-kayıt §10.7: *"Parite bekliyorum; cold-start Kama'yı ilk saniyede geriletebilir."*
+Parite **doğrulandı**; cold-start endişesi **gerçekleşmedi** — Kama D = 5 s'te bile 1.000
+(min 1.000, 30/30). 200 ms RTT tek başına, %1 kayıpla birlikte, hiçbir kolu zorlamıyor.
+
+Bu hücre pratikte **ikinci bir kontrol koşuludur**: yüksek RTT'nin *tek başına* düşman
+olmadığını, ancak kayıpla birleştiğinde (T1c, T2b) ayrıştırıcı olduğunu gösterir.
+
+### T4 HÜKMÜ: **COMPARABLE / PARITY**
