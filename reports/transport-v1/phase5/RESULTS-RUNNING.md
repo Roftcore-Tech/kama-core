@@ -350,3 +350,49 @@ Ancak dağılım Kama lehine belirgin: **en kötü koşu 0.967 ↔ 0.000 / 0.067
 **0/30 ↔ 5/30 ↔ 7/30**, ve D ≤ 10 s'te Kama her iki rakibin de çok önünde. Bu üstünlük
 CI-ayrık DEĞİLDİR (0/30 CP[0,0.116] ile 5/30 CP[0.056,0.347] hafif örtüşür), bu yüzden
 hüküm parite olarak bırakılmıştır — gözlem güçlü ama istatistiksel olarak ayrık değil.
+
+---
+
+# ⚠ DÜZELTME (analiz hatası — ölçüm değil): "yapı-gate hiç açılmıyor" İFADESİ YANLIŞTI
+
+T1a, T1c ve T3a bölümlerinde `parity_emitted = 0 ∧ parity_token_denied = 0` gözlemini
+*"yapı-gate hiç açılmadı"* diye yorumlamıştım. **Bu yorum yanlıştır.** Manifest bu ayrımı
+taşımaz; ayrımı yalnız istemci stderr'indeki `clamp` sayacı gösterir ve o sayaç ancak
+`final_ratio > 0` iken artar — yani **parity ÖNERİLDİĞİNDE**.
+
+| hücre | clamp (medyan) | would_zero | parity_emitted | denied | gerçek durum |
+|---|---|---|---|---|---|
+| T1a | **10 428** | 0 | 0 | 0 | parity ÖNERİLDİ, §8.5 kısıtladı, hiç maddeleşmedi |
+| T1b | 0 | 0 | 0 | 0 | gerçekten hiç karar yok (sıfır-ACK durması, BULGU T1b-1) |
+| T1c | **12 230** | 0 | 0 | 0 | parity ÖNERİLDİ, kısıtlandı, maddeleşmedi |
+| T2a | 5 525 | 0 | **19** | 1 560 | önerildi, kısıtlandı, KISMEN maddeleşti |
+| T2b | 12 982 | 0 | 1 | 141 | önerildi, kısıtlandı, neredeyse hiç maddeleşmedi |
+| T3a | **7 486** | 0 | 0 | 0 | parity ÖNERİLDİ, kısıtlandı, maddeleşmedi |
+
+## BULGU FEC-1 — kodlama önerisi maddeleşmeden kayboluyor (sessiz)
+
+Altı hostile hücrenin beşinde arbiter parity'yi **binlerce kez önerdi** (clamp 5 500–13 000) ve
+§8.5 bant-türevli bütçe kısıtı öneriyi küçülttü. T1a / T1c / T3a'da sonuç **sıfır parity çerçevesi**
+oldu — ne emisyon ne de ret.
+
+**Çıkarım (kanıtla desteklenen, ispatlanmamış):** küçültülmüş oran, K=8'de **tek bir onarım
+sembolü üretmeye yetmeyecek** kadar düşük kalıyor (`r` 0'a yuvarlanıyor), bu yüzden hiç parity
+çerçevesi kurulmuyor — kurulmadığı için pacer'ın reddedeceği bir şey de olmuyor
+(`denied = 0`). Bu, kayıtlı `q18-fec-gate-defect` monoton-olmayan ölü-bölge desenine uyar.
+Alternatif bir aşağı-akış kapısı da aynı imzayı üretebilir; bu veriden ayırt EDİLEMEZ.
+
+**Bu bir telemetri boşluğudur:** aktivasyon manifesti *"hiç önerilmedi"* ile *"önerildi ama
+maddeleşmedi"* durumlarını AYIRT EDEMEZ — ikisi de `parity=0, denied=0` görünür. Faz-3'ün
+"yapılandırıldı ≠ ateşledi" ayrımının bir kademe altında aynı sınıf boşluk var.
+
+**Yönü tek değil:** T3a'da bu davranış KORUYUCU çıktı (dar banda parity israfı yok, Kama
+quinn'den %43 az tel harcadı); T1a/T1c'de ise kodlama alt-sistemi rejime hiçbir katkı yapmadı.
+Aynı mekanizma iki rejimde zıt işaretli.
+
+**Faz-5 eylemi: YOK.** Bu hücrelerde Kama kaybetmiyor (T1a DOMINATES, T1c/T3a PARITY), dolayısıyla
+taksonomi tetiklenmiyor ve ayarlama sözleşmece yasak. **Faz-6 girdisi olarak kaydedildi:**
+(a) §8.5 kısıtı + `r` granülerliği hostile rejimlerin geniş bir sınıfında FEC'i fiilen devre dışı
+bırakıyor mu, (b) aktivasyon manifesti bu ayrımı taşımalı mı?
+
+Yukarıdaki T1a / T1c / T3a bölümlerindeki *"gate hiç açılmadı"* cümleleri bu bölümle
+**SUPERSEDE** edilmiştir. Ölçümler değişmedi; değişen yalnız benim yorumumdur.
