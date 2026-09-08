@@ -150,13 +150,22 @@ cargo test  -p bench --all-features                                  57 geçti /
 18 `ignored` FAZ-4'ten GELMEZ; gecelik-only işaretli mevcut sim testleridir (`--ignored` ile
 gecelik iş akışında koşarlar). Sayı gizlenmiyor, olduğu gibi raporlanıyor.
 
-Faz-4'te eklenen birim testleri (16): `manifest` 6 (`m0_profil_kimligi_deterministik`,
-`anlam_farki_beyan_kosul_farki_engel`, `ayni_kol_iki_kosu_farksiz`, `kol_adlari_belirsiz_degil`,
-`tcp_tel_muhasebesi_siniri_beyan_edilir`, `tel_muhasebesi_farki_beyan_edilir`) ·
-`outcome` 8 (blackout 3, sonuç sınıfı 2, istatistik 2, kurulum görünümü+sınıfı 2) ·
-`kama_product` 2 (`bayraksiz_kiyas_yolu_kanonik_profildir`, `tek_alan_sapmasi_gorunur`) ·
-`tcp` 1 (`cerceveleme_mesaj_anlamini_korur`) · mevcut ürün-yolu testine eklenen aktivasyon
-manifesti ve kimlik doğrulamaları.
+Faz-4 metodoloji birim testleri — **20** (koşu çıktısından sayıldı, tahmin değil):
+
+* `manifest` **6** — `m0_profil_kimligi_deterministik` · `anlam_farki_beyan_kosul_farki_engel` ·
+  `ayni_kol_iki_kosu_farksiz` · `kol_adlari_belirsiz_degil` ·
+  `tcp_tel_muhasebesi_siniri_beyan_edilir` · `tel_muhasebesi_farki_beyan_edilir`
+* `outcome` **11** — blackout 3 (`akis_sonu_sessizligi_blackout_degil`,
+  `ortadaki_kesinti_yakalanir_ve_kurtarma_olculur`, `kurtarma_yoksa_none`) · sonuç sınıfı 2
+  (`sonuc_siniflari_ayrilir`, `sinif_onceligi_sabittir`) · istatistik 4 (`kucuk_n_smoke_kalir`,
+  `medyan_ci_deterministik_ve_kapsayici`, `kesin_oran_araligi_sifirda_bile_bilgi_verir`,
+  `stall_katmanlamasi_gizlemez`) · kurulum 2 (`kurulum_gorunumu_simetrik_turetilir`,
+  `kurulum_sinifi_sessizce_karisamaz`)
+* `kama_product` **2** — `bayraksiz_kiyas_yolu_kanonik_profildir` · `tek_alan_sapmasi_gorunur`
+* `tcp` **1** — `cerceveleme_mesaj_anlamini_korur`
+
+Ayrıca mevcut ürün-yolu testine (`full_arm_server_and_client_run_end_to_end_with_fec`)
+aktivasyon-manifesti tüketimi ve canlı kimlik doğrulaması eklendi.
 
 ---
 
