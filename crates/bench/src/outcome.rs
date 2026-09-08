@@ -186,7 +186,19 @@ pub fn blackout_scan(run: &RunOutput, spec: &BlackoutSpec) -> BlackoutReport {
     // bu span içinde KALIR ve yakalanır — §8'in asıl hedefi budur.
     let last_sent = run.events.iter().map(|e| e.sent_ns).max().unwrap_or(0);
     let last_delivered = run.events.iter().filter_map(|e| e.delivered_ns).max();
-    let horizon = last_delivered.unwrap_or(last_sent).max(last_sent);
+    // [ERRATUM-1] Ufuk SON TESLİMİN BİR NS SONRASIDIR, teslimin kendisi DEĞİL.
+    //
+    // Hata: ufuk son teslime EŞİT olduğunda, son pencere `[t, ufuk)` yarı-açık olduğu için
+    // o teslimi SAYMAZ (`d < end` yanlış) ama AYNI mesajı `delivered_ns >= end` olduğu için
+    // "bekleyen iş" SAYAR → teslim=0 ∧ bekleyen=var → sahte blackout. 100/100 teslim eden bir
+    // koşu 20 ms'lik "blackout" damgası alıyordu. Üstelik yanlılık YÖNLÜYDÜ: yalnız kuyruğu
+    // pencere sınırını aşan kol cezalanıyordu (ölçülen: Kama 16/30, quinn 1/30, TCP 0/30 —
+    // üçünün de completion'ı 1.000 iken). Ölçüm yanlılığıydı, taşıyıcı özelliği değil.
+    //
+    // `max(last_sent, last_delivered+1)`: teslim kendi penceresinin İÇİNDE kalır ve artık
+    // "bekleyen" sayılmaz; gönderim-sonrası sessizlik ufku ise UZAMAZ (teslimsiz kuyruk
+    // vakası `kurtarma_yoksa_none` testindeki gibi aynen korunur).
+    let horizon = last_delivered.map_or(last_sent, |d| last_sent.max(d.saturating_add(1)));
     if horizon == 0 {
         return BlackoutReport::default();
     }
@@ -588,6 +600,31 @@ mod tests {
         assert_eq!(b.total_ns, 5 * S, "{b:?}");
         // En uzun kesinti 1. sn'de başladı; ilk sonraki teslim 6. sn → 5 sn.
         assert_eq!(b.time_to_recovery_ns, Some(5 * S), "{b:?}");
+    }
+
+    /// [ERRATUM-1 REGRESYON] Son teslim pencere sınırını AŞTIĞINDA sahte blackout ÜRETİLMEZ.
+    ///
+    /// Gerçek kampanya verisinden alınmış vaka (T0/rep11): 100 mesajın 100'ü teslim edildi,
+    /// son gönderim 4.952 s, son teslim 5.021 s. Ufuk son teslime eşit olduğunda son pencere
+    /// `[5.000, 5.021)` teslimi dışlıyor ama aynı mesajı "bekleyen" sayıyordu → sahte blackout.
+    /// Yanlılık YÖNLÜYDÜ: yalnız kuyruğu saniye sınırını aşan kol cezalanıyordu.
+    #[test]
+    fn son_teslim_pencere_sinirini_asinca_sahte_blackout_yok() {
+        // Sıkı paketlenmiş teslimler + son teslim 5.021 s'de (5 s sınırının hemen ötesinde).
+        let mut ev: Vec<(u64, u64, Option<u64>)> = Vec::new();
+        for i in 0..100u64 {
+            let sent = i * 50 * 1_000_000; // 50 ms aralık → son gönderim 4.950 s
+            let delivered = sent + 70 * 1_000_000; // her biri +70 ms → son teslim 5.020 s
+            ev.push((i, sent, Some(delivered)));
+        }
+        let r = run(50_000, ev);
+        let b = blackout_scan(&r, &BlackoutSpec::default());
+        assert!(
+            !b.any,
+            "100/100 teslim eden koşu blackout DEĞİLDİR (sınır artefaktı): {b:?}"
+        );
+        assert_eq!(b.total_ns, 0);
+        assert_eq!(b.longest_ns, 0);
     }
 
     /// [§8] Kurtarma HİÇ olmazsa `time_to_recovery` yoktur (None) — 0 diye raporlanmaz.
