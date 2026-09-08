@@ -207,11 +207,11 @@ impl ReturnPathObserver {
             u32::try_from(ok.saturating_mul(1000) / self.expected_windows.max(1)).unwrap_or(1000)
         };
         // Dönüş-yolu ACK kaybı: alıcının nominal ritmine göre MUTLAK oran.
-        let dpa_x100 = if self.ack_samples == 0 {
-            0
-        } else {
-            self.last_sent_seen.saturating_mul(100) / self.ack_samples
-        };
+        let dpa_x100 = self
+            .last_sent_seen
+            .saturating_mul(100)
+            .checked_div(self.ack_samples)
+            .unwrap_or(0);
         let ack_loss = if self.ack_samples < MIN_ACK_LOSS_SAMPLES || dpa_x100 == 0 {
             0
         } else {
