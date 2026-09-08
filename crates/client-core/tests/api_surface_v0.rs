@@ -167,6 +167,7 @@ async fn transport_api_v0_surface_is_frozen() {
         // [S1B] fragmenter: mesaj-granülü ACK + canonical-serialize hata sayacı.
         messages_acked: _,
         frag_encode_failures: _,
+        fec_partial_blocks_closed: _,
         // [TEŞHİS] yapı-gate karar tabanı + karar-yolu histogramı + kuruluş görünürlüğü.
         fate: _,
         // [DR-CS-3] cold-start probe/echo muhasebesi.

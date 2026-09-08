@@ -1188,3 +1188,76 @@ fn v1_ack_yon_ayrimi_uretmez() {
     assert_eq!(s.forward_loss_permille, 0);
     assert!(s.ack_samples == 6 && s.v2_samples == 0);
 }
+
+// ═══════════ [FAZ-2] FEC SPEC-TAMLIĞI — kalem 2 ve 4 ═══════════
+
+/// KALEM-4: acil-durum kurtarma framing'i FEC blok framing'ine göre seçilir (§11 / TDD §5.6).
+/// FEC kapalıyken `Tiny` (D× kopya), FEC açıkken `SegmentBlock` (minimal parity). Çağıran eskiden
+/// `Framing::Tiny`'yi SABİT veriyordu → spec'in segment-block kolu ulaşılamazdı.
+#[test]
+fn kalem4_acil_framing_fec_aktifligine_bagli() {
+    use adaptive_transport::emergency::{Framing, RecoveryAction};
+    // FEC KAPALI (default Manual{false}) → Tiny kolu → kopya, parity YOK.
+    let mut off = Sender::new();
+    off.set_establish_probe(false);
+    let off = drive(off, 40, gap_pattern());
+    // FEC AÇIK (Controller) → SegmentBlock kolu.
+    let mut on = Sender::new();
+    on.set_establish_probe(false);
+    let _ = on.set_fec_actuation_mode(FecActuationMode::Controller);
+    let on = drive(on, 40, gap_pattern());
+    // Her iki kolda da acil-durum seviyesine girilmemiş olabilir; framing seçimi yine de
+    // last_recovery'nin TÜRÜNDEN okunur (Arq seviyesinde ikisi de Arq'tır).
+    let f_off = off.last_recovery();
+    let f_on = on.last_recovery();
+    assert!(
+        !matches!(f_off, RecoveryAction::MinimalParity { .. }),
+        "FEC kapalıyken minimal-parity kolu SEÇİLEMEZ: {f_off:?}"
+    );
+    // Framing eşlemesinin kendisi (seviyeden bağımsız) doğrudan pinlenir:
+    let cfg = adaptive_transport::emergency::EmergencyConfig::fixture();
+    let a_tiny = adaptive_transport::emergency::action(
+        adaptive_transport::emergency::EmergencyLevel::Dup2,
+        Framing::Tiny,
+        &cfg,
+    );
+    let a_block = adaptive_transport::emergency::action(
+        adaptive_transport::emergency::EmergencyLevel::Dup2,
+        Framing::SegmentBlock,
+        &cfg,
+    );
+    assert!(matches!(a_tiny, RecoveryAction::Duplication { .. }));
+    assert!(
+        matches!(a_block, RecoveryAction::MinimalParity { permille } if permille > 0),
+        "segment-block → minimal parity (§11 NORMATİF): {a_block:?}"
+    );
+    let _ = f_on;
+}
+
+/// KALEM-2: §8.5 bütçe clamp'i bağlandı, ama BANT KANITI YOKKEN parity'yi SIFIRLAMAZ.
+/// (Formülün literal okuması BtlBw<125 B/s'te cap=0 verir ve §11'in minimal-parity tabanıyla
+/// çelişir; sıfırlama vakası ayrı sayaçla görünür kılınır, sessizce seçilmez.)
+#[test]
+fn kalem2_bant_kaniti_yokken_clamp_parity_sifirlamaz() {
+    let mut s = Sender::new();
+    s.set_establish_probe(false);
+    s.set_fec_loss_risk(FecLossRiskConfig::experimental_v1());
+    let s = drive(s, 80, gap_pattern());
+    // Bu sürücüde ölçülen bant çok küçüktür → clamp sıfırlamak isterdi.
+    let would_zero = s.diag_parity_budget_would_zero();
+    let levels = s.diag_spec_levels();
+    assert!(
+        levels[1] + levels[2] > 0,
+        "önkoşul: spekülatif kol öneri üretmeli: {levels:?}"
+    );
+    assert!(
+        would_zero > 0,
+        "dar bantta clamp sıfırlamak isterdi ve bu GÖRÜNÜR olmalı"
+    );
+    // Ve gerçekten sıfırlanmamış olmalı: son karar oranı > 0.
+    assert!(
+        s.diag_ts_sample().final_ratio > 0,
+        "kanıt yokken clamp parity'yi silmemeli: {:?}",
+        s.diag_ts_sample()
+    );
+}

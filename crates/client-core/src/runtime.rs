@@ -496,6 +496,8 @@ pub struct FateWindowDiag {
     /// silence_ns, continuity‰, forward_loss‰, return_impairment‰, direction_evidence,
     /// confidence‰, health, ack_samples, v2_samples)`.
     pub return_path: adaptive_transport::return_path::ReturnPathState,
+    /// [FAZ-2] `(repair_loss_not_arqed, parity_budget_clamped, parity_budget_would_zero)`.
+    pub fec_completeness: (u64, u64, u64),
     /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
     /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
     /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI · 6=oturum-kurulmadı(PreConverge).
@@ -585,6 +587,8 @@ pub struct ClientStats {
     /// [S1B] Canonical symbol serialize hatası — ULAŞILAMAZ olmalı (bounds koşu-öncesi typed).
     /// Sıfırdan farklıysa blok/esi hizası bozulmuştur; sessiz bozulma yerine görünür sayaç.
     pub frag_encode_failures: u64,
+    /// [FAZ-2 KALEM-1] Akış sonunda zero-dolgu ile kapatılan KISMİ FEC bloğu sayısı (Model-A).
+    pub fec_partial_blocks_closed: u64,
     /// [TEŞHİS] Yapı-gate'in karar tabanı (kapanış anındaki fotoğraf) — bkz. [`FateWindowDiag`].
     pub fate: FateWindowDiag,
     /// [DR-CS-3] Wire'a yazılan CS-probe (0 = bootstrap kapalı VEYA PreConverge hiç yaşanmadı).
@@ -960,7 +964,9 @@ async fn client_task(
     // bounded repair_store (en-eski düşer → o bloğun FecParity kararı başlık-only'e düşer).
     let mut cur_block: Vec<Vec<u8>> = Vec::new();
     let mut cur_block_id: u32 = 0;
-    let mut repair_store: BTreeMap<u32, Vec<RepairSymbol>> = BTreeMap::new();
+    // [FAZ-2 / KALEM-1] blok → (K_actual, repair'ler). K_actual kısmi/son blokta k_shape'ten
+    // küçüktür ve TEL BAŞLIĞINDA taşınmak zorundadır (alıcı Model-A zero-enjeksiyonunu ondan türetir).
+    let mut repair_store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
     const REPAIR_STORE_BLOCKS: usize = 64;
     // unit-store: unit_id → payload; varlık = outstanding. İlk-ACK'te düşer (sınır: cfg).
     let mut store: HashMap<u64, Vec<u8>> = HashMap::new();
@@ -1046,10 +1052,14 @@ async fn client_task(
                     if d.kind == TransmitKind::FecParity {
                         if let (Some(p), Some(hint)) = (fec.as_ref(), d.send_record) {
                             let SrLogicalRef::Fec { block_id, esi } = hint.logical_ref;
-                            let sym: Option<&[u8]> = repair_store
-                                .get(&block_id)
-                                .and_then(|rs| rs.iter().find(|r| r.esi == esi))
+                            let entry = repair_store.get(&block_id);
+                            let sym: Option<&[u8]> = entry
+                                .and_then(|(_, rs)| rs.iter().find(|r| r.esi == esi))
                                 .map(|r| r.bytes.as_slice());
+                            // [FAZ-2 / KALEM-1] K_actual tel başlığında: tam blokta k_shape,
+                            // kısmi/son blokta gerçek kaynak sayısı.
+                            let k_actual_wire = entry
+                                .map_or_else(|| u8::try_from(p.k_shape).unwrap_or(255), |(k, _)| *k);
                             if sym.is_some() {
                                 stats.fec_repairs_tx += 1;
                             } else {
@@ -1061,7 +1071,7 @@ async fn client_task(
                                     profile_id: p.profile_id,
                                     block_id,
                                     esi,
-                                    k_actual: u8::try_from(p.k_shape).unwrap_or(255),
+                                    k_actual: k_actual_wire,
                                     seq: (d.seq & 0xFFFF) as u16,
                                 },
                                 sym.unwrap_or(&[]),
@@ -1387,7 +1397,8 @@ async fn client_task(
                                 .collect();
                             if let Ok(reps) = RsSimdCodec.encode(p, &srcs) {
                                 stats.fec_blocks_latched += 1;
-                                repair_store.insert(cur_block_id, reps);
+                                repair_store
+                                    .insert(cur_block_id, (u8::try_from(p.k_shape).unwrap_or(255), reps));
                                 while repair_store.len() > REPAIR_STORE_BLOCKS {
                                     repair_store.pop_first();
                                 }
@@ -1426,6 +1437,64 @@ async fn client_task(
                 let now = elapsed_ns(start);
                 handle_rx!(&buf[..n], now);
             }
+        }
+    }
+
+    // ── [FAZ-2 / KALEM-1] KISMİ/SON BLOK KAPANIŞI (Model-A known-zero) ──────────────────────
+    // fec-core §6 NORMATİF: `known_zero_count = K_shape − K_actual`; **gönderici zero-slot'ları
+    // ENCODE'a katar (repair üretimi için), WIRE'a GÖNDERMEZ**. Eskiden blok YALNIZ tam
+    // dolduğunda kapanıyordu (`cur_block.len() == k_shape`) → akışın SONUNDAKİ eksik blok ve
+    // K'ya ulaşmayan kısa akışlar FEC korumasından TAMAMEN yoksundu (denetim B-2).
+    if let Some(p) = fec.as_ref() {
+        if !cur_block.is_empty() {
+            let k_actual = u8::try_from(cur_block.len()).unwrap_or(255);
+            let parity_wire = seam.sealed_len(HDR_FEC + p.e_usize()) as u64;
+            let planned_r: u16 = if let Some(r) = fec_manual_r {
+                let auth = session.sender_mut().open_fec_block_authority();
+                session
+                    .sender_mut()
+                    .close_fec_block_manual(auth, cur_block_id, r, parity_wire)
+                    .unwrap_or(0)
+            } else {
+                let snap = session.sender().controller_decision_snapshot();
+                let auth = session.sender_mut().open_fec_block_authority();
+                session
+                    .sender_mut()
+                    .fec_controller_latch(
+                        auth,
+                        snap,
+                        k_actual,
+                        p.r_code_max,
+                        cur_block_id,
+                        parity_wire,
+                    )
+                    .planned_r
+            };
+            if planned_r > 0 {
+                // Zero-slot dolgusu: ESI [K_actual, K_shape) canonical-zero (E byte). ENCODE'a
+                // girer, TELE ÇIKMAZ — alıcı bunları k_actual'dan türetip enjekte eder.
+                let zero = vec![0u8; p.e_usize()];
+                let mut srcs: Vec<SourceSymbol> = cur_block
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| SourceSymbol {
+                        esi: i as u16,
+                        bytes: b,
+                    })
+                    .collect();
+                for esi in cur_block.len()..p.k_shape_usize() {
+                    srcs.push(SourceSymbol {
+                        esi: esi as u16,
+                        bytes: &zero,
+                    });
+                }
+                if let Ok(reps) = RsSimdCodec.encode(p, &srcs) {
+                    stats.fec_blocks_latched += 1;
+                    stats.fec_partial_blocks_closed += 1;
+                    repair_store.insert(cur_block_id, (k_actual, reps));
+                }
+            }
+            cur_block.clear();
         }
     }
 
@@ -1507,6 +1576,11 @@ async fn client_task(
         sched: session.sender().diag_sched_summary(),
         preconverge_parity_blocked: session.sender().diag_preconverge_parity_blocked(),
         return_path: session.sender().diag_return_path(elapsed_ns(start)),
+        fec_completeness: (
+            session.sender().diag_repair_loss_not_arqed(),
+            session.sender().diag_parity_budget_clamped(),
+            session.sender().diag_parity_budget_would_zero(),
+        ),
         fec_latch_diag: {
             let d = session.sender().diag_fec_actuation();
             (
@@ -1926,6 +2000,12 @@ fn fec_ingest(
         repairs: BTreeMap::new(),
     });
     if is_repair {
+        // [FAZ-2 / KALEM-1 — MODEL-A] `K_actual` OTORİTESİ REPAIR shard'ıdır: v0 telinde source
+        // sembolleri DATA çerçevesiyle gider ve k_actual TAŞIMAZ (alıcı orada k_shape varsayar).
+        // Repair başlığı gerçek k_actual'ı taşır (§6 NORMATİF) → blok girdisi burada düzeltilir.
+        if k_actual > 0 && usize::from(k_actual) <= p.k_shape_usize() {
+            asm.k = k_actual;
+        }
         asm.repairs.entry(esi).or_insert(symbol);
     } else {
         asm.sources.entry(esi).or_insert(symbol);
@@ -1963,14 +2043,21 @@ fn fec_ingest(
                     bytes: b,
                 }))
                 .collect();
-            RsSimdCodec.reconstruct(p, &recv, 0)
+            // [FAZ-2 / KALEM-1] Model-A: `known_zero_count = K_shape − K_actual` canonical-zero
+            // shard decoder'a BİLİNEN SOURCE olarak enjekte edilir (rank bedava; §6). Eskiden
+            // sabit 0 veriliyordu → kısmi/son blok HİÇ decode edilemezdi.
+            let known_zero = p.k_shape_usize().saturating_sub(usize::from(asm.k));
+            RsSimdCodec.reconstruct(p, &recv, known_zero)
         };
         match result {
             Ok(recovered) => {
-                let k = slot.blocks.get(&block_id).map_or(k_actual, |a| a.k);
+                // [FAZ-2 / KALEM-1] birim-id eşlemesi K_SHAPE'e dayanır (gönderici blok_id'yi
+                // `id / k_shape` ile atar), K_actual'a DEĞİL — kısmi blokta `asm.k` kullanmak
+                // kurtarılan chunk'ı YANLIŞ birime bağlardı.
+                let k = u64::from(p.k_shape);
                 for r in recovered {
                     recovered_esis.push(r.esi);
-                    let unit_id = u64::from(block_id) * u64::from(k) + u64::from(r.esi);
+                    let unit_id = u64::from(block_id) * k + u64::from(r.esi);
                     let Ok(pfx) = SourcePrefix::parse(&r.bytes) else {
                         continue;
                     };

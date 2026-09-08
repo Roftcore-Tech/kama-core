@@ -1708,8 +1708,11 @@ pub struct Sender {
     diag_t_first_l1_ns: u64,
     diag_t_first_l2_ns: u64,
     diag_preconverge_parity_blocked: u64, // [KURULUŞ-GUARD] arbiter çıkışı PreConverge'de sıfırlandı
-    diag_first_l1_ctx: (u64, u64, u64),   // [EVIDENCE] (em, instant, persistent) ilk L1'de
-    diag_first_l2_ctx: (u64, u64, u64),   // [EVIDENCE] ilk L2'de
+    repair_loss_not_arqed: u64, // [FAZ-2/3] ARQ'ya SOKULMAYAN kayıp repair sayısı (salt gözlem)
+    diag_parity_budget_clamped: u64, // [FAZ-2/2] §8.5 bütçe clamp'inin bağladığı karar sayısı
+    diag_parity_budget_would_zero: u64, // [FAZ-2/2] clamp parity'yi sıfırlayacaktı (§11 çelişkisi)
+    diag_first_l1_ctx: (u64, u64, u64), // [EVIDENCE] (em, instant, persistent) ilk L1'de
+    diag_first_l2_ctx: (u64, u64, u64), // [EVIDENCE] ilk L2'de
     /// [HANDOFF ENSTRÜMANI] Son kararın anlık görüntüsü (zaman serisi örnekleyici okur).
     diag_last_ts: TsSample,
     /// [PERSIST ENSTRÜMANI] Yürürlükteki persistence ufku (son, tepe) ns.
@@ -1948,6 +1951,9 @@ impl Sender {
             diag_t_first_l1_ns: 0,
             diag_t_first_l2_ns: 0,
             diag_preconverge_parity_blocked: 0,
+            repair_loss_not_arqed: 0,
+            diag_parity_budget_clamped: 0,
+            diag_parity_budget_would_zero: 0,
             diag_first_l1_ctx: (0, 0, 0),
             diag_first_l2_ctx: (0, 0, 0),
             diag_last_ts: TsSample::default(),
@@ -3341,13 +3347,29 @@ impl Sender {
                         self.fate_estimator
                             .on_loss_evidence(p.unit.id, now_ns, guard);
                     }
-                    self.pending_lost.push_back(LostRec {
-                        seq,
-                        unit: p.unit,
-                        deadline_ns: now_ns,
-                        retx_count: p.retx_count,
-                        send_ns: p.send_ns, // [TUR-2a] un-loss kol-1 RTT için orijinal damga
-                    });
+                    // [FAZ-2 / KALEM-3 — REPAIR FATE AYRIMI] Kaybolan bir REPAIR shard'ı ARQ
+                    // kuyruğuna GİREMEZ. Parity `unit.id = esi` taşır (plan_fec_parity) ve ESI,
+                    // kaynak birim-id'lerinden FARKLI bir namespace'tir: `pending_lost`'a girerse
+                    // `plan_arq_retransmits` onu birim-id'si `esi` olan bir DATA gibi yeniden
+                    // gönderir → ürün runtime'ı `store.get(&esi)` ile YANLIŞ (ilk) kaynak birimi
+                    // retransmit eder. Aynı namespace tehlikesi fate-estimator tarafında zaten
+                    // tanınmıştı (yukarıdaki `origin == Data` koşulu); ARQ tarafında tanınmamıştı.
+                    //
+                    // Spec: repair'ler proaktif ve ACK-BAĞIMSIZDIR (fec-core §4/§6; engine §9 ARQ
+                    // yalnız orijinal DATA'yı kapsar) — kaybolan repair "eksik kalan redundans"tır,
+                    // yeniden iletilecek bir yük değil. Inflight'tan düşürme ve tombstone (geç-ACK
+                    // anlaşılsın) KORUNUR; yalnız ARQ kuyruğu atlanır.
+                    if p.origin == TransmitKind::FecParity {
+                        self.repair_loss_not_arqed = self.repair_loss_not_arqed.saturating_add(1);
+                    } else {
+                        self.pending_lost.push_back(LostRec {
+                            seq,
+                            unit: p.unit,
+                            deadline_ns: now_ns,
+                            retx_count: p.retx_count,
+                            send_ns: p.send_ns, // [TUR-2a] un-loss kol-1 RTT için orijinal damga
+                        });
+                    }
                     // [TUR-2b] tombstone: bounded, en-eski-önce eviction + audit.
                     while self.tombstones.len() >= TOMBSTONE_MAX {
                         match self.tombstone_order.pop_front() {
@@ -3601,6 +3623,50 @@ impl Sender {
         // Guard'ın belgelenmiş ilkesi kola değil TELE ÇIKAN PARITY'ye aittir (:3655-3659: "FEC ölçüm
         // olmadan aksiyon almaz"; PreConverge'de parity kıt token bütçesinde ORİJİNALLERLE yarışır ve
         // kuruluşu bozar). Bu yüzden guard arbiter ÇIKIŞINA uygulanır — üç kolu birden kapsar.
+        // [FAZ-2 / KALEM-2 — §8.5 BÜTÇE CLAMP'İ] `parity_final = min(fuzzy_parity, budget_cap,
+        // profile_cap)` (engine-spec §658-661, NORMATİF; TDD §5.5). `budget_cap = f(BtlBw)` ZATEN
+        // uygulanmıştı (`budget::budget_cap_permille`) ama HİÇBİR ÜRÜN ÇAĞIRANI YOKTU — yalnız
+        // tv_emergency testinden çağrılıyordu (denetim: WIRE). Dar bantta yüksek kayıp parity'yi
+        // PATLATAMAZ: 1 mbit'te cap 900‰ (bağlamaz), 64 kbit'te 64‰ (sert bağlar).
+        //
+        // TEK-ARBİTER İNVARYANTI KORUNUR: bu ikinci bir FEC otoritesi DEĞİL, arbiter ÇIKIŞINA
+        // uygulanan bir üst-sınırdır (yalnız küçültür, asla büyütmez). Kalibrasyon YAPILMADI —
+        // `BudgetConfig::fixture()` mevcut [CAL] değerleriyle bağlandı.
+        let final_ratio = {
+            let cfg = crate::budget::BudgetConfig::fixture();
+            let btlbw = self.btlbw.btlbw();
+            // KANIT YOKKEN CLAMP YOK: `btlbw()` örnek yokken 0 döner; 0'ı "bütçe yok" diye okumak
+            // FEC'i kuruluş fazında SESSİZCE kapatırdı. Ölçüm yokken üst-sınır profil tavanıdır
+            // (spec §8.5 cap'i BtlBw'nin FONKSİYONUDUR; BtlBw yoksa fonksiyon tanımsızdır).
+            let cap = if btlbw == 0 {
+                cfg.profile_cap_permille
+            } else {
+                crate::budget::budget_cap_permille(btlbw, &cfg)
+            };
+            let clamped = crate::budget::parity_final(final_ratio, cap, cfg.profile_cap_permille);
+            // ── SPEC-İÇİ ÇELİŞKİ (kayıtlı, sessizce çözülmedi) ──
+            // §8.5 formülü `cap = BtlBw×1000/budget_ref` dar bantta 0'a iner: `budget_ref =
+            // 125 kB/s` fixture'ıyla BtlBw < 125 B/s ⇒ cap 0‰. Ama §11 (NORMATİF) TAM O KÖŞEDE
+            // (sub-kbps, emergency) "minimal parity shard" ister ve ürünün MIN_RATE tabanı
+            // 31 B/s'tir. Yani formülün literal okuması, transport'un birincil hedef rejiminde
+            // FEC'i tamamen kapatır — §11 ile çelişir.
+            //
+            // KARAR (kalibrasyon DEĞİL): clamp yalnız KÜÇÜLTTÜĞÜNDE uygulanır; parity'yi SIFIRA
+            // indirecekse UYGULANMAZ ve ayrı sayaçla görünür kılınır. Böylece §8.5'in koruyucu
+            // etkisi (dar bantta parity patlamasın) kazanılır, §11'in tabanı yok edilmez.
+            // Sıfırlama vakasının politikası owner kararıdır (kapanış raporu, açık kalem).
+            if clamped == 0 && final_ratio > 0 {
+                self.diag_parity_budget_would_zero =
+                    self.diag_parity_budget_would_zero.saturating_add(1);
+                final_ratio
+            } else {
+                if clamped < final_ratio {
+                    self.diag_parity_budget_clamped =
+                        self.diag_parity_budget_clamped.saturating_add(1);
+                }
+                clamped
+            }
+        };
         let (final_ratio, reason) = if self.state == SenderState::PreConverge && final_ratio > 0 {
             self.diag_preconverge_parity_blocked =
                 self.diag_preconverge_parity_blocked.saturating_add(1);
@@ -3764,7 +3830,8 @@ impl Sender {
         let prev_state = self.state; // [TUR-3c] preemption-muhasebesi için
         let health = u32::try_from(self.ack_confidence_permille(now_ns)).unwrap_or(u32::MAX);
         let level = self.emergency.update(health, now_ns);
-        self.last_recovery = emergency::action(level, Framing::Tiny, &self.emergency_cfg);
+        self.last_recovery =
+            emergency::action(level, self.emergency_framing(), &self.emergency_cfg);
 
         let idle = self.tx_queue.is_empty()
             && self.inflight.is_empty()
@@ -4417,6 +4484,45 @@ impl Sender {
         }
     }
 
+    /// [FAZ-2 KALEM-4] Acil-durum kurtarma eyleminin framing'i. Spec §11 / TDD §5.6 iki kol tanımlar:
+    /// `Tiny` (tek datagram) → zaman-aralıklı D× KOPYA; `SegmentBlock` (çok-shard'lı blok framing)
+    /// → **minimal parity shard** (düşük r/k, ACK-bağımsız). Çağıran `Framing::Tiny`'yi SABİT
+    /// veriyordu; FEC ürün profilinde açık olduğundan blok framing MEVCUTTUR ve spec'in
+    /// segment-block kolu ulaşılamaz kalıyordu (denetim: `Framing::SegmentBlock` ve
+    /// `RecoveryAction::MinimalParity` "hiçbir yerden çağrılmıyor").
+    fn emergency_framing(&self) -> Framing {
+        match self.fec_mode {
+            FecActuationMode::Controller => Framing::SegmentBlock,
+            FecActuationMode::Manual { enabled } => {
+                if enabled {
+                    Framing::SegmentBlock
+                } else {
+                    Framing::Tiny
+                }
+            }
+        }
+    }
+
+    /// [FAZ-2 KALEM-2] §8.5 bant-türevli bütçe clamp'inin parity oranını KÜÇÜLTTÜĞÜ karar sayısı.
+    #[must_use]
+    pub fn diag_parity_budget_clamped(&self) -> u64 {
+        self.diag_parity_budget_clamped
+    }
+
+    /// [FAZ-2 KALEM-2] §8.5 clamp'inin parity'yi SIFIRLAYACAĞI (ve bu yüzden uygulanmadığı) karar
+    /// sayısı — §11 ile çelişen köşenin ölçüsü. `> 0` = owner kararı bekleyen rejimdeyiz.
+    #[must_use]
+    pub fn diag_parity_budget_would_zero(&self) -> u64 {
+        self.diag_parity_budget_would_zero
+    }
+
+    /// [FAZ-2 KALEM-3] Kaybolduğu ilan edilip ARQ kuyruğuna SOKULMAYAN repair shard sayısı.
+    /// `> 0` = repair/DATA fate ayrımı fiilen çalıştı (salt gözlem).
+    #[must_use]
+    pub fn diag_repair_loss_not_arqed(&self) -> u64 {
+        self.repair_loss_not_arqed
+    }
+
     /// [FAZ-1 DÖNÜŞ-YOLU] Bir ACK datagram'ı gözlendi. **Motor davranışını DEĞİŞTİRMEZ** —
     /// yalnız `diag_return_path()` çıktısını besler. Ürün runtime'ı `Event::AckReceived`'dan
     /// hemen ÖNCE çağırır; çağrılmaması motoru etkilemez (gözlem boş kalır).
@@ -4671,14 +4777,41 @@ impl Sender {
                     let (computed, clamped) =
                         compute_requested_r(s.ratio_permille, k_actual, profile_r_max);
                     if s.emergency {
-                        // Temporary safety interlock pending 1b/1d arbitration: requested-GÖRÜNÜR, planned=0.
-                        FecLatchResult {
-                            requested_ratio_permille: s.ratio_permille,
-                            computed_r: computed,
-                            clamped_r: clamped,
-                            planned_r: 0,
-                            same_event_eligible: true,
-                            suppression: Some(FecSuppressionReason::EmergencyPendingArbitration),
+                        // [FAZ-2 / KALEM-4 — SPEC UYUMU] Acil durumda davranış FRAMING'e bağlıdır
+                        // (engine §11 L771-772 / TDD §5.6 L584-585, NORMATİF):
+                        //   Tiny        → parity YOK, kurtarma zaman-aralıklı D× kopyayla yapılır
+                        //   SegmentBlock→ **minimal parity shard** (düşük r/k, ACK-bağımsız)
+                        // Kod her iki kolda da parity'yi 0'a düşürüyordu ("temporary safety
+                        // interlock pending 1b/1d arbitration") — yani segment-block kolunda
+                        // spec'in TERSİNİ yapıyordu (denetim tema B). `emergency::action` zaten
+                        // `MinimalParity { permille }` üretiyor; burada TÜKETİLİYOR.
+                        // Kalibrasyon YAPILMADI: oran `EmergencyConfig::fixture()` değeridir.
+                        let minimal = match self.last_recovery {
+                            RecoveryAction::MinimalParity { permille } => permille,
+                            _ => 0,
+                        };
+                        if minimal > 0 {
+                            let (mc, mclamped) =
+                                compute_requested_r(minimal, k_actual, profile_r_max);
+                            FecLatchResult {
+                                requested_ratio_permille: minimal,
+                                computed_r: mc,
+                                clamped_r: mclamped,
+                                planned_r: mclamped,
+                                same_event_eligible: true,
+                                suppression: None,
+                            }
+                        } else {
+                            FecLatchResult {
+                                requested_ratio_permille: s.ratio_permille,
+                                computed_r: computed,
+                                clamped_r: clamped,
+                                planned_r: 0,
+                                same_event_eligible: true,
+                                suppression: Some(
+                                    FecSuppressionReason::EmergencyPendingArbitration,
+                                ),
+                            }
                         }
                     } else {
                         FecLatchResult {

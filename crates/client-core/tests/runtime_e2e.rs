@@ -1038,3 +1038,69 @@ fn fec_v1_urun_defaultu_sinirli_politika() {
     );
     assert_eq!(cfg.structure_gate_level_permille, Some(250));
 }
+
+/// [FAZ-2 KALEM-1] Model-A kısmi/son blok: K_shape=8 iken YALNIZ 5 kaynak birim var (K_actual=5).
+/// Gönderici zero-slot'ları ENCODE'a katar (tele göndermez), alıcı `k_actual`'ı repair başlığından
+/// öğrenip known-zero enjekte eder. Kalıcı olarak silinen bir chunk FEC ile kurtarılmalı.
+/// Spec: fec-core §6 (NORMATİF, zorunlu POC: K_shape=8 × K_actual<K).
+#[tokio::test(flavor = "multi_thread")]
+async fn partial_block_below_k_is_coded_and_recovers_model_a() {
+    use client_core::runtime::FecRuntimeConfig;
+    const MSG_LEN: usize = 40; // 48 B chunk'a sığar → mesaj = 1 birim
+    let cfg = || RuntimeConfig {
+        max_unit_bytes: 48,
+        fec: Some(FecRuntimeConfig {
+            profile_id: 0x03, // K=8, R_max=4, E=64
+            manual_r: Some(4),
+        }),
+        drain_cap: Duration::from_millis(800),
+        ..RuntimeConfig::default()
+    };
+    // unit 2'nin DATA'sı KALICI düşer; repair'ler geçer.
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg(),
+        Box::new(fec_seam::DropUnitsSeam(&[2])),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam))
+        .await
+        .expect("client connect");
+
+    // 5 mesaj = 5 birim → blok K=8'e ULAŞMAZ (kısmi blok).
+    let msgs: Vec<Vec<u8>> = (0..5u8)
+        .map(|i| (0..MSG_LEN).map(|j| (j as u8).wrapping_add(i)).collect())
+        .collect();
+    for m in &msgs {
+        client.send(m.clone()).expect("offer");
+    }
+    // Birimler ana döngüye alınıp tele çıksın (aksi hâlde offer'lar kuyrukta kalır ve blok
+    // hiç oluşmaz — ilk denemede `unaccepted_offers: 5` ile yakalandı).
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    // Akış sonu → kısmi blok zero-dolgu ile kapanır, parity drain penceresinde tele çıkar.
+    let cs = client.shutdown().await;
+    assert_eq!(
+        cs.fec_partial_blocks_closed, 1,
+        "akış sonunda TAM OLARAK bir kısmi blok kapanmalı: {cs:?}"
+    );
+    assert!(cs.fec_repairs_tx > 0, "kısmi blok parity üretmeli: {cs:?}");
+
+    // Silinen birim FEC ile kurtarılmalı → 5 mesajın hepsi teslim.
+    let mut got = Vec::new();
+    while got.len() < 5 {
+        match tokio::time::timeout(Duration::from_secs(5), server.next_delivery()).await {
+            Ok(Some(d)) => got.push(d.payload),
+            _ => break,
+        }
+    }
+    let ss = server.shutdown().await;
+    assert!(
+        ss.fec_recovered_units >= 1,
+        "kalıcı silinen chunk Model-A kısmi blokta kurtarılmalı: {ss:?}"
+    );
+    assert_eq!(got.len(), 5, "5 mesajın hepsi teslim edilmeli: {ss:?}");
+    for m in &msgs {
+        assert!(got.contains(m), "byte-eş teslim: {ss:?}");
+    }
+}

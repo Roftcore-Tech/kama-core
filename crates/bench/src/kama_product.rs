@@ -403,7 +403,7 @@ fn print_activation(stats: &client_core::runtime::ClientStats) {
          spec_levels={:?} arbiter={:?} gate_opened={} ledger_peak_ppm={} spurious={} \
          establish_probe={} bootstrap_probe={} tail_probe={} rtt_samples={} state={} \
          data_denied={} retx_denied={} preconv_parity_blocked={} \
-         return_path=[bw={}B/s ack_int={}ms silence={}ms cont={}‰ fwd_loss={}‰ ret_impair={}‰ ret_ack_loss={}‰ dpa={} dir_ev={} conf={}‰ {:?} n={}/{}]",
+         return_path=[bw={}B/s ack_int={}ms silence={}ms cont={}‰ fwd_loss={}‰ ret_impair={}‰ ret_ack_loss={}‰ dpa={} dir_ev={} conf={}‰ {:?} n={}/{}] fec2=[repair_not_arqed={} clamp={} would_zero={} partial_blocks={}]",
         stats.tx_retx_bytes,
         stats.tx_dup_bytes,
         stats.tx_fec_bytes,
@@ -435,6 +435,10 @@ fn print_activation(stats: &client_core::runtime::ClientStats) {
         f.return_path.health,
         f.return_path.ack_samples,
         f.return_path.v2_samples,
+        f.fec_completeness.0,
+        f.fec_completeness.1,
+        f.fec_completeness.2,
+        stats.fec_partial_blocks_closed,
     );
 }
 
