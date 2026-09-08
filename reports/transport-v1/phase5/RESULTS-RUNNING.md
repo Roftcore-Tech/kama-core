@@ -38,3 +38,65 @@ Kama/quinn'in tam tel muhasebesiyle DOĞRUDAN kıyaslanamaz (metodoloji §10).*
 ### T0 HÜKMÜ: **COMPARABLE / PARITY**
 Birincil metrikte üç kol da tavanda ve güven aralıkları özdeş. Kontrol hücresi amacını
 gerçekleştirdi: **Kama'nın hostile uzmanlaşması sağlıklı yolda regresyon üretmiyor.**
+
+---
+
+## T1a — RANDOM LOSS (`p1_loss50`: loss 50% rate 100kbit, çift yön) · N=30 · D=20s
+
+| kol | n | claim | completion(20s) medyan | IQR | CI | outcome | blackout | stall |
+|---|---|---|---|---|---|---|---|---|
+| kama-v1-full | 30 | final | **1.000** | [1.000,1.000] | [1.000,1.000] | blackout=18 completed=10 deadline-miss=2 | 18/30 en uzun 15.0s | 18/30 CI[0.406,0.773] |
+| quinn-reliable-stream | 30 | final | 0.900 | [0.470,1.000] | [0.530,1.000] | blackout=25 completed=2 conn-fail=1 timeout=2 | 27/30 en uzun 18.0s | 28/30 CI[0.779,0.992] |
+| tcp-default | 30 | final | 0.120 | [0.050,0.550] | [0.060,0.510] | blackout=26 conn-fail=1 timeout=3 | 29/30 en uzun 26.0s | 30/30 CI[0.884,1.000] |
+
+Deadline eğrisi (medyan): **D=5s** kama 0.940 / quinn 0.220 / tcp 0.040 —
+**D=10s** kama 0.990 / quinn 0.510 / tcp 0.060 — **D=20s** kama 1.000 / quinn 0.900 / tcp 0.120.
+
+### Varsayımsız dağılım ifadeleri (sıra-tabanlı, Gaussian varsayımı YOK)
+
+| | kama-v1-full | quinn | tcp |
+|---|---|---|---|
+| min | **0.970** | 0.000 | 0.000 |
+| medyan | **1.000** | 0.920 | 0.125 |
+| ≥0.99 olan koşu | **28/30** | 11/30 | 2/30 |
+| <0.50 olan koşu (felaket) | **0/30** | 8/30 | 20/30 |
+
+* Kama'nın **en kötü koşusu (0.970), quinn'in medyanının (0.920) ÜSTÜNDE.**
+* `P(Kama koşusu > quinn koşusu) = 0.789` · `P(Kama koşusu > TCP koşusu) = 0.958` (0.5 = fark yok).
+* Kama hiçbir koşuda %50'nin altına düşmedi; quinn 8, TCP 20 koşuda düştü.
+
+### Aktivasyon (medyan) — ÖN-KAYITLI BEKLENTİ YANLIŞLANDI
+
+```
+parity_emitted = 0   parity_token_denied = 0   ← yapı-gate HİÇ açılmadı
+retx = 95   dup = 9   tail_probe = 11   recover_arq = 8   state_transitions = 18
+srtt = 99.2 ms   btlbw = 8.1 kB/s   fwd_loss = 496‰ (enjekte %50)   ret_ack_loss = 658‰
+tel: data = 28 300 B   retx = 26 427 B   parity = 0 B
+```
+
+Ön-kayıt §9'da T1a için *"yapı-gate açılır → parity; spekülatif L1/L2"* yazmıştım.
+**Ölçüm bunu yanlışladı:** %50 bağımsız kayıpta parity ne ÜRETİLDİ ne de ÖNERİLİP REDDEDİLDİ
+(`denied = 0`). Kama bu hücreyi **saf ARQ ile, sıfır FEC ile** kazandı. Faz 1–4 boyunca
+kablolanan kodlama alt-sistemi bu hücreye hiçbir katkı yapmadı. Tahmin geriye dönük
+düzeltilmiyor; sapma olduğu gibi kaydediliyor.
+
+Bağlam (Aşama A gözlemiyle tutarlı): iid kayıp hücrelerinde yapı-gate kapalı kalıyor
+(T1a %50 → parity 0, T1b %80 → parity 0), buna karşılık korelasyonlu/gemodel hücrede açılıyor
+(T2a → parity 22, denied 1943). Bu, `Q18Iid` yapı politikasının bir IID-yapı dedektörü olmasıyla
+tutarlıdır. **Faz-5'te ayarlama YAPILMAZ**; T2 sonucuyla birlikte sınıflandırılacaktır.
+
+### Tel maliyeti
+kama data 28.3 kB + retx 26.4 kB ≈ **54.7 kB** · quinn **56.5 kB** · tcp 26.8 kB (uygulama
+katmanı; çekirdek trafiği görünmez, DOĞRUDAN kıyaslanamaz — metodoloji §10).
+Kama, quinn'den **%3 daha az** tel harcayarak completion'ı 0.900 → 1.000'e çıkardı.
+
+### Anlam farkı (NON-NORMALIZED — zorunlu beyan)
+quinn ve TCP **tam sıralı akış** garantisi verir; Kama **mesaj granülünde sırasız** teslim eder.
+Kama'nın üstünlüğünün bir kısmı doğrudan bu **daha zayıf garantiden** gelir: sıralı akışta tek
+bir kayıp ardındaki tüm teslimleri bloklar (head-of-line), mesaj granülünde bloklamaz. Bu fark
+normalize EDİLMEMİŞTİR ve edilmemelidir; sonuç bu beyanla birlikte okunmalıdır.
+
+### T1a HÜKMÜ: **KAMA DOMINATES**
+Birincil metrikte üç deadline'da da her iki rakibi geçti; en kötü koşusu quinn'in medyanının
+üstünde, felaket koşusu yok (0/30 vs 8/30 ve 20/30). Üstünlük **kodlamadan değil, ARQ +
+mesaj-granülü tesliminden** geliyor — bu, hücrenin en önemli bulgusudur.
