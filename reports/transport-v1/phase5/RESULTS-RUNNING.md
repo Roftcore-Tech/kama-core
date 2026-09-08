@@ -303,3 +303,50 @@ Sınıflandırıldı, ayarlanmadı.
 ### T2b HÜKMÜ: **COMPARABLE / PARITY**
 quinn ile ayrışma yok (`P = 0.533`, örtüşen CI, iki medyan da 1.000). TCP'ye karşı Kama açık
 üstün (medyan 1.000 ↔ 0.430, `P = 0.751`). **Önceki üstünlük iddiası bu hücrede geri çekildi.**
+
+---
+
+## T3a — DÜŞÜK BANT (`h2_cell`: `delay 300ms 200ms distribution normal loss 25% rate 8kbit`, çift yön) · N=30 · D=20s · geo 30×64B
+
+| kol | completion(20s) medyan | min | CI | ≥0.99 | <0.50 | blackout | stall + CI |
+|---|---|---|---|---|---|---|---|
+| kama-v1-full | **1.000** | **0.967** | [1.000,1.000] | **29/30** | **0/30** | 28/30 | 28/30 CI[0.779,0.992] |
+| quinn-reliable-stream | **1.000** | 0.000 | [0.967,1.000] | 18/30 | 5/30 | 30/30 | 30/30 CI[0.884,1.000] |
+| tcp-default | **1.000** | 0.067 | [1.000,1.000] | 22/30 | 7/30 | 30/30 | 30/30 CI[0.884,1.000] |
+
+`P(kama > quinn) = 0.688` · `P(kama > tcp) = 0.621`.
+Deadline eğrisi: **5 s** kama 0.900 / quinn 0.200 / tcp 0.233 — **10 s** 1.000 / 0.933 / 0.433 —
+**20 s** 1.000 / 1.000 / 1.000.
+
+### Ön-kayıtlı RİSK gerçekleşmedi — ve sebebi ölçülebilir
+
+Ön-kayıt §10.6'da açıkça yazmıştım: *"Kama'nın parity'si dar bandı israf ederse Kama
+KAYBEDEBİLİR — bu gerçek bir risk olarak kaydediliyor."*
+
+**Gerçekleşmedi.** Sebep telemetride görünüyor: `parity_emitted = 0`, `parity_bytes = 0` —
+yapı-gate bu hücrede hiç açılmadı, dolayısıyla dar banda **hiç parity harcanmadı**.
+
+Tel maliyeti: kama 2 730 B data + 910 B retx = **3.64 kB** ↔ quinn **6.36 kB** ↔ tcp 2.28 kB
+(uygulama katmanı, kıyaslanamaz). Kama, quinn'den **%43 daha az tel** harcadı.
+
+**Bağlantı kaydı:** T1'de "iid kayıpta gate hiç açılmıyor" bir eksiklik gibi görünüyordu; T3a'da
+aynı davranış **koruyucu** çıktı — dar bantta kodlama israfını engelledi. Aynı mekanizmanın iki
+rejimde zıt işaretli sonuç vermesi, kodlama politikasının Faz-6'da tek bir "iyi/kötü" etiketiyle
+değerlendirilemeyeceğini gösterir. Ayarlama YAPILMADI.
+
+### §8.5 / §11 çelişki köşesi
+`would_zero = 0` (btlbw medyan 651 B/s ≫ 124 B/s köşesi) — ön-kayıtlı beklentiyle uyumlu,
+bu hücrede spec çelişkisine GİRİLMEDİ.
+
+### Aktivasyon
+`parity=0 denied=0 retx=10 dup=1.5 probes=0 recover_arq=7` ·
+srtt=2193 ms (300 ms gecikme + 8 kbit kuyruk serileşmesi) · btlbw=651 B/s ·
+fwd_loss=350‰ (enjekte %25 üzerinde — jitter'lı yolda muhafazakâr tahminci) ·
+ret_ack_loss=368‰.
+
+### T3a HÜKMÜ: **COMPARABLE / PARITY**
+Birincil deadline'da üç medyan da 1.000 ve CI'lar örtüşüyor → medyan üstünlüğü İDDİA EDİLMEZ.
+Ancak dağılım Kama lehine belirgin: **en kötü koşu 0.967 ↔ 0.000 / 0.067**, felaket koşusu
+**0/30 ↔ 5/30 ↔ 7/30**, ve D ≤ 10 s'te Kama her iki rakibin de çok önünde. Bu üstünlük
+CI-ayrık DEĞİLDİR (0/30 CP[0,0.116] ile 5/30 CP[0.056,0.347] hafif örtüşür), bu yüzden
+hüküm parite olarak bırakılmıştır — gözlem güçlü ama istatistiksel olarak ayrık değil.
