@@ -143,7 +143,7 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
     // Bilinmeyen profil: birim tavanını kısıtlama — `validate_fec` koşu-öncesi typed reddedecek.
     // FEC açıkken birim tavanı = profilin symbol kapasitesi (ÜRÜN PROFİLİYLE AYNI); payload daha
     // küçükse davranış değişmez (mesaj tek chunk kalır) ama config v1'den SAPMAZ → manifest
-    // "kama-v1-full" diyebilir. FEC kapalıyken birim = payload (kol zaten v1 değil).
+    // client_core::runtime::TRANSPORT_V1_PROFILE_ID diyebilir. FEC kapalıyken birim = payload (kol zaten v1 değil).
     let unit = profile_id.and_then(fec_chunk_capacity).unwrap_or(payload);
     // [DENETİM B-5] TEK DOĞRULUK KAYNAĞI: ürün v1 profilinden başla, YALNIZ açık override uygula.
     // Eskiden burada `RuntimeConfig { .. }` elle kuruluyordu; ürün default'ları (IW 2400,
@@ -338,7 +338,7 @@ fn profile_delta(c: &RuntimeConfig) -> Vec<String> {
 fn print_manifest(role: &str, c: &RuntimeConfig) {
     let delta = profile_delta(c);
     let profile = if delta.is_empty() {
-        "kama-v1-full"
+        client_core::runtime::TRANSPORT_V1_PROFILE_ID
     } else {
         "kama-custom"
     };
@@ -652,7 +652,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     // disiplinine bırakılmaz. Tek bir alan bile saparsa kimlik `kama-custom` olur.
     let profile_delta_v = profile_delta(&rt_cfg);
     let profile_id_label = if profile_delta_v.is_empty() {
-        "kama-v1-full".to_string()
+        client_core::runtime::TRANSPORT_V1_PROFILE_ID.to_string()
     } else {
         "kama-custom".to_string()
     };

@@ -660,6 +660,10 @@ Kanonik kurallar (TDD §5.3 ile birebir):
 available_redundancy_budget = f(BtlBw, mevcut tx ihtiyacı)   [CAL]
 parity_final = min(fuzzy_parity, budget_cap, profile_cap)
   → düşük bantta yüksek loss bile parity'yi patlatamaz (dar bandı FEC israf etmez).
+  → [AMENDMENT-3] budget_cap YALNIZ KÜÇÜLTÜR, SIFIRLAMAZ: budget_cap == 0 ∧ fuzzy_parity > 0 ise
+    clamp UYGULANMAZ (fuzzy_parity aynen geçer) ve `diag_parity_budget_would_zero` sayılır.
+    Gerekçe + §11 ilişkisi: bu bölümün sonundaki AMENDMENT-3 notu ve
+    docs/transport-v1/adr/ADR-minimal-parity-exception.md.
 send_rate_final = clamp(fuzzy_send_rate, [MIN_RATE, min(BtlBw_based_cap, profile_cap)])   MIN_RATE=[CAL]
   → [R8 işaret levhası] PRE_CONVERGE'de MIN_RATE floor UYGULANMAZ (MUST-NOT-APPLY) → cold-start pacing
     floor = PRE_CONVERGE_FLOOR_BW (§3.3-A / §16.1 / Ek-B). (Kural burada da işaretli — uzakta yazılıp
@@ -793,8 +797,23 @@ GEÇİŞ KARARLILIĞI — RETREAT HYSTERESIS (NORMATİF, KİLİTLİ — asimetri
                           de-escalate→re-escalate döngüsü; dwell bunu zamanla ayırır, duplication'ın
                           ölçüm etkisi sindirilene dek mode kilitli).
   Marjlar (X, Y, min_dwell) = [CAL] fixture (netem baseline'da kalibre; mekanizma [STD:Schmitt/kontrol-teorisi]).
-duplication/parity yine available_redundancy_budget ile clamp (§8.5).
+duplication/parity yine available_redundancy_budget ile clamp (§8.5).   [AMENDMENT-3: BAĞLAYICI DEĞİL — aşağı bkz.]
 ```
+
+> **[AMENDMENT-3] (impl-driven, gerekçeli — kod-spec tutarlılığı; Faz-6 dondurma, 2026-09-11):**
+> §8.5 NORMAL adaptif FEC bütçesini yönetir. §11 MinimalParity, **dar ve kendi kapılarıyla sınırlı bir
+> acil-durum istisnasıdır**; §8.5 bütçe kısıtına TABİ DEĞİLDİR (yukarıdaki "yine §8.5 ile clamp" satırı
+> bu istisna için bağlayıcı değildir). İstisnanın kapıları — doğrulanmış uygulama, `sender.rs`
+> `fec_controller_latch` emergency dalı: (1) fuzzy mod = EMERGENCY_FORWARD_REDUNDANCY
+> (loss HIGH ∧ bw LOW ∧ ack_confidence LOW), **VE** (2) retreat-hysteresis merdiveni ≥ Dup2
+> (health < X), **VE** (3) framing = segment-block. Üçü birden sağlanınca parity oranı
+> `EmergencyConfig` sabitidir (Dup2 → 100‰, Dup3 → 200‰), yalnız profil `r_code_max` ile kırpılır ve
+> NORMAL oranın YERİNE geçer (toplanmaz) — tek latch yolu, ikinci bir FEC emitörü YOKTUR. §8.5'in
+> sıfırlama-reddi (yukarıdaki AMENDMENT-3 satırı) ise NORMAL yolun ayrı bir kuralıdır; iki mekanizma
+> aynı köşede farklı kapılarla çalışır ve birbirini tetiklemez. Sınırlar: (a) §8.5 sıfırlama-reddi ve
+> §11 istisnası birbirinden BAĞIMSIZDIR — "§8.5 sıfırlayınca §11 devreye girer" DEĞİLDİR; (b) Faz-5
+> T0–T7 kampanyasında (990 koşu) RECOVER_FWD/§11 yolu HİÇ ateşlemedi (`recover_fwd_entries = 0`,
+> 330/330 Kama koşusu) — istisna tel-doğrulanmıştır (tv_emergency), saha-doğrulanmamıştır.
 
 ---
 

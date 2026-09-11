@@ -789,6 +789,10 @@ pub struct FecActuationDiag {
     pub authority_mode: FecActuationMode,
     pub last_latch: Option<FecLatchResult>,
     pub latch_event_index: u64,
+    /// [FAZ-6 §1.3] SALT GÖZLEM — öneri > 0 iken `compute_requested_r` r=0 verdiği için HİÇ parity
+    /// çerçevesi kurulmayan latch sayısı (baskılama yok, pacer reddi yok: "maddeleşmeyen öneri").
+    /// Hiçbir kontrol yolu OKUMAZ; `parity_emitted=0 ∧ denied=0` ikilisini "hiç önerilmedi"den ayırır.
+    pub rounded_to_zero_count: u64,
     pub no_eligible_decision_count: u64,
     pub decision_event_mismatch_count: u64,
     pub no_rule_zero_count: u64,
@@ -1589,6 +1593,7 @@ pub struct Sender {
     instance_id: u64,           // Commit-K: process-yerel Sender-kimliği (yabancı-witness-reddi)
     fec_authority_generation: u64, // Commit-K: monoton açılış-generation (saturating)
     last_latch: Option<FecLatchResult>,
+    latch_rounded_to_zero: u64, // [FAZ-6 §1.3] salt gözlem; hiçbir karar okumaz
     latch_event_index: u64,
     no_eligible_decision_count: u64,
     decision_event_mismatch_count: u64,
@@ -1889,6 +1894,7 @@ impl Sender {
             instance_id: NEXT_SENDER_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             fec_authority_generation: 0,
             last_latch: None,
+            latch_rounded_to_zero: 0,
             latch_event_index: 0,
             no_eligible_decision_count: 0,
             decision_event_mismatch_count: 0,
@@ -4943,6 +4949,11 @@ impl Sender {
         };
         // Commit-K: STAGING — planned-parity witness-otoritesiyle-kuyruklanır (izin-kaynağı=bu-latch;
         // sonraki-global-mode-değişimi-bastıramaz). planned_r=0 → kuyruk-dokunulmaz.
+        // [FAZ-6 §1.3] SALT GÖZLEM: öneri vardı, baskılanmadı, ama r=0'a yuvarlandı → maddeleşmedi.
+        // Faz-5 BULGU FEC-1'in ölçüm boşluğunu kapatır; hiçbir kontrol kararı bu sayacı okumaz.
+        if r.requested_ratio_permille > 0 && r.planned_r == 0 && r.suppression.is_none() {
+            self.latch_rounded_to_zero = self.latch_rounded_to_zero.saturating_add(1);
+        }
         for esi in 0..r.planned_r {
             self.push_parity_authorized(
                 block_id,
@@ -4975,6 +4986,7 @@ impl Sender {
             authority_mode: self.fec_mode,
             last_latch: self.last_latch,
             latch_event_index: self.latch_event_index,
+            rounded_to_zero_count: self.latch_rounded_to_zero,
             no_eligible_decision_count: self.no_eligible_decision_count,
             decision_event_mismatch_count: self.decision_event_mismatch_count,
             no_rule_zero_count: self.no_rule_zero_count,

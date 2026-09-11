@@ -125,7 +125,7 @@ impl RunManifest {
     /// Kanonik Kama profili mi (sapma yok)?
     #[must_use]
     pub fn is_canonical_kama(&self) -> bool {
-        self.arm == "kama-v1-full" && self.profile_delta.is_empty()
+        self.arm == client_core::runtime::TRANSPORT_V1_PROFILE_ID && self.profile_delta.is_empty()
     }
 
     /// [FAZ-4 §17] KIYAS DENETİMİ — İKİ AYRI SINIF, karıştırılmaz.

@@ -595,7 +595,7 @@ IF loss HIGH  AND  bandwidth LOW  AND  ack_confidence LOW:
       geç koruma = kayıp; de-escalate min_dwell [CAL] — erken iniş→re-escalate osilasyonunu keser).
       Gerekçe+detay: engine spec §11 (KİLİTLİ). Marjlar [CAL:netem].
 ```
-> Bu mod ne "hep ARQ" ne "hep FEC"dir; **ACK-bağımsız forward kurtarma**dır ve path iyileşince fuzzy tarafından geri çekilir — geri çekilme **asimetrik hysteresis'le** (yukarıda; tek-eşik salınımı yasak). `parity/duplication` yine `available_redundancy_budget` ile clamp'lenir (§5.5).
+> Bu mod ne "hep ARQ" ne "hep FEC"dir; **ACK-bağımsız forward kurtarma**dır ve path iyileşince fuzzy tarafından geri çekilir — geri çekilme **asimetrik hysteresis'le** (yukarıda; tek-eşik salınımı yasak). `parity/duplication` yine `available_redundancy_budget` ile clamp'lenir (§5.5). **[AMENDMENT-3]:** bu cümle §11 MinimalParity istisnası için BAĞLAYICI DEĞİLDİR — istisna kendi üç kapısıyla sınırlıdır ve §5.5 bütçesine tabi değildir; normatif metin engine-spec §11 AMENDMENT-3 ve `docs/transport-v1/adr/ADR-minimal-parity-exception.md`.
 
 ### 5.4 Loss-Decoupling YAPISAL (INV-RATE-1 fuzzy'ye gömülü)
 > **NORMATİF:** `send_rate` çıktısı YALNIZCA bandwidth + queue_delay membership'ine bağlıdır; **loss_rate, rate çıktısının girdisi DEĞİLDİR.** Böylece "loss alone MUST NOT reduce rate" fuzzy tasarımın içine gömülüdür (kanal kaybı FEC/ARQ'yu etkiler, rate'i değil). queue_delay/RTprop inflation/delivery collapse rate'i düşürür.
