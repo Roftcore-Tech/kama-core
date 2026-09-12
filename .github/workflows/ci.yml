@@ -14,10 +14,22 @@ name: core-ci
 #   CI-06  BUL-06 — satır-kapsamı kapısı (ratchet).
 #   CI-09  her job'a timeout.
 
+# KAPSAM (2026-09-05, Yaaz): push trigger main-only idi → PR'sız dallar CI görmüyordu
+# ([ÖLÇÜLDÜ] d1-sprint5c 224 commit CI'sız). Artık HER dal, HER push:
+#   - feature dalı push  → quality (fmt + clippy ×2 + test ×4)  — hızlı geri bildirim
+#   - PR + main          → tam set (semantic-matrix, miri, asan, msan, coverage, security,
+#                          aead-differential, fuzz-smoke)  — merge kapısı DEĞİŞMEDİ
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
+  workflow_dispatch:
+
+# Aynı dala üst üste push → eski koşum iptal (dakika tasarrufu). main ve PR merge-ref'i
+# iptal edilmez (kapı kanıtı yarım kalmasın).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name == 'push' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -75,6 +87,7 @@ jobs:
   # vekili DEĞİLDİR. Her konfigürasyon ayrı build+clippy+test edilir; sayaçlar görünür;
   # 0-test-binary = hard-fail.
   semantic-matrix:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 90           # CI-09
     strategy:
@@ -121,6 +134,7 @@ jobs:
 
   # ── CI-02: miri, GERÇEK bir hedefle (eski `-p crypto -p ccr-codec` hedefi 0 test koşuyordu) ──
   miri:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20           # CI-09
     steps:
@@ -141,6 +155,7 @@ jobs:
 
   # ── CI-03: AddressSanitizer ──
   asan:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30           # CI-09
     steps:
@@ -168,6 +183,7 @@ jobs:
   # Rust `-Zsanitizer=undefined` DESTEKLEMİYOR (UBSan yok); MSan bu risk sınıfının doğru aracıdır.
   msan:
     name: msan (uninitialized memory, SIMD deps)
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -194,6 +210,7 @@ jobs:
   # sonrası büyüyen yüzeyde YENİDEN ölçülüp ratchet'lenene kadar continue-on-error (bilinçli,
   # geçici — ilk yeşil ölçümden sonra bu satır kaldırılıp eşik güncellenmeli).
   coverage:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45           # CI-09
     continue-on-error: true
@@ -209,6 +226,7 @@ jobs:
 
   # ── Statik güvenlik kapıları ──
   security:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15           # CI-09
     steps:
@@ -223,6 +241,7 @@ jobs:
 
   # ── KATMAN-3 (DR-5): RustCrypto == libsodium AEAD differential-oracle ──
   aead-differential:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20           # CI-09
     steps:
@@ -235,6 +254,7 @@ jobs:
 
   # ── CI-08 (PR kolu): fuzz smoke — 11 hedefin BİRLEŞİMİ (P3 5 + SR-STR-CORE-001 6) ──
   fuzz-smoke:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45           # CI-09
     steps:
