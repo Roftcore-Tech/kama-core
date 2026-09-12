@@ -16,7 +16,8 @@ name: core-ci
 
 # KAPSAM (2026-09-05, Yaaz): push trigger main-only idi → PR'sız dallar CI görmüyordu
 # ([ÖLÇÜLDÜ] d1-sprint5c 224 commit CI'sız). Artık HER dal, HER push:
-#   - feature dalı push  → quality (fmt + clippy ×2 + test ×4)  — hızlı geri bildirim
+#   - feature dalı push  → quality'nin hızlı kısmı (fmt + clippy ×2 + default test + sealed-type kanıtı)
+#                          all-features / no-default / release / soak adımları PR + main'de
 #   - PR + main          → tam set (semantic-matrix, miri, asan, msan, coverage, security,
 #                          aead-differential, fuzz-smoke)  — merge kapısı DEĞİŞMEDİ
 on:
@@ -69,18 +70,22 @@ jobs:
             || { echo "::error::K-WIRE-SEALED-TYPE-1 kapisi 0 test kosuyor (BUL-03 regresyonu)"; exit 1; }
 
       - name: test (all-features)
+        if: github.event_name != 'push' || github.ref == 'refs/heads/main'
         run: cargo test --workspace --all-features
 
       # CI-05
       - name: test (no-default-features)
+        if: github.event_name != 'push' || github.ref == 'refs/heads/main'
         run: cargo test --workspace --no-default-features
 
       # CI-04 — sevk edilen konfigürasyon
       - name: test (all-features, release)
+        if: github.event_name != 'push' || github.ref == 'refs/heads/main'
         run: cargo test --workspace --all-features --release
 
       # SOAK — uzun-oturum bellek kararlılığı. [ÖLÇÜLDÜ] 0,27 s release.
       - name: soak (uzun oturum bellek kararlılığı)
+        if: github.event_name != 'push' || github.ref == 'refs/heads/main'
         run: cargo test -p adaptive-transport --test soak_long_session --release
 
   # DR-RATE-RAMP-2B §A1 / AŞAMA-2 (M1 kararı — KALDIRILMAZ): `--all-features` default build'in
