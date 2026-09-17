@@ -544,18 +544,18 @@ ack_confidence ∈ {LOW, MED, HIGH}   (delivered-ACK / beklenen-ACK örneklemesi
 fec_parity_ratio     [0..1]   (0 = FEC yok; Reed-Solomon erasure parity oranı)
 arq_aggressiveness   [0..1]
 send_rate (pacing)   bps      (token-bucket)
-compress             {on/off}
+compress             {on/off}   [AMENDMENT-4: RETIRED — transport sıkıştırmaz; alan kalıntı, tüketilmez]
 ```
 
 ### 5.3 Kural Tabanı (anahtar kurallar)
 ```
-loss LOW                          → fec=0,    arq=light,  rate↑,            compress=policy
-loss HIGH, bw HIGH, jitter LOW    → fec=high, arq=moderate (RS erasure),    compress=policy
+loss LOW                          → fec=0,    arq=light,  rate↑,            compress=—(retired, AMENDMENT-4)
+loss HIGH, bw HIGH, jitter LOW    → fec=high, arq=moderate (RS erasure),    compress=—(retired, AMENDMENT-4)
 loss MED,  bw MED                 → fec=med,  arq=med
 loss LOW,  jitter HIGH            → fec=0,    arq=reorder-tolerant (RTO↑, fast-rtx↓)
 bw LOW, queue_delay HIGH          → rate↓ (congestion; fec CAP)
 loss HIGH, bw LOW, jitter HIGH    → mode = EMERGENCY_FORWARD_REDUNDANCY (§5.6), rate=minimal-reliable,
-  (EN KÖTÜ — NORMATİF)              compress=ON.  Doktrin: "ulaştırmak > hızlı ulaştırmak."
+  (EN KÖTÜ — NORMATİF)              (compress: transport dışı, AMENDMENT-4).  Doktrin: "ulaştırmak > hızlı ulaştırmak."
                                     (pure-ARQ DEĞİL — %80 bidirectional loss'ta ACK dönüş yolu da ~%80
                                      kayıplı → round-trip ~%4 → ARQ sürünür; ACK'e bağımsız forward kurtarma.)
 ```
@@ -644,16 +644,18 @@ D — CONTROL/HOP:            control → per-hop Noise/TLS/AEAD → SRC → UDP
 
 ---
 
-## 8. Sıkıştırma (yeniden açıldı — NORMATİF)
+## 8. Sıkıştırma — TRANSPORT'UN İŞİ DEĞİLDİR [AMENDMENT-4]
 
-> Eski "CRIME → kapalı" kararı GERİ ALINDI. CRIME = saldırganın seçili-plaintext'i sırla **aynı sıkıştırma bağlamına** enjekte edip ciphertext uzunluğunu gözlemesi + HTTP cookie oracle. E2E mesajda böyle oracle YOK, HTTP yüzeyi YOK → CRIME geçersiz.
-
-```
-compress = zstd; metin mesaj için default ON (düşük bantta büyük kazanç); fuzzy çıktısı (Section 5).
-Ses/video: codec'te zaten sıkıştırılı → ÇİFT sıkıştırma YOK.
-Residual: sıkıştırma uzunluğu içeriğe bağlı → uzunluk-tabanlı trafik analizi (CRIME DEĞİL, metadata).
-  Bu zaten kabul edilen hub-metadata katmanında (sealed-sender Beta+); padding Beta+ knob.
-```
+> **[AMENDMENT-4] (mimari-driven, sahip kararı 2026-09-17 — iki-katmanlı kripto topolojisi):**
+> **Sıkıştırma transport'un işi DEĞİLDİR; transport ciphertext görür** (E2E kripto transport'un
+> ÜSTÜNDE, birimler transport'a opak gelir). Sahibi **application/RPC mesaj-hazırlama
+> alt-katmanıdır** (`application-protocol-and-rpc-spec.md` §3, karşı-pointer orada). **Fuzzy
+> controller sıkıştırma kararı VERMEZ.** Bu bölümün önceki normatif metni (zstd, metin için default
+> ON, fuzzy çıktısı) ve CRIME analizi ile INV-COMPRESS-1 **oraya TAŞINMIŞTIR**; burada normatif
+> hüküm kalmamıştır. Donmuş transport kodunda sıkıştırma YOKTUR (zstd bağımlılığı yok);
+> `FusionDecision.compress` alanı üretilen ama HİÇBİR yerde tüketilmeyen kalıntı bir çıktıdır —
+> ADR-17 golden-vektör kararlılığı için v1'de bırakılmıştır, kaldırılması v1.x temizliğidir
+> (`docs/transport-v1/EVOLUTION.md` §9.8).
 
 ---
 
@@ -724,7 +726,7 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | INV-WIRE-2 | Per-mesaj imza YOK (Ed25519 yalnızca cert; N-türevi ss_s static-DH auth; SIGNED_CONTROL istisna). |
 | INV-RATE-1 | Loss alone MUST NOT reduce rate — fuzzy'de yapısal (loss, rate çıktısının girdisi değil). |
 | INV-RATE-2 | Rate = SRC + fuzzy controller; recovery (ARQ/FEC/karma/none) da fuzzy-seçili; sabit strateji YOK. |
-| INV-FUZZY-1 | FEC/ARQ/rate/compress kararı fuzzy controller (loss/jitter/bw/queue → defuzzified); parity budget-clamp'li. |
+| INV-FUZZY-1 | FEC/ARQ/rate kararı (compress: AMENDMENT-4 ile transport'tan ÇIKARILDI) fuzzy controller (loss/jitter/bw/queue → defuzzified); parity budget-clamp'li. |
 | INV-CLASS-2 | Loss rate MUST NOT be a direct bandwidth estimator (delivered-bytes/time). |
 | INV-FEC-1 | FEC plaintext shard'lar üzerinde çalışır AMA her alınan shard FEC decoder'a girmeden ÖNCE AEAD-authenticate edilir; authenticated olmayan byte decoder'a GİRMEZ (SR-AUDIT-001). FEC yalnızca block/shard framing MEVCUTSA uygulanır — framing-driven, application-role-driven DEĞİL; transport baytların chat/file/control olduğunu bilmez. |
 | INV-FEC-2 | FEC erasure coding (Reed-Solomon), XOR değil; on-demand (loss eşiği + ARQ kurtaramıyor/yavaş). |
@@ -735,7 +737,7 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | INV-CRYPTO-1 | Client↔Hub Noise IK/KK (setup: dest_hash ClientHint'te gizli + hub_handle atama); single-datagram outer Noise YOK (thin); outer AEAD yalnız block/shard framing + control; hub-mesh Noise KK. |
 | INV-NONCE-1 | Transport counter monoton; 2B seq wire'da; receiver reconstruct; wrap→rekey; reuse imkansız. |
 | INV-REPLAY-1 | Replay window AEAD başarısından ÖNCE güncellenmez. |
-| INV-COMPRESS-1 | Sıkıştırma izinli (CRIME E2E'de geçersiz); ses/video çift-sıkıştırma yok; uzunluk-leak = kabul edilen metadata. |
+| INV-COMPRESS-1 | **TAŞINDI → app-rpc §3 (AMENDMENT-4).** Transport sıkıştırmaz; CRIME/çift-sıkıştırma/uzunluk-leak hükümleri mesaj-hazırlama alt-katmanında. |
 | INV-MTU-1 | Default 1200B (fragmentation kaçın); yüksek MTU validation sonrası opt-in; azaltma anında. |
 | INV-ACK-1 | Windowed/batched ACK; per-paket ACK YOK (ACK storm engeli); ACK-only budgeted. |
 | INV-LAYER-1 | hub_handle (L2) cleartext/hub-route; E2E envelope (L3) hub'a opak; FEC/ARQ (L5) profile-specific. |
@@ -766,10 +768,10 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | AC-16 | hub_handle allocation allocation_attempt + collision check içerir (MAX_HANDLE_ALLOC_ATTEMPTS=8). |
 | AC-17 | Section 18 ccr §35 rewrite "pending" İDDİA ETMEZ (ccr §35 canonical authority). |
 | AC-4 | Zero-RTT N-türevi one-way + early_data; konuşma başına 1 handshake; Bob offline tolere. |
-| AC-5 | Fuzzy controller: loss/jitter/bw/queue → fec/arq/rate/compress; rate loss'a bağlı DEĞİL. |
+| AC-5 | Fuzzy controller: loss/jitter/bw/queue → fec/arq/rate (compress transport dışı, AMENDMENT-4); rate loss'a bağlı DEĞİL. |
 | AC-6 | bandwidth obsesif sampling (validity-gated); ACK-compression/app-limited bw_est'i şişirmez. |
 | AC-7 | FEC on-demand Reed-Solomon erasure (XOR değil); yalnızca block/shard framing MEVCUTSA (framing-driven, app-role değil); AEAD-verify önce. |
-| AC-8 | En kötü senaryo (loss high+bw low+ack_confidence low): mode=EMERGENCY_FORWARD_REDUNDANCY (§5.6) — tiny→2×/3× duplication, block→minimal parity, sparse cumulative ACK; pure-ARQ DEĞİL; path düzelince fuzzy redundancy'yi ASİMETRİK HYSTERESIS ile geri çeker (Schmitt bant + de-escalate dwell; escalate anında; tek-eşik salınımı YASAK — §5.6, engine §11). compress=on, rate=minimal-reliable. |
+| AC-8 | En kötü senaryo (loss high+bw low+ack_confidence low): mode=EMERGENCY_FORWARD_REDUNDANCY (§5.6) — tiny→2×/3× duplication, block→minimal parity, sparse cumulative ACK; pure-ARQ DEĞİL; path düzelince fuzzy redundancy'yi ASİMETRİK HYSTERESIS ile geri çeker (Schmitt bant + de-escalate dwell; escalate anında; tek-eşik salınımı YASAK — §5.6, engine §11). rate=minimal-reliable (compress: transport dışı, AMENDMENT-4). |
 | AC-9 | KCP tamamen ÇIKARILDI; tek custom adaptif transport motoru (Rust-native, ARQ+FEC, fuzzy-seçili; uygulama rolüne kör); per-paket ACK yok (storm engeli). |
 | AC-QUIC | Her test QUIC ile yan yana ölçülür; QUIC daha iyiyse QUIC seçilir; custom transport QUIC'in çöktüğü lowband/high-loss'ta QUIC'ten düşük banta iner (kanıt = Side-by-Side). QUIC fork NO-GO. |
 | AC-QBENCH-1 | QUIC baseline best-available production-grade QUIC + en güçlü mevcut CC (destekliyorsa BBR/BBRv2; Cubic/Reno anlamsız), versiyon-pinli, kullanılan profil raporda; aynı netem/MTU/payload/donanım; tek değişken = transport (§4.4.1) |
@@ -782,7 +784,7 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | AC-QBENCH-8 | N≥30 run + p95/p99 + CI + versioned harness + yayımlanan ham veri → bağımsız reproduce (§4.4.9) |
 | AC-QBENCH-9 | GO = (A) en az bir kazanma tier'ı [Tier-1/2/3] + (B) guardrail'ler [mekanizma+güvenlik+iyi-ağ]; Tier-3-alone yalnız operasyonel-belirleyici verimle; global NO-GO → quinn devri kabul; QUIC selected'ta Session V3 semantics değişmez (§4.4.5, §4.4.10) |
 | AC-CRYPTO | Kripto katmanlama §0.1: Noise IK/KK setup (dest_hash ClientHint gizli) + thin single-datagram (outer Noise yok) + outer AEAD yalnız block/shard framing + control + hub-mesh Noise KK. |
-| AC-10 | Sıkıştırma izinli (CRIME N/A); ses/video çift-sıkıştırma yok. |
+| AC-10 | TAŞINDI → app-rpc §3 (AMENDMENT-4): sıkıştırma transport kabul ölçütü DEĞİLDİR. |
 | AC-11 | MTU default 1200B; 1900B validation sonrası. |
 | AC-12 | Layer-matched accounting: SESSION_DATA/UDP/IPv4 = 50B ≤ TLS/TCP/IPv4 62B; üstünlük yapısal sunulur. |
 | AC-13 | counter wrap→rekey; replay window AEAD'den sonra; seq 2B nonce resync. |
@@ -807,7 +809,7 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | Kaybedilen bölge (P_bbr) önceden ilan; global NO-GO ([X,Y] boş → quinn) kabul (doktrin dürüstlüğü) | ✅ | 4.4.5, 4.4.10 |
 | Kripto katmanlama kilitli (Noise IK/KK setup + thin single-datagram + outer-AEAD block/shard-only) | ✅ | 0.1, INV-CRYPTO-1 |
 | Paket kaybı → fuzzy-seçili recovery (ARQ/FEC/karma, koşula göre; ne ARQ ne FEC default) | ✅ | 5.3, 12 |
-| Sıkıştırma izinli (CRIME N/A) + uzunluk-leak notu | ✅ | 8 |
+| Sıkıştırma — transport dışı; app-rpc §3'e taşındı (AMENDMENT-4) | ➡ | 8 |
 | MTU 1200B hostile-safe; nonce/seq/replay | ✅ | 11, 6 |
 | Layer accounting + dürüst TLS kıyas | ✅ | 13 |
 | Katmanlar ayrık (L1–L5) | ✅ | 0 |
@@ -828,7 +830,7 @@ Transport Layer TDD Status: Implementation-ready / freeze-ready (Session Model V
 Cross-doc status:
   ccr-format-spec.md §35 = SESSION_INIT / SESSION_INIT_RESPONSE / SESSION_DATA / SIGNED_CONTROL +
     AAD/session_context + replay/counter reconstruction + hub_handle binding için CANONICAL byte-level OTORİTE.
-  Bu belge = SRC/pacing + fuzzy controller + FEC/ARQ adaptif seçim (tek adaptif transport motoru; ne ARQ ne FEC default) + QUIC benchmark + MTU/ACK/compression +
+  Bu belge = SRC/pacing + fuzzy controller + FEC/ARQ adaptif seçim (tek adaptif transport motoru; ne ARQ ne FEC default) + QUIC benchmark + MTU/ACK (compression: app-rpc §3, AMENDMENT-4) +
     layer accounting view için TRANSPORT POLICY/PROFILE otoritesi.
   PAIRED REWRITE BEKLEMİYOR — ccr §35 zaten Session Model V3 canonical authority.
 
@@ -849,7 +851,7 @@ Frozen:
   - fuzzy controller architecture
   - QUIC benchmark mandate (§4.1: every test vs QUIC; QUIC if better; beat QUIC only in lowband; fork NO-GO)
   - QUIC FULL-SCALE eval methodology (§4.4: kategorik yetenek eşiği [X,Y]; adil quinn+BBRv2 + TCP/KCP/RNS baselines; completion/blackout-survival/floor birincil; estimator-accuracy + loss/congestion confusion mekanizma-kanıtı; kaynak/güvenlik-pariteliği/reproduce; GO-NO/GO launch criteria; DCP/ASELSAN/TÜBİTAK killer-chart)
-  - compression policy
+  - compression policy   [AMENDMENT-4: transport dışı → app-rpc §3]
   - MTU/ACK strategy
   - TLS comparison framing
 

@@ -36,6 +36,7 @@ kalmamıştır; her default-OFF mekanizmanın ADR/sınır kararı vardır.**
 | cargo `experimental-cold-start` (F2A) | KEEP-EXPERIMENTAL | OFF | feature | DR-CS-3 ile duplicate | audit |
 | cargo `diag-sched-telemetry` | KEEP-EXPERIMENTAL (diag) | OFF | feature | vakum-sayaç uyarısı | Faz-3 |
 | cargo `experimental-fs-harness` | KEEP-EXPERIMENTAL (harness) | OFF | feature | — | audit |
+| `FusionDecision.compress` fuzzy çıktısı (fusion.rs:444) | **DELETE (gelecek temizlik, v1.x)** — kalıntı; tüketicisiz | üretilir, tüketilmez | evet (alan) | zstd yok; TDD §8 AMENDMENT-4 | EVOLUTION §9.8 |
 | bench `kama` stub kolu (`mod kama`, `KamaArm`) | **DELETE (gelecek temizlik)** | — | bench | FEC'siz, yanıltıcı; Faz-5'te kullanılmadı | audit UNWIRED |
 | bench `serve --ts-out` / `ServerCfg::ts_out` | DELETE (gelecek temizlik) | — | bench | tüketicisiz | audit UNWIRED |
 | `EngineError::{FeatureNotImplemented, ParamNotConfirmed, ParamNeverArrived}`, `ParamSetPlan::start_fec_immediately`, `PreParamHold`, `RecoveredMap` (kama-engine) | DELETE (gelecek temizlik) — **tema E, post-v1** | — | kablosuz | audit UNWIRED | Sprint-6/kripto |

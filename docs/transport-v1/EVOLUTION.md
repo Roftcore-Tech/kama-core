@@ -69,6 +69,17 @@ adı KORUNAMAZ. Salt-dokümantasyon, salt-gözlem tanı, test ve CI değişiklik
 sayaçlarını manifeste taşımak `kama-bench-manifest/v2` işidir; şema sürümü artmadan alan
 eklenmez (analizörler şemayı kontrol eder).
 
+## 9.8 Kalıntı fuzzy çıktısı `FusionDecision.compress`
+
+| | |
+|---|---|
+| v1 durumu | `fusion.rs:444` alan üretilir (`bw.low > 500‰ ∨ emergency`), HİÇ tüketilmez; zstd yok; TDD §8 AMENDMENT-4 ile sıkıştırma transport dışı |
+| neden bırakıldı | kaldırmak `tv_fusion.rs:54,95` golden vektörlerini değiştirir → ADR-17 kararlılığı; davranış etkisi sıfır |
+| tetik | ilk v1.x kod temizliği penceresi |
+| gereken kanıt | alanın tüketicisiz olduğunun repo-genel taraması (bugün: yalnız fusion.rs + testler) |
+| etkilenen hücreler | hiçbiri (çıktı hiçbir karara girmez) |
+| YAPMA | alanı "kullanılabilir" diye bir tüketiciye BAĞLAMAK — transport ciphertext görür, sıkıştıramaz |
+
 ## §22 — GELECEK DEĞİŞİKLİK POLİTİKASI (bağlayıcı)
 
 Transport davranışını değiştiren HER değişiklik, PR açıklamasında ŞU ALTI beyanı yapar:

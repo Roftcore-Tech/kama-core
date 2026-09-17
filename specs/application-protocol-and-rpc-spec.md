@@ -82,6 +82,18 @@ AppRpcFrame {
 }
 ```
 
+> **[AMENDMENT-4] Sıkıştırma — bu alt-katmanın işidir (karşı-pointer: `transport-layer-tdd.md` §8).**
+> Sahip kararı (2026-09-17): sıkıştırma **mesaj-hazırlama** adımıdır ve **düz-metin payload'a, E2E
+> mühürden ÖNCE** uygulanır; transport ciphertext gördüğü için sıkıştıramaz ve fuzzy controller
+> sıkıştırma kararı vermez. Bu adım **App-RPC FRAMING DEĞİLDİR**: yukarıdaki MUTLAK KURAL aynen
+> geçerlidir (framing yalnız Plane 1; hot-path SESSION_DATA sarmalanmaz). Sıkıştırma, framing'in
+> değil payload hazırlığının parçası olduğundan **her iki düzleme** (Plane 1 control, Plane 2
+> hot-path) uygulanabilir. TDD §8'den taşınan hükümler: `compress = zstd; metin mesaj için default
+> ON` · ses/video codec'te sıkıştırılı → ÇİFT sıkıştırma YOK · CRIME E2E'de geçersiz (seçili-plaintext
+> oracle ve HTTP yüzeyi yok) · residual uzunluk-tabanlı trafik analizi = kabul edilen hub-metadata
+> (padding Beta+ knob). Bu paragraf **INV-COMPRESS-1**'in yeni evidir. Karar mekanizması (hangi
+> mesaj sıkıştırılır) app-rpc'nindir, transport ölçümlerine BAĞLI DEĞİLDİR.
+
 `request_id` semantiği (NORMATİF):
 
 ```

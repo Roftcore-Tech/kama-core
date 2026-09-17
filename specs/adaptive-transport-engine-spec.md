@@ -245,7 +245,7 @@ on_event(e):
     TimerFired(t)    -> §12 timer handler
     AppData(bytes)   -> enqueue(tx_queue); if state==IDLE: state=PRE_CONVERGE   # §3.3 [K-KEYSTONE]; PRE_CONVERGE→STARTUP ilk geçerli SACK/echo'da (§3.3-D)
   ClassifyPath()        # §5
-  (fec_ratio, arq_aggr, send_rate, compress) = FuzzyEvaluate()   # §8.4, §15
+  (fec_ratio, arq_aggr, send_rate, compress) = FuzzyEvaluate()   # §8.4, §15 — compress: KALINTI çıktı, tüketilmez [AMENDMENT-4]
   ClampRecoveryBudget()  # §8.5
   UpdatePacingRate(send_rate)  # §13
   ScheduleTransmit()     # pacing token bucket'a göre DATA / retransmit / FEC / duplication
@@ -645,7 +645,7 @@ DRAIN_RTPROP (RTprop tazeleme):
 ### 8.4 FEC/ARQ arbitrasyonu (FÜZYON — aynı state, §15 fuzzy)
 ```
 Girdi:  loss_rate, jitter, bandwidth, queue_delay, ack_confidence   (§15 fuzzified)
-Çıktı:  fec_parity_ratio, arq_aggressiveness, send_rate_gain_hint, compress
+Çıktı:  fec_parity_ratio, arq_aggressiveness, send_rate_gain_hint, compress   [AMENDMENT-4: compress KALINTI — üretilir, hiçbir aktüatör tüketmez; sıkıştırma app-rpc §3'ün]
 Kanonik kurallar (TDD §5.3 ile birebir):
   loss LOW                         → fec=0,    arq=light
   loss HIGH ∧ bw HIGH ∧ jitter LOW → fec=high, arq=moderate           (RS erasure, RTT-beklemeden recovery)
@@ -774,7 +774,7 @@ Davranış (payload tipine göre):
      → forward duplication: aynı payload D× gönder (D=2..3), ACK beklemeden.   D=[CAL]
   segment-block / multi-shard:
      → minimal parity shards (low-rate forward FEC), r/k düşük ama ACK-bağımsız.
-  compress = ON (dar bantta bytes azalt).
+  compress = ON (dar bantta bytes azalt).   [AMENDMENT-4: transport SIKIŞTIRMAZ — sahibi app-rpc §3; TDD §8]
   send_rate = minimal-reliable (MIN_RATE clamp; §8.5) — path'i boğma.
 
 Geri çekilme (NORMATİF):
@@ -947,7 +947,7 @@ Her biri 3 membership: LOW / MED / HIGH — trapezoidal (deterministik, sürekli
   (a1,a2,b1,b2 netem'de kalibre; UYDURULMAZ.)
 
 Defuzzification: kurallar (§8.4) → ağırlıklı-ortalama (centroid) → fec_parity_ratio, arq_aggressiveness,
-                 send_rate_gain, compress.
+                 send_rate_gain, compress (kalıntı, tüketilmez — AMENDMENT-4).
 
 DETERMINIZM (ADR-17, ZORUNLU):
   aynı input snapshot (loss,jitter,bw,qdelay,ackconf) → aynı output. RNG YOK.
@@ -969,7 +969,7 @@ VEKTÖR SETLERİ:
              BtlBw (§7). "ana yetenek" kanıtı: loss enjekte edilir, BtlBw DEĞİŞMEZ (bandwidth loss'tan bağımsız).
   TV-LOSS:   (ack dizisi) → beklenen lost set (packet/time threshold, §5) + loss_pre_fec/residual.
   TV-FEC:    (block, k, r, silinen shard'lar) → reconstruct doğru; tampered shard → decoder RED (INV-FEC-1).
-  TV-FUZZY:  (input snapshot) → beklenen (fec_ratio, arq_aggr, send_rate, compress) (ADR-17 determinizm).
+  TV-FUZZY:  (input snapshot) → beklenen (fec_ratio, arq_aggr, send_rate, compress) (ADR-17 determinizm). [AMENDMENT-4: `compress` golden vektörde KALIR — kod alanı üretiyor; kaldırılması v1.x, EVOLUTION §9.8]
   TV-EMERGENCY: (health trace) → beklenen level geçişleri (§11 hysteresis): Schmitt bant-içi gürültüde
              SIFIR flip; escalate ANINDA (dwell'siz); de-escalate geçişleri ≥ min_dwell aralıklı;
              framing-ayrımlı RecoveryAction (Tiny→Duplication D×+spacing, SegmentBlock→MinimalParity).
