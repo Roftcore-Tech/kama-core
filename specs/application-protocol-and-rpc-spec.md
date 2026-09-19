@@ -1,5 +1,11 @@
 # Kama — Application Protocol & RPC Spec
 
+> **YAMA KAYDI — 2026-09-18b:** §3 "transport ciphertext gördüğü için sıkıştıramaz" kalıntısı düzeltildi (tip-bilgisi gerekçesi); "CRIME E2E'de geçersiz" → kontrollü ifade (cross-request oracle yüzeyi yok; secret ile attacker-controlled plaintext aynı context'te değil; uzunluk sızıntısı residual); sıkıştırma wire sözleşmesi → application-message-protocol.md §5 (compression_id, uncompressed_len, MAX_DECOMPRESSED, expansion, sözlük yok, invalid→drop).
+
+
+> **YAMA KAYDI — 2026-09-18 [AMENDMENT-6]:** §1 kapsam netleştirmesi (bu belge = Client↔Hub Kontrol RPC, Plane 1; E2E mesaj şeması application-message-protocol.md'de; Plane 1 istemcisi kama-core'un; KS-DEMUX-1 Crypto içinde) · AMENDMENT-4 gerekçe düzeltmesi · §14 dosya transferi PoC'de (SUPERSEDED) · §6.11 DELIVER/FETCH payload [OPEN] + INIT/RESPONSE zarflarının SessionControl'e yönlendirilmesi.
+
+
 **Durum:** Implementation-ready / freeze-ready Alpha.
 
 **Kritik mimari invariant (NORMATİF):** Kama üç ayrı **düzlem** (plane) çalıştırır. App-RPC Control Plane, kurulu (established) Session Model V3 hot-path'ini (`SESSION_DATA`) **ASLA sarmalamaz**. Hot-path raw Session Message Data Plane üzerinden gider ve `transport-layer-tdd.md`'deki thin overhead (established ≈ `hub_handle4 + seq16 + ciphertext + tag16`) korunur. App-RPC framing yalnızca control-plane içindir.
@@ -9,6 +15,8 @@ Bu belge `identity-and-trust-model.md` (trust), `ccr-format-spec.md` (§35 Sessi
 ---
 
 ## 1. Scope / Non-Goals
+
+> **[AMENDMENT-6 — kapsam netleştirmesi, 2026-09-18]** Bu belge **Client↔Hub Kontrol RPC'sidir (Plane 1)**; adına rağmen E2E uygulama mesaj şemasını (TEXT / FILE_* / RECEIPT / PTT_* — SESSION_DATA plaintext'inin içi) TANIMLAMAZ; o şema `application-message-protocol.md`'dedir (iskelet v0.1 mevcut; sahibi Application, alan kararları [KARAR — Hayri]). Katman grafiği transport-tdd §0 INV-NEIGHBOR-1: Application'ın tek komşusu Transport; Plane 1 istemcisi **kama-core'un** (Transport tarafının) parçasıdır, Application onu ancak `connect/send/recv` üzerinden dolaylı kullanır. SESSION_INIT/RESPONSE zarfları Transport tarafından Crypto'nun SessionControl'üne yönlendirilir; **candidate seçimi (KS-DEMUX-1) Crypto'nun içindedir** — Application ve Transport candidate bilmez.
 
 Kapsam:
 
@@ -82,15 +90,14 @@ AppRpcFrame {
 }
 ```
 
-> **[AMENDMENT-4] Sıkıştırma — bu alt-katmanın işidir (karşı-pointer: `transport-layer-tdd.md` §8).**
+> **[AMENDMENT-4] Sıkıştırma — bu alt-katmanın işidir (karşı-pointer: `transport-layer-tdd.md` §8).** [AMENDMENT-6 gerekçe düzeltmesi: "transport ciphertext görür" öncülü kanonik mimaride geçersiz — Transport plaintext görür; sıkıştırmanın app'te kalma gerekçesi TİP bilgisi (ses/video çift sıkıştırma yasağı) + kodda aktüatör yokluğu (fusion.rs:551 üretici, tüketici yok, sıkıştırma crate'i yok).]
 > Sahip kararı (2026-09-17): sıkıştırma **mesaj-hazırlama** adımıdır ve **düz-metin payload'a, E2E
-> mühürden ÖNCE** uygulanır; transport ciphertext gördüğü için sıkıştıramaz ve fuzzy controller
+> mühürden ÖNCE** uygulanır; ~~transport ciphertext gördüğü için sıkıştıramaz~~ [AMENDMENT-6: transport PLAINTEXT görür; app'te kalma sebebi TİP bilgisidir — "ses/video zaten codec-sıkıştırılı" kararını yalnız Application verebilir] ve fuzzy controller
 > sıkıştırma kararı vermez. Bu adım **App-RPC FRAMING DEĞİLDİR**: yukarıdaki MUTLAK KURAL aynen
 > geçerlidir (framing yalnız Plane 1; hot-path SESSION_DATA sarmalanmaz). Sıkıştırma, framing'in
 > değil payload hazırlığının parçası olduğundan **her iki düzleme** (Plane 1 control, Plane 2
 > hot-path) uygulanabilir. TDD §8'den taşınan hükümler: `compress = zstd; metin mesaj için default
-> ON` · ses/video codec'te sıkıştırılı → ÇİFT sıkıştırma YOK · CRIME E2E'de geçersiz (seçili-plaintext
-> oracle ve HTTP yüzeyi yok) · residual uzunluk-tabanlı trafik analizi = kabul edilen hub-metadata
+> ON` · ses/video codec'te sıkıştırılı → ÇİFT sıkıştırma YOK · ~~CRIME E2E'de geçersiz~~ [AMENDMENT-6 kontrollü ifade: HTTP/TLS-tarzı cross-request compression-oracle YÜZEYİ mevcut değildir; bununla birlikte attacker-controlled plaintext ile secret-bearing plaintext AYNI compression context'inde sıkıştırılmaz (per-message/per-batch izole context, ccr §35.6 P1-7 ile aynı); ciphertext uzunluk sızıntısı residual metadata olarak KABUL EDİLİR; küçük mesajlar sıkıştırılmaz — wire sözleşmesi application-message-protocol.md §5] · residual uzunluk-tabanlı trafik analizi = kabul edilen hub-metadata
 > (padding Beta+ knob). Bu paragraf **INV-COMPRESS-1**'in yeni evidir. Karar mekanizması (hangi
 > mesaj sıkıştırılır) app-rpc'nindir, transport ölçümlerine BAĞLI DEĞİLDİR.
 
@@ -250,6 +257,10 @@ FETCH_MAILBOX response {
 
 MailboxItem {
   item_seq          : u64_be        # mailbox-local monoton
+  envelope_type     : u8            # [AMENDMENT-7, 2026-09-18] STORE_MESSAGE ile AYNI registry (0x01 INIT, 0x02 INIT_RESPONSE,
+                                    #  0x04 SIGNED_CONTROL). Hub STORE'dan kopyalar, yorumlamaz. Transport bunu okuyarak
+                                    #  SessionControl komutunu seçer (AcceptInit / AcceptResponse) — Crypto magic parse ETMEZ
+                                    #  (KM-SEAM-TC-001 K6). Reserved/unknown → item DROP.
   envelope_len      : u32_be
   envelope          : bytes[envelope_len]   # OPAK Session Model V3 frame (hub parse etmez, blob taşır)
 }
@@ -367,13 +378,17 @@ PRESENCE_KEEPALIVE response { ack : bool_u8; pending_count : u32_be }
 
 Normatif: app-level presence (transport keepalive'den ayrı). Hub bununla "client online → server-initiated push yapabilirim" kararını verir.
 
+> **[AMENDMENT-7 — 2026-09-18] `0x81 DELIVER` ve `MailboxItem` yerleşimine `envelope_type:u8` eklendi (STORE_MESSAGE registry'si); geri kalan alanlar mevcut. Exact byte vektörleri app-rpc freeze kapısı [OPEN].** Kanonik mimaride DELIVER'ı Transport tarafı (kama-core) alır; `envelope_type` INIT/RESPONSE ise zarf Crypto SessionControl'e (AcceptInit/AcceptResponse) yönlendirilir, Application'a yalnız `Ready(SessionHandle)` olayı çıkar. Payload exact layout S3/S1 ile birlikte kapanır.
+
 ### 6.11 Server-initiated: DELIVER (0x81), DELIVERY_STATUS (0x82), REVOCATION_NOTIFY (0x83), ROUTE_MISS (0x84)
 
 ```
 DELIVER (0x81):
   mailbox/reconnect/control-plane delivery notification veya non-hot-path envelope push.
   Established hot-path server-initiated message DELIVER wrapper'a SARILMAZ — raw Plane 2 ile push edilir.
-  payload: { envelope_len u32_be; envelope bytes[] }  (OPAK Session Model V3 frame)
+  payload: { envelope_type u8; envelope_len u32_be; envelope bytes[] }  (OPAK Session Model V3 frame)
+  [AMENDMENT-7] envelope_type STORE_MESSAGE registry'siyle aynı; Transport'un SessionControl dispatch anahtarı (AcceptInit/AcceptResponse);
+  Crypto zarf içini parse ederek tür ÇIKARMAZ. Bu alan Plane 1 kontrol-düzlemi metadata'sıdır; hot-path'e byte eklemez (LAW-7 dışı).
 
 DELIVERY_STATUS (0x82) — OPSIYONEL/best-effort:
   payload: { ref u64_be; state u8 }   # 0x01 queued, 0x02 delivered_to_hub_b, 0x03 fetched_by_recipient
@@ -611,6 +626,8 @@ Hot-path (established SESSION_DATA):
 ---
 
 ## 14. File-Transfer Beta-Reserved Notu
+
+> **[SUPERSEDED — 2026-09-18, PoC kapsamı]** Dosya transferi PoC KAPSAMINDADIR: `FILE_BEGIN / FILE_CHUNK / FILE_END / FILE_ABORT` mesaj tipleri `application-message-protocol.md`'de tanımlanır (Application sahibi: transfer_id, offset, size, bütün-dosya hash, birleştirme; **chunk retry/ACK/FEC/kayıp tespiti/per-chunk MAC YASAK** — hepsi Transport ve Crypto'nun). Chunk boyutu transport bütçesine göre HESAPLANMAZ: Application plaintext birimi verir, Transport böler/batch'ler. Aşağıdaki Beta notu tarihseldir.
 
 ```
 - Alpha PoC file transfer IMPLEMENTE ETMEZ (PoC = mesajlaşma direnci, Side-by-Side ölçüm).

@@ -1,5 +1,11 @@
 # Kama — Adaptive Transport Engine Spec (Implementable)
 
+> **YAMA KAYDI — 2026-09-18b:** §10.1 shard alan etiketleri `[GÜVENLİK katmanı]` → `[SEAM — session E2E anahtarı]` (AMENDMENT-5 ile tutarlı; RS transport'ta); §13 otorite tablosu "shard AEAD'i GÜVENLİK katmanı yürütür" → seam/hop-ctx diliyle. §0.2/§10 arası çelişki kapandı.
+
+
+> **YAMA KAYDI — 2026-09-18 [AMENDMENT-5, dar; Claude Code metni]:** §0.2 :47 ve :712 — FEC POLİTİKA + EXECUTION (RS encode/reconstruct) TRANSPORT'un (runtime.rs:1408/1501/2061); per-shard AEAD SEAM'in (seal :998 / open :1184); open → reconstruct sırası (INV-FEC-1) korunur. Eski "EXECUTION güvenlik katmanının" hiç uygulanmamıştı. Başka değişiklik YOK; "E2E transport'un üstünde" topolojisi YAZILMADI (iptal).
+
+
 **Belge:** `adaptive-transport-engine-spec.md` v0.1 — Alpha
 **Statü:** IMPLEMENTATION SPEC (kod blueprint'i; `transport-layer-tdd.md` mimari/policy otoritesinin altında)
 **Bağlam:** `transport-layer-tdd.md` (Architecture & Alpha Policy TDD) *ne* inşa edileceğini dondurdu.
@@ -44,8 +50,11 @@ Sonuçlar (NORMATİF):
 - ACK: İÇERİĞİ transport üretir (hangi seq'ler geldi) ama client↔hub Noise-secured kanalın İÇİNDE taşınır
        → forge-koruması Noise'dan gelir, transport'tan DEĞİL. Transport ACK'e AEAD UYGULAMAZ; güvenlik katmanı uygular.
 - FEC: POLİTİKA (ne kadar parity, §8.4 fuzzy — ölçülen loss'tan) transport'un;
-       EXECUTION (RS-encode + per-shard AEAD, code-then-encrypt-authenticate-shards) GÜVENLİK katmanının.
-       Transport parity ORANINI verir; güvenlik katmanı encode+AEAD yapar; transport opak shard'ları pace/track eder.
+       [AMENDMENT-5] (impl-driven, kod-spec tutarlılığı): FEC POLİTİKA (k, r; §8.4) ve EXECUTION (RS encode / reconstruct)
+       TRANSPORT'undur (client-core RsSimdCodec.encode runtime.rs:1408/:1501, .reconstruct :2061). Per-shard AEAD SEAM'indir
+       (SecuritySeam::seal :998 / open :1184, tel kenarı). Sıra korunur: gönderici RS-encode → seal, alıcı open → reconstruct
+       (authenticate-before-decode, INV-FEC-1). Transport shard başlığını (block_id/esi/k_actual) reliability için okur,
+       anahtar tutmaz; seam kurtarma bilmez. ~~Eski: EXECUTION güvenlik katmanının; güvenlik katmanı encode+AEAD yapar~~ (hiç uygulanmadı).
 - "Pipeline D outer-AEAD" (TDD §0.1) control/shard için EXECUTE edilir ama GÜVENLİK katmanında;
        bu belge o AEAD'i transport-owned olarak REDEFINE ETMEZ (yalnız birimi opak taşır).
 ```
@@ -709,9 +718,9 @@ Bu, spurious retransmit'i sender'a bildirir + gereksiz uygulama teslimi önler.
 
 ## 10. FEC Block Format & Parity Selection (NORMATİF — INV-FEC-1 uyumlu)
 
-> **SoC (§0.2):** FEC **POLİTİKA** (ne kadar parity → k,r; §8.4 fuzzy, ölçülen loss'tan) TRANSPORT'un. FEC **EXECUTION** (RS-encode + per-shard AEAD, code-then-encrypt-authenticate-shards) GÜVENLİK katmanının (Noise+kompakt). Transport parity ORANINI verir; güvenlik katmanı encode+AEAD yapar; transport opak shard'ları pace/deliver/track eder + framing metadata'sını (block_id/shard_index/k/r) reliability için okur. Aşağıdaki kripto sırası GÜVENLİK katmanının davranışıdır — transport onu EXECUTE ETMEZ, referanstır.
+> **SoC (§0.2) [AMENDMENT-5]:** FEC **POLİTİKA** (k,r; §8.4 fuzzy) ve **EXECUTION** (RS encode/reconstruct) TRANSPORT'un; **per-shard AEAD** SEAM'in (tel kenarı). ~~Eski: EXECUTION GÜVENLİK katmanının~~. Transport parity ORANINI verir; güvenlik katmanı encode+AEAD yapar; transport opak shard'ları pace/deliver/track eder + framing metadata'sını (block_id/shard_index/k/r) reliability için okur. Aşağıdaki kripto sırası GÜVENLİK katmanının davranışıdır — transport onu EXECUTE ETMEZ, referanstır.
 
-**Kripto sırası (KİLİTLİ — TDD INV-FEC-1, §4.4.7; GÜVENLİK katmanı yürütür): CODE-THEN-ENCRYPT-AND-AUTHENTICATE-SHARDS.**
+**Kripto sırası (KİLİTLİ — TDD INV-FEC-1, §4.4.7): CODE-THEN-ENCRYPT-AND-AUTHENTICATE-SHARDS.** [AMENDMENT-5: AEAD sırası seam'in davranışıdır; RS'yi transport execute eder.]
 ```
 Gönderen (güv. katmanı): block_plaintext → RS-erasure encode (k data + r parity) → (k+r) PLAINTEXT shard →
           HER shard AYRI AEAD encrypt+authenticate → wire'da yalnız ciphertext shard.
@@ -731,9 +740,9 @@ FEC_SHARD {
   k            : u8        # data shard sayısı (bu blok)
   r            : u8        # parity shard sayısı
   shard_len    : u16_be    # bu shard'ın payload uzunluğu
-  # --- güvenlik katmanı (TRANSPORT görmez/yönetmez — opak; §0.2, INV-FEC-1) ---
-  ciphertext   : shard_len bytes    # per-shard AEAD ciphertext  [GÜVENLİK katmanı]
-  aead_tag     : 16 bytes           # per-shard AEAD tag         [GÜVENLİK katmanı]
+  # --- seam çıktısı (AMENDMENT-5: RS encode TRANSPORT'ta yapıldı; bu iki alanı tel kenarındaki SEAM üretir, transport yorumlamaz; INV-FEC-1) ---
+  ciphertext   : shard_len bytes    # per-shard AEAD ciphertext  [SEAM — session E2E anahtarı]
+  aead_tag     : 16 bytes           # per-shard AEAD tag         [SEAM]
 }
 # Kripto yapı (ct+tag) ccr §35/TDD §0.1'e aittir; bu belge onu transport-owned REDEFINE ETMEZ.
 # reed-solomon-erasure (ADR-16); ErasureCodec trait arkasında (SIMD Beta geçişi trait ile) — encode/decode güv. katmanında.
@@ -1140,7 +1149,7 @@ GO/NO-GO: §4.4.10 üç-tier (Tier-1/2/3) + guardrail'ler. Bu belge o kapıyı B
 ```
 transport-layer-tdd.md   : WHAT/policy otoritesi (§0.1 kripto, §2 wire, §4.4 benchmark, §5 fuzzy, INV-*).
 ccr-format-spec.md §35   : Session Model V3 canonical byte'lar (SESSION_INIT/DATA); ACK/FEC_SHARD hop-transport (E2E DEĞİL).
-identity §11 / §0.1      : client↔hub Noise IK/KK GÜVENLİK katmanında; ACK/control/shard AEAD'i GÜVENLİK katmanı yürütür (transport tutmaz, §0.2); hot-path thin.
+identity §11 / §0.1      : client↔hub Noise IK/KK hop anahtarı SEAM'de (ProtectionContext::HubChannel); shard AEAD'i SEAM session E2E anahtarıyla yürütür (transport anahtar tutmaz, §0.2 AMENDMENT-5; RS transport'ta); hot-path thin.
 ADR-01/02/16/17/18       : Rust/Tokio; reed-solomon-erasure + ErasureCodec trait; deterministik fuzzy; netem gate.
 Bu belge byte-layout'ta ccr §35'i EZMEZ; ACK/FEC_SHARD hop-transport frame'leridir (E2E envelope'un dışında, §0.2).
 ```

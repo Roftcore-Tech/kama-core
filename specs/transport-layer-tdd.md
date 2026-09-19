@@ -1,5 +1,11 @@
 # Kama — Transport Layer TDD (Adaptive Hostile-Aware Transport)
 
+> **YAMA KAYDI — 2026-09-18b:** §7 Pipeline C "Outer AEAD (Noise transport key)" → session E2E anahtarı (§0.1 ile tutarlı); alıcı adımı "seam.open → transport reconstruct"; §0'a INV-PLAINTEXT-NOT-SEMANTICS (plaintext görmek ≠ semantik bağ; serileştirme sınırı PreparedUnit→UnsealedTransportUnit→SealedWireUnit; CCR/cert canonical-codec-only, protobuf re-encode yasak, compressor yasak; private key API'den geçmez).
+
+
+> **YAMA KAYDI — 2026-09-18 [AMENDMENT-6, Abkarada kararı + Claude Code kanıtı]:** §0'a INV-NEIGHBOR-1 (kanonik katman grafiği App→Transport→Crypto→UDP; degree(App)=degree(Crypto)=1; Transport→Crypto iki arayüz ailesi PacketProtection + SessionControl typed; SessionHandle ≠ HubHandle invariantları; zaman sahipliği ayrımı; early_unit istisnası) · §0.1 shard AEAD anahtarı "Noise transport key" → session E2E anahtarı; ProtectionContext S3 [OPEN] · §2 22B formatı = seam çıktısı notu (kod: legacy.rs:126, wire.rs:15-30, IdentitySeam no-op) · §8 AMENDMENT-4 gerekçesi düzeltildi ("transport ciphertext görür" → plaintext görür; app'te kalma gerekçesi tip bilgisi + aktüatör yokluğu, fusion.rs:551 / Cargo.lock negatif). INV-FEC-1 ve L-modeli DEĞİŞMEDİ.
+
+
 > **Tasarım ilkesi (TLS 1.3 dersi, NORMATİF):** Handshake sonrası bağ **byte'larda değil, anahtarda** kurulur. TLS established record'unda `connection_id`/`session_id`/`handshake_hash`/`cert_hash`/imza **yoktur** — yalnızca 16B AEAD tag vardır; tag handshake'ten türeyen key ile üretildiği için bağ kriptografiktir. Kama aynı modeli benimser: established mesajda **yalnızca demux handle + seq + ciphertext + AEAD tag** bulunur. Per-mesaj imza, link_id, cert-ref, routing-info, length **TAŞINMAZ.**
 > **Bağımlılık:** identity-and-trust-model.md (trust), ccr-format-spec.md (**§35 Session Model V3 — SESSION_INIT / SESSION_INIT_RESPONSE / SESSION_DATA / SIGNED_CONTROL canonical app-envelope byte'ları ve wire/session canonical semantiği orada**), routing-rendezvous-architecture.md (CAD-53/56/57), discovery-architecture.md.
 > **Çekirdek:** Kama transport "KCP over UDP" değil, "QUIC clone" değildir. Async hot-path = **UDP üzerinde E2E-authenticated message envelope** + hub-routing handle. FEC/ARQ + SRC seçili modların araçlarıdır (adaptif motor koşula göre seçer), her mesajı saran zorunlu zarf değildir. **KCP çıkarıldı** (§4). QUIC = zorunlu benchmark referansı, bağımlılık değil (§4.1).
@@ -7,6 +13,39 @@
 ---
 
 ## 0. Katman Modeli (NORMATİF — omurga)
+
+> **[AMENDMENT-6 — KANONİK KATMAN GRAFİĞİ, 2026-09-18, Abkarada] INV-NEIGHBOR-1 (NORMATİF):**
+> ```
+> Application → Transport (bu belge; kama-core) → Crypto (tel kenarı) → UDP
+> degree(Application) = 1   tek alt komşusu Transport
+> degree(Crypto)      = 1   tek üst komşusu Transport
+> ```
+> Application, Crypto'yu DOĞRUDAN ÇAĞIRAMAZ ve ondan callback ALAMAZ; Crypto, Application'ı çağıramaz.
+> Tüm Application↔security etkileşimi Transport ÜZERİNDEN geçer ("mediated" = çağrı grafiğinin sahibi
+> Transport'tur; Transport kripto semantiğini YORUMLAMAZ). Transport → Crypto sınırı İKİ arayüz ailesi taşır,
+> üçüncü seam değildir: **PacketProtection** `seal(datagram, ProtectionContext) / open(wire)` ve
+> **SessionControl** `command(SessionCommand) → SessionResult` (typed komut: Initiate{peer, early_unit?} ·
+> AcceptInit{wire} · AcceptResponse{wire} · Renew{session}; zarf payload'ı opak, komut opak DEĞİL).
+> Lifecycle olayları (`Ready(h) · RenewRequired(h) · Closed(h, reason)`) typed'dır; Transport yorumlamadan
+> Application'a iletir. **`SessionHandle`** Crypto tarafından basılır, Application için opak, Transport
+> içeriğini yorumlamaz, tek crypto session state'e çözülür, epoch DEĞİLDİR, wire'da gönderilmez, restart
+> sonrası geçerli olmak zorunda değildir, `Closed` sonrası kullanılamaz; **`HubHandle`** (wire routing, ccr
+> §35.7) ile AYRI tiptir ve birleştirilemez. Zaman sahipliği: Transport teslim/yeniden-iletim deadline'larını,
+> Crypto güvenlik-durumu ömürlerini (candidate expiry, key lifetime, replay retirement, grace, cap) tutar;
+> Crypto ağ retransmisyon timer'ı TUTMAZ. `early_unit` istisnası: Application plaintext'i bir kez data-path
+> dışında SessionControl'e girer; Crypto onu OPAK byte olarak işler, anlamını yorumlamaz.
+>
+> **INV-PLAINTEXT-NOT-SEMANTICS (NORMATİF):** *Plaintext görmek ≠ semantik bağ.* Transport, plaintext byte dizisi
+> üzerinde **yapısal** işlemler yapar — uzunluk, segment/batch, FEC, deadline, öncelik ipucu — ve bunların hiçbiri
+> "bu TEXT mi / FILE_CHUNK mı / protobuf alan #7 mi" bilgisini gerektirmez. Semantik (tip, şema, alan anlamı,
+> "bu sıkıştırılabilir mi") YALNIZ Application'ındır. Ayrım korunduğu sürece Transport'un plaintext işlemesi katman
+> ihlali DEĞİLDİR. **Serileştirme sınırı:** Application nesneleri → AppMessageCodec → `PreparedUnit{bytes,
+> compression_policy}`; Transport → batch/segment/FEC → `UnsealedTransportUnit`; Crypto → `SealedWireUnit`. Crypto
+> protobuf bilmez, Transport protobuf bilmez, FEC TEXT bilmez. **CCR / sertifika / public key** yalnız canonical
+> kripto codec'iyle (ccr §3) serileştirilir; protobuf ile YENİDEN kodlanmaz (iki canonicalization katmanı yasak),
+> generic compressor'dan GEÇMEZ (yüksek entropi, sıfır kazanç, gereksiz transform + side-channel yüzeyi — "byte
+> bozulur" diye değil); başka mesajda taşınacaksa opak `bytes` blob'udur. **Private key** Application/Transport
+> API'sinden HİÇ geçmez; Crypto/keystore/HSM sınırı içinde kalır.
 
 ```
 L1  IP/UDP                       UDP/IPv4 = 28B, UDP/IPv6 = 48B base
@@ -33,7 +72,7 @@ Client↔Hub Noise handshake  : IK (yeni kayıt, sk_device possession) / KK (kay
 Hot-path SESSION_DATA        : THIN — hub_handle cleartext (opaque, PRF-türevi, correlation-resistant, dest_hash'ten
                               türemez) + E2E envelope (Session Model V3 AEAD: ss_e+ss_s, Noise-inspired one-way).
                               Per-mesaj OUTER Noise AEAD YOK. dest_hash (kimlik-bağlı) hot-path'te TAŞINMAZ.
-Segment-block/Control framing (Pipeline C/D): OUTER AEAD (Noise transport key) per-shard — YALNIZCA burada (FEC shard auth).
+Segment-block/Control framing (Pipeline C/D): per-shard AEAD — ANAHTAR = **session E2E anahtarı** (shard'lar session verisidir; hop anahtarı DEĞİL) [AMENDMENT-6: eski "Noise transport key" ifadesi düzeltildi; hop anahtarı yalnız transport'un hub-yönelik kontrol çerçeveleri ve Plane 1 RPC için]. ProtectionContext'i Transport verir (Session(h) | HubChannel) — bugün SealArgs'ta ctx alanı YOK (kod: {wire_pn, dh_epoch, send_generation}); S3 seam'inde eklenecek [OPEN]. YALNIZCA burada (FEC shard auth).
 Hub↔Hub mesh                 : Noise KK (datacenter; routing §6).
 ```
 > **Neden hot-path'te outer Noise yok ama dest_hash yine gizli:** Kimlik-bağlı alan (dest_hash) setup'ta ClientHint ile gizlenir; hot-path'te yalnız opaque hub_handle görünür (kimliğe bağlanamaz). Per-mesaj outer Noise 0.025 kbps'de +16B tag/mesaj = kabul edilemez maliyet; E2E envelope zaten içeriği korur. Bu, "thin hot-path" (TLS-dersi) ile "dest_hash gizli" (Noise ClientHint) kararlarının birlikte tutarlı halidir — çelişki yok, KİLİTLİ.
@@ -71,6 +110,8 @@ Hub↔Hub mesh                 : Noise KK (datacenter; routing §6).
 ---
 
 ## 2. SESSION_DATA Hot-Path Wire (TEK form — NORMATİF)
+
+> **[AMENDMENT-6 not]** Bu 22 B format **Crypto seam'inin ÇIKTISIdır**: `hub_handle`'ı seam yazar (kod: kama-noise-wire legacy.rs:126, AAD dışı; HubHandle atama → HandleAssign, bugün yalnız hub_sim.rs:53-62), transport'a giren birim plaintext'tir (kod: client-core wire.rs:15-30 DATA çerçevesi `[type][seq u16][unit_id u64]` 11 B — interim). Ürün seam'i (IdentitySeam) bugün hub_handle yazmaz — PoC no-op ile tutarlı. Transport bu formatı ÜRETMEZ, yorumlamaz.
 
 ```
 ┌─ L2 transport (hub okur) ─┐┌─ L3 E2E app-envelope (hub okuyamaz; ccr §35) ─┐
@@ -633,11 +674,11 @@ B — SESSION_INIT/resync:    Noise handshake+early_data → retry scheduling �
 C — Segment-block payload (MTU'yu aşar → shard'lara bölünür):
     Gönderen: block_plaintext → (fuzzy FEC seçtiyse) Reed-Solomon encode → plaintext shard'lar → her shard AYRI
               AEAD-encrypt/authenticate → gönder.
-    Alıcı:    şifreli shard al → her shard'ı ÖNCE AEAD verify/decrypt → yalnızca authenticated shard'lar FEC
-              decoder'a girer → eksik shard'lar reconstruct.
+    Alıcı:    şifreli shard al → her shard'ı ÖNCE seam.open (session E2E anahtarı) → yalnızca authenticated shard'lar FEC
+              decoder'a girer (transport reconstruct) → eksik shard'lar reconstruct.
     NORMATİF: Authenticated olmayan byte FEC decoder'a GİRMEZ (SR-AUDIT-001). Recovery: fuzzy —
               bant var+loss yüksek → FEC ağır; bant dar+loss düşük → FEC=0, ARQ retransmit; karma mümkün.
-    Outer AEAD (Noise transport key) per-shard = block framing gereği (FEC shard auth); tek-datagram'da YOK.
+    Per-shard AEAD — anahtar = **session E2E anahtarı** (AMENDMENT-6; ~~Noise transport key~~ ifadesi yanlıştı: shard session verisidir) — block framing gereği (FEC shard auth); tek-datagram'da YOK. RS encode transport'ta, seal seam'de (AMENDMENT-5).
 D — CONTROL/HOP:            control → per-hop Noise/TLS/AEAD → SRC → UDP/QUIC (deployment)
 ```
 > Tek generic pipeline tüm payload'lara KÖR uygulanmaz. FEC/outer-AEAD **framing-specific** (block'ta mümkün; tek-datagram'da değil). Tek adaptif transport motoru tüm pipeline'larda; ayrı segment-block motoru YOK.
@@ -646,9 +687,14 @@ D — CONTROL/HOP:            control → per-hop Noise/TLS/AEAD → SRC → UDP
 
 ## 8. Sıkıştırma — TRANSPORT'UN İŞİ DEĞİLDİR [AMENDMENT-4]
 
-> **[AMENDMENT-4] (mimari-driven, sahip kararı 2026-09-17 — iki-katmanlı kripto topolojisi):**
-> **Sıkıştırma transport'un işi DEĞİLDİR; transport ciphertext görür** (E2E kripto transport'un
-> ÜSTÜNDE, birimler transport'a opak gelir). Sahibi **application/RPC mesaj-hazırlama
+> **[AMENDMENT-4] (sahip kararı 2026-09-17; gerekçesi AMENDMENT-6 ile düzeltildi — ~~iki-katmanlı kripto topolojisi~~ iptal):**
+> **Sıkıştırma transport'un işi DEĞİLDİR.** ~~transport ciphertext görür (E2E kripto transport'un ÜSTÜNDE)~~
+> [AMENDMENT-6 gerekçe düzeltmesi: kanonik mimaride Transport PLAINTEXT görür, dolayısıyla sıkıştırma
+> transport'ta katman ihlali olmazdı; karar yine app'te kalır, gerekçe farklı: (1) ses/video "çift sıkıştırma
+> yok" kuralı TİP bilgisi ister, Transport tip bilmez (INV-ENGINE-SOC); (2) kodda aktüatör YOK — Claude Code
+> kanıtı: FusionDecision.compress üretici fusion.rs:551, tüketici yok, Cargo.lock'ta sıkıştırma crate'i yok,
+> ON/OFF anahtarı yok → TDD §8'in eski "default ON, fuzzy çıktısı" metni hiç uygulanmamıştı.]
+> Sahibi **application/RPC mesaj-hazırlama
 > alt-katmanıdır** (`application-protocol-and-rpc-spec.md` §3, karşı-pointer orada). **Fuzzy
 > controller sıkıştırma kararı VERMEZ.** Bu bölümün önceki normatif metni (zstd, metin için default
 > ON, fuzzy çıktısı) ve CRIME analizi ile INV-COMPRESS-1 **oraya TAŞINMIŞTIR**; burada normatif

@@ -1,5 +1,46 @@
 # Identity & Trust Model
 
+> **YAMA KAYDI — 2026-09-18 [AMENDMENT-6]:** kanun bandı → transport-tdd §0 referansı + "oturum durum makinesi Crypto'nun içinde, yalnız Transport'un SessionControl'üyle sürülür; Application doğrudan çağırmaz" notu. P0 yamaları ve T-18a/b/c DEĞİŞMEDİ.
+
+
+> **Katman grafiği:** transport-layer-tdd §0 INV-NEIGHBOR-1. Bu belge trust/validator semantiği otoritesidir; oturum durum makinesi (pending, candidate, epoch, renew) Crypto'nun içindedir ve yalnız Transport'un SessionControl komutlarıyla sürülür — Application onu DOĞRUDAN çağırmaz.
+
+> **YAMA KAYDI — 2026-09-07b (CRYPTO-P0 MİNİ CERRAHİ PASS):** in-session rekey drift'i temizlendi (E-2 / CAD-40 / §Forward secrecy: `k_new=HASH(k_old)` Alpha'da YOK; otorite noise-wire §0.9/§5 cap→yeni handshake) · P0-2 tamamlandı (CAD-45, §10 adım-5, §15.5 yorumu, verify_session_init adım-11, T-19: hepsi `(validated sender device identity, init_counter)`) · §10.6'daki **stale AAD kopya tablosu** kaldırıldı → ccr §35.3.1/§35.5.1/§35.9/§35.10 referansı (A-8 tamamlandı) · 21e stale acceptance kriteri confirmation-safe grace'e çekildi (P0-9). Yeni karar YOK.
+
+
+> **YAMA KAYDI — 2026-09-07 (CRYPTO-P0-FREEZE):** P0-1 (SSI1 wire-magic kaldırıldı + D1 exact) · P0-2 (INIT replay identity = validated sender identity + init_counter; 7 gün = retention horizon) · P0-3/P0-4 (RESPONSE: wire session_id_internal lookup kaldırıldı, SSR1 wire-magic kaldırıldı, pending_session caller-seçimli candidate, KS-DEMUX-1 OPEN) · P0-5 (D4/D5/D7 exact) · P0-6 (replay_precheck/replay_commit ayrımı) · P0-7 (underflow-safe aritmetik) · P0-8 (kanonik alım sırası) · P0-9 (confirmation-safe epoch transition) · P0-13 (zeroization sırası) · P0-14 (summary GO/HOLD sınırı). Yeni karar YOK, wire DEĞİŞMEDİ.
+
+
+> **YAMA KAYDI — 2026-09-02 (S2 blocker kapatma, B4 — ccr §35.18 cross-doc reconciliation talebi):**
+> - **Kapanış özeti** Session Model V3'e hizalandı: "Async Session V2" → "Session Model V3";
+>   hot-path 18B; dh_epoch 0→1 FS upgrade; magic SSI1/SSR1/SSD1/SSC1; replay girdisi
+>   `SESSION_INIT init_counter`.
+> - **Validator adları §15.6 ile hizalandı:** `verify_async_init/accept/data` →
+>   `verify_session_init / verify_session_init_response / verify_session_data`;
+>   `verify_signed_control_message` → `verify_signed_control`.
+> - **`check_async_data_replay` → `check_session_data_replay`** (8 isabet; fonksiyon zaten V3 için
+>   aktifti, yalnız adı legacy'ydi). §15.5'e alias notu eklendi.
+> - Kapanış özetine **CROSS-DOC RECONCILIATION** bloğu: Async Session V2 + `verify_async_*` ailesi
+>   DEPRECATED / MUST NOT IMPLEMENT; aktif parser REJECT eder.
+> - Deprecated Appendix (Section 27) içeriğine DOKUNULMADI (tarihsel kayıt korunur).
+>
+> **YAMA KAYDI — 2026-09-07 (Hasan tutarsızlık raporu / B4-EXT — E-13):**
+> 09-02 yaması kozmetikti (özet + adlar). Bu yama **pseudocode gövdelerini** ccr'a çekiyor:
+> - **A-3 (en yüksek interop riski):** `per-message key = HKDF(k_send, seq)` V2 zarfı KALDIRILDI →
+>   tek `k_send` + reconstructed full counter; AAD → ccr §35.9 (28B). §10.5-8, §10.5-18, §15.6-data-7/8.
+> - **A-2:** `session_root = HKDF(..., info=session_context_v1)` → `epoch_1_root = KDF(..., u16_be(1))`
+>   (ccr §35.2.1 D4). `"SR-DATA-A2B-E0/E1"` label şeması → `"SR-SESSION-TRAFFIC-V3"` + direction (D2/D5).
+>   `session_root` adı belge genelinde `epoch_1_root`'a çekildi.
+> - **A-1:** §10.5-15 SSR1 wire'ından `session_id_internal` çıkarıldı (INV-SM3-WIRE); §15.6-init-9
+>   "wire alanıyla karşılaştır" → "türet, bağ AAD üzerinden". **RESPONSE demux'u AÇIK KALEM olarak işaretlendi.**
+> - **A-4:** SIGNED_CONTROL TBS → ccr §35.10 (counter + SHA-256(ciphertext) bağlı). Eski kısa TBS'in
+>   replay / ciphertext-substitution açığı not olarak yazıldı.
+> - **A-5:** §15.5 girdisi ham `seq` → `full_counter`; `highest_seq` → `highest_counter`; reconstruction
+>   çağıran tarafta zorunlu kılındı (wrap-around replay kapandı).
+> - **B-2:** "SESSION_INIT timestamp penceresi" → `(device_id, init_counter)` replay kümesi;
+>   7 gün = ALICI alım zamanına göre budama ufku (wire'da timestamp YOK).
+
+
 **Doküman:** `identity-and-trust-model.md`
 **Versiyon:** v1.5 + **Haziran 2026 ERRATA** (statik X25519 mimari dönüşü — aşağıdaki errata otoriterdir)
 **Durum:** SRS/TDD — implementation-ready (ccr-spec §35 reconciliation sonrası). Aktif async model: **Session Model V3**. Historical AsyncMessage / Async Session V2 terimleri deprecated, yalnızca appendix.
@@ -14,7 +55,13 @@
 
 **E-1 — STATİK X25519 (SignedNoisePrekey KALDIRILDI):** Transport X25519 anahtarı artık Device Cert (CompactDeviceCert, ccr-spec §13) içinde **statik** taşınır (`pk_x25519`). `SignedNoisePrekey`, `PrekeyBundle`, `canonical_prekey_tbs`, prekey rotation/archive/refresh state machine, `record_sequence` vs `prekey.sequence` ayrımı, N=1 archive (CAD-32), prekey accept-grace — **HEPSİ KALDIRILDI.** Gövdedeki Section 7.10, 7.11 (PrekeyBundle), Section 12 (rotation), ilgili CAD-17/28/29/30/31/32/33 prekey kuralları DEPRECATED. **Gerekçe:** değişken prekey = her mesajda hub'dan taze prekey çekme = hub bağımlılığı = hostile ağda bağlantı kurulamama. Statik X25519 = tek-temassız asenkron mesaj + cache hiç bayatlamaz. **X25519 ROTATION YOK** (Device Cert 90 günde yenilenir, içindeki x25519 sabit kalır). KAYIP: oturum-başlangıcı forward secrecy (static sızarsa bekleyen async mesajlar) — kabul (cihaz ele geçirme kapsam dışı).
 
-**E-2 — RATCHET = NOISE REKEY (Double Ratchet kullanılmıyor):** Oturum-içi forward secrecy Noise'ın kendi rekey'i ile (`k_new=HASH(k_old)`, 0 wire byte). Signal Double Ratchet ATILDI (DH-ratchet'i her yön değişiminde 32B wire maliyeti getirir, 0.1 kbps bütçe kaldırmaz; verdiği post-compromise healing zaten kapsam dışı tehdide karşı). MAX_SKIP kavramı geçerli (Bob skipped key saklar, N-mesaj-ACK penceresi bağlamında).
+**E-2 — RATCHET YOK; ALPHA KEY LIFECYCLE = CAP → YENİ HANDSHAKE (Double Ratchet kullanılmıyor):**
+~~Oturum-içi forward secrecy Noise'ın kendi rekey'i ile (`k_new=HASH(k_old)`, 0 wire byte).~~
+**[DÜZELTİLDİ 2026-09-07 — CRYPTO-P0 mini pass]** `k_new = HASH(k_old)` in-session rekey Alpha'da
+**YOKTUR** ve aktif normatif davranış DEĞİLDİR. Otorite `kama-noise-wire-tdd §0.9/§5`: Alpha'da
+in-session key-phase YOK · KEY_UPDATE YOK · `SESSION_RENEW_REQUIRED` (session cap) → **tamamen yeni
+handshake / yeni session**. Bu belge o kararı OKUR, yeniden seçmez. Yön değişmedi (Double Ratchet
+hâlâ atılmış); değişen, oturum-içi FS mekanizmasının ne olduğudur. Signal Double Ratchet ATILDI (DH-ratchet'i her yön değişiminde 32B wire maliyeti getirir, 0.1 kbps bütçe kaldırmaz; verdiği post-compromise healing zaten kapsam dışı tehdide karşı). MAX_SKIP kavramı geçerli (Bob skipped key saklar, N-mesaj-ACK penceresi bağlamında).
 
 **E-3 — ASENKRON-FIRST + SESSION MODEL V3:** Mesajlaşma+dosya = asenkron store-and-forward. Async messaging modeli **Session Model V3'dir** (ccr-spec §35, SESSION_INIT/SESSION_INIT_RESPONSE/SESSION_DATA/SIGNED_CONTROL — bkz. **E-12**, otoriter). Eski tek-yapı `AsyncMessage`/`SRAM`/`Noise N one-way`/per-message `sender_signature` modeli DEPRECATED (Section 27). Senkron (PTT/voice/video) = Beta, Noise pattern, WebRTC DTLS sökülür. Güven çapası: DiscoveryRecordV2 (sk_user_identity imzalı, static X25519 taşır). Ek HMAC kullanılmaz; bütünlük/orijinallik AEAD tag + `ss_s` possession auth (hot-path) + domain separation + recipient/link binding ile sağlanır; non-repudiation yalnızca SIGNED_CONTROL'da (Section 10.5).
 
@@ -37,11 +84,11 @@
 **E-12 — SESSION MODEL V3 = CANONICAL ASYNC MESSAGING MODELİ (OTORİTER, E-3'ü GÜNCELLER):** Eski tek-yapı `AsyncMessage` / `SRAM` / `Noise N one-way` / `sender_signature = Ed25519_Sign(sk_device, msg_tbs)` modeli **DEPRECATED'dir** (her mesajda full dest_hash + ephemeral + cert + 64B imza ≈ 200B metadata → 0.025 kbps survival'da sürdürülemez). **Aktif canonical async messaging modeli Session Model V3'dir** (ccr-spec §35, CAD-54/55):
 
 * `SESSION_INIT` — pahalı/bootstrap mesajı (self-contained, konuşma başına 1 kez; Bob online olmak zorunda değil; Alice Bob'un static X25519'unu discovery cache'ten bilir → handshake YOK). `session_id_internal` + `init_root` burada kurulur.
-* `SESSION_INIT_RESPONSE` — stateful session activation (Bob INIT'i mailbox'tan alınca; Alpha default STRONGER, Bob ephemeral ZORUNLU → FS upgrade). `session_root` burada türetilir.
+* `SESSION_INIT_RESPONSE` — stateful session activation (Bob INIT'i mailbox'tan alınca; Alpha default STRONGER, Bob ephemeral ZORUNLU → FS upgrade). `epoch_1_root` burada türetilir (ccr §35.2.1 D4).
 * `SESSION_DATA` — düşük-overhead hot-path (≈18B app-envelope; SADECE `seq16 + ciphertext + AEAD tag`; hub_handle 4B L2 routing wire'da; session_id_internal/flags/len/recipient_dest_hash/cert/ephemeral/timestamp/imza YOK; length implicit). HER mesaj.
 * `SIGNED_CONTROL` — nadir non-repudiation gereken mesaj (kritik komut, delivery receipt, audit) = SESSION_DATA + `sender_signature(64B)` + full sender context.
 
-**Normatif kurallar:** (1) Normal chat/file/data hot-path **imzasızdır ve deniable'dır**. (2) Sender authentication normal hot-path'te **`ss_s = DH(sender_static_x25519, recipient_static_x25519)` possession + AEAD tag** ile sağlanır (ayrı per-message imza YOK). (3) Ed25519 `sk_device` imzası **yalnızca** `SIGNED_CONTROL` / delivery receipt / audit-control context'te kullanılır. (4) Public non-repudiation **bilinçli olarak yoktur** (yalnızca SIGNED_CONTROL). (5) `identity-and-trust-model.md` semantik otorite olduğundan, gövdedeki tüm aktif bölümler Session Model V3 ile uyumludur; eski `AsyncMessage/SRAM/Noise N/msg_tbs/verify_async_message_*/sender_signature` ifadeleri yalnızca **Deprecated Appendix (Section 27)**'de tarihsel referanstır, aktif protokol davranışı DEĞİLDİR. Key schedule: `session_context_v1` (Section 35.2; `message_type` AAD'de, `policy_sequence`/`recipient_discovery_record_hash` çıkarıldı, `recipient_static_x25519_hash` kullanılır). Anahtar kavramlar: `init_root`, `session_root`, `session_id_internal`, epoch-0 PRE-RESPONSE DATA, epoch-1 POST-RESPONSE DATA, `ss_s` possession auth, AEAD tag authentication.
+**Normatif kurallar:** (1) Normal chat/file/data hot-path **imzasızdır ve deniable'dır**. (2) Sender authentication normal hot-path'te **`ss_s = DH(sender_static_x25519, recipient_static_x25519)` possession + AEAD tag** ile sağlanır (ayrı per-message imza YOK). (3) Ed25519 `sk_device` imzası **yalnızca** `SIGNED_CONTROL` / delivery receipt / audit-control context'te kullanılır. (4) Public non-repudiation **bilinçli olarak yoktur** (yalnızca SIGNED_CONTROL). (5) `identity-and-trust-model.md` semantik otorite olduğundan, gövdedeki tüm aktif bölümler Session Model V3 ile uyumludur; eski `AsyncMessage/SRAM/Noise N/msg_tbs/verify_async_message_*/sender_signature` ifadeleri yalnızca **Deprecated Appendix (Section 27)**'de tarihsel referanstır, aktif protokol davranışı DEĞİLDİR. Key schedule: `session_context_v1` (Section 35.2; `message_type` AAD'de, `policy_sequence`/`recipient_discovery_record_hash` çıkarıldı, `recipient_static_x25519_hash` kullanılır). Anahtar kavramlar: `init_root`, `session_root`, `session_id_internal`, epoch-0 PRE-RESPONSE DATA (init_root), epoch-1 POST-RESPONSE DATA (`epoch_1_root`), `ss_s` possession auth, AEAD tag authentication.
 
 **E-13 — SESSION MODEL V3 İSİMLENDİRME RECONCILE (OTORİTER, E-3/E-12'yi GÜNCELLER, Haziran 2026):** ccr-spec §35 wire/session canonical otorite olarak **Session Model V3**'e geçti. Bu belgedeki aktif "Session Model V3" semantiği DOĞRU; yalnızca İSİMLER reconcile edilir (wire byte'ları için ccr §35 otoriter):
 
@@ -66,7 +113,7 @@
 - **İki katman:** B2C (RoftCore, açık kayıt) vs Enterprise (federasyon; allowlist+seat+cihaz-onayı gated). **B2C↔Enterprise izolasyon sınırı Beta'ya ERTELENDİ** (Alpha: enterprise-öncelik, B2C basit).
 - **RA akışı:** `federation_selector → operator_id` çözümü **Gate-1/2/3'ten ÖNCE** (Gate-0); ardından 3 gate o operator_id'ye uygulanır (admin-control-plane-tdd §10). Davet link/QR formatı (`federation_selector` + expiry encode) **TBD — dondurulmadı.**
 
-**KAVRAMSAL NETLİK (NORMATİF — "KK/IK" YANLIŞ ETİKETİ DÜZELTİLDİ):** Async key schedule **tek-yön authenticated**'dır: `ss_e = DH(sender_ephemeral, recipient_static)` (FS) + `ss_s = DH(sender_static, recipient_static)` (sender auth, possession). Bu **N-türevi tek-yön** (inline cert ≈ Noise X-benzeri, ref ≈ Noise K-benzeri) — **interaktif KK/IK DEĞİL**. İki tarafın aynı anda online olması GEREKMEZ: Alice tek SESSION_INIT gönderir, hub saklar, Bob offline olabilir; Bob online olunca `init_root`'u kendi static'iyle (ss_e+ss_s) çözer. `SESSION_INIT_RESPONSE` senkron handshake DEĞİL — Bob online olunca kendi ephemeral'ını ekleyen **asenkron FS-upgrade** (epoch-0 tek-yön init_root → epoch-1 çift-yön session_root). İlk mesaj RESPONSE olmadan da teslim+okunur. (Senkron Client↔Client / canlı PTT-voice-video için interaktif Noise IK/KK = Beta, ayrı konu.) **Wire byte otoritesi: ccr-spec §35.**
+**KAVRAMSAL NETLİK (NORMATİF — "KK/IK" YANLIŞ ETİKETİ DÜZELTİLDİ):** Async key schedule **tek-yön authenticated**'dır: `ss_e = DH(sender_ephemeral, recipient_static)` (FS) + `ss_s = DH(sender_static, recipient_static)` (sender auth, possession). Bu **N-türevi tek-yön** (inline cert ≈ Noise X-benzeri, ref ≈ Noise K-benzeri) — **interaktif KK/IK DEĞİL**. İki tarafın aynı anda online olması GEREKMEZ: Alice tek SESSION_INIT gönderir, hub saklar, Bob offline olabilir; Bob online olunca `init_root`'u kendi static'iyle (ss_e+ss_s) çözer. `SESSION_INIT_RESPONSE` senkron handshake DEĞİL — Bob online olunca kendi ephemeral'ını ekleyen **asenkron FS-upgrade** (epoch-0 tek-yön init_root → epoch-1 çift-yön epoch_1_root). İlk mesaj RESPONSE olmadan da teslim+okunur. (Senkron Client↔Client / canlı PTT-voice-video için interaktif Noise IK/KK = Beta, ayrı konu.) **Wire byte otoritesi: ccr-spec §35.**
 
 **SESSION MODEL V3 INVARIANTS (NORMATİF):**
 
@@ -213,12 +260,12 @@ RA, enrollment denetimi için `phone_number → identity_hash/dest_hash` mapping
 | **CAD-37** | **X25519 ROTATION YOK:** Forward secrecy oturum-içi Noise rekey + her async mesajda taze ephemeral ile sağlanır; static key rotation gerekmez. KAYIP: static sızarsa bekleyen async mesajlar (kabul, cihaz ele geçirme kapsam dışı) |
 | ~~CAD-38~~ | ~~**ASYNCMESSAGE NOISE N:** `k=DH(sender_ephemeral, recipient_static_x25519)`; magic "SRAM"~~ → **DEPRECATED (E-12)**: Session Model V3 ile değiştirildi (SESSION_INIT amortize bootstrap → SESSION_DATA 18B hot-path). Stateless-per-message model 0.025 kbps survival'da sürdürülemezdi. Yeni model: CAD-54/55 (ccr-spec §35) |
 | ~~CAD-39~~ | ~~**ASYNCMESSAGE AUTH:** per-message sender_signature = Ed25519_Sign(sk_device, msg_tbs)~~ → **DEPRECATED (E-12)**: per-message Ed25519 imza KALDIRILDI. Hot-path sender auth artık `ss_s = DH(sender_static, recipient_static)` possession + AEAD tag (imzasız, deniable). Ed25519 imza yalnızca SIGNED_CONTROL'da (CAD-55) |
-| **CAD-40** | **NOISE REKEY (Double Ratchet YOK):** Oturum-içi FS `k_new=HASH(k_old)` (0 wire byte). Double Ratchet atıldı (DH-ratchet 32B/yön maliyeti + healing kapsam dışı tehdide karşı). Post-compromise healing Alpha'da YOK (kabul). Session Model V3'de epoch-1 (POST-RESPONSE) ephemeral×ephemeral ile FS upgrade (CAD-54) |
+| **CAD-40** | **[REVİZE 2026-09-07] ALPHA KEY LIFECYCLE (Double Ratchet YOK):** ~~Oturum-içi FS `k_new=HASH(k_old)`~~ → Alpha'da in-session rekey/key-phase/KEY_UPDATE **YOK**; cap → `SESSION_RENEW_REQUIRED` → yeni handshake (otorite: kama-noise-wire §0.9/§5). Double Ratchet atıldı (DH-ratchet 32B/yön maliyeti + healing kapsam dışı tehdide karşı). Post-compromise healing Alpha'da YOK (kabul). Session Model V3'de epoch-1 (POST-RESPONSE) ephemeral×ephemeral ile FS upgrade (CAD-54) |
 | **CAD-41** | **DISCOVERY TEK-SEFERDE:** İyi internet varsayımı sadece kayıt/discovery anında. Discovery'de tüm bilgi (VOPRF telefon→dest_hash + DiscoveryRecordV2'ler static X25519 dahil) tek seferde çekilir+cache'lenir; sonra hostile ağda tekrar çekilmez. "Lazy discovery" yoktur |
 | **CAD-42** | **DISCOVERYRECORDV2:** `current_device_x25519` (statik) taşır; `current_prekey_bundle` KALDIRILDI; **`home_hub_id` KONUM alanı da KALDIRILDI (CAD-53 — client konum bilmez)**. sk_user_identity imzalı; hub değiştiremez. Session Model V3'nin güven çapası (Alice Bob'un static X25519'unu buradan alır → SESSION_INIT ss_e/ss_s) |
 | **CAD-43** | **PKI YERLEŞİMİ (E-10):** Root + Intermediate (kurum başına ayrı key) + RA RoftCore'da; Admin Server + Hub kurumda. Güvenlik-kritik her şey RoftCore-kontrollü HSM-destekli CA/RA ortamında (erişim kontrolü + audit logging + separation of duties); kurum hub egemenliği + Admin Server yönetimi |
 | **CAD-44** | **MALİ MODEL (lisans gate, Intermediate expiry DEĞİL):** RA, sertifika isteğini Intermediate'e göndermeden önce OrgEntitlementRecord (lisans + seat limit) kontrol eder; aşılırsa/lisans yoksa imzalamaz. Lisans enforcement 5 katman (E-11): RA gate + OrgEntitlementRecord + Identity Cert 1 yıl yenileme + HubListRecord validity + CRLite. Lisans bitince Identity Cert yenilenmez → Device Cert parent'ı aşamaz (`DeviceCert.not_after <= min(identity.not_after, license_not_after)`) → routing durur; Intermediate (5 yıl namespace) bozulmaz |
-| **CAD-45** | **REPLAY (Session Model V3):** SESSION_DATA per-epoch+direction `seq` (u32) + sliding window bitmap (512-1024, hostile sırasız); SESSION_INIT replay key `(sender_identity_hash, session_id_internal, message_counter)` + timestamp max_age 7 gün; ilk INIT atomik counter check. N-message ACK penceresi: Alice ACK almadan N mesajdan fazla gönderemez (DoS + sessiz kayıp + MAX_SKIP tek mekanizma); session/link-bazlı (`ack_outstanding[session_id_internal][dir]`) |
+| **CAD-45** | **REPLAY (Session Model V3):** SESSION_DATA per-epoch+direction `seq` (u32) + sliding window bitmap (512-1024, hostile sırasız); SESSION_INIT replay key **[REVİZE 2026-09-07/P0-2]** `(validated sender device identity, init_counter)` ~~(sender_identity_hash, session_id_internal, message_counter)` + timestamp max_age 7 gün; ilk INIT atomik counter check. N-message ACK penceresi: Alice ACK almadan N mesajdan fazla gönderemez (DoS + sessiz kayıp + MAX_SKIP tek mekanizma); session/link-bazlı (`ack_outstanding[session_id_internal][dir]`) |
 | **CAD-46** | **ÇOK-HUB SELF-HEALING:** Client ~3 hub'a kayıtlı olabilir (primary/secondary/tertiary, failover); HubBinding REDDEDİLDİ (self-healing'i öldürür); split-brain uygulama-düzeyi cert kontrolü + sk_device possession ile kapalı; mesajlaşma tek hub (primary)=1x bant; LWW+TTL |
 | **CAD-47** | **BOOTSTRAP:** App bundle'da SADECE Root CA pin; HubListRecord (Intermediate-imzalı, IP SAN) RA'dan onboarding'de gelir; cache'lenir, hostile'da tekrar çekilmez |
 | **CAD-48** | **ADMIN SERVER:** Kurum yönetim identity (Intermediate-imzalı cert); RA onu mTLS'te tanır; admin panel yetki matrisi (Section 6.3.3): sessiz cihaz ekleme YASAK (sk_device possession şart), log silme YASAK (append-only), sınırsız sertifika YASAK (lisans gate) |
@@ -297,7 +344,9 @@ SAN URI YOK → dest_hash issuer Identity/User Cert'ten türetilir (`SHA-256(SHA
 3. **Tek-temassız asenkron mesaj:** Alice, Bob'un statik X25519'uyla handshake olmadan SESSION_INIT gönderir (zero-RTT, CAD-54).
 4. **Cache bayatlamaz:** Statik key 90 gün (Device Cert ömrü) geçerli; rotation yok.
 
-**Forward secrecy:** Oturum-içi FS Noise rekey ile (`k_new=HASH(k_old)`, CAD-40); her async mesajda taze `sender_ephemeral_x25519` ile başlangıç FS'i (Bob static sızmadıkça). **KAYIP:** Bob static X25519 sızarsa bekleyen async mesajlar açılabilir (kabul — cihaz ele geçirme kapsam dışı). Post-compromise healing Alpha'da YOK (CAD-40).
+**Forward secrecy:** Alpha'da oturum-içi rekey YOKTUR (CAD-40 revize, 2026-09-07); oturum FS'i
+`SESSION_RENEW_REQUIRED` (cap) → yeni handshake granülaritesindedir — yani **PCS = session-cap
+granülaritesinde**, ratchet Beta konusudur. her async mesajda taze `sender_ephemeral_x25519` ile başlangıç FS'i (Bob static sızmadıkça). **KAYIP:** Bob static X25519 sızarsa bekleyen async mesajlar açılabilir (kabul — cihaz ele geçirme kapsam dışı). Post-compromise healing Alpha'da YOK (CAD-40).
 
 Tam yapı ve validation: CompactDeviceCert (ccr-spec §13 + Section 7.4), Session Model V3 (ccr-spec §35 + Section 10.5), DiscoveryRecordV2 (Section 7.13 + 15.7), validators (Section 15).
 
@@ -876,8 +925,8 @@ OrgEntitlementRecord {
 | HubListRecord | Kurum hub bootstrap (IP SAN) | Intermediate CA (RoftCore) | Lokal cache | not_after'a kadar | Public | Hub topolojisi değişince | RA'dan (onboarding, once) |
 | CRLite filter cache | Revocation | Intermediate CA | Lokal cache | valid_until'a kadar | Public | <24h | Alınır (once/connection, iyi internette) |
 | **Async outbound seq** (per link, per dir) | SESSION_DATA seq + N-msg-ACK penceresi (ack_outstanding) | Client | Lokal DB | Session (link) | Hassas | per-message artar | — |
-| **Async inbound replay state** (per link, per epoch+dir) | highest_seq + sliding bitmap (512-1024); SESSION_INIT timestamp pencere | Client | Lokal DB | Session (max_age 7 gün budama) | Hassas | per-message | — |
-| **SessionState** (per link) | init_root/session_root + epoch chain keys (Section 16) | Client | Lokal şifreli DB | Uzun (inaktivite timeout 30 gün) | **Kritik** | epoch geçişi (PRE→POST SESSION_INIT_RESPONSE) | — |
+| **Async inbound replay state** (per link, per epoch+dir) | highest_counter + sliding bitmap (512-1024); **SESSION_INIT replay identity = (validated sender device identity, `init_counter`)** — [P0-2] sender identity DOĞRULANMIŞ sertifika bağlamından gelir; `init_counter` gerçek wire alanıdır; `message_counter` / wire `session_id_internal` / wire timestamp KULLANILMAZ (V2 kalıntısı). İlk-insert ATOMİKtir, duplicate → reject | Client | Lokal DB | Session (7 gün = replay-entry **retention/pruning horizon**, ALICININ local receive-time'ına göre; **wire timestamp validation DEĞİLDİR**, wire'da timestamp alanı YOK — P0-2) | Hassas | per-message | — |
+| **SessionState** (per link) | init_root/epoch_1_root + epoch chain keys (Section 16) | Client | Lokal şifreli DB | Uzun (inaktivite timeout 30 gün) | **Kritik** | epoch geçişi (PRE→POST SESSION_INIT_RESPONSE) | — |
 | CT checkpoint cache (STH) | Şeffaflık audit | CT Log | Lokal cache | Kalıcı | Public | — | Opportunistic |
 | PeerTrustCache | Peer doğrulama state (Section 16) | Client | Lokal şifreli DB | Kalıcı | Hassas (sosyal graf) | — | Hayır |
 | Message storage | Mesaj geçmişi | Client | Lokal şifreli DB | Kalıcı | **Hassas** | — | Hayır |
@@ -1006,7 +1055,11 @@ sequenceDiagram
 3. ss_e = DH(sender_ephemeral_sk, bob_static_x25519);  ss_s = DH(alice_static_x25519_sk, bob_static_x25519)
    init_root = HKDF("SR-SESSION-INIT-V3", ss_e || ss_s, session_context_v1)        # ss_s = sender AUTH
    session_id_internal   = Trunc128(HKDF("SR-SESSION-ID-V3", init_root, session_context_v1))     # dest_hash'ten TÜREMEZ
-4. k_init = per-message key (init_root'tan, SESSION_INIT_AAD ile); ciphertext = AEAD(k_init, AAD, plaintext)
+4. k_init = KDF("SR-SESSION-INIT-DATA-V3", init_root, 0x01, 32)          # ccr §35.2.1 D6
+   nonce = nonce96(0); AAD = SESSION_INIT_AAD (ccr §35.3.1)
+   ciphertext = AEAD_seal(k_init, nonce, AAD, plaintext)
+   # "per-message key" ifadesi V2 kalıntısıydı (E-13): burada mesaj-başına türetme YOK,
+   # her init_root TAM OLARAK BİR SESSION_INIT mühürler (ccr INV-INIT-KEY-1).
    # AEAD tag = İKİ kanıt: integrity + ss_s possession (sender_signature YOK — CAD-55)
 5. sender_cert = cert_mode 0=ref(32B) | 1=inline-compact(152B) | 2=bundle(chain)   [reference-first]
 6. SESSION_INIT = {magic "SSI1"(AAD), flags, recipient_dest_hash, sender_ephemeral, sender_cert(ref/inline/bundle), init_counter, ct, tag16}
@@ -1018,8 +1071,9 @@ sequenceDiagram
 **PRE-RESPONSE DATA — epoch-0 (Alice, Bob henüz cevap vermeden devam edebilir, amortization):**
 ```
 8. Alice SESSION_INIT_RESPONSE beklemeden SESSION_DATA (epoch-0, A→B tek yön) gönderebilir:
-   k_send_A2B_e0 = HKDF("SR-DATA-A2B-E0", init_root, "")
-   per-message key = HKDF(k_send_A2B_e0, seq); SESSION_DATA_AAD = "SSD1"||flags(epoch0,dir A2B)||session_id_internal||seq
+   k_send_A2B_e0 = KDF("SR-SESSION-TRAFFIC-V3", init_root, 0x01, 32)        # ccr §35.2.1 D2 (direction 0x01 = A→B)
+   # PER-MESSAGE HKDF YOKTUR (V2 kalıntısıydı — E-13): tek k_send + reconstructed full counter.
+   # nonce96 = 0x00×4 || LE64(full_counter)   ·   AAD = ccr §35.9 (28B, "SSD1"||ver||suite||direction||epoch||seq16||session_id_internal)
    SESSION_DATA = {hub_handle(4B,L2) | seq16(2B), ciphertext, tag16(16B)}   # 18B app-envelope; flags/len/session_id_internal/cert/imza/ephemeral YOK; length implicit (ccr §35.6)
    if ack_outstanding[session_id_internal][A2B] >= N: WAIT (N-message ACK penceresi, CAD-45)
 ```
@@ -1036,18 +1090,24 @@ sequenceDiagram
 12. Bob hub'a bağlanır (Client↔Hub Noise transport) + mailbox'tan SESSION_INIT + epoch-0 SESSION_DATA'ları çeker
 13. verify_session_init(init, local_identity, fresh_crlite)   # Section 15.6 (chain + ss_s possession + session_id_internal)
 14. bob_ephemeral = X25519_keygen()   (Alpha STRONGER: ZORUNLU → FS upgrade)
-    ss_ee2 = DH(bob_ephemeral_sk, alice_init_ephemeral_pub);  ss_se2 = DH(bob_ephemeral_sk, alice_static_x25519_pub)
-    session_root = HKDF("SR-SESSION-EPOCH-V3", init_root || ss_ee2 || ss_se2, session_context_v1)
-15. SESSION_INIT_RESPONSE = {magic "SSR1", session_id_internal, bob_ephemeral, counter, ct(session_root-derived)} → Alice mailbox
+    ss_e2 = DH(bob_ephemeral_sk, alice_init_ephemeral_pub) || DH(bob_ephemeral_sk, alice_static_x25519_pub)   # 64B
+    epoch_1_root = KDF("SR-SESSION-EPOCH-V3", init_root || ss_e2, u16_be(1), 32)     # ccr §35.2.1 D4 (info = u16_be(1))
+    # Eski ad "session_root" ve info=session_context_v1 kullanımı V2 kalıntısıydı (E-13) — ccr otoriter.
+15. SESSION_INIT_RESPONSE = {magic "SSR1"(AAD), flags, bob_ephemeral, response_counter, ct(k_resp-derived), tag16} → Alice mailbox
+    # session_id_internal wire'da TAŞINMAZ (INV-SM3-WIRE; ccr §35.5) — AAD'de türetilmiş olarak bağlıdır (ccr §35.5.1).
+    # [A-1 KAPANDI — 2026-09-19] Demux Crypto'nun içinde, pending kümesi üzerinde cap'li deneme (KM-SEAM-TC-001 K7);
+    #   wire alanı eklenmedi; Transport envelope_type ile yönlendirir (app-rpc AMENDMENT-7).
 16. Bob epoch-1 session state oluşturur (k_send_B2A_e1, k_send_A2B_e1); epoch-0 DATA'ları init_root ile açar
 ```
 
 **ESTABLISHED — epoch-1 DATA (çift yön hot-path):**
 ```
-17. Alice SESSION_INIT_RESPONSE'i alınca: verify_session_init_response → session_root türet → init_ephemeral_sk SİL (FS)
-    epoch-1'e geç: k_send_A2B_e1 = HKDF("SR-DATA-A2B-E1", session_root, ""), k_send_B2A_e1 simetrik
+17. Alice SESSION_INIT_RESPONSE'i alınca: verify_session_init_response → epoch_1_root türet → init_ephemeral_sk SİL (FS)
+    epoch-1'e geç: k_A2B_e1 = KDF("SR-SESSION-TRAFFIC-V3", epoch_1_root, 0x01, 32)   # ccr §35.2.1 D5
+                   k_B2A_e1 = KDF("SR-SESSION-TRAFFIC-V3", epoch_1_root, 0x02, 32)   # "SR-DATA-*-E1" label'ı V2 kalıntısıydı (E-13)
 18. Bundan sonra TÜM mesajlar SESSION_DATA epoch-1: 18B app-envelope (seq16+ct+tag16; hub_handle L2; session_id_internal AAD'de)
-    per-message key = HKDF(k_send_dir_e1, seq); replay = sliding window bitmap (per epoch+dir)
+    tek k_send_dir_e1 + reconstructed full counter (per-message HKDF YOK);
+    replay = ccr §35.8 full-counter reconstruction + sliding bitmap (per epoch+dir)
 ```
 
 **ACK + failover:**
@@ -1072,14 +1132,16 @@ Ek HMAC kullanılmaz. Mesaj bütünlüğü ve orijinalliği şunlarla sağlanır
 
 > **Hot-path deniable + imzasız (NORMATİF, CAD-55):** Normal SESSION_DATA chat/file/data per-message imza TAŞIMAZ. k AEAD'yi Bob da üretebildiği için mesaj üçüncü tarafa Alice'i bağlamaz (Signal/OTR deniability modeli). **Public non-repudiation bilinçli olarak yoktur** — yalnızca `SIGNED_CONTROL` (Section 35.9) Ed25519 imza taşır.
 
-**AEAD Associated Data (AAD) — message-type'a göre (ccr-spec §35.2 exact layout):**
+**AEAD Associated Data (AAD) — OTORİTE ccr-spec §35 (bu belgede KOPYA TABLO TUTULMAZ, A-8):**
 ```
-SESSION_INIT_AAD:   "SSI1" || version || flags || cipher_suite_id || session_id_internal || recipient_dest_hash ||
-                  sender_cert_ref || sender_ephemeral_x25519 || message_counter || timestamp   (144B)
-SESSION_INIT_RESPONSE_AAD: "SSR1" || version || flags || cipher_suite_id || session_id_internal || bob_ephemeral || counter (64B)
-SESSION_DATA_AAD:   "SSD1" || flags(epoch+direction) || session_id_internal || seq   (25B; SSD1 wire'da YOK, AAD-only)
-SIGNED_CONTROL:   "SSC1" || version || flags || session_id_internal || seq || ciphertext_len || ciphertext  (signed_control_tbs)
+SESSION_INIT_AAD          → ccr §35.3.1   (exact alan listesi ve sırası)
+SESSION_INIT_RESPONSE_AAD → ccr §35.5.1
+SESSION_DATA_AAD          → ccr §35.9     (28B; "SSD1" wire'da YOK, AAD-only)
+SIGNED_CONTROL TBS        → ccr §35.10    (counter ve SHA-256(ciphertext) BAĞLI olan biçim)
 ```
+> **[2026-09-07 — CRYPTO-P0 mini pass]** Buradaki eski kopya tablo KALDIRILDI: `message_counter`
+> ve `timestamp` gibi **wire'da bulunmayan** alanları AAD'de gösteriyordu, SSD1'i 25B (doğrusu 28B)
+> ve SIGNED_CONTROL TBS'ini counter/ciphertext bağlamayan kısa biçimde veriyordu. Tek otorite ccr §35.
 > Bu binding sayesinde: hub mesajı başka alıcıya yönlendiremez (recipient_dest_hash INIT AAD + session_context'te → farklı k → AEAD fail), downgrade yapamaz (cipher_suite_id AAD'de + Alpha sabit), cross-epoch/cross-direction replay engellenir (epoch+direction SESSION_DATA flags'te AAD'de), INIT forge edemez (ss_s possession yok → AEAD fail).
 
 ---
@@ -1244,7 +1306,10 @@ fresh_crlite = get_or_refresh_crlite_once_per_connection()
 2. verify_compact_device_cert(alice_cert, fresh_crlite)        # Section 15.3, chain→Root
 3. ss_e/ss_s türet → init_root → ciphertext AEAD tag doğru → ss_s possession KANIT (sender auth, imza YOK)
 4. session_id_internal == Trunc128(HKDF("SR-SESSION-ID-V3", init_root, session_context_v1))   # internal/AAD session id (DERIVED — wire'da YOK)
-5. replay: (sender_identity_hash, session_id_internal, message_counter) + timestamp window
+5. replay: **(validated sender device identity, `init_counter`)** — [P0-2] `session_id_internal`
+   TÜRETİLMİŞ değerdir, wire replay identifier olarak parse EDİLMEZ; `message_counter` ve wire
+   timestamp YOKTUR. 7 gün = alıcının local receive-time'ına göre replay-entry retention/pruning
+   horizon'ıdır (wire timestamp validation DEĞİL). İlk-insert ATOMİK, duplicate → reject.
 6. TOFU/contact policy (PeerTrustCache); SessionState[session_id_internal] oluştur
 ```
 > Saldırgan Bob'un public cert'ini hash'leyip sahte INIT koyamaz (`ss_s` için alice_static_x25519_sk gerekir → hub'da yok → AEAD tag fail). Hub retarget edemez (recipient_dest_hash session_context'te → farklı k). Hub sadece suppress edebilir (availability; N-msg-ACK yakalar).
@@ -1589,23 +1654,45 @@ verify_compact_device_cert(compact_cert, identity_cert, org_entitlement, fresh_c
 
 > **KRİTİK (NORMATİF):** `issuer_identity_hash`/`issuer_dest_hash` `device_ed25519_pub`'tan TÜRETİLMEZ — yalnızca issuer Identity/User Cert'in `user_identity_ed25519_pub`'undan (CAD-16). Device key sadece imza doğrulama key'idir, routing identity üretmez. `issuer_signature`'ı **sk_user_identity** üretir (Identity CA/User Cert), **sk_intermediate DEĞİL**. Trust path: CompactDeviceCert → Identity/User Cert → Intermediate → Root. `intermediate_sig` terimi CompactDeviceCert'te KULLANILMAZ (yalnızca HubListRecord gibi gerçekten Intermediate-imzalı yapılarda).
 
-### 15.5 check_async_data_replay (Session Model V3 — per epoch+direction sliding window)
+### 15.5 Replay State Machine — `replay_precheck` / `replay_commit` (Session Model V3 — per epoch+direction sliding window)
+
+> **Ad ve yapı değişikliği [B4 + P0-6, 2026-09-07]:** Eski ad `check_async_data_replay` (Async Session V2 döneminden), ara ad `check_session_data_replay`. **P0-6 ile tek fonksiyon İKİYE AYRILDI:** `replay_precheck` (PURE) + `replay_commit` (mutating, yalnız AEAD success sonrası). Eski tek-fonksiyonlu biçim AEAD'den ÖNCE state mutate ediyordu → **replay-state poisoning**. v1.5 öncesi metinlerde eski adlar geçebilir; aktif kontrat yalnız bu ikisidir.
 
 ```
-check_async_data_replay(session_id_internal, epoch, direction, seq, session_state) -> bool:
-  # session_state.replay_window[epoch][direction]: highest_seq + bitmap (512-1024)
-  WINDOW = 1024                                            # hostile sırasız tolerans (512-1024)
-  w = session_state.replay_window[epoch][direction]
-  highest = w.highest_seq
-  if seq > highest:
-    slide_window(w, seq); return TRUE                      # ileri → kabul + kaydır
-  if seq <= highest - WINDOW:
-    return FALSE                                           # window'dan eski → reddet
-  if bitmap_test(w.bitmap, seq):
-    return FALSE                                           # zaten görüldü → REPLAY reddet
-  bitmap_set(w.bitmap, seq); return TRUE                   # sırasız ama geçerli → kabul
+# [P0-6 — İKİ FAZ, NORMATİF] Replay kontrolü PURE precheck ile MUTATING commit'e AYRILIR.
+# Canonical invariant (ccr + kama-noise-wire ortak): unauthenticated / AEAD-FAILED bir paket
+# replay penceresini ASLA ilerletemez. Eski tek-fonksiyonlu biçim (kontrol + mutasyon aynı çağrıda,
+# AEAD'den ÖNCE) replay-state poisoning'e açıktı — KALDIRILDI.
+#
+# GİRDİ full_counter'dır — ham seq16 DEĞİL. Çağıran önce ccr §35.8 reconstruction'ı uygular
+# (3 aday, argmin; backward tie → düşük, forward tie → yüksek).
+# session_state.replay_window[epoch][direction]: highest_counter + bitmap (512-1024)
 
-# SESSION_INIT replay (session henüz yok): key = (sender_identity_hash, session_id_internal, message_counter)
+replay_precheck(full_counter, epoch, direction, session_state) -> bool:     # PURE — MUTASYON YOK
+  WINDOW         = 1024                                    # ccr §35.8 REPLAY_WINDOW
+  MAX_FUTURE_GAP = 4096                                    # ccr §35.8
+  if epoch not in session_state.acceptable_epochs[direction]: return FALSE  # P0-9: grace'e tabi
+  w = session_state.replay_window[epoch][direction]
+  highest = w.highest_counter
+  # [P0-7] UNDERFLOW-SAFE: "highest - WINDOW" YAZILMAZ (u64 wrap replay kararını etkileyemez).
+  if full_counter > highest:
+    if full_counter - highest > MAX_FUTURE_GAP: return FALSE   # future-gap → reddet
+    return TRUE                                                # ileri → kabul (commit'te kaydırılır)
+  if full_counter + WINDOW <= highest:  return FALSE            # window'dan eski → reddet
+  if bitmap_test(w.bitmap, full_counter): return FALSE          # zaten görüldü → REPLAY reddet
+  return TRUE                                                   # sırasız ama geçerli
+
+replay_commit(full_counter, epoch, direction, session_state) -> void:      # YALNIZ AEAD SUCCESS sonrası
+  w = session_state.replay_window[epoch][direction]
+  if full_counter > w.highest_counter:
+    slide_window(w, full_counter)                          # highest advance + pencere kaydır
+  bitmap_set(w.bitmap, full_counter)
+
+# Kanonik alım sırası (P0-8): demux → reconstruct → replay_precheck → key → nonce → AAD →
+#   AEAD_open → SUCCESS → replay_commit → plaintext handoff.
+# AEAD failure'da crypto/replay state BYTE-FOR-BYTE değişmeden kalır.
+
+# SESSION_INIT replay (session henüz yok): key = (validated sender device identity, init_counter)   # [P0-2]
 #   + timestamp MAX_AGE 7 gün (S&F TTL); ilk INIT atomik counter init (sonraki aynı counter reddedilir).
 ```
 
@@ -1617,8 +1704,13 @@ check_async_data_replay(session_id_internal, epoch, direction, seq, session_stat
 
 ```
 verify_session_init(init, local_identity, fresh_crlite) -> validated_init | FAIL:
-  # init = SESSION_INIT (magic "SSI1", ccr-spec §35.3)
-  1. frame type / magic "SSI1" / version / flags geçerli (cert_mode ∈ {0,1,2})
+  # init = SESSION_INIT — ccr-spec §35.3 canonical wire:
+  #   flags || recipient_dest_hash || sender_ephemeral || cert_field || init_counter || ct || tag16
+  #   "SSI1" WIRE ALANI DEĞİLDİR — yalnız SESSION_INIT_AAD domain separator'ıdır (ccr §35.3.1).
+  1. outer/carrier frame class == SESSION_INIT (transport packet_class / app-rpc envelope_type 0x01);
+     wire payload'da "SSI1" ARAMA (P0-1).
+     flags canonical bit allocation'a göre validate (cert_mode ∈ {0,1,2}; reserved nonzero → reject).
+     protocol_version / cipher_suite_id aktif profile + session context'ten gelir, wire'dan parse edilmez.
   2. init.recipient_dest_hash == local dest_hash                  # recipient confusion önleme
   3. sender_cert çöz: cert_mode 0=ref→cache (miss→FAIL_CLOSED/defer; çıplak device_id GÜVENİLMEZ)
                       1=inline CompactDeviceCert (152B); 2=DeviceCertBundle (chain material)
@@ -1631,45 +1723,108 @@ verify_session_init(init, local_identity, fresh_crlite) -> validated_init | FAIL
      ver||profile||cipher_suite_id||sender_cert_ref||recipient_dest_hash||recipient_static_x25519_hash
   7. ss_e = DH(init.sender_ephemeral, recipient_static); ss_s = DH(sender_static, recipient_static)
      (her iki DH all-zero/low-order → reject)
-  8. init_root = HKDF("SR-SESSION-INIT-V3", ss_e || ss_s, session_context_v1)
-  9. session_id_internal expected: init.session_id_internal == Trunc128(HKDF("SR-SESSION-ID-V3", init_root, session_context_v1))
-                                                                   # mismatch → reject
-  10. AEAD decrypt/verify (k init_root-derived, AAD=SESSION_INIT_AAD) → BAŞARI = ss_s possession KANIT (sender auth)
-  11. replay: key = (sender_identity_hash, init.session_id_internal, init.message_counter) + timestamp MAX_AGE 7 gün
+  8. init_root = KDF("SR-SESSION-INIT-V3", ss_e || ss_s, session_context_v1, 32)   # ccr §35.2.1 D1 (exact)
+     # Başka HKDF invocation biçimi YASAK (INV-KDF-1).
+  9. session_id_internal = KDF("SR-SESSION-ID-V3", init_root, session_context_v1, 16)   # ccr §35.2.1 D3
+     # TÜRETİLİR — wire'da TAŞINMAZ (INV-SM3-WIRE). Karşılaştırılacak bir wire alanı YOKTUR;
+     # bağ, AAD üzerinden kurulur (ccr §35.3.1): AAD yanlışsa AEAD adım 10'da zaten fail eder.
+  10. k_init = KDF("SR-SESSION-INIT-DATA-V3", init_root, 0x01, 32)              # ccr §35.2.1 D6
+      nonce = nonce96(0); AAD = SESSION_INIT_AAD (ccr §35.3.1 — exact alan listesi)
+      AEAD decrypt/verify → BAŞARI = ss_s possession KANIT (sender auth)
+  11. replay: key = (validated sender device identity, init.init_counter)   # [P0-2] exact
+      # `session_id_internal` TÜRETİLİR (adım 9), wire replay identifier DEĞİLDİR.
+      # `message_counter` ve wire timestamp YOKTUR (ccr §35.3 layout).
+      # 7 gün = ALICININ local receive-time'ına göre replay-entry retention/pruning horizon'ı;
+      #         wire timestamp validation DEĞİL. İlk-insert ATOMİK; duplicate → reject.
   12. pending/inbound mailbox SessionState[session_id_internal] oluştur (epoch=PRE_RESPONSE, init_root)
   return validated_init
 
-verify_session_init_response(accept, pending_session, fresh_crlite) -> session_state | FAIL:
-  # accept = SESSION_INIT_RESPONSE (magic "SSR1", ccr-spec §35.4)
-  1. magic "SSR1" / version / flags
-  2. accept.session_id_internal pending_session'da var mı? (yoksa LINK_ROUTE_MISS / reject)
-  3. accept.bob_ephemeral all-zero / low-order → reject (Alpha STRONGER zorunlu)
-  4. ss_ee2 = DH(alice_init_ephemeral_sk, accept.bob_ephemeral)    # ephemeral×ephemeral (FS upgrade)
-     ss_se2 = DH(alice_static_x25519_sk, accept.bob_ephemeral)     # static×ephemeral (Alpha ZORUNLU)
-     (her iki DH all-zero → reject; biri eksikse fail-closed)
-  5. session_root = HKDF("SR-SESSION-EPOCH-V3", init_root || ss_ee2 || ss_se2, session_context_v1)
-  6. AEAD decrypt/verify (AAD=SESSION_INIT_RESPONSE_AAD) → başarısız → reject
-  7. epoch-1 session state (k_send_A2B_e1, k_send_B2A_e1)
-  8. alice_init_ephemeral_sk SİL (forward secrecy)
+verify_session_init_response(response, pending_session, fresh_crlite) -> session_state | FAIL:
+  # response = SESSION_INIT_RESPONSE — ccr-spec §35.5 canonical wire:
+  #   flags || responder_ephemeral || response_counter || ct || tag16
+  #   "SSR1" WIRE ALANI DEĞİLDİR — yalnız SESSION_INIT_RESPONSE_AAD domain separator'ıdır (ccr §35.5.1).
+  #
+  # KONTRAT (P0-3): `pending_session`, ÇAĞIRAN tarafından ÖNCEDEN seçilmiş CANDIDATE session'dır.
+  #   Bu validator candidate'ın DOĞRU olup olmadığını kriptografik olarak doğrular
+  #   (candidate.init_root → türetilen session_id_internal → AAD → D4/D7 → AEAD).
+  #   Candidate'ın NASIL seçileceği bu validator'ın işi DEĞİLDİR.
+  1. outer/carrier frame class == SESSION_INIT_RESPONSE; wire payload'da "SSR1" ARAMA (P0-4).
+     flags canonical validate (bit0 = 0; reserved nonzero → reject; ccr §35.5 C-4).
+     response_counter monotonluk kontrolü (eşit/geri → reject).
+  2. response.responder_ephemeral all-zero / low-order → reject (Alpha STRONGER zorunlu)
+  3. ss_e2 = DH(alice_init_ephemeral_sk, response.responder_ephemeral)     # ephemeral×ephemeral (FS upgrade)
+          || DH(alice_static_x25519_sk,   response.responder_ephemeral)     # static×ephemeral (Alpha ZORUNLU)
+     # Responder tarafındaki bayt dizisiyle AYNI:
+     #   DH(bob_ephemeral_sk, alice_init_ephemeral_pub) || DH(bob_ephemeral_sk, alice_static_x25519_pub)
+     (her iki DH all-zero/low-order → reject; biri eksikse fail-closed)
+  4. epoch_1_root = KDF("SR-SESSION-EPOCH-V3", pending_session.init_root || ss_e2, u16_be(1), 32)  # D4
+  5. k_resp = KDF("SR-SESSION-RESP-DATA-V3", epoch_1_root, 0x02, 32)                               # D7
+     nonce = nonce96(0); AAD = SESSION_INIT_RESPONSE_AAD (ccr §35.5.1; session_id_internal =
+     pending_session'dan TÜRETİLMİŞ değer — wire'dan okunmaz)
+  6. AEAD decrypt/verify → başarısız → reject
+     # Başarısızlık = "bu candidate yanlış" VEYA "paket bozuk". Ayrım yapılmaz; pending_session
+     # state'i DEĞİŞMEZ (P0-6 ilkesi RESPONSE'a da uygulanır).
+  7. epoch-1 traffic state:                                                                        # D5
+       k_A2B_e1 = KDF("SR-SESSION-TRAFFIC-V3", epoch_1_root, 0x01, 32)
+       k_B2A_e1 = KDF("SR-SESSION-TRAFFIC-V3", epoch_1_root, 0x02, 32)
+     send_epoch[A→B] = 1  (Alice artık epoch-1 gönderir; ilk fırsatta geçerli bir epoch-1 paketi yollar
+                           → Bob'un implicit confirmation'ı bununla oluşur, noise-wire §4)
+     recv: epoch-0 receive state'i BURADA DISCARD EDİLMEZ (P0-9; grace noise-wire §4'e tabidir)
+    # [P0-9 confirmation-safe transition — noise-wire §4 OTORİTER, özet]:
+    #   Bob RESPONSE'u GÖNDERDİĞİNDE Alice'in aldığı VARSAYILMAZ → Bob A→B epoch-0 kabulünü SÜRDÜRÜR,
+    #     grace BAŞLAMAZ.
+    #   Alice RESPONSE'u doğruladığında send_epoch[A→B]=1 ve ilk fırsatta GEÇERLİ epoch-1 paketi yollar.
+    #   Bob ilk GEÇERLİ (AEAD-doğrulanmış) epoch-1 paketini alınca implicit confirmation oluşur →
+    #     ANCAK O ZAMAN: epoch-0 receive grace BAŞLAR ve send_epoch[B→A]=1.
+    #   Grace bitince epoch-0 receive cipher/state DISCARD → sonrasında epoch-0 REJECT.
+    #   AEAD-GEÇERSİZ epoch-1 paketi implicit confirmation OLUŞTURAMAZ, grace BAŞLATAMAZ (security-critical).
+    #   RESPONSE kaybolursa: Alice epoch-0'da kalır, Bob epoch-0 kabulünü korur → session ÖLMEZ.
+  8. ZEROIZATION SIRASI (P0-13): `alice_init_ephemeral_sk` YALNIZ (a) adım 6 AEAD başarılı,
+     (b) epoch_1_root türetildi, (c) epoch-1 traffic state kuruldu — ÜÇÜ de tamamlandıktan sonra
+     zeroize edilir. AEAD failure'da SİLİNMEZ (RESPONSE cached-retry semantiği korunur).
   return session_state (epoch=POST_RESPONSE)
+
+  # [KS-DEMUX-1 KAPANDI — 2026-09-19, KM-SEAM-TC-001 K7]
+  #   Candidate seçimi CRYPTO'nun İÇİNDEDİR: AcceptResponse{wire} kendi pending kümesini en-yeni-önce, cap'li
+  #   (PENDING_RESPONSE_TRIAL_CAP, ccr §35.15 KS-DOS-1 — değer [KARAR]) dener; wire alanı EKLENMEDİ; sonuç opak
+  #   (yanlış candidate ≡ bozuk paket). Transport RESPONSE zarfını DELIVER/MailboxItem envelope_type'ından tanıyıp
+  #   SessionControl'e verir (app-rpc AMENDMENT-7). Bu validator artık 'pending_session' argümanını çağırandan DEĞİL,
+  #   kendi iterasyonundan alır; imza semantiği aynı kalır.
 
 verify_session_data(data, session_state) -> plaintext | FAIL:
   # data = SESSION_DATA (18B; SSD1 wire'da YOK, AAD-only)
   1. outer frame_type == DATA (transport packet_class); wire'da SSD1 ARAMA
-  2. data.session_id_internal session_state'te var mı? (yoksa → LINK_ROUTE_MISS, kriptografik accept DEĞİL)
-  3. data.flags epoch+direction geçerli mi?
+  2. session demux: hub_handle (L2) → session_state. SESSION_DATA wire'ında session_id_internal YOKTUR
+     (18B zarf: seq16+ct+tag16). Eşleşme yoksa → LINK_ROUTE_MISS (kriptografik accept DEĞİL)
+  3. epoch/direction wire'da TAŞINMAZ; session_state'ten gelir ve AAD'ye + anahtar seçimine girer
+     (ccr §35.9; INV-NONCE-DIR-1 / INV-NONCE-EPOCH-1). Grace penceresindeyse {current, previous} denenir
   4. epoch-1 mesajı ama session henüz SESSION_INIT_RESPONSE almadı (epoch-1 chain yok) → reject/defer
-  5. epoch-0 mesajı SESSION_INIT_RESPONSE SONRASI (epoch-0 kapandı) → reject
-  6. check_async_data_replay(session_id_internal, epoch, direction, data.seq, session_state)  # Section 15.5
-  7. per-message key = HKDF(k_send_dir_epoch, data.seq)
-  8. AAD = "SSD1" || data.flags || data.session_id_internal || data.seq
-  9. AEAD decrypt/verify → başarısız → reject
+  5. epoch-0 mesajı: **RESPONSE gönderimi/alımı TEK BAŞINA epoch-0'ı KAPATMAZ** (P0-9).
+     Old-epoch retirement `kama-noise-wire §4 confirmation-safe transition`'a tabidir:
+     implicit confirmation (ilk GEÇERLİ epoch-1 paketi) + bounded grace tamamlanana kadar
+     epoch-0 receive KABUL EDİLİR. Yalnız grace bitip epoch-0 receive state DISCARD edildikten
+     sonra → reject. State DIRECTION-LOCAL tutulur.
+  6. full_counter = reconstruct_counter(session_state.expected[epoch][direction], data.seq16)  # ccr §35.8
+     replay_precheck(full_counter, epoch, direction, session_state)   # PURE — Section 15.5, MUTASYON YOK
+  7. k = traffic_key(epoch, direction)   # TEK anahtar; per-message HKDF YOKTUR — V2 kalıntısıydı, E-13
+     nonce96 = 0x00 0x00 0x00 0x00 || LE64(full_counter)                    # ccr §35.8 / noise-wire §4.5
+     # seq16 NONCE DEĞİLDİR; nonce sayacı reconstructed FULL counter'dır.
+  8. AAD = ccr §35.9 (28B): "SSD1" || protocol_version || cipher_suite_id || direction
+           || u16_be(dh_epoch) || seq16 || session_id_internal
+  9. plaintext = AEAD_open(k, nonce96, AAD, ciphertext, tag) → başarısız → reject
+     # AEAD FAIL ⇒ replay state BYTE-FOR-BYTE DEĞİŞMEDEN kalır (P0-6).
+  10. replay_commit(full_counter, epoch, direction, session_state)   # YALNIZ AEAD SUCCESS sonrası
+  11. plaintext handoff
   return plaintext
 
 verify_signed_control_message(msg, session_state, sender_cert) -> plaintext | FAIL:
   # msg = SIGNED_CONTROL (magic "SSC1", ccr-spec §35.9)
   1. SESSION_DATA gibi AEAD verify (session_id_internal, seq, replay) → plaintext
-  2. signed_control_tbs = "SSC1" || version || flags || session_id_internal || seq || ciphertext_len || ciphertext
+  2. signed_control_tbs = ccr §35.10 (OTORİTER — counter ve ciphertext BAĞLI):
+       "SSC1" || version || sender_device_cert_hash || session_context_hash || direction || epoch
+       || reconstructed_full_counter || command_type || application_command_id || SHA-256(ciphertext)
+     # Eski kısa TBS'ler (identity flags/seq biçimi ve ccr §30.4b) V2 kalıntısıydı (E-13): counter'ı ve
+     # ciphertext'i BAĞLAMIYORLARDI → imzalı-komut replay'i ve ciphertext substitution mümkündü.
      Ed25519_Verify(sender_cert.device_ed25519_pub, signed_control_tbs, msg.sender_signature) → başarısız → reject
   3. yalnızca explicit critical command / delivery receipt / audit context için kabul edilir (non-repudiation)
   return plaintext
@@ -2259,7 +2414,10 @@ Mode C: emergency propagation mode, TTL-limited multi-hub sync, disaster/field o
 | T-16 | Malicious hub SESSION_DATA suppression (mesajı düşür) | ⚠ Kabul | N-message ACK penceresi: Alice ACK gelmezse sessiz kaybı yakalar; çok-hub failover | Hub mesajı geciktirebilir/düşürebilir (availability residual) |
 | T-17 | Stale DiscoveryRecord suppression (eski geçerli sun) | ✓ | record_sequence cache (highest_discovery_sequence); rollback reddi; çok-hub multi-source | First-contact rollback (eski-ama-geçerli) tespit edilemeyebilir |
 | T-18 | Statik X25519 private key compromise | ⚠ Kabul | Lifetime (90 gün); identity_hash/dest_hash'i etkilemez; şüphe → Device Cert revoke (3-katman) | Revoke öncesi bekleyen async mesajlar açılabilir (cihaz ele geçirme kapsam dışı, CAD-37) |
-| T-19 | SESSION_DATA replay / duplicate delivery | ✓ | check_async_data_replay: per epoch+direction sliding bitmap (512-1024); SESSION_INIT (session_id_internal,counter)+timestamp; ilk INIT atomik | Yok (window dışı eski → reddedilir) |
+| **T-18a** | **KCI — alıcı static compromise ⇒ gönderen taklidi** | ⚠ **Kabul (residual)** | `ss_s = DH(sender_static, recipient_static)` SİMETRİKTİR: Bob'un static sk'si ele geçerse saldırgan `ss_s`'i HERHANGİ BİR Alice için hesaplar, kendi ephemeral'ıyla `ss_e` üretir ve Bob'a **herhangi biri adına** geçerli SESSION_INIT yazar (cert public olduğundan cert-mode engel değil). X3DH sınıfının bilinen özelliği. | **Mitigasyon mevcut:** saldırganda gönderenin Ed25519 `sk_device`'ı YOKTUR → `SIGNED_CONTROL` zorunlu kılınan yüzeyde KCI **etkisizdir**. **[KARAR-SLOTU KS-SC-1]** SIGNED_CONTROL ZORUNLU komut sınıfı tanımlanacak (aday: yetki/anahtar/üyelik değiştiren komutlar · revocation-ilgili komutlar · admin yüzeyi). Normal chat/file hot-path imzasız kalır (CAD-55 deniability korunur) → o yüzeyde residual kabul edilir. |
+| **T-18b** | **epoch-0'da ileri gizlilik YOK** | ⚠ **Kabul (residual)** | `init_root = KDF(label, ss_e‖ss_s, ctx)`; `ss_e = DH(sender_eph, recipient_STATIC)` ve `ss_s = DH(sender_STATIC, recipient_STATIC)` — **her iki DH de alıcının uzun ömürlü static'ine bağlıdır**. Alıcı static'i İLERİDE ele geçerse GEÇMİŞTEKİ TÜM epoch-0 trafiği çözülür. Bu "zayıf FS" değil, epoch-0 için FS **yokluğudur**. Tasarım RESPONSE beklemeden epoch-0 göndermeyi teşvik eder ve RESPONSE mailbox'ta ≤7 gün bekleyebilir → sahada epoch-0 istisna değil NORMAL mod olabilir. | Asenkron-first gereksiniminin doğrudan bedeli; kaldırılamaz. Azaltma: **[KARAR-SLOTU KS-FS-1]** yüksek hassasiyetli trafik için `require_epoch1` politika bayrağı (RESPONSE gelene kadar DATA gönderme) + alıcı tarafında RESPONSE'u mailbox'ta ÖNCELİKLENDİRME. **İddia dili:** "forward secrecy" ifadesi **epoch-1 için** nitelenmelidir. |
+| **T-18c** | **Gönderen ephemeral retention (≤7 gün)** | ⚠ **Kabul (residual)** | Alice `init_ephemeral_sk`'yi RESPONSE gelene kadar tutmak ZORUNDADIR (mailbox TTL ≤7 gün). O pencerede **Alice'in** cihazı ele geçerse bekleyen TÜM oturumların epoch-0 gizliliği düşer. T-18b ile birlikte: epoch-0 **iki taraftan da** korumasızdır. | RESPONSE alınır alınmaz `init_ephemeral_sk` SİLİNİR (§10.5-17 zaten normatif). Pencereyi kısaltmanın tek yolu RESPONSE gecikmesini kısaltmaktır (KS-FS-1). |
+| T-19 | SESSION_DATA replay / duplicate delivery | ✓ | `replay_precheck`/`replay_commit` (P0-6): per epoch+direction sliding bitmap (512-1024), commit YALNIZ AEAD success sonrası; SESSION_INIT replay = (validated sender device identity, init_counter), ilk INIT atomik | Yok (window dışı eski → reddedilir) |
 | T-20 | Mailbox metadata leakage (kim-kimle) | ⚠ Kabul | recipient_dest_hash routing için hub'a görünür (sealed sender Alpha'da yok); metadata minimize | Hub routing metadata gözlemler (federated model varsayar) |
 | T-21 | Revoked cert ama hub hâlâ route ediyor | ✓ | 3-katman: RA→hub push (anlık) + CRLite fail-closed (client çift-katman) + kısa ömür | Stale push/CRLite window (<24h, push saniyeler) |
 | T-22 | Async sender spoof | ✓ | SESSION_INIT ss_s = DH(sender_static, recipient_static) possession + AEAD tag; saldırgan public cert hash'leyip sahte INIT koyamaz (sender_static_sk yok → tag fail) | Yok |
@@ -2344,7 +2502,7 @@ Mode C: emergency propagation mode, TTL-limited multi-hub sync, disaster/field o
 2. signature/AEAD verify (cert chain / Session Model V3 AEAD+ss_s; SIGNED_CONTROL "SSC1" / DiscoveryRecordV2 dr_tbs "SRDR")
 3. EKU / nameConstraints / SAN
 4. validity (CompactDeviceCert not_after; statik X25519 cert içinde)
-5. Async replay (check_async_data_replay 15.5) + DiscoveryRecord rollback (15.6b)
+5. Async replay (check_session_data_replay 15.5) + DiscoveryRecord rollback (15.6b)
 6. fresh_crlite.contains(device_cert_hash)? → fail-closed (CompactDeviceCert hash-based revocation)
    # CT audit kritik yolda DEĞİL — opportunistic
 ```
@@ -2379,7 +2537,7 @@ Doğrulanmamış DiscoveryRecordV2 ile async mesaj GÖNDERİLMEZ.
 8.  CompactDeviceCert expired (not_after) → REJECT (15.4)
 9.  Revoked Device Cert + geçerli DiscoveryRecord → REJECT (CRLite fail-closed + RA push)
 10. Bob, SESSION_INIT'te Alice CompactDeviceCert + ss_s possession (AEAD tag) doğrular (verify_session_init, 15.6)
-11. SESSION_DATA replay (seq window'da, bitmap'te var, per epoch+dir) → REJECT (check_async_data_replay, 15.5)
+11. SESSION_DATA replay (seq window'da, bitmap'te var, per epoch+dir) → REJECT (check_session_data_replay, 15.5)
 12. SESSION_INIT timestamp > max_age (7 gün) → REJECT (bounded, DoS yok)
 13. SESSION_INIT recipient_dest_hash != my_dest_hash → REJECT (recipient confusion, 15.6)
 14. Statik X25519 private compromise → Device Cert revoke (3-katman; bekleyen async risk kabul)
@@ -2393,7 +2551,7 @@ Doğrulanmamış DiscoveryRecordV2 ile async mesaj GÖNDERİLMEZ.
 21b. SESSION_DATA parser wire'da SSD1 BEKLEMEZ (AAD-only); SSD1 yalnızca AAD domain separator
 21c. SESSION_INIT session_id_internal expected HKDF output ile eşleşmezse → REJECT (15.6 verify_session_init)
 21d. SESSION_INIT_RESPONSE bob_ephemeral all-zero → REJECT (Alpha STRONGER zorunlu)
-21e. SESSION_INIT_RESPONSE olmadan epoch-1 SESSION_DATA → REJECT/DEFER; SESSION_INIT_RESPONSE sonrası epoch-0 SESSION_DATA → REJECT
+21e. SESSION_INIT_RESPONSE olmadan epoch-1 SESSION_DATA → REJECT/DEFER; SESSION_INIT_RESPONSE sonrası epoch-0 SESSION_DATA → **grace'e tabidir** (confirmation-safe; otorite kama-noise-wire §4): implicit confirmation (ilk GEÇERLİ epoch-1 paketi) + bounded grace tamamlanıp epoch-0 receive state DISCARD edildikten SONRA → REJECT. [P0-9, 2026-09-07]
 21f. SESSION_DATA session_id_internal bilinmeyen → LINK_ROUTE_MISS (kriptografik accept DEĞİL) → SESSION_INIT_REF rebind
 21g. SIGNED_CONTROL imza geçersiz → REJECT; normal SESSION_DATA sender_signature TAŞIMAZ
 21h. inline CompactDeviceCert var ama Identity/User Cert cache miss → bundle (cert_mode=2) gerekir / defer
@@ -2428,7 +2586,7 @@ Doğrulanmamış DiscoveryRecordV2 ile async mesaj GÖNDERİLMEZ.
 | AC-04 | **DiscoveryRecordV2** + `verify_discovery_record_v2` (current_device_x25519, rollback) implemente edilebilir | 7.13, 15.6b |
 | AC-05 | **Session Model V3** INIT/RESPONSE/DATA send/store/receive/ACK flow implemente edilebilir (handshake yok, zero-RTT, epoch chain) | 10.5, ccr-spec §35 |
 | AC-06 | `verify_session_init` / `verify_session_init_response` / `verify_session_data` / `verify_signed_control_message` (ss_s possession auth, reference-first cache-miss fail-closed) | 15.6 |
-| AC-07 | **Replay protection** (`check_async_data_replay`: per epoch+direction sliding bitmap; SESSION_INIT counter+timestamp) implemente edilebilir | 15.5 |
+| AC-07 | **Replay protection** (`check_session_data_replay`: per epoch+direction sliding bitmap; SESSION_INIT counter+timestamp) implemente edilebilir | 15.5 |
 | AC-08 | **N-message ACK penceresi** (Alice ACK almadan N mesajdan fazla gönderemez) implemente edilebilir | 12.3, CAD-45 |
 | AC-09 | DiscoveryRecord rollback/suppression protection implemente edilebilir | 15.6b, 16 |
 | AC-10 | CRLite once-per-connection + **fail-closed** validation implemente edilebilir | 15.1 |
@@ -2515,7 +2673,7 @@ Yerine: statik X25519 (rotation yok); cert yenilenince yeni device_cert_hash →
 verify_signed_noise_prekey        → verify_compact_device_cert (15.4) + verify_async_init (15.6)
 verify_prekey_bundle              → verify_discovery_record_v2 (15.6b)
 select_best_prekey_bundle         → verify_discovery_record_v2 (sequence/rollback dahil)
-check_prekey_sequence_rollback    → DiscoveryRecord rollback (15.6b) + check_async_data_replay (15.5)
+check_prekey_sequence_rollback    → DiscoveryRecord rollback (15.6b) + check_session_data_replay (15.5)
 apply_prekey_handover             → (yok — statik X25519)
 prekey_compromise_response        → static_x25519_compromise_response (15.13)
 ```
@@ -2600,4 +2758,19 @@ Protokol-kritik tüm kimlik/trust/async/revocation davranışı bu dokümanda + 
 
 **Doküman sonu — Identity & Trust Model v1.5 + Haziran 2026 ERRATA (Statik X25519 Canonical)**
 
-Bu versiyon **statik X25519 + Async Session V2** mimarisini implementation-ready seviyeye taşır: CompactDeviceCert (~152B, statik pk_x25519, SAN URI yok, dest_hash türetilir); DiscoveryRecordV2 (current_device_x25519, KONUM taşımaz/home_hub_id KALDIRILDI, sk_user_identity imzalı binding); **Async Session V2** (ASYNC_INIT/ACCEPT/DATA; zero-RTT, ss_s possession auth + AEAD tag imzasız hot-path, SIGNED_CONTROL non-repudiation, reference-first cache-miss fail-closed, epoch chain FS); replay protection (per epoch+direction sliding bitmap + ASYNC_INIT counter+timestamp) + N-message ACK penceresi; çok-hub self-healing (primary/secondary/tertiary failover, LWW+TTL); 3-katman revocation (RA→hub push + CRLite fail-closed + kısa ömür); HubListRecord bootstrap (Intermediate-imzalı, Root pin app bundle'da); RA/Admin Server mali model (lisans gate + admin approval + cihaz onayı, sertifika basma RoftCore'da); yeni validator seti (verify_compact_device_cert, verify_discovery_record_v2, verify_async_init/accept/data, verify_signed_control_message, check_async_data_replay, verify_hublist_record, apply_license_gate, apply_admin_approval_gate, verify_admin_server_cert, static_x25519_compromise_response). PKI: Root (20 yıl, offline, pinned) → Intermediate (kurum başına ayrı key, **5 yıl, namespace omurgası**, RoftCore'da) → Identity CA (**1 yıl**, RA license gate ile yenilenir) → Device Cert (90 gün). Lisans enforcement Intermediate expiry ile DEĞİL: RA gate + OrgEntitlementRecord + Identity Cert 1 yıl + HubListRecord validity + CRLite (E-11). Multi-device kapsam dışı (limit=1). Eski SignedNoisePrekey iskeleti + eski tek-yapı AsyncMessage/SRAM/Noise N modeli Deprecated Appendix (Section 27) altında "MUST NOT IMPLEMENT" — ana gövde tek canonical mimari anlatır. Protokol-kritik hiçbir davranış TODO/open question olarak bırakılmadı; kalan OQ'lar byte-level encoding (ccr-spec'te çözülü) + ileri-faz (Beta/quantum).
+Bu versiyon **statik X25519 + Session Model V3** mimarisini implementation-ready seviyeye taşır: CompactDeviceCert (~152B, statik pk_x25519, SAN URI yok, dest_hash türetilir); DiscoveryRecordV2 (current_device_x25519, KONUM taşımaz/home_hub_id KALDIRILDI, sk_user_identity imzalı binding); **Session Model V3** (SESSION_INIT / SESSION_INIT_RESPONSE / SESSION_DATA / SIGNED_CONTROL; zero-RTT N-türevi authenticated one-way, ss_s possession auth + AEAD tag imzasız **18B** hot-path, SIGNED_CONTROL non-repudiation, reference-first cache-miss fail-closed, dh_epoch 0→1 FS upgrade; magic SSI1/SSR1/SSD1/SSC1); replay protection (per epoch+direction sliding bitmap + SESSION_INIT `init_counter` persistent anti-replay) + N-message ACK penceresi; çok-hub self-healing (primary/secondary/tertiary failover, LWW+TTL); 3-katman revocation (RA→hub push + CRLite fail-closed + kısa ömür); HubListRecord bootstrap (Intermediate-imzalı, Root pin app bundle'da); RA/Admin Server mali model (lisans gate + admin approval + cihaz onayı, sertifika basma RoftCore'da); yeni validator seti (verify_compact_device_cert, verify_discovery_record_v2, verify_session_init, verify_session_init_response, verify_session_data, verify_signed_control, check_session_data_replay, verify_hublist_record, apply_license_gate, apply_admin_approval_gate, verify_admin_server_cert, static_x25519_compromise_response). PKI: Root (20 yıl, offline, pinned) → Intermediate (kurum başına ayrı key, **5 yıl, namespace omurgası**, RoftCore'da) → Identity CA (**1 yıl**, RA license gate ile yenilenir) → Device Cert (90 gün). Lisans enforcement Intermediate expiry ile DEĞİL: RA gate + OrgEntitlementRecord + Identity Cert 1 yıl + HubListRecord validity + CRLite (E-11). Multi-device kapsam dışı (limit=1). Eski SignedNoisePrekey iskeleti + eski tek-yapı AsyncMessage/SRAM/Noise N modeli Deprecated Appendix (Section 27) altında "MUST NOT IMPLEMENT" — ana gövde tek canonical mimari anlatır. Protokol-kritik kripto davranışları TODO/open question olarak bırakılmadı; kalan OQ'lar byte-level encoding
+(ccr-spec'te çözülü) + ileri-faz (Beta/quantum). **[P0-14 sınır düzeltmesi, 2026-09-07]** Bu ifade
+**kriptografik kontrat** içindir ve şu sınırla okunur:
+```
+Crypto / key-schedule / wire validation : implementation-ready
+  SESSION_INIT crypto                   : GO
+  SESSION_INIT_RESPONSE crypto primitive: GO
+  SESSION_DATA crypto                   : GO
+  Replay state machine (P0-6/P0-7)      : GO
+  dh_epoch 0→1 transition (P0-9)        : GO  (otorite: kama-noise-wire §4)
+SESSION_INIT_RESPONSE demux (KS-DEMUX-1)            : GO  (Crypto içinde, cap'li — KM-SEAM-TC-001 K7; 2026-09-19)
+S3 SEAM-FROZEN                                        : HOLD — KS-DOS-1/KS-GRACE-1 sabitleri + vektörler + harness
+Production interoperability freeze                    : HOLD — golden vektörler + interop/adversarial testler
+```
+
+> **CROSS-DOC RECONCILIATION [B4, 2026-09-02 — ccr §35.18 talebi kapatıldı]:** Aktif async model **Session Model V3**'tür (ccr-spec §35 + §35.2.1 KDF instantiation + §35.3.1/§35.5.1 AAD). Async Session V2 (ASYNC_INIT/ACCEPT/DATA, magic SAI1/SAA1/SAD1/SAC1, `link_id` 16B, 39B hot-path) ve `verify_async_*` validator ailesi **DEPRECATED / MUST NOT IMPLEMENT** — yalnız Deprecated Appendix (Section 27) + ccr §35-DEPRECATED'de tarihsel kayıttır. Aktif wire parser bu formları **REJECT** eder (negative corpus zorunlu). Bu belgenin aktif gövdesinde `ASYNC_*` / `39B` / `link_id` / `verify_async_*` ifadeleri normatif anlamda **KULLANILMAZ**.
