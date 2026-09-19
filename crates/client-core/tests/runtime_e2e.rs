@@ -340,7 +340,7 @@ mod fec_seam {
         OpenReject, OpenedDatagram, SealArgs, SealError, SealedDatagram, SeamPeer, SecuritySeam,
         IDENTITY_TAG,
     };
-    use client_core::wire::decode_data;
+    use client_core::wire::{decode_data, decode_data_frag};
 
     /// IdentitySeam + alıcı-yönlü kalıcı DATA-erasure (unit_id ∈ drop).
     pub struct DropUnitsSeam(pub &'static [u64]);
@@ -364,7 +364,12 @@ mod fec_seam {
                 return Err(OpenReject::Malformed);
             }
             let plain = &wire[..wire.len() - IDENTITY_TAG];
-            if let Some((_, unit_id, _)) = decode_data(plain) {
+            // [VAKUM DÜZELTMESİ 2026-09-19] Yalnız `decode_data` (0x00) bakılıyordu; fragmenter
+            // açıkken çerçeveler FRAME_DATA_FRAG (0x05) olduğundan HİÇBİR ŞEY düşmüyordu.
+            let unit = decode_data(plain)
+                .map(|(_, u, _)| u)
+                .or_else(|| decode_data_frag(plain).map(|(_, u, _, _)| u));
+            if let Some(unit_id) = unit {
                 if self.0.contains(&unit_id) {
                     return Err(OpenReject::AuthFail); // kalıcı erasure: retransmit'ler dahil.
                 }
@@ -586,18 +591,37 @@ async fn fragmenter_message_survives_a_permanently_erased_chunk_via_fec() {
     // Blok K=8'e ulaşsın diye ikinci bir mesaj (7 + 7 = 14 birim → ilk blok dolar, latch koşar).
     client.send(msg.clone()).expect("offer 2");
 
-    let got = tokio::time::timeout(Duration::from_secs(15), server.next_delivery())
-        .await
-        .expect("teslim zaman aşımı")
-        .expect("teslim kanalı kapandı");
-    assert_eq!(got.payload, msg, "silinen chunk'a rağmen byte-eş mesaj");
+    // [YARIŞ + VAKUM DÜZELTMESİ 2026-09-19 — PR #55 hosted CI'da yakalandı]
+    // Eski test İLK teslimi bekleyip hemen kapatıyordu. İki mesaj byte-özdeş olduğundan hangisinin
+    // geldiği ayırt edilemiyordu ve yavaş runner'da ikinci mesaj offer kuyruğundan ALINMADAN
+    // shutdown başlıyordu (CI: offered=1, acked=7). Üstelik `DropUnitsSeam` yalnız 0x00 DATA'ya
+    // bakıyordu; fragmenter açıkken çerçeveler 0x05 olduğundan HİÇBİR chunk düşmüyor, test
+    // `acked >= 14` kaçış dalından geçiyordu (ölçüldü: open_failures=0, fec_recovered=0).
+    // Şimdi: İKİ teslim de beklenir (silinen chunk'ı taşıyan mesaj yalnız FEC ile tamamlanabilir),
+    // kaçış dalı YOK, ve silmenin gerçekten olduğu ayrıca doğrulanır.
+    for n in 0..2 {
+        let got = tokio::time::timeout(Duration::from_secs(15), server.next_delivery())
+            .await
+            .unwrap_or_else(|_| panic!("teslim {n} zaman aşımı"))
+            .expect("teslim kanalı kapandı");
+        assert_eq!(
+            got.payload, msg,
+            "silinen chunk'a rağmen byte-eş mesaj (teslim {n})"
+        );
+    }
 
     let cs = client.shutdown().await;
     let ss = server.shutdown().await;
     assert!(
-        ss.fec_recovered_units >= 1 || cs.acked >= 14,
-        "kayıp chunk ya FEC ile kurtarıldı ya ARQ ile tamamlandı: server={ss:?} client={cs:?}"
+        ss.open_failures >= 1,
+        "VAKUM KORUMASI: unit 3 gerçekten düşürülmüş olmalı (seam hiçbir şey silmediyse test anlamsız): {ss:?}"
     );
+    assert!(
+        ss.fec_recovered_units >= 1,
+        "kalıcı silinen chunk YALNIZ FEC ile kurtarılabilir (ARQ retransmit'leri de düşer): \
+         server={ss:?} client={cs:?}"
+    );
+    assert_eq!(ss.delivered, 2, "iki mesaj da TAM teslim: {ss:?}");
     assert_eq!(ss.frag_chunk_dropped, 0, "sınır ihlali olmamalı: {ss:?}");
 }
 

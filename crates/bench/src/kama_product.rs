@@ -1659,9 +1659,17 @@ mod tests {
         .await
         .expect("bind");
         let addr = srv.local_addr();
+        // Pump durdurulabilir olmalı: sunucu istatistiği (param_bound_peers) koşu sonunda okunur.
+        let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
         let pump = tokio::spawn(async move {
             let mut srv = srv;
-            while srv.next_delivery().await.is_some() {}
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    d = srv.next_delivery() => { if d.is_none() { break; } }
+                }
+            }
+            srv.shutdown().await
         });
 
         // 16 birim = profil 0x03'te (K=8) tam İKİ blok → latch iki kez kapanır.
@@ -1669,7 +1677,8 @@ mod tests {
             .run_client(cfg(addr, 16, 5_000, arm))
             .await
             .expect("client koşusu");
-        pump.abort();
+        let _ = stop_tx.send(());
+        let srv_stats = pump.await.expect("pump görevi");
 
         assert!(
             out.meta.tx.fec > 0,
@@ -1677,11 +1686,21 @@ mod tests {
              ölçülen bileşenler: {:?}",
             out.meta.tx
         );
-        assert!(
-            out.meta.tx.ctrl > 0,
-            "PARAM_SET bootstrap'i kontrol byte'ı üretmeli: {:?}",
-            out.meta.tx
+        // [YARIŞ DÜZELTMESİ 2026-09-19 — main'deki ilk core-main koşusunda yakalandı]
+        // Eski assertion `out.meta.tx.ctrl > 0` idi. PARAM_SET, istemci döngüsünün `rtprop`
+        // aralığının İLK (anında) tick'inde gönderilir; `mark_t0` ise ölçüm-öncesi tel sayaçlarını
+        // (tx_ctrl_bytes dahil) SIFIRLAR — tasarım gereği: kuruluş trafiği ölçüm penceresi dışıdır.
+        // Hangisinin önce olduğu zamanlayıcıya bağlıdır: PARAM t0'dan önce giderse ctrl == 0 çıkar
+        // (CI: data=1200 fec=736 ctrl=0; yerel: ctrl=51). Yani eski assertion bir ÜRÜN özelliğini
+        // değil, ölçüm penceresinin kenarını sınıyordu. İddia ("PARAM_SET bootstrap'i gerçekten
+        // telden geçti") yarışsız kanıtla değiştirildi: SUNUCU PARAM_SET'i doğrulayıp eşi BAĞLADI.
+        // Bu sayaç t0 ile sıfırlanmaz ve ctrl byte'ından daha güçlü kanıttır (hash doğrulaması dahil).
+        assert_eq!(
+            srv_stats.param_bound_peers, 1,
+            "PARAM_SET telden geçmeli ve sunucuda doğrulanıp bağlanmalı; rejects={} istemci tx={:?}",
+            srv_stats.param_rejects, out.meta.tx
         );
+        assert_eq!(srv_stats.param_rejects, 0);
     }
 
     /// TAM KOL uçtan uca: `run_server` + `run_client`, FEC AÇIK, ikisi de kendi egress
