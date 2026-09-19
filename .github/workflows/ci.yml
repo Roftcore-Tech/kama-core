@@ -180,7 +180,7 @@ jobs:
     steps:
       - name: classify
         run: |
-          R='${{ join(needs.*.result, ",") }}'
+          R='${{ join(needs.*.result, ',') }}'
           echo "job sonuçları: $R"
           if [[ "$R" == *failure* ]]; then
             echo "::error title=TEST_FAILURE::en az bir korelasyon kapisi kirmizi — transport dogrulugu incelenmeli"

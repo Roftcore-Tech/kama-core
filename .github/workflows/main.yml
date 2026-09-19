@@ -124,7 +124,7 @@ jobs:
     if: always()
     steps:
       - run: |
-          R='${{ join(needs.*.result, ",") }}'
+          R='${{ join(needs.*.result, ',') }}'
           echo "job sonuçları: $R"
           if [[ "$R" == *failure* ]]; then echo "::error title=TEST_FAILURE::main entegrasyon kapisi kirmizi"; exit 1; fi
           if [[ "$R" == *cancelled* ]]; then echo "::warning title=INFRA_FAILURE::job iptal/timeout — transport hatasi DEGIL"; exit 1; fi
