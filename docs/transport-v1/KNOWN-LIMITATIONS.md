@@ -67,6 +67,25 @@ tanımsız; dal `main`'e merge edilmemiş). Kanıt yerel doğrulanmış harness'
 **Kanıt/eylem:** `reports/transport-v1/NIGHTLY-INFRA-WAIVER.md` (sahip adımları listeli).
 INFRA sınıfı; transport arızası değil.
 
+## LIM-008 — ~1 ms'den kısa akışta PARAM_SET hiç gönderilmez (FEC bağlanmaz)
+
+**İfade:** İstemci PARAM_SET'i ana döngünün `rtprop` interval'inin ilk tick'inde gönderir
+(`crates/client-core/src/runtime.rs`, `rtprop.tick()` kolu). tokio zamanlayıcı çarkı 1 ms
+çözünürlüklüdür; "anında" ilk tick pratikte ≈1 ms sonra ateşler. Tüm akış (sunum + teslim teyidi)
+bundan önce biterse ana döngü PARAM gönderilmeden çıkar; drain döngüsünde `rtprop` kolu yoktur.
+O akışta repair shard'ları tele çıkar ama sunucu eşi bağlamaz (`param_bound_peers = 0`); kod
+okumasına göre shard'lar `pre_param_fec`'te (sınırlı, `PRE_PARAM_FEC_CAP`) bekler ve kullanılmaz.
+**Kapsam:** yalnız alt-milisaniye RTT + kayıpsız yol (loopback/aynı-host). RTT ≥ ms olan her
+yolda akış ilk tick'ten uzun yaşar; ilan edilmiş hostile zarfın DIŞINDA bir köşedir.
+**Kanıt:** hosted CI `core-main` 35466488294 (2026-09-19): akış 0.34 ms ve 0.97 ms, `fec=736 B`,
+`ctrl=0`, `param_confirmed=0`, sunucu `param_bound_peers=0`, `param_rejects=0`. Bağımsız tokio
+1.52.3 sondası (current_thread, 200 deneme): ilk tick 0.93–1.07 ms. Yerel 60/60 koşuda akış
+51–82 ms, PARAM her seferinde bağlandı.
+**v1'de neden değişmiyor:** runtime donmuş (ADR-transport-v1-freeze); PARAM gönderim anını
+değiştirmek runtime davranış değişikliğidir. Test (`bench::kama_product`) ön koşulu sunum
+aralığıyla kurar, runtime'a dokunmaz.
+**Gelecek:** v1.x — PARAM_SET'in ilk DATA'dan önce (tick beklemeden) gönderilmesi adayı.
+
 ## Sınır OLMAYANLAR (açıkça)
 
 * T0'daki 33 tail probe / 100 mesaj: toplam tel quinn'in %4 üstünde — tasarım takası, patoloji değil.

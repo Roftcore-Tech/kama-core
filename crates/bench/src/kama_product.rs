@@ -1673,8 +1673,12 @@ mod tests {
         });
 
         // 16 birim = profil 0x03'te (K=8) tam İKİ blok → latch iki kez kapanır.
+        // Sunum 1 ms aralıklı: akış ≥ 15 ms yaşar → ilk `rtprop` tick'ini (≈1 ms) KESİN görür.
+        // Gerekçe aşağıdaki [KÖK NEDEN] notunda.
+        let mut ccfg = cfg(addr, 16, 5_000, arm);
+        ccfg.submit_interval = Duration::from_millis(1);
         let out = KamaProductTransport
-            .run_client(cfg(addr, 16, 5_000, arm))
+            .run_client(ccfg)
             .await
             .expect("client koşusu");
         let _ = stop_tx.send(());
@@ -1686,15 +1690,19 @@ mod tests {
              ölçülen bileşenler: {:?}",
             out.meta.tx
         );
-        // [YARIŞ DÜZELTMESİ 2026-09-19 — main'deki ilk core-main koşusunda yakalandı]
-        // Eski assertion `out.meta.tx.ctrl > 0` idi. PARAM_SET, istemci döngüsünün `rtprop`
-        // aralığının İLK (anında) tick'inde gönderilir; `mark_t0` ise ölçüm-öncesi tel sayaçlarını
-        // (tx_ctrl_bytes dahil) SIFIRLAR — tasarım gereği: kuruluş trafiği ölçüm penceresi dışıdır.
-        // Hangisinin önce olduğu zamanlayıcıya bağlıdır: PARAM t0'dan önce giderse ctrl == 0 çıkar
-        // (CI: data=1200 fec=736 ctrl=0; yerel: ctrl=51). Yani eski assertion bir ÜRÜN özelliğini
-        // değil, ölçüm penceresinin kenarını sınıyordu. İddia ("PARAM_SET bootstrap'i gerçekten
-        // telden geçti") yarışsız kanıtla değiştirildi: SUNUCU PARAM_SET'i doğrulayıp eşi BAĞLADI.
-        // Bu sayaç t0 ile sıfırlanmaz ve ctrl byte'ından daha güçlü kanıttır (hash doğrulaması dahil).
+        // [KÖK NEDEN — 2026-09-19, hosted CI'da iki kez yakalandı; İLK TEŞHİSİM YANLIŞTI]
+        // Eski assertion `out.meta.tx.ctrl > 0` idi. İlk teşhis "PARAM_SET `mark_t0`'dan önce
+        // gidiyor, sayaç sıfırlanıyor" idi ve assertion sunucu-tarafı `param_bound_peers == 1`
+        // ile değiştirildi. O da CI'da düştü (bound=0, rejects=0, param_confirmed=0) → PARAM t0'dan
+        // önce gitmiyordu, HİÇ gitmiyordu. Ölçülen mekanizma: PARAM_SET istemci döngüsünün
+        // `rtprop` interval'inin ilk tick'inde gönderilir; tokio zamanlayıcı çarkı 1 ms
+        // çözünürlüklüdür ve deadline'ı yukarı yuvarlar → "anında" ilk tick current_thread
+        // runtime'da 0.93–1.07 ms sonra ateşler (tokio 1.52.3, 200/200 ölçüm). Burst sunumda akış
+        // CI'da 0.34 ms / 0.97 ms'de bitti (yerelde 51–82 ms, 60/60 geçer) → ana döngü PARAM
+        // gönderilmeden çıktı; drain döngüsünde `rtprop` kolu yoktur. Bu, DONMUŞ runtime'ın
+        // belgelenen bir özelliğidir (KNOWN-LIMITATIONS), burada DEĞİŞTİRİLMEZ; test, iddiasının
+        // ön koşulunu (akış ilk tick'ten uzun yaşar) sunum aralığıyla deterministik kurar.
+        // İddia: PARAM_SET telden geçti, sunucu hash'i doğrulayıp eşi BAĞLADI (t0 ile sıfırlanmaz).
         assert_eq!(
             srv_stats.param_bound_peers, 1,
             "PARAM_SET telden geçmeli ve sunucuda doğrulanıp bağlanmalı; rejects={} istemci tx={:?}",
