@@ -49,6 +49,8 @@ pub use kama_noise_wire::opened::OpenedTransportShard;
 /// [S1B] Fragmenter'ın chunk metadata tipi — `wire::decode_data_frag` bunu döndürür, app/harness
 /// tarafı ayrıca kama-transport-schema'ya bağımlı olmasın diye buradan da erişilebilir.
 pub use kama_transport_schema::prefix::SourcePrefix;
+/// [v1] Ürün profili — tek doğruluk kaynağı (benchmark de bunu kullanır).
+pub use runtime::KamaV1Profile;
 
 /// Owns the egress decision engine and drives the ingress decode path.
 ///

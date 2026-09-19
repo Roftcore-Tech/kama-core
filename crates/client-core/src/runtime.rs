@@ -147,15 +147,19 @@ pub struct RuntimeConfig {
     /// (byte-özdeş). `ChannelDerived` bir ÖLÇÜM KOLUDUR, düzeltme değil — bkz.
     /// `reports/loss-ledger-confirm-defect/FINDING.md`.
     pub loss_confirm_horizon: LossConfirmHorizon,
-    /// [FEC-RISK] Deneysel FEC kayıp-riski tahmincisi. Default KAPALI → davranış bugünküyle
-    /// semantik özdeş. AÇIKKEN tek tüketici FEC oranı kararıdır; CC/pacing/ARQ dokunulmaz.
+    /// [FEC v1] Spekülatif FEC kayıp-riski lane'i. **Ürün default'u `FecLossRiskConfig::bounded_v1()`**
+    /// (aday A 250-250-250 + persistence P2 + C4 guard'ı G1; bkz. `reports/fec-loss-risk-v1/closure`).
+    /// `fec: None` iken (default) İNERT — oran hesaplanır, hiçbir aktüasyon yolu çalışmaz (tümü
+    /// `fec.as_ref()`'e kapılı) → FEC'siz yol byte-özdeş. Tek tüketici FEC oranı kararıdır;
+    /// CC/pacing/ARQ/kanonik kayıp dokunulmaz. Kapatmak için `FecLossRiskConfig::default()`.
     pub fec_loss_risk: FecLossRiskConfig,
     /// [HANDOFF ENSTRÜMANI] Zaman-serisi örnekleme periyodu (ns). `None` (default) = kapalı.
     /// Açıkken pace tick'lerinde en çok [`TS_CAP`] örnek toplanır (bounded; SR-AUDIT-001).
     /// Salt gözlem — motor durumuna dokunmaz.
     pub ts_sample_period_ns: Option<u64>,
-    /// [R-SWEEP] Yapı-gate parity seviyesi override'ı (‰). `None` (default) = motor `fec_med`
-    /// (sevk davranışı, byte-özdeş). Kalibrasyon kolu.
+    /// [FEC v1] Yapı-gate parity seviyesi (‰). **Ürün default'u `Some(250)`** (aday A'nın gate
+    /// bileşeni; r-sweep: 500‰/r4 15–20 % kayıpta israflı). `None` = motor `fec_med` (500). Yalnız
+    /// `fec: Some(..)` iken etkili.
     pub structure_gate_level_permille: Option<u32>,
 }
 
@@ -174,33 +178,100 @@ pub struct FecRuntimeConfig {
     pub manual_r: Option<u16>,
 }
 
-impl Default for RuntimeConfig {
-    fn default() -> Self {
-        Self {
+/// [KAMA TRANSPORT v1 ÜRÜN PROFİLİ] — sevk yapılandırmasının **TEK doğruluk kaynağı**.
+///
+/// "Kama v1" adıyla ölçülebilecek tek konfigürasyon budur. `RuntimeConfig::default()` bu profile
+/// devreder; benchmark kolları da elle `RuntimeConfig { .. }` kurmak yerine [`Self::runtime_config`]
+/// ile başlayıp YALNIZ açık override uygular. Denetim bulgusu (2026-09-08,
+/// `reports/transport-v1-audit/CONFIRMED-FINDINGS.md` B-5): bench profili elle kurduğu için ürün
+/// default'ları (IW 2400, `bounded_v1`, gate 250) benchmark'a HİÇ ulaşmamış; "sevk" etiketli kol
+/// ürünün sevk etmediği bir yapılandırmayı ölçmüştü.
+///
+/// **Açık mekanizmalar:** ARQ + selective retransmit · tail-recovery (`validated_v1`, [`ClientSession`]
+/// kurar) · kuruluş probu (DR-EST-1) · ilk-uçuş penceresi 2400 B · adaptif FEC (profil 0x05, K=8,
+/// E=1024) · yapı-gate (seviye 250‰) · spekülatif FEC kolu `bounded_v1` (A 250-250-250 + P2 + C4
+/// guard'ı G1) · kayıp defteri (Suspected/Confirmed/Spurious).
+///
+/// **Kapalı (bilinçli):** DR-CS-3 bootstrap-RTT merdiveni (`bootstrap_rtt`, kalibre edilmemiş) ·
+/// kalibre füzyon politikası (`fusion_policy`, opt-in ölçüm kapısı) · `BurstFusion` yapı-gate dalı
+/// (kalibre edilmemiş) · fragmenter (`max_message_bytes`, açık opt-in — wire formatı görünür değişir) ·
+/// kanal-türevli confirm ufku (ölçüm kolu).
+pub struct KamaV1Profile;
+
+/// [FAZ-6 DONDURMA] Transport v1 ÜRÜN-PROFİL kimliği — benchmark manifestlerindeki `arm` değeri.
+/// Yalnız `profile_delta` BOŞ olan koşu bu adı taşıyabilir; herhangi bir sapma `kama-custom`tur.
+/// Bu sabit tek kaynaktır: `crates/bench` etiketi buradan okur, elle yazmaz.
+pub const TRANSPORT_V1_PROFILE_ID: &str = "kama-v1-full";
+/// [FAZ-6 DONDURMA] Mimari/spec sürüm kimliği. Davranış değiştiren her değişiklik bu kimliği
+/// `transport-v1.x` ya da `transport-v2` yapmak ZORUNDADIR (bkz. docs/transport-v1/EVOLUTION.md §9.5).
+pub const TRANSPORT_V1_ARCHITECTURE: &str = "transport-v1";
+
+impl KamaV1Profile {
+    /// Sevk FEC profili: `kama_fec_codec` 0x05 — K_shape 8, R_code_max 4, **E = 1024**.
+    ///
+    /// Neden 0x05 (0x03 değil): symbol boyu E, birim tavanını `E − SOURCE_PREFIX_LEN` ile bağlar
+    /// (`validate_fec`). E=64 profilleri birimi 53 B'ye indirir (sabit-overhead %36.6); E=1024
+    /// birimi 1013 B'de tutar, mühürlü FEC-shard 26+11+1024 = 1061 B < 1280 PMTU tabanı,
+    /// sabit-overhead %3.5 — düşük-bant hedef rejimi için doğru takas (profile.rs:82-84).
+    pub const FEC_PROFILE_ID: u8 = 0x05;
+
+    /// Birim (chunk) tavanı = `fec_chunk_capacity(FEC_PROFILE_ID)` = E − `SOURCE_PREFIX_LEN`.
+    /// Bir birim tam olarak bir FEC source-symbol'üne oturur (§2.6 symbol_len kilidi).
+    /// `fec_v1_profile_is_symbol_aligned` testi bu sabiti katalogla eşler.
+    pub const MAX_UNIT_BYTES: usize = 1024 - SOURCE_PREFIX_LEN;
+
+    /// PreConverge ilk-uçuş kredisi (pacer burst cap). Eski `0` değeri bir CLAMP HATASIYDI.
+    pub const INITIAL_WINDOW_BYTES: u64 = adaptive_transport::pacer::DEFAULT_BURST_CAP;
+
+    /// Yapı-gate açıldığında istediği parity seviyesi (‰): r=2 @ K=8. r-sweep: 500‰/r4 15–20 %
+    /// kayıpta israflı (`reports/fec-loss-risk-v1/rsweep`).
+    pub const STRUCTURE_GATE_LEVEL_PERMILLE: u32 = 250;
+
+    /// v1 ürün profilinin `RuntimeConfig`'i. Değiştirmek = sevk davranışını değiştirmek;
+    /// `product_v1_profile_is_pinned` testi her alanı pinler.
+    #[must_use]
+    pub fn runtime_config() -> RuntimeConfig {
+        RuntimeConfig {
             max_inflight_units: 4096,
             offer_queue: 1024,
             delivery_queue: 1024,
-            max_unit_bytes: 1200,
-            // Fragmenter KAPALI (mesaj = birim; eski davranış birebir).
+            max_unit_bytes: Self::MAX_UNIT_BYTES,
+            // Fragmenter AÇIK OPT-IN kalır: açmak her DATA çerçevesine 11 B prefix ekler (wire
+            // görünür değişiklik) — düşük-bant hedefinde yanlış takas. >1013 B mesaj gönderen
+            // uygulama `max_message_bytes`i AÇIKÇA kurar.
             max_message_bytes: None,
             max_peers: 64,
             quota_r: 4,
             drain_cap: Duration::from_secs(3),
             idle_hold: Duration::from_secs(105),
-            // [IW] Pacer'ın KENDİ başlangıç kredisi — yeni bir sabit değil (bkz. alan dokümanı).
-            initial_window_bytes: adaptive_transport::pacer::DEFAULT_BURST_CAP,
+            initial_window_bytes: Self::INITIAL_WINDOW_BYTES,
             bootstrap_rtt: false,
             bootstrap_fast_ladder: false,
             fec_structure_policy: FecStructurePolicy::default(),
-            fec: None,
-            // Sevk default'u KAPALI: kalibrasyon opt-in kalır (ürün default kararı ayrı bir
-            // ölçüm kapısıdır; bkz. reports/fec-policy-arm-v1/).
+            // [DENETİM B-1 DÜZELTMESİ] FEC ürün profiline BAĞLANDI. Önceki `None` "gerektiğinde
+            // otomatik açılır" DEĞİL, "bu runtime'da FEC yok" demekti: `fec_loss_risk` kolu açık
+            // olmasına rağmen yönettiği alt-sistem ürün yolunda bulunmuyordu (configuration
+            // zombie). Sevk kapısı S1-GATE 2026-08-26'da geçilmişti (NO-HARM PASS; burst h3b
+            // FEC %100 vs ARQ-only %99) — eksik olan yeni kanıt değil, kararın default'a
+            // uygulanmasıydı. `manual_r: None` = Controller (adaptif): parity oranını arbiter
+            // belirler, temiz yolda 0'dır.
+            fec: Some(FecRuntimeConfig {
+                profile_id: Self::FEC_PROFILE_ID,
+                manual_r: None,
+            }),
             fusion_policy: None,
             loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,
-            fec_loss_risk: FecLossRiskConfig::default(),
+            fec_loss_risk: FecLossRiskConfig::bounded_v1(),
             ts_sample_period_ns: None,
-            structure_gate_level_permille: None,
+            structure_gate_level_permille: Some(Self::STRUCTURE_GATE_LEVEL_PERMILLE),
         }
+    }
+}
+
+impl Default for RuntimeConfig {
+    /// v1 ürün profili ([`KamaV1Profile`]).
+    fn default() -> Self {
+        KamaV1Profile::runtime_config()
     }
 }
 
@@ -423,6 +494,20 @@ pub struct FateWindowDiag {
     pub fec_persist: (u64, u64, usize),
     /// [EVIDENCE ENSTRÜMANI] İlk L1 / ilk L2 anında `(sent_window_units, instant_ppm, persistent_ppm)`.
     pub fec_spec_transitions: ((u64, u64, u64), (u64, u64, u64)),
+    /// [C4-ATIF] Zamanlayıcı sınıf sayaçları (yalnız `diag-sched-telemetry` feature'ında dolu, aksi 0):
+    /// `[data_sel, data_denied, data_emit, retx_sel, retx_denied, retx_emit, dup_sel, dup_denied,
+    /// dup_emit, parity_denied, parity_emit, tail_probe_emit]`.
+    pub sched: [u64; 12],
+    /// [KURULUŞ-GUARD] PreConverge'de arbiter çıkışının sıfırlandığı karar sayısı.
+    pub preconverge_parity_blocked: u64,
+    /// [FAZ-1 DÖNÜŞ-YOLU] Ölçülen geri-bildirim durumu: `(measured_return_bw_bps, ack_interval_ns,
+    /// silence_ns, continuity‰, forward_loss‰, return_impairment‰, direction_evidence,
+    /// confidence‰, health, ack_samples, v2_samples)`.
+    pub return_path: adaptive_transport::return_path::ReturnPathState,
+    /// [FAZ-2] `(repair_loss_not_arqed, parity_budget_clamped, parity_budget_would_zero)`.
+    pub fec_completeness: (u64, u64, u64),
+    /// [FAZ-3] Aktivasyon + tahminci yüzeyi: yapılandırıldı / ulaşılabilir / ateşledi ayrımı.
+    pub activation: adaptive_transport::sender::ActivationDiag,
     /// Yapı-gate karar-yolu histogramı (`adaptive_transport::sender::GateOutcome::index`
     /// sırasıyla): 0=kapsam-dışı · 1=kayıp-bandın-altında · 2=pencere-küçük ·
     /// 3=geçiş-kanıtı-yetersiz · 4=burst→ARQ · 5=AÇILDI · 6=oturum-kurulmadı(PreConverge).
@@ -512,6 +597,8 @@ pub struct ClientStats {
     /// [S1B] Canonical symbol serialize hatası — ULAŞILAMAZ olmalı (bounds koşu-öncesi typed).
     /// Sıfırdan farklıysa blok/esi hizası bozulmuştur; sessiz bozulma yerine görünür sayaç.
     pub frag_encode_failures: u64,
+    /// [FAZ-2 KALEM-1] Akış sonunda zero-dolgu ile kapatılan KISMİ FEC bloğu sayısı (Model-A).
+    pub fec_partial_blocks_closed: u64,
     /// [TEŞHİS] Yapı-gate'in karar tabanı (kapanış anındaki fotoğraf) — bkz. [`FateWindowDiag`].
     pub fate: FateWindowDiag,
     /// [DR-CS-3] Wire'a yazılan CS-probe (0 = bootstrap kapalı VEYA PreConverge hiç yaşanmadı).
@@ -544,6 +631,17 @@ pub struct ServerStats {
     pub fec_decode_failures: u64,
     /// [S1] Kapasite gereği düşürülen en-eski blok (bounded birleştirici).
     pub fec_blocks_evicted: u64,
+    /// [C4-ATIF] Alınan repair'lerin kesişimsiz akıbeti: blok KAYNAKLARLA tamamlandığında elde tutulan
+    /// repair'ler (ARQ/geç-orijinal parity'yi yendi → boşa), evict anında tutulanlar (boşa), başarılı
+    /// decode'da tutulanlar (faydalı). Kalan = kapanışta hâlâ açık bloklarda.
+    pub fec_repairs_wasted_complete: u64,
+    pub fec_repairs_wasted_evicted: u64,
+    pub fec_repairs_useful: u64,
+    /// [C4-ATIF] Blok akıbetleri: kaynaklarla tamamlanan (repair tutan / tutmayan), decode edilen,
+    /// evict edilen (repair tutan / hayalet = repair'siz ve kaynak < K).
+    pub fec_blocks_complete_with_repairs: u64,
+    pub fec_blocks_decoded: u64,
+    pub fec_blocks_evicted_with_repairs: u64,
     /// [S1] Wire'a yazılan RECOVERED-control çerçevesi (blok başına bir).
     pub fec_recovered_ctrl_tx: u64,
     /// [S1B] Birleştiriciye giren chunk (DATA + FEC-kurtarma; yalnız fragmentasyon açıkken).
@@ -876,7 +974,9 @@ async fn client_task(
     // bounded repair_store (en-eski düşer → o bloğun FecParity kararı başlık-only'e düşer).
     let mut cur_block: Vec<Vec<u8>> = Vec::new();
     let mut cur_block_id: u32 = 0;
-    let mut repair_store: BTreeMap<u32, Vec<RepairSymbol>> = BTreeMap::new();
+    // [FAZ-2 / KALEM-1] blok → (K_actual, repair'ler). K_actual kısmi/son blokta k_shape'ten
+    // küçüktür ve TEL BAŞLIĞINDA taşınmak zorundadır (alıcı Model-A zero-enjeksiyonunu ondan türetir).
+    let mut repair_store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
     const REPAIR_STORE_BLOCKS: usize = 64;
     // unit-store: unit_id → payload; varlık = outstanding. İlk-ACK'te düşer (sınır: cfg).
     let mut store: HashMap<u64, Vec<u8>> = HashMap::new();
@@ -962,10 +1062,14 @@ async fn client_task(
                     if d.kind == TransmitKind::FecParity {
                         if let (Some(p), Some(hint)) = (fec.as_ref(), d.send_record) {
                             let SrLogicalRef::Fec { block_id, esi } = hint.logical_ref;
-                            let sym: Option<&[u8]> = repair_store
-                                .get(&block_id)
-                                .and_then(|rs| rs.iter().find(|r| r.esi == esi))
+                            let entry = repair_store.get(&block_id);
+                            let sym: Option<&[u8]> = entry
+                                .and_then(|(_, rs)| rs.iter().find(|r| r.esi == esi))
                                 .map(|r| r.bytes.as_slice());
+                            // [FAZ-2 / KALEM-1] K_actual tel başlığında: tam blokta k_shape,
+                            // kısmi/son blokta gerçek kaynak sayısı.
+                            let k_actual_wire = entry
+                                .map_or_else(|| u8::try_from(p.k_shape).unwrap_or(255), |(k, _)| *k);
                             if sym.is_some() {
                                 stats.fec_repairs_tx += 1;
                             } else {
@@ -977,7 +1081,7 @@ async fn client_task(
                                     profile_id: p.profile_id,
                                     block_id,
                                     esi,
-                                    k_actual: u8::try_from(p.k_shape).unwrap_or(255),
+                                    k_actual: k_actual_wire,
                                     seq: (d.seq & 0xFFFF) as u16,
                                 },
                                 sym.unwrap_or(&[]),
@@ -1132,6 +1236,19 @@ async fn client_task(
                     stats.unknown_frames += 1;
                 } else {
                     if let Ok(frame) = AckFrame::decode(&plain) {
+                        // [FAZ-1 DÖNÜŞ-YOLU] Gözlem girdisi: teldeki ACK boyu + alıcının GÖRDÜĞÜ
+                        // datagram sayısı (V2 `seen_count`) + göndericinin yolladığı sayı.
+                        // Motor davranışını DEĞİŞTİRMEZ; yön-ayrımını (ileri kayıp ↔ dönüş
+                        // bozulması) mümkün kılan tek kanıt budur.
+                        session.sender_mut().observe_ack_feedback(
+                            adaptive_transport::return_path::AckObservation {
+                                wire_bytes: raw.len() as u64,
+                                seen_count: frame.seen_count,
+                                v2: frame.v2,
+                                sent_datagrams: stats.tx_datagrams,
+                            },
+                            $now,
+                        );
                         let acked = frame.acked_full(max_emitted_seq + 1);
                         for s in &acked {
                             let Some(&unit) = seq_to_unit.get(s) else { continue };
@@ -1290,7 +1407,8 @@ async fn client_task(
                                 .collect();
                             if let Ok(reps) = RsSimdCodec.encode(p, &srcs) {
                                 stats.fec_blocks_latched += 1;
-                                repair_store.insert(cur_block_id, reps);
+                                repair_store
+                                    .insert(cur_block_id, (u8::try_from(p.k_shape).unwrap_or(255), reps));
                                 while repair_store.len() > REPAIR_STORE_BLOCKS {
                                     repair_store.pop_first();
                                 }
@@ -1329,6 +1447,64 @@ async fn client_task(
                 let now = elapsed_ns(start);
                 handle_rx!(&buf[..n], now);
             }
+        }
+    }
+
+    // ── [FAZ-2 / KALEM-1] KISMİ/SON BLOK KAPANIŞI (Model-A known-zero) ──────────────────────
+    // fec-core §6 NORMATİF: `known_zero_count = K_shape − K_actual`; **gönderici zero-slot'ları
+    // ENCODE'a katar (repair üretimi için), WIRE'a GÖNDERMEZ**. Eskiden blok YALNIZ tam
+    // dolduğunda kapanıyordu (`cur_block.len() == k_shape`) → akışın SONUNDAKİ eksik blok ve
+    // K'ya ulaşmayan kısa akışlar FEC korumasından TAMAMEN yoksundu (denetim B-2).
+    if let Some(p) = fec.as_ref() {
+        if !cur_block.is_empty() {
+            let k_actual = u8::try_from(cur_block.len()).unwrap_or(255);
+            let parity_wire = seam.sealed_len(HDR_FEC + p.e_usize()) as u64;
+            let planned_r: u16 = if let Some(r) = fec_manual_r {
+                let auth = session.sender_mut().open_fec_block_authority();
+                session
+                    .sender_mut()
+                    .close_fec_block_manual(auth, cur_block_id, r, parity_wire)
+                    .unwrap_or(0)
+            } else {
+                let snap = session.sender().controller_decision_snapshot();
+                let auth = session.sender_mut().open_fec_block_authority();
+                session
+                    .sender_mut()
+                    .fec_controller_latch(
+                        auth,
+                        snap,
+                        k_actual,
+                        p.r_code_max,
+                        cur_block_id,
+                        parity_wire,
+                    )
+                    .planned_r
+            };
+            if planned_r > 0 {
+                // Zero-slot dolgusu: ESI [K_actual, K_shape) canonical-zero (E byte). ENCODE'a
+                // girer, TELE ÇIKMAZ — alıcı bunları k_actual'dan türetip enjekte eder.
+                let zero = vec![0u8; p.e_usize()];
+                let mut srcs: Vec<SourceSymbol> = cur_block
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| SourceSymbol {
+                        esi: i as u16,
+                        bytes: b,
+                    })
+                    .collect();
+                for esi in cur_block.len()..p.k_shape_usize() {
+                    srcs.push(SourceSymbol {
+                        esi: esi as u16,
+                        bytes: &zero,
+                    });
+                }
+                if let Ok(reps) = RsSimdCodec.encode(p, &srcs) {
+                    stats.fec_blocks_latched += 1;
+                    stats.fec_partial_blocks_closed += 1;
+                    repair_store.insert(cur_block_id, (k_actual, reps));
+                }
+            }
+            cur_block.clear();
         }
     }
 
@@ -1407,6 +1583,15 @@ async fn client_task(
         fec_spec_signals: session.sender().diag_spec_signals(),
         fec_persist: session.sender().diag_persist(),
         fec_spec_transitions: session.sender().diag_spec_transitions(),
+        sched: session.sender().diag_sched_summary(),
+        preconverge_parity_blocked: session.sender().diag_preconverge_parity_blocked(),
+        return_path: session.sender().diag_return_path(elapsed_ns(start)),
+        activation: session.sender().diag_activation(),
+        fec_completeness: (
+            session.sender().diag_repair_loss_not_arqed(),
+            session.sender().diag_parity_budget_clamped(),
+            session.sender().diag_parity_budget_would_zero(),
+        ),
         fec_latch_diag: {
             let d = session.sender().diag_fec_actuation();
             (
@@ -1826,6 +2011,12 @@ fn fec_ingest(
         repairs: BTreeMap::new(),
     });
     if is_repair {
+        // [FAZ-2 / KALEM-1 — MODEL-A] `K_actual` OTORİTESİ REPAIR shard'ıdır: v0 telinde source
+        // sembolleri DATA çerçevesiyle gider ve k_actual TAŞIMAZ (alıcı orada k_shape varsayar).
+        // Repair başlığı gerçek k_actual'ı taşır (§6 NORMATİF) → blok girdisi burada düzeltilir.
+        if k_actual > 0 && usize::from(k_actual) <= p.k_shape_usize() {
+            asm.k = k_actual;
+        }
         asm.repairs.entry(esi).or_insert(symbol);
     } else {
         asm.sources.entry(esi).or_insert(symbol);
@@ -1838,7 +2029,14 @@ fn fec_ingest(
         )
     };
     if complete {
-        slot.blocks.remove(&block_id); // tüm source'lar geldi — kurtarılacak yok.
+        // [C4-ATIF] Kaynaklar parity'yi yendi: tutulan repair'ler boşa gitti.
+        if let Some(a) = slot.blocks.remove(&block_id) {
+            let held = a.repairs.len() as u64;
+            if held > 0 {
+                stats.fec_repairs_wasted_complete += held;
+                stats.fec_blocks_complete_with_repairs += 1;
+            }
+        }
     } else if ready {
         let result = {
             let asm = slot.blocks.get(&block_id).expect("entry az önce kuruldu");
@@ -1856,14 +2054,21 @@ fn fec_ingest(
                     bytes: b,
                 }))
                 .collect();
-            RsSimdCodec.reconstruct(p, &recv, 0)
+            // [FAZ-2 / KALEM-1] Model-A: `known_zero_count = K_shape − K_actual` canonical-zero
+            // shard decoder'a BİLİNEN SOURCE olarak enjekte edilir (rank bedava; §6). Eskiden
+            // sabit 0 veriliyordu → kısmi/son blok HİÇ decode edilemezdi.
+            let known_zero = p.k_shape_usize().saturating_sub(usize::from(asm.k));
+            RsSimdCodec.reconstruct(p, &recv, known_zero)
         };
         match result {
             Ok(recovered) => {
-                let k = slot.blocks.get(&block_id).map_or(k_actual, |a| a.k);
+                // [FAZ-2 / KALEM-1] birim-id eşlemesi K_SHAPE'e dayanır (gönderici blok_id'yi
+                // `id / k_shape` ile atar), K_actual'a DEĞİL — kısmi blokta `asm.k` kullanmak
+                // kurtarılan chunk'ı YANLIŞ birime bağlardı.
+                let k = u64::from(p.k_shape);
                 for r in recovered {
                     recovered_esis.push(r.esi);
-                    let unit_id = u64::from(block_id) * u64::from(k) + u64::from(r.esi);
+                    let unit_id = u64::from(block_id) * k + u64::from(r.esi);
                     let Ok(pfx) = SourcePrefix::parse(&r.bytes) else {
                         continue;
                     };
@@ -1889,7 +2094,10 @@ fn fec_ingest(
                         true,
                     );
                 }
-                slot.blocks.remove(&block_id);
+                if let Some(a) = slot.blocks.remove(&block_id) {
+                    stats.fec_repairs_useful += a.repairs.len() as u64;
+                    stats.fec_blocks_decoded += 1;
+                }
             }
             Err(_) => {
                 stats.fec_decode_failures += 1; // blok KORUNUR (bug-fix): shard atılmaz.
@@ -1897,7 +2105,13 @@ fn fec_ingest(
         }
     }
     while slot.blocks.len() > RX_BLOCKS_CAP {
-        slot.blocks.pop_first();
+        if let Some((_, a)) = slot.blocks.pop_first() {
+            let held = a.repairs.len() as u64;
+            if held > 0 {
+                stats.fec_repairs_wasted_evicted += held;
+                stats.fec_blocks_evicted_with_repairs += 1;
+            }
+        }
         stats.fec_blocks_evicted += 1;
     }
     recovered_esis

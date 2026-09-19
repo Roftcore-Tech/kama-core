@@ -1,0 +1,9 @@
+C4 TEYİT (n=20, final-içerik ağacı) ve HAVUZ (G1 ailesi n=20 + teyit n=20 = n=40)
+== teyit:
+  off   n_ok=13/20 mean=0.266 sd=0.108 med=0.271 Δok=+nan p=nan | all mean=0.173 Δ=+nan p=nan | stall=7 | tel=53811B (+0.0%) parity=0B | t_L1−t_susp med=nan ms | inv_ihlal=0
+  A-G1  n_ok=14/20 mean=0.303 sd=0.045 med=0.292 Δok=+0.037 p=0.143 | all mean=0.212 Δ=+0.039 p=0.214 | stall=6 | tel=58295B (+8.3%) parity=4600B | t_L1−t_susp med=0 ms | inv_ihlal=0
+  B-G1  n_ok=18/20 mean=0.281 sd=0.103 med=0.292 Δok=+0.015 p=0.349 | all mean=0.253 Δ=+0.080 p=0.047 | stall=2 | tel=62092B (+15.4%) parity=7774B | t_L1−t_susp med=0 ms | inv_ihlal=0
+== havuz n=40:
+  off   n_ok=30/40 mean=0.264 sd=0.091 med=0.276 Δok=+nan p=nan | all mean=0.198 Δ=+nan p=nan | stall=10 | tel=53902B (+0.0%) parity=0B | t_L1−t_susp med=nan ms | inv_ihlal=0
+  A-G1  n_ok=31/40 mean=0.302 sd=0.093 med=0.312 Δok=+0.038 p=0.060 | all mean=0.234 Δ=+0.036 p=0.136 | stall=9 | tel=57856B (+7.3%) parity=4416B | t_L1−t_susp med=0 ms | inv_ihlal=0
+  B-G1  n_ok=34/40 mean=0.299 sd=0.099 med=0.307 Δok=+0.036 p=0.074 | all mean=0.254 Δ=+0.057 p=0.038 | stall=6 | tel=60597B (+12.4%) parity=6440B | t_L1−t_susp med=0 ms | inv_ihlal=0

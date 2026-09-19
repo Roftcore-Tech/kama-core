@@ -1,0 +1,1408 @@
+{
+ "cluster": "bench-harness",
+ "mechanisms": [
+  {
+   "name": "Bench arm: quinn stream (Q-STREAM) — per-message bi-stream",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.1 L241-263 (best-available QUIC, stream mode ölçülür)",
+    "specs/transport-layer-tdd.md §16 AC-QBENCH-1 L775",
+    "specs/tech-stack-adr.md ADR-14 L229 (quinn = benchmark harness)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md L36 (Q-STREAM tablosu)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/quic.rs:231 QuinnTransport::run_server",
+    "crates/bench/src/quic.rs:239 QuinnTransport::run_client",
+    "crates/bench/src/quic.rs:496 send_one (open_bi → write_all → finish → read_exact(1B ack))",
+    "crates/bench/src/quic.rs:479 run_server_loop (her stream ayrı task, HoL yok)",
+    "crates/bench/src/main.rs:291 TransportArg::Quinn",
+    "crates/bench/src/main.rs:557 dispatch"
+   ],
+   "product_call_chain": "YOK — bu bir karşı-taraf kolu. Zincir: bench CLI `--transport quinn` → main.rs:557 → quic::QuinnTransport::run_client → quinn::Endpoint. client-core/adaptive-transport'a HİÇ dokunmaz.",
+   "product_reachable": false,
+   "gate": "CLI `--transport quinn` (main.rs:147, default_value_t = TransportArg::Quinn)",
+   "default_state": "CLI default'u BU koldur (transport arg default = Quinn). Ürün config'i yok.",
+   "activation_condition": "`bench client|serve --transport quinn`. `--fec-*`, `--loss-confirm-k`, `--bootstrap-rtt`, `--initial-window-bytes`, `--spec-*`, `--persist-*`, `--rp-suppress`, `--ts-out` bu kolda SESSİZCE yok sayılır (typed ret YOK; grep: quic.rs'te cfg.fec/cfg.bootstrap_rtt vb. hiç okunmaz).",
+   "bench_exposure": "scripts/netem/product_vs_quinn.sh:75 `run_arm quinn`; scripts/netem/kapi_manifest.py:104 ARM_CLI[\"q-stream\"]; harness/run-bench.sh:30/47 (nightly quinn baseline, cc sweep).",
+   "telemetry": "RunMeta.transport=\"quinn\", quinn_version=\"0.11.11\" (quic.rs:158); udp_tx/rx_bytes t0-delta (quic.rs:378-379); TxComponents::default() (bileşen ayrımı YOK); BUDGET-REV(quinn) satırı yalnız governor sarılıysa (quic.rs:456).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "default_state_detail": null,
+   "evidence": [
+    "crates/bench/src/quic.rs:496-509 `send_one`: `open_bi` → `write_all(payload)` → `finish()` → `recv.read_exact(&mut ack)` → teslim = APP-düzeyi 1 B ters ACK",
+    "crates/bench/src/quic.rs:481-487 server: `read_to_end(1<<20).is_ok()` ⇒ `send.write_all(&[1u8])` — mesaj TAM okunmazsa ACK yok",
+    "crates/bench/src/main.rs:557 `TransportArg::Quinn => quic::QuinnTransport.run_server(cfg).await`",
+    "crates/bench/src/quic.rs:398-420 `handshake_failed_output`: handshake fail/timeout = GEÇERLİ 0-completion ölçümü (§4.4.3 ④), hata değil"
+   ],
+   "duplicates_or_dead": "Yok. qdgram (crates/bench/src/qdgram.rs) aynı quinn endpoint kodunu (quic::build_endpoint/client_config/server_config) paylaşır — kasıtlı tek-kaynak.",
+   "feature_off_behavior": "Kol seçilmezse hiç derlenmez değil, sadece koşulmaz. Kol kaldırılırsa §4.4 birincil kapısı (AC-QBENCH-1) ölçülemez.",
+   "notes": "Teslim tanımı APP-düzeyi round-trip (ters yönde güvenilir 1 B stream). Bu, Kama'nın transport-SACK teslimine göre ters yolda DAHA PAHALI bir teyit; reverse-impaired hücrelerde quinn aleyhine, forward-only hücrelerde nötr. §8.1 tablosunda bu fark 'app-ACK: stream-FIN teyidi' olarak beyanlı."
+  },
+  {
+   "name": "Bench arm: quinn datagram + app-ARQ (Q-DGRAM-ARQ)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.1 L246 (datagram mode AYRI ölçülür)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md L37 (Q-DGRAM-ARQ = FAZ-1 primary comparator)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md L318-321 (app-ACK simetrisi r5 L)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/qdgram.rs:1-20 modül doc (PTO politikası + kümülatif ACK aralığı)",
+    "crates/bench/src/qdgram.rs:33-44 DG_DATA/DG_ACK/ACK_FREQ_N=2/ACK_TICK=20ms/RTO_MIN..MAX",
+    "crates/bench/src/qdgram.rs:123 serve_endpoint",
+    "crates/bench/src/main.rs:295 TransportArg::Qdgram",
+    "crates/bench/src/main.rs:559 dispatch"
+   ],
+   "product_call_chain": "YOK — karşı-taraf kolu. bench CLI `--transport qdgram` → main.rs:559 → qdgram::QdgramTransport.",
+   "product_reachable": false,
+   "gate": "CLI `--transport qdgram`",
+   "default_state": "CLI default DEĞİL (default Quinn).",
+   "activation_condition": "`--transport qdgram`. FEC/risk/bootstrap bayrakları sessizce yok sayılır (qdgram.rs'te yalnız cfg.quota_r/payload_bytes okunur — grep kanıtı).",
+   "bench_exposure": "YALNIZ scripts/netem/kapi_manifest.py:105 ARM_CLI[\"q-dgram-arq\"] (kampanya manifesti). Hiçbir kama-product betiği bu kolu koşmaz; product_vs_quinn.sh'de YOK.",
+   "telemetry": "RunMeta.transport=\"qdgram\"; TxComponents{data,retx} dolu, fec/dup/ctrl=0 (qdgram.rs:471-478); QDGRAM-TERMINATION stderr satırı (qdgram.rs:440).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "crates/bench/src/qdgram.rs:38-41 `ACK_FREQ_N: u32 = 2` + `ACK_TICK = 20ms` — Kama receiver'ıyla eşlenik",
+    "crates/adaptive-transport/src/receiver.rs:76 `const ACK_FREQ_N: u32 = 2;` (ayna kaynağı doğrulandı)",
+    "crates/client-core/src/runtime.rs:64 `const ACK_TICK: Duration = Duration::from_millis(20);` (ürün sunucusu da 20 ms)",
+    "scripts/netem/kapi_analyze.py:23 `PRIMARY_COMP = \"q-dgram-arq\"` — analizde birincil karşılaştırıcı"
+   ],
+   "duplicates_or_dead": "quic.rs ile endpoint/TLS kodunu paylaşır (import: crates/bench/src/qdgram.rs:30). Duplicate yok.",
+   "feature_off_behavior": "Koşulmazsa §4.4.1'in 'datagram mode AYRI ölçülür' şartı ve FAZ-1'in primary comparator'ı boş kalır.",
+   "notes": "Semantik-eşlenik referansın en dürüst kolu (FEC yok, sıralama yok, mesaj=datagram, app-ARQ). Ama ÜRÜN kolu (kama-product) ile HİÇ aynı koşuda yan yana koşturulmuyor — product_vs_quinn.sh yalnız q-stream kullanıyor."
+  },
+  {
+   "name": "Bench arm: kama security-stub (`--transport kama`) — FEC yapısal olarak imkânsız",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.1 L255 (tek değişken = transport; confound YOK)",
+    "specs/transport-layer-tdd.md §14 INV-FEC-1 L~735 (per-shard AEAD zorunlu)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md L22-23, L34-35 (KAMA-ARQ / KAMA-TAIL-V1 = stub adaptör)"
+   ],
+   "spec_requires_v1": "obsolete",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/kama.rs:1-14 modül doc: \"FEC parity ÜRETİLMEZ (`TransmitKind::FecParity` emit edilmez)\"",
+    "crates/bench/src/kama.rs:36-41 FRAME_DATA/HDR_DATA=11/TAG_STUB=16",
+    "crates/bench/src/kama.rs:113 `sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1())` (yalnız --kama-arm tail-v1)",
+    "crates/bench/src/main.rs:293 TransportArg::Kama",
+    "crates/bench/src/main.rs:558 dispatch"
+   ],
+   "product_call_chain": "KISMİ: bench CLI `--transport kama` → main.rs:558 → kama.rs → `adaptive_transport::sender::Sender` doğrudan. client-core runtime, fragmenter, seam, PARAM, FEC yolu ATLANIR. Ürün wire'ı DEĞİL (bench-local 11 B header).",
+   "product_reachable": false,
+   "gate": "CLI `--transport kama` + `--kama-arm arq|tail-v1` (main.rs:150)",
+   "default_state": "`--kama-arm` default = `KamaArmArg::Arq` (crates/bench/src/transport.rs:35-38 `#[default] Arq`) = tail recovery KAPALI. Ürün default'u tail AÇIK (crates/client-core/src/lib.rs:83) → stub'ın default'u ürünü TEMSİL ETMEZ.",
+   "activation_condition": "`--transport kama`. Tüm FEC/risk/gate/bootstrap bayrakları sessizce yok sayılır.",
+   "bench_exposure": "scripts/netem/kapi_manifest.py:102-103 (kama-arq, kama-tail-v1 — ön-kayıtlı KAPI-1 manifestinin İKİ Kama kolu); harness/run-kama-matrix.sh:20,33 (ADR-18 nightly netem kapısı!).",
+   "telemetry": "RunMeta.kama_arm=\"kama-arq\"|\"kama-tail-v1\" (kama.rs:528); TxComponents{data,retx,dup} dolu, fec/ctrl=0.",
+   "classification": "DELETE",
+   "confidence": "medium",
+   "evidence": [
+    "crates/bench/src/kama.rs:6-8 \"FEC parity ÜRETİLMEZ (`TransmitKind::FecParity` emit edilmez) → wire'da yalnız DATA + ACK → INV-FEC-1 ihlali fiziksel olarak imkânsız\"",
+    "crates/bench/src/kama_product.rs:3-7 \"Sonuç: quinn kıyaslarımızın tamamı bugüne dek Kama'nın FEC'siz yarısıyla koştu\"",
+    "scripts/netem/product_vs_quinn.sh:4-6 aynı tespit betik başlığında",
+    "harness/run-kama-matrix.sh:20 `docker exec -d \"$SERVER\" \"$BIN\" serve --transport kama --bind \"[::]:4433\"` — ZORUNLU nightly kapısı stub kolu koşuyor"
+   ],
+   "duplicates_or_dead": "kama-product `--fec-profile 0` kolu bunun daha yüksek-sadakatli üst-kümesi (gerçek runtime + gerçek wire + tail-ON). Stub'ın tek ayırt edici özelliği düşük sadakat.",
+   "feature_off_behavior": "Kaldırılırsa kapi_manifest.py ARMS listesi (2/4 kol) ve harness/run-kama-matrix.sh kırılır → ön-kayıtlı KAPI-1 kampanyası ve ADR-18 nightly kapısı yeniden kablolanmalı.",
+   "notes": "DELETE'i 'hemen sil' diye değil 'v1 kanıt yüzeyinden çıkar' diye öneriyorum: bu kol yayımlanmış tüm Kama-vs-quinn sayılarının kaynağı (docs/results/kama-vs-quinn-v1.md) ve hâlâ ADR-18 nightly kapısını besliyor. Alternatif sınıflandırma KEEP-EXPERIMENTAL (kripto-suz kontrol kolu) — ama o zaman manifest ve nightly kapısı kama-product'a taşınmalı, aksi hâlde 'ürün ölçüldü' iddiası yapılamaz."
+  },
+  {
+   "name": "Bench arm: kama-product (gerçek client-core runtime)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4 L213-216 (savunulabilir kanıt)",
+    "specs/transport-layer-tdd.md §16 AC-QBENCH-1/6 L775,L780",
+    "specs/adaptive-transport-engine-spec.md §17 L1104-1115 (harness girdileri motorun ölçülen çıktıları)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/kama_product.rs:265-279 impl BenchTransport for KamaProductTransport",
+    "crates/bench/src/kama_product.rs:115-232 fn runtime_cfg(ArmCfg) -> RuntimeConfig",
+    "crates/bench/src/kama_product.rs:283-383 server_loop (ServerEndpoint::bind_with_policy)",
+    "crates/bench/src/kama_product.rs:384-705 client_loop (ClientEndpoint::connect_with_policy)",
+    "crates/bench/src/main.rs:298 TransportArg::KamaProduct",
+    "crates/bench/src/main.rs:560/569 dispatch"
+   ],
+   "product_call_chain": "bench CLI `--transport kama-product` → main.rs:560/569 → kama_product::client_loop → `client_core::runtime::ClientEndpoint::connect_with_policy(addr, runtime_cfg(..), Box::new(IdentitySeam), Some(BudgetEgress))` → client_task → `adaptive_transport::sender::Sender` (offer→schedule_transmit→seal_send→UDP) ; alıcı: `ServerEndpoint::bind_with_policy` → server_task → `adaptive_transport::receiver::Receiver` → next_delivery. TAM ürün yolu (fragmenter, PARAM, FEC latch, tail, fuzzy) dahil; yalnız kripto seam stub.",
+   "product_reachable": true,
+   "gate": "CLI `--transport kama-product` (+ sunucuda `--payload` ZORUNLU eşleştirme)",
+   "default_state": "CLI default DEĞİL. Kol seçildiğinde RuntimeConfig `..RuntimeConfig::default()` üstüne 12 alan AÇIKÇA ezilir (kama_product.rs:147-231) — üçü ürün default'undan SAPAR (ayrı kayıtlar: initial_window_bytes, structure_gate_level_permille, fec_loss_risk).",
+   "activation_condition": "`--transport kama-product` her iki uçta; FEC açıksa `--fec-profile/--fec-r/--fec-mode` İKİ UÇTA AYNI (PARAM hash fail-closed).",
+   "bench_exposure": "scripts/netem/product_vs_quinn.sh (6 kol), guard_check.sh, fec_{evidence,persist,risk,rsweep,marginal_r,handoff,risk_shortflow}_*.sh, fec_campaign_preflight.sh. kapi_manifest.py'de YOK; harness/run-kama-matrix.sh'de YOK (nightly kapı).",
+   "telemetry": "KP-CLIENT (kama_product.rs:560-607, 40+ alan), KP-SERVER (kama_product.rs:379-382, ServerStats Debug), BUDGET-REV (kama_product.rs:368-378).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:1-30 modül doc — kolun gerekçesi ve SoC sözleşmesi",
+    "crates/bench/src/kama_product.rs:404-420 `ClientEndpoint::connect_with_policy(cfg.server, runtime_cfg(ArmCfg{..}), Box::new(IdentitySeam), Some(policy))`",
+    "crates/client-core/src/runtime.rs:616 \"Client ucu: ClientSession (G2 sevk default'ları — tail-ON validated_v1) + UDP döngüsü\"",
+    "reports/product-vs-quinn-v3/iid50/kp-static-r4/rep1/out.jsonl meta: transport=\"kama-product\", tx.fec=22816 → FEC gerçekten wire'a çıkıyor"
+   ],
+   "duplicates_or_dead": "`kama` stub kolu bunun düşük-sadakatli ikizi (ayrı kayıt).",
+   "feature_off_behavior": "Bu kol olmadan §4.4 kıyası ürünü değil stub'ı ölçer (bugünkü nightly durumu).",
+   "notes": "Kol DOĞRU inşa edilmiş; sorun kolun kendisi değil, (a) ön-kayıtlı manifeste/nightly kapıya bağlanmamış olması, (b) üç ürün-default'unu sessizce ezmesi, (c) yalnız teşhis-tier betiklerle koşturulması."
+  },
+  {
+   "name": "Bench arm: TCP+TLS / KCP / RNS / Signal-sınıfı ikincil baseline'lar",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.1 L259-263 (SECONDARY EVIDENCE / APPENDIX; GO kapısını BLOKE ETMEZ)",
+    "specs/transport-layer-tdd.md §16 AC-QBENCH-2 L776",
+    "specs/transport-layer-tdd.md §4.3 L194 (RNS/Signal comparison boundary)"
+   ],
+   "spec_requires_v1": "optional",
+   "implemented": false,
+   "impl_symbols": [],
+   "product_call_chain": "YOK",
+   "product_reachable": false,
+   "gate": "Yok — TransportArg enum'unda yalnız 4 varyant var.",
+   "default_state": "Mevcut değil.",
+   "activation_condition": "Yok.",
+   "bench_exposure": "YOK. `grep -rn -i \"tcp|kcp|reticulum|rns\" crates/bench/src/*.rs` → 0 eşleşme.",
+   "telemetry": "Yok.",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "crates/bench/src/main.rs:289-299 TransportArg = {Quinn, Kama, Qdgram, KamaProduct} — TCP kolu YOK",
+    "grep -rn -i \"tcp|kcp|reticulum|rns\" crates/bench/src/*.rs → boş çıktı",
+    "specs/transport-layer-tdd.md:776 AC-QBENCH-2 \"Ek baselineler (TCP+TLS, KCP, RNS, Signal/WhatsApp) SECONDARY/appendix — GO kapısını bloke ETMEZ\""
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "Yokluğu §4.4.10 GO kapısını bloke etmez (spec açıkça öyle diyor). Ancak §13 Layer Accounting'in 'TLS/TCP baseline ≈ 62B + payload' cümlesi ölçülmemiş bir referanstır — o cümleye dayanan byte iddiası yapılamaz.",
+   "notes": "Kasıtlı v1-dışı. Tek risk: §13'teki TLS byte kıyası ve konumlandırma dili, ölçülmemiş bir baseline'a atıfta bulunuyor; rapor dilinde 'ölçülmedi' etiketi zorunlu."
+  },
+  {
+   "name": "Bench arm: Q-FEC-ISOLATION / Q-FEC-REFERENCE (FAZ-2, FEC atfı için)",
+   "spec_refs": [
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md L38-39, L46-51 (FAZ-2 conjunctive kural; W9/W10)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md L55-65 (ISOLATION aynı-implementation eşlemesi)",
+    "specs/transport-layer-tdd.md §4.4.4 L343-347 (FEC efficiency mekanizma-kanıtı)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [],
+   "product_call_chain": "YOK",
+   "product_reachable": false,
+   "gate": "Yok — adaptör yazılmamış.",
+   "default_state": "Mevcut değil.",
+   "activation_condition": "Yok.",
+   "bench_exposure": "YOK. `grep -rn -i \"isolation|q-fec\" crates/` → yalnız ilgisiz test adları.",
+   "telemetry": "Yok.",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md:38-39 \"KAMA-FEC-S (FAZ-2) … W9 | Q-FEC-ISOLATION (FAZ-2) quinn DATAGRAM + kama-fec-codec aynen … W9\"",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md:46-51 \"FAZ-2 (FEC kolları): conjunctive kural (r5 C.2) ancak burada devreye girer; mimari/entegrasyon yorumu ancak ISOLATION+REFERENCE aynı yönde geçerse\"",
+    "scripts/netem/product_vs_quinn.sh:77,85 — FEC'li Kama kolları quinn'in KARŞISINA zaten konuluyor (kp-static-r4, kp-iw-bs-static) ama izolasyon kolu yok"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "Adaptör yokken FEC'li Kama kolu ile quinn arasındaki fark 'Kama'nın FEC'i' ile 'Kama'nın entegrasyonu/paketlemesi' arasında AYRIŞTIRILAMAZ — kampanya tasarımının kendi conjunctive kuralını ihlal eder.",
+   "notes": "Bu, GO kapısının kendisini bloke etmez; FEC-atfı iddiasını bloke eder. product_vs_quinn.sh zaten FEC'li kolları quinn karşısına koyduğu için iddia-riski CANLI."
+  },
+  {
+   "name": "Karşı-taraf CC seçimi (`--cc cubic|bbr`) — 'en güçlü mevcut CC'",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.1 L247-249 (En güçlü mevcut CC; Cubic/Reno'ya karşı kazanmak anlamsız)",
+    "specs/transport-layer-tdd.md §4.4.11 L495 (killer-chart: 'quinn+BBR eğrisi')",
+    "specs/transport-layer-tdd.md §16 AC-QBENCH-1 L775",
+    "specs/tech-stack-adr.md ADR-18 L276-278"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/transport.rs:11-27 enum Cc {Cubic, Bbr} + label()",
+    "crates/bench/src/quic.rs:180-186 `Cc::Bbr => t.congestion_controller_factory(Arc::new(BbrConfig::default()))`",
+    "crates/bench/src/main.rs:35/141 `--cc` default_value_t = CcArg::Cubic"
+   ],
+   "product_call_chain": "YOK (karşı-taraf ayarı). Kama kollarında `cfg.cc` yalnız RunMeta etiketi olarak kullanılır (kama_product.rs: `cc: cfg.cc.label()`), davranışa etkisi YOKTUR.",
+   "product_reachable": false,
+   "gate": "CLI `--cc bbr`",
+   "default_state": "`cubic` (main.rs:35 ve main.rs:141 `default_value_t = CcArg::Cubic`).",
+   "activation_condition": "`--cc bbr` HER İKİ uçta verilmeli (serve + client ayrı bayraklar).",
+   "bench_exposure": "YALNIZ harness/run-bench.sh:11 `CCS=\"${CCS:-cubic bbr}\"` (eski quinn baseline üreticisi). scripts/netem/*.sh'lerin HİÇBİRİ `--cc` geçmez (grep: 0 eşleşme); kapi_calrun.sh:103/115 `--cc` yok; product_vs_quinn.sh'de yok → hepsi cubic.",
+   "telemetry": "RunMeta.cc (\"cubic\"|\"bbr\").",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "grep -rn \"--cc\\b\" scripts/ → 0 eşleşme (hiçbir netem betiği CC seçmiyor)",
+    "reports/product-vs-quinn-v3/iid50/quinn/rep1/out.jsonl meta: `\"cc\":\"cubic\"`",
+    "harness/compare.py:5 \"quinn: results/<profile>_cubic_r*.jsonl (baseline v1)\" — headline kıyas CUBIC dosyalarına sabitlenmiş, bbr verisi üretilse bile kullanılmıyor",
+    "docs/results/quinn-baseline-v1.md:77-80 p1_loss50 cubic 0.15 vs bbr 0.00 — CC seçimi sonucu MADDİ olarak değiştiriyor"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "cubic-only kıyas §4.4.1'in 'strawman yenme' yasağına ve AC-QBENCH-1'e aykırı; §4.4.11 killer-chart'ın ilan ettiği eğri (quinn+BBR) üretilemez.",
+   "notes": "Kod hazır, kablo yok. Baseline v1 verisi BBR'nin bazı profillerde cubic'ten KÖTÜ olduğunu gösteriyor (p1_loss50: bbr 0.00 vs cubic 0.15) — o yüzden 'en güçlü CC' = profil-başına max(cubic,bbr) olarak raporlanmalı, tek CC seçilmemeli."
+  },
+  {
+   "name": "Zarf/MTU pinleri (path_mtu, max_udp_payload, PMTUD, GSO/coalescing)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.1 L254-255 (aynı MTU=1200)",
+    "specs/transport-layer-tdd.md §11 L680-684 (INV-MTU-1 default 1200B)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §8.2 L322-332"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/quic.rs:175-179 `t.mtu_discovery_config(None); t.initial_mtu(1452); t.enable_segmentation_offload(false); t.max_concurrent_bidi_streams(512)`",
+    "crates/bench/src/quic.rs:110-112 `GovernedUdpSocket::max_transmit_segments() = 1`",
+    "crates/adaptive-transport/src/rate.rs:18 `pub const DEFAULT_MTU: u64 = 1200;`",
+    "scripts/netem/kapi3_harness.sh:88-96 ethtool gro/gso/tso/lro off",
+    "scripts/netem/kapi_manifest.py:174-181 path_mtu/max_udp_payload/pmtud/coalescing pinleri"
+   ],
+   "product_call_chain": "Kama tarafında DEFAULT_MTU=1200 motorun içinde sabit (rate.rs:18, pacer DEFAULT_BURST_CAP = 2×MTU). Bench MTU'yu Kama kolunda AYARLAMAZ.",
+   "product_reachable": true,
+   "gate": "Kod-içi sabit; CLI bayrağı YOK.",
+   "default_state": "quinn: initial_mtu=1452, PMTUD off, GSO off. Kama: DEFAULT_MTU=1200. netem veth path_mtu=1500.",
+   "activation_condition": "Her koşuda.",
+   "bench_exposure": "Tüm kollarda; ethtool offload kapatma yalnız kapi3_harness.sh kullanan betiklerde (ethtool yoksa `KAPI3_OFFLOAD=\"ethtool-missing\"` ile SESSİZ devam).",
+   "telemetry": "kapi3_realized() offload alanını loglar — ama YALNIZ kapi_calrun.sh/kapi3_selftest.sh çağırır; product_vs_quinn.sh ve tüm fec_* aileleri çağırmaz.",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "crates/bench/src/quic.rs:176 `t.initial_mtu(1452);` vs crates/adaptive-transport/src/rate.rs:18 `DEFAULT_MTU: u64 = 1200`",
+    "specs/transport-layer-tdd.md:254 \"Aynı netem/tc script, aynı MTU=1200, aynı payload dağılımı\"",
+    "scripts/netem/kapi_manifest.py:174-175 `\"path_mtu\": MTU, \"max_udp_payload\": 1452` (MTU=1500, kapi_manifest.py:30)",
+    "scripts/netem/kapi3_harness.sh:94-96 `KAPI3_OFFLOAD=\"ethtool-missing\"` — offload doğrulanamadan koşuya devam"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "—",
+   "notes": "§4.4.1 metni 'aynı MTU=1200' derken kampanya tasarımı 1500/1452 pinlemiş. 256 B payload'da her mesaj her iki tarafta da tek datagrama sığdığı için etki cwnd-birimi düzeyinde; ama spec metniyle çelişki AÇIK ve raporda beyan edilmeli. Offload'un ethtool yokken sessizce doğrulanmaması ayrı bir kanıt-hijyeni riski."
+  },
+  {
+   "name": "Kurulum maliyeti (setup cost) muhasebesi — quinn handshake ölçüm penceresi DIŞINDA",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.3 ④ L305-308 (handshake / first-delivery success @ loss — BİRİNCİL)",
+    "specs/transport-layer-tdd.md §4.4.3 SECONDARY L316-320 (bytes-per-delivered-message)",
+    "specs/transport-layer-tdd.md §4.4.10 Tier-3 L470-476",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §3.1/§3.4 L145-189"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/quic.rs:246-252 handshake `timeout(cfg.max_deadline, connecting)`",
+    "crates/bench/src/quic.rs:296 `let stats0 = conn.stats();` (handshake SONRASI fotoğraf)",
+    "crates/bench/src/quic.rs:378-379 `udp_tx_bytes: stats.udp_tx.bytes.saturating_sub(stats0.udp_tx.bytes)`",
+    "crates/bench/src/kama_product.rs:485 `cli.mark_t0().await` (connect'ten HEMEN sonra; öncesinde trafik yok)",
+    "crates/client-core/src/runtime.rs:1195-1203 t0'da sayaç sıfırlama (motor durumu KORUNUR)"
+   ],
+   "product_call_chain": "Kama tarafında: connect → mark_t0 → ölçüm. Kama'nın PreConverge/bootstrap/CS-probe kurulum trafiği ölçüm penceresinin İÇİNDE ve byte sayacında.",
+   "product_reachable": true,
+   "gate": "`--establish-gate` + `--gate` + `--warmup-msgs` (verilirse t0 warmup sonrasına kayar).",
+   "default_state": "product_vs_quinn.sh ve tüm fec_* ailelerinde gate/warmup VERİLMEZ → quinn: t0 = handshake sonrası; kama-product: t0 = connect anı (kurulum ölçüm içinde).",
+   "activation_condition": "Her koşuda (asimetri gate'ler olmadan da var; gate'lerle warmup her iki kolda simetrikleşir ama handshake yine dışarıda kalır).",
+   "bench_exposure": "kapi_calrun.sh:118-119 `--establish-gate`/`--gate`/`--warmup-msgs 10` kullanır (simetrik). product_vs_quinn.sh:44-48 HİÇBİRİNİ kullanmaz.",
+   "telemetry": "RunMeta.t0_unix_ns, events_epoch_offset_ns, warmup_residue, budget.pre_arm_bytes/pre_arm_pkts (pre-arm = ölçüm-öncesi trafik; quinn Unlimited'ta governor yok → 0).",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "crates/bench/src/quic.rs:296 stats0 handshake tamamlandıktan SONRA alınıyor → TLS cert exchange + Initial/Handshake paketleri `udp_tx_bytes`'a GİRMİYOR",
+    "crates/bench/src/kama_product.rs:485 `cli.mark_t0().await;` connect'ten sonra, ilk offer'dan ÖNCE → Kama'nın PreConverge merdiveni/CS-probe'ları ölçüme DAHİL",
+    "scripts/netem/product_vs_quinn.sh:44-48 client çağrısında `--gate`/`--establish-gate`/`--warmup-msgs` YOK",
+    "reports/product-vs-quinn-v3/iid50/kp-bootstrap/rep1/out.jsonl meta: `\"tx\":{...,\"ctrl\":88}` — CS-probe/PARAM kontrol byte'ları Kama'nın bütçesinde"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "—",
+   "notes": "Asimetri KAMA ALEYHİNE: quinn kurulum bedelini (byte + zaman) ölçüm dışına yazar, Kama kendi kurulumunu ölçüm içinde öder. §4.4.3 ④ 'zero-RTT first-delivery' avantajını da görünmez kılar. Düzeltme seçenekleri: (a) quinn'in handshake byte'larını ayrı alan olarak raporla, (b) her iki kolda t0'ı 'ilk app-offer' olarak tanımla, (c) product_vs_quinn.sh'e establish-gate ekle. Şu an hiçbiri yapılmıyor."
+  },
+  {
+   "name": "Kripto byte-pariteliği: IdentitySeam (+16 B) vs gerçek noise-wire (+26 B)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.1 L253-255 (tek değişken = transport; confound YOK)",
+    "specs/transport-layer-tdd.md §4.4.7 L388 (güvenlik pariteliği)",
+    "specs/transport-layer-tdd.md §13 L699-712 (Layer Accounting)",
+    "specs/transport-layer-tdd.md §4.4.10 Tier-3 L470-476 (byte bütçesi kazanımı)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/client-core/src/seam.rs:114 `pub const IDENTITY_TAG: usize = 16;`",
+    "crates/client-core/src/seam.rs:117-129 IdentitySeam::seal → `frame.resize(frame.len() + IDENTITY_TAG, 0)`",
+    "crates/kama-noise-wire/src/outer.rs:9-11 `pub const TAG_LEN: usize = 16; pub const OUTER_HDR_LEN: usize = 10;`",
+    "crates/kama-noise-wire/src/legacy.rs:25 `pub const LEGACY_OVERHEAD: usize = 22;`",
+    "crates/bench/src/kama.rs:40 `const TAG_STUB: usize = 16;`"
+   ],
+   "product_call_chain": "kama_product.rs:418 `Box::new(IdentitySeam)` → client_core::runtime seal_send! (runtime.rs:915-960) → `stats.tx_bytes += sd.bytes.len()`. Gerçek üründe bu dikişe kama-noise-wire takılacak (S2).",
+   "product_reachable": true,
+   "gate": "Kod-içi tip seçimi (bench IdentitySeam takar); CLI bayrağı YOK.",
+   "default_state": "Bench her zaman IdentitySeam. Gerçek Noise seam bench'ten seçilemez.",
+   "activation_condition": "Her kama/kama-product koşusunda.",
+   "bench_exposure": "Tüm Kama kolları.",
+   "telemetry": "RunMeta.udp_tx_bytes / TxComponents — hepsi 16 B tag varsayımıyla.",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "crates/client-core/src/seam.rs:141-143 `fn sealed_len(&self, frame_len: usize) -> usize { frame_len + IDENTITY_TAG }` → +16 B, header YOK",
+    "crates/kama-noise-wire/src/outer.rs:11 `pub const OUTER_HDR_LEN: usize = 10;` — gerçek dış zarf 10 B header + 16 B tag = 26 B/datagram",
+    "reports/product-vs-quinn-v3/iid50/kp-static-r4/rep1/out.jsonl: budget.injected_pkts=1496 → gerçek seam'de +10 B × 1496 ≈ +15 KB (ölçülen udp_tx_bytes 122 377'nin ~%12'si)",
+    "crates/bench/src/kama_product.rs:18-21 modül doc: \"byte-eşdeğer +16 B sahte tag … S2'de aynı dikişe kama-noise-wire takılınca bu kol DEĞİŞMEDEN gerçek kriptoyla koşar\" — 10 B fark beyan edilmemiş"
+   ],
+   "duplicates_or_dead": "crates/bench/src/kama.rs:40 TAG_STUB=16 aynı varsayımı tekrarlar (iki Kama kolu kendi aralarında tutarlı, gerçek wire ile değil).",
+   "feature_off_behavior": "—",
+   "notes": "Stub, AEAD tag'ini modelliyor ama dış-zarf header'ını (nonce/pn/epoch alanları) modellemiyor. Kama-lehine ~10 B/datagram sistematik eksik-sayım. FEC kollarında paket sayısı 8× arttığı için etki oradaki byte iddialarında maddi. Düzeltme: IDENTITY_TAG yerine OUTER_HDR_LEN+TAG_LEN=26 B dolgu, ya da byte iddialarına açık bir '+10 B/pkt beyan edilmemiş' düzeltmesi."
+  },
+  {
+   "name": "Teslim tanımı (delivery definition) — ilk-teyit-kazanır, kol-başına kaynak",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.3 ① L292-297 (deadline-bounded completion; 'tam teslim edilen mesaj')",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §8.1 L306-316 (app-ACK satırı)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/event.rs:9-20 RawEvent{msg_id, sent_ns, delivered_ns, payload_bytes}",
+    "crates/bench/src/quic.rs:496-509 send_one → ters 1 B app-ACK",
+    "crates/bench/src/qdgram.rs:14-16 modül doc: 'delivered_ns = mesajı kapsayan İLK ACK'",
+    "crates/bench/src/kama_product.rs:530-543 `a = cli.acked()` → ilk-kazanır slot doldurma",
+    "crates/client-core/src/runtime.rs:1074-1091 macro unit_acked! (frag açıkken YALNIZ son chunk teyidinde mesaj ACK'i)"
+   ],
+   "product_call_chain": "kama-product: receiver ACK / FEC-RECOVERED → sender.on_ack → runtime unit_acked! → acked_tx → ClientEndpoint::acked() → bench slot. Fragmentasyon açıkken mesaj granülü korunur (msg_pending sayacı 0'a inince).",
+   "product_reachable": true,
+   "gate": "Yok (semantik).",
+   "default_state": "Üç kolda da 'ilk teslim-teyidi anı; yoksa None'.",
+   "activation_condition": "Her koşu.",
+   "bench_exposure": "Tüm kollar.",
+   "telemetry": "delivered_ns null/değer; metrics::completion (crates/bench/src/metrics.rs:44-56) latency ≤ deadline filtresi.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1076-1085 frag açıkken `*rem -= 1; if *rem == 0 { … acked_tx.try_send(m) }` — yarım mesaj teslim sayılmaz",
+    "crates/bench/src/kama_product.rs:535-542 `if slot.is_none() { *slot = Some(elapsed_ns(start)); delivered_count += 1; }` — ilk-kazanır dedup",
+    "crates/bench/src/quic.rs:481-486 server yalnız `read_to_end(..).is_ok()` ise ACK yazar",
+    "crates/client-core/src/runtime.rs:1219-1220 `let msg_id = next_message; next_message = next_message.wrapping_add(1);` — bench'in `unit_id = warmup_msgs + msg_id` eşlemesi hem frag-on hem frag-off'ta geçerli (doğrulandı, hata yok)"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "—",
+   "notes": "Kaynak farkı beyanlı: quinn = app round-trip; kama-product = transport ACK VEYA FEC-RECOVERED. FEC-RECOVERED'ın da teslim sayılması doğru (alıcı birimi gerçekten kurtardı) ve KP-SERVER `fec_recovered_ctrl_tx`/`msgs_reassembled` ile çapraz-doğrulanabilir."
+  },
+  {
+   "name": "Hizmet-semantiği normalizasyon tablosu (§8.1) — kama-product KAPSAM DIŞI",
+   "spec_refs": [
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §8.1 L305-316 (her hücre raporunda ZORUNLU tablo)",
+    "specs/transport-layer-tdd.md §4.4.1 L253-255"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md:306-316 tablo (güvenilirlik/sıralama/mesaj-sınırları/deadline-iptal/dup-suppression/app-ACK/connection-state × KAMA|Q-STREAM|Q-DGRAM)"
+   ],
+   "product_call_chain": "YOK (doküman).",
+   "product_reachable": false,
+   "gate": "Doküman; kodda zorlayıcı kontrol YOK.",
+   "default_state": "Tablo yalnız KAMA(stub)/Q-STREAM/Q-DGRAM sütunlarını içerir; `kama-product` sütunu YOK (kol tablodan SONRA, SPRINT-A'da eklendi).",
+   "activation_condition": "—",
+   "bench_exposure": "Rapor şablonu; hiçbir betik tabloyu üretmiyor.",
+   "telemetry": "Yok — tablo elle yazılıyor.",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md:306 sütun başlıkları `| boyut | KAMA | Q-STREAM | Q-DGRAM-ARQ / Q-FEC-* |` — kama-product yok",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md:309 `| mesaj-sınırları | unit = mesaj | stream = mesaj | datagram = mesaj |` — kama-product FEC kolunda unit ≠ mesaj (5 chunk)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md:327-328 `fragmentation_policy | YOK — mesaj tek datagrama sığar` — kama-product profil 0x03'te İHLAL",
+    "crates/bench/src/kama_product.rs:151-153 `max_message_bytes: (payload > unit).then_some(payload)` — fragmenter açılıyor"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "Tablo güncellenmezse her kama-product-vs-quinn raporu, ön-kayıtlı semantik pinlerin ikisini (mesaj-sınırı, fragmentasyon) sessizce ihlal eder.",
+   "notes": "En küçük düzeltme: tabloya KAMA-PRODUCT sütunu + 'fragmentation: FEC profiline bağlı (0x03 → 5 chunk/256 B; 0x05 → 1 chunk)' satırı."
+  },
+  {
+   "name": "Paketleme asimetrisi: FEC profili 0x03 + 256 B payload → mesaj başına 5 datagram",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.1 L254 (aynı payload dağılımı)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §8.2 L327 (fragmentation_policy: YOK)",
+    "specs/fec-core-tdd-v3.0.md (profil kataloğu E/K)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/kama_product.rs:143-153 `unit = payload.min(fec_chunk_capacity(profile))`, `max_message_bytes = (payload > unit).then_some(payload)`",
+    "crates/client-core/src/runtime.rs:255-257 fec_chunk_capacity = `e_usize() - SOURCE_PREFIX_LEN`",
+    "crates/kama-fec-codec/src/profile.rs:69-75 profil 0x03: k_shape=8, r_code_max=4, e=64",
+    "crates/kama-transport-schema/src/lib.rs:37 `SOURCE_PREFIX_LEN: usize = 11`",
+    "crates/client-core/src/runtime.rs:1226-1262 fragmenter döngüsü"
+   ],
+   "product_call_chain": "bench `--fec-profile 3 --payload 256` → runtime_cfg → max_unit_bytes=53, max_message_bytes=256 → runtime.rs:1222 `n_chunks = 256.div_ceil(53) = 5` → 5 ayrı birim, 5 ayrı datagram.",
+   "product_reachable": true,
+   "gate": "`--fec-profile` (0 = fragmenter kapalı) + `--payload`",
+   "default_state": "`--fec-profile 0` (main.rs:60/179) → FEC kapalı, fragmenter kapalı, mesaj = 1 datagram (283 B).",
+   "activation_condition": "profil ≠ 0 ve payload > chunk kapasitesi.",
+   "bench_exposure": "TÜM FEC betikleri profil 3 kullanır (grep: fec-profile 3 × 9 betik; profil 0x05 (E=1024, 256 B'yi tek chunk'ta taşır) HİÇ kullanılmıyor).",
+   "telemetry": "RunMeta.tx.data (fec-off 28300/100 msg = 283 B/msg = 1 pkt; static-r4 44600/100 = 446 B/msg ≈ 5×89 B); budget.injected_pkts (191 vs 1496).",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "reports/product-vs-quinn-v3/iid50/kp-sevk/rep1/out.jsonl: `\"tx\":{\"data\":28300,...}`, injected_pkts=191 → 100 mesaj ≈ 1 datagram/mesaj",
+    "reports/product-vs-quinn-v3/iid50/kp-static-r4/rep1/out.jsonl: `\"tx\":{\"data\":44600,\"fec\":22816}`, injected_pkts=1496 → mesaj başına ~15 datagram (5 kaynak + parity + retx)",
+    "crates/kama-fec-codec/src/profile.rs:73 `e: 64` → chunk kapasitesi 64-11 = 53 B; 256/53 = 5 chunk",
+    "grep -rn \"fec-profile\" scripts/ → 9 betikte profil 3, profil 5 sıfır kullanım"
+   ],
+   "duplicates_or_dead": "Profil 0x05 (e=1024) fragmentasyonu 256 B'de tamamen kaldırırdı; hiçbir kampanyada kullanılmıyor.",
+   "feature_off_behavior": "`--fec-profile 0` → 1 datagram/mesaj, quinn ile paketleme-eşit; ama o zaman FEC de yok.",
+   "notes": "iid %50 kayıpta 5-chunk mesajın FEC'siz tam-teslim olasılığı 0.5^5 = %3 iken quinn'in tek-paket mesajı %50. FecArm doc'u (transport.rs:99-113) `StaticR{r:0}`'ın granül-confound'unu FEC kolları ARASINDA çözdüğünü doğru söylüyor, ama FEC-KOLU ↔ FEC-OFF-KOLU ve FEC-KOLU ↔ QUINN kıyaslarında granül hâlâ ikinci eksen. product_vs_quinn.sh tam bu kıyası yapıyor (kp-static-r4 vs quinn)."
+  },
+  {
+   "name": "Deadline semantiği (mesaj-başı deadline, koşu-sonu, gözlem penceresi)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.3 ① L292-296 (completion deadline'sız ölçülMEZ)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §8.1 L310 (deadline-sonrası-iptal)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/main.rs:138 `--max-deadline-s` default 120",
+    "crates/bench/src/metrics.rs:44-56 completion(events, deadline) = latency ≤ D filtresi",
+    "crates/bench/src/kama_product.rs:504-511 total_deadline_ns = t0 + (n-1)×interval + max_deadline",
+    "crates/bench/src/quic.rs:328-332 per-mesaj deadline = max_deadline + kalan-sunum-süresi ([inceleme #12])",
+    "crates/bench/src/main.rs:508 `--deadlines-s` default \"10,30,120\""
+   ],
+   "product_call_chain": "`--fec-deadline-ms` ayrı bir eksen: kama_product.rs:427-431 → `tx.send_with_deadline(payload, deadline_ns)` → runtime.rs:1211-1212 `session.sender_mut().declare_delivery_deadline(d)` → fusion_policy. Bu YALNIZ Policy kolunda dolar.",
+   "product_reachable": true,
+   "gate": "`--max-deadline-s` (ölçüm) ve `--fec-deadline-ms` (motora bildirim, yalnız `--fec-mode policy`).",
+   "default_state": "max_deadline_s=120 (CLI), product_vs_quinn.sh'de 30; fec_deadline_ms=0 → `deadline_ns: None` → motor bütçe görmez (NoDeadlineDeclared → ArqOnly).",
+   "activation_condition": "completion(D) hesabı her koşuda; motor-bildirimi yalnız Policy kolunda.",
+   "bench_exposure": "`--fec-mode policy` HİÇBİR betikte kullanılmıyor (grep: 0 eşleşme) → fusion_policy ve declared_deadline benchmark'ta HİÇ aktive edilmiyor.",
+   "telemetry": "RunMeta.max_deadline_ns; KP-CLIENT `deadline_ns={stats.fate.declared_deadline_ns:?}` ve `fusion={fusion_actions:?}` (vakum-sayaç ayrımı için kasıtlı eklenmiş).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "crates/bench/src/metrics.rs:49-52 `.filter(|e| latency_ns(e).is_some_and(|l| l <= dn))`",
+    "crates/bench/src/quic.rs:329-331 gözlem penceresi kama/qdgram ile eşitlenmiş ([inceleme #12] yorumu)",
+    "crates/bench/src/kama_product.rs:429-431 `FecArm::PolicyV2Deadline { deadline_ns, .. } => Some(deadline_ns), _ => None`",
+    "grep -rn \"fec-mode policy\" scripts/ → 0 eşleşme"
+   ],
+   "duplicates_or_dead": "kapi_analyze.py:44-52 completion'ı Python'da yeniden uygular (ayrı kayıt).",
+   "feature_off_behavior": "fec_deadline_ms=0 → politika fail-safe ArqOnly; sessiz varsayılan yok (typed).",
+   "notes": "Deadline ölçüm ekseni SAĞLAM. Ama `--fec-mode policy` kolu hiç koşulmadığı için `fusion_policy` (client-core default'unda da None) benchmark'ta tamamen ölü."
+  },
+  {
+   "name": "İş yükü ekseni: burst vs paced sunum (`--submit-interval-ms`)",
+   "spec_refs": [
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §9.3 L366-375 (mesaj planları, sınıf-başına paced aralık)",
+    "specs/transport-layer-tdd.md §4.4.2 L266-289 (profil matrisi)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/main.rs:154 `--submit-interval-ms` default 0 (burst)",
+    "crates/bench/src/kama_product.rs:494-500 burst dalı; :513-523 paced dalı",
+    "crates/bench/src/quic.rs:337-347 submit_at sleep + sent_ns sunum anında",
+    "crates/bench/src/qdgram.rs (aynı plan)",
+    "crates/bench/src/transport.rs:167-170 ClientCfg::submit_interval doc"
+   ],
+   "product_call_chain": "Sunum planı bench'e ait; her kolda AYNI plan (mesaj i, t0 + i×interval).",
+   "product_reachable": false,
+   "gate": "`--submit-interval-ms`",
+   "default_state": "0 = burst. product_vs_quinn.sh: 50 ms; fec aileleri: 20 ms; kapi_manifest: sınıf-başına 1000/5000/30000 ms.",
+   "activation_condition": "Her koşu.",
+   "bench_exposure": "Tüm kollar; RunMeta.submit_interval_ns ile kaydediliyor.",
+   "telemetry": "RunMeta.submit_interval_ns",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:494-500 burst: `for slot in &mut sent_ns { *slot = Some(elapsed_ns(start)); offer(..).await?; }`",
+    "crates/bench/src/quic.rs:344-347 `if !submit_at.is_zero() { sleep(submit_at).await; } let sent_ns = start.elapsed()...` — sent_ns sleep SONRASI (sunum anı), üç kolda aynı",
+    "crates/bench/src/kama.rs:10-14 modül doc: sent_ns = APP-OFFER anı (pacing dwell latency'ye DAHİL), her iki tarafta aynı frame"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "—",
+   "notes": "Ölçüm-frame'i (sent_ns = app-offer) üç kolda özdeş ve gerekçeli — bu, harness'ın en sağlam normalizasyonlarından biri."
+  },
+  {
+   "name": "Ölçüm-t0 senkronu: warmup + establish-gate + measurement-gate barrier",
+   "spec_refs": [
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §3.1 L145-154 (A1 barrier protokolü W6)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §3.2 L155-160 (A2 warm-up kirlenme kuralları)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/transport.rs:214-227 gate_sync (`<gate>.ready` yaz → `<gate>.go` bekle, 120 s tavan, typed timeout)",
+    "crates/bench/src/main.rs:169/172/175 `--warmup-msgs`, `--gate`, `--establish-gate`",
+    "crates/bench/src/main.rs:53 `--gate-watch` (server reverse-bütçe senkronu)",
+    "crates/bench/src/kama_product.rs:434-467 warmup fazı + gate çağrıları",
+    "crates/bench/src/quic.rs:257-291 aynı protokol; :515-529 warmup_one (10 s tavan + stream RESET)"
+   ],
+   "product_call_chain": "`cli.mark_t0()` → runtime.rs:1195-1203 sayaç sıfırlama (motor durumu KORUNUR — counter_reset_without_state_reset).",
+   "product_reachable": true,
+   "gate": "`--warmup-msgs N --gate P --establish-gate Q` (+ server `--gate-watch P`)",
+   "default_state": "warmup_msgs=0, gate=None, establish_gate=None, gate_watch=None (main.rs:169-175, 53).",
+   "activation_condition": "Yalnız açıkça verildiğinde.",
+   "bench_exposure": "YALNIZ scripts/netem/kapi_calrun.sh:118-119 (`--establish-gate`, `--gate`, `--warmup-msgs 10`) + :104 `--gate-watch`. product_vs_quinn.sh, guard_check.sh ve TÜM fec_* aileleri HİÇBİRİNİ kullanmaz.",
+   "telemetry": "RunMeta.warmup_residue, t0_unix_ns, events_epoch_offset_ns, budget.armed_at_ns/pre_arm_bytes.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "crates/bench/src/transport.rs:214-227 gate_sync — üç adaptör de AYNI protokolü kullanır",
+    "scripts/netem/kapi_calrun.sh:118-119 `--establish-gate \"$GATE_E\" --gate \"$GATE_M\"`",
+    "scripts/netem/product_vs_quinn.sh:44-48 client argümanlarında gate/warmup YOK",
+    "crates/client-core/src/runtime.rs:1195-1203 t0'da yalnız sayaçlar sıfırlanır, motor durumu korunur"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "Gate'siz koşuda t0 ≈ koşu başı; quinn için handshake sonrası, Kama için connect anı → kurulum asimetrisi (ayrı kayıt).",
+   "notes": "Mekanizma tam ve doğru; sorun ürün-kolu sürücülerinin onu HİÇ kullanmaması. Bu, product_vs_quinn.sh'in 'teşhis tier' beyanıyla tutarlı ama ön-kayıtlı doğrulamada kullanılamaz."
+  },
+  {
+   "name": "Bütçe governor (paket-atomik, yön-başına, IP-düzeyi) + kollar arası erişilebilirlik asimetrisi",
+   "spec_refs": [
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §2.1-2.4 L105-142 (permitted_utilization, packet-atomic governor W2)",
+    "specs/transport-layer-tdd.md §4.4.3 SECONDARY L316-318 (bytes-per-delivered-message)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/budget.rs:18 `IPV4_UDP_OVERHEAD: u64 = 28`; :159-190 permit/permit_n; :63-80 BudgetSnapshot",
+    "crates/bench/src/kama_product.rs:62-79 BudgetEgress impl EgressPolicy (fail-closed: zehirli kilit ⇒ REDDET)",
+    "crates/bench/src/quic.rs:57-123 GovernedUdpSocket (max_transmit_segments=1)",
+    "crates/bench/src/quic.rs:129-137 `if budget == BudgetMode::Unlimited { … return Ok((ep, None)) }`",
+    "crates/bench/src/main.rs:305-340 budget_mode() — burst XOR paced typed doğrulama"
+   ],
+   "product_call_chain": "kama-product: BudgetEgress → client_core::runtime seal_send! (runtime.rs:941-953) `egress.admit(n, now)`; ret ⇒ `egress_refused_*` sayacı, motor durumu geri itilmez (INV-RATE-1).",
+   "product_reachable": true,
+   "gate": "`--budget-burst-bytes` XOR (`--budget-refill-bytes-per-s` + `--budget-bucket-bytes` [+ `--budget-ceiling-bytes`])",
+   "default_state": "Hepsi 0 → BudgetMode::Unlimited (main.rs:43-51, 156-166).",
+   "activation_condition": "Bayrak verilirse.",
+   "bench_exposure": "YALNIZ kapi_calrun.sh ($FWD_BUDGET/$REV_BUDGET, kapi_manifest.py:123-160 kanal-türevli). product_vs_quinn.sh ve tüm fec_* aileleri Unlimited koşar.",
+   "telemetry": "RunMeta.budget (mode/injected_bytes/injected_pkts/refused/pre_arm/armed_at_ns/first_refusal_ns); BUDGET-REV stderr (kama_product.rs:368, quic.rs:456).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "crates/bench/src/quic.rs:129-137 Unlimited'ta governor SARILMAZ → `gov = None`",
+    "reports/product-vs-quinn-v3/iid50/quinn/rep1/out.jsonl meta: `\"budget\":{\"mode\":\"\",\"injected_bytes\":0,\"injected_pkts\":0,...}` — quinn'de enjekte-düzlem YOK",
+    "reports/product-vs-quinn-v3/iid50/kp-sevk/rep1/out.jsonl meta: `\"budget\":{\"mode\":\"unlimited\",\"injected_bytes\":59401,\"injected_pkts\":191,...}` — kama-product'ta VAR",
+    "crates/bench/src/kama_product.rs:283-289 governor DAİMA takılır (Unlimited olsa bile), quic.rs:129 takılmaz"
+   ],
+   "duplicates_or_dead": "Tek implementasyon (budget.rs) üç kolda paylaşılıyor — doğru.",
+   "feature_off_behavior": "Unlimited'ta kama-product hâlâ injected_bytes/pkts sayar; quinn saymaz → IP-düzeyi (28 B/pkt) byte kıyası quinn için YAPILAMAZ.",
+   "notes": "Somut boşluk: Unlimited koşularda quinn'in paket sayısı hiçbir yere yazılmıyor (RunMeta'da datagram alanı yok, quinn stats.udp_tx.datagrams okunmuyor) → 'bytes-per-delivered-message'ı IP düzlemine çevirmek imkânsız. En küçük düzeltme: quinn kolunda Unlimited'ta da governor sar, ya da RunMeta'ya udp_tx_datagrams ekle."
+  },
+  {
+   "name": "Wire muhasebesi: udp_tx_bytes DENEME düzlemi + TxComponents bileşen ayrımı",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.3 SECONDARY L316-318 (bytes/msg, ACK/retransmit overhead)",
+    "specs/transport-layer-tdd.md §4.4.4 L343-347 (FEC efficiency: parity byte / kurtarılan payload byte)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §4.3 L225-231 (decomposition + reconcile)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/event.rs:22-36 TxComponents{data,retx,dup,fec,ctrl}",
+    "crates/client-core/src/runtime.rs:928-939 sınıf-başına sayaç (TxClass::Data/Retx/Dup/Fec/Ctrl)",
+    "crates/bench/src/kama_product.rs:665-672 RunMeta.tx doldurma",
+    "crates/bench/src/quic.rs:381 `tx: TxComponents::default()` (quinn ayırt etmez)",
+    "crates/bench/src/qdgram.rs:471-478 {data,retx} dolu"
+   ],
+   "product_call_chain": "runtime seal_send! → stats.tx_bytes/tx_<class>_bytes → ClientStats → bench RunMeta.",
+   "product_reachable": true,
+   "gate": "Yok (her zaman).",
+   "default_state": "Açık.",
+   "activation_condition": "Her koşu.",
+   "bench_exposure": "kama/kama-product/qdgram; quinn'de yapısal olarak yok.",
+   "telemetry": "RunMeta.tx.{data,retx,dup,fec,ctrl}; KP-CLIENT `tx={}B(data=… retx=… dup=… fec=… ctrl=…)`.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:930-939 \"DENEME düzlemi: kapı reddetse de üretilen byte sayılır (sınıf ayrımıyla)\"",
+    "crates/bench/src/quic.rs:378-379 quinn: `stats.udp_tx.bytes` t0-delta (UDP payload düzlemi; IP header'sız)",
+    "reports/product-vs-quinn-v3/iid50/kp-static-r4/rep1/out.jsonl `\"tx\":{\"data\":44600,\"retx\":49060,\"dup\":5646,\"fec\":22816,\"ctrl\":255}` toplam = 122377 = udp_tx_bytes ✓",
+    "crates/bench/src/event.rs:58-60 udp_tx_bytes doc: \"TRANSPORT-DENEMESİ düzlemi (governor reddettikleri DAHİL; üç kol da aynı kural)\""
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "—",
+   "notes": "Muhasebe düzlemi (UDP payload, deneme) üç kolda tutarlı ve toplamı kapanıyor. Eksikler: (a) quinn için paket sayısı yok → IP düzlemi çevrilemez, (b) IdentitySeam 10 B eksik (ayrı kayıt), (c) 'FEC efficiency = parity byte / kurtarılan payload byte' metriği hesaplanmıyor (kurtarılan byte alıcı tarafta KP-SERVER'da, istemci JSONL'inde değil)."
+  },
+  {
+   "name": "Reverse-path bozulması + reverse-yön bütçesi/gate-watch",
+   "spec_refs": [
+    "specs/tech-stack-adr.md ADR-18 L286 (reverse-path impaired ACK profili ZORUNLU)",
+    "specs/transport-layer-tdd.md §4.4.2 L273 (reverse-path: sağlam → ACK-yolu bozuk)",
+    "specs/transport-layer-tdd.md §4.4.4 L349-350 (ARQ efficiency, reverse-path-impaired altında davranış)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "scripts/netem/kapi3_harness.sh:99-104 kapi3_netem (fwd = MID/mb0 egress, rev = MID/ma0 egress)",
+    "scripts/netem/kapi_manifest.py:49-51 p5_revpath (fwd %5 / rev %80); :76-78 h4a_revsevere (fwd %10 / rev %90)",
+    "crates/bench/src/main.rs:53 `--gate-watch` (reverse bütçe arm senkronu)",
+    "crates/bench/src/kama_product.rs:316-329 server gate-watch → mark_t0"
+   ],
+   "product_call_chain": "Server tarafı: ServerEndpoint egress → BudgetEgress → runtime.rs:1803-1815 (deneme düzlemi + refused).",
+   "product_reachable": true,
+   "gate": "netem rev-spec (harness) + `--gate-watch` + server budget bayrakları.",
+   "default_state": "product_vs_quinn.sh: rev = \"delay 200ms loss 10%\" (hafif). fec aileleri: rev loss %2. Reverse-severe profiller (p5/h4a) YALNIZ kapi_manifest'te.",
+   "activation_condition": "Betiğin verdiği netem rev-spec'e göre.",
+   "bench_exposure": "product_vs_quinn.sh:89-90 iki hücrede rev %10; kapi_manifest.py p5_revpath/h4a_revsevere yalnız stub kollarıyla koşulan kampanyada.",
+   "telemetry": "RunMeta.udp_rx_bytes; metrics::ack_overhead_ratio = udp_rx_bytes / payload_total (crates/bench/src/metrics.rs:91); BUDGET-REV.",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "scripts/netem/product_vs_quinn.sh:89-90 `run_cell iid50 \"delay 200ms loss 50%\" \"delay 200ms loss 10%\"` — reverse yalnız %10",
+    "scripts/netem/kapi_manifest.py:49-51 p5_revpath rev %80 — ama ARM_CLI'de kama-product YOK",
+    "specs/tech-stack-adr.md:286 \"reverse-path impaired ACK (dönüş yolu bozuk)\" NORMATİF minimum profil listesinde",
+    "scripts/netem/kapi3_harness.sh:100-103 rev netem ma0 egress'te (faithful, orta-ns)"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behargavior": null,
+   "feature_off_behavior": "Reverse-severe profil ürün kolunda hiç koşulmadı → 'ARQ-only'nin ikinci cehennemi' iddiası ürün için ölçülmemiş.",
+   "notes": "Harness reverse bozulmayı DOĞRU uyguluyor (üç-ns, ayrı yön), ama ADR-18'in zorunlu reverse-severe profili ürün koluyla hiç eşleşmedi. quinn'in app-ACK'i ters yolda güvenilir stream olduğundan reverse-severe hücre ayrıca quinn aleyhine keskin bir ayrım noktası — ölçülmemiş fırsat."
+  },
+  {
+   "name": "Ürün-default sapması #1: initial_window_bytes (ürün 2400, bench 0)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3/§11.1 PRE_CONVERGE (docs/design/pre-converge-v1.md atfı, spec L1153)",
+    "specs/transport-layer-tdd.md §4.4.3 ④ L305-308 (first-delivery success)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/client-core/src/runtime.rs:195 `initial_window_bytes: adaptive_transport::pacer::DEFAULT_BURST_CAP`",
+    "crates/adaptive-transport/src/pacer.rs:9 `pub const DEFAULT_BURST_CAP: u64 = 2 * crate::rate::DEFAULT_MTU;` (= 2400)",
+    "crates/bench/src/kama_product.rs:161 `initial_window_bytes,` (ArmCfg'den; RuntimeConfig::default()'u EZER)",
+    "crates/bench/src/main.rs:124/239 `--initial-window-bytes` default_value_t = 0",
+    "crates/adaptive-transport/src/sender.rs:293-317 InitialWindowConfig doc (`bytes == 0` = eski davranış)"
+   ],
+   "product_call_chain": "client-core runtime.rs:854-858 `session.sender_mut().set_initial_window(InitialWindowConfig{ bytes: cfg.initial_window_bytes })` → sender PreConverge burst-cap tabanı.",
+   "product_reachable": true,
+   "gate": "CLI `--initial-window-bytes N`",
+   "default_state": "ÜRÜN: 2400 (AÇIK). BENCH kama-product kolu: 0 (KAPALI) — CLI default 0 doğrudan RuntimeConfig alanına yazılıyor.",
+   "activation_condition": "Bench'te yalnız `--initial-window-bytes 2400` açıkça verilirse ürün default'una eşitlenir.",
+   "bench_exposure": "product_vs_quinn.sh:80/84/85 (kp-iw2400, kp-iw-bs, kp-iw-bs-static) ve guard_check.sh:37. `kp-sevk` (satır 76) ve TÜM fec_* aileleri IW=0 koşar — yani 'sevk davranışı' etiketli kol ürün default'u DEĞİL.",
+   "telemetry": "RunMeta.kama_arm etiketine `-iw2400` eklenir (kama_product.rs:688-690) — ama IW=0 durumu etikette görünmez (boş string).",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:195 `initial_window_bytes: adaptive_transport::pacer::DEFAULT_BURST_CAP,`",
+    "crates/bench/src/main.rs:124 `#[arg(long, default_value_t = 0)] initial_window_bytes: u64,`",
+    "crates/bench/src/kama_product.rs:161 alan açıkça set ediliyor → `..RuntimeConfig::default()` bu alanı doldurmuyor",
+    "crates/client-core/src/runtime.rs:112-116 \"Ölçüm (netem 200 ms RTT / %50 kayıp, n=6/hücre, 2 hücre): sevk davranışı 6/12 çöküş; ilk pencere açıkken 0/12. Sevk default'u ÖLÇÜLÜ BOZUKTU\"",
+    "scripts/netem/product_vs_quinn.sh:76 `run_arm \"$cell\" \"kp-sevk\" kama-product` — ek bayrak yok ⇒ IW=0"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "IW=0 → PreConverge'de ilk uçuş TEK paket; %50 kayıpta kuruluş yazı-tura (client-core/src/runtime.rs:107-116 ölçümü).",
+   "notes": "Bu, 'bench ürün default'unu ölçmüyor' sınıfının en net vakası: ürün 2400'e çevrildikten SONRA bench default'u 0'da kaldı. `kp-sevk` etiketi de yanıltıcı (sevk ≠ ürün default). Düzeltme: CLI default'u `None` yapıp verilmezse RuntimeConfig::default()'u KORU."
+  },
+  {
+   "name": "Ürün-default sapması #2: structure_gate_level_permille (ürün Some(250), bench None ⇒ 500)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §5.3 L550 (fuzzy kural tabanı, fec_med)",
+    "specs/transport-layer-tdd.md §14 INV-FUZZY-1 L~730"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/client-core/src/runtime.rs:206 `structure_gate_level_permille: Some(250)`",
+    "crates/client-core/src/runtime.rs:159-162 alan doc: \"**Ürün default'u `Some(250)`** … `None` = motor `fec_med` (500)\"",
+    "crates/bench/src/kama_product.rs:224 `structure_gate_level_permille: gate,` (gate = cfg.gate_permille, default None)",
+    "crates/bench/src/main.rs:96/215 `--gate-permille` (Option, default None)",
+    "crates/adaptive-transport/src/fusion.rs:365 `fec_med: 500`",
+    "crates/adaptive-transport/src/sender.rs:4432-4437 `gate_level_permille() = override.unwrap_or(fuzzy.config().fec_med)`"
+   ],
+   "product_call_chain": "runtime.rs:845-847 `session.sender_mut().set_structure_gate_level(cfg.structure_gate_level_permille)` → sender.rs:4422 → yapı-gate kararı → FEC latch.",
+   "product_reachable": true,
+   "gate": "CLI `--gate-permille N`",
+   "default_state": "ÜRÜN: Some(250) (‰, K=8'de r2). BENCH: None ⇒ fec_med = 500‰ (r4) — ÜRÜNÜN İKİ KATI parity.",
+   "activation_condition": "Yalnız `fec: Some(..)` VE Controller modunda etkili; `--gate-permille 250` verilirse ürün default'una eşitlenir.",
+   "bench_exposure": "YALNIZ fec_rsweep.sh:35 ve fec_evidence_family.sh:43, fec_persist_family.sh:44 `--gate-permille $g` geçer (POL_A → 250). product_vs_quinn.sh HİÇ geçmez (ama orada FEC zaten Manual, gate bypass).",
+   "telemetry": "KP-CLIENT `gate_opened={stats.fate.structure_gate_opened}` + `gate_outcomes` histogramı (runtime.rs:437-441).",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:159-161 \"**Ürün default'u `Some(250)`** (aday A'nın gate bileşeni; r-sweep: 500‰/r4 15–20 % kayıpta israflı)\"",
+    "crates/bench/src/kama_product.rs:224 `structure_gate_level_permille: gate,` — `..RuntimeConfig::default()` bu alanı doldurmaz",
+    "crates/bench/src/main.rs:96 `#[arg(long)] gate_permille: Option<u32>` (default None)",
+    "crates/adaptive-transport/src/fusion.rs:365 `fec_med: 500,`"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "Gate 500‰'de = ürünün kalibrasyonda REDDETTİĞİ seviye; benchmark ürünü kendi ölçtüğü israflı ayarla koşturur.",
+   "notes": "Aynı düzeltme deseni: bench CLI Option'ı None iken RuntimeConfig::default()'u korumalı, `None ⇒ motor fec_med` semantiğine düşmemeli."
+  },
+  {
+   "name": "Ürün-default sapması #3: fec_loss_risk (ürün bounded_v1, bench default() = KAPALI)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §5.3 L550-568 (fuzzy kural tabanı)",
+    "specs/transport-layer-tdd.md §14 INV-FEC-2 (on-demand FEC)",
+    "reports/fec-loss-risk-v1/closure (kapanış kararı atfı; sender.rs:429-434 doc)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/client-core/src/runtime.rs:204 `fec_loss_risk: FecLossRiskConfig::bounded_v1()`",
+    "crates/adaptive-transport/src/sender.rs:435-447 bounded_v1() {enabled:true, 250/250, LearnedSpuriousAge, reorder_suppress 300}",
+    "crates/adaptive-transport/src/sender.rs:395-416 Default {enabled:false, 125/250, FixedSrtt, suppress u32::MAX}",
+    "crates/adaptive-transport/src/sender.rs:421-426 experimental_v1() {enabled:true, ..Default}",
+    "crates/bench/src/kama_product.rs:187-192 `if fec_risk { experimental_v1() } else { FecLossRiskConfig::default() }`",
+    "crates/bench/src/main.rs:83/202 `--fec-risk` default false"
+   ],
+   "product_call_chain": "runtime → session.sender_mut().set_fec_loss_risk(cfg.fec_loss_risk) → arbiter spekülatif kolu → FEC oranı.",
+   "product_reachable": true,
+   "gate": "CLI `--fec-risk` (+ `--spec-l1-permille/--spec-l2-permille/--persist-mode/--rp-suppress` ince ayar)",
+   "default_state": "ÜRÜN: bounded_v1() = AÇIK. BENCH: FecLossRiskConfig::default() = KAPALI (enabled:false). `--fec-risk` verilse bile bounded_v1 DEĞİL, experimental_v1 (125/250 + FixedSrtt + guard yok) kurulur.",
+   "activation_condition": "bounded_v1'e ancak bayrak-yeniden-inşasıyla ulaşılır: `--fec-risk --spec-l1-permille 250 --spec-l2-permille 250 --persist-mode learned --rp-suppress 300` (+ gate 250).",
+   "bench_exposure": "`--fec-risk` fec_risk_families.sh, fec_rsweep.sh, fec_persist_family.sh, fec_evidence_family.sh, fec_risk_shortflow.sh'de var. bounded_v1'in TAM eşdeğeri yalnız fec_evidence_family.sh'de `ARMS_LIST=\"A-G1\"` ile (varsayılan ARMS `off A-M0 B-M0`, G1 YOK). product_vs_quinn.sh'de HİÇ yok.",
+   "telemetry": "KP-CLIENT `arb={fec_arbiter_reasons:?} lvl={fec_spec_levels:?} spec={fec_spec_signals:?} persist={fec_persist:?} risk_ppm={fec_risk_ppm:?}`.",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "`grep -rn \"bounded_v1\" crates --include=*.rs` → yalnız crates/client-core/src/runtime.rs:204 (ürün default) + crates/adaptive-transport tests. BENCH'ten SIFIR çağrı.",
+    "crates/bench/src/kama_product.rs:188-192 `let mut c = if fec_risk { FecLossRiskConfig::experimental_v1() } else { FecLossRiskConfig::default() };`",
+    "crates/adaptive-transport/src/sender.rs:429-434 bounded_v1 doc: \"FEC v1 sınırlı politikası (kapanış kararı) … ürün default'u client-core'dadır\"",
+    "scripts/netem/fec_evidence_family.sh:33 `ARMS=\"${ARMS_LIST:-off A-M0 B-M0}\"` — G1 (rp-suppress 300) varsayılan kolda YOK"
+   ],
+   "duplicates_or_dead": "experimental_v1() ile bounded_v1() bench'te ayrı ayrı ulaşılabilir olmalı; şu an yalnız birincisi.",
+   "feature_off_behavior": "`fec: None` iken bu lane İNERT (runtime.rs:150-153) → FEC-kapalı kollarda sapmanın davranışsal etkisi YOK. FEC-açık Controller kollarında ürünün SEVK EDİLEN spekülatif politikası hiç ölçülmemiş demektir.",
+   "notes": "En keskin bulgu: v1 FEC kapanış kararının kendisi (bounded_v1) benchmark harness'ından ULAŞILAMAZ. En küçük düzeltme: `--fec-risk` değerini `bounded_v1()` yap (veya `--fec-risk-profile bounded|experimental|off` ekle) ve verilmezse RuntimeConfig::default()'u KORU."
+  },
+  {
+   "name": "Bench-özel drain_cap override (ürün 3 s → bench 0)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md D8 shutdown-drain (spec L~448 teslim-damgası app/bench katmanı notu)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/client-core/src/runtime.rs:192 `drain_cap: Duration::from_secs(3)`",
+    "crates/bench/src/kama_product.rs:164 `drain_cap: Duration::ZERO,`",
+    "crates/bench/src/kama_product.rs:89-92 gerekçe yorumu"
+   ],
+   "product_call_chain": "runtime shutdown → drain döngüsü (pif→0 VEYA drain_cap).",
+   "product_reachable": true,
+   "gate": "Kod-içi; CLI bayrağı YOK.",
+   "default_state": "ÜRÜN 3 s, BENCH 0 — KASITLI.",
+   "activation_condition": "shutdown().",
+   "bench_exposure": "Tüm kama-product koşuları.",
+   "telemetry": "ClientStats.undelivered.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:89-92 \"`drain_cap = 0`: bench'te kapanış-drenajı YOKTUR — aksi hâlde deadline SONRASI akan retransmit'ler `tx_bytes`'a girer ve ölçüm penceresini sessizce genişletirdi\"",
+    "crates/client-core/src/runtime.rs:192 `drain_cap: Duration::from_secs(3),`"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "—",
+   "notes": "Gerekçeli ve doğru bir ölçüm-penceresi koruması; ürün-default sapması olmakla birlikte ölçüm lehine. Rapor dilinde beyan edilmeli (byte penceresi ürün davranışından dar)."
+  },
+  {
+   "name": "FEC aktüasyon modu: Manual (statik-r) yapı-gate/arbiter'ı BYPASS eder",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §14 INV-FUZZY-1 / INV-FEC-2 L~728-733 (FEC kararı fuzzy controller; on-demand)",
+    "specs/transport-layer-tdd.md §4.4.4 L343-347 (fuzzy'nin FEC'i kapatmayı SEÇMESİ test edilir)",
+    "specs/adaptive-transport-engine-spec.md §8/§10 (latch + arbiter)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/transport.rs:60-113 FecArm{Off,StaticR,Adaptive,PolicyV2Deadline} + from_args",
+    "crates/client-core/src/runtime.rs:864-875 `FecActuationMode::Manual{enabled:true}` (manual_r varsa) vs `Controller`",
+    "crates/adaptive-transport/src/sender.rs:4606 `FecActuationMode::Manual { .. } => zero(0, FecSuppressionReason::ManualDisabled, false)`",
+    "crates/adaptive-transport/src/sender.rs:4607-4650 Controller dalı (fuzzy snapshot → compute_requested_r → arbiter)",
+    "crates/bench/src/main.rs:69/188 `--fec-mode` default FecModeCli::Static"
+   ],
+   "product_call_chain": "bench `--fec-mode adaptive` → FecArm::Adaptive → FecRuntimeConfig{manual_r: None} → runtime.rs:869 `FecActuationMode::Controller` → sender fec_latch → yapı-gate + arbiter + spekülatif kol.",
+   "product_reachable": true,
+   "gate": "`--fec-mode static|adaptive|policy` + `--fec-r`",
+   "default_state": "`--fec-mode` default = `static` (main.rs:69/188). `--fec-profile` default 0 ⇒ FecArm::Off (FEC hiç yok).",
+   "activation_condition": "Controller yolu yalnız `--fec-profile P --fec-mode adaptive` ile.",
+   "bench_exposure": "KRİTİK: product_vs_quinn.sh'in HİÇBİR kolu `--fec-mode adaptive` kullanmaz (satır 76-85: ya profil 0 = Off, ya `--fec-r 4` = Manual). Adaptive yalnız fec_* ailelerinde (quinn YOK). Policy modu hiçbir yerde.",
+   "telemetry": "KP-CLIENT `latch={fec_latch_diag:?}`, `gate_opened=`, `gate_outcomes` (7 kova), `arb={fec_arbiter_reasons:?}`, `fec_blocks=`, `fec_repairs_tx=`.",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:4606 Manual modda latch DAİMA `zero(0, ManualDisabled)` — yapı-gate, fuzzy ve arbiter hiç danışılmaz",
+    "crates/client-core/src/runtime.rs:866-868 `let mode = if fec_manual_r.is_some() { FecActuationMode::Manual { enabled: true } } else { FecActuationMode::Controller };`",
+    "scripts/netem/product_vs_quinn.sh:75-85 — 7 kolun hiçbirinde `--fec-mode adaptive` yok",
+    "reports/product-vs-quinn-v1/iid50/ dizininde `kama-product-adaptive` VARDI; v3'te (güncel betik) KALDIRILMIŞ"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "Manual modda parity `close_fec_block_manual` ile sabit r'de üretilir — ürünün karar mekanizması ölçülmez.",
+   "notes": "Sonuç cümlesi: ürünün FEC KARAR YIĞINI (fuzzy → yapı-gate → arbiter → spekülatif lane) hiçbir quinn kıyasında koşmadı. FEC aileleri karar yığınını koşuyor ama quinn'siz; product_vs_quinn quinn'li ama karar yığını bypass'lı. İki eksen hiç kesişmiyor."
+  },
+  {
+   "name": "Tail recovery kol maruziyeti (kama-product'ta kapatılamaz; stub'da opt-in)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §9 ARQ / tail probe",
+    "specs/transport-layer-tdd.md §14 INV-ARQ-1"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/client-core/src/lib.rs:83 `sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());` (ClientSession::new sevk default)",
+    "crates/client-core/src/lib.rs:218-228 test `shipped_default_tail_recovery_is_on_via_validated_v1`",
+    "crates/bench/src/kama.rs:113 stub kolunda yalnız `--kama-arm tail-v1` ile",
+    "crates/bench/src/transport.rs:29-49 KamaArm{Arq(default), TailV1}"
+   ],
+   "product_call_chain": "ClientEndpoint::connect → ClientSession::new (lib.rs:83) → sender tail-ON. kama-product'ta bayrakla kapatılamaz.",
+   "product_reachable": true,
+   "gate": "kama-product: gate YOK (daima ON). kama stub: `--kama-arm arq|tail-v1`.",
+   "default_state": "ÜRÜN + kama-product: AÇIK (validated_v1). kama stub kolu: KAPALI (KamaArm::Arq default).",
+   "activation_condition": "kama-product'ta her koşu.",
+   "bench_exposure": "kama-product tüm koşular (etikette `kama-product-tailv1-` öneki, kama_product.rs:680). Stub kolunda kapi_manifest.py:102-103 iki kol.",
+   "telemetry": "KP-CLIENT `sched=[..., tail_probe_emit]` — ama YALNIZ `diag-sched-telemetry` feature'ında dolu (aksi 0).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "crates/client-core/src/lib.rs:71-83 \"**ON** — `TailRecoveryConfig::validated_v1()`, the named KAMA-TAIL-V1 constant\"",
+    "crates/bench/src/transport.rs:35-38 `#[derive(..., Default)] pub enum KamaArm { #[default] Arq, TailV1 }` — stub default tail OFF",
+    "crates/bench/src/kama_product.rs:676-680 etiket `kama-product-tailv1-…` (kolun daima tail-ON olduğunu taşır)",
+    "crates/client-core/src/runtime.rs:813 \"G2 sevk default'ları TEK kaynaktan: ClientSession (tail-ON validated_v1 …)\""
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "kama-product'ta tail kapatılamadığı için 'tail'in katkısı' ürün kolunda A/B ölçülemez (stub kolunda ölçülebilir ama o kol ürün değil).",
+   "notes": "harness/run-kama-matrix.sh:33 `--kama-arm` geçmiyor ⇒ ADR-18 nightly kapısı tail-OFF stub'ı ölçüyor: ürünün iki ayırt edici mekanizması (tail + FEC) nightly kapıda YOK."
+  },
+  {
+   "name": "Telemetri: KP-CLIENT / KP-SERVER / BUDGET-REV stderr satırları",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §17 L1108-1113 (harness girdileri = engine'in ölçülen çıktıları)",
+    "specs/transport-layer-tdd.md §4.4.4 L325-356 (mekanizma-kanıtı)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/kama_product.rs:560-607 KP-CLIENT (40+ alan)",
+    "crates/bench/src/kama_product.rs:379-382 KP-SERVER (`stats={stats:?}` — ServerStats tamamı)",
+    "crates/bench/src/kama_product.rs:368-378 BUDGET-REV",
+    "crates/bench/src/kama_product.rs:335-341 SIGTERM/SIGINT kapanış kolu (KP-SERVER'ın yazılmasını sağlayan düzeltme)",
+    "crates/bench/src/qdgram.rs:440-443 QDGRAM-TERMINATION"
+   ],
+   "product_call_chain": "ClientStats/ServerStats ← runtime sayaçları ← sender/receiver diag_* API'leri.",
+   "product_reachable": true,
+   "gate": "Yok (her koşuda stderr'e).",
+   "default_state": "Açık.",
+   "activation_condition": "Client: koşu sonunda. Server: SIGTERM/SIGINT veya endpoint kapanışı.",
+   "bench_exposure": "Tüm kama-product koşuları; analiz betikleri c.err/s.err'i parse ediyor.",
+   "telemetry": "Kendisi telemetri.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:330-336 yorum: dairesel bağımlılık kusuru ve düzeltmesi — \"alıcı-tarafı FEC kanıtının tamamı … kaybediliyordu\"",
+    "scripts/netem/fec_c4_attrib_analyze.py:12-13 `c=open(f\"{d}/c.err\"); s=open(f\"{d}/s.err\"); kc=re.search(r\"KP-CLIENT.*\",c); ks=re.search(r\"KP-SERVER.*\",s)`",
+    "scripts/netem/fec_risk_analyze.py:39 `glob.glob(f\"{root}/{fam}/*/rep*/c.err\")`",
+    "crates/client-core/src/runtime.rs:560-584 ServerStats FEC alanları (fec_blocks_decoded, fec_repairs_useful, msgs_reassembled, param_bound_peers…)"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "—",
+   "notes": "Güçlü telemetri. Zayıflık: yapılandırılmamış stderr metni (regex parse), JSONL'e girmiyor → RunOutput tek başına mekanizma-kanıtı taşımıyor. §4.4.9 'ham veri yayımlanır' için s.err/c.err'in de artefakt sayılması gerek."
+  },
+  {
+   "name": "Zaman-serisi enstrümanı `--ts-out` (client) — 50 ms örnekleme CSV",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §17 L1111 (estimator/mekanizma kanıtı)"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/main.rs:206 `--ts-out` (Client)",
+    "crates/bench/src/kama_product.rs:203-206 `ts_sample: cfg.ts_out.is_some()` → `ts_sample_period_ns: ts_sample.then_some(50_000_000)`",
+    "crates/bench/src/kama_product.rs:609-650 CSV yazımı (22 sütun)",
+    "crates/client-core/src/runtime.rs:1059-1065 örnekleme (TS_CAP=4096 sınırlı)",
+    "crates/client-core/src/runtime.rs:156-158 alan doc: 'Salt gözlem — motor durumuna dokunmaz'"
+   ],
+   "product_call_chain": "runtime pace tick → `session.sender().diag_ts_sample()` → stats.ts → bench CSV.",
+   "product_reachable": true,
+   "gate": "`--ts-out PATH`",
+   "default_state": "None (kapalı) hem CLI'da hem RuntimeConfig::default()'ta (runtime.rs:205).",
+   "activation_condition": "Yalnız client'ta ve yalnız bayrak verilirse.",
+   "bench_exposure": "fec_evidence_family.sh:44 `extra=\"--ts-out $d/ts.csv\"` (yalnız risk kolları); fec_persist/rsweep aileleri benzer.",
+   "telemetry": "ts.csv 22 sütun (instant/persistent/rp/confirmed/props/final_ratio/reason/level/evidence_mass/pacer_tokens/sched_*).",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:205 `ts_sample_period_ns: None,`",
+    "crates/bench/src/kama_product.rs:226 `ts_sample_period_ns: ts_sample.then_some(50_000_000),`",
+    "scripts/netem/fec_evidence_analyze.py:32-35 ts.csv okuma",
+    "crates/client-core/src/runtime.rs:167 `pub const TS_CAP: usize = 4096;` (bounded, SR-AUDIT-001)"
+   ],
+   "duplicates_or_dead": "ts.csv'nin `sched_*` sütunları `diag-sched-telemetry` olmadan DAİMA 0 (ayrı kayıt).",
+   "feature_off_behavior": "Kapalıyken motor durumu ve wire byte'ları değişmez (salt gözlem).",
+   "notes": "Doğru tasarlanmış gözlem enstrümanı; v1 iddiası için gerekli değil ama mekanizma-kanıtı üretiminde kullanışlı."
+  },
+  {
+   "name": "Ölü bayrak: `serve --ts-out` (kabul edilir, atılır)",
+   "spec_refs": [],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/main.rs:87 Serve varyantında `ts_out: Option<PathBuf>`",
+    "crates/bench/src/main.rs:376 `ts_out: _,` (destructure'da atılıyor)",
+    "crates/bench/src/main.rs:407 `ts_out: None,` (ServerCfg'ye sabit None)",
+    "crates/bench/src/transport.rs:266-267 ServerCfg::ts_out doc: 'Server'da yok sayılır'"
+   ],
+   "product_call_chain": "YOK.",
+   "product_reachable": false,
+   "gate": "`serve --ts-out`",
+   "default_state": "None.",
+   "activation_condition": "Hiçbir zaman etki etmez.",
+   "bench_exposure": "Hiçbir betik `serve --ts-out` geçmiyor.",
+   "telemetry": "Yok.",
+   "classification": "DELETE",
+   "confidence": "high",
+   "evidence": [
+    "crates/bench/src/main.rs:376 `ts_out: _,`",
+    "crates/bench/src/main.rs:407 `ts_out: None,`",
+    "crates/bench/src/transport.rs:266 \"[HANDOFF ENSTRÜMANI] Zaman-serisi CSV yolu (`Some` → 50 ms örnekleme). Server'da yok sayılır.\" — ama alan yine de taşınıyor"
+   ],
+   "duplicates_or_dead": "ServerCfg.ts_out alanı da ölü (kama_product.rs:298 `ts_sample: cfg.ts_out.is_some()` daima false).",
+   "feature_off_behavior": "—",
+   "notes": "Zararsız ama yanıltıcı: operatör `serve --ts-out x.csv` yazıp sessiz boş sonuç alır. Ya kaldır ya da typed hata ver."
+  },
+  {
+   "name": "Cargo feature `diag-sched-telemetry` — zamanlayıcı sınıf sayaçları",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.4 L325-356 (mekanizma kanıtı)"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/Cargo.toml:25-26 `diag-sched-telemetry = [\"client-core/diag-sched-telemetry\", \"adaptive-transport/diag-sched-telemetry\"]`",
+    "crates/adaptive-transport/Cargo.toml:27 `diag-sched-telemetry = []`",
+    "crates/client-core/src/runtime.rs:430-433 `pub sched: [u64; 12]` — \"yalnız `diag-sched-telemetry` feature'ında dolu, aksi 0\"",
+    "crates/adaptive-transport/src/bw.rs:159-261 cfg-gated alanlar"
+   ],
+   "product_call_chain": "Feature açıkken sender/bw sayaçları → ClientStats.fate.sched → KP-CLIENT `sched={...}` + ts.csv sched_* sütunları.",
+   "product_reachable": true,
+   "gate": "Cargo feature (derleme zamanı).",
+   "default_state": "KAPALI (workspace default'unda yok).",
+   "activation_condition": "`cargo build --release -p bench --features diag-sched-telemetry`",
+   "bench_exposure": "HİÇBİR betik bu feature ile build etmiyor: tüm netem betikleri `cargo build --release -p bench --bin bench` diyor (grep: 9 betik, hiçbirinde --features).",
+   "telemetry": "KP-CLIENT `sched=[0,0,...]` ve ts.csv'nin son 6 sütunu — feature kapalıyken VAKUM SAYAÇ.",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "grep -rn \"cargo build\" scripts/netem/*.sh → 9 betikte `cargo build --release -p bench --bin bench`, hiçbirinde `--features diag-sched-telemetry`",
+    "crates/client-core/src/runtime.rs:430 \"(yalnız `diag-sched-telemetry` feature'ında dolu, aksi 0)\"",
+    "crates/bench/Cargo.toml:25 yorum: \"bench telemetri derlemesi: cargo build --release -p bench --features diag-sched-telemetry\"",
+    "scripts/gate.sh:73 `run_tests \"4 test diag-telemetry\" --features diag-sched-telemetry` — CI test ediyor ama netem koşuları etmiyor"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "Sayaçlar 0 döner ve KP-CLIENT/ts.csv'ye 0 olarak YAZILIR → 'ölçüldü ve sıfırdı' ile 'derlenmedi' ayırt edilemez (vakum-sayaç tuzağı).",
+   "notes": "En küçük düzeltme: feature kapalıyken alanı `None`/`-` olarak yazdır, 0 değil; veya netem betiklerinde build satırını feature'lı hâle getir."
+  },
+  {
+   "name": "Kol etiketleme / provenans (RunMeta.kama_arm + koşu metadata'sı)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.9 L445-451 (versioned harness, seeded RNG, reproduce)",
+    "specs/transport-layer-tdd.md §16 AC-QBENCH-8 L782"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/kama_product.rs:673-698 kama_arm etiketi (fec.label + burstfusion + bootstraprtt + iw + fastladder)",
+    "crates/bench/src/event.rs:38-92 RunMeta tüm alanlar",
+    "crates/bench/src/transport.rs:117-131 FecArm::label()",
+    "crates/bench/src/kama_product.rs:52 `KAMA_VERSION = env!(\"CARGO_PKG_VERSION\")` → \"0.1.0\" (git commit DEĞİL)"
+   ],
+   "product_call_chain": "YOK (metadata).",
+   "product_reachable": false,
+   "gate": "Yok.",
+   "default_state": "Açık.",
+   "activation_condition": "Her koşu.",
+   "bench_exposure": "Tüm kollar.",
+   "telemetry": "RunMeta.{profile, cc, transport, quinn_version, seed, repeat, kama_arm, submit_interval_ns, budget, t0_unix_ns, events_epoch_offset_ns, warmup_residue}.",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:679-698 etiket YALNIZ 5 bayrağı taşır — `--fec-risk`, `--spec-l1/l2-permille`, `--gate-permille`, `--persist-*`, `--rp-suppress`, `--loss-confirm-k`, `--quota-r` etikette YOK",
+    "crates/bench/src/kama_product.rs:674-678 yorumun kendisi bu kusuru bir kez düzelttiğini söylüyor: \"Önceden yalnız FEC ayarı yazılıyordu → … provenans yalnız DİZİN ADINA dayanıyordu\" — yeni knob'lar için tekrar oluşmuş",
+    "reports/product-vs-quinn-v3/iid50/kp-sevk/rep1/out.jsonl: `\"profile\":\"default\",\"seed\":0,\"repeat\":0` — product_vs_quinn.sh `--profile/--seed/--repeat` geçmiyor ⇒ 4 rep birbirinden AYIRT EDİLEMEZ, netem hücresi (iid50/burst50) JSONL'de YOK",
+    "crates/bench/src/kama_product.rs:52 `KAMA_VERSION: &str = env!(\"CARGO_PKG_VERSION\")` → git commit yok (§4.4.9 'versioned harness (git commit)' karşılanmıyor)"
+   ],
+   "duplicates_or_dead": "fec_evidence_family.sh:45 her koşuya `argv.txt` yazıyor (kısmi telafi, yalnız o ailede).",
+   "feature_off_behavior": "—",
+   "notes": "Üç ayrı provenans deliği: (1) yeni FEC knob'ları etikette yok, (2) product_vs_quinn.sh seed/repeat/profile geçmiyor → hücre ve tekrar kimliği yalnız dizin adında, (3) git commit hiçbir yerde. §4.4.9/AC-QBENCH-8 için üçü de gerekli."
+  },
+  {
+   "name": "Ön-kayıtlı kampanya manifesti (kapi_manifest.py) — kama-product KOL LİSTESİNDE YOK",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.9 L438-452 (reproducibility, seeded, versioned)",
+    "specs/transport-layer-tdd.md §4.4.2 L266-289 (cherry-pick yasağı; tam sweep + önceden ilan)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §0 L30-45"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "scripts/netem/kapi_manifest.py:100 `ARMS = [\"kama-arq\", \"kama-tail-v1\", \"q-stream\", \"q-dgram-arq\"]`",
+    "scripts/netem/kapi_manifest.py:101-106 ARM_CLI eşlemesi",
+    "scripts/netem/kapi_manifest.py:114-121 SHA-256 tohum türetimi (calibration/evaluation ayrık; drand kilidi)",
+    "scripts/netem/kapi_manifest.py:38-99 PROFILES kataloğu (Grup A/B/C)",
+    "scripts/netem/kapi_manifest.py:160-184 full_schema (kanal pinleri)"
+   ],
+   "product_call_chain": "YOK (manifest üretici).",
+   "product_reachable": false,
+   "gate": "`kapi_manifest.py calibration|evaluation|profiles`",
+   "default_state": "ARMS 4 kol; kama-product HİÇ YOK.",
+   "activation_condition": "Kampanya üretimi.",
+   "bench_exposure": "kapi_calrun.sh manifesti sürer.",
+   "telemetry": "manifest JSONL satırları (cell/arm/seed/rep/budget/plane).",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "scripts/netem/kapi_manifest.py:100 `ARMS = [\"kama-arq\", \"kama-tail-v1\", \"q-stream\", \"q-dgram-arq\"]  # FAZ-1`",
+    "scripts/netem/kapi_manifest.py:102-103 her ikisi de `transport=\"kama\"` (stub)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md:43-45 \"FAZ-1 (önce koşulur): FEC hiçbir kolda yok\"",
+    "grep -rn \"kama-product\" scripts/netem/kapi_manifest.py scripts/netem/kapi_calrun.sh → 0 eşleşme"
+   ],
+   "duplicates_or_dead": "product_vs_quinn.sh manifest-siz, tohum-suz, randomizasyon-suz bir alternatif sürücü (ayrı kayıt).",
+   "feature_off_behavior": "Ürün kolu ön-kayıtlı çerçeveye girmediği sürece §4.4.9/AC-QBENCH-8 'bağımsız reproduce' ürün için sağlanamaz.",
+   "notes": "Manifest altyapısı (SHA-256 tohum, drand kilidi, dengeli randomizasyon, kanal-türevli bütçe, full_schema) YÜKSEK kaliteli — eksik olan tek şey ARMS listesine kama-product'ın eklenmesi ve kolun semantik pinlerinin (fragmentasyon!) yeniden müzakeresi."
+  },
+  {
+   "name": "Metrik hesabı: bench `metrics` alt-komutu vs kapi_analyze.py (çift implementasyon)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.3 ① L292-296",
+    "specs/transport-layer-tdd.md §4.4.9 L440-442 (median + p95/p99 + %95 CI)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/bench/src/metrics.rs:44-56 completion; :58-93 run_metrics (ttfd/p50/p95/bytes_per_delivered/ack_overhead); :116-137 aggregate (median/IQR/min/max); :150-164 aggregate_secondary",
+    "crates/bench/src/main.rs:504-550 Cmd::Metrics",
+    "scripts/netem/kapi_analyze.py:44-52 completion (Python yeniden-implementasyon); :133-146 quantile agregasyonu"
+   ],
+   "product_call_chain": "YOK.",
+   "product_reachable": false,
+   "gate": "`bench metrics --runs ... --deadlines-s ...`",
+   "default_state": "deadlines \"10,30,120\".",
+   "activation_condition": "Elle çağrı.",
+   "bench_exposure": "HİÇBİR betik `bench metrics` çağırmıyor (grep: 0). Yalnız harness/run-bench.sh:57 eski akışta. Kampanya analizi Python'da.",
+   "telemetry": "stdout tablo.",
+   "classification": "DELETE",
+   "confidence": "medium",
+   "evidence": [
+    "grep -rn \"bench metrics\" scripts/ → 0 eşleşme; kapi_analyze.py:44 kendi `completion()`'ını tanımlıyor",
+    "crates/bench/src/metrics.rs:116-137 `AggregateDeadline{median,q1,q3,min,max}` — p95/p99 ve %95 CI YOK (§4.4.9 ister)",
+    "crates/bench/src/main.rs:504-550 Metrics kolu yalnız unit testlerden ve elle çağrılıyor",
+    "scripts/netem/kapi_analyze.py:45 yorum: \"Mesaj-başı deadline (r5 G): latency = delivered − sent ≤ D\" — Rust ile aynı tanım, ayrı kod"
+   ],
+   "duplicates_or_dead": "İki completion implementasyonu (Rust metrics.rs + Python kapi_analyze.py). Sapma riski sessiz.",
+   "feature_off_behavior": "—",
+   "notes": "DELETE'i 'iki taneden birini seç' anlamında öneriyorum: kampanya Python'u kullanıyorsa Rust metrics.rs'i test-yardımcısına indir, ya da tersini yap. Ayrıca hangisi kalırsa §4.4.9'un p95/p99 + %95 CI şartını karşılamalı — şu an ikisi de karşılamıyor."
+  },
+  {
+   "name": "Birincil metrik EKSİK: blackout survival (ikili)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.3 ② L299-303 (BLACKOUT SURVIVAL (ikili) — birincil)",
+    "specs/transport-layer-tdd.md §4.4.10 Tier-2 L466-469",
+    "specs/tech-stack-adr.md ADR-18 L288 (intermittent blackout profili ZORUNLU)",
+    "CLAUDE.md §10 BENCH-01"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [],
+   "product_call_chain": "YOK",
+   "product_reachable": false,
+   "gate": "Yok.",
+   "default_state": "Mevcut değil.",
+   "activation_condition": "—",
+   "bench_exposure": "p6_blackout profili VAR (kapi_manifest.py:52-53 + TRACE_PLANS:108; harness/run-kama-matrix.sh:22-28 toggler) ama ölçülen şey completion PROXY'si; 'oturum N-sn kesintiyi sağ atlattı mı' ikili metriği hesaplanmıyor.",
+   "telemetry": "Yok. (quinn tarafında `conn` ölümü QDGRAM-TERMINATION benzeri bir sinyalle yakalanabilirdi; quic.rs'te böyle bir alan yok.)",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "grep -rn -i \"survival|blackout\" crates/bench/src/*.rs → 0 eşleşme",
+    "specs/transport-layer-tdd.md:299-303 \"② BLACKOUT SURVIVAL (ikili) — birincil … QUIC: idle-timeout → yeni handshake … Kama: aynı oturumdan devam\"",
+    "crates/bench/src/quic.rs:166-170 `t.max_idle_timeout(Some(300s))` — QUIC'in gerçek idle-ölümü BİLEREK devre dışı bırakılmış (ölçüm penceresini kapsasın diye) → survival farkı yapısal olarak GÖRÜNMEZ",
+    "CLAUDE.md §10 BENCH-01: \"blackout survival İKİLİ metriği … ADIM-3 ÖNCESİ\""
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "Tier-2 kazanma iddiasının yarısı ('QUIC handshake kurar, blackout sonrası session survival KAYBEDER') ölçüm olmadan yapılamaz.",
+   "notes": "Ek ince nokta: quinn'in max_idle_timeout'u 300 s'ye çekilmiş — bu quinn LEHİNE bir normalizasyon (gerçek ürün 30 s default'ta ölürdü) ve survival farkını yapısal olarak siliyor. İkili metrik eklenirken bu pin de yeniden gerekçelendirilmeli."
+  },
+  {
+   "name": "Birincil metrik EKSİK: operational floor [X_quic, Y_kama]",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.3 ③ L299-304 (OPERATIONAL FLOOR — birincil, asıl kanıt)",
+    "specs/transport-layer-tdd.md §4.4.10 Tier-1 L461-465 ([X,Y] boş DEĞİL)",
+    "specs/transport-layer-tdd.md §4.4.11 L491-500 (killer chart)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [],
+   "product_call_chain": "YOK",
+   "product_reachable": false,
+   "gate": "Yok.",
+   "default_state": "Mevcut değil.",
+   "activation_condition": "—",
+   "bench_exposure": "YOK — completion(D) profil-başına hesaplanıyor ama 'completion'ın %90 altına düştüğü kayıp noktası' türetilmiyor; harness/compare.py profil-başına delta yazıyor, floor değil.",
+   "telemetry": "Yok.",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "grep -rn -i \"floor\" crates/bench/src/*.rs → yalnız ilgisiz eşleşmeler (rto floor, rate floor)",
+    "specs/transport-layer-tdd.md:304 \"Kazanç bölgesi = [X_quic, Y_sr] … Value proposition = bu aralık\"",
+    "specs/transport-layer-tdd.md:461-465 Tier-1 GO şartı doğrudan [X,Y]'ye bağlı",
+    "harness/compare.py:221-228 profil-başına completion farkı yazıyor; loss-süpürmesi üzerinde floor aramıyor"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "Tier-1 (en güçlü) kazanma iddiası hesaplanamaz; §4.4.11 GRAFİK 1/2 üretilemez.",
+   "notes": "Türetmesi ucuz (mevcut completion verisinden loss ekseni boyunca eşik araması) ama loss süpürmesinin ürün koluyla koşulmuş olması gerek — şu an ürün kolu yalnız 2 sabit hücrede (iid50/burst50) koşuyor."
+  },
+  {
+   "name": "Mekanizma-kanıtı EKSİK: estimator accuracy + loss/congestion confusion matrix",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.4 L328-341 (estimator accuracy netem ground-truth'a karşı; confusion matrix)",
+    "specs/transport-layer-tdd.md §4.4.10 [G1] L478-479 (GUARDRAIL — kazanılan tier ne olursa olsun ZORUNLU)",
+    "specs/transport-layer-tdd.md §16 AC-QBENCH-4 L778 / INV-QBENCH-2 L~741",
+    "specs/adaptive-transport-engine-spec.md §17 L1111"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [],
+   "product_call_chain": "Motor tarafında girdiler VAR (BtlBw, srtt, loss_windowed_ppm, ledger internals; KP-CLIENT `bw_range`, `loss_range`, `ledger_*` alanlarında dışa vuruyor) ama netem ground-truth ile KIYASLAYAN bir hesap yok.",
+   "product_reachable": true,
+   "gate": "Yok.",
+   "default_state": "Mevcut değil.",
+   "activation_condition": "—",
+   "bench_exposure": "YOK. kapi3_realized() tc sayaçlarını (configured/realized kanal) logluyor — ground-truth kaynağı MEVCUT ama estimator ile eşleştirilmiyor; üstelik yalnız kapi_calrun.sh çağırıyor.",
+   "telemetry": "KP-CLIENT `bw_range={fusion_bw_range:?} loss_range={fusion_loss_range:?} ledger_peak= ledger_now= loss_declared_pkt/time` — hammadde var, metrik yok.",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "grep -rn -i \"confusion|estimator_accuracy|ground.truth\" crates/bench/src/*.rs → 0 eşleşme",
+    "specs/transport-layer-tdd.md:478-479 \"[G1] MEKANİZMA: estimator accuracy + loss/congestion confusion baseline barını tutar (üstünlük TEMELLENDİRİLMİŞ; şans değil)\" — GO'nun ZORUNLU guardrail'i",
+    "specs/transport-layer-tdd.md:334 \"Bu yüzden estimator doğruluğu GO'nun ön-şartı\"",
+    "scripts/netem/kapi3_harness.sh:155-164 kapi3_realized (tc -s -j) — ground-truth kanalı mevcut ama tüketilmiyor"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "G1 guardrail'i ölçülmeden §4.4.10 GO kararı VERİLEMEZ — tier kazanılsa bile.",
+   "notes": "Bu, benchmark kümesindeki en yüksek etkili WIRE: GO kapısının üç guardrail'inden biri hiç implemente edilmemiş. Hammadde (KP-CLIENT bw/loss aralıkları + kapi3_realized tc sayaçları) hazır; eksik olan eşleştirme/hesap katmanı."
+  },
+  {
+   "name": "Kaynak maliyeti metrikleri EKSİK (CPU/byte, bellek, enerji, ARM)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.6 L374-387",
+    "specs/transport-layer-tdd.md §16 AC-QBENCH-5 L779",
+    "specs/transport-layer-tdd.md §4.4.3 SECONDARY L317 (enerji/mesaj)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [],
+   "product_call_chain": "YOK",
+   "product_reachable": false,
+   "gate": "Yok.",
+   "default_state": "Mevcut değil.",
+   "activation_condition": "—",
+   "bench_exposure": "YOK.",
+   "telemetry": "Yok.",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "grep -rn -i \"cpu|energy|enerji|rss|memory\" crates/bench/src/*.rs → 0 eşleşme",
+    "specs/transport-layer-tdd.md:779 AC-QBENCH-5 \"Kaynak maliyeti (CPU/byte, bellek, enerji, ARM) quinn ekseninde ölçülür (§4.4.6)\"",
+    "specs/transport-layer-tdd.md:470-476 Tier-3 EFFICIENCY WIN 'byte/ACK/energy bütçesi' üzerinden tanımlı"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "Tier-3 kazanımının 'energy' bileşeni ve AC-QBENCH-5 ölçülemez; UAV/mobil konumlandırma iddiası kanıtsız kalır.",
+   "notes": "Tier-1/Tier-2 kazanılırsa GO için zorunlu değil (kazanma tier'ı A-şartı), ama AC-QBENCH-5 bir kabul kriteri olarak listelenmiş. En ucuz yol: /proc/self/stat CPU + peak RSS'i RunMeta'ya ekle (enerji ayrı iş)."
+  },
+  {
+   "name": "İstatistiksel sağlamlık: N≥30 / p95-p99 / %95 CI / git-commit provenansı",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.9 L440-451",
+    "specs/transport-layer-tdd.md §16 AC-QBENCH-8 L782"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "crates/bench/src/metrics.rs:116-137 aggregate (median/IQR/min/max — p95/p99 ve CI YOK)",
+    "scripts/netem/kapi_analyze.py:133-146 aynı eksik",
+    "scripts/netem/kapi_manifest.py:114-121 tohum türetimi (VAR, doğru)"
+   ],
+   "product_call_chain": "YOK",
+   "product_reachable": false,
+   "gate": "`--seed`, `--repeat`, REPS betik değişkeni.",
+   "default_state": "product_vs_quinn.sh REPS=4 (n=4); fec aileleri REPS=5; kapi_manifest calibration n=10; harness/run-kama-matrix REPEATS=5. Hiçbiri N≥30 değil.",
+   "activation_condition": "—",
+   "bench_exposure": "Tüm sürücüler.",
+   "telemetry": "RunMeta.seed/repeat (product_vs_quinn.sh geçmiyor → hepsi 0).",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "specs/transport-layer-tdd.md:440-441 \"Her hücre N ≥ 30 run; median + p95/p99 + %95 güven aralığı; variance raporu.\"",
+    "crates/bench/src/metrics.rs:127-134 `completion_median/q1/q3/min/max` — p95/p99/CI yok",
+    "scripts/netem/product_vs_quinn.sh:16 `REPS=\"${2:-4}\"`",
+    "crates/bench/src/kama_product.rs:52 KAMA_VERSION = paket sürümü (\"0.1.0\"), git commit yok — §4.4.9 'versioned harness (git commit)' karşılanmıyor"
+   ],
+   "duplicates_or_dead": "Yok.",
+   "feature_off_behavior": "AC-QBENCH-8 karşılanmadan §4.4.10 GO ilan edilemez.",
+   "notes": "Tohum altyapısı (SHA-256 türetimi, drand kilidi) zaten var ve iyi; eksikler N, kuyruk istatistikleri, CI ve git-commit damgası. product_vs_quinn.sh bunların hiçbirini taşımıyor (teşhis tier beyanıyla tutarlı)."
+  },
+  {
+   "name": "netem harness altyapısı: üç-namespace faithful topoloji (kapi3)",
+   "spec_refs": [
+    "specs/tech-stack-adr.md ADR-18 L274-289 (netem/tc + container'lı iki-uç harness; ZORUNLU KALİTE KAPISI)",
+    "specs/transport-layer-tdd.md §4.4.1 L253-255 (aynı netem/tc script)",
+    "docs/design/KAPI-1-V2-BENCHMARK-TASARIM.md §4.1 L203-211"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "scripts/netem/kapi3_harness.sh:30-97 kapi3_setup (ns-A ↔ ns-MID ↔ ns-B, ARP pin, rp_filter, offload)",
+    "scripts/netem/kapi3_harness.sh:99-104 kapi3_netem (netem YALNIZ orta-ns egress'lerinde)",
+    "scripts/netem/kapi3_harness.sh:106-123 kapi3_trace (zaman-pencere planı)",
+    "scripts/netem/kapi3_harness.sh:126-153 kapi3_capture_start (4 düzlem AF_PACKET + opsiyonel pcap)",
+    "scripts/netem/kapi3_harness.sh:155-164 kapi3_realized (tc -s -j + neigh + offload)"
+   ],
+   "product_call_chain": "YOK (altyapı).",
+   "product_reachable": false,
+   "gate": "`unshare -rnm` içinde source.",
+   "default_state": "—",
+   "activation_condition": "Sürücü betiği source ederse.",
+   "bench_exposure": "product_vs_quinn.sh:24, guard_check.sh:12, tüm fec_* aileleri, kapi_calrun.sh, kapi3_selftest.sh.",
+   "telemetry": "realized_<tag>.json, *_va0/ma0/mb0/vb0.jsonl capture düzlemleri.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "scripts/netem/kapi3_harness.sh:6-9 gerekçe: \"netem'i ORTA ns'e taşımak endpoint-egress capture'ını YAPISAL pre-impairment yapar\"",
+    "scripts/netem/kapi3_harness.sh:74-83 pin_neigh dört arayüzde statik ARP (sub-kbps'te ARP netem kuyruğunda ölür)",
+    "scripts/netem/kapi3_harness.sh:88-96 offload kapatma (ethtool yoksa kaydedip devam)",
+    "grep -rn \"kapi3_capture_start|kapi3_realized\" scripts/ → YALNIZ kapi_calrun.sh ve kapi3_selftest.sh çağırıyor"
+   ],
+   "duplicates_or_dead": "scripts/netem/faithful_harness.sh (iki-ns eski sürüm) hâlâ repoda — kapi3 onun genişletilmişi.",
+   "feature_off_behavior": "—",
+   "notes": "Altyapı kaliteli. Kritik boşluk: capture ve realized-channel logları HİÇBİR kama-product sürücüsünde çağrılmıyor → ürün kolunun hiçbir ölçümü bağımsız wire doğrulamasına (configured-vs-realized, çift-sayım kontrolü) sahip değil."
+  },
+  {
+   "name": "Sürücü: product_vs_quinn.sh (teşhis-tier ürün-vs-quinn koşumu)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.2 L266-289 (cherry-pick yasağı)",
+    "specs/transport-layer-tdd.md §4.4.9 L438-452",
+    "specs/transport-layer-tdd.md §4.4.1 L241-263"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "scripts/netem/product_vs_quinn.sh:1-16 başlık + 'ön-kayıtlı kampanya DEĞİL' beyanı",
+    "scripts/netem/product_vs_quinn.sh:31-49 run_rep",
+    "scripts/netem/product_vs_quinn.sh:71-86 run_cell (7 kol)",
+    "scripts/netem/product_vs_quinn.sh:89-90 iki hücre (iid50, burst50)",
+    "scripts/netem/product_vs_quinn.sh:92-98 ham sayı özeti (grep -c delivered_ns)"
+   ],
+   "product_call_chain": "YOK (sürücü).",
+   "product_reachable": false,
+   "gate": "Elle çağrı.",
+   "default_state": "REPS=4, MSGS=100, PAYLOAD=256, DEADLINE=30, INTERVAL=50.",
+   "activation_condition": "Elle.",
+   "bench_exposure": "Kendisi.",
+   "telemetry": "out.jsonl + c.err/s.err; hücre adı yalnız DİZİN adında.",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "scripts/netem/product_vs_quinn.sh:9-10 \"NE DEĞİL: ön-kayıtlı kampanya DEĞİL. Küçük n, tek geçiş, teşhis tier'ı.\" (dürüst beyan)",
+    "scripts/netem/product_vs_quinn.sh:75-85 kollar sıralı ve SABİT sırada koşuyor (quinn önce, sonra 6 Kama kolu) — dengeli randomizasyon YOK (kapi_manifest.py:~200'de var)",
+    "scripts/netem/product_vs_quinn.sh:46 `timeout $((DEADLINE + 40))` — sunum penceresini `(MSGS-1)*INTERVAL` hesaba KATMIYOR; kapi_calrun.sh:114 doğru formülü kullanıyor",
+    "scripts/netem/product_vs_quinn.sh:94-97 `[ -f \"$f\" ] || continue` — timeout'la öldürülen koşu out.jsonl yazmaz ve SESSİZCE özetten düşer (kayıp-örnek gizlenmesi)",
+    "scripts/netem/product_vs_quinn.sh:44-48 `--seed/--repeat/--profile/--gate/--establish-gate/--warmup-msgs/--cc` hiçbiri yok"
+   ],
+   "duplicates_or_dead": "kapi_calrun.sh aynı işin ön-kayıtlı, normalizasyonlu sürümü — ama ürün kolunu koşamıyor (manifest ARMS'ta yok).",
+   "feature_off_behavior": "—",
+   "notes": "Betiğin kendi beyanı doğru (teşhis tier). WIRE sınıfı, betiği kötülemek için değil: ürünü quinn'e karşı koşan TEK sürücü bu ve §4.4 kapısı için gereken normalizasyonların (gate, warmup, bütçe, capture, seed, randomizasyon, CC, adaptif FEC kolu, workload-duyarlı timeout) hiçbirine sahip değil. v1 kapısı için kapi_calrun.sh'e ürün kolu eklenmeli."
+  },
+  {
+   "name": "ADR-18 nightly netem kalite kapısı (CI-07) — stub kolu ölçüyor",
+   "spec_refs": [
+    "specs/tech-stack-adr.md ADR-18 L274-289 (ZORUNLU KALİTE KAPISI; her profilde Kama vs QUIC yan yana, nightly CI)",
+    "specs/transport-layer-tdd.md §4.4.9 L447-451 (Nightly full-matris; regresyon build'i kırar)",
+    "CLAUDE.md §7 (Self-hosted nightly: netem benchmark 7 profil vs quinn+BBR)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    ".github/workflows/nightly.yml:111-143 netem-gate job (self-hosted, linux, netem)",
+    ".github/workflows/nightly.yml:129-131 `bash harness/run-kama-matrix.sh` (REPEATS=5)",
+    ".github/workflows/nightly.yml:136-137 `python3 harness/compare.py --gate results/baseline/kama-baseline.json`",
+    "harness/run-kama-matrix.sh:20,33 `--transport kama` (STUB)",
+    "harness/run-bench.sh:11 `CCS=\"${CCS:-cubic bbr}\"` (quinn baseline üreticisi; nightly'de ÇAĞRILMIYOR)",
+    "harness/compare.py:5 kıyas dosyaları `results/<profile>_cubic_r*.jsonl`"
+   ],
+   "product_call_chain": "YOK — nightly kapı `--transport kama` stub'ını koşuyor, client-core runtime'ına hiç girmiyor.",
+   "product_reachable": false,
+   "gate": "GitHub Actions nightly + self-hosted runner etiketi.",
+   "default_state": "7 profil × 5 repeat, cubic, `--kama-arm` verilmiyor ⇒ tail OFF, FEC yapısal olarak yok.",
+   "activation_condition": "Nightly; self-hosted runner varsa.",
+   "bench_exposure": "Kendisi ADR-18 kapısı.",
+   "telemetry": "results/*.jsonl, results/kama-vs-quinn.json, results/gate-report.json artefaktları.",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "harness/run-kama-matrix.sh:20 `docker exec -d \"$SERVER\" \"$BIN\" serve --transport kama --bind \"[::]:4433\"`",
+    "harness/run-kama-matrix.sh:33-35 client çağrısında `--kama-arm` YOK ⇒ KamaArm::Arq (tail OFF)",
+    "harness/compare.py:5 \"kama: results/kama_<profile>_r*.jsonl · quinn: results/<profile>_cubic_r*.jsonl (baseline v1)\" — quinn tarafı DONMUŞ cubic artefaktı, aynı koşuda yeniden üretilmiyor",
+    ".github/workflows/nightly.yml:122-124 preflight yalnız `results/baseline/kama-baseline.json` varlığını istiyor"
+   ],
+   "duplicates_or_dead": "harness/ (Docker, iki-ns) ve scripts/netem/ (rootless, üç-ns) İKİ ayrı netem harness ailesi — kapı eskisini, aktif kampanyalar yenisini kullanıyor.",
+   "feature_off_behavior": "Kapı yeşil kalırken ürünün tail+FEC+fuzzy yığını hiç ölçülmez; regresyon koruması stub davranışına bağlı.",
+   "notes": "ADR-18 'her profilde Kama adaptive transport vs QUIC/quinn YAN YANA' diyor; nightly'de quinn aynı koşuda koşmuyor (donmuş cubic baseline'a karşı kıyaslanıyor) ve Kama tarafı stub. Bu, bench-harness kümesindeki ikinci en yüksek etkili WIRE."
+  },
+  {
+   "name": "Mimari-aktif manifest (`bench --manifest`) — koşu başında etkin config dökümü",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.9 L445-447 (versioned harness; reproduce)",
+    "specs/transport-layer-tdd.md §4.4.1 L250-251 (kullanılan impl + profil RAPORDA açıkça yazılır)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": false,
+   "impl_symbols": [],
+   "product_call_chain": "YOK",
+   "product_reachable": false,
+   "gate": "Yok.",
+   "default_state": "Mevcut değil.",
+   "activation_condition": "—",
+   "bench_exposure": "YOK — etkin RuntimeConfig (IW, gate seviyesi, fec_loss_risk profili, tail config, quota_r, persist knob'ları) hiçbir yere yazılmıyor; yalnız 5 bayrak kama_arm etiketinde.",
+   "telemetry": "Yok.",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "crates/bench/src/main.rs:28-31 Cmd = {Serve, Client, Metrics} — manifest alt-komutu yok",
+    "crates/bench/src/kama_product.rs:679-698 etiket yalnız fec/burstfusion/bootstraprtt/iw/fastladder taşıyor",
+    "reports/transport-v1-audit/PLAN.md Faz-4: \"**mimari-aktif manifest** (bench başlangıç/bitiş) … bench `--manifest`\" — planlı, yazılmamış"
+   ],
+   "duplicates_or_dead": "fec_evidence_family.sh:45 argv.txt kısmi telafi.",
+   "feature_off_behavior": "Bench'in ölçtüğü konfigürasyonun ürün default'undan ne kadar saptığı koşu artefaktından ANLAŞILAMAZ — bu denetimin bulduğu üç sapma (IW, gate, risk) tam bu yüzden gözden kaçmıştı.",
+   "notes": "En yüksek fayda/maliyet oranlı düzeltme: `RuntimeConfig` + `Sender` etkin ayarlarını RunMeta'ya JSON olarak yaz. Sapmaları otomatik görünür kılar."
+  },
+  {
+   "name": "Alternatif/paralel harness'lar (crate examples)",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4 (tek otoriter harness beklentisi; açık bir yasak yok)"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/client-core/examples/fec_arm_compare.rs (in-process seam-erasure teşhis aracı)",
+    "crates/client-core/examples/p1_endpoint.rs (süreç-düzeyi işlevsel kapı; s1_gate.sh, s2_region.sh, p1_e2e_gate.sh)",
+    "crates/adaptive-transport/examples/fate_two_arm.rs (FATE2ARM-V1 estimator ayrışması)",
+    "crates/adaptive-transport/examples/dr_arqtail_product.rs (iki-netns ÜRÜN tail doğrulaması)",
+    "crates/adaptive-transport/examples/udp_budget_runner.rs (feature: experimental-fec-budget)",
+    "crates/kama-integration/examples/*.rs (11 runner: fs1, dr_cs3_panel, a2_rx_netem…)"
+   ],
+   "product_call_chain": "Bazıları ürün Sender'ını doğrudan sürer (dr_arqtail_product, fate_two_arm); fec_arm_compare client-core runtime'ını sürer ama in-process kanalla.",
+   "product_reachable": true,
+   "gate": "`cargo run --example ...` (+ bazıları cargo feature ister).",
+   "default_state": "CI'da build ediliyor (gate.sh:66 --all-targets), koşulmuyor.",
+   "activation_condition": "Elle.",
+   "bench_exposure": "§4.4 kıyasına GİRMEZ; ayrı teşhis/kapı araçları.",
+   "telemetry": "Her biri kendi satır formatını yazıyor.",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "crates/client-core/examples/fec_arm_compare.rs:7-11 \"**Ne DEĞİL:** bu bir benchmark, bir ön-kayıtlı deney veya bir ürün iddiası DEĞİLDİR. netem yok, iki-netns yok, quinn yok\"",
+    "crates/client-core/examples/p1_endpoint.rs:7 \"Ölçüm iddiası YOK — bu bir işlevsel kapıdır (teslim/kapanış/sınır), benchmark değildir.\"",
+    "crates/adaptive-transport/examples/dr_arqtail_product.rs:1-3 \"faithful two-netns PRODUCT tail-recovery validation driver\"",
+    "scripts/netem/run_policy_validation.sh:7 `--features experimental-fec-budget --example udp_budget_runner`"
+   ],
+   "duplicates_or_dead": "Beş ayrı 'iki-uç UDP sürücüsü' iskeleti var (bench, p1_endpoint, dr_arqtail_product, udp_budget_runner, kama-integration runner'ları). Tekilleştirme fırsatı, ama her biri kendi kapısına bağlı.",
+   "feature_off_behavior": "—",
+   "notes": "Hepsi kendi sınırını doğru beyan ediyor (iddia-tier disiplini iyi). v1 kapısı için hiçbiri gerekmez; silinmeleri de gerekmez."
+  }
+ ],
+ "open_questions": [
+  "Görev tanımı `wip/c4-attrib @ 35f60f80`'i işaret ediyordu; çalışma ağacı `audit/transport-v1-closure @ 15133be4` üzerindeydi. Denetim ikinci dal üzerinde yapıldı — 35f60f80 ile içerik farkı kontrol edilmedi (read-only kısıtı gereği checkout yapılmadı). Bulguların o commit'te de geçerli olup olmadığı doğrulanmalı.",
+  "`kama` stub kolunun sınıflandırması DELETE mi KEEP-EXPERIMENTAL mi: kol hâlâ ADR-18 nightly kapısını (harness/run-kama-matrix.sh) ve ön-kayıtlı KAPI-1 manifestinin 2/4 kolunu besliyor. Kaldırma kararı, o iki bağımlılığın kama-product'a taşınmasına bağlı — bu bir sahip kararı, kod kanıtıyla çözülemez.",
+  "quinn'in `max_idle_timeout(300s)` pini (crates/bench/src/quic.rs:166-170) ölçüm penceresini kapsamak için konmuş, ama §4.4.3 ②'nin ölçmek istediği şey tam olarak QUIC'in idle-timeout ile oturum kaybetmesi. Bu pin blackout-survival metriği eklenirken kaldırılmalı mı, yoksa iki ayrı koşu sınıfı mı olmalı — spec bunu ayırt etmiyor.",
+  "`IdentitySeam` +16 B vs gerçek `OUTER_HDR_LEN(10)+TAG_LEN(16)=26 B` farkının hangi çerçeve sınıflarında (DATA / ACK / FEC_SHARD / control) geçerli olduğunu doğrulamadım — kama-noise-wire'ın inner header'ları (FEC_INNER_HDR_LEN=11, CONTROL_INNER_PREFIX_LEN=6) bench'in bench-local header'larıyla örtüşüyor olabilir. Net byte deltası ancak S2 seam takıldığında ölçülebilir.",
+  "§4.4.1'in 'aynı MTU=1200' cümlesi ile kampanya tasarımının path_mtu=1500/max_udp_payload=1452 pini çelişiyor. Hangisinin otorite olduğunu (spec mi, onaylı KAPI-1 tasarım dokümanı mı) belirlemedim; spec-otorite kuralına göre spec kazanır ama tasarım dokümanı ayrıca onaylanmış görünüyor.",
+  "product_vs_quinn.sh'in `timeout $((DEADLINE+40))` formülü sunum penceresini saymıyor; mevcut varsayılanlarda (MSGS=100, INTERVAL=50 ms) sığıyor. Daha büyük INTERVAL/MSGS ile hangi koşuların sessizce kesildiğini (out.jsonl yazılmadan) geçmiş reports/ dizinlerinde saymadım — reports/product-vs-quinn-v1..v3'te eksik rep dosyası olup olmadığı doğrulanmalı.",
+  "`--fec-mode policy` kolu hiçbir betikte koşulmamış ve `RuntimeConfig::default().fusion_policy = None`. Bu kolun v1 kapsamında olup olmadığı (KEEP-EXPERIMENTAL mi WIRE mi) FEC v1 kapanış kararının Path A kapsamına bağlı; ben yalnız ürün-durumunu denetledim, kararı yeniden açmadım.",
+  "kapi_analyze.py'nin `PRIMARY_COMP = \"q-dgram-arq\"` seçimi ile §4.4.1'in 'PRIMARY launch gate = vs best-available QUIC' (stream dahil) ifadesi arasındaki ilişkiyi netleştiremedim: datagram+app-ARQ 'best-available QUIC' mi, yoksa semantik-eşlenik yardımcı baseline mı? Tasarım dokümanı ikincisini söylüyor, analiz betiği birincisi gibi davranıyor."
+ ]
+}

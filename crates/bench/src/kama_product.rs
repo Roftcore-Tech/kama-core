@@ -35,8 +35,8 @@ use std::time::{Duration, Instant};
 
 use client_core::runtime::{
     fec_chunk_capacity, ClientEndpoint, ClientSender, EgressPolicy, FecLossRiskConfig,
-    FecRuntimeConfig, FecStructurePolicy, LossConfirmHorizon, PersistMode, RuntimeConfig,
-    RuntimeError, ServerEndpoint,
+    FecRuntimeConfig, FecStructurePolicy, KamaV1Profile, LossConfirmHorizon, PersistMode,
+    RuntimeConfig, RuntimeError, ServerEndpoint,
 };
 use client_core::seam::IdentitySeam;
 use tokio::signal::unix::{signal, SignalKind};
@@ -109,6 +109,7 @@ struct ArmCfg {
     persist_alpha: Option<u32>,
     persist_rho: Option<u32>,
     persist_q: Option<u32>,
+    rp_suppress: Option<u32>,
 }
 
 fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
@@ -130,6 +131,7 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
         persist_alpha,
         persist_rho,
         persist_q,
+        rp_suppress,
     } = a;
     let payload = usize::try_from(payload_bytes).unwrap_or(usize::MAX);
     let profile_id = match fec {
@@ -139,9 +141,15 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
         | FecArm::PolicyV2Deadline { profile_id, .. } => Some(profile_id),
     };
     // Bilinmeyen profil: birim tavanını kısıtlama — `validate_fec` koşu-öncesi typed reddedecek.
-    let unit = profile_id
-        .and_then(fec_chunk_capacity)
-        .map_or(payload, |cap| payload.min(cap));
+    // FEC açıkken birim tavanı = profilin symbol kapasitesi (ÜRÜN PROFİLİYLE AYNI); payload daha
+    // küçükse davranış değişmez (mesaj tek chunk kalır) ama config v1'den SAPMAZ → manifest
+    // client_core::runtime::TRANSPORT_V1_PROFILE_ID diyebilir. FEC kapalıyken birim = payload (kol zaten v1 değil).
+    let unit = profile_id.and_then(fec_chunk_capacity).unwrap_or(payload);
+    // [DENETİM B-5] TEK DOĞRULUK KAYNAĞI: ürün v1 profilinden başla, YALNIZ açık override uygula.
+    // Eskiden burada `RuntimeConfig { .. }` elle kuruluyordu; ürün default'ları (IW 2400,
+    // bounded_v1 risk kolu, yapı-gate 250) benchmark'a HİÇ ulaşmıyordu ve "sevk" etiketli kol
+    // ürünün sevk etmediği bir yapılandırmayı ölçüyordu.
+    let v1 = KamaV1Profile::runtime_config();
     RuntimeConfig {
         max_unit_bytes: unit.max(1),
         // Mesaj chunk'a sığmıyorsa fragmenter AÇIK (açık opt-in; eşitsizlikten türemez).
@@ -155,8 +163,13 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
         },
         // [DR-CS-3] opt-in; false = sevk davranışı (probe planlanmaz).
         bootstrap_rtt,
-        // [IW] opt-in; 0 = sevk davranışı (ilk uçuş tek paket).
-        initial_window_bytes,
+        // [IW] 0 = ÜRÜN PROFİLİ değeri (2400). Eskiden 0 = "ilk uçuş tek paket" idi; o değer
+        // ürünün CLAMP HATASI diye düzelttiği davranıştı ve `kp-sevk` kolunu ürün-dışı yapıyordu.
+        initial_window_bytes: if initial_window_bytes == 0 {
+            v1.initial_window_bytes
+        } else {
+            initial_window_bytes
+        },
         // [KURULUŞ] merdiven seçimi (bootstrap_rtt kapalıyken etkisiz).
         bootstrap_fast_ladder: bootstrap_fast,
         drain_cap: Duration::ZERO,
@@ -181,12 +194,14 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
                 k_permille: loss_confirm_k,
             }
         },
-        // [FEC-RISK] Deneysel kol; false = sevk davranışı (semantik özdeş).
+        // [FEC-RISK] false = ÜRÜN PROFİLİ (`bounded_v1`: A 250-250-250 + P2 + C4 guard'ı G1);
+        // true = kampanya kolu (`experimental_v1`, knob override'larıyla). Eskiden false
+        // `FecLossRiskConfig::default()` (KAPALI) demekti → ürün kolu spekülatif kolu hiç koşmazdı.
         fec_loss_risk: {
             let mut c = if fec_risk {
                 FecLossRiskConfig::experimental_v1()
             } else {
-                FecLossRiskConfig::default()
+                v1.fec_loss_risk
             };
             // [R-SWEEP] tavan override'ları (None = [CAL] default'lar: 125/250).
             if let Some(v) = spec_l1 {
@@ -212,10 +227,15 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
             if let Some(v) = persist_q {
                 c.persist_q_permille = v;
             }
+            // [C4 G1] reorder-baskısı guard eşiği (None = kapalı = sevk).
+            if let Some(v) = rp_suppress {
+                c.reorder_suppress_permille = v;
+            }
             c
         },
-        // [R-SWEEP] gate seviyesi (None = motor fec_med = 500 sevk).
-        structure_gate_level_permille: gate,
+        // [R-SWEEP] gate seviyesi; None = ÜRÜN PROFİLİ değeri (250). Eskiden None = motor
+        // `fec_med` (500) idi → bench ürün-dışı bir parity seviyesi ölçüyordu.
+        structure_gate_level_permille: gate.or(v1.structure_gate_level_permille),
         // [HANDOFF ENSTRÜMANI] 50 ms zaman serisi (salt gözlem); None = kapalı.
         ts_sample_period_ns: ts_sample.then_some(50_000_000),
         // [DEADLINE-EKSENİ] Politika kolu kalibrasyonu KURAR; diğer kollarda `None` (yapı-gate
@@ -224,6 +244,226 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
             .then(adaptive_transport::fusion_policy::FusionPolicy::calibration_v2_deadline),
         ..RuntimeConfig::default()
     }
+}
+
+// ── [DENETİM] MİMARİ-AKTİF MANİFEST ────────────────────────────────────────────────────────────
+// Her koşu, NE koştuğunu ve NEYİN fiilen ateşlendiğini kendisi beyan eder. Amacı tek bir sınıf
+// hatayı imkânsız kılmak: bir ARQ-only alt-kümesini "Kama tam mimarisi" diye etiketlemek.
+// Kıyas raporları `profile=` alanını AYNEN taşımak zorundadır (`kama-v1-full` dışındaki hiçbir
+// koşu "Kama v1" adıyla raporlanamaz).
+
+/// Yürürlükteki config'in v1 ürün profilinden sapmaları (boş liste = tam v1 profili).
+fn profile_delta(c: &RuntimeConfig) -> Vec<String> {
+    let v = KamaV1Profile::runtime_config();
+    let mut d = Vec::new();
+    if c.max_unit_bytes != v.max_unit_bytes {
+        d.push(format!(
+            "max_unit_bytes {} != {}",
+            c.max_unit_bytes, v.max_unit_bytes
+        ));
+    }
+    if c.max_message_bytes != v.max_message_bytes {
+        d.push(format!(
+            "max_message_bytes {:?} != {:?}",
+            c.max_message_bytes, v.max_message_bytes
+        ));
+    }
+    if c.initial_window_bytes != v.initial_window_bytes {
+        d.push(format!(
+            "initial_window_bytes {} != {}",
+            c.initial_window_bytes, v.initial_window_bytes
+        ));
+    }
+    match (c.fec, v.fec) {
+        (Some(a), Some(b)) if a.profile_id == b.profile_id && a.manual_r == b.manual_r => {}
+        (a, b) => d.push(format!(
+            "fec {:?} != {:?}",
+            a.map(|f| (f.profile_id, f.manual_r)),
+            b.map(|f| (f.profile_id, f.manual_r))
+        )),
+    }
+    if c.structure_gate_level_permille != v.structure_gate_level_permille {
+        d.push(format!(
+            "structure_gate_level_permille {:?} != {:?}",
+            c.structure_gate_level_permille, v.structure_gate_level_permille
+        ));
+    }
+    if c.fec_loss_risk.enabled != v.fec_loss_risk.enabled
+        || c.fec_loss_risk.bootstrap_cap_permille != v.fec_loss_risk.bootstrap_cap_permille
+        || c.fec_loss_risk.persistent_cap_permille != v.fec_loss_risk.persistent_cap_permille
+        || c.fec_loss_risk.reorder_suppress_permille != v.fec_loss_risk.reorder_suppress_permille
+        || c.fec_loss_risk.persist_mode != v.fec_loss_risk.persist_mode
+    {
+        d.push(format!(
+            "fec_loss_risk(enabled={} l1={} l2={} rp_suppress={} persist={:?}) != v1(enabled={} l1={} l2={} rp_suppress={} persist={:?})",
+            c.fec_loss_risk.enabled, c.fec_loss_risk.bootstrap_cap_permille,
+            c.fec_loss_risk.persistent_cap_permille, c.fec_loss_risk.reorder_suppress_permille,
+            c.fec_loss_risk.persist_mode,
+            v.fec_loss_risk.enabled, v.fec_loss_risk.bootstrap_cap_permille,
+            v.fec_loss_risk.persistent_cap_permille, v.fec_loss_risk.reorder_suppress_permille,
+            v.fec_loss_risk.persist_mode
+        ));
+    }
+    if c.bootstrap_rtt != v.bootstrap_rtt {
+        d.push(format!(
+            "bootstrap_rtt {} != {}",
+            c.bootstrap_rtt, v.bootstrap_rtt
+        ));
+    }
+    if c.fusion_policy.is_some() != v.fusion_policy.is_some() {
+        d.push("fusion_policy farkı".to_string());
+    }
+    if c.fec_structure_policy != v.fec_structure_policy {
+        d.push(format!(
+            "fec_structure_policy {:?} != {:?}",
+            c.fec_structure_policy, v.fec_structure_policy
+        ));
+    }
+    if !matches!(
+        (c.loss_confirm_horizon, v.loss_confirm_horizon),
+        (
+            LossConfirmHorizon::CadenceLegacy,
+            LossConfirmHorizon::CadenceLegacy
+        )
+    ) {
+        d.push(format!(
+            "loss_confirm_horizon {:?} != {:?}",
+            c.loss_confirm_horizon, v.loss_confirm_horizon
+        ));
+    }
+    d
+}
+
+/// Koşu ÖNCESİ beyan: profil kimliği, sapmalar, açık/kapalı mekanizmalar ve kapalı olma nedenleri.
+fn print_manifest(role: &str, c: &RuntimeConfig) {
+    let delta = profile_delta(c);
+    let profile = if delta.is_empty() {
+        client_core::runtime::TRANSPORT_V1_PROFILE_ID
+    } else {
+        "kama-custom"
+    };
+    let fec = c.fec.map_or_else(
+        || "OFF(subsystem yok)".to_string(),
+        |f| match f.manual_r {
+            None => format!("ON adaptive p{:#04x}", f.profile_id),
+            Some(r) => format!("ON static-r{r} p{:#04x}", f.profile_id),
+        },
+    );
+    eprintln!(
+        "KP-MANIFEST role={role} profile={profile} commit={} unit={}B msg_cap={:?} \
+         fec={fec} fec_risk={} spec_caps={}/{} rp_suppress={} persist={:?} gate={:?} \
+         iw={}B arq=ON(selective+dup) tail=ON(validated_v1) establish_probe=ON \
+         bootstrap_ladder={} fusion_policy={} structure_policy={:?} confirm_horizon={:?} \
+         features=[diag-sched-telemetry={}]",
+        option_env!("KAMA_GIT_SHA").unwrap_or("unknown"),
+        c.max_unit_bytes,
+        c.max_message_bytes,
+        c.fec_loss_risk.enabled,
+        c.fec_loss_risk.bootstrap_cap_permille,
+        c.fec_loss_risk.persistent_cap_permille,
+        c.fec_loss_risk.reorder_suppress_permille,
+        c.fec_loss_risk.persist_mode,
+        c.structure_gate_level_permille,
+        c.initial_window_bytes,
+        if c.bootstrap_rtt {
+            "ON"
+        } else {
+            "OFF(kalibre-değil)"
+        },
+        if c.fusion_policy.is_some() {
+            "ON"
+        } else {
+            "OFF(opt-in ölçüm kapısı)"
+        },
+        c.fec_structure_policy,
+        c.loss_confirm_horizon,
+        cfg!(feature = "diag-sched-telemetry"),
+    );
+    for x in &delta {
+        eprintln!("KP-MANIFEST role={role} DELTA-vs-v1: {x}");
+    }
+    if delta.is_empty() {
+        eprintln!(
+            "KP-MANIFEST role={role} DELTA-vs-v1: (yok — bu koşu 'Kama v1' adıyla raporlanabilir)"
+        );
+    }
+}
+
+/// Koşu SONRASI beyan: hangi mekanizmalar FİİLEN ateşledi (sayaçtan; performanstan çıkarım YOK).
+fn print_activation(stats: &client_core::runtime::ClientStats) {
+    let f = &stats.fate;
+    let sched = f.sched;
+    let tail = if cfg!(feature = "diag-sched-telemetry") {
+        format!("{}", sched[11])
+    } else {
+        "n/a(diag-sched-telemetry gerekli)".to_string()
+    };
+    eprintln!(
+        "KP-ACTIVATED arq_retx={}B dup={}B fec_parity={}B fec_blocks={} fec_repairs_tx={} \
+         spec_levels={:?} arbiter={:?} gate_opened={} ledger_peak_ppm={} spurious={} \
+         establish_probe={} bootstrap_probe={} tail_probe={} rtt_samples={} state={} \
+         data_denied={} retx_denied={} preconv_parity_blocked={} \
+         return_path=[bw={}B/s ack_int={}ms silence={}ms cont={}‰ fwd_loss={}‰ ret_impair={}‰ ret_ack_loss={}‰ dpa={} dir_ev={} conf={}‰ {:?} n={}/{}] fec2=[repair_not_arqed={} clamp={} would_zero={} partial_blocks={}]\n\
+         KP-ACTIVATION cfg=[tail={} fec={}] fired=[tail_probe={}@{}ms tail_cancel={} parity={} parity_denied={} retx={} dup={}] \
+         reach=[transitions={} recover_arq={} recover_fwd={} probe_up={} left_preconv={}ms] \
+         est=[btlbw={}B/s srtt={}us rtprop={}us qdelay={}us pace={}B/s tokens={} inflight={}B]",
+        stats.tx_retx_bytes,
+        stats.tx_dup_bytes,
+        stats.tx_fec_bytes,
+        stats.fec_blocks_latched,
+        stats.fec_repairs_tx,
+        f.fec_spec_levels,
+        f.fec_arbiter_reasons,
+        f.structure_gate_opened,
+        f.ledger_loss_ppm_peak,
+        f.spurious_units,
+        f.establish_probes_tx,
+        stats.cs_probes_tx,
+        tail,
+        f.rtt_samples,
+        f.sender_state,
+        sched[1],
+        sched[4],
+        f.preconverge_parity_blocked,
+        f.return_path.measured_return_bw_bps,
+        f.return_path.ack_interval_ns / 1_000_000,
+        f.return_path.silence_ns / 1_000_000,
+        f.return_path.feedback_continuity_permille,
+        f.return_path.forward_loss_permille,
+        f.return_path.return_impairment_permille,
+        f.return_path.return_ack_loss_permille,
+        f.return_path.datagrams_per_ack_x100 / 100,
+        f.return_path.direction_evidence,
+        f.return_path.confidence_permille,
+        f.return_path.health,
+        f.return_path.ack_samples,
+        f.return_path.v2_samples,
+        f.fec_completeness.0,
+        f.fec_completeness.1,
+        f.fec_completeness.2,
+        stats.fec_partial_blocks_closed,
+        f.activation.tail_configured,
+        f.activation.fec_configured,
+        f.activation.tail_probes,
+        f.activation.tail_first_ns / 1_000_000,
+        f.activation.tail_cancelled,
+        f.activation.parity_emitted,
+        f.activation.parity_token_denied,
+        f.activation.retransmits,
+        f.activation.dups,
+        f.activation.state_transitions,
+        f.activation.recover_arq_entries,
+        f.activation.recover_fwd_entries,
+        f.activation.probe_up_entries,
+        f.activation.left_preconverge_ns / 1_000_000,
+        f.activation.btlbw_bps,
+        f.activation.srtt_us,
+        f.activation.rtprop_us,
+        f.activation.queue_delay_us,
+        f.activation.pacer_rate_bps,
+        f.activation.pacer_tokens,
+        f.activation.inflight_bytes,
+    );
 }
 
 fn rt_err(what: &str, e: RuntimeError) -> BenchError {
@@ -278,32 +518,31 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
     let start = Instant::now();
     let gov = Arc::new(Mutex::new(BudgetGovernor::new(cfg.budget)));
     let policy: Box<dyn EgressPolicy> = Box::new(BudgetEgress(Arc::clone(&gov)));
-    let mut srv = ServerEndpoint::bind_with_policy(
-        cfg.bind,
-        runtime_cfg(ArmCfg {
-            payload_bytes: cfg.payload_bytes,
-            quota_r: cfg.quota_r,
-            fec: cfg.fec,
-            burst_fusion: cfg.burst_fusion,
-            bootstrap_rtt: cfg.bootstrap_rtt,
-            initial_window_bytes: cfg.initial_window_bytes,
-            bootstrap_fast: cfg.bootstrap_fast,
-            loss_confirm_k: cfg.loss_confirm_k,
-            fec_risk: cfg.fec_risk,
-            ts_sample: cfg.ts_out.is_some(),
-            spec_l1: cfg.spec_l1_permille,
-            spec_l2: cfg.spec_l2_permille,
-            gate: cfg.gate_permille,
-            persist_mode: cfg.persist_mode.clone(),
-            persist_alpha: cfg.persist_alpha,
-            persist_rho: cfg.persist_rho,
-            persist_q: cfg.persist_q,
-        }),
-        Box::new(IdentitySeam),
-        Some(policy),
-    )
-    .await
-    .map_err(|e| rt_err("bind", e))?;
+    let rt_cfg = runtime_cfg(ArmCfg {
+        payload_bytes: cfg.payload_bytes,
+        quota_r: cfg.quota_r,
+        fec: cfg.fec,
+        burst_fusion: cfg.burst_fusion,
+        bootstrap_rtt: cfg.bootstrap_rtt,
+        initial_window_bytes: cfg.initial_window_bytes,
+        bootstrap_fast: cfg.bootstrap_fast,
+        loss_confirm_k: cfg.loss_confirm_k,
+        fec_risk: cfg.fec_risk,
+        ts_sample: cfg.ts_out.is_some(),
+        spec_l1: cfg.spec_l1_permille,
+        spec_l2: cfg.spec_l2_permille,
+        gate: cfg.gate_permille,
+        persist_mode: cfg.persist_mode.clone(),
+        persist_alpha: cfg.persist_alpha,
+        persist_rho: cfg.persist_rho,
+        persist_q: cfg.persist_q,
+        rp_suppress: cfg.rp_suppress,
+    });
+    print_manifest("server", &rt_cfg);
+    let mut srv =
+        ServerEndpoint::bind_with_policy(cfg.bind, rt_cfg, Box::new(IdentitySeam), Some(policy))
+            .await
+            .map_err(|e| rt_err("bind", e))?;
 
     // [W6] gate-watch: reverse bütçe client'ın ölçüm-t0'ına (`<gate>.go`) senkronlanır — warmup
     // ACK'leri pre_arm'da muaf (r5 D.2). Verilmezse hemen arm (eski davranış).
@@ -358,6 +597,7 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
         |_| BudgetGovernor::new(BudgetMode::Unlimited).snapshot(),
         |g| g.snapshot(),
     );
+
     eprintln!(
         "BUDGET-REV mode={} injected={}B/{}pkt refused={}B/{}pkt armed_at_ns={} pre_arm={}B/{}pkt",
         snap.mode,
@@ -387,32 +627,48 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
 
     let gov = Arc::new(Mutex::new(BudgetGovernor::new(cfg.budget)));
     let policy: Box<dyn EgressPolicy> = Box::new(BudgetEgress(Arc::clone(&gov)));
+    let rt_cfg = runtime_cfg(ArmCfg {
+        payload_bytes: cfg.payload_bytes,
+        quota_r: 4,
+        fec: cfg.fec,
+        burst_fusion: cfg.burst_fusion,
+        bootstrap_rtt: cfg.bootstrap_rtt,
+        initial_window_bytes: cfg.initial_window_bytes,
+        bootstrap_fast: cfg.bootstrap_fast,
+        loss_confirm_k: cfg.loss_confirm_k,
+        fec_risk: cfg.fec_risk,
+        ts_sample: cfg.ts_out.is_some(),
+        spec_l1: cfg.spec_l1_permille,
+        spec_l2: cfg.spec_l2_permille,
+        gate: cfg.gate_permille,
+        persist_mode: cfg.persist_mode.clone(),
+        persist_alpha: cfg.persist_alpha,
+        persist_rho: cfg.persist_rho,
+        persist_q: cfg.persist_q,
+        rp_suppress: cfg.rp_suppress,
+    });
+    print_manifest("client", &rt_cfg);
+    // [FAZ-4 §1.3] PROFİL KİMLİĞİ — koddan türetilir (rt_cfg taşınmadan ÖNCE), operatör
+    // disiplinine bırakılmaz. Tek bir alan bile saparsa kimlik `kama-custom` olur.
+    let profile_delta_v = profile_delta(&rt_cfg);
+    let profile_id_label = if profile_delta_v.is_empty() {
+        client_core::runtime::TRANSPORT_V1_PROFILE_ID.to_string()
+    } else {
+        "kama-custom".to_string()
+    };
+    // [FAZ-4 §M4] KURULUM MALİYETİ AYRI ÖLÇÜLÜR. Kama'da el sıkışma yoktur; bu süre soket
+    // bağlama + endpoint kurulumudur. Ölçüm-t0 aşağıda warmup/gate SONRASINDA konur → kurulum
+    // completion penceresinin DIŞINDADIR (üç kolun tamamıyla aynı). Sayı gizlenmez, raporlanır.
+    let setup_t0 = elapsed_ns(start);
     let mut cli = ClientEndpoint::connect_with_policy(
         cfg.server,
-        runtime_cfg(ArmCfg {
-            payload_bytes: cfg.payload_bytes,
-            quota_r: 4,
-            fec: cfg.fec,
-            burst_fusion: cfg.burst_fusion,
-            bootstrap_rtt: cfg.bootstrap_rtt,
-            initial_window_bytes: cfg.initial_window_bytes,
-            bootstrap_fast: cfg.bootstrap_fast,
-            loss_confirm_k: cfg.loss_confirm_k,
-            fec_risk: cfg.fec_risk,
-            ts_sample: cfg.ts_out.is_some(),
-            spec_l1: cfg.spec_l1_permille,
-            spec_l2: cfg.spec_l2_permille,
-            gate: cfg.gate_permille,
-            persist_mode: cfg.persist_mode.clone(),
-            persist_alpha: cfg.persist_alpha,
-            persist_rho: cfg.persist_rho,
-            persist_q: cfg.persist_q,
-        }),
+        rt_cfg,
         Box::new(IdentitySeam),
         Some(policy),
     )
     .await
     .map_err(|e| rt_err("connect", e))?;
+    let setup_ns = elapsed_ns(start).saturating_sub(setup_t0);
     // Offer tutamağı AYRI: `acked()` `&mut cli` ödünç alır, sunum aynı `select!` içinde sürsün.
     let tx = cli.sender();
     // [DEADLINE-EKSENİ] Politika kolunda her offer teslim bütçesini bildirir; diğer kollarda
@@ -555,7 +811,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
          fec_blocks={} fec_repairs_tx={} fec_recovered_ctrl={} param_confirmed={} \
          seal_fail={} send_err={} stale={} cs_probe_tx={} cs_echo_rx={} \
          state={} left_preconv={} establish_tx={} \
-         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?} spurious={} confirm_k={:?} latch={:?} suppress={:?} risk_t={:?} risk_ppm={:?} flow_end={} arb={:?} lvl={:?} spec={:?} persist={:?} em_l1={:?} em_l2={:?}",
+         deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?} spurious={} confirm_k={:?} latch={:?} suppress={:?} risk_t={:?} risk_ppm={:?} flow_end={} arb={:?} lvl={:?} spec={:?} persist={:?} em_l1={:?} em_l2={:?} sched={:?}",
         stats.tx_bytes,
         stats.tx_data_bytes,
         stats.tx_retx_bytes,
@@ -604,15 +860,17 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         stats.fate.fec_persist,
         stats.fate.fec_spec_transitions.0,
         stats.fate.fec_spec_transitions.1,
+        stats.fate.sched,
     );
+    print_activation(&stats);
     // [HANDOFF ENSTRÜMANI] zaman serisini CSV'ye dök (varsa).
     if let Some(path) = cfg.ts_out.as_ref() {
         let mut csv = String::from(
-            "t_ms,instant_ppm,persistent_ppm,rp_permille,confirmed_ppm,confirmed_prop,structure_prop,spec_prop,final_ratio,reason_idx,level_idx,evidence_mass,declared_units\n",
+            "t_ms,instant_ppm,persistent_ppm,rp_permille,confirmed_ppm,confirmed_prop,structure_prop,spec_prop,final_ratio,reason_idx,level_idx,evidence_mass,declared_units,pacer_tokens,pending_parity,pending_lost,data_denied,retx_denied,parity_denied,retx_emitted,parity_emitted,data_emitted\n",
         );
         for (t, x) in &stats.ts {
             csv.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 t / 1_000_000,
                 x.instant_ppm,
                 x.persistent_ppm,
@@ -625,7 +883,16 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
                 x.reason_idx,
                 x.level_idx,
                 x.evidence_mass,
-                x.declared_units
+                x.declared_units,
+                x.pacer_tokens,
+                x.pending_parity,
+                x.pending_lost,
+                x.sched_data_denied,
+                x.sched_retx_denied,
+                x.sched_parity_denied,
+                x.sched_retx_emitted,
+                x.sched_parity_emitted,
+                x.sched_data_emitted
             ));
         }
         if let Err(e) = std::fs::write(path, csv) {
@@ -683,6 +950,33 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         t0_unix_ns,
         events_epoch_offset_ns: t0,
         warmup_residue,
+        // [FAZ-4] Ateşleme özeti manifeste taşınır: "yapılandırıldı" ile "ateşledi" bir daha
+        // karıştırılamaz (denetim: "FEC enabled" denip hiç ateşlememiş olması).
+        activation: Some(crate::manifest::ActivationSummary {
+            tail_configured: stats.fate.activation.tail_configured,
+            fec_configured: stats.fate.activation.fec_configured,
+            tail_probes: stats.fate.activation.tail_probes,
+            tail_cancelled: stats.fate.activation.tail_cancelled,
+            parity_emitted: stats.fate.activation.parity_emitted,
+            parity_token_denied: stats.fate.activation.parity_token_denied,
+            retransmits: stats.fate.activation.retransmits,
+            dups: stats.fate.activation.dups,
+            state_transitions: stats.fate.activation.state_transitions,
+            recover_arq_entries: stats.fate.activation.recover_arq_entries,
+            left_preconverge_ns: stats.fate.activation.left_preconverge_ns,
+            btlbw_bps: stats.fate.activation.btlbw_bps,
+            srtt_us: stats.fate.activation.srtt_us,
+            rtprop_us: stats.fate.activation.rtprop_us,
+            return_ack_loss_permille: stats.fate.return_path.return_ack_loss_permille,
+            return_forward_loss_permille: stats.fate.return_path.forward_loss_permille,
+            bytes_data: stats.tx_data_bytes,
+            bytes_retx: stats.tx_retx_bytes,
+            bytes_parity: stats.tx_fec_bytes,
+        }),
+        setup_ns,
+        setup_in_window: false,
+        profile_id: profile_id_label.clone(),
+        profile_delta: profile_delta_v.clone(),
     };
     Ok(RunOutput { meta, events })
 }
@@ -712,6 +1006,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             establish_gate: None,
             fec,
             burst_fusion: false,
@@ -725,6 +1020,102 @@ mod tests {
             spec_l2_permille: None,
             spec_l1_permille: None,
         }
+    }
+
+    /// [FAZ-4 §22] RESMÎ KIYAS YOLU KANONİK CONSTRUCTOR'I KULLANIR.
+    ///
+    /// Denetim bulgusu: "sevk profili" etiketli kol ürünün sevk etmediği bir yapılandırmayı
+    /// ölçmüştü. Bu test benchmark'ın bayraksız yolunun `KamaV1Profile::runtime_config()`
+    /// ile ALAN ALAN aynı olduğunu kilitler — sapma listesi boş olmalıdır.
+    #[test]
+    fn bayraksiz_kiyas_yolu_kanonik_profildir() {
+        let bayraksiz = ArmCfg {
+            payload_bytes: 256,
+            quota_r: 4,
+            // BAYRAKSIZ CLI değeri: `--fec-profile` ürün sabitine bağlı, `--fec-mode` adaptif.
+            // `FecArm::Off` DEĞİL — o, FEC'i açıkça kapatan bir koldur.
+            fec: FecArm::from_args(
+                KamaV1Profile::FEC_PROFILE_ID,
+                0,
+                crate::transport::FecModeArg::Adaptive,
+                0,
+            ),
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0, // 0 = "verilmedi" → ürün değeri
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+            fec_risk: false, // bayrak yok → bounded_v1
+            ts_sample: false,
+            spec_l1: None,
+            spec_l2: None,
+            gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
+            rp_suppress: None,
+        };
+        let c = runtime_cfg(bayraksiz);
+        let d = profile_delta(&c);
+        assert!(d.is_empty(), "bayraksız yol ÜRÜN profili DEĞİL: {d:?}");
+        // Ve kimliğin kendisi de kanonik etiketi almalı.
+        // `FecRuntimeConfig` PartialEq türetmiyor (transport crate'ine dokunmamak için burada
+        // alan alan kıyaslıyoruz — Faz-4 transport kodunu DEĞİŞTİRMEZ).
+        let (a, b) = (
+            c.fec.expect("ürün profilinde FEC var"),
+            KamaV1Profile::runtime_config()
+                .fec
+                .expect("ürün profilinde FEC var"),
+        );
+        assert_eq!((a.profile_id, a.manual_r), (b.profile_id, b.manual_r));
+        assert_eq!(
+            c.initial_window_bytes,
+            KamaV1Profile::INITIAL_WINDOW_BYTES,
+            "iw=0 CLAMP hatasıydı; ürün değerine düşmeli"
+        );
+    }
+
+    /// [FAZ-4 §22] TEK alan sapması sapma listesine YANSIR (kimlik `kama-custom` olur).
+    #[test]
+    fn tek_alan_sapmasi_gorunur() {
+        let mut sapan = ArmCfg {
+            payload_bytes: 256,
+            quota_r: 4,
+            fec: FecArm::from_args(
+                KamaV1Profile::FEC_PROFILE_ID,
+                0,
+                crate::transport::FecModeArg::Adaptive,
+                0,
+            ),
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 1200, // ← TEK sapma
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+            fec_risk: false,
+            ts_sample: false,
+            spec_l1: None,
+            spec_l2: None,
+            gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
+            rp_suppress: None,
+        };
+        let d = profile_delta(&runtime_cfg(sapan.clone()));
+        assert_eq!(d.len(), 1, "yalnız bir sapma beklenirdi: {d:?}");
+        assert!(d[0].contains("initial_window_bytes"), "{d:?}");
+        // Yapı-gate seviyesinin sapması da görünür.
+        sapan.initial_window_bytes = 0;
+        sapan.gate = Some(500);
+        let d2 = profile_delta(&runtime_cfg(sapan));
+        assert!(
+            d2.iter()
+                .any(|x| x.contains("structure_gate_level_permille")),
+            "{d2:?}"
+        );
     }
 
     fn srv_cfg(bind: SocketAddr, fec: FecArm) -> ServerCfg {
@@ -748,6 +1139,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2_permille: None,
             spec_l1_permille: None,
         }
@@ -805,6 +1197,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -824,6 +1217,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -862,6 +1256,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -892,11 +1287,13 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
         };
         let d = runtime_cfg(base.clone());
         assert_eq!(d.fec_loss_risk.bootstrap_cap_permille, 125);
         assert_eq!(d.fec_loss_risk.persistent_cap_permille, 250);
-        assert_eq!(d.structure_gate_level_permille, None);
+        // [DENETİM B-5] gate override yokken ÜRÜN PROFİLİ değeri gelir (eskiden None → motor 500).
+        assert_eq!(d.structure_gate_level_permille, Some(250));
         let o = runtime_cfg(ArmCfg {
             spec_l1: Some(250),
             spec_l2: Some(375),
@@ -928,6 +1325,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         };
@@ -940,6 +1338,7 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2: None,
                 spec_l1: None,
                 ..base
@@ -968,6 +1367,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -994,6 +1394,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1018,6 +1419,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1054,6 +1456,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
@@ -1084,10 +1487,13 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2: None,
             spec_l1: None,
         });
-        assert_eq!(small.max_unit_bytes, 48);
+        // [DENETİM B-5] Birim tavanı artık profilin symbol kapasitesi (53), payload değil —
+        // davranış aynı (48 B mesaj tek chunk), ama config ürün profilinden sapmaz.
+        assert_eq!(small.max_unit_bytes, 53);
         assert_eq!(small.max_message_bytes, None, "48 ≤ 53 → fragmentasyon yok");
     }
 
@@ -1116,6 +1522,7 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2: None,
                 spec_l1: None,
             }),
@@ -1172,6 +1579,7 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2: None,
                 spec_l1: None,
             }),
@@ -1242,6 +1650,7 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2: None,
                 spec_l1: None,
             }),
@@ -1310,6 +1719,34 @@ mod tests {
         );
         // Dönüş yolu gerçekten kullanıldı (server ACK üretti) — tek yönlü sahte-yeşil değil.
         assert!(out.meta.udp_rx_bytes > 0, "ACK dönüş yolu ölçülmeli");
+
+        // [FAZ-4 §22] AKTİVASYON MANİFESTİ FAZ-3 TANILARINI GERÇEKTEN TÜKETİR.
+        // "yapılandırıldı ≠ ateşledi" ayrımı manifeste TAŞINMALI; alanlar vakum olmamalı.
+        let act = out
+            .meta
+            .activation
+            .as_ref()
+            .expect("aktivasyon manifesti YOK");
+        assert!(act.fec_configured, "bu kolda FEC yapılandırılmıştı");
+        assert!(act.tail_configured, "tail ürün profilinde AÇIK");
+        assert!(act.bytes_data > 0, "veri byte'ı taşınmalı: {act:?}");
+        assert_eq!(
+            act.bytes_parity, out.meta.tx.fec,
+            "parity byte'ı iki kaynakta AYNI olmalı (tanı ile wire sayacı ayrışamaz)"
+        );
+        assert_eq!(act.bytes_retx, out.meta.tx.retx);
+        // [FAZ-4 §1.3] KİMLİK CANLI KOŞUDA DA DOĞRU: bu kol statik r=4 / p0x03 kullanır,
+        // yani ÜRÜN PROFİLİ DEĞİLDİR. Manifest bunu `kama-custom` olarak etiketlemeli ve
+        // sapmayı adıyla saymalı — "sevk profili" diye raporlanması imkânsız olsun.
+        assert_eq!(
+            out.meta.profile_id, "kama-custom",
+            "statik-r kolu ürün profili DEĞİL"
+        );
+        assert!(
+            out.meta.profile_delta.iter().any(|d| d.contains("fec")),
+            "sapma FEC alanında görünmeli: {:?}",
+            out.meta.profile_delta
+        );
     }
 
     /// Egress kapısı gerçekten kapı: sıfır-bütçe burst modunda arm sonrası HİÇBİR datagram
@@ -1334,6 +1771,7 @@ mod tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2: None,
                 spec_l1: None,
             }),

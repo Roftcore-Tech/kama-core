@@ -1,0 +1,4 @@
+# actionlint: self-hosted netem runner etiketi (kama-netem-01) bilinen etiket olarak tanıtılır.
+self-hosted-runner:
+  labels:
+    - netem

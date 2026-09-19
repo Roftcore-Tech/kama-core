@@ -1,0 +1,1327 @@
+{
+ "cluster": "bw-rtt-pacing",
+ "mechanisms": [
+  {
+   "name": "Delivery-rate sampler (BBR §7.1: per-packet delivered/delivered_time/first_sent snapshot; interval=max(ack_elapsed,send_elapsed))",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §7.1 L553-569",
+    "specs/adaptive-transport-engine-spec.md §7.4 L599-604 (INV-ENGINE-BW)",
+    "specs/transport-layer-tdd.md §5.1 L536-540",
+    "specs/transport-layer-tdd.md §14 INV-CLASS-2 L731"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/bw.rs:57-148 DeliveryRateSampler {on_sent, on_ack, credit_delivered, forget_in_flight, delivered}",
+    "crates/adaptive-transport/src/sender.rs:5745-5786 track_sent (on_sent call at 5767-5769)",
+    "crates/adaptive-transport/src/sender.rs:2947 / 2969 bw_sampler.on_ack (inflight + tombstone kol-1)",
+    "crates/adaptive-transport/src/sender.rs:2984 credit_delivered (kol-2)",
+    "crates/adaptive-transport/src/sender.rs:3135,3301,3352,5403,5414 forget_in_flight"
+   ],
+   "product_call_chain": "client-core runtime.rs:815 ClientSession::new() → lib.rs:82 Sender::new() (bw_sampler: DeliveryRateSampler::new() sender.rs:1786) → runtime.rs:963 drive!{session.on_event} → lib.rs:91 → sender.rs:2125 on_event → 2151 on_event_core → [send] schedule_transmit 4041 → drain_new_data 5656 → track_sent 5745 → bw_sampler.on_sent 5767 → InflightPacket.bw_sample; [ack] runtime.rs:1169 Event::AckReceived → on_ack_received 2884 → inflight.remove 2932 → bw_sampler.on_ack 2947 → RateSample → btlbw.update 2949",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on (no config)",
+   "activation_condition": "every original/retransmit emission (on_sent) and every newly-acked seq (on_ack); superseded-transmission late ACK only credits delivered (kol-2, 2978-2990)",
+   "bench_exposure": "kama-product arm (bench/src/kama_product.rs) drives client-core runtime → on by default; stub arm bench/src/kama.rs:111 Sender::new() direct",
+   "telemetry": "NOT exported in product ClientStats/FateWindowDiag (runtime.rs:1394-1412 exports only sender_state/rtt_samples/establish_probes_tx). Engine accessor diag_pif() (sender.rs:5885) used only by runtime drain loop (runtime.rs:1365) and bench stub arm. Bench KP-CLIENT line (kama_product.rs:561-570) prints no delivered-rate field.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "bw.rs:98-116 on_ack: delivered += size; interval_ns = ack_elapsed.max(send_elapsed); first_sent_ns = pkt.sent_ns",
+    "sender.rs:2947 `let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);`",
+    "sender.rs:5767-5769 `.on_sent(now_ns, unit.size, !more_pending, gain_ge1)`",
+    "runtime.rs:1169-1174 Event::AckReceived(AckInfo{acked_seqs, ack_delay: frame.ack_delay_duration()})",
+    "tests: crates/adaptive-transport/tests/tv_bw.rs:19 tv_bw_sampler_golden, :182 tv_bw_credit_delivered_no_sample_but_future_delta, :203 tv_bw_credit_anchors_next_send_window"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a (ungated)",
+   "notes": "packets_in_flight leak fix (§3.7 commit-B) wired at 5 sites; spec §7.1 matched field-for-field."
+  },
+  {
+   "name": "BtlBw max-filter + sample validity gate (§7.2/§7.3: MIN_RATE_INTERVAL=1ms, app-limited only-if-≥BtlBw rule, KEEP-LAST, external valid flag)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §7.2 L571-576",
+    "specs/adaptive-transport-engine-spec.md §7.3 L578-597 (validity list)",
+    "specs/adaptive-transport-engine-spec.md §6 L524-526 (KEEP-LAST D-2/2)",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1066 (W_BTLBW row)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/bw.rs:157-298 BtlBwFilter {set_window, update, btlbw, last_sample_bw}",
+    "crates/adaptive-transport/src/bw.rs:12-14 W_BTLBW=10s, MIN_RATE_INTERVAL=1ms",
+    "crates/adaptive-transport/src/bw.rs:221-257 update() validity + KEEP-LAST",
+    "crates/adaptive-transport/src/sender.rs:2949 / 2971 btlbw.update(sample, now_ns, sample.delivered > 0)"
+   ],
+   "product_call_chain": "on_ack_received sender.rs:2884 → 2947/2969 sampler.on_ack → 2949/2971 btlbw.update(sample, now, valid=sample.delivered>0) → btlbw() consumed by compute_send_rate 4020, cwnd_over_srtt 2317, fuzzy input bandwidth_bps 3411, Drain BDP 3798, ProbeUp snapshot/success 3857-3891, startup_plateau 3985",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "each valid RateSample; app-limited samples enter only if bw ≥ current BtlBw (bw.rs:233); interval<1ms rejected (bw.rs:231)",
+   "bench_exposure": "kama-product arm on by default; acceptance counters only with cargo feature diag-sched-telemetry (bench Cargo.toml:26)",
+   "telemetry": "btlbw value NOT in product ClientStats. `last_fusion_obs`/`fusion_bw_range` (FateWindowDiag runtime.rs:389-393) carry bandwidth_bps but are filled only inside `if self.fusion_policy.is_enabled()` (sender.rs:3481-3515) → RuntimeConfig default fusion_policy: None (runtime.rs:202) → None/zero in product. diag_bw_accept (sender.rs:2043) is cfg(diag-sched-telemetry).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "bw.rs:231-246 `if valid && sample.interval >= MIN_RATE_INTERVAL { ... app_limited_ok = !sample.is_app_limited || bw >= self.btlbw(); ... }`",
+    "bw.rs:247-255 KEEP-LAST retain + re-push last",
+    "sender.rs:2949 `self.btlbw.update(sample, now_ns, sample.delivered > 0);`",
+    "sender.rs:3481 `if self.fusion_policy.is_enabled() {` gating diag_last_obs (3499-3515)",
+    "tests: tv_bw.rs:58 tv_bw_loss_does_not_reduce_btlbw, :87 tv_bw_app_limited_rule, :136 tv_bw_min_interval_and_external_invalid, :224 tv_bw_keep_last_and_channel_window"
+   ],
+   "duplicates_or_dead": "diag accessors window_ns()/samples_snapshot() (bw.rs:288-297) and sender diag_wbtlbw/diag_btlbw_samples (sender.rs:5920-5928) have no product consumer; bench stub arm only (bench/src/kama.rs:467)",
+   "feature_off_behavior": "n/a",
+   "notes": "§7.3 external validity flags reverse_path_impaired / ack_delay_untrusted are NOT fed into the `valid` argument — the only external gate is `delivered > 0`. ack_delay-untrusted samples are handled on the RTT side (raw sample used, sender.rs:3054-3057) and never invalidate the bw sample. Spec §7.3 lists them as BtlBw-invalidating conditions; see estimator_confidence record."
+  },
+  {
+   "name": "app_limited marking at send (§7.3: pkt.is_app_limited when tx_queue empty ∧ inflight < cwnd)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.1 L261 mark_app_limited_if(tx_queue boş ∧ inflight < cwnd)",
+    "specs/adaptive-transport-engine-spec.md §7.3 L590-592"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:5756-5769 track_sent: more_pending = !tx_queue.is_empty() || !pending_lost.is_empty() || !dup_queue.is_empty(); on_sent(..., app_limited = !more_pending, ...)"
+   ],
+   "product_call_chain": "schedule_transmit 4041 → drain_new_data 5656 / plan_arq_retransmits / drain_due_duplicates → track_sent 5745 → bw_sampler.on_sent(app_limited=!more_pending) 5767 → RateSample.is_app_limited → BtlBwFilter.update rule bw.rs:233",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "emission when no further DATA/retx/dup work is queued",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "rejected_app_limited counter only under diag-sched-telemetry (bw.rs:167-169, 238)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5756-5758 `let more_pending = !self.tx_queue.is_empty() || !self.pending_lost.is_empty() || !self.dup_queue.is_empty();`",
+    "sender.rs:5767-5769 `.on_sent(now_ns, unit.size, !more_pending, gain_ge1)`",
+    "tv_bw.rs:87 tv_bw_app_limited_rule"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Deviation from spec §3.1/§7.3: the `inflight < cwnd` conjunct is not evaluated (no inflight byte-cap exists — see inflight-cap record); code treats 'queue empty' alone as app-limited. Conservative direction (more samples flagged app-limited), but pending FEC parity queue is not part of more_pending."
+  },
+  {
+   "name": "W_BTLBW channel-derived window (Y3 delivered-EAI: w_epoch = 2×UNIT_SIZE_HINT/last_full_bw + 2.097s return-prior, max INITIAL_RTT; W = K_BW(8)×w_epoch, floor 10s)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §16.1 L1004 (`W_BTLBW` delivered-EAI-türetimi [Y3, K6R-mühürlü])",
+    "specs/adaptive-transport-engine-spec.md §6 L523-524 (W_BTLBW = max(10s, K_bw × ack_epoch) — older text)",
+    "specs/adaptive-transport-engine-spec.md §16.1 L994 (K_bw row, ack_epoch form)",
+    "specs/adaptive-transport-engine-spec.md §16.1 L1006 (TUR-D1 EK-3 open debt)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:2894-2913 (w_epoch computation, btlbw.set_window(w_epoch * K_BW))",
+    "crates/adaptive-transport/src/sender.rs:1416 K_BW=8, :1449 UNIT_SIZE_HINT=267",
+    "crates/adaptive-transport/src/bw.rs:211-213 set_window (max with 10s floor)",
+    "crates/adaptive-transport/src/bw.rs:177-180,243-245,282-284 last_full_bw / last_sample_bw"
+   ],
+   "product_call_chain": "on_ack_received 2884 → window block 2894-2924 executed before samples are processed → btlbw.set_window → bw.rs:247 cutoff prune in update()",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "every non-empty ACK",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "diag_wbtlbw() (sender.rs:5920) → (last_full_bw, window_ns); no product export; bench stub arm prints (kama.rs:467)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:2907-2911 `let w_epoch = { let dbw = self.btlbw.last_sample_bw().max(1); let term1 = Duration::from_nanos(2 * UNIT_SIZE_HINT * 1_000_000_000 / dbw); (term1 + Duration::from_nanos(2_097_000_000)).max(INITIAL_RTT) };`",
+    "sender.rs:2913 `self.btlbw.set_window(w_epoch * K_BW);`",
+    "sender.rs:2912 `let _ = ack_epoch;` (srtt-based ack_epoch computed but unused for W_BTLBW)",
+    "bw.rs:212 `self.window_ns = dur_ns(w).max(dur_ns(W_BTLBW));`",
+    "tv_bw.rs:224 tv_bw_keep_last_and_channel_window"
+   ],
+   "duplicates_or_dead": "`ack_epoch` local at sender.rs:2896 is computed and discarded (`let _ = ack_epoch;` 2912) — leftover from pre-Y3 derivation",
+   "feature_off_behavior": "n/a",
+   "notes": "Spec is internally inconsistent: §6 L523 and §16.1 L994 state W_BTLBW = max(10s, K_bw×ack_epoch) while §16.1 L1004 (K6R-sealed) states the Y3 delivered-EAI derivation the code implements. Return-prior 2.097s is a static constant (E-FULL debt declared in spec)."
+  },
+  {
+   "name": "estimator_confidence EWMA + ack_compression_score + reverse_path/ack_delay validity feed (§7.3: bw_est = BtlBw × confidence_gate; low confidence → conservative pace, fuzzy 'unknown')",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §7.2 L575",
+    "specs/adaptive-transport-engine-spec.md §7.3 L580-597",
+    "specs/transport-layer-tdd.md §5.1 L540 (NORMATİF validity → estimator_confidence düşer)",
+    "specs/adaptive-transport-engine-spec.md §8.1 L616 (SrcState.estimator_confidence)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [],
+   "product_call_chain": "none — no symbol exists (repo-wide grep for estimator_confidence|confidence_gate|ack_compression returns only a test name in tests/fusion_policy_wiring.rs:98 about the fusion-policy rtt-sample gate, unrelated)",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "absent",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "grep -rn 'estimator_confidence\\|confidence_gate\\|ack_compression\\|jitter_score\\|reordering_score' crates --include=*.rs → only rtt.rs:6-7 doc ('ertelendi') and fusion_policy_wiring.rs:98",
+    "bw.rs:221 update(sample, now_ns, valid) — sole external validity input; sender.rs:2949 passes `sample.delivered > 0`",
+    "spec §7.3 L580-584 lists 4 invalidation conditions; code implements 2 (app_limited, interval) structurally"
+   ],
+   "duplicates_or_dead": "n/a",
+   "feature_off_behavior": "n/a",
+   "notes": "Spec-normative, zero implementation. Whether it is a v1 blocker is an open question: several failure modes it was meant to cover were closed by other means (TUR-2b tombstone bw recovery, TUR-3a KEEP-LAST, ack_confidence-driven RecoverFwd). The reverse_path_impaired and ack_delay_untrusted conditions never reach the BtlBw gate."
+  },
+  {
+   "name": "RTT sampling with Karn discipline (originals only, highest newly-acked seq; tombstone kol-1 late-ACK sample recovery; superseded kol-2 no sample; un-loss kol-1 candidate)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.2 L265-276 UpdateRTT",
+    "specs/adaptive-transport-engine-spec.md §6 L504-510",
+    "specs/adaptive-transport-engine-spec.md §5 L445 (Karn muhafazakâr)",
+    "specs/adaptive-transport-engine-spec.md §16.2 K-1 closure L1088-1099 (sansür-kolu)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:2925-2957 (inflight branch: origin==Data ∧ seq≥largest → rtt_send_ns)",
+    "crates/adaptive-transport/src/sender.rs:2958-2977 (tombstone kol-1: retx_count==0)",
+    "crates/adaptive-transport/src/sender.rs:2978-2990 (kol-2: no RTT/rate sample, credit only)",
+    "crates/adaptive-transport/src/sender.rs:3020-3040 (un-loss kol-1 candidate)",
+    "crates/adaptive-transport/src/sender.rs:3047-3070 (sample → rtt.observe, rtt_sample_count, DrainRtprop qualifying)"
+   ],
+   "product_call_chain": "runtime.rs:1169 Event::AckReceived → sender.rs:2884 on_ack_received → rtt_send_ns selection → 3054 apply_ack_delay → 3058 rtt.observe → srtt()/rtprop()/queue_delay() consumers (compute_send_rate 4021-4022, windows 2895-2924, Drain/DrainRtprop/Steady epochs, fuzzy 3380-3413, PTO tail 3140-3145)",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "ACK that newly acknowledges ≥1 original DATA transmission (or tombstoned original with retx_count==0)",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "rtt_samples (monotone count) and left_preconverge exported in FateWindowDiag (runtime.rs:1410-1411; diag_rtt_sample_count sender.rs:4195); srtt/rtprop values not exported",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:2951-2954 `if p.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) { largest = seq; rtt_send_ns = Some(p.send_ns); }`",
+    "sender.rs:2965-2977 tombstone retx_count==0 branch produces bw + RTT candidate; 2978-2990 else-branch: credit_delivered only",
+    "sender.rs:3058 `self.rtt.observe(now_ns, sample);`",
+    "runtime.rs:102-111 doc: 'örnek YALNIZ ORİJİNAL DATA emisyonlarından gelir (Karn)'"
+   ],
+   "duplicates_or_dead": "Second RTT source: DR-CS-3 bootstrap echo bs_on_echo → rtt.observe at sender.rs:2616 (default OFF: RuntimeConfig.bootstrap_rtt=false runtime.rs:196; cold-start cluster)",
+   "feature_off_behavior": "n/a",
+   "notes": "Karn is stricter than spec allows (spec L445 notes per-transmission seq removes classic ambiguity) — deliberate."
+  },
+  {
+   "name": "ack_delay subtraction + min-RTT guard (§6 TUR-1x: corrected = raw − ack_delay only if ≥ rtprop, else raw processed; receiver V2 256µs floor-encoding + saturation counter)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §6 L504-510",
+    "specs/adaptive-transport-engine-spec.md §16.1 L986-987 (ACK_DELAY_UNIT, min-rtt guard rows)",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1070 (ack_delay row FIXED)",
+    "specs/adaptive-transport-engine-spec.md §2.2 L170-194 (ACK_FRAME_V2)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rtt.rs:239-248 apply_ack_delay(raw, ack_delay, min_rtt) → (sample, corrected)",
+    "crates/adaptive-transport/src/rtt.rs:225-227 rtt_sample (checked_sub)",
+    "crates/adaptive-transport/src/sender.rs:3047-3057 (raw, apply_ack_delay, diag_rtt_rejected)",
+    "crates/adaptive-transport/src/ack.rs:32 ACK_DELAY_UNIT_US=256, :154-157 ack_delay_duration()",
+    "crates/adaptive-transport/src/receiver.rs:459-467 build_ack floor-encoding + ack_delay_saturated"
+   ],
+   "product_call_chain": "server: runtime.rs Receiver (2085) → receiver.rs:459 build_ack encodes ack_delay → wire; client: runtime.rs:1155 AckFrame::decode → 1171 ack_delay: frame.ack_delay_duration() → AckInfo → sender.rs:3054 apply_ack_delay(raw, ack.ack_delay, self.rtt.rtprop()) → rtt.observe 3058",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "every RTT sample; correction rejected (raw used) when raw−delay < rtprop or underflow",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "diag_rtt() → (rejected_samples, max_decoded_ack_delay_us) (sender.rs:5870-5872) — not exported to product stats; receiver ack_delay_saturated() (receiver.rs:500) not exported",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "rtt.rs:244-247 `match raw_rtt.checked_sub(ack_delay) { Some(c) if min_rtt.is_none_or(|m| c >= m) => (c, true), _ => (raw_rtt, false) }`",
+    "sender.rs:3054-3057 `let (sample, corrected) = apply_ack_delay(raw, ack.ack_delay, self.rtt.rtprop()); if !corrected { self.diag_rtt_rejected += 1; }`",
+    "receiver.rs:464-467 `let encoded = (delay_us / ACK_DELAY_UNIT_US).min(ACK_DELAY_ENC_MAX); if encoded == ACK_DELAY_ENC_MAX { self.ack_delay_saturated += 1; }`",
+    "runtime.rs:1171 `ack_delay: frame.ack_delay_duration(),`",
+    "tests: tv_rtt.rs:80 tv_rtt_sample_ack_delay_untrusted, :86 tv_rtt_apply_ack_delay_min_rtt_guard; receiver.rs:595,610"
+   ],
+   "duplicates_or_dead": "rtt.rs:225 rtt_sample() (plain checked_sub → None) is the pre-TUR-1x form; product path uses apply_ack_delay; rtt_sample retained for tv_rtt golden only",
+   "feature_off_behavior": "n/a",
+   "notes": "Spec §7.3 says ack_delay_untrusted invalidates the bw sample; code keeps the bw sample (only the RTT correction is rejected) — see estimator_confidence record."
+  },
+  {
+   "name": "srtt/rttvar EWMA (RFC 6298 α=1/8, β=1/4, first sample srtt=s, rttvar=s/2) with channel-timed quantum loop n=clamp(Δt/T,1,64), T=rtprop/K_CONV(4)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §6 L514-517",
+    "specs/adaptive-transport-engine-spec.md §6 L537-539 (TUR-3a.5-β kuantum-döngü)",
+    "specs/adaptive-transport-engine-spec.md §16.1 L1007 (K_CONV row)",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1068"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rtt.rs:11-14 SRTT_ALPHA_DEN=8, RTTVAR_BETA_DEN=4",
+    "crates/adaptive-transport/src/rtt.rs:125-172 set_conv_interval, QUANTUM_CAP=64, observe()",
+    "crates/adaptive-transport/src/sender.rs:2922-2924 rtt.set_conv_interval(rtp / K_CONV) (only when rtprop known)",
+    "crates/adaptive-transport/src/sender.rs:1447 K_CONV=4"
+   ],
+   "product_call_chain": "on_ack_received 2884 → 2922-2924 set_conv_interval → 3058 rtt.observe → srtt()/rttvar() consumers: compute_send_rate 4022 (cwnd/srtt), rtprop window 2914, jitter_ppm 3396, ack_confidence 5809, epochs 3803/3826/3876, tail_recovery PTO 3140-3145",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on; conv_ref None until first rtprop → n≡1 (bit-identical RFC 6298)",
+   "activation_condition": "each RTT sample; quantum n>1 when Δt between samples > rtprop/4",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "srtt not exported in product stats (diag_rate srtt_us sender.rs:5842 has no product consumer; path_timing_snapshot 5903 consumed only by FS harness)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "rtt.rs:144-147 `let n = match (self.conv_ref_ns, self.last_sample_ns) { (Some(t), Some(last)) => (now_ns.saturating_sub(last) / t).clamp(1, Self::QUANTUM_CAP), _ => 1 };`",
+    "rtt.rs:157-165 loop applying rttvar-then-srtt n times",
+    "sender.rs:2922-2924 `if let Some(rtp) = self.rtt.rtprop() { self.rtt.set_conv_interval(rtp / K_CONV); }`",
+    "tests: tv_rtt.rs:13 tv_rtt_golden, :111 tv_rtt_quantum_loop_families"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "INITIAL_RTT=100ms (sender.rs:1329) is used only as unwrap_or fallback in rate/epoch math while srtt is None (PreConverge, where compute_send_rate returns the floor before any phase lookup) — not as an estimator seed (Ek-B CANCELLED model not present)."
+  },
+  {
+   "name": "RTprop min-filter (W_RTPROP = max(10s, K_RTPROP(8)×srtt), KEEP-LAST, min_entry_time age for refresh)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §6 L519-527",
+    "specs/adaptive-transport-engine-spec.md §16.1 L994 (K_rtprop)",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1067"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rtt.rs:23-57 MinFilter {observe, min, min_entry_time}",
+    "crates/adaptive-transport/src/rtt.rs:16 W_RTPROP=10s, :113-115 set_rtprop_window, :189-205 rtprop_age_ns/rtprop_window_ns/rtprop",
+    "crates/adaptive-transport/src/sender.rs:2914 rtt.set_rtprop_window(srtt_now * K_RTPROP), :1417 K_RTPROP=8"
+   ],
+   "product_call_chain": "on_ack_received 2884 → 2914 set_rtprop_window → 3058 observe (rtt.rs:170 rtprop.observe) → rtprop() consumers: compute_send_rate 4021 (BDP), bdp in cwnd_over_srtt 2317, Drain 3800, qd_ratio 3939-3945, conv interval 2922, DrainRtprop entry age 3098-3102, PathTimingState 5905",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "each RTT sample; window pruned per observe",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "diag_qd() rtprop_us (sender.rs:5890) — bench stub arm only (kama.rs:465); not in product stats",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "rtt.rs:31-44 observe: push, cutoff prune, KEEP-LAST re-push",
+    "rtt.rs:114 `self.rtprop_window_ns = dur_ns(w).max(dur_ns(W_RTPROP));`",
+    "sender.rs:2914 `self.rtt.set_rtprop_window(srtt_now * K_RTPROP);`",
+    "tv_rtt.rs:13 tv_rtt_golden"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Spec: W_rtprop = K_rtprop × corrected_srtt — code uses srtt before this ACK's sample is applied (deterministic, documented at 2893-2894)."
+  },
+  {
+   "name": "queue_delay = min_{W_qd}(rtt) − RTprop (short-window standing queue; W_qd = K_QD(2)×w_epoch, ≤ W_rtprop, keep-last, no 10s floor) + qd_ratio per-mille",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §6 L529-536 (TUR-3a.5-α)",
+    "specs/adaptive-transport-engine-spec.md §16.1 L995 (K_QD row: W_qd = K_QD×ack_epoch)",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1069, L1079 (qd_ratio fuzzy)",
+    "specs/transport-layer-tdd.md §5.1 L537 (queue_delay = srtt − rtprop_min — superseded text)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rtt.rs:74-81 qd_min/qd_window_ns, :119-121 set_qd_window (min with rtprop window, ≥1), :212-219 queue_delay()",
+    "crates/adaptive-transport/src/sender.rs:2915-2920 set_qd_window(w_epoch * K_QD), :1419 K_QD=2",
+    "crates/adaptive-transport/src/sender.rs:3938-3946 qd_ratio_permille_now()",
+    "crates/adaptive-transport/src/sender.rs:3400-3413 fuzzy input qd_ratio_permille (0 + diag_qd_no_evidence when rtprop absent)"
+   ],
+   "product_call_chain": "on_ack_received → 2920 set_qd_window → 3058 observe (rtt.rs:171 qd_min.observe) → queue_delay() → qd_ratio_permille_now 3939 → (a) fuzzy_evaluate 3407 → FusionInputs.qd_ratio_permille → fusion.rs:537 sr1 = bw.low ∧ qd.high → send_rate_gain → compute_send_rate 4024-4031; (b) ProbeUp entry hysteresis 3884 and abort 3855-3859",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on; qd_window defaults to rtprop window (rtt.rs:98) until first ACK writes it",
+   "activation_condition": "each RTT sample",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "diag_qd() (sender.rs:5890-5895) not exported; diag_qd_no_evidence counter (1678) not exported",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "rtt.rs:212-219 `match (self.qd_min.min(), self.rtprop.min()) { (Some(short_min), Some(rtprop)) => Duration::from_nanos(short_min.saturating_sub(rtprop)), _ => Duration::ZERO }`",
+    "sender.rs:2920 `self.rtt.set_qd_window(w_epoch * K_QD);` with comment '[S-FAZ-0, K8-fix] W_qd srtt-dalından delivered-EAI-saatine'",
+    "fusion.rs:537-540 `let sr1 = bw.low.min(qd.high); ... send_rate_gain = weighted_average([(sr1, c.sr_low), (sr_default, c.sr_high)])`",
+    "tests: tv_rtt.rs:48 tv_rtt_qd_short_min_standing_queue_and_instant_release; sender_state_thresholds.rs:295/318 qd_ratio tests"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Deviation from spec text: spec §6 L531 and §16.1 L995 define W_qd = K_QD × ack_epoch (srtt-based); code uses the Y3 delivered-EAI w_epoch (K8-fix, comment sender.rs:2915-2919). Spec grep finds no 'S-FAZ-0'/'K8' amendment. TDD §5.1 L537 still says srtt − rtprop_min (superseded by engine §6)."
+  },
+  {
+   "name": "jitter_score = rttvar/srtt as fuzzy jitter input (§6)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §6 L541-545",
+    "specs/transport-layer-tdd.md §5.1 L535"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:3396-3399 jitter_ppm = rttvar×1e6/srtt",
+    "crates/adaptive-transport/src/sender.rs:3412 FusionInputs.jitter_ppm"
+   ],
+   "product_call_chain": "on_event_core 2151 → fuzzy_evaluate 3379 → 3396 jitter_ppm → FusionInputs 3410-3415 → fusion.rs:489 decide()",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "every event (fuzzy_evaluate runs per event)",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "none exported",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3396-3399 `let jitter_ppm = dur_ns(self.rtt.rttvar()).saturating_mul(1_000_000).checked_div(dur_ns(srtt)).unwrap_or(0);`"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "First sample bootstraps rttvar = srtt/2 → jitter reads HIGH artificially at first (documented sender.rs:1721)."
+  },
+  {
+   "name": "reordering_score EWMA (out_of_order/total) → jitter input = max(jitter_score, reordering_score) (§6)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §6 L543-545",
+    "specs/transport-layer-tdd.md §9 L664 (reordering_score metric)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [],
+   "product_call_chain": "none — rtt.rs:6-7 header declares jitter_score/reordering_score 'fuzzy adımına (§8) ertelendi'; fuzzy jitter input is rttvar/srtt only (sender.rs:3396-3412)",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "absent",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "classification": "WIRE",
+   "confidence": "low",
+   "evidence": [
+    "rtt.rs:6-7 `jitter_score` / `reordering_score` fuzzy adımına (§8) ertelendi (`reordering_score` `[CAL]` içerir)",
+    "grep -rn reordering_score crates → only rtt.rs doc",
+    "sender.rs:3410-3415 FusionInputs has jitter_ppm only (no reorder component)"
+   ],
+   "duplicates_or_dead": "A separate reorder-tolerance tracker exists for packet-threshold (sender.rs:2989 reorder.note_spurious, loss.set_packet_threshold 3078-3079) and a receiver-side reorder_pressure feeds the speculative FEC lane (TsSample.reorder_pressure_permille sender.rs:530) — neither feeds the §6 jitter fuzzy input",
+   "feature_off_behavior": "n/a",
+   "notes": "Low confidence on v1 necessity: the spec marks it [CAL] and the fuzzy jitter axis (TDD §5.3 rules) mostly affects ARQ reorder-tolerance, which the note_spurious path already adapts. Flagged for the fusion cluster."
+  },
+  {
+   "name": "ack_epoch / expected_ack_interval (EAI) clock: max(srtt, EAI), EAI = ACK_FREQ_N(2)×unit/pacer_rate + 65B/31B·s⁻¹ static return prior",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §5 L459 (ack_epoch = max(corrected_srtt, EAI))",
+    "specs/adaptive-transport-engine-spec.md §16.1 L988 (K_c row: EAI definition)",
+    "specs/adaptive-transport-engine-spec.md §16.1 L997 (T_SPACING static-prior debt)",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1071 (ACK_CADENCE_FLOOR static prior)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:3263-3273 expected_ack_interval()",
+    "crates/adaptive-transport/src/sender.rs:1393-1397 EXPECTED_ACK_FREQ_N=2, EAI_SACK_WIRE_BYTES=65, EAI_RETURN_BW_PRIOR=31"
+   ],
+   "product_call_chain": "consumers in this cluster: Drain epoch 3803-3808, DrainRtprop epoch 3826-3831, Steady ProbeUp period 3876-3881, ack_confidence threshold 5809-5812 (K_CONF_EAI=2), fuzzy ack_epoch/W_loss 3381 (loss cluster); NOT used for W_BTLBW/W_qd since Y3 (2912 discarded)",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "computed on demand from pacer.rate() and mean inflight unit size",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "none",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3269-3272 `let rate = self.pacer.rate().max(1); let eai_ns = EXPECTED_ACK_FREQ_N * unit * 1_000_000_000 / rate + EAI_SACK_WIRE_BYTES * 1_000_000_000 / EAI_RETURN_BW_PRIOR;`",
+    "sender.rs:3803-3808 Drain `epoch = srtt.max(self.expected_ack_interval())`",
+    "sender.rs:8106 test ack_confidence_eai_floor_prevents_false_low"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Return-bw prior is a static 31 B/s constant → EAI ≥ 2.097s on every channel (spec-declared E-FULL debt: 'ölçülen return_bw gelince daralır'). All ack_epoch-based dwell/period thresholds in Drain/DrainRtprop/ProbeUp therefore carry a ≥2.1s floor on fast channels."
+  },
+  {
+   "name": "SRC core equations (§8.2): BDP = BtlBw×RTprop; cwnd = max(cwnd_gain(2)×BDP, MIN_CWND 4800); pacing = phase_gain×BtlBw; send_rate = min(pacing × fuzzy_gain‰, cwnd/srtt) (Little-law rate form)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §8.2 L624-630",
+    "specs/adaptive-transport-engine-spec.md §0.3 L64 (queue_delay + inflight_cap pace)",
+    "specs/transport-layer-tdd.md §5.4 L600-601, §6 L610-612",
+    "specs/adaptive-transport-engine-spec.md §3 L248-251 (UpdatePacingRate)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rate.rs:15-18 CWND_GAIN=2, DEFAULT_MTU=1200",
+    "crates/adaptive-transport/src/rate.rs:88-104 SrcConfig {cwnd_gain, min_cwnd=4×MTU}",
+    "crates/adaptive-transport/src/rate.rs:121-123 bdp_bytes, :126-132 rate_from_window",
+    "crates/adaptive-transport/src/rate.rs:164-177 effective_send_rate",
+    "crates/adaptive-transport/src/sender.rs:4001-4033 compute_send_rate"
+   ],
+   "product_call_chain": "on_event_core 2151 → fuzzy_evaluate 3379 (send_rate_gain_permille) → update_state 3742 → 2211 natural_rate = compute_send_rate → 4024 effective_send_rate(src_cfg, btlbw, rtprop, srtt, phase.gain(), decision.send_rate_gain_permille) → 4032 send_rate_final → 2222 send_rate = natural.max(effective_floor) → 2223 pacer.set_rate",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "SrcConfig::default() (sender.rs:1789): cwnd_gain 2, min_cwnd 4800",
+   "activation_condition": "every event after PreConverge (PreConverge early-returns floor at 4006-4008)",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "diag_rate() (sender.rs:5842-5856) → (state, btlbw, srtt_us, pacer.rate, inflight) — bench stub arm only (kama.rs:458); no product export",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "rate.rs:172-176 `let bdp = bdp_bytes(btlbw, rtprop); let cwnd = cfg.cwnd_gain.saturating_mul(bdp).max(cfg.min_cwnd); let pacing = pacing_gain.apply(btlbw); let throttled = pacing*gain‰/1000; throttled.min(rate_from_window(cwnd, srtt))`",
+    "sender.rs:4024-4032 effective_send_rate(...) then budget::send_rate_final(fuzzy_rate, min_rate_bps, u64::MAX)",
+    "tests: tv_src.rs:14 tv_src_bdp_and_cwnd, :37 tv_src_pacing_gains, :72 tv_src_inv_rate_1b_queue_delay_reduces_rate; sender_state_thresholds.rs:187 send_rate_differs_between_startup_and_the_steady_family"
+   ],
+   "duplicates_or_dead": "rate::evaluate/SrcDecision (rate.rs:106-155) is a parallel formula with zero product callers — see separate record",
+   "feature_off_behavior": "n/a",
+   "notes": "§8.2 says inflight cap 'üstündeyse gönderme'; code realizes it only as the cwnd/srtt rate ceiling (Little law) — see inflight-cap record. rate uses srtt (not rtprop) for the ceiling so queue growth throttles."
+  },
+  {
+   "name": "rate::evaluate / SrcDecision (bdp, cwnd, pacing_rate, send_rate) — parallel SRC formula used only by golden tests",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §8.2 L624-630",
+    "specs/adaptive-transport-engine-spec.md §16 L940-951 (TV-SRC conformance vectors)"
+   ],
+   "spec_requires_v1": "optional",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rate.rs:106-155 SrcDecision, evaluate()"
+   ],
+   "product_call_chain": "none — grep -rn 'evaluate(&' crates: only tests/tv_src.rs:21,26,40,41,66,83 and tests/tv_loss.rs:171,183; sender.rs calls effective_send_rate (4024) exclusively",
+   "product_reachable": false,
+   "gate": "none",
+   "default_state": "n/a",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "classification": "DELETE",
+   "confidence": "medium",
+   "evidence": [
+    "grep -rn 'rate::evaluate\\|evaluate(&' crates --include=*.rs → tv_src.rs and tv_loss.rs only",
+    "rate.rs:137-155 evaluate() computes send_rate = pacing_rate.min(inflight_cap_rate) without the fuzzy gain leg that the product applies (rate.rs:175)",
+    "tv_src.rs:60 tv_src_inv_rate_1a_loss_does_not_change_rate and tv_loss.rs:169-183 pin INV-RATE-1 on evaluate(), not on the product function"
+   ],
+   "duplicates_or_dead": "duplicate of effective_send_rate minus the fuzzy-gain multiplication",
+   "feature_off_behavior": "n/a",
+   "notes": "Risk: the INV-RATE-1 §8.2 golden vectors (TV-SRC) are pinned on a function the product never executes; drift between evaluate() and effective_send_rate() would not be caught. Recommend re-pointing tv_src/tv_loss goldens to effective_send_rate (gain‰=1000) and removing evaluate(), or keeping evaluate() as a thin wrapper."
+  },
+  {
+   "name": "Inflight byte cap inflight_bytes ≤ cwnd_bytes gate at send (§8.2/§14) and MIN_CWND channel-derived (k×BDP) floor",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §8.2 L629 (inflight cap: üstündeyse gönderme, kuyrukta beklet)",
+    "specs/adaptive-transport-engine-spec.md §14 L906",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1083 (MIN_CWND=4800B BREAKS row: inflight-cap kolu hiç seçilmez; gereken k×BDP tabanı)",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1065 (Startup cwnd-cap = MIN_CWND ailesi (D-4/2); inflight-cap borcu AÇIK)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rate.rs:147-148,176 (rate-form only: min(pacing, cwnd/srtt))",
+    "crates/adaptive-transport/src/rate.rs:101 min_cwnd = 4×DEFAULT_MTU = 4800 (byte-absolute)"
+   ],
+   "product_call_chain": "drain_new_data sender.rs:5656-5670 gates emission only on try_send_pre_parity (token bucket, 5664); no comparison of inflight_bytes against cwnd anywhere in the emission path (grep 'cwnd' in sender.rs → only grounded_startup_rate/cwnd_over_srtt/Drain BDP target)",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "absent (byte gate); MIN_CWND fixed 4800",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:5657-5670 while-loop breaks only on `!self.try_send_pre_parity(front.size, false)`",
+    "grep -n 'cwnd' sender.rs → lines 2216-2324 (startup floor ceiling), 3797 (Drain target) — no inflight-byte comparison",
+    "spec §16.2 L1083 classifies MIN_CWND=4800B as BREAKS (byte-mutlak; BDP'nin 3-48×)",
+    "spec §16.2 L1065 'inflight-cap borcu AÇIK'"
+   ],
+   "duplicates_or_dead": "n/a",
+   "feature_off_behavior": "n/a",
+   "notes": "The spec's own §16.2 inventory records this as open debt (D-4/2). Little-law ceiling cwnd/srtt does bound the rate, but with min_cwnd=4800 ≫ BDP on sub-kbps it rarely binds (spec L1083). Startup exit therefore relies on plateau detection rather than the cap."
+  },
+  {
+   "name": "MIN_RATE channel-survival floor (31 B/s all states) + send_rate_final clamp (§8.5)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §8.5 L663-666",
+    "specs/adaptive-transport-engine-spec.md §3.3-A [R2] L310-313",
+    "specs/adaptive-transport-engine-spec.md §16.1 L983 (min_rate_bps row), Ek-B L1138-1142 (MUST-NOT-APPLY 10000)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/budget.rs:11-33 BudgetConfig::fixture() min_rate_bps=31",
+    "crates/adaptive-transport/src/budget.rs:52-54 send_rate_final(fuzzy_rate, min_rate, cap)",
+    "crates/adaptive-transport/src/sender.rs:4032 budget::send_rate_final(fuzzy_rate, self.budget_cfg.min_rate_bps, u64::MAX)",
+    "crates/adaptive-transport/src/sender.rs:1793 pacer initial rate = min_rate_bps"
+   ],
+   "product_call_chain": "compute_send_rate 4004 → 4032 send_rate_final → 2211 natural_rate → 2223 pacer.set_rate",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "BudgetConfig::fixture() (sender.rs:1781): min_rate 31 B/s, cap u64::MAX",
+   "activation_condition": "every rate computation after PreConverge; PreConverge returns PRE_CONVERGE_FLOOR_BW directly (4006-4008) so the fixture floor is MUST-NOT-APPLY-compliant",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "none",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "budget.rs:29 `min_rate_bps: 31, // [R2] kanal-hayatta-kalma floor`",
+    "sender.rs:4032 `budget::send_rate_final(fuzzy_rate, self.budget_cfg.min_rate_bps, u64::MAX)`",
+    "tv_emergency.rs:46 GOLDEN G2 MIN_RATE clamp ⟂ INV-RATE-1"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "§8.5 upper clamp min(BtlBw_based_cap, profile_cap) is not applied (cap = u64::MAX). BudgetConfig.profile_cap_permille/budget_ref_bps are parity-side fields with no sender caller (see parity budget clamp record)."
+  },
+  {
+   "name": "PRE_CONVERGE floor pacing (31 B/s) + single-unit burst clamp + sub-byte token refill (R1) + channel-derived burst cap (R3: clamp(rate×40ms, 1 unit, 2×MTU)) + fill_to_cap on exit (§3.3-A/K-D2/R1/R2/R3)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-A L291-321",
+    "specs/adaptive-transport-engine-spec.md §8.5 L664-666 ([R8] işaret levhası)",
+    "specs/adaptive-transport-engine-spec.md §16.1 L981-985 (PRE_CONVERGE_FLOOR_BW, BURST_WINDOW, refill precision)",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1085 (SAFE: pacer refill+kalan [R1], BURST_WINDOW [R3])"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:1384 PRE_CONVERGE_FLOOR_BW=31, :1462 BURST_WINDOW_NS=40ms",
+    "crates/adaptive-transport/src/sender.rs:4004-4008 compute_send_rate PreConverge early return",
+    "crates/adaptive-transport/src/sender.rs:2224-2247 burst cap clamp + fill_to_cap on PreConverge exit",
+    "crates/adaptive-transport/src/pacer.rs:49-55 refill (sub-byte remainder), :70-80 set_burst_cap/fill_to_cap"
+   ],
+   "product_call_chain": "on_event_core 2151 → 2153 pacer.refill(dt) → update_state → compute_send_rate (floor in PreConverge) → 2223 set_rate → 2228-2242 set_burst_cap(window_bytes.clamp(burst_lo, burst_hi)) → 2243-2247 fill_to_cap on exit → schedule_transmit → try_send",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "state == PreConverge (rate); burst cap recomputed every event in all states",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "diag_pacer() (sender.rs:2031-2037) → (rate, tokens, burst_cap): no product consumer; TsSample.pacer_tokens (sender.rs:546) exported only when ts_sample_period_ns set (runtime.rs:1058-1062)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:4006-4008 `if self.state == SenderState::PreConverge { return PRE_CONVERGE_FLOOR_BW; }`",
+    "sender.rs:2228-2242 `let window_bytes = send_rate.saturating_mul(BURST_WINDOW_NS) / 1e9; ... self.pacer.set_burst_cap(window_bytes.clamp(burst_lo, burst_hi));`",
+    "pacer.rs:50-54 numer = rate·dt_ns + refill_rem; add = numer/1e9; refill_rem = numer%1e9",
+    "tests: tv_pace.rs:41 tv_pace_r1_sub_byte_precision_no_truncation, :75 tv_pace_r3_channel_derived_burst; sender_state_thresholds.rs:274 preconverge_returns_the_floor_before_any_phase_lookup"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "The single-unit clamp in PreConverge is overridden in the product by the Initial Window default (see next record) — `burst_lo = front_size.max(iw)` with iw=2400 by RuntimeConfig default."
+  },
+  {
+   "name": "Initial window [IW]: PreConverge first-flight burst budget (burst_lo raised to initial_window.bytes so the pacer's full initial credit is not clipped to one unit)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-A [K-D2] L300-303 (PRE_CONVERGE'de burst tek-birime clamp'lenir → ilk birim t=0'da gider, kalanı floor-refill yayar)",
+    "specs/adaptive-transport-engine-spec.md §3.3-B L323-333",
+    "(no spec section describes an initial-window budget; grep 'initial_window|ilk-uçuş' in specs → none)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:303-318 InitialWindowConfig {bytes} (engine Default = 0)",
+    "crates/adaptive-transport/src/sender.rs:2229-2242 iw applied to burst_lo/burst_hi in PreConverge",
+    "crates/adaptive-transport/src/sender.rs:4201-4209 set_initial_window/initial_window",
+    "crates/client-core/src/runtime.rs:102-117 RuntimeConfig.initial_window_bytes doc, :195 default = DEFAULT_BURST_CAP (2400), :854-858 set_initial_window"
+   ],
+   "product_call_chain": "runtime.rs:854-858 session.sender_mut().set_initial_window(InitialWindowConfig{bytes: cfg.initial_window_bytes}) → sender.rs:2234-2238 iw = initial_window.bytes in PreConverge → burst_lo = front_size.max(iw) → pacer.set_burst_cap → first drain_new_data loop emits up to 2400 B at t0",
+   "product_reachable": true,
+   "gate": "RuntimeConfig.initial_window_bytes (0 = off)",
+   "default_state": "PRODUCT ON: RuntimeConfig::default().initial_window_bytes = DEFAULT_BURST_CAP = 2400 (runtime.rs:195); ENGINE OFF: InitialWindowConfig::default().bytes = 0 (sender.rs:314-318, 1951)",
+   "activation_condition": "state == PreConverge ∧ bytes > 0",
+   "bench_exposure": "bench CLI --initial-window-bytes default 0 (main.rs:123-124 serve, 238-239 client); kama_product.rs:160 passes it verbatim with comment '0 = sevk davranışı (ilk uçuş tek paket)' → the kama-product bench arm runs IW OFF by default while the product default is ON",
+   "telemetry": "none (no counter distinguishes first-flight size); tests/initial_window.rs:46 shipped_initial_flight_is_exactly_one_packet pins the ENGINE default only",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "medium",
+   "evidence": [
+    "runtime.rs:195 `initial_window_bytes: adaptive_transport::pacer::DEFAULT_BURST_CAP,`",
+    "sender.rs:313 'KALİBRE EDİLMEMİŞ: default flip ölçüm ister.' and :316 `/// İlk-uçuş bütçesi (byte). 0 = kapalı (sevk davranışı).`",
+    "kama_product.rs:159-160 `// [IW] opt-in; 0 = sevk davranışı (ilk uçuş tek paket).\\n initial_window_bytes,` (CLI default 0)",
+    "spec §3.3-A L302-303 'PRE_CONVERGE'de burst tek-birime clamp'lenir → ilk birim t=0'da gider, kalanı floor-refill yayar' and K-D2 rationale that a 2×MTU t0 dump bypasses the floor",
+    "tests/initial_window.rs:89 initial_window_is_off_by_default (engine-level)"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "bytes=0 → burst_lo = front_size → one unit at t0, floor-refill spreads the rest (spec K-D2 behaviour)",
+   "notes": "Three-way inconsistency: (1) spec §3.3-A [K-D2] mandates the single-unit PreConverge clamp; (2) engine doc says uncalibrated / default flip needs measurement, engine default OFF; (3) client-core product default is ON (2400 B) on the basis of a 12-run netem sample cited in runtime.rs:113-116, while the bench arm that produces the campaign numbers defaults to OFF and labels OFF as 'sevk davranışı'. Per CLAUDE.md 'çelişkide spec kazanır' the product default violates K-D2 unless an [AMENDMENT] is recorded. Classified KEEP-EXPERIMENTAL because the spec forbids the ON state and the mechanism's own contract says default-flip requires measurement; the orchestrator should decide between spec amendment and default revert."
+  },
+  {
+   "name": "Startup pacing floor (DR-RATE-RAMP-2): at PreConverge→Startup exit arm floor = min(2.885 × min_cwnd/srtt, cwnd/srtt); send_rate = max(natural, min(floor, cwnd/srtt)); bootstrap-only, one-shot, released when ramp ends or natural ≥ floor",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3 L206 (STARTUP → BtlBw hızlı keşif, pacing_gain yüksek)",
+    "specs/adaptive-transport-engine-spec.md §8.2 L628 (send_rate = pacing_gain × BtlBw)",
+    "specs/adaptive-transport-engine-spec.md §0.3 L64-68 (INV-RATE-1 + faz-gain)",
+    "(no spec section describes a startup pacing initialization floor; grep 'RAMP|startup pacing|min_cwnd / srtt' in specs → none)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:1062-1125 StartupPacingConfig (Default enabled: true, rationale comment)",
+    "crates/adaptive-transport/src/sender.rs:1501-1512 fields startup_pacing/startup_pacing_floor_bps/startup_floor_armed_once/startup_base_seen",
+    "crates/adaptive-transport/src/sender.rs:2203-2210 arm at PreConverge exit; 2216-2223 apply; 2248-2281 release",
+    "crates/adaptive-transport/src/sender.rs:2297-2324 grounded_startup_rate / cwnd_over_srtt; :1055-1060 rate_per_srtt",
+    "crates/adaptive-transport/src/sender.rs:2019-2027 set_startup_pacing_init / startup_pacing_floor_bps"
+   ],
+   "product_call_chain": "ClientSession::new (lib.rs:82) → Sender::new → new_internal 1806 startup_pacing: StartupPacingConfig::default() (=enabled true) → on_event_core 2203-2210 arms on prev_state==PreConverge ∧ state!=PreConverge → 2219-2223 send_rate = natural_rate.max(floor.min(cwnd_over_srtt())) → pacer.set_rate → 2272-2281 release",
+   "product_reachable": true,
+   "gate": "StartupPacingConfig.enabled (engine); NOT exposed in RuntimeConfig (runtime.rs:73-160 has no field; grep 'startup' runtime.rs → only comment 813)",
+   "default_state": "ON in product (engine Default enabled: true, sender.rs:1124; lib.rs:67-69 doc 'startup pacing ON'); no product-level override",
+   "activation_condition": "first PreConverge exit with srtt known; effective while state ∈ {PreConverge, Startup, RecoverArq, RecoverFwd} until natural_rate ≥ floor or a post-ramp phase is reached",
+   "bench_exposure": "no bench flag (kama_product.rs/main.rs have no startup-pacing arg) → kama-product arm runs it ON implicitly; ON/OFF pairing only in tests (budget_equivalence_pin.rs:31,115; kama-integration fs_f0.rs:106, dr_cs3_*.rs:66/72)",
+   "telemetry": "startup_pacing_floor_bps() accessor (sender.rs:2025) has no product/bench consumer; not in ClientStats",
+   "classification": "SHIP",
+   "confidence": "low",
+   "evidence": [
+    "sender.rs:1124 `Self { enabled: true }` (Default) with 60-line rationale 1082-1123",
+    "sender.rs:1806 `startup_pacing: StartupPacingConfig::default(), // default OFF` — comment contradicts the value",
+    "sender.rs:2019 doc `/// DR-RATE-RAMP-2 (§FAZ-1): product config — startup pacing initialization (default OFF).` — stale",
+    "sender.rs:2203-2210 arming condition; 2219 `let effective_floor = self.startup_pacing_floor_bps.min(self.cwnd_over_srtt());` 2222 `let send_rate = natural_rate.max(effective_floor);`",
+    "tests sender.rs:7633 inv_rate_1_active_floor_loss_does_not_reduce_rate, 7679, 7696, 7711, 7730, 7753 (six-test contract); 7560 legacy golden re-scoped to floor OFF"
+   ],
+   "duplicates_or_dead": "stale 'default OFF' comments at sender.rs:1063, 1806, 2019 are misleading (value is true)",
+   "feature_off_behavior": "enabled=false → floor never arms; send_rate = natural_rate (byte-identical baseline per 1063-1064)",
+   "notes": "Spec does not describe this mechanism; it modifies the §8.2 rate law during bootstrap (rate can exceed 2.885×BtlBw when BtlBw is the 31 B/s-floor self-clock fixed point). The INV-RATE-1 lock-golden was re-scoped via a report (reports/fs-cal-2/v3.5/INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md, cited sender.rs:1090) rather than a spec [AMENDMENT]. Not exposed in RuntimeConfig, so the product cannot switch it off. SHIP is assigned on the basis that it is on the default path with a pinned contract; confidence low because spec authority is missing. Open question listed."
+  },
+  {
+   "name": "Sender state machine dispatch + evaluation priority (§3: idle > PreConverge(RTT-lock) > RecoverFwd(emergency/ackconf) > RecoverArq(pending) > in-phase Startup/Drain/DrainRtprop/ProbeUp/Steady; AMENDMENT-1 recovery from any ACTIVE phase)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3 L200-240",
+    "specs/adaptive-transport-engine-spec.md §3 L226-229 (değerlendirme önceliği)",
+    "specs/adaptive-transport-engine-spec.md §3.3-C L336-351"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:53-72 enum SenderState {Idle, PreConverge, Startup, Drain, ProbeUp, Steady, RecoverArq, RecoverFwd, DrainRtprop}",
+    "crates/adaptive-transport/src/sender.rs:3742-3936 update_state",
+    "crates/adaptive-transport/src/sender.rs:2169-2183 AppData: Idle→PreConverge (no srtt) / Idle→Startup (resume)"
+   ],
+   "product_call_chain": "on_event_core 2151 → dispatch → 3379 fuzzy_evaluate → 3743 update_state (emergency.update 3745, idle 3749, priority ladder 3763-3912) → compute_send_rate phase lookup 4009-4019 → schedule_transmit 4041 state match 4050-4061",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on; initial Idle (sender.rs:1783)",
+   "activation_condition": "every event",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "FateWindowDiag.sender_state (closing-time phase string, runtime.rs:1394-1403) printed by KP-CLIENT `state=` (kama_product.rs:565,585); no transition counters exported",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3763-3782 `self.state = if idle { Idle } else if self.state == PreConverge { if srtt.is_some() {Startup} else {PreConverge} } else if emergency_active { RecoverFwd } else if !self.pending_lost.is_empty() { RecoverArq } else { match self.state { ... } }`",
+    "tests: tests/sender_state_matrix.rs:281 no_forbidden_transition_is_reachable, :298 preconverge_is_never_re_entered, :317 preconverge_never_enters_recovery, :331 startup_never_reaches_steady_directly"
+   ],
+   "duplicates_or_dead": "`_ => SenderState::Steady` arm at 3911 is unreachable after explicit arms (all 9 variants matched) — harmless",
+   "feature_off_behavior": "n/a",
+   "notes": "Emergency escalation (emergency.rs) and ack_confidence (sender.rs:5788-5824) drive RecoverFwd — loss/recovery cluster; only the overlay/gain interaction is audited here."
+  },
+  {
+   "name": "PRE_CONVERGE → STARTUP unlock on first RTT sample (§3.3-D staged release; bw lock separate)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3 L286-289, §3.3-D L353-358",
+    "specs/adaptive-transport-engine-spec.md §3 L218 (R1/R14)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:3766-3773 update_state PreConverge arm (rtt.srtt().is_some() → Startup)",
+    "crates/adaptive-transport/src/sender.rs:2243-2247 fill_to_cap on exit",
+    "crates/adaptive-transport/src/sender.rs:2175-2182 resume never re-enters PreConverge"
+   ],
+   "product_call_chain": "on_ack_received 3058 rtt.observe (first sample) → update_state 3766-3773 → Startup → compute_send_rate 4010 Gain::STARTUP → startup floor arm 2203-2210",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "first ACK yielding an RTT sample (originals only) or bootstrap echo (default OFF)",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "FateWindowDiag.left_preconverge (= rtt_samples > 0) and rtt_samples (runtime.rs:1404-1411); KP-CLIENT `left_preconv=`",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3769-3773 `if self.rtt.srtt().is_some() { SenderState::Startup } else { SenderState::PreConverge }`",
+    "sender.rs tests 6017 idle_to_preconverge_then_startup_on_first_ack; sender_state_thresholds.rs:104,166"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "'bw kilidi AYRI' (§3.3-D) has no explicit representation: BtlBw simply starts at 0 and the first sample enters the max-filter; §8.5 budget-clamp-tied-to-bw-lock is not implemented (see parity budget record)."
+  },
+  {
+   "name": "STARTUP high-gain ramp (Gain::STARTUP 2.885) + delivered-anchor plateau detection (STARTUP_PLATEAU_ROUNDS=3, ε=50‰, round = first ACK of post-marker send ∧ bw sample) → DRAIN; re-entry counter reset (§3 STARTUP→DRAIN, TUR-6)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3 L206, L219",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1065 (startup_plateau round FIXED [TUR-6])",
+    "specs/adaptive-transport-engine-spec.md §16.2 ZM-1 L1035-1036"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rate.rs:40-44 Gain::STARTUP 2885/1000",
+    "crates/adaptive-transport/src/sender.rs:1374-1376 STARTUP_PLATEAU_ROUNDS=3, STARTUP_PLATEAU_EPS_PERMILLE=50",
+    "crates/adaptive-transport/src/sender.rs:3972-4000 startup_plateau()",
+    "crates/adaptive-transport/src/sender.rs:3754-3758 plateau evaluated on base (recovery-inclusive); 3784-3795 Startup→Drain; 3929-3935 re-entry reset",
+    "crates/adaptive-transport/src/sender.rs:2932-2934 startup_round_complete marker; 2950 bw_sampled_since_round"
+   ],
+   "product_call_chain": "on_ack_received sets round markers (2932-2934, 2950) → update_state 3754-3758 startup_plateau → 3784-3795 Drain → compute_send_rate phase Startup gain 4010",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "state Startup (or recovery overlay with base Startup); 3 consecutive delivered-anchor rounds with BtlBw growth ≤ 5%",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "none exported (startup_stable_rounds internal)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3978-3981 `if !self.startup_round_complete || !self.bw_sampled_since_round { return false; }`",
+    "sender.rs:3987-3999 grew = Δbw×1000 > last×EPS; stable_rounds ≥ STARTUP_PLATEAU_ROUNDS",
+    "sender.rs:3784-3790 `if self.plateau_reached { self.plateau_reached = false; self.drain_entry_ns = Some(now_ns); SenderState::Drain }`",
+    "tests sender.rs:8055 plateau_round_is_supply_independent, :8085 startup_reentry_resets_plateau_counter; sender_state_thresholds.rs:334"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Plateau under recovery overlay exits to Steady rather than Drain (declared limit r3, comment 3758-3760) — deviation from §3 L219 transition text, documented."
+  },
+  {
+   "name": "DRAIN startup-exit phase (Gain::DRAIN = 1/2.885; exit when inflight_bytes ≤ cwnd_gain×BDP or dwell ≥ DRAIN_MAX_DWELL_EPOCH(3)×ack_epoch) (TUR-3b)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3 L211-212, L219",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1073"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rate.rs:45-49 Gain::DRAIN 1000/2885",
+    "crates/adaptive-transport/src/sender.rs:1424 DRAIN_MAX_DWELL_EPOCH=3",
+    "crates/adaptive-transport/src/sender.rs:3796-3821 Drain arm; 4011 phase→gain"
+   ],
+   "product_call_chain": "update_state 3796-3821 → compute_send_rate 4011 PacingPhase::Drain → effective_send_rate → pacer.set_rate",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "entered from Startup plateau; exits on byte threshold or liveness dwell",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "none exported (sender_state at close only)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3800-3818 `let bdp = CWND_GAIN * bdp_bytes(btlbw, rtprop); let epoch = srtt.max(EAI); let elapsed = now − drain_entry; if inflight_bytes <= bdp || elapsed >= epoch×3 { Steady } else { Drain }`",
+    "sender.rs test 8125 startup_exit_enters_drain_then_steady_on_bdp"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Startup floor release check (2264-2281) treats Drain as post-ramp → floor released at Drain entry."
+  },
+  {
+   "name": "STEADY phase (pacing_gain 1.0; pace = BtlBw) (§3/§8.3)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3 L207",
+    "specs/adaptive-transport-engine-spec.md §8.3 L633-635"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rate.rs:34-35 Gain::STEADY",
+    "crates/adaptive-transport/src/sender.rs:4018 `_ => PacingPhase::Steady`",
+    "crates/adaptive-transport/src/sender.rs:3874-3900 Steady arm (ProbeUp entry check)"
+   ],
+   "product_call_chain": "update_state → compute_send_rate 4018 → effective_send_rate(gain 1/1)",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "after Drain/DrainRtprop/ProbeUp exit, or recovery exit with base Steady",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "sender_state at close",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:4018 `_ => PacingPhase::Steady,`",
+    "sender_state_thresholds.rs:187 send_rate_differs_between_startup_and_the_steady_family"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": ""
+  },
+  {
+   "name": "PROBE_UP gentle bandwidth probe (Gain::PROBE_UP 1.25; entry: Steady ∧ now−last_probe_end ≥ K_PROBE_PERIOD_EPOCH(4)×live ack_epoch ∧ qd_ratio ≤ 500‰ ∧ backlog; frozen entry snapshots epoch_e/btlbw_e/delivered_e; exits success(delivered ≥ 2×btlbw_e×epoch_e ∧ btlbw > btlbw_e×1.025) / abort(qd>500‰ ∨ probe-attributed loss) / timeout(4×epoch_e) / preempt) (§8.3, TUR-3c)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3 L213-214, L220, L229",
+    "specs/adaptive-transport-engine-spec.md §8.3 L633-638",
+    "specs/adaptive-transport-engine-spec.md §16.1 L1008-1009 (K_PROBE_PERIOD_EPOCH, volume/dwell/eşikler)",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1074"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rate.rs:36-37 Gain::PROBE_UP 5/4",
+    "crates/adaptive-transport/src/sender.rs:1436-1440 K_PROBE_PERIOD_EPOCH=4, PROBE_MAX_DWELL_EPOCH=4, PROBE_VOLUME_EPOCH=2, PROBE_SUCCESS_EPS_PERMILLE=25, PROBE_QD_ABORT_PERMILLE=500",
+    "crates/adaptive-transport/src/sender.rs:3843-3871 ProbeUp arm; 3874-3900 Steady entry; 3914-3922 preempt accounting; 3948-3966 probe_close_success/probe_close",
+    "crates/adaptive-transport/src/sender.rs:3291-3298 queue_losses: probe_loss_attributed if send_ns ≥ probe_entry_ns",
+    "crates/adaptive-transport/src/sender.rs:4012 phase→gain; 1321 ProbeExit"
+   ],
+   "product_call_chain": "update_state Steady arm 3874-3900 → ProbeUp → compute_send_rate 4012 Gain::PROBE_UP → pacer.set_rate; exits via 3844-3871 / 3914-3922 (emergency/pending preempt) / loss attribution 3294-3298",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "Steady with backlog, qd ≤ 500‰, ≥4×ack_epoch since last probe end (ack_epoch ≥ 2.097s due to static return prior → period ≥ 8.4s)",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "diag_probe() → (success, abort, timeout, preempt) (sender.rs:5957-5964) — bench stub arm only (kama.rs:464); NOT exported in product ClientStats",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3880-3897 period_ok/qd_ok/backlog gate and entry snapshots",
+    "sender.rs:3846-3870 success/abort/timeout evaluation on frozen epoch_e/btlbw_e",
+    "sender.rs:3294-3298 `if let Some(entry) = self.probe_entry_ns { if p.send_ns >= entry { self.probe_loss_attributed = true; } }`",
+    "tests sender.rs:7439 probe_up_contract_entry_success_and_gates, :7505 probe_up_timeout_and_preempt_bookkeeping"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Loss→rate coupling: a probe-attributed loss aborts the probe (gain 1.25→1.0). Spec §16.1 L1009 explicitly sanctions this abort leg. Spec §8.3 'PROBE_BW_PERIOD' is realized as K_PROBE_PERIOD_EPOCH×ack_epoch."
+  },
+  {
+   "name": "ProbeBW down-leg after probe (pacing_gain = 1.0 − g_dn to drain the probe-built queue) (§8.3)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §8.3 L636-638"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/rate.rs:38-39 Gain::PROBE_DOWN 3/4 and PacingPhase::ProbeDown (rate.rs:70-71) exist but are mapped only from SenderState::DrainRtprop (sender.rs:4013)"
+   ],
+   "product_call_chain": "ProbeUp exits go directly to Steady (sender.rs:3948-3966 probe_close_success/probe_close return SenderState::Steady); no state applies PROBE_DOWN after a probe",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "absent",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:3953 `SenderState::Steady` (probe_close_success) and 3964 `SenderState::Steady` (probe_close)",
+    "sender.rs:4009-4019 phase map: ProbeUp→PROBE_UP, DrainRtprop→ProbeDown, no post-probe down phase",
+    "spec §8.3 L636-637 'BW-probe: ... → BtlBw taze; ardından pacing_gain = 1.0−g_dn ile biriken kuyruğu boşalt.'"
+   ],
+   "duplicates_or_dead": "PacingPhase::ProbeDown name is misleading — it is the DrainRtprop gain, not a post-ProbeUp drain",
+   "feature_off_behavior": "n/a",
+   "notes": "Queue built during ProbeUp is left to Steady (gain 1.0) and the qd-driven fuzzy soft-drain (fusion sr1) to dissipate. Whether the explicit g_dn leg is required for v1 is a spec/CAL question (g_dn=[CAL], never calibrated)."
+  },
+  {
+   "name": "DRAIN_RTPROP RTprop refresh (§8.3/§12 RTPROP_PROBE_TIMER; entry: Steady ∧ rtprop min-sample age ≥ W_rtprop/2 on RtpropProbe tick; pacing gain 0.75 (PacingPhase::ProbeDown); exit: (dwell ≥ 1×ack_epoch ∧ qualifying RTT sample) ∨ dwell ≥ 3×ack_epoch) (TUR-3b)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3 L210, L223",
+    "specs/adaptive-transport-engine-spec.md §8.3 L640-642",
+    "specs/adaptive-transport-engine-spec.md §12 L875",
+    "specs/adaptive-transport-engine-spec.md §16.2 L1072"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:3093-3109 on_timer Timer::RtpropProbe entry",
+    "crates/adaptive-transport/src/sender.rs:1421-1422 DRAIN_RTPROP_MIN/MAX_DWELL_EPOCH = 1/3",
+    "crates/adaptive-transport/src/sender.rs:3823-3841 DrainRtprop exit arm; 3063-3066 qualifying sample flag; 4013 gain",
+    "crates/adaptive-transport/src/rtt.rs:189-193 rtprop_age_ns"
+   ],
+   "product_call_chain": "runtime.rs:62 RTPROP_TICK=200ms → 908 interval → 1344 drive!(Event::TimerFired(Timer::RtpropProbe)) → sender.rs:3095-3109 → state DrainRtprop → compute_send_rate 4013 Gain::PROBE_DOWN 0.75 → exit 3823-3841 on qualifying RTT sample (3063-3066)",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "Steady ∧ rtprop min-entry age ≥ max(10s, 8×srtt)/2 at a 200ms tick",
+   "bench_exposure": "kama-product arm on by default; bench stub arm also drives RtpropProbe (kama.rs:327,483)",
+   "telemetry": "none exported (state at close only)",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3098-3107 `let stale = self.rtt.rtprop_age_ns(now_ns).is_some_and(|age| age >= self.rtt.rtprop_window_ns() / 2); if stale { self.state = DrainRtprop; ... }`",
+    "sender.rs:3833-3840 exit invariant",
+    "runtime.rs:1344 `drive!(Event::TimerFired(Timer::RtpropProbe), now);`",
+    "sender.rs test 8167 drain_rtprop_contract_dwell_and_exit_invariant"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Spec §8.3 says 'cwnd_gain'i kısa süre düşür (inflight drain)'; code lowers pacing gain to 0.75 instead (no cwnd byte gate exists). Entry is only from Steady, so under sustained RecoverArq/ProbeUp the refresh is deferred (documented 3885-3887)."
+  },
+  {
+   "name": "Recovery overlay / base_phase (INV-RATE-1 extension TUR-7 β1): RecoverArq/RecoverFwd use the base phase gain (Startup 2.885 or Steady 1.0); recovery exit returns to base; plateau evaluated under recovery; re-entry ≠ recovery return",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §0.3 L64-68 ([TUR-7 S1-onaylı EK-CÜMLE])",
+    "specs/adaptive-transport-engine-spec.md §16.1 L1000 (base_phase row; kilit-golden inv_rate_1_loss_declaration_preserves_phase_gain)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:1647-1650 base_is_startup field",
+    "crates/adaptive-transport/src/sender.rs:4014-4017 compute_send_rate recovery→base gain",
+    "crates/adaptive-transport/src/sender.rs:3902-3910 recovery exit to base; 3754-3758 plateau on base; 3924-3935 true-entry detection"
+   ],
+   "product_call_chain": "update_state 3776-3780 (RecoverFwd/RecoverArq) → compute_send_rate 4014-4017 Gain::STARTUP if base_is_startup else Steady → pacer.set_rate",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "any loss declaration / emergency while ramping",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "none",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:4014-4017 `SenderState::RecoverArq | SenderState::RecoverFwd if self.base_is_startup => { PacingPhase::Startup }`",
+    "sender.rs:3904-3910 `RecoverArq | RecoverFwd => if self.base_is_startup { Startup } else { Steady }`",
+    "sender.rs:7560 inv_rate_1_loss_declaration_preserves_phase_gain (floor OFF) + 7633 inv_rate_1_active_floor_loss_does_not_reduce_rate (floor ON)"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": ""
+  },
+  {
+   "name": "INV-RATE-1 end-to-end (loss ⟂ send_rate): fuzzy send_rate_gain from bw∧queue_delay only (§5.4); rate inputs loss-free; queue_losses touches no pacer/rate state; runtime never back-pressures on send error/egress refusal",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §5.4 L600-601, §14 INV-RATE-1 L725",
+    "specs/adaptive-transport-engine-spec.md §0.3 L63-64, §7.4 L603, §5 L408-411, §12 L871"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/fusion.rs:535-540 send_rate_gain = weighted_average(sr1=bw.low∧qd.high → sr_low, else sr_high)",
+    "crates/adaptive-transport/src/rate.rs:164-177 effective_send_rate (no loss input)",
+    "crates/adaptive-transport/src/sender.rs:3280-3330 queue_losses (inflight/tombstone/probe-attrib only)",
+    "crates/client-core/src/runtime.rs:941-954 seal_send! (send error / egress refusal counted, never fed back)"
+   ],
+   "product_call_chain": "loss.on_ack 3080 / detect_time_losses 3115-3117 → queue_losses 3280 → pending_lost → update_state RecoverArq overlay (base gain kept) → compute_send_rate unchanged inputs (btlbw, rtprop, srtt, phase gain, fuzzy gain from bw+qd)",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "structural",
+   "activation_condition": "always",
+   "bench_exposure": "kama-product arm; n8_reverify_emit.rs:93-103 pins BtlBw and send_rate bit-identical at 0% vs 15% loss",
+   "telemetry": "none direct",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "fusion.rs:535-540 `// 3) send_rate_gain — §5.4 loss-decoupling: YALNIZ bw + queue_delay. let sr1 = bw.low.min(qd.high); ...`",
+    "rate.rs:164-171 signature (cfg, btlbw, rtprop, srtt, pacing_gain, send_rate_gain_permille) — no loss parameter",
+    "sender.rs:3280-3300 queue_losses body: inflight.remove, inflight_bytes −=, probe_loss_attributed, tombstone — no pacer/btlbw/rtt writes",
+    "runtime.rs:947-952 `if sock.send(&sd.bytes).await.is_err() { stats.send_errors += 1; // kayıp; asla geri itme (INV-RATE-1). }`",
+    "tests: tv_src.rs:60, tv_loss.rs:169, n8_reverify_emit.rs:93-103, fec_loss_risk.rs:192/408, sender.rs:7560/7633"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Two spec-sanctioned indirect couplings: (1) ProbeUp abort on probe-attributed loss (§16.1 L1009); (2) tombstone/inflight removal reduces inflight_bytes which feeds the Drain exit byte-threshold only. srtt inflation from queueing (not loss) lowers cwnd/srtt — by design."
+  },
+  {
+   "name": "Token-bucket pacer (§13): single bucket shared by DATA / ARQ retransmit / geometric+emergency duplicates / FEC parity; refill per event (Δt since last event); grant order DATA-first with ARQ every K_ARQ_SHARE(4)th grant, FEC parity last",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §13 L890-901",
+    "specs/adaptive-transport-engine-spec.md §3.3-B L331-333 (kopyalar AYNI pacer'dan; pacer'ı baypas eden gönderim yolu YOK)",
+    "specs/adaptive-transport-engine-spec.md §16.1 L1001 (K_ARQ_SHARE row; DATA-önce ölçülü-karar)",
+    "specs/adaptive-transport-engine-spec.md §9 L678"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/pacer.rs:17-98 TokenBucket {new, set_rate, refill, try_send, set_burst_cap, fill_to_cap, tokens, burst_cap, rate}",
+    "crates/adaptive-transport/src/sender.rs:2153 pacer.refill(dt); 2223 set_rate; 1793 initial TokenBucket::new(31, DEFAULT_BURST_CAP)",
+    "crates/adaptive-transport/src/sender.rs:5294-5314 try_send_pre_parity → pacer.try_send (5313)",
+    "crates/adaptive-transport/src/sender.rs:5664 (DATA), 5340/5459 (ARQ retx), 5622 (duplicates), 4895 (FEC parity direct pacer.try_send)",
+    "crates/adaptive-transport/src/sender.rs:4041-4082 schedule_transmit ordering; 1434 K_ARQ_SHARE=4"
+   ],
+   "product_call_chain": "on_event_core 2153 refill → compute_send_rate → 2223 set_rate → 2242 set_burst_cap → schedule_transmit 4041 (ARQ-share 4049-4055 → drain_new_data 5656 → plan_arq_retransmits / plan_forward_duplication → emit_tail_probe → drain_establish_probe → drain_due_duplicates → plan_fec_parity → bootstrap probes) → TransmitDecision → runtime.rs:963 drive! → seal_send! → sock.send",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "every emission",
+   "bench_exposure": "kama-product arm on by default",
+   "telemetry": "diag_pacer() (2031) no product consumer; TsSample.pacer_tokens + sched_*_denied/emitted (sender.rs:546-554) only with ts_sample_period_ns (runtime.rs:159, 1058-1062) and diag-sched-telemetry feature; FateWindowDiag.sched[12] (runtime.rs:432) zero unless feature",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "pacer.rs:58-65 try_send; pacer.rs:49-55 refill with remainder",
+    "sender.rs:5313 `self.pacer.try_send(size)`; call sites 5340, 5459, 5622, 5664 via try_send_pre_parity; 4895 direct in plan_fec_parity",
+    "sender.rs:4049-4057 `if self.state == RecoverArq && !self.pending_lost.is_empty() && self.arq_share_tick.is_multiple_of(K_ARQ_SHARE) { self.plan_arq_retransmits(...) } self.drain_new_data(...)`",
+    "tests: tv_pace.rs:11 tv_pace_token_bucket, :34 tv_pace_burst_cap_clamps; tv_arq.rs:127 GOLDEN G5 retransmits from token bucket"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "§13 priority text (retransmit > FEC > DATA) is superseded by the measured DATA-first order (§16.1 L1001 K_ARQ_SHARE row sanctions it). Two bypass paths exist — see next record."
+  },
+  {
+   "name": "Pacer-bypass emission paths: DR-EST-1 establish probe (PreConverge, token-exempt single datagram from the oldest due geometric copy; default ON) and DR-CS-3 bootstrap probes (additive, not paced; default OFF)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.3-B L331-333 ('pacer'ı baypas eden gönderim yolu YOK')",
+    "specs/adaptive-transport-engine-spec.md §3.3-F L369-375 (probe = hızlandırıcı, opsiyonel)",
+    "specs/adaptive-transport-engine-spec.md §16.1 L1017-1019 (PROBE_BUDGET_FRACTION, PROBE_PAYLOAD_SIZE)",
+    "(no spec section describes DR-EST-1; grep 'DR-EST|establish' in specs → none)"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:5542-5580 drain_establish_probe (no try_send; establish_probe_enabled)",
+    "crates/adaptive-transport/src/sender.rs:1816 establish_probe_enabled: true; 5598 set_establish_probe; 1389-1390 ESTABLISH_PROBE_INITIAL/CAP_NS",
+    "crates/adaptive-transport/src/sender.rs:3151-3200 drain_bootstrap_probes ('ADDITIVE, NOT PACED'); 1019-1023 BS_FIRES_NS/BS_PROBE_WIRE_EXACT/BS_TX_HARD_BUDGET"
+   ],
+   "product_call_chain": "schedule_transmit 4070 drain_establish_probe (PreConverge only, 5546) → TransmitDecision pushed without pacer debit 5574 → runtime seal_send!; bootstrap: 4084 drain_bootstrap_probes gated by bootstrap_rtt.enabled (3152) — runtime.rs:824-835 sets it from RuntimeConfig.bootstrap_rtt (default false)",
+   "product_reachable": true,
+   "gate": "establish: Sender.establish_probe_enabled (no RuntimeConfig field; engine default true); bootstrap: RuntimeConfig.bootstrap_rtt (default false)",
+   "default_state": "establish probe ON (sender.rs:1816); bootstrap probes OFF (runtime.rs:196)",
+   "activation_condition": "establish: state PreConverge ∧ a geometric copy is due (interval 0.5s→8s cap); bootstrap: PreConverge ∧ no srtt ∧ ladder step due",
+   "bench_exposure": "establish: implicit in kama-product arm; bootstrap: --bootstrap-rtt / --bootstrap-fast flags (main.rs:119-127, 234-242)",
+   "telemetry": "FateWindowDiag.establish_probes_tx (runtime.rs:1412; sender.rs:5607) printed by KP-CLIENT `establish_tx=`; bootstrap: bootstrap_rtt_diag() (2008) not exported",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:4063-4070 comment 'TEK datagram'ı token-MUAF geçirir; INV-RATE-1'e dokunmaz (send_rate/pacer-rate değişmez — ayrı bounded yan-kol)' + call",
+    "sender.rs:5561 comment 'drain_due_duplicates gövdesinin try_send'siz tek-elemanlı' ; 5574 out.push without pacer debit",
+    "sender.rs:3151-3160 doc 'ADDITIVE, NOT PACED: this deliberately does NOT call try_send_pre_parity / pacer.try_send'",
+    "runtime.rs:196 `bootstrap_rtt: false,`; runtime.rs:824-835 set_bootstrap_rtt",
+    "tests/establish_probe.rs; tests/dr_cs3_structural_oracle.rs"
+   ],
+   "duplicates_or_dead": "DR-CS-1 F2A drain_cs_probes (sender.rs:2777, cfg experimental-cold-start) is a second implementation of the same 0x19/0x1A ladder, skipped when bootstrap_rtt.enabled (4080-4083); feature not compiled in client-core",
+   "feature_off_behavior": "establish_probe_enabled=false → geometric copies wait for floor tokens (documented stall at 31 B/s); bootstrap OFF → no probes",
+   "notes": "Establish probe is on the default product path and bypasses the token bucket, which §3.3-B forbids ('pacer'ı baypas eden gönderim yolu YOK'); it is bounded (one datagram per due copy, PreConverge only) but has no spec authority. Cold-start cluster should own the classification; recorded here for the pacing invariant. SHIP given default-on + product telemetry; medium confidence pending spec amendment."
+  },
+  {
+   "name": "Pacer wakeup API: TokenBucket::ns_until_sendable + Sender::next_wakeup_ns / next_timer_deadline_ns / pending_work_ready_ns (EK4-A2 event-loop liveness)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §13 L897 ('değilse pacing kuyruğunda bekle (Tokio timer)')"
+   ],
+   "spec_requires_v1": "optional",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/pacer.rs:100-126 ns_until_sendable",
+    "crates/adaptive-transport/src/sender.rs:2433-2437 next_wakeup_ns; 2453 next_timer_deadline_ns; 2545-2563 pending_work_ready_ns (ns_until_sendable 2490, 2563)"
+   ],
+   "product_call_chain": "none in product: runtime.rs:6 doc 'next_wakeup_ns()'e tek-kaynak-uyku YOK (D3, EK4-A2 tarihi): pompa idempotent + kanıtlı'; product loop uses fixed PACE_TICK=1ms (runtime.rs:60, 1326) and RTPROP_TICK=200ms; grep next_wakeup_ns runtime.rs → comment only",
+   "product_reachable": false,
+   "gate": "none",
+   "default_state": "API present, unconsumed",
+   "activation_condition": "n/a in product",
+   "bench_exposure": "none (bench arms also tick-pump)",
+   "telemetry": "none",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "medium",
+   "evidence": [
+    "runtime.rs:6 comment and 60-62 tick constants; 1326/1344/1373 tick-driven drive! calls",
+    "sender.rs:2433-2437 public next_wakeup_ns; consumers: tests/ek4_a2_liveness.rs (per sender.rs comments), on_event_batch (cfg experimental-cold-start)",
+    "pacer.rs:112-126 ns_until_sendable"
+   ],
+   "duplicates_or_dead": "unconsumed public API in product",
+   "feature_off_behavior": "n/a",
+   "notes": "Spec §13 envisions a Tokio-timer sleep; product chose a 1 ms pump (D3). Keeping the API is harmless but it is not exercised by the product runtime; classify as experimental until an event-driven loop adopts it."
+  },
+  {
+   "name": "Product timer pump: PACE_TICK 1 ms → Event::TimerFired(Timer::Pto) (pacer drain + time-threshold loss + tombstone prune + tail PTO); RTPROP_TICK 200 ms → Timer::RtpropProbe (vs §12 PTO timer formula)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §12 L866-875 (PTO formula; RTPROP_PROBE_TIMER)",
+    "specs/adaptive-transport-engine-spec.md §16.2 ZM-1 L1035 (tick count is not time)",
+    "specs/adaptive-transport-engine-spec.md §3 L248-251"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/client-core/src/runtime.rs:58-62 PACE_TICK=1ms, RTPROP_TICK=200ms; 908 interval(RTPROP_TICK); 1326, 1344, 1373 drive! calls",
+    "crates/adaptive-transport/src/sender.rs:953-958 enum Timer {Pto, RtpropProbe}",
+    "crates/adaptive-transport/src/sender.rs:3093-3149 on_timer",
+    "crates/adaptive-transport/src/tail_recovery.rs:145-156 base_pto_ns = clamp(srtt + 4·rttvar + max_ack_delay, min, max) (validated_v1: 10ms/10s/1s/30s, 72-82)"
+   ],
+   "product_call_chain": "runtime.rs:1324-1327 `_ = pace.tick() => drive!(Event::TimerFired(Timer::Pto), now)` → sender.rs:2153 refill → 3111-3120 detect_time_losses → 3140-3149 tail_recovery.on_timer(srtt, rttvar) (validated_v1 ON via lib.rs:83) → schedule_transmit; runtime.rs:1344 RtpropProbe → 3095",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on",
+   "activation_condition": "1 ms / 200 ms wall-clock intervals",
+   "bench_exposure": "kama-product arm (same runtime)",
+   "telemetry": "none for ticks",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "runtime.rs:60 `const PACE_TICK: Duration = Duration::from_millis(1);` 62 `const RTPROP_TICK: Duration = Duration::from_millis(200);`",
+    "runtime.rs:1326 `drive!(Event::TimerFired(Timer::Pto), now); ts_sample!(now);`",
+    "sender.rs:3113-3117 time-threshold loss under Timer::Pto (frozen in PreConverge)",
+    "tail_recovery.rs:148-156 base_pto_ns"
+   ],
+   "duplicates_or_dead": "`Timer::Pto` is a misnomer: it is the pace/loss tick, not a PTO-formula timer; the §12 PTO formula lives only in tail_recovery (probe leg)",
+   "feature_off_behavior": "n/a",
+   "notes": "§12 PTO is not armed as a timer (§3.1 arm_pto_timer); time-threshold loss is evaluated every 1 ms tick against srtt-derived thresholds (loss cluster). The 200 ms RtpropProbe tick only samples the channel-clocked staleness condition (ZM-2 compliant)."
+  },
+  {
+   "name": "IDLE state / IDLE_TIMER (§12: idle > IDLE_TIMEOUT → IDLE, session kept) and Idle→Startup resume",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3 L204, L224",
+    "specs/adaptive-transport-engine-spec.md §12 L876-877 (IDLE_TIMEOUT=[CAL]; [R4] IDLE_TIMER yalnız IDLE'a geçirir)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:3749-3753 idle = all queues empty; 3763-3766 → Idle immediately",
+    "crates/adaptive-transport/src/sender.rs:2175-2182 AppData: Idle→Startup if srtt known (PreConverge only first time)",
+    "crates/adaptive-transport/src/sender.rs:3783 Idle→Startup in phase match"
+   ],
+   "product_call_chain": "update_state 3749-3766 → Idle; next AppData 2175-2182 → Startup → 3929-3935 re-entry resets plateau counters → Gain::STARTUP",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always on; no IDLE_TIMEOUT constant exists (grep IDLE_TIMEOUT sender.rs → none)",
+   "activation_condition": "tx_queue ∧ inflight ∧ pending_lost ∧ dup_queue all empty (immediate)",
+   "bench_exposure": "kama-product arm",
+   "telemetry": "sender_state at close",
+   "classification": "SHIP",
+   "confidence": "medium",
+   "evidence": [
+    "sender.rs:3749-3753 `let idle = self.tx_queue.is_empty() && self.inflight.is_empty() && self.pending_lost.is_empty() && self.dup_queue.is_empty();`",
+    "sender.rs:2175-2182 resume logic",
+    "tests sender.rs:7336 drains_to_idle_when_quiescent; sender_state_thresholds.rs:104 resume_from_idle_goes_to_startup_not_back_to_preconverge; sender_state_matrix.rs:342 idle_resume_can_skip_startup_probing"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "n/a",
+   "notes": "Deviation: spec's IDLE_TIMEOUT dwell is absent — the sender goes Idle the instant work drains, and every resume re-enters Startup (2.885× gain) with plateau counters reset (3929-3935). Estimators (srtt/rtprop/btlbw windows) are retained across Idle, so the practical effect is a Startup re-ramp per message gap; on paced workloads (bench --interval) this means Startup gain is applied at each resume. Open question whether an IDLE_TIMEOUT dwell is needed for v1."
+  },
+  {
+   "name": "FEC budget kernel reserve/settle in schedule_transmit (Commit-V FloorCap prototype: budget_reserve before drains, budget_settle after; budget_service_tickets)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §8.5 L658-662 (available_redundancy_budget)",
+    "specs/adaptive-transport-engine-spec.md §13 L898 (priority)"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:4044-4046 budget_reserve call; 4076-4078 budget_settle call; 5045 budget_reserve; 5197 budget_settle; 5159-5160 budget_service_tickets; 5296-5310 reservation displacement in try_send_pre_parity",
+    "crates/adaptive-transport/src/budget_kernel.rs:222 floor_timing, :382 settle"
+   ],
+   "product_call_chain": "none — every site is `#[cfg(feature = \"experimental-fec-budget\")]`; client-core Cargo.toml features list only diag-sched-telemetry → not compiled in product",
+   "product_reachable": false,
+   "gate": "cargo feature experimental-fec-budget (adaptive-transport/Cargo.toml:15-17)",
+   "default_state": "OFF (feature default-off; not enabled by client-core or bench)",
+   "activation_condition": "feature build + set_budget_policy (sender.rs:4977)",
+   "bench_exposure": "examples/udp_budget_runner.rs (required-features), tests/budget_live_tests.rs, live_budget_sweep.rs — not the kama-product arm",
+   "telemetry": "diag_budget() (4999) feature-only",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:4044-4046 `#[cfg(feature = \"experimental-fec-budget\")] self.budget_reserve(now_ns);`",
+    "sender.rs:5308-5309 `#[cfg(not(feature = \"experimental-fec-budget\"))] let _ = is_retx;`",
+    "adaptive-transport/Cargo.toml:15-17 'OFF (default): FloorCap-kodu-üretim-yoluna-BAĞLANMAZ'",
+    "client-core/Cargo.toml:38-40 features: diag-sched-telemetry only"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "try_send_pre_parity reduces to pacer.try_send (5313); schedule order unchanged (budget_equivalence_pin.rs)",
+   "notes": "Correctly outside v1; no v1 claim depends on it."
+  },
+  {
+   "name": "§8.5 parity budget clamp f(BtlBw): budget_cap_permille = min(profile_cap, BtlBw×1000/budget_ref) and parity_final = min(fuzzy, budget_cap, profile_cap)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §8.5 L658-662",
+    "specs/transport-layer-tdd.md §5.5 L603-604, §14 INV-FUZZY-1 L730",
+    "specs/adaptive-transport-engine-spec.md §3.3-D L356-358 (budget clamp bw-kilidine bağlı)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/budget.rs:38-47 budget_cap_permille, parity_final",
+    "crates/adaptive-transport/src/budget.rs:12-20 profile_cap_permille=900, budget_ref_bps=125_000"
+   ],
+   "product_call_chain": "none — grep -rn 'budget_cap_permille(\\|parity_final(' crates → only tests/tv_emergency.rs:21-39; sender.rs reads budget_cfg only for min_rate_bps (1793, 4032); the FEC arbiter (fec_arbiter sender.rs:581) has no BtlBw-budget input",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "dead in product",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "grep 'budget_cfg\\.' sender.rs → 1793 `pacer: TokenBucket::new(budget_cfg.min_rate_bps, ...)`, 4032 `send_rate_final(fuzzy_rate, self.budget_cfg.min_rate_bps, u64::MAX)` only",
+    "tv_emergency.rs:21-39 exercises budget_cap_permille/parity_final in isolation",
+    "budget.rs:1-7 module doc claims §8.5 parity clamp"
+   ],
+   "duplicates_or_dead": "budget.rs parity functions have no non-test caller",
+   "feature_off_behavior": "n/a",
+   "notes": "Cross-cluster: parity actuation is the FEC cluster's arbiter (max of confirmed/structure/speculative). The bandwidth-derived cap the spec requires ('düşük bantta yüksek loss bile parity'yi patlatamaz') is not applied anywhere on the product path. Recorded here because it is the only §8.5 BtlBw consumer; the FEC-cluster auditor should confirm whether an equivalent cap exists (e.g. r_code_max / profile) before treating as a v1 blocker."
+  },
+  {
+   "name": "diag-sched-telemetry BtlBw acceptance lineage counters (offered/accepted/rejected_invalid/rejected_interval/rejected_app_limited) and SchedDiag per-class token denial counters",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.4 L325-357 (mechanism-proof secondary metrics)",
+    "specs/adaptive-transport-engine-spec.md §17 L1111 (estimator accuracy vs netem ground-truth)"
+   ],
+   "spec_requires_v1": "optional",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/bw.rs:158-172 diag_* fields; 222-239 increments; 259-271 diag_accept",
+    "crates/adaptive-transport/src/sender.rs:2043-2048 diag_bw_accept; 1127+ SchedDiag; 1979 sched_diag()",
+    "crates/client-core/src/runtime.rs:432 FateWindowDiag.sched[12]"
+   ],
+   "product_call_chain": "compiled only with feature diag-sched-telemetry (client-core/Cargo.toml:40; bench/Cargo.toml:26); observation-only counters at existing decision points",
+   "product_reachable": true,
+   "gate": "cargo feature diag-sched-telemetry",
+   "default_state": "OFF (feature default-off)",
+   "activation_condition": "feature build",
+   "bench_exposure": "cargo build -p bench --features diag-sched-telemetry (bench/Cargo.toml:25-26); KP-CLIENT prints sched=… (kama_product.rs:566 `sched={:?}`)",
+   "telemetry": "is telemetry",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "bw.rs:222-239 `#[cfg(feature = \"diag-sched-telemetry\")] { self.diag_offered += 1; ... }`",
+    "adaptive-transport/Cargo.toml:21-27 'OBSERVATION-ONLY: adds saturating counters ... no control flow'"
+   ],
+   "duplicates_or_dead": "none",
+   "feature_off_behavior": "counters absent; behaviour byte-identical",
+   "notes": "Correct as observation-only; does not substitute for the missing product export of BtlBw/srtt values."
+  },
+  {
+   "name": "gain_ge1 send-time gain stamp + RateSample.ack_elapsed/sent_ns (TUR-D1 shrink-detector inputs; consumer archived)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §16.1 L1002-1003, L1005 (K_SHRINK/K_RATIO/K_FRESH [ARŞİV — MUST NOT IMPLEMENT: TUR-D1-shrink])",
+    "specs/adaptive-transport-engine-spec.md §16.1 L1006 (EK-3 AÇIK-BORÇ)"
+   ],
+   "spec_requires_v1": "obsolete",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/bw.rs:31-34 SentPacket.gain_ge1; 46-52 RateSample.gain_ge1/ack_elapsed/sent_ns",
+    "crates/adaptive-transport/src/sender.rs:5759-5769 gain_ge1 computed and passed to on_sent"
+   ],
+   "product_call_chain": "computed on every emission (5763-5769) and carried in RateSample; grep 'gain_ge1\\|\\.ack_elapsed\\|\\.sent_ns' sender.rs → only the producer lines; no reader anywhere except tv_bw.rs fixtures",
+   "product_reachable": true,
+   "gate": "none",
+   "default_state": "always computed, never read",
+   "activation_condition": "n/a",
+   "bench_exposure": "none",
+   "telemetry": "none",
+   "classification": "DELETE",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5761-5762 comment '(örnek-sınıflandırma-bilgisi; tüketicisi-arşivlendi, alan-korunur)'",
+    "grep -rn 'gain_ge1' crates → bw.rs, sender.rs:5763/5769, tests/tv_bw.rs fixtures only",
+    "spec §16.1 L1002 TUR-D1 shrink family '[ARŞİV — MUST NOT IMPLEMENT ... kod turd1-reconciliation-branch-DO-NOT-MERGE]'"
+   ],
+   "duplicates_or_dead": "dead fields; the only design that consumed them is spec-archived MUST-NOT-IMPLEMENT",
+   "feature_off_behavior": "n/a",
+   "notes": "Removing the fields is a signature change to SentPacket/RateSample (bw.rs) — surgical-edit rule applies; tv_bw.rs fixtures would need updating."
+  },
+  {
+   "name": "Cluster telemetry export to product stats (btlbw, srtt, rtprop, queue_delay, send_rate/pacer rate, phase-transition and ProbeUp/DrainRtprop counters, startup floor) — §4.4.4/§17 estimator-accuracy evidence surface",
+   "spec_refs": [
+    "specs/transport-layer-tdd.md §4.4.4 L325-357",
+    "specs/transport-layer-tdd.md §9 L662-665 (NetworkClassifier metrikleri)",
+    "specs/adaptive-transport-engine-spec.md §17 L1108-1112 (estimator accuracy §7 BtlBw vs netem ground-truth)",
+    "specs/transport-layer-tdd.md §14 INV-QBENCH-2 L735"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": false,
+   "impl_symbols": [
+    "engine accessors exist: sender.rs:5842 diag_rate, 5870 diag_rtt, 5890 diag_qd, 5903 path_timing_snapshot, 5920 diag_wbtlbw, 5957 diag_probe, 2031 diag_pacer, 2025 startup_pacing_floor_bps",
+    "product export: runtime.rs:1394-1412 FateWindowDiag fills sender_state, left_preconverge, rtt_samples, establish_probes_tx only"
+   ],
+   "product_call_chain": "runtime.rs:1385-1440 stats.fate = FateWindowDiag{...} — none of diag_rate/diag_qd/diag_probe/diag_pacer/path_timing_snapshot are called (grep in client-core/src → none); bandwidth_bps reaches last_fusion_obs only when fusion_policy enabled (sender.rs:3481)",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "not exported",
+   "activation_condition": "n/a",
+   "bench_exposure": "kama-product KP-CLIENT (kama_product.rs:561-600) prints state= / left_preconv= / establish_tx= / bw_range (policy-only) — no BtlBw/srtt/rtprop/rate values; the retired stub arm bench/src/kama.rs:458-467 did print diag_rate/diag_probe/diag_qd/diag_wbtlbw",
+   "telemetry": "gap",
+   "classification": "WIRE",
+   "confidence": "medium",
+   "evidence": [
+    "grep -n 'diag_rate()\\|diag_qd()\\|diag_probe()\\|diag_pacer()\\|diag_wbtlbw()\\|path_timing_snapshot()\\|startup_pacing_floor_bps()' crates/client-core/src/*.rs crates/bench/src/*.rs → only bench/src/kama.rs:458-467 (stub arm)",
+    "runtime.rs:1404-1412 exported sender fields list",
+    "kama_product.rs:561-570 KP-CLIENT format string (no btlbw/srtt fields)",
+    "spec §17 L1111 requires estimator accuracy (BtlBw vs ground truth) as §4.4.4 mechanism proof"
+   ],
+   "duplicates_or_dead": "n/a",
+   "feature_off_behavior": "n/a",
+   "notes": "Every estimator/pacing value audited in this cluster is invisible on the product bench path; only phase-at-close and RTT-sample count are visible. The §4.4 gate's mechanism-proof metrics (estimator accuracy, loss/congestion confusion) cannot be produced from the kama-product arm today. TsSample (runtime.rs:460, sender.rs:526-555) carries pacer_tokens but not rate/btlbw."
+  }
+ ],
+ "open_questions": [
+  "Initial window default conflict: RuntimeConfig::default().initial_window_bytes = 2400 (runtime.rs:195) vs spec §3.3-A [K-D2] single-unit PreConverge clamp (engine-spec L300-303) vs engine doc 'KALİBRE EDİLMEMİŞ: default flip ölçüm ister' (sender.rs:313) vs bench kama-product CLI default 0 labelled 'sevk davranışı' (kama_product.rs:159-160). Which is the authoritative v1 default, and does an [AMENDMENT] to §3.3-A exist outside specs/?",
+  "Startup pacing floor (DR-RATE-RAMP-2) is default ON in the product with no RuntimeConfig switch and no spec section; its INV-RATE-1 supersession is recorded in a report (reports/fs-cal-2/v3.5/INV-RATE-1-STARTUP-FLOOR-SUPERSESSION.md, cited sender.rs:1090) not in specs/. Is a spec amendment required before v1, and should RuntimeConfig expose the switch? Stale 'default OFF' comments at sender.rs:1063/1806/2019 contradict the value.",
+  "W_BTLBW and W_qd window derivations: code uses the Y3 delivered-EAI w_epoch (sender.rs:2907-2920) for both; spec §6 L523/L531 and §16.1 L994-995 still state K_bw×ack_epoch / K_QD×ack_epoch while §16.1 L1004 sanctions Y3 for W_BTLBW only. The W_qd K8-fix (sender.rs:2915-2919) has no spec row. Spec-internal reconciliation needed?",
+  "estimator_confidence / ack_compression_score (§7.3, TDD §5.1) are unimplemented; bw validity gate receives only `delivered > 0` (sender.rs:2949). Is this a v1 blocker given TUR-2b/3a closures, or should §7.3 be amended to the implemented validity set?",
+  "Inflight byte cap (§8.2/§14) and MIN_CWND k×BDP floor are open debt per the spec's own §16.2 inventory (L1065, L1083). Is D-4/2 scheduled before the §4.4 benchmark gate?",
+  "§8.3 post-ProbeUp down-leg (pacing_gain = 1−g_dn, g_dn=[CAL]) is not implemented; PacingPhase::ProbeDown is used only for DrainRtprop. Required for v1 or [CAL]-deferred?",
+  "§8.5 send_rate upper clamp min(BtlBw_based_cap, profile_cap) is not applied (sender.rs:4032 cap = u64::MAX) and the §8.5 parity budget clamp f(BtlBw) has no product caller (budget.rs:38-47 test-only). FEC-cluster auditor to confirm whether the arbiter provides an equivalent bandwidth-derived parity cap.",
+  "IDLE_TIMEOUT (§12) does not exist: sender goes Idle immediately on empty queues and re-enters Startup (2.885× gain, plateau counters reset) on every resume (sender.rs:3749-3766, 2175-2182, 3929-3935). Intended for v1, or should an idle dwell be added for paced workloads?",
+  "DR-EST-1 establish probe (default ON, sender.rs:1816) bypasses the token bucket (sender.rs:5542-5580) contrary to §3.3-B 'pacer'ı baypas eden gönderim yolu YOK'; no spec section describes DR-EST-1. Cold-start cluster to classify; pacing cluster flags the invariant tension.",
+  "rate::evaluate (rate.rs:137-155) is the function the TV-SRC INV-RATE-1 goldens pin (tv_src.rs, tv_loss.rs) but the product uses effective_send_rate (sender.rs:4024); should the goldens be re-pointed before evaluate is removed?",
+  "Product telemetry gap: no BtlBw/srtt/rtprop/send_rate/ProbeUp/DrainRtprop values reach ClientStats or the KP-CLIENT line (runtime.rs:1394-1412; kama_product.rs:561-600). How will §4.4.4/§17 estimator-accuracy evidence be produced for the benchmark gate?",
+  "reordering_score EWMA (§6) as a fuzzy jitter component is absent (rtt.rs:6-7 'ertelendi'); jitter input is rttvar/srtt only. Fusion-cluster decision needed on v1 necessity.",
+  "expected_ack_interval uses a static 31 B/s return-bw prior (sender.rs:1397) → ack_epoch ≥ 2.097 s on all channels, inflating Drain/DrainRtprop dwell and ProbeUp period on fast links (spec-declared E-FULL debt at §16.1 L997). Is the E-FULL measured return_bw scheduled before v1?"
+ ]
+}

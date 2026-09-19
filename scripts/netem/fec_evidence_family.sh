@@ -28,7 +28,8 @@ POL_A="250-250-250"; POL_B="250-375-375"
 P2="--persist-mode learned --persist-alpha 500 --persist-rho 1250 --persist-q 950"
 # M1/M2 (evidence floor/scaled) KALDIRILDI — kampanya Case B+D ile kapandı; yalnız M0 (mevcut davranış).
 EM_MIN="-"; EM_FULL="-"
-mode_args() { case "$1" in M0) echo "";; *) echo "bilinmeyen mod: $1" >&2; exit 4;; esac; }
+RP_SUPPRESS="${RP_SUPPRESS:-300}"
+mode_args() { case "$1" in M0) echo "";; G1) echo "--rp-suppress $RP_SUPPRESS";; *) echo "bilinmeyen mod: $1" >&2; exit 4;; esac; }
 ARMS="${ARMS_LIST:-off A-M0 B-M0}"
 run() { # $1=dir $2=cell $3=arm $4=msgs
   local d="$1" cell="$2" arm="$3" M="$4"; mkdir -p "$d"; P=$((P+1))
@@ -42,7 +43,7 @@ run() { # $1=dir $2=cell $3=arm $4=msgs
     c="$c --fec-risk --spec-l1-permille $l1 --spec-l2-permille $l2 --gate-permille $g $P2 $(mode_args $mode)"
     extra="--ts-out $d/ts.csv"
   fi
-  printf 'cell=%s arm=%s msgs=%s rtt=%s em_min=%s em_full=%s fwd=[%s] snd=[%s]\n' "$cell" "$arm" "$M" "${RTT[$cell]}" "$EM_MIN" "$EM_FULL" "${FWD[$cell]}" "${SND[$cell]:-}" > "$d/argv.txt"
+  printf 'cell=%s arm=%s msgs=%s rtt=%s em_min=%s em_full=%s rp_suppress=%s fwd=[%s] snd=[%s]\n' "$cell" "$arm" "$M" "${RTT[$cell]}" "$EM_MIN" "$EM_FULL" "$RP_SUPPRESS" "${FWD[$cell]}" "${SND[$cell]:-}" > "$d/argv.txt"
   # shellcheck disable=SC2086
   nsenter -t "$CHLB" -n "$BENCH" serve --bind "10.10.1.1:$P" $c 2>"$d/s.err" >/dev/null &
   local sp=$!; sleep 1

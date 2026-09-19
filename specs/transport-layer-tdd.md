@@ -1,5 +1,11 @@
 # Kama — Transport Layer TDD (Adaptive Hostile-Aware Transport)
 
+> **YAMA KAYDI — 2026-09-18b:** §7 Pipeline C "Outer AEAD (Noise transport key)" → session E2E anahtarı (§0.1 ile tutarlı); alıcı adımı "seam.open → transport reconstruct"; §0'a INV-PLAINTEXT-NOT-SEMANTICS (plaintext görmek ≠ semantik bağ; serileştirme sınırı PreparedUnit→UnsealedTransportUnit→SealedWireUnit; CCR/cert canonical-codec-only, protobuf re-encode yasak, compressor yasak; private key API'den geçmez).
+
+
+> **YAMA KAYDI — 2026-09-18 [AMENDMENT-6, Abkarada kararı + Claude Code kanıtı]:** §0'a INV-NEIGHBOR-1 (kanonik katman grafiği App→Transport→Crypto→UDP; degree(App)=degree(Crypto)=1; Transport→Crypto iki arayüz ailesi PacketProtection + SessionControl typed; SessionHandle ≠ HubHandle invariantları; zaman sahipliği ayrımı; early_unit istisnası) · §0.1 shard AEAD anahtarı "Noise transport key" → session E2E anahtarı; ProtectionContext S3 [OPEN] · §2 22B formatı = seam çıktısı notu (kod: legacy.rs:126, wire.rs:15-30, IdentitySeam no-op) · §8 AMENDMENT-4 gerekçesi düzeltildi ("transport ciphertext görür" → plaintext görür; app'te kalma gerekçesi tip bilgisi + aktüatör yokluğu, fusion.rs:551 / Cargo.lock negatif). INV-FEC-1 ve L-modeli DEĞİŞMEDİ.
+
+
 > **Tasarım ilkesi (TLS 1.3 dersi, NORMATİF):** Handshake sonrası bağ **byte'larda değil, anahtarda** kurulur. TLS established record'unda `connection_id`/`session_id`/`handshake_hash`/`cert_hash`/imza **yoktur** — yalnızca 16B AEAD tag vardır; tag handshake'ten türeyen key ile üretildiği için bağ kriptografiktir. Kama aynı modeli benimser: established mesajda **yalnızca demux handle + seq + ciphertext + AEAD tag** bulunur. Per-mesaj imza, link_id, cert-ref, routing-info, length **TAŞINMAZ.**
 > **Bağımlılık:** identity-and-trust-model.md (trust), ccr-format-spec.md (**§35 Session Model V3 — SESSION_INIT / SESSION_INIT_RESPONSE / SESSION_DATA / SIGNED_CONTROL canonical app-envelope byte'ları ve wire/session canonical semantiği orada**), routing-rendezvous-architecture.md (CAD-53/56/57), discovery-architecture.md.
 > **Çekirdek:** Kama transport "KCP over UDP" değil, "QUIC clone" değildir. Async hot-path = **UDP üzerinde E2E-authenticated message envelope** + hub-routing handle. FEC/ARQ + SRC seçili modların araçlarıdır (adaptif motor koşula göre seçer), her mesajı saran zorunlu zarf değildir. **KCP çıkarıldı** (§4). QUIC = zorunlu benchmark referansı, bağımlılık değil (§4.1).
@@ -7,6 +13,39 @@
 ---
 
 ## 0. Katman Modeli (NORMATİF — omurga)
+
+> **[AMENDMENT-6 — KANONİK KATMAN GRAFİĞİ, 2026-09-18, Abkarada] INV-NEIGHBOR-1 (NORMATİF):**
+> ```
+> Application → Transport (bu belge; kama-core) → Crypto (tel kenarı) → UDP
+> degree(Application) = 1   tek alt komşusu Transport
+> degree(Crypto)      = 1   tek üst komşusu Transport
+> ```
+> Application, Crypto'yu DOĞRUDAN ÇAĞIRAMAZ ve ondan callback ALAMAZ; Crypto, Application'ı çağıramaz.
+> Tüm Application↔security etkileşimi Transport ÜZERİNDEN geçer ("mediated" = çağrı grafiğinin sahibi
+> Transport'tur; Transport kripto semantiğini YORUMLAMAZ). Transport → Crypto sınırı İKİ arayüz ailesi taşır,
+> üçüncü seam değildir: **PacketProtection** `seal(datagram, ProtectionContext) / open(wire)` ve
+> **SessionControl** `command(SessionCommand) → SessionResult` (typed komut: Initiate{peer, early_unit?} ·
+> AcceptInit{wire} · AcceptResponse{wire} · Renew{session}; zarf payload'ı opak, komut opak DEĞİL).
+> Lifecycle olayları (`Ready(h) · RenewRequired(h) · Closed(h, reason)`) typed'dır; Transport yorumlamadan
+> Application'a iletir. **`SessionHandle`** Crypto tarafından basılır, Application için opak, Transport
+> içeriğini yorumlamaz, tek crypto session state'e çözülür, epoch DEĞİLDİR, wire'da gönderilmez, restart
+> sonrası geçerli olmak zorunda değildir, `Closed` sonrası kullanılamaz; **`HubHandle`** (wire routing, ccr
+> §35.7) ile AYRI tiptir ve birleştirilemez. Zaman sahipliği: Transport teslim/yeniden-iletim deadline'larını,
+> Crypto güvenlik-durumu ömürlerini (candidate expiry, key lifetime, replay retirement, grace, cap) tutar;
+> Crypto ağ retransmisyon timer'ı TUTMAZ. `early_unit` istisnası: Application plaintext'i bir kez data-path
+> dışında SessionControl'e girer; Crypto onu OPAK byte olarak işler, anlamını yorumlamaz.
+>
+> **INV-PLAINTEXT-NOT-SEMANTICS (NORMATİF):** *Plaintext görmek ≠ semantik bağ.* Transport, plaintext byte dizisi
+> üzerinde **yapısal** işlemler yapar — uzunluk, segment/batch, FEC, deadline, öncelik ipucu — ve bunların hiçbiri
+> "bu TEXT mi / FILE_CHUNK mı / protobuf alan #7 mi" bilgisini gerektirmez. Semantik (tip, şema, alan anlamı,
+> "bu sıkıştırılabilir mi") YALNIZ Application'ındır. Ayrım korunduğu sürece Transport'un plaintext işlemesi katman
+> ihlali DEĞİLDİR. **Serileştirme sınırı:** Application nesneleri → AppMessageCodec → `PreparedUnit{bytes,
+> compression_policy}`; Transport → batch/segment/FEC → `UnsealedTransportUnit`; Crypto → `SealedWireUnit`. Crypto
+> protobuf bilmez, Transport protobuf bilmez, FEC TEXT bilmez. **CCR / sertifika / public key** yalnız canonical
+> kripto codec'iyle (ccr §3) serileştirilir; protobuf ile YENİDEN kodlanmaz (iki canonicalization katmanı yasak),
+> generic compressor'dan GEÇMEZ (yüksek entropi, sıfır kazanç, gereksiz transform + side-channel yüzeyi — "byte
+> bozulur" diye değil); başka mesajda taşınacaksa opak `bytes` blob'udur. **Private key** Application/Transport
+> API'sinden HİÇ geçmez; Crypto/keystore/HSM sınırı içinde kalır.
 
 ```
 L1  IP/UDP                       UDP/IPv4 = 28B, UDP/IPv6 = 48B base
@@ -33,7 +72,7 @@ Client↔Hub Noise handshake  : IK (yeni kayıt, sk_device possession) / KK (kay
 Hot-path SESSION_DATA        : THIN — hub_handle cleartext (opaque, PRF-türevi, correlation-resistant, dest_hash'ten
                               türemez) + E2E envelope (Session Model V3 AEAD: ss_e+ss_s, Noise-inspired one-way).
                               Per-mesaj OUTER Noise AEAD YOK. dest_hash (kimlik-bağlı) hot-path'te TAŞINMAZ.
-Segment-block/Control framing (Pipeline C/D): OUTER AEAD (Noise transport key) per-shard — YALNIZCA burada (FEC shard auth).
+Segment-block/Control framing (Pipeline C/D): per-shard AEAD — ANAHTAR = **session E2E anahtarı** (shard'lar session verisidir; hop anahtarı DEĞİL) [AMENDMENT-6: eski "Noise transport key" ifadesi düzeltildi; hop anahtarı yalnız transport'un hub-yönelik kontrol çerçeveleri ve Plane 1 RPC için]. ProtectionContext'i Transport verir (Session(h) | HubChannel) — bugün SealArgs'ta ctx alanı YOK (kod: {wire_pn, dh_epoch, send_generation}); S3 seam'inde eklenecek [OPEN]. YALNIZCA burada (FEC shard auth).
 Hub↔Hub mesh                 : Noise KK (datacenter; routing §6).
 ```
 > **Neden hot-path'te outer Noise yok ama dest_hash yine gizli:** Kimlik-bağlı alan (dest_hash) setup'ta ClientHint ile gizlenir; hot-path'te yalnız opaque hub_handle görünür (kimliğe bağlanamaz). Per-mesaj outer Noise 0.025 kbps'de +16B tag/mesaj = kabul edilemez maliyet; E2E envelope zaten içeriği korur. Bu, "thin hot-path" (TLS-dersi) ile "dest_hash gizli" (Noise ClientHint) kararlarının birlikte tutarlı halidir — çelişki yok, KİLİTLİ.
@@ -71,6 +110,8 @@ Hub↔Hub mesh                 : Noise KK (datacenter; routing §6).
 ---
 
 ## 2. SESSION_DATA Hot-Path Wire (TEK form — NORMATİF)
+
+> **[AMENDMENT-6 not]** Bu 22 B format **Crypto seam'inin ÇIKTISIdır**: `hub_handle`'ı seam yazar (kod: kama-noise-wire legacy.rs:126, AAD dışı; HubHandle atama → HandleAssign, bugün yalnız hub_sim.rs:53-62), transport'a giren birim plaintext'tir (kod: client-core wire.rs:15-30 DATA çerçevesi `[type][seq u16][unit_id u64]` 11 B — interim). Ürün seam'i (IdentitySeam) bugün hub_handle yazmaz — PoC no-op ile tutarlı. Transport bu formatı ÜRETMEZ, yorumlamaz.
 
 ```
 ┌─ L2 transport (hub okur) ─┐┌─ L3 E2E app-envelope (hub okuyamaz; ccr §35) ─┐
@@ -544,18 +585,18 @@ ack_confidence ∈ {LOW, MED, HIGH}   (delivered-ACK / beklenen-ACK örneklemesi
 fec_parity_ratio     [0..1]   (0 = FEC yok; Reed-Solomon erasure parity oranı)
 arq_aggressiveness   [0..1]
 send_rate (pacing)   bps      (token-bucket)
-compress             {on/off}
+compress             {on/off}   [AMENDMENT-4: RETIRED — transport sıkıştırmaz; alan kalıntı, tüketilmez]
 ```
 
 ### 5.3 Kural Tabanı (anahtar kurallar)
 ```
-loss LOW                          → fec=0,    arq=light,  rate↑,            compress=policy
-loss HIGH, bw HIGH, jitter LOW    → fec=high, arq=moderate (RS erasure),    compress=policy
+loss LOW                          → fec=0,    arq=light,  rate↑,            compress=—(retired, AMENDMENT-4)
+loss HIGH, bw HIGH, jitter LOW    → fec=high, arq=moderate (RS erasure),    compress=—(retired, AMENDMENT-4)
 loss MED,  bw MED                 → fec=med,  arq=med
 loss LOW,  jitter HIGH            → fec=0,    arq=reorder-tolerant (RTO↑, fast-rtx↓)
 bw LOW, queue_delay HIGH          → rate↓ (congestion; fec CAP)
 loss HIGH, bw LOW, jitter HIGH    → mode = EMERGENCY_FORWARD_REDUNDANCY (§5.6), rate=minimal-reliable,
-  (EN KÖTÜ — NORMATİF)              compress=ON.  Doktrin: "ulaştırmak > hızlı ulaştırmak."
+  (EN KÖTÜ — NORMATİF)              (compress: transport dışı, AMENDMENT-4).  Doktrin: "ulaştırmak > hızlı ulaştırmak."
                                     (pure-ARQ DEĞİL — %80 bidirectional loss'ta ACK dönüş yolu da ~%80
                                      kayıplı → round-trip ~%4 → ARQ sürünür; ACK'e bağımsız forward kurtarma.)
 ```
@@ -595,7 +636,7 @@ IF loss HIGH  AND  bandwidth LOW  AND  ack_confidence LOW:
       geç koruma = kayıp; de-escalate min_dwell [CAL] — erken iniş→re-escalate osilasyonunu keser).
       Gerekçe+detay: engine spec §11 (KİLİTLİ). Marjlar [CAL:netem].
 ```
-> Bu mod ne "hep ARQ" ne "hep FEC"dir; **ACK-bağımsız forward kurtarma**dır ve path iyileşince fuzzy tarafından geri çekilir — geri çekilme **asimetrik hysteresis'le** (yukarıda; tek-eşik salınımı yasak). `parity/duplication` yine `available_redundancy_budget` ile clamp'lenir (§5.5).
+> Bu mod ne "hep ARQ" ne "hep FEC"dir; **ACK-bağımsız forward kurtarma**dır ve path iyileşince fuzzy tarafından geri çekilir — geri çekilme **asimetrik hysteresis'le** (yukarıda; tek-eşik salınımı yasak). `parity/duplication` yine `available_redundancy_budget` ile clamp'lenir (§5.5). **[AMENDMENT-3]:** bu cümle §11 MinimalParity istisnası için BAĞLAYICI DEĞİLDİR — istisna kendi üç kapısıyla sınırlıdır ve §5.5 bütçesine tabi değildir; normatif metin engine-spec §11 AMENDMENT-3 ve `docs/transport-v1/adr/ADR-minimal-parity-exception.md`.
 
 ### 5.4 Loss-Decoupling YAPISAL (INV-RATE-1 fuzzy'ye gömülü)
 > **NORMATİF:** `send_rate` çıktısı YALNIZCA bandwidth + queue_delay membership'ine bağlıdır; **loss_rate, rate çıktısının girdisi DEĞİLDİR.** Böylece "loss alone MUST NOT reduce rate" fuzzy tasarımın içine gömülüdür (kanal kaybı FEC/ARQ'yu etkiler, rate'i değil). queue_delay/RTprop inflation/delivery collapse rate'i düşürür.
@@ -633,27 +674,34 @@ B — SESSION_INIT/resync:    Noise handshake+early_data → retry scheduling �
 C — Segment-block payload (MTU'yu aşar → shard'lara bölünür):
     Gönderen: block_plaintext → (fuzzy FEC seçtiyse) Reed-Solomon encode → plaintext shard'lar → her shard AYRI
               AEAD-encrypt/authenticate → gönder.
-    Alıcı:    şifreli shard al → her shard'ı ÖNCE AEAD verify/decrypt → yalnızca authenticated shard'lar FEC
-              decoder'a girer → eksik shard'lar reconstruct.
+    Alıcı:    şifreli shard al → her shard'ı ÖNCE seam.open (session E2E anahtarı) → yalnızca authenticated shard'lar FEC
+              decoder'a girer (transport reconstruct) → eksik shard'lar reconstruct.
     NORMATİF: Authenticated olmayan byte FEC decoder'a GİRMEZ (SR-AUDIT-001). Recovery: fuzzy —
               bant var+loss yüksek → FEC ağır; bant dar+loss düşük → FEC=0, ARQ retransmit; karma mümkün.
-    Outer AEAD (Noise transport key) per-shard = block framing gereği (FEC shard auth); tek-datagram'da YOK.
+    Per-shard AEAD — anahtar = **session E2E anahtarı** (AMENDMENT-6; ~~Noise transport key~~ ifadesi yanlıştı: shard session verisidir) — block framing gereği (FEC shard auth); tek-datagram'da YOK. RS encode transport'ta, seal seam'de (AMENDMENT-5).
 D — CONTROL/HOP:            control → per-hop Noise/TLS/AEAD → SRC → UDP/QUIC (deployment)
 ```
 > Tek generic pipeline tüm payload'lara KÖR uygulanmaz. FEC/outer-AEAD **framing-specific** (block'ta mümkün; tek-datagram'da değil). Tek adaptif transport motoru tüm pipeline'larda; ayrı segment-block motoru YOK.
 
 ---
 
-## 8. Sıkıştırma (yeniden açıldı — NORMATİF)
+## 8. Sıkıştırma — TRANSPORT'UN İŞİ DEĞİLDİR [AMENDMENT-4]
 
-> Eski "CRIME → kapalı" kararı GERİ ALINDI. CRIME = saldırganın seçili-plaintext'i sırla **aynı sıkıştırma bağlamına** enjekte edip ciphertext uzunluğunu gözlemesi + HTTP cookie oracle. E2E mesajda böyle oracle YOK, HTTP yüzeyi YOK → CRIME geçersiz.
-
-```
-compress = zstd; metin mesaj için default ON (düşük bantta büyük kazanç); fuzzy çıktısı (Section 5).
-Ses/video: codec'te zaten sıkıştırılı → ÇİFT sıkıştırma YOK.
-Residual: sıkıştırma uzunluğu içeriğe bağlı → uzunluk-tabanlı trafik analizi (CRIME DEĞİL, metadata).
-  Bu zaten kabul edilen hub-metadata katmanında (sealed-sender Beta+); padding Beta+ knob.
-```
+> **[AMENDMENT-4] (sahip kararı 2026-09-17; gerekçesi AMENDMENT-6 ile düzeltildi — ~~iki-katmanlı kripto topolojisi~~ iptal):**
+> **Sıkıştırma transport'un işi DEĞİLDİR.** ~~transport ciphertext görür (E2E kripto transport'un ÜSTÜNDE)~~
+> [AMENDMENT-6 gerekçe düzeltmesi: kanonik mimaride Transport PLAINTEXT görür, dolayısıyla sıkıştırma
+> transport'ta katman ihlali olmazdı; karar yine app'te kalır, gerekçe farklı: (1) ses/video "çift sıkıştırma
+> yok" kuralı TİP bilgisi ister, Transport tip bilmez (INV-ENGINE-SOC); (2) kodda aktüatör YOK — Claude Code
+> kanıtı: FusionDecision.compress üretici fusion.rs:551, tüketici yok, Cargo.lock'ta sıkıştırma crate'i yok,
+> ON/OFF anahtarı yok → TDD §8'in eski "default ON, fuzzy çıktısı" metni hiç uygulanmamıştı.]
+> Sahibi **application/RPC mesaj-hazırlama
+> alt-katmanıdır** (`application-protocol-and-rpc-spec.md` §3, karşı-pointer orada). **Fuzzy
+> controller sıkıştırma kararı VERMEZ.** Bu bölümün önceki normatif metni (zstd, metin için default
+> ON, fuzzy çıktısı) ve CRIME analizi ile INV-COMPRESS-1 **oraya TAŞINMIŞTIR**; burada normatif
+> hüküm kalmamıştır. Donmuş transport kodunda sıkıştırma YOKTUR (zstd bağımlılığı yok);
+> `FusionDecision.compress` alanı üretilen ama HİÇBİR yerde tüketilmeyen kalıntı bir çıktıdır —
+> ADR-17 golden-vektör kararlılığı için v1'de bırakılmıştır, kaldırılması v1.x temizliğidir
+> (`docs/transport-v1/EVOLUTION.md` §9.8).
 
 ---
 
@@ -724,7 +772,7 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | INV-WIRE-2 | Per-mesaj imza YOK (Ed25519 yalnızca cert; N-türevi ss_s static-DH auth; SIGNED_CONTROL istisna). |
 | INV-RATE-1 | Loss alone MUST NOT reduce rate — fuzzy'de yapısal (loss, rate çıktısının girdisi değil). |
 | INV-RATE-2 | Rate = SRC + fuzzy controller; recovery (ARQ/FEC/karma/none) da fuzzy-seçili; sabit strateji YOK. |
-| INV-FUZZY-1 | FEC/ARQ/rate/compress kararı fuzzy controller (loss/jitter/bw/queue → defuzzified); parity budget-clamp'li. |
+| INV-FUZZY-1 | FEC/ARQ/rate kararı (compress: AMENDMENT-4 ile transport'tan ÇIKARILDI) fuzzy controller (loss/jitter/bw/queue → defuzzified); parity budget-clamp'li. |
 | INV-CLASS-2 | Loss rate MUST NOT be a direct bandwidth estimator (delivered-bytes/time). |
 | INV-FEC-1 | FEC plaintext shard'lar üzerinde çalışır AMA her alınan shard FEC decoder'a girmeden ÖNCE AEAD-authenticate edilir; authenticated olmayan byte decoder'a GİRMEZ (SR-AUDIT-001). FEC yalnızca block/shard framing MEVCUTSA uygulanır — framing-driven, application-role-driven DEĞİL; transport baytların chat/file/control olduğunu bilmez. |
 | INV-FEC-2 | FEC erasure coding (Reed-Solomon), XOR değil; on-demand (loss eşiği + ARQ kurtaramıyor/yavaş). |
@@ -735,7 +783,7 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | INV-CRYPTO-1 | Client↔Hub Noise IK/KK (setup: dest_hash ClientHint'te gizli + hub_handle atama); single-datagram outer Noise YOK (thin); outer AEAD yalnız block/shard framing + control; hub-mesh Noise KK. |
 | INV-NONCE-1 | Transport counter monoton; 2B seq wire'da; receiver reconstruct; wrap→rekey; reuse imkansız. |
 | INV-REPLAY-1 | Replay window AEAD başarısından ÖNCE güncellenmez. |
-| INV-COMPRESS-1 | Sıkıştırma izinli (CRIME E2E'de geçersiz); ses/video çift-sıkıştırma yok; uzunluk-leak = kabul edilen metadata. |
+| INV-COMPRESS-1 | **TAŞINDI → app-rpc §3 (AMENDMENT-4).** Transport sıkıştırmaz; CRIME/çift-sıkıştırma/uzunluk-leak hükümleri mesaj-hazırlama alt-katmanında. |
 | INV-MTU-1 | Default 1200B (fragmentation kaçın); yüksek MTU validation sonrası opt-in; azaltma anında. |
 | INV-ACK-1 | Windowed/batched ACK; per-paket ACK YOK (ACK storm engeli); ACK-only budgeted. |
 | INV-LAYER-1 | hub_handle (L2) cleartext/hub-route; E2E envelope (L3) hub'a opak; FEC/ARQ (L5) profile-specific. |
@@ -766,10 +814,10 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | AC-16 | hub_handle allocation allocation_attempt + collision check içerir (MAX_HANDLE_ALLOC_ATTEMPTS=8). |
 | AC-17 | Section 18 ccr §35 rewrite "pending" İDDİA ETMEZ (ccr §35 canonical authority). |
 | AC-4 | Zero-RTT N-türevi one-way + early_data; konuşma başına 1 handshake; Bob offline tolere. |
-| AC-5 | Fuzzy controller: loss/jitter/bw/queue → fec/arq/rate/compress; rate loss'a bağlı DEĞİL. |
+| AC-5 | Fuzzy controller: loss/jitter/bw/queue → fec/arq/rate (compress transport dışı, AMENDMENT-4); rate loss'a bağlı DEĞİL. |
 | AC-6 | bandwidth obsesif sampling (validity-gated); ACK-compression/app-limited bw_est'i şişirmez. |
 | AC-7 | FEC on-demand Reed-Solomon erasure (XOR değil); yalnızca block/shard framing MEVCUTSA (framing-driven, app-role değil); AEAD-verify önce. |
-| AC-8 | En kötü senaryo (loss high+bw low+ack_confidence low): mode=EMERGENCY_FORWARD_REDUNDANCY (§5.6) — tiny→2×/3× duplication, block→minimal parity, sparse cumulative ACK; pure-ARQ DEĞİL; path düzelince fuzzy redundancy'yi ASİMETRİK HYSTERESIS ile geri çeker (Schmitt bant + de-escalate dwell; escalate anında; tek-eşik salınımı YASAK — §5.6, engine §11). compress=on, rate=minimal-reliable. |
+| AC-8 | En kötü senaryo (loss high+bw low+ack_confidence low): mode=EMERGENCY_FORWARD_REDUNDANCY (§5.6) — tiny→2×/3× duplication, block→minimal parity, sparse cumulative ACK; pure-ARQ DEĞİL; path düzelince fuzzy redundancy'yi ASİMETRİK HYSTERESIS ile geri çeker (Schmitt bant + de-escalate dwell; escalate anında; tek-eşik salınımı YASAK — §5.6, engine §11). rate=minimal-reliable (compress: transport dışı, AMENDMENT-4). |
 | AC-9 | KCP tamamen ÇIKARILDI; tek custom adaptif transport motoru (Rust-native, ARQ+FEC, fuzzy-seçili; uygulama rolüne kör); per-paket ACK yok (storm engeli). |
 | AC-QUIC | Her test QUIC ile yan yana ölçülür; QUIC daha iyiyse QUIC seçilir; custom transport QUIC'in çöktüğü lowband/high-loss'ta QUIC'ten düşük banta iner (kanıt = Side-by-Side). QUIC fork NO-GO. |
 | AC-QBENCH-1 | QUIC baseline best-available production-grade QUIC + en güçlü mevcut CC (destekliyorsa BBR/BBRv2; Cubic/Reno anlamsız), versiyon-pinli, kullanılan profil raporda; aynı netem/MTU/payload/donanım; tek değişken = transport (§4.4.1) |
@@ -782,7 +830,7 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | AC-QBENCH-8 | N≥30 run + p95/p99 + CI + versioned harness + yayımlanan ham veri → bağımsız reproduce (§4.4.9) |
 | AC-QBENCH-9 | GO = (A) en az bir kazanma tier'ı [Tier-1/2/3] + (B) guardrail'ler [mekanizma+güvenlik+iyi-ağ]; Tier-3-alone yalnız operasyonel-belirleyici verimle; global NO-GO → quinn devri kabul; QUIC selected'ta Session V3 semantics değişmez (§4.4.5, §4.4.10) |
 | AC-CRYPTO | Kripto katmanlama §0.1: Noise IK/KK setup (dest_hash ClientHint gizli) + thin single-datagram (outer Noise yok) + outer AEAD yalnız block/shard framing + control + hub-mesh Noise KK. |
-| AC-10 | Sıkıştırma izinli (CRIME N/A); ses/video çift-sıkıştırma yok. |
+| AC-10 | TAŞINDI → app-rpc §3 (AMENDMENT-4): sıkıştırma transport kabul ölçütü DEĞİLDİR. |
 | AC-11 | MTU default 1200B; 1900B validation sonrası. |
 | AC-12 | Layer-matched accounting: SESSION_DATA/UDP/IPv4 = 50B ≤ TLS/TCP/IPv4 62B; üstünlük yapısal sunulur. |
 | AC-13 | counter wrap→rekey; replay window AEAD'den sonra; seq 2B nonce resync. |
@@ -807,7 +855,7 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | Kaybedilen bölge (P_bbr) önceden ilan; global NO-GO ([X,Y] boş → quinn) kabul (doktrin dürüstlüğü) | ✅ | 4.4.5, 4.4.10 |
 | Kripto katmanlama kilitli (Noise IK/KK setup + thin single-datagram + outer-AEAD block/shard-only) | ✅ | 0.1, INV-CRYPTO-1 |
 | Paket kaybı → fuzzy-seçili recovery (ARQ/FEC/karma, koşula göre; ne ARQ ne FEC default) | ✅ | 5.3, 12 |
-| Sıkıştırma izinli (CRIME N/A) + uzunluk-leak notu | ✅ | 8 |
+| Sıkıştırma — transport dışı; app-rpc §3'e taşındı (AMENDMENT-4) | ➡ | 8 |
 | MTU 1200B hostile-safe; nonce/seq/replay | ✅ | 11, 6 |
 | Layer accounting + dürüst TLS kıyas | ✅ | 13 |
 | Katmanlar ayrık (L1–L5) | ✅ | 0 |
@@ -828,7 +876,7 @@ Transport Layer TDD Status: Implementation-ready / freeze-ready (Session Model V
 Cross-doc status:
   ccr-format-spec.md §35 = SESSION_INIT / SESSION_INIT_RESPONSE / SESSION_DATA / SIGNED_CONTROL +
     AAD/session_context + replay/counter reconstruction + hub_handle binding için CANONICAL byte-level OTORİTE.
-  Bu belge = SRC/pacing + fuzzy controller + FEC/ARQ adaptif seçim (tek adaptif transport motoru; ne ARQ ne FEC default) + QUIC benchmark + MTU/ACK/compression +
+  Bu belge = SRC/pacing + fuzzy controller + FEC/ARQ adaptif seçim (tek adaptif transport motoru; ne ARQ ne FEC default) + QUIC benchmark + MTU/ACK (compression: app-rpc §3, AMENDMENT-4) +
     layer accounting view için TRANSPORT POLICY/PROFILE otoritesi.
   PAIRED REWRITE BEKLEMİYOR — ccr §35 zaten Session Model V3 canonical authority.
 
@@ -849,7 +897,7 @@ Frozen:
   - fuzzy controller architecture
   - QUIC benchmark mandate (§4.1: every test vs QUIC; QUIC if better; beat QUIC only in lowband; fork NO-GO)
   - QUIC FULL-SCALE eval methodology (§4.4: kategorik yetenek eşiği [X,Y]; adil quinn+BBRv2 + TCP/KCP/RNS baselines; completion/blackout-survival/floor birincil; estimator-accuracy + loss/congestion confusion mekanizma-kanıtı; kaynak/güvenlik-pariteliği/reproduce; GO-NO/GO launch criteria; DCP/ASELSAN/TÜBİTAK killer-chart)
-  - compression policy
+  - compression policy   [AMENDMENT-4: transport dışı → app-rpc §3]
   - MTU/ACK strategy
   - TLS comparison framing
 

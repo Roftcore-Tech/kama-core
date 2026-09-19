@@ -246,14 +246,31 @@ impl BenchTransport for QuinnTransport {
         // → koşu 0 completion. GEÇERLİ ölçüm sonucu (§4.4.3 "handshake success" metriği), HATA değil
         // → agregaya dahil (dışlanırsa QUIC completion'ı şişer). connect() Result'ı (ConnectError,
         // örn. bozuk adres) hâlâ gerçek hata → ? ile yayılır; yalnız handshake fail/timeout 0-completion.
+        // [FAZ-4 §M4] KURULUM MALİYETİ AYRI ÖLÇÜLÜR: QUIC el sıkışması gerçek bir maliyettir ve
+        // ölçüm-t0 aşağıda (warmup + gate sonrası) konur → completion penceresinin DIŞINDADIR.
+        // Bu, dört kolun tamamında AYNI kuraldır; sayı gizlenmez, manifeste yazılır.
+        let setup_clock = Instant::now();
         let connecting = endpoint
             .connect(cfg.server, "localhost")
             .map_err(|e| BenchError::Quic(e.to_string()))?;
         let conn = match timeout(cfg.max_deadline, connecting).await {
             Ok(Ok(c)) => c,
-            Ok(Err(_handshake_err)) => return Ok(handshake_failed_output(&cfg, gov.as_ref())),
-            Err(_timed_out) => return Ok(handshake_failed_output(&cfg, gov.as_ref())),
+            Ok(Err(_handshake_err)) => {
+                return Ok(handshake_failed_output(
+                    &cfg,
+                    gov.as_ref(),
+                    setup_ns_of(setup_clock),
+                ))
+            }
+            Err(_timed_out) => {
+                return Ok(handshake_failed_output(
+                    &cfg,
+                    gov.as_ref(),
+                    setup_ns_of(setup_clock),
+                ))
+            }
         };
+        let setup_ns = setup_ns_of(setup_clock);
         // [W6] Kuruluş-gate'i: handshake TEMİZ ağda tamam (DÜZLEM-A); harness şimdi netem'i
         // uygular (A2) — warmup impaired koşar.
         if let Some(g) = &cfg.establish_gate {
@@ -385,6 +402,11 @@ impl BenchTransport for QuinnTransport {
                 t0_unix_ns,
                 events_epoch_offset_ns: 0, // event'ler ölçüm-t0 epoch'unda
                 warmup_residue,
+                activation: None,
+                setup_ns,
+                setup_in_window: false,
+                profile_id: String::new(),
+                profile_delta: Vec::new(),
             },
             events,
         })
@@ -395,7 +417,12 @@ impl BenchTransport for QuinnTransport {
 /// (completion 0). Bağlantı kurulmadığı için wire bytes 0. §4.4.3'te bu bir ölçüm sonucudur
 /// (handshake fail), hata DEĞİL — koşu agregaya 0-completion olarak girer (QUIC'in gerçek
 /// zayıflığını yansıtır; severe loss'ta bağlanamamak Kama'nın kazandığı yer).
-fn handshake_failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>) -> RunOutput {
+/// Kurulum saatinin ns karşılığı (tek yerde; saturating).
+fn setup_ns_of(clock: Instant) -> u64 {
+    u64::try_from(clock.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn handshake_failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>, setup_ns: u64) -> RunOutput {
     let events = (0..cfg.msg_count)
         .map(|msg_id| RawEvent {
             msg_id,
@@ -424,6 +451,12 @@ fn handshake_failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>) -> RunOutpu
             t0_unix_ns: 0,
             events_epoch_offset_ns: 0,
             warmup_residue: 0,
+            activation: None,
+            // El sıkışma BAŞARISIZ: harcanan kurulum süresi yine raporlanır (0 değil).
+            setup_ns,
+            setup_in_window: false,
+            profile_id: String::new(),
+            profile_delta: Vec::new(),
         },
         events,
     }
@@ -617,6 +650,7 @@ mod loopback_tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
             })
@@ -695,6 +729,7 @@ mod loopback_tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
             })
@@ -753,6 +788,7 @@ mod loopback_tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
             })
@@ -831,6 +867,7 @@ mod loopback_tests {
                 persist_alpha: None,
                 persist_rho: None,
                 persist_q: None,
+                rp_suppress: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
             })

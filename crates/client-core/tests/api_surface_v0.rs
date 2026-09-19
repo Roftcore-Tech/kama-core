@@ -167,6 +167,7 @@ async fn transport_api_v0_surface_is_frozen() {
         // [S1B] fragmenter: mesaj-granülü ACK + canonical-serialize hata sayacı.
         messages_acked: _,
         frag_encode_failures: _,
+        fec_partial_blocks_closed: _,
         // [TEŞHİS] yapı-gate karar tabanı + karar-yolu histogramı + kuruluş görünürlüğü.
         fate: _,
         // [DR-CS-3] cold-start probe/echo muhasebesi.
@@ -190,6 +191,12 @@ async fn transport_api_v0_surface_is_frozen() {
         fec_recovered_units: _,
         fec_decode_failures: _,
         fec_blocks_evicted: _,
+        fec_repairs_wasted_complete: _,
+        fec_repairs_wasted_evicted: _,
+        fec_repairs_useful: _,
+        fec_blocks_complete_with_repairs: _,
+        fec_blocks_decoded: _,
+        fec_blocks_evicted_with_repairs: _,
         fec_recovered_ctrl_tx: _,
         seal_failures: _,
         param_bound_peers: _,

@@ -1,0 +1,475 @@
+{
+ "cluster": "ack-sack",
+ "verdicts": [
+  {
+   "mechanism": "(cluster-wide precondition)",
+   "claim": "Audit target is branch wip/c4-attrib @ 35f60f80 = final transport content",
+   "verdict": "corrected",
+   "corrected_value": "Worktree HEAD is audit/transport-v1-closure @ 15133be4, NOT wip/c4-attrib. However `git diff --stat 35f60f80 HEAD -- crates/adaptive-transport crates/client-core crates/bench` returns EMPTY output, so the transport/product/bench content is byte-identical to the stated target and all findings can be adjudicated against this tree.",
+   "evidence": [
+    "$ git branch --show-current → audit/transport-v1-closure",
+    "$ git log --oneline -1 → 15133be4 docs(fec): kapanış raporu §2 — final dal SHA 87077502 (PR #51)",
+    "$ git diff --stat 35f60f80 HEAD -- crates/adaptive-transport crates/client-core crates/bench → (no output)"
+   ],
+   "note": "No refutation; recorded so downstream readers do not assume a mismatch invalidates the audit."
+  },
+  {
+   "mechanism": "ACK/SACK frame codec — ACK_FRAME_V2 (0x14) emit, V1 (0x10) decode-compat",
+   "claim": "Product call chain SERVER emit → CLIENT consume is real and unconditional",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:22 `use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};`",
+    "crates/client-core/src/runtime.rs:2146 `let out = slot.rx.on_datagram(` → runtime.rs:2168-2172 `if let Some(ack) = out.ack { ... srv_seal_send(..., ack.encode()).await; }`",
+    "crates/client-core/src/runtime.rs:1990-2001 `_ = ack_timer.tick() => { ... s.rx.on_ack_timer(now).map(|a| (*p, s.seam_peer, s.next_pn(), a.encode())) ... srv_seal_send(...)`",
+    "crates/client-core/src/runtime.rs:1153-1154 `if let Ok(frame) = AckFrame::decode(&plain) { let acked = frame.acked_full(max_emitted_seq + 1);`",
+    "crates/adaptive-transport/src/receiver.rs:434-441 tick_ack → build_ack; receiver.rs:459 `fn build_ack`",
+    "crates/adaptive-transport/src/ack.rs:145 `v2: true, // [TUR-1x] emit daima V2`"
+   ],
+   "note": "Every hop is non-test code in client-core/adaptive-transport. Line drift only: out.ack→srv_seal_send is 2168-2172, not 2170."
+  },
+  {
+   "mechanism": "ACK/SACK frame codec — ACK_FRAME_V2 (0x14) emit, V1 (0x10) decode-compat",
+   "claim": "V1 (0x10) decode-compat is part of a SHIP mechanism that is 'exercised'",
+   "verdict": "corrected",
+   "corrected_value": "The V1 EMIT branch is structurally unreachable: `AckFrame::from_received` hardwires `v2: true` (ack.rs:145) and a repo-wide grep for `v2: false` returns ZERO hits in src or tests. ack.rs:209-213's `else { FRAME_TYPE_ACK }` arm can only be reached by hand-constructing AckFrame, which nothing outside ack.rs:398/423 (unit test) does. So SHIP applies to V2 emit + the decoder's dual acceptance; V1 emit is dead code and the V1 accept-branch (runtime.rs:1149, ack.rs:243) is an input surface no peer in this system produces.",
+   "evidence": [
+    "$ grep -rn \"v2: false|v2:false\" crates --include=*.rs → (no output)",
+    "crates/adaptive-transport/src/ack.rs:145 `v2: true, // [TUR-1x] emit daima V2 (0x14, 15B gövde §2.2); V1 yalnız decode-uyumluluk.`",
+    "crates/adaptive-transport/src/ack.rs:209-213 `out.push(if self.v2 { FRAME_TYPE_ACK_V2 } else { FRAME_TYPE_ACK });`",
+    "crates/adaptive-transport/src/ack.rs:422-424 (test) `assert_eq!(bytes[0], FRAME_TYPE_ACK_V2, \"emit V2\"); bytes[0] = FRAME_TYPE_ACK; bytes.truncate(9);`",
+    "$ grep -rn \"FRAME_TYPE_ACK\\b\" crates --include=*.rs → ack.rs:26,213,243,423; runtime.rs:22,1149; bench/src/kama.rs:21,148 (no emitter)"
+   ]
+  },
+  {
+   "mechanism": "ACK/SACK frame codec — ACK_FRAME_V2 (0x14) emit, V1 (0x10) decode-compat",
+   "claim": "Telemetry: KP-CLIENT `delivered={}/{}` is ACK telemetry",
+   "verdict": "corrected",
+   "corrected_value": "`delivered_count` is NOT an ACK-only metric. The bench's `cli.acked()` stream merges ACK-derived and FEC-RECOVERED-derived unit confirmations, and the code says so explicitly. ClientStats.acked (the ACK-only counter, runtime.rs:464 field / :1158 increment) is NOT printed in the KP-CLIENT line at all.",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:529-530 `// Teslim-teyidi ACK'ten de FEC-RECOVERED'dan da gelebilir; ikisi de aynı akış.`",
+    "crates/bench/src/kama_product.rs:537 `delivered_count += 1;`",
+    "crates/client-core/src/runtime.rs:1130-1133 RECOVERED branch also fires `unit_acked!(unit)` (→ same acked() stream) while incrementing `stats.fec_recovered_ctrl_units`, not `stats.acked`",
+    "crates/bench/src/kama_product.rs:561-610 KP-CLIENT format arg list contains no `stats.acked`"
+   ],
+   "note": "`rx={}B` (stats.rx_bytes) and metrics.rs:91 ack_overhead_ratio ARE real ACK-return telemetry — that half of the claim is confirmed."
+  },
+  {
+   "mechanism": "SACK range reconstruction (descending gap/len) + MAX_ACK_RANGES clamp + bounded decode",
+   "verdict": "confirmed",
+   "claim": "MAX_ACK_RANGES=16 newest-first clamp on emit, typed decode reject, MAX_ACKED_SEQS truncation, product-wired",
+   "evidence": [
+    "crates/adaptive-transport/src/ack.rs:36 `pub const MAX_ACK_RANGES: usize = 16;`",
+    "crates/adaptive-transport/src/ack.rs:130 `if ranges.len() == MAX_ACK_RANGES { break; }`",
+    "crates/adaptive-transport/src/ack.rs:255-258 `if range_count > MAX_ACK_RANGES { return Err(TransportError::TooManyAckRanges { ... max: MAX_ACK_RANGES`",
+    "crates/adaptive-transport/src/ack.rs:177 and :193-194 `acked.truncate(MAX_ACKED_SEQS);`",
+    "crates/adaptive-transport/src/ack.rs:42 `pub const MAX_ACKED_SEQS: usize = 65536;`",
+    "tests present: ack.rs:311 decode_rejects_range_count_over_max, :341 acked_full_is_bounded_against_len_inflation; tests/tv_ack.rs:78 tv_ack_structure, :111/:122/:134 truncated/trailing/bad-type rejects"
+   ],
+   "note": "Divergent noise-wire caps confirmed: kama-noise-wire/src/control.rs:17 ACK_MAX_RANGES=32, :19 SACK_MAX_GAP_BLOCKS=32."
+  },
+  {
+   "mechanism": "seq-wrap reconstruction (u16 wire seq → u64 full counter) on both ends of the ACK path",
+   "verdict": "confirmed",
+   "claim": "resolve_seq wired on both server ingest and client acked_full",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:34 `use adaptive_transport::seq::resolve_seq;`",
+    "crates/client-core/src/runtime.rs:2144-2145 `let expected = slot.rx.largest_seq().map_or(0, |m| m + 1); let full = resolve_seq(expected, wire_seq);` (also :2239, :2270)",
+    "crates/adaptive-transport/src/ack.rs:173 `let largest_full = crate::seq::resolve_seq(expected, self.largest_seq);`",
+    "crates/client-core/src/runtime.rs:905/968 `max_emitted_seq = max_emitted_seq.max(d.seq);`",
+    "crates/adaptive-transport/src/seq.rs:20-35 resolve_seq (deterministic, no RNG — ADR-17)"
+   ],
+   "note": "Only non-test consumers outside adaptive-transport are runtime.rs:2145/2239/2270; bench/src/kama.rs:616 is the legacy arm."
+  },
+  {
+   "mechanism": "Batched ACK — frequency trigger ACK_FREQ_N (per-N DATA; no per-packet ACK)",
+   "verdict": "confirmed",
+   "claim": "ACK_FREQ_N=2 const, no runtime knob, frequency path not cadence-gated, forced on duplicate",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:76 `const ACK_FREQ_N: u32 = 2;`",
+    "crates/adaptive-transport/src/receiver.rs:434-441 `fn tick_ack(&mut self, now_ns: u64, force: bool)` / `if force || self.since_last_ack >= self.ack_freq {`",
+    "$ grep -n \"ack_freq\" receiver.rs → :138 field, :172 init, :436 use — NO setter, no assignment",
+    "crates/adaptive-transport/src/sender.rs:1393 `const EXPECTED_ACK_FREQ_N: u64 = 2;` (hand-mirrored, no shared const — drift risk confirmed)",
+    "crates/adaptive-transport/src/receiver.rs:225 `let ack = self.tick_ack(now_ns, true); // dup ACK teyidi tetikler`"
+   ],
+   "note": "Telemetry claim also confirmed: diag_return_supply() (receiver.rs:384) has only bench/src/kama.rs:600 (legacy arm) + tests as consumers; nothing in client-core reads it."
+  },
+  {
+   "mechanism": "ACK timer path (ACK_DELAY_TIMER / ACK_TIMER_T) — server 20 ms tick → Receiver::on_ack_timer",
+   "verdict": "confirmed",
+   "claim": "20ms interval wired in product; activation = have_recv && (tail_due || quota-branch || elapsed≥cadence_eff)",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:64 `const ACK_TICK: Duration = Duration::from_millis(20);`",
+    "crates/client-core/src/runtime.rs:1970 `let mut ack_timer = interval(ACK_TICK);` inside server_task select loop (:1990 `_ = ack_timer.tick()`)",
+    "crates/adaptive-transport/src/receiver.rs:269-271 `if !self.have_recv { return None; }`",
+    "crates/adaptive-transport/src/receiver.rs:283-291 tail_due branch; :298-306 quota branch; :309-323 cadence branch",
+    "tests: tests/receiver_ack_policy.rs:114 ack_cadence_floor_brackets_the_timer_emission, :147 timer_without_any_arrival_emits_nothing; receiver.rs:625 ack_timer_first_exempt_then_cadence_throttled"
+   ]
+  },
+  {
+   "mechanism": "ACK cadence floor — return-budget prior (ACK_CADENCE = 65/(0.25·31) ≈ 8.39 s)",
+   "verdict": "confirmed",
+   "claim": "Constants and gate exist and are on the product timer path",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:83 `const SACK_WIRE_BYTES: u64 = 65;` :85 `RETURN_BUDGET_PERMIL: u64 = 250;` :87 `RETURN_BW_PRIOR: u64 = 31;`",
+    "crates/adaptive-transport/src/receiver.rs:93-94 `const ACK_CADENCE_FLOOR_NS: u64 = SACK_WIRE_BYTES * 1_000_000_000 * 1000 / (RETURN_BUDGET_PERMIL * RETURN_BW_PRIOR);` (= 8.387e9 ns)",
+    "crates/adaptive-transport/src/receiver.rs:314 `if elapsed < cadence_eff { return None; }`",
+    "spec confirms: specs/adaptive-transport-engine-spec.md:1016 `ACK_CADENCE(return_bw) [R15] | sack_wire/(Y·return_bw) ... 0.25k≈8.3s`"
+   ]
+  },
+  {
+   "mechanism": "First-SACK cadence exemption generalized → return-supply episode detector + quota R",
+   "verdict": "confirmed",
+   "claim": "quota_r is a real RuntimeConfig gate wired to Receiver::set_quota_r; default 4",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:97 `pub quota_r: u32,`",
+    "crates/client-core/src/runtime.rs:191 `quota_r: 4,` (inside `impl Default for RuntimeConfig`) — finding said :189, off by two",
+    "crates/client-core/src/runtime.rs:2085-2086 `let mut rx = Receiver::new(); rx.set_quota_r(cfg.quota_r);`",
+    "crates/adaptive-transport/src/receiver.rs:106 K_EPISODE=4, :108 EPISODE_WINDOW=3, :111 QUOTA_R_DEFAULT=4, :115 T_SPACING_NS, :299 `if self.episode_first_pending || elapsed >= T_SPACING_NS {`",
+    "bench: crates/bench/src/main.rs:39-41 `--quota-r` default 4 → transport.rs:240 → kama_product.rs:291 `quota_r: cfg.quota_r,`"
+   ],
+   "note": "K-4 invariant unobservability confirmed: diag_return_supply's only non-test consumer repo-wide is bench/src/kama.rs:600 (legacy arm)."
+  },
+  {
+   "mechanism": "Measured return-path bandwidth (return_bw) replacing the 31 B/s prior — §3.3-E FULL",
+   "verdict": "confirmed",
+   "claim": "No estimator exists; all consumers read the constant prior; classification WIRE",
+   "evidence": [
+    "$ grep -rn \"return_bw|ReturnBw|return_rate\" crates --include=*.rs (excluding tests) → only doc-comments: receiver.rs:84,86,88,91,113 and sender.rs:1396,3255. Zero symbols.",
+    "crates/adaptive-transport/src/receiver.rs:87 `const RETURN_BW_PRIOR: u64 = 31;`",
+    "crates/adaptive-transport/src/sender.rs:1397 `const EAI_RETURN_BW_PRIOR: u64 = 31;`; :3270-3271 `+ EAI_SACK_WIRE_BYTES * 1_000_000_000 / EAI_RETURN_BW_PRIOR;`",
+    "crates/adaptive-transport/src/sender.rs:2907-2910 hard-coded `(term1 + Duration::from_nanos(2_097_000_000)).max(INITIAL_RTT)`",
+    "crates/adaptive-transport/src/receiver.rs:472-475 `// arrival_rate: receiver bu artımda BOYUT görmüyor (RxDatagram size taşımaz) → ölçüm YOK → sentinel`",
+    "spec pre-authorises the fix: specs/adaptive-transport-engine-spec.md:1071 `... ölçülen return_bw'den adaptif (§3.3-E FULL — T_SPACING'in de bağlanacağı yer)`"
+   ]
+  },
+  {
+   "mechanism": "Tail-SACK cadence exemption (K_TAIL)",
+   "verdict": "confirmed",
+   "claim": "Wired on the product timer path with its own clock; K_TAIL=2 not in §16.1 [CAL] table",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:100 `const K_TAIL: u64 = 2;`",
+    "crates/adaptive-transport/src/receiver.rs:283-292 tail_due predicate → `self.last_tail_ack_ns = now_ns;` :290 `self.burn_quota();` :291 `return self.build_ack(now_ns);`",
+    "crates/adaptive-transport/src/receiver.rs:327-329 `fn last_emit_any(&self) -> u64 { self.last_ack_ns.max(self.last_tail_ack_ns) }`",
+    "test: receiver.rs:650 tail_pending_data_gets_cadence_exempt_sack",
+    "$ grep -n \"K_TAIL\" specs/adaptive-transport-engine-spec.md → no §16.1 row (only §16.2 K_CONF_EAI cross-reference), confirming the ZM-3 registration gap"
+   ],
+   "note": "Tail branch deliberately does NOT call record_ack_emit and does NOT reset since_last_ack — the finding's activation condition is exactly right."
+  },
+  {
+   "mechanism": "Minimal-taban arrival-rate acceleration (cadence_eff = clamp(K_ARR×last_gap, T_SPACING, FLOOR))",
+   "verdict": "confirmed",
+   "claim": "K_ARR=2, clamp formula, diag_accel_emits, quota-exhausted gate",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:118 `const K_ARR: u64 = 2;`",
+    "crates/adaptive-transport/src/receiver.rs:309-313 `let cadence_eff = if self.since_last_ack > 0 && self.last_gap_ns > 0 { (K_ARR.saturating_mul(self.last_gap_ns)).clamp(T_SPACING_NS, ACK_CADENCE_FLOOR_NS) } else { ACK_CADENCE_FLOOR_NS };`",
+    "crates/adaptive-transport/src/receiver.rs:317-319 `if cadence_eff < ACK_CADENCE_FLOOR_NS { self.diag_accel_emits += 1; }`",
+    "test: receiver.rs:924 arrival_rate_acceleration_mid_regime; spec row specs/adaptive-transport-engine-spec.md:999 `K_ARR ... 2 [CAL {2,4}; {1} elendi]`"
+   ]
+  },
+  {
+   "mechanism": "ack_delay V2 encoding (256 µs unit, floor-encoding, saturation audit counter)",
+   "claim": "receiver.ack_delay_saturated() has ZERO consumers repo-wide (grep incl. tests)",
+   "verdict": "refuted",
+   "corrected_value": "It has three consumers — all in-module unit tests. The correct statement is: zero PRODUCT and zero BENCH consumers; the counter is asserted only by receiver.rs's own #[cfg(test)] block, so the spec's audit counter is unobservable outside `cargo test`.",
+   "evidence": [
+    "$ grep -rn \"ack_delay_saturated\" crates --include=*.rs → receiver.rs:152 (field), :184 (init), :466 (increment), :500-501 (accessor), :606, :617, :621 (tests)",
+    "crates/adaptive-transport/src/receiver.rs:621 `assert_eq!(r.ack_delay_saturated(), 1, \"satürasyon audit'e yazılır\");` (in ack_delay_large_hold_not_saturated_and_saturation_counted, receiver.rs:610)",
+    "no hit in crates/client-core or crates/bench"
+   ],
+   "note": "The encoding half of the record is confirmed: receiver.rs:464 `let encoded = (delay_us / crate::ack::ACK_DELAY_UNIT_US).min(ACK_DELAY_ENC_MAX);` matches spec §2.1 L162-166 verbatim."
+  },
+  {
+   "mechanism": "ack_delay RTT correction + min-rtt guard",
+   "verdict": "confirmed",
+   "claim": "apply_ack_delay wired product-side with never-skip semantics and rejection counter",
+   "evidence": [
+    "crates/adaptive-transport/src/rtt.rs:244-247 `match raw_rtt.checked_sub(ack_delay) { Some(c) if min_rtt.is_none_or(|m| c >= m) => (c, true), _ => (raw_rtt, false), }`",
+    "crates/adaptive-transport/src/sender.rs:3054-3056 `let (sample, corrected) = apply_ack_delay(raw, ack.ack_delay, self.rtt.rtprop()); if !corrected { self.diag_rtt_rejected += 1;`",
+    "crates/client-core/src/runtime.rs:1169-1172 `Event::AckReceived(AckInfo { acked_seqs: acked, ack_delay: frame.ack_delay_duration() })`",
+    "crates/adaptive-transport/src/ack.rs:154-155 `pub fn ack_delay_duration(&self) -> Duration { let unit_us = if self.v2 { ACK_DELAY_UNIT_US } else { 1 };`"
+   ],
+   "note": "duplicates_or_dead sub-claim CONFIRMED and stronger than stated: rtt.rs:225 `pub fn rtt_sample` has ZERO non-test callers repo-wide (only tests/tv_rtt.rs:81-82) — it is dead public API, a DELETE candidate."
+  },
+  {
+   "mechanism": "ack_epoch (rekey/wrap epoch) field + cross-epoch ACK rejection",
+   "verdict": "confirmed",
+   "claim": "Serialized and parsed but never compared; constant 0 on both ends",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:170 `ack_epoch: 0,` — the only assignment; grep shows :136 (field), :170 (init), :474 (passed to from_received)",
+    "crates/adaptive-transport/src/ack.rs:57 field, :215 encode, :246 decode",
+    "$ grep -rn \"\\.ack_epoch\" crates/adaptive-transport/src/sender.rs crates/client-core/src/runtime.rs → no reader",
+    "crates/adaptive-transport/src/sender.rs:2897 `let ack_epoch = srtt_now.max(self.expected_ack_interval());` then :2912 `let _ = ack_epoch;` — confirmed dead local AND confirmed name collision with the wire field",
+    "spec normative: specs/adaptive-transport-engine-spec.md:156 `Farklı ack_epoch → farklı key domain; cross-epoch ACK reddedilir.`",
+    "crates/client-core/src/seam.rs:29 `/// DH-epoch (0 = e0; rekey S2).`; runtime.rs:1796 `dh_epoch: 0,` hardcoded in srv_seal_send"
+   ],
+   "note": "WIRE is defensible only if S2/rekey is inside v1. No rekey path exists anywhere in the product runtime, so this is a deferred-to-S2 item rather than a transport-code blocker."
+  },
+  {
+   "mechanism": "Extended SACK V2 measurement ext — emission (seen_count real; arrival_rate sentinel)",
+   "verdict": "confirmed",
+   "claim": "seen_count counts all datagrams incl. dup/shard; arrival_rate always sentinel; 6 B/ACK on wire",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:196 `self.seen_total = self.seen_total.saturating_add(1);` — placed before the dup check at :222, so dups and FEC shards count",
+    "crates/adaptive-transport/src/receiver.rs:476-477 `self.seen_total, crate::ack::ARRIVAL_RATE_SENTINEL,`",
+    "crates/adaptive-transport/src/ack.rs:223-228 `if self.v2 { out.extend_from_slice(&self.seen_count.to_be_bytes()); out.extend_from_slice(&self.arrival_rate.to_be_bytes()); }` (4 B + 2 B)",
+    "crates/adaptive-transport/src/ack.rs:81 `pub const ARRIVAL_RATE_SENTINEL: u16 = 0xFFFF;`"
+   ],
+   "note": "arrival_rate is a compile-time constant on every emission — 2 B/ACK (≈6.5% of the 31 B plain V2 frame) of permanently-constant wire. See corrected_classifications."
+  },
+  {
+   "mechanism": "Extended SACK V2 measurement ext — sender consumer",
+   "verdict": "confirmed",
+   "claim": "No product consumer of seen_count / arrival_rate",
+   "evidence": [
+    "$ grep -rn \"\\.seen_count|\\.arrival_rate\" crates --include=*.rs → only ack.rs:226-227 (encode), ack.rs:428-429 + tests/tv_ack.rs:59-60,73-74,100-101 (tests). kama-noise-wire `d.seen_count()` hits are a Dedup accessor, unrelated.",
+    "crates/adaptive-transport/src/sender.rs:944-949 `pub struct AckInfo { pub acked_seqs: Vec<u64>, pub ack_delay: Duration }` — only two fields",
+    "crates/client-core/src/runtime.rs:1169-1172 constructs AckInfo without seen_count/arrival_rate",
+    "crates/adaptive-transport/src/sender.rs:107-108 `/// seen_count/arrival_gap SENDER'A-TAŞINMAZ (ledger-only ...; karar-girdisi-yapılamaz — amendman-§3).`"
+   ],
+   "note": "Classification KEEP-EXPERIMENTAL is questionable — see corrected_classifications; there is no artifact to keep default-OFF."
+  },
+  {
+   "mechanism": "Sender ACK ingestion in product client runtime",
+   "verdict": "confirmed",
+   "claim": "Full decode → acked_full → store.remove → Event::AckReceived chain in client-core non-test code",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1093-1096 `macro_rules! handle_rx` (stats.rx_datagrams/rx_bytes, seam.open)",
+    "crates/client-core/src/runtime.rs:1147-1153 type gate then `AckFrame::decode(&plain)`",
+    "crates/client-core/src/runtime.rs:1156-1163 `let Some(&unit) = seq_to_unit.get(s) else { continue }; if store.remove(&unit).is_some() { stats.acked += 1; unit_acked!(unit);`",
+    "crates/client-core/src/runtime.rs:1169-1174 `drive!(Event::AckReceived(AckInfo{..}), $now)` → :963 `for d in session.on_event($ev, $now)` → sender.rs:2185 `Event::AckReceived(ack) => self.on_ack_received(&ack, now_ns),`",
+    "crates/client-core/src/runtime.rs:815 `let mut session = ClientSession::new();` (product uses the shipped default surface)"
+   ],
+   "note": "Unidirectional claim confirmed: server_task has no ACK-decode branch; the only client→server-direction frames the server emits are ACK/RECOVERED/PARAM_ACK/CS-echo (runtime.rs:590 doc)."
+  },
+  {
+   "mechanism": "Sender OnAckReceived (§3.2)",
+   "claim": "Telemetry: FateWindowDiag fields printed in KP-CLIENT include ledger_unloss and loss_declared_*",
+   "verdict": "refuted",
+   "corrected_value": "KP-CLIENT prints `left_preconv` and `spurious` (and many FEC/ledger fields) but does NOT print ledger_unloss or loss_declared_pkt/loss_declared_time. Those three are populated into ClientStats.fate (runtime.rs:1466-1468) and are only reachable programmatically via `cli.shutdown()`; they never appear on the bench's diagnostic line.",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1466 `ledger_unloss: session.sender().diag_ledger().0,` :1467 `loss_declared_pkt: session.sender().diag_loss().0,` :1468 `loss_declared_time: session.sender().diag_loss().1,`",
+    "crates/bench/src/kama_product.rs:561-610 full KP-CLIENT format + arg list — contains `stats.fate.left_preconverge` and `stats.fate.spurious_units`, no ledger_unloss / loss_declared_* argument",
+    "$ grep -n \"ledger_unloss|loss_declared\" crates/bench/src/kama_product.rs → (no output)"
+   ],
+   "note": "The mechanism itself (inflight release, Karn RTT, tombstone, un-loss, dup-queue cancel, tail progress) is CONFIRMED wired: sender.rs:2929-2953, :2954-2996, :3002-3004, :3007-3039, :3071 `self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id));`, :3082-3089 tail_recovery."
+  },
+  {
+   "mechanism": "EAI (expected ACK interval) sender model + cadence-aware loss floor K_c×EAI",
+   "verdict": "confirmed",
+   "claim": "Formula, consumers, and CadenceLegacy default are as stated",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3270-3271 `let eai_ns = EXPECTED_ACK_FREQ_N * unit * 1_000_000_000 / rate + EAI_SACK_WIRE_BYTES * 1_000_000_000 / EAI_RETURN_BW_PRIOR;`",
+    "crates/adaptive-transport/src/sender.rs:3257-3258 `fn cadence_loss_floor(&self) -> Duration { Duration::from_nanos(dur_ns(self.expected_ack_interval()) * CADENCE_KC_NUM / CADENCE_KC_DEN) }` (3/2 = K_c 1.5)",
+    "crates/client-core/src/runtime.rs:203 `loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,` in RuntimeConfig::default()",
+    "crates/bench/src/main.rs:76-78 `--loss-confirm-k` default 0 with doc `cadence-legacy, ölçüldü ki HİÇ ateşlemiyor ... ÖLÇÜM KOLU`",
+    "crates/adaptive-transport/src/sender.rs:1391-1400 mirror constants (EXPECTED_ACK_FREQ_N/EAI_SACK_WIRE_BYTES/EAI_RETURN_BW_PRIOR) duplicated from receiver.rs:76-87 — hand-mirror confirmed"
+   ]
+  },
+  {
+   "mechanism": "ack_confidence — reverse-path liveness",
+   "claim": "Code deviates from spec §5.1 because it uses last_ack_ns.or(first_send_ns) instead of max(last_ack, first_send)",
+   "verdict": "corrected",
+   "corrected_value": "Textually true, behaviorally null. `first_send_ns` is written exactly once (sender.rs:5755-5756, guarded by is_none()) at the first emission, and `last_ack_ns` is written only in on_ack_received (sender.rs:2888), which can only run after an emission. On a monotonic clock last_ack_ns >= first_send_ns always holds, so `.or()` and `max()` return the same anchor. The real defect the §16.2 SUSPECT row is pointing at — a never-rebased first_send_ns — is NOT fixed by switching to max() either.",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:5802 `let anchor = match self.last_ack_ns.or(self.first_send_ns) {`",
+    "crates/adaptive-transport/src/sender.rs:5755-5756 `if self.first_send_ns.is_none() { self.first_send_ns = Some(now_ns);`",
+    "crates/adaptive-transport/src/sender.rs:2888 `self.last_ack_ns = Some(now_ns);` (inside on_ack_received, after the empty-ack early return at :2885)",
+    "specs/adaptive-transport-engine-spec.md §5.1 `silence   = now − max(last_ack_time, first_send_time)`"
+   ],
+   "note": "TWO deviations the finding did NOT flag: (1) code threshold is `max(3×srtt, K_CONF_EAI×EAI)` (sender.rs:5809-5811) while spec §5.1 says `threshold = ACK_SILENCE_MULT × srtt` — an extra term with no spec §5.1 basis (justified only in a [TUR-3b] comment); (2) code's `active` predicate includes `dup_queue` (sender.rs:5795-5799) while spec lists only inflight ∨ pending_recovery ∨ tx_queue."
+  },
+  {
+   "mechanism": "ACK decimation (reverse-path impaired → ACK_FREQ↑ / ACK-only budget↓)",
+   "verdict": "confirmed",
+   "claim": "Dead predicate; no product consumer; no sender→receiver signal; no knob",
+   "evidence": [
+    "$ grep -rn \"ack_decimation\" crates --include=*.rs → emergency.rs:205 (def) + tests/tv_emergency.rs:8,96-98 ONLY",
+    "crates/adaptive-transport/src/emergency.rs:203-207 `/// ACK decimation aktif mi (§11: emergency'de sparse ACK). Arq dışında `true`. ... pub fn ack_decimation(level: EmergencyLevel) -> bool { level != EmergencyLevel::Arq }`",
+    "crates/adaptive-transport/src/receiver.rs: `ack_freq` has no setter (only :138 field, :172 init, :436 use)",
+    "crates/client-core/src/runtime.rs:2023-2048 `enum RxFrame` = Data | DataFrag | Fec | Param | CsProbe — no decimation control frame",
+    "spec normative: specs/transport-layer-tdd.md §16 AC-8 requires `sparse cumulative ACK` in EMERGENCY_FORWARD_REDUNDANCY"
+   ]
+  },
+  {
+   "mechanism": "Second ACK/SACK codec family — kama-transport-schema Control::Ack / Control::Sack",
+   "verdict": "confirmed",
+   "claim": "Zero client-core consumers; product ACK goes 0x14 raw through IdentitySeam",
+   "evidence": [
+    "$ grep -rn \"Control::Ack|Control::Sack\" crates --include=*.rs → non-test hits ONLY in kama-transport-schema/src/control.rs:91-92,109-110 and kama-noise-wire/src/control.rs:49,68,162,167,203,213,222,230",
+    "crates/kama-engine/src/recovered_map.rs:165 is inside `#[cfg(test)]` (mod starts at recovered_map.rs:108) — the finding's cfg(test) claim is CONFIRMED",
+    "$ grep -n \"Control::\" crates/client-core/src/runtime.rs → only :1335 and :2335, both `Control::ParamSet`",
+    "crates/bench/src/kama_product.rs:309 `Box::new(IdentitySeam),` (finding said :311); also :419, :1154",
+    "crates/client-core/src/seam.rs:111-144 IdentitySeam = `frame.resize(frame.len() + IDENTITY_TAG, 0)` with `/// GÜVENLİK İDDİASI YOK`"
+   ],
+   "note": "Classification WIRE hinges on whether S2 is v1. The layout conflict is real and quantified in a missed-mechanism entry below (the shipped 65 B sack_wire model does not match either layout)."
+  },
+  {
+   "mechanism": "Duplicate suppression → forced ACK (RX_DUP_SUPPRESS §9.4) + bounded rx-set + unit-level dedup",
+   "verdict": "confirmed",
+   "claim": "Wired; RX_DEDUP_WINDOW=4096 seq-level, DELIVERED_DEDUP_WINDOW=8192 unit-level; was_duplicate uncounted",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:222-231 `if self.received.contains(&d.seq) { self.state = RxState::DupSuppress; let ack = self.tick_ack(now_ns, true); ... was_duplicate: true`",
+    "crates/adaptive-transport/src/receiver.rs:126 `const RX_DEDUP_WINDOW: usize = 4096;` :414-419 `while self.received.len() > RX_DEDUP_WINDOW { self.received.pop_first(); ...`",
+    "crates/client-core/src/runtime.rs:1570 `const DELIVERED_DEDUP_WINDOW: usize = 8192;` with doc at :1565-1569 `Retransmit YENİ seq taşıdığından Receiver'ın seq-dedup'u birim tekrarını YAKALAMAZ (ilk netem kapı-koşusu bunu 26 duplicate-teslimle gösterdi)`",
+    "$ grep -rn \"was_duplicate\" crates --include=*.rs (non-test) → receiver.rs:72,229,260 only — never read in runtime.rs; ServerStats has no duplicate counter"
+   ]
+  },
+  {
+   "mechanism": "Per-peer receiver/ACK state lifecycle",
+   "verdict": "confirmed",
+   "claim": "max_peers=64 fail-closed, idle_hold=105s retirement, both surfaced in ServerStats",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:188-190 `max_peers: 64,` ... `idle_hold: Duration::from_secs(105),`",
+    "crates/client-core/src/runtime.rs:2081-2084 `if peers.len() >= cfg.max_peers { stats.dropped_new_peers += 1; continue; }`",
+    "crates/client-core/src/runtime.rs:2009-2010 `peers.retain(|_, s| now.saturating_sub(s.last_seen_ns) < idle_hold_ns); stats.retired_idle_peers += (before - peers.len()) as u64;`",
+    "crates/client-core/src/runtime.rs:539 `pub dropped_new_peers: u64,` :541 `pub retired_idle_peers: u64,`"
+   ]
+  },
+  {
+   "mechanism": "ACK coverage of FEC shard seqs",
+   "claim": "Classification SHIP",
+   "verdict": "unverifiable",
+   "corrected_value": "The branch is real and wired, but it is inert in the default product build: RuntimeConfig::default() sets `fec: None` (runtime.rs:199) and the bench default is `--fec-profile 0`. With fec None the entire FEC frame family is counted as unknown_frames and the FecShard ACK branch is never reached. SHIP's 'exercised' criterion is therefore not met by any default configuration; whether SHIP is right depends on the owner's ruling that the FEC lane is inside v1.",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:199 `fec: None,`",
+    "crates/client-core/src/runtime.rs:2223-2226 `RxFrame::Fec { h, symbol } => { let Some(p) = fec.as_ref() else { stats.unknown_frames += 1; // FEC kapalı — çerçeve işlenemez, sayılır. continue; };` (finding cited 2199-2202 — wrong lines)",
+    "crates/client-core/src/runtime.rs:2233-2262 pre-param hold branch, incl. :2237 `// Motor-ACK'i yine verilir (seq işgal edildi; kayıp-sinyali üretme).` and :2255-2261 srv_seal_send",
+    "crates/client-core/src/runtime.rs:2268-2289 confirmed path: `stats.fec_repairs_rx += 1;` then on_datagram(FecShard) then srv_seal_send",
+    "crates/bench/src/main.rs:57-60 `--fec-profile` default_value_t = 0",
+    "crates/adaptive-transport/src/receiver.rs:237-246 FecShard → `(Vec::new(), true)` with `**N8: shard-admission BtlBw/credit-YOLU-AÇMAZ**`"
+   ]
+  },
+  {
+   "mechanism": "Sender max_ack_delay assumption (25 ms) in tail-PTO vs receiver ACK hold",
+   "verdict": "confirmed",
+   "claim": "validated_v1 25 ms is the shipped value via ClientSession::new; TailRecoveryConfig::default() is OFF",
+   "evidence": [
+    "crates/adaptive-transport/src/tail_recovery.rs:50-56 Default impl: `enabled: false, ... max_ack_delay_ns: 25_000_000, // 25 ms`",
+    "crates/adaptive-transport/src/tail_recovery.rs:74-82 validated_v1: `enabled: true, ... max_ack_delay_ns: 25_000_000,`",
+    "crates/client-core/src/lib.rs:81-83 `let mut sender = Sender::new(); sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());`",
+    "crates/client-core/src/runtime.rs:815 `let mut session = ClientSession::new();` — the product client_task actually takes this path (verified, not inferred)",
+    "crates/adaptive-transport/src/tail_recovery.rs:148-153 `raw = srtt + rttvar*4 + self.cfg.max_ack_delay_ns` then clamp",
+    "crates/adaptive-transport/src/fate_estimator.rs:347 `max_ack_delay_ns: 25_000_000,` (observation-only mirror)"
+   ],
+   "note": "The 25 ms vs 8.39 s asymmetry is real and quantified by receiver.rs:93-94; it is a genuine cross-cluster inconsistency, not an ACK-codec bug — the finding's framing is correct."
+  },
+  {
+   "mechanism": "Receiver-side reorder hold before reporting gaps",
+   "verdict": "confirmed",
+   "claim": "Receiver reports all gaps immediately; tolerance is sender-side",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:8-10 `Receiver TÜM gap'leri SACK'te bildirir (gerçekleri raporlar); reorder toleransı + loss ilanı SENDER-tarafındadır (§5 packet/time-threshold, §9.3)`",
+    "crates/adaptive-transport/src/receiver.rs:248-254 `self.state = if is_shard { RxState::FecDecode } else if self.has_gap() { RxState::Reorder } else { RxState::Normal };` — informational only, does not gate build_ack",
+    "crates/adaptive-transport/src/receiver.rs:472-478 build_ack serializes the whole rx-set unconditionally",
+    "crates/adaptive-transport/src/sender.rs:3001-3002 `self.loss.set_packet_threshold(u64::from(self.reorder.reorder_thresh(&self.retx_cfg)));`",
+    "test: receiver.rs:581 gap_produces_sack_range_and_reorder_state"
+   ]
+  },
+  {
+   "mechanism": "ACK-only return budget fraction Y (RETURN_BUDGET_FRACTION=0.25) / per-profile ACK budget (INV-ACK-1)",
+   "claim": "Classification SHIP",
+   "verdict": "refuted",
+   "corrected_value": "WIRE. Y is not a separable shipped mechanism — it exists only as a compile-time factor inside ACK_CADENCE_FLOOR_NS (already counted by the cadence-floor record), and the actual normative requirement (INV-ACK-1 'ACK-only budgeted', TDD §12 'per-profil ACK budget') is unimplemented in three independent ways: (1) no per-profile budget field exists anywhere in RuntimeConfig; (2) the receiver's own doc scopes Y to 'SACK+echo', but echo/RECOVERED/PARAM_ACK return frames never pass through Receiver and are emitted directly with zero accounting; (3) the only real budget enforcer, EgressPolicy, is None in the shipping bind() and its sole impl is a bench harness type.",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:84-85 `/// [§16.1] RETURN_BUDGET_FRACTION (Y) permil — SACK+echo dönüşü ≤ Y·return_bw. 0.25 → 250.` — 'echo' is in the doc but not in the accounting",
+    "crates/client-core/src/runtime.rs:2322 `srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, pn, f).await;` (CS-echo, unmetered) — the branch at :2311-2323 never touches slot.rx",
+    "crates/client-core/src/runtime.rs:2216-2219, :2305-2308, :2370-2373 `stats.fec_recovered_ctrl_tx += 1; let f = encode_recovered(...); srv_seal_send(...)` — RECOVERED, unmetered",
+    "crates/client-core/src/runtime.rs:2352 PARAM_ACK via srv_seal_send, unmetered",
+    "crates/client-core/src/runtime.rs:311 `Self::bind_with_policy(bind, cfg, seam, None).await` — shipping bind passes None",
+    "$ grep -rn \"bind_with_policy|EgressPolicy\" crates --include=*.rs (outside runtime.rs) → only client-core/tests/api_surface_v0.rs and bench/src/kama_product.rs:65,286-287,396",
+    "specs/transport-layer-tdd.md §14 `INV-ACK-1 | Windowed/batched ACK; per-paket ACK YOK (ACK storm engeli); ACK-only budgeted.`"
+   ]
+  },
+  {
+   "mechanism": "Piggyback ACK on reverse-direction DATA",
+   "verdict": "confirmed",
+   "claim": "Absent from the product; only sim-harness comments",
+   "evidence": [
+    "$ grep -rni \"piggyback\" crates --include=*.rs → adaptive-transport/tests/live_budget_sweep.rs:2, kama-engine/tests/m1_reverse_nis.rs:12,491, kama-engine/tests/micro_sweep_1b.rs:6,423 — all comments in test harnesses",
+    "crates/client-core/src/runtime.rs:590 `/// Dönüş yönünde üretilen datagram (ACK/RECOVERED/PARAM_ACK) — DENEME düzlemi.`",
+    "specs/transport-layer-tdd.md §12 lists `piggyback` in a non-MUST enumeration"
+   ],
+   "note": "Classification challenged — see corrected_classifications; KEEP-EXPERIMENTAL implies an artifact that must stay default-OFF, and no artifact exists."
+  },
+  {
+   "mechanism": "ACK-path diagnostic metrics (ack_loss_rate, ack_compression_score, ack_spacing_rate)",
+   "verdict": "confirmed",
+   "claim": "Absent; AC-6 handled structurally in bw.rs",
+   "evidence": [
+    "$ grep -rn \"ack_compression|ack_loss_rate|ack_spacing\" crates --include=*.rs → (no output, entire tree incl. tests)",
+    "crates/adaptive-transport/src/bw.rs:105 `let interval_ns = ack_elapsed.max(send_elapsed);` with doc at :97 `interval = max(ack_elapsed, send_elapsed)` (engine §7.1) — the AC-6 protection is structural",
+    "crates/adaptive-transport/src/sender.rs:3414 `ack_confidence_permille` is the reverse-path fuzzy input actually wired"
+   ],
+   "note": "Classification challenged — see corrected_classifications."
+  }
+ ],
+ "missed_mechanisms": [
+  {
+   "name": "RECOVERED-control frame as a second return-path acknowledgment (client ingest shares the ACK bookkeeping verbatim)",
+   "evidence": "crates/client-core/src/runtime.rs:1121 `} else if plain.first() == Some(&FRAME_RECOVERED) {` — this branch lives INSIDE the same handle_rx macro as the ACK branch and performs the identical unit-release bookkeeping: :1129 `if store.remove(&unit).is_some()`, :1131 `unit_acked!(unit)`, :1134-1135 `for old in unit_seqs.remove(&unit).unwrap_or_default() { seq_to_unit.remove(&old); }` — byte-for-byte the same three lines as the ACK branch at :1159-1162. It then drives runtime.rs:1144 `drive!(Event::RecoveredControl(RecoveredInfo { units }), $now)` → sender.rs:2139/2357 (batch early-path) → sender.rs:4778 `fn on_recovered_control`. Server side emits it at runtime.rs:2216-2219 / :2305-2308 / :2370-2373 (`stats.fec_recovered_ctrl_tx += 1; encode_recovered(...); srv_seal_send(...)`). The cluster's records never enumerate it, yet it is a logical acknowledgment on the same return path with the same seq/unit maps. Gate: cfg.fec Some on both ends (runtime.rs:199 default None). Sender doc at sender.rs:96-97 is explicit that it is SAF-LOGICAL and must NOT touch rate/BtlBw (N8).",
+   "suggested_classification": "SHIP (conditional on the FEC lane) — but it MUST be audited in this cluster, not only in the FEC cluster, because it mutates the ACK path's seq_to_unit/unit_seqs/store state."
+  },
+  {
+   "name": "Return-path budget blindness: three non-SACK return families bypass all ACK accounting",
+   "evidence": "The Receiver's cadence/quota/tail machinery meters ONLY the SACKs it emits (receiver.rs:339-347 burn_quota, :450-452 record_ack_emit). Every other return-direction datagram goes straight to the socket with no counter feeding the cadence gate: CS-echo at runtime.rs:2311-2323 (`stats.cs_echoes_tx += 1; srv_seal_send(...)`, and the branch comment at :2312-2313 states it 'ACK üretmez' — i.e. it is invisible to the receiver), RECOVERED at runtime.rs:2216-2219/:2305-2308/:2370-2373, PARAM_ACK at runtime.rs:2352. receiver.rs:84 nevertheless documents Y as bounding 'SACK+echo dönüşü'. In a FEC-on run the RECOVERED stream is per-block, i.e. potentially denser than the 1-per-8.39 s cadence the floor was designed to guarantee. No component anywhere sums realized return bytes against Y·return_bw in the product (EgressPolicy is None at runtime.rs:311).",
+   "suggested_classification": "WIRE — INV-ACK-1's 'ACK-only budgeted' is unmet not merely because Y is static but because the budget's own scope statement is unimplemented."
+  },
+  {
+   "name": "sack_wire = 65 B constant does not match the shipped ACK wire size (59 B)",
+   "evidence": "specs/adaptive-transport-engine-spec.md:985 defines `sack_wire` = 28(UDP/IPv4) + 22(handle4+seq2+tag16) + ACK_FRAME_V2 body(15+4·range) = 65 B at 0 ranges. The product emits `ack.encode()` directly into `seam.seal(...)` (runtime.rs:2172, :2001) and IdentitySeam adds ONLY a 16 B tag with no handle and no seq: crates/client-core/src/seam.rs:118-127 `frame.resize(frame.len() + IDENTITY_TAG, 0)`, seam.rs:114 `pub const IDENTITY_TAG: usize = 16;`. ACK V2 body is exactly 15 + 4n (ack.rs:202 doc, :208-228 encode). So the shipped return datagram is 15+16 = 31 B UDP payload = 59 B on IPv4/UDP, i.e. 6 B (9.2%) below the constant that derives ACK_CADENCE_FLOOR (receiver.rs:93), T_SPACING (receiver.rs:115), the sender EAI return term (sender.rs:1395/3271), the w_epoch return-prior (sender.rs:2910) and the PreConverge rtt_floor (sender.rs:1455/5698). Every one of those five [CAL] constants is therefore derived from a header the product does not emit.",
+   "suggested_classification": "Not a classification — a calibration-provenance defect that should be recorded against the cadence-floor / EAI records (and it sharpens the open question about the post-S2 layout, since noise-wire's EXTENDED outer would re-derive it a third way)."
+  },
+  {
+   "name": "Duplicate-triggered forced ACK is an unbudgeted 1:1 responder (INV-ACK-1 edge)",
+   "evidence": "crates/adaptive-transport/src/receiver.rs:222-231: every received datagram whose seq is already in the rx-set calls `self.tick_ack(now_ns, true)` with force=true, and receiver.rs:436 `if force || self.since_last_ack >= self.ack_freq` bypasses the ACK_FREQ_N=2 batching entirely. Neither the cadence floor nor the episode quota can suppress it (the quota is only decremented at :341, never checked as a precondition on this path). A duplicate flood — replay, or a network that duplicates — therefore yields exactly one SACK per inbound datagram, which is the per-packet ACK storm INV-ACK-1 forbids. Side effect: the same call resets `since_last_ack = 0` (receiver.rs:437), so a duplicate also erases the pending-ACK credit accumulated by genuinely-new arrivals.",
+   "suggested_classification": "WIRE (bounded-forced-ACK rate limit missing) — the mechanism is required by INV-ACK-1 / specs/transport-layer-tdd.md §14 L739 and has no limiter."
+  },
+  {
+   "name": "FEC shards consume the ACK_FREQ_N credit, coupling ACK rate to shard rate",
+   "evidence": "crates/adaptive-transport/src/receiver.rs:255 `let ack = self.tick_ack(now_ns, false);` runs for BOTH match arms of `d.kind` — RxKind::Data and RxKind::FecShard (receiver.rs:232-246). seen_total also counts shards (receiver.rs:196, before the dup check). So with FEC on and an r/k ratio of 0.5, the frequency-path ACK rate becomes (data+shards)/2 rather than data/2 — the ACK-overhead model implied by 'ACK count ≈ DATA/2' in the findings understates it by the shard fraction. The findings' Batched-ACK record states 'every 2nd received datagram (DATA or FEC shard)' but does not draw the overhead consequence, and no record covers the interaction with the return budget.",
+   "suggested_classification": "Note against the Batched-ACK SHIP record (no reclassification) — but it must be stated wherever the 'ACK-only budgeted' claim is made."
+  },
+  {
+   "name": "rtt::rtt_sample() — dead public helper duplicating apply_ack_delay",
+   "evidence": "crates/adaptive-transport/src/rtt.rs:222-227 `pub fn rtt_sample(raw_rtt: Duration, ack_delay: Duration) -> Option<Duration>`. Repo-wide grep shows the ONLY callers are crates/adaptive-transport/tests/tv_rtt.rs:81-82. The product path uses apply_ack_delay exclusively (sender.rs:48 import, sender.rs:3054 call). The two functions implement conflicting §7.3 semantics: rtt_sample RETURNS None (skips the sample) when ack_delay > raw, while apply_ack_delay's doc at rtt.rs:230-233 explicitly says the sample must NEVER be skipped ('sample-skip estimator açlığı üretir — K-1 sınıfı'). Keeping the superseded semantics as public API is a live foot-gun for any future caller.",
+   "suggested_classification": "DELETE"
+  },
+  {
+   "name": "PeerSlot::next_pn() — per-peer wire packet number for every sealed return frame",
+   "evidence": "crates/client-core/src/runtime.rs:1765-1769 `fn next_pn(&mut self) -> u64 { let v = self.tx_pn; self.tx_pn = self.tx_pn.wrapping_add(1); v }`. It is consumed by all nine srv_seal_send call sites (ACK :2001/:2172/:2258/:2287, RECOVERED :2219/:2308/:2373, CS-echo :2322, PARAM_ACK :2352) and feeds SealArgs.wire_pn (runtime.rs:1794). seam.rs:26-27 documents the contract as 'per-peer monoton; çağıran sayar, seam ihlali reddeder', but the implementation is `wrapping_add`, i.e. it silently wraps rather than failing closed. Under IdentitySeam this is inert; under S2 (kama-noise-wire, where PN monotonicity is an AEAD-nonce invariant — INV-NONCE-1) a wrap is a nonce reuse. No record in the cluster covers the ACK path's PN source.",
+   "suggested_classification": "WIRE (S2-blocking) — the seam contract's monotonicity is asserted in docs but implemented as wrapping arithmetic with no rekey/refuse path."
+  }
+ ],
+ "corrected_classifications": [
+  {
+   "mechanism": "ACK-only return budget fraction Y (RETURN_BUDGET_FRACTION=0.25) / per-profile ACK budget (INV-ACK-1 'ACK-only budgeted')",
+   "classification": "WIRE",
+   "reason": "SHIP is not defensible. Y has no independent existence on the product path — it is a compile-time factor inside ACK_CADENCE_FLOOR_NS (receiver.rs:93-94), already fully credited to the cadence-floor record; counting it twice inflates the SHIP list. The normative requirement it is meant to satisfy is disconnected on three counts: (a) no per-profile ACK budget field exists in RuntimeConfig (grep of runtime.rs:85-207 shows quota_r as the only ACK-adjacent knob); (b) receiver.rs:84 scopes Y to 'SACK+echo' but CS-echo (runtime.rs:2311-2323), RECOVERED (:2216/:2305/:2370) and PARAM_ACK (:2352) never enter Receiver's accounting; (c) the only enforcement hook, EgressPolicy, is None in the shipping ServerEndpoint::bind (runtime.rs:311) with a bench-only impl (kama_product.rs:65). INV-ACK-1 (transport-layer-tdd.md §14 L739) is spec-required and structurally unmet → WIRE."
+  },
+  {
+   "mechanism": "Piggyback ACK on reverse-direction DATA",
+   "classification": "DELETE",
+   "reason": "KEEP-EXPERIMENTAL is defined as 'intentionally outside v1, must be default OFF' — that presupposes an artifact whose default state can be checked. There is none: grep -rni piggyback over crates returns only five comment lines inside test harnesses (live_budget_sweep.rs:2, m1_reverse_nis.rs:12,491, micro_sweep_1b.rs:6,423). The record describes a spec sentence (transport-layer-tdd.md §12, non-MUST), not code. It should be struck from the mechanism inventory (or moved to an explicit 'not-implemented, spec-optional' list) so the KEEP-EXPERIMENTAL bucket keeps its meaning: things that exist and must stay off."
+  },
+  {
+   "mechanism": "ACK-path diagnostic metrics (ack_loss_rate, ack_compression_score, ack_spacing_rate) — TDD §9 NetworkClassifier",
+   "classification": "DELETE",
+   "reason": "Same defect as the piggyback record: nothing exists to keep default-OFF. `grep -rn 'ack_compression|ack_loss_rate|ack_spacing' crates --include=*.rs` returns zero hits across the entire tree including tests. The record is a spec enumeration, not a mechanism. The substantive content — that AC-6 is met structurally by bw.rs:105 `interval_ns = ack_elapsed.max(send_elapsed)` and that the wired reverse-path fuzzy input is ack_confidence_permille (sender.rs:3414) — belongs as a note on the ack_confidence record."
+  },
+  {
+   "mechanism": "ACK/SACK frame codec — ACK_FRAME_V2 (0x14) emit, V1 (0x10) decode-compat",
+   "classification": "SHIP",
+   "reason": "Classification stands for the V2 emit + decode surface, but the record must be split: the V1 EMIT branch (ack.rs:209-213 `else { FRAME_TYPE_ACK }`) is unreachable product code — `from_received` hardwires v2:true (ack.rs:145) and `grep -rn 'v2: false' crates` returns nothing repo-wide, so no code path in the workspace can construct a V1 frame outside ack.rs:398/:423 test fixtures. That sub-branch plus the client's V1 accept-gate (runtime.rs:1149 `plain[0] != FRAME_TYPE_ACK && ...`) is a DELETE candidate: it widens the accepted-input surface for a codepoint no peer in this system emits, and the tv_ack.rs:47 'V1 compat golden' test pins compatibility with a producer that does not exist."
+  },
+  {
+   "mechanism": "Extended SACK V2 measurement ext — emission (seen_count real; arrival_rate = 0xFFFF sentinel per spec zeyl)",
+   "classification": "SHIP",
+   "reason": "Classification stands for seen_count (spec §2.2 normative field, really populated at receiver.rs:196). But arrival_rate is not an 'emission mechanism' — it is a hardwired compile-time constant: receiver.rs:477 passes `crate::ack::ARRIVAL_RATE_SENTINEL` unconditionally, and receiver.rs:472-475 documents that the receiver structurally cannot measure it (RxDatagram carries no size). That is 2 B of invariant payload on every SACK (≈6.5% of the 31 B plain frame, ≈3.4% of the 59 B shipped datagram) with neither a producer that can vary it nor a consumer that reads it. The field should be recorded separately as DELETE-or-defer-to-K3, not folded into a SHIP record — otherwise the audit reports as 'shipped' two bytes whose only possible value is a sentinel."
+  },
+  {
+   "mechanism": "Extended SACK V2 measurement ext — sender consumer (seen≪sent forward/return-loss split; arrival_rate cold-start bw hint) [K3]",
+   "classification": "WIRE",
+   "reason": "KEEP-EXPERIMENTAL again presupposes default-OFF code; there is none (`grep -rn '\\.seen_count|\\.arrival_rate' crates` yields only ack.rs encode + tests, and AckInfo at sender.rs:944-949 has exactly two fields). More importantly the finding's own spec_requires_v1='experimental' is contradicted by its cited spec text: §2.2 L189-193 states the sender comparison as the PURPOSE of the field pair and §16.1's sack_wire row already charges the 6 B to every ACK. So the workspace unconditionally pays the wire cost of a spec-motivated feature whose consumer is absent — that is the definition of WIRE (spec-required, disconnected), not of an experiment. If the owner rules K3 out of v1, then the correct action is to delete the two fields from the V2 body rather than keep paying for them."
+  }
+ ]
+}

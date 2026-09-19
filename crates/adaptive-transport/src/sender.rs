@@ -386,6 +386,10 @@ pub struct FecLossRiskConfig {
     /// garantisi. Motor K bilmez (INV-ENGINE-SOC) — bu yüzden sabit, profil-bağımsız bir taban;
     /// K>8 profilde 1 repair için daha küçük ‰ yeterdi, taban yalnız ihtiyatlıdır.
     pub spec_min_permille: u32,
+    /// [C4 G1 `[CAL]`] Reorder-belirsiz rejim guard'ı: `declared_units ≥ reorder_min_evidence_units ∧
+    /// reorder_pressure_permille ≥ bu eşik` ⇒ spekülatif öneri YOK. `u32::MAX` = kapalı (sevk).
+    /// Yalnız MEVCUT sinyal (spurious/olay oranı); risk hesabı ve `t_first_risk` değişmez.
+    pub reorder_suppress_permille: u32,
 }
 
 impl Default for FecLossRiskConfig {
@@ -406,6 +410,7 @@ impl Default for FecLossRiskConfig {
             reorder_discount_max_permille: 500,
             tight_budget_permille: 2_500,
             spec_min_permille: 63,
+            reorder_suppress_permille: u32::MAX,
         }
     }
 }
@@ -416,6 +421,27 @@ impl FecLossRiskConfig {
     pub fn experimental_v1() -> Self {
         Self {
             enabled: true,
+            ..Self::default()
+        }
+    }
+
+    /// **FEC v1 sınırlı politikası (kapanış kararı):** aday A = 250-250-250 (L1 = L2 = 250‰; yapı-gate
+    /// seviyesi client-core `RuntimeConfig`'te `Some(250)`), persistence P2 (öğrenilen Q95 spurious-yaş
+    /// ufku × 1.25, taban 0.5×srtt) ve C4 guard'ı G1 (`reorder_pressure ≥ 300‰ ∧ declared ≥ 8` ⇒ öneri
+    /// yok). Ölçüldü (reports/fec-loss-risk-v1/closure): loss-only 20 % +23 pp teslim; karışık
+    /// kayıp+reorder (C4) n=20 OFF'a eşit/üstü (+0.04), tel +6 %; temiz yolda parity 0. Transport
+    /// `default()` NÖTR (kapalı) kalır; ürün default'u client-core'dadır.
+    #[must_use]
+    pub fn bounded_v1() -> Self {
+        Self {
+            enabled: true,
+            bootstrap_cap_permille: 250,
+            persistent_cap_permille: 250,
+            persist_mode: PersistMode::LearnedSpuriousAge,
+            persist_srtt_permille: 500,
+            persist_rho_permille: 1250,
+            persist_q_permille: 950,
+            reorder_suppress_permille: 300,
             ..Self::default()
         }
     }
@@ -515,6 +541,17 @@ pub struct TsSample {
     /// [EVIDENCE] `sent_window_units` (ham) ve `declared_units` karar anında.
     pub evidence_mass: u64,
     pub declared_units: u64,
+    /// [C4-ATIF] Karar anındaki bütçe/kuyruk durumu: pacer token bakiyesi, bekleyen parity, bekleyen
+    /// kayıp (retx adayı) sayısı; kümülatif sınıf sayaçları (telemetri feature'ı kapalıyken 0).
+    pub pacer_tokens: u64,
+    pub pending_parity: u64,
+    pub pending_lost: u64,
+    pub sched_data_denied: u64,
+    pub sched_retx_denied: u64,
+    pub sched_parity_denied: u64,
+    pub sched_retx_emitted: u64,
+    pub sched_parity_emitted: u64,
+    pub sched_data_emitted: u64,
 }
 
 /// [TEŞHİS] Arbiter sebep histogramı kova sayısı.
@@ -679,6 +716,47 @@ pub struct ControllerDecisionSnapshot {
     pub emergency: bool,
 }
 
+/// [FAZ-3 TELEMETRİ] Ürün derlemesinde HER ZAMAN dolu aktivasyon/tahminci yüzeyi.
+///
+/// Denetim tema C: sevk edilen ikilide "mekanizma ateşledi mi?" sorusu cevapsızdı — tail-probe
+/// emisyonu ve tahminci değerleri yalnız `diag-sched-telemetry` feature'ı altında görünüyordu.
+/// Bu yapı üç FARKLI olguyu ayırır: **yapılandırıldı** (`*_configured`), **ulaşılabilir**
+/// (kod yolu koştu: `state_transitions`, `*_entries`), **ateşledi** (emisyon sayaçları + ilk-an).
+/// Salt gözlem: hiçbir karar bu alanları OKUMAZ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ActivationDiag {
+    /// Tail-recovery yapılandırması açık mı (config; ateşleme DEĞİL).
+    pub tail_configured: bool,
+    /// FEC aktüasyonu yapılandırıldı mı (Controller ya da Manual{true}).
+    pub fec_configured: bool,
+    /// Tele çıkan tail-probe sayısı ve İLK ateşleme anı (ns; 0 = hiç).
+    pub tail_probes: u64,
+    pub tail_first_ns: u64,
+    /// Vadesi gelmişken emisyon anında iptal edilen probe (ACK yarışı).
+    pub tail_cancelled: u64,
+    /// Tele çıkan parity ve pacer'ın reddettiği parity denemesi.
+    pub parity_emitted: u64,
+    pub parity_token_denied: u64,
+    /// Sınıf-başına emisyon.
+    pub retransmits: u64,
+    pub dups: u64,
+    /// Faz geçişleri ve kritik faz girişleri (ulaşılabilirlik kanıtı).
+    pub state_transitions: u64,
+    pub recover_arq_entries: u64,
+    pub recover_fwd_entries: u64,
+    pub probe_up_entries: u64,
+    /// PreConverge'den çıkış anı (ns; 0 = hiç çıkılmadı = oturum kurulmadı).
+    pub left_preconverge_ns: u64,
+    /// Tahminciler — kararı ÜRETEN girdiler (neden-sorusunun cevabı).
+    pub btlbw_bps: u64,
+    pub srtt_us: u64,
+    pub rtprop_us: u64,
+    pub queue_delay_us: u64,
+    pub pacer_rate_bps: u64,
+    pub pacer_tokens: u64,
+    pub inflight_bytes: u64,
+}
+
 /// Commit-G: latch-baskılama nedenleri (named; kalibrasyon-dışı-hücre-işaretleri).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FecSuppressionReason {
@@ -711,6 +789,10 @@ pub struct FecActuationDiag {
     pub authority_mode: FecActuationMode,
     pub last_latch: Option<FecLatchResult>,
     pub latch_event_index: u64,
+    /// [FAZ-6 §1.3] SALT GÖZLEM — öneri > 0 iken `compute_requested_r` r=0 verdiği için HİÇ parity
+    /// çerçevesi kurulmayan latch sayısı (baskılama yok, pacer reddi yok: "maddeleşmeyen öneri").
+    /// Hiçbir kontrol yolu OKUMAZ; `parity_emitted=0 ∧ denied=0` ikilisini "hiç önerilmedi"den ayırır.
+    pub rounded_to_zero_count: u64,
     pub no_eligible_decision_count: u64,
     pub decision_event_mismatch_count: u64,
     pub no_rule_zero_count: u64,
@@ -1459,6 +1541,8 @@ pub struct Sender {
     // DR-ARQ-PRODUCT-TAIL-1: bounded tail-loss recovery (default OFF; INV-CS-4 supersession). Decision logic lives
     // in crate::tail_recovery; the sender only bridges live ACK/RTT/inflight state to it and emits via the ARQ path.
     tail_recovery: TailRecovery,
+    /// [FAZ-1] Dönüş-yolu gözlemcisi — SALT GÖZLEM (hiçbir kontrol yolu okumaz).
+    return_path: crate::return_path::ReturnPathObserver,
     // DR-RATE-RAMP-2 (§FAZ-1): startup pacing initialization (default OFF).
     startup_pacing: StartupPacingConfig,
     // Active bootstrap pacing floor (B/s). 0 = inactive. Bootstrap-only: released on startup plateau or
@@ -1509,6 +1593,7 @@ pub struct Sender {
     instance_id: u64,           // Commit-K: process-yerel Sender-kimliği (yabancı-witness-reddi)
     fec_authority_generation: u64, // Commit-K: monoton açılış-generation (saturating)
     last_latch: Option<FecLatchResult>,
+    latch_rounded_to_zero: u64, // [FAZ-6 §1.3] salt gözlem; hiçbir karar okumaz
     latch_event_index: u64,
     no_eligible_decision_count: u64,
     decision_event_mismatch_count: u64,
@@ -1668,6 +1753,24 @@ pub struct Sender {
     /// [FEC-RISK v2 ENSTRÜMAN] İlk L1 / L2 önerisinin anı (ns, 0 = hiç).
     diag_t_first_l1_ns: u64,
     diag_t_first_l2_ns: u64,
+    diag_preconverge_parity_blocked: u64, // [KURULUŞ-GUARD] arbiter çıkışı PreConverge'de sıfırlandı
+    repair_loss_not_arqed: u64, // [FAZ-2/3] ARQ'ya SOKULMAYAN kayıp repair sayısı (salt gözlem)
+    // [FAZ-3 TELEMETRİ] Ürün derlemesinde HER ZAMAN açık aktivasyon sayaçları. Bunlar eskiden
+    // yalnız `diag-sched-telemetry` feature'ı altında vardı → sevk edilen ikili dosyada
+    // "mekanizma ateşledi mi?" sorusu CEVAPSIZDI (denetim tema C).
+    act_tail_probe_emitted: u64,
+    act_tail_probe_first_ns: u64,
+    act_parity_emitted: u64,
+    act_parity_token_denied: u64,
+    act_retransmit_emitted: u64,
+    act_dup_emitted: u64,
+    act_state_transitions: u64,
+    act_recover_arq_entries: u64,
+    act_recover_fwd_entries: u64,
+    act_probe_up_entries: u64,
+    act_left_preconverge_ns: u64,
+    diag_parity_budget_clamped: u64, // [FAZ-2/2] §8.5 bütçe clamp'inin bağladığı karar sayısı
+    diag_parity_budget_would_zero: u64, // [FAZ-2/2] clamp parity'yi sıfırlayacaktı (§11 çelişkisi)
     diag_first_l1_ctx: (u64, u64, u64), // [EVIDENCE] (em, instant, persistent) ilk L1'de
     diag_first_l2_ctx: (u64, u64, u64), // [EVIDENCE] ilk L2'de
     /// [HANDOFF ENSTRÜMANI] Son kararın anlık görüntüsü (zaman serisi örnekleyici okur).
@@ -1762,7 +1865,8 @@ impl Sender {
             tx_queue: VecDeque::new(),
             pending_lost: VecDeque::new(),
             tail_recovery: TailRecovery::new(TailRecoveryConfig::default()), // default OFF
-            startup_pacing: StartupPacingConfig::default(),                  // default OFF
+            return_path: crate::return_path::ReturnPathObserver::default(),
+            startup_pacing: StartupPacingConfig::default(), // default OFF
             startup_pacing_floor_bps: 0,
             startup_floor_armed_once: false,
             startup_base_seen: false,
@@ -1790,6 +1894,7 @@ impl Sender {
             instance_id: NEXT_SENDER_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             fec_authority_generation: 0,
             last_latch: None,
+            latch_rounded_to_zero: 0,
             latch_event_index: 0,
             no_eligible_decision_count: 0,
             decision_event_mismatch_count: 0,
@@ -1906,6 +2011,21 @@ impl Sender {
             diag_reorder_pressure_peak: 0,
             diag_t_first_l1_ns: 0,
             diag_t_first_l2_ns: 0,
+            diag_preconverge_parity_blocked: 0,
+            repair_loss_not_arqed: 0,
+            act_tail_probe_emitted: 0,
+            act_tail_probe_first_ns: 0,
+            act_parity_emitted: 0,
+            act_parity_token_denied: 0,
+            act_retransmit_emitted: 0,
+            act_dup_emitted: 0,
+            act_state_transitions: 0,
+            act_recover_arq_entries: 0,
+            act_recover_fwd_entries: 0,
+            act_probe_up_entries: 0,
+            act_left_preconverge_ns: 0,
+            diag_parity_budget_clamped: 0,
+            diag_parity_budget_would_zero: 0,
             diag_first_l1_ctx: (0, 0, 0),
             diag_first_l2_ctx: (0, 0, 0),
             diag_last_ts: TsSample::default(),
@@ -3299,13 +3419,29 @@ impl Sender {
                         self.fate_estimator
                             .on_loss_evidence(p.unit.id, now_ns, guard);
                     }
-                    self.pending_lost.push_back(LostRec {
-                        seq,
-                        unit: p.unit,
-                        deadline_ns: now_ns,
-                        retx_count: p.retx_count,
-                        send_ns: p.send_ns, // [TUR-2a] un-loss kol-1 RTT için orijinal damga
-                    });
+                    // [FAZ-2 / KALEM-3 — REPAIR FATE AYRIMI] Kaybolan bir REPAIR shard'ı ARQ
+                    // kuyruğuna GİREMEZ. Parity `unit.id = esi` taşır (plan_fec_parity) ve ESI,
+                    // kaynak birim-id'lerinden FARKLI bir namespace'tir: `pending_lost`'a girerse
+                    // `plan_arq_retransmits` onu birim-id'si `esi` olan bir DATA gibi yeniden
+                    // gönderir → ürün runtime'ı `store.get(&esi)` ile YANLIŞ (ilk) kaynak birimi
+                    // retransmit eder. Aynı namespace tehlikesi fate-estimator tarafında zaten
+                    // tanınmıştı (yukarıdaki `origin == Data` koşulu); ARQ tarafında tanınmamıştı.
+                    //
+                    // Spec: repair'ler proaktif ve ACK-BAĞIMSIZDIR (fec-core §4/§6; engine §9 ARQ
+                    // yalnız orijinal DATA'yı kapsar) — kaybolan repair "eksik kalan redundans"tır,
+                    // yeniden iletilecek bir yük değil. Inflight'tan düşürme ve tombstone (geç-ACK
+                    // anlaşılsın) KORUNUR; yalnız ARQ kuyruğu atlanır.
+                    if p.origin == TransmitKind::FecParity {
+                        self.repair_loss_not_arqed = self.repair_loss_not_arqed.saturating_add(1);
+                    } else {
+                        self.pending_lost.push_back(LostRec {
+                            seq,
+                            unit: p.unit,
+                            deadline_ns: now_ns,
+                            retx_count: p.retx_count,
+                            send_ns: p.send_ns, // [TUR-2a] un-loss kol-1 RTT için orijinal damga
+                        });
+                    }
                     // [TUR-2b] tombstone: bounded, en-eski-önce eviction + audit.
                     while self.tombstones.len() >= TOMBSTONE_MAX {
                         match self.tombstone_order.pop_front() {
@@ -3550,6 +3686,66 @@ impl Sender {
         // ── TEK FEC ARBİTER ───────────────────────────────────────────────────────────────
         // final = max(confirmed, structure, speculative). Toplama YOK. Parity'yi yazan tek yer.
         let (final_ratio, reason) = fec_arbiter(confirmed, structure, spec);
+        // [KURULUŞ-GUARD — ARBİTER KAPSAMI] (transport-v1 denetimi, 2026-09-08)
+        // Guard `structure_gate_fec` içinde vardı (`BlockedPreConverge`, :3664) ama YALNIZ yapı-gate
+        // kolunu kapsıyordu; spekülatif kol (`speculative_propose`) hiçbir `SenderState` kontrolü
+        // içermiyor. FEC ürün profilinde default AÇIK olduğundan (client-core `KamaV1Profile`) bu
+        // artık canlı bir yol: Karn-dışı bir ACK (retransmit belirsizliği) RTT örneği vermeden
+        // SACK boşluklarıyla kayıp ilan edebilir → risk > l1_min → PreConverge'de parity önerilir.
+        // Guard'ın belgelenmiş ilkesi kola değil TELE ÇIKAN PARITY'ye aittir (:3655-3659: "FEC ölçüm
+        // olmadan aksiyon almaz"; PreConverge'de parity kıt token bütçesinde ORİJİNALLERLE yarışır ve
+        // kuruluşu bozar). Bu yüzden guard arbiter ÇIKIŞINA uygulanır — üç kolu birden kapsar.
+        // [FAZ-2 / KALEM-2 — §8.5 BÜTÇE CLAMP'İ] `parity_final = min(fuzzy_parity, budget_cap,
+        // profile_cap)` (engine-spec §658-661, NORMATİF; TDD §5.5). `budget_cap = f(BtlBw)` ZATEN
+        // uygulanmıştı (`budget::budget_cap_permille`) ama HİÇBİR ÜRÜN ÇAĞIRANI YOKTU — yalnız
+        // tv_emergency testinden çağrılıyordu (denetim: WIRE). Dar bantta yüksek kayıp parity'yi
+        // PATLATAMAZ: 1 mbit'te cap 900‰ (bağlamaz), 64 kbit'te 64‰ (sert bağlar).
+        //
+        // TEK-ARBİTER İNVARYANTI KORUNUR: bu ikinci bir FEC otoritesi DEĞİL, arbiter ÇIKIŞINA
+        // uygulanan bir üst-sınırdır (yalnız küçültür, asla büyütmez). Kalibrasyon YAPILMADI —
+        // `BudgetConfig::fixture()` mevcut [CAL] değerleriyle bağlandı.
+        let final_ratio = {
+            let cfg = crate::budget::BudgetConfig::fixture();
+            let btlbw = self.btlbw.btlbw();
+            // KANIT YOKKEN CLAMP YOK: `btlbw()` örnek yokken 0 döner; 0'ı "bütçe yok" diye okumak
+            // FEC'i kuruluş fazında SESSİZCE kapatırdı. Ölçüm yokken üst-sınır profil tavanıdır
+            // (spec §8.5 cap'i BtlBw'nin FONKSİYONUDUR; BtlBw yoksa fonksiyon tanımsızdır).
+            let cap = if btlbw == 0 {
+                cfg.profile_cap_permille
+            } else {
+                crate::budget::budget_cap_permille(btlbw, &cfg)
+            };
+            let clamped = crate::budget::parity_final(final_ratio, cap, cfg.profile_cap_permille);
+            // ── SPEC-İÇİ ÇELİŞKİ (kayıtlı, sessizce çözülmedi) ──
+            // §8.5 formülü `cap = BtlBw×1000/budget_ref` dar bantta 0'a iner: `budget_ref =
+            // 125 kB/s` fixture'ıyla BtlBw < 125 B/s ⇒ cap 0‰. Ama §11 (NORMATİF) TAM O KÖŞEDE
+            // (sub-kbps, emergency) "minimal parity shard" ister ve ürünün MIN_RATE tabanı
+            // 31 B/s'tir. Yani formülün literal okuması, transport'un birincil hedef rejiminde
+            // FEC'i tamamen kapatır — §11 ile çelişir.
+            //
+            // KARAR (kalibrasyon DEĞİL): clamp yalnız KÜÇÜLTTÜĞÜNDE uygulanır; parity'yi SIFIRA
+            // indirecekse UYGULANMAZ ve ayrı sayaçla görünür kılınır. Böylece §8.5'in koruyucu
+            // etkisi (dar bantta parity patlamasın) kazanılır, §11'in tabanı yok edilmez.
+            // Sıfırlama vakasının politikası owner kararıdır (kapanış raporu, açık kalem).
+            if clamped == 0 && final_ratio > 0 {
+                self.diag_parity_budget_would_zero =
+                    self.diag_parity_budget_would_zero.saturating_add(1);
+                final_ratio
+            } else {
+                if clamped < final_ratio {
+                    self.diag_parity_budget_clamped =
+                        self.diag_parity_budget_clamped.saturating_add(1);
+                }
+                clamped
+            }
+        };
+        let (final_ratio, reason) = if self.state == SenderState::PreConverge && final_ratio > 0 {
+            self.diag_preconverge_parity_blocked =
+                self.diag_preconverge_parity_blocked.saturating_add(1);
+            (0, FecArbiterReason::None)
+        } else {
+            (final_ratio, reason)
+        };
         self.diag_arbiter_reasons[reason.index()] += 1;
         // [HANDOFF ENSTRÜMANI] Kararın anlık görüntüsü — "canonical geldiğinde parity düştü mü"
         // sorusu bu seri olmadan sorulamaz. Salt gözlem, sabit boyut.
@@ -3570,6 +3766,15 @@ impl Sender {
             },
             evidence_mass: spec_split.map_or(0, |x| x.sent_window_units),
             declared_units: spec_split.map_or(0, |x| x.declared_units),
+            pacer_tokens: self.pacer.tokens(),
+            pending_parity: self.pending_fec.len() as u64,
+            pending_lost: self.pending_lost.len() as u64,
+            sched_data_denied: self.diag_sched_summary()[1],
+            sched_retx_denied: self.diag_sched_summary()[4],
+            sched_parity_denied: self.diag_sched_summary()[9],
+            sched_retx_emitted: self.diag_sched_summary()[5],
+            sched_parity_emitted: self.diag_sched_summary()[10],
+            sched_data_emitted: self.diag_sched_summary()[2],
         };
         d.fec_parity_ratio_permille = final_ratio;
         if final_ratio > 0 {
@@ -3697,7 +3902,8 @@ impl Sender {
         let prev_state = self.state; // [TUR-3c] preemption-muhasebesi için
         let health = u32::try_from(self.ack_confidence_permille(now_ns)).unwrap_or(u32::MAX);
         let level = self.emergency.update(health, now_ns);
-        self.last_recovery = emergency::action(level, Framing::Tiny, &self.emergency_cfg);
+        self.last_recovery =
+            emergency::action(level, self.emergency_framing(), &self.emergency_cfg);
 
         let idle = self.tx_queue.is_empty()
             && self.inflight.is_empty()
@@ -3886,6 +4092,26 @@ impl Sender {
             self.startup_round_marker_seq = self.next_seq;
             self.startup_round_complete = false;
             self.base_is_startup = true;
+        }
+        // [FAZ-3 TELEMETRİ] Faz geçişleri: hangi mekanizmanın NE ZAMAN devreye girdiğini ürün
+        // derlemesinde kanıtlar (salt gözlem; kararı değiştirmez).
+        if self.state != prev_state {
+            self.act_state_transitions = self.act_state_transitions.saturating_add(1);
+            match self.state {
+                SenderState::RecoverArq => {
+                    self.act_recover_arq_entries = self.act_recover_arq_entries.saturating_add(1);
+                }
+                SenderState::RecoverFwd => {
+                    self.act_recover_fwd_entries = self.act_recover_fwd_entries.saturating_add(1);
+                }
+                SenderState::ProbeUp => {
+                    self.act_probe_up_entries = self.act_probe_up_entries.saturating_add(1);
+                }
+                _ => {}
+            }
+            if prev_state == SenderState::PreConverge && self.act_left_preconverge_ns == 0 {
+                self.act_left_preconverge_ns = now_ns;
+            }
         }
     }
 
@@ -4269,6 +4495,13 @@ impl Sender {
         if policy_ceiling == Some(0) || split.instant_ppm < c.l1_min_instant_ppm {
             return SpeculativeProposal::NONE;
         }
+        // [C4 G1] Reorder-belirsiz rejim: son olayların ≥R‰'i Spurious çıktıysa spekülatif parity'nin
+        // ölçülü faydası ≈0 (alıcıda blok zaten kapanmış oluyor) → öneri yok. Kapalıyken (u32::MAX) inert.
+        if split.declared_units >= c.reorder_min_evidence_units
+            && split.reorder_pressure_permille >= c.reorder_suppress_permille
+        {
+            return SpeculativeProposal::NONE;
+        }
         let level = if split.persistent_ppm >= c.l2_min_persistent_ppm {
             SpeculativeLevel::L2Persistent
         } else {
@@ -4312,6 +4545,124 @@ impl Sender {
             ratio_permille: cap,
             deadline_assisted: tight && level == SpeculativeLevel::L1Bootstrap,
         }
+    }
+
+    /// [C4-ATIF] Zamanlayıcı sınıf sayaçlarının sabit-boyutlu özeti (feature kapalıyken sıfır):
+    /// `[data_sel, data_denied, data_emit, retx_sel, retx_denied, retx_emit, dup_sel, dup_denied,
+    /// dup_emit, parity_denied, parity_emit, tail_probe_emit]`. Salt gözlem.
+    #[must_use]
+    pub fn diag_sched_summary(&self) -> [u64; 12] {
+        #[cfg(feature = "diag-sched-telemetry")]
+        {
+            let d = self.sched_diag;
+            [
+                d.data_selected,
+                d.data_token_denied,
+                d.data_wire_emitted,
+                d.arq_retransmit_selected,
+                d.arq_retransmit_token_denied,
+                d.arq_retransmit_wire_emitted,
+                d.dup_selected,
+                d.dup_token_denied,
+                d.dup_wire_emitted,
+                d.fec_parity_token_denied,
+                d.fec_parity_wire_emitted,
+                d.tail_probe_wire_emitted,
+            ]
+        }
+        #[cfg(not(feature = "diag-sched-telemetry"))]
+        {
+            [0; 12]
+        }
+    }
+
+    /// [FAZ-2 KALEM-4] Acil-durum kurtarma eyleminin framing'i. Spec §11 / TDD §5.6 iki kol tanımlar:
+    /// `Tiny` (tek datagram) → zaman-aralıklı D× KOPYA; `SegmentBlock` (çok-shard'lı blok framing)
+    /// → **minimal parity shard** (düşük r/k, ACK-bağımsız). Çağıran `Framing::Tiny`'yi SABİT
+    /// veriyordu; FEC ürün profilinde açık olduğundan blok framing MEVCUTTUR ve spec'in
+    /// segment-block kolu ulaşılamaz kalıyordu (denetim: `Framing::SegmentBlock` ve
+    /// `RecoveryAction::MinimalParity` "hiçbir yerden çağrılmıyor").
+    fn emergency_framing(&self) -> Framing {
+        match self.fec_mode {
+            FecActuationMode::Controller => Framing::SegmentBlock,
+            FecActuationMode::Manual { enabled } => {
+                if enabled {
+                    Framing::SegmentBlock
+                } else {
+                    Framing::Tiny
+                }
+            }
+        }
+    }
+
+    /// [FAZ-3 TELEMETRİ] Aktivasyon + tahminci anlık görüntüsü (ürün derlemesinde her zaman dolu).
+    #[must_use]
+    pub fn diag_activation(&self) -> ActivationDiag {
+        let us = |d: Duration| u64::try_from(d.as_micros()).unwrap_or(u64::MAX);
+        ActivationDiag {
+            tail_configured: self.tail_recovery.config().enabled,
+            fec_configured: !matches!(self.fec_mode, FecActuationMode::Manual { enabled: false }),
+            tail_probes: self.act_tail_probe_emitted,
+            tail_first_ns: self.act_tail_probe_first_ns,
+            tail_cancelled: self.tail_probe_cancelled,
+            parity_emitted: self.act_parity_emitted,
+            parity_token_denied: self.act_parity_token_denied,
+            retransmits: self.act_retransmit_emitted,
+            dups: self.act_dup_emitted,
+            state_transitions: self.act_state_transitions,
+            recover_arq_entries: self.act_recover_arq_entries,
+            recover_fwd_entries: self.act_recover_fwd_entries,
+            probe_up_entries: self.act_probe_up_entries,
+            left_preconverge_ns: self.act_left_preconverge_ns,
+            btlbw_bps: self.btlbw.btlbw(),
+            srtt_us: self.rtt.srtt().map_or(0, us),
+            rtprop_us: self.rtt.rtprop().map_or(0, us),
+            queue_delay_us: us(self.rtt.queue_delay()),
+            pacer_rate_bps: self.pacer.rate(),
+            pacer_tokens: self.pacer.tokens(),
+            inflight_bytes: self.inflight_bytes,
+        }
+    }
+
+    /// [FAZ-2 KALEM-2] §8.5 bant-türevli bütçe clamp'inin parity oranını KÜÇÜLTTÜĞÜ karar sayısı.
+    #[must_use]
+    pub fn diag_parity_budget_clamped(&self) -> u64 {
+        self.diag_parity_budget_clamped
+    }
+
+    /// [FAZ-2 KALEM-2] §8.5 clamp'inin parity'yi SIFIRLAYACAĞI (ve bu yüzden uygulanmadığı) karar
+    /// sayısı — §11 ile çelişen köşenin ölçüsü. `> 0` = owner kararı bekleyen rejimdeyiz.
+    #[must_use]
+    pub fn diag_parity_budget_would_zero(&self) -> u64 {
+        self.diag_parity_budget_would_zero
+    }
+
+    /// [FAZ-2 KALEM-3] Kaybolduğu ilan edilip ARQ kuyruğuna SOKULMAYAN repair shard sayısı.
+    /// `> 0` = repair/DATA fate ayrımı fiilen çalıştı (salt gözlem).
+    #[must_use]
+    pub fn diag_repair_loss_not_arqed(&self) -> u64 {
+        self.repair_loss_not_arqed
+    }
+
+    /// [FAZ-1 DÖNÜŞ-YOLU] Bir ACK datagram'ı gözlendi. **Motor davranışını DEĞİŞTİRMEZ** —
+    /// yalnız `diag_return_path()` çıktısını besler. Ürün runtime'ı `Event::AckReceived`'dan
+    /// hemen ÖNCE çağırır; çağrılmaması motoru etkilemez (gözlem boş kalır).
+    pub fn observe_ack_feedback(&mut self, obs: crate::return_path::AckObservation, now_ns: u64) {
+        self.return_path.on_ack(obs, now_ns);
+    }
+
+    /// [FAZ-1 DÖNÜŞ-YOLU] Ölçülen dönüş-yolu durumu (ileri-yön kaybı ile dönüş bozulmasının
+    /// AYRIMI dâhil). `now_ns` sessizliği türetmek için gerekir.
+    #[must_use]
+    pub fn diag_return_path(&self, now_ns: u64) -> crate::return_path::ReturnPathState {
+        self.return_path.state(now_ns)
+    }
+
+    /// [KURULUŞ-GUARD] PreConverge'de arbiter çıkışının sıfırlandığı karar sayısı (salt gözlem).
+    /// `> 0` = kuruluş fazında parity önerildi ve guard tarafından tele çıkmadan kesildi.
+    #[must_use]
+    pub fn diag_preconverge_parity_blocked(&self) -> u64 {
+        self.diag_preconverge_parity_blocked
     }
 
     /// [EVIDENCE ENSTRÜMAN] İlk L1 ve ilk L2 anındaki `(sent_window_units, instant_ppm,
@@ -4547,14 +4898,41 @@ impl Sender {
                     let (computed, clamped) =
                         compute_requested_r(s.ratio_permille, k_actual, profile_r_max);
                     if s.emergency {
-                        // Temporary safety interlock pending 1b/1d arbitration: requested-GÖRÜNÜR, planned=0.
-                        FecLatchResult {
-                            requested_ratio_permille: s.ratio_permille,
-                            computed_r: computed,
-                            clamped_r: clamped,
-                            planned_r: 0,
-                            same_event_eligible: true,
-                            suppression: Some(FecSuppressionReason::EmergencyPendingArbitration),
+                        // [FAZ-2 / KALEM-4 — SPEC UYUMU] Acil durumda davranış FRAMING'e bağlıdır
+                        // (engine §11 L771-772 / TDD §5.6 L584-585, NORMATİF):
+                        //   Tiny        → parity YOK, kurtarma zaman-aralıklı D× kopyayla yapılır
+                        //   SegmentBlock→ **minimal parity shard** (düşük r/k, ACK-bağımsız)
+                        // Kod her iki kolda da parity'yi 0'a düşürüyordu ("temporary safety
+                        // interlock pending 1b/1d arbitration") — yani segment-block kolunda
+                        // spec'in TERSİNİ yapıyordu (denetim tema B). `emergency::action` zaten
+                        // `MinimalParity { permille }` üretiyor; burada TÜKETİLİYOR.
+                        // Kalibrasyon YAPILMADI: oran `EmergencyConfig::fixture()` değeridir.
+                        let minimal = match self.last_recovery {
+                            RecoveryAction::MinimalParity { permille } => permille,
+                            _ => 0,
+                        };
+                        if minimal > 0 {
+                            let (mc, mclamped) =
+                                compute_requested_r(minimal, k_actual, profile_r_max);
+                            FecLatchResult {
+                                requested_ratio_permille: minimal,
+                                computed_r: mc,
+                                clamped_r: mclamped,
+                                planned_r: mclamped,
+                                same_event_eligible: true,
+                                suppression: None,
+                            }
+                        } else {
+                            FecLatchResult {
+                                requested_ratio_permille: s.ratio_permille,
+                                computed_r: computed,
+                                clamped_r: clamped,
+                                planned_r: 0,
+                                same_event_eligible: true,
+                                suppression: Some(
+                                    FecSuppressionReason::EmergencyPendingArbitration,
+                                ),
+                            }
                         }
                     } else {
                         FecLatchResult {
@@ -4571,6 +4949,11 @@ impl Sender {
         };
         // Commit-K: STAGING — planned-parity witness-otoritesiyle-kuyruklanır (izin-kaynağı=bu-latch;
         // sonraki-global-mode-değişimi-bastıramaz). planned_r=0 → kuyruk-dokunulmaz.
+        // [FAZ-6 §1.3] SALT GÖZLEM: öneri vardı, baskılanmadı, ama r=0'a yuvarlandı → maddeleşmedi.
+        // Faz-5 BULGU FEC-1'in ölçüm boşluğunu kapatır; hiçbir kontrol kararı bu sayacı okumaz.
+        if r.requested_ratio_permille > 0 && r.planned_r == 0 && r.suppression.is_none() {
+            self.latch_rounded_to_zero = self.latch_rounded_to_zero.saturating_add(1);
+        }
         for esi in 0..r.planned_r {
             self.push_parity_authorized(
                 block_id,
@@ -4603,6 +4986,7 @@ impl Sender {
             authority_mode: self.fec_mode,
             last_latch: self.last_latch,
             latch_event_index: self.latch_event_index,
+            rounded_to_zero_count: self.latch_rounded_to_zero,
             no_eligible_decision_count: self.no_eligible_decision_count,
             decision_event_mismatch_count: self.decision_event_mismatch_count,
             no_rule_zero_count: self.no_rule_zero_count,
@@ -4813,6 +5197,14 @@ impl Sender {
             if !self.pacer.try_send(p.size) {
                 // Commit-G: budget-denied-GÖRÜNÜRLÜĞÜ (gauge; 1b-tasarım-girdisi — politika-DEĞİŞMEDİ).
                 self.token_denied_r_gauge = self.pending_fec.len() as u64;
+                // [FAZ-3] parity token reddi — ürün derlemesinde görünür.
+                self.act_parity_token_denied = self.act_parity_token_denied.saturating_add(1);
+                // [FAZ-3] Denetim bulgusu: bu SchedDiag alanı DEKLARE edilmiş ama HİÇ yazılmıyordu
+                // (vakum sayaç). Feature'lı görünüm artık ürün sayacıyla tutarlı.
+                #[cfg(feature = "diag-sched-telemetry")]
+                {
+                    self.sched_diag.fec_parity_token_denied += 1;
+                }
                 // Commit-N: attribution-snapshot (TAM-overwrite; yalnız-GERÇEK-token-denial-yolu).
                 self.token_denial_count_total = self.token_denial_count_total.saturating_add(1);
                 self.last_token_denial = Some(FecTokenDenialSnapshot {
@@ -4847,6 +5239,12 @@ impl Sender {
             .remove(idx)
             .expect("emit_parity_at: idx-geçerli");
         self.parity_emitted_total = self.parity_emitted_total.saturating_add(1);
+        // [FAZ-3] Aktivasyon kanıtı: parity TELE ÇIKTI.
+        self.act_parity_emitted = self.act_parity_emitted.saturating_add(1);
+        #[cfg(feature = "diag-sched-telemetry")]
+        {
+            self.sched_diag.fec_parity_wire_emitted += 1;
+        }
         // [FEC-RISK ENSTRÜMAN] İlk parity'nin TELE ÇIKTIĞI an — kolun asıl ölçtüğü büyüklük
         // `t_first_parity − t_first_suspected` (FEC'in tepki gecikmesi).
         if self.diag_t_first_parity_ns == 0 {
@@ -5386,6 +5784,11 @@ impl Sender {
         {
             self.sched_diag.tail_probe_wire_emitted += 1;
         }
+        // [FAZ-3] Ürün derlemesinde de görünür (feature'sız).
+        self.act_tail_probe_emitted = self.act_tail_probe_emitted.saturating_add(1);
+        if self.act_tail_probe_first_ns == 0 {
+            self.act_tail_probe_first_ns = now_ns;
+        }
         // Supersede the still-outstanding original: retire it inflight→tombstone (no loss declaration), then bump
         // the tombstone so the original's late ACK is Karn-excluded, then emit the probe copy under a fresh seq.
         self.retire_inflight_to_tombstone(target, now_ns);
@@ -5685,6 +6088,16 @@ impl Sender {
         let bw_sample = self
             .bw_sampler
             .on_sent(now_ns, unit.size, !more_pending, gain_ge1);
+        // [FAZ-3] Sınıf-başına aktivasyon (ürün derlemesinde görünür).
+        match origin {
+            TransmitKind::Retransmit => {
+                self.act_retransmit_emitted = self.act_retransmit_emitted.saturating_add(1);
+            }
+            TransmitKind::Duplicate => {
+                self.act_dup_emitted = self.act_dup_emitted.saturating_add(1);
+            }
+            _ => {}
+        }
         let units = u64::from(origin == TransmitKind::Data); // yalnız orijinal DATA loss sayacına.
         self.loss.on_sent(seq, now_ns, units);
         self.inflight_bytes += unit.size;

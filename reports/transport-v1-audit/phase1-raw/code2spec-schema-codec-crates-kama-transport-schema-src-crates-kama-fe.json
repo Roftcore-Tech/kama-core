@@ -1,0 +1,1340 @@
+{
+ "module": "schema-codec (crates/kama-transport-schema/src + crates/kama-fec-codec/src)",
+ "items": [
+  {
+   "symbol": "SOURCE_PREFIX_LEN",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:37",
+   "kind": "const-knob",
+   "purpose": "Canonical source-symbol prefix size = 11 B (msg_id4+off4+len2+flags1); §2.6 byte authority.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/wire.rs:59 (HDR_DATA_FRAG = HDR_DATA + SOURCE_PREFIX_LEN)",
+    "crates/client-core/src/wire.rs:88",
+    "crates/client-core/src/runtime.rs:213 (MAX_UNIT_BYTES = 1024 - SOURCE_PREFIX_LEN)",
+    "crates/client-core/src/runtime.rs:288",
+    "crates/client-core/src/runtime.rs:315",
+    "crates/client-core/src/runtime.rs:1301",
+    "crates/client-core/src/runtime.rs:1957"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "kama-noise-wire-tdd-v2.0 §2.6",
+   "evidence": [
+    "grep -n SOURCE_PREFIX_LEN crates/client-core/src/runtime.rs → 42,81,204,210,213,288,290,307,315,1098,1301,1957,2198",
+    "KamaV1Profile::MAX_UNIT_BYTES literally derives from it (runtime.rs:213)"
+   ]
+  },
+  {
+   "symbol": "SourcePrefix",
+   "path_line": "crates/kama-transport-schema/src/prefix.rs:20",
+   "kind": "struct",
+   "purpose": "Canonical source-symbol prefix DTO (message_id/chunk_offset/actual_payload_len/source_flags).",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1293 (constructed per chunk)",
+    "crates/client-core/src/wire.rs:87 (decode_data_frag)",
+    "crates/client-core/src/runtime.rs:1955"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.6 canonical-source-symbol prefix",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:41 use kama_transport_schema::prefix::{SourcePrefix, SOURCE_FLAG_FINAL}",
+    "re-exported to app surface at crates/client-core/src/lib.rs:51"
+   ]
+  },
+  {
+   "symbol": "SourcePrefix::serialize_symbol",
+   "path_line": "crates/kama-transport-schema/src/prefix.rs:35",
+   "kind": "fn",
+   "purpose": "Serializes prefix+payload+canonical zero-pad into an E-byte buffer; single source of the symbol bytes on both ends.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1302 (egress, error consumed → stats.frag_encode_failures)",
+    "crates/client-core/src/runtime.rs:2256 (ingress, RESULT DISCARDED via `let _ =`)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.6 MADDE-9",
+   "evidence": [
+    "runtime.rs:1302 `if pfx.serialize_symbol(chunk, &mut body).is_err() { stats.frag_encode_failures += 1; continue; }`",
+    "runtime.rs:2256 `let _ = pfx.serialize_symbol(payload, &mut sym);` — typed error computed but unconsumed on the receive path; on failure `sym` stays all-zero and silently corrupts the block"
+   ]
+  },
+  {
+   "symbol": "SourcePrefix::parse",
+   "path_line": "crates/kama-transport-schema/src/prefix.rs:71",
+   "kind": "fn",
+   "purpose": "Reads the 11 B prefix back out of an E-byte symbol (metadata recovery after FEC reconstruct) with bounds+reserved-flag validation.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/wire.rs:87 (decode_data_frag)",
+    "crates/client-core/src/runtime.rs:1955 (post-reconstruct metadata recovery)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.6 MADDE-9 prefix validation",
+   "evidence": [
+    "wire.rs:87 `let pfx = SourcePrefix::parse(body).ok()?;`",
+    "runtime.rs:1955 `let Ok(pfx) = SourcePrefix::parse(&r.bytes) else { continue };`",
+    "also fuzzed: fuzz/fuzz_targets/fuzz_prefix.rs:26 and Kani-proved: crates/kama-transport-schema/tests/kani_prefix_proofs.rs:21,29"
+   ]
+  },
+  {
+   "symbol": "SourcePrefix::payload_slice",
+   "path_line": "crates/kama-transport-schema/src/prefix.rs:102",
+   "kind": "fn",
+   "purpose": "Returns the application-payload slice of a recovered symbol (prefix..prefix+actual_payload_len).",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.6",
+   "evidence": [
+    "grep -rn payload_slice crates/client-core/src/ → 0 hits",
+    "only non-test src caller: crates/kama-engine/src/admission.rs:101, and admit_and_decode is never called from the runtime (see ClientSession::admit item)",
+    "PRODUCT RE-IMPLEMENTS IT INLINE with different semantics at crates/client-core/src/runtime.rs:1957 `r.bytes.get(SOURCE_PREFIX_LEN..SOURCE_PREFIX_LEN + len)` (returns None on overflow) vs payload_slice `end.min(symbol.len())` (silently truncates)",
+    "fuzz/fuzz_targets/fuzz_prefix.rs:32 explicitly asserts the silent-truncation case never fires"
+   ]
+  },
+  {
+   "symbol": "SOURCE_FLAG_FINAL",
+   "path_line": "crates/kama-transport-schema/src/prefix.rs:15",
+   "kind": "const-knob",
+   "purpose": "source_flags bit0 = final/end-of-message; every other bit is reserved→reject.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1297 (set on last chunk when frag_on)",
+    "crates/client-core/src/runtime.rs:1779 (read on reassembly)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.6 MADDE-9",
+   "evidence": [
+    "runtime.rs:1297 `source_flags: if frag_on && ci + 1 == n_chunks { SOURCE_FLAG_FINAL } else { 0 }`",
+    "runtime.rs:1779 `pfx.source_flags & SOURCE_FLAG_FINAL != 0`"
+   ]
+  },
+  {
+   "symbol": "SOURCE_FLAGS_RESERVED_MASK",
+   "path_line": "crates/kama-transport-schema/src/prefix.rs:16",
+   "kind": "const-knob",
+   "purpose": "Private reserved-bit mask enforcing fail-closed reject of unknown source_flags bits.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "reached inside serialize_symbol (prefix.rs:36) and parse (prefix.rs:82), both product-called"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.6 MADDE-9",
+   "evidence": [
+    "prefix.rs:36 and prefix.rs:82 are the only readers; both functions are product-called (see SourcePrefix::parse / serialize_symbol items)"
+   ]
+  },
+  {
+   "symbol": "ParamFields",
+   "path_line": "crates/kama-transport-schema/src/param.rs:20",
+   "kind": "struct",
+   "purpose": "PARAM_SET canonical field set (§8) that param_hash is bound to; both ends must derive it identically.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:319-330 param_fields_for(&FecProfile)",
+    "crates/client-core/src/runtime.rs:2027 param_expected",
+    "crates/client-core/src/runtime.rs:940 plan_param_bootstrap(1, &param_fields_for(p))"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "kama-noise-wire-tdd §8 / MADDE-8",
+   "evidence": [
+    "runtime.rs:40 `use kama_transport_schema::param::ParamFields;`",
+    "runtime.rs:2401 `slot.param.on_param_set(&ctl, exp)` consumes it on the receive side"
+   ]
+  },
+  {
+   "symbol": "ParamFields::canonical_hash_input",
+   "path_line": "crates/kama-transport-schema/src/param.rs:52",
+   "kind": "fn",
+   "purpose": "Produces the canonical DS||fields byte string that BLAKE2s-256 hashes into param_hash.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:940 → crates/kama-engine/src/param_bootstrap.rs:32 → crates/kama-noise-wire/src/param_bind.rs:20"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§8 MADDE-8",
+   "evidence": [
+    "param_bind.rs:20 `let input = fields.canonical_hash_input()`; param_bootstrap.rs:32 `let param_hash = bind_transport_parameters(fields)?;`; runtime.rs:940 `plan_param_bootstrap(1, &param_fields_for(p)).ok()`",
+    "golden-drift-gated at crates/kama-transport-schema/tests/golden_v0.rs:98,124,130"
+   ]
+  },
+  {
+   "symbol": "ParamFields::validate",
+   "path_line": "crates/kama-transport-schema/src/param.rs:37",
+   "kind": "fn",
+   "purpose": "B4-invariant fail-closed check 1≤K_shape≤255, E≥11 before the hash preimage is built.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "reached from canonical_hash_input (param.rs:53) on the product PARAM-bootstrap chain"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§8 B4-invariant",
+   "evidence": [
+    "param.rs:53 `self.validate()?;` is the first statement of canonical_hash_input",
+    "mutation-hardened: crates/kama-transport-schema/tests/schema_registry_mutants.rs:223-272 (4 mutants)"
+   ]
+  },
+  {
+   "symbol": "PARAM_DS",
+   "path_line": "crates/kama-transport-schema/src/param.rs:11",
+   "kind": "const-knob",
+   "purpose": "Domain separator ASCII(\"KAMA-PARAM-V1\") prefixed to the canonical hash input.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "param.rs:55-56 inside canonical_hash_input (product chain)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§8",
+   "evidence": [
+    "param.rs:55 `v.extend_from_slice(PARAM_DS);`",
+    "no direct external src caller (grep: only tests golden_v0.rs:101,106 and schema_registry_mutants.rs:290) — reachable only transitively, which is correct"
+   ]
+  },
+  {
+   "symbol": "K_SHAPE_MAX",
+   "path_line": "crates/kama-transport-schema/src/param.rs:14",
+   "kind": "const-knob",
+   "purpose": "B4 upper bound K_shape ≤ 255 (k_actual is u8 on the wire).",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "param.rs:38 inside ParamFields::validate (product chain)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§8 B4",
+   "evidence": [
+    "grep -rn K_SHAPE_MAX crates → only crates/kama-transport-schema/src/param.rs:14,38 (no external caller); reachable via validate()"
+   ]
+  },
+  {
+   "symbol": "E_MIN",
+   "path_line": "crates/kama-transport-schema/src/param.rs:16",
+   "kind": "const-knob",
+   "purpose": "B4 lower bound E ≥ 11 so the 11 B prefix always fits in a symbol.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "param.rs:41 inside ParamFields::validate (product chain)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§8 B4",
+   "evidence": [
+    "grep -rn E_MIN crates → only param.rs:16,41; no external caller"
+   ]
+  },
+  {
+   "symbol": "ParamFields.partial_policy / ParamFields.packet_scheduling_policy",
+   "path_line": "crates/kama-transport-schema/src/param.rs:28-29",
+   "kind": "config-field",
+   "purpose": "Two normative canonical-hash fields describing partial-block and packet-scheduling policy.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:327-328 — hard-coded to 0, no runtime knob ever varies them"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§8 canonical PARAM field order; fec-core §6 (code_suite_id, K_shape, R_code_max, E, partial_policy, packet_schedule_policy)",
+   "evidence": [
+    "runtime.rs:327 `partial_policy: 0,` runtime.rs:328 `packet_scheduling_policy: 0,`",
+    "no RuntimeConfig / FecRuntimeConfig field maps to either (grep -n partial_policy crates/client-core/src → only runtime.rs:327)",
+    "must stay in the hash preimage (byte-normative) but is a dead policy axis in v1"
+   ]
+  },
+  {
+   "symbol": "MessageId",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:29",
+   "kind": "struct",
+   "purpose": "u32 type alias for the session+direction-scoped monotone message id.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "prefix.rs:21 SourcePrefix.message_id, set at crates/client-core/src/runtime.rs:1294"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.6 ID-SCOPE/WRAP",
+   "evidence": [
+    "grep -rn '\\bMessageId\\b' crates → only crates/kama-transport-schema/src/{lib.rs:29, prefix.rs:12,21}"
+   ]
+  },
+  {
+   "symbol": "ProfileId",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:23",
+   "kind": "struct",
+   "purpose": "u8 alias for FEC profile id.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "param.rs:24 ParamFields.profile_id (product), lib.rs:57 LogicalShardHeader.profile_id (not product)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.6",
+   "evidence": [
+    "grep -rn '\\bProfileId\\b' crates → zero hits outside crates/kama-transport-schema/src (lib.rs:23, param.rs:8,24)"
+   ]
+  },
+  {
+   "symbol": "CodeSuiteId",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:25",
+   "kind": "struct",
+   "purpose": "u8 alias for the RS math / generator / ESI code-suite id.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "param.rs:23 ParamFields.code_suite_id; set from FecProfile at crates/client-core/src/runtime.rs:323"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §5 / §2.6",
+   "evidence": [
+    "grep -rn '\\bCodeSuiteId\\b' crates → zero hits outside crates/kama-transport-schema/src"
+   ]
+  },
+  {
+   "symbol": "BlockId",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:27",
+   "kind": "struct",
+   "purpose": "u32 alias for the session+direction-scoped monotone block id.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.6",
+   "evidence": [
+    "only users: lib.rs:58 LogicalShardHeader.block_id and control.rs:35,41,56 (Recovered/BlockComplete/BlockAbort) — neither type reaches the runtime",
+    "the product carries block_id as a bare u32 in its own frame: crates/client-core/src/wire.rs:114 `pub block_id: u32`"
+   ]
+  },
+  {
+   "symbol": "Esi",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:31",
+   "kind": "struct",
+   "purpose": "u16 alias for the Encoding Symbol ID.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.6",
+   "evidence": [
+    "grep -rn '\\bEsi\\b' crates → the ONLY use anywhere is crates/kama-transport-schema/src/control.rs:36 `esi_ranges: Vec<(Esi, Esi)>` (Control::Recovered, not product)",
+    "the product uses a bare u16: crates/client-core/src/wire.rs:116 `pub esi: u16`"
+   ]
+  },
+  {
+   "symbol": "KActual",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:33",
+   "kind": "struct",
+   "purpose": "u8 alias for the real source-shard count in a block (B4: 1≤K_actual≤K_shape≤255).",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.6 / fec-core §6 Model-A",
+   "evidence": [
+    "grep -rn '\\bKActual\\b' crates → the ONLY use anywhere is lib.rs:60 LogicalShardHeader.k_actual, which the runtime never constructs",
+    "product uses bare u8: crates/client-core/src/wire.rs:118 `pub k_actual: u8`"
+   ]
+  },
+  {
+   "symbol": "EXTENDED_OUTER_OVERHEAD",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:41",
+   "kind": "const-knob",
+   "purpose": "26 B EXTENDED-outer fixed overhead (h_ext4+wire_format1+wire_flags1+pn_trunc4+tag16).",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.6 FINAL-BYTE-LAYOUT",
+   "evidence": [
+    "src consumers are kama-noise-wire only: crates/kama-noise-wire/src/outer.rs:49,52 and crates/kama-noise-wire/src/protector.rs:283,363,376",
+    "kama-noise-wire is a client-core Cargo dependency (crates/client-core/Cargo.toml:31) but the runtime imports nothing from it except the re-export at crates/client-core/src/lib.rs:48; the product wire is crates/client-core/src/wire.rs instead",
+    "referenced only as a comment in the transport bench harness: crates/adaptive-transport/src/fs_harness.rs:48"
+   ]
+  },
+  {
+   "symbol": "LEGACY_SESSION_DATA_OVERHEAD",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:45",
+   "kind": "const-knob",
+   "purpose": "22 B legacy SESSION_DATA overhead (hub_handle4+seq2+tag16) with a self-declared unverified AEAD-expansion assumption.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "product_call_sites": [],
+   "classification": "DELETE",
+   "spec_ref_or_none": "ccr-format-spec Session V3 legacy (not implemented in this repo)",
+   "evidence": [
+    "grep -rn LEGACY_SESSION_DATA_OVERHEAD crates fuzz → 3 hits total, all in the schema crate itself: src/lib.rs:45 and tests/golden_v0.rs:8,192",
+    "tests/golden_v0.rs:192 is `assert_eq!(LEGACY_SESSION_DATA_OVERHEAD, 22)` — a self-referential tautology, not a wire oracle",
+    "doc comment on lib.rs:44 concedes the number is an assumption: \"AEAD-expansion=yalnız-tag varsayımı; N7-raporunda exact-teyit\" — an unmeasured byte estimate (CLAUDE.md §8 prohibition)"
+   ]
+  },
+  {
+   "symbol": "EXTENDED_V1",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:48",
+   "kind": "const-knob",
+   "purpose": "wire_format codepoint 0x01 for the EXTENDED outer header.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.5/§2.6",
+   "evidence": [
+    "src consumers: crates/kama-noise-wire/src/outer.rs:38,57 and crates/kama-noise-wire/src/aad.rs:20 only",
+    "the product's first wire byte is a client-core frame_type (crates/client-core/src/wire.rs:15 FRAME_DATA=0x00, :103 FRAME_FEC=0x01, :277 FRAME_PARAM=0x03 …), not EXTENDED_V1"
+   ]
+  },
+  {
+   "symbol": "INNER_V1",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:50",
+   "kind": "const-knob",
+   "purpose": "UNIFIED-INNER-HEADER inner_version codepoint 0x01.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.56",
+   "evidence": [
+    "src consumers: crates/kama-noise-wire/src/inner.rs:101,116,132 only",
+    "the product frames carry no inner_version byte at all (crates/client-core/src/wire.rs:124-135 encode_fec writes type,kind,profile,block,esi,k_actual,seq)"
+   ]
+  },
+  {
+   "symbol": "LogicalShardHeader",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:55",
+   "kind": "struct",
+   "purpose": "Unsealed FEC-shard logical header DTO (kind/profile_id/block_id/esi/k_actual).",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.6 FEC-inner header",
+   "evidence": [
+    "src consumer: crates/kama-noise-wire/src/inner.rs:10 only; every other hit is a test (kama-integration/tests/*, kama-noise-wire/tests/*)",
+    "the product DUPLICATES it as crates/client-core/src/wire.rs:109 `pub struct FecFrameHeader` with the same five fields plus `seq`, with wire.rs:96 documenting the intent: \"Alan-düzeni kama-noise-wire encode_fec_inner/LogicalShardHeader (§2.6) ile BİREBİR hizalı\""
+   ]
+  },
+  {
+   "symbol": "UnsealedTransportPacket",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:66",
+   "kind": "enum-variant",
+   "purpose": "Unsealed transport packet DTO with FecShard{header,symbol} and Control(Control) variants — the seal() input type.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§12 ortak-tipler",
+   "evidence": [
+    "src consumers: crates/kama-noise-wire/src/protector.rs:24 and crates/kama-integration/src/{receiver_host.rs:481,524, receiver_control_core.rs:279} — kama-integration is a test/harness crate",
+    "crates/client-core/src/wire.rs:99 records the pending swap: \"S2 noise-wire adopsiyonu bu çerçeveyi seam-arkasında UnsealedTransportPacket::FecShard'a alan-eşlemeli swap eder\"",
+    "crates/adaptive-transport/src/fec.rs:30 mentions it only in a comment"
+   ]
+  },
+  {
+   "symbol": "SchemaError::PayloadTooLong",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:81",
+   "kind": "enum-variant",
+   "purpose": "actual_payload_len exceeds E−11.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "produced at prefix.rs:42 (serialize_symbol) and prefix.rs:87 (parse), both product-called"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.6",
+   "evidence": [
+    "runtime.rs:1302 consumes serialize_symbol's Err; wire.rs:87 consumes parse's Err via `.ok()?`"
+   ]
+  },
+  {
+   "symbol": "SchemaError::ReservedFlagsSet",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:84",
+   "kind": "enum-variant",
+   "purpose": "source_flags reserved bit set → fail-closed reject.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "produced at prefix.rs:37 and prefix.rs:83; the parse path is the product's ingress validator (wire.rs:87)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.6 MADDE-9",
+   "evidence": [
+    "tests/err_paths_prefix.rs:46,164 sweep all 7 reserved bits on both directions"
+   ]
+  },
+  {
+   "symbol": "SchemaError::SymbolLenMismatch",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:87",
+   "kind": "enum-variant",
+   "purpose": "declared actual_payload_len != supplied payload length in serialize_symbol.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "produced at prefix.rs:48; consumed at crates/client-core/src/runtime.rs:1302"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.6 symbol_len kilidi",
+   "evidence": [
+    "runtime.rs:1302-1304 increments stats.frag_encode_failures rather than swallowing"
+   ]
+  },
+  {
+   "symbol": "SchemaError::ProfileBound",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:90",
+   "kind": "enum-variant",
+   "purpose": "B4-invariant violation in ParamFields::validate.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "produced at param.rs:39,42; mapped at crates/kama-noise-wire/src/param_bind.rs:21 → EngineError::Param → dropped by `.ok()` at crates/client-core/src/runtime.rs:940"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§8 B4",
+   "evidence": [
+    "runtime.rs:940 `.and_then(|p| plan_param_bootstrap(1, &param_fields_for(p)).ok())` — the typed error is discarded into `None`, which then sets param_confirmed=true at runtime.rs:941 (\"FEC-yoksa PARAM-akışı yok\"), silently disabling PARAM bootstrap instead of failing closed"
+   ]
+  },
+  {
+   "symbol": "SchemaError::UnknownInnerKind",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:93",
+   "kind": "enum-variant",
+   "purpose": "Reserved/unknown inner_kind codepoint → fail-closed frame reject.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.56 fail-closed",
+   "evidence": [
+    "sole producer is inner_kind::classify (inner_kind.rs:83); sole src consumer is crates/kama-noise-wire/src/inner.rs:136",
+    "the product performs NO fail-closed inner-kind classification — see the inner_kind::FEC_SOURCE item"
+   ]
+  },
+  {
+   "symbol": "SchemaError::BufferTooShort",
+   "path_line": "crates/kama-transport-schema/src/lib.rs:96",
+   "kind": "enum-variant",
+   "purpose": "symbol shorter than the 11 B prefix in SourcePrefix::parse.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "produced at prefix.rs:73; consumed at crates/client-core/src/wire.rs:87 and runtime.rs:1955"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.6; SR-AUDIT-001 bounds-before-alloc",
+   "evidence": [
+    "Kani-proved no-panic: crates/kama-transport-schema/tests/kani_prefix_proofs.rs:21,29"
+   ]
+  },
+  {
+   "symbol": "inner_kind::FEC_REPAIR",
+   "path_line": "crates/kama-transport-schema/src/inner_kind.rs:10",
+   "kind": "const-knob",
+   "purpose": "inner_kind codepoint 0x02 = FEC repair shard.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1054 (egress: kind byte written into FecFrameHeader)",
+    "crates/client-core/src/runtime.rs:2299, 2330, 2413 (ingress: `is_repair = h.kind == inner_kind::FEC_REPAIR`)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.56",
+   "evidence": [
+    "runtime.rs:1054 `kind: inner_kind::FEC_REPAIR,` inside encode_fec(&FecFrameHeader{..})",
+    "this is the ONLY inner_kind constant the product runtime reads"
+   ]
+  },
+  {
+   "symbol": "inner_kind::FEC_SOURCE",
+   "path_line": "crates/kama-transport-schema/src/inner_kind.rs:8",
+   "kind": "const-knob",
+   "purpose": "inner_kind codepoint 0x01 = FEC source shard.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.56",
+   "evidence": [
+    "grep -rn FEC_SOURCE crates fuzz → NO src hit outside the schema crate; only tests (schema_registry_mutants.rs:34,39,83; kama-noise-wire/tests/{golden_wire,err_paths_control,err_paths_inner,dr_cs1_wire}.rs)",
+    "the product decides source-vs-repair by NEGATION: runtime.rs:2299/2330/2413 `h.kind == inner_kind::FEC_REPAIR` — so any kind byte that is not 0x02 (including 0x00 reserved and 0x03..0xFF reserved) is silently treated as SOURCE. That is fail-OPEN, the opposite of the §2.56 fail-closed contract that inner_kind::classify implements",
+    "crates/client-core/src/wire.rs:145-155 decode_fec validates only k_actual != 0; it never validates buf[1] (kind) against the registry"
+   ]
+  },
+  {
+   "symbol": "inner_kind::{ACK,SACK,RECOVERED,BLOCK_COMPLETE,PARAM_SET,PARAM_ACK,BLOCK_ABORT,SESSION_CLOSE,SESSION_RENEW_REQUIRED}",
+   "path_line": "crates/kama-transport-schema/src/inner_kind.rs:13-21",
+   "kind": "const-knob",
+   "purpose": "Normative §2.56 control codepoint allowlist 0x10..0x18.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.56 INNER_KIND-REGISTRY [NORMATİF]",
+   "evidence": [
+    "src consumers: only inner_kind::classify (same file, inner_kind.rs:72-82), crates/kama-noise-wire/src/control.rs:163,168,173 and crates/kama-noise-wire/src/retry.rs:91",
+    "the PRODUCT wire uses a THIRD, incompatible registry: crates/client-core/src/wire.rs FRAME_DATA=0x00, FRAME_FEC=0x01, FRAME_RECOVERED=0x02, FRAME_PARAM=0x03, FRAME_PARAM_ACK=0x04, FRAME_DATA_FRAG=0x05, FRAME_CS_PROBE=0x06, FRAME_CS_ECHO=0x07 — plus adaptive_transport ACK frames 0x10/0x14 on the same first-byte dispatch (crates/client-core/src/runtime.rs:22,1208)",
+    "numeric collisions between the two live registries: product 0x02=RECOVERED vs schema 0x02=FEC_REPAIR; product ACK_V2 0x14 vs schema 0x14=PARAM_SET"
+   ]
+  },
+  {
+   "symbol": "inner_kind::CTRL_CS_PROBE / CTRL_CS_ECHO",
+   "path_line": "crates/kama-transport-schema/src/inner_kind.rs:23,25",
+   "kind": "const-knob",
+   "purpose": "DR-CS-1 amendment codepoints 0x19/0x1A for the cold-start probe/echo pair.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.56 DR-CS-1-AMENDMAN; §2.57 CTRL_CS_PROBE(0x19)/CTRL_CS_ECHO(0x1A)",
+   "evidence": [
+    "grep -rn CTRL_CS_PROBE crates → no src caller outside the schema crate and kama-noise-wire",
+    "the product ships its own probe/echo frames with DIFFERENT codepoints: crates/client-core/src/wire.rs:224 FRAME_CS_PROBE=0x06, wire.rs:229 FRAME_CS_ECHO=0x07, with wire.rs:211 acknowledging the schema codepoints exist but are not used",
+    "crates/adaptive-transport/src/sender.rs:109 and :1271 claim \"UNGATED — the 0x1A/0x19 codepoint already ships in kama-transport-schema\"; that is true of the constant only, not of any product wire byte"
+   ]
+  },
+  {
+   "symbol": "ShardKind",
+   "path_line": "crates/kama-transport-schema/src/inner_kind.rs:29",
+   "kind": "enum-variant",
+   "purpose": "Typed source/repair discriminant for FEC shards.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.6 FEC-inner header",
+   "evidence": [
+    "src consumers: crates/kama-noise-wire/src/{inner.rs:9, protector.rs:23} and crates/kama-engine/src/admission.rs:15,53-54 (admit_and_decode, unreached from the runtime)",
+    "the product uses an untyped `pub kind: u8` instead: crates/client-core/src/wire.rs:110",
+    "crates/adaptive-transport/src/receiver.rs:48 refers to it only in a comment (\"source/repair ayrımı (schema ShardKind)\")"
+   ]
+  },
+  {
+   "symbol": "ShardKind::codepoint",
+   "path_line": "crates/kama-transport-schema/src/inner_kind.rs:37",
+   "kind": "fn",
+   "purpose": "ShardKind → 0x01/0x02 codepoint.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.56",
+   "evidence": [
+    "sole src caller: crates/kama-noise-wire/src/inner.rs:102 `out.push(header.kind.codepoint());`",
+    "mutation-hardened at crates/kama-transport-schema/tests/schema_registry_mutants.rs:37-42 (2 mutants)"
+   ]
+  },
+  {
+   "symbol": "ShardKind::from_codepoint",
+   "path_line": "crates/kama-transport-schema/src/inner_kind.rs:46",
+   "kind": "fn",
+   "purpose": "0x01/0x02 → ShardKind, None otherwise; the inverse of codepoint().",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "product_call_sites": [],
+   "classification": "DELETE",
+   "spec_ref_or_none": "§2.56",
+   "evidence": [
+    "grep -rn from_codepoint crates fuzz → 9 hits, ALL either the definition (inner_kind.rs:46) or crates/kama-transport-schema/tests/schema_registry_mutants.rs:11,46-69. Zero src callers anywhere in the workspace",
+    "DUPLICATE MAPPING: inner_kind::classify (inner_kind.rs:70-71) re-implements the same 0x01→Source / 0x02→Repair table inline instead of calling from_codepoint, so the two can drift independently",
+    "the test that keeps it alive (schema_registry_mutants.rs:47) states plainly \"Ters yön hiç test edilmemişti\" — it was added to kill a mutant on a function nothing calls"
+   ]
+  },
+  {
+   "symbol": "InnerKind",
+   "path_line": "crates/kama-transport-schema/src/inner_kind.rs:57",
+   "kind": "enum-variant",
+   "purpose": "Unified Fec(ShardKind)/Control(u8) classification result for the single-parser-selection rule.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.56 tek-parser-seçimi",
+   "evidence": [
+    "sole src consumer: crates/kama-noise-wire/src/inner.rs:9,137,166"
+   ]
+  },
+  {
+   "symbol": "classify",
+   "path_line": "crates/kama-transport-schema/src/inner_kind.rs:68",
+   "kind": "fn",
+   "purpose": "Fail-closed codepoint → InnerKind; the normative gate that makes unknown codepoints a frame-level reject.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.56 \"Bilinmeyen-inner_kind → FAIL-CLOSED-reject\"",
+   "evidence": [
+    "sole src caller in the workspace: crates/kama-noise-wire/src/inner.rs:136",
+    "grep -rn 'classify(' crates → every other hit is a test, or an unrelated function (adaptive-transport fs_harness.rs:892 pin_c_classify, kama-noise-wire demux.rs:39 HandleClass)",
+    "this is the single mechanism whose absence causes the fail-OPEN documented on the inner_kind::FEC_SOURCE item"
+   ]
+  },
+  {
+   "symbol": "ControlId",
+   "path_line": "crates/kama-transport-schema/src/control.rs:7",
+   "kind": "struct",
+   "purpose": "u32 alias for the idempotent-dedup control id (session+direction scoped, monotone, never reused).",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/kama-engine/src/param_bootstrap.rs:29 signature, reached from crates/client-core/src/runtime.rs:940"
+   ],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.57 + DR-CS-1b-A2-AMENDMAN A-3 (\"MUST be monotonically allocated per session and direction … MUST NOT be reused\")",
+   "evidence": [
+    "the product violates the A-3 contract with two hard-coded literals: crates/client-core/src/runtime.rs:940 `plan_param_bootstrap(1, ...)` and runtime.rs:2394-2395 `Control::ParamSet { id: 0, ... }`",
+    "an allocator exists and is never called from client-core: crates/kama-noise-wire/src/control_id_gate.rs:98 `pub fn issue(&mut self) -> Result<ControlId, ControlIdIssueError>`; grep -rn 'ControlIdGate|control_id_gate' crates/client-core crates/kama-engine → 0 hits",
+    "a dedup window also exists and is unreached: crates/kama-noise-wire/src/control_dedup_window.rs:92"
+   ]
+  },
+  {
+   "symbol": "Control",
+   "path_line": "crates/kama-transport-schema/src/control.rs:11",
+   "kind": "enum-variant",
+   "purpose": "Logical (unsealed) secure-control body enum, 11 variants covering §2.57.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:39 import; only the ParamSet variant is constructed/matched (runtime.rs:1394, 2394)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.57 CONTROL-BODY-LAYOUT'LARI",
+   "evidence": [
+    "grep -n 'Control::' crates/client-core/src/*.rs → runtime.rs:1394 and runtime.rs:2394, both ParamSet; every other variant appears only in comments (wire.rs:164,211,287)"
+   ]
+  },
+  {
+   "symbol": "Control::ParamSet",
+   "path_line": "crates/kama-transport-schema/src/control.rs:45",
+   "kind": "enum-variant",
+   "purpose": "param_hash + profile_id + code_suite_id binding frame (0x14, ACK-eliciting).",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/kama-engine/src/param_bootstrap.rs:34 (built by plan_param_bootstrap, called at runtime.rs:940)",
+    "crates/client-core/src/runtime.rs:1394 (param_hash extracted for the product's own 0x03 frame)",
+    "crates/client-core/src/runtime.rs:2394 (rebuilt on ingress to feed ParamState::on_param_set)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.57 PARAM_SET (0x14)",
+   "evidence": [
+    "runtime.rs:1395 `let f = encode_param(p.profile_id, p.code_suite_id, param_hash);` — the DTO is used as a carrier, then re-serialized into the product's own FRAME_PARAM=0x03 frame, never into the §2.56 0x14 inner frame"
+   ]
+  },
+  {
+   "symbol": "Control::{Ack,Sack,Recovered,BlockComplete,ParamAck,BlockAbort,SessionClose,SessionRenewRequired,CsProbe,CsEcho}",
+   "path_line": "crates/kama-transport-schema/src/control.rs:13,26,33,39,52,54,60,62,69,76",
+   "kind": "enum-variant",
+   "purpose": "The other ten §2.57 control bodies.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.57",
+   "evidence": [
+    "src constructors are all outside the product runtime: crates/kama-noise-wire/src/control.rs:49,68,83,96,114,115,123,124,133,140; crates/kama-engine/src/recovered_map.rs:165 (Ack); crates/kama-integration/src/receiver_host.rs:474 (Recovered) and receiver_control_core.rs:139 (CsEcho) — kama-integration is a harness crate",
+    "the product ships functional equivalents of four of them in its own format: RECOVERED → crates/client-core/src/wire.rs:172 FRAME_RECOVERED=0x02; PARAM_ACK → wire.rs:281 FRAME_PARAM_ACK=0x04; CsProbe/CsEcho → wire.rs:224,229 (0x06/0x07); ACK → adaptive_transport::ack 0x10/0x14",
+    "BlockComplete, BlockAbort, SessionClose, SessionRenewRequired and Sack have NO product equivalent at all — grep -rn 'SessionClose|BlockAbort|BlockComplete' crates/client-core/src → 0 hits"
+   ]
+  },
+  {
+   "symbol": "Control::Ack{ack_delay_256us, seen_count, arrival_rate}",
+   "path_line": "crates/kama-transport-schema/src/control.rs:18,19,21",
+   "kind": "config-field",
+   "purpose": "Three ACK-V2 fields merged into the schema's ACK body by a 2026-08-26 decision note.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "NONE — specs/kama-noise-wire-tdd-v2.0.md:293 defines ACK(0x10) as `acked_dh_epoch u8 · ack_range_count u16_be · [pn_start,pn_end]×count` with no such fields",
+   "evidence": [
+    "control.rs:16-17 carries an in-code amendment note (\"[ACK-V2 birleşimi, 2026-08-26 Abkarada-onayı]\") that is NOT reflected in the frozen spec text at specs/kama-noise-wire-tdd-v2.0.md:293-294",
+    "crates/kama-noise-wire/src/control.rs:59-61 serializes them (epoch1+ack_delay2+seen_count4+arrival_rate2+count2+16n per control.rs:164), so the schema DTO and the frozen §2.57 layout disagree by 8 bytes",
+    "the product's ACK is a wholly separate codec: crates/adaptive-transport/src/ack.rs:26,30 FRAME_TYPE_ACK=0x10 / FRAME_TYPE_ACK_V2=0x14, consumed at crates/client-core/src/runtime.rs:1208,1212"
+   ]
+  },
+  {
+   "symbol": "Control::codepoint",
+   "path_line": "crates/kama-transport-schema/src/control.rs:88",
+   "kind": "fn",
+   "purpose": "Control variant → §2.56 codepoint.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.56",
+   "evidence": [
+    "src callers: crates/kama-noise-wire/src/protector.rs:221,223,372 and crates/kama-noise-wire/src/retry.rs:44 only",
+    "grep -rn '\\.codepoint()' crates/client-core → 0 hits"
+   ]
+  },
+  {
+   "symbol": "Control::control_id",
+   "path_line": "crates/kama-transport-schema/src/control.rs:107",
+   "kind": "fn",
+   "purpose": "Extracts the idempotent-dedup control_id from any variant.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "§2.57 idempotent-dedup",
+   "evidence": [
+    "src callers: crates/kama-noise-wire/src/protector.rs:221,224 and crates/kama-noise-wire/src/retry.rs:90 only",
+    "grep -rn 'control_id()' crates/client-core → 0 hits"
+   ]
+  },
+  {
+   "symbol": "by_id",
+   "path_line": "crates/kama-fec-codec/src/profile.rs:103",
+   "kind": "fn",
+   "purpose": "profile_id → catalog FecProfile allowlist lookup; unknown → None (fail-closed).",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:287 (validate_fec, typed reject)",
+    "crates/client-core/src/runtime.rs:315 (fec_chunk_capacity)",
+    "crates/client-core/src/runtime.rs:922 (client egress)",
+    "crates/client-core/src/runtime.rs:2025 (server ingress)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §6 enumerated-profile",
+   "evidence": [
+    "runtime.rs:287 `let p = by_id(f.profile_id).ok_or(RuntimeError::FecConfig(\"unknown profile_id\"))?;`",
+    "also reached from crates/kama-engine/src/admission.rs:31 (not product)"
+   ]
+  },
+  {
+   "symbol": "PROFILES",
+   "path_line": "crates/kama-fec-codec/src/profile.rs:54",
+   "kind": "const-knob",
+   "purpose": "The enumerated profile catalog (6 entries) that by_id searches.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "profile.rs:105 inside by_id (product chain)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §6 (K_shape∈{2,4,8,..}, R_code_max+E profil-içi-sabit)",
+   "evidence": [
+    "direct external references are test/fuzz only (tests/roundtrip.rs:32, tests/engine_reuse.rs:32, tests/err_paths_codec.rs:507, fuzz/fuzz_targets/fuzz_fec_decode.rs:36); the product reaches it only via by_id"
+   ]
+  },
+  {
+   "symbol": "FecProfile 0x05 (K=8, R=4, E=1024)",
+   "path_line": "crates/kama-fec-codec/src/profile.rs:85-91",
+   "kind": "const-knob",
+   "purpose": "The shipped v1 product FEC profile.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:208 `pub const FEC_PROFILE_ID: u8 = 0x05;` → runtime.rs:251 in KamaV1Profile::runtime_config()"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §6",
+   "evidence": [
+    "RuntimeConfig::default() (runtime.rs:263-267) delegates to KamaV1Profile::runtime_config(), which sets `fec: Some(FecRuntimeConfig { profile_id: Self::FEC_PROFILE_ID, manual_r: None })` at runtime.rs:250-253",
+    "NOTE: RuntimeConfig::default() has fec = Some(0x05), NOT None — the KNOWN CONTEXT in the task brief is stale; runtime.rs:243-249 records the B-1 audit fix that flipped it"
+   ]
+  },
+  {
+   "symbol": "FecProfile 0x03 (K=8, R=4, E=64)",
+   "path_line": "crates/kama-fec-codec/src/profile.rs:69-75",
+   "kind": "const-knob",
+   "purpose": "E=64 catalog profile used as the historical campaign/bench arm.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "product_call_sites": [],
+   "classification": "KEEP-EXPERIMENTAL",
+   "gate": "explicit --fec-profile 3 CLI arg (default 0)",
+   "spec_ref_or_none": "fec-core §6",
+   "evidence": [
+    "crates/bench/src/main.rs:59-60 `#[arg(long, default_value_t = 0)] fec_profile: u8` (0 = FEC off)",
+    "crates/bench/src/kama_product.rs:954,959,967,1171,1191,1223 pin 0x03 in bench unit tests",
+    "crates/client-core/src/runtime.rs:204-207 documents why the product moved OFF E=64: \"E=64 profilleri birimi 53 B'ye indirir (sabit-overhead %36.6)\""
+   ]
+  },
+  {
+   "symbol": "FecProfile 0x01 / 0x02 (K=2 and K=4, E=64)",
+   "path_line": "crates/kama-fec-codec/src/profile.rs:55-68",
+   "kind": "const-knob",
+   "purpose": "Small-K E=64 catalog profiles.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "fec-core §6",
+   "evidence": [
+    "explicit selectors are test-only: crates/kama-fec-codec/tests/golden.rs:43,66,94 (0x01); tests/roundtrip.rs:91,114,124; tests/known_zero.rs:222; tests/err_paths_codec.rs:97,114,128,164,412; crates/kama-integration/tests/fs_fec_arms.rs:63",
+    "no product or bench-CLI default selects them; deleting them would change the profile_id allowlist (a wire contract), so keep rather than delete"
+   ]
+  },
+  {
+   "symbol": "FecProfile 0x04 (K=16,R=8,E=64) and 0x06 (K=16,R=8,E=1024)",
+   "path_line": "crates/kama-fec-codec/src/profile.rs:76-82, 92-98",
+   "kind": "const-knob",
+   "purpose": "K=16 catalog profiles.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "product_call_sites": [],
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "fec-core §6",
+   "evidence": [
+    "grep -rn 'by_id(0x04|by_id(0x06|profile_id: 0x04|profile_id: 0x06' crates fuzz → the ONLY hits are the catalog definitions themselves (profile.rs:77, profile.rs:93)",
+    "they are exercised solely by whole-catalog loops: tests/roundtrip.rs:32 `for p in PROFILES`, tests/engine_reuse.rs:32, examples/measure.rs:16 `for pid in [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06]`",
+    "0x06's own comment (profile.rs:83-84) motivates only E=1024, which 0x05 already provides; no caller has ever needed K=16"
+   ]
+  },
+  {
+   "symbol": "FecProfile::validate",
+   "path_line": "crates/kama-fec-codec/src/profile.rs:28",
+   "kind": "fn",
+   "purpose": "B4-invariant + reed-solomon-simd even-E alignment fail-closed check.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "codec.rs:299 and codec.rs:314 (RsSimdCodec::encode / ::reconstruct), both product-called"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §8 B4-invariant",
+   "evidence": [
+    "codec.rs:299 `profile.validate()?;` is the first statement of RsSimdCodec::encode, reached from runtime.rs:1369",
+    "the even-E branch (profile.rs:35-37) is unreachable via by_id — all six catalog entries have E∈{64,1024}; it only fires for hand-built FecProfile literals, which exist only in tests (err_paths_codec.rs:256,268,286,323,464)"
+   ]
+  },
+  {
+   "symbol": "FecProfile::k_shape_usize",
+   "path_line": "crates/kama-fec-codec/src/profile.rs:44",
+   "kind": "fn",
+   "purpose": "k_shape as usize.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "codec.rs:120,182,302,364,385 (product codec chain)",
+    "crates/client-core/src/runtime.rs:1350 (block-close threshold)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §6",
+   "evidence": [
+    "runtime.rs:1350 `if cur_block.len() == p.k_shape_usize() {`"
+   ]
+  },
+  {
+   "symbol": "FecProfile::e_usize",
+   "path_line": "crates/kama-fec-codec/src/profile.rs:48",
+   "kind": "fn",
+   "purpose": "E as usize (symbol length).",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:315 (fec_chunk_capacity)",
+    "runtime.rs:288 (validate_fec bound)",
+    "runtime.rs:1307, 1338, 2246, 2323 (symbol buffers + ingress length gate)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "§2.6 symbol_len kilidi",
+   "evidence": [
+    "runtime.rs:2323 `if h.profile_id != p.profile_id || symbol.len() != p.e_usize() {` — the product's fail-closed length gate"
+   ]
+  },
+  {
+   "symbol": "CODE_SUITE_RS_SIMD_V1",
+   "path_line": "crates/kama-fec-codec/src/profile.rs:8",
+   "kind": "const-knob",
+   "purpose": "The single Alpha code_suite_id (0x01) stamped into every catalog profile.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "read as data through by_id → FecProfile.code_suite_id → crates/client-core/src/runtime.rs:323 (ParamFields) and runtime.rs:1395 (encode_param)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §5",
+   "evidence": [
+    "direct name references are test-only (tests/err_paths_codec.rs:61,256,268,286,323,464; tests/golden.rs:30); the product consumes the value via the profile struct field"
+   ]
+  },
+  {
+   "symbol": "FecCodec",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:51",
+   "kind": "module",
+   "purpose": "Crypto-agnostic opaque-symbol codec trait (K-FEC-SOC-1/2).",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:37 import; method resolution for RsSimdCodec.encode (runtime.rs:1369) and .reconstruct (runtime.rs:1945)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §2",
+   "evidence": [
+    "runtime.rs:36-38 `use kama_fec_codec::{by_id, FecCodec, FecProfile, ReceivedSymbol, RepairSymbol, RsSimdCodec, SourceSymbol};`"
+   ]
+  },
+  {
+   "symbol": "FecCodec::encode",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:57",
+   "kind": "fn",
+   "purpose": "K_shape source symbols → R repair symbols.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1369 `if let Ok(reps) = RsSimdCodec.encode(p, &srcs)`"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §2/§6",
+   "evidence": [
+    "runtime.rs:1360-1374: the block is only encoded when planned_r > 0; the result lands in repair_store and is drained by TransmitKind::FecParity at runtime.rs:1041-1064",
+    "INV-FEC-1 ordering holds: encode runs on the plaintext block (runtime.rs:1361) and each shard is sealed afterwards by seal_send! (runtime.rs:1064)"
+   ]
+  },
+  {
+   "symbol": "FecCodec::reconstruct",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:68",
+   "kind": "fn",
+   "purpose": "Admitted source+repair (+known_zero) → recovered source symbols.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1945 `RsSimdCodec.reconstruct(p, &recv, 0)`"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §6 Model-A",
+   "evidence": [
+    "called from fec_ingest (runtime.rs:1887) only when `ready && !complete` (runtime.rs:1927-1929); recovered symbols reach the app via admit_chunk at runtime.rs:1966"
+   ]
+  },
+  {
+   "symbol": "FecCodec::recompute_repair",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:85",
+   "kind": "fn",
+   "purpose": "Default trait method: deterministically recompute a single repair ESI (§6 on-demand-repair).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "product_call_sites": [],
+   "classification": "DELETE",
+   "spec_ref_or_none": "fec-core §6 on-demand-recompute",
+   "evidence": [
+    "grep -rn recompute_repair crates fuzz → 10 hits: the definition, its own doc comment, crates/kama-fec-codec/examples/measure.rs:91, and tests (golden.rs:74,82,87; err_paths_codec.rs:142,148,155). Zero src callers",
+    "its own doc (codec.rs:79-81) records the POC finding that the mechanism buys nothing on this backend: \"reed-solomon-simd tüm-R recovery-shard'ı tek encode() çağrısında üretir; bu backend'de gerçek-tek-ESI-compute-saving YOKtur (encode-then-select)\"",
+    "the implementation literally calls self.encode() and discards R−1 results (codec.rs:97-104), i.e. it is strictly more expensive than the encode the product already does",
+    "the product's on-demand parity is served from repair_store instead (crates/client-core/src/runtime.rs:1043-1046)"
+   ]
+  },
+  {
+   "symbol": "RsSimdCodec",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:291",
+   "kind": "struct",
+   "purpose": "Stateless reed-solomon-simd codec (fresh engine per call).",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1369 (encode)",
+    "crates/client-core/src/runtime.rs:1945 (reconstruct)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "ADR-16; fec-core §5 CODE_SUITE_RS_SIMD_V1",
+   "evidence": [
+    "also used by crates/kama-engine/src/admission.rs:62 (not product)",
+    "this is the only codec impl on any product path"
+   ]
+  },
+  {
+   "symbol": "RsSimdEngine",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:334",
+   "kind": "struct",
+   "purpose": "Second FecCodec impl holding a cached encoder/decoder behind RefCell, reset() per profile, to amortise engine construction.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "product_call_sites": [],
+   "classification": "DELETE",
+   "spec_ref_or_none": "none — introduced by a D0 hypothesis the crate itself records as falsified",
+   "evidence": [
+    "grep -rn RsSimdEngine crates/*/src/ | grep -v kama-fec-codec/src → 0 hits; the only callers are crates/kama-fec-codec/examples/measure.rs:9,77 and tests (engine_reuse.rs:31,43,59,99; err_paths_codec.rs:126,393; m4_timing.rs:94,97)",
+    "the module doc (codec.rs:8-13) states the measurement outcome: \"D0-hipotezi ÇÜRÜDÜ … Ölçüm (measure.rs) reuse'un hızlanma VERMEDİĞİNİ gösterdi (~1.0×)\"",
+    "DUPLICATE: it is a second implementation of the same FecCodec contract over the same core fns (ordered_source/run_encode/prepare_received/run_decode), kept only because it is \"byte-eş\" — which is exactly the drift risk a second impl creates",
+    "it drags a RefCell + a hand-written Debug impl (codec.rs:339-347) that exists only to satisfy a mutation test (err_paths_codec.rs:381-397)"
+   ]
+  },
+  {
+   "symbol": "RsSimdEngine::new",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:351",
+   "kind": "fn",
+   "purpose": "Constructor for the unused engine-reuse codec.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "product_call_sites": [],
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "callers: examples/measure.rs:9, tests/engine_reuse.rs:31,43,59,99, tests/err_paths_codec.rs:126,393, tests/m4_timing.rs:94,97 — all non-product"
+   ]
+  },
+  {
+   "symbol": "impl Debug for RsSimdEngine",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:339",
+   "kind": "fn",
+   "purpose": "Hand-written Debug printing enc_cached/dec_cached booleans.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "sole consumer: crates/kama-fec-codec/tests/err_paths_codec.rs:381-397, whose own comment names the mutant it exists to kill (\"MUTANT codec.rs:342:9\")",
+    "diagnostic-only surface on a type with no product caller"
+   ]
+  },
+  {
+   "symbol": "SourceSymbol",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:23",
+   "kind": "struct",
+   "purpose": "Borrowed encode input (esi + E bytes).",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1361-1368"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §2",
+   "evidence": [
+    "runtime.rs:1364-1367 `.map(|(i, b)| SourceSymbol { esi: i as u16, bytes: b })`"
+   ]
+  },
+  {
+   "symbol": "RepairSymbol",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:30",
+   "kind": "struct",
+   "purpose": "Owned encode output (esi + E bytes).",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:957 (repair_store: BTreeMap<u32, Vec<RepairSymbol>>)",
+    "runtime.rs:1044-1046 (parity lookup by esi)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §2",
+   "evidence": [
+    "runtime.rs:1044-1046 `.and_then(|rs| rs.iter().find(|r| r.esi == esi)).map(|r| r.bytes.as_slice())`"
+   ]
+  },
+  {
+   "symbol": "ReceivedSymbol",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:37",
+   "kind": "struct",
+   "purpose": "Borrowed decode input with an is_repair discriminant.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1931-1944"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §2/§6",
+   "evidence": [
+    "runtime.rs:1934-1943 builds the Vec<ReceivedSymbol> from asm.sources and asm.repairs before reconstruct"
+   ]
+  },
+  {
+   "symbol": "RecoveredSource",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:45",
+   "kind": "struct",
+   "purpose": "Owned reconstruct output (source esi + E-byte canonical symbol).",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "crates/client-core/src/runtime.rs:1948-1957 (consumed structurally: r.esi, r.bytes)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §6",
+   "evidence": [
+    "runtime.rs:1948 `for r in recovered { recovered_esis.push(r.esi); ... SourcePrefix::parse(&r.bytes) ... }`",
+    "the type name is never imported in client-core (runtime.rs:36-38 omits it) — reachable only as the return type of reconstruct"
+   ]
+  },
+  {
+   "symbol": "ordered_source",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:115",
+   "kind": "fn",
+   "purpose": "Private: orders source symbols into ESI 0..K and validates len/range/dup/full-K.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "codec.rs:300 (RsSimdCodec::encode) — product",
+    "codec.rs:363 (RsSimdEngine::encode) — not product"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §6",
+   "evidence": [
+    "reached from crates/client-core/src/runtime.rs:1369 via RsSimdCodec::encode"
+   ]
+  },
+  {
+   "symbol": "prepare_received",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:180",
+   "kind": "fn",
+   "purpose": "Private: validates the received set and computes Model-A k_actual / any_missing / decode condition.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "codec.rs:319-320 (RsSimdCodec::reconstruct) — product",
+    "codec.rs:389-390 (RsSimdEngine::reconstruct) — not product"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §6 Model-A / decode condition",
+   "evidence": [
+    "reached from crates/client-core/src/runtime.rs:1945"
+   ]
+  },
+  {
+   "symbol": "run_encode",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:160",
+   "kind": "fn",
+   "purpose": "Private: shared encode core over a prepared ReedSolomonEncoder.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "codec.rs:307 (stateless, product) and codec.rs:374 (engine, not product)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §2",
+   "evidence": [
+    "exists in this shape only so RsSimdEngine can share it (codec.rs:5-6); if RsSimdEngine is deleted this can fold back into RsSimdCodec::encode"
+   ]
+  },
+  {
+   "symbol": "run_decode",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:256",
+   "kind": "fn",
+   "purpose": "Private: shared decode core, injects canonical zeros for [K_actual,K_shape) and filters them out of the result.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "codec.rs:325 (stateless, product) and codec.rs:399 (engine, not product)"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §6 Model-A known-zero injection",
+   "evidence": [
+    "the zero-injection loop (codec.rs:269-272) and the `filter(|(idx,_)| *idx < k_actual)` guard (codec.rs:279) are no-ops for the product because it always passes known_zero=0 (runtime.rs:1945) → k_actual == k_shape"
+   ]
+  },
+  {
+   "symbol": "rs_err",
+   "path_line": "crates/kama-fec-codec/src/codec.rs:108",
+   "kind": "fn",
+   "purpose": "Private: maps opaque reed-solomon-simd errors into FecError::RsEngine.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "codec.rs:165,167,306,324 on the RsSimdCodec paths"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "ADR-16",
+   "evidence": [
+    "keeps the RS crate's error type out of the public surface (crypto/backend agnosticism)"
+   ]
+  },
+  {
+   "symbol": "FecError::{ProfileBound,SourceCount,SymbolLen,EsiOutOfRange,RsEngine}",
+   "path_line": "crates/kama-fec-codec/src/error.rs:9,12,15,21,40",
+   "kind": "enum-variant",
+   "purpose": "Typed fail-closed codec errors reachable on the product encode/decode paths.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "produced at codec.rs:130,122,137,151,192,205,213,231,246,299/314 (validate) and consumed at crates/client-core/src/runtime.rs:1369 and :1946"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §6 fail-closed",
+   "evidence": [
+    "runtime.rs:1369 `if let Ok(reps) = RsSimdCodec.encode(p, &srcs)` — Err silently skips the block, no counter; runtime.rs:1946 matches Ok/Err with an explicit comment that a decode failure must not drop the block"
+   ]
+  },
+  {
+   "symbol": "FecError::DuplicateEsi",
+   "path_line": "crates/kama-fec-codec/src/error.rs:18",
+   "kind": "enum-variant",
+   "purpose": "Same ESI admitted twice (logical dedup, K-FEC-RSPACE-1).",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "produced at codec.rs:143,218,237; reachable but structurally unreachable from the runtime"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core K-FEC-RSPACE-1",
+   "evidence": [
+    "the product de-duplicates upstream: crates/client-core/src/runtime.rs:1906-1910 uses `asm.sources.entry(esi).or_insert(symbol)` / `asm.repairs.entry(esi).or_insert(symbol)` on BTreeMaps, so the Vec handed to reconstruct (runtime.rs:1931-1944) can never contain a duplicate ESI",
+    "defensive depth, not dead — keep"
+   ]
+  },
+  {
+   "symbol": "FecError::Insufficient",
+   "path_line": "crates/kama-fec-codec/src/error.rs:26",
+   "kind": "enum-variant",
+   "purpose": "admitted + known_zero < K_shape.",
+   "called_from_product": true,
+   "only_from": "product",
+   "product_call_sites": [
+    "produced at codec.rs:246; pre-empted by the runtime's own readiness test"
+   ],
+   "classification": "SHIP",
+   "spec_ref_or_none": "fec-core §6 decode condition",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1917-1918 computes `ready = asm.sources.len() + asm.repairs.len() >= k` and only then calls reconstruct (runtime.rs:1929), so this variant is unreachable from the product call site — the decode condition is implemented twice"
+   ]
+  },
+  {
+   "symbol": "FecError::KnownZeroTooLarge",
+   "path_line": "crates/kama-fec-codec/src/error.rs:33",
+   "kind": "enum-variant",
+   "purpose": "known_zero_count >= K_shape → K_actual < 1 (B4 violation).",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "fec-core §6 Model-A fail-closed",
+   "evidence": [
+    "produced at codec.rs:191 only when known_zero_count >= k; the product hard-codes known_zero = 0 (crates/client-core/src/runtime.rs:1945 `RsSimdCodec.reconstruct(p, &recv, 0)`), so it can never fire",
+    "this is the visible symptom of the unwired Model-A partial-block path — see the k_actual finding in todo_wiring"
+   ]
+  },
+  {
+   "symbol": "FecError::SourceInZeroRegion",
+   "path_line": "crates/kama-fec-codec/src/error.rs:37",
+   "kind": "enum-variant",
+   "purpose": "A source ESI arrived inside the [K_actual,K_shape) zero-pad region — K_actual inconsistency.",
+   "called_from_product": false,
+   "only_from": "test",
+   "product_call_sites": [],
+   "classification": "WIRE",
+   "spec_ref_or_none": "fec-core §6 Model-A (\"reject + rank-ARTMAZ + allocation-GENİŞLEMEZ\")",
+   "evidence": [
+    "produced at codec.rs:231 only when idx >= k_actual, and k_actual == k whenever known_zero == 0 — so with the product's hard-coded 0 this branch is dead",
+    "yet the product DOES read a peer-supplied k_actual off the wire and trusts it for readiness: crates/client-core/src/runtime.rs:2307,2338 pass `h.k_actual` into fec_ingest → runtime.rs:1903 `k: k_actual` → runtime.rs:1913 readiness. A peer sending k_actual < k_shape makes the block 'ready' early and then decodes with the WRONG Model-A parameters, because known_zero stays 0. The schema-side guard that would have caught this is exactly this variant, and it is bypassed"
+   ]
+  }
+ ],
+ "cal_markers": [],
+ "todo_wiring": [
+  "ROOT CAUSE (one gap, ~25 items): the product runtime never uses the §2.56/§2.57 sealed-inner wire. crates/client-core/src/runtime.rs frames everything through its own crates/client-core/src/wire.rs registry (FRAME_DATA 0x00, FRAME_FEC 0x01, FRAME_RECOVERED 0x02, FRAME_PARAM 0x03, FRAME_PARAM_ACK 0x04, FRAME_DATA_FRAG 0x05, FRAME_CS_PROBE 0x06, FRAME_CS_ECHO 0x07) plus adaptive_transport::ack 0x10/0x14. wire.rs:99 names the pending swap: 'S2 noise-wire adopsiyonu bu çerçeveyi seam-arkasında UnsealedTransportPacket::FecShard'a alan-eşlemeli swap eder (tek-nokta, D5)'. Until that swap, LogicalShardHeader, UnsealedTransportPacket, EXTENDED_OUTER_OVERHEAD, EXTENDED_V1, INNER_V1, classify, InnerKind, ShardKind, Control (10 of 11 variants), Control::codepoint, Control::control_id, BlockId, Esi, KActual and SchemaError::UnknownInnerKind are all implemented, tested and disconnected.",
+  "FAIL-OPEN inner-kind at ingress: crates/client-core/src/wire.rs:145-155 decode_fec validates only k_actual != 0 and never checks buf[1] against the registry; crates/client-core/src/runtime.rs:2299,2330,2413 then decide source-vs-repair by `h.kind == inner_kind::FEC_REPAIR`. Any non-0x02 byte (including 0x00 and the 0x03..0x0F reserved-FEC range) is silently admitted as SOURCE. §2.56 requires fail-closed reject; inner_kind::classify implements it and is never called from the product.",
+  "control_id contract violated: spec §2.57 DR-CS-1b-A2-AMENDMAN A-3 requires monotone per-session/direction allocation with no reuse. The product passes literal 1 (crates/client-core/src/runtime.rs:940) and literal 0 (runtime.rs:2394). kama_noise_wire::control_id_gate::ControlIdGate::issue (control_id_gate.rs:98) and control_dedup_window (control_dedup_window.rs:92) exist and have zero client-core/kama-engine callers.",
+  "Model-A partial blocks unwired: crates/client-core/src/runtime.rs:1945 hard-codes `reconstruct(p, &recv, 0)` while runtime.rs:2307,2338 trust the peer-supplied h.k_actual for block readiness (runtime.rs:1903,1913). A peer sending k_actual < k_shape triggers early readiness with the wrong known_zero, and both schema guards for that case (FecError::KnownZeroTooLarge, FecError::SourceInZeroRegion) are structurally unreachable.",
+  "crates/client-core/src/runtime.rs:2256 `let _ = pfx.serialize_symbol(payload, &mut sym);` discards a typed SchemaError on the ingress path; on failure the pre-zeroed `sym` is fed into the block as a valid symbol. The egress twin at runtime.rs:1302 does consume it (stats.frag_encode_failures).",
+  "crates/client-core/src/runtime.rs:940 `.ok()` discards EngineError from plan_param_bootstrap, and runtime.rs:941 then sets param_confirmed = true, so a B4 rejection silently turns PARAM bootstrap off instead of failing closed.",
+  "ClientSession::admit (crates/client-core/src/lib.rs:104-111) is the only caller of kama_engine::admit_and_decode, and it is invoked from nowhere but crates/client-core/src/lib.rs:152 (#[cfg(test)]) and crates/client-core/tests/api_surface_v0.rs:50. The `.admit(` calls at runtime.rs:1002 and 1866 are EgressPolicy::admit, a different method. Consequently SourcePrefix::payload_slice and ShardKind reach production code (kama-engine/src/admission.rs) that the runtime never enters.",
+  "ParamFields.partial_policy and ParamFields.packet_scheduling_policy (param.rs:28-29) are hashed into param_hash but hard-coded to 0 at crates/client-core/src/runtime.rs:327-328 with no RuntimeConfig field behind them."
+ ],
+ "duplicate_control_loops": [
+  "TWO FecCodec implementations of the same contract: RsSimdCodec (codec.rs:291, product) and RsSimdEngine (codec.rs:334, zero src callers). Both drive the same ordered_source/run_encode/prepare_received/run_decode core and are held byte-equal only by test (tests/engine_reuse.rs). The crate's own module doc (codec.rs:8-13) records that the reuse hypothesis was measured and falsified (~1.0x).",
+  "TWO codepoint→ShardKind mappings: ShardKind::from_codepoint (inner_kind.rs:46, zero src callers) and the same 0x01/0x02 table inlined in classify (inner_kind.rs:70-71). They can drift independently.",
+  "TWO payload-slice implementations with DIFFERENT semantics: SourcePrefix::payload_slice (prefix.rs:102, `end.min(symbol.len())` — silent truncation) and the product's inline re-slice at crates/client-core/src/runtime.rs:1957 (`r.bytes.get(..)` — None on overflow). The product uses only the second.",
+  "TWO ACK wire codecs for the same quantity: adaptive_transport::ack (ack.rs:26,30 FRAME_TYPE_ACK 0x10 / FRAME_TYPE_ACK_V2 0x14, the one the product actually uses at runtime.rs:1208,1212) and the schema Control::Ack body serialized by kama_noise_wire::control (control.rs:49-61). The schema DTO carries three extra fields (ack_delay_256us, seen_count, arrival_rate) that specs/kama-noise-wire-tdd-v2.0.md:293 does not define — an 8-byte divergence between the schema DTO and the frozen §2.57 layout.",
+  "TWO decode-condition implementations: fec-core's `admitted + known_zero >= K_shape` (codec.rs:244-251, FecError::Insufficient) and the product's own `sources.len() + repairs.len() >= k` readiness test (crates/client-core/src/runtime.rs:1917-1918). The product's pre-check makes the codec's variant unreachable.",
+  "TWO PARAM_ACK confirmation paths: kama_engine::ParamAckTracker::on_param_ack (param_bootstrap.rs:62, matches Control::ParamAck, zero product callers) and the product's inline hash compare at crates/client-core/src/runtime.rs:1172-1174 (`if h == plan.param_hash && !param_confirmed`).",
+  "THREE frame-type registries live on the same first dispatch byte: schema §2.56 inner_kind (0x01,0x02,0x10..0x1A), client-core wire.rs (0x00..0x07), and adaptive_transport::ack (0x10,0x14). Collisions: product 0x02 = RECOVERED vs schema 0x02 = FEC_REPAIR; product ACK_V2 0x14 vs schema 0x14 = PARAM_SET."
+ ],
+ "notes": "SCOPE/BRANCH: the task named branch wip/c4-attrib @ 35f60f80, but the worktree is on audit/transport-v1-closure @ 15133be4 (wip/c4-attrib resolves to d3fc1953). `git diff --stat 35f60f80 HEAD -- crates/kama-transport-schema crates/kama-fec-codec` reports no changes, so the audited content is identical for these two crates. Read-only; no cargo run, no file modified.\n\nSIZE: the whole scope is 1054 lines (schema 479, fec-codec 575). Both crates are small, mature, heavily tested (golden vectors, mutation-guided tests, Kani proofs on prefix::parse, two libFuzzer targets) and contain zero cargo features, zero cfg-gated blocks, zero [CAL] markers, zero TODO/FIXME, and zero todo!()/unimplemented!()/FeatureNotImplemented stubs. Every error surface is typed thiserror per CLAUDE.md §6.\n\nonly_from CONVENTION used above: \"product\" = a real call chain from crates/client-core/src/runtime.rs. \"test\" = the symbol IS called from non-test src (kama-noise-wire/src, kama-engine/src, kama-integration/src), but that src is itself only ever driven by tests and harnesses — never by the product runtime. \"nowhere\" = no src caller anywhere in the workspace. \"bench\" = only crates/kama-fec-codec/examples/measure.rs (+ tests).\n\nHEADLINE SPLIT. kama-fec-codec is essentially SHIP-clean: 22 of 25 items are on the product path, and the three exceptions (RsSimdEngine, its ::new, its Debug impl, plus the recompute_repair default method) are self-documented dead weight from a falsified performance hypothesis. kama-transport-schema is the opposite: only the prefix.rs surface (SourcePrefix + serialize_symbol + parse + SOURCE_FLAG_FINAL + SOURCE_PREFIX_LEN), the param.rs surface (ParamFields + canonical_hash_input + validate + PARAM_DS/K_SHAPE_MAX/E_MIN), one inner_kind constant (FEC_REPAIR) and one Control variant (ParamSet) reach the product. Everything else — the entire §2.56/§2.57 sealed-inner registry — is correct, tested, and disconnected behind the unperformed S2 noise-wire seam swap.\n\nCORRECTION TO THE TASK BRIEF: RuntimeConfig::default() does NOT have fec: None. crates/client-core/src/runtime.rs:263-267 delegates to KamaV1Profile::runtime_config(), which sets fec: Some(FecRuntimeConfig { profile_id: 0x05, manual_r: None }) at runtime.rs:250-253. The in-code comment at runtime.rs:243-249 records the 2026-09-08 B-1 audit finding that flipped it (\"configuration zombie\"). The rest of the brief's default-state claims (bootstrap_rtt: false at runtime.rs:240, fec_loss_risk: bounded_v1() at runtime.rs:257, structure_gate_level_permille: Some(250) at runtime.rs:259, fusion_policy: None at runtime.rs:254, loss_confirm_horizon: CadenceLegacy at runtime.rs:255) all verified as stated.\n\nRISK RANKING of what I found, highest first: (1) the fail-OPEN inner-kind at product ingress — the schema's normative fail-closed gate exists and is bypassed; (2) the trusted-but-unused peer k_actual, which lets a peer force an early, mathematically wrong decode while both Model-A guards are unreachable; (3) the hard-coded control_id, which violates a MUST in the frozen spec while a correct allocator sits unused; (4) the discarded serialize_symbol Result at runtime.rs:2256, which converts a bounds failure into a silently zero-filled symbol.\n\nDELETE candidates are small and safe: RsSimdEngine (+::new, +Debug impl), FecCodec::recompute_repair, ShardKind::from_codepoint, LEGACY_SESSION_DATA_OVERHEAD. Each has zero src callers and each is kept alive only by tests written to kill mutants on code nothing calls. Removing RsSimdEngine also lets run_encode/run_decode/ordered_source/prepare_received fold back into RsSimdCodec, since sharing them was the only reason they were extracted (codec.rs:5-6, codec.rs:112).\n\nKEEP-EXPERIMENTAL items are the four unused catalog profiles (0x01, 0x02, 0x04, 0x06) plus 0x03. I did not classify them DELETE because profile_id is a wire allowlist under fec-core §6 — removing an entry narrows a protocol contract, which is a spec-level decision, not a cleanup. 0x04 and 0x06 are the strongest deletion candidates of the five: no caller anywhere ever selects them by id, only whole-catalog loops touch them."
+}

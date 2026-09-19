@@ -171,10 +171,21 @@ fn n8_v2_recovered_wiring_ledger_bound_btlbw_unchanged() {
         "fires: recovered→confirmed_logical GİRDİ (muhasebe-yarısı BAĞLI)"
     );
     assert_eq!(led_noop, 0, "noop: recovered-girişi yok");
-    // Retransmit-cancel gerçekleşti (FEC ana-avantajı; M1-sinyali).
-    assert!(
-        canc_fires > 0,
-        "fires: bekleyen-retransmit İPTAL (diag_recovered_cancels>0)"
+    // [FAZ-2 / KALEM-3 — SEMANTİK DÜZELTMESİ 2026-09-08]
+    // Bu test eskiden iptali PARITY girdileri üzerinden ölçüyordu (yukarıdaki kurulum yorumu:
+    // "parity'ler pending_lost'a girer"). O vehicle, transport'ta düzeltilen bir kusura
+    // dayanıyordu: kaybolan bir REPAIR shard'ı ARQ kuyruğuna giriyordu ve `unit.id = esi`
+    // taşıdığı için ürün runtime'ında YANLIŞ kaynak birimi retransmit ettiriyordu (ESI ile
+    // kaynak birim-id'leri FARKLI namespace'ler). Spec: repair'ler proaktif ve ACK-bağımsızdır
+    // (fec-core §4/§6; engine §9 ARQ yalnız orijinal DATA'yı kapsar).
+    //
+    // Düzeltmeden sonra parity `pending_lost`'a hiç girmez → bu senaryoda iptal edilecek girdi
+    // KALMAZ. RECOVERED→cancel sözleşmesi KAYNAK birimler için değişmedi
+    // (`pending_lost.retain(|r| r.unit.id != ru.unit_id)`); bu testin ölçtüğü şey artık
+    // "parity ARQ'ya girmiyor"dur.
+    assert_eq!(
+        canc_fires, 0,
+        "fires: parity ARQ kuyruğuna GİRMEZ → iptal edilecek girdi yok (kalem-3)"
     );
     assert_eq!(canc_noop, 0, "noop: cancel-yok");
     // GÜVENLİK-YARISI KORUNDU: recovered BtlBw'ye bit-eklemez (fires-vs-noop BİT-ÖZDEŞ).

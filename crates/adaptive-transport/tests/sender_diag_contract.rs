@@ -318,3 +318,22 @@ fn btlbw_samples_are_windowed_not_a_fixed_vector() {
         "bw örnekleri zaman sırasında değil"
     );
 }
+
+/// [FAZ-6 §1.3 / INV-007 / INV-015] `rounded_to_zero_count` SALT GÖZLEMDİR: taze sender'da 0,
+/// accessor `&self` (durum değiştirmez) ve tekrar tekrar okumak sonraki okumayı DEĞİŞTİRMEZ.
+/// Sayaç hiçbir kontrol kararının girdisi değildir — bu test API şeklini ve yan-etkisizliği kilitler.
+#[test]
+fn rounded_to_zero_count_salt_gozlemdir() {
+    let fresh = Sender::new();
+    assert_eq!(fresh.diag_fec_actuation().rounded_to_zero_count, 0);
+
+    let s = drive(40);
+    let a = s.diag_fec_actuation();
+    let b = s.diag_fec_actuation(); // &self: ikinci okuma birinciyle özdeş olmalı
+    assert_eq!(a.rounded_to_zero_count, b.rounded_to_zero_count);
+    assert_eq!(a.latch_event_index, b.latch_event_index);
+    assert_eq!(a.emitted_r_total, b.emitted_r_total);
+    // Maddeleşen parity (emitted) ile yuvarlanan-sıfır aynı latch'i sayamaz: ikisi de
+    // latch_event_index'i AŞAMAZ.
+    assert!(a.rounded_to_zero_count <= a.latch_event_index);
+}

@@ -1,68 +1,83 @@
 name: core-nightly
 
-# SR-STR-CORE-001 §6: CI-07 (netem kalite kapısı) + CI-08 (derin fuzz) + branch-coverage ölçümü.
+# ── SHARD'LI, TIMEOUT'LU GECELİK ──────────────────────────────────────────────────────────────
+# [CI-REPAIR 2026-09-08] Ölçülen sorunlar:
+#   · 5 gecelik koşunun 5'i de kırmızı; wall-clock ortalaması 644 dk, biri TAM 24 saat
+#     (netem-gate self-hosted runner'da kuyrukta/asılı kaldı — `timeout-minutes` kuyruk süresini
+#     KAPSAMAZ, bu yüzden job artık açık bir repo değişkenine kapılı).
+#   · `kani` her gece kaynaktan `cargo install kani-verifier` yapıyordu ve zaten
+#     `continue-on-error: true` olduğu için hiçbir şeyi kapılamıyordu → haftalığa alındı.
+#   · `fuzz-deep` 6 hedef × 30 dk = ~3.5 saat/gece. Hedef başına 10 dk'ya indirildi (corpus
+#     birikimi korunur; derinlik haftalık kolda).
+#   · `fuzz-smoke` PR'da "error: no such command: fuzz" ile 8/16 koşuda kırmızıydı — kök neden
+#     install-action'ın kısayol formu; açık `tool:` girdisiyle düzeltildi ve buraya taşındı.
 #
-#   CI-07  BUL-01 — ADR-18 ve CLAUDE.md §7'nin "ZORUNLU KALİTE KAPISI" dediği nightly netem
-#          karşılaştırması CI'da HİÇ MEVCUT DEĞİLDİ ve .gitignore'daki `/results` satırı nedeniyle
-#          karşılaştırılacak baseline depoda yoktu ([ÖLÇÜLDÜ] 0 adet .jsonl, üç özet JSON eksik).
-#          Ürünün en güçlü iddiası regresyon korumasızdı. Docker + NET_ADMIN yetkili runner gerekir.
-#   CI-08  BUL-04 — hedef başına 30 dk; corpus commit'lenir ve regresyon koruması oluşur.
-#   branch BUL-06 — branch kapsamı %81,21, CI'da hiç ölçülmüyordu. Nightly'de ölçülür + eşiklenir.
+# HOSTILE SHARD'LARI (T0–T7) ayrı job'lardır, her biri kendi timeout'uyla. Yalnız `NETEM_RUNNER`
+# repo değişkeni 'true' iken koşarlar (self-hosted netem runner'ı gerektirir).
 
 on:
   schedule:
     - cron: "0 2 * * *"
   workflow_dispatch:
+    inputs:
+      run_hostile:
+        description: "T0–T7 hostile shard'larını koştur (netem runner gerekir)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: core-nightly
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
-  # ── CI-08: derin fuzz + corpus biriktirme ──
-  fuzz-deep:
+  # ── CI-08: fuzz (hedef başına 10 dk; corpus biriktirilir) ──
+  fuzz:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         target:
-          - fuzz_inner_parse      # TC-08 — BUL-04'ün çekirdeği (AEAD-baypaslı parser)
-          - fuzz_open             # TC-09
-          - fuzz_control_decode   # TC-09
-          - fuzz_ack_decode       # TC-09
-          - fuzz_prefix           # TC-10
-          - fuzz_fec_decode       # TC-10
+          - fuzz_inner_parse
+          - fuzz_open
+          - fuzz_control_decode
+          - fuzz_ack_decode
+          - fuzz_prefix
+          - fuzz_fec_decode
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-fuzz
-
-      # Önceki gecenin corpus'unu geri yükle — sıfırdan başlamak regresyon korumasını yok eder.
+        with:
+          workspaces: "fuzz -> target"
+      # KÖK NEDEN DÜZELTMESİ: kısayol form (`@cargo-fuzz`) runner'da `cargo-fuzz` binary'sini
+      # PATH'e koymuyordu → `cargo +nightly fuzz` "no such command: fuzz" veriyordu.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
       - name: restore corpus
         uses: actions/cache/restore@v4
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-
           restore-keys: fuzz-corpus-${{ matrix.target }}-
-
-      - name: fuzz 30 min
+      - name: fuzz 10 min
         run: >
           cargo +nightly fuzz run ${{ matrix.target }} --
-          -max_total_time=1800 -rss_limit_mb=2048 -print_final_stats=1
-
-      # Corpus'u minimize et (cmin) — sınırsız büyümeyi engeller, kapsamı korur.
+          -max_total_time=600 -rss_limit_mb=2048 -print_final_stats=1
       - name: minimize corpus
         if: success()
         run: cargo +nightly fuzz cmin ${{ matrix.target }}
-
       - name: save corpus
         if: success()
         uses: actions/cache/save@v4
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
-
       - name: upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -70,27 +85,24 @@ jobs:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/
 
-  # ── BUL-06: branch kapsamı (nightly + eşik) ──
+  # ── BUL-06: branch kapsamı (PR'dan taşındı; orada 45 dk'da timeout oluyordu) ──
   branch-coverage:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      # [ÖLÇÜLDÜ] mevcut branch %81,21 (660 branch, 124 missed). Eşik 78 — gürültü kırmızı
-      # üretmesin, geri gidiş yakalansın. Ratchet: yeni testler eşiği yükselttikçe bu satır artar.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
       - name: branch coverage gate
         run: >
           cargo +nightly llvm-cov --workspace --all-features
           --branch --fail-under-branches 78 --summary-only
 
-  # ── desen1 nightly varyantı ──
-  # [ÖLÇÜLDÜ] `recalibrate_cadence` 8,67 s — deponun en ağır sim varyantı, assertion yok.
-  # CI'da koşan dört sim testi ci.yml quality job'ındadır (TC-16).
   sim-nightly:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -100,62 +112,81 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p adaptive-transport --test desen1_sim -- --ignored --nocapture
 
-  # ── CI-07: ADR-18 ZORUNLU KALİTE KAPISI (netem) ──
-  # Self-hosted TERCİH EDİLİYOR, teknik zorunluluk DEĞİL. GitHub-hosted runner'da tc netem
-  # muhtemelen çalışır (passwordless sudo + rootful Docker + cap_add NET_ADMIN).
-  # Gerekçe ÖLÇÜM GEÇERLİLİĞİ: kapı ±%3 mutlak / ±%5 göreli toleransla çalışıyor; GitHub-hosted
-  # runner'lar paylaşımlı VM'ler ve koşumlar arası CPU/IO değişkenliği bu toleranstan büyük
-  # OLABİLİR. Ölçülmedi. [BEKLİYOR — Yaaz: GH-hosted 3× vs self-hosted 3× yayılım karşılaştırması;
-  # GH-hosted yayılım < %3 çıkarsa bu job ubuntu-latest'e taşınır ve runner sökülür.]
-  # Ayrıca: baseline ile gate AYNI platformda üretilmelidir (§4.4.9 reproducible).
-  netem-gate:
+  # ── CI-07 / ADR-18: hostile netem shard'ları ──────────────────────────────────────────────
+  # Her rejim AYRI job + AYRI timeout. `NETEM_RUNNER` repo değişkeni olmadan HİÇ kuyruğa girmez
+  # (24 saatlik asılı kalmanın kök nedeni buydu).
+  hostile:
+    name: "hostile ${{ matrix.regime }}"
+    if: vars.NETEM_RUNNER == 'true' && (github.event_name == 'schedule' || inputs.run_hostile)
     runs-on: [self-hosted, linux, netem]
-    timeout-minutes: 180
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 1          # tek netem runner'ı: shard'lar sırayla
+      matrix:
+        regime:
+          - random-loss
+          - burst-loss
+          - high-latency
+          - low-bandwidth
+          - asymmetric-path
+          - degraded-return
+          - mixed-loss-reorder
+          - competitor-comparison
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-
-      - name: preflight (docker + sch_netem)
+      - name: preflight (netem + ürün profili)
         run: |
           set -e
-          docker info > /dev/null || { echo "::error::Docker daemon yok — netem kapisi kosturulamaz"; exit 1; }
-          lsmod | grep -q sch_netem || modprobe sch_netem
-          test -f results/baseline/kama-baseline.json \
-            || { echo "::error::baseline yok: results/baseline/kama-baseline.json (BUL-01)"; exit 1; }
-
-      - name: build bench image
-        run: docker compose -f harness/docker-compose.yml build
-
-      - name: run kama matrix (7 profil x 5 repeat)
-        env:
-          REPEATS: "5"
-        run: bash harness/run-kama-matrix.sh
-
-      # compare.py --gate: baseline'a karşı regresyon kapısı. Tolerans ve regresyon eşiği
-      # harness/compare.py içinde tek kaynaktan tanımlıdır.
-      - name: netem quality gate
-        run: python3 harness/compare.py --gate results/baseline/kama-baseline.json
-
+          lsmod | grep -q sch_netem || sudo modprobe sch_netem \
+            || { echo "::error title=INFRA_FAILURE::sch_netem yok"; exit 1; }
+          test -x scripts/netem/kapi3_harness.sh \
+            || { echo "::error title=INFRA_FAILURE::netem harness yok"; exit 1; }
+      - name: build bench (release)
+        run: cargo build --release -p bench --bin bench
+      # [FAZ-5 KAPISI] Gerçek T0–T7 koşumu Benchmark Metodolojisi (Faz-4) kapanmadan ETKİNLEŞMEZ.
+      # O ana dek shard yalnız harness'ın ve ÜRÜN PROFİLİNİN canlı olduğunu kanıtlar.
+      # [FAZ-4 §14] ADR-18 gecelik kolu KANONİK ÜRÜN PROFİLİNİ kurar (elle yeniden yazılmış
+      # sevk config'i YOK), yapılandırma + aktivasyon manifestini üretir ve sapma varsa
+      # "Kama v1" etiketini REDDEDER.
+      - name: activation proof (ürün profili gerçekten koşuyor mu)
+        run: |
+          set -o pipefail
+          D="$RUNNER_TEMP/act-${{ matrix.regime }}"
+          bash scripts/netem/v1_activation_proof.sh "$D" 2>&1 | tee /tmp/act.txt
+          grep -q "profile=kama-v1-full" /tmp/act.txt \
+            || { echo "::error title=BENCHMARK_FAILURE::kosu urun profili DEGIL (kama-custom)"; exit 1; }
+      - name: manifest gate (§14 — sapma varsa Kama v1 etiketi REDDEDİLİR)
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/act-${{ matrix.regime }}"
+          n=$(find "$D" -name manifest.json | wc -l)
+          [ "$n" -ge 1 ] || { echo "::error title=BENCHMARK_FAILURE::kosu manifesti URETILMEDI"; exit 1; }
+          for m in $(find "$D" -name manifest.json); do
+            arm=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['arm'])" "$m")
+            delta=$(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['profile_delta']))" "$m")
+            act=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['activation']['fec_configured'])" "$m")
+            echo "$m arm=$arm delta=$delta fec_configured=$act"
+            [ "$arm" = "kama-v1-full" ] && [ "$delta" = "0" ] \
+              || { echo "::error title=BENCHMARK_FAILURE::$m urun profili DEGIL (arm=$arm delta=$delta)"; exit 1; }
+          done
       - name: upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: netem-results
-          path: |
-            results/*.jsonl
-            results/kama-vs-quinn.json
-            results/gate-report.json
-  
-  kani:
-    name: kani (bicimsel dogrulama - pn.rs)
+          name: hostile-${{ matrix.regime }}
+          path: ${{ runner.temp }}/act-${{ matrix.regime }}
+
+  nightly-verdict:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    continue-on-error: true   # K-1 duzeltilene kadar KASTEN kirmizi
+    timeout-minutes: 5
+    needs: [fuzz, branch-coverage, sim-nightly, hostile]
+    if: always()
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo install --locked kani-verifier
-      - run: cargo kani setup
-      - name: kani proofs
-        run: cargo kani -p kama-noise-wire --tests
+      - run: |
+          R='${{ join(needs.*.result, ',') }}'
+          echo "job sonuçları: $R"
+          if [[ "$R" == *failure* ]]; then echo "::error title=TEST_FAILURE::gecelik kapida kirmizi var"; exit 1; fi
+          if [[ "$R" == *cancelled* ]]; then echo "::warning title=TIMEOUT::gecelik job iptal/timeout"; exit 1; fi
+          echo "gecelik yesil (atlanan shard'lar: NETEM_RUNNER degiskeni yok)"

@@ -119,6 +119,13 @@ pub struct TailRecovery {
 }
 
 impl TailRecovery {
+    /// [FAZ-3 TELEMETRİ] Yürürlükteki yapılandırma (salt gözlem; "yapılandırıldı" olgusu
+    /// "ateşledi" olgusundan AYRIDIR).
+    #[must_use]
+    pub fn config(&self) -> TailRecoveryConfig {
+        self.cfg
+    }
+
     #[must_use]
     pub fn new(cfg: TailRecoveryConfig) -> Self {
         Self {

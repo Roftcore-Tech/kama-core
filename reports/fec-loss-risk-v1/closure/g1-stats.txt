@@ -1,0 +1,12 @@
+== E3-C4: koşu-başı d2 — stall-dışı (mean/sd/med/[min,max]) ve tüm-koşu; permütasyon p (tek yönlü: kol > OFF); stall; cold-start; tel
+  off   n_ok=17/20 mean=0.262 sd=0.076 med=0.281 [0.09,0.38] Δok=+nan p=nan | all mean=0.222 Δ=+nan p=nan | stall=3 | t_L1−t_susp med=nan ms (n=0) | inv_ihlal=0 | tel=54233 B parity=0 B
+  A-M0  n_ok=15/20 mean=0.183 sd=0.073 med=0.188 [0.00,0.29] Δok=-0.078 p=0.997 | all mean=0.138 Δ=-0.085 p=0.989 | stall=5 | t_L1−t_susp med=0 ms (n=15) | inv_ihlal=0 | tel=62191 B parity=7912 B
+  A-G1  n_ok=17/20 mean=0.301 sd=0.118 med=0.333 [0.03,0.47] Δok=+0.039 p=0.139 | all mean=0.256 Δ=+0.033 p=0.227 | stall=3 | t_L1−t_susp med=0 ms (n=17) | inv_ihlal=0 | tel=57326 B parity=4232 B
+  B-M0  n_ok=17/20 mean=0.262 sd=0.089 med=0.302 [0.07,0.39] Δok=+0.001 p=0.496 | all mean=0.223 Δ=+0.001 p=0.493 | stall=3 | t_L1−t_susp med=0 ms (n=17) | inv_ihlal=0 | tel=65074 B parity=10764 B
+  B-G1  n_ok=16/20 mean=0.320 sd=0.090 med=0.318 [0.18,0.46] Δok=+0.058 p=0.030 | all mean=0.256 Δ=+0.033 p=0.228 | stall=4 | t_L1−t_susp med=0 ms (n=16) | inv_ihlal=0 | tel=59494 B parity=5888 B
+== E1-L20: koşu-başı d2 — stall-dışı (mean/sd/med/[min,max]) ve tüm-koşu; permütasyon p (tek yönlü: kol > OFF); stall; cold-start; tel
+  off   n_ok= 5/10 mean=0.273 sd=0.047 med=0.250 [0.23,0.34] Δok=+nan p=nan | all mean=0.136 Δ=+nan p=nan | stall=5 | t_L1−t_susp med=nan ms (n=0) | inv_ihlal=0 | tel=53972 B parity=0 B
+  A-M0  n_ok= 8/10 mean=0.508 sd=0.056 med=0.526 [0.38,0.57] Δok=+0.235 p=0.001 | all mean=0.406 Δ=+0.270 p=0.003 | stall=2 | t_L1−t_susp med=52 ms (n=8) | inv_ihlal=0 | tel=62042 B parity=8280 B
+  A-G1  n_ok= 9/10 mean=0.507 sd=0.041 med=0.490 [0.45,0.56] Δok=+0.234 p=0.001 | all mean=0.456 Δ=+0.320 p=0.000 | stall=1 | t_L1−t_susp med=25 ms (n=9) | inv_ihlal=0 | tel=62147 B parity=8464 B
+  B-M0  n_ok= 7/10 mean=0.613 sd=0.041 med=0.594 [0.56,0.70] Δok=+0.340 p=0.001 | all mean=0.429 Δ=+0.293 p=0.007 | stall=3 | t_L1−t_susp med=52 ms (n=7) | inv_ihlal=0 | tel=65632 B parity=12328 B
+  B-G1  n_ok= 9/10 mean=0.610 sd=0.064 med=0.615 [0.52,0.75] Δok=+0.337 p=0.000 | all mean=0.549 Δ=+0.412 p=0.000 | stall=1 | t_L1−t_susp med=26 ms (n=9) | inv_ihlal=0 | tel=66048 B parity=12512 B

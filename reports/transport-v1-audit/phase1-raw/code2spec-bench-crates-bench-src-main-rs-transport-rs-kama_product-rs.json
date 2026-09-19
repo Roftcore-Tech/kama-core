@@ -1,0 +1,1025 @@
+{
+ "module": "bench (crates/bench/src: main.rs, transport.rs, kama_product.rs, kama.rs, quic.rs, qdgram.rs, metrics.rs, budget.rs, event.rs, error.rs)",
+ "items": [
+  {
+   "symbol": "crate `bench` (whole crate)",
+   "path_line": "crates/bench/Cargo.toml:1",
+   "kind": "module",
+   "purpose": "§4.4 benchmark harness binary; leaf crate. Depends on adaptive-transport + client-core + quinn; NOTHING depends on it.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md §4.4 (transport-layer-tdd.md:213)",
+   "evidence": [
+    "crates/bench/Cargo.toml:9-14 deps adaptive-transport + client-core",
+    "grep -rn 'use bench|bench::' crates --include=*.rs excluding crates/bench/ → EMPTY (leaf; zero product reachability)",
+    "crates/bench/Cargo.toml:27-29 [[bin]] name=bench"
+   ]
+  },
+  {
+   "symbol": "fn runtime_cfg(ArmCfg) -> RuntimeConfig",
+   "path_line": "crates/bench/src/kama_product.rs:115",
+   "kind": "fn",
+   "purpose": "THE bench→product config seam: maps CLI/ArmCfg onto client-core RuntimeConfig for the `kama-product` arm.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "WIRE",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md:256 (§4.4.1 'tek değişken = transport')",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:161 `initial_window_bytes,` passes CLI value straight through; CLI default is 0 (main.rs:132-134, main.rs:229-231) while RuntimeConfig::default() ships DEFAULT_BURST_CAP=2400 (client-core/src/runtime.rs:195 @HEAD; adaptive-transport/src/pacer.rs:9)",
+    "crates/bench/src/kama_product.rs:187-191 `fec_loss_risk: { let mut c = if fec_risk { experimental_v1() } else { FecLossRiskConfig::default() }` — default() is enabled:false (adaptive-transport/src/sender.rs:396-398) while product default is bounded_v1() enabled:true 250/250/Learned/rp300 (client-core/src/runtime.rs:204 @HEAD; sender.rs:435-447)",
+    "crates/bench/src/kama_product.rs:224 `structure_gate_level_permille: gate,` — CLI None (main.rs:94-96) overwrites product Some(250) (client-core/src/runtime.rs:206 @HEAD) with None = engine fec_med 500",
+    "crates/bench/src/kama_product.rs:231 `..RuntimeConfig::default()` — the struct-update fallback is defeated for exactly these three fields because they are named explicitly above it",
+    "Consequence in the live harness: scripts/netem/product_vs_quinn.sh:76 labels the no-flag arm `kp-sevk` (shipping) and :80 offers `kp-iw2400` as an experimental lever — but 2400 IS the product default; the 'sevk' arm ran IW=0, risk-lane OFF, gate=500",
+    "Owner has an UNCOMMITTED in-flight fix in the worktree (KamaV1Profile + `gate.or(v1.structure_gate_level_permille)`); see notes"
+   ]
+  },
+  {
+   "symbol": "test fn rsweep_caps_flow_to_runtime",
+   "path_line": "crates/bench/src/kama_product.rs:898",
+   "kind": "fn",
+   "purpose": "Pins CLI r-sweep overrides into RuntimeConfig — but its no-override assertions pin the CLOBBERED (non-product) values.",
+   "called_from_product": false,
+   "only_from": "test",
+   "classification": "WIRE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:921 `assert_eq!(d.fec_loss_risk.bootstrap_cap_permille, 125)` — 125 is FecLossRiskConfig::default() (sender.rs:400), product bounded_v1 is 250 (sender.rs:438)",
+    "crates/bench/src/kama_product.rs:923 `assert_eq!(d.structure_gate_level_permille, None)` — product default is Some(250) (client-core/src/runtime.rs:206 @HEAD)",
+    "Test-pinned defect: the regression test would have failed if the bench had carried product defaults"
+   ]
+  },
+  {
+   "symbol": "harness/run-kama-matrix.sh via nightly netem-gate",
+   "path_line": ".github/workflows/nightly.yml:129",
+   "kind": "branch",
+   "purpose": "ADR-18 mandatory nightly netem quality gate — the only CI job that runs the bench binary.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "WIRE",
+   "spec_ref_or_none": "specs/tech-stack-adr.md ADR-18; specs/transport-layer-tdd.md §4.4 gate",
+   "evidence": [
+    ".github/workflows/nightly.yml:129-132 `run: bash harness/run-kama-matrix.sh`",
+    ".github/workflows/nightly.yml:136 `python3 harness/compare.py --gate results/baseline/kama-baseline.json`",
+    "harness/run-kama-matrix.sh:20 `serve --transport kama` and :33 `client --transport kama` — the security-STUB arm",
+    "crates/bench/src/kama.rs:7 'FEC parity ÜRETİLMEZ (TransmitKind::FecParity emit edilmez)'",
+    "harness/run-kama-matrix.sh passes no --kama-arm → default KamaArmArg::Arq (main.rs:150) → Sender::new() tail recovery OFF (sender.rs:1801), while the product ships tail-ON validated_v1 (client-core/src/runtime.rs:675)",
+    "Net: the mandatory quality gate measures stub-crypto + no-FEC + tail-OFF — three product mechanisms absent"
+   ]
+  },
+  {
+   "symbol": "mod kama (stub transport arm)",
+   "path_line": "crates/bench/src/kama.rs:1",
+   "kind": "module",
+   "purpose": "Older 'kama' arm: drives adaptive_transport::Sender/Receiver directly over UDP with an identity security stub (+16B fake tag). Superseded by kama_product.rs.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "DELETE",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md §4.4.1 (fair-comparison setup)",
+   "evidence": [
+    "crates/bench/src/kama.rs:4-8 module doc: no crypto ⇒ FEC parity structurally impossible",
+    "crates/bench/src/kama_product.rs:3-6: 'quinn kıyaslarımızın tamamı bugüne dek Kama'nın FEC'siz yarısıyla koştu'",
+    "scripts/netem/product_vs_quinn.sh:4-6 same statement",
+    "find reports -name argv.txt -exec grep -l -- '--transport kama ' → 0 of 480; kama-product → 480 of 480",
+    "BLOCKER for removal: .github/workflows/nightly.yml:129 + harness/run-kama-matrix.sh:20,33 still drive it. CLAUDE.md §6 requires deprecate-to-appendix, not silent delete."
+   ]
+  },
+  {
+   "symbol": "enum KamaArm { Arq, TailV1 } + KamaArm::label",
+   "path_line": "crates/bench/src/transport.rs:34",
+   "kind": "enum-variant",
+   "purpose": "Selects tail-recovery config for the stub arm; written into RunMeta.kama_arm.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Only consumer: crates/bench/src/kama.rs:112 `if arm == KamaArm::TailV1 { sender.set_tail_recovery_config(validated_v1()) }` and kama.rs:528 label()",
+    "crates/bench/src/kama_product.rs:882 `kama_arm: KamaArm::Arq, // bu kolda yok sayılır`",
+    "crates/bench/src/quic.rs:412 and qdgram.rs:459 write `kama_arm: String::new()`",
+    "MISLEADING DOC: transport.rs:35 says Arq = 'Ürün defaults'ları (tail recovery OFF)'. False for the product: client-core/src/runtime.rs:675 'ClientSession (G2 sevk default'ları — tail-ON validated_v1)'; Sender::new() OFF is the ENGINE default (sender.rs:1801), not the product default.",
+    "Dies with kama.rs; keep only if the nightly gate keeps the stub arm"
+   ]
+  },
+  {
+   "symbol": "CLI arg `serve --ts-out`",
+   "path_line": "crates/bench/src/main.rs:87",
+   "kind": "config-field",
+   "purpose": "Declared server-side time-series CSV output path.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/main.rs:84-87 declares the arg with help text",
+    "crates/bench/src/main.rs:376 `ts_out: _,` — value discarded during destructuring",
+    "crates/bench/src/main.rs:407 `ts_out: None,` — ServerCfg hard-coded None",
+    "Result: `bench serve --ts-out /x` is accepted and silently does nothing; clap gives no warning"
+   ]
+  },
+  {
+   "symbol": "ServerCfg::ts_out",
+   "path_line": "crates/bench/src/transport.rs:269",
+   "kind": "config-field",
+   "purpose": "Server-side TS CSV path in the ServerCfg struct.",
+   "called_from_product": false,
+   "only_from": "nowhere",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Only assignment from CLI: crates/bench/src/main.rs:407 `ts_out: None`",
+    "Only read: crates/bench/src/kama_product.rs:487 `ts_sample: cfg.ts_out.is_some()` ⇒ structurally always false ⇒ server never sets ts_sample_period_ns",
+    "transport.rs:268 doc itself says 'Server'da yok sayılır' — the field is the vestige"
+   ]
+  },
+  {
+   "symbol": "FecArm::PolicyV2Deadline + FecModeCli::Policy + --fec-deadline-ms",
+   "path_line": "crates/bench/src/transport.rs:91",
+   "kind": "enum-variant",
+   "purpose": "Calibrated fusion-policy arm: installs FusionPolicy::calibration_v2_deadline and declares a per-offer delivery budget.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/adaptive-transport-engine-spec.md (fusion policy); RuntimeConfig.fusion_policy default None (client-core/src/runtime.rs:202 @HEAD)",
+   "evidence": [
+    "crates/bench/src/transport.rs:115-118 FecArm::from_args maps FecModeArg::Policy",
+    "crates/bench/src/kama_product.rs:229-230 `fusion_policy: matches!(fec, FecArm::PolicyV2Deadline{..}).then(FusionPolicy::calibration_v2_deadline)`",
+    "crates/bench/src/kama_product.rs:428-431 deadline_ns declared per offer only in this arm",
+    "NEVER EXERCISED: grep -rn -- '--fec-deadline-ms' scripts/ harness/ .github/ → 0 hits; find reports -name argv.txt -exec grep -l -- '--fec-deadline-ms' → 0 of 480"
+   ]
+  },
+  {
+   "symbol": "CLI arg `--bootstrap-fast` / ServerCfg+ClientCfg.bootstrap_fast",
+   "path_line": "crates/bench/src/main.rs:136",
+   "kind": "config-field",
+   "purpose": "Selects the establishment-fast bootstrap ladder (0.2/0.6/1.8/5.4 s) instead of 3/9/21/45 s.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "client-core/src/runtime.rs:118-122 (bootstrap_fast_ladder default false)",
+   "evidence": [
+    "crates/bench/src/main.rs:134-136 (serve) and :233-235 (client)",
+    "crates/bench/src/kama_product.rs:162 `bootstrap_fast_ladder: bootstrap_fast`",
+    "Inert unless --bootstrap-rtt is also given (client-core/src/runtime.rs:118-122)",
+    "NEVER EXERCISED: 0 hits in scripts/ harness/ .github/; 0 of 480 argv.txt"
+   ]
+  },
+  {
+   "symbol": "CLI arg `--bootstrap-rtt`",
+   "path_line": "crates/bench/src/main.rs:133",
+   "kind": "config-field",
+   "purpose": "Opt-in DR-CS-3 cold-start RTT probe ladder; must match on both ends.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "client-core/src/runtime.rs:123-128 (default false, 'KALİBRE EDİLMEMİŞ')",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:159 `bootstrap_rtt,` → RuntimeConfig.bootstrap_rtt",
+    "Genuinely wired in the product path (NOT behind a cargo feature): client-core/src/runtime.rs:883-896 `set_bootstrap_rtt(..)` + `set_cs_probe_lane(cfg.bootstrap_rtt)`",
+    "Used by scripts/netem/product_vs_quinn.sh:82,84,85; 0 of 480 recorded argv.txt (that script's runs are under reports/product-vs-quinn-v* which are untracked)"
+   ]
+  },
+  {
+   "symbol": "CLI arg `--fec-risk` (ClientCfg/ServerCfg.fec_risk)",
+   "path_line": "crates/bench/src/main.rs:78",
+   "kind": "config-field",
+   "purpose": "Selects the speculative FEC loss-risk lane config.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "WIRE",
+   "spec_ref_or_none": "client-core/src/runtime.rs:150-155 (product default bounded_v1)",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:188-191: true→experimental_v1(), false→FecLossRiskConfig::default()",
+    "NEITHER branch is the product config: experimental_v1 = enabled+125/250/FixedSrtt/rp=u32::MAX (sender.rs:421-425 over 400-413); product bounded_v1 = enabled+250/250/LearnedSpuriousAge/rp=300 (sender.rs:435-447)",
+    "So no bench invocation reproduces the shipped lane without manually adding --spec-l1-permille 250 --persist-mode learned --rp-suppress 300",
+    "Help text (main.rs:75-77) says 'KAPALI = sevk davranışı' — false at HEAD, the product default is ON"
+   ]
+  },
+  {
+   "symbol": "CLI arg `--initial-window-bytes`",
+   "path_line": "crates/bench/src/main.rs:134",
+   "kind": "config-field",
+   "purpose": "PreConverge first-flight window (bytes).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "WIRE",
+   "spec_ref_or_none": "client-core/src/runtime.rs:102-117 (product default = DEFAULT_BURST_CAP)",
+   "evidence": [
+    "crates/bench/src/main.rs:131-134 default_value_t = 0, help says '0 = sevk davranışı, tek paket'",
+    "crates/bench/src/kama_product.rs:161 passes 0 through",
+    "Product default is 2400 (client-core/src/runtime.rs:194-195 @HEAD), and the field doc there says the 0 behaviour was a MEASURED CLAMP BUG (6/12 collapse at 200 ms/50 % loss)",
+    "scripts/netem/product_vs_quinn.sh:80 markets 2400 as an experimental arm 'kp-iw2400' — it is the shipping value"
+   ]
+  },
+  {
+   "symbol": "CLI arg `--gate-permille` (gate_permille)",
+   "path_line": "crates/bench/src/main.rs:96",
+   "kind": "config-field",
+   "purpose": "Structure-gate parity level override (permille).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "WIRE",
+   "spec_ref_or_none": "client-core/src/runtime.rs:160-163 (product Some(250))",
+   "evidence": [
+    "crates/bench/src/main.rs:94-96 Option<u32>, no default",
+    "crates/bench/src/kama_product.rs:224 `structure_gate_level_permille: gate` — None passes None, not the product Some(250)",
+    "kama_product.rs:223 comment claims 'None = motor fec_med = 500 sevk' — 500 is the ENGINE fallback, not the product ship value"
+   ]
+  },
+  {
+   "symbol": "CLI arg `--loss-confirm-k` → LossConfirmHorizon",
+   "path_line": "crates/bench/src/main.rs:73",
+   "kind": "config-field",
+   "purpose": "Measurement arm for the loss-ledger Suspected→Confirmed horizon (0 = CadenceLegacy, >0 = k×srtt permille).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "client-core/src/runtime.rs:146-149 (default CadenceLegacy)",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:177-183 maps 0→CadenceLegacy, >0→ChannelDerived{k_permille}",
+    "Correctly byte-identical at default (matches product default at HEAD)",
+    "6 hits in scripts/; 0 of 480 argv.txt"
+   ]
+  },
+  {
+   "symbol": "CLI knobs --spec-l1-permille / --spec-l2-permille / --persist-mode / --persist-alpha / --persist-rho / --persist-q / --rp-suppress",
+   "path_line": "crates/bench/src/main.rs:90",
+   "kind": "const-knob",
+   "purpose": "Direct r-sweep / persistence / reorder-guard overrides onto FecLossRiskConfig.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none (research knobs; FEC v1 closure decided the shipped values)",
+   "evidence": [
+    "crates/bench/src/main.rs:88-108 (serve) and :204-226 (client)",
+    "crates/bench/src/kama_product.rs:192-217 apply each Some(v) onto the FecLossRiskConfig",
+    "These are the ONLY way to hand-reconstruct bounded_v1 from the bench CLI at HEAD (see --fec-risk item)"
+   ]
+  },
+  {
+   "symbol": "CLI arg `serve --quota-r` / ServerCfg::quota_r [CAL {4,8}]",
+   "path_line": "crates/bench/src/main.rs:39",
+   "kind": "const-knob",
+   "purpose": "Receiver silence re-ACK episode quota R; measurement matrix knob.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "[TUR-5 r3]; adaptive-transport/src/receiver.rs:146 'R [CAL {4,8}] — bench ölçüm-matrisi set_quota_r ile'",
+   "evidence": [
+    "crates/bench/src/main.rs:38-40 default 4 (matches product default, client-core/src/runtime.rs:191)",
+    "Product wiring exists: crates/client-core/src/runtime.rs:2145 `rx.set_quota_r(cfg.quota_r)`",
+    "kama-product server: kama_product.rs:296 `quota_r: cfg.quota_r`; kama stub: kama.rs:612 `r.set_quota_r(quota_r)`; qdgram app-mirror: qdgram.rs:186",
+    "ASYMMETRY: kama_product.rs:401 hard-codes `quota_r: 4` on the CLIENT side (no ClientCfg field exists) — the flag is serve-only"
+   ]
+  },
+  {
+   "symbol": "CLI arg `--fec-profile` / `--fec-r` / `--fec-mode` + FecArm::from_args",
+   "path_line": "crates/bench/src/transport.rs:110",
+   "kind": "fn",
+   "purpose": "Resolves the FEC arm; mode selector orthogonal to r so that static-r0 (fragmentation on, parity off) is representable.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/fec-core-tdd-v3.0.md; client-core/src/runtime.rs:169-179 FecRuntimeConfig",
+   "evidence": [
+    "crates/bench/src/transport.rs:110-121 from_args; profile_id 0 ⇒ FecArm::Off",
+    "crates/bench/src/kama_product.rs:165-176 → RuntimeConfig.fec",
+    "Well exercised: --fec-r 21 hits, --fec-mode 13 hits, --fec-profile 12 hits in scripts/",
+    "Design defect already fixed and pinned by test static_r0_control_arm_is_reachable_and_keeps_fragmentation (kama_product.rs:784)"
+   ]
+  },
+  {
+   "symbol": "CLI arg `--fec-burst-fusion` → FecStructurePolicy::BurstFusion",
+   "path_line": "crates/bench/src/main.rs:127",
+   "kind": "config-field",
+   "purpose": "Opt-in burst-branch coding for the structure gate.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "client-core/src/runtime.rs:129-132 (default Q18Iid, 'KALİBRE EDİLMEMİŞTİR')",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:152-157 maps to FecStructurePolicy::BurstFusion else Q18Iid",
+    "Default matches product default (Q18Iid) — no clobber here",
+    "1 hit in scripts/"
+   ]
+  },
+  {
+   "symbol": "CLI arg `--cc {cubic,bbr}` + CcArg/Cc + Cc::label",
+   "path_line": "crates/bench/src/transport.rs:12",
+   "kind": "enum-variant",
+   "purpose": "Congestion controller selection for the quinn/qdgram arms; report label everywhere.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "WIRE",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md:246-247 (§4.4.1: 'En güçlü mevcut congestion control: default CC + destekliyorsa BBR/BBRv2 profili')",
+   "evidence": [
+    "Real effect only in quic.rs:181-187 (CubicConfig vs BbrConfig)",
+    "On the Kama arms it is LABEL-ONLY: kama_product.rs:814 and kama.rs:509 use `cfg.cc.label()` and nothing else ⇒ `--transport kama-product --cc bbr` stamps cc=\"bbr\" in RunMeta while nothing changed (metadata-lie risk)",
+    "NEVER EXERCISED: find reports -name argv.txt -exec grep -l -- '--cc bbr' → 0 of 480. Only harness/run-bench.sh:11 (`CCS=\"cubic bbr\"`) would drive it, and that docker harness is not the modern netem path",
+    "§4.4.1 asks for QUIC's BEST configuration; the recorded evidence base is cubic-only"
+   ]
+  },
+  {
+   "symbol": "fn transport_config(cc) — initial_mtu(1452)",
+   "path_line": "crates/bench/src/quic.rs:176",
+   "kind": "const-knob",
+   "purpose": "quinn TransportConfig pins: idle 300 s, PMTUD off, initial_mtu 1452, GSO off, 512 bidi streams.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "WIRE",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md:256 (§4.4.1 'Aynı netem/tc script, aynı MTU=1200')",
+   "evidence": [
+    "crates/bench/src/quic.rs:176 `t.initial_mtu(1452)`",
+    "Kama side uses adaptive-transport/src/rate.rs:18 `DEFAULT_MTU: u64 = 1200`",
+    "Spec §4.4.1 (transport-layer-tdd.md:256) requires the SAME MTU=1200 on both arms as a confound control",
+    "Counter-evidence (pre-registered): quic.rs:171-174 cites inceleme #8/#21/#23 and scripts/netem/kapi_manifest.py:175 `\"max_udp_payload\": 1452`, :30 `MTU = 1500`. Discrepancy is documented in the manifest but contradicts the spec line."
+   ]
+  },
+  {
+   "symbol": "struct KamaProductTransport + impl BenchTransport",
+   "path_line": "crates/bench/src/kama_product.rs:263",
+   "kind": "struct",
+   "purpose": "The product-runtime bench arm; the only arm that drives client-core ClientEndpoint/ServerEndpoint.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md §4.4",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:265-279 delegates to server_loop/client_loop",
+    "crates/bench/src/main.rs:559,569 dispatch for TransportArg::KamaProduct",
+    "480 of 480 reports/**/argv.txt use --transport kama-product"
+   ]
+  },
+  {
+   "symbol": "async fn server_loop",
+   "path_line": "crates/bench/src/kama_product.rs:283",
+   "kind": "fn",
+   "purpose": "Product ServerEndpoint + reverse-direction budget governor + SIGTERM/SIGINT closure so receiver-side FEC counters are printed.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:331-345 documented circular-dependency fix: without the signal arm the loop never reached the eprintln! and s.err stayed 0 bytes, losing fec_repairs_rx/fec_recovered_units/param_bound_peers",
+    "crates/bench/src/kama_product.rs:378-388 KP-SERVER diagnostic line"
+   ]
+  },
+  {
+   "symbol": "async fn client_loop",
+   "path_line": "crates/bench/src/kama_product.rs:388",
+   "kind": "fn",
+   "purpose": "Product ClientEndpoint + forward governor + the three-arm-common RawEvent measurement frame (sent_ns = app-offer, delivered_ns = first ACK-or-RECOVERED).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md §4.4.3 (deadline-bounded completion)",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:466-534 warmup phase, gate_sync, mark_t0, paced/burst submission, acked() join",
+    "crates/bench/src/kama_product.rs:401 hard-coded `quota_r: 4` (client side has no CLI knob)"
+   ]
+  },
+  {
+   "symbol": "RunMeta.kama_arm provenance label (kama-product)",
+   "path_line": "crates/bench/src/kama_product.rs:839",
+   "kind": "config-field",
+   "purpose": "Encodes which behaviour-selecting flags a run used, so evidence stays identifiable after files are copied/pooled.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "WIRE",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md §4.4.9 (reproducibility)",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:832-836 comment: 'Etiket TÜM davranış-seçici bayrakları taşır'",
+    "crates/bench/src/kama_product.rs:838-857 actually encodes only: fec.label(), burst_fusion, bootstrap_rtt, initial_window_bytes, bootstrap_fast",
+    "MISSING from the label: --fec-risk, --loss-confirm-k, --spec-l1-permille, --spec-l2-permille, --gate-permille, --persist-mode/-alpha/-rho/-q, --rp-suppress (all read at kama_product.rs:479-497)",
+    "So two runs differing in the speculative-FEC lane produce byte-identical metadata — the exact failure the comment claims to prevent"
+   ]
+  },
+  {
+   "symbol": "ts-series CSV writer (--ts-out)",
+   "path_line": "crates/bench/src/kama_product.rs:618",
+   "kind": "fn",
+   "purpose": "Dumps stats.ts (50 ms handoff time-series) to CSV; 22 columns.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "client-core/src/runtime.rs:156-159 (ts_sample_period_ns default None; TS_CAP 4096)",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:596 `ts_sample: cfg.ts_out.is_some()` → kama_product.rs:226 `ts_sample_period_ns: ts_sample.then_some(50_000_000)`",
+    "Observation-only by construction (client-core/src/runtime.rs:158 'Salt gözlem — motor durumuna dokunmaz')",
+    "CLIENT-ONLY: the serve-side flag is dead (see `serve --ts-out` item)",
+    "Used by scripts/netem/fec_handoff_family.sh:26 and fec_evidence_family.sh:44"
+   ]
+  },
+  {
+   "symbol": "ts CSV sched_* columns + KP-CLIENT `sched={:?}` field",
+   "path_line": "crates/bench/src/kama_product.rs:622",
+   "kind": "feature-gated-block",
+   "purpose": "Scheduler class counters (data/retx/parity denied+emitted) in the CSV and diagnostic line.",
+   "called_from_product": false,
+   "only_from": "feature-gated",
+   "gate": "cargo feature diag-sched-telemetry (default OFF)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/Cargo.toml:25-26 `diag-sched-telemetry = [\"client-core/diag-sched-telemetry\", \"adaptive-transport/diag-sched-telemetry\"]` — pure pass-through, no #[cfg] in bench itself",
+    "adaptive-transport/src/sender.rs:4374-4375 `pub fn diag_sched_summary` body is `#[cfg(feature = \"diag-sched-telemetry\")]`",
+    "adaptive-transport/src/sender.rs:3613-3618 TsSample sched_* fields read that summary",
+    "client-core/src/runtime.rs:489 'yalnız diag-sched-telemetry feature'ında dolu, aksi 0'",
+    "VACUUM-COUNTER RISK: in the default build these 6 CSV columns and the sched field are silently all-zero with no marker in the CSV header"
+   ]
+  },
+  {
+   "symbol": "struct BudgetEgress + impl EgressPolicy",
+   "path_line": "crates/bench/src/kama_product.rs:63",
+   "kind": "struct",
+   "purpose": "Adapter plugging the bench budget governor into the product egress seam.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "client-core::runtime::EgressPolicy",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:65-79 admit()/arm(); admit adds IPV4_UDP_OVERHEAD and fails CLOSED on a poisoned lock (kama_product.rs:71-73)",
+    "Installed at kama_product.rs:288-289 (server) and :396-397 (client) via *_with_policy constructors"
+   ]
+  },
+  {
+   "symbol": "async fn offer(tx, payload, deadline_ns)",
+   "path_line": "crates/bench/src/kama_product.rs:248",
+   "kind": "fn",
+   "purpose": "Bounded backpressure contract: retries on QueueFull, propagates other typed errors so unit_id↔offer-order mapping cannot silently shift.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:255-260 loop on RuntimeError::QueueFull with OFFER_RETRY (1 ms)",
+    "Call sites: kama_product.rs:481, 517, 543"
+   ]
+  },
+  {
+   "symbol": "struct ArmCfg",
+   "path_line": "crates/bench/src/kama_product.rs:94",
+   "kind": "struct",
+   "purpose": "Flat CLI→runtime_cfg parameter bundle (18 fields).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:94-113 definition",
+    "Constructed at kama_product.rs:285-302 (server) and :399-418 (client) plus 10 test sites"
+   ]
+  },
+  {
+   "symbol": "const GATE_POLL / OFFER_RETRY / WARMUP_CAP_EXTRA / KAMA_VERSION",
+   "path_line": "crates/bench/src/kama_product.rs:51",
+   "kind": "const-knob",
+   "purpose": "Harness timing constants and version stamp.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:51-58",
+    "GATE_POLL used at :348; OFFER_RETRY at :258; WARMUP_CAP_EXTRA at :445; KAMA_VERSION at :815",
+    "KAMA_VERSION is written into RunMeta.quinn_version (frozen-field misnomer, see event.rs item)"
+   ]
+  },
+  {
+   "symbol": "struct ClientRun + fn drive + fn handle_datagram (stub arm)",
+   "path_line": "crates/bench/src/kama.rs:85",
+   "kind": "struct",
+   "purpose": "Stub-arm sender state machine driver + seq→unit join + measurement bookkeeping.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/kama.rs:107-247 impl; only constructed at kama.rs:265 and tests kama.rs:696,699",
+    "Duplicates the whole measurement loop that kama_product.rs:388 implements against the real product runtime"
+   ]
+  },
+  {
+   "symbol": "TransmitKind catch-all `_ => {}` in stub-arm tx accounting",
+   "path_line": "crates/bench/src/kama.rs:234",
+   "kind": "branch",
+   "purpose": "Attributes emitted bytes to data/retx/dup components; everything else is swallowed.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/kama.rs:230-236: Data/Retransmit/Duplicate matched, `_ => {}` drops FecParity and CsProbe from the component decomposition while they still count in tx_bytes (kama.rs:228)",
+    "Comment at kama.rs:233-234 acknowledges CsProbe is unattributed"
+   ]
+  },
+  {
+   "symbol": "env knob KAMA_BENCH_TRACE (ClientRun.trace)",
+   "path_line": "crates/bench/src/kama.rs:131",
+   "kind": "const-knob",
+   "purpose": "Per-unit TX/ACK trace to stderr for P0 diagnosis.",
+   "called_from_product": false,
+   "only_from": "diagnostic-only",
+   "gate": "env var KAMA_BENCH_TRACE (unset by default)",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/kama.rs:103,131 `std::env::var_os(\"KAMA_BENCH_TRACE\").is_some()`",
+    "Read at kama.rs:159 (ACK trace) and kama.rs:218 (TX trace)",
+    "Stub-arm only; kama_product.rs has no equivalent. Historical use: reports/p0-burst-recovery/P0-CLOSURE.md:8"
+   ]
+  },
+  {
+   "symbol": "async fn serve_loop (stub arm) + RTRAJ diag line",
+   "path_line": "crates/bench/src/kama.rs:541",
+   "kind": "fn",
+   "purpose": "Stub-arm receiver pump; emits BUDGET-REV and RTRAJ (return-supply) diagnostic lines.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "DELETE",
+   "spec_ref_or_none": "[TUR-5 r3 §6]",
+   "evidence": [
+    "crates/bench/src/kama.rs:594-605 RTRAJ via `rx.diag_return_supply()` every ~500 ms",
+    "Only caller outside tests: kama.rs:634 (KamaTransport::run_server)",
+    "kama_product.rs has NO return-supply diagnostic — deleting kama.rs loses this channel unless ported"
+   ]
+  },
+  {
+   "symbol": "stub arm silently ignores 13 CLI flags",
+   "path_line": "crates/bench/src/kama.rs:256",
+   "kind": "branch",
+   "purpose": "kama.rs client_loop reads only a subset of ClientCfg.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Census of `cfg.*` reads in crates/bench/src/kama.rs: server,msg_count,payload_bytes,max_deadline,cc,seed,repeat,profile,kama_arm,submit_interval,budget,warmup_msgs,gate,establish_gate,quota_r,gate_watch — and NOTHING else",
+    "Never read there: fec, fec_risk, loss_confirm_k, burst_fusion, bootstrap_rtt, initial_window_bytes, bootstrap_fast, ts_out, spec_l1/l2_permille, gate_permille, persist_*, rp_suppress",
+    "Only --fec-* carries a 'kama-product dışında yok sayılır' note in help (main.rs:53,203); the other 9 flags are accepted silently with no manifest trace"
+   ]
+  },
+  {
+   "symbol": "struct QuinnTransport + impl BenchTransport",
+   "path_line": "crates/bench/src/quic.rs:28",
+   "kind": "struct",
+   "purpose": "quinn reliable-stream QUIC baseline (§4.4.1 primary comparator).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md §4.4.1 (transport-layer-tdd.md:241)",
+   "evidence": [
+    "crates/bench/src/quic.rs:230-388 run_server/run_client",
+    "Dispatched at main.rs:557,567",
+    "QUINN_VERSION pinned at quic.rs:159 = \"0.11.11\"; Cargo.toml:17 `quinn = \"0.11\"`"
+   ]
+  },
+  {
+   "symbol": "struct GovernedUdpSocket + fn build_endpoint",
+   "path_line": "crates/bench/src/quic.rs:60",
+   "kind": "struct",
+   "purpose": "Wraps quinn's AsyncUdpSocket so the packet-atomic budget applies to QUIC; Unlimited bypasses the wrapper entirely (zero perturbation of banked runs).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "r5 §D / KAPI-1 W2",
+   "evidence": [
+    "crates/bench/src/quic.rs:65-158; try_send at :68-92 with GSO-defensive permit_n; max_transmit_segments()=1 at :108-110",
+    "crates/bench/src/quic.rs:118-124 Unlimited short-circuit",
+    "Shared with qdgram: qdgram.rs:120,128 call build_endpoint"
+   ]
+  },
+  {
+   "symbol": "fn spawn_gate_watch",
+   "path_line": "crates/bench/src/quic.rs:436",
+   "kind": "fn",
+   "purpose": "Reverse-direction governor arm synced to the client's measurement-t0 `<gate>.go` file (5 ms poll).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "r5 D.2",
+   "evidence": [
+    "crates/bench/src/quic.rs:436-446",
+    "Callers: quic.rs:234, qdgram.rs:122",
+    "kama-product equivalent is inlined at kama_product.rs:344-353 (20 ms GATE_POLL); kama stub at kama.rs:562-570 — THREE separate implementations of the same barrier"
+   ]
+  },
+  {
+   "symbol": "struct SkipVerify (rustls ServerCertVerifier)",
+   "path_line": "crates/bench/src/quic.rs:537",
+   "kind": "struct",
+   "purpose": "Accepts the bench self-signed cert; bench-only, never product.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/quic.rs:536-575; doc at :535 'YALNIZ bench (güvenlik değil)'",
+    "Only use: quic.rs:216 `.with_custom_certificate_verifier(Arc::new(SkipVerify))`",
+    "Confined to the bench crate — no product crate references it"
+   ]
+  },
+  {
+   "symbol": "fn handshake_failed_output",
+   "path_line": "crates/bench/src/quic.rs:398",
+   "kind": "fn",
+   "purpose": "Turns a QUIC handshake failure/timeout into a VALID 0-completion run instead of an error.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md §4.4.3 ('QUIC handshake kuramıyorsa → completion = 0%')",
+   "evidence": [
+    "crates/bench/src/quic.rs:398-429; callers quic.rs:254,255",
+    "Mirror in qdgram.rs:490 failed_output (callers qdgram.rs:135)",
+    "Binding harness contract: handshake-fail = valid 0, not an excluded run"
+   ]
+  },
+  {
+   "symbol": "fn warmup_one / fn send_one (quinn)",
+   "path_line": "crates/bench/src/quic.rs:496",
+   "kind": "fn",
+   "purpose": "One bi-stream message; warmup_one resets the stream at 10 s so residue carries no post-t0 retransmit.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "KAPI-1 §3.2 amendment (asymmetry documented)",
+   "evidence": [
+    "crates/bench/src/quic.rs:496-535",
+    "Asymmetry vs Kama is explicit at quic.rs:265-268: QUIC can cancel, the Kama engine cannot abandon a unit; the difference surfaces in RunMeta.warmup_residue"
+   ]
+  },
+  {
+   "symbol": "struct QdgramTransport + fn serve_endpoint",
+   "path_line": "crates/bench/src/qdgram.rs:116",
+   "kind": "struct",
+   "purpose": "quinn DATAGRAM + application-level ARQ — the FEC-free semantic-equivalent comparator (FAZ-1 primary).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md §4.4.1 ('gerekiyorsa datagram mode AYRI ölçülür', transport-layer-tdd.md:249)",
+   "evidence": [
+    "crates/bench/src/qdgram.rs:116-166 impl; serve_endpoint at :169-245",
+    "ARQ policy frozen in the module doc qdgram.rs:4-7 (rto0 = clamp(2×rtt,100ms,10s), ×2 backoff)",
+    "Mirrors Kama receiver constants deliberately: ACK_FREQ_N=2 (qdgram.rs:39) and ACK_TICK=20 ms (qdgram.rs:41)"
+   ]
+  },
+  {
+   "symbol": "fn to_ranges / encode_dg_ack / decode_dg_ack",
+   "path_line": "crates/bench/src/qdgram.rs:95",
+   "kind": "fn",
+   "purpose": "Cumulative range-summary app-ACK — the app-level equivalent of Kama SACK; fixed-width big-endian (ADR-05).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/tech-stack-adr.md ADR-05 (no varint)",
+   "evidence": [
+    "crates/bench/src/qdgram.rs:61-109; ranges bounded by max_datagram_size (qdgram.rs:191-194)",
+    "Encoding is fixed-width BE per ADR-05: qdgram.rs:34-38 header comments"
+   ]
+  },
+  {
+   "symbol": "const WARMUP_BASE = 1<<40 (two copies)",
+   "path_line": "crates/bench/src/qdgram.rs:247",
+   "kind": "const-knob",
+   "purpose": "Warmup unit-id base placed outside the measurement id space so warmup deliveries cannot land in measurement vectors.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/qdgram.rs:247 and crates/bench/src/kama.rs:57 — same constant, two definitions",
+    "kama-product uses a DIFFERENT scheme instead: base_id = warmup_msgs with checked_sub (kama_product.rs:498, 545-547) — three arms, two incompatible warmup-id conventions"
+   ]
+  },
+  {
+   "symbol": "fn gate_sync (file barrier)",
+   "path_line": "crates/bench/src/transport.rs:222",
+   "kind": "fn",
+   "purpose": "`<gate>.ready` write → `<gate>.go` poll (5 ms, 120 s cap) so all three adapters share one t=0.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "r5 B.2",
+   "evidence": [
+    "crates/bench/src/transport.rs:222-236; typed timeout error, no hang",
+    "7 call sites, all bench: kama_product.rs:594,629; qdgram.rs:142,151; kama.rs:285,365; quic.rs:260,294"
+   ]
+  },
+  {
+   "symbol": "trait BenchTransport",
+   "path_line": "crates/bench/src/transport.rs:283",
+   "kind": "module",
+   "purpose": "SoC seam: run_server / run_client → raw RunOutput; metric computation stays out.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/transport.rs:283-292 (RPITIT + Send)",
+    "4 impls: quic.rs:230, qdgram.rs:118, kama.rs:631, kama_product.rs:265"
+   ]
+  },
+  {
+   "symbol": "struct KamaTransport (unit)",
+   "path_line": "crates/bench/src/transport.rs:296",
+   "kind": "struct",
+   "purpose": "Marker type for the stub arm; its BenchTransport impl lives in kama.rs.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/transport.rs:294-296; doc still says 'Kama ileride adaptive-transport engine loop'una bağlanacak (ADIM 3+); şimdi typed-error stub' (transport.rs:1-2) — stale, that step landed as kama_product.rs",
+    "Used only at main.rs:558,568 and kama.rs:631",
+    "transport.rs module doc line 1-2 describes the crate as 'quinn baseline + kama stub' — no mention of the product arm that carries 480/480 recorded runs"
+   ]
+  },
+  {
+   "symbol": "pub fn completion / run_metrics / aggregate / aggregate_secondary",
+   "path_line": "crates/bench/src/metrics.rs:44",
+   "kind": "fn",
+   "purpose": "§4.4.3 primary metric: deadline-bounded completion + IQR + secondary bytes/delivered-msg and ACK overhead.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md §4.4.3 (transport-layer-tdd.md:290) and §4.4.9",
+   "evidence": [
+    "crates/bench/src/metrics.rs:44,58,116,150",
+    "Consumed only by main.rs:526,545 (the `bench metrics` subcommand) and by quic.rs tests :791,853",
+    "NO netem script invokes `bench metrics`: grep -rn 'metrics' scripts/ .github/ → only harness/analyze.py:4 and harness/report.py:4 mention it as the nominal authority",
+    "Duplicate implementation exists in Python (see duplicate_control_loops)"
+   ]
+  },
+  {
+   "symbol": "pub fn percentile_ns / percentile_f64 / rank_index",
+   "path_line": "crates/bench/src/metrics.rs:168",
+   "kind": "fn",
+   "purpose": "Deterministic nearest-rank percentile (no interpolation, no RNG).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/tech-stack-adr.md ADR-17 (deterministic, no RNG)",
+   "evidence": [
+    "crates/bench/src/metrics.rs:168-186",
+    "percentile_ns is `pub` but has only in-crate callers (metrics.rs:74,75 + tests) — over-exported",
+    "rank_index formula duplicated in harness/analyze.py (see duplicate_control_loops)"
+   ]
+  },
+  {
+   "symbol": "struct BudgetGovernor + fn permit / permit_n / arm / snapshot",
+   "path_line": "crates/bench/src/budget.rs:88",
+   "kind": "struct",
+   "purpose": "Packet-atomic, pacing-neutral, per-direction byte budget; ONE implementation shared by all arms.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "r5 §D / KAPI-1 W2",
+   "evidence": [
+    "crates/bench/src/budget.rs:104-208; integer-only token math (budget.rs:11)",
+    "permit call sites: kama.rs:245,578,622; kama_product.rs via BudgetEgress:71-74; permit_n: quic.rs:89 (and qdgram through the same wrapped socket)",
+    "Correctly identical across arms — this is the one control loop that is NOT duplicated"
+   ]
+  },
+  {
+   "symbol": "pub fn BudgetGovernor::is_armed",
+   "path_line": "crates/bench/src/budget.rs:135",
+   "kind": "fn",
+   "purpose": "Reports arm state for the gate-watch poll.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "DELETE",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "Doc at budget.rs:134 claims 'serve_loop gate-watch poll'u okur; testler de kullanır'",
+    "Only non-test caller in the whole tree: crates/bench/src/kama.rs:565 (the stub arm)",
+    "kama_product.rs:328,349 tracks arm state with a LOCAL `armed` bool instead; quic.rs GovHandle has no is_armed",
+    "Dies with kama.rs"
+   ]
+  },
+  {
+   "symbol": "enum BudgetMode { Unlimited, Burst, Paced } + label",
+   "path_line": "crates/bench/src/budget.rs:24",
+   "kind": "enum-variant",
+   "purpose": "Workload-disjoint budget shape (r5 D.1); label goes into the manifest.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "r5 D.1/D.6",
+   "evidence": [
+    "crates/bench/src/budget.rs:24-59",
+    "Constructed only via main.rs:311-345 budget_mode() with XOR validation (burst and paced cannot coexist)",
+    "Exercised: 1 script each for --budget-burst-bytes / --budget-refill-bytes-per-s / --budget-bucket-bytes / --budget-ceiling-bytes"
+   ]
+  },
+  {
+   "symbol": "fn budget_mode(burst, refill, bucket, ceiling)",
+   "path_line": "crates/bench/src/main.rs:311",
+   "kind": "fn",
+   "purpose": "Validates CLI budget args; a wrong campaign config errors BEFORE the run instead of silently mis-budgeting.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "r5 D.1",
+   "evidence": [
+    "crates/bench/src/main.rs:311-346; four typed BenchError::Other rejections",
+    "Callers: main.rs:396 (serve), main.rs:471 (client)"
+   ]
+  },
+  {
+   "symbol": "struct BudgetSnapshot (serde, embedded in RunMeta)",
+   "path_line": "crates/bench/src/budget.rs:63",
+   "kind": "struct",
+   "purpose": "Frozen per-run budget counters incl. pre_arm_* (DÜZLEM-A handshake exemption is counted, not hidden).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "r5 D.5 / inceleme #18",
+   "evidence": [
+    "crates/bench/src/budget.rs:63-82; note at :74-76 that t0-relative exhaustion must be computed as first_refusal_ns − armed_at_ns",
+    "Embedded at event.rs:78-80 `#[serde(default)] pub budget: BudgetSnapshot`"
+   ]
+  },
+  {
+   "symbol": "RunMeta.quinn_version (carries KAMA_VERSION on Kama arms)",
+   "path_line": "crates/bench/src/event.rs:48",
+   "kind": "config-field",
+   "purpose": "Version stamp for reproducibility.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "WIRE",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md §4.4.9 (reproducibility appendix)",
+   "evidence": [
+    "crates/bench/src/event.rs:47-48 doc says 'quinn sürümü'",
+    "crates/bench/src/kama_product.rs:816 and kama.rs:511 write KAMA_VERSION (= CARGO_PKG_VERSION of the bench crate = 0.1.0) into this field",
+    "kama_product.rs:50 and kama.rs:42 both say 'alan donmuş, yeniden adlandırma YOK'",
+    "Effect: for kama arms the field records the BENCH crate version, not the transport build — no git SHA anywhere in RunMeta"
+   ]
+  },
+  {
+   "symbol": "RunMeta.cc",
+   "path_line": "crates/bench/src/event.rs:44",
+   "kind": "config-field",
+   "purpose": "Congestion-controller label.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "WIRE",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md:250 ('Kullanılan QUIC impl + CC profile RAPORDA açıkça yazılır')",
+   "evidence": [
+    "crates/bench/src/event.rs:43-44",
+    "On Kama arms it is decorative: kama_product.rs:814 / kama.rs:509 stamp cfg.cc.label() while nothing in the Kama path consumes Cc",
+    "A `--cc bbr` kama-product run would be indistinguishable in metadata from a real BBR run"
+   ]
+  },
+  {
+   "symbol": "struct RunMeta / RunOutput + write_jsonl / read_jsonl",
+   "path_line": "crates/bench/src/event.rs:41",
+   "kind": "struct",
+   "purpose": "Raw event record (SoC: raw truth here, computation in metrics).",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md §4.4.9",
+   "evidence": [
+    "crates/bench/src/event.rs:96-163",
+    "write_jsonl is atomic tmp+rename (event.rs:120-135) so a killed client cannot leave a partial file that a resume check would treat as complete (inceleme #28)",
+    "All post-JSONL fields carry #[serde(default)] for backward-compatible reads (event.rs:63,69,73,77,80,84,88,92)"
+   ]
+  },
+  {
+   "symbol": "struct TxComponents",
+   "path_line": "crates/bench/src/event.rs:29",
+   "kind": "struct",
+   "purpose": "tx byte decomposition data/retx/dup/fec/ctrl; total must equal udp_tx_bytes.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "none",
+   "evidence": [
+    "crates/bench/src/event.rs:29-36; doc at :25-28 says fec/ctrl only fill on the kama-product arm",
+    "Filled: kama_product.rs:823-829 (all five); kama.rs:521-525 (data/retx/dup only); qdgram.rs:469-476 (data/retx, fec=0, ctrl=0); quinn writes default() (quic.rs:373, 419)"
+   ]
+  },
+  {
+   "symbol": "enum BenchError { Io, Json, Quic, Tls, Other }",
+   "path_line": "crates/bench/src/error.rs:7",
+   "kind": "enum-variant",
+   "purpose": "Typed harness errors; no reachable todo!().",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "CLAUDE.md §6 (reachable todo!() yasak)",
+   "evidence": [
+    "crates/bench/src/error.rs:1-23; Io/Json are #[from], Quic/Tls/Other constructed explicitly",
+    "No FeatureNotImplemented stub anywhere in bench: grep -rn 'todo!|unimplemented!|FeatureNotImplemented' crates/bench/src → only the error.rs:1 doc comment stating none exist"
+   ]
+  },
+  {
+   "symbol": "Cmd::Metrics subcommand",
+   "path_line": "crates/bench/src/main.rs:245",
+   "kind": "enum-variant",
+   "purpose": "Aggregates raw JSONL runs into completion median/IQR + secondary metrics.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "specs/transport-layer-tdd.md §4.4.3/§4.4.9",
+   "evidence": [
+    "crates/bench/src/main.rs:244-254 declaration, :519-551 handler",
+    "Zero script call sites; harness/analyze.py:4 and harness/report.py:4 name it the authority while implementing/consuming the same numbers themselves",
+    "Skips unreadable run files with a warning instead of aborting (main.rs:521-533) — deliberate, matches the harness contract that a handshake-fail run may write no file"
+   ]
+  },
+  {
+   "symbol": "CLI args --gate / --establish-gate / --gate-watch / --warmup-msgs",
+   "path_line": "crates/bench/src/main.rs:167",
+   "kind": "config-field",
+   "purpose": "KAPI-1 W6 two-stage barrier + out-of-measurement warmup; shared t0 across all three arms.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "r5 B.2 / D.2",
+   "evidence": [
+    "crates/bench/src/main.rs:166-175 (client --gate/--establish-gate), :46-48 (serve --gate-watch), :164-166 (--warmup-msgs)",
+    "Honoured by ALL four arms: kama_product.rs:592,627; quic.rs:259,292; qdgram.rs:141,150; kama.rs:284,364",
+    "Exercised: --gate 12 hits, --warmup-msgs 1, --establish-gate 1, --gate-watch 2 in scripts/"
+   ]
+  },
+  {
+   "symbol": "CLI arg --submit-interval-ms (workload axis)",
+   "path_line": "crates/bench/src/main.rs:154",
+   "kind": "config-field",
+   "purpose": "0 = burst (all at t0), >0 = paced submission at i×interval; per-message deadline = submission_i + max_deadline.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "r5 §G",
+   "evidence": [
+    "crates/bench/src/main.rs:152-154",
+    "Identical semantics in all arms: kama_product.rs:506-514 + 536-548; quic.rs:344-352; qdgram.rs:329-332; kama.rs:280",
+    "13 hits in scripts/ — one of the most-used knobs"
+   ]
+  },
+  {
+   "symbol": "CLI arg `serve --payload` / ServerCfg::payload_bytes",
+   "path_line": "crates/bench/src/main.rs:124",
+   "kind": "config-field",
+   "purpose": "Receiver unit-payload cap; must equal the client --payload or FEC symbol alignment breaks.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "KEEP-EXPERIMENTAL",
+   "spec_ref_or_none": "client-core validate_fec (client-core/src/runtime.rs:273-305)",
+   "evidence": [
+    "crates/bench/src/main.rs:122-124 default 256",
+    "crates/bench/src/kama_product.rs:286 `payload_bytes: cfg.payload_bytes` → runtime_cfg max_unit_bytes",
+    "Ignored by quinn/qdgram/kama serve paths (their cfg reads do not include payload_bytes on the server side)",
+    "Correctness depends on the operator passing it: scripts/netem/product_vs_quinn.sh:37 adds `--payload $PAYLOAD` only when transport = kama-product"
+   ]
+  },
+  {
+   "symbol": "fn fec_chunk_capacity usage in runtime_cfg (fragmenter auto-enable)",
+   "path_line": "crates/bench/src/kama_product.rs:142",
+   "kind": "branch",
+   "purpose": "When the payload exceeds the FEC chunk capacity, the bench turns the fragmenter ON.",
+   "called_from_product": false,
+   "only_from": "bench",
+   "classification": "WIRE",
+   "spec_ref_or_none": "client-core/src/runtime.rs:83-93 (max_message_bytes is an EXPLICIT opt-in; wire format visibly changes)",
+   "evidence": [
+    "crates/bench/src/kama_product.rs:142-146 `let unit = profile_id.and_then(fec_chunk_capacity).map_or(payload, |cap| payload.min(cap))`",
+    "crates/bench/src/kama_product.rs:150 `max_message_bytes: (payload > unit).then_some(payload)` — DERIVED, not explicitly requested",
+    "client-core/src/runtime.rs:90-92 states the opposite requirement: 'Eşitsizlikten TÜREMEZ: max_unit_bytes'i küçülten bir config fragmentasyonu KAZAYLA açamaz'",
+    "So the bench opens a visible wire-format change (11 B SourcePrefix per DATA frame) as a side effect of `--fec-profile 3 --payload 256`, which is exactly the derivation the product config forbids"
+   ]
+  }
+ ],
+ "cal_markers": [
+  "crates/bench/src/main.rs:39 — \"[TUR-5 r3] Epizot-kotası R [CAL {4,8}] (kama receiver).\" (serve --quota-r)",
+  "crates/bench/src/transport.rs:239 — \"[TUR-5 r3] Epizot-kotası R [CAL {4,8}] — ölçüm-matrisi (kama receiver'ına geçer).\" (ServerCfg::quota_r)",
+  "crates/bench/src/kama_product.rs:193 — \"[R-SWEEP] tavan override'ları (None = [CAL] default'lar: 125/250).\" (spec_l1/spec_l2 onto FecLossRiskConfig)",
+  "(cross-reference, outside scope but the origin of the 125/250 [CAL] values quoted above) adaptive-transport/src/sender.rs:400-401 bootstrap_cap_permille=125 / persistent_cap_permille=250 in FecLossRiskConfig::default()",
+  "(cross-reference) adaptive-transport/src/receiver.rs:146 — \"quota_r: u32, // R [CAL {4,8}] — bench ölçüm-matrisi set_quota_r ile\""
+ ],
+ "todo_wiring": [
+  "NO literal TODO/FIXME/XXX/HACK/todo!()/unimplemented!()/FeatureNotImplemented exists anywhere in crates/bench/src — verified by grep -rn 'TODO|FIXME|XXX|HACK|todo!|unimplemented!|FeatureNotImplemented' crates/bench/src, whose ONLY hit is the doc line crates/bench/src/error.rs:1 asserting none exist. The wiring gaps below are therefore UNDOCUMENTED — nothing in the code marks them.",
+  "crates/bench/src/kama_product.rs:161 + :191 + :224 — three product defaults silently clobbered by CLI defaults (initial_window_bytes 0 vs 2400; FecLossRiskConfig::default() vs bounded_v1(); structure_gate_level_permille None vs Some(250)). No marker; the surrounding comments assert the opposite ('0 = sevk davranışı', 'false = sevk davranışı', 'None = motor fec_med = 500 sevk').",
+  "crates/bench/src/main.rs:376 + :407 — `serve --ts-out` parsed then discarded (`ts_out: _` then hard-coded `ts_out: None`). No compiler warning, no runtime notice.",
+  "crates/bench/src/transport.rs:269 — ServerCfg::ts_out is structurally always None, so kama_product.rs:487 `ts_sample: cfg.ts_out.is_some()` is a constant-false branch.",
+  "crates/bench/src/kama_product.rs:832-857 — the RunMeta.kama_arm label comment promises 'TÜM davranış-seçici bayrakları', but 10 behaviour-selecting flags (--fec-risk, --loss-confirm-k, --spec-l1/l2-permille, --gate-permille, --persist-mode/-alpha/-rho/-q, --rp-suppress) are absent from it.",
+  "crates/bench/src/transport.rs:35 — KamaArm::Arq documented as 'Ürün defaults'ları (tail recovery OFF)'; the product ships tail-ON validated_v1 (client-core/src/runtime.rs:675). Stale claim, never updated after G2.",
+  "crates/bench/src/transport.rs:1-2 — module doc still says 'quinn baseline + kama stub. Kama ileride adaptive-transport engine loop'una bağlanacak (ADIM 3+); şimdi typed-error stub.' The product arm (kama_product.rs) that carries 480/480 recorded runs is not mentioned.",
+  "crates/bench/src/kama_product.rs:150 — fragmenter (max_message_bytes) is DERIVED from payload > chunk capacity, which client-core/src/runtime.rs:90-92 explicitly forbids ('Eşitsizlikten TÜREMEZ ... wire formatı değişikliği ancak açık niyetle olur').",
+  "crates/bench/src/quic.rs:176 — initial_mtu(1452) for quinn vs DEFAULT_MTU=1200 for Kama (adaptive-transport/src/rate.rs:18); specs/transport-layer-tdd.md:256 requires the same MTU=1200 on both arms as a confound control. Pre-registered in scripts/netem/kapi_manifest.py:175, unreconciled with the spec line.",
+  "crates/bench/src/kama.rs:234 — `_ => {}` in the TransmitKind match silently omits FecParity and CsProbe from the tx component decomposition while those bytes still count in tx_bytes.",
+  "crates/bench/src/kama_product.rs:401 — client-side quota_r hard-coded to 4; there is no ClientCfg::quota_r, so `--quota-r` is serve-only with no note in the client help text.",
+  "crates/bench/src/kama_product.rs:622-627 — six sched_* CSV columns and the KP-CLIENT `sched=` field are structurally all-zero unless the crate is built with --features diag-sched-telemetry (adaptive-transport/src/sender.rs:4374-4375); nothing in the CSV header or the diagnostic line records which build produced the file."
+ ],
+ "duplicate_control_loops": [
+  "Two Kama bench arms measuring the same transport: crates/bench/src/kama.rs (security-stub driving adaptive_transport::Sender directly, FEC structurally impossible, tail OFF by default) vs crates/bench/src/kama_product.rs (real client-core runtime, FEC+ARQ fusion, tail-ON). Both implement their own warmup phase, gate barrier, budget arm, seq/unit join and RunMeta construction. Evidence: kama.rs:256-539 vs kama_product.rs:388-707. Recorded usage: kama-product 480/480 argv.txt, kama 0/480 — yet .github/workflows/nightly.yml:129 → harness/run-kama-matrix.sh:20,33 drives the STUB for the ADR-18 nightly quality gate.",
+  "Completion metric computed in two languages: crates/bench/src/metrics.rs:44 `pub fn completion` + metrics.rs:183 `rank_index` (nearest-rank) vs harness/analyze.py:38 `def completion` (harness/analyze.py:4 explicitly says 'bench metrics (Rust) completion medyan/IQR otoritesidir; bu betik AYNI nearest-rank ile'), plus scripts/netem/fec_risk_completion.py and the delivered_ns-consuming analyzers scripts/netem/{fec_c4_attrib,fec_evidence,fec_rsweep,fec_marginal_r,fec_handoff,fec_persist,kapi}_analyze.py. No netem script invokes `bench metrics`, so the declared authority is not the one used.",
+  "Gate-barrier arm logic implemented three times: crates/bench/src/quic.rs:436-446 spawn_gate_watch (5 ms poll, shared by quinn+qdgram), crates/bench/src/kama_product.rs:344-353 (inline, 20 ms GATE_POLL), crates/bench/src/kama.rs:562-570 (inline, ACK_TICK-driven, the only user of BudgetGovernor::is_armed). Three different poll periods ⇒ three different t0 skew bounds across arms.",
+  "Warmup unit-id conventions duplicated and divergent: const WARMUP_BASE = 1<<40 defined twice (crates/bench/src/kama.rs:57 and crates/bench/src/qdgram.rs:247) while kama_product.rs:498 uses a completely different scheme (base_id = warmup_msgs with checked_sub at :545-547). Same problem, three solutions.",
+  "elapsed_ns(start) helper defined three times with identical bodies: crates/bench/src/kama.rs:80, crates/bench/src/qdgram.rs:111, crates/bench/src/kama_product.rs:239.",
+  "Handshake/connection-failure→0-completion RunOutput builders duplicated: crates/bench/src/quic.rs:398 handshake_failed_output and crates/bench/src/qdgram.rs:490 failed_output (near-identical bodies, differing only in the transport string).",
+  "FEC-arm parity level is decided by two authorities in the same config: the structure gate (structure_gate_level_permille, kama_product.rs:224) and, in the Policy arm only, FusionPolicy::calibration_v2_deadline (kama_product.rs:229-230). client-core/src/runtime.rs:138-140 states the gate must go SILENT when the policy is installed ('çift-otorite gözlemlenemez davranış üretir'); the bench sets both fields independently and never asserts the mutual exclusion."
+ ],
+ "notes": "SCOPE/PROVENANCE. The prompt named branch wip/c4-attrib @ 35f60f80; the checkout is audit/transport-v1-closure @ 15133be4. Content equivalence was verified: `git diff --stat 35f60f80 HEAD -- crates/bench crates/adaptive-transport crates/client-core` is EMPTY, so all committed line numbers below are valid for 35f60f80. Every crates/bench line number cited is from the COMMITTED file (I extracted `git show HEAD:crates/bench/src/kama_product.rs` to a scratchpad copy to pin them).\n\nLIVE-EDIT WARNING (important for the parent agent). The worktree changed DURING this audit. At session start `git status` showed crates/bench clean; midway, crates/bench/src/kama_product.rs became modified, alongside pre-existing uncommitted edits to crates/client-core/src/{lib.rs,runtime.rs}, crates/client-core/tests/runtime_e2e.rs and a new untracked crates/client-core/tests/product_profile_v1.rs. Those edits introduce `KamaV1Profile` (client-core/src/runtime.rs, new) and rewrite the three clobbering lines in runtime_cfg to `initial_window_bytes: if initial_window_bytes == 0 { v1.initial_window_bytes }`, `else { v1.fec_loss_risk }` and `structure_gate_level_permille: gate.or(v1.structure_gate_level_permille)`. The new doc block cites `reports/transport-v1-audit/CONFIRMED-FINDINGS.md` B-5 with the same diagnosis I reached independently from HEAD. So the owner is actively fixing the top finding while this audit ran — my items describe the COMMITTED state, not the worktree. Do not report the fix as missing without re-reading the worktree. That worktree fix also flips `fec: None` → `fec: Some(profile 0x05, manual_r: None)` and `max_unit_bytes: 1200` → `1013` in the product default, which changes several of my \"matches product default\" judgements; re-verify after it lands.\n\nHIGHEST-SEVERITY FINDING (evidence-complete, HEAD). crates/bench/src/kama_product.rs:161/191/224 name three RuntimeConfig fields explicitly, defeating the `..RuntimeConfig::default()` at :231 for exactly those fields. With no CLI flags the `kama-product` arm therefore runs initial_window_bytes=0 (product: 2400), fec_loss_risk disabled (product: bounded_v1 enabled 250/250/Learned/rp300) and structure_gate_level_permille=None→engine 500 (product: 250). scripts/netem/product_vs_quinn.sh:76 labels that arm `kp-sevk` (\"shipping\"). The regression test at kama_product.rs:921-923 pins the clobbered values, so CI could not catch it. Any claim of the form \"we measured the shipping Kama v1 against quinn\" that rests on a `kp-sevk` run is not supported by the code at HEAD.\n\nSECOND FINDING (not in the file scope but decisive for it). The ADR-18 mandatory nightly netem gate (.github/workflows/nightly.yml:129 → harness/run-kama-matrix.sh:20,33) drives `--transport kama`, i.e. crates/bench/src/kama.rs — no crypto (so FEC parity is structurally unemittable, kama.rs:7), no --kama-arm (so tail recovery OFF, sender.rs:1801, while the product ships tail-ON, client-core/src/runtime.rs:675), and no product runtime at all. The quality gate that is supposed to catch transport regressions cannot observe three shipped mechanisms. Pointing the nightly matrix at `kama-product` is the prerequisite for classifying kama.rs DELETE; per CLAUDE.md §6 the module should then be moved to an appendix with MUST NOT IMPLEMENT rather than silently removed.\n\nCLASSIFICATION SEMANTICS. Nothing in crates/bench can be SHIP: the crate is a leaf (verified — no crates/*/Cargo.toml outside crates/bench depends on it, and grep for `bench::` across crates finds nothing), so `called_from_product` is false for every item by construction. I used KEEP-EXPERIMENTAL for measurement infrastructure that is correctly bench-only and still needed, WIRE for items where the harness is architecturally required to reflect the product and does not (the config clobber, the provenance label gap, the MTU asymmetry, the cc label-only stamp, the derived fragmenter), and DELETE for the superseded stub arm and the dead knobs that hang off it.\n\nFLAG-EXERCISE CENSUS (method: grep over scripts/ harness/ .github/ plus `find reports -name argv.txt` over 480 recorded run manifests). Never referenced by any script AND never in any recorded run: --fec-deadline-ms (⇒ the whole FusionPolicy/Policy arm has never executed) and --bootstrap-fast. Never in a recorded run: --cc bbr (0/480 — the §4.4.1 \"measure QUIC at its best\" requirement has no BBR evidence behind it), --fec-risk, --bootstrap-rtt, --transport kama. Recorded runs are 480/480 kama-product.\n\nCROSS-CHECK AVAILABLE. reports/transport-v1-audit/phase1-raw/{flags-flags.json, spec2code-*.json} is a prior audit artifact covering the same flags; I did not read it as a source and derived every claim above from the code and manifests directly, so it can serve as an independent cross-check."
+}

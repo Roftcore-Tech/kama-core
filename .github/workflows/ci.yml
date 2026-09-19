@@ -1,148 +1,112 @@
 name: core-ci
 
-# BİRLEŞİM (2026-09-02): main'in semantic-matrix sözleşmesi (DR-RATE-RAMP-2B §A1 / M1 kararı —
-# 5 konfigürasyon ayrı ayrı, görünür sayaçlarla) KORUNUR + SR-STR-CORE-001 §6 CI değişiklik seti
-# (CI-01..CI-06, CI-09) EKLENİR. CI-07 (netem kalite kapısı) ve CI-08 nightly kolu: nightly.yml.
+# ── PR GERİ-BİLDİRİM HALKASI (hızlı, deterministik, sınırlı) ───────────────────────────────────
+# [CI-REPAIR 2026-09-08] Bu dosya ÖLÇÜLEREK yeniden yapılandırıldı. Önceki hâli her PR push'unda
+# ~233 faturalanan runner-dakikası harcıyordu (19 koşuda 4433 dk) ve GitHub Actions kotasını
+# tüketip tüm pipeline'ı "billing" hatasıyla düşürdü. Ölçülen dağılım:
+#   quality 141 dk (tam test setini DÖRT kez koşuyordu: locked / all-features / no-default / release)
+#   semantic-matrix 5 shard = 180 dk · coverage 45 dk (continue-on-error, hep timeout)
+#   diğer tüm job'lar toplam < 10 dk
+# Ayrıca `concurrency` YOKTU: 22:29/22:30/22:31'de aynı PR için üç tam koşu paralel başladı.
 #
-# SR-STR-CORE-001 gerekçeleri (kısa):
-#   CI-01  BUL-03 — `--all-features` altında trybuild kapısı 0 test koşuyordu; K-WIRE-SEALED-TYPE-1'in
-#          TEK CI koruması default-feature koşumudur; meta-assertion ile kanıtlanır.
-#   CI-02  BUL-02 — eski miri hedefi (`crypto`,`ccr-codec`) 3-satır stub → her PR'da 0 testle yeşil.
-#   CI-03  ASan; MSan SIMD bağımlılıkları için (Rust'ta UBSan yok).
-#   CI-04  BUL-12 — release'te overflow wrap'lenir, debug_assert düşer; sevk konfigürasyonu test edilir.
-#   CI-05  BUL-12 — no-default-features production görünümü.
-#   CI-06  BUL-06 — satır-kapsamı kapısı (ratchet).
-#   CI-09  her job'a timeout.
+# YENİ SÖZLEŞME:
+#   PR      → yalnız hızlı, deterministik doğruluk (bu dosya)
+#   main    → geniş entegrasyon + semantic-matrix + release/no-default/soak (main.yml)
+#   nightly → shard'lı, timeout'lu, hostile/fuzz/coverage yükleri (nightly.yml)
+#
+# Ağır kama-integration panelleri PR'dan ÇIKARILDI (ölçüm: dr_cs3_v2_channel 21.3 dk,
+# fs_s6_v2_pins 4.1 dk, fs_arqtail_pins 1.9 dk = test süresinin %65'i). main.yml onları TAM
+# workspace koşumunda çalıştırır; feature-unification sözleşmesi (M1) orada korunur.
 
 on:
-  push:
-    branches: [main]
   pull_request:
+    paths-ignore:
+      - 'reports/**'
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+
+# Aynı dal için yalnız EN SON koşu yaşar. (Ölçüldü: iptal edilmeyen paralel koşular kotanın
+# en büyük tek çarpanıydı.)
+concurrency:
+  group: core-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
-  # ── Statik kapılar + default/all-features/release/no-default test seti ──
-  quality:
+  # ── Statik kapılar (fmt + iki clippy görünümü) ──
+  static:
+    name: static (fmt + clippy)
     runs-on: ubuntu-latest
-    timeout-minutes: 150          # CI-09; hosted'da all-features+release ~2 s sürebiliyor
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-
       - name: fmt
         run: cargo fmt --all -- --check
-
       - name: clippy (all-features)
         run: cargo clippy --all-targets --all-features -- -D warnings
-
       # CI-05 — production görünümü (feature-unification kapısı)
       - name: clippy (no-default-features)
         run: cargo clippy --all-targets --no-default-features -- -D warnings
 
-      # CI-01 — DEFAULT feature koşumu. trybuild/K-WIRE-SEALED-TYPE-1 YALNIZ burada koşar.
-      - name: test (default features, locked)
-        run: cargo test --workspace --locked
-
-      # CI-01 doğrulaması: sealed-tip kapısının fiilen koştuğunu KANITLA (BUL-03 regresyon koruması).
-      - name: assert sealed-type gate actually runs
-        run: |
-          out=$(cargo test -p kama-noise-wire --locked --test trybuild -- --list)
-          echo "$out"
-          echo "$out" | grep -q "sealed_type_cannot_be_forged" \
-            || { echo "::error::K-WIRE-SEALED-TYPE-1 kapisi 0 test kosuyor (BUL-03 regresyonu)"; exit 1; }
-
-      - name: test (all-features)
-        run: cargo test --workspace --all-features
-
-      # CI-05
-      - name: test (no-default-features)
-        run: cargo test --workspace --no-default-features
-
-      # CI-04 — sevk edilen konfigürasyon
-      - name: test (all-features, release)
-        run: cargo test --workspace --all-features --release
-
-      # SOAK — uzun-oturum bellek kararlılığı. [ÖLÇÜLDÜ] 0,27 s release.
-      - name: soak (uzun oturum bellek kararlılığı)
-        run: cargo test -p adaptive-transport --test soak_long_session --release
-
-  # DR-RATE-RAMP-2B §A1 / AŞAMA-2 (M1 kararı — KALDIRILMAZ): `--all-features` default build'in
-  # vekili DEĞİLDİR. Her konfigürasyon ayrı build+clippy+test edilir; sayaçlar görünür;
-  # 0-test-binary = hard-fail.
-  semantic-matrix:
+  # ── Hızlı doğruluk: tam workspace, ağır entegrasyon panelleri hariç ──
+  test-fast:
+    name: test (all-features, hızlı küme)
     runs-on: ubuntu-latest
-    timeout-minutes: 90           # CI-09
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: default-workspace
-            args: ""
-          - name: all-features
-            args: "--all-features"
-          - name: experimental-cold-start
-            args: "-p adaptive-transport -p kama-integration --features experimental-cold-start"
-          - name: experimental-fec-budget
-            args: "-p adaptive-transport --features experimental-fec-budget"
-          - name: diagnostic
-            args: "-p adaptive-transport -p kama-integration --features diag-sched-telemetry"
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: "build (${{ matrix.name }})"
-        run: cargo build --all-targets ${{ matrix.args }}
-      - name: "clippy (${{ matrix.name }})"
-        run: cargo clippy --all-targets ${{ matrix.args }} -- -D warnings
-      - name: "test (${{ matrix.name }}) with visible counts"
-        env:
-          CARGO_TERM_COLOR: never # sayaç-grep'leri ANSI-öneke takılmasın (ilk hosted koşuda yakalandı)
+
+      # CI-01 — trybuild/K-WIRE-SEALED-TYPE-1 YALNIZ default-feature koşumunda çalışır.
+      - name: sealed-type gate (default features, locked)
         run: |
           set -o pipefail
-          cargo test ${{ matrix.args }} 2>&1 | tee /tmp/out.txt
-          echo "----- ${{ matrix.name }} summary -----"
-          # bc runner'da YOK (ilk hosted koşuda yakalandı) → awk ile topla.
-          COMPILED=$(grep -c 'Running ' /tmp/out.txt || true)
-          RUN=$(grep -oP '^test result: \w+\. \K[0-9]+' /tmp/out.txt | awk '{s+=$1} END {print s+0}')
-          FILTERED=$(grep -oP '; \K[0-9]+(?= filtered out)' /tmp/out.txt | awk '{s+=$1} END {print s+0}')
-          IGNORED=$(grep -oP '; \K[0-9]+(?= ignored)' /tmp/out.txt | awk '{s+=$1} END {print s+0}')
-          echo "test_binaries_compiled=$COMPILED"
-          echo "tests_run=$RUN"
-          echo "tests_ignored=$IGNORED"
-          echo "tests_filtered_out=$FILTERED"
-          if [ "$COMPILED" -eq 0 ]; then echo "no test binary compiled for ${{ matrix.name }}"; exit 1; fi
+          out=$(cargo test -p kama-noise-wire --locked --test trybuild -- --list)
+          echo "$out"
+          echo "$out" | grep -q "sealed_type_cannot_be_forged" \
+            || { echo "::error title=TEST_FAILURE::K-WIRE-SEALED-TYPE-1 kapisi 0 test kosuyor (BUL-03 regresyonu)"; exit 1; }
 
-  # ── CI-02: miri, GERÇEK bir hedefle (eski `-p crypto -p ccr-codec` hedefi 0 test koşuyordu) ──
+      - name: test (workspace --all-features, kama-integration hariç)
+        run: cargo test --workspace --all-features --exclude kama-integration
+
+      # [DENETİM] Ürün profili ve mekanizma-kablolaması PR'da deterministik olarak pinlenir.
+      - name: product-profile invariants + activation smoke
+        run: |
+          set -o pipefail
+          cargo test -p client-core --all-features --test product_profile_v1 2>&1 | tee /tmp/pp.txt
+          grep -Eq "test result: ok\. [1-9][0-9]* passed" /tmp/pp.txt \
+            || { echo "::error title=TEST_FAILURE::urun-profili pin testi 0 test kosuyor"; exit 1; }
+          cargo test -p adaptive-transport --all-features --test fec_loss_risk
+
+  # ── Ucuz derin kapılar (hepsi < 5 dk; ölçüldü) ──
   miri:
     runs-on: ubuntu-latest
-    timeout-minutes: 20           # CI-09
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri, rust-src
       - uses: Swatinem/rust-cache@v2
-      # [ÖLÇÜLDÜ] kama-transport-schema: 9 test / 2,7 s. kama-noise-wire -Zmiri-disable-isolation
-      # ister (proptest getcwd; UB değil). kama-fec-codec 1913 s'te bitmedi → CI dışı.
-      # NOT: crypto/ccr-codec gerçek içerik kazandığında (Sprint-6) buraya GERİ EKLENMELİ (CLAUDE.md §7).
       - name: miri (transport-schema) + non-empty gate assertion
         run: |
           set -o pipefail
           cargo +nightly miri test -p kama-transport-schema 2>&1 | tee miri.log
           grep -Eq "test result: ok\. [1-9][0-9]* passed" miri.log \
-            || { echo "::error::miri kapisi 0 test kosuyor (BUL-02 regresyonu)"; exit 1; }
+            || { echo "::error title=TEST_FAILURE::miri kapisi 0 test kosuyor (BUL-02 regresyonu)"; exit 1; }
 
-  # ── CI-03: AddressSanitizer ──
   asan:
     runs-on: ubuntu-latest
-    timeout-minutes: 30           # CI-09
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -153,23 +117,17 @@ jobs:
         env:
           RUSTFLAGS: "-Zsanitizer=address"
           RUSTDOCFLAGS: "-Zsanitizer=address"
-        run: >
-          cargo +nightly test -p kama-noise-wire
-          -Zbuild-std --target x86_64-unknown-linux-gnu
+        run: cargo +nightly test -p kama-noise-wire -Zbuild-std --target x86_64-unknown-linux-gnu
       - name: ASan (fec-codec)
         env:
           RUSTFLAGS: "-Zsanitizer=address"
           RUSTDOCFLAGS: "-Zsanitizer=address"
-        run: >
-          cargo +nightly test -p kama-fec-codec
-          -Zbuild-std --target x86_64-unknown-linux-gnu
+        run: cargo +nightly test -p kama-fec-codec -Zbuild-std --target x86_64-unknown-linux-gnu
 
-  # MSan — başlatılmamış-bellek okuması (SIMD bağımlılıkları: reed-solomon-simd, chacha20poly1305).
-  # Rust `-Zsanitizer=undefined` DESTEKLEMİYOR (UBSan yok); MSan bu risk sınıfının doğru aracıdır.
   msan:
     name: msan (uninitialized memory, SIMD deps)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -179,85 +137,57 @@ jobs:
       - name: msan (kama-fec-codec)
         env:
           RUSTFLAGS: "-Zsanitizer=memory -Zsanitizer-memory-track-origins"
-        run: >
-          cargo +nightly test -p kama-fec-codec --tests
-          --target x86_64-unknown-linux-gnu -Zbuild-std
+        run: cargo +nightly test -p kama-fec-codec --tests --target x86_64-unknown-linux-gnu -Zbuild-std
       - name: msan (kama-noise-wire)
         env:
           RUSTFLAGS: "-Zsanitizer=memory -Zsanitizer-memory-track-origins"
-        run: >
-          cargo +nightly test -p kama-noise-wire --tests
-          --target x86_64-unknown-linux-gnu -Zbuild-std
+        run: cargo +nightly test -p kama-noise-wire --tests --target x86_64-unknown-linux-gnu -Zbuild-std
 
-  # ── CI-06: kapsam kapısı ──
-  # DİKKAT: %92 eşiği merge-base'de (bb61c2da, ölçülen %93,65) kalibre edildi; P0-P4 + S1 FEC
-  # sonrası büyüyen yüzeyde YENİDEN ölçülüp ratchet'lenene kadar continue-on-error (bilinçli,
-  # geçici — ilk yeşil ölçümden sonra bu satır kaldırılıp eşik güncellenmeli).
-  coverage:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45           # CI-09
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      - name: line coverage gate
-        run: cargo llvm-cov --workspace --all-features --fail-under-lines 92
-
-  # ── Statik güvenlik kapıları ──
   security:
     runs-on: ubuntu-latest
-    timeout-minutes: 15           # CI-09
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-deny
-      - uses: taiki-e/install-action@cargo-audit
-      # BUL-14: sodiumoxide 0.2.7 → RUSTSEC-2021-0137 (unmaintained). AÇIK-2 kararına dek warning.
-      - run: cargo audit
-      - run: cargo deny check
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit
+      # BUL-14 / AÇIK-2: sodiumoxide 0.2.7 → RUSTSEC-2021-0137 (unmaintained; bakımsız-uyarı,
+      # istismar edilebilir açık DEĞİL). Karar verilene dek AÇIKÇA yok sayılır — aksi hâlde job
+      # her koşuda kırmızı olur ve kapı sinyal taşımaz (ölçüldü: 4/16 kırmızının nedeni buydu).
+      - name: cargo audit (bilinen bakımsız-uyarı hariç)
+        run: cargo audit --ignore RUSTSEC-2021-0137
+      - name: cargo deny
+        run: cargo deny check
 
-  # ── KATMAN-3 (DR-5): RustCrypto == libsodium AEAD differential-oracle ──
   aead-differential:
     runs-on: ubuntu-latest
-    timeout-minutes: 20           # CI-09
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: >
-          cargo test -p kama-noise-wire --features libsodium-oracle
-          --test aead_differential -- --nocapture
+      - run: cargo test -p kama-noise-wire --features libsodium-oracle --test aead_differential -- --nocapture
 
-  # ── CI-08 (PR kolu): fuzz smoke — 11 hedefin BİRLEŞİMİ (P3 5 + SR-STR-CORE-001 6) ──
-  fuzz-smoke:
+  # ── Sonuç sınıflandırması: infra/billing hatası ile korelasyon hatası KARIŞMASIN ──
+  ci-verdict:
+    name: ci verdict (failure classification)
     runs-on: ubuntu-latest
-    timeout-minutes: 45           # CI-09
+    timeout-minutes: 5
+    needs: [static, test-fast, miri, asan, msan, security, aead-differential]
+    if: always()
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "fuzz -> target"
-      - uses: taiki-e/install-action@cargo-fuzz
-      - name: fuzz smoke (60 s / hedef)
+      - name: classify
         run: |
-          set -e
-          for t in ack_decode fec_decode noise_wire_decode protector_open wire_v0 \
-                   fuzz_inner_parse fuzz_open fuzz_control_decode \
-                   fuzz_ack_decode fuzz_prefix fuzz_fec_decode; do
-            echo "::group::$t"
-            cargo +nightly fuzz run "$t" -- \
-              -max_total_time=60 -rss_limit_mb=2048 -print_final_stats=1
-            echo "::endgroup::"
-          done
-      - name: upload crash artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fuzz-artifacts
-          path: fuzz/artifacts/
+          R='${{ join(needs.*.result, ',') }}'
+          echo "job sonuçları: $R"
+          if [[ "$R" == *failure* ]]; then
+            echo "::error title=TEST_FAILURE::en az bir korelasyon kapisi kirmizi — transport dogrulugu incelenmeli"
+            exit 1
+          fi
+          if [[ "$R" == *cancelled* ]]; then
+            echo "::warning title=INFRA_FAILURE::job iptal edildi (timeout / concurrency / runner). Bu bir transport hatasi DEGILDIR."
+            exit 1
+          fi
+          echo "tum kapilar yesil"

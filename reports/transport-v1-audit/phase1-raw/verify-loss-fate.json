@@ -1,0 +1,528 @@
+{
+ "cluster": "loss-fate",
+ "verdicts": [
+  {
+   "mechanism": "Packet-threshold loss declaration (§5a, K=3)",
+   "claim": "Product call chain runtime.rs AckFrame::decode → Event::AckReceived → Sender::on_ack_received → loss.on_ack → queue_losses → pending_lost/tombstone → arq.plan → TxClass::Retx wire; classification SHIP",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1153 `if let Ok(frame) = AckFrame::decode(&plain) {`",
+    "crates/client-core/src/runtime.rs:1154 `let acked = frame.acked_full(max_emitted_seq + 1);`",
+    "crates/client-core/src/runtime.rs:1168-1172 `drive!(Event::AckReceived(AckInfo { acked_seqs: acked, ack_delay: frame.ack_delay_duration() }), $now)`",
+    "crates/adaptive-transport/src/sender.rs:3004 `let lost = self.loss.on_ack(&ack.acked_seqs, now_ns);` (unconditional)",
+    "crates/adaptive-transport/src/loss.rs:14 `pub const PACKET_THRESHOLD: u64 = 3;`",
+    "crates/adaptive-transport/src/loss.rs:26 `pub fn packet_threshold_lost(seq, largest_acked, k) -> bool { largest_acked.saturating_sub(seq) >= k }`",
+    "crates/adaptive-transport/src/loss.rs:620 `fn on_ack(&mut self, acked: &[u64], now_ns: u64) -> Vec<u64>` → filter `packet_threshold_lost(seq, la, k)` → `self.declare(*seq, s.units, now_ns)`",
+    "crates/adaptive-transport/src/sender.rs:3339 `self.pending_lost.push_back(LostRec {` (inside queue_losses)",
+    "crates/adaptive-transport/src/sender.rs:5354 `let new_seq = self.track_sent(rec.unit, now_ns, rec.retx_count + 1, TransmitKind::Retransmit);`",
+    "crates/client-core/src/runtime.rs:1048 `TransmitKind::Retransmit => TxClass::Retx,` → :1053 `seal_send!(frame, class, $now);`",
+    "crates/adaptive-transport/tests/tv_loss.rs:18 `fn tv_loss_g1_packet_threshold_reorder_vs_loss()`; crates/adaptive-transport/tests/sender_loss_path.rs:148 `fn packet_threshold_declares_loss_and_creates_tombstones()`"
+   ],
+   "note": "Every hop is a real non-test call site in client-core or adaptive-transport src. SHIP is defensible: wired, no feature flag, spec-required (specs/adaptive-transport-engine-spec.md:408 §5(a) K=[STD:BBR/QUIC 3]), exercised by TV-LOSS + sender_loss_path."
+  },
+  {
+   "mechanism": "Packet-threshold loss declaration (§5a, K=3)",
+   "claim": "Telemetry: FateWindowDiag.loss_declared_pkt = diag_loss().0 (runtime.rs:1467; sender.rs:5876-5883 diag_loss) printed in KP-CLIENT (kama_product.rs:561-615 via stats.fate.*)",
+   "verdict": "corrected",
+   "corrected_value": "Field IS populated in the product struct at crates/client-core/src/runtime.rs:1467 from `session.sender().diag_loss().0`, but it is NOT printed in KP-CLIENT or read anywhere in crates/bench. Also diag_loss is at sender.rs:5859, not 5876-5883 (that range is diag_ledger).",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1467 `loss_declared_pkt: session.sender().diag_loss().0,`",
+    "crates/client-core/src/runtime.rs:1468 `loss_declared_time: session.sender().diag_loss().1,`",
+    "`grep -rn \"loss_declared_pkt|loss_declared_time\" crates/bench/` → zero hits",
+    "Full census of `.fate.` reads in crates/bench (kama_product.rs:585-615) contains only: sender_state, left_preconverge, establish_probes_tx, declared_deadline_ns, fusion_actions, last_fusion_obs, fusion_bw_range, fusion_loss_range, ledger_loss_ppm_peak, ledger_loss_ppm, structure_gate_opened, ledger_internals, ledger_confirm_path, ledger_tick_span, spurious_units, fec_latch_diag, fec_last_suppression, fec_risk_times, fec_risk_ppm, fec_arbiter_reasons, fec_spec_levels, fec_spec_signals, fec_persist, fec_spec_transitions, sched",
+    "crates/adaptive-transport/src/sender.rs:5859 `pub fn diag_loss(&self) -> (u64, u64, u64) {` (returns diag_loss_pkt, diag_loss_time, pending_lost.len())",
+    "crates/adaptive-transport/src/sender.rs:5876 `pub fn diag_ledger(&self) -> (u64, u64, u64) {`"
+   ],
+   "note": "Classification SHIP is unaffected (the mechanism reaches the wire), but the loss-attribution split is invisible in every bench run — the §5a-vs-§5b attribution the TUR-A diagnostic was built for cannot be read from KP-CLIENT output."
+  },
+  {
+   "mechanism": "Adaptive reorder tolerance k = max(K, ρ×recent_max_reorder) (§9.3)",
+   "claim": "Wired via sender.rs:3002-3003 set_packet_threshold(reorder.reorder_thresh(&retx_cfg)) consumed at loss.rs effective_packet_thresh; ρ=2/1 uncalibrated fixture; SHIP",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3002-3003 `self.loss.set_packet_threshold(u64::from(self.reorder.reorder_thresh(&self.retx_cfg)));`",
+    "crates/adaptive-transport/src/loss.rs:309 `pub fn set_packet_threshold(&mut self, k: u64) { self.packet_thresh_dyn = k; }`",
+    "crates/adaptive-transport/src/loss.rs:568 `fn effective_packet_thresh(&self) -> u64 { if self.packet_thresh_dyn == 0 { self.cfg.packet_threshold } else { self.packet_thresh_dyn } }`",
+    "crates/adaptive-transport/src/arq.rs:145-149 `cfg.reorder_k.max(scaled)`",
+    "crates/adaptive-transport/src/arq.rs:68 `/// **KALİBRE DEĞİL** fixture.` → :70-79 `reorder_k: 3, reorder_rho_num: 2, reorder_rho_den: 1`",
+    "crates/adaptive-transport/src/sender.rs:1918-1919 `reorder: ReorderTracker::new(), retx_cfg: RetxConfig::fixture(),`",
+    "Feeds: sender.rs:2992-2994 (tombstone kol-2 note_spurious) and sender.rs:3031-3032 (un-loss note_spurious)",
+    "specs/adaptive-transport-engine-spec.md:466 `**Reordering threshold (adaptif, §9.3):** reorder_thresh = max(K, ρ × recent_max_reorder) ... ρ=[CAL].`"
+   ],
+   "note": "Both note_spurious feed sites are real product call sites in on_ack_received. ρ=2/1 is an explicitly uncalibrated fixture against a spec [CAL] slot; no calibration artifact found under reports/ for ρ. Sender::recent_max_reorder() has only two readers, both inside sender.rs #[cfg(test)] (mod tests starts at sender.rs:6000): :7433 and :8322 — the adaptive k has no product observability."
+  },
+  {
+   "mechanism": "Time-threshold loss declaration (§5b, 9/8×srtt, later-ACK precondition)",
+   "claim": "Product chain: runtime.rs PACE_TICK 1ms → Event::TimerFired(Timer::Pto) → sender.on_timer → gate state != PreConverge → loss.detect_time_losses → queue_losses; SHIP",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:60 `const PACE_TICK: Duration = Duration::from_millis(1);` → :907 `let mut pace = interval(PACE_TICK);`",
+    "crates/client-core/src/runtime.rs:1326 `drive!(Event::TimerFired(Timer::Pto), now); ts_sample!(now);` (and drain loop :1373)",
+    "crates/adaptive-transport/src/sender.rs:3113 `if self.state != SenderState::PreConverge {`",
+    "crates/adaptive-transport/src/sender.rs:3114-3117 `let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT); let lost = self.loss.detect_time_losses(now_ns, srtt, self.cadence_loss_floor());`",
+    "crates/adaptive-transport/src/loss.rs:692 `seq < la && time_threshold_lost(elapsed, srtt, floor, cfg.time_num, cfg.time_den)`",
+    "crates/adaptive-transport/src/loss.rs:681 `if !self.have_acked { return Vec::new(); }` (TUR-1a evidence precondition)",
+    "crates/adaptive-transport/src/loss.rs:174 `min_delay: Duration::from_millis(1),`; :171-173 `packet_threshold: PACKET_THRESHOLD, time_num: TIME_THRESH_NUM, time_den: TIME_THRESH_DEN`",
+    "specs/adaptive-transport-engine-spec.md:412-413 `(b) TIME_THRESHOLD: send_time + max(TIME_THRESH × srtt, min_delay, K_c × EAI) < now ∧ LATER-ACK KANITI (seq < largest_acked) VAR.`"
+   ],
+   "note": "Confirmed. Note the product 'Timer::Pto' is a 1 ms pump, not the §12 PTO formula — the finding states this correctly."
+  },
+  {
+   "mechanism": "Time-threshold loss declaration (§5b)",
+   "claim": "duplicates_or_dead: next_time_loss_deadline_ns (loss.rs:584-601) is a read-only derivation used only under experimental-cold-start",
+   "verdict": "corrected",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:2468 `.next_time_loss_deadline_ns(srtt, self.cadence_loss_floor()),` — inside `fn next_timer_deadline_ns` (sender.rs:2453), which is NOT feature-gated (the `#[cfg(feature = \"experimental-cold-start\")]` block above it closes before this call)",
+    "crates/adaptive-transport/src/sender.rs:2673 and :2739 — these two ARE inside experimental-cold-start code",
+    "crates/adaptive-transport/src/sender.rs:2433 `pub fn next_wakeup_ns(&self) -> Option<u64> {` → :2435 `Self::earlier(self.next_timer_deadline_ns(), self.pending_work_ready_ns())`",
+    "Only non-test caller of next_wakeup_ns repo-wide: crates/adaptive-transport/src/udp_runner.rs:862 `if s.next_wakeup_ns().is_some_and(|w| w <= now2) {`",
+    "crates/adaptive-transport/src/lib.rs:56-57 `#[cfg(feature = \"experimental-fec-budget\")] pub mod udp_runner;`",
+    "crates/adaptive-transport/src/udp_runner.rs:1 `//! Commit-AB — POLICY-AWARE UDP BENCH-RUNNER (feature-gated; ÜRETİM-YOLUNA-BAĞLI-DEĞİL; ...)`",
+    "grep of `next_wakeup_ns` in crates/client-core → zero hits"
+   ],
+   "corrected_value": "One call site (sender.rs:2468) is unconditional, not cold-start-gated. The correct statement is: the derivation is unreachable from the PRODUCT path because its only entry point, next_wakeup_ns(), has no client-core caller — its sole non-test caller is udp_runner.rs:862, which is behind `experimental-fec-budget` and self-documented as not on the production path.",
+   "note": "Conclusion (not product-wired) survives; the stated gate is wrong."
+  },
+  {
+   "mechanism": "Cadence-aware loss floor K_c×EAI with static return-bw prior (65 B / 31 B·s⁻¹)",
+   "claim": "Constants and consumers as stated; K_c=1.5; prior term ≈2.097 s added to every EAI; SHIP",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1393 `const EXPECTED_ACK_FREQ_N: u64 = 2;`, :1395 `const EAI_SACK_WIRE_BYTES: u64 = 65;`, :1397 `const EAI_RETURN_BW_PRIOR: u64 = 31;`, :1399-1400 `const CADENCE_KC_NUM: u64 = 3; const CADENCE_KC_DEN: u64 = 2;`",
+    "crates/adaptive-transport/src/sender.rs:3258 `Duration::from_nanos(dur_ns(self.expected_ack_interval()) * CADENCE_KC_NUM / CADENCE_KC_DEN)`",
+    "crates/adaptive-transport/src/sender.rs:3270-3271 `let eai_ns = EXPECTED_ACK_FREQ_N * unit * 1_000_000_000 / rate + EAI_SACK_WIRE_BYTES * 1_000_000_000 / EAI_RETURN_BW_PRIOR;`",
+    "Consumers verified: sender.rs:3117 (detect_time_losses floor), :3286 (tombstone T_loss), :3381 (`let ack_epoch = srtt.max(self.expected_ack_interval());`), :3386 (CadenceLegacy confirm horizon), :5811 (`.max(dur_ns(self.expected_ack_interval()).saturating_mul(u64::from(K_CONF_EAI)))` in ack_confidence_permille)",
+    "specs/adaptive-transport-engine-spec.md:988 §16.2 K_c row: `1.5 [CAL matris {1.25, 1.5, 2.0}]` with `sack_wire/return_bw_önseli(31 B/s [CAL], §3.3-E-FULL ölçümle değişir)`",
+    "specs/adaptive-transport-engine-spec.md:985 `sack_wire [R15] | ... | 65B`"
+   ],
+   "note": "65/31 = 2.0967 s, matching the doc at sender.rs:619-621. All five consumers are on the product event path."
+  },
+  {
+   "mechanism": "Cadence-aware loss floor K_c×EAI",
+   "claim": "duplicates_or_dead: Measured return_bw NOT implemented anywhere (grep 'return_bw' only in comments/consts: sender.rs:1396-1397, receiver.rs:84-115)",
+   "verdict": "corrected",
+   "evidence": [
+    "Full repo census of `return_bw|RETURN_BW` in crates/**/*.rs: receiver.rs:84 (doc), :86 (doc), :87 `const RETURN_BW_PRIOR: u64 = 31;`, :88 (doc), :91 (doc), :94, :113 (doc), :115; sender.rs:620 (doc), :1396 (doc), :1397, :3255 (doc), :3271; plus two test files",
+    "crates/adaptive-transport/src/receiver.rs:93-94 `const ACK_CADENCE_FLOOR_NS: u64 = SACK_WIRE_BYTES * 1_000_000_000 * 1000 / (RETURN_BUDGET_PERMIL * RETURN_BW_PRIOR);` — a LIVE derived constant, not a comment",
+    "crates/adaptive-transport/src/receiver.rs:115 `const T_SPACING_NS: u64 = SACK_WIRE_BYTES * 1_000_000_000 / RETURN_BW_PRIOR;` — LIVE, drives the r3 episode-quota SACK spacing",
+    "No estimator, field, setter, or method named for measured return bandwidth exists in sender.rs, receiver.rs, rtt.rs, bw.rs, or client-core/src/runtime.rs"
+   ],
+   "corrected_value": "The 'not implemented' half is confirmed. The scoping half is wrong: receiver.rs:94 and :115 are load-bearing derived constants (ACK_CADENCE_FLOOR_NS ≈ 8.4 s and T_SPACING_NS ≈ 2.1 s) that govern SACK emission cadence, so the static prior has THREE live consumers, not one."
+  },
+  {
+   "mechanism": "Measured return_bw replacing EAI_RETURN_BW_PRIOR (§3.3-E FULL)",
+   "claim": "implemented=false, product_reachable=false, classification WIRE, spec_requires_v1=required",
+   "verdict": "confirmed",
+   "evidence": [
+    "No estimator/field/setter for measured return bandwidth anywhere (census above)",
+    "specs/adaptive-transport-engine-spec.md:419-420 `return_bw_önseli §3.3-E-FULL'de ölçülen return_bw ile değişir [CAL].`",
+    "specs/adaptive-transport-engine-spec.md:988 §16.2 K_c row `... ölçülen return_bw gelince daralır ...`",
+    "specs/adaptive-transport-engine-spec.md:1071 §16.2 class-inventory row `ACK_CADENCE_FLOOR (RETURN_BW_PRIOR=31 const) | receiver.rs | ... [TUR-5 r3] kısmen-FIXED ... kalıcı-rejim cadence'i hâlâ statik-önsel (E-FULL borcu)` with **gereken sınıf** column = `ölçülen return_bw'den adaptif (§3.3-E FULL — T_SPACING'in de bağlanacağı yer)`",
+    "reports/loss-ledger-confirm-defect/FINDING.md:18-24 measured table: Confirmed birim 0/0/0, confirmed_total 0/0/0, en yaşlı Suspected 2.10/1.88/2.69 s vs confirm ufku 3.18/3.23/3.23 s",
+    "crates/adaptive-transport/src/sender.rs:619-621 doc `... ÖLÇÜLEN KANALDAN BAĞIMSIZDIR — 200 ms RTT'li yolda ufku ~3.2 s = 16×RTT'ye çiviler.`"
+   ],
+   "note": "WIRE is defensible and STRONGER than the finding argues: §16.2's class-inventory 'gereken sınıf' (required class) column names measured return_bw as the required fix for the receiver's ACK_CADENCE_FLOOR too, so this is a spec-required-but-disconnected mechanism on two consumers, not one. Whether it is a v1 BLOCKER still hinges on whether v1 claims need a live loss signal in short flows — that remains an owner decision, so the finding's 'medium' confidence is appropriate."
+  },
+  {
+   "mechanism": "PRE_CONVERGE loss-declaration freeze (§3.3-C/1)",
+   "claim": "queue_losses gated by state != PreConverge || srtt.is_some(); time path gated by state != PreConverge; loss.on_ack unconditional so detector-internal declare still runs — spec deviation",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3074 `if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {` wrapping :3076 `self.queue_losses(&lost, now_ns);`",
+    "crates/adaptive-transport/src/sender.rs:3113 `if self.state != SenderState::PreConverge {` wrapping detect_time_losses",
+    "crates/adaptive-transport/src/sender.rs:2999-3001 comment `... §3.3-C/(1) yasak-1: PRE_CONVERGE'de loss İLANI YOK ... Detector her zaman sync kalır.` then :3004 unconditional `self.loss.on_ack(...)`",
+    "crates/adaptive-transport/src/loss.rs:658-662 inside on_ack: `if let Some(s) = self.inflight.remove(seq) { self.lost_units += s.units; self.declare(*seq, s.units, now_ns); }` — runs regardless of sender state",
+    "crates/adaptive-transport/src/sender.rs:3290 `if let Some(p) = self.inflight.remove(&seq) {` (only inside queue_losses, i.e. skipped in PreConverge)",
+    "crates/adaptive-transport/tests/sender_loss_path.rs:115 `fn loss_declaration_is_frozen_until_the_first_sack()`",
+    "specs/adaptive-transport-engine-spec.md:335-352 §3.3-C yasak (1)"
+   ],
+   "note": "The stated deviation is real and I re-derived its consequence independently: in PreConverge with srtt None a packet-threshold hit is removed from LossDetector.inflight and ledgered Suspected with lost_units incremented, while Sender.inflight still holds the unit (queue_losses never runs) — so no tombstone, no pending_lost, and the detector can never re-declare that seq. The unit is only resolvable by a later ACK (which flips the ledger event to Spurious via loss.rs:630-639). Classification SHIP at 'medium' confidence is fair; the ledger/lost_units contamination is a genuine open item."
+  },
+  {
+   "mechanism": "W_loss event ledger + loss_windowed_ppm fuzzy input (TUR-2a; K_wl=8; LEDGER_MAX=4096)",
+   "claim": "Wired: every product event → fuzzy_evaluate → ledger_tick(now, ack_epoch×K_WL, confirm_horizon) → loss_windowed_ppm → FusionInputs.loss_ppm → fuzzy.decide; SHIP",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3394-3395 `self.loss.ledger_tick(now_ns, ack_epoch * K_WL, confirm_horizon);`",
+    "crates/adaptive-transport/src/sender.rs:3409 `loss_ppm: self.loss.loss_windowed_ppm(),` inside `let inputs = FusionInputs {`",
+    "crates/adaptive-transport/src/sender.rs:3416 `let mut d = self.fuzzy.decide(&inputs);`",
+    "crates/adaptive-transport/src/sender.rs:1407 `const K_WL: u32 = 8;`",
+    "crates/adaptive-transport/src/loss.rs:17 `pub const LEDGER_MAX: usize = 4096;`; :283-286 bounded eviction with `self.ledger_evicted_total += 1;`",
+    "crates/adaptive-transport/src/loss.rs:341-343 `if e.state == LedgerState::Suspected && age >= conf_ns { e.state = LedgerState::Confirmed;`",
+    "crates/adaptive-transport/src/loss.rs:354-364 `loss_windowed_ppm` sums only `LedgerState::Confirmed` over `sent_window_units`",
+    "crates/adaptive-transport/src/loss.rs:605-618 `on_sent` maintains sent_window denominator with LEDGER_MAX eviction",
+    "specs/adaptive-transport-engine-spec.md:458-461 `loss_pre_fec (fuzzy girdisi) = loss_windowed_ppm = Confirmed_units / pencere-içi-gönderim; W_loss = K_wl × ack_epoch ... [TUR-2a — ömür-boyu monoton ratchet CANCELLED ...]`",
+    "specs/adaptive-transport-engine-spec.md:989-991 §16.2 K_wl=8, confirm-ufku = K_c×EAI (ayrı sabit YOK), LEDGER_MAX=4096"
+   ],
+   "note": "Confirmed including the INV-RATE-1 separation (loss_ppm feeds fuzzy fec/arq consequents, never send_rate). ledger_evicted_total() has zero readers repo-wide outside tests — see missed_mechanisms."
+  },
+  {
+   "mechanism": "Confirm horizon — CadenceLegacy (default)",
+   "claim": "RuntimeConfig::default() loss_confirm_horizon = CadenceLegacy (runtime.rs:203); Sender::new() = CadenceLegacy (sender.rs:1933); wired via set_loss_confirm_horizon; SHIP",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:203 `loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,` (inside `impl Default for RuntimeConfig` at :181)",
+    "crates/adaptive-transport/src/sender.rs:1933 `loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,` in Sender::new()",
+    "crates/adaptive-transport/src/sender.rs:622-623 `#[default] CadenceLegacy,`",
+    "crates/client-core/src/runtime.rs:839-841 `session.sender_mut().set_loss_confirm_horizon(cfg.loss_confirm_horizon);`",
+    "crates/adaptive-transport/src/sender.rs:4411 `pub fn set_loss_confirm_horizon(&mut self, h: LossConfirmHorizon) { self.loss_confirm_horizon = h; }`",
+    "crates/adaptive-transport/src/sender.rs:3386 `LossConfirmHorizon::CadenceLegacy => self.cadence_loss_floor(),`",
+    "crates/bench/src/kama_product.rs:179-185 `loss_confirm_horizon: if loss_confirm_k == 0 { LossConfirmHorizon::CadenceLegacy } else { ... }`",
+    "reports/loss-ledger-confirm-defect/FINDING.md:18-24 confirmed_total = 0 in 3/3 product runs"
+   ],
+   "note": "Default state verified in all three places the task names. The measured functional defect (Confirmed never fires at 200 ms RTT) is real and separately recorded."
+  },
+  {
+   "mechanism": "Confirm horizon — ChannelDerived{k_permille}",
+   "claim": "KEEP-EXPERIMENTAL; default OFF everywhere; no product caller sets it",
+   "verdict": "confirmed",
+   "evidence": [
+    "Full repo census of `set_loss_confirm_horizon(` / `ChannelDerived`: crates/client-core/src/runtime.rs:841 (passes cfg through), crates/adaptive-transport/tests/fusion_policy_wiring.rs:344 (test), crates/bench/src/kama_product.rs:182 (bench, only when --loss-confirm-k > 0), plus the definition/match sites sender.rs:626, :3387, :4411",
+    "crates/adaptive-transport/src/sender.rs:614-616 doc `Bu enum bir DÜZELTME DEĞİL, bir ÖLÇÜM KOLUDUR. Default sevk davranışıdır ve byte-özdeştir;`",
+    "crates/client-core/src/runtime.rs:146-149 doc `\\`ChannelDerived\\` bir ÖLÇÜM KOLUDUR, düzeltme değil`",
+    "crates/adaptive-transport/src/sender.rs:4407-4410 doc `TEK DEĞİŞKEN: yalnız \\`ledger_tick\\`'in confirm argümanını etkiler. Kayıp TESPİTİ ... ve expire penceresi (\\`w_loss\\`) DEĞİŞMEZ`",
+    "specs/adaptive-transport-engine-spec.md:990 §16.2 `= K_c×EAI (ayrı sabit YOK)`"
+   ],
+   "note": "KEEP-EXPERIMENTAL requirements met: default OFF in RuntimeConfig::default(), Sender::new(), and bench default; and spec §16.2 explicitly rejects a separate confirm constant, so it must not back any v1 loss-signal claim."
+  },
+  {
+   "mechanism": "Un-loss (late ACK → Spurious): pending-retransmit cancel, copy cancel, kol-1 RTT, note_spurious",
+   "claim": "Wired at sender.rs:3006-3040 + loss.rs:623-640; SHIP",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/loss.rs:625-640 `if let Some(ev) = self.events.iter_mut().rev().find(|e| e.seq == seq && e.state != LedgerState::Spurious) { ev.state = LedgerState::Spurious; self.spurious_units_total += ev.units; ... self.unlossed.push(seq); }`",
+    "crates/adaptive-transport/src/sender.rs:3008 `let unlossed = self.loss.take_unlossed();`",
+    "crates/adaptive-transport/src/sender.rs:3015 `for rec in self.pending_lost.drain(..)` with :3020 `self.diag_unloss += 1;` and :3021 `acked_units.push(rec.unit.id);`",
+    "crates/adaptive-transport/src/sender.rs:3027-3029 `if rec.retx_count == 0 { self.fate_estimator.correct_original_delivered(rec.unit.id); }`",
+    "crates/adaptive-transport/src/sender.rs:3031-3032 `self.reorder.note_spurious(u32::try_from(la.saturating_sub(rec.seq)).unwrap_or(u32::MAX));`",
+    "crates/adaptive-transport/src/sender.rs:3034-3037 kol-1 RTT candidate gated on `rec.retx_count == 0`",
+    "crates/adaptive-transport/src/sender.rs:3070-3072 `if !acked_units.is_empty() { self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id)); }`",
+    "crates/adaptive-transport/tests/sender_loss_path.rs:214 `fn late_ack_converts_a_declared_loss_into_spurious()`"
+   ],
+   "note": "Confirmed, including the 'kanıt kanıttır' behaviour (Confirmed is also converted, loss.rs:628 filter is `!= Spurious`, not `== Suspected`)."
+  },
+  {
+   "mechanism": "Un-loss (late ACK → Spurious)",
+   "claim": "Telemetry: FateWindowDiag.ledger_unloss (runtime.rs:1466) and ledger_spurious_units (:1465) printed as spurious= in KP-CLIENT (kama_product.rs:602)",
+   "verdict": "corrected",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1466 `ledger_unloss: session.sender().diag_ledger().0,` — populated, but zero readers in crates/bench",
+    "crates/client-core/src/runtime.rs:1465 `ledger_spurious_units: session.sender().diag_ledger().2,` — populated, zero readers in crates/bench",
+    "crates/client-core/src/runtime.rs:1421 `spurious_units: session.sender().diag_ledger().2,` — this IS the field printed",
+    "crates/bench/src/kama_product.rs:602 `stats.fate.spurious_units,` (printed as `spurious=`)"
+   ],
+   "corrected_value": "Only `spurious_units` (runtime.rs:1421) is printed. `ledger_unloss` (the cancel count, diag_ledger().0) is populated in the product struct but printed nowhere — so the un-loss cancellation volume is unobservable in bench output. `ledger_spurious_units` is a duplicate field of `spurious_units` with the same source expression and no reader.",
+   "note": "Classification SHIP unaffected; this is a telemetry-accuracy correction plus a duplicate-field observation."
+  },
+  {
+   "mechanism": "Tombstone retained transmission record (TUR-2b/2c)",
+   "claim": "Wired (insert on queue_losses, hit on on_ack_received, TTL prune on Pto tick, superseded marking on retransmit/HandToForward); SHIP; telemetry NOT exposed on product path",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3286-3287 `let t_loss_ns = (dur_ns(srtt) * 9 / 8).max(dur_ns(self.cadence_loss_floor())); let expiry_ns = now_ns.saturating_add(t_loss_ns.saturating_mul(u64::from(K_TOMB)));`",
+    "crates/adaptive-transport/src/sender.rs:3347-3369 bounded eviction (`while self.tombstones.len() >= TOMBSTONE_MAX`) + `self.tombstones.insert(seq, TombstoneRec { ... })`",
+    "crates/adaptive-transport/src/sender.rs:2953 `} else if let Some(t) = self.tombstones.remove(&seq) {` → :2956 `self.diag_tomb_hits += 1;` → kol-1 :2967-2978 (bw_sampler.on_ack + btlbw.update + RTT) / kol-2 :2979-2994 (`credit_delivered`, `diag_ambiguous_skipped`, note_spurious)",
+    "crates/adaptive-transport/src/sender.rs:3123-3138 TTL prune loop on Timer::Pto",
+    "crates/adaptive-transport/src/sender.rs:5353 `self.mark_tombstone_superseded(seq);` (retransmit) and :5373 (HandToForward)",
+    "crates/adaptive-transport/src/sender.rs:1411 `const K_TOMB: u32 = 8;`",
+    "Telemetry gap CONFIRMED: full census of `diag_tombstone(` → sender.rs:5968 (def), sender.rs:8260/8265/8304/8353/8377/8382/8385 (all inside #[cfg(test)] mod starting at sender.rs:6000), crates/bench/src/kama.rs:462 (STUB arm). Zero hits in crates/client-core.",
+    "specs/adaptive-transport-engine-spec.md:992-993 §16.2 K_TOMB=8, TOMBSTONE_MAX=4096"
+   ],
+   "note": "SHIP confirmed and the telemetry gap is real: tombstone hits / bw-recovered / evictions / ambiguous-skips are visible only from the non-product `kama` stub bench arm, so the TUR-2b/2c sampling-rescue can never be measured on the product path."
+  },
+  {
+   "mechanism": "Spurious-age ring + Q95 quantile (learned persistence horizon)",
+   "claim": "Product default ON via RuntimeConfig::default() fec_loss_risk = bounded_v1() (LearnedSpuriousAge, q 950, ρ 1250); transport default OFF; bench default OFF and uses experimental_v1 when --fec-risk; runtime.rs:842 comment is stale",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:204 `fec_loss_risk: FecLossRiskConfig::bounded_v1(),`",
+    "crates/adaptive-transport/src/sender.rs:438-448 bounded_v1: `enabled: true, bootstrap_cap_permille: 250, persistent_cap_permille: 250, persist_mode: PersistMode::LearnedSpuriousAge, persist_srtt_permille: 500, persist_rho_permille: 1250, persist_q_permille: 950, reorder_suppress_permille: 300`",
+    "crates/adaptive-transport/src/sender.rs:395-415 `impl Default for FecLossRiskConfig` → `enabled: false, ... persist_mode: PersistMode::FixedSrtt, ... reorder_suppress_permille: u32::MAX`",
+    "crates/adaptive-transport/src/sender.rs:1934 `fec_loss_risk: FecLossRiskConfig::default(),` in Sender::new()",
+    "STALE COMMENT CONFIRMED — crates/client-core/src/runtime.rs:842 `// [FEC-RISK] Deneysel risk tahmincisi; default KAPALI (semantik özdeş).` immediately above :843 `session.sender_mut().set_fec_loss_risk(cfg.fec_loss_risk);` where cfg default is bounded_v1 with enabled: true",
+    "BENCH/PRODUCT MISMATCH CONFIRMED — crates/bench/src/kama_product.rs:187-192 `let mut c = if fec_risk { FecLossRiskConfig::experimental_v1() } else { FecLossRiskConfig::default() };`",
+    "crates/adaptive-transport/src/loss.rs:50 `pub const SPURIOUS_AGE_RING: usize = 32;`; :634-638 unconditional ring write inside on_ack; :368-379 spurious_age_quantile with `rank = ((len as u64 * q).div_ceil(1000)).clamp(1, len as u64)`",
+    "crates/adaptive-transport/src/sender.rs:3444 `self.loss.spurious_age_quantile(c.persist_q_permille),` (sole non-test caller)",
+    "crates/client-core/src/runtime.rs:1427 `fec_persist: session.sender().diag_persist(),` → printed at crates/bench/src/kama_product.rs:612"
+   ],
+   "note": "Both audit flags are independently reproduced. The bench/product divergence is material: the `kama-product` bench arm NEVER exercises the product default (bounded_v1) — --fec-risk selects experimental_v1 (FixedSrtt, caps 125/250, G1 off) instead. Any campaign result from the bench arm is therefore not evidence about the shipped product configuration."
+  },
+  {
+   "mechanism": "reorder_pressure + G1 suppress guard + discount",
+   "claim": "Wired into speculative lane; product default ON with G1=300‰; transport default off (u32::MAX)",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/loss.rs:446-450 `reorder_pressure_permille: if all_units == 0 { 0 } else { u32::try_from(u128::from(spur_units) * 1000 / u128::from(all_units)).unwrap_or(1000) }`; :451 `declared_units: all_units`",
+    "crates/adaptive-transport/src/sender.rs:3453-3466 split computed + `self.diag_reorder_pressure_last` / `_peak`",
+    "crates/adaptive-transport/src/sender.rs:409-413 defaults `reorder_min_evidence_units: 8, reorder_discount_max_permille: 500, ... reorder_suppress_permille: u32::MAX`",
+    "crates/adaptive-transport/src/sender.rs:444 bounded_v1 `reorder_suppress_permille: 300,`",
+    "crates/adaptive-transport/src/sender.rs:389-392 doc `[C4 G1 [CAL]] ... \\`u32::MAX\\` = kapalı (sevk).`",
+    "crates/client-core/src/runtime.rs:1426 `fec_spec_signals: session.sender().diag_spec_signals(),` → crates/bench/src/kama_product.rs:611 `stats.fate.fec_spec_signals,`",
+    "crates/bench/src/kama_product.rs:217-219 `if let Some(v) = rp_suppress { c.reorder_suppress_permille = v; }`"
+   ],
+   "note": "Confirmed. It is the only consumer of the ledger's Spurious share, as stated."
+  },
+  {
+   "mechanism": "fec_loss_risk_ppm (v1 single-number instant risk accessor)",
+   "claim": "DELETE — zero non-test callers; duplicate of RiskSplit.instant_ppm",
+   "verdict": "confirmed",
+   "evidence": [
+    "Full repo census of `fec_loss_risk_ppm(`: crates/adaptive-transport/src/loss.rs:476 (definition) ONLY — zero call sites anywhere in crates/**/src, and the only other hits are in crates/adaptive-transport/tests/fec_loss_risk.rs",
+    "crates/adaptive-transport/src/loss.rs:394 doc `* \\`instant_ppm\\` — [\\`Self::fec_loss_risk_ppm\\`] ile aynı (yaş-ağırlıklı Suspected + Confirmed)`",
+    "crates/adaptive-transport/src/sender.rs:3457 `self.diag_risk_ppm_last = split.instant_ppm;` — product reads instant_ppm from the split, never the standalone fn",
+    "Weight semantics are byte-identical: loss.rs:479-492 (standalone) vs loss.rs:415-431 (split) both use Confirmed=1000, Spurious=0, Suspected=weights.for_age(...) with srtt_ns==0 → 0"
+   ],
+   "note": "DELETE defensible. I verified the two implementations are semantically identical, so it is a true duplicate surface, not an independent oracle path."
+  },
+  {
+   "mechanism": "Lifetime loss_pre_fec_ppm (lost_units/sent_units ratchet) trait accessor",
+   "claim": "DELETE — spec-cancelled semantics, zero non-test callers, name collides with the live fuzzy input term",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/loss.rs:709-711 `fn loss_pre_fec_ppm(&self) -> u64 { ratio_ppm(self.lost_units, self.sent_units) }`",
+    "Full repo census of `loss_pre_fec_ppm(`: loss.rs:150 (trait decl), loss.rs:709 (impl), sender.rs:7366 — and sender.rs:7366 is inside `#[cfg(test)] mod tests` which begins at sender.rs:6000. Zero product callers.",
+    "specs/adaptive-transport-engine-spec.md:459-460 `[TUR-2a — ömür-boyu monoton ratchet CANCELLED (K-1 fuzzy-zehirlenmesinin köküydü); ömür-boyu sayaç yalnız diag]`",
+    "specs/adaptive-transport-engine-spec.md:458 `loss_pre_fec (fuzzy girdisi) = loss_windowed_ppm = Confirmed_units / pencere-içi-gönderim` — the spec term now names a different quantity",
+    "lost_units alone IS surfaced as diag: crates/adaptive-transport/src/loss.rs:504-521 diag_ledger_internals → sender.rs:4157 → crates/client-core/src/runtime.rs:1418, printed at crates/bench/src/kama_product.rs:599"
+   ],
+   "note": "DELETE (of the ratio, keeping the lost_units diag) is defensible: the ratio is a spec-CANCELLED semantic still occupying the LossDetector port under the exact name the spec reassigned to loss_windowed_ppm."
+  },
+  {
+   "mechanism": "residual_loss (unrecovered_units/sent_units) — on_unrecovered feed",
+   "claim": "WIRE — spec-normative input with zero product producers and zero product consumers; §11 health has no residual_loss term",
+   "verdict": "confirmed",
+   "evidence": [
+    "Full repo census of `on_unrecovered(` excluding tests dirs: crates/adaptive-transport/src/loss.rs:148 (trait decl) and :705 (impl) ONLY — zero call sites",
+    "Full repo census of `residual_loss_ppm(` excluding tests dirs: loss.rs:152 (decl) and :713 (impl) ONLY — zero call sites",
+    "crates/adaptive-transport/src/sender.rs:3744 `let health = u32::try_from(self.ack_confidence_permille(now_ns)).unwrap_or(u32::MAX);` → :3745 `let level = self.emergency.update(health, now_ns);` — health is ack_confidence ALONE",
+    "crates/adaptive-transport/src/emergency.rs:131 `/// \\`health\\` (ack_confidence↑ / residual_loss↓, per-mille) + \\`now\\` → güncel level.` — residual_loss appears only in this doc comment",
+    "crates/adaptive-transport/src/sender.rs:3777-3779 the `!self.pending_lost.is_empty()` branch comment says 'residual loss' but the predicate is pending_lost, not the residual counter",
+    "specs/adaptive-transport-engine-spec.md:460 `residual_loss = unrecovered_units / sent_units (FEC/ARQ SONRASI)`",
+    "specs/adaptive-transport-engine-spec.md:497-499 `[AMENDMENT-2] ... \\`residual_loss\\` ile birlikte §11 \\`health = f(ack_confidence↑, residual_loss↓)\\`'i besler.`",
+    "specs/transport-layer-tdd.md §9 residual_after_fec metric"
+   ],
+   "note": "WIRE confirmed and independently strengthened: I traced the §11 health input to its single source (ack_confidence_permille) and confirmed AMENDMENT-2's second term is entirely absent from the computation, not merely from the counter. The owner decision the finding names (wire vs. formally mark diag-only) is the correct framing."
+  },
+  {
+   "mechanism": "FateEstimator prefix-causal loss-structure window (FS-CAL-2 §3)",
+   "claim": "Ingest always on; decision consumption gated by RuntimeConfig.fec = Some (default None) + loss_ppm ≥ STRUCTURE_GATE_LOSS_MIN_PPM + n ≥ STRUCTURE_GATE_MIN_N + state != PreConverge",
+   "verdict": "corrected",
+   "evidence": [
+    "Ingest CONFIRMED: crates/adaptive-transport/src/sender.rs:2166 `self.fate_estimator.advance(now_ns);` (unconditional, every event); :2938-2942 `if p.origin == TransmitKind::Data { self.fate_estimator.on_original_ack(p.unit.id); }`; :2960-2966 tombstone correction; :3024-3028 un-loss correction; :3332-3337 `on_loss_evidence(p.unit.id, now_ns, guard)` with guard from `self.tail_recovery.base_pto_ns(...)`",
+    "Gate conditions CONFIRMED in code: sender.rs:1352 `const STRUCTURE_GATE_LOSS_MIN_PPM: u64 = 100_000;`, :1355 `const STRUCTURE_GATE_MIN_N: u32 = 32;`, :3661 `if self.state == SenderState::PreConverge { return GateOutcome::BlockedPreConverge; }`, :3667 `if loss_ppm < STRUCTURE_GATE_LOSS_MIN_PPM`, :3670-3671 `let f = self.fate_estimator.snapshot(); if f.n < STRUCTURE_GATE_MIN_N`",
+    "BUT the fec: Some condition is NOT in the engine. crates/adaptive-transport/src/sender.rs:3538-3543 shows structure_gate_fec is called in the ELSE branch of the fusion_policy check: `} else { ... let outcome = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm); ... }` — the discriminant is `fusion_policy` (RuntimeConfig default None → else branch taken), not `fec`",
+    "crates/adaptive-transport/src/sender.rs:3544-3548 `self.diag_gate_outcomes[outcome.index()] += 1;` and `self.diag_structure_gate_opened += 1;` therefore increment in the PRODUCT DEFAULT configuration (fec: None), proving the decision path executes",
+    "crates/client-core/src/runtime.rs:199 `fec: None,` and :202 `fusion_policy: None,`",
+    "crates/client-core/src/lib.rs:83 `sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());` (the guard source; note this is client-core/src/lib.rs:83, NOT adaptive-transport/src/lib.rs which is only 60 lines)"
+   ],
+   "corrected_value": "The gate's DECISION path is not gated on fec at all — it runs unconditionally whenever fusion_policy is None (the product default), and its diagnostic counters populate under fec: None. `fec: None` only suppresses ACTUATION downstream in client-core (runtime.rs:1013-1020: FecParity decisions are counted as stale_decisions, not emitted). The 'gate consumer inert with fec: None' statement is true only for wire effect.",
+   "note": "SHIP classification survives, but the distinction matters for the audit: with the shipped default the estimator IS the live decision base for a gate that computes an opened/blocked verdict every fuzzy_evaluate; only the last hop to parity bytes is inert."
+  },
+  {
+   "mechanism": "FateEstimator prefix-causal loss-structure window (FS-CAL-2 §3)",
+   "claim": "Telemetry: FateWindowDiag n/lost/n00/n01/n10/n11/burst_delta_ppm (runtime.rs:1386-1393) and gate_outcomes[7] (:1464) printed in KP-CLIENT (kama_product.rs:585-598)",
+   "verdict": "refuted",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1385-1393 populate n, lost, n00, n01, n10, n11, burst_delta_ppm from `session.sender().diag_loss_structure()` — the FIELDS exist and are populated",
+    "`grep -rn \"burst_delta_ppm|gate_outcomes\" crates/bench/` → ZERO hits",
+    "Complete list of `.fate.` reads in crates/bench (kama_product.rs:585-615): sender_state(585), left_preconverge(586), establish_probes_tx(587), declared_deadline_ns(591), fusion_actions(592), last_fusion_obs(593), fusion_bw_range(594), fusion_loss_range(595), ledger_loss_ppm_peak(596), ledger_loss_ppm(597), structure_gate_opened(598), ledger_internals(599), ledger_confirm_path(600), ledger_tick_span(601), spurious_units(602), fec_latch_diag(604), fec_last_suppression(605), fec_risk_times(606), fec_risk_ppm(607), fec_arbiter_reasons(609), fec_spec_levels(610), fec_spec_signals(611), fec_persist(612), fec_spec_transitions(613,614), sched(615)",
+    "kama_product.rs:585 is `stats.fate.sender_state` — the finding's cited range 585-598 contains none of the window counters"
+   ],
+   "corrected_value": "Only `structure_gate_opened` (kama_product.rs:598) reaches KP-CLIENT. The seven window features and the 7-bucket gate_outcomes histogram are populated in the product ClientStats but printed nowhere — the exact 'why did the gate not open' discrimination the runtime.rs:1382-1384 comment claims to provide is unavailable in bench output.",
+   "note": "This is the largest single inaccuracy in the submitted findings: it asserts observability for the estimator's decision base that does not exist at the bench boundary."
+  },
+  {
+   "mechanism": "FateEstimator — stale doc claim",
+   "claim": "Stale docs: fate_estimator.rs:27-29 and lib.rs:32-34 say 'observation-only: no product caller' — false since sender.rs:3670 consumes snapshot() in the structure gate",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/lib.rs:32-34 `/// FS-CAL-2 v3 §3 — prefix-causal loss-structure fate estimator (pure/deterministic/integer-only; observation-only: no product caller; guard grounded to \\`tail_recovery::base_pto_ns\\`).`",
+    "crates/adaptive-transport/src/sender.rs:3670 `let f = self.fate_estimator.snapshot();` inside structure_gate_fec",
+    "crates/adaptive-transport/src/sender.rs:3543 call site of structure_gate_fec on the product fuzzy_evaluate path",
+    "crates/adaptive-transport/src/sender.rs:3546-3548 `if let GateOutcome::Opened(fec) = outcome { structure = fec; ... }` → :3589 `let (final_ratio, reason) = fec_arbiter(confirmed, structure, spec);`"
+   ],
+   "note": "Confirmed. The doc comment is actively misleading about the estimator's role in the shipped decision path."
+  },
+  {
+   "mechanism": "Receiver seq-level duplicate suppression (RX_DEDUP_WINDOW=4096, dup → forced ACK)",
+   "claim": "Wired on server ingest; dup → empty delivered + forced ACK; SHIP; was_duplicate not consumed in client-core",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:126 `const RX_DEDUP_WINDOW: usize = 4096;`",
+    "crates/adaptive-transport/src/receiver.rs:222-230 `if self.received.contains(&d.seq) { self.state = RxState::DupSuppress; let ack = self.tick_ack(now_ns, true); return RxOutput { delivered: Vec::new(), ack, was_duplicate: true }; }`",
+    "crates/adaptive-transport/src/receiver.rs:412-419 bounded prune `while self.received.len() > RX_DEDUP_WINDOW { self.received.pop_first(); ... }`",
+    "Product ingest: crates/client-core/src/runtime.rs:2145 `let full = resolve_seq(expected, wire_seq);` → :2146-2153 `slot.rx.on_datagram(RxDatagram { seq: full, unit_id, kind: RxKind::Data }, now)` → :2156 `if out.delivered.contains(&unit_id) {` → :2168-2174 `if let Some(ack) = out.ack { ... srv_seal_send(...).await; }`",
+    "was_duplicate CONFIRMED unconsumed: full census → receiver.rs:72 (field), :229, :260 (writes), receiver.rs:573 (test). Zero hits in crates/client-core and crates/bench.",
+    "specs/adaptive-transport-engine-spec.md:401 `duplicate → RX_DUP_SUPPRESS: teslim etme, yalnız ACK (§9.4)`"
+   ],
+   "note": "SHIP confirmed. The note that retransmits carry NEW seqs (sender.rs:5354 track_sent) so this dedup never catches unit re-delivery is also correct — that is the client-core admit_chunk window's job."
+  },
+  {
+   "mechanism": "Receiver gap → SACK range reporting (all gaps reported immediately)",
+   "claim": "Wired; ACK_FREQ_N=2; MAX_ACK_RANGES=16; SHIP",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/receiver.rs:248-253 `self.state = if is_shard { RxState::FecDecode } else if self.has_gap() { RxState::Reorder } else { RxState::Normal };` then :257 `let ack = self.tick_ack(now_ns, false);` — the gap does NOT suppress ACK production",
+    "crates/adaptive-transport/src/receiver.rs:9-11 SoC doc: Receiver reports ALL gaps in the SACK; reorder tolerance + loss declaration are sender-side",
+    "crates/adaptive-transport/src/receiver.rs:423-430 `fn has_gap(&self) -> bool { ... received.len() < span }`",
+    "crates/adaptive-transport/src/ack.rs:36 `pub const MAX_ACK_RANGES: usize = 16;`; ack.rs:130 `if ranges.len() == MAX_ACK_RANGES {` clamp in from_received",
+    "crates/adaptive-transport/tests/receiver_ack_policy.rs referenced tests exist"
+   ],
+   "note": "Confirmed. RxState::Reorder is written but read only by receiver.rs test :585 — informational, as stated."
+  },
+  {
+   "mechanism": "Receiver RX_REORDER hold-within-reordering_threshold (spec §4 'bekle')",
+   "claim": "Not implemented; DELETE of the vestigial variant; spec-internal ambiguity §4:398 vs §4:404",
+   "verdict": "confirmed",
+   "evidence": [
+    "specs/adaptive-transport-engine-spec.md:398 `if gap ∧ within reordering_threshold: RX_REORDER (bekle)`",
+    "specs/adaptive-transport-engine-spec.md:404 `... Reorder toleransı §9.3.` (defers to the sender)",
+    "crates/adaptive-transport/src/receiver.rs:251 `RxState::Reorder` is written; :257 `tick_ack` runs regardless — no withholding branch exists anywhere in on_datagram",
+    "crates/adaptive-transport/src/receiver.rs:9-11 explicit SoC decision documenting the hold is deliberately NOT at the receiver",
+    "Census of `RxState::Reorder`: receiver.rs:251 (write) and receiver.rs:585 (test read) only"
+   ],
+   "note": "Confirmed, including the spec-internal contradiction. DELETE applies to the unused variant only; the architectural decision (tolerance is sender-side) is defensible and matches §9.3. Owner must resolve the §4 wording since 'spec wins'."
+  },
+  {
+   "mechanism": "DSACK-like duplicate report in ACK (§9.3/§9.4)",
+   "claim": "Not implemented; superseded by per-transmission-seq + tombstone late-ACK; DELETE / MUST-NOT-IMPLEMENT appendix",
+   "verdict": "confirmed",
+   "evidence": [
+    "Case-insensitive repo census of `dsack`: crates/adaptive-transport/src/arq.rs:151 doc comment ONLY (`retransmit'ten SONRA orijinal ACK / DSACK geldi`)",
+    "crates/adaptive-transport/src/ack.rs:55-70 AckFrame fields carry no duplicate indicator; encode/decode (ack.rs:204-260) carry no dup field",
+    "specs/adaptive-transport-engine-spec.md:695 `DSACK-benzeri: rx duplicate aldığını ACK'te bildirir (§9.4) → sender spurious teyidi.`",
+    "specs/adaptive-transport-engine-spec.md:445-448 `ZEYL: per-transmission-seq tasarımında (retransmit YENİ seq) klasik Karn-belirsizliği zayıftır — seq iletimi tekil tanımlar`",
+    "Actual spurious confirmation paths verified: loss.rs:625-640 (un-loss) and sender.rs:2979-2994 (tombstone kol-2), both keyed on the ORIGINAL seq"
+   ],
+   "note": "Confirmed. The spec itself supplies the supersession rationale in its own ZEYL, so the appendix + MUST-NOT-IMPLEMENT recommendation (CLAUDE.md §6) is the right disposition."
+  },
+  {
+   "mechanism": "reordering_score EWMA (§6 fuzzy jitter input = fuzzify(max(jitter_score, reordering_score)))",
+   "claim": "WIRE — spec-normative, never implemented; jitter input is rttvar-derived only",
+   "verdict": "confirmed",
+   "evidence": [
+    "Case-insensitive repo census of `reordering_score|out_of_order`: crates/adaptive-transport/src/rtt.rs:6-7 `//! \\`jitter_score\\` / \\`reordering_score\\` fuzzy adımına (§8) ertelendi (\\`reordering_score\\` \\`[CAL]\\` içerir).` — a comment, and nothing else in the entire tree",
+    "crates/adaptive-transport/src/sender.rs:3396-3399 `let jitter_ppm = dur_ns(self.rtt.rttvar()).saturating_mul(1_000_000).checked_div(dur_ns(srtt)).unwrap_or(0);` → :3412 `jitter_ppm,` into FusionInputs — rttvar only",
+    "specs/adaptive-transport-engine-spec.md:541-544 `jitter / reordering score: jitter_score = rttvar_normalized = rttvar / max(srtt, ε); reordering_score = EWMA(out_of_order_arrivals / total_arrivals) [CAL: EWMA α_reorder] → fuzzify(max(jitter_score, reordering_score)) → jitter girdisi`",
+    "specs/transport-layer-tdd.md:535 jitter ∈ {LOW,MED,HIGH} (rttvar / reordering_score)"
+   ],
+   "note": "WIRE confirmed: spec-required (NORMATİF §6 block), zero implementation. The consequence the finding names is exact — the fuzzy rule 'loss LOW ∧ jitter HIGH → arq reorder-tolerant' can only fire from RTT variance, never from observed reordering, so netem reorder-only cells cannot reach that rule. Note the receiver DOES have the raw signal (has_gap, receiver.rs:423) and the sender has recent_max_reorder (arq.rs:132), but neither is EWMA'd or routed to fusion."
+  },
+  {
+   "mechanism": "client-core unit/message-level delivered dedup (admit_chunk, DELIVERED_DEDUP_WINDOW=8192)",
+   "claim": "Wired on both DATA and FEC-recovered ingest with a SHARED window; SHIP",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1570 `const DELIVERED_DEDUP_WINDOW: usize = 8192;`",
+    "crates/client-core/src/runtime.rs:1681 `fn admit_chunk(`; :1694-1696 `if !slot.delivered_seen.insert(unit_id) { return; }`; :1697-1698 bounded `pop_first`",
+    "crates/client-core/src/runtime.rs:1711-1731 fragment path keyed on message_id with the same window",
+    "Two product call sites CONFIRMED: :2157 (DATA ingest, from_fec=false) and :1906 (FEC-recovered path)",
+    "crates/client-core/src/runtime.rs:1745 `delivered_seen: std::collections::BTreeSet<u64>,` in PeerSlot; :2092 init",
+    "specs/fec-core-tdd-v3.0.md:312 DUP: FEC-recover-sonrası-original → app'e-2.teslim-YOK"
+   ],
+   "note": "SHIP confirmed. The absence of a dedup-drop counter in ServerStats is real — I found no such field — so the activation of this gate is only inferable from exact ss.delivered counts."
+  },
+  {
+   "mechanism": "Client-side first-ACK-wins unit store release",
+   "claim": "Wired at runtime.rs:1153-1163; store.remove + seq map pruning; SHIP",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1153-1155 `if let Ok(frame) = AckFrame::decode(&plain) { let acked = frame.acked_full(max_emitted_seq + 1); for s in &acked {`",
+    "crates/client-core/src/runtime.rs:1156-1164 `let Some(&unit) = seq_to_unit.get(s) else { continue }; if store.remove(&unit).is_some() { stats.acked += 1; unit_acked!(unit); for old in unit_seqs.remove(&unit).unwrap_or_default() { seq_to_unit.remove(&old); } }`",
+    "crates/client-core/src/runtime.rs:1022-1029 store-miss stale emission rationale (header-only frame still goes to wire so the engine's inflight stays consistent) → :1019 `stats.stale_decisions += 1;`",
+    "crates/client-core/src/runtime.rs:1166-1173 `drive!(Event::AckReceived(AckInfo { acked_seqs: acked, ... }), $now)` — the engine gets the undiffed acked_full output"
+   ],
+   "note": "Confirmed. The line offsets in the finding (1153/1157) are exact."
+  },
+  {
+   "mechanism": "Sender-side duplicate suppression: pending forward-copy cancel on ACK + idempotent duplicate-ACK",
+   "claim": "Wired at sender.rs:3069-3072; SHIP",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3069-3072 `// §3.3-B stop koşulu: teyit edilen birimlerin bekleyen geometrik kopyalarını İPTAL et. if !acked_units.is_empty() { self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id)); }`",
+    "acked_units is populated from three sources on the product ACK path: sender.rs:2939 (inflight hit), :2958 (tombstone hit), :3021 (un-loss drain)",
+    "crates/adaptive-transport/src/sender.rs:2933 `if let Some(p) = self.inflight.remove(&seq) {` — idempotent for a repeated ACK of the same seq",
+    "crates/adaptive-transport/src/sender.rs:3080-3088 tail_recovery reset guarded by `if self.inflight.len() < inflight_before`",
+    "crates/adaptive-transport/tests/sender_loss_path.rs:292 `fn duplicate_ack_of_the_same_seq_is_idempotent()`"
+   ],
+   "note": "Confirmed. Wire effect is by omission (copies never emitted), which satisfies the task's 'reaching the wire' definition as a suppressed transmission on the product path."
+  },
+  {
+   "mechanism": "RecoveredControl logical dedup (FEC-recovered unit → cancel pending retransmit + copies)",
+   "claim": "Wired; gated on RuntimeConfig.fec = Some (default None)",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/client-core/src/runtime.rs:1121 `} else if plain.first() == Some(&FRAME_RECOVERED) {` → :1144 `drive!(Event::RecoveredControl(RecoveredInfo { units }), $now);`",
+    "crates/adaptive-transport/src/sender.rs:2138-2141 early return on on_recovered_control (no pacing/fuzzy)",
+    "crates/adaptive-transport/src/sender.rs:4797 `pending_lost.retain` + diag_recovered_cancels + dup_queue.retain; :4802 record_recovered_logical",
+    "crates/client-core/src/runtime.rs:199 `fec: None,` — RuntimeConfig default means the FRAME_RECOVERED branch is inert in the shipped default",
+    "specs/fec-core-tdd-v3.0.md:312 logical-ESI-duplicate + no second app delivery + rank-does-not-increase"
+   ],
+   "note": "The submitted finding was truncated mid-record in the prompt; I verified the portion that was legible. The decode branch is gated on `fec.as_ref()`, so with the product default (fec: None) this cancel path never fires — consistent with a conditionally-enabled-by-design SHIP, contingent on the FEC v1 closure decision."
+  }
+ ],
+ "missed_mechanisms": [
+  {
+   "name": "resolve_seq — u16 wire seq → 64-bit full-counter reconstruction (§2 / TV-SEQ)",
+   "evidence": "crates/adaptive-transport/src/seq.rs:20 `pub fn resolve_seq(expected: u64, wire: u16) -> u64` (SEQ_BITS=16, half-window candidate selection, RFC 9000 A.3 specialized). PRODUCT call sites: crates/client-core/src/runtime.rs:34 `use adaptive_transport::seq::resolve_seq;`, :2145 `let full = resolve_seq(expected, wire_seq);` (server DATA ingest, feeds RxDatagram.seq), :2239 and :2270 (further server ingest paths). Also crates/adaptive-transport/src/ack.rs:173 `let largest_full = crate::seq::resolve_seq(expected, self.largest_seq);` inside acked_full, consumed by the client at runtime.rs:1154. Wire seq is truncated at emission: crates/client-core/src/runtime.rs:1044-1047 `encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload)`. This is the seq-space foundation of BOTH loss detection (packet_threshold_lost compares full counters) and receiver dedup (Receiver.received is a BTreeSet<u64> of full counters); a resolution error would silently corrupt every mechanism in this cluster. Tested at crates/adaptive-transport/tests/tv_seq.rs:21, seq_and_reader_bounds.rs:40-66, kani_seq_proofs.rs.",
+   "suggested_classification": "SHIP"
+  },
+  {
+   "name": "AckFrame::acked_full reconstruction + MAX_ACK_RANGES=16 / MAX_ACKED_SEQS=65536 truncation semantics",
+   "evidence": "crates/adaptive-transport/src/ack.rs:166 `pub fn acked_full(&self, expected: u64) -> Vec<u64>` is the SOLE producer of `ack.acked_seqs`, which is the sole input to sender.rs:3004 `loss.on_ack(&ack.acked_seqs, now_ns)`. Product chain: crates/client-core/src/runtime.rs:1154 `let acked = frame.acked_full(max_emitted_seq + 1);` → :1169 Event::AckReceived. Bounds: ack.rs:36 `pub const MAX_ACK_RANGES: usize = 16;` (encode-side clamp at ack.rs:130), ack.rs:42 `pub const MAX_ACKED_SEQS: usize = 65536;` (decode-side truncation at ack.rs:177 and :193-195). The doc at ack.rs:163-166 states the truncation is safe only because SACK is cumulative and later ACKs re-cover the highest seqs. This directly bounds which seqs the sender can ever observe as acked, hence which are eligible for packet-threshold declaration and for ledger un-loss — it belongs in the loss-fate cluster as its own record, not as a footnote. The findings mention MAX_ACK_RANGES only in a note under the receiver gap record.",
+   "suggested_classification": "SHIP"
+  },
+  {
+   "name": "SuspectConfidence age-weight ladder (200/400/700/700 per-mille) — the weighting that turns Suspected events into instant risk",
+   "evidence": "crates/adaptive-transport/src/loss.rs:77-86 struct with w_lt_quarter/w_lt_half/w_lt_one/w_ge_one; :88-102 `impl Default` with doc `İlk deneysel şekil ([CAL], kalibre EDİLMEMİŞ): 0.20 / 0.40 / 0.70 / 0.70.` and values 200/400/700/700; :104-118 `pub fn for_age(self, age_ns, srtt_ns) -> u32`. PRODUCT-ACTIVE by default: crates/client-core/src/runtime.rs:204 `fec_loss_risk: FecLossRiskConfig::bounded_v1(),` and bounded_v1 (sender.rs:438-448) inherits `weights` from `Self::default()` (sender.rs:398 `weights: crate::loss::SuspectConfidence::default(),`). Consumed at crates/adaptive-transport/src/sender.rs:3452 `self.fec_loss_risk.weights` → loss.rs:426-427 `weights.for_age(age, srtt_ns)`. It is the sole determinant of instant_ppm's magnitude and therefore of the L1 bootstrap trigger (l1_min_instant_ppm=10_000), yet it is an explicitly uncalibrated [CAL] table shipping ON in the product default, with no knob in RuntimeConfig and no bench flag. No record covers it.",
+   "suggested_classification": "SHIP (with an open [CAL] calibration debt, same class as ρ=2/1)"
+  },
+  {
+   "name": "ledger_evicted_total — SR-AUDIT-001 bounded-ledger eviction audit counter with no product accessor",
+   "evidence": "crates/adaptive-transport/src/loss.rs:240 field `ledger_evicted_total: u64,   // audit: kapasite-eviction (SR-AUDIT-001)`; incremented at loss.rs:285 (event-ledger eviction in `declare`) and loss.rs:613 (sent_window eviction in `on_sent`); accessor at loss.rs:564 `pub fn ledger_evicted_total(&self) -> u64`. Full repo census: the ONLY readers are crates/adaptive-transport/tests/emergency_and_accessors.rs:265 and :276. There is no Sender diag accessor that surfaces it, and no field for it in FateWindowDiag (crates/client-core/src/runtime.rs:340-450). The comment at loss.rs:608-610 says eviction shrinks the denominator so `ppm hafif yukarı-yanlı olur, SAKLANMAZ — audit sayacıyla görünür` — but the counter is invisible on the product path, so the acknowledged ppm bias is in fact unobservable in any product or bench run. Contrast: the sibling tombstone_evicted IS at least reachable via diag_tombstone (stub bench arm only).",
+   "suggested_classification": "WIRE (audit-required by SR-AUDIT-001 and by loss.rs's own honesty note, but disconnected from every product/bench readout)"
+  },
+  {
+   "name": "LossConfig / ThresholdLossDetector::with_config — the [CAL] min_delay and 9/8 ratio have no product or bench calibration surface",
+   "evidence": "crates/adaptive-transport/src/loss.rs:155-166 `pub struct LossConfig { packet_threshold, time_num, time_den, min_delay }`; :168-177 Default (3, 9, 8, 1ms) with doc `min_delay [CAL] parametre`; :253 `pub fn with_config(cfg: LossConfig) -> Self`. Full repo census of `with_config(`: crates/adaptive-transport/tests/tv_loss.rs:49,78,97 and tests/emergency_and_accessors.rs:294 — ZERO non-test callers. crates/adaptive-transport/src/sender.rs:1784 `loss: ThresholdLossDetector::new(),` (i.e. LossConfig::default) is the only construction on the product path, and there is no setter and no RuntimeConfig field for it. Consequence: the spec's [CAL] min_delay slot (specs/adaptive-transport-engine-spec.md:414 `min_delay=[CAL] (reordering tail)`) cannot be swept from bench or configured from the product, so no calibration campaign for it is even expressible today. Compare the K_c matrix {1.25,1.5,2.0} in §16.2 which is likewise hardcoded (sender.rs:1399-1400 consts).",
+   "suggested_classification": "WIRE (spec-declared [CAL] parameter with no calibration path) — or an explicit spec note that these ship fixed"
+  },
+  {
+   "name": "diag_loss().2 (pending_lost_now) — third element of the loss-attribution triple never surfaced",
+   "evidence": "crates/adaptive-transport/src/sender.rs:5859-5866 `pub fn diag_loss(&self) -> (u64, u64, u64) { (self.diag_loss_pkt, self.diag_loss_time, self.pending_lost.len() as u64) }` with doc `(packet_threshold_queued, time_threshold_queued, pending_lost_now)`. crates/client-core/src/runtime.rs:1467-1468 consume only `.0` and `.1`; there is no FateWindowDiag field for the third. Combined with the refutation above (neither .0 nor .1 reaches bench output either), the entire TUR-A loss-attribution instrument — built specifically to answer 'is a spurious RecoverArq caused by a real gap or by cadence' — is dark end-to-end on the product path.",
+   "suggested_classification": "WIRE (telemetry completion), or DELETE the third element if pending_lost depth is deliberately out of scope"
+  }
+ ],
+ "corrected_classifications": [
+  {
+   "mechanism": "FateEstimator prefix-causal loss-structure window (FS-CAL-2 §3) — ingest + structure-gate consumer",
+   "classification": "SHIP",
+   "reason": "Classification stands, but two of its supporting statements must be corrected before it is relied on. (1) The gate's activation condition is NOT 'RuntimeConfig.fec = Some'. structure_gate_fec is called from the ELSE branch of the fusion_policy check (sender.rs:3538-3543), so with the shipped default (fusion_policy: None) the gate evaluates on every fuzzy_evaluate and increments diag_gate_outcomes/diag_structure_gate_opened even though fec is None; only the final actuation to parity bytes is inert in client-core. (2) The telemetry claim is refuted: n/lost/n00/n01/n10/n11/burst_delta_ppm and gate_outcomes[7] are populated in ClientStats.fate (runtime.rs:1386-1393, :1464) but are read nowhere in crates/bench — the complete list of .fate. reads in kama_product.rs:585-615 excludes all of them. Confidence should stay at 'medium' but for the corrected reason: the decision base is live under the default config while being unobservable in bench output."
+  },
+  {
+   "mechanism": "Measured return_bw replacing EAI_RETURN_BW_PRIOR (§3.3-E FULL) — confirm-horizon defect fix",
+   "classification": "WIRE",
+   "reason": "Classification stands and should be recorded with HIGHER confidence than 'medium'. The finding argues only from the sender's EAI. Independent re-derivation shows the static prior has three live consumers, two of them on the receiver: crates/adaptive-transport/src/receiver.rs:93-94 ACK_CADENCE_FLOOR_NS and :115 T_SPACING_NS are derived constants, not comments. More decisively, specs/adaptive-transport-engine-spec.md:1071 lists ACK_CADENCE_FLOOR in the §16.2 BREAKS/SUSPECT class inventory as only 'kısmen-FIXED' with the required-class column reading 'ölçülen return_bw'den adaptif (§3.3-E FULL — T_SPACING'in de bağlanacağı yer)'. That is a spec row naming an unimplemented mechanism as the required class for shipped code — the textbook WIRE signature, independent of the confirm-horizon argument."
+  },
+  {
+   "mechanism": "Packet-threshold loss declaration (§5a) — telemetry sub-claim",
+   "classification": "SHIP",
+   "reason": "Mechanism classification is correct and well-evidenced; only the telemetry field of the record is wrong. loss_declared_pkt/loss_declared_time are populated at runtime.rs:1467-1468 but printed nowhere in crates/bench, and diag_loss lives at sender.rs:5859 (5876 is diag_ledger). Recording this matters because the finding's stated §5a-vs-§5b attribution evidence does not exist in any bench artifact, so no campaign claim may cite it."
+  },
+  {
+   "mechanism": "Time-threshold loss declaration (§5b) — duplicates_or_dead sub-claim",
+   "classification": "SHIP",
+   "reason": "Mechanism classification is correct. The sub-claim that next_time_loss_deadline_ns is 'used only under experimental-cold-start' is wrong: sender.rs:2468 sits in the ungated next_timer_deadline_ns. The correct non-product argument is that its only entry point, next_wakeup_ns (sender.rs:2433), has zero client-core callers — its sole non-test caller is udp_runner.rs:862, and udp_runner is `#[cfg(feature = \"experimental-fec-budget\")]` (lib.rs:56-57) and self-documented at udp_runner.rs:1 as 'ÜRETİM-YOLUNA-BAĞLI-DEĞİL'."
+  },
+  {
+   "mechanism": "Spurious-age ring + quantile (PERSIST learned persistence horizon)",
+   "classification": "SHIP",
+   "reason": "Classification stands (product default ON via bounded_v1, per the FEC v1 closure which is not to be reopened). Both audit flags are independently confirmed and should be elevated from 'notes' to actionable defects: (a) crates/client-core/src/runtime.rs:842 asserts 'default KAPALI' one line above the setter that passes enabled:true; (b) the kama-product bench arm never runs the product default — kama_product.rs:187-192 selects experimental_v1 (FixedSrtt, caps 125/250, G1 off) or default() (disabled), so no bench measurement in the repo is evidence about the shipped fec_loss_risk configuration. That second point undercuts any campaign claim made from the bench arm about product FEC-risk behaviour."
+  },
+  {
+   "mechanism": "Un-loss (late ACK → Spurious) — telemetry sub-claim",
+   "classification": "SHIP",
+   "reason": "Mechanism classification is correct. Telemetry correction: only `spurious_units` (runtime.rs:1421 → kama_product.rs:602) is printed; `ledger_unloss` (runtime.rs:1466, the actual cancel count) and `ledger_spurious_units` (runtime.rs:1465) have no bench reader. Additionally `ledger_spurious_units` and `spurious_units` are populated from the identical expression `session.sender().diag_ledger().2` — one of the two is a redundant field."
+  }
+ ]
+}

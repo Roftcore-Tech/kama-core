@@ -1,5 +1,40 @@
 # CCR Format Specification
 
+> **YAMA KAYDI — 2026-09-18b:** başlık notuna CCR canonical-codec-only kuralı (protobuf re-encode ve generic compressor yasak; opak bytes olarak taşınır).
+
+
+> **YAMA KAYDI — 2026-09-18 [AMENDMENT-6]:** kanun bandı → transport-tdd §0 referansı · §35.3 early_data istisnası (Crypto opak işler) · §35.6 BatchPayload sahiplik notu (birimi Transport üretir; kodda YOK, interim 11B çerçeve; canonical S3 [OPEN]) · §35.6 sıkıştırma pointer'ı → app-rpc §3 · §35.7 HubHandle ≠ SessionHandle · statü matrisi S3 diliyle. P0 kripto yamaları DEĞİŞMEDİ (yerleşimden bağımsız).
+
+
+> **Katman grafiği:** transport-layer-tdd §0 INV-NEIGHBOR-1 (App → Transport → Crypto → UDP; Crypto'nun tek üst komşusu Transport). Bu belge E2E byte otoritesidir; yerleşimden bağımsızdır. **CCR nesneleri (cert, attestation, TBS) YALNIZ bu belgenin canonical codec'iyle serileştirilir**; protobuf/generic serializer ile yeniden kodlanmaz, generic compressor'dan geçmez, başka mesajda opak `bytes` olarak taşınır (transport-tdd §0 INV-PLAINTEXT-NOT-SEMANTICS).
+
+> **YAMA KAYDI — 2026-09-07b:** §35.12 parser-reject ve §30.x negative-corpus satırlarındaki "RESPONSE sonrası epoch_0 → reject" ifadeleri grace'e tabi hale getirildi (P0-9; erken-reject testi yazılmaz) · statü matrisine entegre protector HOLD gerekçesi (S2-noise.2 + CRY-1 + noise-wire D1-ENTRY) ve KS-GRACE-1 notu eklendi.
+
+
+> **YAMA KAYDI — 2026-09-07 (CRYPTO-P0-FREEZE):** §35.5 epoch-0 reject wording'i confirmation-safe makineye referansla düzeltildi (P0-9/§12) · §35.13'e zorunlu test seti (§19) · doküman sonuna CRYPTO-P0-FREEZE statü matrisi (§15). Wire format / key schedule / primitive DEĞİŞMEDİ.
+
+
+> **YAMA KAYDI — 2026-09-02 (S2 blocker kapatma, B1+B2):**
+> - **YENİ §35.2.1** — HKDF instantiation exact (HMAC-BLAKE2s-256 pini; kanonik `KDF(label,secret,context,L)`
+>   sarmalayıcısı = Extract(salt=label, IKM=secret) + Expand(PRK, info=context, L); D1–D7 türetme tablosu;
+>   INV-KDF-1/2/3, INV-INIT-KEY-1, INV-RESP-KEY-1; V-KDF-1..7 vektörleri).
+>   **D5 (epoch-1 traffic keys) daha önce hiçbir yerde tanımlı DEĞİLDİ — eklendi.**
+> - **YENİ §35.3.1** — SESSION_INIT AAD + nonce exact (`KARAR-2 = A`, `KARAR-3 = Evet` uygulandı).
+> - **YENİ §35.5.1** — SESSION_INIT_RESPONSE AAD + nonce exact.
+> - **§35.9'a not** — SSD1 ile EXTENDED AAD arasındaki asimetrinin kasıtlı olduğu; `epoch` = u16_be(dh_epoch).
+> - Uygulanan karar: **KARAR-1 = A** (INIT/RESPONSE ayrı domain-separated anahtar `k_init`/`k_resp`, nonce96(0)).
+>   Gerekçe §35.2.1 D6/D7 notunda. **Geri alınabilir:** B seçeneğine dönüş = D6/D7 satırlarını kaldır +
+>   §4 EPOCH-PN-INIT'e "epoch-0 sayacı 1'den başlar" kuralı ekle.
+> - Mevcut hiçbir normatif satır silinmedi/değiştirilmedi; yalnız ekleme yapıldı.
+>
+> **YAMA KAYDI — 2026-09-07 (Hasan raporu / B4-EXT mekanik kalemler):**
+> - **§30.4b** SIGNED_CONTROL `signed_control_context` kısa TBS'i → §35.10 otoriter TBS'ine çekildi (A-4/B-1).
+>   ⚠ Bu bölümün SIGNED_CONTROL vektörleri yeniden üretilmelidir.
+> - **§35.6** seq16 satırına AEAD nonce mapping eklendi: `nonce96 = 0x00×4 || LE64(full_counter)` (C-1).
+> - **§35.5** reject kurallarına RESPONSE flags simetrisi (C-4) ve ephemeral-tazelik kuralı (C-3) eklendi.
+> - **§35.8** reconstruction'a beraberlik kuralı (C-9); **§30.4b** boş early_data / init_counter=0 geçerliliği (C-10).
+
+
 **Doküman:** `ccr-format-spec.md`
 **Versiyon:** v1.0
 **Durum:** Implementation-ready binary format spec — freeze-ready (DiscoveryEndpointRecord transport-key reconciliation sonrası)
@@ -1785,7 +1820,7 @@ Parser her zaman **bounded** çalışır: önce length okunur, max'a karşı kon
 
 ### 30.1 SignedNoisePrekey TBS ⚠️ DEPRECATED / MUST NOT IMPLEMENT (prekey kaldırıldı)
 
-> **DEPRECATED:** SignedNoisePrekey test vector'ü artık geçerli değil (prekey nesnesi kaldırıldı, Section 18). Statik X25519 Device CCR'ın `pk_device_x25519` alanında taşınır (Section 13 CompactDeviceCert). Session Model V3 test vektörleri için Section 30.4b (SESSION_INIT/DATA, magic SAI1/SAD1) + Section 35.2 key schedule.
+> **DEPRECATED:** SignedNoisePrekey test vector'ü artık geçerli değil (prekey nesnesi kaldırıldı, Section 18). Statik X25519 Device CCR'ın `pk_device_x25519` alanında taşınır (Section 13 CompactDeviceCert). Session Model V3 test vektörleri için Section 30.4b (SESSION_INIT/DATA, magic **SSI1/SSD1**)   <!-- [2026-09-07] eski metin "SAI1/SAD1" (deprecated V2 magic) yazıyordu → vektör üreticisini yanlış yönlendiriyordu --> + Section 35.2 key schedule.
 
 ### 30.2 Root CA CCR_TBS (örnek alan sırası)
 
@@ -1872,6 +1907,8 @@ SESSION_INIT_REF (121B app-envelope; magic "SSI1" AAD'de):
   sender_ephemeral   : <32B>                                # e (public)
   sender_cert_ref    : <32B>                                # SHA-256(canonical_compact_device_cert)
   init_counter       : 00 00 00 00 00 00 00 01              # u64_be (epoch 0)
+  # [C-10] GEÇERLİLİK: early_data uzunluğu N=0 GEÇERLİDİR (yalnız session kurma amaçlı INIT);
+  #        init_counter = 0 GEÇERLİ bir başlangıç değeridir. Her ikisi için de ayrı reject kuralı YOKTUR.
   ciphertext(early)  : <bytes + AEAD tag 16B>
   # sender_signature YOK; init_variant generic Noise pattern selector DEĞİL (Section 35.2 otoriter)
 
@@ -1890,7 +1927,12 @@ SESSION_DATA (18B app-envelope; magic "SSD1" AAD'de, wire'da YOK):
 
 SIGNED_CONTROL (SESSION_DATA + 64B Ed25519; magic "SSC1"):
   seq16 + ciphertext + aead_tag(16B) + sender_ed25519_signature(64B)
-  signed_control_context = "SSC1" || command_type || epoch || seq16 || session_context_hash || command_id
+  signed_control_tbs = §35.10 OTORİTER (bu bölüm yalnız vektör taşır, tanım TAŞIMAZ):
+    "SSC1" || version || sender_device_cert_hash || session_context_hash || direction || epoch
+    || reconstructed_full_counter || command_type || application_command_id || SHA-256(ciphertext)
+  # [A-4/B-1 düzeltmesi] Buradaki eski kısa biçim (command_type||epoch||seq16||session_context_hash||command_id)
+  # counter'ı ve ciphertext'i BAĞLAMIYORDU → imzalı-komut replay'i + ciphertext substitution mümkündü.
+  # ⚠ Bu bölümün SIGNED_CONTROL vektörleri §35.10 TBS'i ile YENİDEN ÜRETİLMELİDİR.
 ```
 
 ### 30.4c OrgEntitlementRecord canonical_entitlement_tbs (Section 21.6)
@@ -2172,7 +2214,7 @@ C++ (hub/client): canonical byte'ları TAŞIR (adaptive transport/Noise), Rust'a
 > **Mimari faz değişimi (Haziran 2026, CAD-60 — TLS 1.3 dersi):** Eski **Async Session V2** (ASYNC_INIT/ACCEPT/DATA, hot-path ≈39B app-envelope, link_id 16B + seq 4B + len 2B, magic SAI1/SAA1/SAD1/SAC1) **DEPRECATED** (Section 35-DEPRECATED-V2, MUST NOT IMPLEMENT / MUST REJECT) — 39B universal hot-path TLS/TCP/IPv4 established baseline'a karşı byte avantajı sağlamıyordu. Yeni aktif model **Session Model V3**: SESSION_INIT (tek seferlik authenticated bootstrap) → SESSION_INIT_RESPONSE → SESSION_DATA (18B E2E app-envelope hot-path) → SIGNED_CONTROL (nadir non-repudiation); magic SSI1/SSR1/SSD1/SSC1.
 >
 > **OTORİTE BÖLÜŞÜMÜ (P0-3, NORMATİF):** `identity-and-trust-model.md` **trust lifecycle, PKI, revocation, endpoint-validation semantiği** için otoriterdir. **Bu doküman (ccr §35)** Session Model V3 **wire/session canonical byte'ları ve hot-path message semantiği** için byte-level/wire-level otoriterdir. İkisi çelişirse: kimlik/PKI/trust → identity; wire/byte/session → ccr §35.
-> **CROSS-DOC REQUIRED:** identity-and-trust-model.md içindeki eski ASYNC_INIT/ACCEPT/DATA ≈39B modeli Session Model V3 ile reconcile edilmeli; eski model deprecated appendix'e taşınmalı.
+> **CROSS-DOC — [2026-09-07 KAPANDI]:** identity-and-trust-model.md'deki eski ASYNC_INIT/ACCEPT/DATA ≈39B modeli Session Model V3 ile reconcile EDİLDİ (identity YAMA KAYDI 2026-09-07 / E-13: per-message HKDF, `SR-DATA-*` label şeması, `session_root` adı, ham-seq replay ve kısa SIGNED_CONTROL TBS kaldırıldı). Aşağıdaki metin tarihsel gerekçe olarak korunur: eski ASYNC model; eski model deprecated appendix'e taşınmalı.
 
 ### 35.0 TLS 1.3 Dersi (NORMATİF ilke)
 
@@ -2236,7 +2278,136 @@ session_id_internal = Trunc128(HKDF("SR-SESSION-ID-V3", init_root, session_conte
 
 > **link_id KALDIRILDI (CAD-60):** Eski 16B `link_id` artık YOK. Routing rolü transport L2 `hub_handle`'a (Section 35.7), kriptografik link-binding rolü `session_id_internal` + per-session key'e geçti. Per-session key zaten cross-session ayrımı sağlar (A oturumunun key'iyle B oturumu decrypt edilemez). Korelasyon-direnci `hub_handle`'ın hub-assigned opaque (dest_hash'ten türemez) olmasıyla korunur.
 
+### 35.2.1 HKDF Instantiation (NORMATİF — exact) [B1, 2026-09-02]
+
+> Bu alt-bölüm §35.2'deki `HKDF(label, secret, context)` yazımının **tek** kanonik anlamını verir.
+> Primitive seçimi burada YAPILMAZ — pki §13 crypto primitives registry (cipher_suite_id 0x0001) otoriterdir.
+> Boşluk sınıfı: DR-4 dersi ("semantik tanımlı ama serialization tanımsız") — noise-wire §13.5 checklist.
+
+```
+PRIMITIVE (pki §13, cipher_suite_id 0x0001):
+  KDF     = HKDF-BLAKE2s (RFC 5869 yapısı, hash = BLAKE2s-256)
+  HashLen = 32B
+
+KRİTİK — HMAC vs KEYED-HASH: RFC 5869 HKDF, HMAC-Hash üzerine tanımlıdır.
+  Buradaki HMAC = HMAC-BLAKE2s-256 (RFC 2104; BLAKE2s block size 64B, output 32B).
+  BLAKE2s'in NATIVE KEYED MODE'u (BLAKE2s-with-key) KULLANILMAZ — iki FARKLI fonksiyondur
+  ve sessiz interop kırılmasının en yaygın kaynağıdır.
+  Referans implementasyon: RustCrypto `hkdf::Hkdf<blake2::Blake2s256>` (HMAC'ı içeride kurar).
+
+İKİ PRIMITIVE (RFC 5869 §2.2 / §2.3):
+  Extract(salt, IKM)   = HMAC-BLAKE2s-256(key = salt, msg = IKM)        → PRK (32B)
+  Expand(PRK, info, L) = RFC 5869 §2.3 (T(i) zinciri, sayaç 0x01'den)   → OKM (L byte)
+
+KANONİK SARMALAYICI — bu belgedeki HER `HKDF(label, secret, context)` yazımı ŞU demektir:
+
+  KDF(label, secret, context, L):
+      PRK = Extract(salt = ASCII(label), IKM = secret)
+      OKM = Expand(PRK, info = context, L = L)
+      return OKM
+
+  · label   : ASCII byte'ları; NUL-terminator YOK; padding YOK; uzunluk tam
+  · secret  : konkatenasyon SIRASI aşağıdaki tabloda sabit
+  · context : byte dizisi; boş olabilir (o hâlde info = boş dizi)
+  · L       : tabloda sabit; L ≤ 255 × 32
+  · TEK-KURAL: her türetme Extract+Expand yapar. Expand-only kısayolu, salt=zeros varyantı,
+    label'ı info'ya taşıma YASAK.
+  · SALT = LABEL SEÇİMİNİN GEREKÇESİ [CRY-4]: RFC 5869 §3.1 salt'ın public ve keyfi olmasına
+    izin verir; salt'ın birincil işlevi domain separation'dır. Her türetmeye kendi public
+    label'ını salt olarak vermek, her birine AYRIK bir Extract domain'i verir ve tek kod yolu
+    korunur. Bu, Noise'un (salt = chaining key) ve TLS 1.3'ün (HKDF-Expand-Label) kalıbından
+    bilinçli bir SAPMAdır; denetçi için burada kayıtlıdır. Doğrulama: HKDF implementasyonunun
+    kendisi önce RFC 5869'un SHA-256 vektörleriyle sınanır, sonra BLAKE2s vektörleri üretilir. Gerekçe: init_root ve epoch_1_root ham DH materyali
+    içerir → Extract kriptografik olarak ZORUNLU; kalan üçünde gereksiz ama zararsızdır.
+    Tek kod yolu = implementer hatası ve interop ayrışma yüzeyi minimum.
+```
+
+**TÜRETME TABLOSU (NORMATİF — sıra, uzunluk ve byte temsilleri sabit):**
+
+```
+D1  init_root                                                            L = 32
+    label   = "SR-SESSION-INIT-V3"
+    secret  = ss_e (32B) || ss_s (32B)                                   # 64B
+    context = session_context_v1 (100B, §35.2)
+
+D2  epoch-0 traffic keys                                                 L = 32 (her yön)
+    label   = "SR-SESSION-TRAFFIC-V3"
+    secret  = init_root (32B)
+    context = direction (1B)   # 0x01 = A→B (initiator→responder)
+                               # 0x02 = B→A          (§35.9 direction alanıyla AYNI kodlama)
+    k_A2B_e0 = KDF(label, init_root, 0x01, 32)
+    k_B2A_e0 = KDF(label, init_root, 0x02, 32)
+    Rol eşlemesi: initiator k_send = k_A2B_e0, k_recv = k_B2A_e0; responder tersi.
+
+D3  session_id_internal                                                  L = 16
+    label   = "SR-SESSION-ID-V3"
+    secret  = init_root (32B)
+    context = session_context_v1 (100B)
+    NOT: L=16 ile "L=32 üret + ilk 16B'yi al" BYTE-ÖZDEŞ sonuç verir (RFC 5869 T(1) prefix
+         özelliği). §35.2'deki `Trunc128(...)` yazımı TAM OLARAK bunu ifade eder; kanonik
+         implementasyon yazımı L=16'dır.
+
+D4  epoch_1_root                                                         L = 32
+    label   = "SR-SESSION-EPOCH-V3"
+    secret  = init_root (32B) || ss_e2 (64B)                             # 96B
+              ss_e2 = DH(bob_eph_sk, sender_eph_pub) || DH(bob_eph_sk, sender_static_pub)
+    context = u16_be(1) = 0x00 0x01                                      # 2B
+
+D5  epoch-1 traffic keys                                                 L = 32 (her yön)
+    [YENİ — §35.5 epoch_1_root'u veriyordu ama traffic key türetimini TANIMLAMIYORDU]
+    label   = "SR-SESSION-TRAFFIC-V3"     # D2 ile AYNI label; PRK farklı ⇒ key farklı
+    secret  = epoch_1_root (32B)
+    context = direction (1B, D2 ile aynı kodlama)
+    k_A2B_e1 = KDF(label, epoch_1_root, 0x01, 32)
+    k_B2A_e1 = KDF(label, epoch_1_root, 0x02, 32)
+
+D6  SESSION_INIT seal key                                                L = 32
+    [KARAR-1 = A uygulandı: ayrı domain-separated anahtar]
+    label   = "SR-SESSION-INIT-DATA-V3"
+    secret  = init_root (32B)
+    context = 0x01                                                       # A→B
+    k_init  = KDF(label, init_root, 0x01, 32)
+
+D7  SESSION_INIT_RESPONSE seal key                                       L = 32
+    [KARAR-1 = A uygulandı]
+    label   = "SR-SESSION-RESP-DATA-V3"
+    secret  = epoch_1_root (32B)
+    context = 0x02                                                       # B→A
+    k_resp  = KDF(label, epoch_1_root, 0x02, 32)
+```
+
+> **KARAR-1 gerekçesi (D6/D7 neden ayrı anahtar):** SESSION_INIT `k_A2B_e0` ile ve nonce96(0)
+> ile mühürlenseydi, epoch-0 SESSION_DATA sayacı da 0'dan başladığı için (noise-wire §4
+> EPOCH-PN-INIT) **aynı anahtar altında nonce çakışması** doğardı. Alternatif "0 rezerve
+> edilmiştir" konvansiyonu yerine ayrı anahtar seçildi: nonce ayrımı **yapısal** olur,
+> §4'ün sayaç-başlangıç kuralı dokunulmadan kalır, denetimde konvansiyona değil
+> domain-separation'a dayanılır. Maliyet: session başına 2 ekstra HKDF çağrısı.
+
+**INVARIANT'lar (NORMATİF):**
+
+| ID | Statement |
+|----|-----------|
+| INV-KDF-1 | Tüm türetmeler tek kanonik sarmalayıcıdan geçer; başka HKDF çağrım biçimi (Expand-only, salt=zeros, label'ı info'ya taşıma) YASAK. |
+| INV-KDF-2 | `label` byte'ları protocol_version V1 için IMMUTABLE; değişirse yeni protocol_version. |
+| INV-KDF-3 | HMAC-BLAKE2s-256 ≠ BLAKE2s-keyed; test bunu AYRI negatif vektörle assert eder. |
+| INV-INIT-KEY-1 | Her `init_root` TAM OLARAK BİR SESSION_INIT mühürler. Payload değişirse yeni `init_counter` + YENİ ephemeral + yeni session attempt (noise-wire §0.7-B / MADDE-5). Retry = cached byte-for-byte datagram; yeniden seal YASAK. |
+| INV-RESP-KEY-1 | Her `epoch_1_root` TAM OLARAK BİR SESSION_INIT_RESPONSE mühürler (fresh responder ephemeral ⇒ fresh `epoch_1_root`). RESPONSE retry'ı da cached byte-for-byte. |
+
+**Zorunlu test vektörleri:**
+
+```
+V-KDF-1 : sabit ss_e/ss_s/session_context_v1 → init_root exact 32B
+V-KDF-2 : k_A2B_e0, k_B2A_e0 exact + k_A2B_e0 ≠ k_B2A_e0   (INV-NONCE-DIR-1 birincil testi)
+V-KDF-3 : session_id_internal exact 16B; L=16 ≡ Trunc128(L=32) byte-özdeşlik assert'i
+V-KDF-4 : epoch_1_root exact; k_*_e1 ≠ k_*_e0               (INV-NONCE-EPOCH-1 birincil testi)
+V-KDF-5 : k_init ≠ k_A2B_e0 ve k_resp ≠ k_B2A_e1            (D6/D7 domain-separation)
+V-KDF-6 : NEGATİF — HMAC-BLAKE2s-256 vs BLAKE2s-keyed FARKLI çıktı verir
+V-KDF-7 : üç-kaynak eşitliği (spec byte'ları + RustCrypto + bağımsız referans; §13.5)
+```
+
 ### 35.3 SESSION_INIT Wire Format + Cert Policy
+
+> **[AMENDMENT-6] `early_data` istisnası (NORMATİF):** Application plaintext'i bir kez normal data-path dışında Crypto'ya girer — `connect(peer, early_unit?)` → Transport → SessionControl `Initiate{peer, early_unit}`. Crypto `early_unit`'i **OPAK byte dizisi** olarak işler; uygulama semantiğini (TEXT/FILE/…) HİÇBİR ZAMAN yorumlamaz. Application yine Crypto'yu görmez (INV-NEIGHBOR-1).
 
 **flags alanı (NORMATİF — canonical bit allocation):**
 ```
@@ -2320,6 +2491,53 @@ SESSION_INIT_BUNDLE (cert_mode=10):
 
 > **Future optimization (NON-NORMATIVE, Alpha canonical DEĞİL):** `recipient_dest_hash32 → recipient_routing_key16` + `sender_cert_ref32 → sender_cert_hint16` ileride SESSION_INIT_REF'i 121B → ~89B app-envelope'a indirebilir. Alpha canonical değil; collision/fail-closed/cache semantiği + cross-doc review gerektirir.
 
+### 35.3.1 SESSION_INIT AAD + Nonce (NORMATİF) [B2, 2026-09-02]
+
+Wire'da magic TAŞINMAZ; AAD içindedir (§35.9 ile aynı domain-separation disiplini).
+
+```
+SESSION_INIT_AAD =
+  "SSI1"                (4B)          ||   # 53 53 49 31 — AAD-only, wire'da YOK
+  protocol_version      (u8,     1B)  ||
+  cipher_suite_id       (u16_be, 2B)  ||
+  flags                 (u8,     1B)  ||   # wire'daki byte, AYNEN
+  recipient_dest_hash   (32B)         ||   # wire'daki byte, AYNEN
+  sender_ephemeral      (32B)         ||   # wire'daki byte, AYNEN
+  cert_field            (değişken)    ||   # cert_mode'a göre wire'da NE VARSA aynen:
+                                           #   00 → sender_cert_ref     (32B)
+                                           #   01 → compact_device_cert (152B)
+                                           #   10 → device_cert_bundle  (alınan byte'lar)
+  init_counter          (u64_be, 8B)  ||
+  session_id_internal   (16B)              # INTERNAL (wire'da YOK); §35.2.1 D3
+
+# [KARAR-2 = A, KARAR-3 = Evet uygulandı]
+```
+
+> **İLKE (KARAR-2 gerekçesi):** AAD, ciphertext'ten ÖNCEKİ **tüm** cleartext wire byte'larını
+> birebir kapsar (+ magic/version/suite öneki, + `session_id_internal` soneki).
+> Zorunluluk sebebi: `flags` ve `init_counter` **`session_context_v1`'e GİRMEZ** → anahtar bağı
+> onları korumaz. AAD kapsamazsa transit'te değiştirilebilirler (cert_mode karışıklığı,
+> replay-identity oynatma). Minimal AAD teknik olarak yeterli olabilirdi ama doğrulaması
+> "hangi alan dolaylı olarak bağlı" muhakemesi gerektirirdi; tam kapsamda böyle bir muhakeme
+> yoktur. AAD wire'da taşınmadığı için değişken uzunluğun byte maliyeti SIFIRDIR.
+
+```
+NONCE:
+  nonce = nonce96(0)          # noise-wire §4.5 mapping: 4B zero-prefix || LE64(0)
+  KEY   = k_init              # §35.2.1 D6
+  Güvenlik dayanağı: INV-INIT-KEY-1 — her init_root tam olarak bir SESSION_INIT mühürler;
+  retry cached byte-for-byte olduğu için aynı (key, nonce) ile İKİNCİ BİR plaintext üretilmez.
+```
+
+**Zorunlu test vektörleri:**
+```
+V-SSI-1 : exact AAD byte dizisi — üç cert_mode için AYRI vektör
+V-SSI-2 : exact nonce + ciphertext + tag
+V-SSI-3 : NEGATİF — flags'te 1 bit değişimi → AEAD fail
+V-SSI-4 : NEGATİF — init_counter değişimi → AEAD fail
+V-SSI-5 : NEGATİF — cert_mode ile uzunluk uyumsuzluğu → parser reject (AEAD'ye ULAŞMAZ)
+```
+
 ### 35.4 SESSION_INIT Uç Doğrulama (ZORUNLU — NORMATİF, hub-untrusted)
 
 > Bu bölüm E2E güvenliğin can damarıdır. Hub GÜVENİLMEZDİR; hub'ın admission kontrolü (Root CA join gate) E2E authentication YERİNE GEÇMEZ.
@@ -2383,10 +2601,47 @@ DATA_EPOCH_ACTIVE       : SESSION_DATA akışı (epoch 1)
 **Reject kuralları:**
 ```
 - RESPONSE gelmeden epoch_1 SESSION_DATA → DEFER/REJECT
-- RESPONSE sonrası epoch_0 (eski) SESSION_DATA → REJECT
+- **epoch_0 SESSION_DATA acceptance, RESPONSE gönderimi/alımıyla DOĞRUDAN KAPANMAZ [P0-9/§12, 2026-09-07].**
+  `dh_epoch` 0→1 transition ve old-epoch retirement `kama-noise-wire §4 confirmation-safe state machine`'ine
+  tabidir (OTORİTE oradadır): previous-epoch receive state YALNIZ implicit confirmation (ilk GEÇERLİ,
+  AEAD-doğrulanmış epoch-1 paketi) + bounded grace tamamlandıktan sonra DISCARD edilir. **Discard sonrası
+  epoch_0 → REJECT.** State direction-local tutulur; RESPONSE kaybolursa epoch-0 usable kalır.
+  (Önceki metin "RESPONSE sonrası epoch_0 → REJECT" idi; blanket okuma confirmation-safe makineyle
+  çelişiyordu. Wire format ve key schedule DEĞİŞMEDİ.)
 - responder_ephemeral all-zero → REJECT
 - DH all-zero shared secret → REJECT (Section 6.x low-order/all-zero kontrolü)
 - session_context mismatch → AEAD fail/REJECT
+- **[C-4] RESPONSE flags (INIT ile SİMETRİK):** `flags.bit0 = 0` zorunlu; `bits1..7` reserved →
+  nonzero ise REJECT (fail-closed). `response_counter` monoton olmalı; eşit/geri giden → REJECT.
+- **[C-3] Ephemeral tazeliği (NORMATİF):** Bir `sender_ephemeral`, FARKLI bir `init_counter` ile
+  İKİNCİ KEZ KULLANILAMAZ. Payload değişirse → yeni init_counter + YENİ ephemeral + yeni session attempt.
+  Retransmit yalnız cached byte-for-byte datagram'dır (§35.2.1 INV-INIT-KEY-1; noise-wire §0.7-B MADDE-5).
+  Aynı kural responder tarafında `responder_ephemeral` / `response_counter` için geçerlidir (INV-RESP-KEY-1).
+```
+
+### 35.5.1 SESSION_INIT_RESPONSE AAD + Nonce (NORMATİF) [B2, 2026-09-02]
+
+```
+SESSION_INIT_RESPONSE_AAD =
+  "SSR1"                (4B)          ||   # 53 53 52 31 — AAD-only, wire'da YOK
+  protocol_version      (u8,     1B)  ||
+  cipher_suite_id       (u16_be, 2B)  ||
+  flags                 (u8,     1B)  ||   # wire'daki byte, AYNEN
+  responder_ephemeral   (32B)         ||   # wire'daki byte, AYNEN
+  response_counter      (u64_be, 8B)  ||
+  session_id_internal   (16B)              # §35.2.1 D3 (init_root'tan; epoch-1'de DEĞİŞMEZ)
+
+NONCE:
+  nonce = nonce96(0)
+  KEY   = k_resp             # §35.2.1 D7
+  Güvenlik dayanağı: INV-RESP-KEY-1 — her epoch_1_root tam olarak bir RESPONSE mühürler.
+```
+
+**Zorunlu test vektörleri:**
+```
+V-SSR-1 : exact AAD + nonce + ciphertext + tag
+V-SSR-2 : NEGATİF — responder_ephemeral all-zero → reject (§35.5 kuralı; AEAD'den ÖNCE)
+V-SSR-3 : NEGATİF — response_counter değişimi → AEAD fail
 ```
 
 ### 35.6 SESSION_DATA Canonical Bytes (HOT-PATH — EN KRİTİK)
@@ -2394,6 +2649,22 @@ DATA_EPOCH_ACTIVE       : SESSION_DATA akışı (epoch 1)
 ```
 SESSION_DATA app-envelope canonical (E2E — hub okuyamaz):
   seq16        : u16_be     # düşük-bit / resync hint (Section 35.8 — TEK BAŞINA nonce DEĞİL)
+                            # AEAD nonce96 = 0x00×4 || LE64(reconstructed_full_counter)
+                            #   (noise-wire §4.5 mapping; DR-4 CLOSED) [C-1]
+                            # direction ve epoch nonce'ta DEĞİL — ANAHTARDA (§35.2.1 D2/D5) ve AAD'de (§35.9);
+                            # cross-direction / cross-epoch replay savunması anahtar ayrımındadır.
+
+# ─── HOT-PATH BYTE BÜTÇESİ — MUST NOT [2026-09-16, Abkarada byte kuralı] ───────────────
+# Established hot-path E2E paketine yeni metadata eklemek "son çare" DEĞİL, **DEFAULT YASAK**.
+# Aşağıdakiler bu zarfa EKLENEMEZ:
+#   session_id · resp_hint · key_phase · transport_id · ack_id · fec metadata · rpc method_id
+#   · explicit length · ikinci/outer AEAD tag · imza
+# Bir alan gerçekten zorunluysa sorulacak soru "kaç byte ekleyelim" DEĞİLDİR; sırasıyla:
+#   (1) mevcut bir alanı ÇIKARABİLİR miyiz?
+#   (2) stateful çözebilir miyiz (taşıyıcı/sunucu state'i, 0 wire byte)?
+#   (3) hub'a güvenerek çözebilir miyiz (trust takası, 0 wire byte)?
+# Gerekçe: 3.125 B/s tabanında her 2 byte ≈ 0.64 s hava zamanıdır. 22B zarf, TLS/TCP/IPv4'ün
+# ~62B'sine karşı ürünün tek gerçek kaldıracıdır; büyürse ürünün varlık sebebi kalmaz.
   ciphertext   : bytes[N]
   aead_tag     : bytes16
 
@@ -2422,6 +2693,10 @@ cert, no re-handshake, no stream dependency.
 
 ### 35.7 hub_handle Semantiği + Allocation (NORMATİF)
 
+> **[KARAR-SLOTU KS-HANDLE-1 — 2026-09-19] `hub_handle` yeniden kullanım koşulu:** Bir handle invalidate edildikten (§35.16 rebind, teardown, `hub_handle_epoch` rollover) sonra **hiçbir peer'a** yeniden atanmadan önce (a) o handle'a bağlı transport outstanding/ARQ state'i ölmüş olmalı VE (b) `HANDLE_TOMBSTONE` dolmuş olmalı. **Türetim kuralı (NORMATİF — magic number değil):** `HANDLE_TOMBSTONE ≥ max(hop-ARQ maksimum RTO×retry ufku, MAX_REORDER_DISTANCE'ın süre karşılığı, mailbox teslim ufku)` — yani o handle'a **geç gelebilecek son meşru datagramın** ufku; namespace 2³² olduğu için tombstone'un bellek maliyeti düşüktür, kısa tutmanın gerekçesi yoktur. Değer bu üç girdiden hub sahibi tarafından hesaplanır `[KALİBRASYON]`. Aksi hâlde eski peer'ın uçuştaki datagramı yeni peer'ın leg'ine düşer (AEAD fail eder ama transport state'e girer — availability). Bu satır olmadan §35.7'nin PRF türetimi "bir handle = bir leg" garantisini yalnız *aktif* tabloda verir.
+
+> **[AMENDMENT-6] `hub_handle` (HubHandle — wire/routing kimliği) ≠ `SessionHandle` (Crypto'nun bastığı yerel capability; wire'da YOK; transport-tdd §0 INV-NEIGHBOR-1). İki tip BİRLEŞTİRİLEMEZ; eşleme Crypto'nun içindedir (kod: legacy.rs `LegacySessionProtector::new(hub_handle, …)`, session.rs h_ext → Session).**
+
 ```
 - 32-bit opaque hub-local routing handle. authentication DEĞİL. E2E boundary DEĞİL.
 - 4B default (Alpha lowband). High-risk deployment 8B handle profili MAY; Alpha default 4B.
@@ -2446,6 +2721,10 @@ reconstruct_counter(expected_counter, seq16):
   base = expected_counter & ~0xffff
   candidates = [ base | seq16, (base - 0x10000) | seq16, (base + 0x10000) | seq16 ]
   candidate = argmin |c - expected_counter|  over candidates
+  # [C-9] BERABERLİK KURALI (NORMATİF — noise-wire §4 32-bit PN kuralıyla AYNI):
+  #   iki aday eşit uzaklıktaysa → geriye doğru olan (düşük) aday seçilir.
+  #   (Simetrik formülasyon: backward tie → düşük, forward tie → yüksek.)
+  #   İki farklı tie kuralı = iki implementasyonun AYNI pakette ayrışması → interop kırılması.
 
   ACCEPT only if:
     candidate >= lowest_acceptable_counter
@@ -2485,6 +2764,13 @@ SESSION_DATA_AAD =
   session_id_internal     (16B)            # INTERNAL (wire'da YOK) — cross-session ayrımı
 # hub_handle E2E AAD'ye GİRMEZ (hub-local remap serbest kalsın). link_id KALDIRILDI (binding key/context'te).
 ```
+
+> **AAD asimetrisi KASITLIDIR [B2 notu, 2026-09-02]:** SSD1 AAD'si `direction` / `epoch` /
+> `session_id_internal`'ı AÇIKÇA taşır; EXTENDED zarf AAD'si (noise-wire §2.8) taşımaz — orada
+> bunlar ANAHTARDA bağlıdır (INV-NONCE-DIR-1 / INV-NONCE-EPOCH-1: yön ve epoch başına ayrı key).
+> İki farklı yaklaşım, ikisi de yeterli; çelişki DEĞİLDİR.
+> `epoch` alanı = `u16_be(dh_epoch)`, dh_epoch ∈ {0, 1}.
+
 
 ### 35.10 SIGNED_CONTROL (non-repudiation, nadir)
 
@@ -2547,7 +2833,7 @@ Kama adaptive transport:
 - AEAD fail → reject, replay window GÜNCELLENMEZ.
 - all-zero X25519 DH → reject (Section 6.x low-order/all-zero kontrolü).
 - cert chain invalid / dest_hash mismatch / static_x25519 cert'e bağlı değil → reject.
-- RESPONSE öncesi epoch_1 SESSION_DATA → defer/reject; RESPONSE sonrası epoch_0 → reject.
+- RESPONSE öncesi epoch_1 SESSION_DATA → defer/reject; RESPONSE sonrası epoch_0 → **grace'e tabi** — yalnız implicit confirmation + bounded grace sonrası (epoch-0 receive state discard edildikten sonra) reject [P0-9; otorite kama-noise-wire §4].
 - deprecated ASYNC_* (SAI1/SAA1/SAD1/SAC1) aktif wire → reject; eski SRAM/Noise-N/per-message Ed25519 → reject.
 ```
 
@@ -2573,6 +2859,45 @@ AC-SM3-10: dest_hash, Identity/User Cert public key'den türetilir (SHA-256(SHA-
            device_ed25519_pub'tan ASLA.
 AC-SM3-11: SESSION_INIT_RESPONSE canonical byte'ları ve state transition tanımlı (Section 35.5).
 AC-SM3-12: Deprecated Async V2 formları (SAI1/SAA1/SAD1/SAC1, ASYNC_*) aktif wire parser'da REJECT.
+
+--- CRYPTO-P0-FREEZE ZORUNLU TEST SETİ [2026-09-07] ---
+
+KDF:
+  V-KDF-1  exact init_root (D1)
+  V-KDF-2  direction-separated epoch-0 keys; k_A2B_e0 != k_B2A_e0 (D2)
+  V-KDF-3  exact session_id_internal; L=16 ≡ Trunc128(L=32) (D3)
+  V-KDF-4  exact epoch_1_root + epoch separation; k_*_e1 != k_*_e0 (D4/D5)
+  V-KDF-5  k_init != k_A2B_e0 ve k_resp != k_B2A_e1 (D6/D7 domain separation)
+  V-KDF-6  NEGATIF: HMAC-BLAKE2s-256 != native keyed BLAKE2s
+  V-KDF-7  bağımsız implementasyon eşitliği (üçüncü kaynak; libsodium HKDF-BLAKE2s SAĞLAMAZ)
+
+SSI1:
+  exact AAD (üç cert_mode) · exact nonce · exact ciphertext · exact tag
+  flags bit flip -> AEAD fail · init_counter bit flip -> AEAD fail
+  "SSI1" byte'ları wire'da BEKLENMEZ (parser SSI1 aramaz)
+
+SSR1:
+  exact AAD · exact nonce · exact ciphertext · exact tag
+  responder_ephemeral all-zero -> reject · response_counter mutation -> AEAD fail
+  "SSR1" byte'ları wire'da BEKLENMEZ · wire session_id lookup YOK
+
+REPLAY (security-critical regression — P0-6):
+  forged paket: counter görülmemiş, AEAD FAIL
+    ASSERT replay bitmap DEĞİŞMEDİ ve highest/expected DEĞİŞMEDİ
+  sonra AYNI full_counter ile GEÇERLİ paket
+    ASSERT kabul edildi
+  + duplicate valid reject · too-old reject · future-gap reject · seq16 wrap
+  + half-span / tie kuralı · yanlış direction fail · yanlış epoch fail
+  + AEAD failure ASLA replay commit etmez · underflow/wrap aritmetiği (P0-7)
+
+EPOCH TRANSITION (P0-9):
+  RESPONSE normal teslim : Alice epoch1'e geçer · Bob ilk epoch1'e kadar epoch0 kabul eder ·
+                           ilk GEÇERLİ epoch1 -> implicit confirmation -> grace başlar ·
+                           grace sonrası epoch0 reject
+  RESPONSE kayıp         : Alice epoch0'da kalır · Bob epoch0 accept'i korur · session ÖLMEZ
+  Reordering             : grace İÇİNDE geç epoch0 kabul · grace SONRASI geç epoch0 reject
+  Forgery (SECURITY)     : AEAD-geçersiz epoch1 paketi implicit confirmation OLUŞTURAMAZ,
+                           grace BAŞLATAMAZ, state transition YAPAMAZ
 AC-SI-1  : SESSION_INIT uç doğrulama zorunlu (cert chain→pinned Root + dest_hash + device_x25519 binding).
 AC-SI-2  : SESSION_INIT reference-first; cache-hit'te full cert gönderilmez; bundle hard-max + MTU policy.
 AC-SM3-13: Alpha LINK_ROUTE_MISS recovery = SESSION_INIT_REF rebind; tanımsız SESSION_RESUME frame YOK.
@@ -2601,7 +2926,8 @@ INVALID (negative) corpus:
   current_device_x25519 mismatch with CompactDeviceCert.device_x25519_pub → reject
   all-zero X25519 public key / DH all-zero shared secret → reject
   responder_ephemeral all-zero → reject
-  RESPONSE öncesi epoch_1 SESSION_DATA → defer/reject; RESPONSE sonrası epoch_0 → reject
+  RESPONSE öncesi epoch_1 SESSION_DATA → defer/reject; RESPONSE sonrası epoch_0 → GRACE'E TABİ
+  (yalnız implicit confirmation + bounded grace sonrası reject; erken-reject testi YAZILMAZ — P0-9)
   deprecated SAI1/SAA1/SAD1/SAC1 active wire → reject; old ASYNC_*/SRAM/Noise-N/per-message Ed25519 → reject
   SESSION_INIT flags cert_mode=11 → reject
   SESSION_INIT flags reserved bits (4..7) non-zero → reject; init_variant != 00 → reject
@@ -2615,6 +2941,10 @@ INVALID (negative) corpus:
 ```
 > **Batching ↔ implicit-length (P1-6 / madde-5, NORMATİF — VARINT YOK):** batch tek AEAD birimi; alt-mesaj framing ciphertext İÇİNDE (deterministic, wire-overhead değil). **LEB128/protobuf-style varint Session Model V3'ün HİÇBİR yerinde (encrypted subframe dahil) KULLANILMAZ.** Canonical iç framing:
 ```
+# [AMENDMENT-6 sahiplik notu, 2026-09-18] Bu yapı, seam'in seal()'e ALDIĞI plaintext birimin çerçevesidir; birimi
+# TRANSPORT üretir (batching transport'un). **CANONICAL = BU YAPI** (KM-SEAM-TC-001 KARAR-1 = (a), 2026-09-18);
+# kodda henüz yok (interim client-core wire.rs `[type][seq u16][unit_id u64]` 11 B çerçeve emekliye ayrılır, transport v1.x).
+# `payload` içi → application-message-protocol.md (Application'ın).
 BatchPayload {
   submsg_count : u8
   submsg[i]    : BatchSubMessage[submsg_count]
@@ -2628,9 +2958,9 @@ BatchSubMessage {
   payload : bytes[length]
 }
 ```
-> Tek seq16, tek tag (batch tek AEAD birimi). Düşük bant için bu kompakt form; alternatif basit form (`submsg_count u8` + her biri `u16_be len + payload`) da geçerli — her iki halde **varint YOK, deterministic parser VAR**.
+> Tek seq16, tek tag (batch tek AEAD birimi). Düşük bant için bu kompakt form **TEK canonical encoding'dir** (KM-SEAM-TC-001 KARAR-1, 2026-09-19). ~~Alternatif basit form (`submsg_count u8` + her biri `u16_be len + payload`) da geçerli~~ — **SUPERSEDED**: bir canonical spec'te iki geçerli encoding olamaz; alternatif form REJECT edilir (len_mode 0xF1..0xFF gibi). Varint YOK, deterministic parser VAR.
 
-> **Sıkıştırma (P1-7, transport-layer-tdd.md §8 otorite — özet):** Sıkıştırma policy-controlled + thresholded + **context-isolated** (per-message/per-batch izole bağlam). Saldırgan-kontrollü plaintext ile gizli sır AYNI sıkıştırma bağlamında KARIŞTIRILMAZ. Eşik altı küçük mesaj (expansion riski) sıkıştırılMAZ. Ses/video çift-sıkıştırma YOK. Uzunluk-leak metadata olarak belgelenir (CRIME E2E'de geçersiz ama side-channel tümüyle yok sayılmaz).
+> **Sıkıştırma (P1-7; sahiplik app-rpc §3 [AMENDMENT-4], wire sözleşmesi application-message-protocol.md §5; transport-tdd §8 normatif değil — özet):** Sıkıştırma policy-controlled + thresholded + **context-isolated** (per-message/per-batch izole bağlam). Saldırgan-kontrollü plaintext ile gizli sır AYNI sıkıştırma bağlamında KARIŞTIRILMAZ. Eşik altı küçük mesaj (expansion riski) sıkıştırılMAZ. Ses/video çift-sıkıştırma YOK. Uzunluk-leak metadata olarak belgelenir (CRIME E2E'de geçersiz ama side-channel tümüyle yok sayılmaz).
 
 ### 35.15 Hub Session State DoS Koruması (NORMATİF, CAD-57)
 
@@ -2641,6 +2971,39 @@ BatchSubMessage {
   hub_handle ancak doğrulanmış akışta kalıcılaşır.
 - Hub INIT içeriğini açamaz (E2E) ama recipient_dest_hash routing + admission (Root CA join gate) görür.
 ```
+
+> **[KARAR-SLOTU KS-DOS-1 — 2026-09-07, değer donmadan implementasyon başlamaz]** Yukarıdaki
+> "TTL + cap + per-source rate-limit" isimli ama DEĞERSİZ. Üç sabit birlikte donar:
+> ```
+> HALF_OPEN_TTL              = [KARAR]
+> HALF_OPEN_CAP              = [KARAR]   # eşzamanlı yarım-açık session
+> PER_SOURCE_INIT_RATE       = [KARAR]
+> PENDING_RESPONSE_TRIAL_CAP = [KARAR]   # Alice tarafı: RESPONSE demux'ta denenecek
+>                                        # pending session üst sınırı (§35.5 demux notu)
+> ```
+> **Boyutlandırma kuralı (NORMATİF):** `HALF_OPEN_CAP`, saldırgan modeline değil **dürüst retry
+> profiline** göre taban alınır — %90 kayıpta meşru istemci INIT'i cached byte-for-byte defalarca
+> gönderir; cap küçük seçilirse MEŞRU retry'lar meşru kayıtları düşürür. Saldırgan sınırlaması
+> `PER_SOURCE_INIT_RATE` ile yapılır.
+> **`PENDING_RESPONSE_TRIAL_CAP` neden burada:** demux yazılmadan varsayılan davranış "pending
+> kümesinde dene-çöz" olur; cap yoksa her sahte RESPONSE N×(2 X25519) maliyeti doğurur
+> (amplifikasyon). Cap bu ailenin parçasıdır.
+> **SEMANTİK (NORMATİF, 2026-09-19 — değerden bağımsız donar; kalan yalnız kalibrasyon):**
+> - `HALF_OPEN_TTL`: hub'ın yarım-açık session kaydını tuttuğu **monotonic** süre; dolunca kayıt düşer, sonraki
+>   INIT yeni kayıt açar (replay kümesi ayrı, §35.8 — TTL replay korumasını GEVŞETMEZ).
+> - `HALF_OPEN_CAP`: **per-source** sınırdır, global değil (global cap bir saldırganın tüm hub'ı kilitlemesine izin
+>   verir). Dolunca **en eski yarım-açık kayıt düşürülür** (drop-oldest), yeni INIT reddedilmez — dürüst retry'lar
+>   kendi eski kayıtlarını yeniler, saldırgan ise yalnız kendi kotasını tüketir. Ek **global soft-cap** yalnız
+>   bellek koruması içindir ve per-source'tan büyük olmalıdır.
+> - `PER_SOURCE_INIT_RATE` — **"source" tanımı:** bind ÖNCESİ (CLIENT_BIND yok) = UDP 4-tuple; NAT arkası çok
+>   istemci aynı tuple'ı paylaşabilir (adil olmayan ama güvenli — kota paylaşılır, bypass edilemez). Bind SONRASI =
+>   doğrulanmış client identity (dest_hash); spoof edilemez. IP spoofing ile kota bypass'ı Plane 0 Noise handshake
+>   tamamlanmadan INIT kabul edilmediği için mümkün değildir (INIT yalnız Plane 1 üzerinden). Aşımda INIT sessiz
+>   düşer (drop, reject cevabı YOK — amplifikasyon vermez).
+> - `PENDING_RESPONSE_TRIAL_CAP`: **per-peer** (Alice'in Bob'a açık pending sayısı) VE sahte-RESPONSE başına deneme
+>   üst sınırı; deneme sırası en-yeni-önce (KM-SEAM-TC-001 K7); cap aşımında `Failed` (opak). Değeri
+>   `HALF_OPEN_CAP` ile aynı ailede kalibre edilir (aynı dürüst-retry profili).
+> Bu dört semantik donmuştur; `[KARAR]` işaretleri yalnız **sayısal kalibrasyon** ister.
 
 ### 35.16 LINK_ROUTE_MISS + Rebind (NORMATİF, CAD-57)
 
@@ -2716,6 +3079,25 @@ CROSS-DOC: identity-and-trust-model.md bazı bölümlerde hâlâ historical Asyn
 **Doküman sonu — CCR Format Specification v1.0**
 
 Bu doküman `identity-and-trust-model.md` v1.5'in (Haziran 2026 ERRATA, statik X25519 canonical) tanımladığı tüm kimlik/PKI nesnelerinin kesin canonical binary formatını verir: CCR envelope + cert tipleri (Root 20y / Intermediate 5y namespace omurgası / Identity 1y / Device 90g), canonical_ccr_tbs, **CompactDeviceCert** (~152B, statik pk_x25519, SAN/deviceId yok, dest_hash türetilir, Section 13), DeviceCertBundle (unsigned container), **DiscoveryRecord** (current_device_x25519 binding, KONUM taşımaz/home_hub_id KALDIRILDI, magic SRDR, Section 21), **HubListRecord** (Intermediate-imzalı IP SAN bootstrap, magic SRHL, Section 21.5), **OrgEntitlementRecord** (RoftCore-imzalı lisans kaydı + lifetime clamp, magic SROE, Section 21.6), **Session Model V3** (SESSION_INIT/SESSION_INIT_RESPONSE/SESSION_DATA/SIGNED_CONTROL, TLS-dersi key-binding, 18B SESSION_DATA hot-path, magic SSI1/SSR1/SSD1/SSC1, Section 35; eski Async V2 SA?1 + tek-yapı SRAM/Noise N DEPRECATED Section 35-DEPRECATED/V2). Lisans enforcement Intermediate expiry ile DEĞİL — OrgEntitlementRecord + RA license gate + Identity 1 yıl + clamp (identity v1.5 E-11). [SignedNoisePrekey/PrekeyBundle statik X25519 kararıyla DEPRECATED / MUST NOT IMPLEMENT, Section 18-19.] Tüm integer big-endian fixed-width; imzalı yapılarda varint yok; canonical input Kama-native (JSON/protobuf/DER değil). Magic domain separation (SRCR/SRDR/SRHL/SROE + Session V3: SSI1/SSR1/SSD1/SSC1 + routing: SRRR/SRAN/SRAH; SRAM + Async V2 SA?1 DEPRECATED) cross-protocol signature confusion'ı önler. Hash girdileri kesin (identity_hash ham key, subject_key_id/ROOT_CA_SPKI_HASH spki). Parser rejection kuralları tam; libFuzzer hedefleri + Java/Rust/C++ differential interop tanımlı. RA→CA boundary korunur (izole mTLS/gRPC, custom transport değil). v1.5 ile tek bilinçli fark: TBS'e domain-separation magic eklenmesi (semantik değişmez, açıkça not edildi). Mimari hiçbir karar bu dokümanda yeniden tasarlanmadı — identity-and-trust-model.md semantik otorite, bu doküman byte-level projeksiyonu.
+
+> **STATÜ [2026-09-19] — CRYPTO-P0-FREEZE (07 Eyl) bloğu bu bloğun SUPERSEDE eder:**
+> ```
+> Core crypto architecture            : GO   (kanonik: App → Transport → Crypto tel kenarında → UDP; transport-tdd §0 INV-NEIGHBOR-1)
+> CCR canonical codec                 : GO
+> D1–D7 key schedule (§35.2.1)        : GO
+> SSI1 / SSR1 / SSD1 crypto           : GO
+> SESSION_DATA hot-path (seam çıktısı): GO
+> Replay / nonce model                : GO   (P0-6/P0-7; PN sayacı CRYPTO'da — KM-SEAM-TC-001 K2)
+> dh_epoch 0→1 transition             : GO   (kama-noise-wire §4)
+> RESPONSE demux (KS-DEMUX-1)         : GO   (KM-SEAM-TC-001 K7: candidate seçimi CRYPTO içinde, cap'li; Transport dispatch
+>                                              anahtarı = DELIVER/MailboxItem envelope_type, app-rpc AMENDMENT-7)
+> Transport↔Crypto seam (S3) tasarımı : GO   (KM-SEAM-TC-001 K1–K9; ProtectionContext(Session|HubChannel); KARAR-1 = §35.6 BatchPayload)
+> S3 SEAM-FROZEN                      : HOLD — KS-DOS-1 sabitleri (§35.15) + KS-GRACE-1 (N_g/T_g) + §35.13 vektörler + harness + stub
+> Application Message Protocol v1     : HOLD — alan/limit kararları (application-message-protocol.md §8)
+> Production interoperability freeze  : HOLD — vektörler + interop/adversarial testler + noise-wire D1-ENTRY (N1–N10 + POC)
+> ```
+> Açık product/calibration kalemleri: KS-DOS-1 (§35.15) · KS-GRACE-1 · KS-REV-1 (revocation-model, K10 ile) · KS-RA-1 (pki).
+> ~~S2-noise.2~~ ve ~~CRY-1~~ kapandı (S3 K1/K2). ~~KS-ACK-1~~ söküldü (app-rpc MAILBOX_PRUNE).
 
 ---
 

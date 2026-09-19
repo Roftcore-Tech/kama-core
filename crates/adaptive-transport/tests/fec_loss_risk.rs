@@ -749,3 +749,574 @@ fn evidence_gecis_enstrumani_dolu() {
     assert!(l2.2 >= 10_000, "ilk L2'de persistent ≥ l2_min: {l2:?}");
     assert!(l2.0 >= l1.0, "kütle L1'den L2'ye azalmaz (aynı uçuş)");
 }
+
+// ═══════════════ [FEC v1] sınırlı politika + C4 guard'ı G1 ═══════════════
+
+/// Ürün politikası değerleri (kapanış kararı): A 250-250-250 + P2 + G1(300‰). Transport default'u nötr kalır.
+#[test]
+fn bounded_v1_degerleri_ve_default_notr() {
+    let b = FecLossRiskConfig::bounded_v1();
+    assert!(b.enabled);
+    assert_eq!(b.bootstrap_cap_permille, 250);
+    assert_eq!(b.persistent_cap_permille, 250);
+    assert_eq!(b.persist_mode, PersistMode::LearnedSpuriousAge);
+    assert_eq!(
+        (
+            b.persist_srtt_permille,
+            b.persist_rho_permille,
+            b.persist_q_permille
+        ),
+        (500, 1250, 950)
+    );
+    assert_eq!(b.reorder_suppress_permille, 300);
+    let d = FecLossRiskConfig::default();
+    assert!(!d.enabled);
+    assert_eq!(
+        d.reorder_suppress_permille,
+        u32::MAX,
+        "default: G1 kapalı (nötr)"
+    );
+}
+
+/// G1: kısmi geç-ACK (Spurious) ile reorder-baskısı ≥ 300‰ olunca spekülatif ÖNERİ susar; risk
+/// hesabı, `t_first_risk` ve ilk L1 anı DEĞİŞMEZ (yalnız öneri bastırılır). Eşik kapalıyken öneri sürer.
+#[test]
+fn g1_reorder_baskisi_oneriyi_bastirir_riski_degistirmez() {
+    fn scenario(cfg: FecLossRiskConfig, late_upto: u64) -> (Sender, Vec<TsSample>) {
+        // Zaman çizgisi handoff ailesiyle aynı: PreConverge ilk ACK'e kadar yalnız seq 0'ı gönderir;
+        // 80 birim ancak 4.1 s'deki ACK'ten sonra 44 s'ye kadar tele çıkar.
+        let mut s = Sender::new();
+        s.set_establish_probe(false);
+        s.set_fec_loss_risk(cfg);
+        let mut samples = Vec::new();
+        let mut step = |s: &mut Sender, ev: Event, t: u64| {
+            s.on_event(ev, t);
+            samples.push(s.diag_ts_sample());
+        };
+        for i in 0..80u64 {
+            step(
+                &mut s,
+                Event::AppData(OpaqueUnit {
+                    id: 1000 + i,
+                    size: 101,
+                }),
+                0,
+            );
+        }
+        for t in 1..=20u64 {
+            step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+        }
+        step(
+            &mut s,
+            Event::AckReceived(AckInfo {
+                acked_seqs: vec![0],
+                ack_delay: Duration::ZERO,
+            }),
+            4_100 * MS,
+        );
+        for t in 21..=220u64 {
+            step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+        }
+        // 41..79 ACK → 1..40 paket-eşiğiyle Suspected (declared ≥ 8).
+        step(
+            &mut s,
+            Event::AckReceived(AckInfo {
+                acked_seqs: (41..80).collect(),
+                ack_delay: Duration::ZERO,
+            }),
+            45_000 * MS,
+        );
+        for t in 226..=230u64 {
+            step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+        }
+        // Geç-ACK: 1..late_upto Spurious (reorder), kalanı Suspected → rp = spurious/declared, risk sürer.
+        step(
+            &mut s,
+            Event::AckReceived(AckInfo {
+                acked_seqs: (1..late_upto).collect(),
+                ack_delay: Duration::ZERO,
+            }),
+            46_200 * MS,
+        );
+        for t in 232..=400u64 {
+            step(&mut s, Event::TimerFired(Timer::Pto), t * 200 * MS);
+        }
+        (s, samples)
+    }
+    let (g1, s_g1) = scenario(FecLossRiskConfig::bounded_v1(), 21);
+    let (open, s_open) = scenario(
+        FecLossRiskConfig {
+            reorder_suppress_permille: u32::MAX,
+            ..FecLossRiskConfig::bounded_v1()
+        },
+        21,
+    );
+    // Geç-ACK anı: ilk rp > 0 örneği. Pencere zamanla kayar (W_loss) → spurious kanıtı SONRA yaşlanır ve
+    // rp tekrar 0'a iner; bu yüzden guard'ın etkisi geç-ACK'i izleyen örneklerde sınanır.
+    let cut = s_open
+        .iter()
+        .position(|x| x.reorder_pressure_permille > 0)
+        .expect("önkoşul: spurious gelmeli (rp > 0)");
+    let win = |v: &[TsSample]| -> Vec<TsSample> { v[cut..(cut + 6).min(v.len())].to_vec() };
+    eprintln!(
+        "g1 pencere: {:?}",
+        win(&s_open)
+            .iter()
+            .map(|x| (x.reorder_pressure_permille, x.instant_ppm, x.spec_prop))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        win(&s_open)
+            .iter()
+            .all(|x| x.reorder_pressure_permille >= 300 && x.instant_ppm >= 10_000),
+        "önkoşul: rp ≥ 300‰ ∧ instant ≥ l1_min: {:?}",
+        win(&s_open)
+    );
+    assert!(
+        win(&s_open)
+            .iter()
+            .all(|x| x.spec_prop > 0 && x.level_idx >= 1),
+        "eşik kapalı: öneri sürer"
+    );
+    assert!(
+        win(&s_g1)
+            .iter()
+            .all(|x| x.spec_prop == 0 && x.level_idx == 0),
+        "G1: öneri bastırılır (L0): {:?}",
+        win(&s_g1)
+    );
+    // Risk hesabı ve zaman damgaları özdeş: G1 yalnız öneriyi bastırır.
+    assert!(
+        s_g1.iter()
+            .zip(&s_open)
+            .all(|(a, b)| a.instant_ppm == b.instant_ppm
+                && a.persistent_ppm == b.persistent_ppm
+                && a.reorder_pressure_permille == b.reorder_pressure_permille),
+        "tahminci G1'den bağımsız"
+    );
+    assert_eq!(
+        g1.diag_fec_risk_times().2,
+        open.diag_fec_risk_times().2,
+        "t_first_risk değişmez"
+    );
+    assert_eq!(
+        g1.diag_spec_signals().3,
+        open.diag_spec_signals().3,
+        "ilk L1 anı değişmez (geç-ACK'ten önce)"
+    );
+    assert!(g1.diag_spec_signals().3 > 0, "önkoşul: L1 ateşledi");
+    // Geç-ACK'ten ÖNCE öneriler özdeş (guard rp yokken inert).
+    assert_eq!(&s_g1[..cut], &s_open[..cut], "rp = 0 iken byte-özdeş");
+    // Eşik semantiği: spurious payı eşiğin ALTINDA (1..10 → rp = 250‰ < 300) ⇒ guard bastırmaz; seri
+    // eşiği kapalı kolla özdeş. Guard salt mevcut split'in fonksiyonu (latch/tarihçe yok).
+    let (_, s_g1_low) = scenario(FecLossRiskConfig::bounded_v1(), 11);
+    let (_, s_open_low) = scenario(
+        FecLossRiskConfig {
+            reorder_suppress_permille: u32::MAX,
+            ..FecLossRiskConfig::bounded_v1()
+        },
+        11,
+    );
+    let rp_low = s_open_low
+        .iter()
+        .map(|x| x.reorder_pressure_permille)
+        .max()
+        .unwrap_or(0);
+    assert!(
+        rp_low > 0 && rp_low < 300,
+        "önkoşul: 0 < rp < 300‰ ({rp_low})"
+    );
+    assert_eq!(s_g1_low, s_open_low, "eşik altında G1 byte-özdeş");
+}
+
+// ═══════════ [KURULUŞ-GUARD] PreConverge'de hiçbir kol parity çıkaramaz ═══════════
+
+/// Denetim bulgusu (2026-09-08): `structure_gate_fec` PreConverge'de bloke ediyordu ama
+/// `speculative_propose` hiçbir `SenderState` kontrolü içermiyor. FEC ürün profilinde default
+/// AÇIK olduğundan bu canlı bir yol. Guard arbiter ÇIKIŞINA taşındı; bu test onu pinler.
+///
+/// Senaryo: Karn-dışı ACK — retransmit belirsizliği yüzünden RTT örneği ÜRETİLMEZ (oturum
+/// PreConverge'de kalır) ama SACK boşlukları kaybı ilan eder → spekülatif kol parity önerir.
+#[test]
+fn kurulus_guard_preconverge_de_arbiter_ciktisini_sifirlar() {
+    let mut s = Sender::new();
+    s.set_establish_probe(false);
+    s.set_fec_loss_risk(FecLossRiskConfig::experimental_v1());
+    for i in 0..80u64 {
+        s.on_event(
+            Event::AppData(OpaqueUnit {
+                id: 1000 + i,
+                size: 101,
+            }),
+            0,
+        );
+    }
+    let mut saw_proposal_in_preconverge = false;
+    let mut max_final_in_preconverge = 0u32;
+    for t in 1..=40u64 {
+        s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS);
+        if s.state() == SenderState::PreConverge {
+            let x = s.diag_ts_sample();
+            max_final_in_preconverge = max_final_in_preconverge.max(x.final_ratio);
+            if x.spec_prop > 0 || x.structure_prop > 0 || x.confirmed_prop > 0 {
+                saw_proposal_in_preconverge = true;
+            }
+        }
+    }
+    assert_eq!(
+        s.state(),
+        SenderState::PreConverge,
+        "önkoşul: ACK yok → oturum kurulmadı"
+    );
+    assert_eq!(
+        max_final_in_preconverge, 0,
+        "PreConverge'de arbiter çıkışı parity YAZAMAZ (kuruluş guard'ı)"
+    );
+    // Guard sayacı, öneri gerçekten oluştuysa artmış olmalı (vakum testi değil).
+    if saw_proposal_in_preconverge {
+        assert!(
+            s.diag_preconverge_parity_blocked() > 0,
+            "öneri vardı ama guard sayacı artmadı"
+        );
+    }
+}
+
+/// Guard yalnız PreConverge'i keser: oturum kurulduktan sonra parity normal akar (regresyon pini).
+#[test]
+fn kurulus_guard_sadece_preconverge_i_keser() {
+    let s = drive(
+        {
+            let mut x = Sender::new();
+            x.set_fec_loss_risk(FecLossRiskConfig::experimental_v1());
+            x
+        },
+        80,
+        gap_pattern(),
+    );
+    assert_ne!(
+        s.state(),
+        SenderState::PreConverge,
+        "önkoşul: oturum kuruldu"
+    );
+    let levels = s.diag_spec_levels();
+    assert!(
+        levels[1] + levels[2] > 0,
+        "kuruluş sonrası spekülatif kol ateşlemeli: {levels:?}"
+    );
+}
+
+// ═══════════ [FAZ-1] DÖNÜŞ-YOLU GÖZLEMİ — ileri kayıp ≠ dönüş bozulması ═══════════
+
+use adaptive_transport::return_path::{AckObservation, ReturnPathHealth, ReturnPathObserver};
+
+fn obs(seen: u32, sent: u64) -> AckObservation {
+    AckObservation {
+        wire_bytes: 65,
+        seen_count: seen,
+        v2: true,
+        sent_datagrams: sent,
+    }
+}
+
+/// R1 — YALNIZ İLERİ-YÖN bozulması: ACK'ler ritminde akıyor (süreklilik tam) ama alıcı
+/// gönderilenin çok azını görüyor → `forward_loss` YÜKSEK, `return_impairment` SIFIR.
+#[test]
+fn r1_ileri_yon_kaybi_donus_bozulmasi_olarak_gorunmez() {
+    let mut o = ReturnPathObserver::default();
+    // Alıcının NOMİNAL ritmi (2 datagram/ACK) → dönüş yolu sağlıklı; ileri yönde %50 kayıp.
+    // (Fixture 20 datagram/ACK iken mutlak ölçü haklı olarak %90 dönüş-ACK kaybı bildiriyordu.)
+    let (mut sent, mut seen) = (0u64, 0u32);
+    for i in 0..10u64 {
+        sent += 2;
+        seen += 1;
+        o.on_ack(obs(seen, sent), (i + 1) * 100 * MS);
+    }
+    let s = o.state(10 * 100 * MS);
+    assert!(s.direction_evidence, "yön kanıtı oluşmalı");
+    // Bir-ACK gecikmeli kümülatif oran: sent_{n-1}=180, seen_n=100 → 444‰ (muhafazakâr: gerçek
+    // %50'nin altında, çünkü son pencerenin uçuşu henüz sayılmaz).
+    assert!(
+        (350..=550).contains(&s.forward_loss_permille),
+        "ileri kayıp ≈ %50 olmalı (gecikme yüzünden hafif düşük): {s:?}"
+    );
+    assert_eq!(
+        s.return_impairment_permille, 0,
+        "geri bildirim kesintisiz → dönüş bozulması SIFIR (INV-RETURN-1): {s:?}"
+    );
+    assert_eq!(s.health, ReturnPathHealth::Healthy);
+}
+
+/// R2 — YALNIZ DÖNÜŞ bozulması: alıcı gönderilenin TAMAMINI görüyor (ileri yön temiz) ama
+/// ACK'lerin çoğu dönüşte kayboluyor → `forward_loss` SIFIR, `return_impairment` YÜKSEK.
+#[test]
+fn r2_donus_yolu_bozulmasi_ileri_kayip_olarak_gorunmez() {
+    let mut o = ReturnPathObserver::default();
+    let (mut sent, mut seen) = (0u64, 0u32);
+    // İlk iki ACK ritmi kurar (100 ms), sonra ACK'ler 5 pencerede bir geliyor.
+    for i in 0..3u64 {
+        sent += 20;
+        seen += 20;
+        o.on_ack(obs(seen, sent), (i + 1) * 100 * MS);
+    }
+    let mut t = 300 * MS;
+    for _ in 0..6u64 {
+        t += 500 * MS; // 5 pencere = 4 kaçırılmış
+        sent += 100;
+        seen += 100;
+        o.on_ack(obs(seen, sent), t);
+    }
+    let s = o.state(t);
+    assert!(s.direction_evidence);
+    assert_eq!(
+        s.forward_loss_permille, 0,
+        "alıcı her şeyi gördü → ileri kayıp SIFIR: {s:?}"
+    );
+    // Ayırt edici üçlü (hepsi dönüş yolunu gösterir, hiçbiri ileri yönü suçlamaz):
+    assert!(
+        s.return_impairment_permille >= 300,
+        "kümülatif süreklilik kaybı görünmeli: {s:?}"
+    );
+    assert!(
+        s.ack_interval_ns >= 300 * MS,
+        "geri-bildirim ritmi yavaşladı: {s:?}"
+    );
+    assert!(
+        s.measured_return_bw_bps < 500,
+        "ölçülen dönüş debisi düştü (R0'da >1000 B/s): {s:?}"
+    );
+}
+
+/// R5 — geri bildirim ÖLDÜ: son ACK'ten sonra uzun sessizlik → `Dead`; ileri-yön ölçüsü
+/// (son bilinen `forward_loss`) bundan ETKİLENMEZ.
+#[test]
+fn r5_olu_geri_bildirim_dead_olur_ileri_olcuyu_bozmaz() {
+    let mut o = ReturnPathObserver::default();
+    let (mut sent, mut seen) = (0u64, 0u32);
+    for i in 0..5u64 {
+        sent += 2; // nominal ritim → dönüş yolu sağlıklı başlar
+        seen += 2;
+        o.on_ack(obs(seen, sent), (i + 1) * 100 * MS);
+    }
+    let healthy = o.state(520 * MS);
+    assert_eq!(healthy.health, ReturnPathHealth::Healthy);
+    let degraded = o.state(500 * MS + 350 * MS);
+    assert_eq!(degraded.health, ReturnPathHealth::Degraded);
+    let dead = o.state(500 * MS + 5_000 * MS);
+    assert_eq!(dead.health, ReturnPathHealth::Dead, "{dead:?}");
+    assert_eq!(dead.forward_loss_permille, healthy.forward_loss_permille);
+}
+
+/// R0 — sağlıklı simetrik: örnek biriktikçe güven artar, ölçülen dönüş bandı ÖNSELE (31 B/s)
+/// eşit DEĞİLDİR — ölçüm önselin yerine geçmez, onun yanında durur.
+#[test]
+fn r0_saglikli_yolda_olculen_donus_bandi_onselden_bagimsizdir() {
+    let mut o = ReturnPathObserver::default();
+    let (mut sent, mut seen) = (0u64, 0u32);
+    for i in 0..8u64 {
+        sent += 10;
+        seen += 10;
+        o.on_ack(obs(seen, sent), (i + 1) * 50 * MS);
+    }
+    let s = o.state(400 * MS);
+    assert_eq!(s.confidence_permille, 1000, "8 örnekte güven doyar");
+    // 65 B / 50 ms = 1300 B/s — 31 B/s önseliyle hiçbir ilgisi yok.
+    assert!(
+        s.measured_return_bw_bps > 1000,
+        "ölçülen dönüş bandı gerçek debiden gelir: {s:?}"
+    );
+    assert_eq!(s.ack_interval_ns, 50 * MS);
+}
+
+/// R5' — MUTLAK dönüş-ACK-kaybı: alıcının nominal ritmi (ACK_FREQ_N=2 datagram/ACK) referans
+/// alınır; ACK başına 30 datagram gözlenirse dönüşte ~%93 ACK kaybı vardır. Bu ölçü EWMA'nın
+/// yeni ritme uyum sağlamasından ETKİLENMEZ ve ileri-yön ölçüsünü BOZMAZ.
+#[test]
+fn r5b_mutlak_donus_ack_kaybi_ewma_uyumundan_etkilenmez() {
+    let mut o = ReturnPathObserver::default();
+    // 10 ACK, her biri 300 ms arayla; ACK başına 30 datagram (nominal 2) → ~933‰ ACK kaybı.
+    let (mut sent, mut seen) = (0u64, 0u32);
+    for i in 0..10u64 {
+        sent += 30;
+        seen += 30;
+        o.on_ack(obs(seen, sent), (i + 1) * 300 * MS);
+    }
+    let s = o.state(3_000 * MS);
+    assert_eq!(s.datagrams_per_ack_x100 / 100, 30, "{s:?}");
+    assert!(
+        s.return_ack_loss_permille >= 900,
+        "dönüş ACK kaybı ~933‰ olmalı: {s:?}"
+    );
+    assert_eq!(
+        s.forward_loss_permille, 0,
+        "ileri yol temiz — dönüş kaybı oraya YAZILMAZ (INV-RETURN-1): {s:?}"
+    );
+    assert_eq!(s.health, ReturnPathHealth::Dead, "{s:?}");
+}
+
+/// Sağlıklı ritim (2 datagram/ACK) mutlak ölçüde SIFIR kayıp verir — yanlış alarm yok.
+#[test]
+fn r0b_nominal_ritim_donus_kaybi_uretmez() {
+    let mut o = ReturnPathObserver::default();
+    let (mut sent, mut seen) = (0u64, 0u32);
+    for i in 0..12u64 {
+        sent += 2;
+        seen += 2;
+        o.on_ack(obs(seen, sent), (i + 1) * 40 * MS);
+    }
+    let s = o.state(480 * MS);
+    assert_eq!(s.return_ack_loss_permille, 0, "{s:?}");
+    assert_eq!(s.health, ReturnPathHealth::Healthy);
+}
+
+/// Kanıt eşiği: V1 (seen_count'suz) ACK'ler yön-ayrımı ÜRETMEZ — uydurulmuş sayı yayılmaz.
+#[test]
+fn v1_ack_yon_ayrimi_uretmez() {
+    let mut o = ReturnPathObserver::default();
+    for i in 0..6u64 {
+        o.on_ack(
+            AckObservation {
+                wire_bytes: 59,
+                seen_count: 0,
+                v2: false,
+                sent_datagrams: (i + 1) * 20,
+            },
+            (i + 1) * 100 * MS,
+        );
+    }
+    let s = o.state(600 * MS);
+    assert!(!s.direction_evidence, "V2 yoksa yön kanıtı YOK");
+    assert_eq!(s.forward_loss_permille, 0);
+    assert!(s.ack_samples == 6 && s.v2_samples == 0);
+}
+
+// ═══════════ [FAZ-2] FEC SPEC-TAMLIĞI — kalem 2 ve 4 ═══════════
+
+/// KALEM-4: acil-durum kurtarma framing'i FEC blok framing'ine göre seçilir (§11 / TDD §5.6).
+/// FEC kapalıyken `Tiny` (D× kopya), FEC açıkken `SegmentBlock` (minimal parity). Çağıran eskiden
+/// `Framing::Tiny`'yi SABİT veriyordu → spec'in segment-block kolu ulaşılamazdı.
+#[test]
+fn kalem4_acil_framing_fec_aktifligine_bagli() {
+    use adaptive_transport::emergency::{Framing, RecoveryAction};
+    // FEC KAPALI (default Manual{false}) → Tiny kolu → kopya, parity YOK.
+    let mut off = Sender::new();
+    off.set_establish_probe(false);
+    let off = drive(off, 40, gap_pattern());
+    // FEC AÇIK (Controller) → SegmentBlock kolu.
+    let mut on = Sender::new();
+    on.set_establish_probe(false);
+    let _ = on.set_fec_actuation_mode(FecActuationMode::Controller);
+    let on = drive(on, 40, gap_pattern());
+    // Her iki kolda da acil-durum seviyesine girilmemiş olabilir; framing seçimi yine de
+    // last_recovery'nin TÜRÜNDEN okunur (Arq seviyesinde ikisi de Arq'tır).
+    let f_off = off.last_recovery();
+    let f_on = on.last_recovery();
+    assert!(
+        !matches!(f_off, RecoveryAction::MinimalParity { .. }),
+        "FEC kapalıyken minimal-parity kolu SEÇİLEMEZ: {f_off:?}"
+    );
+    // Framing eşlemesinin kendisi (seviyeden bağımsız) doğrudan pinlenir:
+    let cfg = adaptive_transport::emergency::EmergencyConfig::fixture();
+    let a_tiny = adaptive_transport::emergency::action(
+        adaptive_transport::emergency::EmergencyLevel::Dup2,
+        Framing::Tiny,
+        &cfg,
+    );
+    let a_block = adaptive_transport::emergency::action(
+        adaptive_transport::emergency::EmergencyLevel::Dup2,
+        Framing::SegmentBlock,
+        &cfg,
+    );
+    assert!(matches!(a_tiny, RecoveryAction::Duplication { .. }));
+    assert!(
+        matches!(a_block, RecoveryAction::MinimalParity { permille } if permille > 0),
+        "segment-block → minimal parity (§11 NORMATİF): {a_block:?}"
+    );
+    let _ = f_on;
+}
+
+/// KALEM-2: §8.5 bütçe clamp'i bağlandı, ama BANT KANITI YOKKEN parity'yi SIFIRLAMAZ.
+/// (Formülün literal okuması BtlBw<125 B/s'te cap=0 verir ve §11'in minimal-parity tabanıyla
+/// çelişir; sıfırlama vakası ayrı sayaçla görünür kılınır, sessizce seçilmez.)
+#[test]
+fn kalem2_bant_kaniti_yokken_clamp_parity_sifirlamaz() {
+    let mut s = Sender::new();
+    s.set_establish_probe(false);
+    s.set_fec_loss_risk(FecLossRiskConfig::experimental_v1());
+    let s = drive(s, 80, gap_pattern());
+    // Bu sürücüde ölçülen bant çok küçüktür → clamp sıfırlamak isterdi.
+    let would_zero = s.diag_parity_budget_would_zero();
+    let levels = s.diag_spec_levels();
+    assert!(
+        levels[1] + levels[2] > 0,
+        "önkoşul: spekülatif kol öneri üretmeli: {levels:?}"
+    );
+    assert!(
+        would_zero > 0,
+        "dar bantta clamp sıfırlamak isterdi ve bu GÖRÜNÜR olmalı"
+    );
+    // Ve gerçekten sıfırlanmamış olmalı: son karar oranı > 0.
+    assert!(
+        s.diag_ts_sample().final_ratio > 0,
+        "kanıt yokken clamp parity'yi silmemeli: {:?}",
+        s.diag_ts_sample()
+    );
+}
+
+// ═══════════ [FAZ-3] RUNTIME TELEMETRİ — yapılandırıldı ≠ ulaşılabilir ≠ ateşledi ═══════════
+
+/// "Yapılandırıldı" ile "ateşledi" AYRI olgulardır: tail-recovery açıkken bile hiç probe
+/// çıkmayabilir. Telemetri ikisini karıştırmamalı (denetimin "kod var → koşmuştur" hatası).
+#[test]
+fn faz3_yapilandirildi_atesledi_ayrimi() {
+    use adaptive_transport::tail_recovery::TailRecoveryConfig;
+    // (a) tail KAPALI (Sender default'u): configured=false, ateşleme=0.
+    let off = Sender::new();
+    let a_off = off.diag_activation();
+    assert!(!a_off.tail_configured, "Sender default'unda tail KAPALI");
+    assert_eq!(a_off.tail_probes, 0);
+
+    // (b) tail AÇIK ama hiç sürülmedi: configured=true, ateşleme HÂLÂ 0.
+    let mut on = Sender::new();
+    on.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
+    let a_on = on.diag_activation();
+    assert!(a_on.tail_configured, "validated_v1 → configured");
+    assert_eq!(
+        a_on.tail_probes, 0,
+        "yapılandırma ATEŞLEME DEĞİLDİR: {a_on:?}"
+    );
+    assert_eq!(a_on.left_preconverge_ns, 0, "oturum kurulmadı");
+}
+
+/// Ulaşılabilirlik ve tahminciler: ACK'li bir akıştan sonra faz geçişleri sayılır, PreConverge'den
+/// çıkış anı damgalanır ve karar GİRDİLERİ (srtt/btlbw/pacer) ürün derlemesinde okunabilir olur.
+#[test]
+fn faz3_ulasilabilirlik_ve_tahminciler_dolu() {
+    let s = drive(Sender::new(), 80, gap_pattern());
+    let a = s.diag_activation();
+    assert!(
+        a.state_transitions > 0,
+        "faz geçişi olmalı (ulaşılabilirlik kanıtı): {a:?}"
+    );
+    assert!(
+        a.left_preconverge_ns > 0,
+        "ilk RTT örneğiyle PreConverge terk edilmeli: {a:?}"
+    );
+    assert!(a.srtt_us > 0, "srtt ölçülmeli: {a:?}");
+    assert!(a.pacer_rate_bps > 0, "pacer hızı okunabilmeli: {a:?}");
+    // Kayıp sürüşünde ARQ fazına girilmiş olmalı ve retransmit ateşlemiş olmalı.
+    assert!(
+        a.recover_arq_entries > 0 || a.retransmits > 0,
+        "kayıplı sürüşte ARQ kolu ateşlemeli: {a:?}"
+    );
+}
+
+/// Vakum koruması: FEC yapılandırılmamışken parity sayaçları SIFIR kalır — telemetri
+/// "ateşledi" diye yanlış kanıt üretmez.
+#[test]
+fn faz3_fec_yapilandirilmamisken_parity_sayaclari_sifir() {
+    let s = drive(Sender::new(), 80, gap_pattern());
+    let a = s.diag_activation();
+    assert!(!a.fec_configured, "bu sürüşte FEC aktüasyonu yok");
+    assert_eq!(a.parity_emitted, 0, "{a:?}");
+    assert_eq!(a.parity_token_denied, 0, "{a:?}");
+}

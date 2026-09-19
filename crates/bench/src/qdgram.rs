@@ -130,13 +130,23 @@ impl BenchTransport for QdgramTransport {
         endpoint.set_default_client_config(client_config(cfg.cc)?);
         // Handshake max_deadline ile bounded (quic.rs ile aynı gerekçe); fail → 0-completion
         // GEÇERLİ ölçüm sonucu.
+        // [FAZ-4 §M4] Kurulum maliyeti AYRI ölçülür; ölçüm-t0 warmup/gate sonrasında konur →
+        // kurulum completion penceresinin DIŞINDADIR (dört kolda aynı kural).
+        let setup_clock = Instant::now();
         let connecting = endpoint
             .connect(cfg.server, "localhost")
             .map_err(|e| BenchError::Quic(e.to_string()))?;
         let conn = match timeout(cfg.max_deadline, connecting).await {
             Ok(Ok(c)) => c,
-            Ok(Err(_)) | Err(_) => return Ok(failed_output(&cfg, gov.as_ref())),
+            Ok(Err(_)) | Err(_) => {
+                return Ok(failed_output(
+                    &cfg,
+                    gov.as_ref(),
+                    u64::try_from(setup_clock.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                ))
+            }
         };
+        let setup_ns = u64::try_from(setup_clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
         // [W6] Kuruluş-gate'i (handshake temiz ağda; netem bu noktada uygulanır, A2).
         if let Some(g) = &cfg.establish_gate {
             crate::transport::gate_sync(g).await?;
@@ -153,7 +163,7 @@ impl BenchTransport for QdgramTransport {
         if let Some(h) = &gov {
             h.arm_now(); // ölçüm-t0: bütçe ARM (handshake+warmup pre_arm'da muaf).
         }
-        let out = client_loop(&cfg, &conn, gov.as_ref(), warmup_residue).await;
+        let out = client_loop(&cfg, &conn, gov.as_ref(), warmup_residue, setup_ns).await;
         conn.close(0u32.into(), b"done");
         let _ = timeout(Duration::from_secs(3), endpoint.wait_idle()).await;
         Ok(out)
@@ -314,6 +324,7 @@ async fn client_loop(
     conn: &Connection,
     gov: Option<&GovHandle>,
     warmup_residue: u64,
+    setup_ns: u64,
 ) -> RunOutput {
     let start = Instant::now();
     // [W6] wire sayaçları ölçüm-t0 fotoğrafından DELTA (handshake/warmup r5 D.2 gereği hariç).
@@ -481,13 +492,18 @@ async fn client_loop(
             t0_unix_ns,
             events_epoch_offset_ns: 0,
             warmup_residue,
+            activation: None,
+            setup_ns,
+            setup_in_window: false,
+            profile_id: String::new(),
+            profile_delta: Vec::new(),
         },
         events,
     }
 }
 
 /// Handshake kurulamadı → tüm mesajlar teslim EDİLMEDİ (0-completion, geçerli ölçüm sonucu).
-fn failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>) -> RunOutput {
+fn failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>, setup_ns: u64) -> RunOutput {
     let events = (0..cfg.msg_count)
         .map(|msg_id| RawEvent {
             msg_id,
@@ -516,6 +532,11 @@ fn failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>) -> RunOutput {
             t0_unix_ns: 0,
             events_epoch_offset_ns: 0,
             warmup_residue: 0,
+            activation: None,
+            setup_ns,
+            setup_in_window: false,
+            profile_id: String::new(),
+            profile_delta: Vec::new(),
         },
         events,
     }
@@ -585,6 +606,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2_permille: None,
             spec_l1_permille: None,
         }

@@ -1,0 +1,1 @@
+tag=R4 fwd=[delay 20ms rate 1mbit] rev=[delay 200ms rate 1mbit]

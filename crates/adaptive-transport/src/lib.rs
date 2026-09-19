@@ -47,6 +47,8 @@ pub mod loss;
 pub mod pacer;
 pub mod rate;
 pub mod receiver;
+/// [FAZ-1] Dönüş-yolu gözlemi (salt gözlem; kontrol yolu beslemez).
+pub mod return_path;
 pub mod rtt;
 pub mod sender;
 pub mod seq;

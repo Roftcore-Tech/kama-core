@@ -279,6 +279,11 @@ mod tests {
             t0_unix_ns: 0,
             events_epoch_offset_ns: 0,
             warmup_residue: 0,
+            activation: None,
+            setup_ns: 0,
+            setup_in_window: false,
+            profile_id: String::new(),
+            profile_delta: Vec::new(),
         };
         let run = RunOutput {
             meta,

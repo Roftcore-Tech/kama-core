@@ -1,0 +1,479 @@
+{
+ "cluster": "burst-random",
+ "verdicts": [
+  {
+   "mechanism": "AUDIT SCOPE (applies to every mechanism below)",
+   "claim": "Findings were derived from the pinned content of branch wip/c4-attrib @ 35f60f80.",
+   "verdict": "corrected",
+   "corrected_value": "HEAD is audit/transport-v1-closure @ 15133be4, whose tree is byte-identical to 35f60f80 for crates/ and specs/ (`git diff --stat 35f60f80 HEAD -- crates specs` = empty). BUT the working tree is DIRTY on exactly the files that decide several findings: crates/client-core/src/runtime.rs, crates/client-core/src/lib.rs, crates/bench/src/kama_product.rs, crates/client-core/tests/runtime_e2e.rs (git status ' M'), plus untracked crates/client-core/tests/product_profile_v1.rs. The findings' runtime.rs/kama_product.rs line numbers match the PINNED blobs, not the working tree. I verified all runtime.rs / kama_product.rs claims against `git show 35f60f80:<path>`.",
+   "evidence": [
+    "git branch --show-current → audit/transport-v1-closure; git log --oneline -1 → 15133be4",
+    "git diff --stat 35f60f80 HEAD -- crates specs → (empty)",
+    "git status --porcelain → ' M crates/client-core/src/runtime.rs', ' M crates/bench/src/kama_product.rs', ' M crates/client-core/src/lib.rs', ' M crates/client-core/tests/runtime_e2e.rs', '?? crates/client-core/tests/product_profile_v1.rs'",
+    "35f60f80:crates/client-core/src/runtime.rs:199 'fec: None,' vs working tree crates/client-core/src/runtime.rs:250 'fec: Some(FecRuntimeConfig {'"
+   ],
+   "note": "The uncommitted work introduces KamaV1Profile (working tree runtime.rs:198-262) which flips fec to Some(0x05) and rewrites bench runtime_cfg() to start from the product profile. Its own comment names the previous state a defect: working tree runtime.rs:243-249 'Önceki `None` … \"bu runtime'da FEC yok\" demekti … (configuration zombie)' and kama_product.rs:149-152 '[DENETİM B-5] … ürün default'ları (IW 2400, bounded_v1 risk kolu, yapı-gate 250) benchmark'a HİÇ ulaşmıyordu'. So the repo owner independently reached the same conclusions I record below."
+  },
+  {
+   "mechanism": "Loss-structure fate estimator (n00/n01/n10/n11, burst_delta_ppm)",
+   "claim": "Product call chain runtime.rs drive! → ClientSession::on_event → Sender::on_event_core → fate_estimator.advance/on_original_ack/on_loss_evidence/correct_original_delivered, with snapshot read in structure_gate_fec.",
+   "verdict": "confirmed",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:802 'async fn client_task(' ; :961 'macro_rules! drive {' ; :963 'for d in session.on_event($ev, $now) {'",
+    "35f60f80:crates/client-core/src/lib.rs:91 'pub fn on_event(&mut self, event: Event, now_ns: u64) -> Vec<TransmitDecision>'",
+    "crates/adaptive-transport/src/sender.rs:2166 'self.fate_estimator.advance(now_ns);'",
+    "crates/adaptive-transport/src/sender.rs:2942 'if p.origin == TransmitKind::Data { self.fate_estimator.on_original_ack(p.unit.id); }'",
+    "crates/adaptive-transport/src/sender.rs:2966 / :3028 'self.fate_estimator.correct_original_delivered(...)'",
+    "crates/adaptive-transport/src/sender.rs:3336-3337 'self.fate_estimator\\n    .on_loss_evidence(p.unit.id, now_ns, guard);' inside 'if p.origin == TransmitKind::Data'",
+    "crates/adaptive-transport/src/sender.rs:3670 'let f = self.fate_estimator.snapshot();'"
+   ],
+   "note": "Every hop is a real non-test call site. Originals-only gating and the base_pto_ns reordering guard are both real (guard built at sender.rs:3333-3335 from self.tail_recovery.base_pto_ns)."
+  },
+  {
+   "mechanism": "Loss-structure fate estimator (n00/n01/n10/n11, burst_delta_ppm)",
+   "claim": "Default state: ALWAYS ON, no feature flag, no config field, no setter.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1493 'fate_estimator: crate::fate_estimator::FateEstimator,'",
+    "crates/adaptive-transport/src/sender.rs:1798 'fate_estimator: crate::fate_estimator::FateEstimator::new(),' inside Sender::new",
+    "grep -rn 'fate_estimator|FateEstimator' crates --include=*.rs outside sender.rs/fate_estimator.rs → only lib.rs:34 'pub mod fate_estimator;' + tests + one runtime.rs doc comment (runtime.rs:397 pinned) — no setter, no RuntimeConfig field"
+   ],
+   "note": ""
+  },
+  {
+   "mechanism": "Loss-structure fate estimator (n00/n01/n10/n11, burst_delta_ppm)",
+   "claim": "STALE DOC DEFECT: three in-tree comments still call the estimator observation-only.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/fate_estimator.rs:28-29 'This module is observation-only: nothing in the product engine calls it; it never mutates ARQ/ACK/loss/RTT/PTO state.'",
+    "crates/adaptive-transport/src/sender.rs:2068-2069 'Nothing in the engine reads this. It is exposed so the input exists and can be measured before any rule is allowed to consume it'",
+    "crates/adaptive-transport/src/sender.rs:2164-2165 'Observation-only: nothing reads the estimator except diag_loss_structure (pinned by loss_structure_observation.rs).'",
+    "crates/adaptive-transport/tests/loss_structure_observation.rs:196-208 test 'estimator_has_exactly_one_reader' asserts snapshot_reads == 2 with comment 'The estimator is now DELIBERATELY decision-carrying through exactly one decision consumer: structure_gate_fec'"
+   ],
+   "note": "Cited line numbers are off by 1-3 (finding said fate_estimator.rs:29, sender.rs:2068, sender.rs:2163-2164); the substance is exact."
+  },
+  {
+   "mechanism": "Estimator §3.4 eligibility contract (WindowFeatures::eligible)",
+   "claim": "Zero product callers; only tests + examples/fate_two_arm.rs.",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn '\\.eligible(' crates --include=*.rs → crates/adaptive-transport/src/fate_estimator.rs:505,523,525,529,532 (all inside #[cfg(test)] mod) + crates/adaptive-transport/examples/fate_two_arm.rs:153,161. No hit in crates/client-core or in any non-test src file.",
+    "crates/adaptive-transport/src/fate_estimator.rs:94-105 'pub fn eligible(&self, warmup_complete, telemetry_stale, flow_converged) -> bool { self.n as usize == FATE_WINDOW && self.n10+self.n11 >= MIN_LOSS_TRANSITIONS && self.n00+self.n01 >= MIN_NONLOSS_TRANSITIONS && … }'",
+    "crates/adaptive-transport/src/fate_estimator.rs:34/36/38 FATE_WINDOW=256, MIN_LOSS_TRANSITIONS=8, MIN_NONLOSS_TRANSITIONS=32"
+   ],
+   "note": "Line numbers exact. The divergent weaker gate preconditions are also confirmed: sender.rs:1355 'const STRUCTURE_GATE_MIN_N: u32 = 32;' and sender.rs:3671 'if f.n < STRUCTURE_GATE_MIN_N'."
+  },
+  {
+   "mechanism": "Estimator §3.4 eligibility contract (WindowFeatures::eligible)",
+   "claim": "Classification WIRE (spec-required + disconnected).",
+   "verdict": "refuted",
+   "corrected_value": "KEEP-EXPERIMENTAL (or DELETE) — not WIRE.",
+   "evidence": [
+    "The finding's own record states spec_requires_v1: 'not-specified'. Its cited authority is a module doc comment, not an authority spec: crates/adaptive-transport/src/fate_estimator.rs:25-26 'Eligibility thresholds (§3.4) are PINNED for FS-CAL-2 v3; changing any of them requires a new design/calibration version (design §3.4).'",
+    "Repo-wide search of the authority specs for the eligibility contract: no occurrence of 'FATE_WINDOW', 'MIN_LOSS_TRANSITIONS' or a loss-structure eligibility clause in specs/adaptive-transport-engine-spec.md or specs/transport-layer-tdd.md (their fuzzy-input list is specs/transport-layer-tdd.md:532-539, which enumerates loss_rate/jitter/bandwidth/queue_delay/ack_confidence only).",
+    "specs/adaptive-transport-engine-spec.md:645-656 §8.4 canonical rules contain no structure/eligibility term (verified by reading the block)."
+   ],
+   "note": "WIRE per the task rubric requires 'spec-required + disconnected'. The disconnection leg is proven; the spec-required leg is not. The function is a measurement-lane API with zero product consumers."
+  },
+  {
+   "mechanism": "Structure-aware FEC gate (structure_gate_fec)",
+   "claim": "Product call chain … sender.rs:3543 structure_gate_fec → arbiter → runtime.rs fec_controller_latch → RsSimdCodec.encode → FecParity on the wire.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3543 'let outcome = self.structure_gate_fec(d.fec_parity_ratio_permille, inputs.loss_ppm);' inside the else-branch of :3481 'if self.fusion_policy.is_enabled()'",
+    "crates/adaptive-transport/src/sender.rs:3589 'let (final_ratio, reason) = fec_arbiter(confirmed, structure, spec);'",
+    "35f60f80:crates/client-core/src/runtime.rs:1287-1298 'let snap = session.sender().controller_decision_snapshot(); … .fec_controller_latch(auth, snap, …).planned_r' then :1300 'if planned_r > 0 { … RsSimdCodec.encode(p, &srcs) … repair_store.insert(...) }'"
+   ],
+   "note": "Chain hops all real and non-test."
+  },
+  {
+   "mechanism": "Structure-aware FEC gate (structure_gate_fec)",
+   "claim": "Activation condition: fuzzy fec==0 AND state != PreConverge AND loss_windowed_ppm >= 100_000 AND fate n >= 32.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3650-3652 'if fuzzy_fec_permille != 0 { return GateOutcome::NotApplicable; }'",
+    "crates/adaptive-transport/src/sender.rs:3663-3665 'if self.state == SenderState::PreConverge { return GateOutcome::BlockedPreConverge; }'",
+    "crates/adaptive-transport/src/sender.rs:3667-3669 'if loss_ppm < STRUCTURE_GATE_LOSS_MIN_PPM { return GateOutcome::BlockedLossBelowBand; }' with :1352 'const STRUCTURE_GATE_LOSS_MIN_PPM: u64 = 100_000;'",
+    "crates/adaptive-transport/src/sender.rs:3671-3673 'if f.n < STRUCTURE_GATE_MIN_N { return GateOutcome::BlockedWindowTooSmall; }'"
+   ],
+   "note": "Order of the guards is PreConverge BEFORE loss-band, not after — otherwise as stated."
+  },
+  {
+   "mechanism": "Structure-aware FEC gate (structure_gate_fec)",
+   "claim": "Classification SHIP.",
+   "verdict": "refuted",
+   "corrected_value": "WIRE (at the pinned commit).",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:199 'fec: None,' in RuntimeConfig::default()",
+    "35f60f80:crates/client-core/src/runtime.rs:865 'if fec.is_some() { … set_fec_actuation_mode(mode) }' — with fec None the sender stays in its constructed mode and no Controller authority exists",
+    "35f60f80:crates/client-core/src/runtime.rs:1287-1300 the entire latch/encode block is inside the `Some(p)` FEC-profile arm, so with fec: None fec_controller_latch is never called and RsSimdCodec::encode is never reached",
+    "The finding's own feature_off_behavior text: 'With fec: None (default) the gate still computes and still writes d.fec_parity_ratio_permille, but no block is latched and no parity is emitted → wire byte-identical to a no-FEC build.'"
+   ],
+   "note": "SHIP requires 'wired into product + exercised'. At RuntimeConfig::default() the gate's decision terminates at an unconsumed proposal — the task's own definition of NOT wired ('a path ending at … an unused result … or never-consumed proposal is NOT wired'). The finding asserted the default was inert and then classified SHIP anyway; that is internally inconsistent. The repo's uncommitted fix (working tree runtime.rs:243-250) calls the same state a 'configuration zombie'."
+  },
+  {
+   "mechanism": "Structure-aware FEC gate (structure_gate_fec)",
+   "claim": "MEASURED in-tree: burst50 'adaptive' arm tx.fec = 0 B in 6/6 reps; iid50 'adaptive' tx.fec > 0 in 4/6 reps (1104/736/2208/1104 B).",
+   "verdict": "confirmed",
+   "evidence": [
+    "reports/guard-check-v2/burst50/adaptive/rep{1..6}/out.jsonl meta.tx.fec = 0,0,0,0,0,0 (my own recount via json parse)",
+    "reports/guard-check-v2/iid50/adaptive/rep{1..6}/out.jsonl meta.tx.fec = 0,0,1104,736,2208,1104",
+    "meta.kama_arm = 'kama-product-tailv1-fec-adaptive-p0x03-bootstraprtt-iw2400' (transport 'kama-product')"
+   ],
+   "note": "Numbers reproduce exactly. BUT the arms are NOT the shipped default: the label carries '-bootstraprtt' and '-iw2400', i.e. the campaign passed --bootstrap-rtt (RuntimeConfig::default() has bootstrap_rtt: false, pinned runtime.rs:196) and an explicit initial window. Also profile 0x03, whereas the working-tree v1 profile is 0x05."
+  },
+  {
+   "mechanism": "Structure-aware FEC gate (structure_gate_fec)",
+   "claim": "Telemetry: diag_structure_gate_opened reaches ClientStats.fate.structure_gate_opened and is printed by the bench as `gate_opened=`; diag_gate_outcomes is carried but not printed.",
+   "verdict": "corrected",
+   "corrected_value": "The CODE claim is true at the pin, but the cited artifacts cannot show it: the guard-check-v2 c.err files were produced by an OLDER bench binary whose KP-CLIENT line has no gate_opened= field at all.",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:1461 'structure_gate_opened: session.sender().diag_structure_gate_opened(),' ; :1464 'gate_outcomes: session.sender().diag_gate_outcomes(),'",
+    "35f60f80:crates/bench/src/kama_product.rs:566 format string contains 'gate_opened={}' … 'arb={:?}' 'latch={:?}' 'suppress={:?}' ; :598 'stats.fate.structure_gate_opened,'",
+    "reports/guard-check-v2/iid50/adaptive/rep3/c.err (338 bytes, entire file): 'KP-CLIENT delivered=100/100 warm_ack=0 residue=0 tx=83919B(data=44600 retx=34784 dup=3176 fec=1104 ctrl=255) rx=27402B refused=0B/0pkt fec_blocks=3 fec_repairs_tx=12 fec_recovered_ctrl=5 param_confirmed=1 seal_fail=0 send_err=0 stale=15 cs_probe_tx=0 cs_echo_rx=0' — no gate_opened=, no arb=, no latch=, no suppress=",
+    "grep -o 'gate_opened=[0-9]*' and 'arb=\\[…\\]' over that c.err → zero matches"
+   ],
+   "note": "Consequence: for the guard-check-v2 campaign there is NO run-level record of which gate outcome or which arbiter lane fired. Any lane attribution from those artifacts is unverifiable."
+  },
+  {
+   "mechanism": "Burst-vs-IID discriminator STRUCTURE_GATE_IID_MAX_DELTA_PPM = 50_000",
+   "claim": "Hardcoded 50_000, exactly two occurrences (definition + use), no config knob or setter; measured basis is the in-process fate_two_arm example (+567k ppm); policy behind it rests on an invalid Q17 holdout.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:1366 'const STRUCTURE_GATE_IID_MAX_DELTA_PPM: i64 = 50_000;'",
+    "crates/adaptive-transport/src/sender.rs:3697 'let iid_structure = f.burst_delta_ppm <= STRUCTURE_GATE_IID_MAX_DELTA_PPM;' — grep of the identifier over sender.rs returns only 1366 and 3697 (plus the 1362 doc-comment cross-reference)",
+    "crates/adaptive-transport/src/sender.rs:1357-1358 \"IID'de beklenen 0 (±gürültü); burst'te (GE-L3+) FATE2ARM ölçümü +567k ppm — boşluk ~433k. 50k = gürültü-üstü, burst-altı güvenli çizgi\"",
+    "crates/adaptive-transport/src/sender.rs:1360-1365 '[DAYANAK BORCU — 2026-09-04] … Burst rejiminde FEC'in zararlı olduğuna dair GEÇERLİ bir ölçüm yoktur: o iddiayı üreten hücrede hiç FEC kolu yoktu.'"
+   ],
+   "note": "Classification SHIP inherits the same inertness defect as the parent gate — see the corrected classification for structure_gate_fec."
+  },
+  {
+   "mechanism": "FecStructurePolicy::Q18Iid",
+   "claim": "Default is Q18Iid; product wiring runtime.rs → set_fec_structure_policy → sender.rs:3698 match → BlockedBurstLeftToArq leaves structure lane at 0.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:634-636 '#[derive(… Default)] pub enum FecStructurePolicy { #[default] Q18Iid,'",
+    "crates/adaptive-transport/src/sender.rs:1931 'fec_structure_policy: FecStructurePolicy::Q18Iid,' in Sender::new",
+    "35f60f80:crates/client-core/src/runtime.rs:198 'fec_structure_policy: FecStructurePolicy::default(),' ; :819 '.set_fec_structure_policy(cfg.fec_structure_policy);'",
+    "crates/adaptive-transport/src/sender.rs:3699-3705 'FecStructurePolicy::Q18Iid => { if iid_structure { GateOutcome::Opened(self.gate_level_permille()) } else { GateOutcome::BlockedBurstLeftToArq } }'",
+    "crates/adaptive-transport/src/sender.rs:270 'BlockedBurstLeftToArq' ; :284 index 4"
+   ],
+   "note": "Every line number exact."
+  },
+  {
+   "mechanism": "FecStructurePolicy::Q18Iid",
+   "claim": "Classification SHIP — 'this IS the off/default state of the burst-coding capability'.",
+   "verdict": "refuted",
+   "corrected_value": "WIRE (same root cause as structure_gate_fec).",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:199 'fec: None,' → no latch, no parity in ANY regime at default",
+    "reports/guard-check-v2/burst50/adaptive tx.fec = 0 in 6/6 — but the same campaign's iid50/adaptive shows tx.fec > 0 only because the arm explicitly passed --fec-profile 0x03, i.e. overrode the default fec: None"
+   ],
+   "note": "At the shipped default the 'burst → parity 0' behaviour is not a decision, it is a tautology: parity is 0 everywhere. The K-FEC-NEG-1 'Dürüstlük-kanıtı' the finding invokes (specs/fec-core-tdd-v3.0.md:394-395, verified verbatim) therefore cannot be claimed from the default build at all."
+  },
+  {
+   "mechanism": "FecStructurePolicy::BurstFusion",
+   "claim": "Opt-in, default OFF, byte-identical when off; bench flag --fec-burst-fusion on both ends; measured on netem through the product runtime.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:637-640 BurstFusion variant ; :3707-3733 branch (evidence gate → iid short-circuit → needed_permille = loss_ppm×3/2/1000 → Opened(lvl) or Opened(c.fec_high))",
+    "crates/adaptive-transport/src/sender.rs:1372-1373 'const BURST_FUSION_MARGIN_NUM: u64 = 3; const BURST_FUSION_MARGIN_DEN: u64 = 2;'",
+    "crates/bench/src/main.rs:118 and :233 'fec_burst_fusion: bool' args ; 35f60f80:crates/bench/src/kama_product.rs:153-157 maps absent flag to Q18Iid",
+    "reports/guard-check-v2/{burst50,iid50}/burstfus/rep*/out.jsonl meta.kama_arm = 'kama-product-tailv1-fec-adaptive-p0x03-burstfusion-bootstraprtt-iw2400' with meta.tx.fec = 736/1104/2208/736/2576/1104 (burst50) and 2576/1472/2208/2208/2208/1472 (iid50)"
+   ],
+   "note": "KEEP-EXPERIMENTAL is defensible and correctly argued. Recount of delivered: v2 burst50 burstfus 97,98,98,99,99,100 vs adaptive 100,98,97,100,99,100 — matches the finding exactly."
+  },
+  {
+   "mechanism": "FecStructurePolicy::BurstFusion",
+   "claim": "'(b) without the guard (guard-check-v1) it produced hard collapses (0/100, 13/100, 20/100)' — attributed to the missing PreConverge guard.",
+   "verdict": "corrected",
+   "corrected_value": "The three collapse numbers reproduce exactly, but the attribution is confounded: guard-check-v1 contains ONLY a burstfus arm — there is no paired 'adaptive' control in that campaign.",
+   "evidence": [
+    "find reports/guard-check-v1 -maxdepth 2 -type d → reports/guard-check-v1/burst50/burstfus and reports/guard-check-v1/iid50/burstfus ONLY (no adaptive/ directory under either cell)",
+    "reports/guard-check-v1 delivered recount: burst50/burstfus rep1..6 = 100,100,100,98,100,0 ; iid50/burstfus rep1..6 = 100,99,100,13,100,20",
+    "crates/adaptive-transport/src/sender.rs:3659-3660 in-code claim \"netem'de EN KÖTÜ koldu (v2 5/12 çöküş)\" — I count 3 collapses in 12 guard-check-v1 burstfus reps, not 5, so the in-code '5/12' refers to some other campaign and is not reproducible from guard-check-v1"
+   ],
+   "note": "Without a control arm on the same seeds, guard-check-v1 cannot separate 'BurstFusion without the guard collapses' from 'this cell collapses'."
+  },
+  {
+   "mechanism": "BurstFusion evidence threshold (prior-as-evidence defect)",
+   "claim": "`evidenced` computed at sender.rs:3696 and applied only inside the BurstFusion arm; on the shipped Q18Iid path it is computed then never read, so FEC can open on a window with zero loss transitions where burst_delta is purely the Laplace prior.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3696 'let evidenced = f.n10 + f.n11 >= crate::fate_estimator::MIN_LOSS_TRANSITIONS;'",
+    "crates/adaptive-transport/src/sender.rs:3699-3705 Q18Iid arm — reads only `iid_structure`, never `evidenced`",
+    "crates/adaptive-transport/src/sender.rs:3709-3711 'if !evidenced { return GateOutcome::BlockedNoTransitionEvidence; }' inside the BurstFusion arm only",
+    "crates/adaptive-transport/src/sender.rs:3679-3681 in-code admission: '• hiç geçiş yok (n00=n01=n10=n11=0) → p11 = p01 = (0+1)/(0+2) = 500_000 → delta = 0 → \"IID\" okunur ve FEC AÇILIR;'",
+    "crates/adaptive-transport/src/sender.rs:3688-3690 'Kanıt eşiği default yola eklendiğinde iid_loss_opens_fec_* RED veriyor, yani Q18-FIX'in IID dalı bugün prior'la ateşliyor.' ; :3691-3694 'Bu bir AÇIK BORÇTUR (owner kararı gerekir), gizlenmiş bir kusur değil.'",
+    "crates/adaptive-transport/src/fate_estimator.rs:145-148 Laplace formulas confirm p11=p01=500_000 at all-zero counters"
+   ],
+   "note": "This is the strongest and best-evidenced item in the cluster. WIRE is defensible here (spec-adjacent + incomplete on the shipped path)."
+  },
+  {
+   "mechanism": "BurstFusion evidence threshold (prior-as-evidence defect)",
+   "claim": "spec_ref 'specs/adaptive-transport-engine-spec.md:1085 (§16.2 SAFE/BREAKS discipline: a mechanism must read a measurement, not a prior)'.",
+   "verdict": "refuted",
+   "corrected_value": "Line 1085 is the §16.2 SAFE-row example list for CLOCK CLASSES, not a measurement-vs-prior doctrine.",
+   "evidence": [
+    "specs/adaptive-transport-engine-spec.md:1085 verbatim: '| SAFE (doğru sınıf, örnek): pacer refill+kalan [R1], BURST_WINDOW [R3], PC geometrik takvim (RTT_floor-türevi), ACK_SILENCE=3·srtt, K=3 packet-threshold, ilk-SACK cadence-exempt | — | — | — | — |'"
+   ],
+   "note": "The defect is real; this particular spec citation does not support it. The correct in-tree authority for 'no action without measurement' in this cluster is the PreConverge doctrine at specs/adaptive-transport-engine-spec.md:341-344 / §8.5."
+  },
+  {
+   "mechanism": "PreConverge guard on structural FEC decisions (BlockedPreConverge)",
+   "claim": "Unconditional, applies to both policies, exercised by a deterministic test asserting bucket 6 > 0 and bucket 5 == 0.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3663-3665 'if self.state == SenderState::PreConverge { return GateOutcome::BlockedPreConverge; }' — placed before every other precondition except the fuzzy!=0 short-circuit",
+    "crates/adaptive-transport/src/sender.rs:264 variant, :286 'Self::BlockedPreConverge => 6'",
+    "crates/adaptive-transport/tests/structure_gate_fec.rs:346-380 'fn structure_gate_never_decides_before_the_session_is_established' loops both policies and asserts 'g[6] > 0' and 'assert_eq!(g[5], 0)'",
+    "crates/adaptive-transport/src/sender.rs:3651-3662 rationale block quoted accurately by the finding"
+   ],
+   "note": "Classification SHIP is defensible for this one: it is a pure guard whose effect (blocking) does not require FEC actuation to be observable, and it is spec-anchored at specs/adaptive-transport-engine-spec.md:341-344 (verified)."
+  },
+  {
+   "mechanism": "Structure-gate parity level (structure_gate_level_permille)",
+   "claim": "PRODUCT default Some(250); BENCH default None → engine fec_med 500; a measured product/bench divergence pinned by kama_product.rs:923.",
+   "verdict": "confirmed",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:206 'structure_gate_level_permille: Some(250),' ; :847 '.set_structure_gate_level(cfg.structure_gate_level_permille);'",
+    "35f60f80:crates/bench/src/kama_product.rs:224 'structure_gate_level_permille: gate,' with comment ':223 [R-SWEEP] gate seviyesi (None = motor fec_med = 500 sevk)'",
+    "35f60f80:crates/bench/src/kama_product.rs:923 'assert_eq!(d.structure_gate_level_permille, None);' ; :932 'assert_eq!(o.structure_gate_level_permille, Some(250));'",
+    "crates/adaptive-transport/src/sender.rs:4433-4436 gate_level_permille() → 'unwrap_or(self.fuzzy.config().fec_med)'",
+    "35f60f80:crates/bench/src/kama_product.rs:231 '..RuntimeConfig::default()' confirming struct-literal override semantics"
+   ],
+   "note": "Confirmed at the pin. It is FIXED in the uncommitted working tree: kama_product.rs:238 now reads 'structure_gate_level_permille: gate.or(v1.structure_gate_level_permille),'. That working-tree change makes the neighbouring test assertion at working-tree kama_product.rs:1116 'assert_eq!(d.structure_gate_level_permille, None);' arithmetically false (None.or(Some(250)) == Some(250)) — see missed_mechanisms."
+  },
+  {
+   "mechanism": "Structure-gate parity level (structure_gate_level_permille)",
+   "claim": "Classification SHIP.",
+   "verdict": "refuted",
+   "corrected_value": "WIRE (inherits fec: None inertness).",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:199 'fec: None,'",
+    "The finding's own gate text: 'only effective when fec: Some(..)'"
+   ],
+   "note": "A parity level that is only consumed by a latch that is never called is a never-consumed proposal at the default."
+  },
+  {
+   "mechanism": "Single FEC arbiter — final = max(confirmed, structure, speculative)",
+   "claim": "Pure max, no summation, single write site for fec_parity_ratio_permille; ties prefer confirmed > structure > speculative.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:581-604 'pub fn fec_arbiter(confirmed, structure, spec) … let mut best = (confirmed.0, confirmed.1); if structure > best.0 {…} if spec.ratio_permille > best.0 {…} if best.0 == 0 { (0, None) } else { best }'",
+    "crates/adaptive-transport/src/sender.rs:577-578 doc 'final = max(confirmed, structure, speculative) — **TOPLAMA YOK**'",
+    "crates/adaptive-transport/src/sender.rs:3589 call ; :3620 'd.fec_parity_ratio_permille = final_ratio' (single write after the arbiter)"
+   ],
+   "note": ""
+  },
+  {
+   "mechanism": "Single FEC arbiter — final = max(confirmed, structure, speculative)",
+   "claim": "BURST-RELEVANT CONSEQUENCE: at the product default the speculative lane (bounded_v1, ON) can still raise parity in a burst regime via max(); 'visible in reports/guard-check-v2/iid50/adaptive where tx.fec > 0 in 4/6 reps even though the campaign arm did not enable the risk lane'.",
+   "verdict": "refuted",
+   "corrected_value": "(a) At the pinned product default no lane can raise parity, because fec: None removes the latch entirely. (b) The claim about which lane fired in guard-check-v2 is unverifiable: the arm label does not encode fec_risk and the artifacts carry no arbiter telemetry.",
+   "evidence": [
+    "35f60f80:crates/client-core/src/runtime.rs:199 'fec: None,' vs :204 'fec_loss_risk: FecLossRiskConfig::bounded_v1(),' — the speculative lane is config-enabled but its output has no actuation path",
+    "crates/adaptive-transport/src/sender.rs:420-447 'pub fn bounded_v1() -> Self { enabled: true, bootstrap_cap_permille: 250, persistent_cap_permille: 250, persist_mode: PersistMode::LearnedSpuriousAge, …, reorder_suppress_permille: 300, … }'",
+    "35f60f80:crates/bench/src/kama_product.rs:680-697 the kama_arm label is built from cfg.fec.label() + burst_fusion + bootstrap_rtt + initial_window_bytes + bootstrap_fast ONLY — fec_risk is NOT encoded",
+    "reports/guard-check-v2/iid50/adaptive/rep3/out.jsonl meta contains no fec_loss_risk / arbiter fields (full meta dumped: profile, cc, transport, quinn_version, seed, repeat, msg_count, payload_bytes, max_deadline_ns, udp_tx_bytes, udp_rx_bytes, tx{data,retx,dup,fec,ctrl}, kama_arm, submit_interval_ns, budget, t0_unix_ns, events_epoch_offset_ns, warmup_residue)",
+    "reports/guard-check-v2/iid50/adaptive/rep3/c.err has no arb= field (older bench binary)"
+   ],
+   "note": "Classification of the arbiter itself: the function is correct and spec-anchored (§8.4), but like the gate its output is inert at the pinned default — see corrected_classifications."
+  },
+  {
+   "mechanism": "Fuzzy emergency trigger (Mode::EmergencyForwardRedundancy)",
+   "claim": "min3(loss.high, bw.low, ackc.low) > 500‰ → mode; OR'd with the hysteresis level at sender.rs:3752-3753 to enter RecoverFwd; no telemetry for occupancy; last_recovery()/emergency_level() have zero product/bench consumers.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/fusion.rs:542-546 'let emergency = min3(loss.high, bw.low, ackc.low); let mode = if emergency > PERMILLE / 2 { Mode::EmergencyForwardRedundancy } else { Mode::Normal };'",
+    "crates/adaptive-transport/src/sender.rs:3752-3753 'let emergency_active = level > EmergencyLevel::Arq || decision.mode == Mode::EmergencyForwardRedundancy;'",
+    "crates/adaptive-transport/src/sender.rs:3774-3776 'else if emergency_active { SenderState::RecoverFwd }'",
+    "grep -rn 'last_recovery()' crates --include=*.rs → ZERO hits (definition at sender.rs:5980 has no callers at all)",
+    "grep -rn 'emergency_level()' crates --include=*.rs → crates/adaptive-transport/src/sender.rs:7011 only (in-file #[cfg(test)])",
+    "specs/adaptive-transport-engine-spec.md:655 'loss HIGH ∧ bw LOW ∧ ackconf LOW → EMERGENCY_FORWARD_REDUNDANCY (§11)' — verified verbatim"
+   ],
+   "note": "One nuance the finding missed: the PreConverge branch at sender.rs:3767-3773 precedes the emergency_active branch, so RecoverFwd is structurally unreachable before the first RTT sample — emergency recovery is frozen during cold start by construction."
+  },
+  {
+   "mechanism": "Emergency retreat hysteresis (Schmitt + de-escalate dwell)",
+   "claim": "fixture 300/700 permille + 1000 ms dwell, hardcoded in Sender::new, no knob; escalate immediate; §16.2 lists both the escalate step and deescalate_dwell as unfixed clock-class BREAKS.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/emergency.rs:91-96 'pub fn fixture() -> Self { Self { escalate_permille: 300, deescalate_permille: 700, deescalate_dwell: Duration::from_millis(1000) } }' with :88 doc '**KALİBRE DEĞİL** fixture.'",
+    "crates/adaptive-transport/src/emergency.rs:157-173 update(): escalate branch has no dwell; de-escalate branch is dwell-locked via last_deescalate_ns",
+    "crates/adaptive-transport/src/sender.rs:1791 'emergency: HysteresisController::new(HysteresisConfig::fixture(), EmergencyLevel::Arq),' ; :3745 'let level = self.emergency.update(health, now_ns);'",
+    "specs/adaptive-transport-engine-spec.md:1076 '| emergency escalate adımı | emergency.rs update() | event-count (çağrı başına) | 1ms pompada Arq→Dup3 2 ms'de (merdiven fiilen binary) | adım-başına RTT-türevi dwell |' and the next row '| deescalate_dwell=1s | emergency.rs:95 | wall-clock | 1s < 1 srtt → tek ACK'te koruma tam iner (flap) | k·srtt veya ≥1 sağlıklı round |'",
+    "specs/adaptive-transport-engine-spec.md:779-796 §11 RETREAT HYSTERESIS (NORMATİF, KİLİTLİ) verified verbatim"
+   ],
+   "note": "The spec even names the exact source line (emergency.rs:95) and it is correct: deescalate_dwell is at emergency.rs:95. Escalate also requires 'self.level < EmergencyLevel::Dup3', which the finding omitted."
+  },
+  {
+   "mechanism": "Emergency forward duplication (dup_spacing as the burst-decorrelation mechanism)",
+   "claim": "Classification WIRE — 'no channel-derived spacing exists anywhere in the tree'.",
+   "verdict": "refuted",
+   "corrected_value": "SHIP with a recorded [CAL]/clock-class debt. The wall-clock 20 ms applies ONLY to the emergency fire-once copies; three other dup_queue producers use srtt-derived intervals with ×2 geometric backoff, and the spec itself classifies that schedule as SAFE.",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:5514 'let (factor, spacing) = self.dup_params();' → :5520-5526 'due_ns: now_ns + i*dur_ns(spacing), interval_ns: 0 // emergency: fire-once, reschedule YOK' — this is the only path that uses the 20 ms",
+    "crates/adaptive-transport/src/sender.rs:5506-5510 tail-liveness copies: 'let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT)); … interval_ns: srtt_ns.max(1), // geometrik reschedule (drain'de ×COPY_MULTIPLIER)'",
+    "crates/adaptive-transport/src/sender.rs:3311-3316 P0 re-arm: 'due_ns: now_ns.saturating_add(srtt_ns), … interval_ns: srtt_ns.max(1)'",
+    "crates/adaptive-transport/src/sender.rs:1458 'const PC_COPY_MULTIPLIER: u64 = 2;' ; :5643-5650 'if dup.interval_ns > 0 { let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER); … }'",
+    "specs/adaptive-transport-engine-spec.md:1085 '| SAFE (doğru sınıf, örnek): … PC geometrik takvim (RTT_floor-türevi), …' — the spec explicitly puts the geometric copy schedule in the CORRECT clock class",
+    "crates/adaptive-transport/src/emergency.rs:122 'dup_spacing: Duration::from_millis(20),' ; crates/adaptive-transport/src/sender.rs:1381 'const DEFAULT_DUP_SPACING: Duration = Duration::from_millis(20);'"
+   ],
+   "note": "WIRE per the rubric requires 'disconnected'. Duplication is fully connected: sender.rs:3746 → 3774 RecoverFwd → 4059 plan_forward_duplication → 5520 dup_queue → 5611 drain_due_duplicates → 5622 pacer → TransmitDecision{Duplicate} → runtime.rs drive! → seam. Mis-calibration of one constant is a [CAL] debt, not disconnection. The finding's own §16.2 citation (spec:1077) is correct and I confirm it verbatim; the overreach is the 'nowhere in the tree' universal."
+  },
+  {
+   "mechanism": "Emergency forward duplication (dup_queue producers)",
+   "claim": "dup_queue is fed from FOUR distinct call sites, listed as sender.rs:5378-5381, :5312-5316, :5520-5526, :5686-5690, :5701-5707.",
+   "verdict": "corrected",
+   "corrected_value": "SIX producers, and one cited line is wrong. Real sites: 3312 (P0 re-arm), 5377 (ARQ cap handoff), 5506 (tail-liveness), 5522 (emergency), 5583 (single-copy peek path), 5646 (geometric reschedule), 5687 (RecoverFwd new-DATA), 5703 (PreConverge geometric).",
+   "evidence": [
+    "grep -n 'dup_queue.push' crates/adaptive-transport/src/sender.rs → 3312, 5377, 5506, 5522, 5583, 5646, 5687, 5703 (plus 6173 in an in-file test)",
+    "The P0 re-arm is at crates/adaptive-transport/src/sender.rs:3310-3316 (inside queue_losses' Duplicate-origin branch), not :5312-5316 as cited"
+   ],
+   "note": "The substantive point — no counter separates the causes, only tx_dup_bytes exists — is CONFIRMED: 35f60f80:crates/bench/src/kama_product.rs:669 'dup: stats.tx_dup_bytes,' is the sole surface."
+  },
+  {
+   "mechanism": "Emergency minimal-parity action (SegmentBlock → MinimalParity)",
+   "claim": "Unreachable in product: emergency::action is called once with Framing::Tiny hardcoded; MinimalParity appears only in emergency.rs + tv_emergency.rs; dup_params would degrade it to duplication anyway.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3746 'self.last_recovery = emergency::action(level, Framing::Tiny, &self.emergency_cfg);' — grep of 'emergency::action' over crates returns this line only in src/",
+    "grep -rn 'Framing::SegmentBlock' crates --include=*.rs → crates/adaptive-transport/src/emergency.rs:194,197 (the match arms) + crates/adaptive-transport/tests/tv_emergency.rs:87,91 only",
+    "grep -rn 'MinimalParity' crates --include=*.rs → emergency.rs:71,194,197 + tests/tv_emergency.rs:88,92 only",
+    "crates/adaptive-transport/src/sender.rs:5740-5743 dup_params match: only the Duplication arm reads factor/spacing; '_ =>' falls back to DEFAULT_DUP_FACTOR/DEFAULT_DUP_SPACING",
+    "specs/adaptive-transport-engine-spec.md:771-772 '§11 … segment-block / multi-shard: → minimal parity shards (low-rate forward FEC), r/k düşük ama ACK-bağımsız.' and :954-956 TV-EMERGENCY 'framing-ayrımlı RecoveryAction (Tiny→Duplication D×+spacing, SegmentBlock→MinimalParity)'"
+   ],
+   "note": "WIRE is fully defensible here: spec-required (§11 NORMATİF + §16 conformance vector) AND disconnected. Best-supported WIRE in the cluster alongside ACK decimation."
+  },
+  {
+   "mechanism": "Emergency ACK decimation",
+   "claim": "Entirely unwired: ack_decimation has no product caller; receiver ACK frequency is a compile-time constant never reassigned.",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn 'ack_decimation' crates --include=*.rs → crates/adaptive-transport/src/emergency.rs:205 (definition) + crates/adaptive-transport/tests/tv_emergency.rs:8,96,97,98 only",
+    "grep -rn 'ack_freq' crates --include=*.rs → crates/adaptive-transport/src/receiver.rs:138 (field decl), :172 'ack_freq: ACK_FREQ_N,' (sole assignment, in the constructor), :436 'if force || self.since_last_ack >= self.ack_freq' (sole read), + tests/receiver_ack_policy.rs:72 (test name). No setter, no mutation anywhere.",
+    "crates/adaptive-transport/src/receiver.rs:76 'const ACK_FREQ_N: u32 = 2;'",
+    "specs/transport-layer-tdd.md §5.6 verified verbatim: 'ACK: → sparse cumulative / range ACK yalnız (ACK decimation) → per-paket ACK YOK, ACK storm YOK, per-paket ACK bağımlılığı YOK'"
+   ],
+   "note": "WIRE fully defensible."
+  },
+  {
+   "mechanism": "Emergency FEC interlock (planned_r forced to 0 in EmergencyForwardRedundancy)",
+   "claim": "Unconditional inside the latch; requested visible, planned 0, suppression reason EmergencyPendingArbitration; bench-visible via latch=/suppress=.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:4568 'emergency: self.last_decision.mode == Mode::EmergencyForwardRedundancy,'",
+    "crates/adaptive-transport/src/sender.rs:4630-4641 'if s.emergency { // Temporary safety interlock pending 1b/1d arbitration: requested-GÖRÜNÜR, planned=0. FecLatchResult { … planned_r: 0, … suppression: Some(FecSuppressionReason::EmergencyPendingArbitration) } }'",
+    "35f60f80:crates/bench/src/kama_product.rs:566 format string contains 'latch={:?} suppress={:?}'",
+    "specs/adaptive-transport-engine-spec.md:796 'duplication/parity yine available_redundancy_budget ile clamp (§8.5).' — a clamp, confirming the finding's point that the spec asks for a clamp, not a zero"
+   ],
+   "note": "WIRE defensible. Caveat identical to the telemetry finding above: the guard-check-v2 c.err files predate the latch=/suppress= fields, so this telemetry has never actually appeared in a stored campaign artifact."
+  },
+  {
+   "mechanism": "P0 burst-recovery fix (lost Duplicate-origin copy re-arms a geometric forward copy)",
+   "claim": "Unconditional, on the product path, deterministic regression gate; but the netem validation ran the SECURITY-STUB arm, not the product runtime.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/sender.rs:3299-3317 'if p.origin == TransmitKind::Duplicate { self.bw_sampler.forget_in_flight(); … if !self.dup_queue.iter().any(|d| d.unit.id == p.unit.id) { … dup_queue.push(DupRec{ due_ns: now_ns+srtt_ns, unit: p.unit, interval_ns: srtt_ns.max(1) }) } }'",
+    "crates/adaptive-transport/src/sender.rs:3302-3310 comment '[P0 burst-recovery] … SESSİZCE VAZGEÇME … GEOMETRİK (self-reschedule, ×2 backoff, ACK-ile-iptal) forward kopya yeniden-kur'",
+    "reports/burst-reproof-v1/manifest-h3.jsonl arms field (parsed): {\"kama-arq\": {\"transport\": \"kama\", \"kama_arm\": \"arq\"}, \"kama-tail-v1\": {\"transport\": \"kama\", \"kama_arm\": \"tail-v1\"}, \"q-stream\": {\"transport\": \"quinn\"}, \"q-dgram-arq\": {\"transport\": \"qdgram\"}} — no 'kama-product' arm anywhere",
+    "crates/bench/src/main.rs:292 'Security-stub sürücüsü (FEC parity YAPISAL olarak emit edilemez — bkz. src/kama.rs).'",
+    "reports/p0-burst-recovery/P0-CLOSURE.md:34 '| **kama-tail-v1** (primary) | 0.927 | **0.983** | **+0.057** | 7.3 → 1.7 |'"
+   ],
+   "note": "SHIP defensible: this mechanism needs no FEC config, is unconditional in Sender, and reaches the wire on the default product path. The validation-scope caveat is exactly right and is the most valuable caveat in the finding set."
+  },
+  {
+   "mechanism": "ARQ cap-exceeded handoff (CapExceedPolicy::HandToForward, fire-once)",
+   "claim": "arq_retx_cap=3, HandToForward, hardwired fixture with no RuntimeConfig knob; fire-once copy at sender.rs:5377-5381.",
+   "verdict": "confirmed",
+   "evidence": [
+    "crates/adaptive-transport/src/arq.rs:69-79 RetxConfig::fixture with arq_retx_cap: 3 and cap_exceed: CapExceedPolicy::HandToForward, doc '**KALİBRE DEĞİL** fixture'",
+    "crates/adaptive-transport/src/sender.rs:5377-5381 'self.dup_queue.push(DupRec { … interval_ns: 0, // emergency: fire-once });'",
+    "grep over crates/client-core for 'arq_retx_cap' / 'cap_exceed' → no RuntimeConfig field",
+    "specs/adaptive-transport-engine-spec.md:685 'ARQ_RETX_CAP: bir seq için max retransmit sayısı; aşılırsa FEC/forward'a devret veya connection-fail.   [CAL]'"
+   ],
+   "note": "SHIP defensible (unconditional, no FEC config dependency)."
+  },
+  {
+   "mechanism": "Multi-dimensional burst-length signal (burst_p50/p95/max, choose_profile)",
+   "claim": "(record truncated in the input) — burst percentile signals from fec-core §8.",
+   "verdict": "confirmed",
+   "evidence": [
+    "grep -rn 'burst_p95|burst_p50|burst_max|choose_profile' crates --include=*.rs → crates/kama-engine/tests/m1_reverse_nis.rs:89,103,112,224,624,1123,1152 ONLY. Zero hits in any src/ file, zero hits in crates/client-core, zero hits in crates/adaptive-transport.",
+    "specs/fec-core-tdd-v3.0.md:278 'profile = choose_profile(q_raw, burst_p95, reorder, reverse_health, deadline, target_block_failure_prob)' — verified verbatim",
+    "specs/fec-core-tdd-v3.0.md:293 '**ÇOK-BOYUTLU-SİNYAL (tek-q̂-yetersiz):** q_raw · burst_p50/95/max · reorder · rtt/queue-trend · ECN · reverse-health · feedback_age · headroom · deadline · block-size.' — verified verbatim"
+   ],
+   "note": "The only burst-length statistics in the tree are a TEST channel model measuring the simulated link (m1_reverse_nis.rs), not a transport estimator. choose_profile does not exist in code at all. WIRE is the correct classification (spec-required by fec-core §8/§14 K-FEC-2, entirely absent from product)."
+  }
+ ],
+ "missed_mechanisms": [
+  {
+   "name": "Adaptive reorder tolerance (packet-threshold ρ×recent_max_reorder + note_spurious un-loss wiring)",
+   "evidence": "This is the product's actual burst-vs-reordering discriminator on the loss-declaration path and it is fully wired, yet appears in no finding. crates/adaptive-transport/src/sender.rs:1666 'reorder: ReorderTracker, // §9.3 spurious→note_spurious kablosu; packet-thresh tüketimi'; :2992-2993 'self.reorder.note_spurious(u32::try_from(la.saturating_sub(seq)).unwrap_or(u32::MAX));'; :3003 '.set_packet_threshold(u64::from(self.reorder.reorder_thresh(&self.retx_cfg)));'; :3031-3032 second note_spurious wire in the un-loss drain. Consumer side: crates/adaptive-transport/src/loss.rs:307-309 'pub fn set_packet_threshold(&mut self, k: u64)' with doc '[TUR-2a] Adaptif packet-threshold: sender max(K, ρ×recent_max_reorder) yazar'; :568 'fn effective_packet_thresh'; :650 'let k = self.effective_packet_thresh(); // [TUR-2a] adaptif reorder-toleransı (§9.3)'. Unconditional, no config knob, exercised on every product ACK. Spec anchor: specs/adaptive-transport-engine-spec.md:1085 lists 'K=3 packet-threshold' in the SAFE clock-class row.",
+   "suggested_classification": "SHIP"
+  },
+  {
+   "name": "Reorder-pressure guard on speculative FEC (reorder_suppress_permille = 300, C4/G1) and the persistence horizon (PersistMode::LearnedSpuriousAge, Q95 spurious-age × 1.25)",
+   "evidence": "These are literal burst-vs-random structure signals feeding the FEC decision, default-ON in the product profile, and the findings mention them only in passing inside the arbiter record. crates/adaptive-transport/src/sender.rs:428-447 'pub fn bounded_v1() -> Self { enabled: true, bootstrap_cap_permille: 250, persistent_cap_permille: 250, persist_mode: PersistMode::LearnedSpuriousAge, persist_srtt_permille: 500, persist_rho_permille: 1250, persist_q_permille: 950, reorder_suppress_permille: 300, .. }' with doc ':430 C4 guard'ı G1 (reorder_pressure ≥ 300‰ ∧ declared ≥ 8 ⇒ öneri yok)'. Source signal: crates/adaptive-transport/src/loss.rs:59-60 'Penceredeki Spurious birim / tüm olay birimleri (per-mille) — reorder baskısı. pub reorder_pressure_permille: u32,' and loss.rs:387-392 '[FEC-RISK v2] Spekülatif kolun ÜÇ girdisi tek geçişte — instant · persistent · reorder … Ayrım BÜYÜKLÜKTE değil, ZAMANDA'. Product default: 35f60f80:crates/client-core/src/runtime.rs:204 'fec_loss_risk: FecLossRiskConfig::bounded_v1(),' wired at :902 'session.sender_mut().set_fec_loss_risk(cfg.fec_loss_risk);'. Consumed at sender.rs:3440-3466 and :3556 speculative_propose. Note: at the pin its output is inert (fec: None), same as the structure lane.",
+   "suggested_classification": "WIRE (at the pinned default; SHIP once fec actuation is default-on)"
+  },
+  {
+   "name": "Unbounded geometric dup_queue reschedule — no COPY_MAX_INTERVAL / RETRY_BUDGET (spec §16.2 BREAK row, unfixed)",
+   "evidence": "The spec's own normative clock inventory records this as an open defect in exactly the burst-recovery machinery the findings audited, and no finding mentions it. specs/adaptive-transport-engine-spec.md:1084 '| geometrik kopya deadline'sızlığı | sender dup_queue | deadline-türevi AMA tavansız | ölü kanalda sonsuz reschedule (COPY_MAX_INTERVAL/RETRY_BUDGET kodda yok) | §12 deadline tavanı DupRec'e |'. Confirmed absent: grep -rn 'COPY_MAX_INTERVAL|RETRY_BUDGET' crates --include=*.rs → zero hits. Code: crates/adaptive-transport/src/sender.rs:5642-5650 'if dup.interval_ns > 0 { let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER); self.dup_queue.push(DupRec { due_ns: now_ns.saturating_add(next_interval), unit: dup.unit, interval_ns: next_interval }); }' with in-code comment ':5643 sayı-tavanı YOK, deadline'a dek'. The P0 fix (sender.rs:3312-3316) is one of the producers that arms this unbounded loop.",
+   "suggested_classification": "WIRE"
+  },
+  {
+   "name": "Pure-silence tail-liveness forward duplication (plan_forward_duplication empty-pending_lost branch)",
+   "evidence": "A separate burst/blackout-recovery mechanism with different semantics from emergency duplication, collapsed into the emergency record by the findings. crates/adaptive-transport/src/sender.rs:5490-5513: doc '[TUR-1a / D-1/1 liveness kolu] pending_lost BOŞKEN (saf-sessizlik: later-ACK preconditionı loss SINIFLANDIRMASINI blokladı ama tail cevapsız): unacked orijinal inflight birimlerine spekülatif geometrik kopya (taban=srtt, ×2 backoff; ACK'le iptal §3.3-B-stop). Loss METRİĞİNE dokunmaz'; code filters 'p.origin == TransmitKind::Data' and pushes 'interval_ns: srtt_ns.max(1)'. Unconditional, no knob, no dedicated counter (folded into tx_dup_bytes). It is the branch that actually runs when the reverse path is fully dead — i.e. the flagship blackout regime — and it never uses factor/spacing from dup_params.",
+   "suggested_classification": "SHIP"
+  },
+  {
+   "name": "Bench unit test rsweep_caps_flow_to_runtime is arithmetically inconsistent with the uncommitted working-tree fix",
+   "evidence": "Working tree crates/bench/src/kama_product.rs:238 'structure_gate_level_permille: gate.or(v1.structure_gate_level_permille),' where :150 'let v1 = KamaV1Profile::runtime_config();' and working-tree crates/client-core/src/runtime.rs:258 'structure_gate_level_permille: Some(Self::STRUCTURE_GATE_LEVEL_PERMILLE),' with :218 'pub const STRUCTURE_GATE_LEVEL_PERMILLE: u32 = 250;'. The test at working-tree crates/bench/src/kama_product.rs:1113-1116 calls runtime_cfg(base) with 'gate: None' and then asserts 'assert_eq!(d.structure_gate_level_permille, None);'. None.or(Some(250)) == Some(250), so this assertion cannot hold. The test carries no #[ignore]. (I did not run cargo, per instructions; this is a static reading of the two lines.)",
+   "suggested_classification": "n/a — CI/test-hygiene defect in uncommitted work, not a transport mechanism"
+  },
+  {
+   "name": "Guard-check campaign arms are not the shipped default configuration (bootstrap_rtt + explicit initial window + profile 0x03)",
+   "evidence": "Every guard-check-v2 arm label is 'kama-product-tailv1-fec-adaptive-p0x03[-burstfusion]-bootstraprtt-iw2400' (reports/guard-check-v2/*/*/rep*/out.jsonl meta.kama_arm). Per 35f60f80:crates/bench/src/kama_product.rs:680-697 the '-bootstraprtt' token is emitted only when cfg.bootstrap_rtt is true, and RuntimeConfig::default() sets 'bootstrap_rtt: false' (35f60f80:crates/client-core/src/runtime.rs:196), documented at runtime.rs:118 as the shipped default. Additionally the DR-CS-3 probe lane is gated by the default-OFF 'experimental-cold-start' cargo feature (crates/client-core/src/runtime.rs:896 'session.sender_mut().set_cs_probe_lane(cfg.bootstrap_rtt);'), so the flag's effect in those runs depends on the build features, which the artifacts do not record. Consequence: the cluster's only netem evidence was collected on a non-default arm whose deviations are not fully recorded in the artifacts.",
+   "suggested_classification": "n/a — evidence-provenance defect affecting every measured claim in this cluster"
+  }
+ ],
+ "corrected_classifications": [
+  {
+   "mechanism": "Structure-aware FEC gate (structure_gate_fec)",
+   "classification": "WIRE",
+   "reason": "At the pinned commit RuntimeConfig::default() carries 'fec: None' (35f60f80:crates/client-core/src/runtime.rs:199). With fec None, FecActuationMode is never set (runtime.rs:865 'if fec.is_some()') and the whole block-close/latch/RsSimdCodec::encode path (runtime.rs:1287-1315) is inside the Some(profile) arm, so the gate's Opened(ratio) proposal is never consumed and no parity byte reaches the wire in any regime. Under the task's own rule ('a path ending at … an unused result … or never-consumed proposal is NOT wired') this is WIRE, not SHIP. The finding stated the inertness and then classified SHIP anyway. Independent corroboration: the uncommitted working-tree fix labels the prior state a 'configuration zombie' (working-tree runtime.rs:243-249)."
+  },
+  {
+   "mechanism": "FecStructurePolicy::Q18Iid (burst → parity zero)",
+   "classification": "WIRE",
+   "reason": "Same root cause. At the default, 'burst → parity 0' is not a decision the product takes — parity is 0 in every regime because there is no FEC actuation. reports/guard-check-v2/burst50/adaptive tx.fec = 0 (6/6) was produced by an arm that explicitly passed --fec-profile 0x03, i.e. it overrode the default. K-FEC-NEG-1's mandatory 'Dürüstlük-kanıtı' (specs/fec-core-tdd-v3.0.md:394-395) therefore has no default-build demonstration."
+  },
+  {
+   "mechanism": "Structure-gate parity level (structure_gate_level_permille)",
+   "classification": "WIRE",
+   "reason": "Some(250) is set on the sender (35f60f80:crates/client-core/src/runtime.rs:206 → :847) but is only read by gate_level_permille() inside Opened(ratio), which the latch never consumes at the default (fec: None). The confirmed bench/product divergence (bench default None → engine fec_med 500, 35f60f80:crates/bench/src/kama_product.rs:224 and the pin at :923) means no measurement in the repo was taken at the shipped level."
+  },
+  {
+   "mechanism": "Single FEC arbiter — final = max(confirmed, structure, speculative)",
+   "classification": "WIRE",
+   "reason": "The function is correct, spec-anchored (specs/adaptive-transport-engine-spec.md:645-656) and always executed, but its sole actuation route is controller_decision_snapshot → fec_controller_latch, which is unreachable at RuntimeConfig::default() (fec: None). Its diagnostic outputs (diag_arbiter_reasons, TsSample) do reach ClientStats, but a decision that reaches only telemetry is not wired to the wire. Consistency demands the same verdict as the three lanes it arbitrates."
+  },
+  {
+   "mechanism": "Estimator §3.4 eligibility contract (WindowFeatures::eligible)",
+   "classification": "KEEP-EXPERIMENTAL",
+   "reason": "WIRE requires spec-required + disconnected. Disconnection is proven (zero product callers: only fate_estimator.rs:505-532 tests and examples/fate_two_arm.rs:153,161), but the requirement leg is not: the contract's authority is the module's own doc comment referencing an out-of-tree design doc (fate_estimator.rs:25-26), and neither transport authority spec contains a loss-structure eligibility clause. It must stay default-OFF-equivalent (it is: never called) and must not be cited as satisfying any v1 claim. DELETE is also arguable since nothing but the FATE2ARM measurement example consumes it."
+  },
+  {
+   "mechanism": "Emergency forward duplication (D× time-spaced copies)",
+   "classification": "SHIP",
+   "reason": "WIRE requires disconnection; this path is connected end to end (sender.rs:3746 → 3774 RecoverFwd → 4059 plan_forward_duplication → 5520-5526 dup_queue → 5611 drain_due_duplicates → 5622 pacer admission → TransmitDecision{Duplicate} → runtime.rs:963 drive! → seam → UDP), needs no FEC config, and fires at the product default. The 20 ms wall-clock spacing is a real and spec-recorded [CAL]/clock-class debt (specs/adaptive-transport-engine-spec.md:1077) but it is a calibration defect on a shipped mechanism. The finding's universal 'no channel-derived spacing exists anywhere in the tree' is refuted by sender.rs:3312-3316, :5506-5510, :5646 and :5703-5707, all srtt/RTT_floor-derived with PC_COPY_MULTIPLIER backoff — a schedule the spec itself lists as SAFE (spec:1085)."
+  },
+  {
+   "mechanism": "Multi-dimensional burst-length signal (burst_p50/p95/max, choose_profile)",
+   "classification": "WIRE",
+   "reason": "Required by specs/fec-core-tdd-v3.0.md:278 (choose_profile with burst_p95) and :293 (ÇOK-BOYUTLU-SİNYAL) and by §14 K-FEC-2 (:373). Completely absent from product code: grep -rn 'burst_p95|burst_p50|burst_max|choose_profile' crates --include=*.rs hits only crates/kama-engine/tests/m1_reverse_nis.rs (a test channel model). The only burst-structure input the product actually has is fate_estimator's single scalar burst_delta_ppm."
+  }
+ ]
+}

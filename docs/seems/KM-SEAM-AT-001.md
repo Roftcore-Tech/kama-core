@@ -1,0 +1,140 @@
+# KM-SEAM-AT-001 — Application ↔ Transport Seam Sözleşmesi (S1)
+
+**Belge:** `docs/seams/KM-SEAM-AT-001.md` v0.1 · **Tarih:** 2026-09-19
+**İmzacılar:** Hayri (Application) · Abkarada (Transport / kama-core) — ikisi imzalamadan sözleşme değildir.
+**Statü: TASARIM GO ✅ (K1–K9 + KARAR-1/2 kapalı, 2026-09-19) · SEAM-FROZEN HOLD 🟡** — FROZEN için: types compile + AMP codec conformance vektörleri + §6 harness + §7 stub'lar. **Kripto golden vektörü bu seam'in kapısı DEĞİLDİR** (sınırdan kripto byte'ı geçmez).
+**Türetildiği kaynaklar (icat yok):** transport-tdd §0 INV-NEIGHBOR-1 / INV-PLAINTEXT-NOT-SEMANTICS · KM-SEAM-TC-001 (S3) §1.2 SessionControl/SessionEvent, K7, K8, K9 · app-rpc §2 (üç düzlem), AMENDMENT-7 (envelope_type) · application-message-protocol.md §1–§2, §5 · engine-spec §0.2 · ccr §35.6 BatchPayload (KARAR-1) · identity (multi-device limit=1)
+**Yazım:** her karar **K** · **G** (kaynak atfıyla) · **R** (reddedilen alternatif) · **S** (sınır).
+
+---
+
+## 0. Sınır
+
+```
+Application (Hayri)                                        Transport / kama-core (Abkarada)
+  ürün semantiği · mesaj şeması (AMP) · sıkıştırma kararı  ──►  connect/send/recv/events tek API
+  Crypto'yu GÖRMEZ · Plane 1'i GÖRMEZ · retry YAPMAZ       ◄──  Plane 1 RPC istemcisi · batch/segment/ARQ/FEC/pacing
+                                                                  · SessionControl'ü sürer · olayları typed iletir
+```
+Application'ın tek alt komşusu Transport'tur (INV-NEIGHBOR-1). Bu belge kama-core'un **app-facing API'sinin** tamamıdır; başka app-facing yüzey yoktur.
+
+---
+
+## 1. Arayüz / şema
+
+```rust
+pub trait KamaTransport {
+    fn capabilities(&self) -> TransportCapabilities;
+    fn connect(&mut self, peer: PeerRef, early_unit: Option<PreparedUnit>) -> Result<ConnectResult, TransportError>;
+    fn send(&mut self, session: SessionHandle, unit: PreparedUnit, policy: DeliveryPolicy) -> Result<(), TransportError>;
+    fn recv(&mut self) -> Option<Delivered>;                  // poll; sıralama garantisi §4
+    fn poll_event(&mut self) -> Option<SessionEvent>;         // Ready | RenewRequired | Closed | ConnectFailed
+    fn close(&mut self, session: SessionHandle);
+}
+pub struct TransportCapabilities { pub max_plaintext_unit_bytes: u32, pub preferred_plaintext_unit_bytes: u32 }
+pub struct PreparedUnit          { pub bytes: Bytes /* = AppMessageRecord, AMP §2 */, pub compression_policy: CompressionPolicy }
+pub enum   CompressionPolicy     { Never, AppCompressed /* bit0 zaten set */ }   // §1 K4
+pub enum   DeliveryPolicy        { Reliable, DeadlineBounded { deadline: Instant }, BestEffort }
+pub struct Delivered             { pub session: SessionHandle, pub unit: Bytes /* AppMessageRecord */ }
+pub enum   SessionEvent          { Ready(SessionHandle, PeerRef), RenewRequired(SessionHandle), Closed(SessionHandle, CloseReason),
+                                   ConnectFailed(ConnectTicket) }
+pub enum   ConnectResult         { Ready(SessionHandle), Pending(ConnectTicket) }   // K2 KARAR-1: idempotent, olay üretmez
+pub struct SessionHandle(/* opak */);   pub struct ConnectTicket(/* opak */);   pub struct PeerRef(/* opak; StaticPeerMaterialProvider anahtarı */);
+```
+
+**K1 — Application yalnız bu trait'i çağırır; Crypto'ya ve Plane 1'e erişimi YOKTUR.**
+**G:** INV-NEIGHBOR-1 (`degree(Application)=1`). `connect()` içinde Transport, S3 SessionControl `Initiate` → `OutboundEnvelope` → Plane 1 `STORE_MESSAGE` zincirini kendisi sürer; `AcceptInit`/`AcceptResponse` yönlendirmesini DELIVER/`MailboxItem.envelope_type` ile yapar (app-rpc AMENDMENT-7). Application yalnız `Ready(h)` görür.
+**R:** *App'in Plane 1 çerçevelerini kendisinin kurması* — reddedildi: Plane 1 hub-yönelik kontrol düzlemidir (kama-core'un); app'e açılırsa hub-RPC semantiği ürün koduna sızar ve INV-NEIGHBOR-1'in "mediated" kuralı bozulur. *App'in `initiate()` çağırması* — reddedildi (eski S2; app→crypto kenarı).
+**S:** Plane 1 istemcisinin kodunu Hayri yazabilir — ama **kama-core'un içinde**, bu API'nin altında. Şerit adı ("Application RPC") ile katman adı ayrışır; bu belge katmanı esas alır.
+
+**K2 — `SessionHandle`'ı yalnız Transport verir: yeni kuruluşta `Ready(h)` olayıyla, idempotent `connect()`'te mevcut handle `ConnectResult::Ready(h)` dönüşüyle. Application opak taşır; `Closed` sonrası kullanamaz.**
+**G:** Crypto basar, Transport iletir (S3 K8); invariantlar transport-tdd §0 (epoch değil, wire'da yok, restart sonrası geçerli olmak zorunda değil, `HubHandle` ile ayrı tip).
+**KARAR-1 — aynı peer'a ikinci `connect()`: İDEMPOTENT [kapandı 2026-09-19].** `connect()` → `ConnectResult`: aktif session varsa **`Ready(h)` döner (olay YAYINLAMAZ)**; pending varsa **aynı** `Pending(ticket)`; hiç yoksa yeni handshake + `Pending(ticket)`. `Ready` olayı yalnız gerçek state geçişinde çıkar — olay kuyruğu idempotency mekanizması **değildir** (duplicate `Ready` yok). Gerekçe: multi-device limit=1 (identity) ⇒ peer başına en fazla bir aktif session; paralel handshake KS-DOS-1 cap'ini boşa tüketir.
+**S — KARAR-2 [kapandı 2026-09-19]: ATOMİK CUTOVER; cap'e bağlı DEĞİL.**
+```
+h aktif → RenewRequired(h) → arka planda h' kuruluyor (h hâlâ send kabul eder)
+→ h' hazır → ATOMİK CUTOVER: h = draining (yeni send YOK, outstanding boşalır) · h' = aktif
+→ Ready(h') → Closed(h, Renewed)
+```
+Cutover sonrası `send(h)` → **`SessionSuperseded`** (yapısal hata; oracle değil, app'in düzelteceği yerel lifecycle durumu). Reddedilen: *"eski h cap'e kadar kabul eder"* — davranışı Crypto'nun gizli sayaç durumuna bağlar (aynı `send` bazen çalışır, birkaç paket sonra çalışmaz) ve `h`/`h'` üzerinden eşzamanlı veri kabul edilirse cross-session sıralama bölünür (§4 yalnız aynı-session Reliable sıralaması garanti eder). **Cap Crypto'nun güvenlik sınırıdır, API semantiği değil** — App↔Transport sözleşmesine kripto iç runtime state'i sızdırılmaz.
+
+**K3 — `PreparedUnit.bytes` bir `AppMessageRecord`'dur; Transport onu yapısal olarak işler, semantik olarak asla.**
+**G:** INV-PLAINTEXT-NOT-SEMANTICS. Transport uzunluk/segment/batch (ccr §35.6 `BatchSubMessage.payload` = bir record; KARAR-1 S3) /FEC/deadline yapar; `msg_type`'ı okumaz.
+**R:** *Transport'un tip-bazlı öncelik/sıkıştırma kararı vermesi* — reddedildi (tip bilgisi app'in). İhtiyaç varsa app **politika** verir (`DeliveryPolicy`, `CompressionPolicy`), semantik değil.
+**S:** `bytes.len() ≤ max_plaintext_unit_bytes` (K5); aşarsa `UnitTooLarge`. Application record'u **kendisi böler** (FILE_CHUNK) — Transport birim içini bölmez; birden fazla record'u bir birime **paketler**.
+
+**K4 — Sıkıştırma Application'da yapılır ve `PreparedUnit` içinde işaretlidir; Transport sıkıştırmaz.**
+**G:** AMENDMENT-4/6 (transport-tdd §8, app-rpc §3): karar tip bilgisi ister; AMP §5 wire sözleşmesi (`flags.bit0`, `compression_id`, izole context, bounded decompress). `CompressionPolicy` alanı Transport için **bilgilendiricidir** (istatistik/ileride pacing ipucu), davranış değiştirmez.
+**R:** *Transport'un `compressible` ipucuyla sıkıştırması* — kod kanıtı aktüatör yok (fusion.rs:551); karar app'te; alan ileride bu yönde genişlemeye açık bırakıldı (v2).
+**S:** Alıcı tarafta decompress de Application'da (AMP §5 kuralları 1–4); Transport `Delivered.unit`'i olduğu gibi verir.
+
+**K5 — `TransportCapabilities` salt-okunur; değerleri Transport türetir, Application hesaplamaz.**
+**G:** Application yalnız Transport'u bilir; 18 B E2E kayıt ek yükü ve 4 B `hub_handle` (ccr AC-SM3-2) Transport'un **alt komşusundan** öğrendiği sayılardır. Kaynak S3 iki sorgu: **`conservative_limits(ProtectionClass::Session)`** — handle gerektirmez, tüm session profilleri (legacy/extended) için güvenli **minimum**; S1 `capabilities()` (global, session öncesi) bunu kullanır — ve **`limits(ProtectionContext::Session(h))`** — aktif session'ın gerçek profili; v2 `capabilities(session)` için. Transport kripto format matematiğini **hiçbir yerde tekrar etmez**. Zincir: `Crypto conservative_limits(class) → Transport MTU/framing/segment bütçesi → TransportCapabilities.max_plaintext_unit_bytes → Application`.
+**R:** *Application'ın 18'i bilmesi* — reddedildi: Crypto'ya ait sabit app'e sızar, format değişince sessiz kırılma. Eski `SecurityCapabilities`/orkestratör composition modeli (X-dönemi) **iptal**.
+**S:** `preferred_plaintext_unit_bytes` batching için ipucu; app record'ları ona göre boyutlandırırsa daha az birim; zorunlu değil.
+
+**K6 — `early_unit` opak bir `PreparedUnit`'tir; Transport onu S3 `Initiate{early_unit}` ile geçirir.**
+**G:** transport-tdd §0 istisna + ccr §35.3 AMENDMENT-6: Crypto opak işler. `first_message` adı bilinçli **reddedildi** (Crypto'nun TEXT bildiği izlenimi).
+**S:** Boyutu `max_early_unit_bytes` `[KARAR — ccr §35.3 early_data sınırından türer]`; aşarsa `UnitTooLarge`. Teslimi RESPONSE gibi Plane 1 üzerinden; ACK'i **yoktur** (async), app receipt'le öğrenir (K8).
+**İdempotent `connect` ile etkileşim [kapandı 2026-09-19]:** `early_unit` **yalnız yeni handshake yaratılırken tüketilir.** Pending INIT byte-for-byte cache'lendiği için (INV-INIT-KEY-1) mevcut handshake'e yeni early data eklenemez. Kural: aktif veya pending peer'a `connect(peer, Some(X))` → **`EarlyUnitConflict`** (yapısal hata; X **sessizce düşürülmez**, hiçbir byte tüketilmez); `connect(peer, None)` → K1 idempotent davranışı aynen. Application X'i `Ready(h)` sonrası normal `send()` ile yollar.
+
+**K7 — Olaylar typed'dır; Transport yorumlamadan iletir.**
+**G:** S3 K6/K8; transport-tdd §0 ("opaque" DEĞİL). `Ready(h, peer)` peer'ı taşır ki app konuşmaya eşlesin; `ConnectFailed(ticket)` opak sebeple (§3).
+**S:** Olay sırası bir session için garanti: `Ready` → (`RenewRequired`)* → `Closed`. `Ready` gelmeden `send(h)` → `UnknownSession`.
+
+**K8 — Application teslimi Transport'tan öğrenmez; receipt AMP semantiğidir.**
+**G:** LAW-5 + INV-NEIGHBOR-1: transport ACK hop/E2E-ARQ'nun iç işi (S3), app'e sızmaz. "Bob'un uygulaması işledi" bilgisi yalnız `RECEIPT` record'uyla (AMP 0x08) gelir. `send()`'in `Ok(())` dönmesi = kuyruğa alındı, teslim değil.
+**R:** *`send()`'in teslim callback'i vermesi* — reddedildi: E2E teslim tanımı (hub aldı mı, Bob aldı mı, Bob açtı mı) katmanlara göre farklı; tek bir "delivered" app'i yanıltır. Async yolda anlamsız.
+**S:** Application **hiçbir retry yapmaz**; `send` başarısızsa (`Backpressure`, `DeadlineExpired`) yalnız kullanıcıya yansıtır ya da bekler.
+
+---
+
+## 2. Byte sözleşmesi ve vektörler
+Bu seam **wire tanımlamaz**. Sınırdan geçen byte'lar: `PreparedUnit.bytes` = AMP `AppMessageRecord` (AMP §2/§5 tanımlı) — `Delivered.unit` aynı record byte-identical geri gelir. **Vektörler:** AMP §7 codec conformance seti (pozitif/negatif record'lar) + **seam-özel:** `send` → (MockTransport) → `recv` byte-özdeşlik; `early_unit` byte-özdeşlik; `UnitTooLarge` sınırı tam `max_plaintext_unit_bytes`'ta. Kripto vektörü bu seam'in kapısı değildir.
+
+## 3. Hata semantiği
+```
+TransportError ∈ { UnknownSession, SessionSuperseded, EarlyUnitConflict, UnitTooLarge, Backpressure, DeadlineExpired, NotConnected }
+ConnectFailed(ticket)  — sebep OPAK (kripto Failed'ı, Plane 1 deadline'ı, route miss aynı görünür)
+```
+**K9 — Application'a kripto nedeni sızmaz.** S3 §3 (`Failed` opak, `open()→None` sessiz) burada da korunur; `ConnectFailed` tek tip. Gerekçe: oracle yüzeyi yok; app güvenlik kararı veremez. Yapısal hatalar (boyut, backpressure) typed'dır çünkü app'in düzeltebileceği şeylerdir.
+
+## 4. Zamanlama / deadline
+- Application `DeliveryPolicy` **beyan eder**; Transport **uygular** (transport-tdd §0). `DeadlineBounded` süresi dolarsa birim sessizce düşer ve `DeadlineExpired` yalnız `send()` anında (kuyruk dolu) döner — teslim edilemeyen birim için sonradan sinyal **yoktur** (K8).
+- `connect()` süresi Transport'un Plane 1 `Reliable` deadline'ıdır; dolarsa `ConnectFailed(ticket)`. **Semantik (donmuş):** `ConnectFailed` ⇒ pending kripto state kapatılır (ephemeral zeroize — ancak T-18c'nin "RESPONSE 7 güne kadar gelebilir" kuralıyla çelişmemesi için bu deadline yalnız **online-direct** yoluna uygulanır; mailbox/async yolunda `connect` deadline'ı YOKTUR, pending mailbox TTL'iyle yaşar) · `early_unit` **teslim edilmemiştir** ve Application tarafından yeni `connect`'ten sonra normal `send()` ile yeniden verilmelidir (Transport onu saklamaz) · ticket geçersizleşir. Değeri `[KALİBRASYON — KS-8]`.
+- `recv()` sıralaması: **aynı session içinde `Reliable` birimler gönderim sırasında** (transport reassembly + E2E replay penceresi); `BestEffort`/`DeadlineBounded` sırasız gelebilir. Application AMP `msg_id` ile kendi sırasını tutar.
+- Application timer'ı yalnız UI/ürün amaçlı; **retransmit timer'ı YOKTUR** (LAW-5).
+
+## 5. Sürümleme
+`KamaTransport` API v1 · `PreparedUnit` içi AMP `msg_version` (bağımsız) · `TransportCapabilities` alan ekleme = minor, imza değişimi = v2. Plane 1/2 sürümleri (app-rpc `protocol_version`, ccr) app'e görünmez.
+
+## 6. Conformance harness (= anlaşmanın kendisi)
+| Test | Kanıtladığı |
+|---|---|
+| H-NO-CRYPTO-EDGE | Application crate'inin Crypto crate'ine **derleme bağımlılığı yok** (statik); Plane 1 tiplerine bağımlılığı yok |
+| H-APP-RETRY-0 | Deterministik kayıp altında `recovery ON` → teslim; `recovery OFF` → kasıtlı düşürülen birim **kurtarılmaz**; app kodunda retransmit yolu yok |
+| H-ROUNDTRIP | `send(PreparedUnit)` → `recv()` byte-identical; `early_unit` byte-identical |
+| H-EVENTS | `Ready → RenewRequired → Ready(h') → Closed(h, Renewed)` sırası; `Closed` sonrası `send(h)` → `UnknownSession` |
+| H-CUTOVER | Cutover öncesi `send(h)` kabul; cutover sonrası `send(h)` → `SessionSuperseded`; `h`'nin outstanding'i drain olur; `h'` üzerinden sıralama korunur; davranış Crypto cap değerinden BAĞIMSIZ (cap değiştirilse de aynı) |
+| H-CONNECT-IDEMP | aktif peer → `Ready(h)` döner, olay YOK; pending → aynı ticket; olay kuyruğunda duplicate `Ready` yok |
+| H-EARLY-CONFLICT | aktif/pending peer'a `connect(peer, Some(X))` → `EarlyUnitConflict`; X hiçbir yola girmez (MockTransport/Crypto'da byte izi yok); `connect(peer, None)` idempotent |
+| H-CAPS | `len == max` kabul, `len == max+1` `UnitTooLarge`; değer Transport'tan, app'te sabit yok |
+| H-OPAQUE-FAIL | Yanlış peer material, bozuk RESPONSE, Plane 1 timeout → ayırt edilemez `ConnectFailed` |
+| H-NO-PLANE1 | Application hiçbir Plane 1 method_id/çerçeve üretmez (statik kontrol) |
+| H-COMPRESS-BOUNDARY | `CompressionPolicy` Transport davranışını değiştirmez; decompress yalnız app'te (AMP §5 kuralları) |
+
+## 7. Karşı-taraf stub'ları
+**`MockTransport`** (Hayri için): deterministik kayıp/sırasız/duplicate enjeksiyonu, `Ready/Renew/Closed` senaryoları, kapasite sabitleri, `ConnectFailed` enjeksiyonu; Plane 1 ve Crypto **içermez**. **`MockApplication`** (Abkarada için): AMP record üretici/tüketici, `connect→send→recv` akışı, receipt üretimi; retry yok.
+
+## 8. Açıklar
+| # | Kalem | Sahip |
+|---|---|---|
+| ~~KARAR-1~~ | KAPANDI: idempotent, `ConnectResult::{Ready, Pending}`, duplicate olay yok | — |
+| ~~KARAR-2~~ | KAPANDI: atomik cutover, `SessionSuperseded`; cap'e bağlı değil | — |
+| ⬛ KS-8 | `connect` Plane 1 deadline değeri | Abkarada |
+| ~~S3 ekleme~~ | KAPANDI: `conservative_limits(class)` + `limits(Session(h))` — KM-SEAM-TC-001 §1.1 | — |
+| AMP v1 | A1–A5 kararları; §7 codec conformance vektörleri (bu seam'in de kapısı) | Hayri |
+| — | §6 harness + §7 stub'lar | Hayri + Abkarada, Hasan koşar |
+
+## 9. Bu belgenin sınırı
+Kripto doğruluğunu tanımlamaz (ccr/identity/S3). Plane 1 wire'ını tanımlamaz (app-rpc). Mesaj şemasını tanımlamaz (AMP). Media'yı görmez. Yalnız "Application, Transport'a ne verir, ne alır, neyi asla görmez" sorusunu kapatır.

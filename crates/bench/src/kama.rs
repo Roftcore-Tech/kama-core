@@ -531,6 +531,13 @@ async fn client_loop(
         t0_unix_ns,
         events_epoch_offset_ns: t0, // kama event'leri koşu-epoch'undan damgalanır
         warmup_residue,
+        activation: None,
+        // [FAZ-4 §M4] Stub kol UDP soketi bağlar; el sıkışma YOK, kurulum ölçülebilir bir olay
+        // değil (≈0). Ölçüm-t0 warmup/gate SONRASINDA konur → kurulum pencere DIŞINDA.
+        setup_ns: 0,
+        setup_in_window: false,
+        profile_id: String::new(),
+        profile_delta: Vec::new(),
     };
     Ok(RunOutput { meta, events })
 }
@@ -683,6 +690,7 @@ mod tests {
             persist_alpha: None,
             persist_rho: None,
             persist_q: None,
+            rp_suppress: None,
             spec_l2_permille: None,
             spec_l1_permille: None,
         }

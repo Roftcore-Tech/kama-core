@@ -1,5 +1,11 @@
 # Kama — Adaptive Transport Engine Spec (Implementable)
 
+> **YAMA KAYDI — 2026-09-18b:** §10.1 shard alan etiketleri `[GÜVENLİK katmanı]` → `[SEAM — session E2E anahtarı]` (AMENDMENT-5 ile tutarlı; RS transport'ta); §13 otorite tablosu "shard AEAD'i GÜVENLİK katmanı yürütür" → seam/hop-ctx diliyle. §0.2/§10 arası çelişki kapandı.
+
+
+> **YAMA KAYDI — 2026-09-18 [AMENDMENT-5, dar; Claude Code metni]:** §0.2 :47 ve :712 — FEC POLİTİKA + EXECUTION (RS encode/reconstruct) TRANSPORT'un (runtime.rs:1408/1501/2061); per-shard AEAD SEAM'in (seal :998 / open :1184); open → reconstruct sırası (INV-FEC-1) korunur. Eski "EXECUTION güvenlik katmanının" hiç uygulanmamıştı. Başka değişiklik YOK; "E2E transport'un üstünde" topolojisi YAZILMADI (iptal).
+
+
 **Belge:** `adaptive-transport-engine-spec.md` v0.1 — Alpha
 **Statü:** IMPLEMENTATION SPEC (kod blueprint'i; `transport-layer-tdd.md` mimari/policy otoritesinin altında)
 **Bağlam:** `transport-layer-tdd.md` (Architecture & Alpha Policy TDD) *ne* inşa edileceğini dondurdu.
@@ -44,8 +50,11 @@ Sonuçlar (NORMATİF):
 - ACK: İÇERİĞİ transport üretir (hangi seq'ler geldi) ama client↔hub Noise-secured kanalın İÇİNDE taşınır
        → forge-koruması Noise'dan gelir, transport'tan DEĞİL. Transport ACK'e AEAD UYGULAMAZ; güvenlik katmanı uygular.
 - FEC: POLİTİKA (ne kadar parity, §8.4 fuzzy — ölçülen loss'tan) transport'un;
-       EXECUTION (RS-encode + per-shard AEAD, code-then-encrypt-authenticate-shards) GÜVENLİK katmanının.
-       Transport parity ORANINI verir; güvenlik katmanı encode+AEAD yapar; transport opak shard'ları pace/track eder.
+       [AMENDMENT-5] (impl-driven, kod-spec tutarlılığı): FEC POLİTİKA (k, r; §8.4) ve EXECUTION (RS encode / reconstruct)
+       TRANSPORT'undur (client-core RsSimdCodec.encode runtime.rs:1408/:1501, .reconstruct :2061). Per-shard AEAD SEAM'indir
+       (SecuritySeam::seal :998 / open :1184, tel kenarı). Sıra korunur: gönderici RS-encode → seal, alıcı open → reconstruct
+       (authenticate-before-decode, INV-FEC-1). Transport shard başlığını (block_id/esi/k_actual) reliability için okur,
+       anahtar tutmaz; seam kurtarma bilmez. ~~Eski: EXECUTION güvenlik katmanının; güvenlik katmanı encode+AEAD yapar~~ (hiç uygulanmadı).
 - "Pipeline D outer-AEAD" (TDD §0.1) control/shard için EXECUTE edilir ama GÜVENLİK katmanında;
        bu belge o AEAD'i transport-owned olarak REDEFINE ETMEZ (yalnız birimi opak taşır).
 ```
@@ -245,7 +254,7 @@ on_event(e):
     TimerFired(t)    -> §12 timer handler
     AppData(bytes)   -> enqueue(tx_queue); if state==IDLE: state=PRE_CONVERGE   # §3.3 [K-KEYSTONE]; PRE_CONVERGE→STARTUP ilk geçerli SACK/echo'da (§3.3-D)
   ClassifyPath()        # §5
-  (fec_ratio, arq_aggr, send_rate, compress) = FuzzyEvaluate()   # §8.4, §15
+  (fec_ratio, arq_aggr, send_rate, compress) = FuzzyEvaluate()   # §8.4, §15 — compress: KALINTI çıktı, tüketilmez [AMENDMENT-4]
   ClampRecoveryBudget()  # §8.5
   UpdatePacingRate(send_rate)  # §13
   ScheduleTransmit()     # pacing token bucket'a göre DATA / retransmit / FEC / duplication
@@ -645,7 +654,7 @@ DRAIN_RTPROP (RTprop tazeleme):
 ### 8.4 FEC/ARQ arbitrasyonu (FÜZYON — aynı state, §15 fuzzy)
 ```
 Girdi:  loss_rate, jitter, bandwidth, queue_delay, ack_confidence   (§15 fuzzified)
-Çıktı:  fec_parity_ratio, arq_aggressiveness, send_rate_gain_hint, compress
+Çıktı:  fec_parity_ratio, arq_aggressiveness, send_rate_gain_hint, compress   [AMENDMENT-4: compress KALINTI — üretilir, hiçbir aktüatör tüketmez; sıkıştırma app-rpc §3'ün]
 Kanonik kurallar (TDD §5.3 ile birebir):
   loss LOW                         → fec=0,    arq=light
   loss HIGH ∧ bw HIGH ∧ jitter LOW → fec=high, arq=moderate           (RS erasure, RTT-beklemeden recovery)
@@ -660,6 +669,10 @@ Kanonik kurallar (TDD §5.3 ile birebir):
 available_redundancy_budget = f(BtlBw, mevcut tx ihtiyacı)   [CAL]
 parity_final = min(fuzzy_parity, budget_cap, profile_cap)
   → düşük bantta yüksek loss bile parity'yi patlatamaz (dar bandı FEC israf etmez).
+  → [AMENDMENT-3] budget_cap YALNIZ KÜÇÜLTÜR, SIFIRLAMAZ: budget_cap == 0 ∧ fuzzy_parity > 0 ise
+    clamp UYGULANMAZ (fuzzy_parity aynen geçer) ve `diag_parity_budget_would_zero` sayılır.
+    Gerekçe + §11 ilişkisi: bu bölümün sonundaki AMENDMENT-3 notu ve
+    docs/transport-v1/adr/ADR-minimal-parity-exception.md.
 send_rate_final = clamp(fuzzy_send_rate, [MIN_RATE, min(BtlBw_based_cap, profile_cap)])   MIN_RATE=[CAL]
   → [R8 işaret levhası] PRE_CONVERGE'de MIN_RATE floor UYGULANMAZ (MUST-NOT-APPLY) → cold-start pacing
     floor = PRE_CONVERGE_FLOOR_BW (§3.3-A / §16.1 / Ek-B). (Kural burada da işaretli — uzakta yazılıp
@@ -705,9 +718,9 @@ Bu, spurious retransmit'i sender'a bildirir + gereksiz uygulama teslimi önler.
 
 ## 10. FEC Block Format & Parity Selection (NORMATİF — INV-FEC-1 uyumlu)
 
-> **SoC (§0.2):** FEC **POLİTİKA** (ne kadar parity → k,r; §8.4 fuzzy, ölçülen loss'tan) TRANSPORT'un. FEC **EXECUTION** (RS-encode + per-shard AEAD, code-then-encrypt-authenticate-shards) GÜVENLİK katmanının (Noise+kompakt). Transport parity ORANINI verir; güvenlik katmanı encode+AEAD yapar; transport opak shard'ları pace/deliver/track eder + framing metadata'sını (block_id/shard_index/k/r) reliability için okur. Aşağıdaki kripto sırası GÜVENLİK katmanının davranışıdır — transport onu EXECUTE ETMEZ, referanstır.
+> **SoC (§0.2) [AMENDMENT-5]:** FEC **POLİTİKA** (k,r; §8.4 fuzzy) ve **EXECUTION** (RS encode/reconstruct) TRANSPORT'un; **per-shard AEAD** SEAM'in (tel kenarı). ~~Eski: EXECUTION GÜVENLİK katmanının~~. Transport parity ORANINI verir; güvenlik katmanı encode+AEAD yapar; transport opak shard'ları pace/deliver/track eder + framing metadata'sını (block_id/shard_index/k/r) reliability için okur. Aşağıdaki kripto sırası GÜVENLİK katmanının davranışıdır — transport onu EXECUTE ETMEZ, referanstır.
 
-**Kripto sırası (KİLİTLİ — TDD INV-FEC-1, §4.4.7; GÜVENLİK katmanı yürütür): CODE-THEN-ENCRYPT-AND-AUTHENTICATE-SHARDS.**
+**Kripto sırası (KİLİTLİ — TDD INV-FEC-1, §4.4.7): CODE-THEN-ENCRYPT-AND-AUTHENTICATE-SHARDS.** [AMENDMENT-5: AEAD sırası seam'in davranışıdır; RS'yi transport execute eder.]
 ```
 Gönderen (güv. katmanı): block_plaintext → RS-erasure encode (k data + r parity) → (k+r) PLAINTEXT shard →
           HER shard AYRI AEAD encrypt+authenticate → wire'da yalnız ciphertext shard.
@@ -727,9 +740,9 @@ FEC_SHARD {
   k            : u8        # data shard sayısı (bu blok)
   r            : u8        # parity shard sayısı
   shard_len    : u16_be    # bu shard'ın payload uzunluğu
-  # --- güvenlik katmanı (TRANSPORT görmez/yönetmez — opak; §0.2, INV-FEC-1) ---
-  ciphertext   : shard_len bytes    # per-shard AEAD ciphertext  [GÜVENLİK katmanı]
-  aead_tag     : 16 bytes           # per-shard AEAD tag         [GÜVENLİK katmanı]
+  # --- seam çıktısı (AMENDMENT-5: RS encode TRANSPORT'ta yapıldı; bu iki alanı tel kenarındaki SEAM üretir, transport yorumlamaz; INV-FEC-1) ---
+  ciphertext   : shard_len bytes    # per-shard AEAD ciphertext  [SEAM — session E2E anahtarı]
+  aead_tag     : 16 bytes           # per-shard AEAD tag         [SEAM]
 }
 # Kripto yapı (ct+tag) ccr §35/TDD §0.1'e aittir; bu belge onu transport-owned REDEFINE ETMEZ.
 # reed-solomon-erasure (ADR-16); ErasureCodec trait arkasında (SIMD Beta geçişi trait ile) — encode/decode güv. katmanında.
@@ -770,7 +783,7 @@ Davranış (payload tipine göre):
      → forward duplication: aynı payload D× gönder (D=2..3), ACK beklemeden.   D=[CAL]
   segment-block / multi-shard:
      → minimal parity shards (low-rate forward FEC), r/k düşük ama ACK-bağımsız.
-  compress = ON (dar bantta bytes azalt).
+  compress = ON (dar bantta bytes azalt).   [AMENDMENT-4: transport SIKIŞTIRMAZ — sahibi app-rpc §3; TDD §8]
   send_rate = minimal-reliable (MIN_RATE clamp; §8.5) — path'i boğma.
 
 Geri çekilme (NORMATİF):
@@ -793,8 +806,23 @@ GEÇİŞ KARARLILIĞI — RETREAT HYSTERESIS (NORMATİF, KİLİTLİ — asimetri
                           de-escalate→re-escalate döngüsü; dwell bunu zamanla ayırır, duplication'ın
                           ölçüm etkisi sindirilene dek mode kilitli).
   Marjlar (X, Y, min_dwell) = [CAL] fixture (netem baseline'da kalibre; mekanizma [STD:Schmitt/kontrol-teorisi]).
-duplication/parity yine available_redundancy_budget ile clamp (§8.5).
+duplication/parity yine available_redundancy_budget ile clamp (§8.5).   [AMENDMENT-3: BAĞLAYICI DEĞİL — aşağı bkz.]
 ```
+
+> **[AMENDMENT-3] (impl-driven, gerekçeli — kod-spec tutarlılığı; Faz-6 dondurma, 2026-09-11):**
+> §8.5 NORMAL adaptif FEC bütçesini yönetir. §11 MinimalParity, **dar ve kendi kapılarıyla sınırlı bir
+> acil-durum istisnasıdır**; §8.5 bütçe kısıtına TABİ DEĞİLDİR (yukarıdaki "yine §8.5 ile clamp" satırı
+> bu istisna için bağlayıcı değildir). İstisnanın kapıları — doğrulanmış uygulama, `sender.rs`
+> `fec_controller_latch` emergency dalı: (1) fuzzy mod = EMERGENCY_FORWARD_REDUNDANCY
+> (loss HIGH ∧ bw LOW ∧ ack_confidence LOW), **VE** (2) retreat-hysteresis merdiveni ≥ Dup2
+> (health < X), **VE** (3) framing = segment-block. Üçü birden sağlanınca parity oranı
+> `EmergencyConfig` sabitidir (Dup2 → 100‰, Dup3 → 200‰), yalnız profil `r_code_max` ile kırpılır ve
+> NORMAL oranın YERİNE geçer (toplanmaz) — tek latch yolu, ikinci bir FEC emitörü YOKTUR. §8.5'in
+> sıfırlama-reddi (yukarıdaki AMENDMENT-3 satırı) ise NORMAL yolun ayrı bir kuralıdır; iki mekanizma
+> aynı köşede farklı kapılarla çalışır ve birbirini tetiklemez. Sınırlar: (a) §8.5 sıfırlama-reddi ve
+> §11 istisnası birbirinden BAĞIMSIZDIR — "§8.5 sıfırlayınca §11 devreye girer" DEĞİLDİR; (b) Faz-5
+> T0–T7 kampanyasında (990 koşu) RECOVER_FWD/§11 yolu HİÇ ateşlemedi (`recover_fwd_entries = 0`,
+> 330/330 Kama koşusu) — istisna tel-doğrulanmıştır (tv_emergency), saha-doğrulanmamıştır.
 
 ---
 
@@ -928,7 +956,7 @@ Her biri 3 membership: LOW / MED / HIGH — trapezoidal (deterministik, sürekli
   (a1,a2,b1,b2 netem'de kalibre; UYDURULMAZ.)
 
 Defuzzification: kurallar (§8.4) → ağırlıklı-ortalama (centroid) → fec_parity_ratio, arq_aggressiveness,
-                 send_rate_gain, compress.
+                 send_rate_gain, compress (kalıntı, tüketilmez — AMENDMENT-4).
 
 DETERMINIZM (ADR-17, ZORUNLU):
   aynı input snapshot (loss,jitter,bw,qdelay,ackconf) → aynı output. RNG YOK.
@@ -950,7 +978,7 @@ VEKTÖR SETLERİ:
              BtlBw (§7). "ana yetenek" kanıtı: loss enjekte edilir, BtlBw DEĞİŞMEZ (bandwidth loss'tan bağımsız).
   TV-LOSS:   (ack dizisi) → beklenen lost set (packet/time threshold, §5) + loss_pre_fec/residual.
   TV-FEC:    (block, k, r, silinen shard'lar) → reconstruct doğru; tampered shard → decoder RED (INV-FEC-1).
-  TV-FUZZY:  (input snapshot) → beklenen (fec_ratio, arq_aggr, send_rate, compress) (ADR-17 determinizm).
+  TV-FUZZY:  (input snapshot) → beklenen (fec_ratio, arq_aggr, send_rate, compress) (ADR-17 determinizm). [AMENDMENT-4: `compress` golden vektörde KALIR — kod alanı üretiyor; kaldırılması v1.x, EVOLUTION §9.8]
   TV-EMERGENCY: (health trace) → beklenen level geçişleri (§11 hysteresis): Schmitt bant-içi gürültüde
              SIFIR flip; escalate ANINDA (dwell'siz); de-escalate geçişleri ≥ min_dwell aralıklı;
              framing-ayrımlı RecoveryAction (Tiny→Duplication D×+spacing, SegmentBlock→MinimalParity).
@@ -1121,7 +1149,7 @@ GO/NO-GO: §4.4.10 üç-tier (Tier-1/2/3) + guardrail'ler. Bu belge o kapıyı B
 ```
 transport-layer-tdd.md   : WHAT/policy otoritesi (§0.1 kripto, §2 wire, §4.4 benchmark, §5 fuzzy, INV-*).
 ccr-format-spec.md §35   : Session Model V3 canonical byte'lar (SESSION_INIT/DATA); ACK/FEC_SHARD hop-transport (E2E DEĞİL).
-identity §11 / §0.1      : client↔hub Noise IK/KK GÜVENLİK katmanında; ACK/control/shard AEAD'i GÜVENLİK katmanı yürütür (transport tutmaz, §0.2); hot-path thin.
+identity §11 / §0.1      : client↔hub Noise IK/KK hop anahtarı SEAM'de (ProtectionContext::HubChannel); shard AEAD'i SEAM session E2E anahtarıyla yürütür (transport anahtar tutmaz, §0.2 AMENDMENT-5; RS transport'ta); hot-path thin.
 ADR-01/02/16/17/18       : Rust/Tokio; reed-solomon-erasure + ErasureCodec trait; deterministik fuzzy; netem gate.
 Bu belge byte-layout'ta ccr §35'i EZMEZ; ACK/FEC_SHARD hop-transport frame'leridir (E2E envelope'un dışında, §0.2).
 ```

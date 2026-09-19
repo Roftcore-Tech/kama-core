@@ -1,0 +1,648 @@
+{
+ "cluster": "tail-probe",
+ "mechanisms": [
+  {
+   "name": "PTO timer event production (Timer::Pto) and product 1 ms pump",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §12 Timers L857-873 (PTO = srtt + max(4·rttvar, min_pto) + max_ack_delay; PTO firing → probe/retransmit; backoff 2^n; PTO does not reduce send_rate)",
+    "specs/adaptive-transport-engine-spec.md §3.1 L262 arm_pto_timer() / §3.2 L274 reset_pto_timer()",
+    "specs/adaptive-transport-engine-spec.md §3.3-C/(5) L347-350 (PTO NOT armed in PRE_CONVERGE)",
+    "specs/adaptive-transport-engine-spec.md §9.2 L689 (RTO/PTO → §12)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:953-958 enum Timer { Pto, RtpropProbe }",
+    "crates/adaptive-transport/src/sender.rs:3093 fn on_timer (Timer::Pto arm at 3110)",
+    "crates/adaptive-transport/src/sender.rs:2200-2210 on_event_core: Event::TimerFired(timer) => self.on_timer(timer, now_ns)",
+    "crates/client-core/src/runtime.rs:59-60 const PACE_TICK = 1 ms",
+    "crates/client-core/src/runtime.rs:907 let mut pace = interval(PACE_TICK)",
+    "crates/client-core/src/runtime.rs:1324-1327 pace.tick() => drive!(Event::TimerFired(Timer::Pto), now)",
+    "crates/client-core/src/runtime.rs:1371-1374 drain loop pace.tick() => drive!(Event::TimerFired(Timer::Pto), now)"
+   ],
+   "product_call_chain": "ClientEndpoint::connect (runtime.rs:688/701) → tokio::spawn(client_task) (runtime.rs:720) → client_task (runtime.rs:802) → tokio::select! pace.tick() every 1 ms (runtime.rs:907, 1324-1327; also drain loop 1371-1374) → drive!(Event::TimerFired(Timer::Pto)) → ClientSession::on_event (lib.rs:90) → Sender::on_event → on_event_core (sender.rs:2200-2210) → on_timer(Timer::Pto) (sender.rs:3110) → fuzzy/update_state → schedule_transmit (sender.rs:4041).",
+   "product_reachable": true,
+   "gate": "None. The product runtime pumps Timer::Pto unconditionally at PACE_TICK (1 ms); there is no arm_pto_timer/reset_pto_timer object — due-ness is derived per tick from live state (tail_recovery.armed_at_ns, loss deadlines).",
+   "default_state": "Always on in product (unconditional 1 ms pump, runtime.rs:59-60, 1324-1327).",
+   "activation_condition": "Every 1 ms tick while the client task runs (main loop and drain loop).",
+   "bench_exposure": "kama-product arm drives client-core runtime → pump active. kama stub arm also fires Timer::Pto from its own loop (crates/bench/src/kama.rs:323, 353, 479). quinn arms n/a.",
+   "telemetry": "TailRecovery::timer_fire_count (sender.rs:2117 via tail_probe_diag_ext) counts every Pto tick (1 kHz in product; e.g. reports/dr-cs-3/off-zerodiff/diagcs-d1--P2-GE20L10-RTT1000--STATIC_R0--rep14.json:51 tail_probe_timer_fires=1849800). Not printed by KP-CLIENT.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:955 `Pto,` in enum Timer",
+    "sender.rs:2209 `Event::TimerFired(timer) => self.on_timer(timer, now_ns),`",
+    "runtime.rs:60 `const PACE_TICK: Duration = Duration::from_millis(1);`",
+    "runtime.rs:1326 `drive!(Event::TimerFired(Timer::Pto), now); ts_sample!(now);`",
+    "runtime.rs:6 `next_wakeup_ns()`'e tek-kaynak-uyku YOK (D3, EK4-A2 tarihi): pompa idempotent + kanıtlı.",
+    "runtime.rs:720 `let task = tokio::spawn(client_task(`"
+   ],
+   "duplicates_or_dead": "Spec's arm_pto_timer()/reset_pto_timer() (§3.1/§3.2) have no direct code analog; replaced by pump + derived deadlines. `next_wakeup_ns` (sender.rs:2436) is the alternative wakeup design, unused by product (see separate record).",
+   "feature_off_behavior": "n/a (no gate).",
+   "notes": "Spec §12/§3.3-C/(5) say PTO is NOT ARMED in PRE_CONVERGE; code implements that only for the time-threshold loss branch (sender.rs:3113 `if self.state != SenderState::PreConverge`) — the tail-recovery block at sender.rs:3144 runs in every state (see open questions)."
+  },
+  {
+   "name": "Bounded tail-loss recovery state machine (TailRecovery / KAMA-TAIL-V1) — product default ON via ClientSession::new()",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §12 L868-871 (PTO firing → probe/retransmit; exponential backoff) — normative hook",
+    "specs/adaptive-transport-engine-spec.md §5(b) L413-421 (time-threshold needs LATER-ACK evidence → tail is blind; liveness may trigger probe/retransmit)",
+    "specs/adaptive-transport-engine-spec.md §12 L881-886 PATH_DEAD/RETRY_BUDGET: 'TAM SESSİZLİK YASAK (blackout-survival)'",
+    "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 L40-66 (behavioral spec: ARM/TARGET/PTO/RESET/BOUND/REORDER/KARN/FEC-INDEP/NO-LOSS/METRICS/FAIL-CLOSED) — design doc, not specs/",
+    "docs/design/P3-DEFAULT-FLIP-DECISION.md §2.3 L61-69 (G2 default-ON via validated_v1, default struct stays OFF)",
+    "reports/decision-requests/DR-CS-1-minimal-bootstrap.md:162 INV-CS-4 (superseded explicitly by DR-ARQ-PRODUCT-TAIL-1)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/tail_recovery.rs:18-33 struct TailRecoveryConfig",
+    "crates/adaptive-transport/src/tail_recovery.rs:35-54 impl Default (enabled=false; cap 2; 1 ms/60 s/1 s/120 s/25 ms — NEVER validated)",
+    "crates/adaptive-transport/src/tail_recovery.rs:72-83 fn validated_v1() (enabled=true; 10 ms/10 s/1 s/30 s/25 ms; max_tail_probes=3)",
+    "crates/adaptive-transport/src/tail_recovery.rs:96-119 struct TailRecovery",
+    "crates/adaptive-transport/src/tail_recovery.rs:192-244 fn on_timer → ProbeDecision",
+    "crates/adaptive-transport/src/sender.rs:1498 field tail_recovery: TailRecovery",
+    "crates/adaptive-transport/src/sender.rs:1801 Sender::new(): TailRecovery::new(TailRecoveryConfig::default()) // default OFF",
+    "crates/adaptive-transport/src/sender.rs:2056-2060 fn set_tail_recovery_config",
+    "crates/client-core/src/lib.rs:80-85 ClientSession::new(): sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1())"
+   ],
+   "product_call_chain": "runtime.rs:688/701 ClientEndpoint::connect → 720 spawn(client_task) → 815 `let mut session = ClientSession::new();` → lib.rs:82-83 Sender::new() + set_tail_recovery_config(validated_v1()) → [each 1 ms tick] on_event(TimerFired(Pto)) → on_event_core → on_timer (sender.rs:3144-3156: tail_recovery.on_timer(now, srtt, rttvar, oldest_inflight) → ProbeDue → tail_probe_pending=Some(seq)) → schedule_transmit (4041) → emit_tail_probe (4064 → 5442-5485: token check, retire original, track_sent Retransmit, push TransmitDecision) → drive! macro (runtime.rs:963) carries_unit=Retransmit → seq_to_unit/store lookup → encode_data → seal_send!(TxClass::Retx) (runtime.rs:1048, 935) → sock.send (runtime.rs:948). Receiver side: server_task rx.on_datagram → SACK → client handle_rx → Event::AckReceived → on_ack_received (sender.rs:3080-3089 progress reset / disarm).",
+   "product_reachable": true,
+   "gate": "TailRecoveryConfig.enabled (typed config, set only via Sender::set_tail_recovery_config). No RuntimeConfig field, no Cargo feature, no CLI flag in product; the ON/OFF choice is fixed at ClientSession::new() (lib.rs:83).",
+   "default_state": "Engine default (Sender::new()): OFF (sender.rs:1801, tail_recovery.rs:44). Product default (ClientSession::new() used by runtime client_task): ON with validated_v1() (lib.rs:83, runtime.rs:815). RuntimeConfig::default() has no tail field (runtime.rs:181-210).",
+   "activation_condition": "enabled && inflight non-empty (oldest inflight seq exists) && probe_index < max_tail_probes && now−last_progress ≥ pto && now−armed_at ≥ pto, where pto = base_pto·2^probe_index (tail_recovery.rs:192-244). Emission additionally requires target still in inflight and a pacer token (sender.rs:5446-5465).",
+   "bench_exposure": "kama-product (`--transport kama-product`): ALWAYS ON (ClientSession::new(); `--kama-arm` ignored — kama_product.rs:12-13, 673-680, 724; RunMeta label 'kama-product-tailv1-…'). kama stub arm: `--kama-arm tail-v1` installs validated_v1 (kama.rs:112-113); default `--kama-arm arq` = OFF (main.rs:149-150, transport.rs:30-39). Not exercised by quinn/qdgram.",
+   "telemetry": "Sender::tail_probe_diag() (probes, bytes, spurious, spurious_bytes) sender.rs:2096; tail_probe_diag_ext() (due, sent, cancelled, bytes, spurious, timer_fires) sender.rs:2110; tail_probe_due_edge_count() sender.rs:2050; tail_recovery_enabled() sender.rs:2090. NONE of these are copied into ClientStats or printed by KP-CLIENT/KP-SERVER (grep 'tail' in runtime.rs → only 432/616/813 comments; kama_product.rs → only 12/673/680/1235). Product-visible activation proxies: ClientStats.sched[11] = tail_probe_wire_emitted ONLY when built with feature diag-sched-telemetry (runtime.rs:433, 1429; sender.rs:4374-4395; default OFF), printed by KP-CLIENT as `sched={:?}` (kama_product.rs:561, 615); tx_retx_bytes (TxClass::Retx) includes probes but is indistinguishable from ARQ retransmits (runtime.rs:1048).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "tail_recovery.rs:44 `enabled: false,` (default) / tail_recovery.rs:74 `enabled: true,` (validated_v1) / tail_recovery.rs:80 `max_tail_probes: 3,`",
+    "sender.rs:1801 `tail_recovery: TailRecovery::new(TailRecoveryConfig::default()), // default OFF`",
+    "lib.rs:83 `sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());`",
+    "runtime.rs:815 `let mut session = ClientSession::new();`",
+    "sender.rs:3144 `if self.tail_recovery.is_enabled() {` … 3149 `self.tail_recovery.on_timer(now_ns, srtt, rttvar, oldest)` … 3155 `self.tail_probe_pending = Some(target_seq);`",
+    "sender.rs:4064 `self.emit_tail_probe(&mut out, now_ns);`",
+    "sender.rs:5475 `let new_seq = self.track_sent(unit, now_ns, retx_count + 1, TransmitKind::Retransmit);`",
+    "runtime.rs:1048 `TransmitKind::Retransmit => TxClass::Retx,`",
+    "kama_product.rs:680 `\"kama-product-tailv1-{}{}{}{}{}\",`",
+    "lib.rs:218 test shipped_default_tail_recovery_is_on_via_validated_v1 / lib.rs:236 engine_default_tail_recovery_stays_off",
+    "tail_recovery.rs:581 test validated_v1_pins_the_grid_config_and_default_stays_off",
+    "reports/dr-arq-product-tail-1/v1/FINAL-CHECKPOINT.md:9 GO — MECHANISM CORRECT, POLICY/TUNING PENDING; :23-32 gates",
+    "reports/g1-tail-revalidation/G1-CLOSURE.md:7-13 (h3b/h3c ON ≥ OFF, p2 no-harm)"
+   ],
+   "duplicates_or_dead": "TailRecoveryConfig::default() bounds (cap 2, 1 ms/60 s/120 s) are a second, never-validated config kept only as the OFF baseline (R1 rule). Literal copies of validated_v1 values: crates/adaptive-transport/examples/dr_arqtail_product.rs:36-46 tail_on_config(); crates/kama-integration/tests/common/dr_cs3_panel.rs:87-96 tail_on_config() (both test/example; pinned equal by tail_recovery.rs:581 test). Harness-side model crates/kama-integration/tests/common/fs_tailprobe.rs (separate record). reports/AI-HANDOFF-CURRENT.md:24 still states 'ships default-OFF' — stale relative to G2 (2026-08-24).",
+   "feature_off_behavior": "With enabled=false: on_timer returns Idle (tail_recovery.rs:200-203), tail_probe_deadline_ns None (sender.rs:2533-2535), emit_tail_probe returns immediately (sender.rs:5443-5445), ACK bridge skipped (sender.rs:3082) → wire byte-identical to pre-decision (INV-CS-4 baseline; sender.rs:7072 test tail_probe_off_never_probes; FINAL-CHECKPOINT.md:23 OFF_never_probes).",
+   "notes": "Ordering within one on_event: on_timer sets pending FIRST, then schedule_transmit runs the normal ARQ planner, then emit_tail_probe (sender.rs:4041-4064) — same-tick double-plan prevented (test sender.rs:7102). Tail block executes in ALL sender states including PreConverge (sender.rs:3144 is outside the 3113 `state != PreConverge` guard); with srtt=None the machine uses initial_pto_ns=1 s (tail_recovery.rs:148-151). Empirical: reports/dr-cs-3/off-zerodiff/…rep14.json:46-55 shows tail_probe_due_edge=1, tail_probe_sent=0 in a cold-start stall (probe went due, token-starved). Known tuning gap: terminal-tail L10-med 0/30 (tail_recovery.rs:68-70; P3 §2.2). Server side has NO Sender (runtime.rs:1943-2085 server_task uses Receiver only) → tail probing is client→hub direction only."
+  },
+  {
+   "name": "PTO base formula, clamp, exponential backoff and no-RTT initial PTO (base_pto_ns / current_pto_ns)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §12 L869 `PTO = srtt + max(RTTVAR_MULT × rttvar, min_pto) + max_ack_delay; RTTVAR_MULT=[STD:4]; min_pto=[CAL]`",
+    "specs/adaptive-transport-engine-spec.md §12 L870 `PTO backoff exponential (2^n)`",
+    "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 L47-49 (clamp(srtt + max(4·rttvar, TIMER_GRANULARITY) + max_ack_delay, PTO_MIN, PTO_MAX)·2^probe_index; no RTT → PTO_INITIAL, Karn)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/tail_recovery.rs:148-158 fn base_pto_ns → None ⇒ initial_pto_ns; Some ⇒ clamp(srtt + 4·rttvar + max_ack_delay, min_pto, max_pto)",
+    "crates/adaptive-transport/src/tail_recovery.rs:162-166 fn current_pto_ns = base·2^probe_index capped at max_backoff_pto_ns",
+    "crates/adaptive-transport/src/sender.rs:3146-3149 srtt/rttvar bridged from self.rtt into on_timer",
+    "crates/adaptive-transport/src/sender.rs:2532-2538 tail_probe_deadline_ns uses current_pto_ns",
+    "crates/adaptive-transport/src/fate_estimator.rs:43-48 reordering_guard_ns delegates to TailRecovery::base_pto_ns (observation-only consumer); sender.rs:3333-3337 guard passed to fate_estimator.on_loss_evidence"
+   ],
+   "product_call_chain": "Same as TailRecovery record: on_timer (sender.rs:3149) → TailRecovery::on_timer → current_pto_ns (tail_recovery.rs:216) → base_pto_ns. Also read-only via tail_probe_deadline_ns (sender.rs:2538) and fate_estimator guard (sender.rs:3335).",
+   "product_reachable": true,
+   "gate": "TailRecoveryConfig.enabled (formula evaluated only on the ON path in on_timer; base_pto_ns itself is also called unconditionally by the fate-estimator guard at sender.rs:3335 using the current config's bounds).",
+   "default_state": "Product (validated_v1): min 10 ms, max 10 s, initial 1 s, backoff cap 30 s, max_ack_delay 25 ms (tail_recovery.rs:75-79). Engine default: 1 ms / 60 s / 1 s / 120 s / 25 ms (tail_recovery.rs:45-49).",
+   "activation_condition": "Evaluated on every Pto tick when enabled and inflight non-empty.",
+   "bench_exposure": "kama-product always (validated_v1); kama stub arm only with --kama-arm tail-v1.",
+   "telemetry": "Not directly exposed; indirectly via probe timing in tail_probe_diag_ext (not printed by product).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "tail_recovery.rs:150-156 `None => self.cfg.initial_pto_ns, Some(srtt) => { let raw = srtt.saturating_add(rttvar_ns.saturating_mul(4)).saturating_add(self.cfg.max_ack_delay_ns); raw.clamp(self.cfg.min_pto_ns, self.cfg.max_pto_ns) }`",
+    "tail_recovery.rs:163-165 `let factor = 1u64.checked_shl(self.probe_index).unwrap_or(u64::MAX); base.saturating_mul(factor).min(self.cfg.max_backoff_pto_ns)`",
+    "tail_recovery.rs:341 test base_pto_clamp_and_no_sample; :373 backoff_sequence_and_retry_cap; :488 rtt_step_up_scales_pto; :504 variance_widens_pto",
+    "fate_estimator.rs:48 `TailRecovery::new(*cfg).base_pto_ns(srtt_ns, rttvar_ns)` / :603 test guard_equals_product_base_pto"
+   ],
+   "duplicates_or_dead": "fs_tailprobe.rs (test harness) uses a different formula pto_mult·rtt + max_ack_delay (kama-integration/tests/common/fs_tailprobe.rs:14-29) — experiment-only duplicate.",
+   "feature_off_behavior": "When disabled, current_pto_ns is never consulted for probing; base_pto_ns still feeds the observation-only fate-estimator guard with default bounds.",
+   "notes": "Formula deviation (minor): spec/TDD place the min inside (`max(4·rttvar, min_pto|TIMER_GRANULARITY)`), code applies an outer clamp of the whole sum to [min_pto, max_pto] and has no TIMER_GRANULARITY constant. RTTVAR_MULT=4 matches [STD:4]. Karn initial_pto branch matches TDD. Spec's min_pto is [CAL]; validated_v1 10 ms was campaign-frozen (FIDELITY-AND-FREEZE.md:24-27)."
+  },
+  {
+   "name": "PTO-handler → tail arm/due bridge and pending-target slot (`tail_probe_pending`; closest analog of a 'tail latch')",
+   "spec_refs": [
+    "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 L45-46 ARM (enabled ∧ inflight non-empty ∧ no ACK progress) and TARGET (OLDEST outstanding inflight SOURCE seq)",
+    "specs/adaptive-transport-engine-spec.md §12 L870 (PTO firing → probe/retransmit)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:1529 field tail_probe_pending: Option<u64>",
+    "crates/adaptive-transport/src/sender.rs:3140-3156 Timer::Pto handler: oldest = inflight.keys().next(); on_timer → ProbeDue ⇒ tail_probe_pending = Some(target_seq); sched_diag.tail_probe_enqueued on not-pending→pending edge",
+    "crates/adaptive-transport/src/tail_recovery.rs:204-244 on_timer: get_or_insert(armed_at), cap check, guards, probe_due_count (level) + probe_due_edge_count (edge)",
+    "crates/adaptive-transport/src/sender.rs:2058 set_tail_recovery_config clears the slot"
+   ],
+   "product_call_chain": "1 ms pump → on_timer(Timer::Pto) (sender.rs:3110) → [unconditional on state] sender.rs:3144-3156 → tail_probe_pending set → consumed same tick by emit_tail_probe (sender.rs:5446) in schedule_transmit.",
+   "product_reachable": true,
+   "gate": "TailRecoveryConfig.enabled (sender.rs:3144).",
+   "default_state": "Slot None (sender.rs:1816); product tail ON so the slot is live.",
+   "activation_condition": "on_timer returns ProbeDue (see TailRecovery record). Note the target is the oldest key in `inflight` regardless of origin (Data/Retransmit/Duplicate/FecParity all enter inflight via track_sent, sender.rs:5746-5786; parity at 4937-4945).",
+   "bench_exposure": "kama-product always; kama stub with --kama-arm tail-v1.",
+   "telemetry": "SchedDiag.tail_probe_enqueued (feature diag-sched-telemetry, sender.rs:1171; not in the 12-slot sched summary); TailRecovery.probe_due_count / probe_due_edge_count (sender.rs:2050, 2112) — not printed by product.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3145 `let oldest = self.inflight.keys().next().copied();`",
+    "sender.rs:3148-3155 `if let ProbeDecision::ProbeDue { target_seq, .. } = self.tail_recovery.on_timer(now_ns, srtt, rttvar, oldest) { … self.tail_probe_pending = Some(target_seq); }`",
+    "tail_recovery.rs:210-213 `let armed = *self.armed_at_ns.get_or_insert(now_ns.max(self.last_progress_ns));`",
+    "sender.rs:7220 test tail_probe_ack_race_cancels_without_consuming_cap asserts `tail_probe_pending == Some(0)` then None"
+   ],
+   "duplicates_or_dead": "No symbol named tail_latch/TailLatch exists anywhere in crates (grep). 'latch' in sender.rs refers to FEC block-close latch (fec_controller_latch, sender.rs:4578) and the startup-pacing floor latch (sender.rs:1504-1509) — different clusters.",
+   "feature_off_behavior": "Slot never set; emit_tail_probe returns early.",
+   "notes": "Deviation from TDD §4 TARGET ('SOURCE seq'): no origin filter — if the oldest inflight entry is a FecParity packet (unit.id = ESI, sender.rs:4938-4941) the probe would emit a Retransmit with unit_id in the ESI namespace (FEC-ON configurations only; product default fec: None). Also PreConverge is not excluded here although spec §3.3-C/(5) forbids arming PTO before srtt exists."
+  },
+  {
+   "name": "Tail-probe emission through the ARQ retransmit path (emit_tail_probe): shared pacer token, ACK-race cancel, token-starved retention, state-independent placement",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §9.1 L684-686 (retransmits share the DATA pacing budget; token bucket §13)",
+    "specs/adaptive-transport-engine-spec.md §12 L871 (PTO does not reduce send_rate — INV-RATE-1)",
+    "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 L45-46, L54-55 (one probe = one bounded retransmit of the oldest unit; probe loss → backoff+re-probe up to cap)",
+    "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 L59 NO-LOSS INV"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:5434-5485 fn emit_tail_probe",
+    "crates/adaptive-transport/src/sender.rs:5294-5318 fn try_send_pre_parity (→ pacer.try_send; experimental-fec-budget reserve check compiled out by default)",
+    "crates/adaptive-transport/src/sender.rs:4041-4064 schedule_transmit ordering (ARQ share tick → drain_new_data → RecoverArq/RecoverFwd planner → emit_tail_probe → establish probe → dup drain → FEC parity)",
+    "crates/adaptive-transport/src/tail_recovery.rs:253-257 on_probe_sent (cap spent only on real emission)",
+    "crates/adaptive-transport/src/sender.rs:1530 tail_probe_cancelled counter"
+   ],
+   "product_call_chain": "schedule_transmit (sender.rs:4041, called at end of on_event_core pipeline) → emit_tail_probe (4064) → inflight.get(target) re-verify (5449) → try_send_pre_parity(size, true) (5460) → retire_inflight_to_tombstone + mark_tombstone_superseded (5473-5474) → track_sent(…, TransmitKind::Retransmit) (5475) → out.push(TransmitDecision{Retransmit}) (5476-5482) → on_probe_sent/record_probe (5483-5484) → runtime drive! (runtime.rs:963-1050) → seal_send!(TxClass::Retx) → sock.send.",
+   "product_reachable": true,
+   "gate": "TailRecoveryConfig.enabled (sender.rs:5443) + tail_probe_pending Some.",
+   "default_state": "Product ON (validated_v1).",
+   "activation_condition": "pending target still in inflight AND pacer token available for unit.size. If target vanished (ACKed/already retransmitted): cancelled, cap NOT consumed (5449-5454). If no token: stays pending, cap NOT consumed (5460-5465).",
+   "bench_exposure": "kama-product always; probe bytes land in tx_retx_bytes (KP-CLIENT `retx=`).",
+   "telemetry": "SchedDiag.tail_probe_selected / tail_probe_token_denied / tail_probe_wire_emitted (sender.rs:1164-1169; feature-gated); ClientStats.sched[11] = tail_probe_wire_emitted (runtime.rs:433, 1429; sender.rs:4390); tail_probe_cancelled via tail_probe_diag_ext (sender.rs:2114). Without the feature the product exposes only tx_retx_bytes (mixed with ARQ).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5446 `let Some(target) = self.tail_probe_pending.take() else { return; };`",
+    "sender.rs:5449-5454 target-missing branch: `self.tail_probe_cancelled = … ; return;`",
+    "sender.rs:5460-5465 `if !self.try_send_pre_parity(unit.size, true) { … self.tail_probe_pending = Some(target); // no token → keep pending; cap NOT consumed. return; }`",
+    "sender.rs:5483 `self.tail_recovery.on_probe_sent(now_ns); // spend the attempt only on a real emission.`",
+    "sender.rs:7193 test tail_probe_token_unavailable_cap_not_consumed; :7146 tail_probe_terminal_tail_bounded_recovery; :7281 tail_probe_determinism_two_senders",
+    "FINAL-CHECKPOINT.md:29-30 probe_loss_retry_cap / no_unbounded_retransmission (global max probe_sent = 3)"
+   ],
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "Returns at sender.rs:5443; schedule_transmit output byte-identical.",
+   "notes": "Emission is deliberately outside the RecoverArq state gate (comment sender.rs:5434-5437), so a probe can fire in Startup/Steady/RecoverFwd/PreConverge. In RecoverFwd the same tail unit may also receive §11 forward copies (double coverage; not de-duplicated). send_record: None (5481) — probes carry no FEC send-record hint. Product runtime store-miss for a probe of an already-delivered unit → header-only stale emission counted in stale_decisions (runtime.rs:1021-1030)."
+  },
+  {
+   "name": "Superseded-original bookkeeping and Karn exclusion for tail probes (retire_inflight_to_tombstone, mark_tombstone_superseded, origin≠Data RTT filter)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §5 L432-449 [TUR-2b/2c] tombstone kol-1/kol-2 rule (superseded transmission's late ACK: no RTT, no rate sample, delivered credit) and ZEYL-2 (superseded mark on ANY re-emission)",
+    "specs/adaptive-transport-engine-spec.md §9.3 L691-696 spurious retransmit detection",
+    "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 L56 KARN"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:5392-5432 fn retire_inflight_to_tombstone (inflight → tombstone WITHOUT loss declaration; Duplicate-origin → no tombstone)",
+    "crates/adaptive-transport/src/sender.rs:5531-5538 fn mark_tombstone_superseded (retx_count += 1)",
+    "crates/adaptive-transport/src/sender.rs:2951-2954 RTT sample only if p.origin == TransmitKind::Data",
+    "crates/adaptive-transport/src/sender.rs:2955-2985 late-ACK on tombstone: retx_count==0 → kol-1 (BW+RTT); else kol-2 (credit_delivered only)"
+   ],
+   "product_call_chain": "emit_tail_probe (sender.rs:5473-5475) → retire_inflight_to_tombstone(target) → mark_tombstone_superseded(target) → track_sent(unit, retx_count+1, Retransmit). Later ACKs: on_ack_received (sender.rs:2885) → inflight hit with origin Retransmit → no RTT sample (2951); tombstone hit with retx_count>0 → kol-2 (2977-2985).",
+   "product_reachable": true,
+   "gate": "Reached only on the tail-ON emission path (retire_inflight_to_tombstone has no other caller — sender.rs:5473 only).",
+   "default_state": "Product ON.",
+   "activation_condition": "Each real tail-probe emission.",
+   "bench_exposure": "kama-product always.",
+   "telemetry": "diag_tomb_hits (sender.rs:2960), diag_delivered_credited (2984), tombstone_evicted; none tail-specific; none printed as tail fields.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5473-5474 `self.retire_inflight_to_tombstone(target, now_ns); self.mark_tombstone_superseded(target);`",
+    "sender.rs:5398-5406 `let Some(p) = self.inflight.remove(&seq) … if p.origin == TransmitKind::Duplicate { self.bw_sampler.forget_in_flight(); return; }`",
+    "sender.rs:2951 `if p.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {`",
+    "sender.rs:2977-2983 kol-2: `self.bw_sampler.credit_delivered(now_ns, t.unit.size);`",
+    "sender.rs:7249 test tail_probe_ack_is_karn_excluded_from_rtt"
+   ],
+   "duplicates_or_dead": "Mirrors queue_losses tombstone bookkeeping (sender.rs:3280-3345) minus loss semantics — intentional parallel, documented at 5396-5397.",
+   "feature_off_behavior": "Unreachable when disabled.",
+   "notes": "INV-RATE-1 preserved: no pending_lost push, no loss-counter mutation (sender.rs:5393-5395). Spurious-probe classification (a late ACK of the superseded original) reaches kol-2 but is NOT fed back into TailRecovery spurious counters (see separate record)."
+  },
+  {
+   "name": "ACK-progress reset / disarm bridge (tail timer reset on real inflight shrink; disarm on drained inflight)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §3.2 L265-275 OnAckReceived … reset_pto_timer()",
+    "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 L51 RESET/CANCEL (any ACK progress (new acked_seq) resets timer and probe_index; inflight empty → DISARM)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:2891-2893 inflight_before snapshot in on_ack_received",
+    "crates/adaptive-transport/src/sender.rs:3080-3089 `if tail_recovery.is_enabled() { if inflight.len() < inflight_before { on_ack_progress(now) } if inflight.is_empty() { disarm() } }`",
+    "crates/adaptive-transport/src/tail_recovery.rs:169-173 on_ack_progress (last_progress=now, armed_at=Some(now), probe_index=0)",
+    "crates/adaptive-transport/src/tail_recovery.rs:183-186 disarm; :205-209 on_timer disarms when oldest_inflight_seq is None"
+   ],
+   "product_call_chain": "client handle_rx (runtime.rs) decodes ACK → drive!(Event::AckReceived) → on_event_core (sender.rs:2208) → on_ack_received (2885) → 3080-3089 bridge.",
+   "product_reachable": true,
+   "gate": "TailRecoveryConfig.enabled (sender.rs:3082).",
+   "default_state": "Product ON.",
+   "activation_condition": "Any ACK that removes ≥1 entry from `inflight` (any origin: Data, Retransmit, Duplicate, FecParity) → reset; empty inflight → disarm. Late ACKs hitting tombstones do not shrink inflight → no reset (sender.rs:2890 comment).",
+   "bench_exposure": "kama-product always.",
+   "telemetry": "None specific; observable via probe_index reset behaviour only in tests (tail_recovery.rs:422 ack_progress_resets_and_clears_backoff, :445 drain_disarms).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:2893 `let inflight_before = self.inflight.len();`",
+    "sender.rs:3083-3088 `if self.inflight.len() < inflight_before { self.tail_recovery.on_ack_progress(now_ns); } if self.inflight.is_empty() { self.tail_recovery.disarm(); }`",
+    "tail_recovery.rs:169-173 `pub fn on_ack_progress(&mut self, now_ns: u64) { self.last_progress_ns = now_ns; self.armed_at_ns = Some(now_ns); self.probe_index = 0; }`",
+    "kama-integration/tests/common/dr_cs3_panel.rs:847-852 (per-EPISODE cap; on_ack_progress resets probe_index → per-run bound = horizon/min_pto+1)"
+   ],
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "Bridge skipped; TailRecovery state untouched.",
+   "notes": "Deviation from TDD wording 'new ack-eliciting SOURCE data': progress is any inflight shrink, including ACKs of FecParity or Duplicate packets. Consequence: max_tail_probes is a per-idle-window cap, not a per-run cap (dr_cs3_panel.rs:847-852 'UNBOUNDED-BY-PRODUCT per run'); consistent with spec §12 RETRY_BUDGET being deadline-derived rather than count-capped, but it means the '3 probes' headline is per episode."
+  },
+  {
+   "name": "Reordering / delayed-ACK guard (no probe within one PTO of last ACK progress)",
+   "spec_refs": [
+    "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 L53 REORDER/DACK",
+    "specs/adaptive-transport-engine-spec.md §5 L417 min_delay [CAL] (reordering tail) and §5 L465-466 adaptive reorder_thresh"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/tail_recovery.rs:218-222 `if now_ns.saturating_sub(self.last_progress_ns) < pto { was_due=false; return Idle }`",
+    "crates/adaptive-transport/src/tail_recovery.rs:223-226 not-yet-due check against armed_at"
+   ],
+   "product_call_chain": "Inside TailRecovery::on_timer on the product Pto tick path.",
+   "product_reachable": true,
+   "gate": "TailRecoveryConfig.enabled.",
+   "default_state": "Product ON.",
+   "activation_condition": "Suppresses a due probe while now − last_progress < current PTO.",
+   "bench_exposure": "kama-product always; FINAL-CHECKPOINT.md:47 reorder slice probe_sent 0.",
+   "telemetry": "None (implicit in probe_due counts).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "tail_recovery.rs:217-222 `// reordering / delayed-ACK guard: never probe within one PTO of the most recent ACK progress.`",
+    "tail_recovery.rs:472 test delayed_ack_and_reordering_guard",
+    "FINAL-CHECKPOINT.md:47 `reorder OFF 1.00 / ON 1.00 probe_sent 0 — reordering guard holds`"
+   ],
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "n/a.",
+   "notes": "Guard is time-based only; it does not consult the ledger's adaptive reorder_thresh (§9.3) — separate mechanism in loss.rs."
+  },
+  {
+   "name": "Bounded probe cap + exponential backoff per idle window (max_tail_probes, probe_index)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §12 L870 (PTO backoff exponential 2^n)",
+    "specs/adaptive-transport-engine-spec.md §12 L879-880 RETRY_BUDGET: 'SABİT-SAYI DEĞİL, DEADLINE-TÜREVİ — sayı-tavanı YOK, zaman-tavanı var' (tension with fixed count cap)",
+    "specs/adaptive-transport-engine-spec.md §9.1 L686 ARQ_RETX_CAP [CAL]",
+    "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 L52 BOUND (probe_index ≤ MAX_TAIL_PROBES hard cap), L54-55 PROBE LOSS"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/tail_recovery.rs:32 max_tail_probes; :80 validated_v1 = 3; :51 default = 2",
+    "crates/adaptive-transport/src/tail_recovery.rs:214-216 cap check `if self.probe_index >= self.cfg.max_tail_probes { … Idle }`",
+    "crates/adaptive-transport/src/tail_recovery.rs:253-257 on_probe_sent (probe_index += 1; re-arm)",
+    "crates/adaptive-transport/src/tail_recovery.rs:162-166 backoff ·2^probe_index capped max_backoff_pto_ns"
+   ],
+   "product_call_chain": "As TailRecovery record.",
+   "product_reachable": true,
+   "gate": "TailRecoveryConfig.enabled.",
+   "default_state": "Product: cap 3, backoff cap 30 s (validated_v1). Engine default: cap 2, 120 s.",
+   "activation_condition": "After the cap is reached within one idle window the machine returns Idle until ACK progress resets probe_index (tail_recovery.rs:169-173).",
+   "bench_exposure": "kama-product always; FINAL-CHECKPOINT.md:30 global max probe_sent = 3.",
+   "telemetry": "TailRecovery::probe_index() (tail_recovery.rs:295) — not surfaced by product.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "tail_recovery.rs:214-216 `if self.probe_index >= self.cfg.max_tail_probes { self.was_due = false; return ProbeDecision::Idle; // bounded — never unbounded retransmission. }`",
+    "tail_recovery.rs:373 test backoff_sequence_and_retry_cap; :550 probe_loss_bounded_retry",
+    "tail_recovery.rs:66-70 doc: `terminal-tail,10,med` exhausts the fixed cap before packet-threshold ARQ engages (0/30); adaptive cap/backoff is product-v2 backlog",
+    "G1-CLOSURE.md:35-36 L10-med tuning gap → G3"
+   ],
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "n/a.",
+   "notes": "Spec §12 RETRY_BUDGET prescribes a deadline-derived, count-uncapped retry law for the geometric copy machinery; the tail probe uses a fixed per-episode count (3). Because ACK progress resets the index, the effective per-run bound is time-derived (min_pto spacing), which is closer to the spec's intent, but the multi-unit terminal-tail case (L10-med 0/30) shows the fixed cap can be exhausted before packet-threshold ARQ engages. Recorded as tuning-pending (G3), not a correctness defect."
+  },
+  {
+   "name": "Tail PTO deadline exposure in next_wakeup_ns (EK4-A2 source 5, tail_probe_deadline_ns)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §12 L857 Timers (normative timer set) — no explicit wakeup-API requirement found in specs/",
+    "(design) sender.rs:2415-2432 doc-contract: next_wakeup_ns never None while timer-driven work pending"
+   ],
+   "spec_requires_v1": "not-specified",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:2436-2439 pub fn next_wakeup_ns",
+    "crates/adaptive-transport/src/sender.rs:2520-2521 source 5 `best = earlier(best, self.tail_probe_deadline_ns());`",
+    "crates/adaptive-transport/src/sender.rs:2531-2539 fn tail_probe_deadline_ns (armed_at + current_pto)",
+    "crates/adaptive-transport/src/tail_recovery.rs:174-181 armed_at_ns() accessor"
+   ],
+   "product_call_chain": "NONE. next_wakeup_ns call sites: adaptive-transport/tests/ek4_a2_liveness.rs (49, 75, 130-276), tests/dr_cs1_acceptance.rs (60-544), tests/establish_probe.rs:89, src/udp_runner.rs:862 (cfg feature experimental-fec-budget). client-core runtime explicitly does not use it (runtime.rs:6) and pumps Timer::Pto every 1 ms instead.",
+   "product_reachable": false,
+   "gate": "No feature gate on the function; consumer-side only (product has no consumer).",
+   "default_state": "Computed on demand; never called in product.",
+   "activation_condition": "Caller invokes next_wakeup_ns while tail enabled and armed.",
+   "bench_exposure": "Not used by any bench arm (kama.rs and kama_product.rs have no call).",
+   "telemetry": "None.",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "medium",
+   "evidence": [
+    "runtime.rs:6 `//! next_wakeup_ns()'e tek-kaynak-uyku YOK (D3, EK4-A2 tarihi): pompa idempotent + kanıtlı.`",
+    "sender.rs:2521 `best = earlier(best, self.tail_probe_deadline_ns());`",
+    "grep next_wakeup_ns outside sender.rs → only tests/, udp_runner.rs:862 (feature-gated), tail_recovery.rs doc comment"
+   ],
+   "duplicates_or_dead": "Alternative to the product 1 ms pump; in product it is dead code (read-only, side-effect free). Tests ek4_a2_liveness.rs pin it as a liveness contract for a wakeup-driven loop the product chose not to adopt.",
+   "feature_off_behavior": "Returns None for source 5 when tail disabled (sender.rs:2533-2535).",
+   "notes": "Not secretly needed for v1 claims (pump covers liveness). If the D3 pump design is final, source 5 (and next_wakeup_ns generally) could be reclassified DELETE; kept because it is a tested API contract."
+  },
+  {
+   "name": "Tail-probe observation telemetry (tail_probe_diag, tail_probe_diag_ext, tail_probe_due_edge_count, tail_probe_cancelled, SchedDiag tail_* counters, ClientStats.sched[11])",
+   "spec_refs": [
+    "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 L62-63 METRICS (probe_count, probe_bytes, spurious_probe_count/bytes, recovery_cause, timer_fire_count — observation-only)",
+    "specs/transport-layer-tdd.md §4.4.4 L325+ (secondary explanatory metrics: ARQ efficiency, spurious retransmit ratio — L347-348)"
+   ],
+   "spec_requires_v1": "optional",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:2096-2103 tail_probe_diag; :2110-2119 tail_probe_diag_ext; :2050-2052 tail_probe_due_edge_count; :2090-2092 tail_recovery_enabled",
+    "crates/adaptive-transport/src/tail_recovery.rs:246-297 counters (probe_due_edge_count, probe_count, probe_bytes, spurious_*, timer_fire_count, probe_due_count, probe_index)",
+    "crates/adaptive-transport/src/sender.rs:1146-1171 SchedDiag (cfg feature diag-sched-telemetry): tail_probe_selected/token_denied/wire_emitted/enqueued",
+    "crates/adaptive-transport/src/sender.rs:4370-4395 diag_sched_summary [u64;12] (index 11 = tail_probe_wire_emitted; zeros without feature)",
+    "crates/client-core/src/runtime.rs:430-433 FateWindowDiag.sched; :1429 `sched: session.sender().diag_sched_summary()`",
+    "crates/bench/src/kama_product.rs:561, 615 KP-CLIENT prints `sched={:?}`"
+   ],
+   "product_call_chain": "Read APIs are product-reachable (ClientSession::sender() lib.rs:113) but the product runtime copies NONE of tail_probe_diag*/due_edge into ClientStats; only sched[11] (feature-gated) reaches ClientStats.fate.sched → KP-CLIENT `sched=`.",
+   "product_reachable": true,
+   "gate": "Cargo feature diag-sched-telemetry (adaptive-transport/Cargo.toml; client-core and bench forward it) for SchedDiag/sched[11]; tail_probe_diag* ungated but unconsumed by product.",
+   "default_state": "diag-sched-telemetry OFF by default in every crate (no `default =` line in adaptive-transport/client-core/bench Cargo.toml); CI runs --all-features (ci.yml:41, 60, 68). sched[] is all zeros in a default build (sender.rs:4392-4394).",
+   "activation_condition": "Build with --features diag-sched-telemetry (bench Cargo.toml comment: cargo build --release -p bench --features diag-sched-telemetry).",
+   "bench_exposure": "kama-product prints `sched=[…]` (12 values, last = tail_probe_emit) only in a feature build; no bench arm prints tail_probe_diag. Example/integration harnesses consume tail_probe_diag_ext: examples/dr_arqtail_product.rs:276, 301, 345; kama-integration/tests/common/dr_cs3_panel.rs:2610-2611; examples/dr_cs3_panel_runner.rs:221-258.",
+   "telemetry": "This record IS the telemetry. Product-printed proof of tail activation in a default build: none direct (tx_retx_bytes mixes ARQ and tail probes).",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "runtime.rs:433 `pub sched: [u64; 12],` / runtime.rs:1429 `sched: session.sender().diag_sched_summary(),`",
+    "sender.rs:4390 `d.tail_probe_wire_emitted,` (index 11) / sender.rs:4392-4394 `#[cfg(not(feature = \"diag-sched-telemetry\"))] { [0; 12] }`",
+    "grep 'tail' crates/client-core/src/runtime.rs → 432, 616, 813 only (no tail_probe_diag call)",
+    "grep 'tail' crates/bench/src/kama_product.rs → 12, 673, 680, 1235 only",
+    "adaptive-transport/Cargo.toml [features] diag-sched-telemetry = [] (DEFAULT-OFF comment)"
+   ],
+   "duplicates_or_dead": "probe_due_count (level) vs probe_due_edge_count (edge) intentionally both kept (tail_recovery.rs:109-118). spurious_probe_count/bytes are vacuous (separate record).",
+   "feature_off_behavior": "sched[] zeros; tail_probe_diag* still computed but unread by product.",
+   "notes": "Gap for v1 evidence hygiene: a default product build cannot attribute retransmit bytes to tail probes vs ARQ. If tail activation must be provable from KP-CLIENT output, either export tail_probe_diag_ext into ClientStats or build bench with the feature."
+  },
+  {
+   "name": "Spurious tail-probe accounting (spurious_probe_count / spurious_probe_bytes)",
+   "spec_refs": [
+    "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4 L62 METRICS: spurious_probe_count/bytes (probe of a unit that was in fact deliverable)",
+    "specs/adaptive-transport-engine-spec.md §9.3 L691-696 spurious retransmit detection (retransmit then original ACK → mark spurious)",
+    "specs/transport-layer-tdd.md §4.4.4 L347-348 ARQ EFFICIENCY: spurious/gereksiz retransmit oranı"
+   ],
+   "spec_requires_v1": "optional",
+   "implemented": false,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/tail_recovery.rs:260-268 record_probe(bytes, spurious) increments spurious_* only when spurious==true",
+    "crates/adaptive-transport/src/sender.rs:5484 the ONLY product caller: `self.tail_recovery.record_probe(unit.size, false);` (hard-coded false)",
+    "crates/adaptive-transport/src/sender.rs:2100-2101, 2116 read-back into tail_probe_diag/_ext",
+    "crates/adaptive-transport/src/sender.rs:2977-2985 kol-2 late-ACK of a superseded original (the event that would evidence a spurious probe) — does not touch TailRecovery"
+   ],
+   "product_call_chain": "None producing a non-zero value: grep record_probe( across crates → sender.rs:5484 (false) plus the test-harness model fs_tailprobe.rs (separate). The counter is structurally always 0 in product.",
+   "product_reachable": false,
+   "gate": "n/a",
+   "default_state": "Always 0.",
+   "activation_condition": "Never (no code path passes spurious=true).",
+   "bench_exposure": "examples/dr_arqtail_product.rs:345 reads `spurious` from tail_probe_diag_ext and writes it to result.csv (:374-376); FINAL-CHECKPOINT.md:32 gate '[PASS] spurious probes = 0 — sum_spurious=0' therefore reflects a counter that cannot be non-zero.",
+   "telemetry": "tail_probe_diag().2/.3, tail_probe_diag_ext().4 — vacuous.",
+   "classification": "WIRE",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5484 `self.tail_recovery.record_probe(unit.size, false);`",
+    "tail_recovery.rs:263-267 `if spurious { self.spurious_probe_count = …; self.spurious_probe_bytes = …; }`",
+    "grep -rn 'record_probe(' crates → sender.rs:5484 only (product); fs_tailprobe.rs:100/241, fs_spine.rs:953 (test harness model)",
+    "examples/dr_arqtail_product.rs:345 `let (due, sent, cancelled, probe_bytes, spurious, timer_fires) = s.tail_probe_diag_ext();`",
+    "FINAL-CHECKPOINT.md:32 `[PASS] spurious probes = 0 — sum_spurious=0 across ALL adversarial slices (guards hold)`"
+   ],
+   "duplicates_or_dead": "The metric exists in three places (TailRecovery counters, sender diag tuples, grid CSV column) with zero producers. Test-harness model fs_tailprobe.rs computes a real spurious count from its frozen channel model (kama-integration/tests/common/fs_spine.rs:953) — not product.",
+   "feature_off_behavior": "n/a",
+   "notes": "Not a v1 functional blocker (diagnostic), but the DR-ARQ-PRODUCT-TAIL-1 '[PASS] spurious probes = 0' gate and the validated_v1 provenance line 'spurious = 0' (tail_recovery.rs:64) were derived from this vacuous counter and should not be cited as a measured property. A real producer exists conceptually at sender.rs:2977-2985 (late ACK of the superseded original) but cannot currently distinguish tail-probe supersession from ARQ supersession. Classified WIRE because the TDD declares the metric; the orchestrator may downgrade to DELETE (misleading) if the metric is dropped instead."
+  },
+  {
+   "name": "Dup at tail — §11 forward-duplication pure-silence liveness leg (plan_forward_duplication, pending_lost empty)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §5(b) L418-421: pure silence does not raise loss metric but MAY trigger probe/retransmit for liveness (§5.1 ackconf → RECOVER_FWD speculative copy, counted as Duplicate)",
+    "specs/adaptive-transport-engine-spec.md §5.1 L468-489 ack_confidence silence model; [R14] PRE_CONVERGE fixed 1000",
+    "specs/adaptive-transport-engine-spec.md §11 L761-799 Emergency Forward Redundancy (tiny → D× duplication, ACK-independent; Schmitt + asymmetric dwell)",
+    "specs/transport-layer-tdd.md §5.6 L570-598 EMERGENCY_FORWARD_REDUNDANCY; §16 AC-8 L772",
+    "specs/adaptive-transport-engine-spec.md §3 L226 (PRE_CONVERGE: recovery/emergency frozen)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:5487-5528 fn plan_forward_duplication (pending_lost.is_empty() branch: speculative geometric copy for every Data-origin inflight unit without a planned copy, due now, interval srtt)",
+    "crates/adaptive-transport/src/sender.rs:4057-4060 schedule_transmit: SenderState::RecoverFwd => plan_forward_duplication",
+    "crates/adaptive-transport/src/sender.rs:5611-5650 drain_due_duplicates (token-paced emission, TransmitKind::Duplicate, geometric ×PC_COPY_MULTIPLIER reschedule)",
+    "crates/adaptive-transport/src/sender.rs:3742-3777 update_state: emergency_active = level > EmergencyLevel::Arq || decision.mode == EmergencyForwardRedundancy → RecoverFwd",
+    "crates/adaptive-transport/src/sender.rs:5789-5820 ack_confidence_permille (PreConverge → 1000; silence > max(3·srtt, K_CONF_EAI·EAI) → decays)",
+    "crates/adaptive-transport/src/emergency.rs:91-95 HysteresisConfig::fixture() escalate 300‰ / de-escalate 700‰ / dwell 1 s (marked fixture [CAL])",
+    "crates/adaptive-transport/src/sender.rs:3075-3077 ACK cancels planned copies: dup_queue.retain(!acked_units.contains)"
+   ],
+   "product_call_chain": "1 ms pump → on_event_core → fuzzy_evaluate + update_state (sender.rs:3742) → state RecoverFwd when ack_confidence health < escalate threshold → schedule_transmit (4059) → plan_forward_duplication (5494) → dup_queue → drain_due_duplicates (4071 → 5611) → TransmitDecision{Duplicate} → runtime drive! → seal_send!(TxClass::Dup) (runtime.rs:1049, 936) → sock.send.",
+   "product_reachable": true,
+   "gate": "None (state machine); frozen in PreConverge by ack_confidence=1000 (sender.rs:5792-5794) and update_state PreConverge branch (3766-3773).",
+   "default_state": "Active in product; emergency thresholds are HysteresisConfig::fixture()/EmergencyConfig::fixture() (sender.rs:1791-1792) — [CAL] placeholders.",
+   "activation_condition": "Outstanding work ∧ ACK silence > max(3·srtt, K_CONF_EAI·EAI) long enough that health < 300‰ (or fuzzy mode EmergencyForwardRedundancy) ∧ state ≠ PreConverge ∧ pending_lost empty → every unacked Data-origin inflight unit gets a self-rescheduling geometric copy until ACKed.",
+   "bench_exposure": "kama-product and kama stub: tx_dup_bytes (`dup=` in KP-CLIENT); FINAL-CHECKPOINT.md:37-38 notes the few OFF completions came from §11 forward duplication (arm-independent).",
+   "telemetry": "ClientStats.tx_dup_bytes (runtime.rs:936); SchedDiag dup_selected/token_denied/wire_emitted → sched[6..8] (feature); Sender::emergency_level() (sender.rs:5985); last_recovery (5978).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:5495-5513 `if self.pending_lost.is_empty() { // Saf-sessizlik tail-liveness … for unit in tail { self.dup_queue.push(DupRec { due_ns: now_ns, unit, interval_ns: srtt_ns.max(1) }) } return; }`",
+    "sender.rs:3752-3753 `let emergency_active = level > EmergencyLevel::Arq || decision.mode == Mode::EmergencyForwardRedundancy;`",
+    "sender.rs:3774-3776 `} else if emergency_active { SenderState::RecoverFwd`",
+    "sender.rs:5792-5794 `if self.state == SenderState::PreConverge { return 1000; }`",
+    "loss.rs:673-676 comment: pure silence → tail-recovery liveness (§5.1 ack_confidence → RECOVER_FWD speculative copy), not loss classification",
+    "runtime.rs:1049 `TransmitKind::Duplicate => TxClass::Dup,`"
+   ],
+   "duplicates_or_dead": "Overlaps the PTO tail probe on the same tail unit when in RecoverFwd (probe is state-independent, sender.rs:5434-5437); no de-duplication between the two lanes. Also the §3.3-B PreConverge geometric copies (cold-start cluster) use the same dup_queue machinery.",
+   "feature_off_behavior": "n/a (ungated).",
+   "notes": "This is the spec's originally-intended tail liveness path (§5(b)/§5.1); the PTO tail probe was added because this lane only engages after ack_confidence collapses (~3·srtt silence + Schmitt), leaving a terminal-tail hole in ordinary ARQ mode (FINAL-CHECKPOINT.md §3). Emergency thresholds remain fixture [CAL] values."
+  },
+  {
+   "name": "Lost forward-copy geometric re-plan (P0 burst-recovery: Duplicate-origin loss re-plans a self-rescheduling copy)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §9.1 L686 (cap exceeded → hand to forward), §12 L879-886 RETRY_BUDGET deadline-bounded / 'TAM SESSİZLİK YASAK'",
+    "specs/transport-layer-tdd.md §5.6 L570-598 (forward redundancy retreat only by measurement)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:3299-3318 queue_losses Duplicate-origin branch: if no planned copy for unit → dup_queue.push(DupRec{due: now+srtt, interval: srtt})",
+    "crates/adaptive-transport/src/sender.rs:5611-5650 drain_due_duplicates geometric reschedule (×PC_COPY_MULTIPLIER, no count ceiling, cancelled by ACK)"
+   ],
+   "product_call_chain": "on_ack_received/on_timer loss detection → queue_losses (sender.rs:3280) → Duplicate-origin branch (3299) → dup_queue → drain_due_duplicates (schedule_transmit 4071) → Duplicate emission → runtime TxClass::Dup.",
+   "product_reachable": true,
+   "gate": "None.",
+   "default_state": "Active.",
+   "activation_condition": "A forward/emergency copy (origin Duplicate) is itself declared lost while the unit is still undelivered and has no planned copy.",
+   "bench_exposure": "kama-product/kama stub: tx_dup_bytes; regression gate crates/adaptive-transport/tests/burst_loss_recovery.rs (Sınıf A/B run with tail OFF and ON); G1-CLOSURE.md:9-10 h3b/h3c.",
+   "telemetry": "tx_dup_bytes; sched dup_* (feature).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3308-3316 `if !self.dup_queue.iter().any(|d| d.unit.id == p.unit.id) { … self.dup_queue.push(DupRec { due_ns: now_ns.saturating_add(srtt_ns), unit: p.unit, interval_ns: srtt_ns.max(1) }); }`",
+    "burst_loss_recovery.rs:107-149 tests (both tail_on=false/true must deliver)",
+    "G1-CLOSURE.md:27-29 P0 changed only the queue_losses Duplicate branch; deterministic tail test post-P0 passes"
+   ],
+   "duplicates_or_dead": "Same dup_queue lane as §11 and §3.3-B copies (intentional reuse).",
+   "feature_off_behavior": "n/a",
+   "notes": "Included because it is the mechanism that recovers a burst-killed tail when the PTO probe cap is exhausted (burst_loss_recovery.rs:146-149 Sınıf B). Count-uncapped per spec §12 RETRY_BUDGET (deadline-bounded at app layer)."
+  },
+  {
+   "name": "Receiver tail-SACK cadence exemption (K_TAIL — timer-SACK bypasses ACK_CADENCE floor when the remaining data is a tail)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §12 L859-866 ACK_DELAY_TIMER (max_ack_delay; [K2/§3.3-E] bandwidth-aware cadence; [R1] first-SACK cadence-exempt)",
+    "specs/adaptive-transport-engine-spec.md §16.1 table L997 R episode quota ('her emisyon-yolu (freq/timer/tail) kredi düşürür') and L999 K_ARR ('referans = last_emit_any (tail-dahil birleşik-saat)')",
+    "specs/adaptive-transport-engine-spec.md §2.1 L159 ACK production rules"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/receiver.rs:95-100 const K_TAIL: u64 = 2 [CAL {1,2,4}]",
+    "crates/adaptive-transport/src/receiver.rs:268-291 on_ack_timer: tail_due = since_last_ack>0 ∧ last_gap>0 ∧ now−last_arrival ≥ K_TAIL·last_gap ∧ now−last_tail_ack ≥ K_TAIL·last_gap → burn_quota + build_ack (cadence clock NOT reset)",
+    "crates/adaptive-transport/src/receiver.rs:156, 188 last_tail_ack_ns; :326-329 last_emit_any = max(last_ack, last_tail_ack)"
+   ],
+   "product_call_chain": "ServerEndpoint::bind (runtime.rs:1492/1505) → spawn(server_task) (1518) → ack_timer = interval(ACK_TICK=20 ms) (runtime.rs:65, 1970) → ack_timer.tick() (1990) → for each peer slot: s.rx.on_ack_timer(now) (1996) → Some(AckFrame) → encode → srv_seal_send (2001) → socket. Client receives SACK → Event::AckReceived → tail-probe progress reset.",
+   "product_reachable": true,
+   "gate": "None (constant K_TAIL; requires have_recv).",
+   "default_state": "Active; K_TAIL=2, ACK_TICK=20 ms.",
+   "activation_condition": "Pending un-ACKed arrivals below ACK_FREQ_N, silence ≥ 2× last inter-arrival gap, and ≥ 2× gap since the last tail-SACK.",
+   "bench_exposure": "kama-product server (ServerEndpoint) and kama stub server (bench/src/kama.rs:574 rx.on_ack_timer) both exercise it; quinn n/a.",
+   "telemetry": "Receiver::diag_return_supply (receiver.rs:384) — not tail-specific; ServerStats has no tail-SACK counter (not grepped as such).",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "receiver.rs:100 `const K_TAIL: u64 = 2;`",
+    "receiver.rs:282-291 `let tail_due = self.since_last_ack > 0 && self.last_gap_ns > 0 && now_ns.saturating_sub(self.last_arrival_ns) >= self.last_gap_ns.saturating_mul(K_TAIL) && now_ns.saturating_sub(self.last_tail_ack_ns) >= …; if tail_due { self.last_tail_ack_ns = now_ns; self.burn_quota(); return self.build_ack(now_ns); }`",
+    "runtime.rs:1996 `s.rx.on_ack_timer(now)`",
+    "receiver.rs:91 comment: timer is tail backstop; cadence floor ACK_CADENCE_FLOOR_NS ≈ 8.4 s (receiver.rs:88-94)"
+   ],
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "n/a",
+   "notes": "This is the receiver-side counterpart that makes a tail unit (or a tail probe's fresh seq) ACKable within a channel-derived delay instead of the ≈8.4 s cold-start cadence floor; it is what keeps validated_v1's max_ack_delay=25 ms assumption plausible on fast paths. Sub-kbps: exemption effectively inactive (receiver.rs:98-99)."
+  },
+  {
+   "name": "PTO-tick time-threshold loss declaration (tail-blind by design; LATER-ACK precondition)",
+   "spec_refs": [
+    "specs/adaptive-transport-engine-spec.md §5(b) L413-421 TIME_THRESHOLD requires seq < largest_acked; [TUR-1b] cadence-aware floor K_c×EAI",
+    "specs/adaptive-transport-engine-spec.md §3.3-C/(1) L338-340 (no loss declaration in PRE_CONVERGE)"
+   ],
+   "spec_requires_v1": "required",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:3110-3121 Timer::Pto → if state != PreConverge: loss.detect_time_losses(now, srtt, cadence_loss_floor) → queue_losses",
+    "crates/adaptive-transport/src/loss.rs:667-700 detect_time_losses (have_acked && seq < largest_acked; floor = max(min_delay, cadence_floor))",
+    "crates/adaptive-transport/src/loss.rs:580-600 next_time_loss_deadline_ns (None when tail > largest_acked)"
+   ],
+   "product_call_chain": "1 ms pump → on_timer(Timer::Pto) → detect_time_losses → queue_losses → pending_lost → RecoverArq → plan_arq_retransmits.",
+   "product_reachable": true,
+   "gate": "None; skipped in PreConverge (sender.rs:3113).",
+   "default_state": "Active.",
+   "activation_condition": "An inflight seq with a higher seq already ACKed whose age exceeds max(9/8·srtt, min_delay, K_c·EAI).",
+   "bench_exposure": "All Kama arms.",
+   "telemetry": "diag_loss_time (sender.rs:3121); ledger diag_confirm_path; KP-CLIENT ledger fields.",
+   "classification": "SHIP",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:3113-3116 `if self.state != SenderState::PreConverge { let srtt = …; let lost = self.loss.detect_time_losses(now_ns, srtt, self.cadence_loss_floor());`",
+    "loss.rs:673-674 `// time-threshold KESİN kayıp sınıflandırması YALNIZ \"daha yüksek seq ACK'lendi\" kanıtıyla (seq < largest_acked).`",
+    "loss.rs:581 `/// None = eligible-birim-yok (ör. hiç-ACK-kanıtı-yok veya tail > largest_acked —`"
+   ],
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "n/a",
+   "notes": "Listed for cluster completeness: this is the mechanism whose structural tail-blindness (seq ≥ largest_acked never qualifies) motivated DR-ARQ-PRODUCT-TAIL-1 (client-core/src/lib.rs:187-188; FINAL-CHECKPOINT.md §3)."
+  },
+  {
+   "name": "Harness-side tail-probe model (kama-integration fs_tailprobe.rs / fs_spine.rs A0-TAIL) — experiment-only duplicate",
+   "spec_refs": [
+    "reports/AI-HANDOFF-CURRENT.md:64-70 (FS-1/R2A frozen ARQ tail-blind; A0-TAIL deconfounding grid)"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/kama-integration/tests/common/fs_tailprobe.rs:1-60 TailProbeCfg (pto_mult·rtt + max_ack_delay; conservative() cap 2), TailProbe state machine",
+    "crates/kama-integration/tests/common/fs_spine.rs:556, 801, 931-953 (is_a0tail arm drives the model and records spurious via channel oracle)"
+   ],
+   "product_call_chain": "None (tests/common; not compiled into any product crate).",
+   "product_reachable": false,
+   "gate": "Test-only module (crates/kama-integration/tests/common).",
+   "default_state": "n/a",
+   "activation_condition": "FS-1/R2A harness runs with the A0-TAIL arm.",
+   "bench_exposure": "None (kama-integration harness, not crates/bench).",
+   "telemetry": "Harness CSV columns (probes_sent, spurious_probes).",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "fs_tailprobe.rs:1 `//! DR-ARQ-TAIL-1 — EXPERIMENT-ONLY bounded tail probe (NOT a product mechanism; NOT an RFC 9002 adaptive-PTO compliance claim).`",
+    "fs_tailprobe.rs:14-16 `/// PTO = pto_mult · rtt_ns + max_ack_delay_ns (conservative; experiment-only).`",
+    "fs_spine.rs:953 `tp.record_probe(outstanding.len() as u64, spurious);`"
+   ],
+   "duplicates_or_dead": "Duplicate of the product TailRecovery with a different PTO law and cap; must not be cited as product behaviour (its spurious accounting is real, unlike the product counter).",
+   "feature_off_behavior": "n/a",
+   "notes": "Kept because frozen campaign replays (FS-1/R2A) depend on it; explicitly labelled."
+  },
+  {
+   "name": "INV-CS-4 supersession via BootstrapPto internal timer (experimental-cold-start) firing the same Pto core path",
+   "spec_refs": [
+    "reports/decision-requests/DR-CS-1-minimal-bootstrap.md:162 INV-CS-4",
+    "docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §2 L9-10, §4 L42-44 (gated, additive supersession)"
+   ],
+   "spec_requires_v1": "experimental",
+   "implemented": true,
+   "impl_symbols": [
+    "crates/adaptive-transport/src/sender.rs:117-136 enum CsTimerKind (cfg feature experimental-cold-start) — BootstrapPto doc records the supersession",
+    "crates/adaptive-transport/src/sender.rs:2729-2741 BootstrapPto fire → self.on_event_core(Event::TimerFired(Timer::Pto), now_ns)"
+   ],
+   "product_call_chain": "None in product (feature experimental-cold-start default OFF in adaptive-transport, kama-engine, kama-integration Cargo.toml; client-core does not forward it).",
+   "product_reachable": false,
+   "gate": "Cargo feature experimental-cold-start (DEFAULT-OFF).",
+   "default_state": "OFF (not compiled).",
+   "activation_condition": "Feature build + DR-CS-1 batch API; internal BootstrapPto deadline then re-enters the same on_timer(Pto) path, so the tail block at sender.rs:3144 also runs on internal fires.",
+   "bench_exposure": "None in bench (feature not forwarded by bench Cargo.toml).",
+   "telemetry": "cs_* diag (feature).",
+   "classification": "KEEP-EXPERIMENTAL",
+   "confidence": "high",
+   "evidence": [
+    "sender.rs:119 `#[cfg(feature = \"experimental-cold-start\")]` on enum CsTimerKind",
+    "sender.rs:128-131 doc: `Timer::Pto MAY now emit a bounded tail-loss probe (emit_tail_probe) — but ONLY when TailRecovery is explicitly enabled`",
+    "sender.rs:2733 `self.on_event_core(Event::TimerFired(Timer::Pto), now_ns);`",
+    "adaptive-transport/Cargo.toml `experimental-cold-start = []` (DEFAULT-OFF comment)"
+   ],
+   "duplicates_or_dead": "None.",
+   "feature_off_behavior": "Block not compiled; product Pto only from the external 1 ms pump.",
+   "notes": "Cold-start cluster ownership; listed only because the supersession text lives on this enum."
+  }
+ ],
+ "open_questions": [
+  "PreConverge firing vs spec §3.3-C/(5) and §12 L872-873 ('PTO ARM EDİLMEZ before srtt exists'): the tail block at sender.rs:3144-3156 runs in every state (outside the `state != PreConverge` guard at 3113) and TailRecovery uses initial_pto_ns=1 s when srtt is None (tail_recovery.rs:148-151), so a tail probe can go due ~1 s after the first send alongside §3.3-B geometric copies — exactly the 'çift retransmit' the spec warns about (L349-350). Empirical: reports/dr-cs-3/off-zerodiff/diagcs-d1--P2-GE20L10-RTT1000--STATIC_R0--rep14.json:46-55 shows tail_probe_due_edge=1, tail_probe_sent=0 in a cold-start stall (due but token-starved). No test covers tail behaviour in PreConverge (grep tests/ for tail+PreConverge → none). Needs an owner ruling: spec deviation to fix (gate tail on srtt.is_some()/state != PreConverge) or documented supersession.",
+  "Tail-probe target origin: the target is `inflight.keys().next()` (sender.rs:3145) with no origin filter, while DR-ARQ TDD §4 TARGET says 'oldest outstanding SOURCE seq'. FecParity packets ARE inflight-tracked with unit.id = ESI (sender.rs:4937-4945); if the oldest inflight entry is parity, emit_tail_probe emits TransmitKind::Retransmit with unit_id in the ESI namespace, which the runtime maps into seq_to_unit/store as a source id (runtime.rs:970-975, 1021-1030). Only reachable with FEC ON (RuntimeConfig fec: None by default; bench --fec arms). Static finding, not executed — verify and either filter origin==Data/Retransmit or document.",
+  "spurious_probe_count is vacuous: the only product call is record_probe(unit.size, false) (sender.rs:5484). The DR-ARQ-PRODUCT-TAIL-1 gate '[PASS] spurious probes = 0' (FINAL-CHECKPOINT.md:32) and the validated_v1 provenance 'spurious = 0' (tail_recovery.rs:64) were computed from this counter via examples/dr_arqtail_product.rs:345 and therefore cannot be cited as a measured property. Decide: implement (kol-2 late-ACK at sender.rs:2977-2985 needs a tail-vs-ARQ supersession tag) or drop the metric and correct the claim.",
+  "Fixed count cap (max_tail_probes=3 per idle window) vs spec §12 RETRY_BUDGET ('SABİT-SAYI DEĞİL, DEADLINE-TÜREVİ — sayı-tavanı YOK'). The cap resets on any ACK progress (per-episode, dr_cs3_panel.rs:847-852), so per-run it is time-bounded, but the multi-unit terminal-tail L10-med cell is 0/30 (tail_recovery.rs:66-70; G1-CLOSURE.md:35-36 → G3 backlog). Is the fixed cap an accepted [CAL] placeholder for v1 or a spec conformance gap?",
+  "PTO formula deviation: spec §12 L869 and TDD §4 L47 put the minimum inside (`srtt + max(4·rttvar, min_pto|TIMER_GRANULARITY) + max_ack_delay`); code clamps the whole sum to [min_pto, max_pto] (tail_recovery.rs:152-156) and has no TIMER_GRANULARITY. Minor; confirm acceptable.",
+  "ACK-progress reset counts ANY inflight shrink (sender.rs:3083) including ACKs of FecParity/Duplicate packets, whereas TDD §4 RESET says 'new acked SOURCE data'. With FEC ON, parity ACKs can keep resetting the tail timer/backoff. Confirm intended.",
+  "validated_v1 max_ack_delay_ns=25 ms vs receiver behaviour: ACK_TICK=20 ms (runtime.rs:65) but the cold-start cadence floor is ≈8.4 s (receiver.rs:88-94); only the K_TAIL tail-SACK exemption (receiver.rs:282-291) makes tail ACKs timely, and it is inactive at sub-kbps (receiver.rs:98-99). Whether validated_v1's guard/PTO remain sound on sub-kbps paths was not verified in this audit (grid ran 200 ms/1 s RTT cells).",
+  "No product-visible tail telemetry in a default build: ClientStats carries none of tail_probe_diag*/due_edge; only sched[11] under feature diag-sched-telemetry (default OFF; CI builds --all-features). tx_retx_bytes mixes ARQ and tail probes. If v1 evidence requires proving tail activation from KP-CLIENT, decide whether to export tail_probe_diag_ext into ClientStats.",
+  "next_wakeup_ns / tail_probe_deadline_ns (source 5) has no product consumer (runtime.rs:6 D3 pump). If the 1 ms pump is the final product loop design, source 5 and the wakeup API are dead-in-product (currently pinned only by tests); otherwise the product loop should consume it. Ownership decision pending.",
+  "Tail recovery cannot be disabled from RuntimeConfig (no field; runtime.rs:181-210); the ON choice is hard-wired in ClientSession::new() (lib.rs:83). G2 explicitly chose construction-level flip; confirm that a product knob is intentionally absent for v1 (bench kama-product likewise cannot run tail-OFF, kama_product.rs:673-674).",
+  "Documentation staleness: reports/AI-HANDOFF-CURRENT.md:24 states the tail probe 'ships default-OFF'; product has shipped ON since G2 (2026-08-24, P3-DEFAULT-FLIP-DECISION.md:3-5). Not a code issue.",
+  "Double coverage of a tail unit in RecoverFwd: §11 pure-silence geometric copies (sender.rs:5495-5513) and the state-independent PTO probe (sender.rs:5434-5437) can both target the same oldest unit; no de-duplication and no measurement of the combined byte cost was found in this audit.",
+  "Spec authority: no section in specs/ names a 'tail probe'; the normative hook is engine §12 'PTO firing → probe/retransmit' plus §5(b)/§5.1 liveness language. The detailed behavioural contract lives in docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md (design doc, not a frozen spec) — whether an [AMENDMENT] to engine §12 is required for v1 traceability is an owner question."
+ ]
+}

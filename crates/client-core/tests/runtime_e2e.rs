@@ -221,9 +221,14 @@ async fn client_survives_server_death_mid_run() {
         20,
         "kabul edilen her offer ya işlendi ya unaccepted sayacında: {stats:?}"
     );
+    // [YARIŞ DÜZELTMESİ 2026-09-08, transport-v1 denetimi] Residue'nün HANGİ kovada göründüğü
+    // zamanlamaya bağlıdır: ölüm-sonrası offer'lar shutdown anında henüz ana döngüye alınmadıysa
+    // `unaccepted_offers`, alındıysa `undelivered` sayacına düşer. Testin iddiası kova seçimi
+    // değil, "residue TYPED görünür"dür — paralel yük altında ~1/8 kırmızı veren tek assertion
+    // buydu (ürün semantiği değişmedi; yukarıdaki toplam-muhasebe pini iddianın sertliğini korur).
     assert!(
-        stats.undelivered > 0,
-        "ölü server sonrası residue typed görünmeli: {stats:?}"
+        stats.undelivered + stats.unaccepted_offers > 0,
+        "ölü server sonrası residue typed görünmeli (undelivered VEYA unaccepted): {stats:?}"
     );
 }
 
@@ -532,7 +537,15 @@ async fn fragmenter_carries_a_message_far_larger_than_one_fec_symbol() {
     // 1000 B / 48 B = 21 chunk → 21 birim ACK'i, tek mesaj ACK'i.
     assert_eq!(cs.acked, 21, "chunk sayısı kadar birim ACK'i: {cs:?}");
     assert_eq!(ss.msgs_reassembled, 1, "bir mesaj birleştirildi: {ss:?}");
-    assert_eq!(ss.frag_chunks_rx, 21, "21 chunk alındı: {ss:?}");
+    // [YARIŞ DÜZELTMESİ 2026-09-08, CI onarımı] `frag_chunks_rx` TELE ULAŞAN chunk çerçevelerini
+    // sayar ve yalnız mesaj-düzeyi dedup'tan SONRA artar (runtime.rs:1773-1776); §3.3-B kuruluş
+    // kopyası veya bir retransmit aynı chunk'ı MEŞRU olarak ikinci kez getirebilir. Testin iddiası
+    // "bütün chunk'lar ulaştı + mesaj byte-eş"tir; tam-eşitlik mimari invaryant DEĞİLDİR
+    // (workspace paralel yükünde ~1/8 kırmızı; izole 8/8 yeşil). Birim-ACK sayısı (21) pini korunur.
+    assert!(
+        ss.frag_chunks_rx >= 21,
+        "1000 B / 48 B = 21 chunk'ın hepsi ulaşmalı (mükerrer kopya meşru): {ss:?}"
+    );
     assert_eq!(
         ss.delivered, 1,
         "app'e TEK teslim (chunk başına değil): {ss:?}"
@@ -775,9 +788,11 @@ fn shipped_default_now_carries_an_initial_window() {
         !d.bootstrap_rtt,
         "bootstrap merdiveni kalibre değil → opt-in"
     );
+    // [DENETİM B-1] FEC artık ürün profilinde AÇIK (adaptif, profil 0x05). Eski pin
+    // ("kampanya bekliyor") S1-GATE NO-HARM PASS'inden sonra bayatlamıştı.
     assert!(
-        d.fec.is_none(),
-        "FEC default'u ürün-katmanı kampanyası bekliyor"
+        d.fec.is_some_and(|f| f.manual_r.is_none()),
+        "FEC açık ve Controller/adaptif modda olmalı"
     );
 }
 
@@ -991,5 +1006,101 @@ async fn ts_sampler_fills_when_enabled_and_stays_empty_when_disabled() {
             );
         }
         let _ = server.shutdown().await;
+    }
+}
+
+/// [FEC v1] Ürün default'u sınırlı politikadır (A 250-250-250 + P2 + G1) ve FEC alt-sistemi AÇIKTIR.
+///
+/// DEĞİŞİKLİK (2026-09-08, transport-v1 denetimi B-1): burada eskiden `cfg.fec.is_none()`
+/// pinleniyordu. O pin bir sevk KARARINI değil, uygulanmamış bir kararı kodluyordu: spekülatif kol
+/// (`bounded_v1`) açıkken yönettiği alt-sistem ürün yolunda yoktu → parity hiç üretilemezdi.
+/// S1-GATE (2026-08-26) NO-HARM PASS vermişti. Kanonik profil pini: `tests/product_profile_v1.rs`.
+#[test]
+fn fec_v1_urun_defaultu_sinirli_politika() {
+    let cfg = RuntimeConfig::default();
+    assert!(
+        cfg.fec.is_some(),
+        "FEC alt-sistemi ürün profilinde AÇIK olmalı (denetim B-1)"
+    );
+    let b = cfg.fec_loss_risk;
+    assert!(b.enabled);
+    assert_eq!(
+        (
+            b.bootstrap_cap_permille,
+            b.persistent_cap_permille,
+            b.reorder_suppress_permille
+        ),
+        (250, 250, 300)
+    );
+    assert_eq!(
+        b.persist_mode,
+        client_core::runtime::PersistMode::LearnedSpuriousAge
+    );
+    assert_eq!(cfg.structure_gate_level_permille, Some(250));
+}
+
+/// [FAZ-2 KALEM-1] Model-A kısmi/son blok: K_shape=8 iken YALNIZ 5 kaynak birim var (K_actual=5).
+/// Gönderici zero-slot'ları ENCODE'a katar (tele göndermez), alıcı `k_actual`'ı repair başlığından
+/// öğrenip known-zero enjekte eder. Kalıcı olarak silinen bir chunk FEC ile kurtarılmalı.
+/// Spec: fec-core §6 (NORMATİF, zorunlu POC: K_shape=8 × K_actual<K).
+#[tokio::test(flavor = "multi_thread")]
+async fn partial_block_below_k_is_coded_and_recovers_model_a() {
+    use client_core::runtime::FecRuntimeConfig;
+    const MSG_LEN: usize = 40; // 48 B chunk'a sığar → mesaj = 1 birim
+    let cfg = || RuntimeConfig {
+        max_unit_bytes: 48,
+        fec: Some(FecRuntimeConfig {
+            profile_id: 0x03, // K=8, R_max=4, E=64
+            manual_r: Some(4),
+        }),
+        drain_cap: Duration::from_millis(800),
+        ..RuntimeConfig::default()
+    };
+    // unit 2'nin DATA'sı KALICI düşer; repair'ler geçer.
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg(),
+        Box::new(fec_seam::DropUnitsSeam(&[2])),
+    )
+    .await
+    .expect("server bind");
+    let client = ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam))
+        .await
+        .expect("client connect");
+
+    // 5 mesaj = 5 birim → blok K=8'e ULAŞMAZ (kısmi blok).
+    let msgs: Vec<Vec<u8>> = (0..5u8)
+        .map(|i| (0..MSG_LEN).map(|j| (j as u8).wrapping_add(i)).collect())
+        .collect();
+    for m in &msgs {
+        client.send(m.clone()).expect("offer");
+    }
+    // Birimler ana döngüye alınıp tele çıksın (aksi hâlde offer'lar kuyrukta kalır ve blok
+    // hiç oluşmaz — ilk denemede `unaccepted_offers: 5` ile yakalandı).
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    // Akış sonu → kısmi blok zero-dolgu ile kapanır, parity drain penceresinde tele çıkar.
+    let cs = client.shutdown().await;
+    assert_eq!(
+        cs.fec_partial_blocks_closed, 1,
+        "akış sonunda TAM OLARAK bir kısmi blok kapanmalı: {cs:?}"
+    );
+    assert!(cs.fec_repairs_tx > 0, "kısmi blok parity üretmeli: {cs:?}");
+
+    // Silinen birim FEC ile kurtarılmalı → 5 mesajın hepsi teslim.
+    let mut got = Vec::new();
+    while got.len() < 5 {
+        match tokio::time::timeout(Duration::from_secs(5), server.next_delivery()).await {
+            Ok(Some(d)) => got.push(d.payload),
+            _ => break,
+        }
+    }
+    let ss = server.shutdown().await;
+    assert!(
+        ss.fec_recovered_units >= 1,
+        "kalıcı silinen chunk Model-A kısmi blokta kurtarılmalı: {ss:?}"
+    );
+    assert_eq!(got.len(), 5, "5 mesajın hepsi teslim edilmeli: {ss:?}");
+    for m in &msgs {
+        assert!(got.contains(m), "byte-eş teslim: {ss:?}");
     }
 }
