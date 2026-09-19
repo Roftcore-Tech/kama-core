@@ -130,7 +130,7 @@ latch zinciri `requested → computed → clamped → planned → enqueued → e
 Yalnız `diag-sched-telemetry` feature'ı ek alan açar (`KP-ACTIVATED tail_probe=`, ürün derlemesinde
 `n/a` — vakum sayaç uyarısı).
 
-**Sıkıştırma transport'ta YOKTUR** (TDD §8 AMENDMENT-4; sahibi app-rpc §3, E2E mühürden önce).
+**Sıkıştırma transport'ta YOKTUR** (TDD §8 AMENDMENT-4/6; sahibi Application mesaj-hazırlama — gerekçe tip bilgisi; kanonik katman grafiği App → Transport → Crypto(tel kenarı) → UDP, INV-NEIGHBOR-1).
 `FusionDecision.compress` (`fusion.rs:444`) üretilen ama hiçbir yerde tüketilmeyen kalıntı bir
 çıktıdır; zstd bağımlılığı yoktur. ADR-17 golden-vektör kararlılığı için v1'de bırakıldı;
 kaldırılması v1.x temizliği (EVOLUTION §9.8).

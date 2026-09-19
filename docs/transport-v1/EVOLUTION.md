@@ -78,7 +78,7 @@ eklenmez (analizörler şemayı kontrol eder).
 | tetik | ilk v1.x kod temizliği penceresi |
 | gereken kanıt | alanın tüketicisiz olduğunun repo-genel taraması (bugün: yalnız fusion.rs + testler) |
 | etkilenen hücreler | hiçbiri (çıktı hiçbir karara girmez) |
-| YAPMA | alanı "kullanılabilir" diye bir tüketiciye BAĞLAMAK — transport ciphertext görür, sıkıştıramaz |
+| YAPMA | alanı "kullanılabilir" diye bir tüketiciye BAĞLAMAK — sıkıştırma kararı TİP bilgisi ister (ses/video zaten sıkıştırılı), bu bilgi Application'dadır; transport opak birim taşır (TDD §8 AMENDMENT-4/6) |
 
 ## §22 — GELECEK DEĞİŞİKLİK POLİTİKASI (bağlayıcı)
 
