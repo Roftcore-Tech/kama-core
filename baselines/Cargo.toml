@@ -1,0 +1,24 @@
+# KAMA ↔ TCP karşılaştırma kampanyası — taban (baseline) adapter'ları.
+# AYRI workspace: kök Cargo.toml üyesi DEĞİL (fuzz/ deseni). Yalnız `std`; bağımlılık YOK.
+[package]
+name = "kama-baselines"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "UNLICENSED"
+
+[[bin]]
+name = "tcp_adapter"
+path = "src/bin/tcp_adapter.rs"
+
+[[bin]]
+name = "udp_probe"
+path = "src/bin/udp_probe.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 2
+debug = false
+
+[workspace]

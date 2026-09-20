@@ -1,0 +1,3 @@
+loss_pct,rtt_class,rep,tool,bytes,secs,goodput_Bps,mathis_Bps,ratio,fwd_pkts,fwd_drops,fwd_loss_realized,loadavg1
+1,med,0,adapter,8056000,109.126,73823,70662,1.045,6171,72,0.0115,0.19
+1,med,1,adapter,8056000,95.178,84641,70662,1.198,6014,68,0.0112,0.06

@@ -1,0 +1,29 @@
+14:09:50 EXEC-START manifest=/home/ryuzaki/kama-kvt-results/smoke-control/manifest.csv rows=600 already_done=0 kernel=7.0.12-arch1-1 tc=tc utility, iproute2-7.2.0, libbpf 1.7.0
+14:09:50 TOPO-UP offload=OFF(verified) va0 before={'tso': 1, 'gso': 1, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} after={'tso': 0, 'gso': 0, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} | ma0 before={'tso': 1, 'gso': 1, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} after={'tso': 0, 'gso': 0, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} | mb0 before={'tso': 1, 'gso': 1, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} after={'tso': 0, 'gso': 0, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} | vb0 before={'tso': 1, 'gso': 1, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} after={'tso': 0, 'gso': 0, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1}
+14:09:50 GATE owd=0ms ping_rtts=[0.028, 0.051, 0.048] band=[0,3.0] -> OK
+14:09:59 PROGRESS 25/600 (S-control-ctl-small-warm-abl-off-r006)
+14:10:08 PROGRESS 50/600 (S-control-ctl-small-warm-tcp-std-r012)
+14:10:17 PROGRESS 75/600 (S-control-ctl-small-warm-kama-v1-full-r018)
+14:10:26 PROGRESS 100/600 (S-control-ctl-small-warm-abl-on-r024)
+14:10:35 PROGRESS 125/600 (S-control-ctl-small-warm-abl-on-r031)
+14:10:44 PROGRESS 150/600 (S-control-ctl-small-warm-abl-off-r037)
+14:10:52 PROGRESS 175/600 (S-control-ctl-small-warm-tcp-std-r043)
+14:11:01 PROGRESS 200/600 (S-control-ctl-small-warm-kama-v1-full-r049)
+14:11:10 PROGRESS 225/600 (S-control-ctl-small-warm-kama-v1-full-r056)
+14:11:19 PROGRESS 250/600 (S-control-ctl-small-warm-abl-on-r062)
+14:11:28 PROGRESS 275/600 (S-control-ctl-small-warm-abl-off-r068)
+14:11:37 PROGRESS 300/600 (S-control-ctl-small-warm-tcp-std-r074)
+14:11:45 PROGRESS 325/600 (S-control-ctl-small-warm-tcp-std-r081)
+14:11:54 PROGRESS 350/600 (S-control-ctl-small-warm-kama-v1-full-r087)
+14:12:04 PROGRESS 375/600 (S-control-ctl-small-warm-abl-on-r093)
+14:12:12 PROGRESS 400/600 (S-control-ctl-small-warm-abl-off-r099)
+14:12:13 GATE owd=0ms ping_rtts=[0.033, 0.047, 0.063] band=[0,3.0] -> OK
+14:12:17 PROGRESS 425/600 (S-control-ctl-large-warm-tcp-std-r012)
+14:12:22 PROGRESS 450/600 (S-control-ctl-large-warm-kama-v1-full-r024)
+14:12:26 PROGRESS 475/600 (S-control-ctl-large-warm-kama-v1-full-r037)
+14:12:31 PROGRESS 500/600 (S-control-ctl-large-warm-tcp-std-r049)
+14:12:35 PROGRESS 525/600 (S-control-ctl-large-warm-tcp-std-r062)
+14:12:40 PROGRESS 550/600 (S-control-ctl-large-warm-kama-v1-full-r074)
+14:12:44 PROGRESS 575/600 (S-control-ctl-large-warm-kama-v1-full-r087)
+14:12:49 PROGRESS 600/600 (S-control-ctl-large-warm-tcp-std-r099)
+14:12:49 EXEC-DONE rows_in_result=600
