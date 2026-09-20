@@ -375,7 +375,7 @@ Tel baytı = istemci veth arayüzünde (va0) koşu boyunca tx+rx bayt farkı; ı
 
 ## 10. Yapılmadı
 
-* **QUIC / Quinn kolu** — bu raporda YOK (Faz 5; ayrı manifest eki gerektirir).
+* **QUIC / Quinn kolu** — bu raporda YOK. Kama ↔ quinn ↔ TCP karşılaştırması Transport v1 kapanışında zaten yapılmıştır: `reports/transport-v1/PHASE5-T0-T7-REPORT.md` (2026-09-08; 11 hostile hücre, N=30, 990 koşu; hiçbir hücrede TCP/QUIC üstünlüğü yok). Bu kampanyanın kayıp-taraması hücrelerinde QUIC'i de koşan bir ek (`reports/kama-vs-tcp-v1/ext1/`) dondurulup başlatıldı, sahip kararıyla yarıda DURDURULDU (tekrar niteliğinde); sonucu yoktur — bkz. `ext1/STATUS.md`.
 * **KCP kolu** — yok.
 * **Bant (`rate`) ekseni**, **burst / terminal-tail çekirdek grid'i** — süre bütçesi nedeniyle dondurmadan ÖNCE çıkarıldı.
 * **BBR / farklı TCP ayarı, TLS'li TCP** — yok.
