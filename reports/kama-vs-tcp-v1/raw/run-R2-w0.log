@@ -1,0 +1,38 @@
+18:14:02 EXEC-START manifest=reports/kama-vs-tcp-v1/manifest-R2.csv rows=700 already_done=0 kernel=7.0.12-arch1-1 tc=tc utility, iproute2-7.2.0, libbpf 1.7.0
+18:14:03 TOPO-UP offload=OFF(verified) va0 before={'tso': 1, 'gso': 1, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} after={'tso': 0, 'gso': 0, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} | ma0 before={'tso': 1, 'gso': 1, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} after={'tso': 0, 'gso': 0, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} | mb0 before={'tso': 1, 'gso': 1, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} after={'tso': 0, 'gso': 0, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} | vb0 before={'tso': 1, 'gso': 1, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} after={'tso': 0, 'gso': 0, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1}
+18:14:03 GATE owd=0ms ping_rtts=[0.049, 0.063, 0.054] band=[0,3.0] -> OK
+18:14:10 PROGRESS 25/700 (R2-control-ctl-large-warm-tcp-std-r012)
+18:14:16 PROGRESS 50/700 (R2-control-ctl-large-warm-kama-v1-full-r024)
+18:14:22 PROGRESS 75/700 (R2-control-ctl-large-warm-kama-v1-full-r037)
+18:14:28 PROGRESS 100/700 (R2-control-ctl-large-warm-tcp-std-r049)
+18:14:34 PROGRESS 125/700 (R2-control-ctl-large-warm-tcp-std-r062)
+18:14:40 PROGRESS 150/700 (R2-control-ctl-large-warm-kama-v1-full-r074)
+18:14:46 PROGRESS 175/700 (R2-control-ctl-large-warm-kama-v1-full-r087)
+18:14:52 PROGRESS 200/700 (R2-control-ctl-large-warm-tcp-std-r099)
+18:14:53 GATE owd=125ms ping_rtts=[250.0, 250.0, 250.0] band=[250,290.5] -> OK
+18:20:10 PROGRESS 225/700 (R2-main-iid20-med-large-warm-kama-v1-full-r012)
+18:25:49 PROGRESS 250/700 (R2-main-iid20-med-large-warm-tcp-std-r024)
+18:28:02 GATE owd=125ms ping_rtts=[250.0, 250.0, 250.0] band=[250,290.5] -> OK
+18:30:50 PROGRESS 275/700 (R2-main-iid30-med-small-warm-kama-v1-full-r007)
+18:34:00 PROGRESS 300/700 (R2-main-iid30-med-small-warm-tcp-std-r019)
+18:36:29 GATE owd=500ms ping_rtts=[1000.0, 1000.0, 1000.0] band=[1000,1153.0] -> OK
+18:39:20 PROGRESS 325/700 (R2-main-iid30-high-large-warm-tcp-std-r002)
+18:55:31 PROGRESS 350/700 (R2-main-iid30-high-large-warm-kama-v1-full-r014)
+19:09:50 PROGRESS 375/700 (R2-main-iid30-high-large-warm-kama-v1-full-r027)
+19:25:38 PROGRESS 400/700 (R2-main-iid30-high-large-warm-tcp-std-r039)
+19:40:34 PROGRESS 425/700 (R2-main-iid30-high-large-warm-tcp-std-r052)
+19:54:42 PROGRESS 450/700 (R2-main-iid30-high-large-warm-kama-v1-full-r064)
+20:08:04 PROGRESS 475/700 (R2-main-iid30-high-large-warm-kama-v1-full-r077)
+20:22:19 PROGRESS 500/700 (R2-main-iid30-high-large-warm-tcp-std-r089)
+20:32:29 GATE owd=125ms ping_rtts=[250.0, 250.0, 250.0] band=[250,290.5] -> OK
+20:34:46 PROGRESS 525/700 (R2-main-iid40-med-large-warm-kama-v1-full-r002)
+20:46:03 PROGRESS 550/700 (R2-main-iid40-med-large-warm-tcp-std-r014)
+20:56:08 PROGRESS 575/700 (R2-main-iid40-med-large-warm-tcp-std-r027)
+20:58:23 GATE owd=25ms ping_rtts=[50.3, 50.4, 50.4] band=[50,60.5] -> OK
+21:02:11 PROGRESS 600/700 (R2-cold-iid50-low-large-cold-tcp-std-r009)
+21:07:07 PROGRESS 625/700 (R2-cold-iid50-low-large-cold-tcp-std-r022)
+21:09:37 GATE owd=125ms ping_rtts=[250.0, 250.0, 250.0] band=[250,290.5] -> OK
+21:15:16 PROGRESS 650/700 (R2-main-iid50-med-small-warm-tcp-std-r004)
+21:26:35 PROGRESS 675/700 (R2-main-iid50-med-small-warm-tcp-std-r017)
+21:37:04 PROGRESS 700/700 (R2-main-iid50-med-small-warm-kama-v1-full-r029)
+21:37:04 EXEC-DONE rows_in_result=700

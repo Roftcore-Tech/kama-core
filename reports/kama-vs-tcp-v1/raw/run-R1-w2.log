@@ -1,0 +1,49 @@
+14:14:52 EXEC-START manifest=reports/kama-vs-tcp-v1/manifest-R1.csv rows=860 already_done=0 kernel=7.0.12-arch1-1 tc=tc utility, iproute2-7.2.0, libbpf 1.7.0
+14:14:52 TOPO-UP offload=OFF(verified) va0 before={'tso': 1, 'gso': 1, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} after={'tso': 0, 'gso': 0, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} | ma0 before={'tso': 1, 'gso': 1, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} after={'tso': 0, 'gso': 0, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} | mb0 before={'tso': 1, 'gso': 1, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} after={'tso': 0, 'gso': 0, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} | vb0 before={'tso': 1, 'gso': 1, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1} after={'tso': 0, 'gso': 0, 'gro': 0, 'sg': 1, 'txcsum': 1, 'rxcsum': 1}
+14:14:53 GATE owd=25ms ping_rtts=[50.1, 50.2, 50.1] band=[50,60.5] -> OK
+14:16:00 PROGRESS 25/860 (R1-main-iid10-low-large-warm-kama-v1-full-r012)
+14:17:24 PROGRESS 50/860 (R1-main-iid10-low-large-warm-tcp-std-r024)
+14:17:35 GATE owd=125ms ping_rtts=[250.0, 250.0, 250.0] band=[250,290.5] -> OK
+14:18:39 PROGRESS 75/860 (R1-main-iid10-med-large-warm-tcp-std-r007)
+14:22:06 PROGRESS 100/860 (R1-main-iid10-med-large-warm-kama-v1-full-r019)
+14:23:43 GATE owd=500ms ping_rtts=[1000.0, 1000.0, 1000.0] band=[1000,1153.0] -> OK
+14:24:23 PROGRESS 125/860 (R1-main-iid10-high-small-warm-tcp-std-r002)
+14:27:29 PROGRESS 150/860 (R1-main-iid10-high-small-warm-kama-v1-full-r014)
+14:31:12 PROGRESS 175/860 (R1-main-iid10-high-small-warm-kama-v1-full-r027)
+14:31:50 GATE owd=25ms ping_rtts=[50.0, 50.1, 50.1] band=[50,60.5] -> OK
+14:33:29 PROGRESS 200/860 (R1-main-iid20-low-large-warm-kama-v1-full-r009)
+14:35:22 PROGRESS 225/860 (R1-main-iid20-low-large-warm-kama-v1-full-r022)
+14:37:10 GATE owd=500ms ping_rtts=[1000.0, 1000.0, 1000.0] band=[1000,1153.0] -> OK
+14:39:17 PROGRESS 250/860 (R1-main-iid20-high-small-warm-kama-v1-full-r004)
+14:45:46 PROGRESS 275/860 (R1-main-iid20-high-small-warm-kama-v1-full-r017)
+14:51:49 PROGRESS 300/860 (R1-main-iid20-high-small-warm-tcp-std-r029)
+14:51:50 GATE owd=25ms ping_rtts=[50.2, 50.1, 50.4] band=[50,60.5] -> OK
+14:53:57 PROGRESS 325/860 (R1-main-iid30-low-small-warm-tcp-std-r012)
+14:56:08 PROGRESS 350/860 (R1-main-iid30-low-small-warm-kama-v1-full-r024)
+14:56:54 GATE owd=125ms ping_rtts=[250.0, 250.0, 250.0] band=[250,290.5] -> OK
+14:59:27 PROGRESS 375/860 (R1-cold-iid30-med-large-cold-kama-v1-full-r007)
+15:03:58 PROGRESS 400/860 (R1-cold-iid30-med-large-cold-tcp-std-r019)
+15:07:25 GATE owd=500ms ping_rtts=[1000.0, 1000.0, 1000.0] band=[1000,1153.0] -> OK
+15:10:55 PROGRESS 425/860 (R1-main-iid40-high-large-warm-kama-v1-full-r002)
+15:26:48 PROGRESS 450/860 (R1-main-iid40-high-large-warm-tcp-std-r014)
+15:46:40 PROGRESS 475/860 (R1-main-iid40-high-large-warm-tcp-std-r027)
+15:50:25 GATE owd=25ms ping_rtts=[50.4, 50.2, 50.6] band=[50,60.5] -> OK
+15:59:13 PROGRESS 500/860 (R1-main-iid50-low-small-warm-tcp-std-r009)
+16:08:38 PROGRESS 525/860 (R1-main-iid50-low-small-warm-tcp-std-r022)
+16:13:44 GATE owd=25ms ping_rtts=[50.3, 50.2, 50.1] band=[50,60.5] -> OK
+16:18:27 PROGRESS 550/860 (R1-main-iid50-low-large-warm-tcp-std-r004)
+16:32:56 PROGRESS 575/860 (R1-main-iid50-low-large-warm-tcp-std-r017)
+16:45:57 PROGRESS 600/860 (R1-main-iid50-low-large-warm-kama-v1-full-r029)
+16:57:46 PROGRESS 625/860 (R1-main-iid50-low-large-warm-kama-v1-full-r042)
+17:08:17 PROGRESS 650/860 (R1-main-iid50-low-large-warm-tcp-std-r054)
+17:20:21 PROGRESS 675/860 (R1-main-iid50-low-large-warm-tcp-std-r067)
+17:32:18 PROGRESS 700/860 (R1-main-iid50-low-large-warm-kama-v1-full-r079)
+17:47:44 PROGRESS 725/860 (R1-main-iid50-low-large-warm-kama-v1-full-r092)
+17:54:30 GATE owd=25ms ping_rtts=[50.4, 50.4, 50.3] band=[50,60.5] -> OK
+17:56:06 PROGRESS 750/860 (R1-ablation-iid30-low-small-warm-abl-on-r004)
+17:59:08 PROGRESS 775/860 (R1-ablation-iid30-low-small-warm-abl-on-r017)
+18:01:58 PROGRESS 800/860 (R1-ablation-iid30-low-small-warm-abl-off-r029)
+18:01:58 GATE owd=25ms ping_rtts=[50.3, 50.5, 50.4] band=[50,60.5] -> OK
+18:07:23 PROGRESS 825/860 (R1-ablation-iid50-low-small-warm-abl-off-r012)
+18:12:00 PROGRESS 850/860 (R1-ablation-iid50-low-small-warm-abl-on-r024)
+18:14:02 EXEC-DONE rows_in_result=860
