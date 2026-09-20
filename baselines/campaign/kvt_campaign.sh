@@ -10,7 +10,7 @@ for REP in R1 R2; do
   echo "$(date -Is) REPLICA $REP start" >> "$OUT/campaign.log"
   pids=()
   for w in $(seq 0 $((WORKERS-1))); do
-    KVT_WORKER=$w bash "$HERE/kvt_run.sh" "$MAN/manifest-$REP.csv" "$OUT/$REP/w$w" >> "$OUT/$REP-w$w.stdout" 2>&1 &
+    KVT_WORKER=$w bash "$HERE/kvt_run.sh" "$MAN/${KVT_PREFIX:-manifest}-$REP.csv" "$OUT/$REP/w$w" >> "$OUT/$REP-w$w.stdout" 2>&1 &
     pids+=($!); sleep 1
   done
   for p in "${pids[@]}"; do wait "$p"; done

@@ -13,6 +13,8 @@ def parse_spec(spec):
         k = t[i]
         if k == "delay":
             want["delay"] = float(t[i + 1].rstrip("ms")) / 1000.0; i += 2
+        elif k == "loss" and t[i + 1] == "gemodel":   # [EK-1] Gilbert–Elliott: loss gemodel p% r%
+            want["ge_p"] = float(t[i + 2].rstrip("%")) / 100.0; want["ge_r"] = float(t[i + 3].rstrip("%")) / 100.0; i += 4
         elif k == "loss":
             want["loss"] = float(t[i + 1].rstrip("%")) / 100.0; i += 2
         elif k == "rate":
@@ -36,6 +38,11 @@ def main():
         "loss": float((o.get("loss-random") or {}).get("loss", 0.0)),
         "rate": int((o.get("rate") or {}).get("rate", 0)),
     }
+    ge = o.get("loss-gemodel") or {}
+    if "ge_p" in want and not (abs(float(ge.get("p", -1)) - want["ge_p"]) < 1e-4 and abs(float(ge.get("r", -1)) - want["ge_r"]) < 1e-4):
+        print(f"netem gemodel uyuşmazlığı: beklenen p={want['ge_p']} r={want['ge_r']} gerçekleşen={ge}", file=sys.stderr); sys.exit(1)
+    if "ge_p" not in want and ge:
+        print("beklenmeyen gemodel", file=sys.stderr); sys.exit(1)
     ok = (abs(got["delay"] - want["delay"]) < 1e-6 and abs(got["loss"] - want["loss"]) < 1e-4
           and abs(got["rate"] - want["rate"]) <= max(1, want["rate"] // 1000))
     if len(sys.argv) > 3 and str(o.get("seed")) != sys.argv[3]:

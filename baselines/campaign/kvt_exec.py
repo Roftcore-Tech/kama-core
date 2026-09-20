@@ -44,8 +44,12 @@ def topo_up(lg):
     return False
 
 def set_netem(fwd, rev):
-    a = sh(["tc", "qdisc", "replace", "dev", "mb0", "root", "netem"] + fwd.split(), ns="MID")
-    b = sh(["tc", "qdisc", "replace", "dev", "ma0", "root", "netem"] + rev.split(), ns="MID")
+    # [EK-1] `replace` aynı-tür qdisc'te DEĞİŞİKLİK yapar ve belirtilmeyen parametreyi (ör. rate) KORUR
+    # (ölçüldü 2026-09-20: rate'li hücreden rate'siz hücreye geçişte 32000 B/s kaldı; fail-closed doğrulama yakaladı).
+    # Bu yüzden önce SİL, sonra EKLE: her satır temiz bir netem ile başlar.
+    sh(["tc", "qdisc", "del", "dev", "mb0", "root"], ns="MID"); sh(["tc", "qdisc", "del", "dev", "ma0", "root"], ns="MID")
+    a = sh(["tc", "qdisc", "add", "dev", "mb0", "root", "netem"] + fwd.split(), ns="MID")
+    b = sh(["tc", "qdisc", "add", "dev", "ma0", "root", "netem"] + rev.split(), ns="MID")
     return a.returncode == 0 and b.returncode == 0
 
 def qdump(dev):
@@ -88,6 +92,14 @@ def run_row(m, d, port, lg):
                "--fwd-impair", m["netem_fwd"], "--rev-impair", m["netem_rev"],
                "--manifest", os.path.join(d, "manifest.json"), "--out", os.path.join(d, "out.jsonl")]
         ready = ("KP-MANIFEST", 4.0)
+    elif arm == "quinn":   # [EK-1] bench quinn kolu (quinn-reliable-stream; CUBIC; TLS 1.3 — quinn'de kapatılamaz)
+        srv = pre + [BENCH, "serve", "--bind", f"{B_IP}:{port}", "--transport", "quinn"]
+        cli = [BENCH, "client", "--server", f"{B_IP}:{port}", "--transport", "quinn", "--msgs", n,
+               "--payload", pay, "--submit-interval-ms", "0", "--max-deadline-s", str(hz),
+               "--warmup-msgs", m["warmup_msgs"], "--seed", m["rep"], "--repeat", m["rep"],
+               "--fwd-impair", m["netem_fwd"], "--rev-impair", m["netem_rev"],
+               "--manifest", os.path.join(d, "manifest.json"), "--out", os.path.join(d, "out.jsonl")]
+        ready = (None, 1.0)
     elif arm == "tcp-std":
         srv = pre + [TCP, "server", "--bind", f"{B_IP}:{port}"]
         cli = [TCP, "client", "--server", f"{B_IP}:{port}", "--msgs", n, "--payload", pay,
@@ -112,7 +124,7 @@ def run_row(m, d, port, lg):
     else:
         time.sleep(ready[1])
     # istemci tavanı: ısıtma tavanı (30 s) + connect (20 s) + horizon + pay (harness kilitlenmesin)
-    budget = hz + 30 + 20 + 15
+    budget = hz + 60 + 20 + 30   # [EK-1] ısıtma: yazma tavanı 30 s + bekleme 30 s; connect 20 s; pay 30 s
     try:
         rc = subprocess.run(cli, stdout=subprocess.DEVNULL, stderr=cli_err, timeout=budget).returncode
     except subprocess.TimeoutExpired:
