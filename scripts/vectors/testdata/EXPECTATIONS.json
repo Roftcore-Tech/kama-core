@@ -5,7 +5,9 @@
     "ayrildigi anda ilgili satir kirmizi olur, tablo iki yerde ayri ayri bakim gerektirmez.",
     "Yollar REPO KOKUNE gore. Bir girdideki dosyalar TEK kosuda birlikte yuklenir (id",
     "tekilligi dosyalar arasi bir kuraldir, bu yuzden onemli). Girdi bir DIZIN de olabilir.",
-    "maxLength satirlari ozellikle onemli: Python bu sinirlari SCHEMA.json'dan OKUR, Rust'ta ELLE tasinir (const MAX_*). Fixture olmadan iki arac sessizce ayrisir \u2014 T-00.2'de tam olarak bu oldu ve 8 ayrisma olculdu."
+    "maxLength satirlari ozellikle onemli: Python bu sinirlari SCHEMA.json'dan OKUR, Rust'ta ELLE tasinir (const MAX_*). Fixture olmadan iki arac sessizce ayrisir \u2014 T-00.2'de tam olarak bu oldu ve 8 ayrisma olculdu.",
+    "python_only: Rust yukleyicide KARSILIGI OLMAYAN, CLI bayragina bagli denetimler. parity.rs bu bolumu okumaz; yalnizca selftest.sh kosar.",
+    "max_file_bytes: bir girdiye eklenirse iki arac da o siniri kullanir (python --max-file-bytes, rust load_paths_bounded). 8 MiB'lik gercek bir fixture repoya konmasin diye sinir kucultulup mevcut dosyaya uygulanir."
   ],
   "accept": [
     {
@@ -47,10 +49,10 @@
   ],
   "reject": [
     {
-      "label": "schema_version: 2 (T-00.1 DONE KRITERI)",
+      "label": "schema_version 3 (ILERI surum)",
       "code": "SV-004",
       "paths": [
-        "scripts/vectors/testdata/reject/schema-version-2.json"
+        "scripts/vectors/testdata/reject/schema-version-3.json"
       ]
     },
     {
@@ -325,6 +327,98 @@
       "code": "SV-006",
       "paths": [
         "scripts/vectors/testdata/reject/hex-uppercase-in-array.json"
+      ]
+    },
+    {
+      "label": "schema_version 1 (GERI surum; T-00.2'de 2'ye yukseltildi)",
+      "code": "SV-004",
+      "paths": [
+        "scripts/vectors/testdata/reject/schema-version-1.json"
+      ]
+    },
+    {
+      "label": "case_count ile cases uzunlugu uyusmuyor",
+      "code": "SV-013",
+      "paths": [
+        "scripts/vectors/testdata/reject/case-count-mismatch.json"
+      ]
+    },
+    {
+      "label": "flag var, notes'ta tanimi yok (yazim hatasi)",
+      "code": "SV-014",
+      "paths": [
+        "scripts/vectors/testdata/reject/flag-without-note.json"
+      ]
+    },
+    {
+      "label": "notes'ta olu kayit (hicbir vakada kullanilmiyor)",
+      "code": "SV-014",
+      "paths": [
+        "scripts/vectors/testdata/reject/note-without-flag.json"
+      ]
+    },
+    {
+      "label": "flags icinde yinelenen eleman (uniqueItems)",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/flags-duplicate.json"
+      ]
+    },
+    {
+      "label": "notes anahtari buyuk harf (propertyNames)",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/notes-key-uppercase.json"
+      ]
+    },
+    {
+      "label": "case_count 0 (minimum 1)",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/case-count-zero.json"
+      ]
+    },
+    {
+      "label": "dosya boyutu sinirini asiyor (bounds-before-alloc)",
+      "code": "SV-012",
+      "paths": [
+        "scripts/vectors/testdata/reject/maxlen-hex.json"
+      ],
+      "max_file_bytes": 1024
+    }
+  ],
+  "python_only": [
+    {
+      "label": "vakum kapisi: 0 dosya gezildi",
+      "code": "SV-010",
+      "args": [
+        "--min-files",
+        "1"
+      ],
+      "paths": [
+        "scripts/vectors/testdata/vacuum"
+      ]
+    },
+    {
+      "label": "kanonik olmayan bicim (anahtar sirasi + girinti)",
+      "code": "SV-011",
+      "args": [
+        "--canonical"
+      ],
+      "paths": [
+        "scripts/vectors/testdata/canonical/not-canonical.json"
+      ]
+    },
+    {
+      "label": "gercek vectors/ agaci KANONIK",
+      "code": null,
+      "args": [
+        "--canonical",
+        "--min-files",
+        "2"
+      ],
+      "paths": [
+        "vectors"
       ]
     }
   ]

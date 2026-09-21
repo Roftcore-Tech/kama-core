@@ -37,7 +37,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
 /// Bu yükleyicinin bildiği tek şema sürümü.
-pub const SUPPORTED_SCHEMA_VERSION: u64 = 1;
+pub const SUPPORTED_SCHEMA_VERSION: u64 = 2;
 
 // `SCHEMA.json`'daki `maxLength` sınırları. JSON Schema bunları Unicode kod-noktası olarak
 // sayar, bu yüzden karşılaştırma `chars().count()` üzerinden yapılır — byte uzunluğu değil.
@@ -52,6 +52,14 @@ const MAX_NOTE: usize = 1024;
 const MAX_SPEC_REF: usize = 256;
 const MAX_REASON: usize = 200;
 const MAX_HEX_CHARS: usize = 262_144;
+const MAX_GENERATOR: usize = 128;
+const MAX_FLAG: usize = 64;
+const MAX_FLAGS: usize = 32;
+const MAX_NOTE_TEXT: usize = 1024;
+
+/// SR-AUDIT-001 (bounds-before-alloc): dosya BELLEĞE ALINMADAN ÖNCE boyutu sınanır.
+/// Ölçüldü: sınırsızken 16 MB'lık bir vektör dosyası 446 MB RSS tüketiyordu.
+pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Dizin gezintisinde en fazla iniş derinliği (SR-AUDIT-001: sınırsız özyineleme yok).
 const MAX_DIR_DEPTH: usize = 32;
@@ -74,6 +82,15 @@ pub const SV_HEX: &str = "SV-006";
 pub const SV_DUP_ID: &str = "SV-007";
 /// Dizgede kontrol karakteri.
 pub const SV_CTRL: &str = "SV-008";
+/// Dosya boyutu sınırı aşıldı (bounds-before-alloc).
+pub const SV_SIZE: &str = "SV-012";
+/// `case_count` ile `cases` uzunluğu uyuşmuyor.
+pub const SV_COUNT: &str = "SV-013";
+/// flag/`notes` tutarsızlığı (tanımsız flag ya da ölü not).
+pub const SV_FLAGS: &str = "SV-014";
+/// TÜKETİCİ SÖZLEŞMESİ: bu tüketicinin tanımadığı bir `kind` görüldü.
+/// Python tarafında karşılığı YOKTUR (orada tüketici yok) — `SV-009`'un aynası.
+pub const SV_UNKNOWN_KIND: &str = "SV-015";
 
 // ── Hata tipleri ─────────────────────────────────────────────────────────────────────────────
 
@@ -213,7 +230,11 @@ pub struct VectorFile {
     pub spec_version: String,
     /// Serbest metin; araç davranışını etkilemez.
     pub description: Option<String>,
-    /// En az bir vaka.
+    /// Bu dosyayı üreten aracın kimliği/sürümü (provenance). Elle yazılan dosyalarda yok.
+    pub generator: Option<String>,
+    /// flag sözlüğü: `Case::flags` içindeki her token burada açıklanır.
+    pub notes: BTreeMap<String, String>,
+    /// En az bir vaka. Uzunluğu dosyadaki `case_count` ile doğrulanmıştır.
     pub cases: Vec<Case>,
     /// Bu dosyanın geldiği yol (tanı için).
     pub source: String,
@@ -226,6 +247,9 @@ pub struct Case {
     pub id: String,
     /// Tüketicinin üzerinden dağıtım yaptığı anahtar (`encode`, `decode`, `verify`, …).
     pub kind: String,
+    /// Vakanın NEDEN var olduğunu makine-okunur etiketler; her biri [`VectorFile::notes`]
+    /// içinde açıklanmıştır (yükleme bunu doğrular).
+    pub flags: Vec<String>,
     /// Serbest metin; araç davranışını etkilemez.
     pub note: Option<String>,
     /// Otorite belge atfı; araç davranışını etkilemez.
@@ -271,6 +295,61 @@ pub enum RejectResult {
     Fail,
 }
 
+impl VectorFile {
+    /// TÜKETİCİ SÖZLEŞMESİ — vakum kapısı.
+    ///
+    /// Bir tüketici vakaları `kind`'a göre dağıtır. `match` içinde bir `_ => {}` kolu varsa,
+    /// `kind` alanındaki bir yazım hatası (`decdoe`) ya da dosyaya sonradan eklenen yeni bir
+    /// `kind` o vakaların **sessizce hiç koşmaması** demektir: test yeşil, kapsam sıfır.
+    /// Bu yüzden tüketici tanıdığı `kind` kümesini BEYAN EDER; kümenin dışında bir vaka
+    /// görülürse yükleme değil, TÜKETİCİ hata verir (`SV-015`).
+    ///
+    /// ```
+    /// # let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../vectors/examples/example-positive.json");
+    /// let file = kama_vectors::load_file(path).unwrap();
+    /// file.require_kinds(&["encode", "decode"]).unwrap();
+    /// assert!(file.require_kinds(&["encode"]).is_err()); // "decode" beyan edilmedi
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Beyan edilmeyen bir `kind` taşıyan her vaka için bir `SV-015` bulgusu.
+    pub fn require_kinds(&self, known: &[&str]) -> Result<(), VectorErrors> {
+        let errors: Vec<VectorError> = self
+            .cases
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !known.contains(&c.kind.as_str()))
+            .map(|(i, c)| {
+                VectorError::new(
+                    SV_UNKNOWN_KIND,
+                    &self.source,
+                    format!("/cases/{i}/kind"),
+                    format!(
+                        "tüketici {:?} kind'ını tanımıyor (beyan edilenler: {known:?}); \
+                         vaka sessizce ATLANMAZ",
+                        c.kind
+                    ),
+                )
+            })
+            .collect();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(VectorErrors(errors))
+        }
+    }
+
+    /// Dosyanın beyan ettiği vaka sayısı (`case_count`; yüklemede doğrulanmıştır).
+    ///
+    /// Tüketici, KOŞTUĞU vaka sayısını buna karşı doğrulamalıdır — filtreleyip 0 vaka
+    /// koşmak ile dosyanın boş olması ayırt edilemez, ikisi de yeşil görünür.
+    #[must_use]
+    pub fn case_count(&self) -> usize {
+        self.cases.len()
+    }
+}
+
 impl RejectResult {
     /// Şemadaki dizge karşılığı.
     #[must_use]
@@ -292,7 +371,12 @@ struct RawFile {
     suite: String,
     spec_version: String,
     #[serde(default)]
+    generator: Option<String>,
+    #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    notes: BTreeMap<String, String>,
+    case_count: usize,
     cases: Vec<RawCase>,
 }
 
@@ -301,6 +385,8 @@ struct RawFile {
 struct RawCase {
     id: String,
     kind: String,
+    #[serde(default)]
+    flags: Vec<String>,
     #[serde(default)]
     note: Option<String>,
     #[serde(default)]
@@ -406,7 +492,7 @@ impl<'de> Visitor<'de> for UniqueValueVisitor {
 pub fn load_file(path: impl AsRef<Path>) -> Result<VectorFile, VectorErrors> {
     let mut ids = BTreeMap::new();
     let mut errors = Vec::new();
-    let file = load_one(path.as_ref(), &mut ids, &mut errors);
+    let file = load_one(path.as_ref(), MAX_FILE_BYTES, &mut ids, &mut errors);
     match (file, errors.is_empty()) {
         (Some(f), true) => Ok(f),
         _ => Err(VectorErrors(errors)),
@@ -422,6 +508,21 @@ pub fn load_file(path: impl AsRef<Path>) -> Result<VectorFile, VectorErrors> {
 ///
 /// Kümedeki herhangi bir dosya doğrulamadan geçemezse; bulguların tamamı döner.
 pub fn load_paths<P: AsRef<Path>>(paths: &[P]) -> Result<Vec<VectorFile>, VectorErrors> {
+    load_paths_bounded(paths, MAX_FILE_BYTES)
+}
+
+/// [`load_paths`], dosya boyutu sınırı çağıran tarafından verilerek.
+///
+/// Sınırı yalnız sınama amacıyla küçültmek için; ürün yolu [`MAX_FILE_BYTES`]'tır.
+/// (8 MiB'lik gerçek bir fixture repoya konmasın diye parite tablosu bunu kullanır.)
+///
+/// # Errors
+///
+/// [`load_paths`] ile aynı, ayrıca sınırı aşan dosya için `SV-012`.
+pub fn load_paths_bounded<P: AsRef<Path>>(
+    paths: &[P],
+    max_bytes: u64,
+) -> Result<Vec<VectorFile>, VectorErrors> {
     let mut ids: BTreeMap<String, String> = BTreeMap::new();
     let mut errors = Vec::new();
     let mut files = Vec::new();
@@ -433,7 +534,7 @@ pub fn load_paths<P: AsRef<Path>>(paths: &[P]) -> Result<Vec<VectorFile>, Vector
     targets.sort();
 
     for target in &targets {
-        if let Some(file) = load_one(target, &mut ids, &mut errors) {
+        if let Some(file) = load_one(target, max_bytes, &mut ids, &mut errors) {
             files.push(file);
         }
     }
@@ -512,10 +613,37 @@ fn collect_at(
 
 fn load_one(
     path: &Path,
+    max_bytes: u64,
     ids: &mut BTreeMap<String, String>,
     errors: &mut Vec<VectorError>,
 ) -> Option<VectorFile> {
     let display = path.display().to_string();
+
+    // SR-AUDIT-001: boyut, dosya BELLEĞE ALINMADAN ÖNCE sınanır.
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() > max_bytes => {
+            errors.push(VectorError::new(
+                SV_SIZE,
+                &display,
+                "",
+                format!(
+                    "{} byte > {max_bytes} sınırı (SR-AUDIT-001: bounds-before-alloc)",
+                    meta.len()
+                ),
+            ));
+            return None;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            errors.push(VectorError::new(
+                SV_PARSE,
+                &display,
+                "",
+                format!("okunamadı: {err}"),
+            ));
+            return None;
+        }
+    }
 
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -646,6 +774,59 @@ fn validate(
         ));
     }
     check_max_len(display, "/suite", &raw.suite, MAX_SUITE, errors);
+    if let Some(ref g) = raw.generator {
+        if !is_trimmed_nonempty(g, MAX_GENERATOR) {
+            errors.push(VectorError::new(
+                SV_SCHEMA,
+                display,
+                "/generator",
+                "boş olmayan, kırpılmış, ≤128 karakter bir dizge olmalı",
+            ));
+        }
+    }
+
+    // case_count: dosyanın kendi içinde beyan ettiği vaka sayısı. Kesilmiş dosyayı ve
+    // "tüketici hepsini filtreleyip 0 vaka koştu" vakumunu yakalar (Wycheproof numberOfTests).
+    if raw.case_count != raw.cases.len() {
+        errors.push(VectorError::new(
+            SV_COUNT,
+            display,
+            "/case_count",
+            format!(
+                "beyan {}, cases uzunluğu {} — dosya kesilmiş olabilir",
+                raw.case_count,
+                raw.cases.len()
+            ),
+        ));
+    }
+    if raw.case_count == 0 {
+        errors.push(VectorError::new(
+            SV_SCHEMA,
+            display,
+            "/case_count",
+            "en az 1 olmalı",
+        ));
+    }
+
+    // notes anahtarları token, değerleri boş olmayan metin.
+    for (flag, text) in &raw.notes {
+        if !is_token(flag, &['.', '_', '-']) || flag.chars().count() > MAX_FLAG {
+            errors.push(VectorError::new(
+                SV_SCHEMA,
+                display,
+                format!("/notes/{flag}"),
+                format!("anahtar adı küçük harf token olmalı (≤{MAX_FLAG}) — gelen {flag:?}"),
+            ));
+        }
+        if text.is_empty() || text.chars().count() > MAX_NOTE_TEXT {
+            errors.push(VectorError::new(
+                SV_SCHEMA,
+                display,
+                format!("/notes/{flag}"),
+                format!("açıklama boş olamaz ve ≤{MAX_NOTE_TEXT} karakter olmalı"),
+            ));
+        }
+    }
     if let Some(ref d) = raw.description {
         check_max_len(display, "/description", d, MAX_DESCRIPTION, errors);
     }
@@ -666,7 +847,9 @@ fn validate(
         ));
     }
 
-    let mut cases = Vec::with_capacity(raw.cases.len());
+    let mut used_flags: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let case_total = raw.cases.len();
+    let mut cases = Vec::with_capacity(case_total);
     for (i, case) in raw.cases.into_iter().enumerate() {
         let at = format!("/cases/{i}");
 
@@ -685,6 +868,45 @@ fn validate(
                 format!("{at}/kind"),
                 format!("küçük harf token olmalı — gelen {:?}", case.kind),
             ));
+        }
+        if case.flags.len() > MAX_FLAGS {
+            errors.push(VectorError::new(
+                SV_SCHEMA,
+                display,
+                format!("{at}/flags"),
+                format!(
+                    "en çok {MAX_FLAGS} flag olabilir, gelen {}",
+                    case.flags.len()
+                ),
+            ));
+        }
+        for (j, flag) in case.flags.iter().enumerate() {
+            let at_flag = format!("{at}/flags/{j}");
+            if !is_token(flag, &['.', '_', '-']) || flag.chars().count() > MAX_FLAG {
+                errors.push(VectorError::new(
+                    SV_SCHEMA,
+                    display,
+                    &at_flag,
+                    format!("küçük harf token olmalı (≤{MAX_FLAG}) — gelen {flag:?}"),
+                ));
+            }
+            if case.flags[..j].contains(flag) {
+                errors.push(VectorError::new(
+                    SV_SCHEMA,
+                    display,
+                    &at_flag,
+                    format!("yinelenen flag: {flag:?}"),
+                ));
+            }
+            if !raw.notes.contains_key(flag) {
+                errors.push(VectorError::new(
+                    SV_FLAGS,
+                    display,
+                    &at_flag,
+                    format!("flag {flag:?} kökteki `notes` sözlüğünde tanımlı değil"),
+                ));
+            }
+            used_flags.insert(flag.clone());
         }
         check_max_len(display, &format!("{at}/id"), &case.id, MAX_ID, errors);
         check_max_len(display, &format!("{at}/kind"), &case.kind, MAX_KIND, errors);
@@ -778,11 +1000,23 @@ fn validate(
             cases.push(Case {
                 id: case.id,
                 kind: case.kind,
+                flags: case.flags,
                 note: case.note,
                 spec_ref: case.spec_ref,
                 input,
                 expected,
             });
+        }
+    }
+
+    for flag in raw.notes.keys() {
+        if !used_flags.contains(flag) {
+            errors.push(VectorError::new(
+                SV_FLAGS,
+                display,
+                format!("/notes/{flag}"),
+                format!("not {flag:?} hiçbir vakada kullanılmıyor — ölü kayıt"),
+            ));
         }
     }
 
@@ -792,6 +1026,8 @@ fn validate(
             suite: raw.suite,
             spec_version: raw.spec_version,
             description: raw.description,
+            generator: raw.generator,
+            notes: raw.notes,
             cases,
             source: display.to_owned(),
         })

@@ -33,7 +33,7 @@ import re
 import sys
 from pathlib import Path
 
-SUPPORTED_SCHEMA_VERSION = 1
+SUPPORTED_SCHEMA_VERSION = 2
 
 # Doğrulayıcı hata kodları — mesaj metni değişse de bu kodlar kararlıdır.
 SV_PARSE = "SV-001"  # JSON olarak ayrıştırılamadı
@@ -46,8 +46,18 @@ SV_DUP_ID = "SV-007"  # id repo genelinde tekil değil
 SV_CTRL = "SV-008"  # dizgede kontrol karakteri
 SV_SCHEMA_FILE = "SV-009"  # SCHEMA.json okunamadı / desteklenmeyen anahtar sözcük
 SV_VACUOUS = "SV-010"  # beklenenden az dosya doğrulandı (kapı vakumda)
+SV_CANONICAL = "SV-011"  # kanonik serileştirme ihlali (üretici disiplini)
+SV_SIZE = "SV-012"  # dosya boyutu sınırı (bounds-before-alloc, SR-AUDIT-001)
+SV_COUNT = "SV-013"  # case_count ile cases uzunluğu uyuşmuyor
+SV_FLAGS = "SV-014"  # flag/notes tutarsızlığı
 
 HEX_RE = re.compile(r"^([0-9a-f]{2})*$")
+
+# SR-AUDIT-001 (bounds-before-alloc): dosya BELLEĞE ALINMADAN ÖNCE boyutu sınanır.
+# Ölçüldü: sınırsızken 16 MB'lık bir vektör dosyası python'da 158 MB, rust'ta 446 MB RSS
+# tüketiyordu. 8 MiB en büyük makul vektör dosyasının çok üstünde (hex maxLength 262144
+# = 128 KB/alan) ve hostile bir girdinin aracı düşürmesini engelliyor.
+MAX_FILE_BYTES = 8 * 1024 * 1024
 CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -107,6 +117,9 @@ _ASSERTION_KEYWORDS = frozenset(
         "minLength",
         "maxLength",
         "pattern",
+        "propertyNames",
+        "uniqueItems",
+        "minimum",
         "oneOf",
         "allOf",
         "anyOf",
@@ -205,7 +218,17 @@ class SubsetValidator:
             if "maxLength" in schema and len(instance) > schema["maxLength"]:
                 out.append((pointer, f"en çok {schema['maxLength']} karakter olmalı"))
 
+        if isinstance(instance, (int, float)) and not _is_bool(instance):
+            if "minimum" in schema and instance < schema["minimum"]:
+                out.append((pointer, f"en az {schema['minimum']} olmalı, gelen {instance}"))
+
         if isinstance(instance, dict):
+            if "propertyNames" in schema:
+                for key in instance:
+                    out += [
+                        (f"{pointer}/{key}", f"anahtar adı: {msg}")
+                        for _, msg in self.errors(key, schema["propertyNames"], pointer)
+                    ]
             for key in schema.get("required", []):
                 if key not in instance:
                     out.append((pointer, f"zorunlu alan yok: {key!r}"))
@@ -214,10 +237,21 @@ class SubsetValidator:
                 child = f"{pointer}/{key}"
                 if key in props:
                     out += self.errors(value, props[key], child)
-                elif schema.get("additionalProperties", True) is False:
-                    out.append((child, "bilinmeyen alan (şema fail-closed)"))
+                else:
+                    extra = schema.get("additionalProperties", True)
+                    if extra is False:
+                        out.append((child, "bilinmeyen alan (şema fail-closed)"))
+                    elif isinstance(extra, dict):
+                        out += self.errors(value, extra, child)
 
         if isinstance(instance, list):
+            if schema.get("uniqueItems") is True:
+                seen: list = []
+                for item in instance:
+                    if any(_json_equal(item, prev) for prev in seen):
+                        out.append((pointer, f"yinelenen eleman: {item!r}"))
+                        break
+                    seen.append(item)
             if "minItems" in schema and len(instance) < schema["minItems"]:
                 out.append((pointer, f"en az {schema['minItems']} eleman olmalı"))
             if "maxItems" in schema and len(instance) > schema["maxItems"]:
@@ -320,6 +354,64 @@ def _deep_hex_findings(path: str, doc) -> list[Finding]:
     return out
 
 
+def _count_findings(path: str, doc) -> list[Finding]:
+    """`case_count` == len(cases). Kesilmiş dosyayı ve tüketici vakumunu yakalar."""
+    declared = doc.get("case_count")
+    cases = doc.get("cases")
+    if not isinstance(declared, int) or _is_bool(declared) or not isinstance(cases, list):
+        return []  # şekil hatası zaten SV-005'te
+    if declared != len(cases):
+        return [
+            Finding(
+                path,
+                "/case_count",
+                SV_COUNT,
+                f"beyan {declared}, cases uzunluğu {len(cases)} — dosya kesilmiş olabilir",
+            )
+        ]
+    return []
+
+
+def _flag_findings(path: str, doc) -> list[Finding]:
+    """Her kullanılan flag tanımlı; her tanımlı flag kullanılıyor.
+
+    İlk yön yazım hatasını yakalar (`shrot-key` diye bir flag sessizce anlamsız kalmaz),
+    ikinci yön ölü not birikmesini engeller (vaka silinir, açıklaması kalır).
+    """
+    notes = doc.get("notes") or {}
+    cases = doc.get("cases")
+    if not isinstance(notes, dict) or not isinstance(cases, list):
+        return []
+    out: list[Finding] = []
+    used: set[str] = set()
+    for i, case in enumerate(cases):
+        if not isinstance(case, dict):
+            continue
+        for j, flag in enumerate(case.get("flags") or []):
+            if not isinstance(flag, str):
+                continue
+            used.add(flag)
+            if flag not in notes:
+                out.append(
+                    Finding(
+                        path,
+                        f"/cases/{i}/flags/{j}",
+                        SV_FLAGS,
+                        f"flag {flag!r} kökteki `notes` sözlüğünde tanımlı değil",
+                    )
+                )
+    for flag in sorted(set(notes) - used):
+        out.append(
+            Finding(
+                path,
+                f"/notes/{flag}",
+                SV_FLAGS,
+                f"not {flag!r} hiçbir vakada kullanılmıyor — ölü kayıt",
+            )
+        )
+    return out
+
+
 def _control_char_findings(path: str, doc) -> list[Finding]:
     out: list[Finding] = []
     for pointer, value in _walk_strings(doc, ""):
@@ -328,11 +420,119 @@ def _control_char_findings(path: str, doc) -> list[Finding]:
     return out
 
 
+# ── Kanonik serileştirme ──────────────────────────────────────────────────────
+#
+# NEDEN. Vektör dosyalarını bir üretici yazacak. Üretici her koşuda aynı içeriği FARKLI
+# byte'larla yazarsa (anahtar sırası, girinti, unicode kaçışı, son satırsonu) her yeniden-
+# üretim git diff'ini gürültüyle doldurur ve golden incelemesi okunamaz hâle gelir —
+# "bu byte kasıtlı mı değişti" sorusu cevaplanamaz. Kanonik biçim o soruyu geri getirir:
+# diff'te görünen her satır gerçek bir içerik değişikliğidir.
+#
+# KURAL (NORMATİF):
+#   * UTF-8, BOM YOK · satır sonu LF · dosya sonunda TEK satırsonu
+#   * girinti 2 boşluk, ayraçlar `,` ve `: ` (json.dumps indent varsayılanı)
+#   * ensure_ascii=True — ASCII olmayan her karakter \uXXXX olarak kaçırılır (editör/locale
+#     bağımsız byte kararlılığı)
+#   * ÜST DÜZEY ve VAKA anahtar sırası = SCHEMA.json'daki bildirim sırası (alfabetik DEĞİL:
+#     şema sırası okunur bir sıra ve şema zaten tek otorite)
+#   * `input` içindeki serbest haritalarda anahtarlar özyinelemeli LEKSİKOGRAFİK sıralı
+#     (şemanın söyleyecek bir şeyi yok, o yüzden belirlenimci bir kural gerekiyor)
+#
+# KAPSAM. Bu kural `vectors/` ağacındaki GERÇEK vektör dosyaları içindir (üretici çıktısı).
+# `scripts/vectors/testdata/` fixture'ları kapsam DIŞIDIR: bazıları kasten bozuk JSON, bazıları
+# kasten yinelenen anahtar taşır — kanonikleştirilemezler ve kanonikleştirilmemelidirler.
+
+
+def _schema_key_order(schema: dict) -> tuple[list[str], list[str]]:
+    """Kanonik anahtar sırası ŞEMADAN okunur; ikinci bir sıra listesi tutulmaz."""
+    root = list(schema.get("properties", {}))
+    case = list(schema.get("$defs", {}).get("case", {}).get("properties", {}))
+    return root, case
+
+
+def _ordered(mapping: dict, order: list[str]) -> dict:
+    """Bilinen anahtarlar şema sırasında; şemada olmayan varsa (olmamalı) sonda, sıralı."""
+    out = {k: mapping[k] for k in order if k in mapping}
+    out.update({k: mapping[k] for k in sorted(mapping) if k not in out})
+    return out
+
+
+def _sorted_deep(value):
+    """Serbest `input` haritaları: özyinelemeli leksikografik anahtar sırası."""
+    if isinstance(value, dict):
+        return {k: _sorted_deep(value[k]) for k in sorted(value)}
+    if isinstance(value, list):
+        return [_sorted_deep(v) for v in value]
+    return value
+
+
+def canonical_text(doc: dict, schema: dict) -> str:
+    """Belgeyi kanonik metne çevirir. Girdi ŞEMADAN GEÇMİŞ olmalıdır."""
+    root_order, case_order = _schema_key_order(schema)
+    out = _ordered(doc, root_order)
+    if isinstance(out.get("cases"), list):
+        cases = []
+        for case in out["cases"]:
+            if not isinstance(case, dict):
+                cases.append(case)
+                continue
+            c = _ordered(case, case_order)
+            if isinstance(c.get("input"), dict):
+                c["input"] = _sorted_deep(c["input"])
+            cases.append(c)
+        out["cases"] = cases
+    return json.dumps(out, indent=2, ensure_ascii=True) + "\n"
+
+
+def _canonical_findings(path: str, raw: str, doc: dict, schema: dict) -> list[Finding]:
+    want = canonical_text(doc, schema)
+    if raw == want:
+        return []
+    detail = "dosya kanonik biçimde değil"
+    if raw.replace("\r\n", "\n") == want:
+        detail = "satır sonu CRLF — LF olmalı"
+    elif raw.rstrip("\n") + "\n" == want:
+        detail = "dosya sonunda tam olarak bir satırsonu olmalı"
+    elif raw.startswith("\ufeff"):
+        detail = "UTF-8 BOM var"
+    elif json.loads(raw) == json.loads(want):
+        detail = "içerik aynı, BİÇİM farklı (anahtar sırası / girinti / unicode kaçışı)"
+    return [
+        Finding(
+            path,
+            "",
+            SV_CANONICAL,
+            f"{detail}. Düzeltmek için: "
+            f"python3 scripts/vectors/validate.py {path} --write-canonical",
+        )
+    ]
+
+
 # ── Dosya başına doğrulama ────────────────────────────────────────────────────
 
 
-def validate_file(path: Path, validator: SubsetValidator, ids: dict[str, str]) -> list[Finding]:
+def validate_file(
+    path: Path,
+    validator: SubsetValidator,
+    ids: dict[str, str],
+    canonical: bool = False,
+    max_bytes: int = MAX_FILE_BYTES,
+) -> list[Finding]:
     display = str(path)
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return [Finding(display, "", SV_PARSE, f"okunamadı: {exc}")]
+    if size > max_bytes:
+        return [
+            Finding(
+                display,
+                "",
+                SV_SIZE,
+                f"{size} byte > {max_bytes} sınırı (SR-AUDIT-001: bounds-before-alloc)",
+            )
+        ]
+
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -381,8 +581,14 @@ def validate_file(path: Path, validator: SubsetValidator, ids: dict[str, str]) -
     # 3) Şemayla ifade edilemeyen kurallar
     findings += _deep_hex_findings(display, doc)
     findings += _control_char_findings(display, doc)
+    findings += _count_findings(display, doc)
+    findings += _flag_findings(display, doc)
 
-    # 4) id repo genelinde tekil
+    # 4) Kanonik biçim (üretici disiplini; yalnız istendiğinde)
+    if canonical and not findings:
+        findings += _canonical_findings(display, raw, doc, validator.root)
+
+    # 5) id repo genelinde tekil
     for i, case in enumerate(doc.get("cases", []) if isinstance(doc.get("cases"), list) else []):
         if not isinstance(case, dict):
             continue
@@ -443,6 +649,28 @@ def cross_check(files: list[Path], schema: dict) -> int:
     return bad
 
 
+def _write_canonical(files: list[Path], validator: SubsetValidator) -> int:
+    """`--write-canonical`: geçerli dosyaları kanonik biçimde yeniden yazar.
+
+    GEÇERSİZ dosyaya DOKUNULMAZ — kanonikleştirme bir düzeltme aracı değildir; bozuk bir
+    dosyayı "düzeltip" ihlali gizlemesi istenmez.
+    """
+    changed = 0
+    for path in files:
+        raw = path.read_text(encoding="utf-8")
+        ids: dict[str, str] = {}
+        if validate_file(path, validator, ids):
+            print(f"{path}: doğrulamadan geçmiyor — DOKUNULMADI", file=sys.stderr)
+            continue
+        want = canonical_text(json.loads(raw), validator.root)
+        if raw != want:
+            path.write_text(want, encoding="utf-8")
+            print(f"{path}: kanonik biçime yazıldı")
+            changed += 1
+    print(f"{len(files)} dosya · {changed} yeniden yazıldı")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Kama test-vektör dosyalarını vectors/SCHEMA.json'a karşı doğrular."
@@ -457,6 +685,26 @@ def main(argv: list[str] | None = None) -> int:
         "--cross-check",
         action="store_true",
         help="`jsonschema` kuruluysa üçüncü parti uygulamayla da doğrula",
+    )
+    parser.add_argument(
+        "--canonical",
+        action="store_true",
+        help=(
+            "kanonik serileştirmeyi de denetle (SV-011). ÜRETİCİ DİSİPLİNİ: vectors/ "
+            "ağacındaki gerçek vektör dosyaları için; testdata fixture'ları kapsam dışı"
+        ),
+    )
+    parser.add_argument(
+        "--write-canonical",
+        action="store_true",
+        help="dosyaları kanonik biçimde YENİDEN YAZ (--canonical'ın düzeltme kipi)",
+    )
+    parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=MAX_FILE_BYTES,
+        metavar="N",
+        help=f"dosya boyutu sınırı (varsayılan {MAX_FILE_BYTES}); aşılırsa SV-012",
     )
     parser.add_argument(
         "--min-files",
@@ -485,11 +733,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{SV_PARSE}] dosya yok: {f}", file=sys.stderr)
         return 2
 
+    if args.write_canonical:
+        return _write_canonical(files, validator)
+
     ids: dict[str, str] = {}
     findings: list[Finding] = []
     try:
         for f in files:
-            findings += validate_file(f, validator, ids)
+            findings += validate_file(
+                f, validator, ids, canonical=args.canonical, max_bytes=args.max_file_bytes
+            )
     except SchemaUnsupported as exc:
         # Fail-closed: şema, doğrulayıcının zorlayamadığı bir kural içeriyor.
         print(f"[{SV_SCHEMA_FILE}] {exc}", file=sys.stderr)

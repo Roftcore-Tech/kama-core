@@ -189,8 +189,13 @@ jobs:
       # --min-files: yol yanlış yazılırsa ya da ağaç boşalırsa doğrulayıcı 0 dosya gezip
       # YEŞİL dönerdi. Bu, dosyanın başındaki 'test result: ok. [1-9]' kapılarıyla aynı
       # vakum-sınıfı hatadır (BUL-02/BUL-03).
-      - name: vectors/ ağacı (vakum kapısı dâhil)
-        run: python3 scripts/vectors/validate.py vectors/ --min-files 2
+      - name: vectors/ ağacı (kanonik biçim + vakum kapısı)
+        run: python3 scripts/vectors/validate.py vectors/ --canonical --min-files 2
+      # Şema kapısı BİÇİMİ denetler, KAPSAMI değil: ccr §30.7'nin 24 adlandırılmış negatif
+      # vakasından hiçbiri yazılmasa bile yemyeşil kalırdı. Ratchet kapsamın düşmesini
+      # engeller (bugün 4/24; borç görünür ve yalnız azalabilir).
+      - name: spec ↔ vektör kapsam ratchet'i
+        run: python3 scripts/vectors/spec_coverage.py
 
   # ── Sonuç sınıflandırması: infra/billing hatası ile korelasyon hatası KARIŞMASIN ──
   ci-verdict:

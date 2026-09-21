@@ -29,7 +29,13 @@ table = json.load(open(sys.argv[1], encoding="utf-8"))
 for entry in table["accept"]:
     print("accept", "-", entry["label"], " ".join(entry["paths"]), sep="\t")
 for entry in table["reject"]:
-    print("reject", entry["code"], entry["label"], " ".join(entry["paths"]), sep="\t")
+    extra = ["--max-file-bytes", str(entry["max_file_bytes"])] if "max_file_bytes" in entry else []
+    print("reject", entry["code"], entry["label"], " ".join(entry["paths"] + extra), sep="\t")
+# python_only: Rust karşılığı olmayan, CLI bayrağına bağlı denetimler.
+for entry in table.get("python_only", []):
+    kind = "reject" if entry.get("code") else "accept"
+    args = " ".join(entry["paths"] + entry.get("args", []))
+    print(kind, entry.get("code") or "-", "[python-only] " + entry["label"], args, sep="\t")
 PY
 )" || { echo "EXPECTATIONS.json okunamadı" >&2; exit 2; }
 
@@ -72,6 +78,25 @@ elif ! grep -q '\[SV-009\]' <<<"$out"; then
 else
   ok "ret: sema alt-kumesinde olmayan anahtar sozcuk (SV-009, fail-closed)"
 fi
+
+# ── Spec izlenebilirlik ratchet'i: kapsam DÜŞERSE kırmızı olmalı ──
+# Kapının kendisi de vakuma düşebilir: taban dosyası bozulur ya da karşılaştırma yanlış
+# yazılırsa "kapsam düştü" durumu hiç görülmez. Sahte bir tabanla (kapsanmayan bir vakayı
+# kapsanmış sayan) kapının GERÇEKTEN kırmızı olduğu kanıtlanır.
+if python3 scripts/vectors/spec_coverage.py >/dev/null 2>&1; then
+  ok "spec kapsam ratchet'i: gerçek taban yeşil"
+else
+  bad "spec kapsam ratchet'i: gerçek taban" "kapsam düşmüş görünüyor"
+fi
+
+fake="$(mktemp -t kama-coverage-XXXXXX.json)"
+printf '{"total":24,"covered":["INVALID-1","INVALID-2"],"missing":[]}\n' > "$fake"
+if python3 scripts/vectors/spec_coverage.py --baseline "$fake" >/dev/null 2>&1; then
+  bad "spec kapsam ratchet'i: sahte taban" "kapsam DÜŞÜKKEN kapı yeşil kaldı — vakum"
+else
+  ok "spec kapsam ratchet'i: kapsam düşünce kırmızı"
+fi
+rm -f "$fake"
 
 echo
 printf 'ÖZ-TEST (python): %d geçti, %d başarısız\n' "$pass" "$fail"

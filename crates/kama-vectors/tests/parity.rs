@@ -45,6 +45,19 @@ fn label(entry: &Value) -> &str {
     entry["label"].as_str().unwrap_or("<etiketsiz>")
 }
 
+/// Tablo girdisi kendi dosya-boyutu sınırını taşıyabilir (8 MiB'lik gerçek bir fixture
+/// repoya konmasın diye). Taşımıyorsa ürün sınırı kullanılır.
+fn entry_limit(entry: &Value) -> u64 {
+    entry["max_file_bytes"]
+        .as_u64()
+        .unwrap_or(kama_vectors::MAX_FILE_BYTES)
+}
+
+/// Girdiyi tablodaki sınırla yükler.
+fn load_entry(entry: &Value) -> Result<Vec<kama_vectors::VectorFile>, VectorErrors> {
+    kama_vectors::load_paths_bounded(&entry_paths(entry), entry_limit(entry))
+}
+
 // ── 1. Tablo paritesi ────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -54,8 +67,7 @@ fn accepts_every_expected_accept_entry() {
     assert!(!entries.is_empty(), "parite tablosunda accept girdisi yok");
 
     for entry in entries {
-        let paths = entry_paths(entry);
-        match kama_vectors::load_paths(&paths) {
+        match load_entry(entry) {
             Ok(files) => assert!(
                 !files.is_empty(),
                 "kabul: {} — 0 dosya yüklendi (yol yanlış olabilir)",
@@ -73,9 +85,8 @@ fn rejects_every_expected_reject_entry_with_the_expected_code() {
     assert!(!entries.is_empty(), "parite tablosunda reject girdisi yok");
 
     for entry in entries {
-        let paths = entry_paths(entry);
         let code = entry["code"].as_str().expect("reject girdisinde code yok");
-        match kama_vectors::load_paths(&paths) {
+        match load_entry(entry) {
             Ok(_) => panic!("ret: {} — yükleyici KABUL etti; sessiz geçiş", label(entry)),
             Err(errors) => assert!(
                 errors.has_code(code),
@@ -91,10 +102,12 @@ fn rejects_every_expected_reject_entry_with_the_expected_code() {
 
 /// `python3 scripts/vectors/validate.py <paths>` çalıştırır.
 /// `None` = python3 yok (katman atlanır).
-fn python_verdict(paths: &[PathBuf]) -> Option<(bool, String)> {
+fn python_verdict(paths: &[PathBuf], max_bytes: u64) -> Option<(bool, String)> {
     let out = Command::new("python3")
         .arg(repo_root().join("scripts/vectors/validate.py"))
         .args(paths)
+        .arg("--max-file-bytes")
+        .arg(max_bytes.to_string())
         .current_dir(repo_root())
         .output()
         .ok()?;
@@ -113,9 +126,9 @@ fn python_validator_and_rust_loader_reach_the_same_verdict() {
 
     for entry in accept.chain(reject) {
         let paths = entry_paths(entry);
-        let rust_ok = kama_vectors::load_paths(&paths).is_ok();
+        let rust_ok = load_entry(entry).is_ok();
 
-        let Some((py_ok, py_out)) = python_verdict(&paths) else {
+        let Some((py_ok, py_out)) = python_verdict(&paths, entry_limit(entry)) else {
             eprintln!("python3 bulunamadı — araç-paritesi katmanı ATLANDI");
             return;
         };
@@ -227,9 +240,9 @@ fn loads_the_negative_example_file() {
 
 #[test]
 fn unknown_schema_version_is_an_error_not_a_silent_skip() {
-    let path = repo_root().join("scripts/vectors/testdata/reject/schema-version-2.json");
+    let path = repo_root().join("scripts/vectors/testdata/reject/schema-version-3.json");
     let Err(errors) = kama_vectors::load_file(&path) else {
-        panic!("schema_version: 2 sessizce kabul edildi");
+        panic!("schema_version: 3 sessizce kabul edildi");
     };
     assert!(
         errors.has_code(kama_vectors::SV_VERSION_UNKNOWN),
@@ -310,7 +323,7 @@ fn directory_symlink_loops_do_not_multiply_files() {
 
     std::fs::write(
         dir.join("v.json"),
-        r#"{"schema_version":1,"suite":"cyc","spec_version":"selftest@v1",
+        r#"{"schema_version":2,"suite":"cyc","spec_version":"selftest@v1","case_count":1,
             "cases":[{"id":"cyc.c1","kind":"decode","input_hex":"00","expected_hex":"00"}]}"#,
     )
     .expect("fixture yazımı");
@@ -322,4 +335,56 @@ fn directory_symlink_loops_do_not_multiply_files() {
     let files = loaded.expect("döngü sahte bulgu üretmemeli");
     assert_eq!(files.len(), 1, "aynı dosya bir kez görülmeli");
     assert_eq!(files[0].cases.len(), 1);
+}
+
+// ── 7. schema_version 2 alanları ─────────────────────────────────────────────────────────────
+
+#[test]
+fn v2_fields_are_loaded_and_flags_resolve_to_notes() {
+    let file = kama_vectors::load_file(repo_root().join("vectors/examples/example-positive.json"))
+        .expect("pozitif örnek");
+
+    assert_eq!(file.schema_version, 2);
+    assert!(file.generator.is_some(), "provenance alanı taşınmalı");
+
+    // `placeholder-signature` bu dosyanın dürüstlük şerhinin MAKİNE-OKUNUR hâli:
+    // tüketici bunu görüp vakayı kriptografik doğruluk kanıtı saymamalı.
+    let flag = "placeholder-signature";
+    assert!(file.notes.contains_key(flag), "flag sözlükte açıklanmalı");
+    assert!(
+        file.cases.iter().all(|c| c.flags.iter().any(|f| f == flag)),
+        "örnek dosyanın her vakası bu flag'i taşımalı"
+    );
+    // Yükleme zaten doğrular; burada sözleşmeyi testte de sabitliyoruz.
+    for case in &file.cases {
+        for f in &case.flags {
+            assert!(file.notes.contains_key(f), "tanımsız flag: {f}");
+        }
+    }
+}
+
+#[test]
+fn case_count_matches_and_is_the_consumer_vacuum_guard() {
+    let file = kama_vectors::load_file(repo_root().join("vectors/examples/example-negative.json"))
+        .expect("negatif örnek");
+    assert_eq!(file.case_count(), 4);
+
+    // Tüketici vakumu: kind'a göre filtreleyip HİÇ vaka koşmamak sessizce yeşil görünür.
+    // Sayı dosyadan geldiği için bu ayırt edilebilir.
+    let verify_cases = file.cases.iter().filter(|c| c.kind == "verify").count();
+    assert!(verify_cases > 0 && verify_cases < file.case_count());
+}
+
+#[test]
+fn require_kinds_rejects_a_kind_the_consumer_did_not_declare() {
+    let file = kama_vectors::load_file(repo_root().join("vectors/examples/example-negative.json"))
+        .expect("negatif örnek");
+
+    file.require_kinds(&["decode", "verify"])
+        .expect("ikisi de beyan edildi");
+
+    let Err(errors) = file.require_kinds(&["decode"]) else {
+        panic!("beyan edilmeyen 'verify' sessizce atlandı");
+    };
+    assert!(errors.has_code(kama_vectors::SV_UNKNOWN_KIND), "{errors}");
 }

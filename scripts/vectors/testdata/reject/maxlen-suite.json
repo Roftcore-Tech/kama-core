@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "suite": "s-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a",
   "spec_version": "validator-selftest@v1",
   "cases": [
@@ -9,5 +9,6 @@
       "input_hex": "00",
       "expected_hex": "00"
     }
-  ]
+  ],
+  "case_count": 1
 }

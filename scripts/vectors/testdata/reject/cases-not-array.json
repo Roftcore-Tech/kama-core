@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "suite": "selftest-cases-map",
   "spec_version": "x@v1",
   "cases": {

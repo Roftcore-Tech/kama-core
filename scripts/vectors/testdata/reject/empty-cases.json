@@ -1,6 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "suite": "selftest-empty",
   "spec_version": "validator-selftest@v1",
-  "cases": []
+  "cases": [],
+  "case_count": 0
 }

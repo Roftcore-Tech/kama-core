@@ -1,14 +1,23 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "suite": "ccr-parser-reject-v1",
   "spec_version": "ccr-format-spec@v1.0+2026-09-18b",
+  "generator": "elle yazildi (T-00.1 ornek dosyasi)",
   "description": "ORNEK DOSYA (T-00.1) \u2014 negatif vaka bicimini gosterir. Vakalar ccr \u00a730.7 INVALID-n corpus'undan alinmistir; byte degerleri desenli dolgudur, kriptografik golden vector DEGILDIR.",
+  "notes": {
+    "spec-named-case": "ccr-format-spec.md \u00a730.7'de ADI GECEN corpus vakasi (INVALID-n).",
+    "fail-closed-not-invalid": "Beklenen sonuc 'fail': girdi GECERSIZ OLMAYABILIR, dogrulama tamamlanamaz. Ayni girdi eksik baglam (ornek: cert cache) sonradan gelirse GECERLI olabilir \u2014 bu yuzden 'reject' DEGILDIR."
+  },
+  "case_count": 4,
   "cases": [
     {
       "id": "ccr-parser-reject-v1.invalid-1.unsupported-magic",
       "kind": "decode",
-      "spec_ref": "ccr-format-spec.md \u00a730.7 INVALID-1",
+      "flags": [
+        "spec-named-case"
+      ],
       "note": "magic 'SRCX' tanimli degil; 'SRCR' (Root CA CCR) beklenirdi.",
+      "spec_ref": "ccr-format-spec.md \u00a730.7 INVALID-1",
       "input_hex": "5352435801",
       "expected": {
         "result": "reject",
@@ -18,8 +27,11 @@
     {
       "id": "ccr-parser-reject-v1.invalid-4.compact-device-cert-length",
       "kind": "decode",
-      "spec_ref": "ccr-format-spec.md \u00a730.7 INVALID-4",
+      "flags": [
+        "spec-named-case"
+      ],
       "note": "CompactDeviceCertV1 sabit 152B; burada 151B. Uzunluk kontrolu ALLOC'TAN ONCE (PARSER-02).",
+      "spec_ref": "ccr-format-spec.md \u00a730.7 INVALID-4",
       "input_hex": "1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333000000006a1b2c00444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444",
       "expected": {
         "result": "reject",
@@ -29,8 +41,11 @@
     {
       "id": "ccr-parser-reject-v1.invalid-8.device-x25519-all-zero",
       "kind": "decode",
-      "spec_ref": "ccr-format-spec.md \u00a730.7 INVALID-8, \u00a730.4 dogrulama",
+      "flags": [
+        "spec-named-case"
+      ],
       "note": "device_x25519_pub all-zero -> reject (small-order/degenerate DH korumasi).",
+      "spec_ref": "ccr-format-spec.md \u00a730.7 INVALID-8, \u00a730.4 dogrulama",
       "input_hex": "1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000033333333333333333333333333333333000000006a1b2c0044444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444",
       "expected": {
         "result": "reject",
@@ -40,12 +55,16 @@
     {
       "id": "ccr-parser-reject-v1.invalid-13.cert-ref-cache-miss",
       "kind": "verify",
-      "spec_ref": "ccr-format-spec.md \u00a730.7 INVALID-13",
+      "flags": [
+        "spec-named-case",
+        "fail-closed-not-invalid"
+      ],
       "note": "'fail' \u2014 'reject' DEGIL: girdi gecersiz OLMAYABILIR, dogrulama tamamlanamaz (cache-miss + inline cert yok). Fail-closed/defer.",
+      "spec_ref": "ccr-format-spec.md \u00a730.7 INVALID-13",
       "input": {
-        "sender_cert_ref_hex": "5555555555555555555555555555555555555555555555555555555555555555",
         "cert_cache_hex": [],
-        "inline_compact_device_cert_hex": ""
+        "inline_compact_device_cert_hex": "",
+        "sender_cert_ref_hex": "5555555555555555555555555555555555555555555555555555555555555555"
       },
       "expected": {
         "result": "fail",

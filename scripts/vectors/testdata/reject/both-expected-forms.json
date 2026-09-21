@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "suite": "selftest-both-expected",
   "spec_version": "validator-selftest@v1",
   "cases": [
@@ -13,5 +13,6 @@
         "reason": "r"
       }
     }
-  ]
+  ],
+  "case_count": 1
 }

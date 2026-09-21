@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "suite": "selftest-hex-0x",
   "spec_version": "validator-selftest@v1",
   "cases": [
@@ -11,5 +11,6 @@
       },
       "expected_hex": "1234"
     }
-  ]
+  ],
+  "case_count": 1
 }

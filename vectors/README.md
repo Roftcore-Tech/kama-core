@@ -32,10 +32,14 @@ vectors/
 
 scripts/vectors/
   validate.py                     Python doğrulayıcı (stdlib-only, bağımlılıksız)
-  selftest.sh                     doğrulayıcının kendi kapısı
+  spec_coverage.py                spec ↔ vektör kapsam ratchet'i
+  spec-coverage.json              ratchet tabanı (araç durumu — vektör dosyası DEĞİL)
+  selftest.sh                     iki kapının da kendi kapısı
   testdata/EXPECTATIONS.json      PARİTE TABLOSU — Python ve Rust tarafı aynı listeyi okur
   testdata/accept/                kabul edilmesi gereken fixture'lar
   testdata/reject/                reddedilmesi gereken fixture'lar
+  testdata/canonical/             kanonik-biçim fixture'ı
+  testdata/vacuum/                vakum kapısı fixture'ı (kasten .json içermez)
 
 crates/kama-vectors/
   src/lib.rs                      Rust yükleyici + tek hex yardımcısı
@@ -57,13 +61,17 @@ yani örnekler bozulursa kapı kırmızı olur.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "suite": "ccr-compact-device-cert-v1",
   "spec_version": "ccr-format-spec@v1.0+2026-09-18b",
+  "generator": "kama-vector-gen 0.1.0",
+  "notes": { "placeholder-signature": "imza hesaplanmadı; kriptografik kanıt DEĞİL" },
+  "case_count": 2,
   "cases": [
     {
       "id": "ccr-compact-device-cert-v1.encode.field-order",
       "kind": "encode",
+      "flags": ["placeholder-signature"],
       "input": { "not_after_hex": "000000006a1b2c00", "...": "..." },
       "expected_hex": "1111...4444"
     },
@@ -81,11 +89,16 @@ yani örnekler bozulursa kapı kırmızı olur.
 
 | alan | zorunlu | kural |
 |---|---|---|
-| `schema_version` | ✔ | tamsayı. **Yalnız `1` tanımlı.** |
+| `schema_version` | ✔ | tamsayı. **Yalnız `2` tanımlı** (eski `1` artık reddedilir). |
 | `suite` | ✔ | küçük harf token `^[a-z0-9]+(-[a-z0-9]+)*$`. **Dosya başına TEK suite.** |
 | `spec_version` | ✔ | vektörlerin üretildiği donmuş spec sürümü. Önerilen biçim `<spec-slug>@<versiyon>[+<yama-tarihi>]`. |
+| `generator` | — | dosyayı üreten aracın kimliği/sürümü. `spec_version` "hangi spec" der, bu "hangi üretici" der — bir golden değiştiğinde **neyin** değiştirdiği ancak böyle izlenir. |
 | `description` | — | serbest metin; **araç davranışını etkilemez**. |
+| `notes` | — | flag sözlüğü: `{token: açıklama}`. Kullanılan her flag burada tanımlı, tanımlı her flag en az bir vakada kullanılmış olmalı. |
+| `case_count` | ✔ | `cases` uzunluğu, **dosyanın içinde**. Kesilmiş dosyayı ve tüketici vakumunu yakalar. |
 | `cases` | ✔ | en az 1 vaka. |
+
+Anahtarların **bu sırası** aynı zamanda kanonik serileştirme sırasıdır (§6).
 
 ### Vaka
 
@@ -95,6 +108,7 @@ yani örnekler bozulursa kapı kırmızı olur.
 | `kind` | ✔ | aracın üzerinden dağıtım yaptığı anahtar (`encode`, `decode`, `verify`, …). Söz dağarcığı suite'e özel ve **açık**; biçim sabit (küçük harf token). |
 | `input` **\|** `input_hex` | ✔ | **tam olarak biri.** `input` = yapısal girdi (alanlardan kodlama yönü), `input_hex` = ham wire byte'ları (çözümleme yönü). |
 | `expected_hex` **\|** `expected` | ✔ | **tam olarak biri.** `expected_hex` = pozitif vaka, `expected` = negatif vaka. |
+| `flags` | — | vakanın **neden** var olduğunu makine-okunur etiketler; her biri `notes`'ta açıklanır. `note` insan içindir, `flags` araç içindir. |
 | `note`, `spec_ref` | — | serbest metin; **araç davranışını etkilemez**. |
 
 Başka hiçbir alana izin yok: bilinmeyen alan **reddedilir** (fail-closed). Yeni alan eklemek
@@ -109,7 +123,11 @@ Başka hiçbir alana izin yok: bilinmeyen alan **reddedilir** (fail-closed). Yen
 5. **Negatif vakada `result` tam olarak şu üç değerden biri:** `drop` · `reject` · `fail`. Dördüncüsü yok.
 6. **`id` repo genelinde tekildir** — dosya içinde değil, `vectors/` ağacının tamamında.
 7. **Bilinmeyen `schema_version` gören araç HATA verir, sessizce geçmez.**
-8. **`input` içindeki her byte alanının anahtarı `_hex` ile biter** (ya da `hex`'tir). Değeri hex
+8. **`case_count` == `cases` uzunluğu.** Tüketici koştuğu vaka sayısını buna karşı doğrular.
+9. **Her flag `notes`'ta tanımlı, her not en az bir vakada kullanılmış.** İlk yön yazım
+   hatasını (`shrot-key`) yakalar, ikinci yön ölü kayıt birikmesini engeller.
+10. **Dosyalar kanonik biçimde** (§6). **En çok 8 MiB** (SR-AUDIT-001: bounds-before-alloc).
+11. **`input` içindeki her byte alanının anahtarı `_hex` ile biter** (ya da `hex`'tir). Değeri hex
    dizge veya hex dizgelerden oluşan dizi olabilir; doğrulayıcı her derinlikte denetler. Bu kural
    JSON Schema ile ifade edilemez — doğrulayıcı zorlar (`SV-006`).
 
@@ -150,6 +168,9 @@ Bağımlılık yok (Python 3.9+ stdlib). Çıkış kodu: `0` temiz · `1` doğru
 let files = kama_vectors::load_dir("vectors")?;   // ağaç; id tekilliği tüm küme boyunca
 let file  = kama_vectors::load_file(path)?;
 let bytes = kama_vectors::hex("deadbeef")?;       // TEK hex yardımcısı
+
+file.require_kinds(&["encode", "decode"])?;       // TÜKETİCİ SÖZLEŞMESİ (§7)
+assert_eq!(ran, file.case_count());               // vakum kapısı
 ```
 
 Aynı kuralları zorlar ve **aynı `SV-` kodlarını** üretir (`VectorError::code`). Şemanın iki
@@ -168,6 +189,45 @@ kopya `fn hex` gövdelerinin yerini aldı. `SCHEMA.json` sözleşmesini uygular:
 uzunluk, `0x` yok, boşluk yok — **büyük harfi sessizce düzeltmez, hata verir.** (RFC-8439
 vektörleri belgeden boşluklu kopyalandığı için o testte boşluk temizliği yerel kalır; çözüm yine
 ortak fonksiyondur.)
+
+### Kanonik serileştirme (üretici disiplini)
+
+Vektör dosyalarını bir üretici yazacak. Aynı içeriği her koşuda farklı byte'larla yazarsa
+git diff'i gürültüyle dolar ve golden incelemesi okunmaz olur — "bu byte kasıtlı mı değişti"
+sorusu cevaplanamaz. Kanonik biçim o soruyu geri getirir: diff'te görünen her satır gerçek
+bir içerik değişikliğidir.
+
+```
+UTF-8, BOM yok · satır sonu LF · dosya sonunda tek satırsonu
+girinti 2 boşluk · ensure_ascii (ASCII olmayan her karakter \uXXXX)
+üst düzey + vaka anahtar sırası = SCHEMA.json'daki bildirim sırası
+`input` içindeki serbest haritalar: özyinelemeli leksikografik anahtar sırası
+```
+
+```bash
+python3 scripts/vectors/validate.py vectors/ --canonical         # denetle (SV-011)
+python3 scripts/vectors/validate.py vectors/ --write-canonical   # düzelt
+```
+
+Kapsam `vectors/` ağacıdır. `scripts/vectors/testdata/` fixture'ları **kapsam dışıdır**:
+bazıları kasten bozuk JSON, bazıları kasten yinelenen anahtar taşır — kanonikleştirilemezler.
+`--write-canonical` doğrulamadan geçmeyen dosyaya **dokunmaz**; kanonikleştirme bir düzeltme
+aracı değildir, bozuk dosyayı "düzeltip" ihlali gizlemesi istenmez.
+
+### Spec ↔ vektör kapsamı (ratchet)
+
+Şema kapısı dosyaların **biçimini** denetler, **kapsamını** değil. `ccr-format-spec.md` §30.7
+adı geçen 24 negatif vaka tanımlıyor; hiçbiri yazılmasa bile şema kapısı yemyeşil kalırdı.
+
+```bash
+python3 scripts/vectors/spec_coverage.py            # ratchet kapısı (CI)
+python3 scripts/vectors/spec_coverage.py --update   # kapsam arttıysa tabanı yükselt
+```
+
+Kapsam `scripts/vectors/spec-coverage.json` tabanına karşı kıyaslanır ve **düşerse kapı
+kırmızı** olur. **Bugün 4/24.** Borç görünür ve yalnız azalabilir; "sonra yazarız" sessizce
+kalıcı olamaz. Öz-test ratchet'in kendisinin de vakuma düşmediğini kanıtlar (sahte bir
+tabanla kapının gerçekten kırmızı olduğu sınanır).
 
 ### Parite nasıl korunuyor
 
@@ -232,6 +292,11 @@ kümesini** görmesini sağlar. Regresyon testi: `directory_symlink_loops_do_not
 | `SV-008` | dizgede kontrol karakteri |
 | `SV-009` | `SCHEMA.json` okunamadı / **doğrulayıcının tanımadığı şema anahtar sözcüğü** |
 | `SV-010` | `--min-files N` verildi ve daha az dosya doğrulandı — **vakum kapısı** |
+| `SV-011` | kanonik serileştirme ihlali (`--canonical`) |
+| `SV-012` | dosya boyutu sınırı aşıldı (8 MiB; SR-AUDIT-001 bounds-before-alloc) |
+| `SV-013` | `case_count` ile `cases` uzunluğu uyuşmuyor |
+| `SV-014` | flag/`notes` tutarsızlığı (tanımsız flag ya da ölü not) |
+| `SV-015` | **tüketici** tanımadığı bir `kind` gördü — yalnız Rust (`require_kinds`) |
 
 ### İki tasarım kararı
 
@@ -262,8 +327,19 @@ iki araç aynı dosyadan farklı byte okuyabilir. Doğrulayıcı bunu `SV-002` i
 3. Hex'i çözerken küçük-harf varsay; büyük harf gördüğünde **düzeltme, hata ver** (dosya zaten
    CI'dan geçmiş olmalıydı; büyük harf gören araç bozuk bir üreticiye bakıyordur).
 4. Vakaları `id` ile eşle, sıra ile değil.
+5. **Tanıdığın `kind` kümesini beyan et** (`require_kinds`). `match` içindeki bir `_ => {}`
+   kolu, `kind`'daki bir yazım hatasını ya da dosyaya sonradan eklenen yeni bir `kind`'ı
+   **sessizce hiç koşmamaya** çevirir: test yeşil, kapsam sıfır.
+6. **Koştuğun vaka sayısını `case_count`'a karşı doğrula.** Filtreleyip 0 vaka koşmak ile
+   dosyanın boş olması ayırt edilemez; ikisi de yeşil görünür.
+7. Bir `flag`'e dayanarak vaka atlıyorsan bunu **rapor et** — sessiz atlama yine vakumdur.
 
 ## 8. `schema_version` nasıl değişir
+
+> **Bu yordam bir kez uygulandı: `1` → `2`** (T-00.2). Eklenenler: `generator`, `notes`,
+> `case_count`, `cases[].flags`. `1` artık **desteklenmiyor** — `SV-004` ile reddedilir
+> (`reject/schema-version-1.json` bunu pinliyor). İki sürümü birden desteklemek gerekmedi:
+> repo dışında üretici yoktu, hepsi tek commit'te taşındı.
 
 `schema_version: 1` **donmuştur.** Alan eklemek, silmek, bir alanı zorunlu yapmak ya da bir kuralı
 gevşetmek → `2`. Aynı PR'da:
@@ -278,7 +354,22 @@ gevşetmek → `2`. Aynı PR'da:
 Serbest metin alanı (`description`, `note`, `spec_ref`) eklemek de sürüm artırır: `additionalProperties: false`
 eski araçta yeni dosyayı kırar, sessiz geçiş olmaz — istenen davranış budur.
 
-## 9. Kilitli metnin ötesine geçen kararlar
+## 9. Bilinçli olarak YAPILMAYANLAR
+
+Dış pratikte (Wycheproof) olup burada **kasten** almadığımız iki şey:
+
+**`result: "acceptable"`** — Wycheproof'ta "geçerli ama uygulama makul olarak reddedebilir"
+demek. Bizde `result` üçlüsü **kilitli** (`drop`/`reject`/`fail`, T-00.1) ve üçü de rettir.
+Dördüncü bir değer eklemek yerine aynı anlam **pozitif vaka + flag** ile ifade edilir:
+`expected_hex` + `flags: ["may-reject"]` ve `notes`'ta gerekçesi. Kilidi tek taraflı kırmaya
+gerek yok, mekanizma zaten var.
+
+**`testGroups`** — ortak parametreleri (aynı anahtar, aynı eğri) paylaşan vakaları gruplar.
+Şemanın kilitli şekli düz bir `cases[]`; gruplama birleştirme (merge) semantiği getirir ve
+bugün bunu gerektiren **tek bir gerçek vektör dosyası yok**. Spekülatif makine yazmak yerine
+ertelendi: ccr §35 oturum vektörleri yazıldığında tekrar bakılır (`schema_version: 3` adayı).
+
+## 10. Kilitli metnin ötesine geçen kararlar
 
 Görev metni şemayı alan alan kilitledi. Aşağıdakiler o metinde **yoktu**, uygulanabilir olsun diye
 eklendi; her biri tek satırlık bir düzeltmeyle geri alınabilir:
@@ -292,10 +383,12 @@ eklendi; her biri tek satırlık bir düzeltmeyle geri alınabilir:
 | `_hex` anahtar soneki zorunluluğu (kural 4.8) | "byte dizileri hex string" kuralı ancak böyle makine-denetlenebilir | `_deep_hex_findings` |
 | yinelenen JSON anahtarı = hata | iki aracın aynı dosyadan farklı byte okumasını engeller | `_no_duplicates` |
 
-## 10. Kapsam dışı (T-00.1 / T-00.2'de YOK)
+## 11. Kapsam dışı
 
 - **Gerçek vektör içeriği.** `vectors/` altında suite dizini yok; `examples/` dışında dosya yok.
 - **Python üretici.** Ayrı kalem.
 - **`reason` sözlüğü.** Hangi ret gerekçesinin hangi token'a karşılık geldiği suite bazında, vektör
   üretildiğinde sabitlenir.
+- **Kapsam borcu: ccr §30.7'nin 20 vakası** (bugün 4/24). Ratchet borcu görünür tutuyor ve
+  büyümesini engelliyor; kapatmak vektör yazma işidir.
 - **ADR-12 `testvectors/` → `vectors/` satır düzeltmesi.** Spec değişikliği; talimatsız yapılmaz.

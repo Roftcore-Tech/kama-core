@@ -1,7 +1,8 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "suite": "selftest-dupkey-nested",
-  "spec_version": "x@v1",
+  "spec_version": "validator-selftest@v1",
+  "case_count": 1,
   "cases": [
     {
       "id": "selftest-dupkey-nested.c1",

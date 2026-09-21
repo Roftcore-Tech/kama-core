@@ -1,0 +1,20 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-flag-undef",
+  "spec_version": "validator-selftest@v1",
+  "case_count": 1,
+  "cases": [
+    {
+      "id": "selftest-flag-undef.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00",
+      "flags": [
+        "shrot-key"
+      ]
+    }
+  ],
+  "notes": {
+    "short-key": "Anahtar kisa; uygulama reddedebilir."
+  }
+}
