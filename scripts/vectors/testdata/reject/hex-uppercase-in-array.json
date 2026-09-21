@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "suite": "selftest-hex-arr",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-hex-arr.c1",
+      "kind": "encode",
+      "input": {
+        "chain_hex": [
+          "aa",
+          "BB"
+        ]
+      },
+      "expected_hex": "00"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "suite": "selftest-maxlen-id",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "a.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00"
+    }
+  ]
+}

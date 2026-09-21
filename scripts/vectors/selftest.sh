@@ -51,6 +51,28 @@ while IFS=$'\t' read -r kind code label paths; do
   fi
 done <<<"$rows"
 
+# ── SV-009: yalnız Python tarafı ──
+# Rust yükleyici SCHEMA.json'u OKUMAZ (kuralları koda gömülüdür), bu yüzden "şemada
+# tanınmayan anahtar sözcük" kavramının Rust karşılığı yoktur ve paylaşılan tabloya
+# giremez. Fail-closed davranışı burada ayrıca kanıtlanır: şemaya değerlendiricinin
+# bilmediği bir anahtar sözcük enjekte edilir; doğrulayıcı ATLAMAMALI, SV-009 ile durmalı.
+mutated="$(mktemp -t kama-schema-XXXXXX.json)"
+trap 'rm -f "$mutated"' EXIT
+python3 - "$ROOT/vectors/SCHEMA.json" "$mutated" <<'PY'
+import json, sys
+schema = json.load(open(sys.argv[1], encoding="utf-8"))
+schema["properties"]["suite"]["format"] = "hostname"   # alt kümede YOK
+json.dump(schema, open(sys.argv[2], "w", encoding="utf-8"), indent=2)
+PY
+out="$(python3 scripts/vectors/validate.py vectors/ --schema "$mutated" 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]]; then
+  bad "ret: sema alt-kumesinde olmayan anahtar sozcuk" "doğrulayıcı KABUL etti — kural sessizce zorlanmadan geçti"
+elif ! grep -q '\[SV-009\]' <<<"$out"; then
+  bad "ret: sema alt-kumesinde olmayan anahtar sozcuk" "reddedildi ama SV-009 yok — $out"
+else
+  ok "ret: sema alt-kumesinde olmayan anahtar sozcuk (SV-009, fail-closed)"
+fi
+
 echo
 printf 'ÖZ-TEST (python): %d geçti, %d başarısız\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]

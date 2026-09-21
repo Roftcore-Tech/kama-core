@@ -180,6 +180,33 @@ denetlenir. `parity.rs` ayrıca `validate.py`'yi alt süreç olarak çağırıp 
 karşılaştırır (`python3` yoksa o katman atlanır). Bir taraf diğerinden ayrıldığında ilgili satır
 kırmızı olur; tablo iki yerde ayrı bakım istemez.
 
+Parite tanımı: **aynı hüküm** (kabul/ret) **+ beklenen `SV-` kodu iki tarafta da var.** Bulgu
+kümelerinin birebir eşitliği aranmaz — bir taraf aynı ihlal için fazladan bulgu üretebilir
+(örn. büyük harf hex Python'da hem şema deseninden `SV-005` hem derin taramadan `SV-006` verir,
+Rust'ta yalnız `SV-006`). Hüküm ve beklenen kod aynıdır.
+
+### Negatif test korpusu
+
+`scripts/vectors/testdata/reject/` — her biri **tek bir kuralı** ihlal eden dosyalar. Dokuz
+doğrulayıcı hata kodunun tamamı koşuyor:
+
+| kod | fixture | ne pinliyor |
+|---|---|---|
+| `SV-001` | 1 | bozuk JSON |
+| `SV-002` | 2 | yinelenen anahtar — vaka düzeyi **ve** `input` içinde iç içe |
+| `SV-003` | 4 | `schema_version` yok / dizge / ondalıklı / boolean |
+| `SV-004` | 3 | bilinmeyen sürüm: `2`, `999`, negatif |
+| `SV-005` | 24 | şema ihlalleri: oneOf ikilileri, bilinmeyen alan, `result` üçlüsü, **sekiz `maxLength` sınırı** |
+| `SV-006` | 4 | hex: büyük harf, `0x`, tek uzunluk, dizi elemanı |
+| `SV-007` | 1 | `id` tekilliği (iki dosya tek tek geçer, birlikte geçmez) |
+| `SV-008` | 1 | dizgede kontrol karakteri |
+| `SV-009` | — | şema alt-kümesinde olmayan anahtar sözcük — **yalnız Python**, çünkü Rust yükleyici `SCHEMA.json`'u okumaz (kurallar koda gömülü). `selftest.sh` şemaya anahtar sözcük enjekte edip fail-closed davranışını ayrıca kanıtlar. |
+
+> **`maxLength` satırları neden ayrı önemli:** Python bu sınırları `SCHEMA.json`'dan **okur**,
+> Rust'ta `const MAX_*` olarak **elle taşınırlar**. T-00.2'de bu fark ölçüldü: fixture yokken iki
+> araç **sekiz sınırda sessizce ayrışıyordu** (aşırı uzun `suite`/`id`/`kind`/`note`/`spec_ref`/
+> `description`/`hex` ve negatif `schema_version`). Şimdi her biri pinli.
+
 ### Hata kodları
 
 | kod | ne |

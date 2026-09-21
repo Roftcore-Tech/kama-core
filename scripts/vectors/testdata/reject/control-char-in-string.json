@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "suite": "selftest-ctrl",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-ctrl.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00",
+      "note": "iki\tsatir"
+    }
+  ]
+}

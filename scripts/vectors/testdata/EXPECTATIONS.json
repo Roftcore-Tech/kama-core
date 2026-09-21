@@ -1,120 +1,169 @@
 {
   "comment": [
     "Python dogrulayici (scripts/vectors/validate.py) ile Rust yukleyici (crates/kama-vectors)",
-    "arasindaki PARITE TABLOSU — tek kaynak. Iki arac da bu dosyayi okur; biri digerinden",
+    "arasindaki PARITE TABLOSU \u2014 tek kaynak. Iki arac da bu dosyayi okur; biri digerinden",
     "ayrildigi anda ilgili satir kirmizi olur, tablo iki yerde ayri ayri bakim gerektirmez.",
     "Yollar REPO KOKUNE gore. Bir girdideki dosyalar TEK kosuda birlikte yuklenir (id",
-    "tekilligi dosyalar arasi bir kuraldir, bu yuzden onemli). Girdi bir DIZIN de olabilir."
+    "tekilligi dosyalar arasi bir kuraldir, bu yuzden onemli). Girdi bir DIZIN de olabilir.",
+    "maxLength satirlari ozellikle onemli: Python bu sinirlari SCHEMA.json'dan OKUR, Rust'ta ELLE tasinir (const MAX_*). Fixture olmadan iki arac sessizce ayrisir \u2014 T-00.2'de tam olarak bu oldu ve 8 ayrisma olculdu."
   ],
-
   "accept": [
     {
       "label": "gercek vectors/ agaci (ornekler dahil)",
-      "paths": ["vectors"]
+      "paths": [
+        "vectors"
+      ]
     },
     {
       "label": "result soz dagarcigi: drop + reject + fail",
-      "paths": ["scripts/vectors/testdata/accept/result-vocabulary.json"]
+      "paths": [
+        "scripts/vectors/testdata/accept/result-vocabulary.json"
+      ]
     },
     {
       "label": "hex bicimleri: bos dizge (sifir byte) + hex dizisi",
-      "paths": ["scripts/vectors/testdata/accept/hex-array-and-empty.json"]
+      "paths": [
+        "scripts/vectors/testdata/accept/hex-array-and-empty.json"
+      ]
     },
     {
       "label": "dup-id-a tek basina",
-      "paths": ["scripts/vectors/testdata/reject/dup-id-a.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/dup-id-a.json"
+      ]
     },
     {
       "label": "dup-id-b tek basina",
-      "paths": ["scripts/vectors/testdata/reject/dup-id-b.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/dup-id-b.json"
+      ]
+    },
+    {
+      "label": "bos input nesnesi gecerli",
+      "paths": [
+        "scripts/vectors/testdata/accept/input-empty-object.json"
+      ]
     }
   ],
-
   "reject": [
     {
       "label": "schema_version: 2 (T-00.1 DONE KRITERI)",
       "code": "SV-004",
-      "paths": ["scripts/vectors/testdata/reject/schema-version-2.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/schema-version-2.json"
+      ]
     },
     {
       "label": "schema_version yok",
       "code": "SV-003",
-      "paths": ["scripts/vectors/testdata/reject/schema-version-missing.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/schema-version-missing.json"
+      ]
     },
     {
       "label": "schema_version dizge",
       "code": "SV-003",
-      "paths": ["scripts/vectors/testdata/reject/schema-version-string.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/schema-version-string.json"
+      ]
     },
     {
       "label": "yinelenen JSON anahtari (vaka duzeyi)",
       "code": "SV-002",
-      "paths": ["scripts/vectors/testdata/reject/duplicate-json-key.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/duplicate-json-key.json"
+      ]
     },
     {
       "label": "yinelenen JSON anahtari (input icinde, IC ICE)",
       "code": "SV-002",
-      "paths": ["scripts/vectors/testdata/reject/duplicate-json-key-nested.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/duplicate-json-key-nested.json"
+      ]
     },
     {
       "label": "hex buyuk harf",
       "code": "SV-006",
-      "paths": ["scripts/vectors/testdata/reject/hex-uppercase.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/hex-uppercase.json"
+      ]
     },
     {
       "label": "hex 0x oneki",
       "code": "SV-006",
-      "paths": ["scripts/vectors/testdata/reject/hex-0x-prefix.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/hex-0x-prefix.json"
+      ]
     },
     {
       "label": "hex tek uzunluk",
       "code": "SV-006",
-      "paths": ["scripts/vectors/testdata/reject/hex-odd-length.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/hex-odd-length.json"
+      ]
     },
     {
       "label": "input + input_hex birlikte",
       "code": "SV-005",
-      "paths": ["scripts/vectors/testdata/reject/both-input-forms.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/both-input-forms.json"
+      ]
     },
     {
       "label": "input yok",
       "code": "SV-005",
-      "paths": ["scripts/vectors/testdata/reject/no-input.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/no-input.json"
+      ]
     },
     {
       "label": "expected + expected_hex birlikte",
       "code": "SV-005",
-      "paths": ["scripts/vectors/testdata/reject/both-expected-forms.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/both-expected-forms.json"
+      ]
     },
     {
       "label": "result uclu disinda",
       "code": "SV-005",
-      "paths": ["scripts/vectors/testdata/reject/bad-result-value.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/bad-result-value.json"
+      ]
     },
     {
       "label": "reason yok",
       "code": "SV-005",
-      "paths": ["scripts/vectors/testdata/reject/expected-missing-reason.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/expected-missing-reason.json"
+      ]
     },
     {
       "label": "bilinmeyen ust-duzey alan",
       "code": "SV-005",
-      "paths": ["scripts/vectors/testdata/reject/unknown-top-level-field.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/unknown-top-level-field.json"
+      ]
     },
     {
       "label": "bilinmeyen vaka alani",
       "code": "SV-005",
-      "paths": ["scripts/vectors/testdata/reject/unknown-case-field.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/unknown-case-field.json"
+      ]
     },
     {
       "label": "cases bos",
       "code": "SV-005",
-      "paths": ["scripts/vectors/testdata/reject/empty-cases.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/empty-cases.json"
+      ]
     },
     {
       "label": "suite buyuk harf",
       "code": "SV-005",
-      "paths": ["scripts/vectors/testdata/reject/uppercase-suite.json"]
+      "paths": [
+        "scripts/vectors/testdata/reject/uppercase-suite.json"
+      ]
     },
     {
       "label": "id tekilligi DOSYALAR ARASI (ikisi tek tek gecer, birlikte gecmez)",
@@ -122,6 +171,160 @@
       "paths": [
         "scripts/vectors/testdata/reject/dup-id-a.json",
         "scripts/vectors/testdata/reject/dup-id-b.json"
+      ]
+    },
+    {
+      "label": "bozuk JSON",
+      "code": "SV-001",
+      "paths": [
+        "scripts/vectors/testdata/reject/malformed-json.json"
+      ]
+    },
+    {
+      "label": "dizgede kontrol karakteri",
+      "code": "SV-008",
+      "paths": [
+        "scripts/vectors/testdata/reject/control-char-in-string.json"
+      ]
+    },
+    {
+      "label": "schema_version ondalikli (1.0)",
+      "code": "SV-003",
+      "paths": [
+        "scripts/vectors/testdata/reject/version-float.json"
+      ]
+    },
+    {
+      "label": "schema_version boolean",
+      "code": "SV-003",
+      "paths": [
+        "scripts/vectors/testdata/reject/version-boolean.json"
+      ]
+    },
+    {
+      "label": "schema_version negatif (sekil dogru, deger bilinmiyor)",
+      "code": "SV-004",
+      "paths": [
+        "scripts/vectors/testdata/reject/version-negative.json"
+      ]
+    },
+    {
+      "label": "schema_version 999",
+      "code": "SV-004",
+      "paths": [
+        "scripts/vectors/testdata/reject/version-unknown-999.json"
+      ]
+    },
+    {
+      "label": "kok nesne degil (dizi)",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/root-not-object.json"
+      ]
+    },
+    {
+      "label": "cases dizi degil",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/cases-not-array.json"
+      ]
+    },
+    {
+      "label": "input nesne degil",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/input-not-object.json"
+      ]
+    },
+    {
+      "label": "expected icinde bilinmeyen alan",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/expected-unknown-field.json"
+      ]
+    },
+    {
+      "label": "spec_version kirpilmamis",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/spec-version-padded.json"
+      ]
+    },
+    {
+      "label": "suite bos",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/suite-empty.json"
+      ]
+    },
+    {
+      "label": "id ASCII disi",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/id-non-ascii.json"
+      ]
+    },
+    {
+      "label": "maxLength: suite > 64",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/maxlen-suite.json"
+      ]
+    },
+    {
+      "label": "maxLength: id > 128",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/maxlen-id.json"
+      ]
+    },
+    {
+      "label": "maxLength: kind > 64",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/maxlen-kind.json"
+      ]
+    },
+    {
+      "label": "maxLength: note > 1024",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/maxlen-note.json"
+      ]
+    },
+    {
+      "label": "maxLength: spec_ref > 256",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/maxlen-spec-ref.json"
+      ]
+    },
+    {
+      "label": "maxLength: description > 1024",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/maxlen-description.json"
+      ]
+    },
+    {
+      "label": "maxLength: reason > 200",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/maxlen-reason.json"
+      ]
+    },
+    {
+      "label": "maxLength: hex > 262144",
+      "code": "SV-005",
+      "paths": [
+        "scripts/vectors/testdata/reject/maxlen-hex.json"
+      ]
+    },
+    {
+      "label": "derin hex taramasi: DIZI elemani buyuk harf",
+      "code": "SV-006",
+      "paths": [
+        "scripts/vectors/testdata/reject/hex-uppercase-in-array.json"
       ]
     }
   ]

@@ -39,6 +39,20 @@ use serde_json::{Map, Value};
 /// Bu yükleyicinin bildiği tek şema sürümü.
 pub const SUPPORTED_SCHEMA_VERSION: u64 = 1;
 
+// `SCHEMA.json`'daki `maxLength` sınırları. JSON Schema bunları Unicode kod-noktası olarak
+// sayar, bu yüzden karşılaştırma `chars().count()` üzerinden yapılır — byte uzunluğu değil.
+// Python tarafı bunları şemadan okur; burada ELLE taşınırlar, bu yüzden her biri
+// EXPECTATIONS.json'da bir fixture ile pinlidir (yoksa iki araç sessizce ayrışır).
+const MAX_SUITE: usize = 64;
+const MAX_SPEC_VERSION: usize = 128;
+const MAX_DESCRIPTION: usize = 1024;
+const MAX_ID: usize = 128;
+const MAX_KIND: usize = 64;
+const MAX_NOTE: usize = 1024;
+const MAX_SPEC_REF: usize = 256;
+const MAX_REASON: usize = 200;
+const MAX_HEX_CHARS: usize = 262_144;
+
 // ── Hata kodları — `scripts/vectors/validate.py` ile BİREBİR aynı ────────────────────────────
 
 /// JSON olarak ayrıştırılamadı / dosya okunamadı.
@@ -521,6 +535,21 @@ fn load_one(
             ));
             return None;
         }
+        // Negatif tamsayı da TAMSAYIDIR: sürümün ŞEKLİ doğru, DEĞERİ bilinmiyor → SV-004.
+        // (`as_u64()` tek başına -1'i "tamsayı değil" sayıp SV-003 üretiyordu; Python
+        // `isinstance(v, int)` dediği için iki araç ayrışıyordu.)
+        Some(v) if v.is_i64() && !v.is_u64() => {
+            errors.push(VectorError::new(
+                SV_VERSION_UNKNOWN,
+                &display,
+                "/schema_version",
+                format!(
+                    "desteklenmeyen sürüm {v}; bu yükleyici yalnız \
+                     {SUPPORTED_SCHEMA_VERSION} biliyor — sessizce GEÇİLMEZ"
+                ),
+            ));
+            return None;
+        }
         Some(v) => match v.as_u64() {
             None => {
                 errors.push(VectorError::new(
@@ -585,7 +614,11 @@ fn validate(
             ),
         ));
     }
-    if !is_trimmed_nonempty(&raw.spec_version, 128) {
+    check_max_len(display, "/suite", &raw.suite, MAX_SUITE, errors);
+    if let Some(ref d) = raw.description {
+        check_max_len(display, "/description", d, MAX_DESCRIPTION, errors);
+    }
+    if !is_trimmed_nonempty(&raw.spec_version, MAX_SPEC_VERSION) {
         errors.push(VectorError::new(
             SV_SCHEMA,
             display,
@@ -621,6 +654,14 @@ fn validate(
                 format!("{at}/kind"),
                 format!("küçük harf token olmalı — gelen {:?}", case.kind),
             ));
+        }
+        check_max_len(display, &format!("{at}/id"), &case.id, MAX_ID, errors);
+        check_max_len(display, &format!("{at}/kind"), &case.kind, MAX_KIND, errors);
+        if let Some(ref n) = case.note {
+            check_max_len(display, &format!("{at}/note"), n, MAX_NOTE, errors);
+        }
+        if let Some(ref r) = case.spec_ref {
+            check_max_len(display, &format!("{at}/spec_ref"), r, MAX_SPEC_REF, errors);
         }
 
         // id repo genelinde tekil.
@@ -669,7 +710,7 @@ fn validate(
                 decode_at(display, &format!("{at}/expected_hex"), &h, errors).map(Expected::Wire)
             }
             (None, Some(rej)) => {
-                if !is_trimmed_nonempty(&rej.reason, 200) {
+                if !is_trimmed_nonempty(&rej.reason, MAX_REASON) {
                     errors.push(VectorError::new(
                         SV_SCHEMA,
                         display,
@@ -728,12 +769,32 @@ fn validate(
     }
 }
 
+fn check_max_len(
+    display: &str,
+    pointer: &str,
+    value: &str,
+    max: usize,
+    errors: &mut Vec<VectorError>,
+) {
+    let len = value.chars().count();
+    if len > max {
+        errors.push(VectorError::new(
+            SV_SCHEMA,
+            display,
+            pointer,
+            format!("en çok {max} karakter olmalı, gelen {len}"),
+        ));
+    }
+}
+
 fn decode_at(
     display: &str,
     pointer: &str,
     value: &str,
     errors: &mut Vec<VectorError>,
 ) -> Option<Vec<u8>> {
+    // Uzunluk sınırı ŞEMA kuralıdır (SV-005), hex dilbilgisi değil (SV-006).
+    check_max_len(display, pointer, value, MAX_HEX_CHARS, errors);
     match hex(value) {
         Ok(bytes) => Some(bytes),
         Err(err) => {

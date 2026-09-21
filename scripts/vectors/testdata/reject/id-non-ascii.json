@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "suite": "selftest-id-nonascii",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-id-nonascii.\u00e7",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00"
+    }
+  ]
+}
