@@ -79,6 +79,61 @@ else
   ok "ret: sema alt-kumesinde olmayan anahtar sozcuk (SV-009, fail-closed)"
 fi
 
+# ── Şema öz-denetimi: bozuk bir ŞEMA veri hatası değil ARAÇ hatasıdır (rc=2) ──
+# Doğrulayıcı SCHEMA.json'a güvenir. Şemadaki bir anahtar sözcüğün DEĞERİ yanlış tipteyse
+# eskiden doğrulama ortasında Python istisnasıyla düşüyordu: teşhis yerine yığın izi, üstelik
+# veri hatası (rc=1) sınıfında. Aşağıdaki üç sınama şemanın kendi kapısını kanıtlar.
+schema_probe() { # <etiket> <beklenen-metin> <python-mutasyonu>
+  local label="$1" needle="$2" mutation="$3"
+  local mutated; mutated="$(mktemp -t kama-schema-XXXXXX.json)"
+  python3 - "$ROOT/vectors/SCHEMA.json" "$mutated" "$mutation" <<'PY'
+import json, sys
+schema = json.load(open(sys.argv[1], encoding="utf-8"))
+exec(sys.argv[3], {"schema": schema})
+json.dump(schema, open(sys.argv[2], "w", encoding="utf-8"), indent=2)
+PY
+  local out rc
+  out="$(python3 scripts/vectors/validate.py vectors/ --schema "$mutated" 2>&1)"; rc=$?
+  rm -f "$mutated"
+  if [[ $rc -ne 2 ]]; then
+    bad "sema oz-denetimi: $label" "cikis $rc — ARAC hatasi (2) olmaliydi: $out"
+  elif ! grep -qF "$needle" <<<"$out"; then
+    bad "sema oz-denetimi: $label" "rc=2 ama beklenen teshis yok ($needle): $out"
+  else
+    ok "sema oz-denetimi: $label"
+  fi
+}
+schema_probe "anahtar sozcuk degeri yanlis tipte" "int bekleniyordu" \
+  "schema['properties']['suite']['maxLength'] = '64'"
+schema_probe "\$id ile schema_version ayrismis" "/v2/SCHEMA.json" \
+  "schema['\$id'] = 'https://kama.invalid/vectors/SCHEMA.json'"
+schema_probe "combinator tuzagi (allOf icinde properties)" "combinator kolu" \
+  "schema['\$defs']['case']['allOf'].append({'properties': {'tier': {'type': 'string'}}})"
+
+# ── Çapraz kontrol vakumu: kütüphane yoksa SESSİZCE atlanmamalı ──
+stub="$(mktemp -d -t kama-stub-XXXXXX)"
+echo "raise ImportError('gizlendi')" > "$stub/jsonschema.py"
+if PYTHONPATH="$stub" python3 scripts/vectors/validate.py vectors/ --require-cross-check >/dev/null 2>&1; then
+  bad "capraz kontrol vakumu" "jsonschema YOKKEN --require-cross-check yesil dondu"
+else
+  ok "capraz kontrol: kutuphane yoksa hata (sessiz atlama yok)"
+fi
+rm -rf "$stub"
+if python3 scripts/vectors/validate.py vectors/ --require-cross-check >/dev/null 2>&1; then
+  ok "capraz kontrol: bagimsiz oracle ile temiz"
+else
+  bad "capraz kontrol" "jsonschema ile bulgu cikti"
+fi
+
+# ── GitHub Actions anotasyonu: bulgular PR diff'inde dosyaya iliştirilmeli ──
+ann="$(python3 scripts/vectors/validate.py \
+  scripts/vectors/testdata/reject/hex-uppercase.json --github 2>/dev/null)"
+if grep -q '^::error file=scripts/vectors/testdata/reject/hex-uppercase.json,title=SV-006::' <<<"$ann"; then
+  ok "CI anotasyonu: dosya + SV- kodu tasiniyor"
+else
+  bad "CI anotasyonu" "beklenen ::error satiri yok: $ann"
+fi
+
 # ── Spec izlenebilirlik ratchet'i: kapsam DÜŞERSE kırmızı olmalı ──
 # Kapının kendisi de vakuma düşebilir: taban dosyası bozulur ya da karşılaştırma yanlış
 # yazılırsa "kapsam düştü" durumu hiç görülmez. Sahte bir tabanla (kapsanmayan bir vakayı

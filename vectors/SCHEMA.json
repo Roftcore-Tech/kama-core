@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://kama.invalid/vectors/SCHEMA.json",
+  "$id": "https://kama.invalid/vectors/v2/SCHEMA.json",
   "title": "Kama test-vektor dosyasi (schema_version 2)",
   "description": "Uc arac ayni byte beklentisini okur: Python uretici, Rust yukleyici, CI dogrulayici. Bu dosya o uclusunun tek format otoritesidir. Bilinmeyen alan reddedilir (fail-closed); yeni alan eklemek schema_version artirmayi gerektirir. Anahtarlarin BURADAKI bildirim sirasi ayni zamanda kanonik serilestirme sirasidir (README \u00a76).",
   "type": "object",
@@ -189,5 +189,6 @@
         }
       }
     }
-  }
+  },
+  "$comment": "$id SURUMLUDUR ve schema_version const'una BAGLIDIR (/v<N>/SCHEMA.json). Dogrulayici bunu zorlar: surum yukseltilip $id unutulamaz. Iki farkli sema ayni kimligi tasirsa v1'i onbellege almis bir tuketici v2 icin onu servis eder. .invalid TLD (RFC 2606) kasitlidir: kimlik cozulebilir bir adres DEGILDIR."
 }

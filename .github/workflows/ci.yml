@@ -184,13 +184,21 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: doğrulayıcı öz-testi (kabul + red fixture'ları)
+      # ADR-03 doktrini (primary + cross-check) şema tarafında da uygulanır: doğrulayıcının
+      # kendi alt-küme motoru BİRİNCİL, `jsonschema` BAĞIMSIZ MERCİ. Kurulum ~2 sn; kurulum
+      # olmadan --cross-check sessizce atlanır ve "çapraz kontrol var" iddiası vakumda kalır.
+      - name: bağımsız oracle (jsonschema)
+        run: python3 -m pip install --quiet --disable-pip-version-check jsonschema
+      - name: doğrulayıcı öz-testi (fixture'lar + şema öz-denetimi + vakum kapıları)
         run: scripts/vectors/selftest.sh
       # --min-files: yol yanlış yazılırsa ya da ağaç boşalırsa doğrulayıcı 0 dosya gezip
-      # YEŞİL dönerdi. Bu, dosyanın başındaki 'test result: ok. [1-9]' kapılarıyla aynı
-      # vakum-sınıfı hatadır (BUL-02/BUL-03).
-      - name: vectors/ ağacı (kanonik biçim + vakum kapısı)
-        run: python3 scripts/vectors/validate.py vectors/ --canonical --min-files 2
+      # YEŞİL dönerdi (BUL-02/BUL-03 ile aynı vakum sınıfı).
+      # --require-cross-check: jsonschema yoksa sessiz atlama DEĞİL, hata.
+      # Bulgular GITHUB_ACTIONS=true sayesinde ::error anotasyonu olarak PR diff'ine iliştirilir.
+      - name: vectors/ ağacı (kanonik + vakum + bağımsız oracle)
+        run: |
+          python3 scripts/vectors/validate.py vectors/ \
+            --canonical --min-files 2 --require-cross-check
       # Şema kapısı BİÇİMİ denetler, KAPSAMI değil: ccr §30.7'nin 24 adlandırılmış negatif
       # vakasından hiçbiri yazılmasa bile yemyeşil kalırdı. Ratchet kapsamın düşmesini
       # engeller (bugün 4/24; borç görünür ve yalnız azalabilir).

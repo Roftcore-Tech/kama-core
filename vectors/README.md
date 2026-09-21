@@ -190,6 +190,54 @@ uzunluk, `0x` yok, boşluk yok — **büyük harfi sessizce düzeltmez, hata ver
 vektörleri belgeden boşluklu kopyalandığı için o testte boşluk temizliği yerel kalır; çözüm yine
 ortak fonksiyondur.)
 
+### Şemanın kendisi de doğrulanır
+
+Doğrulayıcı `SCHEMA.json`'a **güvenir**. Şemadaki bir anahtar sözcüğün *değeri* yanlış tipteyse
+(`"maxLength": "64"`) doğrulama ortasında Python istisnasıyla düşerdi: operatör teşhis yerine
+yığın izi görür ve hata **veri** hatası sanılırdı. `check_schema_shape()` artık **hiçbir dosyaya
+bakılmadan önce** koşar; kuruluysa resmî meta-şema da ikinci merci olarak çalıştırılır.
+
+İki yapısal değişmez burada zorlanır:
+
+**`$id` ↔ `schema_version` bağlı.** `$id`, `/v<N>/SCHEMA.json` ile bitmeli ve `N` =
+`schema_version`'ın `const`'u olmalı. `$id` bir şema kaynağının **kimliğidir**; iki farklı şema
+aynı kimliği taşırsa v1'i önbelleğe almış bir tüketici v2 için onu servis eder. Bu kural yordamı
+insan diline bırakmıyor: sürüm yükseltilip `$id` unutulamaz. (`1`→`2` geçişinde tam olarak bu
+kaçırılmıştı; kuralı yazınca kendi hatamızı yakaladı.)
+
+**Combinator tuzağı yasak.** `additionalProperties: false` olan bir düğümün `allOf`/`anyOf`/
+`oneOf` kolları `properties` tanımlayamaz. Draft 2020-12'de `additionalProperties` kardeş
+kolların tanıttığı alanları **görmez** — böyle bir kol eklendiği gün geçerli belgeler sessizce
+reddedilir ve sebebi bariz olmaz. (Doğru cevap `unevaluatedProperties`; onu desteklemek
+annotation-izleme semantiği ister, bu değerlendiricinin kapsamı değil — o yüzden tuzak
+**kullanımda** yasaklandı. Ölçüldü: kol eklenince `'tier' was unexpected`,
+`unevaluatedProperties` ile kabul.)
+
+### Bağımsız merci (çapraz kontrol)
+
+ADR-03 doktrini (primary + cross-check) şema tarafında da uygulanır: alt-küme motoru
+**birincil**, `jsonschema` **bağımsız merci**.
+
+```bash
+python3 scripts/vectors/validate.py vectors/ --require-cross-check
+```
+
+`--cross-check` tek başına, kütüphane yoksa **sessizce atlar ve yeşil döner** — CI'da bu,
+çapraz kontrolün hiç koşmaması demektir. `--require-cross-check` bunu hataya çevirir ve CI
+o bayrakla koşar (job `jsonschema`'yı kendi kurar).
+
+### CI anotasyonu
+
+`GITHUB_ACTIONS=true` iken (ya da `--github` ile) her bulgu ayrıca iş-akışı komutu olarak
+basılır, böylece PR diff'inde **ilgili dosyaya iliştirilir**:
+
+```
+::error file=vectors/examples/example-positive.json,title=SV-006::/cases/0/expected_hex: ...
+```
+
+Satır numarası yok: JSON işaretçisinden satır türetmek güvenilmez, o yüzden işaretçi mesajda
+durur ve anotasyon dosya düzeyinde kalır.
+
 ### Kanonik serileştirme (üretici disiplini)
 
 Vektör dosyalarını bir üretici yazacak. Aynı içeriği her koşuda farklı byte'larla yazarsa
@@ -290,7 +338,7 @@ kümesini** görmesini sağlar. Regresyon testi: `directory_symlink_loops_do_not
 | `SV-006` | hex alanı kuralı (küçük harf, çift uzunluk, `0x` yok) |
 | `SV-007` | `id` repo genelinde tekil değil |
 | `SV-008` | dizgede kontrol karakteri |
-| `SV-009` | `SCHEMA.json` okunamadı / **doğrulayıcının tanımadığı şema anahtar sözcüğü** |
+| `SV-009` | **şema öz-denetimi**: okunamadı · tanınmayan anahtar sözcük · anahtar sözcüğün değeri yanlış tipte · derlenemeyen `pattern` · çözülemeyen `$ref` · `$id`↔sürüm ayrışması · combinator tuzağı · `--require-cross-check` ile `jsonschema` yok. Hepsi **rc=2** (araç hatası), rc=1 (veri hatası) değil |
 | `SV-010` | `--min-files N` verildi ve daha az dosya doğrulandı — **vakum kapısı** |
 | `SV-011` | kanonik serileştirme ihlali (`--canonical`) |
 | `SV-012` | dosya boyutu sınırı aşıldı (8 MiB; SR-AUDIT-001 bounds-before-alloc) |
@@ -344,7 +392,8 @@ iki araç aynı dosyadan farklı byte okuyabilir. Doğrulayıcı bunu `SV-002` i
 `schema_version: 1` **donmuştur.** Alan eklemek, silmek, bir alanı zorunlu yapmak ya da bir kuralı
 gevşetmek → `2`. Aynı PR'da:
 
-1. `SCHEMA.json` + bu README güncellenir,
+1. `SCHEMA.json` + bu README güncellenir — **`$id`'nin `/v<N>/` parçası da** (doğrulayıcı
+   `$id` ile `const`'un ayrışmasına izin vermez, bu adım unutulamaz),
 2. `validate.py` ve `crates/kama-vectors/src/lib.rs` içindeki `SUPPORTED_SCHEMA_VERSION`
    güncellenir (gerekirse iki sürüm birden desteklenir),
 3. `scripts/vectors/testdata/reject/schema-version-2.json` **bir üst sürüme** taşınır — yoksa

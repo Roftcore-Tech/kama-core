@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -62,7 +63,11 @@ CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class SchemaUnsupported(Exception):
-    """SCHEMA.json bu değerlendiricinin tanımadığı bir anahtar sözcük içeriyor."""
+    """SCHEMA.json bu değerlendiricinin güvenle yorumlayamayacağı bir şey içeriyor.
+
+    İki durum: tanımadığı bir anahtar sözcük, ya da tanıdığı bir anahtar sözcüğün
+    beklenmedik tipte bir değeri. İkisi de fail-closed — sessizce yorumlanmaz.
+    """
 
 
 class Finding:
@@ -76,6 +81,16 @@ class Finding:
 
     def __str__(self) -> str:
         return f"{self.path}{self.pointer}: [{self.code}] {self.message}"
+
+    def annotation(self) -> str:
+        """GitHub Actions iş-akışı komutu: bulguyu PR diff'inde DOSYAYA iliştirir.
+
+        Satır numarası yok — JSON işaretçisinden satır türetmek güvenilmez; işaretçi
+        mesaja konur, anotasyon dosya düzeyinde kalır (GitHub 1. satıra bağlar).
+        """
+        text = f"{self.pointer}: {self.message}".replace("%", "%25")
+        text = text.replace("\r", "%0D").replace("\n", "%0A")
+        return f"::error file={self.path},title={self.code}::{text}"
 
 
 # ── JSON ayrıştırma (yinelenen anahtar = hata) ────────────────────────────────
@@ -297,6 +312,154 @@ def _kind_of(value) -> str:
     if isinstance(value, int):
         return "integer"
     return "number"
+
+
+# ── Şema öz-denetimi ──────────────────────────────────────────────────────────
+#
+# NEDEN. Doğrulayıcı `SCHEMA.json`'a GÜVENİYOR. Şemadaki bir anahtar sözcüğün DEĞERİ yanlış
+# tipteyse (ör. `"maxLength": "64"`) değerlendirici doğrulama ortasında Python istisnasıyla
+# düşer: operatör teşhis yerine yığın izi görür ve hata veri hatası sanılır. Sektör pratiği
+# nettir — şemanı da doğrula. Aşağıdaki denetim, herhangi bir dosyaya bakılmadan ÖNCE koşar.
+#
+# Ayrıca iki yapısal kural pinlenir (§3 ve §2 bulguları):
+#   * `$id` ile `schema_version` const'u BİRBİRİNE BAĞLI: `$id` `/v<N>/SCHEMA.json` ile
+#     bitmeli ve N == const olmalı. Böylece sürüm yükseltilip `$id` unutulamaz — iki farklı
+#     şema aynı kimliği taşıyamaz.
+#   * `additionalProperties: false` olan bir düğümün combinator kolları (`allOf`/`anyOf`/
+#     `oneOf`/`$ref`) `properties` TANIMLAYAMAZ. Draft 2020-12'de `additionalProperties`
+#     kardeş kolların tanıttığı alanları GÖRMEZ; böyle bir kol eklendiği gün geçerli belgeler
+#     reddedilmeye başlar ve sebebi bariz olmaz. (Doğru cevap `unevaluatedProperties`'tir;
+#     onu desteklemek annotation-izleme semantiği ister — bu değerlendiricinin kapsamı değil,
+#     o yüzden tuzak KULLANIMDA yasaklanır.)
+
+_SCHEMA_KEYWORD_SHAPE: dict[str, type | tuple[type, ...]] = {
+    "type": (str, list),
+    "required": list,
+    "properties": dict,
+    "additionalProperties": (bool, dict),
+    "propertyNames": dict,
+    "items": dict,
+    "minItems": int,
+    "maxItems": int,
+    "minLength": int,
+    "maxLength": int,
+    "minimum": (int, float),
+    "pattern": str,
+    "uniqueItems": bool,
+    "enum": list,
+    "oneOf": list,
+    "allOf": list,
+    "anyOf": list,
+    "not": dict,
+    "$ref": str,
+}
+_KNOWN_TYPES = frozenset(
+    {"object", "array", "string", "boolean", "integer", "number", "null"}
+)
+
+
+def check_schema_shape(schema: dict) -> None:
+    """Şemayı, hiçbir örneğe bakmadan önce denetler.
+
+    Raises:
+        SchemaUnsupported: tanınmayan anahtar sözcük, yanlış tipte değer, bozuk `pattern`,
+            çözülemeyen `$ref`, `$id`/`schema_version` uyumsuzluğu ya da combinator tuzağı.
+    """
+    _check_id_matches_version(schema)
+    _walk_schema(schema, schema, "#")
+
+
+def _check_id_matches_version(schema: dict) -> None:
+    schema_id = schema.get("$id")
+    const = schema.get("properties", {}).get("schema_version", {}).get("const")
+    if not isinstance(schema_id, str):
+        raise SchemaUnsupported("kökte `$id` yok ya da dizge değil")
+    if not isinstance(const, int) or isinstance(const, bool):
+        raise SchemaUnsupported("`properties.schema_version.const` bir tamsayı olmalı")
+    want = f"/v{const}/SCHEMA.json"
+    if not schema_id.endswith(want):
+        raise SchemaUnsupported(
+            f"`$id` ile sürüm ayrışmış: schema_version.const={const} iken $id={schema_id!r} — "
+            f"{want!r} ile bitmeli. İki farklı şema aynı kimliği taşıyamaz."
+        )
+
+
+def _walk_schema(node, root: dict, path: str) -> None:
+    if isinstance(node, bool):
+        return
+    if not isinstance(node, dict):
+        raise SchemaUnsupported(f"{path}: şema düğümü nesne ya da boolean olmalı")
+
+    unknown = set(node) - _ANNOTATION_KEYWORDS - _ASSERTION_KEYWORDS
+    if unknown:
+        raise SchemaUnsupported(f"desteklenmeyen şema anahtar sözcüğü {sorted(unknown)!r} ({path})")
+
+    for key, value in node.items():
+        want = _SCHEMA_KEYWORD_SHAPE.get(key)
+        if want is not None and not isinstance(value, want):
+            names = want.__name__ if isinstance(want, type) else "/".join(t.__name__ for t in want)
+            raise SchemaUnsupported(
+                f"{path}/{key}: {names} bekleniyordu, {type(value).__name__} geldi ({value!r})"
+            )
+
+    if "type" in node:
+        for t in node["type"] if isinstance(node["type"], list) else [node["type"]]:
+            if t not in _KNOWN_TYPES:
+                raise SchemaUnsupported(f"{path}/type: bilinmeyen tip {t!r}")
+    if "pattern" in node:
+        try:
+            re.compile(node["pattern"])
+        except re.error as exc:
+            raise SchemaUnsupported(f"{path}/pattern: derlenemeyen düzenli ifade: {exc}") from exc
+    if "$ref" in node:
+        ref = node["$ref"]
+        target = root
+        if ref != "#":
+            if not ref.startswith("#/"):
+                raise SchemaUnsupported(f"{path}/$ref: yalnız yerel $ref destekleniyor ({ref!r})")
+            for token in ref[2:].split("/"):
+                token = token.replace("~1", "/").replace("~0", "~")
+                if not isinstance(target, dict) or token not in target:
+                    raise SchemaUnsupported(f"{path}/$ref: çözülemedi ({ref!r})")
+                target = target[token]
+
+    _check_combinator_trap(node, path)
+
+    for key in ("properties", "$defs"):
+        for name, child in (node.get(key) or {}).items():
+            _walk_schema(child, root, f"{path}/{key}/{name}")
+    for key in ("items", "not", "propertyNames"):
+        if key in node:
+            _walk_schema(node[key], root, f"{path}/{key}")
+    if isinstance(node.get("additionalProperties"), dict):
+        _walk_schema(node["additionalProperties"], root, f"{path}/additionalProperties")
+    for key in ("oneOf", "allOf", "anyOf"):
+        branches = node.get(key)
+        if branches is None:
+            continue
+        if not branches:
+            raise SchemaUnsupported(f"{path}/{key}: boş combinator")
+        for i, branch in enumerate(branches):
+            _walk_schema(branch, root, f"{path}/{key}/{i}")
+
+
+def _check_combinator_trap(node: dict, path: str) -> None:
+    """`additionalProperties: false` + kardeş kolda `properties` = sessiz ret tuzağı."""
+    if node.get("additionalProperties") is not False:
+        return
+    for key in ("allOf", "anyOf", "oneOf"):
+        for i, branch in enumerate(node.get(key) or []):
+            if isinstance(branch, dict) and "properties" in branch:
+                raise SchemaUnsupported(
+                    f"{path}/{key}/{i}: `additionalProperties: false` olan bir düğümün "
+                    "combinator kolu `properties` tanımlayamaz — Draft 2020-12'de "
+                    "`additionalProperties` kardeş kolların alanlarını GÖRMEZ, geçerli belgeler "
+                    "sessizce reddedilir. Alanı düğümün kendi `properties`'ine taşıyın."
+                )
+    if "$ref" in node and node.get("properties") is not None:
+        raise SchemaUnsupported(
+            f"{path}: `additionalProperties: false` + kardeş `$ref` — aynı tuzak."
+        )
 
 
 # ── Şemayla ifade edilemeyen repo kuralları ───────────────────────────────────
@@ -625,13 +788,23 @@ def collect(paths: list[str]) -> list[Path]:
     return out
 
 
-def cross_check(files: list[Path], schema: dict) -> int:
-    """Üçüncü parti Draft 2020-12 uygulamasıyla çapraz kontrol (opsiyonel)."""
+def cross_check(files: list[Path], schema: dict, required: bool = False) -> int | None:
+    """Üçüncü parti Draft 2020-12 uygulamasıyla çapraz kontrol.
+
+    Döner: bulgu sayısı; `None` = kütüphane yok ve `required` değil (atlandı).
+    """
     try:
         import jsonschema  # type: ignore
     except ImportError:
+        if required:
+            print(
+                "[SV-009] --require-cross-check verildi ama `jsonschema` kurulu değil — "
+                "çapraz kontrol SESSİZCE ATLANMAZ",
+                file=sys.stderr,
+            )
+            return -1
         print("cross-check: `jsonschema` kurulu değil — atlandı", file=sys.stderr)
-        return 0
+        return None
     checker = jsonschema.Draft202012Validator(schema)
     bad = 0
     for f in files:
@@ -687,6 +860,24 @@ def main(argv: list[str] | None = None) -> int:
         help="`jsonschema` kuruluysa üçüncü parti uygulamayla da doğrula",
     )
     parser.add_argument(
+        "--require-cross-check",
+        action="store_true",
+        help=(
+            "`jsonschema` YOKSA hata ver (rc=2). --cross-check tek başına kütüphane "
+            "yoksa sessizce atlar ve yeşil döner — CI'da bu, çapraz kontrolün hiç "
+            "koşmaması demektir (vakum). CI bu bayrakla koşar"
+        ),
+    )
+    parser.add_argument(
+        "--github",
+        action="store_true",
+        default=os.environ.get("GITHUB_ACTIONS") == "true",
+        help=(
+            "bulguları GitHub Actions anotasyonu olarak da bas (PR diff'inde dosyaya "
+            "iliştirilir). GITHUB_ACTIONS=true iken kendiliğinden açılır"
+        ),
+    )
+    parser.add_argument(
         "--canonical",
         action="store_true",
         help=(
@@ -723,6 +914,24 @@ def main(argv: list[str] | None = None) -> int:
         schema = json.loads(Path(args.schema).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"[{SV_SCHEMA_FILE}] şema okunamadı ({args.schema}): {exc}", file=sys.stderr)
+        return 2
+
+    # Şema, herhangi bir dosyaya bakılmadan ÖNCE denetlenir: bozuk bir şema veri hatası
+    # (rc=1) değil ARAÇ hatasıdır (rc=2) ve teşhisle bildirilir, yığın iziyle değil.
+    try:
+        check_schema_shape(schema)
+    except SchemaUnsupported as exc:
+        print(f"[{SV_SCHEMA_FILE}] {args.schema}: {exc}", file=sys.stderr)
+        return 2
+    # Bedava ikinci merci: kuruluysa resmî meta-şema.
+    try:
+        import jsonschema as _js
+
+        _js.validators.validator_for(schema).check_schema(schema)
+    except ImportError:
+        pass
+    except Exception as exc:  # jsonschema.SchemaError ve türevleri
+        print(f"[{SV_SCHEMA_FILE}] {args.schema}: meta-şema reddetti: {exc}", file=sys.stderr)
         return 2
 
     validator = SubsetValidator(schema)
@@ -766,10 +975,16 @@ def main(argv: list[str] | None = None) -> int:
 
     for finding in findings:
         print(str(finding), file=sys.stderr)
+        if args.github:
+            print(finding.annotation())
 
     rc = 1 if findings else 0
-    if args.cross_check and cross_check(files, schema):
-        rc = 1
+    if args.cross_check or args.require_cross_check:
+        bad = cross_check(files, schema, required=args.require_cross_check)
+        if bad == -1:
+            return 2
+        if bad:
+            rc = 1
 
     print(f"{len(files)} dosya · {len(ids)} vaka · {len(findings)} bulgu")
     return rc
