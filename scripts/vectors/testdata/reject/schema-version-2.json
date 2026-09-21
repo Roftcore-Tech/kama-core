@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-future",
+  "spec_version": "x@v1",
+  "cases": [
+    {
+      "id": "selftest-future.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00"
+    }
+  ]
+}

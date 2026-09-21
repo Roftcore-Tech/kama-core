@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "suite": "selftest-both-inputs",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-both-inputs.c1",
+      "kind": "encode",
+      "input": {
+        "a_hex": "00"
+      },
+      "input_hex": "00",
+      "expected_hex": "00"
+    }
+  ]
+}

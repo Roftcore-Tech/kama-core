@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "suite": "selftest-hex-0x",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-hex-0x.c1",
+      "kind": "encode",
+      "input": {
+        "serial_hex": "0x1234"
+      },
+      "expected_hex": "1234"
+    }
+  ]
+}

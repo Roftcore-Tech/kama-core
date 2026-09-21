@@ -170,12 +170,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p kama-noise-wire --features libsodium-oracle --test aead_differential -- --nocapture
 
+  # ── Test-vektör format kapısı (T-00.1) ──
+  # Üç araç (Python üretici, Rust testleri, bu doğrulayıcı) aynı byte beklentisini okur;
+  # vectors/SCHEMA.json o üçlünün tek format otoritesidir. Doğrulayıcının bağımlılığı yok
+  # (stdlib-only), bu yüzden job saniyeler sürer ve toolchain kurulumu gerektirmez.
+  vectors:
+    name: vectors (SCHEMA.json kapısı)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: doğrulayıcı öz-testi (kabul + red fixture'ları)
+        run: scripts/vectors/selftest.sh
+      - name: vectors/ ağacı
+        run: python3 scripts/vectors/validate_vectors.py vectors/
+
   # ── Sonuç sınıflandırması: infra/billing hatası ile korelasyon hatası KARIŞMASIN ──
   ci-verdict:
     name: ci verdict (failure classification)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [static, test-fast, miri, asan, msan, security, aead-differential]
+    needs: [static, test-fast, miri, asan, msan, security, aead-differential, vectors]
     if: always()
     steps:
       - name: classify

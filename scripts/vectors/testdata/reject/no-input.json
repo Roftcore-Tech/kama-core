@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "suite": "selftest-no-input",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-no-input.c1",
+      "kind": "encode",
+      "expected_hex": "00"
+    }
+  ]
+}

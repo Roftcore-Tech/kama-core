@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kama.invalid/vectors/SCHEMA.json",
+  "title": "Kama test-vektor dosyasi (schema_version 1)",
+  "description": "Uc arac ayni byte beklentisini okur: Python uretici, Rust testleri, CI dogrulayici. Bu dosya o uclusunun tek format otoritesidir. Bilinmeyen alan reddedilir (fail-closed); yeni alan eklemek schema_version artirmayi gerektirir.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "suite", "spec_version", "cases"],
+
+  "properties": {
+    "schema_version": {
+      "description": "Bu dosyanin format surumu. Yalnizca 1 tanimlidir. Baska bir deger goren arac HATA verir, sessizce gecmez.",
+      "const": 1
+    },
+    "suite": {
+      "description": "Vektor kumesinin adi. Dosya basina TEK suite. Kucuk harf token.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 64
+    },
+    "spec_version": {
+      "description": "Vektorlerin uretildigi donmus spec surumu. Onerilen bicim: <spec-dosya-slug>@<versiyon>[+<yama-tarihi>], ornek: ccr-format-spec@v1.0+2026-09-18b.",
+      "type": "string",
+      "pattern": "^\\S(.*\\S)?$",
+      "maxLength": 128
+    },
+    "description": {
+      "description": "Serbest metin; arac davranisini ETKILEMEZ.",
+      "type": "string",
+      "maxLength": 1024
+    },
+    "cases": {
+      "description": "En az bir vaka. Sira anlamlidir degildir; eslesme id uzerindendir.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/case" }
+    }
+  },
+
+  "$defs": {
+    "hex": {
+      "$comment": "Kucuk harf, 0x YOK, cift uzunluk. Bos dizge = sifir byte ve GECERLIDIR (ornek: ccr §35 early_data N=0).",
+      "type": "string",
+      "pattern": "^([0-9a-f]{2})*$",
+      "maxLength": 262144
+    },
+
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind"],
+
+      "properties": {
+        "id": {
+          "description": "REPO GENELINDE tekil. Onerilen bicim: <suite>.<yerel-ad>.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+([._/-][a-z0-9]+)*$",
+          "maxLength": 128
+        },
+        "kind": {
+          "description": "Aracin uzerinden dagitim yaptigi anahtar (ornek: encode, decode, verify). Soz dagarcigi suite'e ozeldir ve aciktir; bicim sabittir.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*$",
+          "maxLength": 64
+        },
+        "note": {
+          "description": "Serbest metin; arac davranisini ETKILEMEZ.",
+          "type": "string",
+          "maxLength": 1024
+        },
+        "spec_ref": {
+          "description": "Otorite belge atfi, ornek: 'ccr-format-spec.md §30.7 INVALID-4'. Arac davranisini ETKILEMEZ.",
+          "type": "string",
+          "maxLength": 256
+        },
+
+        "input": {
+          "$comment": "Yapisal girdi (alanlardan kodlama yonu). Ictekii her byte dizisi hex DIZGE olmalidir ve anahtari '_hex' ile bitmelidir; bu derin kural JSON Schema ile ifade edilemez, dogrulayici zorlar (SV-006).",
+          "type": "object"
+        },
+        "input_hex": {
+          "description": "Ham wire byte'lari (cozumleme yonu).",
+          "$ref": "#/$defs/hex"
+        },
+
+        "expected_hex": {
+          "description": "POZITIF vaka: beklenen wire her zaman hex.",
+          "$ref": "#/$defs/hex"
+        },
+        "expected": {
+          "description": "NEGATIF vaka: beklenen ret.",
+          "$ref": "#/$defs/expected_negative"
+        }
+      },
+
+      "allOf": [
+        {
+          "$comment": "input | input_hex — TAM OLARAK biri.",
+          "oneOf": [
+            { "required": ["input"] },
+            { "required": ["input_hex"] }
+          ]
+        },
+        {
+          "$comment": "expected_hex | expected — TAM OLARAK biri.",
+          "oneOf": [
+            { "required": ["expected_hex"] },
+            { "required": ["expected"] }
+          ]
+        }
+      ]
+    },
+
+    "expected_negative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "reason"],
+      "properties": {
+        "result": {
+          "description": "TAM OLARAK bu uc deger. drop = sessiz atim (sayac disinda iz yok). reject = tanimli ret (arayan ret'i gorur). fail = fail-closed/defer (islem tamamlanamaz; girdi mutlaka gecersiz DEGILDIR).",
+          "enum": ["drop", "reject", "fail"]
+        },
+        "reason": {
+          "description": "Kararli, tam-dizge karsilastirilan ret gerekcesi. Onerilen bicim: kucuk harf token, ornek 'invalid-4-length-mismatch'.",
+          "type": "string",
+          "pattern": "^\\S(.*\\S)?$",
+          "maxLength": 200
+        }
+      }
+    }
+  }
+}

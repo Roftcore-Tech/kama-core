@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "suite": "selftest-hex-upper",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-hex-upper.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "DEADBEEF"
+    }
+  ]
+}

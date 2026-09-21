@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "suite": "ccr-parser-reject-v1",
+  "spec_version": "ccr-format-spec@v1.0+2026-09-18b",
+  "description": "ORNEK DOSYA (T-00.1) \u2014 negatif vaka bicimini gosterir. Vakalar ccr \u00a730.7 INVALID-n corpus'undan alinmistir; byte degerleri desenli dolgudur, kriptografik golden vector DEGILDIR.",
+  "cases": [
+    {
+      "id": "ccr-parser-reject-v1.invalid-1.unsupported-magic",
+      "kind": "decode",
+      "spec_ref": "ccr-format-spec.md \u00a730.7 INVALID-1",
+      "note": "magic 'SRCX' tanimli degil; 'SRCR' (Root CA CCR) beklenirdi.",
+      "input_hex": "5352435801",
+      "expected": {
+        "result": "reject",
+        "reason": "invalid-1-unsupported-magic"
+      }
+    },
+    {
+      "id": "ccr-parser-reject-v1.invalid-4.compact-device-cert-length",
+      "kind": "decode",
+      "spec_ref": "ccr-format-spec.md \u00a730.7 INVALID-4",
+      "note": "CompactDeviceCertV1 sabit 152B; burada 151B. Uzunluk kontrolu ALLOC'TAN ONCE (PARSER-02).",
+      "input_hex": "1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333000000006a1b2c00444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444",
+      "expected": {
+        "result": "reject",
+        "reason": "invalid-4-compact-device-cert-length"
+      }
+    },
+    {
+      "id": "ccr-parser-reject-v1.invalid-8.device-x25519-all-zero",
+      "kind": "decode",
+      "spec_ref": "ccr-format-spec.md \u00a730.7 INVALID-8, \u00a730.4 dogrulama",
+      "note": "device_x25519_pub all-zero -> reject (small-order/degenerate DH korumasi).",
+      "input_hex": "1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000033333333333333333333333333333333000000006a1b2c0044444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444",
+      "expected": {
+        "result": "reject",
+        "reason": "invalid-8-device-x25519-all-zero"
+      }
+    },
+    {
+      "id": "ccr-parser-reject-v1.invalid-13.cert-ref-cache-miss",
+      "kind": "verify",
+      "spec_ref": "ccr-format-spec.md \u00a730.7 INVALID-13",
+      "note": "'fail' \u2014 'reject' DEGIL: girdi gecersiz OLMAYABILIR, dogrulama tamamlanamaz (cache-miss + inline cert yok). Fail-closed/defer.",
+      "input": {
+        "sender_cert_ref_hex": "5555555555555555555555555555555555555555555555555555555555555555",
+        "cert_cache_hex": [],
+        "inline_compact_device_cert_hex": ""
+      },
+      "expected": {
+        "result": "fail",
+        "reason": "invalid-13-cert-ref-cache-miss"
+      }
+    }
+  ]
+}
