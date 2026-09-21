@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Kama test-vektör doğrulayıcısı — vectors/SCHEMA.json kapısı (T-00.1).
+"""Kama test-vektör doğrulayıcısı — vectors/SCHEMA.json kapısı (T-00.1 / T-00.2).
 
-Üç araç aynı byte beklentisini okur: Python üretici, Rust testleri, bu doğrulayıcı.
+Üç araç aynı byte beklentisini okur: Python üretici, Rust yükleyici, bu doğrulayıcı.
 Bu betik CI kolunun tamamıdır: `vectors/SCHEMA.json`'u okur, verilen dosyaları ona
 karşı doğrular ve şemayla ifade edilemeyen üç repo kuralını ayrıca zorlar
 (derin hex disiplini, id tekilliği, kontrol karakteri yasağı).
 
+İKİZİ: `crates/kama-vectors` (Rust yükleyici) aynı kuralları zorlar ve aynı SV- kodlarını
+üretir. İkisinin vaka listesi `scripts/vectors/testdata/EXPECTATIONS.json`'da TEK yerde
+durur; ayrışma `crates/kama-vectors/tests/parity.rs` tarafından yakalanır.
+
 Kullanım:
-    python3 scripts/vectors/validate_vectors.py vectors/
-    python3 scripts/vectors/validate_vectors.py a.json b.json --cross-check
+    python3 scripts/vectors/validate.py vectors/
+    python3 scripts/vectors/validate.py a.json b.json --cross-check
 
 Çıkış kodu: 0 = temiz · 1 = doğrulama hatası · 2 = kullanım/ortam hatası.
 

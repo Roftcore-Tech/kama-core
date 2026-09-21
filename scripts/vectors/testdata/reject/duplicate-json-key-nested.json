@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "suite": "selftest-dupkey-nested",
+  "spec_version": "x@v1",
+  "cases": [
+    {
+      "id": "selftest-dupkey-nested.c1",
+      "kind": "encode",
+      "input": {
+        "outer": {
+          "serial_hex": "1111",
+          "serial_hex": "2222"
+        }
+      },
+      "expected_hex": "00"
+    }
+  ]
+}

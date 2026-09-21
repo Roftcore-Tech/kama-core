@@ -7,12 +7,11 @@
 use kama_fec_codec::{by_id, FecCodec, ReceivedSymbol, RsSimdCodec, SourceSymbol};
 use kama_transport_schema::prefix::SourcePrefix;
 
+/// 64B golden. Hex çözümü `kama_vectors::hex` (vectors/SCHEMA.json sözleşmesi: küçük harf,
+/// çift uzunluk, 0x yok); buradaki tek ek kural pinlenmiş uzunluktur.
 fn hex(s: &str) -> Vec<u8> {
     assert_eq!(s.len(), 128, "golden = 64B = 128 hex");
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-        .collect()
+    kama_vectors::hex(s).expect("golden hex")
 }
 
 fn canonical_sym(mid: u32, off: u32, payload: &[u8], fin: bool) -> Vec<u8> {

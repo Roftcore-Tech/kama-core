@@ -9,11 +9,11 @@
 
 Beklenen byte çıktılarını üç ayrı araç okuyacak:
 
-| tüketici | rol |
-|---|---|
-| Python üretici | vektör dosyalarını **yazar** |
-| Rust testleri | dosyaları okur, motoru ona karşı **koşturur** |
-| CI doğrulayıcı | dosyaların formata uyduğunu **kapıda** denetler |
+| tüketici | nerede | rol |
+|---|---|---|
+| Python üretici | *(henüz yok)* | vektör dosyalarını **yazar** |
+| Rust yükleyici | `crates/kama-vectors` | dosyaları okur, motoru ona karşı **koşturur** |
+| CI doğrulayıcı | `scripts/vectors/validate.py` | dosyaların formata uyduğunu **kapıda** denetler |
 
 Aynı formatı okumazlarsa her biri kendi yorumunu yapar ve testler birbirini doğrulayamaz — üretici
 `"DEADBEEF"` yazar, Rust `0xdeadbeef` bekler, CI hiçbirini görmez. `SCHEMA.json` bu üç aracın tek
@@ -28,13 +28,18 @@ vectors/
   examples/
     example-positive.json         pozitif vaka örneği (encode + decode)
     example-negative.json         negatif vaka örneği (reject + fail)
-  <suite>/...                     gerçek vektör dosyaları (T-00.1 kapsamında henüz yok)
+  <suite>/...                     gerçek vektör dosyaları (henüz yok)
 
 scripts/vectors/
-  validate_vectors.py             doğrulayıcı (stdlib-only, bağımlılıksız)
+  validate.py                     Python doğrulayıcı (stdlib-only, bağımlılıksız)
   selftest.sh                     doğrulayıcının kendi kapısı
+  testdata/EXPECTATIONS.json      PARİTE TABLOSU — Python ve Rust tarafı aynı listeyi okur
   testdata/accept/                kabul edilmesi gereken fixture'lar
   testdata/reject/                reddedilmesi gereken fixture'lar
+
+crates/kama-vectors/
+  src/lib.rs                      Rust yükleyici + tek hex yardımcısı
+  tests/parity.rs                 Python ↔ Rust parite testi
 ```
 
 `examples/` altındaki iki dosya **canlı**dır: CI `vectors/` ağacını süpürürken onları da doğrular,
@@ -121,10 +126,12 @@ Başka hiçbir alana izin yok: bilinmeyen alan **reddedilir** (fail-closed). Yen
 `reason` kararlı, **tam-dizge karşılaştırılan** bir gerekçedir. Önerilen biçim küçük harf token,
 kaynağını taşısın: `invalid-4-compact-device-cert-length`. Prose açıklama `note`'a yazılır.
 
-## 6. Doğrulayıcı
+## 6. İki araç, tek kural kümesi
+
+### Python doğrulayıcı — `scripts/vectors/validate.py`
 
 ```bash
-python3 scripts/vectors/validate_vectors.py vectors/
+python3 scripts/vectors/validate.py vectors/
 ```
 
 ```bash
@@ -132,6 +139,46 @@ scripts/vectors/selftest.sh
 ```
 
 Bağımlılık yok (Python 3.9+ stdlib). Çıkış kodu: `0` temiz · `1` doğrulama hatası · `2` kullanım/ortam hatası.
+
+### Rust yükleyici — `crates/kama-vectors`
+
+```rust
+let files = kama_vectors::load_dir("vectors")?;   // ağaç; id tekilliği tüm küme boyunca
+let file  = kama_vectors::load_file(path)?;
+let bytes = kama_vectors::hex("deadbeef")?;       // TEK hex yardımcısı
+```
+
+Aynı kuralları zorlar ve **aynı `SV-` kodlarını** üretir (`VectorError::code`). Şemanın iki
+"tam olarak biri" kuralı burada **tip sistemine** gömülüdür — yüklenmiş bir `Case` hem `input`
+hem `input_hex` taşıyamaz, çünkü öyle bir değer inşa edilemez:
+
+```rust
+pub enum Input    { Structured(Map<String, Value>), Wire(Vec<u8>) }
+pub enum Expected { Wire(Vec<u8>), Rejected { result: RejectResult, reason: String } }
+pub enum RejectResult { Drop, Reject, Fail }
+```
+
+`kama_vectors::hex` repo genelinde **tek** hex uygulamasıdır; dört test dosyasındaki
+(`kama-fec-codec/tests/golden.rs`, `kama-noise-wire/tests/{golden_wire,sprint5b_legacy,rfc8439_vectors}.rs`)
+kopya `fn hex` gövdelerinin yerini aldı. `SCHEMA.json` sözleşmesini uygular: küçük harf, çift
+uzunluk, `0x` yok, boşluk yok — **büyük harfi sessizce düzeltmez, hata verir.** (RFC-8439
+vektörleri belgeden boşluklu kopyalandığı için o testte boşluk temizliği yerel kalır; çözüm yine
+ortak fonksiyondur.)
+
+### Parite nasıl korunuyor
+
+İki aracın vaka listesi `scripts/vectors/testdata/EXPECTATIONS.json`'da, **tek yerde** durur:
+
+```json
+{ "accept": [ { "label": "...", "paths": ["..."] } ],
+  "reject": [ { "label": "...", "code": "SV-004", "paths": ["..."] } ] }
+```
+
+`selftest.sh` (bash+python) ve `crates/kama-vectors/tests/parity.rs` (Rust) aynı dosyadan
+sürülür. Ret vakalarında yalnız "kırmızı mı" değil, **beklenen `SV-` koduyla mı kırmızı**
+denetlenir. `parity.rs` ayrıca `validate.py`'yi alt süreç olarak çağırıp iki aracın **hükmünü**
+karşılaştırır (`python3` yoksa o katman atlanır). Bir taraf diğerinden ayrıldığında ilgili satır
+kırmızı olur; tablo iki yerde ayrı bakım istemez.
 
 ### Hata kodları
 
@@ -149,14 +196,14 @@ Bağımlılık yok (Python 3.9+ stdlib). Çıkış kodu: `0` temiz · `1` doğru
 
 ### İki tasarım kararı
 
-**Fail-closed değerlendirici.** `validate_vectors.py` içindeki JSON Schema motoru tam bir
+**Fail-closed değerlendirici.** `validate.py` içindeki JSON Schema motoru tam bir
 Draft 2020-12 uygulaması değil, `SCHEMA.json`'un kullandığı alt kümedir. Tanımadığı bir anahtar
 sözcükle karşılaşırsa **onu atlamaz, `SV-009` ile durur**. Yani şemaya yeni bir kural eklenip
 doğrulayıcının onu sessizce zorlamadığı bir ara durum oluşamaz — kapı kırmızı olur, geliştirici
 motoru genişletir. Üçüncü parti bir uygulamayla çapraz kontrol:
 
 ```bash
-python3 scripts/vectors/validate_vectors.py vectors/ --cross-check   # `jsonschema` kuruluysa
+python3 scripts/vectors/validate.py vectors/ --cross-check   # `jsonschema` kuruluysa
 ```
 
 (`jsonschema` **bağımlılık değildir**; kurulu değilse adım atlanır. `SCHEMA.json` standart
@@ -183,16 +230,16 @@ iki araç aynı dosyadan farklı byte okuyabilir. Doğrulayıcı bunu `SV-002` i
 gevşetmek → `2`. Aynı PR'da:
 
 1. `SCHEMA.json` + bu README güncellenir,
-2. `validate_vectors.py` içindeki `SUPPORTED_SCHEMA_VERSION` güncellenir (gerekirse iki sürüm birden
-   desteklenir),
+2. `validate.py` ve `crates/kama-vectors/src/lib.rs` içindeki `SUPPORTED_SCHEMA_VERSION`
+   güncellenir (gerekirse iki sürüm birden desteklenir),
 3. `scripts/vectors/testdata/reject/schema-version-2.json` **bir üst sürüme** taşınır — yoksa
    "bilinmeyen sürüm reddedilir" kapısı vakumda kalır,
-4. Python üretici ve Rust okuyucu aynı PR'da taşınır.
+4. Python üretici (yazıldığında) aynı PR'da taşınır.
 
 Serbest metin alanı (`description`, `note`, `spec_ref`) eklemek de sürüm artırır: `additionalProperties: false`
 eski araçta yeni dosyayı kırar, sessiz geçiş olmaz — istenen davranış budur.
 
-## 9. T-00.1'de kilitli metnin ötesine geçen kararlar
+## 9. Kilitli metnin ötesine geçen kararlar
 
 Görev metni şemayı alan alan kilitledi. Aşağıdakiler o metinde **yoktu**, uygulanabilir olsun diye
 eklendi; her biri tek satırlık bir düzeltmeyle geri alınabilir:
@@ -206,11 +253,10 @@ eklendi; her biri tek satırlık bir düzeltmeyle geri alınabilir:
 | `_hex` anahtar soneki zorunluluğu (kural 4.8) | "byte dizileri hex string" kuralı ancak böyle makine-denetlenebilir | `_deep_hex_findings` |
 | yinelenen JSON anahtarı = hata | iki aracın aynı dosyadan farklı byte okumasını engeller | `_no_duplicates` |
 
-## 10. Kapsam dışı (T-00.1'de YOK)
+## 10. Kapsam dışı (T-00.1 / T-00.2'de YOK)
 
 - **Gerçek vektör içeriği.** `vectors/` altında suite dizini yok; `examples/` dışında dosya yok.
 - **Python üretici.** Ayrı kalem.
-- **Rust okuyucu.** `ccr-codec` bugün API-first iskelet; vektör okuyan test yardımcısı ayrı kalem.
 - **`reason` sözlüğü.** Hangi ret gerekçesinin hangi token'a karşılık geldiği suite bazında, vektör
   üretildiğinde sabitlenir.
 - **ADR-12 `testvectors/` → `vectors/` satır düzeltmesi.** Spec değişikliği; talimatsız yapılmaz.

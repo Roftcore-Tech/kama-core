@@ -8,19 +8,13 @@ use kama_noise_wire::inner::InnerPlain;
 use kama_noise_wire::{KamaNoiseWireProtector, SealArgs};
 use kama_transport_schema::inner_kind::ShardKind;
 use kama_transport_schema::{LogicalShardHeader, UnsealedTransportPacket};
+use kama_vectors::hex;
 use zeroize::Zeroizing;
 
 // PINNED (nonce96=LE64, §4.5): h_ext=0x01020304, send_key=0x11×32, recv_key=0x22×32, pn=5, epoch=0,
 // inner = FEC_SOURCE profil=0x03 block=7 esi=3 k_actual=8 symbol=0..64.
 // Outer (ilk 10B) nonce-bağımsız: 01020304 01 00 00000005; ct+tag LE64-nonce'a bağlı.
 const GOLDEN_DATAGRAM: &str = "01020304010000000005d1b4032624c6951f19bd7a6c92b5f2fbeb702d75e01ad27b14ab190ff7dbc78d95b54a16e4284d121d5a783a8125861f55a2ed35a39aa7f999f3e6ca99eb30cfa404d94daa2f7c09bea2a897be0f6b566d3be7c14711b09bea2662";
-
-fn hex(s: &str) -> Vec<u8> {
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-        .collect()
-}
 
 fn golden_packet() -> UnsealedTransportPacket {
     UnsealedTransportPacket::FecShard {
@@ -52,7 +46,11 @@ fn wire_golden_seal_bytes_pinned() {
             },
         )
         .unwrap();
-    assert_eq!(s.bytes, hex(GOLDEN_DATAGRAM), "wire-golden drift-gate");
+    assert_eq!(
+        s.bytes,
+        hex(GOLDEN_DATAGRAM).unwrap(),
+        "wire-golden drift-gate"
+    );
     assert_eq!(s.bytes.len(), 101, "sealed FEC-shard @E=64 = 26+11+64");
 }
 
@@ -64,7 +62,7 @@ fn wire_golden_opens_back() {
         &Zeroizing::new([0x22u8; 32]),
         &Zeroizing::new([0x11u8; 32]),
     );
-    let opened = b.open(&hex(GOLDEN_DATAGRAM)).unwrap();
+    let opened = b.open(&hex(GOLDEN_DATAGRAM).unwrap()).unwrap();
     assert_eq!(opened.full_pn(), 5);
     assert_eq!(opened.dh_epoch(), 0);
     match opened.inner() {

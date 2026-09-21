@@ -170,12 +170,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p kama-noise-wire --features libsodium-oracle --test aead_differential -- --nocapture
 
-  # ── Test-vektör format kapısı (T-00.1) ──
-  # Üç araç (Python üretici, Rust testleri, bu doğrulayıcı) aynı byte beklentisini okur;
+  # ── Test-vektör format kapısı (T-00.1 / T-00.2) ──
+  # Üç araç (Python üretici, Rust yükleyici, bu doğrulayıcı) aynı byte beklentisini okur;
   # vectors/SCHEMA.json o üçlünün tek format otoritesidir. Doğrulayıcının bağımlılığı yok
   # (stdlib-only), bu yüzden job saniyeler sürer ve toolchain kurulumu gerektirmez.
+  #
+  # Bu job PYTHON tarafıdır. Rust tarafı (crates/kama-vectors + Python↔Rust parite testi)
+  # `test-fast` içindeki `cargo test --workspace` ile koşar; ikisinin vaka listesi
+  # scripts/vectors/testdata/EXPECTATIONS.json'da TEK yerde durur.
   vectors:
-    name: vectors (SCHEMA.json kapısı)
+    name: vectors (SCHEMA.json kapısı, python tarafı)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -183,7 +187,7 @@ jobs:
       - name: doğrulayıcı öz-testi (kabul + red fixture'ları)
         run: scripts/vectors/selftest.sh
       - name: vectors/ ağacı
-        run: python3 scripts/vectors/validate_vectors.py vectors/
+        run: python3 scripts/vectors/validate.py vectors/
 
   # ── Sonuç sınıflandırması: infra/billing hatası ile korelasyon hatası KARIŞMASIN ──
   ci-verdict:

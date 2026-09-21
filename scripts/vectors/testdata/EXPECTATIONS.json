@@ -1,0 +1,128 @@
+{
+  "comment": [
+    "Python dogrulayici (scripts/vectors/validate.py) ile Rust yukleyici (crates/kama-vectors)",
+    "arasindaki PARITE TABLOSU — tek kaynak. Iki arac da bu dosyayi okur; biri digerinden",
+    "ayrildigi anda ilgili satir kirmizi olur, tablo iki yerde ayri ayri bakim gerektirmez.",
+    "Yollar REPO KOKUNE gore. Bir girdideki dosyalar TEK kosuda birlikte yuklenir (id",
+    "tekilligi dosyalar arasi bir kuraldir, bu yuzden onemli). Girdi bir DIZIN de olabilir."
+  ],
+
+  "accept": [
+    {
+      "label": "gercek vectors/ agaci (ornekler dahil)",
+      "paths": ["vectors"]
+    },
+    {
+      "label": "result soz dagarcigi: drop + reject + fail",
+      "paths": ["scripts/vectors/testdata/accept/result-vocabulary.json"]
+    },
+    {
+      "label": "hex bicimleri: bos dizge (sifir byte) + hex dizisi",
+      "paths": ["scripts/vectors/testdata/accept/hex-array-and-empty.json"]
+    },
+    {
+      "label": "dup-id-a tek basina",
+      "paths": ["scripts/vectors/testdata/reject/dup-id-a.json"]
+    },
+    {
+      "label": "dup-id-b tek basina",
+      "paths": ["scripts/vectors/testdata/reject/dup-id-b.json"]
+    }
+  ],
+
+  "reject": [
+    {
+      "label": "schema_version: 2 (T-00.1 DONE KRITERI)",
+      "code": "SV-004",
+      "paths": ["scripts/vectors/testdata/reject/schema-version-2.json"]
+    },
+    {
+      "label": "schema_version yok",
+      "code": "SV-003",
+      "paths": ["scripts/vectors/testdata/reject/schema-version-missing.json"]
+    },
+    {
+      "label": "schema_version dizge",
+      "code": "SV-003",
+      "paths": ["scripts/vectors/testdata/reject/schema-version-string.json"]
+    },
+    {
+      "label": "yinelenen JSON anahtari (vaka duzeyi)",
+      "code": "SV-002",
+      "paths": ["scripts/vectors/testdata/reject/duplicate-json-key.json"]
+    },
+    {
+      "label": "yinelenen JSON anahtari (input icinde, IC ICE)",
+      "code": "SV-002",
+      "paths": ["scripts/vectors/testdata/reject/duplicate-json-key-nested.json"]
+    },
+    {
+      "label": "hex buyuk harf",
+      "code": "SV-006",
+      "paths": ["scripts/vectors/testdata/reject/hex-uppercase.json"]
+    },
+    {
+      "label": "hex 0x oneki",
+      "code": "SV-006",
+      "paths": ["scripts/vectors/testdata/reject/hex-0x-prefix.json"]
+    },
+    {
+      "label": "hex tek uzunluk",
+      "code": "SV-006",
+      "paths": ["scripts/vectors/testdata/reject/hex-odd-length.json"]
+    },
+    {
+      "label": "input + input_hex birlikte",
+      "code": "SV-005",
+      "paths": ["scripts/vectors/testdata/reject/both-input-forms.json"]
+    },
+    {
+      "label": "input yok",
+      "code": "SV-005",
+      "paths": ["scripts/vectors/testdata/reject/no-input.json"]
+    },
+    {
+      "label": "expected + expected_hex birlikte",
+      "code": "SV-005",
+      "paths": ["scripts/vectors/testdata/reject/both-expected-forms.json"]
+    },
+    {
+      "label": "result uclu disinda",
+      "code": "SV-005",
+      "paths": ["scripts/vectors/testdata/reject/bad-result-value.json"]
+    },
+    {
+      "label": "reason yok",
+      "code": "SV-005",
+      "paths": ["scripts/vectors/testdata/reject/expected-missing-reason.json"]
+    },
+    {
+      "label": "bilinmeyen ust-duzey alan",
+      "code": "SV-005",
+      "paths": ["scripts/vectors/testdata/reject/unknown-top-level-field.json"]
+    },
+    {
+      "label": "bilinmeyen vaka alani",
+      "code": "SV-005",
+      "paths": ["scripts/vectors/testdata/reject/unknown-case-field.json"]
+    },
+    {
+      "label": "cases bos",
+      "code": "SV-005",
+      "paths": ["scripts/vectors/testdata/reject/empty-cases.json"]
+    },
+    {
+      "label": "suite buyuk harf",
+      "code": "SV-005",
+      "paths": ["scripts/vectors/testdata/reject/uppercase-suite.json"]
+    },
+    {
+      "label": "id tekilligi DOSYALAR ARASI (ikisi tek tek gecer, birlikte gecmez)",
+      "code": "SV-007",
+      "paths": [
+        "scripts/vectors/testdata/reject/dup-id-a.json",
+        "scripts/vectors/testdata/reject/dup-id-b.json"
+      ]
+    }
+  ]
+}
