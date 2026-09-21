@@ -140,6 +140,10 @@ scripts/vectors/selftest.sh
 
 Bağımlılık yok (Python 3.9+ stdlib). Çıkış kodu: `0` temiz · `1` doğrulama hatası · `2` kullanım/ortam hatası.
 
+**Vakum kapısı.** `--min-files N` olmadan, yol yanlış yazılırsa ya da ağaç boşalırsa doğrulayıcı
+0 dosya gezip **yeşil** döner. CI bu yüzden `--min-files 2` ile koşar — `ci.yml`'deki
+`test result: ok. [1-9]` kapılarıyla aynı sınıf (BUL-02/BUL-03).
+
 ### Rust yükleyici — `crates/kama-vectors`
 
 ```rust
@@ -200,7 +204,14 @@ doğrulayıcı hata kodunun tamamı koşuyor:
 | `SV-006` | 4 | hex: büyük harf, `0x`, tek uzunluk, dizi elemanı |
 | `SV-007` | 1 | `id` tekilliği (iki dosya tek tek geçer, birlikte geçmez) |
 | `SV-008` | 1 | dizgede kontrol karakteri |
+| `SV-010` | — | vakum kapısı; `--min-files` bayrağına bağlı, dosya fixture'ı değil |
 | `SV-009` | — | şema alt-kümesinde olmayan anahtar sözcük — **yalnız Python**, çünkü Rust yükleyici `SCHEMA.json`'u okumaz (kurallar koda gömülü). `selftest.sh` şemaya anahtar sözcük enjekte edip fail-closed davranışını ayrıca kanıtlar. |
+
+**Dizin gezintisi.** `load_dir` sembolik dizin bağlarına **inmez** ve 32 seviye derinlik
+sınırı uygular. `is_dir()` bağı izlediği için kendine bağlı bir dizin gezintiyi döndürüp aynı
+dosyayı defalarca yükler ve sahte `SV-007` üretir (ölçüldü: python 1 dosya, rust 40 sahte
+bulgu). Python'daki `Path.rglob` de bağlı dizinlere inmez; bu kural iki aracın **aynı dosya
+kümesini** görmesini sağlar. Regresyon testi: `directory_symlink_loops_do_not_multiply_files`.
 
 > **`maxLength` satırları neden ayrı önemli:** Python bu sınırları `SCHEMA.json`'dan **okur**,
 > Rust'ta `const MAX_*` olarak **elle taşınırlar**. T-00.2'de bu fark ölçüldü: fixture yokken iki
@@ -220,6 +231,7 @@ doğrulayıcı hata kodunun tamamı koşuyor:
 | `SV-007` | `id` repo genelinde tekil değil |
 | `SV-008` | dizgede kontrol karakteri |
 | `SV-009` | `SCHEMA.json` okunamadı / **doğrulayıcının tanımadığı şema anahtar sözcüğü** |
+| `SV-010` | `--min-files N` verildi ve daha az dosya doğrulandı — **vakum kapısı** |
 
 ### İki tasarım kararı
 

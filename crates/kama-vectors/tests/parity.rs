@@ -293,3 +293,33 @@ fn error_display_carries_the_sv_code() {
         "hata metni kodu taşımalı: {text}"
     );
 }
+
+// ── 6. Dizin gezintisi: sembolik dizin bağı izlenmez ─────────────────────────────────────────
+
+/// `is_dir()` sembolik bağı izler; bir dizin kendine bağlanırsa gezinti döner durur ve aynı
+/// dosyayı defalarca yükleyip sahte `SV-007` (id tekrarı) üretir. Python tarafındaki
+/// `Path.rglob` bağlı dizinlere inmez — iki aracın aynı dosya kümesini görmesi gerekir.
+#[cfg(unix)]
+#[test]
+fn directory_symlink_loops_do_not_multiply_files() {
+    use std::os::unix::fs::symlink;
+
+    let dir = std::env::temp_dir().join(format!("kama-vectors-symlink-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("geçici dizin");
+
+    std::fs::write(
+        dir.join("v.json"),
+        r#"{"schema_version":1,"suite":"cyc","spec_version":"selftest@v1",
+            "cases":[{"id":"cyc.c1","kind":"decode","input_hex":"00","expected_hex":"00"}]}"#,
+    )
+    .expect("fixture yazımı");
+    symlink(&dir, dir.join("self")).expect("kendine bağlı dizin");
+
+    let loaded = kama_vectors::load_dir(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let files = loaded.expect("döngü sahte bulgu üretmemeli");
+    assert_eq!(files.len(), 1, "aynı dosya bir kez görülmeli");
+    assert_eq!(files[0].cases.len(), 1);
+}

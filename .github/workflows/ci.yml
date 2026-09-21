@@ -186,8 +186,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: doğrulayıcı öz-testi (kabul + red fixture'ları)
         run: scripts/vectors/selftest.sh
-      - name: vectors/ ağacı
-        run: python3 scripts/vectors/validate.py vectors/
+      # --min-files: yol yanlış yazılırsa ya da ağaç boşalırsa doğrulayıcı 0 dosya gezip
+      # YEŞİL dönerdi. Bu, dosyanın başındaki 'test result: ok. [1-9]' kapılarıyla aynı
+      # vakum-sınıfı hatadır (BUL-02/BUL-03).
+      - name: vectors/ ağacı (vakum kapısı dâhil)
+        run: python3 scripts/vectors/validate.py vectors/ --min-files 2
 
   # ── Sonuç sınıflandırması: infra/billing hatası ile korelasyon hatası KARIŞMASIN ──
   ci-verdict:

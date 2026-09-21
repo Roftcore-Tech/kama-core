@@ -53,6 +53,9 @@ const MAX_SPEC_REF: usize = 256;
 const MAX_REASON: usize = 200;
 const MAX_HEX_CHARS: usize = 262_144;
 
+/// Dizin gezintisinde en fazla iniş derinliği (SR-AUDIT-001: sınırsız özyineleme yok).
+const MAX_DIR_DEPTH: usize = 32;
+
 // ── Hata kodları — `scripts/vectors/validate.py` ile BİREBİR aynı ────────────────────────────
 
 /// JSON olarak ayrıştırılamadı / dosya okunamadı.
@@ -452,7 +455,25 @@ pub fn load_dir(dir: impl AsRef<Path>) -> Result<Vec<VectorFile>, VectorErrors> 
 }
 
 fn collect(path: &Path, out: &mut Vec<std::path::PathBuf>, errors: &mut Vec<VectorError>) {
+    collect_at(path, 0, out, errors);
+}
+
+fn collect_at(
+    path: &Path,
+    depth: usize,
+    out: &mut Vec<std::path::PathBuf>,
+    errors: &mut Vec<VectorError>,
+) {
     if path.is_dir() {
+        if depth >= MAX_DIR_DEPTH {
+            errors.push(VectorError::new(
+                SV_PARSE,
+                &path.display().to_string(),
+                "",
+                format!("dizin derinliği {MAX_DIR_DEPTH} sınırını aştı"),
+            ));
+            return;
+        }
         let entries = match std::fs::read_dir(path) {
             Ok(e) => e,
             Err(err) => {
@@ -466,7 +487,17 @@ fn collect(path: &Path, out: &mut Vec<std::path::PathBuf>, errors: &mut Vec<Vect
             }
         };
         for entry in entries.flatten() {
-            collect(&entry.path(), out, errors);
+            let child = entry.path();
+            // SEMBOLİK DİZİN BAĞI İZLENMEZ. `is_dir()` bağı izler; bir dizin kendine
+            // bağlanırsa gezinti döner durur ve aynı dosya defalarca yüklenip sahte
+            // SV-007 (id tekrarı) üretir. Python tarafındaki `Path.rglob` de sembolik
+            // dizin bağlarına inmez — bu satır iki aracın aynı dosya kümesini görmesini
+            // sağlar (ölçüldü: bu kural olmadan python 1 dosya, rust 40 sahte bulgu).
+            let is_symlink = entry.file_type().map(|t| t.is_symlink()).unwrap_or(false);
+            if is_symlink && child.is_dir() {
+                continue;
+            }
+            collect_at(&child, depth + 1, out, errors);
         }
         return;
     }

@@ -13,6 +13,7 @@ durur; ayrışma `crates/kama-vectors/tests/parity.rs` tarafından yakalanır.
 Kullanım:
     python3 scripts/vectors/validate.py vectors/
     python3 scripts/vectors/validate.py a.json b.json --cross-check
+    python3 scripts/vectors/validate.py vectors/ --min-files 2   # vakum kapısı
 
 Çıkış kodu: 0 = temiz · 1 = doğrulama hatası · 2 = kullanım/ortam hatası.
 
@@ -44,6 +45,7 @@ SV_HEX = "SV-006"  # hex alanı kuralı (küçük harf, çift uzunluk, 0x yok)
 SV_DUP_ID = "SV-007"  # id repo genelinde tekil değil
 SV_CTRL = "SV-008"  # dizgede kontrol karakteri
 SV_SCHEMA_FILE = "SV-009"  # SCHEMA.json okunamadı / desteklenmeyen anahtar sözcük
+SV_VACUOUS = "SV-010"  # beklenenden az dosya doğrulandı (kapı vakumda)
 
 HEX_RE = re.compile(r"^([0-9a-f]{2})*$")
 CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -456,6 +458,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="`jsonschema` kuruluysa üçüncü parti uygulamayla da doğrula",
     )
+    parser.add_argument(
+        "--min-files",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "en az N dosya doğrulanmalı; aksi hâlde SV-010. VAKUM KAPISI: yol yanlış "
+            "yazıldığında ya da ağaç boşaldığında bu bayrak olmadan doğrulayıcı 0 dosya "
+            "gezip YEŞİL döner (ci.yml'deki 'test result: ok. [1-9]' kapılarıyla aynı sınıf)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -486,6 +499,17 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if len(files) < args.min_files:
+        findings.append(
+            Finding(
+                ", ".join(args.paths),
+                "",
+                SV_VACUOUS,
+                f"en az {args.min_files} dosya beklendi, {len(files)} bulundu — "
+                "kapı vakumda çalışıyor (yol yanlış ya da ağaç boş)",
+            )
+        )
 
     for finding in findings:
         print(str(finding), file=sys.stderr)
