@@ -1,5 +1,8 @@
 # Identity & Trust Model
 
+> **YAMA KAYDI — 2026-09-22 [N-mesaj ACK penceresi ÜÇE AYRILDI — sahip kararı]:** (1) KALIR: hub'ın gönderen→alıcı başına teslim edilmemiş öğe sınırı → **mailbox kotası** (app-rpc §8, `0x0505 MAILBOX_QUOTA_EXCEEDED`, N = hub politikası [KALİBRASYON]). (2) KALKTI: istemcide `ack_outstanding` + WAIT (E-9, CAD-45, §8 "Async outbound seq" satırı, §10.5 adım 8 sözde-kod, §10.5 adım 19, §12.3, §15.5 notu, §16 SessionState yapısı + kural, §25 test 24) — üstü çizildi, silinmedi; SESSION_DATA-ACK'in teslim-bilgisi rolü → AMP RECEIPT(delivered). (3) Yeniden yazıldı: T-16 (tespit = RECEIPT(delivered) + msg_id boşluğu, önleme residual), T-26 (hub mailbox kotası + cihaz başına gönderim hızı), AC-08 (§26), CAD-45 son cümlesi, §21.1 CAD-40 notu. (4) E-9'daki "SÖKÜLDÜ 16 Eyl" + `MAILBOX_PRUNE` atfı YANLIŞTI (o söküm repoya hiç girmedi; `MAILBOX_PRUNE` tanımlı değil) → bu karara referans. (5) KANIT, (6) TEYİT → §28.1 (karar içermez) + OQ-09..OQ-15. **Karar listesinde OLMAYAN, tutarlılık için dokunulan:** §10.5 adım 20 failover tetiği ("ACK gelmezse (N mesaj sonra)" → "RECEIPT(delivered) gelmezse", eşik OQ-15), §12.3 out-of-order MAX_SKIP notu, §12.9 sequence diyagramı notu, E-2 MAX_SKIP bağlamı, §2.1 kapsam özeti, §3 hub async trust notu, §9 hub "Async delivery ACK state" satırı (→ mailbox kotası), §9 hub async trust sınırı notu, §12.2 suppress notu.
+
+
 > **YAMA KAYDI — 2026-09-20 [kripto implementasyon risk taraması]:** §15.5 P0-8 alım sırasında "reconstruct" → `counter_reconstruct` + FEC reconstruct'ın bu sıranın parçası olmadığı notu (INV-FEC-1) · replay penceresi "512-1024" aralıkları (§15.5 başlığı, CAD-45, §8 async replay satırı, T-19, E-9) → ccr §35.8 `REPLAY_WINDOW_SIZE = 1024`; CAD-45 `seq (u32)` → wire seq16 + `reconstructed_full_counter` u64 · E-9'daki N-mesaj-ACK penceresi cümlesi SÖKÜLDÜ olarak işaretlendi (16 Eyl sökümünün OTORİTER §0'da eksik kalmış izi).
 
 
@@ -64,7 +67,7 @@
 **YOKTUR** ve aktif normatif davranış DEĞİLDİR. Otorite `kama-noise-wire-tdd §0.9/§5`: Alpha'da
 in-session key-phase YOK · KEY_UPDATE YOK · `SESSION_RENEW_REQUIRED` (session cap) → **tamamen yeni
 handshake / yeni session**. Bu belge o kararı OKUR, yeniden seçmez. Yön değişmedi (Double Ratchet
-hâlâ atılmış); değişen, oturum-içi FS mekanizmasının ne olduğudur. Signal Double Ratchet ATILDI (DH-ratchet'i her yön değişiminde 32B wire maliyeti getirir, 0.1 kbps bütçe kaldırmaz; verdiği post-compromise healing zaten kapsam dışı tehdide karşı). MAX_SKIP kavramı geçerli (Bob skipped key saklar, N-mesaj-ACK penceresi bağlamında).
+hâlâ atılmış); değişen, oturum-içi FS mekanizmasının ne olduğudur. Signal Double Ratchet ATILDI (DH-ratchet'i her yön değişiminde 32B wire maliyeti getirir, 0.1 kbps bütçe kaldırmaz; verdiği post-compromise healing zaten kapsam dışı tehdide karşı). MAX_SKIP kavramı geçerli (Bob skipped key saklar, ~~N-mesaj-ACK penceresi bağlamında~~ [2026-09-22: o bağlam kalktı; MAX_SKIP sınırının sahibi AÇIK — OQ-09]).
 
 **E-3 — ASENKRON-FIRST + SESSION MODEL V3:** Mesajlaşma+dosya = asenkron store-and-forward. Async messaging modeli **Session Model V3'dir** (ccr-spec §35, SESSION_INIT/SESSION_INIT_RESPONSE/SESSION_DATA/SIGNED_CONTROL — bkz. **E-12**, otoriter). Eski tek-yapı `AsyncMessage`/`SRAM`/`Noise N one-way`/per-message `sender_signature` modeli DEPRECATED (Section 27). Senkron (PTT/voice/video) = Beta, Noise pattern, WebRTC DTLS sökülür. Güven çapası: DiscoveryRecordV2 (sk_user_identity imzalı, static X25519 taşır). Ek HMAC kullanılmaz; bütünlük/orijinallik AEAD tag + `ss_s` possession auth (hot-path) + domain separation + recipient/link binding ile sağlanır; non-repudiation yalnızca SIGNED_CONTROL'da (Section 10.5).
 
@@ -78,7 +81,7 @@ hâlâ atılmış); değişen, oturum-içi FS mekanizmasının ne olduğudur. Si
 
 **E-8 — BOOTSTRAP: Root pin app bundle'da, hub listesi RA'dan:** App bundle'da SADECE RoftCore Root CA pinli (sabit). Hub listesi = HubListRecord (ccr-spec §21.5, Intermediate-imzalı, IP SAN'lı), RA'dan onboarding'de gelir (app bundle'a gömülemez — her kurum farklı). Detay: Section 6.3.1.
 
-**E-9 — ÇOK-HUB SELF-HEALING ~~+ N-MESAJ-ACK~~:** Client ~3 hub'a kayıtlı olabilir (primary/secondary/tertiary, failover). HubBinding (client-imzalı tek-hub) REDDEDİLDİ (self-healing'i öldürür). Split-brain zaten uygulama-düzeyi cert kontrolü + sk_device possession ile kapalı (kötü hub Bob'u register edemez). Mesajlaşma tek hub (primary)=1x bant. LWW+TTL. ~~N-mesaj-ACK penceresi: Alice ACK almadan N mesajdan fazla gönderemez (DoS + sessiz kayıp + MAX_SKIP tek mekanizma).~~ **[SÖKÜLDÜ 2026-09-16; bu satıra işlenmemişti — 2026-09-20]** Application'da gönderim penceresi / ACK bekleme YOKTUR (yeniden gönderim ve akış Transport'un — transport-tdd §0 INV-NEIGHBOR-1); mailbox depolaması app-rpc `MAILBOX_PRUNE` (yalnız depolama yaşam döngüsü; gönderen durmaz). Replay: counter+timestamp, sliding window bitmap (~~512-1024~~ 1024 = ccr §35.8), max_age 7 gün. Multi-device KAPSAM DIŞI.
+**E-9 — ÇOK-HUB SELF-HEALING ~~+ N-MESAJ-ACK~~:** Client ~3 hub'a kayıtlı olabilir (primary/secondary/tertiary, failover). HubBinding (client-imzalı tek-hub) REDDEDİLDİ (self-healing'i öldürür). Split-brain zaten uygulama-düzeyi cert kontrolü + sk_device possession ile kapalı (kötü hub Bob'u register edemez). Mesajlaşma tek hub (primary)=1x bant. LWW+TTL. ~~N-mesaj-ACK penceresi: Alice ACK almadan N mesajdan fazla gönderemez (DoS + sessiz kayıp + MAX_SKIP tek mekanizma).~~ ~~**[SÖKÜLDÜ 2026-09-16; bu satıra işlenmemişti — 2026-09-20]**~~ ~~mailbox depolaması app-rpc `MAILBOX_PRUNE` (yalnız depolama yaşam döngüsü; gönderen durmaz).~~ **[DÜZELTME 2026-09-22: "16 Eylül sökümü" repoya hiç girmedi; `MAILBOX_PRUNE` app-rpc'de tanımlı değil. Geçerli olan ÜÇE-AYIRMA kararıdır — bkz. baştaki 2026-09-22 YAMA KAYDI:]** (1) hub tarafı sınır KALIR → **mailbox kotası** (app-rpc §8; `0x0505 MAILBOX_QUOTA_EXCEEDED`; N = hub politikası [KALİBRASYON]); (2) istemci gönderim penceresi / ACK bekleme KALKTI — Application'da ACK bekleme YOKTUR (yeniden gönderim ve akış Transport'un — transport-tdd §0 INV-NEIGHBOR-1); teslim bilgisi → AMP RECEIPT(delivered); (3) T-16 / T-26 / AC-08 buna göre yeniden yazıldı. Replay: counter+timestamp, sliding window bitmap (~~512-1024~~ 1024 = ccr §35.8), max_age 7 gün. Multi-device KAPSAM DIŞI.
 
 **E-11 — LİSANS ENFORCEMENT (Intermediate expiry DEĞİL, 5 katman):** Business-license enforcement Intermediate CA expiry üzerinden YAPILMAZ (Intermediate 5 yıl, namespace omurgası). Bunun yerine: (1) **RA license gate** (sertifika isteğini Intermediate'e göndermeden önce org lisansı + seat limit; lisans yoksa Identity Cert vermez, Device enrollment onaylamaz, HubListRecord yenilemez, Admin taleplerini reddeder); (2) **OrgEntitlementRecord** (RoftCore imzalı lisans kaydı, Section 7.14); (3) **Identity CA/User Cert 1 yıl yenileme** (RA license gate + Admin approval); (4) **HubListRecord validity** (not_after <= license_not_after); (5) **CRLite/revocation** (erken termination). Kriptografik zincir: `IdentityCert.not_after <= OrgEntitlement.license_not_after`; `DeviceCert.not_after <= min(identity_cert.not_after, org_license_not_after)`; `HubListRecord.not_after <= license_not_after`. Lisans bitince Identity Cert yenilenmez (1 yıl) → Device Cert parent'ı aşamaz → routing durur; Intermediate (namespace) bozulmaz. Detay: Section 6.3.2 + 7.14.
 
@@ -144,7 +147,7 @@ Kama aşırı düşük bant genişliği, aşırı paket kaybı, yüksek gecikme,
 
 ### 2.1 Bu Doküman Neyi Kapsar
 
-Identity model, PKI hiyerarşisi, recursive chain validation, **CompactDeviceCert** (statik `pk_x25519` taşıyan tek on-wire cert), DeviceCertBundle, **DiscoveryRecordV2** (statik X25519 referanslı), **Session Model V3** (SESSION_INIT/SESSION_INIT_RESPONSE/SESSION_DATA store-and-forward, authenticated one-way) güven modeli, Client↔Hub / Client↔Client (async) / Hub↔Hub authentication, **Noise rekey** (oturum-içi forward secrecy; Double Ratchet kullanılmaz), **RA + Admin Server yönetim/mali modeli** (lisans gate + admin approval + cihaz onayı), **HubListRecord bootstrap**, Noise transport-layer ↔ application-layer PKI ayrımı, key storage, revocation (CRLite fail-closed, 3-katman), **replay protection** (per epoch+direction sliding bitmap + SESSION_INIT counter/timestamp), **N-message ACK penceresi**, CT Log (async audit).
+Identity model, PKI hiyerarşisi, recursive chain validation, **CompactDeviceCert** (statik `pk_x25519` taşıyan tek on-wire cert), DeviceCertBundle, **DiscoveryRecordV2** (statik X25519 referanslı), **Session Model V3** (SESSION_INIT/SESSION_INIT_RESPONSE/SESSION_DATA store-and-forward, authenticated one-way) güven modeli, Client↔Hub / Client↔Client (async) / Hub↔Hub authentication, **Noise rekey** (oturum-içi forward secrecy; Double Ratchet kullanılmaz), **RA + Admin Server yönetim/mali modeli** (lisans gate + admin approval + cihaz onayı), **HubListRecord bootstrap**, Noise transport-layer ↔ application-layer PKI ayrımı, key storage, revocation (CRLite fail-closed, 3-katman), **replay protection** (per epoch+direction sliding bitmap + SESSION_INIT counter/timestamp), ~~**N-message ACK penceresi**~~ **mailbox kotası** (hub, app-rpc §8) [2026-09-22], CT Log (async audit).
 
 ### 2.2 Diğer Dokümanlara Ait
 
@@ -185,7 +188,7 @@ Identity model, PKI hiyerarşisi, recursive chain validation, **CompactDeviceCer
 
 > `Confirmed (CT trust rolü):` CT Log connection authorization otoritesi **değildir**. "Şimdi bağlanabilir miyim?" → **CRLite**. CT yalnızca "şüpheli issuance/revocation denetlenebilir miydi?" → audit. CT unavailable → session bloke etmez (Section 19).
 
-> `Confirmed (Hub async trust):` Hub Session Model V3 mesajlarını store-and-forward eder ama içeriği **göremez** (AEAD), **değiştiremez** (session key/ss_s hub'da yok → AEAD tag fail). Hub yalnızca **suppress edebilir** (mesajı düşür/geciktir — availability residual). Client N-message ACK penceresi ile sessiz kaybı yakalar (Section 16).
+> `Confirmed (Hub async trust):` Hub Session Model V3 mesajlarını store-and-forward eder ama içeriği **göremez** (AEAD), **değiştiremez** (session key/ss_s hub'da yok → AEAD tag fail). Hub yalnızca **suppress edebilir** (mesajı düşür/geciktir — availability residual). ~~Client N-message ACK penceresi ile sessiz kaybı yakalar (Section 16).~~ Sessiz kayıp tespiti: AMP RECEIPT(delivered) yokluğu + msg_id boşluğu (tespit; önleme residual) [2026-09-22].
 
 ### 3.1 Architectural Positioning / Non-Goals
 
@@ -268,7 +271,7 @@ RA, enrollment denetimi için `phone_number → identity_hash/dest_hash` mapping
 | **CAD-42** | **DISCOVERYRECORDV2:** `current_device_x25519` (statik) taşır; `current_prekey_bundle` KALDIRILDI; **`home_hub_id` KONUM alanı da KALDIRILDI (CAD-53 — client konum bilmez)**. sk_user_identity imzalı; hub değiştiremez. Session Model V3'nin güven çapası (Alice Bob'un static X25519'unu buradan alır → SESSION_INIT ss_e/ss_s) |
 | **CAD-43** | **PKI YERLEŞİMİ (E-10):** Root + Intermediate (kurum başına ayrı key) + RA RoftCore'da; Admin Server + Hub kurumda. Güvenlik-kritik her şey RoftCore-kontrollü HSM-destekli CA/RA ortamında (erişim kontrolü + audit logging + separation of duties); kurum hub egemenliği + Admin Server yönetimi |
 | **CAD-44** | **MALİ MODEL (lisans gate, Intermediate expiry DEĞİL):** RA, sertifika isteğini Intermediate'e göndermeden önce OrgEntitlementRecord (lisans + seat limit) kontrol eder; aşılırsa/lisans yoksa imzalamaz. Lisans enforcement 5 katman (E-11): RA gate + OrgEntitlementRecord + Identity Cert 1 yıl yenileme + HubListRecord validity + CRLite. Lisans bitince Identity Cert yenilenmez → Device Cert parent'ı aşamaz (`DeviceCert.not_after <= min(identity.not_after, license_not_after)`) → routing durur; Intermediate (5 yıl namespace) bozulmaz |
-| **CAD-45** | **REPLAY (Session Model V3):** SESSION_DATA per-epoch+direction ~~`seq` (u32)~~ wire `seq16` → `reconstructed_full_counter` **u64** (ccr §35.8) + sliding window bitmap (~~512-1024~~ **1024** = ccr §35.8 `REPLAY_WINDOW_SIZE`; hostile sırasız) [2026-09-20]; SESSION_INIT replay key **[REVİZE 2026-09-07/P0-2]** `(validated sender device identity, init_counter)` ~~(sender_identity_hash, session_id_internal, message_counter)` + timestamp max_age 7 gün; ilk INIT atomik counter check. N-message ACK penceresi: Alice ACK almadan N mesajdan fazla gönderemez (DoS + sessiz kayıp + MAX_SKIP tek mekanizma); session/link-bazlı (`ack_outstanding[session_id_internal][dir]`) |
+| **CAD-45** | **REPLAY (Session Model V3):** SESSION_DATA per-epoch+direction ~~`seq` (u32)~~ wire `seq16` → `reconstructed_full_counter` **u64** (ccr §35.8) + sliding window bitmap (~~512-1024~~ **1024** = ccr §35.8 `REPLAY_WINDOW_SIZE`; hostile sırasız) [2026-09-20]; SESSION_INIT replay key **[REVİZE 2026-09-07/P0-2]** `(validated sender device identity, init_counter)` ~~(sender_identity_hash, session_id_internal, message_counter)` + timestamp max_age 7 gün; ilk INIT atomik counter check. ~~N-message ACK penceresi: Alice ACK almadan N mesajdan fazla gönderemez (DoS + sessiz kayıp + MAX_SKIP tek mekanizma); session/link-bazlı (`ack_outstanding[session_id_internal][dir]`)~~ **[2026-09-22 ÜÇE-AYIRMA]** tek mekanizmanın üç rolü ayrıldı: DoS → hub mailbox kotası (app-rpc §8, 0x0505) + cihaz başına gönderim hızı; sessiz kayıp → AMP RECEIPT(delivered) + msg_id boşluğu (tespit); MAX_SKIP sınırı → 2026-09-22 YAMA KAYDI madde 5 |
 | **CAD-46** | **ÇOK-HUB SELF-HEALING:** Client ~3 hub'a kayıtlı olabilir (primary/secondary/tertiary, failover); HubBinding REDDEDİLDİ (self-healing'i öldürür); split-brain uygulama-düzeyi cert kontrolü + sk_device possession ile kapalı; mesajlaşma tek hub (primary)=1x bant; LWW+TTL |
 | **CAD-47** | **BOOTSTRAP:** App bundle'da SADECE Root CA pin; HubListRecord (Intermediate-imzalı, IP SAN) RA'dan onboarding'de gelir; cache'lenir, hostile'da tekrar çekilmez |
 | **CAD-48** | **ADMIN SERVER:** Kurum yönetim identity (Intermediate-imzalı cert); RA onu mTLS'te tanır; admin panel yetki matrisi (Section 6.3.3): sessiz cihaz ekleme YASAK (sk_device possession şart), log silme YASAK (append-only), sınırsız sertifika YASAK (lisans gate) |
@@ -927,7 +930,7 @@ OrgEntitlementRecord {
 | Identity CCR | Chain materyali | Intermediate CA | Lokal cache | Kalıcı | Public | 1 yıl | Chain refresh (license gate) |
 | HubListRecord | Kurum hub bootstrap (IP SAN) | Intermediate CA (RoftCore) | Lokal cache | not_after'a kadar | Public | Hub topolojisi değişince | RA'dan (onboarding, once) |
 | CRLite filter cache | Revocation | Intermediate CA | Lokal cache | valid_until'a kadar | Public | <24h | Alınır (once/connection, iyi internette) |
-| **Async outbound seq** (per link, per dir) | SESSION_DATA seq + N-msg-ACK penceresi (ack_outstanding) | Client | Lokal DB | Session (link) | Hassas | per-message artar | — |
+| **Async outbound seq** (per link, per dir) | SESSION_DATA seq ~~+ N-msg-ACK penceresi (ack_outstanding)~~ [2026-09-22: istemci penceresi kaldırıldı] | Client | Lokal DB | Session (link) | Hassas | per-message artar | — |
 | **Async inbound replay state** (per link, per epoch+dir) | highest_counter (u64) + sliding bitmap (~~512-1024~~ 1024 = ccr §35.8); **SESSION_INIT replay identity = (validated sender device identity, `init_counter`)** — [P0-2] sender identity DOĞRULANMIŞ sertifika bağlamından gelir; `init_counter` gerçek wire alanıdır; `message_counter` / wire `session_id_internal` / wire timestamp KULLANILMAZ (V2 kalıntısı). İlk-insert ATOMİKtir, duplicate → reject | Client | Lokal DB | Session (7 gün = replay-entry **retention/pruning horizon**, ALICININ local receive-time'ına göre; **wire timestamp validation DEĞİLDİR**, wire'da timestamp alanı YOK — P0-2) | Hassas | per-message | — |
 | **SessionState** (per link) | init_root/epoch_1_root + epoch chain keys (Section 16) | Client | Lokal şifreli DB | Uzun (inaktivite timeout 30 gün) | **Kritik** | epoch geçişi (PRE→POST SESSION_INIT_RESPONSE) | — |
 | CT checkpoint cache (STH) | Şeffaflık audit | CT Log | Lokal cache | Kalıcı | Public | — | Opportunistic |
@@ -952,7 +955,7 @@ OrgEntitlementRecord {
 | Client registry (`(identity_hash, device_id)` index) | Pattern seçimi, DiscoveryRecord store | Hub | Disk | Kalıcı | Metadata | **Metadata privacy** (kim kayıtlı) |
 | DiscoveryRecordV2 store | Discovery serving (static X25519 dahil) | Client (sk_user_identity imzalı) | Disk | valid_until | Public (imzalı) | **Suppress edebilir, üretemez** |
 | **Async mailbox** (per recipient) | Store-and-forward (Bob offline): SESSION_INIT/SESSION_INIT_RESPONSE/SESSION_DATA | Sender (ss_s possession + AEAD) | Disk | TTL (7 gün) | **E2E şifreli (AEAD)** | **Suppress edebilir, içerik göremez/değiştiremez** |
-| **Async delivery ACK state** | Teslim takibi (N-msg penceresi) | Hub | Disk | TTL | Metadata | Suppress (availability) |
+| **Async delivery ACK state** | Teslim takibi (~~N-msg penceresi~~ mailbox kotası, app-rpc §8 [2026-09-22]) | Hub | Disk | TTL | Metadata | Suppress (availability) |
 | DHT routing table (`routing_key/dest_hash → hub_id`) | Rendezvous | Hub | Disk-backed | Kalıcı | **Routing metadata** | Metadata (routing graph + lookup interest) |
 | Peer hub cache (`hub_id → pk_noise`) | Hub-to-hub Noise | Hub | Disk | Cert validity | Public | Yok |
 | CRLite filter | Revocation taşıma | Intermediate CA | Disk | <24h | Public | Yok (imzalı; suppress → Section 18) |
@@ -963,7 +966,7 @@ OrgEntitlementRecord {
 
 > `Confirmed (A-09):` Hub asla saklamaz: client private key, plaintext içerik, plaintext telefon, Intermediate CA private key, dest_hash↔phone mapping.
 
-> **Hub async trust sınırı (CAD-42/54):** Hub DiscoveryRecordV2'yi (sk_user_identity imzalı) ve Session Model V3 mesajlarını (ss_s possession + AEAD şifreli) saklar/sunar ama **freshness/content otoritesi değildir**. Hub üretemez/değiştiremez (session key/ss_s hub'da yok → AEAD tag fail); yalnızca suppress edebilir → client DiscoveryRecord sequence (rollback) + N-message ACK penceresi (sessiz kayıp) ile mitige eder. Hub içeriği göremez (AEAD).
+> **Hub async trust sınırı (CAD-42/54):** Hub DiscoveryRecordV2'yi (sk_user_identity imzalı) ve Session Model V3 mesajlarını (ss_s possession + AEAD şifreli) saklar/sunar ama **freshness/content otoritesi değildir**. Hub üretemez/değiştiremez (session key/ss_s hub'da yok → AEAD tag fail); yalnızca suppress edebilir → client DiscoveryRecord sequence (rollback) ~~+ N-message ACK penceresi (sessiz kayıp)~~ + RECEIPT(delivered) yokluğu / msg_id boşluğu (sessiz kayıp TESPİTİ) [2026-09-22] ile mitige eder. Hub içeriği göremez (AEAD).
 
 ---
 
@@ -1078,7 +1081,8 @@ sequenceDiagram
    # PER-MESSAGE HKDF YOKTUR (V2 kalıntısıydı — E-13): tek k_send + reconstructed full counter.
    # nonce96 = 0x00×4 || LE64(full_counter)   ·   AAD = ccr §35.9 (28B, "SSD1"||ver||suite||direction||epoch||seq16||session_id_internal)
    SESSION_DATA = {hub_handle(4B,L2) | seq16(2B), ciphertext, tag16(16B)}   # 18B app-envelope; flags/len/session_id_internal/cert/imza/ephemeral YOK; length implicit (ccr §35.6)
-   if ack_outstanding[session_id_internal][A2B] >= N: WAIT (N-message ACK penceresi, CAD-45)
+   # [KALDIRILDI 2026-09-22 — ÜÇE-AYIRMA] ~~if ack_outstanding[session_id_internal][A2B] >= N: WAIT (N-message ACK penceresi, CAD-45)~~
+   # Alice beklemez; hub tarafı sınır = mailbox kotası (app-rpc §8, 0x0505 MAILBOX_QUOTA_EXCEEDED).
 ```
 
 **STORE (Hub, untrusted mailbox):**
@@ -1115,8 +1119,11 @@ sequenceDiagram
 
 **ACK + failover:**
 ```
-19. Bob mesajı alıp doğrulayınca SESSION_DATA-ACK (epoch-1, B→A) döner; Alice ack_outstanding[session_id_internal][A2B]--
-20. ACK gelmezse (N mesaj sonra): Alice "teslim olmuyor" anlar → (a) Alice KENDİ hub'ı sorunluysa
+19. [KALDIRILDI 2026-09-22 — ÜÇE-AYIRMA] ~~Bob mesajı alıp doğrulayınca SESSION_DATA-ACK (epoch-1, B→A) döner; Alice ack_outstanding[session_id_internal][A2B]--~~
+    Teslim bilgisi: Bob uygulama record'unu işleyince AMP RECEIPT(delivered) gönderir (application-message-protocol §3, 0x08; hop ACK'ten TÜREMEZ).
+    Alice sayaç tutmaz, beklemez. SESSION_DATA-ACK'in tel tanımı yoktu; epoch onayı ona DAYANMAZ — epoch 0→1 onayı örtüktür:
+    ilk AEAD-geçerli epoch-1 paketi (noise-wire §4 adım 2–3).
+20. ~~ACK gelmezse (N mesaj sonra)~~ RECEIPT(delivered) gelmezse [eşik: KALİBRASYON — 2026-09-22 kararında TANIMLANMADI, sahip kararı]: Alice "teslim olmuyor" anlar → (a) Alice KENDİ hub'ı sorunluysa
     secondary/tertiary hub'ına geçer (CAD-46) + aynı dest_hash'i tekrar verir (hub-mesh peer konumunu
     DHT'den bulur — Alice peer konumu bilmez, CAD-53); (b) cert bayatsa (90 gün, nadir) DiscoveryRecordV2
     re-fetch (cert hash güncellenir, KONUM için DEĞİL); (c) link state kaybı → LINK_ROUTE_MISS → SESSION_INIT_REF rebind
@@ -1315,14 +1322,14 @@ fresh_crlite = get_or_refresh_crlite_once_per_connection()
    horizon'ıdır (wire timestamp validation DEĞİL). İlk-insert ATOMİK, duplicate → reject.
 6. TOFU/contact policy (PeerTrustCache); SessionState[session_id_internal] oluştur
 ```
-> Saldırgan Bob'un public cert'ini hash'leyip sahte INIT koyamaz (`ss_s` için alice_static_x25519_sk gerekir → hub'da yok → AEAD tag fail). Hub retarget edemez (recipient_dest_hash session_context'te → farklı k). Hub sadece suppress edebilir (availability; N-msg-ACK yakalar).
+> Saldırgan Bob'un public cert'ini hash'leyip sahte INIT koyamaz (`ss_s` için alice_static_x25519_sk gerekir → hub'da yok → AEAD tag fail). Hub retarget edemez (recipient_dest_hash session_context'te → farklı k). Hub sadece suppress edebilir (availability; ~~N-msg-ACK yakalar~~ RECEIPT(delivered) + msg_id boşluğu TESPİT eder [2026-09-22]).
 
 ### 12.3 ACK ve Forward Secrecy (epoch chain)
 
 `Confirmed (CAD-54/55/45):`
-- **ACK:** Bob mesajı alıp doğrulayınca Alice'e SESSION_DATA-ACK döner (epoch-1, B→A). Alice N mesajda bir ACK bekler; gelmezse "teslim olmuyor" anlar (sessiz kayıp yakalama) + N-message ACK penceresi (`ack_outstanding[session_id_internal][dir]`).
+- **~~ACK~~ Teslim bilgisi [2026-09-22 ÜÇE-AYIRMA]:** ~~Bob mesajı alıp doğrulayınca Alice'e SESSION_DATA-ACK döner (epoch-1, B→A). Alice N mesajda bir ACK bekler; gelmezse "teslim olmuyor" anlar (sessiz kayıp yakalama) + N-message ACK penceresi (`ack_outstanding[session_id_internal][dir]`).~~ Bob uygulama record'unu işleyince AMP RECEIPT(delivered) gönderir (application-message-protocol §3, 0x08). Sessiz kayıp tespiti = RECEIPT(delivered) yokluğu + alıcıda msg_id boşluğu. Alice gönderimi durdurmaz (istemci penceresi yok). Epoch onayı bu role dayanmaz (örtük: ilk AEAD-geçerli epoch-1 paketi, noise-wire §4).
 - **Forward secrecy (epoch chain):** epoch-0 PRE-RESPONSE (init_root, ss_e ile başlangıç FS) → SESSION_INIT_RESPONSE'te Bob ephemeral ile epoch-1 POST-RESPONSE (`session_root = HKDF(init_root || ss_ee2 || ss_se2)`, ephemeral×ephemeral FS upgrade). Alice SESSION_INIT_RESPONSE gelince init_ephemeral_sk'i SİLER. Double Ratchet YOK; post-compromise healing YOK (kabul).
-- **Out-of-order:** Bob skipped seq saklar (MAX_SKIP; N-msg-ACK penceresi doğal sınır). Mesajlar sırasız gelebilir (hostile + S&F) → sliding window bitmap per epoch+direction (Section 15.5).
+- **Out-of-order:** Bob skipped seq saklar (MAX_SKIP; ~~N-msg-ACK penceresi doğal sınır~~ [2026-09-22: bu doğal sınır istemci penceresiyle birlikte kalktı; yerine geçen sınır AÇIK — §28.1-A, OQ-09]). Mesajlar sırasız gelebilir (hostile + S&F) → sliding window bitmap per epoch+direction (Section 15.5).
 
 ### 12.4 Device → User Identity Bağı
 
@@ -1386,7 +1393,7 @@ sequenceDiagram
     Bob->>HB: SESSION_INIT_RESPONSE (bob_ephemeral, session_root → epoch-1 FS upgrade)
     HB->>HA: relay SESSION_INIT_RESPONSE
     HA-->>A: SESSION_INIT_RESPONSE → epoch-1; sonra SESSION_DATA (18B) çift yön
-    Note over A,Bob: SESSION_DATA-ACK (N-msg penceresi: teslim onayı)
+    Note over A,Bob: RECEIPT(delivered) — E2E teslim bilgisi, AMP 0x08 [2026-09-22; eski: ~~SESSION_DATA-ACK / N-msg penceresi~~]
 ```
 
 ---
@@ -1702,7 +1709,7 @@ replay_commit(full_counter, epoch, direction, session_state) -> void:      # YAL
 #   + timestamp MAX_AGE 7 gün (S&F TTL); ilk INIT atomik counter init (sonraki aynı counter reddedilir).
 ```
 
-> N-message ACK penceresi (CAD-45) ile uyumlu: Alice ACK almadan N mesajdan fazla gönderemez (`ack_outstanding[session_id_internal][dir]`) → seq window doğal sınırlanır, MAX_SKIP korunur. epoch+direction AAD'de (ccr-spec §35.2) → cross-epoch/cross-direction replay engellenir.
+> ~~N-message ACK penceresi (CAD-45) ile uyumlu: Alice ACK almadan N mesajdan fazla gönderemez (`ack_outstanding[session_id_internal][dir]`) → seq window doğal sınırlanır, MAX_SKIP korunur.~~ [2026-09-22 ÜÇE-AYIRMA: istemci penceresi kalktı; seq window'u doğal sınırlayan mekanizma artık YOK — sınırın sahibi AÇIK, §28.1-A / OQ-09.] epoch+direction AAD'de (ccr-spec §35.2) → cross-epoch/cross-direction replay engellenir.
 
 ### 15.6 Session Model V3 Validators (verify_session_init / verify_session_init_response / verify_session_data / verify_signed_control)
 
@@ -2137,7 +2144,7 @@ SessionState {                          # per konuşma (link), Session Model V3 
   k_send_A2B_e1                 : secret32?  # epoch-1 POST-RESPONSE (session_root'tan)
   k_send_B2A_e1                 : secret32?
   replay_window[epoch][dir]     : {highest_seq, bitmap}   # per epoch+direction (Section 15.5)
-  ack_outstanding[dir]          : uint32     # N-message ACK penceresi (gönderilmiş, ACK beklenen)
+  # [KALDIRILDI 2026-09-22 — ÜÇE-AYIRMA; istemci gönderim penceresi yok] ~~ack_outstanding[dir]          : uint32     # N-message ACK penceresi (gönderilmiş, ACK beklenen)~~
   pending_accept_deadline       : timestamp  # PRE_RESPONSE iken SESSION_INIT_RESPONSE bekleme süresi
   last_activity                 : timestamp  # inaktivite timeout (30 gün)
 }
@@ -2148,7 +2155,7 @@ SessionState {                          # per konuşma (link), Session Model V3 
 - Yüksek görülmüşse düşük DiscoveryRecord sequence **reddedilir** (suppression/rollback).
 - `device_pk_x25519`, DiscoveryRecordV2.current_device_x25519 ile **eşleşmeli** (CAD-42 binding); uyumsuz → reddet.
 - Async replay: `replay_window[epoch][dir]` (highest_seq + bitmap) ile per epoch+direction (Section 15.5); tekrar seq → REPLAY reddet.
-- N-message ACK: `ack_outstanding[dir] >= N` ise Alice yeni mesaj göndermeden ACK bekler (CAD-45).
+- ~~N-message ACK: `ack_outstanding[dir] >= N` ise Alice yeni mesaj göndermeden ACK bekler (CAD-45).~~ [2026-09-22 ÜÇE-AYIRMA: Alice beklemez; hub tarafı sınır = mailbox kotası, app-rpc §8.]
 - Epoch geçişi: PRE_RESPONSE (init_root) → SESSION_INIT_RESPONSE alınca POST_RESPONSE (session_root türet, init_ephemeral_sk SİL). Link state kaybı → LINK_ROUTE_MISS → SESSION_INIT_REF rebind (ccr-spec §35.16; Alpha ayrı resume frame YOK).
 - `identity_hash` değişimi → **identity-change uyarısı** (silent accept YOK; tofu_state = IDENTITY_CHANGED_WARN).
 - Aynı `identity_hash` altında Device Cert değişimi (90 gün yenileme) → chain + CRLite geçerliyse **kabul edilebilir** (yeni device_cert_hash → cache-miss → fetch).
@@ -2417,7 +2424,7 @@ Mode C: emergency propagation mode, TTL-limited multi-hub sync, disaster/field o
 | T-13 | dest_hash metadata leakage | ⚠ Kabul | Routing hub görür (zorunlu); passive observer ClientHint AEAD | Routing hub görünürlüğü kaçınılmaz |
 | T-14 | Plain phone hash leakage | ✓ | VOPRF; telefon identity türetimine girmez | — |
 | T-15 | Malicious hub SESSION_DATA substitution (sahte içerik) | ✓ | AEAD tag (session key hub'da yok); SESSION_INIT'te ss_s possession; hub forge edemez/içerik göremez | Yok |
-| T-16 | Malicious hub SESSION_DATA suppression (mesajı düşür) | ⚠ Kabul | N-message ACK penceresi: Alice ACK gelmezse sessiz kaybı yakalar; çok-hub failover | Hub mesajı geciktirebilir/düşürebilir (availability residual) |
+| T-16 | Malicious hub SESSION_DATA suppression (mesajı düşür) | ⚠ Kabul | **Tespit** [2026-09-22]: Alice'e AMP RECEIPT(delivered) gelmez + Bob'da msg_id boşluğu (sonraki mesaj gelince). **Önleme YOK** → çok-hub failover ile telafi. ~~N-message ACK penceresi: Alice ACK gelmezse sessiz kaybı yakalar; çok-hub failover~~ | Hub mesajı geciktirebilir/düşürebilir (availability residual); tespit mesaj-sonrasıdır, önleme residual |
 | T-17 | Stale DiscoveryRecord suppression (eski geçerli sun) | ✓ | record_sequence cache (highest_discovery_sequence); rollback reddi; çok-hub multi-source | First-contact rollback (eski-ama-geçerli) tespit edilemeyebilir |
 | T-18 | Statik X25519 private key compromise | ⚠ Kabul | Lifetime (90 gün); identity_hash/dest_hash'i etkilemez; şüphe → Device Cert revoke (3-katman) | Revoke öncesi bekleyen async mesajlar açılabilir (cihaz ele geçirme kapsam dışı, CAD-37) |
 | **T-PoC** | **PoC tehdit varsayımı (2026-09-19, NORMATİF — PoC kapsamı için)** | ⚠ Kabul (PoC) | client↔hub yolunda **aktif transport-frame injection / modification / forgery modellenmez** (sahte ACK/SACK, sahte FEC shard, koordinat tahrifi). Bu, hub'a genel güven DEĞİLDİR: hub E2E plaintext açısından **güvenilmez kalır**, E2E modeli değişmez. Wire seam'in `HubChannel` bağlamı PoC'de no-op (KM-SEAM-TC-001 K1); INV-FEC-1 E2E anahtarıyla PoC'de de tutar. | M4 (Traser saha) öncesi tetik sorusu: *"saldırgan aktif frame enjeksiyonu yapabiliyor mu?"* — evet ise HubChannel gerçek anahtar alır (S3 amendment); salt yüksek kayıp/hostile RF tetik değildir. M4 ölçüm raporları `security_profile = poc_no_hop_protector` etiketi taşır. |
@@ -2431,7 +2438,7 @@ Mode C: emergency propagation mode, TTL-limited multi-hub sync, disaster/field o
 | T-23 | Statik X25519 routing kırılması | ✓ | identity_hash/dest_hash statik X25519'a bağlı değil (CAD-16); rotation zaten yok | Yok |
 | T-24 | DiscoveryRecord rollback (same seq farklı kayıt) | ✓ | record_sequence cache: düşük seq reddet; sk_user_identity imzalı (hub değiştiremez) | Yok |
 | T-25 | Recipient confusion (yanlış alıcıya teslim) | ✓ | recipient_dest_hash session_context_v1 + SESSION_INIT_AAD'de (hub retarget edemez → farklı k → tag fail); verify_session_init my_dest_hash kontrol | Yok |
-| T-26 | ACK abuse / sender flood (DoS) | ✓ | N-message ACK penceresi: Alice ACK almadan N mesajdan fazla gönderemez (ratchet counter sınırı + flood koruması) | Yok |
+| T-26 | ACK abuse / sender flood (DoS) | ✓ | [2026-09-22] Hub mailbox kotası (app-rpc §8: gönderen→alıcı başına teslim edilmemiş öğe ≤ N, aşım 0x0505 MAILBOX_QUOTA_EXCEEDED) + cihaz başına gönderim hızı (app-rpc §10, 0x0201). ~~N-message ACK penceresi: Alice ACK almadan N mesajdan fazla gönderemez (ratchet counter sınırı + flood koruması)~~ | Hub-yönlü: yok. Alıcı-tarafı sayaç / MAX_SKIP sınırının sahibi AÇIK (2026-09-22 YAMA KAYDI madde 5) |
 | T-27 | Admin Server compromise | ⚠ Bounded | Verilmeyen yetkiler (Section 6.3.3): sessiz cihaz ekleme YASAK (sk_device possession şart), log silme YASAK, sınırsız cert YASAK; Intermediate RoftCore'da | Kötü admin kullanıcı suspend/revoke edebilir (availability), ama içerik/identity ele geçiremez |
 | T-28 | Lisans gate bypass (sayım kaçırma) | ✓ | RA license gate (Kapı-1) sertifika basmadan önce; Intermediate RoftCore'da (kurum basamaz) | Yok (mali model kriptografik) |
 | T-29 | SIM-swap ile kayıt | ✓ | SMS + Admin cihaz onayı (Kapı-3, CAD-49); admin onaylamadan cihaz aktif olmaz | Admin yanlış onaylarsa (insan hatası, audit log'da) |
@@ -2447,7 +2454,7 @@ Mode C: emergency propagation mode, TTL-limited multi-hub sync, disaster/field o
 - `Confirmed:` CT unavailable = availability degradation, session blocker DEĞİL. CRLite unavailable = session blocker (fail-closed).
 - `Confirmed (CAD-37):` Statik X25519 compromise → bekleyen async mesaj riski KABUL edilir (cihaz ele geçirme kapsam dışı); post-compromise healing Alpha'da yok.
 - `Confirmed (CAD-55):` Sealed sender Alpha'da YOK → recipient_dest_hash hub'a görünür (federated model metadata'yı varsayar; T-20).
-- `Confirmed (CAD-40):` Async mesaj suppression (T-16) availability residual; N-message ACK penceresi sessiz kaybı yakalar.
+- `Confirmed (CAD-40):` Async mesaj suppression (T-16) availability residual; ~~N-message ACK penceresi sessiz kaybı yakalar.~~ sessiz kayıp tespiti = AMP RECEIPT(delivered) yokluğu + msg_id boşluğu (tespit; önleme residual) [2026-09-22].
 - `Confirmed (CAD-46):` Çok-hub self-healing (primary/secondary/tertiary) suppression/failover direnci sağlar; HubBinding reddedildi.
 
 ---
@@ -2565,7 +2572,7 @@ Doğrulanmamış DiscoveryRecordV2 ile async mesaj GÖNDERİLMEZ.
 21i. recipient_static_x25519_hash mismatch → AEAD/tag fail (session_context_v1 binding, false-negative önleme testi)
 22. ROOT_CA_SPKI_HASH eşleşmezse → REJECT (pin)
 23. CRLite once-per-connection: tek handshake → tek 3-hub sorgusu
-24. N-message ACK penceresi: Alice ACK almadan N+1. mesaj → WAIT (CAD-45)
+24. ~~N-message ACK penceresi: Alice ACK almadan N+1. mesaj → WAIT (CAD-45)~~ [KALDIRILDI 2026-09-22 — istemci penceresi yok] → yerine: hub mailbox kotası aşımı → STORE_MESSAGE 0x0505 MAILBOX_QUOTA_EXCEEDED (app-rpc §8); Alice N+1. mesajda BEKLEMEZ.
 25. DeviceRevocationRequest: sk_user_identity imzalı → CRLite'a girer + RA→hub push
 26. CompactDeviceCert/SESSION_INIT/SESSION_DATA/DiscoveryRecordV2 parser fuzz: malformed canonical TBS/envelope (libFuzzer)
 27. device_id kopyalama: saldırgan kurbanın device_id'sini kendi namespace'inde üretir → HİÇBİR yetenek kazanmaz (15.14)
@@ -2594,7 +2601,7 @@ Doğrulanmamış DiscoveryRecordV2 ile async mesaj GÖNDERİLMEZ.
 | AC-05 | **Session Model V3** INIT/RESPONSE/DATA send/store/receive/ACK flow implemente edilebilir (handshake yok, zero-RTT, epoch chain) | 10.5, ccr-spec §35 |
 | AC-06 | `verify_session_init` / `verify_session_init_response` / `verify_session_data` / `verify_signed_control_message` (ss_s possession auth, reference-first cache-miss fail-closed) | 15.6 |
 | AC-07 | **Replay protection** (`check_session_data_replay`: per epoch+direction sliding bitmap; SESSION_INIT counter+timestamp) implemente edilebilir | 15.5 |
-| AC-08 | **N-message ACK penceresi** (Alice ACK almadan N mesajdan fazla gönderemez) implemente edilebilir | 12.3, CAD-45 |
+| AC-08 | ~~**N-message ACK penceresi** (Alice ACK almadan N mesajdan fazla gönderemez) implemente edilebilir~~ **[2026-09-22]** Hub mailbox kotası (gönderen→alıcı başına teslim edilmemiş öğe ≤ N, aşım 0x0505) implemente edilebilir; istemci ACK beklemez; teslim bilgisi AMP RECEIPT(delivered) | 12.3, CAD-45, app-rpc §8 |
 | AC-09 | DiscoveryRecord rollback/suppression protection implemente edilebilir | 15.6b, 16 |
 | AC-10 | CRLite once-per-connection + **fail-closed** validation implemente edilebilir | 15.1 |
 | AC-11 | **static_x25519_compromise_response** (Device Cert revoke, 3-katman) implemente edilebilir | 15.13, 18.3 |
@@ -2736,8 +2743,56 @@ k = DH(sender_ephemeral, recipient_static_x25519)        # saf Noise N one-way
 | OQ-06 | Cross-certification (RFC 5280 §3.3) cross-operator | Beta kapsamı |
 | OQ-07 | Admin Server ↔ RA otomasyon protokol detayı (mTLS mesaj formatı) | İmpl-fazı |
 | OQ-08 | ML-KEM hibridizasyon (harvest-now-decrypt-later) | Quantum yatırımı, ileri faz |
+| OQ-09 | [2026-09-22] Alıcı sayaç / MAX_SKIP sınırının sahibi — istemci N-penceresi kalkınca açıkta kaldı | AÇIK — kanıt §28.1-A |
+| OQ-10 | [2026-09-22] Transport PN tüketimi ↔ ccr §35.8 `MAX_FUTURE_GAP`: ileri-yön kesintisinde üst sınır YOK | AÇIK — kanıt §28.1-A |
+| OQ-11 | [2026-09-22] Future-gap formu: identity §15.5 `full_counter − highest > 4096` ↔ noise-wire §4 `candidate > ew + GAP` (ew = highest+1) → bir paketlik fark; hangisi otoriter | AÇIK |
+| OQ-12 | [2026-09-22] Hop (`HubChannel`) PN uzayının gap sınırı tanımsız (KM-SEAM-TC-001 PoC no-op) | AÇIK — M4 |
+| OQ-13 | [2026-09-22] FETCH_MAILBOX teslim sırası normatif değil (cursor + ardışık ACK_RANGE yalnız İMA ediyor) | AÇIK — kanıt §28.1-B |
+| OQ-14 | [2026-09-22] WS-D2: ACK ailesi (0x10/0x11) silinirse noise-wire §4 adım 2 taşıyıcısı — registry'de keepalive codepoint'i yok | AÇIK — kanıt §28.1-C |
+| OQ-15 | [2026-09-22] §10.5 adım 20 failover eşiği: "RECEIPT(delivered) gelmezse" için süre/sayı (eski "N mesaj sonra" kalktı) | AÇIK — KALİBRASYON, sahip kararı |
 
 Protokol-kritik tüm kimlik/trust/async/revocation davranışı bu dokümanda + ccr-spec'te tanımlıdır.
+
+### 28.1 2026-09-22 ÜÇE-AYIRMA — kanıt (madde 5) ve teyit (madde 6) · **KARAR İÇERMEZ**
+
+**A — Transport'un hop-ACK almadan tüketebileceği azami PN ↔ ccr §35.8 `MAX_FUTURE_GAP = 4096`: ALTINDA DEĞİL (sınır yok).**
+- Sayaç kimliği: §35.8, SESSION_DATA `seq16`'dan geri kazanılan full counter'ı yönetir (ccr :2732-2756; kabul `candidate <= expected + MAX_FUTURE_GAP`, aşım → REJECT, resync yolu yok).
+  noise-wire §2.5 (:237-240): mühürlenen **tüm** sınıflar (SESSION_DATA + FEC source/repair + ACK/SACK/RECOVERED/control) **tek** direction-local PN uzayını paylaşır
+  → transport her mühürlenmiş datagramda bir PN yakar. Extended pn32 yolu (FEC/control) için sınır `FUTURE_GAP_MAX = 2^13 = 8192` (noise-wire :452-455, :472).
+- Gap, alıcının kabul ettiği en yüksek PN'e göre ölçülür (ACK'e göre değil): risk, alıcıya hiç ulaşmayan ardışık PN'lerdir (ileri-yön kesintisi). Yalnız ACK kaybı gap'i tüketmez.
+- Her datagram yeni PN tüketir: `seal_send!` her başarılı mühürde `tx_pn`'i artırır (client-core runtime.rs:995-1008) — DATA, retransmit, tail probe, dup, FEC repair, PARAM_SET, CS-probe.
+- Terim sınırları (hiç dönüş sinyali yokken):
+
+| terim | sınır | kaynak |
+|---|---|---|
+| yeni DATA | ≤ 4096 birim (`max_inflight_units`; store yalnız ACK/RECOVERED ile küçülür) | runtime.rs:235 |
+| ARQ retransmit | 0 (kayıp tespiti `largest_acked` ister) | loss.rs |
+| tail probe | ≤ 3 / boşta-pencere; pencere yalnız ACK ilerlemesiyle sıfırlanır | tail_recovery.rs |
+| FEC repair | ≤ 4 / K=8 blok (tek yayımda ≤ 2048) | runtime.rs:210 |
+| PARAM_SET | ≤ 25 | runtime.rs:1433 |
+| PreConverge geometrik DUP | **SINIRSIZ** — kod: "sayı-tavanı YOK, deadline'a dek" | sender.rs:5962-5971 |
+| DR-EST-1 establish probe | **SINIRSIZ** — PreConverge boyunca periyodik | sender.rs:5863-5912 |
+| RecoverFwd sessizlik DUP | **SINIRSIZ** — geometrik reschedule, yalnız ACK iptal eder | sender.rs:5815-5833 |
+| oturum düzeyi vazgeçme | YOK (motor birim terk etmez, D8) | runtime.rs:1515-1521 |
+
+  Sınırlı terimlerin toplamı bile (4096 + 2048 + 3 + 25) 4096'yı aşar; üç terim sınırsız.
+- **Bugün uygulanmıyor:** ürün ve bench yolu `IdentitySeam` kullanır; `open()` replay/gap kontrolü yapmaz (client-core seam.rs:116-139). Sorun gerçek seam'le görünür olur.
+- Ayrıca: transport motorunun kendi `seq16`'sı üçüncü bir sayaçtır (adaptive-transport seq.rs; yalnız 32768 yarım-pencere). Hop (`HubChannel`) PN uzayı ayrıdır, gap sınırı tanımsız (OQ-12).
+
+**B — FETCH_MAILBOX `item_seq` sırasıyla mı teslim ediyor? İMA EDİLİYOR, normatif DEĞİL.**
+`item_seq` "mailbox-local monoton" (app-rpc §6.3); istek `cursor` (high-water) + `max_items`, yanıt `next_cursor`; ACK_RANGE ardışık, dahil `ack_from..ack_to` (§6.4).
+Bunlar artan sırayı İMA eder; ama "öğeler `item_seq > cursor` ve artan sırada döner" kuralı ve `next_cursor ↔ item_seq` ilişkisi yazılı değil (OQ-13).
+
+**C — identity SESSION_DATA-ACK ↔ noise-wire `Control::Ack/Sack`: FARKLI ÇERÇEVELER; epoch onayı buna DAYANMAZ.**
+- SESSION_DATA-ACK'in tel tanımı yoktu (codepoint/layout yok); rolleri: teslim bilgisi, ~~`ack_outstanding`~~ azaltımı, failover tetiği (§10.5 adım 19–20).
+  noise-wire ACK/SACK (0x10/0x11, :313, :332-335) E2E kontrol çerçeveleridir: full-wire-PN aralığı taşıyan saf geri-bildirim, ACK-eliciting DEĞİL, retry edilmez.
+- noise-wire :358-359 "ACK=confirmation" **PARAM_ACK (0x15)** içindir — transport parametre bağlamasının gönderen-onayı (B2), epoch değil.
+- Epoch 0→1 onayı **örtüktür**: Bob'un aldığı ilk AEAD-geçerli epoch-1 paketi (noise-wire §4 adım 2–3; ccr :2622-2625). Çerçeve türünden bağımsızdır.
+  → SESSION_DATA-ACK'ten korunacak epoch rolü YOK; istemci sayacı + ~~WAIT~~ sökümü epoch onayını etkilemez.
+- **WS-D2'yi (Tema E, sprint planı D2) besleyen sonuç:** hangi ACK ailesi seçilirse seçilsin epoch onayı etkilenmez, **tek şartla** — noise-wire §4 adım 2
+  ("Alice RESPONSE'u alınca HEMEN epoch-1'de en az bir paket gönderir — bekleyen data VEYA ACK/keepalive") bir taşıyıcıya bağlı kalmalı.
+  inner_kind registry'de (:311-316) keepalive codepoint'i yok → 0x10/0x11 silinirse ve bekleyen veri yoksa adım 2'yi neyin taşıyacağı D2 amendment'ında adlandırılmalı (OQ-14).
+  PARAM_ACK (0x15) D2 kapsamı dışındadır. Seçilen aile `acked_dh_epoch` epoch-kapsamını taşımalıdır (noise-wire §4).
 
 ---
 
