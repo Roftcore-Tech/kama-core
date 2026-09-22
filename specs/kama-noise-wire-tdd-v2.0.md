@@ -1,5 +1,8 @@
 # kama-noise-wire-tdd — Kama Noise Secure-Wire Profile [v2.0 — dört-karar-boşluğu-KAPATILDI (HANDLE_ASSIGN-frozen · bootstrap-profile-admission · confirmation-safe-epoch · K-invariant) + öz-tarama-temiz; FULL-DESIGN-GO-onayı: Abkarada]
 
+> **YAMA KAYDI — 2026-09-23 [D-GAP-1 bağı]:** §4 anti-replay sabit-kapsamı güncellendi — legacy-seq16 yolunun `MAX_FUTURE_GAP`/`MAX_REORDER` kapıları ccr §35.8'de KALDIRILDI (far-future reddi yok; yapısal sınır |cand−expected| < 2^15, gönderen kısıtı KS-PN-1). extended-pn32 yolunun `FUTURE_GAP_MAX = 2^13` kapısı DOKUNULMADAN durur — kapsam sorusu identity OQ-16. **Not:** `kama-noise-wire-tdd-v2_0.md` ve `kama-noise-wire-tdd-v2.0.md` aynı başlıkla iki ayrı dosyadır ve hiçbiri diğerini supersede ilan etmez; bu yama ikisine de AYNI şekilde işlendi (otorite kararı sahibe aittir).
+
+
 > **STATÜ — DR-4 CLOSED (KOŞUL-A / LE64)** [Önceki "GEÇİCİ STATÜ OVERRIDE — DR-4 AÇIK" bloğu, DR-4-envanteri
 > KOŞUL-A(2)-KESİN-sağladığı için otomatik-kilitle kaldırıldı — karar-paketi GÖREV-2.]
 > - **Cryptographic-profile freeze: CLOSED** — AEAD-nonce96=LE64 (§4.5); FULL-DESIGN-GO yeniden-aktif (16-gate+nonce96=CLOSED).
@@ -410,8 +413,9 @@ replay_window[dh_epoch]    # bitmap, WINDOW=2^14=16384, HER-dh_epoch-AYRI
 ```
 Legacy-seq16-16-bit-düşük, extended-pn32-32-bit-düşük; İKİSİ-de AYNI-direction-local-full-PN'in-düşük-bitleri (§2.5).
 **[DR-3 — SABİT-KAPSAM-AYRIMI, KARAR-VERİLDİ]:** anti-replay-sabitleri PER-ENCODING-WIDTH: **legacy-seq16-yolu →
-ccr-§35.8-sabitleri** (REPLAY_WINDOW=1024, MAX_FUTURE_GAP=4096, MAX_REORDER=8192 — mühürlü; 16-bit-span-65536'ya-
-uygun-dar-pencere); **extended-pn32-yolu → bu-bölümün-sabitleri** (WINDOW=2^14, FUTURE_GAP_MAX=2^13 — 32-bit-span-
+ccr-§35.8-sabitleri** (REPLAY_WINDOW=1024, ~~MAX_FUTURE_GAP=4096, MAX_REORDER=8192 — mühürlü; 16-bit-span-65536'ya-uygun-dar-pencere~~ — **[D-GAP-1 2026-09-23] bu iki
+kapı ccr §35.8'de KALDIRILDI → legacy-seq16 yolunda far-future reddi YOKTUR**; kalan tek sınır yapısaldır (|cand−expected| < 2^15,
+seq16 tek-anlamlılığı) ve GÖNDEREN tarafından korunur: transport-layer-tdd [AMENDMENT-9] / KS-PN-1. REPLAY_WINDOW=1024 aynen kalır); **extended-pn32-yolu → bu-bölümün-sabitleri** (WINDOW=2^14, FUTURE_GAP_MAX=2^13 — 32-bit-span-
 geniş-pencere-taşır). İki-otorite-arasında-ÇELİŞKİ-DEĞİL-kapsam-ayrımı; iki-yol-ayrı-sabit-setini-uygular.
 ```
 reconstruct(low_bits, low_width_bits, dh_epoch):
@@ -430,6 +434,9 @@ accept(candidate, dh_epoch_wire):
   if candidate + WINDOW < ew:                    REJECT  # TOO-OLD (checked-add, underflow-safe)
   if candidate < ew and window_seen(win, candidate): REJECT  # DUPLICATE
   if candidate > ew + FUTURE_GAP_MAX:            REJECT  # FUTURE-GAP (FUTURE_GAP_MAX=2^13 < span/2 tek-anlamlı)
+  #   [D-GAP-1 2026-09-23] BU SATIR YALNIZ extended-pn32 YOLU İÇİN GEÇERLİDİR. legacy-seq16 yolunda kapı
+  #   KALDIRILDI (ccr §35.8) → o yolda bu kontrol UYGULANMAZ. pn32 kapısının D-GAP-1 kapsamına alınıp
+  #   alınmayacağı AÇIK bir karardır (identity OQ-16): pn32'nin yapısal sınırı 2^15 değil span/2 = 2^31'dir.
   if AEAD_open(candidate, dh_epoch_wire) fails:  REJECT  # candidate=dh_epoch_wire-cipher-state-nonce; window-İLERLEMEZ
   # SUCCESS → COMMIT (yalnız-ilgili-epoch-state):
   window_mark_seen(win, candidate); if candidate >= ew: expected_pn[dh_epoch_wire] = candidate + 1

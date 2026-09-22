@@ -1,5 +1,8 @@
 # Kama — Routing & Rendezvous Architecture (Hub-Mesh DHT)
 
+> **YAMA KAYDI — 2026-09-23 [N-pencere temizliği]:** §5.2, §9 (R-5b) ve §9.1'deki "N-mesaj ACK penceresi" ifadeleri üstü çizildi. Gerekçe: 2026-09-22 sahip kararı — N-mesaj ACK penceresi ÜÇE AYRILDI; istemci/gönderen penceresi KALKTI, sessiz kayıp TESPİTİ artık AMP `RECEIPT(delivered)` yokluğu + `msg_id` boşluğudur (tespit; önleme residual), hub tarafı sınır app-rpc §8 mailbox kotasıdır. Bu belgenin routing/rendezvous hükümleri DEĞİŞMEDİ — yalnız telafi mekanizmasının adı güncellendi.
+
+
 **Durum:** Implementation-ready / freeze-ready (Alpha) — yalnız hub-to-hub RPC payload byte-level test vektörleri bekliyor.
 **Semantik otorite:** `identity-and-trust-model.md` v1.5 + `ccr-format-spec.md`
 **Bu belge:** Hub-to-hub DHT, RoutingRecord, ANNOUNCE, hub-mesh Noise, senkron rendezvous (relay-only).
@@ -488,7 +491,8 @@ Neden örtük yeterli (açık Bob-imzası GEREKMİYOR):
   - Hub X sahte RoutingRecord yaysa bile: Alice'in mesajı Hub X'e gider, ama
     Hub X mesajı OKUYAMAZ (Session Model V3 AEAD; ss_e/ss_s için Bob'un static X25519 sk'sı lazım — E2E).
   - Hub X yalnızca SUPPRESS edebilir (mesajı düşürür) = availability residual,
-    İÇERİK SIZINTISI DEĞİL. Alice N-mesaj-ACK penceresi ile sessiz kaybı yakalar
+    İÇERİK SIZINTISI DEĞİL. Alice ~~N-mesaj-ACK penceresi ile~~ **AMP RECEIPT(delivered) yokluğu + msg_id boşluğuyla** sessiz kaybı
+    yakalar [2026-09-23; N-mesaj ACK penceresi 2026-09-22'de üçe ayrıldı — istemci penceresi kalktı, identity E-9]
     (identity v1.5 CAD-45) → çok-hub failover → başka hub üzerinden Bob'a ulaşır.
 
 Maliyet kararı: Açık Bob-imzası +64B (RoutingRecord'a) + Bob'un katılımı getirirdi.
@@ -959,7 +963,7 @@ Beta (signaling-architecture.md):
 | R-3 | ANNOUNCE replay (eski IP) | ✓ Kapalı | sequence_number monotonic + timestamp window (3.6) |
 | R-4 | IP spoof ile meşru hub'ı banlatma | ✓ Kapalı | IP ban YOK; geçersiz cert sessiz DROP (3.7) |
 | R-5a | Unauthorized fake RoutingRecord / route poisoning | ✓ Kapalı | AuthorizedHubSetRecord DHT STORE için ZORUNLU; `rr.hub_id` AHS içinde değilse RoutingRecord DROP. AHS RA/Intermediate-imzalı — kullanıcı/kötü hub üretemez (5.5/5.8) |
-| R-5b | Authorized-but-malicious hub suppress/delay | ⚠ Kabul | Authorized hub mesajı düşürebilir/geciktirebilir; içerik okuyamaz/değiştiremez (E2E Session Model V3 AEAD). N-mesaj ACK + çok-hub failover telafi (5.7) |
+| R-5b | Authorized-but-malicious hub suppress/delay | ⚠ Kabul | Authorized hub mesajı düşürebilir/geciktirebilir; içerik okuyamaz/değiştiremez (E2E Session Model V3 AEAD). ~~N-mesaj ACK~~ **RECEIPT(delivered) tespiti** + çok-hub failover telafi (5.7) [2026-09-23] |
 | R-6 | RoutingRecord rollback (eski konum replay) | ✓ Kapalı | LWW: düşük sequence_number reddedilir (5.5) |
 | R-7 | DHT mesaj içeriği dinleme (passive) | ✓ Kapalı | Hub-mesh Noise (içerik+dest_hash şifreli) (6.4) |
 | R-8 | Compromised DHT node tüm replikaları okur | ✓ Kapalı | Per-recipient şifreleme: node yalnızca kendine geleni okur (6.4) |
@@ -974,7 +978,7 @@ Beta (signaling-architecture.md):
 
 ```
 R-5b (authorized-but-malicious suppression): Authorized hub Bob'a giden mesajı düşürebilir (availability),
-  AMA okuyamaz/değiştiremez (E2E). N-mesaj-ACK + çok-hub failover telafi eder. KABUL.
+  AMA okuyamaz/değiştiremez (E2E). ~~N-mesaj-ACK~~ **RECEIPT(delivered) tespiti** + çok-hub failover telafi eder. KABUL. [2026-09-23]
   (R-5a unauthorized fake RoutingRecord mandatory AHS ile KAPALI — residual değil.)
 R-10 (eclipse): Küçük mesh'te (savunma sanayi 10-50 hub) Kademlia'nın büyük-ağ varsayımları
   tam geçerli değil. Kademlia eviction + Intermediate-imzalı katılım (Sybil zorlaştırır) kısmi.

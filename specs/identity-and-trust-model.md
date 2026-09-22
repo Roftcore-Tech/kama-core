@@ -1,5 +1,8 @@
 # Identity & Trust Model
 
+> **YAMA KAYDI — 2026-09-23 [D-GAP karar paketi]:** §15.5 `replay_precheck`'te far-future kapısı KALDIRILDI (D-GAP-1; ccr §35.8 ile birebir) — ileri sıçrama AEAD-geçerliyse kabul edilir, `commit`'te atlanan aralık bitmap'te temizlenir; underflow-safe eski-paket kuralı ve "AEAD'den önce güncellenmez" AYNEN kalır. §28.1-A kanıtına sonuç notu eklendi. OQ bakımı: OQ-09/10/11/13 KAPANDI; OQ-12/14/15 AÇIK; **OQ-16 YENİ** (noise-wire extended-pn32 `FUTURE_GAP_MAX` kapsam sorusu).
+
+
 > **YAMA KAYDI — 2026-09-22 [N-mesaj ACK penceresi ÜÇE AYRILDI — sahip kararı]:** (1) KALIR: hub'ın gönderen→alıcı başına teslim edilmemiş öğe sınırı → **mailbox kotası** (app-rpc §8, `0x0505 MAILBOX_QUOTA_EXCEEDED`, N = hub politikası [KALİBRASYON]). (2) KALKTI: istemcide `ack_outstanding` + WAIT (E-9, CAD-45, §8 "Async outbound seq" satırı, §10.5 adım 8 sözde-kod, §10.5 adım 19, §12.3, §15.5 notu, §16 SessionState yapısı + kural, §25 test 24) — üstü çizildi, silinmedi; SESSION_DATA-ACK'in teslim-bilgisi rolü → AMP RECEIPT(delivered). (3) Yeniden yazıldı: T-16 (tespit = RECEIPT(delivered) + msg_id boşluğu, önleme residual), T-26 (hub mailbox kotası + cihaz başına gönderim hızı), AC-08 (§26), CAD-45 son cümlesi, §21.1 CAD-40 notu. (4) E-9'daki "SÖKÜLDÜ 16 Eyl" + `MAILBOX_PRUNE` atfı YANLIŞTI (o söküm repoya hiç girmedi; `MAILBOX_PRUNE` tanımlı değil) → bu karara referans. (5) KANIT, (6) TEYİT → §28.1 (karar içermez) + OQ-09..OQ-15. **Karar listesinde OLMAYAN, tutarlılık için dokunulan:** §10.5 adım 20 failover tetiği ("ACK gelmezse (N mesaj sonra)" → "RECEIPT(delivered) gelmezse", eşik OQ-15), §12.3 out-of-order MAX_SKIP notu, §12.9 sequence diyagramı notu, E-2 MAX_SKIP bağlamı, §2.1 kapsam özeti, §3 hub async trust notu, §9 hub "Async delivery ACK state" satırı (→ mailbox kotası), §9 hub async trust sınırı notu, §12.2 suppress notu.
 
 
@@ -1680,13 +1683,18 @@ verify_compact_device_cert(compact_cert, identity_cert, org_entitlement, fresh_c
 
 replay_precheck(full_counter, epoch, direction, session_state) -> bool:     # PURE — MUTASYON YOK
   WINDOW         = 1024                                    # ccr §35.8 REPLAY_WINDOW
-  MAX_FUTURE_GAP = 4096                                    # ccr §35.8
+  # ~~MAX_FUTURE_GAP = 4096  (ccr §35.8)~~  [D-GAP-1 2026-09-23] far-future kapısı KALDIRILDI
   if epoch not in session_state.acceptable_epochs[direction]: return FALSE  # P0-9: grace'e tabi
   w = session_state.replay_window[epoch][direction]
   highest = w.highest_counter
   # [P0-7] UNDERFLOW-SAFE: "highest - WINDOW" YAZILMAZ (u64 wrap replay kararını etkileyemez).
   if full_counter > highest:
-    if full_counter - highest > MAX_FUTURE_GAP: return FALSE   # future-gap → reddet
+    # ~~if full_counter - highest > MAX_FUTURE_GAP: return FALSE   # future-gap → reddet~~
+    # [D-GAP-1 2026-09-23] Kapı kaldırıldı: ileri sıçrama ne kadar büyük olursa olsun KABUL edilir.
+    #   Gerekçe: sahte far-future paket AEAD'de düşer ve precheck PURE olduğu için state'i ilerletmez (P0-6)
+    #   → kapı hiçbir saldırıyı engellemiyordu; meşru trafikte kalıcı oturum ölümü üretiyordu (§28.1-A).
+    #   commit'te: highest sıçrar + atlanan aralık bitmap'te TEMİZLENİR (o sayaçlar "görülmedi" olur).
+    #   Yapısal sınır (kapı değil): |full_counter − expected| < 2^15 — gönderen kısıtı D-GAP-2 / KS-PN-1.
     return TRUE                                                # ileri → kabul (commit'te kaydırılır)
   if full_counter + WINDOW <= highest:  return FALSE            # window'dan eski → reddet
   if bitmap_test(w.bitmap, full_counter): return FALSE          # zaten görüldü → REPLAY reddet
@@ -1696,6 +1704,7 @@ replay_commit(full_counter, epoch, direction, session_state) -> void:      # YAL
   w = session_state.replay_window[epoch][direction]
   if full_counter > w.highest_counter:
     slide_window(w, full_counter)                          # highest advance + pencere kaydır
+                                                           # [D-GAP-1] sıçrama büyükse atlanan aralık TEMİZLENİR
   bitmap_set(w.bitmap, full_counter)
 
 # Kanonik alım sırası (P0-8): demux → counter_reconstruct → replay_precheck → key → nonce → AAD →
@@ -2743,19 +2752,21 @@ k = DH(sender_ephemeral, recipient_static_x25519)        # saf Noise N one-way
 | OQ-06 | Cross-certification (RFC 5280 §3.3) cross-operator | Beta kapsamı |
 | OQ-07 | Admin Server ↔ RA otomasyon protokol detayı (mTLS mesaj formatı) | İmpl-fazı |
 | OQ-08 | ML-KEM hibridizasyon (harvest-now-decrypt-later) | Quantum yatırımı, ileri faz |
-| OQ-09 | [2026-09-22] Alıcı sayaç / MAX_SKIP sınırının sahibi — istemci N-penceresi kalkınca açıkta kaldı | AÇIK — kanıt §28.1-A |
-| OQ-10 | [2026-09-22] Transport PN tüketimi ↔ ccr §35.8 `MAX_FUTURE_GAP`: ileri-yön kesintisinde üst sınır YOK | AÇIK — kanıt §28.1-A |
-| OQ-11 | [2026-09-22] Future-gap formu: identity §15.5 `full_counter − highest > 4096` ↔ noise-wire §4 `candidate > ew + GAP` (ew = highest+1) → bir paketlik fark; hangisi otoriter | AÇIK |
+| OQ-09 | ~~[2026-09-22] Alıcı sayaç / MAX_SKIP sınırının sahibi — istemci N-penceresi kalkınca açıkta kaldı~~ | **KAPANDI 2026-09-23** — sahibi: gönderen tarafı **D-GAP-2/KS-PN-1** (K ≪ 2^15) + alıcıda yapısal 2^15. Not: Session Model V3'te epoch+yön başına TEK anahtar var (per-message HKDF yok) → "skipped key saklama" anlamında MAX_SKIP bir V2 kalıntısıdır; sayısal sınır replay bitmap'idir |
+| OQ-10 | ~~[2026-09-22] Transport PN tüketimi ↔ ccr §35.8 `MAX_FUTURE_GAP`: ileri-yön kesintisinde üst sınır YOK~~ | **KAPANDI 2026-09-23** — D-GAP-1 (kapı kalktı) + D-GAP-2/KS-PN-1 (K tavanı). K'nin DEĞERİ hâlâ [KALİBRASYON — Abkarada] |
+| OQ-11 | ~~[2026-09-22] Future-gap formu: identity §15.5 `full_counter − highest > 4096` ↔ noise-wire §4 `candidate > ew + GAP` (ew = highest+1) → bir paketlik fark; hangisi otoriter~~ | **KAPANDI 2026-09-23** — legacy/seq16 yolunda iki kapı da kaldırıldı (D-GAP-1) → fark konusuz kaldı. extended-pn32 yolu için OQ-16 |
 | OQ-12 | [2026-09-22] Hop (`HubChannel`) PN uzayının gap sınırı tanımsız (KM-SEAM-TC-001 PoC no-op) | AÇIK — M4 |
-| OQ-13 | [2026-09-22] FETCH_MAILBOX teslim sırası normatif değil (cursor + ardışık ACK_RANGE yalnız İMA ediyor) | AÇIK — kanıt §28.1-B |
+| OQ-13 | ~~[2026-09-22] FETCH_MAILBOX teslim sırası normatif değil~~ | **KAPANDI 2026-09-23** — D-GAP-3: artan `item_seq` NORMATİF (app-rpc §6.3). Artık kalan: `next_cursor` ↔ `item_seq` ilişkisi hâlâ yazılı değil (§28.1-B) |
 | OQ-14 | [2026-09-22] WS-D2: ACK ailesi (0x10/0x11) silinirse noise-wire §4 adım 2 taşıyıcısı — registry'de keepalive codepoint'i yok | AÇIK — kanıt §28.1-C |
 | OQ-15 | [2026-09-22] §10.5 adım 20 failover eşiği: "RECEIPT(delivered) gelmezse" için süre/sayı (eski "N mesaj sonra" kalktı) | AÇIK — KALİBRASYON, sahip kararı |
+| OQ-16 | [2026-09-23] noise-wire **extended-pn32** yolunun `FUTURE_GAP_MAX = 2^13` kapısı: D-GAP-1 kapsamına alınacak mı? (D-GAP-1 yalnız ccr §35.8 / legacy-seq16 için verildi; pn32'nin yapısal sınırı 2^15 değil, span/2 = 2^31) | AÇIK — sahip kararı |
 
 Protokol-kritik tüm kimlik/trust/async/revocation davranışı bu dokümanda + ccr-spec'te tanımlıdır.
 
 ### 28.1 2026-09-22 ÜÇE-AYIRMA — kanıt (madde 5) ve teyit (madde 6) · **KARAR İÇERMEZ**
 
 **A — Transport'un hop-ACK almadan tüketebileceği azami PN ↔ ccr §35.8 `MAX_FUTURE_GAP = 4096`: ALTINDA DEĞİL (sınır yok).**
+> **[SONUÇ — 2026-09-23 karar paketi]** Bu kanıt iki karara bağlandı: **D-GAP-1** far-future reddini kaldırdı (ccr §35.8; gap artık bir kapı değil), **D-GAP-2 / KS-PN-1** gönderen tarafına "hop-ACK almadan ardışık tüketilen PN ≤ K, K ≪ 2^15" tavanını getirdi (transport-layer-tdd [AMENDMENT-9]). Aşağıdaki ölçümler değişmedi; değişen, bunların hangi sınıra karşı okunduğudur: artık sınır 4096'lık kapı değil, seq16'nın yapısal 2^15 tek-anlamlılığıdır.
 - Sayaç kimliği: §35.8, SESSION_DATA `seq16`'dan geri kazanılan full counter'ı yönetir (ccr :2732-2756; kabul `candidate <= expected + MAX_FUTURE_GAP`, aşım → REJECT, resync yolu yok).
   noise-wire §2.5 (:237-240): mühürlenen **tüm** sınıflar (SESSION_DATA + FEC source/repair + ACK/SACK/RECOVERED/control) **tek** direction-local PN uzayını paylaşır
   → transport her mühürlenmiş datagramda bir PN yakar. Extended pn32 yolu (FEC/control) için sınır `FUTURE_GAP_MAX = 2^13 = 8192` (noise-wire :452-455, :472).
