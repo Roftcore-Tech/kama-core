@@ -14,6 +14,7 @@ DENETLENEN DORT ESITLIK:
   B. §1'de bildirilen tipler            ⊆ aynadaki tipler   (ayna alias/yardimci ekleyebilir)
   C. §3 TransportError variant kumesi   == aynadaki variant kumesi   (kume KAPALIDIR)
   D. §6 tablosundaki H-* satir kimlikleri == seam-coverage.json rows[].id
+  E. tek hedef (mock) kayitliyken hicbir satir 'implemented' beyan EDILEMEZ (yalniz 'mock_only')
 
 Ek olarak beyan dosyasinin kendi tutarliligi (tekrarsiz kimlik, gecerli durum, ratchet tabani).
 
@@ -32,8 +33,9 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SPEC = ROOT / "docs/seems/KM-SEAM-AT-001.md"
 DEFAULT_MIRROR = ROOT / "crates/kama-integration/tests/common/seam/api.rs"
 DEFAULT_COVERAGE = ROOT / "scripts/ci/seam-coverage.json"
+DEFAULT_TARGETS = ROOT / "crates/kama-integration/tests/common/seam/target.rs"
 
-VALID_STATUS = {"implemented", "not_implemented"}
+VALID_STATUS = {"implemented", "mock_only", "not_implemented"}
 
 findings: list[str] = []
 
@@ -144,10 +146,11 @@ def main() -> int:
     ap.add_argument("--spec", type=Path, default=DEFAULT_SPEC)
     ap.add_argument("--mirror", type=Path, default=DEFAULT_MIRROR)
     ap.add_argument("--coverage", type=Path, default=DEFAULT_COVERAGE)
+    ap.add_argument("--targets", type=Path, default=DEFAULT_TARGETS)
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
-    for p in (args.spec, args.mirror, args.coverage):
+    for p in (args.spec, args.mirror, args.coverage, args.targets):
         if not p.is_file():
             die(f"dosya yok: {p}")
 
@@ -202,7 +205,7 @@ def main() -> int:
 
     # Beyan oz-tutarliligi
     seen: set[str] = set()
-    implemented = 0
+    implemented, mock_only = 0, 0
     for r in rows:
         rid, status = r.get("id"), r.get("status")
         if rid in seen:
@@ -212,13 +215,26 @@ def main() -> int:
             bad(f"seam-coverage.json: '{rid}' gecersiz durum '{status}' (gecerli: {sorted(VALID_STATUS)})")
         if status == "implemented":
             implemented += 1
+        elif status == "mock_only":
+            mock_only += 1
 
-    baseline = cov.get("implemented_baseline")
-    if not isinstance(baseline, int):
-        bad("seam-coverage.json: `implemented_baseline` tam sayi degil")
-    elif baseline != implemented:
-        bad(f"ratchet tabani gerceklikle ayrisiyor: beyan {implemented} uygulanmis satir, "
-            f"implemented_baseline {baseline} — AYNI commit'te guncelleyin")
+    for key, actual in (("implemented_baseline", implemented), ("mock_only_baseline", mock_only)):
+        baseline = cov.get(key)
+        if not isinstance(baseline, int):
+            bad(f"seam-coverage.json: `{key}` tam sayi degil")
+        elif baseline != actual:
+            bad(f"ratchet tabani gerceklikle ayrisiyor: beyan {actual} satir ({key.split('_baseline')[0]}), "
+                f"{key} {baseline} — AYNI commit'te guncelleyin")
+
+    # E — tek hedef varken "iki hedefte kanitlandi" denemez.
+    targets_text = args.targets.read_text(encoding="utf-8")
+    reg = re.search(r"REGISTERED_TARGETS[^;]*;", targets_text, re.S)
+    real_registered = bool(reg and "TargetKind::Real" in reg.group(0))
+    say(f"  hedef : kayitli gercek hedef {'VAR' if real_registered else 'YOK'}")
+    if not real_registered and implemented:
+        names = [r["id"] for r in rows if r.get("status") == "implemented"]
+        bad(f"tek hedef (mock) kayitliyken {names} 'implemented' beyan edilmis. Bir satir ancak "
+            f"IKI hedefte kostuktan sonra kanitlanmis sayilir; simdilik dogru durum 'mock_only'.")
 
     # Beyan edilen yollar gercekten denetlenenler mi (yanlis dosyayi denetleme tuzagi)
     for key, used in (("spec_path", args.spec), ("mirror_path", args.mirror)):

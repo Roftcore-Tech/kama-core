@@ -112,21 +112,26 @@ import json, os, sys
 line = os.environ["ROWS_LINE"]
 code_rows = [r for r in line.split("rows=", 1)[1].strip().split(",") if r]
 cov = json.load(open(sys.argv[1], encoding="utf-8"))
-declared = [r["id"] for r in cov["rows"] if r.get("status") == "implemented"]
-baseline = cov.get("implemented_baseline", 0)
+# Kod tarafi "hangi govdeler kosuyor" der; beyan "o govdenin kanit degeri ne" der.
+# Kosan bir govde ya implemented (iki hedefte) ya mock_only (yalniz sahtede) olabilir.
+declared = [r["id"] for r in cov["rows"] if r.get("status") in ("implemented", "mock_only")]
+proven = [r["id"] for r in cov["rows"] if r.get("status") == "implemented"]
+floor = cov.get("implemented_baseline", 0) + cov.get("mock_only_baseline", 0)
 ok = True
 if sorted(code_rows) != sorted(declared):
     print(f"::error title=SEAM-CONFORMANCE::kapsam ayrismasi — kodda {sorted(code_rows)}, "
           f"beyanda {sorted(declared)}. Ikisi AYNI commit'te guncellenir.")
     print("KIRMIZI: §6 kapsam beyani gerceklikle ayrisiyor")
     ok = False
-if len(code_rows) < baseline:
+if len(code_rows) < floor:
     print(f"::error title=SEAM-CONFORMANCE::ratchet dustu — kodda {len(code_rows)} satir, "
-          f"taban {baseline}. Kapsam kaybi bilincli mi?")
+          f"taban {floor}. Kapsam kaybi bilincli mi?")
     print("KIRMIZI: kapsam ratchet'i dustu")
     ok = False
 if ok:
-    print(f"  uygulanmis §6 satiri: {len(code_rows)}/{len(cov['rows'])} (taban {baseline}) — hizali")
+    total = len(cov["rows"])
+    print(f"  §6 kapsami: {len(proven)}/{total} KANITLANMIS (iki hedefte) · "
+          f"{len(code_rows) - len(proven)}/{total} yalniz sahtede · taban {floor}")
 sys.exit(0 if ok else 1)
 PY
   fi

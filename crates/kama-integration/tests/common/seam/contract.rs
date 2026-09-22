@@ -18,20 +18,26 @@
 //!   Not: §6'nın 11 satırı ortak koşum yüzeyinde (conformance-core) yaşar; `H-NO-CRYPTO-EDGE` ve
 //!   `H-NO-PLANE1` spec'te STATİK kontrol olarak tanımlıdır (derleme bağımlılığı denetimi) —
 //!   sırası geldiğinde koşum değil, kapı-seviyesi denetim olarak uygulanmaları gerekir.
-//! * **sözleşme** ([`seam_contract_suite!`]) — §6'nın 11 satırı. **Bugün sıfırı uygulanmıştır.**
-//!   Bu boşluk `scripts/ci/seam-coverage.json` içinde satır satır beyan edilir; runner, Rust
-//!   tarafının bildirdiği listeyi (aşağıdaki sentinel) o beyanla ÇAPRAZ KONTROL eder. Beyanla
-//!   gerçeklik ayrışırsa kapı kırmızı — "boş süit sessizce yeşil" hâli mümkün değildir.
+//! * **sözleşme** ([`seam_contract_suite!`]) — §6'nın 11 satırı. **Bugün 1'i uygulanmıştır**
+//!   (H-ROUNDTRIP), ve o satır `mock_only`'dir: yalnız sahtede koştuğu için kanıt değeri ikinci
+//!   hedef gelince doğar. Kalan 10'u ve bu ayrım `scripts/ci/seam-coverage.json` içinde satır
+//!   satır beyan edilir; runner, Rust tarafının bildirdiği listeyi (aşağıdaki sentinel) o
+//!   beyanla ÇAPRAZ KONTROL eder ve tek hedef varken hiçbir satırın "kanıtlandı" sayılmasına
+//!   izin vermez. Beyanla gerçeklik ayrışırsa kapı kırmızı.
 
 #![allow(dead_code)]
 
-/// Rust tarafının GERÇEKLİĞİ: §6'dan uygulanmış satırların kimlikleri.
+/// Rust tarafının GERÇEKLİĞİ: süitin fiilen koşturduğu §6 satırlarının kimlikleri.
 ///
 /// Burası tek doğruluk kaynağı DEĞİLDİR; §6 satır listesinin ve durumlarının otoritesi
 /// `scripts/ci/seam-coverage.json`'dır (o da spec §6 tablosuna karşı `seam-api-drift.py` ile
 /// denetlenir). Bu sabit yalnız "kodda fiilen ne koşuyor" der; runner ikisini karşılaştırır.
 /// Yeni bir §6 satırı uygulandığında AYNI commit'te buraya ve JSON'a eklenir.
-pub const IMPLEMENTED_CONTRACT_ROWS: &[&str] = &[];
+///
+/// **Bir satırın burada olması "kanıtlandı" demek DEĞİLDİR.** Tek hedef (mock) kayıtlıyken bir
+/// satır olsa olsa `mock_only`'dir: gövde hazırdır, doğrulama gücü ikinci hedef gelince doğar
+/// (Google SWE ch.13 / Fowler ContractTest). Beyandaki durum ayrımını runner zorlar.
+pub const CONTRACT_ROWS: &[&str] = &["H-ROUNDTRIP"];
 
 /// Runner'ın okuduğu makine-satırı. `--nocapture` ile basılır.
 pub const CONTRACT_ROWS_SENTINEL: &str = "SEAM-CONTRACT-ROWS";
@@ -41,7 +47,7 @@ pub const CONTRACT_ROWS_SENTINEL: &str = "SEAM-CONTRACT-ROWS";
 /// # Panics
 /// Beyan listesi kendi içinde tutarsızsa (boş kimlik, tekrar eden kimlik).
 pub fn emit_contract_row_sentinel(target_id: &str) {
-    let rows = IMPLEMENTED_CONTRACT_ROWS;
+    let rows = CONTRACT_ROWS;
     for (i, id) in rows.iter().enumerate() {
         assert!(!id.is_empty(), "boş §6 satır kimliği (index {i})");
         assert!(
@@ -53,6 +59,124 @@ pub fn emit_contract_row_sentinel(target_id: &str) {
         "{CONTRACT_ROWS_SENTINEL}: target={target_id} rows={}",
         rows.join(",")
     );
+}
+
+/// KM-SEAM-AT-001 §6 satır gövdeleri — her hedefte AYNI kod koşar.
+pub mod rows {
+    use crate::harness::api::{
+        CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PeerRef, PreparedUnit,
+        SessionEvent, SessionHandle,
+    };
+    use crate::harness::target::SeamTarget;
+
+    /// `Ready`'yi beklerken atılacak azami adım. Sınırsız döngü YOK: gerçek hedef ilerlemezse
+    /// test asılı kalmaz, KIRMIZI olur.
+    const PUMP_BUDGET: usize = 64;
+
+    /// `connect` → (`Pending` →) `Ready` zincirini sürer ve aktif handle'ı döndürür.
+    ///
+    /// # Panics
+    /// Bütçe içinde `Ready` gelmezse ya da olay başka peer taşırsa.
+    fn establish<T: SeamTarget>(
+        t: &mut T::Transport,
+        peer: PeerRef,
+        early: Option<PreparedUnit>,
+    ) -> SessionHandle {
+        match t.connect(peer, early).expect("connect reddedilmemeli") {
+            ConnectResult::Ready(h) => h,
+            ConnectResult::Pending(_) => {
+                for _ in 0..PUMP_BUDGET {
+                    T::pump(t);
+                    match t.poll_event() {
+                        Some(SessionEvent::Ready(h, p)) => {
+                            assert_eq!(p, peer, "Ready olayı başka peer taşıdı");
+                            return h;
+                        }
+                        Some(other) => panic!("Ready'den önce beklenmeyen olay: {other:?}"),
+                        None => continue,
+                    }
+                }
+                panic!("{} adımda Ready gelmedi (hedef {})", PUMP_BUDGET, T::ID);
+            }
+        }
+    }
+
+    /// **H-ROUNDTRIP** — §6: `send(PreparedUnit)` → `recv()` byte-identical; `early_unit`
+    /// byte-identical.
+    ///
+    /// Ölçtüğü şey: Transport birimin **byte'larına dokunmaz**. Çerçeveleme sızmaz, kırpma yok,
+    /// sıkıştırma yok (K3/K4), teslim uydurulmaz ve tekrarlanmaz. Bu iddia hedeften bağımsızdır;
+    /// hedef sözleşmesi gereği peer echo yaptığı için aynı gövde gerçek adapter'da da koşar.
+    ///
+    /// # Panics
+    /// Byte'lar değişirse, teslim gelmezse, oturum eşleşmezse ya da fazladan teslim üretilirse.
+    pub fn h_roundtrip<T: SeamTarget>() {
+        let mut t = T::build().unwrap_or_else(|e| {
+            panic!(
+                "hedef {} kurulamadı ({e}) — uygulanmış satır koşamayan hedefte olamaz",
+                T::ID
+            )
+        });
+        let caps = t.capabilities();
+        let peer = PeerRef::from_raw(0xE0);
+
+        // early_unit: opak, byte-özdeş geri gelmeli (K6).
+        let early_bytes: Vec<u8> = b"AMP-early-unit-record".to_vec();
+        assert!(early_bytes.len() <= caps.max_plaintext_unit_bytes as usize);
+        let h = establish::<T>(
+            &mut t,
+            peer,
+            Some(PreparedUnit {
+                bytes: early_bytes.clone(),
+                compression_policy: CompressionPolicy::Never,
+            }),
+        );
+
+        let delivered = t.recv().expect("early_unit teslim edilmedi");
+        assert_eq!(
+            delivered.session, h,
+            "early_unit başka oturuma teslim edildi"
+        );
+        assert_eq!(
+            delivered.unit,
+            early_bytes,
+            "early_unit byte-özdeş gelmedi (hedef {})",
+            T::ID
+        );
+
+        // send → recv: 0..=255 deseni, kapasite sınırına göre kırpılır.
+        let n = core::cmp::min(256, caps.max_plaintext_unit_bytes as usize);
+        let payload: Vec<u8> = (0..n).map(|i| (i % 256) as u8).collect();
+        t.send(
+            h,
+            PreparedUnit {
+                bytes: payload.clone(),
+                compression_policy: CompressionPolicy::Never,
+            },
+            DeliveryPolicy::Reliable,
+        )
+        .expect("send kuyruğa alınmalı (K8: Ok = kuyruğa alındı)");
+
+        let mut got = None;
+        for _ in 0..PUMP_BUDGET {
+            T::pump(&mut t);
+            if let Some(d) = t.recv() {
+                got = Some(d);
+                break;
+            }
+        }
+        let got = got.expect("send edilen birim teslim edilmedi");
+        assert_eq!(got.session, h, "birim başka oturuma teslim edildi");
+        assert_eq!(
+            got.unit,
+            payload,
+            "birim byte-özdeş gelmedi (hedef {})",
+            T::ID
+        );
+
+        // Fazladan teslim YOK (duplicate/uydurma).
+        assert!(t.recv().is_none(), "hedef {} fazladan teslim üretti", T::ID);
+    }
 }
 
 /// Mekanizma gövdeleri — her hedefte AYNI kod koşar.
@@ -193,10 +317,10 @@ macro_rules! seam_mechanism_suite {
 
 /// Sözleşme süitini (KM-SEAM-AT-001 §6) bir hedef için örnekler.
 ///
-/// **Bugün 0/11 satır uygulanmıştır.** Makro, uygulanan satırları hedef başına saracak yerdir;
-/// şimdilik yalnız beyan-sentinel'ini üretir. Yeni satır eklerken: gövde `contract.rs` içine
-/// generic `fn` olarak yazılır, buraya `#[test]` sarmalayıcısı eklenir, kimliği
-/// `IMPLEMENTED_CONTRACT_ROWS` ve `scripts/ci/seam-coverage.json`'a AYNI commit'te işlenir.
+/// **Bugün 1/11 satır uygulanmıştır** (H-ROUNDTRIP; walking-skeleton'un taşıdığı ince dilim).
+/// Yeni satır eklerken: gövde [`rows`] içine generic `fn` olarak yazılır, buraya `#[test]`
+/// sarmalayıcısı eklenir, kimliği [`CONTRACT_ROWS`] ve `scripts/ci/seam-coverage.json`'a AYNI
+/// commit'te işlenir (durum: tek hedef varken `mock_only`).
 #[macro_export]
 macro_rules! seam_contract_suite {
     ($suite:ident, $target:ty) => {
@@ -207,7 +331,12 @@ macro_rules! seam_contract_suite {
 
             type Target = $target;
 
-            // ── §6 satırları buraya ── (bugün: hiçbiri; boşluk seam-coverage.json'da beyanlı)
+            // ── §6 satırları ── (kalanlar seam-coverage.json'da beyanlı)
+
+            #[test]
+            fn h_roundtrip() {
+                contract::rows::h_roundtrip::<Target>();
+            }
 
             #[test]
             fn c0_declared_contract_rows_are_consistent() {

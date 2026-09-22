@@ -15,8 +15,10 @@
 #   F. API drift          — ayna spec'ten ayrisinca (metot silinince) drift kapisi → 1
 #   G. Hedef parametresi  — gecersiz/eksik hedef → 2 · mevcut olmayan hedef → 3 · mock → 0
 #   H. Kategori sizintisi — --target mock, real-adapter ikilisini KOSMAZ
+#   I. Kanit enflasyonu   — tek hedef varken satir 'implemented' beyan edilirse → 1
+#   J. Sessiz kapsam kaybi— kosan bir satir CONTRACT_ROWS'tan silinirse → 1
 #
-# Cikis kodu: 0 = sekiz muhafiz da calisiyor · 1 = en az biri vakumda.
+# Cikis kodu: 0 = on muhafiz da calisiyor · 1 = en az biri vakumda.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -105,11 +107,39 @@ printf '\n── C. kapsam yalani ──\n'
 python3 - "$SEAM/contract.rs" <<'PY'
 import sys, pathlib
 p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
-s = s.replace('pub const IMPLEMENTED_CONTRACT_ROWS: &[&str] = &[];',
-              'pub const IMPLEMENTED_CONTRACT_ROWS: &[&str] = &["H-ROUNDTRIP"];')
-p.write_text(s, encoding="utf-8")
+old = 'pub const CONTRACT_ROWS: &[&str] = &["H-ROUNDTRIP"];'
+assert old in s, "CONTRACT_ROWS capasi bulunamadi"
+new = 'pub const CONTRACT_ROWS: &[&str] = &["H-ROUNDTRIP", "H-CUTOVER"];'
+p.write_text(s.replace(old, new), encoding="utf-8")
 PY
 expect 1 "C1 kod beyansiz §6 satiri iddia ediyor → 1" -- bash "$GATE" --target mock
+restore
+
+printf '\n── J. sessiz kapsam kaybi ──\n'
+# Beyan 'mock_only' diyor ama govde silinmis: kimse fark etmeden kapsam duser.
+python3 - "$SEAM/contract.rs" <<'PY'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
+old = 'pub const CONTRACT_ROWS: &[&str] = &["H-ROUNDTRIP"];'
+assert old in s, "CONTRACT_ROWS capasi bulunamadi"
+p.write_text(s.replace(old, 'pub const CONTRACT_ROWS: &[&str] = &[];'), encoding="utf-8")
+PY
+expect 1 "J1 kosan satir beyandan dusurulunce → 1" -- bash "$GATE" --target mock
+restore
+
+printf '\n── I. kanit enflasyonu ──\n'
+# Govde yalniz sahtede kostu; beyan 'iki hedefte kanitlandi' diyor.
+python3 - scripts/ci/seam-coverage.json <<'PY'
+import json, sys, pathlib
+p = pathlib.Path(sys.argv[1]); d = json.loads(p.read_text(encoding="utf-8"))
+for r in d["rows"]:
+    if r["id"] == "H-ROUNDTRIP":
+        r["status"] = "implemented"
+d["implemented_baseline"] = 1
+d["mock_only_baseline"] = 0
+p.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+expect 1 "I1 tek hedefken 'implemented' beyani → 1" -- bash "$GATE" --target mock
 restore
 
 printf '\n── D. ratchet tutarsizligi ──\n'
@@ -152,5 +182,5 @@ if ((fail)); then
   printf '::error title=SEAM-SELFTEST::seam conformance kapisinin %d muhafizi vakumda\n' "$fail"
   exit 1
 fi
-printf 'SEAM-SELFTEST: sekiz muhafiz da kirmizi olabiliyor\n'
+printf 'SEAM-SELFTEST: on muhafiz da kirmizi olabiliyor\n'
 exit 0
