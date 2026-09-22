@@ -1,5 +1,8 @@
 # CCR Format Specification
 
+> **YAMA KAYDI — 2026-09-20 [kripto implementasyon risk taraması]:** yeni §5.2 Ed25519 doğrulama kipi (S < ℓ · small-order A/R reject · kanonik encoding · cofactorless; negatif vektörlerle kütüphane teyidi). Not: "512-1024" geçen §D1.6 ve Appendix D2 satırları zaten `MUST NOT IMPLEMENT` / `Historical Only` bölümlerinde — dokunulmadı.
+
+
 > **YAMA KAYDI — 2026-09-18b:** başlık notuna CCR canonical-codec-only kuralı (protobuf re-encode ve generic compressor yasak; opak bytes olarak taşınır).
 
 
@@ -222,6 +225,20 @@ Her variable-length alan tanımlar: max length, empty izinli mi, TBS'e dahil mi,
 - shared_secret all_zero ise → mesaj/oturum reddedilir.
 ```
 Bu özellikle Session Model V3 DH'leri için kritik (CompactDeviceCert.device_x25519_pub, sender_ephemeral_x25519, bob_ephemeral, Hub Noise key). All-zero/low-order nokta contributory-behavior saldırılarını ve sıfır-anahtar DH'i engeller.
+
+### 5.2 Ed25519 İmza Doğrulama Kipi (NORMATİF — tüm Ed25519 doğrulamaları) [2026-09-20]
+
+```
+- S tamsayısı: 0 ≤ S < ℓ (RFC 8032 §5.1.7 decoding) — değilse reject.
+- A (public key) ve R: RFC 8032 nokta decoding kuralı (kanonik encoding; y ≥ p → reject)
+  VE small-order DEĞİL ([8]·P ≠ O) — aksi hâlde reject.
+- Grup denklemi COFACTORLESS: [S]·B = R + [k]·A,  k = SHA-512(R ‖ A ‖ M) mod ℓ  (RFC 8032 §5.1.7, Ed25519).
+- Negatif vektör seti dört ret nedenini AYRI vakalar olarak içerir: S ≥ ℓ · small-order A ·
+  small-order R · kanonik olmayan nokta encoding'i. Kütüphane eşlemesi (ör. ed25519-dalek
+  `verify_strict`) BU vektörlerle teyit edilir; kütüphane bir kuralı kapsamıyorsa açık kontrol eklenir.
+- Bağımsız Python referansı: RFC 8032 §6 illüstrasyonu + yukarıdaki small-order ve kanonik-encoding kontrolleri.
+```
+Gerekçe: RFC 8032 iki doğrulama denklemine (cofactored / cofactorless) izin verir ve small-order bileşenler hakkında sessizdir; kip seçilmezse iki implementasyon aynı imzayı farklı sınıflandırır (interop ve negatif vektörler bölünür) ve imza malleability yüzeyi açılır. Kapsam: CompactDeviceCert imzaları, SIGNED_CONTROL ve bu belgedeki tüm Ed25519 doğrulamaları.
 
 ---
 

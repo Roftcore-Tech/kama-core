@@ -1,5 +1,8 @@
 # Kama — Application Protocol & RPC Spec
 
+> **YAMA KAYDI — 2026-09-20:** §8 dedup satırındaki replay penceresi "512-1024" → ccr §35.8 `REPLAY_WINDOW_SIZE = 1024` (normatif replay: identity §15.5).
+
+
 > **YAMA KAYDI — 2026-09-18b:** §3 "transport ciphertext gördüğü için sıkıştıramaz" kalıntısı düzeltildi (tip-bilgisi gerekçesi); "CRIME E2E'de geçersiz" → kontrollü ifade (cross-request oracle yüzeyi yok; secret ile attacker-controlled plaintext aynı context'te değil; uzunluk sızıntısı residual); sıkıştırma wire sözleşmesi → application-message-protocol.md §5 (compression_id, uncompressed_len, MAX_DECOMPRESSED, expansion, sözlük yok, invalid→drop).
 
 
@@ -488,7 +491,7 @@ Idempotency:
   Data-plane: STORE_MESSAGE / SESSION_DATA message_counter + (handle/link) ile dedup → hostile retry güvenli.
 
 Dedup / replay:
-  Alıcı: message_counter (monoton) + sliding-window bitmap (512-1024) + timestamp penceresi (max 7 gün, S&F TTL).
+  Alıcı: message_counter (monoton) + sliding-window bitmap (~~512-1024~~ 1024 = ccr §35.8 `REPLAY_WINDOW_SIZE`; normatif replay: identity §15.5) + timestamp penceresi (max 7 gün, S&F TTL).
   İlk mesaj ATOMIK counter-check (saldırgan ilk mesajı N kez gönderse de counter=1 bir kez işlenir).
   (replay detayları transport-layer-tdd.md / identity-and-trust-model.md ile uyumlu.)
 ```

@@ -53,6 +53,8 @@ MAX_DECOMPRESSED_MESSAGE = MAX_BODY_BYTES
 | 0x09 | `SIGNALING_BLOB` | `blob_len u16_be · blob bytes[blob_len]` (opak; signaling-seam-v0: core okumaz, parse etmez) | media ekibi |
 | 0x0A | `MEDIA_BUNDLE` | `stream_id u32_be · codec u8 · bundle_ms u8 · payload_len u16_be · payload bytes[payload_len]` (payload içi çerçeve yerleşimi media'nın — bu belge yalnız kabı verir) — **asla sıkıştırılmaz** (§5) | media ekibi (bu belge yalnız kabı verir; alan içi KM-SEAM-AM) — A3 dışı |
 
+**`msg_id` semantiği [A3 PROPOSED → Hayri]:** gönderen tarafından **monoton artan u64** (session-scope'ta; yeniden başlatmada devam garantisi yok → yeni session yeni sayaç); aynı session'da duplicate üretilmez; **alıcı teslim sırasını `msg_id` ile ZORLAMAZ** (sıra Transport'un Reliable politikasıyla gelir; `msg_id` yalnız UI sıralaması, duplicate tespiti ve `RECEIPT.ref_msg_id` referansı içindir). `sent_at_ms` güvenlik/sıra kararı için kullanılmaz.
+
 Dosya için Application'ın SAHİP OLMADIKLARI (INV-NEIGHBOR-1 / LAW-5): chunk retry · chunk ACK · kayıp tespiti · pencereli retransmit · FEC · per-chunk bütünlük. Chunk boyutu `MAX_FILE_CHUNK_BYTES = MAX_BODY_BYTES − 18` (A2; off-by-header yok).
 
 ## 4. Boyut politikası
