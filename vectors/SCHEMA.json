@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kama.invalid/vectors/v2/SCHEMA.json",
+  "title": "Kama test-vektor dosyasi (schema_version 2)",
+  "description": "Uc arac ayni byte beklentisini okur: Python uretici, Rust yukleyici, CI dogrulayici. Bu dosya o uclusunun tek format otoritesidir. Bilinmeyen alan reddedilir (fail-closed); yeni alan eklemek schema_version artirmayi gerektirir. Anahtarlarin BURADAKI bildirim sirasi ayni zamanda kanonik serilestirme sirasidir (README \u00a76).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "suite",
+    "spec_version",
+    "case_count",
+    "cases"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Bu dosyanin format surumu. Yalnizca 2 tanimlidir. Baska bir deger (eski 1 dahil) goren arac HATA verir, sessizce gecmez.",
+      "const": 2
+    },
+    "suite": {
+      "description": "Vektor kumesinin adi. Dosya basina TEK suite. Kucuk harf token.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 64
+    },
+    "spec_version": {
+      "description": "Vektorlerin uretildigi donmus spec surumu. Onerilen bicim: <spec-dosya-slug>@<versiyon>[+<yama-tarihi>], ornek: ccr-format-spec@v1.0+2026-09-18b.",
+      "type": "string",
+      "pattern": "^\\S(.*\\S)?$",
+      "maxLength": 128
+    },
+    "generator": {
+      "description": "Bu dosyayi ureten aracin kimligi ve surumu, ornek: 'kama-vector-gen 0.3.1'. spec_version 'hangi spec' der; bu alan 'hangi uretici' der \u2014 bir golden degistiginde neyin degistirdigi ancak boyle izlenir. Elle yazilan dosyalarda atlanabilir.",
+      "type": "string",
+      "pattern": "^\\S(.*\\S)?$",
+      "maxLength": 128
+    },
+    "description": {
+      "description": "Serbest metin; arac davranisini ETKILEMEZ.",
+      "type": "string",
+      "maxLength": 1024
+    },
+    "notes": {
+      "description": "flag sozlugu: her flag token'inin ne anlama geldigini ACIKLAR. cases[].flags icinde kullanilan HER token burada tanimli olmali; burada tanimli her token EN AZ BIR vakada kullanilmali (olu not birikmez). Wycheproof'un 'notes' alaniyla ayni rol.",
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+([_.-][a-z0-9]+)*$",
+        "maxLength": 64
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "case_count": {
+      "description": "cases dizisinin uzunlugu, DOSYANIN ICINDE. Kesilmis dosyayi ve 'tuketici hepsini filtreleyip 0 vaka kostu' vakumunu yakalar: tuketici kostugu vaka sayisini buna karsi dogrular. Wycheproof'un 'numberOfTests' alaniyla ayni rol.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "cases": {
+      "description": "En az bir vaka. Sira anlamlidir degildir; eslesme id uzerindendir.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/case"
+      }
+    }
+  },
+  "$defs": {
+    "hex": {
+      "$comment": "Kucuk harf, 0x YOK, cift uzunluk. Bos dizge = sifir byte ve GECERLIDIR (ornek: ccr \u00a735 early_data N=0).",
+      "type": "string",
+      "pattern": "^([0-9a-f]{2})*$",
+      "maxLength": 262144
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "description": "REPO GENELINDE tekil. Onerilen bicim: <suite>.<yerel-ad>.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+([._/-][a-z0-9]+)*$",
+          "maxLength": 128
+        },
+        "kind": {
+          "description": "Aracin uzerinden dagitim yaptigi anahtar (ornek: encode, decode, verify). Soz dagarcigi suite'e ozeldir ve aciktir; bicim sabittir.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*$",
+          "maxLength": 64
+        },
+        "flags": {
+          "description": "Vakanin NEDEN var oldugunu makine-okunur etiketler; her token kokteki 'notes' sozlugunde aciklanir. Serbest metin 'note' insan icindir, bu alan arac icindir: tuketici bir flag'e gore vaka atlayabilir/gevsetebilir.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+([_.-][a-z0-9]+)*$",
+            "maxLength": 64
+          },
+          "uniqueItems": true,
+          "maxItems": 32
+        },
+        "note": {
+          "description": "Serbest metin; arac davranisini ETKILEMEZ.",
+          "type": "string",
+          "maxLength": 1024
+        },
+        "spec_ref": {
+          "description": "Otorite belge atfi, ornek: 'ccr-format-spec.md \u00a730.7 INVALID-4'. Arac davranisini ETKILEMEZ.",
+          "type": "string",
+          "maxLength": 256
+        },
+        "input": {
+          "$comment": "Yapisal girdi (alanlardan kodlama yonu). Ictekii her byte dizisi hex DIZGE olmalidir ve anahtari '_hex' ile bitmelidir; bu derin kural JSON Schema ile ifade edilemez, dogrulayici zorlar (SV-006).",
+          "type": "object"
+        },
+        "input_hex": {
+          "description": "Ham wire byte'lari (cozumleme yonu).",
+          "$ref": "#/$defs/hex"
+        },
+        "expected_hex": {
+          "description": "POZITIF vaka: beklenen wire her zaman hex.",
+          "$ref": "#/$defs/hex"
+        },
+        "expected": {
+          "description": "NEGATIF vaka: beklenen ret.",
+          "$ref": "#/$defs/expected_negative"
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "input | input_hex \u2014 TAM OLARAK biri.",
+          "oneOf": [
+            {
+              "required": [
+                "input"
+              ]
+            },
+            {
+              "required": [
+                "input_hex"
+              ]
+            }
+          ]
+        },
+        {
+          "$comment": "expected_hex | expected \u2014 TAM OLARAK biri.",
+          "oneOf": [
+            {
+              "required": [
+                "expected_hex"
+              ]
+            },
+            {
+              "required": [
+                "expected"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "expected_negative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "reason"
+      ],
+      "properties": {
+        "result": {
+          "description": "TAM OLARAK bu uc deger. drop = sessiz atim (sayac disinda iz yok). reject = tanimli ret (arayan ret'i gorur). fail = fail-closed/defer (islem tamamlanamaz; girdi mutlaka gecersiz DEGILDIR).",
+          "enum": [
+            "drop",
+            "reject",
+            "fail"
+          ]
+        },
+        "reason": {
+          "description": "Kararli, tam-dizge karsilastirilan ret gerekcesi. Onerilen bicim: kucuk harf token, ornek 'invalid-4-length-mismatch'.",
+          "type": "string",
+          "pattern": "^\\S(.*\\S)?$",
+          "maxLength": 200
+        }
+      }
+    }
+  },
+  "$comment": "$id SURUMLUDUR ve schema_version const'una BAGLIDIR (/v<N>/SCHEMA.json). Dogrulayici bunu zorlar: surum yukseltilip $id unutulamaz. Iki farkli sema ayni kimligi tasirsa v1'i onbellege almis bir tuketici v2 icin onu servis eder. .invalid TLD (RFC 2606) kasitlidir: kimlik cozulebilir bir adres DEGILDIR."
+}

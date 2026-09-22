@@ -634,6 +634,7 @@ name = "kama-fec-codec"
 version = "0.1.0"
 dependencies = [
  "kama-transport-schema",
+ "kama-vectors",
  "reed-solomon-simd",
  "thiserror",
 ]
@@ -658,6 +659,7 @@ dependencies = [
  "blake2",
  "chacha20poly1305",
  "kama-transport-schema",
+ "kama-vectors",
  "proptest",
  "sodiumoxide",
  "thiserror",
@@ -670,6 +672,15 @@ name = "kama-transport-schema"
 version = "0.1.0"
 dependencies = [
  "blake2",
+ "thiserror",
+]
+
+[[package]]
+name = "kama-vectors"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

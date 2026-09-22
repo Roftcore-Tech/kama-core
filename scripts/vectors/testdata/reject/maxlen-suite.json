@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "suite": "s-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-maxlen-suite.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00"
+    }
+  ],
+  "case_count": 1
+}

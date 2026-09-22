@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-note-dead",
+  "spec_version": "validator-selftest@v1",
+  "case_count": 1,
+  "cases": [
+    {
+      "id": "selftest-note-dead.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00"
+    }
+  ],
+  "notes": {
+    "unused-tag": "Hicbir vakada kullanilmiyor."
+  }
+}

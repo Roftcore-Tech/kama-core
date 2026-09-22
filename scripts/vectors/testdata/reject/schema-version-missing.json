@@ -1,0 +1,12 @@
+{
+  "suite": "selftest-noversion",
+  "spec_version": "x@v1",
+  "cases": [
+    {
+      "id": "selftest-noversion.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00"
+    }
+  ]
+}

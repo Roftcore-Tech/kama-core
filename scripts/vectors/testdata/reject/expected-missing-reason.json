@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-no-reason",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-no-reason.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected": {
+        "result": "reject"
+      }
+    }
+  ],
+  "case_count": 1
+}

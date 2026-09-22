@@ -8,6 +8,7 @@ use kama_noise_wire::{
 };
 use kama_transport_schema::inner_kind::ShardKind;
 use kama_transport_schema::{LogicalShardHeader, UnsealedTransportPacket};
+use kama_vectors::hex;
 use zeroize::Zeroizing;
 
 fn key(s: u8) -> Zeroizing<[u8; 32]> {
@@ -39,13 +40,6 @@ fn legacy_pair(hub_handle: u32) -> (LegacySessionProtector, LegacySessionProtect
     (a, b)
 }
 
-fn hex(s: &str) -> Vec<u8> {
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-        .collect()
-}
-
 // ── §35.6 roundtrip: A→B seal → B open ──
 #[test]
 fn legacy_roundtrip() {
@@ -65,7 +59,7 @@ fn legacy_aad_golden() {
     assert_eq!(aad.len(), LEGACY_AAD_LEN);
     assert_eq!(
         aad.to_vec(),
-        hex("53534431010001010001000533333333333333333333333333333333"),
+        hex("53534431010001010001000533333333333333333333333333333333").unwrap(),
         "SSD1 || ver || suite || dir || epoch || seq16 || session_id_internal"
     );
 }
@@ -86,7 +80,8 @@ fn legacy_datagram_golden() {
     let dg = a.seal(b"legacy hot-path payload", 5).unwrap();
     assert_eq!(
         dg,
-        hex("aabbccdd0005bcd0644447bfb57076ca5f1cf2c399df9e1753118671bd7a0e3ef2f0a1a75d09866a752a2bf1fd"),
+        hex("aabbccdd0005bcd0644447bfb57076ca5f1cf2c399df9e1753118671bd7a0e3ef2f0a1a75d09866a752a2bf1fd")
+            .unwrap(),
         "legacy wire-golden drift-gate"
     );
 }

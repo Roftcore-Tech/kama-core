@@ -1,0 +1,41 @@
+{
+  "schema_version": 2,
+  "suite": "ccr-compact-device-cert-v1",
+  "spec_version": "ccr-format-spec@v1.0+2026-09-18b",
+  "generator": "elle yazildi (T-00.1 ornek dosyasi)",
+  "description": "ORNEK DOSYA (T-00.1) \u2014 sema bicimini gosterir. Bu bir KRIPTOGRAFIK GOLDEN VECTOR DEGILDIR: alan degerleri desenli dolgudur, issuer_signature hesaplanmis bir Ed25519 imza DEGILDIR (ccr \u00a730 'TEST_VECTOR_PLACEHOLDER' disiplini). Gercek golden vector uretilene kadar hicbir arac bunu dogruluk kaniti saymaz.",
+  "notes": {
+    "placeholder-signature": "issuer_signature HESAPLANMIS bir Ed25519 imza DEGILDIR; alan desenli dolgudur (ccr \u00a730 TEST_VECTOR_PLACEHOLDER disiplini). Bu vakayi kriptografik dogruluk kaniti sayan tuketici YANLIS yapar \u2014 yalniz byte-duzeni/kodlama testi icin kullanilir."
+  },
+  "case_count": 2,
+  "cases": [
+    {
+      "id": "ccr-compact-device-cert-v1.encode.field-order",
+      "kind": "encode",
+      "flags": [
+        "placeholder-signature"
+      ],
+      "note": "Alanlardan kodlama yonu: girdi yapisal, beklenen cikti her zaman hex.",
+      "spec_ref": "ccr-format-spec.md \u00a730.4 (CompactDeviceCertV1, 152B)",
+      "input": {
+        "device_ed25519_pub_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "device_x25519_pub_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+        "issuer_key_id_hex": "33333333333333333333333333333333",
+        "issuer_signature_hex": "44444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444",
+        "not_after_hex": "000000006a1b2c00"
+      },
+      "expected_hex": "1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333000000006a1b2c0044444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444"
+    },
+    {
+      "id": "ccr-compact-device-cert-v1.decode.canonical-roundtrip",
+      "kind": "decode",
+      "flags": [
+        "placeholder-signature"
+      ],
+      "note": "Ham wire girdisi: coz + kanonik yeniden-kodla; sonuc byte-ozdes olmali.",
+      "spec_ref": "ccr-format-spec.md \u00a74 (canonical encoding), \u00a730.4",
+      "input_hex": "1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333000000006a1b2c0044444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444",
+      "expected_hex": "1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333000000006a1b2c0044444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ]
+}

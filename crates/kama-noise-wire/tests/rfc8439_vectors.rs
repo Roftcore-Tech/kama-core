@@ -5,12 +5,11 @@
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 
+/// RFC-8439 vektörleri belgeden boşluklu kopyalandı. Boşluk temizliği BURADA yerel kalır;
+/// hex çözümü `kama_vectors::hex` (vectors/SCHEMA.json sözleşmesi) — tek uygulama.
 fn hex(s: &str) -> Vec<u8> {
-    let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-        .collect()
+    let compact: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    kama_vectors::hex(&compact).expect("RFC-8439 vektör hex'i")
 }
 
 // RFC 8439 §2.8.2 "Example and Test Vector for AEAD_CHACHA20_POLY1305".

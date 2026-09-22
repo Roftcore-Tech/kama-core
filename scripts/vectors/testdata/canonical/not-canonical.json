@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-canonical",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "kind": "encode",
+      "id": "selftest-canonical.c1",
+      "expected_hex": "00",
+      "spec_ref": "yok",
+      "input": {
+        "z_hex": "bb",
+        "a_hex": "aa"
+      }
+    }
+  ],
+  "case_count": 1
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-bad-result",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-bad-result.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected": {
+        "result": "discard",
+        "reason": "r"
+      }
+    }
+  ],
+  "case_count": 1
+}
