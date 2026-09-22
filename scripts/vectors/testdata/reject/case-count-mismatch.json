@@ -1,0 +1,20 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-count",
+  "spec_version": "validator-selftest@v1",
+  "case_count": 5,
+  "cases": [
+    {
+      "id": "selftest-count.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00"
+    },
+    {
+      "id": "selftest-count.c2",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00"
+    }
+  ]
+}

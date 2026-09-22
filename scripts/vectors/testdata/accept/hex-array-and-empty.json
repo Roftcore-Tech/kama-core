@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-hex-shapes",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-hex-shapes.empty-bytes",
+      "kind": "encode",
+      "note": "Bos hex = sifir byte ve GECERLIDIR (ccr \u00a735 early_data N=0).",
+      "input": {
+        "early_data_hex": "",
+        "chain_hex": [
+          "aa",
+          "bbcc"
+        ]
+      },
+      "expected_hex": ""
+    }
+  ],
+  "case_count": 1
+}

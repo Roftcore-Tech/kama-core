@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-maxlen-kind",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-maxlen-kind.c1",
+      "kind": "d-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a",
+      "input_hex": "00",
+      "expected_hex": "00"
+    }
+  ],
+  "case_count": 1
+}

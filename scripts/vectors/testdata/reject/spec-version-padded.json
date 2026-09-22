@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-specver-pad",
+  "spec_version": "  x@v1  ",
+  "cases": [
+    {
+      "id": "selftest-specver-pad.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00"
+    }
+  ],
+  "case_count": 1
+}

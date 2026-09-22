@@ -9,3 +9,7 @@ publish = false
 thiserror.workspace = true
 kama-transport-schema = { path = "../kama-transport-schema" }
 reed-solomon-simd = "3.1.0"
+
+[dev-dependencies]
+# Test-vektör hex yardımcısı (T-00.2): golden.rs'teki yerel `fn hex` kopyasının yerine.
+kama-vectors = { path = "../kama-vectors" }

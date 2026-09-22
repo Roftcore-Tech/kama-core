@@ -1,0 +1,36 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-result-vocabulary",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-result-vocabulary.drop",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected": {
+        "result": "drop",
+        "reason": "silent-discard-no-caller-visible-error"
+      },
+      "note": "drop = sessiz atim; yalniz sayac artar (or. PARAM_SET oncesi gelen FEC shard, cap dolu)."
+    },
+    {
+      "id": "selftest-result-vocabulary.reject",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected": {
+        "result": "reject",
+        "reason": "defined-rejection"
+      }
+    },
+    {
+      "id": "selftest-result-vocabulary.fail",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected": {
+        "result": "fail",
+        "reason": "fail-closed-cannot-complete"
+      }
+    }
+  ],
+  "case_count": 3
+}

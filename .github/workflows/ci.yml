@@ -87,6 +87,36 @@ jobs:
             || { echo "::error title=TEST_FAILURE::urun-profili pin testi 0 test kosuyor"; exit 1; }
           cargo test -p adaptive-transport --all-features --test fec_loss_risk
 
+  # ── Conformance: vektör ↔ uygulama (T-00.3) ──
+  # Vektör ya da ilgili kod değiştiğinde kimsenin "koşmayı unutması" mümkün olmasın.
+  #
+  # NEDEN `paths:` YOK. GitHub Actions'ta `paths` yalnız workflow düzeyinde (`on:`) tanımlanır,
+  # iş düzeyinde YOKTUR; bu dosyada zaten workflow düzeyi `paths-ignore` var ve oraya `paths`
+  # eklemek TÜM job'ları etkilerdi. Ayrıca `paths` ile atlanan bir required check sonsuza kadar
+  # "pending" kalıp PR'ı kilitler. Bu yüzden kapı HER ZAMAN koşar; görev metnindeki tetik
+  # listesi script içinde yalnız TEŞHİS olarak basılır (gerekçe: scripts/ci/conformance.sh
+  # başlığı). Maliyet düşük: tüm workspace değil, yalnız kama-vectors + keşfedilen conformance
+  # hedefleri derlenir ve rust-cache test-fast ile paylaşılır.
+  conformance:
+    name: conformance (vektör ↔ uygulama)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # fetch-depth: 0 — tetik teşhisi PR tabanına karşı diff alır (varsayılan sığ klon yetmez).
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Kapının kendi kapısı: üç muhafızın (ratchet / koşum / vakum) gerçekten kırmızı
+      # olduğunu geçici bir conf_* testiyle kanıtlar, sonra temizler.
+      - name: conformance kapısının öz-testi
+        run: scripts/ci/conformance-selftest.sh
+      - name: conformance kapısı
+        env:
+          CONF_DIFF_BASE: ${{ github.event.pull_request.base.sha }}
+        run: scripts/ci/conformance.sh
+
   # ── Ucuz derin kapılar (hepsi < 5 dk; ölçüldü) ──
   miri:
     runs-on: ubuntu-latest
@@ -170,12 +200,47 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p kama-noise-wire --features libsodium-oracle --test aead_differential -- --nocapture
 
+  # ── Test-vektör format kapısı (T-00.1 / T-00.2) ──
+  # Üç araç (Python üretici, Rust yükleyici, bu doğrulayıcı) aynı byte beklentisini okur;
+  # vectors/SCHEMA.json o üçlünün tek format otoritesidir. Doğrulayıcının bağımlılığı yok
+  # (stdlib-only), bu yüzden job saniyeler sürer ve toolchain kurulumu gerektirmez.
+  #
+  # Bu job PYTHON tarafıdır. Rust tarafı (crates/kama-vectors + Python↔Rust parite testi)
+  # `test-fast` içindeki `cargo test --workspace` ile koşar; ikisinin vaka listesi
+  # scripts/vectors/testdata/EXPECTATIONS.json'da TEK yerde durur.
+  vectors:
+    name: vectors (SCHEMA.json kapısı, python tarafı)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # ADR-03 doktrini (primary + cross-check) şema tarafında da uygulanır: doğrulayıcının
+      # kendi alt-küme motoru BİRİNCİL, `jsonschema` BAĞIMSIZ MERCİ. Kurulum ~2 sn; kurulum
+      # olmadan --cross-check sessizce atlanır ve "çapraz kontrol var" iddiası vakumda kalır.
+      - name: bağımsız oracle (jsonschema)
+        run: python3 -m pip install --quiet --disable-pip-version-check jsonschema
+      - name: doğrulayıcı öz-testi (fixture'lar + şema öz-denetimi + vakum kapıları)
+        run: scripts/vectors/selftest.sh
+      # --min-files: yol yanlış yazılırsa ya da ağaç boşalırsa doğrulayıcı 0 dosya gezip
+      # YEŞİL dönerdi (BUL-02/BUL-03 ile aynı vakum sınıfı).
+      # --require-cross-check: jsonschema yoksa sessiz atlama DEĞİL, hata.
+      # Bulgular GITHUB_ACTIONS=true sayesinde ::error anotasyonu olarak PR diff'ine iliştirilir.
+      - name: vectors/ ağacı (kanonik + vakum + bağımsız oracle)
+        run: |
+          python3 scripts/vectors/validate.py vectors/ \
+            --canonical --min-files 2 --require-cross-check
+      # Şema kapısı BİÇİMİ denetler, KAPSAMI değil: ccr §30.7'nin 24 adlandırılmış negatif
+      # vakasından hiçbiri yazılmasa bile yemyeşil kalırdı. Ratchet kapsamın düşmesini
+      # engeller (bugün 4/24; borç görünür ve yalnız azalabilir).
+      - name: spec ↔ vektör kapsam ratchet'i
+        run: python3 scripts/vectors/spec_coverage.py
+
   # ── Sonuç sınıflandırması: infra/billing hatası ile korelasyon hatası KARIŞMASIN ──
   ci-verdict:
     name: ci verdict (failure classification)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [static, test-fast, miri, asan, msan, security, aead-differential]
+    needs: [static, test-fast, conformance, miri, asan, msan, security, aead-differential, vectors]
     if: always()
     steps:
       - name: classify
@@ -188,6 +253,13 @@ jobs:
           fi
           if [[ "$R" == *cancelled* ]]; then
             echo "::warning title=INFRA_FAILURE::job iptal edildi (timeout / concurrency / runner). Bu bir transport hatasi DEGILDIR."
+            exit 1
+          fi
+          # [T-00.3] ATLANAN KAPI YESIL SAYILMAZ. Bu kontrol yoktu: bir job `if:` ya da
+          # `paths` yuzunden atlanirsa sonucu `skipped` olur, yukaridaki iki kontrole takilmaz
+          # ve verdict "tum kapilar yesil" derdi -- kosmayan bir kapi gecmis sayilirdi.
+          if [[ "$R" == *skipped* ]]; then
+            echo "::error title=TEST_FAILURE::en az bir kapi ATLANDI ($R). Atlanan kapi gecmis sayilmaz."
             exit 1
           fi
           echo "tum kapilar yesil"

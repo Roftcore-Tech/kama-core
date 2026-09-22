@@ -5,6 +5,7 @@ members = [
     "crates/ccr-codec",
     "crates/adaptive-transport",
     "crates/kama-transport-schema",
+    "crates/kama-vectors",
     "crates/kama-fec-codec",
     "crates/kama-noise-wire",
     "crates/kama-engine",
@@ -30,5 +31,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [workspace.dependencies]
 thiserror = "2"
+serde = "1"
+serde_json = "1"
 blake2 = "0.10"
 tokio = { version = "1", features = ["time"] }

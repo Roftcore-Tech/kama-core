@@ -1,0 +1,13 @@
+{
+  "schema_version": true,
+  "suite": "selftest-version-bool",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-version-bool.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00"
+    }
+  ]
+}

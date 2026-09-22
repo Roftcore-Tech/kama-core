@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-extra-case-field",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-extra-case-field.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00",
+      "severity": "high"
+    }
+  ],
+  "case_count": 1
+}

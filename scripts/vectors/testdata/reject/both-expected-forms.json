@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "suite": "selftest-both-expected",
+  "spec_version": "validator-selftest@v1",
+  "cases": [
+    {
+      "id": "selftest-both-expected.c1",
+      "kind": "decode",
+      "input_hex": "00",
+      "expected_hex": "00",
+      "expected": {
+        "result": "reject",
+        "reason": "r"
+      }
+    }
+  ],
+  "case_count": 1
+}
