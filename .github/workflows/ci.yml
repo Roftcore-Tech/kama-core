@@ -235,12 +235,53 @@ jobs:
       - name: spec ↔ vektör kapsam ratchet'i
         run: python3 scripts/vectors/spec_coverage.py
 
+  # ── App↔Transport seam sözleşme kapısı (KM-SEAM-AT-001 §6/§7 iskeleti) ──
+  # Aynı sözleşme süiti hem sahteye hem gerçeğe karşı koşar (Google SWE ch.13 "contract tests":
+  # sahtenin doğruluğu ancak AYNI testin ikisine de koşturulmasıyla kanıtlanır). Bugün yalnız
+  # `mock` hedefi kayıtlı; `real` BEYAN EDİLMİŞ BOŞLUKTUR (GAP-SEAM-REAL-1) ve runner onun için
+  # ayrı bir çıkış kodu (3) döndürür — "atlandı" diye sessiz bir sonuç YOKTUR.
+  #
+  # Maliyet: tüm workspace değil, yalnız kama-integration'ın üç seam hedefi ve bağımlılıkları
+  # derlenir; rust-cache paylaşılır.
+  seam-conformance:
+    name: seam conformance (App↔Transport; hedef=mock|real)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Kapının kendi kapısı: on muhafızın (kırmızı test / vakum / kapsam yalanı / ratchet /
+      # boşluk kapanışı / API drift / hedef parametresi / kategori sızıntısı / kanıt enflasyonu /
+      # sessiz kapsam kaybı) gerçekten kırmızı olduğunu geçici mutasyonlarla kanıtlar ve ağacı
+      # her durumda geri alır.
+      - name: seam kapısının öz-testi
+        run: scripts/ci/seam-conformance-selftest.sh
+
+      - name: hedef = mock
+        run: scripts/ci/seam-conformance.sh --target mock
+
+      # Gerçek adapter indiğinde bu adım kendiliğinden 0 bekler hâle gelir; bugün 3 döner.
+      # 1 (kırmızı) ve 2 (ortam/kullanım) her iki dönemde de kabul edilmez.
+      - name: hedef = real (bugün beyan edilmiş boşluk)
+        run: |
+          set +e
+          scripts/ci/seam-conformance.sh --target real
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "gerçek adapter koştu ve yeşil" ;;
+            3) echo "::notice title=SEAM_GAP::gerçek adapter yok — GAP-SEAM-REAL-1 beyanlı (çıkış 3)" ;;
+            *) echo "::error title=TEST_FAILURE::seam real hedefi beklenmeyen çıkış kodu $code"; exit 1 ;;
+          esac
+
   # ── Sonuç sınıflandırması: infra/billing hatası ile korelasyon hatası KARIŞMASIN ──
   ci-verdict:
     name: ci verdict (failure classification)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [static, test-fast, conformance, miri, asan, msan, security, aead-differential, vectors]
+    needs: [static, test-fast, conformance, seam-conformance, miri, asan, msan, security, aead-differential, vectors]
     if: always()
     steps:
       - name: classify

@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "seam": "KM-SEAM-AT-001",
+  "spec_path": "docs/seems/KM-SEAM-AT-001.md",
+  "mirror_path": "crates/kama-integration/tests/common/seam/api.rs",
+  "_comment": "KM-SEAM-AT-001 §6 harness kapsaminin BEYANIDIR. Rust tarafinin gerceklik listesi CONTRACT_ROWS (contract.rs); runner ikisini capraz kontrol eder. UC DURUM: implemented = govde IKI hedefte de kostu (gercek kanit) · mock_only = govde yalniz sahtede kostu, dogrulama gucu ikinci hedef gelince dogar (Google SWE ch.13 / Fowler ContractTest) · not_implemented = yok. Iki taban da ratchet: dusurulemez. Tek hedef kayitliyken hicbir satir implemented olamaz - drift kapisi bunu zorlar.",
+  "implemented_baseline": 0,
+  "mock_only_baseline": 1,
+  "rows": [
+    {
+      "id": "H-NO-CRYPTO-EDGE",
+      "status": "not_implemented",
+      "kind": "static",
+      "note": "Derleme bagimliligi denetimi; kosum testi degil. Application crate'i (henuz yok) inince kapi-seviyesi kontrol olarak yazilir."
+    },
+    {
+      "id": "H-APP-RETRY-0",
+      "status": "not_implemented",
+      "kind": "behavioral",
+      "needs": "deterministik kayip enjeksiyonu (§7 MockTransport) + recovery ON/OFF kolu"
+    },
+    {
+      "id": "H-ROUNDTRIP",
+      "status": "mock_only",
+      "kind": "behavioral",
+      "proof": "contract.rs rows::h_roundtrip — early_unit + send/recv byte-ozdeslik; mutasyon testiyle disi dogrulandi (transport son byte'i kirpinca KIRMIZI)",
+      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); hedef sozlesmesi: peer echo fixture"
+    },
+    {
+      "id": "H-EVENTS",
+      "status": "not_implemented",
+      "kind": "behavioral",
+      "needs": "§7 MockTransport olay senaryolari (Ready/Renew/Closed)"
+    },
+    {
+      "id": "H-CUTOVER",
+      "status": "not_implemented",
+      "kind": "behavioral",
+      "needs": "§7 MockTransport + KARAR-2 atomik cutover senaryosu"
+    },
+    {
+      "id": "H-CONNECT-IDEMP",
+      "status": "not_implemented",
+      "kind": "behavioral",
+      "needs": "§7 MockTransport oturum kaydi (KARAR-1 idempotent connect)"
+    },
+    {
+      "id": "H-EARLY-CONFLICT",
+      "status": "not_implemented",
+      "kind": "behavioral",
+      "needs": "§7 MockTransport + early_unit byte-izi denetimi (K6)"
+    },
+    {
+      "id": "H-CAPS",
+      "status": "not_implemented",
+      "kind": "behavioral",
+      "needs": "gercek capabilities degeri (K5 conservative_limits zinciri) ya da §7 sabitleri"
+    },
+    {
+      "id": "H-OPAQUE-FAIL",
+      "status": "not_implemented",
+      "kind": "behavioral",
+      "needs": "§7 ConnectFailed enjeksiyonu (K9 opak sebep)"
+    },
+    {
+      "id": "H-NO-PLANE1",
+      "status": "not_implemented",
+      "kind": "static",
+      "note": "Statik kontrol; Application crate'i inince."
+    },
+    {
+      "id": "H-COMPRESS-BOUNDARY",
+      "status": "not_implemented",
+      "kind": "behavioral",
+      "needs": "§7 MockTransport + CompressionPolicy davranis-notrlugu olcumu"
+    }
+  ],
+  "gaps": [
+    {
+      "id": "GAP-SEAM-REAL-1",
+      "what": "Gercek (real) adapter hedefi yok; conformance-core yalniz mock hedefinde kosuyor.",
+      "evidence": "crates/kama-integration/tests/common/seam/target.rs REGISTERED_TARGETS icinde TargetKind::Real yok",
+      "runner_exit_code": 3,
+      "owner": "Abkarada"
+    },
+    {
+      "id": "GAP-SEAM-MOCK-7",
+      "what": "KM-SEAM-AT-001 §7 MockTransport (kayip/sirasiz/duplicate enjeksiyonu, olay senaryolari, ConnectFailed enjeksiyonu) yazilmadi; bugunku sahte NullMockTransport yalniz typed-red iskeletidir.",
+      "evidence": "crates/kama-integration/tests/common/seam/target.rs NullMockTransport",
+      "owner": "§7: Hayri + Abkarada"
+    }
+  ],
+  "open_items": [
+    {
+      "id": "SEAM-OPEN-1",
+      "what": "PreparedUnit.bytes tipi: bytes::Bytes mi Vec<u8> mu",
+      "today": "Vec<u8> (UnitBytes alias; tek satir takas)"
+    },
+    {
+      "id": "SEAM-OPEN-2",
+      "what": "DeliveryPolicy::DeadlineBounded deadline tipi: std Instant determinizmi bozar (ADR-17)",
+      "today": "LogicalTick (deterministik)"
+    },
+    {
+      "id": "SEAM-OPEN-3",
+      "what": "CloseReason variant kumesi spec'te tanimli degil",
+      "today": "yalniz Renewed (§K2'de gecen tek variant)"
+    },
+    {
+      "id": "SEAM-OPEN-4",
+      "what": "Produksiyon KamaTransport trait'i hangi crate'e iner",
+      "today": "hicbiri; test-yerel ayna + drift kapisi"
+    }
+  ]
+}
