@@ -1,0 +1,12 @@
+[package]
+name = "kama-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# KM-SEAM-AT-001 (S1) H-NO-CRYPTO-EDGE / H-NO-PLANE1: bu crate kama-noise-wire, crypto,
+# client-core veya Plane 1 (app-rpc) çerçeve tiplerini içeren hiçbir crate'e bağımlı OLAMAZ
+# (transport-layer-tdd.md §0 INV-NEIGHBOR-1). C1.2 bunu ayrıca statik olarak doğrular.
+[dependencies]
+thiserror.workspace = true

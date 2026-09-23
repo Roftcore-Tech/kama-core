@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/crypto",
     "crates/ccr-codec",
+    "crates/kama-app",
     "crates/adaptive-transport",
     "crates/kama-transport-schema",
     "crates/kama-vectors",
