@@ -1,5 +1,10 @@
 # Kama — Application Protocol & RPC Spec
 
+> **YAMA KAYDI — 2026-09-22 [N-mesaj ACK penceresi ÜÇE AYRILDI — sahip kararı]:** (1) KALIR/yeniden adlandırıldı: hub'ın STORE_MESSAGE'da gönderen→alıcı başına teslim edilmemiş öğe sınırı → **mailbox kotası**; `0x0505` = `MAILBOX_QUOTA_EXCEEDED`; N = hub politikası [KALİBRASYON]; ACK_RANGE (alıcı→hub kuyruk temizleme) KALIR, açıklamalarından "N-mesaj ACK penceresi" düştü. (2) KALKTI: istemcide gönderim penceresi / ACK bekleme (identity'deki `ack_outstanding` + WAIT); teslim bilgisi → AMP RECEIPT(delivered) (application-message-protocol §3, 0x08). (3) Yeniden yazıldı: §1 kapsam, §2 ACK_RANGE satırı, §6.4, §7 akış adım 5, §8, §10 STORE_MESSAGE, 0x0505, R-APP-9, uyum tablosu, AC-APP-8, §15 yaşam döngüsü. Üstü çizili metin silinmedi.
+
+> **YAMA KAYDI — 2026-09-20:** §8 dedup satırındaki replay penceresi "512-1024" → ccr §35.8 `REPLAY_WINDOW_SIZE = 1024` (normatif replay: identity §15.5).
+
+
 > **YAMA KAYDI — 2026-09-18b:** §3 "transport ciphertext gördüğü için sıkıştıramaz" kalıntısı düzeltildi (tip-bilgisi gerekçesi); "CRIME E2E'de geçersiz" → kontrollü ifade (cross-request oracle yüzeyi yok; secret ile attacker-controlled plaintext aynı context'te değil; uzunluk sızıntısı residual); sıkıştırma wire sözleşmesi → application-message-protocol.md §5 (compression_id, uncompressed_len, MAX_DECOMPRESSED, expansion, sözlük yok, invalid→drop).
 
 
@@ -27,7 +32,7 @@ Kapsam:
 - CLIENT_BIND auth boundary (sk_device possession)
 - Her method için request/response şeması + normatif davranış
 - Mesaj yaşam döngüsü: send → store → deliver → ack → receipt
-- N-mesaj ACK penceresi + idempotency + dedup
+- ~~N-mesaj ACK penceresi~~ Mailbox kotası + idempotency + dedup  [2026-09-22: istemci gönderim penceresi kaldırıldı; hub tarafı sınır = mailbox kotası]
 - Discovery proxy alt-operasyonları
 - Onboarding / RA proxy (bootstrap-direct istisna + post-onboarding hub-proxy)
 - Error code taksonomisi (u16_be, sınıf-bazlı)
@@ -134,7 +139,7 @@ Client → Hub (request/response), method_id 0x01..0x7F:
 0x04 DISCOVERY_PROXY           alt-op: VOPRF_BLIND_BATCH | LOOKUP_BATCH | PUBLISH → Discovery Server
 0x05 STORE_MESSAGE             control-plane submission: SESSION_INIT/RESPONSE/SIGNED_CONTROL + offline mailbox submit
 0x06 FETCH_MAILBOX             cursor-based pull (reconnect drain)
-0x07 ACK_RANGE                 teslim alınan range ack → kuyruk temizle (N-mesaj ACK penceresi)
+0x07 ACK_RANGE                 teslim alınan range ack → kuyruk temizle ~~(N-mesaj ACK penceresi)~~
 0x08 SESSION_REBIND            LINK_ROUTE_MISS recovery → yeni SESSION_INIT_REF (ccr §35.16)
 0x09 REVOCATION_FETCH_SNAPSHOT (SRFQ → SRFR snapshot; revocation-model.md §6.5)
 0x0A REVOCATION_FETCH_DELTA    (SRFQ → SRFR delta)
@@ -292,7 +297,8 @@ Normatif:
 
 ```
 - ACK_RANGE acked range'i kuyruktan temizler.
-- N-mesaj ACK penceresi: gönderen ACK almadan > N mesaj gönderemez (sessiz kayıp tespiti + ratchet counter DoS sınırı).
+- ~~N-mesaj ACK penceresi: gönderen ACK almadan > N mesaj gönderemez (sessiz kayıp tespiti + ratchet counter DoS sınırı).~~
+  [2026-09-22] Gönderen ACK BEKLEMEZ. ACK_RANGE yalnız hub kuyruğunu temizler ve mailbox kotasını (§8) serbest bırakır.
 - ACK_RANGE zorunludur; DELIVERY_STATUS opsiyonel UX sinyalidir.
 ```
 
@@ -457,7 +463,8 @@ Degraded kapsamı (agresif blacklist YAPMA):
 5. ACK
    Bob → Hub B: ACK_RANGE → kuyruk temizle.
    (opsiyonel) Hub B → Alice yönüne DELIVERY_STATUS (0x82, best-effort).
-   N-mesaj ACK penceresi: Alice ACK almadan > N mesaj gönderemez.
+   ~~N-mesaj ACK penceresi: Alice ACK almadan > N mesaj gönderemez.~~  [2026-09-22: kaldırıldı — Alice beklemez]
+   Teslim bilgisi Alice'e E2E RECEIPT(delivered) ile gelir (application-message-protocol §3, 0x08; hop/transport ACK'ten TÜREMEZ).
 
 6. RECEIPT (opsiyonel, E2E non-repudiation)
    Bob → SIGNED_CONTROL (SSC1) → STORE_MESSAGE → ters yol (Hub B → mesh → Hub A) → Alice.
@@ -475,20 +482,37 @@ ROUTE_MISS herhangi aşamada → SESSION_REBIND → yeni SESSION_INIT_REF
 
 ---
 
-## 8. N-Mesaj ACK Penceresi + Idempotency + Dedup
+## 8. Mailbox Kotası + Idempotency + Dedup  (~~N-Mesaj ACK Penceresi~~ — 2026-09-22 üçe ayrıldı)
 
 ```
-N-mesaj ACK penceresi:
-  Alice, ACK almadan en fazla N established mesaj gönderebilir (default N = profile-bağımlı, lowband'de küçük).
-  Pencere dolarsa Alice gönderimi durdurur → 0x05xx ACK_WINDOW_EXCEEDED (kontrol akışı).
-  Çözdüğü 3 sorun: ratchet counter DoS sınırı + sessiz kayıp tespiti + MAX_SKIP doğal sınırı.
+~~N-mesaj ACK penceresi:~~
+  ~~Alice, ACK almadan en fazla N established mesaj gönderebilir (default N = profile-bağımlı, lowband'de küçük).~~
+  ~~Pencere dolarsa Alice gönderimi durdurur → 0x05xx ACK_WINDOW_EXCEEDED (kontrol akışı).~~
+  ~~Çözdüğü 3 sorun: ratchet counter DoS sınırı + sessiz kayıp tespiti + MAX_SKIP doğal sınırı.~~
+  [2026-09-22 ÜÇE AYRILDI — tek mekanizmanın üç rolü artık üç ayrı sahipte:]
+
+Mailbox kotası (HUB, STORE_MESSAGE):
+  Hub, gönderen→alıcı çifti başına TESLİM EDİLMEMİŞ (ACK_RANGE ile temizlenmemiş) öğe sayısını N ile sınırlar.
+  N = hub politikası [KALİBRASYON]. Aşım → STORE_MESSAGE reddi 0x0505 MAILBOX_QUOTA_EXCEEDED.
+  Bu bir depolama geri-basıncıdır; istemci için ACK-bekleme penceresi DEĞİLDİR.
+  ACK_RANGE (alıcı → hub, §6.4) kuyruğu temizler ve kotayı serbest bırakır.
+
+İstemci gönderim penceresi: YOK.
+  Application ACK beklemez, gönderilmiş-onaysız sayaç tutmaz. Yeniden gönderim ve akış Transport'undur
+  (transport-layer-tdd §0 INV-NEIGHBOR-1).
+
+Eski üç rolün yeni sahibi:
+  ratchet counter DoS sınırı  → hub mailbox kotası (yukarıda) + cihaz başına gönderim hızı (§10 STORE_MESSAGE, 0x0201).
+  sessiz kayıp tespiti        → AMP RECEIPT(delivered) (application-message-protocol §3, 0x08) + alıcıda msg_id boşluğu.
+                                Tespittir, önleme DEĞİL — hub'ın bastırması availability residual'dır (identity T-16).
+  MAX_SKIP doğal sınırı       → sahibi AÇIK; kanıt: 2026-09-22 yama notu madde 5 (ccr §35.8 MAX_FUTURE_GAP ilişkisi).
 
 Idempotency:
   Control-plane: aynı request_id ile retry idempotent (hub aynı response'u döner; çift işlem yok).
   Data-plane: STORE_MESSAGE / SESSION_DATA message_counter + (handle/link) ile dedup → hostile retry güvenli.
 
 Dedup / replay:
-  Alıcı: message_counter (monoton) + sliding-window bitmap (512-1024) + timestamp penceresi (max 7 gün, S&F TTL).
+  Alıcı: message_counter (monoton) + sliding-window bitmap (~~512-1024~~ 1024 = ccr §35.8 `REPLAY_WINDOW_SIZE`; normatif replay: identity §15.5) + timestamp penceresi (max 7 gün, S&F TTL).
   İlk mesaj ATOMIK counter-check (saldırgan ilk mesajı N kez gönderse de counter=1 bir kez işlenir).
   (replay detayları transport-layer-tdd.md / identity-and-trust-model.md ile uyumlu.)
 ```
@@ -578,7 +602,7 @@ ErrorPayload {
   0x0502 ROLLBACK
   0x0503 DELTA_GAP
   0x0504 OUT_OF_WINDOW
-  0x0505 ACK_WINDOW_EXCEEDED
+  0x0505 MAILBOX_QUOTA_EXCEEDED   # ~~ACK_WINDOW_EXCEEDED~~ [2026-09-22] gönderen→alıcı başına teslim edilmemiş öğe kotası aşıldı (§8)
 
 0x06xx  License / policy
   0x0601 LICENSE_EXPIRED
@@ -601,7 +625,7 @@ ErrorPayload {
 
 ```
 - DISCOVERY_PROXY (online enumeration): per-user + per-org quota + anomali tespiti (Signal modeli); sabit batch B=256 padding.
-- STORE_MESSAGE (spam/flood): per-device gönderim hızı + N-mesaj ACK penceresi doğal sınır.
+- STORE_MESSAGE (spam/flood): per-device gönderim hızı + ~~N-mesaj ACK penceresi doğal sınır~~ hub mailbox kotası (§8, 0x0505).
 - REGISTER_OR_RA_PROXY (onboarding abuse): per-org seat limit RA'da (cryptographic enforcement); hub-seviye soft rate-limit.
 - FETCH_MAILBOX: per-device fetch hızı.
 - Aşım → 0x02xx error sınıfı.
@@ -652,7 +676,7 @@ Hot-path (established SESSION_DATA):
 | R-APP-6   | Discovery online enumeration                             | Mitigated           | hub-proxy + rate-limit + sabit batch padding (§12). |
 | R-APP-7   | Plane confusion (hot-path frame app-RPC parser'ına)     | Closed              | 0x0406 WRONG_PLANE; ayrı parser/state machine. |
 | R-APP-8   | DELIVERY_STATUS non-repudiation sanılır                 | Closed              | DELIVERY_STATUS best-effort; gerçek receipt = SIGNED_CONTROL (E2E). |
-| R-APP-9   | ACK olmadan sınırsız gönderim (DoS/counter)             | Closed              | N-mesaj ACK penceresi → 0x0505. |
+| R-APP-9   | ACK olmadan sınırsız gönderim (DoS/counter)             | Closed              | ~~N-mesaj ACK penceresi → 0x0505.~~ Hub mailbox kotası (§8) → 0x0505 MAILBOX_QUOTA_EXCEEDED + cihaz başına gönderim hızı (0x0201). |
 | R-APP-10  | Onboarding endpoint sansürü mevcut kullanıcıyı keser    | Closed              | kayıtlı client hub-proxy kullanır; well-known endpoint yalnız yeni kayıt. |
 ```
 
@@ -677,7 +701,7 @@ Hot-path (established SESSION_DATA):
 | PRESENCE_KEEPALIVE app-presence (transport keepalive'den ayrı)      | ✅    | §6.10 |
 | Discovery proxy: hub OPRF key tutmaz, telefon görmez                 | ✅    | §9    |
 | Bootstrap-direct RA istisnası + post-onboarding hub-proxy           | ✅    | §10   |
-| N-mesaj ACK penceresi → ACK_WINDOW_EXCEEDED                          | ✅    | §8    |
+| ~~N-mesaj ACK penceresi → ACK_WINDOW_EXCEEDED~~ Mailbox kotası → 0x0505 MAILBOX_QUOTA_EXCEEDED | ✅    | §8    |
 | Revocation freshness fail-closed (yeni trust noktaları)             | ✅    | §13   |
 | File-transfer Beta-reserved / FEATURE_DISABLED                      | ✅    | §14   |
 | Error taksonomisi u16_be sınıf-bazlı                                | ✅    | §11   |
@@ -706,7 +730,7 @@ AC-APP-6:  request_id req/resp korelasyonu + idempotency anahtarıdır; E2E AAD'
 AC-APP-7:  SESSION_INIT recipient_dest_hash taşır ve hub route resolve eder;
            established SESSION_DATA hot-path'te recipient_dest_hash YOKTUR.
 
-AC-APP-8:  ACK_RANGE zorunlu; N-mesaj ACK penceresi aşımı 0x0505 döner.
+AC-APP-8:  ACK_RANGE zorunlu; ~~N-mesaj ACK penceresi aşımı 0x0505 döner.~~ mailbox kotası aşımı 0x0505 MAILBOX_QUOTA_EXCEEDED döner; istemci ACK beklemez (gönderim penceresi yok). [2026-09-22]
 
 AC-APP-9:  E2E delivery receipt SIGNED_CONTROL (Plane 2) ile sağlanır; DELIVERY_STATUS best-effort UX sinyalidir.
 
@@ -755,7 +779,7 @@ Frozen (kilitli):
   - method_id tablosu (client 0x01-0x0C, server-initiated 0x81-0x84) ayrı namespace
   - CLIENT_BIND auth boundary (sk_device possession; E2E erişimi yok)
   - STORE_MESSAGE/DELIVER control-only; SESSION_DATA hot-path sarılmaz
-  - mesaj yaşam döngüsü send→store→deliver→ack→receipt + N-mesaj ACK penceresi
+  - mesaj yaşam döngüsü send→store→deliver→ack→receipt + ~~N-mesaj ACK penceresi~~ mailbox kotası
   - error taksonomisi (u16_be, sınıf-bazlı)
   - discovery proxy / RA proxy / revocation fetch hub-proxy
   - E2E receipt = SIGNED_CONTROL; DELIVERY_STATUS opsiyonel

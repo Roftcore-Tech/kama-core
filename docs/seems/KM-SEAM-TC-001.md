@@ -1,5 +1,8 @@
 # KM-SEAM-TC-001 — Transport ↔ Crypto Seam Sözleşmesi (S3)
 
+> **YAMA KAYDI — 2026-09-20:** §6 H-RETRY Bob tarafıyla genişletildi (tekrarlanan SSI1 → mevcut session + byte-identical cached SSR1; noise-wire §0.7-B, ccr INV-RESP-KEY-1).
+
+
 **Belge:** `docs/seams/KM-SEAM-TC-001.md` v0.1 · **Tarih:** 2026-09-18
 **İmzacı:** Abkarada (iki taraf da onun; Transport donmuş, Crypto S2'de yazılacak)
 **Statü: TASARIM GO ✅ (K1–K9 + KARAR-1 kapalı) · SEAM-FROZEN HOLD 🟡** — kalan: KS-DOS-1 + KS-GRACE-1 sabitleri, §2 vektörler, §6 harness, §7 stub.
@@ -126,7 +129,7 @@ K9. Ek: `open()` ve `seal()` senkron, bloklamaz; seam I/O yapmaz.
 | H-PN-OWN | Transport PeerSlot reset / idle emeklilik / `tx_pn` wrap senaryolarında seam PN'i monoton devam eder; `seal()` dönüşündeki `meta.full_wire_pn` ardışık ve Transport'un kaydettiğiyle byte-özdeş |
 | H-FEC-ORDER | Sahte shard → `open()` None → decoder'a girmez; k geçerli shard ile reconstruct başarılı (INV-FEC-1) |
 | H-DEMUX | ≥2 pending; doğru candidate herhangi sırada; cap aşımı → `Failed`; yanlış candidate ile bozuk paket ayırt edilemez |
-| H-RETRY | `Initiate` çıktısı transport cache'inden byte-identical yeniden gönderilir; ikinci `Initiate` = farklı ephemeral |
+| H-RETRY | **Alice:** `Initiate` çıktısı transport cache'inden byte-identical yeniden gönderilir; ikinci `Initiate` = farklı ephemeral · **Bob:** aynı SSI1 tekrar gelirse (duplicate `AcceptInit`) mevcut session'a eşlenir ve **byte-identical cached SSR1** döner; yeni responder ephemeral / ikinci session YOK (noise-wire §0.7-B, ccr INV-RESP-KEY-1) |
 | H-NO-MUTATE | Her fail yolunda replay/pending/key state byte-for-byte aynı |
 | H-HANDLE | `Closed` sonrası `Session(h)` ile seal → `UnknownSession`; `HubHandle` ≠ `SessionHandle` tip düzeyinde |
 | H-SPLIT | Application'dan Crypto'ya doğrudan çağrı yolu YOK (statik bağımlılık kontrolü, INV-NEIGHBOR-1) |
