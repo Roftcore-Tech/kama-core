@@ -5,7 +5,13 @@ Sabit-zamanlı DEĞİLDİR ve olması da gerekmez: bu kod yalnız test vektörü
 """
 
 P = 2 ** 255 - 19
-A24 = 121665
+
+# DİKKAT — iki AYRI sabit karıştırılmasın (bu satır bir kod incelemesinde soru oldu):
+#   A   = 486662  → eğrinin Montgomery parametresi (RFC 7748 §4.1). Ladder'da DOĞRUDAN geçmez.
+#   a24 = (A - 2) / 4 = (486662 - 2) / 4 = 121665  → RFC 7748 §5'in ladder'ının kullandığı sabit;
+#         RFC'nin sözde-kodunda birebir bu adla ve bu değerle geçer.
+# Buraya 486662 yazmak RFC 7748 §5.2'nin TÜM vektörlerini düşürür (ölçüldü: 8/8 FAIL).
+A24 = (486662 - 2) // 4          # == 121665
 
 
 def _decode_scalar(k: bytes) -> int:

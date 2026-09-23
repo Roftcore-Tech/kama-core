@@ -90,6 +90,17 @@ for mut in ("tag", "ct", "aad", "nonce"):
     else:              bad_n = bytes([n[0] ^ 1]) + n[1:]
     ck(f"{mut} bozuldu ⇒ None", c.open_(k, bad_n, bytes(bad_sealed), bad_aad), None)
 
+print("\nSayaç taşması reddi (RFC 8439 §2.8 tek (key,nonce) sınırı)")
+def _raises(fn):
+    try:
+        fn(); return False
+    except ValueError:
+        return True
+# Gerçek 256 GB tahsis edilmez: sınır counter tarafından zorlanır, veri kısa tutulur.
+ck("counter = 2^32 - 1 + 2 blok ⇒ RED", _raises(lambda: c.chacha20(k, 2**32 - 1, n, bytes(65))), True)
+ck("counter = 2^32 ⇒ RED", _raises(lambda: c.chacha20(k, 2**32, n, b"x")), True)
+ck("counter = 2^32 - 1 + 1 blok ⇒ geçerli (sınırda)", len(c.chacha20(k, 2**32 - 1, n, bytes(64))), 64)
+
 print("\nnonce96 mapping (noise-wire §4.5 / ccr §35.6)")
 ck("nonce96(0)", c.nonce96(0).hex(), "000000000000000000000000")
 ck("nonce96(1)", c.nonce96(1).hex(), "000000000100000000000000")

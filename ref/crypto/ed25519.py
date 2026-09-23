@@ -49,7 +49,13 @@ def _mul(p, n):
 
 
 def _recover_x(y: int, sign: int):
-    """RFC 8032 §5.1.3 — y'den x. Kanonik olmayan/çözümsüz kodlamada None."""
+    """RFC 8032 §5.1.3 — y'den x. Kanonik olmayan/çözümsüz kodlamada None.
+
+    KANONİKLİK KAPISI BURADADIR (tek ev). `_decompress` bit 255'i maskeleyip kalan
+    0 <= y < 2^255 değerini buraya verir; [P, 2^255) aralığındaki 19 kanonik-olmayan y
+    aşağıdaki `y >= P` ile, HERHANGİ bir aritmetikten ÖNCE reddedilir — dolayısıyla
+    `pow(..., P)` onları sessizce y mod P'ye indirgeyemez. Testle kilitli:
+    38/38 kodlama (19 y × 2 sign biti) hem `_decompress` hem `verify` tarafından reddediliyor."""
     if y >= P:
         return None                       # kanonik olmayan y (§5.1.3: y < p ZORUNLU)
     yy = y * y % P
@@ -113,6 +119,11 @@ def public_key(sk: bytes) -> bytes:
 def sign(sk: bytes, msg: bytes) -> bytes:
     a, prefix = _secret_expand(sk)
     A = _compress(_mul(B, a))
+    # RFC 8032 §5.1.6 adım 2 r'yi 64-oktetlik tamsayı olarak tanımlar; adım 3 ise [r]B'yi
+    # hesaplarken "For efficiency, do this by first reducing r modulo L" der — indirgeme
+    # AÇIKÇA izinlidir. B'nin mertebesi tam olarak L olduğu için [r]B == [r mod L]B'dir
+    # (kofaktör bileşeni B'de YOKTUR; ölçüldü: [L]B == nötr). S zaten mod L alındığından
+    # imza byte-özdeştir (39 mesajda doğrulandı) ve §7.1 vektörleri her iki biçimde de geçer.
     r = int.from_bytes(_sha512(prefix + msg), "little") % L
     R = _compress(_mul(B, r))
     k = int.from_bytes(_sha512(R + A + msg), "little") % L

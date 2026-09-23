@@ -82,6 +82,26 @@ ck("pubkey", e.public_key(sk).hex(), pk.hex())
 ck("sign", e.sign(sk, msg).hex(), sig.hex())
 ck("verify", e.verify(pk, msg, sig), True)
 
+print("\nTaban noktasının mertebesi (sign() içindeki 'r mod L'nin gerekçesi)")
+# İnceleme itirazı: "r mod L kofaktör bileşenini siler". B'nin mertebesi TAM OLARAK L'dir;
+# kofaktör bileşeni B'de yoktur, dolayısıyla [r]B == [r mod L]B. RFC 8032 §5.1.6 adım 3 de
+# indirgemeye açıkça izin verir ("For efficiency, do this by first reducing r modulo L").
+ck("[L]B == nötr (B'nin mertebesi tam olarak L)", e._eq(e._mul(e.B, e.L), (0, 1, 1, 0)), True)
+ck("[L+1]B == B", e._eq(e._mul(e.B, e.L + 1), e.B), True)
+ck("64 farklı 512-bit r için [r]B == [r mod L]B",
+   all(e._compress(e._mul(e.B, v)) == e._compress(e._mul(e.B, v % e.L))
+       for v in [int.from_bytes(hashlib.sha512(bytes([i])).digest(), "little") for i in range(64)]),
+   True)
+
+print("\nKanonik olmayan nokta kodlamaları — [P, 2^255) aralığının TAMAMI")
+# İnceleme itirazı: "bit-255 maskelemesi y >= P kontrolünü atlatıyor". Aralıktaki 19 y'nin
+# her ikisi sign bitiyle = 38 kodlamanın TAMAMI reddedilmeli. Tek örnek yeterli kanıt değil.
+_enc = [(y | (sb << 255)).to_bytes(32, "little") for y in range(e.P, 1 << 255) for sb in (0, 1)]
+ck("38 kodlamanın tamamı _decompress tarafından RED",
+   sum(1 for b in _enc if e._decompress(b) is None), 38)
+ck("38 kodlamanın tamamı verify() tarafından pubkey olarak RED",
+   any(e.verify(b, b"m", bytes(64)) for b in _enc), False)
+
 print("\nKatılık negatifleri (RFC 8032 §5.1.7 / §8.4)")
 sk0, pk0, m0 = h(VEC[1][1]), h(VEC[1][2]), h(VEC[1][3])
 s0 = e.sign(sk0, m0)

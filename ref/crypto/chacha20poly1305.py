@@ -4,6 +4,7 @@ Registry: `specs/pki-ca-ra-hsm-tdd.md:455` — key 32B / nonce 12B / tag 16B.
 Sabit-zamanlı DEĞİL; yalnız test vektörü üretir/doğrular. Üretim = libsodium (ADR-03).
 """
 
+import hmac
 import struct
 
 MASK32 = 0xFFFFFFFF
@@ -36,8 +37,21 @@ def chacha20_block(key: bytes, counter: int, nonce: bytes) -> bytes:
     return struct.pack("<16I", *[(w[i] + st[i]) & MASK32 for i in range(16)])
 
 
+MAX_BLOCKS = 2 ** 32        # 32-bit blok sayacı
+
+
 def chacha20(key: bytes, counter: int, nonce: bytes, data: bytes) -> bytes:
-    """RFC 8439 §2.4 — akış şifresi."""
+    """RFC 8439 §2.4 — akış şifresi.
+
+    Sayaç taşması AÇIKÇA reddedilir: blok sayacı 32-bit'tir ve sessizce sarardı
+    (aynı (key, nonce) altında keystream tekrarı = felaket). RFC 8439 §2.8 tek
+    (key, nonce) çifti için azami plaintext'i (2^32 - 1) × 64 B ile sınırlar.
+    """
+    nblocks = (len(data) + 63) // 64
+    if counter + nblocks > MAX_BLOCKS:
+        raise ValueError(
+            f"ChaCha20 blok sayacı taşardı: counter={counter} + {nblocks} blok > 2^32 "
+            f"(RFC 8439 §2.8 tek (key,nonce) sınırı)")
     out = bytearray()
     for i in range(0, len(data), 64):
         ks = chacha20_block(key, counter + i // 64, nonce)
@@ -89,18 +103,11 @@ def open_(key: bytes, nonce: bytes, ct_and_tag: bytes, aad: bytes = b"") -> byte
         return None
     ct, tag = ct_and_tag[:-16], ct_and_tag[-16:]
     want = poly1305_mac(_mac_data(aad, ct), poly1305_key_gen(key, nonce))
-    if not _ct_eq(tag, want):
+    # Elle yazılmış döngü yerine stdlib: `compare_digest` C düzeyinde sabit-zamanlıdır.
+    # (Bu referans genel olarak sabit-zamanlı DEĞİL — ama bedava olan katılık alınır.)
+    if not hmac.compare_digest(tag, want):
         return None
     return chacha20(key, 1, nonce, ct)
-
-
-def _ct_eq(a: bytes, b: bytes) -> bool:
-    if len(a) != len(b):
-        return False
-    d = 0
-    for x, y in zip(a, b):
-        d |= x ^ y
-    return d == 0
 
 
 def nonce96(counter: int) -> bytes:

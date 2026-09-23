@@ -3,7 +3,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from x25519 import BASE_U, is_all_zero, public_key, x25519  # noqa: E402
+from x25519 import A24, BASE_U, is_all_zero, public_key, x25519  # noqa: E402
 
 fails = []
 
@@ -17,7 +17,12 @@ def ck(name, got, want):
 
 h = bytes.fromhex
 
-print("RFC 7748 §5.2 — tek adım X25519")
+print("RFC 7748 §5 — ladder sabiti")
+# Kod incelemesinde "A24 486662 olmalı" itirazı geldi. A (486662) eğri parametresi,
+# a24 ise ladder sabiti: a24 = (A-2)/4 = 121665. Bu satır ikisinin karışmasını kilitler.
+ck("a24 == (A-2)/4 == 121665", (A24, A24 == (486662 - 2) // 4), (121665, True))
+
+print("\nRFC 7748 §5.2 — tek adım X25519")
 ck("vektör 1",
    x25519(h("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4"),
           h("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c")).hex(),
