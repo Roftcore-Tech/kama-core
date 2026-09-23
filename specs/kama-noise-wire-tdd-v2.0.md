@@ -1,6 +1,29 @@
 # kama-noise-wire-tdd — Kama Noise Secure-Wire Profile [v2.0 — dört-karar-boşluğu-KAPATILDI (HANDLE_ASSIGN-frozen · bootstrap-profile-admission · confirmation-safe-epoch · K-invariant) + öz-tarama-temiz; FULL-DESIGN-GO-onayı: Abkarada]
 
-> **YAMA KAYDI — 2026-09-23 [D-GAP-1 bağı]:** §4 anti-replay sabit-kapsamı güncellendi — legacy-seq16 yolunun `MAX_FUTURE_GAP`/`MAX_REORDER` kapıları ccr §35.8'de KALDIRILDI (far-future reddi yok; yapısal sınır |cand−expected| < 2^15, gönderen kısıtı KS-PN-1). extended-pn32 yolunun `FUTURE_GAP_MAX = 2^13` kapısı DOKUNULMADAN durur — kapsam sorusu identity OQ-16. **Not:** `kama-noise-wire-tdd-v2_0.md` ve `kama-noise-wire-tdd-v2.0.md` aynı başlıkla iki ayrı dosyadır ve hiçbiri diğerini supersede ilan etmez; bu yama ikisine de AYNI şekilde işlendi (otorite kararı sahibe aittir).
+> **YAMA KAYDI — 2026-09-23 [D-GAP-1 bağı]:** §4 anti-replay sabit-kapsamı güncellendi — legacy-seq16 yolunun `MAX_FUTURE_GAP`/`MAX_REORDER` kapıları ccr §35.8'de KALDIRILDI (far-future reddi yok; yapısal sınır |cand−expected| < 2^15, gönderen kısıtı KS-PN-1). extended-pn32 yolunun `FUTURE_GAP_MAX = 2^13` kapısı DOKUNULMADAN durur — kapsam sorusu identity OQ-16. **[R-2 KAPANDI — 2026-09-23, sahip kararı]** İki kopya BİRLEŞTİRİLDİ: 19 Eylül içeriği otoriterdir ve bu dosyaya taşındı; `kama-noise-wire-tdd-v2_0.md` SİLİNDİ. Bu dosyanın önceki (21 Temmuz) içeriği SUPERSEDED'dir ve git geçmişinden geri alınabilir: `git show 311b5c2d:specs/kama-noise-wire-tdd-v2.0.md`. Kaybolan yalnız eski sürümlerdi (ör. `seal(..., wire_pn)` imzası — PN sahipliği KM-SEAM-TC-001 K2 ile değişti; eski GRACE formülü `max(4×sRTT, 64pkt)` — KS-GRACE-1 ile değişti). Repodaki tüm atıflar zaten bu adı kullanıyordu.
+
+
+> **YAMA KAYDI — 2026-09-18 [AMENDMENT-6]:** 16 Eyl sökümleri GERİ ALINDI (yanlış öncül): §2.5 tek-PN-uzayı hükmü geçerli (session verisi + FEC shard'ları + E2E kontrol tek E2E cipher state); hub-yönelik trafik (HANDLE_ASSIGN, engine ACK, Plane 1) ayrı ProtectionContext::HubChannel · `wire_pn` API satırı geri alındı, PN sahipliği S3 kararı olarak işaretlendi (kod: caller-supplied, PeerSlot'ta sıfırlanır, wrapping_add; öneri: seam kendi tutar) · SealedPacketMeta notu kaldırıldı · kanun bandı kaldırıldı → transport-tdd §0 referansı. §6/§7 (verify-before-admission, per-shard AEAD) AYNEN — kanonik mimarinin kendisi.
+
+
+> **Katman grafiği ve kanun:** transport-layer-tdd §0 INV-NEIGHBOR-1 (tek otorite; bu belge kopyalamaz).
+
+> **YAMA KAYDI — 2026-09-07b:** Belge başındaki 09-02 yama kaydı §2.5'in askı durumuyla ÇELİŞİYORDU (ANAHTAR-ÖZDEŞLİĞİ / REPLAY-STATE-PAYLAŞIMI'nı normatif gibi özetliyordu) → askı işaretiyle hizalandı; S2-noise.2'nin kesin/açık bölümü açıkça yazıldı. Tasarım değişikliği YOK.
+
+
+> **YAMA KAYDI — 2026-09-07 (CRYPTO-P0-FREEZE):** Bu belgede YENİ TASARIM YAPILMADI. Yalnız cross-reference notu: Identity/CCR'nin P0-6 (replay commit ordering) ve P0-9 (confirmation-safe dh_epoch) kararlarına hizalandığı kaydedildi.
+
+
+> **YAMA KAYDI — 2026-09-02 (S2 blocker kapatma, B3):**
+> - **§2.5'e iki normatif blok eklendi** (yeni karar DEĞİL; mevcut kararların açık yazımı):
+>   **ANAHTAR-ÖZDEŞLİĞİ** ve **REPLAY-STATE-PAYLAŞIMI** blokları.
+>   ⚠ **BU İKİ BLOK 2026-09-07'DE ASKIYA ALINDI — NORMATİF DEĞİL** (bkz. §2.5 ve aşağıdaki
+>   2026-09-07 yama kaydı). Bu yama kaydındaki eski özet metin, §2.5'in askı durumuyla
+>   ÇELİŞMEMESİ için buradan kaldırıldı; iddiaların kendisi §2.5'te askı işaretiyle durur.
+>   **S2-noise.2 AÇIKTIR:** SESSION_DATA → E2E key (kesin) · HANDLE_ASSIGN/ACK → hub-channel key
+>   (kesin) · transport ACK/SACK/RECOVERED/PARAM_* ve FEC source/repair shard → **AÇIK**.
+> - İlgili karşı-yama: transport-layer-tdd §0.1.
+> - §0.9 mühürlü kripto listesindeki hiçbir kalem değiştirilmedi.
 
 
 > **STATÜ — DR-4 CLOSED (KOŞUL-A / LE64)** [Önceki "GEÇİCİ STATÜ OVERRIDE — DR-4 AÇIK" bloğu, DR-4-envanteri
@@ -54,8 +77,8 @@
 ## 0. Bu-katmanın-sorumluluğu (SoC-analiz-§5)
 KamaNoiseWireProtector Kama-tarafından-SABİTLENEN: Noise-handshake-pattern · AEAD-algoritması · hash/KDF · wire-PN-
 modeli · truncated-PN-reconstruction · replay-window · dh_epoch (0/1, in-session-key-phase-YOK §5) · Cryptex-inner-envelope-formatı ·
-transport-parameter-binding ile-çalışır. **API:** `seal(UnsealedTransportShard, wire_pn) → packet` / `open(datagram)
-→ OpenedTransportShard`. Engine: `let p=kama_noise_wire.seal(shard,pn)?` / `let o=kama_noise_wire.open(dg)?`.
+transport-parameter-binding ile-çalışır. **[PN SAHİPLİĞİ — KAPANDI 2026-09-19, KM-SEAM-TC-001 K2]** PN sayacını **Crypto tutar**; `SealArgs.wire_pn` **kaldırılır**, `SealArgs` → `{ctx: ProtectionContext, dh_epoch, send_generation}` (transport v1.x API değişikliği, wire değişikliği değil). Gerekçe (kod kanıtı): eski model PN'i çağırandan alıyordu (seam.rs:13), transport `tx_pn` PeerSlot yaşamına bağlı sıfırlanıyor (runtime.rs:2274, idle 105 s) ve `wrapping_add` ile dönüyordu (:1008) — gerçek anahtar altında nonce tekrarı. Sayaç Crypto'da olunca transport'un hiçbir reset/slot/wrap olayı nonce güvenliğine dokunamaz; `SEND_PN_CAP` (protector.rs:249) → `RenewRequired`. Transport `seq16/pn32`'yi kendi ARQ'su için wire'dan **okur**, üretmez. ~~Eski: "caller-supplied PN"~~. **API:** `seal(opaque_datagram) → packet` / `open(datagram)
+→ OpenedTransportShard`. Engine: `let p=seam.seal(ProtectionContext::Session(h), shard)?` / `let o=seam.open(dg)?` — PN'i Crypto tutar, çağıran vermez (K2). ~~Eski: `seal(shard,pn)`~~
 
 ## 0.9 L4-NOISE-SPLIT NON-REGRESSION (Abkarada-kısıtı — MÜHÜRLÜ-KRİPTO-DOKUNULMAZ) [NORMATİF, EN-ÜST-ÖNCELİK]
 noise-wire L4-session-crypto'ya-EN-YAKIN-katman → en-dikkatli-olunacak-yer. **MEVCUT-MÜHÜRLÜ-KRİPTO DEĞİŞMEZ:**
@@ -120,7 +143,7 @@ K-WIRE-BOOTSTRAP-1-hedefi: A-forward-bounded-retry · B-eventual · C-asenkron-t
 RTT-yemez. **Bu-pattern DEĞİŞMEZ (§0.9); noise-wire-onu-OKUR, yeniden-seçmez.** (Senkron-PTT/voice-interaktif-IK/KK
 = Beta-ayrı-konu.)
 
-**(B) HANDSHAKE-PAKETLERİNİN-HOSTILE-SURVIVAL'ı = AÇIK (bu-P0 — pattern-değil, o-mühürlü-pattern'in-PAKET-teslimi):**
+**(B) HANDSHAKE-PAKETLERİNİN-HOSTILE-SURVIVAL'ı — PROBLEM STATEMENT (CLOSED by (B)-MEKANİZMA-KARARI, PATCH-8, aşağıda) (pattern-değil, o-mühürlü-pattern'in-PAKET-teslimi):**
 mühürlü-N-türevi-handshake'in-*paketleri* hostile-ağda (loss/reorder/fragmentation) nasıl-hayatta-kalır? Noise-
 kriptografik-framework-sağlar ama PAKET-SURVIVAL'ı-hazır-çözmez: UDP-handshake-loss-recovery · out-of-order · frag ·
 anti-amplification · jammer-direnci. → mühürlü-pattern-güçlü-olsa-da reverse-%90-loss'ta SESSION_INIT-paketi-hiç-
@@ -166,8 +189,11 @@ INIT-replay-identity : (sender_device_id, recipient_device_id, init_counter)   [
 
 **P0-3 EXACT-SEALED-LENGTH (total-wire-invariant-bunsuz-TEORİK):** pacer-admission seal-ÖNCESİ-kesin-boyut-ister.
 ```rust
-pub trait KamaNoiseWireSizer { fn sealed_len(&self, p: &UnsealedTransportPacket) -> Result<usize, WireSizeError>; }
-// NORMATİF: seal(p).len() == sealed_len(p)  — üst-sınır-DEĞİL, KESİN.
+// [2026-09-19 — S3 hizalaması] Ayrı `KamaNoiseWireSizer` trait'i KALDIRILDI; Transport↔Crypto seam'i yalnız
+// PacketProtection + SessionControl'dür (KM-SEAM-TC-001). sealed_len PacketProtection'ın metodudur:
+//   fn sealed_len(&self, ctx: ProtectionContext, plaintext_len: usize) -> Result<usize, SealError>;
+// NORMATİF: seal(ctx, p).len() == sealed_len(ctx, p.len())  — üst-sınır-DEĞİL, KESİN. Transport bunu pacer-admission
+// için çağırır; kripto format matematiğini tekrar etmez (limits(ctx) ile aynı sahiplik).
 ```
 Pacer-akışı: logical-packet → exact-sealed_len → pacer/CC-token-RESERVE → seal → reserve==len-DOĞRULA → send.
 Seal-başarısız → reservation-serbest. (Aksi: gereksiz-crypto-CPU · queue-bütçe-aşımı · R_wire_max-tahmini-kalır ·
@@ -177,9 +203,11 @@ padding-varyasyonu-microburst/PMTU-ihlali.)
 ama sender-tarafı wire-PN→logical-eşleme-YOKTU. ACK-gelince-engine-bilmeli: wire_pn → {packet-class, block_id, ESI,
 source/repair/control, retransmission-generation, sealed-bytes, send-timestamp, dh_epoch, deadline}.
 ```rust
-pub struct SealedPacket { pub bytes: Bytes, pub meta: SealedPacketMeta }
-pub struct SealedPacketMeta { pub full_wire_pn: u64, pub dh_epoch: u8, pub sealed_len: usize, pub logical_ref: LogicalPacketRef,
-                              pub packet_class: PacketClass, pub send_generation: u32 }
+pub struct SealedUnit { pub bytes: Bytes, pub meta: SealedPacketMeta }   // ad S3 ile aynı
+pub struct SealedPacketMeta { pub full_wire_pn: u64, pub dh_epoch: u8, pub sealed_len: u32 }
+// [2026-09-19 — S3 hizalaması] `logical_ref` (packet-class/block_id/ESI) bu struct'tan ÇIKARILDI: TRANSPORT'un bilgisidir,
+// transport kendi gönderdiği birimi kendi tablosunda meta.full_wire_pn ile eşler (KM-SEAM-TC-001 K2/K4). seal() → SealedUnit{bytes, meta}.
+// `packet_class` da transport bilgisi (kaldırıldı); `send_generation` §0.5 send-record'un iç alanı — meta'da değil, Crypto'nun kendi state'inde.
 ```
 Engine/pacer send-record-oluşturur; ACK/replay/FEC-logical-state bu-kayıt-üzerinden. (Bunsuz: ACK-hangi-shard'ı-
 teslim-sayar? repair-ACK-BtlBw'ye-kaç-byte? recovered-hangi-retx-iptal? R_sent↔R_acked-ayrımı? RTT-hangi-tx'ten?)
@@ -231,6 +259,18 @@ wire_format = EXTENDED_V1 · wire_flags.bit0 = dh_epoch · diğer-bitler=0, non-
   outer-SIZDIRMAZ (tüm-extended-tek-görünüm — Cryptex-korunur).
 · legacy-seq16 ve-extended-pn32 AYNI-direction-local-full-PN-namespace'in-düşük-bitleri; packet-class-nonce-
   namespace'ini-BÖLMEZ.
+
+**[GERİ ALINDI 2026-09-18 — söküm yanlış öncüle dayanıyordu]** §2.5'in orijinal hükmü GEÇERLİDİR: session verisi
+(SESSION_DATA) + o session'ın FEC source/repair shard'ları + E2E-seviyesi kontrol (inner_kind 0x10–0x1A) **tek
+direction-local full-PN uzayı, tek E2E cipher state** (`send_cipher[dh_epoch & 1]`, protector.rs:245-247).
+Kanonik mimaride (App → Transport → Crypto tel kenarında → UDP) bu doğrudur: shard'lar session verisidir, E2E
+anahtarıyla mühürlenir, Cryptex metadata (block_id/esi/k) ciphertext İÇİNDE kalır, INV-FEC-1 (open → reconstruct)
+E2E anahtarıyla PoC dahil tutar. **Ayrı anahtar bağlamı yalnız hub-yönelik trafik içindir:** HANDLE_ASSIGN (§2.55,
+hub-channel), engine ACK_FRAME (hop), Plane 1 RPC — bunlar `ProtectionContext::HubChannel` ile hop anahtarı alır ve
+ayrı PN uzayındadır. Transport bu bağlamı içeriği okumadan verir (birimi hangi kapıdan aldığını bilir); bugün kodda
+ctx alanı YOK, tek seal yolu (runtime.rs:1089-1137; Plane 1 için ayrı yol yok, hub-server stub) → **S3 K1 ile KAPANDI**: `ProtectionContext{Session(h)|HubChannel}` çağıranın verdiği tek bağlamdır, transport v1.x'te `SealArgs`'a eklenir (KM-SEAM-TC-001 §1.1).
+Ürün ACK yolu bugün tek: engine ACK_V2/ACK (ack.rs:26-30) aynı seam'den; noise-wire Control::Ack/Sack (0x10/0x11)
+kodlanmış ama tüketicisi yok (audit tema E aynen açık).
 
 ## 2.55 H_EXT TAHSİS + BİLDİRİM [NORMATİF — DÜZELTİLDİ: hub-authenticated HANDLE_ASSIGN] (extended-parser-bunsuz-çalışmaz)
 **KRİTİK-AYRIM (önceki-hata-düzeltmesi):** h_ext **Bob'ın-E2E-FS-response'una-BAĞLANMAZ** — SESSION_INIT_RESPONSE
@@ -452,7 +492,20 @@ formu `candidate + WINDOW < ew` (çıkarma-yerine-toplama) kullanılır. **EPOCH
    Alice-hiç-göndermezse-Bob-adım-3'e-geçemezdi).
 3. Bob İLK-GEÇERLİ-epoch-1-paketini-alınca Alice'in-RESPONSE'u-aldığını-ÖĞRENİR (implicit-confirmation).
 4. Bob ANCAK-bundan-sonra: epoch-0-recv-GRACE'ini-başlatır + kendi-OUTBOUND'unu-epoch-1'e-geçirir (send_epoch[B→A]=1).
-5. GRACE sabit-2s-DEĞİL: bounded = max(4×sRTT, GRACE_MIN_PACKETS=64-paket-eşdeğeri); hostile-reorder/RTO-bütçesine-
+5. GRACE sabit-2s-DEĞİL: ~~bounded = max(4×sRTT, GRACE_MIN_PACKETS=64-paket-eşdeğeri)~~ → KS-GRACE-1 (aşağıda; sRTT bağımlılığı KALDIRILDI)
+   **[KARAR-SLOTU KS-GRACE-1 — 2026-09-07, HOS-3]** `sRTT` transport estimator'ıdır; kripto kabul
+   penceresinin estimator kalitesine bağlanması istenmiyor (estimator bozulursa güvenlik penceresi
+   oynar). Kripto-gözlemlenebilir forma çevrilecek:
+     epoch-0 grace KAPANIR = (epoch-1'de AEAD-GEÇERLİ kabul edilen N_g paket) VEYA (T_g mutlak monotonic süre)
+                             — HANGİSİ ÖNCE DOLARSA. Sayaç yalnız AEAD-geçerli epoch-1 paketleriyle artar (sahte
+                             paket grace'i kapatamaz; implicit confirmation ile aynı ilke). T_g, implicit
+                             confirmation ANINDAN başlar (RESPONSE gönderiminden değil). Kapanınca epoch-0 recv state
+                             DISCARD, sonrası REJECT; yeniden AÇILMAZ.
+     N_g = [KALİBRASYON]   T_g = [KALİBRASYON]   (semantik donmuştur, 2026-09-19)
+   ccr §35.5/§35.12'nin "RESPONSE sonrası epoch-0 → REJECT" satırı bu kurala REFERANS verecek
+   (iki belge tek hüküm). Hostile gerekçe: hemen-red seçilirse uçuştaki tüm epoch-0 paketleri
+   çöp olur; 3 B/s rejiminde bu doğrudan teslim süresidir. Güvenlik maliyeti dar: o paketler
+   zaten epoch-0 altında gönderilmişti; grace yalnız KABUL penceresini uzatır.; hostile-reorder/RTO-bütçesine-
    bağlı [CAL — D1-ölçümle-kilitlenir]. Grace-bitince epoch-0-recv-state-discard.
 ```
 RESPONSE-kaybolursa: Alice-epoch-0'da-kalır, Bob-epoch-0-kabulü-SÜRER (adım-1) → "epoch-0-usable"-garantisi-
@@ -697,7 +750,7 @@ tek-satırı-var-mı"-taraması ZORUNLU (D2-tuzağı).
 | Canonical source metadata | Source-specific metadata coded prefix'te | CLOSED |
 | K_actual | Her authenticated FEC shard inner header'ında | CLOSED |
 | sealed_len | Exact per-class formulas (EXT=26+inner, legacy=22+payload) | CLOSED |
-| SealedPacketMeta | PN→logical deterministic mapping | CLOSED |
+| SealedPacketMeta | PN→logical deterministic mapping (PN Crypto'nun; K2) | CLOSED |
 | Control protection | Bütün control AEAD encrypted (allowlist) | CLOSED |
 | Effective PMTU | max_udp_payload_bytes | CLOSED |
 | ID widths | profile u8, block/message u32, ESI u16, K_actual u8 | CLOSED |
@@ -709,14 +762,15 @@ tek-satırı-var-mı"-taraması ZORUNLU (D2-tuzağı).
 | AAD | Canonical EXTENDED_V1 serialization | CLOSED |
 | HANDLE_ASSIGN | Wire-frozen layout; hub-authenticated; hub-sıralama-garantisi | CLOSED |
 | PARAM admission | Bootstrap-profile; PARAM_ACK=confirmation, kapı-değil | CLOSED |
-| dh_epoch transition | 5-adım confirmation-safe machine; grace=max(4×sRTT,64pkt) CAL | CLOSED |
+| dh_epoch transition | 5-adım confirmation-safe machine; grace = (N_g AEAD-geçerli epoch-1 paketi) VEYA (T_g monotonic süre), HANGİSİ ÖNCE — KS-GRACE-1, sRTT'siz; değerler KALİBRASYON | CLOSED (semantik) |
 | K-width invariant | 1≤K_actual≤K_shape≤255; E≥11; fail-closed | CLOSED |
 | AEAD nonce96 mapping | DR-4 KOŞUL-A LE64-lock (§4.5); envanter=NO_VECTOR/debt=NO | CLOSED |
 
-**Tüm-ÖNCEKİ-gate'ler-CLOSED; AEAD-nonce96-mapping-OPEN.** Envelope/wire-layout-freeze-KORUNUR;
-cryptographic-profile-freeze DR-4-kapanana-kadar-ASKIDA. [DR-4-koşulu-uygulanıp-§4.5-işlendiğinde: OPEN→CLOSED →
-FULL-DESIGN-GO-yeniden-aktive.] (Önceki-"11-gate"-sayımı-alt-kararların-birleştirilmesiydi; normatif-
-liste-BU-tablodur.)
+> **[SUPERSEDED — 2026-09-19]** Aşağıdaki paragraf DR-4 KAPANMADAN ÖNCEKİ geçici durumu anlatıyordu; DR-4 CLOSED (KOŞUL-A, LE64, §4.5) ve kapanış tablosu "AEAD nonce96 mapping: CLOSED" olduğu için artık geçersizdir. Tarihsel kayıt olarak üstü çizili bırakıldı.
+> ~~**Tüm-ÖNCEKİ-gate'ler-CLOSED; AEAD-nonce96-mapping-OPEN.** Envelope/wire-layout-freeze-KORUNUR;~~
+> ~~cryptographic-profile-freeze DR-4-kapanana-kadar-ASKIDA. [DR-4-koşulu-uygulanıp-§4.5-işlendiğinde: OPEN→CLOSED →~~
+> ~~FULL-DESIGN-GO-yeniden-aktive.] (Önceki-"11-gate"-sayımı-alt-kararların-birleştirilmesiydi; normatif-~~
+> ~~liste-BU-tablodur.)~~
 
 ## STATÜ-MERDİVENİ [PATCH-H]
 **FULL-DESIGN-GO (BU-BELGELER):** üç-wire-blocker-kapatıldı (h_ext-HANDLE_ASSIGN-§2.55 · epoch-aware-PN/ACK-§4/§2.57 · control-ACK-türleri-§2.57) + 14-madde-kapanış (h_ext-§2.55 · inner_kind-registry-§2.56 · control-body-§2.57 · PN-pseudocode-§4 · symbol_len==E-§2.6 · INIT-byte-for-byte-retry-§P0-5 · key-phase-temizliği-§5) + PATCH-1..16+G işlendi · altı-Noise-kararı-CLOSED · normatif-belirsizlik

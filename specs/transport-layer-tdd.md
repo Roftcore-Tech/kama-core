@@ -766,6 +766,9 @@ default path_mtu_target = 1200B (fragmentation kaçınımı); probe 576/768B; lo
 > **[KARAR-SLOTU KS-PN-1 — 2026-09-23] K'nin DEĞERİ [KALİBRASYON — Abkarada].** Sayı bu belgede UYDURULMAZ.
 > Kısıt: `K ≪ 2^15`. Kalibrasyon girdileri: hedef hostile zarf (T1b sıfır-ACK hücresi), `SEND_PN_CAP` (noise-wire §2.5)
 > ve üç yolun ölçülen emisyon hızı.
+> **[2026-09-23 — ikincil etki, sahip notu]** `K ≤ 8192 = 2^13` seçilirse gönderen, noise-wire extended-pn32 yolundaki
+> `FUTURE_GAP_MAX = 2^13` kapısına da hiç ulaşamaz → o kapı konusuz kalır (identity OQ-16 PARK). `K > 8192` seçilirse
+> OQ-16 yeniden açılır ve pn32 kapısı için ayrı karar gerekir.
 >
 > **EVOLUTION §22 — ALTI BEYAN (bu amendment UYGULANDIĞINDA):**
 > 1. Donmuş invaryant: INV-RATE-1 DEĞİŞMEZ (tavan kayıp sinyaliyle değil, geri-bildirim yokluğuyla tetiklenir); yeni bir

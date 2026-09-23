@@ -67,7 +67,7 @@ Kama'nın mimarisi dört katman: **Application → Transport → Crypto → UDP.
 | ID | Ne | Neden | Bitti |
 |---|---|---|---|
 | R-1 | `docs/seems/` → `docs/seams/`; iki seam belgesi commit | yazım hatası; belgeler untracked | `git ls-files docs/seams/` iki dosya |
-| R-2 | Revize noise-wire içeriğini `specs/kama-noise-wire-tdd-v2.0.md`'ye taşı; untracked `-v2_0.md` sil | aynı belgenin iki kopyası var | tek dosya, revize içerik |
+| R-2 | ~~Revize noise-wire içeriğini `specs/kama-noise-wire-tdd-v2.0.md`'ye taşı; untracked `-v2_0.md` sil~~ **KAPANDI 2026-09-23** (19 Eylül içeriği taşındı, `-v2_0.md` silindi; düzeltme: dosya untracked DEĞİL, izlenen bir dosyaydı) | ~~aynı belgenin iki kopyası var~~ | tek dosya, revize içerik ✅ |
 | R-3 | `specs/application-message-protocol.md` commit | untracked | tracked |
 | R-4 | `CLAUDE.md §3` spec yolu `docs/specs/` → `specs/` | yanlış yol | düzeltildi |
 | R-5 | engine-spec / app-rpc / transport-tdd revizyonları PR'a | commit'lenmemiş değişiklik | PR |
