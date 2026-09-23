@@ -35,6 +35,14 @@ grid'i TAMAMLANMIŞ — yeniden koşmak yasak: OFF 8/360, ON 329/360) · RF/jamm
 |---|---|
 | `ext1/manifest-R1.csv` | `af8db284136cf3d61ae2e190db663dc5fe37f8c41aa198644e3d3c9df438b615` |
 | `ext1/manifest-R2.csv` | `3f887e70665476a4f0c57c2d93e3944a712c4406edb8de4ce34f19aa05f55e19` |
+
+> **[2026-09-23] İki manifest dosyası repodan ÇIKARILDI** (1.4 MB; ek yarıda durdurulmuştu — bkz. `STATUS.md`). Yukarıdaki sha256'lar KAYITLI KALIR ve doğrulanabilir: üretici deterministiktir (seed = sha256 türevi; RNG yok, tarih yok), bu yüzden yeniden üretim BYTE-ÖZDEŞ çıkar — silme öncesi ikisi de doğrulandı.
+>
+> ```
+> python3 baselines/campaign/kvt_manifest_ext.py --replica R1 --out ext1/manifest-R1.csv
+> python3 baselines/campaign/kvt_manifest_ext.py --replica R2 --out ext1/manifest-R2.csv
+> sha256sum ext1/manifest-R*.csv   # yukarıdaki değerlerle eşleşmeli
+> ```
 | `kvt_analyze_ext.py` | `d658a420cb26ef243069734da04276089d22c9b5ae54d841fafadee4ba9cadfe` |
 | `kvt_analyze.py` (v1; wilson/pct buradan) | `46ae83ee137e376f97432e4156a50bbbc105994c4867034f3b878649edbc3d1c` |
 | `kvt_exec.py` | `6dc04c69d90d54535dd8a8220e729118636fe33277d0e5456867cec732b95232` |

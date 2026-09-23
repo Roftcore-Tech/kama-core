@@ -10,6 +10,8 @@ yeniden soruyordu; B ve G blokları Faz-5 T1a/T3a ve T2a/T2b'ye benzerdi. Durdur
 **Kısmi veri:** repo DIŞINDA, sahibin makinesinde `/home/ryuzaki/kama-kvt-results/ext1/` (R1 w0–w5 `result.csv` + koşu dizinleri). Analiz edilmedi, rapora GİRMEDİ,
 hiçbir iddiaya dayanak yapılamaz (kısmi replika; hücre blokları işçi sırasına göre yarım).
 
+**Manifest dosyaları repoda DEĞİL** (2026-09-23'te çıkarıldı, 1.4 MB): durdurulmuş bir ekin girdisi oldukları için ağaçta tutulmuyorlar. `EXT-FREEZE.md` §7'deki sha256'lar geçerli; üretici deterministik olduğu için yeniden üretim byte-özdeştir (komutlar orada). Devam edilecekse ÖNCE manifestleri yeniden üret.
+
 **Devam etmek istenirse** (manifest ve analizör donmuş, koşu devam-edilebilir; üretilmiş satırlar yeniden koşulmaz):
 `KVT_WORKERS=6 bash baselines/campaign/kvt_campaign.sh reports/kama-vs-tcp-v1/ext1 /home/ryuzaki/kama-kvt-results/ext1`
 
