@@ -147,6 +147,7 @@ Her kart: **Neden · Ne yapılacak · Nereye · Neye bağlı · Bittiğini nası
 **Nereye:** `ref/crypto/` (yeni).
 **Neye bağlı:** R-7(d).
 **Done:** RFC vektörleri geçiyor; V-KDF-6 negatifi geçiyor.
+**DURUM (2026-09-23): KAPANDI.** `ref/crypto/` — `kdf.py` · `x25519.py` · `ed25519.py` · `chacha20poly1305.py` · `selftest.py` (stdlib-only, 3. parti paket yok). Geçen vektörler: RFC 5869 A.1–A.3 · RFC 7748 §5.2 (iter 1 ve 1000) + §6.1 · RFC 8032 §7.1 (TEST 1/2/3/SHA(abc)/1024) · RFC 8439 §2.3.2–§2.8.2 + A.5. V-KDF-6 negatifi geçiyor. Kapı `core-ci / vectors` job'ına bağlandı; 5 mutasyonla vakum olmadığı gösterildi (INV-KDF-3 karışıklığı dahil hepsi yakalandı). D1–D7 için burada **değer** vektörü YOK, yalnız yapısal özellikler — exact byte'lar A2.2'de üretilecek.
 
 ### A2.2 — Anahtar türetme vektörleri (V-KDF-1..7)
 **Neden:** Bağlantı kurulurken 7 farklı anahtar/kimlik türetiliyor (D1–D7: kök, trafik anahtarları, oturum kimliği, epoch-1 kökü, INIT/RESPONSE mühür anahtarları). Rust'ın her birini byte-for-byte doğru türettiğini görmenin tek yolu bağımsız referansla karşılaştırmak.
