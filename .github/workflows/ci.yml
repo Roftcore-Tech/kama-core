@@ -234,6 +234,11 @@ jobs:
       # engeller (bugün 4/24; borç görünür ve yalnız azalabilir).
       - name: spec ↔ vektör kapsam ratchet'i
         run: python3 scripts/vectors/spec_coverage.py
+      # A2.1: ref/crypto, vektörlerin BAĞIMSIZ kaynağıdır (Rust'tan türetilmez). Kapı olmazsa
+      # referans sessizce bozulur ve ondan üretilen her vektör onunla birlikte bozulur.
+      # stdlib-only, toolchain'siz, ~5 sn.
+      - name: bağımsız kripto referansı (RFC 5869/7748/8032/8439 vektörleri)
+        run: python3 ref/crypto/selftest.py
 
   # ── App↔Transport seam sözleşme kapısı (KM-SEAM-AT-001 §6/§7 iskeleti) ──
   # Aynı sözleşme süiti hem sahteye hem gerçeğe karşı koşar (Google SWE ch.13 "contract tests":
