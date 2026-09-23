@@ -3,6 +3,9 @@
 > **YAMA KAYDI — 2026-09-18b:** §7 Pipeline C "Outer AEAD (Noise transport key)" → session E2E anahtarı (§0.1 ile tutarlı); alıcı adımı "seam.open → transport reconstruct"; §0'a INV-PLAINTEXT-NOT-SEMANTICS (plaintext görmek ≠ semantik bağ; serileştirme sınırı PreparedUnit→UnsealedTransportUnit→SealedWireUnit; CCR/cert canonical-codec-only, protobuf re-encode yasak, compressor yasak; private key API'den geçmez).
 
 
+> **YAMA KAYDI — 2026-09-23 [AMENDMENT-8 + AMENDMENT-9]:** §7 Pipeline A ve §12'deki "N-mesaj ACK penceresi" ifadeleri temizlendi (AMENDMENT-8; 2026-09-22 üçe-ayırma kararının izi, **davranış değişikliği yok**, `kama-v1-full` korunur). §12'ye AMENDMENT-9 eklendi: D-GAP-2 — hop-ACK almadan ardışık tüketilen PN ≤ K (K ≪ 2^15); üç sayı-tavansız emisyon yolu buna bağlandı; K için KS-PN-1 kalibrasyon slotu açıldı. **Uygulandığında davranış değişir** → EVOLUTION §22'nin altı beyanı amendment içinde yazılı, kimlik `transport-v1.x`. §11 REKEY invariants satırı D-GAP-1'e bağlandı. SPEC-ONLY: kod değişmedi.
+
+
 > **YAMA KAYDI — 2026-09-18 [AMENDMENT-6, Abkarada kararı + Claude Code kanıtı]:** §0'a INV-NEIGHBOR-1 (kanonik katman grafiği App→Transport→Crypto→UDP; degree(App)=degree(Crypto)=1; Transport→Crypto iki arayüz ailesi PacketProtection + SessionControl typed; SessionHandle ≠ HubHandle invariantları; zaman sahipliği ayrımı; early_unit istisnası) · §0.1 shard AEAD anahtarı "Noise transport key" → session E2E anahtarı; ProtectionContext S3 [OPEN] · §2 22B formatı = seam çıktısı notu (kod: legacy.rs:126, wire.rs:15-30, IdentitySeam no-op) · §8 AMENDMENT-4 gerekçesi düzeltildi ("transport ciphertext görür" → plaintext görür; app'te kalma gerekçesi tip bilgisi + aktüatör yokluğu, fusion.rs:551 / Cargo.lock negatif). INV-FEC-1 ve L-modeli DEĞİŞMEDİ.
 
 
@@ -656,7 +659,9 @@ NONCE/SEQ (ccr §35 OTORİTER): seq16 nonce DEĞİLDİR — düşük 16 bit / re
      replay identity = (session_id_internal, direction, epoch, full_counter); replay window AEAD
      başarısından ÖNCE güncellenmez.
 REKEY invariants (ccr §35 ile birebir): MAX_MESSAGES_PER_EPOCH = 2^32; REKEY_THRESHOLD <= 2^31;
-     future gap / reorder pencereleri < 2^15 (seq16 reconstruction tek-anlamlı kalsın). Değerler ccr §35 authoritative.
+     ~~future gap / reorder pencereleri < 2^15~~ **[D-GAP-1 2026-09-23]** far-future/reorder KAPILARI ccr §35.8'de KALDIRILDI.
+     Kalan kısıt SABİTE değil GERÇEKLEŞEN MESAFEYE uygulanır: |full_counter − expected| < 2^15 (seq16 reconstruction
+     tek-anlamlı kalsın) ve bunu korumak GÖNDERENİN işidir → [AMENDMENT-9] / KS-PN-1. Değerler ccr §35 authoritative.
 ```
 
 ---
@@ -666,7 +671,7 @@ REKEY invariants (ccr §35 ile birebir): MAX_MESSAGES_PER_EPOCH = 2^32; REKEY_TH
 > **NOT (SoC):** Pipeline ayrımı **framing/boyut** kaynaklıdır (tek datagram mı, segment-block mı) — uygulama rolü (chat/file/"hot-path") DEĞİL. Recovery stratejisi (ARQ/FEC/karma/none) HER pipeline'da fuzzy controller'dan gelir (§5); transport hangi uygulama olduğunu bilmez.
 
 ```
-A — Tek-datagram payload (MTU'ya sığar):  envelope → SRC pacing/batching/N-msg ACK window → UDP
+A — Tek-datagram payload (MTU'ya sığar):  envelope → SRC pacing/batching/~~N-msg ACK window~~ → UDP   [AMENDMENT-8]
     outer AEAD/FEC/prefix = 0B; auth = inner E2E tag; demux = hub_handle.
     Recovery: fuzzy — loss düşük/bant dar → ARQ (selective retransmit); tek küçük mesajda FEC uygulanamaz
     (block yok) → yüksek loss'ta duplication/ARQ. Strateji koşuldan çıkar.
@@ -734,8 +739,52 @@ default path_mtu_target = 1200B (fragmentation kaçınımı); probe 576/768B; lo
 ---
 
 ## 12. ACK Stratejisi (windowed — per-paket ACK DEĞİL)
+
+> **[AMENDMENT-8 — 2026-09-23, N-PENCERESİ TEMİZLİĞİ · DAVRANIŞ DEĞİŞİKLİĞİ YOK]** Bu belgedeki "N-mesaj ACK penceresi"
+> ifadeleri (§7 Pipeline A, §12) üstü çizildi. Gerekçe: 2026-09-22 sahip kararıyla N-mesaj ACK penceresi ÜÇE AYRILDI —
+> hub tarafı sınır **mailbox kotası** olarak app-rpc §8'de KALIR (`0x0505 MAILBOX_QUOTA_EXCEEDED`), **istemci/gönderen
+> penceresi KALKTI** (Application ACK beklemez; identity E-9, CAD-45), teslim bilgisi AMP `RECEIPT(delivered)`'a geçti.
+> Transport'un ACK stratejisi (range/SACK, piggyback, decimation, per-profil bütçe) DEĞİŞMEDİ; burada yalnız
+> transport'a ait OLMAYAN bir uygulama-katmanı mekanizmasının adı temizlendi. **Runtime kararı değişmez** → profil
+> kimliği `kama-v1-full` KORUNUR, T0–T7 hücreleri geçerli kalır, yeniden doğrulama GEREKMEZ.
+
+> **[AMENDMENT-9 — 2026-09-23, D-GAP-2: HOP-ACK'SİZ ARDIŞIK PN TAVANI · NORMATİF · UYGULANDIĞINDA DAVRANIŞ DEĞİŞTİRİR]**
+>
+> **Kural (NORMATİF):** Gönderen, peer'dan hop-ACK almadan ARDIŞIK olarak en fazla **K** paket-numarası (PN) tüketebilir.
+> Tavana ulaşıldığında yeni datagram üretilmez; tüketim ancak ilerleyen bir hop-ACK geldikten sonra devam eder.
+> Sayım (session, direction, dh_epoch) başınadır ve **mühürlenen her sınıfı** kapsar (DATA · retransmit · tail probe ·
+> duplication · FEC repair · E2E kontrol) — çünkü noise-wire §2.5 hepsini TEK PN uzayına koyar.
+>
+> **Gerekçe — gap değil İSRAF:** boşluğa giden her datagram bant ve `SEND_PN_CAP` yakar. (Far-future reddi D-GAP-1 ile
+> kaldırıldı; bu tavanın amacı replay kapısı DEĞİLDİR.) İkincil olarak tavan, ccr §35.8'in yapısal sınırını
+> (|full_counter − expected| < 2^15) meşru trafikte korur → **K ≪ 2^15 ZORUNLUDUR**.
+>
+> **Bağlanan üç yol (bugün sayı-tavanı YOK — ölçülü, identity §28.1-A):** engine-spec §3.3-B PreConverge geometrik
+> kopya · §11.1 cold-start probe/echo (establish probe) · §11 emergency forward redundancy (RecoverFwd sessizlik
+> duplikasyonu). Üçü de bu tavana TABİDİR.
+>
+> **[KARAR-SLOTU KS-PN-1 — 2026-09-23] K'nin DEĞERİ [KALİBRASYON — Abkarada].** Sayı bu belgede UYDURULMAZ.
+> Kısıt: `K ≪ 2^15`. Kalibrasyon girdileri: hedef hostile zarf (T1b sıfır-ACK hücresi), `SEND_PN_CAP` (noise-wire §2.5)
+> ve üç yolun ölçülen emisyon hızı.
+> **[2026-09-23 — ikincil etki, sahip notu]** `K ≤ 8192 = 2^13` seçilirse gönderen, noise-wire extended-pn32 yolundaki
+> `FUTURE_GAP_MAX = 2^13` kapısına da hiç ulaşamaz → o kapı konusuz kalır (identity OQ-16 PARK). `K > 8192` seçilirse
+> OQ-16 yeniden açılır ve pn32 kapısı için ayrı karar gerekir.
+>
+> **EVOLUTION §22 — ALTI BEYAN (bu amendment UYGULANDIĞINDA):**
+> 1. Donmuş invaryant: INV-RATE-1 DEĞİŞMEZ (tavan kayıp sinyaliyle değil, geri-bildirim yokluğuyla tetiklenir); yeni bir
+>    emisyon-tavanı invaryantı EKLENİR.
+> 2. `KamaV1Profile`: yeni alan (ör. `max_unacked_pn`) EKLENİR — bugünkü profilde YOKTUR.
+> 3. Profil kimliği: `kama-v1-full` KORUNAMAZ → `transport-v1.x`.
+> 4. Geçersiz olan T-hücreleri: sıfır/az-ACK hücreleri — T1b (18/30 sıfır-ACK), T1a, T6; ayrıca PreConverge'in uzun
+>    kaldığı her hücre.
+> 5. Yeniden koşulacak doğrulama: ADR-hostile-validation-contract ile T0 (regresyon) + T1a/T1b/T6, N ≥ 30, ön-kayıtlı.
+> 6. Sürüm: `transport-v1.x` (v2 DEĞİL — mimari değişmiyor, sınır ekleniyor).
+>
+> **DURUM: SPEC-ONLY.** Bu turda Rust'a DOKUNULMADI; kod bugün sınırsızdır. Uygulama, yukarıdaki altı beyanla ve
+> KS-PN-1 değeriyle birlikte AYRI bir iş kalemidir.
+
 ```
-N-mesaj ACK penceresi; ACK range/SACK compression; piggyback; ACK decimation; per-profil ACK budget.
+~~N-mesaj ACK penceresi;~~ ACK range/SACK compression; piggyback; ACK decimation; per-profil ACK budget.   [AMENDMENT-8]
 Per-paket ACK KULLANILMAZ (ACK storm + bant israfı — KCP'nin bu davranışı reddedilme gerekçelerindendi).
 Selective retransmit: SACK boşluğu → yalnız eksik seq'ler yeniden gönderilir (paket kaybı burada kurtarılır).
 0.025–0.2 kbps'de ACK overhead payload'dan büyük olabilir (açıkça kabul; ACK decimation + piggyback ile azaltılır).

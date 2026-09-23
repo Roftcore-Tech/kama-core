@@ -1,5 +1,8 @@
 # Kama — Application Protocol & RPC Spec
 
+> **YAMA KAYDI — 2026-09-23 [D-GAP-3 + D-GAP-1 bağı]:** §6.3 FETCH_MAILBOX'a tek normatif satır eklendi — öğeler `item_seq` ARTAN sırada döner (önceden yalnız cursor + ardışık ACK_RANGE ile İMA ediliyordu; identity OQ-13 kapandı, `next_cursor` ilişkisi artık tek açık kalem). §8'deki "MAX_SKIP doğal sınırı → sahibi AÇIK" satırı D-GAP-1/2'ye bağlandı (identity OQ-09 kapandı).
+
+
 > **YAMA KAYDI — 2026-09-22 [N-mesaj ACK penceresi ÜÇE AYRILDI — sahip kararı]:** (1) KALIR/yeniden adlandırıldı: hub'ın STORE_MESSAGE'da gönderen→alıcı başına teslim edilmemiş öğe sınırı → **mailbox kotası**; `0x0505` = `MAILBOX_QUOTA_EXCEEDED`; N = hub politikası [KALİBRASYON]; ACK_RANGE (alıcı→hub kuyruk temizleme) KALIR, açıklamalarından "N-mesaj ACK penceresi" düştü. (2) KALKTI: istemcide gönderim penceresi / ACK bekleme (identity'deki `ack_outstanding` + WAIT); teslim bilgisi → AMP RECEIPT(delivered) (application-message-protocol §3, 0x08). (3) Yeniden yazıldı: §1 kapsam, §2 ACK_RANGE satırı, §6.4, §7 akış adım 5, §8, §10 STORE_MESSAGE, 0x0505, R-APP-9, uyum tablosu, AC-APP-8, §15 yaşam döngüsü. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-09-20:** §8 dedup satırındaki replay penceresi "512-1024" → ccr §35.8 `REPLAY_WINDOW_SIZE = 1024` (normatif replay: identity §15.5).
@@ -277,6 +280,8 @@ Normatif:
 - FETCH_MAILBOX reconnect drain'idir (steady-state hot-path değil); offline biriken envelope'ları çeker.
 - Hub, kuyruğu RELEASE etmeden ÖNCE revocation kontrol eder (revoked device fetch edemez, revocation-model §8.2).
 - items OPAK blob; double-framing semantiği yok (her item length-delimited opak envelope).
+- **[D-GAP-3 2026-09-23 — NORMATİF]** Yanıttaki öğeler `item_seq` ARTAN sırada döner (`item_seq > cursor`); sıra garantisi ima değil, kuraldır
+  (ardışık-dahil `ACK_RANGE` ancak bu sırayla anlamlıdır). Not: `next_cursor` ↔ `item_seq` ilişkisi hâlâ yazılı değil (identity OQ-13 artığı).
 ```
 
 ### 6.4 ACK_RANGE (0x07)
@@ -505,7 +510,8 @@ Eski üç rolün yeni sahibi:
   ratchet counter DoS sınırı  → hub mailbox kotası (yukarıda) + cihaz başına gönderim hızı (§10 STORE_MESSAGE, 0x0201).
   sessiz kayıp tespiti        → AMP RECEIPT(delivered) (application-message-protocol §3, 0x08) + alıcıda msg_id boşluğu.
                                 Tespittir, önleme DEĞİL — hub'ın bastırması availability residual'dır (identity T-16).
-  MAX_SKIP doğal sınırı       → sahibi AÇIK; kanıt: 2026-09-22 yama notu madde 5 (ccr §35.8 MAX_FUTURE_GAP ilişkisi).
+  MAX_SKIP doğal sınırı       → ~~sahibi AÇIK; kanıt: 2026-09-22 yama notu madde 5 (ccr §35.8 MAX_FUTURE_GAP ilişkisi).~~ **[2026-09-23 D-GAP-1/2]** sahibi belirlendi: far-future kapısı kaldırıldı (ccr §35.8),
+                                yerine gönderen tarafı tavanı geldi — transport-layer-tdd [AMENDMENT-9] / KS-PN-1 (K ≪ 2^15). identity OQ-09 KAPANDI.
 
 Idempotency:
   Control-plane: aynı request_id ile retry idempotent (hub aynı response'u döner; çift işlem yok).

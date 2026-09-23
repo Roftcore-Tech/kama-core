@@ -1,5 +1,8 @@
 # CCR Format Specification
 
+> **YAMA KAYDI — 2026-09-23 [D-GAP-1 + temizlik]:** §35.8 far-future reddi KALDIRILDI (`MAX_FUTURE_GAP` kapısı **ve** `MAX_REORDER_DISTANCE`'ın simetrik kontrolünün ileri yarısı — ikincisi karar metninde adlandırılmamıştı, ama aynı reddi 8192'de sürdürüyordu; ayrıntı §35.8 içinde). AEAD-geçerli paket ileri sıçrasa da kabul edilir (highest sıçrar, atlanan aralık bitmap'te temizlenir); underflow-safe eski-paket kuralı ve "replay window AEAD'den önce güncellenmez" (P0-6) AYNEN kalır. Yapısal sınır: |candidate − expected| < 2^15 (seq16 tek-anlamlılığı) → gönderen tarafı kısıtı transport-layer-tdd [AMENDMENT-9] / KS-PN-1. Vektör listeleri (§35.13 REPLAY, §35.14) buna göre güncellendi. Ayrıca §36'daki yanlış `MAILBOX_PRUNE` atfı düzeltildi. **Kapsam DIŞI:** noise-wire extended-pn32 yolunun `FUTURE_GAP_MAX = 2^13` kapısı — ayrı karar gerekir (identity OQ-16).
+
+
 > **YAMA KAYDI — 2026-09-20 [kripto implementasyon risk taraması]:** yeni §5.2 Ed25519 doğrulama kipi (S < ℓ · small-order A/R reject · kanonik encoding · cofactorless; negatif vektörlerle kütüphane teyidi). Not: "512-1024" geçen §D1.6 ve Appendix D2 satırları zaten `MUST NOT IMPLEMENT` / `Historical Only` bölümlerinde — dokunulmadı.
 
 
@@ -2710,7 +2713,7 @@ cert, no re-handshake, no stream dependency.
 
 ### 35.7 hub_handle Semantiği + Allocation (NORMATİF)
 
-> **[KARAR-SLOTU KS-HANDLE-1 — 2026-09-19] `hub_handle` yeniden kullanım koşulu:** Bir handle invalidate edildikten (§35.16 rebind, teardown, `hub_handle_epoch` rollover) sonra **hiçbir peer'a** yeniden atanmadan önce (a) o handle'a bağlı transport outstanding/ARQ state'i ölmüş olmalı VE (b) `HANDLE_TOMBSTONE` dolmuş olmalı. **Türetim kuralı (NORMATİF — magic number değil):** `HANDLE_TOMBSTONE ≥ max(hop-ARQ maksimum RTO×retry ufku, MAX_REORDER_DISTANCE'ın süre karşılığı, mailbox teslim ufku)` — yani o handle'a **geç gelebilecek son meşru datagramın** ufku; namespace 2³² olduğu için tombstone'un bellek maliyeti düşüktür, kısa tutmanın gerekçesi yoktur. Değer bu üç girdiden hub sahibi tarafından hesaplanır `[KALİBRASYON]`. Aksi hâlde eski peer'ın uçuştaki datagramı yeni peer'ın leg'ine düşer (AEAD fail eder ama transport state'e girer — availability). Bu satır olmadan §35.7'nin PRF türetimi "bir handle = bir leg" garantisini yalnız *aktif* tabloda verir.
+> **[KARAR-SLOTU KS-HANDLE-1 — 2026-09-19] `hub_handle` yeniden kullanım koşulu:** Bir handle invalidate edildikten (§35.16 rebind, teardown, `hub_handle_epoch` rollover) sonra **hiçbir peer'a** yeniden atanmadan önce (a) o handle'a bağlı transport outstanding/ARQ state'i ölmüş olmalı VE (b) `HANDLE_TOMBSTONE` dolmuş olmalı. **Türetim kuralı (NORMATİF — magic number değil):** `HANDLE_TOMBSTONE ≥ max(hop-ARQ maksimum RTO×retry ufku, ~~MAX_REORDER_DISTANCE'ın~~ **REPLAY_WINDOW_SIZE'ın** süre karşılığı, mailbox teslim ufku)` **[D-GAP-1 2026-09-23: `MAX_REORDER_DISTANCE` kapısı kaldırıldığı için bu türetim girdisi tanımsız kalırdı. Geç gelen bir datagramın kabul edilebildiği tek sınır artık eski-paket kuralıdır (`full_counter + REPLAY_WINDOW_SIZE <= highest` → reddet), dolayısıyla ufuk REPLAY_WINDOW_SIZE'ın süre karşılığıdır.]** — yani o handle'a **geç gelebilecek son meşru datagramın** ufku; namespace 2³² olduğu için tombstone'un bellek maliyeti düşüktür, kısa tutmanın gerekçesi yoktur. Değer bu üç girdiden hub sahibi tarafından hesaplanır `[KALİBRASYON]`. Aksi hâlde eski peer'ın uçuştaki datagramı yeni peer'ın leg'ine düşer (AEAD fail eder ama transport state'e girer — availability). Bu satır olmadan §35.7'nin PRF türetimi "bir handle = bir leg" garantisini yalnız *aktif* tabloda verir.
 
 > **[AMENDMENT-6] `hub_handle` (HubHandle — wire/routing kimliği) ≠ `SessionHandle` (Crypto'nun bastığı yerel capability; wire'da YOK; transport-tdd §0 INV-NEIGHBOR-1). İki tip BİRLEŞTİRİLEMEZ; eşleme Crypto'nun içindedir (kod: legacy.rs `LegacySessionProtector::new(hub_handle, …)`, session.rs h_ext → Session).**
 
@@ -2745,22 +2748,54 @@ reconstruct_counter(expected_counter, seq16):
 
   ACCEPT only if:
     candidate >= lowest_acceptable_counter
-    candidate <= expected_counter + MAX_FUTURE_GAP
+    ~~candidate <= expected_counter + MAX_FUTURE_GAP~~            # [D-GAP-1] far-future kapısı KALDIRILDI
     candidate not already seen in replay bitmap
-    |candidate - expected_counter| <= MAX_REORDER_DISTANCE
+    ~~|candidate - expected_counter| <= MAX_REORDER_DISTANCE~~    # [D-GAP-1] bu kontrol SİMETRİKti; ileri yarısı da
+                                                                  #   far-future reddidir → kaldırıldı. Geri yarısı zaten
+                                                                  #   REPLAY_WINDOW_SIZE (1024 < 8192) ile kapsanıyor.
     epoch matches
     AEAD verifies
-  REJECT if: duplicate | too old | too far future | ambiguous wrap | AEAD fail
+  REJECT if: duplicate | too old | ~~too far future~~ | ambiguous wrap | AEAD fail
+
+  # ── [D-GAP-1 — 2026-09-23, NORMATİF] İLERİ SIÇRAMA KABULÜ ──────────────────────────────────
+  # AEAD-geçerli paket, ne kadar ileride olursa olsun KABUL EDİLİR:
+  #   highest  := candidate                                   (sıçrar)
+  #   bitmap   := atlanan aralık TEMİZLENİR (yeni pencerede o sayaçlar "görülmedi")
+  #   eski-paket kuralı DEĞİŞMEDİ (underflow-safe): `full_counter + REPLAY_WINDOW_SIZE <= highest` → reddet
+  #   replay window AEAD BAŞARISINDAN ÖNCE güncellenmez (P0-6 — precheck PURE).
+  #
+  # GÜVENLİK GEREKÇESİ: far-future kapısı gereksizdi. Sahte bir far-future paket AEAD'de düşer ve
+  # precheck PURE olduğu için replay state'ini İLERLETEMEZ (P0-6) — yani kapı hiçbir saldırıyı
+  # engellemiyordu. Buna karşılık MEŞRU trafikte kalıcı oturum ölümü üretiyordu: ileri yönde
+  # kesinti boyunca gönderen sayaç yakar, kesinti bitince gelen ilk geçerli paket "çok ileride"
+  # diye reddedilirdi ve resync yolu YOK (identity §28.1-A kanıtı).
+  #
+  # AEAD DENEMESİ SAYISI DEĞİŞMEZ (doğrulandı, bu bölümden): reconstruction `argmin` ile TEK aday
+  # üretir (3 aday üretilir, biri seçilir — üçü de denenmez). D-GAP-1 aday SAYISINI artırmaz,
+  # yalnız precheck kapısını kaldırır. Kapının kaldırılmasıyla, eskiden AEAD'e HİÇ ulaşmayan
+  # far-future paket artık 1 AEAD denemesi maliyeti üretir; ancak saldırgan bu maliyeti zaten
+  # menzil-içi `seq16` göndererek üretebiliyordu → paket başına EN KÖTÜ durum aynı kalır.
+  # Anahtar denemesi ayrı bir eksendir: extended formda `dh_epoch` wire'dadır (noise-wire §4
+  # `wire_flags.bit0`) → 1 anahtar; legacy 22 B zarfta epoch alanı YOKTUR → grace içinde ≤2 anahtar.
+  # D-GAP-1 bu sayıyı da değiştirmez.
+  #
+  # YAPISAL SINIR (kapı yerine geçen tek sınır): seq16 reconstruction ±2^15 içinde tek-anlamlıdır.
+  # Gerçek sayaç `expected`ten 2^15'ten uzaksa YANLIŞ reconstruct edilir → AEAD düşer (sessiz kayıp).
+  # Bu sınırı meşru trafikte korumak transport'un işidir: D-GAP-2 / KS-PN-1 (hop-ACK almadan ardışık
+  # tüketilen PN ≤ K, K ≪ 2^15) — transport-layer-tdd [AMENDMENT-9].
 
 NUMERIC CONSTANTS (Alpha default; saha-kalibre):
-  REPLAY_WINDOW_SIZE     = 1024          MAX_FUTURE_GAP         = 4096
-  MAX_REORDER_DISTANCE   = 8192          MAX_MESSAGES_PER_EPOCH = 2^32
+  REPLAY_WINDOW_SIZE     = 1024          ~~MAX_FUTURE_GAP         = 4096~~   # [D-GAP-1] kapı kaldırıldı
+  ~~MAX_REORDER_DISTANCE   = 8192~~      MAX_MESSAGES_PER_EPOCH = 2^32        # [D-GAP-1] kapı kaldırıldı
   REKEY_THRESHOLD        = 2^31  (epoch rollover bundan ÖNCE; seq16 ambiguity oluşmadan)
 
 INVARIANTS:
-  MAX_REORDER_DISTANCE < 2^15 ... DÜZELTME: MAX_REORDER_DISTANCE ve MAX_FUTURE_GAP < 2^15 OLMALI
-  (seq16 16-bit penceresi → reorder/future pencereleri 2^15'i AŞAMAZ, aksi halde wrap ambiguity).
-  → Alpha: MAX_REORDER_DISTANCE = 8192 (<2^15 ✓), MAX_FUTURE_GAP = 4096 (<2^15 ✓).
+  ~~MAX_REORDER_DISTANCE < 2^15 ... DÜZELTME: MAX_REORDER_DISTANCE ve MAX_FUTURE_GAP < 2^15 OLMALI~~
+  ~~(seq16 16-bit penceresi → reorder/future pencereleri 2^15'i AŞAMAZ, aksi halde wrap ambiguity).~~
+  ~~→ Alpha: MAX_REORDER_DISTANCE = 8192 (<2^15 ✓), MAX_FUTURE_GAP = 4096 (<2^15 ✓).~~
+  [D-GAP-1] İki kapı da kaldırıldığı için bu invariant ARTIK SABİTLERE DEĞİL, MESAFEYE uygulanır:
+  gerçekleşen |full_counter − expected_counter| < 2^15 KALMALIDIR (seq16 reconstruction tek-anlamlılığı).
+  Bunu sağlamak alıcının değil GÖNDERENİN kısıtıdır → transport-layer-tdd [AMENDMENT-9] / KS-PN-1 (K ≪ 2^15).
   seq16 TEK BAŞINA nonce DEĞİL. AEAD nonce/counter = reconstructed full counter.
   replay identity = (session_id_internal, direction, epoch, full_counter).
   replay window AEAD success'ten ÖNCE GÜNCELLENMEZ.
@@ -2903,7 +2938,7 @@ REPLAY (security-critical regression — P0-6):
     ASSERT replay bitmap DEĞİŞMEDİ ve highest/expected DEĞİŞMEDİ
   sonra AYNI full_counter ile GEÇERLİ paket
     ASSERT kabul edildi
-  + duplicate valid reject · too-old reject · future-gap reject · seq16 wrap
+  + duplicate valid reject · too-old reject · ~~future-gap reject~~ **far-future ACCEPT (AEAD-geçerli → highest sıçrar, atlanan aralık bitmap'te temizlenir)** [D-GAP-1] · seq16 wrap
   + half-span / tie kuralı · yanlış direction fail · yanlış epoch fail
   + AEAD failure ASLA replay commit etmez · underflow/wrap aritmetiği (P0-7)
 
@@ -2934,7 +2969,7 @@ INVALID (negative) corpus:
   SESSION_DATA carries signature but not SIGNED_CONTROL → reject
   SESSION_DATA carries FEC/outer-AEAD header → reject (established thin path)
   unknown hub_handle → cheap-drop / LINK_ROUTE_MISS (NOT crypto accept)
-  seq16 duplicate / outside replay window / too far future / ambiguous wrap → reject (wrap→rekey)
+  seq16 duplicate / outside replay window / ~~too far future~~ / ambiguous wrap → reject (wrap→rekey)   # [D-GAP-1] far-future ARTIK REJECT DEĞİL
   AEAD fail → reject, replay window NOT updated
   CompactDeviceCert verified with Intermediate key → FAIL (must verify under Identity/User Cert)
   CompactDeviceCert issuer_signature not valid under Identity/User Cert → reject
@@ -3114,7 +3149,7 @@ Bu doküman `identity-and-trust-model.md` v1.5'in (Haziran 2026 ERRATA, statik X
 > Production interoperability freeze  : HOLD — vektörler + interop/adversarial testler + noise-wire D1-ENTRY (N1–N10 + POC)
 > ```
 > Açık product/calibration kalemleri: KS-DOS-1 (§35.15) · KS-GRACE-1 · KS-REV-1 (revocation-model, K10 ile) · KS-RA-1 (pki).
-> ~~S2-noise.2~~ ve ~~CRY-1~~ kapandı (S3 K1/K2). ~~KS-ACK-1~~ söküldü (app-rpc MAILBOX_PRUNE).
+> ~~S2-noise.2~~ ve ~~CRY-1~~ kapandı (S3 K1/K2). ~~KS-ACK-1~~ ~~söküldü (app-rpc MAILBOX_PRUNE)~~ → **[DÜZELTME 2026-09-23]** `MAILBOX_PRUNE` app-rpc'de TANIMLI DEĞİLDİR (yanlış atıf). Doğrusu: N-mesaj ACK penceresi 2026-09-22'de ÜÇE AYRILDI — hub tarafı **mailbox kotası** (app-rpc §8, `0x0505 MAILBOX_QUOTA_EXCEEDED`), istemci penceresi kaldırıldı, teslim bilgisi AMP RECEIPT(delivered) (identity E-9 / YAMA KAYDI 2026-09-22).
 
 ---
 

@@ -1,5 +1,8 @@
 # Kama — Adaptive Transport Engine Spec (Implementable)
 
+> **YAMA KAYDI — 2026-09-23 [D-GAP-2 bağı]:** Sayı-tavanı olmayan üç emisyon yolu (§3.3-B geometrik kopya, §11 emergency forward redundancy, §11.1 cold-start probe/echo) transport-layer-tdd [AMENDMENT-9] "hop-ACK almadan ardışık PN ≤ K" tavanına bağlandı (K: KS-PN-1 [KALİBRASYON]). SPEC-ONLY — kod değişmedi; uygulandığında EVOLUTION §22'nin altı beyanı geçerlidir (kimlik `transport-v1.x`).
+
+
 > **YAMA KAYDI — 2026-09-18b:** §10.1 shard alan etiketleri `[GÜVENLİK katmanı]` → `[SEAM — session E2E anahtarı]` (AMENDMENT-5 ile tutarlı; RS transport'ta); §13 otorite tablosu "shard AEAD'i GÜVENLİK katmanı yürütür" → seam/hop-ctx diliyle. §0.2/§10 arası çelişki kapandı.
 
 
@@ -328,6 +331,10 @@ PRE_CONVERGE --ilk geçerli SACK/echo--> STARTUP   # RTT+loss kilidi açılır (
   önceden yalnız ≥80 kbps + küçük iş-yükünde tutuyordu. (Kalibrasyon: §16.1 pacer satırları.)
 
 **(B) Veri — programlı geometrik kopya takvimi (forward-redundancy sürücüsü):** [R1/§2.2]
+
+> **[D-GAP-2 / AMENDMENT-9 BAĞI — 2026-09-23]** Bu yolun emisyonu, transport-layer-tdd [AMENDMENT-9]'daki
+> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer [KALİBRASYON] KS-PN-1).
+> Bugün bu yolda SAYI TAVANI YOKTUR (ölçüldü: identity §28.1-A) — tavan SPEC-ONLY'dir, kod bu turda değişmedi.
 ```
 İlk birim t=0'da gider; ACK beklenmez. Kopyalar geometrik: t=0, k_base·RTT_floor, ×COPY_MULTIPLIER, ...
   (taban/çarpan serialization fiziğinden — §16 [CAL]; UYDURULMAZ). Tetik: "henüz hiçbir ölçüm yok".
@@ -773,6 +780,10 @@ tek-datagram / tiny payload: RS uygulanamaz → duplication (§11) doğru araç.
 
 ## 11. Emergency Forward Redundancy Algorithm (NORMATİF — ACK-bağımsız; TDD §5.6)
 
+> **[D-GAP-2 / AMENDMENT-9 BAĞI — 2026-09-23]** Bu yolun emisyonu, transport-layer-tdd [AMENDMENT-9]'daki
+> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer [KALİBRASYON] KS-PN-1).
+> Bugün bu yolda SAYI TAVANI YOKTUR (ölçüldü: identity §28.1-A) — tavan SPEC-ONLY'dir, kod bu turda değişmedi.
+
 ```
 Tetik (fuzzy): loss HIGH ∧ bandwidth LOW ∧ ack_confidence LOW
   Gerekçe: %80 çift-yönlü loss → P(data∧ACK)=0.2×0.2≈%4 → ARQ ~25× round-trip'e sürünür.
@@ -827,6 +838,10 @@ duplication/parity yine available_redundancy_budget ile clamp (§8.5).   [AMENDM
 ---
 
 ## 11.1 Cold-Start Probe/Echo — CTRL_PATH_PROBE genişletmesi [K4/K-KEYSTONE/R3/revize-D0 §4.2]
+
+> **[D-GAP-2 / AMENDMENT-9 BAĞI — 2026-09-23]** Bu yolun emisyonu, transport-layer-tdd [AMENDMENT-9]'daki
+> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer [KALİBRASYON] KS-PN-1).
+> Bugün bu yolda SAYI TAVANI YOKTUR (ölçüldü: identity §28.1-A) — tavan SPEC-ONLY'dir, kod bu turda değişmedi.
 
 > **CANCELLED/SUPERSEDED [DR-CS-1-AMENDMANI; Abkarada-onaylı]:** Bu bölümün `0x12`-codepoint'i otoritatif
 > `kama-noise-wire-tdd-v2.0 §2.56` registry'siyle ÇAKIŞIR (0x12=RECOVERED; runtime-assert). Probe/echo
