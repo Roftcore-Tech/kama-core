@@ -30,8 +30,9 @@ pub struct MockTransport {
     inbox: VecDeque<Delivered>,
 }
 
-// B1.3 bu enjeksiyon metodlarını tanımlar; tüketicileri B1.4'ün conf_s1_* testleridir.
-// O testler eklenince bu allow kaldırılır.
+// Bu ortak modül birden fazla test binary'si tarafından ayrı ayrı derlenir (her
+// `tests/*.rs` kendi crate'idir); her binary enjeksiyon metodlarının hepsini kullanmayabilir,
+// bu yüzden dead_code kontrolü burada gevşetilir.
 #[allow(dead_code)]
 impl MockTransport {
     pub fn new(capabilities: TransportCapabilities) -> Self {
@@ -191,10 +192,17 @@ impl KamaTransport for MockTransport {
         self.events.pop_front()
     }
 
+    /// Handle'ı tamamen unutur (`UnknownSession`'a geçer — H-EVENTS: `Closed` sonrası bu
+    /// çağrılınca `send` artık `UnknownSession` döner; cutover'ın hemen ardından, `close()`
+    /// çağrılmadan önce hâlâ `SessionSuperseded` döner — H-CUTOVER ile çelişmez, iki ayrı an).
     fn close(&mut self, session: SessionHandle) {
         if let Some(peer) = self.session_peer.remove(&session) {
-            self.active_by_peer.remove(&peer);
+            // Yalnız bu handle o peer'in HÂLÂ aktif handle'ıysa eşlemeyi temizle — supersede
+            // edilmiş eski bir handle kapatılırken peer'in YENİ aktif handle'ını silme.
+            if self.active_by_peer.get(&peer) == Some(&session) {
+                self.active_by_peer.remove(&peer);
+            }
         }
-        self.superseded.insert(session);
+        self.superseded.remove(&session);
     }
 }
