@@ -1,6 +1,6 @@
 # Kama Core — CLAUDE.md
 
-> Bu dosya Claude Code'un kalıcı proje bağlamıdır. Kod yazmadan önce OKU. Otorite belgeler `docs/specs/` altında; çelişkide **spec kazanır**.
+> Bu dosya Claude Code'un kalıcı proje bağlamıdır. Kod yazmadan önce OKU. Otorite belgeler `specs/` altında; çelişkide **spec kazanır**.
 
 ## 1. Proje nedir
 
@@ -12,9 +12,9 @@ Rust workspace (ADR-12). 8 crate:
 ```
 crypto · ccr-codec · adaptive-transport · hub-server · client-core · ra-ca · discovery · admin-server
 ```
-**Bu repoda medya YOK.** Real-time medya (WebRTC fork, SRTP, Lyra) ayrı repo `kama-media`'da (Resul+Hasan). İki transport zıt taban: core = recovery-obsesif ("veri ULAŞSIN"); media = latency-obsesif ("geç paket çöp"). Buluşma noktası tek: signaling seam (bkz. `docs/specs/signaling-seam-v0.md`), entegrasyon en sonda.
+**Bu repoda medya YOK.** Real-time medya (WebRTC fork, SRTP, Lyra) ayrı repo `kama-media`'da (Resul+Hasan). İki transport zıt taban: core = recovery-obsesif ("veri ULAŞSIN"); media = latency-obsesif ("geç paket çöp"). Buluşma noktası tek: signaling seam (bkz. `specs/signaling-seam-v0.md`), entegrasyon en sonda.
 
-## 3. Otorite belgeler (donmuş spec'ler — `docs/specs/`)
+## 3. Otorite belgeler (donmuş spec'ler — `specs/`)
 
 ```
 identity-and-trust-model.md            semantik trust otoritesi
@@ -54,7 +54,7 @@ DHT               DHT hub-mesh only; client'lar DHT participant DEĞİL. Client�
                   ANNOUNCE validation recursive verify_chain (iterative DEĞİL). PINNED_ROOT_CA app-bundle'dan.
 ```
 
-## 5. Teknoloji kararları (ADR — `docs/specs/tech-stack-adr.md`)
+## 5. Teknoloji kararları (ADR — `specs/tech-stack-adr.md`)
 
 ```
 ADR-01  Rust (server + core + transport). unsafe yüzeyi minimum (yalnız libsodium + PKCS#11 + mobil binding).

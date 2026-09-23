@@ -66,10 +66,10 @@ Kama'nın mimarisi dört katman: **Application → Transport → Crypto → UDP.
 
 | ID | Ne | Neden | Bitti |
 |---|---|---|---|
-| R-1 | `docs/seems/` → `docs/seams/`; iki seam belgesi commit | yazım hatası; belgeler untracked | `git ls-files docs/seams/` iki dosya |
+| R-1 | ~~`docs/seems/` → `docs/seams/`; iki seam belgesi commit~~ **KAPANDI 2026-09-23** (dizin `git mv` ile yeniden adlandırıldı; `scripts/ci/seam-api-drift.py` ve `seam-coverage.json` içindeki yollar da güncellendi — yoksa #64'ün seam kapısı kırılırdı. Düzeltme: belgeler untracked DEĞİLDİ, izleniyorlardı) | ~~yazım hatası; belgeler untracked~~ | `git ls-files docs/seams/` iki dosya ✅ |
 | R-2 | ~~Revize noise-wire içeriğini `specs/kama-noise-wire-tdd-v2.0.md`'ye taşı; untracked `-v2_0.md` sil~~ **KAPANDI 2026-09-23** (19 Eylül içeriği taşındı, `-v2_0.md` silindi; düzeltme: dosya untracked DEĞİL, izlenen bir dosyaydı) | ~~aynı belgenin iki kopyası var~~ | tek dosya, revize içerik ✅ |
 | R-3 | `specs/application-message-protocol.md` commit | untracked | tracked |
-| R-4 | `CLAUDE.md §3` spec yolu `docs/specs/` → `specs/` | yanlış yol | düzeltildi |
+| R-4 | ~~`CLAUDE.md §3` spec yolu `docs/specs/` → `specs/`~~ **KAPANDI 2026-09-23** (4 yerde düzeltildi: başlık notu, §2, §3, §5) | ~~yanlış yol~~ | düzeltildi ✅ |
 | R-5 | engine-spec / app-rpc / transport-tdd revizyonları PR'a | commit'lenmemiş değişiklik | PR |
 | R-6 | `vectors/` dizini aç | repo'da test verisi dizini yok | dizin + README |
 | R-7 | **Dört konvansiyon kararı (Abdurrahman):** (a) application crate adı — öneri `crates/kama-app` · (b) S3 trait'lerinin evi — öneri `client-core/src/seam.rs` evrilir, implementasyon `kama-noise-wire`; `crates/crypto` iskeletinin kaderi · (c) sözleşme testi dosya öneki — öneri `conf_` · (d) Python referansı için ChaCha20-Poly1305, X25519 ve Ed25519 standart kütüphanede yok — öneri saf-Python RFC 8439 + RFC 7748 + RFC 8032 (§6'da Python illüstrasyonu var) (bağımsız, stdlib-only; RFC'nin kendi test vektörleriyle doğrulanır); alternatif `cryptography` paketi | kararsız kalırsa üç kişi farklı yere yazar | dört karar yazılı |
