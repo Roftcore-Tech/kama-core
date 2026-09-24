@@ -12,6 +12,7 @@ RFC'lerden yazılmış ayrı bir implementasyonla üretilir/doğrulanır.
 ## Ne ÜRETİM DEĞİL
 
 Bu kod **sabit-zamanlı değildir**, üretim yolunda asla çalışmaz ve çalıştırılmamalıdır.
+**Sabit-zamanlılık bu ağaç için gereksinim değil, açıkça KAPSAM DIŞIDIR** (sahip kararı, 2026-09-24): sabit-zamanlılık yalnız zamanlamayı ölçebilen bir saldırganın olduğu yerde gerekir; bu referans çevrimdışı, test anahtarlarıyla, ölçen kimsenin olmadığı ortamda koşar ve Python `int` ile zaten sabit-zamanlı yazılamaz. RFC'lerin kendi Python illüstrasyonları aynı uyarıyla gelir.
 Üretim primitifleri: libsodium (ADR-03) + `x25519-dalek` / `ed25519-dalek` (pki §13 registry).
 
 ## Dosyalar
