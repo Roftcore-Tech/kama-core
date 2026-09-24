@@ -1,5 +1,7 @@
 # kama-noise-wire-tdd — Kama Noise Secure-Wire Profile [v2.0 — dört-karar-boşluğu-KAPATILDI (HANDLE_ASSIGN-frozen · bootstrap-profile-admission · confirmation-safe-epoch · K-invariant) + öz-tarama-temiz; FULL-DESIGN-GO-onayı: Abkarada]
 
+> **YAMA KAYDI — 2026-09-24 [KS-GRACE-1 KAPANDI — sahip kararı, Alpha]:** §4 madde 5 `N_g = 64` (yalnız AEAD-geçerli epoch-1 paketleri) · `T_g = 30 s` (monotonic, implicit confirmation anından); hangisi önce; kapanınca epoch-0 recv state DISCARD, yeniden açılmaz; sRTT bağımlılığı bilinçli olarak YOK. Statü: yerel politika, tel sabiti değil. Sayaçlar ve Beta tetiği (PCS/ratchet) blokta. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-09-23 [D-GAP-1 bağı]:** §4 anti-replay sabit-kapsamı güncellendi — legacy-seq16 yolunun `MAX_FUTURE_GAP`/`MAX_REORDER` kapıları ccr §35.8'de KALDIRILDI (far-future reddi yok; yapısal sınır |cand−expected| < 2^15, gönderen kısıtı KS-PN-1). extended-pn32 yolunun `FUTURE_GAP_MAX = 2^13` kapısı DOKUNULMADAN durur — kapsam sorusu identity OQ-16. **[R-2 KAPANDI — 2026-09-23, sahip kararı]** İki kopya BİRLEŞTİRİLDİ: 19 Eylül içeriği otoriterdir ve bu dosyaya taşındı; `kama-noise-wire-tdd-v2_0.md` SİLİNDİ. Bu dosyanın önceki (21 Temmuz) içeriği SUPERSEDED'dir ve git geçmişinden geri alınabilir: `git show 311b5c2d:specs/kama-noise-wire-tdd-v2.0.md`. Kaybolan yalnız eski sürümlerdi (ör. `seal(..., wire_pn)` imzası — PN sahipliği KM-SEAM-TC-001 K2 ile değişti; eski GRACE formülü `max(4×sRTT, 64pkt)` — KS-GRACE-1 ile değişti). Repodaki tüm atıflar zaten bu adı kullanıyordu.
 
 
@@ -501,7 +503,21 @@ formu `candidate + WINDOW < ew` (çıkarma-yerine-toplama) kullanılır. **EPOCH
                              paket grace'i kapatamaz; implicit confirmation ile aynı ilke). T_g, implicit
                              confirmation ANINDAN başlar (RESPONSE gönderiminden değil). Kapanınca epoch-0 recv state
                              DISCARD, sonrası REJECT; yeniden AÇILMAZ.
-     N_g = [KALİBRASYON]   T_g = [KALİBRASYON]   (semantik donmuştur, 2026-09-19)
+     ~~N_g = [KALİBRASYON]   T_g = [KALİBRASYON]   (semantik donmuştur, 2026-09-19)~~
+     *[2026-09-24: iki `[KALİBRASYON]` aşağıdaki KAPANIŞ bloğuyla sayıya dönüştü; semantik değişmedi.]*
+     ```
+     KS-GRACE-1 — KAPANDI (2026-09-24, Alpha)
+       N_g = 64   (yalnız AEAD-geçerli epoch-1 paketleri sayılır)
+       T_g = 30 s (monotonic; implicit confirmation anından başlar)
+       Kapanış: hangisi önce; kapanınca epoch-0 recv state DISCARD; yeniden açılmaz.
+       Gerekçe: pencere yalnız geçiş anında UÇUŞTA olan epoch-0 paketlerini kurtarır. 64 geçerli
+         epoch-1 paketi "yol boşaldı"nın sRTT'siz göstergesidir; T_g ise gönderenin sustuğu yönü kapatır.
+         sRTT bağımlılığı bilinçli olarak yok (Crypto ağ ölçümü okumaz).
+       Maliyet: kapanana kadar epoch-0 anahtarları yaşar; epoch-0'ın FS'i zaten yok (POC-SCOPE residual).
+       Statü: yerel politika; tel sabiti değil.
+       Sayaç: grace_closed_by_count · grace_closed_by_time · epoch0_packet_after_close
+       Beta tetiği: PCS/ratchet gelirse (epoch sayısı artarsa) yeniden bakılır.
+     ```
    ccr §35.5/§35.12'nin "RESPONSE sonrası epoch-0 → REJECT" satırı bu kurala REFERANS verecek
    (iki belge tek hüküm). Hostile gerekçe: hemen-red seçilirse uçuştaki tüm epoch-0 paketleri
    çöp olur; 3 B/s rejiminde bu doğrudan teslim süresidir. Güvenlik maliyeti dar: o paketler
