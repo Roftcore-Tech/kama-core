@@ -1,5 +1,7 @@
 # CCR Format Specification
 
+> **YAMA KAYDI — 2026-09-24 [KS-DOS-1 KAPANDI — sahip kararı, Alpha kalibrasyonu]:** §35.15 dört `[KARAR]` sabiti sayıya dönüştü (HALF_OPEN_TTL = S&F TTL · HALF_OPEN_CAP = 64/kimlik + 64k global yumuşak tavan · PER_SOURCE_INIT_RATE = 1/s, burst 32 · PENDING_RESPONSE_TRIAL_CAP = 16 = istemci pending INIT tavanı ≤ HALF_OPEN_CAP tutarlılık zinciri NORMATİF); Alpha varsayımları V1–V4, Beta tetikleri T1–T3, sayaçlar ve "yerel politika, tel sabiti değil" statüsü blokta. "Bind öncesi kaynak = UDP 4-tuple" tanımı INIT kapsamından çıkarıldı (INIT bind sonrası gelir) → ayrı `[KARAR — M6]` Plane 0 handshake hız sınırı kalemi. Rust'a dokunulmadı; üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-09-23 [D-GAP-1 + temizlik]:** §35.8 far-future reddi KALDIRILDI (`MAX_FUTURE_GAP` kapısı **ve** `MAX_REORDER_DISTANCE`'ın simetrik kontrolünün ileri yarısı — ikincisi karar metninde adlandırılmamıştı, ama aynı reddi 8192'de sürdürüyordu; ayrıntı §35.8 içinde). AEAD-geçerli paket ileri sıçrasa da kabul edilir (highest sıçrar, atlanan aralık bitmap'te temizlenir); underflow-safe eski-paket kuralı ve "replay window AEAD'den önce güncellenmez" (P0-6) AYNEN kalır. Yapısal sınır: |candidate − expected| < 2^15 (seq16 tek-anlamlılığı) → gönderen tarafı kısıtı transport-layer-tdd [AMENDMENT-9] / KS-PN-1. Vektör listeleri (§35.13 REPLAY, §35.14) buna göre güncellendi. Ayrıca §36'daki yanlış `MAILBOX_PRUNE` atfı düzeltildi. **Kapsam DIŞI:** noise-wire extended-pn32 yolunun `FUTURE_GAP_MAX = 2^13` kapısı — ayrı karar gerekir (identity OQ-16).
 
 
@@ -3027,11 +3029,51 @@ BatchSubMessage {
 > **[KARAR-SLOTU KS-DOS-1 — 2026-09-07, değer donmadan implementasyon başlamaz]** Yukarıdaki
 > "TTL + cap + per-source rate-limit" isimli ama DEĞERSİZ. Üç sabit birlikte donar:
 > ```
-> HALF_OPEN_TTL              = [KARAR]
-> HALF_OPEN_CAP              = [KARAR]   # eşzamanlı yarım-açık session
-> PER_SOURCE_INIT_RATE       = [KARAR]
-> PENDING_RESPONSE_TRIAL_CAP = [KARAR]   # Alice tarafı: RESPONSE demux'ta denenecek
->                                        # pending session üst sınırı (§35.5 demux notu)
+> ~~HALF_OPEN_TTL              = [KARAR]~~
+> ~~HALF_OPEN_CAP              = [KARAR]   # eşzamanlı yarım-açık session~~
+> ~~PER_SOURCE_INIT_RATE       = [KARAR]~~
+> ~~PENDING_RESPONSE_TRIAL_CAP = [KARAR]   # Alice tarafı: RESPONSE demux'ta denenecek~~
+> ~~                                       # pending session üst sınırı (§35.5 demux notu)~~
+> ```
+> *[2026-09-24: dört `[KARAR]` işareti aşağıdaki KAPANIŞ bloğuyla sayıya dönüştü; semantik değişmedi.]*
+>
+> **KS-DOS-1 — KAPANDI (2026-09-24, Alpha kalibrasyonu)**
+> ```
+> Değerler
+>   HALF_OPEN_TTL              = S&F mailbox TTL ile AYNI (bugün 7 gün) — türetilmiş, bağımsız sabit değil
+>   HALF_OPEN_CAP              = 64 kayıt / gönderen kimliği; dolunca en eski düşer
+>                                (+ global yumuşak tavan 64k kayıt, yalnız bellek koruması)
+>   PER_SOURCE_INIT_RATE       = 1/s sürekli, 32 burst (token bucket); aşımda sessiz drop, cevap yok
+>   PENDING_RESPONSE_TRIAL_CAP = 16    [İSTEMCİ tarafı — diğer üçü HUB tarafı]
+>   İstemci pending INIT tavanı = 16   (zincir gereği trial cap ile EŞİT)
+>
+> Tutarlılık zinciri (NORMATİF)
+>   PENDING_RESPONSE_TRIAL_CAP = istemci pending INIT tavanı ≤ HALF_OPEN_CAP
+>   Gerekçe: trial cap pending kümesinden küçükse, kümenin sonundaki MEŞRU RESPONSE hiç denenmeden
+>   düşer. Eşitlik bu hatayı yapısal olarak imkânsız kılar; 4× fark drop-oldest'ı yalnız kötü
+>   davranan istemciye bırakır.
+>
+> Dayandığı Alpha varsayımları
+>   V1 kimlik başına tek istemci (multi-device yok)
+>   V2 initiate yalnız kullanıcı eylemiyle; en kötü eşzamanlı ~16 (rehber tabanlı toplu kişi ekleme)
+>   V3 grup yok → fan-out yok
+>   V4 async yol TTL'i S&F TTL'ine bağlı
+>
+> Yeniden kalibrasyon tetikleri (Beta)
+>   T1 Grup: N üyeli grup kurulumu tek eylemde N INIT fan-out'u üretir →
+>      HALF_OPEN_CAP, burst ve istemci pending tavanı grup üst sınırından TÜRETİLİR (cap ≥ max üye)
+>   T2 Multi-device: eşin her cihazı ayrı oturum → tüm tavanlar × cihaz sayısı
+>   T3 Sealed sender: hub STORE'u gönderen kimliğine bağlayamaz → per-source anahtarlama çöker;
+>      hız sınırı token/ticket tabanına taşınır (ayrı karar)
+>
+> Maliyet: sahte RESPONSE başına en kötü 16 × 2 X25519 (mobilde ~3 ms). DELIVER taşıyıcı bağlamı
+> gönderen kimliğini veriyorsa tipik durum tek deneme.
+>
+> Sayaçlar: halfopen_drop_oldest · init_rate_reject · response_trial_exhausted
+>   (M4 kampanyasında raporlanır; M6'da sayılar tahminle değil veriyle ayarlanır)
+>
+> Statü: dördü de YEREL POLİTİKA — tel sabiti değil, dağıtım başına değişebilir, protocol_version'ı
+> etkilemez.
 > ```
 > **Boyutlandırma kuralı (NORMATİF):** `HALF_OPEN_CAP`, saldırgan modeline değil **dürüst retry
 > profiline** göre taban alınır — %90 kayıpta meşru istemci INIT'i cached byte-for-byte defalarca
@@ -3047,15 +3089,22 @@ BatchSubMessage {
 >   verir). Dolunca **en eski yarım-açık kayıt düşürülür** (drop-oldest), yeni INIT reddedilmez — dürüst retry'lar
 >   kendi eski kayıtlarını yeniler, saldırgan ise yalnız kendi kotasını tüketir. Ek **global soft-cap** yalnız
 >   bellek koruması içindir ve per-source'tan büyük olmalıdır.
-> - `PER_SOURCE_INIT_RATE` — **"source" tanımı:** bind ÖNCESİ (CLIENT_BIND yok) = UDP 4-tuple; NAT arkası çok
->   istemci aynı tuple'ı paylaşabilir (adil olmayan ama güvenli — kota paylaşılır, bypass edilemez). Bind SONRASI =
+> - `PER_SOURCE_INIT_RATE` — **"source" tanımı:** ~~bind ÖNCESİ (CLIENT_BIND yok) = UDP 4-tuple; NAT arkası çok
+>   istemci aynı tuple'ı paylaşabilir (adil olmayan ama güvenli — kota paylaşılır, bypass edilemez). Bind SONRASI =~~
+>   *[2026-09-24 KS-DOS-1: INIT için ÖLÜ MADDE — INIT yalnız Plane 1 üzerinden, yani bind SONRASI gelir; "bind
+>   öncesi = UDP 4-tuple" tanımı Plane 0 handshake hız sınırına aittir → aşağıdaki `[KARAR — M6]`.]* Source =
 >   doğrulanmış client identity (dest_hash); spoof edilemez. IP spoofing ile kota bypass'ı Plane 0 Noise handshake
 >   tamamlanmadan INIT kabul edilmediği için mümkün değildir (INIT yalnız Plane 1 üzerinden). Aşımda INIT sessiz
 >   düşer (drop, reject cevabı YOK — amplifikasyon vermez).
 > - `PENDING_RESPONSE_TRIAL_CAP`: **per-peer** (Alice'in Bob'a açık pending sayısı) VE sahte-RESPONSE başına deneme
 >   üst sınırı; deneme sırası en-yeni-önce (KM-SEAM-TC-001 K7); cap aşımında `Failed` (opak). Değeri
 >   `HALF_OPEN_CAP` ile aynı ailede kalibre edilir (aynı dürüst-retry profili).
-> Bu dört semantik donmuştur; `[KARAR]` işaretleri yalnız **sayısal kalibrasyon** ister.
+> Bu dört semantik donmuştur; ~~`[KARAR]` işaretleri yalnız **sayısal kalibrasyon** ister~~ *[2026-09-24: kalibrasyon yukarıdaki KAPANIŞ bloğuyla yapıldı]*.
+
+> **[KARAR — M6] Plane 0 handshake hız sınırı — bind ÖNCESİ kaynak (2026-09-24, KS-DOS-1'den ayrıldı):**
+> "Bind ÖNCESİ (CLIENT_BIND yok) kaynak = UDP 4-tuple; NAT arkası çok istemci aynı tuple'ı paylaşabilir
+> (adil olmayan ama güvenli — kota paylaşılır, bypass edilemez)" tanımı INIT'e değil **Plane 0 Noise handshake**
+> hız sınırına aittir. Değer ve sayaçlar M6'da veriyle. Bu kalem KS-DOS-1'in dört sabitini ETKİLEMEZ.
 
 ### 35.16 LINK_ROUTE_MISS + Rebind (NORMATİF, CAD-57)
 

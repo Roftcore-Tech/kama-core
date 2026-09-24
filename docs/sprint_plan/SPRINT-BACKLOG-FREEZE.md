@@ -122,18 +122,21 @@ Her kart: **Neden · Ne yapılacak · Nereye · Neye bağlı · Bittiğini nası
 **Nereye:** `specs/ccr-format-spec.md` §35.15, `[KALİBRASYON]` işaretli yerler.
 **Neye bağlı:** —
 **Done:** dört `[KALİBRASYON]` sayıya dönüştü.
+**DURUM (2026-09-24): KAPANDI — sahip kararı.** ccr §35.15 KS-DOS-1 KAPANIŞ bloğu (TTL = S&F TTL · CAP 64/kimlik · 1/s burst 32 · TRIAL_CAP 16 = istemci pending tavanı ≤ CAP zinciri). "Bind öncesi = UDP 4-tuple" INIT'ten çıkarıldı → `[KARAR — M6]`. Beta tetikleri `docs/PARK-LISTESI.md`.
 
 ### A1.2 — Anahtar değişimi penceresini belirle (KS-GRACE-1)
 **Neden:** Bağlantı kurulunca taraflar geçici anahtardan kalıcı anahtara geçer (epoch 0→1). Geçiş anında yolda hâlâ eski anahtarla mühürlenmiş paketler olabilir; bunlar kaybolmasın diye kısa bir süre iki anahtar da kabul edilir. Ne kadar süre? Kural belgede: `N_g` geçerli yeni-anahtar paketi VEYA `T_g` süre — hangisi önce dolarsa pencere kapanır, bir daha açılmaz.
 **Ne yapılacak:** `N_g` ve `T_g` değerleri.
-**Nereye:** `specs/kama-noise-wire-tdd-v2.0.md` §5 KS-GRACE-1.
+**Nereye:** `specs/kama-noise-wire-tdd-v2.0.md` ~~§5~~ **§4 "NONCE/PN/ANTI-REPLAY" madde 5** KS-GRACE-1 *(işaretçi düzeltildi 2026-09-24: dosyada §5 diye bir yer yok)*.
 **Done:** iki sayı yazıldı.
+**DURUM (2026-09-24): KAPANDI — sahip kararı.** `N_g = 64` (yalnız AEAD-geçerli epoch-1) · `T_g = 30 s` (monotonic, implicit confirmation anından). Yerel politika, tel sabiti değil. Beta tetiği: PCS/ratchet.
 
 ### A1.3 — `connect()` bekleme süresi (KS-8)
 **Neden:** Application `connect(peer)` deyince Transport karşı taraftan `RESPONSE` bekler. Karşı taraf çevrimiçiyken ne kadar bekleyip `ConnectFailed` diyeceğiz? (Çevrimdışı/mailbox yolunda süre yok; orada 7 güne kadar cevap gelebilir.)
 **Ne yapılacak:** süre değeri.
 **Nereye:** `docs/seams/KM-SEAM-AT-001.md` §4.
 **Done:** sayı yazıldı.
+**DURUM (2026-09-24): AÇIK — sayı uydurulmadı, sahip kararı.** `connect()` dört parçadır (hub kanalı kurulumu · Initiate · INIT'in Plane 1 ile hub'a ulaşması · Bob'un RESPONSE'unun dönüşü); yalnız 4. parça yeni sayı ister, 1 ve 3 transport'un donmuş zamanlayıcılarıdır. Ayrım saatle değil **hub'ın cevabıyla** yapılmalı: INIT mailbox'a kondu (Bob çevrimdışı → deadline yok, T-18c) / doğrudan teslim edildi (Bob çevrimiçi → KS-8). İki düzeltme bekliyor: S1 §4'teki "connect() süresi Transport'un Plane 1 Reliable deadline'ıdır" cümlesi YANLIŞ (o deadline 3. parça, 4. değil) · `cancel(ticket)` yok, zamanlayıcı transport'ta kalır (K9 ile tutarlı). **KANIT İSTEĞİ (5 kalem, kod/spec'ten sayı + dosya:satır):** `docs/sprint_plan/A1-KALIBRASYON-KARAR-FOYU.md` → KANIT PAKETİ. Sayılar gelince KS-8 = (1+3)'ün üstünde türetilir; KS-HANDLE-1 ve KS-PN-1 de aynı paketle koda bağlanır.
 
 ### A1.4 — Routing etiketi yeniden-kullanım süresi (KS-HANDLE-1)
 **Neden:** Hub her bağlantı bacağına 4 byte'lık bir etiket (`hub_handle`) verir. Bağlantı kapanınca etiket bir süre **askıda** kalmalı; yoksa geç gelen eski bir paket yeni bir bağlantının bacağına düşer. Süre uydurma olmasın: belgede formül var — *o etikete geç gelebilecek son meşru paketin ufku* (ARQ retry ufku, yeniden-sıralama penceresi, mailbox ufku — en büyüğü).
@@ -257,6 +260,7 @@ A1.1 + A1.2 sayıları · A2.* vektörleri commit · A4.* yeşil · C1.2 yeşil.
 
 ### A5.2 — Mühürleme/açma + sayaç + nonce/AAD
 **Ne:** seal/open; sayacı Crypto tutar; nonce96 ve AAD `ccr` §35.6–§35.9; her X25519 DH sonrası `SharedSecret::was_contributory()` (ccr §5.1) — birden çok DH'nin birinde unutmak en olası hata. **Nereye:** `kama-noise-wire`. **Done:** A2.3–A2.5 vektörleri (düşük-mertebe negatifleri dahil); `H-PN-OWN`.
+**KURAL (2026-09-24, PR #68 incelemesinden — sahip kararı):** (a) **tag doğrulamasını asla kendin yazma** — AEAD crate'inin `decrypt`'i kullanılır (içeride `subtle` sabit-zamanlı); elle byte karşılaştırması YASAK. (b) **`seal()` girişinde uzunluk kontrolü, fail-closed** — RFC 8439 (key,nonce) başına 256 GiB sınırı yapısal olarak ulaşılamaz (kayıt başına nonce + `MAX_BODY_BYTES ≤ 65535`), yine de aşırı boy → **hata, sessiz sarma değil**; conformance testi "aşırı boy → hata". Bağlayıcı sınır bayt değil **nonce tekilliği**: PN sahipliği (S3 K2) + `SEND_PN_CAP`. TLS 1.3 aynı gerekçeyle ChaCha20-Poly1305'e kayıt sınırı koymaz.
 
 ### A5.3 — Replay koruması
 **Ne:** `replay_precheck` (yalnız okur) + `replay_commit` (yalnız AEAD başarısında yazar). Tanım `identity` §15.5. **Done:** `H-REPLAY-POISON`, `H-NO-MUTATE`.
