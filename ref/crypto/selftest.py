@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+# ╔═══════════════════════════════════════════════════════════════════════════════╗
+# ║ KAPSAM DIŞI: SABİT-ZAMANLILIK — bu dosya ÜRETİM KODU DEĞİLDİR.                ║
+# ║ Yalnız test vektörü üretir/doğrular: çevrimdışı, test anahtarlarıyla, zamanlama ║
+# ║ ölçebilen bir saldırganın OLMADIĞI ortamda. Sabit-zamanlılık ancak zamanlamanın ║
+# ║ ölçülebildiği yerde gereklidir; Python int aritmetiğiyle zaten yazılamaz.        ║
+# ║ Üretim primitifleri: libsodium (ADR-03) + dalek (pki §13). Bu bir gereksinim     ║
+# ║ değil, açık kapsam-dışı ilanıdır (sahip kararı 2026-09-24; RFC'lerin kendi       ║
+# ║ Python illüstrasyonlarıyla aynı statü).                                          ║
+# ╚═══════════════════════════════════════════════════════════════════════════════╝
 """ref/crypto BAĞIMSIZ referansının tek kapısı — A2.1.
 
 Koşum: python3 ref/crypto/selftest.py

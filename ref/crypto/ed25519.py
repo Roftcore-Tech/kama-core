@@ -1,3 +1,12 @@
+# ╔═══════════════════════════════════════════════════════════════════════════════╗
+# ║ KAPSAM DIŞI: SABİT-ZAMANLILIK — bu dosya ÜRETİM KODU DEĞİLDİR.                ║
+# ║ Yalnız test vektörü üretir/doğrular: çevrimdışı, test anahtarlarıyla, zamanlama ║
+# ║ ölçebilen bir saldırganın OLMADIĞI ortamda. Sabit-zamanlılık ancak zamanlamanın ║
+# ║ ölçülebildiği yerde gereklidir; Python int aritmetiğiyle zaten yazılamaz.        ║
+# ║ Üretim primitifleri: libsodium (ADR-03) + dalek (pki §13). Bu bir gereksinim     ║
+# ║ değil, açık kapsam-dışı ilanıdır (sahip kararı 2026-09-24; RFC'lerin kendi       ║
+# ║ Python illüstrasyonlarıyla aynı statü).                                          ║
+# ╚═══════════════════════════════════════════════════════════════════════════════╝
 """Ed25519 (PureEdDSA) — RFC 8032 §5.1. BAĞIMSIZ referans (A2.1, R-7(d)).
 
 Sabit-zamanlı DEĞİL; yalnız test vektörü üretir/doğrular. Üretim = `ed25519-dalek` + libsodium.
