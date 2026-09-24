@@ -66,13 +66,13 @@ Kama'nın mimarisi dört katman: **Application → Transport → Crypto → UDP.
 
 | ID | Ne | Neden | Bitti |
 |---|---|---|---|
-| R-1 | `docs/seems/` → `docs/seams/`; iki seam belgesi commit | yazım hatası; belgeler untracked | `git ls-files docs/seams/` iki dosya |
+| R-1 | ~~`docs/seems/` → `docs/seams/`; iki seam belgesi commit~~ **KAPANDI 2026-09-23** (dizin `git mv` ile yeniden adlandırıldı; `scripts/ci/seam-api-drift.py` ve `seam-coverage.json` içindeki yollar da güncellendi — yoksa #64'ün seam kapısı kırılırdı. Düzeltme: belgeler untracked DEĞİLDİ, izleniyorlardı) | ~~yazım hatası; belgeler untracked~~ | `git ls-files docs/seams/` iki dosya ✅ |
 | R-2 | ~~Revize noise-wire içeriğini `specs/kama-noise-wire-tdd-v2.0.md`'ye taşı; untracked `-v2_0.md` sil~~ **KAPANDI 2026-09-23** (19 Eylül içeriği taşındı, `-v2_0.md` silindi; düzeltme: dosya untracked DEĞİL, izlenen bir dosyaydı) | ~~aynı belgenin iki kopyası var~~ | tek dosya, revize içerik ✅ |
 | R-3 | `specs/application-message-protocol.md` commit | untracked | tracked |
-| R-4 | `CLAUDE.md §3` spec yolu `docs/specs/` → `specs/` | yanlış yol | düzeltildi |
+| R-4 | ~~`CLAUDE.md §3` spec yolu `docs/specs/` → `specs/`~~ **KAPANDI 2026-09-23** (4 yerde düzeltildi: başlık notu, §2, §3, §5) | ~~yanlış yol~~ | düzeltildi ✅ |
 | R-5 | engine-spec / app-rpc / transport-tdd revizyonları PR'a | commit'lenmemiş değişiklik | PR |
 | R-6 | `vectors/` dizini aç | repo'da test verisi dizini yok | dizin + README |
-| R-7 | **Dört konvansiyon kararı (Abdurrahman):** (a) application crate adı — öneri `crates/kama-app` · (b) S3 trait'lerinin evi — öneri `client-core/src/seam.rs` evrilir, implementasyon `kama-noise-wire`; `crates/crypto` iskeletinin kaderi · (c) sözleşme testi dosya öneki — öneri `conf_` · (d) Python referansı için ChaCha20-Poly1305, X25519 ve Ed25519 standart kütüphanede yok — öneri saf-Python RFC 8439 + RFC 7748 + RFC 8032 (§6'da Python illüstrasyonu var) (bağımsız, stdlib-only; RFC'nin kendi test vektörleriyle doğrulanır); alternatif `cryptography` paketi | kararsız kalırsa üç kişi farklı yere yazar | dört karar yazılı |
+| R-7 | ~~**Dört konvansiyon kararı (Abdurrahman)**~~ **KAPANDI 2026-09-23 — dört karar da sahip tarafından verildi:** **(a)** application crate adı = `crates/kama-app`. **(b)** S3 trait'leri `client-core/src/seam.rs`'te evrilir, implementasyon `kama-noise-wire`'da; `crates/crypto` iskeleti (3 satır, kullanılmıyor) SİLİNİR; kripto bağımlılıkları kama-noise-wire'a eklenir. **(c)** sözleşme testi adlandırması = main'e inen `<seam>_<katman>` dizin şeması (`seam_conformance_core` / `seam_mock_fixture` / `seam_real_adapter`); S3 karşılığı `noise_conformance_core` / `noise_mock_fixture` / `noise_real_adapter`. ~~öneri `conf_`~~ — TEK şema; plandaki `conf_` öneki TERK EDİLDİ (A3.1/A3.2/A4.4'teki `conf_demux`/`conf_epoch`/`conf_s3_*` yolları bu şemaya göre okunur). **(d)** Python referansı = saf-Python RFC 8439 + RFC 7748 + RFC 8032 (stdlib-only, RFC'nin kendi vektörleriyle doğrulanır); `cryptography` paketi ALINMADI. | ~~kararsız kalırsa üç kişi farklı yere yazar~~ | dört karar yazılı ✅ |
 
 ---
 

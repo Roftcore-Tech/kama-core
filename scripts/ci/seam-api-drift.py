@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SPEC = ROOT / "docs/seems/KM-SEAM-AT-001.md"
+DEFAULT_SPEC = ROOT / "docs/seams/KM-SEAM-AT-001.md"
 DEFAULT_MIRROR = ROOT / "crates/kama-integration/tests/common/seam/api.rs"
 DEFAULT_COVERAGE = ROOT / "scripts/ci/seam-coverage.json"
 DEFAULT_TARGETS = ROOT / "crates/kama-integration/tests/common/seam/target.rs"

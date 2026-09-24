@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "seam": "KM-SEAM-AT-001",
-  "spec_path": "docs/seems/KM-SEAM-AT-001.md",
+  "spec_path": "docs/seams/KM-SEAM-AT-001.md",
   "mirror_path": "crates/kama-integration/tests/common/seam/api.rs",
   "_comment": "KM-SEAM-AT-001 §6 harness kapsaminin BEYANIDIR. Rust tarafinin gerceklik listesi CONTRACT_ROWS (contract.rs); runner ikisini capraz kontrol eder. UC DURUM: implemented = govde IKI hedefte de kostu (gercek kanit) · mock_only = govde yalniz sahtede kostu, dogrulama gucu ikinci hedef gelince dogar (Google SWE ch.13 / Fowler ContractTest) · not_implemented = yok. Iki taban da ratchet: dusurulemez. Tek hedef kayitliyken hicbir satir implemented olamaz - drift kapisi bunu zorlar.",
   "implemented_baseline": 0,
