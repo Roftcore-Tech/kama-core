@@ -17,9 +17,9 @@
 use std::collections::VecDeque;
 
 use super::api::{
-    CompressionPolicy, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy, KamaTransport,
-    PeerRef, PreparedUnit, SessionEvent, SessionHandle, TransportCapabilities, TransportError,
-    UnitBytes,
+    AbandonReason, CompressionPolicy, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy,
+    KamaTransport, PeerRef, PreparedUnit, SessionEvent, SessionHandle, TransportCapabilities,
+    TransportError, UnitBytes,
 };
 
 /// Gerçek adapter'ın yokluğunun kimliği. Runner ve `seam_real_adapter` bu sabiti paylaşır.
@@ -82,8 +82,8 @@ pub const REGISTERED_TARGETS: &[(&str, TargetKind)] = &[(MockTarget::ID, TargetK
 
 /// KM-SEAM-AT-001 §7'nin tam `MockTransport`'u DEĞİLDİR.
 ///
-/// §7 deterministik kayıp/sırasız/duplicate enjeksiyonu, olay senaryoları ve `ConnectFailed`
-/// enjeksiyonu ister (`GAP-SEAM-MOCK-7`). Buradaki sahte, walking-skeleton'un gerektirdiği en
+/// §7 deterministik kayıp/sırasız/duplicate enjeksiyonu, olay senaryoları ve
+/// `ConnectAbandoned`/`ConnectProgress` enjeksiyonu ister (`GAP-SEAM-MOCK-7`). Buradaki sahte, walking-skeleton'un gerektirdiği en
 /// ince dilimdir: **peer'ı LOOPBACK modeller** — gönderilen her birim aynı oturumda geri teslim
 /// edilir. Loopback bir sözleşme iddiası değil, echo modelidir; H-ROUNDTRIP'in ölçtüğü şey
 /// transport'un byte'lara DOKUNMAMASIDIR (çerçeve sızıntısı, kırpma, sıkıştırma yok) ve bu
@@ -270,6 +270,27 @@ impl KamaTransport for EchoMockTransport {
         // gerekir ve o SEAM-OPEN-3'tür (spec yalnız `Renewed`'i adlandırıyor). Olmayan bir
         // variant icat etmektense olay üretmemek dürüst olan.
         self.sessions.retain(|s| s.handle != session);
+    }
+
+    fn cancel(&mut self, ticket: ConnectTicket) {
+        // DR-CONNECT-1 H9 (§4): yalnız PENDING niyet iptal edilir; aktif ya da bilinmeyen ticket
+        // için hiçbir şey olmaz (ticket `Ready` ile zaten tüketilmiştir).
+        let Some(pos) = self
+            .sessions
+            .iter()
+            .position(|s| s.ticket == ticket && s.state == SessionState::Pending)
+        else {
+            return;
+        };
+        // `early_unit` teslim EDİLMEZ: kayıt, taşıdığı early birimle birlikte düşer.
+        let handle = self.sessions.remove(pos).handle;
+        // Kuyruktaki `Ready(handle, _)` geri çekilir; yerine tek olay girer, kuyruk büyümez.
+        self.events
+            .retain(|e| !matches!(e, SessionEvent::Ready(h, _) if *h == handle));
+        self.events.push_back(SessionEvent::ConnectAbandoned(
+            ticket,
+            AbandonReason::Cancelled,
+        ));
     }
 }
 

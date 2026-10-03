@@ -20,7 +20,7 @@
 //! |---|---|---|---|
 //! | SEAM-OPEN-1 | `bytes: Bytes` | [`UnitBytes`] = `Vec<u8>` | `bytes` 1.12.1 lock'ta var ama hiçbir crate doğrudan kullanmıyor; doğrudan dep ekleme kararı Hayri'yi de bağlar |
 //! | SEAM-OPEN-2 | `deadline: Instant` | [`Deadline`] = [`LogicalTick`] | ADR-17: süit deterministik olmalı; `std::time::Instant` duvar saati sokar. Repoda `adaptive_transport::clock::Clock` soyutlaması zaten var |
-//! | SEAM-OPEN-3 | `CloseReason` | yalnız `Renewed` | spec tipi anıyor ama variant kümesini TANIMLAMIYOR (§K2 yalnız `Renewed`'i geçiriyor) |
+//! | SEAM-OPEN-3 | `CloseReason` | `Renewed`, `Superseded` | spec tipi anıyor ama variant kümesini KAPATMIYOR (§1: `Renewed` KARAR-2, `Superseded` DR-CONNECT-1 H6, "…") |
 //! | SEAM-OPEN-4 | — | crate yeri | `client-core` kendi doc'unda "henüz ürün crate'i değil" diyor (`lib.rs:21-33`) |
 //!
 //! Not: `crates/bench/src/transport.rs:296` içinde AYNI ADI taşıyan ilgisiz bir bench tipi var
@@ -84,7 +84,29 @@ pub enum SessionEvent {
     Ready(SessionHandle, PeerRef),
     RenewRequired(SessionHandle),
     Closed(SessionHandle, CloseReason),
-    ConnectFailed(ConnectTicket),
+    /// DR-CONNECT-1 H9 — yalnız §4'teki kapalı sonlandırma listesiyle; `ConnectFailed` KALKTI
+    /// (connect için deadline yok).
+    ConnectAbandoned(ConnectTicket, AbandonReason),
+    /// DR-CONNECT-1 H9 — HUB YOLUNUN durumu; eşin canlılığı DEĞİL.
+    ConnectProgress(ConnectTicket, ConnectPhase),
+}
+
+/// DR-CONNECT-1 H2/H9 — sonlandırma nedenleri (a)–(d); OPAK DEĞİL (§3: yerel yaşam-döngüsü
+/// durumu, kripto oracle'ı değil).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbandonReason {
+    Cancelled,
+    PeerClosed,
+    KeyHygiene,
+    LocalPermanent,
+}
+
+/// DR-CONNECT-1 H9 — `ConnectProgress` fazı (§4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectPhase {
+    Measuring,
+    Suspended,
+    LongOutage,
 }
 
 /// §1 K2 / KARAR-1 — idempotent `connect`; olay ÜRETMEZ.
@@ -94,17 +116,19 @@ pub enum ConnectResult {
     Pending(ConnectTicket),
 }
 
-/// SEAM-OPEN-3 — spec yalnız `Renewed`'i adlandırıyor (§K2 atomik cutover).
+/// SEAM-OPEN-3 — spec iki variant adlandırıyor: `Renewed` (§K2 atomik cutover) ve `Superseded`
+/// (DR-CONNECT-1 H6 peer-restart supersession); küme spec'te kapalı ilan edilmedi.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseReason {
     Renewed,
+    Superseded,
 }
 
 /// §1 K2 — opak; yalnız Transport basar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionHandle(u64);
 
-/// §1 — opak; `Pending` sonucunun ve `ConnectFailed`'ın taşıyıcısı.
+/// §1 — opak; `Pending` sonucunun, `cancel`'ın ve `ConnectAbandoned`/`ConnectProgress`'in taşıyıcısı.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConnectTicket(u64);
 
@@ -179,4 +203,7 @@ pub trait KamaTransport {
     fn poll_event(&mut self) -> Option<SessionEvent>;
 
     fn close(&mut self, session: SessionHandle);
+
+    /// DR-CONNECT-1 H9 — bekleyen niyetten TEK çıkış; `ConnectAbandoned(ticket, Cancelled)` üretir.
+    fn cancel(&mut self, ticket: ConnectTicket);
 }

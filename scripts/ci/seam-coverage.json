@@ -57,10 +57,16 @@
       "needs": "gercek capabilities degeri (K5 conservative_limits zinciri) ya da §7 sabitleri"
     },
     {
-      "id": "H-OPAQUE-FAIL",
+      "id": "H-CANCEL",
       "status": "not_implemented",
       "kind": "behavioral",
-      "needs": "§7 ConnectFailed enjeksiyonu (K9 opak sebep)"
+      "needs": "§7 MockTransport sanal saat + sahte RESPONSE enjeksiyonu (DR-CONNECT-1 H9; niyet kendiliginden sonlanmaz). cancel yolunun sahte-tarafi seam_mock_fixture'da sinanir"
+    },
+    {
+      "id": "H-PROGRESS",
+      "status": "not_implemented",
+      "kind": "behavioral",
+      "needs": "§7 MockTransport link-state enjeksiyonu + ConnectProgress senaryolari (DR-CONNECT-1 H9; transport-tdd AMENDMENT-10)"
     },
     {
       "id": "H-NO-PLANE1",
@@ -85,7 +91,7 @@
     },
     {
       "id": "GAP-SEAM-MOCK-7",
-      "what": "KM-SEAM-AT-001 §7 MockTransport (kayip/sirasiz/duplicate enjeksiyonu, olay senaryolari, ConnectFailed enjeksiyonu) yazilmadi; bugunku sahte NullMockTransport yalniz typed-red iskeletidir.",
+      "what": "KM-SEAM-AT-001 §7 MockTransport (kayip/sirasiz/duplicate enjeksiyonu, olay senaryolari, ConnectAbandoned/ConnectProgress enjeksiyonu) yazilmadi; bugunku sahte NullMockTransport yalniz typed-red iskeletidir.",
       "evidence": "crates/kama-integration/tests/common/seam/target.rs NullMockTransport",
       "owner": "§7: Hayri + Abkarada"
     }
