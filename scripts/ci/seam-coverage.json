@@ -69,6 +69,12 @@
       "needs": "§7 MockTransport link-state enjeksiyonu + ConnectProgress senaryolari (DR-CONNECT-1 H9; transport-tdd AMENDMENT-10)"
     },
     {
+      "id": "H-SILENT-REJECT",
+      "status": "not_implemented",
+      "kind": "behavioral",
+      "needs": "§7 MockTransport sahte/gecersiz RESPONSE enjeksiyonu (DR-CONNECT-1: olay yok, pending yasar; H-OPAQUE-FAIL'in yerine)"
+    },
+    {
       "id": "H-NO-PLANE1",
       "status": "not_implemented",
       "kind": "static",

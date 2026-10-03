@@ -1,5 +1,7 @@
 # Kama — Transport Layer TDD (Adaptive Hostile-Aware Transport)
 
+> **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 tamamlama — sahip kararı]:** §10 [AMENDMENT-10] genişletildi: **H4 hop heartbeat YENİ CODEPOINT ile** (`HEARTBEAT 0x1B` / `HEARTBEAT_ACK 0x1C`, HubChannel ctx, sıfır payload + opsiyonel u32 echo token, kendi sayacı yok, REFRESH-ONLY, CS probe bütçesi ve INV-CS-7 kapsamı dışında, RTT observation-only) — CS_PROBE'a bindirilmedi · **KS-HB-1 KAPANDI** (8 s / 25 s / OS) · **jitter RNG'siz** (`hash(client_id ‖ deneme_sayacı) mod pencere`, pencere = backoff adımının %25'i) · link/power sinyali gelene kadar ön-plan davranışı notu (K5 → PARK). Aşağıdaki 2026-10-03 kaydındaki "H4 UYGULANMADI" ifadesi bu kayıtla aşılmıştır. Rust ürün koduna dokunulmadı; üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-03 [DR-CONNECT-1 — sahip kararı; indeks `docs/decisions/DR-CONNECT-1.md`]:** §0'a **INV-NO-IDLE-TEARDOWN** (oturum/niyet zamanla sonlandırılmaz; sonlandırma nedenleri kapalı liste) eklendi (H1/H2) · §12 [AMENDMENT-9] **KS-PN-1 KAPANDI: K = 1024** + tavana ulaşınca davranış (REBIND → floor prob → hop-ACK'le devam) (H5) · §10'a **[AMENDMENT-10]** hub-kanalı prob kadansı: bağlama göre tavan (8 s / 25 s / OS), link yokken askıya alma, anında prob, zorunlu jitter (H3; K3/K5 kanıtıyla; SPEC-ONLY, altı beyan içinde). H4 (hop heartbeat taşıyıcısı) UYGULANMADI — K1 kanıtı sonrası sahip kararı bekliyor. Rust'a dokunulmadı; üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-09-18b:** §7 Pipeline C "Outer AEAD (Noise transport key)" → session E2E anahtarı (§0.1 ile tutarlı); alıcı adımı "seam.open → transport reconstruct"; §0'a INV-PLAINTEXT-NOT-SEMANTICS (plaintext görmek ≠ semantik bağ; serileştirme sınırı PreparedUnit→UnsealedTransportUnit→SealedWireUnit; CCR/cert canonical-codec-only, protobuf re-encode yasak, compressor yasak; private key API'den geçmez).
@@ -752,21 +754,57 @@ NORMATİF: Loss rate MUST NOT be a direct bandwidth estimator. No-ACK ≠ high-l
 >    varken anlamlıdır.
 > 4. **Anında prob:** link gelince · uygulama ön plana gelince · kullanıcı dokununca → backoff beklenmeden HEMEN.
 > 5. **Jitter ZORUNLU:** backoff vadelerine jitter eklenir (thundering herd: hub geri gelince çok sayıda istemci aynı
->    saniyede koşmasın).
+>    saniyede koşmasın). **[2026-10-04 — RNG'siz, sahip kararı]** `jitter = hash(client_id ‖ deneme_sayacı) mod
+>    jitter_penceresi`; `jitter_penceresi` = backoff adımının **%25'i** `[KALİBRASYON — bu değerle KAPALI]`.
+>    İstemciler arası dekorelasyon sağlar, aynı istemcide tekrarlanabilirdir; transport determinizmi (aynı girdi → aynı
+>    çıktı) korunur, golden testler yaşar. Motor RNG TUTMAZ.
+> 6. **[2026-10-04] Sinyal yokken:** link/power sinyali ürün/Android işidir ve bugün yoktur (K5; `docs/PARK-LISTESI.md`
+>    P-4). O gelene kadar kadans ÖN-PLAN davranışıdır (8 s); askıya alma sinyali yoksa askıya alma da YOKTUR.
 > `PATH_DEAD` (§9, bu bölümdeki "tekrarlı no-ACK → PATH_DEAD") bir TANI durumudur, sonlandırma değil: prob sürer.
+>
+> **HOP HEARTBEAT — DR-CONNECT-1 H4 (2026-10-04, sahip kararı: YENİ CODEPOINT · NORMATİF · SPEC-ONLY):**
+> Hub-kanalı prob'unun taşıyıcısı ayrı bir çerçevedir; tek paket üç iş görür: **prob = hop heartbeat = NAT keepalive**.
+> İstemci tek bir hub'a bağlıdır; UDP NAT eşlemesi client→hub yönünde tektir ve ~30 s'de düşer; inbound DELIVER ancak
+> NAT açıksa ulaşır. `CS_PROBE`/`CS_ECHO`'ya BİNDİRİLMEZ: o soğuk-başlangıç ölçüm merdivenidir (bütçeli, 4 atış, u16
+> sayaç sarmaz — INV-CS-7); heartbeat sürekli canlılık + NAT keepalive'dır (sınırsız). İki mekanizma, iki invariant.
+> ```
+> HEARTBEAT      frame_type = 0x1B   body: boş (0 B)  VEYA  echo_token u32_be (4 B)
+> HEARTBEAT_ACK  frame_type = 0x1C   body: gelen HEARTBEAT ile AYNI uzunlukta; echo_token varsa AYNEN yansıtılır
+> body_len ∉ {0, 4} → reject. Fixed-width big-endian (ADR-05; varint yok). ACK boyutu = istek boyutu (amplifikasyon ≤ 1).
+> Bağlam : ProtectionContext::HubChannel (KM-SEAM-TC-001 K1) — hop anahtarı + hop PN uzayı.
+>          Session ctx PN'i TÜKETMEZ → [AMENDMENT-9] K tavanına sayılmaz.
+> Sayaç  : KENDİ SAYACI YOKTUR — hop mührünün PN'i yeterlidir.
+> Token  : opsiyonel u32 echo_token yalnız RTT eşlemesi içindir; sarması serbesttir, replay anlamı YOKTUR.
+> ```
+> **Kurallar:** **(a) REFRESH-ONLY** — heartbeat hub'da yalnız MEVCUT PeerSlot'u yeniler; bilinmeyen eşten gelirse SESSİZ
+> düşer; slot YARATMAZ, dolayısıyla sahte heartbeat DoS yüzeyi değildir. (Bugünkü alıcının "ilk geçerli datagram slot
+> yaratır" davranışı — `runtime.rs:2258-2278` — heartbeat için GEÇERLİ DEĞİLDİR; bu ayrı bir kuraldır.) · **(b)** CS probe
+> bütçesinin (INV-CS-2) ve INV-CS-7'nin kapsamı DIŞINDADIR. · **(c)** heartbeat RTT'si OBSERVATION-ONLY'dir; fuzzy
+> kontrolcüye ve kalibrasyona GİRMEZ. · **(d)** ölçüm KANALA aittir, oturuma değil: 16 bekleyen niyet = 1 heartbeat akışı.
+> · **(e)** E2E DEĞİLDİR: eşin (Bob'un) canlılığı hakkında bilgi vermez (identity OQ-14 AÇIK kalır).
+> **Kadans = madde 2 → [KS-HB-1 KAPANDI: ön plan 8 s · arka plan 25 s · doze OS takvimi]** (25 s = tipik UDP NAT tavanının
+> altı; WireGuard persistent-keepalive mantığı).
+> **Codepoint çakışma denetimi (2026-10-04, tüm registry'ler tarandı):** `0x1B`/`0x1C` engine-spec §1.1'de boştu ·
+> noise-wire §2.56 E2E `inner_kind` registry'sinde `0x1B..0xFF reserved(reject)` aralığında KALIR (heartbeat E2E
+> inner_kind DEĞİLDİR; Session ctx'te görülürse fail-closed reject) · client-core v0 kabuğu (`0x00–0x07`),
+> `kama-transport-schema` ve app-rpc `method_id`'leriyle çakışmaz.
+> **Kod durumu:** `HubChannel` ctx kodda yok (PoC no-op; KM-SEAM-TC-001 §8) → spec burada HubChannel yazar, kod A4.1/D1
+> ile yetişir.
 >
 > **Kanıt (2026-10-03, kod okuması — `docs/sprint_plan/A1-KALIBRASYON-KARAR-FOYU.md` KANIT PAKETİ 2):**
 > - **K3 — jitter bugün YOK.** Establish backoff'unda jitter yok (`sender.rs:5860-5925`); `adaptive-transport`
 >   crate'inde RNG bağımlılığı hiç yok (motor deterministik). Jitter eklenirken determinizm korunacaksa jitter değeri
->   motora dışarıdan GİRDİ olarak verilmelidir — uygulama kartının tasarım kararı, burada SEÇİLMEDİ.
+>   ~~motora dışarıdan GİRDİ olarak verilmelidir — uygulama kartının tasarım kararı, burada SEÇİLMEDİ.~~
+>   **[2026-10-04 KARAR]** RNG'siz türetilir: madde 5.
 > - **K5 — link/power sinyali bugün YOK.** `client-core` ve `adaptive-transport`'ta link-state / power-state girdisi
 >   yok; repoda UniFFI bağlaması yok. Madde 2–4 yeni bir girdi yüzeyi gerektirir (ADR-15: coarse-grained UniFFI).
 > - Bugünkü "prob" bağımsız bir çerçeve DEĞİLDİR: PreConverge'de ilk DATA'nın §3.3-B kopyasıdır; kopya kuyruğu boşsa
->   hiç kurulmaz (`sender.rs:5871`). Bekleyen veri yokken prob'un taşıyıcısı = DR-CONNECT-1 **H4 (AÇIK — sahip kararı)**.
+>   hiç kurulmaz (`sender.rs:5871`). Bekleyen veri yokken prob'un taşıyıcısı = ~~DR-CONNECT-1 **H4 (AÇIK — sahip kararı)**~~
+>   **[2026-10-04 KARAR]** `HEARTBEAT 0x1B` / `HEARTBEAT_ACK 0x1C` (yukarıdaki HOP HEARTBEAT bloğu).
 >
 > **EVOLUTION §22 — ALTI BEYAN (bu amendment UYGULANDIĞINDA):**
 > 1. Donmuş invaryant: INV-RATE-1 DEĞİŞMEZ. Motor determinizmi (aynı girdi → aynı çıktı) KORUNMALIDIR (bkz. K3).
-> 2. `KamaV1Profile`: yeni alanlar (bağlama göre prob tavanı, jitter) EKLENİR — bugünkü profilde YOKTUR.
+> 2. `KamaV1Profile`: yeni alanlar (bağlama göre prob tavanı, jitter, heartbeat) EKLENİR — bugünkü profilde YOKTUR.
 > 3. Profil kimliği: `kama-v1-full` KORUNAMAZ → `transport-v1.x`.
 > 4. Geçersiz olan T-hücreleri: [AMENDMENT-9] ile aynı küme (T1a, T1b, T6 + PreConverge'in uzun kaldığı her hücre);
 >    ön plan tavanı değişmediği için fark jitter kaynaklıdır.

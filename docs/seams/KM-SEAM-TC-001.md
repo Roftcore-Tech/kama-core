@@ -1,5 +1,7 @@
 # KM-SEAM-TC-001 — Transport ↔ Crypto Seam Sözleşmesi (S3)
 
+> **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 — Abkarada kararı; indeks `docs/decisions/DR-CONNECT-1.md`]:** §1.2'ye **K10** eklendi: `AcceptInit`'in mevcut oturumu olan eşten gelen yeni-sayaçlı INIT için PROVISIONAL supersession'ı (onay = ilk AEAD-geçerli epoch-1 paketi; sonra N_g/T_g yalnız-alım drain → `Closed(h, Superseded)`) ve glare tie-break ön koşulu (dest_hash) · `CloseReason`'a `Superseded` · §8'de KS-DOS-1 ve KS-GRACE-1 kapalı olarak işaretlendi (2026-09-24'te kapanmışlardı). Normatif kaynak identity §16. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-09-20:** §6 H-RETRY Bob tarafıyla genişletildi (tekrarlanan SSI1 → mevcut session + byte-identical cached SSR1; noise-wire §0.7-B, ccr INV-RESP-KEY-1).
 
 
@@ -93,6 +95,7 @@ pub enum SessionResult {
     Failed,                                                         // opak (§3)
 }
 pub enum SessionEvent { Ready(SessionHandle), RenewRequired(SessionHandle), Closed(SessionHandle, CloseReason) }
+// CloseReason ∋ { Renewed, Superseded }   [DR-CONNECT-1 H6, 2026-10-04: Superseded = provisional supersession onaylandı (K10)]
 ```
 
 **K6 — Komut typed'dır, zarf payload'ı opaktır.**
@@ -109,6 +112,12 @@ pub enum SessionEvent { Ready(SessionHandle), RenewRequired(SessionHandle), Clos
 **K9 — Zaman sahipliği.** Transport: teslim/yeniden-iletim deadline'ları, `Initiate` çıktısının Plane 1 ile Reliable gönderimi. Crypto: candidate expiry, key lifetime, replay retirement, epoch grace (`N_g` paket VEYA `T_g` süre — ⬛ KARAR KS-GRACE-1, sRTT'siz), session cap. Crypto **ağ retransmisyon timer'ı tutmaz**; retry = cached byte-for-byte (INV-INIT-KEY-1), Crypto aynı `OutboundEnvelope`'u yeniden **üretmez**, Transport cache'ler.
 
 ---
+
+**K10 [DR-CONNECT-1, 2026-10-04] — `AcceptInit`, mevcut oturumu olan eşten gelen yeni-sayaçlı INIT'te yeni oturumu PROVISIONAL kurar; glare'de tie-break uygular.**
+**G:** identity §16 "Oturum yaşam döngüsü" (normatif). Bayat bir INIT (mailbox'ta bekleyip geç gelen) sağlıklı oturumu öldürmemelidir; kalıp, epoch geçişindeki confirmation-safe kuralın aynısıdır (KS-GRACE-1).
+**Provisional durum:** `AcceptInit{wire}` INIT'i doğrular (yeni `init_counter`) → RESPONSE zarfını döndürür; yeni oturum provisional tutulur ve **eski oturumun `Session(h)` ctx'i seal/open için TAM geçerli kalır**. **Onay** = provisional oturumda ilk AEAD-geçerli epoch-1 paketinin `open()`'ı (çerçeve türü fark etmez). Onayda Crypto `Ready(h')` yayınlar; `h` YALNIZ-ALIM drain'e düşer (`seal(Session(h))` → `UnknownSession`/superseded; `open` `N_g = 64` paket VEYA `T_g = 30 s`, hangisi önce) → `Closed(h, Superseded)`. Onaylanmayan provisional oturum half-open TTL ile düşer (ccr §35.15); olay yok, `h`'ye dokunulmaz, hiçbir state ilerlemez (P0-6). Aynı `init_counter`'lı duplicate `AcceptInit` → mevcut oturum + byte-identical cached SSR1 (H-RETRY; değişmedi).
+**Glare — `AcceptInit` ön koşulu:** aynı eşe pending `Initiate` varken o eşten INIT gelirse: yerel `dest_hash` < eşin `dest_hash`'i (bytes32, işaretsiz big-endian) → **kazanan**: `NoOutput` (INIT sessiz düşer, RESPONSE yok, pending korunur); aksi hâlde → **kaybeden**: kendi pending'i kapatılır (ephemeral zeroize) ve INIT normal işlenir (RESPONSE döner). Tek oturum doğar.
+**S:** Crypto Renew ile peer-restart'ı ayırt etmez; ikisi bu yoldan geçer. Hangi `SessionResult` varyantının provisional'ı taşıyacağı (bugünkü `EstablishedAndReply` handle'ı HEMEN verir) A4.1'de tipler derlenirken kesinleşir — bu belge yalnız davranışı bağlar: handle Application'a ONAYDAN önce `Ready` olarak çıkmaz. Onayın taşıyıcısı (eşin gönderecek verisi yoksa) identity OQ-14 / WS-D2'ye bağlıdır.
 
 ## 2. Byte sözleşmesi ve vektörler
 Bu seam kendi wire'ını tanımlamaz. Çıktı formatları: legacy 22 B (ccr §35.6) · extended 26 B (noise-wire §2.5) · SSI1/SSR1 (ccr §35.3/§35.5). KDF/AAD/nonce: ccr §35.2.1/§35.9/§35.8. **Vektörler:** ccr §35.13 CRYPTO-P0-FREEZE seti (V-KDF-1..7, SSI1/SSR1/SSD1 exact+negatif, replay-poisoning, epoch geçişi) + **seam-özel**: `ProtectionContext::Session` vs `HubChannel` aynı çerçeve → farklı ciphertext (anahtar ayrımı) · PN sayacının transport reset/slot-değişimi/wrap'te **değişmediği** · `open()` fail sonrası state byte-özdeş. Üçüncü kaynak Python `hashlib.blake2s`+`hmac`. **Üretilmedi → HOLD.**
@@ -141,8 +150,9 @@ K9. Ek: `open()` ve `seal()` senkron, bloklamaz; seam I/O yapmaz.
 | # | Kalem | Sahip |
 |---|---|---|
 | ~~KARAR-1~~ | KAPANDI → (a) ccr §35.6 BatchPayload; interim çerçeve emekli (transport v1.x) | — |
-| ⬛ KS-DOS-1 | `PENDING_RESPONSE_TRIAL_CAP` + `HALF_OPEN_*` + `PER_SOURCE_INIT_RATE` değerleri | Abkarada |
-| ⬛ KS-GRACE-1 | `N_g` / `T_g` | Abkarada |
+| ~~⬛ KS-DOS-1~~ | ~~`PENDING_RESPONSE_TRIAL_CAP` + `HALF_OPEN_*` + `PER_SOURCE_INIT_RATE` değerleri~~ KAPANDI 2026-09-24 (ccr §35.15) | — |
+| ~~⬛ KS-GRACE-1~~ | ~~`N_g` / `T_g`~~ KAPANDI 2026-09-24: `N_g = 64`, `T_g = 30 s` (noise-wire §4 madde 5) | — |
+| ⬛ DR-CONNECT-1 | K10 provisional'ı taşıyan `SessionResult` biçimi (A4.1) · onay taşıyıcısı (OQ-14 / WS-D2) | Abkarada |
 | — | §2 vektörler + §6 harness + §7 stub | Abkarada (üretim), Hasan (koşum) |
 | ~~[OPEN]~~ | DELIVER/MailboxItem `envelope_type` eklendi (app-rpc AMENDMENT-7) → Transport dispatch anahtarı; `pending_ref` optimizasyonu ayrı [OPEN] | Hayri + hub |
 | [OPEN] | `HubChannel` gerçek anahtar/PN (M4; PoC no-op) | Abkarada |

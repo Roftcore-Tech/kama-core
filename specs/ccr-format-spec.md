@@ -1,5 +1,7 @@
 # CCR Format Specification
 
+> **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 tamamlama — sahip kararı]:** §35.15 slot bloğu: **KS-AGE-1 KAPANDI (SESSION_MAX_AGE = 7 gün)** · **KS-HB-1 KAPANDI (8 s / 25 s / OS)** · **KS-UI-1 KAPANDI (LongOutage = 60 s; yalnız UI)**. §35.16 "client keepalive YOK" ÜSTÜ ÇİZİLDİ (pull-only varsayımıyla yazılmıştı; hop heartbeat `0x1B`/`0x1C` — transport-layer-tdd §10 [AMENDMENT-10]; mailbox fallback ve rebind yolu değişmedi). Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-03 [DR-CONNECT-1 — sahip kararı; indeks `docs/decisions/DR-CONNECT-1.md`]:** §35.15 sonuna kalibrasyon slotları bloğu: **KS-8 KAPANDI (değer yok — deadline yoktur)** · **KS-PN-1 KAPANDI (K = 1024)** · **KS-AGE-1 AÇIK** (SESSION_MAX_AGE, öneri 7 gün) · KS-HB-1 açılmadı (H4 sahip kararı bekliyor). §35.7 **KS-HANDLE-1 KAPANDI**: `HANDLE_TOMBSTONE` = S&F mailbox TTL (K2 kanıtı). §35.16 "client keepalive YOK" satırına DOKUNULMADI — H4 ile çelişir, H4 kararıyla birlikte ele alınacak. Rust'a dokunulmadı; üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-09-24 [KS-DOS-1 KAPANDI — sahip kararı, Alpha kalibrasyonu]:** §35.15 dört `[KARAR]` sabiti sayıya dönüştü (HALF_OPEN_TTL = S&F TTL · HALF_OPEN_CAP = 64/kimlik + 64k global yumuşak tavan · PER_SOURCE_INIT_RATE = 1/s, burst 32 · PENDING_RESPONSE_TRIAL_CAP = 16 = istemci pending INIT tavanı ≤ HALF_OPEN_CAP tutarlılık zinciri NORMATİF); Alpha varsayımları V1–V4, Beta tetikleri T1–T3, sayaçlar ve "yerel politika, tel sabiti değil" statüsü blokta. "Bind öncesi kaynak = UDP 4-tuple" tanımı INIT kapsamından çıkarıldı (INIT bind sonrası gelir) → ayrı `[KARAR — M6]` Plane 0 handshake hız sınırı kalemi. Rust'a dokunulmadı; üstü çizili metin silinmedi.
@@ -3114,11 +3116,17 @@ BatchSubMessage {
 >           semantik KM-SEAM-AT-001 §4. DR-CONNECT-1 ile kapandı; sayı aranmaz.
 > KS-PN-1   KAPANDI — K = 1024 (Session ctx'te hop-ACK'siz ardışık PN tavanı).
 >           Otoriter metin: transport-layer-tdd §12 [AMENDMENT-9].
-> KS-AGE-1  AÇIK [KALİBRASYON — öneri 7 gün] — SESSION_MAX_AGE: oturum yaşı aşılınca bir sonraki gönderimde
+> ~~KS-AGE-1  AÇIK [KALİBRASYON — öneri 7 gün]~~
+> KS-AGE-1  KAPANDI 2026-10-04 — SESSION_MAX_AGE = 7 gün: oturum yaşı aşılınca bir sonraki gönderimde
 >           RenewRequired → KM-SEAM-AT-001 KARAR-2 cutover. TIMEOUT DEĞİL (oturum ölmez, yenilenir);
 >           anahtar hijyeni, sahibi Crypto (KM-SEAM-TC-001 K9). Semantik: identity §16.
-> KS-HB-1   AÇILMADI — hop heartbeat (DR-CONNECT-1 H4) K1 kanıtı sonrası sahip kararı bekliyor.
->           Kadans değerleri (8 s / 25 s / OS) transport-layer-tdd §10 [AMENDMENT-10]'da prob tavanı olarak yazılıdır.
+> ~~KS-HB-1   AÇILMADI — hop heartbeat (DR-CONNECT-1 H4) K1 kanıtı sonrası sahip kararı bekliyor.~~
+> ~~          Kadans değerleri (8 s / 25 s / OS) transport-layer-tdd §10 [AMENDMENT-10]'da prob tavanı olarak yazılıdır.~~
+> KS-HB-1   KAPANDI 2026-10-04 — hop heartbeat kadansı: ön plan 8 s · arka plan 25 s · doze OS takvimi.
+>           Çerçeve HEARTBEAT 0x1B / HEARTBEAT_ACK 0x1C (yeni codepoint; CS_PROBE'a bindirilmez), HubChannel ctx.
+>           Otoriter metin: transport-layer-tdd §10 [AMENDMENT-10].
+> KS-UI-1   KAPANDI 2026-10-04 — LongOutage = heartbeat yanıtı 60 s'dir yok → ConnectPhase::LongOutage.
+>           YALNIZ UI; protokol parametresi DEĞİL (KM-SEAM-AT-001 §4).
 > ```
 > Not: bu slotlar hub DoS sabiti değildir; §35.15'e sahip talimatıyla (slot evi) yazıldı. KS-HANDLE-1: §35.7.
 
@@ -3134,7 +3142,11 @@ On LINK_ROUTE_MISS (hub restart / TTL expiry / unknown hub_handle):
   - receiver SESSION_INIT'i normal doğrular (Section 35.4).
   - eski hub_handle invalidate edilir.
   - lightweight resume Alpha wire object DEĞİL (Beta+ / future extension).
-  - client keepalive YOK (state hub'da; miss → SESSION_INIT_REF rebind, sürekli ping değil).
+  - ~~client keepalive YOK (state hub'da; miss → SESSION_INIT_REF rebind, sürekli ping değil).~~
+    [DR-CONNECT-1 H4, 2026-10-04 — ÜSTÜ ÇİZİLDİ] Bu satır pull-only varsayımıyla yazılmıştı. Hop heartbeat VARDIR
+    (HEARTBEAT 0x1B / HEARTBEAT_ACK 0x1C; transport-layer-tdd §10 [AMENDMENT-10]): inbound DELIVER + NAT eşlemesi için
+    optimizasyondur. Mailbox fallback korunur (app-rpc §6.11, DR-CONNECT-1 H7); miss → SESSION_INIT_REF rebind
+    yolu DEĞİŞMEDİ. Heartbeat hub'da state YARATMAZ (refresh-only).
 ```
 > **NOT:** Lightweight resume Beta'da istenirse exact wire + AAD + key schedule + replay rules ZORUNLU yazılır; aksi halde isim olarak bile bırakılmaz (parser belirsizliği).
 

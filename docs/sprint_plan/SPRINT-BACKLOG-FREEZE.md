@@ -8,7 +8,7 @@
 
 Kama'nın mimarisi dört katman: **Application → Transport → Crypto → UDP.** Application yalnız Transport'la konuşur, Crypto yalnız Transport tarafından çağrılır. Bu iki sınırın sözleşmeleri yazıldı ve onaylandı. Şimdi sözleşmeleri **testle kilitliyoruz** ki üç kişi birbirini beklemeden paralel kod yazabilsin.
 
-**Hasan (test/CI)**
+**~~Hasan~~ karar Abkarada / icra Claude Code (test/CI)** *[2026-10-04, sahip kararı: bu katmanda şu an Hasan yok; girerse devralır]*
 - Beklenen test çıktılarının tutulacağı ortak veri formatını kuruyor.
 - Bu testlerin CI'da otomatik koşmasını sağlıyor.
 - Mimari kuralları (kim kimi çağırabilir) otomatik kontrol eden betikleri ekliyor.
@@ -49,8 +49,9 @@ Kama'nın mimarisi dört katman: **Application → Transport → Crypto → UDP.
 | ~~KS-8~~ | ~~`connect()` cevap için ne kadar bekler~~ **KAPANDI 2026-10-03 (DR-CONNECT-1): deadline yoktur, sayı yok** | `docs/seams/KM-SEAM-AT-001.md` §4 |
 | ~~KS-HANDLE-1~~ | ~~Hub bir routing etiketini yeniden vermeden ne kadar bekler (`HANDLE_TOMBSTONE`)~~ **KAPANDI 2026-10-03: = S&F mailbox TTL (bugün 7 gün)** | `specs/ccr-format-spec.md` §35.7 |
 | ~~KS-PN-1~~ | hop-ACK almadan ardışık tüketilebilecek PN tavanı — **KAPANDI 2026-10-03 (DR-CONNECT-1): K = 1024** | `specs/transport-layer-tdd.md` §12 [AMENDMENT-9] |
-| KS-AGE-1 | `SESSION_MAX_AGE`: oturum kaç yaşında yenilenir (öneri 7 gün) — **AÇIK** | `specs/ccr-format-spec.md` §35.15 · identity §16 |
-| KS-HB-1 | hop heartbeat kadansı — **açılmadı; DR-CONNECT-1 H4 sahip kararı bekliyor** | `docs/decisions/DR-CONNECT-1.md` |
+| ~~KS-AGE-1~~ | `SESSION_MAX_AGE`: oturum kaç yaşında yenilenir — **KAPANDI 2026-10-04: 7 gün** | `specs/ccr-format-spec.md` §35.15 · identity §16 |
+| ~~KS-HB-1~~ | hop heartbeat kadansı — **KAPANDI 2026-10-04: 8 s / 25 s / OS**; çerçeve `HEARTBEAT 0x1B` / `HEARTBEAT_ACK 0x1C` (yeni codepoint) | `specs/transport-layer-tdd.md` §10 [AMENDMENT-10] |
+| ~~KS-UI-1~~ | `LongOutage` eşiği — **KAPANDI 2026-10-04: 60 s** (yalnız UI) | `docs/seams/KM-SEAM-AT-001.md` §4 |
 | **H-\*** | Harness testi: bir sözleşme kuralını otomatik doğrulayan test; tanımı seam belgesinin §6'sında | S1: `KM-SEAM-AT-001.md` §6 · S3: `KM-SEAM-TC-001.md` §6 |
 | **Golden / conformance vektörü** | "Bu girdiye bu byte'lar çıkmalı" veri dosyası; Rust'tan bağımsız üretilir | `vectors/` (bu sprintte açılıyor) |
 | **conformance-core** | Sözleşmenin gözlenebilir davranışını test eden set; hem sahte (mock) hem gerçek modüle karşı koşar | bu belge T-00.4 |
@@ -85,7 +86,7 @@ Her kart: **Neden · Ne yapılacak · Nereye · Neye bağlı · Bittiğini nası
 
 ---
 
-## T-00 — Ortak zemin (Hasan; ilk saatler)
+## T-00 — Ortak zemin (~~Hasan~~ karar Abkarada / icra Claude Code; ilk saatler)
 
 ### T-00.1 — Test verisi formatını kilitle
 **Neden:** Beklenen byte çıktıları üç ayrı araç tarafından okunacak: Python üretici, Rust testleri, CI doğrulayıcı. Aynı formatı okumazlarsa her biri kendi yorumunu yapar ve testler birbirini doğrulayamaz.
@@ -327,7 +328,7 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 **Done:** `MockTransport`'a karşı yeşil.
 
 ### B1.5 — ~~Bağlantı zaman aşımı testi~~ Bağlantı niyeti testleri: H-CANCEL / H-PROGRESS / H-CUTOVER(Superseded) **[DR-CONNECT-1, 2026-10-03]**
-**Neden:** ~~KS-8 belirlenince `ConnectFailed`'ın tam zamanlaması test edilebilir.~~ `connect()` için deadline yok ve `ConnectFailed` kalktı (DR-CONNECT-1). Test edilecek olan artık bir süre değil, üç davranış: **H-CANCEL** (`cancel(ticket)` → `ConnectAbandoned(ticket, Cancelled)`; sanal saat ilerlese de niyet kendiliğinden sonlanmaz; bozuk/sahte RESPONSE olay üretmez) · **H-PROGRESS** (link yok → `Suspended` + 0 prob; link gelir → `Measuring` + anında prob; eşin canlılığı bildirilmez) · **H-CUTOVER(Superseded)** (bilinen eşten yeni INIT → `Ready(h') → Closed(h, Superseded)`; duplicate INIT supersession üretmez). Tanım: `KM-SEAM-AT-001.md` §6.
+**Neden:** ~~KS-8 belirlenince `ConnectFailed`'ın tam zamanlaması test edilebilir.~~ `connect()` için deadline yok ve `ConnectFailed` kalktı (DR-CONNECT-1). Test edilecek olan artık bir süre değil, üç davranış: **H-CANCEL** (`cancel(ticket)` → `ConnectAbandoned(ticket, Cancelled)`; sanal saat ilerlese de niyet kendiliğinden sonlanmaz; bozuk/sahte RESPONSE olay üretmez) · **H-PROGRESS** (link yok → `Suspended` + 0 prob; link gelir → `Measuring` + anında prob; eşin canlılığı bildirilmez) · **H-CUTOVER(Superseded)** (~~bilinen eşten yeni INIT → `Ready(h') → Closed(h, Superseded)`; duplicate INIT supersession üretmez~~ **[2026-10-04]** provisional supersession: onaydan önce `h` tam çalışır; onayda `Ready(h')` → yalnız-alım drain → `Closed(h, Superseded)`; bayat INIT `h`'yi etkilemez; glare → tek `Ready`) · **H-SILENT-REJECT** [2026-10-04] (sahte/geçersiz RESPONSE olay üretmez, pending yaşar). Tanım: `KM-SEAM-AT-001.md` §6.
 **Nereye:** `conf_s1_connect.rs`. **Bağlı:** A1.3. **Done:** yeşil.
 
 ### 🚪 G-S1 — S1 SEAM-FROZEN
@@ -355,7 +356,8 @@ Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıf
 
 ---
 
-## WS-C — Hasan (test/CI) — bugün başlar
+## WS-C — ~~Hasan~~ karar Abkarada / icra Claude Code (test/CI) — bugün başlar
+*[2026-10-04, sahip kararı] WS-C'nin (T-00, C1.2–C1.5) sahibi: **karar Abkarada / icra Claude Code**. Hasan bu katmana girerse devralır.*
 
 ### C1.1 — T-00.1–T-00.4 (yukarıda)
 
@@ -412,9 +414,9 @@ D1 + D2 + D3. INT-02'nin ön koşulu; kripto ve application kapılarından bağ�
 
 ```
 Ön-koşul  R-1..R-7                                   (Abdurrahman + Claude Code; yarım gün)
-Gün 0     T-00 (Hasan) ──┬── A2.* vektörler           (Abdurrahman; sayı beklemez)
+Gün 0     T-00 (~~Hasan~~ Abkarada/Claude Code) ──┬── A2.* vektörler           (Abdurrahman; sayı beklemez)
                          ├── B1.0–B1.4                (Hayri)
-                         └── C1.2–C1.5                (Hasan)
+                         └── C1.2–C1.5                (~~Hasan~~ Abkarada/Claude Code)
 Gün 0–1   A1 kalibrasyon oturumu                     (Abdurrahman; tek oturum)
 Sonra     A3.* + B1.5                                (sayıya bağlı testler)
 Paralel   WS-D transport geçişi (D1–D3)              (Abdurrahman/Resul; A4.1'e bağlı, G-S3'ü beklemez)
