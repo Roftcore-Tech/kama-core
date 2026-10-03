@@ -1,5 +1,7 @@
 # Kama — Adaptive Transport Engine Spec (Implementable)
 
+> **YAMA KAYDI — 2026-10-03 [DR-CONNECT-1 H5]:** Üç emisyon yolundaki (§3.3-B, §11, §11.1) AMENDMENT-9 bağ notlarında `K` değeri yazıldı: **K = 1024** (KS-PN-1 KAPANDI; otoriter metin transport-layer-tdd §12 [AMENDMENT-9]). Tavan hâlâ SPEC-ONLY; kod değişmedi. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-09-23 [D-GAP-2 bağı]:** Sayı-tavanı olmayan üç emisyon yolu (§3.3-B geometrik kopya, §11 emergency forward redundancy, §11.1 cold-start probe/echo) transport-layer-tdd [AMENDMENT-9] "hop-ACK almadan ardışık PN ≤ K" tavanına bağlandı (K: KS-PN-1 [KALİBRASYON]). SPEC-ONLY — kod değişmedi; uygulandığında EVOLUTION §22'nin altı beyanı geçerlidir (kimlik `transport-v1.x`).
 
 
@@ -333,7 +335,7 @@ PRE_CONVERGE --ilk geçerli SACK/echo--> STARTUP   # RTT+loss kilidi açılır (
 **(B) Veri — programlı geometrik kopya takvimi (forward-redundancy sürücüsü):** [R1/§2.2]
 
 > **[D-GAP-2 / AMENDMENT-9 BAĞI — 2026-09-23]** Bu yolun emisyonu, transport-layer-tdd [AMENDMENT-9]'daki
-> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer [KALİBRASYON] KS-PN-1).
+> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer ~~[KALİBRASYON] KS-PN-1~~ **K = 1024** — KS-PN-1 KAPANDI 2026-10-03, DR-CONNECT-1 H5).
 > Bugün bu yolda SAYI TAVANI YOKTUR (ölçüldü: identity §28.1-A) — tavan SPEC-ONLY'dir, kod bu turda değişmedi.
 ```
 İlk birim t=0'da gider; ACK beklenmez. Kopyalar geometrik: t=0, k_base·RTT_floor, ×COPY_MULTIPLIER, ...
@@ -781,7 +783,7 @@ tek-datagram / tiny payload: RS uygulanamaz → duplication (§11) doğru araç.
 ## 11. Emergency Forward Redundancy Algorithm (NORMATİF — ACK-bağımsız; TDD §5.6)
 
 > **[D-GAP-2 / AMENDMENT-9 BAĞI — 2026-09-23]** Bu yolun emisyonu, transport-layer-tdd [AMENDMENT-9]'daki
-> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer [KALİBRASYON] KS-PN-1).
+> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer ~~[KALİBRASYON] KS-PN-1~~ **K = 1024** — KS-PN-1 KAPANDI 2026-10-03, DR-CONNECT-1 H5).
 > Bugün bu yolda SAYI TAVANI YOKTUR (ölçüldü: identity §28.1-A) — tavan SPEC-ONLY'dir, kod bu turda değişmedi.
 
 ```
@@ -840,7 +842,7 @@ duplication/parity yine available_redundancy_budget ile clamp (§8.5).   [AMENDM
 ## 11.1 Cold-Start Probe/Echo — CTRL_PATH_PROBE genişletmesi [K4/K-KEYSTONE/R3/revize-D0 §4.2]
 
 > **[D-GAP-2 / AMENDMENT-9 BAĞI — 2026-09-23]** Bu yolun emisyonu, transport-layer-tdd [AMENDMENT-9]'daki
-> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer [KALİBRASYON] KS-PN-1).
+> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer ~~[KALİBRASYON] KS-PN-1~~ **K = 1024** — KS-PN-1 KAPANDI 2026-10-03, DR-CONNECT-1 H5).
 > Bugün bu yolda SAYI TAVANI YOKTUR (ölçüldü: identity §28.1-A) — tavan SPEC-ONLY'dir, kod bu turda değişmedi.
 
 > **CANCELLED/SUPERSEDED [DR-CS-1-AMENDMANI; Abkarada-onaylı]:** Bu bölümün `0x12`-codepoint'i otoritatif

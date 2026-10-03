@@ -1,5 +1,7 @@
 # Kama — Application Protocol & RPC Spec
 
+> **YAMA KAYDI — 2026-10-03 [DR-CONNECT-1 H7 — sahip kararı]:** §6.11'e DELIVER → mailbox fallback NORMATİF olarak yazıldı (DELIVER ulaşmazsa kayıt mailbox'ta kalır, sonraki FETCH'te teslim; silme yalnız ACK_RANGE ile; DELIVERY_STATUS best-effort kalır). Önceden yalnız §7 durum makinesinden ima ediliyordu. Wire değişikliği yok.
+
 > **YAMA KAYDI — 2026-09-23 [D-GAP-3 + D-GAP-1 bağı]:** §6.3 FETCH_MAILBOX'a tek normatif satır eklendi — öğeler `item_seq` ARTAN sırada döner (önceden yalnız cursor + ardışık ACK_RANGE ile İMA ediliyordu; identity OQ-13 kapandı, `next_cursor` ilişkisi artık tek açık kalem). §8'deki "MAX_SKIP doğal sınırı → sahibi AÇIK" satırı D-GAP-1/2'ye bağlandı (identity OQ-09 kapandı).
 
 
@@ -411,6 +413,15 @@ REVOCATION_NOTIFY (0x83):
 ROUTE_MISS (0x84):
   payload: { link_ref bytes16 }  # client SESSION_REBIND başlatır (BOUNDED — §6.11.1)
 ```
+
+> **[DR-CONNECT-1 H7 — 2026-10-03, NORMATİF] DELIVER → mailbox fallback:** `DELIVER (0x81)` istemciye ulaşmazsa kayıt
+> mailbox'ta KALIR ve sonraki `FETCH_MAILBOX`'ta (§6.3) teslim edilir. Hub bir kaydı YALNIZ `ACK_RANGE` (§6.4) ile
+> kuyruktan siler; server-initiated push tek başına silme nedeni DEĞİLDİR. `DELIVERY_STATUS (0x82)` best-effort kalır.
+> Gerekçe: arka planda NAT eşlemesi kapanabilir (OS doze); teslim kaybolmamalı.
+> Önceki durum (kanıt K4): bu davranış §7 durum makinesinden (`DELIVERED_TO_CLIENT → (ACK_RANGE) → ACKED →
+> kuyruktan temizlenir`) yalnız İMA ediliyordu; §7 adım 3'teki "Bob offline → mailbox store / Bob online → push"
+> ayrımı push edilen kaydın saklanıp saklanmadığını söylemiyordu. Hub implementasyonu bu repoda yok (hub-server
+> iskelet) — kodla karşılaştırılacak davranış yok.
 
 #### 6.11.1 ROUTE_MISS Bounded Rebind Policy (NORMATİF — KAT3-P1-01)
 

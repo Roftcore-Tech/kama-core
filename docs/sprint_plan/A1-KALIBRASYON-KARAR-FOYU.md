@@ -292,3 +292,63 @@ her satır repodan doğrulanabilir. Kod tarafı `main` @ `35142f57` öncesi ağa
 3. **"Hub'ın cevabı ayrımı yapsın" fikri senkron yanıtla kurulamaz** (K3): karar Hub B'de, yanıt Hub A'dan ve daha önce gidiyor. Asenkron `DELIVERY_STATUS` var ama opsiyonel/best-effort.
 4. **KS-PN-1 için K'nin cwnd'den türetilecek bir tavanı yok** (K4); zarfın üst köşesinde ~494, dar köşesinde ~4.
 5. **KS-HANDLE-1 için 105 s tek ve yalnız idle sinyalidir** (K5); slotu düşüren başka olay olmadığından tombstone'un "ARQ state ölmüş" koşulu (a) pratikte "105 s sessizlik" demektir.
+
+
+---
+
+# KANIT PAKETİ 2 — DR-CONNECT-1 K1–K5 (2026-10-03)
+
+**Karar yok.** `docs/decisions/DR-CONNECT-1.md`'nin istediği beş kalem; yalnız kod/spec okuması, `dosya:satır`.
+Bu paketle birlikte yukarıdaki A1.3 (KS-8) ve A1.4 (KS-HANDLE-1) kapandı: KS-8 değersiz ("deadline yoktur"),
+`HANDLE_TOMBSTONE` = S&F mailbox TTL. Yukarıdaki "7 gün ↔ 105 s" ikiliği K2 ile 7 gün lehine çözüldü.
+
+## K1 — CS_PROBE/ECHO heartbeat olarak kullanılabilir mi?
+
+| soru | cevap | kaynak |
+|---|---|---|
+| Çerçeve var mı, codepoint'i ne | **İki numaralandırma var.** Ürün v0 kabuğu: `FRAME_CS_PROBE = 0x06`, `FRAME_CS_ECHO = 0x07`. noise-wire registry: `CTRL_CS_PROBE = 0x19`, `CTRL_CS_ECHO = 0x1A` | `client-core/src/wire.rs:224,228` · `kama-transport-schema/src/inner_kind.rs:23,25` · noise-wire §2.56/§2.57 |
+| Tel boyutu (UDP/IP hariç) | prob **44 B** mühürlü (28 B düz + 16 B tag) · echo **43 B** (27 + 16); echo < prob (amplifikasyon ≤ 1) | `wire.rs:216-231` · noise-wire §2.57 (`:349-353`) |
+| Hub alınca PeerSlot'u yeniliyor mu | **EVET** — `last_seen_ns` her başarıyla açılan datagramda yenilenir, tür ayrımı yok; prob için stateless echo döner | `runtime.rs:2281`, `:2489-2500` |
+| "Heartbeat hub'da state yaratmaz" | **Bugün doğru DEĞİL:** bilinmeyen eşten gelen ilk AEAD-açılabilen datagram (prob dahil) PeerSlot YARATIR; `max_peers = 64` ile sınırlı | `runtime.rs:2258-2278`, `:243` |
+| HubChannel ctx'te gidiyor mu | **Kodda HubChannel ctx YOK** (`ProtectionContext` hiçbir `.rs`'te geçmiyor); prob veriyle aynı seam/PN uzayında `TxClass::Ctrl` ile mühürleniyor | `runtime.rs:1097-1101`; `grep ProtectionContext crates/` → boş |
+| Sürekli yayıcı var mı | **YOK.** Prob bütçeli bir merdiven: 4 atış (3/9/21/45 s), 200 B sert bütçe (INV-CS-2), `experimental-cold-start` feature'ı arkasında; ürün varsayılanında bootstrap kapalı | `sender.rs:191-198`, `:2828-2850`; `runtime.rs:248` (`bootstrap_rtt: false`) |
+| `probe_seq` sınırı | **u16, yeniden kullanılamaz, wrap → yeni prob YOK** (INV-CS-7). 65 535 prob: 8 s kadansta ≈ 6.07 gün, 25 s'de ≈ 18.96 gün; sonra heartbeat kalıcı susar | noise-wire §2.57 (`:351`) · `sender.rs:2839-2842` |
+| Spec'te keepalive yasağı | **VAR:** "client keepalive YOK (state hub'da; … sürekli ping değil)" | ccr §35.16 (`:3121` civarı) |
+| Prob retry kuralı | "RETRY-EDİLMEZ (probe-retry = merdivenin kendisi 3/9/21/45 s)"; echo `T_ECHO_MIN`/akış rate-limit'li | noise-wire §2.57 (`:370-372`) |
+
+**Sonuç:** çerçeve *yerleşimi* yeniden kullanılabilir (yeni codepoint şart değil); çerçevenin *kuralları* (u16 wrap yasağı, sert bütçe, keepalive yasağı) heartbeat'le çelişiyor → H4 uygulanmadı, sahip kararı.
+
+## K2 — hub_handle eşlemesi ve mailbox teslimi
+
+| soru | cevap | kaynak |
+|---|---|---|
+| Handle PeerSlot ile birlikte mi ölüyor (105 s) | **HAYIR.** PeerSlot handle tutmuyor (alanlar: `rx, last_seen_ns, delivered_seen, blocks, msgs, seam_peer, tx_pn, param, pre_param_fec`). Spec: "LIFETIME: session-ömrü-sabit; session-kapanınca-serbest" | `runtime.rs:1907-1920`, `:2267-2276` · noise-wire §2.55 (`:303`) |
+| Mailbox'tan teslim yeni handle mı alıyor | **HAYIR — ESKİ handle'la çıkıyor.** Handle INIT admission'ında atanır; responder çevrimdışıysa mailbox `[HANDLE_ASSIGN, INIT/extended]` sırasıyla tutar | noise-wire §2.55 · `hub_sim.rs:4`, `:50-72` |
+| `FETCH_MAILBOX` / `DELIVER` handle taşıyor mu | Hayır — `MailboxItem { item_seq, envelope_type, envelope }`; handle ayrı `HANDLE_ASSIGN` hub-kanalı mesajıyla gelir | app-rpc §6.3 · noise-wire §2.55 (`:296-297`) |
+| REBIND adımı gerekli mi (H5) | Spec'e göre evet: hub restart / TTL expiry / bilinmeyen handle → `LINK_ROUTE_MISS` → `SESSION_REBIND` | ccr §35.16 · app-rpc §6.8 |
+| Gerçek hub kodu | **YOK** — `hub-server` 3 satırlık iskelet; `hub_sim.rs` 120 satırlık D1 test simülatörü ("gerçek-hub ayrı-repo") | `crates/hub-server/src/lib.rs` · `hub_sim.rs:1` |
+
+**Sonuç:** sahibin kuralı ("eski handle'la çıkıyorsa S&F TTL") → `HANDLE_TOMBSTONE` = S&F mailbox TTL (7 gün). Sınır: kanıt spec + simülatör.
+
+## K3 — Prob backoff'unda jitter
+
+| soru | cevap | kaynak |
+|---|---|---|
+| Establish backoff'unda jitter | **YOK** (bölgede 0 eşleşme; kural: ×2, 8 s tavan) | `sender.rs:5860-5925` |
+| Transport'ta RNG | **YOK** — `rand`/`getrandom`/`fastrand` bağımlılığı yok; motor deterministik | `grep` → boş; `adaptive-transport/Cargo.toml` |
+| Spec'te jitter geçen tek yer | degraded hub rebind backoff'u ("exponential backoff + jitter") — prob değil | app-rpc §6.11.1 |
+
+## K4 — DELIVER ulaşmayınca hub ne yapıyor
+
+| soru | cevap | kaynak |
+|---|---|---|
+| Kod | **YOK** (hub implementasyonu repoda değil) | `crates/hub-server/src/lib.rs` |
+| Spec metni | Açık kural yoktu. Durum makinesi ima ediyor: `QUEUED_AT_HUB_B → (online push \| FETCH_MAILBOX) → DELIVERED_TO_CLIENT → (ACK_RANGE) → ACKED → temizlenir`; ama adım 3 "offline → mailbox store / online → push" ayrımı push edilen kaydın saklandığını söylemiyor | app-rpc §7 (`:456-461`, `:483-484`) |
+
+## K5 — link-state / power-state sinyali
+
+| soru | cevap | kaynak |
+|---|---|---|
+| `client-core` / `adaptive-transport`'ta sinyal | **YOK** (link, power, foreground, doze, connectivity: 0 eşleşme) | `grep -rn -i` → boş |
+| Mobil bağlama | **YOK** — repoda UniFFI yok | `grep -rln uniffi crates/` → boş |
+| Android bağlaması için gereken | (1) runtime'a üç girdi olayı: link up/down · uygulama durumu (ön plan / arka plan / doze) · kullanıcı etkileşimi; (2) ADR-15 gereği coarse-grained UniFFI yüzeyi; (3) Android tarafında `ConnectivityManager.NetworkCallback` + process lifecycle; doze'da kadans OS'un (PARK P-3) | ADR-15 · transport-tdd §10 [AMENDMENT-10] |

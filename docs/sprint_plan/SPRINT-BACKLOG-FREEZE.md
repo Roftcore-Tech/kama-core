@@ -46,8 +46,11 @@ Kama'nın mimarisi dört katman: **Application → Transport → Crypto → UDP.
 | **KS-\*** ("kalibrasyon slotu") | Anlamı belgede tanımlı ama **sayısı henüz verilmemiş** sabit; `[KALİBRASYON]` işaretli | aşağıda tek tek |
 | KS-DOS-1 | Hub'ın yarım-açık bağlantı sınırları (4 sayı) | `specs/ccr-format-spec.md` §35.15 |
 | KS-GRACE-1 | Anahtar değişiminde eski anahtarın ne kadar kabul edileceği (`N_g` paket / `T_g` süre) | `specs/kama-noise-wire-tdd-v2.0.md` §5 |
-| KS-8 | `connect()` cevap için ne kadar bekler | `docs/seams/KM-SEAM-AT-001.md` §4 |
-| KS-HANDLE-1 | Hub bir routing etiketini yeniden vermeden ne kadar bekler (`HANDLE_TOMBSTONE`) | `specs/ccr-format-spec.md` §35.7 |
+| ~~KS-8~~ | ~~`connect()` cevap için ne kadar bekler~~ **KAPANDI 2026-10-03 (DR-CONNECT-1): deadline yoktur, sayı yok** | `docs/seams/KM-SEAM-AT-001.md` §4 |
+| ~~KS-HANDLE-1~~ | ~~Hub bir routing etiketini yeniden vermeden ne kadar bekler (`HANDLE_TOMBSTONE`)~~ **KAPANDI 2026-10-03: = S&F mailbox TTL (bugün 7 gün)** | `specs/ccr-format-spec.md` §35.7 |
+| ~~KS-PN-1~~ | hop-ACK almadan ardışık tüketilebilecek PN tavanı — **KAPANDI 2026-10-03 (DR-CONNECT-1): K = 1024** | `specs/transport-layer-tdd.md` §12 [AMENDMENT-9] |
+| KS-AGE-1 | `SESSION_MAX_AGE`: oturum kaç yaşında yenilenir (öneri 7 gün) — **AÇIK** | `specs/ccr-format-spec.md` §35.15 · identity §16 |
+| KS-HB-1 | hop heartbeat kadansı — **açılmadı; DR-CONNECT-1 H4 sahip kararı bekliyor** | `docs/decisions/DR-CONNECT-1.md` |
 | **H-\*** | Harness testi: bir sözleşme kuralını otomatik doğrulayan test; tanımı seam belgesinin §6'sında | S1: `KM-SEAM-AT-001.md` §6 · S3: `KM-SEAM-TC-001.md` §6 |
 | **Golden / conformance vektörü** | "Bu girdiye bu byte'lar çıkmalı" veri dosyası; Rust'tan bağımsız üretilir | `vectors/` (bu sprintte açılıyor) |
 | **conformance-core** | Sözleşmenin gözlenebilir davranışını test eden set; hem sahte (mock) hem gerçek modüle karşı koşar | bu belge T-00.4 |
@@ -137,12 +140,14 @@ Her kart: **Neden · Ne yapılacak · Nereye · Neye bağlı · Bittiğini nası
 **Nereye:** `docs/seams/KM-SEAM-AT-001.md` §4.
 **Done:** sayı yazıldı.
 **DURUM (2026-09-24): AÇIK — sayı uydurulmadı, sahip kararı.** `connect()` dört parçadır (hub kanalı kurulumu · Initiate · INIT'in Plane 1 ile hub'a ulaşması · Bob'un RESPONSE'unun dönüşü); yalnız 4. parça yeni sayı ister, 1 ve 3 transport'un donmuş zamanlayıcılarıdır. Ayrım saatle değil **hub'ın cevabıyla** yapılmalı: INIT mailbox'a kondu (Bob çevrimdışı → deadline yok, T-18c) / doğrudan teslim edildi (Bob çevrimiçi → KS-8). İki düzeltme bekliyor: S1 §4'teki "connect() süresi Transport'un Plane 1 Reliable deadline'ıdır" cümlesi YANLIŞ (o deadline 3. parça, 4. değil) · `cancel(ticket)` yok, zamanlayıcı transport'ta kalır (K9 ile tutarlı). **KANIT İSTEĞİ (5 kalem, kod/spec'ten sayı + dosya:satır):** `docs/sprint_plan/A1-KALIBRASYON-KARAR-FOYU.md` → KANIT PAKETİ. Sayılar gelince KS-8 = (1+3)'ün üstünde türetilir; KS-HANDLE-1 ve KS-PN-1 de aynı paketle koda bağlanır.
+**DURUM (2026-10-03): KAPANDI — DR-CONNECT-1 (sahip kararı).** Sayı yok: `connect()` için deadline YOKTUR (INV-NO-IDLE-TEARDOWN). `ConnectFailed` kalktı; `cancel(ticket)` + `ConnectAbandoned(ticket, reason)` + `ConnectProgress(ticket, phase)` geldi. Normatif metin `docs/seams/KM-SEAM-AT-001.md` §1/§3/§4/§6; indeks `docs/decisions/DR-CONNECT-1.md`. S1 değişikliği Hayri imzası bekliyor.
 
 ### A1.4 — Routing etiketi yeniden-kullanım süresi (KS-HANDLE-1)
 **Neden:** Hub her bağlantı bacağına 4 byte'lık bir etiket (`hub_handle`) verir. Bağlantı kapanınca etiket bir süre **askıda** kalmalı; yoksa geç gelen eski bir paket yeni bir bağlantının bacağına düşer. Süre uydurma olmasın: belgede formül var — *o etikete geç gelebilecek son meşru paketin ufku* (ARQ retry ufku, yeniden-sıralama penceresi, mailbox ufku — en büyüğü).
 **Ne yapılacak:** formülü üç girdiyle hesapla, sayıyı yaz.
 **Nereye:** `specs/ccr-format-spec.md` §35.7 KS-HANDLE-1.
 **Done:** hesap gösterildi, sayı yazıldı.
+**DURUM (2026-10-03): KAPANDI — DR-CONNECT-1 / kanıt K2.** `HANDLE_TOMBSTONE` = S&F mailbox TTL (bugün 7 gün; türetilmiş). Mailbox'tan teslim ESKİ handle'la çıkıyor (`[HANDLE_ASSIGN, INIT/extended]`, noise-wire §2.55) → ufuk mailbox ufku. Föydeki 105 s alternatifi dayanaksız çıktı (alıcı PeerSlot idle'ı; PeerSlot handle tutmuyor). ccr §35.7 yamalandı.
 
 ### A2.1 — Rust'tan bağımsız Python referansı
 **Neden:** Rust kripto kodunu kendi ürettiği "beklenen" değerlerle test edersek, koddaki hata beklentiye de gömülür ve test kendi hatasını onaylar. İkinci, bağımsız bir implementasyon şart. Kural: Rust'tan **hiçbir kod ve sabit** paylaşmaz.
@@ -321,12 +326,12 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 **Neye bağlı:** B1.0, B1.3.
 **Done:** `MockTransport`'a karşı yeşil.
 
-### B1.5 — Bağlantı zaman aşımı testi
-**Neden:** KS-8 belirlenince `ConnectFailed`'ın tam zamanlaması test edilebilir.
+### B1.5 — ~~Bağlantı zaman aşımı testi~~ Bağlantı niyeti testleri: H-CANCEL / H-PROGRESS / H-CUTOVER(Superseded) **[DR-CONNECT-1, 2026-10-03]**
+**Neden:** ~~KS-8 belirlenince `ConnectFailed`'ın tam zamanlaması test edilebilir.~~ `connect()` için deadline yok ve `ConnectFailed` kalktı (DR-CONNECT-1). Test edilecek olan artık bir süre değil, üç davranış: **H-CANCEL** (`cancel(ticket)` → `ConnectAbandoned(ticket, Cancelled)`; sanal saat ilerlese de niyet kendiliğinden sonlanmaz; bozuk/sahte RESPONSE olay üretmez) · **H-PROGRESS** (link yok → `Suspended` + 0 prob; link gelir → `Measuring` + anında prob; eşin canlılığı bildirilmez) · **H-CUTOVER(Superseded)** (bilinen eşten yeni INIT → `Ready(h') → Closed(h, Superseded)`; duplicate INIT supersession üretmez). Tanım: `KM-SEAM-AT-001.md` §6.
 **Nereye:** `conf_s1_connect.rs`. **Bağlı:** A1.3. **Done:** yeşil.
 
 ### 🚪 G-S1 — S1 SEAM-FROZEN
-B1.0 derleniyor · B1.1 kapalı · B1.2 commit · **B1.3 / B1.4 / B1.5 yeşil** · C1.2 yeşil · KS-8 verili (B1.5 onun davranışsal testi). **Kripto vektörü beklemez** — S3'ten önce donabilir.
+B1.0 derleniyor · B1.1 kapalı · B1.2 commit · **B1.3 / B1.4 / B1.5 yeşil** · C1.2 yeşil · ~~KS-8 verili (B1.5 onun davranışsal testi)~~ DR-CONNECT-1 S1'e işlendi (B1.5 = H-CANCEL/H-PROGRESS/H-CUTOVER(Superseded)) + Hayri imzası. **Kripto vektörü beklemez** — S3'ten önce donabilir.
 
 ### B2.1 — Mesaj codec'i
 **Ne:** encode/decode; sınırlı açma (decompression bomb koruması); A2 limitleri; zstd. **Nereye:** `crates/kama-app/src/amp/`. **Bağlı:** G-S1. **Done:** B1.2 byte-for-byte.
@@ -414,7 +419,7 @@ Gün 0–1   A1 kalibrasyon oturumu                     (Abdurrahman; tek oturum
 Sonra     A3.* + B1.5                                (sayıya bağlı testler)
 Paralel   WS-D transport geçişi (D1–D3)              (Abdurrahman/Resul; A4.1'e bağlı, G-S3'ü beklemez)
 ──────────────────────────────────────────────────
-G-S1      S1 SEAM-FROZEN     ← B1.0–B1.5 + C1.2 + KS-8; kripto vektörü BEKLEMEZ, önce donar
+G-S1      S1 SEAM-FROZEN     ← B1.0–B1.5 + C1.2 + ~~KS-8~~ DR-CONNECT-1 (KS-8 değersiz kapandı); kripto vektörü BEKLEMEZ, önce donar
 G-S3      S3 SEAM-FROZEN
 ──────────────────────────────────────────────────
 G-S1 →    B2.* → G-IMPL-S1
