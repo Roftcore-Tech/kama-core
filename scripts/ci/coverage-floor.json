@@ -1,5 +1,13 @@
 {
-  "_comment": "Branch kapsamı ratchet tabanı (scripts/ci/branch-coverage-gate.py). null = RAPOR-ONLY: ilk hosted ölçümden önce eşik uydurulmaz. Taban yalnız ÖLÇÜLMÜŞ bir değere, elle yükseltilir; düşürmek gerekçe ister.",
+  "_comment": "Branch kapsamı ratchet tabanı (scripts/ci/branch-coverage-gate.py). Taban ÖLÇÜLMÜŞ değerin (82.25 %) hemen altına kondu; yalnız ölçülmüş bir değere, elle yükseltilir; düşürmek gerekçe ister. null = RAPOR-ONLY.",
   "scope": "cargo +nightly llvm-cov --workspace --exclude bench --exclude kama-integration --all-features --branch",
-  "branch_percent_floor": null
+  "branch_percent_floor": 82.0,
+  "measured": {
+    "date": "2026-10-03",
+    "run": 37141056404,
+    "commit": "ci/nightly-repair",
+    "branches_covered": 1826,
+    "branches_total": 2220,
+    "percent": 82.25
+  }
 }
