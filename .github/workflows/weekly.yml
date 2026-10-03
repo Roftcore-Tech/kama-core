@@ -3,22 +3,40 @@ name: core-weekly
 # [CI-REPAIR 2026-09-08] Nightly'den taşınan, pahalı ve kapı OLMAYAN işler.
 # `kani` her gece kaynaktan kurulup ~45 dk harcıyordu ve `continue-on-error: true` olduğu için
 # hiçbir şeyi kapılamıyordu. Derin fuzz de burada (hedef başına 30 dk).
+#
+# [CI-REPAIR-2 2026-10-04] `fuzz-deep` de HİÇ koşmamıştı (nightly ile aynı kök neden: musl hedefi) →
+# scripts/ci/fuzz-all.sh; 6 ayrı job yerine tek job, hedef başına 15 dk. `branch-coverage` gecelikten
+# buraya taşındı: geçersiz `--fail-under-branches` yerine JSON özetinden ratchet kapısı; yalnız kod
+# değiştiyse koşar. `kani` DEĞİŞMEDİ: 8 harness'ten 6'sı pn.rs'te "attempt to add with overflow" ile
+# düşüyor (K-1, ürün kodu bulgusu); job kapı değildir.
 
 on:
   schedule:
     - cron: "0 3 * * 0"
   workflow_dispatch:
+    inputs:
+      only:
+        description: "Yalnız bu işi koştur (elle tetiklemede dakika yakmamak için)"
+        type: choice
+        options: [all, coverage, fuzz-deep, kani]
+        default: all
 
 concurrency:
   group: core-weekly
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: read
+
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
   kani:
     name: kani (bicimsel dogrulama - pn.rs)
+    if: github.event_name == 'schedule' || inputs.only == 'all' || inputs.only == 'kani'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     continue-on-error: true   # K-1 duzeltilene kadar KASTEN kirmizi (kapi DEGIL)
@@ -31,12 +49,9 @@ jobs:
       - run: cargo kani -p kama-noise-wire --tests
 
   fuzz-deep:
+    if: github.event_name == 'schedule' || inputs.only == 'all' || inputs.only == 'fuzz-deep'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [fuzz_inner_parse, fuzz_open, fuzz_control_decode, fuzz_ack_decode, fuzz_prefix, fuzz_fec_decode]
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -48,15 +63,62 @@ jobs:
           tool: cargo-fuzz
       - uses: actions/cache/restore@v4
         with:
-          path: fuzz/corpus/${{ matrix.target }}
-          key: fuzz-corpus-${{ matrix.target }}-
-          restore-keys: fuzz-corpus-${{ matrix.target }}-
-      - name: fuzz 30 min
-        run: >
-          cargo +nightly fuzz run ${{ matrix.target }} --
-          -max_total_time=1800 -rss_limit_mb=2048 -print_final_stats=1
+          path: fuzz/corpus
+          key: fuzz-corpus-all-
+          restore-keys: fuzz-corpus-all-
+      - name: fuzz (6 hedef × 15 dk)
+        run: scripts/ci/fuzz-all.sh 900
+      - uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-all-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: fuzz-deep-${{ matrix.target }}
+          name: fuzz-deep-artifacts
           path: fuzz/artifacts/
+
+  # ── BUL-06: branch kapsamı — ratchet (gecelikten taşındı) ──
+  coverage-changes:
+    if: github.event_name == 'schedule' || inputs.only == 'all' || inputs.only == 'coverage'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.guard.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          scripts/ci/schedule-guard.sh weekly.yml
+          crates Cargo.toml Cargo.lock rust-toolchain.toml
+          scripts/ci/branch-coverage-gate.py scripts/ci/coverage-floor.json .github/workflows/weekly.yml
+
+  branch-coverage:
+    needs: coverage-changes
+    if: needs.coverage-changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      # Kapsam: ürün crate'lerinin kendi testleri. `bench` ve `kama-integration` DIŞARIDA —
+      # kama-integration'ın ağır panelleri (dr_cs3_v2_channel tek başına 21 dk) enstrümantasyon
+      # altında işi PR'da 45 dk'da timeout ettiriyordu. Taban bu kapsamla ölçülür ve bu kapsamla
+      # karşılaştırılır (scripts/ci/coverage-floor.json `scope`).
+      - name: branch coverage (ölç)
+        run: >
+          cargo +nightly llvm-cov --workspace --exclude bench --exclude kama-integration
+          --all-features --branch --json --summary-only --output-path cov.json
+      - name: branch coverage gate (ratchet)
+        run: python3 scripts/ci/branch-coverage-gate.py cov.json scripts/ci/coverage-floor.json

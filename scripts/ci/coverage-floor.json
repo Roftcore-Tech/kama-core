@@ -1,0 +1,5 @@
+{
+  "_comment": "Branch kapsamı ratchet tabanı (scripts/ci/branch-coverage-gate.py). null = RAPOR-ONLY: ilk hosted ölçümden önce eşik uydurulmaz. Taban yalnız ÖLÇÜLMÜŞ bir değere, elle yükseltilir; düşürmek gerekçe ister.",
+  "scope": "cargo +nightly llvm-cov --workspace --exclude bench --exclude kama-integration --all-features --branch",
+  "branch_percent_floor": null
+}
