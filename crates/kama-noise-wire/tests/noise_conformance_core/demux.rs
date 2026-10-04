@@ -64,7 +64,9 @@ pub fn correct_candidate_last<T: S3Target>() {
 ///
 /// ccr §35.15 zinciri (`PENDING_RESPONSE_TRIAL_CAP` = istemci pending INIT tavanı) gereği tavan+1
 /// pending aynı anda VAR OLAMAZ: fazladan INIT kümeye alınmaz. Bu yüzden satır, o adayın kümeye
-/// girmediğini ve RESPONSE'unun tavan kadar denemeden sonra `Failed` döndüğünü sınar.
+/// girmediğini ve RESPONSE'unun tavan kadar denemeden sonra `Failed` döndüğünü sınar
+/// (sahip onayı 2026-10-06). Transport bu reddi Application'a `TransportError::Backpressure`
+/// olarak yansıtır (KM-SEAM-AT-001 §3); o eşleme S1 tarafının işidir, bu süit S3 yüzeyini sınar.
 pub fn candidate_beyond_cap_fails<T: S3Target>() {
     let cap = T::TRIAL_CAP;
     let mut c = T::build().expect("hedef kayıtlı olmalı");
