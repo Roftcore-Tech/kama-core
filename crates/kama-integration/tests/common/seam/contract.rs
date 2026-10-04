@@ -118,7 +118,7 @@ pub mod rows {
             )
         });
         let caps = t.capabilities();
-        let peer = PeerRef::from_raw(0xE0);
+        let peer = crate::harness::test_peer(0xE0);
 
         // early_unit: opak, byte-özdeş geri gelmeli (K6).
         let early_bytes: Vec<u8> = b"AMP-early-unit-record".to_vec();
@@ -226,7 +226,7 @@ pub mod mechanism {
     /// Taze hedef oturum İCAT ETMEZ: `recv()`/`poll_event()` boş ve gözlem yan etkisiz.
     ///
     /// Mekanizma seviyesidir; §6 `H-EVENTS` satırının yerine GEÇMEZ (o, `Ready → RenewRequired →
-    /// Ready(h') → Closed(h, Renewed)` sırasını ister).
+    /// Ready(h') → Closed(h, Superseded)` sırasını ister).
     ///
     /// # Panics
     /// Hiç `connect` çağrılmadan teslim ya da olay üretilirse.

@@ -2,7 +2,10 @@
   "schema_version": 1,
   "seam": "KM-SEAM-AT-001",
   "spec_path": "docs/seams/KM-SEAM-AT-001.md",
-  "mirror_path": "crates/kama-integration/tests/common/seam/api.rs",
+  "mirror_paths": [
+    "crates/kama-contracts/src/s1.rs",
+    "crates/kama-contracts/src/handles.rs"
+  ],
   "_comment": "KM-SEAM-AT-001 §6 harness kapsaminin BEYANIDIR. Rust tarafinin gerceklik listesi CONTRACT_ROWS (contract.rs); runner ikisini capraz kontrol eder. UC DURUM: implemented = govde IKI hedefte de kostu (gercek kanit) · mock_only = govde yalniz sahtede kostu, dogrulama gucu ikinci hedef gelince dogar (Google SWE ch.13 / Fowler ContractTest) · not_implemented = yok. Iki taban da ratchet: dusurulemez. Tek hedef kayitliyken hicbir satir implemented olamaz - drift kapisi bunu zorlar.",
   "implemented_baseline": 0,
   "mock_only_baseline": 1,
@@ -106,22 +109,22 @@
     {
       "id": "SEAM-OPEN-1",
       "what": "PreparedUnit.bytes tipi: bytes::Bytes mi Vec<u8> mu",
-      "today": "Vec<u8> (UnitBytes alias; tek satir takas)"
+      "today": "Vec<u8> (kama_contracts::s1::UnitBytes). [B1 2026-10-05] kama-contracts'in harici bagimliligi 0 oldugu icin `bytes` crate'i orada kullanilamaz; spec metnindeki `Bytes` yazimi duruyor (bilincli fark, kaynakta belgeli)"
     },
     {
       "id": "SEAM-OPEN-2",
       "what": "DeliveryPolicy::DeadlineBounded deadline tipi: std Instant determinizmi bozar (ADR-17)",
-      "today": "LogicalTick (deterministik)"
+      "today": "KAPANDI 2026-10-05 (B1): sozlesme tipi spec'teki gibi std::time::Instant. Test-yerel aynanin LogicalTick sapmasi aynayla birlikte kalkti; deterministik suit duvar saatini OKUMAZ (deadline degerini kurar, sahte zamani kendi enjekte eder)"
     },
     {
       "id": "SEAM-OPEN-3",
       "what": "CloseReason variant kumesi spec'te tanimli degil",
-      "today": "yalniz Renewed (§K2'de gecen tek variant)"
+      "today": "KAPANDI 2026-10-05 (sahip karari): kume kapali — Superseded, UserClosed, PeerClosed, KeyHygiene (kama_contracts::handles::CloseReason). `Renewed` kalkti; cutover kapanisi Superseded"
     },
     {
       "id": "SEAM-OPEN-4",
       "what": "Produksiyon KamaTransport trait'i hangi crate'e iner",
-      "today": "hicbiri; test-yerel ayna + drift kapisi"
+      "today": "KAPANDI 2026-10-05 (R-7(b)): crates/kama-contracts (s1.rs). Test-yerel ayna kalkti; drift kapisi spec'i dogrudan o kaynakla karsilastirir"
     }
   ]
 }

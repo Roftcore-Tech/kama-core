@@ -6,14 +6,15 @@
 #[path = "common/mock_transport.rs"]
 mod mock_transport;
 
+use kama_contracts::s3::SessionCommand;
 use mock_transport::{
-    EnvelopeId, Fault, InjectedCommand, MockTransport, MockTransportError, ENVELOPE_INIT,
-    ENVELOPE_INIT_RESPONSE, MOCK_MAX_CACHED, MOCK_MAX_IN_FLIGHT,
+    EnvelopeId, Fault, MockTransport, MockTransportError, ENVELOPE_INIT, ENVELOPE_INIT_RESPONSE,
+    MOCK_MAX_CACHED, MOCK_MAX_IN_FLIGHT,
 };
 
-fn wire_of(cmd: InjectedCommand) -> Vec<u8> {
+fn wire_of(cmd: SessionCommand) -> Vec<u8> {
     match cmd {
-        InjectedCommand::AcceptInit { wire } | InjectedCommand::AcceptResponse { wire } => wire,
+        SessionCommand::AcceptInit { wire } | SessionCommand::AcceptResponse { wire } => wire,
         other => panic!("zarf taşıyan komut bekleniyordu: {other:?}"),
     }
 }
@@ -43,13 +44,13 @@ fn f2_command_kind_comes_from_envelope_type_not_content() {
     t.submit(ENVELOPE_INIT_RESPONSE, &bytes).unwrap();
     assert_eq!(
         t.deliver().unwrap().unwrap(),
-        InjectedCommand::AcceptInit {
+        SessionCommand::AcceptInit {
             wire: bytes.clone()
         }
     );
     assert_eq!(
         t.deliver().unwrap().unwrap(),
-        InjectedCommand::AcceptResponse {
+        SessionCommand::AcceptResponse {
             wire: bytes.clone()
         }
     );
@@ -173,6 +174,7 @@ fn f8_mock_transport_imports_nothing_from_the_application_layer() {
         .join("\n");
     for banned in [
         "kama_app",
+        "kama_contracts::s1",
         "KamaTransport",
         "AppMessageRecord",
         "PreparedUnit",

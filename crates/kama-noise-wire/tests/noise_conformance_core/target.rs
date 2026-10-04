@@ -7,8 +7,9 @@
 
 #![allow(dead_code)]
 
-use client_core::seam::{PacketProtection, ProtectionContext, SessionControl, SessionHandle};
-use client_core::seam_mock::{self, MockCrypto};
+use kama_contracts::handles::SessionHandle;
+use kama_contracts::s3::{PacketProtection, ProtectionContext, SessionControl};
+use kama_noise_wire::seam_mock::{self, MockCrypto};
 
 /// Gerçek kriptonun yokluğunun kimliği (koşucu ile paylaşılır).
 pub const GAP_REAL_CRYPTO: &str = "GAP-S3-REAL-A5";

@@ -13,17 +13,20 @@
 //! * Sınırlı kuyruk: dolunca typed `Backpressure`; sessiz düşürme yalnız AÇIKÇA enjekte edilen
 //!   kayıptır (SR-AUDIT-001).
 //!
-//! # Neden S3 tiplerinin yerel aynası
+//! # Komut tipi
 //!
-//! `SessionCommand`/`SessionResult` trait tipleri `client-core/src/seam.rs`'te yaşıyor (R-7(b)) ve
-//! `client-core` zaten `kama-noise-wire`'a bağımlı; `kama-noise-wire` testleri onları import ederse
-//! bağımlılık DÖNGÜSÜ oluşur. Bu yüzden aşağıdaki [`InjectedCommand`] KM-SEAM-TC-001 §1.2'nin
-//! test-yerel aynasıdır. Kalıcı çözüm (trait'lerin ortak bir crate'e taşınması ya da adaptörün
-//! `client-core`'da yazılması) A5 öncesi sahip kararıdır.
+//! Sahte, Crypto'ya enjekte edilecek komutu S3'ün GERÇEK tipiyle verir
+//! (`kama_contracts::s3::SessionCommand`). B1'den önce burada bir yerel ayna (`InjectedCommand`)
+//! vardı; gerekçesi olarak yazılan "import edilirse bağımlılık döngüsü oluşur" iddiası YANLIŞTI
+//! (dev-dependency döngüsüne Cargo izin verir; 2026-10-05'te ölçüldü). Tipler `kama-contracts`'a
+//! taşınınca ayna kaldırıldı. Bu modül `kama_contracts::s1`'den (Application seam'i) HİÇBİR ŞEY
+//! import etmez.
 
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, VecDeque};
+
+use kama_contracts::s3::SessionCommand;
 
 /// app-rpc `STORE_MESSAGE.envelope_type` registry'si (AMENDMENT-7).
 pub const ENVELOPE_INIT: u8 = 0x01;
@@ -33,27 +36,6 @@ pub const ENVELOPE_INIT_RESPONSE: u8 = 0x02;
 pub const MOCK_MAX_IN_FLIGHT: usize = 64;
 /// Yeniden gönderim için saklanan zarf tavanı.
 pub const MOCK_MAX_CACHED: usize = 64;
-
-/// Transport'un Crypto'ya enjekte ettiği komut (KM-SEAM-TC-001 §1.2 `SessionCommand` aynası).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InjectedCommand {
-    Initiate {
-        peer: u64,
-        early_unit: Option<Vec<u8>>,
-    },
-    AcceptInit {
-        wire: Vec<u8>,
-    },
-    AcceptResponse {
-        wire: Vec<u8>,
-    },
-    Renew {
-        session: u64,
-    },
-    Close {
-        session: u64,
-    },
-}
 
 /// Saklanan zarfın kimliği (Transport-yerel; Crypto görmez).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -171,11 +153,11 @@ impl MockTransport {
 
     /// Karşı uca ulaşan bir sonraki zarfı, Crypto'ya enjekte edilecek KOMUT olarak verir.
     /// Tür `envelope_type`'tan seçilir; zarfın içi yorumlanmaz (K6).
-    pub fn deliver(&mut self) -> Option<Result<InjectedCommand, MockTransportError>> {
+    pub fn deliver(&mut self) -> Option<Result<SessionCommand, MockTransportError>> {
         let (ty, wire) = self.in_flight.pop_front()?;
         Some(match ty {
-            ENVELOPE_INIT => Ok(InjectedCommand::AcceptInit { wire }),
-            ENVELOPE_INIT_RESPONSE => Ok(InjectedCommand::AcceptResponse { wire }),
+            ENVELOPE_INIT => Ok(SessionCommand::AcceptInit { wire }),
+            ENVELOPE_INIT_RESPONSE => Ok(SessionCommand::AcceptResponse { wire }),
             _ => Err(MockTransportError::UnknownEnvelopeType),
         })
     }

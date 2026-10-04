@@ -78,6 +78,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # CI-01 — trybuild/K-WIRE-SEALED-TYPE-1 YALNIZ default-feature koşumunda çalışır.
+      # [B1] Aynı dosyada H-HANDLE'ın tip yarısı da var (HubHandle ≠ SessionHandle); o testin
+      # KOŞTUĞU seam-conformance job'unda (noise-conformance.sh --target mock) ölçülür.
       - name: sealed-type gate (default features, locked)
         run: |
           set -o pipefail
@@ -85,6 +87,8 @@ jobs:
           echo "$out"
           echo "$out" | grep -q "sealed_type_cannot_be_forged" \
             || { echo "::error title=TEST_FAILURE::K-WIRE-SEALED-TYPE-1 kapisi 0 test kosuyor (BUL-03 regresyonu)"; exit 1; }
+          echo "$out" | grep -q "hub_handle_cannot_stand_in_for_session_handle" \
+            || { echo "::error title=TEST_FAILURE::H-HANDLE tip kapisi listede yok"; exit 1; }
 
       - name: test (workspace --all-features, kama-integration hariç)
         run: cargo test --workspace --all-features --exclude kama-integration

@@ -16,3 +16,10 @@ pub mod target;
 
 #[path = "contract.rs"]
 pub mod contract;
+
+/// Test eşi: `dest_hash`'in ilk sekiz baytı `n` (big-endian), kalanı sıfır. Farklı `n` farklı eş.
+pub fn test_peer(n: u64) -> kama_contracts::handles::PeerRef {
+    let mut dest_hash = [0u8; 32];
+    dest_hash[..8].copy_from_slice(&n.to_be_bytes());
+    kama_contracts::handles::PeerRef::from_dest_hash(dest_hash)
+}

@@ -1,7 +1,7 @@
 //! H-REPLAY-POISON — sahte paket replay penceresini ilerletmez; ardından AYNI sayaçla gelen geçerli
 //! paket kabul edilir ve commit edilir (identity §15.5: precheck saf, commit yalnız AEAD başarısında).
 
-use client_core::seam::PacketProtection;
+use kama_contracts::s3::PacketProtection;
 
 use crate::s3_support::{established, session, tamper};
 use crate::target::S3Target;

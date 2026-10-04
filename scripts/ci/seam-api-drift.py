@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
-"""KM-SEAM-AT-001 drift kapisi — spec ↔ test-yerel ayna ↔ kapsam beyani.
+"""Seam drift kapisi — spec ↔ sozlesme kaynagi (`crates/kama-contracts`) ↔ kapsam beyani.
 
-    scripts/ci/seam-api-drift.py [--spec P] [--mirror P] [--coverage P] [--quiet]
+    scripts/ci/seam-api-drift.py [--seam s1|s3] [--spec P] [--mirror P]... [--coverage P] [--quiet]
 
-NEDEN VAR. `crates/kama-integration/tests/common/seam/api.rs` sozlesmenin §1/§3 bloklarinin
-test-yerel aynasidir (produksiyon trait'i henuz yok; SEAM-OPEN-4). Ayna, dogasi geregi ikinci bir
-hakikattir ve ikinci hakikatler sessizce eskir. Fowler'in contract-test gerekcesi tam olarak bu:
-double, tedarikciden ayrisirsa testler yesil kalir ama hicbir sey kanitlamaz. Bu kapi ayrismayi
-KIRMIZI yapar.
+NEDEN VAR. Sozlesmenin iki yazili hali vardir: belge (`docs/seams/KM-SEAM-*.md` §1 trait bloklari)
+ve derlenen kaynak (`crates/kama-contracts/src/{s1,s3,handles}.rs`). Ikinci bir hakikat sessizce
+eskir; bu kapi ikisinin ayrismasini KIRMIZI yapar. [B1 2026-10-05] Onceden karsilastirilan sey
+test-yerel bir aynaydi (`kama-integration/tests/common/seam/api.rs`); o dosya kalkti, kapi artik
+dogrudan sozlesme kaynagina bakar. `--mirror` adi korundu: "spec'in karsisindaki Rust kaynagi".
+Birden cok kez verilebilir (dosyalar birlestirilir) — ortak tipler `handles.rs`'te durdugu icin.
 
-DENETLENEN DORT ESITLIK:
-  A. §1 trait adi + metot kumesi        == aynadaki trait adi + metot kumesi
-  B. §1'de bildirilen tipler            ⊆ aynadaki tipler   (ayna alias/yardimci ekleyebilir)
-  C. §3 TransportError variant kumesi   == aynadaki variant kumesi   (kume KAPALIDIR)
+--seam s1 (varsayilan; KM-SEAM-AT-001) — DENETLENEN ESITLIKLER:
+  A. §1 trait adi + metot kumesi        == kaynaktaki trait adi + metot kumesi
+  B. §1'de bildirilen tipler            ⊆ kaynaktaki tipler   (kaynak alias/yardimci ekleyebilir)
+  C. §3 TransportError variant kumesi   == kaynaktaki variant kumesi   (kume KAPALIDIR)
   D. §6 tablosundaki H-* satir kimlikleri == seam-coverage.json rows[].id
   E. tek hedef (mock) kayitliyken hicbir satir 'implemented' beyan EDILEMEZ (yalniz 'mock_only')
+  Ek olarak beyan dosyasinin kendi tutarliligi (tekrarsiz kimlik, gecerli durum, ratchet tabani).
 
-Ek olarak beyan dosyasinin kendi tutarliligi (tekrarsiz kimlik, gecerli durum, ratchet tabani).
+--seam s3 (KM-SEAM-TC-001) — DENETLENEN ESITLIKLER:
+  A. §1'deki HER `pub trait` (PacketProtection, SessionControl) kaynakta var ve metot kumesi ayni
+  B. §1'de bildirilen tipler            ⊆ kaynaktaki tipler
+  D. §6 tablosundaki her H-* satirinin noise-seam-coverage.json'da en az bir satiri var
+     (`H-X` ya da alt satir `H-X/…`) ve beyandaki her satir §6'daki bir satira ait
 
 Cikis kodu: 0 = ayrisma yok · 1 = drift (kapi kirmizi) · 2 = ortam/kullanim hatasi.
 """
@@ -30,9 +36,19 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SPEC = ROOT / "docs/seams/KM-SEAM-AT-001.md"
-DEFAULT_MIRROR = ROOT / "crates/kama-integration/tests/common/seam/api.rs"
-DEFAULT_COVERAGE = ROOT / "scripts/ci/seam-coverage.json"
+CONTRACTS = ROOT / "crates/kama-contracts/src"
+DEFAULTS = {
+    "s1": {
+        "spec": ROOT / "docs/seams/KM-SEAM-AT-001.md",
+        "mirror": [CONTRACTS / "s1.rs", CONTRACTS / "handles.rs"],
+        "coverage": ROOT / "scripts/ci/seam-coverage.json",
+    },
+    "s3": {
+        "spec": ROOT / "docs/seams/KM-SEAM-TC-001.md",
+        "mirror": [CONTRACTS / "s3.rs", CONTRACTS / "handles.rs"],
+        "coverage": ROOT / "scripts/ci/noise-seam-coverage.json",
+    },
+}
 DEFAULT_TARGETS = ROOT / "crates/kama-integration/tests/common/seam/target.rs"
 
 VALID_STATUS = {"implemented", "mock_only", "not_implemented"}
@@ -72,11 +88,15 @@ def section(text: str, heading_prefix: str) -> str:
     return "\n".join(lines[start:end])
 
 
-def first_fence(body: str) -> str:
-    m = re.search(r"^```[a-zA-Z]*\n(.*?)^```", body, re.S | re.M)
-    if not m:
+def all_fences(body: str) -> list[str]:
+    blocks = re.findall(r"^```[a-zA-Z]*\n(.*?)^```", body, re.S | re.M)
+    if not blocks:
         die("bolumde fenced kod blogu yok")
-    return m.group(1)
+    return blocks
+
+
+def first_fence(body: str) -> str:
+    return all_fences(body)[0]
 
 
 def spec_api(spec_text: str) -> tuple[str, set[str], set[str]]:
@@ -138,28 +158,125 @@ def mirror_api(mirror_text: str) -> tuple[str | None, set[str], set[str], set[st
     return trait_name, methods, types, variants
 
 
+# ── S3 (KM-SEAM-TC-001) ──────────────────────────────────────────────────────────────────────
+
+
+def spec_traits(spec_text: str) -> tuple[dict[str, set[str]], set[str]]:
+    """§1'deki TUM fenced bloklardan {trait adi: metot kumesi} ve bildirilen tipler."""
+    traits: dict[str, set[str]] = {}
+    types: set[str] = set()
+    for block in all_fences(section(spec_text, "1.")):
+        for tm in re.finditer(r"pub\s+trait\s+(\w+)[^{\n]*\{(.*?)\n\}", block, re.S):
+            traits[tm.group(1)] = set(re.findall(r"\bfn\s+(\w+)\s*\(", tm.group(2)))
+        types |= set(re.findall(r"pub\s+(?:struct|enum)\s+(\w+)", block))
+    if not traits:
+        die("spec §1 bloklarinda hic `pub trait … { … }` bulunamadi")
+    return traits, types
+
+
+def mirror_traits(mirror_text: str) -> tuple[dict[str, set[str]], set[str]]:
+    traits: dict[str, set[str]] = {}
+    for tm in re.finditer(r"^pub\s+trait\s+(\w+)[^{\n]*\{", mirror_text, re.M):
+        body = block_of(mirror_text[tm.start():], r"pub\s+trait\s+\w+[^{\n]*\{") or ""
+        traits[tm.group(1)] = set(re.findall(r"^\s*fn\s+(\w+)\s*\(", body, re.M))
+    types = set(re.findall(r"^pub\s+(?:struct|enum)\s+(\w+)", mirror_text, re.M))
+    return traits, types
+
+
+def check_s3(spec_text: str, mirror_text: str, cov: dict, say) -> None:
+    s_traits, s_types = spec_traits(spec_text)
+    m_traits, m_types = mirror_traits(mirror_text)
+    s_rows = spec_harness_rows(spec_text)
+    say(f"  spec  : {len(s_traits)} trait {sorted(s_traits)} · {len(s_types)} tip · {len(s_rows)} §6 satiri")
+    say(f"  kaynak: {len(m_traits)} trait {sorted(m_traits)} · {len(m_types)} tip")
+
+    # A — her trait + metot kumesi
+    for name, s_methods in sorted(s_traits.items()):
+        if name not in m_traits:
+            bad(f"§1 trait'i kaynakta yok: {name}")
+            continue
+        m_methods = m_traits[name]
+        if s_methods != m_methods:
+            bad(f"§1 {name} metot kumesi ayrisiyor: yalniz spec'te {sorted(s_methods - m_methods)}, "
+                f"yalniz kaynakta {sorted(m_methods - s_methods)}")
+    extra_traits = set(m_traits) - set(s_traits)
+    if extra_traits:
+        bad(f"kaynakta spec §1'de olmayan trait(ler) var: {sorted(extra_traits)}")
+
+    # B — §1 tipleri kaynakta var mi
+    missing_types = s_types - m_types
+    if missing_types:
+        bad(f"§1'de bildirilen tip(ler) kaynakta yok: {sorted(missing_types)}")
+    extra = m_types - s_types
+    if extra:
+        say(f"  kaynak-ek tipler (beklenen; hata tipi/ortak tutamaclar): {sorted(extra)}")
+
+    # D — §6 satirlari ↔ beyan (alt satirlar `H-X/…` serbest)
+    rows = cov.get("rows")
+    if not isinstance(rows, list):
+        bad("noise-seam-coverage.json: `rows` listesi yok")
+        rows = []
+    seen: set[str] = set()
+    bases: set[str] = set()
+    for r in rows:
+        rid = r.get("id")
+        if not isinstance(rid, str) or not rid:
+            bad("noise-seam-coverage.json: kimliksiz satir")
+            continue
+        if rid in seen:
+            bad(f"noise-seam-coverage.json: '{rid}' iki kez beyan edildi")
+        seen.add(rid)
+        base = rid.split("/", 1)[0]
+        bases.add(base)
+        if base not in s_rows:
+            bad(f"noise-seam-coverage.json: '{rid}' spec §6'da olmayan bir satira ait")
+    for row in s_rows:
+        if row not in bases:
+            bad(f"§6 satiri beyanda yok: {row}")
+
+
 # ── ana ──────────────────────────────────────────────────────────────────────────────────────
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(add_help=True)
-    ap.add_argument("--spec", type=Path, default=DEFAULT_SPEC)
-    ap.add_argument("--mirror", type=Path, default=DEFAULT_MIRROR)
-    ap.add_argument("--coverage", type=Path, default=DEFAULT_COVERAGE)
+    ap.add_argument("--seam", choices=sorted(DEFAULTS), default="s1")
+    ap.add_argument("--spec", type=Path, default=None)
+    ap.add_argument("--mirror", type=Path, action="append", default=None,
+                    help="spec'in karsisindaki Rust kaynagi; birden cok kez verilebilir")
+    ap.add_argument("--coverage", type=Path, default=None)
     ap.add_argument("--targets", type=Path, default=DEFAULT_TARGETS)
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
-    for p in (args.spec, args.mirror, args.coverage, args.targets):
+    d = DEFAULTS[args.seam]
+    default_paths = args.spec is None and args.mirror is None
+    args.spec = args.spec or d["spec"]
+    args.mirror = args.mirror or d["mirror"]
+    args.coverage = args.coverage or d["coverage"]
+
+    needed = [args.spec, *args.mirror, args.coverage]
+    if args.seam == "s1":
+        needed.append(args.targets)
+    for p in needed:
         if not p.is_file():
             die(f"dosya yok: {p}")
 
     spec_text = args.spec.read_text(encoding="utf-8")
-    mirror_text = args.mirror.read_text(encoding="utf-8")
+    mirror_text = "\n".join(p.read_text(encoding="utf-8") for p in args.mirror)
     try:
         cov = json.loads(args.coverage.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         die(f"{args.coverage}: bozuk JSON ({e})")
+
+    if args.seam == "s3":
+        say = (lambda *a: None) if args.quiet else print
+        check_s3(spec_text, mirror_text, cov, say)
+        if findings:
+            print(f"\nSEAM-DRIFT[s3]: KIRMIZI ({len(findings)} bulgu)")
+            return 1
+        say("\nSEAM-DRIFT[s3]: YESIL (spec ↔ sozlesme kaynagi ↔ beyan hizali)")
+        return 0
 
     s_trait, s_methods, s_types = spec_api(spec_text)
     s_errs = spec_error_variants(spec_text)
@@ -169,30 +286,30 @@ def main() -> int:
     say = (lambda *a: None) if args.quiet else print
     say(f"  spec  : trait {s_trait} · {len(s_methods)} metot · {len(s_types)} tip · "
         f"{len(s_errs)} hata · {len(s_rows)} §6 satiri")
-    say(f"  ayna  : trait {m_trait} · {len(m_methods)} metot · {len(m_types)} tip · "
+    say(f"  kaynak: trait {m_trait} · {len(m_methods)} metot · {len(m_types)} tip · "
         f"{len(m_errs)} hata")
 
     # A — trait adi + metot kumesi
     if m_trait is None:
-        bad("aynada `pub trait … {` yok — §1 arayuzu temsil edilmiyor")
+        bad("kaynakta `pub trait … {` yok — §1 arayuzu temsil edilmiyor")
     elif m_trait != s_trait:
-        bad(f"trait adi ayrisiyor: spec '{s_trait}', ayna '{m_trait}'")
+        bad(f"trait adi ayrisiyor: spec '{s_trait}', kaynak '{m_trait}'")
     if s_methods != m_methods:
         bad(f"§1 metot kumesi ayrisiyor: yalniz spec'te {sorted(s_methods - m_methods)}, "
-            f"yalniz aynada {sorted(m_methods - s_methods)}")
+            f"yalniz kaynakta {sorted(m_methods - s_methods)}")
 
-    # B — §1 tipleri aynada var mi
+    # B — §1 tipleri kaynakta var mi
     missing_types = s_types - m_types
     if missing_types:
-        bad(f"§1'de bildirilen tip(ler) aynada yok: {sorted(missing_types)}")
+        bad(f"§1'de bildirilen tip(ler) kaynakta yok: {sorted(missing_types)}")
     extra = m_types - s_types
     if extra and not args.quiet:
-        say(f"  ayna-ek tipler (beklenen; alias/yardimci): {sorted(extra)}")
+        say(f"  kaynak-ek tipler (beklenen; alias/yardimci/ortak): {sorted(extra)}")
 
     # C — §3 hata kumesi KAPALI
     if s_errs != m_errs:
         bad(f"§3 TransportError kumesi ayrisiyor: yalniz spec'te {sorted(s_errs - m_errs)}, "
-            f"yalniz aynada {sorted(m_errs - s_errs)}")
+            f"yalniz kaynakta {sorted(m_errs - s_errs)}")
 
     # D — §6 satirlari ↔ beyan
     rows = cov.get("rows")
@@ -237,16 +354,24 @@ def main() -> int:
             f"IKI hedefte kostuktan sonra kanitlanmis sayilir; simdilik dogru durum 'mock_only'.")
 
     # Beyan edilen yollar gercekten denetlenenler mi (yanlis dosyayi denetleme tuzagi)
-    for key, used in (("spec_path", args.spec), ("mirror_path", args.mirror)):
-        declared = cov.get(key)
-        if declared and args.spec == DEFAULT_SPEC and args.mirror == DEFAULT_MIRROR:
-            if (ROOT / declared).resolve() != used.resolve():
-                bad(f"seam-coverage.json {key}='{declared}' denetlenen dosya degil ({used})")
+    if default_paths:
+        declared = cov.get("spec_path")
+        if declared and (ROOT / declared).resolve() != args.spec.resolve():
+            bad(f"seam-coverage.json spec_path='{declared}' denetlenen dosya degil ({args.spec})")
+        declared = cov.get("mirror_paths")
+        if declared is not None:
+            want = sorted(str((ROOT / p).resolve()) for p in declared)
+            used = sorted(str(p.resolve()) for p in args.mirror)
+            if want != used:
+                bad(f"seam-coverage.json mirror_paths={declared} denetlenen dosyalar degil "
+                    f"({[str(p) for p in args.mirror]})")
+        if "mirror_path" in cov:
+            bad("seam-coverage.json: eski tekil `mirror_path` anahtari — `mirror_paths` listesi kullanin")
 
     if findings:
         print(f"\nSEAM-DRIFT: KIRMIZI ({len(findings)} bulgu)")
         return 1
-    say("\nSEAM-DRIFT: YESIL (spec ↔ ayna ↔ beyan hizali)")
+    say("\nSEAM-DRIFT: YESIL (spec ↔ sozlesme kaynagi ↔ beyan hizali)")
     return 0
 
 

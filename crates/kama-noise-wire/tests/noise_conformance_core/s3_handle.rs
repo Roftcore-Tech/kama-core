@@ -1,9 +1,11 @@
 //! H-HANDLE (çalışma zamanı yarısı) — kapanmış oturumun tutamacıyla `seal` → `UnknownSession`.
 //!
-//! Tip yarısı (`HubHandle` ≠ `SessionHandle`, trybuild negatif testi) `kama-contracts` işine (B1)
-//! taşındı; kapsama tablosunda "H-HANDLE/type: pending B1".
+//! Tip yarısı (`HubHandle` ≠ `SessionHandle`) derleme zamanında kanıtlanır: trybuild negatif testi
+//! `tests/ui/hub_handle_is_not_session_handle.rs` (bkz. `tests/trybuild.rs`) ve toolchain'den
+//! bağımsız karşılığı `kama-contracts` birim testi `hub_handle_does_not_convert_to_session_handle`.
+//! Kapsama tablosunda ayrı satırdır ("H-HANDLE/type").
 
-use client_core::seam::{
+use kama_contracts::s3::{
     PacketProtection, SealError, SessionCommand, SessionControl, SessionEvent, SessionResult,
 };
 

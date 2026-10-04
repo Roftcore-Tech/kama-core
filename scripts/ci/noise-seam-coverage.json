@@ -3,14 +3,14 @@
   "seam": "KM-SEAM-TC-001",
   "spec_path": "docs/seams/KM-SEAM-TC-001.md",
   "suite": "crates/kama-noise-wire/tests/noise_conformance_core",
-  "_comment": "S3 §6 satırlarının kapsama beyanı. 'mock: green' yalnız SAHTENİN sözleşmeye uyduğunu söyler; kanıt değeri 'real' hedefi (A5) aynı gövdeleri koşunca doğar. Koşucu (noise-conformance.sh --target mock) her 'green' satırın test_filter'ına uyan en az bir testin LİSTELENDİĞİNİ denetler.",
+  "_comment": "S3 §6 satırlarının kapsama beyanı. 'mock: green' yalnız SAHTENİN sözleşmeye uyduğunu söyler; kanıt değeri 'real' hedefi (A5) aynı gövdeleri koşunca doğar. Koşucu (noise-conformance.sh --target mock) şunları denetler: 'green' ve test_filter'lı her satırın en az bir testi LİSTELENİR; proof=trybuild satırının testi default-feature koşumunda KOŞAR; proof=layer_check satırı için layer_check.py KOŞAR. seam-api-drift.py --seam s3 bu satırları spec §6 ile karşılaştırır (alt satır biçimi: 'H-X/…').",
   "rows": [
     {
       "id": "H-CTX",
       "test_filter": "h_ctx_",
       "mock": "green",
       "real": "pending A5",
-      "note": "Bağlam kaydı çağıranın verdiğiyle aynı; mock'ta Session ≠ HubChannel. identity hedefinde no-op assert edilir; 'Session ≠ HubChannel' gerçek anahtarla (M4)."
+      "note": "Bağlam kaydı çağıranın verdiğiyle aynı; mock'ta Session ≠ HubChannel. identity hedefi (PoC IdentitySeam; client-core/tests/noise_identity_target.rs) no-op'u assert eder; 'Session ≠ HubChannel' gerçek anahtarla (M4)."
     },
     {
       "id": "H-PN-OWN",
@@ -57,16 +57,26 @@
     {
       "id": "H-HANDLE/type",
       "test_filter": "",
-      "mock": "pending B1",
-      "real": "pending A5",
-      "note": "HubHandle(u32) newtype + trybuild negatif testi kama-contracts PR'ında (B1)."
+      "mock": "green",
+      "real": "green",
+      "proof": "trybuild",
+      "proof_test": "hub_handle_cannot_stand_in_for_session_handle",
+      "note": "TİP düzeyi; hedeften bağımsız. trybuild negatif testi (kama-noise-wire/tests/ui/hub_handle_is_not_session_handle.rs): HubHandle, SessionHandle'ın beklendiği yere konunca derlenmez. Toolchain'den bağımsız karşılığı: kama-contracts s3::tests::hub_handle_does_not_convert_to_session_handle."
     },
     {
       "id": "H-REPLAY-POISON",
       "test_filter": "h_replay_poison_",
       "mock": "green",
       "real": "pending A5",
-      "note": "Sahte paket pencereyi ilerletmez; aynı sayaçlı geçerli paket kabul ve commit."
+      "note": "Sahte paket pencereyi ilerletmez; aynı sayaçlı geçerli paket kabul ve commit. §6 satırı 2026-10-05'te eklendi (tanım: sprint planı A4.4 + identity §15.5)."
+    },
+    {
+      "id": "H-SPLIT",
+      "test_filter": "",
+      "mock": "static",
+      "real": "static",
+      "proof": "layer_check",
+      "note": "STATİK; koşum testi değil. scripts/ci/layer_check.py: kama-app'in geçişli grafiğinde kripto/transport crate'i yok (L1, C2); kama-noise-wire → kama-app/client-core kenarı yok (L2, C3)."
     }
   ]
 }

@@ -5,9 +5,11 @@
 //!   kalsa bile bağlam içerikten türetilmez;
 //! * anahtar ayrımı olan hedefte (`mock`): `Session` çıktısı ≠ `HubChannel` çıktısı;
 //! * PoC `IdentitySeam`: iki bağlamda da çıktı plaintext'tir (no-op); "Session ≠ HubChannel" bu
-//!   hedefte UYGULANMAZ (gerçek anahtar M4).
+//!   hedefte UYGULANMAZ (gerçek anahtar M4). `IdentitySeam` `client-core`'undur ve bu crate
+//!   `client-core`'u göremez (katman kuralı C3); o yarı `client-core/tests/noise_identity_target.rs`
+//!   içindedir, koşucu onu `--target identity` ile koşar.
 
-use client_core::seam::{IdentitySeam, PacketProtection, ProtectionContext, IDENTITY_TAG};
+use kama_contracts::s3::{PacketProtection, ProtectionContext};
 
 use crate::s3_support::{established, session};
 use crate::target::S3Target;
@@ -54,29 +56,5 @@ pub fn session_and_hub_seal_differently<T: S3Target>() {
     assert_eq!(
         p.b.open(&hub.bytes).map(|o| o.ctx),
         Some(ProtectionContext::HubChannel)
-    );
-}
-
-/// PoC `IdentitySeam`: bağlam kaydı doğru; iki bağlamda da çıktı = plaintext (+ sıfır dolgu).
-pub fn identity_seam_is_noop_in_both_contexts() {
-    let mut seam = IdentitySeam::new();
-    let mut outputs = Vec::new();
-    for ctx in [
-        ProtectionContext::Session(IdentitySeam::SESSION),
-        ProtectionContext::HubChannel,
-    ] {
-        let sealed = seam.seal(ctx, FRAME).expect("identity seal");
-        assert_eq!(seam.last_seal_ctx(), Some(ctx));
-        assert_eq!(&sealed.bytes[..FRAME.len()], FRAME, "plaintext değişti");
-        assert_eq!(sealed.bytes.len(), FRAME.len() + IDENTITY_TAG);
-        assert!(
-            sealed.bytes[FRAME.len()..].iter().all(|b| *b == 0),
-            "sahte tag sıfır dolgu olmalı"
-        );
-        outputs.push(sealed.bytes);
-    }
-    assert_eq!(
-        outputs[0], outputs[1],
-        "no-op seam'de iki bağlam aynı byte'ları üretir"
     );
 }

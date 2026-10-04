@@ -9,13 +9,18 @@ publish = false
 # DR-CS-1b/A2: urun-alici cold-start dar-dilimleri (unregister/tombstone/A-4). DEFAULT-OFF.
 experimental-cold-start = []
 # K-WIRE-SEALED-TYPE-1: test-constructor'ı dış-crate entegrasyon-testlerine açar (production-build'de KAPALI).
-test-util = []
+# [B1 2026-10-05] Aynı özellik `seam_mock::MockCrypto`'yu (S3 §7 sahtesi) da açar; sahte, sözleşme
+# tiplerinin ham erişimlerine `kama-contracts/test-util` üzerinden ulaşır.
+test-util = ["kama-contracts/test-util"]
 # KATMAN-3 (DR-5): RustCrypto==libsodium AEAD differential-oracle. TEST-ONLY, DEFAULT-KAPALI →
 # production-dependency-graph'ına GİRMEZ (ayrı-CI-job: `cargo test --features libsodium-oracle`).
 # Sistem-libsodium'a linklenir (native).
 libsodium-oracle = ["dep:sodiumoxide"]
 
 [dependencies]
+# S1/S3 sözleşme tipleri (R-7(b); B1). Bu crate S3'ü implemente eder; `client-core`'a ve `kama-app`'e
+# bağımlı OLAMAZ (dev-dependency dahil) — scripts/ci/layer_check.py kural C3.
+kama-contracts = { path = "../kama-contracts" }
 kama-transport-schema = { path = "../kama-transport-schema" }
 thiserror.workspace = true
 # AEAD production-backend: RustCrypto ChaCha20-Poly1305 IETF (RFC 8439; ADR-03/DR-5; pki-§13 primitif).
@@ -47,9 +52,15 @@ trybuild = "1"
 # Test-vektör hex yardımcısı (T-00.2): golden_wire.rs / sprint5b_legacy.rs / rfc8439_vectors.rs
 # içindeki üç yerel `fn hex` kopyasının yerine.
 kama-vectors = { path = "../kama-vectors" }
-# GEÇİCİ (iş emri 2026-10-05 §B1): S3 sözleşme tipleri + MockCrypto bugün client-core'da (R-7(b)).
-# noise_conformance_core onları buradan alır. Bu bir dev-dependency döngüsüdür (client-core →
-# kama-noise-wire); Cargo buna yalnız dev-dep olarak izin verir. `crates/kama-contracts` gelince KALDIRILIR.
-client-core = { path = "../client-core", features = ["test-util"] }
+
+# S3 sözleşme süiti `MockCrypto`'yu kullanır → `test-util` ister. Özellik kapalıyken hedef ATLANIR
+# (trybuild sealed-type kapısı `test-util` KAPALI koşmak zorunda; bu yüzden self dev-dependency ile
+# özelliği her test derlemesinde açmak yerine hedef-düzeyi şart kullanılır). Koşucu
+# (scripts/ci/noise-conformance.sh) özelliği AÇIKÇA verir ve 0 testi kırmızı sayar.
+[[test]]
+name = "noise_conformance_core"
+path = "tests/noise_conformance_core/main.rs"
+required-features = ["test-util"]
+
 [lints]
 workspace = true

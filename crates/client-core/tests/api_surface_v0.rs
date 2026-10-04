@@ -277,7 +277,7 @@ async fn transport_api_v0_surface_is_frozen() {
 
     // SessionControl tipleri (K6 typed komut · K10/DR-CONNECT-1 K5 provisional + Confirmed).
     let h = SessionHandle::from_raw(1);
-    let peer = PeerRef::from_raw(1);
+    let peer = PeerRef::from_dest_hash([1; 32]);
     for cmd in [
         SessionCommand::Initiate {
             peer,
@@ -319,7 +319,13 @@ async fn transport_api_v0_surface_is_frozen() {
     match SessionEvent::Ready(h) {
         SessionEvent::Ready(_) => {}
         SessionEvent::RenewRequired(_) => {}
-        SessionEvent::Closed(_, CloseReason::Renewed | CloseReason::Superseded) => {}
+        SessionEvent::Closed(
+            _,
+            CloseReason::Superseded
+            | CloseReason::UserClosed
+            | CloseReason::PeerClosed
+            | CloseReason::KeyHygiene,
+        ) => {}
         SessionEvent::Confirmed(_) => {}
     }
     fn _dyn_session_control(_: &mut dyn SessionControl) {}

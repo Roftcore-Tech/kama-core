@@ -1,9 +1,9 @@
 //! H-NO-MUTATE — her başarısız yolda replay penceresi, pending kümesi ve anahtar/oturum state'i
 //! byte-for-byte aynı kalır (S3 §3; P0-6 / P0-13).
 
-use client_core::seam::{
-    PacketProtection, ProtectionContext, SealError, SessionCommand, SessionControl, SessionHandle,
-    SessionResult,
+use kama_contracts::handles::SessionHandle;
+use kama_contracts::s3::{
+    PacketProtection, ProtectionContext, SealError, SessionCommand, SessionControl, SessionResult,
 };
 
 use crate::s3_support::{established, initiate, session, tamper, PEER};

@@ -4,7 +4,7 @@
 //! Decoder burada sahtedir (çağrı sayar, `K` farklı shard'la birleştirir). Sınanan şey FEC
 //! matematiği değil, seam'in decoder'ın ÖNÜNDEKİ kapı olmasıdır.
 
-use client_core::seam::PacketProtection;
+use kama_contracts::s3::PacketProtection;
 
 use crate::s3_support::{established, session, tamper};
 use crate::target::S3Target;

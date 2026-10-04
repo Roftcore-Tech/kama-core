@@ -58,7 +58,7 @@ fn f1_mock_declares_itself_as_mock() {
 fn f2_mock_is_deterministic_across_instances() {
     let mut a = MockTarget::build().expect("mock hedefi kurulmalı");
     let mut b = MockTarget::build().expect("mock hedefi kurulmalı");
-    let peer = PeerRef::from_raw(1);
+    let peer = harness::test_peer(1);
 
     let r_a = a.connect(peer, None);
     let r_b = b.connect(peer, None);
@@ -92,7 +92,7 @@ fn f3_mock_does_not_fabricate_delivery() {
     );
 
     // Pending oturum da aktif DEĞİLDİR: Ready gelmeden send kabul edilmez (§K7).
-    let peer = PeerRef::from_raw(9);
+    let peer = harness::test_peer(9);
     let ConnectResult::Pending(_) = t.connect(peer, None).expect("connect") else {
         panic!("taze peer için Pending bekleniyordu");
     };
@@ -146,7 +146,7 @@ fn f5_mock_contract_row_claims_are_well_formed() {
 #[test]
 fn f6_mock_queues_are_bounded() {
     let mut t = MockTarget::build().expect("mock hedefi kurulmalı");
-    let h = ready(&mut t, PeerRef::from_raw(3));
+    let h = ready(&mut t, harness::test_peer(3));
 
     for i in 0..MOCK_MAX_INBOX {
         assert_eq!(
@@ -165,12 +165,12 @@ fn f6_mock_queues_are_bounded() {
     let mut t2 = MockTarget::build().expect("mock hedefi kurulmalı");
     for i in 0..MOCK_MAX_SESSIONS {
         assert!(
-            t2.connect(PeerRef::from_raw(100 + i as u64), None).is_ok(),
+            t2.connect(harness::test_peer(100 + i as u64), None).is_ok(),
             "tavan altında {i}. connect reddedildi"
         );
     }
     assert_eq!(
-        t2.connect(PeerRef::from_raw(999), None),
+        t2.connect(harness::test_peer(999), None),
         Err(TransportError::Backpressure),
         "oturum tavanında sessizce büyüdü"
     );
@@ -184,7 +184,7 @@ fn f6_mock_queues_are_bounded() {
 #[test]
 fn f7_mock_injects_no_loss_reorder_or_duplication() {
     let mut t = MockTarget::build().expect("mock hedefi kurulmalı");
-    let h = ready(&mut t, PeerRef::from_raw(4));
+    let h = ready(&mut t, harness::test_peer(4));
 
     let payloads: Vec<Vec<u8>> = (0u8..8).map(|i| vec![i; (i as usize) + 1]).collect();
     for p in &payloads {
@@ -206,7 +206,7 @@ fn f7_mock_injects_no_loss_reorder_or_duplication() {
 #[test]
 fn f8_mock_cancel_abandons_pending_without_inventing_ready() {
     let mut t = MockTarget::build().expect("mock hedefi kurulmalı");
-    let peer = PeerRef::from_raw(5);
+    let peer = harness::test_peer(5);
 
     let ticket = match t.connect(peer, Some(unit(b"early"))).expect("connect") {
         ConnectResult::Pending(ticket) => ticket,

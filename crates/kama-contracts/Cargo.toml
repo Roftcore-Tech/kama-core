@@ -1,0 +1,26 @@
+[package]
+name = "kama-contracts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# SÖZLEŞME CRATE'İ (R-7(b); iş emri 2026-10-05 §1). S1 (Application↔Transport,
+# docs/seams/KM-SEAM-AT-001.md) ve S3 (Transport↔Crypto, docs/seams/KM-SEAM-TC-001.md)
+# trait/tiplerinin TEK evi.
+#
+# NEDEN AYRI CRATE: trait'ler bir katmanın crate'inde dururken komşu katman onları implemente etmek
+# için o crate'e bağımlı olmak zorundaydı — S3'te bu bir DÖNGÜ (client-core ↔ kama-noise-wire), S1'de
+# TERS YÖN (Transport → Application) demekti; trait Transport'a taşınsa Application geçişli olarak
+# kriptoya bağlanırdı (INV-NEIGHBOR-1 ihlali). Sözleşme hiçbir katmana ait değildir.
+#
+# BU CRATE'E BAĞIMLILIK EKLENMEZ: ne workspace crate'i ne harici crate; normal, dev ya da build fark
+# etmez (`thiserror` YOK — `Display` + `Error` elle yazılır). `scripts/ci/layer_check.py` kural C1
+# bunu kapıda denetler.
+[features]
+# YALNIZ TEST: sahtelerin ihtiyaç duyduğu ham erişimler (`*_for_mock`). Ürün derlemesinde KAPALI.
+# `kama-app` bu özelliği AÇAMAZ (layer_check kural C5).
+test-util = []
+
+[lints]
+workspace = true
