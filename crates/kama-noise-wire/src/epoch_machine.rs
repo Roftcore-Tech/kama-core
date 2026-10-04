@@ -8,7 +8,8 @@
 //! 5. GRACE = max(4×sRTT, GRACE_MIN_PACKETS=64) [CAL — D1-ölçümle-kilitlenir]; bitince epoch-0-recv-discard.
 //!
 //! RESPONSE-kaybolursa: Alice-epoch-0'da-kalır, Bob-epoch-0-kabulü-SÜRER → "epoch-0-usable"-garantisi KORUNUR.
-//! EPOCH-1-PN=0'dan-başlar (§4 EPOCH-PN-INIT; ayrı-cipher-state). Deterministik (RNG-YOK).
+//! PN sayacı epoch'lar boyunca SÜREKLİDİR: epoch-1 epoch-0'ın son PN'inden +1 ile devam eder; ayrı olan
+//! yalnız anahtardır (§4 EPOCH-PN-INIT, 2026-10-06). Deterministik (RNG-YOK).
 
 /// Endpoint rolü (§0.7-A one-way zero-RTT: initiator SESSION_INIT gönderir).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-//! Sprint-4c: dh_epoch 0→1 confirmation-safe machine (§4-B3) + protector-entegrasyonu (epoch1-PN=0).
+//! Sprint-4c: dh_epoch 0→1 confirmation-safe machine (§4-B3) + protector-entegrasyonu (PN epoch'lar boyunca sürekli).
 
 use kama_noise_wire::epoch_machine::GRACE_MIN_PACKETS;
 use kama_noise_wire::{
@@ -101,48 +101,41 @@ fn grace_min_clamp() {
     assert_eq!(ticks, GRACE_MIN_PACKETS, "grace en-az GRACE_MIN_PACKETS");
 }
 
-// ── Entegrasyon: transition sonrası epoch-1 seal/open PN=0'dan başlar (§4 EPOCH-PN-INIT) ──
+// ── Entegrasyon: transition sonrası PN sayacı DEVAM eder (§4 EPOCH-PN-INIT, 2026-10-06) ──
 #[test]
-fn epoch1_pn_starts_zero() {
+fn epoch1_pn_continues_after_transition() {
     let mut a = KamaNoiseWireProtector::new(0x9, &key(0xAA), &key(0xBB));
     let mut b = KamaNoiseWireProtector::new(0x9, &key(0xBB), &key(0xAA));
     // Machine adım-2/3 → epoch-1 kur (engine InstallEpoch1AndSend'i uygular).
     a.install_epoch1_keys(&key(0xCC), &key(0xDD));
     b.install_epoch1_keys(&key(0xDD), &key(0xCC));
-    // epoch-0'da bir paket gönderilmiş olsun (pn=0..2).
-    let _ = a
-        .seal(
-            &fec(),
-            SealArgs {
-                wire_pn: 0,
-                dh_epoch: 0,
-                send_generation: 0,
-            },
-        )
-        .unwrap();
-    let _ = a
-        .seal(
-            &fec(),
-            SealArgs {
-                wire_pn: 5,
-                dh_epoch: 0,
-                send_generation: 0,
-            },
-        )
-        .unwrap();
-    // epoch-1 PN=0'dan başlar (ayrı-cipher-state; epoch-0'ın pn=5'inden devam-ETMEZ).
-    assert_eq!(b.recv_expected_pn(1), 0);
-    let s = a
-        .seal(
-            &fec(),
-            SealArgs {
-                wire_pn: 0,
-                dh_epoch: 1,
-                send_generation: 0,
-            },
-        )
-        .unwrap();
-    assert!(b.open(&s.bytes).is_ok(), "epoch-1 pn=0 kabul");
-    assert_eq!(b.recv_expected_pn(1), 1);
-    assert_eq!(b.recv_expected_pn(0), 0, "epoch-0/1 PN-state AYRI");
+    let args = |wire_pn, dh_epoch| SealArgs {
+        wire_pn,
+        dh_epoch,
+        send_generation: 0,
+    };
+    // epoch-0'da pn=0 ve pn=5 gönderilir, Bob ikisini de açar.
+    for pn in [0u64, 5] {
+        let s = a.seal(&fec(), args(pn, 0)).unwrap();
+        assert!(b.open(&s.bytes).is_ok());
+    }
+    assert_eq!(b.recv_expected_pn(), 6);
+
+    // Gönderen: epoch-1'de PN 0 mühürlenemez (tek sayaç, monotonluk epoch'tan bağımsız).
+    assert!(
+        a.seal(&fec(), args(0, 1)).is_err(),
+        "sayaç epoch'ta sıfırlandı"
+    );
+    // epoch-1 PN 6 ile devam eder ve kabul edilir.
+    let s = a.seal(&fec(), args(6, 1)).unwrap();
+    assert!(b.open(&s.bytes).is_ok(), "epoch-1 pn=6 kabul");
+    assert_eq!(b.recv_expected_pn(), 7, "tek pencere");
+
+    // Alıcı: epoch-1 anahtarıyla mühürlenmiş PN 0 (aynı anahtarlı, state'i taze ikinci bir gönderen
+    // üretir) reddedilir — PN 0 tek pencerede zaten görülmüştür. Pencere ilerlemez.
+    let mut stale = KamaNoiseWireProtector::new(0x9, &key(0xAA), &key(0xBB));
+    stale.install_epoch1_keys(&key(0xCC), &key(0xDD));
+    let old = stale.seal(&fec(), args(0, 1)).unwrap();
+    assert!(b.open(&old.bytes).is_err(), "epoch-1 pn=0 kabul edildi");
+    assert_eq!(b.recv_expected_pn(), 7);
 }

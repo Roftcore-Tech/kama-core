@@ -299,7 +299,7 @@ fn rejected_mutations_leave_no_receiver_state() {
     // bu, state birikimini ölçer.)
     let d = golden_datagram();
     let mut b = fresh_receiver();
-    let before = b.recv_expected_pn(0);
+    let before = b.recv_expected_pn();
 
     for pos in 0..d.len() {
         let mut bad = d.clone();
@@ -307,7 +307,7 @@ fn rejected_mutations_leave_no_receiver_state() {
         let _ = b.open(&bad);
     }
     assert_eq!(
-        b.recv_expected_pn(0),
+        b.recv_expected_pn(),
         before,
         "mutasyon seli recv-penceresini ilerletti"
     );

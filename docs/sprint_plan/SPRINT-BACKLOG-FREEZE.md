@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-06 [PN SÜREKLİ — Abkarada kararı]:** D1'e ACK kimliği kararı (`full_wire_pn`; `dh_epoch` girmez) · D2 durum satırında `dh_epoch` alt-sorusu kapandı · A3.2 / A5.4'te "denenen anahtarın epoch penceresi" → tek pencere. Üstü çizili metin silinmedi.
+
 **Tarih:** 2026-09-20 · v3.1 — kripto implementasyon risk taraması işlendi (A2.1/A2.3/A2.4/A2.7, A3.2, A4.4, A5.0–A5.5, WS-D) · v1/v2 superseded · **Okuyucu:** ekibe yeni katılan biri bu belgeyi açıp tek başına anlayabilmeli.
 
 ---
@@ -211,7 +213,7 @@ Her kart: **Neden · Ne yapılacak · Nereye · Neye bağlı · Bittiğini nası
 
 ### A3.2 — Anahtar değişimi makinesini test et
 **Neden:** Epoch 0→1 geçişinde `RESPONSE` kaybolabilir, geç gelebilir, sırası bozulabilir. Makine bunların hepsinde güvenli kalmalı. En kritik: saldırgan **sahte** bir yeni-anahtar paketi göndererek "geçiş tamamlandı" izlenimi yaratamamalı — geçiş yalnız AEAD'i geçen paketle onaylanır.
-**Ne yapılacak:** matris: RESPONSE normal / kayıp / sırasız × AEAD-geçersiz epoch-1 paketi geçişi tetiklemez × pencere `N_g` VEYA `T_g` hangisi önce × **anahtar denemesi**: legacy 22 B formatında epoch biti yok, grace içinde en fazla iki anahtar denenir (noise-wire K-WIRE-TRIAL-1); replay precheck/commit **denenen anahtarın epoch penceresine** yapılır (identity T-19) — epoch-1 anahtarıyla açılan paket epoch-1 penceresine commit edilir, epoch-0 penceresi değişmez.
+**Ne yapılacak:** matris: RESPONSE normal / kayıp / sırasız × AEAD-geçersiz epoch-1 paketi geçişi tetiklemez × pencere `N_g` VEYA `T_g` hangisi önce × **anahtar denemesi**: legacy 22 B formatında epoch biti yok, grace içinde en fazla iki anahtar denenir (noise-wire K-WIRE-TRIAL-1); ~~replay precheck/commit **denenen anahtarın epoch penceresine** yapılır (identity T-19) — epoch-1 anahtarıyla açılan paket epoch-1 penceresine commit edilir, epoch-0 penceresi değişmez.~~ **[2026-10-06 — PN SÜREKLİ]** replay precheck/commit **TEK pencereye** yapılır (identity §15.5, T-19): hangi anahtar açtıysa o anahtarla doğrulanmış sayaç tek pencereye commit edilir; başarısız deneme hiçbir şeyi değiştirmez.
 **Nereye:** `crates/kama-noise-wire/tests/conf_epoch.rs`. Tanım: `noise-wire` §4/§5.
 **Neye bağlı:** A1.2.
 **Done:** matris yeşil.
@@ -278,7 +280,7 @@ A1.1 + A1.2 sayıları · A2.* vektörleri commit · A4.* yeşil · C1.2 yeşil.
 **Ne:** `replay_precheck` (yalnız okur) + `replay_commit` (yalnız AEAD başarısında yazar). Tanım `identity` §15.5. **Done:** `H-REPLAY-POISON`, `H-NO-MUTATE`.
 
 ### A5.4 — Anahtar değişimi makinesi
-**Ne:** confirmation-safe geçiş, pencere `N_g`/`T_g`; grace içinde en fazla iki anahtar denemesi, replay precheck/commit **denenen anahtarın epoch penceresine** (A3.2). Mevcut `kama-noise-wire/src/epoch_machine.rs` üstünde. **Done:** A3.2.
+**Ne:** confirmation-safe geçiş, pencere `N_g`/`T_g`; grace içinde en fazla iki anahtar denemesi, replay precheck/commit ~~**denenen anahtarın epoch penceresine**~~ **TEK pencereye [2026-10-06 — PN SÜREKLİ]** (A3.2). Mevcut `kama-noise-wire/src/epoch_machine.rs` üstünde. **Done:** A3.2.
 
 ### A5.5 — Oturum kontrolü
 **Ne:** Initiate / AcceptInit / AcceptResponse (sınırlı aday deneme) / Renew / Close; anahtar silme sırası (`identity` §15.6). Mevcut `session.rs`, `init_flight.rs`.
@@ -399,6 +401,7 @@ Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıf
 **Ne yapılacak:** transport ARQ/ACK tablosu `meta.full_wire_pn` ile anahtarlanır (her yeniden gönderim yeni seal → yeni PN; tablo PN → mantıksal birim eşler — S3 K2/K4); interim 11 B çerçeve yerine `BatchPayload`; `SealArgs.wire_pn` üretimi kalkar, `ctx` verilir.
 **Nereye:** `crates/client-core/src/runtime.rs` (seal/open çağrıları), `crates/client-core/src/wire.rs`, `crates/adaptive-transport` ARQ/ACK. Tanım: `KM-SEAM-TC-001.md` K2/K4, `ccr-format-spec.md` §35.6.
 **Neye bağlı:** A4.1; D2 kararı.
+**KARAR (2026-10-06, Abkarada — `dh_epoch` alt-sorusu KAPANDI):** ACK_FRAME_V2 kimliği = `full_wire_pn`; `dh_epoch` kimliğe girmez; dayanak: sayaç epoch'lar boyunca sürekli (noise-wire §2.5, §4 EPOCH-PN-INIT, 2026-10-06).
 **Done:** mevcut kayıp/kurtarma davranış testleri yeni kimlikle yeşil; interim çerçeve kodda yok.
 
 ### D2 — İki ACK ailesinden hangisi ürün ACK'i? (Tema E)
@@ -407,7 +410,7 @@ Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıf
 **Nereye:** karar → `kama-noise-wire-tdd-v2.0.md` §2.57 + `adaptive-transport-engine-spec.md` ACK bölümü; kod → `adaptive-transport/src/ack.rs` veya `kama-noise-wire/src/control.rs`.
 **Neye bağlı:** —
 **Done:** tek ACK ailesi; spec'te amendment kaydı.
-**DURUM (2026-10-04): KARAR KAPANDI (K3), KOD AÇIK.** Ürün ACK'i = engine `ACK_V2`; noise-wire `Control::Ack/Sack` (0x10/0x11) spec'te silindi; onay/keepalive taşıyıcısı = boş batch (OQ-14 kapandı). Kalan kod işi: `kama-noise-wire/src/control.rs` + `kama-transport-schema` + `kama-engine/src/recovered_map.rs`'ten Ack/Sack'in sökülmesi ve D1'de ACK_V2'nin `full_wire_pn`'e anahtarlanması (açık alt-soru: `dh_epoch` belirsizliği).
+**DURUM (2026-10-04): KARAR KAPANDI (K3), KOD AÇIK.** Ürün ACK'i = engine `ACK_V2`; noise-wire `Control::Ack/Sack` (0x10/0x11) spec'te silindi; onay/keepalive taşıyıcısı = boş batch (OQ-14 kapandı). Kalan kod işi: `kama-noise-wire/src/control.rs` + `kama-transport-schema` + `kama-engine/src/recovered_map.rs`'ten Ack/Sack'in sökülmesi ve D1'de ACK_V2'nin `full_wire_pn`'e anahtarlanması (~~açık alt-soru: `dh_epoch` belirsizliği~~ **KAPANDI 2026-10-06: PN sayacı epoch'lar boyunca sürekli; kimlik = `full_wire_pn`**).
 
 ### D3 — Donmuş transport golden'larının güncellenmesi
 **Neden:** D1 çerçeveyi ve numaralandırmayı değiştirdiği için `adaptive-transport/tests/tv_*.rs` ve `kama-transport-schema/tests/golden_v0.rs` golden'larının bir kısmı değişecek. Bunlar donmuş transport'un kanıtı; sessizce "düzeltilmemeli".

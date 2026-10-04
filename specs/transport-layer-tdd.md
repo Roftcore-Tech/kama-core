@@ -1,5 +1,7 @@
 # Kama — Transport Layer TDD (Adaptive Hostile-Aware Transport)
 
+> **YAMA KAYDI — 2026-10-06 [PN SÜREKLİ — Abkarada kararı; WS-D1 `dh_epoch` sorusu KAPANDI]:** §12'ye ACK kimliği satırı: ACK_FRAME_V2 kimliği = `full_wire_pn`; `dh_epoch` kimliğe girmez. [AMENDMENT-9]'daki "sayım (session, direction, dh_epoch) başınadır" → "(session, direction) başınadır" (noise-wire §2.5 ile birebir). Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-04b [K4 — Abkarada kararı]:** §10 [AMENDMENT-10] madde 5 jitter formülü kesinleşti: `BLAKE2s-256(seed ‖ u32_be(deneme))[0..4] mod pencere`; tohum **dest_hash DEĞİL** — `hub_handle` (bind sonrası, bacak başına) / hop handshake'inin yerel ephemeral public anahtarı (bind öncesi). Önceki `hash(client_id ‖ …)` ifadesi üstü çizildi. SPEC-ONLY.
 
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 tamamlama — sahip kararı]:** §10 [AMENDMENT-10] genişletildi: **H4 hop heartbeat YENİ CODEPOINT ile** (`HEARTBEAT 0x1B` / `HEARTBEAT_ACK 0x1C`, HubChannel ctx, sıfır payload + opsiyonel u32 echo token, kendi sayacı yok, REFRESH-ONLY, CS probe bütçesi ve INV-CS-7 kapsamı dışında, RTT observation-only) — CS_PROBE'a bindirilmedi · **KS-HB-1 KAPANDI** (8 s / 25 s / OS) · **jitter RNG'siz** (`hash(client_id ‖ deneme_sayacı) mod pencere`, pencere = backoff adımının %25'i) · link/power sinyali gelene kadar ön-plan davranışı notu (K5 → PARK). Aşağıdaki 2026-10-03 kaydındaki "H4 UYGULANMADI" ifadesi bu kayıtla aşılmıştır. Rust ürün koduna dokunulmadı; üstü çizili metin silinmedi.
@@ -832,6 +834,8 @@ default path_mtu_target = 1200B (fragmentation kaçınımı); probe 576/768B; lo
 
 ## 12. ACK Stratejisi (windowed — per-paket ACK DEĞİL)
 
+> **[2026-10-06 — ACK KİMLİĞİ, Abkarada kararı; WS-D1]** ACK_FRAME_V2 kimliği = `full_wire_pn`; `dh_epoch` kimliğe girmez; dayanak: sayaç epoch'lar boyunca sürekli (noise-wire §2.5, §4 EPOCH-PN-INIT, 2026-10-06). Hub ACK'i cleartext PN'den üretir ve epoch'u bilmez; sürekli sayaçta bir PN değeri (session, direction) içinde tek bir datagrama karşılık gelir.
+
 > **[AMENDMENT-8 — 2026-09-23, N-PENCERESİ TEMİZLİĞİ · DAVRANIŞ DEĞİŞİKLİĞİ YOK]** Bu belgedeki "N-mesaj ACK penceresi"
 > ifadeleri (§7 Pipeline A, §12) üstü çizildi. Gerekçe: 2026-09-22 sahip kararıyla N-mesaj ACK penceresi ÜÇE AYRILDI —
 > hub tarafı sınır **mailbox kotası** olarak app-rpc §8'de KALIR (`0x0505 MAILBOX_QUOTA_EXCEEDED`), **istemci/gönderen
@@ -844,7 +848,7 @@ default path_mtu_target = 1200B (fragmentation kaçınımı); probe 576/768B; lo
 >
 > **Kural (NORMATİF):** Gönderen, peer'dan hop-ACK almadan ARDIŞIK olarak en fazla **K** paket-numarası (PN) tüketebilir.
 > Tavana ulaşıldığında yeni datagram üretilmez; tüketim ancak ilerleyen bir hop-ACK geldikten sonra devam eder.
-> Sayım (session, direction, dh_epoch) başınadır ve **mühürlenen her sınıfı** kapsar (DATA · retransmit · tail probe ·
+> Sayım ~~(session, direction, dh_epoch)~~ **(session, direction) [2026-10-06 — PN SÜREKLİ: sayaç epoch'ta sıfırlanmaz, noise-wire §2.5]** başınadır ve **mühürlenen her sınıfı** kapsar (DATA · retransmit · tail probe ·
 > duplication · FEC repair · E2E kontrol) — çünkü noise-wire §2.5 hepsini TEK PN uzayına koyar.
 >
 > **Gerekçe — gap değil İSRAF:** boşluğa giden her datagram bant ve `SEND_PN_CAP` yakar. (Far-future reddi D-GAP-1 ile

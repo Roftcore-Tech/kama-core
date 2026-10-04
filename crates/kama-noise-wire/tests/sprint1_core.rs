@@ -237,13 +237,13 @@ fn aead_fail_does_not_advance_window() {
             },
         )
         .unwrap();
-    let before = b.recv_expected_pn(0);
+    let before = b.recv_expected_pn();
     // ciphertext'i boz → AEAD fail
     let n = sealed.bytes.len();
     sealed.bytes[n - 1] ^= 0xFF;
     assert!(matches!(b.open(&sealed.bytes), Err(WireError::AeadFail)));
     assert_eq!(
-        b.recv_expected_pn(0),
+        b.recv_expected_pn(),
         before,
         "window AEAD-fail'de ilerlememeli"
     );
@@ -293,9 +293,9 @@ fn replay_same_datagram_rejected() {
     ));
 }
 
-// ── §4: epoch-0/1 ayrı-state, aynı-PN-değeri karışmaz ──
+// ── §4 EPOCH-PN-INIT (2026-10-06): PN sayacı epoch'lar boyunca SÜREKLİ; dh_epoch yalnız anahtar seçer ──
 #[test]
-fn epoch_isolation_same_pn() {
+fn pn_space_is_continuous_across_epochs() {
     let mut a = KamaNoiseWireProtector::new(0x5, &key(0xAA), &key(0xBB));
     let mut b = KamaNoiseWireProtector::new(0x5, &key(0xBB), &key(0xAA));
     a.install_epoch1_keys(&key(0xCC), &key(0xDD));
@@ -311,8 +311,8 @@ fn epoch_isolation_same_pn() {
             },
         )
         .unwrap();
-    // epoch-1 pn=0 (ayrı cipher-state, aynı PN değeri)
-    let s1 = a
+    // epoch-1'de AYNI PN değeri yeniden mühürlenemez (tek sayaç; nonce-reuse guard epoch'tan bağımsız).
+    assert!(a
         .seal(
             &fec_packet(2, 0, 1, 64),
             SealArgs {
@@ -321,14 +321,24 @@ fn epoch_isolation_same_pn() {
                 send_generation: 0,
             },
         )
+        .is_err());
+    // epoch-1 sayaçtan +1 ile devam eder.
+    let s1 = a
+        .seal(
+            &fec_packet(2, 0, 1, 64),
+            SealArgs {
+                wire_pn: 1,
+                dh_epoch: 1,
+                send_generation: 0,
+            },
+        )
         .unwrap();
     assert!(b.open(&s0.bytes).is_ok());
     assert!(
         b.open(&s1.bytes).is_ok(),
-        "epoch-1 pn=0 ayrı-state'te kabul"
+        "epoch-1 pn=1 tek pencerede kabul"
     );
-    assert_eq!(b.recv_expected_pn(0), 1);
-    assert_eq!(b.recv_expected_pn(1), 1);
+    assert_eq!(b.recv_expected_pn(), 2, "tek pencere iki epoch'u da sayar");
 }
 
 // ── §4: epoch-1 anahtarı yokken epoch-1 open reddi ──
