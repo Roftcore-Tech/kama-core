@@ -161,16 +161,24 @@ fn seal_with_non_monotonic_pn_is_seal_input() {
 }
 
 #[test]
-fn pn_floor_is_per_epoch_not_global() {
-    // last_sealed_pn epoch BAŞINA tutulur. Epoch-1 yeni cipher-state'tir ve PN 0'dan başlar
-    // (§4 EPOCH-PN-INIT) — epoch-0'daki yüksek PN, epoch-1'in düşük PN'ini bloklamamalı.
-    // Guard global olsaydı epoch geçişi sonrası gönderim tıkanırdı.
+fn pn_floor_is_global_across_epochs() {
+    // last_sealed_pn TEK sayaçtır: PN uzayı epoch'lar boyunca süreklidir (§4 EPOCH-PN-INIT,
+    // 2026-10-06). Epoch-1, epoch-0'ın son PN'inden +1 ile devam eder; daha düşük ya da eşit PN
+    // epoch-1 anahtarıyla bile mühürlenmez. Taban epoch başına olsaydı aynı PN değeri iki epoch'ta
+    // da var olur ve hub'ın cleartext-PN hop-ACK'i grace penceresinde belirsiz kalırdı.
     let mut p = protector();
     p.install_epoch1_keys(&key(0x33), &key(0x44));
     p.seal(&shard(64), args(1000, 0)).expect("epoch-0 pn=1000");
+    for pn in [0u64, 999, 1000] {
+        assert_eq!(
+            p.seal(&shard(64), args(pn, 1)).unwrap_err(),
+            WireError::SealInput("non-monotonic wire_pn (nonce-reuse guard)"),
+            "epoch-1 pn={pn} kabul edildi (sayaç epoch'ta sıfırlandı)"
+        );
+    }
     assert!(
-        p.seal(&shard(64), args(0, 1)).is_ok(),
-        "epoch-1 PN tabanı epoch-0'dan miras alınmış"
+        p.seal(&shard(64), args(1001, 1)).is_ok(),
+        "epoch-1 devam PN'i reddedildi"
     );
 }
 

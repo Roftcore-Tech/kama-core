@@ -337,9 +337,10 @@ fn pipeline_epoch_transition_live() {
     tx.install_epoch1_keys(&key(0xCC), &key(0xDD));
     rx.install_epoch1_keys(&key(0xDD), &key(0xCC));
 
-    // epoch-1'de blok gönder (PN=0'dan; ayrı-state) + decode → app doğru.
+    // epoch-1'de blok gönder (PN epoch-0'ın son değerinden +1 ile DEVAM eder; §4 EPOCH-PN-INIT
+    // 2026-10-06) + decode → app doğru.
     let mut sent1 = Vec::new();
-    let mut pn = 0u64;
+    let mut pn = sent0.len() as u64;
     // Basit: tek-blok epoch-1'de (sender_encode_seal epoch-0-sabit; burada elle epoch-1 seal).
     let (raw, _ks, ka1) = {
         // Re-encode aynı app; ama seal epoch-1. sender_encode_seal epoch-0 kullanıyor → burada
@@ -523,8 +524,8 @@ fn n8_recovered_is_logical_delivery_not_wire_credit() {
 // cached retransmit — InitFlight anahtar-TUTMAZ (re-seal imkansız); Sprint-4d'de testli, BURADA yeniden
 // yazılmaz, REFERANS: crates/kama-noise-wire/tests/sprint4d_init_flight.rs::retransmit_is_byte_for_byte_cached.
 //
-// Not (keşif-workflow bulguları): (1) reuse-guard `last_sealed_pn` PER-INSTANCE + PER-EPOCH-PARİTE →
-// negatif-test AYNI tx-instance + AYNI dh_epoch şart (vacuity: epoch-izolasyon + yeni-instance-reset meşrudur).
+// Not (keşif-workflow bulguları): (1) reuse-guard `last_sealed_pn` PER-INSTANCE (2026-10-06'dan beri TEK sayaç;
+// epoch'a bölünmez) → negatif-test AYNI tx-instance şart (vacuity: yeni-instance-reset meşrudur).
 // (2) FEC-decode dup-esi'yi FAIL-CLOSED reddeder (codec idempotent-DEĞİL) → tek-teslim = admission distinct-by-esi
 // CALLER-sözleşmesi. (3) send_generation transport-core'da retransmit'te ARTMAZ (sabit 0); retransmit-görünürlüğü
 // SealedPacketMeta.full_wire_pn per-emisyon ayrımıdır (sender-içi retx_count ayrı sayaç) — 5c-kapanış K2/DR-S5-4.

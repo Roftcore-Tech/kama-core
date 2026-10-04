@@ -118,8 +118,12 @@ fn epoch0_datagram_is_rejected_after_the_discard_action_is_applied() {
     let mut driver = MinimalEpochDriver::responder(GRACE_MIN_PACKETS);
     let mut peer = peer();
 
-    // Epoch-0 trafiği transition öncesi KABUL EDİLİR.
+    // PN sayacı epoch'lar boyunca SÜREKLİDİR (§4 EPOCH-PN-INIT, 2026-10-06): gönderen epoch-0'da
+    // PN 1..3'ü mühürler, sonra epoch-1'e PN 4 ile geçer. PN 2 ve 3 geçiş anında UÇUŞTADIR.
     let e0_early = peer.seal(&fec(), args(1, 0)).expect("seal e0").bytes;
+    let e0_grace = peer.seal(&fec(), args(2, 0)).expect("seal e0").bytes;
+    let e0_after = peer.seal(&fec(), args(3, 0)).expect("seal e0").bytes;
+    // Epoch-0 trafiği transition öncesi KABUL EDİLİR.
     assert!(
         driver.protector.open(&e0_early).is_ok(),
         "transition öncesi epoch-0"
@@ -127,14 +131,13 @@ fn epoch0_datagram_is_rejected_after_the_discard_action_is_applied() {
 
     // İlk geçerli epoch-1 → install + grace.
     driver.on_valid_epoch1_received();
-    let e1 = peer.seal(&fec(), args(1, 1)).expect("seal e1").bytes;
+    let e1 = peer.seal(&fec(), args(4, 1)).expect("seal e1").bytes;
     assert!(
         driver.protector.open(&e1).is_ok(),
         "epoch-1 kurulumdan sonra açılmalı"
     );
 
     // Grace BOYUNCA epoch-0 hâlâ kabul edilir (§4-B3: "epoch-0-usable" garantisi).
-    let e0_grace = peer.seal(&fec(), args(2, 0)).expect("seal e0").bytes;
     assert!(
         driver.protector.open(&e0_grace).is_ok(),
         "grace içinde epoch-0 düştü"
@@ -150,13 +153,12 @@ fn epoch0_datagram_is_rejected_after_the_discard_action_is_applied() {
     );
 
     // ORACLE: discard sonrası epoch-0 → EpochNotAccepted(0); epoch-1 → Ok.
-    let e0_after = peer.seal(&fec(), args(3, 0)).expect("seal e0").bytes;
     assert_eq!(
         driver.protector.open(&e0_after).unwrap_err(),
         WireError::EpochNotAccepted(0),
         "discard sonrası epoch-0 hâlâ kabul ediliyor — rotasyon anlamsız"
     );
-    let e1_after = peer.seal(&fec(), args(2, 1)).expect("seal e1").bytes;
+    let e1_after = peer.seal(&fec(), args(5, 1)).expect("seal e1").bytes;
     assert!(
         driver.protector.open(&e1_after).is_ok(),
         "discard epoch-1'i de öldürdü"
@@ -240,13 +242,13 @@ fn initiator_never_starts_grace_or_discards() {
 }
 
 #[test]
-fn epoch1_pn_window_is_independent_of_epoch0() {
-    // §4 EPOCH-PN-INIT: epoch-1 ayrı cipher-state, PN 0'dan başlar. Discard sonrası epoch-1
-    // penceresi epoch-0'ın ilerlemişliğinden ETKİLENMEMELİ.
+fn epoch1_pn_continues_from_epoch0() {
+    // §4 EPOCH-PN-INIT (2026-10-06): PN sayacı epoch'lar boyunca SÜREKLİ, replay penceresi TEK.
+    // Discard yalnız epoch-0 ANAHTARINI kapatır; pencere epoch-0'ın ilerlemişliğinden devam eder.
     let mut driver = MinimalEpochDriver::responder(GRACE_MIN_PACKETS);
     let mut peer = peer();
 
-    // epoch-0 penceresini yüksek bir PN'e taşı.
+    // Pencereyi epoch-0'da yüksek bir PN'e taşı.
     for pn in 1..=20u64 {
         let d = peer.seal(&fec(), args(pn, 0)).expect("seal").bytes;
         driver.protector.open(&d).expect("epoch-0 open");
@@ -256,11 +258,16 @@ fn epoch1_pn_window_is_independent_of_epoch0() {
         driver.on_grace_tick();
     }
 
-    // epoch-1 PN 0'dan başlayabilmeli.
-    let d = peer.seal(&fec(), args(0, 1)).expect("seal e1 pn=0").bytes;
+    // Gönderen epoch-1'de sayacı geri alamaz.
+    assert!(
+        peer.seal(&fec(), args(0, 1)).is_err(),
+        "epoch-1 PN 0'dan yeniden başladı"
+    );
+    // epoch-1 son PN'den +1 ile devam eder.
+    let d = peer.seal(&fec(), args(21, 1)).expect("seal e1 pn=21").bytes;
     assert!(
         driver.protector.open(&d).is_ok(),
-        "epoch-1 penceresi epoch-0'dan miras aldı"
+        "epoch-1 devam PN'i reddedildi"
     );
-    assert_eq!(driver.protector.recv_expected_pn(1), 1);
+    assert_eq!(driver.protector.recv_expected_pn(), 22);
 }

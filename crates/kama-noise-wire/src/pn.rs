@@ -65,7 +65,7 @@ pub fn reconstruct(params: &PnParams, expected_pn: u64, low_bits: u64) -> u64 {
 }
 
 /// Tek dh_epoch'un receive-PN-state'i: expected_pn + sliding-bitmap.
-/// `expected_pn` = en-yüksek-kabul+1 (§4); başlangıç 0 (epoch-cipher-state-YENİ, PN-0'dan-başlar).
+/// `expected_pn` = en-yüksek-kabul+1 (§4); başlangıç 0 (oturum başında; epoch geçişinde SIFIRLANMAZ).
 #[derive(Debug, Clone)]
 pub struct ReplayWindow {
     params: PnParams,
