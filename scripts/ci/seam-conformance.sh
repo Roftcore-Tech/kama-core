@@ -84,6 +84,14 @@ run_suite() {
 step "API drift (KM-SEAM-AT-001 §1/§3/§6 ↔ ayna ↔ beyan)"
 if [[ -f "$DRIFT" ]]; then
   python3 "$DRIFT" || bad "spec ↔ ayna ↔ beyan ayrismasi (bkz. yukaridaki bulgular)"
+  # [B1.0] Urun trait'i artik var (crates/kama-app). Ayni kapi ONU DA spec'e karsi denetler: test
+  # aynasi ile urun trait'i ayri ayri spec'e esit olunca birbirine de esittir (ucgen kapanir).
+  # Dosya yoksa atlanir — oz-test gecici kok kopyasinda kama-app bulunmayabilir.
+  APP_API="crates/kama-app/src/lib.rs"
+  if [[ -f "$APP_API" ]]; then
+    python3 "$DRIFT" --mirror "$APP_API" --quiet \
+      || bad "spec ↔ kama-app (urun trait'i) ayrismasi — KM-SEAM-AT-001 §1/§3 ile $APP_API hizali degil"
+  fi
 else
   bad "$DRIFT yok — ayna denetimsiz kaldi"
 fi

@@ -618,6 +618,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kama-app"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "kama-engine"
 version = "0.1.0"
 dependencies = [
