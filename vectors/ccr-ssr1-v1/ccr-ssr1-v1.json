@@ -1,0 +1,210 @@
+{
+  "schema_version": 2,
+  "suite": "ccr-ssr1-v1",
+  "spec_version": "ccr-format-spec@v1.0+2026-10-04b",
+  "generator": "ref/crypto/gen_vectors.py 1",
+  "description": "SESSION_INIT_RESPONSE (SSR1) exact AAD ve m\u00fch\u00fcr byte'lar\u0131 + negatifler. init_root ve session_id_internal ccr-ssi1-v1 d\u00fcnyas\u0131ndan gelir (ayn\u0131 anahtarlar).",
+  "notes": {
+    "all-private-keys": "input T\u00dcM \u00f6zel anahtarlar\u0131 ta\u015f\u0131r (responder ephemeral + static, initiator ephemeral + static). TEST anahtarlar\u0131d\u0131r."
+  },
+  "case_count": 8,
+  "cases": [
+    {
+      "id": "ccr-ssr1-v1.v-ssr-1.aad",
+      "kind": "aad",
+      "flags": [
+        "all-private-keys"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.5.1 V-SSR-1",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "flags_hex": "00",
+        "init_root_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0",
+        "initiator_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "initiator_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "responder_ephemeral_sk_hex": "e96be023bcc7eddaa07e0a01eba8ce24112da22dc394da90c85aca66c8f10761",
+        "responder_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "response_counter_hex": "0000000000000000",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa"
+      },
+      "expected_hex": "53535231010001009b1df8f9b03e4c492f8a6613470e4665d9ca5de54c3c47db3da261d455e074590000000000000000cca6ce25da13e914f2fae16a9d5814aa"
+    },
+    {
+      "id": "ccr-ssr1-v1.v-ssr-1.seal",
+      "kind": "seal",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "ss_e2 = DH(resp_eph, init_eph_pub) || DH(resp_eph, init_static_pub); D4 \u2192 D7 (k_resp); nonce = nonce96(0).",
+      "spec_ref": "ccr-format-spec.md \u00a735.5.1 V-SSR-1",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "flags_hex": "00",
+        "init_root_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0",
+        "initiator_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "initiator_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "nonce_hex": "000000000000000000000000",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "responder_ephemeral_sk_hex": "e96be023bcc7eddaa07e0a01eba8ce24112da22dc394da90c85aca66c8f10761",
+        "responder_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "response_counter_hex": "0000000000000000",
+        "response_data_hex": "6b616d6120726573706f6e7365",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa"
+      },
+      "expected_hex": "009b1df8f9b03e4c492f8a6613470e4665d9ca5de54c3c47db3da261d455e074590000000000000000aed8b904449cf3b5f5c71294ee74bff55927baa2c77da4fbe581696419"
+    },
+    {
+      "id": "ccr-ssr1-v1.v-ssr-1.seal.empty-response-data",
+      "kind": "seal",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "response_data N=0 \u2192 app-envelope tam 57 B (ccr \u00a735.5).",
+      "spec_ref": "ccr-format-spec.md \u00a735.5.1 V-SSR-1",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "flags_hex": "00",
+        "init_root_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0",
+        "initiator_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "initiator_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "nonce_hex": "000000000000000000000000",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "responder_ephemeral_sk_hex": "e96be023bcc7eddaa07e0a01eba8ce24112da22dc394da90c85aca66c8f10761",
+        "responder_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "response_counter_hex": "0000000000000000",
+        "response_data_hex": "",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa"
+      },
+      "expected_hex": "009b1df8f9b03e4c492f8a6613470e4665d9ca5de54c3c47db3da261d455e074590000000000000000352694d9134eef9e9b0f0b28ab86aa2a"
+    },
+    {
+      "id": "ccr-ssr1-v1.v-ssr-2.responder-ephemeral-all-zero",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "responder_ephemeral t\u00fcm-s\u0131f\u0131r \u2192 reject; AEAD'den \u00d6NCE.",
+      "spec_ref": "ccr-format-spec.md \u00a735.5.1 V-SSR-2",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "init_root_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0",
+        "initiator_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "initiator_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "responder_ephemeral_sk_hex": "e96be023bcc7eddaa07e0a01eba8ce24112da22dc394da90c85aca66c8f10761",
+        "responder_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000aed8b904449cf3b5f5c71294ee74bff55927baa2c77da4fbe581696419"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "x25519-public-key-all-zero"
+      }
+    },
+    {
+      "id": "ccr-ssr1-v1.responder-ephemeral-low-order-nonzero",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "responder_ephemeral = u=1 (d\u00fc\u015f\u00fck mertebe, s\u0131f\u0131r de\u011fil) \u2192 DH t\u00fcm-s\u0131f\u0131r \u2192 reject.",
+      "spec_ref": "ccr-format-spec.md \u00a735.5 reject kurallar\u0131 + \u00a75.1",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "init_root_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0",
+        "initiator_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "initiator_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "responder_ephemeral_sk_hex": "e96be023bcc7eddaa07e0a01eba8ce24112da22dc394da90c85aca66c8f10761",
+        "responder_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "0001000000000000000000000000000000000000000000000000000000000000000000000000000000aed8b904449cf3b5f5c71294ee74bff55927baa2c77da4fbe581696419"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "x25519-shared-secret-all-zero"
+      }
+    },
+    {
+      "id": "ccr-ssr1-v1.v-ssr-3.response-counter-bit-flip",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "response_counter'da 1 bit \u2192 AAD de\u011fi\u015fir \u2192 AEAD d\u00fc\u015fer. Sessiz at\u0131m.",
+      "spec_ref": "ccr-format-spec.md \u00a735.5.1 V-SSR-3",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "init_root_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0",
+        "initiator_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "initiator_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "responder_ephemeral_sk_hex": "e96be023bcc7eddaa07e0a01eba8ce24112da22dc394da90c85aca66c8f10761",
+        "responder_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "009b1df8f9b03e4c492f8a6613470e4665d9ca5de54c3c47db3da261d455e074590000000000000001aed8b904449cf3b5f5c71294ee74bff55927baa2c77da4fbe581696419"
+      },
+      "expected": {
+        "result": "drop",
+        "reason": "v-ssr-3-aead-fail"
+      }
+    },
+    {
+      "id": "ccr-ssr1-v1.flags-bit0-set",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "[C-4] flags.bit0 = 0 zorunlu; bits1..7 reserved. S\u0131f\u0131r-olmayan flags \u2192 reject (fail-closed).",
+      "spec_ref": "ccr-format-spec.md \u00a735.5 [C-4]",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "init_root_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0",
+        "initiator_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "initiator_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "responder_ephemeral_sk_hex": "e96be023bcc7eddaa07e0a01eba8ce24112da22dc394da90c85aca66c8f10761",
+        "responder_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "019b1df8f9b03e4c492f8a6613470e4665d9ca5de54c3c47db3da261d455e074590000000000000000aed8b904449cf3b5f5c71294ee74bff55927baa2c77da4fbe581696419"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ssr1-flags-nonzero"
+      }
+    },
+    {
+      "id": "ccr-ssr1-v1.too-short",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "Asgari app-envelope 57 B; 56 B \u2192 parser reddi.",
+      "spec_ref": "ccr-format-spec.md \u00a735.5",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "init_root_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0",
+        "initiator_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "initiator_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "responder_ephemeral_sk_hex": "e96be023bcc7eddaa07e0a01eba8ce24112da22dc394da90c85aca66c8f10761",
+        "responder_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "009b1df8f9b03e4c492f8a6613470e4665d9ca5de54c3c47db3da261d455e074590000000000000000aed8b904449cf3b5f5c71294ee74bf"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ssr1-length-below-minimum"
+      }
+    }
+  ]
+}

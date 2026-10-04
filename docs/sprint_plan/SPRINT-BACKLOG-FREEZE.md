@@ -164,30 +164,35 @@ Her kart: **Neden · Ne yapılacak · Nereye · Neye bağlı · Bittiğini nası
 **Nereye:** `vectors/ccr-kdf.json`. Tanım: `specs/ccr-format-spec.md` §35.2.1, liste §35.13.
 **Neye bağlı:** A2.1, T-00.1.
 **Done:** dosya commit; Python doğrulayıcı kabul ediyor.
+**DURUM (2026-10-04): KAPANDI (M4).** `vectors/ccr-kdf-v1` — V-KDF-1..6 (12 vaka); V-KDF-7 süreç şartı. Üretici `ref/crypto/gen_vectors.py`; `--check` CI'da (`vectors` job).
 
 ### A2.3 — INIT paketi vektörleri (SSI1)
 **Neden:** `SESSION_INIT` bağlantıyı başlatan paket; wire'daki tam byte'ları interop için sabit olmalı. Negatif vakalar da gerekli: bozulmuş paket **doğru şekilde** reddedilmeli (ve nasıl — AEAD'den önce mi sonra mı).
 **Ne yapılacak:** 3 sertifika modu için pozitif exact byte; negatif: flags bit-flip ve init_counter bit-flip → `drop` (AEAD düşer); sertifika uzunluğu uyumsuz → `reject` (parser, AEAD'den önce); **sıfır olmayan düşük-mertebeli** sender ephemeral → `reject` (ccr §5.1: DH çıktısı sıfır). Vektör `input`'u tüm özel anahtarları (ephemeral + static) taşır — gerçek Crypto'nun exact byte karşılaştırması ancak ephemeral dışarıdan verilebilirse mümkün (A5.5).
 **Nereye:** `vectors/ccr-ssi1.json`. Tanım: `ccr` §35.3, §35.3.1.
 **Done:** commit.
+**DURUM (2026-10-04): KAPANDI (M4).** `vectors/ccr-ssi1-v1` — üç cert_mode AAD + mühür, negatifler (16 vaka); cert_field opak. Üretici `ref/crypto/gen_vectors.py`; `--check` CI'da (`vectors` job).
 
 ### A2.4 — RESPONSE paketi vektörleri (SSR1)
 **Neden:** A2.3 ile aynı, cevap paketi için.
 **Ne yapılacak:** pozitif exact; negatif: karşı tarafın geçici anahtarı sıfır → `reject` (bu yalnız parse filtresi); **sıfır olmayan düşük-mertebeli** responder ephemeral → `reject` (ccr §5.1'in asıl zorunlu kontrolü: DH çıktısı sıfır — parse filtresi bunu yakalamaz); response_counter değiştirilmiş → `drop`. `input` tüm özel anahtarları taşır.
 **Nereye:** `vectors/ccr-ssr1.json`. Tanım: `ccr` §35.5, §35.5.1.
 **Done:** commit.
+**DURUM (2026-10-04): KAPANDI (M4).** `vectors/ccr-ssr1-v1` — AAD + mühür, negatifler (8 vaka). Üretici `ref/crypto/gen_vectors.py`; `--check` CI'da (`vectors` job).
 
 ### A2.5 — Veri paketi vektörleri (SSD1)
 **Neden:** Kurulmuş bağlantıda her veri datagramı 22 byte'lık sabit zarfla gider (`hub_handle 4 · seq 2 · şifreli veri · tag 16`). Nonce ve AAD'nin nasıl kurulduğu byte düzeyinde sabit.
 **Ne yapılacak:** pozitif exact zarf + nonce96 + AAD vektörleri.
 **Nereye:** `vectors/ccr-ssd1.json`. Tanım: `ccr` §35.6, §35.8, §35.9.
 **Done:** commit.
+**DURUM (2026-10-04): KAPANDI (M4).** `vectors/ccr-ssd1-v1` — 22 B zarf, D-GAP-1 far-future kabul, boş batch (15 vaka); 5 mühür vektörü mevcut Rust yoluyla bayt-özdeş. Üretici `ref/crypto/gen_vectors.py`; `--check` CI'da (`vectors` job).
 
 ### A2.6 — Eski formatların reddi
 **Neden:** Protokolün önceki sürümlerinin paketleri (SAI1/SAA1/SAD1/SAC1, 39 byte'lık zarf, eski imza girdisi) artık geçersiz; yeni kod bunları **reddetmeli**, yanlışlıkla kabul etmemeli.
 **Ne yapılacak:** her eski format için bir örnek → `reject`.
 **Nereye:** `vectors/ccr-deprecated-neg.json`. Tanım: `ccr` §35-DEPRECATED, `identity` §27.
 **Done:** commit.
+**DURUM (2026-10-04): KAPANDI (M4).** `vectors/ccr-deprecated-neg-v1` — SAI1/SAA1/SAD1/SAC1/SRAM + DEPRECATED-REJECT-1/2 (7 vaka). Üretici `ref/crypto/gen_vectors.py`; `--check` CI'da (`vectors` job).
 
 ### A2.7 — Ed25519 doğrulama kipi vektörleri
 **Neden:** RFC 8032 iki farklı doğrulama denklemine izin veriyor ve küçük-mertebeli bileşenler hakkında sessiz; kip seçilmezse iki implementasyon aynı imzayı farklı sınıflandırır. Kip artık `ccr` §5.2'de sabit; bu vektörler onu kilitler ve Rust kütüphanesinin gerçekten o kipi uyguladığını kanıtlar.
@@ -195,6 +200,7 @@ Her kart: **Neden · Ne yapılacak · Nereye · Neye bağlı · Bittiğini nası
 **Nereye:** `vectors/ccr-ed25519-neg.json`. Tanım: `ccr-format-spec.md` §5.2.
 **Neye bağlı:** A2.1 (Ed25519 referansı), T-00.1.
 **Done:** commit; kütüphane bir kuralı kapsamıyorsa A5'te açık kontrol eklenir.
+**DURUM (2026-10-04): KAPANDI (M4).** `vectors/ccr-ed25519-neg-v1` — ccr §5.2'nin dört ret nedeni ayrı vakalarda (10 vaka). Üretici `ref/crypto/gen_vectors.py`; `--check` CI'da (`vectors` job).
 
 ### A3.1 — Response eşleştirme sınırını test et
 **Neden:** Gelen `RESPONSE` paketinin hangi bekleyen bağlantıya ait olduğu wire'da yazmaz (byte tasarrufu + gizlilik). Crypto bunu bekleyen adayları sırayla deneyerek bulur. Saldırgan sahte RESPONSE'la sınırsız deneme yaptıramasın diye deneme sayısı sınırlı. Ayrıca "yanlış aday" ile "bozuk paket" dışarıdan **aynı** görünmeli — yoksa saldırgan hangi adayın doğru olduğunu öğrenir.

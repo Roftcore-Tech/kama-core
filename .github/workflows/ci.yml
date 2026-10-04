@@ -239,6 +239,10 @@ jobs:
       # stdlib-only, toolchain'siz, ~5 sn.
       - name: bağımsız kripto referansı (RFC 5869/7748/8032/8439 vektörleri)
         run: python3 ref/crypto/selftest.py
+      # A2.2–A2.7: vectors/ccr-* dosyaları ELLE düzenlenemez — bağımsız referanstan yeniden üretilir ve
+      # diskteki ile bayt-bayt karşılaştırılır. Fark = biri vektörü elle değiştirdi ya da referans kaydı.
+      - name: Session Model V3 vektörleri referanstan yeniden üretilebiliyor mu
+        run: python3 ref/crypto/gen_vectors.py --check
 
   # ── App↔Transport seam sözleşme kapısı (KM-SEAM-AT-001 §6/§7 iskeleti) ──
   # Aynı sözleşme süiti hem sahteye hem gerçeğe karşı koşar (Google SWE ch.13 "contract tests":

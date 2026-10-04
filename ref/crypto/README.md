@@ -24,6 +24,7 @@ Bu kod **sabit-zamanlı değildir**, üretim yolunda asla çalışmaz ve çalı�
 | `ed25519.py` | Ed25519 PureEdDSA (katı doğrulama) | RFC 8032 |
 | `chacha20poly1305.py` | ChaCha20-Poly1305 AEAD + `nonce96()` | RFC 8439 · `specs/pki-ca-ra-hsm-tdd.md:455` |
 | `selftest.py` | dört süitin tek kapısı | — |
+| `gen_vectors.py` | A2.2–A2.7 vektör üreticisi → `vectors/ccr-*`; `--check` diskteki ile karşılaştırır (CI) | ccr §5.1, §5.2, §35.2–§35.9 |
 
 ## Koşum
 
@@ -62,8 +63,20 @@ HKDF Expand sayacı 1→0, `a24`→486662, Ed25519 `S < L` kapısının kaldır�
 kapısının kaldırılması, AEAD veri counter'ı 1→0, taşma kapısının kaldırılması,
 `compare_digest`'in devre dışı bırakılması.
 
+## Vektörler (A2.2–A2.7)
+
+`python3 ref/crypto/gen_vectors.py` altı suite üretir (68 vaka): `ccr-kdf-v1` (V-KDF-1..6) ·
+`ccr-ssi1-v1` (üç cert_mode + negatifler) · `ccr-ssr1-v1` · `ccr-ssd1-v1` (22 B zarf; D-GAP-1
+far-future kabul; boş batch) · `ccr-deprecated-neg-v1` · `ccr-ed25519-neg-v1` (ccr §5.2'nin dört ret
+nedeni ayrı vakalarda). Beklenen byte'ların HİÇBİRİ Rust'tan üretilmedi. Üçüncü-kaynak teyitleri:
+SSD1 AAD'si repodaki Rust golden'ıyla, SSD1 mühür vektörlerinin 5'i mevcut Rust `LegacySessionProtector`
+ile bayt-özdeş çıktı (2026-10-04, geçici testle ölçüldü; kalıcı tüketici A5.2).
+
+`ed25519.py` artık ccr §5.2 kipini tam uygular: small-order A ve R reddi dahil; `verify_reason`
+ilk düşen kuralı kararlı bir token olarak döner.
+
 ## Bilinen sınır
 
-D1–D7 için burada **değer** vektörü yok, yalnız yapısal özellikler var. V-KDF-1..7'nin exact
-byte değerleri A2.2'de bu referanstan üretilip `vectors/` ağacına yazılacak; Rust tarafı onlara
-karşı koşacak. Bu dosyadaki hiçbir sayı Rust çıktısından alınmamıştır.
+SSI1'in `cert_field`'ı OPAK dolgudur: vektörler mührü ve AAD'yi sınar, sertifika doğrulamasını değil.
+V-KDF-7 (üç kaynak eşitliği) bir vaka değil süreç şartıdır; Rust tarafı (A5.1) aynı değerleri üretince
+sağlanır. Bu dizindeki hiçbir sayı Rust çıktısından alınmamıştır.
