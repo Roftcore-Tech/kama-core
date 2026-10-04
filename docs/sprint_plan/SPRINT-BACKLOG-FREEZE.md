@@ -375,6 +375,7 @@ Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıf
 **Nereye:** `scripts/ci/layer_check.py` + `ci.yml` `static` job'una adım. Kural: `specs/transport-layer-tdd.md` §0 INV-NEIGHBOR-1.
 **Neye bağlı:** B1.0 (crate adı).
 **Done:** ihlal eden deneme PR'ı kırmızı; mevcut ağaç yeşil.
+**DURUM (2026-10-04): KAPANDI (M7).** `scripts/ci/layer_check.py`: L1 kama-app → kripto DOĞRUDAN kenarı (geçişli değil — App → Transport → Crypto meşru) · L2 kripto → kama-app (geçişli dahil) · L3 kama-app kaynağında `AppRpcFrame`/`method_id`. Öz-test 12 vaka (her kural ateşliyor + vakum korumaları); `static` job'ında.
 
 ### C1.3 — Test koşucusu
 **Ne:** aynı conformance-core testlerini hedef seçerek (`mock` / `real`) koşturma. **Nereye:** `kama-integration/tests/common/`. **Done:** parametrik koşum çalışıyor.
@@ -384,6 +385,7 @@ Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıf
 **Ne yapılacak:** yalnız `tests/conf_*.rs` dosyalarını tarayan betik: inline beklenen byte-array/hex literal → hata; exact-byte assertion yalnız vektör `id`'si üzerinden; `expected_hex` yalnız yükleyiciden. Mevcut `tv_*`/`golden*` dosyaları **kapsam dışı** (donmuş transport'un kendi golden'ları, dokunulmaz).
 **Nereye:** `scripts/ci/no_inline_expected.py`.
 **Done:** `conf_*` altında literal beklenen değer → kırmızı; ürün kodu etkilenmiyor.
+**DURUM (2026-10-04): KAPANDI (M7).** `scripts/ci/no_inline_expected.py`. Kapsam `conf_*` **ve** `*_conformance_core` (R-7(c) ile inen ad — yalnız `conf_*` taransaydı kapı hiçbir dosyaya bakmazdı). E1 hex dizge ≥16 · E2 byte-dizge ≥8 kaçış · E3 dizi ≥8 eleman; gerekçeli `inline-expected-ok:` işaretiyle protokol sabiti muafiyeti. `--min-files 1` vakum kapısı.
 
 ### C1.5 — Kopya hex yardımcılarını tekleştir
 **Ne:** yeni `conf_*` testleri `kama-vectors`'daki tek `hex` yardımcısını kullanır; eski test dosyaları dokunulmaz. **Done:** yeni testlerde kopya `fn hex()` yok.

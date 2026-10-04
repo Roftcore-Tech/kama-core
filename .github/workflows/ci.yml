@@ -48,6 +48,17 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # C1.2 / C1.4 — mimari kurallar. Derlemeden ÖNCE koşar (yalnız `cargo metadata` + kaynak
+      # taraması; saniyeler). Her kontrol önce KENDİ öz-testini koşar: kuralın gerçekten
+      # ateşlediği kanıtlanmadan "ihlal yok" sonucuna güvenilmez.
+      - name: katman kuralı (INV-NEIGHBOR-1 — kama-app ↔ kripto ↔ Plane 1)
+        run: |
+          python3 scripts/ci/layer_check.py --selftest
+          python3 scripts/ci/layer_check.py
+      - name: conformance testlerinde gömülü beklenen-değer yok
+        run: |
+          python3 scripts/ci/no_inline_expected.py --selftest
+          python3 scripts/ci/no_inline_expected.py --min-files 1
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy (all-features)
