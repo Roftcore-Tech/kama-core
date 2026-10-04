@@ -270,6 +270,7 @@ name = "client-core"
 version = "0.1.0"
 dependencies = [
  "adaptive-transport",
+ "client-core",
  "kama-engine",
  "kama-fec-codec",
  "kama-noise-wire",

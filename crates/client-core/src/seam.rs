@@ -42,6 +42,14 @@ impl SessionHandle {
     pub const fn from_raw(v: u64) -> Self {
         Self(v)
     }
+
+    /// Ham değer — YALNIZ tutamacı basan taraf içindir (sahte Crypto). Transport ÇAĞIRMAZ:
+    /// tutamaç onun için opaktır.
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub(crate) const fn to_raw_for_mock(self) -> u64 {
+        self.0
+    }
 }
 
 /// Opak peer referansı (`StaticPeerMaterialProvider` anahtarı; S1 `PeerRef` ile aynı kavram).
@@ -53,6 +61,12 @@ impl PeerRef {
     #[must_use]
     pub const fn from_raw(v: u64) -> Self {
         Self(v)
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub(crate) const fn to_raw_for_mock(self) -> u64 {
+        self.0
     }
 }
 

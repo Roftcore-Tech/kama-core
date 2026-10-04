@@ -37,3 +37,8 @@ thiserror.workspace = true
 test-util = []
 # [C4-ATIF] salt-gözlem zamanlayıcı telemetrisi (default OFF; ürün davranışı değişmez).
 diag-sched-telemetry = ["adaptive-transport/diag-sched-telemetry"]
+
+[dev-dependencies]
+# Kendi `test-util` feature'ını entegrasyon testlerine açar (MockCrypto, FixedEntropy). Yalnız test
+# derlemesinde; üretim grafiğine girmez.
+client-core = { path = ".", features = ["test-util"] }
