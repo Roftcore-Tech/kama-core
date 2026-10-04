@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-06b [C2 bulgularının yönlendirilmesi — Abkarada]:** A5.4 kartına "düzeltilecek" listesi (5b / 6 / 7 / 9 + ürün bağlantısı) ve Done ölçütü eki · yeni NON-GATING kart C1.6 (mutasyon sınaması). Yalnız ekleme.
+
 > **YAMA KAYDI — 2026-10-06 [PN SÜREKLİ — Abkarada kararı]:** D1'e ACK kimliği kararı (`full_wire_pn`; `dh_epoch` girmez) · D2 durum satırında `dh_epoch` alt-sorusu kapandı · A3.2 / A5.4'te "denenen anahtarın epoch penceresi" → tek pencere. Üstü çizili metin silinmedi.
 
 **Tarih:** 2026-09-20 · v3.1 — kripto implementasyon risk taraması işlendi (A2.1/A2.3/A2.4/A2.7, A3.2, A4.4, A5.0–A5.5, WS-D) · v1/v2 superseded · **Okuyucu:** ekibe yeni katılan biri bu belgeyi açıp tek başına anlayabilmeli.
@@ -281,6 +283,13 @@ A1.1 + A1.2 sayıları · A2.* vektörleri commit · A4.* yeşil · C1.2 yeşil.
 
 ### A5.4 — Anahtar değişimi makinesi
 **Ne:** confirmation-safe geçiş, pencere `N_g`/`T_g`; grace içinde en fazla iki anahtar denemesi, replay precheck/commit ~~**denenen anahtarın epoch penceresine**~~ **TEK pencereye [2026-10-06 — PN SÜREKLİ]** (A3.2). Mevcut `kama-noise-wire/src/epoch_machine.rs` üstünde. **Done:** A3.2.
+**DÜZELTİLECEK (2026-10-06 — A3.2 / C2 bulguları; `noise_conformance_core/epoch.rs` `DECLARED_RED`):**
+- **5b** `N_g` sabit değil: bütçe = `max(argüman, GRACE_MIN_PACKETS)` — `crates/kama-noise-wire/src/epoch_machine.rs:57-67`.
+- **6 / 7** makinede zaman girdisi ve `T_g` sabiti yok (yalnız paket sayacı) — `epoch_machine.rs:112-127`.
+- **9** legacy 22 B zarfta iki anahtarlı deneme ve deneme sayacı yok — `crates/kama-noise-wire/src/legacy.rs:76-116`.
+- **Ürün bağlantısı:** `DhEpochMachine` bugün ürün kodunda hiçbir yere bağlı değil (yalnız testler); A3.2 bir test tutkalıyla koşuyor → A5.4 tutkal yerine ürün bağlantısını yazar.
+- `epoch_machine.rs:112-113` yorumu grace sayacını "her alınan pakette" işletiyor; KS-GRACE-1 yalnız AEAD-geçerli epoch-1 paketlerini saydırır (onaylayan paket #1).
+**Done ölçütüne EK (2026-10-06):** `N_g` tam 64 (kurucu argümanından bağımsız) · monotonic zaman girdisi + `T_g = 30 s` · legacy'de ≤2 anahtar denemesi (sayaçla gözlenir) · `DECLARED_RED` listesi BOŞ.
 
 ### A5.5 — Oturum kontrolü
 **Ne:** Initiate / AcceptInit / AcceptResponse (sınırlı aday deneme) / Renew / Close; anahtar silme sırası (`identity` §15.6). Mevcut `session.rs`, `init_flight.rs`.
@@ -391,6 +400,11 @@ Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıf
 
 ### C1.5 — Kopya hex yardımcılarını tekleştir
 **Ne:** yeni `conf_*` testleri `kama-vectors`'daki tek `hex` yardımcısını kullanır; eski test dosyaları dokunulmaz. **Done:** yeni testlerde kopya `fn hex()` yok.
+
+### C1.6 — Mutasyon sınaması (A3.1 / A3.2 testleri) — **NON-GATING takip kartı** [2026-10-06]
+**Neden:** C1 (H-DEMUX) ve C2 (epoch matrisi) testlerinin BOZUK bir implementasyonu yakaladığı ölçülmedi; yeşil bir test, ölçülene kadar yalnız "şu an düşmüyor" demektir.
+**Ne:** her satır için en az bir hedefli mutasyon (ör. deneme sırası eski-önce, tavan +1, başarısızlıkta pending tüketimi, grace sayacının sahte pakette ilerlemesi) → ilgili testin kırmızıya döndüğü kaydedilir. Mutasyon ağaç dışında uygulanır (git-checkout ile geri alma yok).
+**Nereye:** `reports/` altında kısa tablo. **Neye bağlı:** C1, C2. **Done:** tablo commit; kapı DEĞİL (G-S3'ü bekletmez).
 
 ---
 

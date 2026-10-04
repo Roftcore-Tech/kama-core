@@ -18,9 +18,26 @@
 
 #[macro_use]
 mod demux;
+#[macro_use]
+mod epoch;
 mod target;
 
 noise_demux_suite!(mock_demux, crate::target::MockTarget);
+
+// A3.2 — hedef MEVCUT `epoch_machine.rs` (+ test tutkalı); mock/real ayrımının dışındadır çünkü
+// `MockCrypto` epoch geçişini modellemez. A5.4'te aynı hücreler gerçek oturuma (`real_epoch`) koşar.
+noise_epoch_suite!(machine_epoch;
+    cell_1_response_normal,
+    cell_2_response_lost,
+    cell_3_response_reordered,
+    cell_4_invalid_epoch1_is_inert,
+    cell_5_count_closes_grace,
+    cell_5b_n_g_is_fixed,
+    cell_6_time_closes_grace,
+    cell_7_whichever_first,
+    cell_8_commit_goes_to_the_single_window,
+    cell_9_at_most_two_key_trials,
+);
 
 /// `real` hedefinin yokluğu BEYAN EDİLMİŞ bir boşluktur; sessiz atlama değil. Gerçek hedef
 /// kaydedildiği an bu sınama kırmızıya döner — kapsam sessizce değişemez.

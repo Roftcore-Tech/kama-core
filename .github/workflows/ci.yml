@@ -300,6 +300,9 @@ jobs:
       # inene kadar real = 3 (GAP-S3-REAL-A5).
       - name: S3 hedef = mock
         run: scripts/ci/noise-conformance.sh --target mock
+      # A3.2 epoch matrisi: mevcut epoch_machine.rs üstünde; kırmızı hücreler beyanlıdır (çıktıda listelenir).
+      - name: S3 hedef = machine (epoch matrisi)
+        run: scripts/ci/noise-conformance.sh --target machine
       - name: S3 hedef = real (bugün beyan edilmiş boşluk)
         run: |
           set +e

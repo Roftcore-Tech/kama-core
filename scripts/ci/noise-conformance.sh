@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # KM-SEAM-TC-001 Transport↔Crypto (S3) conformance-core koşucusu — hedef seçicili.
 #
-#   scripts/ci/noise-conformance.sh --target mock|real
+#   scripts/ci/noise-conformance.sh --target mock|real|machine
+#
+# machine = MEVCUT epoch_machine.rs + test tutkalı (A3.2 epoch matrisi). mock/real ayrımının dışındadır:
+# MockCrypto epoch geçişini modellemez. Beyanlı kırmızı hücreler EPOCH-RED-CELL satırlarıyla basılır.
 #
 # Süit: crates/kama-noise-wire/tests/noise_conformance_core/ (satır gövdeleri hedef-agnostik).
 #
@@ -29,8 +32,8 @@ while (($#)); do
   esac
 done
 case "$TARGET" in
-  mock|real) ;;
-  *) echo "kullanım hatası: --target mock|real zorunlu"; exit 2 ;;
+  mock|real|machine) ;;
+  *) echo "kullanım hatası: --target mock|real|machine zorunlu"; exit 2 ;;
 esac
 
 # Hedefin süitleri `<hedef>_` önekli modüllerdir; kayıtlı değilse listede hiç test çıkmaz.
@@ -45,13 +48,14 @@ if [[ "$listed" -eq 0 ]]; then
   exit 1
 fi
 
-out=$(cargo test -p "$PKG" --locked --test "$BIN" -- "${TARGET}_" 2>&1)
+out=$(cargo test -p "$PKG" --locked --test "$BIN" -- "${TARGET}_" --nocapture 2>&1)
 rc=$?
-echo "$out" | grep -E '^test |^test result'
+echo "$out" | grep -E '^test |^test result|^EPOCH-RED-CELL'
 if [[ $rc -ne 0 ]]; then
   echo "::error title=NOISE-CONFORMANCE::hedef=$TARGET kırmızı"
   exit 1
 fi
 echo "$out" | grep -Eq "test result: ok\. ${listed} passed" \
   || { echo "::error title=NOISE-CONFORMANCE::listelenen ($listed) ≠ koşan test sayısı"; exit 1; }
-echo "NOISE-CONFORMANCE: YEŞİL (hedef=$TARGET, $listed test)"
+red=$(echo "$out" | grep -c '^EPOCH-RED-CELL' || true)
+echo "NOISE-CONFORMANCE: YEŞİL (hedef=$TARGET, $listed test, beyanlı kırmızı hücre: $red)"
