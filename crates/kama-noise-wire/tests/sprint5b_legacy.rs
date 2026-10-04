@@ -90,13 +90,12 @@ fn legacy_datagram_golden() {
 #[test]
 fn legacy_constants_separate_from_extended() {
     assert_eq!(LEGACY_PN_PARAMS.window, 1024);
-    assert_eq!(LEGACY_PN_PARAMS.future_gap_max, 4096);
-    assert_eq!(LEGACY_PN_PARAMS.max_reorder, Some(8192));
+    // [D-GAP-1] legacy'de far-future kapısı YOK (MAX_FUTURE_GAP=4096 ve MAX_REORDER_DISTANCE=8192 kaldırıldı).
+    assert_eq!(LEGACY_PN_PARAMS.future_gap_max, None);
     assert_eq!(LEGACY_PN_PARAMS.low_width_bits, 16);
-    // Extended AYRI: 2^14 / 2^13 / reorder-yok / 32-bit.
+    // Extended AYRI: 2^14 / 2^13 (kapı durur) / 32-bit.
     assert_eq!(EXTENDED_PN_PARAMS.window, 1 << 14);
-    assert_eq!(EXTENDED_PN_PARAMS.future_gap_max, 1 << 13);
-    assert_eq!(EXTENDED_PN_PARAMS.max_reorder, None);
+    assert_eq!(EXTENDED_PN_PARAMS.future_gap_max, Some(1 << 13));
     assert_eq!(EXTENDED_PN_PARAMS.low_width_bits, 32);
     // İki-yol-iki-sabit: eşit-DEĞİL.
     assert_ne!(LEGACY_PN_PARAMS.window, EXTENDED_PN_PARAMS.window);
@@ -205,5 +204,61 @@ fn mixed_traffic_demux() {
     assert!(
         ext.open(&leg_dg).is_err(),
         "legacy-datagram extended-parser'da açılamaz"
+    );
+}
+
+// ── [D-GAP-1] ccr §35.8: AEAD-geçerli far-future paket KABUL edilir (uçtan uca, gerçek AEAD) ──
+#[test]
+fn legacy_far_future_aead_valid_is_accepted() {
+    let (mut a, mut b) = legacy_pair(0x0000_3000);
+    assert_eq!(b.open(&a.seal(b"first", 0).unwrap()).unwrap(), b"first");
+    // Yolda geciken eski bir paket (gönderen monoton mühürler; teslim sonra denenecek).
+    let stale = a.seal(b"stale", 1).unwrap();
+
+    // İleri yön kesintisi: gönderen 10 000 sayaç yaktı, alıcıya hiçbiri ulaşmadı. Eskiden bu paket
+    // FutureGap (4096) ile precheck'te düşüyordu ve resync yolu yoktu → oturum kalıcı ölüyordu.
+    let far = a.seal(b"after-outage", 10_000).unwrap();
+    assert_eq!(b.open(&far).unwrap(), b"after-outage");
+    assert_eq!(b.recv_expected_pn(), 10_001, "highest sıçramalı");
+
+    // Sıçranan paket replay edilemez; sıçramadan önceki sayaç artık çok eski.
+    assert!(matches!(
+        b.open(&far),
+        Err(WireError::PnReject(kama_noise_wire::PnReject::Duplicate))
+    ));
+    assert!(matches!(
+        b.open(&stale),
+        Err(WireError::PnReject(kama_noise_wire::PnReject::TooOld))
+    ));
+}
+
+// ── [D-GAP-1] YAPISAL SINIR: gerçek sayaç expected'ten 2^15'ten uzaksa seq16 yanlış kurulur ──
+#[test]
+fn legacy_beyond_structural_limit_fails_aead_without_advancing_state() {
+    let (mut a, mut b) = legacy_pair(0x0000_3001);
+    // Alıcıyı 100 001'e, her adımı 2^15'in ALTINDA tutarak yürüt (eski 4096/8192 kapılarının çok üstü).
+    for pn in [0u64, 30_000, 60_000, 90_000, 100_000] {
+        assert_eq!(b.open(&a.seal(b"x", pn).unwrap()).unwrap(), b"x");
+    }
+    let before = b.recv_expected_pn();
+    assert_eq!(before, 100_001);
+
+    // 100 001'den 40 000 ileri (> 2^15): reconstruction en yakın adayı seçer → YANLIŞ sayaç
+    // (gerçek − 2^16 = 74 465, yani GERİDE). Sonuç sessiz kayıptır; hangi kuralın düşürdüğü yanlış
+    // adayın nereye düştüğüne bağlıdır: pencere dışındaysa TooOld (burada öyle), pencere içindeyse
+    // nonce uyuşmadığı için AeadFail. İkisinde de replay state'i İLERLEMEZ (P0-6).
+    // Bunu meşru trafikte önlemek gönderenin işidir (KS-PN-1, K = 1024 ≪ 2^15).
+    let too_far = a.seal(b"y", before + 40_000).unwrap();
+    assert!(matches!(
+        b.open(&too_far),
+        Err(WireError::PnReject(kama_noise_wire::PnReject::TooOld))
+    ));
+    // Yanlış adayın PENCERE İÇİNE düştüğü uzaklık: 2^16 − 500 ileri → aday 500 geride → AEAD denenir, düşer.
+    let in_window = a.seal(b"z", before + 65_536 - 500).unwrap();
+    assert!(matches!(b.open(&in_window), Err(WireError::AeadFail)));
+    assert_eq!(
+        b.recv_expected_pn(),
+        before,
+        "AEAD başarısızlığı state'i ilerletmemeli"
     );
 }
