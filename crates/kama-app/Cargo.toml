@@ -1,0 +1,18 @@
+[package]
+name = "kama-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# APPLICATION KATMANI (WS-B / B1.0). INV-NEIGHBOR-1: Application'ın TEK alt komşusu Transport'tur.
+#
+# BU CRATE'E KRİPTO BAĞIMLILIĞI EKLENMEZ — `kama-noise-wire`, `ccr-codec`, dalek/chacha/blake2/hkdf
+# doğrudan ya da dolaylı olarak buraya giremez. Plane 1 (app-rpc) tipleri de giremez: `AppRpcFrame`,
+# `method_id` bu crate'te YASAK semboldür. İkisini de `scripts/ci/layer_check.py` kapıda denetler
+# (KM-SEAM-AT-001 §6 H-NO-CRYPTO-EDGE / H-NO-PLANE1).
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

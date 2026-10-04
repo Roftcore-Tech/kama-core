@@ -15,6 +15,7 @@ members = [
     "crates/discovery",
     "crates/admin-server",
     "crates/bench",
+    "crates/kama-app",
 ]
 
 [workspace.package]
