@@ -160,11 +160,13 @@ fn pn_window_too_old() {
 
 #[test]
 fn legacy_params_reorder_bound() {
-    // ccr-§35.8 seti: reorder-mesafesi 8192; bunun ötesi geç-yön too-old.
+    // ccr-§35.8 seti [D-GAP-1 sonrası]: geriye doğru tek sınır eski-paket kuralı (window = 1024).
+    // Eski MAX_REORDER_DISTANCE (8192) uzaklığı bu yüzden hâlâ TooOld — kapı kalktı, sonuç aynı.
     let mut w = ReplayWindow::new(LEGACY_PN_PARAMS);
     w.commit(20_000);
-    // |candidate - expected| > 8192 (geç yön) → TooOld
     assert_eq!(w.precheck(20_000 - 8193), Err(PnReject::TooOld));
+    // İleri yönde kapı YOK.
+    assert_eq!(w.precheck(20_000 + 8193), Ok(()));
 }
 
 // ── §0/§4 seal→open roundtrip (FEC-shard, epoch-0) ──

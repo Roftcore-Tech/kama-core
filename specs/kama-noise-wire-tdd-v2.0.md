@@ -1,5 +1,7 @@
 # kama-noise-wire-tdd — Kama Noise Secure-Wire Profile [v2.0 — dört-karar-boşluğu-KAPATILDI (HANDLE_ASSIGN-frozen · bootstrap-profile-admission · confirmation-safe-epoch · K-invariant) + öz-tarama-temiz; FULL-DESIGN-GO-onayı: Abkarada]
 
+> **YAMA KAYDI — 2026-10-04b [K3 — D2 / Tema E + OQ-14 KAPANDI, Abkarada kararı]:** E2E `Control::Ack` (0x10) ve `Control::Sack` (0x11) ailesi **SİLİNDİ** (§2.56 registry + §2.57 gövdeler üstü çizili; codepoint'ler reserved(reject), yeniden AÇILMAZ). Gerekçe: E2E ARQ yok (hop-yerel ARQ + mailbox fallback), E2E teslim bilgisi AMP RECEIPT'te; ürün ACK'i engine `ACK_FRAME_V2` (engine-spec §2). §2.57 retry tablosundaki "network-ACK (0x10/0x11)" → hop ACK. §4 adım 2'nin taşıyıcısı adlandırıldı: bekleyen veri VEYA **boş batch** (`BatchPayload{submsg_count = 0}`, ccr). Kod (`control.rs`) bu turda değişmedi — WS-D2 kod kalemi.
+
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 H4 — çakışma-önleme notu]:** §2.56'ya tek not: `0x1B`/`0x1C` hop heartbeat için engine-spec §1.1 (HubChannel transport-control) registry'sinde TAHSİS EDİLDİ; bu E2E `inner_kind` registry'sinde `reserved(reject)` KALIR ve burada açılmamalıdır. Registry'nin kendisi, mevcut codepoint'ler ve parser davranışı DEĞİŞMEDİ.
 
 > **YAMA KAYDI — 2026-09-24 [KS-GRACE-1 KAPANDI — sahip kararı, Alpha]:** §4 madde 5 `N_g = 64` (yalnız AEAD-geçerli epoch-1 paketleri) · `T_g = 30 s` (monotonic, implicit confirmation anından); hangisi önce; kapanınca epoch-0 recv state DISCARD, yeniden açılmaz; sRTT bağımlılığı bilinçli olarak YOK. Statü: yerel politika, tel sabiti değil. Sayaçlar ve Beta tetiği (PCS/ratchet) blokta. Üstü çizili metin silinmedi.
@@ -274,7 +276,7 @@ hub-channel), engine ACK_FRAME (hop), Plane 1 RPC — bunlar `ProtectionContext:
 ayrı PN uzayındadır. Transport bu bağlamı içeriği okumadan verir (birimi hangi kapıdan aldığını bilir); bugün kodda
 ctx alanı YOK, tek seal yolu (runtime.rs:1089-1137; Plane 1 için ayrı yol yok, hub-server stub) → **S3 K1 ile KAPANDI**: `ProtectionContext{Session(h)|HubChannel}` çağıranın verdiği tek bağlamdır, transport v1.x'te `SealArgs`'a eklenir (KM-SEAM-TC-001 §1.1).
 Ürün ACK yolu bugün tek: engine ACK_V2/ACK (ack.rs:26-30) aynı seam'den; noise-wire Control::Ack/Sack (0x10/0x11)
-kodlanmış ama tüketicisi yok (audit tema E aynen açık).
+kodlanmış ama tüketicisi yok ~~(audit tema E aynen açık)~~ **[K3 — 2026-10-04b: Tema E KAPANDI — ürün ACK'i engine ACK_FRAME_V2; Control::Ack/Sack ailesi SİLİNDİ (§2.56/§2.57); kod silimi WS-D2]**.
 
 ## 2.55 H_EXT TAHSİS + BİLDİRİM [NORMATİF — DÜZELTİLDİ: hub-authenticated HANDLE_ASSIGN] (extended-parser-bunsuz-çalışmaz)
 **KRİTİK-AYRIM (önceki-hata-düzeltmesi):** h_ext **Bob'ın-E2E-FS-response'una-BAĞLANMAZ** — SESSION_INIT_RESPONSE
@@ -317,7 +319,9 @@ Decrypt-sonrası-ikinci-byte-AYRI-yorumlama (FEC-packet_type / control-control_t
 UNIFIED-INNER-HEADER:  inner_version u8 (=INNER_V1=0x01) · inner_kind u8 · variant_body...
 INNER_KIND-CODEPOINT'leri (çakışmasız):
   0x01 FEC_SOURCE            0x02 FEC_REPAIR
-  0x10 ACK                   0x11 SACK                0x12 RECOVERED          0x13 BLOCK_COMPLETE
+  ~~0x10 ACK                   0x11 SACK~~                0x12 RECOVERED          0x13 BLOCK_COMPLETE
+  # [K3 — 2026-10-04b, D2/Tema E KAPANDI] 0x10 ACK ve 0x11 SACK SİLİNDİ → reserved(reject); yeniden AÇILMAZ.
+  #   E2E ARQ yok: kurtarma hop-yerel (engine ACK_FRAME_V2, engine-spec §2) + mailbox fallback; E2E teslim = AMP RECEIPT.
   0x14 PARAM_SET             0x15 PARAM_ACK           0x16 BLOCK_ABORT        0x17 SESSION_CLOSE
   0x18 SESSION_RENEW_REQUIRED
   0x19 CTRL_CS_PROBE [DR-CS-1-AMENDMAN]   0x1A CTRL_CS_ECHO [DR-CS-1-AMENDMAN]
@@ -337,10 +341,12 @@ FEC-source/repair variant_body = §2.6-FEC-inner (profile_id..symbol_bytes). Con
 Ortak: control-paketi = UNIFIED-INNER-HEADER(inner_kind∈0x10..0x18) · control_id-u32_be · body. **control_id:**
 session+direction-scoped, retry'da-AYNI, yeni-logical-control'da-YENİ (idempotent-dedup); wrap-öncesi-session-renewal.
 ```
-ACK   (0x10): acked_dh_epoch u8 · ack_range_count u16_be · [pn_start u64_be, pn_end u64_be]×count
-              (full-wire-PN/range, epoch-scoped §4; ACK-eliciting-DEĞİL)
-SACK  (0x11): acked_dh_epoch u8 · base_pn u64_be · gap_ack_block_count u16_be · [gap u16_be, ack_len u16_be]×count
-              (epoch-scoped; ACK-eliciting-DEĞİL)
+~~ACK   (0x10): acked_dh_epoch u8 · ack_range_count u16_be · [pn_start u64_be, pn_end u64_be]×count~~
+~~              (full-wire-PN/range, epoch-scoped §4; ACK-eliciting-DEĞİL)~~
+~~SACK  (0x11): acked_dh_epoch u8 · base_pn u64_be · gap_ack_block_count u16_be · [gap u16_be, ack_len u16_be]×count~~
+~~              (epoch-scoped; ACK-eliciting-DEĞİL)~~
+# [K3 — 2026-10-04b] ACK (0x10) ve SACK (0x11) gövdeleri SİLİNDİ (D2/Tema E): tüketicileri yoktu; ürün ACK'i engine
+#   ACK_FRAME_V2'dir ve WS-D1'de meta.full_wire_pn'e anahtarlanır. Son gerekçeleri olan onay taşıyıcısı = boş batch (§4 adım 2).
 RECOVERED(0x12): block_id u32_be · esi_range_count u16_be · [esi_start u16_be, esi_end u16_be]×count
                  (logical-recovery-YALNIZ; ACK/BtlBw-credit-DEĞİL; retransmit-cancel+retention-release)
 BLOCK_COMPLETE(0x13): block_id u32_be · final_source_count u16_be
@@ -366,10 +372,10 @@ AEAD).
 PARAM_SET               → PARAM_ACK (hash-echo) gelene-kadar-retry (control_id-sabit); deadline→retry-durur,
                           emission-SÜRER (B2: ACK=confirmation, admission-kapısı-değil); kalıcı-hash-mismatch→SESSION_CLOSE
 BLOCK_ABORT             ┐
-BLOCK_COMPLETE          │ → KENDİ-wire-PN'leri network-ACK (0x10/0x11) tarafından-KAPSANANA veya-deadline-dolana
+BLOCK_COMPLETE          │ → KENDİ-wire-PN'leri ~~network-ACK (0x10/0x11)~~ **hop-ACK (engine ACK_FRAME_V2; [K3 2026-10-04b])** tarafından-KAPSANANA veya-deadline-dolana
 SESSION_CLOSE           │   kadar-retry. (PARAM_ACK-BUNLARI-onaylamaz — yalnız-PARAM_SET-hash'ini.)
 SESSION_RENEW_REQUIRED  ┘
-ACK / SACK / RECOVERED  → RETRY-EDİLMEZ (pure-feedback, en-güncel-durum-taşır)
+~~ACK / SACK /~~ RECOVERED  → RETRY-EDİLMEZ (pure-feedback, en-güncel-durum-taşır)   # [K3] ACK/SACK silindi
 CTRL_CS_PROBE / CTRL_CS_ECHO [DR-CS-1] → RETRY-EDİLMEZ (probe-retry = merdivenin-kendisi 3/9/21/45s;
                           echo = idempotent-stateless-yanıt). Replay: EXTENDED-outer-pn32-window +
                           control_id-dedup OTOMATİK (yeni-zarf-YOK, yeni-plaintext-yol-YOK).
@@ -487,13 +493,13 @@ accept(candidate, dh_epoch_wire):
   window_mark_seen(win, candidate); if candidate >= ew: expected_pn[dh_epoch_wire] = candidate + 1
 ```
 **UNDERFLOW-KURALI:** tüm-`−WINDOW`/`−span`/`−FUTURE_GAP` işlemleri checked/saturating (u64-wrap-YASAK); karşılaştırma-
-formu `candidate + WINDOW < ew` (çıkarma-yerine-toplama) kullanılır. **EPOCH-PN-INIT:** her-dh_epoch'un-cipher-state'i-YENİ → expected_pn[1]-ve-send-counter-epoch-1'de **0'dan-başlar** (epoch-0-değerinden-devam-ETMEZ; ACK-epoch-scoped-olduğu-için-çakışma-yok). **ACK/SACK-EPOCH-BAĞI (§2.57):** ACK/SACK-body'si
+formu `candidate + WINDOW < ew` (çıkarma-yerine-toplama) kullanılır. **EPOCH-PN-INIT:** her-dh_epoch'un-cipher-state'i-YENİ → expected_pn[1]-ve-send-counter-epoch-1'de **0'dan-başlar** (epoch-0-değerinden-devam-ETMEZ; ACK-epoch-scoped-olduğu-için-çakışma-yok). **[K3 — 2026-10-04b: E2E ACK/SACK silindi; aşağıdaki epoch-bağı gereksinimi (aynı PN değerinin epoch-0/1'de belirsiz olmaması) WS-D1'de engine ACK_FRAME_V2'nin `full_wire_pn` anahtarlamasına DEVROLUR — AÇIK kalem]** **ACK/SACK-EPOCH-BAĞI (§2.57):** ACK/SACK-body'si
 `acked_dh_epoch u8` taşır → hangi-epoch'un-PN'ini-onayladığı-KESİN (epoch-0/1-aynı-PN-değeri-belirsizliği-çözüldü).
 **WRAP:** full-PN-u64-tükenmez; cap/wrap-yaklaşımında SESSION_RENEW_REQUIRED → yeni-handshake (§5). **DH_EPOCH-0→1-GEÇİŞ [B3 — CONFIRMATION-SAFE-STATE-MACHINE; send/recv-epoch-DIRECTION-LOCAL]:**
 ```
 1. Bob RESPONSE-gönderir AMA Alice→Bob-yönünde epoch-0-KABULÜNÜ-SÜRDÜRÜR (grace-BAŞLAMAZ — Alice'in-aldığı-belirsiz).
 2. Alice RESPONSE'u-alınca kendi-OUTBOUND'unu-epoch-1'e-geçirir (send_epoch[A→B]=1) ve-HEMEN-epoch-1'de-en-az-
-   bir-paket-gönderir (bekleyen-data-VEYA-ACK/keepalive — RESPONSE-ACK-eliciting-sayılır; idle-deadlock-önlenir:
+   bir-paket-gönderir (bekleyen-data-VEYA-~~ACK/keepalive~~ **boş-batch `BatchPayload{submsg_count = 0}` [K3 — 2026-10-04b, OQ-14 KAPANDI; ccr: boş batch GEÇERLİ, PN tüketir, app'e teslim yok]** — RESPONSE-ACK-eliciting-sayılır; idle-deadlock-önlenir:
    Alice-hiç-göndermezse-Bob-adım-3'e-geçemezdi).
 3. Bob İLK-GEÇERLİ-epoch-1-paketini-alınca Alice'in-RESPONSE'u-aldığını-ÖĞRENİR (implicit-confirmation).
 4. Bob ANCAK-bundan-sonra: epoch-0-recv-GRACE'ini-başlatır + kendi-OUTBOUND'unu-epoch-1'e-geçirir (send_epoch[B→A]=1).
@@ -676,7 +682,7 @@ resource-trust-DEĞİL** — fec-core-bounds (§13-fec-core-tdd) auth-sonrası-d
 - **K-WIRE-DOS-1:** unauth-paket replay-window-ilerletmez; bounded-key-trial; fixed-cost-outer-parse.
 - **K-WIRE-BIND-1:** transport-parameter-hash Noise-channel-binding'e-bağlı (zamanlama-A/B-seçili); downgrade-
   authenticated-reddedilir.
-- **K-WIRE-CTRL-1:** TÜM-control-frame'ler §2.56-allowlist (ACK/SACK/RECOVERED/BLOCK_COMPLETE/PARAM_SET/PARAM_ACK/
+- **K-WIRE-CTRL-1:** TÜM-control-frame'ler §2.56-allowlist (~~ACK/SACK/~~ [K3 2026-10-04b: silindi] RECOVERED/BLOCK_COMPLETE/PARAM_SET/PARAM_ACK/
   BLOCK_ABORT/SESSION_CLOSE/SESSION_RENEW_REQUIRED — KEY_UPDATE-YOK) secure-wire'dan-geçer;
   cleartext-feedback-YOK; sahte-recovered/ACK-forge-testleri.
 - **K-WIRE-SIZE-1 (P0-3):** seal(p).len()==sealed_len(p) EXACT; pacer-reserve==gerçek-send-byte.
@@ -725,7 +731,7 @@ noise-wire} ← engine; fec-codec yalnız-gerekli-primitive'leri-VEYA-adapter'la
 - **N4 gerçek-wire-overhead:** outer_hdr+inner_hdr+AEAD_tag-byte (fec-core-PMTU-bütçesi-§11-ortak-için).
 - **N5 admission:** verify-before-admission mevcut-Noise-open-yolunda-nerede? AEAD-fail-davranışı?
 - **N6 [UYUM-DOĞRULAMASI — final-allowlist §2.56/§2.57]:** mevcut-kodda control-frame-VARSA §2.56-codepoint'lere
-  (0x10..0x18) uyuyor-mu? **NACK/KEY_UPDATE-YOK** (NACK→SACK; KEY_UPDATE→Alpha-dışı). Eksik-control'lar-D1'de-
+  (0x10..0x18) uyuyor-mu? **NACK/KEY_UPDATE-YOK** (NACK→SACK ~~—~~ [K3 2026-10-04b: SACK de silindi; kayıp geri-bildirimi hop-yerel engine ACK_FRAME_V2'de]; KEY_UPDATE→Alpha-dışı). Eksik-control'lar-D1'de-
   §2.57-body'lerine-göre-eklenir.
 - **N7 wire-sizing/PMTU-raporu (P0-3 — YENİ):** exact-outer-bytes · packet-class-başına-exact-inner · AEAD-tag ·
   padding · IPv4/IPv6/tunnel · sealed_len()-sözleşme-taslağı · profile-başına-max-E · sub-kbps-serialization-tablosu.

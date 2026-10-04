@@ -1,5 +1,7 @@
 # CCR Format Specification
 
+> **YAMA KAYDI — 2026-10-04b [K3 + K5 — Abkarada kararı]:** `BatchPayload{submsg_count = 0}` (BOŞ BATCH) açıkça **GEÇERLİ** ilan edildi: AEAD'den geçer, PN tüketir, Application'a teslim YOK — epoch-1 onayının ve provisional supersession onayının taşıyıcısı (atıflarda "§35.6 BatchPayload" diye geçen tanım fiziksel olarak §35.14 sonundaki nottadır; yama oraya işlendi). §35.15'e **`PROVISIONAL_TTL`** (istemci; = `HALF_OPEN_TTL` değeri, türetilmiş, AYRI ad). Wire layout DEĞİŞMEDİ (boş batch mevcut yapının bir değeridir).
+
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 tamamlama — sahip kararı]:** §35.15 slot bloğu: **KS-AGE-1 KAPANDI (SESSION_MAX_AGE = 7 gün)** · **KS-HB-1 KAPANDI (8 s / 25 s / OS)** · **KS-UI-1 KAPANDI (LongOutage = 60 s; yalnız UI)**. §35.16 "client keepalive YOK" ÜSTÜ ÇİZİLDİ (pull-only varsayımıyla yazılmıştı; hop heartbeat `0x1B`/`0x1C` — transport-layer-tdd §10 [AMENDMENT-10]; mailbox fallback ve rebind yolu değişmedi). Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-03 [DR-CONNECT-1 — sahip kararı; indeks `docs/decisions/DR-CONNECT-1.md`]:** §35.15 sonuna kalibrasyon slotları bloğu: **KS-8 KAPANDI (değer yok — deadline yoktur)** · **KS-PN-1 KAPANDI (K = 1024)** · **KS-AGE-1 AÇIK** (SESSION_MAX_AGE, öneri 7 gün) · KS-HB-1 açılmadı (H4 sahip kararı bekliyor). §35.7 **KS-HANDLE-1 KAPANDI**: `HANDLE_TOMBSTONE` = S&F mailbox TTL (K2 kanıtı). §35.16 "client keepalive YOK" satırına DOKUNULMADI — H4 ile çelişir, H4 kararıyla birlikte ele alınacak. Rust'a dokunulmadı; üstü çizili metin silinmedi.
@@ -3016,6 +3018,15 @@ BatchSubMessage {
   payload : bytes[length]
 }
 ```
+> **[K3 — 2026-10-04, AMENDMENT · BOŞ BATCH GEÇERLİDİR]** `BatchPayload{submsg_count = 0}` (plaintext = tek bayt `0x00`) **GEÇERLİ**dir:
+> AEAD'den geçer, PN tüketir (replay penceresi normal işler), **Application'a teslim YOKTUR** (`recv()` üretmez). Daha önce
+> tanımsızdı. Rolü: **onay / keepalive taşıyıcısı** — gönderecek veri yokken mühürlenebilecek en küçük E2E paket.
+> Kullananlar: noise-wire §4 adım 2 ("Alice RESPONSE'u alınca epoch-1'de en az bir paket gönderir") ve identity §16
+> provisional supersession onayı. Veri paketi varsa onay ODUR; boş batch yalnız veri yokken gider. Tel boyutu: seq16 2 +
+> ct 1 + tag 16 = 19 B app-envelope → hub_handle ile 23 B UDP payload → UDP/IPv4 ile **51 B**. Ayrı bir E2E ACK çerçevesi
+> de aynı zarfı giyecekti; bu yüzden noise-wire `Control::Ack/Sack` (0x10/0x11) ailesi silindi (noise-wire §2.56/§2.57).
+> `submsg_count = 0` ardından fazladan bayt → reject (canonical: tam 1 bayt).
+
 > Tek seq16, tek tag (batch tek AEAD birimi). Düşük bant için bu kompakt form **TEK canonical encoding'dir** (KM-SEAM-TC-001 KARAR-1, 2026-09-19). ~~Alternatif basit form (`submsg_count u8` + her biri `u16_be len + payload`) da geçerli~~ — **SUPERSEDED**: bir canonical spec'te iki geçerli encoding olamaz; alternatif form REJECT edilir (len_mode 0xF1..0xFF gibi). Varint YOK, deterministic parser VAR.
 
 > **Sıkıştırma (P1-7; sahiplik app-rpc §3 [AMENDMENT-4], wire sözleşmesi application-message-protocol.md §5; transport-tdd §8 normatif değil — özet):** Sıkıştırma policy-controlled + thresholded + **context-isolated** (per-message/per-batch izole bağlam). Saldırgan-kontrollü plaintext ile gizli sır AYNI sıkıştırma bağlamında KARIŞTIRILMAZ. Eşik altı küçük mesaj (expansion riski) sıkıştırılMAZ. Ses/video çift-sıkıştırma YOK. Uzunluk-leak metadata olarak belgelenir (CRIME E2E'de geçersiz ama side-channel tümüyle yok sayılmaz).
@@ -3127,6 +3138,10 @@ BatchSubMessage {
 >           Otoriter metin: transport-layer-tdd §10 [AMENDMENT-10].
 > KS-UI-1   KAPANDI 2026-10-04 — LongOutage = heartbeat yanıtı 60 s'dir yok → ConnectPhase::LongOutage.
 >           YALNIZ UI; protokol parametresi DEĞİL (KM-SEAM-AT-001 §4).
+> PROVISIONAL_TTL  [K5, 2026-10-04b] İSTEMCİ tarafı — onaylanmayan provisional oturumun (identity §16) ömrü.
+>           = HALF_OPEN_TTL DEĞERİYLE AYNI (S&F mailbox TTL, bugün 7 gün); TÜRETİLMİŞ, ama AYRI ADDIR:
+>           HALF_OPEN_TTL hub'ın, PROVISIONAL_TTL istemcinin sabitidir (aynı adı iki sahibe vermek KS-DOS-1'deki
+>           "üçü hub'da biri istemcide" karışıklığını tekrarlardı).
 > ```
 > Not: bu slotlar hub DoS sabiti değildir; §35.15'e sahip talimatıyla (slot evi) yazıldı. KS-HANDLE-1: §35.7.
 

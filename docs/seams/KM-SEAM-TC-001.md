@@ -1,5 +1,7 @@
 # KM-SEAM-TC-001 — Transport ↔ Crypto Seam Sözleşmesi (S3)
 
+> **YAMA KAYDI — 2026-10-04b [K5 + K3 — Abkarada kararı]:** §1.2 `SessionResult`'a **`ProvisionalAndReply{new, supersedes, envelope}`**, `SessionEvent`'e **`Confirmed(new)`** eklendi; K10 buna göre kesinleşti (`EstablishedAndReply` = eşle oturum YOK; `ProvisionalAndReply` = eşle oturum VAR; Transport `Ready(new)`'i `Confirmed`'de yayınlar). İstemci sabiti `PROVISIONAL_TTL`. E2E kontrol aralığından `0x10/0x11` (Ack/Sack) silindi notu. A4.1 bunu UYGULAR, yeniden tasarlamaz.
+
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 — Abkarada kararı; indeks `docs/decisions/DR-CONNECT-1.md`]:** §1.2'ye **K10** eklendi: `AcceptInit`'in mevcut oturumu olan eşten gelen yeni-sayaçlı INIT için PROVISIONAL supersession'ı (onay = ilk AEAD-geçerli epoch-1 paketi; sonra N_g/T_g yalnız-alım drain → `Closed(h, Superseded)`) ve glare tie-break ön koşulu (dest_hash) · `CloseReason`'a `Superseded` · §8'de KS-DOS-1 ve KS-GRACE-1 kapalı olarak işaretlendi (2026-09-24'te kapanmışlardı). Normatif kaynak identity §16. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-09-20:** §6 H-RETRY Bob tarafıyla genişletildi (tekrarlanan SSI1 → mevcut session + byte-identical cached SSR1; noise-wire §0.7-B, ccr INV-RESP-KEY-1).
@@ -52,7 +54,7 @@ pub struct Opened { pub ctx: ProtectionContext, pub frame: Bytes, pub meta: Seal
 `Session(h)` → o session'ın E2E cipher state'i (yön + `dh_epoch`'a göre `send_cipher[dh_epoch & 1]`, protector.rs:245). `HubChannel` → client↔hub hop anahtarı (identity §11/§14 Noise IK/KK split).
 **G:** Transport birimi hangi kapıdan aldığını bilir (app `send(h, …)` / kendi kontrol çerçevesi / Plane 1 RPC) — bu **yapısal** bilgidir, semantik değil (INV-PLAINTEXT-NOT-SEMANTICS). Kod bugün tür iletmiyor (SealArgs'ta ctx yok; runtime.rs:1089-1137 tek seal yolu) → **S3'ün getirdiği tek API değişikliği budur.**
 **R:** *Crypto'nun ilk byte'tan tür çıkarması* (bugün open sonrası :1186 `plain.first()`) — reddedildi: Crypto transport çerçevesini parse etmiş olur (LAW-3 simetriği), Plane 1/2 ayrımı kodda karşılıksız kalır.
-**S:** `HubChannel`'a giden her şey (engine ACK_FRAME, HANDLE_ASSIGN, Plane 1 RPC) ayrı PN uzayı ve ayrı anahtar; `Session(h)`'ye giden her şey (SESSION_DATA birimleri + o session'ın FEC shard'ları + E2E kontrol inner_kind 0x10–0x1A) **tek** E2E cipher state ve **tek** PN uzayı (noise-wire §2.5 orijinal hükmü). PoC'de `HubChannel` no-op (IdentitySeam); `Session` gerçek.
+**S:** `HubChannel`'a giden her şey (engine ACK_FRAME, HANDLE_ASSIGN, Plane 1 RPC) ayrı PN uzayı ve ayrı anahtar; `Session(h)`'ye giden her şey (SESSION_DATA birimleri + o session'ın FEC shard'ları + E2E kontrol inner_kind 0x10–0x1A ~~—~~ [K3 2026-10-04b: 0x10/0x11 Ack/Sack silindi; aralık fiilen 0x12–0x1A]) **tek** E2E cipher state ve **tek** PN uzayı (noise-wire §2.5 orijinal hükmü). PoC'de `HubChannel` no-op (IdentitySeam); `Session` gerçek.
 
 **K2 — PN sayacını Crypto tutar; `SealArgs.wire_pn` kaldırılır.**
 **G:** Kod bugün PN'i transport'tan alıyor ve yalnız monotonluğu reddediyor (seam.rs:13); transport `tx_pn` PeerSlot yaşamına bağlı **sıfırlanıyor** (runtime.rs:2274; idle 105 s sonrası yeni slot → tx_pn=0) ve `wrapping_add` ile **dönüyor** (:1008). Gerçek seam'de bu, aynı anahtar altında nonce tekrarı = felaket sınıfı (noise-wire §2.6 NO-REUSE). Sayaç Crypto'da olunca transport'un her reset'i, slot değişimi ve wrap'i nonce güvenliğinden **yapısal olarak** kopar.
@@ -90,11 +92,14 @@ pub enum SessionCommand {
 pub enum SessionResult {
     OutboundEnvelope { envelope_type: u8, bytes: Bytes },          // transport Plane 1 ile yollar
     Established      { session: SessionHandle },
-    EstablishedAndReply { session: SessionHandle, envelope_type: u8, bytes: Bytes },
+    EstablishedAndReply { session: SessionHandle, envelope_type: u8, bytes: Bytes },   // [K5] eşle mevcut oturum YOK
+    ProvisionalAndReply { new: SessionHandle, supersedes: SessionHandle,             // [K5 2026-10-04b] eşle oturum VAR:
+                          envelope_type: u8, bytes: Bytes },                          //   `new` provisional, `supersedes` tam çalışır; zarf = RESPONSE
     NoOutput,
     Failed,                                                         // opak (§3)
 }
-pub enum SessionEvent { Ready(SessionHandle), RenewRequired(SessionHandle), Closed(SessionHandle, CloseReason) }
+pub enum SessionEvent { Ready(SessionHandle), RenewRequired(SessionHandle), Closed(SessionHandle, CloseReason),
+                        Confirmed(SessionHandle) }   // [K5 2026-10-04b] provisional `new` onaylandı (ilk AEAD-geçerli epoch-1 paketi)
 // CloseReason ∋ { Renewed, Superseded }   [DR-CONNECT-1 H6, 2026-10-04: Superseded = provisional supersession onaylandı (K10)]
 ```
 
@@ -115,9 +120,10 @@ pub enum SessionEvent { Ready(SessionHandle), RenewRequired(SessionHandle), Clos
 
 **K10 [DR-CONNECT-1, 2026-10-04] — `AcceptInit`, mevcut oturumu olan eşten gelen yeni-sayaçlı INIT'te yeni oturumu PROVISIONAL kurar; glare'de tie-break uygular.**
 **G:** identity §16 "Oturum yaşam döngüsü" (normatif). Bayat bir INIT (mailbox'ta bekleyip geç gelen) sağlıklı oturumu öldürmemelidir; kalıp, epoch geçişindeki confirmation-safe kuralın aynısıdır (KS-GRACE-1).
-**Provisional durum:** `AcceptInit{wire}` INIT'i doğrular (yeni `init_counter`) → RESPONSE zarfını döndürür; yeni oturum provisional tutulur ve **eski oturumun `Session(h)` ctx'i seal/open için TAM geçerli kalır**. **Onay** = provisional oturumda ilk AEAD-geçerli epoch-1 paketinin `open()`'ı (çerçeve türü fark etmez). Onayda Crypto `Ready(h')` yayınlar; `h` YALNIZ-ALIM drain'e düşer (`seal(Session(h))` → `UnknownSession`/superseded; `open` `N_g = 64` paket VEYA `T_g = 30 s`, hangisi önce) → `Closed(h, Superseded)`. Onaylanmayan provisional oturum half-open TTL ile düşer (ccr §35.15); olay yok, `h`'ye dokunulmaz, hiçbir state ilerlemez (P0-6). Aynı `init_counter`'lı duplicate `AcceptInit` → mevcut oturum + byte-identical cached SSR1 (H-RETRY; değişmedi).
+**Provisional durum:** `AcceptInit{wire}` INIT'i doğrular (yeni `init_counter`) → RESPONSE zarfını döndürür; yeni oturum provisional tutulur ve **eski oturumun `Session(h)` ctx'i seal/open için TAM geçerli kalır**. **Onay** = provisional oturumda ilk AEAD-geçerli epoch-1 paketinin `open()`'ı (çerçeve türü fark etmez). Onayda Crypto `Ready(h')` yayınlar; `h` YALNIZ-ALIM drain'e düşer (`seal(Session(h))` → `UnknownSession`/superseded; `open` `N_g = 64` paket VEYA `T_g = 30 s`, hangisi önce) → `Closed(h, Superseded)`. Onaylanmayan provisional oturum ~~half-open TTL~~ `PROVISIONAL_TTL` ile düşer (ccr §35.15); olay yok, `h`'ye dokunulmaz, hiçbir state ilerlemez (P0-6). Aynı `init_counter`'lı duplicate `AcceptInit` → mevcut oturum + byte-identical cached SSR1 (H-RETRY; değişmedi).
 **Glare — `AcceptInit` ön koşulu:** aynı eşe pending `Initiate` varken o eşten INIT gelirse: yerel `dest_hash` < eşin `dest_hash`'i (bytes32, işaretsiz big-endian) → **kazanan**: `NoOutput` (INIT sessiz düşer, RESPONSE yok, pending korunur); aksi hâlde → **kaybeden**: kendi pending'i kapatılır (ephemeral zeroize) ve INIT normal işlenir (RESPONSE döner). Tek oturum doğar.
-**S:** Crypto Renew ile peer-restart'ı ayırt etmez; ikisi bu yoldan geçer. Hangi `SessionResult` varyantının provisional'ı taşıyacağı (bugünkü `EstablishedAndReply` handle'ı HEMEN verir) A4.1'de tipler derlenirken kesinleşir — bu belge yalnız davranışı bağlar: handle Application'a ONAYDAN önce `Ready` olarak çıkmaz. Onayın taşıyıcısı (eşin gönderecek verisi yoksa) identity OQ-14 / WS-D2'ye bağlıdır.
+**S:** Crypto Renew ile peer-restart'ı ayırt etmez; ikisi bu yoldan geçer. ~~Hangi `SessionResult` varyantının provisional'ı taşıyacağı (bugünkü `EstablishedAndReply` handle'ı HEMEN verir) A4.1'de tipler derlenirken kesinleşir — bu belge yalnız davranışı bağlar: handle Application'a ONAYDAN önce `Ready` olarak çıkmaz.~~
+**[K5 — 2026-10-04b, tipler KESİNLEŞTİ]** `AcceptInit` sonucu: eşle mevcut oturum YOKSA `EstablishedAndReply{session, …}`; VARSA `ProvisionalAndReply{new, supersedes, …}`. Onayda Crypto **`Confirmed(new)`** yayınlar; **Transport, Application'a `Ready(new)`'i `Confirmed`'de yayınlar** → `supersedes` yalnız-alım drain'e düşer (KS-GRACE-1: `N_g = 64` / `T_g = 30 s`) → `Closed(supersedes, Superseded)`. Onaylanmayan provisional **`PROVISIONAL_TTL`** ile düşer (istemci sabiti; değeri `HALF_OPEN_TTL` ile aynı, ayrı ad — ccr §35.15). **A4.1 bu tipleri UYGULAR, yeniden tasarlamaz.** ~~Onayın taşıyıcısı (eşin gönderecek verisi yoksa) identity OQ-14 / WS-D2'ye bağlıdır.~~ **[K3 2026-10-04b]** Onayın taşıyıcısı: veri paketi ya da boş batch `BatchPayload{submsg_count = 0}` (ccr; OQ-14 KAPANDI).
 
 ## 2. Byte sözleşmesi ve vektörler
 Bu seam kendi wire'ını tanımlamaz. Çıktı formatları: legacy 22 B (ccr §35.6) · extended 26 B (noise-wire §2.5) · SSI1/SSR1 (ccr §35.3/§35.5). KDF/AAD/nonce: ccr §35.2.1/§35.9/§35.8. **Vektörler:** ccr §35.13 CRYPTO-P0-FREEZE seti (V-KDF-1..7, SSI1/SSR1/SSD1 exact+negatif, replay-poisoning, epoch geçişi) + **seam-özel**: `ProtectionContext::Session` vs `HubChannel` aynı çerçeve → farklı ciphertext (anahtar ayrımı) · PN sayacının transport reset/slot-değişimi/wrap'te **değişmediği** · `open()` fail sonrası state byte-özdeş. Üçüncü kaynak Python `hashlib.blake2s`+`hmac`. **Üretilmedi → HOLD.**
@@ -152,7 +158,7 @@ K9. Ek: `open()` ve `seal()` senkron, bloklamaz; seam I/O yapmaz.
 | ~~KARAR-1~~ | KAPANDI → (a) ccr §35.6 BatchPayload; interim çerçeve emekli (transport v1.x) | — |
 | ~~⬛ KS-DOS-1~~ | ~~`PENDING_RESPONSE_TRIAL_CAP` + `HALF_OPEN_*` + `PER_SOURCE_INIT_RATE` değerleri~~ KAPANDI 2026-09-24 (ccr §35.15) | — |
 | ~~⬛ KS-GRACE-1~~ | ~~`N_g` / `T_g`~~ KAPANDI 2026-09-24: `N_g = 64`, `T_g = 30 s` (noise-wire §4 madde 5) | — |
-| ⬛ DR-CONNECT-1 | K10 provisional'ı taşıyan `SessionResult` biçimi (A4.1) · onay taşıyıcısı (OQ-14 / WS-D2) | Abkarada |
+| ~~⬛ DR-CONNECT-1~~ | ~~K10 provisional'ı taşıyan `SessionResult` biçimi (A4.1) · onay taşıyıcısı (OQ-14 / WS-D2)~~ **KAPANDI 2026-10-04b:** `ProvisionalAndReply` + `Confirmed` (K5) · boş batch (K3) | — |
 | — | §2 vektörler + §6 harness + §7 stub | Abkarada (üretim), Hasan (koşum) |
 | ~~[OPEN]~~ | DELIVER/MailboxItem `envelope_type` eklendi (app-rpc AMENDMENT-7) → Transport dispatch anahtarı; `pending_ref` optimizasyonu ayrı [OPEN] | Hayri + hub |
 | [OPEN] | `HubChannel` gerçek anahtar/PN (M4; PoC no-op) | Abkarada |

@@ -23,6 +23,20 @@ chacha20poly1305 = "0.10"
 # param_hash production-backend: RustCrypto BLAKE2s-256 (noise-wire-tdd §8; ADR-03/DR-S5-5; pki-§13 primitif).
 blake2 = "0.10"
 zeroize = "1"
+# ── A5.0 kripto çekirdeği bağımlılıkları (R-7(b): implementasyon bu crate'te; primitifler pki §13) ──
+# KDF: HKDF-BLAKE2s (ccr §35.2.1). `hkdf::SimpleHkdf<Blake2s256>` kullanılır — `hkdf::Hkdf<Blake2s256>`
+# DERLENMEZ (BLAKE2'nin blok API'si lazy; `Hkdf`'in istediği eager-buffer bound'unu sağlamaz).
+# `blake2::Blake2sMac`'e GEÇİLMEZ: o BLAKE2s'in keyed modudur, HMAC DEĞİLDİR (INV-KDF-3).
+hkdf = "0.12"
+hmac = "0.12"
+# DH: X25519 (RFC 7748). `reusable_secrets`: Bob'un ephemeral'ı iki DH'de kullanılır (ss_e2, ccr §35.2.1 D4);
+# `static_secrets`: cihazın STATİK X25519 anahtarı (ss_s; identity CAD-36) — bu feature olmadan `StaticSecret`
+# tipi yoktur; `zeroize`: sırlar Drop'ta silinir.
+x25519-dalek = { version = "2", default-features = false, features = ["reusable_secrets", "static_secrets", "zeroize"] }
+# İmza doğrulama: Ed25519 (RFC 8032; ccr §5.2 katı kip). `zeroize`: imza anahtarı Drop'ta silinir.
+ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
+# Entropi: OS kaynağı (`OsRng`); testlerde enjekte edilebilir kaynak A4.1'de (exact vektörler için şart).
+rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
 # libsodium IETF-ChaCha20-Poly1305 independent-oracle — YALNIZ `libsodium-oracle` feature'ıyla (test-only).
 # PIN (=0.2.7): differential-oracle sürümü sabit (libsodium-sys bundled-libsodium build; Cargo.lock-teyitli).
 sodiumoxide = { version = "=0.2.7", optional = true }
