@@ -539,10 +539,14 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
         rp_suppress: cfg.rp_suppress,
     });
     print_manifest("server", &rt_cfg);
-    let mut srv =
-        ServerEndpoint::bind_with_policy(cfg.bind, rt_cfg, Box::new(IdentitySeam), Some(policy))
-            .await
-            .map_err(|e| rt_err("bind", e))?;
+    let mut srv = ServerEndpoint::bind_with_policy(
+        cfg.bind,
+        rt_cfg,
+        Box::new(IdentitySeam::new()),
+        Some(policy),
+    )
+    .await
+    .map_err(|e| rt_err("bind", e))?;
 
     // [W6] gate-watch: reverse bütçe client'ın ölçüm-t0'ına (`<gate>.go`) senkronlanır — warmup
     // ACK'leri pre_arm'da muaf (r5 D.2). Verilmezse hemen arm (eski davranış).
@@ -663,7 +667,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     let mut cli = ClientEndpoint::connect_with_policy(
         cfg.server,
         rt_cfg,
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
         Some(policy),
     )
     .await
@@ -1526,7 +1530,7 @@ mod tests {
                 spec_l2: None,
                 spec_l1: None,
             }),
-            Box::new(IdentitySeam),
+            Box::new(IdentitySeam::new()),
         )
         .await
         .expect("bind");
@@ -1583,7 +1587,7 @@ mod tests {
                 spec_l2: None,
                 spec_l1: None,
             }),
-            Box::new(IdentitySeam),
+            Box::new(IdentitySeam::new()),
         )
         .await
         .expect("bind");
@@ -1654,7 +1658,7 @@ mod tests {
                 spec_l2: None,
                 spec_l1: None,
             }),
-            Box::new(IdentitySeam),
+            Box::new(IdentitySeam::new()),
         )
         .await
         .expect("bind");
@@ -1802,7 +1806,7 @@ mod tests {
                 spec_l2: None,
                 spec_l1: None,
             }),
-            Box::new(IdentitySeam),
+            Box::new(IdentitySeam::new()),
         )
         .await
         .expect("bind");

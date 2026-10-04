@@ -15,14 +15,14 @@ async fn loopback_all_units_delivered_and_acked() {
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         RuntimeConfig::default(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("server bind");
     let mut client = ClientEndpoint::connect(
         server.local_addr(),
         RuntimeConfig::default(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("client connect");
@@ -74,10 +74,13 @@ async fn offer_backpressure_is_typed_queue_full() {
         ..RuntimeConfig::default()
     };
     // Ölü hedef (bağlı ama dinleyen yok): ACK gelmez → store boşalmaz → kuyruk dolar.
-    let client =
-        ClientEndpoint::connect("127.0.0.1:9".parse().unwrap(), cfg, Box::new(IdentitySeam))
-            .await
-            .expect("connect");
+    let client = ClientEndpoint::connect(
+        "127.0.0.1:9".parse().unwrap(),
+        cfg,
+        Box::new(IdentitySeam::new()),
+    )
+    .await
+    .expect("connect");
     client.send(b"a".to_vec()).expect("1. birim store'a");
     // Görev 1. birimi store'a alsın (store cap=1 dolu kalır; ACK yok).
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -105,7 +108,7 @@ async fn oversized_unit_is_typed_refused() {
             drain_cap: Duration::from_millis(50),
             ..RuntimeConfig::default()
         },
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("connect");
@@ -128,14 +131,18 @@ async fn peer_cap_is_fail_closed() {
             max_peers: 1,
             ..RuntimeConfig::default()
         },
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("server bind");
     let addr = server.local_addr();
-    let c1 = ClientEndpoint::connect(addr, RuntimeConfig::default(), Box::new(IdentitySeam))
-        .await
-        .expect("c1");
+    let c1 = ClientEndpoint::connect(
+        addr,
+        RuntimeConfig::default(),
+        Box::new(IdentitySeam::new()),
+    )
+    .await
+    .expect("c1");
     c1.send(b"first-peer".to_vec()).expect("offer");
     // İlk eş teslim edilene kadar bekle (slotu işgal etsin).
     tokio::time::timeout(Duration::from_secs(10), server.next_delivery())
@@ -148,7 +155,7 @@ async fn peer_cap_is_fail_closed() {
             drain_cap: Duration::from_millis(200),
             ..RuntimeConfig::default()
         },
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("c2");
@@ -175,7 +182,7 @@ async fn client_survives_server_death_mid_run() {
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         RuntimeConfig::default(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("server bind");
@@ -186,7 +193,7 @@ async fn client_survives_server_death_mid_run() {
             drain_cap: Duration::from_millis(500),
             ..RuntimeConfig::default()
         },
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("client connect");
@@ -242,14 +249,14 @@ async fn delivery_overflow_is_counted_not_grown() {
             delivery_queue: 4,
             ..RuntimeConfig::default()
         },
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("server bind");
     let mut client = ClientEndpoint::connect(
         server.local_addr(),
         RuntimeConfig::default(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("client connect");
@@ -297,14 +304,14 @@ async fn idle_peer_is_retired_and_slot_reusable() {
             idle_hold: Duration::from_millis(300),
             ..RuntimeConfig::default()
         },
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("server bind");
     let client = ClientEndpoint::connect(
         server.local_addr(),
         RuntimeConfig::default(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("client connect");
@@ -330,57 +337,58 @@ async fn idle_peer_is_retired_and_slot_reusable() {
     );
 }
 
-/// [S1] E2E FEC-kurtarım: gerçek UDP + KALICI erasure (Box::new(IdentitySeam), seçili DATA birimlerini retransmit
+/// [S1] E2E FEC-kurtarım: gerçek UDP + KALICI erasure (Box::new(IdentitySeam::new()), seçili DATA birimlerini retransmit
 /// DAHİL hep düşürür — ARQ'nun tek başına ASLA kurtaramayacağı kayıp sınıfı) → statik-r FEC
 /// (STATIC_R kolu) repair'lerle kurtarır, app 8/8 teslim alır. Repair çerçeveleri (FRAME_FEC)
 /// seam'den geçer; yalnız hedef DATA birimleri düşer. Bu, tezin ("coding, ARQ'nun sansürlediğini
 /// kurtarır") runtime-düzeyi e2e kanıtıdır — kompozisyon hücresinin (fec_recovery_cell) UDP ikizi.
 mod fec_seam {
     use client_core::seam::{
-        OpenReject, OpenedDatagram, SealArgs, SealError, SealedDatagram, SeamPeer, SecuritySeam,
-        IDENTITY_TAG,
+        IdentitySeam, Opened, PacketProtection, ProtectionClass, ProtectionContext,
+        ProtectionLimits, SealError, SealedUnit,
     };
     use client_core::wire::{decode_data, decode_data_frag};
 
-    /// IdentitySeam + alıcı-yönlü kalıcı DATA-erasure (unit_id ∈ drop).
-    pub struct DropUnitsSeam(pub &'static [u64]);
+    /// IdentitySeam + alıcı-yönlü kalıcı DATA-erasure (unit_id ∈ drop). `open` `None` döner —
+    /// S3 K5: sessiz düşürme, state değişmez.
+    pub struct DropUnitsSeam {
+        drop: &'static [u64],
+        inner: IdentitySeam,
+    }
 
-    impl SecuritySeam for DropUnitsSeam {
-        fn seal(
-            &mut self,
-            _peer: SeamPeer,
-            mut frame: Vec<u8>,
-            args: SealArgs,
-        ) -> Result<SealedDatagram, SealError> {
-            frame.resize(frame.len() + IDENTITY_TAG, 0);
-            Ok(SealedDatagram {
-                bytes: frame,
-                full_wire_pn: args.wire_pn,
-                dh_epoch: args.dh_epoch,
-            })
-        }
-        fn open(&mut self, wire: &[u8]) -> Result<OpenedDatagram, OpenReject> {
-            if wire.len() <= IDENTITY_TAG {
-                return Err(OpenReject::Malformed);
+    impl DropUnitsSeam {
+        pub fn new(drop: &'static [u64]) -> Self {
+            Self {
+                drop,
+                inner: IdentitySeam::new(),
             }
-            let plain = &wire[..wire.len() - IDENTITY_TAG];
+        }
+    }
+
+    impl PacketProtection for DropUnitsSeam {
+        fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
+            self.inner.seal(ctx, frame)
+        }
+        fn open(&mut self, wire: &[u8]) -> Option<Opened> {
+            let od = self.inner.open(wire)?;
             // [VAKUM DÜZELTMESİ 2026-09-19] Yalnız `decode_data` (0x00) bakılıyordu; fragmenter
             // açıkken çerçeveler FRAME_DATA_FRAG (0x05) olduğundan HİÇBİR ŞEY düşmüyordu.
-            let unit = decode_data(plain)
+            let unit = decode_data(&od.frame)
                 .map(|(_, u, _)| u)
-                .or_else(|| decode_data_frag(plain).map(|(_, u, _, _)| u));
-            if let Some(unit_id) = unit {
-                if self.0.contains(&unit_id) {
-                    return Err(OpenReject::AuthFail); // kalıcı erasure: retransmit'ler dahil.
-                }
+                .or_else(|| decode_data_frag(&od.frame).map(|(_, u, _, _)| u));
+            if unit.is_some_and(|u| self.drop.contains(&u)) {
+                return None; // kalıcı erasure: retransmit'ler dahil.
             }
-            Ok(OpenedDatagram {
-                peer: 0,
-                plain: plain.to_vec(),
-            })
+            Some(od)
         }
-        fn sealed_len(&self, frame_len: usize) -> usize {
-            frame_len + IDENTITY_TAG
+        fn sealed_len(&self, ctx: ProtectionContext, n: usize) -> Result<usize, SealError> {
+            self.inner.sealed_len(ctx, n)
+        }
+        fn conservative_limits(&self, class: ProtectionClass) -> ProtectionLimits {
+            self.inner.conservative_limits(class)
+        }
+        fn limits(&self, ctx: ProtectionContext) -> ProtectionLimits {
+            self.inner.limits(ctx)
         }
     }
 }
@@ -404,14 +412,17 @@ async fn fec_static_r_recovers_permanently_erased_units_over_udp() {
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         fec_cfg(64),
-        Box::new(fec_seam::DropUnitsSeam(&[2, 5])),
+        Box::new(fec_seam::DropUnitsSeam::new(&[2, 5])),
     )
     .await
     .expect("server bind");
-    let mut client =
-        ClientEndpoint::connect(server.local_addr(), fec_cfg(64), Box::new(IdentitySeam))
-            .await
-            .expect("client connect");
+    let mut client = ClientEndpoint::connect(
+        server.local_addr(),
+        fec_cfg(64),
+        Box::new(IdentitySeam::new()),
+    )
+    .await
+    .expect("client connect");
 
     for i in 0..K {
         client
@@ -498,13 +509,14 @@ async fn fragmenter_carries_a_message_far_larger_than_one_fec_symbol() {
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         cfg(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("server bind");
-    let mut client = ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam))
-        .await
-        .expect("client connect");
+    let mut client =
+        ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam::new()))
+            .await
+            .expect("client connect");
 
     // Deterministik, konum-duyarlı desen: yanlış sırada birleşen bir mesaj EŞİT ÇIKAMAZ.
     let msg: Vec<u8> = (0..MSG_LEN).map(|i| (i % 251) as u8).collect();
@@ -578,11 +590,11 @@ async fn fragmenter_message_survives_a_permanently_erased_chunk_via_fec() {
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         cfg(),
-        Box::new(fec_seam::DropUnitsSeam(&[3])),
+        Box::new(fec_seam::DropUnitsSeam::new(&[3])),
     )
     .await
     .expect("server bind");
-    let client = ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam))
+    let client = ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam::new()))
         .await
         .expect("client connect");
 
@@ -637,11 +649,11 @@ async fn fragmenter_bounds_are_typed_and_enforced_before_the_run() {
     let server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         cfg.clone(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("server bind");
-    let client = ClientEndpoint::connect(server.local_addr(), cfg, Box::new(IdentitySeam))
+    let client = ClientEndpoint::connect(server.local_addr(), cfg, Box::new(IdentitySeam::new()))
         .await
         .expect("client connect");
     match client.send(vec![0u8; 257]) {
@@ -663,7 +675,13 @@ async fn fragmenter_bounds_are_typed_and_enforced_before_the_run() {
         max_message_bytes: Some(50),
         ..RuntimeConfig::default()
     };
-    match ServerEndpoint::bind("127.0.0.1:0".parse().unwrap(), bad, Box::new(IdentitySeam)).await {
+    match ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        bad,
+        Box::new(IdentitySeam::new()),
+    )
+    .await
+    {
         Err(RuntimeError::FecConfig(m)) => {
             assert!(
                 m.contains("max_message_bytes"),
@@ -684,44 +702,44 @@ async fn fragmenter_bounds_are_typed_and_enforced_before_the_run() {
 
 mod cs_seam {
     use client_core::seam::{
-        OpenReject, OpenedDatagram, SealArgs, SealError, SealedDatagram, SeamPeer, SecuritySeam,
-        IDENTITY_TAG,
+        IdentitySeam, Opened, PacketProtection, ProtectionClass, ProtectionContext,
+        ProtectionLimits, SealError, SealedUnit,
     };
     use client_core::wire::{FRAME_CS_ECHO, FRAME_CS_PROBE};
 
     /// IdentitySeam + "DATA yolu tamamen ölü" kanalı: yalnız CS-probe/echo geçer.
     /// Böylece ACK ASLA gelmez → oturum ancak bootstrap-RTT ile PreConverge'den çıkabilir.
-    pub struct OnlyCsSeam;
+    pub struct OnlyCsSeam {
+        inner: IdentitySeam,
+    }
 
-    impl SecuritySeam for OnlyCsSeam {
-        fn seal(
-            &mut self,
-            _peer: SeamPeer,
-            mut frame: Vec<u8>,
-            args: SealArgs,
-        ) -> Result<SealedDatagram, SealError> {
-            frame.resize(frame.len() + IDENTITY_TAG, 0);
-            Ok(SealedDatagram {
-                bytes: frame,
-                full_wire_pn: args.wire_pn,
-                dh_epoch: args.dh_epoch,
-            })
-        }
-        fn open(&mut self, wire: &[u8]) -> Result<OpenedDatagram, OpenReject> {
-            if wire.len() <= IDENTITY_TAG {
-                return Err(OpenReject::Malformed);
-            }
-            let plain = &wire[..wire.len() - IDENTITY_TAG];
-            match plain.first() {
-                Some(&FRAME_CS_PROBE) | Some(&FRAME_CS_ECHO) => Ok(OpenedDatagram {
-                    peer: 0,
-                    plain: plain.to_vec(),
-                }),
-                _ => Err(OpenReject::AuthFail), // DATA/ACK: kalıcı silme
+    impl OnlyCsSeam {
+        pub fn new() -> Self {
+            Self {
+                inner: IdentitySeam::new(),
             }
         }
-        fn sealed_len(&self, frame_len: usize) -> usize {
-            frame_len + IDENTITY_TAG
+    }
+
+    impl PacketProtection for OnlyCsSeam {
+        fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
+            self.inner.seal(ctx, frame)
+        }
+        fn open(&mut self, wire: &[u8]) -> Option<Opened> {
+            let od = self.inner.open(wire)?;
+            match od.frame.first() {
+                Some(&FRAME_CS_PROBE) | Some(&FRAME_CS_ECHO) => Some(od),
+                _ => None, // DATA/ACK: kalıcı silme
+            }
+        }
+        fn sealed_len(&self, ctx: ProtectionContext, n: usize) -> Result<usize, SealError> {
+            self.inner.sealed_len(ctx, n)
+        }
+        fn conservative_limits(&self, class: ProtectionClass) -> ProtectionLimits {
+            self.inner.conservative_limits(class)
+        }
+        fn limits(&self, ctx: ProtectionContext) -> ProtectionLimits {
+            self.inner.limits(ctx)
         }
     }
 }
@@ -742,13 +760,17 @@ async fn bootstrap_rtt_probe_and_echo_traverse_the_product_wire() {
     let server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         cfg(true),
-        Box::new(cs_seam::OnlyCsSeam),
+        Box::new(cs_seam::OnlyCsSeam::new()),
     )
     .await
     .expect("server bind");
-    let client = ClientEndpoint::connect(server.local_addr(), cfg(true), Box::new(IdentitySeam))
-        .await
-        .expect("client connect");
+    let client = ClientEndpoint::connect(
+        server.local_addr(),
+        cfg(true),
+        Box::new(IdentitySeam::new()),
+    )
+    .await
+    .expect("client connect");
     client.send(b"tetikleyici".to_vec()).expect("offer"); // PreConverge'i başlatır
     tokio::time::sleep(Duration::from_millis(5_000)).await;
     let on_c = client.shutdown().await;
@@ -773,13 +795,17 @@ async fn bootstrap_rtt_probe_and_echo_traverse_the_product_wire() {
     let server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         cfg(false),
-        Box::new(cs_seam::OnlyCsSeam),
+        Box::new(cs_seam::OnlyCsSeam::new()),
     )
     .await
     .expect("server bind");
-    let client = ClientEndpoint::connect(server.local_addr(), cfg(false), Box::new(IdentitySeam))
-        .await
-        .expect("client connect");
+    let client = ClientEndpoint::connect(
+        server.local_addr(),
+        cfg(false),
+        Box::new(IdentitySeam::new()),
+    )
+    .await
+    .expect("client connect");
     client.send(b"tetikleyici".to_vec()).expect("offer");
     tokio::time::sleep(Duration::from_millis(5_000)).await;
     let off_c = client.shutdown().await;
@@ -830,14 +856,14 @@ async fn run_reports_whether_the_session_ever_established() {
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         RuntimeConfig::default(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("bind");
     let client = ClientEndpoint::connect(
         server.local_addr(),
         RuntimeConfig::default(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("connect");
@@ -863,7 +889,7 @@ async fn run_reports_whether_the_session_ever_established() {
             drain_cap: Duration::from_millis(50),
             ..RuntimeConfig::default()
         },
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("connect");
@@ -892,14 +918,14 @@ async fn declared_deadline_reaches_the_engine_and_keeps_the_tightest() {
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         RuntimeConfig::default(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("server bind");
     let client = ClientEndpoint::connect(
         server.local_addr(),
         RuntimeConfig::default(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("client connect");
@@ -942,14 +968,14 @@ async fn no_declaration_stays_none_rather_than_inventing_a_default() {
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         RuntimeConfig::default(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("server bind");
     let client = ClientEndpoint::connect(
         server.local_addr(),
         RuntimeConfig::default(),
-        Box::new(IdentitySeam),
+        Box::new(IdentitySeam::new()),
     )
     .await
     .expect("client connect");
@@ -989,7 +1015,7 @@ async fn ts_sampler_fills_when_enabled_and_stays_empty_when_disabled() {
         let mut server = ServerEndpoint::bind(
             "127.0.0.1:0".parse().unwrap(),
             RuntimeConfig::default(),
-            Box::new(IdentitySeam),
+            Box::new(IdentitySeam::new()),
         )
         .await
         .expect("server bind");
@@ -997,9 +1023,10 @@ async fn ts_sampler_fills_when_enabled_and_stays_empty_when_disabled() {
             ts_sample_period_ns: period,
             ..RuntimeConfig::default()
         };
-        let client = ClientEndpoint::connect(server.local_addr(), cfg, Box::new(IdentitySeam))
-            .await
-            .expect("client connect");
+        let client =
+            ClientEndpoint::connect(server.local_addr(), cfg, Box::new(IdentitySeam::new()))
+                .await
+                .expect("client connect");
         for i in 0..8u32 {
             client.send(format!("ts-{i}").into_bytes()).expect("offer");
         }
@@ -1084,11 +1111,11 @@ async fn partial_block_below_k_is_coded_and_recovers_model_a() {
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         cfg(),
-        Box::new(fec_seam::DropUnitsSeam(&[2])),
+        Box::new(fec_seam::DropUnitsSeam::new(&[2])),
     )
     .await
     .expect("server bind");
-    let client = ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam))
+    let client = ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam::new()))
         .await
         .expect("client connect");
 

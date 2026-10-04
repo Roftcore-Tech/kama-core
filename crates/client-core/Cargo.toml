@@ -33,5 +33,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "syn
 thiserror.workspace = true
 
 [features]
+# Sahteler ve deterministik entropi (`seam::FixedEntropy`) — YALNIZ test; üretim grafiğine girmez.
+test-util = []
 # [C4-ATIF] salt-gözlem zamanlayıcı telemetrisi (default OFF; ürün davranışı değişmez).
 diag-sched-telemetry = ["adaptive-transport/diag-sched-telemetry"]

@@ -17,8 +17,9 @@ use client_core::runtime::{
     RuntimeError, ServerEndpoint, ServerHandle, ServerStats,
 };
 use client_core::seam::{
-    IdentitySeam, OpenReject, OpenedDatagram, SealArgs, SealError, SealedDatagram, SeamPeer,
-    SecuritySeam, IDENTITY_TAG,
+    CloseReason, EntropyError, EntropySource, IdentitySeam, Opened, PacketProtection, PeerRef,
+    ProtectionClass, ProtectionContext, ProtectionLimits, SealError, SealedPacketMeta, SealedUnit,
+    SessionCommand, SessionControl, SessionEvent, SessionHandle, SessionResult, IDENTITY_TAG,
 };
 use client_core::wire::{
     decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec, decode_param,
@@ -118,16 +119,17 @@ async fn transport_api_v0_surface_is_frozen() {
     }
 
     // ── ClientEndpoint / ClientHandle imzaları ──
-    let ch: ClientHandle = ClientEndpoint::connect(addr, cfg.clone(), Box::new(IdentitySeam))
-        .await
-        .unwrap();
+    let ch: ClientHandle =
+        ClientEndpoint::connect(addr, cfg.clone(), Box::new(IdentitySeam::new()))
+            .await
+            .unwrap();
     let mut ch = ch;
     let _: Result<(), RuntimeError> = ch.send(Vec::new());
     let _: Option<u64> = ch.acked().await;
     let _: ClientStats = ch.shutdown().await;
 
     // ── ServerEndpoint / ServerHandle imzaları ──
-    let sh: ServerHandle = ServerEndpoint::bind(addr, cfg.clone(), Box::new(IdentitySeam))
+    let sh: ServerHandle = ServerEndpoint::bind(addr, cfg.clone(), Box::new(IdentitySeam::new()))
         .await
         .unwrap();
     let mut sh = sh;
@@ -227,40 +229,103 @@ async fn transport_api_v0_surface_is_frozen() {
         payload: Vec::new(),
     };
 
-    // ── SecuritySeam v1 sözleşmesi (güvenlik-düzlemi bu dikişe takılır; imza noise-wire-hizalı) ──
-    let mut sm = IdentitySeam;
-    let SealArgs {
-        wire_pn: _,
-        dh_epoch: _,
-        send_generation: _,
-    } = SealArgs::default();
-    let sd: SealedDatagram = sm
-        .seal(0 as SeamPeer, Vec::new(), SealArgs::default())
-        .unwrap();
-    let SealedDatagram {
+    // ── S3 sözleşmesi (KM-SEAM-TC-001 §1.1 PacketProtection + §1.2 SessionControl), A4.1 ──
+    // v1'in `SecuritySeam`/`SealArgs`/`OpenReject`'i KALKTI: PN sahipliği Crypto'da (K2), `open`
+    // sessiz (K5), bağlam çağırandan (K1). Bu blok o yüzeyi pinler; biri kaybolursa derlenmez.
+    let mut sm = IdentitySeam::new();
+    let ctx: ProtectionContext = ProtectionContext::Session(IdentitySeam::SESSION);
+    match ctx {
+        ProtectionContext::Session(_h) => {}
+        ProtectionContext::HubChannel => {}
+    }
+    match ProtectionClass::Session {
+        ProtectionClass::Session => {}
+        ProtectionClass::HubChannel => {}
+    }
+    let su: SealedUnit = sm.seal(ctx, &[]).unwrap();
+    let SealedUnit {
         bytes: _,
-        full_wire_pn: _,
-        dh_epoch: _,
-    } = sd;
-    let od: Result<OpenedDatagram, OpenReject> = sm.open(&[0u8; 32]);
-    if let Ok(OpenedDatagram { peer: _, plain: _ }) = od {}
-    match OpenReject::Malformed {
-        OpenReject::AuthFail => {}
-        OpenReject::Replay => {}
-        OpenReject::UnknownPeer => {}
-        OpenReject::EpochNotAccepted => {}
-        OpenReject::Malformed => {}
+        meta:
+            SealedPacketMeta {
+                full_wire_pn: _,
+                dh_epoch: _,
+                sealed_len: _,
+            },
+    } = su;
+    let od: Option<Opened> = sm.open(&[0u8; 32]);
+    if let Some(Opened {
+        ctx: _,
+        frame: _,
+        meta: _,
+    }) = od
+    {}
+    // SealError KAPALI ve yalnız yapısal (S3 §3).
+    match SealError::CapReached {
+        SealError::FrameTooLarge => {}
+        SealError::UnknownSession => {}
+        SealError::CapReached => {}
     }
-    match SealError::NotReady {
-        SealError::NotReady => {}
-        SealError::PnExhausted => {}
-        SealError::EpochKeysMissing => {}
-        SealError::Internal(_) => {}
-    }
-    let _: usize = sm.sealed_len(0);
+    let _: Result<usize, SealError> = sm.sealed_len(ctx, 0);
+    let ProtectionLimits {
+        wire_overhead_bytes: _,
+        max_plaintext_bytes: _,
+    } = sm.conservative_limits(ProtectionClass::Session);
+    let _: ProtectionLimits = sm.limits(ctx);
     let _: usize = IDENTITY_TAG;
-    // dyn-uyumluluk (endpoint sahipliği): Box<dyn SecuritySeam>.
-    let _dyn: Box<dyn SecuritySeam> = Box::new(IdentitySeam);
+    // dyn-uyumluluk (endpoint sahipliği): Box<dyn PacketProtection>.
+    let _dyn: Box<dyn PacketProtection> = Box::new(IdentitySeam::new());
+
+    // SessionControl tipleri (K6 typed komut · K10/DR-CONNECT-1 K5 provisional + Confirmed).
+    let h = SessionHandle::from_raw(1);
+    let peer = PeerRef::from_raw(1);
+    for cmd in [
+        SessionCommand::Initiate {
+            peer,
+            early_unit: None,
+        },
+        SessionCommand::AcceptInit { wire: Vec::new() },
+        SessionCommand::AcceptResponse { wire: Vec::new() },
+        SessionCommand::Renew { session: h },
+        SessionCommand::Close { session: h },
+    ] {
+        match cmd {
+            SessionCommand::Initiate { .. }
+            | SessionCommand::AcceptInit { .. }
+            | SessionCommand::AcceptResponse { .. }
+            | SessionCommand::Renew { .. }
+            | SessionCommand::Close { .. } => {}
+        }
+    }
+    match SessionResult::NoOutput {
+        SessionResult::OutboundEnvelope {
+            envelope_type: _,
+            bytes: _,
+        } => {}
+        SessionResult::Established { session: _ } => {}
+        SessionResult::EstablishedAndReply {
+            session: _,
+            envelope_type: _,
+            bytes: _,
+        } => {}
+        SessionResult::ProvisionalAndReply {
+            new: _,
+            supersedes: _,
+            envelope_type: _,
+            bytes: _,
+        } => {}
+        SessionResult::NoOutput => {}
+        SessionResult::Failed => {}
+    }
+    match SessionEvent::Ready(h) {
+        SessionEvent::Ready(_) => {}
+        SessionEvent::RenewRequired(_) => {}
+        SessionEvent::Closed(_, CloseReason::Renewed | CloseReason::Superseded) => {}
+        SessionEvent::Confirmed(_) => {}
+    }
+    fn _dyn_session_control(_: &mut dyn SessionControl) {}
+    fn _dyn_entropy(e: &mut dyn EntropySource) -> Result<(), EntropyError> {
+        e.fill(&mut [0u8; 32])
+    }
 
     // ── wire-v0 codec imzaları (tag YOK — seam'in işi) ──
     let _: Vec<u8> = encode_data(0u16, 0u64, &[]);
