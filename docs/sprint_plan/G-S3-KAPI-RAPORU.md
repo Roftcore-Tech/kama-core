@@ -2,8 +2,9 @@
 
 **Tarih:** 2026-10-06 · **Hazırlayan:** Claude Code (icra) · **Karar sahibi:** Abkarada
 **Bu belge karar İÇERMEZ.** Kapının ölçütlerini kanıtlarıyla listeler; dondurma kararı sahibindir.
-**Durum notu:** aşağıdaki satırların bir kısmı henüz main'de değil — açık PR'lardadır (#83, #84, #85, #87).
-Satır numaraları `conf/a44-s3-contract` dalının (#87) ağacına göredir.
+**Durum notu (2026-10-05, merge anında güncellendi):** bu raporun dayandığı PR'ların hepsi main'dedir
+(#82 `6b2d6bcb` · #83 `e341b020` · #85 `88961ee1` · #86 `ca788d4c` · #84 `285824b6` · #87 `77848003`).
+Satır numaraları main `77848003` ağacına göredir (merge öncesi tek tek doğrulandı).
 
 Kapı tanımı (`SPRINT-BACKLOG-FREEZE.md`): A1.1 + A1.2 sayıları · A2.* vektörleri commit · A4.* yeşil · C1.2 yeşil.
 
@@ -55,11 +56,11 @@ Toplam 68 vaka; commit `c9119026` (#78).
 | Kalem | Kanıt | Durum |
 |---|---|---|
 | A4.1 tipler derleniyor | `crates/client-core/src/seam.rs`; commit `62f2744a` (#77); CI `static` + `test` | main'de, yeşil |
-| A4.2 MockCrypto mock-fixture | `crates/client-core/tests/noise_mock_fixture.rs` f1–f10; commit `df84e3e5` (#81) + #87 (f10, H-RETRY genişletmesi) | #81 main'de; genişletme #87'de, CI 11/11 |
+| A4.2 MockCrypto mock-fixture | `crates/client-core/tests/noise_mock_fixture.rs` f1–f10; commit `df84e3e5` (#81) + #87 (f10, H-RETRY genişletmesi) | main'de, yeşil (genişletme `77848003`) |
 | A4.3 MockTransport mock-fixture | `crates/kama-noise-wire/tests/noise_transport_mock_fixture.rs` f1–f8; commit `df84e3e5` (#81) | main'de, yeşil |
-| A3.1 H-DEMUX | `noise_conformance_core/demux.rs`, 7 test; #83 | CI 11/11; merge bekliyor |
-| A3.2 epoch matrisi | `noise_conformance_core/epoch.rs`, 9 hücre + 5b; #84 | CI 11/11; **4 hücre beyanlı kırmızı** (aşağıda) |
-| A4.4 yedi satır | `noise_conformance_core/s3_*.rs`, mock 10 test + identity 1 test; #87 | CI 11/11; H-HANDLE tip yarısı pending B1 |
+| A3.1 H-DEMUX | `noise_conformance_core/demux.rs`, 7 test; #83 | main'de (`e341b020`), yeşil |
+| A3.2 epoch matrisi | `noise_conformance_core/epoch.rs`, 9 hücre + 5b; #84 | main'de (`285824b6`); **4 hücre beyanlı kırmızı** (aşağıda) |
+| A4.4 yedi satır | `noise_conformance_core/s3_*.rs`, mock 10 test + identity 1 test; #87 | main'de (`77848003`), yeşil; H-HANDLE tip yarısı pending B1 |
 
 Koşucu: `scripts/ci/noise-conformance.sh --target mock|machine|identity|real`; CI job'u
 `seam conformance (App↔Transport; hedef=mock|real)` içinde dört adım. Kapsama beyanı:
@@ -81,25 +82,26 @@ Beyan: `epoch.rs` `DECLARED_RED`; beyansız kırmızı ya da yeşile dönmüş b
 | Kapı | Kanıt | Durum |
 |---|---|---|
 | C1.2 `layer_check.py` | CI job `static (fmt + clippy)`, `.github/workflows/ci.yml:56-57`; commit `52083030` (#80); `--root` eki #86 | yeşil |
-| C1.4 `no_inline_expected.py` | aynı job; #87 ağacında 13 conformance dosyası taranıyor | yeşil |
+| C1.4 `no_inline_expected.py` | aynı job; main'de 13 conformance dosyası taranıyor | yeşil |
 | `seam-api-drift` | CI job `seam conformance`; S1 trait bloğu ↔ ayna | yeşil |
 
 ## 5. Bu raporun dayandığı PR'lar
 
-| PR | İçerik | Hosted CI |
-|---|---|---|
-| #82 | S1 §3 `DeadlineExpired` cümlesi | koşmaz (yalnız `.md`) |
-| #83 | A3.1 H-DEMUX + S1 §3 pending tavanı cümlesi | 11/11 |
-| #85 | PN sayacı epoch'lar boyunca sürekli | 11/11 |
-| #84 | A3.2 epoch matrisi (#83 + #85 üstünde) | 11/11 |
-| #86 | `layer_check.py --root` | 11/11 |
-| #87 | A4.4 yedi satır + MockCrypto genişletmesi | 11/11 |
+| PR | İçerik | Hosted CI (merge öncesi son uç) | main commit |
+|---|---|---|---|
+| #82 | S1 §3 `DeadlineExpired` cümlesi | koşmaz (yalnız `.md`) | `6b2d6bcb` |
+| #83 | A3.1 H-DEMUX + S1 §3 pending tavanı cümlesi | 11/11 | `e341b020` |
+| #85 | PN sayacı epoch'lar boyunca sürekli | 11/11 | `88961ee1` |
+| #86 | `layer_check.py --root` | 11/11 | `ca788d4c` |
+| #84 | A3.2 epoch matrisi | 11/11 (main'e eşitlenmiş uç `bd112705`) | `285824b6` |
+| #87 | A4.4 yedi satır + MockCrypto genişletmesi | 11/11 (main'e eşitlenmiş uç `2b5cf06a`) | `77848003` |
+
+Her squash-merge'den sonra main'in ağacı, merge öncesi hesaplanan beklenen ağaçla karşılaştırıldı; hepsi aynı.
 
 ## 6. Açık kalanlar (adıyla ve hangi kapıyı beklettiğiyle)
 
 | Açık | Bekleyen kapı |
 |---|---|
-| #83, #84, #85, #87 main'e girmedi | **G-S3** (kapı ölçütleri main'de olmalı) |
 | H-HANDLE tip yarısı: `HubHandle` newtype + trybuild negatifi | B1 (`kama-contracts`); G-S3'ü bekletip bekletmeyeceği sahip kararı |
 | A3.2'nin 4 kırmızı hücresi (5b, 6, 7, 9) | G-IMPL-S3 (A5.4 Done ölçütü); G-S3 için "matris yeşil" ölçütünün beyanlı kırmızıyla sağlanmış sayılıp sayılmayacağı sahip kararı |
 | `real` hedefi yok (`GAP-S3-REAL-A5`) | G-IMPL-S3 |
