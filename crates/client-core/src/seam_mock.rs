@@ -15,13 +15,22 @@
 //! * **K7** — `AcceptResponse` pending kümesini EN YENİ ÖNCE ve en fazla
 //!   [`PENDING_RESPONSE_TRIAL_CAP`] deneme ile tarar; sonuç opaktır (`Failed`).
 //!
-//! # Sahtenin MODELLEMEDİĞİ (bunlar gerçek implementasyonun ve A4.4'ün işi)
+//! * **H-RETRY (2026-10-06)** — `Initiate` deterministik sahte INIT zarfı üretir (`init_counter`
+//!   her çağrıda artar → ikinci `Initiate` FARKLI byte); `AcceptInit` `init_counter`'a göre sahte
+//!   SSR1 üretir ve ÖNBELLEKLER: aynı `(oturum, init_counter)` ile tekrar gelen INIT → byte-özdeş
+//!   aynı SSR1, yeni oturum YOK, yeni olay YOK.
+//! * **K1 kayıt kancası** — `seal()`'e verilen bağlam kaydedilir ([`MockCrypto::last_seal_ctx`]).
+//! * **PN sürekliliği** — [`MockCrypto::mock_set_epoch`] yalnız `meta.dh_epoch`'u değiştirir;
+//!   sayaç SIFIRLANMAZ (noise-wire §4 EPOCH-PN-INIT, 2026-10-06).
 //!
-//! Anahtar türetme · epoch 0→1 geçişi ve grace · provisional supersession / `Confirmed` · glare
-//! tie-break · sertifika doğrulaması · tel formatı (sahtenin başlığı ccr §35.6 DEĞİLDİR).
-//! `command()` kurulum komutlarında HER ZAMAN `Established` döner (sprint planı A4.2).
+//! # Sahtenin MODELLEMEDİĞİ (bunlar gerçek implementasyonun işi)
+//!
+//! Anahtar türetme · grace penceresi ve epoch-0 discard · provisional supersession / `Confirmed` ·
+//! glare tie-break · sertifika doğrulaması · tel formatı (sahtenin zarfları ccr §35.3/§35.5/§35.6
+//! DEĞİLDİR). Kurulum komutları tablo dolmadıkça başarılıdır: `Initiate` → `OutboundEnvelope`,
+//! `AcceptInit` → `EstablishedAndReply`, `AcceptResponse` → `Established` (cap'li aday denemesi).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::seam::{
     CloseReason, Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits,
@@ -35,6 +44,16 @@ pub const PENDING_RESPONSE_TRIAL_CAP: usize = 16;
 pub const MOCK_MAX_SESSIONS: usize = 64;
 /// Olay kuyruğu tavanı.
 pub const MOCK_MAX_EVENTS: usize = 64;
+/// app-rpc `STORE_MESSAGE.envelope_type` (AMENDMENT-7): INIT / INIT_RESPONSE.
+pub const ENVELOPE_INIT: u8 = 0x01;
+pub const ENVELOPE_INIT_RESPONSE: u8 = 0x02;
+
+const INIT_MAGIC: [u8; 8] = *b"MOCKSSI1";
+const RESP_MAGIC: [u8; 8] = *b"MOCKSSR1";
+/// magic(8) + oturum(8) + init_counter(8); ardından opak `early_unit`.
+const INIT_HDR: usize = 24;
+/// magic(8) + oturum(8) + init_counter(8) + yanıtlayan-tekilliği(8).
+const RESP_LEN: usize = 32;
 
 const TAG_CTX_HUB: u8 = 0x00;
 const TAG_CTX_SESSION: u8 = 0x01;
@@ -53,6 +72,8 @@ struct Lane {
     recv_next: u64,
     /// `recv_next - 1 - i` PN'inin görülüp görülmediği (bit i).
     recv_seen: u64,
+    /// `meta.dh_epoch` olarak raporlanan değer; sayacı ETKİLEMEZ.
+    epoch: u8,
 }
 
 impl Lane {
@@ -88,11 +109,20 @@ impl Lane {
 pub struct MockCrypto {
     sessions: BTreeMap<SessionHandle, Lane>,
     hub: Lane,
-    /// Bekleyen INIT belirteçleri (eski → yeni).
-    pending: Vec<u64>,
-    events: std::collections::VecDeque<SessionEvent>,
+    /// Bekleyen INIT'ler `(oturum, init_counter)` (eski → yeni).
+    pending: Vec<(u64, u64)>,
+    /// Sonraki `Initiate`'in `init_counter`'ı.
+    next_init_counter: u64,
+    /// Her TAZE `AcceptInit`'te artar (yanıtlayan ephemeral'ının yerine geçer): SSR1 yeniden
+    /// ÜRETİLSEYDİ byte'ları farklı olurdu; önbellek bunu engeller.
+    next_responder_nonce: u64,
+    /// `(oturum, init_counter)` → önbellekli SSR1 (ccr INV-RESP-KEY-1).
+    response_cache: BTreeMap<(u64, u64), Vec<u8>>,
+    events: VecDeque<SessionEvent>,
     /// Son `AcceptResponse`'ta yapılan deneme sayısı (K7 cap'inin gözlemlenebilir kanıtı).
     pub last_response_trials: usize,
+    /// `seal()`'e verilen bağlamların kaydı (K1 kancası; sınırlı).
+    seal_ctx_log: VecDeque<ProtectionContext>,
 }
 
 impl MockCrypto {
@@ -101,16 +131,83 @@ impl MockCrypto {
         Self::default()
     }
 
-    /// `Initiate`'in ürettiği / `AcceptInit`'in beklediği sahte INIT zarfı.
+    /// `Initiate`'in ürettiği / `AcceptInit`'in beklediği sahte INIT zarfı (`early_unit`'siz).
     #[must_use]
-    pub fn init_envelope(session: u64) -> Vec<u8> {
-        session.to_be_bytes().to_vec()
+    pub fn init_envelope(session: u64, init_counter: u64) -> Vec<u8> {
+        let mut w = Vec::with_capacity(INIT_HDR);
+        w.extend_from_slice(&INIT_MAGIC);
+        w.extend_from_slice(&session.to_be_bytes());
+        w.extend_from_slice(&init_counter.to_be_bytes());
+        w
     }
 
-    /// Bir pending belirtecine karşılık gelen sahte RESPONSE zarfı.
+    fn ssr1(session: u64, init_counter: u64, nonce: u64) -> Vec<u8> {
+        let mut w = Vec::with_capacity(RESP_LEN);
+        w.extend_from_slice(&RESP_MAGIC);
+        w.extend_from_slice(&session.to_be_bytes());
+        w.extend_from_slice(&init_counter.to_be_bytes());
+        w.extend_from_slice(&nonce.to_be_bytes());
+        w
+    }
+
+    /// [`MockCrypto::add_pending`] ile kaydedilen bir pending'e karşılık gelen sahte RESPONSE zarfı.
     #[must_use]
     pub fn response_envelope(token: u64) -> Vec<u8> {
-        token.to_be_bytes().to_vec()
+        Self::ssr1(token, 0, 0)
+    }
+
+    fn parse_init(wire: &[u8]) -> Option<(u64, u64)> {
+        if wire.len() < INIT_HDR || wire.len() > MAX_UDP_PAYLOAD || wire[..8] != INIT_MAGIC {
+            return None;
+        }
+        Some((
+            u64::from_be_bytes(wire[8..16].try_into().ok()?),
+            u64::from_be_bytes(wire[16..24].try_into().ok()?),
+        ))
+    }
+
+    fn parse_response(wire: &[u8]) -> Option<(u64, u64)> {
+        if wire.len() != RESP_LEN || wire[..8] != RESP_MAGIC {
+            return None;
+        }
+        Some((
+            u64::from_be_bytes(wire[8..16].try_into().ok()?),
+            u64::from_be_bytes(wire[16..24].try_into().ok()?),
+        ))
+    }
+
+    /// `seal()`'e en son verilen bağlam (K1: bağlam çağırandan gelir, seam'e DEĞİŞMEDEN ulaşır).
+    #[must_use]
+    pub fn last_seal_ctx(&self) -> Option<ProtectionContext> {
+        self.seal_ctx_log.back().copied()
+    }
+
+    /// Bir oturumun raporlanan `dh_epoch`'unu değiştirir. Sayaç SIFIRLANMAZ (PN epoch'lar boyunca
+    /// sürekli). Oturum yoksa `false`.
+    pub fn mock_set_epoch(&mut self, session: SessionHandle, epoch: u8) -> bool {
+        match self.sessions.get_mut(&session) {
+            Some(lane) => {
+                lane.epoch = epoch & 1;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Oturum/replay/pending/önbellek/olay state'inin parmak izi. Salt-gözlem alanları
+    /// (`last_response_trials`, bağlam kaydı) DIŞARIDADIR — H-NO-MUTATE karşılaştırmaları için.
+    #[must_use]
+    pub fn state_fingerprint(&self) -> String {
+        format!(
+            "{:?}|{:?}|{:?}|{}|{}|{:?}|{:?}",
+            self.sessions,
+            self.hub,
+            self.pending,
+            self.next_init_counter,
+            self.next_responder_nonce,
+            self.response_cache,
+            self.events
+        )
     }
 
     /// Yanıt beklenen bir INIT kaydeder (`AcceptResponse` cap testleri için).
@@ -122,7 +219,7 @@ impl MockCrypto {
         if self.pending.len() >= PENDING_RESPONSE_TRIAL_CAP {
             return Err(SealError::CapReached);
         }
-        self.pending.push(token);
+        self.pending.push((token, 0));
         Ok(())
     }
 
@@ -131,15 +228,17 @@ impl MockCrypto {
         self.pending.len()
     }
 
-    fn establish(&mut self, h: SessionHandle) -> SessionResult {
-        if !self.sessions.contains_key(&h) {
-            if self.sessions.len() >= MOCK_MAX_SESSIONS {
-                return SessionResult::Failed;
-            }
-            self.sessions.insert(h, Lane::default());
+    /// Oturum yoksa kurar ve `Ready` yayınlar; varsa DOKUNMAZ (olay yok). Tablo doluysa `false`.
+    fn ensure_session(&mut self, h: SessionHandle) -> bool {
+        if self.sessions.contains_key(&h) {
+            return true;
         }
+        if self.sessions.len() >= MOCK_MAX_SESSIONS {
+            return false;
+        }
+        self.sessions.insert(h, Lane::default());
         self.push_event(SessionEvent::Ready(h));
-        SessionResult::Established { session: h }
+        true
     }
 
     fn push_event(&mut self, ev: SessionEvent) {
@@ -213,8 +312,13 @@ impl PacketProtection for MockCrypto {
         }
         let lane = self.lane_mut(ctx).ok_or(SealError::UnknownSession)?;
         let pn = lane.next_send_pn;
+        let dh_epoch = lane.epoch;
         // Sayaç SARMAZ; u64::MAX hiçbir zaman mühürlenmez.
         lane.next_send_pn = pn.checked_add(1).ok_or(SealError::CapReached)?;
+        if self.seal_ctx_log.len() >= MOCK_MAX_EVENTS {
+            self.seal_ctx_log.pop_front();
+        }
+        self.seal_ctx_log.push_back(ctx);
         let hdr = header(ctx, pn);
         let tag = checksum(&[&hdr, frame]);
         let mut bytes = Vec::with_capacity(OVERHEAD + frame.len());
@@ -226,7 +330,7 @@ impl PacketProtection for MockCrypto {
             bytes,
             meta: SealedPacketMeta {
                 full_wire_pn: pn,
-                dh_epoch: 0,
+                dh_epoch,
                 sealed_len,
             },
         })
@@ -286,27 +390,70 @@ impl PacketProtection for MockCrypto {
 impl SessionControl for MockCrypto {
     fn command(&mut self, cmd: SessionCommand) -> SessionResult {
         match cmd {
-            // Kurulum komutları: HER ZAMAN `Established` (tablo doluysa `Failed`).
-            SessionCommand::Initiate { peer, .. } => {
-                self.establish(SessionHandle::from_raw(peer.to_raw_for_mock()))
+            // INIT: deterministik sahte zarf; `init_counter` her çağrıda artar. Pending tavanı
+            // doluysa reddedilir ve HİÇBİR state değişmez (ccr §35.15 zinciri).
+            SessionCommand::Initiate { peer, early_unit } => {
+                let session = peer.to_raw_for_mock();
+                let h = SessionHandle::from_raw(session);
+                let early = early_unit.unwrap_or_default();
+                if self.pending.len() >= PENDING_RESPONSE_TRIAL_CAP
+                    || early.len() > Self::LIMITS.max_plaintext_bytes as usize
+                    || self.next_init_counter == u64::MAX
+                    || !self.ensure_session(h)
+                {
+                    return SessionResult::Failed;
+                }
+                let init_counter = self.next_init_counter;
+                self.next_init_counter += 1;
+                self.pending.push((session, init_counter));
+                let mut bytes = Self::init_envelope(session, init_counter);
+                bytes.extend_from_slice(&early);
+                SessionResult::OutboundEnvelope {
+                    envelope_type: ENVELOPE_INIT,
+                    bytes,
+                }
             }
-            SessionCommand::AcceptInit { wire } => match <[u8; 8]>::try_from(wire.as_slice()) {
-                Ok(b) => self.establish(SessionHandle::from_raw(u64::from_be_bytes(b))),
-                Err(_) => SessionResult::Failed,
-            },
+            // Aynı `(oturum, init_counter)` → önbellekteki SSR1 byte-özdeş; yeni oturum/olay YOK.
+            SessionCommand::AcceptInit { wire } => {
+                let Some((session, init_counter)) = Self::parse_init(&wire) else {
+                    return SessionResult::Failed;
+                };
+                let h = SessionHandle::from_raw(session);
+                if let Some(cached) = self.response_cache.get(&(session, init_counter)) {
+                    return SessionResult::EstablishedAndReply {
+                        session: h,
+                        envelope_type: ENVELOPE_INIT_RESPONSE,
+                        bytes: cached.clone(),
+                    };
+                }
+                if self.response_cache.len() >= MOCK_MAX_SESSIONS
+                    || self.next_responder_nonce == u64::MAX
+                    || !self.ensure_session(h)
+                {
+                    return SessionResult::Failed;
+                }
+                let nonce = self.next_responder_nonce;
+                self.next_responder_nonce += 1;
+                let bytes = Self::ssr1(session, init_counter, nonce);
+                self.response_cache
+                    .insert((session, init_counter), bytes.clone());
+                SessionResult::EstablishedAndReply {
+                    session: h,
+                    envelope_type: ENVELOPE_INIT_RESPONSE,
+                    bytes,
+                }
+            }
             // K7: en yeni önce, en fazla cap deneme; hangi adayın tuttuğu DIŞARIYA sızmaz.
             SessionCommand::AcceptResponse { wire } => {
-                let want = <[u8; 8]>::try_from(wire.as_slice())
-                    .ok()
-                    .map(u64::from_be_bytes);
+                let want = Self::parse_response(&wire);
                 let mut trials = 0usize;
                 let mut hit = None;
-                for (i, tok) in self.pending.iter().enumerate().rev() {
+                for (i, cand) in self.pending.iter().enumerate().rev() {
                     if trials == PENDING_RESPONSE_TRIAL_CAP {
                         break;
                     }
                     trials += 1;
-                    if Some(*tok) == want {
+                    if Some(*cand) == want {
                         hit = Some(i);
                         break;
                     }
@@ -314,8 +461,12 @@ impl SessionControl for MockCrypto {
                 self.last_response_trials = trials;
                 match hit {
                     Some(i) => {
-                        let tok = self.pending.remove(i);
-                        self.establish(SessionHandle::from_raw(tok))
+                        let h = SessionHandle::from_raw(self.pending[i].0);
+                        if !self.ensure_session(h) {
+                            return SessionResult::Failed;
+                        }
+                        self.pending.remove(i);
+                        SessionResult::Established { session: h }
                     }
                     // Başarısızlıkta pending kümesi DEĞİŞMEZ (H-NO-MUTATE).
                     None => SessionResult::Failed,

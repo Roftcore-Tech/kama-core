@@ -2,6 +2,8 @@
 
 > **YAMA KAYDI — 2026-10-04b [K5 + K3 — Abkarada kararı]:** §1.2 `SessionResult`'a **`ProvisionalAndReply{new, supersedes, envelope}`**, `SessionEvent`'e **`Confirmed(new)`** eklendi; K10 buna göre kesinleşti (`EstablishedAndReply` = eşle oturum YOK; `ProvisionalAndReply` = eşle oturum VAR; Transport `Ready(new)`'i `Confirmed`'de yayınlar). İstemci sabiti `PROVISIONAL_TTL`. E2E kontrol aralığından `0x10/0x11` (Ack/Sack) silindi notu. A4.1 bunu UYGULAR, yeniden tasarlamaz.
 
+> **YAMA KAYDI — 2026-10-06 [H-RETRY için sahte genişletmesi — Abkarada kararı]:** §7'de `MockCrypto` tanımı güncellendi: `command()` artık sabit `Established` değil; `Initiate` INIT zarfı, `AcceptInit` önbellekli SSR1 üretir. §6 H-HANDLE'ın tip yarısı (`HubHandle` ≠ `SessionHandle`) `kama-contracts` işine (B1) taşındı; H-CTX iddiası hedefe göre ayrıldı (kapsama: `scripts/ci/noise-seam-coverage.json`). Trait blokları değişmedi. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 — Abkarada kararı; indeks `docs/decisions/DR-CONNECT-1.md`]:** §1.2'ye **K10** eklendi: `AcceptInit`'in mevcut oturumu olan eşten gelen yeni-sayaçlı INIT için PROVISIONAL supersession'ı (onay = ilk AEAD-geçerli epoch-1 paketi; sonra N_g/T_g yalnız-alım drain → `Closed(h, Superseded)`) ve glare tie-break ön koşulu (dest_hash) · `CloseReason`'a `Superseded` · §8'de KS-DOS-1 ve KS-GRACE-1 kapalı olarak işaretlendi (2026-09-24'te kapanmışlardı). Normatif kaynak identity §16. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-09-20:** §6 H-RETRY Bob tarafıyla genişletildi (tekrarlanan SSI1 → mevcut session + byte-identical cached SSR1; noise-wire §0.7-B, ccr INV-RESP-KEY-1).
@@ -150,7 +152,7 @@ K9. Ek: `open()` ve `seal()` senkron, bloklamaz; seam I/O yapmaz.
 | H-SPLIT | Application'dan Crypto'ya doğrudan çağrı yolu YOK (statik bağımlılık kontrolü, INV-NEIGHBOR-1) |
 
 ## 7. Karşı-taraf stub'ları
-`MockCrypto` (Transport için): deterministik seal/open (vektör-uyumlu veya identity), `command()` sabit `Established`, cap'li `AcceptResponse`. `MockTransport` (Crypto için): kayıp/sırasız/duplicate enjeksiyonu, PeerSlot reset simülasyonu, `OutboundEnvelope`'u cache'leyip yeniden gönderme.
+`MockCrypto` (Transport için): deterministik seal/open (vektör-uyumlu veya identity), ~~`command()` sabit `Established`~~ **[2026-10-06]** `Initiate` deterministik sahte INIT zarfı üretir (`init_counter` artar), `AcceptInit` `init_counter`'a göre sahte SSR1 üretir ve ÖNBELLEKLER (aynı `init_counter`'lı duplicate → byte-özdeş aynı SSR1, yeni oturum yok), cap'li `AcceptResponse`. `MockTransport` (Crypto için): kayıp/sırasız/duplicate enjeksiyonu, PeerSlot reset simülasyonu, `OutboundEnvelope`'u cache'leyip yeniden gönderme.
 
 ## 8. Açıklar (bu seam'i HOLD tutanlar)
 | # | Kalem | Sahip |

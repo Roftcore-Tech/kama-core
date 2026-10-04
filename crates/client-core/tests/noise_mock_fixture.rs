@@ -11,32 +11,35 @@ use client_core::seam::{
     CloseReason, PacketProtection, PeerRef, ProtectionClass, ProtectionContext, SealError,
     SessionCommand, SessionControl, SessionEvent, SessionHandle, SessionResult,
 };
-use client_core::seam_mock::{MockCrypto, MOCK_MAX_SESSIONS, PENDING_RESPONSE_TRIAL_CAP};
+use client_core::seam_mock::{
+    MockCrypto, ENVELOPE_INIT, ENVELOPE_INIT_RESPONSE, MOCK_MAX_SESSIONS,
+    PENDING_RESPONSE_TRIAL_CAP,
+};
 
 fn s(v: u64) -> ProtectionContext {
     ProtectionContext::Session(SessionHandle::from_raw(v))
 }
 
-/// İki uç: A `Initiate`, B aynı tutamacı INIT zarfından `AcceptInit` ile öğrenir.
+/// İki uç: A `Initiate` ile INIT zarfını üretir, B aynı tutamacı o zarftan `AcceptInit` ile öğrenir.
 fn pair(session: u64) -> (MockCrypto, MockCrypto) {
     let (mut a, mut b) = (MockCrypto::new(), MockCrypto::new());
-    assert_eq!(
-        a.command(SessionCommand::Initiate {
-            peer: PeerRef::from_raw(session),
-            early_unit: None
-        }),
-        SessionResult::Established {
-            session: SessionHandle::from_raw(session)
-        }
-    );
-    assert_eq!(
-        b.command(SessionCommand::AcceptInit {
-            wire: MockCrypto::init_envelope(session)
-        }),
-        SessionResult::Established {
-            session: SessionHandle::from_raw(session)
-        }
-    );
+    let SessionResult::OutboundEnvelope {
+        envelope_type,
+        bytes,
+    } = a.command(SessionCommand::Initiate {
+        peer: PeerRef::from_raw(session),
+        early_unit: None,
+    })
+    else {
+        panic!("Initiate bir INIT zarfı üretmeli");
+    };
+    assert_eq!(envelope_type, ENVELOPE_INIT);
+    assert_eq!(bytes, MockCrypto::init_envelope(session, 0));
+    assert!(matches!(
+        b.command(SessionCommand::AcceptInit { wire: bytes }),
+        SessionResult::EstablishedAndReply { session: h, envelope_type: ENVELOPE_INIT_RESPONSE, .. }
+            if h == SessionHandle::from_raw(session)
+    ));
     (a, b)
 }
 
@@ -230,18 +233,63 @@ fn f8_events_and_bounded_tables() {
     for i in 0..MOCK_MAX_SESSIONS as u64 {
         assert!(matches!(
             m.command(SessionCommand::AcceptInit {
-                wire: MockCrypto::init_envelope(i)
+                wire: MockCrypto::init_envelope(i, 0)
             }),
-            SessionResult::Established { .. }
+            SessionResult::EstablishedAndReply { .. }
         ));
     }
     assert_eq!(
         m.command(SessionCommand::AcceptInit {
-            wire: MockCrypto::init_envelope(9_999)
+            wire: MockCrypto::init_envelope(9_999, 0)
         }),
         SessionResult::Failed,
         "oturum tablosu dolu → yeni oturum reddedilir (sınırsız büyüme yok)"
     );
+}
+
+/// 2026-10-06 genişletmesi: INIT zarfı deterministik ve her `Initiate`'te farklı; SSR1 önbellekli;
+/// bağlam kaydı ve epoch kancası sayacı etkilemez.
+#[test]
+fn f10_init_envelope_response_cache_and_hooks() {
+    let mut a = MockCrypto::new();
+    let init = |a: &mut MockCrypto| match a.command(SessionCommand::Initiate {
+        peer: PeerRef::from_raw(7),
+        early_unit: Some(vec![0xEE]),
+    }) {
+        SessionResult::OutboundEnvelope { bytes, .. } => bytes,
+        other => panic!("INIT zarfı bekleniyordu: {other:?}"),
+    };
+    let (i0, i1) = (init(&mut a), init(&mut a));
+    let mut want = MockCrypto::init_envelope(7, 0);
+    want.push(0xEE);
+    assert_eq!(
+        i0, want,
+        "INIT zarfı deterministik; early_unit opak olarak eklenir"
+    );
+    assert_ne!(i0, i1, "ikinci Initiate farklı init_counter taşır");
+    assert_eq!(a.pending_len(), 2);
+
+    let mut b = MockCrypto::new();
+    let r0 = b.command(SessionCommand::AcceptInit { wire: i0.clone() });
+    let fp = b.state_fingerprint();
+    assert_eq!(b.command(SessionCommand::AcceptInit { wire: i0 }), r0);
+    assert_eq!(
+        b.state_fingerprint(),
+        fp,
+        "duplicate INIT state değiştirmez"
+    );
+    assert_ne!(b.command(SessionCommand::AcceptInit { wire: i1 }), r0);
+
+    // Kancalar: bağlam kaydı ve epoch; sayaç epoch'ta sıfırlanmaz.
+    let h = SessionHandle::from_raw(7);
+    assert_eq!(a.last_seal_ctx(), None);
+    let u0 = a.seal(s(7), b"x").unwrap();
+    assert_eq!(a.last_seal_ctx(), Some(s(7)));
+    assert!(a.mock_set_epoch(h, 1));
+    assert!(!a.mock_set_epoch(SessionHandle::from_raw(8), 1));
+    let u1 = a.seal(s(7), b"x").unwrap();
+    assert_eq!((u0.meta.dh_epoch, u1.meta.dh_epoch), (0, 1));
+    assert_eq!(u1.meta.full_wire_pn, u0.meta.full_wire_pn + 1);
 }
 
 /// Asıl kanıt: gerçek Transport runtime'ı (UDP, ARQ, ACK) sahte Crypto ile uçtan uca çalışır.

@@ -184,3 +184,60 @@ impl MockTransport {
         self.in_flight.len()
     }
 }
+
+// ── PeerSlot simülasyonu (S3 §7; H-PN-OWN) ───────────────────────────────────────────────────
+
+/// Kayıt tablosu tavanı (SR-AUDIT-001).
+pub const MOCK_MAX_SLOT_RECORDS: usize = 4096;
+
+/// Transport'un eş başına tuttuğu yerel durumun en ince modeli: kendi (dar) gönderim numarası ve
+/// Crypto'nun `seal()` dönüşünde verdiği `full_wire_pn`'lerin kaydı.
+///
+/// Sözleşme iddiası (S3 K2): PN'in sahibi Crypto'dur. Transport'un yerel durumu sıfırlansa, boşta
+/// emekliye ayrılsa ya da kendi dar numarası sarsa bile seam sayacı bundan ETKİLENMEZ — çünkü
+/// Transport `seal()`'e PN vermez. Bu tip o olayları üretir; sayaca dokunacak bir yolu YOKTUR.
+#[derive(Debug, Default)]
+pub struct PeerSlotSim {
+    /// Transport-yerel dar numara (interim çerçevedeki `seq u16`'nın karşılığı).
+    pub tx_seq: u16,
+    /// `seal()` dönüşlerinden kaydedilen PN'ler (ARQ tablosunun anahtarları).
+    recorded: Vec<u64>,
+    pub resets: u32,
+}
+
+impl PeerSlotSim {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Bir gönderimi kaydeder: yerel numara ilerler (sarar), seam'in verdiği PN tabloya yazılır.
+    pub fn on_sealed(&mut self, full_wire_pn: u64) -> Result<(), MockTransportError> {
+        if self.recorded.len() >= MOCK_MAX_SLOT_RECORDS {
+            return Err(MockTransportError::Backpressure);
+        }
+        self.recorded.push(full_wire_pn);
+        self.tx_seq = self.tx_seq.wrapping_add(1);
+        Ok(())
+    }
+
+    /// PeerSlot sıfırlandı (yeniden bağlanma): yerel numara 0'a döner, tablo boşalır.
+    pub fn reset(&mut self) {
+        self.tx_seq = 0;
+        self.recorded.clear();
+        self.resets += 1;
+    }
+
+    /// Boşta emeklilik: slot bırakılır; sonraki gönderim taze slotla başlar.
+    pub fn retire_idle(&mut self) {
+        self.reset();
+    }
+
+    /// Yerel dar numarayı sarma sınırına getirir (bir sonraki gönderimde 0'a sarar).
+    pub fn force_tx_seq_to_wrap_edge(&mut self) {
+        self.tx_seq = u16::MAX;
+    }
+
+    pub fn recorded(&self) -> &[u64] {
+        &self.recorded
+    }
+}
