@@ -104,9 +104,12 @@ pub struct KamaNoiseWireProtector {
     h_ext: u32,
     send_cipher: [Option<ChaCha20Poly1305>; 2],
     recv_cipher: [Option<ChaCha20Poly1305>; 2],
-    /// Nonce-reuse yapısal-guard: epoch-başına son-seal-PN (yeni-PN kesin-büyük olmalı).
-    last_sealed_pn: [Option<u64>; 2],
-    recv_windows: [ReplayWindow; 2],
+    /// Nonce-reuse yapısal-guard: son-seal-PN (yeni-PN kesin-büyük olmalı). TEK sayaç: PN uzayı
+    /// (session, direction) başınadır ve epoch'lar boyunca SÜREKLİDİR — dh_epoch yalnız anahtar seçer
+    /// (noise-wire §2.5 + §4 EPOCH-PN-INIT, 2026-10-06).
+    last_sealed_pn: Option<u64>,
+    /// TEK replay penceresi (identity §15.5): sayaç küresel sıralı olduğundan epoch'a bölünmez.
+    recv_window: ReplayWindow,
     /// Epoch-kabul bayrakları (§4-adım-1 + B3): [0]=epoch-0 (grace-bitince-false), [1]=epoch-1
     /// (anahtar-kurulunca-true). B3-adım-3: Bob epoch-0'dayken-de geçerli-epoch-1-paketi-KABUL-EDER.
     recv_epoch_accepts: [bool; 2],
@@ -135,11 +138,8 @@ impl KamaNoiseWireProtector {
                 Some(ChaCha20Poly1305::new(Key::from_slice(recv_key_e0.as_ref()))),
                 None,
             ],
-            last_sealed_pn: [None, None],
-            recv_windows: [
-                ReplayWindow::new(EXTENDED_PN_PARAMS),
-                ReplayWindow::new(EXTENDED_PN_PARAMS),
-            ],
+            last_sealed_pn: None,
+            recv_window: ReplayWindow::new(EXTENDED_PN_PARAMS),
             recv_epoch_accepts: [true, false],
             #[cfg(feature = "experimental-cold-start")]
             send_retired: false,
@@ -155,12 +155,13 @@ impl KamaNoiseWireProtector {
     #[cfg(feature = "experimental-cold-start")]
     pub(crate) fn drop_send_state(&mut self) {
         self.send_cipher = [None, None];
-        self.last_sealed_pn = [None, None];
+        self.last_sealed_pn = None;
         self.send_retired = true;
     }
 
     /// SESSION_INIT_RESPONSE-sonrası epoch-1 anahtar-kurulumu (dh_epoch 0→1; §5).
-    /// Epoch-1 cipher-state YENİ → PN-0'dan-başlar (§4 EPOCH-PN-INIT).
+    /// Yalnız ANAHTAR kurulur; PN sayacı ve replay penceresi SIFIRLANMAZ — epoch-1'in ilk PN'i
+    /// epoch-0'ın son PN'inden +1 ile devam eder (§4 EPOCH-PN-INIT, 2026-10-06).
     pub fn install_epoch1_keys(
         &mut self,
         send_key_e1: &Zeroizing<[u8; KEY_LEN]>,
@@ -184,8 +185,8 @@ impl KamaNoiseWireProtector {
 
     /// Alım-penceresi görünümü (teşhis/test; state-mutasyonu-YOK).
     #[must_use]
-    pub fn recv_expected_pn(&self, dh_epoch: u8) -> u64 {
-        self.recv_windows[usize::from(dh_epoch & 1)].expected_pn()
+    pub fn recv_expected_pn(&self) -> u64 {
+        self.recv_window.expected_pn()
     }
 
     fn nonce_for(full_pn: u64) -> Nonce {
@@ -250,7 +251,7 @@ impl KamaNoiseWireProtector {
         if args.wire_pn >= SEND_PN_CAP {
             return Err(WireError::PnCapReached);
         }
-        if let Some(last) = self.last_sealed_pn[ei] {
+        if let Some(last) = self.last_sealed_pn {
             if args.wire_pn <= last {
                 return Err(WireError::SealInput(
                     "non-monotonic wire_pn (nonce-reuse guard)",
@@ -283,7 +284,7 @@ impl KamaNoiseWireProtector {
             EXTENDED_OUTER_OVERHEAD + inner_plain.len(),
             "seal-len != 26 + inner-len (P0-3 ihlali)"
         );
-        self.last_sealed_pn[ei] = Some(args.wire_pn);
+        self.last_sealed_pn = Some(args.wire_pn);
         Ok(SealedPacket {
             bytes,
             meta: SealedPacketMeta {
@@ -316,14 +317,14 @@ impl KamaNoiseWireProtector {
         let cipher = self.recv_cipher[ei]
             .as_ref()
             .ok_or(WireError::EpochKeysMissing)?;
-        // (3) low_bits + dh_epoch → candidate
+        // (3) low_bits → candidate (tek pencere; dh_epoch yalnız anahtarı seçer)
         let candidate = reconstruct(
             &EXTENDED_PN_PARAMS,
-            self.recv_windows[ei].expected_pn(),
+            self.recv_window.expected_pn(),
             u64::from(outer.pn_trunc),
         );
         // (4) too-old/dup/future precheck — window-İLERLETMEDEN
-        self.recv_windows[ei].precheck(candidate)?;
+        self.recv_window.precheck(candidate)?;
         // (5) dh_epoch-cipher-state AEAD-attempt (AAD = alınan-outer-byte'ların-kendisi)
         let mut aad = [0u8; crate::aad::AAD_LEN];
         aad[0..16].copy_from_slice(crate::aad::AAD_DS);
@@ -338,8 +339,8 @@ impl KamaNoiseWireProtector {
                 },
             )
             .map_err(|_| WireError::AeadFail)?; // window-İLERLEMEZ (commit-çağrılmadı)
-                                                // (6) SUCCESS → COMMIT (yalnız-ilgili-epoch-state)
-        self.recv_windows[ei].commit(candidate);
+                                                // (6) SUCCESS → COMMIT (tek pencere)
+        self.recv_window.commit(candidate);
         // (7) inner-parse + bounds
         let inner = parse_inner(&plain)?;
         // (8) OpenedPacket handoff

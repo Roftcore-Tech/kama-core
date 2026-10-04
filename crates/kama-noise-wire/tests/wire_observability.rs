@@ -482,13 +482,13 @@ fn no_rejection_class_emits_bytes_or_advances_state() {
         .bytes;
 
     let mut b = receiver(H_EXT);
-    let pn_before = b.recv_expected_pn(0);
+    let pn_before = b.recv_expected_pn();
 
     for (name, bad) in invalid_datagram_classes(&valid) {
         let res = b.open(&bad);
         assert!(res.is_err(), "{name}: geçersiz datagram KABUL EDİLDİ");
         assert_eq!(
-            b.recv_expected_pn(0),
+            b.recv_expected_pn(),
             pn_before,
             "{name}: reddetme recv-penceresini ilerletti (state izi)"
         );
@@ -577,5 +577,5 @@ fn pn_reject_variants_are_reachable_and_distinct() {
     );
 
     // Pencere ilerlemedi mi? (Reddedilen sondalar iz bırakmamalı.)
-    assert_eq!(b.recv_expected_pn(0), 7, "reddetmeler pencereyi kaydırdı");
+    assert_eq!(b.recv_expected_pn(), 7, "reddetmeler pencereyi kaydırdı");
 }

@@ -1,5 +1,7 @@
 # Identity & Trust Model
 
+> **YAMA KAYDI — 2026-10-06 [PN SÜREKLİ — Abkarada kararı]:** §15.5, §8 oturum state'i ve T-19: `replay_window[epoch][direction]` → `replay_window[direction]` (TEK pencere). PN sayacı epoch'lar boyunca sürekli olduğundan (noise-wire §2.5 + §4 EPOCH-PN-INIT, 2026-10-06) pencereyi epoch'a bölmek gereksizdir. Precheck/commit tek pencereye yapılır; grace'teki anahtar denemesi (≤2) aynen kalır — hangi anahtar açtıysa o anahtarla doğrulanmış sayaç tek pencereye commit edilir. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-04b [K3 + K5 — Abkarada kararı]:** §28 **OQ-14 KAPANDI**: onay/keepalive taşıyıcısı = boş batch `BatchPayload{submsg_count = 0}` (ccr); E2E `Control::Ack/Sack` ailesi silindi, ürün ACK'i engine ACK_V2 (D2 / Tema E kapandı). §16 provisional supersession: onaylanmayan oturumun ömrü artık **`PROVISIONAL_TTL`** (istemci sabiti; değeri `HALF_OPEN_TTL` ile aynı, ayrı ad). Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 tamamlama — sahip kararı]:** §16 H6 **PROVISIONAL supersession** olarak yeniden yazıldı (2026-10-03 metni üstü çizili: bayat INIT sağlıklı oturumu öldürebiliyordu; artık yeni oturum provisional kurulur, eski oturum tam çalışır, onay = ilk AEAD-geçerli epoch-1 paketi, sonra N_g/T_g drain → `Closed(Superseded)`; alıcı Renew ile peer-restart'ı ayırt etmez) · §16'ya **eşzamanlı INIT (glare)** tie-break'i (dest_hash'i küçük olan kazanır) · `SESSION_MAX_AGE = 7 gün` (KS-AGE-1 KAPANDI) · §28 OQ-14'e not: provisional onayın kritik yolunda. Üstü çizili metin silinmedi.
@@ -1685,13 +1687,19 @@ verify_compact_device_cert(compact_cert, identity_cert, org_entitlement, fresh_c
 #
 # GİRDİ full_counter'dır — ham seq16 DEĞİL. Çağıran önce ccr §35.8 reconstruction'ı uygular
 # (3 aday, argmin; backward tie → düşük, forward tie → yüksek).
-# session_state.replay_window[epoch][direction]: highest_counter (u64) + bitmap (REPLAY_WINDOW_SIZE = 1024, ccr §35.8)
+# ~~session_state.replay_window[epoch][direction]: highest_counter (u64) + bitmap (REPLAY_WINDOW_SIZE = 1024, ccr §35.8)~~
+# [2026-10-06 — PN SÜREKLİ] session_state.replay_window[direction]: highest_counter (u64) + bitmap
+#   (REPLAY_WINDOW_SIZE = 1024, ccr §35.8). TEK pencere: sayaç epoch'lar boyunca sürekli olduğundan epoch'a
+#   bölünmez. Aşağıdaki `epoch` parametresi yalnız kabul kapısına (acceptable_epochs, grace) girer; pencere
+#   seçimine GİRMEZ. Grace'te ≤2 anahtar denenir; hangi anahtar açtıysa sayaç bu TEK pencereye commit edilir;
+#   başarısız deneme hiçbir şeyi değiştirmez.
 
 replay_precheck(full_counter, epoch, direction, session_state) -> bool:     # PURE — MUTASYON YOK
   WINDOW         = 1024                                    # ccr §35.8 REPLAY_WINDOW
   # ~~MAX_FUTURE_GAP = 4096  (ccr §35.8)~~  [D-GAP-1 2026-09-23] far-future kapısı KALDIRILDI
   if epoch not in session_state.acceptable_epochs[direction]: return FALSE  # P0-9: grace'e tabi
-  w = session_state.replay_window[epoch][direction]
+  # ~~w = session_state.replay_window[epoch][direction]~~
+  w = session_state.replay_window[direction]              # [2026-10-06] TEK pencere
   highest = w.highest_counter
   # [P0-7] UNDERFLOW-SAFE: "highest - WINDOW" YAZILMAZ (u64 wrap replay kararını etkileyemez).
   if full_counter > highest:
@@ -1707,7 +1715,8 @@ replay_precheck(full_counter, epoch, direction, session_state) -> bool:     # PU
   return TRUE                                                   # sırasız ama geçerli
 
 replay_commit(full_counter, epoch, direction, session_state) -> void:      # YALNIZ AEAD SUCCESS sonrası
-  w = session_state.replay_window[epoch][direction]
+  # ~~w = session_state.replay_window[epoch][direction]~~
+  w = session_state.replay_window[direction]              # [2026-10-06] TEK pencere
   if full_counter > w.highest_counter:
     slide_window(w, full_counter)                          # highest advance + pencere kaydır
                                                            # [D-GAP-1] sıçrama büyükse atlanan aralık TEMİZLENİR
@@ -2158,7 +2167,8 @@ SessionState {                          # per konuşma (link), Session Model V3 
   k_send_A2B_e0                 : secret32?  # epoch-0 PRE-RESPONSE (init_root'tan)
   k_send_A2B_e1                 : secret32?  # epoch-1 POST-RESPONSE (session_root'tan)
   k_send_B2A_e1                 : secret32?
-  replay_window[epoch][dir]     : {highest_seq, bitmap}   # per epoch+direction (Section 15.5)
+  # ~~replay_window[epoch][dir]     : {highest_seq, bitmap}   # per epoch+direction (Section 15.5)~~
+  replay_window[dir]            : {highest_seq, bitmap}   # [2026-10-06] per direction — TEK pencere (Section 15.5)
   # [KALDIRILDI 2026-09-22 — ÜÇE-AYIRMA; istemci gönderim penceresi yok] ~~ack_outstanding[dir]          : uint32     # N-message ACK penceresi (gönderilmiş, ACK beklenen)~~
   pending_accept_deadline       : timestamp  # PRE_RESPONSE iken SESSION_INIT_RESPONSE bekleme süresi
                                              # [DR-CONNECT-1 H11] NİYETİN deadline'ı DEĞİLDİR: yalnız pending ephemeral'in ömrü
@@ -2173,7 +2183,7 @@ SessionState {                          # per konuşma (link), Session Model V3 
 - Yüksek `highest_discovery_sequence` yalnızca **validation sonrası** cache'lenir (Section 15.6b).
 - Yüksek görülmüşse düşük DiscoveryRecord sequence **reddedilir** (suppression/rollback).
 - `device_pk_x25519`, DiscoveryRecordV2.current_device_x25519 ile **eşleşmeli** (CAD-42 binding); uyumsuz → reddet.
-- Async replay: `replay_window[epoch][dir]` (highest_seq + bitmap) ile per epoch+direction (Section 15.5); tekrar seq → REPLAY reddet.
+- Async replay: ~~`replay_window[epoch][dir]` (highest_seq + bitmap) ile per epoch+direction~~ **[2026-10-06]** `replay_window[dir]` (highest_seq + bitmap) ile per direction — tek pencere (Section 15.5); tekrar seq → REPLAY reddet.
 - ~~N-message ACK: `ack_outstanding[dir] >= N` ise Alice yeni mesaj göndermeden ACK bekler (CAD-45).~~ [2026-09-22 ÜÇE-AYIRMA: Alice beklemez; hub tarafı sınır = mailbox kotası, app-rpc §8.]
 - Epoch geçişi: PRE_RESPONSE (init_root) → SESSION_INIT_RESPONSE alınca POST_RESPONSE (session_root türet, init_ephemeral_sk SİL). Link state kaybı → LINK_ROUTE_MISS → SESSION_INIT_REF rebind (ccr-spec §35.16; Alpha ayrı resume frame YOK).
 - `identity_hash` değişimi → **identity-change uyarısı** (silent accept YOK; tofu_state = IDENTITY_CHANGED_WARN).
@@ -2465,7 +2475,7 @@ Mode C: emergency propagation mode, TTL-limited multi-hub sync, disaster/field o
 | **T-18a** | **KCI — alıcı static compromise ⇒ gönderen taklidi** | ⚠ **Kabul (residual)** | `ss_s = DH(sender_static, recipient_static)` SİMETRİKTİR: Bob'un static sk'si ele geçerse saldırgan `ss_s`'i HERHANGİ BİR Alice için hesaplar, kendi ephemeral'ıyla `ss_e` üretir ve Bob'a **herhangi biri adına** geçerli SESSION_INIT yazar (cert public olduğundan cert-mode engel değil). X3DH sınıfının bilinen özelliği. | **Mitigasyon mevcut:** saldırganda gönderenin Ed25519 `sk_device`'ı YOKTUR → `SIGNED_CONTROL` zorunlu kılınan yüzeyde KCI **etkisizdir**. **[KARAR-SLOTU KS-SC-1]** SIGNED_CONTROL ZORUNLU komut sınıfı tanımlanacak (aday: yetki/anahtar/üyelik değiştiren komutlar · revocation-ilgili komutlar · admin yüzeyi). Normal chat/file hot-path imzasız kalır (CAD-55 deniability korunur) → o yüzeyde residual kabul edilir. |
 | **T-18b** | **epoch-0'da ileri gizlilik YOK** | ⚠ **Kabul (residual)** | `init_root = KDF(label, ss_e‖ss_s, ctx)`; `ss_e = DH(sender_eph, recipient_STATIC)` ve `ss_s = DH(sender_STATIC, recipient_STATIC)` — **her iki DH de alıcının uzun ömürlü static'ine bağlıdır**. Alıcı static'i İLERİDE ele geçerse GEÇMİŞTEKİ TÜM epoch-0 trafiği çözülür. Bu "zayıf FS" değil, epoch-0 için FS **yokluğudur**. Tasarım RESPONSE beklemeden epoch-0 göndermeyi teşvik eder ve RESPONSE mailbox'ta ≤7 gün bekleyebilir → sahada epoch-0 istisna değil NORMAL mod olabilir. | Asenkron-first gereksiniminin doğrudan bedeli; kaldırılamaz. Azaltma: **[KARAR-SLOTU KS-FS-1]** yüksek hassasiyetli trafik için `require_epoch1` politika bayrağı (RESPONSE gelene kadar DATA gönderme) + alıcı tarafında RESPONSE'u mailbox'ta ÖNCELİKLENDİRME. **İddia dili:** "forward secrecy" ifadesi **epoch-1 için** nitelenmelidir. |
 | **T-18c** | **Gönderen ephemeral retention (≤7 gün)** | ⚠ **Kabul (residual)** | Alice `init_ephemeral_sk`'yi RESPONSE gelene kadar tutmak ZORUNDADIR (mailbox TTL ≤7 gün). O pencerede **Alice'in** cihazı ele geçerse bekleyen TÜM oturumların epoch-0 gizliliği düşer. T-18b ile birlikte: epoch-0 **iki taraftan da** korumasızdır. | RESPONSE alınır alınmaz `init_ephemeral_sk` SİLİNİR (§10.5-17 zaten normatif). Pencereyi kısaltmanın tek yolu RESPONSE gecikmesini kısaltmaktır (KS-FS-1). **[DR-CONNECT-1 H11, 2026-10-03]** 7 gün dolunca pending ephemeral silinir ama NİYET KORUNUR: Transport yeni ephemeral ile yeni INIT üretir (forward secrecy açısından daha iyi). Bu süre bir connect deadline'ı DEĞİLDİR; anahtar hijyenidir. |
-| T-19 | SESSION_DATA replay / duplicate delivery | ✓ | `replay_precheck`/`replay_commit` (P0-6): per epoch+direction sliding bitmap (~~512-1024~~ 1024 = ccr §35.8), commit YALNIZ AEAD success sonrası; SESSION_INIT replay = (validated sender device identity, init_counter), ilk INIT atomik | Yok (window dışı eski → reddedilir) |
+| T-19 | SESSION_DATA replay / duplicate delivery | ✓ | `replay_precheck`/`replay_commit` (P0-6): ~~per epoch+direction~~ **[2026-10-06] per direction (tek pencere; PN epoch'lar boyunca sürekli)** sliding bitmap (~~512-1024~~ 1024 = ccr §35.8), commit YALNIZ AEAD success sonrası; SESSION_INIT replay = (validated sender device identity, init_counter), ilk INIT atomik | Yok (window dışı eski → reddedilir) |
 | T-20 | Mailbox metadata leakage (kim-kimle) | ⚠ Kabul | recipient_dest_hash routing için hub'a görünür (sealed sender Alpha'da yok); metadata minimize | Hub routing metadata gözlemler (federated model varsayar) |
 | T-21 | Revoked cert ama hub hâlâ route ediyor | ✓ | 3-katman: RA→hub push (anlık) + CRLite fail-closed (client çift-katman) + kısa ömür | Stale push/CRLite window (<24h, push saniyeler) |
 | T-22 | Async sender spoof | ✓ | SESSION_INIT ss_s = DH(sender_static, recipient_static) possession + AEAD tag; saldırgan public cert hash'leyip sahte INIT koyamaz (sender_static_sk yok → tag fail) | Yok |
