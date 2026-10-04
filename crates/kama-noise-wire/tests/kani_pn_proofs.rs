@@ -28,7 +28,12 @@
 //! `--tests` ZORUNLU: Kani varsayılan olarak yalnız lib target'ını tarar, entegrasyon
 //! testlerindeki harness'ları görmez.
 //!
-//! CI: nightly'de koşar (Kani kurulumu + CBMC ~1 GB, PR başına uygun değil).
+//! CI: haftalık işte koşar (`core-weekly` / kani; Kani kurulumu + CBMC ~1 GB, PR başına uygun değil).
+//!
+//! **DURUM (2026-10-04, M1):** K-1 düzeltildi. Eskiden kısıtsız `expected_pn` ile koşan beş ispat ve
+//! `near_max` ispatı `pn.rs`'te `cand += span` taşmasıyla düşüyordu (8 harness'ten 6'sı kırmızı).
+//! `reconstruct` artık u64'ün en üst span bloğunda ileri adayı ÜRETMİYOR; `commit` de uç değerde
+//! taşmıyor. Tüm harness'lar yeşil beklenir.
 
 #![cfg(kani)]
 
@@ -136,12 +141,12 @@ fn reconstruct_does_not_panic_on_contract_violation() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// ERİŞİLEBİLİRLİK SINIRI — defektin üretimde tetiklenip tetiklenmediği
+// ERİŞİLEBİLİRLİK SINIRI — K-1 defektinin (düzeltildi) üretimde tetiklenip tetiklenmediği
 // ════════════════════════════════════════════════════════════════════════════
 //
-// Yukarıdaki beş ispat KISITSIZ `expected_pn` ile koşar ve BEŞİ DE `pn.rs:52`'de düşer.
-// Bu, fonksiyonun kendisinin yanlış olduğunu gösterir. Ancak "fonksiyon yanlış" ile
-// "sistem güvensiz" AYRI iddialardır; aşağıdaki iki ispat sınırı çizer.
+// [TARİHÇE] Düzeltmeden önce yukarıdaki beş ispat KISITSIZ `expected_pn` ile `cand += span`
+// satırında düşüyordu. "Fonksiyon yanlış" ile "sistem güvensiz" AYRI iddialardır; aşağıdaki iki
+// ispat o sınırı çizmişti ve düzeltmeden sonra regresyon kapısı olarak kalır.
 
 /// **İSPAT 6 — üretim alanında panik YOK.**
 ///
@@ -149,8 +154,7 @@ fn reconstruct_does_not_panic_on_contract_violation() {
 /// kısıtları altında Kani **SUCCESSFUL** verir. Gönderici `SEND_PN_CAP`'te durduğu için
 /// alıcının `expected_pn`'i oraya bile ulaşamaz.
 ///
-/// Yani mevcut çağıranlarla defekt ERİŞİLEMEZ. Bu ispat, düzeltme yapılana kadar
-/// "sistem bugün güvenli" iddiasının dayanağıdır.
+/// Yani düzeltmeden önce de mevcut çağıranlarla defekt ERİŞİLEMEZDİ.
 #[kani::proof]
 fn bounded_expected_never_panics() {
     let expected: u64 = kani::any();
@@ -160,17 +164,14 @@ fn bounded_expected_never_panics() {
     let _ = reconstruct(&EXTENDED_PN_PARAMS, expected, low);
 }
 
-/// **İSPAT 7 — tetikleyici bölgenin izolasyonu.**
+/// **İSPAT 7 — eski tetikleyici bölgede panik YOK.**
 ///
-/// [ÖLÇÜLDÜ] `expected_pn > u64::MAX - 2^31` kısıtı altında Kani **FAILED** verir.
-/// Tetikleyici bölge 2^64 uzayın 2^-33'ü kadardır; rastgele örnekleme (proptest, fuzz)
-/// oraya pratikte hiç düşmez — `pn_boundary_mutants.rs`'in 11 testi ve `pn_proptest.rs`
-/// bu yüzden bulamadı.
-///
-/// Bu harness KASTEN KIRMIZI bırakılmıştır: `pn.rs:52` düzeltildiğinde yeşile döner ve
-/// düzeltmenin gerçekleştiğini haber verir.
+/// `expected_pn > u64::MAX - 2^31` bölgesi K-1'in tetikleyicisiydi (2^64 uzayın 2^-33'ü; rastgele
+/// örnekleme oraya pratikte düşmez — proptest ve fuzz bu yüzden bulamamıştı). Düzeltmeden önce bu
+/// harness KASTEN KIRMIZI idi; düzeltmeyle yeşile döndü ve adı değişti
+/// (eski ad: `near_max_expected_panics_known_defect`).
 #[kani::proof]
-fn near_max_expected_panics_known_defect() {
+fn near_max_expected_never_panics() {
     let expected: u64 = kani::any();
     let low: u64 = kani::any();
     kani::assume(expected > u64::MAX - (1u64 << 31));
@@ -195,4 +196,36 @@ fn precheck_never_panics() {
     w.commit(1);
     let candidate: u64 = kani::any();
     let _ = w.precheck(candidate);
+}
+
+// ── ReplayWindow::commit — uç değerde taşma yok ─────────────────────────────
+
+/// **İSPAT 9 — `precheck`'ten geçen her `candidate` için `commit` panik üretmez.**
+///
+/// [D-GAP-1] legacy'de far-future kapısı kalktığı için `candidate` `expected`ten keyfi uzakta
+/// olabilir (ör. `expected = 0`, `candidate = u64::MAX - 1`). Eski `candidate - ew + 1` ve
+/// `candidate + 1` ifadeleri o uçta taşardı. Pencere KÜÇÜK seçilir (64) ki `commit`'in bit-temizleme
+/// döngüsü sınırlı unwind ile tam ispatlanabilsin; aritmetik pencere boyundan bağımsızdır.
+#[kani::proof]
+#[kani::unwind(66)]
+fn commit_never_panics_after_precheck() {
+    use kama_noise_wire::pn::ReplayWindow;
+    let params = PnParams {
+        low_width_bits: 16,
+        window: 64,
+        future_gap_max: None,
+    };
+    let mut w = ReplayWindow::new(params);
+    let first: u64 = kani::any();
+    if w.precheck(first).is_ok() {
+        w.commit(first);
+    }
+    let second: u64 = kani::any();
+    if w.precheck(second).is_ok() {
+        w.commit(second);
+        assert!(
+            w.expected_pn() > second,
+            "kabul edilen PN her zaman expected'in gerisinde kalmalı"
+        );
+    }
 }

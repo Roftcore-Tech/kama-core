@@ -48,7 +48,7 @@
 //! Doğrula: `cargo mutants -p kama-noise-wire --file crates/kama-noise-wire/src/pn.rs`
 
 use kama_noise_wire::error::PnReject;
-use kama_noise_wire::pn::{reconstruct, PnParams, ReplayWindow, EXTENDED_PN_PARAMS};
+use kama_noise_wire::pn::{reconstruct, ReplayWindow, EXTENDED_PN_PARAMS, LEGACY_PN_PARAMS};
 
 const SPAN: u64 = 1u64 << 32;
 const HALF: u64 = SPAN / 2;
@@ -279,12 +279,17 @@ fn duplicate_check_applies_only_to_the_past_not_to_expected_itself() {
     );
 }
 
-/// MUTANT `pn.rs:120:22` — FUTURE-GAP: `candidate > ew + gap` → `>=`.
+/// FUTURE-GAP kapısı — YALNIZ extended-pn32'de vardır; legacy-seq16'da [D-GAP-1] ile kalktı.
+///
+/// Extended: `candidate > ew + gap` → `>=` mutantı için sınır pinlenir (noise-wire §4; D-GAP-1
+/// kapsamı dışında, kapı durur). Legacy: aynı uzaklık ve çok ötesi KABUL edilir.
 #[test]
 fn future_gap_boundary_is_inclusive_of_the_limit() {
-    // `candidate == ew + FUTURE_GAP_MAX` TAM sınırı KABUL edilir; bir üstü reddedilir.
+    // Extended: `candidate == ew + FUTURE_GAP_MAX` TAM sınırı KABUL edilir; bir üstü reddedilir.
     let w = ReplayWindow::new(EXTENDED_PN_PARAMS);
-    let gap = EXTENDED_PN_PARAMS.future_gap_max;
+    let gap = EXTENDED_PN_PARAMS
+        .future_gap_max
+        .expect("extended sette far-future kapısı var");
     let ew = w.expected_pn();
 
     assert_eq!(
@@ -297,79 +302,98 @@ fn future_gap_boundary_is_inclusive_of_the_limit() {
         Err(PnReject::FutureGap),
         "sınırın bir üstü reddedilmeli"
     );
+
+    // Legacy: kapı YOK ([D-GAP-1]). Eski sınırların (4096, 8192) bir üstü de, çok ötesi de kabul.
+    assert_eq!(LEGACY_PN_PARAMS.future_gap_max, None);
+    let lw = ReplayWindow::new(LEGACY_PN_PARAMS);
+    for far in [4096u64, 4097, 8192, 8193, 1 << 20, 1 << 40, u64::MAX - 1] {
+        assert_eq!(
+            lw.precheck(far),
+            Ok(()),
+            "legacy'de far-future ({far}) precheck'te reddedildi — D-GAP-1 ihlali"
+        );
+    }
+    // Tek istisna sayaç uzayının sonu: expected = candidate + 1 temsil edilemez.
+    assert_eq!(lw.precheck(u64::MAX), Err(PnReject::FutureGap));
 }
 
-/// MUTANT `pn.rs:125:39` (`>` → `==` ve `>` → `>=`) ve `pn.rs:126:41` (`>=` → `<`).
+/// Legacy-seq16 — [D-GAP-1] sonrası davranış: ileri sıçrama KABUL, geriye tek sınır eski-paket kuralı.
 ///
-/// Bu üç mutant YALNIZ legacy sette (`max_reorder = Some(8192)`) canlıdır; extended sette
-/// `max_reorder` `None` olduğu için dal hiç çalışmaz. Mevcut testler bu dalı sürmüyordu.
+/// Eski hâli `MAX_REORDER_DISTANCE = 8192` dalını pinliyordu; o dal ccr §35.8'den kaldırıldı
+/// (ileri yarısı far-future reddiydi, geri yarısı zaten `window` ile kapsanıyordu).
 #[test]
 fn legacy_max_reorder_boundary_and_direction() {
-    // ccr-§35.8 MAX_REORDER_DISTANCE: |candidate − expected| > mr → reject.
-    // Reddin YÖNÜ de doğru olmalı: ileri → FutureGap, geri → TooOld. Yanlış yön,
-    // gözlemciye pencerenin hangi tarafında olduğunu söyler (BUL-10 hattı).
-    let params = PnParams {
-        low_width_bits: 16,
-        window: 1024,
-        future_gap_max: 4096,
-        max_reorder: Some(8192),
-    };
-    let mr = 8192u64;
-
-    let mut w = ReplayWindow::new(params);
-    // expected'i yukarı taşı ki geri yönde de test edebilelim.
+    let mut w = ReplayWindow::new(LEGACY_PN_PARAMS);
     w.commit(20_000);
     let ew = w.expected_pn();
     assert_eq!(ew, 20_001);
+    let win = LEGACY_PN_PARAMS.window; // 1024
 
-    // İleri yön — sınırın kendisi max_reorder tarafından reddedilmez, ama future_gap
-    // (4096) daha dar olduğu için önce o düşer. Yani ileri yönde max_reorder ERİŞİLEMEZ.
-    // Bu, dalın yalnız GERİ yönde canlı olduğunun kaydıdır.
+    // İLERİ YÖN: eskiden 4097'de (future_gap) ve 8193'te (max_reorder) FutureGap dönüyordu.
+    for ahead in [1u64, 4096, 4097, 8192, 8193, 100_000] {
+        assert_eq!(
+            w.precheck(ew + ahead),
+            Ok(()),
+            "legacy ileri sıçrama +{ahead} reddedildi — D-GAP-1: far-future kapısı yok"
+        );
+    }
+
+    // GERİ YÖN: eski-paket kuralı `candidate + WINDOW < expected` → TooOld (underflow-safe form).
+    // Sınır: candidate + win == ew kabul; bir altı TooOld.
     assert_eq!(
-        w.precheck(ew + 4097),
-        Err(PnReject::FutureGap),
-        "ileri yönde future_gap (4096) max_reorder'dan (8192) önce düşer"
-    );
-
-    // Geri yön: |cand − ew| == mr TAM sınırı kabul, bir altı reddedilir.
-    // Ama önce too-old (window=1024) düşer; yani geri yönde de window daha dar.
-    // Sonuç: max_reorder dalı bu parametre setinde HİÇBİR yönden erişilemez.
-    // [ÖLÇÜLDÜ] Kayıt: `LEGACY_PN_PARAMS`'ta window(1024) < future_gap(4096) < max_reorder(8192)
-    // olduğu için §35.8 kontrolü yapısal olarak ölü koddur.
-    assert_eq!(
-        w.precheck(ew - mr),
-        Err(PnReject::TooOld),
-        "geri yönde window (1024) max_reorder'dan (8192) önce düşer"
-    );
-
-    // Dalın canlı olabilmesi için mr < window olmalı — sentetik parametreyle sür.
-    let live = PnParams {
-        low_width_bits: 16,
-        window: 1 << 14,
-        future_gap_max: 1 << 13,
-        max_reorder: Some(64),
-    };
-    let mut w2 = ReplayWindow::new(live);
-    w2.commit(1000);
-    let ew2 = w2.expected_pn();
-
-    // Geri yön: sınır kabul, bir altı TooOld.
-    assert_eq!(
-        w2.precheck(ew2 - 64),
+        w.precheck(ew - win),
         Ok(()),
-        "|cand−ew| == mr kabul edilmeli"
+        "tam pencere sınırı kabul edilmeli"
     );
     assert_eq!(
-        w2.precheck(ew2 - 65),
+        w.precheck(ew - win - 1),
         Err(PnReject::TooOld),
-        "geri yönde mr aşımı TooOld vermeli (yön doğruluğu)"
+        "pencerenin bir altı TooOld vermeli"
     );
-    // İleri yön: mr aşımı FutureGap vermeli (yön doğruluğu — `candidate >= ew` dalı).
+    // Eski max_reorder uzaklığı da (geri yönde) TooOld — pencere daha dar olduğu için hep öyleydi.
+    assert_eq!(w.precheck(ew - 8192), Err(PnReject::TooOld));
+
+    // İLERİ SIÇRAMA KABULÜ: highest sıçrar, atlanan aralık "görülmedi" olur, eski paketler TooOld.
+    let jump = ew + 100_000;
+    w.commit(jump);
+    assert_eq!(w.expected_pn(), jump + 1, "highest sıçramalı");
     assert_eq!(
-        w2.precheck(ew2 + 65),
-        Err(PnReject::FutureGap),
-        "ileri yönde mr aşımı FutureGap vermeli (yön doğruluğu)"
+        w.precheck(jump),
+        Err(PnReject::Duplicate),
+        "sıçranan PN tekrar kabul edilemez"
     );
+    assert_eq!(
+        w.precheck(jump - 1),
+        Ok(()),
+        "atlanan aralık temizlenmeli (pencere içi, görülmedi)"
+    );
+    assert_eq!(
+        w.precheck(20_000),
+        Err(PnReject::TooOld),
+        "sıçramadan önceki PN artık pencere dışında"
+    );
+}
+
+/// u64 uç değerlerinde aritmetik TAŞMAZ (Kani K-1'in örnekleme karşılığı; ispat `kani_pn_proofs.rs`).
+#[test]
+fn arithmetic_is_total_at_u64_extremes() {
+    // reconstruct: en üst span bloğunda ileri aday yoktur; panik de yoktur.
+    for p in [&EXTENDED_PN_PARAMS, &LEGACY_PN_PARAMS] {
+        let span = 1u64 << p.low_width_bits;
+        for expected in [u64::MAX, u64::MAX - 1, u64::MAX - span / 2, u64::MAX - span] {
+            for low in [0u64, 1, span / 2, span - 1] {
+                let got = reconstruct(p, expected, low);
+                assert_eq!(got & (span - 1), low, "düşük bitler korunmalı");
+            }
+        }
+    }
+    // commit: ew = 0'dan en uzak kabul edilebilir PN'e sıçrama (dist + 1 taşardı).
+    let mut w = ReplayWindow::new(LEGACY_PN_PARAMS);
+    assert_eq!(w.precheck(u64::MAX - 1), Ok(()));
+    w.commit(u64::MAX - 1);
+    assert_eq!(w.expected_pn(), u64::MAX);
+    assert_eq!(w.precheck(u64::MAX - 1), Err(PnReject::Duplicate));
+    assert_eq!(w.precheck(u64::MAX), Err(PnReject::FutureGap));
 }
 
 // ════════════════════════════════════════════════════════════════════════════

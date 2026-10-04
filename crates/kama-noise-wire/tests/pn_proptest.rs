@@ -83,6 +83,17 @@ proptest! {
         }
     }
 
+    // INVARIANT-6 (legacy, D-GAP-1): ileri sıçrama HER ZAMAN kabul edilir ve sonrasında aynı PN duplicate'tir.
+    #[test]
+    fn legacy_far_future_is_accepted_once(base in 0u64..1_000_000, ahead in 1u64..(1u64 << 40)) {
+        let mut w = ReplayWindow::new(LEGACY_PN_PARAMS);
+        prop_assert!(try_accept(&mut w, base));
+        let far = base + ahead;
+        prop_assert!(try_accept(&mut w, far), "legacy far-future pn={far} reddedildi (D-GAP-1)");
+        prop_assert_eq!(w.expected_pn(), far + 1);
+        prop_assert!(!try_accept(&mut w, far), "sıçranan PN ikinci kez kabul edildi");
+    }
+
     // INVARIANT-5 (legacy-seti): duplicate hiç kabul-edilmez, reorder-mesafe-sınırı içinde geç-paket kabul.
     #[test]
     fn legacy_no_double_accept(seq in prop::collection::vec(0u64..5000, 1..300)) {
@@ -101,14 +112,14 @@ proptest! {
 fn params_constants_sane() {
     fn check(p: &PnParams) {
         assert!(p.window.is_power_of_two());
-        assert!(
-            p.future_gap_max < (1u64 << (p.low_width_bits - 1)),
-            "future-gap < span/2 tek-anlamlı"
-        );
-        // ccr-§35.8 <2^15 invariant (legacy'de max_reorder var; extended'de yok).
-        if let Some(mr) = p.max_reorder {
-            assert!(mr < (1u64 << 15), "reorder < 2^15 (seq16 wrap-ambiguity)");
-            assert!(p.future_gap_max < (1u64 << 15));
+        // Kapısı olan sette (extended) future-gap < span/2 — reconstruction tek-anlamlılığı.
+        // Legacy'de kapı yok ([D-GAP-1]); <2^15 invariantı artık SABİTE değil MESAFEYE uygulanır ve
+        // gönderenin kısıtıdır (transport-tdd AMENDMENT-9 / KS-PN-1, K = 1024).
+        if let Some(gap) = p.future_gap_max {
+            assert!(
+                gap < (1u64 << (p.low_width_bits - 1)),
+                "future-gap < span/2 tek-anlamlı"
+            );
         }
     }
     check(&EXTENDED_PN_PARAMS);
