@@ -69,8 +69,8 @@ fn arg(a: &[String], k: &str, d: u64) -> u64 {
 /// Dönüş yolu (ACK) temiz — ölçülen şey ileri-yön kurtarma, ACK yolu değil.
 mod ge_seam {
     use client_core::seam::{
-        OpenReject, OpenedDatagram, SealArgs, SealError, SealedDatagram, SeamPeer, SecuritySeam,
-        IDENTITY_TAG,
+        IdentitySeam, Opened, PacketProtection, ProtectionClass, ProtectionContext,
+        ProtectionLimits, SealError, SealedUnit,
     };
 
     /// Saf-tamsayı LCG (ADR-17: RNG kütüphanesi yok, aynı seed → aynı akış).
@@ -105,6 +105,7 @@ mod ge_seam {
         bad: bool,
         pub seen: u64,
         pub dropped: u64,
+        inner: IdentitySeam,
     }
 
     impl GeSeam {
@@ -117,6 +118,7 @@ mod ge_seam {
                 bad: false,
                 seen: 0,
                 dropped: 0,
+                inner: IdentitySeam::new(),
             }
         }
 
@@ -140,38 +142,31 @@ mod ge_seam {
         }
     }
 
-    impl SecuritySeam for GeSeam {
-        fn seal(
-            &mut self,
-            _peer: SeamPeer,
-            mut frame: Vec<u8>,
-            args: SealArgs,
-        ) -> Result<SealedDatagram, SealError> {
-            frame.resize(frame.len() + IDENTITY_TAG, 0);
-            Ok(SealedDatagram {
-                bytes: frame,
-                full_wire_pn: args.wire_pn,
-                dh_epoch: args.dh_epoch,
-            })
+    impl PacketProtection for GeSeam {
+        fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
+            self.inner.seal(ctx, frame)
         }
 
-        fn open(&mut self, wire: &[u8]) -> Result<OpenedDatagram, OpenReject> {
-            if wire.len() <= IDENTITY_TAG {
-                return Err(OpenReject::Malformed);
-            }
+        fn open(&mut self, wire: &[u8]) -> Option<Opened> {
+            let od = self.inner.open(wire)?;
             self.seen += 1;
             if self.step_drops() {
                 self.dropped += 1;
-                return Err(OpenReject::AuthFail); // kanal silmesi (verify-öncesi düşme ile aynı yol)
+                return None; // kanal silmesi (verify-öncesi düşme ile aynı yol; S3 K5 sessiz)
             }
-            Ok(OpenedDatagram {
-                peer: 0,
-                plain: wire[..wire.len() - IDENTITY_TAG].to_vec(),
-            })
+            Some(od)
         }
 
-        fn sealed_len(&self, frame_len: usize) -> usize {
-            frame_len + IDENTITY_TAG
+        fn sealed_len(&self, ctx: ProtectionContext, n: usize) -> Result<usize, SealError> {
+            self.inner.sealed_len(ctx, n)
+        }
+
+        fn conservative_limits(&self, class: ProtectionClass) -> ProtectionLimits {
+            self.inner.conservative_limits(class)
+        }
+
+        fn limits(&self, ctx: ProtectionContext) -> ProtectionLimits {
+            self.inner.limits(ctx)
         }
     }
 }
@@ -226,7 +221,7 @@ async fn run_arm(
     .await
     .expect("server bind");
     let addr = server.local_addr();
-    let client = ClientEndpoint::connect(addr, cfg(), Box::new(IdentitySeam))
+    let client = ClientEndpoint::connect(addr, cfg(), Box::new(IdentitySeam::new()))
         .await
         .expect("client connect");
 

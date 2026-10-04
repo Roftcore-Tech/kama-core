@@ -58,7 +58,7 @@ async fn main() {
         "server" => {
             let bind = arg(&a, "--bind", "127.0.0.1:4600").parse().expect("bind");
             let expect: u64 = arg(&a, "--expect", "100").parse().expect("expect");
-            let mut srv = ServerEndpoint::bind(bind, build_cfg(&a), Box::new(IdentitySeam))
+            let mut srv = ServerEndpoint::bind(bind, build_cfg(&a), Box::new(IdentitySeam::new()))
                 .await
                 .expect("server bind");
             let linger = Duration::from_secs(arg(&a, "--linger-s", "5").parse().unwrap_or(5));
@@ -87,9 +87,10 @@ async fn main() {
             let units: u64 = arg(&a, "--units", "100").parse().expect("units");
             let interval =
                 Duration::from_millis(arg(&a, "--interval-ms", "50").parse().unwrap_or(50));
-            let mut cli = ClientEndpoint::connect(server, build_cfg(&a), Box::new(IdentitySeam))
-                .await
-                .expect("client connect");
+            let mut cli =
+                ClientEndpoint::connect(server, build_cfg(&a), Box::new(IdentitySeam::new()))
+                    .await
+                    .expect("client connect");
             let mut acked = 0u64;
             let _ = tokio::time::timeout(deadline, async {
                 for i in 0..units {
