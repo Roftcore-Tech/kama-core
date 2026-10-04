@@ -47,5 +47,9 @@ trybuild = "1"
 # Test-vektör hex yardımcısı (T-00.2): golden_wire.rs / sprint5b_legacy.rs / rfc8439_vectors.rs
 # içindeki üç yerel `fn hex` kopyasının yerine.
 kama-vectors = { path = "../kama-vectors" }
+# GEÇİCİ (iş emri 2026-10-05 §B1): S3 sözleşme tipleri + MockCrypto bugün client-core'da (R-7(b)).
+# noise_conformance_core onları buradan alır. Bu bir dev-dependency döngüsüdür (client-core →
+# kama-noise-wire); Cargo buna yalnız dev-dep olarak izin verir. `crates/kama-contracts` gelince KALDIRILIR.
+client-core = { path = "../client-core", features = ["test-util"] }
 [lints]
 workspace = true

@@ -296,6 +296,22 @@ jobs:
             *) echo "::error title=TEST_FAILURE::seam real hedefi beklenmeyen çıkış kodu $code"; exit 1 ;;
           esac
 
+      # S3 (Transport↔Crypto) conformance-core — aynı çıkış kodu sözlüğü. Gerçek kripto (A5)
+      # inene kadar real = 3 (GAP-S3-REAL-A5).
+      - name: S3 hedef = mock
+        run: scripts/ci/noise-conformance.sh --target mock
+      - name: S3 hedef = real (bugün beyan edilmiş boşluk)
+        run: |
+          set +e
+          scripts/ci/noise-conformance.sh --target real
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "gerçek kripto koştu ve yeşil" ;;
+            3) echo "::notice title=SEAM_GAP::gerçek kripto yok — GAP-S3-REAL-A5 beyanlı (çıkış 3)" ;;
+            *) echo "::error title=TEST_FAILURE::S3 real hedefi beklenmeyen çıkış kodu $code"; exit 1 ;;
+          esac
+
   # ── Sonuç sınıflandırması: infra/billing hatası ile korelasyon hatası KARIŞMASIN ──
   ci-verdict:
     name: ci verdict (failure classification)
