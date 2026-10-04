@@ -1,5 +1,7 @@
 # Kama — Adaptive Transport Engine Spec (Implementable)
 
+> **YAMA KAYDI — 2026-10-04b [K3 — D2 / Tema E KAPANDI, Abkarada kararı]:** §2'ye not: **ürün ACK'i = engine `ACK_FRAME_V2` (0x14)**; WS-D1'de `meta.full_wire_pn`'e anahtarlanır (her yeniden gönderim yeni PN; tablo PN → mantıksal birim). noise-wire `Control::Ack/Sack` (0x10/0x11) ailesi SİLİNDİ (noise-wire §2.56/§2.57). Bu belgedeki çerçeve yerleşimi DEĞİŞMEDİ. SPEC-ONLY.
+
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 H4 — sahip kararı]:** §1.1 transport-control `frame_type` registry'sine iki codepoint açıldı: **`0x1B HEARTBEAT`**, **`0x1C HEARTBEAT_ACK`** (hop heartbeat; HubChannel ctx; otoriter çerçeve + kurallar transport-layer-tdd §10 [AMENDMENT-10]). Çakışma tarandı: §1.1'de boştu; noise-wire §2.56 E2E registry'sinde reserved(reject) kalır. Mevcut codepoint'lerin anlamı/yerleşimi DEĞİŞMEDİ. SPEC-ONLY.
 
 > **YAMA KAYDI — 2026-10-03 [DR-CONNECT-1 H5]:** Üç emisyon yolundaki (§3.3-B, §11, §11.1) AMENDMENT-9 bağ notlarında `K` değeri yazıldı: **K = 1024** (KS-PN-1 KAPANDI; otoriter metin transport-layer-tdd §12 [AMENDMENT-9]). Tavan hâlâ SPEC-ONLY; kod değişmedi. Üstü çizili metin silinmedi.
@@ -134,6 +136,13 @@ transport-control frame ilk byte = frame_type:
 ---
 
 ## 2. ACK / SACK Frame Format (NORMATİF — fixed-width, ccr §35 varint YASAK)
+
+> **[K3 — D2 / Tema E KAPANDI, 2026-10-04 · Abkarada]** **Ürün ACK'i bu bölümün ailesidir: engine `ACK_FRAME_V2`
+> (0x14; §2.2).** Tek doğruluk kaynağı budur. WS-D1'de ACK'in taşıdığı kimlik `meta.full_wire_pn`'e anahtarlanır
+> (KM-SEAM-TC-001 K2): her yeniden gönderim YENİ PN alır; gönderen tablosu PN → mantıksal birim eşler. noise-wire'ın
+> E2E `Control::Ack/Sack` (0x10/0x11) ailesi SİLİNMİŞTİR (noise-wire §2.56/§2.57): E2E ARQ yoktur — kurtarma
+> hop-yereldir (bu motor) + mailbox fallback (app-rpc §6.11); E2E teslim bilgisi AMP `RECEIPT`'tedir. Hop-yerel ARQ'nun
+> kontrol döngüsü yüksek jitter'da E2E'den kısadır. Aşağıdaki "seq u16" ifadesi bugünkü kodu anlatır; D1 ile PN'e geçer.
 
 Kama `seq` = transport hop seq, **u16** (TDD §2 SESSION_DATA seq 2B). ACK bu seq uzayında çalışır.
 

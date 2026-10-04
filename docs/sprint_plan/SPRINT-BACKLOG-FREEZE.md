@@ -60,7 +60,7 @@ Kama'nın mimarisi dört katman: **Application → Transport → Crypto → UDP.
 | **SEAM-FROZEN** | "Sözleşme kilitlendi": kararlar kapalı + sayılar verili + vektörler commit + testler çalışıyor + mock hazır + mimari kontroller yeşil | seam belgeleri başlığı |
 | **IMPLEMENTATION-GO** | "Gerçek kod sözleşmeyi geçti": aynı vektörler + aynı testler | bu belge §Kapılar |
 | **INV-NEIGHBOR-1** | Mimari kural: Application yalnız Transport'u, Crypto yalnız Transport'u görür | `specs/transport-layer-tdd.md` §0 |
-| **Tema E** | İki ACK kodek ailesi (engine `ACK_V2` ve noise-wire `Control::Ack/Sack`); hangisinin ürün ACK'i olacağı açık audit kalemi — WS-D2'de kapanır | `specs/kama-noise-wire-tdd-v2.0.md` §2.5 notu |
+| **Tema E** | İki ACK kodek ailesi (engine `ACK_V2` ve noise-wire `Control::Ack/Sack`); hangisinin ürün ACK'i olacağı açık audit kalemi — WS-D2'de kapanır | `specs/kama-noise-wire-tdd-v2.0.md` §2.5 notu — **KAPANDI 2026-10-04 (K3):** ürün ACK'i engine `ACK_V2`; `Control::Ack/Sack` silindi |
 
 **Repo gerçeği (Claude Code envanteri, kısaca):** Application katmanı kodu **yok**. Kripto `crates/kama-noise-wire`'da; Transport'un kriptoyu çağırdığı arayüz `crates/client-core/src/seam.rs` (`SecuritySeam` trait'i; 61 çağrı noktası; sahte `IdentitySeam`). Test verisi dosyası hiç yok — beklenen değerler Rust testlerine gömülü. CI `.github/workflows/ci.yml`. Python 3.14, **yalnız standart kütüphane**. Spec'ler `specs/` altında.
 
@@ -299,6 +299,8 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 **Nereye:** `specs/application-message-protocol.md` §8 (metinler §2, §3, §5).
 **Done:** §8'de dört satır "KAPANDI".
 
+**DURUM (2026-10-04): Abkarada tarafı KAPANDI (K1).** AMP A1 ve A2 kapandı; A3'te byte düzeltmesi işlendi (`msg_id`/`ref_msg_id` u32, `sent_at_ms` telde yok). Kalan: A3 ve A4 için Hayri imzası.
+
 ### B1.2 — Mesaj formatı vektörleri
 **Neden:** Her mesaj tipinin exact byte'ları sabit olmalı; ve **Rust codec'i kendi beklentisini üretmemeli** (A2.1'deki aynı ilke). Vektörler codec yazılmadan **önce**, spec'ten okunarak üretilir.
 **Ne yapılacak:** her tip için 1 pozitif exact record; negatif corpus: reserved tip, reserved flag, `body_len` uyumsuz, sıkıştırma: `uncompressed_len` sınırı aşıyor, kesik zstd akışı, expansion oranı aşımı, geçersiz frame. Üretici: spec'ten yazılmış bağımsız mini Python encoder (stdlib; production kodla paylaşım yok).
@@ -397,6 +399,7 @@ Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıf
 **Nereye:** karar → `kama-noise-wire-tdd-v2.0.md` §2.57 + `adaptive-transport-engine-spec.md` ACK bölümü; kod → `adaptive-transport/src/ack.rs` veya `kama-noise-wire/src/control.rs`.
 **Neye bağlı:** —
 **Done:** tek ACK ailesi; spec'te amendment kaydı.
+**DURUM (2026-10-04): KARAR KAPANDI (K3), KOD AÇIK.** Ürün ACK'i = engine `ACK_V2`; noise-wire `Control::Ack/Sack` (0x10/0x11) spec'te silindi; onay/keepalive taşıyıcısı = boş batch (OQ-14 kapandı). Kalan kod işi: `kama-noise-wire/src/control.rs` + `kama-transport-schema` + `kama-engine/src/recovered_map.rs`'ten Ack/Sack'in sökülmesi ve D1'de ACK_V2'nin `full_wire_pn`'e anahtarlanması (açık alt-soru: `dh_epoch` belirsizliği).
 
 ### D3 — Donmuş transport golden'larının güncellenmesi
 **Neden:** D1 çerçeveyi ve numaralandırmayı değiştirdiği için `adaptive-transport/tests/tv_*.rs` ve `kama-transport-schema/tests/golden_v0.rs` golden'larının bir kısmı değişecek. Bunlar donmuş transport'un kanıtı; sessizce "düzeltilmemeli".

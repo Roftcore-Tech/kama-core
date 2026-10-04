@@ -3,6 +3,8 @@
 **Belge:** `application-message-protocol.md` · **Statü:** v1 PROPOSED — A1–A4 için somut öneri yazıldı (2026-09-19); **Hayri (A3/A4) + Abkarada (A1/A2) imzasıyla DESIGN GO**
 **Sahip:** Hayri (Application) · **Gözden geçiren:** Abkarada · **Tarih:** 2026-09-18
 **Otorite ilişkisi:** ccr §35.6 (plaintext birim kabı `BatchSubMessage.payload` — bu belge o payload'ın **içini** tanımlar) · ccr §3 (Kama-native canonical codec disiplini) · transport-tdd §0 INV-NEIGHBOR-1 + INV-PLAINTEXT-NOT-SEMANTICS · app-rpc §3 [AMENDMENT-4] (sıkıştırma sahipliği)
+> **YAMA KAYDI — 2026-10-04 [K1 — Abkarada kararı]:** §8 **A1 ve A2 KAPANDI** (önerildiği gibi). §3 A3 alan listesinde byte düzeltmesi: `TEXT.msg_id` u64 → **u32**; `sent_at_ms` WIRE'DAN ÇIKTI (alıcı kendi zamanını damgalar); `RECEIPT.ref_msg_id` u64 → **u32**. `msg_id` semantiği değişmedi (oturum-scope monoton, duplicate yok). Gerekçe: TEXT başlığı kayıt başlığıyla 23 B'tı ("ok" mesajı telde 75 B, yarısı AMP); düzeltmeyle 11 B. A3/A4 imzası Hayri'de. Üstü çizili metin silinmedi.
+
 **Bu belge NE DEĞİLDİR:** Plane 1 hub-RPC (app-rpc'nin) · transport birim çerçevesi (ccr §35.6 BatchPayload, Transport üretir) · oturum/anahtar (Crypto) · teslim güvenilirliği (Transport)
 
 ---
@@ -42,18 +44,18 @@ MAX_DECOMPRESSED_MESSAGE = MAX_BODY_BYTES
 
 | Kod | Tip | Zorunlu alanlar (spec'ten türetilen) | Alan listesi |
 |---|---|---|---|
-| 0x01 | `TEXT` | `msg_id u64_be · sent_at_ms u64_be (gönderen saati, bilgi amaçlı; güvenlik kararı DEĞİL) · text_len u16_be · text bytes (UTF-8, doğrulanır; geçersiz → DROP)` | **A3 PROPOSED** → Hayri |
+| 0x01 | `TEXT` | ~~`msg_id u64_be · sent_at_ms u64_be (gönderen saati, bilgi amaçlı; güvenlik kararı DEĞİL) · text_len u16_be · text bytes (UTF-8, doğrulanır; geçersiz → DROP)`~~ **[K1 2026-10-04]** `msg_id u32_be · text_len u16_be · text bytes[text_len] (UTF-8, doğrulanır; geçersiz → DROP)` — gövde öneki 6 B (kayıt başlığıyla 11 B). `sent_at_ms` telde YOK: alıcı kendi zamanını damgalar | **A3 PROPOSED** → Hayri |
 | 0x02 | `FILE_BEGIN` | `transfer_id u64_be · file_size u64_be · whole_file_hash [32] (BLAKE2s-256, ccr primitive) · chunk_count u32_be · name_len u8 · name bytes[name_len] (UTF-8 ≤255)` — mime v1'de YOK (uzantıdan); `name_len` u8 = A1'e uygun alan-bazlı fixed-width uzunluk | **A3 PROPOSED** → Hayri |
 | 0x03 | `FILE_CHUNK` | `transfer_id u64_be · offset u64_be · payload_len u16_be · payload bytes[payload_len]` (18 B sabit önek) — **per-chunk MAC/hash YOK** (her record zaten E2E-mühürlü) | **A3 PROPOSED** → Hayri |
 | 0x04 | `FILE_END` | `transfer_id u64_be` | — |
 | 0x05 | `FILE_ABORT` | `transfer_id u64_be · reason u8 (0x01 user_cancel · 0x02 hash_mismatch · 0x03 storage_full · 0x04 timeout · diğer → reserved, bilinmeyen → DROP)` | **A3 PROPOSED** → Hayri |
 | 0x06 | `PTT_OPEN` | `stream_id u32_be · codec u8 (0x01 opus · 0x02 lyra) · bundle_ms u8` — speaker = session'ın peer'ı (1:1, ayrı alan gerekmez); codec/bundle_ms talk-spurt boyunca SABİT (KM-SEAM-AM kararı) | **A3 PROPOSED** → Hayri + Yaaz |
 | 0x07 | `PTT_CLOSE` | `stream_id u32_be` | — |
-| 0x08 | `RECEIPT` | `ref_msg_id u64_be · kind u8 (0x01 delivered = uygulama record'u işledi · 0x02 read)` — **transport ACK'ten TÜREMEZ**; uygulama-seviyesi canlılık sinyali | **A4 PROPOSED:** M3a'da `delivered` VAR (demo değeri + tek canlılık sinyali), `read` M3b → Hayri/ürün |
+| 0x08 | `RECEIPT` | ~~`ref_msg_id u64_be`~~ **[K1 2026-10-04]** `ref_msg_id u32_be` `· kind u8 (0x01 delivered = uygulama record'u işledi · 0x02 read)` — **transport ACK'ten TÜREMEZ**; uygulama-seviyesi canlılık sinyali | **A4 PROPOSED:** M3a'da `delivered` VAR (demo değeri + tek canlılık sinyali), `read` M3b → Hayri/ürün |
 | 0x09 | `SIGNALING_BLOB` | `blob_len u16_be · blob bytes[blob_len]` (opak; signaling-seam-v0: core okumaz, parse etmez) | media ekibi |
 | 0x0A | `MEDIA_BUNDLE` | `stream_id u32_be · codec u8 · bundle_ms u8 · payload_len u16_be · payload bytes[payload_len]` (payload içi çerçeve yerleşimi media'nın — bu belge yalnız kabı verir) — **asla sıkıştırılmaz** (§5) | media ekibi (bu belge yalnız kabı verir; alan içi KM-SEAM-AM) — A3 dışı |
 
-**`msg_id` semantiği [A3 PROPOSED → Hayri]:** gönderen tarafından **monoton artan u64** (session-scope'ta; yeniden başlatmada devam garantisi yok → yeni session yeni sayaç); aynı session'da duplicate üretilmez; **alıcı teslim sırasını `msg_id` ile ZORLAMAZ** (sıra Transport'un Reliable politikasıyla gelir; `msg_id` yalnız UI sıralaması, duplicate tespiti ve `RECEIPT.ref_msg_id` referansı içindir). `sent_at_ms` güvenlik/sıra kararı için kullanılmaz.
+**`msg_id` semantiği [A3 PROPOSED → Hayri]:** gönderen tarafından **monoton artan ~~u64~~ u32** [K1 2026-10-04: oturum `SESSION_MAX_AGE = 7 gün`de yenilendiği için u32 yeter; sayaç sarmadan oturum yenilenir] (session-scope'ta; yeniden başlatmada devam garantisi yok → yeni session yeni sayaç); aynı session'da duplicate üretilmez; **alıcı teslim sırasını `msg_id` ile ZORLAMAZ** (sıra Transport'un Reliable politikasıyla gelir; `msg_id` yalnız UI sıralaması, duplicate tespiti ve `RECEIPT.ref_msg_id` referansı içindir). ~~`sent_at_ms` güvenlik/sıra kararı için kullanılmaz.~~ [K1 2026-10-04: `sent_at_ms` telden çıkarıldı.]
 
 Dosya için Application'ın SAHİP OLMADIKLARI (INV-NEIGHBOR-1 / LAW-5): chunk retry · chunk ACK · kayıp tespiti · pencereli retransmit · FEC · per-chunk bütünlük. Chunk boyutu `MAX_FILE_CHUNK_BYTES = MAX_BODY_BYTES − 18` (A2; off-by-header yok).
 
@@ -90,8 +92,8 @@ Her tip için exact record byte'ları (1 pozitif) + negatif corpus: reserved typ
 ## 8. Açık kararlar
 | # | Karar | Sahip |
 |---|---|---|
-| A1 | body-içi protobuf yasağı — PROPOSED: YASAK, fixed-width + len-prefixed (§2) | Abkarada |
-| A2 | **PROPOSED (türetimli, onay: Abkarada) — byte hesabı düzeltildi 2026-09-19:** `APP_RECORD_HEADER_BYTES = 5` · `MAX_BODY_BYTES = min(65535, max_plaintext_unit_bytes − 5)` · `MAX_DECOMPRESSED_MESSAGE = MAX_BODY_BYTES` (bounded output) · `MAX_EXPANSION_RATIO = 64` (bomb koruması) · `COMPRESS_MIN_BYTES = 64` (3 B/s'de ≈ 20 s; altında zstd çerçeve ek yükü kazancı yer) · `MAX_FILE_CHUNK_BYTES = MAX_BODY_BYTES − 18` (transfer_id 8 + offset 8 + payload_len 2) — ~~eski `−12` ve `min(65535, max_plaintext_unit_bytes)` off-by-header hatasıydı~~ | Abkarada + Hayri |
-| A3 | TEXT/FILE_BEGIN/FILE_ABORT/PTT_OPEN alan listeleri — PROPOSED (§3 tablosu) | Hayri (PTT: + Yaaz) |
+| ~~A1~~ | ~~body-içi protobuf yasağı — PROPOSED: YASAK, fixed-width + len-prefixed (§2)~~ **KAPANDI 2026-10-04 (Abkarada):** gövdede protobuf YASAK; sabit-genişlik big-endian sayısal alanlar; her değişken-uzunluklu alan kendi exact layout'ında belirtilen sabit-genişlik uzunluk alanıyla önce gelir; opsiyonel alan yok | — |
+| ~~A2~~ | **KAPANDI 2026-10-04 (Abkarada) — önerildiği gibi:** `MAX_BODY_BYTES = min(65535, max_plaintext_unit_bytes − 5)` · `MAX_DECOMPRESSED_MESSAGE = MAX_BODY_BYTES` · `MAX_EXPANSION_RATIO = 64` · `COMPRESS_MIN_BYTES = 64` · `MAX_FILE_CHUNK_BYTES = MAX_BODY_BYTES − 18`. Önceki satır: ~~**PROPOSED (türetimli, onay: Abkarada) — byte hesabı düzeltildi 2026-09-19:** `APP_RECORD_HEADER_BYTES = 5` · `MAX_BODY_BYTES = min(65535, max_plaintext_unit_bytes − 5)` · `MAX_DECOMPRESSED_MESSAGE = MAX_BODY_BYTES` (bounded output) · `MAX_EXPANSION_RATIO = 64` (bomb koruması) · `COMPRESS_MIN_BYTES = 64` (3 B/s'de ≈ 20 s; altında zstd çerçeve ek yükü kazancı yer) · `MAX_FILE_CHUNK_BYTES = MAX_BODY_BYTES − 18` (transfer_id 8 + offset 8 + payload_len 2) — ~~eski `−12` ve `min(65535, max_plaintext_unit_bytes)` off-by-header hatasıydı~~~~ | — |
+| A3 | TEXT/FILE_BEGIN/FILE_ABORT/PTT_OPEN alan listeleri — PROPOSED (§3 tablosu) | Hayri (PTT: + Yaaz) — **[2026-10-04] Abkarada tarafı kapalı** (byte düzeltmesi §3'e işlendi: `msg_id`/`ref_msg_id` u32, `sent_at_ms` yok); imza Hayri'de |
 | A4 | RECEIPT — PROPOSED: `delivered` M3a, `read` M3b | Hayri / ürün |
 | A5 | Kova-padding | Beta (ertelendi; v1 freeze'i bloklamaz) |

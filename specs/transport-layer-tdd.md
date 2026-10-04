@@ -1,5 +1,7 @@
 # Kama — Transport Layer TDD (Adaptive Hostile-Aware Transport)
 
+> **YAMA KAYDI — 2026-10-04b [K4 — Abkarada kararı]:** §10 [AMENDMENT-10] madde 5 jitter formülü kesinleşti: `BLAKE2s-256(seed ‖ u32_be(deneme))[0..4] mod pencere`; tohum **dest_hash DEĞİL** — `hub_handle` (bind sonrası, bacak başına) / hop handshake'inin yerel ephemeral public anahtarı (bind öncesi). Önceki `hash(client_id ‖ …)` ifadesi üstü çizildi. SPEC-ONLY.
+
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 tamamlama — sahip kararı]:** §10 [AMENDMENT-10] genişletildi: **H4 hop heartbeat YENİ CODEPOINT ile** (`HEARTBEAT 0x1B` / `HEARTBEAT_ACK 0x1C`, HubChannel ctx, sıfır payload + opsiyonel u32 echo token, kendi sayacı yok, REFRESH-ONLY, CS probe bütçesi ve INV-CS-7 kapsamı dışında, RTT observation-only) — CS_PROBE'a bindirilmedi · **KS-HB-1 KAPANDI** (8 s / 25 s / OS) · **jitter RNG'siz** (`hash(client_id ‖ deneme_sayacı) mod pencere`, pencere = backoff adımının %25'i) · link/power sinyali gelene kadar ön-plan davranışı notu (K5 → PARK). Aşağıdaki 2026-10-03 kaydındaki "H4 UYGULANMADI" ifadesi bu kayıtla aşılmıştır. Rust ürün koduna dokunulmadı; üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-03 [DR-CONNECT-1 — sahip kararı; indeks `docs/decisions/DR-CONNECT-1.md`]:** §0'a **INV-NO-IDLE-TEARDOWN** (oturum/niyet zamanla sonlandırılmaz; sonlandırma nedenleri kapalı liste) eklendi (H1/H2) · §12 [AMENDMENT-9] **KS-PN-1 KAPANDI: K = 1024** + tavana ulaşınca davranış (REBIND → floor prob → hop-ACK'le devam) (H5) · §10'a **[AMENDMENT-10]** hub-kanalı prob kadansı: bağlama göre tavan (8 s / 25 s / OS), link yokken askıya alma, anında prob, zorunlu jitter (H3; K3/K5 kanıtıyla; SPEC-ONLY, altı beyan içinde). H4 (hop heartbeat taşıyıcısı) UYGULANMADI — K1 kanıtı sonrası sahip kararı bekliyor. Rust'a dokunulmadı; üstü çizili metin silinmedi.
@@ -754,8 +756,13 @@ NORMATİF: Loss rate MUST NOT be a direct bandwidth estimator. No-ACK ≠ high-l
 >    varken anlamlıdır.
 > 4. **Anında prob:** link gelince · uygulama ön plana gelince · kullanıcı dokununca → backoff beklenmeden HEMEN.
 > 5. **Jitter ZORUNLU:** backoff vadelerine jitter eklenir (thundering herd: hub geri gelince çok sayıda istemci aynı
->    saniyede koşmasın). **[2026-10-04 — RNG'siz, sahip kararı]** `jitter = hash(client_id ‖ deneme_sayacı) mod
->    jitter_penceresi`; `jitter_penceresi` = backoff adımının **%25'i** `[KALİBRASYON — bu değerle KAPALI]`.
+>    saniyede koşmasın). **[2026-10-04 — RNG'siz, sahip kararı]** ~~`jitter = hash(client_id ‖ deneme_sayacı) mod
+>    jitter_penceresi`~~ **[K4 — 2026-10-04b]** `jitter = BLAKE2s-256(seed ‖ u32_be(deneme))[0..4] mod pencere`
+>    (ilk 4 bayt u32 big-endian okunur; ADR-05). **`seed`** = `hub_handle` (bind sonrası, bacak başına) /
+>    hop handshake'inin yerel ephemeral public anahtarı (bind öncesi). **Tohum `dest_hash` DEĞİLDİR:** statik
+>    kimlik tohum olursa cihaz her ağda aynı prob zamanlama desenini üretir → hostile gözlemci IP değişimleri
+>    boyunca cihazı bağlayabilir; `hub_handle` tasarım gereği correlation-resistant'tır, oturumlar arası bağlanamaz.
+>    `pencere` (`jitter_penceresi`) = backoff adımının **%25'i** `[KALİBRASYON — bu değerle KAPALI]`.
 >    İstemciler arası dekorelasyon sağlar, aynı istemcide tekrarlanabilirdir; transport determinizmi (aynı girdi → aynı
 >    çıktı) korunur, golden testler yaşar. Motor RNG TUTMAZ.
 > 6. **[2026-10-04] Sinyal yokken:** link/power sinyali ürün/Android işidir ve bugün yoktur (K5; `docs/PARK-LISTESI.md`
