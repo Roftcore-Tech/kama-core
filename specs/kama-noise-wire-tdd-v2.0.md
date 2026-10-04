@@ -1,5 +1,7 @@
 # kama-noise-wire-tdd — Kama Noise Secure-Wire Profile [v2.0 — dört-karar-boşluğu-KAPATILDI (HANDLE_ASSIGN-frozen · bootstrap-profile-admission · confirmation-safe-epoch · K-invariant) + öz-tarama-temiz; FULL-DESIGN-GO-onayı: Abkarada]
 
+> **YAMA KAYDI — 2026-10-06b [KS-GRACE-1 sayım netleştirmesi — Abkarada kararı]:** §4 madde 5'e tek cümle: onaylayan ilk AEAD-geçerli epoch-1 paketi `N_g`'ye #1 olarak sayılır. Değer ve semantik değişmedi (yalnız ekleme).
+
 > **YAMA KAYDI — 2026-10-06 [PN SÜREKLİ — Abkarada kararı]:** PN sayacı epoch'lar boyunca SÜREKLİ oldu. §2.5: sayaç uzayı per-(session, direction, dh_epoch) → **per-(session, direction)**; `dh_epoch` yalnız anahtar seçer. §4: state tek `expected_pn` + tek `replay_window`; **EPOCH-PN-INIT** değişti: epoch-1 gönderim sayacı epoch-0'ın son değerinden +1 ile DEVAM eder, sıfırlanmaz. Gerekçe: hub hop-ACK'i cleartext PN'den üretir ve epoch'u bilmez (legacy 22 B zarfta epoch alanı yok); aynı PN değerinin iki epoch'ta var olması grace penceresinde ACK'i belirsiz kılıyordu. K3'ün WS-D1'e devrettiği AÇIK kalem KAPANDI: ACK_FRAME_V2 kimliği = `full_wire_pn`. Nonce tekilliği anahtar başınadır; sürekli sayaç hiçbir anahtar altında tekrar üretmez. Tel formatı DEĞİŞMEDİ. Kod: `protector.rs` aynı PR'da. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-04b [K3 — D2 / Tema E + OQ-14 KAPANDI, Abkarada kararı]:** E2E `Control::Ack` (0x10) ve `Control::Sack` (0x11) ailesi **SİLİNDİ** (§2.56 registry + §2.57 gövdeler üstü çizili; codepoint'ler reserved(reject), yeniden AÇILMAZ). Gerekçe: E2E ARQ yok (hop-yerel ARQ + mailbox fallback), E2E teslim bilgisi AMP RECEIPT'te; ürün ACK'i engine `ACK_FRAME_V2` (engine-spec §2). §2.57 retry tablosundaki "network-ACK (0x10/0x11)" → hop ACK. §4 adım 2'nin taşıyıcısı adlandırıldı: bekleyen veri VEYA **boş batch** (`BatchPayload{submsg_count = 0}`, ccr). Kod (`control.rs`) bu turda değişmedi — WS-D2 kod kalemi.
@@ -521,6 +523,9 @@ formu `candidate + WINDOW < ew` (çıkarma-yerine-toplama) kullanılır. **EPOCH
      ```
      KS-GRACE-1 — KAPANDI (2026-09-24, Alpha)
        N_g = 64   (yalnız AEAD-geçerli epoch-1 paketleri sayılır)
+       [2026-10-06 — Abkarada] Onaylayan ilk AEAD-geçerli epoch-1 paketi (implicit confirmation) N_g'ye
+         #1 olarak SAYILIR: grace onayla açılır ve aynı paket ilk sayımdır; grace 64. geçerli epoch-1
+         paketinde kapanır.
        T_g = 30 s (monotonic; implicit confirmation anından başlar)
        Kapanış: hangisi önce; kapanınca epoch-0 recv state DISCARD; yeniden açılmaz.
        Gerekçe: pencere yalnız geçiş anında UÇUŞTA olan epoch-0 paketlerini kurtarır. 64 geçerli

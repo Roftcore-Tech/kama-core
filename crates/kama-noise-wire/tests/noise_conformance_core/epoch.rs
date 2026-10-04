@@ -86,20 +86,20 @@ fn packet() -> UnsealedTransportPacket {
     }
 }
 
-/// Bir uç: makine + protector + epoch başına gönderim sayacı (§4 EPOCH-PN-INIT).
+/// Bir uç: makine + protector + TEK gönderim sayacı (§4 EPOCH-PN-INIT 2026-10-06: sayaç epoch'lar
+/// boyunca süreklidir; `dh_epoch` yalnız anahtarı seçer).
 struct Endpoint {
     machine: DhEpochMachine,
     protector: KamaNoiseWireProtector,
-    next_pn: [u64; 2],
+    next_pn: u64,
     /// Geçerli epoch-1 paketiyle ilerleyen grace sayacının kaç kez işlediği.
     grace_ticks: u32,
 }
 
 impl Endpoint {
     fn seal(&mut self, dh_epoch: u8) -> Vec<u8> {
-        let e = usize::from(dh_epoch & 1);
-        let wire_pn = self.next_pn[e];
-        self.next_pn[e] += 1;
+        let wire_pn = self.next_pn;
+        self.next_pn += 1;
         self.protector
             .seal(
                 &packet(),
@@ -119,14 +119,16 @@ impl Endpoint {
             return false;
         }
         if dh_epoch & 1 == 1 {
+            // Adım-3/4: ilk geçerli epoch-1 paketi = implicit confirmation (Responder'da).
+            let _ = self.machine.on_valid_epoch1_received();
+            // Onaylayan paket N_g'ye #1 olarak SAYILIR (noise-wire §4 md.5, 2026-10-06): grace
+            // onayla açılır ve aynı paket ilk sayımdır.
             if matches!(self.machine.recv0(), RecvEpoch0::Grace { .. }) {
                 self.grace_ticks += 1;
                 if self.machine.on_grace_tick() == Some(EpochAction::DiscardEpoch0Recv) {
                     self.protector.discard_epoch0_recv();
                 }
             }
-            // Adım-3/4: ilk geçerli epoch-1 paketi = implicit confirmation (Responder'da).
-            let _ = self.machine.on_valid_epoch1_received();
         }
         true
     }
@@ -142,15 +144,17 @@ fn pair(grace_budget: u32) -> (Endpoint, Endpoint) {
     let ep = |role, protector| Endpoint {
         machine: DhEpochMachine::new(role, grace_budget),
         protector,
-        next_pn: [0, 0],
+        next_pn: 0,
         grace_ticks: 0,
     };
     (ep(Role::Initiator, a), ep(Role::Responder, b))
 }
 
-/// Alice RESPONSE'u aldı, Bob ilk geçerli epoch-1 paketini aldı: grace AÇIK.
-fn confirmed_pair(grace_budget: u32) -> (Endpoint, Endpoint) {
+/// Alice RESPONSE'u aldı, Bob ilk geçerli epoch-1 paketini aldı: grace AÇIK (sayaç 1).
+/// Üçüncü öğe: geçişten ÖNCE mühürlenmiş, hâlâ uçuşta olan bir epoch-0 paketi.
+fn confirmed_pair(grace_budget: u32) -> (Endpoint, Endpoint, Vec<u8>) {
     let (mut a, mut b) = pair(grace_budget);
+    let in_flight_epoch0 = a.seal(0);
     assert_eq!(
         a.machine.on_response_received(),
         Some(EpochAction::InstallEpoch1AndSend)
@@ -158,7 +162,8 @@ fn confirmed_pair(grace_budget: u32) -> (Endpoint, Endpoint) {
     let first = a.seal(1);
     assert!(b.deliver(&first, 1));
     assert!(matches!(b.machine.recv0(), RecvEpoch0::Grace { .. }));
-    (a, b)
+    assert_eq!(b.grace_ticks, 1, "onaylayan paket #1 sayılır");
+    (a, b, in_flight_epoch0)
 }
 
 fn tamper(wire: &[u8]) -> Vec<u8> {
@@ -256,7 +261,7 @@ pub fn cell_4_invalid_epoch1_is_inert() -> Cell {
     assert_eq!(b.machine.send_epoch(), 0);
 
     // (b) grace içinde
-    let (mut a, mut b) = confirmed_pair(N_G);
+    let (mut a, mut b, _) = confirmed_pair(N_G);
     let before = b.machine;
     let ticks = b.grace_ticks;
     let forged = tamper(&a.seal(1));
@@ -266,11 +271,11 @@ pub fn cell_4_invalid_epoch1_is_inert() -> Cell {
     Ok(())
 }
 
-/// 5 — `N_g` geçerli epoch-1 paketi grace'i kapatır; sonraki epoch-0 paketi reddedilir; yeniden açılmaz.
+/// 5 — `N_g` geçerli epoch-1 paketi (onaylayan dahil) grace'i kapatır; sonraki epoch-0 paketi
+/// reddedilir; yeniden açılmaz.
 pub fn cell_5_count_closes_grace() -> Cell {
-    let (mut a, mut b) = confirmed_pair(N_G);
-    let late_epoch0 = a.seal(0);
-    for i in 1..=N_G {
+    let (mut a, mut b, late_epoch0) = confirmed_pair(N_G);
+    for i in 2..=N_G {
         assert!(b.machine.recv_accepts(0), "{i}. paketten önce grace açık");
         let p = a.seal(1);
         assert!(b.deliver(&p, 1));
@@ -294,8 +299,8 @@ pub fn cell_5_count_closes_grace() -> Cell {
 
 /// 5b — `N_g` sabittir: kurucuya verilen bütçe pencereyi büyütemez (KS-GRACE-1: sRTT bağı yok).
 pub fn cell_5b_n_g_is_fixed() -> Cell {
-    let (mut a, mut b) = confirmed_pair(N_G + 1);
-    for _ in 0..N_G {
+    let (mut a, mut b, _) = confirmed_pair(N_G + 1);
+    for _ in 2..=N_G {
         let p = a.seal(1);
         assert!(b.deliver(&p, 1));
     }
@@ -321,11 +326,12 @@ pub fn cell_6_time_closes_grace() -> Cell {
 
 /// 7 — hangisi önce: `N_g − 1` paket + `T_g`'den kısa süre → açık; `N_g`'inci paket → kapanır.
 pub fn cell_7_whichever_first() -> Cell {
-    let (mut a, mut b) = confirmed_pair(N_G);
-    for _ in 0..N_G - 1 {
+    let (mut a, mut b, _) = confirmed_pair(N_G);
+    for _ in 2..N_G {
         let p = a.seal(1);
         assert!(b.deliver(&p, 1));
     }
+    assert_eq!(b.grace_ticks, N_G - 1);
     assert!(b.machine.recv_accepts(0), "N_g − 1 pakette açık");
     let p = a.seal(1);
     assert!(b.deliver(&p, 1));
@@ -338,38 +344,49 @@ pub fn cell_7_whichever_first() -> Cell {
     })
 }
 
-/// 8 — grace içinde epoch-1 anahtarıyla açılan paket epoch-1 penceresine işlenir; epoch-0 penceresi aynı kalır.
-pub fn cell_8_commit_goes_to_trial_epoch_window() -> Cell {
-    let (mut a, mut b) = confirmed_pair(N_G);
-    // Epoch-0 penceresini ilerlet, sonra durumunu kaydet.
-    let p0 = a.seal(0);
-    assert!(b.deliver(&p0, 0));
-    let e0_before = b.protector.recv_expected_pn(0);
-    let e1_before = b.protector.recv_expected_pn(1);
-    let held_epoch0 = a.seal(0);
+/// 8 — TEK pencere (identity §15.5, 2026-10-06): epoch-1 anahtarıyla açılan paketin sayacı tek
+/// pencereye commit edilir; başarısız deneme hiçbir şeyi değiştirmez (H-NO-MUTATE).
+pub fn cell_8_commit_goes_to_the_single_window() -> Cell {
+    let (mut a, mut b, in_flight_epoch0) = confirmed_pair(N_G);
+    let before = b.protector.recv_expected_pn();
 
+    // Başarısız deneme: pencere de makine de oynamaz.
+    let machine_before = b.machine;
+    let forged = tamper(&a.seal(1));
+    assert!(!b.deliver(&forged, 1));
+    assert_eq!(
+        b.protector.recv_expected_pn(),
+        before,
+        "başarısız deneme pencereyi oynatmaz"
+    );
+    assert_eq!(b.machine, machine_before);
+
+    // Geçerli epoch-1 paketi: sayaç tek pencereye işlenir (sahte paketin tükettiği PN atlanır).
     let p1 = a.seal(1);
     assert!(b.deliver(&p1, 1));
-    assert_eq!(b.protector.recv_expected_pn(1), e1_before + 1);
+    assert_eq!(b.protector.recv_expected_pn(), before + 2);
+    assert!(!b.deliver(&p1, 1), "aynı sayaç ikinci kez kabul edilmez");
+
+    // Geçişten önce mühürlenmiş epoch-0 paketi aynı pencerede, kendi (daha düşük) sayacıyla ve
+    // epoch-0 anahtarıyla grace içinde hâlâ kabul edilir; tekrarı reddedilir.
+    assert!(b.deliver(&in_flight_epoch0, 0));
+    assert!(!b.deliver(&in_flight_epoch0, 0), "replay");
     assert_eq!(
-        b.protector.recv_expected_pn(0),
-        e0_before,
-        "epoch-0 penceresi oynamaz"
+        b.protector.recv_expected_pn(),
+        before + 2,
+        "eski sayaç pencereyi geri almaz"
     );
-    // Davranışsal kanıt: epoch-0 penceresi bozulmadıysa bekleyen epoch-0 paketi hâlâ kabul edilir,
-    // tekrarı reddedilir.
-    assert!(b.deliver(&held_epoch0, 0));
-    assert!(!b.deliver(&held_epoch0, 0), "replay");
     Ok(())
 }
 
 /// 9 — grace içinde en fazla iki anahtar denemesi (legacy zarfta epoch biti yok).
 pub fn cell_9_at_most_two_key_trials() -> Cell {
     Err(Red {
-        expected: "legacy 22 B zarfta grace içinde ≤2 anahtar denenir; deneme sayacı gözlenir",
+        expected: "legacy 22 B zarfta grace içinde ≤2 anahtar denenir (deneme sayacı gözlenir); \
+                   açan anahtarla doğrulanan sayaç TEK pencereye commit edilir",
         observed:
             "LegacySessionProtector tek anahtar/tek epoch tutar; iki anahtarlı deneme ve sayaç yok \
-                   (extended zarfta epoch biti telde, deneme hep 1 — protector.rs:312-327)",
+                   (extended zarfta epoch biti telde, deneme hep 1 — protector.rs open)",
         at: "crates/kama-noise-wire/src/legacy.rs:76-116",
     })
 }

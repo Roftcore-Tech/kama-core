@@ -35,7 +35,7 @@ noise_epoch_suite!(machine_epoch;
     cell_5b_n_g_is_fixed,
     cell_6_time_closes_grace,
     cell_7_whichever_first,
-    cell_8_commit_goes_to_trial_epoch_window,
+    cell_8_commit_goes_to_the_single_window,
     cell_9_at_most_two_key_trials,
 );
 
