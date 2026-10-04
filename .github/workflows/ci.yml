@@ -303,6 +303,8 @@ jobs:
       # A3.2 epoch matrisi: mevcut epoch_machine.rs üstünde; kırmızı hücreler beyanlıdır (çıktıda listelenir).
       - name: S3 hedef = machine (epoch matrisi)
         run: scripts/ci/noise-conformance.sh --target machine
+      - name: S3 hedef = identity (PoC no-op seam; H-CTX)
+        run: scripts/ci/noise-conformance.sh --target identity
       - name: S3 hedef = real (bugün beyan edilmiş boşluk)
         run: |
           set +e

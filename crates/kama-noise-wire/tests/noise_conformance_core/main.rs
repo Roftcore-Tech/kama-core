@@ -20,6 +20,16 @@
 mod demux;
 #[macro_use]
 mod epoch;
+#[path = "../common/mock_transport.rs"]
+mod mock_transport;
+mod s3_ctx;
+mod s3_fec_order;
+mod s3_handle;
+mod s3_no_mutate;
+mod s3_pn_own;
+mod s3_replay_poison;
+mod s3_retry;
+mod s3_support;
 mod target;
 
 noise_demux_suite!(mock_demux, crate::target::MockTarget);
@@ -54,4 +64,69 @@ fn missing_target_is_a_declared_gap() {
         target::RealTarget::build(),
         Err(TargetUnavailable::NotImplemented { gap }) if gap == target::GAP_REAL_CRYPTO
     ));
+}
+
+// ── A4.4 — yedi S3 sözleşme satırı (KM-SEAM-TC-001 §6) ──────────────────────────────────────
+
+/// Satır gövdelerini hedef başına ayrı `#[test]` olarak sarar.
+macro_rules! noise_s3_suite {
+    ($suite:ident, $target:ty) => {
+        mod $suite {
+            type Target = $target;
+
+            #[test]
+            fn h_ctx_reaches_seam_unchanged() {
+                crate::s3_ctx::ctx_reaches_seam_unchanged::<Target>();
+            }
+            #[test]
+            fn h_ctx_session_and_hub_seal_differently() {
+                crate::s3_ctx::session_and_hub_seal_differently::<Target>();
+            }
+            #[test]
+            fn h_pn_own_survives_transport_local_events() {
+                crate::s3_pn_own::pn_survives_transport_local_events::<Target>();
+            }
+            #[test]
+            fn h_pn_own_continues_across_epoch_transition() {
+                crate::s3_pn_own::pn_continues_across_epoch_transition::<Target>();
+            }
+            #[test]
+            fn h_fec_order_forged_shard_never_reaches_decoder() {
+                crate::s3_fec_order::forged_shard_never_reaches_decoder::<Target>();
+            }
+            #[test]
+            fn h_retry_alice() {
+                crate::s3_retry::alice_retransmits_cached_init_and_new_initiate_differs::<Target>();
+            }
+            #[test]
+            fn h_retry_bob() {
+                crate::s3_retry::bob_maps_duplicate_init_to_same_session_and_cached_response::<
+                    Target,
+                >();
+            }
+            #[test]
+            fn h_no_mutate_failures_leave_state_byte_identical() {
+                crate::s3_no_mutate::failures_leave_state_byte_identical::<Target>();
+            }
+            #[test]
+            fn h_handle_closed_handle_cannot_seal() {
+                crate::s3_handle::closed_handle_cannot_seal::<Target>();
+            }
+            #[test]
+            fn h_replay_poison_forged_packet_does_not_poison_the_window() {
+                crate::s3_replay_poison::forged_packet_does_not_poison_the_window::<Target>();
+            }
+        }
+    };
+}
+
+noise_s3_suite!(mock_s3, crate::target::MockTarget);
+
+/// PoC `IdentitySeam` hedefi: H-CTX'in yalnız bağlam-kaydı ve no-op yarısı uygulanır
+/// ("Session ≠ HubChannel" gerçek anahtarla, M4).
+mod identity_s3 {
+    #[test]
+    fn h_ctx_identity_seam_is_noop_in_both_contexts() {
+        crate::s3_ctx::identity_seam_is_noop_in_both_contexts();
+    }
 }

@@ -7,7 +7,7 @@
 
 #![allow(dead_code)]
 
-use client_core::seam::{PacketProtection, SessionControl};
+use client_core::seam::{PacketProtection, ProtectionContext, SessionControl, SessionHandle};
 use client_core::seam_mock::{self, MockCrypto};
 
 /// Gerçek kriptonun yokluğunun kimliği (koşucu ile paylaşılır).
@@ -60,6 +60,20 @@ pub trait S3Target {
     /// Pending kümesi + oturum/replay state'inin parmak izi (H-NO-MUTATE karşılaştırmaları).
     /// Deneme sayacı gibi salt-gözlem alanları da içindedir; karşılaştıran taraf bunu bilir.
     fn fingerprint(c: &Self::Crypto) -> String;
+
+    // ── A4.4 kancaları ──
+
+    /// Hedefte `Session` ve `HubChannel` ayrı anahtarla mı mühürlenir (H-CTX'in anahtar yarısı).
+    const CONTEXTS_ARE_KEY_SEPARATED: bool;
+
+    /// `seal()`'e en son verilen bağlam — seam'in kendi kaydı (K1 kayıt kancası).
+    fn last_seal_ctx(c: &Self::Crypto) -> Option<ProtectionContext>;
+
+    /// Oturum/replay/pending/anahtar state'inin parmak izi; salt-gözlem alanları HARİÇ.
+    fn state_fingerprint(c: &Self::Crypto) -> String;
+
+    /// Oturumu epoch-1'e geçirir (gönderim tarafı). Hedef geçişi yapamıyorsa `false`.
+    fn enter_epoch1(c: &mut Self::Crypto, session: SessionHandle) -> bool;
 }
 
 /// Kayıtlı hedefler — `missing_target_is_a_declared_gap` bu listeye karşı sınar.
@@ -109,6 +123,20 @@ impl S3Target for MockTarget {
     fn fingerprint(c: &Self::Crypto) -> String {
         format!("{c:?}")
     }
+
+    const CONTEXTS_ARE_KEY_SEPARATED: bool = true;
+
+    fn last_seal_ctx(c: &Self::Crypto) -> Option<ProtectionContext> {
+        c.last_seal_ctx()
+    }
+
+    fn state_fingerprint(c: &Self::Crypto) -> String {
+        c.state_fingerprint()
+    }
+
+    fn enter_epoch1(c: &mut Self::Crypto, session: SessionHandle) -> bool {
+        c.mock_set_epoch(session, 1)
+    }
 }
 
 // ── Gerçek hedef (A5'e kadar beyan edilmiş boşluk) ───────────────────────────────────────────
@@ -150,5 +178,19 @@ impl S3Target for RealTarget {
 
     fn fingerprint(_: &Self::Crypto) -> String {
         String::new()
+    }
+
+    const CONTEXTS_ARE_KEY_SEPARATED: bool = true;
+
+    fn last_seal_ctx(_: &Self::Crypto) -> Option<ProtectionContext> {
+        None
+    }
+
+    fn state_fingerprint(_: &Self::Crypto) -> String {
+        String::new()
+    }
+
+    fn enter_epoch1(_: &mut Self::Crypto, _: SessionHandle) -> bool {
+        false
     }
 }

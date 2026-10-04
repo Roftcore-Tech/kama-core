@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "seam": "KM-SEAM-TC-001",
+  "spec_path": "docs/seams/KM-SEAM-TC-001.md",
+  "suite": "crates/kama-noise-wire/tests/noise_conformance_core",
+  "_comment": "S3 §6 satırlarının kapsama beyanı. 'mock: green' yalnız SAHTENİN sözleşmeye uyduğunu söyler; kanıt değeri 'real' hedefi (A5) aynı gövdeleri koşunca doğar. Koşucu (noise-conformance.sh --target mock) her 'green' satırın test_filter'ına uyan en az bir testin LİSTELENDİĞİNİ denetler.",
+  "rows": [
+    {
+      "id": "H-CTX",
+      "test_filter": "h_ctx_",
+      "mock": "green",
+      "real": "pending A5",
+      "note": "Bağlam kaydı çağıranın verdiğiyle aynı; mock'ta Session ≠ HubChannel. identity hedefinde no-op assert edilir; 'Session ≠ HubChannel' gerçek anahtarla (M4)."
+    },
+    {
+      "id": "H-PN-OWN",
+      "test_filter": "h_pn_own_",
+      "mock": "green",
+      "real": "pending A5",
+      "note": "Ardışık +1; PeerSlot reset / idle emeklilik / tx_seq wrap sayacı etkilemez; epoch 0→1'de sayaç +1 ile devam eder."
+    },
+    {
+      "id": "H-FEC-ORDER",
+      "test_filter": "h_fec_order_",
+      "mock": "green",
+      "real": "pending A5",
+      "note": "Sahte shard decoder'a girmez (çağrı sayısı 0); K geçerli shard ile kurtarma. Decoder sahtedir."
+    },
+    {
+      "id": "H-DEMUX",
+      "test_filter": "h_demux_",
+      "mock": "green",
+      "real": "pending A5",
+      "note": "A3.1 — yedi test (demux.rs)."
+    },
+    {
+      "id": "H-RETRY",
+      "test_filter": "h_retry_",
+      "mock": "green",
+      "real": "pending A5",
+      "note": "Alice ve Bob yarıları; MockCrypto 2026-10-06'da INIT/SSR1 zarfı + önbellekle genişletildi."
+    },
+    {
+      "id": "H-NO-MUTATE",
+      "test_filter": "h_no_mutate_",
+      "mock": "green",
+      "real": "pending A5",
+      "note": "Bozuk tag, replay, kesik datagram, yanlış aday, bozuk RESPONSE/INIT, bilinmeyen oturum."
+    },
+    {
+      "id": "H-HANDLE",
+      "test_filter": "h_handle_",
+      "mock": "green",
+      "real": "pending A5",
+      "note": "Çalışma zamanı yarısı: Closed sonrası seal → UnknownSession."
+    },
+    {
+      "id": "H-HANDLE/type",
+      "test_filter": "",
+      "mock": "pending B1",
+      "real": "pending A5",
+      "note": "HubHandle(u32) newtype + trybuild negatif testi kama-contracts PR'ında (B1)."
+    },
+    {
+      "id": "H-REPLAY-POISON",
+      "test_filter": "h_replay_poison_",
+      "mock": "green",
+      "real": "pending A5",
+      "note": "Sahte paket pencereyi ilerletmez; aynı sayaçlı geçerli paket kabul ve commit."
+    }
+  ]
+}

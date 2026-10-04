@@ -322,6 +322,9 @@ impl EntropySource for FixedEntropy {
 pub struct IdentitySeam {
     session_pn: u64,
     hub_pn: u64,
+    /// `seal()`'e en son verilen bağlam (S3 K1 kayıt kancası; YALNIZ test).
+    #[cfg(any(test, feature = "test-util"))]
+    last_seal_ctx: Option<ProtectionContext>,
 }
 
 /// Sahte tag boyu (ChaCha20-Poly1305 tag'iyle byte-eşdeğer).
@@ -337,6 +340,13 @@ impl IdentitySeam {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// `seal()`'e en son verilen bağlam (K1: bağlam çağırandan gelir, seam'e değişmeden ulaşır).
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn last_seal_ctx(&self) -> Option<ProtectionContext> {
+        self.last_seal_ctx
     }
 
     const LIMITS: ProtectionLimits = ProtectionLimits {
@@ -360,6 +370,10 @@ impl IdentitySeam {
 impl PacketProtection for IdentitySeam {
     fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
         Self::check(ctx, frame.len())?;
+        #[cfg(any(test, feature = "test-util"))]
+        {
+            self.last_seal_ctx = Some(ctx);
+        }
         let counter = match ctx {
             ProtectionContext::Session(_) => &mut self.session_pn,
             ProtectionContext::HubChannel => &mut self.hub_pn,
@@ -452,7 +466,7 @@ mod tests {
     fn pn_never_wraps() {
         let mut seam = IdentitySeam {
             session_pn: u64::MAX,
-            hub_pn: 0,
+            ..IdentitySeam::default()
         };
         assert_eq!(seam.seal(S, b"x").unwrap_err(), SealError::CapReached);
         assert_eq!(
