@@ -2,6 +2,7 @@
 """Katman kuralı kapısı (C1.2) — INV-NEIGHBOR-1'in bağımlılık grafiğindeki karşılığı.
 
     scripts/ci/layer_check.py              # cargo metadata + kaynak taraması
+    scripts/ci/layer_check.py --root DİZİN # başka bir çalışma ağacını denetle (varsayılan: bu script'in deposu)
     scripts/ci/layer_check.py --selftest   # kuralların HER BİRİNİN gerçekten ateşlediğini kanıtlar
 
 KURALLAR (transport-layer-tdd §0 INV-NEIGHBOR-1; KM-SEAM-AT-001 §6 H-NO-CRYPTO-EDGE / H-NO-PLANE1):
@@ -30,7 +31,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+# Varsayılan kök script'in kendi deposudur; `--root` ile başka bir çalışma ağacı (ör. bir worktree)
+# denetlenir. Kök script konumuna SABİT olduğunda başka ağacı ölçtüğünü sanan koşu sessizce kendi
+# ağacını ölçüyordu (2026-10-05'te feature/app envanterinde yaşandı).
+DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 
 APP = "kama-app"
 CRYPTO_LAYER = ("kama-noise-wire", "crypto", "ccr-codec")
@@ -114,9 +118,11 @@ def check(metadata: dict, sources: dict[str, str]) -> list[str]:
     return findings
 
 
-def real_inputs() -> tuple[dict, dict[str, str]]:
+def real_inputs(root: Path) -> tuple[dict, dict[str, str]]:
+    if not (root / "Cargo.toml").is_file():
+        raise EnvironmentError(f"kök bir Cargo çalışma ağacı değil: {root}")
     r = subprocess.run(["cargo", "metadata", "--format-version", "1", "--locked"],
-                       cwd=ROOT, capture_output=True, text=True)
+                       cwd=root, capture_output=True, text=True)
     if r.returncode != 0:
         raise EnvironmentError(f"cargo metadata başarısız: {r.stderr.strip()[:400]}")
     md = json.loads(r.stdout)
@@ -127,7 +133,7 @@ def real_inputs() -> tuple[dict, dict[str, str]]:
         for f in sorted(crate_dir.rglob("*.rs")):
             if "target" in f.parts:
                 continue
-            sources[str(f.relative_to(ROOT))] = f.read_text(encoding="utf-8")
+            sources[str(f.relative_to(root))] = f.read_text(encoding="utf-8")
     return md, sources
 
 
@@ -179,8 +185,15 @@ def selftest() -> int:
 def main(argv: list[str]) -> int:
     if "--selftest" in argv:
         return selftest()
+    root = DEFAULT_ROOT
+    if "--root" in argv:
+        i = argv.index("--root")
+        if i + 1 >= len(argv):
+            print("KULLANIM HATASI: --root bir dizin ister", file=sys.stderr)
+            return 2
+        root = Path(argv[i + 1]).resolve()
     try:
-        md, sources = real_inputs()
+        md, sources = real_inputs(root)
         findings = check(md, sources)
     except EnvironmentError as e:
         print(f"ORTAM HATASI: {e}", file=sys.stderr)
@@ -191,7 +204,7 @@ def main(argv: list[str]) -> int:
     if findings:
         print(f"\nLAYER-CHECK: KIRMIZI ({len(findings)} ihlal) — INV-NEIGHBOR-1")
         return 1
-    print(f"LAYER-CHECK: YEŞİL ({APP}: {len(sources)} kaynak dosyası; L1/L2/L3 temiz)")
+    print(f"LAYER-CHECK: YEŞİL ({APP}: {len(sources)} kaynak dosyası; L1/L2/L3 temiz; kök={root})")
     return 0
 
 
