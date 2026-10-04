@@ -1,5 +1,9 @@
 # CCR Format Specification
 
+> **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 tamamlama — sahip kararı]:** §35.15 slot bloğu: **KS-AGE-1 KAPANDI (SESSION_MAX_AGE = 7 gün)** · **KS-HB-1 KAPANDI (8 s / 25 s / OS)** · **KS-UI-1 KAPANDI (LongOutage = 60 s; yalnız UI)**. §35.16 "client keepalive YOK" ÜSTÜ ÇİZİLDİ (pull-only varsayımıyla yazılmıştı; hop heartbeat `0x1B`/`0x1C` — transport-layer-tdd §10 [AMENDMENT-10]; mailbox fallback ve rebind yolu değişmedi). Üstü çizili metin silinmedi.
+
+> **YAMA KAYDI — 2026-10-03 [DR-CONNECT-1 — sahip kararı; indeks `docs/decisions/DR-CONNECT-1.md`]:** §35.15 sonuna kalibrasyon slotları bloğu: **KS-8 KAPANDI (değer yok — deadline yoktur)** · **KS-PN-1 KAPANDI (K = 1024)** · **KS-AGE-1 AÇIK** (SESSION_MAX_AGE, öneri 7 gün) · KS-HB-1 açılmadı (H4 sahip kararı bekliyor). §35.7 **KS-HANDLE-1 KAPANDI**: `HANDLE_TOMBSTONE` = S&F mailbox TTL (K2 kanıtı). §35.16 "client keepalive YOK" satırına DOKUNULMADI — H4 ile çelişir, H4 kararıyla birlikte ele alınacak. Rust'a dokunulmadı; üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-09-24 [KS-DOS-1 KAPANDI — sahip kararı, Alpha kalibrasyonu]:** §35.15 dört `[KARAR]` sabiti sayıya dönüştü (HALF_OPEN_TTL = S&F TTL · HALF_OPEN_CAP = 64/kimlik + 64k global yumuşak tavan · PER_SOURCE_INIT_RATE = 1/s, burst 32 · PENDING_RESPONSE_TRIAL_CAP = 16 = istemci pending INIT tavanı ≤ HALF_OPEN_CAP tutarlılık zinciri NORMATİF); Alpha varsayımları V1–V4, Beta tetikleri T1–T3, sayaçlar ve "yerel politika, tel sabiti değil" statüsü blokta. "Bind öncesi kaynak = UDP 4-tuple" tanımı INIT kapsamından çıkarıldı (INIT bind sonrası gelir) → ayrı `[KARAR — M6]` Plane 0 handshake hız sınırı kalemi. Rust'a dokunulmadı; üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-09-23 [D-GAP-1 + temizlik]:** §35.8 far-future reddi KALDIRILDI (`MAX_FUTURE_GAP` kapısı **ve** `MAX_REORDER_DISTANCE`'ın simetrik kontrolünün ileri yarısı — ikincisi karar metninde adlandırılmamıştı, ama aynı reddi 8192'de sürdürüyordu; ayrıntı §35.8 içinde). AEAD-geçerli paket ileri sıçrasa da kabul edilir (highest sıçrar, atlanan aralık bitmap'te temizlenir); underflow-safe eski-paket kuralı ve "replay window AEAD'den önce güncellenmez" (P0-6) AYNEN kalır. Yapısal sınır: |candidate − expected| < 2^15 (seq16 tek-anlamlılığı) → gönderen tarafı kısıtı transport-layer-tdd [AMENDMENT-9] / KS-PN-1. Vektör listeleri (§35.13 REPLAY, §35.14) buna göre güncellendi. Ayrıca §36'daki yanlış `MAILBOX_PRUNE` atfı düzeltildi. **Kapsam DIŞI:** noise-wire extended-pn32 yolunun `FUTURE_GAP_MAX = 2^13` kapısı — ayrı karar gerekir (identity OQ-16).
@@ -2715,7 +2719,7 @@ cert, no re-handshake, no stream dependency.
 
 ### 35.7 hub_handle Semantiği + Allocation (NORMATİF)
 
-> **[KARAR-SLOTU KS-HANDLE-1 — 2026-09-19] `hub_handle` yeniden kullanım koşulu:** Bir handle invalidate edildikten (§35.16 rebind, teardown, `hub_handle_epoch` rollover) sonra **hiçbir peer'a** yeniden atanmadan önce (a) o handle'a bağlı transport outstanding/ARQ state'i ölmüş olmalı VE (b) `HANDLE_TOMBSTONE` dolmuş olmalı. **Türetim kuralı (NORMATİF — magic number değil):** `HANDLE_TOMBSTONE ≥ max(hop-ARQ maksimum RTO×retry ufku, ~~MAX_REORDER_DISTANCE'ın~~ **REPLAY_WINDOW_SIZE'ın** süre karşılığı, mailbox teslim ufku)` **[D-GAP-1 2026-09-23: `MAX_REORDER_DISTANCE` kapısı kaldırıldığı için bu türetim girdisi tanımsız kalırdı. Geç gelen bir datagramın kabul edilebildiği tek sınır artık eski-paket kuralıdır (`full_counter + REPLAY_WINDOW_SIZE <= highest` → reddet), dolayısıyla ufuk REPLAY_WINDOW_SIZE'ın süre karşılığıdır.]** — yani o handle'a **geç gelebilecek son meşru datagramın** ufku; namespace 2³² olduğu için tombstone'un bellek maliyeti düşüktür, kısa tutmanın gerekçesi yoktur. Değer bu üç girdiden hub sahibi tarafından hesaplanır `[KALİBRASYON]`. Aksi hâlde eski peer'ın uçuştaki datagramı yeni peer'ın leg'ine düşer (AEAD fail eder ama transport state'e girer — availability). Bu satır olmadan §35.7'nin PRF türetimi "bir handle = bir leg" garantisini yalnız *aktif* tabloda verir.
+> **[KARAR-SLOTU KS-HANDLE-1 — 2026-09-19] `hub_handle` yeniden kullanım koşulu:** Bir handle invalidate edildikten (§35.16 rebind, teardown, `hub_handle_epoch` rollover) sonra **hiçbir peer'a** yeniden atanmadan önce (a) o handle'a bağlı transport outstanding/ARQ state'i ölmüş olmalı VE (b) `HANDLE_TOMBSTONE` dolmuş olmalı. **Türetim kuralı (NORMATİF — magic number değil):** `HANDLE_TOMBSTONE ≥ max(hop-ARQ maksimum RTO×retry ufku, ~~MAX_REORDER_DISTANCE'ın~~ **REPLAY_WINDOW_SIZE'ın** süre karşılığı, mailbox teslim ufku)` **[D-GAP-1 2026-09-23: `MAX_REORDER_DISTANCE` kapısı kaldırıldığı için bu türetim girdisi tanımsız kalırdı. Geç gelen bir datagramın kabul edilebildiği tek sınır artık eski-paket kuralıdır (`full_counter + REPLAY_WINDOW_SIZE <= highest` → reddet), dolayısıyla ufuk REPLAY_WINDOW_SIZE'ın süre karşılığıdır.]** — yani o handle'a **geç gelebilecek son meşru datagramın** ufku; namespace 2³² olduğu için tombstone'un bellek maliyeti düşüktür, kısa tutmanın gerekçesi yoktur. ~~Değer bu üç girdiden hub sahibi tarafından hesaplanır `[KALİBRASYON]`.~~ **[KS-HANDLE-1 KAPANDI — 2026-10-03, DR-CONNECT-1 / kanıt K2]** `HANDLE_TOMBSTONE` = S&F mailbox TTL ile AYNI (bugün 7 gün) — türetilmiş, bağımsız sabit değil. Kanıt: handle INIT admission'ında atanır ve çevrimdışı responder'a mailbox üzerinden `[HANDLE_ASSIGN, INIT/extended]` sırasıyla teslim edilir (noise-wire §2.55; `crates/kama-noise-wire/src/hub_sim.rs:4`, `:50-72`) — mailbox'tan çıkan kayıt ESKİ handle'ı taşır, dolayısıyla o handle'a geç gelebilecek son meşru datagramın ufku mailbox teslim ufkudur (üç girdinin en büyüğü). Handle ömrü oturuma bağlıdır (noise-wire §2.55 "LIFETIME: session-ömrü-sabit"), hub PeerSlot'unun 105 s idle emekliliğine DEĞİL (PeerSlot handle tutmaz, `crates/client-core/src/runtime.rs:1907`). Namespace bedeli kontrol edildi: %25 dolulukta ≈1775 yeni bacak/s'ye kadar epoch rollover'a zorlamaz (`docs/sprint_plan/A1-KALIBRASYON-KARAR-FOYU.md` A1.4). Sınır: gerçek hub bu repoda yok; kanıt spec + D1 simülatörüdür. Aksi hâlde eski peer'ın uçuştaki datagramı yeni peer'ın leg'ine düşer (AEAD fail eder ama transport state'e girer — availability). Bu satır olmadan §35.7'nin PRF türetimi "bir handle = bir leg" garantisini yalnız *aktif* tabloda verir.
 
 > **[AMENDMENT-6] `hub_handle` (HubHandle — wire/routing kimliği) ≠ `SessionHandle` (Crypto'nun bastığı yerel capability; wire'da YOK; transport-tdd §0 INV-NEIGHBOR-1). İki tip BİRLEŞTİRİLEMEZ; eşleme Crypto'nun içindedir (kod: legacy.rs `LegacySessionProtector::new(hub_handle, …)`, session.rs h_ext → Session).**
 
@@ -3106,6 +3110,26 @@ BatchSubMessage {
 > (adil olmayan ama güvenli — kota paylaşılır, bypass edilemez)" tanımı INIT'e değil **Plane 0 Noise handshake**
 > hız sınırına aittir. Değer ve sayaçlar M6'da veriyle. Bu kalem KS-DOS-1'in dört sabitini ETKİLEMEZ.
 
+> **[KALİBRASYON SLOTLARI — DR-CONNECT-1, 2026-10-03 · sahip kararı]** (indeks: `docs/decisions/DR-CONNECT-1.md`)
+> ```
+> KS-8      KAPANDI — DEĞER YOK. connect() deadline'ı yoktur (INV-NO-IDLE-TEARDOWN, transport-layer-tdd §0);
+>           semantik KM-SEAM-AT-001 §4. DR-CONNECT-1 ile kapandı; sayı aranmaz.
+> KS-PN-1   KAPANDI — K = 1024 (Session ctx'te hop-ACK'siz ardışık PN tavanı).
+>           Otoriter metin: transport-layer-tdd §12 [AMENDMENT-9].
+> ~~KS-AGE-1  AÇIK [KALİBRASYON — öneri 7 gün]~~
+> KS-AGE-1  KAPANDI 2026-10-04 — SESSION_MAX_AGE = 7 gün: oturum yaşı aşılınca bir sonraki gönderimde
+>           RenewRequired → KM-SEAM-AT-001 KARAR-2 cutover. TIMEOUT DEĞİL (oturum ölmez, yenilenir);
+>           anahtar hijyeni, sahibi Crypto (KM-SEAM-TC-001 K9). Semantik: identity §16.
+> ~~KS-HB-1   AÇILMADI — hop heartbeat (DR-CONNECT-1 H4) K1 kanıtı sonrası sahip kararı bekliyor.~~
+> ~~          Kadans değerleri (8 s / 25 s / OS) transport-layer-tdd §10 [AMENDMENT-10]'da prob tavanı olarak yazılıdır.~~
+> KS-HB-1   KAPANDI 2026-10-04 — hop heartbeat kadansı: ön plan 8 s · arka plan 25 s · doze OS takvimi.
+>           Çerçeve HEARTBEAT 0x1B / HEARTBEAT_ACK 0x1C (yeni codepoint; CS_PROBE'a bindirilmez), HubChannel ctx.
+>           Otoriter metin: transport-layer-tdd §10 [AMENDMENT-10].
+> KS-UI-1   KAPANDI 2026-10-04 — LongOutage = heartbeat yanıtı 60 s'dir yok → ConnectPhase::LongOutage.
+>           YALNIZ UI; protokol parametresi DEĞİL (KM-SEAM-AT-001 §4).
+> ```
+> Not: bu slotlar hub DoS sabiti değildir; §35.15'e sahip talimatıyla (slot evi) yazıldı. KS-HANDLE-1: §35.7.
+
 ### 35.16 LINK_ROUTE_MISS + Rebind (NORMATİF, CAD-57)
 
 ```
@@ -3118,7 +3142,11 @@ On LINK_ROUTE_MISS (hub restart / TTL expiry / unknown hub_handle):
   - receiver SESSION_INIT'i normal doğrular (Section 35.4).
   - eski hub_handle invalidate edilir.
   - lightweight resume Alpha wire object DEĞİL (Beta+ / future extension).
-  - client keepalive YOK (state hub'da; miss → SESSION_INIT_REF rebind, sürekli ping değil).
+  - ~~client keepalive YOK (state hub'da; miss → SESSION_INIT_REF rebind, sürekli ping değil).~~
+    [DR-CONNECT-1 H4, 2026-10-04 — ÜSTÜ ÇİZİLDİ] Bu satır pull-only varsayımıyla yazılmıştı. Hop heartbeat VARDIR
+    (HEARTBEAT 0x1B / HEARTBEAT_ACK 0x1C; transport-layer-tdd §10 [AMENDMENT-10]): inbound DELIVER + NAT eşlemesi için
+    optimizasyondur. Mailbox fallback korunur (app-rpc §6.11, DR-CONNECT-1 H7); miss → SESSION_INIT_REF rebind
+    yolu DEĞİŞMEDİ. Heartbeat hub'da state YARATMAZ (refresh-only).
 ```
 > **NOT:** Lightweight resume Beta'da istenirse exact wire + AAD + key schedule + replay rules ZORUNLU yazılır; aksi halde isim olarak bile bırakılmaz (parser belirsizliği).
 

@@ -1,5 +1,9 @@
 # Kama — Adaptive Transport Engine Spec (Implementable)
 
+> **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 H4 — sahip kararı]:** §1.1 transport-control `frame_type` registry'sine iki codepoint açıldı: **`0x1B HEARTBEAT`**, **`0x1C HEARTBEAT_ACK`** (hop heartbeat; HubChannel ctx; otoriter çerçeve + kurallar transport-layer-tdd §10 [AMENDMENT-10]). Çakışma tarandı: §1.1'de boştu; noise-wire §2.56 E2E registry'sinde reserved(reject) kalır. Mevcut codepoint'lerin anlamı/yerleşimi DEĞİŞMEDİ. SPEC-ONLY.
+
+> **YAMA KAYDI — 2026-10-03 [DR-CONNECT-1 H5]:** Üç emisyon yolundaki (§3.3-B, §11, §11.1) AMENDMENT-9 bağ notlarında `K` değeri yazıldı: **K = 1024** (KS-PN-1 KAPANDI; otoriter metin transport-layer-tdd §12 [AMENDMENT-9]). Tavan hâlâ SPEC-ONLY; kod değişmedi. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-09-23 [D-GAP-2 bağı]:** Sayı-tavanı olmayan üç emisyon yolu (§3.3-B geometrik kopya, §11 emergency forward redundancy, §11.1 cold-start probe/echo) transport-layer-tdd [AMENDMENT-9] "hop-ACK almadan ardışık PN ≤ K" tavanına bağlandı (K: KS-PN-1 [KALİBRASYON]). SPEC-ONLY — kod değişmedi; uygulandığında EVOLUTION §22'nin altı beyanı geçerlidir (kimlik `transport-v1.x`).
 
 
@@ -116,6 +120,10 @@ transport-control frame ilk byte = frame_type:
                                 # (kama-noise-wire-tdd-v2.0 §2.56/§2.57 otoritatif; bu-satır arşiv-notu, sessiz-silme-yok)
   0x13 CTRL_REKEY_SIGNAL
   0x14 ACK_FRAME_V2             # [K3/R2] cold-start ölçüm eki (§2.2); V1 0x10 korunur
+  0x1B HEARTBEAT                # [DR-CONNECT-1 H4, 2026-10-04] hop heartbeat = prob = NAT keepalive; HubChannel ctx;
+                                # body 0 B veya echo_token u32_be; kendi sayacı yok (transport-layer-tdd §10 [AMENDMENT-10])
+  0x1C HEARTBEAT_ACK            # [DR-CONNECT-1 H4] yanıt; body isteğinkiyle aynı uzunlukta, token aynen yansıtılır
+                                # 0x1B/0x1C E2E inner_kind DEĞİLDİR: noise-wire §2.56'da reserved(reject) kalır
   0x20 FEC_SHARD_HEADER
 (SESSION_* class'ları hub_handle demux + E2E envelope tipinden ayrışır; transport-control frame_type güvenlik katmanı outer-AEAD-çözümünden SONRA görünür — çözümü GÜVENLİK katmanı yapar, §0.2.)
 # [K-final] Cold-start probe/echo (§11.1) dış çerçevesi = hub_handle(4B)+ciphertext+tag → CTRL sınıfı-İÇİ ÖZDEŞ
@@ -333,7 +341,7 @@ PRE_CONVERGE --ilk geçerli SACK/echo--> STARTUP   # RTT+loss kilidi açılır (
 **(B) Veri — programlı geometrik kopya takvimi (forward-redundancy sürücüsü):** [R1/§2.2]
 
 > **[D-GAP-2 / AMENDMENT-9 BAĞI — 2026-09-23]** Bu yolun emisyonu, transport-layer-tdd [AMENDMENT-9]'daki
-> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer [KALİBRASYON] KS-PN-1).
+> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer ~~[KALİBRASYON] KS-PN-1~~ **K = 1024** — KS-PN-1 KAPANDI 2026-10-03, DR-CONNECT-1 H5).
 > Bugün bu yolda SAYI TAVANI YOKTUR (ölçüldü: identity §28.1-A) — tavan SPEC-ONLY'dir, kod bu turda değişmedi.
 ```
 İlk birim t=0'da gider; ACK beklenmez. Kopyalar geometrik: t=0, k_base·RTT_floor, ×COPY_MULTIPLIER, ...
@@ -781,7 +789,7 @@ tek-datagram / tiny payload: RS uygulanamaz → duplication (§11) doğru araç.
 ## 11. Emergency Forward Redundancy Algorithm (NORMATİF — ACK-bağımsız; TDD §5.6)
 
 > **[D-GAP-2 / AMENDMENT-9 BAĞI — 2026-09-23]** Bu yolun emisyonu, transport-layer-tdd [AMENDMENT-9]'daki
-> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer [KALİBRASYON] KS-PN-1).
+> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer ~~[KALİBRASYON] KS-PN-1~~ **K = 1024** — KS-PN-1 KAPANDI 2026-10-03, DR-CONNECT-1 H5).
 > Bugün bu yolda SAYI TAVANI YOKTUR (ölçüldü: identity §28.1-A) — tavan SPEC-ONLY'dir, kod bu turda değişmedi.
 
 ```
@@ -840,7 +848,7 @@ duplication/parity yine available_redundancy_budget ile clamp (§8.5).   [AMENDM
 ## 11.1 Cold-Start Probe/Echo — CTRL_PATH_PROBE genişletmesi [K4/K-KEYSTONE/R3/revize-D0 §4.2]
 
 > **[D-GAP-2 / AMENDMENT-9 BAĞI — 2026-09-23]** Bu yolun emisyonu, transport-layer-tdd [AMENDMENT-9]'daki
-> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer [KALİBRASYON] KS-PN-1).
+> "hop-ACK almadan ardışık tüketilen PN ≤ K" tavanına TABİDİR (K ≪ 2^15, değer ~~[KALİBRASYON] KS-PN-1~~ **K = 1024** — KS-PN-1 KAPANDI 2026-10-03, DR-CONNECT-1 H5).
 > Bugün bu yolda SAYI TAVANI YOKTUR (ölçüldü: identity §28.1-A) — tavan SPEC-ONLY'dir, kod bu turda değişmedi.
 
 > **CANCELLED/SUPERSEDED [DR-CS-1-AMENDMANI; Abkarada-onaylı]:** Bu bölümün `0x12`-codepoint'i otoritatif

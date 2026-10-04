@@ -14,8 +14,8 @@
 mod harness;
 
 use harness::api::{
-    CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PeerRef, PreparedUnit,
-    SessionEvent, SessionHandle, TransportError,
+    AbandonReason, CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PeerRef,
+    PreparedUnit, SessionEvent, SessionHandle, TransportError,
 };
 use harness::target::{
     EchoMockTransport, MockTarget, SeamTarget, TargetKind, MOCK_MAX_INBOX, MOCK_MAX_SESSIONS,
@@ -196,4 +196,52 @@ fn f7_mock_injects_no_loss_reorder_or_duplication() {
         assert_eq!(d.session, h);
     }
     assert!(t.recv().is_none(), "fazladan (duplicate) teslim üretti");
+}
+
+/// DR-CONNECT-1 H9 — sahtenin `cancel` yolu sözleşmenin dediğini yapar ve fazlasını uydurmaz.
+///
+/// Bekleyen niyet iptal edilince: tek olay `ConnectAbandoned(ticket, Cancelled)`; `Ready` ASLA
+/// gelmez; `early_unit` hiçbir yola girmez; aynı peer'a yeniden `connect` YENİ bilet verir.
+/// (H-CANCEL'in "niyet kendiliğinden sonlanmaz" kolu sanal saat ister — `GAP-SEAM-MOCK-7`.)
+#[test]
+fn f8_mock_cancel_abandons_pending_without_inventing_ready() {
+    let mut t = MockTarget::build().expect("mock hedefi kurulmalı");
+    let peer = PeerRef::from_raw(5);
+
+    let ticket = match t.connect(peer, Some(unit(b"early"))).expect("connect") {
+        ConnectResult::Pending(ticket) => ticket,
+        ConnectResult::Ready(_) => panic!("taze peer için Pending bekleniyordu"),
+    };
+    t.cancel(ticket);
+
+    assert_eq!(
+        t.poll_event(),
+        Some(SessionEvent::ConnectAbandoned(
+            ticket,
+            AbandonReason::Cancelled
+        )),
+        "cancel tek olay üretmeli: ConnectAbandoned(ticket, Cancelled)"
+    );
+    assert!(
+        t.poll_event().is_none(),
+        "iptal edilen niyet için Ready geldi"
+    );
+    assert!(
+        t.recv().is_none(),
+        "iptal edilen niyetin early_unit'i teslim edildi"
+    );
+
+    // İkinci cancel etkisizdir (bilet geçersizleşti).
+    t.cancel(ticket);
+    assert!(
+        t.poll_event().is_none(),
+        "geçersiz bilete cancel olay üretti"
+    );
+
+    match t.connect(peer, None).expect("yeniden connect") {
+        ConnectResult::Pending(again) => {
+            assert_ne!(again, ticket, "iptal sonrası aynı bilet geri verildi");
+        }
+        ConnectResult::Ready(_) => panic!("iptal sonrası oturum hâlâ aktif görünüyor"),
+    }
 }

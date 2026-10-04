@@ -1,5 +1,7 @@
 # kama-noise-wire-tdd — Kama Noise Secure-Wire Profile [v2.0 — dört-karar-boşluğu-KAPATILDI (HANDLE_ASSIGN-frozen · bootstrap-profile-admission · confirmation-safe-epoch · K-invariant) + öz-tarama-temiz; FULL-DESIGN-GO-onayı: Abkarada]
 
+> **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 H4 — çakışma-önleme notu]:** §2.56'ya tek not: `0x1B`/`0x1C` hop heartbeat için engine-spec §1.1 (HubChannel transport-control) registry'sinde TAHSİS EDİLDİ; bu E2E `inner_kind` registry'sinde `reserved(reject)` KALIR ve burada açılmamalıdır. Registry'nin kendisi, mevcut codepoint'ler ve parser davranışı DEĞİŞMEDİ.
+
 > **YAMA KAYDI — 2026-09-24 [KS-GRACE-1 KAPANDI — sahip kararı, Alpha]:** §4 madde 5 `N_g = 64` (yalnız AEAD-geçerli epoch-1 paketleri) · `T_g = 30 s` (monotonic, implicit confirmation anından); hangisi önce; kapanınca epoch-0 recv state DISCARD, yeniden açılmaz; sRTT bağımlılığı bilinçli olarak YOK. Statü: yerel politika, tel sabiti değil. Sayaçlar ve Beta tetiği (PCS/ratchet) blokta. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-09-23 [D-GAP-1 bağı]:** §4 anti-replay sabit-kapsamı güncellendi — legacy-seq16 yolunun `MAX_FUTURE_GAP`/`MAX_REORDER` kapıları ccr §35.8'de KALDIRILDI (far-future reddi yok; yapısal sınır |cand−expected| < 2^15, gönderen kısıtı KS-PN-1). extended-pn32 yolunun `FUTURE_GAP_MAX = 2^13` kapısı DOKUNULMADAN durur — kapsam sorusu identity OQ-16. **[R-2 KAPANDI — 2026-09-23, sahip kararı]** İki kopya BİRLEŞTİRİLDİ: 19 Eylül içeriği otoriterdir ve bu dosyaya taşındı; `kama-noise-wire-tdd-v2_0.md` SİLİNDİ. Bu dosyanın önceki (21 Temmuz) içeriği SUPERSEDED'dir ve git geçmişinden geri alınabilir: `git show 311b5c2d:specs/kama-noise-wire-tdd-v2.0.md`. Kaybolan yalnız eski sürümlerdi (ör. `seal(..., wire_pn)` imzası — PN sahipliği KM-SEAM-TC-001 K2 ile değişti; eski GRACE formülü `max(4×sRTT, 64pkt)` — KS-GRACE-1 ile değişti). Repodaki tüm atıflar zaten bu adı kullanıyordu.
@@ -329,6 +331,7 @@ kaydı CANCELLED/SUPERSEDED (0x12=RECOVERED-kilidi-korunur; runtime-assert). Bu-
 codepoint'lerin anlamını/layout'unu/parser-davranışını DEĞİŞTİRMEZ; başka-codepoint/subtype/alan-ekleme
 = DUR-B.
 FEC-source/repair variant_body = §2.6-FEC-inner (profile_id..symbol_bytes). Control variant_body = §2.7-control-body.
+**[DR-CONNECT-1 H4 — 2026-10-04, çakışma-önleme]** `0x1B` (HEARTBEAT) ve `0x1C` (HEARTBEAT_ACK) hop heartbeat için engine-spec §1.1 HubChannel transport-control registry'sinde tahsis edildi (transport-layer-tdd §10 [AMENDMENT-10]). Bu E2E `inner_kind` registry'sinde ikisi de `reserved(reject)` KALIR: Session ctx'te görülürse fail-closed reject. Bu iki değer burada başka amaçla AÇILMAMALIDIR.
 
 ## 2.57 CONTROL-BODY-LAYOUT'LARI [NORMATİF — MADDE-4/5, exact] (§2.56-inner_kind-sonrası-body)
 Ortak: control-paketi = UNIFIED-INNER-HEADER(inner_kind∈0x10..0x18) · control_id-u32_be · body. **control_id:**
