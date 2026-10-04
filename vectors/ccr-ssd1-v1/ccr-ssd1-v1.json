@@ -1,0 +1,408 @@
+{
+  "schema_version": 2,
+  "suite": "ccr-ssd1-v1",
+  "spec_version": "ccr-format-spec@v1.0+2026-10-04b",
+  "generator": "ref/crypto/gen_vectors.py 1",
+  "description": "SESSION_DATA (SSD1) 22 B zarf: exact AAD (\u00a735.9), nonce96 = 00x4 || LE64(full_counter), m\u00fch\u00fcr byte'lar\u0131; art\u0131 al\u0131m kararlar\u0131. `open` vakalar\u0131nda al\u0131c\u0131 state'i: expected_counter (= highest + 1) ve seen_counters (pencerede g\u00f6r\u00fclm\u00fc\u015f saya\u00e7lar). hub_handle AAD'ye G\u0130RMEZ.",
+  "notes": {
+    "layer-22b": "UDP payload = hub_handle 4 + seq16 2 + ciphertext + tag 16 = 22 B + payload (AC-SM3-2).",
+    "d-gap-1": "ccr \u00a735.8 [D-GAP-1]: far-future reddi yok; geriye tek s\u0131n\u0131r eski-paket kural\u0131; yap\u0131sal s\u0131n\u0131r |full \u2212 expected| < 2^15."
+  },
+  "case_count": 15,
+  "cases": [
+    {
+      "id": "ccr-ssd1-v1.seal.a2b-e1-counter-0",
+      "kind": "seal",
+      "flags": [
+        "layer-22b"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.6 + \u00a735.9",
+      "input": {
+        "aad_hex": "535344310100010100010000cca6ce25da13e914f2fae16a9d5814aa",
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "full_counter_hex": "0000000000000000",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "key_name_hex": "6b5f4132425f6531",
+        "nonce_hex": "000000000000000000000000",
+        "payload_hex": "68656c6c6f",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa"
+      },
+      "expected_hex": "00c0ffee0000eaa4cc8a8d95685c7b3d4375ffe4db59b49215884f"
+    },
+    {
+      "id": "ccr-ssd1-v1.seal.b2a-e1-counter-0",
+      "kind": "seal",
+      "flags": [
+        "layer-22b"
+      ],
+      "note": "Ayn\u0131 saya\u00e7, ters y\u00f6n: farkl\u0131 anahtar + AAD'de farkl\u0131 direction.",
+      "spec_ref": "ccr-format-spec.md \u00a735.6 + \u00a735.9",
+      "input": {
+        "aad_hex": "535344310100010200010000cca6ce25da13e914f2fae16a9d5814aa",
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "02",
+        "epoch_hex": "0001",
+        "full_counter_hex": "0000000000000000",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "ecd88b266ad46bc65e264d3ab5733b775798e4ebf634c2c866c67ad774a95c96",
+        "key_name_hex": "6b5f4232415f6531",
+        "nonce_hex": "000000000000000000000000",
+        "payload_hex": "68656c6c6f",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa"
+      },
+      "expected_hex": "00c0ffee0000818ec05b229e9472f58e9c0fdd12eec518ce05b7b3"
+    },
+    {
+      "id": "ccr-ssd1-v1.seal.a2b-e0-counter-3",
+      "kind": "seal",
+      "flags": [
+        "layer-22b"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.6 + \u00a735.9",
+      "input": {
+        "aad_hex": "535344310100010100000003cca6ce25da13e914f2fae16a9d5814aa",
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0000",
+        "full_counter_hex": "0000000000000003",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "3d27c9e689d4de7a734da3ceb60d89d17897b352586ac75fbd2f169d3f98776e",
+        "key_name_hex": "6b5f4132425f6530",
+        "nonce_hex": "000000000300000000000000",
+        "payload_hex": "65706f6368207a65726f",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa"
+      },
+      "expected_hex": "00c0ffee0003466fcf219fa5810691f7b9e2468f8349dccf22b9780842b0828a"
+    },
+    {
+      "id": "ccr-ssd1-v1.seal.a2b-e1-counter-65541",
+      "kind": "seal",
+      "flags": [
+        "layer-22b"
+      ],
+      "note": "full_counter = 65536 + 5 \u2192 seq16 = 5; nonce TAM sayac\u0131 ta\u015f\u0131r (seq16 nonce DE\u011e\u0130L).",
+      "spec_ref": "ccr-format-spec.md \u00a735.6 + \u00a735.9",
+      "input": {
+        "aad_hex": "535344310100010100010005cca6ce25da13e914f2fae16a9d5814aa",
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "full_counter_hex": "0000000000010005",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "key_name_hex": "6b5f4132425f6531",
+        "nonce_hex": "000000000500010000000000",
+        "payload_hex": "77726170706564",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa"
+      },
+      "expected_hex": "00c0ffee0005ab2fe09b64da254108571a0603001aec650d0c721b8ac7"
+    },
+    {
+      "id": "ccr-ssd1-v1.seal.a2b-e1-empty-batch",
+      "kind": "seal",
+      "flags": [
+        "layer-22b"
+      ],
+      "note": "BO\u015e BATCH: BatchPayload{submsg_count = 0} = tek bayt 0x00 \u2192 23 B UDP payload. Onay/keepalive ta\u015f\u0131y\u0131c\u0131s\u0131 (ccr; DR-CONNECT-1 K3). AEAD'den ge\u00e7er, PN t\u00fcketir, Application'a teslim YOK.",
+      "spec_ref": "ccr-format-spec.md \u00a735.6 + \u00a735.9",
+      "input": {
+        "aad_hex": "535344310100010100010009cca6ce25da13e914f2fae16a9d5814aa",
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "full_counter_hex": "0000000000000009",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "key_name_hex": "6b5f4132425f6531",
+        "nonce_hex": "000000000900000000000000",
+        "payload_hex": "00",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa"
+      },
+      "expected_hex": "00c0ffee0009e7b32176bae4f5848e56d416920536ba48"
+    },
+    {
+      "id": "ccr-ssd1-v1.open.far-future-aead-valid-accept",
+      "kind": "open",
+      "flags": [
+        "d-gap-1"
+      ],
+      "note": "expected = 1, gelen full_counter = 10 000 (eski MAX_FUTURE_GAP 4096 ve MAX_REORDER_DISTANCE 8192'nin \u00f6tesi). Far-future kap\u0131s\u0131 YOK: AEAD ge\u00e7erliyse KABUL; highest 10 000'e s\u0131\u00e7rar.",
+      "spec_ref": "ccr-format-spec.md \u00a735.8 [D-GAP-1]",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "expected_counter_hex": "0000000000000001",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "seen_counters_hex": [
+          "0000000000000000"
+        ],
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "00c0ffee2710173e4611f1c99ef8aa098e374075429cc9ddc8dd2b31b1209d709446"
+      },
+      "expected_hex": "6166746572206f7574616765"
+    },
+    {
+      "id": "ccr-ssd1-v1.open.in-order-accept",
+      "kind": "open",
+      "flags": [
+        "d-gap-1"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.8",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "expected_counter_hex": "0000000000000005",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "seen_counters_hex": [
+          "0000000000000000",
+          "0000000000000001",
+          "0000000000000002",
+          "0000000000000003",
+          "0000000000000004"
+        ],
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "00c0ffee0005e4830d18217c65220f7602e20ce5acffaf11e9b908660a37"
+      },
+      "expected_hex": "696e206f72646572"
+    },
+    {
+      "id": "ccr-ssd1-v1.open.late-within-window-accept",
+      "kind": "open",
+      "flags": [
+        "d-gap-1"
+      ],
+      "note": "expected = 3001, gelen 2000: 2000 + 1024 > 3000 \u2192 pencere i\u00e7inde ve g\u00f6r\u00fclmemi\u015f \u2192 KABUL.",
+      "spec_ref": "ccr-format-spec.md \u00a735.8",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "expected_counter_hex": "0000000000000bb9",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "seen_counters_hex": [
+          "0000000000000bb8"
+        ],
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "00c0ffee07d03f11280e1b8a64b417b0e21b24729a57753fc118"
+      },
+      "expected_hex": "6c617465"
+    },
+    {
+      "id": "ccr-ssd1-v1.open.duplicate",
+      "kind": "open",
+      "note": "full_counter = 5 zaten g\u00f6r\u00fcld\u00fc \u2192 replay. Sessiz at\u0131m; state de\u011fi\u015fmez.",
+      "spec_ref": "ccr-format-spec.md \u00a735.8 + \u00a735.12",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "expected_counter_hex": "0000000000000006",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "seen_counters_hex": [
+          "0000000000000000",
+          "0000000000000001",
+          "0000000000000002",
+          "0000000000000003",
+          "0000000000000004",
+          "0000000000000005"
+        ],
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "00c0ffee0005e4830d18217c65220f7602e20ce5acffaf11e9b908660a37"
+      },
+      "expected": {
+        "result": "drop",
+        "reason": "ssd1-replay-duplicate"
+      }
+    },
+    {
+      "id": "ccr-ssd1-v1.open.too-old",
+      "kind": "open",
+      "note": "eski-paket kural\u0131: full_counter + REPLAY_WINDOW_SIZE <= highest \u2192 100 + 1024 <= 5000.",
+      "spec_ref": "ccr-format-spec.md \u00a735.8",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "expected_counter_hex": "0000000000001389",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "seen_counters_hex": [
+          "0000000000001388"
+        ],
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "00c0ffee0064794af7bacfc8876797f98041d263ae13222aefd93e25cc"
+      },
+      "expected": {
+        "result": "drop",
+        "reason": "ssd1-replay-too-old"
+      }
+    },
+    {
+      "id": "ccr-ssd1-v1.open.tag-bit-flip",
+      "kind": "open",
+      "note": "tag'in son biti \u2192 AEAD d\u00fc\u015fer; replay penceresi G\u00dcNCELLENMEZ.",
+      "spec_ref": "ccr-format-spec.md \u00a735.12",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "expected_counter_hex": "0000000000000005",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "seen_counters_hex": [
+          "0000000000000000",
+          "0000000000000001",
+          "0000000000000002",
+          "0000000000000003",
+          "0000000000000004"
+        ],
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "00c0ffee0005e4830d18217c65220f7602e20ce5acffaf11e9b908660a36"
+      },
+      "expected": {
+        "result": "drop",
+        "reason": "ssd1-aead-fail"
+      }
+    },
+    {
+      "id": "ccr-ssd1-v1.open.cross-direction",
+      "kind": "open",
+      "note": "B\u2192A y\u00f6n\u00fcnde m\u00fch\u00fcrlenmi\u015f paket A\u2192B al\u0131c\u0131s\u0131na verildi: anahtar ve AAD direction farkl\u0131 \u2192 AEAD d\u00fc\u015fer.",
+      "spec_ref": "ccr-format-spec.md \u00a735.9",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "expected_counter_hex": "0000000000000005",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "seen_counters_hex": [
+          "0000000000000000",
+          "0000000000000001",
+          "0000000000000002",
+          "0000000000000003",
+          "0000000000000004"
+        ],
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "00c0ffee000580a640425c647899713835f5a25bd667653125356ecb92ff"
+      },
+      "expected": {
+        "result": "drop",
+        "reason": "ssd1-aead-fail"
+      }
+    },
+    {
+      "id": "ccr-ssd1-v1.open.cross-epoch",
+      "kind": "open",
+      "note": "epoch-0 anahtar\u0131yla m\u00fch\u00fcrlenmi\u015f paket epoch-1 state'ine verildi \u2192 AEAD d\u00fc\u015fer.",
+      "spec_ref": "ccr-format-spec.md \u00a735.9",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "expected_counter_hex": "0000000000000005",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "seen_counters_hex": [
+          "0000000000000000",
+          "0000000000000001",
+          "0000000000000002",
+          "0000000000000003",
+          "0000000000000004"
+        ],
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "00c0ffee0005f0ecac38844579545ffb2ffffaad088ce5b011e94956fa3f"
+      },
+      "expected": {
+        "result": "drop",
+        "reason": "ssd1-aead-fail"
+      }
+    },
+    {
+      "id": "ccr-ssd1-v1.open.beyond-structural-limit",
+      "kind": "open",
+      "flags": [
+        "d-gap-1"
+      ],
+      "note": "Ger\u00e7ek saya\u00e7 expected'ten 65 036 ileride (> 2^15): seq16 EN YAKIN adaya kurulur (expected \u2212 500, pencere i\u00e7i) \u2192 nonce uyu\u015fmaz \u2192 AEAD d\u00fc\u015fer. Kap\u0131 de\u011fil, yap\u0131sal s\u0131n\u0131r; me\u015fru trafikte g\u00f6nderen korur (KS-PN-1, K = 1024).",
+      "spec_ref": "ccr-format-spec.md \u00a735.8 [D-GAP-1] yap\u0131sal s\u0131n\u0131r",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "expected_counter_hex": "00000000000186a1",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "seen_counters_hex": [
+          "00000000000186a0"
+        ],
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "00c0ffee84ad38086ea70cda15b5eae65cf83415ad3dcd3b56eb4829"
+      },
+      "expected": {
+        "result": "drop",
+        "reason": "ssd1-aead-fail"
+      }
+    },
+    {
+      "id": "ccr-ssd1-v1.open.too-short",
+      "kind": "open",
+      "note": "Asgari UDP payload 22 B (hub_handle 4 + seq16 2 + tag 16); 21 B \u2192 parser reddi.",
+      "spec_ref": "ccr-format-spec.md \u00a735.6",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "direction_hex": "01",
+        "epoch_hex": "0001",
+        "expected_counter_hex": "0000000000000005",
+        "hub_handle_hex": "00c0ffee",
+        "key_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "seen_counters_hex": [],
+        "session_id_internal_hex": "cca6ce25da13e914f2fae16a9d5814aa",
+        "wire_hex": "00c0ffee0005e4830d18217c65220f7602e20ce5ac"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ssd1-length-below-minimum"
+      }
+    }
+  ]
+}

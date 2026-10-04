@@ -102,6 +102,26 @@ ck("38 kodlamanın tamamı _decompress tarafından RED",
 ck("38 kodlamanın tamamı verify() tarafından pubkey olarak RED",
    any(e.verify(b, b"m", bytes(64)) for b in _enc), False)
 
+print("\nSmall-order noktalar (ccr §5.2) — burulma alt grubunun 8 elemanı")
+# Sekiz nokta HESAPLANIR (ezberden yazılmaz): y adayları taranmaz, burulma üreteci bulunur.
+# Mertebesi 8 olan bir T için [i]T, i = 0..7 tüm alt grubu verir.
+def _find_order8():
+    y = 2
+    while True:
+        x = e._recover_x(y % e.P, 0)
+        if x is not None:
+            pt = (x, y % e.P, 1, x * y % e.P)
+            t = e._mul(pt, e.L)            # [L]P burulma bileşenidir
+            if e._eq(e._mul(t, 8), e.NEUTRAL) and not e._eq(e._mul(t, 4), e.NEUTRAL):
+                return t
+        y += 1
+_T = _find_order8()
+_torsion = [e._compress(e._mul(_T, i)) for i in range(8)]
+ck("8 farklı kodlama", len(set(_torsion)), 8)
+ck("hepsi small-order", all(e.is_small_order(e._decompress(t)) for t in _torsion), True)
+ck("taban noktası small-order DEĞİL", e.is_small_order(e.B), False)
+ck("nötr eleman kodlaması 01 00..00", _torsion[0].hex(), "01" + "00" * 31)
+
 print("\nKatılık negatifleri (RFC 8032 §5.1.7 / §8.4)")
 sk0, pk0, m0 = h(VEC[1][1]), h(VEC[1][2]), h(VEC[1][3])
 s0 = e.sign(sk0, m0)
@@ -120,3 +140,27 @@ print()
 if fails:
     print("SONUÇ: BAŞARISIZ\n" + "\n".join("  - " + f for f in fails)); sys.exit(1)
 print("SONUÇ: TÜM KONTROLLER GEÇTİ")
+
+print("\nccr §5.2 — dört ret nedeni AYRI raporlanır (verify_reason)")
+_sk, _pk, _m = h(VEC[1][1]), h(VEC[1][2]), h(VEC[1][3])
+_sig = e.sign(_sk, _m)
+ck("geçerli imza", e.verify_reason(_pk, _m, _sig), e.OK)
+ck("S >= L", e.verify_reason(_pk, _m, _sig[:32] + ((int.from_bytes(_sig[32:], "little") + e.L)).to_bytes(32, "little")), e.R_S_NOT_CANONICAL)
+ck("kanonik olmayan A (y = p)", e.verify_reason(e.P.to_bytes(32, "little"), _m, _sig), e.R_NON_CANONICAL_POINT)
+# small-order A = nötr eleman: [k]A = O ⇒ R = [r]B, S = r HER mesaj için kofaktörsüz denklemi sağlar.
+_r = 12345
+_forged = e._compress(e._mul(e.B, _r)) + _r.to_bytes(32, "little")
+ck("small-order A ile sahte imza katı kipte RED", e.verify_reason(_torsion[0], b"any message", _forged), e.R_SMALL_ORDER_A)
+ck("…ama gevşek doğrulayıcı KABUL ederdi (vektör anlamlı)", e.verify_cofactored_no_small_order_check(_torsion[0], b"any message", _forged), True)
+# small-order R: R = T (mertebe 8), S = k·a ⇒ kofaktörlü denklem sağlanır, kofaktörsüz sağlanmaz.
+_a, _ = e._secret_expand(_sk)
+_Rt = _torsion[1]
+_k = int.from_bytes(hashlib.sha512(_Rt + _pk + _m).digest(), "little") % e.L
+_sig_r = _Rt + ((_k * _a) % e.L).to_bytes(32, "little")
+ck("small-order R katı kipte RED", e.verify_reason(_pk, _m, _sig_r), e.R_SMALL_ORDER_R)
+ck("…ama gevşek doğrulayıcı KABUL ederdi", e.verify_cofactored_no_small_order_check(_pk, _m, _sig_r), True)
+
+print()
+if fails:
+    print("SONUÇ: BAŞARISIZ\n" + "\n".join("  - " + f for f in fails)); sys.exit(1)
+print("SONUÇ: TÜM KONTROLLER GEÇTİ (ccr §5.2 dahil)")

@@ -11,12 +11,13 @@
 
 Sabit-zamanlı DEĞİL; yalnız test vektörü üretir/doğrular. Üretim = `ed25519-dalek` + libsodium.
 
-DOĞRULAMA KATILIĞI (RFC 8032 §5.1.7 + §8.4): bu referans
+DOĞRULAMA KİPİ = ccr-format-spec §5.2 (NORMATİF; RFC 8032 §5.1.7 + §8.4 üzerine). Bu referans
   * S >= L olan imzaları REDDEDER (malleability — yalnız kanonik S kabul),
-  * kanonik olmayan nokta kodlamalarını REDDEDER,
+  * kanonik olmayan nokta kodlamalarını REDDEDER (y >= p; x = 0 iken sign biti 1),
+  * SMALL-ORDER A ve R'yi REDDEDER ([8]·P == O),
   * denklemi KOFAKTÖRSÜZ kontrol eder: [S]B == R + [k]A.
-Bu, `ed25519-dalek`'in varsayılan katılığıyla aynı hizadadır. libsodium
-`crypto_sign_verify_detached` de S kanonikliğini zorlar.
+Dört ret nedeni AYRI AYRI raporlanır (`verify_reason`); `ccr-ed25519-neg` vektörleri bunlara
+karşı üretilir. `ed25519-dalek` karşılığı `verify_strict`'tir.
 """
 
 import hashlib
@@ -139,17 +140,72 @@ def sign(sk: bytes, msg: bytes) -> bytes:
     return R + ((r + k * a) % L).to_bytes(32, "little")
 
 
-def verify(pk: bytes, msg: bytes, sig: bytes) -> bool:
-    """RFC 8032 §5.1.7 + §8.4 katı doğrulama. Şüphede REDDET."""
+NEUTRAL = (0, 1, 1, 0)
+
+
+def is_small_order(pt) -> bool:
+    """[8]·P == O  (ccr §5.2). Eğrinin burulma alt grubu 8 elemanlıdır."""
+    return _eq(_mul(pt, 8), NEUTRAL)
+
+
+# Ret nedenleri — kararlı token'lar (vektörlerdeki `reason` alanı bunlardır).
+OK = "ok"
+R_LENGTH = "ed25519-bad-length"
+R_S_NOT_CANONICAL = "ed25519-s-not-below-group-order"
+R_NON_CANONICAL_POINT = "ed25519-non-canonical-point-encoding"
+R_SMALL_ORDER_A = "ed25519-small-order-public-key"
+R_SMALL_ORDER_R = "ed25519-small-order-r"
+R_EQUATION = "ed25519-equation-mismatch"
+
+
+def verify_reason(pk: bytes, msg: bytes, sig: bytes) -> str:
+    """ccr §5.2 katı doğrulama; `OK` ya da İLK düşen kuralın token'ı.
+
+    Kontrol SIRASI sabittir ve vektörlerin parçasıdır: uzunluk → S < L → nokta decoding (A, R) →
+    small-order A → small-order R → kofaktörsüz denklem. Birden çok kuralı ihlal eden girdi
+    sıradaki İLK nedenle raporlanır.
+    """
     if len(sig) != 64 or len(pk) != 32:
-        return False
+        return R_LENGTH
     Rs, Ss = sig[:32], sig[32:]
     s = int.from_bytes(Ss, "little")
     if s >= L:
-        return False                      # malleability: yalnız kanonik S kabul
+        return R_S_NOT_CANONICAL          # malleability: yalnız kanonik S kabul
     A = _decompress(pk)
     R = _decompress(Rs)
     if A is None or R is None:
-        return False                      # kanonik olmayan kodlama
+        return R_NON_CANONICAL_POINT
+    if is_small_order(A):
+        return R_SMALL_ORDER_A
+    if is_small_order(R):
+        return R_SMALL_ORDER_R
     k = int.from_bytes(_sha512(Rs + pk + msg), "little") % L
-    return _eq(_mul(B, s), _add(R, _mul(A, k)))   # kofaktörsüz denklem
+    if not _eq(_mul(B, s), _add(R, _mul(A, k))):   # kofaktörsüz denklem
+        return R_EQUATION
+    return OK
+
+
+def verify(pk: bytes, msg: bytes, sig: bytes) -> bool:
+    """ccr §5.2 katı doğrulama. Şüphede REDDET."""
+    return verify_reason(pk, msg, sig) == OK
+
+
+def verify_cofactored_no_small_order_check(pk: bytes, msg: bytes, sig: bytes) -> bool:
+    """GEVŞEK doğrulayıcı — YALNIZ negatif vektör üretimi için.
+
+    RFC 8032'nin izin verdiği KOFAKTÖRLÜ denklemi ([8][S]B == [8]R + [8][k]A) small-order ve
+    S < L kontrolü OLMADAN uygular. Bir negatif vektörün anlamlı olması için "gevşek bir
+    implementasyon bunu KABUL ederdi" gösterilebilmelidir; yoksa vektör yalnız "bozuk imza"dır.
+    """
+    if len(sig) != 64 or len(pk) != 32:
+        return False
+    Rs, Ss = sig[:32], sig[32:]
+    A = _decompress(pk)
+    R = _decompress(Rs)
+    if A is None or R is None:
+        return False
+    s = int.from_bytes(Ss, "little")
+    k = int.from_bytes(_sha512(Rs + pk + msg), "little") % L
+    lhs = _mul(_mul(B, s % L), 8)
+    rhs = _mul(_add(R, _mul(A, k)), 8)
+    return _eq(lhs, rhs)

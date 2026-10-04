@@ -1,0 +1,419 @@
+{
+  "schema_version": 2,
+  "suite": "ccr-ssi1-v1",
+  "spec_version": "ccr-format-spec@v1.0+2026-10-04b",
+  "generator": "ref/crypto/gen_vectors.py 1",
+  "description": "SESSION_INIT (SSI1) exact AAD ve m\u00fch\u00fcr byte'lar\u0131, \u00fc\u00e7 cert_mode i\u00e7in; art\u0131 negatifler. T\u00fcretim: ss_e = DH(eph, B_static), ss_s = DH(A_static, B_static), D1 \u2192 D3 (session_id_internal) \u2192 D6 (k_init); session_context_v1 = pv || profile || suite || sender_cert_ref || recipient_dest_hash || SHA-256(recipient_static_pub). nonce = nonce96(0).",
+  "notes": {
+    "opaque-cert-bytes": "cert_field desenli dolgudur; SSI1 m\u00fchr\u00fc yaln\u0131z 'wire'da ne varsa aynen' kural\u0131n\u0131 s\u0131nar. Sertifika do\u011frulamas\u0131 bu suite'in konusu DE\u011e\u0130L.",
+    "all-private-keys": "input T\u00dcM \u00f6zel anahtarlar\u0131 ta\u015f\u0131r (g\u00f6nderen ephemeral + static, al\u0131c\u0131 static): her iki y\u00f6n de vekt\u00f6rden t\u00fcretilebilir. TEST anahtarlar\u0131d\u0131r."
+  },
+  "case_count": 16,
+  "cases": [
+    {
+      "id": "ccr-ssi1-v1.v-ssi-1.aad.ref",
+      "kind": "aad",
+      "flags": [
+        "opaque-cert-bytes",
+        "all-private-keys"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.3.1 V-SSI-1",
+      "input": {
+        "cert_field_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "cipher_suite_id_hex": "0001",
+        "flags_hex": "00",
+        "init_counter_hex": "0000000000000007",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02"
+      },
+      "expected_hex": "53534931010001007b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d25689e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec30000000000000007cca6ce25da13e914f2fae16a9d5814aa"
+    },
+    {
+      "id": "ccr-ssi1-v1.v-ssi-2.seal.ref",
+      "kind": "seal",
+      "flags": [
+        "opaque-cert-bytes",
+        "all-private-keys"
+      ],
+      "note": "nonce = nonce96(0) = 12 s\u0131f\u0131r bayt; KEY = k_init (D6).",
+      "spec_ref": "ccr-format-spec.md \u00a735.3.1 V-SSI-2",
+      "input": {
+        "cert_field_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "cipher_suite_id_hex": "0001",
+        "early_data_hex": "6b616d61206561726c7920756e6974",
+        "flags_hex": "00",
+        "init_counter_hex": "0000000000000007",
+        "nonce_hex": "000000000000000000000000",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02"
+      },
+      "expected_hex": "007b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d25689e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec30000000000000007e64eed0962a950abd7fe325e5ced1a47eb7d0ec56ae1d4afd6f15d3e22b4c2"
+    },
+    {
+      "id": "ccr-ssi1-v1.v-ssi-1.aad.inline",
+      "kind": "aad",
+      "flags": [
+        "opaque-cert-bytes",
+        "all-private-keys"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.3.1 V-SSI-1",
+      "input": {
+        "cert_field_hex": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d24",
+        "cipher_suite_id_hex": "0001",
+        "flags_hex": "01",
+        "init_counter_hex": "0000000000000007",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02"
+      },
+      "expected_hex": "53534931010001017b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d256030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d240000000000000007cca6ce25da13e914f2fae16a9d5814aa"
+    },
+    {
+      "id": "ccr-ssi1-v1.v-ssi-2.seal.inline",
+      "kind": "seal",
+      "flags": [
+        "opaque-cert-bytes",
+        "all-private-keys"
+      ],
+      "note": "nonce = nonce96(0) = 12 s\u0131f\u0131r bayt; KEY = k_init (D6).",
+      "spec_ref": "ccr-format-spec.md \u00a735.3.1 V-SSI-2",
+      "input": {
+        "cert_field_hex": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d24",
+        "cipher_suite_id_hex": "0001",
+        "early_data_hex": "6b616d61206561726c7920756e6974",
+        "flags_hex": "01",
+        "init_counter_hex": "0000000000000007",
+        "nonce_hex": "000000000000000000000000",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02"
+      },
+      "expected_hex": "017b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d256030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d240000000000000007e64eed0962a950abd7fe325e5ced1a86aae9b2bbe38f945e2aa2af327d6961"
+    },
+    {
+      "id": "ccr-ssi1-v1.v-ssi-1.aad.bundle",
+      "kind": "aad",
+      "flags": [
+        "opaque-cert-bytes",
+        "all-private-keys"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.3.1 V-SSI-1",
+      "input": {
+        "cert_field_hex": "05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26",
+        "cipher_suite_id_hex": "0001",
+        "flags_hex": "02",
+        "init_counter_hex": "0000000000000007",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02"
+      },
+      "expected_hex": "53534931010001027b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d25605101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b260000000000000007cca6ce25da13e914f2fae16a9d5814aa"
+    },
+    {
+      "id": "ccr-ssi1-v1.v-ssi-2.seal.bundle",
+      "kind": "seal",
+      "flags": [
+        "opaque-cert-bytes",
+        "all-private-keys"
+      ],
+      "note": "nonce = nonce96(0) = 12 s\u0131f\u0131r bayt; KEY = k_init (D6).",
+      "spec_ref": "ccr-format-spec.md \u00a735.3.1 V-SSI-2",
+      "input": {
+        "cert_field_hex": "05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26",
+        "cipher_suite_id_hex": "0001",
+        "early_data_hex": "6b616d61206561726c7920756e6974",
+        "flags_hex": "02",
+        "init_counter_hex": "0000000000000007",
+        "nonce_hex": "000000000000000000000000",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02"
+      },
+      "expected_hex": "027b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d25605101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b260000000000000007e64eed0962a950abd7fe325e5ced1a51e3b51a18402ad614779f46a2585ede"
+    },
+    {
+      "id": "ccr-ssi1-v1.v-ssi-2.seal.ref-empty-early-data",
+      "kind": "seal",
+      "flags": [
+        "opaque-cert-bytes",
+        "all-private-keys"
+      ],
+      "note": "early_data N=0 \u2192 app-envelope tam 121 B (ccr \u00a735.3 byte tablosu).",
+      "spec_ref": "ccr-format-spec.md \u00a735.3.1 V-SSI-2",
+      "input": {
+        "cert_field_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "cipher_suite_id_hex": "0001",
+        "early_data_hex": "",
+        "flags_hex": "00",
+        "init_counter_hex": "0000000000000007",
+        "nonce_hex": "000000000000000000000000",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02"
+      },
+      "expected_hex": "007b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d25689e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec30000000000000007cb28e1d935eecf0d136991d42c9604cd"
+    },
+    {
+      "id": "ccr-ssi1-v1.v-ssi-3.flags-cert-mode-bit-flip",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "flags bit0 1\u21920 (INLINE \u2192 REF). Parser kabul eder; AEAD d\u00fc\u015fer. Sessiz at\u0131m.",
+      "spec_ref": "ccr-format-spec.md \u00a735.3.1 V-SSI-3",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "wire_hex": "007b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d256030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d240000000000000007e64eed0962a950abd7fe325e5ced1a86aae9b2bbe38f945e2aa2af327d6961"
+      },
+      "expected": {
+        "result": "drop",
+        "reason": "v-ssi-3-aead-fail"
+      }
+    },
+    {
+      "id": "ccr-ssi1-v1.flags-reserved-bit-set",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "flags bit4 (reserved) set \u2192 parser reddi; AEAD'ye ULA\u015eMAZ.",
+      "spec_ref": "ccr-format-spec.md \u00a735.3 parser reject",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "wire_hex": "107b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d25689e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec30000000000000007e64eed0962a950abd7fe325e5ced1a47eb7d0ec56ae1d4afd6f15d3e22b4c2"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ssi1-flags-reserved-nonzero"
+      }
+    },
+    {
+      "id": "ccr-ssi1-v1.flags-init-variant-nonzero",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "init_variant != 00 \u2192 parser reddi.",
+      "spec_ref": "ccr-format-spec.md \u00a735.3 parser reject",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "wire_hex": "047b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d25689e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec30000000000000007e64eed0962a950abd7fe325e5ced1a47eb7d0ec56ae1d4afd6f15d3e22b4c2"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ssi1-init-variant-reserved"
+      }
+    },
+    {
+      "id": "ccr-ssi1-v1.flags-cert-mode-reserved",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "cert_mode = 11 \u2192 parser reddi.",
+      "spec_ref": "ccr-format-spec.md \u00a735.3 parser reject",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "wire_hex": "037b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d25689e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec30000000000000007e64eed0962a950abd7fe325e5ced1a47eb7d0ec56ae1d4afd6f15d3e22b4c2"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ssi1-cert-mode-reserved"
+      }
+    },
+    {
+      "id": "ccr-ssi1-v1.v-ssi-4.init-counter-bit-flip",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "init_counter'\u0131n son bitinde de\u011fi\u015fim \u2192 AAD de\u011fi\u015fir \u2192 AEAD d\u00fc\u015fer.",
+      "spec_ref": "ccr-format-spec.md \u00a735.3.1 V-SSI-4",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "wire_hex": "007b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d25689e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec30000000000000006e64eed0962a950abd7fe325e5ced1a47eb7d0ec56ae1d4afd6f15d3e22b4c2"
+      },
+      "expected": {
+        "result": "drop",
+        "reason": "v-ssi-4-aead-fail"
+      }
+    },
+    {
+      "id": "ccr-ssi1-v1.v-ssi-5.ref-too-short",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "cert_mode=00 i\u00e7in asgari 121 B; 120 B \u2192 parser reddi (AEAD'ye ULA\u015eMAZ).",
+      "spec_ref": "ccr-format-spec.md \u00a735.3.1 V-SSI-5",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "wire_hex": "007b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d25689e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec30000000000000007e64eed0962a950abd7fe325e5ced1a"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "v-ssi-5-length-mismatch"
+      }
+    },
+    {
+      "id": "ccr-ssi1-v1.v-ssi-5.inline-too-short",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "cert_mode=01 i\u00e7in asgari 241 B; 240 B \u2192 parser reddi.",
+      "spec_ref": "ccr-format-spec.md \u00a735.3.1 V-SSI-5",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "wire_hex": "017b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad19486c38b9a55e84c45050be94fc1eb71012a9a738cb021bcb184c6c17e396c9d256030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d240000000000000007e64eed0962a950abd7fe325e5ced1a"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "v-ssi-5-length-mismatch"
+      }
+    },
+    {
+      "id": "ccr-ssi1-v1.sender-ephemeral-all-zero",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "sender_ephemeral t\u00fcm-s\u0131f\u0131r \u2192 parse/validation reddi.",
+      "spec_ref": "ccr-format-spec.md \u00a75.1",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "wire_hex": "007b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948000000000000000000000000000000000000000000000000000000000000000089e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec30000000000000007e64eed0962a950abd7fe325e5ced1a47eb7d0ec56ae1d4afd6f15d3e22b4c2"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "x25519-public-key-all-zero"
+      }
+    },
+    {
+      "id": "ccr-ssi1-v1.sender-ephemeral-low-order-nonzero",
+      "kind": "open",
+      "flags": [
+        "all-private-keys"
+      ],
+      "note": "sender_ephemeral = u=1 (s\u0131f\u0131r DE\u011e\u0130L, d\u00fc\u015f\u00fck mertebe): all-zero kontrol\u00fcnden ge\u00e7er, DH t\u00fcm-s\u0131f\u0131r verir \u2192 reject. Yaln\u0131z 'pub != 0' bakan implementasyon bunu ka\u00e7\u0131r\u0131r.",
+      "spec_ref": "ccr-format-spec.md \u00a75.1",
+      "input": {
+        "cipher_suite_id_hex": "0001",
+        "profile_id_hex": "01",
+        "protocol_version_hex": "01",
+        "recipient_dest_hash_hex": "7b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948",
+        "recipient_static_pub_hex": "2f067f1d03f77aa3c1108534cc124047e8cca5dcd03e29a4eb2c6ee6a476424d",
+        "recipient_static_sk_hex": "dc1a19700607851bfdaaa6eae12c678861fc740e81c1584983ac02c83360d988",
+        "sender_cert_ref_hex": "89e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec3",
+        "sender_ephemeral_sk_hex": "9c83355f6974c4f6d582a05f80b56589b9efaa8a86c5ed05b5b0d001d020db40",
+        "sender_static_sk_hex": "9351950f9add56329fffcd5c9917cbf477e64ae13ea740c6b3c8a6aaba878b02",
+        "wire_hex": "007b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948010000000000000000000000000000000000000000000000000000000000000089e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec30000000000000007e64eed0962a950abd7fe325e5ced1a47eb7d0ec56ae1d4afd6f15d3e22b4c2"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "x25519-shared-secret-all-zero"
+      }
+    }
+  ]
+}

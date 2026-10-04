@@ -1,0 +1,208 @@
+{
+  "schema_version": 2,
+  "suite": "ccr-kdf-v1",
+  "spec_version": "ccr-format-spec@v1.0+2026-10-04b",
+  "generator": "ref/crypto/gen_vectors.py 1",
+  "description": "V-KDF-1..6 exact byte'lar\u0131 (ccr \u00a735.2.1 D1-D7). V-KDF-7 (\u00fc\u00e7 kaynak e\u015fitli\u011fi) bir vaka de\u011fil bir S\u00dcRE\u00c7 \u015fart\u0131d\u0131r: bu dosya ba\u011f\u0131ms\u0131z referanst\u0131r; Rust taraf\u0131 ayn\u0131 de\u011ferleri \u00fcretince sa\u011flanm\u0131\u015f olur. KDF = Extract(salt = ASCII(label), IKM = secret) ard\u0131ndan Expand(info = context). out_len_hex verilmemi\u015fse L = 32.",
+  "notes": {
+    "d1": "D1 init_root = KDF(SR-SESSION-INIT-V3, ss_e || ss_s, session_context_v1).",
+    "d2": "D2 epoch-0 y\u00f6n anahtarlar\u0131 (context = direction).",
+    "d3": "D3 session_id_internal, L=16.",
+    "d4": "D4 epoch_1_root; secret = init_root || ss_e2, context = u16_be(1).",
+    "d5": "D5 epoch-1 y\u00f6n anahtarlar\u0131 \u2014 D2 ile AYNI label, farkl\u0131 secret.",
+    "d6": "D6 k_init \u2014 SESSION_INIT m\u00fch\u00fcr anahtar\u0131.",
+    "d7": "D7 k_resp \u2014 SESSION_INIT_RESPONSE m\u00fch\u00fcr anahtar\u0131.",
+    "direction-separation": "INV-NONCE-DIR-1: k_A2B != k_B2A (iki vakan\u0131n expected_hex'i farkl\u0131 olmal\u0131).",
+    "epoch-separation": "INV-NONCE-EPOCH-1: k_*_e1 != k_*_e0.",
+    "domain-separation": "D6/D7 trafik anahtarlar\u0131ndan ayr\u0131k.",
+    "prefix-identity": "L=16 \u00e7\u0131kt\u0131s\u0131 L=32'nin ilk 16 bayt\u0131na e\u015fittir.",
+    "inv-kdf-3": "HMAC-BLAKE2s-256 != BLAKE2s-keyed."
+  },
+  "case_count": 12,
+  "cases": [
+    {
+      "id": "ccr-kdf-v1.v-kdf-1.init-root",
+      "kind": "derive",
+      "flags": [
+        "d1"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.2.1 V-KDF-1 (D1)",
+      "input": {
+        "label_hex": "53522d53455353494f4e2d494e49542d5633",
+        "session_context_v1_hex": "0101000189e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec37b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948698c921be75b25672e60529c5f12511781d104d4ac79b381013b2098dde1f305",
+        "ss_e_hex": "1e5248b79acc5500d53b74fbb144afe67f410ca7832a0d4918459dfd73df9534",
+        "ss_s_hex": "674a94fb9569942505a171502d2ed9b7917d3e11de7c1da27bdd4e96564dc17b"
+      },
+      "expected_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0"
+    },
+    {
+      "id": "ccr-kdf-v1.v-kdf-2.k-a2b-e0",
+      "kind": "derive",
+      "flags": [
+        "d2",
+        "direction-separation"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.2.1 V-KDF-2 (D2)",
+      "input": {
+        "context_hex": "01",
+        "label_hex": "53522d53455353494f4e2d545241464649432d5633",
+        "secret_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0"
+      },
+      "expected_hex": "3d27c9e689d4de7a734da3ceb60d89d17897b352586ac75fbd2f169d3f98776e"
+    },
+    {
+      "id": "ccr-kdf-v1.v-kdf-2.k-b2a-e0",
+      "kind": "derive",
+      "flags": [
+        "d2",
+        "direction-separation"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.2.1 V-KDF-2 (D2)",
+      "input": {
+        "context_hex": "02",
+        "label_hex": "53522d53455353494f4e2d545241464649432d5633",
+        "secret_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0"
+      },
+      "expected_hex": "35382af92da0839921db4b68fb6332c2a0fbf417bcfeed47bd7261efcc946275"
+    },
+    {
+      "id": "ccr-kdf-v1.v-kdf-3.session-id-internal",
+      "kind": "derive",
+      "flags": [
+        "d3"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.2.1 V-KDF-3 (D3)",
+      "input": {
+        "context_hex": "0101000189e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec37b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948698c921be75b25672e60529c5f12511781d104d4ac79b381013b2098dde1f305",
+        "label_hex": "53522d53455353494f4e2d49442d5633",
+        "out_len_hex": "10",
+        "secret_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0"
+      },
+      "expected_hex": "cca6ce25da13e914f2fae16a9d5814aa"
+    },
+    {
+      "id": "ccr-kdf-v1.v-kdf-3.trunc128-of-l32",
+      "kind": "derive",
+      "flags": [
+        "d3",
+        "prefix-identity"
+      ],
+      "note": "L=32 \u00e7\u0131kt\u0131s\u0131; ilk 16 bayt\u0131 session_id_internal ile BYTE-\u00d6ZDE\u015e olmal\u0131 (T(1) \u00f6neki).",
+      "spec_ref": "ccr-format-spec.md \u00a735.2.1 V-KDF-3 (D3)",
+      "input": {
+        "context_hex": "0101000189e426681d4ea3f6159d3f7353d1589f24d79ed980ea76334a48e55697f2eec37b18dc04333d60eeb29a4e67126d6fc281cdaa7e4b262c5ff02c222dacad1948698c921be75b25672e60529c5f12511781d104d4ac79b381013b2098dde1f305",
+        "label_hex": "53522d53455353494f4e2d49442d5633",
+        "out_len_hex": "20",
+        "secret_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0"
+      },
+      "expected_hex": "cca6ce25da13e914f2fae16a9d5814aabc75d57a00f1d2b15a5f13e90d0a9faa"
+    },
+    {
+      "id": "ccr-kdf-v1.v-kdf-4.epoch-1-root",
+      "kind": "derive",
+      "flags": [
+        "d4"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.2.1 V-KDF-4 (D4)",
+      "input": {
+        "context_hex": "0001",
+        "init_root_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0",
+        "label_hex": "53522d53455353494f4e2d45504f43482d5633",
+        "ss_e2_hex": "4567c4a67604c52061f55df6c4a8c97bcd5470d75e84e8aea909a3f175aa6a598322f9b6d2eb9a6cf63c712a88ab4551bff0bfd5872d6082dbcd810a8c2cca6d"
+      },
+      "expected_hex": "fcb82f155824fb08430b0522d1292c21e9c8beaa837e282be2b27c5df1438df0"
+    },
+    {
+      "id": "ccr-kdf-v1.v-kdf-4.k-a2b-e1",
+      "kind": "derive",
+      "flags": [
+        "d5",
+        "epoch-separation"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.2.1 V-KDF-4 (D5)",
+      "input": {
+        "context_hex": "01",
+        "label_hex": "53522d53455353494f4e2d545241464649432d5633",
+        "secret_hex": "fcb82f155824fb08430b0522d1292c21e9c8beaa837e282be2b27c5df1438df0"
+      },
+      "expected_hex": "43de8182c37bd09f0f55cc609b63acdf766745b947150a4db31526725f9bcf39"
+    },
+    {
+      "id": "ccr-kdf-v1.v-kdf-4.k-b2a-e1",
+      "kind": "derive",
+      "flags": [
+        "d5",
+        "epoch-separation"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.2.1 V-KDF-4 (D5)",
+      "input": {
+        "context_hex": "02",
+        "label_hex": "53522d53455353494f4e2d545241464649432d5633",
+        "secret_hex": "fcb82f155824fb08430b0522d1292c21e9c8beaa837e282be2b27c5df1438df0"
+      },
+      "expected_hex": "ecd88b266ad46bc65e264d3ab5733b775798e4ebf634c2c866c67ad774a95c96"
+    },
+    {
+      "id": "ccr-kdf-v1.v-kdf-5.k-init",
+      "kind": "derive",
+      "flags": [
+        "d6",
+        "domain-separation"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.2.1 V-KDF-5 (D6)",
+      "input": {
+        "context_hex": "01",
+        "label_hex": "53522d53455353494f4e2d494e49542d444154412d5633",
+        "secret_hex": "be78d21f4fccc94442353e6e17708af0e63974ac328f9635619f73b6b1d1b2f0"
+      },
+      "expected_hex": "f01e4a9ba66eb641a1a591db260d9945a6b9bf700a18bf8b6ba6bbe653df5cf9"
+    },
+    {
+      "id": "ccr-kdf-v1.v-kdf-5.k-resp",
+      "kind": "derive",
+      "flags": [
+        "d7",
+        "domain-separation"
+      ],
+      "spec_ref": "ccr-format-spec.md \u00a735.2.1 V-KDF-5 (D7)",
+      "input": {
+        "context_hex": "02",
+        "label_hex": "53522d53455353494f4e2d524553502d444154412d5633",
+        "secret_hex": "fcb82f155824fb08430b0522d1292c21e9c8beaa837e282be2b27c5df1438df0"
+      },
+      "expected_hex": "59e6affeffe0a0faa6f254069b3cec7788005e3c7899250c1a989f6afc1541c8"
+    },
+    {
+      "id": "ccr-kdf-v1.v-kdf-6.hmac-blake2s",
+      "kind": "hmac",
+      "flags": [
+        "inv-kdf-3"
+      ],
+      "note": "DO\u011eRU primitif: RFC 2104 HMAC, hash = BLAKE2s-256.",
+      "spec_ref": "ccr-format-spec.md \u00a735.2.1 V-KDF-6",
+      "input": {
+        "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "message_hex": "6b616d612d696e762d6b64662d33"
+      },
+      "expected_hex": "ea4a0276e3fc70883f818acb7d5881e0f917e5a4dc304beb71aff977a7c2dca8"
+    },
+    {
+      "id": "ccr-kdf-v1.v-kdf-6.blake2s-keyed-is-not-hmac",
+      "kind": "hmac-candidate",
+      "flags": [
+        "inv-kdf-3"
+      ],
+      "note": "candidate = BLAKE2s'in NATIVE keyed modu. Derlenir ve \u00e7al\u0131\u015f\u0131r ama HMAC DE\u011e\u0130LD\u0130R; HMAC yerine bunu \u00fcreten implementasyon reddedilmelidir.",
+      "spec_ref": "ccr-format-spec.md \u00a735.2.1 V-KDF-6 (INV-KDF-3)",
+      "input": {
+        "candidate_hex": "4ebb87ff2a036a59be4d4fdcc508f5154980f84b7f92b018d9592034131f6445",
+        "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "message_hex": "6b616d612d696e762d6b64662d33"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "v-kdf-6-blake2s-keyed-is-not-hmac"
+      }
+    }
+  ]
+}

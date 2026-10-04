@@ -1,0 +1,197 @@
+{
+  "schema_version": 2,
+  "suite": "ccr-ed25519-neg-v1",
+  "spec_version": "ccr-format-spec@v1.0+2026-10-04b",
+  "generator": "ref/crypto/gen_vectors.py 1",
+  "description": "Ed25519 do\u011frulama kipi negatifleri (ccr \u00a75.2): S >= L \u00b7 small-order A \u00b7 small-order R \u00b7 kanonik olmayan kodlama \u2014 her biri AYRI vaka. K\u00fct\u00fcphane e\u015flemesi (ed25519-dalek verify_strict) bu vekt\u00f6rlerle teyit edilir. Burulma noktalar\u0131 \u00fcreticide HESAPLANIR, ezberden yaz\u0131lmaz.",
+  "notes": {
+    "lax-verifier-accepts": "Gev\u015fek bir do\u011frulay\u0131c\u0131 (kofakt\u00f6rl\u00fc denklem, small-order ve S < L kontrol\u00fc yok) bu girdiyi KABUL eder \u2014 \u00fcretici bunu assert etti. Vekt\u00f6r 'bozuk imza' de\u011fil, 'kip fark\u0131'd\u0131r.",
+    "universal-forgery": "Bu anahtar alt\u0131nda her mesaj i\u00e7in ge\u00e7erli say\u0131lan imza.",
+    "non-canonical": "Nokta kodlamas\u0131 kanonik de\u011fil (RFC 8032 \u00a75.1.3).",
+    "precedence": "Birden \u00e7ok kural\u0131 ihlal eden girdi; reason \u0130LK d\u00fc\u015fen kurald\u0131r (s\u0131ra: uzunluk \u2192 S < L \u2192 nokta decoding \u2192 small-order A \u2192 small-order R \u2192 denklem)."
+  },
+  "case_count": 10,
+  "cases": [
+    {
+      "id": "ccr-ed25519-neg-v1.s-not-below-group-order",
+      "kind": "verify",
+      "flags": [
+        "lax-verifier-accepts"
+      ],
+      "note": "S' = S + L: ayn\u0131 denklemi sa\u011flar (mod L indirgeyen gev\u015fek do\u011frulay\u0131c\u0131 KABUL eder) ama kanonik de\u011fil \u2192 imza malleability.",
+      "spec_ref": "ccr-format-spec.md \u00a75.2",
+      "input": {
+        "message_hex": "6b616d6120656432353531392073747269637420766572696669636174696f6e",
+        "public_key_hex": "a776f7537a0a4c986859b41a105228c503fbd27c82d15af4e84c4ae82ae55fd9",
+        "signature_hex": "de311fc3308d914378517f9873f3749546a4517fa1975d18c725fbaadfdcae2e08e574f365f269f6af82622eb9f73c687396afc43f25ed130803bfab32d4f01e"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ed25519-s-not-below-group-order"
+      }
+    },
+    {
+      "id": "ccr-ed25519-neg-v1.small-order-public-key.identity",
+      "kind": "verify",
+      "flags": [
+        "lax-verifier-accepts",
+        "universal-forgery"
+      ],
+      "note": "A = n\u00f6tr eleman: [k]A = O oldu\u011fundan R = [r]B, S = r HER mesaj i\u00e7in kofakt\u00f6rs\u00fcz denklemi sa\u011flar. Small-order kontrol\u00fc olmayan do\u011frulay\u0131c\u0131 bu anahtar alt\u0131nda her \u015feyi kabul eder.",
+      "spec_ref": "ccr-format-spec.md \u00a75.2",
+      "input": {
+        "message_hex": "666f7267656420756e64657220736d616c6c2d6f72646572206b6579",
+        "public_key_hex": "0100000000000000000000000000000000000000000000000000000000000000",
+        "signature_hex": "e7cab2c099087909cda04e96b52f76861a8051ad61f401bd70388bd947d824a93b09728716e03a2be49522b5d9c00d2aaa2a97f620ad31a287630ae9dfe7fc04"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ed25519-small-order-public-key"
+      }
+    },
+    {
+      "id": "ccr-ed25519-neg-v1.small-order-public-key.order-2",
+      "kind": "verify",
+      "flags": [
+        "lax-verifier-accepts"
+      ],
+      "note": "A = mertebe-2 nokta: [8][k]A = O oldu\u011fundan KOFAKT\u00d6RL\u00dc denklem her mesaj i\u00e7in sa\u011flan\u0131r.",
+      "spec_ref": "ccr-format-spec.md \u00a75.2",
+      "input": {
+        "message_hex": "666f7267656420756e64657220736d616c6c2d6f72646572206b6579",
+        "public_key_hex": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "signature_hex": "e7cab2c099087909cda04e96b52f76861a8051ad61f401bd70388bd947d824a93b09728716e03a2be49522b5d9c00d2aaa2a97f620ad31a287630ae9dfe7fc04"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ed25519-small-order-public-key"
+      }
+    },
+    {
+      "id": "ccr-ed25519-neg-v1.small-order-public-key.order-8",
+      "kind": "verify",
+      "flags": [
+        "lax-verifier-accepts"
+      ],
+      "note": "A = mertebe-8 nokta: [8][k]A = O oldu\u011fundan KOFAKT\u00d6RL\u00dc denklem her mesaj i\u00e7in sa\u011flan\u0131r.",
+      "spec_ref": "ccr-format-spec.md \u00a75.2",
+      "input": {
+        "message_hex": "666f7267656420756e64657220736d616c6c2d6f72646572206b6579",
+        "public_key_hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        "signature_hex": "e7cab2c099087909cda04e96b52f76861a8051ad61f401bd70388bd947d824a93b09728716e03a2be49522b5d9c00d2aaa2a97f620ad31a287630ae9dfe7fc04"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ed25519-small-order-public-key"
+      }
+    },
+    {
+      "id": "ccr-ed25519-neg-v1.small-order-r.order-8",
+      "kind": "verify",
+      "flags": [
+        "lax-verifier-accepts"
+      ],
+      "note": "R burulma noktas\u0131, S = k\u00b7a: [8][S]B = [8]R + [8][k]A sa\u011flan\u0131r (kofakt\u00f6rl\u00fc do\u011frulay\u0131c\u0131 KABUL eder), kofakt\u00f6rs\u00fcz denklem sa\u011flanmaz.",
+      "spec_ref": "ccr-format-spec.md \u00a75.2",
+      "input": {
+        "message_hex": "6b616d6120656432353531392073747269637420766572696669636174696f6e",
+        "public_key_hex": "a776f7537a0a4c986859b41a105228c503fbd27c82d15af4e84c4ae82ae55fd9",
+        "signature_hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a430680b8bade64dd4e925289c3b3ca65b645fe4dddc734284db429a23b33ab04"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ed25519-small-order-r"
+      }
+    },
+    {
+      "id": "ccr-ed25519-neg-v1.small-order-r.order-4",
+      "kind": "verify",
+      "flags": [
+        "lax-verifier-accepts"
+      ],
+      "note": "R burulma noktas\u0131, S = k\u00b7a: [8][S]B = [8]R + [8][k]A sa\u011flan\u0131r (kofakt\u00f6rl\u00fc do\u011frulay\u0131c\u0131 KABUL eder), kofakt\u00f6rs\u00fcz denklem sa\u011flanmaz.",
+      "spec_ref": "ccr-format-spec.md \u00a75.2",
+      "input": {
+        "message_hex": "6b616d6120656432353531392073747269637420766572696669636174696f6e",
+        "public_key_hex": "a776f7537a0a4c986859b41a105228c503fbd27c82d15af4e84c4ae82ae55fd9",
+        "signature_hex": "000000000000000000000000000000000000000000000000000000000000008096a39ffa61302000a7742283ce642561e0e2b59e65542b7d685ffd424bc59b07"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ed25519-small-order-r"
+      }
+    },
+    {
+      "id": "ccr-ed25519-neg-v1.non-canonical-encoding.public-key-y-ge-p",
+      "kind": "verify",
+      "flags": [
+        "non-canonical"
+      ],
+      "note": "A'n\u0131n y'si p + 1 (\u2261 1): indirgeyen decoder bunu n\u00f6tr eleman olarak kabul ederdi. y >= p \u2192 reject.",
+      "spec_ref": "ccr-format-spec.md \u00a75.2",
+      "input": {
+        "message_hex": "6b616d6120656432353531392073747269637420766572696669636174696f6e",
+        "public_key_hex": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "signature_hex": "de311fc3308d914378517f9873f3749546a4517fa1975d18c725fbaadfdcae2e1b117f964b8f579ed9e56a8bdafd5d537396afc43f25ed130803bfab32d4f00e"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ed25519-non-canonical-point-encoding"
+      }
+    },
+    {
+      "id": "ccr-ed25519-neg-v1.non-canonical-encoding.r-y-ge-p",
+      "kind": "verify",
+      "flags": [
+        "non-canonical"
+      ],
+      "note": "R'nin y'si p + 1 \u2192 reject.",
+      "spec_ref": "ccr-format-spec.md \u00a75.2",
+      "input": {
+        "message_hex": "6b616d6120656432353531392073747269637420766572696669636174696f6e",
+        "public_key_hex": "a776f7537a0a4c986859b41a105228c503fbd27c82d15af4e84c4ae82ae55fd9",
+        "signature_hex": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f1b117f964b8f579ed9e56a8bdafd5d537396afc43f25ed130803bfab32d4f00e"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ed25519-non-canonical-point-encoding"
+      }
+    },
+    {
+      "id": "ccr-ed25519-neg-v1.non-canonical-encoding.x-zero-sign-bit-set",
+      "kind": "verify",
+      "flags": [
+        "non-canonical"
+      ],
+      "note": "y = 1 (x = 0) iken sign biti 1: '\u22120' kodlamas\u0131. RFC 8032 \u00a75.1.3 \u2192 reject.",
+      "spec_ref": "ccr-format-spec.md \u00a75.2",
+      "input": {
+        "message_hex": "6b616d6120656432353531392073747269637420766572696669636174696f6e",
+        "public_key_hex": "0100000000000000000000000000000000000000000000000000000000000080",
+        "signature_hex": "de311fc3308d914378517f9873f3749546a4517fa1975d18c725fbaadfdcae2e1b117f964b8f579ed9e56a8bdafd5d537396afc43f25ed130803bfab32d4f00e"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ed25519-non-canonical-point-encoding"
+      }
+    },
+    {
+      "id": "ccr-ed25519-neg-v1.precedence.s-check-before-point-decoding",
+      "kind": "verify",
+      "flags": [
+        "precedence"
+      ],
+      "note": "Hem S >= L hem R kanonik de\u011fil: \u0130LK d\u00fc\u015fen kural S kontrol\u00fcd\u00fcr.",
+      "spec_ref": "ccr-format-spec.md \u00a75.2",
+      "input": {
+        "message_hex": "6b616d6120656432353531392073747269637420766572696669636174696f6e",
+        "public_key_hex": "a776f7537a0a4c986859b41a105228c503fbd27c82d15af4e84c4ae82ae55fd9",
+        "signature_hex": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f08e574f365f269f6af82622eb9f73c687396afc43f25ed130803bfab32d4f01e"
+      },
+      "expected": {
+        "result": "reject",
+        "reason": "ed25519-s-not-below-group-order"
+      }
+    }
+  ]
+}

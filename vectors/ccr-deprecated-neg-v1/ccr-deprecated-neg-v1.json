@@ -1,0 +1,114 @@
+{
+  "schema_version": 2,
+  "suite": "ccr-deprecated-neg-v1",
+  "spec_version": "ccr-format-spec@v1.0+2026-10-04b",
+  "generator": "ref/crypto/gen_vectors.py 1",
+  "description": "Deprecated formatlar\u0131n reddi: Async Session V2 (SAI1/SAA1/SAD1/SAC1), eski SRAM, ve \u00a730.7 historical negative corpus (SRPK, SRPB). Aktif parser bunlar\u0131n H\u0130\u00c7B\u0130R\u0130 i\u00e7in ACCEPT d\u00f6nd\u00fcremez.",
+  "notes": {
+    "deprecated-magic": "MUST NOT IMPLEMENT bir format\u0131n magic'i. Byte'lar\u0131n geri kalan\u0131 desenli dolgudur; ret karar\u0131 YALNIZ magic'ten verilir.",
+    "spec-named-case": "ccr-format-spec.md \u00a730.7'de ADI GE\u00c7EN corpus vakas\u0131."
+  },
+  "case_count": 7,
+  "cases": [
+    {
+      "id": "ccr-deprecated-neg-v1.async-v2.sai1",
+      "kind": "decode",
+      "flags": [
+        "deprecated-magic"
+      ],
+      "note": "ASYNC_INIT magic'i 'SAI1' aktif wire'da \u2192 reject. ACCEPT d\u00f6nd\u00fcren parser hatal\u0131d\u0131r.",
+      "spec_ref": "ccr-format-spec.md \u00a735.12 / AC-SM3-12",
+      "input_hex": "53414931000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "expected": {
+        "result": "reject",
+        "reason": "deprecated-sai1"
+      }
+    },
+    {
+      "id": "ccr-deprecated-neg-v1.async-v2.saa1",
+      "kind": "decode",
+      "flags": [
+        "deprecated-magic"
+      ],
+      "note": "ASYNC_ACCEPT magic'i 'SAA1' aktif wire'da \u2192 reject. ACCEPT d\u00f6nd\u00fcren parser hatal\u0131d\u0131r.",
+      "spec_ref": "ccr-format-spec.md \u00a735.12 / AC-SM3-12",
+      "input_hex": "53414131000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "expected": {
+        "result": "reject",
+        "reason": "deprecated-saa1"
+      }
+    },
+    {
+      "id": "ccr-deprecated-neg-v1.async-v2.sad1",
+      "kind": "decode",
+      "flags": [
+        "deprecated-magic"
+      ],
+      "note": "ASYNC_DATA magic'i 'SAD1' aktif wire'da \u2192 reject. ACCEPT d\u00f6nd\u00fcren parser hatal\u0131d\u0131r.",
+      "spec_ref": "ccr-format-spec.md \u00a735.12 / AC-SM3-12",
+      "input_hex": "53414431000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "expected": {
+        "result": "reject",
+        "reason": "deprecated-sad1"
+      }
+    },
+    {
+      "id": "ccr-deprecated-neg-v1.async-v2.sac1",
+      "kind": "decode",
+      "flags": [
+        "deprecated-magic"
+      ],
+      "note": "ASYNC_CONTROL magic'i 'SAC1' aktif wire'da \u2192 reject. ACCEPT d\u00f6nd\u00fcren parser hatal\u0131d\u0131r.",
+      "spec_ref": "ccr-format-spec.md \u00a735.12 / AC-SM3-12",
+      "input_hex": "53414331000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "expected": {
+        "result": "reject",
+        "reason": "deprecated-sac1"
+      }
+    },
+    {
+      "id": "ccr-deprecated-neg-v1.async-v2.sram",
+      "kind": "decode",
+      "flags": [
+        "deprecated-magic"
+      ],
+      "note": "eski tek-yap\u0131 AsyncMessage magic'i 'SRAM' aktif wire'da \u2192 reject. ACCEPT d\u00f6nd\u00fcren parser hatal\u0131d\u0131r.",
+      "spec_ref": "ccr-format-spec.md \u00a735.12 / AC-SM3-12",
+      "input_hex": "5352414d000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "expected": {
+        "result": "reject",
+        "reason": "deprecated-sram"
+      }
+    },
+    {
+      "id": "ccr-deprecated-neg-v1.deprecated-reject-1.srpk",
+      "kind": "decode",
+      "flags": [
+        "deprecated-magic",
+        "spec-named-case"
+      ],
+      "note": "SignedNoisePrekey ('SRPK') aktif wire'da g\u00f6r\u00fcn\u00fcyor \u2192 reject.",
+      "spec_ref": "ccr-format-spec.md \u00a730.7 DEPRECATED-REJECT-1",
+      "input_hex": "5352504b000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "expected": {
+        "result": "reject",
+        "reason": "deprecated-reject-1-srpk"
+      }
+    },
+    {
+      "id": "ccr-deprecated-neg-v1.deprecated-reject-2.srpb",
+      "kind": "decode",
+      "flags": [
+        "deprecated-magic",
+        "spec-named-case"
+      ],
+      "note": "PrekeyBundle ('SRPB') aktif wire'da g\u00f6r\u00fcn\u00fcyor \u2192 reject.",
+      "spec_ref": "ccr-format-spec.md \u00a730.7 DEPRECATED-REJECT-2",
+      "input_hex": "53525042000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "expected": {
+        "result": "reject",
+        "reason": "deprecated-reject-2-srpb"
+      }
+    }
+  ]
+}
