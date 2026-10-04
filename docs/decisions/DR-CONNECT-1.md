@@ -34,8 +34,20 @@
 | 5 | **Jitter RNG'siz:** `hash(client_id ‖ deneme_sayacı) mod pencere`; pencere = backoff adımının %25'i | transport-layer-tdd §10 [AMENDMENT-10] madde 5 |
 | 6 | **Küçükler:** `LongOutage` = 60 s, yalnız UI (**KS-UI-1**) · KS-AGE-1 = 7 gün · S3'e `CloseReason::Superseded` · K5 (link/power, UniFFI) → PARK, o gelene kadar ön-plan kadansı · Hayri imzası G-S1'in ön koşulu, merge'in değil | KM-SEAM-AT-001 §4, §8 · ccr §35.15 · KM-SEAM-TC-001 §1.2 · PARK P-4 |
 
+## Günün paketi — 5 karar (2026-10-04b)
+
+| # | Karar | Normatif metin |
+|---|---|---|
+| K1 | **AMP A1 ve A2 KAPANDI**; A3 byte düzeltmesi: `TEXT.msg_id` ve `RECEIPT.ref_msg_id` u32, `sent_at_ms` telden çıktı (TEXT başlığı 23 B → 11 B) | application-message-protocol §3, §8 |
+| K2 | **Glare kaybedeninin `early_unit`'i:** Transport saklar ve kazanan oturum `Ready` olunca ilk normal `send()` olarak yollar; Application yalnız `ConnectAbandoned`'da yeniden verir | KM-SEAM-AT-001 K6, §8 |
+| K3 | **D2 / Tema E + OQ-14 KAPANDI:** ürün ACK'i = engine `ACK_FRAME_V2` (WS-D1'de `full_wire_pn`'e anahtarlanır) · noise-wire `Control::Ack/Sack` (0x10/0x11) silindi · onay/keepalive taşıyıcısı = boş batch `BatchPayload{submsg_count = 0}` | ccr (BatchPayload notu) · noise-wire §2.56, §2.57, §4 adım 2 · identity §28 OQ-14, §16 · engine-spec §2 · PARK |
+| K4 | **Jitter tohumu `dest_hash` değil:** `BLAKE2s-256(seed ‖ u32_be(deneme))[0..4] mod pencere`; seed = `hub_handle` (bind sonrası) / hop ephemeral public (bind öncesi) | transport-layer-tdd §10 [AMENDMENT-10] madde 5 |
+| K5 | **Provisional tipleri:** `PROVISIONAL_TTL` (istemci; = `HALF_OPEN_TTL` değeri, ayrı ad) · `SessionResult::ProvisionalAndReply{new, supersedes, envelope}` · `SessionEvent::Confirmed(new)`; Transport `Ready(new)`'i `Confirmed`'de yayınlar | ccr §35.15 · identity §16 · KM-SEAM-TC-001 §1.2, K10 |
+
+**Kripto maliyeti notu:** bu kararların hiçbiri mesaj başına anahtar hesabı eklemez. Anahtar işi: oturum başına bir handshake, 7 günde bir yenileme, restart'ta bir handshake. Mesaj = tek AEAD.
+
 **Kanıt (K1–K5):** `docs/sprint_plan/A1-KALIBRASYON-KARAR-FOYU.md` → KANIT PAKETİ 2.
 
 **H4'te neden yeni codepoint:** CS_PROBE soğuk-başlangıç ölçüm merdivenidir (bütçeli, 4 atış, u16 sayaç sarmaz — INV-CS-7; 8 s kadansta ≈6 günde tükenir); heartbeat sürekli canlılık + NAT keepalive'dır (sınırsız). İki mekanizma, iki invariant; bindirilmez. Codepoint seçimi tüm registry'ler taranarak yapıldı (engine-spec §1.1, noise-wire §2.56, client-core v0 kabuğu, kama-transport-schema, app-rpc method_id).
 
-**Açık kalanlar:** OQ-14 (provisional onayın taşıyıcısı — WS-D2) · glare kaybedeninin `early_unit`'i · jitter'da `client_id` ve hash fonksiyonunun adı · K10 provisional'ı taşıyan `SessionResult` biçimi (A4.1) · S1 için Hayri imzası (G-S1 ön koşulu) · kod tarafı: HubChannel ctx, heartbeat, K tavanı, jitter hepsi SPEC-ONLY.
+**Açık kalanlar:** ~~OQ-14 (provisional onayın taşıyıcısı — WS-D2) · glare kaybedeninin `early_unit`'i · jitter'da `client_id` ve hash fonksiyonunun adı · K10 provisional'ı taşıyan `SessionResult` biçimi (A4.1)~~ *(2026-10-04b: dördü de kapandı — yukarıdaki K2–K5)* · S1 için Hayri imzası (G-S1 ön koşulu) · kod tarafı: HubChannel ctx, heartbeat, K tavanı, jitter hepsi SPEC-ONLY · **yeni:** WS-D1'de engine ACK_V2'nin `full_wire_pn` anahtarlamasında `dh_epoch` belirsizliği (epoch-1 PN 0'dan başlar; silinen E2E ACK `acked_dh_epoch` taşıyordu).
