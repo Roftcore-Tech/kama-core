@@ -16,12 +16,3 @@
 //! kullanıcıya yansıtır ya da bekler.
 
 #![forbid(unsafe_code)]
-
-// ── Sözleşme tipleri: GEÇİCİ yeniden-ihraç (B1 commit 1) ─────────────────────────────────────
-// Çağrı noktaları gövde değişikliği olmadan derlensin diye; bir sonraki commit bunu kaldırır.
-pub use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
-pub use kama_contracts::s1::{
-    AbandonReason, CompressionPolicy, ConnectPhase, ConnectResult, ConnectTicket, Delivered,
-    DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent, TransportCapabilities,
-    TransportError, UnitBytes,
-};

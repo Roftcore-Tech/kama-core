@@ -68,9 +68,10 @@ fn arg(a: &[String], k: &str, d: u64) -> u64 {
 /// Kanal modeli + seam: Gilbert-Elliott silme, YALNIZ ileri yönde (client→server DATA/FEC).
 /// Dönüş yolu (ACK) temiz — ölçülen şey ileri-yön kurtarma, ACK yolu değil.
 mod ge_seam {
-    use client_core::seam::{
-        IdentitySeam, Opened, PacketProtection, ProtectionClass, ProtectionContext,
-        ProtectionLimits, SealError, SealedUnit,
+    use client_core::seam::IdentitySeam;
+    use kama_contracts::s3::{
+        Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits, SealError,
+        SealedUnit,
     };
 
     /// Saf-tamsayı LCG (ADR-17: RNG kütüphanesi yok, aynı seed → aynı akış).

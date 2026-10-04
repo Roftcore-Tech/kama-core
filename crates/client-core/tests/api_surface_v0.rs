@@ -16,11 +16,9 @@ use client_core::runtime::{
     ClientEndpoint, ClientHandle, ClientStats, Delivery, FecRuntimeConfig, RuntimeConfig,
     RuntimeError, ServerEndpoint, ServerHandle, ServerStats,
 };
-use client_core::seam::{
-    CloseReason, EntropyError, EntropySource, IdentitySeam, Opened, PacketProtection, PeerRef,
-    ProtectionClass, ProtectionContext, ProtectionLimits, SealError, SealedPacketMeta, SealedUnit,
-    SessionCommand, SessionControl, SessionEvent, SessionHandle, SessionResult, IDENTITY_TAG,
-};
+use client_core::seam::{EntropyError, EntropySource, IdentitySeam, IDENTITY_TAG};
+// S3 sözleşme tipleri `kama-contracts`'tadır (B1 2026-10-05); bu crate'in yüzeyinden ÇIKTILAR.
+// Yol pini orada tutulur: bu import derlenmezse sözleşme yüzeyi kaymıştır.
 use client_core::wire::{
     decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec, decode_param,
     decode_param_ack, decode_recovered, encode_cs_echo, encode_cs_probe, encode_data,
@@ -30,6 +28,11 @@ use client_core::wire::{
     LEN_CS_ECHO, LEN_CS_PROBE, LEN_PARAM, LEN_PARAM_ACK, RECOVERED_MAX_ESI,
 };
 use client_core::ClientSession;
+use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
+use kama_contracts::s3::{
+    Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits, SealError,
+    SealedPacketMeta, SealedUnit, SessionCommand, SessionControl, SessionEvent, SessionResult,
+};
 // Motor re-export'ları (yalnız yol/isim-pin; derinlemesine imza motorun kendi testlerinde).
 use client_core::{
     admit_and_decode, EngineError, Event, OpaqueUnit, OpenedTransportShard, Sender,

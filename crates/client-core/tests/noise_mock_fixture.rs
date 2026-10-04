@@ -11,9 +11,10 @@
 use std::time::Duration;
 
 use client_core::runtime::{ClientEndpoint, RuntimeConfig, ServerEndpoint};
-use client_core::seam::{
-    CloseReason, PacketProtection, PeerRef, ProtectionClass, ProtectionContext, SealError,
-    SessionCommand, SessionControl, SessionEvent, SessionHandle, SessionResult,
+use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
+use kama_contracts::s3::{
+    PacketProtection, ProtectionClass, ProtectionContext, SealError, SessionCommand,
+    SessionControl, SessionEvent, SessionResult,
 };
 use kama_noise_wire::seam_mock::{
     MockCrypto, ENVELOPE_INIT, ENVELOPE_INIT_RESPONSE, MOCK_MAX_SESSIONS,

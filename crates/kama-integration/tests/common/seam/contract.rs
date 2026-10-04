@@ -63,11 +63,11 @@ pub fn emit_contract_row_sentinel(target_id: &str) {
 
 /// KM-SEAM-AT-001 §6 satır gövdeleri — her hedefte AYNI kod koşar.
 pub mod rows {
-    use crate::harness::api::{
-        CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PeerRef, PreparedUnit,
-        SessionEvent, SessionHandle,
-    };
     use crate::harness::target::SeamTarget;
+    use kama_contracts::handles::{PeerRef, SessionHandle};
+    use kama_contracts::s1::{
+        CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent,
+    };
 
     /// `Ready`'yi beklerken atılacak azami adım. Sınırsız döngü YOK: gerçek hedef ilerlemezse
     /// test asılı kalmaz, KIRMIZI olur.
@@ -182,7 +182,8 @@ pub mod rows {
 /// Mekanizma gövdeleri — her hedefte AYNI kod koşar.
 pub mod mechanism {
     use super::super::target::{SeamTarget, TargetUnavailable, REGISTERED_TARGETS};
-    use crate::harness::api::{KamaTransport, SessionHandle};
+    use kama_contracts::handles::SessionHandle;
+    use kama_contracts::s1::KamaTransport;
 
     /// Hedef kaydı ile hedefin kendi beyanı tutarlı mı.
     ///

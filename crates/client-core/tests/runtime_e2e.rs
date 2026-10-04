@@ -343,11 +343,12 @@ async fn idle_peer_is_retired_and_slot_reusable() {
 /// seam'den geçer; yalnız hedef DATA birimleri düşer. Bu, tezin ("coding, ARQ'nun sansürlediğini
 /// kurtarır") runtime-düzeyi e2e kanıtıdır — kompozisyon hücresinin (fec_recovery_cell) UDP ikizi.
 mod fec_seam {
-    use client_core::seam::{
-        IdentitySeam, Opened, PacketProtection, ProtectionClass, ProtectionContext,
-        ProtectionLimits, SealError, SealedUnit,
-    };
+    use client_core::seam::IdentitySeam;
     use client_core::wire::{decode_data, decode_data_frag};
+    use kama_contracts::s3::{
+        Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits, SealError,
+        SealedUnit,
+    };
 
     /// IdentitySeam + alıcı-yönlü kalıcı DATA-erasure (unit_id ∈ drop). `open` `None` döner —
     /// S3 K5: sessiz düşürme, state değişmez.
@@ -701,11 +702,12 @@ async fn fragmenter_bounds_are_typed_and_enforced_before_the_run() {
 // iki uçta yazılı, ortası kopuktu; `set_bootstrap_rtt`'nin yedi çağrı yerinin hepsi TESTTİ.
 
 mod cs_seam {
-    use client_core::seam::{
-        IdentitySeam, Opened, PacketProtection, ProtectionClass, ProtectionContext,
-        ProtectionLimits, SealError, SealedUnit,
-    };
+    use client_core::seam::IdentitySeam;
     use client_core::wire::{FRAME_CS_ECHO, FRAME_CS_PROBE};
+    use kama_contracts::s3::{
+        Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits, SealError,
+        SealedUnit,
+    };
 
     /// IdentitySeam + "DATA yolu tamamen ölü" kanalı: yalnız CS-probe/echo geçer.
     /// Böylece ACK ASLA gelmez → oturum ancak bootstrap-RTT ile PreConverge'den çıkabilir.

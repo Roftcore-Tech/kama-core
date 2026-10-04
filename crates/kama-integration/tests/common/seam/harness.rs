@@ -1,15 +1,15 @@
 //! App↔Transport seam harness'inin TEK giriş noktası.
 //!
 //! Test ikilileri bu dosyayı `#[path = "../common/seam/harness.rs"] mod harness;` ile dahil eder.
-//! Alt modüller YALNIZ burada tanımlanır: `api.rs`'i iki ayrı yerde `mod` etmek, aynı dosyayı iki
-//! AYRI modül olarak derler ve `harness::api::PreparedUnit` ile
-//! `harness::target::api::PreparedUnit` farklı tipler olurdu — "aynı süit iki hedefte" iddiası
-//! tam da burada sessizce kırılırdı.
+//! Alt modüller YALNIZ burada tanımlanır: bir dosyayı iki ayrı yerde `mod` etmek onu iki AYRI modül
+//! olarak derler ve içindeki tipler farklı tipler olurdu — "aynı süit iki hedefte" iddiası tam da
+//! burada sessizce kırılırdı.
+//!
+//! Sözleşme tipleri bu harness'te TANIMLANMAZ: `kama-contracts` crate'inden gelir
+//! (`kama_contracts::s1`, `kama_contracts::handles`). B1'den (2026-10-05) önce burada bir test-yerel
+//! ayna (`api.rs`) vardı; prodüksiyon tipi indiği için silindi.
 
 #![allow(dead_code)]
-
-#[path = "api.rs"]
-pub mod api;
 
 #[path = "target.rs"]
 pub mod target;

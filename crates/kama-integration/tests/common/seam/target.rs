@@ -16,10 +16,10 @@
 
 use std::collections::VecDeque;
 
-use super::api::{
+use kama_contracts::handles::{PeerRef, SessionHandle};
+use kama_contracts::s1::{
     AbandonReason, CompressionPolicy, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy,
-    KamaTransport, PeerRef, PreparedUnit, SessionEvent, SessionHandle, TransportCapabilities,
-    TransportError, UnitBytes,
+    KamaTransport, PreparedUnit, SessionEvent, TransportCapabilities, TransportError, UnitBytes,
 };
 
 /// Gerçek adapter'ın yokluğunun kimliği. Runner ve `seam_real_adapter` bu sabiti paylaşır.

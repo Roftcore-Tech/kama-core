@@ -13,13 +13,14 @@
 #[path = "../common/seam/harness.rs"]
 mod harness;
 
-use harness::api::{
-    AbandonReason, CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PeerRef,
-    PreparedUnit, SessionEvent, SessionHandle, TransportError,
-};
 use harness::target::{
     EchoMockTransport, MockTarget, SeamTarget, TargetKind, MOCK_MAX_INBOX, MOCK_MAX_SESSIONS,
     STUB_MAX_PLAINTEXT_UNIT_BYTES, STUB_PREFERRED_PLAINTEXT_UNIT_BYTES,
+};
+use kama_contracts::handles::{PeerRef, SessionHandle};
+use kama_contracts::s1::{
+    AbandonReason, CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit,
+    SessionEvent, TransportError,
 };
 
 fn unit(bytes: &[u8]) -> PreparedUnit {

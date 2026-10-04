@@ -16,13 +16,10 @@
 //! maliyet modeli taşır. `open` reddi sessiz-düşürmedir (verify-before-admission: doğrulanamayan
 //! datagram transport durumuna DOKUNMADAN çöpe gider — INV-FEC-1'in alıcı yarısıyla aynı kural).
 
-// ── Sözleşme tipleri: GEÇİCİ yeniden-ihraç (B1 commit 1) ─────────────────────────────────────
-// Çağrı noktaları gövde değişikliği olmadan derlensin diye; bir sonraki commit bunu kaldırır ve
-// `use` yollarını `kama_contracts`'a çevirir.
-pub use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
-pub use kama_contracts::s3::{
+use kama_contracts::handles::SessionHandle;
+use kama_contracts::s3::{
     Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits, SealError,
-    SealedPacketMeta, SealedUnit, SessionCommand, SessionControl, SessionEvent, SessionResult,
+    SealedPacketMeta, SealedUnit,
 };
 
 // ── Entropi ──────────────────────────────────────────────────────────────────────────────────
