@@ -6,6 +6,8 @@
 **Türetildiği kaynaklar (icat yok):** transport-tdd §0 INV-NEIGHBOR-1 / INV-PLAINTEXT-NOT-SEMANTICS · KM-SEAM-TC-001 (S3) §1.2 SessionControl/SessionEvent, K7, K8, K9 · app-rpc §2 (üç düzlem), AMENDMENT-7 (envelope_type) · application-message-protocol.md §1–§2, §5 · engine-spec §0.2 · ccr §35.6 BatchPayload (KARAR-1) · identity (multi-device limit=1)
 **Yazım:** her karar **K** · **G** (kaynak atfıyla) · **R** (reddedilen alternatif) · **S** (sınır).
 
+> **YAMA KAYDI — 2026-10-05 [B3 — Abkarada kararı]:** §3'e `DeadlineExpired` açıklaması eklendi: varyant KALIR; birim deadline'ıdır (`DeliveryPolicy::DeadlineBounded`), bağlantı deadline'ı değil. DR-CONNECT-1 yalnız bağlantı deadline'ını kaldırdı. Trait bloğu ve hata listesi DEĞİŞMEDİ (yalnız ekleme).
+
 > **YAMA KAYDI — 2026-10-04b [K2 — Abkarada kararı]:** K6'ya glare kaybedeninin `early_unit` kuralı: Transport `early_unit`'in kopyasını oturum `Ready` ya da `ConnectAbandoned` olana kadar saklar; glare kaybında kazanan oturum `Ready` olunca ilk normal `send()` olarak yollar, Application'a olay çıkmaz. §8'deki açık kalem kapandı. API değişmedi.
 
 > **YAMA KAYDI — 2026-10-06 [C1 test 4 — Abkarada kararı]:** §3'e pending tavanı cümlesi eklendi: istemci pending INIT tavanı (ccr §35.15 KS-DOS-1, `PENDING_RESPONSE_TRIAL_CAP` ile eşit) doluyken yeni `connect()` → `TransportError::Backpressure`. Trait bloğu ve hata listesi DEĞİŞMEDİ (yalnız ekleme).
@@ -116,6 +118,7 @@ TransportError ∈ { UnknownSession, SessionSuperseded, EarlyUnitConflict, UnitT
 ConnectAbandoned(ticket, reason) — reason ∈ { Cancelled, PeerClosed, KeyHygiene, LocalPermanent }; OPAK DEĞİL   [DR-CONNECT-1 H9]
 ```
 **K9 — Application'a kripto nedeni sızmaz.** S3 §3 (`Failed` opak, `open()→None` sessiz) burada da korunur; ~~`ConnectFailed` tek tip~~. Gerekçe: oracle yüzeyi yok; app güvenlik kararı veremez. Yapısal hatalar (boyut, backpressure) typed'dır çünkü app'in düzeltebileceği şeylerdir.
+**[B3 — 2026-10-05] `DeadlineExpired` KALIR ve birim deadline'ıdır.** `DeliveryPolicy::DeadlineBounded` ile verilen birim (PTT/medya) iletilmeden süresi dolarsa `send()` bunu döner; dönüş anı ve sonradan sinyal olmaması §4'teki kuraldır (değişmedi). DR-CONNECT-1 bağlantı deadline'ını kaldırdı (`connect()` için süre sınırı yok, §4 H10), birim deadline'ını değil — ikisi ayrı şeylerdir.
 **[DR-CONNECT-1 H9] `ConnectAbandoned.reason` OPAK DEĞİLDİR.** Bu yerel bir yaşam-döngüsü durumudur, kripto oracle'ı değil; yukarıdaki opaklık kuralı kripto hatalarına aittir, buna değil. `reason` yalnız §4'teki kapalı listeden gelir ve kripto ayrıntısı taşımaz. Kapalı listenin sonucu: bozuk/sahte RESPONSE, route miss ve yol kesintisi bir bekleyen niyeti SONLANDIRAMAZ — kripto `Failed`'ı hâlâ opaktır ve Application'a hiçbir olay olarak çıkmaz (pending yaşar; KM-SEAM-TC-001 K7).
 **[2026-10-06] Pending tavanı dolu → `Backpressure`.** İstemci pending INIT tavanı (ccr §35.15 KS-DOS-1; tutarlılık zinciri gereği `PENDING_RESPONSE_TRIAL_CAP` ile eşit) doluyken yeni bir eşe `connect()` → `TransportError::Backpressure`; yeni pending OLUŞMAZ, mevcut pending kümesi ve state değişmez. Yapısal hatadır (K9): Application bekler ya da bir niyeti `cancel` eder. Tavanın ötesinde aday var olamayacağı için ona ait bir RESPONSE Crypto'da tavan kadar denemeden sonra opak `Failed` ile biter (KM-SEAM-TC-001 K7, H-DEMUX).
 
