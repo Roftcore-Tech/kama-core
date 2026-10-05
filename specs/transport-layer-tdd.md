@@ -1,5 +1,7 @@
 # Kama — Transport Layer TDD (Adaptive Hostile-Aware Transport)
 
+> **YAMA KAYDI — 2026-10-05 [PN SÜREKLİ artıkları — Abkarada kararı]:** §6 NONCE/SEQ: sayaç geri kazanımından ve `replay identity`'den `epoch` ÇIKTI (ccr §35.8 ile birebir) → kimlik `(session_id_internal, direction, full_counter)`; tek pencere (identity §15.5, 2026-10-06). Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-06 [PN SÜREKLİ — Abkarada kararı; WS-D1 `dh_epoch` sorusu KAPANDI]:** §12'ye ACK kimliği satırı: ACK_FRAME_V2 kimliği = `full_wire_pn`; `dh_epoch` kimliğe girmez. [AMENDMENT-9]'daki "sayım (session, direction, dh_epoch) başınadır" → "(session, direction) başınadır" (noise-wire §2.5 ile birebir). Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-04b [K4 — Abkarada kararı]:** §10 [AMENDMENT-10] madde 5 jitter formülü kesinleşti: `BLAKE2s-256(seed ‖ u32_be(deneme))[0..4] mod pencere`; tohum **dest_hash DEĞİL** — `hub_handle` (bind sonrası, bacak başına) / hop handshake'inin yerel ephemeral public anahtarı (bind öncesi). Önceki `hash(client_id ‖ …)` ifadesi üstü çizildi. SPEC-ONLY.
@@ -675,9 +677,12 @@ IF loss HIGH  AND  bandwidth LOW  AND  ack_confidence LOW:
 SRC: delivered-rate sampling (validity-gated) + RTprop/queue_delay + token-bucket pacing.
      rate kararı fuzzy controller'dan (Section 5); loss rate'i düşürmez.
 NONCE/SEQ (ccr §35 OTORİTER): seq16 nonce DEĞİLDİR — düşük 16 bit / resync hint'tir. Receiver tam
-     counter'ı session_id_internal + direction + epoch + replay window + expected counter ile reconstruct eder.
-     replay identity = (session_id_internal, direction, epoch, full_counter); replay window AEAD
-     başarısından ÖNCE güncellenmez.
+     counter'ı session_id_internal + direction + ~~epoch +~~ replay window + expected counter ile reconstruct eder.
+     ~~replay identity = (session_id_internal, direction, epoch, full_counter)~~
+     [2026-10-05] replay identity = (session_id_internal, direction, full_counter); replay window AEAD
+     başarısından ÖNCE güncellenmez. `epoch` kimlikten ve geri kazanımdan ÇIKTI: sayaç epoch'lar boyunca
+     sürekli, replay penceresi yön başına TEK (identity §15.5, 2026-10-06; ccr §35.8); `epoch` yalnız
+     anahtar ve AAD seçimine girer.
 REKEY invariants (ccr §35 ile birebir): MAX_MESSAGES_PER_EPOCH = 2^32; REKEY_THRESHOLD <= 2^31;
      ~~future gap / reorder pencereleri < 2^15~~ **[D-GAP-1 2026-09-23]** far-future/reorder KAPILARI ccr §35.8'de KALDIRILDI.
      Kalan kısıt SABİTE değil GERÇEKLEŞEN MESAFEYE uygulanır: |full_counter − expected| < 2^15 (seq16 reconstruction

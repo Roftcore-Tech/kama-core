@@ -1,5 +1,7 @@
 # CCR Format Specification
 
+> **YAMA KAYDI — 2026-10-05 [PN SÜREKLİ artıkları — Abkarada kararı]:** §35.8 INVARIANTS: `replay identity`'den `epoch` ÇIKTI → `(session_id_internal, direction, full_counter)`. Dayanak: PN sayacı epoch'lar boyunca sürekli ve replay penceresi yön başına tektir (identity §15.5, 2026-10-06; noise-wire §2.5 + §4 EPOCH-PN-INIT). `epoch` anahtar ve AAD seçiminde aynen kalır (§35.9) — bağlama (INV-BIND-1) dokunulmadı. Tel formatı DEĞİŞMEDİ. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-04b [K3 + K5 — Abkarada kararı]:** `BatchPayload{submsg_count = 0}` (BOŞ BATCH) açıkça **GEÇERLİ** ilan edildi: AEAD'den geçer, PN tüketir, Application'a teslim YOK — epoch-1 onayının ve provisional supersession onayının taşıyıcısı (atıflarda "§35.6 BatchPayload" diye geçen tanım fiziksel olarak §35.14 sonundaki nottadır; yama oraya işlendi). §35.15'e **`PROVISIONAL_TTL`** (istemci; = `HALF_OPEN_TTL` değeri, türetilmiş, AYRI ad). Wire layout DEĞİŞMEDİ (boş batch mevcut yapının bir değeridir).
 
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 tamamlama — sahip kararı]:** §35.15 slot bloğu: **KS-AGE-1 KAPANDI (SESSION_MAX_AGE = 7 gün)** · **KS-HB-1 KAPANDI (8 s / 25 s / OS)** · **KS-UI-1 KAPANDI (LongOutage = 60 s; yalnız UI)**. §35.16 "client keepalive YOK" ÜSTÜ ÇİZİLDİ (pull-only varsayımıyla yazılmıştı; hop heartbeat `0x1B`/`0x1C` — transport-layer-tdd §10 [AMENDMENT-10]; mailbox fallback ve rebind yolu değişmedi). Üstü çizili metin silinmedi.
@@ -2805,7 +2807,10 @@ INVARIANTS:
   gerçekleşen |full_counter − expected_counter| < 2^15 KALMALIDIR (seq16 reconstruction tek-anlamlılığı).
   Bunu sağlamak alıcının değil GÖNDERENİN kısıtıdır → transport-layer-tdd [AMENDMENT-9] / KS-PN-1 (K ≪ 2^15).
   seq16 TEK BAŞINA nonce DEĞİL. AEAD nonce/counter = reconstructed full counter.
-  replay identity = (session_id_internal, direction, epoch, full_counter).
+  ~~replay identity = (session_id_internal, direction, epoch, full_counter).~~
+  [2026-10-05] replay identity = (session_id_internal, direction, full_counter). `epoch` kimlikten ÇIKTI:
+  sayaç epoch'lar boyunca süreklidir ve replay penceresi yön başına TEKTİR (identity §15.5, 2026-10-06;
+  noise-wire §2.5 + §4 EPOCH-PN-INIT). `epoch` yalnız anahtar ve AAD seçimine girer (§35.9).
   replay window AEAD success'ten ÖNCE GÜNCELLENMEZ.
 ```
 
