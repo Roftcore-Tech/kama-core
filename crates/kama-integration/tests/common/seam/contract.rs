@@ -223,11 +223,17 @@ pub mod rows {
     ///
     /// Tavan hedefin adlandırılmış sabitinden okunur ve ccr §35.15'teki sayıyla karşılaştırılır
     /// (KS-DOS-1; tutarlılık zinciri: `PENDING_RESPONSE_TRIAL_CAP` = istemci pending INIT tavanı).
-    /// Satır hedefin `connect`'leri PENDING tutabilmesini ister: olaylar okunmaz, hedef sürülmez.
+    ///
+    /// İki evre. (1) Tavan ve ret iddiaları: hedef SÜRÜLMEZ ve olay OKUNMAZ — satır hedefin
+    /// `connect`'leri PENDING tutabilmesini ister (karşı uç bu evrede yanıtsız). (2) Yerin açılması:
+    /// iptal olayı okunur, sonra hedef sürülür ve bekleyen her niyetin `Ready`'ye çözülmesi beklenir
+    /// (karşı uç bu evrede yanıt verir).
     ///
     /// # Panics
-    /// Tavanın altında `connect` reddedilirse, tavanda kabul edilirse, ret bir state bırakırsa ya da
-    /// hedefin tavanı spec'teki değerden farklıysa.
+    /// Tavanın altında `connect` reddedilirse, tavanda kabul edilirse, ret bir state bırakırsa,
+    /// hedefin tavanı spec'teki değerden farklıysa; iptalden önce başka bir olay çıkmışsa, yer
+    /// açıldığı hâlde (iptalle ya da `Ready` ile) önceden reddedilen eş kabul edilmezse, çözülme
+    /// sırasında `Ready` dışında olay gelirse ya da reddedilen `early_unit` sonradan teslim edilirse.
     pub fn h_pending_cap<T: SeamTarget>() {
         const SPEC_NAME: &str = "İstemci pending INIT tavanı = ";
         /// Bu satırın eşleri bu tabandan numaralanır.

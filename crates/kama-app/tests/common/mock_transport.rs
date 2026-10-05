@@ -161,8 +161,8 @@ impl MockTransport {
     /// [`MockStats::events_dropped`] artar — düşme sessiz değildir. Senaryolar tavanın çok altında
     /// kalır.
     ///
-    /// Düşen bir `Closed` hiçbir zaman OKUNAMAZ; tutamaç sonsuza dek "supersede" kalmasın diye
-    /// unutma o anda yapılır. Böylece supersede kümesi de sınırlıdır (her üyesinin kuyrukta bir
+    /// Düşen bir `Closed` hiçbir zaman OKUNAMAZ; tutamaç (Application `close(h)` çağırmadıkça)
+    /// "supersede" kalmasın diye unutma o anda yapılır. Böylece supersede kümesi de sınırlıdır (her üyesinin kuyrukta bir
     /// `Closed` olayı vardır). Düşen bir `Ready(h)` oturumu yok etmez: Application tutamacı
     /// idempotent `connect()` dönüşünden öğrenebilir.
     fn push_event(&mut self, ev: SessionEvent) {
@@ -176,7 +176,9 @@ impl MockTransport {
         }
     }
 
-    /// Tutamacı tamamen unutur: bundan sonra `send(h)` → `UnknownSession`.
+    /// Tutamacı tamamen unutur: bundan sonra `send(h)` → `UnknownSession`. Yalnız eşin AKTİF
+    /// tutamacı OLMAYAN (supersede edilmiş) tutamaçlar için çağrılır; `active_by_peer`'a dokunmaz
+    /// (aktif tutamacı kapatmanın yolu `close()`'dur).
     fn forget(&mut self, session: SessionHandle) {
         self.superseded.remove(&session);
         self.session_peer.remove(&session);

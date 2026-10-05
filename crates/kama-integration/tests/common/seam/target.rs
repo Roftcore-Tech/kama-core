@@ -86,8 +86,10 @@ pub trait SeamTarget {
     ///
     /// **Bu kanca ilk sözleşme satırını (H-ROUNDTRIP) yazarken doğdu:** gerçek adapter socket
     /// okumadan ilerleyemez. Kanca olmasaydı süit sahte-biçimli olurdu ve bunu ancak gerçek hedefi
-    /// yazarken, bütün satırları yeniden şekillendirerek öğrenirdik. Bir niyeti BEKLEMEDE tutmak
-    /// isteyen satır (H-CANCEL, H-PENDING-CAP, H-SILENT-REJECT) bu kancayı ÇAĞIRMAZ.
+    /// yazarken, bütün satırları yeniden şekillendirerek öğrenirdik. Bir niyetin BEKLEMEDE kalması
+    /// gereken evrede satır bu kancayı ÇAĞIRMAZ (H-CANCEL: iptale kadar · H-SILENT-REJECT: sahte
+    /// yanıtlar boyunca · H-PENDING-CAP: tavan ve ret iddiaları boyunca); niyetin çözülmesini
+    /// istediği evrede çağırır. Hedef, çağrılmadığı sürece bekleyen niyeti çözmemelidir.
     fn pump(transport: &mut Self::Transport);
 
     /// Anahtar yenileme gereksinimi doğar (→ `RenewRequired(h)`).

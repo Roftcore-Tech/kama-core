@@ -13,9 +13,11 @@
 #
 # CIKIS KODLARI
 #   0  yesil
-#   1  kirmizi (test kirmizi · vakum · beyan ↔ gerceklik ayrismasi · drift · iddia edilen satirin
-#      testi listede yok · statik satirin kaniti (layer_check.py) kirmizi)
-#   2  ortam/kullanim hatasi (eksik/gecersiz --target, python3 yok, dosya yok)
+#   1  kirmizi (test kirmizi · vakum · #[ignore]'lu test · beyan ↔ gerceklik ayrismasi · drift ·
+#      iddia edilen satirin testi listede yok · statik satirin kaniti (layer_check.py) kirmizi)
+#   2  ortam/kullanim hatasi (eksik/gecersiz --target, python3 yok, dosya yok, layer_check.py'nin
+#      kendi ortam hatasi). Ortam hatasi, o ana kadar birikmis bir kirmiziyi ORTER: kosum yarida
+#      kesilir ve 2 doner (cikti birikmis kirmiziyi ayrica soyler).
 #   3  BEYAN EDILMIS BOSLUK — istenen hedef bu derlemede yok ve yoklugu kimlikli olarak beyanli
 #      (bugun: --target real → GAP-SEAM-REAL-1). Yesil DEGILDIR; "unuttuk" ile "henuz yok"u ayirir.
 #
@@ -136,6 +138,7 @@ run_mock() {
       if [[ "$layer_rc" -eq 2 ]]; then
         # layer_check'in KENDI ortam hatasi (cargo metadata calismadi vb.) bir katman ihlali degildir.
         echo "ORTAM HATASI: statik satirlarin kaniti kosturulamadi (layer_check.py cikis 2)"
+        ((fail)) && echo "(ayrica: bu ana kadar en az bir KIRMIZI kaydedilmisti — yukariya bakin)"
         rm -f "$core_log" "$fixture_log"
         exit 2
       fi
@@ -229,6 +232,8 @@ run_real() {
   elif ! grep -Eq "test result: ok\. [1-9][0-9]* passed" "$real_core_log"; then
     bad "gercek hedef kayitli ama conformance-core'da 'real' adinda 0 test kostu — \
 suit gercek hedefte ornekleendi mi? (seam_mechanism_suite!/seam_contract_suite! real satirlari)"
+  elif ! grep -Eq "test result: ok\. [0-9]+ passed; 0 failed; 0 ignored" "$real_core_log"; then
+    bad "conformance-core real kolunda #[ignore]'lu (kosmayan) test var — susturulmus test yesil sayilmaz"
   else
     grep -E "test result: ok" "$real_core_log" | head -1 | sed 's/^/  /'
   fi

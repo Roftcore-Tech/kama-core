@@ -81,7 +81,7 @@
       "status": "mock_only",
       "kind": "behavioral",
       "proof": "contract.rs rows::h_pending_cap — tavan kadar pending; sonraki yeni ese connect → Backpressure (early_unit'li de); bekleyen ticket'lar ayni, reddedilen es pending'e girmez; reddedilen connect'ler olay uretmez (ilk olay iptalin ConnectAbandoned'i); yer iki yoldan acilir: iptalle ve Ready ile — ikisinde de onceden reddedilen es kabul edilir; cozulen oturumlarda teslim yok (reddedilen early_unit hicbir yola girmedi). Tavan hedefin adlandirilmis sabitinden; ccr §35.15'teki sayiyla testte karsilastirilir",
-      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); hedefin connect'leri PENDING tutabilmesi (karsi uc yanitsiz)"
+      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); karsi uc iki evreli olmali: tavan ve ret iddialari boyunca YANITSIZ (connect'ler PENDING kalir), hedef surulunce bekleyen her niyeti Ready'ye cozer"
     },
     {
       "id": "H-CANCEL",
@@ -95,7 +95,7 @@
       "status": "mock_only",
       "kind": "behavioral",
       "proof": "contract.rs rows::h_progress — karsi-kontrol: link acikken saat ilerleyince prob sayaci artar; link duser → ConnectProgress(ticket, Suspended), 1 saat boyunca 0 yeni prob, fazladan olay yok; link gelir → ConnectProgress(ticket, Measuring) ve saat ilerlemeden +1 prob; niyet cozulmez (ayni Pending)",
-      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); link durumu ve prob sayaci icin hedef kancalari. LongOutage fazi sinanmiyor (sahte modellemiyor). ACIK S1 NOKTASI: yeni bir niyetin ILK ConnectProgress'inin ne zaman cikacagi §4'te yazmiyor; satir govdeleri (bu satir, H-CANCEL, H-SILENT-REJECT ve establish yardimcisi) link VARKEN dogan niyet icin olay cikmadigini varsayar"
+      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); link durumu ve prob sayaci icin hedef kancalari. LongOutage fazi sinanmiyor (sahte modellemiyor). ACIK S1 NOKTASI: yeni bir niyetin ILK ConnectProgress'inin ne zaman cikacagi §4'te yazmiyor; satir govdelerinin cogu (bu satir, H-CANCEL, H-SILENT-REJECT, H-PENDING-CAP, H-CONNECT-IDEMP, H-EARLY-CONFLICT ve establish yardimcisini kullanan butun satirlar) link VARKEN dogan niyet icin olay cikmadigini varsayar"
     },
     {
       "id": "H-SILENT-REJECT",

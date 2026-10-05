@@ -498,11 +498,12 @@ fn f11_accepted_early_unit_survives_a_full_inbox() {
     );
 }
 
-/// Düşen bir `Closed` olayı tutamacı sonsuza dek "supersede" bırakmaz.
+/// Düşen bir `Closed` olayı tutamacı "supersede" durumunda bırakmaz.
 ///
 /// Olay kuyruğu doluyken yapılan cutover'ın `Ready(h')` ve `Closed(h)` olayları kuyruğa sığmaz.
 /// `Closed` hiç okunamayacağı için eski tutamaç o anda unutulur (`UnknownSession`); yoksa
-/// `send(h)` kalıcı olarak `SessionSuperseded` dönerdi ve supersede kümesi sınırsız büyürdü.
+/// Application `close(h)` çağırmadıkça — ki onu buna yöneltecek olay hiç gelmeyecektir —
+/// `send(h)` `SessionSuperseded` dönmeye devam eder ve supersede kümesi büyürdü.
 #[test]
 fn f12_dropped_closed_event_does_not_strand_the_handle() {
     /// Cutover'ın ürettiği olay sayısı: `Ready(h')` + `Closed(h, Superseded)`.

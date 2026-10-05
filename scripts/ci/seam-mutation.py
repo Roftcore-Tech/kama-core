@@ -37,6 +37,7 @@ import argparse
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -288,11 +289,16 @@ def run(work: Path, offline: bool) -> tuple[list[str], list[str]] | str:
     cmd = ["cargo", "test", "-p", "kama-integration", "--test", "seam_conformance_core"]
     if offline:
         cmd.insert(2, "--offline")
+    # Ayri surec grubu: zaman asiminda yalniz cargo degil, donguye girmis TEST IKILISI de oldurulur.
+    proc = subprocess.Popen(cmd, cwd=work, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, start_new_session=True)
     try:
-        p = subprocess.run(cmd, cwd=work, env=env, capture_output=True, text=True, timeout=RUN_TIMEOUT_S)
+        stdout, stderr = proc.communicate(timeout=RUN_TIMEOUT_S)
     except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
         return f"ZAMAN ASIMI: {RUN_TIMEOUT_S} s icinde bitmedi"
-    out = p.stdout + p.stderr
+    out = stdout + stderr
     if "test result:" not in out:
         return out  # derlenmedi / cargo hatasi
     failed = sorted(set(re.findall(r"^test mock_contract::(h_\w+) \.\.\. FAILED$", out, re.M)))

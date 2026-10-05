@@ -21,7 +21,8 @@ Birden cok kez verilebilir (dosyalar birlestirilir) — ortak tipler `handles.rs
      statik satir da 'mock_only'/'implemented' beyan EDILEMEZ (kosumu yoktur).
      Bir satirin statik olup olmadigi beyandaki `kind` alanindan DEGIL spec §6 metninden okunur
      ("Kanitladigi" hucresinde "statik" yazan satirlar); `kind` o metinle ayni olmak zorundadir.
-     `proof_rules` girdileri scripts/ci/layer_check.py'de gecen kural kimlikleri olmalidir.
+     `proof_rules` girdileri scripts/ci/layer_check.py'de gecen kural kimlikleri olmalidir. Bu,
+     "boyle bir kural VAR" denetimidir; kuralin o satiri gercekten kanitladigini OLCMEZ (inceleme isi).
   Ek olarak beyan dosyasinin kendi tutarliligi (tekrarsiz kimlik, gecerli durum, ratchet tabani).
 
 --seam s3 (KM-SEAM-TC-001) — DENETLENEN ESITLIKLER:
@@ -141,7 +142,9 @@ def spec_harness_rows(spec_text: str) -> list[str]:
 
 
 def spec_static_rows(spec_text: str) -> set[str]:
-    """§6 tablosunda "Kanitladigi" hucresinde `statik` yazan satirlar: kosum degil kapi-seviyesi denetim."""
+    """§6 tablosunda, kimlik hucresinden SONRAKI metninde `statik` kelimesi gecen satirlar: kosum degil
+    kapi-seviyesi denetim. (Kelime eslesmesidir: bir davranis satirinin metnine `statik` yazilirsa o satir
+    da statik sayilir ve beyandaki `kind` ile ayrisma kirmizi olur — gorunur, sessiz degil.)"""
     body = section(spec_text, "6.")
     out = set()
     for line in body.splitlines():
