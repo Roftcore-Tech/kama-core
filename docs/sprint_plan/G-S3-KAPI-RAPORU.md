@@ -5,6 +5,7 @@
 **Güncelleme 2026-10-05b:** §7 eklendi (B1 `kama-contracts` ve G-S3 kanıt işi sonrası durum); onun
 geçersiz kıldığı cümlelerin üstü çizildi. §1–§6'daki satır numaraları hâlâ `77848003` ağacına göredir.
 **Güncelleme 2026-10-05c:** §7.3'teki S1 kapsama sayımı güncellendi (Hayri taşıması, PR #92); eski cümlenin üstü çizildi.
+**Güncelleme 2026-10-05d:** §7.4'e silme kapısının ikinci ölçümü ve taban değişikliği eklendi (yalnız ekleme).
 **Durum notu (2026-10-05, merge anında güncellendi):** bu raporun dayandığı PR'ların hepsi main'dedir
 (#82 `6b2d6bcb` · #83 `e341b020` · #85 `88961ee1` · #86 `ca788d4c` · #84 `285824b6` · #87 `77848003`).
 Satır numaraları main `77848003` ağacına göredir (merge öncesi tek tek doğrulandı).
@@ -167,4 +168,9 @@ artık `kama-app`'in `MockTransport`'udur (tek kopya).
 
 `scripts/ci/word_coverage.py` + `.github/workflows/spec-word-coverage.yml`: spec/karar belgesi değişen her
 PR'da koşar; taban sürümdeki her kelimenin yeni sürümde en az o kadar geçmesini ister. Bu rapor da kapsamdadır.
+**[2026-10-05d]** Kapıya ikinci bir ölçüm eklendi (yerinde korunma): değişen her satır öbeğinde eski metin ya
+üstü çizilmemiş hâlde sırasıyla duruyor ya da üstü çizilmiş olmalıdır. Birinci ölçüm, eski cümle silinip kelimeleri
+başka yerde (YAMA KAYDI satırında, yerine yazılan cümlede) yeniden geçtiğinde yeşil kalıyordu. Workflow'un tabanı
+`origin/<hedef dal>` ucundan PR merge commit'inin ilk ebeveynine (`HEAD^1`) çevrildi: hedef dal ilerledikten sonra
+yeniden koşturulan eski bir iş sahte kayıp veriyordu. Eklenen dosyalar hâlâ denetlenmez (taban sürümleri yoktur).
 

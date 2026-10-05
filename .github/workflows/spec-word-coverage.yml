@@ -2,8 +2,9 @@ name: spec-word-coverage
 
 # ── SİLME KAPISI ───────────────────────────────────────────────────────────────────────────────
 # Donmuş spec ve karar belgelerinde "üstü çiz, silme" kuralının ölçümü: kapsamdaki bir belgenin
-# taban sürümündeki her kelime yeni sürümde EN AZ o kadar geçmelidir (üstü çizili metin sayılır).
-# Kaybolan kelime = 0 değilse kırmızı. Kural ve kapsam: scripts/ci/word_coverage.py.
+# taban sürümündeki her kelime yeni sürümde EN AZ o kadar geçmelidir (üstü çizili metin sayılır) ve
+# değişen her satır öbeğinde eski metin ya yerinde duruyor ya da üstü çizilmiş olmalıdır. İki ölçümden
+# biri sıfır değilse kırmızı. Kural ve kapsam: scripts/ci/word_coverage.py.
 #
 # NEDEN AYRI WORKFLOW: core-ci (ci.yml) yalnız-md PR'larda bilinçli olarak BAŞLAMAZ (`paths-ignore`;
 # 11 job'un runner maliyeti). Silme kapısının koşması gereken yer tam da o PR'lardır. Bu workflow
@@ -41,7 +42,16 @@ jobs:
       # Kapının kendi kapısı: kuralın gerçekten ateşlediği kanıtlanmadan "kayıp yok" sonucuna güvenilmez.
       - name: öz-test
         run: python3 scripts/ci/word_coverage.py --selftest
-      # Taban = PR'ın hedef dalı (yığılı PR'da bir önceki dal). Checkout edilen ağaç PR'ın hedefle
-      # birleşmiş hâlidir; karşılaştırılan şey "main'e inecek olan"dır.
-      - name: kaybolan kelime = 0
-        run: python3 scripts/ci/word_coverage.py --base "origin/${{ github.base_ref }}"
+      # Checkout edilen ağaç PR'ın hedef dalla BİRLEŞMİŞ hâlidir (refs/pull/N/merge); karşılaştırılan
+      # şey "main'e inecek olan"dır. Taban = o merge commit'inin İLK ebeveyni, yani birleştirilen
+      # hedef dal ucu. [2026-10-05] Önceden `origin/<base_ref>` veriliyordu: iş kuyrukta beklerken ya
+      # da sonradan "Re-run jobs" ile yeniden koşturulurken hedef dal ilerlemişse, eski merge ağacı
+      # YENİ uçla karşılaştırılıyor ve hedef dalda sonradan eklenen kelimeler "kayıp" görünüyordu
+      # (ölçüldü: 210 ve 657 sahte kayıp). `HEAD^1` koşulan ağaçla her zaman tutarlıdır.
+      - name: kaybolan kelime = 0 · yerinde korunmayan satır = 0
+        run: |
+          git rev-parse --verify -q "HEAD^2^{commit}" >/dev/null || {
+            echo "::error title=WORD-COVERAGE::HEAD bir PR merge commit'i değil (ikinci ebeveyn yok) — taban belirlenemedi"
+            exit 2
+          }
+          python3 scripts/ci/word_coverage.py --base "HEAD^1"
