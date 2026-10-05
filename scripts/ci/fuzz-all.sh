@@ -27,6 +27,13 @@ targets=(
   fuzz_fec_decode
 )
 
+# Önce BÜTÜN fuzz ikilileri derleniyor mu: aşağıda yalnız altı hedef KOŞAR, ama `fuzz/Cargo.toml`'da
+# on bir ikili var. Koşmayan bir ikili sessizce bozulabiliyor (ölçüldü: `wire_v0`, B1'de bir trait'in
+# yolu değişince 2026-10-05'te derlenmez hâle geldi ve hiçbir kapı görmedi).
+echo "::group::fuzz ikilileri derleniyor mu (hepsi)"
+cargo +nightly check --manifest-path fuzz/Cargo.toml --bins
+echo "::endgroup::"
+
 for t in "${targets[@]}"; do
   echo "::group::fuzz $t (${secs}s, hedef=$host)"
   cargo +nightly fuzz run "$t" --target "$host" -- \

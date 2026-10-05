@@ -16,6 +16,8 @@ arbitrary = { version = "1", features = ["derive"] }
 adaptive-transport = { path = "../crates/adaptive-transport" }
 kama-noise-wire = { path = "../crates/kama-noise-wire" }
 client-core = { path = "../crates/client-core" }
+# S3 trait'i (`PacketProtection`) B1'den beri burada; wire_v0 `IdentitySeam::open`'ı onun üzerinden çağırır.
+kama-contracts = { path = "../crates/kama-contracts" }
 kama-transport-schema = { path = "../crates/kama-transport-schema" }
 kama-fec-codec = { path = "../crates/kama-fec-codec" }
 zeroize = "1"

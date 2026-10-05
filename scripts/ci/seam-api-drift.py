@@ -23,6 +23,22 @@ Birden cok kez verilebilir (dosyalar birlestirilir) — ortak tipler `handles.rs
      ("Kanitladigi" hucresinde "statik" yazan satirlar); `kind` o metinle ayni olmak zorundadir.
      `proof_rules` girdileri scripts/ci/layer_check.py'de gecen kural kimlikleri olmalidir. Bu,
      "boyle bir kural VAR" denetimidir; kuralin o satiri gercekten kanitladigini OLCMEZ (inceleme isi).
+  H. BICIM [2026-10-05; 2026-10-06'da sessiz atlamalar kapatildi]: §1'de bildirilen her tipin TURU
+     (enum / alanli struct / tuple struct / birim struct), her enum'un VARIANT kumesi ve her variant'in
+     bicimi (birim / tuple eleman sayisi / struct alan adlari), alanli her struct'in ALAN ADLARI ve her
+     trait metodunun IMZASI (niteleyiciler `async`/`unsafe`/`const`/`extern` + `fn ad` ile `;` ya da
+     govde arasindaki her sey: jenerikler, parametreler, donus tipi, where; bosluklar atilarak) kaynaktakiyle
+     aynidir. Ayrica: tipin BASLIGI (jenerik parametreler / where), metodun zorunlu mu varsayilan govdeli
+     mi oldugu, trait'in iliskili ogeleri (`type X;`, `const N: T;`) ve kaynakta spec'te olmayan trait.
+     Bildirilmis ama okunamayan enum / struct / imza KIRMIZIdir (atlanmaz).
+     KARSILASTIRILMAYANLAR: variant ve struct ALAN TIPLERI (spec `Bytes` der, kaynak `Vec<u8>`), tuple
+     struct'larin ic tipi, trait BASLIGI (ust-trait sinirlari — bugun kaynakta S3 trait'leri
+     `: Send + 'static` tasir, spec §1 bloklarinda sinir yazmaz), gorunurluk, oznitelikler
+     (`#[non_exhaustive]`, derive'lar), varsayilan metot govdelerinin icerigi.
+     BILINEN KIRILGANLIK (A ve C, H'den once de vardi; H degistirmez): ikisi de ham metne bakar —
+     S1'de trait basligina sinir eklenmesi (`pub trait KamaTransport: Send {`) A'da "trait yok" diye,
+     variant satirinin sonundaki yorum (`NotConnected, // …`) C'de "yalniz spec'te" diye kirmizi verir
+     (ikisi de olculdu; kirmizi dogru, neden yanlis).
   Ek olarak beyan dosyasinin kendi tutarliligi (tekrarsiz kimlik, gecerli durum, ratchet tabani).
 
 --seam s3 (KM-SEAM-TC-001) — DENETLENEN ESITLIKLER:
@@ -30,6 +46,7 @@ Birden cok kez verilebilir (dosyalar birlestirilir) — ortak tipler `handles.rs
   B. §1'de bildirilen tipler            ⊆ kaynaktaki tipler
   D. §6 tablosundaki her H-* satirinin noise-seam-coverage.json'da en az bir satiri var
      (`H-X` ya da alt satir `H-X/…`) ve beyandaki her satir §6'daki bir satira ait
+  H. BICIM: --seam s1'deki H ile ayni (enum variant'lari, struct alan adlari, metot imzalari)
 
 Cikis kodu: 0 = ayrisma yok · 1 = drift (kapi kirmizi) · 2 = ortam/kullanim hatasi.
 """
@@ -116,7 +133,7 @@ def spec_api(spec_text: str) -> tuple[str, set[str], set[str]]:
     if not tm:
         die("spec §1 blogunda `pub trait … { … }` bulunamadi")
     trait_name, trait_body = tm.group(1), tm.group(2)
-    methods = set(re.findall(r"\bfn\s+(\w+)\s*\(", trait_body))
+    methods = set(re.findall(r"\bfn\s+(\w+)\s*[<(]", trait_body))
     types = set(re.findall(r"pub\s+(?:struct|enum)\s+(\w+)", block))
     return trait_name, methods, types
 
@@ -182,11 +199,264 @@ def mirror_api(mirror_text: str) -> tuple[str | None, set[str], set[str], set[st
     tm = re.search(r"pub\s+trait\s+(\w+)\s*\{", mirror_text)
     trait_name = tm.group(1) if tm else None
     trait_body = block_of(mirror_text, r"pub\s+trait\s+\w+\s*\{") or ""
-    methods = set(re.findall(r"^\s*fn\s+(\w+)\s*\(", trait_body, re.M))
+    methods = set(re.findall(r"^\s*fn\s+(\w+)\s*[<(]", trait_body, re.M))
     types = set(re.findall(r"^pub\s+(?:struct|enum)\s+(\w+)", mirror_text, re.M))
     err_body = block_of(mirror_text, r"pub\s+enum\s+TransportError\s*\{") or ""
     variants = set(re.findall(r"^\s{4}([A-Z]\w*)\s*,\s*$", err_body, re.M))
     return trait_name, methods, types, variants
+
+
+# ── bicim karsilastirmasi (variant / alan / imza) ────────────────────────────────────────────
+
+
+def strip_code_comments(code: str) -> str:
+    """Blok ve satir yorumlari ile oznitelikleri atar. Spec bloklarinda ustu cizili eski metin yorum
+    icinde durur (`/* ~~ConnectFailed(...)~~ */`, `// ~~...~~`); o yuzden yorumlar bicime GIRMEZ."""
+    # TEK gecis: once hangisi basliyorsa o yorumdur. Iki ayri geciste `/// … /* …` satirindaki `/*`,
+    # sonraki bir `*/`'a kadar KODU da yutardi.
+    return strip_attributes(re.sub(r"//[^\n]*|/\*.*?\*/", " ", code, flags=re.S))
+
+
+def strip_attributes(code: str) -> str:
+    """`#[…]` / `#![…]` ozniteliklerini atar. Koseli ayrac derinligi sayilir ve dizge sabitleri atlanir:
+    oznitelik birkac satira yayilabilir (`#[deprecated(\n note = "x"\n)]`) ve dizgesinde `]` tasiyabilir
+    (`#[doc = "bkz. [K4]"]`)."""
+    out: list[str] = []
+    i, n = 0, len(code)
+    while i < n:
+        if code[i] == "#" and (code.startswith("[", i + 1) or code.startswith("![", i + 1)):
+            k = code.index("[", i)
+            depth = 0
+            while k < n:
+                ch = code[k]
+                if ch == '"':
+                    k += 1
+                    while k < n and code[k] != '"':
+                        k += 2 if code[k] == "\\" else 1
+                elif ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                k += 1
+            out.append(" ")
+            i = k + 1
+            continue
+        out.append(code[i])
+        i += 1
+    return "".join(out)
+
+
+def split_top(s: str) -> list[str]:
+    """En dis duzeydeki virgullerden boler (parantez / suslu / koseli / acili ayrac ici bolunmez)."""
+    out, depth, cur = [], 0, []
+    for ch in s:
+        if ch in "({[<":
+            depth += 1
+        elif ch in ")}]>":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    out.append("".join(cur))
+    return [x.strip() for x in out if x.strip()]
+
+
+def brace_body(code: str, open_at: int) -> str | None:
+    """`open_at` bir `{` karakterinin indeksi; esi olan `}`'a kadarki ic metin (yoksa None)."""
+    depth = 0
+    for i in range(open_at, len(code)):
+        if code[i] == "{":
+            depth += 1
+        elif code[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return code[open_at + 1:i]
+    return None
+
+
+def declared_kinds(code: str) -> dict[str, tuple[str, str]]:
+    """{tip adi: (tur, baslik)} — tur: "enum" | "struct{}" (alanli) | "struct()" (tuple) | "struct;" (birim);
+    baslik: adla acilis ayraci arasindaki bosluksuz metin (jenerik parametreler, where)."""
+    kinds: dict[str, tuple[str, str]] = {}
+    for m in re.finditer(r"\bpub\s+(enum|struct)\s+(\w+)\b([^{;(]*)([{;(])", code):
+        kind = "enum" if m.group(1) == "enum" else "struct" + {"{": "{}", "(": "()", ";": ";"}[m.group(4)]
+        kinds[m.group(2)] = (kind, re.sub(r"\s+", "", m.group(3)))
+    return kinds
+
+
+def parse_enums(code: str) -> dict[str, dict[str, tuple]]:
+    """{enum adi: {variant adi: bicim}} — bicim: ("unit",) | ("tuple", n) | ("struct", alan adlari)."""
+    enums: dict[str, dict[str, tuple]] = {}
+    for m in re.finditer(r"\bpub\s+enum\s+(\w+)\b[^{;(]*\{", code):
+        body = brace_body(code, m.end() - 1)
+        if body is None:
+            continue
+        variants: dict[str, tuple] = {}
+        for item in split_top(body):
+            vm = re.match(r"([A-Za-z_]\w*)\s*(.*)$", item, re.S)
+            if not vm:
+                variants[item] = ("?",)
+                continue
+            name, rest = vm.group(1), vm.group(2).strip()
+            if rest.startswith("(") and ")" in rest:
+                variants[name] = ("tuple", len(split_top(rest[1:rest.rindex(")")])))
+            elif rest.startswith("{") and "}" in rest:
+                fields = [f.split(":")[0].strip() for f in split_top(rest[1:rest.rindex("}")])]
+                variants[name] = ("struct", tuple(sorted(fields)))
+            elif not rest:
+                variants[name] = ("unit",)
+            else:
+                variants[name] = ("?", rest)
+        enums[m.group(1)] = variants
+    return enums
+
+
+def parse_structs(code: str) -> dict[str, tuple]:
+    """{struct adi: alan adlari} — yalniz suslu ayracli (alanli) struct'lar."""
+    structs: dict[str, tuple] = {}
+    for m in re.finditer(r"\bpub\s+struct\s+(\w+)\b[^{;(]*\{", code):
+        body = brace_body(code, m.end() - 1)
+        if body is None:
+            continue
+        fields = []
+        for item in split_top(body):
+            fm = re.match(r"(?:pub(?:\([^)]*\))?\s+)?([A-Za-z_]\w*)\s*:", item)
+            if fm:
+                fields.append(fm.group(1))
+        structs[m.group(1)] = tuple(sorted(fields))
+    return structs
+
+
+UNREADABLE = "?"
+ITEMS = "<ogeler>"       # parse_signatures: trait'in metot DISI ogeleri (iliskili tip / sabit) bu anahtarda
+
+
+def parse_signatures(code: str) -> dict[str, dict[str, str]]:
+    """{trait adi: {metot adi: bosluksuz imza}} — imza = niteleyiciler (`async`/`unsafe`/`const`/`extern`)
+    + `fn ad` ile `;` ya da govdenin `{`'i arasindaki her sey (jenerikler, parametreler, donus tipi, where)
+    + govdesi varsa `{…}` isareti (zorunlu metot ↔ varsayilan govdeli metot ayrimi; govdenin ICERIGI
+    karsilastirilmaz). Sonu bulunamayan imza UNREADABLE doner (cagiran KIRMIZI yapar).
+    ITEMS anahtari: metot disi ogeler (`type X;`, `const N: T;`) sirali ve bosluksuz."""
+    traits: dict[str, dict[str, str]] = {}
+    fn_re = re.compile(r"((?:\b(?:async|unsafe|const|extern(?:\s*\"[^\"]*\")?)\s+)*)\bfn\s+(\w+)")
+    for m in re.finditer(r"\bpub\s+trait\s+(\w+)[^{;]*\{", code):
+        body = brace_body(code, m.end() - 1)
+        if body is None:
+            traits[m.group(1)] = {UNREADABLE: UNREADABLE}
+            continue
+        sigs: dict[str, str] = {}
+        rest: list[str] = []
+        pos = 0
+        while True:
+            fm = fn_re.search(body, pos)
+            if fm is None:
+                rest.append(body[pos:])
+                break
+            rest.append(body[pos:fm.start()])
+            depth, end = 0, None
+            for i in range(fm.end(), len(body)):
+                ch = body[i]
+                if ch in "([":
+                    depth += 1
+                elif ch in ")]":
+                    depth -= 1
+                elif ch in ";{" and depth == 0:
+                    end = i
+                    break
+            if end is None:
+                sigs[fm.group(2)] = UNREADABLE
+                break
+            sig = re.sub(r"\s+", "", fm.group(1) + "|" + body[fm.end():end]).replace(",)", ")")
+            sig = sig[1:] if sig.startswith("|") else sig
+            pos = end + 1
+            if body[end] == "{":
+                inner = brace_body(body, end)
+                if inner is None:
+                    sigs[fm.group(2)] = UNREADABLE
+                    break
+                pos = end + len(inner) + 2
+                sig += "{…}"
+            sigs[fm.group(2)] = sig
+        items = sorted(re.sub(r"\s+", "", item) for item in re.findall(r"\b(?:type|const)\s+\w+[^;]*;", "".join(rest)))
+        if items:
+            sigs[ITEMS] = " ".join(items)
+        traits[m.group(1)] = sigs
+    return traits
+
+
+def check_shapes(spec_text: str, mirror_text: str, say) -> None:
+    """H — §1 bloklarindaki enum / struct / metot BICIMLERI kaynaktakiyle ayni mi."""
+    spec_code = strip_code_comments("\n".join(all_fences(section(spec_text, "1."))))
+    src_code = strip_code_comments(mirror_text)
+    s_kinds, m_kinds = declared_kinds(spec_code), declared_kinds(src_code)
+    s_enums, m_enums = parse_enums(spec_code), parse_enums(src_code)
+    s_structs, m_structs = parse_structs(spec_code), parse_structs(src_code)
+    s_sigs, m_sigs = parse_signatures(spec_code), parse_signatures(src_code)
+    say(f"  bicim : {len(s_enums)} enum · {len(s_structs)} alanli struct · "
+        f"{sum(len(v) - (ITEMS in v) for v in s_sigs.values())} metot imzasi karsilastirildi")
+    if not s_enums or not s_sigs:
+        bad("§1 bloklarindan enum ya da metot imzasi okunamadi — bicim denetimi vakumda")
+    # Tur: tipin hic olmamasi B'de raporlanir; burada ayni adin BASKA turde bildirilmesi yakalanir
+    # (alanli struct → tuple struct, enum → struct, …). Ayni turdeyse ayrintisi asagida karsilastirilir.
+    same_kind: set[str] = set()
+    for name, (kind, header) in sorted(s_kinds.items()):
+        if name not in m_kinds:
+            # Tipin hic olmamasi B'de raporlanir. B ham metne bakar: bildirim yalniz bir YORUMUN icinde
+            # duruyorsa (sutun 0'da) B onu "var" sayar — burada yakalanir.
+            if re.search(rf"^pub\s+(?:struct|enum)\s+{re.escape(name)}\b", mirror_text, re.M):
+                bad(f"§1 {name} kaynakta yalniz yorum icinde bildirilmis (yorum disinda struct/enum olarak yok)")
+            continue
+        other, other_header = m_kinds[name]
+        if other != kind:
+            bad(f"§1 {name} turu ayrisiyor: spec `{kind}`, kaynak `{other}`")
+            continue
+        same_kind.add(name)
+        if other_header != header:
+            bad(f"§1 {name} basligi (jenerik parametreler / where) ayrisiyor: spec `{header}`, kaynak `{other_header}`")
+    for name in sorted(same_kind):
+        parsed = {"enum": (s_enums, m_enums), "struct{}": (s_structs, m_structs)}.get(s_kinds[name][0])
+        if parsed is None:
+            continue
+        for side, table in zip(("spec", "kaynak"), parsed):
+            if name not in table:
+                bad(f"§1 {name} ({s_kinds[name][0]}) {side} tarafinda okunamadi — bicimi karsilastirilamadi")
+    for name, s_var in sorted(s_enums.items()):
+        m_var = m_enums.get(name)
+        if m_var is None:
+            continue  # yok / baska turde / okunamadi — yukarida ya da B'de raporlandi
+        only_spec, only_src = sorted(set(s_var) - set(m_var)), sorted(set(m_var) - set(s_var))
+        differ = sorted(v for v in set(s_var) & set(m_var) if s_var[v] != m_var[v])
+        if only_spec or only_src or differ:
+            detail = "; ".join(f"{v}: spec {s_var[v]} / kaynak {m_var[v]}" for v in differ)
+            bad(f"§1 enum {name} bicimi ayrisiyor: yalniz spec'te {only_spec}, yalniz kaynakta {only_src}"
+                + (f", bicimi farkli [{detail}]" if differ else ""))
+    for name, s_fields in sorted(s_structs.items()):
+        m_fields = m_structs.get(name)
+        if m_fields is not None and m_fields != s_fields:
+            bad(f"§1 struct {name} alanlari ayrisiyor: spec {list(s_fields)}, kaynak {list(m_fields)}")
+    extra_traits = sorted(set(m_sigs) - set(s_sigs))
+    if extra_traits:
+        bad(f"kaynakta spec §1'de olmayan trait(ler) var: {extra_traits}")
+    for trait, sigs in sorted(s_sigs.items()):
+        m_trait = m_sigs.get(trait)
+        if m_trait is None:
+            continue  # trait'in hic olmamasi A'da raporlanir
+        for method in sorted(set(sigs) | set(m_trait)):
+            sig, other = sigs.get(method), m_trait.get(method)
+            if method == ITEMS:
+                if sig != other:
+                    bad(f"§1 {trait} iliskili ogeleri (type / const) ayrisiyor: spec `{sig or ''}`, kaynak `{other or ''}`")
+            elif UNREADABLE in (sig, other):
+                bad(f"§1 {trait}::{method} imzasi okunamadi (spec `{sig}`, kaynak `{other}`)")
+            elif sig is None or other is None:
+                bad(f"§1 {trait}::{method} imzasi karsilastirilamadi: "
+                    f"{'spec' if sig is None else 'kaynak'} tarafinda boyle bir metot yok")
+            elif other != sig:
+                bad(f"§1 {trait}::{method} imzasi ayrisiyor: spec `{sig}`, kaynak `{other}`")
 
 
 # ── S3 (KM-SEAM-TC-001) ──────────────────────────────────────────────────────────────────────
@@ -198,7 +468,7 @@ def spec_traits(spec_text: str) -> tuple[dict[str, set[str]], set[str]]:
     types: set[str] = set()
     for block in all_fences(section(spec_text, "1.")):
         for tm in re.finditer(r"pub\s+trait\s+(\w+)[^{\n]*\{(.*?)\n\}", block, re.S):
-            traits[tm.group(1)] = set(re.findall(r"\bfn\s+(\w+)\s*\(", tm.group(2)))
+            traits[tm.group(1)] = set(re.findall(r"\bfn\s+(\w+)\s*[<(]", tm.group(2)))
         types |= set(re.findall(r"pub\s+(?:struct|enum)\s+(\w+)", block))
     if not traits:
         die("spec §1 bloklarinda hic `pub trait … { … }` bulunamadi")
@@ -209,7 +479,7 @@ def mirror_traits(mirror_text: str) -> tuple[dict[str, set[str]], set[str]]:
     traits: dict[str, set[str]] = {}
     for tm in re.finditer(r"^pub\s+trait\s+(\w+)[^{\n]*\{", mirror_text, re.M):
         body = block_of(mirror_text[tm.start():], r"pub\s+trait\s+\w+[^{\n]*\{") or ""
-        traits[tm.group(1)] = set(re.findall(r"^\s*fn\s+(\w+)\s*\(", body, re.M))
+        traits[tm.group(1)] = set(re.findall(r"^\s*fn\s+(\w+)\s*[<(]", body, re.M))
     types = set(re.findall(r"^pub\s+(?:struct|enum)\s+(\w+)", mirror_text, re.M))
     return traits, types
 
@@ -241,6 +511,9 @@ def check_s3(spec_text: str, mirror_text: str, cov: dict, say) -> None:
     extra = m_types - s_types
     if extra:
         say(f"  kaynak-ek tipler (beklenen; hata tipi/ortak tutamaclar): {sorted(extra)}")
+
+    # H — bicim
+    check_shapes(spec_text, mirror_text, say)
 
     # D — §6 satirlari ↔ beyan (alt satirlar `H-X/…` serbest)
     rows = cov.get("rows")
@@ -341,6 +614,9 @@ def main() -> int:
     if s_errs != m_errs:
         bad(f"§3 TransportError kumesi ayrisiyor: yalniz spec'te {sorted(s_errs - m_errs)}, "
             f"yalniz kaynakta {sorted(m_errs - s_errs)}")
+
+    # H — bicim
+    check_shapes(spec_text, mirror_text, say)
 
     # D — §6 satirlari ↔ beyan
     rows = cov.get("rows")

@@ -43,10 +43,11 @@ CONFORMANCE_TARGETS_EXPECTED=0
 # ── Görev metnindeki tetik yolları + eksik bulunan üçü (teşhis amaçlı) ───────────────────────
 TRIGGER_PATHS=(
   'vectors/'
-  'ref/'                              # henüz yok — plandaki gelecek dizin
-  'crates/kama-app/'                  # henüz yok — plandaki gelecek crate
+  'ref/'                              # bağımsız referanslar (ref/crypto, ref/amp)
+  'crates/kama-app/'                  # Application crate'i
+  'crates/kama-contracts/'            # [EKLENDİ 2026-10-05] S1/S3 sözleşme tipleri (B1). Önceki yerleri: S3 → client-core seam.rs, S1 → kama-app lib.rs
   'crates/kama-noise-wire/'
-  'crates/client-core/src/seam.rs'
+  'crates/client-core/src/seam.rs'    # IdentitySeam + entropi enjeksiyonu (S3 sözleşme tipleri artık kama-contracts'ta)
   'crates/kama-vectors/'
   'crates/ccr-codec/'                 # [EKLENDİ] ADR-05: wire encoding tek kaynağı
   'crates/kama-fec-codec/'            # [EKLENDİ] vektör tüketicisi
