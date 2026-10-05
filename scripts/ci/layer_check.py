@@ -27,7 +27,8 @@ KM-SEAM-TC-001 §6 H-SPLIT):
   C4  `client-core` için YASAK (doğrudan VE geçişli): kama-app.
   C5  `kama-app`, `kama-contracts`'ın `test-util` özelliğini AÇAMAZ — ne bağımlılık satırında (hiçbir
       bağımlılık türünde) ne de kendi `[features]` tablosundan ileterek (`x = ["kama-contracts/test-util"]`;
-      bağımlılık yeniden adlandırılmışsa yerel adıyla: `x = ["contracts/test-util"]`)
+      bağımlılık yeniden adlandırılmışsa yerel adıyla: `x = ["contracts/test-util"]`), ne de `test-util`'i
+      dolaylı açan bir sözleşme özelliği üzerinden (`mocks = ["test-util"]`, `default = ["test-util"]`)
       — ve kaynağında sahteler için açılan ham erişimleri (`*_for_mock`) ÇAĞIRAMAZ.
       SINIR: `kama-app`'in grafiğindeki BAŞKA bir crate'in aynı özelliği açması (özellik birleşimi)
       buradan görülmez; o yol için C2 katman crate'lerini zaten yasaklar.
@@ -175,17 +176,34 @@ def check(metadata: dict, sources: dict[str, str]) -> list[str]:
                 findings.append(f"{rule} {' → '.join(reversed(path))}: `{root}` için yasak kenar ({how})")
 
     # C5 — Application test-util açamaz ve sahte erişimlerini çağıramaz
+    # `test-util`'i DOLAYLI açan sözleşme özellikleri de sayılır: sözleşme crate'inde `mocks = ["test-util"]`
+    # gibi bir takma ad ya da `default = ["test-util"]` tanımlanırsa onu açmak da `test-util`'i açar.
+    opens = {TEST_UTIL}
+    contract_features = pkgs[CONTRACTS].get("features") or {}
+    grew = True
+    while grew:
+        grew = False
+        for feature, enables in contract_features.items():
+            if feature not in opens and opens & set(enables):
+                opens.add(feature)
+                grew = True
     for dep in app["dependencies"]:
-        if dep["name"] == CONTRACTS and TEST_UTIL in (dep.get("features") or []):
-            kind = dep.get("kind") or "normal"
-            findings.append(f"C5 {APP} → {CONTRACTS} ({kind} bağımlılık) `{TEST_UTIL}` özelliğini açıyor: "
+        if dep["name"] != CONTRACTS:
+            continue
+        kind = dep.get("kind") or "normal"
+        enabled = set(dep.get("features") or [])
+        if dep.get("uses_default_features", True):
+            enabled.add("default")
+        for feature in sorted(enabled & opens):
+            via = "" if feature == TEST_UTIL else f" (`{feature}` üzerinden)"
+            findings.append(f"C5 {APP} → {CONTRACTS} ({kind} bağımlılık) `{TEST_UTIL}` özelliğini açıyor{via}: "
                             f"Application sahte erişimlerini göremez")
     # … ya da kendi [features] tablosundan iletiyor: bağımlılık satırında görünmez. Özellik tablosu
     # bağımlılığı manifest'teki YEREL adıyla anar (`contracts = { package = "kama-contracts" }` ise
     # `contracts/test-util`), o yüzden yeniden adlandırmalar da sayılır.
     local_names = {CONTRACTS} | {dep.get("rename") or dep["name"]
                                  for dep in app["dependencies"] if dep["name"] == CONTRACTS}
-    forwards = {f"{name}{weak}/{TEST_UTIL}" for name in local_names for weak in ("", "?")}
+    forwards = {f"{name}{weak}/{feature}" for name in local_names for weak in ("", "?") for feature in opens}
     for feature, enables in sorted((app.get("features") or {}).items()):
         for item in enables:
             if item in forwards:
@@ -252,7 +270,7 @@ def real_inputs(root: Path) -> tuple[dict, dict[str, str]]:
 
 # ── öz-test ──────────────────────────────────────────────────────────────────────────────────
 def _md(deps_of_app, edges, *, dev_edges=None, contract_deps=(), app_contract_features=None,
-        app_contract_rename=None, app_features=None):
+        app_contract_rename=None, app_features=None, contract_features=None, app_contract_defaults=True):
     """Sentetik metadata. `edges`: normal kenarlar; `dev_edges`: {crate: [dev-bağımlılıklar]}.
 
     Denetlenen dört crate her zaman vardır (vakum koruması gerçek koşuda ayrıca sınanır).
@@ -268,7 +286,8 @@ def _md(deps_of_app, edges, *, dev_edges=None, contract_deps=(), app_contract_fe
             out = [{"name": d, "kind": k} for d, k in deps_of_app]
             if app_contract_features is not None:
                 kind, feats = app_contract_features
-                out.append({"name": CONTRACTS, "kind": kind, "features": list(feats), "rename": app_contract_rename})
+                out.append({"name": CONTRACTS, "kind": kind, "features": list(feats), "rename": app_contract_rename,
+                            "uses_default_features": app_contract_defaults})
             return out
         if n == CONTRACTS:
             return [{"name": d, "kind": None} for d in contract_deps]
@@ -282,6 +301,8 @@ def _md(deps_of_app, edges, *, dev_edges=None, contract_deps=(), app_contract_fe
         pkg = {"name": n, "id": f"id:{n}", "dependencies": manifest_deps(n)}
         if n == APP and app_features is not None:
             pkg["features"] = app_features
+        if n == CONTRACTS and contract_features is not None:
+            pkg["features"] = contract_features
         return pkg
     return {
         "packages": [package(n) for n in names],
@@ -336,6 +357,21 @@ def selftest() -> int:
         ("C5 DEĞİL: yeniden adlandırılmış bağımlılık, özellik iletilmiyor",
          _md([], ok_graph, app_contract_features=(None, []), app_contract_rename="contracts",
              app_features={"mocks": ["contracts/other", "baska/test-util"]}), clean_src, []),
+        ("C5 app, test-util'i açan bir sözleşme özelliğini açıyor (mocks → test-util)",
+         _md([], ok_graph, app_contract_features=(None, ["mocks"]), contract_features={"test-util": [], "mocks": ["test-util"]}),
+         clean_src, ["C5"]),
+        ("C5 aynı takma ad app'in [features] tablosundan iletiliyor",
+         _md([], ok_graph, app_contract_features=(None, []), app_features={"x": ["kama-contracts/mocks"]},
+             contract_features={"test-util": [], "mocks": ["araç"], "araç": ["test-util"]}), clean_src, ["C5"]),
+        ("C5 sözleşmenin varsayılan özelliği test-util'i açıyor",
+         _md([], ok_graph, app_contract_features=(None, []), contract_features={"test-util": [], "default": ["test-util"]}),
+         clean_src, ["C5"]),
+        ("C5 DEĞİL: varsayılan test-util'i açıyor ama app default-features = false",
+         _md([], ok_graph, app_contract_features=(None, []), app_contract_defaults=False,
+             contract_features={"test-util": [], "default": ["test-util"]}), clean_src, []),
+        ("C5 DEĞİL: sözleşmenin test-util'e bağlı olmayan özelliği açılıyor",
+         _md([], ok_graph, app_contract_features=(None, ["std"]), contract_features={"test-util": [], "std": []}),
+         clean_src, []),
         ("C5 DEĞİL: app'in özellik tablosu başka şeyler iletiyor",
          _md([], ok_graph, app_features={"default": ["std"], "std": [], "x": ["other/test-util", "kama-contracts/other"]}),
          clean_src, []),

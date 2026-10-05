@@ -361,6 +361,40 @@ drift_shape "F16 belge yorumundaki /* sonraki metodu gizleyemez (cancel)" s1 s1.
 drift_shape "F17 S3 metodu where kosulu alinca (poll_event)" s3 s3.rs \
   '    fn poll_event(&mut self) -> Option<SessionEvent>;' '    fn poll_event(&mut self) -> Option<SessionEvent> where Self: Sized;' \
   "SessionControl::poll_event imzasi ayrisiyor"
+# [2026-10-06b] Ikinci inceleme. Duzeltmeden onceki betige (272a7dd8) karsi olculdu: F18/F19/F21/F22/F24/F25
+# YESIL donuyordu; F20 kirmiziydi ama yanlis nedenle; F26 (zararsiz duzenleme) KIRMIZI donuyordu.
+drift_shape "F18 trait'e iliskili tip eklenince (type Error)" s1 s1.rs \
+  '    fn capabilities(&self) -> TransportCapabilities;' $'    type Error;\n    fn capabilities(&self) -> TransportCapabilities;' \
+  "KamaTransport iliskili ogeleri (type / const) ayrisiyor"
+drift_shape "F19 zorunlu metot ayni imzayla varsayilan govde alinca (close)" s1 s1.rs \
+  '    fn close(&mut self, session: SessionHandle);' '    fn close(&mut self, session: SessionHandle) {}' \
+  "KamaTransport::close imzasi ayrisiyor"
+drift_shape "F20 metot unsafe olunca (close)" s1 s1.rs \
+  '    fn close(&mut self, session: SessionHandle);' '    unsafe fn close(&mut self, session: SessionHandle);' \
+  "KamaTransport::close imzasi ayrisiyor"
+drift_shape "F21 struct jenerik parametre alinca (Delivered<T = UnitBytes>)" s1 s1.rs \
+  'pub struct Delivered {' 'pub struct Delivered<T = UnitBytes> {' \
+  "Delivered basligi (jenerik parametreler / where) ayrisiyor"
+drift_shape "F22 S1 kaynagina ikinci trait eklenince" s1 s1.rs \
+  $'    fn cancel(&mut self, ticket: ConnectTicket);\n}' \
+  $'    fn cancel(&mut self, ticket: ConnectTicket);\n}\n\npub trait Extra {\n    fn extra(&self);\n}' \
+  "kaynakta spec §1'de olmayan trait(ler) var: ['Extra']"
+drift_shape "F24 S3 trait'ine iliskili sabit eklenince (const VERSION)" s3 s3.rs \
+  '    fn poll_event(&mut self) -> Option<SessionEvent>;' $'    const VERSION: u32;\n    fn poll_event(&mut self) -> Option<SessionEvent>;' \
+  "SessionControl iliskili ogeleri (type / const) ayrisiyor"
+drift_shape "F25 bildirim yorum icine alinip tip takma ada cevrilince (ConnectTicket)" s1 s1.rs \
+  'pub struct ConnectTicket(u64);' $'/*\npub struct ConnectTicket(u64);\n*/\npub type ConnectTicket = u64;' \
+  "ConnectTicket kaynakta yalniz yorum icinde bildirilmis"
+# Zararsiz duzenleme YESIL kalmali: cok satirli ve dizgesinde `]` tasiyan oznitelik bicimi degistirmez.
+OLD='    Measuring,' NEW=$'    #[deprecated(\n        note = "bkz. [K4]"\n    )]\n    Measuring,' python3 - "$CONTRACTS/s1.rs" "$TMPD/same-s1.rs" <<'PY'
+import os, sys, pathlib
+src = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+old, new = os.environ["OLD"], os.environ["NEW"]
+assert src.count(old) == 1, f"capa {src.count(old)} kez bulundu: {old!r}"
+pathlib.Path(sys.argv[2]).write_text(src.replace(old, new), encoding="utf-8")
+PY
+expect 0 "F26 variant'a cok satirli oznitelik eklenince → 0 (bicim degismedi)" -- \
+  python3 "$DRIFT" --seam s1 --mirror "$TMPD/same-s1.rs" --mirror "$CONTRACTS/handles.rs" --quiet
 
 printf '\n'
 printf 'oz-test: %d gecti, %d kaldi\n' "$pass" "$fail"

@@ -11,19 +11,22 @@ içerik kalır).
 
   1. DOSYA GENELİ KELİME ÇOKKÜMESİ: kapsamdaki her dosya için TABAN sürümündeki her kelimenin geçiş
      sayısı, yeni sürümde EN AZ o kadar olmalıdır ("kaybolan kelime = 0").
-  2. YERİNDE KORUNMA [2026-10-05; 2026-10-06'da incelemeden sonra düzeltildi]: taban sürümden
-     çıkarılan ya da değiştirilen her satır öbeği için, öbekteki eski satırların her kelimesi AYNI
-     öbeğin yeni satırlarında ya (a) üstü çizilmemiş metinde, eski SIRASI korunarak (araya yeni kelime
-     girebilir), ya da (b) üstü çizili bir yerde (`~~…~~`; yeri değişmiş olabilir) bulunmalıdır.
-     Yani: eski metin ya olduğu gibi duruyordur, ya da üstü çizilmiştir.
+  2. YERİNDE KORUNMA [2026-10-05; 2026-10-06'da iki incelemeden sonra yeniden yazıldı]: taban
+     sürümden çıkarılan ya da değiştirilen her satır öbeği için, öbekteki eski satırların her kelimesi
+     AYNI öbeğin yeni satırlarında
+       (a) eski SIRASI korunarak — üstü çizili ya da değil; araya yeni kelime girebilir — ya da
+       (b) KENDİ SATIRINDA üstü çizili olarak (üstü çizili parça satır içinde yer değiştirmiş olabilir)
+     bulunmalıdır. Üstü çizilmemiş bir kelime yalnız sırasında yer bulur; BAŞKA bir satırın üstü
+     çizili kelimesi karşılık olmaz. Yani: eski metin ya olduğu gibi duruyordur, ya da üstü çizilmiştir.
        · Öbek = satır-düzeyi farkın değişen parçası; aralarında yalnız boş satır ya da dosyada birden
-         çok kez geçen satır bulunan komşu parçalar TEK öbektir (fark algoritması böyle satırları
-         yanlış eşleyip tek bir düzenlemeyi bölebilir).
-       · Yeni dosyada kelime dizisi olarak bütün hâlinde duran satır (taşınmış ya da tümüyle üstü
-         çizilmiş) muaftır — yeni dosyada o satırdan en az eskisi KADAR varsa. Muaf satırın öbek
-         içindeki karşılığı başka satırlara örtü olmaz.
-       · Üstü çizme durumu satırdan satıra taşınır, yeni blokta (boş satır, tablo satırı, başlık,
-         liste maddesi) sıfırlanır.
+         çok kez geçen satır bulunan komşu parçalar, aradaki satırlarla birlikte TEK öbektir (fark
+         algoritması böyle satırları yanlış eşleyebilir).
+       · Taşınan satır: kelimeleri öbeğinde yer bulamayan bir eski satır, kelime dizisi aynı olan ve
+         hiçbir kelimesi başka satıra yer olmamış bir yeni satır varsa muaftır (bire bir).
+       · Üstü çizme durumu satırdan satıra taşınır; yeni blokta (boş ya da yalnız `>` taşıyan satır,
+         tablo satırı, başlık, liste maddesi, yatay çizgi, kod çiti) sıfırlanır.
+       · Numaralı liste maddesinin sıra numarası (`3. `) bu ölçümde kelime sayılmaz: listeye madde
+         eklenince sonrakilerin numarası kayar.
 
 NEDEN İKİNCİ ÖLÇÜM. Birincisi tek başına şunu göremez: eski cümle üstü çizilmeden silinir ya da
 yeniden yazılır, ama kelimeleri dosyanın başka bir yerinde — aynı değişikliğin YAMA KAYDI satırında
@@ -36,16 +39,36 @@ ya da yerine yazılan cümlede — yeniden geçer; çokküme dengede kalır. Öl
     `0x1B..0xFF`). Kalan 55'inde alarm yok.
 
 SINIRLAR.
-  YAKALAMAZ: bir cümlenin anlamının araya eklenenlerle değişmesini (eski kelimeler sırasıyla
-  duruyorsa ekleme serbesttir); silinen kelimenin aynı öbekte, sırayı bozmayacak bir yerde yeniden
-  geçmesini; tek kalmış bir `~~`'den sonra kendi bloğunun kalanında yapılan değişiklikleri (o kısım
-  üstü çizili sayılır); EKLENEN ve kapsam dışından taşınan dosyaları (taban sürümleri yoktur —
-  listelenir; başka bir daldan taşınan belge özgününe karşı ELLE karşılaştırılır). Çok büyük
-  öbeklerde (kelime çarpımı > CELL_LIMIT) sıra aranmaz, yalnız kelimelerin öbekte bulunmasına bakılır.
-  KURALA UYGUN OLDUĞU HÂLDE KIRMIZI VERİR: hem taşınan hem düzenlenen satır (beklenen: eskisi
-  yerinde üstü çizilir, yenisi yeni yere yazılır). Kelime eşleştirmesi sezgiseldir: YEŞİL sonuç her
-  zaman geçerli bir yerleştirmeye dayanır, ama var olan bir yerleştirme bulunamayabilir (aynı
-  kelimenin öbekte hem düz hem üstü çizili yinelendiği girdiler).
+  YAKALAMAZ:
+  · Bir cümlenin anlamının araya eklenenlerle değişmesini (eski kelimeler sırasıyla duruyorsa ekleme
+    serbesttir).
+  · Silinen kelimenin aynı öbekte, sırayı bozmayan bir yerde — düz ya da üstü çizili — yeniden
+    geçmesini. Örnek: bir satırın SON kelimesi silinir; hemen sonraki satır aynı kelimeyle başlar ve
+    orada `~~W~~ W …` yazılmıştır. Aynı SATIRIN içinde de: bir kelime silinir, aynı kelime satırın
+    başka yerinde üstü çizilip yeniden yazılmıştır.
+  · Yalnız işleç / noktalama değişikliğini — İKİ ÖLÇÜM DE görmez: kelime harf/rakam dizisidir;
+    `≤` → `<`, `-3` → `3`, `10^-3` → `10^3`, `==` → `!=`, `→` → `←` kelime değiştirmez.
+  · Numaralı liste maddesinin sıra numarasının değişmesini (bilerek; yukarıda).
+  · Tek kalmış bir `~~`'den sonra kendi bloğunun kalanında yapılan değişiklikleri (o kısım üstü çizili
+    sayılır). Aynı şey, dengeli bir üstü çizili parça bu betiğin blok saydığı bir satırı aşarsa da olur
+    (ör. paragrafın sayı ve noktayla başlayan devam satırı). Başında `|` olmayan tablo satırı blok
+    sayılmaz.
+  · EKLENEN ve kapsam dışından taşınan dosyaları (taban sürümleri yoktur — listelenir; başka bir daldan
+    taşınan belge özgününe karşı ELLE karşılaştırılır).
+  · Çok büyük öbeklerde (kelime çarpımı > CELL_LIMIT) sırayı: yalnız kelimelerin öbekte bulunmasına
+    bakılır ve çıktıya NOT düşülür.
+  KURALA UYGUN OLDUĞU HÂLDE KIRMIZI VERİR:
+  · Hem taşınan hem düzenlenen satır (beklenen: eskisi yerinde üstü çizilir, yenisi yeni yere yazılır).
+    Hangi bloğun "taşındığına" fark algoritması karar verir: uzun bir blok, yerinde düzenlenmiş kısa
+    bir bölümün üstüne taşınırsa kısa bölüm taşınmış sayılır.
+  · Eski satırın bir PARÇASI ayrı bir satırda üstü çizilip kalanı başka satıra yazılırsa ve parça
+    sırasında değilse (beklenen: parça kalan kelimelerle aynı satırda, ya da satır bütünüyle üstü çizili).
+  · Numaralı bir TABLOYA araya satır eklenip sonraki satırların numarası değişirse.
+  · Bileşik bir kelimenin (`epoch-0`, `2026-10-04`, `KS-8'in`) yalnız bir PARÇASI üstü çizilirse — birinci
+    ölçümde de (beklenen: kelimenin bütünü çizilir).
+  · Kelime eşleştirmesi sezgiseldir: "hepsi yerleşti" sonucu her zaman gerçek bir yerleştirmeye
+    dayanır, ama var olan bir yerleştirme bulunamayabilir (aynı kelimenin öbekte hem düz hem üstü
+    çizili yinelendiği girdiler).
   Bu bir silme kapısıdır, inceleme yerine geçmez.
 
 KAPSAM (SCOPE): specs/, docs/seams/, docs/decisions/, docs/sprint_plan/ altındaki .md dosyaları ile
@@ -105,45 +128,57 @@ def lost_words(old: str, new: str) -> Counter:
     return Counter({w: c - n[w] for w, c in o.items() if c > n[w]})
 
 
-# Satır başı: (alıntı işareti ve girintiden sonra) tablo satırı, başlık ya da liste maddesi.
-BLOCK_START = re.compile(r"^[\s>]*(?:\||#{1,6}\s|[-*+]\s|\d+[.)]\s)")
-TILDE_FENCE = re.compile(r"^[\s>]*~~~")
+# Yeni blok: (alıntı işareti ve girintiden sonra) tablo satırı, başlık, liste maddesi, yatay çizgi.
+BLOCK_START = re.compile(r"^[\s>]*(?:\||#{1,6}\s|[-*+]\s|\d+[.)]\s|(?:[-*_]\s*){3,}$)")
+BLANKISH = re.compile(r"^[\s>]*$")              # boş satır ya da yalnız alıntı işareti (`>`)
+BACKTICK_FENCE = re.compile(r"^[\s>]*`{3,}[^`]*$")
+TILDE_FENCE = re.compile(r"^[\s>]*~{3,}[^~]*$")
+# Numaralı liste maddesinin sıra numarası (`3. `, `12) `). Listeye madde eklenince sonraki maddelerin
+# numarası değişir; numara içerik değildir, ikinci ölçümde kelime sayılmaz (birinci ölçüm sayar).
+LIST_ORDINAL = re.compile(r"^([\s>]*)\d+([.)]\s)")
 
 # Sıra araması |eski kelimeler| × |yeni kelimeler| hücrelik bir tablo kurar; bunun üstündeki öbeklerde
-# yalnız kelimelerin öbekte bulunmasına bakılır (bkz. belge dizgisi, NE ÖLÇMEZ).
+# yalnız kelimelerin öbekte bulunmasına bakılır ve çıktıya not düşülür (bkz. belge dizgisi, SINIRLAR).
 CELL_LIMIT = 2_000_000
 # Eşleştirme sezgiseldir (bkz. `unplaced_words`); yeri bulunamayan kelimeler öne alınarak yeniden denenir.
 PLACEMENT_ROUNDS = 4
 
 
+def _body(line: str) -> str:
+    return LIST_ORDINAL.sub(r"\1\2", line, count=1)
+
+
 def _key(line: str) -> tuple[str, ...]:
-    """Satır kimliği: kelime dizisi. `~~`, boşluk, alıntı (`> `) ve tablo işaretleri kimliğe girmez."""
-    return tuple(WORD.findall(line.replace("~~", " ")))
+    """Satır kimliği: kelime dizisi. `~~`, boşluk, alıntı (`> `), tablo işaretleri ve numaralı liste
+    maddesinin sıra numarası kimliğe girmez."""
+    return tuple(WORD.findall(_body(line).replace("~~", " ")))
 
 
 def _marked_words(lines: list[str]) -> list[list[tuple[str, bool]]]:
     """Her satır için [(kelime, üstü çizili mi)].
 
     `~~` açma/kapama durumu satırdan satıra TAŞINIR (parça birkaç satıra yayılabilir; depoda örnekleri
-    var) ve yeni bir blokta sıfırlanır: boş satır, tablo satırı, başlık, liste maddesi (GFM'de üstü
-    çizme blok sınırını aşmaz). Böylece tek kalmış bir `~~` dosyanın geri kalanını değil yalnız kendi
-    bloğunun kalanını üstü çizili gösterir. `~~~` kod çiti üstü çizme işareti sayılmaz.
+    var) ve yeni bir blokta sıfırlanır: boş ya da yalnız `>` taşıyan satır, tablo satırı, başlık, liste
+    maddesi, yatay çizgi, kod çiti satırı (GFM'de üstü çizme blok sınırını aşmaz). Böylece tek kalmış
+    bir `~~` dosyanın geri kalanını değil yalnız kendi bloğunun kalanını üstü çizili gösterir.
+    Kod çitinin İÇİNDE `~~` işaret sayılmaya devam eder: spec'lerdeki kod bloklarında eski satır
+    yorum içinde üstü çizilerek korunur (`// ~~eski~~`).
     """
     out: list[list[tuple[str, bool]]] = []
     struck = False
     for line in lines:
-        if not line.strip():
+        if BLANKISH.match(line):
             struck = False
             out.append([])
             continue
-        if TILDE_FENCE.match(line):
+        if BACKTICK_FENCE.match(line) or TILDE_FENCE.match(line):
             struck = False
             out.append([(w, False) for w in WORD.findall(line)])
             continue
         if BLOCK_START.match(line):
             struck = False
         marked: list[tuple[str, bool]] = []
-        for k, segment in enumerate(line.split("~~")):
+        for k, segment in enumerate(_body(line).split("~~")):
             if k:
                 struck = not struck
             marked.extend((w, struck) for w in WORD.findall(segment))
@@ -151,135 +186,214 @@ def _marked_words(lines: list[str]) -> list[list[tuple[str, bool]]]:
     return out
 
 
-def _unmatched(old_words: list[str], plain: list[str], heavy: set[str]) -> Counter:
-    """Ağırlıklı en uzun ortak alt dizi: `old_words`'ten `plain` içinde sırasıyla EŞLEŞMEYENLER.
-    `heavy` kümesindeki kelimeler önce yerleştirilir."""
-    n, m = len(old_words), len(plain)
-    big = n + 1
-    weight = [big if w in heavy else 1 for w in old_words]
-    # best[i][j] = old_words[i:] ile plain[j:] arasında eşleşebilen en büyük toplam ağırlık
+def _align(old_words: list[str], new_words: list[str], weight: list[int]) -> list[int | None]:
+    """Ağırlıklı en uzun ortak alt dizi. Döner: her eski kelime için eşleştiği yeni kelimenin indeksi
+    (eşleşmediyse None). Eşleşmeler sırayı korur."""
+    n, m = len(old_words), len(new_words)
+    # best[i][j] = old_words[i:] ile new_words[j:] arasında eşleşebilen en büyük toplam ağırlık
     best = [[0] * (m + 1) for _ in range(n + 1)]
     for i in range(n - 1, -1, -1):
         row, below, word, w = best[i], best[i + 1], old_words[i], weight[i]
         for j in range(m - 1, -1, -1):
             v = below[j] if below[j] >= row[j + 1] else row[j + 1]
-            if plain[j] == word and below[j + 1] + w > v:
+            if new_words[j] == word and below[j + 1] + w > v:
                 v = below[j + 1] + w
             row[j] = v
-    left: Counter = Counter()
+    match: list[int | None] = [None] * n
     i = j = 0
-    while i < n:
-        if j < m and plain[j] == old_words[i] and best[i][j] == best[i + 1][j + 1] + weight[i]:
+    while i < n and j < m:
+        if new_words[j] == old_words[i] and best[i][j] == best[i + 1][j + 1] + weight[i]:
+            match[i] = j
             i += 1
             j += 1
-        elif j < m and best[i][j] == best[i][j + 1]:
+        elif best[i][j] == best[i][j + 1]:
             j += 1
         else:
-            left[old_words[i]] += 1
             i += 1
-    return left
+    return match
 
 
-def unplaced_words(old_words: list[str], plain: list[str], struck: Counter) -> Counter:
-    """Eski kelime dizisinden yeni metinde YERİ BULUNAMAYANLAR.
+def _leftover(old: list[tuple[str, int]], new: list[tuple[str, bool, int]],
+              match: list[int | None]) -> tuple[list[int], set[int]]:
+    """Sırasıyla eşleşmeyen eski kelimelerden, AYNI SATIRDA üstü çizili bir karşılığı da bulunamayanların
+    indeksleri; ve kullanılan yeni kelimelerin indeksleri.
 
-    Bir eski kelimenin yeri vardır, eğer ya üstü çizilmemiş yeni metinde (`plain`) eski sırası korunarak
-    eşleşiyorsa ya da üstü çizili kelimeler çokkümesinde (`struck`) karşılığı varsa.
-
-    GÜVENCE: dönen her sonuç geçerli bir eşleştirmeden hesaplanır — boş sonuç, gerçekten bir yerleştirme
-    bulunduğu demektir (yanlış YEŞİL üretmez). Tersi sezgiseldir: üstü çizili karşılığı olmayan kelimeler
-    önce yerleştirilir, yeri bulunamayanlar öne alınıp yeniden denenir (`PLACEMENT_ROUNDS`). Aynı kelimenin
-    hem düz hem üstü çizili tekrar ettiği kurgusal girdilerde var olan bir yerleştirme bulunamayabilir.
+    "Aynı satır": eski kelimenin satırından sırasıyla eşleşen kelimelerin bulunduğu yeni satırlar. Oradaki,
+    sırasıyla eşleşmede kullanılmamış üstü çizili bir kelime karşılık sayılır (üstü çizili parça satır
+    içinde yer değiştirmiş olabilir). Her üstü çizili kelime en çok BİR eski kelimeye karşılık olur
+    (iki parçalı eşleme). Başka bir satırın üstü çizili kelimesi karşılık OLMAZ.
     """
-    n, m = len(old_words), len(plain)
-    if n == 0:
-        return Counter()
-    if n * m > CELL_LIMIT:
-        have = Counter(plain) + struck
-        need = Counter(old_words)
-        return Counter({w: c - have[w] for w, c in need.items() if c > have[w]})
-    heavy = {w for w in set(old_words) if struck[w] == 0}
-    missing: Counter = Counter()
+    used = {j for j in match if j is not None}
+    lines_of: dict[int, set[int]] = {}
+    for (_, old_line), j in zip(old, match):
+        if j is not None:
+            lines_of.setdefault(old_line, set()).add(new[j][2])
+    need: dict[str, list[int]] = {}
+    for i, (word, _) in enumerate(old):
+        if match[i] is None:
+            need.setdefault(word, []).append(i)
+    unplaced: list[int] = []
+    for word, wanted in need.items():
+        cands = [k for k, (w, is_struck, _) in enumerate(new) if is_struck and w == word and k not in used]
+        owner: dict[int, int] = {}
+
+        def place(i: int, seen: set[int]) -> bool:
+            own_lines = lines_of.get(old[i][1], ())
+            for k in cands:
+                if k in seen or new[k][2] not in own_lines:
+                    continue
+                seen.add(k)
+                if k not in owner or place(owner[k], seen):
+                    owner[k] = i
+                    return True
+            return False
+
+        for i in wanted:
+            if not place(i, set()):
+                unplaced.append(i)
+        used |= set(owner)
+    return sorted(unplaced), used
+
+
+def too_large(old: list[tuple[str, int]], new: list[tuple[str, bool, int]]) -> bool:
+    return len(old) * len(new) > CELL_LIMIT
+
+
+def place_words(old: list[tuple[str, int]], new: list[tuple[str, bool, int]]) -> tuple[list[int], set[int]]:
+    """Bir öbeğin eski kelimelerini yeni metne yerleştirir. Döner: YERİ BULUNAMAYAN eski kelimelerin
+    indeksleri ve kullanılan yeni kelimelerin indeksleri.
+
+    `old`: (kelime, eski satır no) — `new`: (kelime, üstü çizili mi, yeni satır no); ikisi de dosya
+    sırasıyla. Bir eski kelimenin yeri vardır, eğer
+      (a) yeni metinde — üstü çizili ya da değil — eski SIRASI korunarak eşleşiyorsa, ya da
+      (b) kendi satırında, sıranın dışında kalmış üstü çizili bir karşılığı varsa (`_leftover`).
+    Üstü çizilmemiş bir kelime yalnız (a) ile, yani sırasında yer bulur.
+
+    GÜVENCE: "hepsi yerleşti" sonucu her zaman gerçekten bulunmuş bir yerleştirmeye dayanır. Tersi
+    sezgiseldir: en çok kelimeyi sırasıyla eşleyen hizalama aranır; öbekte üstü çizili hiç geçmeyen
+    kelimeler önceliklidir, yeri bulunamayanlar öne alınıp yeniden denenir (`PLACEMENT_ROUNDS`) ve en az
+    eksik veren deneme döner. Var olan bir yerleştirme bulunamayabilir. İSTİSNA: öbek `CELL_LIMIT`'i
+    aşıyorsa sıra ARANMAZ, yalnız kelimelerin öbekte bulunmasına bakılır (`too_large`; çağıran not düşer).
+    """
+    if not old:
+        return [], set()
+    old_words = [w for w, _ in old]
+    new_words = [w for w, _, _ in new]
+    if too_large(old, new):
+        have = Counter(new_words)
+        unplaced = []
+        for i, word in enumerate(old_words):
+            if have[word] > 0:
+                have[word] -= 1
+            else:
+                unplaced.append(i)
+        return unplaced, set(range(len(new)))
+    n = len(old_words)
+    struck_words = {w for w, is_struck, _ in new if is_struck}
+    must = {w for w in old_words if w not in struck_words}
+    promoted: set[str] = set()
+    best: tuple[list[int], set[int]] | None = None
     for _ in range(PLACEMENT_ROUNDS):
-        left = _unmatched(old_words, plain, heavy)
-        missing = Counter({w: c - struck[w] for w, c in left.items() if c > struck[w]})
-        if not missing or set(missing) <= heavy:
+        weight = [(n + 1) * (n + 1) if w in must else n + 1 if w in promoted else 1 for w in old_words]
+        result = _leftover(old, new, _align(old_words, new_words, weight))
+        if best is None or len(result[0]) < len(best[0]):
+            best = result
+        fresh = {old_words[i] for i in result[0]} - must - promoted
+        if not result[0] or not fresh:
             break
-        heavy |= set(missing)
-    return missing
+        promoted |= fresh
+    assert best is not None
+    return best
 
 
-def displaced_lines(old: str, new: str) -> list[tuple[int, Counter, str]]:
-    """YERİNDE KORUNMAYAN eski satır öbekleri: (taban satır no, yeri bulunamayan kelimeler, ilk satırın başı).
+def unplaced_words(old: list[tuple[str, int]], new: list[tuple[str, bool, int]]) -> Counter:
+    """`place_words`'ün yeri bulunamayan kelimeleri (kelime → sayı)."""
+    return Counter(old[i][0] for i in place_words(old, new)[0])
 
-    Öbek = satır-düzeyi farkın değişen parçası. Aralarında yalnız ZAYIF çapa (boş satır ya da dosyada
-    birden çok kez geçen satır) bulunan komşu parçalar TEK öbek sayılır: fark algoritması böyle
-    satırları yanlış eşleyip tek bir düzenlemeyi ikiye bölebilir (ölçüldü: iki komşu paragraf yerinde
-    düzenlenip üstlerine bir not paragrafı eklenince ilk paragraf yalnız notla karşılaştırılıyordu).
 
-    Yeni dosyada kelime dizisi olarak bütün hâlinde duran eski satır (taşınmış ya da tümüyle üstü
-    çizilmiş) muaftır — ama yalnız yeni dosyada o satırdan en az eskisi KADAR varsa; öbeğin içindeki
-    karşılığı da başka satırlara örtü olmasın diye hesaptan düşülür.
+def displaced_lines(old: str, new: str, notes: list[str] | None = None) -> list[tuple[int, Counter, str]]:
+    """YERİNDE KORUNMAYAN eski satır öbekleri: (taban satır no, yeri bulunamayan kelimeler, o satırın başı).
+
+    ÖBEK = satır-düzeyi farkın değişen parçası. Aralarında yalnız ZAYIF çapa (boş satır ya da dosyada
+    birden çok kez geçen satır) bulunan komşu parçalar, aradaki satırlarla BİRLİKTE tek öbek sayılır:
+    fark algoritması böyle satırları yanlış eşleyip tek bir düzenlemeyi bölebilir ya da yinelenen bir
+    satırın yanlış kopyasını "değişmedi" sayabilir (ikisi de ölçüldü).
+
+    TAŞINAN SATIR. Kelimeleri kendi öbeğinde yer bulamayan bir eski satır, kelime dizisi aynı olan bir
+    yeni satır (taşınmış ya da tümüyle üstü çizilmiş) bulursa muaftır — o yeni satırın hiçbir kelimesi
+    başka bir eski satıra yer olmamışsa. Her yeni satır en çok BİR eski satırı muaf kılar ve muaf kıldıktan
+    sonra kendi öbeğinde başka satırlara yer olmaz.
     """
     o, n = old.splitlines(), new.splitlines()
     raw_old, raw_new = Counter(o), Counter(n)
-    keys_old, keys_new = Counter(map(_key, o)), Counter(map(_key, n))
     marked = _marked_words(n)
 
-    groups: list[list[int]] = []
-    current: list[int] | None = None
-    bridged = False
+    groups: list[tuple[list[int], list[int]]] = []    # (eski satır indeksleri, yeni satır indeksleri)
+    current: tuple[list[int], list[int]] | None = None
+    bridge: tuple[int, int, int, int] | None = None
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=o, b=n, autojunk=False).get_opcodes():
         if tag == "equal":
             weak = all(not line.strip() or raw_old[line] > 1 or raw_new[line] > 1 for line in o[i1:i2])
             if current is not None and weak:
-                bridged = True
+                bridge = (i1, i2, j1, j2)
             else:
                 if current is not None:
                     groups.append(current)
-                current, bridged = None, False
+                current, bridge = None, None
             continue
-        if current is not None and bridged:
-            current[1], current[3] = i2, j2
-        else:
-            if current is not None:
-                groups.append(current)
-            current = [i1, i2, j1, j2]
-        bridged = False
+        if current is None:
+            current = ([], [])
+        elif bridge is not None:
+            current[0].extend(range(bridge[0], bridge[1]))
+            current[1].extend(range(bridge[2], bridge[3]))
+        bridge = None
+        current[0].extend(range(i1, i2))
+        current[1].extend(range(j1, j2))
     if current is not None:
         groups.append(current)
 
+    def place_group(g: int, skip_old: set[int], skip_new: set[int]):
+        old_lines, new_lines = groups[g]
+        old_tokens = [(w, i) for i in old_lines if i not in skip_old for w in _key(o[i])]
+        new_tokens = [(w, is_struck, j) for j in new_lines if j not in skip_new for w, is_struck in marked[j]]
+        if notes is not None and too_large(old_tokens, new_tokens) and old_tokens:
+            note = (f"taban satır ~{old_tokens[0][1] + 1}: öbek çok büyük ({len(old_tokens)} × {len(new_tokens)} "
+                    "kelime) — sıra aranmadı, yalnız kelimelerin öbekte bulunmasına bakıldı")
+            if note not in notes:
+                notes.append(note)
+        unplaced, used = place_words(old_tokens, new_tokens)
+        return old_tokens, [old_tokens[i] for i in unplaced], {new_tokens[k][2] for k in used}
+
+    # 1) Her öbek kendi içinde yerleştirilir.
+    placed = [place_group(g, set(), set()) for g in range(len(groups))]
+
+    # 2) Yer bulamayan satırlar için taşınmış karşılık aranır: aynı kelime dizisi, hiçbir kelimesi kullanılmamış.
+    touched = {j for _, _, used_lines in placed for j in used_lines}
+    group_of_new = {j: g for g, (_, new_lines) in enumerate(groups) for j in new_lines}
+    homes: dict[tuple[str, ...], list[int]] = {}
+    for j in sorted(group_of_new):
+        if marked[j] and j not in touched:
+            homes.setdefault(_key(n[j]), []).append(j)
+    exempt: set[int] = set()
+    consumed: set[int] = set()
+    again: set[int] = set()
+    for g, (_, unplaced, _) in enumerate(placed):
+        for i in sorted({line for _, line in unplaced}):
+            free = [j for j in homes.get(_key(o[i]), ()) if j not in consumed]
+            if free:
+                consumed.add(free[0])
+                exempt.add(i)
+                again.update((g, group_of_new[free[0]]))
+
+    # 3) Muaf satırlar ve tüketilen karşılıklar çıkarılıp etkilenen öbekler yeniden yerleştirilir.
+    for g in again:
+        placed[g] = place_group(g, exempt, consumed)
+
     out: list[tuple[int, Counter, str]] = []
-    for i1, i2, j1, j2 in groups:
-        home = [_key(line) for line in n[j1:j2]]
-        used = [False] * (j2 - j1)
-        gone: list[str] = []
-        for line in o[i1:i2]:
-            key = _key(line)
-            if not key:
-                continue
-            if keys_new[key] >= keys_old[key]:
-                for idx, candidate in enumerate(home):
-                    if candidate == key and not used[idx]:
-                        used[idx] = True
-                        break
-                continue
-            gone.append(line)
-        if not gone:
-            continue
-        plain: list[str] = []
-        struck: Counter = Counter()
-        for idx in range(j2 - j1):
-            if used[idx]:
-                continue
-            for word, is_struck in marked[j1 + idx]:
-                if is_struck:
-                    struck[word] += 1
-                else:
-                    plain.append(word)
-        missing = unplaced_words([w for line in gone for w in _key(line)], plain, struck)
-        if missing:
-            out.append((i1 + 1, missing, gone[0].strip()[:90]))
+    for _, unplaced, _ in placed:
+        if unplaced:
+            first = min(line for _, line in unplaced)
+            out.append((first + 1, Counter(w for w, _ in unplaced), o[first].strip()[:90]))
     return out
 
 
@@ -361,7 +475,8 @@ def run(root: Path, base: str, only: list[str]) -> int:
         n = sum(lost.values())
         total += n
         # Dosya silindiyse ikinci ölçümün söyleyeceği yeni bir şey yoktur (her satır kayıptır).
-        moved = displaced_lines(old, new) if new_path is not None else []
+        notes: list[str] = []
+        moved = displaced_lines(old, new, notes) if new_path is not None else []
         displaced_total += len(moved)
         if n:
             sample = ", ".join(f"{w}×{c}" if c > 1 else w for w, c in lost.most_common(12))
@@ -373,6 +488,8 @@ def run(root: Path, base: str, only: list[str]) -> int:
             print(f"KIRMIZI: {label}: taban satır ~{line_no} yerinde korunmamış — eksilen: {sample} | {head}")
         if not n and not moved:
             print(f"  {label}: kaybolan kelime 0 · yerinde korunmayan satır 0")
+        for note in notes:
+            print(f"  NOT {label}: {note}")
     for path, why in fresh:
         print(f"  {path}: {why} — denetlenmedi")
     if total or displaced_total:
@@ -441,9 +558,15 @@ def selftest() -> int:
         ("üstü çizili parça iki satıra yayılıyor", "bir iki\nüç dört\nson\n", "~~bir iki\nüç dört~~ yeni metin\nson\n", 0, 0),
         ("yalnız ekleme (araya satır)", "A\nB\n", "A\nyeni\nB\n", 0, 0),
         ("kelime düpedüz silindi (iki ölçüm de görür)", "alfa beta gama\n", "alfa gama\n", 1, 1),
-        ("SINIR (yakalanmaz): silinen kelime aynı öbekte, sırayı bozmayan yerde yeniden geçiyor",
+        ("silinen kelime hemen üstteki not satırında geçiyor (satırın kalanı yerinde üstü çizili)",
          "| KS-8 | değer | Abkarada |\ndipnot\n",
-         "> not — Abkarada kararı\n| ~~KS-8~~ | ~~değer~~ KAPANDI | — |\ndipnot\n", 0, 0),
+         "> not — Abkarada kararı\n| ~~KS-8~~ | ~~değer~~ KAPANDI | — |\ndipnot\n", 0, 1),
+        ("aynı düzen, hücre üstü çizilerek değişti (not satırı hemen üstte)",
+         "| KS-8 | değer | Abkarada |\ndipnot\n",
+         "> not — Abkarada kararı\n| ~~KS-8~~ | ~~değer~~ KAPANDI | ~~Abkarada~~ — |\ndipnot\n", 0, 0),
+        ("SINIR (yakalanmaz): silinen kelime aynı öbekte, sırayı bozmayan yerde (hemen altta) yeniden geçiyor",
+         "| KS-8 | değer | Abkarada |\ndipnot\n",
+         "| ~~KS-8~~ | ~~değer~~ KAPANDI | — |\n> not — Abkarada kararı\ndipnot\n", 0, 0),
         # 2026-10-06 — #93 incelemesinin bulguları
         ("iki komşu paragraf yerinde düzenlendi, üstlerine not paragrafı eklendi (fark boş satırları yanlış eşler)",
          "## 4\n\nP1 eski bir.\n\nP2 eski iki.\n\n## 5\n",
@@ -480,6 +603,39 @@ def selftest() -> int:
          "c b b\n", "~~c b~~ b c\n", 0, 0),
         ("paragraf yeniden sarıldı (kelime sırası aynı)",
          "bir iki üç dört\nbeş altı yedi\nsekiz dokuz\n", "bir iki üç\ndört beş altı\nyedi sekiz dokuz\n", 0, 0),
+        # 2026-10-06 — düzeltme commit'inin incelemesi: komşu satırın üstü çizili kelimesi örtü olmaz
+        ("komşu başlıkta üstü çizilip yeniden yazılan kelime, bu başlıktan silineni örtmez",
+         "## 16. RA Identity / RA Noise CCR\n\n### 16.1 RA Identity CCR\n\nmetin\n",
+         "## 16. Identity / RA Noise CCR\n\n### 16.1 ~~RA Identity~~ RA Kimlik CCR\n\nmetin\n", 0, 1),
+        ("komşu paragrafta `~~W~~ W …` yazılmış; bu paragraftan W üstü çizilmeden çıkarılmış",
+         "Karar sahibi: Abkarada.\n\nOnay: Abkarada.\n\nson\n",
+         "Karar sahibi: Hasan.\n\nOnay: ~~Abkarada~~ Abkarada ve Hasan.\n\nson\n", 0, 1),
+        ("komşu tablo satırında `~~W~~ W …`; bu satırın hücresi üstü çizilmeden değişmiş",
+         "| KS-8 | connect kalıcı niyet | Abkarada |\n| KS-9 | idle teardown yok | Abkarada |\nson\n",
+         "| KS-8 | connect kalıcı niyet | — |\n| KS-9 | idle teardown yok | ~~Abkarada~~ Abkarada + Hasan |\nson\n", 0, 1),
+        ("aynı tablo, iki hücre de üstü çizilerek değişti",
+         "| KS-8 | connect kalıcı niyet | Abkarada |\n| KS-9 | idle teardown yok | Abkarada |\nson\n",
+         "| KS-8 | connect kalıcı niyet | ~~Abkarada~~ — |\n| KS-9 | idle teardown yok | ~~Abkarada~~ Abkarada + Hasan |\nson\n", 0, 0),
+        ("bütünüyle üstü çizilen satır başka öbeğe taşınmış; oradaki silmeyi örtmez",
+         "başlık\nfoo bar\nara metin tekil\nfoo baz qux\nson\n",
+         "> YAMA: foo\nbaşlık\nara metin tekil\n~~foo bar~~\nbaz qux\nson\n", 0, 1),
+        ("yinelenen satır yerinde duruyor; komşusunun üstü çizili karşılığını tüketmez",
+         "Durum: AÇIK (Abkarada bekliyor)\nDurum: AÇIK\nNot: eski\nx\nDurum: AÇIK\n",
+         "~~Durum: AÇIK (Abkarada bekliyor)~~\nDurum: KAPANDI (Abkarada bekliyor)\nDurum: AÇIK\nNot: ~~eski~~ yeni\nx\nDurum: AÇIK\n", 0, 0),
+        ("SINIR (yanlış kırmızı): eski satırın bir PARÇASI ayrı bir satırda üstü çizilmiş",
+         "Durum: AÇIK (Abkarada bekliyor)\nson\n",
+         "~~AÇIK~~\nDurum: KAPANDI (Abkarada bekliyor)\nson\n", 0, 1),
+        ("alıntıda yalnız `>` taşıyan satır paragrafı ayırır; tek kalmış ~~ sonraki paragrafa taşmaz",
+         "> bir iki\n>\n> alfa beta gama\nson\n", "> bir ~~ iki\n>\n> alfa gama beta\nson\n", 0, 1),
+        ("numaralı listeye madde eklendi, sonrakilerin numarası kaydı",
+         "1. alfa\n2. beta\n3. gama\nson\n", "1. alfa\n2. yeni madde\n3. beta\n4. gama\nson\n", 0, 0),
+        ("numaralı liste maddesinin metni üstü çizilmeden değişti (numara muafiyeti içeriği kapsamaz)",
+         "1. alfa\n2. beta delta\n3. gama\nson\n", "> not: delta\n\n1. alfa\n2. beta\n3. gama\nson\n", 0, 1),
+        ("yeniden sarma + üstü çizme: üstü çizili kelime yeni satırın başına düştü",
+         "aaa bbb ccc\nddd eee\nson\n", "aaa bbb\n~~ccc~~ XXX ddd eee\nson\n", 0, 0),
+        ("kod bloğunda eski satır yorum içinde üstü çizilerek korundu",
+         "```rust\nfn cancel(&mut self, ticket: ConnectTicket);\n```\nson\n",
+         "```rust\n// ~~fn cancel(&mut self, ticket: ConnectTicket);~~\nfn cancel(&mut self, ticket: ConnectTicket) -> bool;\n```\nson\n", 0, 0),
     ]
     for name, old, new, want_lost, want_displaced in placed:
         got_lost = sum(lost_words(old, new).values())
@@ -488,6 +644,14 @@ def selftest() -> int:
         bad += not ok
         print(f"  {'PASS' if ok else 'FAIL'}  yerinde: {name}: beklenen (kayıp {want_lost}, öbek {want_displaced}), "
               f"gelen ({got_lost}, {got_displaced})")
+    reported = displaced_lines(
+        "replay identity = (session, direction, epoch, counter).\n\nState per (session, direction, epoch) tutulur.\n\nson\n",
+        "replay identity = (session, direction, counter).\n\nState ~~per (session, direction, epoch)~~ per (session, direction) "
+        "tutulur; epoch yalnız anahtarı seçer.\n\nson\n")
+    ok = len(reported) == 1 and reported[0][0] == 1 and dict(reported[0][1]) == {"epoch": 1}
+    bad += not ok
+    print(f"  {'PASS' if ok else 'FAIL'}  yerinde: raporlanan kelime çıkarılan kelimedir (epoch): gelen "
+          f"{[(line, dict(words)) for line, words, _ in reported]}")
     for path, want in (("specs/a.md", True), ("specs/x/b.md", True), ("docs/seams/KM-SEAM-AT-001.md", True),
                        ("docs/sprint_plan/SPRINT-BACKLOG-FREEZE.md", True), ("docs/PARK-LISTESI.md", True),
                        ("docs/hayri-app.md", True), ("README.md", False), ("reports/r.md", False),
@@ -529,6 +693,9 @@ def main(argv: list[str]) -> int:
         return run(root, base, files)
     except EnvironmentError as e:
         print(f"ORTAM HATASI: {e}", file=sys.stderr)
+        return 2
+    except UnicodeDecodeError as e:
+        print(f"ORTAM HATASI: kapsamdaki bir dosya UTF-8 değil ({e})", file=sys.stderr)
         return 2
 
 
