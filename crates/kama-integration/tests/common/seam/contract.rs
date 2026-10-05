@@ -20,10 +20,12 @@
 //!   kapı-seviyesi denetimdir: `scripts/ci/layer_check.py` (beyanda durum `static`, kanıt
 //!   `layer_check`; runner mock koşusunda o kapıyı da koşturur).
 //! * **sözleşme** ([`seam_contract_suite!`]) — §6'nın 12 davranış satırı. **Bugün 12'sinin de
-//!   gövdesi vardır**: yedisi `feature/app`'ten taşındı (Hayri — H-ROUNDTRIP, H-EVENTS, H-CUTOVER,
-//!   H-CONNECT-IDEMP, H-EARLY-CONFLICT, H-CAPS, H-COMPRESS-BOUNDARY), dördü DR-CONNECT-1 ile gelen
-//!   satırlardır (H-APP-RETRY-0, H-CANCEL, H-PROGRESS, H-SILENT-REJECT), H-PENDING-CAP G-S3 kanıt
-//!   işinden gelir. HEPSİ `mock_only`'dir: yalnız sahtede koştukları için kanıt değerleri ikinci
+//!   gövdesi vardır**: yedisi `feature/app`'teki `conf_s1_seam.rs` satırlarıdır (Hayri —
+//!   H-ROUNDTRIP, H-EVENTS, H-CUTOVER, H-CONNECT-IDEMP, H-EARLY-CONFLICT, H-CAPS,
+//!   H-COMPRESS-BOUNDARY; H-ROUNDTRIP'in gövdesi bu süitte zaten vardı ve özgün testin iddialarını
+//!   kapsar, diğer altısı oradan taşındı), dördü eksik kalan satırlardır (H-APP-RETRY-0, H-CANCEL,
+//!   H-PROGRESS, H-SILENT-REJECT), H-PENDING-CAP G-S3 kanıt işinden gelir. On ikisi de
+//!   `mock_only`'dir: yalnız sahtede koştukları için kanıt değerleri ikinci
 //!   hedef gelince doğar. Bu ayrım `scripts/ci/seam-coverage.json` içinde satır satır beyan
 //!   edilir; runner, Rust tarafının bildirdiği listeyi (aşağıdaki sentinel) o beyanla ve fiilen
 //!   LİSTELENEN test adlarıyla ÇAPRAZ KONTROL eder ve tek hedef varken hiçbir satırın "kanıtlandı"

@@ -37,9 +37,10 @@
 //!
 //! Provisional supersession (bilinen eşten yeni-sayaçlı INIT) ve glare · `LongOutage` fazı ·
 //! `DeadlineBounded` süresinin dolması · sırasız/duplicate teslim ENJEKSİYONU (§7 sayar; yok) ·
-//! gerçek kayıp/kurtarma (buradaki "recovery" bir anahtardır, ARQ/FEC değil) · AĞ: link durumu
-//! yalnız prob emisyonunu ve `ConnectProgress` olaylarını etkiler — link yokken de `pump()`
-//! handshake tamamlar ve `send` teslim eder. Bunlar gerçek hedefin işidir.
+//! gerçek kayıp/kurtarma (buradaki "recovery" bir anahtardır, ARQ/FEC değil) · prob backoff'u ve
+//! jitter'ı (sabit aralık) · AĞ: link durumu yalnız prob emisyonunu ve `ConnectProgress`
+//! olaylarını etkiler — link yokken de `pump()` handshake tamamlar ve `send` teslim eder. Bunlar
+//! gerçek hedefin işidir.
 
 // Bu ortak modül birden fazla test ikilisi tarafından ayrı ayrı derlenir; her ikili enjeksiyon
 // metotlarının hepsini kullanmayabilir.
@@ -66,7 +67,9 @@ pub const MAX_SESSIONS: usize = 2 * PENDING_INIT_CAP;
 pub const MAX_INBOX: usize = 64;
 /// Olay kuyruğu tavanı.
 pub const MAX_EVENTS: usize = 64;
-/// Link açıkken hub yolu prob kadansı (transport-tdd §10 [AMENDMENT-10], KS-HB-1 ön plan).
+/// Link açıkken hub yolu prob aralığı: transport-tdd §10 [AMENDMENT-10]'daki backoff TAVANI
+/// (KS-HB-1, ön plan 8 s). Sahte sabit aralıkla prob atar; backoff rampasını (500 ms'den ×2) ve
+/// jitter'ı modellemez. Sözleşme satırları bu sayıya bağlanmaz.
 pub const PROBE_INTERVAL: Duration = Duration::from_secs(8);
 
 /// Gözlem sayaçları — salt-okunur; sözleşme yüzeyi DEĞİLDİR.
