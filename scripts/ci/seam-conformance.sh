@@ -13,8 +13,11 @@
 #
 # CIKIS KODLARI
 #   0  yesil
-#   1  kirmizi (test kirmizi · vakum · beyan ↔ gerceklik ayrismasi · drift)
-#   2  ortam/kullanim hatasi (eksik/gecersiz --target, python3 yok, dosya yok)
+#   1  kirmizi (test kirmizi · vakum · #[ignore]'lu test · beyan ↔ gerceklik ayrismasi · drift ·
+#      iddia edilen satirin testi listede yok · statik satirin kaniti (layer_check.py) kirmizi)
+#   2  ortam/kullanim hatasi (eksik/gecersiz --target, python3 yok, dosya yok, layer_check.py'nin
+#      kendi ortam hatasi). Ortam hatasi, o ana kadar birikmis bir kirmiziyi ORTER: kosum yarida
+#      kesilir ve 2 doner (cikti birikmis kirmiziyi ayrica soyler).
 #   3  BEYAN EDILMIS BOSLUK — istenen hedef bu derlemede yok ve yoklugu kimlikli olarak beyanli
 #      (bugun: --target real → GAP-SEAM-REAL-1). Yesil DEGILDIR; "unuttuk" ile "henuz yok"u ayirir.
 #
@@ -31,6 +34,7 @@ cd "$ROOT" || exit 2
 PKG="kama-integration"
 COVERAGE="scripts/ci/seam-coverage.json"
 DRIFT="scripts/ci/seam-api-drift.py"
+LAYER="scripts/ci/layer_check.py"
 
 usage() {
   sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -76,6 +80,12 @@ run_suite() {
     tail -20 "$log"
     return 1
   fi
+  # #[ignore]'lu test LISTELENIR ama KOSMAZ; "listede var" kaniti onu yesil saydirmasin.
+  if ! grep -Eq "test result: ok\. [0-9]+ passed; 0 failed; 0 ignored" "$log"; then
+    bad "$PKG::$t icinde #[ignore]'lu (kosmayan) test var — susturulmus test yesil sayilmaz"
+    grep -E "test result:| \.\.\. ignored" "$log" | head -10
+    return 1
+  fi
   grep -E "test result: ok" "$log" | head -1 | sed 's/^/  /'
   return 0
 }
@@ -105,37 +115,88 @@ run_mock() {
   run_suite seam_mock_fixture "$fixture_log"
 
   # Sozlesme satiri beyani ↔ gerceklik (ADR-03 doktrini: birincil + capraz merci)
-  step "§6 kapsam: kod ↔ beyan capraz kontrolu"
+  step "§6 kapsam: kod ↔ beyan ↔ listelenen testler capraz kontrolu"
   rows="$(grep -o 'SEAM-CONTRACT-ROWS: target=[^ ]* rows=.*' "$core_log" | head -1)"
+  # "Iddia edilen satir gercekten bir test mi" sorusu kosum logundan DEGIL --list'ten okunur:
+  # --nocapture ciktisi satir ortasinda ic ice gecebilir (olculdu), --list gecmez. Listede olmak
+  # kosmus olmak DEGILDIR; kosumun tamaminin gectigi ve hicbir testin #[ignore] ile susturulmadigi
+  # yukarida run_suite'te olculdu (0 failed; 0 ignored).
+  listed="$(cargo test -p "$PKG" --test seam_conformance_core -- --list 2>/dev/null | grep ': test$' || true)"
+
+  # Statik satirlar (kind=static) kosum degil kapi-seviyesi denetimdir; kanitlari burada KOSTURULUR.
+  static_proof="none"
+  if grep -q '"proof": "layer_check"' "$COVERAGE"; then
+    if [[ ! -f "$LAYER" ]]; then
+      bad "$LAYER yok — statik satirlarin kaniti kosturulamadi"
+      static_proof="red"
+    elif layer_out="$(python3 "$LAYER" --root "$ROOT" 2>&1)"; then
+      static_proof="ok"
+      printf '  statik kanit: %s\n' "$(tail -1 <<<"$layer_out")"
+    else
+      layer_rc=$?
+      printf '%s\n' "$layer_out" | tail -12
+      if [[ "$layer_rc" -eq 2 ]]; then
+        # layer_check'in KENDI ortam hatasi (cargo metadata calismadi vb.) bir katman ihlali degildir.
+        echo "ORTAM HATASI: statik satirlarin kaniti kosturulamadi (layer_check.py cikis 2)"
+        ((fail)) && echo "(ayrica: bu ana kadar en az bir KIRMIZI kaydedilmisti — yukariya bakin)"
+        rm -f "$core_log" "$fixture_log"
+        exit 2
+      fi
+      bad "statik satirlarin kaniti (layer_check.py) kirmizi"
+      static_proof="red"
+    fi
+  fi
+
   if [[ -z "$rows" ]]; then
     bad "conformance-core kapsam sentinel'ini basmadi (SEAM-CONTRACT-ROWS) — kod tarafi sessiz"
   else
     printf '  %s\n' "$rows"
-    ROWS_LINE="$rows" python3 - "$COVERAGE" <<'PY' || fail=1
+    ROWS_LINE="$rows" LISTED="$listed" STATIC_PROOF="$static_proof" python3 - "$COVERAGE" <<'PY' || fail=1
 import json, os, sys
 line = os.environ["ROWS_LINE"]
 code_rows = [r for r in line.split("rows=", 1)[1].strip().split(",") if r]
+listed = {l.rsplit(": test", 1)[0].strip() for l in os.environ["LISTED"].splitlines() if l.strip()}
+static_proof = os.environ["STATIC_PROOF"]
 cov = json.load(open(sys.argv[1], encoding="utf-8"))
 # Kod tarafi "hangi govdeler kosuyor" der; beyan "o govdenin kanit degeri ne" der.
 # Kosan bir govde ya implemented (iki hedefte) ya mock_only (yalniz sahtede) olabilir.
 declared = [r["id"] for r in cov["rows"] if r.get("status") in ("implemented", "mock_only")]
 proven = [r["id"] for r in cov["rows"] if r.get("status") == "implemented"]
+static = [r["id"] for r in cov["rows"] if r.get("status") == "static"]
+absent = [r["id"] for r in cov["rows"] if r.get("status") == "not_implemented"]
 floor = cov.get("implemented_baseline", 0) + cov.get("mock_only_baseline", 0)
 ok = True
+def red(title, msg):
+    global ok
+    print(f"::error title=SEAM-CONFORMANCE::{msg}")
+    print(f"KIRMIZI: {title}")
+    ok = False
 if sorted(code_rows) != sorted(declared):
-    print(f"::error title=SEAM-CONFORMANCE::kapsam ayrismasi — kodda {sorted(code_rows)}, "
-          f"beyanda {sorted(declared)}. Ikisi AYNI commit'te guncellenir.")
-    print("KIRMIZI: §6 kapsam beyani gerceklikle ayrisiyor")
-    ok = False
+    red("§6 kapsam beyani gerceklikle ayrisiyor",
+        f"kapsam ayrismasi — kodda {sorted(code_rows)}, beyanda {sorted(declared)}. "
+        f"Ikisi AYNI commit'te guncellenir.")
 if len(code_rows) < floor:
-    print(f"::error title=SEAM-CONFORMANCE::ratchet dustu — kodda {len(code_rows)} satir, "
-          f"taban {floor}. Kapsam kaybi bilincli mi?")
-    print("KIRMIZI: kapsam ratchet'i dustu")
-    ok = False
+    red("kapsam ratchet'i dustu",
+        f"ratchet dustu — kodda {len(code_rows)} satir, taban {floor}. Kapsam kaybi bilincli mi?")
+# Iddia edilen her satirin MOCK hedefinde listelenen bir testi olmali (ad = kimligin kucuk harfli,
+# '-' yerine '_' konmus hali). CONTRACT_ROWS elle tutulan bir listedir; sarmalayici silinirse
+# liste yalan soyler ve bunu baska hicbir sey yakalamaz.
+ghost = [r for r in code_rows if f"mock_contract::{r.lower().replace('-', '_')}" not in listed]
+if ghost:
+    red("iddia edilen §6 satirinin testi yok",
+        f"CONTRACT_ROWS'ta olup mock hedefinde listelenen testi OLMAYAN satir(lar): {ghost} "
+        f"(beklenen ad: mock_contract::<kimlik kucuk harf, - yerine _>)")
+if static and static_proof != "ok":
+    red("statik satirlar kanitsiz",
+        f"statik beyanli satir(lar) {static} icin kanit kapisi yesil degil (durum: {static_proof})")
 if ok:
     total = len(cov["rows"])
+    running = len(code_rows) + len(static)
     print(f"  §6 kapsami: {len(proven)}/{total} KANITLANMIS (iki hedefte) · "
-          f"{len(code_rows) - len(proven)}/{total} yalniz sahtede · taban {floor}")
+          f"{len(code_rows) - len(proven)}/{total} yalniz sahtede · "
+          f"{len(static)}/{total} statik (layer_check) · taban {floor}")
+    print(f"  §6: {running}/{total} satir kosuyor ({len(code_rows)} davranis @ mock + {len(static)} statik kapi)"
+          + (f" · uygulanmamis: {absent}" if absent else ""))
 sys.exit(0 if ok else 1)
 PY
   fi
@@ -171,6 +232,8 @@ run_real() {
   elif ! grep -Eq "test result: ok\. [1-9][0-9]* passed" "$real_core_log"; then
     bad "gercek hedef kayitli ama conformance-core'da 'real' adinda 0 test kostu — \
 suit gercek hedefte ornekleendi mi? (seam_mechanism_suite!/seam_contract_suite! real satirlari)"
+  elif ! grep -Eq "test result: ok\. [0-9]+ passed; 0 failed; 0 ignored" "$real_core_log"; then
+    bad "conformance-core real kolunda #[ignore]'lu (kosmayan) test var — susturulmus test yesil sayilmaz"
   else
     grep -E "test result: ok" "$real_core_log" | head -1 | sed 's/^/  /'
   fi

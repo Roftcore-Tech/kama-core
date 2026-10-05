@@ -1,0 +1,118 @@
+{
+  "schema_version": 2,
+  "suite": "amp-record-v1",
+  "spec_version": "application-message-protocol@v1+2026-10-04-K1",
+  "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile s\u0131f\u0131r payla\u015f\u0131m)",
+  "description": "AMP \u00a72/\u00a73/\u00a75 AppMessageRecord kodlamas\u0131 \u2014 0x01\u20130x08 tiplerinin her biri i\u00e7in 1 pozitif vekt\u00f6r + bir s\u0131k\u0131\u015ft\u0131r\u0131lm\u0131\u015f TEXT \u00f6rne\u011fi. 0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE i\u00e7in vekt\u00f6r YOK (\u00a77 her tip i\u00e7in ister; eksik). B1.2 (WS-B/Hayri); t\u00fcketici B2.1'deki ger\u00e7ek Rust codec'i.",
+  "notes": {
+    "compressed": "flags.bit0=1; body = compression_id(1)|uncompressed_len(4be)|zstd payload (\u00a75). zstd payload baytlar\u0131 \u00fcreten kitapl\u0131\u011f\u0131n s\u00fcr\u00fcm\u00fcne ba\u011fl\u0131 olabilir (zstd s\u00fcr\u00fcmler aras\u0131 bayt-\u00f6zde\u015f \u00e7\u0131kt\u0131 garanti etmez); bu vakadaki expected_hex \u00fcretildi\u011fi ortam\u0131n \u00e7\u0131kt\u0131s\u0131d\u0131r."
+  },
+  "case_count": 9,
+  "cases": [
+    {
+      "id": "amp-record-v1.encode.text",
+      "kind": "encode",
+      "note": "TEXT (0x01): msg_id u32, text_len, text (UTF-8). G\u00f6vde \u00f6neki 6 B; sent_at_ms telde yok (K1).",
+      "spec_ref": "application-message-protocol.md \u00a73 0x01 TEXT",
+      "input": {
+        "msg_id": 1,
+        "text": "merhaba"
+      },
+      "expected_hex": "010100000d0000000100076d657268616261"
+    },
+    {
+      "id": "amp-record-v1.encode.file-begin",
+      "kind": "encode",
+      "note": "FILE_BEGIN (0x02): transfer_id, file_size, whole_file_hash[32], chunk_count, name_len+name.",
+      "spec_ref": "application-message-protocol.md \u00a73 0x02 FILE_BEGIN",
+      "input": {
+        "chunk_count": 4,
+        "file_size": 4096,
+        "name": "rapor.pdf",
+        "transfer_id": 42,
+        "whole_file_hash_hex": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "expected_hex": "010200003e000000000000002a0000000000001000111111111111111111111111111111111111111111111111111111111111111100000004097261706f722e706466"
+    },
+    {
+      "id": "amp-record-v1.encode.file-chunk",
+      "kind": "encode",
+      "note": "FILE_CHUNK (0x03): transfer_id, offset, payload_len+payload (18B sabit \u00f6nek).",
+      "spec_ref": "application-message-protocol.md \u00a73 0x03 FILE_CHUNK",
+      "input": {
+        "offset": 0,
+        "payload_hex": "dededededededededededededededede",
+        "transfer_id": 42
+      },
+      "expected_hex": "0103000022000000000000002a00000000000000000010dededededededededededededededede"
+    },
+    {
+      "id": "amp-record-v1.encode.file-end",
+      "kind": "encode",
+      "note": "FILE_END (0x04): yaln\u0131z transfer_id.",
+      "spec_ref": "application-message-protocol.md \u00a73 0x04 FILE_END",
+      "input": {
+        "transfer_id": 42
+      },
+      "expected_hex": "0104000008000000000000002a"
+    },
+    {
+      "id": "amp-record-v1.encode.file-abort",
+      "kind": "encode",
+      "note": "FILE_ABORT (0x05): transfer_id, reason (0x02 = hash_mismatch).",
+      "spec_ref": "application-message-protocol.md \u00a73 0x05 FILE_ABORT",
+      "input": {
+        "reason": 2,
+        "transfer_id": 42
+      },
+      "expected_hex": "0105000009000000000000002a02"
+    },
+    {
+      "id": "amp-record-v1.encode.ptt-open",
+      "kind": "encode",
+      "note": "PTT_OPEN (0x06): stream_id, codec (0x01=opus), bundle_ms.",
+      "spec_ref": "application-message-protocol.md \u00a73 0x06 PTT_OPEN",
+      "input": {
+        "bundle_ms": 20,
+        "codec": 1,
+        "stream_id": 7
+      },
+      "expected_hex": "0106000006000000070114"
+    },
+    {
+      "id": "amp-record-v1.encode.ptt-close",
+      "kind": "encode",
+      "note": "PTT_CLOSE (0x07): yaln\u0131z stream_id.",
+      "spec_ref": "application-message-protocol.md \u00a73 0x07 PTT_CLOSE",
+      "input": {
+        "stream_id": 7
+      },
+      "expected_hex": "010700000400000007"
+    },
+    {
+      "id": "amp-record-v1.encode.receipt-delivered",
+      "kind": "encode",
+      "note": "RECEIPT (0x08): ref_msg_id u32, kind (0x01=delivered, M3a kapsam\u0131 \u2014 AMP A4).",
+      "spec_ref": "application-message-protocol.md \u00a73 0x08 RECEIPT",
+      "input": {
+        "kind": 1,
+        "ref_msg_id": 1
+      },
+      "expected_hex": "01080000050000000101"
+    },
+    {
+      "id": "amp-record-v1.encode.text-compressed",
+      "kind": "encode",
+      "flags": [
+        "compressed"
+      ],
+      "note": "TEXT, flags.bit0=1: body = compression_id(1)|uncompressed_len(4be)|zstd(payload). Ger\u00e7ek zstd (Python 3.14 compression.zstd) ile \u00fcretildi.",
+      "spec_ref": "application-message-protocol.md \u00a75",
+      "input": {
+        "msg_id": 2,
+        "text": "tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin "
+      },
+      "expected_hex": "010101002d010000009628b52ffd2096fd0000c000000002009074656b726172206564656e206d6574696e200100ec4ae718"
+    }
+  ]
+}

@@ -1,0 +1,130 @@
+{
+  "schema_version": 2,
+  "suite": "amp-record-reject-v1",
+  "spec_version": "application-message-protocol@v1+2026-10-04-K1",
+  "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile s\u0131f\u0131r payla\u015f\u0131m)",
+  "description": "AMP \u00a72/\u00a75/\u00a76 negatif corpus: reserved type/flag, i\u00e7 alan/body_len uyumsuzlu\u011fu, s\u0131k\u0131\u015ft\u0131rma bomb korumalar\u0131 (uncompressed_len a\u015f\u0131m\u0131, expansion oran\u0131), ger\u00e7ek zstd ile kesilmi\u015f/ge\u00e7ersiz frame, bilinmeyen compression_id/msg_version.",
+  "notes": {
+    "compressed": "flags.bit0=1 g\u00f6vde (\u00a75).",
+    "compression-length-only": "Decoder yaln\u0131z beyan edilen uzunluk alanlar\u0131na bakarak reddeder; zstd decompress'e H\u0130\u00c7 ba\u015flanmaz \u2014 ger\u00e7ek bir zstd frame'i olmas\u0131 gerekmez."
+  },
+  "case_count": 9,
+  "cases": [
+    {
+      "id": "amp-record-reject-v1.decode.reserved-msg-type",
+      "kind": "decode",
+      "note": "msg_type=0x00 rezerve (\u00a72: 0x00 ve 0xF0..0xFF \u2192 REJECT).",
+      "spec_ref": "application-message-protocol.md \u00a72",
+      "input_hex": "0100000000",
+      "expected": {
+        "result": "reject",
+        "reason": "reserved-msg-type"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.reserved-flags-nonzero",
+      "kind": "decode",
+      "note": "flags bit1 set; bit1..7 reserved-zero olmal\u0131 (\u00a72).",
+      "spec_ref": "application-message-protocol.md \u00a72",
+      "input_hex": "0101020006000000010000",
+      "expected": {
+        "result": "reject",
+        "reason": "reserved-flags-nonzero"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.inner-field-exceeds-body-len",
+      "kind": "decode",
+      "note": "TEXT.text_len=100 ama body_len i\u00e7inde yaln\u0131z 3 bayt kald\u0131 \u2014 A1: toplam \u2264 body_len, a\u015farsa DROP.",
+      "spec_ref": "application-message-protocol.md \u00a72 (A1)",
+      "input_hex": "0101000009000000010064616263",
+      "expected": {
+        "result": "drop",
+        "reason": "inner-field-exceeds-body-len"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.uncompressed-len-exceeds-max",
+      "kind": "decode",
+      "flags": [
+        "compressed",
+        "compression-length-only"
+      ],
+      "note": "uncompressed_len=1020 > MAX_DECOMPRESSED_MESSAGE=1019 (test parametresi: max_plaintext_unit_bytes=1024) \u2014 decompress'e H\u0130\u00c7 ba\u015flanmaz (\u00a75 kural 1, bomb korumas\u0131).",
+      "spec_ref": "application-message-protocol.md \u00a75 kural 1",
+      "input_hex": "010101000d01000003fc0000000000000000",
+      "expected": {
+        "result": "drop",
+        "reason": "uncompressed-len-exceeds-max-decompressed"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.expansion-ratio-exceeded",
+      "kind": "decode",
+      "flags": [
+        "compressed",
+        "compression-length-only"
+      ],
+      "note": "uncompressed_len/body_len = 1000/10 = 100 > MAX_EXPANSION_RATIO=64 (\u00a75 kural 4, ek bomb s\u0131n\u0131r\u0131).",
+      "spec_ref": "application-message-protocol.md \u00a75 kural 4",
+      "input_hex": "010101000a01000003e80102030405",
+      "expected": {
+        "result": "drop",
+        "reason": "expansion-ratio-exceeded"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.truncated-zstd-stream",
+      "kind": "decode",
+      "flags": [
+        "compressed"
+      ],
+      "note": "Ger\u00e7ek zstd frame'in son 4 bayt\u0131 kesilmi\u015f \u2014 decompress denenir, tamamlanamaz (\u00a75 kural 3).",
+      "spec_ref": "application-message-protocol.md \u00a75 kural 3",
+      "input_hex": "010101003601000000de28b52ffd20de650100140267657263656b207a737464206672616d65202d206b6573696c6569636572696b20020036a4c8",
+      "expected": {
+        "result": "drop",
+        "reason": "invalid-zstd-frame"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.invalid-zstd-frame",
+      "kind": "decode",
+      "flags": [
+        "compressed"
+      ],
+      "note": "0xFF dolgu \u2014 hi\u00e7bir zaman ge\u00e7erli bir zstd frame'i olmad\u0131 (\u00a75 kural 3).",
+      "spec_ref": "application-message-protocol.md \u00a75 kural 3",
+      "input_hex": "01010100150100000010ffffffffffffffffffffffffffffffff",
+      "expected": {
+        "result": "drop",
+        "reason": "invalid-zstd-frame"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.unknown-compression-id",
+      "kind": "decode",
+      "flags": [
+        "compressed"
+      ],
+      "note": "compression_id=0x00 tan\u0131ms\u0131z (0x01=zstd tek algoritma; 0x00 yasak \u2014 bit0=0 kullan\u0131l\u0131r).",
+      "spec_ref": "application-message-protocol.md \u00a75",
+      "input_hex": "0101010009000000000400000000",
+      "expected": {
+        "result": "reject",
+        "reason": "unknown-compression-id"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.unknown-msg-version",
+      "kind": "decode",
+      "note": "msg_version=0x02 bilinmeyen \u2192 DROP, REJECT de\u011fil (\u00a76: ileri uyum).",
+      "spec_ref": "application-message-protocol.md \u00a76",
+      "input_hex": "02010000080000000100026869",
+      "expected": {
+        "result": "drop",
+        "reason": "unknown-msg-version"
+      }
+    }
+  ]
+}
