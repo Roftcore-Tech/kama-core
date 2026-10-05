@@ -60,6 +60,8 @@ pub trait SeamTarget {
     const ID: &'static str;
     /// Hedef ailesi — kategori sızıntısı sınamalarında kullanılır.
     const KIND: TargetKind;
+    /// Hedefin istemci pending INIT tavanı — ADLANDIRILMIŞ sabitinden (ccr §35.15 KS-DOS-1).
+    const PENDING_INIT_CAP: usize;
 
     /// # Errors
     /// Hedef bu derlemede mevcut değilse [`TargetUnavailable`] (typed; beyan edilmiş boşluk).
@@ -99,9 +101,15 @@ pub struct EchoMockTransport {
     inbox: VecDeque<Delivered>,
 }
 
+/// İstemci pending INIT tavanı (ccr §35.15 KS-DOS-1; tutarlılık zinciri gereği
+/// `PENDING_RESPONSE_TRIAL_CAP` ile EŞİT). Bu kadar bekleyen `connect` varken yeni bir eşe `connect`
+/// → `Backpressure` (KM-SEAM-AT-001 §3, H-PENDING-CAP). Değer spec'ten gelir; sözleşme satırı onu
+/// ccr-format-spec'teki sayıyla karşılaştırır.
+pub const MOCK_PENDING_INIT_CAP: usize = 16;
 /// Eşzamanlı oturum tavanı (identity multi-device limit=1 ile karıştırılmamalı; bu yalnız
-/// sahtenin bellek sınırıdır).
-pub const MOCK_MAX_SESSIONS: usize = 4;
+/// sahtenin bellek sınırıdır). Pending tavanından BÜYÜK olmalıdır: yoksa pending tavanına hiç
+/// ulaşılamaz ve H-PENDING-CAP tablo tavanını ölçerdi.
+pub const MOCK_MAX_SESSIONS: usize = 2 * MOCK_PENDING_INIT_CAP;
 /// Teslim kuyruğu tavanı.
 pub const MOCK_MAX_INBOX: usize = 64;
 /// Olay kuyruğu tavanı.
@@ -192,6 +200,15 @@ impl KamaTransport for EchoMockTransport {
             });
         }
 
+        // H-PENDING-CAP (§3): pending INIT tavanı doluyken yeni niyet AÇILMAZ; hiçbir state değişmez.
+        let pending = self
+            .sessions
+            .iter()
+            .filter(|s| s.state == SessionState::Pending)
+            .count();
+        if pending >= MOCK_PENDING_INIT_CAP {
+            return Err(TransportError::Backpressure);
+        }
         if self.sessions.len() >= MOCK_MAX_SESSIONS || self.events.len() >= MOCK_MAX_EVENTS {
             return Err(TransportError::Backpressure);
         }
@@ -302,6 +319,7 @@ impl SeamTarget for MockTarget {
     type Transport = EchoMockTransport;
     const ID: &'static str = "mock";
     const KIND: TargetKind = TargetKind::Mock;
+    const PENDING_INIT_CAP: usize = MOCK_PENDING_INIT_CAP;
 
     fn build() -> Result<Self::Transport, TargetUnavailable> {
         Ok(EchoMockTransport::new(TransportCapabilities {

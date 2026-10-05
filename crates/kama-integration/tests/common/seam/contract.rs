@@ -37,7 +37,7 @@
 /// **Bir satırın burada olması "kanıtlandı" demek DEĞİLDİR.** Tek hedef (mock) kayıtlıyken bir
 /// satır olsa olsa `mock_only`'dir: gövde hazırdır, doğrulama gücü ikinci hedef gelince doğar
 /// (Google SWE ch.13 / Fowler ContractTest). Beyandaki durum ayrımını runner zorlar.
-pub const CONTRACT_ROWS: &[&str] = &["H-ROUNDTRIP"];
+pub const CONTRACT_ROWS: &[&str] = &["H-ROUNDTRIP", "H-PENDING-CAP"];
 
 /// Runner'ın okuduğu makine-satırı. `--nocapture` ile basılır.
 pub const CONTRACT_ROWS_SENTINEL: &str = "SEAM-CONTRACT-ROWS";
@@ -66,7 +66,8 @@ pub mod rows {
     use crate::harness::target::SeamTarget;
     use kama_contracts::handles::{PeerRef, SessionHandle};
     use kama_contracts::s1::{
-        CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent,
+        CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit,
+        SessionEvent, TransportError,
     };
 
     /// `Ready`'yi beklerken atılacak azami adım. Sınırsız döngü YOK: gerçek hedef ilerlemezse
@@ -176,6 +177,100 @@ pub mod rows {
 
         // Fazladan teslim YOK (duplicate/uydurma).
         assert!(t.recv().is_none(), "hedef {} fazladan teslim üretti", T::ID);
+    }
+
+    /// **H-PENDING-CAP** — §6 / §3: istemci pending INIT tavanı kadar bekleyen `connect` varken yeni
+    /// bir eşe `connect()` → `TransportError::Backpressure`; pending kümesi DEĞİŞMEZ.
+    ///
+    /// Tavan hedefin adlandırılmış sabitinden okunur ve ccr §35.15'teki sayıyla karşılaştırılır
+    /// (KS-DOS-1; tutarlılık zinciri: `PENDING_RESPONSE_TRIAL_CAP` = istemci pending INIT tavanı).
+    /// Satır hedefin `connect`'leri PENDING tutabilmesini ister: olaylar okunmaz, hedef sürülmez.
+    ///
+    /// # Panics
+    /// Tavanın altında `connect` reddedilirse, tavanda kabul edilirse, ret bir state bırakırsa ya da
+    /// hedefin tavanı spec'teki değerden farklıysa.
+    pub fn h_pending_cap<T: SeamTarget>() {
+        const SPEC_NAME: &str = "İstemci pending INIT tavanı = ";
+        /// Bu satırın eşleri bu tabandan numaralanır.
+        const PEER_BASE: u64 = 0x0050_0000;
+
+        let cap = T::PENDING_INIT_CAP;
+        let spec = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/ccr-format-spec.md"
+        ))
+        .expect("ccr-format-spec.md okunmalı");
+        let spec_values: Vec<usize> = spec
+            .lines()
+            .filter(|l| !l.contains("~~"))
+            .flat_map(|l| {
+                l.match_indices(SPEC_NAME)
+                    .map(move |(i, _)| &l[i + SPEC_NAME.len()..])
+            })
+            .filter_map(|rest| {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse().ok()
+            })
+            .collect();
+        assert!(
+            !spec_values.is_empty(),
+            "ccr §35.15'te sayısal pending INIT tavanı bulunamadı"
+        );
+        assert!(
+            spec_values.iter().all(|v| *v == cap),
+            "spec {spec_values:?} ≠ hedef sabiti {cap}"
+        );
+
+        let mut t = T::build().unwrap_or_else(|e| {
+            panic!(
+                "hedef {} kurulamadı ({e}) — uygulanmış satır koşamayan hedefte olamaz",
+                T::ID
+            )
+        });
+        let peer = |i: usize| crate::harness::test_peer(PEER_BASE + i as u64);
+
+        // Tavan kadar niyet açılır ve PENDING kalır.
+        let mut tickets = Vec::with_capacity(cap);
+        for i in 0..cap {
+            match t.connect(peer(i), None) {
+                Ok(ConnectResult::Pending(ticket)) => tickets.push(ticket),
+                other => panic!("tavanın altında {i}. connect Pending vermedi: {other:?}"),
+            }
+        }
+
+        // Tavan dolu: yeni eşe connect → Backpressure. early_unit'li de aynı; birim hiçbir yola girmez.
+        let extra = peer(cap);
+        assert_eq!(t.connect(extra, None), Err(TransportError::Backpressure));
+        let early = PreparedUnit {
+            bytes: b"tavanda reddedilen early_unit".to_vec(),
+            compression_policy: CompressionPolicy::Never,
+        };
+        assert_eq!(
+            t.connect(extra, Some(early)),
+            Err(TransportError::Backpressure)
+        );
+        assert!(
+            t.recv().is_none(),
+            "reddedilen early_unit teslim yoluna girdi"
+        );
+
+        // Pending kümesi değişmedi: bekleyen her eşe connect idempotent ve AYNI ticket'ı verir;
+        // reddedilen eş pending'e girmedi (hâlâ Backpressure).
+        for (i, ticket) in tickets.iter().enumerate() {
+            assert_eq!(
+                t.connect(peer(i), None),
+                Ok(ConnectResult::Pending(*ticket)),
+                "{i}. bekleyen niyetin ticket'ı değişti"
+            );
+        }
+        assert_eq!(t.connect(extra, None), Err(TransportError::Backpressure));
+
+        // Ret kalıcı bir durum değildir: bir niyet iptal edilince yer açılır ve aynı eş kabul edilir.
+        t.cancel(tickets[0]);
+        assert!(
+            matches!(t.connect(extra, None), Ok(ConnectResult::Pending(_))),
+            "yer açıldıktan sonra connect hâlâ reddediliyor"
+        );
     }
 }
 
@@ -337,6 +432,11 @@ macro_rules! seam_contract_suite {
             #[test]
             fn h_roundtrip() {
                 contract::rows::h_roundtrip::<Target>();
+            }
+
+            #[test]
+            fn h_pending_cap() {
+                contract::rows::h_pending_cap::<Target>();
             }
 
             #[test]

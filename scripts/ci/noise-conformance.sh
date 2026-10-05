@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # KM-SEAM-TC-001 Transport↔Crypto (S3) conformance-core koşucusu — hedef seçicili.
 #
-#   scripts/ci/noise-conformance.sh --target mock|real|machine|identity
+#   scripts/ci/noise-conformance.sh --target mock|real|machine|identity|vectors
 #
 # identity = PoC IdentitySeam (no-op mühür): H-CTX'in bağlam-kaydı ve no-op yarısı.
 # Kapsama beyanı: scripts/ci/noise-seam-coverage.json (mock koşusunda çapraz denetlenir).
 #
 # machine = MEVCUT epoch_machine.rs + test tutkalı (A3.2 epoch matrisi). mock/real ayrımının dışındadır:
 # MockCrypto epoch geçişini modellemez. Beyanlı kırmızı hücreler EPOCH-RED-CELL satırlarıyla basılır.
+#
+# vectors = Python referansından üretilen SSD1 vektörleri ↔ MEVCUT Rust mühür yolu
+# (LegacySessionProtector): seal bayt-özdeş, open kararları aynı. G-S3 kanıtı; mock/real'den bağımsız.
 #
 # Süit: crates/kama-noise-wire/tests/noise_conformance_core/ (satır gövdeleri hedef-agnostik).
 #
@@ -19,7 +22,7 @@
 #      Yeşil DEĞİLDİR; "atlandı" diye bir sonuç yoktur.
 #
 # HEDEF → NEREDE KOŞAR [B1 2026-10-05]
-#   mock | machine | real : crates/kama-noise-wire/tests/noise_conformance_core (özellik: test-util;
+#   mock | machine | real | vectors : crates/kama-noise-wire/tests/noise_conformance_core (özellik: test-util;
 #                           MockCrypto o özelliğin altında, sahte gerçeğinin sahibi crate'te yaşar)
 #   identity              : crates/client-core/tests/noise_identity_target.rs (IdentitySeam client-core'un;
 #                           kama-noise-wire client-core'u göremez — layer_check C3)
@@ -40,9 +43,9 @@ while (($#)); do
   esac
 done
 case "$TARGET" in
-  mock|real|machine) CARGO_ARGS=(-p kama-noise-wire --locked --features test-util --test noise_conformance_core) ;;
+  mock|real|machine|vectors) CARGO_ARGS=(-p kama-noise-wire --locked --features test-util --test noise_conformance_core) ;;
   identity)          CARGO_ARGS=(-p client-core --locked --test noise_identity_target) ;;
-  *) echo "kullanım hatası: --target mock|real|machine|identity zorunlu"; exit 2 ;;
+  *) echo "kullanım hatası: --target mock|real|machine|identity|vectors zorunlu"; exit 2 ;;
 esac
 
 # Hedefin testleri `<hedef>_` önekli ad taşır; kayıtlı değilse listede hiç test çıkmaz.

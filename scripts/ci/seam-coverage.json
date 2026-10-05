@@ -8,7 +8,7 @@
   ],
   "_comment": "KM-SEAM-AT-001 §6 harness kapsaminin BEYANIDIR. Rust tarafinin gerceklik listesi CONTRACT_ROWS (contract.rs); runner ikisini capraz kontrol eder. UC DURUM: implemented = govde IKI hedefte de kostu (gercek kanit) · mock_only = govde yalniz sahtede kostu, dogrulama gucu ikinci hedef gelince dogar (Google SWE ch.13 / Fowler ContractTest) · not_implemented = yok. Iki taban da ratchet: dusurulemez. Tek hedef kayitliyken hicbir satir implemented olamaz - drift kapisi bunu zorlar.",
   "implemented_baseline": 0,
-  "mock_only_baseline": 1,
+  "mock_only_baseline": 2,
   "rows": [
     {
       "id": "H-NO-CRYPTO-EDGE",
@@ -58,6 +58,13 @@
       "status": "not_implemented",
       "kind": "behavioral",
       "needs": "gercek capabilities degeri (K5 conservative_limits zinciri) ya da §7 sabitleri"
+    },
+    {
+      "id": "H-PENDING-CAP",
+      "status": "mock_only",
+      "kind": "behavioral",
+      "proof": "contract.rs rows::h_pending_cap — tavan kadar pending; sonraki yeni ese connect → Backpressure (early_unit'li de); bekleyen ticket'lar ayni, reddedilen es pending'e girmez; iptalle yer acilinca ayni es kabul edilir. Tavan hedefin adlandirilmis sabitinden; ccr §35.15'teki sayiyla testte karsilastirilir",
+      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); hedefin connect'leri PENDING tutabilmesi (karsi uc yanitsiz)"
     },
     {
       "id": "H-CANCEL",

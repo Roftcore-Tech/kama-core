@@ -105,13 +105,16 @@ expect 1 "B1 testsiz hedef → 1 (bosluk/3 ile karistirilmaz)" -- bash "$GATE" -
 restore
 
 printf '\n── C. kapsam yalani ──\n'
+# Kod, beyanda OLMAYAN bir satir kimligi iddia eder. (Capa regex'tir: CONTRACT_ROWS'a satir
+# eklendikce bu oz-test kirilmasin; kimlik uydurmadir ki hicbir zaman gercek bir satirla cakismasin.)
 python3 - "$SEAM/contract.rs" <<'PY'
-import sys, pathlib
+import re, sys, pathlib
 p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
-old = 'pub const CONTRACT_ROWS: &[&str] = &["H-ROUNDTRIP"];'
-assert old in s, "CONTRACT_ROWS capasi bulunamadi"
-new = 'pub const CONTRACT_ROWS: &[&str] = &["H-ROUNDTRIP", "H-CUTOVER"];'
-p.write_text(s.replace(old, new), encoding="utf-8")
+m = re.search(r'pub const CONTRACT_ROWS: &\[&str\] = &\[(.*?)\];', s, re.S)
+assert m, "CONTRACT_ROWS capasi bulunamadi"
+inner = m.group(1).strip().rstrip(",")
+new = f'pub const CONTRACT_ROWS: &[&str] = &[{inner}, "H-SELFTEST-PROBE"];'
+p.write_text(s[:m.start()] + new + s[m.end():], encoding="utf-8")
 PY
 expect 1 "C1 kod beyansiz §6 satiri iddia ediyor → 1" -- bash "$GATE" --target mock
 restore
@@ -119,11 +122,11 @@ restore
 printf '\n── J. sessiz kapsam kaybi ──\n'
 # Beyan 'mock_only' diyor ama govde silinmis: kimse fark etmeden kapsam duser.
 python3 - "$SEAM/contract.rs" <<'PY'
-import sys, pathlib
+import re, sys, pathlib
 p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
-old = 'pub const CONTRACT_ROWS: &[&str] = &["H-ROUNDTRIP"];'
-assert old in s, "CONTRACT_ROWS capasi bulunamadi"
-p.write_text(s.replace(old, 'pub const CONTRACT_ROWS: &[&str] = &[];'), encoding="utf-8")
+m = re.search(r'pub const CONTRACT_ROWS: &\[&str\] = &\[(.*?)\];', s, re.S)
+assert m and m.group(1).strip(), "CONTRACT_ROWS capasi bulunamadi ya da zaten bos"
+p.write_text(s[:m.start()] + 'pub const CONTRACT_ROWS: &[&str] = &[];' + s[m.end():], encoding="utf-8")
 PY
 expect 1 "J1 kosan satir beyandan dusurulunce → 1" -- bash "$GATE" --target mock
 restore
@@ -136,8 +139,10 @@ p = pathlib.Path(sys.argv[1]); d = json.loads(p.read_text(encoding="utf-8"))
 for r in d["rows"]:
     if r["id"] == "H-ROUNDTRIP":
         r["status"] = "implemented"
-d["implemented_baseline"] = 1
-d["mock_only_baseline"] = 0
+# Tabanlar mutasyon SONRASI gerceklige esitlenir: kapi yalniz "tek hedefken implemented" yuzunden
+# kirmizi olmali, ratchet tutarsizligindan degil.
+d["implemented_baseline"] = sum(r["status"] == "implemented" for r in d["rows"])
+d["mock_only_baseline"] = sum(r["status"] == "mock_only" for r in d["rows"])
 p.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
 expect 1 "I1 tek hedefken 'implemented' beyani → 1" -- bash "$GATE" --target mock

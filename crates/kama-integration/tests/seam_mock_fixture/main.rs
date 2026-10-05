@@ -162,13 +162,11 @@ fn f6_mock_queues_are_bounded() {
         "kuyruk tavanında sessizce büyüdü"
     );
 
-    // Oturum tavanı da sınırlı.
+    // Oturum tavanı da sınırlı. Her oturum `Ready`'ye sürülür: pending birikseydi önce pending
+    // INIT tavanına (H-PENDING-CAP) takılırdık ve ölçülen şey tablo tavanı olmazdı.
     let mut t2 = MockTarget::build().expect("mock hedefi kurulmalı");
     for i in 0..MOCK_MAX_SESSIONS {
-        assert!(
-            t2.connect(harness::test_peer(100 + i as u64), None).is_ok(),
-            "tavan altında {i}. connect reddedildi"
-        );
+        ready(&mut t2, harness::test_peer(100 + i as u64));
     }
     assert_eq!(
         t2.connect(harness::test_peer(999), None),
