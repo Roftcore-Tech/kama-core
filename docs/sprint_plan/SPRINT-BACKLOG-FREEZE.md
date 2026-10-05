@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-05b [PN SÜREKLİ artıkları — Abkarada kararı]:** D1 kartına not: engine ACK çerçevesindeki `ack_epoch` ≠ `dh_epoch`; D1'de dokunulmaz. Yalnız ekleme.
+
 > **YAMA KAYDI — 2026-10-05 [B1 kama-contracts — Abkarada kararı; R-7(b) YENİDEN KARAR]:** S1 ve S3 trait/tipleri `crates/kama-contracts`'a taşındı (harici bağımlılık 0); `MockCrypto` `kama-noise-wire`'ın `test-util` özelliğinde. R-7(b) satırı, A4.1 ve A4.2 "Nereye" satırları buna göre işaretlendi. Katman kuralları `scripts/ci/layer_check.py` C1–C5. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-06b [C2 bulgularının yönlendirilmesi — Abkarada]:** A5.4 kartına "düzeltilecek" listesi (5b / 6 / 7 / 9 + ürün bağlantısı) ve Done ölçütü eki · yeni NON-GATING kart C1.6 (mutasyon sınaması). Yalnız ekleme.
@@ -418,6 +420,7 @@ Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıf
 **Nereye:** `crates/client-core/src/runtime.rs` (seal/open çağrıları), `crates/client-core/src/wire.rs`, `crates/adaptive-transport` ARQ/ACK. Tanım: `KM-SEAM-TC-001.md` K2/K4, `ccr-format-spec.md` §35.6.
 **Neye bağlı:** A4.1; D2 kararı.
 **KARAR (2026-10-06, Abkarada — `dh_epoch` alt-sorusu KAPANDI):** ACK_FRAME_V2 kimliği = `full_wire_pn`; `dh_epoch` kimliğe girmez; dayanak: sayaç epoch'lar boyunca sürekli (noise-wire §2.5, §4 EPOCH-PN-INIT, 2026-10-06).
+**NOT (2026-10-05, Abkarada):** engine ACK çerçevesindeki `ack_epoch` transport'un kendi alanıdır, `dh_epoch` ile ilişkisi yoktur; D1'de dokunulmaz ve ACK kimliğiyle karıştırılmaz.
 **Done:** mevcut kayıp/kurtarma davranış testleri yeni kimlikle yeşil; interim çerçeve kodda yok.
 
 ### D2 — İki ACK ailesinden hangisi ürün ACK'i? (Tema E)
