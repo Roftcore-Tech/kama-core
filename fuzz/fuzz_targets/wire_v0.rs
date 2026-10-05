@@ -1,9 +1,10 @@
 //! P1 wire-v0 + IdentitySeam (S3 PacketProtection): open + tüm çerçeve-decode'ları panik-siz (kabuğun ilk savunma hattı).
 #![no_main]
-use client_core::seam::{IdentitySeam, PacketProtection};
+use client_core::seam::IdentitySeam;
 use client_core::wire::{
     decode_data, decode_fec, decode_param, decode_param_ack, decode_recovered,
 };
+use kama_contracts::s3::PacketProtection;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
