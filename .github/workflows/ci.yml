@@ -276,10 +276,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # Kapının kendi kapısı: on muhafızın (kırmızı test / vakum / kapsam yalanı / ratchet /
+      # Kapının kendi kapısı: on üç muhafızın (kırmızı test / vakum / kapsam yalanı / ratchet /
       # boşluk kapanışı / API drift / hedef parametresi / kategori sızıntısı / kanıt enflasyonu /
-      # sessiz kapsam kaybı) gerçekten kırmızı olduğunu geçici mutasyonlarla kanıtlar ve ağacı
-      # her durumda geri alır.
+      # sessiz kapsam kaybı / hayalet satır / statik kanıt / statik enflasyon) gerçekten kırmızı
+      # olduğunu geçici mutasyonlarla kanıtlar ve ağacı her durumda geri alır.
       - name: seam kapısının öz-testi
         run: scripts/ci/seam-conformance-selftest.sh
 

@@ -156,7 +156,10 @@ kontrolünde reddedildiği için state'e bakılmıyor ve test bunu açıkça yal
 
 S1 §6'ya `H-PENDING-CAP` satırı eklendi; gövde `crates/kama-integration/tests/common/seam/contract.rs`
 `rows::h_pending_cap`. Tavan hedefin adlandırılmış sabitinden okunur ve testte ccr §35.15'teki sayıyla
-karşılaştırılır. `scripts/ci/seam-coverage.json`: 14 satırın 2'si `mock_only`, 12'si `not_implemented`.
+karşılaştırılır. `scripts/ci/seam-coverage.json`: ~~14 satırın 2'si `mock_only`, 12'si `not_implemented`.~~
+**[2026-10-05c — Hayri taşıması]** 14 satırın 12'si `mock_only` (bütün davranış satırları; gövdeler `feature/app`'ten
+taşınan yedi satır + dört eksik satır + H-PENDING-CAP), 2'si `static` (H-NO-CRYPTO-EDGE, H-NO-PLANE1; kanıt
+`layer_check.py`), 0'ı `not_implemented`. Mock hedefi artık `kama-app`'in `MockTransport`'udur (tek kopya).
 
 ### 7.4 Silme kapısı
 
