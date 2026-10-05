@@ -25,8 +25,11 @@ KM-SEAM-TC-001 §6 H-SPLIT):
       Transport'un crate'ine DEĞİL sözleşmeye bağlanır, geçişli grafiğinde hiçbir alt katman yoktur.)
   C3  `kama-noise-wire` için YASAK (doğrudan VE geçişli): kama-app, client-core.
   C4  `client-core` için YASAK (doğrudan VE geçişli): kama-app.
-  C5  `kama-app`, `kama-contracts`'ın `test-util` özelliğini AÇAMAZ (hiçbir bağımlılık türünde) ve
-      kaynağında sahteler için açılan ham erişimleri (`*_for_mock`) ÇAĞIRAMAZ.
+  C5  `kama-app`, `kama-contracts`'ın `test-util` özelliğini AÇAMAZ — ne bağımlılık satırında (hiçbir
+      bağımlılık türünde) ne de kendi `[features]` tablosundan ileterek (`x = ["kama-contracts/test-util"]`)
+      — ve kaynağında sahteler için açılan ham erişimleri (`*_for_mock`) ÇAĞIRAMAZ.
+      SINIR: `kama-app`'in grafiğindeki BAŞKA bir crate'in aynı özelliği açması (özellik birleşimi)
+      buradan görülmez; o yol için C2 katman crate'lerini zaten yasaklar.
 
   GEÇİŞLİ KAPANIŞ NASIL HESAPLANIR: `cargo metadata`'nın çözümlenmiş grafiği üzerinden. Kök crate'in
   KENDİ dev-bağımlılıkları dahildir (testleri de katman kuralına tabidir); yol üzerindeki diğer
@@ -176,6 +179,13 @@ def check(metadata: dict, sources: dict[str, str]) -> list[str]:
             kind = dep.get("kind") or "normal"
             findings.append(f"C5 {APP} → {CONTRACTS} ({kind} bağımlılık) `{TEST_UTIL}` özelliğini açıyor: "
                             f"Application sahte erişimlerini göremez")
+    # … ya da kendi [features] tablosundan iletiyor: bağımlılık satırında görünmez.
+    forwards = {f"{CONTRACTS}/{TEST_UTIL}", f"{CONTRACTS}?/{TEST_UTIL}"}
+    for feature, enables in sorted((app.get("features") or {}).items()):
+        for item in enables:
+            if item in forwards:
+                findings.append(f"C5 {APP} [features] `{feature}` → `{item}`: Application `{TEST_UTIL}` "
+                                f"özelliğini kendi özellik tablosundan da açamaz")
     for path, src in sorted(sources.items()):
         code = strip_comments(src)
         for m in MOCK_ACCESSOR.finditer(code):
@@ -236,7 +246,7 @@ def real_inputs(root: Path) -> tuple[dict, dict[str, str]]:
 
 
 # ── öz-test ──────────────────────────────────────────────────────────────────────────────────
-def _md(deps_of_app, edges, *, dev_edges=None, contract_deps=(), app_contract_features=None):
+def _md(deps_of_app, edges, *, dev_edges=None, contract_deps=(), app_contract_features=None, app_features=None):
     """Sentetik metadata. `edges`: normal kenarlar; `dev_edges`: {crate: [dev-bağımlılıklar]}.
 
     Denetlenen dört crate her zaman vardır (vakum koruması gerçek koşuda ayrıca sınanır).
@@ -262,8 +272,13 @@ def _md(deps_of_app, edges, *, dev_edges=None, contract_deps=(), app_contract_fe
         deps += [{"pkg": f"id:{d}", "dep_kinds": [{"kind": "dev"}]} for d in dev_edges.get(n, [])]
         return {"id": f"id:{n}", "deps": deps,
                 "dependencies": [f"id:{d}" for d in [*edges.get(n, []), *dev_edges.get(n, [])]]}
+    def package(n):
+        pkg = {"name": n, "id": f"id:{n}", "dependencies": manifest_deps(n)}
+        if n == APP and app_features is not None:
+            pkg["features"] = app_features
+        return pkg
     return {
-        "packages": [{"name": n, "id": f"id:{n}", "dependencies": manifest_deps(n)} for n in names],
+        "packages": [package(n) for n in names],
         "resolve": {"nodes": [node(n) for n in names]},
     }
 
@@ -302,6 +317,13 @@ def selftest() -> int:
         ("C5 app test-util açıyor (normal)", _md([], ok_graph, app_contract_features=(None, ["test-util"])), clean_src, ["C5"]),
         ("C5 app test-util açıyor (dev)", _md([], ok_graph, app_contract_features=("dev", ["test-util"])), clean_src, ["C5"]),
         ("C5 DEĞİL: app sözleşmeye özelliksiz bağlı", _md([], ok_graph, app_contract_features=(None, [])), clean_src, []),
+        ("C5 app test-util'i kendi [features] tablosundan iletiyor",
+         _md([], ok_graph, app_features={"mocks": ["kama-contracts/test-util"]}), clean_src, ["C5"]),
+        ("C5 app test-util'i zayıf bağımlılık biçimiyle iletiyor (dep?/feat)",
+         _md([], ok_graph, app_features={"default": [], "mocks": ["kama-contracts?/test-util"]}), clean_src, ["C5"]),
+        ("C5 DEĞİL: app'in özellik tablosu başka şeyler iletiyor",
+         _md([], ok_graph, app_features={"default": ["std"], "std": [], "x": ["other/test-util", "kama-contracts/other"]}),
+         clean_src, []),
         ("C5 app kaynağında sahte erişimi", _md([], ok_graph), {"a.rs": "fn f(h: H) -> u64 { h.to_raw_for_mock() }\n"}, ["C5"]),
         ("C5 DEĞİL: sahte erişimi yalnız yorumda", _md([], ok_graph), {"a.rs": "// to_raw_for_mock YASAK\nfn f() {}\n"}, []),
     ]
