@@ -1,0 +1,120 @@
+{
+  "schema_version": 2,
+  "suite": "amp-record-v1",
+  "spec_version": "application-message-protocol@v1-B1.2+2026-09-23",
+  "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile sıfır paylaşım)",
+  "description": "AMP §2/§3/§5 AppMessageRecord kodlaması — her msg_type için 1 pozitif vektör + bir sıkıştırılmış TEXT örneği. B1.2 (WS-B/Hayri); tüketici B2.1'deki gerçek Rust codec'i.",
+  "notes": {
+    "compressed": "flags.bit0=1; body = compression_id(1)|uncompressed_len(4be)|zstd payload (§5)."
+  },
+  "case_count": 9,
+  "cases": [
+    {
+      "id": "amp-record-v1.encode.text",
+      "kind": "encode",
+      "note": "TEXT (0x01): msg_id, sent_at_ms, text_len, text (UTF-8).",
+      "spec_ref": "application-message-protocol.md §3 0x01 TEXT",
+      "input": {
+        "msg_id": 1,
+        "sent_at_ms": 1758000000000,
+        "text": "merhaba"
+      },
+      "expected_hex": "010100001900000000000000010000019950f72c0000076d657268616261"
+    },
+    {
+      "id": "amp-record-v1.encode.file-begin",
+      "kind": "encode",
+      "note": "FILE_BEGIN (0x02): transfer_id, file_size, whole_file_hash[32], chunk_count, name_len+name.",
+      "spec_ref": "application-message-protocol.md §3 0x02 FILE_BEGIN",
+      "input": {
+        "transfer_id": 42,
+        "file_size": 4096,
+        "whole_file_hash_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "chunk_count": 4,
+        "name": "rapor.pdf"
+      },
+      "expected_hex": "010200003e000000000000002a0000000000001000111111111111111111111111111111111111111111111111111111111111111100000004097261706f722e706466"
+    },
+    {
+      "id": "amp-record-v1.encode.file-chunk",
+      "kind": "encode",
+      "note": "FILE_CHUNK (0x03): transfer_id, offset, payload_len+payload (18B sabit önek).",
+      "spec_ref": "application-message-protocol.md §3 0x03 FILE_CHUNK",
+      "input": {
+        "transfer_id": 42,
+        "offset": 0,
+        "payload_hex": "dededededededededededededededede"
+      },
+      "expected_hex": "0103000022000000000000002a00000000000000000010dededededededededededededededede"
+    },
+    {
+      "id": "amp-record-v1.encode.file-end",
+      "kind": "encode",
+      "note": "FILE_END (0x04): yalnız transfer_id.",
+      "spec_ref": "application-message-protocol.md §3 0x04 FILE_END",
+      "input": {
+        "transfer_id": 42
+      },
+      "expected_hex": "0104000008000000000000002a"
+    },
+    {
+      "id": "amp-record-v1.encode.file-abort",
+      "kind": "encode",
+      "note": "FILE_ABORT (0x05): transfer_id, reason (0x02 = hash_mismatch).",
+      "spec_ref": "application-message-protocol.md §3 0x05 FILE_ABORT",
+      "input": {
+        "transfer_id": 42,
+        "reason": 2
+      },
+      "expected_hex": "0105000009000000000000002a02"
+    },
+    {
+      "id": "amp-record-v1.encode.ptt-open",
+      "kind": "encode",
+      "note": "PTT_OPEN (0x06): stream_id, codec (0x01=opus), bundle_ms.",
+      "spec_ref": "application-message-protocol.md §3 0x06 PTT_OPEN",
+      "input": {
+        "stream_id": 7,
+        "codec": 1,
+        "bundle_ms": 20
+      },
+      "expected_hex": "0106000006000000070114"
+    },
+    {
+      "id": "amp-record-v1.encode.ptt-close",
+      "kind": "encode",
+      "note": "PTT_CLOSE (0x07): yalnız stream_id.",
+      "spec_ref": "application-message-protocol.md §3 0x07 PTT_CLOSE",
+      "input": {
+        "stream_id": 7
+      },
+      "expected_hex": "010700000400000007"
+    },
+    {
+      "id": "amp-record-v1.encode.receipt-delivered",
+      "kind": "encode",
+      "note": "RECEIPT (0x08): ref_msg_id, kind (0x01=delivered, M3a kapsamı — AMP A4).",
+      "spec_ref": "application-message-protocol.md §3 0x08 RECEIPT",
+      "input": {
+        "ref_msg_id": 1,
+        "kind": 1
+      },
+      "expected_hex": "0108000009000000000000000101"
+    },
+    {
+      "id": "amp-record-v1.encode.text-compressed",
+      "kind": "encode",
+      "flags": [
+        "compressed"
+      ],
+      "note": "TEXT, flags.bit0=1: body = compression_id(1)|uncompressed_len(4be)|zstd(payload). Gerçek zstd (Python 3.14 compression.zstd) ile üretildi.",
+      "spec_ref": "application-message-protocol.md §5",
+      "input": {
+        "msg_id": 2,
+        "sent_at_ms": 1758000000000,
+        "text": "tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin "
+      },
+      "expected_hex": "010101003601000000a228b52ffd20a2450100f80000020000019950f72c00009074656b726172206564656e206d6574696e200200ed9ac909000b"
+    }
+  ]
+}
