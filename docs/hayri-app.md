@@ -1,6 +1,9 @@
 # Hayri — Application (WS-B) durum defteri
 
-**Güncelleme:** 2026-10-04 · **Branch:** `feature/app` (local, `main`'den ayrılmış, **push edilmedi**)
+> **YAMA KAYDI — 2026-10-05 [Hayri taşıması, iş emri §4 — karar Abkarada, uygulayan Claude Code]:** Bu defter `origin/feature/app`'ten (commit `f1da50ac`, Hayri) `feature/app-port` dalına taşındı. Yollar (`docs/seems` → `docs/seams`) ve durum satırları güncellendi. Hayri'nin özgün metni SİLİNMEDİ; geçerliliğini yitiren yerlerin üstü çizildi. `[TAŞIMA NOTU …]` ile başlayan her şey Hayri'nin değil taşımanın notudur ve Hayri'nin onayı DEĞİLDİR. Hayri adına hiçbir imza atılmadı; imza bekleyen yerler §7'de sayılı.
+
+~~**Güncelleme:** 2026-10-04 · **Branch:** `feature/app` (local, `main`'den ayrılmış, **push edilmedi**)~~
+**[TAŞIMA NOTU 2026-10-05]** Güncelleme: 2026-10-05 · içerik `feature/app-port` dalıyla (taban `main`) taşındı. `feature/app` `origin`'de duruyor (uç `f1da50ac`); taşıma o dala YAZMADI.
 **Kapsam:** `SPRINT-BACKLOG-FREEZE.md` içindeki **WS-B — Hayri (application)** iş paketi.
 **Rol:** Application katmanı sahibi (`application-message-protocol.md` §Sahip). App-RPC (Plane 1,
 Client↔Hub) ve Crypto bu kapsamın **dışında** — onlar Abkarada'nın (Transport/kama-core) işi.
@@ -18,7 +21,7 @@ Crypto (Abkarada)
 ```
 
 Application'ın tek komşusu Transport'tur (`transport-layer-tdd.md` §0 INV-NEIGHBOR-1). Bu
-sözleşmenin adı **S1**, otorite belgesi `docs/seems/KM-SEAM-AT-001.md`. Application'ın ürettiği
+sözleşmenin adı **S1**, otorite belgesi ~~`docs/seems/KM-SEAM-AT-001.md`~~ `docs/seams/KM-SEAM-AT-001.md`. Application'ın ürettiği
 mesaj içeriğinin byte formatı ise **AMP** (Application Message Protocol), otorite belgesi
 `specs/application-message-protocol.md`.
 
@@ -31,13 +34,26 @@ karşı yaz (IMPLEMENTATION-GO).** Şu an birinci aşamadayız.
 
 | Görev | Ne yapıldı | Konum | Doğrulama |
 |---|---|---|---|
-| **B1.0** | `kama-app` crate'i + `KamaTransport` trait'i ve tüm S1 tipleri (`PreparedUnit`, `TransportCapabilities`, `SessionEvent`, `TransportError`, `ConnectResult`, `SessionHandle`, `ConnectTicket`, `PeerRef`, `CloseReason`, `DeliveryPolicy`, `CompressionPolicy`) — `KM-SEAM-AT-001.md` §1'deki Rust imzasına birebir | `crates/kama-app/{Cargo.toml, src/lib.rs, src/transport.rs}` | `cargo build/clippy/fmt -p kama-app` temiz |
-| **B1.1** | AMP §8'deki A3 (TEXT/FILE_BEGIN/FILE_ABORT/PTT_OPEN alan listeleri) ve A4 (RECEIPT kapsamı: M3a=`delivered`, M3b=`read`) kararları KAPANDI. A1/A2 (Abdurrahman'ın onayı) dokunulmadı. | `specs/application-message-protocol.md` §3, §8 | doküman diff'i |
-| **B1.2** | Bağımsız Python encoder (`ref/amp/encode.py`, stdlib-only Python 3.14 `compression.zstd`, production Rust koduyla sıfır paylaşım) + AMP kayıt vektörleri: 8 `msg_type` için pozitif + 1 sıkıştırılmış örnek (9 vaka), 9 negatif vaka (reserved type/flag, iç alan/body_len uyumsuzluğu, sıkıştırma bomb korumaları, gerçek zstd ile kesilmiş/geçersiz frame, bilinmeyen compression_id/msg_version) | `ref/amp/encode.py`, `vectors/amp-record-v1.json`, `vectors/amp-record-reject-v1.json` | `scripts/vectors/validate.py vectors/` → 4 dosya, 24 vaka, 0 bulgu |
-| **B1.3** | `MockTransport` — `KamaTransport`'u uygulayan sahte Transport. Deterministik enjeksiyon metodları (`complete_connect`, `fail_connect`, `request_renew`, `complete_renew`); Plane 1/Crypto içermez | `crates/kama-app/tests/common/mock_transport.rs` | smoke test (`mock_transport_smoke.rs`) yeşil |
-| **B1.4** | S1 conformance-core — `KM-SEAM-AT-001.md` §6'daki 8 test (H-ROUNDTRIP, H-EVENTS, H-CUTOVER, H-CONNECT-IDEMP, H-EARLY-CONFLICT, H-CAPS, H-OPAQUE-FAIL, H-COMPRESS-BOUNDARY) | `crates/kama-app/tests/conf_s1_seam.rs` | `cargo test -p kama-app` → 9 test yeşil (8 conf + 1 smoke) |
+| **B1.0** | ~~`kama-app` crate'i + `KamaTransport` trait'i ve tüm S1 tipleri (`PreparedUnit`, `TransportCapabilities`, `SessionEvent`, `TransportError`, `ConnectResult`, `SessionHandle`, `ConnectTicket`, `PeerRef`, `CloseReason`, `DeliveryPolicy`, `CompressionPolicy`) — `KM-SEAM-AT-001.md` §1'deki Rust imzasına birebir~~ | ~~`crates/kama-app/{Cargo.toml, src/lib.rs, src/transport.rs}`~~ | ~~`cargo build/clippy/fmt -p kama-app` temiz~~ |
+| **B1.1** | ~~AMP §8'deki A3 (TEXT/FILE_BEGIN/FILE_ABORT/PTT_OPEN alan listeleri) ve A4 (RECEIPT kapsamı: M3a=`delivered`, M3b=`read`) kararları KAPANDI. A1/A2 (Abdurrahman'ın onayı) dokunulmadı.~~ | ~~`specs/application-message-protocol.md` §3, §8~~ | ~~doküman diff'i~~ |
+| **B1.2** | Bağımsız Python encoder (`ref/amp/encode.py`, stdlib-only Python 3.14 `compression.zstd`, production Rust koduyla sıfır paylaşım) + AMP kayıt vektörleri: 8 `msg_type` için pozitif + 1 sıkıştırılmış örnek (9 vaka), 9 negatif vaka (reserved type/flag, iç alan/body_len uyumsuzluğu, sıkıştırma bomb korumaları, gerçek zstd ile kesilmiş/geçersiz frame, bilinmeyen compression_id/msg_version) | `ref/amp/encode.py`, `vectors/amp-record-v1.json`, `vectors/amp-record-reject-v1.json` | ~~`scripts/vectors/validate.py vectors/` → 4 dosya, 24 vaka, 0 bulgu~~ |
+| **B1.3** | `MockTransport` — `KamaTransport`'u uygulayan sahte Transport. Deterministik enjeksiyon metodları (`complete_connect`, ~~`fail_connect`~~, `request_renew`, `complete_renew`); Plane 1/Crypto içermez | `crates/kama-app/tests/common/mock_transport.rs` | smoke test (`mock_transport_smoke.rs`) yeşil |
+| **B1.4** | ~~S1 conformance-core — `KM-SEAM-AT-001.md` §6'daki 8 test (H-ROUNDTRIP, H-EVENTS, H-CUTOVER, H-CONNECT-IDEMP, H-EARLY-CONFLICT, H-CAPS, H-OPAQUE-FAIL, H-COMPRESS-BOUNDARY)~~ | ~~`crates/kama-app/tests/conf_s1_seam.rs`~~ | ~~`cargo test -p kama-app` → 9 test yeşil (8 conf + 1 smoke)~~ |
 
-**Commit geçmişi** (`feature/app`, `main`'in üzerinde, henüz push edilmedi):
+### Taşıma sonrası durum
+
+**[TAŞIMA NOTU 2026-10-05]** Yukarıdaki tablo Hayri'nin `feature/app`'teki kaydıdır; üstü çizili hücreler main'de artık o hâliyle geçerli değildir. Main'e taşınan hâl:
+
+| Görev | Taşıma sonrası durum | Konum (main) | Doğrulama |
+|---|---|---|---|
+| **B1.0** | **TAŞINMADI** (iş emri: `src/transport.rs` bırakıldı). S1 tipleri ve `KamaTransport` trait'i B1 kararıyla (R-7(b)) `kama-contracts` crate'indedir; `kama-app` yalnız ona bağlıdır ve bugün öğe içermez. Özgün tiplerden farklar: `ConnectFailed` yok → `cancel(ticket)` + `ConnectAbandoned(ticket, reason)` + `ConnectProgress(ticket, phase)` (DR-CONNECT-1) · `CloseReason = {Superseded, UserClosed, PeerClosed, KeyHygiene}` (özgün: `Renewed, LocalClose, PeerClose, Error`) · `PeerRef` = `dest_hash`'in (32 B) opak sarmalayıcısı, kurucu `from_dest_hash` (özgün: `from_bytes(Vec<u8>)`) | `crates/kama-contracts/src/{s1.rs, handles.rs}` · `crates/kama-app/{Cargo.toml, src/lib.rs}` | `scripts/ci/layer_check.py` yeşil · `scripts/ci/seam-api-drift.py --seam s1` yeşil |
+| **B1.1** | **TAŞINMADI — İMZA BEKLİYOR (Hayri).** `feature/app`'teki A3/A4 onayı (commit `2159ef63`, 2026-09-23) main'de YOK. Main'de A1/A2 2026-10-04'te kapandı (K1) ve aynı kararla A3 alan listesi DEĞİŞTİ: `TEXT.msg_id` u64 → u32, `sent_at_ms` telden çıktı, `RECEIPT.ref_msg_id` u64 → u32. Hayri'nin onayı bu değişiklikten ÖNCEKİ listeye verilmişti (§7) | `specs/application-message-protocol.md` §3, §8 (taşımada DOKUNULMADI) | — |
+| **B1.2** | **TAŞINDI**, sonra K1'e güncellendi. Taşıma PR'ında (`feature/app-port`) iki adımda: önce üç dosya `origin/feature/app` ile bit-özdeş alındı; ardından kodlayıcı K1 düzenine getirildi ve bayatlayan altı vaka Python'dan yeniden üretildi: `encode.text`, `encode.receipt-delivered`, `encode.text-compressed`, `decode.reserved-flags-nonzero`, `decode.inner-field-exceeds-body-len`, `decode.unknown-msg-version`. Vaka sayısı değişmedi (9 pozitif + 9 negatif). `ref/amp/encode.py --check` eklendi (dosyalar kodlayıcının bugünkü çıktısıyla özdeş mi); CI'a bağlı DEĞİL (Python 3.14 `compression.zstd` ister) | aynı üç dosya | `scripts/vectors/validate.py vectors/` → 10 dosya, 92 vaka, 0 bulgu |
+| **B1.3** | **TAŞINDI**, güncel S1'e getirildi. `fail_connect` kalktı → `cancel(ticket)` (sözleşme metodu) ve `abandon_connect(peer, reason)` (kapalı nedenler). Eklenenler: pending INIT tavanı · sanal saat + link durumu + prob sayacı · sahte RESPONSE enjeksiyonu · kayıp enjeksiyonu + recovery anahtarı · sınırlı kuyruklar. TEK kopya: S1 süiti aynı dosyayı `#[path]` ile kendi mock hedefi yapar. Sahtenin modellemedikleri dosyanın başında sayılı (sırasız/duplicate enjeksiyonu ve provisional supersession dahil) | `crates/kama-app/tests/common/mock_transport.rs` (aynı yol) | `cargo test -p kama-app` → smoke yeşil · `seam_mock_fixture` f1–f11 yeşil |
+| **B1.4** | **TAŞINDI — yer değişti.** Satırlar hedef-agnostik gövdeler olarak ortak süite yazıldı (aynı gövde ileride gerçek Transport'a karşı da koşar); `conf_s1_seam.rs` dosyası taşınmadı. 8 testten 7'si taşındı; **H-OPAQUE-FAIL kalktı** (DR-CONNECT-1: `ConnectFailed` yok; yerine H-SILENT-REJECT). Eklenen beş satır: H-APP-RETRY-0, H-CANCEL, H-PROGRESS, H-SILENT-REJECT, H-PENDING-CAP | `crates/kama-integration/tests/common/seam/contract.rs` (koşum: `seam_conformance_core`) · beyan `scripts/ci/seam-coverage.json` | `scripts/ci/seam-conformance.sh --target mock` → §6'nın 14 satırından 14'ü koşuyor: 12 davranış satırı mock'ta + 2 statik satır (H-NO-CRYPTO-EDGE, H-NO-PLANE1) `layer_check.py`'de. 12 davranış satırının hepsi `mock_only`: gerçek Transport hedefi yok (GAP-SEAM-REAL-1); bir satırın sahtede koşmayan ya da zayıf kalan kısmı beyanın `needs` alanında yazılı |
+| **B1.5** | Kart yeniden tanımlandı (aşağıda §3). H-CANCEL, H-PROGRESS, H-SILENT-REJECT bu taşımada yazıldı ve mock'ta koşuyor. **H-CUTOVER'ın provisional supersession kolu YAZILMADI** (sahte modellemiyor); H-CUTOVER'ın yenileme kolu B1.4'te | aynı süit (`conf_s1_connect.rs` diye bir dosya yok) | yukarıdaki koşum |
+
+**Commit geçmişi** (`feature/app`, `main`'in üzerinde, ~~henüz push edilmedi~~ **[TAŞIMA NOTU 2026-10-05]** `origin`'e push edilmiş, uç `f1da50ac`):
 ```
 9d8f3f72 test: AMP kayıt vektörleri (B1.2)
 49f1569d test: S1 conformance-core — 8 KM-SEAM-AT-001 §6 testi (B1.4)
@@ -55,36 +71,62 @@ H-EVENTS kuralı ise "`Closed` + `close()` sonrası `send` → `UnknownSession`"
 çağrılmadan önceki kısa pencerede) hâlâ `SessionSuperseded` döner — bunlar iki ayrı an, birbiriyle
 çelişmiyor (H-CUTOVER ayrı, H-EVENTS ayrı test ediyor).
 
+**[TAŞIMA NOTU 2026-10-05]** **Taşınan sahtede bu geçiş `close()` çağrısına değil `Closed` olayının TESLİMİNE bağlıdır** — ve bu bir yorum farkıdır, karar Abkarada + Hayri'nindir:
+
+- Taşınan hâl: `Ready(h')` okunduktan sonra, `Closed(h, Superseded)` okunana kadar `send(h)` → `SessionSuperseded`; `Closed` okunduktan sonra `send(h)` → `UnknownSession` (`close(h)` çağrılsın çağrılmasın).
+- Dayanak: S1 §6 H-EVENTS satırının yazılı hâli "`Closed` sonrası `send(h)` → `UnknownSession`"dir; satırda `close()` geçmez. K7 de aynı dili kullanır ("`Ready` gelmeden `send(h)` → `UnknownSession`").
+- Özgün testlerle fark: özgün `h_events` `UnknownSession`'ı `close(h)` çağrısından SONRA bekliyordu (taşınan satır ikisini de sınar: çağrıdan önce ve sonra); özgün `h_cutover` `SessionSuperseded`'ı `Closed` okunduktan SONRA bekliyordu (taşınan satır `Ready(h')` ile `Closed` ARASINDA bekler).
+- Uygulama koduna etkisi: `Closed`'ı işleyip `close(h)` çağıran kod iki okumada da doğru çalışır.
+
 ---
 
 ## 3. Şu anda bloklu olan: B1.5
 
-**Ne:** `connect()` zaman aşımı testi (`conf_s1_connect.rs`).
-**Neye bağlı:** `KS-8` — "Transport, `connect()` çağrısında karşı taraftan `RESPONSE`'u ne kadar
-bekler" sayısı. Kalibrasyonu **Abdurrahman'ın** işi (sprint planı A1.3), henüz verilmedi:
+~~**Ne:** `connect()` zaman aşımı testi (`conf_s1_connect.rs`).~~
+~~**Neye bağlı:** `KS-8` — "Transport, `connect()` çağrısında karşı taraftan `RESPONSE`'u ne kadar
+bekler" sayısı. Kalibrasyonu **Abdurrahman'ın** işi (sprint planı A1.3), henüz verilmedi:~~
 
-```
-docs/seems/KM-SEAM-AT-001.md:104   ... Değeri `[KALİBRASYON — KS-8]`.
-docs/seems/KM-SEAM-AT-001.md:134   | ⬛ KS-8 | `connect` Plane 1 deadline değeri | Abkarada |
-```
+- ~~`docs/seems/KM-SEAM-AT-001.md:104   ... Değeri [KALİBRASYON — KS-8].`~~
+- ~~`docs/seems/KM-SEAM-AT-001.md:134   | ⬛ KS-8 | connect Plane 1 deadline değeri | Abkarada |`~~
 
-**Önemli nüans:** G-S1 kapısı KS-8'i bekler ama Abdurrahman'ın **ağır kripto işini**
+~~**Önemli nüans:** G-S1 kapısı KS-8'i bekler ama Abdurrahman'ın **ağır kripto işini**
 (A2.1-A2.6 vektör üretimi, A5.* gerçek kod) beklemez — doküman: *"KS-8 verili ... Kripto vektörü
 BEKLEMEZ — S3'ten önce donabilir."* KS-8, A1.1/A1.2/A1.4 ile birlikte tek bir kalibrasyon
-oturumunda kararlaştırılabilecek küçük, bağımsız bir sayı.
+oturumunda kararlaştırılabilecek küçük, bağımsız bir sayı.~~
 
-**Ayrıca gerekli (benim dışımda, Hasan'ın işi):** `C1.2` — mimari kuralları otomatik kontrol eden
-script (`scripts/ci/layer_check.py`). Bu repoda henüz yok.
+~~**Ayrıca gerekli (benim dışımda, Hasan'ın işi):** `C1.2` — mimari kuralları otomatik kontrol eden
+script (`scripts/ci/layer_check.py`). Bu repoda henüz yok.~~
+
+**[TAŞIMA NOTU 2026-10-05]** Bu bölümün dayandığı iki şey değişti:
+
+- **KS-8 sayısız kapandı (2026-10-03, DR-CONNECT-1 H10):** `connect()` için deadline YOKTUR; `ConnectFailed` kalktı. Bekleyen niyet yalnız üç yolla biter: `Ready` · `cancel(ticket)` · `ConnectAbandoned(ticket, reason)` (`docs/seams/KM-SEAM-AT-001.md` §4, §8; `docs/decisions/DR-CONNECT-1.md`). Dolayısıyla B1.5 artık bir "zaman aşımı testi" değildir.
+- **B1.5 yeniden tanımlandı** (`docs/sprint_plan/SPRINT-BACKLOG-FREEZE.md` B1.5): H-CANCEL · H-PROGRESS · H-CUTOVER'ın provisional supersession kolu · H-SILENT-REJECT. İlk ikisi ve sonuncusu bu taşımada yazıldı (mock'ta koşuyor); provisional supersession kolu YAZILMADI.
+- **C1.2 kapandı (2026-10-04):** `scripts/ci/layer_check.py` repoda ve CI'da (`static` job). WS-C'nin sahibi artık "karar Abkarada / icra Claude Code"dur (aynı belge, WS-C başlığı).
 
 ---
 
 ## 4. Kapı durumu
 
-```
-🚪 G-S1 (S1 SEAM-FROZEN)
-   B1.0 ✅ · B1.1 ✅ · B1.2 ✅ · B1.3 ✅ · B1.4 ✅ · B1.5 ⬛ (KS-8 bekliyor) · C1.2 ⬛ (Hasan, yok)
-   → KAPANMADI
+~~🚪 G-S1 (S1 SEAM-FROZEN) —
+B1.0 ✅ · B1.1 ✅ · B1.2 ✅ · B1.3 ✅ · B1.4 ✅ · B1.5 ⬛ (KS-8 bekliyor) · C1.2 ⬛ (Hasan, yok)
+→ KAPANMADI~~
 
+**[TAŞIMA NOTU 2026-10-05]** Durum dökümü — **kapı kararı DEĞİLDİR** (karar Abkarada'nın):
+
+```
+🚪 G-S1 (S1 SEAM-FROZEN)                                                    [2026-10-05, taşıma sonrası]
+   B1.0  derleniyor — tipler kama-contracts'ta (kama-app'te öğe yok)
+   B1.1  ⬛ Hayri imzası bekliyor (AMP §8 A3, A4) — Abkarada tarafı kapalı (K1)
+   B1.2  main'e taşındı, K1'e güncel; validate.py 0 bulgu
+   B1.3  main'e taşındı; smoke + mock-fixture yeşil
+   B1.4  7 satır mock'ta yeşil (H-OPAQUE-FAIL kalktı)
+   B1.5  H-CANCEL / H-PROGRESS / H-SILENT-REJECT mock'ta yeşil; provisional supersession kolu YOK
+   C1.2  kapalı (layer_check.py CI'da)
+   S1    ⬛ Hayri imzası bekliyor (S1 §8)
+   → KAPANMADI
+```
+
+```
 🚪 G-IMPL-S1 (Application IMPLEMENTATION-GO)
    B2.1-B2.5 (gerçek mesaj codec'i + bağlantı davranışı) — G-S1 kapanmadan BAŞLANMAZ
    → sprint disiplini: "Beşinci kutu yok; mimari yeniden açılmaz"
@@ -94,9 +136,11 @@ script (`scripts/ci/layer_check.py`). Bu repoda henüz yok.
 
 ## 5. Sırada ne var
 
-1. **KS-8'i Abdurrahman'dan al** (muhtemelen A1.1/A1.2/A1.4 ile birlikte tek kalibrasyon
-   oturumunda) → B1.5'i yaz.
-2. **C1.2'yi Hasan'dan bekle/iste** → G-S1 kapısı kapanır.
+1. ~~**KS-8'i Abdurrahman'dan al** (muhtemelen A1.1/A1.2/A1.4 ile birlikte tek kalibrasyon
+   oturumunda) → B1.5'i yaz.~~ **[TAŞIMA NOTU 2026-10-05]** KS-8 sayısız kapandı; B1.5'in kalan parçası H-CUTOVER'ın
+   provisional supersession kolu (§3).
+2. ~~**C1.2'yi Hasan'dan bekle/iste** → G-S1 kapısı kapanır.~~ **[TAŞIMA NOTU 2026-10-05]** C1.2 kapalı; G-S1 için
+   kalanlar §4 dökümünde (iki imza + B1.5'in kalan kolu).
 3. G-S1 kapanınca **B2.1-B2.5**'e başla: gerçek `AppMessageCodec` (encode/decode, B1.2
    vektörlerine karşı byte-for-byte), TEXT+RECEIPT akışı, dosya transferi (retransmit/ACK/MAC
    YOK — bunlar Transport/Crypto'nun), PTT yaşam döngüsü, gerçek `ConnectResult`/
@@ -110,7 +154,22 @@ script (`scripts/ci/layer_check.py`). Bu repoda henüz yok.
 
 ## 6. Referans belgeler
 
-- `SPRINT-BACKLOG-FREEZE.md` — bu sprintin tam plan dokümanı (görev kartları, kapılar).
-- `docs/seems/KM-SEAM-AT-001.md` — S1 (Application↔Transport) sözleşme otoritesi.
+- `SPRINT-BACKLOG-FREEZE.md` — bu sprintin tam plan dokümanı (görev kartları, kapılar). **[TAŞIMA NOTU 2026-10-05]** yol: `docs/sprint_plan/SPRINT-BACKLOG-FREEZE.md`.
+- ~~`docs/seems/KM-SEAM-AT-001.md`~~ `docs/seams/KM-SEAM-AT-001.md` — S1 (Application↔Transport) sözleşme otoritesi.
 - `specs/application-message-protocol.md` — AMP (mesaj içeriği formatı) otoritesi.
 - `vectors/README.md`, `vectors/SCHEMA.json` — vektör dosya formatı (Hasan'ın T-00.1'i).
+- **[TAŞIMA NOTU 2026-10-05]** `crates/kama-contracts/src/s1.rs` — S1'in derlenen hâli (trait + tipler); `docs/decisions/DR-CONNECT-1.md` — `connect()` = kalıcı niyet kararının indeksi.
+
+---
+
+## 7. İmza bekleyen yerler (Hayri)
+
+**[TAŞIMA NOTU 2026-10-05]** Taşıma Hayri adına imza TAŞIMAZ ve atmaz. Aşağıdaki yerler Hayri'nin imzasını bekliyor; işaret zaten ilgili belgelerde duruyor, burada yalnız toplandı:
+
+| Yer | Bekleyen şey | Not |
+|---|---|---|
+| `specs/application-message-protocol.md` §8 **A3** | TEXT / FILE_BEGIN / FILE_ABORT / PTT_OPEN alan listeleri (PTT: + Yaaz) | Satırda "imza Hayri'de" yazıyor. `feature/app`'teki onay (`2159ef63`, 2026-09-23) K1'den (2026-10-04) ÖNCEKİ listeye verilmişti: TEXT `msg_id u64 · sent_at_ms u64 · text_len u16 · text`, RECEIPT `ref_msg_id u64 · kind u8`. Güncel liste: TEXT `msg_id u32 · text_len u16 · text`, RECEIPT `ref_msg_id u32 · kind u8`. O onay main'e taşınmadı |
+| `specs/application-message-protocol.md` §8 **A4** | RECEIPT kapsamı: M3a'da `delivered`, `read` M3b | `feature/app`'te aynı commit'le onaylanmıştı; main'de satır PROPOSED. Taşınmadı |
+| `docs/seams/KM-SEAM-AT-001.md` §8 **⬛ İMZA** | DR-CONNECT-1 API değişikliği (`cancel` / `ConnectAbandoned` / `ConnectProgress` / `ConnectFailed`'ın kalkması) | Belge başlığına göre iki imza olmadan sözleşme değildir; belgenin başındaki 2026-10-03 … 2026-10-06 tarihli yama kayıtları tek imzalıdır (Abkarada). İmza G-S1'in ön koşuludur, merge'in değil |
+
+Ayrıca Hayri'nin görmesi gereken, onun kodunu etkileyen iki şey: `Closed` sonrası tutamaç semantiği (§2'deki taşıma notu; karar bekliyor) ve `kama-app`'in artık S1 tiplerini kendisi tanımlamayıp `kama-contracts`'tan alması.
