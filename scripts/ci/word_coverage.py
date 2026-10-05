@@ -11,21 +11,24 @@ içerik kalır).
 
   1. DOSYA GENELİ KELİME ÇOKKÜMESİ: kapsamdaki her dosya için TABAN sürümündeki her kelimenin geçiş
      sayısı, yeni sürümde EN AZ o kadar olmalıdır ("kaybolan kelime = 0").
-  2. YERİNDE KORUNMA [2026-10-05; 2026-10-06'da iki incelemeden sonra yeniden yazıldı]: taban
+  2. YERİNDE KORUNMA [2026-10-05; 2026-10-06'da üç incelemeden sonra yeniden yazıldı]: taban
      sürümden çıkarılan ya da değiştirilen her satır öbeği için, öbekteki eski satırların her kelimesi
      AYNI öbeğin yeni satırlarında
        (a) eski SIRASI korunarak — üstü çizili ya da değil; araya yeni kelime girebilir — ya da
        (b) KENDİ SATIRINDA üstü çizili olarak (üstü çizili parça satır içinde yer değiştirmiş olabilir)
      bulunmalıdır. Üstü çizilmemiş bir kelime yalnız sırasında yer bulur; BAŞKA bir satırın üstü
      çizili kelimesi karşılık olmaz. Yani: eski metin ya olduğu gibi duruyordur, ya da üstü çizilmiştir.
+     "Kendi satırı" = eski satırın kelimelerini en çok sırasıyla taşıyan yeni satır (eski satırın yeni
+     hâli); birkaç kelimesi rastlamış bir not satırı değil.
        · Öbek = satır-düzeyi farkın değişen parçası; aralarında yalnız boş satır ya da dosyada birden
          çok kez geçen satır bulunan komşu parçalar, aradaki satırlarla birlikte TEK öbektir (fark
          algoritması böyle satırları yanlış eşleyebilir).
-       · Taşınan satır: kelimeleri öbeğinde yer bulamayan bir eski satır, kelime dizisi aynı olan ve
-         hiçbir kelimesi başka satıra yer olmamış bir yeni satır varsa muaftır (bire bir).
+       · Taşınan satır: kelimeleri öbeğinde yer bulamayan bir eski satır, kelime dizisi aynı olan bir
+         yeni satır varsa muaftır (bire bir; o yeni satır artık başka satırlara yer olmaz). Dokunulmamış
+         satır ve blokların yer değiştirmesi bu yüzden serbesttir.
        · Üstü çizme durumu satırdan satıra taşınır; yeni blokta (boş ya da yalnız `>` taşıyan satır,
          tablo satırı, başlık, liste maddesi, yatay çizgi, kod çiti) sıfırlanır.
-       · Numaralı liste maddesinin sıra numarası (`3. `) bu ölçümde kelime sayılmaz: listeye madde
+       · Numaralı liste maddesinin ESKİ sıra numarasına (`3. `) bu ölçümde yer aranmaz: listeye madde
          eklenince sonrakilerin numarası kayar.
 
 NEDEN İKİNCİ ÖLÇÜM. Birincisi tek başına şunu göremez: eski cümle üstü çizilmeden silinir ya da
@@ -134,7 +137,9 @@ BLANKISH = re.compile(r"^[\s>]*$")              # boş satır ya da yalnız alı
 BACKTICK_FENCE = re.compile(r"^[\s>]*`{3,}[^`]*$")
 TILDE_FENCE = re.compile(r"^[\s>]*~{3,}[^~]*$")
 # Numaralı liste maddesinin sıra numarası (`3. `, `12) `). Listeye madde eklenince sonraki maddelerin
-# numarası değişir; numara içerik değildir, ikinci ölçümde kelime sayılmaz (birinci ölçüm sayar).
+# numarası değişir; numara içerik değildir. İkinci ölçümde ESKİ satırın sıra numarasına yer aranmaz ve
+# satır kimliğine girmez; YENİ taraftaki sayı ise yer olmaya devam eder (paragraf yeniden sarılınca
+# cümle ortasındaki "… ve 3. katmanda" satır başına düşebilir; o `3` yerinde duran bir kelimedir).
 LIST_ORDINAL = re.compile(r"^([\s>]*)\d+([.)]\s)")
 
 # Sıra araması |eski kelimeler| × |yeni kelimeler| hücrelik bir tablo kurar; bunun üstündeki öbeklerde
@@ -178,7 +183,7 @@ def _marked_words(lines: list[str]) -> list[list[tuple[str, bool]]]:
         if BLOCK_START.match(line):
             struck = False
         marked: list[tuple[str, bool]] = []
-        for k, segment in enumerate(_body(line).split("~~")):
+        for k, segment in enumerate(line.split("~~")):
             if k:
                 struck = not struck
             marked.extend((w, struck) for w in WORD.findall(segment))
@@ -213,45 +218,109 @@ def _align(old_words: list[str], new_words: list[str], weight: list[int]) -> lis
     return match
 
 
+def _lcs_len(a: list[str], b: list[str]) -> int:
+    row = [0] * (len(b) + 1)
+    for x in a:
+        prev = 0
+        for j, y in enumerate(b):
+            keep = row[j + 1]
+            row[j + 1] = prev + 1 if x == y else max(row[j + 1], row[j])
+            prev = keep
+    return row[-1]
+
+
 def _leftover(old: list[tuple[str, int]], new: list[tuple[str, bool, int]],
               match: list[int | None]) -> tuple[list[int], set[int]]:
-    """Sırasıyla eşleşmeyen eski kelimelerden, AYNI SATIRDA üstü çizili bir karşılığı da bulunamayanların
+    """Sırasıyla eşleşmeyen eski kelimelerden, KENDİ SATIRINDA üstü çizili bir karşılığı da bulunamayanların
     indeksleri; ve kullanılan yeni kelimelerin indeksleri.
 
-    "Aynı satır": eski kelimenin satırından sırasıyla eşleşen kelimelerin bulunduğu yeni satırlar. Oradaki,
-    sırasıyla eşleşmede kullanılmamış üstü çizili bir kelime karşılık sayılır (üstü çizili parça satır
-    içinde yer değiştirmiş olabilir). Her üstü çizili kelime en çok BİR eski kelimeye karşılık olur
-    (iki parçalı eşleme). Başka bir satırın üstü çizili kelimesi karşılık OLMAZ.
+    "Kendi satırı": eski satırdan sırasıyla eşleşen kelimelerin düştüğü yeni satırlardan, o eski satırın
+    kelimelerini (tek başına karşılaştırıldığında) EN ÇOK sırasıyla taşıyan(lar). Yani eski satırın yeni
+    hâli; ona birkaç kelimesi rastlamış bir not satırı değil. Oradaki, sırasıyla eşleşmede kullanılmamış
+    üstü çizili bir kelime karşılık sayılır (üstü çizili parça satır içinde yer değiştirmiş olabilir).
+    Her üstü çizili kelime en çok BİR eski kelimeye karşılık olur. Başka satırın üstü çizili kelimesi
+    karşılık OLMAZ.
     """
     used = {j for j in match if j is not None}
-    lines_of: dict[int, set[int]] = {}
+    landed: dict[int, set[int]] = {}
     for (_, old_line), j in zip(old, match):
         if j is not None:
-            lines_of.setdefault(old_line, set()).add(new[j][2])
+            landed.setdefault(old_line, set()).add(new[j][2])
     need: dict[str, list[int]] = {}
     for i, (word, _) in enumerate(old):
         if match[i] is None:
             need.setdefault(word, []).append(i)
+    if not need:
+        return [], used
+
+    old_words_of: dict[int, list[str]] = {}
+    for word, old_line in old:
+        old_words_of.setdefault(old_line, []).append(word)
+    new_words_of: dict[int, list[str]] = {}
+    for word, _, new_line in new:
+        new_words_of.setdefault(new_line, []).append(word)
+    own: dict[int, set[int]] = {}
+
+    def own_lines(old_line: int) -> set[int]:
+        if old_line not in own:
+            cands = landed.get(old_line, set())
+            if len(cands) > 1:
+                score = {j: _lcs_len(old_words_of[old_line], new_words_of[j]) for j in cands}
+                top = max(score.values())
+                cands = {j for j in cands if score[j] == top}
+            own[old_line] = cands
+        return own[old_line]
+
     unplaced: list[int] = []
     for word, wanted in need.items():
-        cands = [k for k, (w, is_struck, _) in enumerate(new) if is_struck and w == word and k not in used]
-        owner: dict[int, int] = {}
-
-        def place(i: int, seen: set[int]) -> bool:
-            own_lines = lines_of.get(old[i][1], ())
-            for k in cands:
-                if k in seen or new[k][2] not in own_lines:
-                    continue
-                seen.add(k)
-                if k not in owner or place(owner[k], seen):
-                    owner[k] = i
-                    return True
-            return False
-
+        # Eski satır başına istek, yeni satır başına (kullanılmamış, üstü çizili) arz; en büyük akış.
+        demand: dict[int, list[int]] = {}
         for i in wanted:
-            if not place(i, set()):
-                unplaced.append(i)
-        used |= set(owner)
+            demand.setdefault(old[i][1], []).append(i)
+        supply: dict[int, list[int]] = {}
+        for k, (w, is_struck, new_line) in enumerate(new):
+            if is_struck and w == word and k not in used:
+                supply.setdefault(new_line, []).append(k)
+        flow: dict[tuple[int, int], int] = {}
+        sent = dict.fromkeys(demand, 0)
+        got = dict.fromkeys(supply, 0)
+        while True:
+            # Genişlik öncelikli artırma yolu: isteği kalan eski satırdan arzı kalan yeni satıra.
+            parent: dict[tuple[str, int], tuple[str, int] | None] = {
+                ("o", i): None for i in demand if sent[i] < len(demand[i])}
+            queue = list(parent)
+            end = None
+            while queue and end is None:
+                side, node = queue.pop(0)
+                if side == "o":
+                    for j in own_lines(node):
+                        if j in supply and ("n", j) not in parent:
+                            parent[("n", j)] = (side, node)
+                            if got[j] < len(supply[j]):
+                                end = ("n", j)
+                                break
+                            queue.append(("n", j))
+                else:
+                    for i in demand:
+                        if flow.get((i, node), 0) > 0 and ("o", i) not in parent:
+                            parent[("o", i)] = (side, node)
+                            queue.append(("o", i))
+            if end is None:
+                break
+            got[end[1]] += 1
+            node = end
+            while parent[node] is not None:
+                prev = parent[node]
+                if node[0] == "n":
+                    flow[(prev[1], node[1])] = flow.get((prev[1], node[1]), 0) + 1
+                else:
+                    flow[(node[1], prev[1])] -= 1
+                node = prev
+            sent[node[1]] += 1
+        for i, indices in demand.items():
+            unplaced.extend(indices[sent[i]:])
+        for j, indices in supply.items():
+            used.update(indices[:got[j]])
     return sorted(unplaced), used
 
 
@@ -320,9 +389,9 @@ def displaced_lines(old: str, new: str, notes: list[str] | None = None) -> list[
     satırın yanlış kopyasını "değişmedi" sayabilir (ikisi de ölçüldü).
 
     TAŞINAN SATIR. Kelimeleri kendi öbeğinde yer bulamayan bir eski satır, kelime dizisi aynı olan bir
-    yeni satır (taşınmış ya da tümüyle üstü çizilmiş) bulursa muaftır — o yeni satırın hiçbir kelimesi
-    başka bir eski satıra yer olmamışsa. Her yeni satır en çok BİR eski satırı muaf kılar ve muaf kıldıktan
-    sonra kendi öbeğinde başka satırlara yer olmaz.
+    yeni satır (taşınmış ya da tümüyle üstü çizilmiş) bulursa muaftır. Her yeni satır en çok BİR eski
+    satırı muaf kılar; muaf kıldıktan sonra kendi öbeğinde başka satırlara yer olmaz ve o öbek yeniden
+    yerleştirilir (yer değiştiren iki satır birbirinin kelimelerine yer olmuşsa ikisi de böyle çözülür).
     """
     o, n = old.splitlines(), new.splitlines()
     raw_old, raw_new = Counter(o), Counter(n)
@@ -365,29 +434,36 @@ def displaced_lines(old: str, new: str, notes: list[str] | None = None) -> list[
         return old_tokens, [old_tokens[i] for i in unplaced], {new_tokens[k][2] for k in used}
 
     # 1) Her öbek kendi içinde yerleştirilir.
-    placed = [place_group(g, set(), set()) for g in range(len(groups))]
+    exempt: set[int] = set()
+    consumed: set[int] = set()
+    placed = [place_group(g, exempt, consumed) for g in range(len(groups))]
 
-    # 2) Yer bulamayan satırlar için taşınmış karşılık aranır: aynı kelime dizisi, hiçbir kelimesi kullanılmamış.
-    touched = {j for _, _, used_lines in placed for j in used_lines}
+    # 2) Yer bulamayan satırlar için TAŞINMIŞ karşılık aranır: kelime dizisi aynı olan, henüz başka bir eski
+    #    satırın karşılığı olmamış bir yeni satır. Bulunursa eski satır muaftır, o yeni satır tüketilir ve
+    #    etkilenen öbekler yeniden yerleştirilir: karşılık satıra daha önce başka kelimeler yerleşmişse
+    #    (yer değiştiren iki satırın ortak kelimesi gibi) onlar yeniden yer arar — bu yüzden döngü.
+    #    Kimlik eşitliğine yalnız yerleştirme BAŞARISIZ olunca bakılır: kısa satırların kelime dizisi
+    #    tesadüfen aynı olabilir (ölçüldü), yerleşebilen satır için buna gerek yoktur.
     group_of_new = {j: g for g, (_, new_lines) in enumerate(groups) for j in new_lines}
     homes: dict[tuple[str, ...], list[int]] = {}
     for j in sorted(group_of_new):
-        if marked[j] and j not in touched:
+        if _key(n[j]):
             homes.setdefault(_key(n[j]), []).append(j)
-    exempt: set[int] = set()
-    consumed: set[int] = set()
-    again: set[int] = set()
-    for g, (_, unplaced, _) in enumerate(placed):
-        for i in sorted({line for _, line in unplaced}):
-            free = [j for j in homes.get(_key(o[i]), ()) if j not in consumed]
-            if free:
-                consumed.add(free[0])
-                exempt.add(i)
-                again.update((g, group_of_new[free[0]]))
-
-    # 3) Muaf satırlar ve tüketilen karşılıklar çıkarılıp etkilenen öbekler yeniden yerleştirilir.
-    for g in again:
-        placed[g] = place_group(g, exempt, consumed)
+    while True:
+        touched = {j for _, _, used_lines in placed for j in used_lines}
+        again: set[int] = set()
+        for g, (_, unplaced, _) in enumerate(placed):
+            for i in sorted({line for _, line in unplaced}):
+                free = [j for j in homes.get(_key(o[i]), ()) if j not in consumed]
+                if free:
+                    home = min(free, key=lambda j: (j in touched, group_of_new[j] != g, j))
+                    consumed.add(home)
+                    exempt.add(i)
+                    again.update((g, group_of_new[home]))
+        if not again:
+            break
+        for g in again:
+            placed[g] = place_group(g, exempt, consumed)
 
     out: list[tuple[int, Counter, str]] = []
     for _, unplaced, _ in placed:
@@ -633,6 +709,24 @@ def selftest() -> int:
          "1. alfa\n2. beta delta\n3. gama\nson\n", "> not: delta\n\n1. alfa\n2. beta\n3. gama\nson\n", 0, 1),
         ("yeniden sarma + üstü çizme: üstü çizili kelime yeni satırın başına düştü",
          "aaa bbb ccc\nddd eee\nson\n", "aaa bbb\n~~ccc~~ XXX ddd eee\nson\n", 0, 0),
+        # 2026-10-06 — #93 birleştikten sonra gelen inceleme
+        ("dokunulmamış iki tablo satırı yer değiştirdi (ortak kelimeleri var)",
+         "| KS-7 | connect niyet | AÇIK |\n| r1 | x |\n| r2 | y |\n| KS-9 | heartbeat | AÇIK |\nson\n",
+         "| KS-9 | heartbeat | AÇIK |\n| r1 | x |\n| r2 | y |\n| KS-7 | connect niyet | AÇIK |\nson\n", 0, 0),
+        ("dokunulmamış satır, yerinde üstü çizilerek düzenlenen satırın hemen üstüne taşındı (ilk kelime ortak)",
+         "Hub opak birim iletir.\na1\na2\na3\nHub eski kuralı uygular.\nson\n",
+         "a1\na2\na3\nHub opak birim iletir.\nHub ~~eski~~ yeni kuralı uygular.\nson\n", 0, 0),
+        ("not satırı eski değeri üstü çizili anıyor, ama satırın kendisi üstü çizilmeden değişmiş",
+         "## 4. Zaman aşımı\n\nIdle timeout 30 s olmalıdır.\n\nson tekil\n",
+         "## 4. Zaman aşımı\n\n> YAMA KAYDI: ~~30~~ yerine 60 (Idle timeout).\n\nIdle timeout 60 s olmalıdır.\n\nson tekil\n", 0, 1),
+        ("aynı not, değer yerinde üstü çizilerek değişmiş",
+         "## 4. Zaman aşımı\n\nIdle timeout 30 s olmalıdır.\n\nson tekil\n",
+         "## 4. Zaman aşımı\n\n> YAMA KAYDI: ~~30~~ yerine 60 (Idle timeout).\n\nIdle timeout ~~30~~ 60 s olmalıdır.\n\nson tekil\n", 0, 0),
+        ("paragraf yeniden sarıldı; satır sonu cümle ortasındaki sıra sayısının önüne düştü",
+         "Bu kural yalnız ağ katmanında ve 3. katmanda geçerlidir; ayrıntı aşağıda.\nson satır tekil\n",
+         "Bu kural yalnız ağ katmanında ve\n3. katmanda geçerlidir; ayrıntı aşağıda.\nson satır tekil\n", 0, 0),
+        ("aynı kelime 1100 kez üstü çizili (özyineleme sınırı aşılmaz)",
+         "W " * 1100 + "A\n", "A ~~" + "W " * 1099 + "W~~\n", 0, 0),
         ("kod bloğunda eski satır yorum içinde üstü çizilerek korundu",
          "```rust\nfn cancel(&mut self, ticket: ConnectTicket);\n```\nson\n",
          "```rust\n// ~~fn cancel(&mut self, ticket: ConnectTicket);~~\nfn cancel(&mut self, ticket: ConnectTicket) -> bool;\n```\nson\n", 0, 0),
