@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "suite": "amp-record-reject-v1",
-  "spec_version": "application-message-protocol@v1-B1.2+2026-09-23",
+  "spec_version": "application-message-protocol@v1+2026-10-04-K1",
   "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile sıfır paylaşım)",
   "description": "AMP §2/§5/§6 negatif corpus: reserved type/flag, iç alan/body_len uyumsuzluğu, sıkıştırma bomb korumaları (uncompressed_len aşımı, expansion oranı), gerçek zstd ile kesilmiş/geçersiz frame, bilinmeyen compression_id/msg_version.",
   "notes": {
@@ -26,7 +26,7 @@
       "kind": "decode",
       "note": "flags bit1 set; bit1..7 reserved-zero olmalı (§2).",
       "spec_ref": "application-message-protocol.md §2",
-      "input_hex": "0101020012000000000000000100000000000000000000",
+      "input_hex": "0101020006000000010000",
       "expected": {
         "result": "reject",
         "reason": "reserved-flags-nonzero"
@@ -37,7 +37,7 @@
       "kind": "decode",
       "note": "TEXT.text_len=100 ama body_len içinde yalnız 3 bayt kaldı — A1: toplam ≤ body_len, aşarsa DROP.",
       "spec_ref": "application-message-protocol.md §2 (A1)",
-      "input_hex": "0101000015000000000000000100000000000000000064616263",
+      "input_hex": "0101000009000000010064616263",
       "expected": {
         "result": "drop",
         "reason": "inner-field-exceeds-body-len"
@@ -120,7 +120,7 @@
       "kind": "decode",
       "note": "msg_version=0x02 bilinmeyen → DROP, REJECT değil (§6: ileri uyum).",
       "spec_ref": "application-message-protocol.md §6",
-      "input_hex": "02010000140000000000000001000000000000000000026869",
+      "input_hex": "02010000080000000100026869",
       "expected": {
         "result": "drop",
         "reason": "unknown-msg-version"

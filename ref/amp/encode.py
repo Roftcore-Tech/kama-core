@@ -6,14 +6,22 @@ yazılmadı) bir kopyası DEĞİLDİR — T-00.1 A2.1 ilkesiyle aynı gerekçe: 
 verisini üretirse kendi hatasını onaylar. Bu betik yalnız spec metninden okunarak, stdlib-only
 (Python 3.14+, `compression.zstd`) ve production Rust koduyla SIFIR paylaşımla vektör üretir.
 
-Kullanım: `python3.14 ref/amp/encode.py` → `vectors/amp-record-v1.json` +
-`vectors/amp-record-reject-v1.json` yazar.
+Kullanım:
+    python3.14 ref/amp/encode.py           → vectors/amp-record-v1.json + amp-record-reject-v1.json yazar
+    python3.14 ref/amp/encode.py --check   → yazmaz; diskteki dosyalar yeniden üretilenle bayt-özdeş
+                                             değilse çıkış 1 (gen_vectors.py --check ile aynı sözleşme)
+
+[2026-10-05 — ported from feature/app (Hayri); AMP A1/A2 kararlarına (K1, 2026-10-04) göre güncellendi]
+  · TEXT.msg_id ve RECEIPT.ref_msg_id u64 → u32 (oturum SESSION_MAX_AGE = 7 günde yenilendiği için yeter).
+  · TEXT.sent_at_ms TELDEN ÇIKTI (alıcı kendi zamanını damgalar).
+  Etkilenen vakalar yeniden üretildi; diğerlerinin baytları değişmedi.
 """
 
 from __future__ import annotations
 
 import json
 import struct
+import sys
 from pathlib import Path
 
 from compression import zstd
@@ -49,9 +57,10 @@ def record(msg_type: int, body: bytes, *, flags: int = 0x00, msg_version: int = 
 
 # ---- §3 tip registry: gövde kodlayıcıları ----------------------------------------------------
 
-def text_body(msg_id: int, sent_at_ms: int, text: str) -> bytes:
+def text_body(msg_id: int, text: str) -> bytes:
+    """§3 0x01 TEXT [K1 2026-10-04]: msg_id u32_be · text_len u16_be · text. sent_at_ms telde YOK."""
     text_bytes = text.encode("utf-8")
-    return struct.pack(">QQH", msg_id, sent_at_ms, len(text_bytes)) + text_bytes
+    return struct.pack(">IH", msg_id, len(text_bytes)) + text_bytes
 
 
 def file_begin_body(
@@ -89,7 +98,8 @@ def ptt_close_body(stream_id: int) -> bytes:
 
 
 def receipt_body(ref_msg_id: int, kind: int) -> bytes:
-    return struct.pack(">QB", ref_msg_id, kind)
+    """§3 0x08 RECEIPT [K1 2026-10-04]: ref_msg_id u32_be · kind u8."""
+    return struct.pack(">IB", ref_msg_id, kind)
 
 
 # ---- §5 sıkıştırma wire sözleşmesi ------------------------------------------------------------
@@ -128,14 +138,13 @@ def build_positive() -> dict:
         case(
             "amp-record-v1.encode.text",
             "encode",
-            note="TEXT (0x01): msg_id, sent_at_ms, text_len, text (UTF-8).",
+            note="TEXT (0x01): msg_id u32, text_len, text (UTF-8). Gövde öneki 6 B; sent_at_ms telde yok (K1).",
             spec_ref="application-message-protocol.md §3 0x01 TEXT",
             input_={
                 "msg_id": 1,
-                "sent_at_ms": 1_758_000_000_000,
                 "text": "merhaba",
             },
-            expected_hex=hx(record(TEXT, text_body(1, 1_758_000_000_000, "merhaba"))),
+            expected_hex=hx(record(TEXT, text_body(1, "merhaba"))),
         ),
         case(
             "amp-record-v1.encode.file-begin",
@@ -203,7 +212,7 @@ def build_positive() -> dict:
         case(
             "amp-record-v1.encode.receipt-delivered",
             "encode",
-            note="RECEIPT (0x08): ref_msg_id, kind (0x01=delivered, M3a kapsamı — AMP A4).",
+            note="RECEIPT (0x08): ref_msg_id u32, kind (0x01=delivered, M3a kapsamı — AMP A4).",
             spec_ref="application-message-protocol.md §3 0x08 RECEIPT",
             input_={"ref_msg_id": 1, "kind": 0x01},
             expected_hex=hx(record(RECEIPT, receipt_body(1, 0x01))),
@@ -217,13 +226,12 @@ def build_positive() -> dict:
             spec_ref="application-message-protocol.md §5",
             input_={
                 "msg_id": 2,
-                "sent_at_ms": 1_758_000_000_000,
                 "text": "tekrar eden metin " * 8,
             },
             expected_hex=hx(
                 record(
                     TEXT,
-                    compressed_body(text_body(2, 1_758_000_000_000, "tekrar eden metin " * 8)),
+                    compressed_body(text_body(2, "tekrar eden metin " * 8)),
                     flags=COMPRESS_FLAG_BIT0,
                 )
             ),
@@ -232,7 +240,7 @@ def build_positive() -> dict:
     return {
         "schema_version": 2,
         "suite": "amp-record-v1",
-        "spec_version": "application-message-protocol@v1-B1.2+2026-09-23",
+        "spec_version": "application-message-protocol@v1+2026-10-04-K1",
         "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile sıfır paylaşım)",
         "description": "AMP §2/§3/§5 AppMessageRecord kodlaması — her msg_type için 1 pozitif vektör "
         "+ bir sıkıştırılmış TEXT örneği. B1.2 (WS-B/Hayri); tüketici B2.1'deki gerçek Rust codec'i.",
@@ -253,11 +261,11 @@ def build_negative() -> dict:
 
     reserved_type = record(0x00, b"")
 
-    reserved_flags = record(TEXT, text_body(1, 0, ""), flags=0x02)
+    reserved_flags = record(TEXT, text_body(1, ""), flags=0x02)
 
     # body_len (dış) = gerçek gönderilen bayt sayısı; TEXT'in İÇ text_len alanı, kalan body
     # baytlarından daha büyük bir değer beyan ediyor → §2 A1: "toplam ≤ body_len — aşarsa DROP".
-    inner_prefix = struct.pack(">QQH", 1, 0, 100)  # text_len=100 ama arkasında 3 bayt var
+    inner_prefix = struct.pack(">IH", 1, 100)  # msg_id=1, text_len=100 ama arkasında 3 bayt var
     inner_mismatch_body = inner_prefix + b"\x61\x62\x63"
     inner_mismatch = record(TEXT, inner_mismatch_body)
 
@@ -279,7 +287,7 @@ def build_negative() -> dict:
     unknown_compression_id = struct.pack(">BI", 0x00, 4) + b"\x00\x00\x00\x00"
     unknown_compression = record(TEXT, unknown_compression_id, flags=COMPRESS_FLAG_BIT0)
 
-    unknown_version = record(TEXT, text_body(1, 0, "hi"), msg_version=0x02)
+    unknown_version = record(TEXT, text_body(1, "hi"), msg_version=0x02)
 
     cases = [
         case(
@@ -364,7 +372,7 @@ def build_negative() -> dict:
     return {
         "schema_version": 2,
         "suite": "amp-record-reject-v1",
-        "spec_version": "application-message-protocol@v1-B1.2+2026-09-23",
+        "spec_version": "application-message-protocol@v1+2026-10-04-K1",
         "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile sıfır paylaşım)",
         "description": "AMP §2/§5/§6 negatif corpus: reserved type/flag, iç alan/body_len uyumsuzluğu, "
         "sıkıştırma bomb korumaları (uncompressed_len aşımı, expansion oranı), gerçek zstd ile "
@@ -379,21 +387,35 @@ def build_negative() -> dict:
     }
 
 
-def main() -> None:
+def render(doc: dict) -> str:
+    return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+
+
+def main(argv: list[str]) -> int:
     root = Path(__file__).resolve().parents[2]
     vectors_dir = root / "vectors"
+    outputs = {
+        vectors_dir / "amp-record-v1.json": build_positive(),
+        vectors_dir / "amp-record-reject-v1.json": build_negative(),
+    }
 
-    positive = build_positive()
-    negative = build_negative()
+    if "--check" in argv:
+        # Diskteki dosyalar bu referanstan yeniden üretilenle BAYT-ÖZDEŞ mi (elle düzenleme ya da
+        # başka bir kaynaktan üretim görünür olsun).
+        stale = 0
+        for path, doc in outputs.items():
+            on_disk = path.read_text(encoding="utf-8") if path.is_file() else None
+            same = on_disk == render(doc)
+            stale += not same
+            print(f"{'aynı' if same else 'FARKLI'}: {path.relative_to(root)} ({doc['case_count']} vaka)")
+        return 1 if stale else 0
 
-    (vectors_dir / "amp-record-v1.json").write_text(
-        json.dumps(positive, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    (vectors_dir / "amp-record-reject-v1.json").write_text(
-        json.dumps(negative, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    print(f"wrote {positive['case_count']} positive + {negative['case_count']} negative cases")
+    for path, doc in outputs.items():
+        path.write_text(render(doc), encoding="utf-8")
+    counts = " + ".join(str(doc["case_count"]) for doc in outputs.values())
+    print(f"wrote {counts} cases (positive + negative)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main(sys.argv[1:]))
