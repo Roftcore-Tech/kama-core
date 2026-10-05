@@ -15,15 +15,28 @@
 //! * **mekanizma** ([`mechanism`]) — harness'in kendisinin çalıştığını kanıtlar (hedef kaydı,
 //!   typed kurulum, taze hedefte oturum icat edilmemesi, kapasite tutarlılığı). Bunlar KM-SEAM-
 //!   AT-001 §6 satırları DEĞİLDİR ve öyleymiş gibi sayılmazlar.
-//!   Not: §6'nın 11 satırı ortak koşum yüzeyinde (conformance-core) yaşar; `H-NO-CRYPTO-EDGE` ve
-//!   `H-NO-PLANE1` spec'te STATİK kontrol olarak tanımlıdır (derleme bağımlılığı denetimi) —
-//!   sırası geldiğinde koşum değil, kapı-seviyesi denetim olarak uygulanmaları gerekir.
-//! * **sözleşme** ([`seam_contract_suite!`]) — §6'nın 11 satırı. **Bugün 1'i uygulanmıştır**
-//!   (H-ROUNDTRIP), ve o satır `mock_only`'dir: yalnız sahtede koştuğu için kanıt değeri ikinci
-//!   hedef gelince doğar. Kalan 10'u ve bu ayrım `scripts/ci/seam-coverage.json` içinde satır
-//!   satır beyan edilir; runner, Rust tarafının bildirdiği listeyi (aşağıdaki sentinel) o
-//!   beyanla ÇAPRAZ KONTROL eder ve tek hedef varken hiçbir satırın "kanıtlandı" sayılmasına
-//!   izin vermez. Beyanla gerçeklik ayrışırsa kapı kırmızı.
+//!   Not: §6'nın 12 DAVRANIŞ satırı ortak koşum yüzeyinde (conformance-core) yaşar;
+//!   `H-NO-CRYPTO-EDGE` ve `H-NO-PLANE1` spec'te STATİK kontrol olarak tanımlıdır ve koşum değil
+//!   kapı-seviyesi denetimdir: `scripts/ci/layer_check.py` (beyanda durum `static`, kanıt
+//!   `layer_check`; runner mock koşusunda o kapıyı da koşturur).
+//! * **sözleşme** ([`seam_contract_suite!`]) — §6'nın 12 davranış satırı. **Bugün 12'sinin de
+//!   gövdesi vardır**: yedisi `feature/app`'ten taşındı (Hayri — H-ROUNDTRIP, H-EVENTS, H-CUTOVER,
+//!   H-CONNECT-IDEMP, H-EARLY-CONFLICT, H-CAPS, H-COMPRESS-BOUNDARY), dördü DR-CONNECT-1 ile gelen
+//!   satırlardır (H-APP-RETRY-0, H-CANCEL, H-PROGRESS, H-SILENT-REJECT), H-PENDING-CAP G-S3 kanıt
+//!   işinden gelir. HEPSİ `mock_only`'dir: yalnız sahtede koştukları için kanıt değerleri ikinci
+//!   hedef gelince doğar. Bu ayrım `scripts/ci/seam-coverage.json` içinde satır satır beyan
+//!   edilir; runner, Rust tarafının bildirdiği listeyi (aşağıdaki sentinel) o beyanla ve fiilen
+//!   LİSTELENEN test adlarıyla ÇAPRAZ KONTROL eder ve tek hedef varken hiçbir satırın "kanıtlandı"
+//!   sayılmasına izin vermez. Beyanla gerçeklik ayrışırsa kapı kırmızı.
+//!
+//! # Satır gövdeleri ve senaryo kancaları
+//!
+//! Bir satırın ihtiyaç duyduğu DIŞ koşul (karşı ucun yanıtı, link durumu, saat, kayıp) gövdede
+//! üretilmez; [`crate::harness::target::SeamTarget`] kancalarından istenir. Sahte onları doğrudan
+//! enjekte eder; gerçek hedef aynı kancaları gerçek bir karşı uç fikstürüyle dolduracaktır. Bir
+//! satırın sahtede yeşil olması, kancanın sahtedeki karşılığı kadar güçlüdür: örn. sahtenin
+//! "sahte RESPONSE"u hiçbir kripto çalıştırmaz, "recovery"si ARQ/FEC değil bir anahtardır. Bu
+//! sınırlar satır satır `seam-coverage.json`'ın `needs` alanında yazılıdır.
 
 #![allow(dead_code)]
 
@@ -37,7 +50,20 @@
 /// **Bir satırın burada olması "kanıtlandı" demek DEĞİLDİR.** Tek hedef (mock) kayıtlıyken bir
 /// satır olsa olsa `mock_only`'dir: gövde hazırdır, doğrulama gücü ikinci hedef gelince doğar
 /// (Google SWE ch.13 / Fowler ContractTest). Beyandaki durum ayrımını runner zorlar.
-pub const CONTRACT_ROWS: &[&str] = &["H-ROUNDTRIP", "H-PENDING-CAP"];
+pub const CONTRACT_ROWS: &[&str] = &[
+    "H-APP-RETRY-0",
+    "H-ROUNDTRIP",
+    "H-EVENTS",
+    "H-CUTOVER",
+    "H-CONNECT-IDEMP",
+    "H-EARLY-CONFLICT",
+    "H-CAPS",
+    "H-PENDING-CAP",
+    "H-CANCEL",
+    "H-PROGRESS",
+    "H-SILENT-REJECT",
+    "H-COMPRESS-BOUNDARY",
+];
 
 /// Runner'ın okuduğu makine-satırı. `--nocapture` ile basılır.
 pub const CONTRACT_ROWS_SENTINEL: &str = "SEAM-CONTRACT-ROWS";
@@ -64,10 +90,12 @@ pub fn emit_contract_row_sentinel(target_id: &str) {
 /// KM-SEAM-AT-001 §6 satır gövdeleri — her hedefte AYNI kod koşar.
 pub mod rows {
     use crate::harness::target::SeamTarget;
-    use kama_contracts::handles::{PeerRef, SessionHandle};
+    use std::time::Duration;
+
+    use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
     use kama_contracts::s1::{
-        CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit,
-        SessionEvent, TransportError,
+        AbandonReason, CompressionPolicy, ConnectPhase, ConnectResult, ConnectTicket, Delivered,
+        DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent, TransportError,
     };
 
     /// `Ready`'yi beklerken atılacak azami adım. Sınırsız döngü YOK: gerçek hedef ilerlemezse
@@ -272,6 +300,509 @@ pub mod rows {
             "yer açıldıktan sonra connect hâlâ reddediliyor"
         );
     }
+
+    // ── ortak yardımcılar ────────────────────────────────────────────────────────────────────
+
+    fn fresh<T: SeamTarget>() -> T::Transport {
+        T::build().unwrap_or_else(|e| {
+            panic!(
+                "hedef {} kurulamadı ({e}) — uygulanmış satır koşamayan hedefte olamaz",
+                T::ID
+            )
+        })
+    }
+
+    fn unit(bytes: &[u8]) -> PreparedUnit {
+        PreparedUnit {
+            bytes: bytes.to_vec(),
+            compression_policy: CompressionPolicy::Never,
+        }
+    }
+
+    /// Bir sonraki olayı bekler (hedefi sürerek). Bütçe dolarsa `None`.
+    fn next_event<T: SeamTarget>(t: &mut T::Transport) -> Option<SessionEvent> {
+        for _ in 0..PUMP_BUDGET {
+            if let Some(ev) = t.poll_event() {
+                return Some(ev);
+            }
+            T::pump(t);
+        }
+        None
+    }
+
+    /// Bir sonraki teslimi bekler (hedefi sürerek). Bütçe dolarsa `None`.
+    fn next_delivery<T: SeamTarget>(t: &mut T::Transport) -> Option<Delivered> {
+        for _ in 0..PUMP_BUDGET {
+            if let Some(d) = t.recv() {
+                return Some(d);
+            }
+            T::pump(t);
+        }
+        None
+    }
+
+    /// Hedef ne kadar sürülürse sürülsün başka olay ÇIKMADIĞINI doğrular.
+    fn assert_no_event<T: SeamTarget>(t: &mut T::Transport, why: &str) {
+        for _ in 0..PUMP_BUDGET {
+            if let Some(ev) = t.poll_event() {
+                panic!("{why}: beklenmeyen olay {ev:?}");
+            }
+            T::pump(t);
+        }
+    }
+
+    /// `Pending(ticket)` bekler.
+    fn pending_ticket(r: Result<ConnectResult, TransportError>, what: &str) -> ConnectTicket {
+        match r {
+            Ok(ConnectResult::Pending(ticket)) => ticket,
+            other => panic!("{what}: Pending bekleniyordu, gelen {other:?}"),
+        }
+    }
+
+    // ── Hayri'nin yedi satırı (ported from feature/app; güncel S1'e göre) ────────────────────
+
+    /// **H-EVENTS** — §6: `Ready → RenewRequired → Ready(h') → Closed(h, Superseded)` sırası;
+    /// `Closed` sonrası `send(h)` → `UnknownSession`.
+    ///
+    /// "`Closed` sonrası" burada `Closed` olayının Application'a TESLİMİNDEN sonrası olarak okunur
+    /// (K7 aynı dili kullanır: "`Ready` gelmeden `send(h)` → `UnknownSession`"). `Ready(h')` ile
+    /// `Closed` arasındaki pencere H-CUTOVER'ındır (`SessionSuperseded`). Hayri'nin özgün testi
+    /// `UnknownSession`'ı `close(h)` çağrısından sonra bekliyordu; gövde iki biçimi de sınar.
+    ///
+    /// # Panics
+    /// Olay sırası farklıysa, fazladan olay çıkarsa ya da `Closed` sonrası `send(h)` başka bir şey
+    /// dönerse.
+    pub fn h_events<T: SeamTarget>() {
+        let mut t = fresh::<T>();
+        let peer = crate::harness::test_peer(0xE1);
+        let h = establish::<T>(&mut t, peer, None); // Ready(h, peer)
+
+        T::require_renew(&mut t, h);
+        assert_eq!(
+            next_event::<T>(&mut t),
+            Some(SessionEvent::RenewRequired(h))
+        );
+
+        T::complete_renew(&mut t, h);
+        let h2 = match next_event::<T>(&mut t) {
+            Some(SessionEvent::Ready(h2, p)) => {
+                assert_eq!(p, peer, "Ready(h') başka peer taşıdı");
+                assert_ne!(h2, h, "yenileme aynı tutamacı verdi");
+                h2
+            }
+            other => panic!("RenewRequired'dan sonra Ready(h') bekleniyordu, gelen {other:?}"),
+        };
+        assert_eq!(
+            next_event::<T>(&mut t),
+            Some(SessionEvent::Closed(h, CloseReason::Superseded))
+        );
+        assert_no_event::<T>(&mut t, "Closed sonrası");
+
+        // `Closed` Application'a ulaştı: eski tutamaç artık BİLİNMİYOR. Satırın yazılı hâli budur
+        // ("`Closed` sonrası `send(h)` → `UnknownSession`"); `close()` çağrısı İSTEMEZ.
+        assert_eq!(
+            t.send(h, unit(b"gec"), DeliveryPolicy::Reliable),
+            Err(TransportError::UnknownSession)
+        );
+        // Hayri'nin özgün testindeki biçim: Application `Closed`'ı işleyip eski tutamacı kapatır
+        // (kaynak bırakma). Sonuç değişmez ve kapatma YENİ oturuma dokunmaz.
+        t.close(h);
+        assert_eq!(
+            t.send(h, unit(b"gec"), DeliveryPolicy::Reliable),
+            Err(TransportError::UnknownSession)
+        );
+        assert_eq!(t.send(h2, unit(b"yeni"), DeliveryPolicy::Reliable), Ok(()));
+    }
+
+    /// **H-CUTOVER** — §6 (yenileme kolu): cutover öncesi `send(h)` kabul; cutover sonrası `send(h)`
+    /// → `SessionSuperseded`; `h`'nin outstanding'i drain olur; `h'` üzerinden sıralama korunur.
+    ///
+    /// KAPSAM DIŞI (satırın geri kalanı; sahte modellemiyor, gerçek hedefte yazılacak): provisional
+    /// supersession (bilinen eşten yeni-sayaçlı INIT), bayat INIT'in etkisizliği, duplicate INIT,
+    /// glare, davranışın Crypto cap değerinden bağımsızlığı.
+    ///
+    /// # Panics
+    /// Yukarıdaki dört iddiadan biri tutmazsa.
+    pub fn h_cutover<T: SeamTarget>() {
+        let mut t = fresh::<T>();
+        let peer = crate::harness::test_peer(0xE2);
+        let h = establish::<T>(&mut t, peer, None);
+
+        // Cutover öncesi ve yenileme SÜRERKEN h kabul eder.
+        assert_eq!(t.send(h, unit(b"once-1"), DeliveryPolicy::Reliable), Ok(()));
+        T::require_renew(&mut t, h);
+        assert_eq!(
+            next_event::<T>(&mut t),
+            Some(SessionEvent::RenewRequired(h))
+        );
+        assert_eq!(t.send(h, unit(b"once-2"), DeliveryPolicy::Reliable), Ok(()));
+
+        // Cutover: Ready(h') geldi, Closed(h) henüz TESLİM EDİLMEDİ → h supersede edilmiş.
+        T::complete_renew(&mut t, h);
+        let h2 = match next_event::<T>(&mut t) {
+            Some(SessionEvent::Ready(h2, p)) if p == peer => h2,
+            other => panic!("Ready(h') bekleniyordu, gelen {other:?}"),
+        };
+        assert_eq!(
+            t.send(h, unit(b"sonra"), DeliveryPolicy::Reliable),
+            Err(TransportError::SessionSuperseded)
+        );
+
+        // h'nin outstanding'i drain olur: cutover'dan ÖNCE kabul edilen iki birim teslim edilir.
+        for want in [&b"once-1"[..], &b"once-2"[..]] {
+            let d = next_delivery::<T>(&mut t).expect("outstanding birim drain olmadı");
+            assert_eq!((d.session, d.unit.as_slice()), (h, want));
+        }
+
+        // h' üzerinden gönderim çalışır ve sıra korunur.
+        for body in [&b"yeni-1"[..], &b"yeni-2"[..], &b"yeni-3"[..]] {
+            assert_eq!(t.send(h2, unit(body), DeliveryPolicy::Reliable), Ok(()));
+        }
+        for want in [&b"yeni-1"[..], &b"yeni-2"[..], &b"yeni-3"[..]] {
+            let d = next_delivery::<T>(&mut t).expect("h' üzerinden teslim gelmedi");
+            assert_eq!(
+                (d.session, d.unit.as_slice()),
+                (h2, want),
+                "h' sırası bozuldu"
+            );
+        }
+        assert!(
+            t.recv().is_none(),
+            "fazladan teslim (reddedilen birim sızdı)"
+        );
+
+        assert_eq!(
+            next_event::<T>(&mut t),
+            Some(SessionEvent::Closed(h, CloseReason::Superseded))
+        );
+    }
+
+    /// **H-CONNECT-IDEMP** — §6: aktif peer → `Ready(h)` döner, olay YOK; pending → aynı ticket;
+    /// olay kuyruğunda duplicate `Ready` yok.
+    ///
+    /// # Panics
+    /// İkinci `connect` farklı ticket/tutamaç verirse ya da fazladan olay üretirse.
+    pub fn h_connect_idemp<T: SeamTarget>() {
+        let mut t = fresh::<T>();
+        let peer = crate::harness::test_peer(0xE3);
+
+        let ticket = pending_ticket(t.connect(peer, None), "ilk connect");
+        assert_eq!(t.connect(peer, None), Ok(ConnectResult::Pending(ticket)));
+
+        let h = match next_event::<T>(&mut t) {
+            Some(SessionEvent::Ready(h, p)) if p == peer => h,
+            other => panic!("Ready bekleniyordu, gelen {other:?}"),
+        };
+        for _ in 0..3 {
+            assert_eq!(t.connect(peer, None), Ok(ConnectResult::Ready(h)));
+        }
+        assert_no_event::<T>(&mut t, "idempotent connect");
+    }
+
+    /// **H-EARLY-CONFLICT** — §6: aktif/pending peer'a `connect(peer, Some(X))` →
+    /// `EarlyUnitConflict`; X hiçbir yola girmez; `connect(peer, None)` idempotent.
+    ///
+    /// # Panics
+    /// Çakışma kabul edilirse ya da reddedilen birim teslim yoluna girerse.
+    pub fn h_early_conflict<T: SeamTarget>() {
+        let mut t = fresh::<T>();
+        let peer = crate::harness::test_peer(0xE4);
+        let conflicting = || Some(unit(b"cakisan early_unit"));
+
+        // Pending durumunda çakışma.
+        let ticket = pending_ticket(t.connect(peer, None), "ilk connect");
+        assert_eq!(
+            t.connect(peer, conflicting()),
+            Err(TransportError::EarlyUnitConflict)
+        );
+        assert_eq!(t.connect(peer, None), Ok(ConnectResult::Pending(ticket)));
+
+        // Aktif durumunda çakışma.
+        let h = match next_event::<T>(&mut t) {
+            Some(SessionEvent::Ready(h, p)) if p == peer => h,
+            other => panic!("Ready bekleniyordu, gelen {other:?}"),
+        };
+        assert_eq!(
+            t.connect(peer, conflicting()),
+            Err(TransportError::EarlyUnitConflict)
+        );
+        assert_eq!(t.connect(peer, None), Ok(ConnectResult::Ready(h)));
+
+        // Reddedilen birimler hiçbir yola girmedi.
+        for _ in 0..PUMP_BUDGET {
+            T::pump(&mut t);
+            assert!(t.recv().is_none(), "reddedilen early_unit teslim edildi");
+        }
+    }
+
+    /// **H-CAPS** — §6: `len == max` kabul, `len == max+1` `UnitTooLarge`; değer Transport'tan.
+    ///
+    /// Sınır hedefin kendi `capabilities()`'inden okunur; gövdede sayı yoktur. Satırın "app'te sabit
+    /// yok" cümlesi statik bir iddiadır ve burada SINANMAZ (`kama-app`'te bugün ürün kodu yok).
+    ///
+    /// # Panics
+    /// Sınırda ret ya da sınırın bir üstünde kabul olursa.
+    pub fn h_caps<T: SeamTarget>() {
+        let mut t = fresh::<T>();
+        let h = establish::<T>(&mut t, crate::harness::test_peer(0xE5), None);
+        let max = t.capabilities().max_plaintext_unit_bytes as usize;
+
+        assert_eq!(
+            t.send(h, unit(&vec![0xA5; max]), DeliveryPolicy::Reliable),
+            Ok(()),
+            "tam sınırda kabul edilmeli"
+        );
+        let d = next_delivery::<T>(&mut t).expect("sınırdaki birim teslim edilmedi");
+        assert_eq!(d.unit.len(), max);
+
+        assert_eq!(
+            t.send(h, unit(&vec![0xA5; max + 1]), DeliveryPolicy::Reliable),
+            Err(TransportError::UnitTooLarge)
+        );
+        assert!(t.recv().is_none(), "reddedilen birim teslim edildi");
+    }
+
+    /// **H-COMPRESS-BOUNDARY** — §6: `CompressionPolicy` Transport davranışını değiştirmez;
+    /// decompress yalnız Application'da.
+    ///
+    /// # Panics
+    /// Aynı byte'lar iki politika altında farklı teslim edilirse.
+    pub fn h_compress_boundary<T: SeamTarget>() {
+        let mut t = fresh::<T>();
+        let h = establish::<T>(&mut t, crate::harness::test_peer(0xE6), None);
+        let bytes = b"ayni baytlar, iki politika".to_vec();
+
+        let mut delivered = Vec::new();
+        for policy in [CompressionPolicy::Never, CompressionPolicy::AppCompressed] {
+            let u = PreparedUnit {
+                bytes: bytes.clone(),
+                compression_policy: policy,
+            };
+            assert_eq!(t.send(h, u, DeliveryPolicy::Reliable), Ok(()));
+            delivered.push(next_delivery::<T>(&mut t).expect("birim teslim edilmedi"));
+        }
+        assert_eq!(delivered[0].unit, bytes, "Never: byte'lar değişti");
+        assert_eq!(
+            delivered[1].unit, bytes,
+            "AppCompressed: Transport byte'lara dokundu (açtı ya da sıkıştırdı)"
+        );
+    }
+
+    // ── Eksik dört satır ─────────────────────────────────────────────────────────────────────
+
+    /// **H-APP-RETRY-0** — §6: deterministik kayıp altında `recovery ON` → teslim; `recovery OFF` →
+    /// kasıtlı düşürülen birim **kurtarılmaz**; Application yeniden GÖNDERMEZ.
+    ///
+    /// Application'ın yerinde bu test durur ve her birimi TEK kez `send` eder. Recovery açıkken
+    /// teslimi sağlayan Transport'tur; kapalıyken kayıp kalıcıdır — yani "kurtarma" Application'da
+    /// değil Transport'tadır. ("app kodunda retransmit yolu yok" cümlesi statik bir iddiadır;
+    /// `kama-app`'te bugün mesaj mantığı bulunmadığından davranışla sınanacak bir şey yoktur.)
+    ///
+    /// # Panics
+    /// Recovery açıkken birim teslim edilmezse ya da sıra bozulursa; kapalıyken kaybolan birim
+    /// teslim edilirse.
+    pub fn h_app_retry_0<T: SeamTarget>() {
+        // recovery ON: kaybolan birim Transport'un içinde kurtarılır; sıra korunur.
+        let mut t = fresh::<T>();
+        let h = establish::<T>(&mut t, crate::harness::test_peer(0xE7), None);
+        T::set_recovery(&mut t, true);
+        T::drop_next_units(&mut t, 1);
+        assert_eq!(
+            t.send(h, unit(b"kaybolan"), DeliveryPolicy::Reliable),
+            Ok(())
+        );
+        assert_eq!(
+            t.send(h, unit(b"sonraki"), DeliveryPolicy::Reliable),
+            Ok(())
+        );
+        for want in [&b"kaybolan"[..], &b"sonraki"[..]] {
+            let d = next_delivery::<T>(&mut t).expect("recovery ON: birim teslim edilmedi");
+            assert_eq!(d.unit.as_slice(), want, "recovery ON: sıra bozuldu");
+        }
+        assert!(
+            t.recv().is_none(),
+            "recovery ON: fazladan teslim (duplicate)"
+        );
+
+        // recovery OFF: aynı kayıp KURTARILMAZ; sonraki birim etkilenmez.
+        let mut t = fresh::<T>();
+        let h = establish::<T>(&mut t, crate::harness::test_peer(0xE8), None);
+        T::set_recovery(&mut t, false);
+        T::drop_next_units(&mut t, 1);
+        assert_eq!(
+            t.send(h, unit(b"kaybolan"), DeliveryPolicy::Reliable),
+            Ok(())
+        );
+        assert_eq!(
+            t.send(h, unit(b"sonraki"), DeliveryPolicy::Reliable),
+            Ok(())
+        );
+        let d = next_delivery::<T>(&mut t).expect("recovery OFF: kaybolmayan birim de gelmedi");
+        assert_eq!(d.unit.as_slice(), b"sonraki");
+        for _ in 0..PUMP_BUDGET {
+            T::pump(&mut t);
+            assert!(
+                t.recv().is_none(),
+                "recovery OFF: düşürülen birim kurtarıldı — kurtarma Transport dışında bir yerde"
+            );
+        }
+    }
+
+    /// **H-CANCEL** — §6: `Pending(ticket)` → `cancel(ticket)` → `ConnectAbandoned(ticket,
+    /// Cancelled)`; `early_unit` hiçbir yola girmez; ticket geçersiz, sonraki `connect(peer)` yeni
+    /// ticket verir. Saat ne kadar ilerlerse ilerlesin niyet KENDİLİĞİNDEN sonlanmaz.
+    ///
+    /// KAPSAM DIŞI: satırın "pending kripto state kapanır" cümlesi S1 yüzeyinden gözlenemez
+    /// (Application Crypto'yu görmez) ve sahtede Crypto yoktur; gerçek hedefte, Transport'un
+    /// altındaki Crypto'nun pending kaydına bakılarak sınanacak iştir.
+    ///
+    /// # Panics
+    /// Niyet zamanla sonlanırsa, iptal başka olay üretirse, `early_unit` teslim edilirse ya da
+    /// iptal edilen ticket yeniden verilirse.
+    pub fn h_cancel<T: SeamTarget>() {
+        /// "Ne kadar ilerletilirse ilerletilsin": T-18c ephemeral ömrünün (7 gün) çok ötesi.
+        const A_VERY_LONG_TIME: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+
+        let mut t = fresh::<T>();
+        let peer = crate::harness::test_peer(0xE9);
+        let ticket = pending_ticket(
+            t.connect(peer, Some(unit(b"iptal edilecek early_unit"))),
+            "ilk connect",
+        );
+
+        // INV-NO-IDLE-TEARDOWN: zaman niyeti sonlandırmaz. (Hedef SÜRÜLMEZ: yanıt gelmiyor.)
+        T::advance_clock(&mut t, A_VERY_LONG_TIME);
+        assert!(
+            t.poll_event().is_none(),
+            "zaman geçti diye olay çıktı (niyet kendiliğinden sonlandı?)"
+        );
+        assert_eq!(t.connect(peer, None), Ok(ConnectResult::Pending(ticket)));
+
+        // Tek çıkış: cancel → tam bir olay.
+        t.cancel(ticket);
+        assert_eq!(
+            t.poll_event(),
+            Some(SessionEvent::ConnectAbandoned(
+                ticket,
+                AbandonReason::Cancelled
+            ))
+        );
+        assert!(t.poll_event().is_none(), "iptal birden fazla olay üretti");
+        t.cancel(ticket); // tekrar iptal: etkisiz
+        assert!(t.poll_event().is_none(), "ikinci cancel olay üretti");
+
+        // Ticket geçersiz: aynı eşe connect YENİ ticket verir; eski niyet dirilmez.
+        let again = pending_ticket(t.connect(peer, None), "iptalden sonra connect");
+        assert_ne!(again, ticket, "iptal edilen ticket yeniden verildi");
+        match next_event::<T>(&mut t) {
+            Some(SessionEvent::Ready(_, p)) => assert_eq!(p, peer),
+            other => panic!("yeni niyet Ready'ye çözülmedi: {other:?}"),
+        }
+        // early_unit iptalle birlikte düştü: yeni oturumda teslim EDİLMEZ.
+        for _ in 0..PUMP_BUDGET {
+            T::pump(&mut t);
+            assert!(
+                t.recv().is_none(),
+                "iptal edilen niyetin early_unit'i teslim edildi"
+            );
+        }
+    }
+
+    /// **H-PROGRESS** — §6: link yok → `ConnectProgress(Suspended)` ve 0 prob emisyonu; link gelir →
+    /// `Measuring` + anında prob; `ConnectProgress` hiçbir durumda eşin canlılığını bildirmez.
+    ///
+    /// # Panics
+    /// Link yokken prob çıkarsa, link gelince prob çıkmazsa ya da link olayları niyeti çözerse.
+    pub fn h_progress<T: SeamTarget>() {
+        /// Kadanstan bağımsız "uzun" süre: herhangi bir prob aralığının çok üstünde.
+        const LONG: Duration = Duration::from_secs(60 * 60);
+
+        let mut t = fresh::<T>();
+        let peer = crate::harness::test_peer(0xEA);
+        let ticket = pending_ticket(t.connect(peer, None), "ilk connect");
+
+        // Karşı-kontrol: link AÇIKKEN saat ilerleyince prob çıkar. (Çıkmasaydı aşağıdaki "0 prob"
+        // iddiası her hedefte kendiliğinden doğru olurdu.)
+        let before = T::probe_emissions(&t);
+        T::advance_clock(&mut t, LONG);
+        assert!(
+            T::probe_emissions(&t) > before,
+            "link açıkken hiç prob çıkmadı — '0 prob' iddiası bu hedefte ölçülemez"
+        );
+
+        // Link düşer: Suspended; prob DURUR.
+        T::set_link(&mut t, false);
+        assert_eq!(
+            t.poll_event(),
+            Some(SessionEvent::ConnectProgress(
+                ticket,
+                ConnectPhase::Suspended
+            ))
+        );
+        let suspended_at = T::probe_emissions(&t);
+        T::advance_clock(&mut t, LONG);
+        assert_eq!(
+            T::probe_emissions(&t),
+            suspended_at,
+            "link yokken prob emisyonu oldu"
+        );
+        assert!(t.poll_event().is_none(), "link yokken fazladan olay");
+
+        // Link gelir: Measuring + ANINDA prob (saat ilerletilmeden).
+        T::set_link(&mut t, true);
+        assert_eq!(
+            t.poll_event(),
+            Some(SessionEvent::ConnectProgress(
+                ticket,
+                ConnectPhase::Measuring
+            ))
+        );
+        assert_eq!(
+            T::probe_emissions(&t),
+            suspended_at + 1,
+            "link gelince anında prob çıkmadı"
+        );
+
+        // Bu olaylar HUB YOLUNUN durumudur: niyeti çözmezler, eş hakkında bir şey söylemezler.
+        assert!(t.poll_event().is_none(), "link olayı Ready üretti");
+        assert_eq!(t.connect(peer, None), Ok(ConnectResult::Pending(ticket)));
+    }
+
+    /// **H-SILENT-REJECT** — §6: sahte/geçersiz RESPONSE hiçbir olay üretmez, pending yaşar: ticket
+    /// geçerli kalır, `ConnectAbandoned` çıkmaz, sonradan gelen geçerli RESPONSE aynı niyeti
+    /// `Ready`'ye çözer; kripto nedeni hiçbir olayda görünmez (K9).
+    ///
+    /// # Panics
+    /// Sahte RESPONSE bir olay üretirse, niyeti düşürürse ya da sonraki geçerli yanıt çözülmezse.
+    pub fn h_silent_reject<T: SeamTarget>() {
+        let mut t = fresh::<T>();
+        let peer = crate::harness::test_peer(0xEB);
+        let ticket = pending_ticket(t.connect(peer, None), "ilk connect");
+
+        for _ in 0..3 {
+            T::inject_invalid_response(&mut t, peer);
+            assert!(
+                t.poll_event().is_none(),
+                "sahte RESPONSE olay üretti (kripto nedeni Application'a sızdı)"
+            );
+            assert_eq!(
+                t.connect(peer, None),
+                Ok(ConnectResult::Pending(ticket)),
+                "sahte RESPONSE niyeti düşürdü ya da ticket'ı değiştirdi"
+            );
+        }
+
+        // Geçerli RESPONSE gelir: AYNI niyet Ready'ye çözülür.
+        let h = match next_event::<T>(&mut t) {
+            Some(SessionEvent::Ready(h, p)) => {
+                assert_eq!(p, peer);
+                h
+            }
+            other => panic!("geçerli yanıt niyeti çözmedi: {other:?}"),
+        };
+        assert_eq!(t.connect(peer, None), Ok(ConnectResult::Ready(h)));
+        assert_no_event::<T>(&mut t, "çözülmeden sonra");
+    }
 }
 
 /// Mekanizma gövdeleri — her hedefte AYNI kod koşar.
@@ -413,10 +944,11 @@ macro_rules! seam_mechanism_suite {
 
 /// Sözleşme süitini (KM-SEAM-AT-001 §6) bir hedef için örnekler.
 ///
-/// **Bugün 1/11 satır uygulanmıştır** (H-ROUNDTRIP; walking-skeleton'un taşıdığı ince dilim).
-/// Yeni satır eklerken: gövde [`rows`] içine generic `fn` olarak yazılır, buraya `#[test]`
-/// sarmalayıcısı eklenir, kimliği [`CONTRACT_ROWS`] ve `scripts/ci/seam-coverage.json`'a AYNI
-/// commit'te işlenir (durum: tek hedef varken `mock_only`).
+/// **Bugün 12/12 davranış satırının gövdesi vardır** (iki statik satır koşum değildir; bkz. modül
+/// başlığı). Yeni satır eklerken: gövde [`rows`] içine generic `fn` olarak yazılır, buraya
+/// `#[test]` sarmalayıcısı eklenir (ad = satır kimliğinin küçük harfli, `-` yerine `_` konmuş hâli
+/// — runner bu adı LİSTEDE arar), kimliği [`CONTRACT_ROWS`] ve `scripts/ci/seam-coverage.json`'a
+/// AYNI commit'te işlenir (durum: tek hedef varken `mock_only`).
 #[macro_export]
 macro_rules! seam_contract_suite {
     ($suite:ident, $target:ty) => {
@@ -427,7 +959,12 @@ macro_rules! seam_contract_suite {
 
             type Target = $target;
 
-            // ── §6 satırları ── (kalanlar seam-coverage.json'da beyanlı)
+            // ── §6 davranış satırları (spec tablosu sırasıyla) ──
+
+            #[test]
+            fn h_app_retry_0() {
+                contract::rows::h_app_retry_0::<Target>();
+            }
 
             #[test]
             fn h_roundtrip() {
@@ -435,8 +972,53 @@ macro_rules! seam_contract_suite {
             }
 
             #[test]
+            fn h_events() {
+                contract::rows::h_events::<Target>();
+            }
+
+            #[test]
+            fn h_cutover() {
+                contract::rows::h_cutover::<Target>();
+            }
+
+            #[test]
+            fn h_connect_idemp() {
+                contract::rows::h_connect_idemp::<Target>();
+            }
+
+            #[test]
+            fn h_early_conflict() {
+                contract::rows::h_early_conflict::<Target>();
+            }
+
+            #[test]
+            fn h_caps() {
+                contract::rows::h_caps::<Target>();
+            }
+
+            #[test]
             fn h_pending_cap() {
                 contract::rows::h_pending_cap::<Target>();
+            }
+
+            #[test]
+            fn h_cancel() {
+                contract::rows::h_cancel::<Target>();
+            }
+
+            #[test]
+            fn h_progress() {
+                contract::rows::h_progress::<Target>();
+            }
+
+            #[test]
+            fn h_silent_reject() {
+                contract::rows::h_silent_reject::<Target>();
+            }
+
+            #[test]
+            fn h_compress_boundary() {
+                contract::rows::h_compress_boundary::<Target>();
             }
 
             #[test]

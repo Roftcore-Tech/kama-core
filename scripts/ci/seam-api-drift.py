@@ -16,6 +16,9 @@ Birden cok kez verilebilir (dosyalar birlestirilir) — ortak tipler `handles.rs
   C. §3 TransportError variant kumesi   == kaynaktaki variant kumesi   (kume KAPALIDIR)
   D. §6 tablosundaki H-* satir kimlikleri == seam-coverage.json rows[].id
   E. tek hedef (mock) kayitliyken hicbir satir 'implemented' beyan EDILEMEZ (yalniz 'mock_only')
+  G. 'static' durumu YALNIZ `kind: static` satirlar icindir ve kaniti adlandirilmis olmalidir
+     (`proof: layer_check` + bos olmayan `proof_rules`); davranis satiri 'static' beyan EDILEMEZ,
+     statik satir da 'mock_only'/'implemented' beyan EDILEMEZ (kosumu yoktur)
   Ek olarak beyan dosyasinin kendi tutarliligi (tekrarsiz kimlik, gecerli durum, ratchet tabani).
 
 --seam s3 (KM-SEAM-TC-001) — DENETLENEN ESITLIKLER:
@@ -51,7 +54,10 @@ DEFAULTS = {
 }
 DEFAULT_TARGETS = ROOT / "crates/kama-integration/tests/common/seam/target.rs"
 
-VALID_STATUS = {"implemented", "mock_only", "not_implemented"}
+VALID_STATUS = {"implemented", "mock_only", "static", "not_implemented"}
+VALID_KIND = {"behavioral", "static"}
+# Statik satirin kabul edilen kanit kapilari (runner bunlari kosturur).
+STATIC_PROOFS = {"layer_check"}
 
 findings: list[str] = []
 
@@ -322,20 +328,40 @@ def main() -> int:
 
     # Beyan oz-tutarliligi
     seen: set[str] = set()
-    implemented, mock_only = 0, 0
+    implemented, mock_only, static = 0, 0, 0
     for r in rows:
-        rid, status = r.get("id"), r.get("status")
+        rid, status, kind = r.get("id"), r.get("status"), r.get("kind")
         if rid in seen:
             bad(f"seam-coverage.json: '{rid}' iki kez beyan edildi")
         seen.add(rid)
         if status not in VALID_STATUS:
             bad(f"seam-coverage.json: '{rid}' gecersiz durum '{status}' (gecerli: {sorted(VALID_STATUS)})")
+        if kind not in VALID_KIND:
+            bad(f"seam-coverage.json: '{rid}' gecersiz tur '{kind}' (gecerli: {sorted(VALID_KIND)})")
         if status == "implemented":
             implemented += 1
         elif status == "mock_only":
             mock_only += 1
+        elif status == "static":
+            static += 1
 
-    for key, actual in (("implemented_baseline", implemented), ("mock_only_baseline", mock_only)):
+        # G — durum ↔ tur tutarliligi
+        if status == "static":
+            if kind != "static":
+                bad(f"seam-coverage.json: '{rid}' davranis satiri 'static' beyan edilmis — statik durum "
+                    f"yalniz kind=static satirlar icindir (davranis satiri KOSARAK kanitlanir)")
+            if r.get("proof") not in STATIC_PROOFS:
+                bad(f"seam-coverage.json: '{rid}' statik ama kaniti adlandirilmamis "
+                    f"(proof ∈ {sorted(STATIC_PROOFS)} olmali, gelen {r.get('proof')!r})")
+            rules = r.get("proof_rules")
+            if not (isinstance(rules, list) and rules and all(isinstance(x, str) and x for x in rules)):
+                bad(f"seam-coverage.json: '{rid}' statik ama `proof_rules` bos/eksik — hangi kural kanitliyor?")
+        elif kind == "static" and status in ("implemented", "mock_only"):
+            bad(f"seam-coverage.json: '{rid}' statik satir '{status}' beyan edilmis — statik satirin kosumu "
+                f"yoktur; dogru durum 'static' ya da 'not_implemented'")
+
+    for key, actual in (("implemented_baseline", implemented), ("mock_only_baseline", mock_only),
+                        ("static_baseline", static)):
         baseline = cov.get(key)
         if not isinstance(baseline, int):
             bad(f"seam-coverage.json: `{key}` tam sayi degil")
