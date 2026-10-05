@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-05 [B1 kama-contracts — Abkarada kararı; R-7(b) YENİDEN KARAR]:** S1 ve S3 trait/tipleri `crates/kama-contracts`'a taşındı (harici bağımlılık 0); `MockCrypto` `kama-noise-wire`'ın `test-util` özelliğinde. R-7(b) satırı, A4.1 ve A4.2 "Nereye" satırları buna göre işaretlendi. Katman kuralları `scripts/ci/layer_check.py` C1–C5. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-06b [C2 bulgularının yönlendirilmesi — Abkarada]:** A5.4 kartına "düzeltilecek" listesi (5b / 6 / 7 / 9 + ürün bağlantısı) ve Done ölçütü eki · yeni NON-GATING kart C1.6 (mutasyon sınaması). Yalnız ekleme.
 
 > **YAMA KAYDI — 2026-10-06 [PN SÜREKLİ — Abkarada kararı]:** D1'e ACK kimliği kararı (`full_wire_pn`; `dh_epoch` girmez) · D2 durum satırında `dh_epoch` alt-sorusu kapandı · A3.2 / A5.4'te "denenen anahtarın epoch penceresi" → tek pencere. Üstü çizili metin silinmedi.
@@ -80,7 +82,7 @@ Kama'nın mimarisi dört katman: **Application → Transport → Crypto → UDP.
 | R-4 | ~~`CLAUDE.md §3` spec yolu `docs/specs/` → `specs/`~~ **KAPANDI 2026-09-23** (4 yerde düzeltildi: başlık notu, §2, §3, §5) | ~~yanlış yol~~ | düzeltildi ✅ |
 | R-5 | engine-spec / app-rpc / transport-tdd revizyonları PR'a | commit'lenmemiş değişiklik | PR |
 | R-6 | `vectors/` dizini aç | repo'da test verisi dizini yok | dizin + README |
-| R-7 | ~~**Dört konvansiyon kararı (Abdurrahman)**~~ **KAPANDI 2026-09-23 — dört karar da sahip tarafından verildi:** **(a)** application crate adı = `crates/kama-app`. **(b)** S3 trait'leri `client-core/src/seam.rs`'te evrilir, implementasyon `kama-noise-wire`'da; `crates/crypto` iskeleti (3 satır, kullanılmıyor) SİLİNİR; kripto bağımlılıkları kama-noise-wire'a eklenir. **(c)** sözleşme testi adlandırması = main'e inen `<seam>_<katman>` dizin şeması (`seam_conformance_core` / `seam_mock_fixture` / `seam_real_adapter`); S3 karşılığı `noise_conformance_core` / `noise_mock_fixture` / `noise_real_adapter`. ~~öneri `conf_`~~ — TEK şema; plandaki `conf_` öneki TERK EDİLDİ (A3.1/A3.2/A4.4'teki `conf_demux`/`conf_epoch`/`conf_s3_*` yolları bu şemaya göre okunur). **(d)** Python referansı = saf-Python RFC 8439 + RFC 7748 + RFC 8032 (stdlib-only, RFC'nin kendi vektörleriyle doğrulanır); `cryptography` paketi ALINMADI. | ~~kararsız kalırsa üç kişi farklı yere yazar~~ | dört karar yazılı ✅ |
+| R-7 | ~~**Dört konvansiyon kararı (Abdurrahman)**~~ **KAPANDI 2026-09-23 — dört karar da sahip tarafından verildi:** **(a)** application crate adı = `crates/kama-app`. **(b)** ~~S3 trait'leri `client-core/src/seam.rs`'te evrilir, implementasyon `kama-noise-wire`'da~~ **[YENİDEN KARAR 2026-10-05 — B1]** S1 ve S3 trait/tipleri ORTAK SÖZLEŞME CRATE'İ `crates/kama-contracts`'tadır (harici bağımlılık 0; `kama-app`, `client-core`, `kama-noise-wire` yalnız ona yandan bağlanır); implementasyon `kama-noise-wire`'da. Gerekçe: trait `client-core`'dayken gerçek Crypto onu implemente edemiyordu (`client-core` zaten `kama-noise-wire`'a bağımlı → döngü); S1'de trait `kama-app`'teyken Transport üst katmana bağlanmak zorundaydı; `crates/crypto` iskeleti (3 satır, kullanılmıyor) SİLİNİR; kripto bağımlılıkları kama-noise-wire'a eklenir. **(c)** sözleşme testi adlandırması = main'e inen `<seam>_<katman>` dizin şeması (`seam_conformance_core` / `seam_mock_fixture` / `seam_real_adapter`); S3 karşılığı `noise_conformance_core` / `noise_mock_fixture` / `noise_real_adapter`. ~~öneri `conf_`~~ — TEK şema; plandaki `conf_` öneki TERK EDİLDİ (A3.1/A3.2/A4.4'teki `conf_demux`/`conf_epoch`/`conf_s3_*` yolları bu şemaya göre okunur). **(d)** Python referansı = saf-Python RFC 8439 + RFC 7748 + RFC 8032 (stdlib-only, RFC'nin kendi vektörleriyle doğrulanır); `cryptography` paketi ALINMADI. | ~~kararsız kalırsa üç kişi farklı yere yazar~~ | dört karar yazılı ✅ |
 
 ---
 
@@ -230,14 +232,14 @@ Her kart: **Neden · Ne yapılacak · Nereye · Neye bağlı · Bittiğini nası
 ### A4.1 — Yeni sözleşme tiplerini derlenir hâle getir
 **Neden:** Transport bugün Crypto'yu `SecuritySeam` trait'iyle çağırıyor (61 noktadan). S3 sözleşmesi bu arayüzü değiştirdi: Transport artık paketin sayacını üretmiyor (Crypto üretiyor), bunun yerine "bu paket hangi bağlamda — oturum mu, hub kontrolü mü" bilgisini (`ctx`) veriyor; `seal()` şifreli byte'larla birlikte Crypto'nun atadığı sayacı da döndürüyor. İki taraf aynı imzaya karşı yazabilsin diye önce tipler derlenmeli.
 **Ne yapılacak:** `PacketProtection` (`seal(ctx, frame) → SealedUnit{bytes, meta}` · `open` · `sealed_len` · `conservative_limits` · `limits`) ve `SessionControl` (`command(SessionCommand) → SessionResult`, `poll_event`) trait'leri; mevcut `SecuritySeam`'den evrilir; `IdentitySeam` yeni imzaya adapte, davranışı aynı.
-**Nereye:** R-7(b): `crates/client-core/src/seam.rs`. Tanım: `KM-SEAM-TC-001.md` §1.1–§1.2.
+**Nereye:** R-7(b): ~~`crates/client-core/src/seam.rs`~~ **[2026-10-05 B1]** `crates/kama-contracts/src/s3.rs` (ortak tutamaçlar `handles.rs`); `client-core/src/seam.rs`'te yalnız `IdentitySeam` ve entropi enjeksiyonu kaldı. Tanım: `KM-SEAM-TC-001.md` §1.1–§1.2.
 **Neye bağlı:** R-7(b).
 **Done:** `cargo build --workspace` yeşil; 61 çağrı noktası derleniyor.
 
 ### A4.2 — Sahte Crypto (Transport testleri için)
 **Neden:** Transport tarafı testleri gerçek kripto bitmeden koşabilsin.
 **Ne yapılacak:** `MockCrypto`: deterministik seal/open; `command()` her zaman `Established`; `AcceptResponse` sınırlı deneme yapar; `meta.full_wire_pn` ardışık artar. Mevcut `IdentitySeam` kalıbı, `test-util` feature'ı altında.
-**Nereye:** `client-core/src/seam.rs` yanı veya `kama-noise-wire` (`test-util`).
+**Nereye:** ~~`client-core/src/seam.rs` yanı veya~~ `kama-noise-wire` (`test-util`) **[2026-10-05 B1: `crates/kama-noise-wire/src/seam_mock.rs` — sahte, gerçeğinin sahibi olan crate'te; `kama-noise-wire` → `client-core` kenarı dev-dependency dahil yasak]**.
 **Neye bağlı:** A4.1.
 **Done:** mock-fixture testleri yeşil (mock, Transport'u yanıltmıyor).
 
@@ -255,7 +257,7 @@ Her kart: **Neden · Ne yapılacak · Nereye · Neye bağlı · Bittiğini nası
 - `H-FEC-ORDER` — sahte bir FEC parçası açılamadığı için decoder'a **hiç girmiyor**; yeterli geçerli parçayla kurtarma çalışıyor.
 - `H-RETRY` — **Alice:** aynı INIT byte-for-byte yeniden gönderilebiliyor; yeni `Initiate` = yeni geçici anahtar. **Bob:** aynı INIT tekrar gelirse mevcut oturuma eşleniyor ve önbellekteki RESPONSE **byte-identical** dönüyor — yeni geçici anahtar, ikinci oturum YOK (yoksa iki rakip oturum doğar ve bağlantı sessizce kopar).
 - `H-NO-MUTATE` — her başarısızlıkta iç durum (replay penceresi, bekleyenler, anahtarlar) byte-for-byte aynı kalıyor.
-- `H-HANDLE` — kapanmış oturuma `seal` → hata; `HubHandle` ile `SessionHandle` tip düzeyinde ayrı.
+- `H-HANDLE` — kapanmış oturuma `seal` → hata; `HubHandle` ile `SessionHandle` tip düzeyinde ayrı. **[2026-10-05 B1: tip yarısı KAPANDI — `kama_contracts::s3::HubHandle` + trybuild negatif testi]**
 - `H-REPLAY-POISON` — sahte paket replay penceresini ilerletmiyor; ardından aynı sayaçla gelen **geçerli** paket kabul ediliyor.
 **Ne yapılacak:** yukarıdaki yedi test.
 **Nereye:** `crates/kama-noise-wire/tests/conf_s3_*.rs`. Tanım: `KM-SEAM-TC-001.md` §6; replay kuralı `identity` §15.5.

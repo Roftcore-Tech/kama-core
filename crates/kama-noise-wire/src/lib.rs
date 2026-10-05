@@ -36,6 +36,9 @@ pub mod pn;
 pub mod protector;
 pub mod restart;
 pub mod retry;
+/// S3 §7 sahtesi (`MockCrypto`) — YALNIZ `test-util`; ürün derlemesinde yoktur.
+#[cfg(feature = "test-util")]
+pub mod seam_mock;
 pub mod session;
 
 pub use control::{

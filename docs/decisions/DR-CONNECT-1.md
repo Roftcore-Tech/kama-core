@@ -16,7 +16,7 @@
 | H6 | Peer-restart supersession — **provisional** (karar 3) | identity §16 · KM-SEAM-AT-001 K7, §6 · KM-SEAM-TC-001 K10 |
 | H7 | DELIVER → mailbox fallback normatif; silme yalnız ACK_RANGE | app-rpc §6.11 |
 | H8 | SESSION_MAX_AGE → RenewRequired → cutover; timeout değil, anahtar hijyeni; **KS-AGE-1 = 7 gün** | identity §16 · ccr §35.15 · KM-SEAM-AT-001 §4 |
-| H9 | S1 API: `ConnectFailed` kalktı; `cancel(ticket)`, `ConnectAbandoned(ticket, reason)` (opak değil), `ConnectProgress(ticket, phase)` | KM-SEAM-AT-001 §1, §3, §4, §6, §7, §8 · ayna `tests/common/seam/api.rs` |
+| H9 | S1 API: `ConnectFailed` kalktı; `cancel(ticket)`, `ConnectAbandoned(ticket, reason)` (opak değil), `ConnectProgress(ticket, phase)` | KM-SEAM-AT-001 §1, §3, §4, §6, §7, §8 · ayna `tests/common/seam/api.rs` **[2026-10-05 B1: test-yerel ayna KALKTI; sözleşmenin derlenen hâli `crates/kama-contracts/src/s1.rs`]** |
 | H10 | **KS-8: deadline yoktur**, sayı yok | KM-SEAM-AT-001 §4 · ccr §35.15 |
 | H11 | T-18c: 7 günde ephemeral silinir, niyet korunur, yeni INIT | identity §21 T-18c, §16 · KM-SEAM-AT-001 §4 |
 | H12 | Ürün notu: Google servissiz dağıtımda arka plan erişilebilirliği foreground service ister | docs/PARK-LISTESI.md P-3 |

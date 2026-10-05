@@ -2,7 +2,7 @@
 //!
 //! DATA çerçevesi: `[0x00][seq u16 BE][unit_id u64 BE][payload]` — 11 B başlık. ACK çerçeveleri
 //! `adaptive_transport::ack` codec'inin kendisidir (0x10 V1 / 0x14 V2), burada YENİDEN tanımlanmaz.
-//! Mühür (tag) BU katmanda YOK — çerçeve [`crate::seam::PacketProtection`]'den geçerek wire'a çıkar
+//! Mühür (tag) BU katmanda YOK — çerçeve `kama_contracts::s3::PacketProtection`'dan geçerek wire'a çıkar
 //! (bench'in TAG_STUB'ı encode içindeydi; P1 dikişi ayırır — SoC).
 //!
 //! ccr §35 SESSION_DATA finalizasyonu güvenlik-düzlemi entegrasyonunda yapılır (tasarım D5);

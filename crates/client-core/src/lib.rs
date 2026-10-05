@@ -40,8 +40,6 @@
 
 pub mod runtime;
 pub mod seam;
-#[cfg(any(test, feature = "test-util"))]
-pub mod seam_mock;
 pub mod wire;
 
 pub use adaptive_transport::sender::{Event, OpaqueUnit, Sender, TransmitDecision, TransmitKind};

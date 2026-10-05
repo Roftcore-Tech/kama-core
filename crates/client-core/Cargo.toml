@@ -17,6 +17,10 @@ publish.workspace = true
 # structurally unshippable. See reports/EVIDENCE-LEDGER-2026-08-15.md §5.
 
 [dependencies]
+# S1/S3 sözleşme tipleri (R-7(b); B1). Transport S3'ü TÜKETİR (Crypto'yu `PacketProtection` /
+# `SessionControl` üzerinden çağırır) ve S1'i İMPLEMENTE edecek. `kama-app`'e bağımlı OLAMAZ —
+# scripts/ci/layer_check.py kural C4.
+kama-contracts = { path = "../kama-contracts" }
 adaptive-transport = { path = "../adaptive-transport" }
 kama-engine = { path = "../kama-engine" }
 # [S1] FEC-runtime: canonical source-symbol (SourcePrefix, §2.6 alan-hizası) + gerçek RS codec.
@@ -33,12 +37,16 @@ tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "syn
 thiserror.workspace = true
 
 [features]
-# Sahteler ve deterministik entropi (`seam::FixedEntropy`) — YALNIZ test; üretim grafiğine girmez.
+# Deterministik entropi (`seam::FixedEntropy`) ve `IdentitySeam` bağlam kaydı — YALNIZ test; üretim
+# grafiğine girmez. (`MockCrypto` B1'de `kama-noise-wire`'ın `test-util`'ine taşındı.)
 test-util = []
 # [C4-ATIF] salt-gözlem zamanlayıcı telemetrisi (default OFF; ürün davranışı değişmez).
 diag-sched-telemetry = ["adaptive-transport/diag-sched-telemetry"]
 
 [dev-dependencies]
-# Kendi `test-util` feature'ını entegrasyon testlerine açar (MockCrypto, FixedEntropy). Yalnız test
-# derlemesinde; üretim grafiğine girmez.
+# Kendi `test-util` feature'ını entegrasyon testlerine açar (FixedEntropy, IdentitySeam kancası).
+# Yalnız test derlemesinde; üretim grafiğine girmez.
 client-core = { path = ".", features = ["test-util"] }
+# S3 §7 sahtesi `MockCrypto` gerçeğinin sahibi olan crate'te yaşar; fixture testleri (ve gerçek
+# runtime'ı sahte Crypto ile koşan f9) onu buradan alır. Yalnız test derlemesinde.
+kama-noise-wire = { path = "../kama-noise-wire", features = ["test-util"] }

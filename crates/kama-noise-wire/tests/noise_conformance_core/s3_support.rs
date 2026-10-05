@@ -1,25 +1,30 @@
 //! A4.4 satırlarının ortak fikstürü: kurulu bir uç çifti ve küçük yardımcılar.
 
-use client_core::seam::{
-    PeerRef, ProtectionContext, SessionCommand, SessionControl, SessionHandle, SessionResult,
-};
+use kama_contracts::handles::{PeerRef, SessionHandle};
+use kama_contracts::s3::{ProtectionContext, SessionCommand, SessionControl, SessionResult};
 
-use crate::mock_transport::{InjectedCommand, MockTransport};
+use crate::mock_transport::MockTransport;
 use crate::target::S3Target;
 
-/// Sahte Transport'un verdiği komutu S3 komutuna çevirir (yerel ayna → gerçek tip).
-pub fn to_command(c: InjectedCommand) -> SessionCommand {
-    match c {
-        InjectedCommand::AcceptInit { wire } => SessionCommand::AcceptInit { wire },
-        InjectedCommand::AcceptResponse { wire } => SessionCommand::AcceptResponse { wire },
-        other => panic!("zarf taşıyan komut bekleniyordu: {other:?}"),
-    }
+/// Test eşi: `dest_hash`'in ilk sekiz baytı `n` (big-endian), kalanı sıfır. Sahte Crypto oturum
+/// tutamacını bu sekiz bayttan türetir; farklı `n` farklı eş ve farklı oturum demektir.
+pub fn peer(n: u64) -> PeerRef {
+    let mut dest_hash = [0u8; 32];
+    dest_hash[..8].copy_from_slice(&n.to_be_bytes());
+    PeerRef::from_dest_hash(dest_hash)
+}
+
+/// Sahte Transport'tan sıradaki zarfı Crypto'ya enjekte edilecek komut olarak alır.
+pub fn next_command(net: &mut MockTransport) -> SessionCommand {
+    net.deliver()
+        .expect("zarf ulaşır")
+        .expect("tanımlı zarf türü")
 }
 
 /// `Initiate` çıktısı: zarf türü + byte'lar.
-pub fn initiate<T: S3Target>(a: &mut T::Crypto, peer: u64) -> (u8, Vec<u8>) {
+pub fn initiate<T: S3Target>(a: &mut T::Crypto, peer_id: u64) -> (u8, Vec<u8>) {
     match a.command(SessionCommand::Initiate {
-        peer: PeerRef::from_raw(peer),
+        peer: peer(peer_id),
         early_unit: None,
     }) {
         SessionResult::OutboundEnvelope {
@@ -47,11 +52,7 @@ pub fn established<T: S3Target>() -> Pair<T> {
 
     let (ty, init) = initiate::<T>(&mut a, PEER);
     net.submit(ty, &init).expect("INIT yola çıkar");
-    let cmd = to_command(
-        net.deliver()
-            .expect("INIT ulaşır")
-            .expect("tanımlı zarf türü"),
-    );
+    let cmd = next_command(&mut net);
     let (h, rty, resp) = match b.command(cmd) {
         SessionResult::EstablishedAndReply {
             session,
@@ -61,11 +62,7 @@ pub fn established<T: S3Target>() -> Pair<T> {
         other => panic!("AcceptInit oturum + RESPONSE üretmeli, gelen {other:?}"),
     };
     net.submit(rty, &resp).expect("RESPONSE yola çıkar");
-    let cmd = to_command(
-        net.deliver()
-            .expect("RESPONSE ulaşır")
-            .expect("tanımlı zarf türü"),
-    );
+    let cmd = next_command(&mut net);
     assert_eq!(a.command(cmd), SessionResult::Established { session: h });
     // Kurulum olaylarını boşalt: satırlar yalnız kendi ürettikleri olaylara bakar.
     while a.poll_event().is_some() {}

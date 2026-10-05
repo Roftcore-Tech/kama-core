@@ -9,7 +9,7 @@
 //!
 //! "Konum" = deneme sırasındaki yer (1 = en yeni pending).
 
-use client_core::seam::{SessionCommand, SessionControl, SessionResult};
+use kama_contracts::s3::{SessionCommand, SessionControl, SessionResult};
 
 use crate::target::S3Target;
 

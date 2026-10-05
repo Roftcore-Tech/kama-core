@@ -122,11 +122,6 @@ macro_rules! noise_s3_suite {
 
 noise_s3_suite!(mock_s3, crate::target::MockTarget);
 
-/// PoC `IdentitySeam` hedefi: H-CTX'in yalnız bağlam-kaydı ve no-op yarısı uygulanır
-/// ("Session ≠ HubChannel" gerçek anahtarla, M4).
-mod identity_s3 {
-    #[test]
-    fn h_ctx_identity_seam_is_noop_in_both_contexts() {
-        crate::s3_ctx::identity_seam_is_noop_in_both_contexts();
-    }
-}
+// PoC `IdentitySeam` hedefi (H-CTX'in bağlam-kaydı ve no-op yarısı) `client-core`'dadır:
+// `crates/client-core/tests/noise_identity_target.rs`. Bu crate `client-core`'u göremez (katman
+// kuralı C3). Koşucu: `scripts/ci/noise-conformance.sh --target identity`.

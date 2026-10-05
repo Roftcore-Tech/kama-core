@@ -271,6 +271,7 @@ version = "0.1.0"
 dependencies = [
  "adaptive-transport",
  "client-core",
+ "kama-contracts",
  "kama-engine",
  "kama-fec-codec",
  "kama-noise-wire",
@@ -691,8 +692,12 @@ dependencies = [
 name = "kama-app"
 version = "0.1.0"
 dependencies = [
- "thiserror",
+ "kama-contracts",
 ]
+
+[[package]]
+name = "kama-contracts"
+version = "0.1.0"
 
 [[package]]
 name = "kama-engine"
@@ -721,6 +726,7 @@ name = "kama-integration"
 version = "0.1.0"
 dependencies = [
  "adaptive-transport",
+ "kama-contracts",
  "kama-engine",
  "kama-fec-codec",
  "kama-noise-wire",
@@ -735,10 +741,10 @@ version = "0.1.0"
 dependencies = [
  "blake2",
  "chacha20poly1305",
- "client-core",
  "ed25519-dalek",
  "hkdf",
  "hmac",
+ "kama-contracts",
  "kama-transport-schema",
  "kama-vectors",
  "proptest",

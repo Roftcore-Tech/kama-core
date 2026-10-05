@@ -12,7 +12,8 @@
 #   C. Kapsam yalani      — kod §6 satiri iddia ediyor, beyan etmiyor → kapi 1
 #   D. Ratchet tutarsizligi — beyan tabani gerceklikten yuksek → kapi 1
 #   E. Bosluk kapanisi    — gercek hedef kaydedilince "bosluk beyani" testi → kapi 1
-#   F. API drift          — ayna spec'ten ayrisinca (metot silinince) drift kapisi → 1
+#   F. API drift          — sozlesme kaynagi spec'ten ayrisinca (metot silinince) drift kapisi → 1
+#                           (S1 ve S3 icin ayri ayri; kaynak = crates/kama-contracts)
 #   G. Hedef parametresi  — gecersiz/eksik hedef → 2 · mevcut olmayan hedef → 3 · mock → 0
 #   H. Kategori sizintisi — --target mock, real-adapter ikilisini KOSMAZ
 #   I. Kanit enflasyonu   — tek hedef varken satir 'implemented' beyan edilirse → 1
@@ -28,9 +29,9 @@ GATE="scripts/ci/seam-conformance.sh"
 DRIFT="scripts/ci/seam-api-drift.py"
 SEAM="crates/kama-integration/tests/common/seam"
 TESTS="crates/kama-integration/tests"
+CONTRACTS="crates/kama-contracts/src"
 
 MUTABLE=(
-  "$SEAM/api.rs"
   "$SEAM/target.rs"
   "$SEAM/contract.rs"
   "$TESTS/seam_conformance_core/main.rs"
@@ -166,15 +167,36 @@ expect 1 "E1 gercek hedef kaydedilince bosluk beyani → 1" -- bash "$GATE" --ta
 restore
 
 printf '\n── F. API drift ──\n'
-cp "$SEAM/api.rs" "$TMPD/api-drifted.rs"
-python3 - "$TMPD/api-drifted.rs" <<'PY'
+# Sozlesme kaynaginin KOPYASI bozulur (agac disi); kapi o kopyaya karsi kosturulur.
+cp "$CONTRACTS/s1.rs" "$TMPD/s1-drifted.rs"
+python3 - "$TMPD/s1-drifted.rs" <<'PY'
 import sys, pathlib
 p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
 assert "fn recv(&mut self) -> Option<Delivered>;" in s
 p.write_text(s.replace("fn recv(&mut self) -> Option<Delivered>;", ""), encoding="utf-8")
 PY
-expect 1 "F1 aynadan metot silinince drift → 1" -- \
-  python3 "$DRIFT" --mirror "$TMPD/api-drifted.rs" --quiet
+expect 1 "F1 S1 kaynagindan metot silinince drift → 1" -- \
+  python3 "$DRIFT" --seam s1 --mirror "$TMPD/s1-drifted.rs" --mirror "$CONTRACTS/handles.rs" --quiet
+expect 0 "F2 S1 bozulmamis kaynak → 0 (F1'in kirmizisi mutasyondan)" -- \
+  python3 "$DRIFT" --seam s1 --mirror "$CONTRACTS/s1.rs" --mirror "$CONTRACTS/handles.rs" --quiet
+
+cp "$CONTRACTS/s3.rs" "$TMPD/s3-drifted.rs"
+python3 - "$TMPD/s3-drifted.rs" <<'PY'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
+old = "    fn open(&mut self, wire: &[u8]) -> Option<Opened>;"
+assert old in s
+p.write_text(s.replace(old, ""), encoding="utf-8")
+PY
+expect 1 "F3 S3 kaynagindan metot silinince drift → 1" -- \
+  python3 "$DRIFT" --seam s3 --mirror "$TMPD/s3-drifted.rs" --mirror "$CONTRACTS/handles.rs" --quiet
+expect 0 "F4 S3 bozulmamis kaynak → 0" -- \
+  python3 "$DRIFT" --seam s3 --mirror "$CONTRACTS/s3.rs" --mirror "$CONTRACTS/handles.rs" --quiet
+
+# Ortak tutamac dosyasi verilmezse §1'de bildirilen SessionHandle/PeerRef kaynakta bulunamaz → 1
+# (kapinin "tek dosyaya bakip yesil donme" tuzagina dusmedigini gosterir).
+expect 1 "F5 S1 handles.rs'siz → 1 (ortak tipler eksik)" -- \
+  python3 "$DRIFT" --seam s1 --mirror "$CONTRACTS/s1.rs" --quiet
 
 printf '\n'
 printf 'oz-test: %d gecti, %d kaldi\n' "$pass" "$fail"

@@ -16,10 +16,10 @@
 
 use std::collections::VecDeque;
 
-use super::api::{
+use kama_contracts::handles::{PeerRef, SessionHandle};
+use kama_contracts::s1::{
     AbandonReason, CompressionPolicy, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy,
-    KamaTransport, PeerRef, PreparedUnit, SessionEvent, SessionHandle, TransportCapabilities,
-    TransportError, UnitBytes,
+    KamaTransport, PreparedUnit, SessionEvent, TransportCapabilities, TransportError, UnitBytes,
 };
 
 /// Gerçek adapter'ın yokluğunun kimliği. Runner ve `seam_real_adapter` bu sabiti paylaşır.
@@ -266,9 +266,10 @@ impl KamaTransport for EchoMockTransport {
     }
 
     fn close(&mut self, session: SessionHandle) {
-        // Olay yayınlanmıyor: `Closed(h, CloseReason)` için app-kaynaklı kapanışın variant'ı
-        // gerekir ve o SEAM-OPEN-3'tür (spec yalnız `Renewed`'i adlandırıyor). Olmayan bir
-        // variant icat etmektense olay üretmemek dürüst olan.
+        // Olay yayınlanmıyor. `CloseReason::UserClosed` artık var (küme 2026-10-05'te kapandı), ama
+        // S1 Application'ın KENDİ `close()` çağrısının bir `Closed` olayı üretip üretmediğini
+        // söylemiyor (§1 yalnız imzayı verir; §6 H-EVENTS `Closed` sonrasını tanımlar). Spec'in
+        // söylemediği bir olayı sahteye koymaktansa üretmemek dürüst olan.
         self.sessions.retain(|s| s.handle != session);
     }
 

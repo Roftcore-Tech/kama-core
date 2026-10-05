@@ -40,6 +40,8 @@ kama-noise-wire = { path = "../kama-noise-wire" }
 
 [dev-dependencies]
 zeroize = "1"
+# S1 sözleşme süiti (tests/seam_*) sözleşme tiplerini TEK kaynaktan alır (B1; test-yerel ayna kalktı).
+kama-contracts = { path = "../kama-contracts" }
 # CLOSURE-1B (DR-CS-1b/A2): birleşik 65B-heal testi için sender-tarafı. Cold-start-yüzeyi feature-
 # forward ile açılır (üstteki [features]); flag-OFF derlemede feature-OFF → workspace-pin korunur.
 adaptive-transport = { path = "../adaptive-transport" }

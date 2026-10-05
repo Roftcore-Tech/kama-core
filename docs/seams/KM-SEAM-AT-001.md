@@ -10,6 +10,8 @@
 
 > **YAMA KAYDI — 2026-10-04b [K2 — Abkarada kararı]:** K6'ya glare kaybedeninin `early_unit` kuralı: Transport `early_unit`'in kopyasını oturum `Ready` ya da `ConnectAbandoned` olana kadar saklar; glare kaybında kazanan oturum `Ready` olunca ilk normal `send()` olarak yollar, Application'a olay çıkmaz. §8'deki açık kalem kapandı. API değişmedi.
 
+> **YAMA KAYDI — 2026-10-05 [B1 kama-contracts — Abkarada kararı]:** Bu sözleşmenin derlenen hâli artık `crates/kama-contracts/src/s1.rs`'tedir (ortak tutamaçlar `handles.rs`); `kama-app`'teki kopya ve test-yerel ayna (`kama-integration/tests/common/seam/api.rs`) KALKTI, drift kapısı §1/§3'ü doğrudan o kaynakla karşılaştırır. §1: **`CloseReason` kümesi KAPANDI** — `{ Superseded, UserClosed, PeerClosed, KeyHygiene }`; `Renewed` kalktı, cutover'ın kapanış nedeni `Superseded`'dir (2026-10-04'teki "Renew ile peer-restart aynı yol" kararının sonucu); KARAR-2 bloğu ve §6 H-EVENTS buna göre güncellendi. **`PeerRef`** = `dest_hash`'in (32 B) opak sarmalayıcısı, kurucu `from_dest_hash`. Trait metotları ve `TransportError` kümesi DEĞİŞMEDİ. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-06 [C1 test 4 — Abkarada kararı]:** §3'e pending tavanı cümlesi eklendi: istemci pending INIT tavanı (ccr §35.15 KS-DOS-1, `PENDING_RESPONSE_TRIAL_CAP` ile eşit) doluyken yeni `connect()` → `TransportError::Backpressure`. Trait bloğu ve hata listesi DEĞİŞMEDİ (yalnız ekleme).
 
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 tamamlama — Abkarada kararı]:** K7 supersession **PROVISIONAL** olarak yeniden yazıldı (olay sırası `Ready(h')` ONAYDA → yalnız-alım drain → `Closed(h, Superseded)`; Renew ile peer-restart aynı yol; glare'de tek `Ready`) · §4 `LongOutage` = heartbeat yanıtı 60 s'dir yok (KS-UI-1; yalnız UI) · `SESSION_MAX_AGE = 7 gün` · §6'ya **H-SILENT-REJECT** (H-OPAQUE-FAIL'in yerine) · §8 açık kalemler güncellendi. **İmza:** Hayri imzası S1 freeze'inin (G-S1) ön koşuludur, merge'in değil. Üstü çizili metin silinmedi.
@@ -52,9 +54,10 @@ pub enum   SessionEvent          { Ready(SessionHandle, PeerRef), RenewRequired(
                                    ConnectAbandoned(ConnectTicket, AbandonReason), ConnectProgress(ConnectTicket, ConnectPhase) }
 pub enum   AbandonReason         { Cancelled, PeerClosed, KeyHygiene, LocalPermanent }  // [DR-CONNECT-1] = sonlandırma nedenleri (a)–(d), §4; OPAK DEĞİL (§3)
 pub enum   ConnectPhase          { Measuring, Suspended, LongOutage }                   // [DR-CONNECT-1] HUB YOLUNUN durumu; eşin canlılığı DEĞİL (§4)
-// CloseReason ∋ { Renewed (KARAR-2), Superseded (DR-CONNECT-1 H6: peer-restart supersession), … }
+// ~~CloseReason ∋ { Renewed (KARAR-2), Superseded (DR-CONNECT-1 H6: peer-restart supersession), … }~~
+pub enum   CloseReason           { Superseded, UserClosed, PeerClosed, KeyHygiene }     // [2026-10-05] küme KAPALI. `Renewed` KALKTI: cutover (KARAR-2) ve peer-restart supersession aynı yoldur → `Superseded`
 pub enum   ConnectResult         { Ready(SessionHandle), Pending(ConnectTicket) }   // K2 KARAR-1: idempotent, olay üretmez
-pub struct SessionHandle(/* opak */);   pub struct ConnectTicket(/* opak */);   pub struct PeerRef(/* opak; StaticPeerMaterialProvider anahtarı */);
+pub struct SessionHandle(/* opak */);   pub struct ConnectTicket(/* opak */);   pub struct PeerRef(/* opak; StaticPeerMaterialProvider anahtarı — [2026-10-05] dest_hash'in (32 B, ccr) sarmalayıcısı; kurucu `PeerRef::from_dest_hash([u8; 32])`, alan public değil */);
 ```
 
 **K1 — Application yalnız bu trait'i çağırır; Crypto'ya ve Plane 1'e erişimi YOKTUR.**
@@ -69,7 +72,7 @@ pub struct SessionHandle(/* opak */);   pub struct ConnectTicket(/* opak */);   
 ```
 h aktif → RenewRequired(h) → arka planda h' kuruluyor (h hâlâ send kabul eder)
 → h' hazır → ATOMİK CUTOVER: h = draining (yeni send YOK, outstanding boşalır) · h' = aktif
-→ Ready(h') → Closed(h, Renewed)
+→ Ready(h') → Closed(h, ~~Renewed~~ Superseded)      [2026-10-05: CloseReason kümesi kapandı; `Renewed` kalktı]
 ```
 Cutover sonrası `send(h)` → **`SessionSuperseded`** (yapısal hata; oracle değil, app'in düzelteceği yerel lifecycle durumu). Reddedilen: *"eski h cap'e kadar kabul eder"* — davranışı Crypto'nun gizli sayaç durumuna bağlar (aynı `send` bazen çalışır, birkaç paket sonra çalışmaz) ve `h`/`h'` üzerinden eşzamanlı veri kabul edilirse cross-session sıralama bölünür (§4 yalnız aynı-session Reliable sıralaması garanti eder). **Cap Crypto'nun güvenlik sınırıdır, API semantiği değil** — App↔Transport sözleşmesine kripto iç runtime state'i sızdırılmaz.
 
@@ -143,7 +146,7 @@ ConnectAbandoned(ticket, reason) — reason ∈ { Cancelled, PeerClosed, KeyHygi
 | H-NO-CRYPTO-EDGE | Application crate'inin Crypto crate'ine **derleme bağımlılığı yok** (statik); Plane 1 tiplerine bağımlılığı yok |
 | H-APP-RETRY-0 | Deterministik kayıp altında `recovery ON` → teslim; `recovery OFF` → kasıtlı düşürülen birim **kurtarılmaz**; app kodunda retransmit yolu yok |
 | H-ROUNDTRIP | `send(PreparedUnit)` → `recv()` byte-identical; `early_unit` byte-identical |
-| H-EVENTS | `Ready → RenewRequired → Ready(h') → Closed(h, Renewed)` sırası; `Closed` sonrası `send(h)` → `UnknownSession` |
+| H-EVENTS | ~~`Ready → RenewRequired → Ready(h') → Closed(h, Renewed)` sırası~~ **[2026-10-05]** `Ready → RenewRequired → Ready(h') → Closed(h, Superseded)` sırası; `Closed` sonrası `send(h)` → `UnknownSession` |
 | H-CUTOVER | Cutover öncesi `send(h)` kabul; cutover sonrası `send(h)` → `SessionSuperseded`; `h`'nin outstanding'i drain olur; `h'` üzerinden sıralama korunur; davranış Crypto cap değerinden BAĞIMSIZ (cap değiştirilse de aynı). ~~**[DR-CONNECT-1 H6]** + peer-restart supersession: bilinen eşten yeni INIT → `Ready(h') → Closed(h, Superseded)`; `send(h)` → `SessionSuperseded`; aynı `init_counter`'lı duplicate INIT supersession ÜRETMEZ~~ **[DR-CONNECT-1 H6, 2026-10-04 — provisional]** bilinen eşten yeni-sayaçlı INIT: onaydan ÖNCE `send(h)` kabul ve hiçbir olay yok; onayda `Ready(h')`, `send(h)` → `SessionSuperseded`, `h` yalnız-alım drain (N_g/T_g) → `Closed(h, Superseded)`; onaylanmayan (bayat) INIT `h`'yi ETKİLEMEZ ve olay üretmez; aynı `init_counter`'lı duplicate INIT supersession üretmez; glare → tek `Ready` |
 | H-CONNECT-IDEMP | aktif peer → `Ready(h)` döner, olay YOK; pending → aynı ticket; olay kuyruğunda duplicate `Ready` yok |
 | H-EARLY-CONFLICT | aktif/pending peer'a `connect(peer, Some(X))` → `EarlyUnitConflict`; X hiçbir yola girmez (MockTransport/Crypto'da byte izi yok); `connect(peer, None)` idempotent |

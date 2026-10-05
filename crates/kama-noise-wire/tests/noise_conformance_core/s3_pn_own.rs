@@ -4,7 +4,7 @@
 //! bile seam sayacı geri dönmez ve hiçbir PN tekrarlanmaz. Epoch 0→1 geçişinde de sayaç
 //! sıfırlanmaz, +1 ile devam eder (noise-wire §4 EPOCH-PN-INIT, 2026-10-06).
 
-use client_core::seam::PacketProtection;
+use kama_contracts::s3::{PacketProtection, ProtectionContext};
 
 use crate::mock_transport::PeerSlotSim;
 use crate::s3_support::{established, session};
@@ -15,7 +15,7 @@ const BURST: u64 = 5;
 
 fn seal_burst<T: S3Target>(
     a: &mut T::Crypto,
-    ctx: client_core::seam::ProtectionContext,
+    ctx: ProtectionContext,
     slot: &mut PeerSlotSim,
     all: &mut Vec<u64>,
 ) {

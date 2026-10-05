@@ -6,7 +6,7 @@
 //! `next_wakeup_ns()`'e tek-kaynak-uyku YOK (D3, EK4-A2 tarihi): pompa idempotent + kanıtlı.
 //!
 //! SoC: motor yalnız `OpaqueUnit{id,size}` / `RxDatagram` metadata görür; datagram'lar
-//! [`crate::seam::SecuritySeam`]'den mühürlenir/açılır (kripto AYRI düzlem). INV-RATE-1: gönderim
+//! `kama_contracts::s3::PacketProtection`'dan mühürlenir/açılır (kripto AYRI düzlem). INV-RATE-1: gönderim
 //! hatası = kanal kaybı; motor durumu emisyonu ZATEN işledi, geri itilmez, rate'e dokunulmaz.
 //!
 //! SINIRLAR (SR-AUDIT-001, bounds-before-alloc; motor `tx_queue`'yu sınırlamaz — kabuk sınırlar):
@@ -45,7 +45,6 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
-use crate::seam::{PacketProtection, ProtectionContext, SessionHandle};
 use crate::wire::{
     decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec, decode_param,
     decode_param_ack, decode_recovered, encode_cs_echo, encode_cs_probe, encode_data,
@@ -54,6 +53,8 @@ use crate::wire::{
     HDR_FEC, LEN_CS_PROBE,
 };
 use crate::ClientSession;
+use kama_contracts::handles::SessionHandle;
+use kama_contracts::s3::{PacketProtection, ProtectionContext};
 
 /// Pacing pompası (bench PACE_TICK): her tick §13 token drain + §5 zaman-eşiği loss; idempotent,
 /// yüksek frekans güvenli. EK4-A2 dersi gereği ESAS uyandırma kaynağı budur (D3).

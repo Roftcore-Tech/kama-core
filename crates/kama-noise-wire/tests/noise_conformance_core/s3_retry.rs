@@ -6,19 +6,11 @@
 //! * Bob: aynı INIT tekrar gelirse mevcut oturuma eşlenir ve ÖNBELLEKTEKİ RESPONSE byte-özdeş
 //!   döner; yeni oturum, yeni yanıtlayan geçici anahtarı YOK.
 
-use client_core::seam::{SessionControl, SessionEvent, SessionResult};
+use kama_contracts::s3::{SessionCommand, SessionControl, SessionEvent, SessionResult};
 
 use crate::mock_transport::MockTransport;
-use crate::s3_support::{initiate, to_command, PEER};
+use crate::s3_support::{initiate, next_command as deliver, PEER};
 use crate::target::S3Target;
-
-fn deliver(net: &mut MockTransport) -> client_core::seam::SessionCommand {
-    to_command(
-        net.deliver()
-            .expect("zarf ulaşır")
-            .expect("tanımlı zarf türü"),
-    )
-}
 
 /// Alice yarısı.
 pub fn alice_retransmits_cached_init_and_new_initiate_differs<T: S3Target>() {
@@ -37,7 +29,7 @@ pub fn alice_retransmits_cached_init_and_new_initiate_differs<T: S3Target>() {
     let cmd = deliver(&mut net);
     assert_eq!(
         cmd,
-        client_core::seam::SessionCommand::AcceptInit { wire: init.clone() },
+        SessionCommand::AcceptInit { wire: init.clone() },
         "yeniden gönderim byte-özdeş değil"
     );
     assert_eq!(
@@ -62,7 +54,7 @@ pub fn bob_maps_duplicate_init_to_same_session_and_cached_response<T: S3Target>(
     let mut b = T::build().expect("hedef kayıtlı olmalı");
     let (_, init) = initiate::<T>(&mut a, PEER);
     let accept = |b: &mut T::Crypto, wire: &[u8]| {
-        b.command(client_core::seam::SessionCommand::AcceptInit {
+        b.command(SessionCommand::AcceptInit {
             wire: wire.to_vec(),
         })
     };
@@ -109,7 +101,7 @@ pub fn bob_maps_duplicate_init_to_same_session_and_cached_response<T: S3Target>(
 
     // Alice önbellekli RESPONSE'la oturumu tamamlar.
     assert_eq!(
-        a.command(client_core::seam::SessionCommand::AcceptResponse { wire: ssr1 }),
+        a.command(SessionCommand::AcceptResponse { wire: ssr1 }),
         SessionResult::Established { session }
     );
 }

@@ -80,20 +80,16 @@ run_suite() {
   return 0
 }
 
-# ── 0. API drift kapisi (spec ↔ test-yerel ayna ↔ beyan) ─────────────────────────────────────
-step "API drift (KM-SEAM-AT-001 §1/§3/§6 ↔ ayna ↔ beyan)"
+# ── 0. API drift kapisi (spec ↔ sozlesme kaynagi ↔ beyan) ────────────────────────────────────
+# [B1 2026-10-05] Sozlesmenin TEK derlenen hali crates/kama-contracts'tadir; test-yerel ayna ve
+# kama-app'teki kopya kalkti. Kapi iki seam'i de o kaynaga karsi denetler.
+step "API drift (KM-SEAM-AT-001 §1/§3/§6 ↔ kama-contracts::s1 ↔ beyan)"
 if [[ -f "$DRIFT" ]]; then
-  python3 "$DRIFT" || bad "spec ↔ ayna ↔ beyan ayrismasi (bkz. yukaridaki bulgular)"
-  # [B1.0] Urun trait'i artik var (crates/kama-app). Ayni kapi ONU DA spec'e karsi denetler: test
-  # aynasi ile urun trait'i ayri ayri spec'e esit olunca birbirine de esittir (ucgen kapanir).
-  # Dosya yoksa atlanir — oz-test gecici kok kopyasinda kama-app bulunmayabilir.
-  APP_API="crates/kama-app/src/lib.rs"
-  if [[ -f "$APP_API" ]]; then
-    python3 "$DRIFT" --mirror "$APP_API" --quiet \
-      || bad "spec ↔ kama-app (urun trait'i) ayrismasi — KM-SEAM-AT-001 §1/§3 ile $APP_API hizali degil"
-  fi
+  python3 "$DRIFT" --seam s1 || bad "S1: spec ↔ sozlesme kaynagi ↔ beyan ayrismasi (bkz. yukaridaki bulgular)"
+  step "API drift (KM-SEAM-TC-001 §1.1/§1.2/§6 ↔ kama-contracts::s3 ↔ beyan)"
+  python3 "$DRIFT" --seam s3 || bad "S3: spec ↔ sozlesme kaynagi ↔ beyan ayrismasi (bkz. yukaridaki bulgular)"
 else
-  bad "$DRIFT yok — ayna denetimsiz kaldi"
+  bad "$DRIFT yok — sozlesme kaynagi denetimsiz kaldi"
 fi
 
 # ── mock hedefi ──────────────────────────────────────────────────────────────────────────────

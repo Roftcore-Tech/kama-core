@@ -2,6 +2,8 @@
 
 > **YAMA KAYDI — 2026-10-04b [K5 + K3 — Abkarada kararı]:** §1.2 `SessionResult`'a **`ProvisionalAndReply{new, supersedes, envelope}`**, `SessionEvent`'e **`Confirmed(new)`** eklendi; K10 buna göre kesinleşti (`EstablishedAndReply` = eşle oturum YOK; `ProvisionalAndReply` = eşle oturum VAR; Transport `Ready(new)`'i `Confirmed`'de yayınlar). İstemci sabiti `PROVISIONAL_TTL`. E2E kontrol aralığından `0x10/0x11` (Ack/Sack) silindi notu. A4.1 bunu UYGULAR, yeniden tasarlamaz.
 
+> **YAMA KAYDI — 2026-10-05 [B1 kama-contracts — Abkarada kararı]:** Bu sözleşmenin derlenen hâli artık `crates/kama-contracts/src/s3.rs`'tedir (ortak tutamaçlar `handles.rs`); `client-core/src/seam.rs` yalnız PoC stub'ını (`IdentitySeam`) ve entropi enjeksiyonunu tutar. Drift kapısı §1.1/§1.2 trait bloklarını ve §6 satırlarını o kaynakla ve `scripts/ci/noise-seam-coverage.json` ile karşılaştırır. §1.1'e **`HubHandle`** (u32 newtype) eklendi; **H-HANDLE'ın tip yarısı KAPANDI** (trybuild negatif testi + toolchain'den bağımsız birim testi). §1.2: **`CloseReason` kümesi KAPANDI** — `{ Superseded, UserClosed, PeerClosed, KeyHygiene }`; `Renewed` kalktı. §6: **`H-REPLAY-POISON` satırı EKLENDİ** — sprint planı A4.4 kartında ve conformance süitinde 2026-09-20'den beri vardı, §6 tablosunda eksikti (drift kapısının S3'e ilk koşusunda bulundu); `H-SPLIT`'in kanıtı `scripts/ci/layer_check.py` olarak işaretlendi. §7: `MockCrypto` `kama-noise-wire`'ın `test-util` özelliğine taşındı. Trait metotları DEĞİŞMEDİ. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-06 [H-RETRY için sahte genişletmesi — Abkarada kararı]:** §7'de `MockCrypto` tanımı güncellendi: `command()` artık sabit `Established` değil; `Initiate` INIT zarfı, `AcceptInit` önbellekli SSR1 üretir. §6 H-HANDLE'ın tip yarısı (`HubHandle` ≠ `SessionHandle`) `kama-contracts` işine (B1) taşındı; H-CTX iddiası hedefe göre ayrıldı (kapsama: `scripts/ci/noise-seam-coverage.json`). Trait blokları değişmedi. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 — Abkarada kararı; indeks `docs/decisions/DR-CONNECT-1.md`]:** §1.2'ye **K10** eklendi: `AcceptInit`'in mevcut oturumu olan eşten gelen yeni-sayaçlı INIT için PROVISIONAL supersession'ı (onay = ilk AEAD-geçerli epoch-1 paketi; sonra N_g/T_g yalnız-alım drain → `Closed(h, Superseded)`) ve glare tie-break ön koşulu (dest_hash) · `CloseReason`'a `Superseded` · §8'de KS-DOS-1 ve KS-GRACE-1 kapalı olarak işaretlendi (2026-09-24'te kapanmışlardı). Normatif kaynak identity §16. Üstü çizili metin silinmedi.
@@ -50,6 +52,7 @@ pub struct SealedUnit      { pub bytes: Bytes, pub meta: SealedPacketMeta }     
 pub struct SealedPacketMeta { pub full_wire_pn: u64, pub dh_epoch: u8, pub sealed_len: u32 } // YALNIZ Crypto'ya ait alanlar;
                                                                                           //  logical_ref TRANSPORT'un kendi tablosunda (K4)
 pub struct Opened { pub ctx: ProtectionContext, pub frame: Bytes, pub meta: SealedPacketMeta }  // frame = transport'un verdiği plaintext çerçeve
+pub struct HubHandle(/* u32 */);   // [2026-10-05] wire routing değeri (`hub_handle`, ccr §35.7). `SessionHandle` ile AYRI TİP (K3): biri diğerinin yerine konursa derlenmez
 ```
 
 **K1 — `ProtectionContext` çağıranın verdiği tek bağlamdır; Crypto çerçeve içeriğine bakarak anahtar SEÇMEZ.**
@@ -102,7 +105,8 @@ pub enum SessionResult {
 }
 pub enum SessionEvent { Ready(SessionHandle), RenewRequired(SessionHandle), Closed(SessionHandle, CloseReason),
                         Confirmed(SessionHandle) }   // [K5 2026-10-04b] provisional `new` onaylandı (ilk AEAD-geçerli epoch-1 paketi)
-// CloseReason ∋ { Renewed, Superseded }   [DR-CONNECT-1 H6, 2026-10-04: Superseded = provisional supersession onaylandı (K10)]
+// ~~CloseReason ∋ { Renewed, Superseded }~~   [DR-CONNECT-1 H6, 2026-10-04: Superseded = provisional supersession onaylandı (K10)]
+// [2026-10-05] CloseReason = { Superseded, UserClosed, PeerClosed, KeyHygiene } — küme KAPALI, S1 ile ORTAK tip (kama_contracts::handles); `Renewed` kalktı
 ```
 
 **K6 — Komut typed'dır, zarf payload'ı opaktır.**
@@ -148,11 +152,12 @@ K9. Ek: `open()` ve `seal()` senkron, bloklamaz; seam I/O yapmaz.
 | H-DEMUX | ≥2 pending; doğru candidate herhangi sırada; cap aşımı → `Failed`; yanlış candidate ile bozuk paket ayırt edilemez |
 | H-RETRY | **Alice:** `Initiate` çıktısı transport cache'inden byte-identical yeniden gönderilir; ikinci `Initiate` = farklı ephemeral · **Bob:** aynı SSI1 tekrar gelirse (duplicate `AcceptInit`) mevcut session'a eşlenir ve **byte-identical cached SSR1** döner; yeni responder ephemeral / ikinci session YOK (noise-wire §0.7-B, ccr INV-RESP-KEY-1) |
 | H-NO-MUTATE | Her fail yolunda replay/pending/key state byte-for-byte aynı |
-| H-HANDLE | `Closed` sonrası `Session(h)` ile seal → `UnknownSession`; `HubHandle` ≠ `SessionHandle` tip düzeyinde |
-| H-SPLIT | Application'dan Crypto'ya doğrudan çağrı yolu YOK (statik bağımlılık kontrolü, INV-NEIGHBOR-1) |
+| H-HANDLE | `Closed` sonrası `Session(h)` ile seal → `UnknownSession`; `HubHandle` ≠ `SessionHandle` tip düzeyinde **[2026-10-05: tip yarısı derleme zamanında — trybuild `tests/ui/hub_handle_is_not_session_handle.rs`]** |
+| H-REPLAY-POISON | **[2026-10-05 — satır eklendi; tanım sprint planı A4.4 + identity §15.5]** Sahte paket replay penceresini ilerletmez; ardından AYNI sayaçla gelen geçerli paket kabul edilir ve commit edilir |
+| H-SPLIT | Application'dan Crypto'ya doğrudan çağrı yolu YOK (statik bağımlılık kontrolü, INV-NEIGHBOR-1) **[2026-10-05: kanıt `scripts/ci/layer_check.py` — `kama-app`'in geçişli grafiğinde kripto/transport crate'i yok; `kama-noise-wire` → `kama-app`/`client-core` kenarı yok]** |
 
 ## 7. Karşı-taraf stub'ları
-`MockCrypto` (Transport için): deterministik seal/open (vektör-uyumlu veya identity), ~~`command()` sabit `Established`~~ **[2026-10-06]** `Initiate` deterministik sahte INIT zarfı üretir (`init_counter` artar), `AcceptInit` `init_counter`'a göre sahte SSR1 üretir ve ÖNBELLEKLER (aynı `init_counter`'lı duplicate → byte-özdeş aynı SSR1, yeni oturum yok), cap'li `AcceptResponse`. `MockTransport` (Crypto için): kayıp/sırasız/duplicate enjeksiyonu, PeerSlot reset simülasyonu, `OutboundEnvelope`'u cache'leyip yeniden gönderme.
+`MockCrypto` (Transport için; **[2026-10-05]** `kama-noise-wire` crate'inin `test-util` özelliğinde yaşar — sahte, gerçeğinin sahibi olan crate'te): deterministik seal/open (vektör-uyumlu veya identity), ~~`command()` sabit `Established`~~ **[2026-10-06]** `Initiate` deterministik sahte INIT zarfı üretir (`init_counter` artar), `AcceptInit` `init_counter`'a göre sahte SSR1 üretir ve ÖNBELLEKLER (aynı `init_counter`'lı duplicate → byte-özdeş aynı SSR1, yeni oturum yok), cap'li `AcceptResponse`. `MockTransport` (Crypto için): kayıp/sırasız/duplicate enjeksiyonu, PeerSlot reset simülasyonu, `OutboundEnvelope`'u cache'leyip yeniden gönderme.
 
 ## 8. Açıklar (bu seam'i HOLD tutanlar)
 | # | Kalem | Sahip |

@@ -1,5 +1,9 @@
 //! **mock-fixture** (S3 / A4.2) — sahte Crypto, Transport'u yanıltmıyor mu.
 //!
+//! `MockCrypto` `kama-noise-wire`'ın `test-util` özelliğindedir (sahte, gerçeğinin sahibi olan
+//! crate'te yaşar); tüketicisi Transport olduğu için fixture testleri burada, tüketici tarafında
+//! durur — f9 gerçek Transport runtime'ını sahte Crypto ile uçtan uca koşturur.
+//!
 //! Sahtenin sözleşmeye UYDUĞU conformance-core'da ölçülür (A4.4). Burada ölçülen ayrı bir şeydir:
 //! `MockCrypto`'nun kendi iddialarına sadık kalması ve gerçek seam'in Transport'a gösterdiği
 //! davranışı (ardışık PN, sessiz `open`, replay reddi, cap'li demux) DOĞRU taklit etmesi.
@@ -7,17 +11,26 @@
 use std::time::Duration;
 
 use client_core::runtime::{ClientEndpoint, RuntimeConfig, ServerEndpoint};
-use client_core::seam::{
-    CloseReason, PacketProtection, PeerRef, ProtectionClass, ProtectionContext, SealError,
-    SessionCommand, SessionControl, SessionEvent, SessionHandle, SessionResult,
+use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
+use kama_contracts::s3::{
+    PacketProtection, ProtectionClass, ProtectionContext, SealError, SessionCommand,
+    SessionControl, SessionEvent, SessionResult,
 };
-use client_core::seam_mock::{
+use kama_noise_wire::seam_mock::{
     MockCrypto, ENVELOPE_INIT, ENVELOPE_INIT_RESPONSE, MOCK_MAX_SESSIONS,
     PENDING_RESPONSE_TRIAL_CAP,
 };
 
 fn s(v: u64) -> ProtectionContext {
     ProtectionContext::Session(SessionHandle::from_raw(v))
+}
+
+/// Test eşi: `dest_hash`'in ilk sekiz baytı `n` (big-endian). Sahte, oturum tutamacını bu sekiz
+/// bayttan türetir (`MockCrypto::session_of`), yani `peer(n)` ile kurulan oturum `s(n)`'dir.
+fn peer(n: u64) -> PeerRef {
+    let mut dest_hash = [0u8; 32];
+    dest_hash[..8].copy_from_slice(&n.to_be_bytes());
+    PeerRef::from_dest_hash(dest_hash)
 }
 
 /// İki uç: A `Initiate` ile INIT zarfını üretir, B aynı tutamacı o zarftan `AcceptInit` ile öğrenir.
@@ -27,7 +40,7 @@ fn pair(session: u64) -> (MockCrypto, MockCrypto) {
         envelope_type,
         bytes,
     } = a.command(SessionCommand::Initiate {
-        peer: PeerRef::from_raw(session),
+        peer: peer(session),
         early_unit: None,
     })
     else {
@@ -221,7 +234,7 @@ fn f8_events_and_bounded_tables() {
     );
     assert_eq!(
         a.poll_event(),
-        Some(SessionEvent::Closed(h, CloseReason::Renewed))
+        Some(SessionEvent::Closed(h, CloseReason::UserClosed))
     );
     assert_eq!(
         a.seal(s(4), b"x").unwrap_err(),
@@ -253,7 +266,7 @@ fn f8_events_and_bounded_tables() {
 fn f10_init_envelope_response_cache_and_hooks() {
     let mut a = MockCrypto::new();
     let init = |a: &mut MockCrypto| match a.command(SessionCommand::Initiate {
-        peer: PeerRef::from_raw(7),
+        peer: peer(7),
         early_unit: Some(vec![0xEE]),
     }) {
         SessionResult::OutboundEnvelope { bytes, .. } => bytes,

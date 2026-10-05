@@ -1,7 +1,15 @@
-//! `MockCrypto` — Transport testleri için sahte Crypto (A4.2; KM-SEAM-TC-001 §7). YALNIZ TEST.
+//! `MockCrypto` — Transport testleri için sahte Crypto (A4.2; KM-SEAM-TC-001 §7). YALNIZ TEST
+//! (`test-util` özelliği; ürün derlemesinde bu modül YOKTUR).
 //!
 //! Gerçek kripto bitmeden Transport tarafı [`PacketProtection`] + [`SessionControl`]'e karşı
 //! koşabilsin diye vardır. **GÜVENLİK İDDİASI YOK:** "tag" bir sağlama toplamıdır, gizlilik yoktur.
+//!
+//! # Neden bu crate'te
+//!
+//! Sahte, gerçeğinin sahibi olan crate'te yaşar (sahip kararı 2026-10-05): gerçek Crypto burada
+//! yazılacak ve S3 sözleşme süiti (`tests/noise_conformance_core`) ikisini AYNI gövdelerle sınar.
+//! Tüketicisi Transport'tur (`client-core`); onu dev-dependency ile, bu crate'in `test-util`
+//! özelliğini açarak alır. Ters yön (`kama-noise-wire → client-core`) katman kuralıyla yasaktır.
 //!
 //! # Sahtenin SADIK kaldığı sözleşme (Transport'u yanıltmaması gereken yerler)
 //!
@@ -32,10 +40,10 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::seam::{
-    CloseReason, Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits,
-    SealError, SealedPacketMeta, SealedUnit, SessionCommand, SessionControl, SessionEvent,
-    SessionHandle, SessionResult,
+use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
+use kama_contracts::s3::{
+    Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits, SealError,
+    SealedPacketMeta, SealedUnit, SessionCommand, SessionControl, SessionEvent, SessionResult,
 };
 
 /// ccr §35.15 KS-DOS-1: sahte-RESPONSE başına deneme tavanı (= istemci pending INIT tavanı).
@@ -104,7 +112,8 @@ impl Lane {
 }
 
 /// Sahte Crypto. Endpoint başına bir örnek; iki uç aynı tutamaç değerlerini paylaşır
-/// (`Initiate{peer}` → `from_raw(peer)`; karşı uç aynı tutamacı `AcceptInit`'in zarfından okur).
+/// (`Initiate{peer}` → [`MockCrypto::session_of`]`(peer)`; karşı uç aynı tutamacı `AcceptInit`'in
+/// zarfından okur).
 #[derive(Debug, Default)]
 pub struct MockCrypto {
     sessions: BTreeMap<SessionHandle, Lane>,
@@ -129,6 +138,14 @@ impl MockCrypto {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sahtenin bir eşe bastığı oturum tutamacının ham değeri: `dest_hash`'in ilk sekiz baytı
+    /// (big-endian). Deterministiktir; iki uç aynı eş için aynı tutamaca varır.
+    #[must_use]
+    pub fn session_of(peer: PeerRef) -> u64 {
+        let h = peer.to_raw_for_mock();
+        u64::from_be_bytes([h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]])
     }
 
     /// `Initiate`'in ürettiği / `AcceptInit`'in beklediği sahte INIT zarfı (`early_unit`'siz).
@@ -393,7 +410,7 @@ impl SessionControl for MockCrypto {
             // INIT: deterministik sahte zarf; `init_counter` her çağrıda artar. Pending tavanı
             // doluysa reddedilir ve HİÇBİR state değişmez (ccr §35.15 zinciri).
             SessionCommand::Initiate { peer, early_unit } => {
-                let session = peer.to_raw_for_mock();
+                let session = Self::session_of(peer);
                 let h = SessionHandle::from_raw(session);
                 let early = early_unit.unwrap_or_default();
                 if self.pending.len() >= PENDING_RESPONSE_TRIAL_CAP
@@ -481,7 +498,8 @@ impl SessionControl for MockCrypto {
             }
             SessionCommand::Close { session } => {
                 if self.sessions.remove(&session).is_some() {
-                    self.push_event(SessionEvent::Closed(session, CloseReason::Renewed));
+                    // `Close` komutu yerel bir kapatma isteğidir.
+                    self.push_event(SessionEvent::Closed(session, CloseReason::UserClosed));
                 }
                 SessionResult::NoOutput
             }

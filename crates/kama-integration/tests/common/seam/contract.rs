@@ -63,11 +63,11 @@ pub fn emit_contract_row_sentinel(target_id: &str) {
 
 /// KM-SEAM-AT-001 §6 satır gövdeleri — her hedefte AYNI kod koşar.
 pub mod rows {
-    use crate::harness::api::{
-        CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PeerRef, PreparedUnit,
-        SessionEvent, SessionHandle,
-    };
     use crate::harness::target::SeamTarget;
+    use kama_contracts::handles::{PeerRef, SessionHandle};
+    use kama_contracts::s1::{
+        CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent,
+    };
 
     /// `Ready`'yi beklerken atılacak azami adım. Sınırsız döngü YOK: gerçek hedef ilerlemezse
     /// test asılı kalmaz, KIRMIZI olur.
@@ -118,7 +118,7 @@ pub mod rows {
             )
         });
         let caps = t.capabilities();
-        let peer = PeerRef::from_raw(0xE0);
+        let peer = crate::harness::test_peer(0xE0);
 
         // early_unit: opak, byte-özdeş geri gelmeli (K6).
         let early_bytes: Vec<u8> = b"AMP-early-unit-record".to_vec();
@@ -182,7 +182,8 @@ pub mod rows {
 /// Mekanizma gövdeleri — her hedefte AYNI kod koşar.
 pub mod mechanism {
     use super::super::target::{SeamTarget, TargetUnavailable, REGISTERED_TARGETS};
-    use crate::harness::api::{KamaTransport, SessionHandle};
+    use kama_contracts::handles::SessionHandle;
+    use kama_contracts::s1::KamaTransport;
 
     /// Hedef kaydı ile hedefin kendi beyanı tutarlı mı.
     ///
@@ -226,7 +227,7 @@ pub mod mechanism {
     /// Taze hedef oturum İCAT ETMEZ: `recv()`/`poll_event()` boş ve gözlem yan etkisiz.
     ///
     /// Mekanizma seviyesidir; §6 `H-EVENTS` satırının yerine GEÇMEZ (o, `Ready → RenewRequired →
-    /// Ready(h') → Closed(h, Renewed)` sırasını ister).
+    /// Ready(h') → Closed(h, Superseded)` sırasını ister).
     ///
     /// # Panics
     /// Hiç `connect` çağrılmadan teslim ya da olay üretilirse.
