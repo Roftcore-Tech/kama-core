@@ -309,6 +309,10 @@ jobs:
         run: scripts/ci/noise-conformance.sh --target machine
       - name: S3 hedef = identity (PoC no-op seam; H-CTX)
         run: scripts/ci/noise-conformance.sh --target identity
+      # G-S3 kanıtı: Python referansından üretilen SSD1 vektörleri ↔ mevcut Rust mühür yolu
+      # (bayt-özdeş seal + aynı open kararları). 0 test koşarsa kırmızı.
+      - name: S3 vektörler = SSD1 ↔ LegacySessionProtector
+        run: scripts/ci/noise-conformance.sh --target vectors
       - name: S3 hedef = real (bugün beyan edilmiş boşluk)
         run: |
           set +e

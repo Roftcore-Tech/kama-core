@@ -30,6 +30,7 @@ mod s3_pn_own;
 mod s3_replay_poison;
 mod s3_retry;
 mod s3_support;
+mod ssd1_vectors;
 mod target;
 
 noise_demux_suite!(mock_demux, crate::target::MockTarget);
@@ -125,3 +126,21 @@ noise_s3_suite!(mock_s3, crate::target::MockTarget);
 // PoC `IdentitySeam` hedefi (H-CTX'in bağlam-kaydı ve no-op yarısı) `client-core`'dadır:
 // `crates/client-core/tests/noise_identity_target.rs`. Bu crate `client-core`'u göremez (katman
 // kuralı C3). Koşucu: `scripts/ci/noise-conformance.sh --target identity`.
+
+// ── G-S3 kanıtı: Python'dan üretilen SSD1 vektörleri ↔ mevcut Rust mühür yolu ────────────────
+// Hedef seçimine girmez (mock/real değil): sınadığı şey bugünkü `LegacySessionProtector`'dır.
+// Koşucu: `scripts/ci/noise-conformance.sh --target vectors`.
+mod vectors_ssd1 {
+    #[test]
+    fn seal_is_byte_identical_to_python_reference() {
+        crate::ssd1_vectors::seal_is_byte_identical();
+    }
+    #[test]
+    fn open_matches_expected_decisions() {
+        crate::ssd1_vectors::open_matches_expected_decisions();
+    }
+    #[test]
+    fn every_case_is_consumed() {
+        crate::ssd1_vectors::every_case_is_consumed();
+    }
+}
