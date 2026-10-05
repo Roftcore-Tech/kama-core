@@ -20,9 +20,11 @@
 #   J. Sessiz kapsam kaybi— kosan bir satir CONTRACT_ROWS'tan silinirse → 1
 #   K. Hayalet satir      — satir CONTRACT_ROWS'ta ve beyanda duruyor ama #[test] sarmalayicisi yok → 1
 #   L. Statik kanit       — statik satirlarin kaniti (layer_check.py) kirmiziyken → 1
-#   M. Statik enflasyon   — davranis satiri 'static' beyan edilirse (kosmadan kanitli gorunur) → drift 1
+#   M. Statik enflasyon   — davranis satiri 'static' beyan edilirse (kosmadan kanitli gorunur) → drift 1;
+#                           `kind` de birlikte cevrilse ve uydurma kural adi yazilsa bile (tur spec'ten okunur)
+#   N. Susturulmus satir  — satirin sarmalayicisina #[ignore] konursa (listelenir ama kosmaz) → 1
 #
-# K/L/M'de kapinin BEKLENEN nedenle kirmizi oldugu da olculur (cikti o nedeni adiyla tasimali);
+# K/L/M/N'de kapinin BEKLENEN nedenle kirmizi oldugu da olculur (cikti o nedeni adiyla tasimali);
 # baska bir nedenle kirmizi olan kapi, sinanan muhafizin calistigini gostermez.
 #
 # Cikis kodu: 0 = butun muhafizlar calisiyor · 1 = en az biri vakumda.
@@ -211,7 +213,9 @@ printf '\n── L. statik kanit ──\n'
 # yasak bir Plane 1 sembolu tasiyan dosya konur; kapi kirmizi olmali.
 printf 'fn method_id() {}\n' > "$LAYER_PROBE"
 expect 1 "L1 statik satirin kaniti (layer_check) kirmiziyken → 1" -- bash "$GATE" --target mock
-expect_reason "L2 neden: statik satirlarin kaniti kirmizi" "statik satirlarin kaniti (layer_check.py) kirmizi"
+# Neden, layer_check'in probe dosyasi icin bastigi BULGUNUN kendisidir (genel "kirmizi" cumlesi degil):
+# layer_check baska bir nedenle dusseydi bu satir gecmezdi.
+expect_reason "L2 neden: layer_check probe dosyasindaki yasak sembolu buldu" "selftest_layer_probe.rs: yasak Plane 1 sembolü"
 rm -f "$LAYER_PROBE"
 
 printf '\n── M. statik durum enflasyonu ──\n'
@@ -230,7 +234,39 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps(d, ensure_ascii=False, indent=2)
 PY
 expect 1 "M1 davranis satiri 'static' beyan edilince drift → 1" -- \
   python3 "$DRIFT" --seam s1 --coverage "$TMPD/coverage-static-inflated.json" --quiet
-expect_reason "M2 neden: statik durum yalniz kind=static satirlar icin" "'H-CAPS' davranis satiri 'static' beyan edilmis"
+expect_reason "M2 neden: statik durum yalniz statik satirlar icin" "'H-CAPS' davranis satiri 'static' beyan edilmis"
+
+# Ayni yalan, `kind` de birlikte cevrilerek ve uydurma bir kural adiyla: beyan kendi icinde tutarli
+# gorunur. Tur beyandan degil spec §6 metninden okundugu icin yine kirmizi olmali.
+python3 - scripts/ci/seam-coverage.json "$TMPD/coverage-kind-flipped.json" <<'PY'
+import json, sys, pathlib
+d = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+hit = [r for r in d["rows"] if r["id"] == "H-CAPS"]
+assert len(hit) == 1 and hit[0]["kind"] == "behavioral", "H-CAPS davranis satiri capasi bulunamadi"
+hit[0].update(status="static", kind="static", proof="layer_check", proof_rules=["BOGUS-RULE"])
+for key, status in (("implemented_baseline", "implemented"), ("mock_only_baseline", "mock_only"),
+                    ("static_baseline", "static")):
+    d[key] = sum(r["status"] == status for r in d["rows"])
+pathlib.Path(sys.argv[2]).write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+expect 1 "M3 kind + durum birlikte 'static' yapilinca drift → 1" -- \
+  python3 "$DRIFT" --seam s1 --coverage "$TMPD/coverage-kind-flipped.json" --quiet
+expect_reason "M4 neden: tur spec §6 metninden okunur" "ama spec §6 metnine gore satir behavioral"
+expect_reason "M5 neden: uydurma kural adi reddedilir" "layer_check.py'de olmayan kural: ['BOGUS-RULE']"
+
+printf '\n── N. susturulmus satir ──\n'
+# Sarmalayici duruyor, CONTRACT_ROWS ve beyan duruyor, test LISTELENIYOR — ama #[ignore] ile kosmuyor.
+python3 - "$SEAM/contract.rs" <<'PY'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
+old = ('            #[test]\n'
+       '            fn h_caps() {\n')
+assert s.count(old) == 1, "h_caps sarmalayici capasi bulunamadi"
+p.write_text(s.replace(old, '            #[test]\n            #[ignore]\n            fn h_caps() {\n'), encoding="utf-8")
+PY
+expect 1 "N1 satir #[ignore] ile susturulunca → 1" -- bash "$GATE" --target mock
+expect_reason "N2 neden: susturulmus test yesil sayilmaz" "#[ignore]'lu (kosmayan) test var"
+restore
 
 printf '\n── F. API drift ──\n'
 # Sozlesme kaynaginin KOPYASI bozulur (agac disi); kapi o kopyaya karsi kosturulur.

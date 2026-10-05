@@ -6,7 +6,7 @@
     "crates/kama-contracts/src/s1.rs",
     "crates/kama-contracts/src/handles.rs"
   ],
-  "_comment": "KM-SEAM-AT-001 §6 harness kapsaminin BEYANIDIR. Rust tarafinin gerceklik listesi CONTRACT_ROWS (contract.rs); runner ikisini ve fiilen listelenen test adlarini capraz kontrol eder. DORT DURUM: implemented = govde IKI hedefte de kostu (gercek kanit) · mock_only = govde yalniz sahtede kostu, dogrulama gucu ikinci hedef gelince dogar (Google SWE ch.13 / Fowler ContractTest) · static = kosum degil kapi-seviyesi denetim (yalniz kind=static satirlar; kanit layer_check, runner kosturur) · not_implemented = yok. Uc taban da ratchet: dusurulemez. Tek hedef kayitliyken hicbir satir implemented olamaz - drift kapisi bunu zorlar. Bir satirin sahtede kosmayan/zayif kalan kismi o satirin `needs` alaninda yazilidir.",
+  "_comment": "KM-SEAM-AT-001 §6 harness kapsaminin BEYANIDIR. Rust tarafinin gerceklik listesi CONTRACT_ROWS (contract.rs); runner ikisini ve fiilen listelenen test adlarini capraz kontrol eder. DORT DURUM: implemented = govde IKI hedefte de kostu (gercek kanit) · mock_only = govde yalniz sahtede kostu, dogrulama gucu ikinci hedef gelince dogar (Google SWE ch.13 / Fowler ContractTest) · static = kosum degil kapi-seviyesi denetim (yalniz kind=static satirlar; kanit layer_check, runner kosturur) · not_implemented = yok. Uc taban beyandaki satir sayilariyla ESIT olmak zorundadir (drift kapisi zorlar): bir satirin durumu dusurulurse taban da ayni commit'te degisir ve fark incelemede gorunur. Kosucunun alt siniri = implemented + mock_only. Tek hedef kayitliyken hicbir satir implemented olamaz - drift kapisi bunu zorlar. Bir satirin sahtede kosmayan/zayif kalan kismi o satirin `needs` alaninda yazilidir.",
   "implemented_baseline": 0,
   "mock_only_baseline": 12,
   "static_baseline": 2,
@@ -31,8 +31,8 @@
       "id": "H-APP-RETRY-0",
       "status": "mock_only",
       "kind": "behavioral",
-      "proof": "contract.rs rows::h_app_retry_0 — her birim TEK kez send edilir; recovery ON + 1 kayip → iki birim de, gonderim sirasinda, tekrarsiz teslim; recovery OFF + ayni kayip → dusurulen birim hic gelmez, sonraki gelir",
-      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); sahtenin 'recovery'si bir anahtardir (ARQ/FEC degil) — gercek kayip altinda ON/OFF farki yalniz gercek hedefte olculur. 'app kodunda retransmit yolu yok' cumlesi statiktir; kama-app'te urun kodu olmadigindan bugun sinanacak bir sey yok"
+      "proof": "contract.rs rows::h_app_retry_0 — her birim TEK kez send edilir; recovery ON + 1 kayip → iki birim de, gonderim sirasinda, tekrarsiz teslim; recovery OFF + ayni kayip → dusurulen birim hic gelmez. Karsi-kontrol BASKA oturumda: kayipsiz oturumun birimi gelir (hedef hicbir sey teslim etmiyor olsaydi OFF kolu kendiliginden gecerdi)",
+      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); sahtenin 'recovery'si bir anahtardir (ARQ/FEC degil) — gercek kayip altinda ON/OFF farki yalniz gercek hedefte olculur. S1, recovery OFF iken kalici bir Reliable boslugunun ARKASINDAKI birimin (ayni oturumda) teslim edilip edilmeyecegini soylemez; satir bunu SINAMAZ. 'app kodunda retransmit yolu yok' cumlesi statiktir; kama-app'te urun kodu olmadigindan bugun sinanacak bir sey yok"
     },
     {
       "id": "H-ROUNDTRIP",
@@ -52,7 +52,7 @@
       "id": "H-CUTOVER",
       "status": "mock_only",
       "kind": "behavioral",
-      "proof": "contract.rs rows::h_cutover — YALNIZ yenileme kolu: cutover oncesi ve yenileme surerken send(h) kabul; Ready(h') sonrasi (Closed okunmadan) send(h) → SessionSuperseded; h'nin iki outstanding birimi sirayla drain; h' uzerinden uc birim sirayla; reddedilen birim sizmaz; sonra Closed(h, Superseded)",
+      "proof": "contract.rs rows::h_cutover — YALNIZ yenileme kolu: cutover oncesi ve yenileme surerken send(h) kabul; Ready(h') sonrasi (Closed okunmadan) send(h) → SessionSuperseded; h'nin iki outstanding birimi sirayla drain olur — biri teslim kuyrugunda, digeri cutover aninda Transport'un icinde (ilk iletimi kaybolmus, kurtarilacak); h' uzerinden uc birim sirayla; reddedilen birim sizmaz; sonra Closed(h, Superseded)",
       "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1). SATIRIN SAHTEDE KOSMAYAN KISMI: provisional supersession (bilinen esten yeni-sayacli INIT; onaydan once olay yok; N_g/T_g yalniz-alim drain), bayat INIT'in etkisizligi, duplicate INIT, glare → tek Ready, davranisin Crypto cap degerinden bagimsizligi. Sahte bunlari modellemiyor (Crypto ve karsi uc yok)"
     },
     {
@@ -80,7 +80,7 @@
       "id": "H-PENDING-CAP",
       "status": "mock_only",
       "kind": "behavioral",
-      "proof": "contract.rs rows::h_pending_cap — tavan kadar pending; sonraki yeni ese connect → Backpressure (early_unit'li de); bekleyen ticket'lar ayni, reddedilen es pending'e girmez; iptalle yer acilinca ayni es kabul edilir. Tavan hedefin adlandirilmis sabitinden; ccr §35.15'teki sayiyla testte karsilastirilir",
+      "proof": "contract.rs rows::h_pending_cap — tavan kadar pending; sonraki yeni ese connect → Backpressure (early_unit'li de); bekleyen ticket'lar ayni, reddedilen es pending'e girmez; reddedilen connect'ler olay uretmez (ilk olay iptalin ConnectAbandoned'i); yer iki yoldan acilir: iptalle ve Ready ile — ikisinde de onceden reddedilen es kabul edilir; cozulen oturumlarda teslim yok (reddedilen early_unit hicbir yola girmedi). Tavan hedefin adlandirilmis sabitinden; ccr §35.15'teki sayiyla testte karsilastirilir",
       "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); hedefin connect'leri PENDING tutabilmesi (karsi uc yanitsiz)"
     },
     {
@@ -95,7 +95,7 @@
       "status": "mock_only",
       "kind": "behavioral",
       "proof": "contract.rs rows::h_progress — karsi-kontrol: link acikken saat ilerleyince prob sayaci artar; link duser → ConnectProgress(ticket, Suspended), 1 saat boyunca 0 yeni prob, fazladan olay yok; link gelir → ConnectProgress(ticket, Measuring) ve saat ilerlemeden +1 prob; niyet cozulmez (ayni Pending)",
-      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); link durumu ve prob sayaci icin hedef kancalari. LongOutage fazi sinanmiyor (sahte modellemiyor)"
+      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); link durumu ve prob sayaci icin hedef kancalari. LongOutage fazi sinanmiyor (sahte modellemiyor). ACIK S1 NOKTASI: yeni bir niyetin ILK ConnectProgress'inin ne zaman cikacagi §4'te yazmiyor; satir govdeleri (bu satir, H-CANCEL, H-SILENT-REJECT ve establish yardimcisi) link VARKEN dogan niyet icin olay cikmadigini varsayar"
     },
     {
       "id": "H-SILENT-REJECT",
@@ -135,7 +135,7 @@
       "status": "partial",
       "what": "KISMEN KAPANDI 2026-10-05 (Hayri tasimasi). KALAN: KM-SEAM-AT-001 §7'nin saydigi sirasiz/duplicate teslim enjeksiyonu ve supersession (provisional, glare) senaryosu sahtede YOK; ayrica LongOutage fazi ve DeadlineBounded suresinin dolmasi modellenmiyor. 'recovery' bir anahtardir (ARQ/FEC degil).",
       "closed_part": "§7 MockTransport feature/app'ten tasindi ve guncel S1'e getirildi: Ready/RenewRequired/Closed senaryolari, ConnectAbandoned/ConnectProgress enjeksiyonu, sanal saat + link + prob sayaci, sahte RESPONSE, deterministik kayip + recovery anahtari, pending INIT tavani, sinirli kuyruklar. TEK kopya crates/kama-app/tests/common/mock_transport.rs; kosucu ayni dosyayi #[path] ile mock hedefi yapar. Eski iskelet sahte (EchoMock) kalkti.",
-      "evidence": "crates/kama-integration/tests/common/seam/target.rs app_mock (#[path]) · seam_mock_fixture f1–f11 · sahtenin baslik notu 'Sahtenin MODELLEMEDIGI'",
+      "evidence": "crates/kama-integration/tests/common/seam/target.rs app_mock (#[path]) · seam_mock_fixture f1–f12 · sahtenin baslik notu 'Sahtenin MODELLEMEDIGI'",
       "blocks": "H-CUTOVER'in provisional supersession kolu (SPRINT-BACKLOG B1.5) sahtede yazilamaz",
       "owner": "§7: Hayri + Abkarada"
     }

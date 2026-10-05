@@ -497,3 +497,29 @@ fn f11_accepted_early_unit_survives_a_full_inbox() {
         "kabul edilmiş early_unit düşürüldü ya da başka oturuma gitti"
     );
 }
+
+/// Düşen bir `Closed` olayı tutamacı sonsuza dek "supersede" bırakmaz.
+///
+/// Olay kuyruğu doluyken yapılan cutover'ın `Ready(h')` ve `Closed(h)` olayları kuyruğa sığmaz.
+/// `Closed` hiç okunamayacağı için eski tutamaç o anda unutulur (`UnknownSession`); yoksa
+/// `send(h)` kalıcı olarak `SessionSuperseded` dönerdi ve supersede kümesi sınırsız büyürdü.
+#[test]
+fn f12_dropped_closed_event_does_not_strand_the_handle() {
+    /// Cutover'ın ürettiği olay sayısı: `Ready(h')` + `Closed(h, Superseded)`.
+    const CUTOVER_EVENTS: u64 = 2;
+
+    let mut t = build();
+    let old = ready(&mut t, harness::test_peer(14));
+    for _ in 0..MAX_EVENTS {
+        t.request_renew(old); // kuyruk okunmadan dolar
+    }
+    let new = t.complete_renew(old);
+    assert_eq!(t.stats().events_dropped, CUTOVER_EVENTS);
+
+    assert_eq!(
+        t.send(old, unit(b"eski"), DeliveryPolicy::Reliable),
+        Err(TransportError::UnknownSession),
+        "Closed olayı düşen tutamaç supersede durumunda takılı kaldı"
+    );
+    assert_eq!(t.send(new, unit(b"yeni"), DeliveryPolicy::Reliable), Ok(()));
+}

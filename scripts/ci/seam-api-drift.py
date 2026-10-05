@@ -16,9 +16,12 @@ Birden cok kez verilebilir (dosyalar birlestirilir) — ortak tipler `handles.rs
   C. §3 TransportError variant kumesi   == kaynaktaki variant kumesi   (kume KAPALIDIR)
   D. §6 tablosundaki H-* satir kimlikleri == seam-coverage.json rows[].id
   E. tek hedef (mock) kayitliyken hicbir satir 'implemented' beyan EDILEMEZ (yalniz 'mock_only')
-  G. 'static' durumu YALNIZ `kind: static` satirlar icindir ve kaniti adlandirilmis olmalidir
+  G. 'static' durumu YALNIZ statik satirlar icindir ve kaniti adlandirilmis olmalidir
      (`proof: layer_check` + bos olmayan `proof_rules`); davranis satiri 'static' beyan EDILEMEZ,
-     statik satir da 'mock_only'/'implemented' beyan EDILEMEZ (kosumu yoktur)
+     statik satir da 'mock_only'/'implemented' beyan EDILEMEZ (kosumu yoktur).
+     Bir satirin statik olup olmadigi beyandaki `kind` alanindan DEGIL spec §6 metninden okunur
+     ("Kanitladigi" hucresinde "statik" yazan satirlar); `kind` o metinle ayni olmak zorundadir.
+     `proof_rules` girdileri scripts/ci/layer_check.py'de gecen kural kimlikleri olmalidir.
   Ek olarak beyan dosyasinin kendi tutarliligi (tekrarsiz kimlik, gecerli durum, ratchet tabani).
 
 --seam s3 (KM-SEAM-TC-001) — DENETLENEN ESITLIKLER:
@@ -53,6 +56,7 @@ DEFAULTS = {
     },
 }
 DEFAULT_TARGETS = ROOT / "crates/kama-integration/tests/common/seam/target.rs"
+LAYER_CHECK = ROOT / "scripts/ci/layer_check.py"
 
 VALID_STATUS = {"implemented", "mock_only", "static", "not_implemented"}
 VALID_KIND = {"behavioral", "static"}
@@ -134,6 +138,24 @@ def spec_harness_rows(spec_text: str) -> list[str]:
     if not rows:
         die("spec §6 tablosunda hic H-* satiri bulunamadi")
     return rows
+
+
+def spec_static_rows(spec_text: str) -> set[str]:
+    """§6 tablosunda "Kanitladigi" hucresinde `statik` yazan satirlar: kosum degil kapi-seviyesi denetim."""
+    body = section(spec_text, "6.")
+    out = set()
+    for line in body.splitlines():
+        m = re.match(r"\|\s*(H-[A-Z0-9-]+)\s*\|(.*)", line)
+        if m and re.search(r"\bstatik\b", m.group(2), re.I):
+            out.add(m.group(1))
+    return out
+
+
+def layer_rule_ids() -> set[str]:
+    """layer_check.py'nin kaynaginda gecen kural kimlikleri (L1.. / C1..)."""
+    if not LAYER_CHECK.is_file():
+        die(f"dosya yok: {LAYER_CHECK}")
+    return set(re.findall(r"\b([LC][1-9])\b", LAYER_CHECK.read_text(encoding="utf-8")))
 
 
 # ── ayna ayristirma ──────────────────────────────────────────────────────────────────────────
@@ -329,6 +351,8 @@ def main() -> int:
     # Beyan oz-tutarliligi
     seen: set[str] = set()
     implemented, mock_only, static = 0, 0, 0
+    spec_static = spec_static_rows(spec_text)
+    known_rules = layer_rule_ids()
     for r in rows:
         rid, status, kind = r.get("id"), r.get("status"), r.get("kind")
         if rid in seen:
@@ -345,18 +369,27 @@ def main() -> int:
         elif status == "static":
             static += 1
 
-        # G — durum ↔ tur tutarliligi
+        # G — tur SPEC'ten okunur; beyandaki `kind` onunla ayni olmali
+        want_kind = "static" if rid in spec_static else "behavioral"
+        if kind in VALID_KIND and kind != want_kind:
+            bad(f"seam-coverage.json: '{rid}' kind='{kind}' ama spec §6 metnine gore satir {want_kind} "
+                f"(statik satirlar: {sorted(spec_static)})")
         if status == "static":
-            if kind != "static":
+            if rid not in spec_static:
                 bad(f"seam-coverage.json: '{rid}' davranis satiri 'static' beyan edilmis — statik durum "
-                    f"yalniz kind=static satirlar icindir (davranis satiri KOSARAK kanitlanir)")
+                    f"yalniz spec §6'da statik isaretli satirlar icindir (davranis satiri KOSARAK kanitlanir)")
             if r.get("proof") not in STATIC_PROOFS:
                 bad(f"seam-coverage.json: '{rid}' statik ama kaniti adlandirilmamis "
                     f"(proof ∈ {sorted(STATIC_PROOFS)} olmali, gelen {r.get('proof')!r})")
             rules = r.get("proof_rules")
             if not (isinstance(rules, list) and rules and all(isinstance(x, str) and x for x in rules)):
                 bad(f"seam-coverage.json: '{rid}' statik ama `proof_rules` bos/eksik — hangi kural kanitliyor?")
-        elif kind == "static" and status in ("implemented", "mock_only"):
+            else:
+                unknown = sorted(set(rules) - known_rules)
+                if unknown:
+                    bad(f"seam-coverage.json: '{rid}' proof_rules icinde layer_check.py'de olmayan kural: "
+                        f"{unknown} (bilinen: {sorted(known_rules)})")
+        elif rid in spec_static and status in ("implemented", "mock_only"):
             bad(f"seam-coverage.json: '{rid}' statik satir '{status}' beyan edilmis — statik satirin kosumu "
                 f"yoktur; dogru durum 'static' ya da 'not_implemented'")
 

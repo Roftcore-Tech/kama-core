@@ -17,6 +17,18 @@ Kullanım:
   Etkilenen vakalar yeniden üretildi; diğerlerinin baytları değişmedi.
   · Çıktı KANONİK biçimde yazılır (özgün sürüm ensure_ascii=False ve sırasız `input` yazıyordu; CI'daki
     `validate.py --canonical` kapısı SV-011 ile reddediyordu). Yalnız biçim; vaka içerikleri aynı.
+  · Pozitif dosyanın `description` alanı düzeltildi: özgün metin "her msg_type için 1 pozitif vektör"
+    diyordu; registry'de on tip var, vektörler sekizini (0x01–0x08) kapsıyor. Vaka baytları değişmedi.
+  · Bilinmeyen argüman artık hatadır (önceden `--check` dışındaki her şey dosyaları YENİDEN YAZIYORDU).
+
+SINIRLAR (bilinen; düzeltilmedi):
+  · 0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE için pozitif vektör yok; reserved tip yalnız 0x00 ile
+    sınanıyor (0xF0..0xFF yok); "bilinmeyen ama reserved olmayan tip → DROP" (§6) vakası yok.
+  · `uncompressed-len-exceeds-max` vakasının girdisi expansion oranı kuralını da çiğniyor; iki kural da
+    DROP verir, hangi nedenin döneceği denetim sırasına bağlıdır.
+  · İki vaka (encode.text-compressed, decode.truncated-zstd-stream) varsayılan ayarlı `zstd.compress`
+    çıktısı taşır; bu baytlar libzstd sürümüne bağlı olabilir → `--check` başka bir makinede dosya hiç
+    değişmeden FARKLI diyebilir. Bu yüzden `--check` CI'a bağlı değildir.
 """
 
 from __future__ import annotations
@@ -244,10 +256,13 @@ def build_positive() -> dict:
         "suite": "amp-record-v1",
         "spec_version": "application-message-protocol@v1+2026-10-04-K1",
         "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile sıfır paylaşım)",
-        "description": "AMP §2/§3/§5 AppMessageRecord kodlaması — her msg_type için 1 pozitif vektör "
-        "+ bir sıkıştırılmış TEXT örneği. B1.2 (WS-B/Hayri); tüketici B2.1'deki gerçek Rust codec'i.",
+        "description": "AMP §2/§3/§5 AppMessageRecord kodlaması — 0x01–0x08 tiplerinin her biri için 1 pozitif "
+        "vektör + bir sıkıştırılmış TEXT örneği. 0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE için vektör YOK "
+        "(§7 her tip için ister; eksik). B1.2 (WS-B/Hayri); tüketici B2.1'deki gerçek Rust codec'i.",
         "notes": {
-            "compressed": "flags.bit0=1; body = compression_id(1)|uncompressed_len(4be)|zstd payload (§5).",
+            "compressed": "flags.bit0=1; body = compression_id(1)|uncompressed_len(4be)|zstd payload (§5). "
+            "zstd payload baytları üreten kitaplığın sürümüne bağlı olabilir (zstd sürümler arası bayt-özdeş "
+            "çıktı garanti etmez); bu vakadaki expected_hex üretildiği ortamın çıktısıdır.",
         },
         "case_count": len(cases),
         "cases": cases,
@@ -410,6 +425,11 @@ def render(doc: dict) -> str:
 
 
 def main(argv: list[str]) -> int:
+    unknown = sorted(set(argv) - {"--check"})
+    if unknown:
+        print(f"kullanım hatası: bilinmeyen argüman {unknown}. Argümansız: dosyaları yazar · --check: yazmaz, karşılaştırır",
+              file=sys.stderr)
+        return 2
     root = Path(__file__).resolve().parents[2]
     vectors_dir = root / "vectors"
     outputs = {

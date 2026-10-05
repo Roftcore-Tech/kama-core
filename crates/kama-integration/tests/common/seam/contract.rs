@@ -39,6 +39,15 @@
 //! satırın sahtede yeşil olması, kancanın sahtedeki karşılığı kadar güçlüdür: örn. sahtenin
 //! "sahte RESPONSE"u hiçbir kripto çalıştırmaz, "recovery"si ARQ/FEC değil bir anahtardır. Bu
 //! sınırlar satır satır `seam-coverage.json`'ın `needs` alanında yazılıdır.
+//!
+//! # Satır gövdelerinin dayandığı AÇIK S1 noktası
+//!
+//! S1 §4, yeni bir niyetin İLK `ConnectProgress` olayının ne zaman çıkacağını yazmıyor. Gövdeler,
+//! link VARKEN doğan niyet için olay ÇIKMADIĞINI varsayar (`establish` `Ready`'den önce gelen her
+//! olayı hata sayar; H-CANCEL / H-SILENT-REJECT "olay yok" der; H-PROGRESS ilk olayı `Suspended`
+//! bekler). Sahte böyle davranır. Niyet doğarken `ConnectProgress(Measuring)` yayan bir Transport
+//! S1'in bugünkü metniyle çelişmez ama bu gövdelerin çoğunda kırmızı olur — karar verilince ya
+//! §4'e bir cümle girer ya da yardımcılar o olayı atlar.
 
 #![allow(dead_code)]
 
@@ -296,10 +305,44 @@ pub mod rows {
         assert_eq!(t.connect(extra, None), Err(TransportError::Backpressure));
 
         // Ret kalıcı bir durum değildir: bir niyet iptal edilince yer açılır ve aynı eş kabul edilir.
+        // Buraya kadar hiçbir olay okunmadı; ilk olay iptalin kendisidir — reddedilen connect'ler
+        // olay ÜRETMEMİŞTİR.
         t.cancel(tickets[0]);
+        assert_eq!(
+            t.poll_event(),
+            Some(SessionEvent::ConnectAbandoned(
+                tickets[0],
+                AbandonReason::Cancelled
+            )),
+            "iptalden önce başka bir olay çıkmış (reddedilen connect olay üretti?)"
+        );
         assert!(
             matches!(t.connect(extra, None), Ok(ConnectResult::Pending(_))),
             "yer açıldıktan sonra connect hâlâ reddediliyor"
+        );
+
+        // `Ready` kolu: tavan yeniden dolu (yeni bir eş reddedilir); bekleyen niyetler `Ready`'ye
+        // çözülünce yer açılır ve o eş kabul edilir.
+        let late = peer(cap + 1);
+        assert_eq!(t.connect(late, None), Err(TransportError::Backpressure));
+        for resolved in 0..cap {
+            match next_event::<T>(&mut t) {
+                Some(SessionEvent::Ready(..)) => {}
+                other => panic!("Ready bekleniyordu ({resolved}/{cap} çözüldü), gelen {other:?}"),
+            }
+        }
+        // Kabul edilen niyetlerin hiçbiri early_unit taşımıyordu: çözülen oturumlarda teslim
+        // edilecek bir şey YOKTUR. Tavanda reddedilen early_unit bir yere saklandıysa burada çıkar.
+        for _ in 0..PUMP_BUDGET {
+            T::pump(&mut t);
+            assert!(
+                t.recv().is_none(),
+                "tavanda reddedilen early_unit sonradan teslim edildi"
+            );
+        }
+        assert!(
+            matches!(t.connect(late, None), Ok(ConnectResult::Pending(_))),
+            "niyetler Ready'ye çözüldükten sonra connect hâlâ reddediliyor"
         );
     }
 
@@ -437,6 +480,11 @@ pub mod rows {
             next_event::<T>(&mut t),
             Some(SessionEvent::RenewRequired(h))
         );
+        // 'once-2' cutover anında gerçekten YOLDA olsun: ilk iletimi kaybolur, Transport onu
+        // kurtaracaktır. Böylece "outstanding drain" yalnız teslim kuyruğunda duran bir birimle
+        // değil, Transport'un içinde bekleyen bir birimle de ölçülür.
+        T::set_recovery(&mut t, true);
+        T::drop_next_units(&mut t, 1);
         assert_eq!(t.send(h, unit(b"once-2"), DeliveryPolicy::Reliable), Ok(()));
 
         // Cutover: Ready(h') geldi, Closed(h) henüz TESLİM EDİLMEDİ → h supersede edilmiş.
@@ -602,7 +650,7 @@ pub mod rows {
     ///
     /// # Panics
     /// Recovery açıkken birim teslim edilmezse ya da sıra bozulursa; kapalıyken kaybolan birim
-    /// teslim edilirse.
+    /// teslim edilirse ya da kayıpsız (başka) oturumun birimi gelmezse.
     pub fn h_app_retry_0<T: SeamTarget>() {
         // recovery ON: kaybolan birim Transport'un içinde kurtarılır; sıra korunur.
         let mut t = fresh::<T>();
@@ -626,9 +674,15 @@ pub mod rows {
             "recovery ON: fazladan teslim (duplicate)"
         );
 
-        // recovery OFF: aynı kayıp KURTARILMAZ; sonraki birim etkilenmez.
+        // recovery OFF: aynı kayıp KURTARILMAZ.
+        //
+        // Karşı-kontrol (hedef hiçbir şey teslim etmiyor olsaydı "düşürülen birim gelmedi" iddiası
+        // kendiliğinden doğru çıkardı) BAŞKA bir oturumda gönderilir. Aynı oturumda, kalıcı bir
+        // `Reliable` boşluğunun ARKASINDAKİ birimin teslim edilip edilmeyeceğini S1 söylemez (§4
+        // yalnız sıra garantisi verir); başka oturumun akışında boşluk yoktur.
         let mut t = fresh::<T>();
         let h = establish::<T>(&mut t, crate::harness::test_peer(0xE8), None);
+        let h_control = establish::<T>(&mut t, crate::harness::test_peer(0xEC), None);
         T::set_recovery(&mut t, false);
         T::drop_next_units(&mut t, 1);
         assert_eq!(
@@ -636,11 +690,12 @@ pub mod rows {
             Ok(())
         );
         assert_eq!(
-            t.send(h, unit(b"sonraki"), DeliveryPolicy::Reliable),
+            t.send(h_control, unit(b"kontrol"), DeliveryPolicy::Reliable),
             Ok(())
         );
-        let d = next_delivery::<T>(&mut t).expect("recovery OFF: kaybolmayan birim de gelmedi");
-        assert_eq!(d.unit.as_slice(), b"sonraki");
+        let d = next_delivery::<T>(&mut t)
+            .expect("recovery OFF: kayıpsız oturumun birimi de gelmedi (hedef teslim etmiyor)");
+        assert_eq!((d.session, d.unit.as_slice()), (h_control, &b"kontrol"[..]));
         for _ in 0..PUMP_BUDGET {
             T::pump(&mut t);
             assert!(

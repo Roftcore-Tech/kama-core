@@ -38,9 +38,16 @@
 //! Provisional supersession (bilinen eşten yeni-sayaçlı INIT) ve glare · `LongOutage` fazı ·
 //! `DeadlineBounded` süresinin dolması · sırasız/duplicate teslim ENJEKSİYONU (§7 sayar; yok) ·
 //! gerçek kayıp/kurtarma (buradaki "recovery" bir anahtardır, ARQ/FEC değil) · prob backoff'u ve
-//! jitter'ı (sabit aralık) · AĞ: link durumu yalnız prob emisyonunu ve `ConnectProgress`
-//! olaylarını etkiler — link yokken de `pump()` handshake tamamlar ve `send` teslim eder. Bunlar
-//! gerçek hedefin işidir.
+//! jitter'ı (sabit aralık) · `early_unit` için AYRI boyut sınırı (K6 `max_early_unit_bytes`;
+//! sözleşme tipinde böyle bir alan yok, sahte `max_plaintext_unit_bytes` uygular) · AĞ: link
+//! durumu yalnız prob emisyonunu ve `ConnectProgress` olaylarını etkiler — link yokken de `pump()`
+//! handshake tamamlar ve `send` teslim eder. Bunlar gerçek hedefin işidir.
+//!
+//! # Sahteye ÖZGÜ davranış (S1'de karşılığı yok)
+//!
+//! Oturum tablosu dolunca (`MAX_SESSIONS`) `connect()` de `Backpressure` döner. S1 §3 `connect()`
+//! için `Backpressure`'ı yalnız pending INIT tavanında tanımlar; buradaki ikinci koşul sahtenin
+//! bellek sınırıdır, sözleşme davranışı değildir.
 
 // Bu ortak modül birden fazla test ikilisi tarafından ayrı ayrı derlenir; her ikili enjeksiyon
 // metotlarının hepsini kullanmayabilir.
@@ -153,12 +160,26 @@ impl MockTransport {
     /// Olay kuyruğu sınırlıdır (sahte sınırsız büyümez); doluyken gelen olay DÜŞER ve
     /// [`MockStats::events_dropped`] artar — düşme sessiz değildir. Senaryolar tavanın çok altında
     /// kalır.
+    ///
+    /// Düşen bir `Closed` hiçbir zaman OKUNAMAZ; tutamaç sonsuza dek "supersede" kalmasın diye
+    /// unutma o anda yapılır. Böylece supersede kümesi de sınırlıdır (her üyesinin kuyrukta bir
+    /// `Closed` olayı vardır). Düşen bir `Ready(h)` oturumu yok etmez: Application tutamacı
+    /// idempotent `connect()` dönüşünden öğrenebilir.
     fn push_event(&mut self, ev: SessionEvent) {
         if self.events.len() < MAX_EVENTS {
             self.events.push_back(ev);
         } else {
             self.stats.events_dropped += 1;
+            if let SessionEvent::Closed(h, _) = ev {
+                self.forget(h);
+            }
         }
+    }
+
+    /// Tutamacı tamamen unutur: bundan sonra `send(h)` → `UnknownSession`.
+    fn forget(&mut self, session: SessionHandle) {
+        self.superseded.remove(&session);
+        self.session_peer.remove(&session);
     }
 
     pub fn stats(&self) -> MockStats {
@@ -448,8 +469,7 @@ impl KamaTransport for MockTransport {
         // `Closed` Application'a ULAŞINCA eski tutamaç tamamen unutulur: bundan sonra `send(h)` →
         // `UnknownSession` (H-EVENTS). O ana kadar `SessionSuperseded` (H-CUTOVER).
         if let SessionEvent::Closed(h, _) = ev {
-            self.superseded.remove(&h);
-            self.session_peer.remove(&h);
+            self.forget(h);
         }
         Some(ev)
     }

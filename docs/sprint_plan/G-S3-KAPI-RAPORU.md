@@ -4,6 +4,7 @@
 **Bu belge karar İÇERMEZ.** Kapının ölçütlerini kanıtlarıyla listeler; dondurma kararı sahibindir.
 **Güncelleme 2026-10-05b:** §7 eklendi (B1 `kama-contracts` ve G-S3 kanıt işi sonrası durum); onun
 geçersiz kıldığı cümlelerin üstü çizildi. §1–§6'daki satır numaraları hâlâ `77848003` ağacına göredir.
+**Güncelleme 2026-10-05c:** §7.3'teki S1 kapsama sayımı güncellendi (Hayri taşıması, PR #92); eski cümlenin üstü çizildi.
 **Durum notu (2026-10-05, merge anında güncellendi):** bu raporun dayandığı PR'ların hepsi main'dedir
 (#82 `6b2d6bcb` · #83 `e341b020` · #85 `88961ee1` · #86 `ca788d4c` · #84 `285824b6` · #87 `77848003`).
 Satır numaraları main `77848003` ağacına göredir (merge öncesi tek tek doğrulandı).
@@ -157,9 +158,10 @@ kontrolünde reddedildiği için state'e bakılmıyor ve test bunu açıkça yal
 S1 §6'ya `H-PENDING-CAP` satırı eklendi; gövde `crates/kama-integration/tests/common/seam/contract.rs`
 `rows::h_pending_cap`. Tavan hedefin adlandırılmış sabitinden okunur ve testte ccr §35.15'teki sayıyla
 karşılaştırılır. `scripts/ci/seam-coverage.json`: ~~14 satırın 2'si `mock_only`, 12'si `not_implemented`.~~
-**[2026-10-05c — Hayri taşıması]** 14 satırın 12'si `mock_only` (bütün davranış satırları; gövdeler `feature/app`'ten
-taşınan yedi satır + dört eksik satır + H-PENDING-CAP), 2'si `static` (H-NO-CRYPTO-EDGE, H-NO-PLANE1; kanıt
-`layer_check.py`), 0'ı `not_implemented`. Mock hedefi artık `kama-app`'in `MockTransport`'udur (tek kopya).
+**[2026-10-05c — Hayri taşıması]** 14 satırın 12'si `mock_only` (bütün davranış satırları: Hayri'nin `feature/app`'teki
+yedi satırı — altısının gövdesi özgün testlerden yazıldı, H-ROUNDTRIP'inki süitte zaten vardı — + dört eksik satır +
+H-PENDING-CAP), 2'si `static` (H-NO-CRYPTO-EDGE, H-NO-PLANE1; kanıt `layer_check.py`), 0'ı `not_implemented`. Mock hedefi
+artık `kama-app`'in `MockTransport`'udur (tek kopya).
 
 ### 7.4 Silme kapısı
 

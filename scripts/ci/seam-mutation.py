@@ -20,9 +20,15 @@ okunur.
 
 KAPI DEGILDIR: CI'a bagli degildir (her mutasyon bir derleme; ~40 derleme). Elle/istege bagli kosulur.
 
+OLCUT VE SINIRI. Bir mutasyon, HEDEF satiri kirmizi olunca "oldu" sayilir; satirin HANGI iddiasinin
+kirmizi oldugu ayristirilmaz ve baska satirlarin da kirmizi olmasi engel degildir (her mutasyonun
+kirmizi satir listesi basilir; butun satirlar birden kirmiziysa isaretlenir). Derlenmeyen ya da
+RUN_TIMEOUT_S icinde bitmeyen mutasyon "oldu" SAYILMAZ: ortam hatasidir.
+
 Cikis kodu: 0 = her mutasyon hedef satirinda kirmizi VE her davranis satirinin en az bir mutasyonu var
             1 = yasayan mutasyon ya da mutasyonsuz satir
-            2 = ortam/capa hatasi (taban kirmizi, derlenmedi, capa bulunamadi)
+            2 = ortam/capa hatasi (taban kirmizi ya da CONTRACT_ROWS ile ayrisiyor, derlenmedi, zaman
+                asimi, capa bulunamadi)
 """
 
 from __future__ import annotations
@@ -37,6 +43,8 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+# Tek bir koşumun azami süresi: döngüye giren bir mutant aracı asılı bırakmasın.
+RUN_TIMEOUT_S = 900
 MOCK_REL = "crates/kama-app/tests/common/mock_transport.rs"
 SEAM_REL = "crates/kama-integration/tests/common/seam"
 CORE_REL = "crates/kama-integration/tests/seam_conformance_core/main.rs"
@@ -103,9 +111,9 @@ PUMP_PUSH = """            self.inbox.push_back(held.delivered);"""
 RENEW_EVENTS = """        self.push_event(SessionEvent::Ready(new_handle, peer));
         self.push_event(SessionEvent::Closed(old, CloseReason::Superseded));"""
 POLL_FORGET = """        if let SessionEvent::Closed(h, _) = ev {
-            self.superseded.remove(&h);
-            self.session_peer.remove(&h);
-        }"""
+            self.forget(h);
+        }
+        Some(ev)"""
 SUPERSEDED_CHECK = """        if self.superseded.contains(&session) {
             return Err(TransportError::SessionSuperseded);
         }"""
@@ -130,12 +138,14 @@ M = [
  ("events-wrong-close-reason", "h_events", "Closed(h, UserClosed)", RENEW_EVENTS,
   RENEW_EVENTS.replace("CloseReason::Superseded", "CloseReason::UserClosed")),
  ("events-closed-not-forgotten", "h_events", "Closed okunduktan sonra tutamac unutulmaz (SessionSuperseded donmeye devam eder)", POLL_FORGET,
-  "        let _ = &ev;"),
+  "        Some(ev)"),
  ("events-same-handle", "h_events", "yenileme ayni tutamaci verir", "        let new_handle = SessionHandle::from_raw(self.fresh_id());\n        self.active_by_peer.insert(peer, new_handle);",
   "        let new_handle = old;\n        self.active_by_peer.insert(peer, new_handle);"),
  ("cutover-old-still-accepts", "h_cutover", "cutover sonrasi send(h) kabul edilir", SUPERSEDED_CHECK, ""),
  ("cutover-outstanding-dropped", "h_cutover", "cutover'da h'nin outstanding'i atilir", RENEW_EVENTS,
   "        self.inbox.retain(|d| d.session != old);\n" + RENEW_EVENTS),
+ ("cutover-in-recovery-dropped", "h_cutover", "cutover'da h'nin YOLDAKI (kurtarilmayi bekleyen) birimi atilir", RENEW_EVENTS,
+  "        self.in_recovery.retain(|held| held.delivered.session != old);\n" + RENEW_EVENTS),
  ("cutover-old-rejected-early", "h_cutover", "yenileme SURERKEN send(h) reddedilir", REQ_RENEW,
   REQ_RENEW + "\n        self.superseded.insert(session);"),
  ("idemp-pending-new-ticket", "h_connect_idemp", "pending ese ikinci connect YENI ticket verir", PENDING_BRANCH,
@@ -221,6 +231,11 @@ M = [
             unit.bytes.remove(0);
         }
 """ + SEND_DELIVERED),
+ ("compress-dropped", "h_compress_boundary", "AppCompressed birim kabul edilir ama teslim edilmez", SEND_DELIVERED,
+  """        if unit.compression_policy == kama_contracts::s1::CompressionPolicy::AppCompressed {
+            return Ok(());
+        }
+""" + SEND_DELIVERED),
  ("retry-off-still-recovers", "h_app_retry_0", "recovery KAPALIYKEN de kurtarilir", DROP_BRANCH, DROP_BRANCH.replace("if self.recovery {", "if true {")),
  ("retry-on-loses", "h_app_retry_0", "recovery ACIKKEN kurtarilmaz", DROP_BRANCH, DROP_BRANCH.replace("if self.recovery {", "if false {")),
  ("retry-reorder", "h_app_retry_0", "sonraki birim kurtarilani gecer (sira bozulur)", BEHIND, "        if false {"),
@@ -273,7 +288,10 @@ def run(work: Path, offline: bool) -> tuple[list[str], list[str]] | str:
     cmd = ["cargo", "test", "-p", "kama-integration", "--test", "seam_conformance_core"]
     if offline:
         cmd.insert(2, "--offline")
-    p = subprocess.run(cmd, cwd=work, env=env, capture_output=True, text=True)
+    try:
+        p = subprocess.run(cmd, cwd=work, env=env, capture_output=True, text=True, timeout=RUN_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return f"ZAMAN ASIMI: {RUN_TIMEOUT_S} s icinde bitmedi"
     out = p.stdout + p.stderr
     if "test result:" not in out:
         return out  # derlenmedi / cargo hatasi
@@ -319,7 +337,14 @@ def main() -> int:
         base_failed, rows = base
         if base_failed or not rows:
             die(f"taban yesil degil: kirmizi {base_failed}, yesil {len(rows)} satir")
-        print(f"taban: {len(rows)}/{len(rows)} davranis satiri yesil (mutasyonsuz sahte)")
+        # Taban, suitin KENDI beyaniyla karsilastirilir (CONTRACT_ROWS): eksik kosan satir gorunsun.
+        m = re.search(r'pub const CONTRACT_ROWS: &\[&str\] = &\[(.*?)\];', (REPO / SEAM_REL / "contract.rs").read_text(encoding="utf-8"), re.S)
+        if not m:
+            die("contract.rs icinde CONTRACT_ROWS bulunamadi")
+        declared = sorted(r.lower().replace("-", "_") for r in re.findall(r'"(H-[A-Z0-9-]+)"', m.group(1)))
+        if declared != rows:
+            die(f"taban CONTRACT_ROWS ile ayrisiyor: beyan {declared}, kosan {rows}")
+        print(f"taban: {len(rows)}/{len(declared)} davranis satiri yesil (mutasyonsuz sahte; CONTRACT_ROWS ile ayni kume)")
 
         results = []
         for mid, target, what, old, new in M:
@@ -330,12 +355,15 @@ def main() -> int:
             sync(work, pristine.replace(old, new))
             res = run(work, not args.online)
             if isinstance(res, str):
-                print("\n".join(l for l in res.splitlines() if "error" in l or "-->" in l)[:2000])
-                die(f"mutasyon '{mid}' derlenmedi")
+                print("\n".join(l for l in res.splitlines() if "error" in l or "-->" in l or "ZAMAN" in l)[:2000])
+                die(f"mutasyon '{mid}' derlenmedi ya da zaman asimina ugradi")
             failed, _passed = res
             killed = target in failed
             results.append((mid, target, killed))
-            print(f"{'OLDU  ' if killed else 'YASADI'}  {mid:34s} hedef={target:20s} kirmizi={','.join(failed) or '-'}")
+            # Butun satirlar birden kirmiziysa mutant hedefe ozgu bir seyi degil ortak kurulumu bozmustur;
+            # "oldu" sayilir ama isaretlenir (elle bakilsin).
+            wide = "  [!] BUTUN satirlar kirmizi" if len(failed) == len(rows) else ""
+            print(f"{'OLDU  ' if killed else 'YASADI'}  {mid:34s} hedef={target:20s} kirmizi={','.join(failed) or '-'}{wide}")
 
         alive = [mid for mid, _t, killed in results if not killed]
         # Mutasyon kumesinin KENDI kapsami: mutasyonu olmayan satirin "olcuyor" oldugu gosterilmemistir.

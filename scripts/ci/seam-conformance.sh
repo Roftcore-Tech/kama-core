@@ -78,6 +78,12 @@ run_suite() {
     tail -20 "$log"
     return 1
   fi
+  # #[ignore]'lu test LISTELENIR ama KOSMAZ; "listede var" kaniti onu yesil saydirmasin.
+  if ! grep -Eq "test result: ok\. [0-9]+ passed; 0 failed; 0 ignored" "$log"; then
+    bad "$PKG::$t icinde #[ignore]'lu (kosmayan) test var — susturulmus test yesil sayilmaz"
+    grep -E "test result:| \.\.\. ignored" "$log" | head -10
+    return 1
+  fi
   grep -E "test result: ok" "$log" | head -1 | sed 's/^/  /'
   return 0
 }
@@ -110,8 +116,9 @@ run_mock() {
   step "§6 kapsam: kod ↔ beyan ↔ listelenen testler capraz kontrolu"
   rows="$(grep -o 'SEAM-CONTRACT-ROWS: target=[^ ]* rows=.*' "$core_log" | head -1)"
   # "Iddia edilen satir gercekten bir test mi" sorusu kosum logundan DEGIL --list'ten okunur:
-  # --nocapture ciktisi satir ortasinda ic ice gecebilir (olculdu), --list gecmez. Kosumun
-  # tamaminin gectigi yukarida run_suite'te olculdu.
+  # --nocapture ciktisi satir ortasinda ic ice gecebilir (olculdu), --list gecmez. Listede olmak
+  # kosmus olmak DEGILDIR; kosumun tamaminin gectigi ve hicbir testin #[ignore] ile susturulmadigi
+  # yukarida run_suite'te olculdu (0 failed; 0 ignored).
   listed="$(cargo test -p "$PKG" --test seam_conformance_core -- --list 2>/dev/null | grep ': test$' || true)"
 
   # Statik satirlar (kind=static) kosum degil kapi-seviyesi denetimdir; kanitlari burada KOSTURULUR.
@@ -124,8 +131,15 @@ run_mock() {
       static_proof="ok"
       printf '  statik kanit: %s\n' "$(tail -1 <<<"$layer_out")"
     else
-      bad "statik satirlarin kaniti (layer_check.py) kirmizi"
+      layer_rc=$?
       printf '%s\n' "$layer_out" | tail -12
+      if [[ "$layer_rc" -eq 2 ]]; then
+        # layer_check'in KENDI ortam hatasi (cargo metadata calismadi vb.) bir katman ihlali degildir.
+        echo "ORTAM HATASI: statik satirlarin kaniti kosturulamadi (layer_check.py cikis 2)"
+        rm -f "$core_log" "$fixture_log"
+        exit 2
+      fi
+      bad "statik satirlarin kaniti (layer_check.py) kirmizi"
       static_proof="red"
     fi
   fi
