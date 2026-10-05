@@ -12,8 +12,10 @@
 #   C. Kapsam yalani      — kod §6 satiri iddia ediyor, beyan etmiyor → kapi 1
 #   D. Ratchet tutarsizligi — beyan tabani gerceklikten yuksek → kapi 1
 #   E. Bosluk kapanisi    — gercek hedef kaydedilince "bosluk beyani" testi → kapi 1
-#   F. API drift          — sozlesme kaynagi spec'ten ayrisinca (metot silinince) drift kapisi → 1
-#                           (S1 ve S3 icin ayri ayri; kaynak = crates/kama-contracts)
+#   F. API drift          — sozlesme kaynagi spec'ten ayrisinca drift kapisi → 1 (S1 ve S3 icin ayri ayri;
+#                           kaynak = crates/kama-contracts). F1–F5: AD duzeyi (metot/tip var mi).
+#                           F6–F11: BICIM duzeyi — adlar ayni kalirken variant kumesi, variant'in tasidigi
+#                           deger sayisi, struct alan adi ya da metot imzasi degisirse → 1 (nedeniyle)
 #   G. Hedef parametresi  — gecersiz/eksik hedef → 2 · mevcut olmayan hedef → 3 · mock → 0
 #   H. Kategori sizintisi — --target mock, real-adapter ikilisini KOSMAZ
 #   I. Kanit enflasyonu   — tek hedef varken satir 'implemented' beyan edilirse → 1
@@ -299,6 +301,43 @@ expect 0 "F4 S3 bozulmamis kaynak → 0" -- \
 # (kapinin "tek dosyaya bakip yesil donme" tuzagina dusmedigini gosterir).
 expect 1 "F5 S1 handles.rs'siz → 1 (ortak tipler eksik)" -- \
   python3 "$DRIFT" --seam s1 --mirror "$CONTRACTS/s1.rs" --quiet
+
+# BICIM (H): adlar AYNI kalir, bicim degisir. Ad-duzeyi karsilastirma bunlarin hicbirini gormezdi.
+# drift_shape <ad> <seam> <dosya> <eski> <yeni> <ciktida beklenen dizge>
+drift_shape() {
+  local name="$1" seam="$2" file="$3" old="$4" new="$5" reason="$6" other
+  OLD="$old" NEW="$new" python3 - "$CONTRACTS/$file" "$TMPD/shape-$file" <<'PY'
+import os, sys, pathlib
+src = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+old, new = os.environ["OLD"], os.environ["NEW"]
+assert src.count(old) == 1, f"bicim mutasyonu capasi {src.count(old)} kez bulundu: {old!r}"
+pathlib.Path(sys.argv[2]).write_text(src.replace(old, new), encoding="utf-8")
+PY
+  local mirrors=()
+  for other in "${seam}.rs" handles.rs; do
+    if [[ "$other" == "$file" ]]; then mirrors+=(--mirror "$TMPD/shape-$file"); else mirrors+=(--mirror "$CONTRACTS/$other"); fi
+  done
+  expect 1 "$name → 1" -- python3 "$DRIFT" --seam "$seam" "${mirrors[@]}" --quiet
+  expect_reason "$name: neden" "$reason"
+}
+drift_shape "F6 enum'a variant eklenince (CloseReason + Renewed)" s1 handles.rs \
+  $'pub enum CloseReason {\n' $'pub enum CloseReason {\n    Renewed,\n' \
+  "enum CloseReason bicimi ayrisiyor: yalniz spec'te [], yalniz kaynakta ['Renewed']"
+drift_shape "F7 variant'in tasidigi deger sayisi degisince (Ready'den PeerRef dusunce)" s1 s1.rs \
+  '    Ready(SessionHandle, PeerRef),' '    Ready(SessionHandle),' \
+  "enum SessionEvent bicimi ayrisiyor"
+drift_shape "F8 metot imzasi degisince (cancel)" s1 s1.rs \
+  '    fn cancel(&mut self, ticket: ConnectTicket);' '    fn cancel(&mut self, ticket: u64) -> bool;' \
+  "KamaTransport::cancel imzasi ayrisiyor"
+drift_shape "F9 struct alani yeniden adlandirilinca (TransportCapabilities)" s1 s1.rs \
+  '    pub max_plaintext_unit_bytes: u32,' '    pub max_unit_bytes: u32,' \
+  "struct TransportCapabilities alanlari ayrisiyor"
+drift_shape "F10 S3 enum'una variant eklenince (SessionEvent + Extra)" s3 s3.rs \
+  $'pub enum SessionEvent {\n' $'pub enum SessionEvent {\n    Extra,\n' \
+  "enum SessionEvent bicimi ayrisiyor: yalniz spec'te [], yalniz kaynakta ['Extra']"
+drift_shape "F11 S3 struct-variant alani yeniden adlandirilinca (Initiate.early_unit)" s3 s3.rs \
+  '        early_unit: Option<Vec<u8>>,' '        first_message: Option<Vec<u8>>,' \
+  "enum SessionCommand bicimi ayrisiyor"
 
 printf '\n'
 printf 'oz-test: %d gecti, %d kaldi\n' "$pass" "$fail"

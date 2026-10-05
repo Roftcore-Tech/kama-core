@@ -23,6 +23,10 @@ Birden cok kez verilebilir (dosyalar birlestirilir) — ortak tipler `handles.rs
      ("Kanitladigi" hucresinde "statik" yazan satirlar); `kind` o metinle ayni olmak zorundadir.
      `proof_rules` girdileri scripts/ci/layer_check.py'de gecen kural kimlikleri olmalidir. Bu,
      "boyle bir kural VAR" denetimidir; kuralin o satiri gercekten kanitladigini OLCMEZ (inceleme isi).
+  H. BICIM [2026-10-05]: §1'de bildirilen her enum'un VARIANT kumesi ve her variant'in bicimi (birim /
+     tuple eleman sayisi / struct alan adlari), alanli her struct'in ALAN ADLARI ve her trait metodunun
+     IMZASI (bosluklar atilarak, tipleriyle) kaynaktakiyle aynidir. Karsilastirilmayanlar: variant ve
+     struct ALAN TIPLERI (spec `Bytes` der, kaynak `Vec<u8>`), tuple struct'larin ic tipi, derive'lar.
   Ek olarak beyan dosyasinin kendi tutarliligi (tekrarsiz kimlik, gecerli durum, ratchet tabani).
 
 --seam s3 (KM-SEAM-TC-001) — DENETLENEN ESITLIKLER:
@@ -30,6 +34,7 @@ Birden cok kez verilebilir (dosyalar birlestirilir) — ortak tipler `handles.rs
   B. §1'de bildirilen tipler            ⊆ kaynaktaki tipler
   D. §6 tablosundaki her H-* satirinin noise-seam-coverage.json'da en az bir satiri var
      (`H-X` ya da alt satir `H-X/…`) ve beyandaki her satir §6'daki bir satira ait
+  H. BICIM: --seam s1'deki H ile ayni (enum variant'lari, struct alan adlari, metot imzalari)
 
 Cikis kodu: 0 = ayrisma yok · 1 = drift (kapi kirmizi) · 2 = ortam/kullanim hatasi.
 """
@@ -189,6 +194,137 @@ def mirror_api(mirror_text: str) -> tuple[str | None, set[str], set[str], set[st
     return trait_name, methods, types, variants
 
 
+# ── bicim karsilastirmasi (variant / alan / imza) ────────────────────────────────────────────
+
+
+def strip_code_comments(code: str) -> str:
+    """Blok ve satir yorumlari ile oznitelikleri atar. Spec bloklarinda ustu cizili eski metin yorum
+    icinde durur (`/* ~~ConnectFailed(...)~~ */`, `// ~~...~~`); o yuzden yorumlar bicime GIRMEZ."""
+    code = re.sub(r"/\*.*?\*/", " ", code, flags=re.S)
+    code = re.sub(r"//[^\n]*", "", code)
+    return re.sub(r"#!?\[[^\]\n]*\]", " ", code)
+
+
+def split_top(s: str) -> list[str]:
+    """En dis duzeydeki virgullerden boler (parantez / suslu / koseli / acili ayrac ici bolunmez)."""
+    out, depth, cur = [], 0, []
+    for ch in s:
+        if ch in "({[<":
+            depth += 1
+        elif ch in ")}]>":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    out.append("".join(cur))
+    return [x.strip() for x in out if x.strip()]
+
+
+def brace_body(code: str, open_at: int) -> str | None:
+    """`open_at` bir `{` karakterinin indeksi; esi olan `}`'a kadarki ic metin (yoksa None)."""
+    depth = 0
+    for i in range(open_at, len(code)):
+        if code[i] == "{":
+            depth += 1
+        elif code[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return code[open_at + 1:i]
+    return None
+
+
+def parse_enums(code: str) -> dict[str, dict[str, tuple]]:
+    """{enum adi: {variant adi: bicim}} — bicim: ("unit",) | ("tuple", n) | ("struct", alan adlari)."""
+    enums: dict[str, dict[str, tuple]] = {}
+    for m in re.finditer(r"\bpub\s+enum\s+(\w+)\s*\{", code):
+        body = brace_body(code, m.end() - 1)
+        if body is None:
+            continue
+        variants: dict[str, tuple] = {}
+        for item in split_top(body):
+            vm = re.match(r"([A-Za-z_]\w*)\s*(.*)$", item, re.S)
+            if not vm:
+                variants[item] = ("?",)
+                continue
+            name, rest = vm.group(1), vm.group(2).strip()
+            if rest.startswith("(") and ")" in rest:
+                variants[name] = ("tuple", len(split_top(rest[1:rest.rindex(")")])))
+            elif rest.startswith("{") and "}" in rest:
+                fields = [f.split(":")[0].strip() for f in split_top(rest[1:rest.rindex("}")])]
+                variants[name] = ("struct", tuple(sorted(fields)))
+            elif not rest:
+                variants[name] = ("unit",)
+            else:
+                variants[name] = ("?", rest)
+        enums[m.group(1)] = variants
+    return enums
+
+
+def parse_structs(code: str) -> dict[str, tuple]:
+    """{struct adi: alan adlari} — yalniz suslu ayracli (alanli) struct'lar."""
+    structs: dict[str, tuple] = {}
+    for m in re.finditer(r"\bpub\s+struct\s+(\w+)\s*\{", code):
+        body = brace_body(code, m.end() - 1)
+        if body is None:
+            continue
+        fields = []
+        for item in split_top(body):
+            fm = re.match(r"(?:pub(?:\([^)]*\))?\s+)?([A-Za-z_]\w*)\s*:", item)
+            if fm:
+                fields.append(fm.group(1))
+        structs[m.group(1)] = tuple(sorted(fields))
+    return structs
+
+
+def parse_signatures(code: str) -> dict[str, dict[str, str]]:
+    """{trait adi: {metot adi: bosluksuz imza}} — imza = "(parametreler)->donus"."""
+    traits: dict[str, dict[str, str]] = {}
+    for m in re.finditer(r"\bpub\s+trait\s+(\w+)[^{;]*\{", code):
+        body = brace_body(code, m.end() - 1)
+        if body is None:
+            continue
+        sigs: dict[str, str] = {}
+        for fm in re.finditer(r"\bfn\s+(\w+)\s*\((.*?)\)\s*(->\s*[^;{]+?)?\s*;", body, re.S):
+            sig = re.sub(r"\s+", "", f"({fm.group(2)}){fm.group(3) or ''}").replace(",)", ")")
+            sigs[fm.group(1)] = sig
+        traits[m.group(1)] = sigs
+    return traits
+
+
+def check_shapes(spec_text: str, mirror_text: str, say) -> None:
+    """H — §1 bloklarindaki enum / struct / metot BICIMLERI kaynaktakiyle ayni mi."""
+    spec_code = strip_code_comments("\n".join(all_fences(section(spec_text, "1."))))
+    src_code = strip_code_comments(mirror_text)
+    s_enums, m_enums = parse_enums(spec_code), parse_enums(src_code)
+    s_structs, m_structs = parse_structs(spec_code), parse_structs(src_code)
+    s_sigs, m_sigs = parse_signatures(spec_code), parse_signatures(src_code)
+    say(f"  bicim : {len(s_enums)} enum · {len(s_structs)} alanli struct · "
+        f"{sum(len(v) for v in s_sigs.values())} metot imzasi karsilastirildi")
+    if not s_enums or not s_sigs:
+        bad("§1 bloklarindan enum ya da metot imzasi okunamadi — bicim denetimi vakumda")
+    for name, s_var in sorted(s_enums.items()):
+        m_var = m_enums.get(name)
+        if m_var is None:
+            continue  # tipin hic olmamasi B'de raporlanir
+        only_spec, only_src = sorted(set(s_var) - set(m_var)), sorted(set(m_var) - set(s_var))
+        differ = sorted(v for v in set(s_var) & set(m_var) if s_var[v] != m_var[v])
+        if only_spec or only_src or differ:
+            detail = "; ".join(f"{v}: spec {s_var[v]} / kaynak {m_var[v]}" for v in differ)
+            bad(f"§1 enum {name} bicimi ayrisiyor: yalniz spec'te {only_spec}, yalniz kaynakta {only_src}"
+                + (f", bicimi farkli [{detail}]" if differ else ""))
+    for name, s_fields in sorted(s_structs.items()):
+        m_fields = m_structs.get(name)
+        if m_fields is not None and m_fields != s_fields:
+            bad(f"§1 struct {name} alanlari ayrisiyor: spec {list(s_fields)}, kaynak {list(m_fields)}")
+    for trait, sigs in sorted(s_sigs.items()):
+        for method, sig in sorted(sigs.items()):
+            other = m_sigs.get(trait, {}).get(method)
+            if other is not None and other != sig:
+                bad(f"§1 {trait}::{method} imzasi ayrisiyor: spec `{sig}`, kaynak `{other}`")
+
+
 # ── S3 (KM-SEAM-TC-001) ──────────────────────────────────────────────────────────────────────
 
 
@@ -241,6 +377,9 @@ def check_s3(spec_text: str, mirror_text: str, cov: dict, say) -> None:
     extra = m_types - s_types
     if extra:
         say(f"  kaynak-ek tipler (beklenen; hata tipi/ortak tutamaclar): {sorted(extra)}")
+
+    # H — bicim
+    check_shapes(spec_text, mirror_text, say)
 
     # D — §6 satirlari ↔ beyan (alt satirlar `H-X/…` serbest)
     rows = cov.get("rows")
@@ -341,6 +480,9 @@ def main() -> int:
     if s_errs != m_errs:
         bad(f"§3 TransportError kumesi ayrisiyor: yalniz spec'te {sorted(s_errs - m_errs)}, "
             f"yalniz kaynakta {sorted(m_errs - s_errs)}")
+
+    # H — bicim
+    check_shapes(spec_text, mirror_text, say)
 
     # D — §6 satirlari ↔ beyan
     rows = cov.get("rows")
