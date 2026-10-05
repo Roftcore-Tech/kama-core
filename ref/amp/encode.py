@@ -15,6 +15,8 @@ Kullanım:
   · TEXT.msg_id ve RECEIPT.ref_msg_id u64 → u32 (oturum SESSION_MAX_AGE = 7 günde yenilendiği için yeter).
   · TEXT.sent_at_ms TELDEN ÇIKTI (alıcı kendi zamanını damgalar).
   Etkilenen vakalar yeniden üretildi; diğerlerinin baytları değişmedi.
+  · Çıktı KANONİK biçimde yazılır (özgün sürüm ensure_ascii=False ve sırasız `input` yazıyordu; CI'daki
+    `validate.py --canonical` kapısı SV-011 ile reddediyordu). Yalnız biçim; vaka içerikleri aynı.
 """
 
 from __future__ import annotations
@@ -387,8 +389,24 @@ def build_negative() -> dict:
     }
 
 
+def _sorted_deep(v):
+    if isinstance(v, dict):
+        return {k: _sorted_deep(v[k]) for k in sorted(v)}
+    if isinstance(v, list):
+        return [_sorted_deep(x) for x in v]
+    return v
+
+
 def render(doc: dict) -> str:
-    return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+    """Kanonik biçim (vectors/README "Kanonik serileştirme"; `ref/crypto/gen_vectors.py` ile aynı kural):
+    üst düzey ve vaka anahtarları SCHEMA.json bildirim sırasında (üretici zaten o sırayla kurar), `input`
+    haritaları özyinelemeli leksikografik; 2 boşluk girinti; ASCII kaçışlı.
+    `scripts/vectors/validate.py --canonical` bu çıktıyı AYNEN kabul etmelidir (CI `vectors` job'u)."""
+    out = dict(doc)
+    out["cases"] = [
+        {k: (_sorted_deep(v) if k == "input" else v) for k, v in c.items()} for c in doc["cases"]
+    ]
+    return json.dumps(out, indent=2, ensure_ascii=True) + "\n"
 
 
 def main(argv: list[str]) -> int:
