@@ -45,9 +45,9 @@ TRIGGER_PATHS=(
   'vectors/'
   'ref/'                              # bağımsız referanslar (ref/crypto, ref/amp)
   'crates/kama-app/'                  # Application crate'i
-  'crates/kama-contracts/'            # [EKLENDİ 2026-10-05] S1/S3 sözleşme tipleri (B1); önceki yeri seam.rs'ti
+  'crates/kama-contracts/'            # [EKLENDİ 2026-10-05] S1/S3 sözleşme tipleri (B1). Önceki yerleri: S3 → client-core seam.rs, S1 → kama-app lib.rs
   'crates/kama-noise-wire/'
-  'crates/client-core/src/seam.rs'    # IdentitySeam + entropi enjeksiyonu (sözleşme tipleri artık kama-contracts'ta)
+  'crates/client-core/src/seam.rs'    # IdentitySeam + entropi enjeksiyonu (S3 sözleşme tipleri artık kama-contracts'ta)
   'crates/kama-vectors/'
   'crates/ccr-codec/'                 # [EKLENDİ] ADR-05: wire encoding tek kaynağı
   'crates/kama-fec-codec/'            # [EKLENDİ] vektör tüketicisi

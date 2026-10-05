@@ -338,6 +338,29 @@ drift_shape "F10 S3 enum'una variant eklenince (SessionEvent + Extra)" s3 s3.rs 
 drift_shape "F11 S3 struct-variant alani yeniden adlandirilinca (Initiate.early_unit)" s3 s3.rs \
   '        early_unit: Option<Vec<u8>>,' '        first_message: Option<Vec<u8>>,' \
   "enum SessionCommand bicimi ayrisiyor"
+# [2026-10-06] Inceleme bulgulari. Ayni mutasyonlar duzeltmeden onceki betige karsi olculdu:
+# F12/F13/F14/F16 YESIL donuyordu (sessiz atlama); F15 kirmiziydi ama yanlis nedenle ("yalniz spec'te
+# ['close']" — jenerik metot hic gorulmuyordu); F17 zaten yakalaniyordu (burada regresyon korumasi).
+drift_shape "F12 metot varsayilan govde alip imzasi degisince (cancel)" s1 s1.rs \
+  '    fn cancel(&mut self, ticket: ConnectTicket);' '    fn cancel(&mut self, ticket: u64) -> bool { false }' \
+  "KamaTransport::cancel imzasi ayrisiyor"
+drift_shape "F13 alanli struct tuple struct'a donusunce (Delivered)" s1 s1.rs \
+  $'pub struct Delivered {\n    pub session: SessionHandle,\n    pub unit: UnitBytes,\n}' \
+  'pub struct Delivered(pub SessionHandle, pub UnitBytes);' \
+  "Delivered turu ayrisiyor: spec \`struct{}\`, kaynak \`struct()\`"
+drift_shape "F14 enum struct'a donusunce (ConnectPhase)" s1 s1.rs \
+  'pub enum ConnectPhase {' $'pub struct ConnectPhase(u8);\npub enum ConnectPhaseEski {' \
+  "ConnectPhase turu ayrisiyor: spec \`enum\`, kaynak \`struct()\`"
+drift_shape "F15 metot jenerik olunca (close)" s1 s1.rs \
+  '    fn close(&mut self, session: SessionHandle);' '    fn close<T: Into<SessionHandle>>(&mut self, session: T);' \
+  "KamaTransport::close imzasi ayrisiyor"
+drift_shape "F16 belge yorumundaki /* sonraki metodu gizleyemez (cancel)" s1 s1.rs \
+  '    fn cancel(&mut self, ticket: ConnectTicket);' \
+  $'    /// not: /* kapanmamis\n    fn cancel(&mut self, ticket: u64);\n    // */' \
+  "KamaTransport::cancel imzasi ayrisiyor"
+drift_shape "F17 S3 metodu where kosulu alinca (poll_event)" s3 s3.rs \
+  '    fn poll_event(&mut self) -> Option<SessionEvent>;' '    fn poll_event(&mut self) -> Option<SessionEvent> where Self: Sized;' \
+  "SessionControl::poll_event imzasi ayrisiyor"
 
 printf '\n'
 printf 'oz-test: %d gecti, %d kaldi\n' "$pass" "$fail"

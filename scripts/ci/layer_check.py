@@ -26,7 +26,8 @@ KM-SEAM-TC-001 §6 H-SPLIT):
   C3  `kama-noise-wire` için YASAK (doğrudan VE geçişli): kama-app, client-core.
   C4  `client-core` için YASAK (doğrudan VE geçişli): kama-app.
   C5  `kama-app`, `kama-contracts`'ın `test-util` özelliğini AÇAMAZ — ne bağımlılık satırında (hiçbir
-      bağımlılık türünde) ne de kendi `[features]` tablosundan ileterek (`x = ["kama-contracts/test-util"]`)
+      bağımlılık türünde) ne de kendi `[features]` tablosundan ileterek (`x = ["kama-contracts/test-util"]`;
+      bağımlılık yeniden adlandırılmışsa yerel adıyla: `x = ["contracts/test-util"]`)
       — ve kaynağında sahteler için açılan ham erişimleri (`*_for_mock`) ÇAĞIRAMAZ.
       SINIR: `kama-app`'in grafiğindeki BAŞKA bir crate'in aynı özelliği açması (özellik birleşimi)
       buradan görülmez; o yol için C2 katman crate'lerini zaten yasaklar.
@@ -179,8 +180,12 @@ def check(metadata: dict, sources: dict[str, str]) -> list[str]:
             kind = dep.get("kind") or "normal"
             findings.append(f"C5 {APP} → {CONTRACTS} ({kind} bağımlılık) `{TEST_UTIL}` özelliğini açıyor: "
                             f"Application sahte erişimlerini göremez")
-    # … ya da kendi [features] tablosundan iletiyor: bağımlılık satırında görünmez.
-    forwards = {f"{CONTRACTS}/{TEST_UTIL}", f"{CONTRACTS}?/{TEST_UTIL}"}
+    # … ya da kendi [features] tablosundan iletiyor: bağımlılık satırında görünmez. Özellik tablosu
+    # bağımlılığı manifest'teki YEREL adıyla anar (`contracts = { package = "kama-contracts" }` ise
+    # `contracts/test-util`), o yüzden yeniden adlandırmalar da sayılır.
+    local_names = {CONTRACTS} | {dep.get("rename") or dep["name"]
+                                 for dep in app["dependencies"] if dep["name"] == CONTRACTS}
+    forwards = {f"{name}{weak}/{TEST_UTIL}" for name in local_names for weak in ("", "?")}
     for feature, enables in sorted((app.get("features") or {}).items()):
         for item in enables:
             if item in forwards:
@@ -246,7 +251,8 @@ def real_inputs(root: Path) -> tuple[dict, dict[str, str]]:
 
 
 # ── öz-test ──────────────────────────────────────────────────────────────────────────────────
-def _md(deps_of_app, edges, *, dev_edges=None, contract_deps=(), app_contract_features=None, app_features=None):
+def _md(deps_of_app, edges, *, dev_edges=None, contract_deps=(), app_contract_features=None,
+        app_contract_rename=None, app_features=None):
     """Sentetik metadata. `edges`: normal kenarlar; `dev_edges`: {crate: [dev-bağımlılıklar]}.
 
     Denetlenen dört crate her zaman vardır (vakum koruması gerçek koşuda ayrıca sınanır).
@@ -262,7 +268,7 @@ def _md(deps_of_app, edges, *, dev_edges=None, contract_deps=(), app_contract_fe
             out = [{"name": d, "kind": k} for d, k in deps_of_app]
             if app_contract_features is not None:
                 kind, feats = app_contract_features
-                out.append({"name": CONTRACTS, "kind": kind, "features": list(feats)})
+                out.append({"name": CONTRACTS, "kind": kind, "features": list(feats), "rename": app_contract_rename})
             return out
         if n == CONTRACTS:
             return [{"name": d, "kind": None} for d in contract_deps]
@@ -321,6 +327,15 @@ def selftest() -> int:
          _md([], ok_graph, app_features={"mocks": ["kama-contracts/test-util"]}), clean_src, ["C5"]),
         ("C5 app test-util'i zayıf bağımlılık biçimiyle iletiyor (dep?/feat)",
          _md([], ok_graph, app_features={"default": [], "mocks": ["kama-contracts?/test-util"]}), clean_src, ["C5"]),
+        ("C5 app test-util'i YENİDEN ADLANDIRILMIŞ bağımlılık üzerinden iletiyor",
+         _md([], ok_graph, app_contract_features=(None, []), app_contract_rename="contracts",
+             app_features={"mocks": ["contracts/test-util"]}), clean_src, ["C5"]),
+        ("C5 yeniden adlandırılmış bağımlılık, zayıf biçim (dep?/feat)",
+         _md([], ok_graph, app_contract_features=("dev", []), app_contract_rename="contracts",
+             app_features={"mocks": ["contracts?/test-util"]}), clean_src, ["C5"]),
+        ("C5 DEĞİL: yeniden adlandırılmış bağımlılık, özellik iletilmiyor",
+         _md([], ok_graph, app_contract_features=(None, []), app_contract_rename="contracts",
+             app_features={"mocks": ["contracts/other", "baska/test-util"]}), clean_src, []),
         ("C5 DEĞİL: app'in özellik tablosu başka şeyler iletiyor",
          _md([], ok_graph, app_features={"default": ["std"], "std": [], "x": ["other/test-util", "kama-contracts/other"]}),
          clean_src, []),
