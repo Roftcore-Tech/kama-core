@@ -28,6 +28,7 @@ pub mod handle_assign;
 pub mod hub_sim;
 pub mod init_flight;
 pub mod inner;
+pub mod kdf;
 pub mod legacy;
 pub mod opened;
 pub mod outer;
