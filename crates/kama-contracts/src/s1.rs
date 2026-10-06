@@ -37,6 +37,12 @@ pub type UnitBytes = Vec<u8>;
 pub struct TransportCapabilities {
     pub max_plaintext_unit_bytes: u32,
     pub preferred_plaintext_unit_bytes: u32,
+    /// [2026-10-06 F0.2(iv)] `early_unit` tavanı (K6): Crypto `conservative_limits`'ten INIT zarfı
+    /// için türetilir. Aşan `early_unit` → `connect()` `UnitTooLarge`.
+    pub max_early_unit_bytes: u32,
+    /// [2026-10-06 F0.2(iv)] Ürün builder'ı `false`'u reddeder. Test yapılandırmasında recovery
+    /// OFF iken `DeliveryPolicy::Reliable` best-effort'tur ve `reliable = false` ile BEYAN edilir.
+    pub reliable: bool,
 }
 
 /// §1 K3 — `bytes` bir `AppMessageRecord`'dur; Transport onu yapısal işler, semantik olarak asla.
@@ -104,7 +110,9 @@ pub enum ConnectPhase {
     LongOutage,
 }
 
-/// §1 K2 / KARAR-1 — idempotent `connect`; olay ÜRETMEZ.
+/// §1 K2 / KARAR-1 — idempotent `connect`: TEKRAR eden `connect` olay üretmez (duplicate
+/// Ready/Measuring yok); yeni niyetin `Pending(ticket)`'ı F0.2(ii) gereği
+/// `ConnectProgress(ticket, Measuring)` üretir. [2026-10-06]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectResult {
     /// Aktif oturum zaten var.
@@ -162,8 +170,12 @@ pub trait KamaTransport {
 
     /// İdempotent (KARAR-1). `early_unit` yalnız YENİ handshake yaratılırken tüketilir (K6).
     ///
+    /// [2026-10-06 F0.2(ii)] `Pending(ticket)` döndüğü anda `ConnectProgress(ticket, Measuring)`
+    /// kuyruğa girer; faz değişince yeni olay; aynı faz tekrar yayınlanmaz (§4).
+    ///
     /// # Errors
-    /// `EarlyUnitConflict` (aktif/pending peer'a `Some(_)`), `UnitTooLarge`, `Backpressure`.
+    /// `EarlyUnitConflict` (aktif/pending peer'a `Some(_)`), `UnitTooLarge` (`bytes.len() >`
+    /// `max_early_unit_bytes`), `Backpressure`.
     fn connect(
         &mut self,
         peer: PeerRef,
@@ -171,6 +183,10 @@ pub trait KamaTransport {
     ) -> Result<ConnectResult, TransportError>;
 
     /// `Ok(())` = kuyruğa alındı; teslim DEĞİL (K8).
+    ///
+    /// [2026-10-06 F0.2(i)] Eski tutamaç: `Ready(h')` ile `Closed(h)` olayının `poll_event` ile
+    /// OKUNMASI arasında `send(h)` → `SessionSuperseded`; `Closed(h)` okunduktan sonra →
+    /// `UnknownSession`. Application'ın `close(h)` çağırması GEREKMEZ (§3).
     ///
     /// # Errors
     /// `UnknownSession`, `SessionSuperseded`, `UnitTooLarge`, `Backpressure`, `DeadlineExpired`.
@@ -185,6 +201,9 @@ pub trait KamaTransport {
 
     fn poll_event(&mut self) -> Option<SessionEvent>;
 
+    /// [2026-10-06 F0.2(iii)] Senkron döner (hata dönmez) ve tam BİR `Closed(h, UserClosed)`
+    /// olayı üretir; her oturum sonu tam bir `Closed` olayı. Bilinmeyen, zaten kapanmış
+    /// (`Closed`'ı kuyrukta ya da okunmuş) ya da supersede edilmiş tutamaçta olay ÜRETMEZ (§4).
     fn close(&mut self, session: SessionHandle);
 
     /// Bekleyen niyetten TEK çıkış: `ConnectAbandoned(ticket, Cancelled)` üretir; `early_unit`

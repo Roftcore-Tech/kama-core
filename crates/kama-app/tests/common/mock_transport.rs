@@ -33,15 +33,30 @@
 //!   (H-PROGRESS / H-CANCEL), sahte RESPONSE enjeksiyonu (H-SILENT-REJECT), kayıp enjeksiyonu +
 //!   recovery anahtarı (H-APP-RETRY-0), sınırlı kuyruklar (typed `Backpressure`).
 //!
+//! # S1 F0.2 hükümleri (2026-10-06)
+//!
+//! * (i) eski tutamaç: `Ready(h')` ile `Closed(h)`'nin OKUNMASI arasında `send(h)` →
+//!   `SessionSuperseded`; okunduktan sonra `UnknownSession` (yukarıdaki geçiş kuralı).
+//! * (ii) `connect()` yeni `Pending(ticket)` üretince HER DURUMDA önce `ConnectProgress(ticket,
+//!   Measuring)`; link kapalıysa hemen ardından `ConnectProgress(ticket, Suspended)` (faz değişti).
+//!   Aynı faz tekrar yayınlanmaz (`set_link` aynı durumda no-op; idempotent `connect` olaysız).
+//! * (iii) `close(h)`: aktif tutamaçta tam bir `Closed(h, UserClosed)`; bilinmeyen, zaten kapanmış
+//!   ya da supersede edilmiş tutamaçta HİÇBİR olay (ve hata yok). Supersede edilmiş tutamaçta
+//!   `close(h)` SAF no-op'tur: `Closed(h, Superseded)` okunana kadar (i) korunur
+//!   (`SessionSuperseded`), temizlik `poll_event`'teki `forget(h)`'tadır.
+//! * (iv) `early_unit` için AYRI sınır: `capabilities.max_early_unit_bytes` (K6); `reliable` alanı
+//!   yalnız TAŞINIR (sahte onu okumaz; "recovery" anahtarı ondan bağımsızdır).
+//!
 //! # Sahtenin MODELLEMEDİĞİ
 //!
-//! Provisional supersession (bilinen eşten yeni-sayaçlı INIT) ve glare · `LongOutage` fazı ·
-//! `DeadlineBounded` süresinin dolması · sırasız/duplicate teslim ENJEKSİYONU (§7 sayar; yok) ·
-//! gerçek kayıp/kurtarma (buradaki "recovery" bir anahtardır, ARQ/FEC değil) · prob backoff'u ve
-//! jitter'ı (sabit aralık) · `early_unit` için AYRI boyut sınırı (K6 `max_early_unit_bytes`;
-//! sözleşme tipinde böyle bir alan yok, sahte `max_plaintext_unit_bytes` uygular) · AĞ: link
-//! durumu yalnız prob emisyonunu ve `ConnectProgress` olaylarını etkiler — link yokken de `pump()`
-//! handshake tamamlar ve `send` teslim eder. Bunlar gerçek hedefin işidir.
+//! Provisional supersession'ın onay-öncesi dönemi (bilinen eşten yeni-sayaçlı INIT'in ONAYDAN
+//! önce olaysızlığı; N_g/T_g yalnız-alım drain), bayat INIT, duplicate INIT ve glare — onay anı
+//! [`MockTransport::inject_peer_supersession`] çağrısıdır, olay sırası oradan itibaren modellenir
+//! (F0.4) · `LongOutage` fazı · `DeadlineBounded` süresinin dolması · sırasız/duplicate teslim
+//! ENJEKSİYONU (§7 sayar; yok) · gerçek kayıp/kurtarma (buradaki "recovery" bir anahtardır,
+//! ARQ/FEC değil) · prob backoff'u ve jitter'ı (sabit aralık) · AĞ: link durumu yalnız prob
+//! emisyonunu ve `ConnectProgress` olaylarını etkiler — link yokken de `pump()` handshake tamamlar
+//! ve `send` teslim eder. Bunlar gerçek hedefin işidir.
 //!
 //! # Sahteye ÖZGÜ davranış (S1'de karşılığı yok)
 //!
@@ -277,13 +292,30 @@ impl MockTransport {
     /// # Panics
     /// Session bilinmiyorsa ya da zaten supersede edilmişse.
     pub fn complete_renew(&mut self, old: SessionHandle) -> SessionHandle {
+        self.supersede(old, "complete_renew")
+    }
+
+    /// Peer supersession ONAYI (S1 K7 provisional kuralı, DR-CONNECT-1 H6): bilinen eşten
+    /// onaylanmış yeni INIT — `RenewRequired` OLMADAN `Ready(h')` → `Closed(h, Superseded)`.
+    /// Onay-öncesi (provisional) dönem, bayat/duplicate INIT ve glare modellenmez: onay anı bu
+    /// çağrıdır. Gövde cutover ile aynıdır (S1: Renew ile peer-restart aynı yoldur). [F0.4]
+    ///
+    /// # Panics
+    /// Session bilinmiyorsa ya da zaten supersede edilmişse.
+    pub fn inject_peer_supersession(&mut self, old: SessionHandle) -> SessionHandle {
+        self.supersede(old, "inject_peer_supersession")
+    }
+
+    /// Cutover ve peer supersession'ın ortak gövdesi: yeni tutamaç aktif, eski `superseded`,
+    /// `Ready(yeni)` sonra `Closed(eski, Superseded)`. `RenewRequired` ön koşulu YOKTUR.
+    fn supersede(&mut self, old: SessionHandle, who: &str) -> SessionHandle {
         let peer = *self
             .session_peer
             .get(&old)
-            .expect("complete_renew: bilinmeyen session");
+            .unwrap_or_else(|| panic!("{who}: bilinmeyen session"));
         assert!(
             !self.superseded.contains(&old),
-            "complete_renew: session zaten supersede edilmiş"
+            "{who}: session zaten supersede edilmiş"
         );
         let new_handle = SessionHandle::from_raw(self.fresh_id());
         self.active_by_peer.insert(peer, new_handle);
@@ -388,8 +420,9 @@ impl KamaTransport for MockTransport {
         {
             return Err(TransportError::Backpressure);
         }
+        // K6: `early_unit` sınırı `max_early_unit_bytes`'tır (INIT zarfı), `max_plaintext` değil.
         if let Some(unit) = &early_unit {
-            if unit.bytes.len() > self.capabilities.max_plaintext_unit_bytes as usize {
+            if unit.bytes.len() > self.capabilities.max_early_unit_bytes as usize {
                 return Err(TransportError::UnitTooLarge);
             }
         }
@@ -399,8 +432,13 @@ impl KamaTransport for MockTransport {
         if let Some(unit) = early_unit {
             self.pending_early.insert(ticket, unit.bytes);
         }
+        // F0.2(ii): Pending döndüğü anda ilk olay `Measuring`.
+        self.push_event(SessionEvent::ConnectProgress(
+            ticket,
+            ConnectPhase::Measuring,
+        ));
         if !self.link_up {
-            // Link yokken açılan niyet: prob yok, UI "ağ yok, bekliyor" görsün.
+            // Link yokken açılan niyet: faz hemen değişir — prob yok, UI "ağ yok, bekliyor" görsün.
             self.push_event(SessionEvent::ConnectProgress(
                 ticket,
                 ConnectPhase::Suspended,
@@ -476,17 +514,26 @@ impl KamaTransport for MockTransport {
         Some(ev)
     }
 
-    /// Tutamacı tamamen unutur (`UnknownSession`). Olay ÜRETMEZ: S1, Application'ın kendi `close()`
-    /// çağrısının bir `Closed` olayı doğurup doğurmadığını söylemiyor.
+    /// S1 §4 F0.2(iii): senkron döner, hata vermez. Aktif tutamaçta tutamacı unutur
+    /// (`UnknownSession`) ve tam BİR `Closed(h, UserClosed)` üretir. Bilinmeyen / zaten kapanmış
+    /// (`Closed`'ı kuyrukta ya da okunmuş) / supersede edilmiş tutamaçta HİÇBİR olay: supersede
+    /// edilmişin `Closed(h, Superseded)`'ı zaten kuyruktadır (ya da düştü); ikinci `Closed` yok.
+    ///
+    /// Supersede edilmiş tutamaçta SAF no-op: state'e dokunulmaz, böylece `Closed(h, Superseded)`
+    /// okunana kadar `send(h)` → `SessionSuperseded` korunur (F0.2(i)); temizlik `poll_event`'teki
+    /// `forget(h)`'tadır. Eşin YENİ aktif tutamacına da dokunulmaz.
     fn close(&mut self, session: SessionHandle) {
-        if let Some(peer) = self.session_peer.remove(&session) {
-            // Yalnız bu handle o peer'in HÂLÂ aktif handle'ıysa eşlemeyi temizle — supersede
-            // edilmiş eski bir handle kapatılırken peer'in YENİ aktif handle'ını silme.
-            if self.active_by_peer.get(&peer) == Some(&session) {
-                self.active_by_peer.remove(&peer);
-            }
+        if self.superseded.contains(&session) {
+            return;
         }
-        self.superseded.remove(&session);
+        let Some(peer) = self.session_peer.remove(&session) else {
+            return;
+        };
+        // Supersede edilmemiş ve bilinen tutamaç = eşin aktif tutamacı; eşlemeyi temizle.
+        if self.active_by_peer.get(&peer) == Some(&session) {
+            self.active_by_peer.remove(&peer);
+        }
+        self.push_event(SessionEvent::Closed(session, CloseReason::UserClosed));
     }
 
     /// DR-CONNECT-1 H9 (§4): yalnız BEKLEYEN niyet iptal edilir; `early_unit` teslim EDİLMEZ; ticket

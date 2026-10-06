@@ -10,8 +10,9 @@
 //! Sınanan sahte `crates/kama-app/tests/common/mock_transport.rs` içindeki `MockTransport`'tur
 //! (ported from feature/app — Hayri): Application'ın geliştirme sahtesiyle AYNI dosya, buraya
 //! `#[path]` ile alınır. KM-SEAM-AT-001 §7 sahtesinin yokluğu (`GAP-SEAM-MOCK-7`) bu taşımayla
-//! DARALDI, kapanmadı: §7'nin saydığı sırasız/duplicate enjeksiyonu ve supersession senaryosu
-//! sahtede hâlâ yok. Sahtenin MODELLEMEDİKLERİ o dosyanın başında sayılıdır ve burada iddia edilmez.
+//! DARALDI, kapanmadı: §7'nin saydığı sırasız/duplicate enjeksiyonu sahtede hâlâ yok; supersession
+//! senaryosunun OLAY SIRASI sahtede (F0.4 `inject_peer_supersession`), onay-öncesi/bayat/glare
+//! kısmı değil. Sahtenin MODELLEMEDİKLERİ o dosyanın başında sayılıdır ve burada iddia edilmez.
 //!
 //! §6 satırı olan davranışlar (iptal, link olayları, sahte RESPONSE, cutover…) burada TEKRAR
 //! sınanmaz — onlar conformance-core'dadır ve gerçek hedefte de koşacaktır.
@@ -25,10 +26,10 @@ use harness::target::app_mock::{
     MockStats, MAX_EVENTS, MAX_INBOX, MAX_SESSIONS, PENDING_INIT_CAP, PROBE_INTERVAL,
 };
 use harness::target::{
-    MockTarget, MockTransport, SeamTarget, TargetKind, STUB_MAX_PLAINTEXT_UNIT_BYTES,
-    STUB_PREFERRED_PLAINTEXT_UNIT_BYTES,
+    MockTarget, MockTransport, SeamTarget, TargetKind, STUB_MAX_EARLY_UNIT_BYTES,
+    STUB_MAX_PLAINTEXT_UNIT_BYTES, STUB_PREFERRED_PLAINTEXT_UNIT_BYTES, STUB_RELIABLE,
 };
-use kama_contracts::handles::{PeerRef, SessionHandle};
+use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     AbandonReason, CompressionPolicy, ConnectPhase, ConnectResult, ConnectTicket, Delivered,
     DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent, TransportError,
@@ -45,11 +46,26 @@ fn build() -> MockTransport {
     MockTarget::build().expect("mock hedefi kurulmalı")
 }
 
-/// `connect` → `Pending` → (sahteyi sür) → `Ready` olayını okuyarak aktif handle üretir.
+/// `Pending(ticket)` döndükten hemen sonra ilk olay `ConnectProgress(ticket, Measuring)` olmalı
+/// (F0.2(ii)); sahte sürülmeden, kuyruktan doğrudan okunur.
+fn expect_measuring(t: &mut MockTransport, ticket: ConnectTicket) {
+    assert_eq!(
+        t.poll_event(),
+        Some(SessionEvent::ConnectProgress(
+            ticket,
+            ConnectPhase::Measuring
+        )),
+        "Pending döndüğünde ilk olay Measuring olmalı"
+    );
+}
+
+/// `connect` → `Pending` → `Measuring` okunur → (sahteyi sür) → `Ready` olayını okuyarak aktif
+/// handle üretir.
 fn ready(t: &mut MockTransport, peer: PeerRef) -> SessionHandle {
     match t.connect(peer, None).expect("connect reddedilmemeli") {
         ConnectResult::Ready(h) => h,
-        ConnectResult::Pending(_) => {
+        ConnectResult::Pending(ticket) => {
+            expect_measuring(t, ticket);
             t.pump();
             match t.poll_event() {
                 Some(SessionEvent::Ready(h, p)) => {
@@ -62,6 +78,7 @@ fn ready(t: &mut MockTransport, peer: PeerRef) -> SessionHandle {
     }
 }
 
+/// `Pending(ticket)` döndürür; ilk olayı (`Measuring`) OKUMAZ — çağıran kuyruğu kendisi sınar.
 fn pending(t: &mut MockTransport, peer: PeerRef, early: Option<PreparedUnit>) -> ConnectTicket {
     match t.connect(peer, early).expect("connect reddedilmemeli") {
         ConnectResult::Pending(ticket) => ticket,
@@ -201,6 +218,8 @@ fn f4_mock_capabilities_are_declared_placeholders() {
         caps.preferred_plaintext_unit_bytes,
         STUB_PREFERRED_PLAINTEXT_UNIT_BYTES
     );
+    assert_eq!(caps.max_early_unit_bytes, STUB_MAX_EARLY_UNIT_BYTES);
+    assert_eq!(caps.reliable, STUB_RELIABLE);
 }
 
 /// Sahte, uygulanmamış §6 satırını uygulanmış gibi ilan etmez; beyan iyi biçimlidir.
@@ -370,6 +389,7 @@ fn f8_abandon_emits_exactly_the_injected_closed_reason() {
         let mut t = build();
         let peer = harness::test_peer(50 + i as u64);
         let ticket = pending(&mut t, peer, Some(unit(b"erken")));
+        expect_measuring(&mut t, ticket);
 
         t.abandon_connect(&peer, reason);
         assert_eq!(
@@ -398,11 +418,15 @@ fn f8_abandon_emits_exactly_the_injected_closed_reason() {
     }
 }
 
-/// `close()` yalnız kapatılan tutamacı unutturur.
+/// `close()` yalnız kapatılan tutamacı unutturur ve `Closed` olayını S1 F0.2(iii)'e göre üretir.
 ///
 /// Supersede edilmiş ESKİ tutamacı kapatmak, eşin YENİ aktif oturumunu silmemelidir; yoksa
-/// Application cutover'dan sonra eski tutamacı temizlerken yeni oturumunu kaybeder. `close()`'un
-/// bir `Closed` olayı üretip üretmediği burada SINANMAZ: S1 bunu yazmıyor (işaretli açık nokta).
+/// Application cutover'dan sonra eski tutamacı temizlerken yeni oturumunu kaybeder. Supersede
+/// edilmiş tutamaca `close()` İKİNCİ bir `Closed` üretmez (`Closed(old, Superseded)` zaten
+/// kuyruktadır) ve saf no-op'tur: `Closed(old)` okunana kadar `send(old)` → `SessionSuperseded`
+/// (F0.2(i)), okunduktan sonra `UnknownSession`; aktif tutamaca `close()` tam bir
+/// `Closed(h, UserClosed)` üretir. (Sözleşme düzeyi kanıt H-EVENTS'tedir; burada sahtenin kendi
+/// kuyruğu sınanır.)
 #[test]
 fn f9_close_forgets_only_the_closed_handle() {
     let mut t = build();
@@ -412,6 +436,22 @@ fn f9_close_forgets_only_the_closed_handle() {
     let new = t.complete_renew(old);
 
     t.close(old);
+    // F0.2(i): `Closed(old)` henüz OKUNMADI → close(old) saf no-op, `SessionSuperseded` korunur.
+    assert_eq!(
+        t.send(old, unit(b"eski"), DeliveryPolicy::Reliable),
+        Err(TransportError::SessionSuperseded),
+        "supersede edilmiş tutamaca close() Closed okunmadan tutamacı unutturdu"
+    );
+    assert_eq!(
+        drain_events(&mut t),
+        vec![
+            SessionEvent::RenewRequired(old),
+            SessionEvent::Ready(new, peer),
+            SessionEvent::Closed(old, CloseReason::Superseded),
+        ],
+        "supersede edilmiş tutamaca close() ikinci bir Closed üretti"
+    );
+    // `Closed(old)` okundu → artık UnknownSession.
     assert_eq!(
         t.send(old, unit(b"eski"), DeliveryPolicy::Reliable),
         Err(TransportError::UnknownSession)
@@ -423,8 +463,14 @@ fn f9_close_forgets_only_the_closed_handle() {
     );
     assert_eq!(t.send(new, unit(b"yeni"), DeliveryPolicy::Reliable), Ok(()));
 
-    // Aktif tutamacı kapatmak onu unutturur ve eşi yeniden bağlanılabilir kılar.
+    // Aktif tutamacı kapatmak onu unutturur, tam bir Closed(UserClosed) üretir ve eşi yeniden
+    // bağlanılabilir kılar.
     t.close(new);
+    assert_eq!(
+        drain_events(&mut t),
+        vec![SessionEvent::Closed(new, CloseReason::UserClosed)],
+        "aktif tutamaca close() tam bir Closed(UserClosed) üretmeli"
+    );
     assert_eq!(
         t.send(new, unit(b"gec"), DeliveryPolicy::Reliable),
         Err(TransportError::UnknownSession)
@@ -435,12 +481,12 @@ fn f9_close_forgets_only_the_closed_handle() {
     );
 }
 
-/// Link YOKKEN açılan niyet doğduğu anda `Suspended` bildirilir ve prob üretmez.
+/// Link YOKKEN açılan niyet `Measuring`'in hemen ardından `Suspended` bildirir ve prob üretmez.
 ///
 /// H-PROGRESS bekleyen niyetin link GEÇİŞLERİNİ sınar; bu sınama sahtenin ek iddiasını yerinde
-/// tutar: link yokken `connect` eden Application "gönderiliyor" sanmaz. S1 §4 yeni bir niyetin
-/// İLK `ConnectProgress`'inin ne zaman çıkacağını yazmıyor (işaretli açık nokta); sahte, link
-/// varken doğan niyet için olay ÜRETMEZ.
+/// tutar: link yokken `connect` eden Application "gönderiliyor" sanmaz. S1 §4 F0.2(ii)
+/// (2026-10-06): `Pending` döndüğü anda ilk olay `ConnectProgress(ticket, Measuring)`; link
+/// yoksa faz hemen değişir (`Suspended`). Link VARKEN doğan niyet için yalnız `Measuring` çıkar.
 #[test]
 fn f10_intent_born_without_link_is_reported_suspended() {
     const LONG: Duration = Duration::from_secs(60 * 60);
@@ -451,18 +497,24 @@ fn f10_intent_born_without_link_is_reported_suspended() {
     let ticket = pending(&mut t, harness::test_peer(10), None);
     assert_eq!(
         drain_events(&mut t),
-        vec![SessionEvent::ConnectProgress(
-            ticket,
-            ConnectPhase::Suspended
-        )]
+        vec![
+            SessionEvent::ConnectProgress(ticket, ConnectPhase::Measuring),
+            SessionEvent::ConnectProgress(ticket, ConnectPhase::Suspended),
+        ]
     );
     t.advance_clock(LONG);
     assert_eq!(t.stats().probes, probes_before, "link yokken prob çıktı");
 
-    // Karşı durum: link varken doğan niyet için olay yok.
+    // Karşı durum: link varken doğan niyet için yalnız Measuring.
     let mut t = build();
-    let _ticket = pending(&mut t, harness::test_peer(11), None);
-    assert!(t.poll_event().is_none());
+    let ticket = pending(&mut t, harness::test_peer(11), None);
+    assert_eq!(
+        drain_events(&mut t),
+        vec![SessionEvent::ConnectProgress(
+            ticket,
+            ConnectPhase::Measuring
+        )]
+    );
 }
 
 /// Kabul edilmiş `early_unit`, teslim kuyruğu dolu diye DÜŞÜRÜLMEZ.
@@ -479,7 +531,8 @@ fn f11_accepted_early_unit_survives_a_full_inbox() {
     }
 
     let peer = harness::test_peer(13);
-    let _ticket = pending(&mut t, peer, Some(unit(b"erken")));
+    let ticket = pending(&mut t, peer, Some(unit(b"erken")));
+    expect_measuring(&mut t, ticket);
     t.pump(); // handshake tamamlanır; teslim kuyruğu hâlâ dolu
     let h = match t.poll_event() {
         Some(SessionEvent::Ready(h, p)) if p == peer => h,
