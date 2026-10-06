@@ -39,6 +39,13 @@ Birden cok kez verilebilir (dosyalar birlestirilir) — ortak tipler `handles.rs
      S1'de trait basligina sinir eklenmesi (`pub trait KamaTransport: Send {`) A'da "trait yok" diye,
      variant satirinin sonundaki yorum (`NotConnected, // …`) C'de "yalniz spec'te" diye kirmizi verir
      (ikisi de olculdu; kirmizi dogru, neden yanlis).
+     [2026-10-06] yorum/oznitelik ayiklama tek gecisli tarayicidir: dizge icindeki `//`, `/*`, `]`
+     yorum/oznitelik sinirini KAPATMAZ (olculdu: `#[deprecated(note = "… https://…")]` yanlis kirmizi
+     veriyordu — eski iki gecisli hal dizgedeki `//`'i yorum sanip dosya sonuna kadar yutuyordu).
+     [2026-10-06b] Spec §1 bloklarinda ya da kaynakta dosya sonuna kadar ACIK kalan blok yorum / dizge /
+     ham dizge / oznitelik KIRMIZIdir ("kapanmamis … — bicim denetimi kesildi"): acik yapidan sonraki
+     bildirimler ayiklamada yutulur, karsilastirma sessizce daralirdi (olculdu: spec fence'ine kapanmamis
+     `/*` + kaynakta variant ayrismasi → cikis 0). Sessiz atlama iddiasi bu kapiya dayanir.
   Ek olarak beyan dosyasinin kendi tutarliligi (tekrarsiz kimlik, gecerli durum, ratchet tabani).
 
 --seam s3 (KM-SEAM-TC-001) — DENETLENEN ESITLIKLER:
@@ -209,43 +216,141 @@ def mirror_api(mirror_text: str) -> tuple[str | None, set[str], set[str], set[st
 # ── bicim karsilastirmasi (variant / alan / imza) ────────────────────────────────────────────
 
 
+def _is_ident_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def _blank(seg: str) -> str:
+    """Atilan metnin yerine ayni uzunlukta bosluk; satir sonlari korunur (satir/sutun yapisi degismez)."""
+    return "".join("\n" if ch == "\n" else " " for ch in seg)
+
+
 def strip_code_comments(code: str) -> str:
-    """Blok ve satir yorumlari ile oznitelikleri atar. Spec bloklarinda ustu cizili eski metin yorum
-    icinde durur (`/* ~~ConnectFailed(...)~~ */`, `// ~~...~~`); o yuzden yorumlar bicime GIRMEZ."""
-    # TEK gecis: once hangisi basliyorsa o yorumdur. Iki ayri geciste `/// … /* …` satirindaki `/*`,
-    # sonraki bir `*/`'a kadar KODU da yutardi.
-    return strip_attributes(re.sub(r"//[^\n]*|/\*.*?\*/", " ", code, flags=re.S))
+    """Yorumlari (`// …` satir sonuna; `/* … */` ic ice) ve oznitelikleri (`#[…]` / `#![…]`) bosluga
+    cevirir; dizge ve karakter sabitlerini OLDUGU GIBI birakir. Spec bloklarinda ustu cizili eski metin
+    yorum icinde durur (`/* ~~ConnectFailed(...)~~ */`, `// ~~...~~`); o yuzden yorumlar bicime GIRMEZ.
+
+    TEK gecisli SOZCUK tarayicisi: metin soldan saga bir kez okunur ve hangi yapi once basliyorsa o
+    kazanir — dizge icindeki `//`, `/*`, `]` yorum/oznitelik sonu DEGILDIR; yorum icindeki `"`, `#[`,
+    `]` dizge/oznitelik DEGILDIR. [2026-10-06] Onceki hal IKI gecisti (once yorum regex'i, sonra
+    oznitelik tarayicisi): `#[deprecated(note = "bkz. https://example.org/k4")]` icindeki `//` yorum
+    sanilip dizgenin kapanisi (`")]`) siliniyor, ardindan oznitelik tarayicisi kapanmamis dizgeyle
+    dosya sonuna kadar HER SEYI (handles.rs dahil) yutuyordu → 10 sahte kirmizi.
+
+    Taninan sabitler: `"…"` (kacis `\\`), ham `r"…"` / `r#"…"#` (b/c onekli dahil; kapanis `"` + ayni
+    sayida `#`), karakter `'x'` / `'\\n'` / `'\\u{…}'` / `'"'` — yasam suresi (`'a`, `'static`) sabit
+    DEGILDIR (ucuncu karakter `'` degilse). Oznitelik birkac satira yayilabilir ve dizgesinde `]`
+    tasiyabilir (`#[doc = "bkz. [K4]"]`): koseli ayrac derinligi dizge/yorum DISINDA sayilir.
+    Kapanmayan dizge / yorum / oznitelik dosya sonuna kadar surer; bu fonksiyon onu BILDIRMEZ
+    (ayiklanmis metni dondurur). Bildiren hali `strip_code_comments_eof` — check_shapes onu kullanir
+    ve acik kalan yapiyi KIRMIZI yapar; aksi halde yapidan sonraki bildirimler karsilastirmadan sessizce
+    duser ve kaynaktaki gercek ayrisma YESIL gecerdi (olculdu, 2026-10-06b: spec §1 fence'ine kapanmamis
+    `/*` + ayna variant mutasyonu → cikis 0)."""
+    return strip_code_comments_eof(code)[0]
 
 
-def strip_attributes(code: str) -> str:
-    """`#[…]` / `#![…]` ozniteliklerini atar. Koseli ayrac derinligi sayilir ve dizge sabitleri atlanir:
-    oznitelik birkac satira yayilabilir (`#[deprecated(\n note = "x"\n)]`) ve dizgesinde `]` tasiyabilir
-    (`#[doc = "bkz. [K4]"]`)."""
+def strip_code_comments_eof(code: str) -> tuple[str, str | None]:
+    """`strip_code_comments`'in bildiren hali: (ayiklanmis metin, dosya sonunda acik kalan yapi | None).
+    Acik kalan yapi: `blok yorum` / `ham dizge` / `dizge` / `oznitelik` + basladigi satir — verilen
+    metin icinde (check_shapes birlesik §1 fence metnini / birlesik ayna metnini verir; dosya satiri
+    DEGILDIR). Satir sonuna kadar suren `//` yorumu acik yapi DEGILDIR."""
     out: list[str] = []
     i, n = 0, len(code)
+    attr_depth = 0  # > 0: `#[` … `]` icindeyiz; sabitler dahil her sey bosluga gider
+    attr_start = 0  # son acilan `#[`'in konumu (acik kalirsa satiri raporlanir)
+    open_at_eof: str | None = None
+
+    def emit(seg: str) -> None:
+        out.append(_blank(seg) if attr_depth else seg)
+
+    def line_of(pos: int) -> int:
+        return code.count("\n", 0, pos) + 1
+
     while i < n:
-        if code[i] == "#" and (code.startswith("[", i + 1) or code.startswith("![", i + 1)):
-            k = code.index("[", i)
-            depth = 0
-            while k < n:
-                ch = code[k]
-                if ch == '"':
-                    k += 1
-                    while k < n and code[k] != '"':
-                        k += 2 if code[k] == "\\" else 1
-                elif ch == "[":
-                    depth += 1
-                elif ch == "]":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                k += 1
-            out.append(" ")
-            i = k + 1
+        ch = code[i]
+        nxt = code[i + 1] if i + 1 < n else ""
+        # 1. yorumlar — her modda (oznitelik icindeki yorumun `]`'i oznitelik sonu degildir)
+        if ch == "/" and nxt == "/":
+            j = code.find("\n", i)
+            j = n if j < 0 else j
+            out.append(_blank(code[i:j]))
+            i = j
             continue
-        out.append(code[i])
+        if ch == "/" and nxt == "*":
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if code.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif code.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            if depth:
+                open_at_eof = f"blok yorum (birlesik metinde satir {line_of(i)})"
+            out.append(_blank(code[i:j]))
+            i = j
+            continue
+        # 2. ham dizge r"…" / r#"…"# (`br`/`cr` onekli dahil); `r` sozcuk basinda olmali (`bar"` degil)
+        if ch == "r" and (
+            i == 0
+            or not _is_ident_char(code[i - 1])
+            or (code[i - 1] in "bc" and (i < 2 or not _is_ident_char(code[i - 2])))
+        ):
+            j = i + 1
+            while j < n and code[j] == "#":
+                j += 1
+            if j < n and code[j] == '"':
+                close = '"' + "#" * (j - (i + 1))
+                k = code.find(close, j + 1)
+                if k < 0:
+                    open_at_eof = f"ham dizge (birlesik metinde satir {line_of(i)})"
+                k = n if k < 0 else k + len(close)
+                emit(code[i:k])
+                i = k
+                continue
+        # 3. dizge "…" (kacis `\`); icindeki `//`, `/*`, `]` yapisal DEGILDIR
+        if ch == '"':
+            j = i + 1
+            while j < n and code[j] != '"':
+                j += 2 if code[j] == "\\" else 1
+            if j >= n:
+                open_at_eof = f"dizge (birlesik metinde satir {line_of(i)})"
+            j = min(j + 1, n)
+            emit(code[i:j])
+            i = j
+            continue
+        # 4. karakter sabiti 'x' / '\n' / '\x41' / '\u{…}' / '"' — yasam suresi ('a, 'static) DEGIL
+        if ch == "'":
+            end = None
+            if nxt == "\\":
+                k = code.find("'", i + 3, i + 14)  # kacisli govde ≤ 10 karakter (`\u{10FFFF}`)
+                end = k + 1 if k >= 0 else None
+            elif i + 2 < n and nxt not in "\n'" and code[i + 2] == "'":
+                end = i + 3
+            if end is not None:
+                emit(code[i:end])
+                i = end
+                continue
+        # 5. oznitelik baslangici `#[` / `#![` — derinlik sayimi; icindeki sabit/yorum 1–4'te islenir
+        if attr_depth == 0 and ch == "#" and (nxt == "[" or code.startswith("![", i + 1)):
+            j = code.index("[", i) + 1
+            out.append(_blank(code[i:j]))
+            attr_depth, attr_start = 1, i
+            i = j
+            continue
+        if attr_depth:
+            if ch == "[":
+                attr_depth += 1
+            elif ch == "]":
+                attr_depth -= 1
+            out.append("\n" if ch == "\n" else " ")
+            i += 1
+            continue
+        out.append(ch)
         i += 1
-    return "".join(out)
+    if attr_depth:
+        open_at_eof = f"oznitelik (birlesik metinde satir {line_of(attr_start)})"
+    return "".join(out), open_at_eof
 
 
 def split_top(s: str) -> list[str]:
@@ -390,8 +495,14 @@ def parse_signatures(code: str) -> dict[str, dict[str, str]]:
 
 def check_shapes(spec_text: str, mirror_text: str, say) -> None:
     """H — §1 bloklarindaki enum / struct / metot BICIMLERI kaynaktakiyle ayni mi."""
-    spec_code = strip_code_comments("\n".join(all_fences(section(spec_text, "1."))))
-    src_code = strip_code_comments(mirror_text)
+    spec_code, spec_open = strip_code_comments_eof("\n".join(all_fences(section(spec_text, "1."))))
+    src_code, src_open = strip_code_comments_eof(mirror_text)
+    # [2026-10-06b] Dosya sonunda acik kalan yorum / dizge / oznitelik: ondan sonraki her bildirim
+    # ayiklamada yutulur ve karsilastirma sessizce daralirdi (spec'te kapanmamis `/*` + kaynakta gercek
+    # variant ayrismasi → YESIL; olculdu). Iki tarafta da KIRMIZI: bicim denetimi o noktada kesilmistir.
+    for side, opened in (("spec", spec_open), ("kaynak", src_open)):
+        if opened:
+            bad(f"§1 {side} tarafinda kapanmamis {opened} dosya sonuna kadar surdu — bicim denetimi kesildi")
     s_kinds, m_kinds = declared_kinds(spec_code), declared_kinds(src_code)
     s_enums, m_enums = parse_enums(spec_code), parse_enums(src_code)
     s_structs, m_structs = parse_structs(spec_code), parse_structs(src_code)

@@ -67,6 +67,9 @@ jobs:
           scripts/ci/schedule-guard.sh nightly.yml
           crates fuzz Cargo.toml Cargo.lock rust-toolchain.toml
           scripts/ci/fuzz-all.sh scripts/ci/schedule-guard.sh .github/workflows/nightly.yml
+          scripts/ci/seam-mutation.py ref/amp/encode.py
+          vectors/amp-record-v1.json vectors/amp-record-reject-v1.json
+          crates/kama-app/tests/common/mock_transport.rs crates/kama-integration/tests
 
   # ── CI-08: fuzz (6 hedef × 5 dk, TEK job, tek derleme; corpus biriktirilir) ──
   fuzz:
@@ -114,6 +117,42 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p adaptive-transport --test desen1_sim -- --ignored --nocapture
+
+  # ── [F0.6 2026-10-06] S1 sözleşme satırlarının MUTASYON turu — sahteye karşı, ağaç dışı ──
+  # PR başına KOŞMAZ (ci.yml'deki ci-verdict `skipped`'i kırmızı sayar; koşullu job oraya konamaz).
+  # ~47 küçük-workspace derlemesi (46 mutasyon + 1 taban; koşum başına RUN_TIMEOUT_S = 900 s tavan);
+  # ilk koşu süreyi ölçer — timeout-minutes ona göre ayarlanır. `--online`: taze runner'da kayıt
+  # önbelleği yok (betiğin varsayılanı --offline). CARGO_BUILD_JOBS betik içinde 2.
+  seam-mutation:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: python3 -B scripts/ci/seam-mutation.py --online
+
+  # ── [F0.6 2026-10-06] AMP vektörleri: Python üretici ↔ commit'li JSON bayt-özdeşliği ──
+  # encode.py `compression.zstd` ister (Python 3.14+); ubuntu-latest Python'u onu taşımaz →
+  # setup-python ile 3.14. İki vaka (encode.text-compressed, decode.truncated-zstd-stream) libzstd
+  # sürümüne bağlı bayt taşır (encode.py başlığı): runner'ın libzstd'si yerel üreticiden farklıysa
+  # dosya hiç değişmeden FARKLI çıkabilir — ilk koşu bunu ölçer; sürüm bu yüzden loglanır.
+  amp-vectors-check:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: libzstd sürümü (bayt farkı teşhisi için)
+        run: python3 -c "from compression import zstd; print('zstd', zstd.zstd_version)"
+      - name: encode.py --check (vectors/amp-*.json bayt-özdeş mi)
+        run: python3 -B ref/amp/encode.py --check
 
   # ── CI-07 / ADR-18: hostile netem shard'ları ──────────────────────────────────────────────
   # Her rejim AYRI job + AYRI timeout. `NETEM_RUNNER` repo değişkeni olmadan HİÇ kuyruğa girmez
@@ -185,7 +224,7 @@ jobs:
   nightly-verdict:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, fuzz, sim-nightly, hostile]
+    needs: [changes, fuzz, sim-nightly, seam-mutation, amp-vectors-check, hostile]
     if: always()
     steps:
       - run: |

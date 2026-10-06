@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-06c [F0.6 artıklar — iş emri 2026-10-06 §2]:** B1.0 / B1.2 / B1.3 / B1.4 / B1.5 kartlarına DURUM satırı · B2.2 `msg_id` u32 (AMP K1 ile hizalandı) · yeni `KATMAN 6 — Sonraki sprint — KAPSAM DIŞI` (iş emri §0 listesi, BL/PARK atıflarıyla). Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-05b [PN SÜREKLİ artıkları — Abkarada kararı]:** D1 kartına not: engine ACK çerçevesindeki `ack_epoch` ≠ `dh_epoch`; D1'de dokunulmaz. Yalnız ekleme.
 
 > **YAMA KAYDI — 2026-10-05 [B1 kama-contracts — Abkarada kararı; R-7(b) YENİDEN KARAR]:** S1 ve S3 trait/tipleri `crates/kama-contracts`'a taşındı (harici bağımlılık 0); `MockCrypto` `kama-noise-wire`'ın `test-util` özelliğinde. R-7(b) satırı, A4.1 ve A4.2 "Nereye" satırları buna göre işaretlendi. Katman kuralları `scripts/ci/layer_check.py` C1–C5. Üstü çizili metin silinmedi.
@@ -313,6 +315,7 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 **Nereye:** `crates/kama-app/` (öneri). **Kural:** `Cargo.toml`'da `kama-noise-wire` veya `crypto` bağımlılığı **olamaz** — Application Crypto'yu görmez.
 **Neye bağlı:** R-7(a). Tanım: `KM-SEAM-AT-001.md` §1.
 **Done:** derleniyor; C1.2 statik kontrol yeşil.
+**DURUM (2026-10-06): KAPANDI — `crates/kama-contracts` (#89 B1; R-7(b) yeniden karar).** `KamaTransport` ve S1/S3 tipleri `crates/kama-contracts/src/{s1,s3,handles}.rs`'te (harici bağımlılık 0); `ConnectFailed` DR-CONNECT-1 ile kalktı (A1.3 DURUM 2026-10-03). `test-util` özelliği sahte uygulamalar için. s1 modülü G-S1'de kilitlenir (FROZEN).
 
 ### B1.1 — Mesaj formatının açık kararlarını kapat (AMP A1–A4)
 **Neden:** Kod yazılmadan mesaj formatı kesinleşmeli; belgede her karar için öneri hazır, sahibi onaylayınca kapanır.
@@ -328,6 +331,7 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 **Nereye:** `vectors/amp-*.json`, `ref/amp/encode.py`. Tanım: AMP §2, §3, §5, §7.
 **Neye bağlı:** B1.1, T-00.1.
 **Done:** commit; her negatif vakada `result` tam olarak `drop` ya da `reject`.
+**DURUM (2026-10-06): KAPANDI (vektörler) — `ref/amp/encode.py` (#92 + F0.5).** 0x01–0x0A her tip için pozitif (11 vaka, `vectors/amp-record-v1.json`) + ret (14 vaka, `vectors/amp-record-reject-v1.json`) vektörü; `--check` gecelik işte (F0.6, `.github/workflows/nightly.yml` `amp-vectors-check`). Rust codec tüketicisi B2.1'de (L-B2a). Kalan: Hayri imzası A3/A4 (B1.1).
 
 ### B1.3 — Sahte Transport (Application testleri için)
 **Neden:** Application, gerçek Transport/Crypto olmadan geliştirilebilsin.
@@ -335,6 +339,7 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 **Nereye:** `crates/kama-app/tests/common/mock_transport.rs`.
 **Neye bağlı:** B1.0.
 **Done:** mock-fixture yeşil.
+**DURUM (2026-10-06): KAPANDI — sahte Transport tek kopya `crates/kama-app/tests/common/mock_transport.rs` (#92).** F0.2 / F0.4 ile güncel: `Measuring` ilk olay (F0.2(ii)), `close(h)` → `Closed(h, UserClosed)` (F0.2(iii)), `inject_peer_supersession(h)` (F0.4), `TransportCapabilities.max_early_unit_bytes` / `reliable` (F0.2(iv)). `ConnectFailed` enjeksiyonu DR-CONNECT-1 ile düştü (yerine H-SILENT-REJECT).
 
 ### B1.4 — S1 sözleşme testleri (conformance-core)
 **Neden:** Her test neyi kanıtlıyor:
@@ -349,10 +354,12 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 **Nereye:** `crates/kama-app/tests/conf_s1_*.rs`. Tanım: `KM-SEAM-AT-001.md` §6.
 **Neye bağlı:** B1.0, B1.3.
 **Done:** `MockTransport`'a karşı yeşil.
+**DURUM (2026-10-06): KAPANDI (mock hedefi) — S1 §6 on dört satır.** Gövdeler `crates/kama-integration/tests/common/seam/contract.rs` CONTRACT_ROWS; kapsama `scripts/ci/seam-coverage.json`: 12 davranış satırı `mock_only` + 2 statik. `H-OPAQUE-FAIL` S1'de üstü çizili → `H-SILENT-REJECT`. Real hedef L-T1'de (GAP-SEAM-REAL-1); mutasyon turu (`scripts/ci/seam-mutation.py`) gecelik işte (F0.6, `nightly.yml` `seam-mutation`).
 
 ### B1.5 — ~~Bağlantı zaman aşımı testi~~ Bağlantı niyeti testleri: H-CANCEL / H-PROGRESS / H-CUTOVER(Superseded) **[DR-CONNECT-1, 2026-10-03]**
 **Neden:** ~~KS-8 belirlenince `ConnectFailed`'ın tam zamanlaması test edilebilir.~~ `connect()` için deadline yok ve `ConnectFailed` kalktı (DR-CONNECT-1). Test edilecek olan artık bir süre değil, üç davranış: **H-CANCEL** (`cancel(ticket)` → `ConnectAbandoned(ticket, Cancelled)`; sanal saat ilerlese de niyet kendiliğinden sonlanmaz; bozuk/sahte RESPONSE olay üretmez) · **H-PROGRESS** (link yok → `Suspended` + 0 prob; link gelir → `Measuring` + anında prob; eşin canlılığı bildirilmez) · **H-CUTOVER(Superseded)** (~~bilinen eşten yeni INIT → `Ready(h') → Closed(h, Superseded)`; duplicate INIT supersession üretmez~~ **[2026-10-04]** provisional supersession: onaydan önce `h` tam çalışır; onayda `Ready(h')` → yalnız-alım drain → `Closed(h, Superseded)`; bayat INIT `h`'yi etkilemez; glare → tek `Ready`) · **H-SILENT-REJECT** [2026-10-04] (sahte/geçersiz RESPONSE olay üretmez, pending yaşar). Tanım: `KM-SEAM-AT-001.md` §6.
 **Nereye:** `conf_s1_connect.rs`. **Bağlı:** A1.3. **Done:** yeşil.
+**DURUM (2026-10-06): KAPANDI (S1 düzeyi).** H-CANCEL / H-PROGRESS / H-CUTOVER(Superseded) / H-SILENT-REJECT sahtede koşuyor; F0.4 ile H-CUTOVER ikinci vaka: `RenewRequired` OLMADAN `Ready(h')` → `Closed(h, Superseded)` (eski tutamaç F0.2(i) semantiğiyle). Glare ve bayat INIT S3 real hedefte (L-A5c). `Suspended` / `LongOutage` gerçek tetikleri sonraki sprint (DR-CONNECT-1 IMPL; KATMAN 6).
 
 ### 🚪 G-S1 — S1 SEAM-FROZEN
 B1.0 derleniyor · B1.1 kapalı · B1.2 commit · **B1.3 / B1.4 / B1.5 yeşil** · C1.2 yeşil · ~~KS-8 verili (B1.5 onun davranışsal testi)~~ DR-CONNECT-1 S1'e işlendi (B1.5 = H-CANCEL/H-PROGRESS/H-CUTOVER(Superseded)) + Hayri imzası. **Kripto vektörü beklemez** — S3'ten önce donabilir.
@@ -361,7 +368,7 @@ B1.0 derleniyor · B1.1 kapalı · B1.2 commit · **B1.3 / B1.4 / B1.5 yeşil** 
 **Ne:** encode/decode; sınırlı açma (decompression bomb koruması); A2 limitleri; zstd. **Nereye:** `crates/kama-app/src/amp/`. **Bağlı:** G-S1. **Done:** B1.2 byte-for-byte.
 
 ### B2.2 — Metin mesajı + teslim bilgisi
-**Ne:** TEXT gönder/al; `RECEIPT(delivered)` — **Transport ACK'inden türetilmez**, uygulama kendi üretir. **`msg_id` davranışı (AMP §3, A3):** gönderen tarafında session-scope'ta monoton artan u64; aynı session'da duplicate üretilmez; **alıcı teslim sırasını `msg_id` ile zorlamaz** — sıra Transport'un Reliable teslimiyle gelir; `msg_id` yalnız UI sıralaması, duplicate tespiti ve `RECEIPT.ref_msg_id` için. **Done:** S1 core; duplicate `msg_id` üretilmediği ve alıcının sırasız `msg_id`'yi reddetmediği testleri yeşil.
+**Ne:** TEXT gönder/al; `RECEIPT(delivered)` — **Transport ACK'inden türetilmez**, uygulama kendi üretir. **`msg_id` davranışı (AMP §3, A3):** gönderen tarafında session-scope'ta monoton artan ~~u64~~ u32 **[2026-10-06; AMP K1 2026-10-04]**; aynı session'da duplicate üretilmez; **alıcı teslim sırasını `msg_id` ile zorlamaz** — sıra Transport'un Reliable teslimiyle gelir; `msg_id` yalnız UI sıralaması, duplicate tespiti ve `RECEIPT.ref_msg_id` için. **Done:** S1 core; duplicate `msg_id` üretilmediği ve alıcının sırasız `msg_id`'yi reddetmediği testleri yeşil.
 
 ### B2.3 — Dosya transferi
 **Neden:** Dosya parçalara bölünür, her parça bir mesaj. **Kural:** Application parça yeniden-gönderimi, parça ACK'i, parça MAC'i **yapmaz** — kayıp Transport'un, bütünlük Crypto'nun işi. Application yalnız: `transfer_id`, offset, bütün-dosya hash'i, birleştirme.
@@ -467,3 +474,24 @@ G-IMPL-S1 + G-IMPL-S3 + G-D →   INT-02: uçtan uca mesaj (kama-integration)
 **SEAM-FROZEN** = kararlar kapalı + sayılar verili + vektörler commit + conformance-core çalışıyor + mock contract-conformant + mimari kontroller yeşil.
 **IMPLEMENTATION-GO** = gerçek kod aynı vektörleri tüketiyor + aynı conformance-core'u geçiyor + sözleşme dışı davranış icat etmiyor.
 **Süreç kuralı:** yeni konu → spec'e ekleme | sayı kalibrasyonu | test/kanıt | kod. Beşinci kutu yok; mimari yeniden açılmaz.
+
+---
+
+# KATMAN 6 — Sonraki sprint — KAPSAM DIŞI (iş emri 2026-10-06 §0)
+
+*[2026-10-06, F0.6] Kaynak: iş emri 2026-10-06 §0 "KAPSAM DIŞI (bu sprintte yapılmaz; bir ajan ihtiyaç görürse DUR)". Liste AYNEN; her maddenin altında bu belgedeki / PARK'taki atıfları.*
+
+1. **DR-CONNECT-1'in transport tarafı:** HEARTBEAT/HEARTBEAT_ACK (0x1B/0x1C) implementasyonu, prob backoff tavanları, jitter, link yoksa askıya alma, K=1024 sonrası SESSION_REBIND, ConnectPhase::Suspended/LongOutage'ın gerçek tetikleri (link/power sinyali yok; PARK P-4). Sonraki sprint "DR-CONNECT-1 IMPL".
+   *Atıf:* PARK **P-4** (`docs/PARK-LISTESI.md`) · KATMAN 2 Sözlük KS-PN-1 (K = 1024) / KS-HB-1 (8 s / 25 s / OS; 0x1B / 0x1C) / KS-UI-1 (`LongOutage` 60 s) · A1.3 DURUM 2026-10-03 · **B1.5** H-PROGRESS kolu (yalnız `Measuring`; `seam-coverage.json` H-PROGRESS `needs`: LongOutage fazı sınanmıyor) · S1 §6 H-PROGRESS · F0.2(ii) notu.
+2. **HubChannel gerçek hop anahtarı (Noise split-key; M4).** Bu sprintte HubChannel ctx = bugünkü IdentitySeam davranışı (no-op).
+   *Atıf:* A4.4 `H-CTX` · A5.2 (`ProtectionContext::HubChannel` = IdentitySeam no-op) · iş emri §3 L-A5b. *(M4 = iş emrindeki etiket — HubChannel gerçek anahtar; BL'deki vektör paketi M4 (A2.2–A2.7 DURUM 2026-10-04) ile karıştırılmasın.)*
+3. **A3.3** (hub yarım-açık sınır testleri; NON-GATING, real-adapter).
+   *Atıf:* A3.3 kartı (zaten NON-GATING / real-adapter follow-up) · C4 §6 (`docs/sprint_plan/G-S3-KAPI-RAPORU.md`).
+4. **Hub ürün kodu** (repoda yok); yalnız mevcut test hub simülatörü kullanılır, yenisi yazılmaz.
+   *Atıf:* A3.3 "Nereye: real-adapter (hub-server iskeleti dolunca)".
+5. **KVT (Kama-vs-TCP) kampanyası:** yalnız §5 D3'te tek profil, NON-GATING.
+   *Atıf:* **D3** (KVT eki NON-GATING; D1–D2 KAPSAM DIŞI değil, L-D'de).
+6. **Yeni spec belgesi; yeni karar slotu; yeni harici bağımlılık** (kama-noise-wire'a A5.0'da eklenenler dışında).
+   *Atıf:* KATMAN 1 · KATMAN 5 Süreç kuralı ("Beşinci kutu yok; mimari yeniden açılmaz") · A5.0.
+
+DUR kuralı: bir şerit bu kalemlerden birini gerekli görürse durur ve raporlar (iş emri §8).

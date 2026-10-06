@@ -395,6 +395,48 @@ pathlib.Path(sys.argv[2]).write_text(src.replace(old, new), encoding="utf-8")
 PY
 expect 0 "F26 variant'a cok satirli oznitelik eklenince → 0 (bicim degismedi)" -- \
   python3 "$DRIFT" --seam s1 --mirror "$TMPD/same-s1.rs" --mirror "$CONTRACTS/handles.rs" --quiet
+# [2026-10-06c] Zararsiz duzenleme YESIL kalmali: dizgesinde `//` gecen oznitelik (URL). 2026-10-06: dizgesinde
+# `//` gecen oznitelik, duzeltmeden once exit 1 veriyordu (olculdu: eski iki gecisli tarayici `//`'i yorum sanip
+# dizgenin kapanisini siliyor, oznitelik tarayicisi dosya sonuna kadar yutuyordu → s1'de 10, s3'te 8 sahte kirmizi).
+OLD='pub enum DeliveryPolicy {' NEW=$'#[deprecated(note = "bkz. https://example.org/k4")]\npub enum DeliveryPolicy {' python3 - "$CONTRACTS/s1.rs" "$TMPD/same-url-s1.rs" <<'PY'
+import os, sys, pathlib
+src = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+old, new = os.environ["OLD"], os.environ["NEW"]
+assert src.count(old) == 1, f"capa {src.count(old)} kez bulundu: {old!r}"
+pathlib.Path(sys.argv[2]).write_text(src.replace(old, new), encoding="utf-8")
+PY
+expect 0 "F27 S1 tipine dizgesinde // tasiyan oznitelik eklenince → 0 (bicim degismedi)" -- \
+  python3 "$DRIFT" --seam s1 --mirror "$TMPD/same-url-s1.rs" --mirror "$CONTRACTS/handles.rs" --quiet
+OLD='pub enum ProtectionClass {' NEW=$'#[deprecated(note = "bkz. https://example.org/k4")]\npub enum ProtectionClass {' python3 - "$CONTRACTS/s3.rs" "$TMPD/same-url-s3.rs" <<'PY'
+import os, sys, pathlib
+src = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+old, new = os.environ["OLD"], os.environ["NEW"]
+assert src.count(old) == 1, f"capa {src.count(old)} kez bulundu: {old!r}"
+pathlib.Path(sys.argv[2]).write_text(src.replace(old, new), encoding="utf-8")
+PY
+expect 0 "F27b S3 tipine dizgesinde // tasiyan oznitelik eklenince → 0 (bicim degismedi)" -- \
+  python3 "$DRIFT" --seam s3 --mirror "$TMPD/same-url-s3.rs" --mirror "$CONTRACTS/handles.rs" --quiet
+# [2026-10-06b] Inceleme bulgusu: spec §1 fence'inde kapanmamis `/*` sonrasindaki bildirimler ayiklamada yutulur,
+# karsilastirma sessizce daralirdi — kaynaktaki GERCEK bicim ayrismasi (F7 mutasyonu) bile YESIL geciyordu
+# (olculdu: duzeltmeden onceki betik bu girdide exit 0). Spec KOPYASI bozulur (`--spec`), aynalar bozulmamis
+# F7 mutasyonu; acik kalan yapi iki tarafta da kirmizidir.
+OLD='pub enum   SessionEvent' NEW=$'/* ~~eski not~~ (kapanis unutuldu)\npub enum   SessionEvent' python3 - "docs/seams/KM-SEAM-AT-001.md" "$TMPD/open-comment-s1.md" <<'PY'
+import os, sys, pathlib
+src = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+old, new = os.environ["OLD"], os.environ["NEW"]
+assert src.count(old) == 1, f"capa {src.count(old)} kez bulundu: {old!r}"
+pathlib.Path(sys.argv[2]).write_text(src.replace(old, new), encoding="utf-8")
+PY
+OLD='    Ready(SessionHandle, PeerRef),' NEW='    Ready(SessionHandle),' python3 - "$CONTRACTS/s1.rs" "$TMPD/f28-s1.rs" <<'PY'
+import os, sys, pathlib
+src = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+old, new = os.environ["OLD"], os.environ["NEW"]
+assert src.count(old) == 1, f"capa {src.count(old)} kez bulundu: {old!r}"
+pathlib.Path(sys.argv[2]).write_text(src.replace(old, new), encoding="utf-8")
+PY
+expect 1 "F28 spec §1 fence'inde kapanmamis /* + kaynakta variant ayrismasi → 1 (sessiz daralma yok)" -- \
+  python3 "$DRIFT" --seam s1 --spec "$TMPD/open-comment-s1.md" --mirror "$TMPD/f28-s1.rs" --mirror "$CONTRACTS/handles.rs" --quiet
+expect_reason "F28: neden" "spec tarafinda kapanmamis blok yorum"
 
 printf '\n'
 printf 'oz-test: %d gecti, %d kaldi\n' "$pass" "$fail"

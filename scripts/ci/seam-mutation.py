@@ -18,7 +18,8 @@ sahtenin kopyasi. Her mutasyon sahtenin KOPYASINA metin degisimi olarak uygulani
 bir kez bulunmali), `seam_conformance_core` kosturulur, kirmizi olan `mock_contract::h_*` testleri
 okunur.
 
-KAPI DEGILDIR: CI'a bagli degildir (her mutasyon bir derleme; ~40 derleme). Elle/istege bagli kosulur.
+KAPI DEGILDIR: PR basina kosmaz (her mutasyon bir derleme; ~40 derleme); GECELIK iste kosar
+(.github/workflows/nightly.yml `seam-mutation`, `--online`, 2026-10-06). Elle de kosulabilir.
 
 OLCUT VE SINIRI. Bir mutasyon, HEDEF satiri kirmizi olunca "oldu" sayilir; satirin HANGI iddiasinin
 kirmizi oldugu ayristirilmaz ve baska satirlarin da kirmizi olmasi engel degildir (her mutasyonun
@@ -124,6 +125,16 @@ EARLY_DELIVER = """            let delivered = Delivered {
                 unit: early_bytes,
             };"""
 PENDING_CAP = """        if self.pending_by_peer.len() >= PENDING_INIT_CAP"""
+# F0.2/F0.4 (2026-10-06) capalari
+EARLY_CAP = """        if unit.bytes.len() > self.capabilities.max_early_unit_bytes as usize {"""
+INITIAL_MEASURING = """        // F0.2(ii): Pending döndüğü anda ilk olay `Measuring`.
+        self.push_event(SessionEvent::ConnectProgress(
+            ticket,
+            ConnectPhase::Measuring,
+        ));
+"""
+CLOSE_EVENT = """        self.push_event(SessionEvent::Closed(session, CloseReason::UserClosed));"""
+PEER_SUPERSEDE = """        self.supersede(old, "inject_peer_supersession")"""
 
 M = [
  # (kimlik, hedef satir (test adi), aciklama, eski, yeni)
@@ -142,6 +153,7 @@ M = [
   "        Some(ev)"),
  ("events-same-handle", "h_events", "yenileme ayni tutamaci verir", "        let new_handle = SessionHandle::from_raw(self.fresh_id());\n        self.active_by_peer.insert(peer, new_handle);",
   "        let new_handle = old;\n        self.active_by_peer.insert(peer, new_handle);"),
+ ("close-no-event", "h_events", "close(h): aktif tutamacta Closed(h, UserClosed) cikmaz (F0.2(iii))", CLOSE_EVENT, ""),
  ("cutover-old-still-accepts", "h_cutover", "cutover sonrasi send(h) kabul edilir", SUPERSEDED_CHECK, ""),
  ("cutover-outstanding-dropped", "h_cutover", "cutover'da h'nin outstanding'i atilir", RENEW_EVENTS,
   "        self.inbox.retain(|d| d.session != old);\n" + RENEW_EVENTS),
@@ -149,11 +161,14 @@ M = [
   "        self.in_recovery.retain(|held| held.delivered.session != old);\n" + RENEW_EVENTS),
  ("cutover-old-rejected-early", "h_cutover", "yenileme SURERKEN send(h) reddedilir", REQ_RENEW,
   REQ_RENEW + "\n        self.superseded.insert(session);"),
+ ("cutover-peer-renew-first", "h_cutover", "peer supersession Ready(h')'den ONCE RenewRequired yayinlar (F0.4)", PEER_SUPERSEDE,
+  "        self.push_event(SessionEvent::RenewRequired(old));\n" + PEER_SUPERSEDE),
  ("idemp-pending-new-ticket", "h_connect_idemp", "pending ese ikinci connect YENI ticket verir", PENDING_BRANCH,
   PENDING_BRANCH.replace("return Ok(ConnectResult::Pending(ticket));",
    "let _ = ticket;\n            let fresh = ConnectTicket::from_raw(self.fresh_id());\n            self.pending_by_peer.insert(peer, fresh);\n            return Ok(ConnectResult::Pending(fresh));")),
  ("idemp-duplicate-ready", "h_connect_idemp", "aktif ese connect duplicate Ready olayi uretir", ACTIVE_CONFLICT,
   ACTIVE_CONFLICT + "\n            self.push_event(SessionEvent::Ready(handle, peer));"),
+ ("progress-no-initial-measuring", "h_connect_idemp", "Pending doner ama ilk olay ConnectProgress(ticket, Measuring) cikmaz (F0.2(ii); establish'li her satir kirmizi olur)", INITIAL_MEASURING, ""),
  ("early-conflict-active-ignored", "h_early_conflict", "aktif ese Some(X): sessizce yok sayilir (Ok)", ACTIVE_CONFLICT,
   "        if let Some(&handle) = self.active_by_peer.get(&peer) {"),
  ("early-conflict-pending-ignored", "h_early_conflict", "pending ese Some(X): sessizce yok sayilir (Ok)", PENDING_BRANCH,
@@ -170,6 +185,8 @@ M = [
  ("caps-strict", "h_caps", "len == max reddedilir (>=)", SEND_CAP, SEND_CAP.replace("unit.bytes.len() > self", "unit.bytes.len() >= self")),
  ("caps-loose", "h_caps", "len == max+1 kabul edilir", SEND_CAP,
   SEND_CAP.replace("unit.bytes.len() > self.capabilities.max_plaintext_unit_bytes as usize", "unit.bytes.len() > self.capabilities.max_plaintext_unit_bytes as usize + 1")),
+ ("caps-early-uses-plaintext-limit", "h_caps", "early_unit siniri max_plaintext'ten okunur (STUB 256 < 1024: max_early+1 kabul edilir; F0.2(iv))", EARLY_CAP,
+  EARLY_CAP.replace("max_early_unit_bytes", "max_plaintext_unit_bytes")),
  ("pending-cap-off-by-one", "h_pending_cap", "tavan + 1 pending kabul edilir", PENDING_CAP, "        if self.pending_by_peer.len() > PENDING_INIT_CAP"),
  ("pending-cap-none", "h_pending_cap", "pending tavani yok", PENDING_CAP, "        if false"),
  ("cancel-silent", "h_cancel", "cancel olay uretmez", CANCEL_TAIL,
