@@ -1,5 +1,7 @@
 # CCR Format Specification
 
+> **YAMA KAYDI — 2026-10-06 [PN SÜREKLİ artıkları (Appendix D2) — Abkarada kararı]:** Appendix D2.13 ASYNC-REJECT-5 (tarihsel satır): "per epoch+dir" → "per dir — tek pencere". Appendix tarihseldir, aktif parser bu formları REJECT eder (D2 başlık notu); yalnız kalıntı ifade hizalandı. Dayanak: #85 (noise-wire §2.5 + §4 EPOCH-PN-INIT, 2026-10-06) ve #91 (§35.8 replay identity, 2026-10-05). Tel formatı DEĞİŞMEDİ. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-05 [PN SÜREKLİ artıkları — Abkarada kararı]:** §35.8 INVARIANTS: `replay identity`'den `epoch` ÇIKTI → `(session_id_internal, direction, full_counter)`. Dayanak: PN sayacı epoch'lar boyunca sürekli ve replay penceresi yön başına tektir (identity §15.5, 2026-10-06; noise-wire §2.5 + §4 EPOCH-PN-INIT). `epoch` anahtar ve AAD seçiminde aynen kalır (§35.9) — bağlama (INV-BIND-1) dokunulmadı. Tel formatı DEĞİŞMEDİ. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-04b [K3 + K5 — Abkarada kararı]:** `BatchPayload{submsg_count = 0}` (BOŞ BATCH) açıkça **GEÇERLİ** ilan edildi: AEAD'den geçer, PN tüketir, Application'a teslim YOK — epoch-1 onayının ve provisional supersession onayının taşıyıcısı (atıflarda "§35.6 BatchPayload" diye geçen tanım fiziksel olarak §35.14 sonundaki nottadır; yama oraya işlendi). §35.15'e **`PROVISIONAL_TTL`** (istemci; = `HALF_OPEN_TTL` değeri, türetilmiş, AYRI ad). Wire layout DEĞİŞMEDİ (boş batch mevcut yapının bir değeridir).
@@ -3777,7 +3779,7 @@ ASYNC-REJECT-1:  outer frame_type ∉ {INIT, ACCEPT, DATA, SIGNED_CONTROL} → r
 ASYNC-REJECT-2:  version != 1 → reject
 ASYNC-REJECT-3:  ASYNC_INIT length != beklenen (cert_mode'a göre) → reject
 ASYNC-REJECT-4:  ASYNC_ACCEPT bob_ephemeral all-zero → reject (Alpha STRONGER zorunlu)
-ASYNC-REJECT-5:  ASYNC_DATA seq <= highest-window veya replay (bitmap, per epoch+dir) → reject
+ASYNC-REJECT-5:  ASYNC_DATA seq <= highest-window veya replay (bitmap, ~~per epoch+dir~~ per dir — tek pencere) → reject # [2026-10-06] tek pencere; appendix tarihseldir, aktif parser REJECT eder
 ASYNC-REJECT-5b: ASYNC_DATA epoch-1 mesajı ama session henüz ACCEPT almadı (epoch-1 chain yok) → reject/defer
 ASYNC-REJECT-5c: ASYNC_DATA epoch-0 mesajı ACCEPT SONRASI (epoch kapandı, replay) → reject
 ASYNC-REJECT-6:  AEAD tag doğrulanamadı (k türetilemedi / tampered) → reject

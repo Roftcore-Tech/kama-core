@@ -1,5 +1,7 @@
 # kama-noise-wire-tdd — Kama Noise Secure-Wire Profile [v2.0 — dört-karar-boşluğu-KAPATILDI (HANDLE_ASSIGN-frozen · bootstrap-profile-admission · confirmation-safe-epoch · K-invariant) + öz-tarama-temiz; FULL-DESIGN-GO-onayı: Abkarada]
 
+> **YAMA KAYDI — 2026-10-06c [PN SÜREKLİ artıkları — Abkarada kararı]:** §3 DÖRT-KİMLİK (SECURE-WIRE-IDENTITY) ve Terminoloji [KİLİT]: kimlikten `dh_epoch` ÇIKTI → `(session_id, direction, full_pn)`; `dh_epoch` yalnız anahtar seçer (§2.5). Nonce tekilliği anahtar başınadır; sürekli sayaç hiçbir anahtar altında tekrar üretmez. Dayanak: #85 (§2.5 + §4 EPOCH-PN-INIT, 2026-10-06) ve #91 (ccr §35.8 replay identity, 2026-10-05). Tel formatı DEĞİŞMEDİ. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-06b [KS-GRACE-1 sayım netleştirmesi — Abkarada kararı]:** §4 madde 5'e tek cümle: onaylayan ilk AEAD-geçerli epoch-1 paketi `N_g`'ye #1 olarak sayılır. Değer ve semantik değişmedi (yalnız ekleme).
 
 > **YAMA KAYDI — 2026-10-06 [PN SÜREKLİ — Abkarada kararı]:** PN sayacı epoch'lar boyunca SÜREKLİ oldu. §2.5: sayaç uzayı per-(session, direction, dh_epoch) → **per-(session, direction)**; `dh_epoch` yalnız anahtar seçer. §4: state tek `expected_pn` + tek `replay_window`; **EPOCH-PN-INIT** değişti: epoch-1 gönderim sayacı epoch-0'ın son değerinden +1 ile DEVAM eder, sıfırlanmaz. Gerekçe: hub hop-ACK'i cleartext PN'den üretir ve epoch'u bilmez (legacy 22 B zarfta epoch alanı yok); aynı PN değerinin iki epoch'ta var olması grace penceresinde ACK'i belirsiz kılıyordu. K3'ün WS-D1'e devrettiği AÇIK kalem KAPANDI: ACK_FRAME_V2 kimliği = `full_wire_pn`. Nonce tekilliği anahtar başınadır; sürekli sayaç hiçbir anahtar altında tekrar üretmez. Tel formatı DEĞİŞMEDİ. Kod: `protector.rs` aynı PR'da. Üstü çizili metin silinmedi.
@@ -450,7 +452,7 @@ assert-eder; iki-implementation-AYNI-AAD-dizisini-üretir.**
 ## 3. DÖRT-KİMLİK + KRİPTO-REPLAY↔LOGICAL-DEDUP (SoC-analiz-§10 + go/no-go-§3.2) [NORMATİF]
 ```
 (1) full-wire-PN/nonce-counter  (2) block_id  (3) ESI/logical-symbol-id  (4) message/chunk-id
-SECURE-WIRE-IDENTITY = (session_id, direction, dh_epoch, full_pn) → nonce-uniqueness + kripto-replay + wire-tx-id + network-ACK/RTT
+SECURE-WIRE-IDENTITY = (session_id, direction, ~~dh_epoch,~~ full_pn) → nonce-uniqueness + kripto-replay + wire-tx-id + network-ACK/RTT  # [2026-10-06c] dh_epoch yalnız anahtar seçer (§2.5); PN sürekli, nonce tekilliği anahtar başına
 FEC-LOGICAL-IDENTITY  = (session, block_id, ESI)    → logical-dedup + decoder-rank + ARQ-cancel + app-dup-prevent
 ```
 **FEC-logical-identity ASLA-kripto-replay-key-DEĞİL.** RETRANSMIT: (block_id,source_esi)-AYNI · wire-PN+nonce-YENİ
@@ -596,7 +598,7 @@ RustCrypto==libsodium-IETF-eşitliği (K-WIRE-NONCE96-1).
 4. cap→new-session        : packet/byte/time-cap-dolunca SESSION_RENEW_REQUIRED → tamamen-YENİ-handshake/session
 ```
 **Terminoloji [KİLİT]:** yalnız **dh_epoch (0/1)**; `key_phase`/`rekey_epoch`/`KEY_UPDATE`-terimleri Alpha-
-normatifinde **KULLANILMAZ.** Kimlik: **(session_id, direction, dh_epoch, full_pn).** Outer-state = wire_flags.bit0-
+normatifinde **KULLANILMAZ.** Kimlik: **(session_id, direction, ~~dh_epoch,~~ full_pn) [2026-10-06c: dh_epoch kimlikte değil, anahtar seçer].** Outer-state = wire_flags.bit0-
 dh_epoch (§2.5). dh_epoch-grace §4'te. Noise-native-REKEY()-primitive-açıklaması → Beta-appendix (§Appendix-B,
 non-normative). Cap/wrap-öncesi session-renewal-ZORUNLU (ID-scope §2.6).
 
