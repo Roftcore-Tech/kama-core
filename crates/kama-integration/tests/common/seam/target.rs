@@ -78,6 +78,9 @@ pub trait SeamTarget {
     const PENDING_INIT_CAP: usize;
     /// Hedefin beyan ettiği `TransportCapabilities::reliable` — ADLANDIRILMIŞ sabitinden
     /// (S1 §1 F0.2(iv); H-CAPS `capabilities().reliable`'ı bununla karşılaştırır).
+    ///
+    /// YALNIZ test altyapısı — iş emri 2026-10-06 F07.6 (kabul edilen SAPMA); sözleşme tipine
+    /// girmez.
     const RELIABLE: bool;
 
     /// # Errors

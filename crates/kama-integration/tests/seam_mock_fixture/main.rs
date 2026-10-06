@@ -418,15 +418,17 @@ fn f8_abandon_emits_exactly_the_injected_closed_reason() {
     }
 }
 
-/// `close()` yalnız kapatılan tutamacı unutturur ve `Closed` olayını S1 F0.2(iii)'e göre üretir.
+/// `close()` yalnız kapatılan tutamacı unutturur ve `Closed` olayını S1 F0.2(iii)'e, dönüş
+/// değerini F07.1'e (2026-10-06) göre üretir.
 ///
 /// Supersede edilmiş ESKİ tutamacı kapatmak, eşin YENİ aktif oturumunu silmemelidir; yoksa
 /// Application cutover'dan sonra eski tutamacı temizlerken yeni oturumunu kaybeder. Supersede
-/// edilmiş tutamaca `close()` İKİNCİ bir `Closed` üretmez (`Closed(old, Superseded)` zaten
-/// kuyruktadır) ve saf no-op'tur: `Closed(old)` okunana kadar `send(old)` → `SessionSuperseded`
-/// (F0.2(i)), okunduktan sonra `UnknownSession`; aktif tutamaca `close()` tam bir
-/// `Closed(h, UserClosed)` üretir. (Sözleşme düzeyi kanıt H-EVENTS'tedir; burada sahtenin kendi
-/// kuyruğu sınanır.)
+/// edilmiş tutamaca `close()` `Err(SessionSuperseded)` döner, İKİNCİ bir `Closed` üretmez
+/// (`Closed(old, Superseded)` zaten kuyruktadır) ve saf no-op'tur: `Closed(old)` okunana kadar
+/// `send(old)` → `SessionSuperseded` (F0.2(i)), okunduktan sonra `send(old)` ve `close(old)` →
+/// `UnknownSession`; aktif tutamaca `close()` `Ok(())` döner ve tam bir `Closed(h, UserClosed)`
+/// üretir; kapanmış tutamaca ikinci `close()` → `Err(UnknownSession)`, olay yok. (Sözleşme düzeyi
+/// kanıt H-EVENTS / H-CUTOVER'dadır; burada sahtenin kendi kuyruğu sınanır.)
 #[test]
 fn f9_close_forgets_only_the_closed_handle() {
     let mut t = build();
@@ -435,8 +437,13 @@ fn f9_close_forgets_only_the_closed_handle() {
     t.request_renew(old);
     let new = t.complete_renew(old);
 
-    t.close(old);
-    // F0.2(i): `Closed(old)` henüz OKUNMADI → close(old) saf no-op, `SessionSuperseded` korunur.
+    // F0.2(i) + F07.1: `Closed(old)` henüz OKUNMADI → close(old) `Err(SessionSuperseded)`, saf
+    // no-op, `SessionSuperseded` korunur.
+    assert_eq!(
+        t.close(old),
+        Err(TransportError::SessionSuperseded),
+        "supersede edilmiş tutamaca close() (Closed okunmadan)"
+    );
     assert_eq!(
         t.send(old, unit(b"eski"), DeliveryPolicy::Reliable),
         Err(TransportError::SessionSuperseded),
@@ -451,10 +458,15 @@ fn f9_close_forgets_only_the_closed_handle() {
         ],
         "supersede edilmiş tutamaca close() ikinci bir Closed üretti"
     );
-    // `Closed(old)` okundu → artık UnknownSession.
+    // `Closed(old)` okundu → artık UnknownSession (send ve close); olay yok.
     assert_eq!(
         t.send(old, unit(b"eski"), DeliveryPolicy::Reliable),
         Err(TransportError::UnknownSession)
+    );
+    assert_eq!(t.close(old), Err(TransportError::UnknownSession));
+    assert!(
+        t.poll_event().is_none(),
+        "Closed'ı okunmuş tutamaca close() olay üretti"
     );
     assert_eq!(
         t.connect(peer, None),
@@ -465,7 +477,9 @@ fn f9_close_forgets_only_the_closed_handle() {
 
     // Aktif tutamacı kapatmak onu unutturur, tam bir Closed(UserClosed) üretir ve eşi yeniden
     // bağlanılabilir kılar.
-    t.close(new);
+    assert_eq!(t.close(new), Ok(()), "aktif tutamaca close()");
+    // `Closed` kuyruktayken ikinci close → UnknownSession, olay yok.
+    assert_eq!(t.close(new), Err(TransportError::UnknownSession));
     assert_eq!(
         drain_events(&mut t),
         vec![SessionEvent::Closed(new, CloseReason::UserClosed)],
@@ -555,8 +569,9 @@ fn f11_accepted_early_unit_survives_a_full_inbox() {
 ///
 /// Olay kuyruğu doluyken yapılan cutover'ın `Ready(h')` ve `Closed(h)` olayları kuyruğa sığmaz.
 /// `Closed` hiç okunamayacağı için eski tutamaç o anda unutulur (`UnknownSession`); yoksa
-/// Application `close(h)` çağırmadıkça — ki onu buna yöneltecek olay hiç gelmeyecektir —
-/// `send(h)` `SessionSuperseded` dönmeye devam eder ve supersede kümesi büyürdü.
+/// `send(h)` `SessionSuperseded` dönmeye devam eder ve supersede kümesi büyürdü — supersede
+/// edilmiş tutamaca `close(h)` saf no-op olduğundan (F07.1: `Err(SessionSuperseded)`) onu
+/// Application da temizleyemezdi.
 #[test]
 fn f12_dropped_closed_event_does_not_strand_the_handle() {
     /// Cutover'ın ürettiği olay sayısı: `Ready(h')` + `Closed(h, Superseded)`.

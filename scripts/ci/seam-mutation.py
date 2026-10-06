@@ -135,6 +135,13 @@ INITIAL_MEASURING = """        // F0.2(ii): Pending döndüğü anda ilk olay `M
 """
 CLOSE_EVENT = """        self.push_event(SessionEvent::Closed(session, CloseReason::UserClosed));"""
 PEER_SUPERSEDE = """        self.supersede(old, "inject_peer_supersession")"""
+# F07.1 (2026-10-06) capalari: close -> Result<(), TransportError>
+CLOSE_UNKNOWN = """        let Some(peer) = self.session_peer.remove(&session) else {
+            // F07.1: bilinmeyen ya da `Closed`'ı kuyrukta/okunmuş tutamaç; olay YOK.
+            return Err(TransportError::UnknownSession);
+        };"""
+CLOSE_SUPERSEDED = """            // F07.1: SAF no-op — durum değişmez; `Closed(h, Superseded)` zaten kuyrukta.
+            return Err(TransportError::SessionSuperseded);"""
 
 M = [
  # (kimlik, hedef satir (test adi), aciklama, eski, yeni)
@@ -154,6 +161,8 @@ M = [
  ("events-same-handle", "h_events", "yenileme ayni tutamaci verir", "        let new_handle = SessionHandle::from_raw(self.fresh_id());\n        self.active_by_peer.insert(peer, new_handle);",
   "        let new_handle = old;\n        self.active_by_peer.insert(peer, new_handle);"),
  ("close-no-event", "h_events", "close(h): aktif tutamacta Closed(h, UserClosed) cikmaz (F0.2(iii))", CLOSE_EVENT, ""),
+ ("close-unknown-returns-ok", "h_events", "close(h): bilinmeyen/kapanmis tutamacta Err(UnknownSession) yerine Ok(()) (F07.1)", CLOSE_UNKNOWN,
+  CLOSE_UNKNOWN.replace("return Err(TransportError::UnknownSession);", "return Ok(());")),
  ("cutover-old-still-accepts", "h_cutover", "cutover sonrasi send(h) kabul edilir", SUPERSEDED_CHECK, ""),
  ("cutover-outstanding-dropped", "h_cutover", "cutover'da h'nin outstanding'i atilir", RENEW_EVENTS,
   "        self.inbox.retain(|d| d.session != old);\n" + RENEW_EVENTS),
@@ -161,6 +170,8 @@ M = [
   "        self.in_recovery.retain(|held| held.delivered.session != old);\n" + RENEW_EVENTS),
  ("cutover-old-rejected-early", "h_cutover", "yenileme SURERKEN send(h) reddedilir", REQ_RENEW,
   REQ_RENEW + "\n        self.superseded.insert(session);"),
+ ("close-superseded-returns-ok", "h_cutover", "close(h): supersede edilmis tutamacta Err(SessionSuperseded) yerine Ok(()) (F07.1)", CLOSE_SUPERSEDED,
+  CLOSE_SUPERSEDED.replace("return Err(TransportError::SessionSuperseded);", "return Ok(());")),
  ("cutover-peer-renew-first", "h_cutover", "peer supersession Ready(h')'den ONCE RenewRequired yayinlar (F0.4)", PEER_SUPERSEDE,
   "        self.push_event(SessionEvent::RenewRequired(old));\n" + PEER_SUPERSEDE),
  ("idemp-pending-new-ticket", "h_connect_idemp", "pending ese ikinci connect YENI ticket verir", PENDING_BRANCH,

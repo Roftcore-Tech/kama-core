@@ -441,16 +441,19 @@ pub mod rows {
     /// "`Closed` sonrası" = `Closed` olayının `poll_event` ile OKUNMASINDAN sonrası (S1 §3
     /// F0.2(i), 2026-10-06; K7 aynı dili kullanır). `Ready(h')` ile `Closed` arasındaki pencere
     /// H-CUTOVER'ındır (`SessionSuperseded`). Application'ın `close(h)` çağırması GEREKMEZ;
-    /// çağırırsa (`Closed` okunmuş tutamaç) olay üretmez. Hayri'nin özgün testi `UnknownSession`'ı
-    /// `close(h)` çağrısından sonra bekliyordu; gövde iki biçimi de sınar.
+    /// çağırırsa (`Closed` okunmuş tutamaç) `Err(UnknownSession)` döner ve olay üretmez (F07.1).
+    /// Hayri'nin özgün testi `UnknownSession`'ı `close(h)` çağrısından sonra bekliyordu; gövde iki
+    /// biçimi de sınar.
     ///
-    /// F0.2(iii): aktif `h'`ye `close(h')` tam BİR `Closed(h', UserClosed)` üretir; sonra
-    /// `send(h')` → `UnknownSession`; ikinci `close(h')` olay üretmez — hem `Closed` KUYRUKTAYKEN
-    /// (art arda iki `close`, arada okuma yok) hem `Closed` OKUNDUKTAN sonra.
+    /// F0.2(iii) + F07.1: aktif `h'`ye `close(h')` → `Ok(())` ve tam BİR `Closed(h', UserClosed)`;
+    /// sonra `send(h')` → `UnknownSession`; ikinci `close(h')` → `Err(UnknownSession)` ve olay
+    /// üretmez — hem `Closed` KUYRUKTAYKEN (art arda iki `close`, arada okuma yok) hem `Closed`
+    /// OKUNDUKTAN sonra.
     ///
     /// # Panics
     /// Olay sırası farklıysa, fazladan olay çıkarsa, `Closed` sonrası `send(h)` başka bir şey
-    /// dönerse, `close` olay üretmesi gereken yerde üretmez ya da üretmemesi gerekirken üretirse.
+    /// dönerse, `close` olay üretmesi gereken yerde üretmez ya da üretmemesi gerekirken üretirse,
+    /// ya da `close`'un dönüş değeri F07.1'den ayrışırsa.
     pub fn h_events<T: SeamTarget>() {
         let mut t = fresh::<T>();
         let peer = crate::harness::test_peer(0xE1);
@@ -485,8 +488,13 @@ pub mod rows {
         );
         // Hayri'nin özgün testindeki biçim: Application `Closed`'ı işleyip eski tutamacı kapatır
         // (kaynak bırakma). Sonuç değişmez, kapatma YENİ oturuma dokunmaz ve `Closed`'ı okunmuş
-        // tutamaca `close(h)` olay ÜRETMEZ (F0.2(iii): her oturum sonu tam BİR Closed).
-        t.close(h);
+        // tutamaca `close(h)` olay ÜRETMEZ (F0.2(iii): her oturum sonu tam BİR Closed) ve
+        // `Err(UnknownSession)` döner (F07.1).
+        assert_eq!(
+            t.close(h),
+            Err(TransportError::UnknownSession),
+            "Closed(h, Superseded)'ı okunmuş tutamaca close(h)"
+        );
         assert_no_event::<T>(&mut t, "Closed'ı okunmuş tutamaca close(h)");
         assert_eq!(
             t.send(h, unit(b"gec"), DeliveryPolicy::Reliable),
@@ -494,12 +502,17 @@ pub mod rows {
         );
         assert_eq!(t.send(h2, unit(b"yeni"), DeliveryPolicy::Reliable), Ok(()));
 
-        // F0.2(iii): aktif tutamacı kapatmak tam BİR `Closed(h', UserClosed)` üretir; sonra
-        // tutamaç bilinmez; ikinci `close` olay üretmez. İki kol: (a) `Closed` KUYRUKTAYKEN (henüz
-        // okunmadan) ikinci `close(h')` → yine tam BİR olay; (b) `Closed` OKUNDUKTAN sonra
-        // `close(h')` → olay yok.
-        t.close(h2);
-        t.close(h2); // (a) Closed kuyrukta, okunmadı
+        // F0.2(iii) + F07.1: aktif tutamacı kapatmak `Ok(())` döner ve tam BİR `Closed(h',
+        // UserClosed)` üretir; sonra tutamaç bilinmez; ikinci `close` `Err(UnknownSession)` döner
+        // ve olay üretmez. İki kol: (a) `Closed` KUYRUKTAYKEN (henüz okunmadan) ikinci `close(h')`
+        // → yine tam BİR olay; (b) `Closed` OKUNDUKTAN sonra `close(h')` → olay yok.
+        assert_eq!(t.close(h2), Ok(()), "aktif tutamaca close(h')");
+        // (a) Closed kuyrukta, okunmadı
+        assert_eq!(
+            t.close(h2),
+            Err(TransportError::UnknownSession),
+            "Closed kuyruktayken ikinci close(h')"
+        );
         assert_eq!(
             next_event::<T>(&mut t),
             Some(SessionEvent::Closed(h2, CloseReason::UserClosed))
@@ -509,7 +522,12 @@ pub mod rows {
             t.send(h2, unit(b"gec"), DeliveryPolicy::Reliable),
             Err(TransportError::UnknownSession)
         );
-        t.close(h2); // (b) Closed okundu
+        // (b) Closed okundu
+        assert_eq!(
+            t.close(h2),
+            Err(TransportError::UnknownSession),
+            "Closed'ı okunmuş tutamaca ikinci close(h')"
+        );
         assert_no_event::<T>(&mut t, "Closed'ı okunmuş tutamaca ikinci close(h')");
     }
 
@@ -530,6 +548,10 @@ pub mod rows {
     ///
     /// İki vakada da `Closed(h, Superseded)` okunduktan sonra kuyruk BOŞTUR (geç `RenewRequired`,
     /// ikinci `Closed`, `ConnectProgress` yok).
+    ///
+    /// F07.1 (2026-10-06), iki vakada da: `Ready(h')` okunduktan sonra, `Closed(h)` okunmadan
+    /// `close(h)` → `Err(SessionSuperseded)`; ardından `send(h)` hâlâ `SessionSuperseded` (durum
+    /// değişmedi) ve sonraki olay hâlâ `Closed(h, Superseded)` (fazladan olay yok).
     ///
     /// # Panics
     /// İki vakanın iddialarından biri tutmazsa (vaka 2'de `Ready(h')`'den önce `RenewRequired` ya
@@ -562,6 +584,19 @@ pub mod rows {
         assert_eq!(
             t.send(h, unit(b"sonra"), DeliveryPolicy::Reliable),
             Err(TransportError::SessionSuperseded)
+        );
+        // F07.1: aynı pencerede `close(h)` → `Err(SessionSuperseded)` ve SAF no-op: durum
+        // değişmez (`send(h)` hâlâ `SessionSuperseded`), olay üretmez (sonraki olay hâlâ
+        // `Closed(h, Superseded)`, ardından kuyruk boş).
+        assert_eq!(
+            t.close(h),
+            Err(TransportError::SessionSuperseded),
+            "vaka 1: Ready(h') okundu, Closed(h) okunmadı — close(h)"
+        );
+        assert_eq!(
+            t.send(h, unit(b"sonra-2"), DeliveryPolicy::Reliable),
+            Err(TransportError::SessionSuperseded),
+            "vaka 1: close(h) durumu değiştirdi"
         );
 
         // h'nin outstanding'i drain olur: cutover'dan ÖNCE kabul edilen iki birim teslim edilir.
@@ -609,6 +644,19 @@ pub mod rows {
         assert_eq!(
             t.send(h, unit(b"sonra"), DeliveryPolicy::Reliable),
             Err(TransportError::SessionSuperseded)
+        );
+        // F07.1: aynı pencerede `close(h)` → `Err(SessionSuperseded)` ve SAF no-op: durum
+        // değişmez (`send(h)` hâlâ `SessionSuperseded`), olay üretmez (sonraki olay hâlâ
+        // `Closed(h, Superseded)`, ardından kuyruk boş).
+        assert_eq!(
+            t.close(h),
+            Err(TransportError::SessionSuperseded),
+            "vaka 2: Ready(h') okundu, Closed(h) okunmadı — close(h)"
+        );
+        assert_eq!(
+            t.send(h, unit(b"sonra-2"), DeliveryPolicy::Reliable),
+            Err(TransportError::SessionSuperseded),
+            "vaka 2: close(h) durumu değiştirdi"
         );
 
         // h'nin outstanding'i drain olur; h' çalışır; reddedilen birim sızmaz.
@@ -1057,7 +1105,7 @@ pub mod rows {
 pub mod mechanism {
     use super::super::target::{SeamTarget, TargetUnavailable, REGISTERED_TARGETS};
     use kama_contracts::handles::SessionHandle;
-    use kama_contracts::s1::KamaTransport;
+    use kama_contracts::s1::{KamaTransport, TransportError};
 
     /// Hedef kaydı ile hedefin kendi beyanı tutarlı mı.
     ///
@@ -1125,9 +1173,14 @@ pub mod mechanism {
             t.poll_event().is_none(),
             "ikinci poll_event() farklı davrandı"
         );
-        // §1: `close` hata kanalı taşımaz; bilinmeyen handle no-op olmalı, panik değil ve
+        // §1 F07.1: bilinmeyen handle'a `close` panik değil `Err(UnknownSession)` döner ve
         // (F0.2(iii)) olay ÜRETMEZ.
-        t.close(SessionHandle::from_raw(u64::MAX));
+        assert_eq!(
+            t.close(SessionHandle::from_raw(u64::MAX)),
+            Err(TransportError::UnknownSession),
+            "hedef '{}' bilinmeyen tutamaca close()",
+            T::ID
+        );
         assert!(
             t.poll_event().is_none(),
             "hedef '{}' bilinmeyen tutamaca close() olay üretti",

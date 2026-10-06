@@ -40,10 +40,12 @@
 //! * (ii) `connect()` yeni `Pending(ticket)` üretince HER DURUMDA önce `ConnectProgress(ticket,
 //!   Measuring)`; link kapalıysa hemen ardından `ConnectProgress(ticket, Suspended)` (faz değişti).
 //!   Aynı faz tekrar yayınlanmaz (`set_link` aynı durumda no-op; idempotent `connect` olaysız).
-//! * (iii) `close(h)`: aktif tutamaçta tam bir `Closed(h, UserClosed)`; bilinmeyen, zaten kapanmış
-//!   ya da supersede edilmiş tutamaçta HİÇBİR olay (ve hata yok). Supersede edilmiş tutamaçta
-//!   `close(h)` SAF no-op'tur: `Closed(h, Superseded)` okunana kadar (i) korunur
-//!   (`SessionSuperseded`), temizlik `poll_event`'teki `forget(h)`'tadır.
+//! * (iii) `close(h) -> Result<(), TransportError>` (F07.1, 2026-10-06): aktif tutamaçta tam bir
+//!   `Closed(h, UserClosed)` ve `Ok(())`; bilinmeyen ya da zaten kapanmış (`Closed`'ı kuyrukta ya
+//!   da okunmuş) tutamaçta `Err(UnknownSession)`, HİÇBİR olay. Supersede edilmiş tutamaçta
+//!   (`Closed(h, Superseded)` henüz okunmadı) `Err(SessionSuperseded)` ve SAF no-op: durum
+//!   değişmez, `Closed(h, Superseded)` okunana kadar (i) korunur (`SessionSuperseded`), temizlik
+//!   `poll_event`'teki `forget(h)`'tadır.
 //! * (iv) `early_unit` için AYRI sınır: `capabilities.max_early_unit_bytes` (K6); `reliable` alanı
 //!   yalnız TAŞINIR (sahte onu okumaz; "recovery" anahtarı ondan bağımsızdır).
 //!
@@ -514,26 +516,30 @@ impl KamaTransport for MockTransport {
         Some(ev)
     }
 
-    /// S1 §4 F0.2(iii): senkron döner, hata vermez. Aktif tutamaçta tutamacı unutur
-    /// (`UnknownSession`) ve tam BİR `Closed(h, UserClosed)` üretir. Bilinmeyen / zaten kapanmış
-    /// (`Closed`'ı kuyrukta ya da okunmuş) / supersede edilmiş tutamaçta HİÇBİR olay: supersede
-    /// edilmişin `Closed(h, Superseded)`'ı zaten kuyruktadır (ya da düştü); ikinci `Closed` yok.
+    /// S1 §1/§4 F0.2(iii) + F07.1: senkron döner. Aktif tutamaçta tutamacı unutur (sonra
+    /// `UnknownSession`), tam BİR `Closed(h, UserClosed)` üretir ve `Ok(())` döner. Bilinmeyen /
+    /// zaten kapanmış (`Closed`'ı kuyrukta ya da okunmuş) tutamaçta `Err(UnknownSession)`, HİÇBİR
+    /// olay. Supersede edilmiş tutamaçta `Err(SessionSuperseded)`, HİÇBİR olay: `Closed(h,
+    /// Superseded)` zaten kuyruktadır; ikinci `Closed` yok.
     ///
     /// Supersede edilmiş tutamaçta SAF no-op: state'e dokunulmaz, böylece `Closed(h, Superseded)`
-    /// okunana kadar `send(h)` → `SessionSuperseded` korunur (F0.2(i)); temizlik `poll_event`'teki
-    /// `forget(h)`'tadır. Eşin YENİ aktif tutamacına da dokunulmaz.
-    fn close(&mut self, session: SessionHandle) {
+    /// okunana kadar `send(h)` ve `close(h)` → `SessionSuperseded` korunur (F0.2(i)); temizlik
+    /// `poll_event`'teki `forget(h)`'tadır. Eşin YENİ aktif tutamacına da dokunulmaz.
+    fn close(&mut self, session: SessionHandle) -> Result<(), TransportError> {
         if self.superseded.contains(&session) {
-            return;
+            // F07.1: SAF no-op — durum değişmez; `Closed(h, Superseded)` zaten kuyrukta.
+            return Err(TransportError::SessionSuperseded);
         }
         let Some(peer) = self.session_peer.remove(&session) else {
-            return;
+            // F07.1: bilinmeyen ya da `Closed`'ı kuyrukta/okunmuş tutamaç; olay YOK.
+            return Err(TransportError::UnknownSession);
         };
         // Supersede edilmemiş ve bilinen tutamaç = eşin aktif tutamacı; eşlemeyi temizle.
         if self.active_by_peer.get(&peer) == Some(&session) {
             self.active_by_peer.remove(&peer);
         }
         self.push_event(SessionEvent::Closed(session, CloseReason::UserClosed));
+        Ok(())
     }
 
     /// DR-CONNECT-1 H9 (§4): yalnız BEKLEYEN niyet iptal edilir; `early_unit` teslim EDİLMEZ; ticket

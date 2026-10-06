@@ -52,8 +52,9 @@ impl PeerRef {
 
     /// Ham `dest_hash`. Opaklık = YORUMLAMAMA: Application bu baytları yorumlayamaz/türetemez.
     /// Katman kuralı (`scripts/ci/layer_check.py`) crate kenarlarını ve `*_for_mock` erişimlerini
-    /// yakalar; `as_bytes` çıktısının yorumlanmaması inceleme kuralıdır (bugün CI kapısı yok — iş
-    /// emri F0.3). [2026-10-06 F0.3]
+    /// yakalar; kama-app kaynağında çağrılması `scripts/ci/layer_check.py` C6 ile YASAKTIR
+    /// [2026-10-06 F07.2]; kural muhafazakârdır (kama-app'te `as_bytes` adı hiç geçemez).
+    /// [2026-10-06 F0.3]
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
