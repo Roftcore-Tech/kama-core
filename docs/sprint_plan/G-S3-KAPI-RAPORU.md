@@ -7,6 +7,7 @@ geçersiz kıldığı cümlelerin üstü çizildi. §1–§6'daki satır numaral
 **Güncelleme 2026-10-05c:** §7.3'teki S1 kapsama sayımı güncellendi (Hayri taşıması, PR #92); eski cümlenin üstü çizildi.
 **Güncelleme 2026-10-05d:** §7.4'e silme kapısının ikinci ölçümü ve taban değişikliği eklendi (yalnız ekleme).
 **Güncelleme 2026-10-06:** KDF / SSI1 / SSR1 tüketici satırlarında `pending A5.1 / A5.5` → `pending L-A5a / L-A5c` (iş emri 2026-10-06 §1 şerit adları; F0.6); eski ibarelerin üstü çizildi.
+**Güncelleme 2026-10-06b:** G-S3 FROZEN — Abkarada, sprint kapanışı iş emri (2026-10-06) §0; kama-contracts s3 kilitli.
 **Durum notu (2026-10-05, merge anında güncellendi):** bu raporun dayandığı PR'ların hepsi main'dedir
 (#82 `6b2d6bcb` · #83 `e341b020` · #85 `88961ee1` · #86 `ca788d4c` · #84 `285824b6` · #87 `77848003`).
 Satır numaraları main `77848003` ağacına göredir (merge öncesi tek tek doğrulandı).

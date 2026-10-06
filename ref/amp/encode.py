@@ -25,8 +25,17 @@ Kullanım:
   · 0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE için pozitif vektör + tip-bağımsız ret vakaları (A1 "toplam ≤
     body_len", sabit öneğin sığmaması, reserved flags) eklendi; alan düzeni §3 satırlarından AYNEN. Mevcut
     vakaların baytları değişmedi.
-  · Sıkıştırılmış MEDIA_BUNDLE (flags.bit0=1) için ret vakası YAZILMADI: §3 "asla sıkıştırılmaz" ve §5 kural 6
-    GÖNDERİCİ kuralıdır; alıcı hükmü (drop/reject, reason) spec'te yok.
+  · ~~Sıkıştırılmış MEDIA_BUNDLE (flags.bit0=1) için ret vakası YAZILMADI: §3 "asla sıkıştırılmaz" ve §5 kural 6
+    GÖNDERİCİ kuralıdır; alıcı hükmü (drop/reject, reason) spec'te yok.~~ [2026-10-06 F07.4: vaka YAZILDI —
+    aşağıdaki blok.]
+
+[2026-10-06b — F07.4 (Abkarada'nın yazılı yaması: sprint kapanışı iş emri 2026-10-06 §0/§2)]
+  · Ret vakası `amp-record-reject-v1.decode.media-bundle-compressed-expansion-ratio-exceeded` eklendi: 0x0A
+    MEDIA_BUNDLE taşıyıcı, flags.bit0=1, gövde mevcut `decode.expansion-ratio-exceeded` vakasının kurgusu
+    (uncompressed_len/body_len = 1000/10 = 100 > MAX_EXPANSION_RATIO). Beklenen hüküm mevcut vakayla AYNI
+    (`drop` / `expansion-ratio-exceeded`; yeni reason token'ı yok). Gerekçe: §3 "asla sıkıştırılmaz" ve §5
+    kural 6 GÖNDERİCİ kuralıdır; alıcı §5 alıcı kurallarını (burada kural 4) tipe bakmadan uygular.
+    Vaka listenin SONUNA eklendi; mevcut vakaların ve pozitif dosyanın baytları değişmedi.
 
 SINIRLAR (bilinen; düzeltilmedi):
   · Reserved tip yalnız 0x00 ile sınanıyor (0xF0..0xFF yok); "bilinmeyen ama reserved olmayan tip → DROP"
@@ -359,6 +368,11 @@ def build_negative() -> dict:
         MEDIA_BUNDLE, struct.pack(">IBB", 7, 0x01, 20) + b"\x00"
     )  # sabit önek 8 B, body 7 B (payload_len'in yalnız ilk baytı)
 
+    # [F07.4 2026-10-06] Sıkıştırılmış MEDIA_BUNDLE: gövde `expansion` vakasıyla AYNI kurgu (compression_id,
+    # uncompressed_len=1000, 5 B payload → body_len=10, oran 100 > 64); yalnız taşıyıcı tip 0x0A. Alıcı §5
+    # kural 4'ü tipe bakmadan uygular — decompress'e başlanmaz.
+    media_bundle_compressed_expansion = record(MEDIA_BUNDLE, expansion_payload, flags=COMPRESS_FLAG_BIT0)
+
     cases = [
         case(
             "amp-record-reject-v1.decode.reserved-msg-type",
@@ -478,6 +492,16 @@ def build_negative() -> dict:
             input_hex=hx(media_bundle_truncated_prefix),
             expected={"result": "drop", "reason": "inner-field-exceeds-body-len"},
         ),
+        case(
+            "amp-record-reject-v1.decode.media-bundle-compressed-expansion-ratio-exceeded",
+            "decode",
+            flags=["compressed", "compression-length-only"],
+            note="§3 MEDIA_BUNDLE asla sıkıştırılmaz (gönderici kuralı, §5 kural 6); alıcı §5 kural 4'ü tipe "
+            "bakmadan uygular — uncompressed_len/body_len = 1000/10 = 100 > MAX_EXPANSION_RATIO=64, DROP.",
+            spec_ref="application-message-protocol.md §5 kural 4 (+ §3 0x0A, §5 kural 6)",
+            input_hex=hx(media_bundle_compressed_expansion),
+            expected={"result": "drop", "reason": "expansion-ratio-exceeded"},
+        ),
     ]
     return {
         "schema_version": 2,
@@ -486,8 +510,8 @@ def build_negative() -> dict:
         "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile sıfır paylaşım)",
         "description": "AMP §2/§5/§6 negatif corpus: reserved type/flag, iç alan/body_len uyumsuzluğu "
         "(TEXT, SIGNALING_BLOB, MEDIA_BUNDLE; sabit öneğin sığmaması dahil), sıkıştırma bomb korumaları "
-        "(uncompressed_len aşımı, expansion oranı), gerçek zstd ile kesilmiş/geçersiz frame, bilinmeyen "
-        "compression_id/msg_version.",
+        "(uncompressed_len aşımı, expansion oranı; expansion oranı sıkıştırılmış MEDIA_BUNDLE taşıyıcıyla da), "
+        "gerçek zstd ile kesilmiş/geçersiz frame, bilinmeyen compression_id/msg_version.",
         "notes": {
             "compressed": "flags.bit0=1 gövde (§5).",
             "compression-length-only": "Decoder yalnız beyan edilen uzunluk alanlarına bakarak "

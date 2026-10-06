@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-06d [L-F07 artıklar-2 F07.4/F07.5/F07.6 — iş emri 2026-10-06 §2]:** F07.5: WS-B (B1.*, B2.*) sahibi "Hayri" üstü çizildi → icra Claude Code / karar ve inceleme Abkarada (bu sprint; iş emri 2026-10-06 §0 devir) — WS-B başlığı, KATMAN 1 ve KATMAN 5 sahip etiketleri; B1.1 / B1.2 DURUM ve G-S1 satırındaki "Hayri imzası" kalanı: imza Abkarada, 2026-10-06. F07.4: B1.2 DURUM'unda ret vakası sayısı 14 → 15 (sıkıştırılmış MEDIA_BUNDLE). F07.6: KATMAN 5 sonuna "Kabul edilen SAPMA'lar" bölümü. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-06c [F0.6 artıklar — iş emri 2026-10-06 §2]:** B1.0 / B1.2 / B1.3 / B1.4 / B1.5 kartlarına DURUM satırı · B2.2 `msg_id` u32 (AMP K1 ile hizalandı) · yeni `KATMAN 6 — Sonraki sprint — KAPSAM DIŞI` (iş emri §0 listesi, BL/PARK atıflarıyla). Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-05b [PN SÜREKLİ artıkları — Abkarada kararı]:** D1 kartına not: engine ACK çerçevesindeki `ack_epoch` ≠ `dh_epoch`; D1'de dokunulmaz. Yalnız ekleme.
@@ -29,7 +31,7 @@ Kama'nın mimarisi dört katman: **Application → Transport → Crypto → UDP.
 - Crypto↔Transport sınırını testlerle donduruyor.
 - Sonra gerçek kripto kodunu bu testlere karşı yazıyor.
 
-**Hayri (application)**
+**~~Hayri~~ icra Claude Code / karar ve inceleme Abkarada (bu sprint) **[2026-10-06]** (application)**
 - Mesaj formatının (metin, dosya, PTT, okundu bilgisi) son kararlarını kapatıyor.
 - Application'ın Transport'la konuştuğu API'nin tiplerini kuruyor.
 - Sahte bir Transport'a karşı Application'ı bağımsız geliştiriyor.
@@ -307,7 +309,8 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 
 ---
 
-## WS-B — Hayri (application) — Abdurrahman'ı BEKLEMEZ
+## WS-B — ~~Hayri~~ icra Claude Code / karar ve inceleme Abkarada (bu sprint) **[2026-10-06]** (application) — Abdurrahman'ı BEKLEMEZ
+*[2026-10-06, iş emri 2026-10-06 §0] Hayri'nin bu sprintteki kalemleri (B1.*, B2.*) Abkarada'ya devredildi: **icra Claude Code / karar ve inceleme Abkarada (bu sprint)**. AMP §8 A3/A4 ve S1 §8 imzası Abkarada tarafından atıldı (2026-10-06).*
 
 ### B1.0 — Application crate'i ve Transport API tipleri
 **Neden:** Repo'da Application katmanı kodu hiç yok. Application'ın konuştuğu **tek** şey Transport API'si; önce onun tipleri derlenmeli ki hem Application kodu hem sahte Transport aynı imzaya karşı yazılsın.
@@ -324,6 +327,7 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 **Done:** §8'de dört satır "KAPANDI".
 
 **DURUM (2026-10-04): Abkarada tarafı KAPANDI (K1).** AMP A1 ve A2 kapandı; A3'te byte düzeltmesi işlendi (`msg_id`/`ref_msg_id` u32, `sent_at_ms` telde yok). Kalan: A3 ve A4 için Hayri imzası.
+**DURUM (2026-10-06): KAPANDI — F07.5.** Yukarıdaki kalan (A3 ve A4 imzası) kapandı — imza: Abkarada, 2026-10-06 (Hayri'nin kalemleri bu sprint Abkarada'ya devredildi; AMP §8).
 
 ### B1.2 — Mesaj formatı vektörleri
 **Neden:** Her mesaj tipinin exact byte'ları sabit olmalı; ve **Rust codec'i kendi beklentisini üretmemeli** (A2.1'deki aynı ilke). Vektörler codec yazılmadan **önce**, spec'ten okunarak üretilir.
@@ -331,7 +335,7 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 **Nereye:** `vectors/amp-*.json`, `ref/amp/encode.py`. Tanım: AMP §2, §3, §5, §7.
 **Neye bağlı:** B1.1, T-00.1.
 **Done:** commit; her negatif vakada `result` tam olarak `drop` ya da `reject`.
-**DURUM (2026-10-06): KAPANDI (vektörler) — `ref/amp/encode.py` (#92 + F0.5).** 0x01–0x0A her tip için pozitif (11 vaka, `vectors/amp-record-v1.json`) + ret (14 vaka, `vectors/amp-record-reject-v1.json`) vektörü; `--check` gecelik işte (F0.6, `.github/workflows/nightly.yml` `amp-vectors-check`). Rust codec tüketicisi B2.1'de (L-B2a). Kalan: Hayri imzası A3/A4 (B1.1).
+**DURUM (2026-10-06): KAPANDI (vektörler) — `ref/amp/encode.py` (#92 + F0.5).** 0x01–0x0A her tip için pozitif (11 vaka, `vectors/amp-record-v1.json`) + ret (~~14 vaka~~ 15 vaka **[2026-10-06 F07.4]** — sıkıştırılmış MEDIA_BUNDLE ret vakası eklendi, `vectors/amp-record-reject-v1.json`) vektörü; `--check` gecelik işte (F0.6, `.github/workflows/nightly.yml` `amp-vectors-check`). Rust codec tüketicisi B2.1'de (L-B2a). ~~Kalan: Hayri imzası A3/A4 (B1.1).~~ **[2026-10-06 F07.5]** A3/A4 imzası atıldı (Abkarada; B1.1).
 
 ### B1.3 — Sahte Transport (Application testleri için)
 **Neden:** Application, gerçek Transport/Crypto olmadan geliştirilebilsin.
@@ -362,7 +366,7 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 **DURUM (2026-10-06): KAPANDI (S1 düzeyi).** H-CANCEL / H-PROGRESS / H-CUTOVER(Superseded) / H-SILENT-REJECT sahtede koşuyor; F0.4 ile H-CUTOVER ikinci vaka: `RenewRequired` OLMADAN `Ready(h')` → `Closed(h, Superseded)` (eski tutamaç F0.2(i) semantiğiyle). Glare ve bayat INIT S3 real hedefte (L-A5c). `Suspended` / `LongOutage` gerçek tetikleri sonraki sprint (DR-CONNECT-1 IMPL; KATMAN 6).
 
 ### 🚪 G-S1 — S1 SEAM-FROZEN
-B1.0 derleniyor · B1.1 kapalı · B1.2 commit · **B1.3 / B1.4 / B1.5 yeşil** · C1.2 yeşil · ~~KS-8 verili (B1.5 onun davranışsal testi)~~ DR-CONNECT-1 S1'e işlendi (B1.5 = H-CANCEL/H-PROGRESS/H-CUTOVER(Superseded)) + Hayri imzası. **Kripto vektörü beklemez** — S3'ten önce donabilir.
+B1.0 derleniyor · B1.1 kapalı · B1.2 commit · **B1.3 / B1.4 / B1.5 yeşil** · C1.2 yeşil · ~~KS-8 verili (B1.5 onun davranışsal testi)~~ DR-CONNECT-1 S1'e işlendi (B1.5 = H-CANCEL/H-PROGRESS/H-CUTOVER(Superseded)) + ~~Hayri imzası~~ imza (Abkarada, 2026-10-06; devir — F07.5). **Kripto vektörü beklemez** — S3'ten önce donabilir.
 
 ### B2.1 — Mesaj codec'i
 **Ne:** encode/decode; sınırlı açma (decompression bomb koruması); A2 limitleri; zstd. **Nereye:** `crates/kama-app/src/amp/`. **Bağlı:** G-S1. **Done:** B1.2 byte-for-byte.
@@ -455,7 +459,7 @@ D1 + D2 + D3. INT-02'nin ön koşulu; kripto ve application kapılarından bağ�
 ```
 Ön-koşul  R-1..R-7                                   (Abdurrahman + Claude Code; yarım gün)
 Gün 0     T-00 (~~Hasan~~ Abkarada/Claude Code) ──┬── A2.* vektörler           (Abdurrahman; sayı beklemez)
-                         ├── B1.0–B1.4                (Hayri)
+                         ├── B1.0–B1.4                (~~Hayri~~ Claude Code/Abkarada [2026-10-06])
                          └── C1.2–C1.5                (~~Hasan~~ Abkarada/Claude Code)
 Gün 0–1   A1 kalibrasyon oturumu                     (Abdurrahman; tek oturum)
 Sonra     A3.* + B1.5                                (sayıya bağlı testler)
@@ -474,6 +478,8 @@ G-IMPL-S1 + G-IMPL-S3 + G-D →   INT-02: uçtan uca mesaj (kama-integration)
 **SEAM-FROZEN** = kararlar kapalı + sayılar verili + vektörler commit + conformance-core çalışıyor + mock contract-conformant + mimari kontroller yeşil.
 **IMPLEMENTATION-GO** = gerçek kod aynı vektörleri tüketiyor + aynı conformance-core'u geçiyor + sözleşme dışı davranış icat etmiyor.
 **Süreç kuralı:** yeni konu → spec'e ekleme | sayı kalibrasyonu | test/kanıt | kod. Beşinci kutu yok; mimari yeniden açılmaz.
+
+**Kabul edilen SAPMA'lar (Abkarada, iş emri 2026-10-06 §2 F07.6):** (1) gecelik job'lar ci.yml yerine .github/workflows/nightly.yml'de: `seam-mutation` (scripts/ci/seam-mutation.py) ve `amp-vectors-check` (ref/amp/encode.py --check); (2) bilinmeyen tutamaçta `close` olay üretmez (F07.1 ile `Err(UnknownSession)`); (3) `SeamTarget::RELIABLE` yalnız test altyapısıdır (sözleşme tipine girmez).
 
 ---
 
