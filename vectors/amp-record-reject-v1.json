@@ -3,12 +3,12 @@
   "suite": "amp-record-reject-v1",
   "spec_version": "application-message-protocol@v1+2026-10-04-K1",
   "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile s\u0131f\u0131r payla\u015f\u0131m)",
-  "description": "AMP \u00a72/\u00a75/\u00a76 negatif corpus: reserved type/flag, i\u00e7 alan/body_len uyumsuzlu\u011fu, s\u0131k\u0131\u015ft\u0131rma bomb korumalar\u0131 (uncompressed_len a\u015f\u0131m\u0131, expansion oran\u0131), ger\u00e7ek zstd ile kesilmi\u015f/ge\u00e7ersiz frame, bilinmeyen compression_id/msg_version.",
+  "description": "AMP \u00a72/\u00a75/\u00a76 negatif corpus: reserved type/flag, i\u00e7 alan/body_len uyumsuzlu\u011fu (TEXT, SIGNALING_BLOB, MEDIA_BUNDLE; sabit \u00f6ne\u011fin s\u0131\u011fmamas\u0131 dahil), s\u0131k\u0131\u015ft\u0131rma bomb korumalar\u0131 (uncompressed_len a\u015f\u0131m\u0131, expansion oran\u0131), ger\u00e7ek zstd ile kesilmi\u015f/ge\u00e7ersiz frame, bilinmeyen compression_id/msg_version.",
   "notes": {
     "compressed": "flags.bit0=1 g\u00f6vde (\u00a75).",
     "compression-length-only": "Decoder yaln\u0131z beyan edilen uzunluk alanlar\u0131na bakarak reddeder; zstd decompress'e H\u0130\u00c7 ba\u015flanmaz \u2014 ger\u00e7ek bir zstd frame'i olmas\u0131 gerekmez."
   },
-  "case_count": 9,
+  "case_count": 14,
   "cases": [
     {
       "id": "amp-record-reject-v1.decode.reserved-msg-type",
@@ -124,6 +124,61 @@
       "expected": {
         "result": "drop",
         "reason": "unknown-msg-version"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.signaling-blob-len-exceeds-body-len",
+      "kind": "decode",
+      "note": "SIGNALING_BLOB.blob_len=16 ama body_len i\u00e7inde yaln\u0131z 3 bayt var \u2014 A1: toplam \u2264 body_len, a\u015farsa DROP.",
+      "spec_ref": "application-message-protocol.md \u00a72 (A1)",
+      "input_hex": "01090000050010763d30",
+      "expected": {
+        "result": "drop",
+        "reason": "inner-field-exceeds-body-len"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.signaling-blob-truncated-prefix",
+      "kind": "decode",
+      "note": "SIGNALING_BLOB body_len=0: blob_len alan\u0131 (2 B) s\u0131\u011fm\u0131yor \u2014 sabit \u00f6nek A1 toplam\u0131na dahildir, a\u015farsa DROP.",
+      "spec_ref": "application-message-protocol.md \u00a72 (A1)",
+      "input_hex": "0109000000",
+      "expected": {
+        "result": "drop",
+        "reason": "inner-field-exceeds-body-len"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.signaling-blob-reserved-flags-nonzero",
+      "kind": "decode",
+      "note": "SIGNALING_BLOB, flags bit1 set; bit1..7 reserved-zero olmal\u0131 (\u00a72) \u2014 kural tipten ba\u011f\u0131ms\u0131z.",
+      "spec_ref": "application-message-protocol.md \u00a72",
+      "input_hex": "01090200050003763d30",
+      "expected": {
+        "result": "reject",
+        "reason": "reserved-flags-nonzero"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.media-bundle-payload-len-exceeds-body-len",
+      "kind": "decode",
+      "note": "MEDIA_BUNDLE.payload_len=32 ama body_len i\u00e7inde \u00f6nekten sonra yaln\u0131z 16 bayt var \u2014 A1: a\u015farsa DROP.",
+      "spec_ref": "application-message-protocol.md \u00a72 (A1)",
+      "input_hex": "010a0000180000000701140020dededededededededededededededede",
+      "expected": {
+        "result": "drop",
+        "reason": "inner-field-exceeds-body-len"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.media-bundle-truncated-prefix",
+      "kind": "decode",
+      "note": "MEDIA_BUNDLE body_len=7: sabit \u00f6nek 8 B (stream_id 4 + codec 1 + bundle_ms 1 + payload_len 2) s\u0131\u011fm\u0131yor \u2014 A1, DROP.",
+      "spec_ref": "application-message-protocol.md \u00a72 (A1)",
+      "input_hex": "010a00000700000007011400",
+      "expected": {
+        "result": "drop",
+        "reason": "inner-field-exceeds-body-len"
       }
     }
   ]

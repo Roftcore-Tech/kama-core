@@ -3,11 +3,11 @@
   "suite": "amp-record-v1",
   "spec_version": "application-message-protocol@v1+2026-10-04-K1",
   "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile s\u0131f\u0131r payla\u015f\u0131m)",
-  "description": "AMP \u00a72/\u00a73/\u00a75 AppMessageRecord kodlamas\u0131 \u2014 0x01\u20130x08 tiplerinin her biri i\u00e7in 1 pozitif vekt\u00f6r + bir s\u0131k\u0131\u015ft\u0131r\u0131lm\u0131\u015f TEXT \u00f6rne\u011fi. 0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE i\u00e7in vekt\u00f6r YOK (\u00a77 her tip i\u00e7in ister; eksik). B1.2 (WS-B/Hayri); t\u00fcketici B2.1'deki ger\u00e7ek Rust codec'i.",
+  "description": "AMP \u00a72/\u00a73/\u00a75 AppMessageRecord kodlamas\u0131 \u2014 0x01\u20130x0A tiplerinin her biri i\u00e7in 1 pozitif vekt\u00f6r + bir s\u0131k\u0131\u015ft\u0131r\u0131lm\u0131\u015f TEXT \u00f6rne\u011fi (0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE F0.5 2026-10-06'da eklendi). B1.2 (WS-B/Hayri); t\u00fcketici B2.1'deki ger\u00e7ek Rust codec'i.",
   "notes": {
     "compressed": "flags.bit0=1; body = compression_id(1)|uncompressed_len(4be)|zstd payload (\u00a75). zstd payload baytlar\u0131 \u00fcreten kitapl\u0131\u011f\u0131n s\u00fcr\u00fcm\u00fcne ba\u011fl\u0131 olabilir (zstd s\u00fcr\u00fcmler aras\u0131 bayt-\u00f6zde\u015f \u00e7\u0131kt\u0131 garanti etmez); bu vakadaki expected_hex \u00fcretildi\u011fi ortam\u0131n \u00e7\u0131kt\u0131s\u0131d\u0131r."
   },
-  "case_count": 9,
+  "case_count": 11,
   "cases": [
     {
       "id": "amp-record-v1.encode.text",
@@ -113,6 +113,29 @@
         "text": "tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin tekrar eden metin "
       },
       "expected_hex": "010101002d010000009628b52ffd2096fd0000c000000002009074656b726172206564656e206d6574696e200100ec4ae718"
+    },
+    {
+      "id": "amp-record-v1.encode.signaling-blob",
+      "kind": "encode",
+      "note": "SIGNALING_BLOB (0x09): blob_len u16, blob (opak; core parse etmez). blob = SDP s\u00fcr\u00fcm sat\u0131r\u0131 'v=0'.",
+      "spec_ref": "application-message-protocol.md \u00a73 0x09 SIGNALING_BLOB",
+      "input": {
+        "blob_hex": "763d30"
+      },
+      "expected_hex": "01090000050003763d30"
+    },
+    {
+      "id": "amp-record-v1.encode.media-bundle",
+      "kind": "encode",
+      "note": "MEDIA_BUNDLE (0x0A): stream_id, codec, bundle_ms (ptt-open ile ayn\u0131 ak\u0131\u015f), payload_len+payload (8 B sabit \u00f6nek; payload opak). flags=0: \u00a73 'asla s\u0131k\u0131\u015ft\u0131r\u0131lmaz' (\u00a75 kural 6).",
+      "spec_ref": "application-message-protocol.md \u00a73 0x0A MEDIA_BUNDLE",
+      "input": {
+        "bundle_ms": 20,
+        "codec": 1,
+        "payload_hex": "dededededededededededededededede",
+        "stream_id": 7
+      },
+      "expected_hex": "010a0000180000000701140010dededededededededededededededede"
     }
   ]
 }
