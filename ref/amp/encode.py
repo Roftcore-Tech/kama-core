@@ -21,14 +21,23 @@ Kullanım:
     diyordu; registry'de on tip var, vektörler sekizini (0x01–0x08) kapsıyor. Vaka baytları değişmedi.
   · Bilinmeyen argüman artık hatadır (önceden `--check` dışındaki her şey dosyaları YENİDEN YAZIYORDU).
 
+[2026-10-06 — F0.5 (Abkarada kararı)]
+  · 0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE için pozitif vektör + tip-bağımsız ret vakaları (A1 "toplam ≤
+    body_len", sabit öneğin sığmaması, reserved flags) eklendi; alan düzeni §3 satırlarından AYNEN. Mevcut
+    vakaların baytları değişmedi.
+  · Sıkıştırılmış MEDIA_BUNDLE (flags.bit0=1) için ret vakası YAZILMADI: §3 "asla sıkıştırılmaz" ve §5 kural 6
+    GÖNDERİCİ kuralıdır; alıcı hükmü (drop/reject, reason) spec'te yok.
+
 SINIRLAR (bilinen; düzeltilmedi):
-  · 0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE için pozitif vektör yok; reserved tip yalnız 0x00 ile
-    sınanıyor (0xF0..0xFF yok); "bilinmeyen ama reserved olmayan tip → DROP" (§6) vakası yok.
+  · Reserved tip yalnız 0x00 ile sınanıyor (0xF0..0xFF yok); "bilinmeyen ama reserved olmayan tip → DROP"
+    (§6, örn. 0x0B) vakası yok; §5 kural 2 (çözülen uzunluk ≠ uncompressed_len) ve compression_id "diğer"
+    (0x02 → REJECT) vakası yok.
   · `uncompressed-len-exceeds-max` vakasının girdisi expansion oranı kuralını da çiğniyor; iki kural da
     DROP verir, hangi nedenin döneceği denetim sırasına bağlıdır.
   · İki vaka (encode.text-compressed, decode.truncated-zstd-stream) varsayılan ayarlı `zstd.compress`
     çıktısı taşır; bu baytlar libzstd sürümüne bağlı olabilir → `--check` başka bir makinede dosya hiç
-    değişmeden FARKLI diyebilir. Bu yüzden `--check` CI'a bağlı değildir.
+    değişmeden FARKLI diyebilir. `--check` gecelik işte koşar (.github/workflows/nightly.yml, F0.6
+    2026-10-06); libzstd sürüm farkı o işte FARKLI üretebilir — iş sürümü basar.
 """
 
 from __future__ import annotations
@@ -50,6 +59,8 @@ FILE_ABORT = 0x05
 PTT_OPEN = 0x06
 PTT_CLOSE = 0x07
 RECEIPT = 0x08
+SIGNALING_BLOB = 0x09
+MEDIA_BUNDLE = 0x0A
 
 COMPRESS_FLAG_BIT0 = 0x01
 ZSTD_COMPRESSION_ID = 0x01
@@ -114,6 +125,17 @@ def ptt_close_body(stream_id: int) -> bytes:
 def receipt_body(ref_msg_id: int, kind: int) -> bytes:
     """§3 0x08 RECEIPT [K1 2026-10-04]: ref_msg_id u32_be · kind u8."""
     return struct.pack(">IB", ref_msg_id, kind)
+
+
+def signaling_blob_body(blob: bytes) -> bytes:
+    """§3 0x09 SIGNALING_BLOB: blob_len u16_be · blob bytes[blob_len] (opak; core parse etmez)."""
+    return struct.pack(">H", len(blob)) + blob
+
+
+def media_bundle_body(stream_id: int, codec: int, bundle_ms: int, payload: bytes) -> bytes:
+    """§3 0x0A MEDIA_BUNDLE: stream_id u32_be · codec u8 · bundle_ms u8 · payload_len u16_be ·
+    payload bytes[payload_len] (8 B sabit önek; payload içi media'nın)."""
+    return struct.pack(">IBBH", stream_id, codec, bundle_ms, len(payload)) + payload
 
 
 # ---- §5 sıkıştırma wire sözleşmesi ------------------------------------------------------------
@@ -250,15 +272,32 @@ def build_positive() -> dict:
                 )
             ),
         ),
+        case(
+            "amp-record-v1.encode.signaling-blob",
+            "encode",
+            note="SIGNALING_BLOB (0x09): blob_len u16, blob (opak; core parse etmez). blob = SDP sürüm satırı 'v=0'.",
+            spec_ref="application-message-protocol.md §3 0x09 SIGNALING_BLOB",
+            input_={"blob_hex": hx(b"v=0")},
+            expected_hex=hx(record(SIGNALING_BLOB, signaling_blob_body(b"v=0"))),
+        ),
+        case(
+            "amp-record-v1.encode.media-bundle",
+            "encode",
+            note="MEDIA_BUNDLE (0x0A): stream_id, codec, bundle_ms (ptt-open ile aynı akış), payload_len+payload "
+            "(8 B sabit önek; payload opak). flags=0: §3 'asla sıkıştırılmaz' (§5 kural 6).",
+            spec_ref="application-message-protocol.md §3 0x0A MEDIA_BUNDLE",
+            input_={"stream_id": 7, "codec": 0x01, "bundle_ms": 20, "payload_hex": "de" * 16},
+            expected_hex=hx(record(MEDIA_BUNDLE, media_bundle_body(7, 0x01, 20, bytes.fromhex("de" * 16)))),
+        ),
     ]
     return {
         "schema_version": 2,
         "suite": "amp-record-v1",
         "spec_version": "application-message-protocol@v1+2026-10-04-K1",
         "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile sıfır paylaşım)",
-        "description": "AMP §2/§3/§5 AppMessageRecord kodlaması — 0x01–0x08 tiplerinin her biri için 1 pozitif "
-        "vektör + bir sıkıştırılmış TEXT örneği. 0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE için vektör YOK "
-        "(§7 her tip için ister; eksik). B1.2 (WS-B/Hayri); tüketici B2.1'deki gerçek Rust codec'i.",
+        "description": "AMP §2/§3/§5 AppMessageRecord kodlaması — 0x01–0x0A tiplerinin her biri için 1 pozitif "
+        "vektör + bir sıkıştırılmış TEXT örneği (0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE F0.5 2026-10-06'da "
+        "eklendi). B1.2 (WS-B/Hayri); tüketici B2.1'deki gerçek Rust codec'i.",
         "notes": {
             "compressed": "flags.bit0=1; body = compression_id(1)|uncompressed_len(4be)|zstd payload (§5). "
             "zstd payload baytları üreten kitaplığın sürümüne bağlı olabilir (zstd sürümler arası bayt-özdeş "
@@ -305,6 +344,20 @@ def build_negative() -> dict:
     unknown_compression = record(TEXT, unknown_compression_id, flags=COMPRESS_FLAG_BIT0)
 
     unknown_version = record(TEXT, text_body(1, "hi"), msg_version=0x02)
+
+    # [F0.5 2026-10-06] 0x09 / 0x0A — hepsi tip-bağımsız kurallardan (§2 A1 "toplam ≤ body_len — aşarsa
+    # DROP", §2 reserved flags → REJECT); 0x09/0x0A'ya özgü ret kuralı spec'te yok. Sabit öneğin body_len'e
+    # sığmaması da A1 ihlalidir (önek alanları toplamı > body_len) → aynı reason token'ı (token sözleşmesi
+    # B2.1 Rust codec'inindir; yeni token icat edilmedi).
+    signaling_blob_len_mismatch = record(SIGNALING_BLOB, struct.pack(">H", 16) + b"v=0")  # blob_len=16, 3 B var
+    signaling_blob_truncated_prefix = record(SIGNALING_BLOB, b"")  # blob_len alanı 2 B, body 0 B
+    signaling_blob_reserved_flags = record(SIGNALING_BLOB, signaling_blob_body(b"v=0"), flags=0x02)
+    media_bundle_len_mismatch = record(
+        MEDIA_BUNDLE, struct.pack(">IBBH", 7, 0x01, 20, 32) + b"\xde" * 16
+    )  # payload_len=32, 16 B var
+    media_bundle_truncated_prefix = record(
+        MEDIA_BUNDLE, struct.pack(">IBB", 7, 0x01, 20) + b"\x00"
+    )  # sabit önek 8 B, body 7 B (payload_len'in yalnız ilk baytı)
 
     cases = [
         case(
@@ -385,15 +438,56 @@ def build_negative() -> dict:
             input_hex=hx(unknown_version),
             expected={"result": "drop", "reason": "unknown-msg-version"},
         ),
+        case(
+            "amp-record-reject-v1.decode.signaling-blob-len-exceeds-body-len",
+            "decode",
+            note="SIGNALING_BLOB.blob_len=16 ama body_len içinde yalnız 3 bayt var — A1: toplam ≤ body_len, aşarsa DROP.",
+            spec_ref="application-message-protocol.md §2 (A1)",
+            input_hex=hx(signaling_blob_len_mismatch),
+            expected={"result": "drop", "reason": "inner-field-exceeds-body-len"},
+        ),
+        case(
+            "amp-record-reject-v1.decode.signaling-blob-truncated-prefix",
+            "decode",
+            note="SIGNALING_BLOB body_len=0: blob_len alanı (2 B) sığmıyor — sabit önek A1 toplamına dahildir, aşarsa DROP.",
+            spec_ref="application-message-protocol.md §2 (A1)",
+            input_hex=hx(signaling_blob_truncated_prefix),
+            expected={"result": "drop", "reason": "inner-field-exceeds-body-len"},
+        ),
+        case(
+            "amp-record-reject-v1.decode.signaling-blob-reserved-flags-nonzero",
+            "decode",
+            note="SIGNALING_BLOB, flags bit1 set; bit1..7 reserved-zero olmalı (§2) — kural tipten bağımsız.",
+            spec_ref="application-message-protocol.md §2",
+            input_hex=hx(signaling_blob_reserved_flags),
+            expected={"result": "reject", "reason": "reserved-flags-nonzero"},
+        ),
+        case(
+            "amp-record-reject-v1.decode.media-bundle-payload-len-exceeds-body-len",
+            "decode",
+            note="MEDIA_BUNDLE.payload_len=32 ama body_len içinde önekten sonra yalnız 16 bayt var — A1: aşarsa DROP.",
+            spec_ref="application-message-protocol.md §2 (A1)",
+            input_hex=hx(media_bundle_len_mismatch),
+            expected={"result": "drop", "reason": "inner-field-exceeds-body-len"},
+        ),
+        case(
+            "amp-record-reject-v1.decode.media-bundle-truncated-prefix",
+            "decode",
+            note="MEDIA_BUNDLE body_len=7: sabit önek 8 B (stream_id 4 + codec 1 + bundle_ms 1 + payload_len 2) sığmıyor — A1, DROP.",
+            spec_ref="application-message-protocol.md §2 (A1)",
+            input_hex=hx(media_bundle_truncated_prefix),
+            expected={"result": "drop", "reason": "inner-field-exceeds-body-len"},
+        ),
     ]
     return {
         "schema_version": 2,
         "suite": "amp-record-reject-v1",
         "spec_version": "application-message-protocol@v1+2026-10-04-K1",
         "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile sıfır paylaşım)",
-        "description": "AMP §2/§5/§6 negatif corpus: reserved type/flag, iç alan/body_len uyumsuzluğu, "
-        "sıkıştırma bomb korumaları (uncompressed_len aşımı, expansion oranı), gerçek zstd ile "
-        "kesilmiş/geçersiz frame, bilinmeyen compression_id/msg_version.",
+        "description": "AMP §2/§5/§6 negatif corpus: reserved type/flag, iç alan/body_len uyumsuzluğu "
+        "(TEXT, SIGNALING_BLOB, MEDIA_BUNDLE; sabit öneğin sığmaması dahil), sıkıştırma bomb korumaları "
+        "(uncompressed_len aşımı, expansion oranı), gerçek zstd ile kesilmiş/geçersiz frame, bilinmeyen "
+        "compression_id/msg_version.",
         "notes": {
             "compressed": "flags.bit0=1 gövde (§5).",
             "compression-length-only": "Decoder yalnız beyan edilen uzunluk alanlarına bakarak "

@@ -76,6 +76,9 @@ pub trait SeamTarget {
     const KIND: TargetKind;
     /// Hedefin istemci pending INIT tavanı — ADLANDIRILMIŞ sabitinden (ccr §35.15 KS-DOS-1).
     const PENDING_INIT_CAP: usize;
+    /// Hedefin beyan ettiği `TransportCapabilities::reliable` — ADLANDIRILMIŞ sabitinden
+    /// (S1 §1 F0.2(iv); H-CAPS `capabilities().reliable`'ı bununla karşılaştırır).
+    const RELIABLE: bool;
 
     /// # Errors
     /// Hedef bu derlemede mevcut değilse [`TargetUnavailable`] (typed; beyan edilmiş boşluk).
@@ -97,6 +100,12 @@ pub trait SeamTarget {
 
     /// Yenileme tamamlanır: atomik cutover (→ `Ready(h')`, ardından `Closed(h, Superseded)`).
     fn complete_renew(transport: &mut Self::Transport, old: SessionHandle);
+
+    /// Bilinen eşten ONAYLANMIŞ yeni INIT (peer supersession, S1 K7 / DR-CONNECT-1 H6):
+    /// `RenewRequired` OLMADAN `Ready(h')`, ardından `Closed(h, Superseded)`. Onay-öncesi
+    /// (provisional) dönem, bayat/duplicate INIT ve glare bu kancanın kapsamı DEĞİLDİR (S3 real
+    /// hedefte, L-A5c). [F0.4]
+    fn inject_peer_supersession(transport: &mut Self::Transport, old: SessionHandle);
 
     /// Bekleyen niyete sahte/geçersiz bir RESPONSE ulaşır.
     fn inject_invalid_response(transport: &mut Self::Transport, peer: PeerRef);
@@ -129,6 +138,12 @@ pub const REGISTERED_TARGETS: &[(&str, TargetKind)] = &[(MockTarget::ID, TargetK
 pub const STUB_MAX_PLAINTEXT_UNIT_BYTES: u32 = 1024;
 /// Bkz. [`STUB_MAX_PLAINTEXT_UNIT_BYTES`] — normatif değil.
 pub const STUB_PREFERRED_PLAINTEXT_UNIT_BYTES: u32 = 512;
+/// `early_unit` tavanı (K6, INIT zarfı) — normatif değil; `preferred`'dan küçük bir yer tutucu,
+/// böylece H-CAPS'in `max_early` ve `max_plaintext` sınırları ayrı ayrı ölçülür. [F0.2(iv)]
+pub const STUB_MAX_EARLY_UNIT_BYTES: u32 = 256;
+/// Sahtenin `reliable` beyanı — normatif değil. Sahtenin "recovery" anahtarı bu beyandan
+/// bağımsızdır (sahte alanı yalnız taşır). [F0.2(iv)]
+pub const STUB_RELIABLE: bool = true;
 
 /// Sahte hedef kaydı.
 pub struct MockTarget;
@@ -138,11 +153,14 @@ impl SeamTarget for MockTarget {
     const ID: &'static str = "mock";
     const KIND: TargetKind = TargetKind::Mock;
     const PENDING_INIT_CAP: usize = app_mock::PENDING_INIT_CAP;
+    const RELIABLE: bool = STUB_RELIABLE;
 
     fn build() -> Result<Self::Transport, TargetUnavailable> {
         Ok(MockTransport::new(TransportCapabilities {
             max_plaintext_unit_bytes: STUB_MAX_PLAINTEXT_UNIT_BYTES,
             preferred_plaintext_unit_bytes: STUB_PREFERRED_PLAINTEXT_UNIT_BYTES,
+            max_early_unit_bytes: STUB_MAX_EARLY_UNIT_BYTES,
+            reliable: STUB_RELIABLE,
         }))
     }
 
@@ -156,6 +174,10 @@ impl SeamTarget for MockTarget {
 
     fn complete_renew(transport: &mut Self::Transport, old: SessionHandle) {
         transport.complete_renew(old);
+    }
+
+    fn inject_peer_supersession(transport: &mut Self::Transport, old: SessionHandle) {
+        transport.inject_peer_supersession(old);
     }
 
     fn inject_invalid_response(transport: &mut Self::Transport, peer: PeerRef) {

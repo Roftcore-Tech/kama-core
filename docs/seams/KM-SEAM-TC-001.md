@@ -1,5 +1,7 @@
 # KM-SEAM-TC-001 — Transport ↔ Crypto Seam Sözleşmesi (S3)
 
+> **YAMA KAYDI — 2026-10-06b [F0.3 — Abkarada kararı]:** §1.1 fence'inin altına düzyazı not: `PacketProtection` ve `SessionControl` implementasyonları `Send + 'static`'tir (kaynak `crates/kama-contracts/src/s3.rs` trait başlıkları); entropi kaynağı `EntropySource` trait'i `kama-noise-wire`'ın public API'sinde tanımlanır (L-A5b), bugün `crates/client-core/src/seam.rs`'te duran tanım oraya taşınır — bu seam'in trait'i değildir, Transport enjekte eder. Trait blokları değişmedi. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-04b [K5 + K3 — Abkarada kararı]:** §1.2 `SessionResult`'a **`ProvisionalAndReply{new, supersedes, envelope}`**, `SessionEvent`'e **`Confirmed(new)`** eklendi; K10 buna göre kesinleşti (`EstablishedAndReply` = eşle oturum YOK; `ProvisionalAndReply` = eşle oturum VAR; Transport `Ready(new)`'i `Confirmed`'de yayınlar). İstemci sabiti `PROVISIONAL_TTL`. E2E kontrol aralığından `0x10/0x11` (Ack/Sack) silindi notu. A4.1 bunu UYGULAR, yeniden tasarlamaz.
 
 > **YAMA KAYDI — 2026-10-05 [B1 kama-contracts — Abkarada kararı]:** Bu sözleşmenin derlenen hâli artık `crates/kama-contracts/src/s3.rs`'tedir (ortak tutamaçlar `handles.rs`); `client-core/src/seam.rs` yalnız PoC stub'ını (`IdentitySeam`) ve entropi enjeksiyonunu tutar. Drift kapısı §1.1/§1.2 trait bloklarını ve §6 satırlarını o kaynakla ve `scripts/ci/noise-seam-coverage.json` ile karşılaştırır. §1.1'e **`HubHandle`** (u32 newtype) eklendi; **H-HANDLE'ın tip yarısı KAPANDI** (trybuild negatif testi + toolchain'den bağımsız birim testi). §1.2: **`CloseReason` kümesi KAPANDI** — `{ Superseded, UserClosed, PeerClosed, KeyHygiene }`; `Renewed` kalktı. §6: **`H-REPLAY-POISON` satırı EKLENDİ** — sprint planı A4.4 kartında ve conformance süitinde 2026-09-20'den beri vardı, §6 tablosunda eksikti (drift kapısının S3'e ilk koşusunda bulundu); `H-SPLIT`'in kanıtı `scripts/ci/layer_check.py` olarak işaretlendi. §7: `MockCrypto` `kama-noise-wire`'ın `test-util` özelliğine taşındı. Trait metotları DEĞİŞMEDİ. Üstü çizili metin silinmedi.
@@ -54,6 +56,8 @@ pub struct SealedPacketMeta { pub full_wire_pn: u64, pub dh_epoch: u8, pub seale
 pub struct Opened { pub ctx: ProtectionContext, pub frame: Bytes, pub meta: SealedPacketMeta }  // frame = transport'un verdiği plaintext çerçeve
 pub struct HubHandle(/* u32 */);   // [2026-10-05] wire routing değeri (`hub_handle`, ccr §35.7). `SessionHandle` ile AYRI TİP (K3): biri diğerinin yerine konursa derlenmez
 ```
+
+**[2026-10-06 — F0.3]** `PacketProtection` ve `SessionControl` implementasyonları `Send + 'static`'tir (kaynak: crates/kama-contracts/src/s3.rs trait başlıkları). Entropi kaynağı `EntropySource` trait'i `kama-noise-wire`'ın public API'sinde tanımlanır (L-A5b); bugün `crates/client-core/src/seam.rs`'te duran tanım oraya taşınır; bu seam'in trait'i değildir, Transport enjekte eder.
 
 **K1 — `ProtectionContext` çağıranın verdiği tek bağlamdır; Crypto çerçeve içeriğine bakarak anahtar SEÇMEZ.**
 `Session(h)` → o session'ın E2E cipher state'i (yön + `dh_epoch`'a göre `send_cipher[dh_epoch & 1]`, protector.rs:245). `HubChannel` → client↔hub hop anahtarı (identity §11/§14 Noise IK/KK split).

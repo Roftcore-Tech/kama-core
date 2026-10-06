@@ -6,6 +6,7 @@
 geçersiz kıldığı cümlelerin üstü çizildi. §1–§6'daki satır numaraları hâlâ `77848003` ağacına göredir.
 **Güncelleme 2026-10-05c:** §7.3'teki S1 kapsama sayımı güncellendi (Hayri taşıması, PR #92); eski cümlenin üstü çizildi.
 **Güncelleme 2026-10-05d:** §7.4'e silme kapısının ikinci ölçümü ve taban değişikliği eklendi (yalnız ekleme).
+**Güncelleme 2026-10-06:** KDF / SSI1 / SSR1 tüketici satırlarında `pending A5.1 / A5.5` → `pending L-A5a / L-A5c` (iş emri 2026-10-06 §1 şerit adları; F0.6); eski ibarelerin üstü çizildi.
 **Durum notu (2026-10-05, merge anında güncellendi):** bu raporun dayandığı PR'ların hepsi main'dedir
 (#82 `6b2d6bcb` · #83 `e341b020` · #85 `88961ee1` · #86 `ca788d4c` · #84 `285824b6` · #87 `77848003`).
 Satır numaraları main `77848003` ağacına göredir (merge öncesi tek tek doğrulandı).
@@ -54,7 +55,7 @@ Toplam 68 vaka; commit `c9119026` (#78).
   commit'li bir test DEĞİLDİR ve CI'da koşmaz. `ccr-*` vektörlerinin bugün hiçbir Rust tüketicisi yok
   (`crates/` altında bu suite adlarına atıf yok). Tüketim A5.1 / A5.2 "Done" ölçütüdür.~~
   **[2026-10-05b] SSD1 için KAPANDI — commit'li tüketici testi var, CI'da koşuyor (bkz. §7.2).**
-  KDF / SSI1 / SSR1 için tüketici hâlâ yok: **pending A5.1 / A5.5** (§7.2).
+  KDF / SSI1 / SSR1 için tüketici hâlâ yok: ~~**pending A5.1 / A5.5**~~ **pending L-A5a / L-A5c** **[2026-10-06]** (§7.2).
 - PN sürekliliği kararı (#85) vektörleri değiştirmedi: `gen_vectors.py --check` → hepsi "aynı".
 
 ## 3. A4.* — sözleşme tipleri, sahteler, sözleşme testleri
@@ -111,7 +112,7 @@ Her squash-merge'den sonra main'in ağacı, merge öncesi hesaplanan beklenen a�
 | ~~H-HANDLE tip yarısı: `HubHandle` newtype + trybuild negatifi~~ | ~~B1 (`kama-contracts`); G-S3'ü bekletip bekletmeyeceği sahip kararı~~ **KAPANDI — B1 (§7.1)** |
 | A3.2'nin 4 kırmızı hücresi (5b, 6, 7, 9) | G-IMPL-S3 (A5.4 Done ölçütü); G-S3 için "matris yeşil" ölçütünün beyanlı kırmızıyla sağlanmış sayılıp sayılmayacağı sahip kararı |
 | `real` hedefi yok (`GAP-S3-REAL-A5`) | G-IMPL-S3 |
-| ~~`ccr-*` vektörlerinin Rust tüketicisi yok; SSD1 bayt-özdeşliği commit'li test değil~~ **[2026-10-05b] SSD1 kapandı (§7.2).** Kalan: `ccr-kdf-v1` tüketicisi → **pending A5.1**; `ccr-ssi1-v1` / `ccr-ssr1-v1` tüketicisi → **pending A5.5**; `ccr-ed25519-neg-v1` ve `ccr-deprecated-neg-v1` tüketicisi → A5 (imza doğrulama / eski format reddi yazılınca) | G-IMPL-S3 (~~A5.1 / A5.2~~ A5.1 / A5.5) |
+| ~~`ccr-*` vektörlerinin Rust tüketicisi yok; SSD1 bayt-özdeşliği commit'li test değil~~ **[2026-10-05b] SSD1 kapandı (§7.2).** Kalan: `ccr-kdf-v1` tüketicisi → ~~**pending A5.1**~~ **pending L-A5a** **[2026-10-06]**; `ccr-ssi1-v1` / `ccr-ssr1-v1` tüketicisi → ~~**pending A5.5**~~ **pending L-A5c** **[2026-10-06]**; `ccr-ed25519-neg-v1` ve `ccr-deprecated-neg-v1` tüketicisi → A5 (imza doğrulama / eski format reddi yazılınca) | G-IMPL-S3 (~~A5.1 / A5.2~~ A5.1 / A5.5) |
 | Mutasyon sınaması yapılmadı (C1.6) | kapı değil (NON-GATING) |
 | A3.3 hub yarım-açık sınır testleri | kapı değil (NON-GATING; hub-server iskeleti dolunca) |
 | `ccr-format-spec.md:2808` ve `transport-layer-tdd.md:676-677`: replay identity'de `epoch` — tek pencere kararından sonra fazlalık | ~~karar bekliyor (#85'te not edildi); G-S3'ü bekletmez~~ **[2026-10-05b] karar verildi (epoch kimlikten çıkar); ayrı spec PR'ında uygulanıyor (iş emri §2)** |
@@ -140,9 +141,9 @@ Yazıldığı anda ikisi de main'e girmemiştir; aşağıdaki yollar o PR'ların
 | Suite | Vaka | Rust tüketicisi | Durum |
 |---|---|---|---|
 | `ccr-ssd1-v1` | 15 | `crates/kama-noise-wire/tests/noise_conformance_core/ssd1_vectors.rs` (`vectors_ssd1::*`, 3 test) | **yeşil** — 15/15 vaka koşuluyor: 5 `seal` (AAD, nonce96 ve wire byte'ları BAYT-ÖZDEŞ), 10 `open` (3 kabul: plaintext aynı; 7 ret: karar ve gerekçe aynı, pencere ilerlemiyor) |
-| `ccr-kdf-v1` | 12 | yok | **pending A5.1** (D1–D7 türetimi yazılınca) |
-| `ccr-ssi1-v1` | 16 | yok | **pending A5.5** (oturum kontrolü + enjekte edilebilir entropi) |
-| `ccr-ssr1-v1` | 8 | yok | **pending A5.5** |
+| `ccr-kdf-v1` | 12 | yok | ~~**pending A5.1**~~ **pending L-A5a** **[2026-10-06]** (D1–D7 türetimi yazılınca) |
+| `ccr-ssi1-v1` | 16 | yok | ~~**pending A5.5**~~ **pending L-A5c** **[2026-10-06]** (oturum kontrolü + enjekte edilebilir entropi) |
+| `ccr-ssr1-v1` | 8 | yok | ~~**pending A5.5**~~ **pending L-A5c** **[2026-10-06]** |
 | `ccr-ed25519-neg-v1` | 10 | yok | pending A5 (katı kip imza doğrulama) |
 | `ccr-deprecated-neg-v1` | 7 | yok | pending A5 (eski format reddi) |
 

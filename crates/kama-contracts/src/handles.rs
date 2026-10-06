@@ -35,7 +35,8 @@ impl SessionHandle {
 /// sarmalayıcısı.
 ///
 /// Application eşi bununla adlandırır; Transport ve Crypto onu peer material'ı bulmak için
-/// anahtar olarak kullanır. Alan public DEĞİLDİR.
+/// anahtar olarak kullanır. Alan public DEĞİLDİR; ham baytlar [`PeerRef::as_bytes`] ile okunur,
+/// yorumlanmaz.
 ///
 /// `Debug` çıktısı `dest_hash`'i BASMAZ: bu değer wire'da cleartext taşınmayan bir kimlik
 /// özetidir ve log'a düşmemelidir.
@@ -47,6 +48,15 @@ impl PeerRef {
     #[must_use]
     pub const fn from_dest_hash(dest_hash: [u8; 32]) -> Self {
         Self(dest_hash)
+    }
+
+    /// Ham `dest_hash`. Opaklık = YORUMLAMAMA: Application bu baytları yorumlayamaz/türetemez.
+    /// Katman kuralı (`scripts/ci/layer_check.py`) crate kenarlarını ve `*_for_mock` erişimlerini
+    /// yakalar; `as_bytes` çıktısının yorumlanmaması inceleme kuralıdır (bugün CI kapısı yok — iş
+    /// emri F0.3). [2026-10-06 F0.3]
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
     }
 
     /// Ham `dest_hash` — YALNIZ sahteler içindir (oturum tutamacını eşten türetmek gibi).
@@ -112,6 +122,7 @@ mod tests {
         let (a, b) = ([0xA5u8; 32], [0x5Au8; 32]);
         assert_eq!(PeerRef::from_dest_hash(a), PeerRef::from_dest_hash(a));
         assert_ne!(PeerRef::from_dest_hash(a), PeerRef::from_dest_hash(b));
+        assert_eq!(PeerRef::from_dest_hash(a).as_bytes(), &a);
     }
 
     /// `Debug` çıktısı `dest_hash`'in tamamını asla içermez.

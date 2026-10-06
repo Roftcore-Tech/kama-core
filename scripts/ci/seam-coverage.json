@@ -12,7 +12,7 @@
   "static_baseline": 2,
   "mutation_tool": {
     "path": "scripts/ci/seam-mutation.py",
-    "what": "Davranis satirlarinin sahtede bir sey OLCTUGUNUN kaniti: sahtenin davranisi tek tek bozulur, her bozulmanin hedef satiri kirmizi yaptigi olculur (agac disi; depoya dokunmaz). Her davranis satirinin en az bir mutasyonu olmalidir. CI'a bagli DEGILDIR (her mutasyon bir derleme); sonuc PR aciklamasinda tarihli olarak verilir."
+    "what": "Davranis satirlarinin sahtede bir sey OLCTUGUNUN kaniti: sahtenin davranisi tek tek bozulur, her bozulmanin hedef satiri kirmizi yaptigi olculur (agac disi; depoya dokunmaz). Her davranis satirinin en az bir mutasyonu olmalidir. PR basina kosmaz; GECELIK iste kosar (.github/workflows/nightly.yml seam-mutation, 2026-10-06); elle de kosulabilir."
   },
   "rows": [
     {
@@ -32,7 +32,7 @@
       "status": "mock_only",
       "kind": "behavioral",
       "proof": "contract.rs rows::h_app_retry_0 — her birim TEK kez send edilir; recovery ON + 1 kayip → iki birim de, gonderim sirasinda, tekrarsiz teslim; recovery OFF + ayni kayip → dusurulen birim hic gelmez. Karsi-kontrol BASKA oturumda: kayipsiz oturumun birimi gelir (hedef hicbir sey teslim etmiyor olsaydi OFF kolu kendiliginden gecerdi)",
-      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); sahtenin 'recovery'si bir anahtardir (ARQ/FEC degil) — gercek kayip altinda ON/OFF farki yalniz gercek hedefte olculur. S1, recovery OFF iken kalici bir Reliable boslugunun ARKASINDAKI birimin (ayni oturumda) teslim edilip edilmeyecegini soylemez; satir bunu SINAMAZ. 'app kodunda retransmit yolu yok' cumlesi statiktir; kama-app'te urun kodu olmadigindan bugun sinanacak bir sey yok"
+      "needs": "[2026-10-06] mock: zayif kanit · real: A5.5 — gercek hedefte dogrulama (GAP-SEAM-REAL-1); sahtenin 'recovery'si bir anahtardir (ARQ/FEC degil) — gercek kayip altinda ON/OFF farki yalniz gercek hedefte olculur. S1, recovery OFF iken kalici bir Reliable boslugunun ARKASINDAKI birimin (ayni oturumda) teslim edilip edilmeyecegini soylemez; satir bunu SINAMAZ. 'app kodunda retransmit yolu yok' cumlesi statiktir; kama-app'te urun kodu olmadigindan bugun sinanacak bir sey yok"
     },
     {
       "id": "H-ROUNDTRIP",
@@ -45,64 +45,64 @@
       "id": "H-EVENTS",
       "status": "mock_only",
       "kind": "behavioral",
-      "proof": "contract.rs rows::h_events — Ready → RenewRequired(h) → Ready(h', ayni es, h' ≠ h) → Closed(h, Superseded), fazladan olay yok; Closed okunduktan sonra send(h) → UnknownSession, send(h') kabul",
+      "proof": "contract.rs rows::h_events — Ready → RenewRequired(h) → Ready(h', ayni es, h' ≠ h) → Closed(h, Superseded), fazladan olay yok; Closed okunduktan sonra send(h) → UnknownSession, send(h') kabul. [2026-10-06 F0.2(i)/(iii)] Closed'i okunmus tutamaca close(h) olay uretmez; aktif h'ye close(h'); close(h') ART ARDA (arada okuma yok, Closed KUYRUKTA) → tam BIR Closed(h', UserClosed) ve baska olay yok; sonra send(h') → UnknownSession; Closed OKUNDUKTAN sonra ucuncu close(h') olay uretmez",
       "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); yenileme gereksinimini ve tamamlanmasini ureten karsi uc fiksturu"
     },
     {
       "id": "H-CUTOVER",
       "status": "mock_only",
       "kind": "behavioral",
-      "proof": "contract.rs rows::h_cutover — YALNIZ yenileme kolu: cutover oncesi ve yenileme surerken send(h) kabul; Ready(h') sonrasi (Closed okunmadan) send(h) → SessionSuperseded; h'nin iki outstanding birimi sirayla drain olur — biri teslim kuyrugunda, digeri cutover aninda Transport'un icinde (ilk iletimi kaybolmus, kurtarilacak); h' uzerinden uc birim sirayla; reddedilen birim sizmaz; sonra Closed(h, Superseded)",
-      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1). SATIRIN SAHTEDE KOSMAYAN KISMI: provisional supersession (bilinen esten yeni-sayacli INIT; onaydan once olay yok; N_g/T_g yalniz-alim drain), bayat INIT'in etkisizligi, duplicate INIT, glare → tek Ready, davranisin Crypto cap degerinden bagimsizligi. Sahte bunlari modellemiyor (Crypto ve karsi uc yok)"
+      "proof": "contract.rs rows::h_cutover — IKI vaka tek govdede. Vaka 1 (yenileme kolu): cutover oncesi ve yenileme surerken send(h) kabul; Ready(h') sonrasi (Closed okunmadan) send(h) → SessionSuperseded; h'nin iki outstanding birimi sirayla drain olur — biri teslim kuyrugunda, digeri cutover aninda Transport'un icinde (ilk iletimi kaybolmus, kurtarilacak); h' uzerinden uc birim sirayla; reddedilen birim sizmaz; sonra Closed(h, Superseded) ve Closed sonrasi kuyruk BOS (assert_no_event). Vaka 2 (peer supersession, F0.4 2026-10-06): bilinen esten ONAYLANMIS yeni INIT (kanca inject_peer_supersession) → RenewRequired OLMADAN ilk olay Ready(h'); send(h) → SessionSuperseded; h'nin outstanding'i drain; h' calisir; Closed(h, Superseded) okunur; okunduktan sonra send(h) → UnknownSession (F0.2(i)), send(h') kabul; Closed sonrasi kuyruk BOS (gec RenewRequired(h) / ikinci Closed / ConnectProgress yok; assert_no_event)",
+      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1). SATIRIN SAHTEDE KOSMAYAN KISMI — S3 real hedefte (L-A5c): provisional onay-oncesi olaysizlik (bilinen esten yeni-sayacli INIT onaydan once olay uretmez, send(h) kabul), N_g/T_g yalniz-alim drain, bayat INIT'in etkisizligi, duplicate INIT, glare → tek Ready, davranisin Crypto cap degerinden bagimsizligi. Sahte onay anindan ONCESINI modellemiyor (Crypto ve karsi uc yok); onay ani = kanca cagrisi"
     },
     {
       "id": "H-CONNECT-IDEMP",
       "status": "mock_only",
       "kind": "behavioral",
-      "proof": "contract.rs rows::h_connect_idemp — pending'e ikinci connect ayni ticket; Ready sonrasi uc connect → Ready(h); hicbiri olay uretmez (duplicate Ready yok)",
+      "proof": "contract.rs rows::h_connect_idemp — ilk connect → Pending(ticket) ve ilk olay ConnectProgress(ticket, Measuring) [2026-10-06 F0.2(ii)]; pending'e ikinci connect ayni ticket ve YENI olay yok (Measuring yalniz ilkinde; hedef surulmeden kuyruktan okunur); Ready sonrasi uc connect → Ready(h); hicbiri olay uretmez (duplicate Ready yok)",
       "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1)"
     },
     {
       "id": "H-EARLY-CONFLICT",
       "status": "mock_only",
       "kind": "behavioral",
-      "proof": "contract.rs rows::h_early_conflict — pending ve aktif ese connect(peer, Some(X)) → EarlyUnitConflict; connect(peer, None) idempotent; X teslim yoluna girmez",
+      "proof": "contract.rs rows::h_early_conflict — pending ve aktif ese connect(peer, Some(X)) → EarlyUnitConflict; connect(peer, None) idempotent; X teslim yoluna girmez. [2026-10-06] ilk connect'in Measuring'i acikca okunur; reddedilen ve idempotent connect'ler olay uretmez",
       "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); 'Crypto'da byte izi yok' cumlesi gercek hedefte (Crypto'ya inen cagrilar gozlenerek) sinanir — sahtede Crypto yok"
     },
     {
       "id": "H-CAPS",
       "status": "mock_only",
       "kind": "behavioral",
-      "proof": "contract.rs rows::h_caps — sinir hedefin capabilities()'inden; len == max kabul ve teslim, len == max+1 → UnitTooLarge, reddedilen teslim edilmez",
-      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); sahtenin kapasite sayilari yer tutucudur (K5 conservative_limits zinciri gercek hedefte). 'app'te sabit yok' cumlesi statiktir; kama-app'te urun kodu yok"
+      "proof": "contract.rs rows::h_caps — sinir hedefin capabilities()'inden; len == max kabul ve teslim, len == max+1 → UnitTooLarge, reddedilen teslim edilmez. [2026-10-06 F0.2(iv)] early_unit siniri AYRI alan (max_early_unit_bytes): len == max_early kabul ve Ready sonrasi teslim; len == max_early+1 → connect() UnitTooLarge, olay yok, pending OLUSMAZ — dogrudan kanit: ayni ese connect(peer, Some(kucuk)) Pending verir (pending sizmis olsaydi EarlyUnitConflict donerdi), Measuring okunur, niyet Ready(h_big)'e surulur, tam BIR teslim (h_big, kucuk) gelir ve buyuk birim PUMP_BUDGET boyunca ASLA gelmez; reliable capabilities()'ten okunur ve hedefin adlandirilmis sabitine (SeamTarget::RELIABLE) esittir",
+      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); sahtenin kapasite sayilari yer tutucudur (K5 conservative_limits zinciri ve max_early'nin INIT zarfindan turetilmesi gercek hedefte). reliable: sahte alani yalniz tasir (recovery anahtari ondan bagimsiz); 'urun builder'i false'u reddeder' L-T1'de sinanir. 'app'te sabit yok' cumlesi statiktir; kama-app'te urun kodu yok"
     },
     {
       "id": "H-PENDING-CAP",
       "status": "mock_only",
       "kind": "behavioral",
-      "proof": "contract.rs rows::h_pending_cap — tavan kadar pending; sonraki yeni ese connect → Backpressure (early_unit'li de); bekleyen ticket'lar ayni, reddedilen es pending'e girmez; reddedilen connect'ler olay uretmez (ilk olay iptalin ConnectAbandoned'i); yer iki yoldan acilir: iptalle ve Ready ile — ikisinde de onceden reddedilen es kabul edilir; cozulen oturumlarda teslim yok (reddedilen early_unit hicbir yola girmedi). Tavan hedefin adlandirilmis sabitinden; ccr §35.15'teki sayiyla testte karsilastirilir",
+      "proof": "contract.rs rows::h_pending_cap — tavan kadar pending, her kabul edilen niyetin ilk olayi ConnectProgress(ticket, Measuring) [2026-10-06 F0.2(ii)]; sonraki yeni ese connect → Backpressure (early_unit'li de); bekleyen ticket'lar ayni, reddedilen es pending'e girmez; reddedilen connect'ler olay uretmez (Measuring'lerden sonraki olay iptalin ConnectAbandoned'i); yer iki yoldan acilir: iptalle ve Ready ile — ikisinde de onceden reddedilen es kabul edilir ve Measuring'i okunur; cozulen oturumlarda teslim yok (reddedilen early_unit hicbir yola girmedi). Tavan hedefin adlandirilmis sabitinden; ccr §35.15'teki sayiyla testte karsilastirilir",
       "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); karsi uc iki evreli olmali: tavan ve ret iddialari boyunca YANITSIZ (connect'ler PENDING kalir), hedef surulunce bekleyen her niyeti Ready'ye cozer"
     },
     {
       "id": "H-CANCEL",
       "status": "mock_only",
       "kind": "behavioral",
-      "proof": "contract.rs rows::h_cancel — saat 90 gun ilerler: olay yok, ticket ayni; cancel → tam bir ConnectAbandoned(ticket, Cancelled); ikinci cancel etkisiz; ayni ese connect YENI ticket verir ve Ready'ye cozulur; iptal edilen niyetin early_unit'i teslim edilmez",
+      "proof": "contract.rs rows::h_cancel — Pending(ticket) → ilk olay ConnectProgress(ticket, Measuring) [2026-10-06 F0.2(ii)]; saat 90 gun ilerler: olay yok, ticket ayni; cancel → tam bir ConnectAbandoned(ticket, Cancelled); ikinci cancel etkisiz; ayni ese connect YENI ticket verir (Measuring'i okunur) ve Ready'ye cozulur; iptal edilen niyetin early_unit'i teslim edilmez",
       "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); 'pending kripto state kapanir' cumlesi S1 yuzeyinden gozlenemez (sahtede Crypto yok) — gercek hedefte sinanir"
     },
     {
       "id": "H-PROGRESS",
       "status": "mock_only",
       "kind": "behavioral",
-      "proof": "contract.rs rows::h_progress — karsi-kontrol: link acikken saat ilerleyince prob sayaci artar; link duser → ConnectProgress(ticket, Suspended), 1 saat boyunca 0 yeni prob, fazladan olay yok; link gelir → ConnectProgress(ticket, Measuring) ve saat ilerlemeden +1 prob; niyet cozulmez (ayni Pending)",
-      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); link durumu ve prob sayaci icin hedef kancalari. LongOutage fazi sinanmiyor (sahte modellemiyor). ACIK S1 NOKTASI: yeni bir niyetin ILK ConnectProgress'inin ne zaman cikacagi §4'te yazmiyor; satir govdelerinin cogu (bu satir, H-CANCEL, H-SILENT-REJECT, H-PENDING-CAP, H-CONNECT-IDEMP, H-EARLY-CONFLICT ve establish yardimcisini kullanan butun satirlar) link VARKEN dogan niyet icin olay cikmadigini varsayar"
+      "proof": "contract.rs rows::h_progress — Pending dondugunde ilk olay ConnectProgress(ticket, Measuring) [2026-10-06 F0.2(ii)]; karsi-kontrol: link acikken saat ilerleyince prob sayaci artar; link duser → ConnectProgress(ticket, Suspended), 1 saat boyunca 0 yeni prob, fazladan olay yok; link gelir → ConnectProgress(ticket, Measuring) ve saat ilerlemeden +1 prob; niyet cozulmez (ayni Pending)",
+      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); link durumu ve prob sayaci icin hedef kancalari. LongOutage fazi sinanmiyor (sahte modellemiyor). [2026-10-06] S1 §4 F0.2(ii) KAPANDI: ilk olay Measuring; establish ve her satir govdesi onu ACIKCA okur (yardimcida atlanmaz). Suspended/LongOutage'in gercek tetikleri bu sprintte KAPSAM DISI (PARK P-4): urun Transport'u yalniz Measuring uretir, sahte Suspended'i link enjeksiyonuyla modeller — satirin Suspended yarisi gercek hedefte DR-CONNECT-1 IMPL'e kadar sinanamaz"
     },
     {
       "id": "H-SILENT-REJECT",
       "status": "mock_only",
       "kind": "behavioral",
-      "proof": "contract.rs rows::h_silent_reject — uc sahte RESPONSE: olay yok, ayni Pending(ticket); ardindan gecerli yanit ayni niyeti Ready(h, peer)'e cozer; sonrasinda olay yok",
-      "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1). SAHTEDE KANIT GUCU DUSUK: sahtenin 'sahte RESPONSE'u hicbir kripto calistirmaz, yalnizca yok sayilir; satirin asil iddiasi (Crypto'nun reddi Application'a olay olarak cikmaz) gercek hedefte olculur"
+      "proof": "contract.rs rows::h_silent_reject — Pending(ticket) → ilk olay ConnectProgress(ticket, Measuring) [2026-10-06 F0.2(ii)]; uc sahte RESPONSE: olay yok, ayni Pending(ticket); ardindan gecerli yanit ayni niyeti Ready(h, peer)'e cozer; sonrasinda olay yok",
+      "needs": "[2026-10-06] mock: zayif kanit · real: A5.5 — gercek hedefte dogrulama (GAP-SEAM-REAL-1). SAHTEDE KANIT GUCU DUSUK: sahtenin 'sahte RESPONSE'u hicbir kripto calistirmaz, yalnizca yok sayilir; satirin asil iddiasi (Crypto'nun reddi Application'a olay olarak cikmaz) gercek hedefte olculur"
     },
     {
       "id": "H-NO-PLANE1",
@@ -133,10 +133,10 @@
     {
       "id": "GAP-SEAM-MOCK-7",
       "status": "partial",
-      "what": "KISMEN KAPANDI 2026-10-05 (Hayri tasimasi). KALAN: KM-SEAM-AT-001 §7'nin saydigi sirasiz/duplicate teslim enjeksiyonu ve supersession (provisional, glare) senaryosu sahtede YOK; ayrica LongOutage fazi ve DeadlineBounded suresinin dolmasi modellenmiyor. 'recovery' bir anahtardir (ARQ/FEC degil).",
-      "closed_part": "§7 MockTransport feature/app'ten tasindi ve guncel S1'e getirildi: Ready/RenewRequired/Closed senaryolari, ConnectAbandoned/ConnectProgress enjeksiyonu, sanal saat + link + prob sayaci, sahte RESPONSE, deterministik kayip + recovery anahtari, pending INIT tavani, sinirli kuyruklar. TEK kopya crates/kama-app/tests/common/mock_transport.rs; kosucu ayni dosyayi #[path] ile mock hedefi yapar. Eski iskelet sahte (EchoMock) kalkti.",
-      "evidence": "crates/kama-integration/tests/common/seam/target.rs app_mock (#[path]) · seam_mock_fixture f1–f12 · sahtenin baslik notu 'Sahtenin MODELLEMEDIGI'",
-      "blocks": "H-CUTOVER'in provisional supersession kolu (SPRINT-BACKLOG B1.5) sahtede yazilamaz",
+      "what": "KISMEN KAPANDI 2026-10-05 (Hayri tasimasi); 2026-10-06 F0.4 ile DARALDI: supersession OLAY SIRASI (RenewRequired olmadan Ready(h') → Closed(h, Superseded); eski tutamac F0.2(i)) artik sahtede (inject_peer_supersession). KALAN: KM-SEAM-AT-001 §7'nin saydigi sirasiz/duplicate teslim enjeksiyonu sahtede YOK; supersession'in provisional onay-oncesi donemi, bayat/duplicate INIT ve glare modellenmiyor (onay ani = kanca cagrisi); ayrica LongOutage fazi ve DeadlineBounded suresinin dolmasi modellenmiyor. 'recovery' bir anahtardir (ARQ/FEC degil).",
+      "closed_part": "§7 MockTransport feature/app'ten tasindi ve guncel S1'e getirildi: Ready/RenewRequired/Closed senaryolari, ConnectAbandoned/ConnectProgress enjeksiyonu, sanal saat + link + prob sayaci, sahte RESPONSE, deterministik kayip + recovery anahtari, pending INIT tavani, sinirli kuyruklar. TEK kopya crates/kama-app/tests/common/mock_transport.rs; kosucu ayni dosyayi #[path] ile mock hedefi yapar. Eski iskelet sahte (EchoMock) kalkti. [2026-10-06 F0.2/F0.4] Measuring ilk olay, close → Closed(UserClosed), max_early_unit_bytes siniri, reliable tasima, inject_peer_supersession kancasi.",
+      "evidence": "crates/kama-integration/tests/common/seam/target.rs app_mock (#[path]) · seam_mock_fixture f1–f12 · sahtenin baslik notu 'Sahtenin MODELLEMEDIGI' · contract.rs rows::h_cutover vaka 2",
+      "blocks": "H-CUTOVER'in provisional supersession kolunun ONAY-ONCESI kismi (olaysizlik, N_g/T_g drain), bayat/duplicate INIT ve glare sahtede yazilamaz — S3 real hedefte (L-A5c). Olay sirasi kolu KAPANDI (SPRINT-BACKLOG B1.5, S1 duzeyi)",
       "owner": "§7: Hayri + Abkarada"
     }
   ],
