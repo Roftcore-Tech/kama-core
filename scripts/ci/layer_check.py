@@ -33,6 +33,14 @@ KM-SEAM-TC-001 §6 H-SPLIT):
       SINIR: `kama-app`'in grafiğindeki BAŞKA bir crate'in aynı özelliği açması (özellik birleşimi)
       buradan görülmez; o yol için C2 katman crate'lerini zaten yasaklar.
 
+  [2026-10-06 F07.2]
+  C6  `kama-app` kaynağında (yorum ve dizge/char sabiti DIŞI) `as_bytes` adı GEÇEMEZ (sembol kuralı,
+      `\bas_bytes\b`): `PeerRef::as_bytes` (ham `dest_hash`) Application'da ÇAĞRILAMAZ. Tip bilgisi
+      olmadan alıcı ayırt edilemez; kural MUHAFAZAKÂRDIR — `PeerRef::as_bytes`'ın her çağrı biçimi
+      (yöntem, UFCS, fonksiyon işaretçisi) bu adı taşır; bedeli: kama-app'te `str`/`String`
+      baytları için de `as_bytes` kullanılamaz → `AsRef<[u8]>::as_ref`, `str::bytes`,
+      `String::into_bytes`. Başka adlar (`as_bytes_len`, `my_as_bytes2`) kurala girmez.
+
   GEÇİŞLİ KAPANIŞ NASIL HESAPLANIR: `cargo metadata`'nın çözümlenmiş grafiği üzerinden. Kök crate'in
   KENDİ dev-bağımlılıkları dahildir (testleri de katman kuralına tabidir); yol üzerindeki diğer
   crate'lerin dev-bağımlılıkları dahil DEĞİLDİR (onlar kökün derleme grafiğine girmez).
@@ -77,6 +85,9 @@ NOISE_FORBIDDEN = (APP, "client-core")      # C3
 TRANSPORT_FORBIDDEN = (APP,)                # C4
 TEST_UTIL = "test-util"
 MOCK_ACCESSOR = re.compile(r"\b\w+_for_mock\b")   # C5 — sahteler için açılan ham erişimler
+RAW_PEER_BYTES = re.compile(r"\bas_bytes\b")      # C6 — `PeerRef::as_bytes` (muhafazakâr: ad düzeyi)
+# C6 — char sabiti: `'x'`, `'\n'`, `'\x41'`, `'\u{1F600}'`, `'\''`. Eşleşmeyen `'` ömür/etikettir (`'a`).
+CHAR_LITERAL = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
 
 
 def strip_comments(src: str) -> str:
@@ -96,6 +107,63 @@ def strip_comments(src: str) -> str:
         elif src.startswith("/*", i):
             j = src.find("*/", i + 2)
             i = n if j < 0 else j + 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _is_ident(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def strip_comments_and_literals(src: str) -> str:
+    """C6 için: yorumları atar, dizge ve char sabitlerinin İÇİNİ boşlukla karartır (yaklaşık).
+
+    `strip_comments`'ten farkı: dizgeleri KORUMAZ, karartır; ham dizgeleri (`r"…"`, `r#"…"#`,
+    `br#"…"#`, `cr"…"`), char sabitlerini (`'"'` dahil — dizge başlangıcı sanılmaz) ve iç içe
+    blok yorumları (`/* /* */ */`) tanır. Satır sonları korunur (bulgu satırı kaymaz). Ömürler
+    (`'a`) ve etiketler kod olarak geçer.
+    """
+    out: list[str] = []
+    i, n = 0, len(src)
+
+    def blank(seg: str) -> str:
+        return "".join(ch if ch == "\n" else " " for ch in seg)
+
+    while i < n:
+        c = src[i]
+        prev = src[i - 1] if i > 0 else ""
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            i = n if j < 0 else j
+        elif src.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if src.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif src.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            out.append(blank(src[i:j]))
+            i = j
+        elif c in "bcr" and not _is_ident(prev) and (m := re.match(r"(?:b|c)?r(#*)\"", src[i:])):
+            # ham dizge: kapanış `"` + aynı sayıda `#`; içinde kaçış yok
+            close = '"' + m.group(1)
+            k = src.find(close, i + m.end())
+            j = n if k < 0 else k + len(close)
+            out.append(src[i:i + m.end()] + blank(src[i + m.end():j]))
+            i = j
+        elif c == '"':
+            j = i + 1
+            while j < n and src[j] != '"':
+                j += 2 if src[j] == "\\" else 1
+            out.append('"' + blank(src[i + 1:j]) + ('"' if j < n else ""))
+            i = j + 1
+        elif c == "'" and (m := CHAR_LITERAL.match(src, i)):
+            out.append("'" + blank(src[i + 1:m.end() - 1]) + "'")
+            i = m.end()
         else:
             out.append(c)
             i += 1
@@ -214,6 +282,16 @@ def check(metadata: dict, sources: dict[str, str]) -> list[str]:
         for m in MOCK_ACCESSOR.finditer(code):
             line = code.count("\n", 0, m.start()) + 1
             findings.append(f"C5 {path}: sahte erişimi `{m.group(0)}` çağrılıyor (yorum-dışı, ~satır {line})")
+
+    # C6 — Application kaynağında `as_bytes` adı geçemez (yorum/dizge/char dışı; muhafazakâr)
+    for path, src in sorted(sources.items()):
+        code = strip_comments_and_literals(src)
+        for m in RAW_PEER_BYTES.finditer(code):
+            line = code.count("\n", 0, m.start()) + 1
+            findings.append(f"C6 {path}: `as_bytes` adı geçiyor (yorum/dizge-dışı, ~satır {line}) — "
+                            f"`PeerRef::as_bytes` Application'da çağrılamaz; kural ad düzeyinde "
+                            f"muhafazakârdır (`str`/`String` için `AsRef<[u8]>::as_ref`, `str::bytes`, "
+                            f"`String::into_bytes`)")
     return findings
 
 
@@ -377,6 +455,29 @@ def selftest() -> int:
          clean_src, []),
         ("C5 app kaynağında sahte erişimi", _md([], ok_graph), {"a.rs": "fn f(h: H) -> u64 { h.to_raw_for_mock() }\n"}, ["C5"]),
         ("C5 DEĞİL: sahte erişimi yalnız yorumda", _md([], ok_graph), {"a.rs": "// to_raw_for_mock YASAK\nfn f() {}\n"}, []),
+        # C6 [2026-10-06 F07.2]
+        ("C6 yöntem çağrısı peer.as_bytes()", _md([], ok_graph),
+         {"a.rs": "fn f(peer: PeerRef) -> u8 { peer.as_bytes()[0] }\n"}, ["C6"]),
+        ("C6 UFCS PeerRef::as_bytes(&p)", _md([], ok_graph),
+         {"a.rs": "fn f(p: PeerRef) { let _ = PeerRef::as_bytes(&p); }\n"}, ["C6"]),
+        ("C6 fonksiyon işaretçisi let f = PeerRef::as_bytes;", _md([], ok_graph),
+         {"a.rs": "fn g() { let f = PeerRef::as_bytes; }\n"}, ["C6"]),
+        ("C6 str üzerinde s.as_bytes() (muhafazakâr)", _md([], ok_graph),
+         {"a.rs": "fn f(s: &str) -> usize { s.as_bytes().len() }\n"}, ["C6"]),
+        ("C6 char sabiti '\"' dizge sanılıp sonraki çağrıyı yutmaz", _md([], ok_graph),
+         {"a.rs": "fn f(p: PeerRef) -> bool { let q = '\"'; p.as_bytes()[0] == q as u8 }\n"}, ["C6"]),
+        ("C6 ömür ('a) char sanılmaz", _md([], ok_graph),
+         {"a.rs": "fn f<'a>(p: &'a PeerRef) -> &'a [u8; 32] { p.as_bytes() }\n"}, ["C6"]),
+        ("C6 ham dizgeden SONRAKİ çağrı yakalanır", _md([], ok_graph),
+         {"a.rs": 'fn f(p: PeerRef) { let s = r#"a " b"#; p.as_bytes(); let t = "z"; }\n'}, ["C6"]),
+        ("C6 DEĞİL: yalnız yorumda (satır, blok, iç içe blok, doc)", _md([], ok_graph),
+         {"a.rs": "// peer.as_bytes() YASAK\n/* PeerRef::as_bytes /* iç */ as_bytes */ fn f() {}\n/// as_bytes\n"}, []),
+        ("C6 DEĞİL: dizgede as_bytes", _md([], ok_graph),
+         {"a.rs": 'fn f() -> &\'static str { "dizgede as_bytes" }\n'}, []),
+        ("C6 DEĞİL: ham/bayt dizgede as_bytes", _md([], ok_graph),
+         {"a.rs": 'fn f() { let a = r#"x "as_bytes" y"#; let b = b"as_bytes"; let c = br"as_bytes"; }\n'}, []),
+        ("C6 DEĞİL: başka ad (as_bytes_len, my_as_bytes2)", _md([], ok_graph),
+         {"a.rs": "fn f() { as_bytes_len(); my_as_bytes2(); }\n"}, []),
     ]
     bad = 0
     for name, md, src, want in cases:
@@ -428,7 +529,7 @@ def main(argv: list[str]) -> int:
     if findings:
         print(f"\nLAYER-CHECK: KIRMIZI ({len(findings)} ihlal) — INV-NEIGHBOR-1")
         return 1
-    print(f"LAYER-CHECK: YEŞİL ({APP}: {len(sources)} kaynak dosyası; L1/L2/L3 + C1–C5 temiz; kök={root})")
+    print(f"LAYER-CHECK: YEŞİL ({APP}: {len(sources)} kaynak dosyası; L1/L2/L3 + C1–C6 temiz; kök={root})")
     return 0
 
 

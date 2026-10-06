@@ -201,10 +201,15 @@ pub trait KamaTransport {
 
     fn poll_event(&mut self) -> Option<SessionEvent>;
 
-    /// [2026-10-06 F0.2(iii)] Senkron döner (hata dönmez) ve tam BİR `Closed(h, UserClosed)`
-    /// olayı üretir; her oturum sonu tam bir `Closed` olayı. Bilinmeyen, zaten kapanmış
-    /// (`Closed`'ı kuyrukta ya da okunmuş) ya da supersede edilmiş tutamaçta olay ÜRETMEZ (§4).
-    fn close(&mut self, session: SessionHandle);
+    /// [2026-10-06 F07.1] Senkron döner. `Ok(())` ⟺ tam BİR `Closed(h, UserClosed)` olayı
+    /// kuyruğa girer; her oturum sonu tam bir `Closed` olayı (F0.2(iii), §4).
+    ///
+    /// # Errors
+    /// `UnknownSession` — bilinmeyen ya da zaten kapatılmış (`Closed`'ı kuyrukta ya da okunmuş)
+    /// tutamaç; olay YOK. `SessionSuperseded` — `Ready(h')` ile `Closed(h, Superseded)`'ın
+    /// `poll_event` ile okunması arası (aynı pencerede `send(h)` ile aynı hata); olay YOK, durum
+    /// değişmez (`Closed(h, Superseded)` zaten kuyruktadır).
+    fn close(&mut self, session: SessionHandle) -> Result<(), TransportError>;
 
     /// Bekleyen niyetten TEK çıkış: `ConnectAbandoned(ticket, Cancelled)` üretir; `early_unit`
     /// teslim edilmemiştir.

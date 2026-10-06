@@ -352,7 +352,7 @@ drift_shape "F14 enum struct'a donusunce (ConnectPhase)" s1 s1.rs \
   'pub enum ConnectPhase {' $'pub struct ConnectPhase(u8);\npub enum ConnectPhaseEski {' \
   "ConnectPhase turu ayrisiyor: spec \`enum\`, kaynak \`struct()\`"
 drift_shape "F15 metot jenerik olunca (close)" s1 s1.rs \
-  '    fn close(&mut self, session: SessionHandle);' '    fn close<T: Into<SessionHandle>>(&mut self, session: T);' \
+  '    fn close(&mut self, session: SessionHandle) -> Result<(), TransportError>;' '    fn close<T: Into<SessionHandle>>(&mut self, session: T) -> Result<(), TransportError>;' \
   "KamaTransport::close imzasi ayrisiyor"
 drift_shape "F16 belge yorumundaki /* sonraki metodu gizleyemez (cancel)" s1 s1.rs \
   '    fn cancel(&mut self, ticket: ConnectTicket);' \
@@ -367,10 +367,10 @@ drift_shape "F18 trait'e iliskili tip eklenince (type Error)" s1 s1.rs \
   '    fn capabilities(&self) -> TransportCapabilities;' $'    type Error;\n    fn capabilities(&self) -> TransportCapabilities;' \
   "KamaTransport iliskili ogeleri (type / const) ayrisiyor"
 drift_shape "F19 zorunlu metot ayni imzayla varsayilan govde alinca (close)" s1 s1.rs \
-  '    fn close(&mut self, session: SessionHandle);' '    fn close(&mut self, session: SessionHandle) {}' \
+  '    fn close(&mut self, session: SessionHandle) -> Result<(), TransportError>;' '    fn close(&mut self, session: SessionHandle) -> Result<(), TransportError> { Ok(()) }' \
   "KamaTransport::close imzasi ayrisiyor"
 drift_shape "F20 metot unsafe olunca (close)" s1 s1.rs \
-  '    fn close(&mut self, session: SessionHandle);' '    unsafe fn close(&mut self, session: SessionHandle);' \
+  '    fn close(&mut self, session: SessionHandle) -> Result<(), TransportError>;' '    unsafe fn close(&mut self, session: SessionHandle) -> Result<(), TransportError>;' \
   "KamaTransport::close imzasi ayrisiyor"
 drift_shape "F21 struct jenerik parametre alinca (Delivered<T = UnitBytes>)" s1 s1.rs \
   'pub struct Delivered {' 'pub struct Delivered<T = UnitBytes> {' \

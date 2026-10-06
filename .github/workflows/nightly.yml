@@ -120,7 +120,7 @@ jobs:
 
   # ── [F0.6 2026-10-06] S1 sözleşme satırlarının MUTASYON turu — sahteye karşı, ağaç dışı ──
   # PR başına KOŞMAZ (ci.yml'deki ci-verdict `skipped`'i kırmızı sayar; koşullu job oraya konamaz).
-  # ~47 küçük-workspace derlemesi (46 mutasyon + 1 taban; koşum başına RUN_TIMEOUT_S = 900 s tavan);
+  # ~49 küçük-workspace derlemesi (48 mutasyon + 1 taban; koşum başına RUN_TIMEOUT_S = 900 s tavan);
   # ilk koşu süreyi ölçer — timeout-minutes ona göre ayarlanır. `--online`: taze runner'da kayıt
   # önbelleği yok (betiğin varsayılanı --offline). CARGO_BUILD_JOBS betik içinde 2.
   seam-mutation:

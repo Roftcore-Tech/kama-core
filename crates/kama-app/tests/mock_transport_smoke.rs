@@ -3,7 +3,8 @@
 //! `crates/kama-integration/tests/seam_conformance_core` — AYNI sahte dosyasına karşı koşar.
 //!
 //! Olay beklentileri S1 F0.2 (2026-10-06) ile hizalı: `Pending` döndüğü anda
-//! `ConnectProgress(ticket, Measuring)` (ii); `close(h)` → tam bir `Closed(h, UserClosed)` (iii).
+//! `ConnectProgress(ticket, Measuring)` (ii); `close(h)` → `Ok(())` ve tam bir
+//! `Closed(h, UserClosed)` (iii); kapanmış tutamaca `close(h)` → `Err(UnknownSession)` (F07.1).
 
 mod common;
 
@@ -66,9 +67,9 @@ fn connect_completes_and_roundtrips() {
     assert_eq!(delivered.session, session);
     assert_eq!(delivered.unit, unit.bytes);
 
-    // F0.2(iii): close(h) → tam bir Closed(h, UserClosed); sonra tutamaç bilinmez; ikinci close
-    // olay üretmez.
-    transport.close(session);
+    // F0.2(iii) + F07.1: close(h) → Ok(()) ve tam bir Closed(h, UserClosed); sonra tutamaç
+    // bilinmez; ikinci close → Err(UnknownSession), olay üretmez.
+    assert_eq!(transport.close(session), Ok(()));
     assert_eq!(
         transport.poll_event(),
         Some(SessionEvent::Closed(session, CloseReason::UserClosed))
@@ -78,6 +79,9 @@ fn connect_completes_and_roundtrips() {
         transport.send(session, unit, DeliveryPolicy::Reliable),
         Err(TransportError::UnknownSession)
     );
-    transport.close(session);
+    assert_eq!(
+        transport.close(session),
+        Err(TransportError::UnknownSession)
+    );
     assert_eq!(transport.poll_event(), None);
 }
