@@ -693,6 +693,7 @@ name = "kama-app"
 version = "0.1.0"
 dependencies = [
  "kama-contracts",
+ "kama-vectors",
 ]
 
 [[package]]
