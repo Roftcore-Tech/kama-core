@@ -84,7 +84,8 @@ impl MockTransport {
         self.faults.push_back(fault);
     }
 
-    /// Crypto'nun `OutboundEnvelope{envelope_type, bytes}` çıktısını alır: SAKLAR ve yollar.
+    /// Crypto'nun `Initiated{session, envelope_type, bytes}` (s3 v1.1; eski `OutboundEnvelope`) ya da
+    /// yanıt zarfını alır: SAKLAR ve yollar.
     pub fn submit(
         &mut self,
         envelope_type: u8,

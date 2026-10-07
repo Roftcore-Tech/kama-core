@@ -1,5 +1,7 @@
 # KM-SEAM-TC-001 — Transport ↔ Crypto Seam Sözleşmesi (S3)
 
+> **YAMA KAYDI — 2026-10-08 [K1 "s3 v1.1" — Abkarada kararı]:** FROZEN S3 `SessionControl` gerçek kullanım için eksikti (`Initiate` sonucunda tutamaç yok, yanıtlayanın sonucunda eş yok, HANDLE_ASSIGN komutu yok, bekleyen `Initiate`'i iptal yok). §1.2: `SessionResult::OutboundEnvelope{envelope_type, bytes}` → **`Initiated{session, envelope_type, bytes}`** (`Initiate` ve `Renew`'un yeni oturumu; `session` BEKLEYEN oturumun tutamacı, `Established{session}` aynı tutamaçla gelir) · `EstablishedAndReply` ve `ProvisionalAndReply`'a **`peer: PeerRef`** (INIT'in doğrulanmış göndereni) · `SessionCommand`'a **`AssignHandle{session, hub_handle}`** (noise-wire §2.55 HANDLE_ASSIGN → oturuma bağ; bekleyen oturum dahil; aynı bağın tekrarı idempotent, çakışma/yeniden bağlama `Failed`) · **`Close{session}` bekleyen oturumu da kapatır** (bilinen tutamaçta tam bir `Closed(session, UserClosed)`, bilinmeyende olay yok). K6/K8/K9 ve §7 buna göre işaretlendi. Derlenen hâl `crates/kama-contracts/src/s3.rs`; sahte (`seam_mock.rs`), drift ve bu metin aynı PR'da. Başka belgelerdeki `OutboundEnvelope` anışları (KM-SEAM-AT-001 K-metni, BL kartı) artık `Initiated`'ı adlandırır.
+
 > **YAMA KAYDI — 2026-10-06b [F0.3 — Abkarada kararı]:** §1.1 fence'inin altına düzyazı not: `PacketProtection` ve `SessionControl` implementasyonları `Send + 'static`'tir (kaynak `crates/kama-contracts/src/s3.rs` trait başlıkları); entropi kaynağı `EntropySource` trait'i `kama-noise-wire`'ın public API'sinde tanımlanır (L-A5b), bugün `crates/client-core/src/seam.rs`'te duran tanım oraya taşınır — bu seam'in trait'i değildir, Transport enjekte eder. Trait blokları değişmedi. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-04b [K5 + K3 — Abkarada kararı]:** §1.2 `SessionResult`'a **`ProvisionalAndReply{new, supersedes, envelope}`**, `SessionEvent`'e **`Confirmed(new)`** eklendi; K10 buna göre kesinleşti (`EstablishedAndReply` = eşle oturum YOK; `ProvisionalAndReply` = eşle oturum VAR; Transport `Ready(new)`'i `Confirmed`'de yayınlar). İstemci sabiti `PROVISIONAL_TTL`. E2E kontrol aralığından `0x10/0x11` (Ack/Sack) silindi notu. A4.1 bunu UYGULAR, yeniden tasarlamaz.
@@ -95,14 +97,16 @@ pub enum SessionCommand {
     Initiate      { peer: PeerRef, early_unit: Option<Bytes> },   // early_unit OPAK (ccr §35.3 AMENDMENT-6)
     AcceptInit    { wire: Bytes },                                 // STORE_MESSAGE/DELIVER'dan gelen SSI1
     AcceptResponse{ wire: Bytes },                                 // SSR1 — candidate seçimi İÇERİDE
+    AssignHandle  { session: SessionHandle, hub_handle: HubHandle },  // [s3 v1.1 2026-10-08] HANDLE_ASSIGN (noise-wire §2.55) → oturuma bağ
     Renew         { session: SessionHandle },
-    Close         { session: SessionHandle },
+    Close         { session: SessionHandle },                      // [s3 v1.1] bekleyen (Initiated) oturumu da kapatır
 }
 pub enum SessionResult {
-    OutboundEnvelope { envelope_type: u8, bytes: Bytes },          // transport Plane 1 ile yollar
+    // ~~OutboundEnvelope { envelope_type: u8, bytes: Bytes },          // transport Plane 1 ile yollar~~   [s3 v1.1 2026-10-08 → Initiated]
+    Initiated        { session: SessionHandle, envelope_type: u8, bytes: Bytes },  // [s3 v1.1] bekleyen oturumun tutamacı + INIT; transport Plane 1 ile yollar
     Established      { session: SessionHandle },
-    EstablishedAndReply { session: SessionHandle, envelope_type: u8, bytes: Bytes },   // [K5] eşle mevcut oturum YOK
-    ProvisionalAndReply { new: SessionHandle, supersedes: SessionHandle,             // [K5 2026-10-04b] eşle oturum VAR:
+    EstablishedAndReply { session: SessionHandle, peer: PeerRef, envelope_type: u8, bytes: Bytes },   // [K5] eşle mevcut oturum YOK · [s3 v1.1] peer = INIT'in doğrulanmış göndereni
+    ProvisionalAndReply { new: SessionHandle, supersedes: SessionHandle, peer: PeerRef,  // [K5 2026-10-04b] eşle oturum VAR: · [s3 v1.1] + peer
                           envelope_type: u8, bytes: Bytes },                          //   `new` provisional, `supersedes` tam çalışır; zarf = RESPONSE
     NoOutput,
     Failed,                                                         // opak (§3)
@@ -115,16 +119,16 @@ pub enum SessionEvent { Ready(SessionHandle), RenewRequired(SessionHandle), Clos
 
 **K6 — Komut typed'dır, zarf payload'ı opaktır.**
 **G:** Transport komutun *türünü* bilmek zorunda (Initiate mi AcceptResponse mu — DELIVER `envelope_type`'ından gelir, app-rpc §2); zarfın *içini* bilmemeli. "session_control(opak zarf)" ifadesi yanlıştı: komut opak değil, payload opak.
-**S:** Transport `OutboundEnvelope`'u Plane 1 `STORE_MESSAGE` ile hub'a yollar (hop anahtarıyla mühürlenir, K1); Application hiçbirini görmez, yalnız `Ready(h)` alır (INV-NEIGHBOR-1).
+**S:** Transport ~~`OutboundEnvelope`'u~~ `Initiated`'ın zarfını [s3 v1.1] Plane 1 `STORE_MESSAGE` ile hub'a yollar (hop anahtarıyla mühürlenir, K1); Application hiçbirini görmez, yalnız `Ready(h)` alır (INV-NEIGHBOR-1).
 
 **K7 — KS-DEMUX-1 Crypto'nun içinde kapanır: `AcceptResponse` candidate'ı kendi pending kümesinden cap'li dener.**
 **G:** SSR1 wire'ında oturum ayırt edici yok (ccr §35.5); Transport ve Application candidate bilmez ve bilmemeli (bilseler handshake/transcript/key bilgisi sızar). Crypto pending INIT'leri zaten tutuyor (`init_ephemeral_sk` ≤7 gün, T-18c). Deneme sırası: **en yeni pending önce**; her deneme = 2×X25519 + 1 AEAD; toplam ≤ `PENDING_RESPONSE_TRIAL_CAP`. Sonuç ayırt edilemez (`Failed` tek tip — §3): yanlış candidate ile bozuk paket aynı görünür.
 **R:** *`resp_hint` wire alanı* — LAW-7 (yasak). *Taşıyıcı bağlamı `pending_ref`* — hub/mailbox state'i gerektirir, DELIVER payload'ı tanımsız [OPEN app-rpc §6.11]; kapanırsa **optimizasyon** olarak eklenir, cap'li deneme yine fallback kalır. *Application'ın seçmesi* — INV-NEIGHBOR-1 ihlali.
 **S:** PoC direct-mode dahil geçerli (INIT retry yeni ephemeral üretir → ≥2 pending mümkün). `PENDING_RESPONSE_TRIAL_CAP` ⬛ **KARAR (KS-DOS-1)** — bu belge değer vermez; cap yoksa sahte RESPONSE başına N×X25519 amplifikasyonu (ccr §35.15).
 
-**K8 — `SessionHandle`'ı Crypto basar (`Established`/`Ready`); yaşam döngüsü invariantları transport-tdd §0 INV-NEIGHBOR-1'dedir.** Transport handle'ı `Session(h)` ctx'inde geri verir, yorumlamaz. `Renew` → yeni session, yeni handle; eski handle `Closed` sonrası geçersiz. Yenilemede transport eski handle'ın outstanding ARQ state'ini kapatır (H5/H10 — hop-local ARQ, recovery domain = FlowHandle).
+**K8 — `SessionHandle`'ı Crypto basar (`Established`/`Ready`; [s3 v1.1] bekleyen oturum için `Initiated` anında); yaşam döngüsü invariantları transport-tdd §0 INV-NEIGHBOR-1'dedir.** Transport handle'ı `Session(h)` ctx'inde geri verir, yorumlamaz. `Renew` → yeni session, yeni handle; eski handle `Closed` sonrası geçersiz. Yenilemede transport eski handle'ın outstanding ARQ state'ini kapatır (H5/H10 — hop-local ARQ, recovery domain = FlowHandle).
 
-**K9 — Zaman sahipliği.** Transport: teslim/yeniden-iletim deadline'ları, `Initiate` çıktısının Plane 1 ile Reliable gönderimi. Crypto: candidate expiry, key lifetime, replay retirement, epoch grace (`N_g` paket VEYA `T_g` süre — ⬛ KARAR KS-GRACE-1, sRTT'siz), session cap. Crypto **ağ retransmisyon timer'ı tutmaz**; retry = cached byte-for-byte (INV-INIT-KEY-1), Crypto aynı `OutboundEnvelope`'u yeniden **üretmez**, Transport cache'ler.
+**K9 — Zaman sahipliği.** Transport: teslim/yeniden-iletim deadline'ları, `Initiate` çıktısının Plane 1 ile Reliable gönderimi. Crypto: candidate expiry, key lifetime, replay retirement, epoch grace (`N_g` paket VEYA `T_g` süre — ⬛ KARAR KS-GRACE-1, sRTT'siz), session cap. Crypto **ağ retransmisyon timer'ı tutmaz**; retry = cached byte-for-byte (INV-INIT-KEY-1), Crypto aynı ~~`OutboundEnvelope`'u~~ `Initiated` zarfını [s3 v1.1] yeniden **üretmez**, Transport cache'ler.
 
 ---
 
@@ -156,12 +160,12 @@ K9. Ek: `open()` ve `seal()` senkron, bloklamaz; seam I/O yapmaz.
 | H-DEMUX | ≥2 pending; doğru candidate herhangi sırada; cap aşımı → `Failed`; yanlış candidate ile bozuk paket ayırt edilemez |
 | H-RETRY | **Alice:** `Initiate` çıktısı transport cache'inden byte-identical yeniden gönderilir; ikinci `Initiate` = farklı ephemeral · **Bob:** aynı SSI1 tekrar gelirse (duplicate `AcceptInit`) mevcut session'a eşlenir ve **byte-identical cached SSR1** döner; yeni responder ephemeral / ikinci session YOK (noise-wire §0.7-B, ccr INV-RESP-KEY-1) |
 | H-NO-MUTATE | Her fail yolunda replay/pending/key state byte-for-byte aynı |
-| H-HANDLE | `Closed` sonrası `Session(h)` ile seal → `UnknownSession`; `HubHandle` ≠ `SessionHandle` tip düzeyinde **[2026-10-05: tip yarısı derleme zamanında — trybuild `tests/ui/hub_handle_is_not_session_handle.rs`]** |
+| H-HANDLE | `Closed` sonrası `Session(h)` ile seal → `UnknownSession`; `HubHandle` ≠ `SessionHandle` tip düzeyinde **[2026-10-05: tip yarısı derleme zamanında — trybuild `tests/ui/hub_handle_is_not_session_handle.rs`]** · **[s3 v1.1 2026-10-08]** bekleyen (`Initiated`) oturumun `Close`'u tam bir `Closed` yayınlar ve geç RESPONSE `Failed`; `AssignHandle` tekrarı idempotent, hub tutamacı başka oturumdaysa `Failed` ve state değişmez |
 | H-REPLAY-POISON | **[2026-10-05 — satır eklendi; tanım sprint planı A4.4 + identity §15.5]** Sahte paket replay penceresini ilerletmez; ardından AYNI sayaçla gelen geçerli paket kabul edilir ve commit edilir |
 | H-SPLIT | Application'dan Crypto'ya doğrudan çağrı yolu YOK (statik bağımlılık kontrolü, INV-NEIGHBOR-1) **[2026-10-05: kanıt `scripts/ci/layer_check.py` — `kama-app`'in geçişli grafiğinde kripto/transport crate'i yok; `kama-noise-wire` → `kama-app`/`client-core` kenarı yok]** |
 
 ## 7. Karşı-taraf stub'ları
-`MockCrypto` (Transport için; **[2026-10-05]** `kama-noise-wire` crate'inin `test-util` özelliğinde yaşar — sahte, gerçeğinin sahibi olan crate'te): deterministik seal/open (vektör-uyumlu veya identity), ~~`command()` sabit `Established`~~ **[2026-10-06]** `Initiate` deterministik sahte INIT zarfı üretir (`init_counter` artar), `AcceptInit` `init_counter`'a göre sahte SSR1 üretir ve ÖNBELLEKLER (aynı `init_counter`'lı duplicate → byte-özdeş aynı SSR1, yeni oturum yok), cap'li `AcceptResponse`. `MockTransport` (Crypto için): kayıp/sırasız/duplicate enjeksiyonu, PeerSlot reset simülasyonu, `OutboundEnvelope`'u cache'leyip yeniden gönderme.
+`MockCrypto` (Transport için; **[2026-10-05]** `kama-noise-wire` crate'inin `test-util` özelliğinde yaşar — sahte, gerçeğinin sahibi olan crate'te): deterministik seal/open (vektör-uyumlu veya identity), ~~`command()` sabit `Established`~~ **[2026-10-06]** `Initiate` deterministik sahte INIT zarfı üretir (`init_counter` artar), `AcceptInit` `init_counter`'a göre sahte SSR1 üretir ve ÖNBELLEKLER (aynı `init_counter`'lı duplicate → byte-özdeş aynı SSR1, yeni oturum yok), cap'li `AcceptResponse`. **[s3 v1.1 2026-10-08]** `Initiate` → `Initiated{session, …}`; sahte INIT zarfı başlatanın kimliğini taşır, `AcceptInit` onu `EstablishedAndReply.peer` olarak verir; `AssignHandle` bağı tutar (çakışma/yeniden bağlama `Failed`); `Close` bekleyen INIT'leri de siler. `MockTransport` (Crypto için): kayıp/sırasız/duplicate enjeksiyonu, PeerSlot reset simülasyonu, ~~`OutboundEnvelope`'u~~ `Initiated` zarfını cache'leyip yeniden gönderme.
 
 ## 8. Açıklar (bu seam'i HOLD tutanlar)
 | # | Kalem | Sahip |

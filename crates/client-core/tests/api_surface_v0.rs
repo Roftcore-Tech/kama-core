@@ -30,8 +30,9 @@ use client_core::wire::{
 use client_core::ClientSession;
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s3::{
-    Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits, SealError,
-    SealedPacketMeta, SealedUnit, SessionCommand, SessionControl, SessionEvent, SessionResult,
+    HubHandle, Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits,
+    SealError, SealedPacketMeta, SealedUnit, SessionCommand, SessionControl, SessionEvent,
+    SessionResult,
 };
 // Motor re-export'ları (yalnız yol/isim-pin; derinlemesine imza motorun kendi testlerinde).
 use client_core::{
@@ -288,6 +289,10 @@ async fn transport_api_v0_surface_is_frozen() {
         },
         SessionCommand::AcceptInit { wire: Vec::new() },
         SessionCommand::AcceptResponse { wire: Vec::new() },
+        SessionCommand::AssignHandle {
+            session: h,
+            hub_handle: HubHandle::from_raw(1),
+        },
         SessionCommand::Renew { session: h },
         SessionCommand::Close { session: h },
     ] {
@@ -295,24 +300,29 @@ async fn transport_api_v0_surface_is_frozen() {
             SessionCommand::Initiate { .. }
             | SessionCommand::AcceptInit { .. }
             | SessionCommand::AcceptResponse { .. }
+            | SessionCommand::AssignHandle { .. }
             | SessionCommand::Renew { .. }
             | SessionCommand::Close { .. } => {}
         }
     }
+    // s3 v1.1 (K1, 2026-10-08): `Initiated` tutamaç taşır; yanıtlayan sonuçları `peer` taşır.
     match SessionResult::NoOutput {
-        SessionResult::OutboundEnvelope {
+        SessionResult::Initiated {
+            session: _,
             envelope_type: _,
             bytes: _,
         } => {}
         SessionResult::Established { session: _ } => {}
         SessionResult::EstablishedAndReply {
             session: _,
+            peer: _,
             envelope_type: _,
             bytes: _,
         } => {}
         SessionResult::ProvisionalAndReply {
             new: _,
             supersedes: _,
+            peer: _,
             envelope_type: _,
             bytes: _,
         } => {}

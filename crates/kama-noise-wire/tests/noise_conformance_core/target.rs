@@ -19,7 +19,7 @@
 
 #![allow(dead_code)]
 
-use kama_contracts::handles::SessionHandle;
+use kama_contracts::handles::{PeerRef, SessionHandle};
 use kama_contracts::s3::{
     HubHandle, PacketProtection, ProtectionContext, SessionControl, SessionEvent,
 };
@@ -103,6 +103,13 @@ pub trait S3Target: ProtectionTarget<Crypto: SessionControl> {
     /// Hedef bu derlemede yoksa [`TargetUnavailable`] (beyan edilmiş boşluk).
     fn build() -> Result<Self::Crypto, TargetUnavailable>;
 
+    /// Kimliği `identity` olan uç [s3 v1.1]: bu ucun INIT'ini kabul eden karşı uç
+    /// `EstablishedAndReply.peer` olarak bu kimliği görür.
+    ///
+    /// # Errors
+    /// Hedef bu derlemede yoksa [`TargetUnavailable`].
+    fn build_as(identity: PeerRef) -> Result<Self::Crypto, TargetUnavailable>;
+
     /// Yanıt bekleyen bir INIT kaydeder; `tag` yalnız fikstürün o INIT'i sonradan anmasına yarar.
     ///
     /// # Errors
@@ -180,6 +187,10 @@ impl S3Target for MockTarget {
 
     fn build() -> Result<Self::Crypto, TargetUnavailable> {
         Ok(MockCrypto::new())
+    }
+
+    fn build_as(identity: PeerRef) -> Result<Self::Crypto, TargetUnavailable> {
+        Ok(MockCrypto::with_identity(identity))
     }
 
     fn add_pending(c: &mut Self::Crypto, tag: u64) -> Result<(), PendingRefused> {

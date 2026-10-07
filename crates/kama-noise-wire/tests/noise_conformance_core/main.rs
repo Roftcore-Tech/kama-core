@@ -125,6 +125,10 @@ macro_rules! noise_s3_suite {
             fn h_handle_closed_handle_cannot_seal() {
                 crate::s3_handle::closed_handle_cannot_seal::<$target>();
             }
+            #[test]
+            fn h_handle_pending_close_and_assign_handle() {
+                crate::s3_handle::pending_close_and_assign_handle::<$target>();
+            }
         }
     };
     // Yalnız PacketProtection ailesi; HubChannel no-op (gerçek hedef bugün — L-A5b).

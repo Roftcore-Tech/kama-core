@@ -15,6 +15,10 @@
 //!  * **K10 / DR-CONNECT-1 K5** — [`SessionResult::ProvisionalAndReply`] ve
 //!    [`SessionEvent::Confirmed`]: mevcut oturumu olan eşten gelen yeni-sayaçlı INIT provisional
 //!    kurulur; Transport Application'a `Ready`'yi `Confirmed`'de yayınlar.
+//!  * **s3 v1.1 (Abkarada kararı K1, 2026-10-08)** — `Initiate` bekleyen oturumun tutamacını
+//!    verir ([`SessionResult::Initiated`]); yanıtlayan taraf eşi öğrenir (`EstablishedAndReply` /
+//!    `ProvisionalAndReply` `peer`); hub'ın HANDLE_ASSIGN'ı [`SessionCommand::AssignHandle`] ile
+//!    oturuma bağlanır; `Close` bekleyen oturumu da kapatır.
 //!
 //! SPEC'TEN TEK FARK: spec `Bytes` yazar, burada `Vec<u8>` (bu crate'in harici bağımlılığı yoktur).
 //!
@@ -176,9 +180,21 @@ pub enum SessionCommand {
     AcceptResponse {
         wire: Vec<u8>,
     },
+    /// [s3 v1.1] Hub'ın HANDLE_ASSIGN ile bildirdiği wire tutamacını oturuma bağlar (noise-wire
+    /// §2.55; bekleyen oturum dahil — başlatan tutamacı RESPONSE'tan ÖNCE alır). Başarı ve aynı
+    /// bağın tekrarı (§2.55 REPLAY-IDENTITY, idempotent) `NoOutput`. `Failed` (opak, state
+    /// DEĞİŞMEZ): oturum yok · tutamaç başka bir oturumda (ccr §35.7) · oturum FARKLI bir tutamaca
+    /// bağlı (§2.55 REUSE: oturum içinde değişmez; HUB-MIGRATION bu sürümün kapsamı dışında).
+    AssignHandle {
+        session: SessionHandle,
+        hub_handle: HubHandle,
+    },
     Renew {
         session: SessionHandle,
     },
+    /// [s3 v1.1] Kurulu VE bekleyen (`Initiated`, henüz `Established` değil) oturumu kapatır:
+    /// bekleyen INIT'in state'i silinir, geç gelen RESPONSE'u `Failed` olur. Bilinen tutamaçta
+    /// tam bir `Closed(session, UserClosed)`; bilinmeyende olay YOK.
     Close {
         session: SessionHandle,
     },
@@ -187,8 +203,12 @@ pub enum SessionCommand {
 /// Komut sonucu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionResult {
-    /// Transport bu zarfı Plane 1 ile yollar.
-    OutboundEnvelope {
+    /// [s3 v1.1 — eski `OutboundEnvelope`] `Initiate` (ve `Renew`'un yeni oturumu): `session`
+    /// BEKLEYEN oturumun tutamacıdır (`Established{session}` aynı tutamaçla gelir; `AssignHandle` /
+    /// `Close` onu adlandırır). Transport zarfı Plane 1 ile yollar ve yeniden gönderim için
+    /// byte-for-byte önbellekler (K9).
+    Initiated {
+        session: SessionHandle,
         envelope_type: u8,
         bytes: Vec<u8>,
     },
@@ -196,8 +216,10 @@ pub enum SessionResult {
         session: SessionHandle,
     },
     /// `AcceptInit`: eşle mevcut oturum YOK → oturum hemen kullanılır, zarf = RESPONSE.
+    /// [s3 v1.1] `peer` = INIT'in DOĞRULANMIŞ göndereni (yanıtlayan eşi buradan öğrenir).
     EstablishedAndReply {
         session: SessionHandle,
+        peer: PeerRef,
         envelope_type: u8,
         bytes: Vec<u8>,
     },
@@ -206,6 +228,7 @@ pub enum SessionResult {
     ProvisionalAndReply {
         new: SessionHandle,
         supersedes: SessionHandle,
+        peer: PeerRef,
         envelope_type: u8,
         bytes: Vec<u8>,
     },
