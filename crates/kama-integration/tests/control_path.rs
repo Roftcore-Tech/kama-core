@@ -1,5 +1,7 @@
 //! Sprint-5a: control-yolu uçtan-uca (mock-key). HANDLE_ASSIGN(hub_sim) → PARAM_SET → FEC-emisyon →
-//! ACK/SACK(epoch'lu) → RECOVERED(credit-ÜRETMEZ-assert) → BLOCK_COMPLETE → SESSION_RENEW_REQUIRED.
+//! ~~ACK/SACK(epoch'lu)~~ PARAM_ACK(hash-echo) → RECOVERED(credit-ÜRETMEZ-assert) →
+//! BLOCK_COMPLETE → SESSION_RENEW_REQUIRED. [D2 2026-10-08] noise-wire Ack/Sack ailesi kodda yok
+//! (K3: ürün ACK'i engine `ACK_V2`); 0x10/0x11 RESERVED → reject (codec/schema testlerinde pinli).
 
 use kama_noise_wire::retry::control_produces_bandwidth_credit;
 use kama_noise_wire::{
@@ -98,30 +100,16 @@ fn control_flow_end_to_end() {
     let (mut s2c_tx, mut s2c_rx) = pair(h_ext);
     let mut spn = 0u64;
 
-    // 4) ACK (epoch-scoped) — acked_dh_epoch taşır.
-    let ack = Control::Ack {
+    // 4) ~~ACK (epoch-scoped) / SACK~~ — [D2 2026-10-08] Ack/Sack ailesi kaldırıldı (K3). Yerine
+    //    sunucunun PARAM_SET'e yanıtı PARAM_ACK (hash-echo; NoRetry saf geri-bildirim — eski ACK
+    //    ile aynı retry sınıfı).
+    let param_ack = Control::ParamAck {
         id: 10,
-        acked_dh_epoch: 0,
-        ack_delay_256us: 0,
-        seen_count: 0,
-        arrival_rate: 0xFFFF,
-        ranges: vec![(0, 1)],
+        param_hash: [0x5A; 32],
     };
     assert_eq!(
-        roundtrip_control(&mut s2c_tx, &mut s2c_rx, ack.clone(), spn, 0).unwrap(),
-        ack
-    );
-    spn += 1;
-    // SACK
-    let sack = Control::Sack {
-        id: 11,
-        acked_dh_epoch: 0,
-        base_pn: 0,
-        blocks: vec![(1, 1)],
-    };
-    assert_eq!(
-        roundtrip_control(&mut s2c_tx, &mut s2c_rx, sack.clone(), spn, 0).unwrap(),
-        sack
+        roundtrip_control(&mut s2c_tx, &mut s2c_rx, param_ack.clone(), spn, 0).unwrap(),
+        param_ack
     );
     spn += 1;
 
@@ -194,20 +182,19 @@ fn param_ack_hash_echo() {
 // ── RECOVERED hiçbir control-tipi credit-üretmez (tam-set) ──
 #[test]
 fn no_control_produces_credit() {
+    // [D2 2026-10-08] ~~Ack/Sack~~ (aile kodda yok, K3) → kalan geri-bildirim türleri: CS_ECHO
+    // (eski ACK gibi seen_count taşır; alan YALNIZ-LEDGER) ve PARAM_ACK (hash-echo).
     let all = [
-        Control::Ack {
+        Control::CsEcho {
             id: 1,
-            acked_dh_epoch: 0,
-            ack_delay_256us: 0,
+            subtype: kama_noise_wire::control::CS_SUBTYPE_COLD_START,
+            probe_seq: 0,
             seen_count: 0,
-            arrival_rate: 0xFFFF,
-            ranges: vec![],
+            arrival_gap: 0,
         },
-        Control::Sack {
+        Control::ParamAck {
             id: 2,
-            acked_dh_epoch: 0,
-            base_pn: 0,
-            blocks: vec![],
+            param_hash: [0; 32],
         },
         Control::Recovered {
             id: 3,

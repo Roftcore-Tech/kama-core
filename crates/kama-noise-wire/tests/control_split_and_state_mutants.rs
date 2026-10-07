@@ -12,6 +12,9 @@
 //!   "TAM cap'te BÖLME" sınırını pinlemiyor. Bir off-by-one, tam sınırdaki bir control'ü
 //!   gereksiz böler (fazladan datagram, fazladan control_id) veya cap+1'i bölmeden gönderir
 //!   (alıcı fail-closed reddeder → control kanalı sessizce kopar).
+//!   [D2 2026-10-08] ACK/SACK kolları kodla birlikte kalktı (aile kodda yok, K3; 0x10/0x11
+//!   RESERVED → reject); bölünen tek tür RECOVERED. Anılan iki test RECOVERED'a yeniden
+//!   hedeflendi: `outgoing_recovered_over_cap_split`, `recovered_split_and_within_cap_noop`.
 //!
 //!   **(2) Accessor'lar sabit döndürülebiliyordu — 9 mutant.**
 //!   `hub_handle()`, `recv_expected_pn()`, `dh_epoch()`, `retries_done()`,
@@ -30,8 +33,7 @@ use kama_noise_wire::protector::{KamaNoiseWireSizer, WireSizeError};
 use kama_noise_wire::{
     decode_control_body, split_for_send, Direction, HandleClass, HandleRouter, InboundControlDedup,
     InboundOutcome, KamaNoiseWireProtector, PersistentReplayGuard, ReplayOutcome, RetryClass,
-    SealArgs, Session, SessionId, SessionManager, ACK_MAX_RANGES, RECOVERED_MAX_ESI_RANGES,
-    SACK_MAX_GAP_BLOCKS,
+    SealArgs, Session, SessionId, SessionManager, RECOVERED_MAX_ESI_RANGES,
 };
 use kama_transport_schema::control::Control;
 use kama_transport_schema::inner_kind::{self, ShardKind};
@@ -42,26 +44,8 @@ fn key(s: u8) -> Zeroizing<[u8; 32]> {
     Zeroizing::new([s; 32])
 }
 
-fn ack(n: usize) -> Control {
-    Control::Ack {
-        id: 100,
-        acked_dh_epoch: 0,
-        // ACK-V2 birleşimi (2026-08-26) alanları; bu testler split/state davranışını ölçer,
-        // ölçüm-alanları nötr: delay 0, seen 0, arrival_rate = 0xFFFF ölçüm-yok-sentineli.
-        ack_delay_256us: 0,
-        seen_count: 0,
-        arrival_rate: 0xFFFF,
-        ranges: (0..n).map(|i| (i as u64 * 10, i as u64 * 10 + 3)).collect(),
-    }
-}
-fn sack(n: usize) -> Control {
-    Control::Sack {
-        id: 200,
-        acked_dh_epoch: 0,
-        base_pn: 42,
-        blocks: (0..n).map(|i| (i as u16, i as u16 + 1)).collect(),
-    }
-}
+// [D2 2026-10-08] `ack(n)` / `sack(n)` yardımcıları kaldırıldı — Ack/Sack ailesi kodda yok (K3:
+// ürün ACK'i engine `ACK_V2`); DR-1 bölme/tavan kolları artık yalnız RECOVERED'da.
 fn recovered(n: usize) -> Control {
     Control::Recovered {
         id: 300,
@@ -84,106 +68,92 @@ fn ids() -> impl FnMut() -> u32 {
 // ════════════════════════════════════════════════════════════════════════════
 
 /// MUTANT `control.rs:168:14/27`, `182:14/27`, `196:14/31` — match-guard'lar ve `>` operatörleri.
+/// [D2 2026-10-08] ACK/SACK guard'ları (168/182) kodla birlikte kalktı; kalan RECOVERED guard'ı.
 #[test]
 fn split_does_not_fire_at_exactly_the_cap() {
     // TAM cap'te bölme OLMAMALI: tek parça, AYNI control_id. Guard `>` yerine `>=` olsaydı
     // sınırdaki her control gereksiz bölünür — fazladan datagram + fazladan control_id, ve
     // alıcı tarafında dedup muhasebesi kayar.
-    for (name, c, cap, orig_id) in [
-        ("ACK", ack(ACK_MAX_RANGES), ACK_MAX_RANGES, 100u32),
-        ("SACK", sack(SACK_MAX_GAP_BLOCKS), SACK_MAX_GAP_BLOCKS, 200),
-        (
-            "RECOVERED",
-            recovered(RECOVERED_MAX_ESI_RANGES),
-            RECOVERED_MAX_ESI_RANGES,
-            300,
-        ),
-    ] {
-        let out = split_for_send(&c, ids());
-        assert_eq!(out.len(), 1, "{name}: tam cap ({cap}) bölündü");
-        assert_eq!(out[0], c, "{name}: tam cap'te içerik değişti");
-        assert_eq!(out[0].control_id(), orig_id, "{name}: id değişti");
-    }
+    let c = recovered(RECOVERED_MAX_ESI_RANGES);
+    let out = split_for_send(&c, ids());
+    assert_eq!(
+        out.len(),
+        1,
+        "RECOVERED: tam cap ({RECOVERED_MAX_ESI_RANGES}) bölündü"
+    );
+    assert_eq!(out[0], c, "RECOVERED: tam cap'te içerik değişti");
+    assert_eq!(out[0].control_id(), 300, "RECOVERED: id değişti");
 }
 
 #[test]
 fn split_fires_at_exactly_cap_plus_one() {
     // cap+1'de bölme OLMALI. Guard `>` yerine `true`/`false` sabitine dönüşürse burada yakalanır.
-    for (name, c, cap) in [
-        ("ACK", ack(ACK_MAX_RANGES + 1), ACK_MAX_RANGES),
-        ("SACK", sack(SACK_MAX_GAP_BLOCKS + 1), SACK_MAX_GAP_BLOCKS),
-        (
-            "RECOVERED",
-            recovered(RECOVERED_MAX_ESI_RANGES + 1),
-            RECOVERED_MAX_ESI_RANGES,
-        ),
-    ] {
-        let out = split_for_send(&c, ids());
-        assert_eq!(out.len(), 2, "{name}: cap+1 ({}) bölünmedi", cap + 1);
-    }
+    // [D2 2026-10-08] ACK/SACK kolları kaldırıldı (aile kodda yok, K3); kalan RECOVERED.
+    let out = split_for_send(&recovered(RECOVERED_MAX_ESI_RANGES + 1), ids());
+    assert_eq!(
+        out.len(),
+        2,
+        "RECOVERED: cap+1 ({}) bölünmedi",
+        RECOVERED_MAX_ESI_RANGES + 1
+    );
 }
 
 #[test]
 fn split_preserves_every_element_exactly_once() {
     // Bölme veri KAYBETMEMELİ ve TEKRARLAMAMALI. `chunks()` yanlış boyutla çağrılsa veya
     // guard yanlış dala gitse burada yakalanır.
-    let n = ACK_MAX_RANGES * 3 + 7;
-    let orig = ack(n);
+    // [D2 2026-10-08] ~~ACK~~ → RECOVERED (Ack ailesi kodda yok, K3; bölünen tek tür RECOVERED).
+    let n = RECOVERED_MAX_ESI_RANGES * 3 + 7;
+    let orig = recovered(n);
     let parts = split_for_send(&orig, ids());
-    let mut all: Vec<(u64, u64)> = Vec::new();
+    let mut all: Vec<(u16, u16)> = Vec::new();
     for p in &parts {
         match p {
-            Control::Ack { ranges, .. } => {
+            Control::Recovered { esi_ranges, .. } => {
                 assert!(
-                    ranges.len() <= ACK_MAX_RANGES,
+                    esi_ranges.len() <= RECOVERED_MAX_ESI_RANGES,
                     "parça cap'i aşıyor: {}",
-                    ranges.len()
+                    esi_ranges.len()
                 );
-                assert!(!ranges.is_empty(), "boş parça üretildi");
-                all.extend(ranges.iter().copied());
+                assert!(!esi_ranges.is_empty(), "boş parça üretildi");
+                all.extend(esi_ranges.iter().copied());
             }
-            other => panic!("ACK bölünürken tür değişti: {other:?}"),
+            other => panic!("RECOVERED bölünürken tür değişti: {other:?}"),
         }
     }
     match &orig {
-        Control::Ack { ranges, .. } => assert_eq!(&all, ranges, "bölme veri kaybetti/çoğalttı"),
+        Control::Recovered { esi_ranges, .. } => {
+            assert_eq!(&all, esi_ranges, "bölme veri kaybetti/çoğalttı")
+        }
         _ => unreachable!(),
     }
-    assert_eq!(parts.len(), n.div_ceil(ACK_MAX_RANGES));
+    assert_eq!(parts.len(), n.div_ceil(RECOVERED_MAX_ESI_RANGES));
 }
 
 /// MUTANT `control.rs:186:26`, `200:26` — `if i == 0 { *id } else { next_id() }` → `!=`.
+/// [D2 2026-10-08] SACK kolu (186) kodla birlikte kalktı; kalan RECOVERED kolu (200).
 #[test]
 fn split_keeps_the_original_id_only_on_the_first_chunk() {
     // İlk parça ORİJİNAL id'yi korumalı, sonrakiler YENİ id almalı. `==` → `!=` olursa
     // ilk parça yeni id alır, sonrakiler orijinali paylaşır → alıcıda dedup çakışır ve
     // meşru parçalar `DuplicateAckOnly` sayılıp side-effect'siz düşer.
-    for (name, c, orig_id) in [
-        ("ACK", ack(ACK_MAX_RANGES * 2 + 1), 100u32),
-        ("SACK", sack(SACK_MAX_GAP_BLOCKS * 2 + 1), 200),
-        (
-            "RECOVERED",
-            recovered(RECOVERED_MAX_ESI_RANGES * 2 + 1),
-            300,
-        ),
-    ] {
-        let parts = split_for_send(&c, ids());
-        assert!(parts.len() >= 3, "{name}: en az 3 parça bekleniyordu");
-        assert_eq!(
-            parts[0].control_id(),
+    let orig_id = 300u32;
+    let parts = split_for_send(&recovered(RECOVERED_MAX_ESI_RANGES * 2 + 1), ids());
+    assert!(parts.len() >= 3, "RECOVERED: en az 3 parça bekleniyordu");
+    assert_eq!(
+        parts[0].control_id(),
+        orig_id,
+        "RECOVERED: ilk parça id'si değişti"
+    );
+    let mut seen = vec![parts[0].control_id()];
+    for p in &parts[1..] {
+        assert_ne!(
+            p.control_id(),
             orig_id,
-            "{name}: ilk parça id'si değişti"
+            "RECOVERED: sonraki parça orijinal id'yi aldı"
         );
-        let mut seen = vec![parts[0].control_id()];
-        for p in &parts[1..] {
-            assert_ne!(
-                p.control_id(),
-                orig_id,
-                "{name}: sonraki parça orijinal id'yi aldı"
-            );
-            assert!(!seen.contains(&p.control_id()), "{name}: id tekrar etti");
-            seen.push(p.control_id());
-        }
+        assert!(!seen.contains(&p.control_id()), "RECOVERED: id tekrar etti");
+        seen.push(p.control_id());
     }
 }
 
@@ -211,24 +181,22 @@ fn split_is_a_noop_for_fixed_size_controls() {
     }
 }
 
-/// MUTANT `control.rs:296:22` — ACK range doğrulaması `if s > e` → `>=`.
+/// MUTANT ~~`control.rs:296:22` — ACK range doğrulaması~~ [D2 2026-10-08: ACK kolu kodla birlikte
+/// kalktı, K3] → aynı kapı RECOVERED'da: range doğrulaması `if s > e` → `>=`.
 #[test]
-fn ack_range_accepts_a_single_pn_range() {
-    // `s == e` TEK PN'lik geçerli bir aralıktır (bir paket ACK'lenmiş). `>=` olsaydı
-    // her tek-paket ACK'i reddedilir ve düşük trafikte ACK kanalı tamamen kapanırdı.
-    // (`err_paths_control.rs` bunu RECOVERED için pinliyor; bu ACK kolu.)
-    // [2026-09-02 uyarlama] ACK-V2 birleşimi gövdeye 8B ekledi; yerleşim otoritesi
-    // control.rs::control_body_len: epoch(1)+ack_delay(2)+seen(4)+arrival(2)+count(2)+16n.
-    let mut body = vec![0u8]; // acked_dh_epoch
-    body.extend_from_slice(&0u16.to_be_bytes()); // ack_delay_256us
-    body.extend_from_slice(&0u32.to_be_bytes()); // seen_count
-    body.extend_from_slice(&0xFFFFu16.to_be_bytes()); // arrival_rate (ölçüm-yok sentineli)
+fn recovered_range_accepts_a_single_esi_range() {
+    // `s == e` TEK ESI'lik geçerli bir aralıktır (tek sembol kurtarılmış). `>=` olsaydı her
+    // tek-sembol RECOVERED'ı reddedilir ve düşük kayıpta kurtarma geri-bildirimi kapanırdı.
+    // (`err_paths_control.rs` aynı kolu genişlik sınırlarıyla da pinliyor.)
+    // Yerleşim otoritesi control.rs::control_body_len: block_id(4)+count(2)+4n.
+    let mut body = Vec::new();
+    body.extend_from_slice(&7u32.to_be_bytes()); // block_id
     body.extend_from_slice(&1u16.to_be_bytes()); // count
-    body.extend_from_slice(&7u64.to_be_bytes()); // start
-    body.extend_from_slice(&7u64.to_be_bytes()); // end == start
-    match decode_control_body(inner_kind::ACK, 1, &body) {
-        Ok(Control::Ack { ranges, .. }) => assert_eq!(ranges, vec![(7, 7)]),
-        other => panic!("s == e tek-PN aralığı reddedildi: {other:?}"),
+    body.extend_from_slice(&7u16.to_be_bytes()); // esi_start
+    body.extend_from_slice(&7u16.to_be_bytes()); // esi_end == esi_start
+    match decode_control_body(inner_kind::RECOVERED, 1, &body) {
+        Ok(Control::Recovered { esi_ranges, .. }) => assert_eq!(esi_ranges, vec![(7, 7)]),
+        other => panic!("s == e tek-ESI aralığı reddedildi: {other:?}"),
     }
 }
 
@@ -294,20 +262,18 @@ fn dedup_accessors_report_real_state_not_constants() {
         "taze dedup'ta tombstone olmamalı"
     );
 
-    // ACK ekle → seen artar, tombstone artmaz.
+    // RECOVERED ekle → seen artar, tombstone artmaz.
+    // [D2 2026-10-08] ~~ACK~~ → RECOVERED (Ack ailesi kodda yok, K3; aynı NoRetry geri-bildirim).
     assert_eq!(
-        d.admit(&Control::Ack {
+        d.admit(&Control::Recovered {
             id: 1,
-            acked_dh_epoch: 0,
-            ack_delay_256us: 0,
-            seen_count: 0,
-            arrival_rate: 0xFFFF,
-            ranges: vec![]
+            block_id: 0,
+            esi_ranges: vec![]
         }),
         InboundOutcome::Fresh
     );
     assert_eq!(d.seen_count(), 1);
-    assert!(!d.has_close_tombstone(1), "ACK tombstone üretmemeli");
+    assert!(!d.has_close_tombstone(1), "RECOVERED tombstone üretmemeli");
 
     // SESSION_CLOSE ekle → tombstone oluşur.
     assert_eq!(
@@ -365,7 +331,8 @@ fn tombstone_cap_still_admits_already_known_ids() {
     }
 }
 
-/// MUTANT `retry.rs:35:13` — `ACK | SACK | RECOVERED | PARAM_ACK` match arm silinmesi.
+/// MUTANT `retry.rs:35:13` — ~~`ACK | SACK | RECOVERED | PARAM_ACK`~~ `RECOVERED | PARAM_ACK`
+/// [D2 2026-10-08] match arm silinmesi.
 #[test]
 fn retry_class_table_is_pinned_per_codepoint() {
     // §2.57 retry tablosu tek kaynaktır. Arm silinirse `_ => NoRetry` fallback'i aynı
@@ -387,17 +354,17 @@ fn retry_class_table_is_pinned_per_codepoint() {
             "cp={cp:#04x} yanlış retry sınıfı"
         );
     }
-    for cp in [
-        inner_kind::ACK,
-        inner_kind::SACK,
-        inner_kind::RECOVERED,
-        inner_kind::PARAM_ACK,
-    ] {
+    for cp in [inner_kind::RECOVERED, inner_kind::PARAM_ACK] {
         assert_eq!(
             RetryClass::of(cp),
             RetryClass::NoRetry,
             "cp={cp:#04x} yanlış retry sınıfı"
         );
+    }
+    // [D2 2026-10-08] RESERVED 0x10/0x11 (eski ACK/SACK) tablodan çıktı → fallback NoRetry
+    // (fail-safe: reserved codepoint retry edilmez).
+    for cp in [inner_kind::RESERVED_ACK, inner_kind::RESERVED_SACK] {
+        assert_eq!(RetryClass::of(cp), RetryClass::NoRetry, "cp={cp:#04x}");
     }
     // Registry dışı → NoRetry (fail-safe: bilinmeyen control retry edilmez).
     assert_eq!(RetryClass::of(0x99), RetryClass::NoRetry);
@@ -480,19 +447,19 @@ fn sealed_len_rejects_over_cap_control_with_the_right_kind() {
     // Cap'i aşan bir control BOYUTLANAMAZ — çağıran önce `split_for_send` yapmalıydı.
     // Hata `kind` alanını taşımalı ki çağıran hangi türü böleceğini bilsin; kol silinirse
     // kind kaybolur ve pacer yanlış türü böler.
+    // [D2 2026-10-08] ~~ACK~~ → RECOVERED (Ack ailesi kodda yok, K3; tavanlı kalan tek tür).
     let p = KamaNoiseWireProtector::new(1, &key(1), &key(2));
-    let over = UnsealedTransportPacket::Control(ack(ACK_MAX_RANGES + 1));
+    let over = UnsealedTransportPacket::Control(recovered(RECOVERED_MAX_ESI_RANGES + 1));
     assert_eq!(
         p.sealed_len(&over),
         Err(WireSizeError::ControlCountExceedsCap {
-            kind: inner_kind::ACK
+            kind: inner_kind::RECOVERED
         }),
-        "cap-aşımı ACK yanlış kind ile reddedildi"
+        "cap-aşımı RECOVERED yanlış kind ile reddedildi"
     );
     // Cap içindeki aynı control boyutlanabilmeli.
-    assert!(p
-        .sealed_len(&UnsealedTransportPacket::Control(ack(ACK_MAX_RANGES)))
-        .is_ok());
+    let at_cap = UnsealedTransportPacket::Control(recovered(RECOVERED_MAX_ESI_RANGES));
+    assert!(p.sealed_len(&at_cap).is_ok());
 }
 
 /// MUTANT `session.rs:131:9` — `SessionManager::get_mut` → `None`.

@@ -3,7 +3,9 @@
 //! Body = UNIFIED-INNER-HEADER + control_id SONRASI kısım (inner.rs prefix'i ayrı yazar). Bu modül
 //! yalnız §2.57-body'yi serialize/parse eder; schema `Control` DTO'suyla köprü kurar (logical↔wire).
 //!
-//! DR-1 [Abkarada-onaylı]: ACK_MAX_RANGES=32 · SACK_MAX_GAP_BLOCKS=32 · RECOVERED_MAX_ESI_RANGES=16.
+//! DR-1 [Abkarada-onaylı]: ~~ACK_MAX_RANGES=32 · SACK_MAX_GAP_BLOCKS=32~~ · RECOVERED_MAX_ESI_RANGES=16.
+//! [D2, 2026-10-08] Ack/Sack (0x10/0x11) ailesi KALDIRILDI (K3: ürün ACK'i engine `ACK_V2`); gelen
+//! 0x10/0x11 inner_kind sınıflandırmasında reddedilir (`kama_transport_schema::inner_kind::RESERVED_*`).
 //! GÖNDERİRKEN tavan-aşımı → REJECT-DEĞİL-BÖL (çok-datagram, her-biri-kendi-control_id). GELEN count>tavan
 //! → FAIL-CLOSED reject (DoS-guard). Ayrıca invalid-range (start>end) / kısa-body / reserved → reject.
 
@@ -13,10 +15,6 @@ use kama_transport_schema::control::{Control, ControlId};
 use kama_transport_schema::inner_kind;
 
 // ── DR-1 count-tavanları ──
-/// ACK pn-range üst-sınırı (DR-1).
-pub const ACK_MAX_RANGES: usize = 32;
-/// SACK gap-ack-block üst-sınırı (DR-1).
-pub const SACK_MAX_GAP_BLOCKS: usize = 32;
 /// RECOVERED esi-range üst-sınırı (DR-1).
 pub const RECOVERED_MAX_ESI_RANGES: usize = 16;
 
@@ -36,9 +34,6 @@ fn put_u16(out: &mut Vec<u8>, v: u16) {
 fn put_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_be_bytes());
 }
-fn put_u64(out: &mut Vec<u8>, v: u64) {
-    out.extend_from_slice(&v.to_be_bytes());
-}
 
 /// §2.57 body serialization (control_id HARİÇ — o inner-header'da). Gönderme-tarafı count'ları
 /// tavan-içinde VARSAYAR (çağıran `split_for_send` ile böler); debug-assert ile guard'lı.
@@ -46,40 +41,6 @@ fn put_u64(out: &mut Vec<u8>, v: u64) {
 pub fn encode_control_body(c: &Control) -> Vec<u8> {
     let mut out = Vec::new();
     match c {
-        Control::Ack {
-            acked_dh_epoch,
-            ack_delay_256us,
-            seen_count,
-            arrival_rate,
-            ranges,
-            ..
-        } => {
-            debug_assert!(ranges.len() <= ACK_MAX_RANGES);
-            out.push(*acked_dh_epoch);
-            put_u16(&mut out, *ack_delay_256us);
-            put_u32(&mut out, *seen_count);
-            put_u16(&mut out, *arrival_rate);
-            put_u16(&mut out, ranges.len() as u16);
-            for (s, e) in ranges {
-                put_u64(&mut out, *s);
-                put_u64(&mut out, *e);
-            }
-        }
-        Control::Sack {
-            acked_dh_epoch,
-            base_pn,
-            blocks,
-            ..
-        } => {
-            debug_assert!(blocks.len() <= SACK_MAX_GAP_BLOCKS);
-            out.push(*acked_dh_epoch);
-            put_u64(&mut out, *base_pn);
-            put_u16(&mut out, blocks.len() as u16);
-            for (gap, ack_len) in blocks {
-                put_u16(&mut out, *gap);
-                put_u16(&mut out, *ack_len);
-            }
-        }
         Control::Recovered {
             block_id,
             esi_ranges,
@@ -159,15 +120,6 @@ pub fn encode_control_body(c: &Control) -> Vec<u8> {
 /// Tavan-aşan count (gönderme-öncesi `split_for_send` yapılmalıydı) → [`WireError::ControlCountExceedsCap`].
 pub fn control_body_len(c: &Control) -> Result<usize, WireError> {
     let n = match c {
-        Control::Ack { ranges, .. } => {
-            cap_check(inner_kind::ACK, ranges.len(), ACK_MAX_RANGES)?;
-            // epoch(1) + ack_delay(2) + seen_count(4) + arrival_rate(2) + count(2) + 16n
-            1 + 2 + 4 + 2 + 2 + ranges.len() * 16
-        }
-        Control::Sack { blocks, .. } => {
-            cap_check(inner_kind::SACK, blocks.len(), SACK_MAX_GAP_BLOCKS)?;
-            1 + 8 + 2 + blocks.len() * 4
-        }
         Control::Recovered { esi_ranges, .. } => {
             cap_check(
                 inner_kind::RECOVERED,
@@ -197,43 +149,9 @@ fn cap_check(kind: u8, count: usize, cap: usize) -> Result<(), WireError> {
 
 /// GÖNDERME-tarafı bölme (DR-1): count > tavan ise en-güncel-durumu birden-fazla control'e böler;
 /// her-parça yeni-control_id alır (`next_id`). Tavan-içiyse tek-elemanlı Vec döner (aynı id).
-/// ACK/SACK/RECOVERED bölünür; diğerleri sabit-boy (bölme-gerektirmez).
+/// RECOVERED bölünür (~~ACK/SACK~~ D2'de kaldırıldı); diğerleri sabit-boy (bölme-gerektirmez).
 pub fn split_for_send(c: &Control, mut next_id: impl FnMut() -> ControlId) -> Vec<Control> {
     match c {
-        Control::Ack {
-            id,
-            acked_dh_epoch,
-            ack_delay_256us,
-            seen_count,
-            arrival_rate,
-            ranges,
-        } if ranges.len() > ACK_MAX_RANGES => ranges
-            .chunks(ACK_MAX_RANGES)
-            .enumerate()
-            .map(|(i, ch)| Control::Ack {
-                id: if i == 0 { *id } else { next_id() },
-                acked_dh_epoch: *acked_dh_epoch,
-                ack_delay_256us: *ack_delay_256us,
-                seen_count: *seen_count,
-                arrival_rate: *arrival_rate,
-                ranges: ch.to_vec(),
-            })
-            .collect(),
-        Control::Sack {
-            id,
-            acked_dh_epoch,
-            base_pn,
-            blocks,
-        } if blocks.len() > SACK_MAX_GAP_BLOCKS => blocks
-            .chunks(SACK_MAX_GAP_BLOCKS)
-            .enumerate()
-            .map(|(i, ch)| Control::Sack {
-                id: if i == 0 { *id } else { next_id() },
-                acked_dh_epoch: *acked_dh_epoch,
-                base_pn: *base_pn,
-                blocks: ch.to_vec(),
-            })
-            .collect(),
         Control::Recovered {
             id,
             block_id,
@@ -285,17 +203,6 @@ impl<'a> Reader<'a> {
         self.pos = end;
         Ok(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
     }
-    fn u64(&mut self) -> Result<u64, WireError> {
-        let end = self.pos + 8;
-        let s = self
-            .b
-            .get(self.pos..end)
-            .ok_or(WireError::ControlDecode("body too short"))?;
-        self.pos = end;
-        let mut a = [0u8; 8];
-        a.copy_from_slice(s);
-        Ok(u64::from_be_bytes(a))
-    }
     fn hash32(&mut self) -> Result<[u8; 32], WireError> {
         let end = self.pos + 32;
         let s = self
@@ -330,49 +237,6 @@ pub fn decode_control_body(
     use inner_kind::*;
     let mut r = Reader::new(body);
     let c = match codepoint {
-        ACK => {
-            let acked_dh_epoch = r.u8()?;
-            let ack_delay_256us = r.u16()?;
-            let seen_count = r.u32()?;
-            let arrival_rate = r.u16()?;
-            let count = usize::from(r.u16()?);
-            cap_check(ACK, count, ACK_MAX_RANGES)?;
-            let mut ranges = Vec::with_capacity(count);
-            for _ in 0..count {
-                let s = r.u64()?;
-                let e = r.u64()?;
-                if s > e {
-                    return Err(WireError::ControlDecode("ack range start>end"));
-                }
-                ranges.push((s, e));
-            }
-            Control::Ack {
-                id: control_id,
-                acked_dh_epoch,
-                ack_delay_256us,
-                seen_count,
-                arrival_rate,
-                ranges,
-            }
-        }
-        SACK => {
-            let acked_dh_epoch = r.u8()?;
-            let base_pn = r.u64()?;
-            let count = usize::from(r.u16()?);
-            cap_check(SACK, count, SACK_MAX_GAP_BLOCKS)?;
-            let mut blocks = Vec::with_capacity(count);
-            for _ in 0..count {
-                let gap = r.u16()?;
-                let ack_len = r.u16()?;
-                blocks.push((gap, ack_len));
-            }
-            Control::Sack {
-                id: control_id,
-                acked_dh_epoch,
-                base_pn,
-                blocks,
-            }
-        }
         RECOVERED => {
             let block_id = r.u32()?;
             let count = usize::from(r.u16()?);

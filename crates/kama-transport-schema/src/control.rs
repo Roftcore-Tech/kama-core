@@ -9,26 +9,8 @@ pub type ControlId = u32;
 /// §2.57 secure-control body'leri (logical). count'lar profile-bounded (wire-parse'ta enforce).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Control {
-    /// 0x10 — full-wire-PN/range ACK (epoch-scoped; ACK-eliciting-DEĞİL).
-    Ack {
-        id: ControlId,
-        acked_dh_epoch: u8,
-        /// [ACK-V2 birleşimi, 2026-08-26 Abkarada-onayı] `largest` alımı→bu-ACK gönderimi gecikmesi,
-        /// 256µs birim (motor `FRAME_TYPE_ACK_V2` ile aynı; RTT-düzeltmesi normatif).
-        ack_delay_256us: u16,
-        /// Görülen toplam DATA datagram'ı (K3 cold-start yön-ayrımı; saturating).
-        seen_count: u32,
-        /// Receiver-gözlemli pencere-oranı; 0xFFFF = ölçüm-yok-sentinel (motor sözleşmesi).
-        arrival_rate: u16,
-        ranges: Vec<(u64, u64)>,
-    },
-    /// 0x11 — gap-based SACK (epoch-scoped; ACK-eliciting-DEĞİL).
-    Sack {
-        id: ControlId,
-        acked_dh_epoch: u8,
-        base_pn: u64,
-        blocks: Vec<(u16, u16)>,
-    },
+    // ~~0x10 Ack / 0x11 Sack~~ — [D2, 2026-10-08; K3 2026-10-04] kaldırıldı: ürün ACK'i engine
+    // `ACK_V2` (kimlik `full_wire_pn`); codepoint'ler RESERVED → reject (`inner_kind::RESERVED_*`).
     /// 0x12 — logical-recovery (block_id, ESI-range); ACK/BtlBw-credit DEĞİL.
     Recovered {
         id: ControlId,
@@ -88,8 +70,6 @@ impl Control {
     pub const fn codepoint(&self) -> u8 {
         use crate::inner_kind::*;
         match self {
-            Control::Ack { .. } => ACK,
-            Control::Sack { .. } => SACK,
             Control::Recovered { .. } => RECOVERED,
             Control::BlockComplete { .. } => BLOCK_COMPLETE,
             Control::ParamSet { .. } => PARAM_SET,
@@ -106,9 +86,7 @@ impl Control {
     #[must_use]
     pub const fn control_id(&self) -> ControlId {
         match self {
-            Control::Ack { id, .. }
-            | Control::Sack { id, .. }
-            | Control::Recovered { id, .. }
+            Control::Recovered { id, .. }
             | Control::BlockComplete { id, .. }
             | Control::ParamSet { id, .. }
             | Control::ParamAck { id, .. }

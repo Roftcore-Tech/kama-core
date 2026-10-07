@@ -169,15 +169,19 @@ fn b4_invariant_fail_closed() {
 fn inner_kind_registry() {
     assert_eq!(classify(0x01).unwrap(), InnerKind::Fec(ShardKind::Source));
     assert_eq!(classify(0x02).unwrap(), InnerKind::Fec(ShardKind::Repair));
-    assert_eq!(classify(0x10).unwrap(), InnerKind::Control(0x10));
+    // [D2 2026-10-08 — transport-layer-tdd §12 AMENDMENT-11 D3] ~~classify(0x10) = Control(0x10)~~:
+    // 0x10/0x11 (eski noise-wire ACK/SACK) RESERVED → reject (aşağıdaki listede); kontrol aralığının
+    // alt ucu artık 0x12 (RECOVERED). codepoint-anlamı/wire-layout başka hiçbir yerde DEĞİŞMEDİ.
+    assert_eq!(classify(0x12).unwrap(), InnerKind::Control(0x12));
     assert_eq!(classify(0x18).unwrap(), InnerKind::Control(0x18));
     // DR-CS-1-AMENDMAN (§2.56; f175a14): 0x19/0x1A cold-start kontrol-çifti = KABUL.
     // [DUR-B-SCHEMA-GOLDEN-1 consistency-repair: stale-golden mühürlü-karara hizalandı;
     // codepoint-anlamı/wire-layout DEĞİŞMEDİ.]
     assert_eq!(classify(0x19).unwrap(), InnerKind::Control(0x19));
     assert_eq!(classify(0x1A).unwrap(), InnerKind::Control(0x1A));
-    // fail-closed reserved codepoint'ler (§2.56; 0x1B = amendman-sonrası ilk-unassigned sınır).
-    for cp in [0x00u8, 0x03, 0x0F, 0x1B, 0xFF] {
+    // fail-closed reserved codepoint'ler (§2.56; 0x1B = amendman-sonrası ilk-unassigned sınır;
+    // 0x10/0x11 = D2 RESERVED).
+    for cp in [0x00u8, 0x03, 0x0F, 0x10, 0x11, 0x1B, 0xFF] {
         assert!(
             matches!(classify(cp), Err(SchemaError::UnknownInnerKind(_))),
             "cp {cp:#04x} reject"

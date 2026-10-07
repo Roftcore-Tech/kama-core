@@ -10,7 +10,7 @@ use kama_noise_wire::retry::{InboundControlDedup, InboundOutcome, RetryClass};
 use kama_noise_wire::{KamaNoiseWireProtector, KamaNoiseWireSizer, SealArgs};
 use kama_transport_schema::control::Control;
 use kama_transport_schema::inner_kind::{self, classify, InnerKind};
-use kama_transport_schema::UnsealedTransportPacket;
+use kama_transport_schema::{SchemaError, UnsealedTransportPacket};
 use zeroize::Zeroizing;
 
 fn key(s: u8) -> Zeroizing<[u8; 32]> {
@@ -40,13 +40,13 @@ fn echo(id: u32, seq: u16) -> Control {
 }
 
 /// §6.1 — Registry uniqueness: 0x19/0x1A benzersiz; 0x12 hâlâ YALNIZ RECOVERED.
+/// [D2 2026-10-08] ~~ACK/SACK~~ listeden çıktı (aile kodda yok, K3); 0x10/0x11 RESERVED → reject
+/// ve hiçbir canlı codepoint'le çakışmaz (yeniden KULLANILMAZ).
 #[test]
 fn g1_registry_uniqueness_and_recovered_lock() {
     let all = [
         inner_kind::FEC_SOURCE,
         inner_kind::FEC_REPAIR,
-        inner_kind::ACK,
-        inner_kind::SACK,
         inner_kind::RECOVERED,
         inner_kind::BLOCK_COMPLETE,
         inner_kind::PARAM_SET,
@@ -60,6 +60,16 @@ fn g1_registry_uniqueness_and_recovered_lock() {
     let mut seen = std::collections::BTreeSet::new();
     for cp in all {
         assert!(seen.insert(cp), "codepoint-çakışması: {cp:#04x}");
+    }
+    // [D2 2026-10-08] RESERVED → reject: 0x10/0x11 canlı registry'de YOK ve classify reddeder.
+    assert_eq!(inner_kind::RESERVED_ACK, 0x10);
+    assert_eq!(inner_kind::RESERVED_SACK, 0x11);
+    for cp in [inner_kind::RESERVED_ACK, inner_kind::RESERVED_SACK] {
+        assert!(
+            !seen.contains(&cp),
+            "reserved {cp:#04x} canlı codepoint'le çakışıyor"
+        );
+        assert_eq!(classify(cp), Err(SchemaError::UnknownInnerKind(cp)));
     }
     assert_eq!(inner_kind::CTRL_CS_PROBE, 0x19);
     assert_eq!(inner_kind::CTRL_CS_ECHO, 0x1A);
@@ -79,12 +89,13 @@ fn g1_registry_uniqueness_and_recovered_lock() {
 }
 
 /// §6.2 — Runtime-registry assert: classify TAM-OLARAK authoritative-küme'yi kabul-eder
-/// ({0x01,0x02} ∪ {0x10..=0x1A}); geri-kalan-256-uzayı FAIL-CLOSED.
+/// ({0x01,0x02} ∪ ~~{0x10..=0x1A}~~ {0x12..=0x1A}); geri-kalan-256-uzayı FAIL-CLOSED.
+/// [D2 2026-10-08] 0x10/0x11 (eski ACK/SACK) RESERVED → reject (aile kodda yok, K3).
 #[test]
 fn g2_runtime_registry_matches_authoritative_exactly() {
     for cp in 0u16..=255 {
         let cp = cp as u8;
-        let expect_ok = matches!(cp, 0x01 | 0x02) || (0x10..=0x1A).contains(&cp);
+        let expect_ok = matches!(cp, 0x01 | 0x02) || (0x12..=0x1A).contains(&cp);
         assert_eq!(
             classify(cp).is_ok(),
             expect_ok,
@@ -93,6 +104,8 @@ fn g2_runtime_registry_matches_authoritative_exactly() {
     }
     assert!(matches!(classify(0x19), Ok(InnerKind::Control(0x19))));
     assert!(matches!(classify(0x1A), Ok(InnerKind::Control(0x1A))));
+    assert_eq!(classify(0x10), Err(SchemaError::UnknownInnerKind(0x10)));
+    assert_eq!(classify(0x11), Err(SchemaError::UnknownInnerKind(0x11)));
 }
 
 /// §6.3 — Exact encode/decode: golden-body-byte'ları + exact-length (probe-body=12 → wire=44;
@@ -313,15 +326,13 @@ fn g9_mixed_version_matrix() {
             "AEAD-açılır (session-kill-YOK)"
         );
         // Sonraki-BİLİNEN-frame doğru-decode (parser-desync-YOK):
+        // [D2 2026-10-08] ~~Ack~~ → BlockComplete (Ack ailesi kodda yok, K3; 0x13 old/new ortak).
         let known = a
             .seal(
-                &UnsealedTransportPacket::Control(Control::Ack {
+                &UnsealedTransportPacket::Control(Control::BlockComplete {
                     id: 9,
-                    acked_dh_epoch: 0,
-                    ack_delay_256us: 0,
-                    seen_count: 0,
-                    arrival_rate: 0xFFFF,
-                    ranges: vec![(1, 2)],
+                    block_id: 1,
+                    final_source_count: 2,
                 }),
                 SealArgs {
                     wire_pn: pn(),
@@ -333,7 +344,7 @@ fn g9_mixed_version_matrix() {
         let op = b.open(&known.bytes).unwrap();
         assert!(matches!(
             decode_control(op.inner()).unwrap().unwrap(),
-            Control::Ack { .. }
+            Control::BlockComplete { .. }
         ));
     }
 

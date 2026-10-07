@@ -342,6 +342,7 @@ dependencies = [
  "kama-contracts",
  "kama-transport-schema",
  "rand_core",
+ "sha2",
  "thiserror",
  "x25519-dalek",
  "zeroize",

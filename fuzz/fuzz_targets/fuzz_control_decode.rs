@@ -8,24 +8,29 @@
 //! ayrı ayrı keşfedebilir. Bu, tek-codepoint'e sabitlenmiş bir hedefin gizleyeceği
 //! `cap_check` / `Reader` sınır yollarını açar (DR-1 DoS-guard tavanları).
 //!
+//! [D2 2026-10-08] ~~0x10 ACK / 0x11 SACK~~ — Ack/Sack ailesi kodda yok (K3: ürün ACK'i engine
+//! `ACK_V2`). İki codepoint seçici-kümesinde RESERVED olarak KALIR (indeksler korunur → mevcut
+//! corpus aynı codepoint'e düşer); canlı control-türleri burada 0x12..0x18.
+//!
 //! **Oracle:** panik/OOM yok. `Ok` dönen her gövde için re-encode edilebilir olmalıdır
 //! (decode→encode→decode idempotansı); aksi hâlde parser kabul ettiği bir şeyi üretemiyor
-//! demektir ve bu sessiz bir asimetridir.
+//! demektir ve bu sessiz bir asimetridir. RESERVED 0x10/0x11 HER gövdede
+//! `non-control codepoint` ile reddedilmelidir (kabul = oracle ihlali).
 //!
 //! Koş:  cargo +nightly fuzz run fuzz_control_decode -- -rss_limit_mb=2048
 
 #![no_main]
 
-use kama_noise_wire::{decode_control_body, encode_control_body};
+use kama_noise_wire::{decode_control_body, encode_control_body, WireError};
 use kama_transport_schema::inner_kind::{
-    ACK, BLOCK_ABORT, BLOCK_COMPLETE, PARAM_ACK, PARAM_SET, RECOVERED, SACK,
+    BLOCK_ABORT, BLOCK_COMPLETE, PARAM_ACK, PARAM_SET, RECOVERED, RESERVED_ACK, RESERVED_SACK,
     SESSION_CLOSE, SESSION_RENEW_REQUIRED,
 };
 use libfuzzer_sys::fuzz_target;
 
 const CODEPOINTS: [u8; 9] = [
-    ACK,
-    SACK,
+    RESERVED_ACK,
+    RESERVED_SACK,
     RECOVERED,
     BLOCK_COMPLETE,
     PARAM_SET,
@@ -42,6 +47,16 @@ fuzz_target!(|data: &[u8]| {
     let cp = CODEPOINTS[usize::from(data[0]) % CODEPOINTS.len()];
     let control_id = u32::from(data[0]);
     let body = &data[1..];
+
+    // [D2 2026-10-08] RESERVED → reject: gövdeden bağımsız, codepoint kapısında.
+    if cp == RESERVED_ACK || cp == RESERVED_SACK {
+        assert_eq!(
+            decode_control_body(cp, control_id, body),
+            Err(WireError::ControlDecode("non-control codepoint")),
+            "reserved codepoint reddedilmedi (cp={cp:#04x})"
+        );
+        return;
+    }
 
     if let Ok(c) = decode_control_body(cp, control_id, body) {
         // Kabul edilen gövde yeniden encode edilebilmeli ve aynı değere decode olmalı.

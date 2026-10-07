@@ -162,15 +162,13 @@ mod tests {
     #[test]
     fn non_recovered_control_rejected() {
         let m = RecoveredMap::new();
-        let ack = Control::Ack {
+        // [D2 2026-10-08] Ack ailesi kaldırıldı; RECOVERED-dışı başka bir control kullanılır.
+        let other = Control::BlockComplete {
             id: 1,
-            acked_dh_epoch: 0,
-            ack_delay_256us: 0,
-            seen_count: 0,
-            arrival_rate: 0xFFFF,
-            ranges: vec![(0, 1)],
+            block_id: 7,
+            final_source_count: 3,
         };
-        assert_eq!(m.resolve(&ack), Err(EngineError::UnexpectedControl));
+        assert_eq!(m.resolve(&other), Err(EngineError::UnexpectedControl));
     }
 
     #[test]

@@ -52,8 +52,7 @@ pub mod session;
 pub mod session_control;
 
 pub use control::{
-    decode_control_body, encode_control_body, split_for_send, ACK_MAX_RANGES,
-    RECOVERED_MAX_ESI_RANGES, SACK_MAX_GAP_BLOCKS,
+    decode_control_body, encode_control_body, split_for_send, RECOVERED_MAX_ESI_RANGES,
 };
 #[cfg(feature = "experimental-cold-start")]
 pub use control_dedup_window::{ControlDedupWindow, DedupDecision};

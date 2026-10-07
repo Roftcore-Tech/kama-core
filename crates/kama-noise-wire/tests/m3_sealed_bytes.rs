@@ -2,7 +2,9 @@
 //! PMTU-gate-kanıtı: tüm-class'lar ≤1200B. `--ignored --nocapture` tablo-yazdırır;
 //! normal-modda assert'ler koşar (m3_pmtu_all_classes).
 
-use kama_noise_wire::{KamaNoiseWireProtector, KamaNoiseWireSizer, SealArgs};
+use kama_noise_wire::{
+    KamaNoiseWireProtector, KamaNoiseWireSizer, SealArgs, RECOVERED_MAX_ESI_RANGES,
+};
 use kama_transport_schema::control::Control;
 use kama_transport_schema::inner_kind::ShardKind;
 use kama_transport_schema::{LogicalShardHeader, UnsealedTransportPacket};
@@ -37,15 +39,16 @@ fn cases() -> Vec<(&'static str, UnsealedTransportPacket)> {
             "FecShard-Repair-E1024",
             fec_pkt(1024, ShardKind::Repair, 0x05),
         ),
+        // [D2 2026-10-08] ~~Control-Ack-4range~~ kaldırıldı — Ack ailesi kodda yok (K3). Yerine en
+        // büyük meşru control gövdesi: DR-1 tavanında RECOVERED (16 aralık; boyut sealed_len'den).
         (
-            "Control-Ack-4range",
-            UnsealedTransportPacket::Control(Control::Ack {
+            "Control-Recovered-16range",
+            UnsealedTransportPacket::Control(Control::Recovered {
                 id: 1,
-                acked_dh_epoch: 0,
-                ack_delay_256us: 0,
-                seen_count: 0,
-                arrival_rate: 0xFFFF,
-                ranges: vec![(0, 9), (12, 20), (30, 31), (40, 40)],
+                block_id: 7,
+                esi_ranges: (0..RECOVERED_MAX_ESI_RANGES as u16)
+                    .map(|i| (i, i))
+                    .collect(),
             }),
         ),
         (

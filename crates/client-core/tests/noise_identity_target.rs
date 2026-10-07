@@ -3,6 +3,8 @@
 //! H-CTX'in asıl iddiası "bağlam çağırandan gelir ve seam'e DEĞİŞMEDEN ulaşır"dır ve her hedefte
 //! sınanır. PoC `IdentitySeam` no-op mühürdür: iki bağlamda da çıktı plaintext'tir; "Session ≠
 //! HubChannel" (anahtar ayrımı) bu hedefte UYGULANMAZ — gerçek anahtarla (M4) sınanacak.
+//! S4 (2026-10-08): Session sahte etiketinin ilk 8 baytı PN'dir (BE; alıcının ARQ kimliği, D1a) —
+//! PN 0'da iki bağlamın baytları hâlâ özdeş, sonraki Session mühürlerinde etiket PN'i gösterir.
 //!
 //! Süitin geri kalanı `crates/kama-noise-wire/tests/noise_conformance_core` altındadır. Bu dosya
 //! burada durur çünkü `IdentitySeam` bu crate'indir ve `kama-noise-wire` `client-core`'u göremez
@@ -35,6 +37,15 @@ fn identity_h_ctx_seam_is_noop_in_both_contexts() {
     }
     assert_eq!(
         outputs[0], outputs[1],
-        "no-op seam'de iki bağlam aynı byte'ları üretir"
+        "no-op seam'de iki bağlam aynı byte'ları üretir (Session PN 0)"
     );
+    let next = seam
+        .seal(ProtectionContext::Session(IdentitySeam::SESSION), FRAME)
+        .expect("identity seal");
+    assert_eq!(
+        &next.bytes[FRAME.len()..FRAME.len() + 8],
+        &next.meta.full_wire_pn.to_be_bytes(),
+        "S4: Session etiketinin ilk 8 baytı PN (BE)"
+    );
+    assert_eq!(next.meta.full_wire_pn, 1);
 }
