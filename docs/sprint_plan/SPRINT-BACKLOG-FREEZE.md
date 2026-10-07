@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-08 [B2.1 codec + zstd kararı — Abkarada düzeltmesi 2026-10-08]:** B2.1 kartına DURUM satırı: L-B2a PR-1 (AMP codec); ruzstd REDDEDİLDİ → B2.1 bu sprint `compression_id` = NONE; sıkıştırılmış kayıt vektörleri ve F07.4 ret vakası "pending zstd kararı". Yalnız ekleme.
+
 > **YAMA KAYDI — 2026-10-06d [L-F07 artıklar-2 F07.4/F07.5/F07.6 — iş emri 2026-10-06 §2]:** F07.5: WS-B (B1.*, B2.*) sahibi "Hayri" üstü çizildi → icra Claude Code / karar ve inceleme Abkarada (bu sprint; iş emri 2026-10-06 §0 devir) — WS-B başlığı, KATMAN 1 ve KATMAN 5 sahip etiketleri; B1.1 / B1.2 DURUM ve G-S1 satırındaki "Hayri imzası" kalanı: imza Abkarada, 2026-10-06. F07.4: B1.2 DURUM'unda ret vakası sayısı 14 → 15 (sıkıştırılmış MEDIA_BUNDLE). F07.6: KATMAN 5 sonuna "Kabul edilen SAPMA'lar" bölümü. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-06c [F0.6 artıklar — iş emri 2026-10-06 §2]:** B1.0 / B1.2 / B1.3 / B1.4 / B1.5 kartlarına DURUM satırı · B2.2 `msg_id` u32 (AMP K1 ile hizalandı) · yeni `KATMAN 6 — Sonraki sprint — KAPSAM DIŞI` (iş emri §0 listesi, BL/PARK atıflarıyla). Üstü çizili metin silinmedi.
@@ -370,6 +372,7 @@ B1.0 derleniyor · B1.1 kapalı · B1.2 commit · **B1.3 / B1.4 / B1.5 yeşil** 
 
 ### B2.1 — Mesaj codec'i
 **Ne:** encode/decode; sınırlı açma (decompression bomb koruması); A2 limitleri; zstd. **Nereye:** `crates/kama-app/src/amp/`. **Bağlı:** G-S1. **Done:** B1.2 byte-for-byte.
+**DURUM (2026-10-08): KISMİ — L-B2a PR-1 (AMP codec, `crates/kama-app/src/codec/`).** Başlık + on tip gövdesi + A2 limitleri + alıcı denetim sırası; sıkıştırmasız vektörler birebir (pozitif 10, ret 9). **pending zstd kararı (Abkarada 2026-10-08: ruzstd RED; B2.1 bu sprint `compression_id` = NONE):** sıkıştırılmış kayıt vektörleri — `amp-record-v1.encode.text-compressed` · `decode.uncompressed-len-exceeds-max` · `decode.expansion-ratio-exceeded` · `decode.truncated-zstd-stream` · `decode.invalid-zstd-frame` · `decode.unknown-compression-id` · F07.4 `decode.media-bundle-compressed-expansion-ratio-exceeded` — B2.1 kabul sayımına GİRMEZ; testte ayrıca koşulur (açma adımına ulaşan üçü tipli `zstd-decoder-unavailable`, başlıkta karar verilen dördü vektördeki nedenle). Gönderici sıkıştırmaz (AMP §5 kural 6'nın TEXT=ON varsayılanı bu sprint uygulanmaz).
 
 ### B2.2 — Metin mesajı + teslim bilgisi
 **Ne:** TEXT gönder/al; `RECEIPT(delivered)` — **Transport ACK'inden türetilmez**, uygulama kendi üretir. **`msg_id` davranışı (AMP §3, A3):** gönderen tarafında session-scope'ta monoton artan ~~u64~~ u32 **[2026-10-06; AMP K1 2026-10-04]**; aynı session'da duplicate üretilmez; **alıcı teslim sırasını `msg_id` ile zorlamaz** — sıra Transport'un Reliable teslimiyle gelir; `msg_id` yalnız UI sıralaması, duplicate tespiti ve `RECEIPT.ref_msg_id` için. **Done:** S1 core; duplicate `msg_id` üretilmediği ve alıcının sırasız `msg_id`'yi reddetmediği testleri yeşil.

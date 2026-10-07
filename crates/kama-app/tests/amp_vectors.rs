@@ -8,12 +8,14 @@
 //! Beklenen baytların TAMAMI vektör dosyalarından gelir (Python referansı `ref/amp/encode.py`);
 //! bu dosyada gömülü beklenen bayt yoktur.
 //!
-//! # zstd bekleyen vakalar (DUR)
+//! # "pending zstd kararı" (Abkarada, 2026-10-08)
 //!
-//! zstd çözücüsü/kodlayıcısı workspace'te yoktur (bağımlılık kararı sahipte). Gerçek zstd karesi
-//! gerektiren üç vaka [`PENDING_ZSTD`] listesindedir ve SESSİZCE ATLANMAZ: her biri bugünkü tipli
-//! davranışla (`zstd-decoder-unavailable`) koşulur ve sayılır. zstd geldiğinde bu iddialar
-//! kırmızıya döner; liste o zaman boşaltılır ve vakalar normal yola girer.
+//! ruzstd REDDEDİLDİ; B2.1 bu sprint `compression_id` = NONE ile çalışır (gönderici sıkıştırmaz).
+//! Sıkıştırılmış kayıt (flags.bit0 = 1) taşıyan BÜTÜN vakalar — F07.4 ret vakası dahil —
+//! [`PENDING_ZSTD`] listesindedir: B2.1 kabul sayımına GİRMEZLER, ama SESSİZCE ATLANMAZLAR. Her biri
+//! bugünkü tipli davranışla koşulur ve ayrıca sayılır: açma adımına ULAŞANLAR ([`NEEDS_DECODER`])
+//! `Drop(zstd-decoder-unavailable)` verir; başlık denetiminde (açmadan ÖNCE) karar verilenler
+//! vektörün `(result, reason)` çiftini AYNEN verir. zstd kararı gelince liste boşaltılır.
 
 use kama_app::codec::{
     decode, encode, AmpLimits, AppMessage, DecodeError, DropReason, FileAbortReason, PttCodec,
@@ -38,8 +40,19 @@ const POSITIVE_ID_PREFIX: &str = "amp-record-v1.encode.";
 /// `TEST_MAX_PLAINTEXT_UNIT_BYTES` (MAX_BODY_BYTES = MAX_DECOMPRESSED_MESSAGE = 1019).
 const VECTOR_MAX_PLAINTEXT_UNIT_BYTES: u32 = 1024;
 
-/// Gerçek zstd karesi gerektiren vakalar (zstd bağımlılığı kararı bekliyor — DUR).
-const PENDING_ZSTD: [&str; 3] = [
+/// Sıkıştırılmış kayıt taşıyan vakaların TAMAMI — "pending zstd kararı" (Abkarada 2026-10-08).
+const PENDING_ZSTD: [&str; 7] = [
+    "amp-record-v1.encode.text-compressed",
+    "amp-record-reject-v1.decode.uncompressed-len-exceeds-max",
+    "amp-record-reject-v1.decode.expansion-ratio-exceeded",
+    "amp-record-reject-v1.decode.truncated-zstd-stream",
+    "amp-record-reject-v1.decode.invalid-zstd-frame",
+    "amp-record-reject-v1.decode.unknown-compression-id",
+    "amp-record-reject-v1.decode.media-bundle-compressed-expansion-ratio-exceeded",
+];
+
+/// [`PENDING_ZSTD`]'den başlık denetimlerini geçip açma adımına ULAŞANLAR (gerçek zstd karesi ister).
+const NEEDS_DECODER: [&str; 3] = [
     "amp-record-v1.encode.text-compressed",
     "amp-record-reject-v1.decode.truncated-zstd-stream",
     "amp-record-reject-v1.decode.invalid-zstd-frame",
@@ -75,14 +88,51 @@ fn is_pending(case: &Case) -> bool {
     PENDING_ZSTD.contains(&case.id.as_str())
 }
 
-/// zstd bekleyen vakanın bugünkü davranışı: başlık denetimleri geçer, açma tipli hata verir.
-fn assert_pending_zstd(case: &Case, record: &[u8], limits: &AmpLimits) {
-    assert_eq!(
-        decode(record, limits),
-        Err(DecodeError::Drop(DropReason::CompressionUnavailable)),
-        "{}: pending zstd (DUR) — bugünkü tipli davranış değişti",
-        case.id
+/// Ret vakası: çözüm vektörün `(result, reason)` çiftini AYNEN vermeli.
+fn assert_rejected(
+    case: &Case,
+    record: &[u8],
+    limits: &AmpLimits,
+    result: RejectResult,
+    reason: &str,
+) {
+    let Err(got) = decode(record, limits) else {
+        panic!("{}: ret vakası kabul edildi", case.id);
+    };
+    let class_matches = matches!(
+        (result, &got),
+        (RejectResult::Drop, DecodeError::Drop(_)) | (RejectResult::Reject, DecodeError::Reject(_))
     );
+    assert!(
+        class_matches,
+        "{}: beklenen {}, gelen {got:?}",
+        case.id,
+        result.as_str()
+    );
+    assert_eq!(got.reason(), reason, "{}: gerekçe", case.id);
+}
+
+/// "pending zstd kararı" vakasının bugünkü davranışı: açma adımına ulaşan → tipli
+/// `zstd-decoder-unavailable`; başlıkta karar verilen → vektörün kendi `(result, reason)`'ı.
+fn assert_pending_zstd(
+    case: &Case,
+    record: &[u8],
+    limits: &AmpLimits,
+    expected: Option<(RejectResult, &str)>,
+) {
+    if NEEDS_DECODER.contains(&case.id.as_str()) {
+        assert_eq!(
+            decode(record, limits),
+            Err(DecodeError::Drop(DropReason::CompressionUnavailable)),
+            "{}: pending zstd kararı — bugünkü tipli davranış değişti",
+            case.id
+        );
+    } else {
+        let (result, reason) = expected.unwrap_or_else(|| {
+            panic!("{}: başlıkta karar verilen vaka ret vakası olmalı", case.id)
+        });
+        assert_rejected(case, record, limits, result, reason);
+    }
 }
 
 // ── Yapısal girdi okuyucuları ────────────────────────────────────────────────────────────────
@@ -203,7 +253,7 @@ fn run_positive() -> Tally {
         if is_pending(case) {
             // Sıkıştırılmış beklenen bayt üretilemez ve açılamaz: tipli davranış + kendi kaydımızın
             // gidiş-dönüşü.
-            assert_pending_zstd(case, expected, &limits);
+            assert_pending_zstd(case, expected, &limits, None);
             assert_eq!(
                 decode(&unit.bytes, &limits),
                 Ok(message),
@@ -241,24 +291,10 @@ fn run_reject() -> Tally {
             panic!("{}: ret vakası expected.result/reason taşımalı", case.id);
         };
         if is_pending(case) {
-            assert_pending_zstd(case, record, &limits);
+            assert_pending_zstd(case, record, &limits, Some((*result, reason.as_str())));
             tally.pending += 1;
         } else {
-            let Err(got) = decode(record, &limits) else {
-                panic!("{}: ret vakası kabul edildi", case.id);
-            };
-            let class_matches = matches!(
-                (result, &got),
-                (RejectResult::Drop, DecodeError::Drop(_))
-                    | (RejectResult::Reject, DecodeError::Reject(_))
-            );
-            assert!(
-                class_matches,
-                "{}: beklenen {}, gelen {got:?}",
-                case.id,
-                result.as_str()
-            );
-            assert_eq!(got.reason(), reason.as_str(), "{}: gerekçe", case.id);
+            assert_rejected(case, record, &limits, *result, reason.as_str());
         }
         tally.consumed += 1;
     }
@@ -293,6 +329,14 @@ fn every_case_is_consumed() {
     assert_eq!(
         positive.pending + reject.pending,
         PENDING_ZSTD.len(),
-        "pending zstd (DUR) listesindeki her kimlik dosyalarda tam bir kez bulunmalı"
+        "pending zstd kararı listesindeki her kimlik dosyalarda tam bir kez bulunmalı"
+    );
+    // Kabul sayımı: pending olmayanların hepsi koşuldu (B2.1 kabulü bu sayıya bağlıdır).
+    assert_eq!(
+        positive.consumed + reject.consumed - positive.pending - reject.pending,
+        suite(POSITIVE_PATH, KIND_ENCODE).case_count()
+            + suite(REJECT_PATH, KIND_DECODE).case_count()
+            - PENDING_ZSTD.len(),
+        "kabul sayımına giren vaka sayısı"
     );
 }
