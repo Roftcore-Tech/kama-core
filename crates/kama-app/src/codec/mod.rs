@@ -133,7 +133,8 @@ impl ReceiptKind {
 pub enum AppMessage {
     /// 0x01 `TEXT`.
     Text {
-        /// Gönderen tarafında oturum-scope monoton (§3 `msg_id` semantiği).
+        /// Gönderen tarafında eş başına monoton; oturumdan bağımsız (§3 `msg_id` semantiği, S2
+        /// 2026-10-08 — `crate::messaging`).
         msg_id: u32,
         /// UTF-8 metin (`text_len u16`).
         text: String,
