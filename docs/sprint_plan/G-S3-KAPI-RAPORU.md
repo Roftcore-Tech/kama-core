@@ -6,6 +6,8 @@
 geçersiz kıldığı cümlelerin üstü çizildi. §1–§6'daki satır numaraları hâlâ `77848003` ağacına göredir.
 **Güncelleme 2026-10-05c:** §7.3'teki S1 kapsama sayımı güncellendi (Hayri taşıması, PR #92); eski cümlenin üstü çizildi.
 **Güncelleme 2026-10-05d:** §7.4'e silme kapısının ikinci ölçümü ve taban değişikliği eklendi (yalnız ekleme).
+**Güncelleme 2026-10-08b [L-A5c PR-2]:** gerçek hedef SessionControl ailesiyle kayıtlı (`real_s3_*_control`, `real_demux_*`); epoch matrisi GERÇEK ürün yolunda iki zarf kipinde (`real_epoch_legacy` / `real_epoch_extended`, 10 hücre + 2 iç denetim), A3.2'nin dört kırmızı hücresi (5b, 6, 7, 9) KAPANDI, `DECLARED_RED` BOŞ; `machine` hedefi kaldırıldı; kapsama beyanında real = green. Eski ibarelerin üstü çizildi.
+
 **Güncelleme 2026-10-08 [L-A5c PR-1]:** §7.2 vektör tüketimi — `ccr-kdf-v1` tüketicisi L-A5a ile (#97, `kdf.rs` testleri, 12/12), `ccr-ssi1-v1` / `ccr-ssr1-v1` / `ccr-ed25519-neg-v1` / `ccr-deprecated-neg-v1` tüketicisi `crates/kama-noise-wire/tests/a5c_handshake_vectors.rs` (16 + 8 + 10 + 7 vaka, hepsi koşuluyor); `ccr-ssd1-v1` ayrıca gerçek yolda (`real_ssd1`, #100). Eski "pending" ibarelerinin üstü çizildi.
 
 **Güncelleme 2026-10-06:** KDF / SSI1 / SSR1 tüketici satırlarında `pending A5.1 / A5.5` → `pending L-A5a / L-A5c` (iş emri 2026-10-06 §1 şerit adları; F0.6); eski ibarelerin üstü çizildi.
@@ -74,9 +76,9 @@ Toplam 68 vaka; commit `c9119026` (#78).
 
 Koşucu: `scripts/ci/noise-conformance.sh --target mock|machine|identity|real`; CI job'u
 `seam conformance (App↔Transport; hedef=mock|real)` içinde dört adım. Kapsama beyanı:
-`scripts/ci/noise-seam-coverage.json` ~~(8 satır mock: green, 1 satır pending B1; hepsi real: pending A5)~~ **[2026-10-05b] 9 satır green, 1 satır static (H-SPLIT), 0 beklemede; real: pending A5 (§7.1)**.
+`scripts/ci/noise-seam-coverage.json` ~~(8 satır mock: green, 1 satır pending B1; hepsi real: pending A5)~~ **[2026-10-05b] 9 satır green, 1 satır static (H-SPLIT), 0 beklemede; ~~real: pending A5 (§7.1)~~** **[2026-10-08b] real: green — 8 davranış satırı gerçek hedefte (L-A5b paket + L-A5c kontrol/demux/epoch)**.
 
-### A3.2 kırmızı hücreler (düzeltilmedi; A5.4)
+### A3.2 kırmızı hücreler (~~düzeltilmedi; A5.4~~ **[2026-10-08b] KAPANDI — A5.4, L-A5c PR-2**: dördü de gerçek ürün yolunda yeşil — `N_g` sabit (kurucu bütçesi yok), `T_g` monoton saatle, hangisi önce, legacy grace'te ≤ 2 anahtar denemesi gözleniyor; `DECLARED_RED` BOŞ)
 
 | Hücre | Beklenen | Gözlenen | Yer |
 |---|---|---|---|
@@ -85,7 +87,7 @@ Koşucu: `scripts/ci/noise-conformance.sh --target mock|machine|identity|real`; 
 | 7 | paket ve süre koşulu, hangisi önce | paket yarısı tutuyor; süre yarısı kurulamıyor | `epoch_machine.rs:112-127` |
 | 9 | legacy zarfta ≤2 anahtar denemesi, sayaçla gözlenir | `LegacySessionProtector` tek anahtar; deneme ve sayaç yok | `crates/kama-noise-wire/src/legacy.rs:76-116` |
 
-Beyan: `epoch.rs` `DECLARED_RED`; beyansız kırmızı ya da yeşile dönmüş beyan testi düşürür.
+Beyan: `epoch.rs` `DECLARED_RED`; beyansız kırmızı ya da yeşile dönmüş beyan testi düşürür. **[2026-10-08b]** Liste boş; mekanizma korunuyor.
 
 ## 4. Statik kapılar
 
@@ -113,8 +115,8 @@ Her squash-merge'den sonra main'in ağacı, merge öncesi hesaplanan beklenen a�
 | Açık | Bekleyen kapı |
 |---|---|
 | ~~H-HANDLE tip yarısı: `HubHandle` newtype + trybuild negatifi~~ | ~~B1 (`kama-contracts`); G-S3'ü bekletip bekletmeyeceği sahip kararı~~ **KAPANDI — B1 (§7.1)** |
-| A3.2'nin 4 kırmızı hücresi (5b, 6, 7, 9) | G-IMPL-S3 (A5.4 Done ölçütü); G-S3 için "matris yeşil" ölçütünün beyanlı kırmızıyla sağlanmış sayılıp sayılmayacağı sahip kararı |
-| `real` hedefi yok (`GAP-S3-REAL-A5`) | G-IMPL-S3 |
+| ~~A3.2'nin 4 kırmızı hücresi (5b, 6, 7, 9)~~ **[2026-10-08b] KAPANDI (L-A5c PR-2, `real_epoch_*`)** | G-IMPL-S3 (A5.4 Done ölçütü); G-S3 için "matris yeşil" ölçütünün beyanlı kırmızıyla sağlanmış sayılıp sayılmayacağı sahip kararı |
+| ~~`real` hedefi yok (`GAP-S3-REAL-A5`)~~ **[2026-10-08b] KAPANDI: PacketProtection (L-A5b #100) + SessionControl/H-DEMUX/epoch (L-A5c PR-2); ci.yml real = 0 zorunlu** | G-IMPL-S3 |
 | ~~`ccr-*` vektörlerinin Rust tüketicisi yok; SSD1 bayt-özdeşliği commit'li test değil~~ **[2026-10-05b] SSD1 kapandı (§7.2).** Kalan: `ccr-kdf-v1` tüketicisi → ~~**pending A5.1**~~ **pending L-A5a** **[2026-10-06]**; `ccr-ssi1-v1` / `ccr-ssr1-v1` tüketicisi → ~~**pending A5.5**~~ **pending L-A5c** **[2026-10-06]**; `ccr-ed25519-neg-v1` ve `ccr-deprecated-neg-v1` tüketicisi → A5 (imza doğrulama / eski format reddi yazılınca) **[2026-10-08] beşi de KAPANDI (§7.2: kdf #97, ssi1/ssr1/ed25519-neg/deprecated-neg L-A5c PR-1)** | G-IMPL-S3 (~~A5.1 / A5.2~~ A5.1 / A5.5) |
 | Mutasyon sınaması yapılmadı (C1.6) | kapı değil (NON-GATING) |
 | A3.3 hub yarım-açık sınır testleri | kapı değil (NON-GATING; hub-server iskeleti dolunca) |
@@ -137,7 +139,7 @@ Yazıldığı anda ikisi de main'e girmemiştir; aşağıdaki yollar o PR'ların
 | Katman kuralı | L1–L3 | + C1–C5 (`scripts/ci/layer_check.py`); `kama-noise-wire → client-core` dev-dependency'si kalktı |
 | Drift kapısı | S1 ↔ test aynası | S1 ve S3 ↔ `kama-contracts` kaynağı (`seam-api-drift.py --seam s1\|s3`) |
 | S3 §6 ↔ kapsama | ayrışık (kimse ölçmüyordu) | hizalı: §6'ya `H-REPLAY-POISON` eklendi, beyana `H-SPLIT` (statik; kanıt `layer_check.py`) |
-| Kapsama beyanı | 8 green, 1 pending B1 | 9 green, 1 static, 0 beklemede; hepsi real: pending A5 (H-HANDLE/type hedeften bağımsız) |
+| Kapsama beyanı | 8 green, 1 pending B1 | 9 green, 1 static, 0 beklemede; ~~hepsi real: pending A5~~ **[2026-10-08b] real: green** (H-HANDLE/type hedeften bağımsız) |
 
 ### 7.2 Vektör tüketimi
 

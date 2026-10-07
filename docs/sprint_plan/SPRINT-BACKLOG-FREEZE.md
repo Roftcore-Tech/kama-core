@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-08c [A5.0–A5.5 DURUM satırları — L-A5c PR-2]:** WS-A A5.0 / A5.1 / A5.2 / A5.3 / A5.4 / A5.5 kartlarına DURUM satırı (L-A5a #97, L-A5b #100, L-A5c PR-1 #103 ve PR-2). A5.5'in "Mevcut `session.rs`, `init_flight.rs`" ibaresinin üstü çizildi (gerçek `SessionControl` yeni `session_control.rs`'te). Yalnız ekleme.
+
 > **YAMA KAYDI — 2026-10-08b [KATMAN 6'ya iki madde — Abkarada kararları G1 + zstd]:** KATMAN 6 (sonraki sprint — KAPSAM DIŞI) listesine 7. madde (G1: SESSION_INIT gönderen zincir + iptal doğrulamasının çalışma-zamanı yolu; bu sprint kapalı-sistem kipi, ccr §35.4 YAMA 2026-10-08) ve 8. madde (B2.1 zstd sıkıştırması: ruzstd RED, `compression_id` = NONE; pending zstd kararı vakaları). Yalnız ekleme.
 
 > **YAMA KAYDI — 2026-10-08 [B2.1 codec + zstd kararı — Abkarada düzeltmesi 2026-10-08]:** B2.1 kartına DURUM satırı: L-B2a PR-1 (AMP codec); ruzstd REDDEDİLDİ → B2.1 bu sprint `compression_id` = NONE; sıkıştırılmış kayıt vektörleri ve F07.4 ret vakası "pending zstd kararı". Yalnız ekleme.
@@ -282,16 +284,21 @@ A1.1 + A1.2 sayıları · A2.* vektörleri commit · A4.* yeşil · C1.2 yeşil.
 **Ne yapılacak:** `hkdf`, `hmac`, `x25519-dalek` (`reusable_secrets`/`static_secrets` + `zeroize` özellikleri), `ed25519-dalek`, `rand_core`/`getrandom`; `deny.toml` `[licenses]` kontrolü (dalek crate'leri BSD-3-Clause).
 **Nereye:** `crates/kama-noise-wire/Cargo.toml` (R-7b kararına göre `crates/crypto`), `deny.toml`.
 **Done:** `cargo deny check` yeşil.
+**DURUM (2026-10-08): KAPANDI.** hkdf / hmac / x25519-dalek / ed25519-dalek / rand_core A5.0'da; `sha2` L-A5c PR-1'de (#103; Abkarada'nın B1 onayı — YALNIZ `sha2` → kama-noise-wire). Hosted `security` (cargo deny) yeşil.
 
 ### A5.1 — Anahtar türetme (D1–D7)
 **Neden:** Gerçek kod. **Ne:** `hkdf::SimpleHkdf<blake2::Blake2s256>` ile 7 türetim. **Dikkat:** `hkdf::Hkdf<Blake2s256>`'in derlenmemesi beklenir (BLAKE2'nin blok API'si "lazy", `Hmac` "eager" ister) — **ilk iş bu derlemeyi teyit etmek**. Derleme hatasını "düzeltmek" için `blake2::Blake2sMac`'e geçmek YASAK: o BLAKE2s'in anahtarlı modudur, HMAC değildir (ccr INV-KDF-3) ve sessizce yanlış anahtar üretir — V-KDF-6 yakalar. **Nereye:** R-7(b). **Bağlı:** G-S3, A5.0. **Done:** A2.2 byte-for-byte.
+**DURUM (2026-10-08): KAPANDI — L-A5a #97.** `crates/kama-noise-wire/src/kdf.rs` D1–D7 (`SimpleHkdf<Blake2s256>`); `ccr-kdf-v1` 12/12 (V-KDF-6 negatifi dahil).
 
 ### A5.2 — Mühürleme/açma + sayaç + nonce/AAD
 **Ne:** seal/open; sayacı Crypto tutar; nonce96 ve AAD `ccr` §35.6–§35.9; her X25519 DH sonrası `SharedSecret::was_contributory()` (ccr §5.1) — birden çok DH'nin birinde unutmak en olası hata. **Nereye:** `kama-noise-wire`. **Done:** A2.3–A2.5 vektörleri (düşük-mertebe negatifleri dahil); `H-PN-OWN`.
 **KURAL (2026-09-24, PR #68 incelemesinden — sahip kararı):** (a) **tag doğrulamasını asla kendin yazma** — AEAD crate'inin `decrypt`'i kullanılır (içeride `subtle` sabit-zamanlı); elle byte karşılaştırması YASAK. (b) **`seal()` girişinde uzunluk kontrolü, fail-closed** — RFC 8439 (key,nonce) başına 256 GiB sınırı yapısal olarak ulaşılamaz (kayıt başına nonce + `MAX_BODY_BYTES ≤ 65535`), yine de aşırı boy → **hata, sessiz sarma değil**; conformance testi "aşırı boy → hata". Bağlayıcı sınır bayt değil **nonce tekilliği**: PN sahipliği (S3 K2) + `SEND_PN_CAP`. TLS 1.3 aynı gerekçeyle ChaCha20-Poly1305'e kayıt sınırı koymaz.
 
+**DURUM (2026-10-08): KAPANDI — L-A5b #100 + L-A5c PR-1 #103.** `NoiseWireProtection` (`protector.rs`, `envelope.rs`): legacy 22 B + extended 26 B; TEK sayaç, `SEND_PN_CAP` = 2^31 (S6) → tek `RenewRequired`; `ccr-ssd1-v1` gerçek yolda (`real_ssd1`), extended diferansiyeli (S10), `H-PN-OWN` real. SSI1/SSR1 (A2.3 / A2.4, düşük-mertebe negatifleri dahil) `handshake.rs`'te (#103); her DH `was_contributory`.
+
 ### A5.3 — Replay koruması
 **Ne:** `replay_precheck` (yalnız okur) + `replay_commit` (yalnız AEAD başarısında yazar). Tanım `identity` §15.5. **Done:** `H-REPLAY-POISON`, `H-NO-MUTATE`.
+**DURUM (2026-10-08): KAPANDI — L-A5b #100 (+ L-A5c PR-2).** `replay.rs`: precheck saf → `PrecheckedPn` belgesi → commit (precheck'siz commit derlenmez); aritmetik `pn.rs`'in kani-ispatlı formları. `H-REPLAY-POISON` real; `H-NO-MUTATE` real (paket yarısı #100, kontrol yarısı L-A5c PR-2).
 
 ### A5.4 — Anahtar değişimi makinesi
 **Ne:** confirmation-safe geçiş, pencere `N_g`/`T_g`; grace içinde en fazla iki anahtar denemesi, replay precheck/commit ~~**denenen anahtarın epoch penceresine**~~ **TEK pencereye [2026-10-06 — PN SÜREKLİ]** (A3.2). Mevcut `kama-noise-wire/src/epoch_machine.rs` üstünde. **Done:** A3.2.
@@ -302,11 +309,13 @@ A1.1 + A1.2 sayıları · A2.* vektörleri commit · A4.* yeşil · C1.2 yeşil.
 - **Ürün bağlantısı:** `DhEpochMachine` bugün ürün kodunda hiçbir yere bağlı değil (yalnız testler); A3.2 bir test tutkalıyla koşuyor → A5.4 tutkal yerine ürün bağlantısını yazar.
 - `epoch_machine.rs:112-113` yorumu grace sayacını "her alınan pakette" işletiyor; KS-GRACE-1 yalnız AEAD-geçerli epoch-1 paketlerini saydırır (onaylayan paket #1).
 **Done ölçütüne EK (2026-10-06):** `N_g` tam 64 (kurucu argümanından bağımsız) · monotonic zaman girdisi + `T_g = 30 s` · legacy'de ≤2 anahtar denemesi (sayaçla gözlenir) · `DECLARED_RED` listesi BOŞ.
+**DURUM (2026-10-08): KAPANDI — L-A5c PR-2.** `epoch_machine.rs`: `N_g` = 64 sabit (`GRACE_N_G`; kurucu bütçesi kaldırıldı), `T_g` = 30 s monoton saatle (`on_time`), hangisi önce; onaylayan paket #1; alım yönü iki rolde aynı kuralla kapanır [YORUM]. Ürün bağlantısı: `session_control.rs` + `protector.rs` açma yolu (tutkal kalktı). Legacy grace'te ≤ 2 anahtar denemesi (`last_key_trials` ile gözlenir). Epoch matrisi gerçek ürün yolunda `real_epoch_legacy` / `real_epoch_extended` (10 hücre + 2 iç denetim, ikisi de yeşil); `DECLARED_RED` BOŞ; `machine` hedefi kaldırıldı.
 
 ### A5.5 — Oturum kontrolü
-**Ne:** Initiate / AcceptInit / AcceptResponse (sınırlı aday deneme) / Renew / Close; anahtar silme sırası (`identity` §15.6). Mevcut `session.rs`, `init_flight.rs`.
+**Ne:** Initiate / AcceptInit / AcceptResponse (sınırlı aday deneme) / Renew / Close; anahtar silme sırası (`identity` §15.6). ~~Mevcut `session.rs`, `init_flight.rs`.~~ **[2026-10-08]** Yeni `session_control.rs` (eski Sprint-4 `SessionManager` kama-integration'da kullanıldığı için yerinde).
 **Ephemeral tuzakları:** (a) `x25519-dalek` `EphemeralSecret`, `diffie_hellman(self)` çağrısında **tüketilir**; oysa `e_A` hem INIT'te, hem RESPONSE gelince, hem de başarısız aday denemelerinden sonra yeniden kullanılır (identity §15.6 P0-13: AEAD hatasında silinmez) — tüketilen tip seçilirse tek bir sahte RESPONSE meşru bağlantıyı öldürür → `ReusableSecret`/`StaticSecret` + açık zeroize. (b) Entropi kaynağı `test-util` altında enjekte edilebilir olmalı — A2.3/A2.4 exact vektör karşılaştırması ancak böyle mümkün; aksi hâlde test kendi seal'ini kendi open'ıyla açan round-trip'e düşer. (c) Bob: tekrarlanan INIT → mevcut oturum + önbellekteki RESPONSE (noise-wire §0.7-B, ccr INV-RESP-KEY-1).
 **Done:** A3.1; `H-RETRY` (Alice + Bob), `H-HANDLE`, `H-NO-MUTATE`.
+**DURUM (2026-10-08): KAPANDI — L-A5c PR-2.** `session_control.rs`: Initiate (bekleyen INIT, `Initiated{session}`) / AcceptInit (byte-özdeş yeniden gönderim → önbellekli SSR1; K10 provisional; glare) / AcceptResponse (≤ 16 aday, en yeni önce; opak `Failed`) / AssignHandle / Renew (`Ready(h')` + drain → `Closed(h, Superseded)`) / Close (bekleyen dahil). G1 eş dizini, K2 monoton saat. Ephemeral `StaticSecret`: AEAD hatasında silinmez, kurulunca Drop'ta silinir. Real hedefte `H-RETRY`, `H-HANDLE`, `H-NO-MUTATE`, `H-DEMUX` 7/7 (iki zarf); ek: `a5c_session_control.rs` (K10 drain, bayat provisional, glare, TTL'ler, opak retler).
 
 ### 🚪 G-IMPL-S3 — Crypto IMPLEMENTATION-GO
 Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme dışında davranış yok.

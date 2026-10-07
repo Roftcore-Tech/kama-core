@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # KM-SEAM-TC-001 Transport↔Crypto (S3) conformance-core koşucusu — hedef seçicili.
 #
-#   scripts/ci/noise-conformance.sh --target mock|real|machine|identity|vectors
+#   scripts/ci/noise-conformance.sh --target mock|real|identity|vectors
 #
 # identity = PoC IdentitySeam (no-op mühür): H-CTX'in bağlam-kaydı ve no-op yarısı.
 # Kapsama beyanı: scripts/ci/noise-seam-coverage.json (mock koşusunda çapraz denetlenir).
 #
-# machine = MEVCUT epoch_machine.rs + test tutkalı (A3.2 epoch matrisi). mock/real ayrımının dışındadır:
-# MockCrypto epoch geçişini modellemez. Beyanlı kırmızı hücreler EPOCH-RED-CELL satırlarıyla basılır.
+# [2026-10-08, L-A5c PR-2] `machine` hedefi KALDIRILDI: epoch matrisi (A3.2 → A5.4) artık GERÇEK ürün
+# yolunda `real_epoch_*` olarak `--target real` altında koşar (test tutkalı kalktı; beyanlı kırmızı
+# hücre listesi BOŞ). Eski metin: "machine = MEVCUT epoch_machine.rs + test tutkalı (A3.2 epoch
+# matrisi). mock/real ayrımının dışındadır: MockCrypto epoch geçişini modellemez." `--target machine`
+# artık kullanım hatasıdır (2).
 #
 # vectors = Python referansından üretilen SSD1 vektörleri ↔ MEVCUT Rust mühür yolu
 # (LegacySessionProtector): seal bayt-özdeş, open kararları aynı. G-S3 kanıtı; mock/real'den bağımsız.
@@ -18,11 +21,13 @@
 #   0  yeşil
 #   1  kırmızı (test kırmızı · vakum: 0 test koştu · kapsama beyanı gerçeklikle ayrışıyor)
 #   2  ortam/kullanım hatası
-#   3  BEYAN EDİLMİŞ BOŞLUK — istenen hedef bu derlemede yok (bugün: --target real → GAP-S3-REAL-A5).
+#   3  BEYAN EDİLMİŞ BOŞLUK — istenen hedef bu derlemede yok. [2026-10-08] Gerçek hedef kayıtlı
+#      (L-A5b PacketProtection + L-A5c SessionControl/H-DEMUX/epoch); `--target real` için 3 artık
+#      beklenmez — ci.yml 0 ister.
 #      Yeşil DEĞİLDİR; "atlandı" diye bir sonuç yoktur.
 #
 # HEDEF → NEREDE KOŞAR [B1 2026-10-05]
-#   mock | machine | real | vectors : crates/kama-noise-wire/tests/noise_conformance_core (özellik: test-util;
+#   mock | real | vectors : crates/kama-noise-wire/tests/noise_conformance_core (özellik: test-util;
 #                           MockCrypto o özelliğin altında, sahte gerçeğinin sahibi crate'te yaşar)
 #   identity              : crates/client-core/tests/noise_identity_target.rs (IdentitySeam client-core'un;
 #                           kama-noise-wire client-core'u göremez — layer_check C3)
@@ -43,9 +48,9 @@ while (($#)); do
   esac
 done
 case "$TARGET" in
-  mock|real|machine|vectors) CARGO_ARGS=(-p kama-noise-wire --locked --features test-util --test noise_conformance_core) ;;
+  mock|real|vectors) CARGO_ARGS=(-p kama-noise-wire --locked --features test-util --test noise_conformance_core) ;;
   identity)          CARGO_ARGS=(-p client-core --locked --test noise_identity_target) ;;
-  *) echo "kullanım hatası: --target mock|real|machine|identity|vectors zorunlu"; exit 2 ;;
+  *) echo "kullanım hatası: --target mock|real|identity|vectors zorunlu (machine 2026-10-08'de kaldırıldı → real_epoch_*)"; exit 2 ;;
 esac
 
 # Hedefin testleri `<hedef>_` önekli ad taşır; kayıtlı değilse listede hiç test çıkmaz.
