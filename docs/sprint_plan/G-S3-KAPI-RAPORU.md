@@ -6,6 +6,8 @@
 geçersiz kıldığı cümlelerin üstü çizildi. §1–§6'daki satır numaraları hâlâ `77848003` ağacına göredir.
 **Güncelleme 2026-10-05c:** §7.3'teki S1 kapsama sayımı güncellendi (Hayri taşıması, PR #92); eski cümlenin üstü çizildi.
 **Güncelleme 2026-10-05d:** §7.4'e silme kapısının ikinci ölçümü ve taban değişikliği eklendi (yalnız ekleme).
+**Güncelleme 2026-10-08 [L-A5c PR-1]:** §7.2 vektör tüketimi — `ccr-kdf-v1` tüketicisi L-A5a ile (#97, `kdf.rs` testleri, 12/12), `ccr-ssi1-v1` / `ccr-ssr1-v1` / `ccr-ed25519-neg-v1` / `ccr-deprecated-neg-v1` tüketicisi `crates/kama-noise-wire/tests/a5c_handshake_vectors.rs` (16 + 8 + 10 + 7 vaka, hepsi koşuluyor); `ccr-ssd1-v1` ayrıca gerçek yolda (`real_ssd1`, #100). Eski "pending" ibarelerinin üstü çizildi.
+
 **Güncelleme 2026-10-06:** KDF / SSI1 / SSR1 tüketici satırlarında `pending A5.1 / A5.5` → `pending L-A5a / L-A5c` (iş emri 2026-10-06 §1 şerit adları; F0.6); eski ibarelerin üstü çizildi.
 **Güncelleme 2026-10-06b:** G-S3 FROZEN — Abkarada, sprint kapanışı iş emri (2026-10-06) §0; kama-contracts s3 kilitli.
 **Durum notu (2026-10-05, merge anında güncellendi):** bu raporun dayandığı PR'ların hepsi main'dedir
@@ -113,7 +115,7 @@ Her squash-merge'den sonra main'in ağacı, merge öncesi hesaplanan beklenen a�
 | ~~H-HANDLE tip yarısı: `HubHandle` newtype + trybuild negatifi~~ | ~~B1 (`kama-contracts`); G-S3'ü bekletip bekletmeyeceği sahip kararı~~ **KAPANDI — B1 (§7.1)** |
 | A3.2'nin 4 kırmızı hücresi (5b, 6, 7, 9) | G-IMPL-S3 (A5.4 Done ölçütü); G-S3 için "matris yeşil" ölçütünün beyanlı kırmızıyla sağlanmış sayılıp sayılmayacağı sahip kararı |
 | `real` hedefi yok (`GAP-S3-REAL-A5`) | G-IMPL-S3 |
-| ~~`ccr-*` vektörlerinin Rust tüketicisi yok; SSD1 bayt-özdeşliği commit'li test değil~~ **[2026-10-05b] SSD1 kapandı (§7.2).** Kalan: `ccr-kdf-v1` tüketicisi → ~~**pending A5.1**~~ **pending L-A5a** **[2026-10-06]**; `ccr-ssi1-v1` / `ccr-ssr1-v1` tüketicisi → ~~**pending A5.5**~~ **pending L-A5c** **[2026-10-06]**; `ccr-ed25519-neg-v1` ve `ccr-deprecated-neg-v1` tüketicisi → A5 (imza doğrulama / eski format reddi yazılınca) | G-IMPL-S3 (~~A5.1 / A5.2~~ A5.1 / A5.5) |
+| ~~`ccr-*` vektörlerinin Rust tüketicisi yok; SSD1 bayt-özdeşliği commit'li test değil~~ **[2026-10-05b] SSD1 kapandı (§7.2).** Kalan: `ccr-kdf-v1` tüketicisi → ~~**pending A5.1**~~ **pending L-A5a** **[2026-10-06]**; `ccr-ssi1-v1` / `ccr-ssr1-v1` tüketicisi → ~~**pending A5.5**~~ **pending L-A5c** **[2026-10-06]**; `ccr-ed25519-neg-v1` ve `ccr-deprecated-neg-v1` tüketicisi → A5 (imza doğrulama / eski format reddi yazılınca) **[2026-10-08] beşi de KAPANDI (§7.2: kdf #97, ssi1/ssr1/ed25519-neg/deprecated-neg L-A5c PR-1)** | G-IMPL-S3 (~~A5.1 / A5.2~~ A5.1 / A5.5) |
 | Mutasyon sınaması yapılmadı (C1.6) | kapı değil (NON-GATING) |
 | A3.3 hub yarım-açık sınır testleri | kapı değil (NON-GATING; hub-server iskeleti dolunca) |
 | `ccr-format-spec.md:2808` ve `transport-layer-tdd.md:676-677`: replay identity'de `epoch` — tek pencere kararından sonra fazlalık | ~~karar bekliyor (#85'te not edildi); G-S3'ü bekletmez~~ **[2026-10-05b] karar verildi (epoch kimlikten çıkar); ayrı spec PR'ında uygulanıyor (iş emri §2)** |
@@ -141,12 +143,12 @@ Yazıldığı anda ikisi de main'e girmemiştir; aşağıdaki yollar o PR'ların
 
 | Suite | Vaka | Rust tüketicisi | Durum |
 |---|---|---|---|
-| `ccr-ssd1-v1` | 15 | `crates/kama-noise-wire/tests/noise_conformance_core/ssd1_vectors.rs` (`vectors_ssd1::*`, 3 test) | **yeşil** — 15/15 vaka koşuluyor: 5 `seal` (AAD, nonce96 ve wire byte'ları BAYT-ÖZDEŞ), 10 `open` (3 kabul: plaintext aynı; 7 ret: karar ve gerekçe aynı, pencere ilerlemiyor) |
-| `ccr-kdf-v1` | 12 | yok | ~~**pending A5.1**~~ **pending L-A5a** **[2026-10-06]** (D1–D7 türetimi yazılınca) |
-| `ccr-ssi1-v1` | 16 | yok | ~~**pending A5.5**~~ **pending L-A5c** **[2026-10-06]** (oturum kontrolü + enjekte edilebilir entropi) |
-| `ccr-ssr1-v1` | 8 | yok | ~~**pending A5.5**~~ **pending L-A5c** **[2026-10-06]** |
-| `ccr-ed25519-neg-v1` | 10 | yok | pending A5 (katı kip imza doğrulama) |
-| `ccr-deprecated-neg-v1` | 7 | yok | pending A5 (eski format reddi) |
+| `ccr-ssd1-v1` | 15 | `crates/kama-noise-wire/tests/noise_conformance_core/ssd1_vectors.rs` (`vectors_ssd1::*`, 3 test; **[2026-10-08]** aynı gövdeler gerçek yolda `real_ssd1::*`, #100) | **yeşil** — 15/15 vaka koşuluyor: 5 `seal` (AAD, nonce96 ve wire byte'ları BAYT-ÖZDEŞ), 10 `open` (3 kabul: plaintext aynı; 7 ret: karar ve gerekçe aynı, pencere ilerlemiyor) |
+| `ccr-kdf-v1` | 12 | ~~yok~~ `crates/kama-noise-wire/src/kdf.rs` testleri **[2026-10-08]** | ~~**pending A5.1**~~ ~~**pending L-A5a** **[2026-10-06]** (D1–D7 türetimi yazılınca)~~ **yeşil — 12/12 (L-A5a, #97) [2026-10-08]** |
+| `ccr-ssi1-v1` | 16 | ~~yok~~ `crates/kama-noise-wire/tests/a5c_handshake_vectors.rs` (`ssi1_*`) **[2026-10-08]** | ~~**pending A5.5**~~ ~~**pending L-A5c** **[2026-10-06]** (oturum kontrolü + enjekte edilebilir entropi)~~ **yeşil — 16/16: 3 `aad` + 4 `seal` bayt-özdeş (ref/inline karşı tarafta açılır), 9 `open` ret sınıfı + gerekçe aynı (L-A5c PR-1) [2026-10-08]** |
+| `ccr-ssr1-v1` | 8 | ~~yok~~ `crates/kama-noise-wire/tests/a5c_handshake_vectors.rs` (`ssr1_*`) **[2026-10-08]** | ~~**pending A5.5**~~ ~~**pending L-A5c** **[2026-10-06]**~~ **yeşil — 8/8: `aad` + 2 `seal` bayt-özdeş (başlatan açar), 5 `open` ret aynı (L-A5c PR-1) [2026-10-08]** |
+| `ccr-ed25519-neg-v1` | 10 | ~~yok~~ `crates/kama-noise-wire/tests/a5c_handshake_vectors.rs` → `ed25519_strict::verify_strict` **[2026-10-08]** | ~~pending A5 (katı kip imza doğrulama)~~ **yeşil — 10/10, ilk düşen kural (uzunluk → S < ℓ → kodlama → küçük mertebe A → R → denklem) (L-A5c PR-1) [2026-10-08]** |
+| `ccr-deprecated-neg-v1` | 7 | ~~yok~~ `crates/kama-noise-wire/tests/a5c_handshake_vectors.rs` → `deprecated::deprecated_format` **[2026-10-08]** | ~~pending A5 (eski format reddi)~~ **yeşil — 7/7, magic'ten ret; aktif SSI1 ayrıştırıcısı da kabul döndürmez (L-A5c PR-1) [2026-10-08]** |
 
 SSD1 testinin sınadığı kod bugünkü `LegacySessionProtector`'dır (22 B zarf), S3 trait'leri değil. Koşucu:
 `scripts/ci/noise-conformance.sh --target vectors`; CI'da `seam conformance` job'unun bir adımı ve `test`

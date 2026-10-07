@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub mod aad;
+pub mod clock;
 pub mod control;
 /// F3 (DR-CS-1b/A2): control-id fixed-window dedup (CONTROL_DEDUP_WINDOW). Feature-gated.
 #[cfg(feature = "experimental-cold-start")]
@@ -22,11 +23,14 @@ pub mod control_dedup_window;
 #[cfg(feature = "experimental-cold-start")]
 pub mod control_id_gate;
 pub mod demux;
+pub mod deprecated;
+pub mod ed25519_strict;
 pub mod entropy;
 pub mod envelope;
 pub mod epoch_machine;
 pub mod error;
 pub mod handle_assign;
+pub mod handshake;
 pub mod hub_sim;
 pub mod init_flight;
 pub mod inner;
@@ -35,6 +39,7 @@ pub mod legacy;
 pub mod opened;
 pub mod outer;
 pub mod param_bind;
+pub mod peer_dir;
 pub mod pn;
 pub mod protector;
 pub mod replay;
