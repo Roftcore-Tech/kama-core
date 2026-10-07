@@ -4,7 +4,7 @@ use kama_contracts::handles::{PeerRef, SessionHandle};
 use kama_contracts::s3::{ProtectionContext, SessionCommand, SessionControl, SessionResult};
 
 use crate::mock_transport::MockTransport;
-use crate::target::S3Target;
+use crate::target::{ProtectionTarget, S3Target};
 
 /// Test eşi: `dest_hash`'in ilk sekiz baytı `n` (big-endian), kalanı sıfır. Sahte Crypto oturum
 /// tutamacını bu sekiz bayttan türetir; farklı `n` farklı eş ve farklı oturum demektir.
@@ -35,9 +35,9 @@ pub fn initiate<T: S3Target>(a: &mut T::Crypto, peer_id: u64) -> (u8, Vec<u8>) {
     }
 }
 
-/// Kurulu çift: Alice `Initiate` → (Transport) → Bob `AcceptInit` → (Transport) → Alice
-/// `AcceptResponse`. Dönen tutamaç iki uçta da aynı oturumu adlandırır.
-pub struct Pair<T: S3Target> {
+/// Kurulu çift — hedefin kendi fikstürüyle ([`ProtectionTarget::established`]). Tutamaç iki uçta
+/// da aynı oturumu adlandırır.
+pub struct Pair<T: ProtectionTarget> {
     pub a: T::Crypto,
     pub b: T::Crypto,
     pub h: SessionHandle,
@@ -45,7 +45,14 @@ pub struct Pair<T: S3Target> {
 
 pub const PEER: u64 = 0x00A1_1CE0;
 
-pub fn established<T: S3Target>() -> Pair<T> {
+pub fn established<T: ProtectionTarget>() -> Pair<T> {
+    let (a, b, h) = T::established();
+    Pair { a, b, h }
+}
+
+/// `SessionControl` el sıkışmasıyla kurulu çift: Alice `Initiate` → (Transport) → Bob
+/// `AcceptInit` → (Transport) → Alice `AcceptResponse` (kontrol ailesi olan hedefin fikstürü).
+pub fn handshake<T: S3Target>() -> (T::Crypto, T::Crypto, SessionHandle) {
     let mut a = T::build().expect("hedef kayıtlı olmalı");
     let mut b = T::build().expect("hedef kayıtlı olmalı");
     let mut net = MockTransport::new();
@@ -67,7 +74,7 @@ pub fn established<T: S3Target>() -> Pair<T> {
     // Kurulum olaylarını boşalt: satırlar yalnız kendi ürettikleri olaylara bakar.
     while a.poll_event().is_some() {}
     while b.poll_event().is_some() {}
-    Pair { a, b, h }
+    (a, b, h)
 }
 
 pub fn session(h: SessionHandle) -> ProtectionContext {

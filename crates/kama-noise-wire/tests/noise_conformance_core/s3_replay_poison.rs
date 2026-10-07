@@ -4,9 +4,9 @@
 use kama_contracts::s3::PacketProtection;
 
 use crate::s3_support::{established, session, tamper};
-use crate::target::S3Target;
+use crate::target::ProtectionTarget;
 
-pub fn forged_packet_does_not_poison_the_window<T: S3Target>() {
+pub fn forged_packet_does_not_poison_the_window<T: ProtectionTarget>() {
     let mut p = established::<T>();
     let ctx = session(p.h);
     // Pencereyi biraz ilerlet, sonra sayaç N'li paketi hazırla.

@@ -8,12 +8,12 @@ use kama_contracts::s3::{PacketProtection, ProtectionContext};
 
 use crate::mock_transport::PeerSlotSim;
 use crate::s3_support::{established, session};
-use crate::target::S3Target;
+use crate::target::ProtectionTarget;
 
 /// Her olay arasında mühürlenen paket sayısı.
 const BURST: u64 = 5;
 
-fn seal_burst<T: S3Target>(
+fn seal_burst<T: ProtectionTarget>(
     a: &mut T::Crypto,
     ctx: ProtectionContext,
     slot: &mut PeerSlotSim,
@@ -32,7 +32,7 @@ fn seal_burst<T: S3Target>(
 }
 
 /// Ardışık `seal()` kesin +1; Transport-yerel olaylar seam sayacını etkilemez.
-pub fn pn_survives_transport_local_events<T: S3Target>() {
+pub fn pn_survives_transport_local_events<T: ProtectionTarget>() {
     let mut p = established::<T>();
     let ctx = session(p.h);
     let mut slot = PeerSlotSim::new();
@@ -56,7 +56,7 @@ pub fn pn_survives_transport_local_events<T: S3Target>() {
 }
 
 /// Epoch 0→1 geçişinde `meta.full_wire_pn` sıfırlanmaz; +1 ile devam eder.
-pub fn pn_continues_across_epoch_transition<T: S3Target>() {
+pub fn pn_continues_across_epoch_transition<T: ProtectionTarget>() {
     let mut p = established::<T>();
     let ctx = session(p.h);
     let before = p.a.seal(ctx, b"epoch sifir").expect("seal");
