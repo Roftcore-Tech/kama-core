@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-08b [KATMAN 6'ya iki madde — Abkarada kararları G1 + zstd]:** KATMAN 6 (sonraki sprint — KAPSAM DIŞI) listesine 7. madde (G1: SESSION_INIT gönderen zincir + iptal doğrulamasının çalışma-zamanı yolu; bu sprint kapalı-sistem kipi, ccr §35.4 YAMA 2026-10-08) ve 8. madde (B2.1 zstd sıkıştırması: ruzstd RED, `compression_id` = NONE; pending zstd kararı vakaları). Yalnız ekleme.
+
 > **YAMA KAYDI — 2026-10-08 [B2.1 codec + zstd kararı — Abkarada düzeltmesi 2026-10-08]:** B2.1 kartına DURUM satırı: L-B2a PR-1 (AMP codec); ruzstd REDDEDİLDİ → B2.1 bu sprint `compression_id` = NONE; sıkıştırılmış kayıt vektörleri ve F07.4 ret vakası "pending zstd kararı". Yalnız ekleme.
 
 > **YAMA KAYDI — 2026-10-06d [L-F07 artıklar-2 F07.4/F07.5/F07.6 — iş emri 2026-10-06 §2]:** F07.5: WS-B (B1.*, B2.*) sahibi "Hayri" üstü çizildi → icra Claude Code / karar ve inceleme Abkarada (bu sprint; iş emri 2026-10-06 §0 devir) — WS-B başlığı, KATMAN 1 ve KATMAN 5 sahip etiketleri; B1.1 / B1.2 DURUM ve G-S1 satırındaki "Hayri imzası" kalanı: imza Abkarada, 2026-10-06. F07.4: B1.2 DURUM'unda ret vakası sayısı 14 → 15 (sıkıştırılmış MEDIA_BUNDLE). F07.6: KATMAN 5 sonuna "Kabul edilen SAPMA'lar" bölümü. Üstü çizili metin silinmedi.
@@ -502,5 +504,10 @@ G-IMPL-S1 + G-IMPL-S3 + G-D →   INT-02: uçtan uca mesaj (kama-integration)
    *Atıf:* **D3** (KVT eki NON-GATING; D1–D2 KAPSAM DIŞI değil, L-D'de).
 6. **Yeni spec belgesi; yeni karar slotu; yeni harici bağımlılık** (kama-noise-wire'a A5.0'da eklenenler dışında).
    *Atıf:* KATMAN 1 · KATMAN 5 Süreç kuralı ("Beşinci kutu yok; mimari yeniden açılmaz") · A5.0.
+
+7. **[2026-10-08 — G1, Abkarada kararı] SESSION_INIT göndericisinin zincir + iptal doğrulamasının çalışma-zamanı yolu** (ccr §35.4 adım 1: `verify_chain_to_root`; revocation-model). Bu sprintte KAPALI-SİSTEM KİPİ: Crypto'ya önceden doğrulanmış eş dizini (statik X25519 + `cert_ref`) enjekte edilir, dizinde olmayanın INIT'i opak `Failed`; zincir/iptal tipli sınır olarak kapsam dışı.
+   *Atıf:* ccr §35.4 KAPALI-SİSTEM KİPİ (YAMA 2026-10-08) · L-A5c (A5.5 `AcceptInit`) · identity-and-trust-model / revocation-model.
+8. **[2026-10-08 — Abkarada düzeltmesi] B2.1 zstd sıkıştırması:** ruzstd REDDEDİLDİ; bu sprint `compression_id` = NONE (gönderici sıkıştırmaz, alıcı sıkıştırılmış kaydı başlık denetiminden sonra tipli `zstd-decoder-unavailable` ile düşürür). Sıkıştırılmış kayıt vektörleri ve F07.4 ret vakası "pending zstd kararı".
+   *Atıf:* B2.1 DURUM (2026-10-08) · YAMA KAYDI 2026-10-08 (bu belge) · `crates/kama-app/tests/amp_vectors.rs` `PENDING_ZSTD` (#98).
 
 DUR kuralı: bir şerit bu kalemlerden birini gerekli görürse durur ve raporlar (iş emri §8).
