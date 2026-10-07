@@ -9,6 +9,7 @@
 //! Mesaj codec'i (AMP, `specs/application-message-protocol.md`): [`codec`] (B2.1). Metin + alındı
 //! (TEXT / RECEIPT; eş başına `msg_id`, dedup, outbox): [`messaging`] (B2.2). Dosya, PTT ve
 //! bağlantı akışları B2.3–B2.5 kartlarıyla buraya gelir.
+//! PTT yaşam döngüsü (`PTT_OPEN` / `PTT_CLOSE` + `MEDIA_BUNDLE` kabı): [`ptt`] (B2.4).
 //!
 //! # Katman kuralı (INV-NEIGHBOR-1)
 //!
@@ -21,3 +22,4 @@
 
 pub mod codec;
 pub mod messaging;
+pub mod ptt;
