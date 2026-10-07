@@ -13,9 +13,9 @@ use kama_noise_wire::{
     SEND_PN_CAP,
 };
 use kama_transport_schema::control::Control;
-use kama_transport_schema::inner_kind::{ShardKind, ACK, RECOVERED};
+use kama_transport_schema::inner_kind::{classify, ShardKind, RECOVERED, RESERVED_ACK};
 use kama_transport_schema::prefix::SourcePrefix;
-use kama_transport_schema::{LogicalShardHeader, UnsealedTransportPacket};
+use kama_transport_schema::{LogicalShardHeader, SchemaError, UnsealedTransportPacket};
 use zeroize::Zeroizing;
 
 const PAYLOAD_CAP: usize = 64 - 11; // E - SOURCE_PREFIX_LEN = 53
@@ -484,18 +484,13 @@ fn n8_recovered_is_logical_delivery_not_wire_credit() {
     }
 
     // ── ASSERT-2b: RECOVERED-control ile ACK AYRI-defter/AYRI-codepoint; RECOVERED kredi-ÜRETMEZ ──
+    // [D2 2026-10-08] noise-wire `Control::Ack` kaldırıldı (K3: ürün ACK'i engine `ACK_V2`, kimlik
+    // `full_wire_pn`) → control düzleminde ACK YOK; ayrım artık yapısal: eski ACK codepoint'i 0x10
+    // RESERVED → reject, RECOVERED 0x12 canlı.
     let recovered_ctl = Control::Recovered {
         id: 20,
         block_id: 1,
         esi_ranges: vec![(1, 1), (3, 3)], // tam kurtarılan esi'ler
-    };
-    let ack_ctl = Control::Ack {
-        id: 21,
-        acked_dh_epoch: 0,
-        ack_delay_256us: 0,
-        seen_count: 0,
-        arrival_rate: 0xFFFF,
-        ranges: vec![(0, 4)],
     };
     // RECOVERED wire-katmanında BtlBw-credit ÜRETMEZ (§2.57; N8-invariant).
     assert!(
@@ -508,11 +503,17 @@ fn n8_recovered_is_logical_delivery_not_wire_credit() {
         RECOVERED,
         "RECOVERED codepoint=0x12"
     );
-    assert_eq!(ack_ctl.codepoint(), ACK, "ACK codepoint=0x10");
+    // ~~`ack_ctl.codepoint() == ACK` ("ACK codepoint=0x10")~~ → [D2] RESERVED → reject.
+    assert_eq!(RESERVED_ACK, 0x10, "eski ACK codepoint'i 0x10 (RESERVED)");
+    assert_eq!(
+        classify(RESERVED_ACK),
+        Err(SchemaError::UnknownInnerKind(RESERVED_ACK)),
+        "0x10 RESERVED → reject (control düzleminde ACK yok)"
+    );
     assert_ne!(
         recovered_ctl.codepoint(),
-        ack_ctl.codepoint(),
-        "RECOVERED ≠ ACK (ayrı-defter: recovered→retention-release; ACK→wire-kredi/confirmed_logical)"
+        RESERVED_ACK,
+        "RECOVERED ≠ eski ACK (recovered→retention-release; ACK→engine ACK_V2 kredisi)"
     );
 }
 

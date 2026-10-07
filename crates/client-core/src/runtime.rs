@@ -15,7 +15,7 @@
 //! ASLA sessiz-evict edilmez, boşalma idle-emeklilikle) · teslim kanalı bounded (`try_send`,
 //! taşan teslim sayaçla raporlanır — app drenaj sözleşmesi).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -31,7 +31,6 @@ pub use adaptive_transport::sender::{
     FecArbiterReason, FecLossRiskConfig, FecStructurePolicy, LossConfirmHorizon, PersistMode,
     TsSample, ARBITER_REASON_KINDS,
 };
-use adaptive_transport::seq::resolve_seq;
 use kama_engine::{plan_param_bootstrap, ParamState};
 use kama_fec_codec::{
     by_id, FecCodec, FecProfile, ReceivedSymbol, RepairSymbol, RsSimdCodec, SourceSymbol,
@@ -68,6 +67,10 @@ const PATIENCE_TICK: Duration = Duration::from_secs(1);
 /// Client recv tamponu (yalnız ACK yönü) / server recv tamponu (max UDP datagram).
 const CLIENT_RECV_BUF: usize = 2048;
 const SERVER_RECV_BUF: usize = 65536;
+/// [D1a] PN → motor-seq çeviri tablosunun PN ufku. ACK_V2 `largest_seq` u16'dır: `acked_full` PN'i
+/// bir u16 sarması içinde çözer, daha gerideki PN telden doğru geri kurulamaz — tutmak anlamsız
+/// olurdu ve tablo sınırsız büyürdü (SR-AUDIT-001). Kayıp bir paritenin PN'i de burada budanır.
+const PN_SEQ_WINDOW: u64 = 1 << 16;
 
 /// Çalışma-zamanı konfigürasyonu. Tüm sınırlar açık; `Default` üretim-makul değerler.
 #[derive(Debug, Clone)]
@@ -986,20 +989,30 @@ async fn client_task(
     // seq → unit haritası + birim → seq'leri (ACK'te toplu budama — harita sınırlı kalır).
     let mut seq_to_unit: HashMap<u64, u64> = HashMap::new();
     let mut unit_seqs: HashMap<u64, Vec<u64>> = HashMap::new();
-    let mut max_emitted_seq: u64 = 0;
+    // [D1a] ARQ kimliği = `meta.full_wire_pn` (BL D1; S3 K2/K4): her (yeniden) gönderim yeni bir
+    // seal → yeni PN; alıcı ACK_V2 aralıklarını PN uzayında kurar. Motor kendi seq uzayında KALIR
+    // (motor değişmez): bu tablo PN → motor seq çevirir. PN'ler artan sırada eklenir (ikili arama);
+    // `PN_SEQ_WINDOW` gerisi budanır. Motor kararı taşımayan çerçeveler (PARAM, CS-probe) PN
+    // tüketir ama tabloya girmez — alıcı onları ACK'lemez, ACK'lense de çevrilmez.
+    let mut pn_seq: VecDeque<(u64, u64)> = VecDeque::new();
+    let mut max_sealed_pn: Option<u64> = None;
     let mut next_unit: u64 = 0;
     let mut pace = interval(PACE_TICK);
     let mut rtprop = interval(RTPROP_TICK);
     let mut buf = vec![0u8; CLIENT_RECV_BUF];
 
     // Motoru bir olayla sürer + kararları mühürleyip wire'a yazar. seq→unit kaydı GÖNDERİMDEN
-    // BAĞIMSIZ önce yapılır (acked_full(max_emitted+1) doğruluğu buna bağlı; refused/failed send
-    // de seq'ini işgal eder). Send hatası = kanal kaybı (INV-RATE-1; abort YOK).
+    // BAĞIMSIZ önce yapılır (refused/failed send de seq'ini işgal eder). Send hatası = kanal kaybı
+    // (INV-RATE-1; abort YOK).
     // [v2] Tek-nokta seal+send: yapısal seal-reddi sayılır; PN'i seam atar (yalnız başarılı seal'de).
+    // [D1a] Değeri: başarılı seal'in PN'i (egress reddi / send hatası da PN'i tüketmiş sayılır —
+    // kanal kaybı), seal reddinde `None`.
     macro_rules! seal_send {
         ($frame:expr, $class:expr, $now:expr) => {
             match seam.seal(CLIENT_CTX, &$frame) {
                 Ok(sd) => {
+                    let pn = sd.meta.full_wire_pn;
+                    max_sealed_pn = Some(max_sealed_pn.map_or(pn, |m: u64| m.max(pn)));
                     let n = sd.bytes.len();
                     let n64 = n as u64;
                     // DENEME düzlemi: kapı reddetse de üretilen byte sayılır (sınıf ayrımıyla).
@@ -1026,9 +1039,25 @@ async fn client_task(
                         stats.egress_refused_pkts += 1;
                         stats.egress_refused_bytes += n64;
                     }
+                    Some(pn)
                 }
                 Err(_) => {
                     stats.seal_failures += 1; // typed-red; emisyon kayıp sayıldı.
+                    None
+                }
+            }
+        };
+    }
+    // [D1a] Motor kararının PN'ini çeviri tablosuna yazar + PN ufkunun gerisini budar.
+    macro_rules! map_pn {
+        ($pn:expr, $seq:expr) => {
+            if let Some(pn) = $pn {
+                pn_seq.push_back((pn, $seq));
+                while pn_seq
+                    .front()
+                    .is_some_and(|&(old, _)| pn.saturating_sub(old) >= PN_SEQ_WINDOW)
+                {
+                    pn_seq.pop_front();
                 }
             }
         };
@@ -1036,11 +1065,10 @@ async fn client_task(
     macro_rules! drive {
         ($ev:expr, $now:expr) => {
             for d in session.on_event($ev, $now) {
-                // Seq-uzayı takibi HER kararda (acked_full(max+1) doğruluğu — repair'ler de seq
-                // işgal eder); ama seq→unit haritası YALNIZ birim-taşıyan kararlarda: FecParity'nin
+                // PN → seq çevirisi motor seq'i taşıyan HER kararda (repair'ler de seq işgal eder;
+                // `map_pn!`); ama seq→unit haritası YALNIZ birim-taşıyan kararlarda: FecParity'nin
                 // unit_id'si ESI'dir (AYRI ad-uzayı) — haritaya girseydi repair-ACK'i gerçek bir
                 // birimin store'unu silerdi (S1'de yakalanan tuzak).
-                max_emitted_seq = max_emitted_seq.max(d.seq);
                 let carries_unit = matches!(
                     d.kind,
                     TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate
@@ -1076,11 +1104,13 @@ async fn client_task(
                                     block_id,
                                     esi,
                                     k_actual: k_actual_wire,
+                                    // [D1a] ara çerçeve alanı; kimlik DEĞİL (alıcı PN'i kullanır).
                                     seq: (d.seq & 0xFFFF) as u16,
                                 },
                                 sym.unwrap_or(&[]),
                             );
-                            seal_send!(frame, TxClass::Fec, $now);
+                            let pn = seal_send!(frame, TxClass::Fec, $now);
+                            map_pn!(pn, d.seq);
                             continue;
                         }
                     }
@@ -1091,7 +1121,8 @@ async fn client_task(
                     if d.kind == TransmitKind::CsProbe {
                         let f = encode_cs_probe(CS_PROBE_SUBTYPE, (d.seq & 0xFFFF) as u16);
                         stats.cs_probes_tx += 1;
-                        seal_send!(f, TxClass::Ctrl, $now);
+                        // probe_seq ayrı ad-uzayı: PN tabloya GİRMEZ (alıcı probe'u ACK'lemez).
+                        let _ = seal_send!(f, TxClass::Ctrl, $now);
                         continue;
                     }
                     // FEC-kapalıyken FecParity: v0 kabuk taşımaz, sayar (bootstrap OFF;
@@ -1113,8 +1144,10 @@ async fn client_task(
                 // [S1B] store WIRE GÖVDESİNİ tutar: frag açıkken `prefix ‖ payload`, kapalıyken
                 // düz payload — emisyon tek şekilli kalır, prefix burada YENİDEN kurulmaz.
                 // Stale (store-miss) emisyonda gövde boştur; frag çerçevesi ≥11 B ister, bu yüzden
-                // canonical sıfır-prefix konur: alıcı çözer, seq ACK'lenir, birleştiriciye
+                // canonical sıfır-prefix konur: alıcı çözer, PN ACK'lenir, birleştiriciye
                 // len=0 katkısıyla girer (aynı esi'de gerçek symbol first-wins ile korunur).
+                // [D1a] Çerçevedeki u16 `seq` ara çerçeve alanıdır (S3: interim çerçeve bu sprint
+                // beyanlı KARŞILANMAZ); ARQ kimliği DEĞİL — alıcı kimliği `meta.full_wire_pn`'den alır.
                 let stale_body: [u8; SOURCE_PREFIX_LEN] = [0; SOURCE_PREFIX_LEN];
                 let frame = if frag_on {
                     let body = if stale { &stale_body[..] } else { payload };
@@ -1128,7 +1161,8 @@ async fn client_task(
                     TransmitKind::Duplicate => TxClass::Dup,
                     _ => TxClass::Data,
                 };
-                seal_send!(frame, class, $now);
+                let pn = seal_send!(frame, class, $now);
+                map_pn!(pn, d.seq);
             }
         };
     }
@@ -1243,7 +1277,18 @@ async fn client_task(
                             },
                             $now,
                         );
-                        let acked = frame.acked_full(max_emitted_seq + 1);
+                        // [D1a] ACK aralıkları PN uzayında → motor seq'ine çevrilir. Tabloda olmayan
+                        // PN (ufuk dışı / motor kararı olmayan çerçeve) motora GİTMEZ.
+                        let acked: Vec<u64> = frame
+                            .acked_full(max_sealed_pn.map_or(0, |m| m + 1))
+                            .into_iter()
+                            .filter_map(|pn| {
+                                pn_seq
+                                    .binary_search_by_key(&pn, |&(p, _)| p)
+                                    .ok()
+                                    .map(|i| pn_seq[i].1)
+                            })
+                            .collect();
                         for s in &acked {
                             let Some(&unit) = seq_to_unit.get(s) else { continue };
                             if store.remove(&unit).is_some() {
@@ -1427,7 +1472,8 @@ async fn client_task(
                     if !param_confirmed && param_tries < 25 && due {
                         if let (Some(p), Control::ParamSet { param_hash, .. }) = (fec.as_ref(), &plan.control) {
                             let f = encode_param(p.profile_id, p.code_suite_id, param_hash);
-                            seal_send!(f, TxClass::Ctrl, now);
+                            // Motor kararı değil: PN tabloya GİRMEZ (alıcı PARAM'ı ACK'lemez).
+                            let _ = seal_send!(f, TxClass::Ctrl, now);
                             stats.param_sends += 1;
                             param_tries += 1;
                             param_last_tick_ms = now_ms;
@@ -2175,19 +2221,19 @@ async fn server_task(
                     stats.open_failures += 1;
                     continue;
                 };
-                let (seam_ctx, plain) = (od.ctx, od.frame);
+                // [D1a] Alıcının ARQ kimliği = Crypto'nun açtığı PN (`meta.full_wire_pn`; BL D1).
+                // Çerçevedeki u16 `seq` (ara çerçeve) artık OKUNMAZ.
+                let (seam_ctx, plain, pn) = (od.ctx, od.frame, od.meta.full_wire_pn);
                 // [S1] Çerçeve ayrımı: DATA / FEC-shard. İkisi de peer-slot + motor-ACK yolundan
-                // geçer (repair de seq işgal eder — RxKind::FecShard motor tarafından ACK'lenir).
+                // geçer (repair de PN işgal eder — RxKind::FecShard motor tarafından ACK'lenir).
                 enum RxFrame<'a> {
                     Data {
-                        wire_seq: u16,
                         unit_id: u64,
                         payload: &'a [u8],
                     },
                     /// [S1B] Fragmentli DATA: chunk metadata'sı wire'dan AÇIKÇA gelir.
                     /// `body` = prefix ‖ payload (canonical symbol'ün başı).
                     DataFrag {
-                        wire_seq: u16,
                         unit_id: u64,
                         pfx: SourcePrefix,
                         body: &'a [u8],
@@ -2205,15 +2251,10 @@ async fn server_task(
                     /// echo ile cevaplanır (gönderenin RTT örneği buradan doğar).
                     CsProbe { subtype: u8, probe_seq: u16 },
                 }
-                let parsed = if let Some((wire_seq, unit_id, payload)) = decode_data(&plain) {
-                    RxFrame::Data {
-                        wire_seq,
-                        unit_id,
-                        payload,
-                    }
-                } else if let Some((wire_seq, unit_id, pfx, body)) = decode_data_frag(&plain) {
+                let parsed = if let Some((_seq, unit_id, payload)) = decode_data(&plain) {
+                    RxFrame::Data { unit_id, payload }
+                } else if let Some((_seq, unit_id, pfx, body)) = decode_data_frag(&plain) {
                     RxFrame::DataFrag {
-                        wire_seq,
                         unit_id,
                         pfx,
                         body,
@@ -2266,13 +2307,8 @@ async fn server_task(
                     // Sonrasındaki her şey — motor beslemesi, ACK, symbol ingest, teslim —
                     // ortaktır; iki ayrı kopya bakım-zamanlı ayrışma riskiydi.
                     RxFrame::Data { .. } | RxFrame::DataFrag { .. } => {
-                        let (wire_seq, unit_id, pfx, payload, body) = match parsed {
-                            RxFrame::Data {
-                                wire_seq,
-                                unit_id,
-                                payload,
-                            } => (
-                                wire_seq,
+                        let (unit_id, pfx, payload, body) = match parsed {
+                            RxFrame::Data { unit_id, payload } => (
                                 unit_id,
                                 SourcePrefix {
                                     message_id: (unit_id & 0xFFFF_FFFF) as u32,
@@ -2285,12 +2321,10 @@ async fn server_task(
                                 None,
                             ),
                             RxFrame::DataFrag {
-                                wire_seq,
                                 unit_id,
                                 pfx,
                                 body,
                             } => (
-                                wire_seq,
                                 unit_id,
                                 pfx,
                                 &body[SOURCE_PREFIX_LEN..],
@@ -2298,17 +2332,15 @@ async fn server_task(
                             ),
                             _ => unreachable!("dış match yalnız iki DATA varyantını seçti"),
                         };
-                        let expected = slot.rx.largest_seq().map_or(0, |m| m + 1);
-                        let full = resolve_seq(expected, wire_seq);
                         let out = slot.rx.on_datagram(
                             RxDatagram {
-                                seq: full,
+                                seq: pn,
                                 unit_id,
                                 kind: RxKind::Data,
                             },
                             now,
                         );
-                        // İlk-teslim: seq-yeni ise chunk teslim kapısına girer (dedup orada:
+                        // İlk-teslim: PN-yeni ise chunk teslim kapısına girer (dedup orada:
                         // fragmentasyon kapalı→birim-id, açık→mesaj-id).
                         if out.delivered.contains(&unit_id) {
                             admit_chunk(
@@ -2391,13 +2423,11 @@ async fn server_task(
                             } else {
                                 stats.fec_pre_param_dropped += 1; // taşan düşer (bounded).
                             }
-                            // Motor-ACK'i yine verilir (seq işgal edildi; kayıp-sinyali üretme).
-                            let expected = slot.rx.largest_seq().map_or(0, |m| m + 1);
-                            let full = resolve_seq(expected, h.seq);
+                            // Motor-ACK'i yine verilir (PN işgal edildi; kayıp-sinyali üretme).
                             let is_repair = h.kind == inner_kind::FEC_REPAIR;
                             let out = slot.rx.on_datagram(
                                 RxDatagram {
-                                    seq: full,
+                                    seq: pn,
                                     unit_id: u64::from(h.esi),
                                     kind: RxKind::FecShard {
                                         block_id: h.block_id,
@@ -2423,12 +2453,10 @@ async fn server_task(
                             continue;
                         }
                         stats.fec_repairs_rx += 1;
-                        let expected = slot.rx.largest_seq().map_or(0, |m| m + 1);
-                        let full = resolve_seq(expected, h.seq);
                         let is_repair = h.kind == inner_kind::FEC_REPAIR;
                         let out = slot.rx.on_datagram(
                             RxDatagram {
-                                seq: full,
+                                seq: pn,
                                 unit_id: u64::from(h.esi),
                                 kind: RxKind::FecShard {
                                     block_id: h.block_id,

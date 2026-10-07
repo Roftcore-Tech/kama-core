@@ -1,5 +1,7 @@
 # Kama — Transport Layer TDD (Adaptive Hostile-Aware Transport)
 
+> **YAMA KAYDI — 2026-10-08 [AMENDMENT-11 — WS-D (BL D1/D2/D3) UYGULANDI, L-D şeridi; iş emri 2026-10-06b §5]:** §12'ye [AMENDMENT-11]: ARQ/ACK kimliği = `meta.full_wire_pn` KODDA (çeviri katmanı `client-core` runtime'ında; `adaptive-transport` motoru değişmedi; ACK_FRAME_V2 formatı ve `ack_epoch` dokunulmadı) · noise-wire `Control::Ack/Sack` (0x10/0x11) kod silimi, codepoint'ler RESERVED → reject · golden etkisi listesi · altı beyan. Ara 11 B çerçeve veri yolunda KALIR (S3 kararı: beyanlı KARŞILANMAZ). Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-05 [PN SÜREKLİ artıkları — Abkarada kararı]:** §6 NONCE/SEQ: sayaç geri kazanımından ve `replay identity`'den `epoch` ÇIKTI (ccr §35.8 ile birebir) → kimlik `(session_id_internal, direction, full_counter)`; tek pencere (identity §15.5, 2026-10-06). Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-06 [PN SÜREKLİ — Abkarada kararı; WS-D1 `dh_epoch` sorusu KAPANDI]:** §12'ye ACK kimliği satırı: ACK_FRAME_V2 kimliği = `full_wire_pn`; `dh_epoch` kimliğe girmez. [AMENDMENT-9]'daki "sayım (session, direction, dh_epoch) başınadır" → "(session, direction) başınadır" (noise-wire §2.5 ile birebir). Üstü çizili metin silinmedi.
@@ -840,6 +842,60 @@ default path_mtu_target = 1200B (fragmentation kaçınımı); probe 576/768B; lo
 ## 12. ACK Stratejisi (windowed — per-paket ACK DEĞİL)
 
 > **[2026-10-06 — ACK KİMLİĞİ, Abkarada kararı; WS-D1]** ACK_FRAME_V2 kimliği = `full_wire_pn`; `dh_epoch` kimliğe girmez; dayanak: sayaç epoch'lar boyunca sürekli (noise-wire §2.5, §4 EPOCH-PN-INIT, 2026-10-06). Hub ACK'i cleartext PN'den üretir ve epoch'u bilmez; sürekli sayaçta bir PN değeri (session, direction) içinde tek bir datagrama karşılık gelir.
+
+> **[AMENDMENT-11 — 2026-10-08, WS-D (BL D1/D2/D3) UYGULANDI · TEL ANLAMI DEĞİŞTİ · MOTOR DEĞİŞMEDİ]**
+>
+> **D1 — kimlik (D1a: runtime çeviri katmanı).** Gönderen her motor kararını (DATA · retransmit · duplication · FEC
+> repair) ayrı bir `seal()` ile mühürler → her (yeniden) gönderim yeni PN alır (KM-SEAM-TC-001 K2/K4). Çeviri tablosu
+> PN → motor seq → mantıksal birim (`crates/client-core/src/runtime.rs`); PN ufku `PN_SEQ_WINDOW = 2^16`, yani bir u16
+> sarması: ACK_V2 `largest_seq` u16'dır ve daha gerideki bir PN telden doğru geri kurulamaz. Alıcı
+> `RxDatagram.seq = Opened.meta.full_wire_pn` besler → ACK_V2 aralıkları PN uzayındadır. ACK_FRAME_V2 formatı
+> DEĞİŞMEDİ; `ack_epoch` alanına dokunulmadı (2026-10-05 notu). `adaptive-transport` motoru DEĞİŞMEDİ: motor kendi seq
+> uzayında kalır, ACK motor seq'ine çevrilerek beslenir.
+> Motor kararı taşımayan çerçeveler (PARAM, CS-probe) PN tüketir; alıcıya beslenmez ve çeviri tablosuna girmez →
+> alıcının SACK'inde boşluk olarak görünürler. Motora giden teyitli motor-seq kümesi aynı kalır; tek fark,
+> `MAX_ACK_RANGES` kırpmasının bu boşlukları da sayması (FEC açıkken PARAM, bootstrap açıkken CS-probe; akış
+> başında). Bu farkın etkisi ÖLÇÜLMEDİ.
+> Ara çerçevedeki u16 `seq` alanı YERİNDE: S3 kararı (2026-10-08) gereği "interim çerçeve kodda yok" bu sprint
+> beyanlı KARŞILANMAZ (`BatchPayload` codec'i var, `crates/client-core/src/batch.rs`; veri yolu geçişi sonraki
+> sprint). Alan motor seq'inin alt 16 bitini taşımaya devam eder ama alıcı OKUMAZ — kimlik değildir.
+> PoC `IdentitySeam` (S4): Session sahte etiketinin ilk 8 baytı PN'dir (BE), HubChannel etiketi sıfırdır; `open` PN'i
+> oradan okur ve her datagramı tek örtük oturuma atfeder.
+> KM-SEAM-TC-001 K2'deki "ACK'te gelen full-wire-PN aralığı (noise-wire §2.57)" ifadesi K3 (2026-10-04) ile aşılmıştır:
+> PN aralığını taşıyan çerçeve engine ACK_V2'dir.
+> Kanıt: `client-core/tests/runtime_e2e.rs::arq_identity_is_the_pn_not_the_interim_seq_field` (alıcı seam'i u16 alanını
+> sıfırlar, gönderen seam'i ilk mühürden önce 5 PN yakar, bir birim kalıcı silinir). İki hedefli mutasyon — gönderen
+> PN'i motor seq'i sayar / alıcı u16 alanını kimlik sayar — ikisi de 3/3 koşuda kırmızı; mutasyonsuz 5/5 yeşil.
+>
+> **D2 — ikinci ACK ailesi söküldü.** noise-wire `Control::Ack/Sack` (0x10/0x11) kodda YOK: `kama-transport-schema`
+> (`Control` varyantları, `inner_kind`), `kama-noise-wire` (kontrol codec'i, `ACK_MAX_RANGES`/`SACK_MAX_GAP_BLOCKS`,
+> retry sınıfı), `kama-engine` (`recovered_map` testi). Codepoint'ler RESERVED → reject: şema `classify` →
+> `UnknownInnerKind`; noise-wire kontrol çözücüsü → `ControlDecode`. Ürün ACK'i = engine ACK_V2 (K3, 2026-10-04).
+>
+> **D3 — golden etkisi.** `adaptive-transport/tests/tv_*.rs`: DEĞİŞMEDİ (ACK_V2 ve ara çerçeve baytları aynı).
+> `kama-transport-schema/tests/golden_v0.rs::inner_kind_registry`: DEĞİŞTİ — ~~`classify(0x10) = Control(0x10)`~~ →
+> 0x10/0x11 fail-closed RESERVED listesinde, kontrol aralığının alt ucu `classify(0x12) = Control(0x12)`; prefix,
+> PARAM-canonical ve overhead golden'ları aynı. noise-wire: `sprint2_control.rs::control_body_golden` içindeki Ack gövde golden'ı
+> KALDIRILDI, yerine RECOVERED golden'ı geldi — codec yerleşiminden elle türetildi (`block_id u32 · count u16 ·
+> (esi_start u16, esi_end u16)×count` → `0A0B0C0D 0001 000A 0014`); `m3_sealed_bytes.rs`'te "Control-Ack-4range"
+> vakası "Control-Recovered-16range" oldu (DR-1 tavanındaki en büyük meşru kontrol gövdesi; dosya bayt golden'ı
+> değil ≤1200 B PMTU sınırını sınar); `control_split_and_state_mutants.rs`'te bölme/tavan mekanizması yalnız
+> RECOVERED üzerinde pinli. Kayıt dışı kalan tarihî rapor satırı (`reports/d1-exit/M3-M4-M5.md`, "Control-Ack")
+> değiştirilmedi.
+> `IdentitySeam` mühürlü baytları PN > 0'da etiketin ilk 8 baytında değişti (PoC stub; golden değil, PN 0'da v1 ile
+> özdeş).
+>
+> **EVOLUTION §22 — ALTI BEYAN:**
+> 1. Donmuş invaryant: INV-RATE-1, INV-FEC-1, INV-ENGINE-SOC DEĞİŞMEZ (kimlik Crypto'nun `meta`'sından okunur;
+>    transport anahtar tutmaz, PN üretmez).
+> 2. `KamaV1Profile`: alan eklenmedi, değişmedi.
+> 3. Profil kimliği: tel anlamı değişti (ACK aralıkları PN uzayında; alıcı u16 alanını okumaz) → AMENDMENT-11 öncesi
+>    bir uçla birlikte ÇALIŞMAZ → `transport-v1.x`.
+> 4. Geçersiz olan T-hücreleri: karar yolu aynı girdiyi alır; FEC ya da bootstrap AÇIK hücrelerde ACK range kırpması
+>    farklılaşabilir (ölçülmedi) — bu hücrelerin bankadaki sonuçları AMENDMENT-11 öncesi koda aittir.
+> 5. Yeniden doğrulama: engine + integration testleri yeşil (iş emri §5 kabul ölçütü). KVT tek netem profili
+>    NON-GATING — KOŞULMADI (`sch_netem` yüklü değil; T5 sahibin).
+> 6. Sürüm: `transport-v1.x` (v2 DEĞİL — mimari değişmedi, kimlik kaynağı değişti).
 
 > **[AMENDMENT-8 — 2026-09-23, N-PENCERESİ TEMİZLİĞİ · DAVRANIŞ DEĞİŞİKLİĞİ YOK]** Bu belgedeki "N-mesaj ACK penceresi"
 > ifadeleri (§7 Pipeline A, §12) üstü çizildi. Gerekçe: 2026-09-22 sahip kararıyla N-mesaj ACK penceresi ÜÇE AYRILDI —

@@ -11,7 +11,9 @@
 //!      `decode_control` normalde yalnız `InnerPlain::Control` için çağrılır, ama fonksiyon
 //!      public'tir ve doğrudan çağrılabilir.
 //!   2. `"recovered esi start>end"` — RECOVERED'ın range-doğrulaması. `sprint2_control.rs`
-//!      `invalid_range_rejected` yalnız ACK kolunu sürer; RECOVERED ayrı bir site'tır.
+//!      `invalid_range_rejected` ~~yalnız ACK kolunu sürer; RECOVERED ayrı bir site'tır~~
+//!      [D2 2026-10-08: ACK kolu kodla birlikte kalktı (K3); o test artık RECOVERED kolunu sürer —
+//!      bu dosya aynı site'ın sınır/sıra sözleşmelerini pinler].
 //!
 //! **Oracle:** Tipli `ControlDecode`; panik yok; kısmi `Control` üretilmez.
 
@@ -39,15 +41,15 @@ fn fec_codepoints_are_rejected_by_the_control_decoder() {
 
 #[test]
 fn every_codepoint_outside_the_control_registry_is_rejected() {
-    // §2.57 registry: 0x10..0x1A. Tüm 256 codepoint taranır; registry dışı olan her biri
-    // aynı sınıfta reddedilmeli. Bu tarama, registry'ye sessizce bir codepoint eklenirse
+    // §2.57 registry: ~~0x10..0x1A~~ 0x12..0x1A. Tüm 256 codepoint taranır; registry dışı olan
+    // her biri aynı sınıfta reddedilmeli. Bu tarama, registry'ye sessizce bir codepoint eklenirse
     // (ve §2.57 güncellenmezse) kırmızı yanar.
     // [2026-09-02] Tarama TASARLANDIĞI GİBİ yandı: 0x19/0x1A (CTRL_CS_PROBE/CTRL_CS_ECHO)
     // DR-CS-3 ile registry'ye MEŞRU olarak girmişti (schema inner_kind + noise-wire decoder);
     // liste güncel registry'ye eşitlendi.
+    // [D2 2026-10-08] 0x10/0x11 (ACK/SACK) listeden çıktı — Ack/Sack ailesi kodda yok (K3);
+    // RESERVED → reject: tarama onları artık "non-control codepoint" sınıfında bekler.
     let control_cps = [
-        inner_kind::ACK,
-        inner_kind::SACK,
         inner_kind::RECOVERED,
         inner_kind::BLOCK_COMPLETE,
         inner_kind::PARAM_SET,
@@ -76,6 +78,19 @@ fn every_codepoint_outside_the_control_registry_is_rejected() {
         256 - control_cps.len(),
         "control registry boyutu değişmiş — §2.57 güncellenmiş olabilir"
     );
+    // [D2 2026-10-08] RESERVED → reject (açık pin): eski ACK/SACK codepoint'leri boş gövdede de
+    // codepoint kapısında düşer (`Reader` hiç çalışmaz).
+    for cp in [inner_kind::RESERVED_ACK, inner_kind::RESERVED_SACK] {
+        assert!(
+            !control_cps.contains(&cp),
+            "cp={cp:#04x} registry'de kalmış"
+        );
+        assert_eq!(
+            decode_control_body(cp, 1, &[]),
+            Err(WireError::ControlDecode("non-control codepoint")),
+            "cp={cp:#04x}"
+        );
+    }
 }
 
 #[test]
@@ -104,7 +119,9 @@ fn recovered_body(block_id: u32, ranges: &[(u16, u16)]) -> Vec<u8> {
 
 #[test]
 fn recovered_with_inverted_esi_range_is_rejected() {
-    // `sprint2_control.rs::invalid_range_rejected` ACK kolunu kapatır; bu RECOVERED kolu.
+    // ~~`sprint2_control.rs::invalid_range_rejected` ACK kolunu kapatır; bu RECOVERED kolu.~~
+    // [D2 2026-10-08] ACK kolu kalktı; o test de artık RECOVERED'ı sürer, bu test kesin nedeni
+    // pinler.
     // Ters aralık, alıcı tarafında `for esi in s..=e` gibi bir döngüde ya boş küme ya da
     // (imzasız aritmetikte) taşma üretir — wire'da reddedilmeli.
     let body = recovered_body(7, &[(10, 5)]);

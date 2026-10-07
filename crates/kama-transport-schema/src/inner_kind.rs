@@ -10,8 +10,12 @@ pub const FEC_SOURCE: u8 = 0x01;
 pub const FEC_REPAIR: u8 = 0x02;
 
 // ── Control codepoint'leri (§2.56 allowlist; KEY_UPDATE/NACK YOK) ──
-pub const ACK: u8 = 0x10;
-pub const SACK: u8 = 0x11;
+/// ~~`ACK` 0x10~~ / ~~`SACK` 0x11~~ — [D2, 2026-10-08; karar K3 2026-10-04] RESERVED → reject: ürün
+/// ACK'i engine `ACK_V2`'dir (kimlik `full_wire_pn`, D1); noise-wire Ack/Sack ailesi spec'te silindi
+/// ve kodda yoktur. Codepoint'ler yeniden KULLANILMAZ; gelen → `UnknownInnerKind` (fail-closed).
+pub const RESERVED_ACK: u8 = 0x10;
+/// Bkz. [`RESERVED_ACK`].
+pub const RESERVED_SACK: u8 = 0x11;
 pub const RECOVERED: u8 = 0x12;
 pub const BLOCK_COMPLETE: u8 = 0x13;
 pub const PARAM_SET: u8 = 0x14;
@@ -59,7 +63,8 @@ pub enum InnerKind {
     Control(u8),
 }
 
-/// Codepoint → InnerKind (fail-closed: 0x00 reserved, 0x03..0x0F FEC-reserved, 0x1B..0xFF reserved).
+/// Codepoint → InnerKind (fail-closed: 0x00 reserved, 0x03..0x0F FEC-reserved, 0x10/0x11 reserved
+/// [D2 2026-10-08], 0x1B..0xFF reserved).
 /// Fail-closed = FRAME-seviyesi reject (session-yaşar) — eski-peer'ın yeni-codepoint'leri safe-ignore
 /// etmesinin yapısal-tabanı (DR-CS-1 mixed-version).
 ///
@@ -69,9 +74,7 @@ pub fn classify(cp: u8) -> Result<InnerKind, SchemaError> {
     match cp {
         FEC_SOURCE => Ok(InnerKind::Fec(ShardKind::Source)),
         FEC_REPAIR => Ok(InnerKind::Fec(ShardKind::Repair)),
-        ACK
-        | SACK
-        | RECOVERED
+        RECOVERED
         | BLOCK_COMPLETE
         | PARAM_SET
         | PARAM_ACK

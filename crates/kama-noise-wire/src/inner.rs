@@ -2,7 +2,8 @@
 //!
 //! FEC-inner  : inner_version u8=0x01 · inner_kind u8 (0x01/0x02) · flags u8 (reserved→reject) ·
 //!              profile_id u8 · block_id u32_be · esi u16_be · k_actual u8 · symbol[E]   (hdr=11B)
-//! Ctl-inner  : inner_version u8=0x01 · inner_kind u8 (0x10..0x18) · control_id u32_be · body
+//! Ctl-inner  : inner_version u8=0x01 · inner_kind u8 (0x12..=0x1A; 0x10/0x11 RESERVED → reject,
+//!              D2 2026-10-08) · control_id u32_be · body
 //! Cryptex (§2): FEC-semantiği TAMAMEN burada (ciphertext'te) — outer SIZDIRMAZ.
 
 use crate::error::WireError;

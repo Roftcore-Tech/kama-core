@@ -2,7 +2,7 @@
 //! HARD-BOUND'lar + CAL-10 dedup-window türetimi.
 //!
 //! PRODUCER-INVENTORY (control_id-tüketen üreticiler; `Control` §2.57 varyantları):
-//!   Ack(0x10) · Sack(0x11) · Recovered(0x12) · BlockComplete(0x13) · ParamSet(0x14) ·
+//!   ~~Ack(0x10) · Sack(0x11)~~ [D2 2026-10-08: reserved → reject] · Recovered(0x12) · BlockComplete(0x13) · ParamSet(0x14) ·
 //!   ParamAck(0x15) · BlockAbort(0x16) · SessionClose(0x17) · SessionRenewRequired(0x18).
 //! Atama-yolu: `control::split_for_send(c, next_id)` (control.rs:194) — bugüne kadar `next_id`
 //! CALLER'dan (harness). Üretimde merkezi-atayıcı YOKtu → BU gate onu sağlar (A-3 monoton kontratı).

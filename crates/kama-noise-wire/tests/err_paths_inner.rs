@@ -90,14 +90,15 @@ fn unknown_inner_version_is_rejected() {
 
 #[test]
 fn unknown_inner_kind_codepoint_is_rejected() {
-    // §2.56 registry: 0x01/0x02 (FEC) + 0x10..0x1A (control). Kalan tüm codepoint'ler reserved.
+    // §2.56 registry: 0x01/0x02 (FEC) + ~~0x10..0x1A~~ 0x12..0x1A (control). Kalan tüm
+    // codepoint'ler reserved.
     // [2026-09-02] 0x19/0x1A (CTRL_CS_PROBE/ECHO) DR-CS-3 ile registry'ye meşru girdi —
     // liste güncel inner_kind'a eşitlendi (err_paths_control.rs taramasıyla aynı olay).
+    // [D2 2026-10-08] 0x10/0x11 (ACK/SACK) listeden çıktı — Ack/Sack ailesi kodda yok (K3);
+    // RESERVED → reject: tarama onları artık "unknown inner_kind" sınıfında bekler.
     let known: Vec<u8> = vec![
         inner_kind::FEC_SOURCE,
         inner_kind::FEC_REPAIR,
-        inner_kind::ACK,
-        inner_kind::SACK,
         inner_kind::RECOVERED,
         inner_kind::BLOCK_COMPLETE,
         inner_kind::PARAM_SET,
@@ -128,6 +129,17 @@ fn unknown_inner_kind_codepoint_is_rejected() {
         256 - known.len(),
         "registry dışı codepoint sayısı değişmiş — §2.56 güncellenmiş olabilir"
     );
+    // [D2 2026-10-08] RESERVED → reject (açık pin): eski ACK/SACK codepoint'li control-biçimli
+    // bir inner da kind kapısında düşer (prefix/body'ye inilmez).
+    for cp in [inner_kind::RESERVED_ACK, inner_kind::RESERVED_SACK] {
+        assert!(!known.contains(&cp), "cp={cp:#04x} registry'de kalmış");
+        let ctl = encode_control_inner(cp, 0x1122_3344, &[0x00, 0x00, 0x00]);
+        assert_eq!(
+            expect_inner_parse(&ctl, "reserved"),
+            "unknown inner_kind",
+            "cp={cp:#04x}"
+        );
+    }
 }
 
 // ── SITE 4: "fec inner too short" ───────────────────────────────────────────
@@ -215,7 +227,8 @@ fn fec_with_zero_length_symbol_is_rejected() {
 #[test]
 fn control_inner_below_prefix_len_is_rejected() {
     // Control prefix 6B: version 1 + kind 1 + control_id 4.
-    let full = encode_control_inner(inner_kind::ACK, 0x1122_3344, &[0x00, 0x00, 0x00]);
+    // [D2 2026-10-08] ~~ACK~~ → RECOVERED (Ack ailesi kodda yok, K3; 0x10 kind kapısında düşer).
+    let full = encode_control_inner(inner_kind::RECOVERED, 0x1122_3344, &[0x00, 0x00, 0x00]);
     for len in 2..CONTROL_INNER_PREFIX_LEN {
         assert_eq!(
             expect_inner_parse(&full[..len], "control kısa"),
@@ -224,7 +237,7 @@ fn control_inner_below_prefix_len_is_rejected() {
         );
     }
     // Sınır: tam 6B (boş body) kabul edilir — body-doğrulama control.rs'in işi, inner'ın değil.
-    let empty_body = encode_control_inner(inner_kind::ACK, 0x1122_3344, &[]);
+    let empty_body = encode_control_inner(inner_kind::RECOVERED, 0x1122_3344, &[]);
     assert_eq!(empty_body.len(), CONTROL_INNER_PREFIX_LEN);
     assert!(matches!(
         parse_inner(&empty_body),
@@ -236,9 +249,9 @@ fn control_inner_below_prefix_len_is_rejected() {
 fn all_control_codepoints_share_the_same_prefix_bound() {
     // Dokuz control türünün hepsi aynı 6B prefix kapısına tabi olmalı; birinin gevşek olması
     // bir DoS/parse-confusion yüzeyi açar.
+    // [D2 2026-10-08] ~~ACK/SACK~~ çıktı (aile kodda yok, K3); CTRL_CS_PROBE/ECHO eklendi →
+    // güncel registry yine dokuz control türü (0x12..0x1A).
     for cp in [
-        inner_kind::ACK,
-        inner_kind::SACK,
         inner_kind::RECOVERED,
         inner_kind::BLOCK_COMPLETE,
         inner_kind::PARAM_SET,
@@ -246,11 +259,23 @@ fn all_control_codepoints_share_the_same_prefix_bound() {
         inner_kind::BLOCK_ABORT,
         inner_kind::SESSION_CLOSE,
         inner_kind::SESSION_RENEW_REQUIRED,
+        inner_kind::CTRL_CS_PROBE,
+        inner_kind::CTRL_CS_ECHO,
     ] {
         let full = encode_control_inner(cp, 1, &[0xAA]);
         assert_eq!(
             expect_inner_parse(&full[..5], "control 5B"),
             "control inner too short",
+            "cp={cp:#04x}"
+        );
+    }
+    // [D2 2026-10-08] RESERVED → reject: 0x10/0x11 prefix kapısına hiç ulaşmaz, kind kapısı önce
+    // düşer (aynı 5B girdide farklı ve daha erken reddetme nedeni).
+    for cp in [inner_kind::RESERVED_ACK, inner_kind::RESERVED_SACK] {
+        let full = encode_control_inner(cp, 1, &[0xAA]);
+        assert_eq!(
+            expect_inner_parse(&full[..5], "reserved 5B"),
+            "unknown inner_kind",
             "cp={cp:#04x}"
         );
     }
@@ -285,15 +310,17 @@ fn accepted_fec_roundtrips_all_header_fields() {
 
 #[test]
 fn accepted_control_roundtrips_id_and_body() {
+    // [D2 2026-10-08] ~~SACK~~ → BLOCK_ABORT (Sack ailesi kodda yok, K3; inner katmanı gövdeyi
+    // yorumlamaz — 5B gövde ayrıca geçerli bir BLOCK_ABORT gövdesidir: block_id 4 + reason 1).
     let body = vec![0x11u8, 0x22, 0x33, 0x44, 0x55];
-    let plain = encode_control_inner(inner_kind::SACK, 0xFFFF_FFFF, &body);
+    let plain = encode_control_inner(inner_kind::BLOCK_ABORT, 0xFFFF_FFFF, &body);
     match parse_inner(&plain).expect("geçerli control-inner") {
         InnerPlain::Control {
             inner_kind: k,
             control_id,
             body: b,
         } => {
-            assert_eq!(k, inner_kind::SACK);
+            assert_eq!(k, inner_kind::BLOCK_ABORT);
             assert_eq!(control_id, 0xFFFF_FFFF);
             assert_eq!(b, body);
         }

@@ -15,6 +15,10 @@
 //! GÜVENLİK İDDİASI YOK: [`IdentitySeam`] kimlik/gizlilik/bütünlük SAĞLAMAZ; yalnız byte-eşdeğer
 //! maliyet modeli taşır. `open` reddi sessiz-düşürmedir (verify-before-admission: doğrulanamayan
 //! datagram transport durumuna DOKUNMADAN çöpe gider — INV-FEC-1'in alıcı yarısıyla aynı kural).
+//!
+//! **PN telde (S4, 2026-10-08):** transport'un ARQ kimliği `meta.full_wire_pn`'dir (BL D1, D1a);
+//! alıcı PN'i `open`'dan alır. Bu yüzden stub da PN'i taşır: Session sahte etiketinin ilk 8 baytı
+//! PN (big-endian), kalan 8 bayt sıfır; HubChannel etiketi tamamen sıfır.
 
 use kama_contracts::handles::SessionHandle;
 use kama_contracts::s3::{
@@ -81,12 +85,13 @@ impl EntropySource for FixedEntropy {
 
 // ── IdentitySeam ─────────────────────────────────────────────────────────────────────────────
 
-/// AEAD-tag SİMÜLASYONU: her datagram'a +16 B sıfır-tag ekler/soyar (byte-eşdeğer maliyet modeli;
+/// AEAD-tag SİMÜLASYONU: her datagram'a +16 B sahte tag ekler/soyar (byte-eşdeğer maliyet modeli;
 /// kampanya TAG_STUB soyu). Güvenlik iddiası olmayan stub.
 ///
 /// Tek örtük oturumu vardır ([`IdentitySeam::SESSION`]); `open` her datagram'ı ona atfeder (peer
-/// ayrımı YOK). PN'i kendisi sayar (K2), bağlam sınıfı başına AYRI sayaçla; sayaç wire'a YAZILMAZ,
-/// dolayısıyla v1'e göre wire byte'ları DEĞİŞMEDİ.
+/// ve bağlam ayrımı YOK — PoC sınırı). PN'i kendisi sayar (K2), bağlam sınıfı başına AYRI sayaçla.
+/// **S4 (2026-10-08):** Session etiketinin ilk 8 baytı PN'dir (BE) ve `open` PN'i oradan okur;
+/// HubChannel etiketi sıfırdır. Boy değişmedi (+16 B); PN 0'da baytlar v1 ile özdeş.
 #[derive(Debug, Default)]
 pub struct IdentitySeam {
     session_pn: u64,
@@ -98,6 +103,9 @@ pub struct IdentitySeam {
 
 /// Sahte tag boyu (ChaCha20-Poly1305 tag'iyle byte-eşdeğer).
 pub const IDENTITY_TAG: usize = 16;
+
+/// Session sahte etiketinde PN'in kapladığı önek (u64 BE; S4).
+const PN_TAG_PREFIX: usize = 8;
 
 /// Bir UDP/IPv4 datagramının taşıyabileceği azami payload (65 535 − 20 IP − 8 UDP).
 const MAX_UDP_PAYLOAD: usize = 65_507;
@@ -153,6 +161,10 @@ impl PacketProtection for IdentitySeam {
         let mut bytes = Vec::with_capacity(frame.len() + IDENTITY_TAG);
         bytes.extend_from_slice(frame);
         bytes.resize(frame.len() + IDENTITY_TAG, 0);
+        // S4: Session etiketi PN'i taşır (alıcının ARQ kimliği, D1a); HubChannel etiketi sıfır.
+        if let ProtectionContext::Session(_) = ctx {
+            bytes[frame.len()..frame.len() + PN_TAG_PREFIX].copy_from_slice(&pn.to_be_bytes());
+        }
         let sealed_len = bytes.len() as u32; // ≤ MAX_UDP_PAYLOAD (check)
         Ok(SealedUnit {
             bytes,
@@ -168,12 +180,16 @@ impl PacketProtection for IdentitySeam {
         if wire.len() <= IDENTITY_TAG || wire.len() > MAX_UDP_PAYLOAD {
             return None;
         }
+        let (frame, tag) = wire.split_at(wire.len() - IDENTITY_TAG);
+        let mut pn = [0u8; PN_TAG_PREFIX];
+        pn.copy_from_slice(&tag[..PN_TAG_PREFIX]);
         Some(Opened {
+            // PoC: her datagram tek örtük oturuma atfedilir (HubChannel etiketi sıfır → PN 0).
             ctx: ProtectionContext::Session(Self::SESSION),
-            frame: wire[..wire.len() - IDENTITY_TAG].to_vec(),
+            frame: frame.to_vec(),
             meta: SealedPacketMeta {
-                // Stub PN'i wire'da taşımaz; alım tarafında bilinemez.
-                full_wire_pn: 0,
+                // S4: PN Session etiketinin ilk 8 baytında (BE).
+                full_wire_pn: u64::from_be_bytes(pn),
                 dh_epoch: 0,
                 sealed_len: wire.len() as u32,
             },
@@ -205,7 +221,7 @@ mod tests {
         let mut seam = IdentitySeam::new();
         let frame = [0xABu8; 37];
         let u = seam.seal(S, &frame).expect("seal");
-        // v1 wire'ı: çerçeve + 16 sıfır bayt. Değişmedi.
+        // v1 wire'ı: çerçeve + 16 sıfır bayt. PN 0'da S4 etiketi de sıfırdır → özdeş.
         assert_eq!(&u.bytes[..37], &frame);
         assert_eq!(&u.bytes[37..], &[0u8; IDENTITY_TAG]);
         assert_eq!(u.bytes.len(), seam.sealed_len(S, frame.len()).expect("len"));
@@ -229,6 +245,36 @@ mod tests {
             .full_wire_pn;
         assert_eq!(hub, 0, "HubChannel AYRI PN uzayı (K1)");
         assert_eq!(seam.seal(S, b"x").expect("seal").meta.full_wire_pn, 3);
+    }
+
+    #[test]
+    fn session_tag_carries_pn_and_open_reads_it() {
+        let mut seam = IdentitySeam::new();
+        for want in 0u64..3 {
+            let u = seam.seal(S, b"abc").expect("seal");
+            assert_eq!(u.meta.full_wire_pn, want);
+            assert_eq!(
+                &u.bytes[3..11],
+                &want.to_be_bytes(),
+                "etiketin ilk 8 B'ı = PN (BE)"
+            );
+            assert_eq!(&u.bytes[11..], &[0u8; 8], "etiketin kalanı sıfır");
+            let o = seam.open(&u.bytes).expect("open");
+            assert_eq!(
+                o.meta.full_wire_pn, want,
+                "alıcı PN'i telden okur (D1a kimliği)"
+            );
+            assert_eq!(o.frame, b"abc");
+        }
+        // HubChannel etiketi sıfır (PN telde değil; PoC open'ı onu PN 0 / Session olarak görür).
+        let _ = seam
+            .seal(ProtectionContext::HubChannel, b"h")
+            .expect("hub seal");
+        let h = seam
+            .seal(ProtectionContext::HubChannel, b"h")
+            .expect("hub seal");
+        assert_eq!(h.meta.full_wire_pn, 1);
+        assert_eq!(&h.bytes[1..], &[0u8; IDENTITY_TAG]);
     }
 
     #[test]

@@ -1157,3 +1157,159 @@ async fn partial_block_below_k_is_coded_and_recovers_model_a() {
         assert!(got.contains(m), "byte-eş teslim: {ss:?}");
     }
 }
+
+// ── [D1a] ARQ kimliği = `meta.full_wire_pn` (BL D1) ──────────────────────────────────────────
+//
+// Ara çerçevedeki u16 `seq` alanı yerinde kalır (S3: ara çerçeve bu sprint beyanlı KARŞILANMAZ)
+// ama artık kimlik DEĞİLDİR. Ayırt edici kurulum, iki yarı:
+// * Alıcı yarısı — alıcı seam'i her DATA çerçevesinin `seq` alanını açılışta SIFIRLAR. Kimlik hâlâ
+//   o alan olsaydı ikinci birimden itibaren her datagram "duplicate" sayılır, teslim 1'de kalırdı.
+// * Gönderen yarısı — gönderen seam'i ilk mühürden önce `BURN` PN'i tele hiç çıkmayan çerçevelerle
+//   yakar (PARAM / CS-probe gibi: PN tüketir, motor seq'i tüketmez) → PN ≠ motor seq, BELİRLENİMLİ
+//   (PARAM'ın veriden önce mühürlenmesi zamanlamaya bağlı; o kurulum mutasyonu her koşuda
+//   yakalamadı). Birim 2'nin DATA'sı kalıcı düşer (FEC kapalı, kurtarma yok). Çeviri PN'i motor
+//   seq'i gibi kullansaydı teyitler kayardı: yanlış birimler teyit edilir, doğrular edilmez.
+mod pn_identity {
+    use client_core::seam::IdentitySeam;
+    use client_core::wire::{decode_data, FRAME_DATA};
+    use kama_contracts::s3::{
+        Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits, SealError,
+        SealedUnit,
+    };
+
+    /// IdentitySeam + alıcıda: DATA `seq` alanı sıfırlanır; `drop`taki birimlerin DATA'sı
+    /// (retransmit dahil) kalıcı düşer.
+    pub struct ZeroSeqSeam {
+        drop: &'static [u64],
+        inner: IdentitySeam,
+    }
+
+    impl ZeroSeqSeam {
+        pub fn new(drop: &'static [u64]) -> Self {
+            Self {
+                drop,
+                inner: IdentitySeam::new(),
+            }
+        }
+    }
+
+    /// IdentitySeam + gönderende: ilk mühürden önce `burn` PN tele çıkmayan çerçevelerle tüketilir.
+    pub struct BurnPnSeam {
+        burn: u32,
+        inner: IdentitySeam,
+    }
+
+    impl BurnPnSeam {
+        pub fn new(burn: u32) -> Self {
+            Self {
+                burn,
+                inner: IdentitySeam::new(),
+            }
+        }
+    }
+
+    impl PacketProtection for BurnPnSeam {
+        fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
+            while self.burn > 0 {
+                self.burn -= 1;
+                let _ = self.inner.seal(ctx, b"yakilan PN")?;
+            }
+            self.inner.seal(ctx, frame)
+        }
+        fn open(&mut self, wire: &[u8]) -> Option<Opened> {
+            self.inner.open(wire)
+        }
+        fn sealed_len(&self, ctx: ProtectionContext, n: usize) -> Result<usize, SealError> {
+            self.inner.sealed_len(ctx, n)
+        }
+        fn conservative_limits(&self, class: ProtectionClass) -> ProtectionLimits {
+            self.inner.conservative_limits(class)
+        }
+        fn limits(&self, ctx: ProtectionContext) -> ProtectionLimits {
+            self.inner.limits(ctx)
+        }
+    }
+
+    impl PacketProtection for ZeroSeqSeam {
+        fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
+            self.inner.seal(ctx, frame)
+        }
+        fn open(&mut self, wire: &[u8]) -> Option<Opened> {
+            let mut od = self.inner.open(wire)?;
+            if let Some((_, unit, _)) = decode_data(&od.frame) {
+                if self.drop.contains(&unit) {
+                    return None;
+                }
+                debug_assert_eq!(od.frame[0], FRAME_DATA);
+                od.frame[1] = 0;
+                od.frame[2] = 0;
+            }
+            Some(od)
+        }
+        fn sealed_len(&self, ctx: ProtectionContext, n: usize) -> Result<usize, SealError> {
+            self.inner.sealed_len(ctx, n)
+        }
+        fn conservative_limits(&self, class: ProtectionClass) -> ProtectionLimits {
+            self.inner.conservative_limits(class)
+        }
+        fn limits(&self, ctx: ProtectionContext) -> ProtectionLimits {
+            self.inner.limits(ctx)
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn arq_identity_is_the_pn_not_the_interim_seq_field() {
+    const N: u64 = 12;
+    const ERASED: u64 = 2;
+    const BURN: u32 = 5;
+    let cfg = || RuntimeConfig {
+        drain_cap: Duration::from_millis(300),
+        ..RuntimeConfig::default()
+    };
+    let mut server = ServerEndpoint::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cfg(),
+        Box::new(pn_identity::ZeroSeqSeam::new(&[ERASED])),
+    )
+    .await
+    .expect("server bind");
+    let mut client = ClientEndpoint::connect(
+        server.local_addr(),
+        cfg(),
+        Box::new(pn_identity::BurnPnSeam::new(BURN)),
+    )
+    .await
+    .expect("client connect");
+    for i in 0..N {
+        client.send(format!("pn-{i}").into_bytes()).expect("offer");
+    }
+
+    let (delivered, acked_units) = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut delivered = Vec::new();
+        let mut acked_units = Vec::new();
+        while delivered.len() < (N - 1) as usize || acked_units.len() < (N - 1) as usize {
+            tokio::select! {
+                Some(d) = server.next_delivery() => delivered.push(d.unit_id),
+                Some(u) = client.acked() => acked_units.push(u),
+            }
+        }
+        (delivered, acked_units)
+    })
+    .await
+    .expect("silinen birim dışındakiler 20 s içinde teslim + teyit edilmeli");
+    assert!(
+        !delivered.contains(&ERASED),
+        "kalıcı silinen birim teslim edilemez"
+    );
+    assert!(
+        !acked_units.contains(&ERASED),
+        "silinen birim SAHTE teyit edildi: PN → motor seq çevirisi kaymış"
+    );
+
+    let cs = client.shutdown().await;
+    let ss = server.shutdown().await;
+    assert_eq!(cs.acked, N - 1, "{cs:?}");
+    assert_eq!(cs.undelivered, 1, "{cs:?}");
+    assert_eq!(ss.delivered, N - 1, "{ss:?}");
+}

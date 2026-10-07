@@ -450,6 +450,7 @@ Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıf
 **KARAR (2026-10-06, Abkarada — `dh_epoch` alt-sorusu KAPANDI):** ACK_FRAME_V2 kimliği = `full_wire_pn`; `dh_epoch` kimliğe girmez; dayanak: sayaç epoch'lar boyunca sürekli (noise-wire §2.5, §4 EPOCH-PN-INIT, 2026-10-06).
 **NOT (2026-10-05, Abkarada):** engine ACK çerçevesindeki `ack_epoch` transport'un kendi alanıdır, `dh_epoch` ile ilişkisi yoktur; D1'de dokunulmaz ve ACK kimliğiyle karıştırılmaz.
 **Done:** mevcut kayıp/kurtarma davranış testleri yeni kimlikle yeşil; interim çerçeve kodda yok.
+**DURUM (2026-10-08): KİMLİK KAPANDI (L-D, D1a); "interim çerçeve kodda yok" beyanlı KARŞILANMADI (S3).** ARQ/ACK kimliği = `meta.full_wire_pn`: gönderende PN → motor seq → birim çeviri tablosu (`PN_SEQ_WINDOW = 2^16`), alıcıda `RxDatagram.seq = Opened.meta.full_wire_pn`; `adaptive-transport` motoru, ACK_FRAME_V2 formatı ve `ack_epoch` DEĞİŞMEDİ. `IdentitySeam` S4: Session etiketinin ilk 8 baytı PN (BE). Kayıp/kurtarma testleri yeni kimlikle yeşil (client-core runtime_e2e 20/20 — ayırt edici yeni test `arq_identity_is_the_pn_not_the_interim_seq_field`, iki mutasyon 3/3 kırmızı). Ara 11 B çerçeve veri yolunda kalır — `BatchPayload` codec'i var (PR #99), geçiş sonraki sprint. Amendment: `transport-layer-tdd.md` §12 [AMENDMENT-11].
 
 ### D2 — İki ACK ailesinden hangisi ürün ACK'i? (Tema E)
 **Neden:** Bugün ürün ACK yolu engine `ACK_V2` (`adaptive-transport/src/ack.rs`); noise-wire'da ayrıca full-wire-PN aralıkları taşıyan `Control::Ack/Sack` ailesi kodlanmış ama tüketicisi yok. D1'den sonra ACK'in taşıdığı kimlik kripto sayacı olmak zorunda; iki ailenin birlikte kalması iki doğruluk kaynağı demek.
@@ -457,6 +458,7 @@ Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıf
 **Nereye:** karar → `kama-noise-wire-tdd-v2.0.md` §2.57 + `adaptive-transport-engine-spec.md` ACK bölümü; kod → `adaptive-transport/src/ack.rs` veya `kama-noise-wire/src/control.rs`.
 **Neye bağlı:** —
 **Done:** tek ACK ailesi; spec'te amendment kaydı.
+**DURUM (2026-10-08): KOD KAPANDI (L-D).** `Control::Ack/Sack` (0x10/0x11) kodda yok — `kama-transport-schema` (varyantlar, `inner_kind`), `kama-noise-wire` (codec, tavanlar, retry sınıfı), `kama-engine` (`recovered_map` testi), fuzz hedefleri; codepoint'ler RESERVED → reject (şema `UnknownInnerKind`, noise-wire `ControlDecode`). Amendment: `transport-layer-tdd.md` §12 [AMENDMENT-11] D2.
 **DURUM (2026-10-04): KARAR KAPANDI (K3), KOD AÇIK.** Ürün ACK'i = engine `ACK_V2`; noise-wire `Control::Ack/Sack` (0x10/0x11) spec'te silindi; onay/keepalive taşıyıcısı = boş batch (OQ-14 kapandı). Kalan kod işi: `kama-noise-wire/src/control.rs` + `kama-transport-schema` + `kama-engine/src/recovered_map.rs`'ten Ack/Sack'in sökülmesi ve D1'de ACK_V2'nin `full_wire_pn`'e anahtarlanması (~~açık alt-soru: `dh_epoch` belirsizliği~~ **KAPANDI 2026-10-06: PN sayacı epoch'lar boyunca sürekli; kimlik = `full_wire_pn`**).
 
 ### D3 — Donmuş transport golden'larının güncellenmesi
@@ -465,6 +467,7 @@ Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıf
 **Nereye:** ilgili test dosyaları + `transport-layer-tdd.md` amendment kaydı.
 **Neye bağlı:** D1.
 **Done:** golden farkları amendment'ta listeli; CI yeşil.
+**DURUM (2026-10-08): KAPANDI (L-D).** Engine `tv_*` golden'ları DEĞİŞMEDİ (ACK_V2 ve ara çerçeve baytları aynı); `golden_v0::inner_kind_registry` DEĞİŞTİ (0x10/0x11 RESERVED → reject, kontrol alt ucu 0x12); noise-wire Ack/Sack golden'larının akıbeti ve `IdentitySeam` bayt farkı `transport-layer-tdd.md` §12 [AMENDMENT-11] D3'te listeli. NON-GATING KVT tek netem profili KOŞULMADI (`sch_netem` yüklü değil; T5 sahibin).
 
 ### 🚪 G-D — Transport geçişi tamam
 D1 + D2 + D3. INT-02'nin ön koşulu; kripto ve application kapılarından bağımsız.

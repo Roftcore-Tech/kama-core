@@ -69,7 +69,8 @@ pub enum UnsealedTransportPacket {
         header: LogicalShardHeader,
         symbol: Vec<u8>,
     },
-    /// Secure-control frame (§2.56 inner_kind 0x10..0x18 + §2.57 body). Body logical-formda.
+    /// Secure-control frame (§2.56 inner_kind 0x12..=0x1A — 0x10/0x11 RESERVED → reject, D2
+    /// 2026-10-08 — + §2.57 body). Body logical-formda.
     Control(control::Control),
 }
 

@@ -5,7 +5,7 @@
 //! GÖNDERME-tarafı: `RetryClass` — hangi control retry-edilir, hangi-koşulda-durur (§2.57):
 //!   PARAM_SET → PARAM_ACK-hash-echo'ya-kadar (deadline→durur, emission-SÜRER B2)
 //!   ABORT/COMPLETE/CLOSE/RENEW → kendi-wire-PN network-ACK'ine-kadar (deadline-bounded)
-//!   ACK/SACK/RECOVERED → RETRY-YOK (pure-feedback, en-güncel-durum)
+//!   ~~ACK/SACK~~ [D2 kaldırıldı] RECOVERED → RETRY-YOK (pure-feedback, en-güncel-durum)
 
 use kama_transport_schema::control::{Control, ControlId};
 use kama_transport_schema::inner_kind;
@@ -18,7 +18,7 @@ pub enum RetryClass {
     UntilParamAck,
     /// ABORT/COMPLETE/CLOSE/RENEW: kendi-wire-PN network-ACK'ine-kadar (deadline-bounded).
     UntilNetworkAck,
-    /// ACK/SACK/RECOVERED: retry-EDİLMEZ (pure-feedback).
+    /// RECOVERED (~~ACK/SACK~~ D2'de kaldırıldı): retry-EDİLMEZ (pure-feedback).
     NoRetry,
 }
 
@@ -32,7 +32,7 @@ impl RetryClass {
             BLOCK_ABORT | BLOCK_COMPLETE | SESSION_CLOSE | SESSION_RENEW_REQUIRED => {
                 RetryClass::UntilNetworkAck
             }
-            ACK | SACK | RECOVERED | PARAM_ACK => RetryClass::NoRetry,
+            RECOVERED | PARAM_ACK => RetryClass::NoRetry,
             // DR-CS-1 (§2.57-amendman): probe-retry = merdivenin-kendisi; echo idempotent-stateless.
             CTRL_CS_PROBE | CTRL_CS_ECHO => RetryClass::NoRetry,
             _ => RetryClass::NoRetry,

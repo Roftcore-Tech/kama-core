@@ -87,9 +87,8 @@ fn classify_routes_fec_and_control_to_the_right_branch() {
         classify(inner_kind::FEC_REPAIR),
         Ok(InnerKind::Fec(ShardKind::Repair))
     );
+    // [D2 2026-10-08] ~~ACK/SACK~~ listeden çıktı — Ack/Sack ailesi kodda yok (K3).
     for cp in [
-        inner_kind::ACK,
-        inner_kind::SACK,
         inner_kind::RECOVERED,
         inner_kind::BLOCK_COMPLETE,
         inner_kind::PARAM_SET,
@@ -104,6 +103,17 @@ fn classify_routes_fec_and_control_to_the_right_branch() {
             "control codepoint {cp:#04x} yanlış dala gitti"
         );
     }
+    // [D2 2026-10-08] RESERVED → reject: eski ACK/SACK codepoint'leri (0x10/0x11) hiçbir dala
+    // gitmez — tipli `UnknownInnerKind` (fail-closed).
+    assert_eq!(inner_kind::RESERVED_ACK, 0x10);
+    assert_eq!(inner_kind::RESERVED_SACK, 0x11);
+    for cp in [inner_kind::RESERVED_ACK, inner_kind::RESERVED_SACK] {
+        assert_eq!(
+            classify(cp),
+            Err(SchemaError::UnknownInnerKind(cp)),
+            "reserved {cp:#04x} reddedilmedi"
+        );
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -114,27 +124,9 @@ fn classify_routes_fec_and_control_to_the_right_branch() {
 fn control_codepoints_are_pinned_and_pairwise_distinct() {
     // §2.57: her control türü kendi codepoint'ini taşır. Sabit döndüren mutant, dokuz
     // türün AYRI AYRI pinlenmesiyle ve hepsinin FARKLI olmasıyla iki kez yakalanır.
+    // [D2 2026-10-08] ~~Ack/Sack~~ çıktı (aile kodda yok, K3); CsProbe/CsEcho (DR-CS-1) eklendi →
+    // `Control::codepoint`'in güncel dokuz kolunun hepsi pinli.
     let cases: [(Control, u8); 9] = [
-        (
-            Control::Ack {
-                id: 1,
-                acked_dh_epoch: 0,
-                ack_delay_256us: 0,
-                seen_count: 0,
-                arrival_rate: 0xFFFF,
-                ranges: vec![],
-            },
-            inner_kind::ACK,
-        ),
-        (
-            Control::Sack {
-                id: 1,
-                acked_dh_epoch: 0,
-                base_pn: 0,
-                blocks: vec![],
-            },
-            inner_kind::SACK,
-        ),
         (
             Control::Recovered {
                 id: 1,
@@ -190,6 +182,24 @@ fn control_codepoints_are_pinned_and_pairwise_distinct() {
             },
             inner_kind::SESSION_RENEW_REQUIRED,
         ),
+        (
+            Control::CsProbe {
+                id: 1,
+                subtype: 1,
+                probe_seq: 0,
+            },
+            inner_kind::CTRL_CS_PROBE,
+        ),
+        (
+            Control::CsEcho {
+                id: 1,
+                subtype: 1,
+                probe_seq: 0,
+                seen_count: 0,
+                arrival_gap: 0,
+            },
+            inner_kind::CTRL_CS_ECHO,
+        ),
     ];
 
     let mut seen: Vec<u8> = Vec::new();
@@ -203,11 +213,19 @@ fn control_codepoints_are_pinned_and_pairwise_distinct() {
         seen.push(c.codepoint());
     }
     assert_eq!(seen.len(), 9);
-    // Registry aralığı §2.57: 0x10..=0x18.
+    // Registry aralığı §2.57: ~~0x10..=0x18~~ 0x12..=0x1A ([D2 2026-10-08] 0x10/0x11 RESERVED;
+    // DR-CS-1 0x19/0x1A).
     assert!(
-        seen.iter().all(|&cp| (0x10..=0x18).contains(&cp)),
+        seen.iter().all(|&cp| (0x12..=0x1A).contains(&cp)),
         "control codepoint'i registry aralığı dışında: {seen:?}"
     );
+    // [D2 2026-10-08] RESERVED → reject: hiçbir canlı varyant 0x10/0x11 taşımaz.
+    for cp in [inner_kind::RESERVED_ACK, inner_kind::RESERVED_SACK] {
+        assert!(
+            !seen.contains(&cp),
+            "reserved {cp:#04x} bir varyanta atanmış"
+        );
+    }
 }
 
 #[test]
