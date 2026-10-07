@@ -750,6 +750,7 @@ dependencies = [
  "kama-vectors",
  "proptest",
  "rand_core 0.6.4",
+ "sha2",
  "sodiumoxide",
  "thiserror",
  "trybuild",

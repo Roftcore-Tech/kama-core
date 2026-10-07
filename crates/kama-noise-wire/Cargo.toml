@@ -40,6 +40,10 @@ hmac = "0.12"
 x25519-dalek = { version = "2", default-features = false, features = ["reusable_secrets", "static_secrets", "zeroize"] }
 # İmza doğrulama: Ed25519 (RFC 8032; ccr §5.2 katı kip). `zeroize`: imza anahtarı Drop'ta silinir.
 ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
+# SHA-256 (pki §13): `sender_cert_ref`, `session_context_v1` içindeki SHA-256(recipient_static_pub),
+# DeviceCertBundle `device_cert_hash` (ccr §35.2 / §20). [B1 — Abkarada onayı 2026-10-08: YALNIZ
+# sha2 → kama-noise-wire.] Kilit dosyasında ed25519-dalek üzerinden zaten vardı (aynı sürüm).
+sha2 = { version = "0.10", default-features = false }
 # Entropi: OS kaynağı (`OsRng`); testlerde enjekte edilebilir kaynak A4.1'de (exact vektörler için şart).
 rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
 # libsodium IETF-ChaCha20-Poly1305 independent-oracle — YALNIZ `libsodium-oracle` feature'ıyla (test-only).
