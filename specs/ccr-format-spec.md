@@ -1,5 +1,7 @@
 # CCR Format Specification
 
+> **YAMA KAYDI — 2026-10-08 [G1 kapalı-sistem kipi — Abkarada kararı]:** §35.4'e "KAPALI-SİSTEM KİPİ" notu eklendi: bu sprintte uç, ÖNCEDEN doğrulanmış bir eş dizini (eş başına statik X25519 + `cert_ref`) ile kurulur ve Crypto'ya enjekte edilir; dizinde olmayan göndericinin SESSION_INIT'i opak `Failed`. Zincir (`verify_chain_to_root`) ve iptal doğrulaması çalışma zamanında yapılmaz — tipli sınır olarak KAPSAM DIŞI kaydedildi (BL KATMAN 6, sonraki sprint). §35.4'ün 1–6. adımları ve SALDIRI ANALİZİ değişmedi; not, bu kipte 1–4. adımların NEREDE (dizin kurulurken, bant dışı) karşılandığını söyler.
+
 > **YAMA KAYDI — 2026-10-06 [PN SÜREKLİ artıkları (Appendix D2) — Abkarada kararı]:** Appendix D2.13 ASYNC-REJECT-5 (tarihsel satır): "per epoch+dir" → "per dir — tek pencere". Appendix tarihseldir, aktif parser bu formları REJECT eder (D2 başlık notu); yalnız kalıntı ifade hizalandı. Dayanak: #85 (noise-wire §2.5 + §4 EPOCH-PN-INIT, 2026-10-06) ve #91 (§35.8 replay identity, 2026-10-05). Tel formatı DEĞİŞMEDİ. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-05 [PN SÜREKLİ artıkları — Abkarada kararı]:** §35.8 INVARIANTS: `replay identity`'den `epoch` ÇIKTI → `(session_id_internal, direction, full_counter)`. Dayanak: PN sayacı epoch'lar boyunca sürekli ve replay penceresi yön başına tektir (identity §15.5, 2026-10-06; noise-wire §2.5 + §4 EPOCH-PN-INIT). `epoch` anahtar ve AAD seçiminde aynen kalır (§35.9) — bağlama (INV-BIND-1) dokunulmadı. Tel formatı DEĞİŞMEDİ. Üstü çizili metin silinmedi.
@@ -2573,6 +2575,8 @@ V-SSI-5 : NEGATİF — cert_mode ile uzunluk uyumsuzluğu → parser reject (AEA
 ### 35.4 SESSION_INIT Uç Doğrulama (ZORUNLU — NORMATİF, hub-untrusted)
 
 > Bu bölüm E2E güvenliğin can damarıdır. Hub GÜVENİLMEZDİR; hub'ın admission kontrolü (Root CA join gate) E2E authentication YERİNE GEÇMEZ.
+
+> **KAPALI-SİSTEM KİPİ [YAMA 2026-10-08 — G1, Abkarada kararı; bu sprint]:** Crypto'ya ÖNCEDEN doğrulanmış bir eş dizini enjekte edilir — eş başına statik X25519 (`device_x25519_pub`) + `cert_ref` (`sender_cert_ref`). Dizine giren her kayıt aşağıdaki 1–4. adımları dizin kurulurken (bant dışı) geçmiştir; çalışma zamanında SESSION_INIT'in statik anahtarı ve `sender_cert_ref`'i dizindeki kayıtla eşleşmeli, eşleşmeyen (dizinde olmayan) göndericinin INIT'i opak `Failed`'dır (ayırt edici hata yok, state değişmez). Bu kipte zincir (`verify_chain_to_root`, adım 1) ve iptal (revocation-model) doğrulaması çalışma zamanında YAPILMAZ: tipli sınır olarak KAPSAM DIŞI kaydedilmiştir (BL KATMAN 6, sonraki sprint). Adım 5 (static-DH possession, `ss_s`) ve adım 6 aynen geçerlidir; hub-untrusted iddiası dizinin bütünlüğüne dayanır.
 
 > **İMZA ZİNCİRİ (Section 13 ile birebir — KRİTİK):** CompactDeviceCertV1 `issuer_signature = Ed25519_Sign(sk_user_identity, compact_device_cert_tbs)` — yani **Identity/User Cert** imzalar, **Intermediate DEĞİL**. Trust path: `CompactDeviceCert → Identity/User Cert → Intermediate → pinned Root`. `intermediate_sig` terimi CompactDeviceCert bağlamında KULLANILMAZ. Device cert doğrulama public key'i = `identity_cert.user_identity_ed25519_pub`.
 >
