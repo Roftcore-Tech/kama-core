@@ -24,6 +24,7 @@ use kama_contracts::s3::{
     HubHandle, PacketProtection, ProtectionContext, SessionControl, SessionEvent,
 };
 use kama_noise_wire::envelope::EnvelopeProfile;
+use kama_noise_wire::kdf::SESSION_ID_INTERNAL_LEN;
 use kama_noise_wire::protector::{NoiseWireProtection, SessionKeyMaterial};
 use kama_noise_wire::seam_mock::{self, MockCrypto};
 use kama_noise_wire::{LegacyDirection, KEY_LEN};
@@ -220,7 +221,7 @@ impl S3Target for MockTarget {
 const REAL_HUB_HANDLE: u32 = 0x0000_5A5A;
 const REAL_PROTOCOL_VERSION: u8 = 1;
 const REAL_CIPHER_SUITE_ID: u16 = 1;
-const REAL_SESSION_ID_INTERNAL: [u8; 16] = [0x51; 16];
+const REAL_SESSION_ID_INTERNAL: [u8; SESSION_ID_INTERNAL_LEN] = [0x51; SESSION_ID_INTERNAL_LEN];
 /// Fikstür trafik anahtarları (ccr §35.2.1 rol eşlemesi: `a` = initiator).
 const KEY_A2B_E0: [u8; KEY_LEN] = [0xA0; KEY_LEN];
 const KEY_B2A_E0: [u8; KEY_LEN] = [0xB0; KEY_LEN];

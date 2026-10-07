@@ -21,6 +21,7 @@ use kama_contracts::s3::{
 };
 use kama_noise_wire::aad::build_aad;
 use kama_noise_wire::envelope::EnvelopeProfile;
+use kama_noise_wire::kdf::SESSION_ID_INTERNAL_LEN;
 use kama_noise_wire::outer::OUTER_HDR_LEN;
 use kama_noise_wire::protector::{NoiseWireProtection, SessionKeyMaterial};
 use kama_noise_wire::replay::DirectionalReplay;
@@ -53,7 +54,7 @@ fn legacy(send_direction: LegacyDirection) -> EnvelopeProfile {
         hub_handle: HubHandle::from_raw(H_EXT),
         protocol_version: 1,
         cipher_suite_id: 1,
-        session_id_internal: [0x51; 16],
+        session_id_internal: [0x51; SESSION_ID_INTERNAL_LEN],
         send_direction,
     }
 }
