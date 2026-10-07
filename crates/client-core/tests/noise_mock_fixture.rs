@@ -13,7 +13,7 @@ use std::time::Duration;
 use client_core::runtime::{ClientEndpoint, RuntimeConfig, ServerEndpoint};
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s3::{
-    PacketProtection, ProtectionClass, ProtectionContext, SealError, SessionCommand,
+    HubHandle, PacketProtection, ProtectionClass, ProtectionContext, SealError, SessionCommand,
     SessionControl, SessionEvent, SessionResult,
 };
 use kama_noise_wire::seam_mock::{
@@ -33,10 +33,15 @@ fn peer(n: u64) -> PeerRef {
     PeerRef::from_dest_hash(dest_hash)
 }
 
-/// İki uç: A `Initiate` ile INIT zarfını üretir, B aynı tutamacı o zarftan `AcceptInit` ile öğrenir.
+/// Başlatan ucun kimliği (`dest_hash` öneki; hiçbir test oturumuyla çakışmaz).
+const ALICE: u64 = 0x00A1_1CE0;
+
+/// İki uç: A `Initiate` ile bekleyen oturumun tutamacını ve INIT zarfını alır, B aynı tutamacı ve
+/// A'nın kimliğini o zarftan `AcceptInit` ile öğrenir (s3 v1.1).
 fn pair(session: u64) -> (MockCrypto, MockCrypto) {
-    let (mut a, mut b) = (MockCrypto::new(), MockCrypto::new());
-    let SessionResult::OutboundEnvelope {
+    let (mut a, mut b) = (MockCrypto::with_identity(peer(ALICE)), MockCrypto::new());
+    let SessionResult::Initiated {
+        session: pending,
         envelope_type,
         bytes,
     } = a.command(SessionCommand::Initiate {
@@ -44,14 +49,19 @@ fn pair(session: u64) -> (MockCrypto, MockCrypto) {
         early_unit: None,
     })
     else {
-        panic!("Initiate bir INIT zarfı üretmeli");
+        panic!("Initiate bekleyen oturum + INIT zarfı üretmeli");
     };
+    assert_eq!(pending, SessionHandle::from_raw(session));
     assert_eq!(envelope_type, ENVELOPE_INIT);
-    assert_eq!(bytes, MockCrypto::init_envelope(session, 0));
+    assert_eq!(bytes, MockCrypto::init_envelope(session, 0, peer(ALICE)));
     assert!(matches!(
         b.command(SessionCommand::AcceptInit { wire: bytes }),
-        SessionResult::EstablishedAndReply { session: h, envelope_type: ENVELOPE_INIT_RESPONSE, .. }
-            if h == SessionHandle::from_raw(session)
+        SessionResult::EstablishedAndReply {
+            session: h,
+            peer: p,
+            envelope_type: ENVELOPE_INIT_RESPONSE,
+            ..
+        } if h == SessionHandle::from_raw(session) && p == peer(ALICE)
     ));
     (a, b)
 }
@@ -246,14 +256,14 @@ fn f8_events_and_bounded_tables() {
     for i in 0..MOCK_MAX_SESSIONS as u64 {
         assert!(matches!(
             m.command(SessionCommand::AcceptInit {
-                wire: MockCrypto::init_envelope(i, 0)
+                wire: MockCrypto::init_envelope(i, 0, peer(ALICE))
             }),
             SessionResult::EstablishedAndReply { .. }
         ));
     }
     assert_eq!(
         m.command(SessionCommand::AcceptInit {
-            wire: MockCrypto::init_envelope(9_999, 0)
+            wire: MockCrypto::init_envelope(9_999, 0, peer(ALICE))
         }),
         SessionResult::Failed,
         "oturum tablosu dolu → yeni oturum reddedilir (sınırsız büyüme yok)"
@@ -269,11 +279,11 @@ fn f10_init_envelope_response_cache_and_hooks() {
         peer: peer(7),
         early_unit: Some(vec![0xEE]),
     }) {
-        SessionResult::OutboundEnvelope { bytes, .. } => bytes,
+        SessionResult::Initiated { bytes, .. } => bytes,
         other => panic!("INIT zarfı bekleniyordu: {other:?}"),
     };
     let (i0, i1) = (init(&mut a), init(&mut a));
-    let mut want = MockCrypto::init_envelope(7, 0);
+    let mut want = MockCrypto::init_envelope(7, 0, a.identity());
     want.push(0xEE);
     assert_eq!(
         i0, want,
@@ -303,6 +313,79 @@ fn f10_init_envelope_response_cache_and_hooks() {
     let u1 = a.seal(s(7), b"x").unwrap();
     assert_eq!((u0.meta.dh_epoch, u1.meta.dh_epoch), (0, 1));
     assert_eq!(u1.meta.full_wire_pn, u0.meta.full_wire_pn + 1);
+}
+
+/// s3 v1.1 (K1, 2026-10-08): `AssignHandle` bağı (idempotent tekrar; çakışma, yeniden bağlama ve
+/// bilinmeyen oturum `Failed` ve state değişmez) ve `Close`'un bekleyen oturumu kapatması (bekleyen
+/// INIT ve bağ silinir, tam bir `Closed`, geç RESPONSE `Failed`; bilinmeyen tutamaçta olay yok).
+#[test]
+fn f11_s3_v1_1_assign_handle_and_close_pending() {
+    let mut a = MockCrypto::with_identity(peer(ALICE));
+    let mut b = MockCrypto::new();
+    let SessionResult::Initiated { session: h5, bytes, .. } = a.command(SessionCommand::Initiate {
+        peer: peer(5),
+        early_unit: None,
+    }) else {
+        panic!("Initiate bekleyen oturum üretmeli");
+    };
+    let SessionResult::Initiated { session: h6, .. } = a.command(SessionCommand::Initiate {
+        peer: peer(6),
+        early_unit: None,
+    }) else {
+        panic!("Initiate bekleyen oturum üretmeli");
+    };
+    while a.poll_event().is_some() {}
+
+    let assign = |a: &mut MockCrypto, session, raw| {
+        a.command(SessionCommand::AssignHandle {
+            session,
+            hub_handle: HubHandle::from_raw(raw),
+        })
+    };
+    assert_eq!(assign(&mut a, h5, 0x77), SessionResult::NoOutput);
+    assert_eq!(assign(&mut a, h5, 0x77), SessionResult::NoOutput, "tekrar idempotent");
+    assert_eq!(a.hub_handle_of(h5), Some(HubHandle::from_raw(0x77)));
+    let fp = a.state_fingerprint();
+    for (session, raw, what) in [
+        (h5, 0x78, "yeniden bağlama"),
+        (h6, 0x77, "başka oturumun tutamacı"),
+        (SessionHandle::from_raw(0x0BAD), 0x79, "bilinmeyen oturum"),
+    ] {
+        assert_eq!(assign(&mut a, session, raw), SessionResult::Failed, "{what}");
+        assert_eq!(a.state_fingerprint(), fp, "{what}: state değişti");
+    }
+    assert_eq!(a.poll_event(), None, "başarısız bağ olay üretmez");
+
+    // B yanıtlar; A RESPONSE'u görmeden bekleyen oturumu kapatır.
+    let SessionResult::EstablishedAndReply { bytes: resp, .. } =
+        b.command(SessionCommand::AcceptInit { wire: bytes })
+    else {
+        panic!("AcceptInit RESPONSE üretmeli");
+    };
+    assert_eq!(a.pending_len(), 2);
+    assert_eq!(a.command(SessionCommand::Close { session: h5 }), SessionResult::NoOutput);
+    assert_eq!(
+        a.poll_event(),
+        Some(SessionEvent::Closed(h5, CloseReason::UserClosed))
+    );
+    assert_eq!(a.poll_event(), None, "tam bir Closed");
+    assert_eq!(a.pending_len(), 1, "bekleyen INIT silindi");
+    assert_eq!(a.hub_handle_of(h5), None, "bağ silindi");
+    assert_eq!(
+        a.command(SessionCommand::AcceptResponse { wire: resp }),
+        SessionResult::Failed,
+        "kapatılmış bekleyen oturumun geç RESPONSE'u"
+    );
+
+    let fp = a.state_fingerprint();
+    assert_eq!(
+        a.command(SessionCommand::Close {
+            session: SessionHandle::from_raw(0x0BAD)
+        }),
+        SessionResult::NoOutput
+    );
+    assert_eq!(a.poll_event(), None, "bilinmeyen tutamaçta olay yok");
+    assert_eq!(a.state_fingerprint(), fp);
 }
 
 /// Asıl kanıt: gerçek Transport runtime'ı (UDP, ARQ, ACK) sahte Crypto ile uçtan uca çalışır.

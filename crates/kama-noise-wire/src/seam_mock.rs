@@ -27,6 +27,12 @@
 //!   her çağrıda artar → ikinci `Initiate` FARKLI byte); `AcceptInit` `init_counter`'a göre sahte
 //!   SSR1 üretir ve ÖNBELLEKLER: aynı `(oturum, init_counter)` ile tekrar gelen INIT → byte-özdeş
 //!   aynı SSR1, yeni oturum YOK, yeni olay YOK.
+//! * **s3 v1.1 (2026-10-08)** — `Initiate` → `Initiated{session, …}` (bekleyen oturumun
+//!   tutamacı); sahte INIT başlatanın kimliğini ([`MockCrypto::with_identity`]) taşır ve
+//!   `AcceptInit` onu `EstablishedAndReply.peer` olarak verir; `AssignHandle` oturum ↔ hub
+//!   tutamacı bağını tutar (tekrar idempotent; çakışma / yeniden bağlama / bilinmeyen oturum
+//!   `Failed`, state değişmez); `Close` bekleyen INIT'leri ve bağı da siler, bilinen tutamaçta tam
+//!   bir `Closed(_, UserClosed)` yayınlar.
 //! * **K1 kayıt kancası** — `seal()`'e verilen bağlam kaydedilir ([`MockCrypto::last_seal_ctx`]).
 //! * **PN sürekliliği** — [`MockCrypto::mock_set_epoch`] yalnız `meta.dh_epoch`'u değiştirir;
 //!   sayaç SIFIRLANMAZ (noise-wire §4 EPOCH-PN-INIT, 2026-10-06).
@@ -34,16 +40,19 @@
 //! # Sahtenin MODELLEMEDİĞİ (bunlar gerçek implementasyonun işi)
 //!
 //! Anahtar türetme · grace penceresi ve epoch-0 discard · provisional supersession / `Confirmed` ·
-//! glare tie-break · sertifika doğrulaması · tel formatı (sahtenin zarfları ccr §35.3/§35.5/§35.6
-//! DEĞİLDİR). Kurulum komutları tablo dolmadıkça başarılıdır: `Initiate` → `OutboundEnvelope`,
-//! `AcceptInit` → `EstablishedAndReply`, `AcceptResponse` → `Established` (cap'li aday denemesi).
+//! glare tie-break · sertifika doğrulaması (`peer` doğrulanmaz, INIT'te yazılanıdır) · `Renew`'un
+//! yeni oturumu (sahtede `Renew` `RenewRequired` yayınlar ve `Established{aynı}` döner) · tel
+//! formatı (sahtenin zarfları ccr §35.3/§35.5/§35.6 DEĞİLDİR). Kurulum komutları tablo dolmadıkça
+//! başarılıdır: `Initiate` → `Initiated`, `AcceptInit` → `EstablishedAndReply`, `AcceptResponse` →
+//! `Established` (cap'li aday denemesi).
 
 use std::collections::{BTreeMap, VecDeque};
 
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s3::{
-    Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits, SealError,
-    SealedPacketMeta, SealedUnit, SessionCommand, SessionControl, SessionEvent, SessionResult,
+    HubHandle, Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits,
+    SealError, SealedPacketMeta, SealedUnit, SessionCommand, SessionControl, SessionEvent,
+    SessionResult,
 };
 
 /// ccr §35.15 KS-DOS-1: sahte-RESPONSE başına deneme tavanı (= istemci pending INIT tavanı).
@@ -58,8 +67,9 @@ pub const ENVELOPE_INIT_RESPONSE: u8 = 0x02;
 
 const INIT_MAGIC: [u8; 8] = *b"MOCKSSI1";
 const RESP_MAGIC: [u8; 8] = *b"MOCKSSR1";
-/// magic(8) + oturum(8) + init_counter(8); ardından opak `early_unit`.
-const INIT_HDR: usize = 24;
+/// magic(8) + oturum(8) + init_counter(8) + başlatanın `dest_hash`'i(32); ardından opak
+/// `early_unit`.
+const INIT_HDR: usize = 56;
 /// magic(8) + oturum(8) + init_counter(8) + yanıtlayan-tekilliği(8).
 const RESP_LEN: usize = 32;
 
@@ -116,7 +126,11 @@ impl Lane {
 /// zarfından okur).
 #[derive(Debug, Default)]
 pub struct MockCrypto {
+    /// Bu ucun kimliği — yalnız sahte INIT'e yazılır (`None` = sıfır `dest_hash`).
+    identity: Option<PeerRef>,
     sessions: BTreeMap<SessionHandle, Lane>,
+    /// `AssignHandle` bağları (oturum → hub tutamacı; ≤ oturum sayısı).
+    hub_handles: BTreeMap<SessionHandle, HubHandle>,
     hub: Lane,
     /// Bekleyen INIT'ler `(oturum, init_counter)` (eski → yeni).
     pending: Vec<(u64, u64)>,
@@ -140,6 +154,29 @@ impl MockCrypto {
         Self::default()
     }
 
+    /// Kimliği belli bir uç: `Initiate`'in sahte INIT'i bu kimliği taşır, karşı ucun
+    /// `EstablishedAndReply.peer`'i bu olur.
+    #[must_use]
+    pub fn with_identity(identity: PeerRef) -> Self {
+        Self {
+            identity: Some(identity),
+            ..Self::default()
+        }
+    }
+
+    /// Bu ucun kimliği (verilmediyse sıfır `dest_hash`).
+    #[must_use]
+    pub fn identity(&self) -> PeerRef {
+        self.identity
+            .unwrap_or(PeerRef::from_dest_hash([0u8; 32]))
+    }
+
+    /// `AssignHandle` ile oturuma bağlanmış hub tutamacı.
+    #[must_use]
+    pub fn hub_handle_of(&self, session: SessionHandle) -> Option<HubHandle> {
+        self.hub_handles.get(&session).copied()
+    }
+
     /// Sahtenin bir eşe bastığı oturum tutamacının ham değeri: `dest_hash`'in ilk sekiz baytı
     /// (big-endian). Deterministiktir; iki uç aynı eş için aynı tutamaca varır.
     #[must_use]
@@ -148,13 +185,15 @@ impl MockCrypto {
         u64::from_be_bytes([h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]])
     }
 
-    /// `Initiate`'in ürettiği / `AcceptInit`'in beklediği sahte INIT zarfı (`early_unit`'siz).
+    /// `Initiate`'in ürettiği / `AcceptInit`'in beklediği sahte INIT zarfı (`early_unit`'siz);
+    /// `initiator` = INIT'i gönderen ucun kimliği.
     #[must_use]
-    pub fn init_envelope(session: u64, init_counter: u64) -> Vec<u8> {
+    pub fn init_envelope(session: u64, init_counter: u64, initiator: PeerRef) -> Vec<u8> {
         let mut w = Vec::with_capacity(INIT_HDR);
         w.extend_from_slice(&INIT_MAGIC);
         w.extend_from_slice(&session.to_be_bytes());
         w.extend_from_slice(&init_counter.to_be_bytes());
+        w.extend_from_slice(&initiator.to_raw_for_mock());
         w
     }
 
@@ -173,13 +212,14 @@ impl MockCrypto {
         Self::ssr1(token, 0, 0)
     }
 
-    fn parse_init(wire: &[u8]) -> Option<(u64, u64)> {
+    fn parse_init(wire: &[u8]) -> Option<(u64, u64, PeerRef)> {
         if wire.len() < INIT_HDR || wire.len() > MAX_UDP_PAYLOAD || wire[..8] != INIT_MAGIC {
             return None;
         }
         Some((
             u64::from_be_bytes(wire[8..16].try_into().ok()?),
             u64::from_be_bytes(wire[16..24].try_into().ok()?),
+            PeerRef::from_dest_hash(wire[24..INIT_HDR].try_into().ok()?),
         ))
     }
 
@@ -216,8 +256,9 @@ impl MockCrypto {
     #[must_use]
     pub fn state_fingerprint(&self) -> String {
         format!(
-            "{:?}|{:?}|{:?}|{}|{}|{:?}|{:?}",
+            "{:?}|{:?}|{:?}|{:?}|{}|{}|{:?}|{:?}",
             self.sessions,
+            self.hub_handles,
             self.hub,
             self.pending,
             self.next_init_counter,
@@ -423,22 +464,24 @@ impl SessionControl for MockCrypto {
                 let init_counter = self.next_init_counter;
                 self.next_init_counter += 1;
                 self.pending.push((session, init_counter));
-                let mut bytes = Self::init_envelope(session, init_counter);
+                let mut bytes = Self::init_envelope(session, init_counter, self.identity());
                 bytes.extend_from_slice(&early);
-                SessionResult::OutboundEnvelope {
+                SessionResult::Initiated {
+                    session: h,
                     envelope_type: ENVELOPE_INIT,
                     bytes,
                 }
             }
             // Aynı `(oturum, init_counter)` → önbellekteki SSR1 byte-özdeş; yeni oturum/olay YOK.
             SessionCommand::AcceptInit { wire } => {
-                let Some((session, init_counter)) = Self::parse_init(&wire) else {
+                let Some((session, init_counter, peer)) = Self::parse_init(&wire) else {
                     return SessionResult::Failed;
                 };
                 let h = SessionHandle::from_raw(session);
                 if let Some(cached) = self.response_cache.get(&(session, init_counter)) {
                     return SessionResult::EstablishedAndReply {
                         session: h,
+                        peer,
                         envelope_type: ENVELOPE_INIT_RESPONSE,
                         bytes: cached.clone(),
                     };
@@ -456,9 +499,29 @@ impl SessionControl for MockCrypto {
                     .insert((session, init_counter), bytes.clone());
                 SessionResult::EstablishedAndReply {
                     session: h,
+                    peer,
                     envelope_type: ENVELOPE_INIT_RESPONSE,
                     bytes,
                 }
+            }
+            // [s3 v1.1] Oturum ↔ hub tutamacı bağı. Her ret yolunda state DEĞİŞMEZ.
+            SessionCommand::AssignHandle {
+                session,
+                hub_handle,
+            } => {
+                if !self.sessions.contains_key(&session) {
+                    return SessionResult::Failed;
+                }
+                match self.hub_handles.get(&session) {
+                    Some(bound) if *bound == hub_handle => return SessionResult::NoOutput,
+                    Some(_) => return SessionResult::Failed,
+                    None => {}
+                }
+                if self.hub_handles.values().any(|bound| *bound == hub_handle) {
+                    return SessionResult::Failed;
+                }
+                self.hub_handles.insert(session, hub_handle);
+                SessionResult::NoOutput
             }
             // K7: en yeni önce, en fazla cap deneme; hangi adayın tuttuğu DIŞARIYA sızmaz.
             SessionCommand::AcceptResponse { wire } => {
@@ -496,8 +559,16 @@ impl SessionControl for MockCrypto {
                 self.push_event(SessionEvent::RenewRequired(session));
                 SessionResult::Established { session }
             }
+            // [s3 v1.1] Kurulu VE bekleyen oturumu kapatır: bekleyen INIT'ler ve hub bağı da
+            // silinir (geç gelen RESPONSE `Failed`). Bilinen tutamaçta tam bir `Closed`.
             SessionCommand::Close { session } => {
-                if self.sessions.remove(&session).is_some() {
+                let raw_session = raw(session);
+                let pending_before = self.pending.len();
+                self.pending.retain(|(s, _)| *s != raw_session);
+                let had_pending = self.pending.len() != pending_before;
+                let had_session = self.sessions.remove(&session).is_some();
+                self.hub_handles.remove(&session);
+                if had_session || had_pending {
                     // `Close` komutu yerel bir kapatma isteğidir.
                     self.push_event(SessionEvent::Closed(session, CloseReason::UserClosed));
                 }
