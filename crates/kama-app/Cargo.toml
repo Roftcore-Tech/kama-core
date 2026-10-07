@@ -18,5 +18,10 @@ publish.workspace = true
 [dependencies]
 kama-contracts = { path = "../kama-contracts" }
 
+# Yalnız test: AMP vektörlerini (`vectors/amp-*.json`) yükler. Bağımlılıkları serde/serde_json/
+# thiserror'dır; hiçbiri katman ya da kripto crate'i değildir (layer_check C2 kapanışı temiz).
+[dev-dependencies]
+kama-vectors = { path = "../kama-vectors" }
+
 [lints]
 workspace = true
