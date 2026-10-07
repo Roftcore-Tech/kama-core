@@ -167,8 +167,7 @@ impl MockCrypto {
     /// Bu ucun kimliği (verilmediyse sıfır `dest_hash`).
     #[must_use]
     pub fn identity(&self) -> PeerRef {
-        self.identity
-            .unwrap_or(PeerRef::from_dest_hash([0u8; 32]))
+        self.identity.unwrap_or(PeerRef::from_dest_hash([0u8; 32]))
     }
 
     /// `AssignHandle` ile oturuma bağlanmış hub tutamacı.

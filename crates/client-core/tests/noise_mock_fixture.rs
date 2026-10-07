@@ -322,10 +322,13 @@ fn f10_init_envelope_response_cache_and_hooks() {
 fn f11_s3_v1_1_assign_handle_and_close_pending() {
     let mut a = MockCrypto::with_identity(peer(ALICE));
     let mut b = MockCrypto::new();
-    let SessionResult::Initiated { session: h5, bytes, .. } = a.command(SessionCommand::Initiate {
+    let SessionResult::Initiated {
+        session: h5, bytes, ..
+    } = a.command(SessionCommand::Initiate {
         peer: peer(5),
         early_unit: None,
-    }) else {
+    })
+    else {
         panic!("Initiate bekleyen oturum üretmeli");
     };
     let SessionResult::Initiated { session: h6, .. } = a.command(SessionCommand::Initiate {
@@ -343,7 +346,11 @@ fn f11_s3_v1_1_assign_handle_and_close_pending() {
         })
     };
     assert_eq!(assign(&mut a, h5, 0x77), SessionResult::NoOutput);
-    assert_eq!(assign(&mut a, h5, 0x77), SessionResult::NoOutput, "tekrar idempotent");
+    assert_eq!(
+        assign(&mut a, h5, 0x77),
+        SessionResult::NoOutput,
+        "tekrar idempotent"
+    );
     assert_eq!(a.hub_handle_of(h5), Some(HubHandle::from_raw(0x77)));
     let fp = a.state_fingerprint();
     for (session, raw, what) in [
@@ -351,7 +358,11 @@ fn f11_s3_v1_1_assign_handle_and_close_pending() {
         (h6, 0x77, "başka oturumun tutamacı"),
         (SessionHandle::from_raw(0x0BAD), 0x79, "bilinmeyen oturum"),
     ] {
-        assert_eq!(assign(&mut a, session, raw), SessionResult::Failed, "{what}");
+        assert_eq!(
+            assign(&mut a, session, raw),
+            SessionResult::Failed,
+            "{what}"
+        );
         assert_eq!(a.state_fingerprint(), fp, "{what}: state değişti");
     }
     assert_eq!(a.poll_event(), None, "başarısız bağ olay üretmez");
@@ -363,7 +374,10 @@ fn f11_s3_v1_1_assign_handle_and_close_pending() {
         panic!("AcceptInit RESPONSE üretmeli");
     };
     assert_eq!(a.pending_len(), 2);
-    assert_eq!(a.command(SessionCommand::Close { session: h5 }), SessionResult::NoOutput);
+    assert_eq!(
+        a.command(SessionCommand::Close { session: h5 }),
+        SessionResult::NoOutput
+    );
     assert_eq!(
         a.poll_event(),
         Some(SessionEvent::Closed(h5, CloseReason::UserClosed))
