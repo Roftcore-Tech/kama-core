@@ -125,7 +125,8 @@ impl ReplayWindow {
             return Err(PnReject::Duplicate);
         }
         // SAYAÇ UZAYININ SONU: `expected = candidate + 1` temsil edilemez. Meşru gönderen buraya
-        // ulaşamaz (`SEND_PN_CAP = 2^62`); kabul edilseydi `commit` sonrası aynı PN'in tekrarı
+        // ulaşamaz (`SEND_PN_CAP = 2^31`, ccr REKEY_THRESHOLD); kabul edilseydi `commit` sonrası aynı
+        // PN'in tekrarı
         // duplicate olarak yakalanamazdı.
         if candidate == u64::MAX {
             return Err(PnReject::FutureGap);

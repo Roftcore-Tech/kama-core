@@ -9,22 +9,37 @@
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+use core::fmt;
+use std::collections::{BTreeMap, VecDeque};
 use zeroize::Zeroizing;
 
 use crate::aad::build_aad;
+use crate::envelope::{
+    open_extended, open_legacy, parse_extended, parse_legacy, seal_extended, seal_legacy,
+    wire_handle, EnvelopeProfile, LegacyAadFields, HUB_NOOP_LIMITS, MAX_UDP_PAYLOAD,
+    SESSION_CONSERVATIVE_LIMITS,
+};
 use crate::error::WireError;
 use crate::inner::{
     encode_control_inner, encode_fec_inner, parse_inner, CONTROL_INNER_PREFIX_LEN,
     FEC_INNER_HDR_LEN,
 };
 use crate::opened::OpenedTransportShard;
-use crate::outer::{ExtendedOuter, OUTER_HDR_LEN, TAG_LEN};
+use crate::outer::{ExtendedOuter, FLAG_DH_EPOCH, OUTER_HDR_LEN, TAG_LEN};
 use crate::pn::{reconstruct, ReplayWindow, EXTENDED_PN_PARAMS};
+use crate::replay::{DirectionalReplay, PrecheckedPn};
+use kama_contracts::handles::SessionHandle;
+use kama_contracts::s3::{
+    self, Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits,
+    SealError, SealedUnit, SessionEvent,
+};
 use kama_transport_schema::inner_kind::ShardKind;
 use kama_transport_schema::{UnsealedTransportPacket, EXTENDED_OUTER_OVERHEAD};
 
-/// Full-PN gönderim-tavanı [CAL — renewal-politikası Sprint-4]: aşımı SESSION_RENEW_REQUIRED tetikler.
-pub const SEND_PN_CAP: u64 = 1 << 62;
+/// Full-PN gönderim-tavanı = ccr §35.8 `REKEY_THRESHOLD` (2^31; transport-layer-tdd §6 "REKEY_THRESHOLD <= 2^31").
+/// Tavana ulaşan oturum yeni mühür ÜRETMEZ ve `RenewRequired` yayınlar; sayaç ASLA sarmaz.
+/// [2026-10-08 — sahip kararı S6] önceki değer `1 << 62` ([CAL]) spec'le çelişiyordu; spec kazanır.
+pub const SEND_PN_CAP: u64 = 1 << 31;
 
 /// AEAD-anahtar boyu (registry: 32B).
 pub const KEY_LEN: usize = 32;
@@ -376,6 +391,694 @@ impl KamaNoiseWireSizer for KamaNoiseWireProtector {
                 let _ = TAG_LEN;
                 Ok(EXTENDED_OUTER_OVERHEAD + CONTROL_INNER_PREFIX_LEN + body)
             }
+        }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// S3 GERÇEK `PacketProtection` — `NoiseWireProtection` (L-A5b: A5.2 seal/open + sayaç + nonce/AAD
+// · A5.3 replay). Yukarıdaki `KamaNoiseWireProtector` DEĞİŞMEDİ (mevcut çağıranları var).
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+/// `dh_epoch` değerleri (noise-wire §5: Alpha'da yalnız 0 ve 1).
+const DH_EPOCH_0: u8 = 0;
+const DH_EPOCH_1: u8 = 1;
+/// No-op hub kanalı PN'i wire'a yazmaz; alımda bilinemez (`IdentitySeam` paritesi).
+const HUB_NOOP_RECV_PN: u64 = 0;
+
+/// `dh_epoch` → anahtar dizisi indeksi (0 ya da 1; dizi sınırı yapısal olarak aşılamaz).
+fn idx(dh_epoch: u8) -> usize {
+    usize::from(dh_epoch & FLAG_DH_EPOCH)
+}
+
+/// Gönderim sayacı tahsisi — SAF. `next_send_pn < SEND_PN_CAP` ise `(pn, pn + 1)`, aksi `None`:
+/// tavanda yeni mühür YOK, sayaç TÜKETİLMEZ ve ASLA sarmaz (S3 `CapReached`; noise-wire §4 WRAP).
+/// `pn + 1` taşamaz çünkü `SEND_PN_CAP < u64::MAX`.
+#[must_use]
+pub fn allocate_send_pn(next_send_pn: u64) -> Option<(u64, u64)> {
+    if next_send_pn >= SEND_PN_CAP {
+        return None;
+    }
+    Some((next_send_pn, next_send_pn.checked_add(1)?))
+}
+
+/// Bir oturumun kurulum girdisi: sabit zarf profili + epoch-0 trafik anahtarları (ccr §35.2.1 D2;
+/// rol eşlemesi çağıranındır: initiator `send = k_A2B_e0`, `recv = k_B2A_e0`, responder tersi).
+/// Anahtarlar [`Zeroizing`] içinde gelir; cipher kurulduktan sonra bu kopyalar silinir.
+pub struct SessionKeyMaterial {
+    pub profile: EnvelopeProfile,
+    pub send_e0: Zeroizing<[u8; KEY_LEN]>,
+    pub recv_e0: Zeroizing<[u8; KEY_LEN]>,
+}
+
+impl fmt::Debug for SessionKeyMaterial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Anahtar baytı Debug'a GİRMEZ.
+        f.debug_struct("SessionKeyMaterial")
+            .field("profile", &self.profile)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Oturumun gönderim yarısının durumu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    /// `seal` + `open`.
+    Active,
+    /// Gönderim yarısı emekli (send anahtarları silindi): `seal` → `UnknownSession`, `open` sürer
+    /// (supersession drain'i — kural L-A5c'nin).
+    ReceiveOnly,
+}
+
+/// Bir oturumun kripto durumu.
+struct SessionCrypto {
+    profile: EnvelopeProfile,
+    send: [Option<ChaCha20Poly1305>; 2],
+    recv: [Option<ChaCha20Poly1305>; 2],
+    /// Gönderimde kullanılan epoch (yalnız ileri: 0 → 1).
+    send_epoch: u8,
+    /// Alım kabul kapısı (noise-wire §4 `accept` adım 1; grace). `[0]` grace kapanınca `false`
+    /// olur ve onu `true`'ya çeviren yol YOKTUR.
+    recv_accepts: [bool; 2],
+    /// TEK gönderim sayacı: epoch'lar boyunca SÜREKLİ, Crypto atar (S3 K2; noise-wire §2.5 + §4
+    /// EPOCH-PN-INIT). Yalnız başarılı mühürde ilerler.
+    next_send_pn: u64,
+    /// TEK alım penceresi (yön başına; epoch'a bölünmez — identity §15.5).
+    replay: DirectionalReplay,
+    /// `RenewRequired` bu oturum için kuyruğa kondu mu (tek sefer).
+    renew_signalled: bool,
+    lifecycle: Lifecycle,
+}
+
+/// Saf açma aşamasının çıktısı (commit ÖNCESİ).
+struct OpenOk {
+    pn: PrecheckedPn,
+    epoch: u8,
+    frame: Vec<u8>,
+}
+
+fn cipher_from(key: &Zeroizing<[u8; KEY_LEN]>) -> ChaCha20Poly1305 {
+    ChaCha20Poly1305::new(Key::from_slice(key.as_ref()))
+}
+
+impl SessionCrypto {
+    fn new(material: SessionKeyMaterial) -> Self {
+        let replay = DirectionalReplay::new(material.profile.pn_params());
+        Self {
+            send: [Some(cipher_from(&material.send_e0)), None],
+            recv: [Some(cipher_from(&material.recv_e0)), None],
+            send_epoch: DH_EPOCH_0,
+            recv_accepts: [true, false],
+            next_send_pn: 0,
+            replay,
+            renew_signalled: false,
+            lifecycle: Lifecycle::Active,
+            profile: material.profile,
+        }
+    }
+
+    /// Zarfı mühürler (state'e DOKUNMAZ; sayaç çağıranda ilerler).
+    fn seal_envelope(&self, pn: u64, frame: &[u8]) -> Result<Vec<u8>, SealError> {
+        let cipher = self.send[idx(self.send_epoch)]
+            .as_ref()
+            .ok_or(SealError::UnknownSession)?;
+        let sealed = match &self.profile {
+            EnvelopeProfile::Legacy {
+                hub_handle,
+                protocol_version,
+                cipher_suite_id,
+                session_id_internal,
+                send_direction,
+            } => {
+                let aad = LegacyAadFields {
+                    protocol_version: *protocol_version,
+                    cipher_suite_id: *cipher_suite_id,
+                    direction_code: send_direction.code(),
+                    epoch: u16::from(self.send_epoch),
+                    session_id_internal,
+                };
+                seal_legacy(cipher, hub_handle.raw(), &aad, pn, frame)
+            }
+            EnvelopeProfile::Extended { h_ext } => {
+                seal_extended(cipher, h_ext.raw(), self.send_epoch, pn, frame)
+            }
+        };
+        // ChaCha20 şifrelemesi yalnız plaintext sınırını (≈ 256 GiB) aşan girdide düşer; çerçeve
+        // `max_plaintext_bytes` ile önceden sınırlandığından erişilemez — panik yerine yapısal ret.
+        sealed.map_err(|_| SealError::FrameTooLarge)
+    }
+
+    /// Legacy alımda TEK anahtar (L-A5b): 22 B zarfta epoch alanı YOKTUR → kurulu ve kabul edilen
+    /// EN YENİ alım epoch'u. Grace içindeki ≤2 anahtar denemesi (ccr §35.8) L-A5c'nindir.
+    fn legacy_recv_epoch(&self) -> Option<u8> {
+        [DH_EPOCH_1, DH_EPOCH_0]
+            .into_iter()
+            .find(|&e| self.recv_accepts[idx(e)] && self.recv[idx(e)].is_some())
+    }
+
+    /// SAF açma aşaması (noise-wire §4-ORDER 1–5; identity §15.5 P0-8): parse → reconstruct →
+    /// precheck → anahtar → AEAD. `&self`: hiçbir başarısızlık state'e dokunamaz (H-NO-MUTATE).
+    fn try_open(&self, wire: &[u8]) -> Result<OpenOk, WireError> {
+        match &self.profile {
+            EnvelopeProfile::Legacy {
+                hub_handle,
+                protocol_version,
+                cipher_suite_id,
+                session_id_internal,
+                send_direction,
+            } => {
+                let header = parse_legacy(wire)?;
+                if header.hub_handle != hub_handle.raw() {
+                    return Err(WireError::UnknownHandle(header.hub_handle));
+                }
+                let candidate = self.replay.reconstruct(u64::from(header.seq16));
+                let pn = self.replay.precheck(candidate)?;
+                let epoch = self
+                    .legacy_recv_epoch()
+                    .ok_or(WireError::EpochKeysMissing)?;
+                let cipher = self.recv[idx(epoch)]
+                    .as_ref()
+                    .ok_or(WireError::EpochKeysMissing)?;
+                let aad = LegacyAadFields {
+                    protocol_version: *protocol_version,
+                    cipher_suite_id: *cipher_suite_id,
+                    // Alınan paket eşin yönündedir (ccr §35.9 cross-direction ayrımı).
+                    direction_code: send_direction.opposite().code(),
+                    epoch: u16::from(epoch),
+                    session_id_internal,
+                };
+                let frame = open_legacy(cipher, &aad, candidate, wire)?;
+                Ok(OpenOk { pn, epoch, frame })
+            }
+            EnvelopeProfile::Extended { h_ext } => {
+                let outer = parse_extended(wire)?;
+                if outer.h_ext != h_ext.raw() {
+                    return Err(WireError::UnknownHandle(outer.h_ext));
+                }
+                // `dh_epoch` wire'dadır → TEK anahtar (ccr §35.8 "anahtar denemesi" notu).
+                let epoch = outer.dh_epoch & FLAG_DH_EPOCH;
+                if !self.recv_accepts[idx(epoch)] {
+                    return Err(WireError::EpochNotAccepted(epoch));
+                }
+                let cipher = self.recv[idx(epoch)]
+                    .as_ref()
+                    .ok_or(WireError::EpochKeysMissing)?;
+                let candidate = self.replay.reconstruct(u64::from(outer.pn_trunc));
+                let pn = self.replay.precheck(candidate)?;
+                let frame = open_extended(cipher, candidate, wire)?;
+                Ok(OpenOk { pn, epoch, frame })
+            }
+        }
+    }
+
+    /// Salt-durum özeti — anahtar BAYTI içermez (yalnız varlık bayrakları).
+    #[cfg(feature = "test-util")]
+    fn fingerprint(&self) -> String {
+        format!(
+            "{:?}|pn={}|send_epoch={}|accepts={:?}|send_keys={:?}|recv_keys={:?}|lifecycle={:?}|\
+             renew={}|replay={}",
+            self.profile,
+            self.next_send_pn,
+            self.send_epoch,
+            self.recv_accepts,
+            self.send.each_ref().map(Option::is_some),
+            self.recv.each_ref().map(Option::is_some),
+            self.lifecycle,
+            self.renew_signalled,
+            self.replay.fingerprint()
+        )
+    }
+}
+
+/// GERÇEK S3 `PacketProtection` (KM-SEAM-TC-001 §1.1) — endpoint başına TEK nesne. L-A5c aynı
+/// tipe `SessionControl`'ü ekler (iki trait tek nesnede; olay kuyruğu ortak).
+///
+/// * **Sayaç (S3 K2):** oturum başına TEK gönderim sayacı, epoch'lar boyunca SÜREKLİ; Crypto
+///   atar. [`SEND_PN_CAP`]'e ulaşınca `seal` → `CapReached` (sayaç tüketilmez) ve İLK seferde tek
+///   `RenewRequired(h)` olayı kuyruğa girer.
+/// * **Zarf:** oturum başına SABİT [`EnvelopeProfile`] (legacy 22 B / extended 26 B); `limits(ctx)`
+///   o profili raporlar.
+/// * **Alım (S3 K5):** demux (ilk dört bayt) → parse → reconstruct → precheck (saf) → AEAD →
+///   commit (TEK mutasyon). Her başarısızlık `None` ve state bayt-özdeş (H-NO-MUTATE); commit'ten
+///   sonra başarısızlık yolu YOKTUR. Çerçeve OPAK — iç parse yapılmaz (S3 K4).
+/// * **HubChannel:** PoC no-op, `client-core` `IdentitySeam` ile BAYT/ALAN ÖZDEŞ (`frame ‖ 0×16`,
+///   ayrı sayaç, `dh_epoch = 0`). PoC no-op hub kanalı kimlik doğrulamaz (IdentitySeam
+///   paritesi); oturum trafiği hiçbir zaman HubChannel'a atfedilmez (demux önce): `open` önce
+///   ilk dört baytı kayıtlı oturum tutamaçlarıyla eşler; tutamaç kayıtlıysa sonuç ya o oturumdur
+///   ya `None`. Yalnız tutamacı bilinmeyen VE son 16 baytı sıfır olan datagram `HubChannel`'a
+///   atfedilir. Gerçek hop anahtarı KAPSAM DIŞI (M4).
+/// * **Oturum tablosu:** oturum YALNIZ `pub(crate)` kurulum API'siyle eklenir; ürün yolunda onu
+///   yalnız L-A5c'nin `SessionControl`'ü, kendi kabul kapılarının (HALF_OPEN_CAP / pending
+///   tavanı) arkasında çağırır. Tablo bu kapılarla sınırlıdır; ayrı tavan sabiti yoktur.
+/// * **Olay kuyruğu:** bu katmanın tek üreticisi `RenewRequired`'dır (oturum başına en çok bir
+///   kez; `close` o oturumun bekleyen `RenewRequired`'ını düşürür) → kuyruk ≤ canlı oturum sayısı.
+#[derive(Default)]
+pub struct NoiseWireProtection {
+    sessions: BTreeMap<SessionHandle, SessionCrypto>,
+    /// Wire tutamacı (`hub_handle` / `h_ext`) → oturum (decrypt ÖNCESİ demux; noise-wire §2.5).
+    by_wire_handle: BTreeMap<u32, SessionHandle>,
+    /// Sonraki basılacak oturum tutamacının ham değeri (tutamaç tekrar kullanılmaz).
+    next_session_raw: u64,
+    /// HubChannel no-op'un AYRI PN sayacı (S3 K1).
+    hub_next_pn: u64,
+    /// Crypto → Transport olayları (L-A5c'nin `SessionControl::poll_event`'i boşaltır).
+    events: VecDeque<SessionEvent>,
+    /// `seal()`'e en son verilen bağlam (S3 K1 kayıt kancası; YALNIZ test).
+    #[cfg(feature = "test-util")]
+    last_seal_ctx: Option<ProtectionContext>,
+}
+
+impl fmt::Debug for NoiseWireProtection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Anahtar ve oturum kimliği Debug'a GİRMEZ; yalnız sayımlar.
+        f.debug_struct("NoiseWireProtection")
+            .field("sessions", &self.sessions.len())
+            .field("hub_next_pn", &self.hub_next_pn)
+            .field("pending_events", &self.events.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl NoiseWireProtection {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    // ── Kurulum API'si (pub(crate): L-A5c'nin SessionControl'ü çağırır) ──────────────────────
+
+    /// Oturum kurar ve tutamacını basar (S3 K8). Wire tutamacı başka bir oturumda kayıtlıysa ya
+    /// da tutamaç uzayı tükendiyse `None`; state DEĞİŞMEZ.
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+    #[must_use]
+    pub(crate) fn install_session(
+        &mut self,
+        material: SessionKeyMaterial,
+    ) -> Option<SessionHandle> {
+        let wire = material.profile.wire_handle();
+        if self.by_wire_handle.contains_key(&wire) {
+            return None;
+        }
+        let raw = self.next_session_raw;
+        let after = raw.checked_add(1)?;
+        let h = SessionHandle::from_raw(raw);
+        self.next_session_raw = after;
+        self.by_wire_handle.insert(wire, h);
+        self.sessions.insert(h, SessionCrypto::new(material));
+        Some(h)
+    }
+
+    /// Epoch-1 trafik anahtarlarını kurar (ccr §35.2.1 D5); kurulunca epoch-1 alımı kabul edilir
+    /// (noise-wire §4 B3 adım 3). Sayaç ve pencere SIFIRLANMAZ (EPOCH-PN-INIT). Oturum yoksa,
+    /// aktif değilse ya da epoch-1 zaten kuruluysa `false` (anahtar DEĞİŞTİRİLMEZ).
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+    #[must_use]
+    pub(crate) fn install_epoch1(
+        &mut self,
+        h: SessionHandle,
+        send_e1: &Zeroizing<[u8; KEY_LEN]>,
+        recv_e1: &Zeroizing<[u8; KEY_LEN]>,
+    ) -> bool {
+        let Some(s) = self.sessions.get_mut(&h) else {
+            return false;
+        };
+        let e1 = idx(DH_EPOCH_1);
+        if s.lifecycle != Lifecycle::Active || s.send[e1].is_some() || s.recv[e1].is_some() {
+            return false;
+        }
+        s.send[e1] = Some(cipher_from(send_e1));
+        s.recv[e1] = Some(cipher_from(recv_e1));
+        s.recv_accepts[e1] = true;
+        true
+    }
+
+    /// Gönderim epoch'unu İLERİ alır (yalnız 0 → 1; anahtarı kurulu olmalı). Epoch-1'e geçişte
+    /// epoch-0 gönderim anahtarı silinir. Sayaç DEVAM eder: epoch-1'in ilk PN'i son epoch-0 PN'i
+    /// + 1, epoch-0'da hiç mühürlenmediyse 0 (noise-wire §4 EPOCH-PN-INIT).
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+    #[must_use]
+    pub(crate) fn set_send_epoch(&mut self, h: SessionHandle, epoch: u8) -> bool {
+        let Some(s) = self.sessions.get_mut(&h) else {
+            return false;
+        };
+        if s.lifecycle != Lifecycle::Active
+            || epoch > DH_EPOCH_1
+            || epoch < s.send_epoch
+            || s.send[idx(epoch)].is_none()
+        {
+            return false;
+        }
+        if epoch == DH_EPOCH_1 {
+            s.send[idx(DH_EPOCH_0)] = None;
+        }
+        s.send_epoch = epoch;
+        true
+    }
+
+    /// Grace kapanışı (noise-wire §4 KS-GRACE-1): epoch-0 alım state'i atılır ve bir daha
+    /// AÇILMAZ (kabul bayrağını geri çeviren yol yoktur). Kuralın kendisi (`N_g` / `T_g`)
+    /// L-A5c'nindir. Epoch-1 alımı kurulmadan çağrılırsa `false` (oturum sağırlaşırdı).
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+    #[must_use]
+    pub(crate) fn discard_epoch0_recv(&mut self, h: SessionHandle) -> bool {
+        let Some(s) = self.sessions.get_mut(&h) else {
+            return false;
+        };
+        if s.recv[idx(DH_EPOCH_1)].is_none() {
+            return false;
+        }
+        s.recv_accepts[idx(DH_EPOCH_0)] = false;
+        s.recv[idx(DH_EPOCH_0)] = None;
+        true
+    }
+
+    /// Gönderim yarısını emekliye ayırır: send anahtarları silinir, `seal` → `UnknownSession`;
+    /// alım sürer. Geri alınamaz.
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+    #[must_use]
+    pub(crate) fn retire_send(&mut self, h: SessionHandle) -> bool {
+        let Some(s) = self.sessions.get_mut(&h) else {
+            return false;
+        };
+        s.lifecycle = Lifecycle::ReceiveOnly;
+        s.send = [None, None];
+        true
+    }
+
+    /// Oturumu siler (anahtarlar drop'ta silinir), wire tutamacını demux tablosundan çıkarır ve
+    /// bekleyen `RenewRequired(h)`'yi düşürür. Olay ÜRETMEZ (`Closed` L-A5c'nin
+    /// `SessionControl`'ündedir).
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+    #[must_use]
+    pub(crate) fn close(&mut self, h: SessionHandle) -> bool {
+        let Some(s) = self.sessions.remove(&h) else {
+            return false;
+        };
+        self.by_wire_handle.remove(&s.profile.wire_handle());
+        self.events
+            .retain(|ev| *ev != SessionEvent::RenewRequired(h));
+        true
+    }
+
+    /// Sıradaki bekleyen olay (L-A5c `SessionControl::poll_event`).
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+    pub(crate) fn take_event(&mut self) -> Option<SessionEvent> {
+        self.events.pop_front()
+    }
+
+    fn push_event(&mut self, ev: SessionEvent) {
+        self.events.push_back(ev);
+    }
+
+    // ── Veri yolu (PacketProtection'ın gövdeleri) ───────────────────────────────────────────
+
+    /// Oturum bağlamının seal kapısı — `seal` ve `sealed_len` AYNI sırayla: çerçeve tavanı
+    /// (oturum yoksa sınıfın güvenli minimumu) → oturum var ve gönderebilir.
+    fn check_session_seal(
+        &self,
+        h: SessionHandle,
+        plaintext_len: usize,
+    ) -> Result<&SessionCrypto, SealError> {
+        let session = self.sessions.get(&h);
+        let limits = session.map_or(SESSION_CONSERVATIVE_LIMITS, |s| s.profile.limits());
+        if plaintext_len > limits.max_plaintext_bytes as usize {
+            return Err(SealError::FrameTooLarge);
+        }
+        match session {
+            Some(s) if s.lifecycle == Lifecycle::Active => Ok(s),
+            _ => Err(SealError::UnknownSession),
+        }
+    }
+
+    /// Sıra: `FrameTooLarge` → `UnknownSession` → `CapReached` (+ ilk seferde `RenewRequired`)
+    /// → mühür → BAŞARIDA sayaç +1. Hata yollarında sayaç/pencere/anahtar DEĞİŞMEZ.
+    fn seal_session(&mut self, h: SessionHandle, frame: &[u8]) -> Result<SealedUnit, SealError> {
+        self.check_session_seal(h, frame.len())?;
+        let s = self.sessions.get_mut(&h).ok_or(SealError::UnknownSession)?;
+        let Some((pn, next)) = allocate_send_pn(s.next_send_pn) else {
+            let first = !s.renew_signalled;
+            s.renew_signalled = true;
+            if first {
+                self.push_event(SessionEvent::RenewRequired(h));
+            }
+            return Err(SealError::CapReached);
+        };
+        let bytes = s.seal_envelope(pn, frame)?;
+        let sealed_len = u32::try_from(bytes.len()).map_err(|_| SealError::FrameTooLarge)?;
+        debug_assert_eq!(
+            bytes.len(),
+            frame.len() + s.profile.overhead(),
+            "seal(ctx, f).len() != sealed_len(ctx, f.len())"
+        );
+        s.next_send_pn = next;
+        Ok(SealedUnit {
+            bytes,
+            meta: s3::SealedPacketMeta {
+                full_wire_pn: pn,
+                dh_epoch: s.send_epoch,
+                sealed_len,
+            },
+        })
+    }
+
+    /// `IdentitySeam::seal` ile bayt/alan özdeş: `frame ‖ 0×16`, ayrı sayaç, `dh_epoch = 0`.
+    fn seal_hub(&mut self, frame: &[u8]) -> Result<SealedUnit, SealError> {
+        if frame.len() > HUB_NOOP_LIMITS.max_plaintext_bytes as usize {
+            return Err(SealError::FrameTooLarge);
+        }
+        let pn = self.hub_next_pn;
+        // Sayaç SARMAZ (IdentitySeam ile aynı kural).
+        let next = pn.checked_add(1).ok_or(SealError::CapReached)?;
+        let mut bytes = Vec::with_capacity(frame.len() + TAG_LEN);
+        bytes.extend_from_slice(frame);
+        bytes.resize(frame.len() + TAG_LEN, 0);
+        let sealed_len = u32::try_from(bytes.len()).map_err(|_| SealError::FrameTooLarge)?;
+        self.hub_next_pn = next;
+        Ok(SealedUnit {
+            bytes,
+            meta: s3::SealedPacketMeta {
+                full_wire_pn: pn,
+                dh_epoch: DH_EPOCH_0,
+                sealed_len,
+            },
+        })
+    }
+
+    /// Saf aşama → (başarıda) TEK commit → `Opened`. Commit'ten sonra başarısızlık yolu YOK.
+    fn open_session(&mut self, h: SessionHandle, wire: &[u8]) -> Option<Opened> {
+        let s = self.sessions.get_mut(&h)?;
+        let ok = s.try_open(wire).ok()?;
+        let sealed_len = u32::try_from(wire.len()).ok()?;
+        let full_wire_pn = ok.pn.full_pn();
+        // noise-wire §4-ORDER (6): AEAD BAŞARISINDAN SONRA commit — TEK mutasyon.
+        s.replay.commit(ok.pn);
+        Some(Opened {
+            ctx: ProtectionContext::Session(h),
+            frame: ok.frame,
+            meta: s3::SealedPacketMeta {
+                full_wire_pn,
+                dh_epoch: ok.epoch,
+                sealed_len,
+            },
+        })
+    }
+
+    /// `IdentitySeam::open` paritesi; yalnız tutamacı kayıtlı OLMAYAN datagram buraya gelir ve
+    /// son 16 baytı sıfır olmalıdır. State'e dokunmaz.
+    fn open_hub(wire: &[u8]) -> Option<Opened> {
+        if wire.len() <= TAG_LEN {
+            return None;
+        }
+        let (frame, tag) = wire.split_at(wire.len() - TAG_LEN);
+        if tag.iter().any(|&b| b != 0) {
+            return None;
+        }
+        let sealed_len = u32::try_from(wire.len()).ok()?;
+        Some(Opened {
+            ctx: ProtectionContext::HubChannel,
+            frame: frame.to_vec(),
+            meta: s3::SealedPacketMeta {
+                full_wire_pn: HUB_NOOP_RECV_PN,
+                dh_epoch: DH_EPOCH_0,
+                sealed_len,
+            },
+        })
+    }
+
+    // ── YALNIZ test (`test-util`): kurulum sarmalayıcıları ve gözlem kancaları ─────────────
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn install_session_for_test(
+        &mut self,
+        material: SessionKeyMaterial,
+    ) -> Option<SessionHandle> {
+        self.install_session(material)
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn install_epoch1_for_test(
+        &mut self,
+        h: SessionHandle,
+        send_e1: &Zeroizing<[u8; KEY_LEN]>,
+        recv_e1: &Zeroizing<[u8; KEY_LEN]>,
+    ) -> bool {
+        self.install_epoch1(h, send_e1, recv_e1)
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn set_send_epoch_for_test(&mut self, h: SessionHandle, epoch: u8) -> bool {
+        self.set_send_epoch(h, epoch)
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn discard_epoch0_recv_for_test(&mut self, h: SessionHandle) -> bool {
+        self.discard_epoch0_recv(h)
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn retire_send_for_test(&mut self, h: SessionHandle) -> bool {
+        self.retire_send(h)
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn close_for_test(&mut self, h: SessionHandle) -> bool {
+        self.close(h)
+    }
+
+    #[cfg(feature = "test-util")]
+    pub fn take_event_for_test(&mut self) -> Option<SessionEvent> {
+        self.take_event()
+    }
+
+    /// Gönderim sayacını İLERİ taşır (vektör sayaçları ve `SEND_PN_CAP` sınırı için). Geri alma
+    /// YOK — aynı anahtar altında nonce tekrarı testte de üretilemez. `pn > SEND_PN_CAP`
+    /// reddedilir.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn set_next_send_pn_for_test(&mut self, h: SessionHandle, pn: u64) -> bool {
+        match self.sessions.get_mut(&h) {
+            Some(s) if pn >= s.next_send_pn && pn <= SEND_PN_CAP => {
+                s.next_send_pn = pn;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Bir oturumun alım penceresinin `expected_pn`'i (en yüksek kabul + 1).
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn recv_expected_pn_for_test(&self, h: SessionHandle) -> Option<u64> {
+        self.sessions.get(&h).map(|s| s.replay.expected_pn())
+    }
+
+    /// `open`'ın oturum yolunun AYNI saf aşaması, commit'siz ve TYPED: `None`'ın gerekçesini
+    /// gözlemlemek içindir (vektör sözlüğü). Döner: `(full_pn, dh_epoch, frame)`.
+    /// `MAX_UDP_PAYLOAD` üstü datagram ve HubChannel yolu burada sınanmaz.
+    ///
+    /// # Errors
+    /// Saf aşamanın [`WireError`]'ı; tutamaç kayıtlı değilse [`WireError::UnknownHandle`].
+    #[cfg(feature = "test-util")]
+    pub fn inspect_open_for_test(&self, wire: &[u8]) -> Result<(u64, u8, Vec<u8>), WireError> {
+        let handle = wire_handle(wire).ok_or(WireError::DatagramTooShort {
+            got: wire.len(),
+            min: crate::envelope::WIRE_HANDLE_LEN,
+        })?;
+        let session = self
+            .by_wire_handle
+            .get(&handle)
+            .and_then(|h| self.sessions.get(h))
+            .ok_or(WireError::UnknownHandle(handle))?;
+        let ok = session.try_open(wire)?;
+        Ok((ok.pn.full_pn(), ok.epoch, ok.frame))
+    }
+
+    /// Oturum (sayaç, gönderim epoch'u, kabul bayrakları, anahtar VARLIK bayrakları, pencere
+    /// `expected` + bitler, yaşam döngüsü, renew bayrağı), demux tablosu, tutamaç sayacı, hub
+    /// sayacı ve olay kuyruğu. Anahtar baytı ASLA; salt-gözlem alanı (`last_seal_ctx`) dışarıda.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn state_fingerprint(&self) -> String {
+        let sessions: Vec<String> = self
+            .sessions
+            .iter()
+            .map(|(h, s)| format!("{h:?}={}", s.fingerprint()))
+            .collect();
+        format!(
+            "sessions={sessions:?}|wire={:?}|next_raw={}|hub_pn={}|events={:?}",
+            self.by_wire_handle, self.next_session_raw, self.hub_next_pn, self.events
+        )
+    }
+
+    /// `seal()`'e en son verilen bağlam (S3 K1: bağlam çağırandan gelir, seam'e DEĞİŞMEDEN ulaşır).
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn last_seal_ctx(&self) -> Option<ProtectionContext> {
+        self.last_seal_ctx
+    }
+}
+
+impl PacketProtection for NoiseWireProtection {
+    fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
+        let unit = match ctx {
+            ProtectionContext::Session(h) => self.seal_session(h, frame)?,
+            ProtectionContext::HubChannel => self.seal_hub(frame)?,
+        };
+        #[cfg(feature = "test-util")]
+        {
+            self.last_seal_ctx = Some(ctx);
+        }
+        Ok(unit)
+    }
+
+    fn open(&mut self, wire: &[u8]) -> Option<Opened> {
+        // bounds-before-alloc: UDP'nin taşıyamayacağı datagram hiçbir yola girmez.
+        if wire.len() > MAX_UDP_PAYLOAD {
+            return None;
+        }
+        // Demux ÖNCE: kayıtlı tutamaç → yalnız o oturum (asla HubChannel'a düşmez).
+        let session = wire_handle(wire).and_then(|w| self.by_wire_handle.get(&w).copied());
+        match session {
+            Some(h) => self.open_session(h, wire),
+            None => Self::open_hub(wire),
+        }
+    }
+
+    fn sealed_len(&self, ctx: ProtectionContext, plaintext_len: usize) -> Result<usize, SealError> {
+        match ctx {
+            ProtectionContext::Session(h) => {
+                let s = self.check_session_seal(h, plaintext_len)?;
+                Ok(plaintext_len + s.profile.overhead())
+            }
+            ProtectionContext::HubChannel => {
+                if plaintext_len > HUB_NOOP_LIMITS.max_plaintext_bytes as usize {
+                    return Err(SealError::FrameTooLarge);
+                }
+                Ok(plaintext_len + TAG_LEN)
+            }
+        }
+    }
+
+    fn conservative_limits(&self, class: ProtectionClass) -> ProtectionLimits {
+        match class {
+            ProtectionClass::Session => SESSION_CONSERVATIVE_LIMITS,
+            ProtectionClass::HubChannel => HUB_NOOP_LIMITS,
+        }
+    }
+
+    fn limits(&self, ctx: ProtectionContext) -> ProtectionLimits {
+        match ctx {
+            ProtectionContext::Session(h) => self
+                .sessions
+                .get(&h)
+                .map_or(SESSION_CONSERVATIVE_LIMITS, |s| s.profile.limits()),
+            ProtectionContext::HubChannel => HUB_NOOP_LIMITS,
         }
     }
 }

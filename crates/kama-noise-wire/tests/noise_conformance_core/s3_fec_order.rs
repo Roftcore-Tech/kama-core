@@ -7,7 +7,7 @@
 use kama_contracts::s3::PacketProtection;
 
 use crate::s3_support::{established, session, tamper};
-use crate::target::S3Target;
+use crate::target::ProtectionTarget;
 
 /// Kurtarma için gereken shard sayısı.
 const K: usize = 4;
@@ -45,7 +45,7 @@ fn receive<P: PacketProtection>(p: &mut P, dec: &mut CountingDecoder, wire: &[u8
     }
 }
 
-pub fn forged_shard_never_reaches_decoder<T: S3Target>() {
+pub fn forged_shard_never_reaches_decoder<T: ProtectionTarget>() {
     let mut p = established::<T>();
     let ctx = session(p.h);
     let block: Vec<u8> = (0..(K * SHARD_BODY) as u8).collect();

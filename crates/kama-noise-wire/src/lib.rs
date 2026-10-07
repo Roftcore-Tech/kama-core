@@ -22,6 +22,8 @@ pub mod control_dedup_window;
 #[cfg(feature = "experimental-cold-start")]
 pub mod control_id_gate;
 pub mod demux;
+pub mod entropy;
+pub mod envelope;
 pub mod epoch_machine;
 pub mod error;
 pub mod handle_assign;
@@ -35,6 +37,7 @@ pub mod outer;
 pub mod param_bind;
 pub mod pn;
 pub mod protector;
+pub mod replay;
 pub mod restart;
 pub mod retry;
 /// S3 §7 sahtesi (`MockCrypto`) — YALNIZ `test-util`; ürün derlemesinde yoktur.

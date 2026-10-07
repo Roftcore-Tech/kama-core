@@ -150,7 +150,8 @@ fn reconstruct_does_not_panic_on_contract_violation() {
 
 /// **İSPAT 6 — üretim alanında panik YOK.**
 ///
-/// [ÖLÇÜLDÜ] `expected_pn < SEND_PN_CAP` (2^62) ve `low_bits < 2^32` (u32 `pn_trunc`)
+/// [ÖLÇÜLDÜ] `expected_pn < SEND_PN_CAP` (2026-10-08'den beri 2^31; önce 2^62 — daha dar aralık, ispat
+/// kapsamı alt-kümedir) ve `low_bits < 2^32` (u32 `pn_trunc`)
 /// kısıtları altında Kani **SUCCESSFUL** verir. Gönderici `SEND_PN_CAP`'te durduğu için
 /// alıcının `expected_pn`'i oraya bile ulaşamaz.
 ///
