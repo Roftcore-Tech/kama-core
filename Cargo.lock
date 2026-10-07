@@ -692,6 +692,7 @@ dependencies = [
 name = "kama-app"
 version = "0.1.0"
 dependencies = [
+ "blake2",
  "kama-contracts",
  "kama-vectors",
 ]

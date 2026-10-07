@@ -11,6 +11,10 @@ KM-SEAM-TC-001 §6 H-SPLIT):
   L1  Application → Crypto DOĞRUDAN kenarı YASAK.
       `kama-app`'in Cargo.toml'unda (normal/build/dev) şunlar olamaz: kripto katmanı crate'leri
       (kama-noise-wire, crypto, ccr-codec) ve ham kripto primitifleri.
+      [2026-10-08 — Abkarada kararı] TEK DAR İSTİSNA: `blake2`, ADIYLA ve YALNIZ normal bağımlılık
+      olarak; kapsamı YALNIZ `FILE_BEGIN.whole_file_hash` (BLAKE2s-256, AMP §3 0x02;
+      `crates/kama-app/src/file_transfer.rs` `whole_file_hash`). dev/build bağımlılığı olarak ya da
+      başka herhangi bir primitif / kripto katmanı crate'i için istisna YOKTUR.
   L2  Crypto → Application kenarı YASAK (doğrudan YA DA geçişli).
       Kripto katmanı crate'lerinin bağımlılık kapanışında `kama-app` olamaz.
   L3  Application kaynağında Plane 1 sembolü YASAK: `AppRpcFrame`, `method_id`.
@@ -71,6 +75,11 @@ RAW_CRYPTO = (
     "chacha20poly1305", "chacha20", "poly1305", "aead", "blake2", "hkdf", "hmac", "sha2",
     "x25519-dalek", "ed25519-dalek", "curve25519-dalek", "sodiumoxide", "libsodium-sys", "ring",
 )
+# L1 DAR İSTİSNA [2026-10-08 — Abkarada: "blake2 → kama-app DAR istisna ONAYLANDI (yalnız
+# FILE_BEGIN.whole_file_hash; layer_check L1'de adıyla)"]. {ad: izinli TEK bağımlılık türü}. Kapsam:
+# `crates/kama-app/src/file_transfer.rs` `whole_file_hash` (BLAKE2s-256, AMP §3 0x02). RAW_CRYPTO'nun
+# geri kalanı ve CRYPTO_LAYER L1'de yasak kalır; istisna dev/build türüne uzanmaz.
+APP_RAW_CRYPTO_EXCEPTION = {"blake2": "normal"}
 FORBIDDEN_SYMBOLS = ("AppRpcFrame", "method_id")
 
 CONTRACTS = "kama-contracts"
@@ -183,11 +192,13 @@ def check(metadata: dict, sources: dict[str, str]) -> list[str]:
         if required not in pkgs:
             raise EnvironmentError(f"`{required}` paketi metadata'da yok — katman kuralı denetlenemiyor")
 
-    # L1 — doğrudan kenar
+    # L1 — doğrudan kenar (tek DAR istisna: APP_RAW_CRYPTO_EXCEPTION, adıyla ve türüyle)
     banned = set(CRYPTO_LAYER) | set(RAW_CRYPTO)
     for dep in app["dependencies"]:
         if dep["name"] in banned:
             kind = dep.get("kind") or "normal"
+            if APP_RAW_CRYPTO_EXCEPTION.get(dep["name"]) == kind:
+                continue
             findings.append(f"L1 {APP} → {dep['name']} ({kind} bağımlılık): Application kripto katmanına DOĞRUDAN bağlanamaz")
 
     # L2 — kripto katmanının kapanışında kama-app
@@ -396,6 +407,18 @@ def selftest() -> int:
         ("L1 doğrudan kama-noise-wire", _md([("kama-noise-wire", None)], {APP: ["kama-noise-wire"]}), clean_src, ["C2", "L1"]),
         ("L1 dev-bağımlılık ccr-codec", _md([("ccr-codec", "dev")], {}, dev_edges={APP: ["ccr-codec"]}), clean_src, ["C2", "L1"]),
         ("L1 ham primitif (hkdf)", _md([("hkdf", None)], {APP: ["hkdf"]}), clean_src, ["L1"]),
+        # L1 DAR İSTİSNA [2026-10-08]: blake2 yalnız adıyla ve yalnız normal bağımlılık olarak geçer
+        ("L1 DEĞİL: blake2 normal bağımlılık (DAR istisna)",
+         _md([(CONTRACTS, None), ("blake2", None)], {APP: [CONTRACTS, "blake2"]}), clean_src, []),
+        ("L1 blake2 dev-bağımlılık (istisna yalnız normal tür)",
+         _md([("blake2", "dev")], {}, dev_edges={APP: ["blake2"]}), clean_src, ["L1"]),
+        ("L1 blake2 build-bağımlılık (istisna yalnız normal tür)",
+         _md([("blake2", "build")], {APP: ["blake2"]}), clean_src, ["L1"]),
+        ("L1 istisna genişlemez: blake2 yanında sha2",
+         _md([("blake2", None), ("sha2", None)], {APP: ["blake2", "sha2"]}), clean_src, ["L1"]),
+        ("L1 istisna genişlemez: blake2 yanında chacha20poly1305",
+         _md([("blake2", None), ("chacha20poly1305", None)], {APP: ["blake2", "chacha20poly1305"]}),
+         clean_src, ["L1"]),
         ("L2 doğrudan kama-noise-wire → kama-app", _md([], {"kama-noise-wire": [APP]}), clean_src, ["C3", "L2"]),
         ("L2 geçişli ccr-codec → x → kama-app", _md([], {"ccr-codec": ["x"], "x": [APP]}), clean_src, ["L2"]),
         ("L3 AppRpcFrame kodda", _md([], {}), {"a.rs": "struct AppRpcFrame;\n"}, ["L3"]),

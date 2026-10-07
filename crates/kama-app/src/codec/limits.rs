@@ -52,7 +52,8 @@ pub const MAX_EXPANSION_RATIO: u64 = 64;
 /// §5 kural 5 / A2 — `body_len_uncompressed` bundan küçükse sıkıştırma YOK.
 pub const COMPRESS_MIN_BYTES: usize = 64;
 
-/// §3 0x02 — `whole_file_hash [32]` (BLAKE2s-256 çıktı boyu; hash bu crate'te HESAPLANMAZ).
+/// §3 0x02 — `whole_file_hash [32]` (BLAKE2s-256 çıktı boyu; codec hash HESAPLAMAZ — hesap
+/// `crate::file_transfer::whole_file_hash`'te).
 pub const WHOLE_FILE_HASH_BYTES: usize = 32;
 
 /// §3 0x02 — `name_len u8` ⇒ `name` en çok 255 bayt (UTF-8).

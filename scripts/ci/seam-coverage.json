@@ -25,7 +25,7 @@
         "C2",
         "L3"
       ],
-      "note": "Statik satir; kosum testi degil. Kanit scripts/ci/layer_check.py: kama-app'in grafiginde (dogrudan VE gecisli, dev dahil) kripto katmani crate'i ve ham kripto primitifi yok (L1, C2); kaynaginda Plane 1 sembolu yok (L3). Runner mock kosusunda bu kapiyi kosturur; kurallarin ates ettigi layer_check.py --selftest ile ayrica olculur. SINIR: kama-app'te bugun urun kodu yok (lib.rs yalniz belge; test agacinda MockTransport) ve workspace'te Plane 1 tipi tanimlayan crate yok — kapi kod geldiginde ateslemek uzere kurulu."
+      "note": "Statik satir; kosum testi degil. Kanit scripts/ci/layer_check.py: kama-app'in grafiginde (dogrudan VE gecisli, dev dahil) kripto katmani crate'i ve ham kripto primitifi yok (L1, C2); kaynaginda Plane 1 sembolu yok (L3). [2026-10-08 — Abkarada: blake2 DAR istisnasi] TEK istisna `blake2`: adiyla ve YALNIZ normal bagimlilik olarak, kapsami YALNIZ FILE_BEGIN.whole_file_hash (crates/kama-app/src/file_transfer.rs whole_file_hash); layer_check L1 APP_RAW_CRYPTO_EXCEPTION, selftest dev/build turunu ve yanina eklenen baska primitifi reddeder. Runner mock kosusunda bu kapiyi kosturur; kurallarin ates ettigi layer_check.py --selftest ile ayrica olculur. SINIR: kama-app'te bugun urun kodu yok (lib.rs yalniz belge; test agacinda MockTransport) ve workspace'te Plane 1 tipi tanimlayan crate yok — kapi kod geldiginde ateslemek uzere kurulu."
     },
     {
       "id": "H-APP-RETRY-0",
