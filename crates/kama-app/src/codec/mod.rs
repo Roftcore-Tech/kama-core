@@ -145,7 +145,8 @@ pub enum AppMessage {
         transfer_id: u64,
         /// Dosya boyu (bayt).
         file_size: u64,
-        /// BLAKE2s-256 bütün-dosya özeti — bu crate'te HESAPLANMAZ, opak taşınır.
+        /// BLAKE2s-256 bütün-dosya özeti — codec HESAPLAMAZ, opak taşır; hesap ve doğrulama
+        /// [`crate::file_transfer::whole_file_hash`] (B2.3).
         whole_file_hash: [u8; WHOLE_FILE_HASH_BYTES],
         /// Parça sayısı.
         chunk_count: u32,

@@ -11,12 +11,18 @@ publish.workspace = true
 # BU CRATE'İN KATMAN BAĞIMLILIĞI YALNIZ `kama-contracts`'TIR. Şunlar DOĞRUDAN YA DA GEÇİŞLİ olarak
 # buraya giremez: `kama-noise-wire`, `crypto`, `ccr-codec`, `client-core`, `kama-engine`,
 # `adaptive-transport`, `kama-fec-codec`, `kama-transport-schema` ve ham kripto primitifleri
-# (dalek/chacha/blake2/hkdf…). Plane 1 (app-rpc) tipleri de giremez: `AppRpcFrame`, `method_id` bu
-# crate'te YASAK semboldür. `kama-contracts`'ın `test-util` özelliği burada AÇILAMAZ.
+# (dalek/chacha/hkdf…; tek DAR istisna `blake2`, aşağıda). Plane 1 (app-rpc) tipleri de giremez:
+# `AppRpcFrame`, `method_id` bu crate'te YASAK semboldür. `kama-contracts`'ın `test-util` özelliği
+# burada AÇILAMAZ.
 # Hepsini `scripts/ci/layer_check.py` kapıda denetler (KM-SEAM-AT-001 §6 H-NO-CRYPTO-EDGE /
 # H-NO-PLANE1).
 [dependencies]
 kama-contracts = { path = "../kama-contracts" }
+# DAR İSTİSNA (Abkarada 2026-10-08): YALNIZ `FILE_BEGIN.whole_file_hash` (BLAKE2s-256, AMP §3
+# 0x02) için; tek kullanımı `src/file_transfer.rs` `whole_file_hash`. `layer_check.py` L1 onu
+# ADIYLA ve yalnız normal bağımlılık olarak geçirir; başka primitif yasak kalır. Sürüm satırı
+# `kama-noise-wire` ile aynı (kilit dosyasında 0.10.6).
+blake2 = "0.10"
 
 # Yalnız test: AMP vektörlerini (`vectors/amp-*.json`) yükler. Bağımlılıkları serde/serde_json/
 # thiserror'dır; hiçbiri katman ya da kripto crate'i değildir (layer_check C2 kapanışı temiz).
