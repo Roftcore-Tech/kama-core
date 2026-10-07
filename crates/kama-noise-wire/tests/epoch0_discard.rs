@@ -17,6 +17,14 @@
 //! boşluk mu? Bilinçliyse spec'te `[BEKLİYOR]` olarak işaretlenmelidir.
 //!
 //! **Oracle:** Discard sonrası epoch-0 datagram → `EpochNotAccepted(0)`; epoch-1 datagram → `Ok`.
+//!
+//! **[2026-10-08 — A5.4, L-A5c]** Bağlama katmanı artık ürün yolundadır: `NoiseWireProtection`'ın
+//! oturum kontrolü (`session_control`) makinenin eylemlerini uygular ve epoch matrisi
+//! (`noise_conformance_core`, `real_epoch`) bunu gerçek oturumda sınar. Bu dosya makine ↔ protector
+//! sözleşmesini sabitlemeye devam eder; sürücü yeni API'ye taşındı: grace YALNIZ AEAD-geçerli
+//! epoch-1 paketleriyle sayılır (onaylayan #1, `N_g` sabit) ve `T_g` süresi de kapatır.
+
+use core::time::Duration;
 
 use kama_noise_wire::error::WireError;
 use kama_noise_wire::{
@@ -66,10 +74,15 @@ struct MinimalEpochDriver {
 }
 
 impl MinimalEpochDriver {
-    fn responder(grace_budget: u32) -> Self {
+    /// Bob, RESPONSE'u göndermiş: epoch-1 ALIM anahtarları kurulu, gönderim epoch-0'da.
+    fn responder() -> Self {
+        let mut machine = DhEpochMachine::new(Role::Responder);
+        machine.on_response_sent();
+        let mut protector = KamaNoiseWireProtector::new(H_EXT, &key(0x22), &key(0x11));
+        protector.install_epoch1_keys(&key(0x44), &key(0x33));
         Self {
-            machine: DhEpochMachine::new(Role::Responder, grace_budget),
-            protector: KamaNoiseWireProtector::new(H_EXT, &key(0x22), &key(0x11)),
+            machine,
+            protector,
             applied: Vec::new(),
         }
     }
@@ -77,10 +90,8 @@ impl MinimalEpochDriver {
     /// Aksiyonu protector'a UYGULAR — eksik olan tek satır budur.
     fn apply(&mut self, action: EpochAction) {
         match action {
-            EpochAction::InstallEpoch1AndSend => {
-                self.protector.install_epoch1_keys(&key(0x44), &key(0x33));
-            }
-            EpochAction::StartGrace => {}
+            // Anahtarlar RESPONSE gönderilirken kuruldu; bu eylem gönderim epoch'unun geçişidir.
+            EpochAction::InstallEpoch1AndSend | EpochAction::StartGrace => {}
             EpochAction::DiscardEpoch0Recv => {
                 self.protector.discard_epoch0_recv();
             }
@@ -88,16 +99,23 @@ impl MinimalEpochDriver {
         self.applied.push(action);
     }
 
-    fn on_valid_epoch1_received(&mut self) {
-        for a in self.machine.on_valid_epoch1_received() {
+    /// AEAD-geçerli bir epoch-1 datagramını açar ve makineyi sürer (onay / grace sayımı).
+    fn deliver_epoch1(&mut self, wire: &[u8]) {
+        self.protector.open(wire).expect("geçerli epoch-1 açılmalı");
+        for a in self.machine.on_valid_epoch1_received(Duration::ZERO) {
             self.apply(a);
         }
     }
 
-    fn on_grace_tick(&mut self) {
-        if let Some(a) = self.machine.on_grace_tick() {
-            self.apply(a);
+    /// Grace'i `N_g`'ye kadar tüketir (onaylayan paket zaten #1 sayıldı).
+    fn exhaust_grace(&mut self, peer: &mut KamaNoiseWireProtector, first_pn: u64) -> u64 {
+        let mut pn = first_pn;
+        while self.machine.recv_accepts(0) {
+            let d = peer.seal(&fec(), args(pn, 1)).expect("seal e1").bytes;
+            self.deliver_epoch1(&d);
+            pn += 1;
         }
+        pn
     }
 }
 
@@ -115,7 +133,7 @@ fn peer() -> KamaNoiseWireProtector {
 #[test]
 fn epoch0_datagram_is_rejected_after_the_discard_action_is_applied() {
     // TC-18 ORACLE. Bu, wiring eklendiğinde production'da gözlenmesi gereken davranıştır.
-    let mut driver = MinimalEpochDriver::responder(GRACE_MIN_PACKETS);
+    let mut driver = MinimalEpochDriver::responder();
     let mut peer = peer();
 
     // PN sayacı epoch'lar boyunca SÜREKLİDİR (§4 EPOCH-PN-INIT, 2026-10-06): gönderen epoch-0'da
@@ -129,13 +147,10 @@ fn epoch0_datagram_is_rejected_after_the_discard_action_is_applied() {
         "transition öncesi epoch-0"
     );
 
-    // İlk geçerli epoch-1 → install + grace.
-    driver.on_valid_epoch1_received();
+    // İlk geçerli epoch-1 → implicit confirmation + grace (#1).
     let e1 = peer.seal(&fec(), args(4, 1)).expect("seal e1").bytes;
-    assert!(
-        driver.protector.open(&e1).is_ok(),
-        "epoch-1 kurulumdan sonra açılmalı"
-    );
+    driver.deliver_epoch1(&e1);
+    assert!(matches!(driver.machine.recv0(), RecvEpoch0::Grace { .. }));
 
     // Grace BOYUNCA epoch-0 hâlâ kabul edilir (§4-B3: "epoch-0-usable" garantisi).
     assert!(
@@ -143,10 +158,8 @@ fn epoch0_datagram_is_rejected_after_the_discard_action_is_applied() {
         "grace içinde epoch-0 düştü"
     );
 
-    // Grace'i tüket.
-    for _ in 0..GRACE_MIN_PACKETS {
-        driver.on_grace_tick();
-    }
+    // Grace'i tüket (yalnız geçerli epoch-1 paketleri sayılır).
+    let next = driver.exhaust_grace(&mut peer, 5);
     assert!(
         driver.applied.contains(&EpochAction::DiscardEpoch0Recv),
         "discard aksiyonu sürücüye ulaşmadı"
@@ -158,7 +171,7 @@ fn epoch0_datagram_is_rejected_after_the_discard_action_is_applied() {
         WireError::EpochNotAccepted(0),
         "discard sonrası epoch-0 hâlâ kabul ediliyor — rotasyon anlamsız"
     );
-    let e1_after = peer.seal(&fec(), args(5, 1)).expect("seal e1").bytes;
+    let e1_after = peer.seal(&fec(), args(next, 1)).expect("seal e1").bytes;
     assert!(
         driver.protector.open(&e1_after).is_ok(),
         "discard epoch-1'i de öldürdü"
@@ -169,14 +182,11 @@ fn epoch0_datagram_is_rejected_after_the_discard_action_is_applied() {
 fn discard_is_irreversible_within_the_session() {
     // Eski anahtarın "geçersizleşmesi" kalıcı olmalıdır. Discard sonrası gelen bir epoch-0
     // seli hiçbir koşulda kabulü geri açmamalı (state-machine geri dönüşü yok).
-    let mut driver = MinimalEpochDriver::responder(GRACE_MIN_PACKETS);
+    let mut driver = MinimalEpochDriver::responder();
     let mut peer = peer();
-    driver.on_valid_epoch1_received();
-    for _ in 0..GRACE_MIN_PACKETS {
-        driver.on_grace_tick();
-    }
+    let next = driver.exhaust_grace(&mut peer, 1);
 
-    for pn in 10..40u64 {
+    for pn in next..next + 30 {
         let d = peer.seal(&fec(), args(pn, 0)).expect("seal").bytes;
         assert_eq!(
             driver.protector.open(&d).unwrap_err(),
@@ -184,8 +194,13 @@ fn discard_is_irreversible_within_the_session() {
             "pn={pn}: epoch-0 kabulü geri açıldı"
         );
     }
-    // Ek grace tick'leri de durumu değiştirmemeli (idempotent Discarded).
-    driver.on_grace_tick();
+    // Ek geçerli epoch-1 paketleri ve zaman da durumu değiştirmemeli (idempotent Discarded).
+    let d = peer
+        .seal(&fec(), args(next + 30, 1))
+        .expect("seal e1")
+        .bytes;
+    driver.deliver_epoch1(&d);
+    assert_eq!(driver.machine.on_time(Duration::MAX), None);
     assert_eq!(driver.machine.recv0(), RecvEpoch0::Discarded);
 }
 
@@ -218,26 +233,41 @@ fn discard_also_drops_the_epoch0_receive_key_not_just_the_accept_flag() {
 }
 
 #[test]
-fn initiator_never_starts_grace_or_discards() {
-    // Rol asimetrisi (§4-B3): grace YALNIZ Responder'da başlar. Initiator'da epoch-0 recv
-    // discard'ı bu makine tarafından üretilmez — üretilirse Alice kendi epoch-0 alımını
-    // erken kapatır ve Bob'un gecikmiş epoch-0 paketleri düşer.
-    let mut m = DhEpochMachine::new(Role::Initiator, GRACE_MIN_PACKETS);
+fn initiator_grace_starts_only_after_the_peer_switches() {
+    // ~~Rol asimetrisi (§4-B3): grace YALNIZ Responder'da başlar.~~ [2026-10-08 A5.4 — YORUM]
+    // Initiator'ın epoch-0 ALIMI da aynı kuralla kapanır, ama yalnız Bob epoch-1'e geçtikten SONRA
+    // (Bob'dan gelen ilk geçerli epoch-1 paketi = #1): öncesinde Bob epoch-0'da gönderir ve Alice'in
+    // epoch-0 alımı açık kalmalıdır — erken kapanırsa Bob'un epoch-0 paketleri düşer.
+    let mut m = DhEpochMachine::new(Role::Initiator);
     assert!(
-        m.on_valid_epoch1_received().is_empty(),
-        "Initiator grace başlattı"
+        m.on_valid_epoch1_received(Duration::ZERO).is_empty(),
+        "epoch-1 anahtarı yokken grace başladı"
     );
     assert_eq!(
         m.on_response_received(),
         Some(EpochAction::InstallEpoch1AndSend)
     );
-    for _ in 0..(GRACE_MIN_PACKETS * 2) {
-        assert_eq!(m.on_grace_tick(), None, "Initiator discard üretti");
-    }
+    assert_eq!(
+        m.on_time(Duration::MAX),
+        None,
+        "grace başlamadan zaman kapatmaz"
+    );
     assert_eq!(
         m.recv0(),
         RecvEpoch0::Accepting,
-        "Initiator epoch-0 kabulü kapandı"
+        "Bob geçmeden Initiator epoch-0 kabulü kapandı"
+    );
+    // Bob geçti: ilk geçerli epoch-1 paketi → grace (#1), gönderim zaten epoch-1.
+    assert_eq!(
+        m.on_valid_epoch1_received(Duration::ZERO),
+        vec![EpochAction::StartGrace]
+    );
+    for _ in 2..GRACE_MIN_PACKETS {
+        assert!(m.on_valid_epoch1_received(Duration::ZERO).is_empty());
+    }
+    assert_eq!(
+        m.on_valid_epoch1_received(Duration::ZERO),
+        vec![EpochAction::DiscardEpoch0Recv]
     );
 }
 
@@ -245,7 +275,7 @@ fn initiator_never_starts_grace_or_discards() {
 fn epoch1_pn_continues_from_epoch0() {
     // §4 EPOCH-PN-INIT (2026-10-06): PN sayacı epoch'lar boyunca SÜREKLİ, replay penceresi TEK.
     // Discard yalnız epoch-0 ANAHTARINI kapatır; pencere epoch-0'ın ilerlemişliğinden devam eder.
-    let mut driver = MinimalEpochDriver::responder(GRACE_MIN_PACKETS);
+    let mut driver = MinimalEpochDriver::responder();
     let mut peer = peer();
 
     // Pencereyi epoch-0'da yüksek bir PN'e taşı.
@@ -253,21 +283,17 @@ fn epoch1_pn_continues_from_epoch0() {
         let d = peer.seal(&fec(), args(pn, 0)).expect("seal").bytes;
         driver.protector.open(&d).expect("epoch-0 open");
     }
-    driver.on_valid_epoch1_received();
-    for _ in 0..GRACE_MIN_PACKETS {
-        driver.on_grace_tick();
-    }
-
     // Gönderen epoch-1'de sayacı geri alamaz.
     assert!(
         peer.seal(&fec(), args(0, 1)).is_err(),
         "epoch-1 PN 0'dan yeniden başladı"
     );
-    // epoch-1 son PN'den +1 ile devam eder.
+    // epoch-1 son PN'den +1 ile devam eder; onaylayan paket budur.
     let d = peer.seal(&fec(), args(21, 1)).expect("seal e1 pn=21").bytes;
-    assert!(
-        driver.protector.open(&d).is_ok(),
-        "epoch-1 devam PN'i reddedildi"
-    );
+    driver.deliver_epoch1(&d);
     assert_eq!(driver.protector.recv_expected_pn(), 22);
+    // Grace boyunca ve sonrasında pencere TEK ve süreklidir.
+    let next = driver.exhaust_grace(&mut peer, 22);
+    assert_eq!(driver.protector.recv_expected_pn(), next);
+    assert_eq!(driver.machine.recv0(), RecvEpoch0::Discarded);
 }

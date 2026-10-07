@@ -300,30 +300,19 @@ jobs:
             *) echo "::error title=TEST_FAILURE::seam real hedefi beklenmeyen çıkış kodu $code"; exit 1 ;;
           esac
 
-      # S3 (Transport↔Crypto) conformance-core — aynı çıkış kodu sözlüğü. Gerçek kripto (A5)
-      # inene kadar real = 3 (GAP-S3-REAL-A5).
+      # S3 (Transport↔Crypto) conformance-core — aynı çıkış kodu sözlüğü. [2026-10-08, L-A5c PR-2]
+      # Gerçek kripto kayıtlı: real = 0 ZORUNLU (A5b PacketProtection + A5c SessionControl, H-DEMUX,
+      # epoch matrisi `real_epoch_*` — eski `machine` hedefi kaldırıldı, beyanlı kırmızı hücre yok).
       - name: S3 hedef = mock
         run: scripts/ci/noise-conformance.sh --target mock
-      # A3.2 epoch matrisi: mevcut epoch_machine.rs üstünde; kırmızı hücreler beyanlıdır (çıktıda listelenir).
-      - name: S3 hedef = machine (epoch matrisi)
-        run: scripts/ci/noise-conformance.sh --target machine
       - name: S3 hedef = identity (PoC no-op seam; H-CTX)
         run: scripts/ci/noise-conformance.sh --target identity
       # G-S3 kanıtı: Python referansından üretilen SSD1 vektörleri ↔ mevcut Rust mühür yolu
       # (bayt-özdeş seal + aynı open kararları). 0 test koşarsa kırmızı.
       - name: S3 vektörler = SSD1 ↔ LegacySessionProtector
         run: scripts/ci/noise-conformance.sh --target vectors
-      - name: S3 hedef = real (bugün beyan edilmiş boşluk)
-        run: |
-          set +e
-          scripts/ci/noise-conformance.sh --target real
-          code=$?
-          set -e
-          case "$code" in
-            0) echo "gerçek kripto koştu ve yeşil" ;;
-            3) echo "::notice title=SEAM_GAP::gerçek kripto yok — GAP-S3-REAL-A5 beyanlı (çıkış 3)" ;;
-            *) echo "::error title=TEST_FAILURE::S3 real hedefi beklenmeyen çıkış kodu $code"; exit 1 ;;
-          esac
+      - name: S3 hedef = real (gerçek kripto — 0 zorunlu)
+        run: scripts/ci/noise-conformance.sh --target real
 
   # ── Sonuç sınıflandırması: infra/billing hatası ile korelasyon hatası KARIŞMASIN ──
   ci-verdict:

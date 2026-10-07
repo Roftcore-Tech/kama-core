@@ -475,6 +475,9 @@ struct OpenOk {
     pn: PrecheckedPn,
     epoch: u8,
     frame: Vec<u8>,
+    /// Denenen alım anahtarı sayısı (legacy grace ≤ 2; extended hep 1).
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+    key_trials: u8,
 }
 
 fn cipher_from(key: &Zeroizing<[u8; KEY_LEN]>) -> ChaCha20Poly1305 {
@@ -528,12 +531,13 @@ impl SessionCrypto {
         sealed.map_err(|_| SealError::FrameTooLarge)
     }
 
-    /// Legacy alımda TEK anahtar (L-A5b): 22 B zarfta epoch alanı YOKTUR → kurulu ve kabul edilen
-    /// EN YENİ alım epoch'u. Grace içindeki ≤2 anahtar denemesi (ccr §35.8) L-A5c'nindir.
-    fn legacy_recv_epoch(&self) -> Option<u8> {
+    /// Legacy alımın aday epoch'ları: 22 B zarfta epoch alanı YOKTUR → kurulu ve kabul edilen alım
+    /// epoch'ları, EN YENİ ÖNCE. ~~Legacy alımda TEK anahtar (L-A5b)~~ [A5.4, L-A5c] grace içinde
+    /// ≤ 2 anahtar denenir (ccr §35.8); açan anahtarın sayacı TEK pencereye commit edilir.
+    fn legacy_recv_epochs(&self) -> impl Iterator<Item = u8> + '_ {
         [DH_EPOCH_1, DH_EPOCH_0]
             .into_iter()
-            .find(|&e| self.recv_accepts[idx(e)] && self.recv[idx(e)].is_some())
+            .filter(|&e| self.recv_accepts[idx(e)] && self.recv[idx(e)].is_some())
     }
 
     /// SAF açma aşaması (noise-wire §4-ORDER 1–5; identity §15.5 P0-8): parse → reconstruct →
@@ -553,22 +557,34 @@ impl SessionCrypto {
                 }
                 let candidate = self.replay.reconstruct(u64::from(header.seq16));
                 let pn = self.replay.precheck(candidate)?;
-                let epoch = self
-                    .legacy_recv_epoch()
-                    .ok_or(WireError::EpochKeysMissing)?;
-                let cipher = self.recv[idx(epoch)]
-                    .as_ref()
-                    .ok_or(WireError::EpochKeysMissing)?;
-                let aad = LegacyAadFields {
-                    protocol_version: *protocol_version,
-                    cipher_suite_id: *cipher_suite_id,
-                    // Alınan paket eşin yönündedir (ccr §35.9 cross-direction ayrımı).
-                    direction_code: send_direction.opposite().code(),
-                    epoch: u16::from(epoch),
-                    session_id_internal,
-                };
-                let frame = open_legacy(cipher, &aad, candidate, wire)?;
-                Ok(OpenOk { pn, epoch, frame })
+                let mut key_trials = 0u8;
+                let mut last = WireError::EpochKeysMissing;
+                for epoch in self.legacy_recv_epochs() {
+                    let Some(cipher) = self.recv[idx(epoch)].as_ref() else {
+                        continue;
+                    };
+                    key_trials += 1;
+                    let aad = LegacyAadFields {
+                        protocol_version: *protocol_version,
+                        cipher_suite_id: *cipher_suite_id,
+                        // Alınan paket eşin yönündedir (ccr §35.9 cross-direction ayrımı).
+                        direction_code: send_direction.opposite().code(),
+                        epoch: u16::from(epoch),
+                        session_id_internal,
+                    };
+                    match open_legacy(cipher, &aad, candidate, wire) {
+                        Ok(frame) => {
+                            return Ok(OpenOk {
+                                pn,
+                                epoch,
+                                frame,
+                                key_trials,
+                            })
+                        }
+                        Err(e) => last = e,
+                    }
+                }
+                Err(last)
             }
             EnvelopeProfile::Extended { h_ext } => {
                 let outer = parse_extended(wire)?;
@@ -586,7 +602,12 @@ impl SessionCrypto {
                 let candidate = self.replay.reconstruct(u64::from(outer.pn_trunc));
                 let pn = self.replay.precheck(candidate)?;
                 let frame = open_extended(cipher, candidate, wire)?;
-                Ok(OpenOk { pn, epoch, frame })
+                Ok(OpenOk {
+                    pn,
+                    epoch,
+                    frame,
+                    key_trials: 1,
+                })
             }
         }
     }
@@ -632,7 +653,6 @@ impl SessionCrypto {
 ///   tavanı) arkasında çağırır. Tablo bu kapılarla sınırlıdır; ayrı tavan sabiti yoktur.
 /// * **Olay kuyruğu:** bu katmanın tek üreticisi `RenewRequired`'dır (oturum başına en çok bir
 ///   kez; `close` o oturumun bekleyen `RenewRequired`'ını düşürür) → kuyruk ≤ canlı oturum sayısı.
-#[derive(Default)]
 pub struct NoiseWireProtection {
     sessions: BTreeMap<SessionHandle, SessionCrypto>,
     /// Wire tutamacı (`hub_handle` / `h_ext`) → oturum (decrypt ÖNCESİ demux; noise-wire §2.5).
@@ -643,9 +663,16 @@ pub struct NoiseWireProtection {
     hub_next_pn: u64,
     /// Crypto → Transport olayları (L-A5c'nin `SessionControl::poll_event`'i boşaltır).
     events: VecDeque<SessionEvent>,
+    /// Oturum kontrol düzlemi (A5.5, `crate::session_control`). `None` = yalnız `PacketProtection`
+    /// (test kurulumu, [`NoiseWireProtection::new`]); ürün kurulumu
+    /// [`NoiseWireProtection::with_control`] ile düzlemi ZORUNLU kurar.
+    pub(crate) control: Option<Box<crate::session_control::ControlPlane>>,
     /// `seal()`'e en son verilen bağlam (S3 K1 kayıt kancası; YALNIZ test).
     #[cfg(feature = "test-util")]
     last_seal_ctx: Option<ProtectionContext>,
+    /// Son açmada denenen alım anahtarı sayısı (A5.4 hücre 9 gözlemi; YALNIZ test).
+    #[cfg(feature = "test-util")]
+    last_key_trials: u8,
 }
 
 impl fmt::Debug for NoiseWireProtection {
@@ -655,14 +682,84 @@ impl fmt::Debug for NoiseWireProtection {
             .field("sessions", &self.sessions.len())
             .field("hub_next_pn", &self.hub_next_pn)
             .field("pending_events", &self.events.len())
+            .field("session_control", &self.control.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl NoiseWireProtection {
+    /// Boş nesne — kurucuların ortak tabanı (düzlemsiz).
+    pub(crate) fn empty() -> Self {
+        Self {
+            sessions: BTreeMap::new(),
+            by_wire_handle: BTreeMap::new(),
+            next_session_raw: 0,
+            hub_next_pn: 0,
+            events: VecDeque::new(),
+            control: None,
+            #[cfg(feature = "test-util")]
+            last_seal_ctx: None,
+            #[cfg(feature = "test-util")]
+            last_key_trials: 0,
+        }
+    }
+
+    /// YALNIZ `PacketProtection` (oturum kontrolü YOK; her `SessionControl` komutu `Failed`).
+    /// YALNIZ TEST: ürün kurulumu eş dizini ister — [`NoiseWireProtection::with_control`] (G1).
+    /// `Default` BİLEREK yok: dizinsiz bir ürün kurulumu yolu açardı.
+    #[cfg(any(test, feature = "test-util"))]
+    #[allow(clippy::new_without_default)]
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::empty()
+    }
+
+    /// Yeni oturum tutamacı basar (tutamaç tekrar kullanılmaz). Uzay tükendiyse `None`.
+    pub(crate) fn mint_handle(&mut self) -> Option<SessionHandle> {
+        let raw = self.next_session_raw;
+        let after = raw.checked_add(1)?;
+        self.next_session_raw = after;
+        Some(SessionHandle::from_raw(raw))
+    }
+
+    /// Oturum protector'da kurulu mu.
+    pub(crate) fn sessions_contains(&self, h: SessionHandle) -> bool {
+        self.sessions.contains_key(&h)
+    }
+
+    /// Wire tutamacı bir oturumun demux kaydında mı.
+    pub(crate) fn wire_handle_in_use(&self, raw: u32) -> bool {
+        self.by_wire_handle.contains_key(&raw)
+    }
+
+    /// Verilen (önceden basılmış) tutamaçla oturum kurar. Tutamaç ya da wire tutamacı başka bir
+    /// oturumdaysa `false`; state DEĞİŞMEZ.
+    #[must_use]
+    pub(crate) fn install_session_at(
+        &mut self,
+        h: SessionHandle,
+        material: SessionKeyMaterial,
+    ) -> bool {
+        let wire = material.profile.wire_handle();
+        if self.by_wire_handle.contains_key(&wire) || self.sessions.contains_key(&h) {
+            return false;
+        }
+        self.by_wire_handle.insert(wire, h);
+        self.sessions.insert(h, SessionCrypto::new(material));
+        true
+    }
+
+    /// `RenewRequired(h)`'nin TEK sefer kuralı (tavan ya da yaş, hangisi önce): bu çağrı ilk ise
+    /// `true`. Oturum protector'da yoksa (henüz kurulmamış) karar düzlemindir → `true`.
+    pub(crate) fn mark_renew_signalled(&mut self, h: SessionHandle) -> bool {
+        match self.sessions.get_mut(&h) {
+            Some(s) if s.renew_signalled => false,
+            Some(s) => {
+                s.renew_signalled = true;
+                true
+            }
+            None => true,
+        }
     }
 
     // ── Kurulum API'si (pub(crate): L-A5c'nin SessionControl'ü çağırır) ──────────────────────
@@ -675,17 +772,14 @@ impl NoiseWireProtection {
         &mut self,
         material: SessionKeyMaterial,
     ) -> Option<SessionHandle> {
-        let wire = material.profile.wire_handle();
-        if self.by_wire_handle.contains_key(&wire) {
+        if self
+            .by_wire_handle
+            .contains_key(&material.profile.wire_handle())
+        {
             return None;
         }
-        let raw = self.next_session_raw;
-        let after = raw.checked_add(1)?;
-        let h = SessionHandle::from_raw(raw);
-        self.next_session_raw = after;
-        self.by_wire_handle.insert(wire, h);
-        self.sessions.insert(h, SessionCrypto::new(material));
-        Some(h)
+        let h = self.mint_handle()?;
+        self.install_session_at(h, material).then_some(h)
     }
 
     /// Epoch-1 trafik anahtarlarını kurar (ccr §35.2.1 D5); kurulunca epoch-1 alımı kabul edilir
@@ -786,7 +880,7 @@ impl NoiseWireProtection {
         self.events.pop_front()
     }
 
-    fn push_event(&mut self, ev: SessionEvent) {
+    pub(crate) fn push_event(&mut self, ev: SessionEvent) {
         self.events.push_back(ev);
     }
 
@@ -872,6 +966,10 @@ impl NoiseWireProtection {
         let full_wire_pn = ok.pn.full_pn();
         // noise-wire §4-ORDER (6): AEAD BAŞARISINDAN SONRA commit — TEK mutasyon.
         s.replay.commit(ok.pn);
+        #[cfg(feature = "test-util")]
+        {
+            self.last_key_trials = ok.key_trials;
+        }
         Some(Opened {
             ctx: ProtectionContext::Session(h),
             frame: ok.frame,
@@ -1011,9 +1109,20 @@ impl NoiseWireProtection {
             .map(|(h, s)| format!("{h:?}={}", s.fingerprint()))
             .collect();
         format!(
-            "sessions={sessions:?}|wire={:?}|next_raw={}|hub_pn={}|events={:?}",
-            self.by_wire_handle, self.next_session_raw, self.hub_next_pn, self.events
+            "sessions={sessions:?}|wire={:?}|next_raw={}|hub_pn={}|events={:?}|control={}",
+            self.by_wire_handle,
+            self.next_session_raw,
+            self.hub_next_pn,
+            self.events,
+            self.control_fingerprint()
         )
+    }
+
+    /// Son başarılı açmada denenen alım anahtarı sayısı (legacy grace ≤ 2; A5.4 hücre 9).
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn last_key_trials(&self) -> u8 {
+        self.last_key_trials
     }
 
     /// `seal()`'e en son verilen bağlam (S3 K1: bağlam çağırandan gelir, seam'e DEĞİŞMEDEN ulaşır).
@@ -1045,7 +1154,15 @@ impl PacketProtection for NoiseWireProtection {
         // Demux ÖNCE: kayıtlı tutamaç → yalnız o oturum (asla HubChannel'a düşmez).
         let session = wire_handle(wire).and_then(|w| self.by_wire_handle.get(&w).copied());
         match session {
-            Some(h) => self.open_session(h, wire),
+            Some(h) => {
+                // A5.4: zaman kuralları (`T_g`) pakete bakmadan ÖNCE uygulanır — süresi dolmuş
+                // grace'te gecikmiş epoch-0 paketi kabul edilmez.
+                self.session_tick(h);
+                let opened = self.open_session(h, wire)?;
+                // Yalnız AEAD-geçerli paket epoch makinesini / onayı / drain'i sürer.
+                self.after_session_open(h, opened.meta.dh_epoch);
+                Some(opened)
+            }
             None => Self::open_hub(wire),
         }
     }

@@ -1,7 +1,9 @@
 //! A4.4 satırlarının ortak fikstürü: kurulu bir uç çifti ve küçük yardımcılar.
 
 use kama_contracts::handles::{PeerRef, SessionHandle};
-use kama_contracts::s3::{ProtectionContext, SessionCommand, SessionControl, SessionResult};
+use kama_contracts::s3::{
+    HubHandle, ProtectionContext, SessionCommand, SessionControl, SessionResult,
+};
 
 use crate::mock_transport::MockTransport;
 use crate::target::{ProtectionTarget, S3Target};
@@ -56,6 +58,9 @@ pub struct Pair<T: ProtectionTarget> {
 pub const PEER: u64 = 0x00A1_1CE0;
 /// Başlatan ucun (Alice) kimliği — `PEER`'den (Bob) farklı [s3 v1.1].
 pub const INITIATOR: u64 = 0x0011_7A70;
+/// El sıkışmanın iki uca bağladığı hub tutamacı (HANDLE_ASSIGN iki tarafa AYNI değeri verir —
+/// noise-wire §2.55; gerçek hedefte tutamaçsız oturum mühürlemez).
+pub const PAIR_HUB_HANDLE: u32 = 0x0000_C0DE;
 
 pub fn established<T: ProtectionTarget>() -> Pair<T> {
     let (a, b, h) = T::established();
@@ -94,6 +99,16 @@ pub fn handshake<T: S3Target>() -> (T::Crypto, T::Crypto, SessionHandle) {
         pending, h,
         "Established, Initiated'daki bekleyen tutamaçla gelmeli"
     );
+    for c in [&mut a, &mut b] {
+        assert_eq!(
+            c.command(SessionCommand::AssignHandle {
+                session: h,
+                hub_handle: HubHandle::from_raw(PAIR_HUB_HANDLE),
+            }),
+            SessionResult::NoOutput,
+            "kurulu oturuma hub tutamacı bağlanmalı"
+        );
+    }
     // Kurulum olaylarını boşalt: satırlar yalnız kendi ürettikleri olaylara bakar.
     while a.poll_event().is_some() {}
     while b.poll_event().is_some() {}

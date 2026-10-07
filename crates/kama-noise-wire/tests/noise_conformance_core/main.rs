@@ -32,10 +32,28 @@ mod ssd1_vectors;
 mod target;
 
 noise_demux_suite!(mock_demux, crate::target::MockTarget);
+noise_demux_suite!(real_demux_legacy, crate::target::RealLegacyControlTarget);
+noise_demux_suite!(
+    real_demux_extended,
+    crate::target::RealExtendedControlTarget
+);
 
-// A3.2 — hedef MEVCUT `epoch_machine.rs` (+ test tutkalı); mock/real ayrımının dışındadır çünkü
-// `MockCrypto` epoch geçişini modellemez. A5.4'te aynı hücreler gerçek oturuma (`real_epoch`) koşar.
-noise_epoch_suite!(machine_epoch;
+// A3.2 → A5.4 — epoch matrisi GERÇEK ürün yolunda (iki zarf kipi); ~~hedef MEVCUT
+// `epoch_machine.rs` (+ test tutkalı)~~ tutkal kalktı (L-A5c PR-2). Önceki `machine_epoch` hedefi
+// kaldırıldı: aynı hücreler artık `real_epoch_*` altında koşar.
+noise_epoch_suite!(real_epoch_legacy, kama_noise_wire::session_control::EnvelopeKind::Legacy;
+    cell_1_response_normal,
+    cell_2_response_lost,
+    cell_3_response_reordered,
+    cell_4_invalid_epoch1_is_inert,
+    cell_5_count_closes_grace,
+    cell_5b_n_g_is_fixed,
+    cell_6_time_closes_grace,
+    cell_7_whichever_first,
+    cell_8_commit_goes_to_the_single_window,
+    cell_9_at_most_two_key_trials,
+);
+noise_epoch_suite!(real_epoch_extended, kama_noise_wire::session_control::EnvelopeKind::Extended;
     cell_1_response_normal,
     cell_2_response_lost,
     cell_3_response_reordered,
@@ -48,23 +66,20 @@ noise_epoch_suite!(machine_epoch;
     cell_9_at_most_two_key_trials,
 );
 
-/// `real` hedefinin SessionControl ailesi BEYAN EDİLMİŞ bir boşluktur (L-A5c), sessiz atlama değil:
-/// gerçek hedef bugün yalnız PacketProtection ailesiyle kayıtlıdır. Kontrol ailesi gerçek hedefe
-/// kaydedildiği an bu sınama kırmızıya döner — kapsam sessizce değişemez. (Ad `real_` içerir:
-/// `--target real` koşusu boşluğu da listeler.)
+/// Gerçek hedef İKİ aileyle de kayıtlıdır [2026-10-08, L-A5c PR-2]: PacketProtection (paket
+/// hedefleri) ve SessionControl + H-DEMUX (kontrol hedefleri). ~~`real` hedefinin SessionControl
+/// ailesi BEYAN EDİLMİŞ bir boşluktur (L-A5c)~~ — boşluk kapandı; aile kaydı düşerse bu sınama
+/// kırmızıya döner. (Ad `real_` içerir: `--target real` koşusu kaydı da listeler.)
 #[test]
-fn session_control_on_real_is_a_declared_gap() {
-    use target::{Family, TargetKind, GAP_REAL_SESSION_CONTROL};
-    let real: Vec<_> = target::REGISTERED_TARGETS
-        .iter()
-        .filter(|r| r.kind == TargetKind::Real)
-        .collect();
-    assert!(!real.is_empty(), "gerçek hedef kayıtlı olmalı (L-A5b)");
-    assert!(
-        real.iter().all(|r| r.family == Family::PacketProtection),
-        "gerçek hedefe SessionControl ailesi kaydedildi: {GAP_REAL_SESSION_CONTROL} kapandı — bu \
-         sınamayı kaldır, real_* kontrol süitlerini ve demux'u ekle"
-    );
+fn real_covers_both_families() {
+    use target::{Family, TargetKind};
+    let real = |f: Family| {
+        target::REGISTERED_TARGETS
+            .iter()
+            .any(|r| r.kind == TargetKind::Real && r.family == f)
+    };
+    assert!(real(Family::PacketProtection), "gerçek paket hedefi yok");
+    assert!(real(Family::SessionControl), "gerçek kontrol hedefi yok");
 }
 
 // ── A4.4 — yedi S3 sözleşme satırı (KM-SEAM-TC-001 §6) ──────────────────────────────────────
@@ -131,6 +146,35 @@ macro_rules! noise_s3_suite {
             }
         }
     };
+    // Yalnız SessionControl ailesi (gerçek kontrol hedefleri — L-A5c PR-2; paket satırları aynı
+    // uygulamanın paket hedeflerinde koşar).
+    ($suite:ident, $target:ty, control_only) => {
+        mod $suite {
+            #[test]
+            fn h_retry_alice() {
+                crate::s3_retry::alice_retransmits_cached_init_and_new_initiate_differs::<$target>(
+                );
+            }
+            #[test]
+            fn h_retry_bob() {
+                crate::s3_retry::bob_maps_duplicate_init_to_same_session_and_cached_response::<
+                    $target,
+                >();
+            }
+            #[test]
+            fn h_no_mutate_failures_leave_state_byte_identical() {
+                crate::s3_no_mutate::failures_leave_state_byte_identical::<$target>();
+            }
+            #[test]
+            fn h_handle_closed_handle_cannot_seal() {
+                crate::s3_handle::closed_handle_cannot_seal::<$target>();
+            }
+            #[test]
+            fn h_handle_pending_close_and_assign_handle() {
+                crate::s3_handle::pending_close_and_assign_handle::<$target>();
+            }
+        }
+    };
     // Yalnız PacketProtection ailesi; HubChannel no-op (gerçek hedef bugün — L-A5b).
     ($suite:ident, $target:ty, packet_only) => {
         mod $suite {
@@ -154,6 +198,16 @@ noise_s3_suite!(
     real_s3_extended,
     crate::target::RealExtendedTarget,
     packet_only
+);
+noise_s3_suite!(
+    real_s3_legacy_control,
+    crate::target::RealLegacyControlTarget,
+    control_only
+);
+noise_s3_suite!(
+    real_s3_extended_control,
+    crate::target::RealExtendedControlTarget,
+    control_only
 );
 
 // PoC `IdentitySeam` hedefi (H-CTX'in bağlam-kaydı ve no-op yarısı) `client-core`'dadır:

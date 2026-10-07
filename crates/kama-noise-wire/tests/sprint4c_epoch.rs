@@ -1,6 +1,8 @@
 //! Sprint-4c: dh_epoch 0→1 confirmation-safe machine (§4-B3) + protector-entegrasyonu (PN epoch'lar boyunca sürekli).
 
-use kama_noise_wire::epoch_machine::GRACE_MIN_PACKETS;
+use core::time::Duration;
+
+use kama_noise_wire::epoch_machine::{GRACE_MIN_PACKETS, GRACE_T_G};
 use kama_noise_wire::{
     DhEpochMachine, EpochAction, KamaNoiseWireProtector, RecvEpoch0, Role, SealArgs,
 };
@@ -27,7 +29,7 @@ fn fec() -> UnsealedTransportPacket {
 // ── Adım-2 (Alice): RESPONSE alınca send_epoch 0→1 + InstallEpoch1AndSend ──
 #[test]
 fn initiator_response_switches_send_epoch() {
-    let mut m = DhEpochMachine::new(Role::Initiator, 100);
+    let mut m = DhEpochMachine::new(Role::Initiator);
     assert_eq!(m.send_epoch(), 0);
     assert_eq!(
         m.on_response_received(),
@@ -42,7 +44,7 @@ fn initiator_response_switches_send_epoch() {
 // ── RESPONSE-KAYIP: Alice epoch-0'da-kalır ("epoch-0-usable" garantisi) ──
 #[test]
 fn response_loss_keeps_epoch0() {
-    let m = DhEpochMachine::new(Role::Initiator, 100);
+    let m = DhEpochMachine::new(Role::Initiator);
     // on_response_received hiç çağrılmadı → send_epoch=0, epoch-0-recv-Accepting.
     assert_eq!(m.send_epoch(), 0);
     assert!(m.recv_accepts(0));
@@ -52,11 +54,15 @@ fn response_loss_keeps_epoch0() {
 // ── Adım-3/4 (Bob): ilk-geçerli-epoch-1 → send=1 + grace-başlar ──
 #[test]
 fn responder_epoch1_recv_starts_grace() {
-    let mut m = DhEpochMachine::new(Role::Responder, 100);
+    let mut m = DhEpochMachine::new(Role::Responder);
     assert_eq!(m.send_epoch(), 0);
     // Bob RESPONSE-göndermez → on_response NO-OP.
     assert_eq!(m.on_response_received(), None);
-    let actions = m.on_valid_epoch1_received();
+    // RESPONSE gönderilirken epoch-1 ALIM anahtarları kurulur; gönderim epoch-0'da kalır (adım-1).
+    m.on_response_sent();
+    assert_eq!(m.send_epoch(), 0);
+    assert!(m.recv_accepts(1));
+    let actions = m.on_valid_epoch1_received(Duration::ZERO);
     assert_eq!(
         actions,
         vec![EpochAction::InstallEpoch1AndSend, EpochAction::StartGrace]
@@ -66,39 +72,62 @@ fn responder_epoch1_recv_starts_grace() {
     // Grace boyunca epoch-0 HÂLÂ kabul (adım-4: grace-aktif ama discard-değil).
     assert!(m.recv_accepts(0));
     assert!(m.recv_accepts(1));
-    // İdempotent.
-    assert!(m.on_valid_epoch1_received().is_empty());
+    // Sonraki geçerli epoch-1 paketi yalnız sayımdır (eylem yok).
+    assert!(m.on_valid_epoch1_received(Duration::ZERO).is_empty());
 }
 
-// ── Adım-5: grace-tick tükenince epoch-0-recv discard ──
+// ── Adım-5: N_g geçerli epoch-1 paketi (onaylayan #1) epoch-0-recv'i discard eder ──
 #[test]
 fn grace_expiry_discards_epoch0() {
-    let mut m = DhEpochMachine::new(Role::Responder, GRACE_MIN_PACKETS);
-    m.on_valid_epoch1_received();
-    // GRACE_MIN_PACKETS-1 tick: hâlâ grace.
-    for _ in 0..(GRACE_MIN_PACKETS - 1) {
-        assert_eq!(m.on_grace_tick(), None);
+    let mut m = DhEpochMachine::new(Role::Responder);
+    m.on_response_sent();
+    let _ = m.on_valid_epoch1_received(Duration::ZERO); // onaylayan paket = #1
+                                                        // #2 .. #(N_g − 1): hâlâ grace.
+    for _ in 2..GRACE_MIN_PACKETS {
+        assert!(m.on_valid_epoch1_received(Duration::ZERO).is_empty());
         assert!(m.recv_accepts(0));
     }
-    // Son tick: discard.
-    assert_eq!(m.on_grace_tick(), Some(EpochAction::DiscardEpoch0Recv));
+    // N_g'inci paket: discard.
+    assert_eq!(
+        m.on_valid_epoch1_received(Duration::ZERO),
+        vec![EpochAction::DiscardEpoch0Recv]
+    );
     assert_eq!(m.recv0(), RecvEpoch0::Discarded);
     assert!(!m.recv_accepts(0), "grace-bitti → epoch-0-recv-discard");
     assert!(m.recv_accepts(1));
 }
 
-// ── Grace-budget GRACE_MIN_PACKETS'in altına düşürülemez (max clamp) ──
+// ── KS-GRACE-1: N_g SABİT (kurucu bütçesi yok) ve T_g süresi de kapatır; hangisi önce ──
 #[test]
-fn grace_min_clamp() {
-    let mut m = DhEpochMachine::new(Role::Responder, 1); // < GRACE_MIN
-    m.on_valid_epoch1_received();
-    let mut ticks = 0;
+fn n_g_is_exact_and_t_g_closes_grace() {
+    let mut m = DhEpochMachine::new(Role::Responder);
+    m.on_response_sent();
+    let mut counted = 0;
     while m.recv_accepts(0) {
-        m.on_grace_tick();
-        ticks += 1;
-        assert!(ticks <= GRACE_MIN_PACKETS + 1);
+        let _ = m.on_valid_epoch1_received(Duration::ZERO);
+        counted += 1;
+        assert!(counted <= GRACE_MIN_PACKETS, "N_g'de kapanmadı");
     }
-    assert_eq!(ticks, GRACE_MIN_PACKETS, "grace en-az GRACE_MIN_PACKETS");
+    assert_eq!(counted, GRACE_MIN_PACKETS, "onaylayan dahil tam N_g");
+
+    let mut t = DhEpochMachine::new(Role::Responder);
+    t.on_response_sent();
+    let start = Duration::from_secs(5);
+    let _ = t.on_valid_epoch1_received(start);
+    assert_eq!(
+        t.on_time(start + GRACE_T_G - Duration::from_millis(1)),
+        None
+    );
+    assert!(t.recv_accepts(0), "T_g dolmadan açık");
+    assert_eq!(
+        t.on_time(start + GRACE_T_G),
+        Some(EpochAction::DiscardEpoch0Recv)
+    );
+    assert!(!t.recv_accepts(0));
+    // Yeniden açılmaz.
+    let _ = t.on_valid_epoch1_received(start + GRACE_T_G * 2);
+    assert_eq!(t.on_time(start + GRACE_T_G * 3), None);
+    assert!(!t.recv_accepts(0));
 }
 
 // ── Entegrasyon: transition sonrası PN sayacı DEVAM eder (§4 EPOCH-PN-INIT, 2026-10-06) ──

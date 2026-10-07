@@ -5,11 +5,21 @@
 //! 2. Alice RESPONSE'u-alınca send_epoch[A→B]=1 + HEMEN epoch-1'de-≥1-paket (idle-deadlock-önlenir).
 //! 3. Bob İLK-GEÇERLİ-epoch-1-paketini-alınca Alice'in-RESPONSE'u-aldığını-ÖĞRENİR (implicit-confirmation).
 //! 4. Bob ANCAK-bundan-sonra epoch-0-recv-GRACE-başlatır + send_epoch[B→A]=1.
-//! 5. GRACE = max(4×sRTT, GRACE_MIN_PACKETS=64) [CAL — D1-ölçümle-kilitlenir]; bitince epoch-0-recv-discard.
+//! 5. GRACE — KS-GRACE-1 (2026-09-24; A5.4 2026-10-08 ürün yolunda): `N_g` = [`GRACE_N_G`] (64)
+//!    AEAD-geçerli epoch-1 paketi (onaylayan ilk paket #1) VEYA `T_g` = [`GRACE_T_G`] (30 s, monotonic,
+//!    onay anından), HANGİSİ ÖNCE; kapanınca epoch-0-recv-DISCARD, yeniden AÇILMAZ. sRTT bağı YOK:
+//!    ~~grace = max(4×sRTT, GRACE_MIN_PACKETS)~~ kurucu bütçe argümanı kaldırıldı (A5.4 hücre 5b).
 //!
 //! RESPONSE-kaybolursa: Alice-epoch-0'da-kalır, Bob-epoch-0-kabulü-SÜRER → "epoch-0-usable"-garantisi KORUNUR.
 //! PN sayacı epoch'lar boyunca SÜREKLİDİR: epoch-1 epoch-0'ın son PN'inden +1 ile devam eder; ayrı olan
-//! yalnız anahtardır (§4 EPOCH-PN-INIT, 2026-10-06). Deterministik (RNG-YOK).
+//! yalnız anahtardır (§4 EPOCH-PN-INIT, 2026-10-06). Deterministik (RNG-YOK); zaman çağırandan gelir
+//! (`now`: enjekte edilen monoton saatin değeri — `crate::clock`).
+//!
+//! **Alım yönü iki rolde de aynı kuralla kapanır [YORUM, A5.4]:** Initiator'ın epoch-0 alımı (Bob→Alice)
+//! Bob onaylayıp epoch-1'e geçtikten sonra gelen İLK geçerli epoch-1 paketiyle grace'e girer ve aynı
+//! `N_g`/`T_g` kuralıyla kapanır; aksi hâlde Alice'in epoch-0 alım anahtarı oturum boyunca canlı kalırdı.
+
+use core::time::Duration;
 
 /// Endpoint rolü (§0.7-A one-way zero-RTT: initiator SESSION_INIT gönderir).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,15 +33,16 @@ pub enum Role {
 /// epoch-0 recv-state (§4-B3 grace).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecvEpoch0 {
-    /// epoch-0 recv kabul-ediliyor (transition-öncesi / grace-boyunca).
+    /// epoch-0 recv kabul-ediliyor (transition-öncesi).
     Accepting,
-    /// grace-aktif: epoch-0 hâlâ-kabul ama bounded-geri-sayım (paket-eşdeğeri).
-    Grace { remaining_pkts: u32 },
-    /// grace-bitti: epoch-0 recv-state DISCARD (§4-B3 adım-5).
+    /// grace-aktif: epoch-0 hâlâ kabul. `counted` = sayılan AEAD-geçerli epoch-1 paketi (onaylayan
+    /// #1); `since` = grace'in başladığı monoton an.
+    Grace { counted: u32, since: Duration },
+    /// grace-bitti: epoch-0 recv-state DISCARD (§4-B3 adım-5). Geri dönüş YOK.
     Discarded,
 }
 
-/// Machine'in çağırana ürettiği eylem (engine protector'a uygular).
+/// Machine'in çağırana ürettiği eylem (oturum katmanı protector'a uygular).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EpochAction {
     /// epoch-1 anahtarları kur + HEMEN epoch-1'de-≥1-paket-gönder (idle-deadlock-önleme).
@@ -42,8 +53,12 @@ pub enum EpochAction {
     DiscardEpoch0Recv,
 }
 
-/// GRACE alt-sınır (§4-B3; paket-eşdeğeri). sRTT-tabanlı üst-değer [CAL] engine'de max()'lanır.
-pub const GRACE_MIN_PACKETS: u32 = 64;
+/// KS-GRACE-1 `N_g` = 64 — SABİT (yalnız AEAD-geçerli epoch-1 paketleri sayılır).
+pub const GRACE_N_G: u32 = 64;
+/// Eski ad (A5.4 öncesi "alt sınır"dı; artık `N_g`'nin TAM değeri) — mevcut tüketiciler için.
+pub const GRACE_MIN_PACKETS: u32 = GRACE_N_G;
+/// KS-GRACE-1 `T_g` = 30 s (monotonic; implicit confirmation anından).
+pub const GRACE_T_G: Duration = Duration::from_secs(30);
 
 /// dh_epoch 0→1 machine (direction-local). Deterministik; RNG-YOK.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,22 +67,23 @@ pub struct DhEpochMachine {
     send_epoch: u8,
     recv0: RecvEpoch0,
     epoch1_installed: bool,
-    grace_budget_pkts: u32,
 }
 
 impl DhEpochMachine {
-    /// `grace_budget_pkts` = max(4×sRTT-eşdeğeri, GRACE_MIN_PACKETS) [CAL — engine hesaplar].
     #[must_use]
-    pub fn new(role: Role, grace_budget_pkts: u32) -> Self {
+    pub fn new(role: Role) -> Self {
         Self {
             role,
             send_epoch: 0,
             recv0: RecvEpoch0::Accepting,
             epoch1_installed: false,
-            grace_budget_pkts: grace_budget_pkts.max(GRACE_MIN_PACKETS),
         }
     }
 
+    #[must_use]
+    pub fn role(&self) -> Role {
+        self.role
+    }
     #[must_use]
     pub fn send_epoch(&self) -> u8 {
         self.send_epoch
@@ -85,6 +101,14 @@ impl DhEpochMachine {
         }
     }
 
+    /// Responder'da epoch-1 alım anahtarları RESPONSE gönderilirken kurulur (Bob, Alice'in
+    /// RESPONSE sonrası epoch-1 paketlerini kabul edebilsin; gönderim epoch-0'da KALIR — adım-1).
+    pub fn on_response_sent(&mut self) {
+        if self.role == Role::Responder {
+            self.epoch1_installed = true;
+        }
+    }
+
     /// **Adım-2 (Initiator):** RESPONSE alındı → send_epoch=1 + epoch-1-kur + HEMEN-gönder.
     /// (Responder'da NO-OP: RESPONSE'u Bob göndermez, almaz.) İdempotent.
     pub fn on_response_received(&mut self) -> Option<EpochAction> {
@@ -96,32 +120,52 @@ impl DhEpochMachine {
         Some(EpochAction::InstallEpoch1AndSend)
     }
 
-    /// **Adım-3/4 (Responder):** İLK-GEÇERLİ-epoch-1-paket alındı → implicit-confirmation → send_epoch=1 +
-    /// epoch-1-kur + epoch-0-recv-GRACE-başlat. (Initiator'da NO-OP.) İdempotent (ilk-kez).
-    pub fn on_valid_epoch1_received(&mut self) -> Vec<EpochAction> {
-        if self.role != Role::Responder || self.send_epoch == 1 {
+    /// AEAD-GEÇERLİ bir epoch-1 paketi alındı (`now` = monoton an). Geçersiz paket bu yola GİRMEZ
+    /// (çağıranın sözleşmesi: yalnız açılmış paket).
+    ///
+    /// * İlk paket — Responder: implicit confirmation (adım-3/4) → send_epoch=1 + grace (#1);
+    ///   Initiator: karşı yön geçti → grace (#1).
+    /// * Grace içinde sonraki her paket bir sayımdır; `N_g`'inci pakette discard.
+    /// * Discard sonrası: hiçbir şey (yeniden açılmaz).
+    pub fn on_valid_epoch1_received(&mut self, now: Duration) -> Vec<EpochAction> {
+        if !self.epoch1_installed {
             return Vec::new();
         }
-        self.send_epoch = 1;
-        self.epoch1_installed = true;
-        self.recv0 = RecvEpoch0::Grace {
-            remaining_pkts: self.grace_budget_pkts,
-        };
-        vec![EpochAction::InstallEpoch1AndSend, EpochAction::StartGrace]
+        match self.recv0 {
+            RecvEpoch0::Accepting => {
+                let mut actions = Vec::with_capacity(2);
+                if self.role == Role::Responder && self.send_epoch == 0 {
+                    self.send_epoch = 1;
+                    actions.push(EpochAction::InstallEpoch1AndSend);
+                }
+                actions.push(EpochAction::StartGrace);
+                self.recv0 = RecvEpoch0::Grace {
+                    counted: 1,
+                    since: now,
+                };
+                actions
+            }
+            RecvEpoch0::Grace { counted, since } => {
+                let counted = counted.saturating_add(1);
+                if counted >= GRACE_N_G {
+                    self.recv0 = RecvEpoch0::Discarded;
+                    return vec![EpochAction::DiscardEpoch0Recv];
+                }
+                self.recv0 = RecvEpoch0::Grace { counted, since };
+                Vec::new()
+            }
+            RecvEpoch0::Discarded => Vec::new(),
+        }
     }
 
-    /// **Adım-5:** grace-boyunca gelen-her-paket bir tick düşer; sıfırlanınca epoch-0-recv-discard.
-    /// (Engine grace-aktifken her-alınan-pakette çağırır; alternatif sRTT-timer engine-tarafında.)
-    pub fn on_grace_tick(&mut self) -> Option<EpochAction> {
-        if let RecvEpoch0::Grace { remaining_pkts } = self.recv0 {
-            let left = remaining_pkts.saturating_sub(1);
-            if left == 0 {
+    /// Zaman girdisi: grace içinde `now − since ≥ T_g` → discard (`T_g` paket sayımından
+    /// bağımsız; hangisi önce).
+    pub fn on_time(&mut self, now: Duration) -> Option<EpochAction> {
+        if let RecvEpoch0::Grace { since, .. } = self.recv0 {
+            if now.saturating_sub(since) >= GRACE_T_G {
                 self.recv0 = RecvEpoch0::Discarded;
                 return Some(EpochAction::DiscardEpoch0Recv);
             }
-            self.recv0 = RecvEpoch0::Grace {
-                remaining_pkts: left,
-            };
         }
         None
     }

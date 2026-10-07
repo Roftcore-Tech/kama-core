@@ -3,55 +3,55 @@
   "seam": "KM-SEAM-TC-001",
   "spec_path": "docs/seams/KM-SEAM-TC-001.md",
   "suite": "crates/kama-noise-wire/tests/noise_conformance_core",
-  "_comment": "S3 §6 satırlarının kapsama beyanı. 'mock: green' yalnız SAHTENİN sözleşmeye uyduğunu söyler; kanıt değeri 'real' hedefi (A5) aynı gövdeleri koşunca doğar. Koşucu (noise-conformance.sh --target mock) şunları denetler: 'green' ve test_filter'lı her satırın en az bir testi LİSTELENİR; proof=trybuild satırının testi default-feature koşumunda KOŞAR; proof=layer_check satırı için layer_check.py KOŞAR. seam-api-drift.py --seam s3 bu satırları spec §6 ile karşılaştırır (alt satır biçimi: 'H-X/…').",
+  "_comment": "S3 §6 satırlarının kapsama beyanı. 'mock: green' yalnız SAHTENİN sözleşmeye uyduğunu söyler; kanıt değeri 'real' hedefi (A5) aynı gövdeleri koşunca doğar. Koşucu (noise-conformance.sh --target mock) şunları denetler: 'green' ve test_filter'lı her satırın en az bir testi LİSTELENİR; proof=trybuild satırının testi default-feature koşumunda KOŞAR; proof=layer_check satırı için layer_check.py KOŞAR. seam-api-drift.py --seam s3 bu satırları spec §6 ile karşılaştırır (alt satır biçimi: 'H-X/…'). [2026-10-08, L-A5c PR-2] real = green: aynı gövdeler GERÇEK hedefte koşar — PacketProtection satırları real_s3_legacy / real_s3_extended (L-A5b), SessionControl satırları real_s3_*_control, H-DEMUX real_demux_*, epoch matrisi real_epoch_* (A5.4; DECLARED_RED boş), SSD1 real_ssd1.",
   "rows": [
     {
       "id": "H-CTX",
       "test_filter": "h_ctx_",
       "mock": "green",
-      "real": "pending A5",
+      "real": "green",
       "note": "Bağlam kaydı çağıranın verdiğiyle aynı; mock'ta Session ≠ HubChannel. identity hedefi (PoC IdentitySeam; client-core/tests/noise_identity_target.rs) no-op'u assert eder; 'Session ≠ HubChannel' gerçek anahtarla (M4)."
     },
     {
       "id": "H-PN-OWN",
       "test_filter": "h_pn_own_",
       "mock": "green",
-      "real": "pending A5",
+      "real": "green",
       "note": "Ardışık +1; PeerSlot reset / idle emeklilik / tx_seq wrap sayacı etkilemez; epoch 0→1'de sayaç +1 ile devam eder."
     },
     {
       "id": "H-FEC-ORDER",
       "test_filter": "h_fec_order_",
       "mock": "green",
-      "real": "pending A5",
+      "real": "green",
       "note": "Sahte shard decoder'a girmez (çağrı sayısı 0); K geçerli shard ile kurtarma. Decoder sahtedir."
     },
     {
       "id": "H-DEMUX",
       "test_filter": "h_demux_",
       "mock": "green",
-      "real": "pending A5",
+      "real": "green",
       "note": "A3.1 — yedi test (demux.rs)."
     },
     {
       "id": "H-RETRY",
       "test_filter": "h_retry_",
       "mock": "green",
-      "real": "pending A5",
+      "real": "green",
       "note": "Alice ve Bob yarıları; MockCrypto 2026-10-06'da INIT/SSR1 zarfı + önbellekle genişletildi."
     },
     {
       "id": "H-NO-MUTATE",
       "test_filter": "h_no_mutate_",
       "mock": "green",
-      "real": "pending A5",
+      "real": "green",
       "note": "Bozuk tag, replay, kesik datagram, yanlış aday, bozuk RESPONSE/INIT, bilinmeyen oturum."
     },
     {
       "id": "H-HANDLE",
       "test_filter": "h_handle_",
       "mock": "green",
-      "real": "pending A5",
+      "real": "green",
       "note": "Çalışma zamanı yarısı: Closed sonrası seal → UnknownSession."
     },
     {
@@ -67,7 +67,7 @@
       "id": "H-REPLAY-POISON",
       "test_filter": "h_replay_poison_",
       "mock": "green",
-      "real": "pending A5",
+      "real": "green",
       "note": "Sahte paket pencereyi ilerletmez; aynı sayaçlı geçerli paket kabul ve commit. §6 satırı 2026-10-05'te eklendi (tanım: sprint planı A4.4 + identity §15.5)."
     },
     {

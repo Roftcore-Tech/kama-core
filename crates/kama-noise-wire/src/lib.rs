@@ -49,6 +49,7 @@ pub mod retry;
 #[cfg(feature = "test-util")]
 pub mod seam_mock;
 pub mod session;
+pub mod session_control;
 
 pub use control::{
     decode_control_body, encode_control_body, split_for_send, ACK_MAX_RANGES,

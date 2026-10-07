@@ -13,9 +13,12 @@
 //! * [`S3Target`] — buna `SessionControl` satırlarını ekler (H-RETRY, H-HANDLE, H-DEMUX,
 //!   H-NO-MUTATE'in kontrol yarısı).
 //!
-//! `mock` iki aileyi de taşır. Gerçek hedef (`NoiseWireProtection`, iki zarf profiliyle) bugün
-//! yalnız ilk aileyi taşır: `SessionControl` L-A5c'de (A5.5) gelir; o güne dek kontrol ailesi
-//! gerçek hedef için BEYAN EDİLMİŞ boşluktur ([`GAP_REAL_SESSION_CONTROL`]).
+//! `mock` iki aileyi de taşır. Gerçek hedef (`NoiseWireProtection`, iki zarf profiliyle) iki
+//! biçimde kayıtlıdır: paket hedefleri (`RealLegacyTarget` / `RealExtendedTarget`; oturum
+//! doğrudan kurulur, PacketProtection ailesi) ve kontrol hedefleri (`RealLegacyControlTarget` /
+//! `RealExtendedControlTarget`; ürün kurulumu `with_control`, gerçek el sıkışma + HANDLE_ASSIGN,
+//! SessionControl ailesi + H-DEMUX). ~~`SessionControl` L-A5c'de (A5.5) gelir; o güne dek kontrol
+//! ailesi gerçek hedef için BEYAN EDİLMİŞ boşluktur~~ [2026-10-08, L-A5c PR-2] boşluk kapandı.
 
 #![allow(dead_code)]
 
@@ -23,16 +26,21 @@ use kama_contracts::handles::{PeerRef, SessionHandle};
 use kama_contracts::s3::{
     HubHandle, PacketProtection, ProtectionContext, SessionControl, SessionEvent,
 };
+use kama_noise_wire::clock::ManualClock;
+use kama_noise_wire::entropy::OsEntropy;
 use kama_noise_wire::envelope::EnvelopeProfile;
-use kama_noise_wire::kdf::SESSION_ID_INTERNAL_LEN;
+use kama_noise_wire::handshake::{dh, seal_ssr1, session_context_v1, Ssr1Seal};
+use kama_noise_wire::kdf::{self, SESSION_ID_INTERNAL_LEN};
+use kama_noise_wire::peer_dir::{LocalIdentity, PeerDirectory, PeerEntry};
 use kama_noise_wire::protector::{NoiseWireProtection, SessionKeyMaterial};
 use kama_noise_wire::seam_mock::{self, MockCrypto};
+use kama_noise_wire::session_control::{self, ControlConfig, EnvelopeKind};
 use kama_noise_wire::{LegacyDirection, KEY_LEN};
+use sha2::{Digest, Sha256};
+use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
-/// Gerçek hedefte henüz olmayan ailenin kimliği (koşucu ile paylaşılır): bugün yalnız
-/// `SessionControl` ailesi (A5.5, L-A5c).
-pub const GAP_REAL_SESSION_CONTROL: &str = "GAP-S3-REAL-A5";
+use crate::s3_support::{peer, INITIATOR, PEER};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetKind {
@@ -45,6 +53,9 @@ pub enum TargetKind {
 pub enum Family {
     /// Yalnız `PacketProtection` satırları.
     PacketProtection,
+    /// Yalnız `SessionControl` satırları + H-DEMUX (paket satırları aynı uygulamanın paket
+    /// hedefinde koşar).
+    SessionControl,
     /// `PacketProtection` + `SessionControl` satırları.
     Full,
 }
@@ -132,7 +143,7 @@ pub trait S3Target: ProtectionTarget<Crypto: SessionControl> {
     fn fingerprint(c: &Self::Crypto) -> String;
 }
 
-/// Kayıtlı hedefler — `session_control_on_real_is_a_declared_gap` bu listeye karşı sınar.
+/// Kayıtlı hedefler — `real_covers_both_families` bu listeye karşı sınar.
 pub const REGISTERED_TARGETS: &[Registered] = &[
     Registered {
         id: MockTarget::ID,
@@ -148,6 +159,16 @@ pub const REGISTERED_TARGETS: &[Registered] = &[
         id: RealExtendedTarget::ID,
         kind: TargetKind::Real,
         family: Family::PacketProtection,
+    },
+    Registered {
+        id: RealLegacyControlTarget::ID,
+        kind: TargetKind::Real,
+        family: Family::SessionControl,
+    },
+    Registered {
+        id: RealExtendedControlTarget::ID,
+        kind: TargetKind::Real,
+        family: Family::SessionControl,
     },
 ];
 
@@ -350,3 +371,180 @@ impl ProtectionTarget for RealExtendedTarget {
         c.take_event_for_test()
     }
 }
+
+// ── Gerçek KONTROL hedefi: ürün kurulumu (`with_control`) + gerçek el sıkışma (L-A5c PR-2) ────
+
+/// `build()`'in varsayılan ucu (satırların andığı eşlerden farklı).
+const DEFAULT_ID: u64 = 0x00DE_FA17;
+/// Fikstür dizinindeki kimlikler: varsayılan uç + satırların andığı eşler.
+const FIXTURE_IDS: [u64; 4] = [DEFAULT_ID, INITIATOR, PEER, PEER + 1];
+const LABEL_STATIC: &[u8] = b"kama-fixture-static-v1";
+const LABEL_CERT_REF: &[u8] = b"kama-fixture-cert-ref-v1";
+const LABEL_INIT_EPH: &[u8] = b"kama-fixture-init-ephemeral-v1";
+const LABEL_RESP_EPH: &[u8] = b"kama-fixture-response-ephemeral-v1";
+
+fn derive(label: &[u8], input: &[u8]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(label);
+    h.update(input);
+    h.finalize().into()
+}
+
+/// Fikstür kimliği: `dest_hash`'ten deterministik statik X25519 ve `cert_ref` (TEST anahtarları).
+pub fn fixture_identity(p: PeerRef) -> LocalIdentity {
+    LocalIdentity::new(
+        StaticSecret::from(derive(LABEL_STATIC, p.as_bytes())),
+        *p.as_bytes(),
+        derive(LABEL_CERT_REF, p.as_bytes()),
+    )
+}
+
+/// G1 eş dizini: fikstür kimliklerinin hepsi (bant dışı "doğrulanmış" sayılır).
+fn fixture_directory() -> PeerDirectory {
+    PeerDirectory::new(FIXTURE_IDS.iter().map(|&n| {
+        let id = fixture_identity(peer(n));
+        PeerEntry {
+            dest_hash: id.dest_hash,
+            static_x25519_pub: *id.static_public().as_bytes(),
+            cert_ref: id.cert_ref,
+        }
+    }))
+    .expect("fikstür dizini kurulmalı")
+}
+
+/// Ürün kurulumu; saatin test kopyası dışarıda kalır (zaman hücreleri ilerletir).
+pub fn real_endpoint(
+    identity: PeerRef,
+    envelope: EnvelopeKind,
+) -> (NoiseWireProtection, ManualClock) {
+    let clock = ManualClock::new();
+    let p = NoiseWireProtection::with_control(ControlConfig {
+        identity: fixture_identity(identity),
+        directory: fixture_directory(),
+        clock: Box::new(clock.clone()),
+        entropy: Box::new(OsEntropy::new()),
+        envelope,
+    });
+    (p, clock)
+}
+
+fn ephemeral_for(label: &[u8], tag: u64) -> [u8; 32] {
+    derive(label, &tag.to_be_bytes())
+}
+
+/// `add_pending(tag)` ile varsayılan uçtan `PEER`'e açılan INIT'e Bob'un vereceği GEÇERLİ SSR1 —
+/// Crypto'ya bakmadan, aynı türetimle bağımsız hesaplanır.
+fn real_response_for(tag: u64) -> Vec<u8> {
+    let alice = fixture_identity(peer(DEFAULT_ID));
+    let bob = fixture_identity(peer(PEER));
+    let eph = StaticSecret::from(ephemeral_for(LABEL_INIT_EPH, tag));
+    let ss_e = dh(&eph, bob.static_public()).expect("DH");
+    let ss_s = dh(alice.static_secret(), bob.static_public()).expect("DH");
+    let ctx = session_context_v1(&alice.cert_ref, &bob.dest_hash, bob.static_public());
+    let root = kdf::d1_init_root(&ss_e, &ss_s, &ctx).expect("D1");
+    let sid = kdf::d3_session_id_internal(&root, &ctx).expect("D3");
+    let resp_eph = StaticSecret::from(ephemeral_for(LABEL_RESP_EPH, tag));
+    seal_ssr1(&Ssr1Seal {
+        init_root: &root,
+        session_id_internal: &sid,
+        initiator_ephemeral: &PublicKey::from(&eph),
+        initiator_static: alice.static_public(),
+        responder_ephemeral: &resp_eph,
+        response_counter: 0,
+        response_data: &[],
+    })
+    .expect("SSR1")
+    .0
+}
+
+macro_rules! real_control_target {
+    ($name:ident, $id:literal, $envelope:expr) => {
+        pub struct $name;
+
+        impl ProtectionTarget for $name {
+            type Crypto = NoiseWireProtection;
+            const ID: &'static str = $id;
+            const KIND: TargetKind = TargetKind::Real;
+            const CONTEXTS_ARE_KEY_SEPARATED: bool = false;
+
+            fn established() -> (Self::Crypto, Self::Crypto, SessionHandle) {
+                crate::s3_support::handshake::<Self>()
+            }
+
+            fn last_seal_ctx(c: &Self::Crypto) -> Option<ProtectionContext> {
+                c.last_seal_ctx()
+            }
+
+            fn state_fingerprint(c: &Self::Crypto) -> String {
+                c.state_fingerprint()
+            }
+
+            /// Epoch geçişi bu hedefte makinenin işidir (paket satırları paket hedeflerinde).
+            fn enter_epoch1(_: &mut Self::Crypto, _: SessionHandle) -> bool {
+                false
+            }
+
+            fn poll_event(c: &mut Self::Crypto) -> Option<SessionEvent> {
+                SessionControl::poll_event(c)
+            }
+        }
+
+        impl S3Target for $name {
+            const TRIAL_CAP: usize = session_control::PENDING_RESPONSE_TRIAL_CAP;
+
+            fn build() -> Result<Self::Crypto, TargetUnavailable> {
+                Ok(real_endpoint(peer(DEFAULT_ID), $envelope).0)
+            }
+
+            fn build_as(identity: PeerRef) -> Result<Self::Crypto, TargetUnavailable> {
+                Ok(real_endpoint(identity, $envelope).0)
+            }
+
+            fn add_pending(c: &mut Self::Crypto, tag: u64) -> Result<(), PendingRefused> {
+                c.initiate_with_ephemeral_for_test(peer(PEER), ephemeral_for(LABEL_INIT_EPH, tag))
+                    .map(|_| ())
+                    .ok_or(PendingRefused)
+            }
+
+            fn response_for(tag: u64) -> Vec<u8> {
+                real_response_for(tag)
+            }
+
+            fn corrupt(valid: &[u8]) -> Vec<u8> {
+                // AEAD etiketinin son biti.
+                let mut w = valid.to_vec();
+                if let Some(last) = w.last_mut() {
+                    *last ^= 1;
+                }
+                w
+            }
+
+            fn last_trials(c: &Self::Crypto) -> usize {
+                c.last_response_trials()
+            }
+
+            fn pending_len(c: &Self::Crypto) -> usize {
+                c.pending_len()
+            }
+
+            fn fingerprint(c: &Self::Crypto) -> String {
+                format!(
+                    "{}|trials={}",
+                    c.state_fingerprint(),
+                    c.last_response_trials()
+                )
+            }
+        }
+    };
+}
+
+real_control_target!(
+    RealLegacyControlTarget,
+    "real-legacy-control",
+    EnvelopeKind::Legacy
+);
+real_control_target!(
+    RealExtendedControlTarget,
+    "real-extended-control",
+    EnvelopeKind::Extended
+);

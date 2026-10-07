@@ -1,31 +1,42 @@
-//! EPOCH MATRİSİ (A3.2) — epoch 0→1 confirmation-safe geçiş; noise-wire §4 (beş adım) + KS-GRACE-1.
+//! EPOCH MATRİSİ (A3.2 → A5.4) — epoch 0→1 confirmation-safe geçiş; noise-wire §4 (beş adım) +
+//! KS-GRACE-1 (`N_g` = 64 AEAD-geçerli epoch-1 paketi, onaylayan #1 · `T_g` = 30 s, onay anından ·
+//! hangisi önce · kapanınca epoch-0 DISCARD, yeniden açılmaz).
 //!
-//! **Sınanan şey MEVCUT `epoch_machine.rs`'tir**, gerçek kripto oturumu değil. `DhEpochMachine`
-//! bugün ürün kodunda hiçbir yere bağlı değildir (yalnız testler kullanır); bu yüzden aşağıdaki
-//! [`Endpoint`] makineyi `KamaNoiseWireProtector`'a modül belgesinin tarif ettiği biçimde bağlayan
-//! TEST TUTKALIDIR. Tutkalın yaptığı seçimler (ör. grace sayacını yalnız AEAD-geçerli epoch-1
-//! paketinde ilerletmek) makinenin değil tutkalın davranışıdır; A5.4 bu tutkalı ürün koduna taşır.
+//! **[2026-10-08, A5.4 — L-A5c PR-2] Sınanan şey GERÇEK ürün yoludur:** iki uç
+//! `NoiseWireProtection::with_control` ile kurulur, gerçek el sıkışma (SSI1 → SSR1) ve
+//! HANDLE_ASSIGN'la bağlanır; `DhEpochMachine` protector'ın açma yolunda sürülür.
+//! ~~`DhEpochMachine` bugün ürün kodunda hiçbir yere bağlı değildir; aşağıdaki `Endpoint` TEST
+//! TUTKALIDIR~~ — tutkal kalktı. Hücreler iki zarf kipinde koşar: legacy 22 B (epoch telde YOK →
+//! grace içinde ≤ 2 anahtar denemesi) ve extended 26 B (epoch telde → tek anahtar).
+//!
+//! **Uçuştaki epoch-0 paketi:** Alice'in bekleyen oturumu HANDLE_ASSIGN gelince epoch-0 için
+//! kurulur (0-RTT, ccr §0.7-A "epoch-0-usable"); RESPONSE'tan ÖNCE mühürlenen paketler geçişten
+//! sonra Bob'a ulaşabilir — grace onlar içindir.
 //!
 //! # Kırmızı hücreler
 //!
-//! Mevcut makinenin sağlamadığı hücreler DÜZELTİLMEZ (ürün kodu A5.4'ün işi). Her hücre
-//! `Result<(), Red>` döner; [`DECLARED_RED`] hangi hücrelerin bugün kırmızı olduğunu beyan eder ve
-//! sarmalayıcı beyanla gerçeği ÇAPRAZ denetler: beyansız kırmızı da, beyanlı ama yeşile dönmüş
-//! hücre de testi düşürür. Böylece kapı yeşil kalır ama kırmızılar sessizce kaybolamaz.
+//! [`DECLARED_RED`] BOŞTUR (A5.4 kabul ölçütü). Beyan mekanizması korunur: sarmalayıcı beyanla
+//! gerçeği ÇAPRAZ denetler — beyansız kırmızı da, beyanlı ama yeşile dönmüş hücre de testi düşürür.
 
-use kama_noise_wire::epoch_machine::GRACE_MIN_PACKETS;
-use kama_noise_wire::init_flight::{
-    InitAdmission, InitFlight, InitReceiver, InitReplayIdentity, InitRetryConfig, RetransmitOutcome,
-};
-use kama_noise_wire::{
-    DhEpochMachine, EpochAction, KamaNoiseWireProtector, RecvEpoch0, Role, SealArgs,
-};
-use kama_transport_schema::inner_kind::ShardKind;
-use kama_transport_schema::{LogicalShardHeader, UnsealedTransportPacket};
-use zeroize::Zeroizing;
+use core::time::Duration;
 
-/// KS-GRACE-1 `N_g` — kodda bu ada sahip sabit yok; karşılığı `GRACE_MIN_PACKETS`.
+use kama_contracts::handles::SessionHandle;
+use kama_contracts::s3::{
+    HubHandle, PacketProtection, ProtectionContext, SessionCommand, SessionControl, SessionEvent,
+    SessionResult,
+};
+use kama_noise_wire::clock::ManualClock;
+use kama_noise_wire::epoch_machine::{RecvEpoch0, GRACE_MIN_PACKETS, GRACE_T_G};
+use kama_noise_wire::protector::NoiseWireProtection;
+use kama_noise_wire::session_control::EnvelopeKind;
+
+use crate::s3_support::{peer, INITIATOR, PEER};
+use crate::target::real_endpoint;
+
+/// KS-GRACE-1 `N_g` (kodda `GRACE_N_G`; eski adı `GRACE_MIN_PACKETS`).
 const N_G: u32 = GRACE_MIN_PACKETS;
+/// Matrisin iki uca bağladığı hub tutamacı.
+const HUB: u32 = 0x0000_E90C;
 
 /// Kırmızı hücre kaydı: beklenen / gözlenen / kanıt yeri.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,13 +48,9 @@ pub struct Red {
 
 pub type Cell = Result<(), Red>;
 
-/// Bugün kırmızı olan hücreler. Bir hücre A5.4'te yeşile dönünce buradan SİLİNİR (aynı commit).
-pub const DECLARED_RED: &[&str] = &[
-    "cell_5b_n_g_is_fixed",
-    "cell_6_time_closes_grace",
-    "cell_7_whichever_first",
-    "cell_9_at_most_two_key_trials",
-];
+/// Bugün kırmızı olan hücreler — A5.4'ten beri BOŞ. ~~"cell_5b_n_g_is_fixed",
+/// "cell_6_time_closes_grace", "cell_7_whichever_first", "cell_9_at_most_two_key_trials"~~
+pub const DECLARED_RED: &[&str] = &[];
 
 /// Koşucunun okuduğu makine satırı.
 pub const RED_SENTINEL: &str = "EPOCH-RED-CELL";
@@ -65,105 +72,132 @@ pub fn check(name: &str, outcome: Cell) {
     }
 }
 
-// ── Test tutkalı ─────────────────────────────────────────────────────────────────────────────
+// ── Fikstür: iki gerçek uç ───────────────────────────────────────────────────────────────────
 
-const H_EXT: u32 = 0x9;
-
-fn key(s: u8) -> Zeroizing<[u8; 32]> {
-    Zeroizing::new([s; 32])
+/// Alice (`INITIATOR`) INIT'i yolladı, tutamacını aldı; Bob (`PEER`) kabul etti ve RESPONSE'u
+/// üretti — RESPONSE Alice'e henüz TESLİM EDİLMEDİ (hücreler teslimi kendileri sürer).
+struct World {
+    a: NoiseWireProtection,
+    b: NoiseWireProtection,
+    ha: SessionHandle,
+    hb: SessionHandle,
+    clock_b: ManualClock,
+    init: Vec<u8>,
+    resp: Vec<u8>,
 }
 
-fn packet() -> UnsealedTransportPacket {
-    UnsealedTransportPacket::FecShard {
-        header: LogicalShardHeader {
-            kind: ShardKind::Source,
-            profile_id: 3,
-            block_id: 1,
-            esi: 0,
-            k_actual: 1,
-        },
-        symbol: vec![0u8; 64],
-    }
-}
-
-/// Bir uç: makine + protector + TEK gönderim sayacı (§4 EPOCH-PN-INIT 2026-10-06: sayaç epoch'lar
-/// boyunca süreklidir; `dh_epoch` yalnız anahtarı seçer).
-struct Endpoint {
-    machine: DhEpochMachine,
-    protector: KamaNoiseWireProtector,
-    next_pn: u64,
-    /// Geçerli epoch-1 paketiyle ilerleyen grace sayacının kaç kez işlediği.
-    grace_ticks: u32,
-}
-
-impl Endpoint {
-    fn seal(&mut self, dh_epoch: u8) -> Vec<u8> {
-        let wire_pn = self.next_pn;
-        self.next_pn += 1;
-        self.protector
-            .seal(
-                &packet(),
-                SealArgs {
-                    wire_pn,
-                    dh_epoch,
-                    send_generation: 0,
-                },
-            )
-            .expect("kurulu epoch anahtarıyla seal")
-            .bytes
-    }
-
-    /// Alım: yalnız AEAD-geçerli paket makineyi sürer. `true` = açıldı.
-    fn deliver(&mut self, wire: &[u8], dh_epoch: u8) -> bool {
-        if self.protector.open(wire).is_err() {
-            return false;
-        }
-        if dh_epoch & 1 == 1 {
-            // Adım-3/4: ilk geçerli epoch-1 paketi = implicit confirmation (Responder'da).
-            let _ = self.machine.on_valid_epoch1_received();
-            // Onaylayan paket N_g'ye #1 olarak SAYILIR (noise-wire §4 md.5, 2026-10-06): grace
-            // onayla açılır ve aynı paket ilk sayımdır.
-            if matches!(self.machine.recv0(), RecvEpoch0::Grace { .. }) {
-                self.grace_ticks += 1;
-                if self.machine.on_grace_tick() == Some(EpochAction::DiscardEpoch0Recv) {
-                    self.protector.discard_epoch0_recv();
-                }
-            }
-        }
-        true
-    }
-}
-
-/// Alice (initiator) ve Bob (responder); her ikisinde epoch-1 anahtarları kuruludur (Bob RESPONSE'u
-/// gönderirken, Alice RESPONSE'u aldığında kurar — burada önceden kurulur, geçişi MAKİNE sürer).
-fn pair(grace_budget: u32) -> (Endpoint, Endpoint) {
-    let mut a = KamaNoiseWireProtector::new(H_EXT, &key(0xAA), &key(0xBB));
-    let mut b = KamaNoiseWireProtector::new(H_EXT, &key(0xBB), &key(0xAA));
-    a.install_epoch1_keys(&key(0xCC), &key(0xDD));
-    b.install_epoch1_keys(&key(0xDD), &key(0xCC));
-    let ep = |role, protector| Endpoint {
-        machine: DhEpochMachine::new(role, grace_budget),
-        protector,
-        next_pn: 0,
-        grace_ticks: 0,
-    };
-    (ep(Role::Initiator, a), ep(Role::Responder, b))
-}
-
-/// Alice RESPONSE'u aldı, Bob ilk geçerli epoch-1 paketini aldı: grace AÇIK (sayaç 1).
-/// Üçüncü öğe: geçişten ÖNCE mühürlenmiş, hâlâ uçuşta olan bir epoch-0 paketi.
-fn confirmed_pair(grace_budget: u32) -> (Endpoint, Endpoint, Vec<u8>) {
-    let (mut a, mut b) = pair(grace_budget);
-    let in_flight_epoch0 = a.seal(0);
+fn assign(c: &mut NoiseWireProtection, session: SessionHandle) {
     assert_eq!(
-        a.machine.on_response_received(),
-        Some(EpochAction::InstallEpoch1AndSend)
+        c.command(SessionCommand::AssignHandle {
+            session,
+            hub_handle: HubHandle::from_raw(HUB),
+        }),
+        SessionResult::NoOutput
     );
-    let first = a.seal(1);
-    assert!(b.deliver(&first, 1));
-    assert!(matches!(b.machine.recv0(), RecvEpoch0::Grace { .. }));
-    assert_eq!(b.grace_ticks, 1, "onaylayan paket #1 sayılır");
-    (a, b, in_flight_epoch0)
+}
+
+fn world(kind: EnvelopeKind) -> World {
+    let (mut a, _) = real_endpoint(peer(INITIATOR), kind);
+    let (mut b, clock_b) = real_endpoint(peer(PEER), kind);
+    let SessionResult::Initiated {
+        session: ha,
+        bytes: init,
+        ..
+    } = a.command(SessionCommand::Initiate {
+        peer: peer(PEER),
+        early_unit: None,
+    })
+    else {
+        panic!("Initiate bekleyen oturum üretmeli");
+    };
+    assign(&mut a, ha);
+    let SessionResult::EstablishedAndReply {
+        session: hb,
+        bytes: resp,
+        ..
+    } = b.command(SessionCommand::AcceptInit { wire: init.clone() })
+    else {
+        panic!("AcceptInit oturum + RESPONSE üretmeli");
+    };
+    assign(&mut b, hb);
+    while a.poll_event().is_some() {}
+    while b.poll_event().is_some() {}
+    World {
+        a,
+        b,
+        ha,
+        hb,
+        clock_b,
+        init,
+        resp,
+    }
+}
+
+impl World {
+    /// Alice mühürler; döner: (wire, dh_epoch).
+    fn seal_a(&mut self, frame: &[u8]) -> (Vec<u8>, u8) {
+        let u = self
+            .a
+            .seal(ProtectionContext::Session(self.ha), frame)
+            .expect("Alice seal");
+        (u.bytes, u.meta.dh_epoch)
+    }
+
+    fn seal_b(&mut self) -> u8 {
+        self.b
+            .seal(ProtectionContext::Session(self.hb), b"bob")
+            .expect("Bob seal")
+            .meta
+            .dh_epoch
+    }
+
+    fn deliver_response(&mut self) -> SessionResult {
+        self.a.command(SessionCommand::AcceptResponse {
+            wire: self.resp.clone(),
+        })
+    }
+
+    fn b_open(&mut self, w: &[u8]) -> bool {
+        self.b.open(w).is_some()
+    }
+
+    fn b_epoch(&self) -> (u8, RecvEpoch0) {
+        self.b.epoch_state_for_test(self.hb).expect("Bob oturumu")
+    }
+
+    fn b_grace_open(&self) -> bool {
+        matches!(self.b_epoch().1, RecvEpoch0::Grace { .. })
+    }
+
+    /// Alice'in bir epoch-1 paketi Bob'a ulaşır.
+    fn epoch1_to_b(&mut self) {
+        let (p, e) = self.seal_a(b"epoch-1");
+        assert_eq!(e, 1);
+        assert!(self.b_open(&p), "geçerli epoch-1 paketi açılmalı");
+    }
+}
+
+/// Onaylanmış çift: Alice RESPONSE'tan ÖNCE `inflight` epoch-0 paketi (0-RTT) mühürledi (uçuşta);
+/// RESPONSE teslim edildi; Alice'in ilk epoch-1 paketi Bob'a ulaştı → onay, grace #1.
+fn confirmed(kind: EnvelopeKind, inflight: usize) -> (World, Vec<Vec<u8>>) {
+    let mut w = world(kind);
+    let early: Vec<Vec<u8>> = (0..inflight)
+        .map(|_| {
+            let (p, e) = w.seal_a(b"0-RTT");
+            assert_eq!(e, 0, "RESPONSE'tan önce epoch-0");
+            p
+        })
+        .collect();
+    assert_eq!(
+        w.deliver_response(),
+        SessionResult::Established { session: w.ha }
+    );
+    w.epoch1_to_b();
+    assert!(
+        matches!(w.b_epoch(), (1, RecvEpoch0::Grace { counted: 1, .. })),
+        "onay: Bob epoch-1'e geçer, onaylayan paket #1"
+    );
+    (w, early)
 }
 
 fn tamper(wire: &[u8]) -> Vec<u8> {
@@ -175,220 +209,218 @@ fn tamper(wire: &[u8]) -> Vec<u8> {
 
 // ── Matris ───────────────────────────────────────────────────────────────────────────────────
 
-/// 1 — RESPONSE normal: epoch-1 kurulur; ilk geçerli epoch-1 paketiyle onay.
-pub fn cell_1_response_normal() -> Cell {
-    let (mut a, mut b) = pair(N_G);
+/// 1 — RESPONSE normal: Bob onaydan önce epoch-0'da gönderir; Alice RESPONSE'la epoch-1'e geçer;
+/// ilk geçerli epoch-1 paketiyle onay: Bob epoch-1'e geçer, grace açılır, epoch-0 hâlâ kabul.
+pub fn cell_1_response_normal(kind: EnvelopeKind) -> Cell {
+    let mut w = world(kind);
+    assert_eq!(w.seal_b(), 0, "Bob onaydan önce epoch-0'da gönderir");
+    let (early, e0) = w.seal_a(b"0-RTT");
+    assert_eq!(e0, 0);
     assert_eq!(
-        b.machine.send_epoch(),
-        0,
-        "Bob onaydan önce epoch-0'da gönderir"
+        w.deliver_response(),
+        SessionResult::Established { session: w.ha }
     );
-    assert_eq!(
-        a.machine.on_response_received(),
-        Some(EpochAction::InstallEpoch1AndSend)
-    );
-    assert_eq!(a.machine.send_epoch(), 1);
-    let first = a.seal(1);
-    assert!(b.deliver(&first, 1));
-    assert_eq!(b.machine.send_epoch(), 1, "onay: Bob epoch-1'e geçer");
-    assert!(matches!(b.machine.recv0(), RecvEpoch0::Grace { .. }));
+    assert_eq!(w.a.poll_event(), Some(SessionEvent::Ready(w.ha)));
+    w.epoch1_to_b();
+    assert_eq!(w.seal_b(), 1, "onay: Bob epoch-1'e geçer");
+    assert!(w.b_grace_open());
+    assert!(w.b_open(&early), "grace boyunca epoch-0 hâlâ kabul");
+    Ok(())
+}
+
+/// 2 — RESPONSE kayıp: INIT'in (byte-özdeş) yeniden gönderimi aynı oturumu ve aynı RESPONSE'u
+/// verir; epoch-0 açık kalır; onay yok.
+pub fn cell_2_response_lost(kind: EnvelopeKind) -> Cell {
+    let mut w = world(kind);
+    let fp = w.b.state_fingerprint();
+    let again = w.b.command(SessionCommand::AcceptInit {
+        wire: w.init.clone(),
+    });
     assert!(
-        b.machine.recv_accepts(0),
-        "grace boyunca epoch-0 hâlâ kabul"
+        matches!(again, SessionResult::EstablishedAndReply { session, ref bytes, .. }
+            if session == w.hb && *bytes == w.resp),
+        "yeniden gönderim aynı oturum + byte-özdeş RESPONSE vermeli"
     );
+    assert_eq!(w.b.state_fingerprint(), fp, "ikinci oturum / state yok");
+    let (p, e) = w.seal_a(b"0-RTT");
+    assert_eq!(e, 0, "Alice epoch-0'da kalır");
+    assert!(w.b_open(&p), "Bob epoch-0'ı kabul eder");
+    assert_eq!(
+        w.b_epoch(),
+        (0, RecvEpoch0::Accepting),
+        "onay yok, grace yok"
+    );
+    assert_eq!(w.a.pending_len(), 1, "Alice'in INIT'i bekliyor");
     Ok(())
 }
 
-/// 2 — RESPONSE kayıp: INIT yeniden gönderimi sınırlı; epoch-0 açık kalır; onay yok.
-pub fn cell_2_response_lost() -> Cell {
-    let (mut a, mut b) = pair(N_G);
-    // Alice RESPONSE'u hiç almadı: epoch-0'da kalır ve Bob onu kabul etmeyi sürdürür.
-    let cfg = InitRetryConfig::alpha_default();
-    let mut flight = InitFlight::new(vec![0xA5; 32], 1, cfg);
-    let mut sends = 0u32;
-    while let RetransmitOutcome::Send { datagram, .. } = flight.retransmit() {
-        assert_eq!(datagram, &[0xA5; 32][..], "yeniden gönderim byte-özdeş");
-        sends += 1;
-        assert!(sends <= cfg.max_retries, "yeniden gönderim sınırsız");
-    }
-    assert_eq!(flight.retransmit(), RetransmitOutcome::Exhausted);
-
-    assert_eq!(a.machine.send_epoch(), 0);
-    let p = a.seal(0);
-    assert!(b.deliver(&p, 0), "epoch-0 kullanılabilir kalır");
-    assert_eq!(b.machine.send_epoch(), 0, "onay yok");
-    assert_eq!(b.machine.recv0(), RecvEpoch0::Accepting, "grace başlamaz");
-    Ok(())
-}
-
-/// 3 — RESPONSE sırasız (INIT yeniden gönderiminden sonra): tek oturum, çift kurulum yok.
-pub fn cell_3_response_reordered() -> Cell {
-    let id = InitReplayIdentity {
-        sender_device_id: [1; 16],
-        recipient_device_id: [2; 16],
-        init_counter: 7,
+/// 3 — RESPONSE sırasız / çift (INIT yeniden gönderiminden sonra): tek oturum, çift kurulum yok.
+pub fn cell_3_response_reordered(kind: EnvelopeKind) -> Cell {
+    let mut w = world(kind);
+    let SessionResult::EstablishedAndReply { bytes: second, .. } =
+        w.b.command(SessionCommand::AcceptInit {
+            wire: w.init.clone(),
+        })
+    else {
+        panic!("yeniden gönderilen INIT önbellekli RESPONSE almalı");
     };
-    let mut rx = InitReceiver::new();
-    assert_eq!(rx.admit(id, [9; 32]), InitAdmission::Fresh);
-    // Alice RESPONSE'u göremeden INIT'i yeniden gönderdi; Bob aynı oturuma eşler.
+    assert_eq!(second, w.resp);
     assert_eq!(
-        rx.admit(id, [9; 32]),
-        InitAdmission::DuplicateResendConfirmation
+        w.deliver_response(),
+        SessionResult::Established { session: w.ha }
     );
-    assert_eq!(rx.established_count(), 1, "ikinci oturum yok");
-
-    // İki RESPONSE kopyası da Alice'e ulaştı: geçiş bir kez olur.
-    let (mut a, _b) = pair(N_G);
     assert_eq!(
-        a.machine.on_response_received(),
-        Some(EpochAction::InstallEpoch1AndSend)
+        w.a.command(SessionCommand::AcceptResponse { wire: second }),
+        SessionResult::Failed,
+        "geç gelen ikinci RESPONSE ikinci kurulum yapmaz"
     );
-    let after_first = a.machine;
-    assert_eq!(a.machine.on_response_received(), None, "çift kurulum yok");
-    assert_eq!(a.machine, after_first, "ikinci RESPONSE state değiştirmez");
+    assert_eq!(w.a.pending_len(), 0);
+    assert_eq!(w.a.poll_event(), Some(SessionEvent::Ready(w.ha)));
+    assert_eq!(w.a.poll_event(), None, "tek Ready");
     Ok(())
 }
 
-/// 4 — AEAD-geçersiz epoch-1 paketi onayı tetiklemez, grace sayacını ilerletmez.
-pub fn cell_4_invalid_epoch1_is_inert() -> Cell {
-    // (a) onaydan önce
-    let (mut a, mut b) = pair(N_G);
-    a.machine.on_response_received();
-    let forged = tamper(&a.seal(1));
-    let before = b.machine;
-    assert!(!b.deliver(&forged, 1));
-    assert_eq!(b.machine, before, "sahte paket onay üretmez");
-    assert_eq!(b.machine.send_epoch(), 0);
-
-    // (b) grace içinde
-    let (mut a, mut b, _) = confirmed_pair(N_G);
-    let before = b.machine;
-    let ticks = b.grace_ticks;
-    let forged = tamper(&a.seal(1));
-    assert!(!b.deliver(&forged, 1));
-    assert_eq!(b.machine, before, "sahte paket grace'i ilerletmez");
-    assert_eq!(b.grace_ticks, ticks);
+/// 4 — AEAD-geçersiz epoch-1 paketi onayı tetiklemez, grace sayacını ilerletmez, state'e dokunmaz.
+pub fn cell_4_invalid_epoch1_is_inert(kind: EnvelopeKind) -> Cell {
+    let mut w = world(kind);
+    assert_eq!(
+        w.deliver_response(),
+        SessionResult::Established { session: w.ha }
+    );
+    let (first, _) = w.seal_a(b"ilk epoch-1");
+    let fp = w.b.state_fingerprint();
+    assert!(!w.b_open(&tamper(&first)));
+    assert_eq!(
+        w.b.state_fingerprint(),
+        fp,
+        "geçersiz paket state'e dokundu"
+    );
+    assert_eq!(w.b_epoch(), (0, RecvEpoch0::Accepting), "onay tetiklendi");
+    assert!(w.b_open(&first));
+    assert!(
+        matches!(w.b_epoch(), (1, RecvEpoch0::Grace { counted: 1, .. })),
+        "geçerli paket onaylar ve #1 sayılır"
+    );
     Ok(())
 }
 
 /// 5 — `N_g` geçerli epoch-1 paketi (onaylayan dahil) grace'i kapatır; sonraki epoch-0 paketi
 /// reddedilir; yeniden açılmaz.
-pub fn cell_5_count_closes_grace() -> Cell {
-    let (mut a, mut b, late_epoch0) = confirmed_pair(N_G);
+pub fn cell_5_count_closes_grace(kind: EnvelopeKind) -> Cell {
+    let (mut w, early) = confirmed(kind, 1);
     for i in 2..=N_G {
-        assert!(b.machine.recv_accepts(0), "{i}. paketten önce grace açık");
-        let p = a.seal(1);
-        assert!(b.deliver(&p, 1));
+        assert!(w.b_grace_open(), "{i}. paketten önce grace açık");
+        w.epoch1_to_b();
     }
-    assert_eq!(b.grace_ticks, N_G);
-    assert_eq!(b.machine.recv0(), RecvEpoch0::Discarded);
-    assert!(
-        !b.deliver(&late_epoch0, 0),
-        "kapanıştan sonra epoch-0 reddedilir"
-    );
-
-    // Yeniden açılmaz: sonraki hiçbir makine olayı epoch-0 kabulünü geri getirmez.
-    let p = a.seal(1);
-    assert!(b.deliver(&p, 1));
-    let _ = b.machine.on_response_received();
-    let _ = b.machine.on_valid_epoch1_received();
-    let _ = b.machine.on_grace_tick();
-    assert!(!b.machine.recv_accepts(0));
+    assert_eq!(w.b_epoch().1, RecvEpoch0::Discarded);
+    assert!(!w.b_open(&early[0]), "kapanıştan sonra epoch-0 reddedilir");
+    // Yeniden açılmaz: sonraki paket ve zaman kabulü geri getirmez.
+    w.epoch1_to_b();
+    w.clock_b.advance(GRACE_T_G * 2);
+    let _ = w.b.poll_event();
+    assert_eq!(w.b_epoch().1, RecvEpoch0::Discarded);
     Ok(())
 }
 
-/// 5b — `N_g` sabittir: kurucuya verilen bütçe pencereyi büyütemez (KS-GRACE-1: sRTT bağı yok).
-pub fn cell_5b_n_g_is_fixed() -> Cell {
-    let (mut a, mut b, _) = confirmed_pair(N_G + 1);
-    for _ in 2..=N_G {
-        let p = a.seal(1);
-        assert!(b.deliver(&p, 1));
+/// 5b — `N_g` sabittir: kurucuya verilen bir bütçe YOKTUR; grace tam `N_g` pakette kapanır.
+pub fn cell_5b_n_g_is_fixed(kind: EnvelopeKind) -> Cell {
+    let (mut w, _) = confirmed(kind, 0);
+    let mut counted = 1;
+    while w.b_grace_open() {
+        w.epoch1_to_b();
+        counted += 1;
+        assert!(counted <= N_G, "N_g'de kapanmadı");
     }
-    if b.machine.recv0() == RecvEpoch0::Discarded {
-        return Ok(());
-    }
-    Err(Red {
-        expected: "grace N_g geçerli epoch-1 paketinde kapanır (kurucu argümanından bağımsız)",
-        observed: "bütçe = max(argüman, GRACE_MIN_PACKETS); N_g+1 verilince N_g pakette kapanmadı",
-        at: "crates/kama-noise-wire/src/epoch_machine.rs:57-67",
-    })
+    assert_eq!(counted, N_G, "onaylayan dahil tam N_g");
+    Ok(())
 }
 
-/// 6 — `T_g` monotonic süre grace'i kapatır.
-pub fn cell_6_time_closes_grace() -> Cell {
-    Err(Red {
-        expected: "onay anından T_g (30 s, monotonic) sonra grace kapanır, epoch-0 reddedilir",
-        observed:
-            "makinede zaman girdisi yok (yalnız on_grace_tick paket sayacı); T_g sabiti kodda yok",
-        at: "crates/kama-noise-wire/src/epoch_machine.rs:112-127",
-    })
+/// 6 — `T_g` monotonic süre grace'i kapatır (onay anından); gecikmiş epoch-0 paketi reddedilir.
+pub fn cell_6_time_closes_grace(kind: EnvelopeKind) -> Cell {
+    let (mut w, early) = confirmed(kind, 1);
+    w.clock_b.advance(GRACE_T_G - Duration::from_millis(1));
+    let _ = w.b.poll_event();
+    assert!(w.b_grace_open(), "T_g dolmadan açık");
+    w.clock_b.advance(Duration::from_millis(1));
+    assert!(!w.b_open(&early[0]), "T_g dolunca epoch-0 reddedilir");
+    assert_eq!(w.b_epoch().1, RecvEpoch0::Discarded);
+    Ok(())
 }
 
 /// 7 — hangisi önce: `N_g − 1` paket + `T_g`'den kısa süre → açık; `N_g`'inci paket → kapanır.
-pub fn cell_7_whichever_first() -> Cell {
-    let (mut a, mut b, _) = confirmed_pair(N_G);
+/// Ters sıra: az paket + `T_g` → kapanır.
+pub fn cell_7_whichever_first(kind: EnvelopeKind) -> Cell {
+    let (mut w, early) = confirmed(kind, 2);
     for _ in 2..N_G {
-        let p = a.seal(1);
-        assert!(b.deliver(&p, 1));
+        w.epoch1_to_b();
     }
-    assert_eq!(b.grace_ticks, N_G - 1);
-    assert!(b.machine.recv_accepts(0), "N_g − 1 pakette açık");
-    let p = a.seal(1);
-    assert!(b.deliver(&p, 1));
-    assert!(!b.machine.recv_accepts(0), "N_g'inci pakette kapanır");
-    // Paket yarısı yukarıda sınandı ve tutuyor. Süre yarısı kurulamıyor (hücre 6).
-    Err(Red {
-        expected: "paket ve süre koşulu birlikte: hangisi önce dolarsa",
-        observed: "paket koşulu tutuyor; süre koşulu yok, bu yüzden 'hangisi önce' sınanamıyor",
-        at: "crates/kama-noise-wire/src/epoch_machine.rs:112-127",
-    })
+    w.clock_b.advance(GRACE_T_G - Duration::from_millis(1));
+    assert!(
+        w.b_open(&early[0]),
+        "N_g − 1 paket + T_g'den kısa süre: grace açık"
+    );
+    w.epoch1_to_b();
+    assert!(!w.b_open(&early[1]), "N_g'inci pakette kapanır");
+
+    let (mut w2, early2) = confirmed(kind, 1);
+    w2.epoch1_to_b();
+    w2.clock_b.advance(GRACE_T_G);
+    assert!(!w2.b_open(&early2[0]), "T_g: az pakete rağmen kapanır");
+    Ok(())
 }
 
-/// 8 — TEK pencere (identity §15.5, 2026-10-06): epoch-1 anahtarıyla açılan paketin sayacı tek
-/// pencereye commit edilir; başarısız deneme hiçbir şeyi değiştirmez (H-NO-MUTATE).
-pub fn cell_8_commit_goes_to_the_single_window() -> Cell {
-    let (mut a, mut b, in_flight_epoch0) = confirmed_pair(N_G);
-    let before = b.protector.recv_expected_pn();
-
-    // Başarısız deneme: pencere de makine de oynamaz.
-    let machine_before = b.machine;
-    let forged = tamper(&a.seal(1));
-    assert!(!b.deliver(&forged, 1));
+/// 8 — TEK pencere (identity §15.5): epoch-1 anahtarıyla açılan paketin sayacı tek pencereye
+/// commit edilir; başarısız deneme hiçbir şeyi değiştirmez (H-NO-MUTATE); grace içindeki epoch-0
+/// paketi aynı pencerede kendi (daha düşük) sayacıyla kabul edilir, tekrarı reddedilir.
+pub fn cell_8_commit_goes_to_the_single_window(kind: EnvelopeKind) -> Cell {
+    let (mut w, early) = confirmed(kind, 1);
+    let before = w.b.recv_expected_pn_for_test(w.hb).expect("pencere");
+    let fp = w.b.state_fingerprint();
+    let forged = tamper(&w.seal_a(b"sahte").0);
+    assert!(!w.b_open(&forged));
     assert_eq!(
-        b.protector.recv_expected_pn(),
-        before,
-        "başarısız deneme pencereyi oynatmaz"
+        w.b.state_fingerprint(),
+        fp,
+        "başarısız deneme state'i değiştirdi"
     );
-    assert_eq!(b.machine, machine_before);
-
-    // Geçerli epoch-1 paketi: sayaç tek pencereye işlenir (sahte paketin tükettiği PN atlanır).
-    let p1 = a.seal(1);
-    assert!(b.deliver(&p1, 1));
-    assert_eq!(b.protector.recv_expected_pn(), before + 2);
-    assert!(!b.deliver(&p1, 1), "aynı sayaç ikinci kez kabul edilmez");
-
-    // Geçişten önce mühürlenmiş epoch-0 paketi aynı pencerede, kendi (daha düşük) sayacıyla ve
-    // epoch-0 anahtarıyla grace içinde hâlâ kabul edilir; tekrarı reddedilir.
-    assert!(b.deliver(&in_flight_epoch0, 0));
-    assert!(!b.deliver(&in_flight_epoch0, 0), "replay");
+    w.epoch1_to_b();
     assert_eq!(
-        b.protector.recv_expected_pn(),
-        before + 2,
+        w.b.recv_expected_pn_for_test(w.hb),
+        Some(before + 2),
+        "sahte paketin tükettiği PN atlanır, tek pencere"
+    );
+    assert!(w.b_open(&early[0]), "grace içinde epoch-0, kendi sayacıyla");
+    assert!(!w.b_open(&early[0]), "replay");
+    assert_eq!(
+        w.b.recv_expected_pn_for_test(w.hb),
+        Some(before + 2),
         "eski sayaç pencereyi geri almaz"
     );
     Ok(())
 }
 
-/// 9 — grace içinde en fazla iki anahtar denemesi (legacy zarfta epoch biti yok).
-pub fn cell_9_at_most_two_key_trials() -> Cell {
-    Err(Red {
-        expected: "legacy 22 B zarfta grace içinde ≤2 anahtar denenir (deneme sayacı gözlenir); \
-                   açan anahtarla doğrulanan sayaç TEK pencereye commit edilir",
-        observed:
-            "LegacySessionProtector tek anahtar/tek epoch tutar; iki anahtarlı deneme ve sayaç yok \
-                   (extended zarfta epoch biti telde, deneme hep 1 — protector.rs open)",
-        at: "crates/kama-noise-wire/src/legacy.rs:76-116",
-    })
+/// 9 — grace içinde en fazla iki anahtar denemesi: legacy zarfta epoch telde YOK → epoch-1 önce,
+/// sonra epoch-0 (≤ 2); extended zarfta epoch telde → hep 1. Grace kapanınca epoch-0 paketi düşer.
+pub fn cell_9_at_most_two_key_trials(kind: EnvelopeKind) -> Cell {
+    let (mut w, early) = confirmed(kind, 2);
+    w.epoch1_to_b();
+    let e1_trials = w.b.last_key_trials();
+    assert!(w.b_open(&early[0]), "grace içinde epoch-0 açılır");
+    let e0_trials = w.b.last_key_trials();
+    let want = match kind {
+        EnvelopeKind::Legacy => (1, 2),
+        EnvelopeKind::Extended => (1, 1),
+    };
+    assert_eq!(
+        (e1_trials, e0_trials),
+        want,
+        "anahtar denemesi (epoch-1 paketi, epoch-0 paketi)"
+    );
+    while w.b_grace_open() {
+        w.epoch1_to_b();
+    }
+    assert!(!w.b_open(&early[1]), "grace kapanınca epoch-0 paketi düşer");
+    Ok(())
 }
 
 /// `N_g` kodda adlandırılmış sabitten gelir ve spec'teki değere eşittir.
@@ -426,15 +458,15 @@ pub fn declared_red_is_consistent(known: &[&str]) {
     }
 }
 
-/// Matrisi, mevcut makine hedefi için hücre başına ayrı `#[test]` olarak sarar.
+/// Matrisi, verilen zarf kipinde hücre başına ayrı `#[test]` olarak sarar.
 #[macro_export]
 macro_rules! noise_epoch_suite {
-    ($suite:ident; $($cell:ident),+ $(,)?) => {
+    ($suite:ident, $kind:expr; $($cell:ident),+ $(,)?) => {
         mod $suite {
             $(
                 #[test]
                 fn $cell() {
-                    $crate::epoch::check(stringify!($cell), $crate::epoch::$cell());
+                    $crate::epoch::check(stringify!($cell), $crate::epoch::$cell($kind));
                 }
             )+
 

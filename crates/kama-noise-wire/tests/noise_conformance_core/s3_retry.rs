@@ -9,13 +9,20 @@
 use kama_contracts::s3::{SessionCommand, SessionControl, SessionEvent, SessionResult};
 
 use crate::mock_transport::MockTransport;
-use crate::s3_support::{initiate, next_command as deliver, PEER};
+use crate::s3_support::{initiate, next_command as deliver, peer, INITIATOR, PEER};
 use crate::target::S3Target;
+
+/// Alice (`INITIATOR`) ve Bob (`PEER`): INIT Bob'a adreslidir (gerçek hedefte alıcı kimliği sınanır).
+fn alice_and_bob<T: S3Target>() -> (T::Crypto, T::Crypto) {
+    (
+        T::build_as(peer(INITIATOR)).expect("hedef kayıtlı olmalı"),
+        T::build_as(peer(PEER)).expect("hedef kayıtlı olmalı"),
+    )
+}
 
 /// Alice yarısı.
 pub fn alice_retransmits_cached_init_and_new_initiate_differs<T: S3Target>() {
-    let mut a = T::build().expect("hedef kayıtlı olmalı");
-    let mut b = T::build().expect("hedef kayıtlı olmalı");
+    let (mut a, mut b) = alice_and_bob::<T>();
     let mut net = MockTransport::new();
 
     let (ty, init) = initiate::<T>(&mut a, PEER);
@@ -50,8 +57,7 @@ pub fn alice_retransmits_cached_init_and_new_initiate_differs<T: S3Target>() {
 
 /// Bob yarısı.
 pub fn bob_maps_duplicate_init_to_same_session_and_cached_response<T: S3Target>() {
-    let mut a = T::build().expect("hedef kayıtlı olmalı");
-    let mut b = T::build().expect("hedef kayıtlı olmalı");
+    let (mut a, mut b) = alice_and_bob::<T>();
     let (_, init) = initiate::<T>(&mut a, PEER);
     let accept = |b: &mut T::Crypto, wire: &[u8]| {
         b.command(SessionCommand::AcceptInit {
@@ -89,13 +95,14 @@ pub fn bob_maps_duplicate_init_to_same_session_and_cached_response<T: S3Target>(
         assert_eq!(T::state_fingerprint(&b), after_first);
     }
 
-    // Karşılaştırmanın boş olmadığının kanıtı: FARKLI bir INIT'in RESPONSE'u farklıdır.
+    // Karşılaştırmanın boş olmadığının kanıtı: FARKLI bir INIT'in RESPONSE'u farklıdır. Eşle
+    // etkin oturum varken yeni sayaçlı INIT gerçek hedefte PROVISIONAL'dır (K10); sahte
+    // supersession modellemez — iki biçim de RESPONSE taşır.
     let (_, other_init) = initiate::<T>(&mut a, PEER);
-    let SessionResult::EstablishedAndReply {
-        bytes: other_ssr1, ..
-    } = accept(&mut b, &other_init)
-    else {
-        panic!("yeni INIT de RESPONSE üretmeli");
+    let other_ssr1 = match accept(&mut b, &other_init) {
+        SessionResult::EstablishedAndReply { bytes, .. }
+        | SessionResult::ProvisionalAndReply { bytes, .. } => bytes,
+        other => panic!("yeni INIT de RESPONSE üretmeli, gelen {other:?}"),
     };
     assert_ne!(other_ssr1, ssr1, "farklı INIT'e aynı RESPONSE döndü");
 
