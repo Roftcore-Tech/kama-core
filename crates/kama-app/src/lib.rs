@@ -6,8 +6,9 @@
 //! (R-7(b), 2026-10-05): burada dursaydı onu implemente eden Transport bu crate'e — alt katman üst
 //! katmana — bağımlı olmak zorunda kalırdı.
 //!
-//! Mesaj codec'i (AMP, `specs/application-message-protocol.md`): [`codec`] (B2.1). Metin/alındı,
-//! dosya, PTT ve bağlantı akışları B2.2–B2.5 kartlarıyla buraya gelir.
+//! Mesaj codec'i (AMP, `specs/application-message-protocol.md`): [`codec`] (B2.1). Metin + alındı
+//! (TEXT / RECEIPT; eş başına `msg_id`, dedup, outbox): [`messaging`] (B2.2). Dosya, PTT ve
+//! bağlantı akışları B2.3–B2.5 kartlarıyla buraya gelir.
 //!
 //! # Katman kuralı (INV-NEIGHBOR-1)
 //!
@@ -19,3 +20,4 @@
 #![forbid(unsafe_code)]
 
 pub mod codec;
+pub mod messaging;
