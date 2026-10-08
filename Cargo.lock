@@ -728,6 +728,7 @@ name = "kama-integration"
 version = "0.1.0"
 dependencies = [
  "adaptive-transport",
+ "client-core",
  "kama-contracts",
  "kama-engine",
  "kama-fec-codec",

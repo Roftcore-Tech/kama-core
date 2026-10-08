@@ -262,8 +262,8 @@ jobs:
   # ── App↔Transport seam sözleşme kapısı (KM-SEAM-AT-001 §6/§7 iskeleti) ──
   # Aynı sözleşme süiti hem sahteye hem gerçeğe karşı koşar (Google SWE ch.13 "contract tests":
   # sahtenin doğruluğu ancak AYNI testin ikisine de koşturulmasıyla kanıtlanır). Bugün yalnız
-  # `mock` hedefi kayıtlı; `real` BEYAN EDİLMİŞ BOŞLUKTUR (GAP-SEAM-REAL-1) ve runner onun için
-  # ayrı bir çıkış kodu (3) döndürür — "atlandı" diye sessiz bir sonuç YOKTUR.
+  # `mock` ve `real` kayıtlı (L-T1, 2026-10-08). ~~`real` BEYAN EDİLMİŞ BOŞLUKTUR (GAP-SEAM-REAL-1),
+  # runner çıkış 3~~ — kapandı; "atlandı" diye sessiz bir sonuç YOKTUR.
   #
   # Maliyet: tüm workspace değil, yalnız kama-integration'ın üç seam hedefi ve bağımlılıkları
   # derlenir; rust-cache paylaşılır.
@@ -286,19 +286,12 @@ jobs:
       - name: hedef = mock
         run: scripts/ci/seam-conformance.sh --target mock
 
-      # Gerçek adapter indiğinde bu adım kendiliğinden 0 bekler hâle gelir; bugün 3 döner.
-      # 1 (kırmızı) ve 2 (ortam/kullanım) her iki dönemde de kabul edilmez.
-      - name: hedef = real (bugün beyan edilmiş boşluk)
-        run: |
-          set +e
-          scripts/ci/seam-conformance.sh --target real
-          code=$?
-          set -e
-          case "$code" in
-            0) echo "gerçek adapter koştu ve yeşil" ;;
-            3) echo "::notice title=SEAM_GAP::gerçek adapter yok — GAP-SEAM-REAL-1 beyanlı (çıkış 3)" ;;
-            *) echo "::error title=TEST_FAILURE::seam real hedefi beklenmeyen çıkış kodu $code"; exit 1 ;;
-          esac
+      # [2026-10-08 L-T1] Gerçek adapter kayıtlı (client_core::transport::ClientTransport + gerçek
+      # kripto + UDP loopback): real = 0 ZORUNLU. ~~bugün 3 döner (GAP-SEAM-REAL-1)~~ — kapandı.
+      # Real hedefte koşamayan satır yalnız kimlikli beyanla atlanır (SEAM-ROW-GAP ↔ real_gap,
+      # runner çapraz denetler); 1 (kırmızı), 2 (ortam) ve 3 (boşluk) kabul edilmez.
+      - name: hedef = real (0 zorunlu)
+        run: scripts/ci/seam-conformance.sh --target real
 
       # S3 (Transport↔Crypto) conformance-core — aynı çıkış kodu sözlüğü. [2026-10-08, L-A5c PR-2]
       # Gerçek kripto kayıtlı: real = 0 ZORUNLU (A5b PacketProtection + A5c SessionControl, H-DEMUX,

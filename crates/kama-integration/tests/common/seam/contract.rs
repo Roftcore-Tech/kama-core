@@ -80,6 +80,11 @@ pub const CONTRACT_ROWS: &[&str] = &[
 /// Runner'ın okuduğu makine-satırı. `--nocapture` ile basılır.
 pub const CONTRACT_ROWS_SENTINEL: &str = "SEAM-CONTRACT-ROWS";
 
+/// [L-T1] Hedefin bir satır için BEYAN ETTİĞİ boşluğun makine-satırı (bkz.
+/// [`crate::harness::target::SeamTarget::ROW_GAPS`]); runner `seam-coverage.json` `real_gap` ile
+/// çapraz denetler.
+pub const ROW_GAP_SENTINEL: &str = "SEAM-ROW-GAP";
+
 /// Hedefe bakmaksızın sabit olan beyan tutarlılığı + sentinel emisyonu.
 ///
 /// # Panics
@@ -113,6 +118,26 @@ pub mod rows {
     /// `Ready`'yi beklerken atılacak azami adım. Sınırsız döngü YOK: gerçek hedef ilerlemezse
     /// test asılı kalmaz, KIRMIZI olur.
     const PUMP_BUDGET: usize = 64;
+
+    /// [L-T1] Hedef bu satır için kimlikli bir boşluk beyan ettiyse sentinel basar ve `true` döner;
+    /// satır gövdesi o hedefte KOŞMAZ. Sessiz atlama değildir: runner sentinel'i beyandaki
+    /// `real_gap` ile eşler, beyansız boşluk ya da boşluğu beyanlı satırın "kanıtlandı" sayılması
+    /// kırmızıdır.
+    fn declared_gap<T: SeamTarget>(row: &str) -> bool {
+        match T::ROW_GAPS.iter().find(|g| g.row == row) {
+            Some(g) => {
+                println!(
+                    "{}: target={} row={} gap={}",
+                    super::ROW_GAP_SENTINEL,
+                    T::ID,
+                    g.row,
+                    g.gap
+                );
+                true
+            }
+            None => false,
+        }
+    }
 
     /// `connect` → (`Pending` →) `Ready` zincirini sürer ve aktif handle'ı döndürür.
     ///
@@ -1011,6 +1036,10 @@ pub mod rows {
         /// Kadanstan bağımsız "uzun" süre: herhangi bir prob aralığının çok üstünde.
         const LONG: Duration = Duration::from_secs(60 * 60);
 
+        if declared_gap::<T>("H-PROGRESS") {
+            return;
+        }
+
         let mut t = fresh::<T>();
         let peer = crate::harness::test_peer(0xEA);
         let ticket = pending_ticket(t.connect(peer, None), "ilk connect");
@@ -1142,6 +1171,9 @@ pub mod mechanism {
                     "hedef '{}' kimliksiz bir boşlukla reddetti — beyan edilmemiş boşluk",
                     T::ID
                 );
+            }
+            Err(TargetUnavailable::Environment(why)) => {
+                panic!("hedef '{}' ortam hatasıyla kurulamadı: {why}", T::ID);
             }
         }
     }

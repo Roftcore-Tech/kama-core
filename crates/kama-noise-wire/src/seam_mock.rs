@@ -580,3 +580,71 @@ impl SessionControl for MockCrypto {
         self.events.pop_front()
     }
 }
+
+// ── [L-T1] Gerçek kripto fikstürü (YALNIZ test-util; TEST anahtarları) ───────────────────────
+//
+// S1 conformance'ın `real` hedefi (kama-integration) ÜRÜN kurulumunu (`with_control`) koşar ama
+// kimlik malzemesini kendisi türetemez: X25519/SHA-256 tipleri bu crate'in bağımlılığıdır ve test
+// crate'ine yeni bir bağımlılık kenarı açılmaz. Anahtarlar `dest_hash`'ten deterministik türer —
+// GİZLİ DEĞİLDİR; yalnız sentetik test eşleri içindir.
+
+const FIXTURE_LABEL_STATIC: &[u8] = b"kama-s1-real-fixture-static-v1";
+const FIXTURE_LABEL_CERT_REF: &[u8] = b"kama-s1-real-fixture-cert-ref-v1";
+
+fn fixture_derive(label: &[u8], input: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(label);
+    h.update(input);
+    h.finalize().into()
+}
+
+/// `dest_hash` kimliğinin TEST yerel kimliği (statik X25519 + `cert_ref` `dest_hash`'ten türer).
+#[must_use]
+pub fn fixture_identity(dest_hash: [u8; 32]) -> crate::peer_dir::LocalIdentity {
+    crate::peer_dir::LocalIdentity::new(
+        x25519_dalek::StaticSecret::from(fixture_derive(FIXTURE_LABEL_STATIC, &dest_hash)),
+        dest_hash,
+        fixture_derive(FIXTURE_LABEL_CERT_REF, &dest_hash),
+    )
+}
+
+/// Verilen kimliklerin G1 eş dizini ("bant dışı doğrulanmış" sayılır).
+///
+/// # Errors
+/// Aynı kimlik iki kez verilirse ([`crate::peer_dir::DirectoryError`]).
+pub fn fixture_directory(
+    dest_hashes: impl IntoIterator<Item = [u8; 32]>,
+) -> Result<crate::peer_dir::PeerDirectory, crate::peer_dir::DirectoryError> {
+    crate::peer_dir::PeerDirectory::new(dest_hashes.into_iter().map(|d| {
+        let id = fixture_identity(d);
+        crate::peer_dir::PeerEntry {
+            dest_hash: id.dest_hash,
+            static_x25519_pub: *id.static_public().as_bytes(),
+            cert_ref: id.cert_ref,
+        }
+    }))
+}
+
+/// Ürün kurulumu (`NoiseWireProtection::with_control`, OS entropisi) + saatin test kopyası.
+#[must_use]
+pub fn fixture_protection(
+    dest_hash: [u8; 32],
+    directory: crate::peer_dir::PeerDirectory,
+    envelope: crate::session_control::EnvelopeKind,
+) -> (
+    crate::protector::NoiseWireProtection,
+    crate::clock::ManualClock,
+) {
+    let clock = crate::clock::ManualClock::new();
+    let protection = crate::protector::NoiseWireProtection::with_control(
+        crate::session_control::ControlConfig {
+            identity: fixture_identity(dest_hash),
+            directory,
+            clock: Box::new(clock.clone()),
+            entropy: Box::new(crate::entropy::OsEntropy::new()),
+            envelope,
+        },
+    );
+    (protection, clock)
+}

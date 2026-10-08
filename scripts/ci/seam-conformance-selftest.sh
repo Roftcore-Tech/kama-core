@@ -11,20 +11,27 @@
 #   B. Vakum              — test hedefi var ama icinde test yok → kapi 1 (3 DEGIL: bosluk sanilmaz)
 #   C. Kapsam yalani      — kod §6 satiri iddia ediyor, beyan etmiyor → kapi 1
 #   D. Ratchet tutarsizligi — beyan tabani gerceklikten yuksek → kapi 1
-#   E. Bosluk kapanisi    — gercek hedef kaydedilince "bosluk beyani" testi → kapi 1
+#   E. Bosluk kapanisi    — ~~gercek hedef kaydedilince "bosluk beyani" testi → kapi 1~~ [2026-10-08 L-T1:
+#                           hedef kayitli] kayitli gercek hedefi real-adapter ABSENT beyan ederse → kapi 1
 #   F. API drift          — sozlesme kaynagi spec'ten ayrisinca drift kapisi → 1 (S1 ve S3 icin ayri ayri;
 #                           kaynak = crates/kama-contracts). F1–F5: AD duzeyi (metot/tip var mi).
 #                           F6–F11: BICIM duzeyi — adlar ayni kalirken variant kumesi, variant'in tasidigi
 #                           deger sayisi, struct alan adi ya da metot imzasi degisirse → 1 (nedeniyle)
-#   G. Hedef parametresi  — gecersiz/eksik hedef → 2 · mevcut olmayan hedef → 3 · mock → 0
+#   G. Hedef parametresi  — gecersiz/eksik hedef → 2 · mock → 0 · real → 0 [L-T1] · hedef kayittan
+#                           dusurulup ABSENT beyan edilince → 3 (bosluk yolu hala calisiyor)
 #   H. Kategori sizintisi — --target mock, real-adapter ikilisini KOSMAZ
-#   I. Kanit enflasyonu   — tek hedef varken satir 'implemented' beyan edilirse → 1
+#   I. Kanit enflasyonu   — tek hedef varken satir 'implemented' beyan edilirse → 1 [L-T1: gercek hedef
+#                           kayittan dusurulerek olculur; neden drift ciktisinda]
 #   J. Sessiz kapsam kaybi— kosan bir satir CONTRACT_ROWS'tan silinirse → 1
 #   K. Hayalet satir      — satir CONTRACT_ROWS'ta ve beyanda duruyor ama #[test] sarmalayicisi yok → 1
 #   L. Statik kanit       — statik satirlarin kaniti (layer_check.py) kirmiziyken → 1
 #   M. Statik enflasyon   — davranis satiri 'static' beyan edilirse (kosmadan kanitli gorunur) → drift 1;
 #                           `kind` de birlikte cevrilse ve uydurma kural adi yazilsa bile (tur spec'ten okunur)
 #   N. Susturulmus satir  — satirin sarmalayicisina #[ignore] konursa (listelenir ama kosmaz) → 1
+#   O. Beyanli bosluk     — [L-T1] real hedefte satir yalniz kimlikli beyanla atlanir: beyandan
+#                           `real_gap` silinirse (sentinel ↔ beyan) → 1 · boslugu beyanli satir
+#                           'implemented' denirse → 1 · iki hedefte kosan satir 'mock_only' birakilirsa
+#                           (beyan gercekligin gerisinde) → 1
 #
 # K/L/M/N'de kapinin BEKLENEN nedenle kirmizi oldugu da olculur (cikti o nedeni adiyla tasimali);
 # baska bir nedenle kirmizi olan kapi, sinanan muhafizin calistigini gostermez.
@@ -91,10 +98,26 @@ expect_reason() {
   fi
 }
 
+# coverage_mutate <python-govdesi>: beyanin kendisini bozar; tabanlar mutasyon SONRASI esitlenir ki
+# kirmizi drift ratchet'inden degil, sinanan capraz denetimden gelsin.
+coverage_mutate() {
+  MUT="$1" python3 - scripts/ci/seam-coverage.json <<'PY'
+import json, os, sys, pathlib
+p = pathlib.Path(sys.argv[1]); d = json.loads(p.read_text(encoding="utf-8"))
+rows = {r["id"]: r for r in d["rows"]}
+exec(os.environ["MUT"])
+for key, status in (("implemented_baseline", "implemented"), ("mock_only_baseline", "mock_only"),
+                    ("static_baseline", "static")):
+    d[key] = sum(r["status"] == status for r in d["rows"])
+p.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
 printf '── G. hedef parametresi ──\n'
 expect 2 "G1 eksik --target → 2" -- bash "$GATE"
 expect 2 "G2 gecersiz hedef → 2" -- bash "$GATE" --target bogus
-expect 3 "G3 mevcut olmayan hedef → 3 (beyan edilmis bosluk)" -- bash "$GATE" --target real
+# [L-T1 2026-10-08] Gercek hedef kayitli: real → 0. (Eski G3 "mevcut olmayan hedef → 3" icin bkz. G5.)
+expect 0 "G3 gercek hedef (L-T1) → 0" -- bash "$GATE" --target real
 expect 0 "G4 mock hedefi → 0" -- bash "$GATE" --target mock
 
 printf '\n── H. kategori sizintisi ──\n'
@@ -103,6 +126,36 @@ if grep -q 'seam_real_adapter' <<<"$LAST_OUT"; then
 else
   ok "H1 --target mock real-adapter'i kosmuyor"
 fi
+
+# Bosluk yolu: hedef kayittan dusurulur VE real-adapter ABSENT beyan eder → 3 (yesil degil, kirmizi da degil).
+unregister_real() {
+  python3 - "$SEAM/target.rs" <<'PY'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
+old = "    (super::real::RealTarget::ID, TargetKind::Real),\n"
+assert s.count(old) == 1, "REGISTERED_TARGETS real kaydi capasi bulunamadi"
+p.write_text(s.replace(old, ""), encoding="utf-8")
+PY
+}
+declare_real_absent() {
+  cat > "$TESTS/seam_real_adapter/main.rs" <<'ABSENT'
+//! oz-test: gercek hedefin yoklugunu beyan eden real-adapter (bosluk yolu probe'u).
+#[path = "../common/seam/harness.rs"]
+mod harness;
+#[test]
+fn real_target_is_declared_absent() {
+    println!("SEAM-TARGET-REAL: ABSENT gap=GAP-SELFTEST-ABSENT");
+    let _ = harness::target::REGISTERED_TARGETS.len();
+}
+ABSENT
+}
+unregister_real
+declare_real_absent
+# Tek-hedef beyani: iki hedefte kanitli satirlar 'mock_only'ye doner, real bosluklari kalkar (aksi
+# hâlde drift "tek hedefken implemented" der ve kod 1 olur — I'nin konusu).
+coverage_mutate $'for r in d["rows"]:\n    r.pop("real_gap", None)\n    if r["status"] == "implemented":\n        r["status"] = "mock_only"'
+expect 3 "G5 hedef kayittan dusup ABSENT beyan edilince → 3 (beyan edilmis bosluk)" -- bash "$GATE" --target real
+restore
 
 printf '\n── A. kirmizi test ──\n'
 cat >> "$TESTS/seam_mock_fixture/main.rs" <<'PROBE'
@@ -154,20 +207,11 @@ expect 1 "J1 kosan satir beyandan dusurulunce → 1" -- bash "$GATE" --target mo
 restore
 
 printf '\n── I. kanit enflasyonu ──\n'
-# Govde yalniz sahtede kostu; beyan 'iki hedefte kanitlandi' diyor.
-python3 - scripts/ci/seam-coverage.json <<'PY'
-import json, sys, pathlib
-p = pathlib.Path(sys.argv[1]); d = json.loads(p.read_text(encoding="utf-8"))
-for r in d["rows"]:
-    if r["id"] == "H-ROUNDTRIP":
-        r["status"] = "implemented"
-# Tabanlar mutasyon SONRASI gerceklige esitlenir: kapi yalniz "tek hedefken implemented" yuzunden
-# kirmizi olmali, ratchet tutarsizligindan degil.
-d["implemented_baseline"] = sum(r["status"] == "implemented" for r in d["rows"])
-d["mock_only_baseline"] = sum(r["status"] == "mock_only" for r in d["rows"])
-p.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-PY
+# [L-T1 2026-10-08] Beyan 11 satiri 'implemented' diyor (iki hedefte kostu). Gercek hedef kayittan
+# dusurulunce ayni beyan TEK hedefte "iki hedefte kanitlandi" demis olur → drift kirmizi.
+unregister_real
 expect 1 "I1 tek hedefken 'implemented' beyani → 1" -- bash "$GATE" --target mock
+expect_reason "I2 neden: tek hedef kayitliyken implemented beyan edilemez" "tek hedef (mock) kayitliyken"
 restore
 
 printf '\n── D. ratchet tutarsizligi ──\n'
@@ -181,16 +225,11 @@ expect 1 "D1 beyan tabani gerceklikten yuksek → 1" -- bash "$GATE" --target mo
 restore
 
 printf '\n── E. bosluk kapanisi ──\n'
-python3 - "$SEAM/target.rs" <<'PY'
-import sys, pathlib
-p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
-old = 'pub const REGISTERED_TARGETS: &[(&str, TargetKind)] = &[(MockTarget::ID, TargetKind::Mock)];'
-new = ('pub const REGISTERED_TARGETS: &[(&str, TargetKind)] =\n'
-       '    &[(MockTarget::ID, TargetKind::Mock), ("real", TargetKind::Real)];')
-assert old in s, "REGISTERED_TARGETS capasi bulunamadi"
-p.write_text(s.replace(old, new), encoding="utf-8")
-PY
-expect 1 "E1 gercek hedef kaydedilince bosluk beyani → 1" -- bash "$GATE" --target real
+# [L-T1 2026-10-08] Hedef KAYITLI kalir, real-adapter yoklugunu beyan eder: bosluk beyani kaydin
+# gerisinde kalmistir → kirmizi (3 DEGIL: "henuz yok" denemez).
+declare_real_absent
+expect 1 "E1 kayitli gercek hedef ABSENT beyan edilince → 1" -- bash "$GATE" --target real
+expect_reason "E2 neden: bosluk beyani kayitla celisiyor" "real-adapter 'ABSENT' diyor"
 restore
 
 printf '\n── K. hayalet satir ──\n'
@@ -268,6 +307,20 @@ p.write_text(s.replace(old, '            #[test]\n            #[ignore]\n       
 PY
 expect 1 "N1 satir #[ignore] ile susturulunca → 1" -- bash "$GATE" --target mock
 expect_reason "N2 neden: susturulmus test yesil sayilmaz" "#[ignore]'lu (kosmayan) test var"
+restore
+
+printf '\n── O. beyanli bosluk (real) ──\n'
+coverage_mutate 'rows["H-PROGRESS"].pop("real_gap")'
+expect 1 "O1 beyandan real_gap silinince (sentinel ↔ beyan) → 1" -- bash "$GATE" --target real
+expect_reason "O2 neden: beyanli bosluk ↔ sentinel" "beyanli bosluk ↔ sentinel ayrisiyor"
+restore
+coverage_mutate 'rows["H-PROGRESS"]["status"] = "implemented"'
+expect 1 "O3 boslugu beyanli satir 'implemented' denince → 1" -- bash "$GATE" --target real
+expect_reason "O4 neden: bosluk beyanli satir kanitli sayilamaz" "bosluk beyanli satir kanitlanmis sayiliyor"
+restore
+coverage_mutate 'rows["H-ROUNDTRIP"]["status"] = "mock_only"'
+expect 1 "O5 iki hedefte kosan satir 'mock_only' birakilinca → 1" -- bash "$GATE" --target real
+expect_reason "O6 neden: beyan gercekligin gerisinde" "beyan gercekligin gerisinde"
 restore
 
 printf '\n── F. API drift ──\n'

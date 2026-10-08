@@ -39,8 +39,13 @@
 #![forbid(unsafe_code)]
 
 pub mod batch;
+/// [L-T1] Bellek içi zarf taşıyıcısı — YALNIZ test.
+#[cfg(any(test, feature = "test-util"))]
+pub mod memory_link;
 pub mod runtime;
 pub mod seam;
+/// [L-T1] S1 `KamaTransport`'un gerçek adaptörü (veri yolu + S3 oturum kontrolü).
+pub mod transport;
 pub mod wire;
 
 pub use adaptive_transport::sender::{Event, OpaqueUnit, Sender, TransmitDecision, TransmitKind};

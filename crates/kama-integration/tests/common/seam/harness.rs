@@ -17,6 +17,10 @@ pub mod target;
 #[path = "contract.rs"]
 pub mod contract;
 
+/// [L-T1] Gerçek hedefin fikstürü (`client-core` adaptörü + gerçek kripto + UDP loopback).
+#[path = "real.rs"]
+pub mod real;
+
 /// Test eşi: `dest_hash`'in ilk sekiz baytı `n` (big-endian), kalanı sıfır. Farklı `n` farklı eş.
 pub fn test_peer(n: u64) -> kama_contracts::handles::PeerRef {
     let mut dest_hash = [0u8; 32];
