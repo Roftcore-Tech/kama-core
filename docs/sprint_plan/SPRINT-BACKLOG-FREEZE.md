@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-08h [L-B2d B2.5 Application tarafı + S8 vektörleri — Abkarada kararları S1 / S8]:** B2.5 kartına Application tarafı DURUM satırı (`cancel_connect`, `connect_state`, erken metin S1 K6) · B1.2 kartına S8 DURUM satırı (beş DROP token'ı için Python ret vakası; vektör değişikliği Abkarada'nın yazılı S8 yamasıyla ve YALNIZ `ref/amp/encode.py`'den). Yalnız ekleme.
+
 > **YAMA KAYDI — 2026-10-08g [L-T1 — S1 gerçek adaptörü; iş emri 2026-10-06b §4]:** B1.4, B1.5 ve B2.5 kartlarına DURUM satırı. S1 conformance'ın `real` hedefi KAYITLI ve KOŞUYOR (`client_core::transport::ClientTransport` + gerçek kripto + UDP loopback); 11/12 davranış satırı iki hedefte (`implemented`), H-PROGRESS real'de kimlikli BEYANLI BOŞLUK (GAP-S1-REAL-PROGRESS: `Suspended`/`LongOutage` tetikleri ve hub prob'u bu sprint KAPSAM DIŞI). `ci.yml` S1 real adımı yalnız 0 kabul eder. Yalnız ekleme.
 
 > **YAMA KAYDI — 2026-10-08f [B2.4 PTT — S7 / S8 / S9 Abkarada kararları]:** B2.4 kartına DURUM satırı (L-B2c, `crates/kama-app/src/ptt.rs`). Uygulanan sahip kararları: S9 (PTT sesi `MEDIA_BUNDLE` BestEffort; codec / `bundle_ms` farkı DROP; PTT_START / PTT_END = `PTT_OPEN` / `PTT_CLOSE`), S7 (`PTT_OPEN` öncesi `MEDIA_BUNDLE` düşer), S8 (vektörsüz alıcı kararları fail-closed DROP). AMP tel formatı DEĞİŞMEDİ; spec'e dokunulmadı. Yalnız ekleme.
@@ -356,6 +358,7 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 **Nereye:** `vectors/amp-*.json`, `ref/amp/encode.py`. Tanım: AMP §2, §3, §5, §7.
 **Neye bağlı:** B1.1, T-00.1.
 **Done:** commit; her negatif vakada `result` tam olarak `drop` ya da `reject`.
+**DURUM (2026-10-08): S8 — beş ret vakası eklendi (15 → 20; Abkarada'nın yazılı yaması).** `decode.record-len-mismatch` · `decode.unknown-msg-type` (0x0B) · `decode.invalid-utf8` · `decode.unknown-enum-value` (RECEIPT.kind) · `decode.decompressed-len-mismatch` (§5 kural 2; elle kurulan tek Raw bloklu zstd karesi, libzstd'ye bağlı değil). Mevcut vakaların baytları değişmedi (`--check` bayt-özdeş). Rust tüketicisi: dördü birebir, sıkıştırılmış olanı "pending zstd kararı" listesinde (PENDING_ZSTD 8).
 **DURUM (2026-10-06): KAPANDI (vektörler) — `ref/amp/encode.py` (#92 + F0.5).** 0x01–0x0A her tip için pozitif (11 vaka, `vectors/amp-record-v1.json`) + ret (~~14 vaka~~ 15 vaka **[2026-10-06 F07.4]** — sıkıştırılmış MEDIA_BUNDLE ret vakası eklendi, `vectors/amp-record-reject-v1.json`) vektörü; `--check` gecelik işte (F0.6, `.github/workflows/nightly.yml` `amp-vectors-check`). Rust codec tüketicisi B2.1'de (L-B2a). ~~Kalan: Hayri imzası A3/A4 (B1.1).~~ **[2026-10-06 F07.5]** A3/A4 imzası atıldı (Abkarada; B1.1).
 
 ### B1.3 — Sahte Transport (Application testleri için)
@@ -412,6 +415,7 @@ B1.0 derleniyor · B1.1 kapalı · B1.2 commit · **B1.3 / B1.4 / B1.5 yeşil** 
 ### B2.5 — Bağlantı açma ve anahtar yenileme davranışı
 **Ne:** `ConnectResult`, `SessionSuperseded`, `EarlyUnitConflict` gerçek kodda. **Done:** `H-CUTOVER`, `H-CONNECT-IDEMP`, `H-EARLY-CONFLICT`.
 **DURUM (2026-10-08): Transport tarafı KAPANDI (L-T1); Application tarafı L-B2d'de.** `ConnectResult` (idempotent), `SessionSuperseded` / `UnknownSession` penceresi (F0.2(i)), `EarlyUnitConflict`, `early_unit` Transport'ta saklanıp `Ready`'de ilk gönderim, atomik cutover (yenilemede eski oturumun teyitsiz birimleri boşalınca RESPONSE Crypto'ya verilir — KARAR-2) `crates/client-core/src/transport.rs`'te; H-CUTOVER / H-CONNECT-IDEMP / H-EARLY-CONFLICT real hedefte yeşil. Kalan (L-B2d, kama-app): cancel ve `ConnectProgress` UI durumu.
+**DURUM (2026-10-08): Application tarafı KAPANDI (L-B2d) — `crates/kama-app/src/messaging.rs`.** `cancel_connect(peer)` (bekleyen niyetten tek çıkış, sonuç `ConnectAbandoned(Cancelled)`) · `connect_state(peer)` → `Idle` / `Connecting{ticket, phase}` (son `ConnectProgress`; hub yolunun durumu, eşin canlılığı değil) / `Ready(h)` · `connect_with_text(peer, text)`: ilk metin `early_unit` (S1 K6) — Transport'ta durur, `Ready`'de outbox'a "gönderilmiş", `ConnectAbandoned`'da "gönderilmemiş" olarak girer ve sıradaki oturumda AYNI `msg_id`'yle gider. `Closed(Superseded)` sonrası RECEIPT'siz metnin eski `msg_id`'yle yeniden gönderimi B2.2'den (L-B2a PR-2). Testler `crates/kama-app/tests/connect_flow.rs` (6); iki hedefli mutasyon beklenen testleri kırmızı yaptı.
 
 ### 🚪 G-IMPL-S1 — Application IMPLEMENTATION-GO
 Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıfır (statik).

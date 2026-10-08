@@ -59,6 +59,21 @@
 //! RECEIPT yeniden). Transport'un REDDETTİĞİ (kuyruğa almadığı) bir yeniden gönderim sonraki
 //! [`Messenger::poll`] çağrılarında bekler (K8 "bekler"): kabul edilmemiş birim tele çıkmamıştır.
 //!
+//! # Bağlantı (B2.5)
+//!
+//! * [`Messenger::connect_state`] — UI için eşin bağlantı durumu: hazır oturum, bekleyen niyetin
+//!   SON `ConnectProgress` fazı ya da boşta. Faz HUB YOLUNUN durumudur; eşin canlılığı yalnız
+//!   [`MessengerEvent::Delivered`] ile bilinir (S1 §4).
+//! * [`Messenger::cancel_connect`] — bekleyen niyetten TEK çıkış (`KamaTransport::cancel`); sonucu
+//!   `ConnectAbandoned(ticket, Cancelled)` olayıyla gelir.
+//! * [`Messenger::connect_with_text`] — ilk metin `early_unit` olarak (S1 K6): kayıt Transport'ta
+//!   durur, motor onu KENDİSİ yollamaz ve saklamaz. `Ready(h, eş)` gelince kayıt "h'ye gönderilmiş"
+//!   olarak outbox'a girer (Transport onu `h`'de ilk normal `send` olarak yollar; glare kaybında
+//!   kazanan oturumda) — sonrası her TEXT gibidir (RECEIPT, oturum değişiminde yeniden gönderim).
+//!   `ConnectAbandoned` gelince birim teslim edilmemiştir (S1 §4): kayıt outbox'a "hiçbir tutamaca
+//!   gönderilmemiş" olarak girer ve eşin sıradaki oturumunda AYNI `msg_id`'yle yollanır (yeni
+//!   oturumu uygulama [`Messenger::connect`] ile ister; motor kendiliğinden bağlanmaz).
+//!
 //! # Bilinen sınır (sahibe açık)
 //!
 //! Sayaç kalıcı değildir (AMP §3: yeniden başlatmada devam garantisi yok). Durumunu yitirip
@@ -76,8 +91,8 @@ use std::collections::{BTreeMap, VecDeque};
 
 use kama_contracts::handles::{PeerRef, SessionHandle};
 use kama_contracts::s1::{
-    ConnectResult, Delivered, DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent,
-    TransportError,
+    ConnectPhase, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy, KamaTransport,
+    PreparedUnit, SessionEvent, TransportError,
 };
 
 use crate::codec::{self, AmpLimits, AppMessage, EncodeError, LimitsError, ReceiptKind};
@@ -169,6 +184,22 @@ impl fmt::Debug for MessengerEvent {
                 .finish(),
         }
     }
+}
+
+/// [B2.5] Eşin bağlantı durumu — UI içindir; eşin canlılığını BİLDİRMEZ (S1 §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectState {
+    /// Hazır oturum da bekleyen niyet de yok.
+    Idle,
+    /// Bekleyen niyet ve onun son `ConnectProgress` fazı.
+    Connecting {
+        /// Niyetin bileti ([`Messenger::cancel_connect`] onu iptal eder).
+        ticket: ConnectTicket,
+        /// Son okunan faz (`connect` dönüşünde `Measuring`).
+        phase: ConnectPhase,
+    },
+    /// Eşin güncel oturumu.
+    Ready(SessionHandle),
 }
 
 /// [`Messenger::send_text`] ve [`Messenger::connect`] hatası. Her hata yolunda motor durumu
@@ -344,10 +375,117 @@ impl<T: KamaTransport> Messenger<T> {
             .transport
             .connect(peer, None)
             .map_err(MessengerError::Transport)?;
-        if let ConnectResult::Ready(handle) = result {
-            self.adopt(handle, peer);
+        match result {
+            ConnectResult::Ready(handle) => self.adopt(handle, peer),
+            ConnectResult::Pending(ticket) => self.note_pending(peer, ticket),
         }
         Ok(result)
+    }
+
+    /// [B2.5] İlk metni `early_unit` olarak taşıyan `connect` (S1 K6; modül belgesi, "Bağlantı").
+    /// Dönen `msg_id` metnin kimliğidir: teslimi [`MessengerEvent::Delivered`] ile öğrenilir.
+    ///
+    /// # Errors
+    ///
+    /// Denetim sırasıyla: [`MessengerError::PeerTableFull`] · [`MessengerError::OutboxFull`] ·
+    /// [`MessengerError::MsgIdExhausted`] · [`MessengerError::UnackedSpanFull`] ·
+    /// [`MessengerError::Encode`] · [`MessengerError::Transport`] (aktif ya da bekleyen eşe
+    /// `EarlyUnitConflict`, tavan `UnitTooLarge`, `Backpressure`). Hiçbiri `msg_id` tüketmez.
+    pub fn connect_with_text(
+        &mut self,
+        peer: PeerRef,
+        text: &str,
+    ) -> Result<(ConnectResult, MsgId), MessengerError> {
+        if !self.peers.contains_key(&peer) && self.peers.len() >= MAX_PEERS {
+            return Err(MessengerError::PeerTableFull);
+        }
+        let probe = self.peers.get(&peer);
+        let msg_id = match probe {
+            Some(state) => state.next_send_id()?,
+            None => PeerState::new().next_send_id()?,
+        };
+        let message = AppMessage::Text {
+            msg_id,
+            text: text.to_owned(),
+        };
+        let unit = codec::encode(&message, &self.limits).map_err(MessengerError::Encode)?;
+        let result = self
+            .transport
+            .connect(peer, Some(unit.clone()))
+            .map_err(MessengerError::Transport)?;
+        let state = self.peers.entry(peer).or_insert_with(PeerState::new);
+        state.next_msg_id = msg_id.checked_add(1);
+        match result {
+            ConnectResult::Pending(ticket) => {
+                state.early = Some((msg_id, unit));
+                state.connecting = Some((ticket, ConnectPhase::Measuring));
+            }
+            ConnectResult::Ready(handle) => {
+                // K6: aktif eşe `early_unit` `EarlyUnitConflict`'tir; buraya ancak sözleşme dışı bir
+                // Transport'la gelinir. Kayıt kaybolmasın: outbox'a "gönderilmemiş" girer ve
+                // benimsenen oturumdan normal gönderimle yollanır.
+                state.outbox.insert(
+                    msg_id,
+                    OutboxEntry {
+                        unit,
+                        sent_on: None,
+                    },
+                );
+                self.adopt(handle, peer);
+                if let Some(state) = self.peers.get_mut(&peer) {
+                    state.resend_pending = true;
+                    flush_peer(&mut self.transport, state, &mut self.stats);
+                }
+            }
+        }
+        Ok((result, msg_id))
+    }
+
+    /// [B2.5] Eşin bekleyen niyetini iptal eder (`KamaTransport::cancel`). Bekleyen niyet yoksa
+    /// `false` (olay yok). Sonuç `ConnectAbandoned(ticket, Cancelled)` olayıyla gelir; niyetin
+    /// erken metni o olayla outbox'a geçer.
+    pub fn cancel_connect(&mut self, peer: PeerRef) -> bool {
+        let Some((ticket, _)) = self.peers.get(&peer).and_then(|s| s.connecting) else {
+            return false;
+        };
+        self.transport.cancel(ticket);
+        true
+    }
+
+    /// [B2.5] Eşin bağlantı durumu (UI).
+    #[must_use]
+    pub fn connect_state(&self, peer: PeerRef) -> ConnectState {
+        match self.peers.get(&peer) {
+            Some(PeerState {
+                session: Some(handle),
+                ..
+            }) => ConnectState::Ready(*handle),
+            Some(PeerState {
+                connecting: Some((ticket, phase)),
+                ..
+            }) => ConnectState::Connecting {
+                ticket: *ticket,
+                phase: *phase,
+            },
+            _ => ConnectState::Idle,
+        }
+    }
+
+    /// `Pending(ticket)`: eşin bekleyen niyeti (faz olaylarla güncellenir).
+    fn note_pending(&mut self, peer: PeerRef, ticket: ConnectTicket) {
+        let known_peers = self.peers.len();
+        let state = match self.peers.entry(peer) {
+            Entry::Occupied(slot) => slot.into_mut(),
+            Entry::Vacant(slot) => {
+                if known_peers >= MAX_PEERS {
+                    return;
+                }
+                slot.insert(PeerState::new())
+            }
+        };
+        if state.connecting.map(|(t, _)| t) != Some(ticket) {
+            state.connecting = Some((ticket, ConnectPhase::Measuring));
+        }
     }
 
     /// TEXT gönderir ve atanan `msg_id`'yi döndürür. `Ok` = Transport kaydı kuyruğa aldı; teslim
@@ -408,10 +546,37 @@ impl<T: KamaTransport> Messenger<T> {
         match event {
             SessionEvent::Ready(handle, peer) => self.adopt(handle, peer),
             SessionEvent::Closed(handle, _) => self.retire(handle),
-            SessionEvent::RenewRequired(_)
-            | SessionEvent::ConnectAbandoned(..)
-            | SessionEvent::ConnectProgress(..) => {}
+            SessionEvent::ConnectProgress(ticket, phase) => {
+                if let Some(state) = self.state_of_ticket(ticket) {
+                    state.connecting = Some((ticket, phase));
+                }
+            }
+            SessionEvent::ConnectAbandoned(ticket, _) => {
+                if let Some(state) = self.state_of_ticket(ticket) {
+                    state.connecting = None;
+                    // S1 §4: `early_unit` teslim edilmemiştir; eşin sıradaki oturumunda AYNI
+                    // `msg_id`'yle (aynı baytlar) yollanır.
+                    if let Some((msg_id, unit)) = state.early.take() {
+                        state.outbox.insert(
+                            msg_id,
+                            OutboxEntry {
+                                unit,
+                                sent_on: None,
+                            },
+                        );
+                        state.resend_pending = true;
+                    }
+                }
+            }
+            SessionEvent::RenewRequired(_) => {}
         }
+    }
+
+    /// Bekleyen niyetin bileti `ticket` olan eşin durumu.
+    fn state_of_ticket(&mut self, ticket: ConnectTicket) -> Option<&mut PeerState> {
+        self.peers
+            .values_mut()
+            .find(|s| s.connecting.is_some_and(|(t, _)| t == ticket))
     }
 
     /// `handle`'ı `peer`'in güncel tutamacı yapar (`Ready` olayı ya da `ConnectResult::Ready`).
@@ -432,6 +597,19 @@ impl<T: KamaTransport> Messenger<T> {
         if state.session == Some(handle) {
             // Aynı tutamacın ikinci kez bildirilmesi (ör. `connect` dönüşü + `Ready` olayı).
             return;
+        }
+        // Eşe oturum geldi: bekleyen niyet çözüldü (kendi niyetimiz ya da glare'de eşinki).
+        state.connecting = None;
+        // K6: erken metin Transport'tadır ve bu oturumda ilk normal `send` olarak gider — burada
+        // YOLLANMAZ, yalnız RECEIPT ve oturum değişimi için "h'ye gönderilmiş" olarak kaydedilir.
+        if let Some((msg_id, unit)) = state.early.take() {
+            state.outbox.insert(
+                msg_id,
+                OutboxEntry {
+                    unit,
+                    sent_on: Some(handle),
+                },
+            );
         }
         if let Some(previous) = state.session.replace(handle) {
             self.by_handle.remove(&previous);
@@ -548,14 +726,20 @@ struct PeerState {
     resend_pending: bool,
     /// Alıcı dedup penceresi.
     dedup: DedupWindow,
+    /// [B2.5] Bekleyen niyet: bilet + son `ConnectProgress` fazı.
+    connecting: Option<(ConnectTicket, ConnectPhase)>,
+    /// [B2.5] Transport'ta duran erken metin (S1 K6): `Ready`'de outbox'a "gönderilmiş",
+    /// `ConnectAbandoned`'da "gönderilmemiş" olarak geçer.
+    early: Option<(MsgId, PreparedUnit)>,
 }
 
 /// RECEIPT bekleyen kayıt.
 struct OutboxEntry {
     /// Kodlanmış TEXT kaydı: yeniden gönderim AYNI baytları (aynı `msg_id`) taşır.
     unit: PreparedUnit,
-    /// Kaydı en son kabul eden tutamaç.
-    sent_on: SessionHandle,
+    /// Kaydı en son kabul eden tutamaç; `None` = hiçbir tutamaca kabul ettirilmedi (vazgeçilen
+    /// niyetin erken metni).
+    sent_on: Option<SessionHandle>,
 }
 
 impl PeerState {
@@ -566,6 +750,8 @@ impl PeerState {
             outbox: BTreeMap::new(),
             resend_pending: false,
             dedup: DedupWindow::new(),
+            connecting: None,
+            early: None,
         }
     }
 
@@ -594,7 +780,7 @@ impl PeerState {
             msg_id,
             OutboxEntry {
                 unit,
-                sent_on: handle,
+                sent_on: Some(handle),
             },
         );
         self.next_msg_id = msg_id.checked_add(1);
@@ -613,7 +799,7 @@ fn flush_peer<T: KamaTransport>(
         return;
     };
     for entry in state.outbox.values_mut() {
-        if entry.sent_on == handle {
+        if entry.sent_on == Some(handle) {
             continue;
         }
         if transport
@@ -623,7 +809,7 @@ fn flush_peer<T: KamaTransport>(
             stats.resend_refused += 1;
             return;
         }
-        entry.sent_on = handle;
+        entry.sent_on = Some(handle);
         stats.resent_on_new_session += 1;
     }
     state.resend_pending = false;

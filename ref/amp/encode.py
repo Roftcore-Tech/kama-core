@@ -37,10 +37,20 @@ Kullanım:
     kural 6 GÖNDERİCİ kuralıdır; alıcı §5 alıcı kurallarını (burada kural 4) tipe bakmadan uygular.
     Vaka listenin SONUNA eklendi; mevcut vakaların ve pozitif dosyanın baytları değişmedi.
 
+[2026-10-08 — S8 (Abkarada'nın yazılı yaması: "vektörsüz alıcı kararları fail-closed DROP + token'lar …
+  + bunlar için Python vektörü")]
+  · Beş ret vakası listenin SONUNA eklendi (mevcut vakaların ve pozitif dosyanın baytları DEĞİŞMEDİ):
+    `decode.record-len-mismatch`, `decode.unknown-msg-type`, `decode.invalid-utf8`,
+    `decode.unknown-enum-value`, `decode.decompressed-len-mismatch`. Reason token'ları B2.1 Rust codec'inin
+    token sözleşmesidir (`crates/kama-app/src/codec/mod.rs` `DropReason`); yeni token icat edilmedi.
+  · `decompressed-len-mismatch` GERÇEK bir zstd karesi taşır ama karesi ELLE kurulur: tek Raw bloklu
+    çerçeve (RFC 8878 §3.1.1) — baytlar spec'ten belirlenir, libzstd sürümüne bağlı DEĞİLDİR; üretici
+    `compression.zstd.decompress` ile karenin geçerliliğini doğrular.
+
 SINIRLAR (bilinen; düzeltilmedi):
-  · Reserved tip yalnız 0x00 ile sınanıyor (0xF0..0xFF yok); "bilinmeyen ama reserved olmayan tip → DROP"
-    (§6, örn. 0x0B) vakası yok; §5 kural 2 (çözülen uzunluk ≠ uncompressed_len) ve compression_id "diğer"
-    (0x02 → REJECT) vakası yok.
+  · Reserved tip yalnız 0x00 ile sınanıyor (0xF0..0xFF yok); ~~"bilinmeyen ama reserved olmayan tip → DROP"
+    (§6, örn. 0x0B) vakası yok; §5 kural 2 (çözülen uzunluk ≠ uncompressed_len)~~ [S8 2026-10-08: ikisi
+    eklendi] ve compression_id "diğer" (0x02 → REJECT) vakası yok.
   · `uncompressed-len-exceeds-max` vakasının girdisi expansion oranı kuralını da çiğniyor; iki kural da
     DROP verir, hangi nedenin döneceği denetim sırasına bağlıdır.
   · İki vaka (encode.text-compressed, decode.truncated-zstd-stream) varsayılan ayarlı `zstd.compress`
@@ -153,6 +163,19 @@ def compressed_body(uncompressed: bytes) -> bytes:
     """flags.bit0=1 durumundaki gövde: compression_id(1) | uncompressed_len(4 be) | payload."""
     payload = zstd.compress(uncompressed)
     return struct.pack(">BI", ZSTD_COMPRESSION_ID, len(uncompressed)) + payload
+
+
+def zstd_raw_frame(data: bytes) -> bytes:
+    """[S8 2026-10-08] Tek Raw bloklu zstd karesi (RFC 8878 §3.1.1) — sıkıştırma algoritmasına ve libzstd
+    sürümüne bağlı DEĞİL, baytlar spec'ten belirlenir. Magic 0xFD2FB528 (LE) · Frame_Header_Descriptor 0x20
+    (Single_Segment=1, FCS 1 B, sağlama yok, sözlük yok) · Frame_Content_Size = len · Block_Header (3 B LE)
+    = Last_Block(1) | Block_Type Raw(0) << 1 | Block_Size << 3 · ham bayt."""
+    if len(data) > 0xFF:
+        raise ValueError("tek baytlık Frame_Content_Size en çok 255 B taşır")
+    block_header = (1 | (0 << 1) | (len(data) << 3)).to_bytes(3, "little")
+    frame = b"\x28\xb5\x2f\xfd" + bytes([0x20, len(data)]) + block_header + data
+    assert zstd.decompress(frame) == data, "elle kurulan zstd karesi geçersiz"
+    return frame
 
 
 def hx(b: bytes) -> str:
@@ -373,6 +396,22 @@ def build_negative() -> dict:
     # kural 4'ü tipe bakmadan uygular — decompress'e başlanmaz.
     media_bundle_compressed_expansion = record(MEDIA_BUNDLE, expansion_payload, flags=COMPRESS_FLAG_BIT0)
 
+    # [S8 2026-10-08 — Abkarada'nın yazılı yaması] Vektörsüz alıcı kararları: fail-closed DROP + token.
+    # Kayıt başlığı body_len = 4 (PTT_CLOSE gövdesi) ama kayıtta 5 gövde baytı var (§2: kayıt = 5 B başlık +
+    # body_len bayt).
+    record_len_longer = record(PTT_CLOSE, ptt_close_body(1)) + b"\x00"
+    # 0x0B: kayıtlı değil (registry 0x01..0x0A) ve reserved değil (0x00, 0xF0..0xFF) — §6 ileri uyum: DROP.
+    unknown_msg_type = record(MEDIA_BUNDLE + 1, b"")
+    # TEXT.text_len = 1, metin baytı 0xFF: UTF-8'de hiçbir konumda geçerli değil.
+    invalid_utf8 = record(TEXT, struct.pack(">IH", 1, 1) + b"\xff")
+    # RECEIPT.kind = 0xFF: §3 enum'unda tanımsız.
+    unknown_enum_value = record(RECEIPT, receipt_body(1, 0xFF))
+    # §5 kural 2: kare 3 B'a açılır, uncompressed_len = 4 beyan ediliyor (oran ve tavan denetimlerini geçer).
+    raw_frame = zstd_raw_frame(b"abc")
+    decompressed_len_mismatch = record(
+        TEXT, struct.pack(">BI", ZSTD_COMPRESSION_ID, 4) + raw_frame, flags=COMPRESS_FLAG_BIT0
+    )
+
     cases = [
         case(
             "amp-record-reject-v1.decode.reserved-msg-type",
@@ -502,6 +541,50 @@ def build_negative() -> dict:
             input_hex=hx(media_bundle_compressed_expansion),
             expected={"result": "drop", "reason": "expansion-ratio-exceeded"},
         ),
+        # [S8 2026-10-08] vektörsüz alıcı kararları — fail-closed DROP.
+        case(
+            "amp-record-reject-v1.decode.record-len-mismatch",
+            "decode",
+            note="Başlığın body_len'i (4) kayıttaki gövde baytı sayısından (5) farklı — §2: kayıt = 5 B başlık + "
+            "body_len bayt; S8: fail-closed DROP.",
+            spec_ref="application-message-protocol.md §2 (S8 2026-10-08)",
+            input_hex=hx(record_len_longer),
+            expected={"result": "drop", "reason": "record-len-mismatch"},
+        ),
+        case(
+            "amp-record-reject-v1.decode.unknown-msg-type",
+            "decode",
+            note="msg_type=0x0B kayıtlı değil ve reserved değil — §6 ileri uyum: DROP, REJECT değil (S8).",
+            spec_ref="application-message-protocol.md §6 (S8 2026-10-08)",
+            input_hex=hx(unknown_msg_type),
+            expected={"result": "drop", "reason": "unknown-msg-type"},
+        ),
+        case(
+            "amp-record-reject-v1.decode.invalid-utf8",
+            "decode",
+            note="TEXT.text tek bayt 0xFF — geçerli UTF-8 değil; S8: fail-closed DROP.",
+            spec_ref="application-message-protocol.md §3 0x01 (S8 2026-10-08)",
+            input_hex=hx(invalid_utf8),
+            expected={"result": "drop", "reason": "invalid-utf8"},
+        ),
+        case(
+            "amp-record-reject-v1.decode.unknown-enum-value",
+            "decode",
+            note="RECEIPT.kind=0xFF §3 enum'unda tanımsız; S8: fail-closed DROP.",
+            spec_ref="application-message-protocol.md §3 0x08 (S8 2026-10-08)",
+            input_hex=hx(unknown_enum_value),
+            expected={"result": "drop", "reason": "unknown-enum-value"},
+        ),
+        case(
+            "amp-record-reject-v1.decode.decompressed-len-mismatch",
+            "decode",
+            flags=["compressed"],
+            note="Tek Raw bloklu zstd karesi (RFC 8878 §3.1.1; elle kurulur, libzstd'ye bağlı değil) 3 B'a açılır "
+            "ama uncompressed_len=4 beyan ediliyor — §5 kural 2: DROP (S8).",
+            spec_ref="application-message-protocol.md §5 kural 2 (S8 2026-10-08)",
+            input_hex=hx(decompressed_len_mismatch),
+            expected={"result": "drop", "reason": "decompressed-len-mismatch"},
+        ),
     ]
     return {
         "schema_version": 2,
@@ -511,7 +594,8 @@ def build_negative() -> dict:
         "description": "AMP §2/§5/§6 negatif corpus: reserved type/flag, iç alan/body_len uyumsuzluğu "
         "(TEXT, SIGNALING_BLOB, MEDIA_BUNDLE; sabit öneğin sığmaması dahil), sıkıştırma bomb korumaları "
         "(uncompressed_len aşımı, expansion oranı; expansion oranı sıkıştırılmış MEDIA_BUNDLE taşıyıcıyla da), "
-        "gerçek zstd ile kesilmiş/geçersiz frame, bilinmeyen compression_id/msg_version.",
+        "gerçek zstd ile kesilmiş/geçersiz frame, bilinmeyen compression_id/msg_version; [S8] kayıt uzunluğu "
+        "uyumsuzluğu, kayıtsız msg_type, geçersiz UTF-8, tanımsız enum değeri, açılan uzunluk ≠ uncompressed_len.",
         "notes": {
             "compressed": "flags.bit0=1 gövde (§5).",
             "compression-length-only": "Decoder yalnız beyan edilen uzunluk alanlarına bakarak "
