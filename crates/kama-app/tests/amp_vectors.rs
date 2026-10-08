@@ -41,7 +41,7 @@ const POSITIVE_ID_PREFIX: &str = "amp-record-v1.encode.";
 const VECTOR_MAX_PLAINTEXT_UNIT_BYTES: u32 = 1024;
 
 /// Sıkıştırılmış kayıt taşıyan vakaların TAMAMI — "pending zstd kararı" (Abkarada 2026-10-08).
-const PENDING_ZSTD: [&str; 7] = [
+const PENDING_ZSTD: [&str; 8] = [
     "amp-record-v1.encode.text-compressed",
     "amp-record-reject-v1.decode.uncompressed-len-exceeds-max",
     "amp-record-reject-v1.decode.expansion-ratio-exceeded",
@@ -49,13 +49,16 @@ const PENDING_ZSTD: [&str; 7] = [
     "amp-record-reject-v1.decode.invalid-zstd-frame",
     "amp-record-reject-v1.decode.unknown-compression-id",
     "amp-record-reject-v1.decode.media-bundle-compressed-expansion-ratio-exceeded",
+    // [S8 2026-10-08] §5 kural 2 — tek Raw bloklu (deterministik) zstd karesi; açma adımına ulaşır.
+    "amp-record-reject-v1.decode.decompressed-len-mismatch",
 ];
 
 /// [`PENDING_ZSTD`]'den başlık denetimlerini geçip açma adımına ULAŞANLAR (gerçek zstd karesi ister).
-const NEEDS_DECODER: [&str; 3] = [
+const NEEDS_DECODER: [&str; 4] = [
     "amp-record-v1.encode.text-compressed",
     "amp-record-reject-v1.decode.truncated-zstd-stream",
     "amp-record-reject-v1.decode.invalid-zstd-frame",
+    "amp-record-reject-v1.decode.decompressed-len-mismatch",
 ];
 
 /// Koşulan vaka sayısı; `pending` = [`PENDING_ZSTD`]'den koşulanlar (onlar da `consumed`'a dahil).
