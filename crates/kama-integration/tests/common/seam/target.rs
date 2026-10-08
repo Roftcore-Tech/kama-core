@@ -12,12 +12,13 @@
 //! testlerinde kullandığı sahte ile bu süitin sınadığı sahte AYNI koddur. İkinci bir kopya olsaydı
 //! sözleşme süiti birini sınarken Application diğerine karşı geliştirilirdi.
 //!
-//! # Bugünkü durum: tek hedef
+//! # İki hedef (L-T1, 2026-10-08)
 //!
-//! `mock` kayıtlı, `real` DEĞİL — ve bu **beyan edilmiş bir boşluktur** ([`GAP_REAL_ADAPTER`]),
-//! sessiz bir atlama değil. `scripts/ci/seam-conformance.sh --target real` bugün çıkış kodu 3
-//! döner; `seam_real_adapter` süiti boşluğun BEYAN EDİLDİĞİNİ sınar. Gerçek adapter kaydedildiği
-//! an o sınama kırmızıya döner — kapsam sessizce değişemez.
+//! `mock` ve `real` kayıtlıdır. `real` = `client_core::transport::ClientTransport`, gerçek kripto ve
+//! gerçek veri yolu; fikstürü [`super::real`]. ~~`real` DEĞİL — beyan edilmiş boşluk
+//! ([`GAP_REAL_ADAPTER`]), `--target real` çıkış 3~~ *[2026-10-08: L-T1 ile kapandı]*. Bir hedefin
+//! koşamadığı satır YALNIZ [`SeamTarget::ROW_GAPS`] ile, kimlikli olarak beyan edilir; runner bu
+//! beyanı `seam-coverage.json`'ın `real_gap` alanıyla çapraz denetler (sessiz atlama değildir).
 
 #![allow(dead_code)]
 
@@ -32,8 +33,21 @@ pub mod app_mock;
 
 pub use app_mock::MockTransport;
 
-/// Gerçek adapter'ın yokluğunun kimliği. Runner ve `seam_real_adapter` bu sabiti paylaşır.
+/// ~~Gerçek adapter'ın yokluğunun kimliği~~ — L-T1 (2026-10-08) ile KAPANDI; tarihî kimlik
+/// (`seam-coverage.json` `needs` metinleri ona atıf yapar).
 pub const GAP_REAL_ADAPTER: &str = "GAP-SEAM-REAL-1";
+
+/// Bir hedefin koşamadığı §6 satırının KİMLİKLİ beyanı (sessiz atlama değil): satır gövdesi
+/// sentinel basıp döner, runner beyanı `seam-coverage.json` `real_gap` alanıyla çapraz denetler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowGap {
+    /// §6 satır kimliği (ör. `H-PROGRESS`).
+    pub row: &'static str,
+    /// Boşluk kimliği (beyandaki `real_gap` ile AYNI).
+    pub gap: &'static str,
+    /// Neden.
+    pub why: &'static str,
+}
 
 /// Hedef ailesi. `Mock` = sahte modül (geliştirme sırasında), `Real` = gerçek implementasyon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +74,9 @@ impl TargetKind {
 pub enum TargetUnavailable {
     #[error("hedef uygulanmadı ({gap})")]
     NotImplemented { gap: &'static str },
+    /// Hedef var ama bu ortamda kurulamadı (soket vb.) — boşluk DEĞİL, kırmızıdır.
+    #[error("hedef ortam hatasıyla kurulamadı ({0})")]
+    Environment(&'static str),
 }
 
 /// Sözleşme süitinin parametresi: hedefi kuran fabrika + senaryo kancaları.
@@ -82,6 +99,8 @@ pub trait SeamTarget {
     /// YALNIZ test altyapısı — iş emri 2026-10-06 F07.6 (kabul edilen SAPMA); sözleşme tipine
     /// girmez.
     const RELIABLE: bool;
+    /// Bu hedefin koşamadığı satırların kimlikli beyanı (varsayılan: yok).
+    const ROW_GAPS: &'static [RowGap] = &[];
 
     /// # Errors
     /// Hedef bu derlemede mevcut değilse [`TargetUnavailable`] (typed; beyan edilmiş boşluk).
@@ -130,7 +149,10 @@ pub trait SeamTarget {
 }
 
 /// Kayıtlı hedefler — `seam_real_adapter` bu listeye karşı "gerçek hedef yok" iddiasını sınar.
-pub const REGISTERED_TARGETS: &[(&str, TargetKind)] = &[(MockTarget::ID, TargetKind::Mock)];
+pub const REGISTERED_TARGETS: &[(&str, TargetKind)] = &[
+    (MockTarget::ID, TargetKind::Mock),
+    (super::real::RealTarget::ID, TargetKind::Real),
+];
 
 // ── Sahte hedef ──────────────────────────────────────────────────────────────────────────────
 

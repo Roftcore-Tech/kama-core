@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-08g [L-T1 — S1 gerçek adaptörü; iş emri 2026-10-06b §4]:** B1.4, B1.5 ve B2.5 kartlarına DURUM satırı. S1 conformance'ın `real` hedefi KAYITLI ve KOŞUYOR (`client_core::transport::ClientTransport` + gerçek kripto + UDP loopback); 11/12 davranış satırı iki hedefte (`implemented`), H-PROGRESS real'de kimlikli BEYANLI BOŞLUK (GAP-S1-REAL-PROGRESS: `Suspended`/`LongOutage` tetikleri ve hub prob'u bu sprint KAPSAM DIŞI). `ci.yml` S1 real adımı yalnız 0 kabul eder. Yalnız ekleme.
+
 > **YAMA KAYDI — 2026-10-08f [B2.4 PTT — S7 / S8 / S9 Abkarada kararları]:** B2.4 kartına DURUM satırı (L-B2c, `crates/kama-app/src/ptt.rs`). Uygulanan sahip kararları: S9 (PTT sesi `MEDIA_BUNDLE` BestEffort; codec / `bundle_ms` farkı DROP; PTT_START / PTT_END = `PTT_OPEN` / `PTT_CLOSE`), S7 (`PTT_OPEN` öncesi `MEDIA_BUNDLE` düşer), S8 (vektörsüz alıcı kararları fail-closed DROP). AMP tel formatı DEĞİŞMEDİ; spec'e dokunulmadı. Yalnız ekleme.
 
 > **YAMA KAYDI — 2026-10-08e [B2.3 dosya transferi — L-B2b; Abkarada kararları S7 + S8 + `blake2` DAR istisnası]:** B2.3 kartına DURUM satırı (L-B2b). Sahip kararları (2026-10-08): S7 `MAX_REASSEMBLY_BYTES = 64 MiB` (alıcı birleştirme tavanı) · S8 vektörsüz alıcı kararı → fail-closed DROP (panik yok, olay yok) · `blake2` → `kama-app` DAR istisna (yalnız `FILE_BEGIN.whole_file_hash`; `scripts/ci/layer_check.py` L1'de adıyla, yalnız normal bağımlılık). zstd yok (`compression_id` = NONE). Resume NON-GATING. AMP spec'ine dokunulmadı. Yalnız ekleme.
@@ -377,11 +379,13 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 **Nereye:** `crates/kama-app/tests/conf_s1_*.rs`. Tanım: `KM-SEAM-AT-001.md` §6.
 **Neye bağlı:** B1.0, B1.3.
 **Done:** `MockTransport`'a karşı yeşil.
+**DURUM (2026-10-08): KAPANDI (iki hedef) — L-T1.** Real hedef `crates/kama-integration/tests/common/seam/real.rs`: hedef = ürün builder'ıyla kurulan `client_core::transport::ClientTransport` (gerçek `NoiseWireProtection`, TEST anahtarları; UDP loopback veri yolu), karşı uç = aynı adaptörün echo yapan örnekleri, zarflar bellek içi hub'dan yalnız `pump`'ta. `seam-coverage.json`: 11 satır `implemented` + H-PROGRESS `mock_only` (`real_gap` GAP-S1-REAL-PROGRESS) + 2 statik; runner real kolunda beyan ↔ koşum ↔ beyanlı boşluk çapraz denetimi (seçici öz-test O1–O6). Adaptöre beş hedefli mutasyon (sırasız teslim, yenileme yanıtı tutulmaz, kayıp kancası etkisiz, kurtarma anahtarı yayılmaz, niyet anahtar hijyeniyle biter) — her biri yalnız beklenen satırı kırmızı yaptı; mutasyonsuz real süiti 5/5 yeşil.
 **DURUM (2026-10-06): KAPANDI (mock hedefi) — S1 §6 on dört satır.** Gövdeler `crates/kama-integration/tests/common/seam/contract.rs` CONTRACT_ROWS; kapsama `scripts/ci/seam-coverage.json`: 12 davranış satırı `mock_only` + 2 statik. `H-OPAQUE-FAIL` S1'de üstü çizili → `H-SILENT-REJECT`. Real hedef L-T1'de (GAP-SEAM-REAL-1); mutasyon turu (`scripts/ci/seam-mutation.py`) gecelik işte (F0.6, `nightly.yml` `seam-mutation`).
 
 ### B1.5 — ~~Bağlantı zaman aşımı testi~~ Bağlantı niyeti testleri: H-CANCEL / H-PROGRESS / H-CUTOVER(Superseded) **[DR-CONNECT-1, 2026-10-03]**
 **Neden:** ~~KS-8 belirlenince `ConnectFailed`'ın tam zamanlaması test edilebilir.~~ `connect()` için deadline yok ve `ConnectFailed` kalktı (DR-CONNECT-1). Test edilecek olan artık bir süre değil, üç davranış: **H-CANCEL** (`cancel(ticket)` → `ConnectAbandoned(ticket, Cancelled)`; sanal saat ilerlese de niyet kendiliğinden sonlanmaz; bozuk/sahte RESPONSE olay üretmez) · **H-PROGRESS** (link yok → `Suspended` + 0 prob; link gelir → `Measuring` + anında prob; eşin canlılığı bildirilmez) · **H-CUTOVER(Superseded)** (~~bilinen eşten yeni INIT → `Ready(h') → Closed(h, Superseded)`; duplicate INIT supersession üretmez~~ **[2026-10-04]** provisional supersession: onaydan önce `h` tam çalışır; onayda `Ready(h')` → yalnız-alım drain → `Closed(h, Superseded)`; bayat INIT `h`'yi etkilemez; glare → tek `Ready`) · **H-SILENT-REJECT** [2026-10-04] (sahte/geçersiz RESPONSE olay üretmez, pending yaşar). Tanım: `KM-SEAM-AT-001.md` §6.
 **Nereye:** `conf_s1_connect.rs`. **Bağlı:** A1.3. **Done:** yeşil.
+**DURUM (2026-10-08): L-T1 — real hedefte H-CANCEL / H-CUTOVER(Superseded) / H-SILENT-REJECT KOŞUYOR; H-PROGRESS real'de BEYANLI BOŞLUK** (GAP-S1-REAL-PROGRESS — gerçek tetikler KATMAN 6). H-CANCEL'in "saat ne kadar ilerlerse ilerlesin" iddiası gerçek Crypto'nun `HALF_OPEN_TTL` (7 gün) düşürmesine karşı sınanır: adaptör aynı bilet altında taze INIT başlatır.
 **DURUM (2026-10-06): KAPANDI (S1 düzeyi).** H-CANCEL / H-PROGRESS / H-CUTOVER(Superseded) / H-SILENT-REJECT sahtede koşuyor; F0.4 ile H-CUTOVER ikinci vaka: `RenewRequired` OLMADAN `Ready(h')` → `Closed(h, Superseded)` (eski tutamaç F0.2(i) semantiğiyle). Glare ve bayat INIT S3 real hedefte (L-A5c). `Suspended` / `LongOutage` gerçek tetikleri sonraki sprint (DR-CONNECT-1 IMPL; KATMAN 6).
 
 ### 🚪 G-S1 — S1 SEAM-FROZEN
@@ -407,6 +411,7 @@ B1.0 derleniyor · B1.1 kapalı · B1.2 commit · **B1.3 / B1.4 / B1.5 yeşil** 
 
 ### B2.5 — Bağlantı açma ve anahtar yenileme davranışı
 **Ne:** `ConnectResult`, `SessionSuperseded`, `EarlyUnitConflict` gerçek kodda. **Done:** `H-CUTOVER`, `H-CONNECT-IDEMP`, `H-EARLY-CONFLICT`.
+**DURUM (2026-10-08): Transport tarafı KAPANDI (L-T1); Application tarafı L-B2d'de.** `ConnectResult` (idempotent), `SessionSuperseded` / `UnknownSession` penceresi (F0.2(i)), `EarlyUnitConflict`, `early_unit` Transport'ta saklanıp `Ready`'de ilk gönderim, atomik cutover (yenilemede eski oturumun teyitsiz birimleri boşalınca RESPONSE Crypto'ya verilir — KARAR-2) `crates/client-core/src/transport.rs`'te; H-CUTOVER / H-CONNECT-IDEMP / H-EARLY-CONFLICT real hedefte yeşil. Kalan (L-B2d, kama-app): cancel ve `ConnectProgress` UI durumu.
 
 ### 🚪 G-IMPL-S1 — Application IMPLEMENTATION-GO
 Aynı vektörler + aynı conformance-core; Crypto/hub-RPC bağımlılığı sıfır (statik).

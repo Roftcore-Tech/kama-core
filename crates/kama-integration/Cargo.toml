@@ -42,6 +42,11 @@ kama-noise-wire = { path = "../kama-noise-wire" }
 zeroize = "1"
 # S1 sözleşme süiti (tests/seam_*) sözleşme tiplerini TEK kaynaktan alır (B1; test-yerel ayna kalktı).
 kama-contracts = { path = "../kama-contracts" }
+# [L-T1] S1 `real` hedefi: ürün adaptörü (`client_core::transport`) + bellek içi zarf hub'ı
+# (`memory_link`, test-util) ve gerçek kriptonun TEST fikstürü (`seam_mock::fixture_*`, test-util).
+# Yalnız test derlemesinde; yeni harici crate YOK (iki kenar da workspace içi).
+client-core = { path = "../client-core", features = ["test-util"] }
+kama-noise-wire = { path = "../kama-noise-wire", features = ["test-util"] }
 # CLOSURE-1B (DR-CS-1b/A2): birleşik 65B-heal testi için sender-tarafı. Cold-start-yüzeyi feature-
 # forward ile açılır (üstteki [features]); flag-OFF derlemede feature-OFF → workspace-pin korunur.
 adaptive-transport = { path = "../adaptive-transport" }

@@ -18,8 +18,9 @@
 #   2  ortam/kullanim hatasi (eksik/gecersiz --target, python3 yok, dosya yok, layer_check.py'nin
 #      kendi ortam hatasi). Ortam hatasi, o ana kadar birikmis bir kirmiziyi ORTER: kosum yarida
 #      kesilir ve 2 doner (cikti birikmis kirmiziyi ayrica soyler).
-#   3  BEYAN EDILMIS BOSLUK — istenen hedef bu derlemede yok ve yoklugu kimlikli olarak beyanli
-#      (bugun: --target real → GAP-SEAM-REAL-1). Yesil DEGILDIR; "unuttuk" ile "henuz yok"u ayirir.
+#   3  BEYAN EDILMIS BOSLUK — istenen hedef bu derlemede yok ve yoklugu kimlikli olarak beyanli.
+#      Yesil DEGILDIR; "unuttuk" ile "henuz yok"u ayirir. ~~(bugun: --target real → GAP-SEAM-REAL-1)~~
+#      [2026-10-08 L-T1: gercek hedef kayitli; kayitli hedefin ABSENT beyani KIRMIZIDIR (1)]
 #
 # TASARIM KARARI — "atlandi" diye bir sonuc YOK. Rust'ta alisilmis kalip, ortam degiskeni yoksa
 # testi `#[ignore]` etmektir; sonuc yesil kosuda gorunmez bir bosluktur. Bu repoda bu hata sinifi
@@ -35,6 +36,7 @@ PKG="kama-integration"
 COVERAGE="scripts/ci/seam-coverage.json"
 DRIFT="scripts/ci/seam-api-drift.py"
 LAYER="scripts/ci/layer_check.py"
+TARGETS_RS="crates/kama-integration/tests/common/seam/target.rs"
 
 usage() {
   sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -217,6 +219,18 @@ run_real() {
   local sentinel
   sentinel="$(grep -o 'SEAM-TARGET-REAL: [A-Z]* gap=[A-Za-z0-9-]*' "$log" | head -1)"
   if [[ "$sentinel" == *"ABSENT"* ]]; then
+    # [L-T1] Kayitli bir gercek hedef "yok" beyan edilemez: bosluk beyani kaydin GERISINDE kalmis.
+    if python3 - "$TARGETS_RS" <<'PY'
+import re, sys
+s = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"REGISTERED_TARGETS[^;]*;", s, re.S)
+sys.exit(0 if (m and "TargetKind::Real" in m.group(0)) else 1)
+PY
+    then
+      bad "gercek hedef REGISTERED_TARGETS'ta kayitli ama real-adapter 'ABSENT' diyor — bosluk beyani kayitla celisiyor"
+      rm -f "$log"
+      return
+    fi
     gap="${sentinel##*gap=}"
     printf '  %s\n' "$sentinel"
     rm -f "$log"
@@ -236,8 +250,63 @@ suit gercek hedefte ornekleendi mi? (seam_mechanism_suite!/seam_contract_suite! 
     bad "conformance-core real kolunda #[ignore]'lu (kosmayan) test var — susturulmus test yesil sayilmaz"
   else
     grep -E "test result: ok" "$real_core_log" | head -1 | sed 's/^/  /'
+    real_rows_cross_check "$real_core_log"
   fi
   rm -f "$log" "$real_core_log"
+}
+
+# [L-T1 2026-10-08] §6 kapsam @ real: kosan satirlar ↔ beyan ↔ beyanli bosluklar.
+# Bir satir real hedefte YALNIZ kimlikli beyanla (SeamTarget::ROW_GAPS → SEAM-ROW-GAP sentinel'i)
+# atlanabilir ve beyanda `real_gap` ile AYNI kimligi tasimalidir; boyle bir satir 'implemented'
+# sayilamaz. Bosluksuz kosan her satir 'implemented' beyan edilmeli ve real_contract:: altinda
+# listelenmeli. Ayrisma kirmizidir.
+real_rows_cross_check() {
+  local core_log="$1" listed
+  step "§6 kapsam @ real: beyan ↔ kosum ↔ beyanli bosluk capraz kontrolu"
+  listed="$(cargo test -p "$PKG" --test seam_conformance_core -- --list 2>/dev/null | grep ': test$' || true)"
+  REAL_LOG="$core_log" LISTED="$listed" python3 - "$COVERAGE" <<'PY' || fail=1
+import json, os, re, sys
+log = open(os.environ["REAL_LOG"], encoding="utf-8", errors="replace").read()
+listed = {l.rsplit(": test", 1)[0].strip() for l in os.environ["LISTED"].splitlines() if l.strip()}
+cov = json.load(open(sys.argv[1], encoding="utf-8"))
+rows = {r["id"]: r for r in cov["rows"]}
+ok = True
+def red(title, msg):
+    global ok
+    print(f"::error title=SEAM-CONFORMANCE::{msg}")
+    print(f"KIRMIZI: {title}")
+    ok = False
+m = re.search(r"SEAM-CONTRACT-ROWS: target=real rows=([A-Z0-9,-]*)", log)
+gaps = dict(re.findall(r"SEAM-ROW-GAP: target=real row=([A-Z0-9-]+) gap=([A-Za-z0-9-]+)", log))
+if not m:
+    red("real kapsam sentinel'i yok", "conformance-core @ real SEAM-CONTRACT-ROWS basmadi — kod tarafi sessiz")
+code_rows = [r for r in (m.group(1).split(",") if m else []) if r]
+for rid in code_rows:
+    r = rows.get(rid, {})
+    declared, seen = r.get("real_gap"), gaps.get(rid)
+    if declared or seen:
+        if declared != seen:
+            red("beyanli bosluk ↔ sentinel ayrisiyor",
+                f"{rid}: beyanda real_gap={declared!r}, kosumda bosluk={seen!r}")
+        if r.get("status") != "mock_only":
+            red("bosluk beyanli satir kanitlanmis sayiliyor",
+                f"{rid}: real hedefte KOSMADI (bosluk {seen or declared}) ama durum {r.get('status')!r}")
+    else:
+        if r.get("status") != "implemented":
+            red("beyan gercekligin gerisinde",
+                f"{rid}: iki hedefte de kostu ama durum {r.get('status')!r} — 'implemented' olmali")
+        name = f"real_contract::{rid.lower().replace('-', '_')}"
+        if name not in listed:
+            red("real hedefte satirin testi yok", f"{rid}: {name} listelenmiyor")
+unknown = sorted(set(gaps) - set(code_rows))
+if unknown:
+    red("bilinmeyen satir icin bosluk", f"CONTRACT_ROWS'ta olmayan satir(lar) icin bosluk beyani: {unknown}")
+if ok:
+    ran = len(code_rows) - len(gaps)
+    print(f"  §6 @ real: {ran}/{len(code_rows)} satir kostu · beyanli bosluk: "
+          + (", ".join(f"{k}={v}" for k, v in sorted(gaps.items())) or "yok"))
+sys.exit(0 if ok else 1)
+PY
 }
 
 case "$TARGET" in

@@ -130,7 +130,21 @@ async fn transport_api_v0_surface_is_frozen() {
     let mut ch = ch;
     let _: Result<(), RuntimeError> = ch.send(Vec::new());
     let _: Option<u64> = ch.acked().await;
+    // v0.13 (L-T1 S1 adaptörü): minor-EKLEME, kasıtlı pin-güncellemesi — teyitsiz mesaj sayacı +
+    // kurtarma anahtarı (yalnız test yapılandırması) + oturum bağlamlı uç.
+    let _: usize = ch.outstanding();
+    ch.set_recovery(true);
     let _: ClientStats = ch.shutdown().await;
+    let ch2: ClientHandle = ClientEndpoint::connect_session(
+        addr,
+        cfg.clone(),
+        Box::new(IdentitySeam::new()),
+        None,
+        ProtectionContext::Session(IdentitySeam::SESSION),
+    )
+    .await
+    .unwrap();
+    let _ = ch2;
 
     // ── ServerEndpoint / ServerHandle imzaları ──
     let sh: ServerHandle = ServerEndpoint::bind(addr, cfg.clone(), Box::new(IdentitySeam::new()))
@@ -139,6 +153,7 @@ async fn transport_api_v0_surface_is_frozen() {
     let mut sh = sh;
     let _: SocketAddr = sh.local_addr();
     let _: Option<Delivery> = sh.next_delivery().await;
+    let _: Option<Delivery> = sh.try_next_delivery(); // v0.13 (L-T1)
     let _: ServerStats = sh.shutdown().await;
 
     // ── ClientStats / ServerStats / Delivery: TAM alan kümesi ──
@@ -184,6 +199,8 @@ async fn transport_api_v0_surface_is_frozen() {
         flow_end_ns: _,
         // v0.11: bounded zaman serisi (yalnız örnekleme açıkken dolar).
         ts: _,
+        // v0.13 (L-T1): kurtarma kapalıyken tele çıkmayan retransmit/kopya kararı.
+        recovery_suppressed: _,
     } = ClientStats::default();
     let ServerStats {
         delivered: _,
@@ -227,10 +244,13 @@ async fn transport_api_v0_surface_is_frozen() {
         peer: _,
         unit_id: _,
         payload: _,
+        // v0.13 (L-T1): teslimi açan koruma bağlamı (S1 adaptörü oturuma atfeder).
+        ctx: _,
     } = Delivery {
         peer: addr,
         unit_id: 0,
         payload: Vec::new(),
+        ctx: ProtectionContext::HubChannel,
     };
 
     // ── S3 sözleşmesi (KM-SEAM-TC-001 §1.1 PacketProtection + §1.2 SessionControl), A4.1 ──

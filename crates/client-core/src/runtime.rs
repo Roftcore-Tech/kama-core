@@ -17,6 +17,8 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
@@ -609,6 +611,9 @@ pub struct ClientStats {
     pub cs_probes_tx: u64,
     /// [DR-CS-3] Alınan ve motora beslenen CS-echo — RTT örneğinin tek kaynağı.
     pub cs_echoes_rx: u64,
+    /// [L-T1] Kurtarma kapalıyken ([`ClientHandle::set_recovery`]) tele ÇIKARILMAYAN ARQ
+    /// retransmit / §11 kopya / FEC repair kararı (yalnız test yapılandırması).
+    pub recovery_suppressed: u64,
 }
 
 /// Server koşu istatistikleri.
@@ -688,6 +693,9 @@ pub struct Delivery {
     pub peer: SocketAddr,
     pub unit_id: u64,
     pub payload: Vec<u8>,
+    /// [L-T1] Datagramı açan koruma bağlamı (eş yuvasının `open` ile kimliklendirilmiş bağlamı) —
+    /// S1 adaptörü teslimi bununla oturuma atfeder.
+    pub ctx: ProtectionContext,
 }
 
 fn elapsed_ns(start: Instant) -> u64 {
@@ -705,6 +713,8 @@ pub struct ClientHandle {
     acked_rx: mpsc::Receiver<u64>,
     shutdown_tx: watch::Sender<bool>,
     t0_tx: mpsc::Sender<oneshot::Sender<()>>,
+    /// [L-T1] Kurtarma anahtarı (bkz. [`ClientHandle::set_recovery`]).
+    recovery_tx: watch::Sender<bool>,
     task: JoinHandle<ClientStats>,
 }
 
@@ -715,6 +725,9 @@ pub struct ClientSender {
     offer_tx: mpsc::Sender<(Vec<u8>, Option<u64>)>,
     /// [S1B] App-yüzü tavan MESAJ tavanıdır; birim (chunk) tavanı fragmenter'ın içinde kalır.
     max_message_bytes: usize,
+    /// [L-T1] Kabul edilip henüz app-düzeyi teyidi gelmemiş mesaj sayısı: kabulde artar,
+    /// teyitte (ACK ya da FEC-RECOVERED) azalır (bkz. [`ClientHandle::outstanding`]).
+    outstanding: Arc<AtomicUsize>,
 }
 
 impl ClientSender {
@@ -759,7 +772,9 @@ impl ClientSender {
             .map_err(|e| match e {
                 mpsc::error::TrySendError::Full(_) => RuntimeError::QueueFull,
                 mpsc::error::TrySendError::Closed(_) => RuntimeError::Closed,
-            })
+            })?;
+        self.outstanding.fetch_add(1, Ordering::AcqRel);
+        Ok(())
     }
 }
 
@@ -787,6 +802,30 @@ impl ClientEndpoint {
         seam: Box<dyn PacketProtection>,
         egress: Option<Box<dyn EgressPolicy>>,
     ) -> Result<ClientHandle, RuntimeError> {
+        // PoC: tek örtük oturum (`IdentitySeam::SESSION`) — eski çağıranların davranışı birebir.
+        Self::connect_session(
+            server,
+            cfg,
+            seam,
+            egress,
+            ProtectionContext::Session(SessionHandle::from_raw(0)),
+        )
+        .await
+    }
+
+    /// [L-T1] [`connect_with_policy`](Self::connect_with_policy) + koruma bağlamı: bu ucun HER
+    /// çerçevesi `ctx` ile mühürlenir (S1 adaptörü oturum başına bir uç açar; `ctx` =
+    /// `ProtectionContext::Session(h)`).
+    ///
+    /// # Errors
+    /// FEC-config reddi (koşu-öncesi typed) veya soket bind/connect hatası.
+    pub async fn connect_session(
+        server: SocketAddr,
+        cfg: RuntimeConfig,
+        seam: Box<dyn PacketProtection>,
+        egress: Option<Box<dyn EgressPolicy>>,
+        ctx: ProtectionContext,
+    ) -> Result<ClientHandle, RuntimeError> {
         validate_fec(&cfg)?; // [S1] koşu-öncesi typed FEC-config doğrulaması
         let sock = UdpSocket::bind(match server {
             SocketAddr::V4(_) => "0.0.0.0:0",
@@ -800,24 +839,33 @@ impl ClientEndpoint {
         // Kapasite 1 + onay-oneshot: mark_t0 görev işleyene dek bekler (ölçüm sözleşmesi).
         let (t0_tx, t0_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
         let max_message_bytes = cfg.max_message_bytes.unwrap_or(cfg.max_unit_bytes);
+        let (recovery_tx, recovery_rx) = watch::channel(true);
+        let outstanding = Arc::new(AtomicUsize::new(0));
         let task = tokio::spawn(client_task(
             sock,
             cfg,
             seam,
             egress,
-            offer_rx,
-            acked_tx,
-            shutdown_rx,
-            t0_rx,
+            ClientTaskLinks {
+                offer_rx,
+                acked_tx,
+                shutdown_rx,
+                t0_rx,
+                ctx,
+                recovery_rx,
+                outstanding: Arc::clone(&outstanding),
+            },
         ));
         Ok(ClientHandle {
             offer: ClientSender {
                 offer_tx,
                 max_message_bytes,
+                outstanding,
             },
             acked_rx,
             shutdown_tx,
             t0_tx,
+            recovery_tx,
             task,
         })
     }
@@ -872,6 +920,22 @@ impl ClientHandle {
         self.acked_rx.recv().await
     }
 
+    /// [L-T1] Kabul edilmiş ama app-düzeyi teyidi (ACK ya da FEC-RECOVERED) henüz gelmemiş mesaj
+    /// sayısı. S1 adaptörü atomik cutover'dan önce eski oturumun boşaldığını buradan okur.
+    #[must_use]
+    pub fn outstanding(&self) -> usize {
+        self.offer.outstanding.load(Ordering::Acquire)
+    }
+
+    /// [L-T1] Kurtarma anahtarı — **yalnız test yapılandırması** (ürün builder'ı kapalı kurtarmayı
+    /// reddeder; S1 `TransportCapabilities::reliable`). Kapalıyken motorun ARQ retransmit, §11
+    /// kopya ve FEC repair kararları tele ÇIKMAZ (`ClientStats::recovery_suppressed`); ilk
+    /// emisyonlar ve kontrol çerçeveleri etkilenmez. Motor emisyonu zaten işlediğinden çıkmayan karar kayıp
+    /// sayılır (INV-RATE-1: hız düşmez). Varsayılan: açık.
+    pub fn set_recovery(&self, on: bool) {
+        let _ = self.recovery_tx.send(on);
+    }
+
     /// Kontrollü kapanış: drain (pif→0 VEYA `drain_cap`) → istatistik. Görev panik ederse
     /// varsayılan istatistik döner (panik yutulmaz: ayrı gözlemlenebilir, unwrap edilmez).
     pub async fn shutdown(self) -> ClientStats {
@@ -882,16 +946,36 @@ impl ClientHandle {
 
 /// Client görevi: bench `client_loop` şekli, ölçüm makinesi çıkarılmış, sınırlar eklenmiş hâli.
 #[allow(clippy::too_many_arguments)]
+/// Client görevinin kanal uçları + oturum bağlamı (argüman listesi sınırlı kalsın diye bir arada).
+struct ClientTaskLinks {
+    offer_rx: mpsc::Receiver<(Vec<u8>, Option<u64>)>,
+    acked_tx: mpsc::Sender<u64>,
+    shutdown_rx: watch::Receiver<bool>,
+    t0_rx: mpsc::Receiver<oneshot::Sender<()>>,
+    /// [L-T1] Bu ucun koruma bağlamı (her çerçeve bununla mühürlenir).
+    ctx: ProtectionContext,
+    /// [L-T1] Kurtarma anahtarı (bkz. [`ClientHandle::set_recovery`]).
+    recovery_rx: watch::Receiver<bool>,
+    /// [L-T1] Teyitsiz mesaj sayacı (bkz. [`ClientHandle::outstanding`]).
+    outstanding: Arc<AtomicUsize>,
+}
+
 async fn client_task(
     sock: UdpSocket,
     cfg: RuntimeConfig,
     mut seam: Box<dyn PacketProtection>,
     mut egress: Option<Box<dyn EgressPolicy>>,
-    mut offer_rx: mpsc::Receiver<(Vec<u8>, Option<u64>)>,
-    acked_tx: mpsc::Sender<u64>,
-    mut shutdown_rx: watch::Receiver<bool>,
-    mut t0_rx: mpsc::Receiver<oneshot::Sender<()>>,
+    links: ClientTaskLinks,
 ) -> ClientStats {
+    let ClientTaskLinks {
+        mut offer_rx,
+        acked_tx,
+        mut shutdown_rx,
+        mut t0_rx,
+        ctx: client_ctx,
+        recovery_rx,
+        outstanding,
+    } = links;
     let start = Instant::now();
     // G2 sevk default'ları TEK kaynaktan: ClientSession (tail-ON validated_v1, startup-pacing motor
     // default'u ON, bootstrap OFF, FEC Manual-off). Burada default'a dokunulmaz.
@@ -960,7 +1044,6 @@ async fn client_task(
     // PoC: tek örtük oturum. Gerçek tutamaç `SessionControl`'ün `Ready`/`Established`'inden gelir
     // (A5.5); engine çerçevelerinin `HubChannel`'a ayrılması WS-D1'dir. Bugün hepsi tek bağlamda
     // mühürlenir — v1 ile aynı davranış.
-    const CLIENT_CTX: ProtectionContext = ProtectionContext::Session(SessionHandle::from_raw(0));
     let param_plan = fec
         .as_ref()
         .and_then(|p| plan_param_bootstrap(1, &param_fields_for(p)).ok());
@@ -1009,7 +1092,7 @@ async fn client_task(
     // kanal kaybı), seal reddinde `None`.
     macro_rules! seal_send {
         ($frame:expr, $class:expr, $now:expr) => {
-            match seam.seal(CLIENT_CTX, &$frame) {
+            match seam.seal(client_ctx, &$frame) {
                 Ok(sd) => {
                     let pn = sd.meta.full_wire_pn;
                     max_sealed_pn = Some(max_sealed_pn.map_or(pn, |m: u64| m.max(pn)));
@@ -1082,6 +1165,12 @@ async fn client_task(
                     // (DATA store-miss gerekçesiyle aynı: motor her emisyonu inflight izler; hiç
                     // göndermemek yapay kayıp sinyali üretirdi).
                     if d.kind == TransmitKind::FecParity {
+                        // [L-T1] Kurtarma kapalıyken FEC repair da tele ÇIKMAZ: parity bir kurtarma
+                        // mekanizmasıdır (ARQ ile aynı anahtar; yalnız test yapılandırması).
+                        if !*recovery_rx.borrow() {
+                            stats.recovery_suppressed += 1;
+                            continue;
+                        }
                         if let (Some(p), Some(hint)) = (fec.as_ref(), d.send_record) {
                             let SrLogicalRef::Fec { block_id, esi } = hint.logical_ref;
                             let entry = repair_store.get(&block_id);
@@ -1128,6 +1217,14 @@ async fn client_task(
                     // FEC-kapalıyken FecParity: v0 kabuk taşımaz, sayar (bootstrap OFF;
                     // sevk default'larında üretilmezler — typed genişleme noktası).
                     stats.stale_decisions += 1;
+                    continue;
+                }
+                // [L-T1] Kurtarma kapalı (yalnız test yapılandırması): ARQ retransmit ve §11 kopya
+                // tele ÇIKMAZ. Motor emisyonu zaten işledi; çıkmayan karar kayıp sayılır (INV-RATE-1).
+                if !*recovery_rx.borrow()
+                    && matches!(d.kind, TransmitKind::Retransmit | TransmitKind::Duplicate)
+                {
+                    stats.recovery_suppressed += 1;
                     continue;
                 }
                 // Store-miss = birim BAŞKA bir kopyasıyla çoktan teslim edilmiş, motor eski seq'in
@@ -1193,11 +1290,19 @@ async fn client_task(
                         if *rem == 0 {
                             msg_pending.remove(&m);
                             stats.messages_acked += 1;
+                            let _ = outstanding.fetch_update(
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                                |v| Some(v.saturating_sub(1)),
+                            );
                             let _ = acked_tx.try_send(u64::from(m));
                         }
                     }
                 }
             } else {
+                let _ = outstanding.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
+                    Some(v.saturating_sub(1))
+                });
                 // app drenajı; taşarsa olay düşer, teslim durumu store'da zaten kesin.
                 let _ = acked_tx.try_send($unit);
             }
@@ -1391,7 +1496,7 @@ async fn client_task(
                         Some(s)
                     });
                     let hdr = if frag_on { HDR_DATA_FRAG } else { HDR_DATA };
-                    let size = wire_len(seam.as_ref(), CLIENT_CTX, hdr + chunk.len());
+                    let size = wire_len(seam.as_ref(), client_ctx, hdr + chunk.len());
                     // store WIRE GÖVDESİNİ tutar (frag: prefix‖payload, düz: payload).
                     store.insert(id, if frag_on { body } else { chunk.to_vec() });
                     if frag_on {
@@ -1412,7 +1517,7 @@ async fn client_task(
                     debug_assert_eq!(cur_block.len() as u64, id % u64::from(p.k_shape));
                     cur_block.push(sym);
                     if cur_block.len() == p.k_shape_usize() {
-                        let parity_wire = wire_len(seam.as_ref(), CLIENT_CTX, HDR_FEC + e);
+                        let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + e);
                         // Statik-r (Manual{true} + manuel-close) YA DA adaptif (Controller + latch).
                         let planned_r: u16 = if let Some(r) = fec_manual_r {
                             let auth = session.sender_mut().open_fec_block_authority();
@@ -1498,7 +1603,7 @@ async fn client_task(
     if let Some(p) = fec.as_ref() {
         if !cur_block.is_empty() {
             let k_actual = u8::try_from(cur_block.len()).unwrap_or(255);
-            let parity_wire = wire_len(seam.as_ref(), CLIENT_CTX, HDR_FEC + p.e_usize());
+            let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + p.e_usize());
             let planned_r: u16 = if let Some(r) = fec_manual_r {
                 let auth = session.sender_mut().open_fec_block_authority();
                 session
@@ -1751,6 +1856,11 @@ impl ServerHandle {
         self.delivery_rx.recv().await
     }
 
+    /// [L-T1] Bekleyen teslim varsa hemen döner, yoksa `None` (senkron S1 adaptörü için).
+    pub fn try_next_delivery(&mut self) -> Option<Delivery> {
+        self.delivery_rx.try_recv().ok()
+    }
+
     /// Ölçüm-t0 işareti (dönüş yönü): wire sayaçları sıfırlanır, ALICI DURUMU KORUNUR ve varsa
     /// [`EgressPolicy`] arm edilir. Görev işleyene dek bekler — bkz. [`ClientHandle::mark_t0`].
     pub async fn mark_t0(&self) {
@@ -1857,6 +1967,7 @@ fn push_delivery(
     stats: &mut ServerStats,
     delivery_tx: &mpsc::Sender<Delivery>,
     peer: SocketAddr,
+    ctx: ProtectionContext,
     unit_id: u64,
     payload: Vec<u8>,
     from_fec: bool,
@@ -1865,6 +1976,7 @@ fn push_delivery(
         peer,
         unit_id,
         payload,
+        ctx,
     };
     if delivery_tx.try_send(d).is_ok() {
         stats.delivered += 1;
@@ -1906,6 +2018,7 @@ fn admit_chunk(
             stats,
             delivery_tx,
             peer,
+            slot.ctx,
             unit_id,
             payload.to_vec(),
             from_fec,
@@ -1936,7 +2049,7 @@ fn admit_chunk(
             slot.delivered_seen.pop_first();
         }
         stats.msgs_reassembled += 1;
-        push_delivery(stats, delivery_tx, peer, mid, full, from_fec);
+        push_delivery(stats, delivery_tx, peer, slot.ctx, mid, full, from_fec);
     } else if slot.msgs.len() > MSG_ASM_CAP {
         slot.msgs.pop_first();
         stats.msg_asm_evicted += 1;
