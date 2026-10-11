@@ -30,8 +30,8 @@ use common::mock_transport::{MockTransport, PROBE_INTERVAL};
 use kama_app::codec::limits::{MSG_TYPE_RESERVED_HIGH_START, MSG_VERSION_V1, TEXT_PREFIX_BYTES};
 use kama_app::codec::{decode, encode, AmpLimits, AppMessage, EncodeError, ReceiptKind};
 use kama_app::messaging::{
-    Messenger, MessengerError, MessengerEvent, MsgId, FIRST_MSG_ID, MAX_OUTBOX_UNACKED,
-    MSG_DEDUP_WINDOW,
+    ConnectState, Messenger, MessengerError, MessengerEvent, MsgId, FIRST_MSG_ID,
+    MAX_OUTBOX_UNACKED, MSG_DEDUP_WINDOW,
 };
 use kama_app::store::{
     AppStore, AppStoreError, CounterKind, DedupWindow, MemoryAppStore, OutboxUnit,
@@ -130,13 +130,31 @@ fn outbox_ids(store: &dyn AppStore, peer: PeerRef) -> Vec<MsgId> {
         .collect()
 }
 
+/// Depodaki kalıcı outbox kayıtlarının içeriği (`msg_id`, metin), artan sırayla.
+fn outbox_texts(store: &dyn AppStore, peer: PeerRef) -> Vec<(MsgId, String)> {
+    store
+        .outbox_list(peer)
+        .expect("depo okunur")
+        .iter()
+        .map(
+            |stored| match decode(&stored.unit().bytes, &limits()).expect("geçerli kayıt") {
+                AppMessage::Text { msg_id, text } => (msg_id, text),
+                other => panic!("outbox'ta TEXT dışı kayıt: {other:?}"),
+            },
+        )
+        .collect()
+}
+
 /// Arıza enjekte edilebilen depo: işlem başına bir anahtar; anahtar kapalıyken her işlem bellek
-/// içi depoya gider, açıkken `Persist` döner ve HİÇBİR şey yazmaz.
+/// içi depoya gider. `fail_*` açıkken işlem `Persist` döner ve HİÇBİR şey yazmaz.
+/// `fail_after_outbox_put` açıkken kayıt YAZILIR, sonra `Persist` döner — depo sözleşmesinin
+/// "`Err` sonrası yazma kalıcı olmuş olabilir" durumu.
 #[derive(Default)]
 struct FlakyStore {
     inner: MemoryAppStore,
     fail_reserve: AtomicBool,
     fail_outbox_put: AtomicBool,
+    fail_after_outbox_put: AtomicBool,
     fail_outbox_remove: AtomicBool,
     fail_outbox_list: AtomicBool,
 }
@@ -167,7 +185,8 @@ impl AppStore for FlakyStore {
 
     fn outbox_put(&self, peer: PeerRef, unit: &OutboxUnit) -> Result<(), AppStoreError> {
         Self::check(&self.fail_outbox_put)?;
-        self.inner.outbox_put(peer, unit)
+        self.inner.outbox_put(peer, unit)?;
+        Self::check(&self.fail_after_outbox_put)
     }
 
     fn outbox_remove(&self, peer: PeerRef, msg_id: MsgId) -> Result<bool, AppStoreError> {
@@ -982,8 +1001,14 @@ fn no_resend_without_a_session_change() {
 // ── K4G-07: kalıcı `msg_id` ve outbox (aynı depoyla yeniden başlatma) ────────────────────────
 //
 // Taban `b7da69c4`'te (K4G-07 öncesi main) aşağıdaki testlerin hiçbiri DERLENMEZ:
-// `Messenger::with_store`, `MessengerError::Store` ve `MessengerStats::store_errors` yoktur. Her
-// testin belgesi, derlenecek biçime getirilse bile eski kodda neden KIRMIZI olacağını yazar.
+// `Messenger::with_store`, `MessengerError::Store` ve `MessengerStats::store_errors` yoktur.
+// Davranışça üç sınıf vardır ve her testin belgesi kendi sınıfını yazar:
+// * eski koda uyarlansa da KIRMIZI olanlar (yeniden başlatmada `msg_id` sürmesi, outbox'ın ve
+//   erken metnin yeniden başlatmadan sağ çıkması) — neden kırmızı, belgede;
+// * eski koda UYARLANAMAYANLAR (depo hatası, geri alma, kalıcı kapanışın yinelenmesi): o kodda
+//   depo yolu yoktu; bu kartın sözleşmesini sabitlerler;
+// * eski kodda da aynı davranışı gösteren D4 testi: beyanlı sınırı sabitler, regresyon testi
+//   DEĞİLDİR.
 
 /// DUR #105 (plan D4): Alice'in süreci ölür ve AYNI depoyla yeniden başlar; Bob çalışmayı sürdürür
 /// ve dedup penceresi Alice'in eski `msg_id`'lerini tutar. Yeniden başlayan Alice'in ilk
@@ -1092,11 +1117,12 @@ fn unreceipted_text_survives_a_sender_restart_and_is_receipted_on_the_new_sessio
 
 /// K4G-07: depo hatası sessiz yutulmaz ve panik üretmez. `msg_id` ayrılamazsa ya da kayıt kalıcı
 /// outbox'a yazılamazsa kayıt Transport'a VERİLMEZ, outbox'a (bellek ve depo) girmez ve çağırana
-/// tipli `MessengerError::Store` döner. Depodan ayrılmış ama tele çıkmamış değer yanmaz: depo
-/// düzelince sıradaki gönderim kesintisiz değer alır.
+/// tipli `MessengerError::Store` döner (depoya yazıp `Err` dönen belirsiz durum ayrı testte:
+/// `ambiguous_store_write_is_rolled_back_or_replaced_by_the_next_send`). Depodan ayrılmış ama tele
+/// çıkmamış değer yanmaz: depo düzelince sıradaki gönderim kesintisiz değer alır.
 ///
-/// `b7da69c4`'te KIRMIZI: Messenger depo almıyordu, `MessengerError::Store` yoktu; o kodda depo
-/// hatası yolu hiç bulunmadığı için test eski koda uyarlanamaz — bu kartın sözleşmesini sabitler.
+/// `b7da69c4`'e uyarlanamaz: Messenger depo almıyordu, `MessengerError::Store` yoktu; o kodda depo
+/// hatası yolu hiç bulunmadığı için test bu kartın sözleşmesini sabitler.
 #[test]
 fn store_failure_sends_nothing_and_burns_no_msg_id() {
     let flaky = Arc::new(FlakyStore::default());
@@ -1156,8 +1182,7 @@ fn store_failure_sends_nothing_and_burns_no_msg_id() {
 /// hatayı tipli döndürür. Depo düzelince `connect` yüklemeyi yineler; kalan kayıt bir kez daha
 /// gider, Bob'un dedup'ında söner (ikinci teslim YOK) ve RECEIPT'i onu kapatır.
 ///
-/// `b7da69c4`'te KIRMIZI: depo, kalıcı outbox ve `MessengerStats::store_errors` yoktu; test eski
-/// koda uyarlanamaz.
+/// `b7da69c4`'e uyarlanamaz: depo, kalıcı outbox ve `MessengerStats::store_errors` yoktu.
 #[test]
 fn background_store_errors_are_counted_and_never_fake_a_delivery() {
     let flaky = Arc::new(FlakyStore::default());
@@ -1211,6 +1236,190 @@ fn background_store_errors_are_counted_and_never_fake_a_delivery() {
     );
     assert_eq!(drain(&mut duo.alice), vec![delivered(BOB, msg_id)]);
     assert!(outbox_ids(&*store, BOB).is_empty());
+}
+
+/// K4G-07: erken metin (S1 K6) Transport'a verilmeden ÖNCE kalıcı outbox'a yazılır. Depoya
+/// yazılamazsa niyet hiç açılmaz (Transport çağrılmaz): tipli hata, eş boşta, değer yanmaz.
+/// Yazıldıktan sonra Alice niyet sürerken ölürse kayıt kaybolmaz: aynı depoyla yeniden başlayan
+/// motor onu eşin ilk oturumunda gönderir; Bob TAM BİR KEZ teslim eder, RECEIPT kaydı kapatır.
+///
+/// `b7da69c4`'te KIRMIZI: erken metin yalnız Transport'ta ve motorun belleğindeydi; çökmeyle yok
+/// olur, yeni oturumda gönderilecek kayıt kalmaz (Bob hiçbir şey almaz). Depo arızası kısmı eski
+/// koda uyarlanamaz.
+#[test]
+fn early_text_is_persisted_before_the_transport_and_survives_a_restart() {
+    let flaky = Arc::new(FlakyStore::default());
+    let store: Arc<dyn AppStore> = flaky.clone();
+    let mut duo = Duo::unconnected_with(Arc::clone(&store));
+    flaky.fail_outbox_put.store(true, Ordering::SeqCst);
+    assert_eq!(
+        duo.alice.connect_with_text(BOB, "erken"),
+        Err(MessengerError::Store(AppStoreError::Persist))
+    );
+    flaky.fail_outbox_put.store(false, Ordering::SeqCst);
+    assert_eq!(
+        duo.alice.connect_state(BOB),
+        ConnectState::Idle,
+        "niyet açılmadı"
+    );
+    assert!(outbox_ids(&*store, BOB).is_empty());
+
+    let (result, early) = duo
+        .alice
+        .connect_with_text(BOB, "erken")
+        .expect("niyet açıldı");
+    assert!(matches!(result, ConnectResult::Pending(_)));
+    assert_eq!(early, FIRST_MSG_ID, "yazılamayan deneme değer yakmadı");
+    assert_eq!(
+        outbox_ids(&*store, BOB),
+        vec![early],
+        "Transport'tan önce kalıcı"
+    );
+
+    // Alice niyet sürerken ölür; aynı depoyla yeniden başlar, oturum sonra kurulur.
+    duo.restart_alice(Arc::clone(&store));
+    let handle = duo.link.borrow_mut().establish();
+    assert_eq!(
+        drain(&mut duo.alice),
+        vec![session(SessionEvent::Ready(handle, BOB))]
+    );
+    assert_eq!(duo.alice.stats().resent_on_new_session, 1);
+    assert_eq!(
+        drain(&mut duo.bob),
+        vec![
+            session(SessionEvent::Ready(handle, ALICE)),
+            received(ALICE, early, "erken"),
+        ]
+    );
+    assert_eq!(duo.bob.stats().duplicate_texts, 0, "tam bir kez");
+    assert_eq!(drain(&mut duo.alice), vec![delivered(BOB, early)]);
+    assert!(outbox_ids(&*store, BOB).is_empty());
+}
+
+/// K4G-07 geri alma: Transport'un reddettiği kayıt (`Backpressure`) kalıcı outbox'ta KALMAZ —
+/// yazma Transport'tan öncedir, ret onu geri alır. Yeniden başlatmada da gönderilmez.
+///
+/// `b7da69c4`'e uyarlanamaz: kalıcı outbox yoktu (geri alınacak kopya yoktu).
+#[test]
+fn transport_refusal_rolls_back_the_persisted_record() {
+    let store = fresh_store();
+    let (mut duo, old) = Duo::connected_with(Arc::clone(&store));
+    let accepted: Vec<MsgId> = (0..LINK_QUEUE_CAP)
+        .map(|_| duo.alice.send_text(BOB, "dolu").expect("kuyrukta yer var"))
+        .collect();
+    assert_eq!(
+        duo.alice.send_text(BOB, "taşan"),
+        Err(MessengerError::Transport(TransportError::Backpressure))
+    );
+    assert_eq!(
+        outbox_ids(&*store, BOB),
+        accepted,
+        "reddedilen kayıt geri alındı"
+    );
+    assert_eq!(duo.alice.stats().store_errors, 0);
+    // Bob kabul edilenleri işler; RECEIPT'ler kalıcı kopyaları kapatır.
+    assert_eq!(drain(&mut duo.bob).len(), LINK_QUEUE_CAP);
+    assert_eq!(drain(&mut duo.alice).len(), LINK_QUEUE_CAP);
+    assert!(outbox_ids(&*store, BOB).is_empty());
+
+    // Yeniden başlatma: reddedilen kayıt depoda olmadığı için gönderilmez.
+    duo.restart_alice(Arc::clone(&store));
+    let new = duo.link.borrow_mut().reconnect_after_crash(Side::Alice);
+    assert_eq!(
+        drain(&mut duo.alice),
+        vec![session(SessionEvent::Ready(new, BOB))]
+    );
+    assert_eq!(duo.alice.stats().resent_on_new_session, 0);
+    assert_eq!(
+        drain(&mut duo.bob),
+        vec![
+            session(SessionEvent::Ready(new, ALICE)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        ]
+    );
+}
+
+/// K4G-07 geri alma, depo belirsizliği: depo `Err` döndürdüğü hâlde yazmayı kalıcılaştırmış
+/// olabilir (depo sözleşmesi). Motor kalıcı kopyayı geri alır. Geri alma da başarısızsa kayıt
+/// depoda kalır ve `store_errors` artar (beyanlı davranış); süreç yaşadıkça aynı `msg_id`'yle
+/// (yedek) gönderilen sıradaki kayıt onun yerine geçer — telde ve depoda yalnız sonraki metin.
+///
+/// `b7da69c4`'e uyarlanamaz: kalıcı outbox ve geri alma yoktu.
+#[test]
+fn ambiguous_store_write_is_rolled_back_or_replaced_by_the_next_send() {
+    let flaky = Arc::new(FlakyStore::default());
+    let store: Arc<dyn AppStore> = flaky.clone();
+    let (mut duo, _) = Duo::connected_with(Arc::clone(&store));
+    // (1) Depo yazdı ama `Err` döndü: kalıcı kopya geri alındı.
+    flaky.fail_after_outbox_put.store(true, Ordering::SeqCst);
+    assert_eq!(
+        duo.alice.send_text(BOB, "belirsiz"),
+        Err(MessengerError::Store(AppStoreError::Persist))
+    );
+    assert!(outbox_ids(&*store, BOB).is_empty(), "geri alındı");
+    assert_eq!(duo.alice.stats().store_errors, 0);
+    // (2) Geri alma da başarısız: kayıt depoda kalır ve sayılır (beyanlı).
+    flaky.fail_outbox_remove.store(true, Ordering::SeqCst);
+    assert_eq!(
+        duo.alice.send_text(BOB, "eski metin"),
+        Err(MessengerError::Store(AppStoreError::Persist))
+    );
+    flaky.fail_after_outbox_put.store(false, Ordering::SeqCst);
+    flaky.fail_outbox_remove.store(false, Ordering::SeqCst);
+    assert_eq!(duo.alice.stats().store_errors, 1);
+    assert_eq!(
+        outbox_texts(&*store, BOB),
+        vec![(FIRST_MSG_ID, "eski metin".to_owned())]
+    );
+    assert!(
+        duo.raw_inbox(Side::Bob).is_empty(),
+        "Transport'a hiçbir şey verilmedi"
+    );
+    assert_eq!(duo.alice.unacked_count(BOB), 0, "bellek outbox'ına girmedi");
+    // (3) Süreç yaşıyor: aynı `msg_id` (yedek) ile gönderilen sıradaki kayıt onun yerine geçer.
+    let next = duo.alice.send_text(BOB, "yeni metin").expect("gönderilir");
+    assert_eq!(next, FIRST_MSG_ID, "yedek değer kullanıldı");
+    assert_eq!(
+        outbox_texts(&*store, BOB),
+        vec![(next, "yeni metin".to_owned())]
+    );
+    assert_eq!(
+        drain(&mut duo.bob),
+        vec![received(ALICE, next, "yeni metin")]
+    );
+    assert_eq!(drain(&mut duo.alice), vec![delivered(BOB, next)]);
+    assert!(outbox_ids(&*store, BOB).is_empty());
+}
+
+/// K4G-07: kalıcı kapanışı başarısız olan bir kaydın RECEIPT'i yinelenirse (ör. yeni oturumdaki
+/// yeniden gönderimin RECEIPT'i) silme idempotent olarak yeniden denenir: bellekte karşılığı
+/// olmayan RECEIPT olay üretmez ama depodaki kalıntı kapanır.
+///
+/// `b7da69c4`'e uyarlanamaz: kalıcı outbox yoktu.
+#[test]
+fn a_repeated_receipt_retries_the_persistent_close() {
+    let flaky = Arc::new(FlakyStore::default());
+    let store: Arc<dyn AppStore> = flaky.clone();
+    let (mut duo, _) = Duo::connected_with(Arc::clone(&store));
+    let msg_id = duo.alice.send_text(BOB, "bir").expect("gönderilir");
+    assert_eq!(drain(&mut duo.bob), vec![received(ALICE, msg_id, "bir")]);
+    flaky.fail_outbox_remove.store(true, Ordering::SeqCst);
+    assert_eq!(drain(&mut duo.alice), vec![delivered(BOB, msg_id)]);
+    flaky.fail_outbox_remove.store(false, Ordering::SeqCst);
+    assert_eq!(outbox_ids(&*store, BOB), vec![msg_id], "kalıcı kopya kaldı");
+
+    duo.inject(Side::Alice, receipt_record(msg_id));
+    assert!(drain(&mut duo.alice).is_empty(), "ikinci Delivered yok");
+    assert_eq!(duo.alice.stats().receipts_ignored, 1);
+    assert!(
+        outbox_ids(&*store, BOB).is_empty(),
+        "tekrar RECEIPT kalıntıyı kapattı"
+    );
+    assert_eq!(
+        duo.alice.stats().store_errors,
+        1,
+        "yalnız ilk silme hatası sayıldı"
+    );
 }
 
 /// D4 BEYANLI SINIRI — bu test hatayı ONAYLAMAZ; sınırın hâlâ var olduğunu sabitler ("çözüldü"
