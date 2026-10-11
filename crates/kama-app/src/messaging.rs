@@ -1348,6 +1348,54 @@ mod tests {
         fn cancel(&mut self, _ticket: ConnectTicket) {}
     }
 
+    /// [`RecordingTransport::connect`]'in her zaman döndürdüğü bilet.
+    const RECORDING_TICKET: ConnectTicket = ConnectTicket::from_raw(1);
+
+    /// Her gönderimi kabul eden ve hangi tutamaca gittiğini kaydeden Transport; `connect` her
+    /// zaman `Pending(RECORDING_TICKET)` döner, hiçbir şey teslim etmez.
+    #[derive(Default)]
+    struct RecordingTransport {
+        sent_on: Vec<SessionHandle>,
+    }
+
+    impl KamaTransport for RecordingTransport {
+        fn capabilities(&self) -> TransportCapabilities {
+            NullTransport.capabilities()
+        }
+
+        fn connect(
+            &mut self,
+            _peer: PeerRef,
+            _early_unit: Option<PreparedUnit>,
+        ) -> Result<ConnectResult, TransportError> {
+            Ok(ConnectResult::Pending(RECORDING_TICKET))
+        }
+
+        fn send(
+            &mut self,
+            session: SessionHandle,
+            _unit: PreparedUnit,
+            _policy: DeliveryPolicy,
+        ) -> Result<(), TransportError> {
+            self.sent_on.push(session);
+            Ok(())
+        }
+
+        fn recv(&mut self) -> Option<Delivered> {
+            None
+        }
+
+        fn poll_event(&mut self) -> Option<SessionEvent> {
+            None
+        }
+
+        fn close(&mut self, _session: SessionHandle) -> Result<(), TransportError> {
+            Err(TransportError::UnknownSession)
+        }
+
+        fn cancel(&mut self, _ticket: ConnectTicket) {}
+    }
+
     fn handle(n: usize) -> SessionHandle {
         SessionHandle::from_raw(u64::try_from(n).expect("test sayısı u64'e sığar"))
     }
@@ -1563,6 +1611,60 @@ mod tests {
         assert!(messenger.peers.is_empty(), "olay yolunda eş kurulmadı");
         assert_eq!(messenger.peer_of(handle(1)), None);
         assert_eq!(messenger.stats().store_errors, 1);
+    }
+
+    /// K4G-07 (inceleme, mutasyon M3): `adopt` erken metni YALNIZ onu taşıyan niyet bu oturumla
+    /// çözüldüyse "h'ye gönderilmiş" sayar ve o durumda h'den YOLLAMAZ (Transport onu h'de ilk
+    /// normal `send` olarak yollar, K6). Çözülen niyet erken metnin niyeti değilse (bekleyen niyet
+    /// kaydı yok — ör. eş-başlatımlı oturum — ya da başka bilet) Transport metni bu oturumda
+    /// taşımıyordur: kayıt "gönderilmemiş" girer ve h'den TAM BİR KEZ gönderilir. Genel API bu
+    /// durumları `adopt`'tan önce (`note_pending`, `ConnectAbandoned`) çözer; test `adopt`'un kendi
+    /// kuralını sabitler: çözülen bilet, `adopt` anındaki `connecting` kaydıdır.
+    ///
+    /// M3 (`sent_on = Some(handle)`, bilete bakmadan) bu testi KIRMIZI yapar: "niyet kaydı yok" ve
+    /// "başka bilet" durumlarında kayıt "gönderilmiş" sayılır, h'ye hiçbir gönderim olmaz
+    /// (`sent_on` boş, `resent_on_new_session` 0) ve metin bir sonraki oturum değişimine dek
+    /// takılır.
+    #[test]
+    fn adopt_marks_the_early_text_sent_only_for_its_own_ticket() {
+        let p = peer(0);
+        let h = handle(9);
+        for (case, resolved) in [
+            ("bilet eşit", Some(RECORDING_TICKET)),
+            ("bekleyen niyet kaydı yok", None),
+            ("başka bilet", Some(ConnectTicket::from_raw(2))),
+        ] {
+            let mut messenger =
+                Messenger::new(RecordingTransport::default()).expect("limitler geçerli");
+            let (result, msg_id) = messenger
+                .connect_with_text(p, "erken")
+                .expect("niyet açıldı");
+            assert_eq!(result, ConnectResult::Pending(RECORDING_TICKET), "{case}");
+            messenger.peers.get_mut(&p).expect("eş kuruldu").connecting =
+                resolved.map(|ticket| (ticket, ConnectPhase::Measuring));
+
+            messenger.adopt(h, p);
+            let carried = resolved == Some(RECORDING_TICKET);
+            let expected_sends = if carried { Vec::new() } else { vec![h] };
+            assert_eq!(
+                messenger.transport().sent_on,
+                expected_sends,
+                "{case}: h'den gönderim"
+            );
+            assert_eq!(
+                messenger.stats().resent_on_new_session,
+                u64::from(!carried),
+                "{case}"
+            );
+            let state = &messenger.peers[&p];
+            assert!(state.early.is_none(), "{case}: erken metin outbox'a geçti");
+            assert_eq!(
+                state.outbox[&msg_id].sent_on,
+                Some(h),
+                "{case}: kayıt h'de (Transport'un ya da yeniden gönderimin)"
+            );
+            assert_eq!(state.connecting, None, "{case}: niyet çözüldü");
+        }
     }
 
     #[test]
