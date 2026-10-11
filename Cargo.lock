@@ -766,6 +766,7 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "kama-noise-wire",
+ "kama-vectors",
  "serde",
  "serde_json",
  "sha2",

@@ -24,7 +24,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
-use crate::cert::{split_compact_device_cert, KEY_LEN};
+use crate::cert::{self, split_compact_device_cert, KEY_LEN};
 use crate::encoding::{base64_decode, base64_encode, hex_decode, hex_encode, DecodeError};
 
 /// `format_version` (v0; göç yok).
@@ -41,7 +41,7 @@ pub const MIN_DEVICES: usize = 2;
 pub const MAX_DEVICES: usize = 64;
 /// Cihaz adının en çok uzunluğu (§7).
 pub const MAX_NAME_LEN: usize = 32;
-/// Yükleyicinin kabul ettiği en büyük dosya (§7): 64 cihazlık en büyük geçerli v0 dosyası < 40 KiB.
+/// Yükleyicinin kabul ettiği en büyük dosya (§7): 64 cihazlık en büyük geçerli v0 dosyası < 48 KiB.
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
 
 // ── Değer tipleri ────────────────────────────────────────────────────────────────────────────
@@ -271,6 +271,12 @@ pub struct RootFile {
 pub struct DeviceConfig {
     pub format_version: u32,
     pub device_id: DeviceName,
+    /// Kimlik Ed25519 çifti — cihaz anahtarlarından AYRI (plan K4G-12 Ek (3)); `priv` PoC'de çalışma
+    /// zamanında kullanılmaz.
+    pub identity_ed25519: KeyPair,
+    /// `SHA-256(identity_ed25519.pub)` (ccr §13.3 / §13.5).
+    pub identity_hash: Public32,
+    /// `SHA-256(identity_hash)` (ccr §13.5).
     pub dest_hash: Public32,
     pub x25519_static: KeyPair,
     pub ed25519: KeyPair,
@@ -286,6 +292,7 @@ pub struct DeviceConfig {
 #[serde(deny_unknown_fields)]
 pub struct PeerConfig {
     pub name: DeviceName,
+    pub identity_hash: Public32,
     pub dest_hash: Public32,
     pub x25519_pub: Public32,
     pub cert: CertBytes,
@@ -392,8 +399,9 @@ fn ed25519_public_of(secret: &Secret32) -> Public32 {
 }
 
 impl DeviceConfig {
-    /// Yapısal tutarlılık (§5). İmza, zincir, iptal ve `dest_hash` türetmesi DENETLENMEZ (ccr §35.4
-    /// KAPALI-SİSTEM KİPİ: eş listesi bant dışında doğrulanmıştır).
+    /// Yapısal tutarlılık (§5): anahtar çiftleri, kimlik ≠ cihaz anahtarı, `identity_hash` /
+    /// `dest_hash` türetmesi (kendisi + eşler), sertifikanın taşıdığı anahtarlar, tekillik. İmza,
+    /// zincir ve iptal DENETLENMEZ (ccr §35.4 KAPALI-SİSTEM KİPİ: eş listesi bant dışında doğrulanmıştır).
     ///
     /// # Errors
     /// [`FormatError::UnsupportedVersion`] · [`FormatError::Invalid`].
@@ -408,6 +416,28 @@ impl DeviceConfig {
         }
         if ed25519_public_of(&self.ed25519.secret) != self.ed25519.public {
             return Err(FormatError::Invalid("ed25519.pub does not match its priv"));
+        }
+        if ed25519_public_of(&self.identity_ed25519.secret) != self.identity_ed25519.public {
+            return Err(FormatError::Invalid(
+                "identity_ed25519.pub does not match its priv",
+            ));
+        }
+        // ccr §13.3: kimlik cihaz anahtarından türetilmez — aynı anahtar iki rolde kullanılamaz.
+        if self.identity_ed25519.public == self.ed25519.public {
+            return Err(FormatError::Invalid(
+                "identity key must differ from device key",
+            ));
+        }
+        let identity_hash = cert::identity_hash(self.identity_ed25519.public.bytes());
+        if identity_hash != *self.identity_hash.bytes() {
+            return Err(FormatError::Invalid(
+                "identity_hash is not SHA-256(identity pub)",
+            ));
+        }
+        if cert::dest_hash(&identity_hash) != *self.dest_hash.bytes() {
+            return Err(FormatError::Invalid(
+                "dest_hash is not SHA-256(identity_hash)",
+            ));
         }
         let (own, _) = split_compact_device_cert(self.cert.bytes());
         if own.device_ed25519_pub != *self.ed25519.public.bytes()
@@ -435,6 +465,11 @@ impl DeviceConfig {
             }
             if *peer.x25519_pub.bytes() == [0u8; KEY_LEN] {
                 return Err(FormatError::Invalid("all-zero peer x25519_pub"));
+            }
+            if cert::dest_hash(peer.identity_hash.bytes()) != *peer.dest_hash.bytes() {
+                return Err(FormatError::Invalid(
+                    "peer dest_hash is not SHA-256(identity_hash)",
+                ));
             }
             let (fields, _) = split_compact_device_cert(peer.cert.bytes());
             if fields.device_x25519_pub != *peer.x25519_pub.bytes() {

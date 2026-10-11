@@ -1,11 +1,12 @@
 //! K4G-12 DONE kanıtı (kart madde 3) — gerçek `kama-provision` ikilisi, geçici dizinde.
 //!
-//! `init` 3 cihaz üretir; her cihazın `peers`'ı diğer ikisini içerir; `dest_hash` türetme
-//! fonksiyonuyla (ve bağımsız SHA-256 hesabıyla) doğrulanır; `cert` katı Ed25519 (`verify_strict`)
-//! ile test köküne karşı geçer; iki koşu farklı anahtarlar üretir; hiçbir `device-*.json` kök gizli
-//! anahtarını içermez (bayt araması); `.gitignore` ve `0600` mevcut. Çıktılar yalnız
-//! `std::env::temp_dir()` altındaki benzersiz alt dizinlere yazılır ve test sonunda silinir — repoya
-//! hiçbir `root.json` / `device-*.json` yazılmaz.
+//! `init` 3 cihaz üretir; her cihazın `peers`'ı diğer ikisini içerir; `dest_hash` cihazdan AYRI kimlik
+//! anahtarından türetme fonksiyonuyla (ve bağımsız SHA-256 hesabıyla) doğrulanır (plan K4G-12 Ek (3));
+//! `cert` katı Ed25519 (`verify_strict`) ile test köküne karşı geçer — TBS etiketi Python altın
+//! vektöründen (`ccr-compact-device-cert-v1`) okunur; iki koşu farklı anahtarlar üretir; hiçbir
+//! `device-*.json` kök gizli anahtarını içermez (bayt araması); `.gitignore` ve `0600` mevcut.
+//! Çıktılar yalnız `std::env::temp_dir()` altındaki benzersiz alt dizinlere yazılır ve test sonunda
+//! silinir — repoya hiçbir `root.json` / `device-*.json` yazılmaz.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -19,9 +20,11 @@ use kama_noise_wire::handshake::cert_ref_of;
 use kama_provision::cert;
 use kama_provision::encoding::{base64_encode, hex_encode};
 use kama_provision::format::{load_device_config, DeviceConfig, RootFile};
+use kama_vectors::Expected;
 use sha2::{Digest, Sha256};
 
 const BIN: &str = env!("CARGO_BIN_EXE_kama-provision");
+const CDC_SUITE: &str = "ccr-compact-device-cert-v1";
 const THREE: [&str; 3] = ["alice", "bob", "carol"];
 /// ccr §13.1: 90 gün.
 const NINETY_DAYS_SECS: u64 = 90 * 24 * 60 * 60;
@@ -57,6 +60,25 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// `domain_sep("SR_CDC_V1")` — Python referansının altın vektöründen (ccr §13.2 YAMA 2026-10-11);
+/// Rust sabitinden DEĞİL.
+fn reference_domain_sep() -> Vec<u8> {
+    let path = format!(
+        "{}/../../vectors/{CDC_SUITE}/{CDC_SUITE}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let file = kama_vectors::load_file(path).expect("vektör dosyası yüklenmeli");
+    let case = file
+        .cases
+        .iter()
+        .find(|case| case.kind == "domain-sep")
+        .expect("domain-sep vakası");
+    let Expected::Wire(wire) = &case.expected else {
+        panic!("{}: pozitif vaka bekleniyordu", case.id);
+    };
+    wire.clone()
 }
 
 fn run_init(out: &Path, args: &[&str]) -> Output {
@@ -178,6 +200,7 @@ fn init_writes_three_mutually_listed_devices_with_root_signed_certs() {
     issuer.update(root_pub);
     let issuer_key_id = issuer.finalize();
     let not_after = provisioned.root.created_at_unix + NINETY_DAYS_SECS;
+    let domain_sep = reference_domain_sep();
 
     for (name, (config, _)) in &provisioned.devices {
         assert_eq!(config.device_id.as_str(), name);
@@ -190,16 +213,35 @@ fn init_writes_three_mutually_listed_devices_with_root_signed_certs() {
         assert_eq!(config.peers.len(), 2);
         for peer in &config.peers {
             let (other, _) = &provisioned.devices[peer.name.as_str()];
+            assert_eq!(peer.identity_hash, other.identity_hash);
             assert_eq!(peer.dest_hash, other.dest_hash);
             assert_eq!(peer.x25519_pub, other.x25519_static.public);
             assert_eq!(peer.cert, other.cert);
         }
 
-        // `dest_hash`: türetme fonksiyonu + bağımsız SHA-256(SHA-256(ed25519.pub)).
+        // `identity_hash` / `dest_hash`: AYRI kimlik anahtarından (ccr §13.3 / §13.5) — türetme
+        // fonksiyonu + bağımsız SHA-256; reddedilen cihaz-anahtarı formülüyle ÇAKIŞMAZ.
         let ed_pub = *config.ed25519.public.bytes();
-        assert_eq!(*config.dest_hash.bytes(), cert::dest_hash(&ed_pub));
-        let independent: [u8; 32] = Sha256::digest(Sha256::digest(ed_pub)).into();
+        let identity_pub = *config.identity_ed25519.public.bytes();
+        assert_ne!(
+            identity_pub, ed_pub,
+            "{name}: kimlik anahtarı cihaz anahtarından ayrı olmalı"
+        );
+        let identity_hash = cert::identity_hash(&identity_pub);
+        assert_eq!(
+            *config.identity_hash.bytes(),
+            identity_hash,
+            "{name}: identity_hash"
+        );
+        assert_eq!(*config.dest_hash.bytes(), cert::dest_hash(&identity_hash));
+        let independent: [u8; 32] = Sha256::digest(Sha256::digest(identity_pub)).into();
         assert_eq!(*config.dest_hash.bytes(), independent, "{name}: dest_hash");
+        let rejected: [u8; 32] = Sha256::digest(Sha256::digest(ed_pub)).into();
+        assert_ne!(
+            *config.dest_hash.bytes(),
+            rejected,
+            "{name}: cihaz anahtarından türemiş"
+        );
 
         // `cert`: ccr §13.1 düzeni bağımsız ofsetlerle; imza köke karşı katı kipte.
         let cert_bytes = config.cert.bytes();
@@ -211,7 +253,7 @@ fn init_writes_three_mutually_listed_devices_with_root_signed_certs() {
         );
         assert_eq!(cert_bytes[64..80], issuer_key_id[..16], "issuer_key_id");
         assert_eq!(cert_bytes[80..88], not_after.to_be_bytes(), "not_after");
-        let mut tbs = b"SR_CDC_V1\0\0\0\0\0\0\0".to_vec();
+        let mut tbs = domain_sep.clone();
         tbs.extend_from_slice(&cert_bytes[..88]);
         let signature = &cert_bytes[88..];
         assert_eq!(verify_strict(&root_pub, &tbs, signature), Ok(()), "{name}");
@@ -283,6 +325,7 @@ fn init_writes_three_mutually_listed_devices_with_root_signed_certs() {
     for (config, _) in provisioned.devices.values() {
         all_needles.extend(secret_encodings(config.x25519_static.secret.expose()));
         all_needles.extend(secret_encodings(config.ed25519.secret.expose()));
+        all_needles.extend(secret_encodings(config.identity_ed25519.secret.expose()));
     }
     assert!(
         !contains_any(&result.stdout, &all_needles),
@@ -315,12 +358,17 @@ fn every_run_generates_fresh_keys_and_optional_fields_stay_empty() {
         let (x, _) = &a.devices[name];
         let (y, _) = &b.devices[name];
         assert_ne!(x.dest_hash, y.dest_hash, "{name}");
+        assert_ne!(
+            x.identity_ed25519.public, y.identity_ed25519.public,
+            "{name}"
+        );
         assert_ne!(x.x25519_static.public, y.x25519_static.public, "{name}");
         assert_ne!(x.ed25519.public, y.ed25519.public, "{name}");
         assert_ne!(x.cert, y.cert, "{name}");
         assert!(
             x.x25519_static.secret.expose() != y.x25519_static.secret.expose()
-                && x.ed25519.secret.expose() != y.ed25519.secret.expose(),
+                && x.ed25519.secret.expose() != y.ed25519.secret.expose()
+                && x.identity_ed25519.secret.expose() != y.identity_ed25519.secret.expose(),
             "{name}: gizli anahtar iki koşuda aynı"
         );
         assert_ne!(x.ed25519.public, a.root.ed25519.public, "cihaz ≠ kök");

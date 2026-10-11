@@ -188,6 +188,10 @@ pub fn init(
 /// Bir cihazın bellekteki anahtarları ve sertifikası (gizli alanlar Drop'ta sıfırlanır).
 struct DeviceMaterial {
     name: DeviceName,
+    /// Kimlik Ed25519 çifti — cihaz anahtarlarından AYRI (plan K4G-12 Ek (3); ccr §13.3).
+    identity: SigningKey,
+    identity_pub: [u8; KEY_LEN],
+    identity_hash: [u8; KEY_LEN],
     x25519: StaticSecret,
     x25519_pub: [u8; KEY_LEN],
     ed25519: SigningKey,
@@ -217,6 +221,10 @@ fn generate_device(
     let x25519_pub = *PublicKey::from(&x25519).as_bytes();
     let ed25519 = SigningKey::from_bytes(&random_key(entropy)?);
     let ed25519_pub = ed25519.verifying_key().to_bytes();
+    // dest_hash cihaz anahtarından DEĞİL, ayrı kimlik anahtarından türer (ccr §13.3 / §13.5).
+    let identity = SigningKey::from_bytes(&random_key(entropy)?);
+    let identity_pub = identity.verifying_key().to_bytes();
+    let identity_hash = cert::identity_hash(&identity_pub);
     let fields = CertFields {
         device_ed25519_pub: ed25519_pub,
         device_x25519_pub: x25519_pub,
@@ -226,17 +234,20 @@ fn generate_device(
     let compact_cert = cert::sign_compact_device_cert(&fields, root)?;
     Ok(DeviceMaterial {
         name: name.clone(),
+        identity,
+        identity_pub,
+        identity_hash,
         x25519,
         x25519_pub,
         ed25519,
         ed25519_pub,
-        dest_hash: cert::dest_hash(&ed25519_pub),
+        dest_hash: cert::dest_hash(&identity_hash),
         cert: compact_cert,
     })
 }
 
-/// `device-<ad>.json` içeriği: kendi anahtarları + diğer bütün cihazlar `peers`'ta (§3.2). Kökün
-/// yalnız açık anahtarı girer (D9).
+/// `device-<ad>.json` içeriği: kendi kimlik ve cihaz anahtarları + diğer bütün cihazlar `peers`'ta
+/// (§3.2). Kökün yalnız açık anahtarı girer (D9).
 fn device_config(
     device: &DeviceMaterial,
     all: &[DeviceMaterial],
@@ -248,6 +259,7 @@ fn device_config(
         .filter(|peer| peer.name != device.name)
         .map(|peer| PeerConfig {
             name: peer.name.clone(),
+            identity_hash: Public32::from_bytes(peer.identity_hash),
             dest_hash: Public32::from_bytes(peer.dest_hash),
             x25519_pub: Public32::from_bytes(peer.x25519_pub),
             cert: CertBytes::from_bytes(peer.cert),
@@ -260,6 +272,11 @@ fn device_config(
     DeviceConfig {
         format_version: FORMAT_VERSION,
         device_id: device.name.clone(),
+        identity_ed25519: KeyPair {
+            secret: Secret32::from_bytes(device.identity.to_bytes()),
+            public: Public32::from_bytes(device.identity_pub),
+        },
+        identity_hash: Public32::from_bytes(device.identity_hash),
         dest_hash: Public32::from_bytes(device.dest_hash),
         x25519_static: KeyPair {
             secret: Secret32::from_bytes(device.x25519.to_bytes()),

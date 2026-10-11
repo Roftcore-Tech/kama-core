@@ -17,14 +17,19 @@ kama-noise-wire = { path = "../kama-noise-wire" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-# D11 BEYANI: aşağıdaki dört crate Cargo.lock'ta ZATEN kilitli (kama-noise-wire'ın bağımlılıkları) ve
-# özellik kümeleri kama-noise-wire'ınkinin alt kümesidir → Cargo.lock'a yeni paket girmez. Gerekçe:
+# D11: aşağıdaki dört crate Cargo.lock'ta ZATEN kilitli (kama-noise-wire'ın bağımlılıkları) ve özellik
+# kümeleri kama-noise-wire'ınkinin alt kümesidir → yeni paket yok; plan Ek (3) DUR-K4G-12 (d) ONAYLI. Gerekçe:
 # kama-noise-wire'ın genel API'si Ed25519 imzası ÜRETMEZ (yalnız doğrular), X25519 açık anahtarını
 # gizliden türetmez, genel SHA-256 (ccr §8.1 spki, CAD-16) ve sıfırlanan tampon sunmaz.
 ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
 x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
 sha2 = { version = "0.10", default-features = false }
 zeroize = "1"
+
+[dev-dependencies]
+# DUR-K4G-12 (c): ccr §13 altın vektörleri (`vectors/ccr-*`, Python referansı) bu yükleyiciyle okunur;
+# workspace crate'i, Cargo.lock'a yeni paket girmez.
+kama-vectors = { path = "../kama-vectors" }
 
 [lints]
 workspace = true

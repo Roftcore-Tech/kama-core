@@ -11,10 +11,12 @@
 //! §2 "Anahtarlar"). Çalışma zamanında imza doğrulanmaz (ccr §35.4 KAPALI-SİSTEM KİPİ);
 //! [`verify_compact_device_cert`] testler ve çevrim dışı araçlar içindir.
 //!
-//! **DUR-K4G-12:** kartın GİRDİ'sindeki "mevcut kodlayıcı" ve "mevcut `dest_hash` türetmesi"
-//! `kama-noise-wire`'da yoktur (`handshake.rs` sertifikayı opak 152 B olarak taşır). [`DOMAIN_SEP_CDC_V1`]
-//! (ccr §13.2'de dolgusu tanımsız) ve [`dest_hash`] (ccr §13.3 ile çelişen PoC türetmesi) Abkarada
-//! kararını bekleyen ÖNERİLERDİR; ikisi de yalnız bu modülde tanımlıdır.
+//! **DUR-K4G-12 CEVAP (plan Ek 2026-10-11 (3)):** `kama-noise-wire` CompactDeviceCert kodlayıcısı ve
+//! `dest_hash` türetmesi sunmaz (`handshake.rs` sertifikayı opak 152 B taşır); ikisi burada ccr §13'ten
+//! yazılır. (a) `dest_hash` cihaz anahtarından DEĞİL, cihazdan ayrı kimlik Ed25519 anahtarından türer
+//! ([`identity_hash`], [`dest_hash`]; ccr §13.3 / §13.5). (b) [`DOMAIN_SEP_CDC_V1`] ccr §13.2 YAMA KAYDI
+//! 2026-10-11 tanımıdır. Altın vektörler: `vectors/ccr-dest-hash-v1/`, `vectors/ccr-compact-device-cert-v1/`
+//! (`ref/crypto/gen_vectors.py`; tüketici `tests/ccr_cert_vectors.rs`).
 
 use ed25519_dalek::{Signer, SigningKey};
 use kama_noise_wire::ed25519_strict::{verify_strict, Ed25519Reject};
@@ -31,9 +33,9 @@ pub const NOT_AFTER_LEN: usize = 8;
 pub const SIGNATURE_LEN: usize = 64;
 /// `domain_sep(...)` etiketi: "16B sabit etiket" (ccr §13.2).
 pub const DOMAIN_SEP_LEN: usize = 16;
-/// **ÖNERİ — DUR-K4G-12 (b).** `domain_sep("SR_CDC_V1")` = 9 B ASCII + 7 B `0x00` (sağa sıfır dolgu).
-/// ccr §13.2 etiketi "16B sabit" der ama dolguyu tanımlamaz (SPEC-GAP-REGISTRY-2026-08-27,
-/// S4-pki-discovery.6); karar Abkarada'nın (PROVISIONING-FORMAT-v0 §4.5).
+/// `domain_sep("SR_CDC_V1")` — ccr §13.2 YAMA KAYDI 2026-10-11 (K4G-12; DUR-K4G-12 (b)): ASCII etiket
+/// (≤ 16 B) + `0x00` dolgu → `53525f4344435f5631` + `00`×7. Altın vektör
+/// `ccr-compact-device-cert-v1.domain-sep.sr-cdc-v1`.
 pub const DOMAIN_SEP_CDC_V1: [u8; DOMAIN_SEP_LEN] = *b"SR_CDC_V1\0\0\0\0\0\0\0";
 /// İmzalanan alanlar: `device_ed25519_pub ‖ device_x25519_pub ‖ issuer_key_id ‖ not_after` (88 B).
 pub const SIGNED_FIELDS_LEN: usize = KEY_LEN + KEY_LEN + ISSUER_KEY_ID_LEN + NOT_AFTER_LEN;
@@ -162,13 +164,17 @@ pub fn issuer_key_id(issuer_ed25519_pub: &[u8; KEY_LEN]) -> [u8; ISSUER_KEY_ID_L
     id
 }
 
-/// **ÖNERİ — DUR-K4G-12 (a).** PoC `dest_hash` = `SHA-256(SHA-256(identity_ed25519_pub))`: CAD-16
-/// formülü (ccr §13.5) cihazın Ed25519 açık anahtarına uygulanır — PoC'de Identity/User Cert katmanı
-/// yoktur ve çoklu cihaz kapsam dışıdır. ccr §13.3'ün "device key'den DEĞİL" cümlesiyle çelişir; karar
-/// Abkarada'nın (PROVISIONING-FORMAT-v0 §4.4).
+/// `identity_hash = SHA-256(user_identity_ed25519_pub)` (ccr §13.3 / §13.5, CAD-16) — HAM 32 B anahtar
+/// üzerinden, spki değil (ccr §8.1). Girdi KİMLİK anahtarıdır: cihaz Ed25519 anahtarından türetmek ccr
+/// §13.3'te yasaktır (DUR-K4G-12 (a) — o öneri reddedildi, plan Ek 2026-10-11 (3)).
 #[must_use]
-pub fn dest_hash(identity_ed25519_pub: &[u8; KEY_LEN]) -> [u8; KEY_LEN] {
-    let identity_hash = Sha256::digest(identity_ed25519_pub);
+pub fn identity_hash(identity_ed25519_pub: &[u8; KEY_LEN]) -> [u8; KEY_LEN] {
+    Sha256::digest(identity_ed25519_pub).into()
+}
+
+/// `dest_hash = SHA-256(identity_hash)` (ccr §13.5, CAD-16).
+#[must_use]
+pub fn dest_hash(identity_hash: &[u8; KEY_LEN]) -> [u8; KEY_LEN] {
     Sha256::digest(identity_hash).into()
 }
 
@@ -237,10 +243,9 @@ mod tests {
         let signer = SigningKey::from_bytes(&[9; KEY_LEN]);
         let key = signer.verifying_key().to_bytes();
         // spki (33 B) özeti ≠ ham anahtar özeti (ccr §8.1).
-        let raw: [u8; KEY_LEN] = Sha256::digest(key).into();
+        let raw = identity_hash(&key);
         assert_ne!(issuer_key_id(&key), raw[..ISSUER_KEY_ID_LEN]);
-        // dest_hash iki kez özettir; tek özet değildir.
-        assert_ne!(dest_hash(&key), raw);
-        assert_eq!(dest_hash(&key), <[u8; KEY_LEN]>::from(Sha256::digest(raw)));
+        // dest_hash kimlik özetinin özetidir; kimlik özetinin kendisi değildir.
+        assert_ne!(dest_hash(&raw), raw);
     }
 }
