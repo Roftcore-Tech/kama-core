@@ -25,7 +25,8 @@
 //!
 //! Testler (kart NE 3): (a) cancel+connect aynı porttan; (b) yenileme sonrası aynı port; (c)
 //! adres-sahteli kopya; (d) `max_peers` yeni anahtarla. Her testin belgesi 5dbd0b80'de (K4G-01
-//! merge noktası) neden KIRMIZI olduğunu yazar.
+//! merge noktası) neden KIRMIZI olduğunu yazar. Ek (e): kapanış emekliliğinin bakım-tick yolu, dolu
+//! tablo baskısı olmadan (orkestratör incelemesi; yalnız tick çağrısı silinince kırmızı).
 //!
 //! BEYANLI KALAN AÇIK (INT-02; PoC-KAPSAM-001 §5): hattaki saldırgan gözlediği geçerli datagramı
 //! sahte adresten ÖNCE ileterek `max_peers` içinde ek yuva açabilir (test (c)'de açar, (d) bunun
@@ -60,9 +61,14 @@ const ALICE: u8 = 0xA1;
 const BOB: u8 = 0xB0;
 const CAROL: u8 = 0xC0;
 
-/// Sunucu düzeyi testin (d) hub (wire) tutamaçları.
+/// Sunucu düzeyi testlerin (d), (e) hub (wire) tutamaçları.
 const HUB_AB: HubHandle = HubHandle::from_raw(0x7E57_0AB0);
 const HUB_AC: HubHandle = HubHandle::from_raw(0x7E57_0AC0);
+
+/// (e): sonda turları arasında kapanan oturumun BEKLENMEDİĞİ aralık — bakım tick'inin (runtime
+/// `PATIENCE_TICK` = 1 s) neredeyse her zaman düştüğü pencere. Doğruluk buna bağlı değildir: koşul
+/// olaydır (sondanın teslimi), üst sınır `WAIT`.
+const PROBE_PACE: Duration = Duration::from_millis(250);
 
 /// Beklenen bir olayın (S1 olayı, teslim) ÜST SINIRI — aşılırsa kırmızı, sessiz geçiş yok. (b)'nin
 /// anlamı gereği `idle_hold`'dan (105 s) çok küçüktür (test ayrıca doğrular).
@@ -668,5 +674,110 @@ async fn d_max_peers_bounds_session_keyed_slots() {
     );
     assert_eq!(ss.delivered, 3);
     // Reddedilen datagramlar ALINDI ve AÇILDI: ret kriptodan değil, tavandan.
+    assert_eq!((ss.open_failures, ss.unknown_frames), (0, 0));
+}
+
+/// **(e) Kapanış emekliliğinin BAKIM-TICK yolu — dolu tablo baskısı YOK** (orkestratör incelemesi).
+/// Üründe `max_peers = 64` olduğundan kapanan oturumun yuvasını pratikte emekliye ayıran TEK yol
+/// bakım tick'idir (runtime `PATIENCE_TICK` = 1 s → `retire_closed_slots`); (d) yalnız dolu-tablo
+/// yolunu ölçer.
+///
+/// Düzenek: `max_peers: 3` ve en çok İKİ yuva (Bob'un `(A, h_ab)`'si — sonra onun taze hâli — ve
+/// Carol'ın bariyer yuvası `(B, h_ac)`) → tablo HİÇ dolmaz, dolu-tablo yolu HİÇ çalışmaz
+/// (`dropped_new_peers == 0` doğrular); `idle_hold` ürün değeri (105 s) → idle emekliliği de
+/// çalışmaz. Bob'un birimi 0 teslim edilir (yuvanın teslim-dedup penceresine girer), sonra oturum
+/// tablosu `h_ab`'siz yayımlanır (oturum kapandı); bundan sonra Bob'un yuvasını emekliye
+/// ayırabilecek tek yol bakım tick'idir.
+///
+/// Gözlem — olay koşullu, sabit uyku YOK: `ServerStats` yalnız kapanışta okunur; yuvanın varlığı
+/// tekrarlanan bir SONDAYLA olaydan okunur. Her turda `h_ab` YALNIZ sonda süresince yeniden
+/// yayımlanır, Bob birim 0'ı yeni PN'le yeniden yollar, ardından Carol'ın yuvasından bir bariyer
+/// gelir (aynı sunucu soketinden sırayla işlenir: bariyer teslim edildiğinde sonda işlenmiştir).
+/// Yuva hâlâ duruyorsa birim 0 onun dedup penceresinde yutulur (teslim yok) ve `h_ab` yeniden
+/// kaldırılır; yuva emekliye ayrılmışsa sonda TAZE bir yuva açar ve birim 0 yeniden teslim edilir —
+/// bekleme koşulu budur (üst sınır `WAIT` ≫ 1 s). Turlar arasındaki `PROBE_PACE` aralığında `h_ab`
+/// beklenmez; sonda penceresi bir bariyer gidiş-dönüşü kadar kısadır. Sonda taze yuvayı açtıktan
+/// sonra `h_ab` beklenmeye devam eder (taze yuva emekliye ayrılmaz) → `retired_idle_peers == 1`
+/// kesindir.
+///
+/// YALNIZ bakım-tick çağrısı silinince KIRMIZI: yuva hiçbir yoldan emekliye ayrılmaz (tablo dolmaz,
+/// `idle_hold` dolmaz) → her sonda yutulur → üst sınır aşılır. Dolu-tablo yolundaki çağrı silinirse
+/// YEŞİL kalır (o yol bu testte hiç çalışmaz). 5dbd0b80'de de KIRMIZI (kapanış emekliliği yoktu).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e_maintenance_tick_retires_a_closed_session_slot_without_table_pressure() {
+    let mut alice = node(ALICE).0;
+    let mut bob = node(BOB).0;
+    let mut carol = node(CAROL).0;
+    let (h_ab, h_ba) = handshake(&mut alice, &mut bob, id(BOB), HUB_AB);
+    let (h_ac, h_ca) = handshake(&mut alice, &mut carol, id(CAROL), HUB_AC);
+    let expected = ExpectedSessions::new();
+    expected.insert_ready(h_ab);
+    expected.insert_ready(h_ac);
+    let cfg = RuntimeConfig {
+        max_peers: 3,
+        ..RuntimeConfig::default()
+    };
+    let mut server = ServerEndpoint::bind_expecting(
+        SocketAddr::from(([127, 0, 0, 1], 0)),
+        cfg,
+        Box::new(alice),
+        None,
+        expected.clone(),
+        CtxDispatchCounters::new(),
+    )
+    .await
+    .expect("veri alıcısı");
+    let to = server.local_addr();
+    let bob_addr = udp().await;
+    let carol_addr = udp().await;
+
+    // Bob'un yuvası `(A, h_ab)`: birim 0 teslim edilir ve yuvanın teslim-dedup penceresine girer.
+    send(&bob_addr, &sealed_data(&mut bob, h_ba, 0), to).await;
+    let d = delivery(&mut server).await;
+    assert_eq!((d.unit_id, d.ctx), (0, ProtectionContext::Session(h_ab)));
+
+    // Bob'un oturumu kapanır: tablo yalnız Carol'la yayımlanır. Yeni datagram yollanmadan bakım
+    // tick'i yuvayı emekliye ayırmalı; sonda turları bunu olaydan okur.
+    let carol_only = [(h_ac, Readiness::Ready)];
+    expected.replace(carol_only);
+    let deadline = Instant::now() + WAIT;
+    let mut barrier = 0;
+    loop {
+        tokio::time::sleep(PROBE_PACE).await;
+        expected.insert_ready(h_ab);
+        send(&bob_addr, &sealed_data(&mut bob, h_ba, 0), to).await;
+        barrier += 1;
+        send(&carol_addr, &sealed_data(&mut carol, h_ca, barrier), to).await;
+        let mut fresh_slot = false;
+        loop {
+            let d = delivery(&mut server).await;
+            if d.ctx == ProtectionContext::Session(h_ac) {
+                assert_eq!(d.unit_id, barrier, "bariyer sırası");
+                break;
+            }
+            assert_eq!((d.unit_id, d.ctx), (0, ProtectionContext::Session(h_ab)));
+            fresh_slot = true;
+        }
+        if fresh_slot {
+            break;
+        }
+        expected.replace(carol_only);
+        assert!(
+            Instant::now() < deadline,
+            "kapanan oturumun yuvası bakım tick'inde emekliye ayrılmadı (sonda hep yutuldu)"
+        );
+    }
+    assert!(server.try_next_delivery().is_none());
+    // Sondalar `h_ab` beklenirken işlendi (bariyer bekleniyor): hiçbir datagram kapıda düşmedi.
+    assert_eq!(server.ctx_dispatch_stats(), CtxDispatchStats::default());
+    let ss = server.shutdown().await;
+    assert_eq!(
+        ss.retired_idle_peers, 1,
+        "kapanan oturumun yuvası bakım tick'inde emekliye ayrıldı"
+    );
+    assert_eq!(
+        ss.dropped_new_peers, 0,
+        "tavan hiç dolmadı: dolu-tablo yolu çalışmadı"
+    );
     assert_eq!((ss.open_failures, ss.unknown_frames), (0, 0));
 }

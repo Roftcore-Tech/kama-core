@@ -3243,8 +3243,11 @@ mod ctx_first_tests {
 
     /// [K4G-01b] Yuva `(adres, oturum)` anahtarlıdır: aynı adreste üç oturum üç yuvadır. Bağlı
     /// oturumu beklenen kümeden çıkan (kapanan) yuva emekliye ayrılır; aynı adresteki diğer
-    /// oturumların yuvaları — `NotReady` olan dahil, o da hâlâ beklenir — kalır. Her yuvanın bağı
-    /// anahtarının oturumudur.
+    /// oturumların yuvaları — `NotReady` olan dahil, o da hâlâ beklenir — kalır. Yuvanın bağının
+    /// (`PeerSlot::ctx`) anahtarının oturumu olduğu burada değil UÇTAN UCA kanıtlanır: aynı
+    /// adresten gelen oturumların teslimleri kendi oturumlarıyla etiketlenir —
+    /// `tests/session_keyed_slots.rs` (a), (b) (`Delivered::session`, veri alıcısının
+    /// `Delivery::ctx`'inden), (d) ve `tests/ctx_first_dispatch.rs`'in uyarlanan adımı (`d.ctx`).
     #[test]
     fn closed_session_slot_retires_and_same_address_slots_stay() {
         let addr = SocketAddr::from(([127, 0, 0, 1], 40_000));
@@ -3265,9 +3268,6 @@ mod ctx_first_tests {
         let mut left: Vec<SessionHandle> = peers.keys().map(|&(_, h)| h).collect();
         left.sort();
         assert_eq!(left, [h2, h3]);
-        for (&(_, h), slot) in &peers {
-            assert_eq!(slot.ctx, ProtectionContext::Session(h));
-        }
         // Kapanış dışında hiçbir şey yuva düşürmez (idempotent).
         assert_eq!(retire_closed_slots(&mut peers, &expected), 0);
         assert_eq!(peers.len(), 2);

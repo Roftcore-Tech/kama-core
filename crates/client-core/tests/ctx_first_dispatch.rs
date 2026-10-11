@@ -695,7 +695,10 @@ async fn server_session_context_must_be_expected_and_bound_to_the_slot() {
     let d = delivery(&mut server).await;
     assert_eq!((d.unit_id, d.ctx), (0, ProtectionContext::Session(h_ab)));
 
-    // Yuva tek oturuma aittir: Carol'ın GEÇERLİ datagramı Bob'un yuvasının adresinden → düşer.
+    // Beklenmeyen oturum (tablo yalnız h_ab): Carol'ın GEÇERLİ datagramı Bob'un yuvasının
+    // adresinden gelse de yuvaya bakılmadan düşer (kol c, `ctx_mismatch_drops`). [K4G-01b]
+    // Yuva-bağı kolu anahtar gereği gerçek akışta ulaşılmaz (yuva `(adres, oturum)` ile aranır);
+    // yalnız `runtime::ctx_first_tests`'te saf sınanır.
     let wire = sealed_data(&mut carol, h_ca, 1);
     send(&bob_ep, &wire, to).await;
     server_ctx(&server, stats(1, 0)).await;
