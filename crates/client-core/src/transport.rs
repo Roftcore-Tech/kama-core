@@ -44,6 +44,16 @@
 //! INIT başlatır, Application hiçbir olay görmez. Niyet yalnız `Ready`, `cancel` ya da kapalı bir
 //! `ConnectAbandoned` nedeniyle biter.
 //!
+//! # Bağlam-önce dağıtım (K4G-01 / D1 v1.1)
+//!
+//! Bağlam yükün tipinden türetilmez; bağlam dağıtıcıyı seçer. Yük, bağlam doğrulanmadan çözülmez.
+//! Veri alıcısı açılan datagramın yükünü YALNIZ bağlamı bu adaptörün oturum tablosunda beklenen bir
+//! `Session(h)` ise ve eş yuvası varsa o yuvanın oturumuysa işler; her oturum ucu yalnız kendi
+//! `Session(h)`'sini. Beklenen küme bu tablodan yayımlanır (`sync_expected`); yeni bir tutamaç
+//! zarfı (INIT/RESPONSE) yola çıkmadan eklenir. `HubChannel` (direct-mode'da hub yok; PoC'de
+//! AEAD'siz no-op) ve başka her bağlam yüke dokunulmadan düşer ve sayılır
+//! ([`ClientTransport::ctx_dispatch_stats`]).
+//!
 //! # KAPSAM DIŞI (iş emri §4)
 //!
 //! `Suspended` / `LongOutage` tetikleri, heartbeat, backoff, rebind ve INIT'in byte-özdeş yeniden
@@ -67,7 +77,8 @@ use kama_contracts::s3::{
 };
 
 use crate::runtime::{
-    ClientEndpoint, ClientHandle, RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
+    ClientEndpoint, ClientHandle, CtxDispatchCounters, CtxDispatchStats, ExpectedSessions,
+    RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
 };
 #[cfg(any(test, feature = "test-util"))]
 use crate::wire::decode_data;
@@ -393,6 +404,11 @@ pub struct ClientTransport<C: PacketProtection + SessionControl> {
     events: VecDeque<SessionEvent>,
     inbox: VecDeque<Delivered>,
     reorder: HashMap<SocketAddr, Reorder>,
+    /// [K4G-01 / D1 (v1.1)] Veri alıcısının BEKLEDİĞİ oturumlar — bu adaptörün oturum tablosunun
+    /// yayını ([`Self::sync_expected`]); yeni tutamaç zarfı (INIT/RESPONSE) yola çıkmadan eklenir.
+    expected: ExpectedSessions,
+    /// [K4G-01] Düğüm geneli bağlam-önce dağıtım sayaçları (veri alıcısı + bütün oturum uçları).
+    ctx_counters: CtxDispatchCounters,
     /// Sıradaki `send`'lerden kaçının ilk emisyonu kaybettirilecek (yalnız test).
     #[cfg(any(test, feature = "test-util"))]
     drops: usize,
@@ -444,10 +460,17 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             .enable_all()
             .build()?;
         let crypto = Arc::new(Mutex::new(crypto));
-        let server = rt.block_on(ServerEndpoint::bind(
+        // [K4G-01 / D1 (v1.1)] Veri alıcısının beklediği oturumlar bu adaptörün oturum tablosundan
+        // yayımlanır (`sync_expected`); kurulumda tablo boştur → hiçbir `Session(_)` beklenmez.
+        let expected = ExpectedSessions::new();
+        let ctx_counters = CtxDispatchCounters::new();
+        let server = rt.block_on(ServerEndpoint::bind_expecting(
             cfg.data_bind,
             cfg.runtime.clone(),
             Box::new(CryptoSeam(Arc::clone(&crypto))),
+            None,
+            expected.clone(),
+            ctx_counters.clone(),
         ))?;
         // K5: kapasite Crypto'nun oturum sınıfı için güvenli minimumundan türer; veri çerçevesinin
         // başlığı düşülür ve veri yolunun birim tavanıyla kırpılır.
@@ -482,6 +505,8 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             events: VecDeque::new(),
             inbox: VecDeque::new(),
             reorder: HashMap::new(),
+            expected,
+            ctx_counters,
             #[cfg(any(test, feature = "test-util"))]
             drops: 0,
             server,
@@ -500,6 +525,15 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.peer_addrs.insert(peer, addr);
     }
 
+    /// [K4G-01 / D1 (v1.1)] Düğüm geneli bağlam-önce dağıtım sayaçları (telemetri; canlı):
+    /// `ctx_mismatch_drops` (beklenmeyen `Session(_)` bağlamı) ve `hub_frames_dropped`
+    /// (HubChannel). Veri alıcısı ve bütün oturum uçları aynı kümeyi paylaşır; uç kapansa da
+    /// sayım kaybolmaz.
+    #[must_use]
+    pub fn ctx_dispatch_stats(&self) -> CtxDispatchStats {
+        self.ctx_counters.snapshot()
+    }
+
     /// Bekleyen işi sürer: zarf olayları → tutulan yenileme yanıtları → Crypto olayları →
     /// teslimler. Her S1 çağrısı bunu kendisi çağırır; uygulama döngüsü de doğrudan çağırabilir.
     pub fn drive(&mut self) {
@@ -507,6 +541,26 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.release_held_renewals();
         self.drive_crypto_events();
         self.drive_deliveries();
+        self.sync_expected();
+    }
+
+    /// [K4G-01 / D1 (v1.1)] Veri alıcısının BEKLEDİĞİ oturum kümesini oturum tablosundan yeniden
+    /// yayımlar: bekleyen niyetler, yenilemeler, onay bekleyen provisional'lar, yanıtlayan rolde
+    /// kurulanlar ve kapanmamış (`Active` / `Superseded`) oturumlar. "Beklenen" YALNIZ bu tablodur;
+    /// ilk gelen datagramdan öğrenme (TOFU) yoktur. Yeni bir tutamaç ayrıca, zarfı (INIT/RESPONSE)
+    /// yola çıkmadan ÖNCE eklenir: karşı uç o zarfı almadan bu oturumda veri yollayamaz, yani
+    /// tablo ile veri yolu arasında yarış kalmaz.
+    fn sync_expected(&self) {
+        let mut expected: Vec<SessionHandle> = self.intents.iter().map(|it| it.pending).collect();
+        expected.extend(self.renewals.iter().map(|r| r.pending));
+        expected.extend(self.provisional.keys().copied());
+        expected.extend(self.responder_peer.keys().copied());
+        for (h, s) in &self.sessions {
+            if s.phase != Phase::Closed {
+                expected.push(*h);
+            }
+        }
+        self.expected.replace(expected);
     }
 
     fn command(&self, cmd: SessionCommand) -> SessionResult {
@@ -561,6 +615,8 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 });
                 self.hub_of.insert(session, hub_handle);
                 self.responder_peer.insert(session, peer);
+                // [K4G-01] RESPONSE'tan ÖNCE beklenir: başlatan ancak onu alınca veri yollar.
+                self.expected.insert(session);
                 let _ = self
                     .link
                     .send_response(peer, hub_handle, envelope_type, bytes);
@@ -578,6 +634,9 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 });
                 self.hub_of.insert(new, hub_handle);
                 self.provisional.insert(new, (peer, supersedes));
+                // [K4G-01] Onayı getirecek ilk epoch-1 paketi bu oturumun bağlamında açılır:
+                // RESPONSE'tan ÖNCE beklenir.
+                self.expected.insert(new);
                 let _ = self
                     .link
                     .send_response(peer, hub_handle, envelope_type, bytes);
@@ -710,6 +769,8 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             bytes,
         } = self.command(SessionCommand::Renew { session: h })
         {
+            // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
+            self.expected.insert(pending);
             if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
                 self.attempts.insert(a, pending);
             }
@@ -778,6 +839,8 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 bytes,
             } => {
                 self.intents[i].pending = session;
+                // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
+                self.expected.insert(session);
                 if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
                     self.attempts.insert(a, session);
                 }
@@ -838,14 +901,16 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             #[cfg(any(test, feature = "test-util"))]
             max_unit_sealed: None,
         };
+        // [K4G-01 / D1 (v1.1)] Ucun beklediği bağlam `Session(h)`'dir; sayaçlar düğüm geneli.
         let endpoint = self
             .rt
-            .block_on(ClientEndpoint::connect_session(
+            .block_on(ClientEndpoint::connect_session_counted(
                 addr,
                 self.runtime_cfg.clone(),
                 Box::new(seam),
                 None,
                 ProtectionContext::Session(h),
+                self.ctx_counters.clone(),
             ))
             .ok()?;
         endpoint.set_recovery(self.recovery_on);
@@ -998,6 +1063,8 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
                 envelope_type,
                 bytes,
             } => {
+                // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
+                self.expected.insert(session);
                 if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
                     self.attempts.insert(a, session);
                 }
@@ -1089,6 +1156,7 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         if let SessionEvent::Closed(h, _) = ev {
             // F0.2(i): `Closed(h)` OKUNDUKTAN sonra tutamaç bilinmez.
             self.sessions.remove(&h);
+            self.sync_expected();
         }
         Some(ev)
     }
@@ -1111,6 +1179,7 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
             let r = self.renewals.remove(i);
             let _ = self.command(SessionCommand::Close { session: r.pending });
         }
+        self.sync_expected();
         self.events
             .push_back(SessionEvent::Closed(session, CloseReason::UserClosed));
         Ok(())
@@ -1127,6 +1196,7 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         });
         self.attempts.retain(|_, p| *p != it.pending);
         self.hub_of.remove(&it.pending);
+        self.sync_expected();
         self.events.push_back(SessionEvent::ConnectAbandoned(
             ticket,
             AbandonReason::Cancelled,
