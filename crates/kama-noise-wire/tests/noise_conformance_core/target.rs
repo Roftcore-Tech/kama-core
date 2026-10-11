@@ -423,6 +423,9 @@ pub fn real_endpoint(
         directory: fixture_directory(),
         clock: Box::new(clock.clone()),
         entropy: Box::new(OsEntropy::new()),
+        counter_store: std::sync::Arc::new(
+            kama_noise_wire::counter_store::MemoryCounterStore::new(),
+        ),
         envelope,
     });
     (p, clock)

@@ -5,18 +5,26 @@
 //! **Kurulum (G1 — ccr §35.4 KAPALI-SİSTEM KİPİ):** [`NoiseWireProtection::with_control`] yerel
 //! kimliği, doğrulanmış eş dizinini, monoton saati (K2) ve entropi kaynağını İSTER; dizinsiz ürün
 //! kurulumu yoktur. Dizinde olmayan göndericinin INIT'i opak `Failed`; zincir/iptal doğrulaması bu
-//! kipte çalışma zamanında yapılmaz (BL KATMAN 6 madde 7).
+//! kipte çalışma zamanında yapılmaz (BL KATMAN 6 madde 7). [K4G-02] Kurulum ayrıca cihazın kalıcı
+//! `init_counter` deposunu ([`CounterStore`]) İSTER.
 //!
 //! **Komutlar:**
 //! * `Initiate{peer}` → bekleyen INIT (REF kipi SSI1) + `Initiated{session}`. Tavan
 //!   [`PENDING_RESPONSE_TRIAL_CAP`]; `early_unit` bu sprint DESTEKLENMEZ (sahip kararı S1: Transport
 //!   saklar, Ready'de ilk `send`) → boş olmayan `early_unit` `Failed`. Çıktı byte-özdeş yeniden
 //!   gönderim için Transport'ta önbelleklenir; Crypto aynı zarfı yeniden ÜRETMEZ (K9).
+//!   [K4G-02, D2] Her INIT için [`CounterStore::reserve_next`] BİR kez çağrılır ve INIT dönen
+//!   değerle mühürlenir; sayaç cihaz başınadır (eş başına DEĞİL) ve düzlemde TUTULMAZ. Depo hata
+//!   verirse INIT GÖNDERİLMEZ: opak `Failed`, neden [`ControlFailure::CounterPersist`]
+//!   ([`NoiseWireProtection::last_control_failure`]).
 //! * `AcceptInit` → doğrula (dizin → DH → AEAD); aynı `(eş, init_counter)` ve BYTE-ÖZDEŞ INIT →
 //!   önbellekli yanıt, yeni oturum/olay YOK (H-RETRY Bob); aynı sayaç farklı bayt → `Failed`. Eşle
 //!   etkin oturum YOKSA `EstablishedAndReply` + `Ready`; VARSA `ProvisionalAndReply` (K10). Glare
 //!   (K10): bu eşe bekleyen INIT'imiz varken INIT gelirse yerel `dest_hash` < eşinki → kazanan
 //!   (`NoOutput`, INIT sessiz düşer); aksi → kaybeden: bekleyenimiz silinir, INIT işlenir.
+//!   [K4G-02 4(b); #104 YORUM 9 düzeltmesi] H-RETRY sınaması glare'den ve AEAD'den ÖNCE gelir:
+//!   önbellekteki `(eş, n)` ile çakışan farklı baytlı INIT provisional yola GİRMEZ, `Failed` alır.
+//!   Bu yüzden başlatanın sayacı kalıcıdır; yeniden başlayan başlatıcı `n`'den büyük değerle gelir.
 //! * `AcceptResponse` → bekleyenler en-yeni-önce, en çok [`PENDING_RESPONSE_TRIAL_CAP`] deneme
 //!   (K7); yanlış aday ile bozuk paket aynı görünür (`Failed`, state değişmez).
 //! * `AssignHandle` → oturum ↔ hub tutamacı bağı (noise-wire §2.55); anahtarlar bağ gelince
@@ -38,6 +46,7 @@
 
 use core::time::Duration;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s3::{HubHandle, SessionCommand, SessionControl, SessionEvent, SessionResult};
@@ -46,6 +55,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
 use crate::clock::MonotonicClock;
+use crate::counter_store::{CounterStore, CounterStoreError};
 use crate::deprecated::deprecated_format;
 use crate::entropy::EntropySource;
 use crate::envelope::EnvelopeProfile;
@@ -87,12 +97,15 @@ pub enum EnvelopeKind {
     Extended,
 }
 
-/// Ürün kurulumunun girdileri — hepsi ZORUNLU (G1, K2).
+/// Ürün kurulumunun girdileri — hepsi ZORUNLU (G1, K2, K4G-02).
 pub struct ControlConfig {
     pub identity: LocalIdentity,
     pub directory: PeerDirectory,
     pub clock: Box<dyn MonotonicClock>,
     pub entropy: Box<dyn EntropySource>,
+    /// Cihazın kalıcı `init_counter` deposu (K4G-02, D2). `Arc`: üründe aynı somut depo başka
+    /// arayüzleri de gerçekler (K4G-06); düzlem yalnız [`CounterStore::reserve_next`]'i çağırır.
+    pub counter_store: Arc<dyn CounterStore>,
     pub envelope: EnvelopeKind,
 }
 
@@ -105,12 +118,24 @@ impl core::fmt::Debug for ControlConfig {
     }
 }
 
+/// `SessionResult::Failed`'in bu somut tipte KAYDEDİLEN nedeni. S3'te `Failed` yüksüz ve opaktır
+/// (FROZEN); neden yalnız [`NoiseWireProtection::last_control_failure`] ile gözlenir. Burada adı
+/// olmayan retler opak kalır.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlFailure {
+    /// Plan K4G-02 "`Failed(CounterPersist)`": [`CounterStore::reserve_next`] hata döndü → INIT
+    /// GÖNDERİLMEDİ, değer ayrılmadı.
+    CounterPersist(CounterStoreError),
+}
+
 /// Bekleyen INIT (başlatan tarafı). Ephemeral sır Drop'ta silinir.
 struct PendingInit {
     handle: SessionHandle,
     peer: [u8; DEST_HASH_LEN],
     ephemeral: StaticSecret,
     secrets: InitSecrets,
+    /// Bu INIT'e [`CounterStore`]'dan ayrılmış değer — salt kayıt; sonraki değer bundan
+    /// TÜRETİLMEZ (K4G-02).
     #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
     init_counter: u64,
     created_at: Duration,
@@ -180,10 +205,14 @@ pub(crate) struct ControlPlane {
     sessions: BTreeMap<SessionHandle, Meta>,
     /// `(eş, init_counter)` → yanıt; eş başına ≤ [`HALF_OPEN_CAP`].
     responses: BTreeMap<([u8; DEST_HASH_LEN], u64), CachedResponse>,
-    /// Başlatan: eş başına sonraki `init_counter`.
-    init_counters: BTreeMap<[u8; DEST_HASH_LEN], u64>,
+    /// Başlatan: cihazın `init_counter` deposu (K4G-02). Düzlem sayaç TUTMAZ.
+    counter_store: Arc<dyn CounterStore>,
     /// Son `AcceptResponse`'taki aday denemesi (salt gözlem; K7 kanıtı).
     last_response_trials: usize,
+    /// Son `command`'ın kaydedilen `Failed` nedeni (salt gözlem; her `command` başında temizlenir).
+    last_failure: Option<ControlFailure>,
+    /// Kümülatif [`ControlFailure::CounterPersist`] sayısı (salt gözlem).
+    counter_persist_failures: u64,
 }
 
 impl ControlPlane {
@@ -197,8 +226,20 @@ impl ControlPlane {
             pending: Vec::new(),
             sessions: BTreeMap::new(),
             responses: BTreeMap::new(),
-            init_counters: BTreeMap::new(),
+            counter_store: cfg.counter_store,
             last_response_trials: 0,
+            last_failure: None,
+            counter_persist_failures: 0,
+        }
+    }
+
+    /// `Failed`'in nedenini kaydeder (salt gözlem; davranışı etkilemez).
+    fn record_failure(&mut self, failure: ControlFailure) {
+        self.last_failure = Some(failure);
+        match failure {
+            ControlFailure::CounterPersist(_) => {
+                self.counter_persist_failures = self.counter_persist_failures.saturating_add(1);
+            }
         }
     }
 
@@ -265,10 +306,7 @@ impl ControlPlane {
             .iter()
             .map(|((_, n), c)| format!("{n}:{:?}", c.kind))
             .collect();
-        format!(
-            "pending={pending:?}|sessions={sessions:?}|responses={responses:?}|counters={:?}",
-            self.init_counters.values().collect::<Vec<_>>()
-        )
+        format!("pending={pending:?}|sessions={sessions:?}|responses={responses:?}")
     }
 }
 
@@ -320,12 +358,29 @@ struct Effects {
 }
 
 impl NoiseWireProtection {
-    /// ÜRÜN kurulumu: `PacketProtection` + `SessionControl`, eş dizini ve saat ZORUNLU (G1, K2).
+    /// ÜRÜN kurulumu: `PacketProtection` + `SessionControl`, eş dizini ve saat ZORUNLU (G1, K2);
+    /// `init_counter` deposu ZORUNLU (K4G-02).
     #[must_use]
     pub fn with_control(cfg: ControlConfig) -> Self {
         let mut p = Self::empty();
         p.control = Some(Box::new(ControlPlane::new(cfg)));
         p
+    }
+
+    /// Son `command`'ın `Failed` NEDENİ. Yalnız [`ControlFailure`]'da adı olan nedenler kaydedilir;
+    /// diğer retler opak kalır (`None`). Her `command` başında temizlenir. S3'ün
+    /// `SessionResult::Failed`'i yüksüzdür; neden yalnız bu somut tipte gözlenir.
+    #[must_use]
+    pub fn last_control_failure(&self) -> Option<ControlFailure> {
+        self.control.as_deref().and_then(|cp| cp.last_failure)
+    }
+
+    /// [`CounterStore`] hatası yüzünden GÖNDERİLMEYEN INIT sayısı (kümülatif; telemetri).
+    #[must_use]
+    pub fn counter_persist_failures(&self) -> u64 {
+        self.control
+            .as_deref()
+            .map_or(0, |cp| cp.counter_persist_failures)
     }
 
     // ── Veri yolu kancaları (protector `open` çağırır) ───────────────────────────────────────
@@ -570,12 +625,19 @@ impl NoiseWireProtection {
         if cp.pending.len() >= PENDING_RESPONSE_TRIAL_CAP {
             return SessionResult::Failed;
         }
-        let counter = cp.init_counters.get(&entry.dest_hash).copied().unwrap_or(0);
-        let Some(next_counter) = counter.checked_add(1) else {
-            return SessionResult::Failed;
-        };
         let Some(ephemeral) = ephemeral.or_else(|| cp.fresh_ephemeral()) else {
             return SessionResult::Failed;
+        };
+        // K4G-02 (D2): INIT başına TEK ayırma, mühürden hemen önce; değer dönmeden önce kalıcıdır
+        // (write-ahead deponundur). Hata → INIT GÖNDERİLMEZ ve değer ayrılmamıştır; S3 `Failed`
+        // opak olduğundan neden burada kaydedilir.
+        let reserved = cp.counter_store.reserve_next();
+        let counter = match reserved {
+            Ok(counter) => counter,
+            Err(e) => {
+                cp.record_failure(ControlFailure::CounterPersist(e));
+                return SessionResult::Failed;
+            }
         };
         let recipient_static = PublicKey::from(entry.static_x25519_pub);
         let cert_ref = cp.identity.cert_ref;
@@ -599,7 +661,6 @@ impl NoiseWireProtection {
         let Some(cp) = self.control.as_deref_mut() else {
             return SessionResult::Failed;
         };
-        cp.init_counters.insert(entry.dest_hash, next_counter);
         cp.pending.push(PendingInit {
             handle: h,
             peer: entry.dest_hash,
@@ -943,13 +1004,17 @@ impl NoiseWireProtection {
     }
 
     /// Verilen ephemeral'la `Initiate` (H-DEMUX fikstürü: yanıtı test bağımsızca hesaplar).
-    /// Döner: bekleyen oturumun tutamacı; `Initiate`'in reddettiği durumda `None`.
+    /// Döner: bekleyen oturumun tutamacı; `Initiate`'in reddettiği durumda `None`. Bir `command`
+    /// gibi önce kaydedilmiş `Failed` nedenini temizler ([`Self::last_control_failure`]).
     #[cfg(feature = "test-util")]
     pub fn initiate_with_ephemeral_for_test(
         &mut self,
         peer: PeerRef,
         ephemeral: [u8; X25519_LEN],
     ) -> Option<SessionHandle> {
+        if let Some(cp) = self.control.as_deref_mut() {
+            cp.last_failure = None;
+        }
         match self.initiate_with(peer, None, Some(StaticSecret::from(ephemeral))) {
             SessionResult::Initiated { session, .. } => Some(session),
             _ => None,
@@ -984,6 +1049,9 @@ impl NoiseWireProtection {
 
 impl SessionControl for NoiseWireProtection {
     fn command(&mut self, cmd: SessionCommand) -> SessionResult {
+        if let Some(cp) = self.control.as_deref_mut() {
+            cp.last_failure = None;
+        }
         match cmd {
             SessionCommand::Initiate { peer, early_unit } => {
                 self.cmd_initiate(peer, early_unit, None)

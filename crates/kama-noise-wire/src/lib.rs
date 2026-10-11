@@ -22,6 +22,7 @@ pub mod control_dedup_window;
 /// F-CID-0 (DR-CS-1b/A2): control-id merkezi issuance-gate + CAL-10 dedup-window. Feature-gated.
 #[cfg(feature = "experimental-cold-start")]
 pub mod control_id_gate;
+pub mod counter_store;
 pub mod demux;
 pub mod deprecated;
 pub mod ed25519_strict;
@@ -62,6 +63,7 @@ pub use control_id_gate::{
     MAX_CONTROL_ID_ISSUE_RATE_PER_DIRECTION, MAX_CONTROL_REORDER_ALLOWANCE,
     MAX_RETRY_REORDER_HORIZON_S,
 };
+pub use counter_store::{CounterStore, CounterStoreError};
 pub use demux::{HandleClass, HandleRouter};
 pub use epoch_machine::{DhEpochMachine, EpochAction, RecvEpoch0, Role, GRACE_MIN_PACKETS};
 pub use error::{PnReject, WireError};
