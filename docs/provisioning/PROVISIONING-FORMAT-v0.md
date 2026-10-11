@@ -56,7 +56,7 @@ kama-provision --help
 
 | Argüman | Kural |
 |---|---|
-| `--out <dir>` | Zorunlu. Dizin **yoksa** oluşturulur (Unix: `0700`; üst dizin var olmalı). **Varsa boş** bir dizin olmalıdır; dolu dizin reddedilir (önceki bir provisioning'in üstüne yazılmaz, iki kimlik kümesi karışmaz). |
+| `--out <dir>` | Zorunlu. Dizin **yoksa** oluşturulur (Unix: `0700`; üst dizin var olmalı). **Varsa boş** bir dizin olmalıdır; dolu dizin ve sembolik bağ reddedilir (önceki bir provisioning'in üstüne yazılmaz, iki kimlik kümesi karışmaz). |
 | `--devices` | Zorunlu. Virgülle ayrılmış **2–64** cihaz adı; ad `[a-z0-9][a-z0-9_-]{0,31}`; tekrar eden ad reddedilir. |
 | `--hub <host:port>` | İsteğe bağlı. `host` boş olamaz ve boşluk içeremez, `port` 1–65535. Hub anahtarı CLI'da yoktur (§4.7). |
 | `--direct` | İsteğe bağlı. `ad=ip:port` çiftleri (direct-mode). `ad` `--devices`'ta olmalı ve bir kez geçmeli; adres IP sabiti olmalı (`127.0.0.1:47001`, `[::1]:47001`; ana makine adı kabul edilmez), `port` 1–65535. |
@@ -74,11 +74,12 @@ ayrıştırılır (clap yok, D11); `--out` UTF-8 olmayan bir yol olabilir.
 4. Bir dosya yazılamazsa bu koşunun oluşturduğu bütün dosyalar (ve dizini bu koşu oluşturduysa dizin)
    silinir; yarım bir anahtar kümesi bırakılmaz.
 5. Windows ve diğer Unix dışı platformlarda izinler uygulanmaz; CLI standart hataya uyarı basar.
-6. Standart çıktıya yalnız yazılan dosyaların yolları basılır; **hiçbir anahtar, `dest_hash` ya da
-   sertifika basılmaz**.
+6. Standart çıktıya yalnız yazılan dosyaların yolları ve D9 hatırlatması basılır; **hiçbir anahtar,
+   `dest_hash` ya da sertifika basılmaz**.
 
-**Çıkış kodu:** `0` başarı · `1` çalışma hatası (G/Ç, entropi, saat, öz-denetim) · `2` kullanım hatası
-(hiçbir dosya yazılmaz).
+**Çıkış kodu:** `0` başarı · `1` çalışma hatası (dolu çıktı dizini, G/Ç, entropi, saat, öz-denetim) ·
+`2` kullanım hatası. `2`'de ve `1`'in G/Ç dışı nedenlerinde hiçbir dosya yazılmaz; G/Ç hatasında bu
+koşunun yazdıkları silinir (madde 4).
 
 ## 3. Dosyalar
 
