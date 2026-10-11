@@ -24,6 +24,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod clock;
 pub mod codec;
 pub mod file_transfer;
 pub mod messaging;

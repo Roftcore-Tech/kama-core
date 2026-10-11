@@ -1,35 +1,60 @@
-//! B2.4 — PTT yaşam döngüsü (`kama_app::ptt`) uçtan uca.
+//! B2.4 / K4G-08 — PTT yaşam döngüsü (`kama_app::ptt`) uçtan uca.
 //!
-//! Beklenen davranışın kaynağı: AMP §3 (`PTT_OPEN` / `PTT_CLOSE` / `MEDIA_BUNDLE`; iş emrindeki
-//! `PTT_START` / `PTT_END` bunlardır), sahip kararları S7 (`PTT_OPEN` öncesi `MEDIA_BUNDLE`
-//! düşer), S8 (vektörsüz alıcı kararı fail-closed DROP: olay yok, panik yok), S9 (PTT sesi
-//! `MEDIA_BUNDLE` BestEffort; codec / `bundle_ms` farkı DROP), S1 K7 ve §4 (supersession,
-//! sıralama).
+//! Beklenen davranışın kaynağı: AMP §3 (`PTT_OPEN` / `PTT_CLOSE` / `MEDIA_BUNDLE`; K4G-08 yaması
+//! 2026-10-12: PTT-R0…PTT-R5), plan D5 (aktif akışın `PTT_OPEN`'ı her yeni oturumda bir kez aynı
+//! `stream_id` ile; `stream_id` kalıcı) ve D7 ek (PTT kayıtlarının üçü de `Reliable`), sahip
+//! kararları S7 (`PTT_OPEN` öncesi `MEDIA_BUNDLE` düşer), S8 (vektörsüz alıcı kararı fail-closed
+//! DROP: olay yok, panik yok), S9 (codec / `bundle_ms` farkı DROP; S9'un "`MEDIA_BUNDLE`
+//! `BestEffort`" kararı K4G-08 ile kalktı), S1 K2/K7 ve §4 (idempotent `connect`, supersession,
+//! sıralama). İş emrindeki `PTT_START` / `PTT_END` AMP'nin `PTT_OPEN` / `PTT_CLOSE`'udur.
 //!
 //! Düzenek `tests/text_receipt.rs`'teki iki uçlu çiftin (`Link`) kırpılmış KOPYASIDIR: bir uçtan
-//! gönderilen birim karşı ucun teslim kuyruğuna düşer; oturum kurma, supersession, oturum sonu ve
-//! ham kayıt enjeksiyonu testin elindedir. Ek olarak her uç, Transport'un KABUL ettiği
-//! gönderimlerin tipini, `DeliveryPolicy`'sini ve `CompressionPolicy`'sini kaydeder (S9
-//! denetimi). Ortak sahte (`tests/common/mock_transport.rs`) politika kaydetmez ve S1 sözleşme
-//! süitiyle paylaşıldığı için değiştirilmedi.
+//! gönderilen birim karşı ucun teslim kuyruğuna düşer; oturum kurma, supersession, oturum sonu,
+//! çökme + yeniden bağlanma, yoldaki birimi geciktirme ya da kaybettirme ve ham kayıt enjeksiyonu
+//! testin elindedir. Ek olarak her uç, Transport'un KABUL ettiği gönderimlerin tutamacını, tipini,
+//! `DeliveryPolicy`'sini ve `CompressionPolicy`'sini kaydeder (PTT-R0 ve "oturum başına bir yeniden
+//! `PTT_OPEN`" denetimi). Zaman, iki ucun paylaştığı elle ilerletilen bir saattir (PTT-R4; gerçek
+//! uyku yok). Eşler arası `stream_id` benzersizliği ortak yansıtıcı sahteyle
+//! (`tests/common/mock_transport.rs`) sınanır; o sahte politika kaydetmez ve S1 sözleşme süitiyle
+//! paylaşıldığı için değiştirilmedi.
+//!
+//! # Testlerin `0904f723`'teki (K4G-08 öncesi main) durumu — üç sınıf
+//!
+//! Düzenek `Ptt::new(saat)` ve depo-bağlı `stream_id` kullandığı için dosya eski kodda DERLENMEZ.
+//! K4G-08'in eklediği ya da anlamını değiştirdiği her testin belgesi, test MANTIĞININ eski koda göre
+//! sınıfını yazar:
+//!
+//! * **KIRMIZI (uyarlansa da)** — eski API'ye uyarlanınca da bir doğrulama düşer;
+//! * **UYARLANAMAZ** — sınadığı yüzey eski kodda yok (ör. `PttError::Store`, `ptt_orphan_bundles`,
+//!   `PTT_STREAM_IDLE_TTL`);
+//! * **AYNI DAVRANIŞ** — eski kodda da geçerdi; regresyon kilidi.
+
+mod common;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::iter;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
+use common::mock_transport::MockTransport;
+use kama_app::clock::MonotonicClock;
 use kama_app::codec::limits::{APP_RECORD_HEADER_BYTES, MEDIA_BUNDLE_PREFIX_BYTES};
 use kama_app::codec::{decode, encode, AmpLimits, AppMessage, MsgType, PttCodec};
-use kama_app::messaging::{Messenger, MessengerEvent};
+use kama_app::messaging::{Messenger, MessengerEvent, MsgId};
 use kama_app::ptt::{
     max_bundle_payload_bytes, Ptt, PttError, PttEvent, PttStats, StreamId, FIRST_STREAM_ID,
+    PTT_MAX_ACTIVE_STREAMS, PTT_STREAM_IDLE_TTL,
 };
-use kama_app::store::MemoryAppStore;
+use kama_app::store::{
+    AppStore, AppStoreError, CounterKind, DedupWindow, MemoryAppStore, OutboxUnit,
+};
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
-    CompressionPolicy, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy, KamaTransport,
-    PreparedUnit, SessionEvent, TransportCapabilities, TransportError,
+    CompressionPolicy, ConnectPhase, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy,
+    KamaTransport, PreparedUnit, SessionEvent, TransportCapabilities, TransportError,
 };
 
 /// Test parametresi (normatif değil): codec vektörlerinin üretildiği değerle aynı.
@@ -44,6 +69,8 @@ const LINK_EVENT_CAP: usize = 16;
 const LINK_LOG_CAP: usize = 256;
 /// `drain` döngüsünün tavanı.
 const DRAIN_CAP: usize = 1024;
+/// "Yeniden yoklansa da" tur sayısı.
+const IDLE_ROUNDS: usize = 8;
 /// Testlerin demet süresi (ms; normatif değil — `bundle_ms` media ekibinindir).
 const TEST_BUNDLE_MS: u8 = 20;
 /// Uyuşmazlık vakalarındaki ikinci demet süresi (ms).
@@ -52,9 +79,12 @@ const OTHER_BUNDLE_MS: u8 = 40;
 const TEST_SPURT_BUNDLES: u8 = 3;
 /// Test ses çerçevesinin boyu (bayt; içerik opak).
 const TEST_FRAME_BYTES: usize = 3;
+/// PTT-R4 sınırının bir adım altı.
+const TTL_MARGIN: Duration = Duration::from_secs(1);
 
 const ALICE: PeerRef = PeerRef::from_dest_hash([0xA1; 32]);
 const BOB: PeerRef = PeerRef::from_dest_hash([0xB0; 32]);
+const CAROL: PeerRef = PeerRef::from_dest_hash([0xC0; 32]);
 
 fn caps() -> TransportCapabilities {
     TransportCapabilities {
@@ -124,6 +154,90 @@ fn session(event: SessionEvent) -> PttEvent {
     PttEvent::Messenger(MessengerEvent::Session(event))
 }
 
+/// Taze bellek içi depo — kalıcı durumu olmayan bir cihaz.
+fn fresh_store() -> Arc<dyn AppStore> {
+    Arc::new(MemoryAppStore::new())
+}
+
+/// `ptt.poll` `None` verene kadar olayları toplar.
+fn drain_events<T: KamaTransport>(ptt: &mut Ptt, messenger: &mut Messenger<T>) -> Vec<PttEvent> {
+    let mut events = Vec::new();
+    while let Some(event) = ptt.poll(messenger) {
+        assert!(events.len() < DRAIN_CAP, "olay akışı bitmiyor");
+        events.push(event);
+    }
+    events
+}
+
+// ── saat ve depo ─────────────────────────────────────────────────────────────────────────────
+
+/// Elle ilerletilen saat: kopyalar AYNI zamanı paylaşır (test bir kopyayı tutar, motorlar
+/// diğerlerini); zaman yalnız ileri gider (u64 nanosaniyede doyar).
+#[derive(Clone, Default)]
+struct ManualClock {
+    nanos: Arc<AtomicU64>,
+}
+
+impl ManualClock {
+    fn advance(&self, by: Duration) {
+        let step = u64::try_from(by.as_nanos()).unwrap_or(u64::MAX);
+        let advanced = self
+            .nanos
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |now| {
+                Some(now.saturating_add(step))
+            });
+        assert!(advanced.is_ok(), "kapanış her zaman Some döner");
+    }
+}
+
+impl MonotonicClock for ManualClock {
+    fn now(&self) -> Duration {
+        Duration::from_nanos(self.nanos.load(Ordering::SeqCst))
+    }
+}
+
+/// Arıza enjekte edilebilen depo: anahtarlar kapalıyken her işlem bellek içi depoya gider.
+/// `fail_reserve` açıkken `reserve_next` `Persist`, `exhaust_reserve` açıkken `Exhausted` döner ve
+/// hiçbir şey ayırmaz.
+#[derive(Default)]
+struct FlakyStore {
+    inner: MemoryAppStore,
+    fail_reserve: AtomicBool,
+    exhaust_reserve: AtomicBool,
+}
+
+impl AppStore for FlakyStore {
+    fn reserve_next(&self, peer: PeerRef, kind: CounterKind) -> Result<u64, AppStoreError> {
+        if self.fail_reserve.load(Ordering::SeqCst) {
+            return Err(AppStoreError::Persist);
+        }
+        if self.exhaust_reserve.load(Ordering::SeqCst) {
+            return Err(AppStoreError::Exhausted);
+        }
+        self.inner.reserve_next(peer, kind)
+    }
+
+    fn dedup_load(&self, peer: PeerRef) -> Result<DedupWindow, AppStoreError> {
+        self.inner.dedup_load(peer)
+    }
+
+    fn dedup_save(&self, peer: PeerRef, window: &DedupWindow) -> Result<(), AppStoreError> {
+        self.inner.dedup_save(peer, window)
+    }
+
+    fn outbox_put(&self, peer: PeerRef, unit: &OutboxUnit) -> Result<(), AppStoreError> {
+        self.inner.outbox_put(peer, unit)
+    }
+
+    fn outbox_remove(&self, peer: PeerRef, msg_id: MsgId) -> Result<bool, AppStoreError> {
+        self.inner.outbox_remove(peer, msg_id)
+    }
+
+    fn outbox_list(&self, peer: PeerRef) -> Result<Vec<OutboxUnit>, AppStoreError> {
+        self.inner.outbox_list(peer)
+    }
+}
+
 // ── iki uçlu çift (`tests/text_receipt.rs`'ten kırpılmış kopya + gönderim kaydı) ─────────────
 
 #[derive(Debug, Clone, Copy)]
@@ -140,9 +254,19 @@ impl Side {
             Self::Bob => ALICE,
         }
     }
+
+    /// Karşı uç.
+    const fn other(self) -> Self {
+        match self {
+            Self::Alice => Self::Bob,
+            Self::Bob => Self::Alice,
+        }
+    }
 }
 
-/// Transport'un kabul ettiği bir gönderim: kaydın tipi ve beyan edilen iki politika.
+/// Transport'un kabul ettiği bir gönderim: tutamaç, kaydın tipi ve beyan edilen iki politika.
+type Accepted = (SessionHandle, MsgType, DeliveryPolicy, CompressionPolicy);
+/// [`Accepted`]'in tutamaçsız hâli.
 type Sent = (MsgType, DeliveryPolicy, CompressionPolicy);
 
 /// Bir ucun Transport durumu.
@@ -158,7 +282,7 @@ struct Endpoint {
     /// `SessionSuperseded` (S1 F0.2(i)); `Closed` okununca `UnknownSession`.
     superseded: Vec<SessionHandle>,
     /// Bu uçtan KABUL edilen gönderimler, sırasıyla (≤ `LINK_LOG_CAP`).
-    sent: Vec<Sent>,
+    sent: Vec<Accepted>,
 }
 
 impl Endpoint {
@@ -230,12 +354,81 @@ impl Link {
         endpoint.push_event(SessionEvent::Closed(handle, reason));
     }
 
+    /// `side` ucunun süreci öldü: Transport durumu (oturum, kuyruklar, olaylar, kayıt) yok olur.
+    /// Karşı uç bunu bilmez; eski oturumu hâlâ aktiftir.
+    fn crash(&mut self, side: Side) {
+        *self.endpoint(side) = Endpoint::default();
+    }
+
+    /// Çöküp yeniden başlayan `side` ucu eşle yeni oturum kurar: o uca yalnız `Ready(h')`; karşı
+    /// uca eş-yeniden-başlatma supersession'ı (identity §16): `Ready(h')` sonra
+    /// `Closed(h, Superseded)`.
+    fn reconnect_after_crash(&mut self, side: Side) -> SessionHandle {
+        let handle = self.fresh_handle();
+        let restarted = self.endpoint(side);
+        assert!(
+            restarted.active.is_none(),
+            "yeniden başlayan uçta oturum olamaz"
+        );
+        restarted.active = Some(handle);
+        restarted.push_event(SessionEvent::Ready(handle, side.remote()));
+        let peer_side = side.other();
+        let peer = self.endpoint(peer_side);
+        let old = peer
+            .active
+            .replace(handle)
+            .expect("karşı uçta eski oturum yok");
+        peer.superseded.push(old);
+        peer.push_event(SessionEvent::Ready(handle, peer_side.remote()));
+        peer.push_event(SessionEvent::Closed(old, CloseReason::Superseded));
+        handle
+    }
+
     /// `to` ucuna, aktif oturumu üzerinden eşten gelmiş gibi ham kayıt koyar.
     fn inject(&mut self, to: Side, unit: Vec<u8>) {
         let endpoint = self.endpoint(to);
         let session = endpoint.active.expect("inject: aktif oturum yok");
         assert!(endpoint.inbox.len() < LINK_QUEUE_CAP, "inject: kuyruk dolu");
         endpoint.inbox.push_back(Delivered { session, unit });
+    }
+
+    /// `to` ucunun teslim kuyruğunu tavanına dek boş kayıtla doldurur (codec'te düşerler, olay
+    /// yok): eşin o uca sonraki gönderimi `Backpressure` alır.
+    fn fill_inbox(&mut self, to: Side) {
+        let endpoint = self.endpoint(to);
+        let session = endpoint.active.expect("fill_inbox: aktif oturum yok");
+        while endpoint.inbox.len() < LINK_QUEUE_CAP {
+            endpoint.inbox.push_back(Delivered {
+                session,
+                unit: Vec::new(),
+            });
+        }
+    }
+
+    /// `to` ucunun teslim kuyruğundaki birimleri yoldan alır — motora verilmemiştir, tutamaçları
+    /// korunur: test onları kaybettirebilir ya da sonra [`Link::deliver_late`] ile verebilir.
+    fn take_inbox(&mut self, to: Side) -> Vec<Delivered> {
+        self.endpoint(to).inbox.drain(..).collect()
+    }
+
+    /// Yolda tutulan birimleri `to` ucunun teslim kuyruğunun SONUNA koyar: eski oturumun yalnız-alım
+    /// drain'inden geç gelen birimlerin karşılığı (S1 K7).
+    fn deliver_late(&mut self, to: Side, units: Vec<Delivered>) {
+        let endpoint = self.endpoint(to);
+        assert!(
+            endpoint.inbox.len() + units.len() <= LINK_QUEUE_CAP,
+            "deliver_late: kuyruk tavanı"
+        );
+        endpoint.inbox.extend(units);
+    }
+
+    /// `side` ucuna sıralanmış, henüz okunmamış oturum olaylarını atar (olay kuyruğu taşınca düşen
+    /// olayların karşılığı; ortak sahte de böyle düşürür). Supersede edilmiş tutamaçların kaydı da
+    /// silinir: onların `Closed`'ı artık hiç okunmayacaktır.
+    fn drop_events(&mut self, side: Side) {
+        let endpoint = self.endpoint(side);
+        endpoint.events.clear();
+        endpoint.superseded.clear();
     }
 }
 
@@ -293,7 +486,7 @@ impl KamaTransport for End {
         );
         let message = decode(&unit.bytes, &limits()).expect("motor geçerli kayıt üretir");
         me.sent
-            .push((message.msg_type(), policy, unit.compression_policy));
+            .push((session, message.msg_type(), policy, unit.compression_policy));
         remote.inbox.push_back(Delivered {
             session,
             unit: unit.bytes,
@@ -332,23 +525,27 @@ impl KamaTransport for End {
     fn cancel(&mut self, _ticket: ConnectTicket) {}
 }
 
-/// Bir uç: Messenger + PTT motoru. Olaylar yalnız PTT motorundan okunur (Messenger'ın tek
-/// okuyucusu).
+/// Bir uç: Messenger + PTT motoru, ikisi AYNI depoyla (stream_id depodan). Olaylar yalnız PTT
+/// motorundan okunur (Messenger'ın tek okuyucusu).
 struct Node {
     messenger: Messenger<End>,
     ptt: Ptt,
 }
 
 impl Node {
-    fn new(link: &Rc<RefCell<Link>>, side: Side) -> Self {
+    fn new(
+        link: &Rc<RefCell<Link>>,
+        side: Side,
+        store: Arc<dyn AppStore>,
+        clock: &ManualClock,
+    ) -> Self {
         let end = End {
             link: Rc::clone(link),
             side,
         };
         Self {
-            messenger: Messenger::with_store(end, Arc::new(MemoryAppStore::new()))
-                .expect("limitler geçerli"),
-            ptt: Ptt::new(),
+            messenger: Messenger::with_store(end, store).expect("limitler geçerli"),
+            ptt: Ptt::new(Arc::new(clock.clone())),
         }
     }
 
@@ -372,33 +569,46 @@ impl Node {
 
     /// `poll` `None` verene kadar olayları toplar.
     fn drain(&mut self) -> Vec<PttEvent> {
-        let mut events = Vec::new();
-        while let Some(event) = self.ptt.poll(&mut self.messenger) {
-            assert!(events.len() < DRAIN_CAP, "olay akışı bitmiyor");
-            events.push(event);
-        }
-        events
+        drain_events(&mut self.ptt, &mut self.messenger)
     }
 }
 
-/// İki uçlu düzenek: Alice'in ve Bob'un uçları + testin `Link` denetimi.
+/// İki uçlu düzenek: Alice'in ve Bob'un uçları, ortak saat + testin `Link` denetimi.
 struct Duo {
     link: Rc<RefCell<Link>>,
+    clock: ManualClock,
     alice: Node,
     bob: Node,
 }
 
 impl Duo {
     fn unconnected() -> Self {
+        Self::unconnected_with(fresh_store())
+    }
+
+    /// Alice'in motorları `alice_store` ile (yeniden başlatma testleri aynı depoyu yeniden verir),
+    /// Bob'unkiler taze depoyla.
+    fn unconnected_with(alice_store: Arc<dyn AppStore>) -> Self {
         let link = Rc::new(RefCell::new(Link::default()));
-        let alice = Node::new(&link, Side::Alice);
-        let bob = Node::new(&link, Side::Bob);
-        Self { link, alice, bob }
+        let clock = ManualClock::default();
+        let alice = Node::new(&link, Side::Alice, alice_store, &clock);
+        let bob = Node::new(&link, Side::Bob, fresh_store(), &clock);
+        Self {
+            link,
+            clock,
+            alice,
+            bob,
+        }
     }
 
     /// Oturum kurulmuş, iki tarafın `Ready` olayı okunmuş düzenek.
     fn connected() -> (Self, SessionHandle) {
-        let mut duo = Self::unconnected();
+        Self::connected_with(fresh_store())
+    }
+
+    /// [`Duo::connected`]; Alice'in deposu verilir.
+    fn connected_with(alice_store: Arc<dyn AppStore>) -> (Self, SessionHandle) {
+        let mut duo = Self::unconnected_with(alice_store);
         let handle = duo.link.borrow_mut().establish();
         assert_eq!(
             duo.alice.drain(),
@@ -411,17 +621,58 @@ impl Duo {
         (duo, handle)
     }
 
+    /// Alice'in süreci ölür ve `store` ile yeniden başlar: eski motorlar ve Transport durumu yok
+    /// olur; Bob'un ucu bunu bilmez. Yeni oturumu test kurar ([`Link::reconnect_after_crash`]).
+    fn restart_alice(&mut self, store: Arc<dyn AppStore>) {
+        self.link.borrow_mut().crash(Side::Alice);
+        self.alice = Node::new(&self.link, Side::Alice, store, &self.clock);
+    }
+
     fn inject(&self, to: Side, unit: Vec<u8>) {
         self.link.borrow_mut().inject(to, unit);
     }
 
+    fn fill_inbox(&self, to: Side) {
+        self.link.borrow_mut().fill_inbox(to);
+    }
+
+    fn take_inbox(&self, to: Side) -> Vec<Delivered> {
+        self.link.borrow_mut().take_inbox(to)
+    }
+
+    fn deliver_late(&self, to: Side, units: Vec<Delivered>) {
+        self.link.borrow_mut().deliver_late(to, units);
+    }
+
+    fn drop_events(&self, side: Side) {
+        self.link.borrow_mut().drop_events(side);
+    }
+
     /// `side` ucundan Transport'un kabul ettiği gönderimler, sırasıyla.
     fn sent(&self, side: Side) -> Vec<Sent> {
-        self.link.borrow_mut().endpoint(side).sent.clone()
+        self.link
+            .borrow_mut()
+            .endpoint(side)
+            .sent
+            .iter()
+            .map(|&(_, msg_type, policy, compression)| (msg_type, policy, compression))
+            .collect()
+    }
+
+    /// `side` ucundan `handle` tutamacına kabul edilen kayıtların tipleri, sırasıyla.
+    fn sent_on(&self, side: Side, handle: SessionHandle) -> Vec<MsgType> {
+        self.link
+            .borrow_mut()
+            .endpoint(side)
+            .sent
+            .iter()
+            .filter(|accepted| accepted.0 == handle)
+            .map(|accepted| accepted.1)
+            .collect()
     }
 }
 
-// ── testler ──────────────────────────────────────────────────────────────────────────────────
+// ── yaşam döngüsü ve gönderen ────────────────────────────────────────────────────────────────
 
 #[test]
 fn open_bundles_close_round_trip_in_order() {
@@ -445,7 +696,7 @@ fn open_bundles_close_round_trip_in_order() {
             .chain(iter::once(ended(ALICE, stream)))
             .collect();
     assert_eq!(duo.bob.drain(), expected);
-    assert_eq!(duo.bob.ptt.incoming_stream(ALICE), None);
+    assert!(duo.bob.ptt.incoming_streams(ALICE).is_empty());
     assert_eq!(
         duo.bob.ptt.stats(),
         PttStats::default(),
@@ -453,8 +704,7 @@ fn open_bundles_close_round_trip_in_order() {
     );
     // PTT kayıtları alındı üretmez: gönderene hiçbir şey dönmez.
     assert!(duo.alice.drain().is_empty());
-    // Sıradaki basış yeni `stream_id` alır (gönderen başına monoton) ve kendi parametreleriyle
-    // açılır.
+    // Sıradaki basış eşin kalıcı sayacından yeni `stream_id` alır ve kendi parametreleriyle açılır.
     let next = duo
         .alice
         .open(BOB, PttCodec::Lyra, OTHER_BUNDLE_MS)
@@ -466,8 +716,12 @@ fn open_bundles_close_round_trip_in_order() {
     );
 }
 
+/// PTT-R0 (plan D7 ek, K4G-08 §0): `PTT_OPEN`, `MEDIA_BUNDLE` ve `PTT_CLOSE` Transport'a
+/// `Reliable` verilir; hiçbir PTT kaydı sıkıştırılmaz.
+///
+/// `0904f723`'te KIRMIZI (uyarlansa da): `MEDIA_BUNDLE` `BestEffort` gidiyordu (`ptt.rs:433`).
 #[test]
-fn lifecycle_records_are_reliable_and_bundles_best_effort() {
+fn r0_all_ptt_records_are_reliable() {
     let (mut duo, _) = Duo::connected();
     let stream = duo
         .alice
@@ -479,16 +733,13 @@ fn lifecycle_records_are_reliable_and_bundles_best_effort() {
             .expect("gönderilir");
     }
     duo.alice.close(stream).expect("kapanır");
-    // S9: ses `BestEffort`; yaşam döngüsü kaydı `Reliable`. Hiçbir PTT kaydı sıkıştırılmaz.
-    let lifecycle = |msg_type| (msg_type, DeliveryPolicy::Reliable, CompressionPolicy::Never);
-    let bundle = (
-        MsgType::MediaBundle,
-        DeliveryPolicy::BestEffort,
-        CompressionPolicy::Never,
-    );
-    let expected: Vec<Sent> = iter::once(lifecycle(MsgType::PttOpen))
-        .chain(iter::repeat_n(bundle, usize::from(TEST_SPURT_BUNDLES)))
-        .chain(iter::once(lifecycle(MsgType::PttClose)))
+    let reliable = |msg_type| (msg_type, DeliveryPolicy::Reliable, CompressionPolicy::Never);
+    let expected: Vec<Sent> = iter::once(reliable(MsgType::PttOpen))
+        .chain(iter::repeat_n(
+            reliable(MsgType::MediaBundle),
+            usize::from(TEST_SPURT_BUNDLES),
+        ))
+        .chain(iter::once(reliable(MsgType::PttClose)))
         .collect();
     assert_eq!(duo.sent(Side::Alice), expected);
 }
@@ -549,8 +800,8 @@ fn bundle_with_another_bundle_ms_is_dropped() {
 #[test]
 fn bundle_before_open_is_dropped() {
     let (mut duo, _) = Duo::connected();
-    // `BestEffort` demet `Reliable` `PTT_OPEN`'ı geçebilir (S1 §4): akışı açılmamış demet düşer
-    // (S7).
+    // Akışı açılmamış demet düşer (S7, PTT-R3) — ör. `PTT_OPEN`'ı eski oturumla kaybolmuş bir
+    // akışın demeti. Aynı oturumda Reliable sıra demetin kendi `PTT_OPEN`'ını geçmesine izin vermez.
     duo.inject(
         Side::Bob,
         bundle_record(
@@ -561,7 +812,7 @@ fn bundle_before_open_is_dropped() {
         ),
     );
     assert!(duo.bob.drain().is_empty());
-    assert_eq!(duo.bob.ptt.stats().bundles_without_stream, 1);
+    assert_eq!(duo.bob.ptt.stats().ptt_orphan_bundles, 1);
     let stream = duo
         .alice
         .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
@@ -588,7 +839,8 @@ fn bundle_after_close_or_from_an_old_stream_is_dropped() {
         .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
         .expect("açılır");
     duo.alice.close(stream).expect("kapanır");
-    // `BestEffort` demet `PTT_CLOSE`'tan sonra varabilir (S1 §4): akış bitmiştir, demet düşer.
+    // Akışın `PTT_CLOSE`'undan sonra işlenen demet (aynı oturumda Reliable sıra bunu engeller; eski
+    // bir oturumun drain'inden gelebilir) akışsızdır ve düşer (PTT-R3).
     duo.inject(
         Side::Bob,
         bundle_record(stream, PttCodec::Opus.code(), TEST_BUNDLE_MS, &frame(1)),
@@ -600,7 +852,7 @@ fn bundle_after_close_or_from_an_old_stream_is_dropped() {
             ended(ALICE, stream),
         ]
     );
-    assert_eq!(duo.bob.ptt.stats().bundles_without_stream, 1);
+    assert_eq!(duo.bob.ptt.stats().ptt_orphan_bundles, 1);
     // Gönderende kapanmış akış bilinmez; hiçbir şey gönderilmez.
     assert_eq!(
         duo.alice.send_bundle(stream, &frame(2)),
@@ -612,7 +864,7 @@ fn bundle_after_close_or_from_an_old_stream_is_dropped() {
         2,
         "yalnız PTT_OPEN ve PTT_CLOSE"
     );
-    // Yeni akış etkinken eski akışın geç demeti bilinmeyen akıştır.
+    // Yeni akış etkinken kapanmış eski akışın geç demeti de bilinmeyen akıştır.
     let next = duo
         .alice
         .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
@@ -625,90 +877,7 @@ fn bundle_after_close_or_from_an_old_stream_is_dropped() {
         duo.bob.drain(),
         vec![started(ALICE, next, PttCodec::Opus, TEST_BUNDLE_MS)]
     );
-    assert_eq!(duo.bob.ptt.stats().bundles_unknown_stream, 1);
-}
-
-#[test]
-fn close_for_an_unknown_stream_is_dropped() {
-    let (mut duo, _) = Duo::connected();
-    duo.inject(Side::Bob, close_record(FIRST_STREAM_ID));
-    assert!(duo.bob.drain().is_empty());
-    let stream = duo
-        .alice
-        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
-        .expect("açılır");
-    // Etkin akış varken başka `stream_id`'nin `PTT_CLOSE`'u akışı bitirmez.
-    duo.inject(Side::Bob, close_record(stream + 1));
-    duo.alice
-        .send_bundle(stream, &frame(1))
-        .expect("gönderilir");
-    assert_eq!(
-        duo.bob.drain(),
-        vec![
-            started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS),
-            audio(ALICE, stream, &frame(1)),
-        ]
-    );
-    assert_eq!(duo.bob.ptt.stats().unknown_closes, 2);
-    assert_eq!(duo.bob.ptt.incoming_stream(ALICE), Some(stream));
-}
-
-#[test]
-fn second_open_ends_the_active_stream_and_starts_the_new_one() {
-    let (mut duo, _) = Duo::connected();
-    let first = duo
-        .alice
-        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
-        .expect("açılır");
-    // Gönderen: eş başına tek giden akış.
-    assert_eq!(
-        duo.alice.open(BOB, PttCodec::Lyra, OTHER_BUNDLE_MS),
-        Err(PttError::StreamActive { stream_id: first })
-    );
-    assert_eq!(
-        duo.bob.drain(),
-        vec![started(ALICE, first, PttCodec::Opus, TEST_BUNDLE_MS)]
-    );
-    // Alıcı: `PTT_CLOSE`'u gelmemiş akış varken başka `stream_id`'li `PTT_OPEN` (kapanışı
-    // kaybolmuş ya da yeniden başlamış gönderici) — en yeni kazanır: önce eskinin sonu.
-    let second = first + 1;
-    duo.inject(
-        Side::Bob,
-        open_record(second, PttCodec::Lyra, OTHER_BUNDLE_MS),
-    );
-    assert_eq!(
-        duo.bob.drain(),
-        vec![
-            ended(ALICE, first),
-            started(ALICE, second, PttCodec::Lyra, OTHER_BUNDLE_MS),
-        ]
-    );
-    // Eski akışın demeti artık bilinmeyen akıştır; yenisininki iletilir.
-    duo.inject(
-        Side::Bob,
-        bundle_record(first, PttCodec::Opus.code(), TEST_BUNDLE_MS, &frame(1)),
-    );
-    duo.inject(
-        Side::Bob,
-        bundle_record(second, PttCodec::Lyra.code(), OTHER_BUNDLE_MS, &frame(2)),
-    );
-    assert_eq!(duo.bob.drain(), vec![audio(ALICE, second, &frame(2))]);
-    // Etkin akışın `stream_id`'siyle yeniden `PTT_OPEN` düşer — parametreleri farklı olsa da
-    // (akışın codec / bundle_ms'i ilk `PTT_OPEN`'la sabit, S9).
-    duo.inject(
-        Side::Bob,
-        open_record(second, PttCodec::Lyra, OTHER_BUNDLE_MS),
-    );
-    duo.inject(
-        Side::Bob,
-        open_record(second, PttCodec::Opus, TEST_BUNDLE_MS),
-    );
-    assert!(duo.bob.drain().is_empty());
-    let stats = duo.bob.ptt.stats();
-    assert_eq!(stats.streams_replaced, 1);
-    assert_eq!(stats.bundles_unknown_stream, 1);
-    assert_eq!(stats.duplicate_opens, 2);
-    assert_eq!(duo.bob.ptt.incoming_stream(ALICE), Some(second));
+    assert_eq!(duo.bob.ptt.stats().ptt_orphan_bundles, 2);
 }
 
 #[test]
@@ -744,55 +913,6 @@ fn oversize_payload_is_a_typed_error_at_the_sender() {
             audio(ALICE, stream, &exact),
         ]
     );
-}
-
-#[test]
-fn stream_survives_supersession() {
-    let (mut duo, old) = Duo::connected();
-    let stream = duo
-        .alice
-        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
-        .expect("açılır");
-    assert_eq!(
-        duo.bob.drain(),
-        vec![started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS)]
-    );
-    // Eski tutamaçla yolda kalan demet.
-    duo.alice
-        .send_bundle(stream, &frame(1))
-        .expect("gönderilir");
-    let new = duo.link.borrow_mut().supersede();
-    // Alice `Ready(h')`'yi okumadan: eski tutamaç supersede edilmiştir (S1 F0.2(i)); ret aynen.
-    assert_eq!(
-        duo.alice.send_bundle(stream, &frame(2)),
-        Err(PttError::Transport(TransportError::SessionSuperseded))
-    );
-    assert_eq!(
-        duo.alice.drain(),
-        vec![
-            session(SessionEvent::Ready(new, BOB)),
-            session(SessionEvent::Closed(old, CloseReason::Superseded)),
-        ]
-    );
-    // Akış eşindir: aynı `stream_id` yeni tutamaçla sürer.
-    assert_eq!(duo.alice.ptt.outgoing_stream(BOB), Some(stream));
-    duo.alice
-        .send_bundle(stream, &frame(3))
-        .expect("gönderilir");
-    duo.alice.close(stream).expect("kapanır");
-    // Bob: oturum olayları önce; supersession akışı bitirmez; eski tutamaçtan gelen demet de akışa
-    // bağlanır.
-    assert_eq!(
-        duo.bob.drain(),
-        vec![
-            session(SessionEvent::Ready(new, ALICE)),
-            session(SessionEvent::Closed(old, CloseReason::Superseded)),
-            audio(ALICE, stream, &frame(1)),
-            audio(ALICE, stream, &frame(3)),
-            ended(ALICE, stream),
-        ]
-    );
-    assert_eq!(duo.bob.ptt.stats(), PttStats::default());
 }
 
 #[test]
@@ -835,15 +955,21 @@ fn session_end_ends_the_incoming_stream() {
         duo.alice.send_bundle(next, &frame(2)).expect("gönderilir");
         assert!(duo.bob.drain().is_empty(), "{reason:?}");
         let stats = duo.bob.ptt.stats();
-        assert_eq!(stats.bundles_without_stream, 2);
+        assert_eq!(stats.ptt_orphan_bundles, 2);
         assert_eq!(stats.unknown_closes, 1);
         assert_eq!(stats.opens_without_session, 1);
-        assert_eq!(duo.bob.ptt.incoming_stream(ALICE), None);
+        assert!(duo.bob.ptt.incoming_streams(ALICE).is_empty());
     }
 }
 
+/// Gönderen hataları tiplidir ve reddedilen `open` akış açmaz. `NoSession` depoya dokunmadan döner;
+/// Transport reddinde (`Backpressure`) ayrılmış `stream_id` YANAR (boşluk; modül belgesi —
+/// alıcı ardışıklık zorlamaz).
+///
+/// `0904f723`'te KIRMIZI (uyarlansa da): reddedilen `open` değer tüketmiyordu (`stream ==
+/// FIRST_STREAM_ID`); K4G-08 kalıcı ayırmada hata yolunun değer yaktığını seçti.
 #[test]
-fn sender_errors_are_typed_and_a_refused_open_changes_nothing() {
+fn sender_errors_are_typed_and_a_refused_open_opens_nothing() {
     let mut duo = Duo::unconnected();
     assert_eq!(
         duo.alice.open(BOB, PttCodec::Opus, TEST_BUNDLE_MS),
@@ -866,10 +992,8 @@ fn sender_errors_are_typed_and_a_refused_open_changes_nothing() {
         duo.bob.drain(),
         vec![session(SessionEvent::Ready(handle, ALICE))]
     );
-    // Bob'un kuyruğu dolu: Transport'un `Backpressure`'ı aynen; akış açılmaz, `stream_id` yanmaz.
-    for _ in 0..LINK_QUEUE_CAP {
-        duo.inject(Side::Bob, Vec::new());
-    }
+    // Bob'un kuyruğu dolu: Transport'un `Backpressure`'ı aynen; akış açılmaz.
+    duo.fill_inbox(Side::Bob);
     assert_eq!(
         duo.alice.open(BOB, PttCodec::Opus, TEST_BUNDLE_MS),
         Err(PttError::Transport(TransportError::Backpressure))
@@ -882,8 +1006,9 @@ fn sender_errors_are_typed_and_a_refused_open_changes_nothing() {
         .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
         .expect("yer açıldı");
     assert_eq!(
-        stream, FIRST_STREAM_ID,
-        "reddedilen PTT_OPEN stream_id tüketmedi"
+        stream,
+        FIRST_STREAM_ID + 1,
+        "NoSession değer ayırmadı; reddedilen PTT_OPEN'ın ayırdığı değer yandı"
     );
     // Eş başına tek giden akış.
     assert_eq!(
@@ -900,6 +1025,12 @@ fn sender_errors_are_typed_and_a_refused_open_changes_nothing() {
     );
 }
 
+/// `close` giden akışı HER DURUMDA kapatır ve `PTT_CLOSE` yeniden denenmez (S1 K8). Bob'da
+/// `PTT_CLOSE`'u gelmeyen akış, Alice'in sıradaki basışıyla BİTMEZ (en yeni kazanır kalktı): yeni
+/// akışla birlikte etkin kalır (PTT-R5) ve PTT-R4 ile biter.
+///
+/// `0904f723`'te KIRMIZI (uyarlansa da): sıradaki `PTT_OPEN` eski akışı örtük bitiriyordu
+/// (`PttEnded` + `PttStarted`); PTT-R4 yoktu.
 #[test]
 fn close_always_ends_the_outgoing_stream_and_is_never_retried() {
     let (mut duo, handle) = Duo::connected();
@@ -908,10 +1039,8 @@ fn close_always_ends_the_outgoing_stream_and_is_never_retried() {
         .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
         .expect("açılır");
     // Bob'un kuyruğu `PTT_OPEN`'ın arkasından dolar.
-    for _ in 1..LINK_QUEUE_CAP {
-        duo.inject(Side::Bob, Vec::new());
-    }
-    // `BestEffort` demet de Transport'un geri basıncına tabidir; ret aynen döner.
+    duo.fill_inbox(Side::Bob);
+    // Reliable demet de Transport'un geri basıncına tabidir; ret aynen döner, motor yeniden denemez.
     assert_eq!(
         duo.alice.send_bundle(stream, &frame(0)),
         Err(PttError::Transport(TransportError::Backpressure))
@@ -931,8 +1060,8 @@ fn close_always_ends_the_outgoing_stream_and_is_never_retried() {
         duo.bob.drain(),
         vec![started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS)]
     );
-    // Motor `PTT_CLOSE`'u kendiliğinden yeniden göndermez; Alice'in sıradaki basışı eski akışı
-    // Bob'da örtük bitirir (en yeni `PTT_OPEN` kazanır).
+    // Motor `PTT_CLOSE`'u kendiliğinden yeniden göndermez. Alice'in sıradaki basışı Bob'da YENİ
+    // akıştır; eski akış onu bekleyen alıcıda yanında etkin kalır.
     let next = duo
         .alice
         .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
@@ -940,11 +1069,9 @@ fn close_always_ends_the_outgoing_stream_and_is_never_retried() {
     assert_eq!(next, stream + 1);
     assert_eq!(
         duo.bob.drain(),
-        vec![
-            ended(ALICE, stream),
-            started(ALICE, next, PttCodec::Lyra, TEST_BUNDLE_MS),
-        ]
+        vec![started(ALICE, next, PttCodec::Lyra, TEST_BUNDLE_MS)]
     );
+    assert_eq!(duo.bob.ptt.incoming_streams(ALICE), vec![stream, next]);
     let open_sent: Sent = (
         MsgType::PttOpen,
         DeliveryPolicy::Reliable,
@@ -970,6 +1097,13 @@ fn close_always_ends_the_outgoing_stream_and_is_never_retried() {
     );
     assert_eq!(duo.alice.close(next), Err(PttError::NoSession));
     assert_eq!(duo.alice.ptt.outgoing_stream(BOB), None);
+    // Bob'da `PTT_CLOSE`'u gelmeyen iki akış PTT-R4 ile, yerel olarak biter.
+    duo.clock.advance(PTT_STREAM_IDLE_TTL);
+    assert_eq!(
+        duo.bob.drain(),
+        vec![ended(ALICE, stream), ended(ALICE, next)]
+    );
+    assert_eq!(duo.bob.ptt.stats().streams_ended_by_idle, 2);
 }
 
 #[test]
@@ -1004,4 +1138,900 @@ fn non_ptt_events_pass_through_unchanged() {
         })]
     );
     assert_eq!(duo.bob.ptt.stats(), PttStats::default());
+}
+
+// ── oturum değişimi: yeniden `PTT_OPEN` (D5, K4G-08 §1) ──────────────────────────────────────
+
+/// Akış eşindir: supersession akışı bitirmez; aynı `stream_id` yeni tutamaçla sürer ve yeni oturuma
+/// önce akışın `PTT_OPEN`'ı gider (D5). Eski tutamaçla yoldaki demet de akışa bağlanır.
+///
+/// `0904f723`'te KIRMIZI (uyarlansa da): yeni oturumda `PTT_OPEN` yoktu (`sent_on(h')` = demet +
+/// kapanış); Bob'da `duplicate_opens` 0'dı.
+#[test]
+fn stream_survives_supersession() {
+    let (mut duo, old) = Duo::connected();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS)]
+    );
+    // Eski tutamaçla yolda kalan demet.
+    duo.alice
+        .send_bundle(stream, &frame(1))
+        .expect("gönderilir");
+    let new = duo.link.borrow_mut().supersede();
+    // Alice `Ready(h')`'yi okumadan: eski tutamaç supersede edilmiştir (S1 F0.2(i)); ret aynen.
+    assert_eq!(
+        duo.alice.send_bundle(stream, &frame(2)),
+        Err(PttError::Transport(TransportError::SessionSuperseded))
+    );
+    assert_eq!(
+        duo.alice.drain(),
+        vec![
+            session(SessionEvent::Ready(new, BOB)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        ]
+    );
+    // Akış eşindir: aynı `stream_id` yeni tutamaçla sürer.
+    assert_eq!(duo.alice.ptt.outgoing_stream(BOB), Some(stream));
+    duo.alice
+        .send_bundle(stream, &frame(3))
+        .expect("gönderilir");
+    duo.alice.close(stream).expect("kapanır");
+    assert_eq!(
+        duo.sent_on(Side::Alice, new),
+        vec![MsgType::PttOpen, MsgType::MediaBundle, MsgType::PttClose]
+    );
+    // Bob: oturum olayları önce; supersession akışı bitirmez; eski tutamaçtan gelen demet de akışa
+    // bağlanır; yeniden `PTT_OPEN` etkin akışın tekrarıdır (PTT-R1).
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            session(SessionEvent::Ready(new, ALICE)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+            audio(ALICE, stream, &frame(1)),
+            audio(ALICE, stream, &frame(3)),
+            ended(ALICE, stream),
+        ]
+    );
+    assert_eq!(
+        duo.bob.ptt.stats(),
+        PttStats {
+            duplicate_opens: 1,
+            ..PttStats::default()
+        }
+    );
+}
+
+/// D5 / K4G-08 §1 (olay yolu; DUR #107): asıl `PTT_OPEN` eski oturumla yolda kaybolur (S1 K7:
+/// Transport teslim edilmemiş birimi yeni oturuma taşımaz). Açık akışın `PTT_OPEN`'ı yeni oturuma
+/// AYNI `stream_id` ile, `Reliable`, TAM BİR KEZ yeniden gider — `Ready(h')` geçirilirken, o
+/// oturumdaki demetlerden önce; sonraki yoklamalar ve demetler onu yinelemez. Bob'da akış yeniden
+/// `PTT_OPEN`'la başlar, demetler yetim kalmaz.
+///
+/// `0904f723`'te KIRMIZI (uyarlansa da): yeniden `PTT_OPEN` yoktu — yeni oturuma yalnız demetler
+/// gider, Bob'da hepsi akışsız düşer (`PttStarted` / `PttAudio` yok).
+#[test]
+fn reopen_after_supersession_is_sent_exactly_once() {
+    let (mut duo, old) = Duo::connected();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(
+        duo.take_inbox(Side::Bob).len(),
+        1,
+        "PTT_OPEN yolda kayboldu"
+    );
+    let new = duo.link.borrow_mut().supersede();
+    // `Ready(h')` uygulamaya verildiğinde yeniden `PTT_OPEN` h'ye çoktan sunulmuştur.
+    assert_eq!(
+        duo.alice.ptt.poll(&mut duo.alice.messenger),
+        Some(session(SessionEvent::Ready(new, BOB)))
+    );
+    assert_eq!(
+        duo.sent_on(Side::Alice, new),
+        vec![MsgType::PttOpen],
+        "Ready(h') geçirilirken"
+    );
+    assert_eq!(
+        duo.alice.drain(),
+        vec![session(SessionEvent::Closed(old, CloseReason::Superseded))]
+    );
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice.drain().is_empty());
+    }
+    for n in 0..TEST_SPURT_BUNDLES {
+        duo.alice
+            .send_bundle(stream, &frame(n))
+            .expect("gönderilir");
+    }
+    let on_new: Vec<MsgType> = iter::once(MsgType::PttOpen)
+        .chain(iter::repeat_n(
+            MsgType::MediaBundle,
+            usize::from(TEST_SPURT_BUNDLES),
+        ))
+        .collect();
+    assert_eq!(
+        duo.sent_on(Side::Alice, new),
+        on_new,
+        "PTT_OPEN tam bir kez"
+    );
+    assert!(duo
+        .sent(Side::Alice)
+        .iter()
+        .all(|&(_, policy, _)| policy == DeliveryPolicy::Reliable));
+    let alice_stats = duo.alice.ptt.stats();
+    assert_eq!(alice_stats.opens_resent, 1);
+    assert_eq!(alice_stats.opens_resend_refused, 0);
+    let expected: Vec<PttEvent> = [
+        session(SessionEvent::Ready(new, ALICE)),
+        session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS),
+    ]
+    .into_iter()
+    .chain((0..TEST_SPURT_BUNDLES).map(|n| audio(ALICE, stream, &frame(n))))
+    .collect();
+    assert_eq!(duo.bob.drain(), expected);
+    assert_eq!(duo.bob.ptt.stats(), PttStats::default(), "yetim demet yok");
+}
+
+/// D5 (senkron yol): yeni oturum `Ready` olayı okunmadan benimsenebilir — idempotent
+/// `Messenger::connect` mevcut tutamacı `ConnectResult::Ready(h')` ile olaysız döndürür (S1 K2).
+/// Yeniden `PTT_OPEN` yine TAM BİR KEZ gider: `send_bundle`, `close` ya da `poll` — hangisi önce
+/// gelirse — onu demetten / kapanıştan önce verir; sonra okunan `Ready(h')` onu yinelemez;
+/// `Ready(h')` hiç okunmasa da yoklamanın başındaki denetim onu verir.
+///
+/// `0904f723`'te KIRMIZI (uyarlansa da): yeniden `PTT_OPEN` yoktu (`sent_on(h')`'de `PTT_OPEN`
+/// yok).
+#[test]
+fn reopen_follows_a_session_adopted_without_an_event() {
+    // (a) `send_bundle` önce.
+    let (mut duo, old) = Duo::connected();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS)]
+    );
+    let new = duo.link.borrow_mut().supersede();
+    assert_eq!(
+        duo.alice.messenger.connect(BOB),
+        Ok(ConnectResult::Ready(new))
+    );
+    duo.alice
+        .send_bundle(stream, &frame(1))
+        .expect("gönderilir");
+    assert_eq!(
+        duo.sent_on(Side::Alice, new),
+        vec![MsgType::PttOpen, MsgType::MediaBundle]
+    );
+    assert_eq!(
+        duo.alice.drain(),
+        vec![
+            session(SessionEvent::Ready(new, BOB)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        ]
+    );
+    duo.alice
+        .send_bundle(stream, &frame(2))
+        .expect("gönderilir");
+    assert_eq!(
+        duo.sent_on(Side::Alice, new),
+        vec![MsgType::PttOpen, MsgType::MediaBundle, MsgType::MediaBundle],
+        "sonra okunan Ready(h') PTT_OPEN'ı yinelemedi"
+    );
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            session(SessionEvent::Ready(new, ALICE)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+            audio(ALICE, stream, &frame(1)),
+            audio(ALICE, stream, &frame(2)),
+        ]
+    );
+    assert_eq!(duo.bob.ptt.stats().duplicate_opens, 1);
+
+    // (b) `close` önce: `PTT_OPEN`, sonra `PTT_CLOSE`.
+    let (mut duo, old) = Duo::connected();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS)]
+    );
+    let new = duo.link.borrow_mut().supersede();
+    assert_eq!(
+        duo.alice.messenger.connect(BOB),
+        Ok(ConnectResult::Ready(new))
+    );
+    duo.alice.close(stream).expect("kapanır");
+    assert_eq!(
+        duo.alice.drain(),
+        vec![
+            session(SessionEvent::Ready(new, BOB)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        ]
+    );
+    assert_eq!(
+        duo.sent_on(Side::Alice, new),
+        vec![MsgType::PttOpen, MsgType::PttClose],
+        "kapanmış akış için yeniden PTT_OPEN yok"
+    );
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            session(SessionEvent::Ready(new, ALICE)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+            ended(ALICE, stream),
+        ]
+    );
+
+    // (c) `poll` önce: yoklamanın başında, olaylar okunmadan.
+    let (mut duo, old) = Duo::connected();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    let new = duo.link.borrow_mut().supersede();
+    assert_eq!(
+        duo.alice.messenger.connect(BOB),
+        Ok(ConnectResult::Ready(new))
+    );
+    assert_eq!(
+        duo.alice.drain(),
+        vec![
+            session(SessionEvent::Ready(new, BOB)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        ]
+    );
+    duo.alice
+        .send_bundle(stream, &frame(3))
+        .expect("gönderilir");
+    assert_eq!(
+        duo.sent_on(Side::Alice, new),
+        vec![MsgType::PttOpen, MsgType::MediaBundle]
+    );
+    assert_eq!(duo.alice.ptt.stats().opens_resent, 1);
+
+    // (d) `Ready(h')` olayı hiç okunmaz (ör. taşan olay kuyruğunda düştü; tutamaç yalnız
+    // `connect` dönüşünden öğrenilir): yoklamanın başındaki denetim `PTT_OPEN`'ı yine verir.
+    let (mut duo, _) = Duo::connected();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    let new = duo.link.borrow_mut().supersede();
+    duo.drop_events(Side::Alice);
+    assert_eq!(
+        duo.alice.messenger.connect(BOB),
+        Ok(ConnectResult::Ready(new))
+    );
+    assert!(duo.alice.drain().is_empty());
+    assert_eq!(duo.sent_on(Side::Alice, new), vec![MsgType::PttOpen]);
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice.drain().is_empty());
+    }
+    duo.alice
+        .send_bundle(stream, &frame(4))
+        .expect("gönderilir");
+    assert_eq!(
+        duo.sent_on(Side::Alice, new),
+        vec![MsgType::PttOpen, MsgType::MediaBundle]
+    );
+}
+
+/// D5 (geri basınç yolu): Transport yeniden `PTT_OPEN`'ı reddederse (`Backpressure`) tutamaç
+/// işaretlenmez ve kayıt sonraki denetimlerde yeniden sunulur; o oturumdaki demet `PTT_OPEN`'dan
+/// önce GİTMEZ. Kabul edildikten sonra o oturuma bir daha verilmez: toplam TAM BİR kabul.
+///
+/// `0904f723`'te KIRMIZI (uyarlansa da): yeniden `PTT_OPEN` yoktu; geri basınç kalkınca yeni oturuma
+/// yalnız demet giderdi.
+#[test]
+fn refused_reopen_is_retried_until_accepted_once() {
+    let (mut duo, old) = Duo::connected();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS)]
+    );
+    let new = duo.link.borrow_mut().supersede();
+    // Bob'un kuyruğu dolar: Alice'in Bob'a her gönderimi `Backpressure`.
+    duo.fill_inbox(Side::Bob);
+    assert_eq!(
+        duo.alice.drain(),
+        vec![
+            session(SessionEvent::Ready(new, BOB)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        ]
+    );
+    assert!(duo.sent_on(Side::Alice, new).is_empty());
+    assert!(duo.alice.ptt.stats().opens_resend_refused > 0);
+    assert_eq!(
+        duo.alice.send_bundle(stream, &frame(1)),
+        Err(PttError::Transport(TransportError::Backpressure))
+    );
+    assert!(
+        duo.sent_on(Side::Alice, new).is_empty(),
+        "demet PTT_OPEN'dan önce gitmez"
+    );
+    // Bob kuyruğunu boşaltır (boş kayıtlar codec'te düşer, olay yok).
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            session(SessionEvent::Ready(new, ALICE)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        ]
+    );
+    // Sonraki yoklama `PTT_OPEN`'ı verir; sonrakiler yinelemez.
+    assert!(duo.alice.drain().is_empty());
+    assert_eq!(duo.sent_on(Side::Alice, new), vec![MsgType::PttOpen]);
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice.drain().is_empty());
+    }
+    duo.alice
+        .send_bundle(stream, &frame(2))
+        .expect("gönderilir");
+    assert_eq!(
+        duo.sent_on(Side::Alice, new),
+        vec![MsgType::PttOpen, MsgType::MediaBundle]
+    );
+    assert_eq!(duo.alice.ptt.stats().opens_resent, 1);
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, stream, &frame(2))]);
+    assert_eq!(duo.bob.ptt.stats().duplicate_opens, 1);
+}
+
+// ── alıcı kuralları PTT-R0…R5 (AMP §3) ──────────────────────────────────────────────────────
+
+/// PTT-R0 "geç gelen parçayı düşürmez": telde demet sıra numarası yoktur; motor demeti teslim
+/// sırasıyla verir ve geç geldiği için düşürmez. (i) Aynı akışın eski oturumda yolda kalmış demeti,
+/// yeni oturumdaki demetten SONRA gelir: ikisi de verilir (oturumlar arası sıra yükün işidir).
+/// (ii) Eski akışın eski oturumda kalmış demeti ve `PTT_CLOSE`'u, aynı eşin yeni oturumdaki YENİ
+/// akışının `PTT_OPEN`'ından SONRA gelir: eski akış yenisiyle birlikte etkindir (PTT-R5), demet
+/// `PttAudio` olur, akış kendi `PTT_CLOSE`'uyla biter.
+///
+/// `0904f723`'te KIRMIZI (uyarlansa da): (ii)'de "en yeni kazanır" yeni `PTT_OPEN`'da eski akışı
+/// bitiriyordu (`PttEnded` + `PttStarted`); geç demet `bundles_unknown_stream`'e, `PTT_CLOSE`
+/// `unknown_closes`'a düşüyordu. (i) AYNI DAVRANIŞ.
+#[test]
+fn r0_late_bundles_from_a_retired_session_are_delivered_not_dropped() {
+    let (mut duo, first_session) = Duo::connected();
+    let first = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, first, PttCodec::Opus, TEST_BUNDLE_MS)]
+    );
+
+    // (i) Demet 1 eski oturumda yolda kalır; demet 2 yeni oturumdan önce varır.
+    duo.alice.send_bundle(first, &frame(1)).expect("gönderilir");
+    let in_flight = duo.take_inbox(Side::Bob);
+    let second_session = duo.link.borrow_mut().supersede();
+    assert_eq!(
+        duo.alice.drain(),
+        vec![
+            session(SessionEvent::Ready(second_session, BOB)),
+            session(SessionEvent::Closed(first_session, CloseReason::Superseded)),
+        ]
+    );
+    duo.alice.send_bundle(first, &frame(2)).expect("gönderilir");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            session(SessionEvent::Ready(second_session, ALICE)),
+            session(SessionEvent::Closed(first_session, CloseReason::Superseded)),
+            audio(ALICE, first, &frame(2)),
+        ]
+    );
+    duo.deliver_late(Side::Bob, in_flight);
+    assert_eq!(
+        duo.bob.drain(),
+        vec![audio(ALICE, first, &frame(1))],
+        "geç demet düşmedi"
+    );
+
+    // (ii) Demet 3 ve `PTT_CLOSE` ikinci oturumda yolda kalır; üçüncü oturumda yeni akış açılır.
+    duo.alice.send_bundle(first, &frame(3)).expect("gönderilir");
+    duo.alice.close(first).expect("kapanır");
+    let in_flight = duo.take_inbox(Side::Bob);
+    let third_session = duo.link.borrow_mut().supersede();
+    assert_eq!(
+        duo.alice.drain(),
+        vec![
+            session(SessionEvent::Ready(third_session, BOB)),
+            session(SessionEvent::Closed(
+                second_session,
+                CloseReason::Superseded
+            )),
+        ]
+    );
+    let second = duo
+        .alice
+        .open(BOB, PttCodec::Lyra, OTHER_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            session(SessionEvent::Ready(third_session, ALICE)),
+            session(SessionEvent::Closed(
+                second_session,
+                CloseReason::Superseded
+            )),
+            started(ALICE, second, PttCodec::Lyra, OTHER_BUNDLE_MS),
+        ]
+    );
+    assert_eq!(
+        duo.bob.ptt.incoming_streams(ALICE),
+        vec![first, second],
+        "yeni akış eskisini bitirmedi"
+    );
+    duo.deliver_late(Side::Bob, in_flight);
+    assert_eq!(
+        duo.bob.drain(),
+        vec![audio(ALICE, first, &frame(3)), ended(ALICE, first)]
+    );
+    assert_eq!(duo.bob.ptt.incoming_streams(ALICE), vec![second]);
+    assert_eq!(
+        duo.bob.ptt.stats(),
+        PttStats {
+            duplicate_opens: 1,
+            ..PttStats::default()
+        },
+        "tek tekrar (i)'deki yeniden PTT_OPEN; hiçbir demet düşmedi"
+    );
+}
+
+/// PTT-R1: eşin etkin akışlarından HERHANGİ birinin `stream_id`'siyle tekrar gelen `PTT_OPEN`
+/// idempotenttir — yeni akış yok, hata yok, olay yok; akışın parametreleri ilk `PTT_OPEN`'la sabit
+/// kalır (S9). Gönderenin yeni oturumdaki yeniden `PTT_OPEN`'ı (D5) alıcıda bu yoldan söner.
+///
+/// `0904f723`'te KIRMIZI (uyarlansa da): iki etkin akış olamıyordu; ikinci `PTT_OPEN` birinciyi
+/// bitiriyor, birincinin tekrar `PTT_OPEN`'ı da ikinciyi bitirip birinciyi YENİDEN başlatıyordu.
+#[test]
+fn r1_repeated_open_for_an_active_stream_is_idempotent() {
+    let (mut duo, _) = Duo::connected();
+    let (older, newer): (StreamId, StreamId) = (10, 11);
+    duo.inject(
+        Side::Bob,
+        open_record(older, PttCodec::Opus, TEST_BUNDLE_MS),
+    );
+    duo.inject(
+        Side::Bob,
+        open_record(newer, PttCodec::Lyra, OTHER_BUNDLE_MS),
+    );
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            started(ALICE, older, PttCodec::Opus, TEST_BUNDLE_MS),
+            started(ALICE, newer, PttCodec::Lyra, OTHER_BUNDLE_MS),
+        ]
+    );
+    // Aynı parametrelerle, farklı parametrelerle ve öbür akış için tekrar.
+    duo.inject(
+        Side::Bob,
+        open_record(older, PttCodec::Opus, TEST_BUNDLE_MS),
+    );
+    duo.inject(
+        Side::Bob,
+        open_record(older, PttCodec::Lyra, OTHER_BUNDLE_MS),
+    );
+    duo.inject(
+        Side::Bob,
+        open_record(newer, PttCodec::Lyra, OTHER_BUNDLE_MS),
+    );
+    assert!(duo.bob.drain().is_empty(), "olay yok");
+    assert_eq!(
+        duo.bob.ptt.incoming_streams(ALICE),
+        vec![older, newer],
+        "yeni akış yok"
+    );
+    // Parametreler ilk `PTT_OPEN`'ınki: akışın parametreleriyle demet geçer, tekrarınkiyle düşer.
+    duo.inject(
+        Side::Bob,
+        bundle_record(older, PttCodec::Opus.code(), TEST_BUNDLE_MS, &frame(1)),
+    );
+    duo.inject(
+        Side::Bob,
+        bundle_record(older, PttCodec::Lyra.code(), OTHER_BUNDLE_MS, &frame(2)),
+    );
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, older, &frame(1))]);
+    let stats = duo.bob.ptt.stats();
+    assert_eq!(stats.duplicate_opens, 3);
+    assert_eq!(stats.bundles_mismatched, 1);
+}
+
+/// PTT-R2: bilinmeyen `stream_id`'nin `PTT_CLOSE`'u sessizce yok sayılır — etkin akış yokken, başka
+/// akışlar etkinken ve akış zaten kapanmışken; `PTT_CLOSE` yalnız kendi akışını bitirir.
+///
+/// `0904f723`'te KIRMIZI (uyarlansa da): iki etkin akış olamıyordu (ikinci `PTT_OPEN` birinciyi
+/// bitirirdi). Tek akışlı kısmı (bilinmeyen kapanış yok sayılır) AYNI DAVRANIŞ.
+#[test]
+fn r2_close_for_an_unknown_stream_is_ignored() {
+    let (mut duo, _) = Duo::connected();
+    duo.inject(Side::Bob, close_record(5));
+    assert!(duo.bob.drain().is_empty());
+    let (first, second, unknown): (StreamId, StreamId, StreamId) = (10, 11, 12);
+    for stream in [first, second] {
+        duo.inject(
+            Side::Bob,
+            open_record(stream, PttCodec::Opus, TEST_BUNDLE_MS),
+        );
+    }
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            started(ALICE, first, PttCodec::Opus, TEST_BUNDLE_MS),
+            started(ALICE, second, PttCodec::Opus, TEST_BUNDLE_MS),
+        ]
+    );
+    duo.inject(Side::Bob, close_record(unknown));
+    assert!(duo.bob.drain().is_empty());
+    assert_eq!(duo.bob.ptt.incoming_streams(ALICE), vec![first, second]);
+    duo.inject(Side::Bob, close_record(first));
+    duo.inject(Side::Bob, close_record(first));
+    duo.inject(
+        Side::Bob,
+        bundle_record(second, PttCodec::Opus.code(), TEST_BUNDLE_MS, &frame(1)),
+    );
+    assert_eq!(
+        duo.bob.drain(),
+        vec![ended(ALICE, first), audio(ALICE, second, &frame(1))]
+    );
+    assert_eq!(duo.bob.ptt.stats().unknown_closes, 3);
+    assert_eq!(duo.bob.ptt.incoming_streams(ALICE), vec![second]);
+}
+
+/// PTT-R3: `stream_id`'si eşin etkin akışlarından biri olmayan `MEDIA_BUNDLE` düşer ve
+/// `ptt_orphan_bundles` artar — etkin akış yokken (S7), başka akışlar etkinken ve akışın
+/// `PTT_CLOSE`'undan sonra. Başka hiçbir sayaç artmaz.
+///
+/// `0904f723`'te UYARLANAMAZ: sayaç yoktu (`bundles_without_stream` / `bundles_unknown_stream`
+/// ikiye bölüyordu). Uyarlansa KIRMIZI: iki etkin akış olamıyordu.
+#[test]
+fn r3_bundle_for_an_unknown_stream_is_an_orphan() {
+    let (mut duo, _) = Duo::connected();
+    let (first, second, unknown): (StreamId, StreamId, StreamId) = (10, 11, 12);
+    let bundle =
+        |stream, n| bundle_record(stream, PttCodec::Opus.code(), TEST_BUNDLE_MS, &frame(n));
+    duo.inject(Side::Bob, bundle(first, 0));
+    assert!(duo.bob.drain().is_empty(), "etkin akış yok");
+    for stream in [first, second] {
+        duo.inject(
+            Side::Bob,
+            open_record(stream, PttCodec::Opus, TEST_BUNDLE_MS),
+        );
+    }
+    duo.inject(Side::Bob, bundle(unknown, 1));
+    duo.inject(Side::Bob, close_record(first));
+    duo.inject(Side::Bob, bundle(first, 2));
+    duo.inject(Side::Bob, bundle(second, 3));
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            started(ALICE, first, PttCodec::Opus, TEST_BUNDLE_MS),
+            started(ALICE, second, PttCodec::Opus, TEST_BUNDLE_MS),
+            ended(ALICE, first),
+            audio(ALICE, second, &frame(3)),
+        ]
+    );
+    assert_eq!(
+        duo.bob.ptt.stats(),
+        PttStats {
+            ptt_orphan_bundles: 3,
+            ..PttStats::default()
+        }
+    );
+}
+
+/// PTT-R4: akışa `PTT_STREAM_IDLE_TTL` boyunca `MEDIA_BUNDLE` gelmezse alıcı akışı yerel olarak
+/// kapatır: `PttEnded` üretir, eşe hiçbir şey göndermez (`PTT_CLOSE` yok). Süre `PTT_OPEN`'da başlar
+/// ve kabul edilen her demette sıfırlanır; düşen (S9) demet ve tekrar `PTT_OPEN` sıfırlamaz.
+/// Transport kuyruğunda bekleyen demet süre denetiminden ÖNCE işlenir. Saat elle ilerletilir.
+///
+/// `0904f723`'te UYARLANAMAZ (saat ve `PTT_STREAM_IDLE_TTL` yoktu). Uyarlansa KIRMIZI: akış hiçbir
+/// zaman kendiliğinden bitmiyordu.
+#[test]
+fn r4_idle_stream_is_closed_locally_after_the_ttl() {
+    let (mut duo, _) = Duo::connected();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS)]
+    );
+    // Süre `PTT_OPEN`'da başladı: sınırın bir adım altında akış sürer (60 s kesinti dahil, K8).
+    duo.clock.advance(PTT_STREAM_IDLE_TTL - TTL_MARGIN);
+    assert!(duo.bob.drain().is_empty());
+    assert_eq!(duo.bob.ptt.incoming_streams(ALICE), vec![stream]);
+    // Kabul edilen demet süreyi sıfırlar.
+    duo.alice
+        .send_bundle(stream, &frame(1))
+        .expect("gönderilir");
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, stream, &frame(1))]);
+    duo.clock.advance(PTT_STREAM_IDLE_TTL - TTL_MARGIN);
+    // Düşen demet (S9) ve tekrar `PTT_OPEN` (PTT-R1) sıfırlamaz.
+    duo.inject(
+        Side::Bob,
+        bundle_record(stream, PttCodec::Lyra.code(), TEST_BUNDLE_MS, &frame(9)),
+    );
+    duo.inject(
+        Side::Bob,
+        open_record(stream, PttCodec::Opus, TEST_BUNDLE_MS),
+    );
+    assert!(duo.bob.drain().is_empty());
+    assert_eq!(duo.bob.ptt.incoming_streams(ALICE), vec![stream]);
+    // Son kabul edilen demetten tam `PTT_STREAM_IDLE_TTL` sonra: yerel kapanış.
+    duo.clock.advance(TTL_MARGIN);
+    assert_eq!(duo.bob.drain(), vec![ended(ALICE, stream)]);
+    assert_eq!(duo.bob.ptt.stats().streams_ended_by_idle, 1);
+    assert!(duo.bob.ptt.incoming_streams(ALICE).is_empty());
+    assert!(
+        duo.sent(Side::Bob).is_empty(),
+        "alıcı hiçbir şey göndermedi: PTT_CLOSE yok"
+    );
+    // Kapanmış akışın sonraki demeti bilinmeyen akıştır (PTT-R3).
+    duo.alice
+        .send_bundle(stream, &frame(2))
+        .expect("gönderilir");
+    assert!(duo.bob.drain().is_empty());
+    assert_eq!(duo.bob.ptt.stats().ptt_orphan_bundles, 1);
+
+    // Kuyrukta bekleyen demet akışı canlı tutar: süre, kuyruk işlendikten sonra denetlenir.
+    duo.alice.close(stream).expect("kapanır");
+    let next = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, next, PttCodec::Opus, TEST_BUNDLE_MS)]
+    );
+    duo.alice.send_bundle(next, &frame(3)).expect("gönderilir");
+    duo.clock.advance(PTT_STREAM_IDLE_TTL * 2);
+    assert_eq!(
+        duo.bob.drain(),
+        vec![audio(ALICE, next, &frame(3))],
+        "bekleyen demet önce işlendi"
+    );
+    assert_eq!(duo.bob.ptt.incoming_streams(ALICE), vec![next]);
+    duo.clock.advance(PTT_STREAM_IDLE_TTL);
+    assert_eq!(duo.bob.drain(), vec![ended(ALICE, next)]);
+    assert_eq!(duo.bob.ptt.stats().streams_ended_by_idle, 2);
+}
+
+/// PTT-R5: aynı eşten aynı anda en çok `PTT_MAX_ACTIVE_STREAMS` (2) akış; fazlası düşer ve
+/// `opens_over_active_limit` artar. Yeni akış eskisini bitirmez; bir akış bitince yer açılır.
+///
+/// `0904f723`'te KIRMIZI (uyarlansa da): "en yeni kazanır" — ikinci `PTT_OPEN` birinciyi bitirirdi
+/// (`PttEnded` + `PttStarted`), üçüncüsü düşmez ikinciyi bitirirdi; eş başına tek akış vardı.
+#[test]
+fn r5_at_most_two_streams_per_peer_are_active() {
+    assert_eq!(PTT_MAX_ACTIVE_STREAMS, 2);
+    let (mut duo, _) = Duo::connected();
+    let (first, second, third): (StreamId, StreamId, StreamId) = (10, 11, 12);
+    let bundle =
+        |stream, n| bundle_record(stream, PttCodec::Opus.code(), TEST_BUNDLE_MS, &frame(n));
+    for stream in [first, second, third] {
+        duo.inject(
+            Side::Bob,
+            open_record(stream, PttCodec::Opus, TEST_BUNDLE_MS),
+        );
+    }
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            started(ALICE, first, PttCodec::Opus, TEST_BUNDLE_MS),
+            started(ALICE, second, PttCodec::Opus, TEST_BUNDLE_MS),
+        ]
+    );
+    assert_eq!(duo.bob.ptt.stats().opens_over_active_limit, 1);
+    assert_eq!(duo.bob.ptt.incoming_streams(ALICE), vec![first, second]);
+    // İki etkin akışın demeti geçer; düşen akışınki bilinmeyen akıştır (PTT-R3).
+    for (stream, n) in [(first, 1), (second, 2), (third, 3)] {
+        duo.inject(Side::Bob, bundle(stream, n));
+    }
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            audio(ALICE, first, &frame(1)),
+            audio(ALICE, second, &frame(2)),
+        ]
+    );
+    assert_eq!(duo.bob.ptt.stats().ptt_orphan_bundles, 1);
+    // Bir akış bitince yer açılır.
+    duo.inject(Side::Bob, close_record(first));
+    duo.inject(
+        Side::Bob,
+        open_record(third, PttCodec::Opus, TEST_BUNDLE_MS),
+    );
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            ended(ALICE, first),
+            started(ALICE, third, PttCodec::Opus, TEST_BUNDLE_MS),
+        ]
+    );
+    assert_eq!(duo.bob.ptt.incoming_streams(ALICE), vec![second, third]);
+    assert_eq!(duo.bob.ptt.stats().opens_over_active_limit, 1);
+}
+
+// ── `stream_id`: kalıcılık, benzersizlik, depo hatası ───────────────────────────────────────
+
+/// D5 (K4G-08 §1, `CounterKind::StreamId`): `stream_id` eş başına kalıcıdır — Ptt ve Messenger AYNI
+/// depoyla yeniden kurulunca aynı eşe sıradaki `stream_id` öncekilerin hepsinden büyüktür. Alice
+/// basış sürerken ölür (`PTT_CLOSE` hiç gitmez, Bob'da akış etkin kalır); yeniden başlayan Alice'in
+/// yeni basışı Bob'da YENİ akış olarak başlar, sesi eski akışa karışmaz.
+///
+/// `0904f723`'te KIRMIZI (uyarlansa da): sayaç motorun belleğindeydi; yeni motor
+/// `FIRST_STREAM_ID`'den başlar (`second == first`), Bob'da `PTT_OPEN` etkin akışın tekrarı
+/// sayılıp düşer (`PttStarted` yok) ve yeni basışın demetleri eski akışa bağlanır.
+#[test]
+fn stream_ids_continue_after_a_restart_with_the_same_store() {
+    let store = fresh_store();
+    let (mut duo, old) = Duo::connected_with(Arc::clone(&store));
+    let first = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, first, PttCodec::Opus, TEST_BUNDLE_MS)]
+    );
+
+    duo.restart_alice(Arc::clone(&store));
+    let new = duo.link.borrow_mut().reconnect_after_crash(Side::Alice);
+    assert_eq!(
+        duo.alice.drain(),
+        vec![session(SessionEvent::Ready(new, BOB))]
+    );
+    let second = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    // Sayaç depodan sürdü: öncekinden büyük; çökme anında ayrılmış ama kullanılmamış değer
+    // olmadığı için boşluk da yok.
+    assert_eq!(second, first + 1);
+    duo.alice
+        .send_bundle(second, &frame(1))
+        .expect("gönderilir");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            session(SessionEvent::Ready(new, ALICE)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+            started(ALICE, second, PttCodec::Opus, TEST_BUNDLE_MS),
+            audio(ALICE, second, &frame(1)),
+        ]
+    );
+    assert_eq!(duo.bob.ptt.stats().duplicate_opens, 0);
+    assert_eq!(duo.bob.ptt.incoming_streams(ALICE), vec![first, second]);
+}
+
+/// K4G-08 kararı (K4G-11 API'sinde `ptt_push(stream_id)` / `ptt_close(stream_id)` eş almaz): eş
+/// başına sayaçlar iki eşe aynı değeri önerebilir; `Ptt::open` açık akışlar arasında
+/// benzersizliği korur — başka bir eşin açık akışının değeri atlanır (kalıcı olarak ayrılmıştı,
+/// yanar) ve yenisi ayrılır. Demet ve kapanış `stream_id`'ye göre DOĞRU eşin oturumuna gider.
+/// Düzenek ortak yansıtıcı sahtedir: iki eşe iki oturum; gönderilen her kayıt aynı tutamaçla
+/// "eşten gelmiş" gibi geri döner ve tutamacın eşine bağlanır.
+///
+/// `0904f723`'te UYARLANAMAZ (tek, eşten bağımsız bellek sayacı: çakışma doğmuyordu ve depo
+/// okunmuyordu). Uyarlansa olay akışı AYNI DAVRANIŞ, depodaki eş sayaçları KIRMIZI. Atlama kuralı
+/// kaldırılırsa KIRMIZI: Carol'ın akışı Bob'unkini ezer.
+#[test]
+fn open_stream_ids_are_unique_across_peers() {
+    let store = fresh_store();
+    let mut messenger = Messenger::with_store(MockTransport::new(caps()), Arc::clone(&store))
+        .expect("limitler geçerli");
+    let mut ptt = Ptt::new(Arc::new(ManualClock::default()));
+    for peer in [BOB, CAROL] {
+        let ConnectResult::Pending(ticket) = messenger.connect(peer).expect("connect") else {
+            panic!("bilinmeyen eşe ilk connect Pending olmalı");
+        };
+        let handle = messenger.transport_mut().complete_connect(&peer);
+        assert_eq!(
+            drain_events(&mut ptt, &mut messenger),
+            vec![
+                session(SessionEvent::ConnectProgress(
+                    ticket,
+                    ConnectPhase::Measuring
+                )),
+                session(SessionEvent::Ready(handle, peer)),
+            ]
+        );
+    }
+    let to_bob = ptt
+        .open(&mut messenger, BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    let to_carol = ptt
+        .open(&mut messenger, CAROL, PttCodec::Lyra, OTHER_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(to_bob, FIRST_STREAM_ID);
+    assert_eq!(
+        to_carol,
+        FIRST_STREAM_ID + 1,
+        "Bob'un açık akışının değeri atlandı"
+    );
+    ptt.send_bundle(&mut messenger, to_bob, &frame(1))
+        .expect("gönderilir");
+    ptt.send_bundle(&mut messenger, to_carol, &frame(2))
+        .expect("gönderilir");
+    ptt.close(&mut messenger, to_bob).expect("kapanır");
+    assert_eq!(ptt.outgoing_stream(BOB), None);
+    assert_eq!(ptt.outgoing_stream(CAROL), Some(to_carol));
+    assert_eq!(
+        drain_events(&mut ptt, &mut messenger),
+        vec![
+            started(BOB, to_bob, PttCodec::Opus, TEST_BUNDLE_MS),
+            started(CAROL, to_carol, PttCodec::Lyra, OTHER_BUNDLE_MS),
+            audio(BOB, to_bob, &frame(1)),
+            audio(CAROL, to_carol, &frame(2)),
+            ended(BOB, to_bob),
+        ]
+    );
+    // Sayaçlar depoda eş başına sürer; Carol'ın atlanan değeri de ayrılmıştı.
+    assert_eq!(
+        store.reserve_next(BOB, CounterKind::StreamId),
+        Ok(u64::from(to_bob) + 1)
+    );
+    assert_eq!(
+        store.reserve_next(CAROL, CounterKind::StreamId),
+        Ok(u64::from(to_carol) + 1)
+    );
+}
+
+/// Depo hatası (K4G-08 kararı): `stream_id` ayrılamazsa tipli hata döner, `PTT_OPEN` Transport'a
+/// verilmez ve akış açılmaz — panik yok, sessiz yutma yok. Depo tükenmesi `StreamIdExhausted`'dır.
+/// Ayrılamayan değer yoktur: depo düzelince eşin ilk değeri gelir.
+///
+/// `0904f723`'te UYARLANAMAZ: `Ptt` depoyu okumuyordu (`PttError::Store` yoktu; depo arızası
+/// `open`'ı etkilemezdi).
+#[test]
+fn store_failure_opens_nothing_and_sends_no_open() {
+    let flaky = Arc::new(FlakyStore::default());
+    let (mut duo, _) = Duo::connected_with(Arc::clone(&flaky) as Arc<dyn AppStore>);
+    flaky.fail_reserve.store(true, Ordering::SeqCst);
+    assert_eq!(
+        duo.alice.open(BOB, PttCodec::Opus, TEST_BUNDLE_MS),
+        Err(PttError::Store(AppStoreError::Persist))
+    );
+    flaky.fail_reserve.store(false, Ordering::SeqCst);
+    flaky.exhaust_reserve.store(true, Ordering::SeqCst);
+    assert_eq!(
+        duo.alice.open(BOB, PttCodec::Opus, TEST_BUNDLE_MS),
+        Err(PttError::StreamIdExhausted)
+    );
+    flaky.exhaust_reserve.store(false, Ordering::SeqCst);
+    assert_eq!(duo.alice.ptt.outgoing_stream(BOB), None);
+    assert!(
+        duo.sent(Side::Alice).is_empty(),
+        "PTT_OPEN Transport'a verilmedi"
+    );
+    assert!(duo.bob.drain().is_empty());
+    assert_eq!(
+        duo.alice.open(BOB, PttCodec::Opus, TEST_BUNDLE_MS),
+        Ok(FIRST_STREAM_ID)
+    );
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(
+            ALICE,
+            FIRST_STREAM_ID,
+            PttCodec::Opus,
+            TEST_BUNDLE_MS
+        )]
+    );
 }

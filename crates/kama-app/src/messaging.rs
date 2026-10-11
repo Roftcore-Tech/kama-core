@@ -431,6 +431,12 @@ impl<T: KamaTransport> Messenger<T> {
         &self.limits
     }
 
+    /// Kalıcı depo — YALNIZ bu crate'in motorları için: `Ptt` `stream_id`'yi buradan ayırır
+    /// (K4G-08). Application'ın tek deposudur; bileşim kökü onu bir kez bağlar.
+    pub(crate) fn store(&self) -> &dyn AppStore {
+        &*self.store
+    }
+
     /// Gözlem sayaçları.
     #[must_use]
     pub fn stats(&self) -> MessengerStats {
