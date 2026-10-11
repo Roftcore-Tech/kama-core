@@ -1652,6 +1652,157 @@ fn r1_repeated_open_for_an_active_stream_is_idempotent() {
     assert_eq!(stats.bundles_mismatched, 1);
 }
 
+/// PTT-R1, kapanmış akış (inceleme bulgusu "hayalet akış"): supersession'da akışın asıl `PTT_OPEN`'ı
+/// ve bir demeti eski oturumun drain'inde kalır (S1 K7); yeni oturumdaki yeniden `PTT_OPEN`, demet
+/// ve `PTT_CLOSE` önce işlenir. Sonra gelen asıl `PTT_OPEN` kapanmış akışı yeniden BAŞLATMAZ: ikinci
+/// `PttStarted` yok, etkin akış yok (PTT-R5 yuvası boş). Aynı drain'in geç demeti PTT-R3'tür.
+///
+/// `b1cce203`'te (K4G-08'in inceleme öncesi hâli) KIRMIZI: geç `PTT_OPEN` aynı basışa ikinci
+/// `PttStarted` üretiyor, geç demet o hayalet akışa `PttAudio` oluyor ve akış PTT-R4'e dek etkin
+/// kalıyordu. `0904f723`'te UYARLANAMAZ (yeniden `PTT_OPEN` yoktu).
+#[test]
+fn r1_late_open_from_a_retired_session_does_not_restart_a_closed_stream() {
+    let (mut duo, old) = Duo::connected();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    duo.alice
+        .send_bundle(stream, &frame(0))
+        .expect("gönderilir");
+    let in_flight = duo.take_inbox(Side::Bob);
+    assert_eq!(
+        in_flight.len(),
+        2,
+        "PTT_OPEN ve demet eski oturumun drain'inde"
+    );
+    let new = duo.link.borrow_mut().supersede();
+    assert_eq!(
+        duo.alice.drain(),
+        vec![
+            session(SessionEvent::Ready(new, BOB)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        ]
+    );
+    duo.alice
+        .send_bundle(stream, &frame(1))
+        .expect("gönderilir");
+    duo.alice.close(stream).expect("kapanır");
+    assert_eq!(
+        duo.sent_on(Side::Alice, new),
+        vec![MsgType::PttOpen, MsgType::MediaBundle, MsgType::PttClose]
+    );
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            session(SessionEvent::Ready(new, ALICE)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+            started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS),
+            audio(ALICE, stream, &frame(1)),
+            ended(ALICE, stream),
+        ]
+    );
+    duo.deliver_late(Side::Bob, in_flight);
+    assert!(duo.bob.drain().is_empty(), "ikinci PttStarted yok");
+    assert!(
+        duo.bob.ptt.incoming_streams(ALICE).is_empty(),
+        "hayalet akış yok"
+    );
+    assert_eq!(
+        duo.bob.ptt.stats(),
+        PttStats {
+            opens_after_close: 1,
+            ptt_orphan_bundles: 1,
+            ..PttStats::default()
+        },
+        "geç PTT_OPEN PTT-R1, geç demet PTT-R3"
+    );
+}
+
+/// Gerileme kilidi (hayalet akış düzeltmesinin sınırı): PTT-R4 ile ya da oturum sonuyla biten akış
+/// kapanmış akış kaydına GİRMEZ — gönderen onu hâlâ açık tutuyor olabilir; yeni oturumdaki yeniden
+/// `PTT_OPEN` (D5) akışı yeniden başlatır ve demetleri yine `PttAudio` olur.
+///
+/// `b1cce203`'te AYNI DAVRANIŞ (kayıt yoktu); kayıt bu kapanışları da tutsaydı KIRMIZI.
+#[test]
+fn reopen_restarts_a_stream_ended_by_idle_or_session_end() {
+    // (a) PTT-R4.
+    let (mut duo, old) = Duo::connected();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS)]
+    );
+    duo.clock.advance(PTT_STREAM_IDLE_TTL);
+    assert_eq!(duo.bob.drain(), vec![ended(ALICE, stream)]);
+    let new = duo.link.borrow_mut().supersede();
+    assert_eq!(
+        duo.alice.drain(),
+        vec![
+            session(SessionEvent::Ready(new, BOB)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        ]
+    );
+    duo.alice
+        .send_bundle(stream, &frame(1))
+        .expect("gönderilir");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            session(SessionEvent::Ready(new, ALICE)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+            started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS),
+            audio(ALICE, stream, &frame(1)),
+        ]
+    );
+    assert_eq!(duo.bob.ptt.incoming_streams(ALICE), vec![stream]);
+    assert_eq!(duo.bob.ptt.stats().opens_after_close, 0);
+
+    // (b) Oturum sonu: iki uçta da oturum biter, sonra yenisi kurulur.
+    let (mut duo, old) = Duo::connected();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS)]
+    );
+    duo.link
+        .borrow_mut()
+        .end(Side::Bob, CloseReason::PeerClosed);
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            session(SessionEvent::Closed(old, CloseReason::PeerClosed)),
+            ended(ALICE, stream),
+        ]
+    );
+    duo.link
+        .borrow_mut()
+        .end(Side::Alice, CloseReason::PeerClosed);
+    let new = duo.link.borrow_mut().establish();
+    assert_eq!(
+        duo.alice.drain(),
+        vec![
+            session(SessionEvent::Closed(old, CloseReason::PeerClosed)),
+            session(SessionEvent::Ready(new, BOB)),
+        ]
+    );
+    assert_eq!(duo.sent_on(Side::Alice, new), vec![MsgType::PttOpen]);
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            session(SessionEvent::Ready(new, ALICE)),
+            started(ALICE, stream, PttCodec::Opus, TEST_BUNDLE_MS),
+        ]
+    );
+    assert_eq!(duo.bob.ptt.stats().opens_after_close, 0);
+}
+
 /// PTT-R2: bilinmeyen `stream_id`'nin `PTT_CLOSE`'u sessizce yok sayılır — etkin akış yokken, başka
 /// akışlar etkinken ve akış zaten kapanmışken; `PTT_CLOSE` yalnız kendi akışını bitirir.
 ///
