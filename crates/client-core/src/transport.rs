@@ -23,10 +23,17 @@
 //! # Teslim sırası (S1 §4)
 //!
 //! Aynı oturumdaki `Reliable` birimler gönderim sırasıyla teslim edilir. Veri alıcısı birimleri
-//! varış sırasıyla verir; adaptör onları kaynak uç başına `unit_id` sırasına sokar. Motor bir birimi
-//! hiçbir zaman terk etmediği için (ARQ teyide kadar sürer) bu sıra kalıcı bir boşlukta beklemez;
-//! `BestEffort` / `DeadlineBounded` birimler de aynı sırayla gelir (S1 onlara sırasızlık İZNİ verir,
-//! zorunluluğu değil).
+//! varış sırasıyla verir; adaptör onları kaynak uç (= oturum) başına `unit_id` sırasına sokar.
+//! Motor bir birimi hiçbir zaman terk etmediği için (ARQ teyide kadar sürer) bu sıra kalıcı bir
+//! boşlukta beklemez; `BestEffort` / `DeadlineBounded` birimler de aynı sırayla gelir (S1 onlara
+//! sırasızlık İZNİ verir, zorunluluğu değil).
+//!
+//! [K4G-01b] Sıralama durumu (`Reorder`) OTURUMA anahtarlıdır (`SessionHandle`; kaynak adres
+//! DEĞİL): karşı ucun her oturumu tek bir uçtan gelir, `unit_id` uzayı oturumundur. Böylece
+//! (i) aynı adresten gelen yeni oturumun birimleri eski oturumun `next`'ine takılıp sessizce
+//! atılmaz; (ii) aynı oturumun birden çok eş yuvasından (adres) gelen kopyaları — ör. hattaki
+//! saldırganın sahte adresten önce ilettiği kopya — S1'e TEK kez teslim edilir. Oturum `Closed`
+//! olunca (teslim kabulü bitince) durumu silinir; tablo oturum tablosuyla sınırlıdır.
 //!
 //! # Yenileme: önce boşalt, sonra atomik cutover (S1 KARAR-2)
 //!
@@ -53,6 +60,11 @@
 //! zarfı (INIT/RESPONSE) yola çıkmadan eklenir. `HubChannel` (direct-mode'da hub yok; PoC'de
 //! AEAD'siz no-op) ve başka her bağlam yüke dokunulmadan düşer ve sayılır
 //! ([`ClientTransport::ctx_dispatch_stats`]).
+//!
+//! [K4G-01b] Veri alıcısının eş yuvası `(adres, SessionHandle)` ile anahtarlıdır: aynı adresten
+//! yeni bir beklenen oturum YENİ yuva alır (yenileme / supersession / cancel+connect sonrası
+//! efemeral port yeniden kullanımı `idle_hold` kadar düşmez); yuvanın oturum bağı veri datagramıyla
+//! değişmez; bağlı oturum beklenen kümeden çıkınca yuva emekliye ayrılır (`crate::runtime`).
 //!
 //! INV-ACK-DELIVER-1: teslim yoluna kabul edilmeyen birim ACK'lenmez. Beklenen kümede her
 //! tutamacın hazırlığı da yayımlanır: yalnız teslim kapısının (`drive_deliveries`) kabul ettiği
@@ -345,6 +357,10 @@ struct Renewal {
 }
 
 /// Kaynak uç başına sıralı teslim (S1 §4).
+///
+/// [K4G-01b] Adaptör bunu OTURUM başına tutar (`ClientTransport::reorder`, `SessionHandle`
+/// anahtarlı): karşı ucun bir oturumu tek bir uçtur. `unit < next` ve tutulan birim için ikinci
+/// kopya YOK SAYILIR — aynı oturumun farklı eş yuvalarından gelen kopyaları burada tekilleşir.
 #[derive(Default)]
 struct Reorder {
     next: u64,
@@ -409,7 +425,11 @@ pub struct ClientTransport<C: PacketProtection + SessionControl> {
     locally_closed: BTreeSet<SessionHandle>,
     events: VecDeque<SessionEvent>,
     inbox: VecDeque<Delivered>,
-    reorder: HashMap<SocketAddr, Reorder>,
+    /// [K4G-01b] Oturum başına sıralı teslim — anahtar `SessionHandle`, kaynak adres DEĞİL (bkz.
+    /// modül belgesi "Teslim sırası"). Girdi yalnız teslim kabul eden (`phase != Closed`) oturum
+    /// için açılır ve oturum `Closed` olunca silinir (`close`, `on_crypto_closed`, `Closed`'ın
+    /// okunması) → anahtar kümesi `sessions`'ın alt kümesidir.
+    reorder: HashMap<SessionHandle, Reorder>,
     /// [K4G-01 / D1 (v1.1)] Veri alıcısının BEKLEDİĞİ oturumlar — bu adaptörün oturum tablosunun
     /// yayını ([`Self::sync_expected`]); yeni tutamaç zarfı (INIT/RESPONSE) yola çıkmadan eklenir.
     expected: ExpectedSessions,
@@ -839,7 +859,15 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         if s.phase == Phase::Active {
             s.phase = Phase::Closed;
         }
+        let closed = s.phase == Phase::Closed;
         s.endpoint = None;
+        // [K4G-01b] Teslim kabulü bitti (`drive_deliveries` `Closed`'u reddeder) → sıralama durumu
+        // silinir; içinde tutulan birim artık hiçbir yoldan teslim edilemezdi. Supersede edilmiş
+        // oturum `Closed` okunana dek teslim kabul eder (yalnız-alım drain) — onunki okunurken
+        // (`poll_event`) silinir.
+        if closed {
+            self.reorder.remove(&h);
+        }
         self.events.push_back(SessionEvent::Closed(h, reason));
         if let Some(i) = self.renewals.iter().position(|r| r.old == h) {
             let r = self.renewals.remove(i);
@@ -960,13 +988,13 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 // Kapanmış / bilinmeyen oturumun teslimi düşer.
                 _ => continue,
             }
-            self.reorder.entry(d.peer).or_default().push(
-                d.unit_id,
-                h,
-                d.payload,
-                cap,
-                &mut self.inbox,
-            );
+            // [K4G-01b] Sıra OTURUMUN (`h`), kaynak adresin (`d.peer`) değil: aynı adresten gelen
+            // yeni oturum eski oturumun `next`'ine takılmaz; aynı oturumun başka bir yuvadan
+            // (adres) gelen kopyası burada tekilleşir.
+            self.reorder
+                .entry(h)
+                .or_default()
+                .push(d.unit_id, h, d.payload, cap, &mut self.inbox);
         }
     }
 
@@ -1006,6 +1034,15 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     #[must_use]
     pub fn inbox_len_for_test(&self) -> usize {
         self.inbox.len()
+    }
+
+    /// [K4G-01b] Sıralama durumu tutulan oturumlar (sıralı). Kapanan oturumunki silinir.
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn reorder_sessions_for_test(&self) -> Vec<SessionHandle> {
+        let mut out: Vec<SessionHandle> = self.reorder.keys().copied().collect();
+        out.sort();
+        out
     }
 
     /// Eşin gönderim kabul eden (aktif) oturumu — fikstür yenileme/supersession'ın bittiğini
@@ -1179,6 +1216,9 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         if let SessionEvent::Closed(h, _) = ev {
             // F0.2(i): `Closed(h)` OKUNDUKTAN sonra tutamaç bilinmez.
             self.sessions.remove(&h);
+            // [K4G-01b] Bilinmeyen oturumun teslimi düşer → sıralama durumu da silinir (anahtar
+            // kümesi `sessions`'ın alt kümesi kalır).
+            self.reorder.remove(&h);
             self.sync_expected();
         }
         Some(ev)
@@ -1197,6 +1237,9 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         s.phase = Phase::Closed;
         s.endpoint = None;
         self.locally_closed.insert(session);
+        // [K4G-01b] `Closed` oturumun teslimi `drive_deliveries`'te düşer → sıralama durumu
+        // silinir.
+        self.reorder.remove(&session);
         let _ = self.command(SessionCommand::Close { session });
         if let Some(i) = self.renewals.iter().position(|r| r.old == session) {
             let r = self.renewals.remove(i);

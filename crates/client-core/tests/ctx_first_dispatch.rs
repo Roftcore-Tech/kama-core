@@ -665,6 +665,16 @@ async fn server_hub_channel_data_cannot_enter_an_existing_session_slot() {
 /// Sunucu ucu: `Session(h)` için `h` oturum tablosunda beklenmeli ve eş yuvasının oturumu olmalı.
 /// ESKİ DAVRANIŞ: Carol'ın geçerli datagramı Bob'un yuvasında Bob'un bağlamıyla teslim edilir
 /// (oturumlar arası karışma), tabloda olmayan oturum ilk datagramıyla yuva açardı.
+///
+/// [K4G-01b UYARLAMASI] Yuva artık `(adres, oturum)` anahtarlıdır. "Yuva bağı korunur" adımı
+/// #114'te `ctx_mismatch_drops`'u bekliyordu: yuva adres-anahtarlıydı, aynı adresten gelen BEKLENEN
+/// başka oturum düşüyordu — K4G-01b'nin kapattığı bulgu (yenilemede / supersession'da efemeral port
+/// yeniden kullanılırsa yeni oturum `idle_hold` = 105 s düşerdi). Korunan değişmez aynıdır: başka
+/// oturumun geçerli datagramı bu yuvanın ARQ / teslim durumuna GİREMEZ. Kanıtı artık düşüş değil
+/// ayrımdır: Carol'ın datagramı Bob'un adresinden kendi yuvasında, KENDİ bağlamıyla teslim edilir
+/// ve Bob'un sıradaki birimiyle AYNI kimliği (5) taşır — Bob'un yuvasına (teslim-dedup
+/// penceresine) girseydi Bob'un 5'i teslim edilmezdi. Beklenmeyen oturumun düşüşü (ilk iki adım)
+/// değişmedi.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_session_context_must_be_expected_and_bound_to_the_slot() {
     let mut alice = node(ALICE);
@@ -685,7 +695,10 @@ async fn server_session_context_must_be_expected_and_bound_to_the_slot() {
     let d = delivery(&mut server).await;
     assert_eq!((d.unit_id, d.ctx), (0, ProtectionContext::Session(h_ab)));
 
-    // Yuva tek oturuma aittir: Carol'ın GEÇERLİ datagramı Bob'un yuvasının adresinden → düşer.
+    // Beklenmeyen oturum (tablo yalnız h_ab): Carol'ın GEÇERLİ datagramı Bob'un yuvasının
+    // adresinden gelse de yuvaya bakılmadan düşer (kol c, `ctx_mismatch_drops`). [K4G-01b]
+    // Yuva-bağı kolu anahtar gereği gerçek akışta ulaşılmaz (yuva `(adres, oturum)` ile aranır);
+    // yalnız `runtime::ctx_first_tests`'te saf sınanır.
     let wire = sealed_data(&mut carol, h_ca, 1);
     send(&bob_ep, &wire, to).await;
     server_ctx(&server, stats(1, 0)).await;
@@ -704,19 +717,23 @@ async fn server_session_context_must_be_expected_and_bound_to_the_slot() {
     let d = delivery(&mut server).await;
     assert_eq!((d.unit_id, d.ctx), (3, ProtectionContext::Session(h_ac)));
 
-    // Yuva bağı korunur: Carol artık beklense de Bob'un yuvası onu kabul etmez.
-    let wire = sealed_data(&mut carol, h_ca, 4);
+    // Yuva bağı korunur: Carol artık beklense de Bob'un yuvası onu kabul etmez. [K4G-01b] Bob'un
+    // adresinden gelen Carol datagramı `(bob_ep, h_ac)` yuvasına gider — Bob'un yuvasına değil.
+    let wire = sealed_data(&mut carol, h_ca, 5);
     send(&bob_ep, &wire, to).await;
-    server_ctx(&server, stats(3, 0)).await;
+    let d = delivery(&mut server).await;
+    assert_eq!((d.unit_id, d.ctx), (5, ProtectionContext::Session(h_ac)));
 
-    // Bariyer: Bob'un sıradaki datagramı. Teslim sırası 0 → 3 → 5; 1, 2, 4 YOK.
+    // Bariyer: Bob'un sıradaki datagramı (aynı birim kimliği 5) Bob'un yuvasında, Bob'un
+    // bağlamıyla. Teslim sırası 0 → 3 → 5 (Carol) → 5 (Bob); 1, 2 YOK.
     let wire = sealed_data(&mut bob, h_ba, 5);
     send(&bob_ep, &wire, to).await;
     let d = delivery(&mut server).await;
     assert_eq!((d.unit_id, d.ctx), (5, ProtectionContext::Session(h_ab)));
     assert!(server.try_next_delivery().is_none());
+    assert_eq!(server.ctx_dispatch_stats(), stats(2, 0));
     let ss = server.shutdown().await;
-    assert_eq!(ss.delivered, 3);
+    assert_eq!(ss.delivered, 4);
     // Carol'ın düşen datagramları AÇILDI (AEAD geçerli): düşüş kriptodan değil, bağlamdan.
     assert_eq!((ss.open_failures, ss.unknown_frames), (0, 0));
 }
