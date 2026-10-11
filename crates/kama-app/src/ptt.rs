@@ -55,9 +55,11 @@
 //! # Gönderen
 //!
 //! Eş başına en çok bir açık giden akış (YORUM): konuşan oturumun eşidir (AMP §3, 1:1); akış
-//! açıkken ikinci [`Ptt::open`] → [`PttError::StreamActive`]. [`Ptt::open`] ve
-//! [`Ptt::send_bundle`] hata yollarında akış tablosu DEĞİŞMEZ (`open`'ın ayırdığı değer yanabilir,
-//! yukarıda). [`Ptt::close`] ise akışı HER DURUMDA kapatır (YORUM): basış bitmiştir. `PTT_CLOSE`
+//! açıkken ikinci [`Ptt::open`] → [`PttError::StreamActive`]. [`Ptt::open`]'ın hata yollarında
+//! akış açılmaz (ayırdığı değer yanabilir, yukarıda). [`Ptt::send_bundle`]'ın hata yollarında akış
+//! açık kalır; tek iz: demetten önce sunulan yeniden `PTT_OPEN` (aşağıda) kabul edilip demet
+//! reddedildiyse bu kabul kaydedilir (`PTT_OPEN` o oturuma bir daha gitmez). [`Ptt::close`] ise
+//! akışı HER DURUMDA kapatır (YORUM): basış bitmiştir. `PTT_CLOSE`
 //! Transport'a verilemezse hata döner ve kayıt yeniden denenmez (S1 K8); alıcı akışı PTT-R4 ile
 //! (en geç [`PTT_STREAM_IDLE_TTL`] sonra) ya da oturum sonunda bitirir. Reddedilen demeti de motor
 //! yeniden denemez: çağıran (media) bekler ve aynı demeti yeniden verir. Giden akış çağıranındır:
@@ -71,15 +73,18 @@
 //!
 //! Gönderen her açık akış için `PTT_OPEN`'ın en son KABUL edildiği tutamacı tutar. Eşin güncel
 //! oturumu ([`Messenger::session_of`]) başka bir tutamaçsa akışın `PTT_OPEN`'ı oraya AYNI
-//! `stream_id`, `codec` ve `bundle_ms` ile, `Reliable`, BİR KEZ yeniden verilir — o tutamaçtaki
-//! demetlerden ve `PTT_CLOSE`'tan ÖNCE. Denetim her [`Ptt::poll`]'un başında, eşin `Ready` olayı
-//! geçirilirken ve her [`Ptt::send_bundle`] / [`Ptt::close`]'tan önce yapılır: yeni oturum `Ready`
-//! olayı okunmadan da benimsenebilir (senkron [`Messenger::connect`] → `ConnectResult::Ready`),
-//! bu yüzden yalnız olaya güvenilmez. Transport reddederse (ör. `Backpressure`) tutamaç
-//! işaretlenmez ve kayıt sonraki denetimde yeniden sunulur (kabul edilmemiş birim tele çıkmamıştır;
-//! S1 K8 "bekler"); kabul edildikten sonra o tutamaca bir daha verilmez — akış ve oturum başına en
-//! çok bir kabul. Akışı bilen alıcıda bu tekrar PTT-R1'dir (etkisiz); `PTT_OPEN`'ı eski oturumla
-//! kaybetmiş alıcıda akışı başlatır.
+//! `stream_id`, `codec` ve `bundle_ms` ile, `Reliable`, BİR KEZ yeniden verilir. Denetim her
+//! [`Ptt::poll`]'un başında, eşin `Ready` olayı geçirilirken ve her [`Ptt::send_bundle`] /
+//! [`Ptt::close`]'tan önce yapılır: yeni oturum `Ready` olayı okunmadan da benimsenebilir (senkron
+//! [`Messenger::connect`] → `ConnectResult::Ready`), bu yüzden yalnız olaya güvenilmez. Transport
+//! reddederse (ör. `Backpressure`) tutamaç işaretlenmez ve kayıt sonraki denetimde yeniden sunulur
+//! (kabul edilmemiş birim tele çıkmamıştır; S1 K8 "bekler"); kabul edildikten sonra o tutamaca bir
+//! daha verilmez — akış ve oturum başına en çok bir kabul. O tutamaçtaki demet `PTT_OPEN` kabul
+//! edilmeden GİTMEZ (`send_bundle` reddi döndürür). `close`'ta ise yeniden `PTT_OPEN` reddedilirse
+//! `PTT_CLOSE` yine sunulur — alıcıdaki akışı bitiren odur; ret sayılır ve akış kapandığı için
+//! `PTT_OPEN` bir daha sunulmaz: bu tutamaçta `PTT_CLOSE` `PTT_OPEN`'sız gidebilir (akışı bilen
+//! alıcıda akışı bitirir, bilmeyende PTT-R2). Akışı bilen alıcıda yeniden `PTT_OPEN` PTT-R1'dir
+//! (etkisiz); `PTT_OPEN`'ı eski oturumla kaybetmiş alıcıda akışı başlatır.
 //!
 //! Eşin güncel oturumu kalmadıysa (`UserClosed`, `PeerClosed` ya da `KeyHygiene` ile kapanış)
 //! eşin gelen akışları `PttEnded` ile biter: her [`Ptt::poll`] önce böyle akışları bitirir, yani
@@ -123,7 +128,9 @@
 //!   edilince başlar ve her kabul edilen demette sıfırlanır; tekrar `PTT_OPEN` ya da düşen demet
 //!   sıfırlamaz. Zaman enjekte edilen saatten ([`MonotonicClock`]) okunur ve kayıt İŞLENDİĞİ anda
 //!   damgalanır. [`Ptt::poll`] süreyi yalnız Messenger'da okunacak bir şey kalmadığında denetler:
-//!   Transport kuyruğunda bekleyen demet önce işlenir ve akışı canlı tutar.
+//!   Transport kuyruğunda bekleyen demet önce işlenir ve akışı canlı tutar. Denetim YALNIZ
+//!   [`Ptt::poll`] içindedir: trafik olmasa da uygulama `poll`'u periyodik çağırmalıdır, yoksa
+//!   süresi dolan akış ancak sonraki `poll`'da biter.
 //!
 //! # Tablolar
 //!
@@ -151,6 +158,12 @@
 //! * [`PTT_STREAM_IDLE_TTL`]'den uzun bir kesintiden sonra gelen demetler, akış alıcıda kapandığı
 //!   için PTT-R3 ile düşer: gönderen aynı oturumda akışı yeniden açmaz (yeni oturumdaki yeniden
 //!   `PTT_OPEN` akışı yeniden başlatır).
+//! * Kapatılmış bir `stream_id` başka bir eşin açık akışına yeniden verilebilir: sayaçlar eş
+//!   başınadır ve benzersizlik yalnız AÇIK giden akışlar arasında korunur (K4G-08 kararı). Kapattığı
+//!   `stream_id`'yi yeniden kullanan çağıran (use-after-close) [`Ptt::send_bundle`] /
+//!   [`Ptt::close`] ile o başka eşin akışına ses ya da kapanış yollar: çağıran kapattığı kimliği
+//!   KULLANMAMALIDIR. K4G-11 (`ptt_push(stream_id)` / `ptt_close(stream_id)` eş almaz) bu sınırı
+//!   kendi tutamacıyla kapatmalıdır.
 //! * D4 (PoC-KAPSAM-001 §5 EK-1): kalıcı durum tamamen kaybolur ve aynı kimlik yeniden
 //!   kullanılırsa `stream_id`'ler baştan başlar; alıcıda hâlâ bilinen (etkin ya da kapanmış akış
 //!   kaydındaki) bir akışın değeri yeniden gelirse PTT-R1 onu tekrar sayar ve yeni akış başlamaz:
@@ -285,9 +298,10 @@ impl fmt::Debug for PttEvent {
 }
 
 /// [`Ptt::open`], [`Ptt::send_bundle`] ve [`Ptt::close`] hatası. `open`'da akış açılmaz (ayrılmış
-/// `stream_id` yanabilir — modül belgesi); `send_bundle`'da akış tablosu değişmez; `close`'da akış
-/// yine de kapanmıştır. Motor reddedilen kaydı yeniden denemez (S1 K8); tek istisna oturum
-/// değişiminin yeniden `PTT_OPEN`'ıdır (D5: kabul edilene dek sonraki denetimlerde yeniden sunulur).
+/// `stream_id` yanabilir — modül belgesi); `send_bundle`'da akış açık kalır (demetten önce kabul
+/// edilmiş bir yeniden `PTT_OPEN` kaydedilir); `close`'da akış yine de kapanmıştır. Motor reddedilen
+/// kaydı yeniden denemez (S1 K8); tek istisna oturum değişiminin yeniden `PTT_OPEN`'ıdır (D5: akış
+/// açık kaldıkça kabul edilene dek sonraki denetimlerde yeniden sunulur).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PttError {
     /// Eşin hazır oturumu yok: `Ready` görülmedi ya da `Closed` okundu.
@@ -400,8 +414,9 @@ pub struct PttStats {
     /// Gönderen (D5): yeni oturuma Transport'un kabul ettiği yeniden `PTT_OPEN`'lar — akış ve
     /// oturum başına en çok bir.
     pub opens_resent: u64,
-    /// Gönderen (D5): Transport'un reddettiği yeniden `PTT_OPEN` denemeleri (sonraki denetimde
-    /// yeniden sunulur).
+    /// Gönderen (D5): Transport'un reddettiği yeniden `PTT_OPEN` denemeleri. Yoklama ve
+    /// `send_bundle` yolundaki ret sonraki denetimde yeniden sunulur; `close` yolundaki ret yeniden
+    /// SUNULMAZ (akış kapandı; `PTT_CLOSE` yine gider).
     pub opens_resend_refused: u64,
 }
 
@@ -564,7 +579,8 @@ impl Ptt {
     /// Denetim sırasıyla: [`PttError::UnknownStream`] · [`PttError::PayloadTooLarge`] ·
     /// [`PttError::NoSession`] · yeniden `PTT_OPEN`'ın [`PttError::Encode`] ya da
     /// [`PttError::Transport`]'u (demet verilmedi; `PTT_OPEN` sonraki denetimde yeniden sunulur) ·
-    /// demetin [`PttError::Encode`] ya da [`PttError::Transport`]'u. Reddedilen demeti motor yeniden
+    /// demetin [`PttError::Encode`] ya da [`PttError::Transport`]'u (yeniden `PTT_OPEN` bu çağrıda
+    /// kabul edildiyse o kabul kalır). Her hatada akış açık kalır. Reddedilen demeti motor yeniden
     /// denemez (S1 K8): çağıran bekler ve aynı demeti yeniden verir.
     pub fn send_bundle<T: KamaTransport>(
         &mut self,
@@ -598,8 +614,8 @@ impl Ptt {
 
     /// Basış biter: akış kapanır ve `PTT_CLOSE` eşin güncel oturumuna `DeliveryPolicy::Reliable`
     /// ile TEK KEZ sunulur. Eşin güncel oturumu akışın `PTT_OPEN`'ını henüz almadıysa önce o sunulur
-    /// (D5); sunulamazsa `PTT_CLOSE` yine sunulur (alıcıdaki akışı bitiren odur) ve ret
-    /// `opens_resend_refused`'ta sayılır.
+    /// (D5); sunulamazsa `PTT_CLOSE` yine sunulur (alıcıdaki akışı bitiren odur), ret
+    /// `opens_resend_refused`'ta sayılır ve `PTT_OPEN` bir daha sunulmaz (akış kapandı).
     ///
     /// # Errors
     ///
@@ -634,6 +650,10 @@ impl Ptt {
     /// (3) Messenger'ın olayları — eşin `Ready` olayı geçirilmeden önce (1) yinelenir;
     /// (4) Messenger'da okunacak bir şey kalmadıysa [`PTT_STREAM_IDLE_TTL`]'i dolmuş ilk gelen akış
     /// için `PttEnded` (PTT-R4). Olay üretmeyen (atılan) PTT kayıtları aynı çağrıda atlanır.
+    ///
+    /// PTT-R4 denetimi yalnız burada yapılır: trafik olmasa da uygulama `poll`'u periyodik
+    /// çağırmalıdır (zamanlayıcı ya da olay döngüsü turu); yoksa süresi dolan akış ancak sonraki
+    /// `poll`'da biter.
     #[must_use]
     pub fn poll<T: KamaTransport>(&mut self, messenger: &mut Messenger<T>) -> Option<PttEvent> {
         self.reopen_all(messenger);

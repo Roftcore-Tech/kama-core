@@ -379,7 +379,8 @@ impl<T: KamaTransport> Messenger<T> {
     /// Motoru kurar. AMP limitleri `transport.capabilities()`'ten bir kez türetilir (A2, S1 K5).
     ///
     /// `store` uygulamanın kalıcı durumudur (K4G-07): `msg_id`'ler YALNIZ ondan ayrılır, outbox ona
-    /// yazılır. Aynı depoyla yeniden kurulan motor sayaçlara kaldığı yerden devam eder ve bir eşin
+    /// yazılır; `Ptt` de `stream_id`'lerini bu depodan ayırır (K4G-08, `Messenger::store`
+    /// üzerinden). Aynı depoyla yeniden kurulan motor sayaçlara kaldığı yerden devam eder ve bir eşin
     /// kalıcı outbox'ını eş motorda ilk göründüğünde yükler (modül belgesi, "Kalıcı outbox"). Ürün
     /// yolu kalıcı depoyu verir (`kama-store::RedbStore`, bileşim kökü); yeni boş bir depo kalıcı
     /// durumu kaybolmuş bir cihazdır (D4 beyanlı sınırı). Kurulum depoya dokunmaz.
@@ -401,7 +402,8 @@ impl<T: KamaTransport> Messenger<T> {
     }
 
     /// YALNIZ bu crate'in birim testleri (`messaging`, `ptt`, `file_transfer`): taze bellek içi
-    /// depoyla kurar — kalıcı durumu olmayan cihaz. Kalıcılık isteyen her yol
+    /// depoyla kurar — kalıcı durumu olmayan cihaz (`ptt` testlerinde `stream_id`'ler de bu depodan
+    /// ayrılır). Kalıcılık isteyen her yol
     /// [`Messenger::with_store`]'u kullanır; ürün kodunda kalıcı olmayan yapıcı YOKTUR.
     ///
     /// # Errors

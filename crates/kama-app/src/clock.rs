@@ -3,10 +3,10 @@
 //! `FILE_RECEIPT_TTL`) aynı arayüzü kullanır. Saat kurulumda ENJEKTE edilir; motorlar duvar saatine
 //! bakmaz ve kendileri uyumaz.
 //!
-//! Biçim `kama_noise_wire::MonotonicClock` ile AYNIDIR (`now()` keyfi bir başlangıçtan bu yana
-//! geçen süre, asla geri gitmez), ama Application o crate'i göremez (INV-NEIGHBOR-1;
-//! `scripts/ci/layer_check.py` L1/C2). Bu yüzden arayüz burada ayrıca tanımlıdır; bileşim kökü
-//! (K4G-11) iki katmana kendi saatlerini ayrı ayrı verir.
+//! Biçim `kama_noise_wire::clock::MonotonicClock` ile AYNIDIR (`now()` keyfi bir başlangıçtan bu
+//! yana geçen süre, asla geri gitmez; o crate onu kökte yeniden dışa aktarmaz), ama Application o
+//! crate'i göremez (INV-NEIGHBOR-1; `scripts/ci/layer_check.py` L1/C2). Bu yüzden arayüz burada
+//! ayrıca tanımlıdır; bileşim kökü (K4G-11) iki katmana kendi saatlerini ayrı ayrı verir.
 //!
 //! Üretimde [`SystemClock`] (`std::time::Instant` — işletim sisteminin monoton saati). Testler
 //! arayüzü elle ilerletilen bir saatle gerçekler (`tests/ptt.rs`); bu crate'in test özelliği
