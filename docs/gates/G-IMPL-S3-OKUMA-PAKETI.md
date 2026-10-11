@@ -175,7 +175,7 @@ Alıntı düzeltilmedi; aşağıdaki notlar ondan ayrıdır.
 | Harness'ler (hepsi `VERIFICATION:- SUCCESSFUL`) | `commit_never_panics_after_precheck`, `precheck_never_panics`, `near_max_expected_never_panics`, `bounded_expected_never_panics`, `reconstruct_does_not_panic_on_contract_violation`, `reconstruct_is_deterministic`, `reconstruct_stays_within_one_span`, `reconstruct_preserves_low_bits`, `reconstruct_never_panics` |
 | Kaynakla tutarlılık | Dokuz ad, `crates/kama-noise-wire/tests/kani_pn_proofs.rs`'teki dokuz `#[kani::proof]` fonksiyonunun adlarıyla birebir aynıdır (K4G-04 şeridi, `grep`). `weekly.yml:11`: "kani 9/9". |
 | Kırmızıysa neden | Yok (yeşil) |
-| Hosted koşu | Kilit kalkınca `gh workflow run weekly.yml -f only=kani --ref main` ile alınacak; koşu kimliği sonradan eklenecek. |
+| Hosted koşu | ~~Kilit kalkınca `gh workflow run weekly.yml -f only=kani --ref main` ile alınacak; koşu kimliği sonradan eklenecek.~~ **YEŞİL.** Faturalandırma kilidi kalktıktan sonra alındı: core-weekly `workflow_dispatch` (`only=kani`) koşusu [38174686178](https://github.com/Roftcore-Tech/kama-core/actions/runs/38174686178) (iş 114574469077), main `b7da69c4`, 2026-10-11T21:02:11Z. Komut `weekly.yml:50`: `cargo kani -p kama-noise-wire --tests --features test-util`. İş log'u: Kani Rust Verifier 0.68.0, aynı dokuz harness'in her biri `VERIFICATION:- SUCCESSFUL`, `Complete - 9 successfully verified harnesses, 0 failures, 9 total.` Bu, core-weekly'de main'deki ilk yeşil kani işidir; önceki dört main koşusunda (35499480741, 36308169017, 37192327396, 38129681429) kani işi kırmızıydı. |
 
 ## 4. Bilinen açıklar
 
