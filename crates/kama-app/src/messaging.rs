@@ -1,25 +1,56 @@
 //! Metin + alındı (B2.2) — AMP `TEXT` (0x01) ve `RECEIPT` (0x08) akışı
-//! (`specs/application-message-protocol.md` §3; S2 yaması 2026-10-08).
+//! (`specs/application-message-protocol.md` §3; S2 yaması 2026-10-08, K4G-07 yaması 2026-10-12).
 //!
 //! [`Messenger`] S1 [`KamaTransport`]'u sahiplenir ve onun üstünde iki yarıyı yürütür:
 //!
-//! * **Gönderen** — [`Messenger::send_text`] eşin sıradaki `msg_id`'sini atar, TEXT kaydını
-//!   codec'le kurar ([`codec::encode`]) ve eşin güncel oturumuna `DeliveryPolicy::Reliable` ile
-//!   verir. Kayıt, eşin `RECEIPT(delivered)`'ı gelene kadar outbox'ta tutulur.
+//! * **Gönderen** — [`Messenger::send_text`] eşin sıradaki `msg_id`'sini kalıcı depodan ayırır
+//!   ([`AppStore::reserve_next`]), TEXT kaydını codec'le kurar ([`codec::encode`]), kaydı kalıcı
+//!   outbox'a yazar ve eşin güncel oturumuna `DeliveryPolicy::Reliable` ile verir. Kayıt, eşin
+//!   `RECEIPT(delivered)`'ı gelene kadar outbox'ta tutulur.
 //! * **Alıcı** — [`Messenger::poll`] önce Transport olaylarını, sonra teslim edilen birimleri okur.
 //!   Dedup penceresinde ilk kez görülen TEXT [`MessengerEvent::TextReceived`] üretir; HER TEXT'e
 //!   (tekrar dahil) `RECEIPT(delivered)` döner. RECEIPT outbox'taki kaydı kapatır ve `msg_id`
 //!   başına tam bir kez [`MessengerEvent::Delivered`] üretir.
 //!
-//! # `msg_id` eş başınadır (S2, Abkarada 2026-10-08)
+//! # `msg_id` eş başınadır (S2, Abkarada 2026-10-08) ve kalıcıdır (K4G-07, plan D4 v1.1)
 //!
 //! Gönderen sayacı ve alıcı dedup'ı `PeerRef` anahtarlıdır, `SessionHandle` değil: supersession
 //! (`Ready(h')` → `Closed(h, Superseded)`) de kapanış + yeniden bağlanma da ikisini sıfırlamaz.
-//! Sayaç kesin artar ve YALNIZ Transport kaydı kabul ettiğinde (`send` → `Ok(())`) ilerler. Her
-//! `Err` kaydın kuyruğa alınmadığı anlamına gelir (S1 §3): o `msg_id` tele çıkmamıştır ve sıradaki
-//! gönderimde kullanılır. Böylece alıcıdaki `msg_id` boşluğu yalnız yolda kaybolmuş bir TEXT'i
-//! gösterir (identity T-16 tespit sinyali). `u32` alanı tükenince
+//! Sayaç motorda DEĞİL, depodadır: her `msg_id` `AppStore::reserve_next(eş, CounterKind::MsgId)`
+//! ile ayrılır ve depo değeri döndürmeden ÖNCE kalıcılaştırır; aynı depoyla yeniden kurulan motor
+//! sayaca kaldığı yerden devam eder. Ayrılan değer YALNIZ kayıt Transport'a kabul ettirildiğinde
+//! (`send` / `connect` → `Ok`) tüketilir. Ayırmadan sonraki bir adım hata verirse (her `Err` kaydın
+//! kuyruğa alınmadığı anlamına gelir, S1 §3) değer eşin yedeğinde kalır ve sıradaki gönderim onu
+//! kullanır: yerel hata `msg_id` yakmaz. Böylece alıcıdaki `msg_id` boşluğu yolda kaybolmuş bir
+//! TEXT'i (identity T-16 tespit sinyali) ya da süreç ölürken yedekte kalmış, tele hiç çıkmamış bir
+//! değeri gösterir. Depo `u32` alanının tükendiğini kalıcı olarak bildirir →
 //! [`MessengerError::MsgIdExhausted`]; sarma YOK.
+//!
+//! # Kalıcı outbox (K4G-07)
+//!
+//! Outbox'ın kalıcı kopyası depodadır ([`AppStore::outbox_put`] / [`AppStore::outbox_remove`] /
+//! [`AppStore::outbox_list`]). Motor bellekte onun aynasını ve kaydın en son hangi tutamaca kabul
+//! ettirildiğini (kalıcı DEĞİL: tutamaç süreç ömrüyle sınırlıdır) tutar. Yazma ÖNCE gelir: kayıt
+//! Transport'a verilmeden önce depoya yazılır, Transport reddederse kalıcı kopya geri alınır. Böylece
+//! Transport'un kabul ettiği her kayıt depodadır; süreç hangi anda ölürse ölsün RECEIPT'siz kayıt
+//! kaybolmaz, en kötü durumda bir kez fazladan gider ve alıcının dedup'ında söner. RECEIPT kaydı
+//! bellekten ve depodan kapatır.
+//!
+//! Yeniden başlatma: motor kurulurken depoya dokunmaz. Bir eşin kalıcı outbox'ı, eş motorda İLK
+//! göründüğünde ([`Messenger::connect`], [`Messenger::connect_with_text`] ya da eşin `Ready` olayı)
+//! yüklenir ve kayıtları hiçbir tutamaca gönderilmemiş sayılır: eşin sıradaki oturumunda, bugünkü
+//! oturum-değişimi yolundan ESKİ `msg_id` (aynı bayt) ile gönderilirler ("Retry yok" bölümü).
+//! Yükleme başarısızsa eş motorda kurulmaz: çağrı yolunda [`MessengerError::Store`] döner; olay
+//! yolunda eşin oturumu benimsenmez (o tutamacın birimleri atılır) ve
+//! [`MessengerStats::store_errors`] artar; uygulamanın sonraki `connect`'i yüklemeyi yeniden dener.
+//!
+//! Depo hatası sessiz yutulmaz: `msg_id` ayrılamazsa ya da kayıt depoya yazılamazsa kayıt
+//! Transport'a VERİLMEZ, outbox'a girmez (depo belirsizliği "Beyanlı sınırlar"da) ve çağırana
+//! [`MessengerError::Store`] döner (depo tükenmesi [`MessengerError::MsgIdExhausted`], depo outbox
+//! tavanı [`MessengerError::OutboxFull`] olarak). Çağırana dönemeyen depo hataları (RECEIPT'in
+//! kalıcı kapanışı, geri alma, olayla gelen eşin yüklemesi) [`MessengerStats::store_errors`]'ta
+//! sayılır. Kalıcı kapanışı başarısız olmuş bir kaydın RECEIPT'i yinelenirse (ör. yeni oturumdaki
+//! yeniden gönderimin RECEIPT'i) silme idempotent olarak yeniden denenir.
 //!
 //! # Alıcı dedup penceresi ([`MSG_DEDUP_WINDOW`], S7)
 //!
@@ -36,8 +67,8 @@
 //! `msg_id` ile atanacak `msg_id` arası [`MSG_DEDUP_WINDOW`]'a ulaşamaz
 //! ([`MessengerError::UnackedSpanFull`]). Alıcının gördüğü en büyük `msg_id`, göndericinin
 //! atadığı en büyükten büyük olamaz; bu yüzden outbox'tan yeniden gönderilen her kayıt alıcı
-//! penceresinin İÇİNDE kalır ve dedup kararı kesindir. Pencere-altı durumu yalnız sayacını
-//! yitirmiş (yeniden başlamış) bir göndericide doğar.
+//! penceresinin İÇİNDE kalır ve dedup kararı kesindir. Pencere-altı durumu yalnız kalıcı durumunu
+//! yitirmiş bir göndericide doğar ("Beyanlı sınırlar", D4).
 //!
 //! # RECEIPT
 //!
@@ -67,18 +98,32 @@
 //! * [`Messenger::cancel_connect`] — bekleyen niyetten TEK çıkış (`KamaTransport::cancel`); sonucu
 //!   `ConnectAbandoned(ticket, Cancelled)` olayıyla gelir.
 //! * [`Messenger::connect_with_text`] — ilk metin `early_unit` olarak (S1 K6): kayıt Transport'ta
-//!   durur, motor onu KENDİSİ yollamaz ve saklamaz. `Ready(h, eş)` gelince kayıt "h'ye gönderilmiş"
-//!   olarak outbox'a girer (Transport onu `h`'de ilk normal `send` olarak yollar; glare kaybında
-//!   kazanan oturumda) — sonrası her TEXT gibidir (RECEIPT, oturum değişiminde yeniden gönderim).
-//!   `ConnectAbandoned` gelince birim teslim edilmemiştir (S1 §4): kayıt outbox'a "hiçbir tutamaca
-//!   gönderilmemiş" olarak girer ve eşin sıradaki oturumunda AYNI `msg_id`'yle yollanır (yeni
-//!   oturumu uygulama [`Messenger::connect`] ile ister; motor kendiliğinden bağlanmaz).
+//!   durur ve motor onu KENDİSİ yollamaz; kalıcı kopyası Transport'a verilmeden ÖNCE depoya yazılır
+//!   (K4G-07). Erken metin onu taşıyan niyetin BİLETİNE bağlıdır: yalnız o niyet bir oturumla
+//!   çözülürse (`Ready(h, eş)`) kayıt "h'ye gönderilmiş" olarak outbox'a girer (Transport onu `h`'de
+//!   ilk normal `send` olarak yollar; glare kaybında kazanan oturumda) — sonrası her TEXT gibidir
+//!   (RECEIPT, oturum değişiminde yeniden gönderim). Niyet biterse birim teslim edilmemiştir (S1 §4)
+//!   ve kayıt outbox'a "hiçbir tutamaca gönderilmemiş" olarak girer: kendi biletiyle gelen
+//!   `ConnectAbandoned`'da ya da eşe başka biletli bir niyet açıldığında (ör. iptalden sonra, olay
+//!   okunmadan yeni `connect` / `connect_with_text`; bir eşin en çok bir bekleyen niyeti vardır).
+//!   Kayıt eşin sıradaki oturumunda AYNI `msg_id`'yle yollanır (yeni oturumu uygulama
+//!   [`Messenger::connect`] ile ister; motor kendiliğinden bağlanmaz).
 //!
-//! # Bilinen sınır (sahibe açık)
+//! # Beyanlı sınırlar (K4G-07)
 //!
-//! Sayaç kalıcı değildir (AMP §3: yeniden başlatmada devam garantisi yok). Durumunu yitirip
-//! yeniden başlayan bir göndericinin `msg_id`'leri, eşin hâlâ tuttuğu dedup penceresinde görülmüş
-//! sayılabilir: o TEXT'ler teslim edilmez ama RECEIPT alır.
+//! * **D4 (PROVISIONING-FORMAT-v0 §1; PoC-KAPSAM-001 §5 EK-1) — ÇÖZÜLMEDİ, sınırdır.** Kalıcı
+//!   durum tamamen kaybolur (veri silme, yeniden kurulum; burada: boş depo) ve aynı eski kimlik
+//!   yeniden kullanılırsa `msg_id`'ler baştan başlar; eşin hâlâ tuttuğu dedup penceresinde görülmüş
+//!   sayılan TEXT'ler teslim edilmez ama RECEIPT alır (yanlış "teslim edildi"). Yerel tespit
+//!   imkânsızdır (geçmişi bilen kaynak yok); bu durumda yeniden provisioning zorunludur (yeni kimlik
+//!   → alıcıda yeni eş).
+//! * **Alıcı dedup penceresi kalıcı DEĞİLDİR** (bu kartta depoya bağlanmadı): yeniden başlayan
+//!   alıcı, gönderenin oturum değişiminde yeniden gönderdiği ve daha önce teslim ettiği bir TEXT'i
+//!   bir kez daha teslim edebilir (yinelenen gösterim; yanlış "teslim edildi" DEĞİL).
+//! * **Depo hatasının belirsizliği:** depo sözleşmesi gereği `Err` dönen bir yazma yine de kalıcı
+//!   olmuş olabilir. Geri alma da başarısızsa kayıt depoda kalır: süreç yaşadıkça aynı `msg_id`'yle
+//!   gönderilen sıradaki kayıt onun yerine geçer; süreç ölürse yeniden başlatmadan sonra çağırana
+//!   hata dönmüş kayıt gönderilir.
 //!
 //! # Gizlilik
 //!
@@ -88,6 +133,7 @@
 use core::fmt;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 use kama_contracts::handles::{PeerRef, SessionHandle};
 use kama_contracts::s1::{
@@ -96,11 +142,16 @@ use kama_contracts::s1::{
 };
 
 use crate::codec::{self, AmpLimits, AppMessage, EncodeError, LimitsError, ReceiptKind};
+#[cfg(test)]
+use crate::store::MemoryAppStore;
+use crate::store::{AppStore, AppStoreError, CounterKind, OutboxUnit};
 
 /// `TEXT.msg_id` ve `RECEIPT.ref_msg_id` (AMP §3; telde `u32_be`).
 pub type MsgId = u32;
 
-/// Bir eşe atanan ilk `msg_id`. Spec başlangıç değeri koymaz; değer bu uygulamanındır.
+/// Taze depoda bir eşe atanan ilk `msg_id`. Spec başlangıç değeri koymaz; değer bu uygulamanındır
+/// ve depo onu `store::FIRST_COUNTER_VALUE` olarak verir (eşitlik `store`'da derleme zamanında
+/// denetlenir).
 pub const FIRST_MSG_ID: MsgId = 0;
 
 /// S7 (Abkarada 2026-10-08) — alıcının eş başına dedup penceresi (`msg_id` sayısı).
@@ -110,9 +161,9 @@ pub const MSG_DEDUP_WINDOW: MsgId = 4096;
 /// gelmemiş TEXT tavanı.
 pub const MAX_OUTBOX_UNACKED: usize = 256;
 
-/// Eş tablosu tavanı — yerel bellek sınırı, normatif DEĞİL `[KALİBRASYON]`. Eş durumu (sayaç,
-/// dedup, outbox) oturumlardan sağ çıkmak zorunda olduğu için tablodan eş ÇIKARILMAZ: çıkarılan
-/// eşin sayacı baştan başlar ve eşin dedup penceresine çarpardı. Tavan doluyken YENİ eş reddedilir.
+/// Eş tablosu tavanı — yerel bellek sınırı, normatif DEĞİL `[KALİBRASYON]`. Eş durumu oturumlardan
+/// sağ çıkmak zorunda olduğu için tablodan eş ÇIKARILMAZ: sayaç ve outbox depoda kalsa da
+/// çıkarılan eşin dedup penceresi (kalıcı değil) kaybolurdu. Tavan doluyken YENİ eş reddedilir.
 pub const MAX_PEERS: usize = 64;
 
 /// Güncelliğini yitirmiş tutamaç → eş eşlemelerinin FIFO tavanı — yerel sınır, normatif DEĞİL.
@@ -202,8 +253,12 @@ pub enum ConnectState {
     Ready(SessionHandle),
 }
 
-/// [`Messenger::send_text`] ve [`Messenger::connect`] hatası. Her hata yolunda motor durumu
-/// DEĞİŞMEZ: `msg_id` tüketilmez, outbox'a kayıt girmez. Motor hiçbirini yeniden denemez.
+/// [`Messenger::send_text`] ve [`Messenger::connect`] hatası. Her hata yolunda kayıt Transport'a
+/// verilmez (Transport'un kendi reddi hariç) ve outbox'a girmez — bellekte hiçbir zaman; depoda da,
+/// tek beyanlı istisnayla: depo `Err` döndürdüğü hâlde yazmayı kalıcılaştırmış ve geri alma da
+/// başarısız olmuşsa kayıt depoda kalır (modül belgesi, "Beyanlı sınırlar"). `msg_id` tüketilmez —
+/// depodan ayrılmış ama kullanılmamış değer eşin sıradaki gönderimine kalır. Motor hiçbirini yeniden
+/// denemez.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessengerError {
     /// Eşin hazır oturumu yok: `Ready` görülmedi ya da `Closed` okundu. Motor metni kuyruğa
@@ -225,6 +280,12 @@ pub enum MessengerError {
     Encode(EncodeError),
     /// Transport reddetti; kayıt kuyruğa ALINMADI (S1 §3). Yeniden deneme kararı çağıranındır.
     Transport(TransportError),
+    /// Kalıcı depo ([`AppStore`]) `msg_id` ayıramadı, eşin outbox'ını okuyamadı ya da kaydı
+    /// outbox'a yazamadı: kayıt Transport'a VERİLMEDİ ve outbox'a girmedi (depo belirsizliği
+    /// istisnası tür belgesinde; modül belgesi, "Kalıcı outbox"). Depo tükenmesi
+    /// [`MessengerError::MsgIdExhausted`], depo outbox tavanı [`MessengerError::OutboxFull`] olarak
+    /// döner, burada değil.
+    Store(AppStoreError),
 }
 
 impl fmt::Display for MessengerError {
@@ -244,6 +305,7 @@ impl fmt::Display for MessengerError {
             Self::MsgIdExhausted => f.write_str("msg_id space of this peer is exhausted (no wrap)"),
             Self::Encode(e) => write!(f, "TEXT does not fit one AMP record: {e}"),
             Self::Transport(e) => write!(f, "transport refused the record: {e}"),
+            Self::Store(e) => write!(f, "app store failed, nothing was sent: {e}"),
         }
     }
 }
@@ -253,6 +315,7 @@ impl std::error::Error for MessengerError {
         match self {
             Self::Encode(e) => Some(e),
             Self::Transport(e) => Some(e),
+            Self::Store(e) => Some(e),
             Self::NoSession
             | Self::PeerTableFull
             | Self::OutboxFull
@@ -287,11 +350,19 @@ pub struct MessengerStats {
     pub resend_refused: u64,
     /// Tablo doluyken `Ready`'si gelen yeni eşler (izlenmedi; birimleri atılır).
     pub peers_refused: u64,
+    /// Çağırana dönemeyen depo hataları: RECEIPT'in kalıcı kapanışı, Transport'a verilmeyen
+    /// kaydın kalıcı kopyasının geri alınması, olayla gelen yeni eşin outbox yüklemesi (modül
+    /// belgesi, "Kalıcı outbox"). Çağırana dönen depo hatası [`MessengerError::Store`]'dur ve
+    /// burada sayılmaz.
+    pub store_errors: u64,
 }
 
 /// B2.2 metin motoru. Ayrıntı: modül belgesi.
 pub struct Messenger<T> {
     transport: T,
+    /// Kalıcı durum: eş başına `msg_id` sayacı ve outbox'ın kalıcı kopyası (K4G-07). Alıcı dedup
+    /// penceresi depoya bağlı DEĞİLDİR (modül belgesi, "Beyanlı sınırlar").
+    store: Arc<dyn AppStore>,
     limits: AmpLimits,
     /// Eş başına durum (≤ [`MAX_PEERS`]); hiçbir eş çıkarılmaz.
     peers: BTreeMap<PeerRef, PeerState>,
@@ -307,19 +378,38 @@ pub struct Messenger<T> {
 impl<T: KamaTransport> Messenger<T> {
     /// Motoru kurar. AMP limitleri `transport.capabilities()`'ten bir kez türetilir (A2, S1 K5).
     ///
+    /// `store` uygulamanın kalıcı durumudur (K4G-07): `msg_id`'ler YALNIZ ondan ayrılır, outbox ona
+    /// yazılır. Aynı depoyla yeniden kurulan motor sayaçlara kaldığı yerden devam eder ve bir eşin
+    /// kalıcı outbox'ını eş motorda ilk göründüğünde yükler (modül belgesi, "Kalıcı outbox"). Ürün
+    /// yolu kalıcı depoyu verir (`kama-store::RedbStore`, bileşim kökü); yeni boş bir depo kalıcı
+    /// durumu kaybolmuş bir cihazdır (D4 beyanlı sınırı). Kurulum depoya dokunmaz.
+    ///
     /// # Errors
     ///
     /// [`LimitsError`] — Transport'un beyan ettiği birim AMP için çok küçük.
-    pub fn new(transport: T) -> Result<Self, LimitsError> {
+    pub fn with_store(transport: T, store: Arc<dyn AppStore>) -> Result<Self, LimitsError> {
         let limits = AmpLimits::from_capabilities(&transport.capabilities())?;
         Ok(Self {
             transport,
+            store,
             limits,
             peers: BTreeMap::new(),
             by_handle: BTreeMap::new(),
             retired: VecDeque::new(),
             stats: MessengerStats::default(),
         })
+    }
+
+    /// YALNIZ bu crate'in birim testleri (`messaging`, `ptt`, `file_transfer`): taze bellek içi
+    /// depoyla kurar — kalıcı durumu olmayan cihaz. Kalıcılık isteyen her yol
+    /// [`Messenger::with_store`]'u kullanır; ürün kodunda kalıcı olmayan yapıcı YOKTUR.
+    ///
+    /// # Errors
+    ///
+    /// [`Messenger::with_store`] ile aynı.
+    #[cfg(test)]
+    pub(crate) fn new(transport: T) -> Result<Self, LimitsError> {
+        Self::with_store(transport, Arc::new(MemoryAppStore::new()))
     }
 
     /// Alttaki Transport.
@@ -353,7 +443,9 @@ impl<T: KamaTransport> Messenger<T> {
         self.peers.get(&peer).and_then(|state| state.session)
     }
 
-    /// Eşe Transport'un kabul ettiği, `RECEIPT(delivered)`'ı henüz gelmemiş TEXT sayısı.
+    /// Eşin outbox'ındaki, `RECEIPT(delivered)`'ı henüz gelmemiş TEXT sayısı. Motorun tanıdığı
+    /// eşler içindir: yeniden başlatmadan sonra eşin kalıcı outbox'ı eş motorda ilk göründüğünde
+    /// yüklenir (modül belgesi, "Kalıcı outbox"); o ana dek 0'dır.
     #[must_use]
     pub fn unacked_count(&self, peer: PeerRef) -> usize {
         self.peers.get(&peer).map_or(0, |state| state.outbox.len())
@@ -362,15 +454,15 @@ impl<T: KamaTransport> Messenger<T> {
     /// `KamaTransport::connect(peer, None)` (S1 K2, KARAR-1 idempotent). Aktif oturumun tutamacı
     /// `ConnectResult::Ready(h)` ile olay YAYINLANMADAN dönebildiği için burada benimsenir;
     /// `Pending` [`Messenger::poll`]'da okunan `Ready` ile çözülür. `early_unit` B2.5'indir; burada
-    /// verilmez.
+    /// verilmez. Motor eşi henüz tanımıyorsa önce eşin kalıcı outbox'ı yüklenir (modül belgesi,
+    /// "Kalıcı outbox").
     ///
     /// # Errors
     ///
-    /// [`MessengerError::PeerTableFull`] (Transport çağrılmaz) · [`MessengerError::Transport`].
+    /// [`MessengerError::PeerTableFull`] · [`MessengerError::Store`] (eşin outbox'ı yüklenemedi) —
+    /// ikisinde de Transport çağrılmaz · [`MessengerError::Transport`].
     pub fn connect(&mut self, peer: PeerRef) -> Result<ConnectResult, MessengerError> {
-        if !self.peers.contains_key(&peer) && self.peers.len() >= MAX_PEERS {
-            return Err(MessengerError::PeerTableFull);
-        }
+        materialize(&mut self.peers, &*self.store, peer)?;
         let result = self
             .transport
             .connect(peer, None)
@@ -387,37 +479,46 @@ impl<T: KamaTransport> Messenger<T> {
     ///
     /// # Errors
     ///
-    /// Denetim sırasıyla: [`MessengerError::PeerTableFull`] · [`MessengerError::OutboxFull`] ·
-    /// [`MessengerError::MsgIdExhausted`] · [`MessengerError::UnackedSpanFull`] ·
-    /// [`MessengerError::Encode`] · [`MessengerError::Transport`] (aktif ya da bekleyen eşe
-    /// `EarlyUnitConflict`, tavan `UnitTooLarge`, `Backpressure`). Hiçbiri `msg_id` tüketmez.
+    /// Denetim sırasıyla: [`MessengerError::PeerTableFull`] · [`MessengerError::Store`] (eşin
+    /// outbox'ı yüklenemedi) · [`MessengerError::OutboxFull`] · [`MessengerError::MsgIdExhausted`]
+    /// ya da [`MessengerError::Store`] (`msg_id` ayrılamadı) · [`MessengerError::UnackedSpanFull`] ·
+    /// [`MessengerError::Encode`] · [`MessengerError::OutboxFull`] ya da [`MessengerError::Store`]
+    /// (kayıt depoya yazılamadı) · [`MessengerError::Transport`] (aktif ya da bekleyen eşe
+    /// `EarlyUnitConflict`, tavan `UnitTooLarge`, `Backpressure`). Hiçbiri `msg_id` tüketmez ve
+    /// hiçbirinde kayıt outbox'a girmez (depo belirsizliği istisnası: [`MessengerError`]).
     pub fn connect_with_text(
         &mut self,
         peer: PeerRef,
         text: &str,
     ) -> Result<(ConnectResult, MsgId), MessengerError> {
-        if !self.peers.contains_key(&peer) && self.peers.len() >= MAX_PEERS {
-            return Err(MessengerError::PeerTableFull);
-        }
-        let probe = self.peers.get(&peer);
-        let msg_id = match probe {
-            Some(state) => state.next_send_id()?,
-            None => PeerState::new().next_send_id()?,
-        };
+        let state = materialize(&mut self.peers, &*self.store, peer)?;
+        let msg_id = state.next_send_id(&*self.store, peer)?;
         let message = AppMessage::Text {
             msg_id,
             text: text.to_owned(),
         };
         let unit = codec::encode(&message, &self.limits).map_err(MessengerError::Encode)?;
-        let result = self
-            .transport
-            .connect(peer, Some(unit.clone()))
-            .map_err(MessengerError::Transport)?;
-        let state = self.peers.entry(peer).or_insert_with(PeerState::new);
-        state.next_msg_id = msg_id.checked_add(1);
+        persist_unsent(&*self.store, &mut self.stats, peer, msg_id, &unit)?;
+        let result = match self.transport.connect(peer, Some(unit.clone())) {
+            Ok(result) => result,
+            Err(error) => {
+                forget_unsent(&*self.store, &mut self.stats, peer, msg_id);
+                return Err(MessengerError::Transport(error));
+            }
+        };
+        // Kayıt Transport'ta (K6): ayrılan `msg_id` tüketildi.
+        state.spare_msg_id = None;
         match result {
             ConnectResult::Pending(ticket) => {
-                state.early = Some((msg_id, unit));
+                // Transport bu erken metni yeni bir niyetle kabul etti (K6: bekleyen eşe
+                // `EarlyUnitConflict`): önceki erken metnin niyeti — olayı henüz okunmamış olsa da
+                // (ör. iptal) — bitmiştir. O metin EZİLMEZ, outbox'a "gönderilmemiş" olarak geçer.
+                state.release_early();
+                state.early = Some(EarlyText {
+                    ticket,
+                    msg_id,
+                    unit,
+                });
                 state.connecting = Some((ticket, ConnectPhase::Measuring));
             }
             ConnectResult::Ready(handle) => {
@@ -443,7 +544,8 @@ impl<T: KamaTransport> Messenger<T> {
 
     /// [B2.5] Eşin bekleyen niyetini iptal eder (`KamaTransport::cancel`). Bekleyen niyet yoksa
     /// `false` (olay yok). Sonuç `ConnectAbandoned(ticket, Cancelled)` olayıyla gelir; niyetin
-    /// erken metni o olayla outbox'a geçer.
+    /// erken metni o olayla — olay okunmadan eşe başka biletli bir niyet açılırsa o anda — outbox'a
+    /// "gönderilmemiş" olarak geçer.
     pub fn cancel_connect(&mut self, peer: PeerRef) -> bool {
         let Some((ticket, _)) = self.peers.get(&peer).and_then(|s| s.connecting) else {
             return false;
@@ -471,18 +573,21 @@ impl<T: KamaTransport> Messenger<T> {
         }
     }
 
-    /// `Pending(ticket)`: eşin bekleyen niyeti (faz olaylarla güncellenir).
+    /// `Pending(ticket)`: eşin bekleyen niyeti (faz olaylarla güncellenir). Eşin durumu
+    /// [`Messenger::connect`]'te, Transport çağrılmadan önce kuruldu. Erken metin başka bir bilete
+    /// aitse o niyet bitmiştir (bir eşin en çok bir bekleyen niyeti vardır, KARAR-1; ör. iptalin
+    /// olayı henüz okunmadı): metin outbox'a "gönderilmemiş" olarak geçer.
     fn note_pending(&mut self, peer: PeerRef, ticket: ConnectTicket) {
-        let known_peers = self.peers.len();
-        let state = match self.peers.entry(peer) {
-            Entry::Occupied(slot) => slot.into_mut(),
-            Entry::Vacant(slot) => {
-                if known_peers >= MAX_PEERS {
-                    return;
-                }
-                slot.insert(PeerState::new())
-            }
+        let Some(state) = self.peers.get_mut(&peer) else {
+            return;
         };
+        if state
+            .early
+            .as_ref()
+            .is_some_and(|early| early.ticket != ticket)
+        {
+            state.release_early();
+        }
         if state.connecting.map(|(t, _)| t) != Some(ticket) {
             state.connecting = Some((ticket, ConnectPhase::Measuring));
         }
@@ -496,8 +601,12 @@ impl<T: KamaTransport> Messenger<T> {
     ///
     /// Denetim sırasıyla: [`MessengerError::PeerTableFull`] (izlenmeyen eş, tablo dolu) ya da
     /// [`MessengerError::NoSession`] · [`MessengerError::OutboxFull`] ·
-    /// [`MessengerError::MsgIdExhausted`] · [`MessengerError::UnackedSpanFull`] ·
-    /// [`MessengerError::Encode`] · [`MessengerError::Transport`]. Hiçbiri `msg_id` tüketmez.
+    /// [`MessengerError::MsgIdExhausted`] ya da [`MessengerError::Store`] (`msg_id` ayrılamadı) ·
+    /// [`MessengerError::UnackedSpanFull`] · [`MessengerError::Encode`] ·
+    /// [`MessengerError::OutboxFull`] ya da [`MessengerError::Store`] (kayıt depoya yazılamadı) ·
+    /// [`MessengerError::Transport`]. Hiçbiri `msg_id` tüketmez; hiçbirinde kayıt outbox'a girmez
+    /// (depo belirsizliği istisnası: [`MessengerError`]) ya da Transport'a verilmez (Transport'un
+    /// kendi reddi hariç).
     pub fn send_text(&mut self, peer: PeerRef, text: &str) -> Result<MsgId, MessengerError> {
         let Some(state) = self.peers.get_mut(&peer) else {
             return Err(if self.peers.len() >= MAX_PEERS {
@@ -507,15 +616,20 @@ impl<T: KamaTransport> Messenger<T> {
             });
         };
         let handle = state.session.ok_or(MessengerError::NoSession)?;
-        let msg_id = state.next_send_id()?;
+        let msg_id = state.next_send_id(&*self.store, peer)?;
         let message = AppMessage::Text {
             msg_id,
             text: text.to_owned(),
         };
         let unit = codec::encode(&message, &self.limits).map_err(MessengerError::Encode)?;
-        self.transport
+        persist_unsent(&*self.store, &mut self.stats, peer, msg_id, &unit)?;
+        if let Err(error) = self
+            .transport
             .send(handle, unit.clone(), DeliveryPolicy::Reliable)
-            .map_err(MessengerError::Transport)?;
+        {
+            forget_unsent(&*self.store, &mut self.stats, peer, msg_id);
+            return Err(MessengerError::Transport(error));
+        }
         state.commit_send(msg_id, unit, handle);
         Ok(msg_id)
     }
@@ -552,19 +666,19 @@ impl<T: KamaTransport> Messenger<T> {
                 }
             }
             SessionEvent::ConnectAbandoned(ticket, _) => {
-                if let Some(state) = self.state_of_ticket(ticket) {
-                    state.connecting = None;
-                    // S1 §4: `early_unit` teslim edilmemiştir; eşin sıradaki oturumunda AYNI
-                    // `msg_id`'yle (aynı baytlar) yollanır.
-                    if let Some((msg_id, unit)) = state.early.take() {
-                        state.outbox.insert(
-                            msg_id,
-                            OutboxEntry {
-                                unit,
-                                sent_on: None,
-                            },
-                        );
-                        state.resend_pending = true;
+                // Niyet ve erken metin AYRI eşlenir: erken metin kendi biletine bağlıdır (modül
+                // belgesi, "Bağlantı"). S1 §4: `early_unit` teslim edilmemiştir; eşin sıradaki
+                // oturumunda AYNI `msg_id`'yle (aynı baytlar) yollanır.
+                for state in self.peers.values_mut() {
+                    if state.connecting.is_some_and(|(t, _)| t == ticket) {
+                        state.connecting = None;
+                    }
+                    if state
+                        .early
+                        .as_ref()
+                        .is_some_and(|early| early.ticket == ticket)
+                    {
+                        state.release_early();
                     }
                 }
             }
@@ -581,17 +695,18 @@ impl<T: KamaTransport> Messenger<T> {
 
     /// `handle`'ı `peer`'in güncel tutamacı yapar (`Ready` olayı ya da `ConnectResult::Ready`).
     /// Önceki güncel tutamaç emekliye ayrılır; RECEIPT'siz kayıtlar yeni tutamaçtan yeniden
-    /// gönderilir (S1 K7).
+    /// gönderilir (S1 K7). Motorun tanımadığı eşin kalıcı outbox'ı burada yüklenir; yüklenemezse eş
+    /// kurulmaz ve tutamaç benimsenmez (modül belgesi, "Kalıcı outbox").
     fn adopt(&mut self, handle: SessionHandle, peer: PeerRef) {
-        let known_peers = self.peers.len();
-        let state = match self.peers.entry(peer) {
-            Entry::Occupied(slot) => slot.into_mut(),
-            Entry::Vacant(slot) => {
-                if known_peers >= MAX_PEERS {
-                    self.stats.peers_refused += 1;
-                    return;
-                }
-                slot.insert(PeerState::new())
+        let state = match materialize(&mut self.peers, &*self.store, peer) {
+            Ok(state) => state,
+            Err(MessengerError::PeerTableFull) => {
+                self.stats.peers_refused += 1;
+                return;
+            }
+            Err(_) => {
+                self.stats.store_errors += 1;
+                return;
             }
         };
         if state.session == Some(handle) {
@@ -599,15 +714,18 @@ impl<T: KamaTransport> Messenger<T> {
             return;
         }
         // Eşe oturum geldi: bekleyen niyet çözüldü (kendi niyetimiz ya da glare'de eşinki).
-        state.connecting = None;
-        // K6: erken metin Transport'tadır ve bu oturumda ilk normal `send` olarak gider — burada
-        // YOLLANMAZ, yalnız RECEIPT ve oturum değişimi için "h'ye gönderilmiş" olarak kaydedilir.
-        if let Some((msg_id, unit)) = state.early.take() {
+        let resolved = state.connecting.take().map(|(ticket, _)| ticket);
+        // K6: erken metin YALNIZ onu taşıyan niyet bu oturumla çözüldüyse Transport'tadır ve bu
+        // oturumda ilk normal `send` olarak gider — o durumda burada YOLLANMAZ, yalnız RECEIPT ve
+        // oturum değişimi için "h'ye gönderilmiş" olarak kaydedilir. Başka bir bilete aitse niyeti
+        // bitmiştir: "gönderilmemiş" olarak girer ve aşağıda bu oturumdan gönderilir.
+        if let Some(early) = state.early.take() {
+            let sent_on = (resolved == Some(early.ticket)).then_some(handle);
             state.outbox.insert(
-                msg_id,
+                early.msg_id,
                 OutboxEntry {
-                    unit,
-                    sent_on: Some(handle),
+                    unit: early.unit,
+                    sent_on,
                 },
             );
         }
@@ -696,30 +814,48 @@ impl<T: KamaTransport> Messenger<T> {
         }
     }
 
-    /// `RECEIPT(delivered)`: outbox'taki kaydı kapatır — `msg_id` başına tam bir [`Delivered`].
+    /// `RECEIPT(delivered)`: outbox'taki kaydı bellekten ve depodan kapatır — `msg_id` başına
+    /// (motor ömründe) tam bir [`Delivered`]. Kalıcı kopya silinemezse teslim yine gerçektir
+    /// (olay üretilir, `store_errors` artar); kayıt depoda kalır, yeniden başlatmadan sonra bir kez
+    /// fazladan gider ve alıcının dedup'ında söner — yanlış "teslim edildi" doğmaz. Bellekte
+    /// karşılığı olmayan (tekrar ya da bilinmeyen) RECEIPT olay üretmez ama kalıcı silmeyi
+    /// idempotent olarak yineler: önceki bir silme hatasından kalan kopya böyle kapanır. Bellekte
+    /// bekleyen erken metnin kalıcı kopyasına dokunulmaz.
     ///
     /// [`Delivered`]: MessengerEvent::Delivered
     fn on_receipt(&mut self, peer: PeerRef, ref_msg_id: MsgId) -> Option<MessengerEvent> {
         let state = self.peers.get_mut(&peer)?;
-        if state.outbox.remove(&ref_msg_id).is_some() {
-            Some(MessengerEvent::Delivered {
-                peer,
-                msg_id: ref_msg_id,
-            })
-        } else {
+        if state.outbox.remove(&ref_msg_id).is_none() {
             self.stats.receipts_ignored += 1;
-            None
+            let early_pending = state
+                .early
+                .as_ref()
+                .is_some_and(|early| early.msg_id == ref_msg_id);
+            if !early_pending && self.store.outbox_remove(peer, ref_msg_id).is_err() {
+                self.stats.store_errors += 1;
+            }
+            return None;
         }
+        if self.store.outbox_remove(peer, ref_msg_id).is_err() {
+            self.stats.store_errors += 1;
+        }
+        Some(MessengerEvent::Delivered {
+            peer,
+            msg_id: ref_msg_id,
+        })
     }
 }
 
-/// Eş başına durum — oturumlardan bağımsız (S2).
+/// Eş başına durum — oturumlardan bağımsız (S2). Yalnız [`materialize`] kurar: outbox aynası
+/// HER ZAMAN depodaki kalıcı outbox'tan başlar.
 struct PeerState {
     /// Gönderimin gideceği güncel tutamaç.
     session: Option<SessionHandle>,
-    /// Sıradaki `msg_id`; `None` = `u32` alanı tükendi.
-    next_msg_id: Option<MsgId>,
-    /// Transport'un kabul ettiği, RECEIPT bekleyen kayıtlar; `msg_id` sırasıyla
+    /// Depodan ayrılmış ama henüz hiçbir kayda verilmemiş `msg_id` (ayırmadan sonraki bir adım
+    /// hata verdi): sıradaki gönderim onu kullanır, yerel hata `msg_id` yakmaz. Kalıcı DEĞİLDİR;
+    /// süreç ölürse değer yanar (alıcıda boşluk).
+    spare_msg_id: Option<MsgId>,
+    /// RECEIPT bekleyen kayıtlar — depodaki kalıcı outbox'ın aynası; `msg_id` sırasıyla
     /// (≤ [`MAX_OUTBOX_UNACKED`]).
     outbox: BTreeMap<MsgId, OutboxEntry>,
     /// Outbox'ta güncel tutamaca henüz kabul ettirilememiş kayıt var.
@@ -728,39 +864,88 @@ struct PeerState {
     dedup: DedupWindow,
     /// [B2.5] Bekleyen niyet: bilet + son `ConnectProgress` fazı.
     connecting: Option<(ConnectTicket, ConnectPhase)>,
-    /// [B2.5] Transport'ta duran erken metin (S1 K6): `Ready`'de outbox'a "gönderilmiş",
-    /// `ConnectAbandoned`'da "gönderilmemiş" olarak geçer.
-    early: Option<(MsgId, PreparedUnit)>,
+    /// [B2.5] Transport'ta duran erken metin (S1 K6), kendi niyetinin biletiyle: o niyet `Ready`
+    /// ile çözülürse outbox'a "gönderilmiş", niyet biterse "gönderilmemiş" olarak geçer (modül
+    /// belgesi, "Bağlantı").
+    early: Option<EarlyText>,
+}
+
+/// [B2.5] Erken metin ve onu taşıyan niyet (S1 K6). Bilet, metnin hangi niyetle Transport'a
+/// verildiğini kaydeder: `ConnectAbandoned` ve `Ready` metni ANCAK bu biletle eşler.
+struct EarlyText {
+    /// Metni `early_unit` olarak taşıyan niyetin bileti.
+    ticket: ConnectTicket,
+    /// Metnin `msg_id`'si (depodan ayrıldı, kalıcı kopyası outbox'ta).
+    msg_id: MsgId,
+    /// Kodlanmış TEXT kaydı.
+    unit: PreparedUnit,
 }
 
 /// RECEIPT bekleyen kayıt.
 struct OutboxEntry {
     /// Kodlanmış TEXT kaydı: yeniden gönderim AYNI baytları (aynı `msg_id`) taşır.
     unit: PreparedUnit,
-    /// Kaydı en son kabul eden tutamaç; `None` = hiçbir tutamaca kabul ettirilmedi (vazgeçilen
-    /// niyetin erken metni).
+    /// Kaydı en son kabul eden tutamaç (kalıcı DEĞİL); `None` = bu süreçte hiçbir tutamaca kabul
+    /// ettirilmedi (vazgeçilen niyetin erken metni ya da depodan yüklenmiş kayıt).
     sent_on: Option<SessionHandle>,
 }
 
 impl PeerState {
-    fn new() -> Self {
+    /// Depodan yüklenmiş outbox'la eş durumu: kayıtlar bu süreçte hiçbir tutamaca gönderilmemiştir
+    /// ve eşin sıradaki oturumunda yeniden gönderilir.
+    fn restored(units: Vec<OutboxUnit>) -> Self {
+        let outbox: BTreeMap<MsgId, OutboxEntry> = units
+            .into_iter()
+            .map(|record| {
+                let msg_id = record.msg_id();
+                let entry = OutboxEntry {
+                    unit: record.into_unit(),
+                    sent_on: None,
+                };
+                (msg_id, entry)
+            })
+            .collect();
         Self {
             session: None,
-            next_msg_id: Some(FIRST_MSG_ID),
-            outbox: BTreeMap::new(),
-            resend_pending: false,
+            spare_msg_id: None,
+            resend_pending: !outbox.is_empty(),
+            outbox,
             dedup: DedupWindow::new(),
             connecting: None,
             early: None,
         }
     }
 
-    /// Gönderim ön denetimleri; atanacak `msg_id`'yi döndürür (henüz TÜKETMEZ).
-    fn next_send_id(&self) -> Result<MsgId, MessengerError> {
+    /// Gönderim ön denetimleri; atanacak `msg_id`'yi döndürür (henüz TÜKETMEZ). Değer önce yedekten,
+    /// yoksa depodan gelir (`reserve_next` — değer dönmeden kalıcıdır) ve kayıt Transport'a kabul
+    /// ettirilene dek yedekte durur ([`PeerState::commit_send`]).
+    fn next_send_id(
+        &mut self,
+        store: &dyn AppStore,
+        peer: PeerRef,
+    ) -> Result<MsgId, MessengerError> {
         if self.outbox.len() >= MAX_OUTBOX_UNACKED {
             return Err(MessengerError::OutboxFull);
         }
-        let msg_id = self.next_msg_id.ok_or(MessengerError::MsgIdExhausted)?;
+        let msg_id = match self.spare_msg_id {
+            Some(spare) => spare,
+            None => {
+                let msg_id = reserve_msg_id(store, peer)?;
+                // Depo sözleşmesi (değerler kesin artar) eşin bekleyen her kaydının `msg_id`'sinden
+                // büyük bir değer verir. Vermezse kayıt bekleyen bir kaydın yerine geçer ve onun
+                // RECEIPT'i yenisini kapatırdı (#105 sınıfı): değer kullanılmaz.
+                let newest_pending = self
+                    .outbox
+                    .last_key_value()
+                    .map(|(&newest, _)| newest)
+                    .max(self.early.as_ref().map(|early| early.msg_id));
+                if newest_pending.is_some_and(|newest| msg_id <= newest) {
+                    return Err(MessengerError::Store(AppStoreError::Corrupt));
+                }
+                self.spare_msg_id = Some(msg_id);
+                msg_id
+            }
+        };
         if let Some((&oldest, _)) = self.outbox.first_key_value() {
             // Outbox'taki her `msg_id` atanacaktan küçüktür; `checked_sub` yalnız bozulmuş bir
             // durumda `None` verir ve o da reddedilir (fail-closed).
@@ -774,7 +959,8 @@ impl PeerState {
         Ok(msg_id)
     }
 
-    /// Transport kaydı kabul etti: `msg_id` tüketilir, kayıt outbox'a girer.
+    /// Transport kaydı kabul etti: `msg_id` tüketilir (yedek boşalır), kayıt outbox aynasına girer
+    /// (kalıcı kopyası Transport'tan önce yazıldı).
     fn commit_send(&mut self, msg_id: MsgId, unit: PreparedUnit, handle: SessionHandle) {
         self.outbox.insert(
             msg_id,
@@ -783,7 +969,106 @@ impl PeerState {
                 sent_on: Some(handle),
             },
         );
-        self.next_msg_id = msg_id.checked_add(1);
+        self.spare_msg_id = None;
+    }
+
+    /// Erken metnin niyeti bitti (vazgeçildi ya da yerini başka biletli bir niyet aldı): birim
+    /// teslim edilmemiştir (S1 §4). Kayıt outbox aynasına "hiçbir tutamaca gönderilmemiş" olarak
+    /// geçer ve eşin sıradaki oturumunda AYNI `msg_id`'yle (aynı bayt) gider; kalıcı kopyası
+    /// Transport'tan önce yazıldığı için zaten depodadır. Erken metin yoksa etkisizdir.
+    fn release_early(&mut self) {
+        if let Some(early) = self.early.take() {
+            self.outbox.insert(
+                early.msg_id,
+                OutboxEntry {
+                    unit: early.unit,
+                    sent_on: None,
+                },
+            );
+            self.resend_pending = true;
+        }
+    }
+}
+
+/// `peer`'in durumu; motor eşi henüz tanımıyorsa eşin kalıcı outbox'ı depodan yüklenerek kurulur
+/// (tablo tavanı denetimi önce). Yükleme başarısızsa eş KURULMAZ: eksik bir aynayla yeni gönderime
+/// izin vermek, yüklenemeyen eski kayıtları alıcının dedup penceresinin altına itebilir ve onlara
+/// yanlış "teslim edildi" ürettirebilirdi (pencere-altı = fail-closed tekrar + RECEIPT).
+///
+/// # Errors
+///
+/// [`MessengerError::PeerTableFull`] · [`MessengerError::Store`] — iki durumda da tablo değişmez.
+fn materialize<'a>(
+    peers: &'a mut BTreeMap<PeerRef, PeerState>,
+    store: &dyn AppStore,
+    peer: PeerRef,
+) -> Result<&'a mut PeerState, MessengerError> {
+    let known_peers = peers.len();
+    match peers.entry(peer) {
+        Entry::Occupied(slot) => Ok(slot.into_mut()),
+        Entry::Vacant(slot) => {
+            if known_peers >= MAX_PEERS {
+                return Err(MessengerError::PeerTableFull);
+            }
+            let units = store.outbox_list(peer).map_err(MessengerError::Store)?;
+            // Depo sözleşmesi eş başına en çok `MAX_OUTBOX_UNACKED` kayıt verir; fazlası bozuk
+            // depodur (sınır, aynaya almadan önce).
+            if units.len() > MAX_OUTBOX_UNACKED {
+                return Err(MessengerError::Store(AppStoreError::Corrupt));
+            }
+            Ok(slot.insert(PeerState::restored(units)))
+        }
+    }
+}
+
+/// Depodan eşin sıradaki `msg_id`'si. Tükenme kalıcıdır ve sarma yoktur.
+///
+/// # Errors
+///
+/// [`MessengerError::MsgIdExhausted`] (depo `Exhausted`) · [`MessengerError::Store`] — değer
+/// ayrılmamıştır ya da (`u32`'ye sığmayan, depo sözleşmesine aykırı değer) kullanılamaz.
+fn reserve_msg_id(store: &dyn AppStore, peer: PeerRef) -> Result<MsgId, MessengerError> {
+    let value = store
+        .reserve_next(peer, CounterKind::MsgId)
+        .map_err(|error| match error {
+            AppStoreError::Exhausted => MessengerError::MsgIdExhausted,
+            other => MessengerError::Store(other),
+        })?;
+    MsgId::try_from(value).map_err(|_| MessengerError::Store(AppStoreError::Corrupt))
+}
+
+/// Yazma önce: kayıt Transport'a verilmeden ÖNCE eşin kalıcı outbox'ına yazılır. Yazılamazsa kayıt
+/// Transport'a verilmez; depoda kalmış olabilecek kopya geri alınır ([`forget_unsent`]).
+///
+/// # Errors
+///
+/// [`MessengerError::OutboxFull`] (depo outbox tavanı; hiçbir şey yazılmadı) ·
+/// [`MessengerError::Store`].
+fn persist_unsent(
+    store: &dyn AppStore,
+    stats: &mut MessengerStats,
+    peer: PeerRef,
+    msg_id: MsgId,
+    unit: &PreparedUnit,
+) -> Result<(), MessengerError> {
+    let record = OutboxUnit::new(msg_id, unit.clone()).map_err(MessengerError::Store)?;
+    match store.outbox_put(peer, &record) {
+        Ok(()) => Ok(()),
+        Err(AppStoreError::OutboxFull) => Err(MessengerError::OutboxFull),
+        Err(error) => {
+            // Depo sözleşmesi: `Err` sonrası yazma kalıcı olmuş OLABİLİR.
+            forget_unsent(store, stats, peer, msg_id);
+            Err(MessengerError::Store(error))
+        }
+    }
+}
+
+/// Transport'a verilmeyen kaydın kalıcı kopyasını geri alır (tek deneme). Başarısızsa kayıt depoda
+/// kalır ve `store_errors` artar; `msg_id` yedekte durduğu için eşin sıradaki gönderimi aynı
+/// `msg_id`'yle onun yerine geçer (modül belgesi, "Beyanlı sınırlar").
+fn forget_unsent(store: &dyn AppStore, stats: &mut MessengerStats, peer: PeerRef, msg_id: MsgId) {
+    if store.outbox_remove(peer, msg_id).is_err() {
+        stats.store_errors += 1;
     }
 }
 
@@ -940,14 +1225,83 @@ impl DedupWindow {
 
 #[cfg(test)]
 mod tests {
-    //! Pencere sınırları, sayaç tükenmesi ve tablo tavanları — uçtan uca akış
-    //! `tests/text_receipt.rs`'te.
+    //! Pencere sınırları, sayaç tükenmesi, depo sözleşmesi ihlalleri ve tablo tavanları — uçtan
+    //! uca akış (yeniden başlatma, kalıcı outbox, depo hatası dahil) `tests/text_receipt.rs`'te.
+
+    use std::sync::Mutex;
 
     use super::*;
+    use crate::store::FIRST_COUNTER_VALUE;
     use kama_contracts::s1::{CompressionPolicy, ConnectTicket, TransportCapabilities};
 
     /// Test parametresi (normatif değil).
     const TEST_MAX_PLAINTEXT_UNIT_BYTES: u32 = 1024;
+
+    /// `msg_id` sayacı testin koyduğu değerden süren (tükenme kuralı ürün depolarıyla aynı:
+    /// [`CounterKind::advance`]) ve istenirse outbox listesini sabit veren depo; geri kalan her şey
+    /// bellek içi depoya gider.
+    struct TestStore {
+        next: Mutex<u64>,
+        listed: Option<Vec<OutboxUnit>>,
+        rest: MemoryAppStore,
+    }
+
+    impl TestStore {
+        fn seeded(next: u64) -> Self {
+            Self {
+                next: Mutex::new(next),
+                listed: None,
+                rest: MemoryAppStore::new(),
+            }
+        }
+
+        fn listing(units: Vec<OutboxUnit>) -> Self {
+            Self {
+                listed: Some(units),
+                ..Self::seeded(FIRST_COUNTER_VALUE)
+            }
+        }
+
+        fn set_next(&self, next: u64) {
+            *self.next.lock().expect("kilit zehirlenmedi") = next;
+        }
+    }
+
+    impl AppStore for TestStore {
+        fn reserve_next(&self, _peer: PeerRef, kind: CounterKind) -> Result<u64, AppStoreError> {
+            let mut next = self.next.lock().expect("kilit zehirlenmedi");
+            let value = *next;
+            *next = kind.advance(value)?;
+            Ok(value)
+        }
+
+        fn dedup_load(&self, peer: PeerRef) -> Result<crate::store::DedupWindow, AppStoreError> {
+            self.rest.dedup_load(peer)
+        }
+
+        fn dedup_save(
+            &self,
+            peer: PeerRef,
+            window: &crate::store::DedupWindow,
+        ) -> Result<(), AppStoreError> {
+            self.rest.dedup_save(peer, window)
+        }
+
+        fn outbox_put(&self, peer: PeerRef, unit: &OutboxUnit) -> Result<(), AppStoreError> {
+            self.rest.outbox_put(peer, unit)
+        }
+
+        fn outbox_remove(&self, peer: PeerRef, msg_id: MsgId) -> Result<bool, AppStoreError> {
+            self.rest.outbox_remove(peer, msg_id)
+        }
+
+        fn outbox_list(&self, peer: PeerRef) -> Result<Vec<OutboxUnit>, AppStoreError> {
+            match &self.listed {
+                Some(units) => Ok(units.clone()),
+                None => self.rest.outbox_list(peer),
+            }
+        }
+    }
 
     /// Hiçbir şey teslim etmeyen, her gönderimi kabul eden Transport (tablo tavanları için).
     struct NullTransport;
@@ -976,6 +1330,54 @@ mod tests {
             _unit: PreparedUnit,
             _policy: DeliveryPolicy,
         ) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn recv(&mut self) -> Option<Delivered> {
+            None
+        }
+
+        fn poll_event(&mut self) -> Option<SessionEvent> {
+            None
+        }
+
+        fn close(&mut self, _session: SessionHandle) -> Result<(), TransportError> {
+            Err(TransportError::UnknownSession)
+        }
+
+        fn cancel(&mut self, _ticket: ConnectTicket) {}
+    }
+
+    /// [`RecordingTransport::connect`]'in her zaman döndürdüğü bilet.
+    const RECORDING_TICKET: ConnectTicket = ConnectTicket::from_raw(1);
+
+    /// Her gönderimi kabul eden ve hangi tutamaca gittiğini kaydeden Transport; `connect` her
+    /// zaman `Pending(RECORDING_TICKET)` döner, hiçbir şey teslim etmez.
+    #[derive(Default)]
+    struct RecordingTransport {
+        sent_on: Vec<SessionHandle>,
+    }
+
+    impl KamaTransport for RecordingTransport {
+        fn capabilities(&self) -> TransportCapabilities {
+            NullTransport.capabilities()
+        }
+
+        fn connect(
+            &mut self,
+            _peer: PeerRef,
+            _early_unit: Option<PreparedUnit>,
+        ) -> Result<ConnectResult, TransportError> {
+            Ok(ConnectResult::Pending(RECORDING_TICKET))
+        }
+
+        fn send(
+            &mut self,
+            session: SessionHandle,
+            _unit: PreparedUnit,
+            _policy: DeliveryPolicy,
+        ) -> Result<(), TransportError> {
+            self.sent_on.push(session);
             Ok(())
         }
 
@@ -1079,30 +1481,190 @@ mod tests {
 
     #[test]
     fn msg_id_exhaustion_is_typed_and_never_wraps() {
-        let mut state = PeerState::new();
-        assert_eq!(state.next_send_id(), Ok(FIRST_MSG_ID));
-        state.next_msg_id = Some(MsgId::MAX);
-        let last = state.next_send_id().expect("son msg_id kullanılabilir");
+        let p = peer(0);
+        let mut state = PeerState::restored(Vec::new());
+        assert_eq!(
+            state.next_send_id(&MemoryAppStore::new(), p),
+            Ok(FIRST_MSG_ID),
+            "taze depo"
+        );
+        let store = TestStore::seeded(u64::from(MsgId::MAX));
+        let mut state = PeerState::restored(Vec::new());
+        let last = state
+            .next_send_id(&store, p)
+            .expect("son msg_id kullanılabilir");
         assert_eq!(last, MsgId::MAX);
         state.commit_send(last, unit(), handle(1));
-        assert_eq!(state.next_send_id(), Err(MessengerError::MsgIdExhausted));
-        // RECEIPT outbox'u boşaltsa da sarma yok.
+        assert_eq!(
+            state.next_send_id(&store, p),
+            Err(MessengerError::MsgIdExhausted)
+        );
+        // RECEIPT outbox'u boşaltsa da sarma yok: tükenme depoda kalıcıdır.
         state.outbox.clear();
-        assert_eq!(state.next_send_id(), Err(MessengerError::MsgIdExhausted));
+        assert_eq!(
+            state.next_send_id(&store, p),
+            Err(MessengerError::MsgIdExhausted)
+        );
+        assert_eq!(state.spare_msg_id, None, "ayrılamayan değer yedeğe girmez");
     }
 
     #[test]
     fn unacked_span_stays_inside_the_dedup_window() {
-        let mut state = PeerState::new();
-        let oldest = state.next_send_id().expect("ilk gönderim");
+        let p = peer(0);
+        let store = TestStore::seeded(FIRST_COUNTER_VALUE);
+        let mut state = PeerState::restored(Vec::new());
+        let oldest = state.next_send_id(&store, p).expect("ilk gönderim");
         state.commit_send(oldest, unit(), handle(1));
-        state.next_msg_id = Some(oldest + MSG_DEDUP_WINDOW - 1);
-        assert_eq!(state.next_send_id(), Ok(oldest + MSG_DEDUP_WINDOW - 1));
-        state.next_msg_id = Some(oldest + MSG_DEDUP_WINDOW);
+        store.set_next(u64::from(oldest + MSG_DEDUP_WINDOW - 1));
+        let edge = state.next_send_id(&store, p).expect("pencerenin son üyesi");
+        assert_eq!(edge, oldest + MSG_DEDUP_WINDOW - 1);
+        state.commit_send(edge, unit(), handle(1));
+        // Sıradaki değer `oldest`'u alıcı penceresinin altına iterdi: tipli geri basınç.
         assert_eq!(
-            state.next_send_id(),
+            state.next_send_id(&store, p),
             Err(MessengerError::UnackedSpanFull { oldest })
         );
+        // Red değeri yakmadı: `oldest`'un RECEIPT'i gelince AYNI değer kullanılır, depo bir daha
+        // sorulmaz.
+        state.outbox.remove(&oldest);
+        assert_eq!(state.next_send_id(&store, p), Ok(oldest + MSG_DEDUP_WINDOW));
+        assert_eq!(
+            store.reserve_next(p, CounterKind::MsgId),
+            Ok(u64::from(oldest + MSG_DEDUP_WINDOW) + 1)
+        );
+    }
+
+    /// Kodlanmış TEXT kaydının `msg_id`'si ve metni.
+    fn text_of(unit: &PreparedUnit, limits: &AmpLimits) -> (MsgId, String) {
+        match codec::decode(&unit.bytes, limits) {
+            Ok(AppMessage::Text { msg_id, text }) => (msg_id, text),
+            other => panic!("TEXT bekleniyordu: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_store_that_repeats_a_pending_msg_id_is_corrupt_and_overwrites_nothing() {
+        let p = peer(0);
+        let seeded = Arc::new(TestStore::seeded(5));
+        let store: Arc<dyn AppStore> = seeded.clone();
+        let mut messenger = Messenger::with_store(NullTransport, store).expect("limitler geçerli");
+        messenger.adopt(handle(1), p);
+        let five = messenger.send_text(p, "bekleyen").expect("ilk gönderim");
+        assert_eq!(five, 5);
+        // Sözleşme ihlali (depo geri sardı): bekleyen kaydın değeri yeniden verildi. Denetim
+        // olmasaydı yeni kayıt bekleyenin yerine geçerdi (bellekte ve depoda) ve bekleyenin
+        // RECEIPT'i yenisini kapatırdı.
+        seeded.set_next(u64::from(five));
+        assert_eq!(
+            messenger.send_text(p, "ezen"),
+            Err(MessengerError::Store(AppStoreError::Corrupt))
+        );
+        let state = &messenger.peers[&p];
+        assert_eq!(state.outbox.len(), 1);
+        assert_eq!(
+            text_of(&state.outbox[&five].unit, messenger.limits()),
+            (five, "bekleyen".to_owned()),
+            "bellekteki kayıt ezilmedi"
+        );
+        let persisted = seeded.outbox_list(p).expect("depo okunur");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(
+            text_of(persisted[0].unit(), messenger.limits()),
+            (five, "bekleyen".to_owned()),
+            "depodaki kayıt ezilmedi"
+        );
+        assert_eq!(state.spare_msg_id, None, "geçersiz değer yedeğe girmez");
+
+        // Bellekte bekleyen erken metnin değeri de bekleyen sayılır.
+        let mut state = PeerState::restored(Vec::new());
+        state.early = Some(EarlyText {
+            ticket: ConnectTicket::from_raw(0),
+            msg_id: 7,
+            unit: unit(),
+        });
+        let repeating = TestStore::seeded(7);
+        assert_eq!(
+            state.next_send_id(&repeating, p),
+            Err(MessengerError::Store(AppStoreError::Corrupt))
+        );
+        assert_eq!(state.spare_msg_id, None);
+        assert_eq!(state.next_send_id(&repeating, p), Ok(8));
+    }
+
+    #[test]
+    fn an_outbox_listing_over_the_cap_is_corrupt_and_builds_no_peer() {
+        let units: Vec<OutboxUnit> = (0..=MAX_OUTBOX_UNACKED)
+            .map(|n| {
+                let msg_id = MsgId::try_from(n).expect("küçük sayı");
+                OutboxUnit::new(msg_id, unit()).expect("sınır içinde")
+            })
+            .collect();
+        let store = Arc::new(TestStore::listing(units));
+        let mut messenger = Messenger::with_store(NullTransport, store).expect("limitler geçerli");
+        assert_eq!(
+            messenger.connect(peer(0)),
+            Err(MessengerError::Store(AppStoreError::Corrupt))
+        );
+        assert!(messenger.peers.is_empty(), "çağrı yolunda eş kurulmadı");
+        // Olay yolu: eş kurulmaz, tutamaç benimsenmez, hata sayılır.
+        messenger.adopt(handle(1), peer(0));
+        assert!(messenger.peers.is_empty(), "olay yolunda eş kurulmadı");
+        assert_eq!(messenger.peer_of(handle(1)), None);
+        assert_eq!(messenger.stats().store_errors, 1);
+    }
+
+    /// K4G-07 (inceleme, mutasyon M3): `adopt` erken metni YALNIZ onu taşıyan niyet bu oturumla
+    /// çözüldüyse "h'ye gönderilmiş" sayar ve o durumda h'den YOLLAMAZ (Transport onu h'de ilk
+    /// normal `send` olarak yollar, K6). Çözülen niyet erken metnin niyeti değilse (bekleyen niyet
+    /// kaydı yok — ör. eş-başlatımlı oturum — ya da başka bilet) Transport metni bu oturumda
+    /// taşımıyordur: kayıt "gönderilmemiş" girer ve h'den TAM BİR KEZ gönderilir. Genel API bu
+    /// durumları `adopt`'tan önce (`note_pending`, `ConnectAbandoned`) çözer; test `adopt`'un kendi
+    /// kuralını sabitler: çözülen bilet, `adopt` anındaki `connecting` kaydıdır.
+    ///
+    /// M3 (`sent_on = Some(handle)`, bilete bakmadan) bu testi KIRMIZI yapar: "niyet kaydı yok" ve
+    /// "başka bilet" durumlarında kayıt "gönderilmiş" sayılır, h'ye hiçbir gönderim olmaz
+    /// (`sent_on` boş, `resent_on_new_session` 0) ve metin bir sonraki oturum değişimine dek
+    /// takılır.
+    #[test]
+    fn adopt_marks_the_early_text_sent_only_for_its_own_ticket() {
+        let p = peer(0);
+        let h = handle(9);
+        for (case, resolved) in [
+            ("bilet eşit", Some(RECORDING_TICKET)),
+            ("bekleyen niyet kaydı yok", None),
+            ("başka bilet", Some(ConnectTicket::from_raw(2))),
+        ] {
+            let mut messenger =
+                Messenger::new(RecordingTransport::default()).expect("limitler geçerli");
+            let (result, msg_id) = messenger
+                .connect_with_text(p, "erken")
+                .expect("niyet açıldı");
+            assert_eq!(result, ConnectResult::Pending(RECORDING_TICKET), "{case}");
+            messenger.peers.get_mut(&p).expect("eş kuruldu").connecting =
+                resolved.map(|ticket| (ticket, ConnectPhase::Measuring));
+
+            messenger.adopt(h, p);
+            let carried = resolved == Some(RECORDING_TICKET);
+            let expected_sends = if carried { Vec::new() } else { vec![h] };
+            assert_eq!(
+                messenger.transport().sent_on,
+                expected_sends,
+                "{case}: h'den gönderim"
+            );
+            assert_eq!(
+                messenger.stats().resent_on_new_session,
+                u64::from(!carried),
+                "{case}"
+            );
+            let state = &messenger.peers[&p];
+            assert!(state.early.is_none(), "{case}: erken metin outbox'a geçti");
+            assert_eq!(
+                state.outbox[&msg_id].sent_on,
+                Some(h),
+                "{case}: kayıt h'de (Transport'un ya da yeniden gönderimin)"
+            );
+            assert_eq!(state.connecting, None, "{case}: niyet çözüldü");
+        }
     }
 
     #[test]
