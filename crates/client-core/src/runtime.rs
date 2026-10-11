@@ -14,6 +14,9 @@
 //! backpressure) · server peer tablosu cap'li fail-closed (yeni-peer typed-drop + sayaç; aktif peer
 //! ASLA sessiz-evict edilmez, boşalma idle-emeklilikle) · teslim kanalı bounded (`try_send`,
 //! taşan teslim sayaçla raporlanır — app drenaj sözleşmesi).
+//! [K4G-01b] Server eş yuvası `(adres, SessionHandle)` ile anahtarlıdır; tavan YUVA sayısıdır.
+//! Boşalma idle-emeklilikle YA DA bağlı oturum oturum tablosundan çıkınca (kapanınca) olur —
+//! böyle bir yuva zaten erişilemezdir (bkz. "BAĞLAM-ÖNCE DAĞITIM"), ikisi de sayılır.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -98,12 +101,16 @@ pub struct RuntimeConfig {
     /// niyetle olur.
     pub max_message_bytes: Option<usize>,
     /// Server eş-tablosu tavanı (fail-closed; SESSION_COUNT_CAP=64 hizası).
+    /// [K4G-01b] Sayılan birim eş YUVASIDIR, anahtarı `(adres, SessionHandle)`: aynı adresten
+    /// iki oturum iki yuva tutar (yenileme / supersession geçişinde geçici).
     pub max_peers: usize,
     /// Alıcı R-kotası (sessizlik re-ACK bütçesi).
     pub quota_r: u32,
     /// Shutdown drain süre-tavanı (motor birim terk etmez → drain CAP'siz sonlanmayabilir, D8).
     pub drain_cap: Duration,
     /// Server idle-peer emeklilik eşiği (item 3; SESSION_IDLE_HOLD hizası 105 s).
+    /// [K4G-01b] Bağlı oturumu kapanan yuva bu eşiği BEKLEMEZ
+    /// (bkz. [`ServerStats::retired_idle_peers`]).
     pub idle_hold: Duration,
     /// [IW] PreConverge ilk-uçuş penceresi (byte). **DEFAULT AÇIK** (`DEFAULT_BURST_CAP` = 2×MTU).
     ///
@@ -624,8 +631,12 @@ pub struct ServerStats {
     /// Teslim kanalı doluyken düşen teslim (app drenaj sözleşmesi ihlali görünür olsun).
     pub delivery_dropped: u64,
     /// Peer-cap fail-closed reddi (yeni peer, tablo dolu).
+    /// [K4G-01b] "Yeni peer" = yeni `(adres, SessionHandle)` yuvası.
     pub dropped_new_peers: u64,
     /// Idle-emekliliğe ayrılan peer (item 3).
+    /// [K4G-01b] Bağlı oturumu oturum tablosundan çıkmış (kapanmış) yuvanın emekliliği de burada
+    /// sayılır — `idle_hold`'u beklemez; yapı alanları `api_surface_v0` ile pinli olduğundan ayrı
+    /// sayaç açılmadı.
     pub retired_idle_peers: u64,
     pub rx_datagrams: u64,
     pub open_failures: u64,
@@ -726,6 +737,24 @@ fn elapsed_ns(start: Instant) -> u64 {
 // `connect_session`'a verilen bağlam; sunucu ucunda oturum tablosunun yayımladığı
 // `ExpectedSessions` ve eş yuvasının bağlandığı bağlam.
 //
+// [K4G-01b] Eş yuvası `(adres, SessionHandle)` ile anahtarlıdır (`SlotKey`), adresle DEĞİL:
+//   · `Session(h)` datagramı için yalnız `(kaynak adres, h)` yuvası okunur; aynı adresteki başka
+//     bir oturumun yuvası bu datagramın dağıtımına, ARQ / teslim durumuna KATILMAZ.
+//   · Yuva YALNIZ kol (a)'da — beklenen kümede `Ready` tutamaçla, AEAD-geçerli datagramla —
+//     yaratılır (K4G-01 kapısı korunur). Aynı adresten yeni bir beklenen oturum → YENİ yuva
+//     (yenileme, supersession, cancel+connect sonrası efemeral port yeniden kullanımı 105 s
+//     düşmez).
+//   · Yuvanın oturum bağı (`PeerSlot::ctx`) yaratılırken kurulur ve veri datagramıyla ASLA değişmez
+//     (PoC-KAPSAM-001 K5 analoğu: bağ yalnız el sıkışmayla — yeni oturum = yeni yuva).
+//   · Emeklilik: `idle_hold` dolunca YA DA bağlı oturum beklenen kümeden çıkınca (kapandı). İkinci
+//     durumdaki yuva zaten ERİŞİLEMEZ — beklenmeyen oturumun datagramı yuvaya bakılmadan kol (c)'de
+//     düşer —; emeklilik yalnız kapasiteyi boşaltır, hiçbir teslim / ACK davranışını değiştirmez.
+//   · `max_peers` yuva sayısını sınırlar; tablo doluyken önce kapanmış oturumların yuvaları
+//     emekliye ayrılır, yer yoksa yeni yuva fail-closed reddedilir (`dropped_new_peers`).
+//   · Beyanlı açık (INT-02; PoC-KAPSAM-001 §5, kapanış M4 / adres doğrulama): hattaki saldırgan
+//     gözlediği geçerli datagramı sahte adresten ÖNCE ileterek `max_peers` içinde ek yuva açabilir.
+//     Ek yuvanın teslimi S1 adaptöründe oturum anahtarlı `Reorder`'da tekilleşir (çift teslim yok).
+//
 // INV-ACK-DELIVER-1 (plan Ek 2026-10-11 (3)): teslim yoluna kabul edilmeyen birim ACK'lenmez.
 // Sunucu ucunda beklenen tutamacın HAZIRLIĞI da yayımlanır (`Readiness`): kol (a)'ya yalnız
 // `Ready` (S1'e açılmış — teslim yolunun kabul ettiği) oturumun datagramı girer ve ACK'lenir.
@@ -815,6 +844,9 @@ pub enum Readiness {
 /// açılmış (kapanmamış) oturumlar `Ready`; yeni bir tutamacı zarfı (INIT/RESPONSE) yola çıkmadan
 /// ÖNCE ekler, yenileme/supersession/kapanışta günceller. Bağımsız `bind` / `bind_with_policy`
 /// yalnız örtük PoC oturumunu (`Ready`) bekler. Klonlar AYNI kümeyi paylaşır.
+///
+/// [K4G-01b] Eş yuvalarının ömrü de bu kümeye bağlıdır: bağlı oturumu kümeden çıkan (kapanan)
+/// `(adres, oturum)` yuvası `idle_hold`'u beklemeden emekliye ayrılır.
 #[derive(Debug, Clone, Default)]
 pub struct ExpectedSessions(Arc<Mutex<BTreeMap<SessionHandle, Readiness>>>);
 
@@ -912,6 +944,11 @@ fn route_client(opened: ProtectionContext, expected: ProtectionContext) -> CtxRo
 /// bir yuva tek oturuma aittir; başka bir oturumun geçerli datagramı o yuvanın ARQ / teslim
 /// durumuna giremez — VE `h` oturum tablosunda beklenmeli ([`ExpectedSessions`]): `Ready` → kol
 /// (a); `NotReady` → ACK'siz düşüş (INV-ACK-DELIVER-1); beklenmiyor → kol (c).
+///
+/// [K4G-01b] Çağıran `slot`'a `(kaynak adres, h)` anahtarlı yuvanın bağını verir; yuva yalnız kendi
+/// anahtarının oturumuna bağlı yaratıldığından bağ ya yoktur ya `opened`'a eşittir. Eşitsizlik kolu
+/// derinlemesine savunmadır (anahtar ileride değişirse yine kol (c)); aynı adresteki BAŞKA oturumun
+/// yuvası buraya hiç verilmez.
 fn route_server(
     opened: ProtectionContext,
     slot: Option<ProtectionContext>,
@@ -2138,6 +2175,9 @@ impl ServerEndpoint {
     /// ve — eş yuvası varsa — yuvanın bağlandığı bağlamla birebir aynıysa Session dağıtıcısına
     /// girer. `ctx_counters` = paylaşımlı telemetri sayaçları.
     ///
+    /// [K4G-01b] Eş yuvası `(kaynak adres, h)` ile anahtarlıdır: aynı adresten yeni bir beklenen
+    /// oturum yeni yuva alır; bağlı oturumu `expected`'dan çıkan yuva emekliye ayrılır.
+    ///
     /// # Errors
     /// FEC-config reddi (koşu-öncesi typed) veya soket bind hatası.
     pub async fn bind_expecting(
@@ -2396,6 +2436,11 @@ fn admit_chunk(
     }
 }
 
+/// [K4G-01b] Eş yuvası anahtarı: `(kaynak adres, SessionHandle)` — adres tek başına DEĞİL. Aynı
+/// adresten gelen iki oturum (yenileme / supersession / efemeral port yeniden kullanımı) iki ayrı
+/// yuvadır; bir yuva tek oturuma aittir.
+type SlotKey = (SocketAddr, SessionHandle);
+
 /// Eş yuvası: alıcı motoru + idle-emeklilik çapası (item 3) + teslim-dedup penceresi.
 struct PeerSlot {
     rx: Receiver,
@@ -2407,12 +2452,45 @@ struct PeerSlot {
     msgs: BTreeMap<u32, MsgAsm>,
     /// [v2] Koruma bağlamı (open'ın kimliklendirdiği; dönüş-seal bu bağlamla). Dönüş-yönü PN sayacı
     /// artık BURADA DEĞİL: seam sayar (S3 K2) — slot emekliliği/yeniden açılması PN'i sıfırlayamaz.
+    /// [K4G-01b] = `Session(h)`, `h` yuva anahtarının oturumu; yaratılırken kurulur, ASLA
+    /// değişmez (K5 analoğu: bağ veri datagramıyla değişmez).
     ctx: ProtectionContext,
     /// [v1/PARAM] Per-peer bound-param durumu (fail-closed admission-gate).
     param: ParamState,
     /// [v1/PARAM] Bind-öncesi gelen FEC-shard'ların bounded bekletmesi (PreParamHold deseni;
     /// DÜŞÜRME yarış-duyarlıydı: repair'ler yeniden-üretilmez — CI yavaş-runner'da yakalandı).
     pre_param_fec: Vec<(FecFrameHeader, Vec<u8>)>,
+}
+
+impl PeerSlot {
+    /// Taze yuva; oturum bağı (`ctx`) burada kurulur ve yuvanın ömrü boyunca değişmez.
+    fn new(ctx: ProtectionContext, quota_r: u32, now: u64) -> Self {
+        let mut rx = Receiver::new();
+        rx.set_quota_r(quota_r);
+        Self {
+            rx,
+            last_seen_ns: now,
+            delivered_seen: std::collections::BTreeSet::new(),
+            blocks: BTreeMap::new(),
+            msgs: BTreeMap::new(),
+            ctx,
+            param: ParamState::new(),
+            pre_param_fec: Vec::new(),
+        }
+    }
+}
+
+/// [K4G-01b] Bağlı oturumu beklenen kümeden çıkmış (kapanmış) yuvaları emekliye ayırır; ayrılan
+/// yuva sayısını döner (çağıran `retired_idle_peers`'a ekler — sessiz eviction yok).
+///
+/// Böyle bir yuva zaten ERİŞİLEMEZDİR: oturumu beklenmeyen datagram `route_server`'da yuvaya hiç
+/// bakılmadan kol (c)'de düşer. Emeklilik bu yüzden hiçbir teslim / ACK davranışını değiştirmez,
+/// yalnız `max_peers` kapasitesini `idle_hold` beklemeden boşaltır. `NotReady` oturum beklenmeye
+/// devam ettiğinden yuvası emekliye AYRILMAZ.
+fn retire_closed_slots(peers: &mut HashMap<SlotKey, PeerSlot>, expected: &ExpectedSessions) -> u64 {
+    let before = peers.len();
+    peers.retain(|&(_, session), _| expected.readiness(session).is_some());
+    (before - peers.len()) as u64
 }
 
 /// [v1/PARAM] Per-peer pre-param hold tavanı (MAX_PREPARAM_SHARDS hizası, küçük: E≤1KB sınıfı).
@@ -2635,7 +2713,8 @@ async fn server_task(
     let fec: Option<FecProfile> = cfg.fec.and_then(|f| by_id(f.profile_id));
     // [v1/PARAM] yerel-beklenen canonical alanlar (fail-closed doğrulama tabanı).
     let param_expected: Option<ParamFields> = fec.as_ref().map(param_fields_for);
-    let mut peers: HashMap<SocketAddr, PeerSlot> = HashMap::new();
+    // [K4G-01b] Yuva anahtarı `(adres, oturum)` (bkz. `SlotKey`); tavan `cfg.max_peers` yuva.
+    let mut peers: HashMap<SlotKey, PeerSlot> = HashMap::new();
     let mut ack_timer = interval(ACK_TICK);
     let mut patience = interval(PATIENCE_TICK);
     let mut buf = vec![0u8; SERVER_RECV_BUF];
@@ -2661,7 +2740,9 @@ async fn server_task(
                 // ACK_FREQ_N'e ulaşamayan kuyruğu timer teyit eder (bench birebir).
                 let acks: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
                     .iter_mut()
-                    .filter_map(|(p, s)| s.rx.on_ack_timer(now).map(|a| (*p, s.ctx, a.encode())))
+                    .filter_map(|(&(p, _), s)| {
+                        s.rx.on_ack_timer(now).map(|a| (p, s.ctx, a.encode()))
+                    })
                     .collect();
                 for (peer, sp, plain) in acks {
                     srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, plain).await;
@@ -2670,10 +2751,15 @@ async fn server_task(
             _ = patience.tick() => {
                 // Item 3: idle-peer emekliliği — tablo boşalması YALNIZ burada (sessiz-eviction yok;
                 // emeklilik gözlemlenir). ACK-durumu peer'la gider; geç DATA yeni peer-slot açar.
+                // [K4G-01b] İkinci neden: bağlı oturum beklenen kümeden çıktı (kapandı) — yuva
+                // erişilemez, `idle_hold` beklenmez (`retire_closed_slots`; tablo doluyken yeni
+                // yuva yolunda da çağrılır). Kapanmış oturumun geç DATA'sı yuva AÇAMAZ (kol c).
                 let now = elapsed_ns(start);
+                let mut retired = retire_closed_slots(&mut peers, &expected);
                 let before = peers.len();
                 peers.retain(|_, s| now.saturating_sub(s.last_seen_ns) < idle_hold_ns);
-                stats.retired_idle_peers += (before - peers.len()) as u64;
+                retired += (before - peers.len()) as u64;
+                stats.retired_idle_peers += retired;
             }
             r = sock.recv_from(&mut buf) => {
                 let Ok((n, peer)) = r else { continue };
@@ -2693,21 +2779,29 @@ async fn server_task(
                 // (`Session(h)`) teslim ediliyordu.
                 // INV-ACK-DELIVER-1: oturumu henüz `Ready` olmayan beklenen tutamacın datagramı
                 // alıcı motoruna GİRMEZ → ACK üretilmez; teslim yolu onu kabul etmeyecekti.
-                match route_server(od.ctx, peers.get(&peer).map(|s| s.ctx), &expected) {
-                    CtxRoute::Session => {}
-                    CtxRoute::Hub => {
+                // [K4G-01b] Yuva `(adres, h)` ile anahtarlıdır: yalnız bu datagramın kendi
+                // oturumunun yuvası okunur (aynı adresteki başka oturumun yuvası değil). Kol (a)
+                // tek çıktısı yuva anahtarıdır; `Session` kolu yalnız `Session(h)`'den doğar —
+                // başka her birleşim kol (c) sayılır (fail-closed).
+                let slot_ctx = match od.ctx {
+                    ProtectionContext::Session(h) => peers.get(&(peer, h)).map(|s| s.ctx),
+                    ProtectionContext::HubChannel => None,
+                };
+                let key: SlotKey = match (route_server(od.ctx, slot_ctx, &expected), od.ctx) {
+                    (CtxRoute::Session, ProtectionContext::Session(h)) => (peer, h),
+                    (CtxRoute::Hub, _) => {
                         hub.on_hub_frame(&od);
                         continue;
                     }
-                    CtxRoute::NotReady => {
+                    (CtxRoute::NotReady, _) => {
                         ctx_counters.add_not_ready();
                         continue;
                     }
-                    CtxRoute::Mismatch => {
+                    _ => {
                         ctx_counters.add_ctx_mismatch();
                         continue;
                     }
-                }
+                };
                 // [D1a] Alıcının ARQ kimliği = Crypto'nun açtığı PN (`meta.full_wire_pn`; BL D1).
                 // Çerçevedeki u16 `seq` (ara çerçeve) artık OKUNMAZ.
                 let (seam_ctx, plain, pn) = (od.ctx, od.frame, od.meta.full_wire_pn);
@@ -2763,28 +2857,20 @@ async fn server_task(
                 let now = elapsed_ns(start);
                 // Peer-cap FAIL-CLOSED (bench'in sınırsız tablosu SR-AUDIT ihlaliydi — D6):
                 // tablo doluyken YENİ peer typed-drop; mevcut peer'lar etkilenmez.
-                if !peers.contains_key(&peer) {
+                // [K4G-01b] Yeni yuva = yeni `(adres, oturum)`; buraya yalnız kol (a) (beklenen,
+                // `Ready`, AEAD-geçerli) ulaşır. Tablo doluysa önce bağlı oturumu kapanmış
+                // (erişilemez) yuvalar emekliye ayrılır; aktif bir yuva ASLA çıkarılmaz.
+                if !peers.contains_key(&key) {
+                    if peers.len() >= cfg.max_peers {
+                        stats.retired_idle_peers += retire_closed_slots(&mut peers, &expected);
+                    }
                     if peers.len() >= cfg.max_peers {
                         stats.dropped_new_peers += 1;
                         continue;
                     }
-                    let mut rx = Receiver::new();
-                    rx.set_quota_r(cfg.quota_r);
-                    peers.insert(
-                        peer,
-                        PeerSlot {
-                            rx,
-                            last_seen_ns: now,
-                            delivered_seen: std::collections::BTreeSet::new(),
-                            blocks: BTreeMap::new(),
-                            msgs: BTreeMap::new(),
-                            ctx: seam_ctx,
-                            param: ParamState::new(),
-                            pre_param_fec: Vec::new(),
-                        },
-                    );
+                    peers.insert(key, PeerSlot::new(seam_ctx, cfg.quota_r, now));
                 }
-                let Some(slot) = peers.get_mut(&peer) else { continue };
+                let Some(slot) = peers.get_mut(&key) else { continue };
                 slot.last_seen_ns = now;
                 match parsed {
                     // [S1B] İki DATA çerçevesi TEK kolda işlenir. Fark yalnızca chunk
@@ -3065,6 +3151,8 @@ mod ctx_first_tests {
     //! [K4G-01 / D1 (v1.1)] Yönlendirme tablosunun saf sınaması: kol YALNIZ açılan bağlamdan ve
     //! beklenen tutamaçtan türer — fonksiyonların yük girdisi bile yoktur. Gerçek kripto + gerçek
     //! veri yoluyla uçtan uca regresyon: `tests/ctx_first_dispatch.rs`.
+    //! [K4G-01b] + `(adres, oturum)` yuva emeklilik kuralının saf sınaması; uçtan uca:
+    //! `tests/session_keyed_slots.rs`.
 
     use super::*;
     use kama_contracts::s3::SealedPacketMeta;
@@ -3097,7 +3185,9 @@ mod ctx_first_tests {
         // Tablo günceldir: eklenen tutamaç beklenir ...
         expected.insert_ready(SessionHandle::from_raw(2));
         assert_eq!(route_server(B, None, &expected), CtxRoute::Session);
-        // ... ama bir yuva tek oturuma aittir.
+        // ... ama bir yuva tek oturuma aittir. [K4G-01b] Sunucu yuvayı `(adres, h)` ile aradığından
+        // bu kola gerçek akışta ulaşılmaz (aynı adresteki başka oturum ayrı yuvadır); derinlemesine
+        // savunma olarak korunur.
         assert_eq!(route_server(B, Some(A), &expected), CtxRoute::Mismatch);
         // Tablodan çıkan oturumun mevcut yuvası da artık beklenmez.
         expected.replace([(SessionHandle::from_raw(2), Readiness::Ready)]);
@@ -3149,5 +3239,37 @@ mod ctx_first_tests {
             not_ready_drops: 0,
         };
         assert_eq!(counters.snapshot(), want);
+    }
+
+    /// [K4G-01b] Yuva `(adres, oturum)` anahtarlıdır: aynı adreste üç oturum üç yuvadır. Bağlı
+    /// oturumu beklenen kümeden çıkan (kapanan) yuva emekliye ayrılır; aynı adresteki diğer
+    /// oturumların yuvaları — `NotReady` olan dahil, o da hâlâ beklenir — kalır. Her yuvanın bağı
+    /// anahtarının oturumudur.
+    #[test]
+    fn closed_session_slot_retires_and_same_address_slots_stay() {
+        let addr = SocketAddr::from(([127, 0, 0, 1], 40_000));
+        let [h1, h2, h3] = [1, 2, 3].map(SessionHandle::from_raw);
+        let mut peers: HashMap<SlotKey, PeerSlot> = HashMap::new();
+        for h in [h1, h2, h3] {
+            peers.insert(
+                (addr, h),
+                PeerSlot::new(ProtectionContext::Session(h), 4, 0),
+            );
+        }
+        assert_eq!(peers.len(), 3, "aynı adres, üç oturum → üç yuva");
+        let expected = ExpectedSessions::new();
+        expected.insert_ready(h2);
+        expected.insert_pending(h3);
+
+        assert_eq!(retire_closed_slots(&mut peers, &expected), 1);
+        let mut left: Vec<SessionHandle> = peers.keys().map(|&(_, h)| h).collect();
+        left.sort();
+        assert_eq!(left, [h2, h3]);
+        for (&(_, h), slot) in &peers {
+            assert_eq!(slot.ctx, ProtectionContext::Session(h));
+        }
+        // Kapanış dışında hiçbir şey yuva düşürmez (idempotent).
+        assert_eq!(retire_closed_slots(&mut peers, &expected), 0);
+        assert_eq!(peers.len(), 2);
     }
 }
