@@ -728,9 +728,14 @@ async fn server_session_context_must_be_expected_and_bound_to_the_slot() {
 /// 6be4ff44'te KIRMIZI: bağlam kapısı yokken açılan her datagram yeni adres için yuva yaratıyordu
 /// (TOFU) — ilk anahtarsız DATA tek yuvayı HubChannel bağlamıyla alır ve kendi birimini (7) teslim
 /// ettirir; Carol'ın ve Bob'un datagramları `dropped_new_peers`'a düşer (2), Bob'un birimi hiç
-/// teslim edilmez → ilk teslim iddiası tutmaz. Gövde ve yardımcıları yalnız 6be4ff44'te de bulunan
-/// API'leri kullanır (`ServerEndpoint::bind`, `ServerStats`, `next_delivery`); o koda taşınınca
-/// iddia koşturularak doğrulanabilir.
+/// teslim edilmez → ilk teslim iddiası tutmaz. Kapı sayaçları (`ctx_dispatch_stats`) 6be4ff44'te
+/// yoktur; o satır çıkarılınca gövde ve yardımcıları yalnız 6be4ff44'te de bulunan API'leri
+/// kullanır (`ServerEndpoint::bind`, `ServerStats`, `next_delivery`) ve iddia o koda taşınarak
+/// koşturulabilir.
+///
+/// Saldırı datagramlarının ALINIP kapıda düştüğünün kanıtı sıralama varsayımı değildir: kapı
+/// sayaçları (`hub_frames_dropped == 1`, `ctx_mismatch_drops == 1`) beklenir ve kapanışta
+/// `rx_datagrams == 3`, `open_failures == 0` (üçü de alındı ve açıldı).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_max_peers_one_is_not_taken_by_unkeyed_or_unexpected_datagrams() {
     let mut alice = node(ALICE);
@@ -769,19 +774,25 @@ async fn server_max_peers_one_is_not_taken_by_unkeyed_or_unexpected_datagrams() 
     send(&bob_ep, &wire, to).await;
     let d = delivery(&mut server).await;
     assert_eq!((d.unit_id, d.ctx), (0, ProtectionContext::Session(h_ab)));
+    // İki saldırı datagramı kapıda düştü: biri HubChannel, biri beklenmeyen oturum.
+    server_ctx(&server, stats(1, 1)).await;
     let ss = server.shutdown().await;
     assert_eq!(ss.dropped_new_peers, 0, "meşru eş reddedildi");
     assert_eq!(ss.delivered, 1);
-    // Saldırı datagramları AÇILDI (`open_failures == 0`): düşüş kriptodan değil, bağlam kapısından.
+    // Üç datagram da ALINDI ve AÇILDI: düşüş kriptodan değil, bağlam kapısından.
+    assert_eq!(ss.rx_datagrams, 3);
     assert_eq!((ss.open_failures, ss.unknown_frames), (0, 0));
 }
 
 // ── INV-ACK-DELIVER-1 ────────────────────────────────────────────────────────────────────────
 
 /// Gerçek S1 adaptörü (`ClientTransport`, ürün builder'ı) + bu dosyanın kriptosu + `MemoryHub`.
+/// FEC iki düğümde de KAPALI (iki uçta aynı kurulur): oturum ucu PARAM_SET yollamaz, bootstrap
+/// kapalı olduğundan CS-probe de yok — veri alıcısına gelen her datagram DATA ya da kopyasıdır.
 fn transport_node(me: u8, hub: &MemoryHub) -> ClientTransport<NoiseWireProtection> {
     let mut cfg = ClientTransportConfig::product(SocketAddr::from(([127, 0, 0, 1], 0)));
     cfg.runtime.drain_cap = Duration::from_millis(100);
+    cfg.runtime.fec = None;
     ClientTransport::new(cfg, node(me), Box::new(hub.link(id(me)))).expect("düğüm")
 }
 
@@ -807,7 +818,9 @@ fn eventually(what: &str, mut cond: impl FnMut() -> bool) {
 /// Bob'a, HANDLE_ASSIGN'ı Alice'e taşır → Alice'in bekleyen oturumu epoch-0 için kurulur (0-RTT;
 /// S1'e açılmadı → `NotReady`); Bob `Ready` olur, RESPONSE hub'da TUTULUR. Bob'un erken DATA'sı
 /// (epoch-0) Alice'in veri alıcısında açılır ama motora girmeden, ACK'siz düşer:
-/// `not_ready_drops ≥ 1`, birim Bob'da teyitsiz kalır. Röle 2 RESPONSE'u taşır → Alice `Ready` →
+/// `not_ready_drops ≥ 1` — bu pencerede Bob'un oturum ucundan YALNIZ DATA ve kopyaları gelir (FEC
+/// kapalı → PARAM_SET yok; bootstrap kapalı → CS-probe yok), yani sayılan düşüş DATA'nındır —
+/// ve birim Bob'da teyitsiz kalır. Röle 2 RESPONSE'u taşır → Alice `Ready` →
 /// Bob'un ARQ yeniden gönderimi teslim edilir; kayıp yok. ESKİ DAVRANIŞ (#114'ün ilk hâli):
 /// bekleyen tutamaç hazırlık ayrımı olmadan beklenen kümedeydi → datagram ACK'lenir, teslim
 /// kapısı onu `Ready` olmayan oturum diye atardı → Bob teyit alır, birim hiç teslim edilmez.
@@ -832,10 +845,9 @@ fn inv_ack_deliver_unit_of_a_not_ready_session_is_not_acked() {
     // RESPONSE hub'da TUTULURKEN Bob yollar.
     bob.send(h_bob, unit(b"erken"), DeliveryPolicy::Reliable)
         .expect("gönder");
-    eventually(
-        "Ready olmayan oturumun datagramı ACK'siz düşmeli",
-        || alice.ctx_dispatch_stats().not_ready_drops >= 1,
-    );
+    eventually("Ready olmayan oturumun DATA'sı ACK'siz düşmeli", || {
+        alice.ctx_dispatch_stats().not_ready_drops >= 1
+    });
     std::thread::sleep(QUIET);
     assert_eq!(bob.outstanding_for_test(), 1, "Ready öncesi ACK yok");
     assert!(alice.recv().is_none(), "Ready öncesi teslim yok");
