@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
-  "suite": "ccr-compact-device-cert-v1",
+  "suite": "ccr-cdc-v1",
   "spec_version": "ccr-format-spec@v1.0+2026-10-11",
   "generator": "ref/crypto/gen_vectors.py 1",
-  "description": "CompactDeviceCertV1 (ccr \u00a713.1 / \u00a713.2): domain_sep(\"SR_CDC_V1\"), issuer_key_id, TBS ve tam imzal\u0131 152 B sertifika \u2014 sabit girdilerle. examples/example-positive.json'daki yer tutucu dosyan\u0131n aksine imza HESAPLANMI\u015eTIR (ref/crypto/ed25519.py, kat\u0131 kipte do\u011fruland\u0131).",
+  "description": "CompactDeviceCertV1 = SR_CDC_V1 (ccr \u00a713.1 / \u00a713.2): domain_sep(\"SR_CDC_V1\"), issuer_key_id, TBS ve tam imzal\u0131 152 B sertifika \u2014 sabit girdilerle. Yer tutucu bi\u00e7im \u00f6rne\u011finden (vectors/examples/example-positive.json; imzas\u0131 hesaplanmam\u0131\u015f desenli dolgu) AYRI suite: burada imza HESAPLANMI\u015eTIR (ref/crypto/ed25519.py, kat\u0131 kipte do\u011fruland\u0131) ve encode girdisi imzalayan\u0131n tohumunu ta\u015f\u0131r.",
   "notes": {
     "domain-sep-patch": "domain_sep dolgusu ccr \u00a713.2 YAMA KAYDI 2026-10-11 (K4G-12) ile tan\u0131mland\u0131; SPEC-GAP S4-pki-discovery.6 kapand\u0131.",
     "poc-root-issuer": "PoC'de Identity/User Cert katman\u0131 yok: CompactDeviceCert'i test k\u00f6k\u00fc do\u011frudan imzalar (plan D9); issuer_key_id k\u00f6k\u00fcn spki \u00f6zetinden."
@@ -11,7 +11,7 @@
   "case_count": 4,
   "cases": [
     {
-      "id": "ccr-compact-device-cert-v1.domain-sep.sr-cdc-v1",
+      "id": "ccr-cdc-v1.domain-sep.sr-cdc-v1",
       "kind": "domain-sep",
       "flags": [
         "domain-sep-patch"
@@ -24,7 +24,7 @@
       "expected_hex": "53525f4344435f563100000000000000"
     },
     {
-      "id": "ccr-compact-device-cert-v1.issuer-key-id.root",
+      "id": "ccr-cdc-v1.issuer-key-id.root",
       "kind": "issuer-key-id",
       "flags": [
         "poc-root-issuer"
@@ -37,7 +37,7 @@
       "expected_hex": "cff42260e5c178daf9bcc73f74869635"
     },
     {
-      "id": "ccr-compact-device-cert-v1.tbs.root-issued",
+      "id": "ccr-cdc-v1.tbs.root-issued",
       "kind": "tbs",
       "flags": [
         "domain-sep-patch"
@@ -53,7 +53,7 @@
       "expected_hex": "53525f4344435f5631000000000000008097e5501b941bd3dcf5915ba9aad1a982dc46b0c23be5cb8846b92f7ea80875a4a9ff823f08f918286357dce4dd1e7133d0dd0b15e6ace7bb3736b5e4a9bc5ccff42260e5c178daf9bcc73f74869635000000006b417880"
     },
     {
-      "id": "ccr-compact-device-cert-v1.encode.root-signed",
+      "id": "ccr-cdc-v1.encode.root-signed",
       "kind": "encode",
       "flags": [
         "poc-root-issuer"

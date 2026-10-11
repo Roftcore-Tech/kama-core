@@ -2,12 +2,16 @@
 //!
 //! Sıra: girdi denetimi → bellekte üretim (kök + cihaz anahtarları, sertifikalar) → öz-denetim
 //! (yükleyicinin denetimleri + sertifika köke karşı) → çıktı dizini → `.gitignore` → cihaz dosyaları →
-//! `root.json`. Girdi, entropi ve öz-denetim hatalarında dosya sistemine dokunulmaz; yazım sırasında
-//! hata olursa bu koşunun oluşturduğu her dosya (ve oluşturduysa dizin) silinir. Dosyalar `O_EXCL` ile
-//! YENİ oluşturulur ve Unix'te `0600`'dür (dizin `0700`).
+//! `root.json`. Girdi, entropi ve öz-denetim hatalarında dosya sistemine dokunulmaz. Yazım sırasında
+//! hata olursa bu koşunun yazdığı gizli dosyalar silinir; `.gitignore` ve (bu koşu oluşturduysa) dizin
+//! YALNIZ bütün gizli dosyalar gerçekten silindiyse silinir — silinemeyen yollar hataya
+//! ([`InitError::Cleanup`]) yalnız yol adıyla girer (D9). Dosyalar `O_EXCL` ile YENİ oluşturulur ve
+//! Unix'te `0600`'dür (dizin `0700`).
 //!
-//! Gizli anahtarlar yalnız dalek tiplerinde (`StaticSecret`, `SigningKey`; Drop'ta sıfırlanır) ve
-//! sıfırlanan tamponlarda (`Zeroizing`) tutulur; hiçbiri log'a ya da standart çıktıya yazılmaz.
+//! Gizli anahtarlar dalek tiplerinde (`StaticSecret`, `SigningKey`; Drop'ta sıfırlanır), öbekteki
+//! [`Secret32`]'de ve sıfırlanan, TEK seferde tam kapasiteyle ayrılan JSON tamponlarında (`Zeroizing`)
+//! tutulur; hiçbiri log'a ya da standart çıktıya yazılmaz. Önlenemeyen yığın kopyaları `Secret32`
+//! belgesinde yazılıdır.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -94,6 +98,12 @@ pub enum InitError {
     Json,
     #[error("i/o error at {path}: {source}")]
     Io { path: String, source: io::Error },
+    /// Yazım hatasından sonra temizlik bazı yolları silemedi (yalnız yol adları; içerik yok).
+    #[error("{cause}; cleanup could not remove: {leftover}")]
+    Cleanup {
+        cause: Box<InitError>,
+        leftover: String,
+    },
 }
 
 impl From<serde_json::Error> for InitError {
@@ -170,21 +180,45 @@ pub fn init(
         format_version: FORMAT_VERSION,
         created_at_unix,
         ed25519: KeyPair {
-            secret: Secret32::from_bytes(root.to_bytes()),
+            secret: Secret32::copy_from(root.as_bytes()),
             public: Public32::from_bytes(root_pub),
         },
     };
     files.push((ROOT_FILE_NAME.to_owned(), to_json(&root_file)?));
 
     let mut output = Output::create(&request.out_dir)?;
-    output.write(GITIGNORE_FILE_NAME, GITIGNORE_CONTENT.as_bytes())?;
-    for (name, contents) in &files {
-        output.write(name, contents)?;
+    if let Err(error) = write_files(&mut output, &files) {
+        let leftover = output.abort();
+        if leftover.is_empty() {
+            return Err(error);
+        }
+        return Err(InitError::Cleanup {
+            cause: Box::new(error),
+            leftover: join_paths(&leftover),
+        });
     }
     Ok(InitReport {
         written: output.commit(),
         permissions_enforced: cfg!(unix),
     })
+}
+
+/// `.gitignore` ÖNCE (gizli dosya hiçbir an Git'e karşı korumasız kalmasın), sonra cihaz dosyaları, en
+/// son `root.json`.
+fn write_files(
+    output: &mut Output,
+    files: &[(String, Zeroizing<Vec<u8>>)],
+) -> Result<(), InitError> {
+    output.write(GITIGNORE_FILE_NAME, GITIGNORE_CONTENT.as_bytes())?;
+    for (name, contents) in files {
+        output.write(name, contents)?;
+    }
+    Ok(())
+}
+
+fn join_paths(paths: &[PathBuf]) -> String {
+    let shown: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+    shown.join(", ")
 }
 
 /// Bir cihazın bellekteki anahtarları ve sertifikası (gizli alanlar Drop'ta sıfırlanır).
@@ -280,17 +314,17 @@ fn device_config(
         format_version: FORMAT_VERSION,
         device_id: device.name.clone(),
         identity_ed25519: KeyPair {
-            secret: Secret32::from_bytes(device.identity.to_bytes()),
+            secret: Secret32::copy_from(device.identity.as_bytes()),
             public: Public32::from_bytes(device.identity_pub),
         },
         identity_hash: Public32::from_bytes(device.identity_hash),
         dest_hash: Public32::from_bytes(device.dest_hash),
         x25519_static: KeyPair {
-            secret: Secret32::from_bytes(device.x25519.to_bytes()),
+            secret: Secret32::copy_from(device.x25519.as_bytes()),
             public: Public32::from_bytes(device.x25519_pub),
         },
         ed25519: KeyPair {
-            secret: Secret32::from_bytes(device.ed25519.to_bytes()),
+            secret: Secret32::copy_from(device.ed25519.as_bytes()),
             public: Public32::from_bytes(device.ed25519_pub),
         },
         cert: CertBytes::from_bytes(device.cert),
@@ -301,20 +335,53 @@ fn device_config(
     }
 }
 
-/// Girintili JSON + son satır sonu. Tampon Drop'ta sıfırlanır (gizli anahtar içerir).
+/// Yalnız bayt SAYAN yazıcı: serileştirmenin uzunluğunu içerik tutmadan ölçer.
+struct ByteCounter(usize);
+
+impl Write for ByteCounter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Girintili JSON + son satır sonu, Drop'ta sıfırlanan tamponda (gizli anahtar içerir). Uzunluk ÖNCE
+/// ölçülür ve tampon TEK seferde tam kapasiteyle ayrılır: `serde_json::to_vec_pretty` gibi 128 B'tan
+/// ikiye katlayarak büyüseydi her yeniden ayırma eski (gizli içerikli) tamponu sıfırlanmadan serbest
+/// bırakırdı.
 fn to_json<T: Serialize>(value: &T) -> Result<Zeroizing<Vec<u8>>, InitError> {
-    let mut bytes = Zeroizing::new(serde_json::to_vec_pretty(value)?);
+    let mut counter = ByteCounter(0);
+    serde_json::to_writer_pretty(&mut counter, value)?;
+    let len = counter.0.saturating_add(1);
+    let mut bytes = Zeroizing::new(Vec::<u8>::with_capacity(len));
+    let capacity = bytes.capacity();
+    serde_json::to_writer_pretty(&mut *bytes, value)?;
     bytes.push(b'\n');
+    debug_assert_eq!(bytes.len(), len, "ölçülen uzunluk yazılanla aynı olmalı");
+    debug_assert_eq!(
+        bytes.capacity(),
+        capacity,
+        "JSON tamponu yeniden ayrılmamalı"
+    );
     Ok(bytes)
 }
 
-/// Bu koşunun oluşturduğu dosyalar. [`Output::commit`] edilmeden düşerse (hata yolu) oluşturduğu her
-/// dosyayı ve oluşturduysa dizini siler. Drop panik etmez; silme hataları yok sayılır.
+/// Bu koşunun çıktı dizini ve yazdığı dosyalar. `.gitignore` gizli dosyalardan ÖNCE yazılır. Hata
+/// yolunda ([`Output::abort`]) gizli dosyalar silinir; `.gitignore` ve (bu koşu oluşturduysa) dizin YALNIZ
+/// bütün gizli dosyalar gerçekten silindiyse silinir (D9). [`Output::commit`] ya da `abort` edilmeden
+/// düşerse (beklenmeyen yol) aynı temizlik sessizce denenir; Drop panik etmez.
 struct Output {
     dir: PathBuf,
     created_dir: bool,
-    written: Vec<PathBuf>,
-    committed: bool,
+    /// `.gitignore` (yazıldıysa).
+    gitignore: Option<PathBuf>,
+    /// Gizli anahtar taşıyan dosyalar (cihaz dosyaları, `root.json`), yazım sırasıyla.
+    secrets: Vec<PathBuf>,
+    finished: bool,
 }
 
 impl Output {
@@ -333,44 +400,80 @@ impl Output {
         Ok(Self {
             dir: dir.to_path_buf(),
             created_dir,
-            written: Vec::new(),
-            committed: false,
+            gitignore: None,
+            secrets: Vec::new(),
+            finished: false,
         })
     }
 
-    /// `name`'i `O_EXCL` + `0600` ile YENİ oluşturur ve yazar.
+    /// `name`'i `O_EXCL` + `0600` ile YENİ oluşturur ve yazar. `.gitignore` dışındaki her dosya gizli
+    /// anahtar taşır.
     fn write(&mut self, name: &str, contents: &[u8]) -> Result<(), InitError> {
         let path = self.dir.join(name);
-        let result = self.write_new(&path, contents);
+        let result = self.write_new(&path, name == GITIGNORE_FILE_NAME, contents);
         result.map_err(|error| io_error(&path, error))
     }
 
-    fn write_new(&mut self, path: &Path, contents: &[u8]) -> io::Result<()> {
+    fn write_new(&mut self, path: &Path, is_gitignore: bool, contents: &[u8]) -> io::Result<()> {
         let mut file = create_private_file(path)?;
-        // Dosya artık bu koşunundur: sonraki her hata yolunda silinir.
-        self.written.push(path.to_path_buf());
+        // Dosya artık bu koşunundur: hata yolunda temizliğe girer.
+        if is_gitignore {
+            self.gitignore = Some(path.to_path_buf());
+        } else {
+            self.secrets.push(path.to_path_buf());
+        }
         restrict_permissions(&file)?;
         file.write_all(contents)?;
         file.sync_all()
     }
 
-    /// Yazımı tamamlar: dosyalar kalır, yolları yazım sırasıyla döner.
+    /// Yazımı tamamlar: dosyalar kalır, yolları yazım sırasıyla (`.gitignore` önce) döner.
     fn commit(mut self) -> Vec<PathBuf> {
-        self.committed = true;
-        std::mem::take(&mut self.written)
+        self.finished = true;
+        let mut written = Vec::with_capacity(self.secrets.len() + 1);
+        written.extend(self.gitignore.take());
+        written.append(&mut self.secrets);
+        written
+    }
+
+    /// Hata yolu: temizler; silinemeyen yolları döner (yalnız yol, içerik değil).
+    fn abort(mut self) -> Vec<PathBuf> {
+        self.finished = true;
+        self.clean_up()
+    }
+
+    /// Gizli dosyaları (ters sırayla) siler. Biri bile silinemezse `.gitignore` ve dizin KORUNUR: kalan
+    /// gizli dosya Git'e karşı korumasız kalmaz (D9). Dönen liste silinemeyen yollardır.
+    fn clean_up(&mut self) -> Vec<PathBuf> {
+        let mut leftover = Vec::new();
+        for path in self.secrets.drain(..).rev() {
+            remove_or_keep(fs::remove_file(&path), path, &mut leftover);
+        }
+        if !leftover.is_empty() {
+            return leftover;
+        }
+        if let Some(path) = self.gitignore.take() {
+            remove_or_keep(fs::remove_file(&path), path, &mut leftover);
+        }
+        if leftover.is_empty() && self.created_dir {
+            remove_or_keep(fs::remove_dir(&self.dir), self.dir.clone(), &mut leftover);
+        }
+        leftover
+    }
+}
+
+/// Silme sonucu: zaten yoksa sorun değil; başka her hata yolu `leftover`'a ekler.
+fn remove_or_keep(removed: io::Result<()>, path: PathBuf, leftover: &mut Vec<PathBuf>) {
+    if removed.is_err_and(|error| error.kind() != io::ErrorKind::NotFound) {
+        leftover.push(path);
     }
 }
 
 impl Drop for Output {
     fn drop(&mut self) {
-        if self.committed {
-            return;
-        }
-        for path in self.written.iter().rev() {
-            let _ = fs::remove_file(path);
-        }
-        if self.created_dir {
-            let _ = fs::remove_dir(&self.dir);
+        if !self.finished {
+            // Beklenmeyen yol: aynı kural, raporlanacak yer yok.
+            self.clean_up();
         }
     }
 }
@@ -525,6 +628,54 @@ mod tests {
         let zero = init(&req, &mut ZeroEntropy, 1);
         assert!(matches!(zero, Err(InitError::ZeroKey)), "{zero:?}");
         assert!(!out.exists());
+    }
+
+    #[test]
+    fn json_buffer_is_allocated_once_with_exact_capacity() {
+        let root = RootFile {
+            format_version: FORMAT_VERSION,
+            created_at_unix: 1,
+            ed25519: KeyPair {
+                secret: Secret32::copy_from(&[7; KEY_LEN]),
+                public: Public32::from_bytes([8; KEY_LEN]),
+            },
+        };
+        let bytes = to_json(&root).expect("json");
+        // Tek ayırma: büyüme olsaydı kapasite ikiye katlanmış, uzunluktan büyük kalırdı.
+        assert_eq!(
+            bytes.capacity(),
+            bytes.len(),
+            "tam kapasite, yeniden ayırma yok"
+        );
+        assert_eq!(bytes.last(), Some(&b'\n'));
+        let parsed: RootFile = serde_json::from_slice(&bytes).expect("geçerli JSON");
+        assert_eq!(parsed.ed25519.secret.expose(), &[7; KEY_LEN]);
+    }
+
+    #[test]
+    fn failed_secret_removal_keeps_gitignore_and_reports_the_path() {
+        let out = scratch_path("stuck");
+        let mut output = Output::create(&out).expect("dizin");
+        output
+            .write(GITIGNORE_FILE_NAME, GITIGNORE_CONTENT.as_bytes())
+            .expect("yazım");
+        output.write("device-a.json", b"{}").expect("yazım");
+        // Silinemeyen "gizli dosya": boş olmayan bir dizin (`remove_file` her ayrıcalıkta düşer).
+        let stuck = out.join("device-stuck.json");
+        fs::create_dir(&stuck).expect("dizin");
+        fs::write(stuck.join("x"), b"x").expect("dosya");
+        output.secrets.push(stuck.clone());
+        let leftover = output.abort();
+        assert_eq!(leftover, vec![stuck], "silinemeyen yol raporlanır");
+        assert!(
+            !out.join("device-a.json").exists(),
+            "silinebilen gizli dosya silinir"
+        );
+        assert!(
+            out.join(GITIGNORE_FILE_NAME).exists(),
+            "gizli dosya kaldıkça .gitignore korunur"
+        );
+        let _ = fs::remove_dir_all(&out);
     }
 
     #[test]

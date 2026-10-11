@@ -618,7 +618,7 @@ canonical_compact_device_cert =        # ağda dolaşan tam 152B
 device_cert_hash = SHA-256(canonical_compact_device_cert)    # = revocation_id (Section 13.6)
 ```
 
-> **`domain_sep` tanımı [YAMA 2026-10-11 — K4G-12, Abkarada kararı DUR-K4G-12 (b)]:** `domain_sep(label)` = `label`'ın ASCII baytları (≤ 16 B) ardından 16 B'a tamamlayan `0x00` dolgu (sağa). `domain_sep("SR_CDC_V1")` = `53525f4344435f5631` ‖ `00`×7 = `53525f4344435f563100000000000000` (16 B); `compact_device_cert_tbs` = 16 + 88 = 104 B. Altın vektör: `vectors/ccr-compact-device-cert-v1/` (`ref/crypto/gen_vectors.py`; Rust'tan bağımsız).
+> **`domain_sep` tanımı [YAMA 2026-10-11 — K4G-12, Abkarada kararı DUR-K4G-12 (b)]:** `domain_sep(label)` = `label`'ın ASCII baytları (≤ 16 B) ardından 16 B'a tamamlayan `0x00` dolgu (sağa). `domain_sep("SR_CDC_V1")` = `53525f4344435f5631` ‖ `00`×7 = `53525f4344435f563100000000000000` (16 B); `compact_device_cert_tbs` = 16 + 88 = 104 B. Altın vektör: `vectors/ccr-cdc-v1/` (`ref/crypto/gen_vectors.py`; Rust'tan bağımsız).
 
 > **Boyut kararı (NORMATİF):** CompactDeviceCertV1 hot-path'te magic/version alanı TAŞIMAZ (152B korunur); tip/versiyon protokol context'inden gelir. Gelecekte explicit versiyon gerekirse **CompactDeviceCertV2** tanımlanır ve boyut artışı kabul edilir. **Alpha hot-path CompactDeviceCertV1 = tam 152B sabit nesne: magic yok, version yok, cert_type yok, serial yok, extension yok, SAN URI yok, device_id yok.**
 

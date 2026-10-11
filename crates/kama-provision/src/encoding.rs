@@ -47,18 +47,29 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 /// # Errors
 /// [`DecodeError::Length`] · [`DecodeError::Hex`].
 pub fn hex_decode<const N: usize>(text: &str) -> Result<[u8; N], DecodeError> {
+    let mut out = [0u8; N];
+    hex_decode_into(text, &mut out)?;
+    Ok(out)
+}
+
+/// Tam `2 * out.len()` küçük harf hex karakterini DOĞRUDAN `out`'a çözer — gizli baytlar için: ara
+/// dizi kopyası yoktur. Hata durumunda `out` kısmen yazılmış olabilir; çağıranın tamponu sıfırlanan
+/// türdendir (`format::Secret32`).
+///
+/// # Errors
+/// [`DecodeError::Length`] · [`DecodeError::Hex`].
+pub fn hex_decode_into(text: &str, out: &mut [u8]) -> Result<(), DecodeError> {
     let digits = text.as_bytes();
-    if digits.len() != N * 2 {
+    if digits.len() != out.len() * 2 {
         return Err(DecodeError::Length {
-            expected: N * 2,
+            expected: out.len() * 2,
             actual: digits.len(),
         });
     }
-    let mut out = [0u8; N];
     for (slot, pair) in out.iter_mut().zip(digits.chunks_exact(2)) {
         *slot = (hex_value(pair[0])? << 4) | hex_value(pair[1])?;
     }
-    Ok(out)
+    Ok(())
 }
 
 fn hex_value(digit: u8) -> Result<u8, DecodeError> {

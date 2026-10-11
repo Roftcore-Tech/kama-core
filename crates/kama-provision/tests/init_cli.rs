@@ -3,7 +3,7 @@
 //! `init` 3 cihaz üretir; her cihazın `peers`'ı diğer ikisini içerir; `dest_hash` cihazdan AYRI kimlik
 //! anahtarından türetme fonksiyonuyla (ve bağımsız SHA-256 hesabıyla) doğrulanır (plan K4G-12 Ek (3));
 //! `cert` katı Ed25519 (`verify_strict`) ile test köküne karşı geçer — TBS etiketi Python altın
-//! vektöründen (`ccr-compact-device-cert-v1`) okunur; iki koşu farklı anahtarlar üretir; hiçbir
+//! vektöründen (`ccr-cdc-v1`) okunur; iki koşu farklı anahtarlar üretir; hiçbir
 //! `device-*.json` kök gizli anahtarını içermez (bayt araması); `.gitignore` ve `0600` mevcut.
 //! Çıktılar yalnız `std::env::temp_dir()` altındaki benzersiz alt dizinlere yazılır ve test sonunda
 //! silinir — repoya hiçbir `root.json` / `device-*.json` yazılmaz.
@@ -24,7 +24,7 @@ use kama_vectors::Expected;
 use sha2::{Digest, Sha256};
 
 const BIN: &str = env!("CARGO_BIN_EXE_kama-provision");
-const CDC_SUITE: &str = "ccr-compact-device-cert-v1";
+const CDC_SUITE: &str = "ccr-cdc-v1";
 const THREE: [&str; 3] = ["alice", "bob", "carol"];
 /// ccr §13.1: 90 gün.
 const NINETY_DAYS_SECS: u64 = 90 * 24 * 60 * 60;

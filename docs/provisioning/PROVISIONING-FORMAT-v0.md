@@ -48,6 +48,13 @@ Ed25519 gizli anahtarını (`identity_ed25519.priv`; PoC'de çalışma zamanınd
 taşır. Bu **kabul edilmiş PoC riskidir** (D9; PoC-KAPSAM-001 §5 EK-1/EK-2: at-rest koruması yok,
 `noBackupFilesDir` yalnız yedeklemeyi sınırlar); büyütülmez.
 
+**Bellek hijyeni (CLI ve yükleyici).** Gizli anahtar alanı (`Secret32`) öbekte durur, yalnız ödünç
+alınan kaynaktan kurulur ve Drop'ta sıfırlanır; JSON tamponları uzunluk önce ölçülerek TEK seferde tam
+kapasiteyle ayrılır (büyüyen tamponun eski kopyası kalmaz) ve Drop'ta sıfırlanır. Önlenemeyen kalan
+kopyalar: `StaticSecret::from` / `LocalIdentity::new` diziyi değerle ister ve dalek tipleri yığında
+taşınır; Rust'ta taşınan değerin eski yeri sıfırlanmaz. Gizli anahtarlar diskte zaten düz JSON'da
+durduğu için bu kopyalar riski büyütmez.
+
 ## 2. CLI
 
 ```
@@ -72,15 +79,17 @@ ayrıştırılır (clap yok, D11); `--out` UTF-8 olmayan bir yol olabilir.
 2. Sonra `device-<ad>.json` dosyaları, en son `root.json`.
 3. Her dosya **yeni** oluşturulur (`O_EXCL`; var olan dosyanın üstüne yazılmaz) ve Unix'te izni `0600`'dür
    (umask'tan bağımsız; oluşturulduktan sonra açıkça `0600` yapılır).
-4. Bir dosya yazılamazsa bu koşunun oluşturduğu bütün dosyalar (ve dizini bu koşu oluşturduysa dizin)
-   silinir; yarım bir anahtar kümesi bırakılmaz.
+4. Bir dosya yazılamazsa bu koşunun yazdığı gizli dosyalar (`device-*.json`, `root.json`) silinir;
+   `.gitignore` ve (bu koşu oluşturduysa) dizin YALNIZ bütün gizli dosyalar gerçekten silindiyse silinir —
+   silinemeyen bir gizli dosya Git'e karşı korumasız kalmaz. Silinemeyen yollar hata mesajında (standart
+   hata) yalnız yol adıyla listelenir, içerik basılmaz; çıkış kodu `1`.
 5. Windows ve diğer Unix dışı platformlarda izinler uygulanmaz; CLI standart hataya uyarı basar.
 6. Standart çıktıya yalnız yazılan dosyaların yolları ve D9 hatırlatması basılır; **hiçbir anahtar,
    `dest_hash` ya da sertifika basılmaz**.
 
 **Çıkış kodu:** `0` başarı · `1` çalışma hatası (dolu çıktı dizini, G/Ç, entropi, saat, öz-denetim) ·
-`2` kullanım hatası. `2`'de ve `1`'in G/Ç dışı nedenlerinde hiçbir dosya yazılmaz; G/Ç hatasında bu
-koşunun yazdıkları silinir (madde 4).
+`2` kullanım hatası. `2`'de ve `1`'in G/Ç dışı nedenlerinde hiçbir dosya yazılmaz; G/Ç hatasında
+temizlik madde 4'teki kurala uyar.
 
 ## 3. Dosyalar
 
@@ -218,7 +227,8 @@ compact_device_cert_tbs (104 B) =
   kendisi değil `cert_ref` (32 B) taşınır, yanıtlayan göndereni eş dizininde `cert_ref` ile bulur.
 - İmza çalışma zamanında doğrulanmaz (ccr §35.4 KAPALI-SİSTEM KİPİ). `kama_provision::cert` doğrulama
   yardımcısını (`verify_compact_device_cert`, katı kip `kama_noise_wire::ed25519_strict::verify_strict`)
-  testler ve çevrim dışı araçlar için sunar.
+  testler ve çevrim dışı araçlar için sunar; kapsamı yalnız ccr §13.8 adım 9'dur (imza) — zincir, süre,
+  iptal PoC dışı.
 - **Kodlayıcının yeri:** kartın GİRDİ satırındaki "mevcut kodlayıcı" `kama-noise-wire`'da yoktur
   (`handshake.rs` sertifika alanını opak bayt dizisi olarak taşır: `COMPACT_DEVICE_CERT_LEN = 152`,
   `cert_ref_of`). Kodlayıcı ccr §13.1 / §13.2'den `kama_provision::cert`'te yazılmıştır (DUR-K4G-12;
@@ -262,7 +272,7 @@ dolgusuyla aynı gelenek); SPEC-GAP S4-pki-discovery.6 kapandı.
 domain_sep("SR_CDC_V1") = 53 52 5f 43 44 43 5f 56 31 00 00 00 00 00 00 00
 ```
 
-Altın vektör `ccr-compact-device-cert-v1.domain-sep.sr-cdc-v1` (§4.8).
+Altın vektör `ccr-cdc-v1.domain-sep.sr-cdc-v1` (§4.8).
 
 ### 4.6 `peers` ve `direct_addrs`
 
@@ -285,7 +295,11 @@ Beklenen baytları yalnız Python referansı üretir (`ref/crypto/gen_vectors.py
 | Suite | Vakalar | Rust tüketicisi |
 |---|---|---|
 | `vectors/ccr-dest-hash-v1/` | `identity-hash`, `dest-hash` (sabit kimlik açık anahtarı) | `crates/kama-provision/tests/ccr_cert_vectors.rs` |
-| `vectors/ccr-compact-device-cert-v1/` | `domain-sep`, `issuer-key-id`, `tbs`, `encode` (test köküyle imzalı tam 152 B) | aynı dosya; `tests/init_cli.rs` TBS etiketini bu vektörden okur |
+| `vectors/ccr-cdc-v1/` | `domain-sep`, `issuer-key-id`, `tbs`, `encode` (test köküyle imzalı tam 152 B) | aynı dosya; `tests/init_cli.rs` TBS etiketini bu vektörden okur |
+
+`ccr-cdc-v1` (CompactDeviceCertV1 = `SR_CDC_V1`), `vectors/examples/example-positive.json`'daki yer tutucu
+biçim örneğinden (`ccr-compact-device-cert-v1`; imzası hesaplanmamış desenli dolgu) AYRI bir suite'tir;
+`encode` kind'ı iki dosyada farklı girdi sözleşmesi taşır, suite adı onları ayırır.
 
 Üretim: `python3 ref/crypto/gen_vectors.py` · denetim (CI): `python3 ref/crypto/gen_vectors.py --check`.
 
@@ -331,6 +345,8 @@ okunur (yanlış kök ve bozulmuş bayt reddedilir); iki koşu farklı anahtarla
 üretir; hiçbir `device-*.json` kök gizli anahtarını içermez (bayt araması: hex, büyük harf hex, ham bayt,
 base64); `.gitignore` = `*`, dosyalar `0600`, dizin `0700`; standart çıktıda gizli anahtar yok.
 `crates/kama-provision/tests/ccr_cert_vectors.rs` §4.8 vektörlerinin her vakasını tüketir.
+`src/provision.rs` birim testleri §2 madde 4'ü (silinemeyen gizli dosyada `.gitignore` korunur, yol
+raporlanır) ve JSON tamponunun tek ayırmasını (kapasite = uzunluk) sınar.
 
 ## 7. Uygulama sınırları (protokol sınırı değildir)
 
@@ -346,3 +362,4 @@ base64); `.gitignore` = `*`, dosyalar `0600`, dizin `0700`; standart çıktıda 
 |---|---|---|
 | 2026-10-11 | v0 TASLAK | İlk sürüm (K4G-12). §4.4 ve §4.5 DUR-K4G-12 cevabını bekliyor. |
 | 2026-10-11 | v0 | DUR-K4G-12 cevabı (plan Ek (3)): (a) `identity_ed25519` + `identity_hash` alanları (cihaz ve `peers[]`), `dest_hash = SHA-256(SHA-256(identity_pub))`; cihaz-anahtarı formülü reddedildi. (b) `domain_sep` kabul, ccr §13.2 YAMA KAYDI 2026-10-11. (c) altın vektörler (§4.8). |
+| 2026-10-11 | v0 | İnceleme düzeltmeleri (dosya biçimi değişmedi): §2 madde 4 temizlik kuralı (`.gitignore` yalnız bütün gizli dosyalar silindiyse silinir; kalan yollar standart hataya, çıkış `1`); §1 bellek hijyeni; §4.3 doğrulama kapsamı (yalnız ccr §13.8 adım 9); §4.8 CDC suite adı `ccr-cdc-v1` (yer tutucu örnekle ad çakışması giderildi). |

@@ -672,7 +672,7 @@ def gen_ed25519():
     return suite(s, desc, notes, cases)
 
 
-# ══ K4G-12 — ccr-dest-hash-v1 + ccr-compact-device-cert-v1 (ccr §8.1 / §13; YAMA 2026-10-11) ════
+# ══ K4G-12 — ccr-dest-hash-v1 + ccr-cdc-v1 (ccr §8.1 / §13; YAMA 2026-10-11) ════
 # Plan KAMA-PLAN-4GUN-APP-KRIPTO Ek 2026-10-11 (3), DUR-K4G-12: (a) dest_hash cihazdan AYRI bir kimlik
 # Ed25519 anahtarından; (b) domain_sep = ASCII etiket + 0x00 dolgu (ccr §13.2 YAMA 2026-10-11); (c) bu
 # vektörler. PoC'de CompactDeviceCert'i test kökü imzalar (plan D9); üretimde imzalayan sk_user_identity.
@@ -736,7 +736,7 @@ def gen_dest_hash():
 
 
 def gen_compact_device_cert():
-    s = "ccr-compact-device-cert-v1"
+    s = "ccr-cdc-v1"
     label = b"SR_CDC_V1"
     sep = domain_sep(label)
     assert hx(sep) == "53525f4344435f5631" + "00" * 7
@@ -782,9 +782,11 @@ def gen_compact_device_cert():
         "poc-root-issuer": "PoC'de Identity/User Cert katmanı yok: CompactDeviceCert'i test kökü doğrudan "
                            "imzalar (plan D9); issuer_key_id kökün spki özetinden.",
     }
-    desc = ("CompactDeviceCertV1 (ccr §13.1 / §13.2): domain_sep(\"SR_CDC_V1\"), issuer_key_id, TBS ve tam "
-            "imzalı 152 B sertifika — sabit girdilerle. examples/example-positive.json'daki yer tutucu "
-            "dosyanın aksine imza HESAPLANMIŞTIR (ref/crypto/ed25519.py, katı kipte doğrulandı).")
+    desc = ("CompactDeviceCertV1 = SR_CDC_V1 (ccr §13.1 / §13.2): domain_sep(\"SR_CDC_V1\"), issuer_key_id, "
+            "TBS ve tam imzalı 152 B sertifika — sabit girdilerle. Yer tutucu biçim örneğinden "
+            "(vectors/examples/example-positive.json; imzası hesaplanmamış desenli dolgu) AYRI suite: burada "
+            "imza HESAPLANMIŞTIR (ref/crypto/ed25519.py, katı kipte doğrulandı) ve encode girdisi imzalayanın "
+            "tohumunu taşır.")
     return suite(s, desc, notes, cases, spec=SPEC_K4G12)
 
 

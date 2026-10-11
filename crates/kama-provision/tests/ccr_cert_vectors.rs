@@ -1,5 +1,5 @@
 //! DUR-K4G-12 (c) — ccr §13 altın vektörleri ↔ Rust: `ccr-dest-hash-v1` ve
-//! `ccr-compact-device-cert-v1` (Python referansı `ref/crypto/gen_vectors.py`; Rust'tan BAĞIMSIZ).
+//! `ccr-cdc-v1` (Python referansı `ref/crypto/gen_vectors.py`; Rust'tan BAĞIMSIZ).
 //!
 //! * `identity-hash` / `dest-hash`: kimlik anahtarından türetme (ccr §13.3 / §13.5).
 //! * `domain-sep`: ccr §13.2 YAMA KAYDI 2026-10-11 (ASCII etiket + `0x00` dolgu).
@@ -86,7 +86,7 @@ fn identity_and_dest_hash_match_the_reference() {
 #[test]
 fn compact_device_cert_matches_the_reference() {
     let file = suite(
-        "ccr-compact-device-cert-v1",
+        "ccr-cdc-v1",
         &["domain-sep", "issuer-key-id", "tbs", "encode"],
     );
     let sep_cases = of_kind(&file, "domain-sep");

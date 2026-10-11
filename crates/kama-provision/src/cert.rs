@@ -15,7 +15,7 @@
 //! `dest_hash` türetmesi sunmaz (`handshake.rs` sertifikayı opak 152 B taşır); ikisi burada ccr §13'ten
 //! yazılır. (a) `dest_hash` cihaz anahtarından DEĞİL, cihazdan ayrı kimlik Ed25519 anahtarından türer
 //! ([`identity_hash`], [`dest_hash`]; ccr §13.3 / §13.5). (b) [`DOMAIN_SEP_CDC_V1`] ccr §13.2 YAMA KAYDI
-//! 2026-10-11 tanımıdır. Altın vektörler: `vectors/ccr-dest-hash-v1/`, `vectors/ccr-compact-device-cert-v1/`
+//! 2026-10-11 tanımıdır. Altın vektörler: `vectors/ccr-dest-hash-v1/`, `vectors/ccr-cdc-v1/`
 //! (`ref/crypto/gen_vectors.py`; tüketici `tests/ccr_cert_vectors.rs`).
 
 use ed25519_dalek::{Signer, SigningKey};
@@ -35,7 +35,7 @@ pub const SIGNATURE_LEN: usize = 64;
 pub const DOMAIN_SEP_LEN: usize = 16;
 /// `domain_sep("SR_CDC_V1")` — ccr §13.2 YAMA KAYDI 2026-10-11 (K4G-12; DUR-K4G-12 (b)): ASCII etiket
 /// (≤ 16 B) + `0x00` dolgu → `53525f4344435f5631` + `00`×7. Altın vektör
-/// `ccr-compact-device-cert-v1.domain-sep.sr-cdc-v1`.
+/// `ccr-cdc-v1.domain-sep.sr-cdc-v1`.
 pub const DOMAIN_SEP_CDC_V1: [u8; DOMAIN_SEP_LEN] = *b"SR_CDC_V1\0\0\0\0\0\0\0";
 /// İmzalanan alanlar: `device_ed25519_pub ‖ device_x25519_pub ‖ issuer_key_id ‖ not_after` (88 B).
 pub const SIGNED_FIELDS_LEN: usize = KEY_LEN + KEY_LEN + ISSUER_KEY_ID_LEN + NOT_AFTER_LEN;
@@ -137,8 +137,9 @@ pub fn split_compact_device_cert(
 }
 
 /// Sertifikanın imzasını `issuer_ed25519_pub`'a karşı ccr §5.2 katı kipiyle doğrular
-/// (`kama_noise_wire::ed25519_strict::verify_strict`). Çalışma zamanında ÇAĞRILMAZ (ccr §35.4
-/// KAPALI-SİSTEM KİPİ); testler ve çevrim dışı araçlar içindir.
+/// (`kama_noise_wire::ed25519_strict::verify_strict`). Kapsam YALNIZ ccr §13.8 adım 9'dur (imza);
+/// zincir, süre, iptal ve kimlik adımları PoC kapsamı dışıdır (PKI yok). Çalışma zamanında ÇAĞRILMAZ
+/// (ccr §35.4 KAPALI-SİSTEM KİPİ); testler ve çevrim dışı araçlar içindir.
 ///
 /// # Errors
 /// [`CertError::Signature`] — katı kipin ilk düşen kuralı.

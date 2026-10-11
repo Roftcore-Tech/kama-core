@@ -5,7 +5,8 @@
 //! [`DeviceConfig::local_identity`] + [`DeviceConfig::peer_directory`] ile `kama-noise-wire`'ın ürün
 //! kurulumuna (`ControlConfig`) bağlar. Kimlik, anahtarlar ve eş dizini bellekte kalır (D8).
 //!
-//! * Gizli anahtar alanı yalnız [`Secret32`]'dir: Debug'ta maskeli, `Clone` değil, Drop'ta sıfırlanır.
+//! * Gizli anahtar alanı yalnız [`Secret32`]'dir: Debug'ta maskeli, `Clone` değil, öbekte durur ve
+//!   Drop'ta sıfırlanır; yalnız ödünç alınan kaynaktan kurulur.
 //! * [`DeviceConfig`]'te kök gizli anahtarı için alan YOKTUR (D9) — yalnız `root_pub`.
 //! * Bütün nesneler bilinmeyen alanı reddeder; JSON hataları girdiden içerik taşımaz (yalnız kategori
 //!   ve satır/sütun).
@@ -22,10 +23,12 @@ use kama_noise_wire::handshake::{cert_ref_of, COMPACT_DEVICE_CERT_LEN};
 use kama_noise_wire::peer_dir::{DirectoryError, LocalIdentity, PeerDirectory, PeerEntry};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::cert::{self, split_compact_device_cert, KEY_LEN};
-use crate::encoding::{base64_decode, base64_encode, hex_decode, hex_encode, DecodeError};
+use crate::encoding::{
+    base64_decode, base64_encode, hex_decode, hex_decode_into, hex_encode, DecodeError,
+};
 
 /// `format_version` (v0; göç yok).
 pub const FORMAT_VERSION: u32 = 0;
@@ -161,20 +164,40 @@ impl fmt::Debug for Public32 {
 }
 
 /// 32 B gizli anahtar (X25519 skaler baytları ya da Ed25519 tohumu) — JSON'da 64 karakter hex.
-/// Debug'ta MASKELİDİR, `Clone` DEĞİLDİR, Drop'ta sıfırlanır; erişim yalnız ödünçtür
-/// ([`Secret32::expose`]).
-pub struct Secret32(Zeroizing<[u8; KEY_LEN]>);
+/// Debug'ta MASKELİDİR, `Clone` DEĞİLDİR; baytlar ÖBEKTE durur (değerin taşınması yalnız işaretçiyi
+/// kopyalar) ve Drop'ta sıfırlanır. Yalnız ödünç alınan kaynaktan kurulur ([`Secret32::copy_from`];
+/// JSON'dan doğrudan öbek tamponuna çözülür); erişim yalnız ödünçtür ([`Secret32::expose`]).
+///
+/// **Kalan kopyalar (önlenemez, belgelidir):** `x25519_dalek::StaticSecret::from` ve
+/// `LocalIdentity::new` diziyi DEĞERLE ister; dalek tipleri (`StaticSecret`, `SigningKey`) yığında
+/// taşınır ve Rust'ta taşınan değerin eski yeri sıfırlanmaz. Bu kopyalar `zeroize`'ın da belgelediği
+/// dil sınırıdır; gizli anahtarlar zaten düz JSON'da diskte durduğu için (kabul edilmiş PoC riski, D9)
+/// bellek kopyaları riski büyütmez.
+pub struct Secret32(Box<[u8; KEY_LEN]>);
 
 impl Secret32 {
+    /// Ödünç alınan gizli baytları DOĞRUDAN öbekteki tampona kopyalar (çağıranda ek dizi kopyası yok).
     #[must_use]
-    pub fn from_bytes(bytes: [u8; KEY_LEN]) -> Self {
-        Self(Zeroizing::new(bytes))
+    pub fn copy_from(secret: &[u8; KEY_LEN]) -> Self {
+        let mut boxed = Self::zeroed();
+        boxed.0.copy_from_slice(secret);
+        boxed
+    }
+
+    fn zeroed() -> Self {
+        Self(Box::new([0u8; KEY_LEN]))
     }
 
     /// Gizli baytlar — yalnız anahtar kurmak için; log'a, Debug'a, standart çıktıya verilmez.
     #[must_use]
     pub fn expose(&self) -> &[u8; KEY_LEN] {
         &self.0
+    }
+}
+
+impl Drop for Secret32 {
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }
 
@@ -194,9 +217,12 @@ impl Serialize for Secret32 {
 impl<'de> Deserialize<'de> for Secret32 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = Zeroizing::new(String::deserialize(deserializer)?);
-        hex_decode::<KEY_LEN>(&text)
-            .map(Self::from_bytes)
-            .map_err(serde::de::Error::custom)
+        // Hex doğrudan öbek tamponuna çözülür; hata yolunda tampon Drop'ta sıfırlanır.
+        let mut secret = Self::zeroed();
+        match hex_decode_into(&text, &mut secret.0[..]) {
+            Ok(()) => Ok(secret),
+            Err(error) => Err(serde::de::Error::custom(error)),
+        }
     }
 }
 
@@ -536,7 +562,7 @@ mod tests {
     #[test]
     fn secrets_never_appear_in_debug_output() {
         let pair = KeyPair {
-            secret: Secret32::from_bytes([0xAB; KEY_LEN]),
+            secret: Secret32::copy_from(&[0xAB; KEY_LEN]),
             public: Public32::from_bytes([0xCD; KEY_LEN]),
         };
         let shown = format!("{pair:?}");
@@ -548,6 +574,25 @@ mod tests {
                 "Debug çıktısında {needle}: {shown}"
             );
         }
+    }
+
+    #[test]
+    fn secret_round_trips_through_json_and_rejects_bad_hex() {
+        let secret = Secret32::copy_from(&[0x5A; KEY_LEN]);
+        let json = serde_json::to_string(&secret).expect("serileşir");
+        assert_eq!(json, format!("\"{}\"", "5a".repeat(KEY_LEN)));
+        let back: Secret32 = serde_json::from_str(&json).expect("çözülür");
+        assert_eq!(back.expose(), &[0x5A; KEY_LEN]);
+        let upper = format!("\"{}\"", "5A".repeat(KEY_LEN));
+        assert!(
+            serde_json::from_str::<Secret32>(&upper).is_err(),
+            "büyük harf hex"
+        );
+        let short = format!("\"{}\"", "5a".repeat(KEY_LEN - 1));
+        assert!(
+            serde_json::from_str::<Secret32>(&short).is_err(),
+            "kısa hex"
+        );
     }
 
     #[test]
@@ -575,7 +620,7 @@ mod tests {
             format_version: FORMAT_VERSION,
             created_at_unix: 1,
             ed25519: KeyPair {
-                secret: Secret32::from_bytes([1; KEY_LEN]),
+                secret: Secret32::copy_from(&[1; KEY_LEN]),
                 public: Public32::from_bytes([2; KEY_LEN]),
             },
         };

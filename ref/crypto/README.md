@@ -69,7 +69,7 @@ kapısının kaldırılması, AEAD veri counter'ı 1→0, taşma kapısının ka
 `ccr-ssi1-v1` (üç cert_mode + negatifler) · `ccr-ssr1-v1` · `ccr-ssd1-v1` (22 B zarf; D-GAP-1
 far-future kabul; boş batch) · `ccr-deprecated-neg-v1` · `ccr-ed25519-neg-v1` (ccr §5.2'nin dört ret
 nedeni ayrı vakalarda) · **K4G-12:** `ccr-dest-hash-v1` (kimlik anahtarından `identity_hash` /
-`dest_hash`, ccr §13.3 / §13.5) · `ccr-compact-device-cert-v1` (`domain_sep("SR_CDC_V1")` — ccr §13.2
+`dest_hash`, ccr §13.3 / §13.5) · `ccr-cdc-v1` (`domain_sep("SR_CDC_V1")` — ccr §13.2
 YAMA 2026-10-11 —, `issuer_key_id`, TBS ve test köküyle İMZALI tam 152 B CompactDeviceCertV1). Beklenen byte'ların HİÇBİRİ Rust'tan üretilmedi. Üçüncü-kaynak teyitleri:
 SSD1 AAD'si repodaki Rust golden'ıyla, SSD1 mühür vektörlerinin 5'i mevcut Rust `LegacySessionProtector`
 ile bayt-özdeş çıktı (2026-10-04, geçici testle ölçüldü; kalıcı tüketici A5.2).
