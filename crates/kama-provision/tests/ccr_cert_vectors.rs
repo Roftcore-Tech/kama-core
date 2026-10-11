@@ -68,18 +68,18 @@ fn fields_of(case: &Case) -> CertFields {
 #[test]
 fn identity_and_dest_hash_match_the_reference() {
     let file = suite("ccr-dest-hash-v1", &["identity-hash", "dest-hash"]);
-    let mut consumed = 0usize;
-    for case in of_kind(&file, "identity-hash") {
+    let identity_cases = of_kind(&file, "identity-hash");
+    for case in &identity_cases {
         let identity_hash = cert::identity_hash(&array(case, "identity_ed25519_pub_hex"));
         assert_eq!(identity_hash.as_slice(), expected(case), "{}", case.id);
-        consumed += 1;
     }
-    for case in of_kind(&file, "dest-hash") {
+    let dest_cases = of_kind(&file, "dest-hash");
+    for case in &dest_cases {
         let identity_hash = cert::identity_hash(&array(case, "identity_ed25519_pub_hex"));
         let dest_hash = cert::dest_hash(&identity_hash);
         assert_eq!(dest_hash.as_slice(), expected(case), "{}", case.id);
-        consumed += 1;
     }
+    let consumed = identity_cases.len() + dest_cases.len();
     assert_eq!(consumed, file.case_count(), "her vaka koşulmalı");
 }
 
@@ -89,26 +89,26 @@ fn compact_device_cert_matches_the_reference() {
         "ccr-compact-device-cert-v1",
         &["domain-sep", "issuer-key-id", "tbs", "encode"],
     );
-    let mut consumed = 0usize;
-    for case in of_kind(&file, "domain-sep") {
+    let sep_cases = of_kind(&file, "domain-sep");
+    for case in &sep_cases {
         let label = field(case, "label_hex");
         assert_eq!(DOMAIN_SEP_CDC_V1.as_slice(), expected(case), "{}", case.id);
         // ccr §13.2 YAMA 2026-10-11 kuralının kendisi: etiket, ardından `0x00` dolgu.
         assert_eq!(&DOMAIN_SEP_CDC_V1[..label.len()], label.as_slice());
         assert!(DOMAIN_SEP_CDC_V1[label.len()..].iter().all(|&b| b == 0));
-        consumed += 1;
     }
-    for case in of_kind(&file, "issuer-key-id") {
+    let key_id_cases = of_kind(&file, "issuer-key-id");
+    for case in &key_id_cases {
         let key_id = cert::issuer_key_id(&array(case, "issuer_ed25519_pub_hex"));
         assert_eq!(key_id.as_slice(), expected(case), "{}", case.id);
-        consumed += 1;
     }
-    for case in of_kind(&file, "tbs") {
+    let tbs_cases = of_kind(&file, "tbs");
+    for case in &tbs_cases {
         let tbs = fields_of(case).tbs();
         assert_eq!(tbs.as_slice(), expected(case), "{}", case.id);
-        consumed += 1;
     }
-    for case in of_kind(&file, "encode") {
+    let encode_cases = of_kind(&file, "encode");
+    for case in &encode_cases {
         let fields = fields_of(case);
         let issuer = SigningKey::from_bytes(&array(case, "issuer_ed25519_seed_hex"));
         let compact = cert::sign_compact_device_cert(&fields, &issuer).expect("imza");
@@ -118,7 +118,7 @@ fn compact_device_cert_matches_the_reference() {
         let issuer_pub = issuer.verifying_key().to_bytes();
         let verdict = cert::verify_compact_device_cert(&compact, &issuer_pub);
         assert_eq!(verdict, Ok(()), "{}", case.id);
-        consumed += 1;
     }
+    let consumed = sep_cases.len() + key_id_cases.len() + tbs_cases.len() + encode_cases.len();
     assert_eq!(consumed, file.case_count(), "her vaka koşulmalı");
 }

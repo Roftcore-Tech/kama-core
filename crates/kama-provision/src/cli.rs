@@ -134,7 +134,7 @@ fn known_flag(flag: &OsStr) -> Option<&'static str> {
     FLAGS.into_iter().find(|known| *known == text)
 }
 
-fn utf8(value: &OsStr, flag: &'static str) -> Result<&str, UsageError> {
+fn utf8<'a>(value: &'a OsStr, flag: &'static str) -> Result<&'a str, UsageError> {
     value.to_str().ok_or(UsageError::NotUtf8(flag))
 }
 

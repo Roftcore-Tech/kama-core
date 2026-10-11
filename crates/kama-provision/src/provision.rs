@@ -147,7 +147,9 @@ pub fn init(
         .checked_add(cert::DEVICE_CERT_VALIDITY_SECS)
         .ok_or(InitError::Clock)?;
 
-    let root = SigningKey::from_bytes(&random_key(entropy)?);
+    // Tohum `Zeroizing`'de kalır; anahtar tipine yalnız ödünç verilir (deref).
+    let root_seed = random_key(entropy)?;
+    let root = SigningKey::from_bytes(&root_seed);
     let root_pub = root.verifying_key().to_bytes();
     let issuer_key_id = cert::issuer_key_id(&root_pub);
     let mut devices = Vec::with_capacity(request.devices.len());
@@ -217,12 +219,17 @@ fn generate_device(
     issuer_key_id: [u8; ISSUER_KEY_ID_LEN],
     not_after: u64,
 ) -> Result<DeviceMaterial, InitError> {
-    let x25519 = StaticSecret::from(*random_key(entropy)?);
+    // Tohumlar `Zeroizing`'de kalır. `StaticSecret::from` diziyi değerle ister: tek kopya doğrudan
+    // Drop'ta sıfırlanan `StaticSecret`'e gider; `SigningKey`'e yalnız ödünç verilir (deref).
+    let x25519_seed = random_key(entropy)?;
+    let x25519 = StaticSecret::from(*x25519_seed);
     let x25519_pub = *PublicKey::from(&x25519).as_bytes();
-    let ed25519 = SigningKey::from_bytes(&random_key(entropy)?);
+    let ed25519_seed = random_key(entropy)?;
+    let ed25519 = SigningKey::from_bytes(&ed25519_seed);
     let ed25519_pub = ed25519.verifying_key().to_bytes();
     // dest_hash cihaz anahtarından DEĞİL, ayrı kimlik anahtarından türer (ccr §13.3 / §13.5).
-    let identity = SigningKey::from_bytes(&random_key(entropy)?);
+    let identity_seed = random_key(entropy)?;
+    let identity = SigningKey::from_bytes(&identity_seed);
     let identity_pub = identity.verifying_key().to_bytes();
     let identity_hash = cert::identity_hash(&identity_pub);
     let fields = CertFields {
