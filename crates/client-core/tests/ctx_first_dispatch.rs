@@ -782,8 +782,7 @@ async fn server_max_peers_one_is_not_taken_by_unkeyed_or_unexpected_datagrams() 
 fn transport_node(me: u8, hub: &MemoryHub) -> ClientTransport<NoiseWireProtection> {
     let mut cfg = ClientTransportConfig::product(SocketAddr::from(([127, 0, 0, 1], 0)));
     cfg.runtime.drain_cap = Duration::from_millis(100);
-    ClientTransport::new(cfg, node(me), Box::new(hub.link(id(me))))
-        .expect("düğüm")
+    ClientTransport::new(cfg, node(me), Box::new(hub.link(id(me)))).expect("düğüm")
 }
 
 fn unit(bytes: &[u8]) -> PreparedUnit {
@@ -833,9 +832,10 @@ fn inv_ack_deliver_unit_of_a_not_ready_session_is_not_acked() {
     // RESPONSE hub'da TUTULURKEN Bob yollar.
     bob.send(h_bob, unit(b"erken"), DeliveryPolicy::Reliable)
         .expect("gönder");
-    eventually("Ready olmayan oturumun datagramı ACK'siz düşmeli", || {
-        alice.ctx_dispatch_stats().not_ready_drops >= 1
-    });
+    eventually(
+        "Ready olmayan oturumun datagramı ACK'siz düşmeli",
+        || alice.ctx_dispatch_stats().not_ready_drops >= 1,
+    );
     std::thread::sleep(QUIET);
     assert_eq!(bob.outstanding_for_test(), 1, "Ready öncesi ACK yok");
     assert!(alice.recv().is_none(), "Ready öncesi teslim yok");
