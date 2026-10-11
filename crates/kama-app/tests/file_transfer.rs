@@ -21,6 +21,7 @@ mod common;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use common::mock_transport::MockTransport;
 use kama_app::codec::limits::{FILE_NAME_MAX_BYTES, WHOLE_FILE_HASH_BYTES};
@@ -32,6 +33,7 @@ use kama_app::file_transfer::{
     FIRST_TRANSFER_ID, MAX_OUTGOING_TRANSFERS, MAX_REASSEMBLY_BYTES,
 };
 use kama_app::messaging::{Messenger, MessengerEvent};
+use kama_app::store::MemoryAppStore;
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     ConnectResult, ConnectTicket, Delivered, DeliveryPolicy, KamaTransport, PreparedUnit,
@@ -403,8 +405,13 @@ impl Duo {
     fn connected() -> Self {
         let link = Rc::new(RefCell::new(Link::default()));
         let mut duo = Self {
-            alice: Messenger::new(End::new(&link, Side::Alice)).expect("limitler geçerli"),
-            bob: Messenger::new(End::new(&link, Side::Bob)).expect("limitler geçerli"),
+            alice: Messenger::with_store(
+                End::new(&link, Side::Alice),
+                Arc::new(MemoryAppStore::new()),
+            )
+            .expect("limitler geçerli"),
+            bob: Messenger::with_store(End::new(&link, Side::Bob), Arc::new(MemoryAppStore::new()))
+                .expect("limitler geçerli"),
             alice_files: FileTransfer::new(),
             bob_files: FileTransfer::new(),
             link,
@@ -583,7 +590,9 @@ fn empty_file_round_trips_without_chunks() {
 
 #[test]
 fn echo_peer_reassembles_through_mock_loss_and_recovery() {
-    let mut messenger = Messenger::new(MockTransport::new(caps())).expect("limitler geçerli");
+    let mut messenger =
+        Messenger::with_store(MockTransport::new(caps()), Arc::new(MemoryAppStore::new()))
+            .expect("limitler geçerli");
     let mut files = FileTransfer::new();
     connect_mock(&mut messenger, &mut files, BOB);
     let chunk_len = messenger.limits().max_file_chunk_bytes();

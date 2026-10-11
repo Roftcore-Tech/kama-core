@@ -11,8 +11,11 @@
 
 mod common;
 
+use std::sync::Arc;
+
 use common::mock_transport::MockTransport;
 use kama_app::messaging::{ConnectState, Messenger, MessengerError, MessengerEvent, MsgId};
+use kama_app::store::MemoryAppStore;
 use kama_contracts::handles::PeerRef;
 use kama_contracts::s1::{
     AbandonReason, ConnectPhase, ConnectResult, SessionEvent, TransportCapabilities, TransportError,
@@ -26,13 +29,13 @@ const DRAIN_CAP: usize = 256;
 const BOB: PeerRef = PeerRef::from_dest_hash([0xB0; 32]);
 
 fn messenger() -> Messenger<MockTransport> {
-    Messenger::new(MockTransport::new(TransportCapabilities {
+    let transport = MockTransport::new(TransportCapabilities {
         max_plaintext_unit_bytes: TEST_MAX_PLAINTEXT_UNIT_BYTES,
         preferred_plaintext_unit_bytes: TEST_MAX_PLAINTEXT_UNIT_BYTES,
         max_early_unit_bytes: TEST_MAX_PLAINTEXT_UNIT_BYTES,
         reliable: true,
-    }))
-    .expect("limitler geçerli")
+    });
+    Messenger::with_store(transport, Arc::new(MemoryAppStore::new())).expect("limitler geçerli")
 }
 
 /// Motoru, okunacak bir şey kalmayana dek sürer; olayları sırayla döndürür.

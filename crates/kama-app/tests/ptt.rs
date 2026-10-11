@@ -17,6 +17,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::iter;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use kama_app::codec::limits::{APP_RECORD_HEADER_BYTES, MEDIA_BUNDLE_PREFIX_BYTES};
 use kama_app::codec::{decode, encode, AmpLimits, AppMessage, MsgType, PttCodec};
@@ -24,6 +25,7 @@ use kama_app::messaging::{Messenger, MessengerEvent};
 use kama_app::ptt::{
     max_bundle_payload_bytes, Ptt, PttError, PttEvent, PttStats, StreamId, FIRST_STREAM_ID,
 };
+use kama_app::store::MemoryAppStore;
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     CompressionPolicy, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy, KamaTransport,
@@ -344,7 +346,8 @@ impl Node {
             side,
         };
         Self {
-            messenger: Messenger::new(end).expect("limitler geçerli"),
+            messenger: Messenger::with_store(end, Arc::new(MemoryAppStore::new()))
+                .expect("limitler geçerli"),
             ptt: Ptt::new(),
         }
     }
