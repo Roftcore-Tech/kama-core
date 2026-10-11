@@ -10,7 +10,14 @@
       "test_filter": "h_ctx_",
       "mock": "green",
       "real": "green",
-      "note": "Bağlam kaydı çağıranın verdiğiyle aynı; mock'ta Session ≠ HubChannel. identity hedefi (PoC IdentitySeam; client-core/tests/noise_identity_target.rs) no-op'u assert eder; 'Session ≠ HubChannel' gerçek anahtarla (M4)."
+      "note": "Bağlam kaydı çağıranın verdiğiyle aynı; mock'ta Session ≠ HubChannel. identity hedefi (PoC IdentitySeam; client-core/tests/noise_identity_target.rs) no-op'u assert eder; 'Session ≠ HubChannel' gerçek anahtarla (M4). [K4G-01, 2026-10-11] Bu satırın 'real: green'i YALNIZ bağlam-kaydı (real_s3_*::h_ctx_reaches_seam_unchanged) ve HubChannel no-op (real_s3_*::h_ctx_hub_channel_is_identity_noop) yarısını kapsar; 'Session ≠ HubChannel anahtarı' yarısı alt satırdadır: H-CTX/key."
+    },
+    {
+      "id": "H-CTX/key",
+      "test_filter": "h_ctx_session_and_hub_seal_differently",
+      "mock": "green",
+      "real": "declared",
+      "note": "[K4G-01, 2026-10-11] 'Session ≠ HubChannel' anahtar / PN-uzayı ayrımı. Yalnız sahtede kanıtlı (mock_s3::h_ctx_session_and_hub_seal_differently; CONTEXTS_ARE_KEY_SEPARATED = true). Gerçek hedefte HubChannel PoC no-op'tur (AEAD'siz; hop anahtarı yok — M4, PoC-KAPSAM-001 §3): bu yarı için real kanıtı YOK, iddia edilmez (declared). Boşluğun Transport'taki etkisi bağlam-önce dağıtımla sınırlandı (plan D1 v1.1): HubChannel çerçevesi Session durumuna ulaşmaz — crates/client-core/tests/ctx_first_dispatch.rs."
     },
     {
       "id": "H-PN-OWN",
