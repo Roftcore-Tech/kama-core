@@ -9,6 +9,8 @@
 //!   `ControlFailure::CounterPersist`), değer ayrılmaz, düzlem durumu bayt-özdeş.
 //! * Madde 2 — düzlem sayacı kendisi artırmaz ve belleğe almaz: her INIT depoya TAM BİR kez sorar,
 //!   dönen değer telde AYNEN görünür; INIT üretmeyen yollar (kabul, yanıt, glare) depoya sormaz.
+//! * "Hata = ayrılmadı" — ayırma ÖNCESİ retler (dizinde olmayan eş, boş olmayan `early_unit`,
+//!   bekleyen INIT tavanı, entropi hatası) depoya sormaz, değer tüketmez.
 //!
 //! Sayaç telden okunur (`handshake::parse_ssi1`): kanıt, gönderilen baytlardır.
 
@@ -25,18 +27,22 @@ use kama_contracts::s3::{
 };
 use kama_noise_wire::clock::ManualClock;
 use kama_noise_wire::counter_store::{CounterStore, CounterStoreError, MemoryCounterStore};
-use kama_noise_wire::entropy::OsEntropy;
+use kama_noise_wire::entropy::{EntropySource, FixedEntropy, OsEntropy};
 use kama_noise_wire::epoch_machine::GRACE_T_G;
 use kama_noise_wire::handshake::parse_ssi1;
 use kama_noise_wire::peer_dir::{LocalIdentity, PeerDirectory, PeerEntry};
 use kama_noise_wire::protector::NoiseWireProtection;
-use kama_noise_wire::session_control::{ControlConfig, ControlFailure, EnvelopeKind};
+use kama_noise_wire::session_control::{
+    ControlConfig, ControlFailure, EnvelopeKind, PENDING_RESPONSE_TRIAL_CAP,
+};
 use sha2::{Digest, Sha256};
 use x25519_dalek::StaticSecret;
 
 const ALICE: u8 = 0xA1;
 const BOB: u8 = 0xB0;
 const CAROL: u8 = 0xC0;
+/// Dizinde OLMAYAN kimlik.
+const MALLORY: u8 = 0xEE;
 
 fn peer(n: u8) -> PeerRef {
     PeerRef::from_dest_hash([n; 32])
@@ -83,12 +89,21 @@ struct Node {
 
 /// Ürün kurulumu (`with_control`); `init_counter` deposu dışarıdan verilir.
 fn node(n: u8, counter_store: Arc<dyn CounterStore>) -> Node {
+    node_with_entropy(n, counter_store, Box::new(OsEntropy::new()))
+}
+
+/// [`node`]; entropi kaynağı da dışarıdan verilir.
+fn node_with_entropy(
+    n: u8,
+    counter_store: Arc<dyn CounterStore>,
+    entropy: Box<dyn EntropySource>,
+) -> Node {
     let clock = ManualClock::new();
     let c = NoiseWireProtection::with_control(ControlConfig {
         identity: identity(n),
         directory: directory(),
         clock: Box::new(clock.clone()),
-        entropy: Box::new(OsEntropy::new()),
+        entropy,
         counter_store,
         envelope: EnvelopeKind::Extended,
     });
@@ -334,7 +349,8 @@ fn k4g02_4b_restart_collision_on_n_fails_and_n_plus_1_is_accepted() {
 /// 4(c) — depo hata verirse INIT GÖNDERİLMEZ ve sayaç İLERLEMEZ. Üç INIT yolu da (ilk INIT,
 /// `Renew`, `test-util` kancası) depoya BİR kez sorar; hata alınca: opak `Failed` (S3), neden
 /// `ControlFailure::CounterPersist`, bekleyen INIT yok, olay yok, düzlem durumu bayt-özdeş, kurulu
-/// oturum çalışır. Depo düzelince sonraki INIT, hatalardan ÖNCEKİ sıradaki değeri taşır.
+/// oturum çalışır. Kanca da `command` gibi önce eski nedeni temizler. Depo düzelince sonraki INIT,
+/// hatalardan ÖNCEKİ sıradaki değeri taşır.
 #[test]
 fn k4g02_4c_failing_store_sends_no_init_and_reserves_nothing() {
     let store = Arc::new(FailingCounterStore::default());
@@ -366,6 +382,7 @@ fn k4g02_4c_failing_store_sends_no_init_and_reserves_nothing() {
         None,
         "test-util kancası"
     );
+    assert_eq!(a.c.last_control_failure(), persist, "kanca nedeni kaydeder");
     assert_eq!(a.c.counter_persist_failures(), 3);
     assert_eq!(store.calls(), 4, "her INIT girişimi depoya BİR kez sordu");
     assert_eq!(a.c.pending_len(), 0, "bekleyen INIT yok");
@@ -376,6 +393,20 @@ fn k4g02_4c_failing_store_sends_no_init_and_reserves_nothing() {
     );
     assert!(a.events().is_empty(), "olay yok");
     assert!(!a.seal(ha).is_empty(), "kurulu oturum etkilenmedi");
+
+    // Kanca da `command` gibi önce nedeni temizler: ayırma ÖNCESİ (opak) ret, kayıtlı eski nedeni
+    // bırakmaz ve depoya sormaz.
+    assert_eq!(
+        a.c.initiate_with_ephemeral_for_test(peer(MALLORY), [7u8; 32]),
+        None,
+        "dizinde olmayan eş"
+    );
+    assert_eq!(
+        a.c.last_control_failure(),
+        None,
+        "kanca eski nedeni temizlemedi"
+    );
+    assert_eq!(store.calls(), 4, "ayırma öncesi ret depoya sordu");
 
     // Depo düzelir: başarısız ayırmalar değer TÜKETMEDİ.
     store.set_fail(false);
@@ -389,9 +420,10 @@ fn k4g02_4c_failing_store_sends_no_init_and_reserves_nothing() {
     assert_eq!(a.c.counter_persist_failures(), 3, "toplam korunur");
 }
 
-/// Madde 2 — düzlem sayacı kendisi ARTIRMAZ ve belleğe ALMAZ: her INIT (ilk INIT, başka eş,
-/// `Renew`, `test-util` kancası) depoya TAM BİR kez sorar ve dönen değer telde AYNEN görünür
-/// (boşluklu dizi: düzlem `+1` türetseydi saphardı). Yanıtlayan (`AcceptInit`) depoya sormaz.
+/// Madde 2 — düzlem sayacı kendisi ARTIRMAZ ve belleğe ALMAZ: ilk INIT, başka eşe INIT ve `Renew`
+/// depoya TAM BİR kez sorar ve dönen değer telde AYNEN görünür (boşluklu dizi: düzlem `+1`
+/// türetseydi saphardı). `test-util` kancası da depoya TAM BİR kez sorar; kanca INIT baytlarını
+/// döndürmediği için onun teldeki değeri burada ÖLÇÜLMEZ. Yanıtlayan (`AcceptInit`) depoya sormaz.
 #[test]
 fn k4g02_2_each_init_reserves_once_and_carries_the_store_value_verbatim() {
     let sa = Arc::new(ScriptedCounterStore::new(&[10, 20, 35, 1_000_000]));
@@ -410,6 +442,78 @@ fn k4g02_2_each_init_reserves_once_and_carries_the_store_value_verbatim() {
         .is_some());
     assert_eq!(sa.calls(), 4, "test-util kancası da BİR kez sorar");
     assert_eq!(sb.calls(), 0, "yanıtlayan sayaç ayırmaz");
+}
+
+/// "Hata = ayrılmadı" (D2), ayırma ÖNCESİ retler: dizinde olmayan eş, boş olmayan `early_unit`,
+/// bekleyen INIT tavanı (`PENDING_RESPONSE_TRIAL_CAP`) ve entropi hatası `reserve_next`'ten ÖNCE
+/// opak `Failed` döner — depoya SORULMAZ, değer tüketilmez, neden kaydedilmez.
+#[test]
+fn k4g02_rejections_before_reservation_consume_no_counter() {
+    let assert_opaque = |a: &Node| {
+        assert_eq!(
+            a.c.last_control_failure(),
+            None,
+            "ayırma öncesi ret neden kaydetti"
+        );
+        assert_eq!(a.c.counter_persist_failures(), 0);
+    };
+
+    // Dizinde olmayan eş · boş olmayan `early_unit` (sahip kararı S1).
+    let s = Arc::new(ScriptedCounterStore::new(&[]));
+    let mut a = node(ALICE, s.clone());
+    assert_eq!(
+        a.c.command(SessionCommand::Initiate {
+            peer: peer(MALLORY),
+            early_unit: None,
+        }),
+        SessionResult::Failed,
+        "dizinde olmayan eş"
+    );
+    assert_opaque(&a);
+    assert_eq!(
+        a.c.command(SessionCommand::Initiate {
+            peer: peer(BOB),
+            early_unit: Some(b"erken".to_vec()),
+        }),
+        SessionResult::Failed,
+        "boş olmayan early_unit"
+    );
+    assert_opaque(&a);
+    assert_eq!(s.calls(), 0, "dizin / early_unit reddi depoya sordu");
+
+    // Bekleyen INIT tavanı: tavan kadar INIT birer değer ayırır; tavanı aşan INIT ayırmaz.
+    let cap = PENDING_RESPONSE_TRIAL_CAP;
+    let values: Vec<u64> = (0..cap as u64).collect();
+    let s = Arc::new(ScriptedCounterStore::new(&values));
+    let mut a = node(ALICE, s.clone());
+    for _ in 0..cap {
+        a.initiate(BOB);
+    }
+    assert_eq!(s.calls(), cap);
+    assert_eq!(
+        a.c.command(SessionCommand::Initiate {
+            peer: peer(BOB),
+            early_unit: None,
+        }),
+        SessionResult::Failed,
+        "bekleyen INIT tavanı"
+    );
+    assert_opaque(&a);
+    assert_eq!(s.calls(), cap, "tavan reddi depoya sordu");
+
+    // Entropi hatası (boş deterministik kaynak): geçici anahtar üretilemez.
+    let s = Arc::new(ScriptedCounterStore::new(&[]));
+    let mut a = node_with_entropy(ALICE, s.clone(), Box::new(FixedEntropy::new(Vec::new())));
+    assert_eq!(
+        a.c.command(SessionCommand::Initiate {
+            peer: peer(BOB),
+            early_unit: None,
+        }),
+        SessionResult::Failed,
+        "entropi hatası"
+    );
+    assert_opaque(&a);
+    assert_eq!(s.calls(), 0, "entropi reddi depoya sordu");
 }
 
 /// Madde 2 (glare) — iki uç aynı anda başlatır: her INIT BİR değer ayırır; glare'in iki kolu

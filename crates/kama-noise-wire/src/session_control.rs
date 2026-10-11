@@ -1004,13 +1004,17 @@ impl NoiseWireProtection {
     }
 
     /// Verilen ephemeral'la `Initiate` (H-DEMUX fikstürü: yanıtı test bağımsızca hesaplar).
-    /// Döner: bekleyen oturumun tutamacı; `Initiate`'in reddettiği durumda `None`.
+    /// Döner: bekleyen oturumun tutamacı; `Initiate`'in reddettiği durumda `None`. Bir `command`
+    /// gibi önce kaydedilmiş `Failed` nedenini temizler ([`Self::last_control_failure`]).
     #[cfg(feature = "test-util")]
     pub fn initiate_with_ephemeral_for_test(
         &mut self,
         peer: PeerRef,
         ephemeral: [u8; X25519_LEN],
     ) -> Option<SessionHandle> {
+        if let Some(cp) = self.control.as_deref_mut() {
+            cp.last_failure = None;
+        }
         match self.initiate_with(peer, None, Some(StaticSecret::from(ephemeral))) {
             SessionResult::Initiated { session, .. } => Some(session),
             _ => None,
