@@ -254,7 +254,12 @@ impl AppStore for RedbStore {
         let table = txn.open_table(OUTBOX).map_err(persist)?;
         let (first, last) = outbox_bounds(&peer);
         let mut units = Vec::new();
-        for entry in table.range(&first..=&last).map_err(persist)? {
+        // `KR` açıkça verilir: boyu sabit dizi anahtarında `&a..=&b` iki `RangeBounds`
+        // gerçeklemesine uyar (`RangeInclusive<T>` ve `RangeInclusive<&T>`), çıkarım belirsizdir.
+        for entry in table
+            .range::<&[u8; OUTBOX_KEY_LEN]>(&first..=&last)
+            .map_err(persist)?
+        {
             let (key, value) = entry.map_err(persist)?;
             // SR-AUDIT-001: eş başına en çok MAX_OUTBOX_UNACKED kayıt yazılabilir; fazlası bozulmadır
             // ve ayırmadan ÖNCE reddedilir.
@@ -329,7 +334,11 @@ fn held_units(
 ) -> Result<usize, AppStoreError> {
     let (first, last) = outbox_bounds(peer);
     let mut held = 0;
-    for entry in table.range(&first..=&last).map_err(persist)? {
+    // `KR` açıkça verilir (bkz. `outbox_list`).
+    for entry in table
+        .range::<&[u8; OUTBOX_KEY_LEN]>(&first..=&last)
+        .map_err(persist)?
+    {
         entry.map_err(persist)?;
         held += 1;
         if held >= MAX_OUTBOX_UNACKED {
@@ -348,11 +357,9 @@ fn encode_dedup(window: &DedupWindow) -> [u8; DEDUP_VALUE_LEN] {
     };
     out[DEDUP_FLAG_AT] = flag;
     out[DEDUP_HIGHEST_AT..DEDUP_SEEN_AT].copy_from_slice(&highest.to_be_bytes());
-    for (chunk, word) in out[DEDUP_SEEN_AT..]
-        .chunks_exact_mut(WORD_LEN)
-        .zip(window.seen.iter())
-    {
-        chunk.copy_from_slice(&word.to_be_bytes());
+    let (chunks, _) = out[DEDUP_SEEN_AT..].as_chunks_mut::<WORD_LEN>();
+    for (chunk, word) in chunks.iter_mut().zip(window.seen.iter()) {
+        *chunk = word.to_be_bytes();
     }
     out
 }
@@ -371,12 +378,11 @@ fn decode_dedup(bytes: &[u8]) -> Result<DedupWindow, AppStoreError> {
         HIGHEST_ABSENT if raw_highest == 0 => None,
         _ => return Err(AppStoreError::Corrupt),
     };
+    // Boy yukarıda tam denetlendi: kuyruk tam `DEDUP_WINDOW_WORDS` kelimedir, artık bayt yoktur.
+    let (chunks, _) = bytes[DEDUP_SEEN_AT..].as_chunks::<WORD_LEN>();
     let mut seen = [0u64; DEDUP_WINDOW_WORDS];
-    for (word, chunk) in seen
-        .iter_mut()
-        .zip(bytes[DEDUP_SEEN_AT..].chunks_exact(WORD_LEN))
-    {
-        *word = u64::from_be_bytes(chunk.try_into().map_err(|_| AppStoreError::Corrupt)?);
+    for (word, chunk) in seen.iter_mut().zip(chunks) {
+        *word = u64::from_be_bytes(*chunk);
     }
     Ok(DedupWindow { highest, seen })
 }
