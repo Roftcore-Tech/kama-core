@@ -10,13 +10,23 @@
 NEDEN VAR. Bir sozlesme satirinin sahtede YESIL olmasi, satirin bir sey OLCTUGUNU gostermez: govde
 hicbir seyi sinamiyor da olabilir. Bu betik sahtenin (`crates/kama-app/tests/common/mock_transport.rs`)
 davranisini tek tek bozar ve her bozulmanin HEDEF satiri kirmizi yaptigini olcer. Olcum sahteyle
-sinirlidir: satirin gercek hedefteki gucu hakkinda bir sey soylemez (GAP-SEAM-REAL-1).
+sinirlidir: satirin gercek hedefteki gucu hakkinda bir sey soylemez ~~(GAP-SEAM-REAL-1)~~
+[K4G-03 2026-10-11: gercek hedef L-T1 (#109) ile kayitli ve TABANDA kosar (asagida); mutasyon
+operatorleri ise sahteye ozgudur — real hedefin satir gucu bu turda OLCULMEZ].
 
 NASIL. Depoya DOKUNULMAZ (git ile geri alma yok): gecici bir dizinde minik bir workspace kurulur —
-`kama-contracts` kaynagi + harness dosyalari (`common/seam/*.rs`, `seam_conformance_core/main.rs`) +
+~~`kama-contracts` kaynagi +~~ harness dosyalari (`common/seam/*.rs`, `seam_conformance_core/main.rs`) +
 sahtenin kopyasi. Her mutasyon sahtenin KOPYASINA metin degisimi olarak uygulanir (capa tam olarak
 bir kez bulunmali), `seam_conformance_core` kosturulur, kirmizi olan `mock_contract::h_*` testleri
 okunur.
+[K4G-03 2026-10-11] `real.rs` (L-T1) harness'e girdi ve `client-core` ile `kama-noise-wire`'a (ikisi de
+`test-util`) baglidir. Urun crate'leri (`kama-contracts`, `client-core`, `kama-noise-wire` ve gecisli
+path bagimliliklari) KOPYALANMAZ: depodaki yerlerinden PATH ile, salt okunur baglanir (`fuzz/`
+workspace'iyle ayni kalip). Sozlesme crate'i kopyalansaydi grafikte iki `kama-contracts` olurdu ve
+ClientTransport'un uyguladigi `KamaTransport` harness'inkiyle ayni tip olmazdi. Mutasyona YALNIZ
+sahtenin kopyasi ugrar. TABAN (mutasyonsuz) ikilinin tamamini kosar ve mock ile real kolunda her
+satiri yesil ister; MUTASYON kosumlari yalniz `mock_*` testlerini kosar (#109 oncesi ikilinin
+tamami): real hedef sahte kodunu icermez, her mutasyonda yeniden kosmasi bir sey olcmez.
 
 KAPI DEGILDIR: PR basina kosmaz (her mutasyon bir derleme; ~40 derleme); GECELIK iste kosar
 (.github/workflows/nightly.yml `seam-mutation`, `--online`, 2026-10-06). Elle de kosulabilir.
@@ -28,13 +38,15 @@ RUN_TIMEOUT_S icinde bitmeyen mutasyon "oldu" SAYILMAZ: ortam hatasidir.
 
 Cikis kodu: 0 = her mutasyon hedef satirinda kirmizi VE her davranis satirinin en az bir mutasyonu var
             1 = yasayan mutasyon ya da mutasyonsuz satir
-            2 = ortam/capa hatasi (taban kirmizi ya da CONTRACT_ROWS ile ayrisiyor, derlenmedi, zaman
-                asimi, capa bulunamadi)
+            2 = ortam/capa hatasi (taban kirmizi ya da CONTRACT_ROWS ile ayrisiyor — mock ya da real
+                kolu —, harness.rs'in bir modulu HARNESS_FILES'ta yok, derlenmedi, zaman asimi, capa
+                bulunamadi)
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -51,7 +63,17 @@ MOCK_REL = "crates/kama-app/tests/common/mock_transport.rs"
 SEAM_REL = "crates/kama-integration/tests/common/seam"
 CORE_REL = "crates/kama-integration/tests/seam_conformance_core/main.rs"
 CONTRACTS_REL = "crates/kama-contracts"
-HARNESS_FILES = ("harness.rs", "target.rs", "contract.rs")
+# [K4G-03 2026-10-11] `real.rs` (#109, L-T1) eklendi: harness.rs onu `pub mod real;` ile, target.rs
+# REGISTERED_TARGETS ile, main.rs real suitleriyle ister. Listede olmadigi icin gecelik 2026-10-08'den
+# beri "couldn't find file …/common/seam/real.rs" ile derlenmiyordu.
+HARNESS_FILES = ("harness.rs", "target.rs", "contract.rs", "real.rs")
+# real.rs'in urun bagimliliklari (L-T1): depodan PATH ile baglanir, kopyalanmaz (bkz. scaffold).
+CLIENT_CORE_REL = "crates/client-core"
+NOISE_WIRE_REL = "crates/kama-noise-wire"
+# Mutasyon kosumlarinin test suzgeci: yalniz sahte hedefin suitleri (`mock_mechanism`, `mock_contract`)
+# — #109 oncesi ikilinin tamami buydu. Mutasyon yalniz sahtenin kopyasini degistirir; real hedef sahte
+# kodunu icermez, her mutasyonda yeniden kosmasi olcum degil yalniz sure ve oynaklik ekler.
+MUTATION_TEST_FILTER = "mock_"
 
 # ── capalar: sahtenin kaynagindan AYNEN alinmis parcalar ─────────────────────────────────────
 
@@ -279,27 +301,43 @@ def die(msg: str) -> "NoReturn":  # noqa: F821
     sys.exit(2)
 
 
+def toml_str(p: Path) -> str:
+    """Yolu TOML temel dizgesi olarak yazar (Python'un JSON dizge kacislari TOML'unkilerin alt kumesi)."""
+    return json.dumps(str(p), ensure_ascii=False)
+
+
 def scaffold(work: Path) -> None:
-    """Gecici workspace: kama-contracts (kopya, bagimsiz manifest) + harness'i tasiyan minik crate."""
+    """Gecici workspace: harness'i tasiyan minik crate; urun crate'leri depodan PATH ile (kopya YOK).
+
+    ~~kama-contracts (kopya, bagimsiz manifest) + harness'i tasiyan minik crate.~~ [K4G-03 2026-10-11]
+    real.rs (L-T1) `client-core` ve `kama-noise-wire`'a baglidir; ikisi `kama-contracts`'i deponun
+    yolundan alir, o yuzden sozlesme crate'i de kopyalanmaz (tek `kama-contracts` → tek `KamaTransport`).
+    Uc crate ve gecisli path bagimliliklari (adaptive-transport, kama-engine, kama-transport-schema,
+    kama-fec-codec) depodaki yerlerinden SALT OKUNUR derlenir — `fuzz/` workspace'iyle ayni kalip;
+    `version.workspace` vb. miras deponun kok manifestinden cozulur. Derleme ciktisi
+    CARGO_TARGET_DIR = <work>/target: depoya yazilmaz.
+    """
     (work / "crates/kama-integration/src").mkdir(parents=True)
     (work / "crates/kama-integration/src/lib.rs").write_text("", encoding="utf-8")
     (work / SEAM_REL).mkdir(parents=True)
     (work / CORE_REL).parent.mkdir(parents=True)
     (work / MOCK_REL).parent.mkdir(parents=True)
-    shutil.copytree(REPO / CONTRACTS_REL / "src", work / CONTRACTS_REL / "src")
     # H-PENDING-CAP spec'teki sayiyi `<manifest>/../../specs/…` yolundan okur.
     (work / "specs").symlink_to(REPO / "specs", target_is_directory=True)
     (work / "Cargo.toml").write_text(
-        '[workspace]\nresolver = "2"\nmembers = ["crates/kama-contracts", "crates/kama-integration"]\n',
-        encoding="utf-8")
-    (work / CONTRACTS_REL / "Cargo.toml").write_text(
-        '[package]\nname = "kama-contracts"\nversion = "0.0.0"\nedition = "2021"\npublish = false\n\n'
-        '[features]\ntest-util = []\n', encoding="utf-8")
+        '[workspace]\nresolver = "2"\nmembers = ["crates/kama-integration"]\n', encoding="utf-8")
+    # Bagimlilik kumesi = deponun kama-integration'inin seam testleri icin tasidigi kenarlar
+    # (`kama-contracts`; [L-T1] `client-core` + `kama-noise-wire`, ikisi `test-util`) + `thiserror`.
     (work / "crates/kama-integration/Cargo.toml").write_text(
         '[package]\nname = "kama-integration"\nversion = "0.0.0"\nedition = "2021"\npublish = false\n\n'
-        '[dev-dependencies]\nkama-contracts = { path = "../kama-contracts" }\nthiserror = "2"\n',
+        '[dev-dependencies]\n'
+        f'kama-contracts = {{ path = {toml_str(REPO / CONTRACTS_REL)} }}\n'
+        f'client-core = {{ path = {toml_str(REPO / CLIENT_CORE_REL)}, features = ["test-util"] }}\n'
+        f'kama-noise-wire = {{ path = {toml_str(REPO / NOISE_WIRE_REL)}, features = ["test-util"] }}\n'
+        'thiserror = "2"\n',
         encoding="utf-8")
-    # Deponun kilidi: harici bagimliliklar (thiserror ve gecislileri) deponun surumlerinde kalsin.
+    # Deponun kilidi: harici bagimliliklar (thiserror, tokio, dalek, … ve gecislileri) deponun
+    # surumlerinde kalsin.
     shutil.copy(REPO / "Cargo.lock", work / "Cargo.lock")
 
 
@@ -310,13 +348,19 @@ def sync(work: Path, mock_text: str) -> None:
     (work / MOCK_REL).write_text(mock_text, encoding="utf-8")
 
 
-def run(work: Path, offline: bool) -> tuple[list[str], list[str]] | str:
+def run(work: Path, offline: bool, test_filter: str | None = None) -> dict[str, str] | str:
+    """`seam_conformance_core`'u kosturur (`test_filter` verilirse yalniz adinda o gecen testler).
+
+    Doner: test adi → `ok`/`FAILED` ya da (derlenmedi / zaman asimi) ham cikti.
+    """
     env = dict(os.environ)
     env.setdefault("CARGO_BUILD_JOBS", "2")
     env["CARGO_TARGET_DIR"] = str(work / "target")
     cmd = ["cargo", "test", "-p", "kama-integration", "--test", "seam_conformance_core"]
     if offline:
         cmd.insert(2, "--offline")
+    if test_filter:
+        cmd += ["--", test_filter]
     # Ayri surec grubu: zaman asiminda yalniz cargo degil, donguye girmis TEST IKILISI de oldurulur.
     proc = subprocess.Popen(cmd, cwd=work, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, start_new_session=True)
@@ -329,9 +373,13 @@ def run(work: Path, offline: bool) -> tuple[list[str], list[str]] | str:
     out = stdout + stderr
     if "test result:" not in out:
         return out  # derlenmedi / cargo hatasi
-    failed = sorted(set(re.findall(r"^test mock_contract::(h_\w+) \.\.\. FAILED$", out, re.M)))
-    passed = sorted(set(re.findall(r"^test mock_contract::(h_\w+) \.\.\. ok$", out, re.M)))
-    return failed, passed
+    return dict(re.findall(r"^test (\S+) \.\.\. (ok|FAILED)$", out, re.M))
+
+
+def suite_rows(res: dict[str, str], suite: str, verdict: str) -> list[str]:
+    """`suite` (`mock_contract` / `real_contract`) icindeki §6 satir testlerinden sonucu `verdict` olanlar."""
+    return sorted(name.split("::", 1)[1] for name, v in res.items()
+                  if v == verdict and name.startswith(f"{suite}::h_"))
 
 
 def main() -> int:
@@ -359,6 +407,15 @@ def main() -> int:
         n = pristine.count(old)
         if n != 1:
             die(f"capa '{mid}': eski metin sahtede {n} kez bulundu (tam 1 olmali) — sahte degisti, capayi guncelleyin")
+    # [K4G-03] harness.rs'in `#[path]` ile tanimladigi her modul kopyalanmali. Liste geride kalirsa
+    # (#109'da real.rs) taban "couldn't find file" ile derlenmez; burada, cargo'dan once, adiyla durur.
+    # Yalniz satir basindaki oznitelik sayilir (dosyanin `//!` belgesindeki ornek `#[path]` sayilmaz).
+    harness_mods = set(re.findall(r'^\s*#\[path = "([^"]+)"\]',
+                                  (REPO / SEAM_REL / "harness.rs").read_text(encoding="utf-8"), re.M))
+    unlisted = sorted(harness_mods - set(HARNESS_FILES))
+    if unlisted:
+        die(f"harness.rs {unlisted} modulunu tanimliyor ama HARNESS_FILES'ta yok — listeye ve gerekiyorsa "
+            f"mini workspace bagimliliklarina (scaffold) ekleyin")
 
     work = Path(tempfile.mkdtemp(prefix="seam-mutation-"))
     try:
@@ -368,7 +425,10 @@ def main() -> int:
         if isinstance(base, str):
             print(base[-3000:])
             die("taban derlenmedi (kayit onbellegi yoksa --online deneyin)")
-        base_failed, rows = base
+        # Taban ikilinin TAMAMIDIR (mock + real; mekanizma + sozlesme): herhangi bir kirmizi ortam hatasidir.
+        base_failed = sorted(name for name, v in base.items() if v == "FAILED")
+        rows = suite_rows(base, "mock_contract", "ok")
+        real_rows = suite_rows(base, "real_contract", "ok")
         if base_failed or not rows:
             die(f"taban yesil degil: kirmizi {base_failed}, yesil {len(rows)} satir")
         # Taban, suitin KENDI beyaniyla karsilastirilir (CONTRACT_ROWS): eksik kosan satir gorunsun.
@@ -378,7 +438,18 @@ def main() -> int:
         declared = sorted(r.lower().replace("-", "_") for r in re.findall(r'"(H-[A-Z0-9-]+)"', m.group(1)))
         if declared != rows:
             die(f"taban CONTRACT_ROWS ile ayrisiyor: beyan {declared}, kosan {rows}")
-        print(f"taban: {len(rows)}/{len(declared)} davranis satiri yesil (mutasyonsuz sahte; CONTRACT_ROWS ile ayni kume)")
+        # [K4G-03] real kolu da tabanda kosar ve AYNI kumeyi yesil vermek zorundadir: kosmayan ya da
+        # eksik kosan real kolu (vakum) yesil sayilmaz. Beyanli bosluk satiri (real.rs ROW_GAPS) govdesini
+        # kosmadan sentinel basip doner; "yesil"i olcum degildir, o yuzden satirda ADIYLA basilir.
+        if declared != real_rows:
+            die(f"taban real kolu CONTRACT_ROWS ile ayrisiyor: beyan {declared}, kosan {real_rows}")
+        gaps = re.findall(r'row: "(H-[A-Z0-9-]+)"', (REPO / SEAM_REL / "real.rs").read_text(encoding="utf-8"))
+        print(f"taban: mock {len(rows)}/{len(declared)} · real {len(real_rows)}/{len(declared)} davranis satiri "
+              f"yesil (mutasyonsuz sahte + gercek hedef; CONTRACT_ROWS ile ayni kume"
+              + (f"; real'de beyanli bosluk, govde kosmaz: {','.join(gaps)}" if gaps else "")
+              + f") · ikili: {len(base)} test yesil, 0 kirmizi")
+        print(f"mutasyon kosumlari: yalniz '{MUTATION_TEST_FILTER}' testleri — mutasyon yalniz sahtenin "
+              f"kopyasini degistirir; real hedefte oldurme OLCULMEZ")
 
         results = []
         for mid, target, what, old, new in M:
@@ -387,11 +458,11 @@ def main() -> int:
             if target not in rows:
                 die(f"mutasyon '{mid}' var olmayan bir satiri hedefliyor: {target}")
             sync(work, pristine.replace(old, new))
-            res = run(work, not args.online)
+            res = run(work, not args.online, MUTATION_TEST_FILTER)
             if isinstance(res, str):
                 print("\n".join(l for l in res.splitlines() if "error" in l or "-->" in l or "ZAMAN" in l)[:2000])
                 die(f"mutasyon '{mid}' derlenmedi ya da zaman asimina ugradi")
-            failed, _passed = res
+            failed = suite_rows(res, "mock_contract", "FAILED")
             killed = target in failed
             results.append((mid, target, killed))
             # Butun satirlar birden kirmiziysa mutant hedefe ozgu bir seyi degil ortak kurulumu bozmustur;
