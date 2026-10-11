@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "suite": "ccr-dest-hash-v1",
+  "spec_version": "ccr-format-spec@v1.0+2026-10-11",
+  "generator": "ref/crypto/gen_vectors.py 1",
+  "description": "Kimlik t\u00fcretmesi (ccr \u00a713.3 / \u00a713.5, CAD-16): sabit bir kimlik Ed25519 a\u00e7\u0131k anahtar\u0131 i\u00e7in identity_hash ve dest_hash. PoC'de kama-provision cihaz ba\u015f\u0131na cihaz anahtarlar\u0131ndan AYRI bir kimlik \u00e7ifti \u00fcretir (plan K4G-12 Ek (3)); bu vekt\u00f6rler t\u00fcretmeyi sabitler.",
+  "notes": {
+    "raw-key-not-spki": "identity_hash HAM 32 B anahtar\u0131n \u00f6zetidir; 33 B spki_encoding (alg || key) \u00f6zeti DE\u011e\u0130LD\u0130R (ccr \u00a78.1 ayr\u0131m\u0131).",
+    "identity-key-not-device-key": "dest_hash cihazdan AYRI kimlik Ed25519 anahtar\u0131ndan t\u00fcrer; SHA-256(SHA-256(device_ed25519_pub)) ccr \u00a713.3'te YASAK ve DUR-K4G-12 (a) ile reddedildi (plan Ek 2026-10-11 (3))."
+  },
+  "case_count": 2,
+  "cases": [
+    {
+      "id": "ccr-dest-hash-v1.identity-hash",
+      "kind": "identity-hash",
+      "flags": [
+        "raw-key-not-spki"
+      ],
+      "note": "identity_hash = SHA-256(user_identity_ed25519_pub) \u2014 ham 32 B anahtar \u00fczerinden.",
+      "spec_ref": "ccr-format-spec.md \u00a713.3 / \u00a713.5 (CAD-16)",
+      "input": {
+        "identity_ed25519_pub_hex": "84d87dd9f288a85a8e7422e71989a982b08071fde2c3eb6190da22b60b93bd45"
+      },
+      "expected_hex": "4fdf5213696f235c336d66665f9dee00238d32c6f85ff52bf98e43f7845d2c1e"
+    },
+    {
+      "id": "ccr-dest-hash-v1.dest-hash",
+      "kind": "dest-hash",
+      "flags": [
+        "identity-key-not-device-key"
+      ],
+      "note": "dest_hash = SHA-256(identity_hash) = SHA-256(SHA-256(user_identity_ed25519_pub)).",
+      "spec_ref": "ccr-format-spec.md \u00a713.3 / \u00a713.5 (CAD-16)",
+      "input": {
+        "identity_ed25519_pub_hex": "84d87dd9f288a85a8e7422e71989a982b08071fde2c3eb6190da22b60b93bd45"
+      },
+      "expected_hex": "3a44a96a654172ba08bf07f58da843c82af0df429bef784025a53b252cdde230"
+    }
+  ]
+}

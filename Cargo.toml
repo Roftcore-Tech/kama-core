@@ -17,6 +17,7 @@ members = [
     "crates/bench",
     "crates/kama-app",
     "crates/kama-contracts",
+    "crates/kama-provision",
 ]
 
 [workspace.package]

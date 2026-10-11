@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "suite": "ccr-cdc-v1",
+  "spec_version": "ccr-format-spec@v1.0+2026-10-11",
+  "generator": "ref/crypto/gen_vectors.py 1",
+  "description": "CompactDeviceCertV1 = SR_CDC_V1 (ccr \u00a713.1 / \u00a713.2): domain_sep(\"SR_CDC_V1\"), issuer_key_id, TBS ve tam imzal\u0131 152 B sertifika \u2014 sabit girdilerle. Yer tutucu bi\u00e7im \u00f6rne\u011finden (vectors/examples/example-positive.json; imzas\u0131 hesaplanmam\u0131\u015f desenli dolgu) AYRI suite: burada imza HESAPLANMI\u015eTIR (ref/crypto/ed25519.py, kat\u0131 kipte do\u011fruland\u0131) ve encode girdisi imzalayan\u0131n tohumunu ta\u015f\u0131r.",
+  "notes": {
+    "domain-sep-patch": "domain_sep dolgusu ccr \u00a713.2 YAMA KAYDI 2026-10-11 (K4G-12) ile tan\u0131mland\u0131; SPEC-GAP S4-pki-discovery.6 kapand\u0131.",
+    "poc-root-issuer": "PoC'de Identity/User Cert katman\u0131 yok: CompactDeviceCert'i test k\u00f6k\u00fc do\u011frudan imzalar (plan D9); issuer_key_id k\u00f6k\u00fcn spki \u00f6zetinden."
+  },
+  "case_count": 4,
+  "cases": [
+    {
+      "id": "ccr-cdc-v1.domain-sep.sr-cdc-v1",
+      "kind": "domain-sep",
+      "flags": [
+        "domain-sep-patch"
+      ],
+      "note": "16 B etiket = ASCII etiket (<= 16 B) + 0x00 dolgu.",
+      "spec_ref": "ccr-format-spec.md \u00a713.2 (domain_sep, YAMA 2026-10-11)",
+      "input": {
+        "label_hex": "53525f4344435f5631"
+      },
+      "expected_hex": "53525f4344435f563100000000000000"
+    },
+    {
+      "id": "ccr-cdc-v1.issuer-key-id.root",
+      "kind": "issuer-key-id",
+      "flags": [
+        "poc-root-issuer"
+      ],
+      "note": "issuer_key_id = SHA-256(0x01 || issuer_ed25519_pub)[0..16].",
+      "spec_ref": "ccr-format-spec.md \u00a78.1 / \u00a713.4",
+      "input": {
+        "issuer_ed25519_pub_hex": "0bb01afc73636bf1821d41497fd34da23b801c4a66379166ab8666a50a27d849"
+      },
+      "expected_hex": "cff42260e5c178daf9bcc73f74869635"
+    },
+    {
+      "id": "ccr-cdc-v1.tbs.root-issued",
+      "kind": "tbs",
+      "flags": [
+        "domain-sep-patch"
+      ],
+      "note": "compact_device_cert_tbs = domain_sep(\"SR_CDC_V1\") || device_ed25519_pub || device_x25519_pub || issuer_key_id || not_after (104 B).",
+      "spec_ref": "ccr-format-spec.md \u00a713.2",
+      "input": {
+        "device_ed25519_pub_hex": "8097e5501b941bd3dcf5915ba9aad1a982dc46b0c23be5cb8846b92f7ea80875",
+        "device_x25519_pub_hex": "a4a9ff823f08f918286357dce4dd1e7133d0dd0b15e6ace7bb3736b5e4a9bc5c",
+        "issuer_key_id_hex": "cff42260e5c178daf9bcc73f74869635",
+        "not_after_hex": "000000006b417880"
+      },
+      "expected_hex": "53525f4344435f5631000000000000008097e5501b941bd3dcf5915ba9aad1a982dc46b0c23be5cb8846b92f7ea80875a4a9ff823f08f918286357dce4dd1e7133d0dd0b15e6ace7bb3736b5e4a9bc5ccff42260e5c178daf9bcc73f74869635000000006b417880"
+    },
+    {
+      "id": "ccr-cdc-v1.encode.root-signed",
+      "kind": "encode",
+      "flags": [
+        "poc-root-issuer"
+      ],
+      "note": "Tam 152 B; issuer_signature = Ed25519_Sign(issuer, tbs) (RFC 8032, belirlenimli).",
+      "spec_ref": "ccr-format-spec.md \u00a713.1 / \u00a713.2",
+      "input": {
+        "device_ed25519_pub_hex": "8097e5501b941bd3dcf5915ba9aad1a982dc46b0c23be5cb8846b92f7ea80875",
+        "device_x25519_pub_hex": "a4a9ff823f08f918286357dce4dd1e7133d0dd0b15e6ace7bb3736b5e4a9bc5c",
+        "issuer_ed25519_seed_hex": "ce91c94e33deae31197121293756f5c2ca2236bbdb527b3ff7e6f677782dc48d",
+        "issuer_key_id_hex": "cff42260e5c178daf9bcc73f74869635",
+        "not_after_hex": "000000006b417880"
+      },
+      "expected_hex": "8097e5501b941bd3dcf5915ba9aad1a982dc46b0c23be5cb8846b92f7ea80875a4a9ff823f08f918286357dce4dd1e7133d0dd0b15e6ace7bb3736b5e4a9bc5ccff42260e5c178daf9bcc73f74869635000000006b4178809b22f16cea6c8eb7f4ed7f1f751c3ded6d10fa327e90d096ab1a0551ca6ef8f1a378456bc92b52b217f74045c03f96c3e1076d4477f02db683731c67c0604804"
+    }
+  ]
+}

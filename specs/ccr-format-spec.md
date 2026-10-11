@@ -1,5 +1,7 @@
 # CCR Format Specification
 
+> **YAMA KAYDI 2026-10-11 — K4G-12 —** §13.2 `domain_sep` tanımlandı: 16 B etiket = ASCII etiket ≤ 16 B + `0x00` dolgu; `SR_CDC_V1` için bayt dizisi `53525f4344435f5631` + `00`×7 (Abkarada kararı DUR-K4G-12 (b), plan Ek 2026-10-11 (3); SPEC-GAP S4-pki-discovery.6 kapanır; tel formatı, TBS alan sırası ve 152 B düzen değişmedi, yalnız ekleme).
+
 > **YAMA KAYDI — 2026-10-08 [G1 kapalı-sistem kipi — Abkarada kararı]:** §35.4'e "KAPALI-SİSTEM KİPİ" notu eklendi: bu sprintte uç, ÖNCEDEN doğrulanmış bir eş dizini (eş başına statik X25519 + `cert_ref`) ile kurulur ve Crypto'ya enjekte edilir; dizinde olmayan göndericinin SESSION_INIT'i opak `Failed`. Zincir (`verify_chain_to_root`) ve iptal doğrulaması çalışma zamanında yapılmaz — tipli sınır olarak KAPSAM DIŞI kaydedildi (BL KATMAN 6, sonraki sprint). §35.4'ün 1–6. adımları ve SALDIRI ANALİZİ değişmedi; not, bu kipte 1–4. adımların NEREDE (dizin kurulurken, bant dışı) karşılandığını söyler.
 
 > **YAMA KAYDI — 2026-10-06 [PN SÜREKLİ artıkları (Appendix D2) — Abkarada kararı]:** Appendix D2.13 ASYNC-REJECT-5 (tarihsel satır): "per epoch+dir" → "per dir — tek pencere". Appendix tarihseldir, aktif parser bu formları REJECT eder (D2 başlık notu); yalnız kalıntı ifade hizalandı. Dayanak: #85 (noise-wire §2.5 + §4 EPOCH-PN-INIT, 2026-10-06) ve #91 (§35.8 replay identity, 2026-10-05). Tel formatı DEĞİŞMEDİ. Üstü çizili metin silinmedi.
@@ -615,6 +617,8 @@ canonical_compact_device_cert =        # ağda dolaşan tam 152B
 
 device_cert_hash = SHA-256(canonical_compact_device_cert)    # = revocation_id (Section 13.6)
 ```
+
+> **`domain_sep` tanımı [YAMA 2026-10-11 — K4G-12, Abkarada kararı DUR-K4G-12 (b)]:** `domain_sep(label)` = `label`'ın ASCII baytları (≤ 16 B) ardından 16 B'a tamamlayan `0x00` dolgu (sağa). `domain_sep("SR_CDC_V1")` = `53525f4344435f5631` ‖ `00`×7 = `53525f4344435f563100000000000000` (16 B); `compact_device_cert_tbs` = 16 + 88 = 104 B. Altın vektör: `vectors/ccr-cdc-v1/` (`ref/crypto/gen_vectors.py`; Rust'tan bağımsız).
 
 > **Boyut kararı (NORMATİF):** CompactDeviceCertV1 hot-path'te magic/version alanı TAŞIMAZ (152B korunur); tip/versiyon protokol context'inden gelir. Gelecekte explicit versiyon gerekirse **CompactDeviceCertV2** tanımlanır ve boyut artışı kabul edilir. **Alpha hot-path CompactDeviceCertV1 = tam 152B sabit nesne: magic yok, version yok, cert_type yok, serial yok, extension yok, SAN URI yok, device_id yok.**
 

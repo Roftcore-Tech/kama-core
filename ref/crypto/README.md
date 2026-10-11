@@ -24,7 +24,7 @@ Bu kod **sabit-zamanlı değildir**, üretim yolunda asla çalışmaz ve çalı�
 | `ed25519.py` | Ed25519 PureEdDSA (katı doğrulama) | RFC 8032 |
 | `chacha20poly1305.py` | ChaCha20-Poly1305 AEAD + `nonce96()` | RFC 8439 · `specs/pki-ca-ra-hsm-tdd.md:455` |
 | `selftest.py` | dört süitin tek kapısı | — |
-| `gen_vectors.py` | A2.2–A2.7 vektör üreticisi → `vectors/ccr-*`; `--check` diskteki ile karşılaştırır (CI) | ccr §5.1, §5.2, §35.2–§35.9 |
+| `gen_vectors.py` | A2.2–A2.7 (+ K4G-12) vektör üreticisi → `vectors/ccr-*`; `--check` diskteki ile karşılaştırır (CI) | ccr §5.1, §5.2, §8.1, §13.1–§13.5, §35.2–§35.9 |
 
 ## Koşum
 
@@ -65,10 +65,12 @@ kapısının kaldırılması, AEAD veri counter'ı 1→0, taşma kapısının ka
 
 ## Vektörler (A2.2–A2.7)
 
-`python3 ref/crypto/gen_vectors.py` altı suite üretir (68 vaka): `ccr-kdf-v1` (V-KDF-1..6) ·
+`python3 ref/crypto/gen_vectors.py` sekiz suite üretir (74 vaka): `ccr-kdf-v1` (V-KDF-1..6) ·
 `ccr-ssi1-v1` (üç cert_mode + negatifler) · `ccr-ssr1-v1` · `ccr-ssd1-v1` (22 B zarf; D-GAP-1
 far-future kabul; boş batch) · `ccr-deprecated-neg-v1` · `ccr-ed25519-neg-v1` (ccr §5.2'nin dört ret
-nedeni ayrı vakalarda). Beklenen byte'ların HİÇBİRİ Rust'tan üretilmedi. Üçüncü-kaynak teyitleri:
+nedeni ayrı vakalarda) · **K4G-12:** `ccr-dest-hash-v1` (kimlik anahtarından `identity_hash` /
+`dest_hash`, ccr §13.3 / §13.5) · `ccr-cdc-v1` (`domain_sep("SR_CDC_V1")` — ccr §13.2
+YAMA 2026-10-11 —, `issuer_key_id`, TBS ve test köküyle İMZALI tam 152 B CompactDeviceCertV1). Beklenen byte'ların HİÇBİRİ Rust'tan üretilmedi. Üçüncü-kaynak teyitleri:
 SSD1 AAD'si repodaki Rust golden'ıyla, SSD1 mühür vektörlerinin 5'i mevcut Rust `LegacySessionProtector`
 ile bayt-özdeş çıktı (2026-10-04, geçici testle ölçüldü; kalıcı tüketici A5.2).
 

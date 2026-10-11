@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""A2.2–A2.7 — Session Model V3 test vektörleri; BAĞIMSIZ Python referansından üretilir.
+"""A2.2–A2.7 — Session Model V3 test vektörleri (+ K4G-12: CompactDeviceCertV1 ve kimlik türetmesi,
+ccr §8.1 / §13.1–§13.5); BAĞIMSIZ Python referansından üretilir.
 
     python3 ref/crypto/gen_vectors.py            # vectors/ altına yazar
     python3 ref/crypto/gen_vectors.py --check    # yeniden üretir ve DİSKTEKİYLE karşılaştırır (CI)
 
 KURAL: buradaki hiçbir beklenen byte Rust'tan üretilmez. Kaynak yalnız `specs/ccr-format-spec.md`
-(§5.1, §5.2, §35.2–§35.9) ve bu dizindeki stdlib-only referanstır (kdf / x25519 / ed25519 /
-chacha20poly1305). Rust implementasyonu bu dosyalara KARŞI koşar; tersi değil.
+(§5.1, §5.2, §8.1, §13.1–§13.5, §35.2–§35.9) ve bu dizindeki stdlib-only referanstır (kdf / x25519 /
+ed25519 / chacha20poly1305). Rust implementasyonu bu dosyalara KARŞI koşar; tersi değil.
 
 Girdiler deterministiktir: her anahtar `SHA-256("kama-vec:<ad>")`'dan türer. Rastgelelik yok,
 dolayısıyla çıktı byte-for-byte tekrarlanabilir.
@@ -116,7 +117,7 @@ WORLD = {
 }
 
 
-def suite(name, description, notes, cases):
+def suite(name, description, notes, cases, spec=SPEC):
     used = {f for c in cases for f in c.get("flags", [])}
     assert used == set(notes), (name, used ^ set(notes))
     ids = [c["id"] for c in cases]
@@ -124,7 +125,7 @@ def suite(name, description, notes, cases):
     return {
         "schema_version": 2,
         "suite": name,
-        "spec_version": SPEC,
+        "spec_version": spec,
         "generator": GEN,
         "description": description,
         "notes": notes,
@@ -671,7 +672,126 @@ def gen_ed25519():
     return suite(s, desc, notes, cases)
 
 
-SUITES = [gen_kdf, gen_ssi1, gen_ssr1, gen_ssd1, gen_deprecated, gen_ed25519]
+# ══ K4G-12 — ccr-dest-hash-v1 + ccr-cdc-v1 (ccr §8.1 / §13; YAMA 2026-10-11) ════
+# Plan KAMA-PLAN-4GUN-APP-KRIPTO Ek 2026-10-11 (3), DUR-K4G-12: (a) dest_hash cihazdan AYRI bir kimlik
+# Ed25519 anahtarından; (b) domain_sep = ASCII etiket + 0x00 dolgu (ccr §13.2 YAMA 2026-10-11); (c) bu
+# vektörler. PoC'de CompactDeviceCert'i test kökü imzalar (plan D9); üretimde imzalayan sk_user_identity.
+SPEC_K4G12 = "ccr-format-spec@v1.0+2026-10-11"
+DOMAIN_SEP_LEN = 16
+SPKI_ALG_ED25519 = 0x01  # ccr §6.3
+CDC_LEN = 152  # ccr §13.1
+CDC_SIGNED_FIELDS_LEN = 32 + 32 + 16 + 8
+CDC_NOT_AFTER = 1791676800 + 90 * 24 * 60 * 60  # 2026-10-11T00:00Z + 90 gün (ccr §13.1 üst sınırı)
+
+IDENTITY_SK = seed("provision-identity-ed25519")
+IDENTITY_PUB = ed25519.public_key(IDENTITY_SK)
+DEVICE_ED25519_PUB = ed25519.public_key(seed("provision-device-ed25519"))
+DEVICE_X25519_PUB = x25519.public_key(seed("provision-device-static-x25519"))
+ROOT_SK = seed("provision-root-ed25519")
+ROOT_PUB = ed25519.public_key(ROOT_SK)
+assert len({IDENTITY_PUB, DEVICE_ED25519_PUB, ROOT_PUB}) == 3
+
+
+def domain_sep(label: bytes) -> bytes:
+    """ccr §13.2 [YAMA 2026-10-11 — K4G-12]: ASCII etiket (<= 16 B) + 16 B'a 0x00 dolgu (sağa)."""
+    assert label.isascii() and 0 < len(label) <= DOMAIN_SEP_LEN, label
+    return label + bytes(DOMAIN_SEP_LEN - len(label))
+
+
+def spki_key_id16(pub: bytes) -> bytes:
+    """ccr §8.1 subject_key_id = SHA-256(spki_encoding(alg, key)), spki = alg(u8) || key (33 B);
+    CompactDeviceCert issuer_key_id = ilk 16 bayt (ccr §13.4)."""
+    return sha256(bytes([SPKI_ALG_ED25519]) + pub)[:16]
+
+
+def gen_dest_hash():
+    s = "ccr-dest-hash-v1"
+    ref = "ccr-format-spec.md §13.3 / §13.5 (CAD-16)"
+    identity_hash = sha256(IDENTITY_PUB)
+    dest_hash = sha256(identity_hash)
+    # Reddedilen formül (cihaz anahtarından) farklı sonuç verir — vektör bunu ayırt eder.
+    assert dest_hash != sha256(sha256(DEVICE_ED25519_PUB))
+    # Ham anahtar özeti spki özetinden farklıdır (ccr §8.1).
+    assert identity_hash != sha256(bytes([SPKI_ALG_ED25519]) + IDENTITY_PUB)
+    identity = {"identity_ed25519_pub_hex": hx(IDENTITY_PUB)}
+    cases = [
+        case(f"{s}.identity-hash", "identity-hash", flags=["raw-key-not-spki"], spec_ref=ref,
+             note="identity_hash = SHA-256(user_identity_ed25519_pub) — ham 32 B anahtar üzerinden.",
+             input=identity, expected_hex=hx(identity_hash)),
+        case(f"{s}.dest-hash", "dest-hash", flags=["identity-key-not-device-key"], spec_ref=ref,
+             note="dest_hash = SHA-256(identity_hash) = SHA-256(SHA-256(user_identity_ed25519_pub)).",
+             input=identity, expected_hex=hx(dest_hash)),
+    ]
+    notes = {
+        "raw-key-not-spki": "identity_hash HAM 32 B anahtarın özetidir; 33 B spki_encoding (alg || key) "
+                            "özeti DEĞİLDİR (ccr §8.1 ayrımı).",
+        "identity-key-not-device-key": "dest_hash cihazdan AYRI kimlik Ed25519 anahtarından türer; "
+                                       "SHA-256(SHA-256(device_ed25519_pub)) ccr §13.3'te YASAK ve "
+                                       "DUR-K4G-12 (a) ile reddedildi (plan Ek 2026-10-11 (3)).",
+    }
+    desc = ("Kimlik türetmesi (ccr §13.3 / §13.5, CAD-16): sabit bir kimlik Ed25519 açık anahtarı için "
+            "identity_hash ve dest_hash. PoC'de kama-provision cihaz başına cihaz anahtarlarından AYRI bir "
+            "kimlik çifti üretir (plan K4G-12 Ek (3)); bu vektörler türetmeyi sabitler.")
+    return suite(s, desc, notes, cases, spec=SPEC_K4G12)
+
+
+def gen_compact_device_cert():
+    s = "ccr-cdc-v1"
+    label = b"SR_CDC_V1"
+    sep = domain_sep(label)
+    assert hx(sep) == "53525f4344435f5631" + "00" * 7
+    key_id = spki_key_id16(ROOT_PUB)
+    signed = DEVICE_ED25519_PUB + DEVICE_X25519_PUB + key_id + u64(CDC_NOT_AFTER)
+    assert len(signed) == CDC_SIGNED_FIELDS_LEN
+    tbs = sep + signed
+    assert len(tbs) == DOMAIN_SEP_LEN + CDC_SIGNED_FIELDS_LEN
+    signature = ed25519.sign(ROOT_SK, tbs)
+    assert ed25519.verify_reason(ROOT_PUB, tbs, signature) == ed25519.OK
+    # Etiketsiz (ya da yanlış dolgulu) TBS üzerindeki imza bu imzayla doğrulanmaz.
+    assert ed25519.verify_reason(ROOT_PUB, signed, signature) != ed25519.OK
+    cert = signed + signature
+    assert len(cert) == CDC_LEN
+    fields = {
+        "device_ed25519_pub_hex": hx(DEVICE_ED25519_PUB),
+        "device_x25519_pub_hex": hx(DEVICE_X25519_PUB),
+        "issuer_key_id_hex": hx(key_id),
+        "not_after_hex": hx(u64(CDC_NOT_AFTER)),
+    }
+    cases = [
+        case(f"{s}.domain-sep.sr-cdc-v1", "domain-sep", flags=["domain-sep-patch"],
+             spec_ref="ccr-format-spec.md §13.2 (domain_sep, YAMA 2026-10-11)",
+             note="16 B etiket = ASCII etiket (<= 16 B) + 0x00 dolgu.",
+             input={"label_hex": hx(label)}, expected_hex=hx(sep)),
+        case(f"{s}.issuer-key-id.root", "issuer-key-id", flags=["poc-root-issuer"],
+             spec_ref="ccr-format-spec.md §8.1 / §13.4",
+             note="issuer_key_id = SHA-256(0x01 || issuer_ed25519_pub)[0..16].",
+             input={"issuer_ed25519_pub_hex": hx(ROOT_PUB)}, expected_hex=hx(key_id)),
+        case(f"{s}.tbs.root-issued", "tbs", flags=["domain-sep-patch"],
+             spec_ref="ccr-format-spec.md §13.2",
+             note="compact_device_cert_tbs = domain_sep(\"SR_CDC_V1\") || device_ed25519_pub || "
+                  "device_x25519_pub || issuer_key_id || not_after (104 B).",
+             input=fields, expected_hex=hx(tbs)),
+        case(f"{s}.encode.root-signed", "encode", flags=["poc-root-issuer"],
+             spec_ref="ccr-format-spec.md §13.1 / §13.2",
+             note="Tam 152 B; issuer_signature = Ed25519_Sign(issuer, tbs) (RFC 8032, belirlenimli).",
+             input={**fields, "issuer_ed25519_seed_hex": hx(ROOT_SK)}, expected_hex=hx(cert)),
+    ]
+    notes = {
+        "domain-sep-patch": "domain_sep dolgusu ccr §13.2 YAMA KAYDI 2026-10-11 (K4G-12) ile tanımlandı; "
+                            "SPEC-GAP S4-pki-discovery.6 kapandı.",
+        "poc-root-issuer": "PoC'de Identity/User Cert katmanı yok: CompactDeviceCert'i test kökü doğrudan "
+                           "imzalar (plan D9); issuer_key_id kökün spki özetinden.",
+    }
+    desc = ("CompactDeviceCertV1 = SR_CDC_V1 (ccr §13.1 / §13.2): domain_sep(\"SR_CDC_V1\"), issuer_key_id, "
+            "TBS ve tam imzalı 152 B sertifika — sabit girdilerle. Yer tutucu biçim örneğinden "
+            "(vectors/examples/example-positive.json; imzası hesaplanmamış desenli dolgu) AYRI suite: burada "
+            "imza HESAPLANMIŞTIR (ref/crypto/ed25519.py, katı kipte doğrulandı) ve encode girdisi imzalayanın "
+            "tohumunu taşır.")
+    return suite(s, desc, notes, cases, spec=SPEC_K4G12)
+
+
+SUITES = [gen_kdf, gen_ssi1, gen_ssr1, gen_ssd1, gen_deprecated, gen_ed25519, gen_dest_hash,
+          gen_compact_device_cert]
 
 
 def _sorted_deep(v):
