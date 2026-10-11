@@ -45,6 +45,13 @@ KM-SEAM-TC-001 §6 H-SPLIT):
       baytları için de `as_bytes` kullanılamaz → `AsRef<[u8]>::as_ref`, `str::bytes`,
       `String::into_bytes`. Başka adlar (`as_bytes_len`, `my_as_bytes2`) kurala girmez.
 
+  [2026-10-11 K4G-06 — ALTYAPI sınıfı; plan D8 v1.1]
+  C7  Altyapı crate'ine (`INFRA`: `kama-store`) workspace'te YALNIZ bileşim kökü (`COMPOSITION_ROOTS`)
+      bağımlı olabilir — normal, dev, build fark etmez. Bileşim kökü listesi bugün BOŞTUR (K4G-11
+      `kama-node`'u ekler). Doğrudan kenar denetlenir; `A → B → kama-store` zincirinde doğrudan bağımlı
+      `B` yakalanır. Altyapı crate'inin KENDİ bağımlılıkları (trait sahipleri `kama-app`,
+      `kama-noise-wire`) bu kuralın konusu değildir; o yön diğer kurallarla sınırlıdır.
+
   GEÇİŞLİ KAPANIŞ NASIL HESAPLANIR: `cargo metadata`'nın çözümlenmiş grafiği üzerinden. Kök crate'in
   KENDİ dev-bağımlılıkları dahildir (testleri de katman kuralına tabidir); yol üzerindeki diğer
   crate'lerin dev-bağımlılıkları dahil DEĞİLDİR (onlar kökün derleme grafiğine girmez).
@@ -52,6 +59,8 @@ KM-SEAM-TC-001 §6 H-SPLIT):
 VAKUM KORUMASI: denetlenen crate'lerden biri (`kama-app`, `kama-contracts`, `kama-noise-wire`,
 `client-core`) metadata'da yoksa ya da `kama-app` için kaynak dosyası bulunamazsa kapı YEŞİL dönmez,
 ortam hatası (2) verir — "denetlenecek şey yok" sessizce "ihlal yok" sayılmaz.
+[2026-10-11 K4G-06] Altyapı crate'i (`kama-store`, C7) metadata'da yoksa da ortam hatası (2): crate
+yeniden adlandırılırsa kural sessizce boşa düşmez.
 
 Çıkış: 0 = temiz · 1 = katman ihlali · 2 = ortam/kullanım hatası.
 """
@@ -97,6 +106,10 @@ MOCK_ACCESSOR = re.compile(r"\b\w+_for_mock\b")   # C5 — sahteler için açıl
 RAW_PEER_BYTES = re.compile(r"\bas_bytes\b")      # C6 — `PeerRef::as_bytes` (muhafazakâr: ad düzeyi)
 # C6 — char sabiti: `'x'`, `'\n'`, `'\x41'`, `'\u{1F600}'`, `'\''`. Eşleşmeyen `'` ömür/etikettir (`'a`).
 CHAR_LITERAL = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
+# C7 [2026-10-11 K4G-06] — altyapı sınıfı: bu crate'lere workspace'te YALNIZ bileşim kökleri bağımlı
+# olabilir. Bileşim kökü listesi bugün BOŞTUR; K4G-11 `kama-node`'u buraya ekler.
+INFRA = ("kama-store",)
+COMPOSITION_ROOTS: tuple[str, ...] = ()
 
 
 def strip_comments(src: str) -> str:
@@ -303,6 +316,32 @@ def check(metadata: dict, sources: dict[str, str]) -> list[str]:
                             f"`PeerRef::as_bytes` Application'da çağrılamaz; kural ad düzeyinde "
                             f"muhafazakârdır (`str`/`String` için `AsRef<[u8]>::as_ref`, `str::bytes`, "
                             f"`String::into_bytes`)")
+
+    # C7 [2026-10-11 K4G-06] — altyapı crate'ine yalnız bileşim kökü bağımlı olabilir
+    findings += infra_findings(metadata)
+    return findings
+
+
+def infra_findings(metadata: dict, roots: tuple[str, ...] = COMPOSITION_ROOTS) -> list[str]:
+    """C7 — altyapı crate'ine (`INFRA`) yalnız bileşim kökleri (`roots`) bağımlı olabilir.
+
+    Saf fonksiyon: `check()` onu gerçek kök listesiyle çağırır; öz-test istisna yolunu (bugün kök
+    yok) sentetik bir kökle doğrudan sınar. Kenarlar çözümlenmiş grafikten, türü ne olursa olsun
+    (normal / dev / build) okunur. Altyapı crate'i metadata'da yoksa ortam hatası (vakum koruması).
+    """
+    by_id = {p["id"]: p["name"] for p in metadata["packages"]}
+    for infra in INFRA:
+        if infra not in by_id.values():
+            raise EnvironmentError(f"`{infra}` paketi metadata'da yok — altyapı kuralı (C7) denetlenemiyor")
+    findings: list[str] = []
+    for crate, deps in sorted(edge_map(metadata, by_id).items()):
+        if crate in roots:
+            continue
+        for dep, dev_only in deps:
+            if dep in INFRA:
+                kind = "dev" if dev_only else "normal/build"
+                findings.append(f"C7 {crate} → {dep} ({kind} bağımlılık): altyapı crate'ine yalnız bileşim "
+                                f"kökü bağımlı olabilir (bileşim kökleri: {', '.join(roots) or 'yok'})")
     return findings
 
 
@@ -366,6 +405,7 @@ def _md(deps_of_app, edges, *, dev_edges=None, contract_deps=(), app_contract_fe
     """
     dev_edges = dev_edges or {}
     base = {APP, CONTRACTS, NOISE, TRANSPORT}
+    base |= set(INFRA)  # [2026-10-11 K4G-06] C7'nin altyapı crate'i de her zaman vardır
     names = sorted(base | set(edges) | set(dev_edges)
                    | {d for ds in edges.values() for d in ds}
                    | {d for ds in dev_edges.values() for d in ds}
@@ -501,11 +541,29 @@ def selftest() -> int:
          {"a.rs": 'fn f() { let a = r#"x "as_bytes" y"#; let b = b"as_bytes"; let c = br"as_bytes"; }\n'}, []),
         ("C6 DEĞİL: başka ad (as_bytes_len, my_as_bytes2)", _md([], ok_graph),
          {"a.rs": "fn f() { as_bytes_len(); my_as_bytes2(); }\n"}, []),
+        # C7 [2026-10-11 K4G-06] — altyapı crate'ine yalnız bileşim kökü bağımlı olabilir
+        ("C7 client-core → kama-store (normal)",
+         _md([], {**ok_graph, TRANSPORT: [CONTRACTS, NOISE, "kama-store"]}), clean_src, ["C7"]),
+        ("C7 kama-app → kama-store (dev-bağımlılık)",
+         _md([], ok_graph, dev_edges={APP: ["kama-store"]}), clean_src, ["C7"]),
+        ("C7 zincir kama-integration → ara → kama-store (doğrudan bağımlı ara yakalanır)",
+         _md([], {**ok_graph, "kama-integration": ["ara"], "ara": ["kama-store"]}), clean_src, ["C7"]),
+        ("C7 DEĞİL: kama-store → kama-app + kama-noise-wire (meşru yön)",
+         _md([], {**ok_graph, "kama-store": [APP, NOISE, CONTRACTS]}), clean_src, []),
     ]
     bad = 0
     for name, md, src, want in cases:
         got = sorted({f.split()[0] for f in check(md, src)})
         ok = got == sorted(want)
+        bad += not ok
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}: beklenen {want or 'temiz'}, gelen {got or 'temiz'}")
+    # C7 istisna yolu [2026-10-11 K4G-06]: bugün bileşim kökü YOK (COMPOSITION_ROOTS boş); yol sentetik
+    # bir kökle doğrudan sınanır — aynı kenar, kök listede değilken kırmızı, listedeyken temiz.
+    root_md = _md([], {**ok_graph, "kama-node": ["kama-store", APP, NOISE]})
+    for name, roots, want in (("C7 kök listede değil: kama-node → kama-store", (), ["C7"]),
+                              ("C7 DEĞİL: bileşim kökü kama-node → kama-store", ("kama-node",), [])):
+        got = sorted({f.split()[0] for f in infra_findings(root_md, roots)})
+        ok = got == want
         bad += not ok
         print(f"  {'PASS' if ok else 'FAIL'}  {name}: beklenen {want or 'temiz'}, gelen {got or 'temiz'}")
     def without(md, name):
@@ -519,6 +577,7 @@ def selftest() -> int:
     vacuum = [("vakum: kama-app yok", {"packages": [], "resolve": {"nodes": []}}, clean_src),
               ("vakum: kaynak yok", full, {})]
     vacuum += [(f"vakum: {n} yok", without(full, n), clean_src) for n in (CONTRACTS, NOISE, TRANSPORT)]
+    vacuum += [(f"vakum: {n} yok (C7)", without(full, n), clean_src) for n in INFRA]  # [2026-10-11 K4G-06]
     for name, md, src in vacuum:
         try:
             check(md, src)
@@ -552,7 +611,7 @@ def main(argv: list[str]) -> int:
     if findings:
         print(f"\nLAYER-CHECK: KIRMIZI ({len(findings)} ihlal) — INV-NEIGHBOR-1")
         return 1
-    print(f"LAYER-CHECK: YEŞİL ({APP}: {len(sources)} kaynak dosyası; L1/L2/L3 + C1–C6 temiz; kök={root})")
+    print(f"LAYER-CHECK: YEŞİL ({APP}: {len(sources)} kaynak dosyası; L1/L2/L3 + C1–C7 temiz; kök={root})")
     return 0
 
 

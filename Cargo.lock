@@ -776,6 +776,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kama-store"
+version = "0.1.0"
+dependencies = [
+ "kama-app",
+ "kama-contracts",
+ "kama-noise-wire",
+ "redb",
+ "thiserror",
+]
+
+[[package]]
 name = "kama-transport-schema"
 version = "0.1.0"
 dependencies = [
@@ -1152,6 +1163,15 @@ name = "readme-rustdocifier"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08ad765b21a08b1a8e5cdce052719188a23772bcbefb3c439f0baaf62c56ceac"
+
+[[package]]
+name = "redb"
+version = "4.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb338a6c67830a61bed824b78c2bb034ab1ff401a20616bd7957524f4fdc2f22"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "reed-solomon-simd"

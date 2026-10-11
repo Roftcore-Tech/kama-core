@@ -28,3 +28,4 @@ pub mod codec;
 pub mod file_transfer;
 pub mod messaging;
 pub mod ptt;
+pub mod store;

@@ -1,0 +1,23 @@
+[package]
+name = "kama-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# ALTYAPI CRATE'İ (K4G-06, plan D8 v1.1): TEK somut kalıcı depo `RedbStore`. İki arayüzü AYRI AYRI
+# gerçekler — `kama_app::store::AppStore` (uygulama durumu) ve `kama_noise_wire::CounterStore`
+# (`init_counter`) — birleştirmez. Bağımlılık yönü yalnız bu crate'ten trait sahiplerine doğrudur;
+# workspace'te bu crate'e YALNIZ bileşim kökü (K4G-11 `kama-node`) bağımlı olabilir
+# (`scripts/ci/layer_check.py` kural C7).
+[dependencies]
+kama-app = { path = "../kama-app" }
+kama-contracts = { path = "../kama-contracts" }
+kama-noise-wire = { path = "../kama-noise-wire" }
+# D11 onayı (Abkarada, plan v1.1): `redb` SABİT sürüm. Saf Rust gömülü KV deposu (MIT OR
+# Apache-2.0, MSRV 1.90). Varsayılan özellik yalnız `std`.
+redb = "=4.3.0"
+thiserror.workspace = true
+
+[lints]
+workspace = true
