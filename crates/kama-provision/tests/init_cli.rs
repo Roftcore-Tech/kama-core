@@ -337,8 +337,8 @@ fn non_empty_output_directory_is_refused_and_left_untouched() {
     fs::write(out.join("keep.txt"), b"x").expect("dosya");
     let result = run_init(&out, &["--devices", "alice,bob"]);
     assert_eq!(result.status.code(), Some(1));
-    let left: Vec<_> = fs::read_dir(&out).expect("dizin").collect();
-    assert_eq!(left.len(), 1, "yalnız önceden var olan dosya kalmalı");
+    let left = fs::read_dir(&out).expect("dizin").count();
+    assert_eq!(left, 1, "yalnız önceden var olan dosya kalmalı");
 }
 
 #[test]
