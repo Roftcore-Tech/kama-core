@@ -47,7 +47,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install --locked kani-verifier
       - run: cargo kani setup
-      - run: cargo kani -p kama-noise-wire --tests
+      - run: cargo kani -p kama-noise-wire --tests --features test-util
 
   fuzz-deep:
     if: github.event_name == 'schedule' || inputs.only == 'all' || inputs.only == 'fuzz-deep'
