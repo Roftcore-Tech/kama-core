@@ -22,20 +22,25 @@
 //! Her negatif vakadan sonra AYNI çerçeve baytları beklenen Session bağlamında yollanır ve etkisi
 //! görülür: negatif kolun etkisizliği çerçevenin bozukluğundan değil, bağlamdan gelir (vakum yok).
 //!
-//! "Session durumu bayt-özdeş" iki düzlemde ölçülür: (1) Crypto — uç sessizken (kurtarma kapalı,
-//! PARAM onaylı → hiçbir mühür yok) `NoiseWireProtection::state_fingerprint()` sahte datagramdan
-//! önce ve sonra AYNI dizgedir (oturum, pencere, sayaç, olay kuyruğu, demux tablosu); (2) Transport
-//! — ARQ deposu (`outstanding`, teyit akışı) ve Session sayaçları (`acked`,
-//! `fec_recovered_ctrl_units`, `cs_echoes_rx`, `param_confirmed`, `unknown_frames`) yalnız pozitif
-//! kontrollerin etkisini taşır. PARAM_ACK vakasında uç PARAM_SET yinelediği için (1) ölçülemez;
-//! orada gözlenen durum PARAM onayının kendisidir (yineleme sürer).
+//! "Session durumu bayt-özdeş" — ölçülen ve AYIRT EDİCİ kanıt Transport düzlemindedir: ARQ deposu
+//! (`outstanding`, teyit akışı) ve Session sayaçları (`acked`, `fec_recovered_ctrl_units`,
+//! `cs_echoes_rx`, `param_confirmed`, `unknown_frames`) sahte datagramdan sonra değişmez ve yalnız
+//! pozitif kontrollerin etkisini taşır; PARAM_ACK vakasında gözlenen durum PARAM onayının
+//! kendisidir (yineleme sürer). Crypto parmak izi (`NoiseWireProtection::state_fingerprint()`, uç
+//! sessizken — kurtarma kapalı, PARAM onaylı) bu yolda AYIRT EDİCİ DEĞİLDİR: `open_hub` durumsuzdur
+//! ve ESKİ (bağlamsız) runtime da sahte ACK'i kriptoya dokunmadan işlerdi. Parmak izi yalnız
+//! saldırının kripto durumuna dokunmadığını sınayan bir ÖN-KOŞUL denetimidir. Runtime'ın iç
+//! haritaları için test-util anlık görüntüsü EKLENMEDİ (beyanlı istisna).
 //!
 //! Sunucu ucu (D1 iki yolu kapsar): mevcut bir Session yuvasının adresinden gelen HubChannel DATA,
-//! başka bir oturumun geçerli datagramı ve oturum tablosunda olmayan oturum. ESKİ DAVRANIŞ: sunucu
-//! bağlama hiç bakmıyordu — yuva ilk datagramın bağlamıyla kuruluyor, teslim YUVANIN bağlamıyla
-//! (`Session(h)`) etiketleniyordu; HubChannel'ın sabit PN'i (0) yuvanın alıcısında yeniyse (PN 0
-//! yolda kaybolduysa ya da 4096'lık dedup penceresinden kaydıysa) anahtarsız DATA S1'e oturum
-//! verisi olarak ulaşıyordu.
+//! başka bir oturumun geçerli datagramı, oturum tablosunda olmayan oturum ve 1 yuvalık eş
+//! tablosunun doldurulma denemesi. ESKİ DAVRANIŞ: sunucu bağlama hiç bakmıyordu — yuva ilk
+//! datagramın bağlamıyla kuruluyor, teslim YUVANIN bağlamıyla (`Session(h)`) etiketleniyordu;
+//! HubChannel'ın sabit PN'i (0) yuvanın alıcısında yeniyse (PN 0 yolda kaybolduysa ya da 4096'lık
+//! dedup penceresinden kaydıysa) anahtarsız DATA S1'e oturum verisi olarak ulaşıyordu.
+//!
+//! INV-ACK-DELIVER-1 (plan Ek 2026-10-11 (3)): teslim yoluna kabul edilmeyen birim ACK'lenmez —
+//! gerçek `ClientTransport` çifti, `MemoryHub` rölesi elle sürülerek belirlenimli.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -43,15 +48,20 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use adaptive_transport::ack::{AckFrame, ARRIVAL_RATE_SENTINEL};
+use client_core::memory_link::MemoryHub;
 use client_core::runtime::{
     ClientEndpoint, ClientHandle, ClientStats, CtxDispatchCounters, CtxDispatchStats, Delivery,
     ExpectedSessions, RuntimeConfig, ServerEndpoint, ServerHandle,
 };
+use client_core::transport::{ClientTransport, ClientTransportConfig};
 use client_core::wire::{
     decode_data, decode_param, encode_cs_echo, encode_data, encode_param_ack, encode_recovered,
     CS_PROBE_SUBTYPE,
 };
 use kama_contracts::handles::{PeerRef, SessionHandle};
+use kama_contracts::s1::{
+    CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit,
+};
 use kama_contracts::s3::{
     HubHandle, Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits,
     SealError, SealedUnit, SessionCommand, SessionControl, SessionResult,
@@ -80,6 +90,9 @@ const WAIT: Duration = Duration::from_secs(5);
 const QUIET: Duration = Duration::from_millis(300);
 /// PARAM_SET yineleme periyodunun (≥ 200 ms) birkaç katı: onaylanmamış uç bu sürede yineler.
 const PARAM_WINDOW: Duration = Duration::from_millis(700);
+/// ARQ yeniden gönderimini bekleme tavanı (gerçek zaman; kuruluş probu 0,5 s'den, PTO 1 s'den
+/// başlar ve katlanır).
+const RETX_WAIT: Duration = Duration::from_secs(15);
 
 // ── Fikstür ──────────────────────────────────────────────────────────────────────────────────
 
@@ -202,10 +215,13 @@ fn ack_frame(pn: u64) -> Vec<u8> {
         .encode()
 }
 
+/// Bu dosyanın düzeneklerinde `not_ready_drops` daima 0'dır (hazır olmayan oturum yok); INV
+/// testi o sayacı ayrıca okur.
 fn stats(ctx_mismatch_drops: u64, hub_frames_dropped: u64) -> CtxDispatchStats {
     CtxDispatchStats {
         ctx_mismatch_drops,
         hub_frames_dropped,
+        not_ready_drops: 0,
     }
 }
 
@@ -429,9 +445,11 @@ async fn a_hub_channel_ack_cannot_remove_an_inflight_unit() {
 
     rig.send(&attack).await;
     rig.expect_ctx(stats(0, 1)).await;
+    // Ayırt edici kanıt: ARQ deposu ve teyit akışı değişmedi.
     rig.assert_no_ack("HubChannel ACK").await;
     assert_eq!(rig.client.outstanding(), 2, "birim ARQ deposunda kalmalı");
-    assert_eq!(rig.alice_fp(), fp, "Crypto durumu bayt-özdeş olmalı");
+    // Ön-koşul (AYIRT EDİCİ DEĞİL — `open_hub` durumsuz): saldırı kripto durumuna dokunmaz.
+    assert_eq!(rig.alice_fp(), fp, "ön-koşul: kripto durumu değişti");
 
     // Aynı ACK baytları beklenen bağlamda: birim silinir (çerçeve geçerliydi, düşüş bağlamdandı).
     let real = rig.bob_wire(&ack);
@@ -456,9 +474,11 @@ async fn b_hub_channel_recovered_cannot_remove_an_inflight_unit() {
 
     rig.send(&attack).await;
     rig.expect_ctx(stats(0, 1)).await;
+    // Ayırt edici kanıt: ARQ deposu ve teyit akışı değişmedi.
     rig.assert_no_ack("HubChannel RECOVERED").await;
     assert_eq!(rig.client.outstanding(), 2, "birim ARQ deposunda kalmalı");
-    assert_eq!(rig.alice_fp(), fp, "Crypto durumu bayt-özdeş olmalı");
+    // Ön-koşul (AYIRT EDİCİ DEĞİL — `open_hub` durumsuz): saldırı kripto durumuna dokunmaz.
+    assert_eq!(rig.alice_fp(), fp, "ön-koşul: kripto durumu değişti");
 
     let real = rig.bob_wire(&recovered);
     rig.send(&real).await;
@@ -482,8 +502,11 @@ async fn b_hub_channel_cs_echo_is_not_dispatched() {
 
     rig.send(&attack).await;
     rig.expect_ctx(stats(0, 1)).await;
+    // Ayırt edici kanıt: ARQ deposu değişmedi; `cs_echoes_rx` kapanışta yalnız pozitif
+    // kontrolü sayar.
     assert_eq!(rig.client.outstanding(), 2);
-    assert_eq!(rig.alice_fp(), fp, "Crypto durumu bayt-özdeş olmalı");
+    // Ön-koşul (AYIRT EDİCİ DEĞİL — `open_hub` durumsuz): saldırı kripto durumuna dokunmaz.
+    assert_eq!(rig.alice_fp(), fp, "ön-koşul: kripto durumu değişti");
 
     // Aynı echo beklenen bağlamda, ardından bariyer ACK: aynı soketten sırayla işlenir, teyit
     // geldiğinde echo da işlenmiştir.
@@ -675,7 +698,7 @@ async fn server_session_context_must_be_expected_and_bound_to_the_slot() {
     assert!(reply.is_none(), "beklenmeyen oturum yuva açtı");
 
     // Oturum tablosu Carol oturumunu yayımlar → aynı adresten sıradaki datagram kabul edilir.
-    expected.insert(h_ac);
+    expected.insert_ready(h_ac);
     let wire = sealed_data(&mut carol, h_ca, 3);
     send(&carol_ep, &wire, to).await;
     let d = delivery(&mut server).await;
@@ -696,4 +719,145 @@ async fn server_session_context_must_be_expected_and_bound_to_the_slot() {
     assert_eq!(ss.delivered, 3);
     // Carol'ın düşen datagramları AÇILDI (AEAD geçerli): düşüş kriptodan değil, bağlamdan.
     assert_eq!((ss.open_failures, ss.unknown_frames), (0, 0));
+}
+
+/// `max_peers` DoS regresyonu (plan Ek (3) madde 2): eş tablosu TEK yuvalıyken anahtarsız
+/// (HubChannel) datagram ve beklenmeyen oturumun GEÇERLİ datagramı taze soketlerden yuva AÇAMAZ;
+/// ardından meşru eşin beklenen oturum DATA'sı teslim edilir ve `dropped_new_peers == 0`.
+///
+/// 6be4ff44'te KIRMIZI: bağlam kapısı yokken açılan her datagram yeni adres için yuva yaratıyordu
+/// (TOFU) — ilk anahtarsız DATA tek yuvayı HubChannel bağlamıyla alır ve kendi birimini (7) teslim
+/// ettirir; Carol'ın ve Bob'un datagramları `dropped_new_peers`'a düşer (2), Bob'un birimi hiç
+/// teslim edilmez → ilk teslim iddiası tutmaz. Gövde ve yardımcıları yalnız 6be4ff44'te de bulunan
+/// API'leri kullanır (`ServerEndpoint::bind`, `ServerStats`, `next_delivery`); o koda taşınınca
+/// iddia koşturularak doğrulanabilir.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_max_peers_one_is_not_taken_by_unkeyed_or_unexpected_datagrams() {
+    let mut alice = node(ALICE);
+    let mut bob = node(BOB);
+    let mut carol = node(CAROL);
+    let (h_ab, h_ba) = handshake(&mut alice, &mut bob, id(BOB), HUB_AB);
+    let (h_ac, h_ca) = handshake(&mut alice, &mut carol, id(CAROL), HUB_AC);
+    // Bağımsız `bind` örtük PoC oturumunu (tutamaç 0) bekler; taze Alice'in ilk oturumu odur.
+    assert_eq!(h_ab, SessionHandle::from_raw(0));
+    assert_ne!(h_ac, h_ab);
+    let alice = Arc::new(Mutex::new(alice));
+    let cfg = RuntimeConfig {
+        max_peers: 1,
+        ..RuntimeConfig::default()
+    };
+    let mut server = ServerEndpoint::bind(
+        SocketAddr::from(([127, 0, 0, 1], 0)),
+        cfg,
+        Box::new(Shared(Arc::clone(&alice))),
+    )
+    .await
+    .expect("veri alıcısı");
+    let to = server.local_addr();
+
+    // Taze soket 1: anahtarsız HubChannel DATA. Taze soket 2: beklenmeyen oturumun GEÇERLİ DATA'sı.
+    let unkeyed = udp().await;
+    let attack = forged(&alice, &encode_data(0, 7, b"sahte"));
+    send(&unkeyed, &attack, to).await;
+    let unexpected = udp().await;
+    let wire = sealed_data(&mut carol, h_ca, 8);
+    send(&unexpected, &wire, to).await;
+
+    // Meşru eş: beklenen oturumun DATA'sı. Aynı sunucu soketine en son varır ve sırayla işlenir.
+    let bob_ep = udp().await;
+    let wire = sealed_data(&mut bob, h_ba, 0);
+    send(&bob_ep, &wire, to).await;
+    let d = delivery(&mut server).await;
+    assert_eq!((d.unit_id, d.ctx), (0, ProtectionContext::Session(h_ab)));
+    let ss = server.shutdown().await;
+    assert_eq!(ss.dropped_new_peers, 0, "meşru eş reddedildi");
+    assert_eq!(ss.delivered, 1);
+    // Saldırı datagramları AÇILDI (`open_failures == 0`): düşüş kriptodan değil, bağlam kapısından.
+    assert_eq!((ss.open_failures, ss.unknown_frames), (0, 0));
+}
+
+// ── INV-ACK-DELIVER-1 ────────────────────────────────────────────────────────────────────────
+
+/// Gerçek S1 adaptörü (`ClientTransport`, ürün builder'ı) + bu dosyanın kriptosu + `MemoryHub`.
+fn transport_node(me: u8, hub: &MemoryHub) -> ClientTransport<NoiseWireProtection> {
+    let mut cfg = ClientTransportConfig::product(SocketAddr::from(([127, 0, 0, 1], 0)));
+    cfg.runtime.drain_cap = Duration::from_millis(100);
+    ClientTransport::new(cfg, node(me), Box::new(hub.link(id(me))))
+        .expect("düğüm")
+}
+
+fn unit(bytes: &[u8]) -> PreparedUnit {
+    PreparedUnit {
+        bytes: bytes.to_vec(),
+        compression_policy: CompressionPolicy::Never,
+    }
+}
+
+/// `cond` doğru olana dek bekler (gerçek zaman: ARQ yeniden gönderimi gerçek saatle işler).
+fn eventually(what: &str, mut cond: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + RETX_WAIT;
+    while !cond() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// INV-ACK-DELIVER-1 — teslim yoluna kabul edilmeyen birim ACK'lenmez.
+///
+/// Belirlenimli (`MemoryHub` rölesi elle sürülür): Alice başlatır, Bob yanıtlar. Röle 1 INIT'i
+/// Bob'a, HANDLE_ASSIGN'ı Alice'e taşır → Alice'in bekleyen oturumu epoch-0 için kurulur (0-RTT;
+/// S1'e açılmadı → `NotReady`); Bob `Ready` olur, RESPONSE hub'da TUTULUR. Bob'un erken DATA'sı
+/// (epoch-0) Alice'in veri alıcısında açılır ama motora girmeden, ACK'siz düşer:
+/// `not_ready_drops ≥ 1`, birim Bob'da teyitsiz kalır. Röle 2 RESPONSE'u taşır → Alice `Ready` →
+/// Bob'un ARQ yeniden gönderimi teslim edilir; kayıp yok. ESKİ DAVRANIŞ (#114'ün ilk hâli):
+/// bekleyen tutamaç hazırlık ayrımı olmadan beklenen kümedeydi → datagram ACK'lenir, teslim
+/// kapısı onu `Ready` olmayan oturum diye atardı → Bob teyit alır, birim hiç teslim edilmez.
+#[test]
+fn inv_ack_deliver_unit_of_a_not_ready_session_is_not_acked() {
+    let hub = MemoryHub::new();
+    let mut alice = transport_node(ALICE, &hub);
+    let mut bob = transport_node(BOB, &hub);
+    alice.add_peer_addr(id(BOB), bob.data_addr());
+    bob.add_peer_addr(id(ALICE), alice.data_addr());
+
+    let Ok(ConnectResult::Pending(_)) = alice.connect(id(BOB), None) else {
+        panic!("bağlantı beklemede başlamalı");
+    };
+    // Röle 1: INIT → Bob, HANDLE_ASSIGN → Alice. RESPONSE henüz yok.
+    assert_eq!(hub.relay(), 1);
+    alice.drive();
+    bob.drive();
+    let h_bob = bob.active_session_for_test(id(ALICE)).expect("Bob Ready");
+    assert!(alice.active_session_for_test(id(BOB)).is_none());
+
+    // RESPONSE hub'da TUTULURKEN Bob yollar.
+    bob.send(h_bob, unit(b"erken"), DeliveryPolicy::Reliable)
+        .expect("gönder");
+    eventually("Ready olmayan oturumun datagramı ACK'siz düşmeli", || {
+        alice.ctx_dispatch_stats().not_ready_drops >= 1
+    });
+    std::thread::sleep(QUIET);
+    assert_eq!(bob.outstanding_for_test(), 1, "Ready öncesi ACK yok");
+    assert!(alice.recv().is_none(), "Ready öncesi teslim yok");
+
+    // Röle 2: RESPONSE → Alice → Ready; Bob'un yeniden gönderimi teslim edilir.
+    assert_eq!(hub.relay(), 1);
+    let mut delivered = None;
+    eventually("Ready sonrası yeniden gönderim teslim edilmeli", || {
+        delivered = alice.recv();
+        delivered.is_some()
+    });
+    let delivered = delivered.expect("teslim");
+    assert_eq!(delivered.unit, b"erken");
+    assert_eq!(
+        alice.active_session_for_test(id(BOB)),
+        Some(delivered.session)
+    );
+    eventually("Ready sonrası teyit gelmeli", || {
+        bob.outstanding_for_test() == 0
+    });
+    assert!(alice.recv().is_none(), "tek teslim");
+    let ctx = alice.ctx_dispatch_stats();
+    assert!(ctx.not_ready_drops >= 1);
+    assert_eq!((ctx.ctx_mismatch_drops, ctx.hub_frames_dropped), (0, 0));
 }

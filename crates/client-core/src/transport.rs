@@ -54,6 +54,12 @@
 //! AEAD'siz no-op) ve başka her bağlam yüke dokunulmadan düşer ve sayılır
 //! ([`ClientTransport::ctx_dispatch_stats`]).
 //!
+//! INV-ACK-DELIVER-1: teslim yoluna kabul edilmeyen birim ACK'lenmez. Beklenen kümede her
+//! tutamacın hazırlığı da yayımlanır: yalnız teslim kapısının (`drive_deliveries`) kabul ettiği
+//! oturumlar `Ready`'dir; bekleyen INIT / yenileme, onaysız provisional ve `Ready` olayı
+//! işlenmemiş yanıtlayan tutamaçların datagramları veri alıcısında ACK'siz düşer
+//! (`not_ready_drops`), gönderen ARQ ile yeniden yollar.
+//!
 //! # KAPSAM DIŞI (iş emri §4)
 //!
 //! `Suspended` / `LongOutage` tetikleri, heartbeat, backoff, rebind ve INIT'in byte-özdeş yeniden
@@ -78,7 +84,7 @@ use kama_contracts::s3::{
 
 use crate::runtime::{
     ClientEndpoint, ClientHandle, CtxDispatchCounters, CtxDispatchStats, ExpectedSessions,
-    RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
+    Readiness, RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
 };
 #[cfg(any(test, feature = "test-util"))]
 use crate::wire::decode_data;
@@ -544,23 +550,37 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.sync_expected();
     }
 
-    /// [K4G-01 / D1 (v1.1)] Veri alıcısının BEKLEDİĞİ oturum kümesini oturum tablosundan yeniden
-    /// yayımlar: bekleyen niyetler, yenilemeler, onay bekleyen provisional'lar, yanıtlayan rolde
-    /// kurulanlar ve kapanmamış (`Active` / `Superseded`) oturumlar. "Beklenen" YALNIZ bu tablodur;
-    /// ilk gelen datagramdan öğrenme (TOFU) yoktur. Yeni bir tutamaç ayrıca, zarfı (INIT/RESPONSE)
-    /// yola çıkmadan ÖNCE eklenir: karşı uç o zarfı almadan bu oturumda veri yollayamaz, yani
-    /// tablo ile veri yolu arasında yarış kalmaz.
+    /// [K4G-01 / D1 (v1.1) + INV-ACK-DELIVER-1] Veri alıcısının BEKLEDİĞİ oturum kümesini ve her
+    /// tutamacın teslim hazırlığını oturum tablosundan yeniden yayımlar. "Beklenen" YALNIZ bu
+    /// tablodur; ilk gelen datagramdan öğrenme (TOFU) yoktur. Yeni bir tutamaç ayrıca, zarfı
+    /// (INIT/RESPONSE) yola çıkmadan ÖNCE `NotReady` eklenir: karşı uç o zarfı almadan bu oturumda
+    /// veri yollayamaz, yani tablo ile veri yolu arasında yarış kalmaz.
+    ///
+    /// | Kategori | Hazırlık | `drive_deliveries` kabulü |
+    /// |---|---|---|
+    /// | `intents[].pending`, `renewals[].pending` | `NotReady` | hayır (S1 oturumu değil) |
+    /// | `provisional`, `responder_peer` | `NotReady` | ancak `Confirmed` / `Ready` işlenince |
+    /// | `sessions`, `Active` / `Superseded` | `Ready` | evet |
+    /// | `sessions`, `Closed` | yayımlanmaz | hayır |
+    ///
+    /// `Ready` kümesi teslim kapısının kabul koşuluyla (`phase != Closed`) AYNIDIR. Bir tutamaç iki
+    /// kategoride birden bulunursa (ör. yinelenen INIT'in yanıtlayan kaydı) `Ready` sona eklendiği
+    /// için o geçerlidir.
     fn sync_expected(&self) {
-        let mut expected: Vec<SessionHandle> = self.intents.iter().map(|it| it.pending).collect();
-        expected.extend(self.renewals.iter().map(|r| r.pending));
-        expected.extend(self.provisional.keys().copied());
-        expected.extend(self.responder_peer.keys().copied());
-        for (h, s) in &self.sessions {
-            if s.phase != Phase::Closed {
-                expected.push(*h);
-            }
-        }
-        self.expected.replace(expected);
+        let not_ready = self
+            .intents
+            .iter()
+            .map(|it| it.pending)
+            .chain(self.renewals.iter().map(|r| r.pending))
+            .chain(self.provisional.keys().copied())
+            .chain(self.responder_peer.keys().copied())
+            .map(|h| (h, Readiness::NotReady));
+        let ready = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.phase != Phase::Closed)
+            .map(|(h, _)| (*h, Readiness::Ready));
+        self.expected.replace(not_ready.chain(ready));
     }
 
     fn command(&self, cmd: SessionCommand) -> SessionResult {
@@ -616,7 +636,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 self.hub_of.insert(session, hub_handle);
                 self.responder_peer.insert(session, peer);
                 // [K4G-01] RESPONSE'tan ÖNCE beklenir: başlatan ancak onu alınca veri yollar.
-                self.expected.insert(session);
+                self.expected.insert_pending(session);
                 let _ = self
                     .link
                     .send_response(peer, hub_handle, envelope_type, bytes);
@@ -636,7 +656,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 self.provisional.insert(new, (peer, supersedes));
                 // [K4G-01] Onayı getirecek ilk epoch-1 paketi bu oturumun bağlamında açılır:
                 // RESPONSE'tan ÖNCE beklenir.
-                self.expected.insert(new);
+                self.expected.insert_pending(new);
                 let _ = self
                     .link
                     .send_response(peer, hub_handle, envelope_type, bytes);
@@ -770,7 +790,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         } = self.command(SessionCommand::Renew { session: h })
         {
             // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
-            self.expected.insert(pending);
+            self.expected.insert_pending(pending);
             if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
                 self.attempts.insert(a, pending);
             }
@@ -840,7 +860,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             } => {
                 self.intents[i].pending = session;
                 // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
-                self.expected.insert(session);
+                self.expected.insert_pending(session);
                 if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
                     self.attempts.insert(a, session);
                 }
@@ -932,6 +952,9 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 // Yarış: oturumu duyuran Crypto olayı (onay) teslimden sonra işlenebilir.
                 self.drive_crypto_events();
             }
+            // [K4G-01 / INV-ACK-DELIVER-1] Bu kabul koşulu `sync_expected`'in `Ready` kümesiyle
+            // AYNIDIR: veri alıcısı yalnız o kümedeki oturumun birimini ACK'ler. Biri değişirse
+            // öteki de değişmeli — aksi hâlde ACK'lenmiş birim burada kaybolur.
             match self.sessions.get(&h) {
                 Some(s) if s.phase != Phase::Closed => {}
                 // Kapanmış / bilinmeyen oturumun teslimi düşer.
@@ -1064,7 +1087,7 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
                 bytes,
             } => {
                 // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
-                self.expected.insert(session);
+                self.expected.insert_pending(session);
                 if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
                     self.attempts.insert(a, session);
                 }

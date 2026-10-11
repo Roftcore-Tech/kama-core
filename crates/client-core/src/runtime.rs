@@ -15,7 +15,7 @@
 //! ASLA sessiz-evict edilmez, boşalma idle-emeklilikle) · teslim kanalı bounded (`try_send`,
 //! taşan teslim sayaçla raporlanır — app drenaj sözleşmesi).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -725,6 +725,14 @@ fn elapsed_ns(start: Instant) -> u64 {
 // "Beklenen" tutamaç BEKLENENDİR, ilk gelen datagramdan öğrenilmez (TOFU yok): istemci ucunda
 // `connect_session`'a verilen bağlam; sunucu ucunda oturum tablosunun yayımladığı
 // `ExpectedSessions` ve eş yuvasının bağlandığı bağlam.
+//
+// INV-ACK-DELIVER-1 (plan Ek 2026-10-11 (3)): teslim yoluna kabul edilmeyen birim ACK'lenmez.
+// Sunucu ucunda beklenen tutamacın HAZIRLIĞI da yayımlanır (`Readiness`): kol (a)'ya yalnız
+// `Ready` (S1'e açılmış — teslim yolunun kabul ettiği) oturumun datagramı girer ve ACK'lenir.
+// Beklenen ama hazır olmayan (`NotReady`: bekleyen INIT / yenileme, onaysız provisional, `Ready`
+// olayı henüz işlenmemiş yanıtlayan) oturumun datagramı motora girmeden, ACK'siz düşer ve
+// `not_ready_drops` artar; gönderen ARQ ile yeniden yollar, `Ready` sonrası kabul edilir.
+// Tamponlama YOKTUR.
 
 /// Bağlam belirtmeyen kurucuların (`connect`, `bind`) tek örtük PoC oturumu (`IdentitySeam`'in
 /// oturumuyla aynı tutamaç; eski çağıranların davranışı birebir).
@@ -740,6 +748,7 @@ pub struct CtxDispatchCounters(Arc<CtxDispatchCells>);
 struct CtxDispatchCells {
     ctx_mismatch_drops: AtomicU64,
     hub_frames_dropped: AtomicU64,
+    not_ready_drops: AtomicU64,
 }
 
 impl CtxDispatchCounters {
@@ -755,6 +764,7 @@ impl CtxDispatchCounters {
         CtxDispatchStats {
             ctx_mismatch_drops: self.0.ctx_mismatch_drops.load(Ordering::Relaxed),
             hub_frames_dropped: self.0.hub_frames_dropped.load(Ordering::Relaxed),
+            not_ready_drops: self.0.not_ready_drops.load(Ordering::Relaxed),
         }
     }
 
@@ -764,6 +774,10 @@ impl CtxDispatchCounters {
 
     fn add_hub_frame_dropped(&self) {
         self.0.hub_frames_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn add_not_ready(&self) {
+        self.0.not_ready_drops.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -776,18 +790,33 @@ pub struct CtxDispatchStats {
     /// Kol (b): `HubChannel` bağlamında açılan datagram — `on_hub_frame` saydı ve düşürdü (PoC:
     /// HubChannel no-op, AEAD'siz; gerçek hub handler'ları hub sprintinde).
     pub hub_frames_dropped: u64,
+    /// INV-ACK-DELIVER-1: tutamacı beklenen ama oturumu henüz `Ready` olmayan datagram — motora
+    /// girmeden, ACK'siz düşürüldü; gönderen ARQ ile yeniden yollar. Güvenlik sayacı DEĞİLDİR:
+    /// `Ready` / onay geçişleri çevresinde olağan akışta da artar (`ctx_mismatch_drops`'tan ayrı).
+    pub not_ready_drops: u64,
 }
 
-/// [K4G-01 / D1 (v1.1)] Sunucu ucunun BEKLEDİĞİ oturum tutamaçları.
+/// [K4G-01 / INV-ACK-DELIVER-1] Beklenen bir tutamacın teslim hazırlığı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Readiness {
+    /// Oturum S1'e açıldı ve teslim yolu birimini KABUL EDER (`Ready` sonrası, yalnız-alım drain
+    /// dahil): datagram Session dağıtıcısına girer, ACK'lenir ve teslim edilir.
+    Ready,
+    /// Oturum bekleniyor ama teslim yolu henüz kabul ETMEZ (bekleyen INIT / yenileme, onaysız
+    /// provisional, `Ready` olayı işlenmemiş yanıtlayan): datagram ACK'siz düşer.
+    NotReady,
+}
+
+/// [K4G-01 / D1 (v1.1)] Sunucu ucunun BEKLEDİĞİ oturum tutamaçları ve teslim hazırlıkları.
 ///
 /// Kaynağı oturum tablosudur, gelen datagram DEĞİLDİR (TOFU yok): S1 adaptörü
 /// ([`crate::transport::ClientTransport`]) kümeyi kendi tablosundan yayımlar — bekleyen niyet,
-/// yenileme, onay bekleyen provisional, yanıtlayan rolde kurulan ve kapanmamış oturumlar; yeni bir
-/// tutamacı zarfı (INIT/RESPONSE) yola çıkmadan ÖNCE ekler, yenileme/supersession/kapanışta
-/// günceller. Bağımsız `bind` / `bind_with_policy` yalnız örtük PoC oturumunu bekler. Klonlar AYNI
-/// kümeyi paylaşır.
+/// yenileme, onay bekleyen provisional ve yanıtlayan rolde kurulan tutamaçlar `NotReady`, S1'e
+/// açılmış (kapanmamış) oturumlar `Ready`; yeni bir tutamacı zarfı (INIT/RESPONSE) yola çıkmadan
+/// ÖNCE ekler, yenileme/supersession/kapanışta günceller. Bağımsız `bind` / `bind_with_policy`
+/// yalnız örtük PoC oturumunu (`Ready`) bekler. Klonlar AYNI kümeyi paylaşır.
 #[derive(Debug, Clone, Default)]
-pub struct ExpectedSessions(Arc<Mutex<BTreeSet<SessionHandle>>>);
+pub struct ExpectedSessions(Arc<Mutex<BTreeMap<SessionHandle, Readiness>>>);
 
 impl ExpectedSessions {
     /// Boş küme: hiçbir `Session(_)` beklenmiyor.
@@ -796,33 +825,40 @@ impl ExpectedSessions {
         Self::default()
     }
 
-    /// Yalnız `session`'ı bekleyen küme.
+    /// Yalnız `session`'ı (`Ready`) bekleyen küme.
     #[must_use]
     pub fn only(session: SessionHandle) -> Self {
         let expected = Self::new();
-        expected.insert(session);
+        expected.insert_ready(session);
         expected
     }
 
-    /// `session` beklenir.
-    pub fn insert(&self, session: SessionHandle) {
-        self.lock().insert(session);
+    /// `session` beklenir ve teslim yolu onu kabul eder.
+    pub fn insert_ready(&self, session: SessionHandle) {
+        self.lock().insert(session, Readiness::Ready);
     }
 
-    /// Kümeyi TEK adımda `sessions` yapar: okuyucu ara hâli görmez.
-    pub fn replace(&self, sessions: impl IntoIterator<Item = SessionHandle>) {
-        let next: BTreeSet<SessionHandle> = sessions.into_iter().collect();
+    /// `session` beklenir ama henüz hazır değildir. Zaten `Ready` ise DEĞİŞMEZ (hazırlık geri
+    /// alınmaz; kaldırma yalnız tablonun yeniden yayınıyla olur).
+    pub fn insert_pending(&self, session: SessionHandle) {
+        self.lock().entry(session).or_insert(Readiness::NotReady);
+    }
+
+    /// Kümeyi TEK adımda yeniden yayımlar: okuyucu ara hâli görmez. Aynı tutamaç birden çok kez
+    /// gelirse SONUNCUSU geçerlidir.
+    pub fn replace(&self, sessions: impl IntoIterator<Item = (SessionHandle, Readiness)>) {
+        let next: BTreeMap<SessionHandle, Readiness> = sessions.into_iter().collect();
         *self.lock() = next;
     }
 
-    /// `session` bekleniyor mu.
+    /// `session` bekleniyorsa hazırlığı; beklenmiyorsa `None`.
     #[must_use]
-    pub fn contains(&self, session: SessionHandle) -> bool {
-        self.lock().contains(&session)
+    pub fn readiness(&self, session: SessionHandle) -> Option<Readiness> {
+        self.lock().get(&session).copied()
     }
 
     /// Zehirlenmeye karşı panik yapmaz: küme her işlemin sonunda tutarlıdır.
-    fn lock(&self) -> MutexGuard<'_, BTreeSet<SessionHandle>> {
+    fn lock(&self) -> MutexGuard<'_, BTreeMap<SessionHandle, Readiness>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -850,8 +886,12 @@ impl HubDispatch {
 /// türetilir; `Opened::frame`'e (yüke) bakılmaz.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CtxRoute {
-    /// (a) `Session(h)`, `h` beklenenle birebir eşit → o oturumun Session dağıtıcısı.
+    /// (a) `Session(h)`, `h` beklenenle birebir eşit (sunucuda: `Ready`) → o oturumun Session
+    /// dağıtıcısı.
     Session,
+    /// (a') Sunucu: `Session(h)`, `h` beklenen ama `NotReady` → motora girmeden, ACK'siz düşür +
+    /// `not_ready_drops` (INV-ACK-DELIVER-1).
+    NotReady,
     /// (b) `HubChannel` → [`HubDispatch::on_hub_frame`].
     Hub,
     /// (c) başka her şey → düşür + `ctx_mismatch_drops`.
@@ -868,9 +908,10 @@ fn route_client(opened: ProtectionContext, expected: ProtectionContext) -> CtxRo
     }
 }
 
-/// Sunucu ucu: `Session(h)` için `h` oturum tablosunda beklenmeli ([`ExpectedSessions`]) VE eş
-/// yuvası varsa yuvanın bağlandığı bağlamla birebir eşleşmeli — bir yuva tek oturuma aittir; başka
-/// bir oturumun geçerli datagramı o yuvanın ARQ / teslim durumuna giremez.
+/// Sunucu ucu: `Session(h)` için eş yuvası varsa yuvanın bağlandığı bağlamla birebir eşleşmeli —
+/// bir yuva tek oturuma aittir; başka bir oturumun geçerli datagramı o yuvanın ARQ / teslim
+/// durumuna giremez — VE `h` oturum tablosunda beklenmeli ([`ExpectedSessions`]): `Ready` → kol
+/// (a); `NotReady` → ACK'siz düşüş (INV-ACK-DELIVER-1); beklenmiyor → kol (c).
 fn route_server(
     opened: ProtectionContext,
     slot: Option<ProtectionContext>,
@@ -878,12 +919,14 @@ fn route_server(
 ) -> CtxRoute {
     match opened {
         ProtectionContext::HubChannel => CtxRoute::Hub,
-        ProtectionContext::Session(h)
-            if slot.is_none_or(|bound| bound == opened) && expected.contains(h) =>
-        {
-            CtxRoute::Session
+        ProtectionContext::Session(_) if slot.is_some_and(|bound| bound != opened) => {
+            CtxRoute::Mismatch
         }
-        ProtectionContext::Session(_) => CtxRoute::Mismatch,
+        ProtectionContext::Session(h) => match expected.readiness(h) {
+            Some(Readiness::Ready) => CtxRoute::Session,
+            Some(Readiness::NotReady) => CtxRoute::NotReady,
+            None => CtxRoute::Mismatch,
+        },
     }
 }
 
@@ -1559,6 +1602,11 @@ async fn client_task(
                     CtxRoute::Session => Some(od),
                     CtxRoute::Hub => {
                         hub.on_hub_frame(&od);
+                        None
+                    }
+                    // İstemci ucu yalnız `Ready` oturum için açılır; kol yine de kendi sayacıyla.
+                    CtxRoute::NotReady => {
+                        ctx_counters.add_not_ready();
                         None
                     }
                     CtxRoute::Mismatch => {
@@ -2643,10 +2691,16 @@ async fn server_task(
                 // ESKİ DAVRANIŞ (kapatılan delik): bağlama bakılmadığı için mevcut bir Session
                 // yuvasının adresinden gelen AEAD'siz HubChannel DATA'sı yuvanın bağlamıyla
                 // (`Session(h)`) teslim ediliyordu.
+                // INV-ACK-DELIVER-1: oturumu henüz `Ready` olmayan beklenen tutamacın datagramı
+                // alıcı motoruna GİRMEZ → ACK üretilmez; teslim yolu onu kabul etmeyecekti.
                 match route_server(od.ctx, peers.get(&peer).map(|s| s.ctx), &expected) {
                     CtxRoute::Session => {}
                     CtxRoute::Hub => {
                         hub.on_hub_frame(&od);
+                        continue;
+                    }
+                    CtxRoute::NotReady => {
+                        ctx_counters.add_not_ready();
                         continue;
                     }
                     CtxRoute::Mismatch => {
@@ -3041,13 +3095,36 @@ mod ctx_first_tests {
         // Mevcut Session yuvasının adresinden gelen HubChannel da Session'a girmez.
         assert_eq!(route_server(HUB, Some(A), &expected), CtxRoute::Hub);
         // Tablo günceldir: eklenen tutamaç beklenir ...
-        expected.insert(SessionHandle::from_raw(2));
+        expected.insert_ready(SessionHandle::from_raw(2));
         assert_eq!(route_server(B, None, &expected), CtxRoute::Session);
         // ... ama bir yuva tek oturuma aittir.
         assert_eq!(route_server(B, Some(A), &expected), CtxRoute::Mismatch);
         // Tablodan çıkan oturumun mevcut yuvası da artık beklenmez.
-        expected.replace([SessionHandle::from_raw(2)]);
+        expected.replace([(SessionHandle::from_raw(2), Readiness::Ready)]);
         assert_eq!(route_server(A, Some(A), &expected), CtxRoute::Mismatch);
+    }
+
+    /// INV-ACK-DELIVER-1: beklenen ama `Ready` olmayan tutamaç Session koluna (ACK üreten alıcı
+    /// motoruna) GİRMEZ.
+    #[test]
+    fn server_route_keeps_not_ready_out_of_the_session_path() {
+        let expected = ExpectedSessions::new();
+        expected.insert_pending(SessionHandle::from_raw(1));
+        assert_eq!(route_server(A, None, &expected), CtxRoute::NotReady);
+        // Yuva bağı hazırlıktan önce denetlenir.
+        assert_eq!(route_server(A, Some(B), &expected), CtxRoute::Mismatch);
+        // Hazırlık `Ready`'ye yükselir ...
+        expected.insert_ready(SessionHandle::from_raw(1));
+        assert_eq!(route_server(A, None, &expected), CtxRoute::Session);
+        // ... ve `insert_pending` onu geri ALMAZ.
+        expected.insert_pending(SessionHandle::from_raw(1));
+        assert_eq!(route_server(A, None, &expected), CtxRoute::Session);
+        // Yeniden yayında aynı tutamaç iki kez gelirse sonuncusu geçerlidir.
+        expected.replace([
+            (SessionHandle::from_raw(1), Readiness::NotReady),
+            (SessionHandle::from_raw(1), Readiness::Ready),
+        ]);
+        assert_eq!(route_server(A, None, &expected), CtxRoute::Session);
     }
 
     #[test]
@@ -3069,6 +3146,7 @@ mod ctx_first_tests {
         let want = CtxDispatchStats {
             ctx_mismatch_drops: 0,
             hub_frames_dropped: 1,
+            not_ready_drops: 0,
         };
         assert_eq!(counters.snapshot(), want);
     }
