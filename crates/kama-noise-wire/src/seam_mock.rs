@@ -643,6 +643,8 @@ pub fn fixture_protection(
             directory,
             clock: Box::new(clock.clone()),
             entropy: Box::new(crate::entropy::OsEntropy::new()),
+            // K4G-02: bellek içi `init_counter` deposu — KALICI DEĞİL (her çağrı yeni depo).
+            counter_store: std::sync::Arc::new(crate::counter_store::MemoryCounterStore::new()),
             envelope,
         },
     );

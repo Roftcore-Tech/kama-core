@@ -14,6 +14,7 @@
 #![cfg(feature = "test-util")]
 
 use core::time::Duration;
+use std::sync::Arc;
 
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s3::{
@@ -21,6 +22,7 @@ use kama_contracts::s3::{
     SessionEvent, SessionResult,
 };
 use kama_noise_wire::clock::ManualClock;
+use kama_noise_wire::counter_store::MemoryCounterStore;
 use kama_noise_wire::entropy::OsEntropy;
 use kama_noise_wire::epoch_machine::GRACE_T_G;
 use kama_noise_wire::peer_dir::{LocalIdentity, PeerDirectory, PeerEntry};
@@ -81,6 +83,7 @@ fn node(n: u8, envelope: EnvelopeKind) -> Node {
         directory: directory(),
         clock: Box::new(clock.clone()),
         entropy: Box::new(OsEntropy::new()),
+        counter_store: Arc::new(MemoryCounterStore::new()),
         envelope,
     });
     Node { c, clock }
@@ -336,6 +339,7 @@ fn opaque_rejects_leave_state_untouched() {
                 directory: PeerDirectory::new(dir).unwrap(),
                 clock: Box::new(clock.clone()),
                 entropy: Box::new(OsEntropy::new()),
+                counter_store: Arc::new(MemoryCounterStore::new()),
                 envelope: EnvelopeKind::Extended,
             }),
             clock,
