@@ -761,6 +761,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kama-provision"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "kama-noise-wire",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "kama-transport-schema"
 version = "0.1.0"
 dependencies = [
