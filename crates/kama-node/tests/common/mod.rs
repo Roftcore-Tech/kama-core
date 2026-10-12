@@ -7,7 +7,8 @@
 //! * Olaylar: dinleyici olayları kanala yazar; [`Events::wait`] beklenen olayı ÜST SÜRE SINIRIYLA
 //!   bekler (gerçek uyku yok; koşul olaydır). Eşleşmeyen olaylar sırasıyla saklanır, sonraki
 //!   beklemeler önce onlara bakar (olay sırası iddiası gerekmez). Periyodik `Metrics` olayları
-//!   saklanmaz: ölçü beklemesi yalnız taze anlık görüntüye bakar.
+//!   saklanmaz; kanalda ise bekleyebilirler: bir aşamanın SONRASINI gösteren ölçü için önce
+//!   [`Events::drain_now`] çağrılır (`two_nodes_loopback::expect_clean_metrics`).
 //! * Zarf taşıyıcısı (DUR-K4G-11 bekleniyor): [`RelayLink`] — `client_core::memory_link::MemoryHub`
 //!   (YALNIZ test-util) her gönderim ve yoklamada röle eder; arka plan iş parçacığı ve uyku yok.
 
@@ -192,6 +193,16 @@ pub struct Events {
 }
 
 impl Events {
+    /// Kanalda ŞU ANA dek birikmiş olayları BLOKLAMADAN saklananlara taşır; `Metrics` olayları
+    /// atılır. Sonraki `Metrics` beklemesi yalnız bu çağrıdan sonra kanala giren olaylara bakar.
+    pub fn drain_now(&mut self) {
+        while let Ok(event) = self.rx.try_recv() {
+            if !matches!(event, NodeEvent::Metrics(_)) {
+                self.backlog.push(event);
+            }
+        }
+    }
+
     /// `pick`'in kabul ettiği ilk olayı döner: önce saklananlar (geliş sırasıyla), sonra yeniler —
     /// en çok [`WAIT`] boyunca. Süre dolarsa ya da düğüm kapanırsa görülen olaylarla panik.
     pub fn wait<T>(&mut self, what: &str, mut pick: impl FnMut(&NodeEvent) -> Option<T>) -> T {

@@ -13,10 +13,11 @@
 //!
 //! Akış: TEXT ↔ RECEIPT (iki yön) · 1 dosya (`FILE_RECEIPT(ok)` dahil; yol olayla, içerik diskte
 //! bayt-özdeş) · 1 PTT akışı (OPEN, sıralı demetler, CLOSE) + kapanmış tutamaçların tipli hatası ·
-//! ölçüler (epoch-1 iki uçta, `ctx_mismatch_drops == 0`, `delivery_channel_drops == 0`) · Bob
-//! kapalıyken Alice'in metni outbox'ta kalır · iki düğüm kapatılıp AYNI `data_dir` ile yeniden
-//! açılır: outbox'taki metin AYNI `msg_id`'yle teslim olur, yeni `msg_id` ve `init_counter`
-//! artmıştır.
+//! ölçüler (epoch-1 iki uçta, `ctx_mismatch_drops == 0`, `delivery_channel_drops == 0`; anlık
+//! görüntü ilgili aşamadan SONRA alınır) · Bob kapalıyken Alice'in metni outbox'ta kalır · iki
+//! düğüm kapatılıp AYNI `data_dir` ile yeniden açılır ve bağlantıyı arka plan boşaltması
+//! (`drain_background`, PoC K6 / EK-2) kurar: outbox'taki metin AYNI `msg_id`'yle teslim olur,
+//! yeni `msg_id` ve `init_counter` artmıştır.
 //!
 //! Zamanlama: gerçek uyku yok; her bekleme bir olayın ÜST SINIRIDIR (`common::WAIT`).
 
@@ -62,6 +63,10 @@ fn start(device: &Device, hub: &MemoryHub) -> (KamaNode, Events) {
 
 fn connect(alice: &KamaNode, alice_events: &mut Events, bob_events: &mut Events) {
     alice.connect(BOB).expect("connect");
+    wait_connected(alice_events, bob_events);
+}
+
+fn wait_connected(alice_events: &mut Events, bob_events: &mut Events) {
     alice_events.wait("alice: Connected(bob)", |event| {
         matches!(event, NodeEvent::Connected { peer_id } if peer_id == BOB).then_some(())
     });
@@ -92,7 +97,16 @@ fn expect_receipt(events: &mut Events, from: &str, msg_id: MsgId) {
 }
 
 /// Eşle oturum hazır ve epoch-1'de; bağlam-önce dağıtım ve teslim kanalı hiçbir şey düşürmedi.
+///
+/// Anlık görüntü bu çağrıdan SONRA hesaplanmış olmalıdır (önceki aşamanın bütün düşmelerini
+/// kapsasın): kanalda bekleyen eski olaylar önce boşaltılır; boşaltmadan sonra gelen İLK `Metrics`
+/// atlanır (boşaltmadan önce hesaplanıp sonra gönderilmiş olabilir); ondan sonrakiler düğüm
+/// iş parçacığında ilkinin gönderiminden SONRA hesaplanmıştır.
 fn expect_clean_metrics(events: &mut Events, peer: &str) {
+    events.drain_now();
+    events.wait("Metrics (boşaltmadan sonraki ilk; atlanır)", |event| {
+        matches!(event, NodeEvent::Metrics(_)).then_some(())
+    });
     let metrics = events.wait(
         &format!("Metrics: {peer} bağlı, epoch 1"),
         |event| match event {
@@ -277,7 +291,10 @@ fn text_file_ptt_and_restart_persistence_over_loopback_udp() {
     let hub = MemoryHub::new();
     let (bob, mut bob_events) = start(bob_device, &hub);
     let (alice, mut alice_events) = start(alice_device, &hub);
-    connect(&alice, &mut alice_events, &mut bob_events);
+    // Arka plan boşaltması (PoC K6 / EK-2): oturumu ve bekleyen niyeti olmayan eşe `connect`
+    // tetikler; eşin kalıcı outbox'ı yüklenir ve kayıt sıradaki oturumda AYNI `msg_id`'yle gider.
+    alice.drain_background().expect("drain_background");
+    wait_connected(&mut alice_events, &mut bob_events);
     expect_text(&mut bob_events, ALICE, m2, "bob kapalıyken");
     expect_receipt(&mut alice_events, BOB, m2);
     let m3 = alice.send_text(BOB, "yeniden").expect("metin");
