@@ -14,8 +14,8 @@
 //! Dosya aktarımı (`FILE_*`; parçalama, alıcı birleştirme, bütün-dosya özeti): [`file_transfer`]
 //! (B2.3).
 //!
-//! Enjekte edilen monoton saat (`MonotonicClock` + `SystemClock`; PTT-R4, K4G-09 zamanlayıcıları):
-//! [`clock`] (K4G-08).
+//! Enjekte edilen monoton saat (`MonotonicClock` + `SystemClock`; PTT-R4 ve kapanmış akış kaydı,
+//! K4G-09 zamanlayıcıları): [`clock`] (K4G-08).
 //!
 //! # Katman kuralı (INV-NEIGHBOR-1)
 //!

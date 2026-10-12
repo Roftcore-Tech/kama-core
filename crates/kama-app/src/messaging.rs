@@ -401,10 +401,9 @@ impl<T: KamaTransport> Messenger<T> {
         })
     }
 
-    /// YALNIZ bu crate'in birim testleri (`messaging`, `ptt`, `file_transfer`): taze bellek içi
-    /// depoyla kurar — kalıcı durumu olmayan cihaz (`ptt` testlerinde `stream_id`'ler de bu depodan
-    /// ayrılır). Kalıcılık isteyen her yol
-    /// [`Messenger::with_store`]'u kullanır; ürün kodunda kalıcı olmayan yapıcı YOKTUR.
+    /// YALNIZ bu crate'in birim testleri (`messaging`, `file_transfer`): taze bellek içi depoyla
+    /// kurar — kalıcı durumu olmayan cihaz. Kalıcılık isteyen her yol (K4G-08'den beri `ptt` birim
+    /// testleri de) [`Messenger::with_store`]'u kullanır; ürün kodunda kalıcı olmayan yapıcı YOKTUR.
     ///
     /// # Errors
     ///

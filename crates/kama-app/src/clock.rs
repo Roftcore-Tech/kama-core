@@ -1,7 +1,7 @@
-//! Monoton saat — Application'ın zaman girdisi (K4G-08). Bugünkü tek tüketici PTT-R4'tür
-//! (`ptt::PTT_STREAM_IDLE_TTL`); K4G-09'un dosya zamanlayıcıları (`FILE_IDLE_TTL`,
-//! `FILE_RECEIPT_TTL`) aynı arayüzü kullanır. Saat kurulumda ENJEKTE edilir; motorlar duvar saatine
-//! bakmaz ve kendileri uyumaz.
+//! Monoton saat — Application'ın zaman girdisi (K4G-08). Bugünkü tüketici `ptt`'dir: PTT-R4
+//! (`ptt::PTT_STREAM_IDLE_TTL`) ve kapanmış akış kaydının ömrü (PTT-R1); K4G-09'un dosya
+//! zamanlayıcıları (`FILE_IDLE_TTL`, `FILE_RECEIPT_TTL`) aynı arayüzü kullanır. Saat kurulumda
+//! ENJEKTE edilir; motorlar duvar saatine bakmaz ve kendileri uyumaz.
 //!
 //! Biçim `kama_noise_wire::clock::MonotonicClock` ile AYNIDIR (`now()` keyfi bir başlangıçtan bu
 //! yana geçen süre, asla geri gitmez; o crate onu kökte yeniden dışa aktarmaz), ama Application o
@@ -9,8 +9,9 @@
 //! ayrıca tanımlıdır; bileşim kökü (K4G-11) iki katmana kendi saatlerini ayrı ayrı verir.
 //!
 //! Üretimde [`SystemClock`] (`std::time::Instant` — işletim sisteminin monoton saati). Testler
-//! arayüzü elle ilerletilen bir saatle gerçekler (`tests/ptt.rs`); bu crate'in test özelliği
-//! (`test-util`) yoktur ve kütüphanede test saati tutulmaz.
+//! arayüzü elle ilerletilen bir saatle gerçekler (`tests/ptt.rs` ve `ptt` birim testleri); bu
+//! crate'in test özelliği (`test-util`) yoktur ve kütüphanenin dışa açık yüzeyinde test saati
+//! tutulmaz.
 
 use core::time::Duration;
 use std::time::Instant;
