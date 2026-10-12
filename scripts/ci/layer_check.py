@@ -121,10 +121,11 @@ CHAR_LITERAL = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^
 # C7 [2026-10-11 K4G-06] — altyapı sınıfı: bu crate'lere workspace'te YALNIZ bileşim kökleri bağımlı
 # olabilir. [2026-10-12 K4G-11] Bileşim kökü: `kama-node` (K4G-06'da liste boştu).
 INFRA = ("kama-store",)
-COMPOSITION_ROOTS: tuple[str, ...] = ("kama-node",)
 # C8 [2026-10-12 K4G-11] — bileşim kökü sınıfı: {kök crate: kurma modülü (crate-göreli yol)}. Crypto
-# katmanının Rust adı kökün ürün kaynağında yalnız kurma modülünde geçebilir.
+# katmanının Rust adı kökün ürün kaynağında yalnız kurma modülünde geçebilir. TEK KAYNAK: C7'nin kök
+# listesi buradan türer (iki ayrı liste ayrışamaz).
 ROOT_WIRING = {"kama-node": "src/wiring.rs"}
+COMPOSITION_ROOTS: tuple[str, ...] = tuple(sorted(ROOT_WIRING))
 ROOT_CRYPTO_NAME = re.compile(r"\bkama_noise_wire\b")
 
 
@@ -644,9 +645,16 @@ def selftest() -> int:
         ("C8 alt modülde de (src/a/b.rs)",
          {"src/wiring.rs": wiring_src, "src/a/b.rs": "type C = kama_noise_wire::protector::NoiseWireProtection;\n"},
          ["C8"]),
-        ("C8 DEĞİL: dizgede ve iç içe blok yorumda",
+        ("C8 DEĞİL: dizgede",
+         {"src/wiring.rs": wiring_src, "src/event.rs": 'fn f() -> &\'static str { "kama_noise_wire" }\n'}, []),
+        # İç içe ayıklama gerçekten sınanır: ad İÇ yorumun kapanışından SONRA, dış yorumun içinde. İç
+        # içeliği bilmeyen bir ayıklayıcı ilk `*/`'da yorumu bitirip adı kod sanardı (kırmızı).
+        ("C8 DEĞİL: iç içe blok yorumda, iç kapanıştan SONRA",
+         {"src/wiring.rs": wiring_src, "src/event.rs": "/* dış /* iç */ kama_noise_wire */ fn f() {}\n"}, []),
+        ("C8 iç içe blok yorum kapandıktan SONRA kod",
          {"src/wiring.rs": wiring_src,
-          "src/event.rs": 'fn f() -> &\'static str { "kama_noise_wire" }\n/* a /* kama_noise_wire */ b */\n'}, []),
+          "src/event.rs": "/* dış /* iç */ yorum */ type C = kama_noise_wire::protector::NoiseWireProtection;\n"},
+         ["C8"]),
         ("C8 DEĞİL: başka ad (kama_noise_wire_x, my_kama_noise_wire)",
          {"src/wiring.rs": wiring_src, "src/a.rs": "fn f() { kama_noise_wire_x(); my_kama_noise_wire(); }\n"}, []),
     ]
@@ -655,6 +663,10 @@ def selftest() -> int:
         ok = got == want
         bad += not ok
         print(f"  {'PASS' if ok else 'FAIL'}  {name}: beklenen {want or 'temiz'}, gelen {got or 'temiz'}")
+    # C7 ↔ C8 tek kaynak [2026-10-12 K4G-11]: kök listesi kurma modülü tablosundan türer.
+    same = set(COMPOSITION_ROOTS) == set(ROOT_WIRING)
+    bad += not same
+    print(f"  {'PASS' if same else 'FAIL'}  C7/C8 kök listeleri aynı (COMPOSITION_ROOTS = ROOT_WIRING anahtarları)")
     def without(md, name):
         gone = f"id:{name}"
         nodes = [{"id": n["id"],
