@@ -2259,9 +2259,11 @@ impl ServerHandle {
 
     /// [K4G-11] Salt-okunur: teslim kanalı doluyken düşen teslim sayısı —
     /// [`ServerStats::delivery_dropped`] ile AYNI sayaç, kapanışı beklemeden okunur (bileşim kökünün
-    /// `delivery_channel_drops`'u). Değer, görevin son döngü turunun başında yayımladığıdır: en çok
-    /// bir tur (olay yoksa ≤ alıcı ACK zamanlayıcısı periyodu) geride kalabilir; kapanıştaki kesin
-    /// değer [`ServerHandle::shutdown`]'ın döndürdüğü istatistiktir. Monoton.
+    /// `delivery_channel_drops`'u). Yayın: sayaç görevin bir `select!` kolunda (`push_delivery`)
+    /// artar; döngü o kol biter bitmez başa döner ve değeri yayımlar — okuyucu en çok artışın olduğu
+    /// kolun kalan işi kadar geride kalır, bir zamanlayıcıyı beklemez. Kapanış kolunda (`break`)
+    /// yayın yoktur; kapanıştaki kesin değer [`ServerHandle::shutdown`]'ın döndürdüğü
+    /// istatistiktir. Monoton.
     #[must_use]
     pub fn delivery_dropped(&self) -> u64 {
         self.delivery_dropped.load(Ordering::Relaxed)
