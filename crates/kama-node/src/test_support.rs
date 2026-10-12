@@ -235,6 +235,15 @@ impl Events {
         Some(found)
     }
 
+    /// Şu ana dek gelmiş BÜTÜN olaylar (`Metrics` hariç), geliş sırasıyla; saklananlar boşalır.
+    /// BLOKLAMAZ. Olay sırası iddiaları içindir.
+    pub(crate) fn drain_all(&mut self) -> Vec<NodeEvent> {
+        while let Ok(event) = self.rx.try_recv() {
+            self.absorb(event);
+        }
+        std::mem::take(&mut self.backlog)
+    }
+
     /// İş parçacıklı düğüm için: [`Events::take`], bulunana dek en çok [`WAIT`].
     pub(crate) fn wait<T>(
         &mut self,
@@ -265,12 +274,18 @@ impl Events {
     }
 }
 
-fn listener() -> (Box<dyn NodeListener>, Events) {
+/// Olay kanalı: gönderen ucu dinleyiciye (ör. testin kendi dinleyicisi), bekleyici teste.
+pub(crate) fn event_channel() -> (Sender<NodeEvent>, Events) {
     let (tx, rx) = mpsc::channel();
     let events = Events {
         rx,
         backlog: Vec::new(),
     };
+    (tx, events)
+}
+
+fn listener() -> (Box<dyn NodeListener>, Events) {
+    let (tx, events) = event_channel();
     (Box::new(ChannelListener(tx)), events)
 }
 
@@ -296,11 +311,19 @@ pub(crate) fn manual(
 /// İş parçacıklı düğüm (ürün döngüsü; zarf taşıyıcısı test rölesi).
 pub(crate) fn threaded(phone: &Phone, hub: &MemoryHub) -> (KamaNode, Events) {
     let (listener, events) = listener();
-    let node = KamaNode::start_with_envelope_link(&phone.config, &phone.data, listener, |me| {
+    (threaded_with(phone, hub, listener), events)
+}
+
+/// [`threaded`], testin verdiği dinleyiciyle.
+pub(crate) fn threaded_with(
+    phone: &Phone,
+    hub: &MemoryHub,
+    listener: Box<dyn NodeListener>,
+) -> KamaNode {
+    KamaNode::start_with_envelope_link(&phone.config, &phone.data, listener, |me| {
         RelayLink::boxed(hub, me)
     })
-    .expect("düğüm kurulmalı");
-    (node, events)
+    .expect("düğüm kurulmalı")
 }
 
 /// `step` bir değer verene dek tekrarlar — en çok [`WAIT`]. Adımlar arasında [`NODE_TICK`] kadar

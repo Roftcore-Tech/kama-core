@@ -30,6 +30,8 @@ const STRANGER: &str = "yabanci";
 /// Limit sondası: her AMP kaydından büyük bir girdi (`MAX_BODY_BYTES` bir birime sığar; birim
 /// 1 KiB mertebesindedir) — dönen `TooLarge` düğümün limitini söyler.
 const PROBE_LEN: usize = 64 * 1024;
+/// Plan D14: tek TEXT ≤ 1002 B — sondadan okunan tavana karşı BAĞIMSIZ kaynak.
+const D14_MAX_TEXT_BYTES: usize = 1002;
 /// Test basışının demet süresi — media'nındır (AMP §3 0x06; düğüm yorumlamaz).
 const BUNDLE_MS: u8 = 40;
 /// Kapanıştan önce kuyruğa konan komut sayısı: komut kuyruğu tavanının (64) altında — hiçbiri
@@ -222,6 +224,7 @@ fn oversize_inputs_are_typed_errors_and_the_limit_itself_fits() {
     // Metin: limit sondadan okunur.
     let (what, len, max_text) = too_large(alice.send_text(BOB, &"a".repeat(PROBE_LEN)));
     assert_eq!((what, len), ("text", PROBE_LEN));
+    assert_eq!(max_text, D14_MAX_TEXT_BYTES, "plan D14");
     assert_eq!(
         too_large(alice.send_text(BOB, &"a".repeat(max_text + 1))),
         ("text", max_text + 1, max_text)

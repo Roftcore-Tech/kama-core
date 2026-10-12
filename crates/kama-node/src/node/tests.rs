@@ -5,28 +5,30 @@
 
 use std::fs;
 use std::path::Path;
-use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use client_core::memory_link::MemoryHub;
-use kama_app::codec::{AppMessage, PttCodec};
+use kama_app::codec::{AppMessage, EncodeError, PttCodec};
 use kama_app::file_transfer::{
-    FileFailure, SendFailure, TransferId, FILE_IDLE_TTL, FILE_RECEIPT_TTL,
+    FileFailure, FileSendError, SendFailure, TransferId, FILE_IDLE_TTL, FILE_RECEIPT_TTL,
 };
-use kama_app::messaging::{ConnectState, MessengerEvent};
+use kama_app::messaging::{ConnectState, MessengerError, MessengerEvent};
 use kama_app::ptt::{PttError, PttEvent, PTT_STREAM_IDLE_TTL};
-use kama_contracts::handles::PeerRef;
-use kama_contracts::s1::{AbandonReason, ConnectPhase, TransportError};
+use kama_contracts::handles::{CloseReason, PeerRef};
+use kama_contracts::s1::{AbandonReason, ConnectPhase, KamaTransport, TransportError};
 
-use super::{Command, NodeLoop, Reply, REPLY_CAPACITY};
+use super::{lock, Command, NodeLoop, Reply, COMMAND_QUEUE_CAP, REPLY_CAPACITY};
 use crate::error::NodeError;
 use crate::event::{
     CloseCause, FileFailReason, FileRef, FileStage, LinkState, NodeEvent, NodeMetrics,
 };
 use crate::handle::FileHandle;
 use crate::test_support::{self as support, Events, ManualClock, TempDir};
-use crate::KamaNode;
+use crate::{KamaNode, NodeListener};
 
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
@@ -57,6 +59,23 @@ const CONTROL_MARGIN: Duration = Duration::from_secs(1);
 const BARRIER_TEXT: &str = "engel";
 /// Epoch geçişini tetikleyen ilk veri paketi.
 const EPOCH_TEXT: &str = "epoch-1";
+/// Zincir sırası testinde alındının ARDINDAN aynı oturumda gelen metin.
+const AFTER_RECEIPT_TEXT: &str = "alindidan-sonra";
+/// Zincir sırası testinde Alice'in teslim kuyruğundaki kayıtlar: `FILE_RECEIPT(ok)` + metin.
+const RECEIPT_AND_TEXT: usize = 2;
+
+/// Plan D14: tek TEXT ≤ 1002 B — düğümün türettiği tavana karşı BAĞIMSIZ kaynak (ürün profili:
+/// birim 1013 B − AMP başlığı 5 B = `MAX_BODY_BYTES` 1008 B; − TEXT öneki 6 B).
+const D14_MAX_TEXT_BYTES: usize = 1002;
+/// Metin testlerinin karakteri (tek baytlık UTF-8: bayt boyu = karakter sayısı).
+const TEXT_CHAR: &str = "a";
+
+/// Oturumsuz `send_file`'ın kaynağı: düğüm oturum yokken dosyayı OKUMAZ (ad yeter).
+const UNREAD_SOURCE: &str = "okunmaz.bin";
+/// Kapanıştan önce kuyruğa konan yanıtsız komut sayısı — kuyruk tavanının (`COMMAND_QUEUE_CAP`)
+/// altında: `Shutdown` hepsinin ardına sığar.
+const QUEUED_BEFORE_SHUTDOWN: usize = 8;
+const _: () = assert!(QUEUED_BEFORE_SHUTDOWN < COMMAND_QUEUE_CAP);
 
 // ── Yardımcılar ──────────────────────────────────────────────────────────────────────────────
 
@@ -710,4 +729,361 @@ fn receipt_timeout_closes_the_handle_on_a_turn_without_traffic() {
     );
     let again = call(node, |reply| Command::CancelFile { file, reply });
     assert!(matches!(again, Err(NodeError::HandleClosed)), "{again:?}");
+}
+
+// ── Son tur (koordinatör 9a145b41 incelemesi) ────────────────────────────────────────────────
+
+/// Bekletme kapısı: (girildi bildirimi, bırakma bekleyicisi).
+type Gate = (SyncSender<()>, Receiver<()>);
+
+/// Dinleyici: İLK `FileFailed` olayında düğüm iş parçacığını — komut grubunun içinde, o olayı
+/// doğuran komutun yürütülmesi sırasında — test bırakana dek bekletir; bütün olayları kanala yazar.
+struct GatedListener {
+    events: Sender<NodeEvent>,
+    gate: Mutex<Option<Gate>>,
+}
+
+impl NodeListener for GatedListener {
+    fn on_event(&self, event: NodeEvent) {
+        let gated = matches!(event, NodeEvent::FileFailed { .. });
+        let _ = self.events.send(event);
+        if !gated {
+            return;
+        }
+        // Kilit beklemeden ÖNCE bırakılır.
+        let gate = lock(&self.gate).take();
+        if let Some((entered, release)) = gate {
+            let _ = entered.send(());
+            let _ = release.recv();
+        }
+    }
+}
+
+/// Oturumsuz `send_file`'ın düğümdeki sonucu.
+fn not_queued_no_session() -> (String, FileFailReason) {
+    (
+        BOB.to_owned(),
+        FileFailReason::NotQueued(FileSendError::NoSession),
+    )
+}
+
+/// Madde 7(c), kuyrukta yer VARKEN: `Shutdown` kuyruğun sonuna girer, kapanış bayrağı KALKMAZ ve
+/// önündeki yanıtsız komutların hepsi işlenir. (Eski anlamda bayrak her kapanışta kalkıyordu.)
+#[test]
+fn shutdown_with_room_in_the_queue_never_raises_the_stop_flag() {
+    let _serial = support::serial();
+    let root = TempDir::new("shutdown-room");
+    let phones = support::provision(root.path(), &[ALICE, BOB]);
+    let hub = MemoryHub::new();
+    let (node, mut events) = support::threaded(&phones[ALICE], &hub);
+    let shared = Arc::clone(&node.shared);
+    // Oturum yok: her komut düğümde `NoSession` olayına dönüşür.
+    let files: Vec<FileHandle> = (0..QUEUED_BEFORE_SHUTDOWN)
+        .map(|_| {
+            node.send_file(BOB, Path::new(UNREAD_SOURCE))
+                .expect("kuyruğa")
+        })
+        .collect();
+    node.shutdown().expect("kapanış");
+    assert!(
+        !shared.stopping.load(Ordering::Acquire),
+        "kuyrukta yer varken kapanış bayrağı kalkmaz"
+    );
+    for file in files {
+        assert_eq!(
+            events.take(failed_outgoing(file)),
+            Some(not_queued_no_session()),
+            "kapanıştan önce kuyruğa giren komut işlendi"
+        );
+    }
+}
+
+/// Madde 7(c), kuyruk DOLUYKEN: `Shutdown` sığmaz, bayrak kalkar; döngü bayrağı komut grubu
+/// sonunda okur ve içinde bulunduğu grubun sonunda biter — grubun dışında kalan komut olay
+/// üretmeden düşer. Yarışsız: döngü grubun İLK komutunun dinleyici çağrısında bekletilirken
+/// kuyruk doldurulur ve kapanış istenir; döngü ancak bayrak kalktıktan sonra bırakılır.
+#[test]
+fn full_queue_shutdown_ends_after_the_current_batch_and_drops_the_rest_without_events() {
+    let _serial = support::serial();
+    let root = TempDir::new("shutdown-full");
+    let phones = support::provision(root.path(), &[ALICE, BOB]);
+    let hub = MemoryHub::new();
+    let (events_tx, mut events) = support::event_channel();
+    let (entered_tx, entered) = mpsc::sync_channel(1);
+    let (release, release_rx) = mpsc::sync_channel(1);
+    let listener = GatedListener {
+        events: events_tx,
+        gate: Mutex::new(Some((entered_tx, release_rx))),
+    };
+    let node = support::threaded_with(&phones[ALICE], &hub, Box::new(listener));
+    let shared = Arc::clone(&node.shared);
+    let source = Path::new(UNREAD_SOURCE);
+
+    let first = node.send_file(BOB, source).expect("kuyruğa");
+    entered
+        .recv_timeout(support::WAIT)
+        .expect("döngü grubun ilk komutunun olayında bekliyor");
+    let queued: Vec<FileHandle> = (0..COMMAND_QUEUE_CAP)
+        .map(|_| node.send_file(BOB, source).expect("kuyrukta yer var"))
+        .collect();
+    assert!(
+        matches!(node.send_file(BOB, source), Err(NodeError::Busy)),
+        "kuyruk dolu"
+    );
+    let closing = thread::spawn(move || node.shutdown());
+    support::until("kapanış bayrağı kalktı", || {
+        shared.stopping.load(Ordering::Acquire).then_some(())
+    });
+    release.send(()).expect("döngüyü bırak");
+    support::until("kapanış bitti", || closing.is_finished().then_some(()));
+    closing
+        .join()
+        .expect("kapanış iş parçacığı")
+        .expect("kapanış");
+
+    // Grup en çok `COMMAND_QUEUE_CAP` komuttur: ilk komut + kuyruktan `COMMAND_QUEUE_CAP − 1`.
+    let (processed, dropped) = queued.split_at(COMMAND_QUEUE_CAP - 1);
+    assert_eq!(
+        events.take(failed_outgoing(first)),
+        Some(not_queued_no_session())
+    );
+    for &file in processed {
+        assert_eq!(
+            events.take(failed_outgoing(file)),
+            Some(not_queued_no_session()),
+            "grup içinde işlendi"
+        );
+    }
+    for &file in dropped {
+        assert_eq!(
+            events.take(failed_outgoing(file)),
+            None,
+            "grubun dışında kaldı: olay üretmeden düştü"
+        );
+    }
+}
+
+/// Madde 7(d) karşı yüzü: bilet niyetin SON olayında çıkar — başarılı bağlantıda `Ready` ile.
+/// Aksi hâlde her (yeniden) bağlantıda kayıt büyürdü.
+#[test]
+fn tickets_are_released_on_ready_and_after_a_reconnection() {
+    let _serial = support::serial();
+    let root = TempDir::new("tickets");
+    let phones = support::provision(root.path(), &[ALICE, BOB]);
+    let hub = MemoryHub::new();
+    let (_bob, _bob_events) = support::threaded(&phones[BOB], &hub);
+    let (mut alice, mut events) = support::manual(&phones[ALICE], &hub, support::system_clock());
+    let node = &mut alice.node;
+
+    connect_from_manual(node, &mut events, BOB);
+    assert!(
+        node.tickets.is_empty(),
+        "Ready bileti çıkardı: {:?}",
+        node.tickets
+    );
+    // Oturum biter (Transport'un yerel `close`'u), sonra YENİ bir niyetle yeniden bağlanılır.
+    let to_bob = peer_of(node, BOB);
+    let session = node.messenger.session_of(to_bob).expect("hazır oturum");
+    node.messenger
+        .transport_mut()
+        .close(session)
+        .expect("yerel kapanış");
+    support::until("Closed(bob)", || {
+        node.turn();
+        events.take(|event| {
+            matches!(
+                event,
+                NodeEvent::Closed {
+                    peer_id,
+                    reason: CloseCause::Session(CloseReason::UserClosed),
+                } if peer_id == BOB
+            )
+            .then_some(())
+        })
+    });
+    connect_from_manual(node, &mut events, BOB);
+    assert!(
+        node.tickets.is_empty(),
+        "yeniden bağlantıda da: {:?}",
+        node.tickets
+    );
+}
+
+/// Madde 3: düğümün girdi tavanları motorların KENDİ sınırıdır ve metin tavanı plan D14'ün
+/// değeridir. Ön denetim atlanarak (komut doğrudan) limit + 1 motora verilir: metni codec, demeti
+/// PTT motoru reddeder; limit boyunu ikisi de kabul eder.
+#[test]
+fn input_limits_are_the_engines_own_limits() {
+    let _serial = support::serial();
+    let root = TempDir::new("limits");
+    let phones = support::provision(root.path(), &[ALICE, BOB]);
+    let hub = MemoryHub::new();
+    let (_bob, _bob_events) = support::threaded(&phones[BOB], &hub);
+    let (mut alice, mut events) = support::manual(&phones[ALICE], &hub, support::system_clock());
+    let limits = alice.limits;
+    let node = &mut alice.node;
+    connect_from_manual(node, &mut events, BOB);
+    let to_bob = peer_of(node, BOB);
+    assert_eq!(limits.max_text_bytes, D14_MAX_TEXT_BYTES, "plan D14");
+
+    let over = call(node, |reply| Command::SendText {
+        peer: to_bob,
+        text: TEXT_CHAR.repeat(limits.max_text_bytes + 1),
+        reply,
+    });
+    assert!(
+        matches!(
+            over,
+            Err(NodeError::Messenger(MessengerError::Encode(
+                EncodeError::BodyTooLarge { .. }
+            )))
+        ),
+        "{over:?}"
+    );
+    call(node, |reply| Command::SendText {
+        peer: to_bob,
+        text: TEXT_CHAR.repeat(limits.max_text_bytes),
+        reply,
+    })
+    .expect("limit boyundaki metni motor kabul eder");
+
+    let stream = call(node, |reply| Command::PttOpen {
+        peer: to_bob,
+        codec: PttCodec::Lyra,
+        bundle_ms: BUNDLE_MS,
+        reply,
+    })
+    .expect("ptt_open");
+    let over = call(node, |reply| Command::PttPush {
+        stream,
+        payload: vec![BUNDLE_BYTE; limits.max_bundle_bytes + 1],
+        reply,
+    });
+    assert!(
+        matches!(
+            over,
+            Err(NodeError::Ptt(PttError::PayloadTooLarge { payload_len, max_payload_len }))
+                if payload_len == limits.max_bundle_bytes + 1
+                    && max_payload_len == limits.max_bundle_bytes
+        ),
+        "{over:?}"
+    );
+    call(node, |reply| Command::PttPush {
+        stream,
+        payload: vec![BUNDLE_BYTE; limits.max_bundle_bytes],
+        reply,
+    })
+    .expect("limit boyundaki demeti motor kabul eder");
+}
+
+/// Madde 4: üst düzey `epoch` hazır oturumların EN DÜŞÜĞÜDÜR. Alice bob'a başlatandır (epoch 1),
+/// carol'a yanıtlayandır ve carol henüz veri yollamadı (epoch 0) → `Some(0)`; carol'ın ilk
+/// epoch-1 paketinden sonra `Some(1)`.
+#[test]
+fn top_level_epoch_is_the_lowest_ready_session_epoch() {
+    let _serial = support::serial();
+    let root = TempDir::new("epoch-min");
+    let phones = support::provision(root.path(), &[ALICE, BOB, CAROL]);
+    let hub = MemoryHub::new();
+    let (_bob, _bob_events) = support::threaded(&phones[BOB], &hub);
+    let (mut alice, mut alice_events) =
+        support::manual(&phones[ALICE], &hub, support::system_clock());
+    let (mut carol, mut carol_events) =
+        support::manual(&phones[CAROL], &hub, support::system_clock());
+
+    connect_from_manual(&mut alice.node, &mut alice_events, BOB);
+    // carol başlatır; carol SÜRÜLMEZ: RESPONSE'u işlemez, veri yollayamaz.
+    let to_alice = peer_of(&carol.node, ALICE);
+    call(&mut carol.node, |reply| Command::Connect {
+        peer: to_alice,
+        reply,
+    })
+    .expect("connect");
+    support::until("alice: Connected(carol)", || {
+        alice.node.turn();
+        alice_events.take(connected(CAROL))
+    });
+    let view = alice.node.snapshot();
+    assert_eq!(
+        peer_state(&view, BOB),
+        (LinkState::Connected, Some(1)),
+        "{view:?}"
+    );
+    assert_eq!(
+        peer_state(&view, CAROL),
+        (LinkState::Connected, Some(0)),
+        "{view:?}"
+    );
+    assert_eq!(view.epoch, Some(0), "en düşük değer: {view:?}");
+
+    support::until("carol: Connected(alice)", || {
+        carol.node.turn();
+        carol_events.take(connected(ALICE))
+    });
+    call(&mut carol.node, |reply| Command::SendText {
+        peer: to_alice,
+        text: EPOCH_TEXT.to_owned(),
+        reply,
+    })
+    .expect("metin");
+    support::until("alice: carol oturumu epoch-1", || {
+        alice.node.turn();
+        carol.node.turn();
+        (peer_state(&alice.node.snapshot(), CAROL) == (LinkState::Connected, Some(1))).then_some(())
+    });
+    assert_eq!(alice.node.snapshot().epoch, Some(1));
+}
+
+/// Madde 5: alındıyla (`FILE_RECEIPT(ok)`) biten giden aktarımın son olayı zincir sırasıyla gelir —
+/// aynı turda, ondan SONRA işlenen kaydın olayından önce (`handle`'dan hemen sonra boşaltma).
+#[test]
+fn receipt_completion_is_reported_in_chain_order_within_the_turn() {
+    let _serial = support::serial();
+    let root = TempDir::new("chain-order");
+    let phones = support::provision(root.path(), &[ALICE, BOB]);
+    let hub = MemoryHub::new();
+    let (bob, mut bob_events) = support::threaded(&phones[BOB], &hub);
+    let (mut alice, mut events) = support::manual(&phones[ALICE], &hub, support::system_clock());
+    let node = &mut alice.node;
+    connect_from_manual(node, &mut events, BOB);
+    let chunk_len = node.messenger.limits().max_file_chunk_bytes();
+    let source = root.path().join("sirali.bin");
+    fs::write(&source, file_of_chunks(chunk_len)).expect("kaynak dosya");
+    let file = send_file(node, BOB, &source);
+    support::until("alice: Sent", || {
+        node.turn();
+        events.take(progress(file, FileStage::Sent))
+    });
+
+    // Bob dosyayı aldı: `FILE_RECEIPT(ok)` olaydan ÖNCE Transport'una verildi; metin aynı oturumda
+    // ondan sonra gider. Alice ikisini de işlemeden teslim kuyruğunda tutar.
+    bob_events.wait("bob: FileReceived(alice)", |event| {
+        matches!(event, NodeEvent::FileReceived { peer_id, .. } if peer_id == ALICE).then_some(())
+    });
+    let text_id = bob.send_text(ALICE, AFTER_RECEIPT_TEXT).expect("metin");
+    queue_records(node, RECEIPT_AND_TEXT);
+    let _ = events.drain_all();
+    node.turn();
+    let order = events.drain_all();
+    let delivered = order
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                NodeEvent::FileProgress { file: got, stage: FileStage::Delivered, .. }
+                    if *got == file
+            )
+        })
+        .expect("Delivered aynı turda");
+    let text = order
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                NodeEvent::TextReceived { peer_id, msg_id, .. }
+                    if peer_id == BOB && *msg_id == text_id
+            )
+        })
+        .expect("metin aynı turda");
+    assert!(delivered < text, "zincir sırası: {order:?}");
 }
