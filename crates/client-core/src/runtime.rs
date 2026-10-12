@@ -2130,6 +2130,10 @@ pub struct ServerHandle {
     local_addr: SocketAddr,
     /// [K4G-01] Bağlam-önce dağıtım sayaçları (bkz. [`ServerHandle::ctx_dispatch_stats`]).
     ctx_counters: CtxDispatchCounters,
+    /// [K4G-11] [`ServerStats::delivery_dropped`]'ın canlı aynası (salt gözlem; bkz.
+    /// [`ServerHandle::delivery_dropped`]). Görev her döngü turunun başında sayacın o anki değerini
+    /// buraya yazar; sayaç ve davranış değişmez.
+    delivery_dropped: Arc<AtomicU64>,
 }
 
 impl ServerEndpoint {
@@ -2195,6 +2199,7 @@ impl ServerEndpoint {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         // Kapasite 1 + onay-oneshot: mark_t0 görev işleyene dek bekler (ölçüm sözleşmesi).
         let (t0_tx, t0_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
+        let delivery_dropped = Arc::new(AtomicU64::new(0));
         let task = tokio::spawn(server_task(
             sock,
             cfg,
@@ -2205,6 +2210,7 @@ impl ServerEndpoint {
             t0_rx,
             expected,
             ctx_counters.clone(),
+            Arc::clone(&delivery_dropped),
         ));
         Ok(ServerHandle {
             delivery_rx,
@@ -2213,6 +2219,7 @@ impl ServerEndpoint {
             task,
             local_addr,
             ctx_counters,
+            delivery_dropped,
         })
     }
 }
@@ -2248,6 +2255,16 @@ impl ServerHandle {
     #[must_use]
     pub fn ctx_dispatch_stats(&self) -> CtxDispatchStats {
         self.ctx_counters.snapshot()
+    }
+
+    /// [K4G-11] Salt-okunur: teslim kanalı doluyken düşen teslim sayısı —
+    /// [`ServerStats::delivery_dropped`] ile AYNI sayaç, kapanışı beklemeden okunur (bileşim kökünün
+    /// `delivery_channel_drops`'u). Değer, görevin son döngü turunun başında yayımladığıdır: en çok
+    /// bir tur (olay yoksa ≤ alıcı ACK zamanlayıcısı periyodu) geride kalabilir; kapanıştaki kesin
+    /// değer [`ServerHandle::shutdown`]'ın döndürdüğü istatistiktir. Monoton.
+    #[must_use]
+    pub fn delivery_dropped(&self) -> u64 {
+        self.delivery_dropped.load(Ordering::Relaxed)
     }
 
     /// Kapanış → istatistik.
@@ -2679,6 +2696,8 @@ fn fec_ingest(
 
 /// Server görevi: bench `serve_loop` şekli + bounded peers + idle-emeklilik + teslim akışı.
 /// [K4G-01] `expected` + `ctx_counters`: bağlam-önce dağıtımın girdileri (bkz. `bind_expecting`).
+/// [K4G-11] `delivery_dropped_seen`: `stats.delivery_dropped`'ın salt-gözlem aynası
+/// ([`ServerHandle::delivery_dropped`]); yalnız yazılır, görev onu OKUMAZ.
 #[allow(clippy::too_many_arguments)]
 async fn server_task(
     sock: UdpSocket,
@@ -2690,6 +2709,7 @@ async fn server_task(
     mut t0_rx: mpsc::Receiver<oneshot::Sender<()>>,
     expected: ExpectedSessions,
     ctx_counters: CtxDispatchCounters,
+    delivery_dropped_seen: Arc<AtomicU64>,
 ) -> ServerStats {
     // [K4G-01 / D1 (v1.1)] HubChannel dağıtıcısı: Session durumunun hiçbirini TUTMAZ (yalnız
     // sayaç).
@@ -2721,6 +2741,9 @@ async fn server_task(
     let idle_hold_ns = u64::try_from(cfg.idle_hold.as_nanos()).unwrap_or(u64::MAX);
 
     loop {
+        // [K4G-11] Salt gözlem: sayacın o anki değeri yayımlanır (önceki turun bütün `continue`
+        // yolları dahil). Sayaç yalnız `push_delivery`'de artar; burada okunur, değişmez.
+        delivery_dropped_seen.store(stats.delivery_dropped, Ordering::Relaxed);
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             // Ölçüm-t0 (ServerHandle::mark_t0): wire sayaçları sıfır, ALICI DURUMU KORUNUR.
@@ -3271,5 +3294,78 @@ mod ctx_first_tests {
         // Kapanış dışında hiçbir şey yuva düşürmez (idempotent).
         assert_eq!(retire_closed_slots(&mut peers, &expected), 0);
         assert_eq!(peers.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod delivery_dropped_mirror_tests {
+    //! [K4G-11] [`ServerHandle::delivery_dropped`] salt-okunur erişimcisinin sınaması: değer
+    //! [`ServerStats::delivery_dropped`] ile AYNI sayaçtır ve kapanışı beklemeden okunur. Bekleme
+    //! süreleri yalnız beklenen olayın ÜST SINIRIDIR (koşul sayaç değeridir, zaman değil).
+
+    use super::*;
+    use crate::seam::IdentitySeam;
+
+    /// Beklenen sayaç değerinin üst süre sınırı.
+    const WAIT: Duration = Duration::from_secs(20);
+    /// Yoklama adımı.
+    const TICK: Duration = Duration::from_millis(5);
+    /// Taşırılan teslim kanalının kapasitesi (en küçük geçerli değer).
+    const TINY_QUEUE: usize = 1;
+    /// Gönderilen birim: kanal kapasitesinden büyük olmalı ki teslimler taşsın.
+    const UNITS: u64 = 16;
+
+    async fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while tokio::time::Instant::now() < deadline {
+            if done() {
+                return true;
+            }
+            tokio::time::sleep(TICK).await;
+        }
+        done()
+    }
+
+    /// Teslimler BİLEREK drenaj edilmez: kanala ilk birim girer, kalan `UNITS − 1` birim sayılarak
+    /// düşer (her birim ilk teslimde tam bir kez `push_delivery`'ye gelir). Ayna bu değere
+    /// kapanıştan ÖNCE ulaşır ve kapanış istatistiğiyle aynıdır.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_value_equals_the_overflow_counter_before_shutdown() {
+        let server = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().expect("adres"),
+            RuntimeConfig {
+                delivery_queue: TINY_QUEUE,
+                ..RuntimeConfig::default()
+            },
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("server bind");
+        assert_eq!(server.delivery_dropped(), 0, "taşma yokken sıfır");
+        let client = ClientEndpoint::connect(
+            server.local_addr(),
+            RuntimeConfig::default(),
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("client connect");
+        for i in 0..UNITS {
+            client
+                .send(format!("taşma-{i}").into_bytes())
+                .expect("offer");
+        }
+        let expected = UNITS - TINY_QUEUE as u64;
+        assert!(
+            wait_until(|| server.delivery_dropped() == expected).await,
+            "canlı değer kapanıştan önce {expected} olmalı, gelen {}",
+            server.delivery_dropped()
+        );
+        client.shutdown().await;
+        let stats = server.shutdown().await;
+        assert_eq!(
+            stats.delivery_dropped, expected,
+            "erişimci ve kapanış istatistiği aynı sayaçtır: {stats:?}"
+        );
+        assert_eq!(stats.delivered, TINY_QUEUE as u64, "{stats:?}");
     }
 }
