@@ -45,8 +45,8 @@ use common::mock_transport::MockTransport;
 use kama_app::clock::MonotonicClock;
 use kama_app::codec::limits::{APP_RECORD_HEADER_BYTES, SIGNALING_BLOB_PREFIX_BYTES};
 use kama_app::codec::{decode, encode, AmpLimits, AppMessage, MsgType, ReceiptKind};
-use kama_app::file_transfer::{FileTransfer, FILE_RECEIPT_TTL};
-use kama_app::messaging::{Messenger, MessengerEvent, MAX_OUTBOX_UNACKED};
+use kama_app::file_transfer::FileTransfer;
+use kama_app::messaging::{ConnectState, Messenger, MessengerEvent};
 use kama_app::ptt::{Ptt, PttEvent};
 use kama_app::signaling::{
     max_blob_bytes, Signaling, SignalingError, SignalingEvent, SignalingId, SignalingStats,
@@ -664,7 +664,8 @@ fn round_trip_delivers_opaque_blobs_in_order_and_reliably() {
 /// A2'nin 0x09 sınırı: `max_blob_bytes` = birim − kayıt başlığı − `blob_len` öneki (bağımsız
 /// türetim). Bir bayt fazlası tipli `TooLarge`; Transport'a hiçbir şey verilmez, kayda bir şey girmez,
 /// kimlik tüketilmez; boyut oturum denetiminden ÖNCE denetlenir. Tam sınır: kayıt birime tam sığar ve
-/// karşıya ulaşır.
+/// karşıya ulaşır. Denetim sırası: eşin yeniden sunulacak bir kaydı VARKEN de `TooLarge` hiçbir şey
+/// göndermez (yeniden sunum denetiminden önce döner); kayıt sonraki `pump`'ta sunulur.
 ///
 /// `ea0d3909`'da UYARLANAMAZ: `SignalingError::TooLarge` ve `max_blob_bytes` yoktu (codec'in
 /// `EncodeError::BodyTooLarge`'ı vardı — o kısım AYNI DAVRANIŞ).
@@ -699,10 +700,24 @@ fn oversize_blob_is_a_typed_error_and_reaches_no_transport() {
         "kayıt birime tam sığdı"
     );
     assert_eq!(duo.bob.turn(), vec![received(ALICE, &exact)]);
+    // Denetim sırası: yeni oturum senkron benimsenir, `exact` yeniden sunulmayı bekler.
+    let new = duo.supersede();
+    assert_eq!(
+        duo.alice.messenger.connect(BOB),
+        Ok(ConnectResult::Ready(new))
+    );
+    assert_eq!(duo.alice.send(BOB, &over), too_large);
+    assert!(
+        duo.blobs_on(Side::Alice, new).is_empty(),
+        "boyut reddi bekleyen yeniden sunumu tetiklemedi"
+    );
+    duo.alice.pump();
+    assert_eq!(duo.blobs_on(Side::Alice, new), vec![exact]);
 }
 
-/// Hazır oturumu olmayan eşe gönderim tipli `NoSession`: eş hiç görülmedi, oturumu henüz kurulmadı ya
-/// da `Closed` okundu. Hiçbirinde Transport'a bir şey verilmez ve kimlik tüketilmez.
+/// Hazır oturumu olmayan eşe gönderim tipli `NoSession`: (i) eş hiç görülmedi; (ii) eş GÖRÜLDÜ —
+/// `Messenger::connect` bekleyen bir niyet açtı (`ConnectState::Connecting`) — ama oturumu henüz
+/// kurulmadı; (iii) `Closed` okundu. Hiçbirinde Transport'a bir şey verilmez ve kimlik tüketilmez.
 ///
 /// `ea0d3909`'da UYARLANAMAZ: `SignalingError` yoktu.
 #[test]
@@ -711,12 +726,23 @@ fn send_without_a_ready_session_is_a_typed_error() {
     assert_eq!(
         duo.alice.send(CAROL, b"x"),
         Err(SignalingError::NoSession),
-        "hiç görülmemiş eş"
+        "(i) hiç görülmemiş eş"
+    );
+    assert!(matches!(
+        duo.alice.messenger.connect(BOB),
+        Ok(ConnectResult::Pending(_))
+    ));
+    assert!(
+        matches!(
+            duo.alice.messenger.connect_state(BOB),
+            ConnectState::Connecting { .. }
+        ),
+        "eş görüldü: bekleyen niyet"
     );
     assert_eq!(
         duo.alice.send(BOB, b"x"),
         Err(SignalingError::NoSession),
-        "oturumu kurulmamış eş"
+        "(ii) görülmüş, oturumu kurulmamış eş"
     );
     let handle = duo.link.borrow_mut().establish();
     assert_eq!(
@@ -738,7 +764,7 @@ fn send_without_a_ready_session_is_a_typed_error() {
     assert_eq!(
         duo.alice.send(BOB, b"x"),
         Err(SignalingError::NoSession),
-        "Closed okundu"
+        "(iii) Closed okundu"
     );
     assert_eq!(duo.sent(Side::Alice).len(), 1, "yalnız ilk blob");
     assert_eq!(duo.alice.signaling.stats().blobs_sent, 1);
@@ -1042,6 +1068,64 @@ fn refused_resend_is_retried_later_and_accepted_once() {
     );
 }
 
+/// Eski tutamaç GEÇİCİ rettir: Alice'in Messenger'ı yeni oturumu (h2) senkron benimser, ama Transport o
+/// arada bir supersession daha görmüştür (h3; olaylar henüz okunmadı). `pump`'ın h2'ye yeniden sunumu
+/// `SessionSuperseded` alır — kayıt DÜŞMEZ (`records_failed` = 0); `Ready(h3)` okununca blob h3'e TAM
+/// BİR KEZ sunulur ve Bob onu alır. Eski tutamaçtaki ret iki kezdir: `pump`'ta ve `Ready(h2)`
+/// geçirilirken.
+///
+/// `ea0d3909`'da KIRMIZI (uyarlansa da): yeniden sunum yoktu (h3'e blob gitmez).
+#[test]
+fn a_resend_refused_by_a_stale_handle_waits_for_the_newer_session() {
+    let (mut duo, first) = Duo::connected();
+    duo.alice.send(BOB, b"b1").expect("gönderilir");
+    duo.take_inbox(Side::Bob);
+    let second = duo.supersede();
+    assert_eq!(
+        duo.alice.messenger.connect(BOB),
+        Ok(ConnectResult::Ready(second))
+    );
+    let third = duo.supersede();
+    duo.alice.pump();
+    let stats = duo.alice.signaling.stats();
+    assert_eq!(
+        (stats.resend_refused, stats.records_failed),
+        (1, 0),
+        "SessionSuperseded geçici: kayıt kaldı"
+    );
+    assert_eq!(duo.alice.signaling.pending_count(BOB), 1);
+    assert_eq!(
+        duo.alice.turn(),
+        vec![
+            session(SessionEvent::Ready(second, BOB)),
+            session(SessionEvent::Closed(first, CloseReason::Superseded)),
+            session(SessionEvent::Ready(third, BOB)),
+            session(SessionEvent::Closed(second, CloseReason::Superseded)),
+        ]
+    );
+    assert!(duo.blobs_on(Side::Alice, second).is_empty());
+    assert_eq!(duo.blobs_on(Side::Alice, third), vec![b"b1".to_vec()]);
+    let stats = duo.alice.signaling.stats();
+    assert_eq!(
+        (
+            stats.resend_refused,
+            stats.resent_on_new_session,
+            stats.records_failed
+        ),
+        (2, 1, 0)
+    );
+    assert_eq!(
+        duo.bob.turn(),
+        vec![
+            session(SessionEvent::Ready(second, ALICE)),
+            session(SessionEvent::Closed(first, CloseReason::Superseded)),
+            session(SessionEvent::Ready(third, ALICE)),
+            session(SessionEvent::Closed(second, CloseReason::Superseded)),
+            received(ALICE, b"b1"),
+        ]
+    );
+}
+
 /// "Oturum başına bir kez": aynı kayıtlar art arda İKİ supersession görür; her yeni tutamaca her blob
 /// TAM BİR KEZ gider, önceki tutamaca bir daha verilmez (`resent_on_new_session` = 2 blob × 2 oturum).
 /// Bob her oturumdan blob'ları alır (dedup yok).
@@ -1129,13 +1213,12 @@ fn a_closed_session_keeps_the_record_for_the_next_session() {
 
 /// Ömür ilk KABUL anından sayılır ve yeniden sunum UZATMAZ: blob ömrünün bir adım öncesine dek her yeni
 /// oturuma sunulur; tam sınırda (ilk kabulden `SIGNALING_RESEND_TTL` sonra) budanır ve sunulmaz — o
-/// arada yeniden sunulmuş olsa da. Oturum değişimi olmadan da `pump` ömrü dolanı budar. Sabit kilidi:
-/// öneri değeri `FILE_RECEIPT_TTL` (60 s).
+/// arada yeniden sunulmuş olsa da. Oturum değişimi olmadan da `pump` ömrü dolanı budar. Değer kilidi:
+/// öneri 60 s (DUR-K4G-14a; sahip kararı gelene dek değişmez).
 ///
 /// `ea0d3909`'da UYARLANAMAZ: yeniden sunum kaydı, ömrü ve `pending_count` yoktu.
 #[test]
 fn resend_record_expires_after_the_ttl_from_first_acceptance() {
-    assert_eq!(SIGNALING_RESEND_TTL, FILE_RECEIPT_TTL);
     assert_eq!(SIGNALING_RESEND_TTL, Duration::from_secs(60));
     let (mut duo, first) = Duo::connected();
     duo.alice.send(BOB, b"b1").expect("gönderilir");
@@ -1193,15 +1276,54 @@ fn resend_record_expires_after_the_ttl_from_first_acceptance() {
     assert_eq!(duo.alice.signaling.stats().records_expired, 2);
 }
 
+/// Budama bir eşin süresi dolmuş BÜTÜN kayıtlarını düşürür, yalnız ilkini değil: aynı eşe üç blob ömrün
+/// başında, bir blob yarı ömürde gönderilir ve hepsi eski oturumla yolda kaybolur; ilk üçünün ömrü
+/// dolduğunda yeni oturuma YALNIZ canlı olan sunulur (`records_expired` = 3).
+///
+/// `ea0d3909`'da UYARLANAMAZ: yeniden sunum kaydı ve ömrü yoktu.
+#[test]
+fn every_expired_record_is_pruned_and_only_live_ones_are_resent() {
+    let (mut duo, old) = Duo::connected();
+    for bytes in [b"x1", b"x2", b"x3"] {
+        duo.alice.send(BOB, bytes).expect("gönderilir");
+    }
+    let half = SIGNALING_RESEND_TTL / 2;
+    duo.clock.advance(half);
+    duo.alice.send(BOB, b"live").expect("gönderilir");
+    duo.take_inbox(Side::Bob);
+    // İlk üçü tam sınırda (ömür doldu), sonuncusu yarı ömürde.
+    duo.clock.advance(SIGNALING_RESEND_TTL - half);
+    assert_eq!(duo.alice.signaling.pending_count(BOB), 1);
+    let new = duo.supersede();
+    assert_eq!(
+        duo.alice.turn(),
+        vec![
+            session(SessionEvent::Ready(new, BOB)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        ]
+    );
+    assert_eq!(duo.blobs_on(Side::Alice, new), vec![b"live".to_vec()]);
+    let stats = duo.alice.signaling.stats();
+    assert_eq!((stats.records_expired, stats.resent_on_new_session), (3, 1));
+    assert_eq!(
+        duo.bob.turn(),
+        vec![
+            session(SessionEvent::Ready(new, ALICE)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+            received(ALICE, b"live"),
+        ]
+    );
+}
+
 /// Eş başına tavan: tavan + 1 blob gönderilir (hepsi eski oturumla yolda kaybolur); gönderim hiç
 /// reddedilmez, EN ESKİ kayıt düşer (`records_evicted` = 1). Supersession'da yalnız kalan kayıtlar,
 /// gönderim sırasıyla, her biri TAM BİR KEZ yeniden sunulur — Bob'un teslim kuyruğu tavanı yeniden
-/// sunumu geri basınçla turlara bölse de. Sabit kilidi: öneri değeri `MAX_OUTBOX_UNACKED` (256).
+/// sunumu geri basınçla turlara bölse de. Değer kilidi: öneri 256 (DUR-K4G-14a; sahip kararı gelene
+/// dek değişmez).
 ///
 /// `ea0d3909`'da UYARLANAMAZ: yeniden sunum kaydı ve tavanı yoktu.
 #[test]
 fn resend_record_is_bounded_per_peer_and_the_oldest_goes_first() {
-    assert_eq!(SIGNALING_RESEND_PER_PEER, MAX_OUTBOX_UNACKED);
     assert_eq!(SIGNALING_RESEND_PER_PEER, 256);
     let (mut duo, old) = Duo::connected();
     for n in 0..=SIGNALING_RESEND_PER_PEER {

@@ -26,7 +26,14 @@
 //! }
 //! files.pump(&mut m);
 //! signaling.pump(&mut m);
+//! while let Some(fe) = files.poll_event() { … }
 //! ```
+//!
+//! **Çağrı sözleşmesi:** bir motor TEK bir Messenger'la kullanılır — [`Signaling::send`],
+//! [`Signaling::handle`] ve [`Signaling::pump`]'a her çağrıda aynı Messenger verilir
+//! (`FileTransfer::send_file`'daki `messenger` kuralıyla aynı). Yeniden sunum kaydı o Messenger'ın
+//! oturum tutamaçlarına dayanır: başka bir Messenger'la yapılan çağrı kaydı yanlış Transport'un
+//! oturumuna sunabilir. Bu sözleşme dışıdır; tablonun bellek tavanı o durumda da tutar ("Tablolar").
 //!
 //! # Zincire bağlanış
 //!
@@ -54,8 +61,9 @@
 //! tespit edemez ve her geçerli blob'u — aynı baytlarla yeniden gelen dahil — teslim eder.
 //! Messenger'ın `msg_id` dedup penceresi bu tipe UYGULANMAZ. Yinelenen blob'u medya motoru idempotent
 //! işler (signaling-seam-v0 §3: at-least-once, duplicate mümkün; sıra garanti edilmez). Alıcı, eşin
-//! güncel oturumu olmasa da (ör. eski oturumun yalnız-alım drain'inden geç teslim) blob'u teslim eder:
-//! içerik opaktır, geçerliliğine medya motoru karar verir.
+//! güncel oturumu olmasa da blob'u teslim eder — ör. eşin oturumu `Closed` ile bittikten sonra emekli
+//! tutamaçtan gelen geç blob (supersession drain'inde ise eşin güncel oturumu VARDIR): içerik opaktır,
+//! geçerliliğine medya motoru karar verir.
 //!
 //! # Oturum değişimi — yeniden sunum (S1 K7)
 //!
@@ -82,12 +90,18 @@
 //! bırakılacağını tanımlamaz (alındı yok). Uygulanan öneri: kayıt ilk kabulden itibaren
 //! [`SIGNALING_RESEND_TTL`] tutulur — yeniden sunum ömrü UZATMAZ, blob'un teslim çabası gönderimden
 //! itibaren süreyle sınırlıdır (signaling-seam-v0 §3 "deadline-bounded reliable") —; eş başına en çok
-//! [`SIGNALING_RESEND_PER_PEER`], toplam en çok `MAX_PEERS × SIGNALING_RESEND_PER_PEER` kayıt; tavan
-//! dolunca en eski kayıt yer açar. Yeni gönderim tavan yüzünden REDDEDİLMEZ: onaylanamayan eski
-//! kayıtlar yeni sinyalleşmeyi ömürleri boyunca durdurmamalıdır. Ömrü dolmuş ya da düşmüş blob yeniden
-//! sunulmaz; kaybını medya motorunun kendi uygulama-ACK'i karşılar (signaling-seam-v0 §3). İki sabit
-//! KALİBRASYON SEÇİMİDİR, türetilmiş değildir: yeni sayı icat edilmedi, değerler mevcut sabitlerden
-//! yeniden kullanıldı (sabit belgeleri).
+//! [`SIGNALING_RESEND_PER_PEER`], toplam en çok `MAX_PEERS × SIGNALING_RESEND_PER_PEER` kayıt; eşin
+//! tavanı dolunca eşin KENDİ en eski kaydı yer açar. Yeni gönderim tavan yüzünden REDDEDİLMEZ:
+//! onaylanamayan eski kayıtlar yeni sinyalleşmeyi ömürleri boyunca durdurmamalıdır. Ömrü dolmuş ya da
+//! düşmüş blob yeniden sunulmaz; kaybını medya motorunun kendi uygulama-ACK'i karşılar
+//! (signaling-seam-v0 §3). İki sabit KALİBRASYON SEÇİMİDİR, türetilmiş değildir: değerleri mevcut iki
+//! sabitin değerlerinden SEÇİLDİ, onlara bağlı değildir (sabit belgeleri). Öneri işareti YALNIZ bu
+//! tutma kuralını (ömür, ömrün başı, tavanlar, taşma politikası) kapsar; yukarıdaki yeniden sunum
+//! mekanizması kartın "supersession'da yeniden gönderim" maddesinin K4G-08 deseniyle uygulanmasıdır.
+//!
+//! Kayıt BELLEKTEDİR (plan D8: `AppStore` yalnız sayaç / dedup / outbox taşır): süreç yeniden başlarsa
+//! tutulan blob'lar yeniden sunulmaz (PoC-KAPSAM-001 K2: sahada uygulama yeniden başlatılmaz). Kartın
+//! "outbox üzerinden" ifadesinden fark budur: Messenger outbox'ı kalıcıdır (K4G-07), bu kayıt değildir.
 //!
 //! Süre olay üretmez ve zamanlayıcı yoktur: saat ([`MonotonicClock`]) yalnız gönderimde (ömrün başı),
 //! yeniden sunum kararından önceki budamada (`send`, `pump`, `Ready`) ve
@@ -106,10 +120,11 @@
 //! # Tablolar (SR-AUDIT-001)
 //!
 //! Tek tablo yeniden sunum kaydıdır: eş başına ≤ [`SIGNALING_RESEND_PER_PEER`], toplam ≤
-//! `MAX_PEERS × SIGNALING_RESEND_PER_PEER` (türetilmiş; motor birden çok Messenger'la kullanılsa da
-//! sınır tutar); her kayıt ≤ `max_plaintext_unit_bytes` bayttır. Tek ekleme noktasında sınır eklemeden
-//! ÖNCE denetlenir: önce süresi dolanlar budanır, sonra eşin ya da tablonun en eski kaydı yer açar.
-//! Boş eş girdisi tutulmaz. Alıcı tarafında tablo ve kuyruk YOKTUR.
+//! `MAX_PEERS × SIGNALING_RESEND_PER_PEER` (türetilmiş). Çağrı sözleşmesine uyan motorda toplam zaten
+//! aşılmaz — kayıtlı eşler tek Messenger'ın ≤ `MAX_PEERS` eşidir —; toplam denetimi, sözleşme
+//! çiğnense de belleği sınırlı tutan savunmadır. Her kayıt ≤ `max_plaintext_unit_bytes` bayttır. Tek
+//! ekleme noktasında sınır eklemeden ÖNCE denetlenir: önce süresi dolanlar budanır, sonra eşin kendi ya
+//! da tablonun en eski kaydı yer açar. Boş eş girdisi tutulmaz. Alıcı tarafında tablo ve kuyruk YOKTUR.
 //!
 //! # Bilinen sınırlar (beyanlı)
 //!
@@ -123,6 +138,10 @@
 //!   kendi sırasını tutar).
 //! * Yeniden sunum yalnız `handle(Ready)` / `send` / `pump` denetimlerindedir: trafik olmasa da `pump`
 //!   periyodik çağrılmalıdır.
+//! * Yeniden sunum kaydı bellektedir: süreç yeniden başlarsa tutulan blob'lar yeniden sunulmaz
+//!   (PoC-KAPSAM-001 K2; D8). Kartın "outbox üzerinden" ifadesinden fark: Messenger outbox'ı kalıcıdır.
+//! * Bir motor tek bir Messenger'la kullanılır ("Çağrı sözleşmesi"); başka bir Messenger'la yeniden
+//!   sunum doğru değildir.
 //! * Tutma kuralı ve iki sabiti ÖNERİDİR (DUR-K4G-14a): sahip kararıyla değişebilir.
 //!
 //! # Gizlilik
@@ -143,8 +162,7 @@ use kama_contracts::s1::{
 use crate::clock::MonotonicClock;
 use crate::codec::limits::SIGNALING_BLOB_PREFIX_BYTES;
 use crate::codec::{self, AmpLimits, AppMessage, EncodeError};
-use crate::file_transfer::FILE_RECEIPT_TTL;
-use crate::messaging::{Messenger, MessengerEvent, MAX_OUTBOX_UNACKED, MAX_PEERS};
+use crate::messaging::{Messenger, MessengerEvent, MAX_PEERS};
 
 /// Motor-tekil, kesin artan yerel blob tutamacı ([`Signaling::send`]'in dönüşü). Telde YOKTUR,
 /// kalıcı DEĞİLDİR ve hiçbir zaman yeniden verilmez (modül belgesi, "`SignalingId`").
@@ -164,26 +182,30 @@ pub const FIRST_SIGNALING_ID: SignalingId = SignalingId(0);
 
 /// Yeniden sunum kaydının ömrü — kaydın ilk KABUL anından itibaren; yeniden sunum uzatmaz.
 ///
-/// **ÖNERİ / KALİBRASYON SEÇİMİ — sahip kararı bekliyor (DUR-K4G-14a); türetilmiş DEĞİLDİR.** Değer
-/// [`FILE_RECEIPT_TTL`]'den (60 s, plan D6) yeniden kullanıldı, yeni sayı icat edilmedi: kama-app'te
-/// gönderenin onaysız kalmış bir gönderimle ilgilenmeyi bıraktığı mevcut tek süre. Kurulum hedefi
-/// ≤ 1 s olan bir sinyalleşme blob'u bundan eskiyse medya motorunun kendi durumu onu çoktan aşmıştır.
-/// Seçilmeyen seçenek (sahibe açık): `PTT_STREAM_IDLE_TTL` (120 s) — PoC K8'in 60 s kesintisini
-/// yeniden bağlanma payıyla kapsar, ama IP değişiminden (K4) sonra eski adresli blob'ları da yeniden
-/// sunar.
-pub const SIGNALING_RESEND_TTL: Duration = FILE_RECEIPT_TTL;
-
-/// Eş başına yeniden sunum kaydı tavanı; dolunca eşin en eski kaydı yer açar.
+/// **KALİBRASYON — sahip kararı bekliyor (DUR-K4G-14a); türetilmiş DEĞİLDİR.** 60 s değeri
+/// [`FILE_RECEIPT_TTL`](crate::file_transfer::FILE_RECEIPT_TTL)'den SEÇİLDİ (plan D6): kama-app'te
+/// gönderenin onaysız kalmış bir gönderimle ilgilenmeyi bıraktığı mevcut tek süre; yeni sayı icat
+/// edilmedi. Sabit ona BAĞLI değildir: o değişirse bu değişmez. Kurulum hedefi ≤ 1 s olan bir
+/// sinyalleşme blob'u bundan eskiyse medya motorunun kendi durumu onu çoktan aşmıştır.
 ///
-/// **ÖNERİ / KALİBRASYON SEÇİMİ — sahip kararı bekliyor (DUR-K4G-14a); türetilmiş DEĞİLDİR.** Değer
-/// [`MAX_OUTBOX_UNACKED`]'ten (S7, 256) yeniden kullanıldı, yeni sayı icat edilmedi: eş başına
-/// Transport'un kabul ettiği ama onayı gelmemiş kayıtların mevcut tavanı (TEXT). Bellek profili
-/// Messenger outbox'ıyla aynıdır (kayıt ≤ `max_plaintext_unit_bytes`).
-pub const SIGNALING_RESEND_PER_PEER: usize = MAX_OUTBOX_UNACKED;
+/// Seçilmeyen seçenek (sahibe açık): 120 s (`PTT_STREAM_IDLE_TTL` değeri) — PoC K8'in 60 s kesintisini
+/// yeniden bağlanma payıyla kapsar (60 s'de kesintiden hemen önce gönderilmiş blob kesinti sonrası
+/// oturumda sunulmaz). Eski içerikli bir blob'un — ör. IP değişiminden (K4) önceki adresleri taşıyan —
+/// sonraki oturuma yeniden sunulması İKİ değerde de mümkündür; 120 s bu pencereyi iki katına çıkarır.
+pub const SIGNALING_RESEND_TTL: Duration = Duration::from_secs(60);
+
+/// Eş başına yeniden sunum kaydı tavanı; dolunca eşin KENDİ en eski kaydı yer açar.
+///
+/// **KALİBRASYON — sahip kararı bekliyor (DUR-K4G-14a); türetilmiş DEĞİLDİR.** 256 değeri
+/// [`MAX_OUTBOX_UNACKED`](crate::messaging::MAX_OUTBOX_UNACKED)'ten SEÇİLDİ (S7): eş başına
+/// Transport'un kabul ettiği ama onayı gelmemiş kayıtların mevcut tavanı (TEXT); yeni sayı icat
+/// edilmedi. Sabit ona BAĞLI değildir. Bellek profili Messenger outbox'ıyla aynıdır (kayıt ≤
+/// `max_plaintext_unit_bytes`).
+pub const SIGNALING_RESEND_PER_PEER: usize = 256;
 
 /// Yeniden sunum kaydının toplam tavanı — türetilmiş: eş tablosu tavanı × eş başına tavan (yeni sayı
-/// yok). Tek Messenger'la kullanılan motorda kayıtlı eşler zaten ≤ `MAX_PEERS`'tir; tavan motoru
-/// birden çok Messenger'a karşı da sınırlı tutar.
+/// yok). Çağrı sözleşmesine uyan motorda (tek Messenger) kayıtlı eşler o Messenger'ın ≤ `MAX_PEERS`
+/// eşidir ve tavan zaten aşılmaz; denetim, sözleşme çiğnense de belleği sınırlı tutan savunmadır.
 const MAX_SIGNALING_RECORDS: usize = MAX_PEERS * SIGNALING_RESEND_PER_PEER;
 
 // Tavan sıfır olsaydı her yeni kayıt kendini tahliye ederdi.
@@ -309,7 +331,9 @@ pub struct SignalingStats {
     pub records_failed: u64,
 }
 
-/// K4G-14a sinyalleşme motoru. Ayrıntı: modül belgesi.
+/// K4G-14a sinyalleşme motoru. Ayrıntı: modül belgesi. Bir motor TEK bir Messenger'la kullanılır:
+/// [`Signaling::send`], [`Signaling::handle`] ve [`Signaling::pump`]'a her çağrıda aynı Messenger
+/// verilir (modül belgesi, "Çağrı sözleşmesi").
 pub struct Signaling {
     /// [`SIGNALING_RESEND_TTL`]'nin zaman kaynağı.
     clock: Arc<dyn MonotonicClock>,
@@ -366,7 +390,8 @@ impl Signaling {
     /// `SIGNALING_BLOB` kaydını `DeliveryPolicy::Reliable` ile kuyruğa aldı; teslim DEĞİL (S1 K8) —
     /// alındı yoktur. Kayıt sıkıştırılmaz. Eşin yeniden sunulacak kayıtları yeni blob'dan ÖNCE eşin
     /// güncel oturumuna sunulur (modül belgesi, "Oturum değişimi"); onların reddi bu gönderimi
-    /// durdurmaz. Kabul edilen blob yeniden sunum kaydına girer.
+    /// durdurmaz. Kabul edilen blob yeniden sunum kaydına girer. `messenger` motorun her çağrıda
+    /// kullandığı TEK Messenger'dır (modül belgesi, "Çağrı sözleşmesi").
     ///
     /// # Errors
     ///
@@ -591,9 +616,10 @@ const fn is_transient(error: TransportError) -> bool {
 
 #[cfg(test)]
 mod tests {
-    //! Kimlik tükenmesi, yeniden sunum kaydının tavanları (eş başına + toplam, en eski düşer), kalıcı
-    //! retle düşen kayıt, `handle` geçirgenliği ve `Debug` — uçtan uca akış (gidiş-dönüş, boyut,
-    //! oturum değişimi, ömür, dedup yokluğu) `tests/signaling.rs`'te.
+    //! Kimlik tükenmesi (denetim sırası dahil), yeniden sunum kaydının tavanları (eş başına — eşin
+    //! kendi en eskisi — ve toplam), Transport ret sınıflaması (`TransportError`'ın bütün türleri),
+    //! `pump`'ın bütün eşleri denetlemesi, `handle` geçirgenliği ve `Debug` — uçtan uca akış
+    //! (gidiş-dönüş, boyut, oturum değişimi, ömür, dedup yokluğu) `tests/signaling.rs`'te.
     //!
     //! Her testin belgesi, test mantığının `ea0d3909`'daki (K4G-14a öncesi main) sınıfını yazar
     //! (KIRMIZI (uyarlansa da) / UYARLANAMAZ / AYNI DAVRANIŞ; `tests/signaling.rs` başlığı).
@@ -608,13 +634,14 @@ mod tests {
     const TEST_MAX_PLAINTEXT_UNIT_BYTES: u32 = 1024;
 
     /// Her `connect`'e yeni bir hazır oturumla yanıt veren (aynı eşe yeniden `connect` = yeni
-    /// tutamaç: senkron oturum değişimi), kabul ettiği gönderimlerin tutamacını kaydeden ya da
-    /// `refuse` ile reddeden, hiçbir şey teslim etmeyen Transport.
+    /// tutamaç: senkron oturum değişimi), kabul ettiği gönderimlerin tutamacını kaydeden, hiçbir şey
+    /// teslim etmeyen Transport. `refuse`'daki hatalar sıradaki gönderimlere birer birer verilir (tek
+    /// atımlık); reddedilen gönderim kaydedilmez.
     #[derive(Default)]
     struct TestTransport {
         last_handle: u64,
         sent_on: Vec<SessionHandle>,
-        refuse: Option<TransportError>,
+        refuse: VecDeque<TransportError>,
     }
 
     impl KamaTransport for TestTransport {
@@ -644,7 +671,7 @@ mod tests {
             _unit: PreparedUnit,
             _policy: DeliveryPolicy,
         ) -> Result<(), TransportError> {
-            if let Some(error) = self.refuse {
+            if let Some(error) = self.refuse.pop_front() {
                 return Err(error);
             }
             self.sent_on.push(session);
@@ -689,6 +716,14 @@ mod tests {
         messenger
     }
 
+    /// Eşe senkron oturum değişimi: `Messenger::connect` yeni tutamacı olaysız benimser.
+    fn reconnect(messenger: &mut Messenger<TestTransport>, p: PeerRef) -> SessionHandle {
+        match messenger.connect(p) {
+            Ok(ConnectResult::Ready(handle)) => handle,
+            other => panic!("yeni hazır oturum bekleniyordu: {other:?}"),
+        }
+    }
+
     /// Eşin kayıtlarının kimlikleri, kayıt sırasıyla.
     fn ids_of(signaling: &Signaling, p: PeerRef) -> Vec<u64> {
         signaling
@@ -702,8 +737,10 @@ mod tests {
         signaling.records.values().map(VecDeque::len).sum()
     }
 
-    /// `u64` kimlik alanının sonu: son değer verilir, sonra her gönderim tipli `IdExhausted` alır ve
-    /// hiçbir şey gönderilmez — sarma yok, kimlik yeniden verilmez.
+    /// `u64` kimlik alanının sonu: son değer verilir, sonra her gönderim tipli `IdExhausted` alır —
+    /// sarma yok, kimlik yeniden verilmez. Denetim sırası: `IdExhausted` eşin bekleyen yeniden
+    /// sunumundan ÖNCE döner — yeniden sunulacak bir kayıt varken de hiçbir şey gönderilmez; kayıt
+    /// sonraki `pump`'ta sunulur.
     ///
     /// `ea0d3909`'da UYARLANAMAZ: `SignalingId` ve `Signaling` motoru yoktu.
     #[test]
@@ -716,6 +753,7 @@ mod tests {
             .send(&mut messenger, p, b"son")
             .expect("son kimlik kullanılabilir");
         assert_eq!(last.get(), u64::MAX);
+        let second = reconnect(&mut messenger, p);
         let sent = messenger.transport().sent_on.len();
         for _ in 0..2 {
             assert_eq!(
@@ -727,16 +765,25 @@ mod tests {
         assert_eq!(
             messenger.transport().sent_on.len(),
             sent,
-            "hiçbir şey gönderilmedi"
+            "bekleyen yeniden sunum da gitmedi"
         );
         assert_eq!(ids_of(&signaling, p), vec![u64::MAX]);
         assert_eq!(signaling.stats().blobs_sent, 1);
+        signaling.pump(&mut messenger);
+        assert_eq!(
+            messenger.transport().sent_on.last(),
+            Some(&second),
+            "kayıt pump'ta sunuldu"
+        );
+        assert_eq!(signaling.stats().resent_on_new_session, 1);
     }
 
     /// Yeniden sunum kaydı eş başına [`SIGNALING_RESEND_PER_PEER`] (dolunca eşin EN ESKİ kaydı
     /// düşer) ve toplam [`MAX_SIGNALING_RECORDS`] (dolunca tablonun EN ESKİ kaydı düşer, başka
-    /// eşinki olsa da) ile sınırlıdır; yeni gönderim hiçbir durumda reddedilmez. Toplam tavanın
-    /// ötesindeki eş, tek Messenger'ın eş tavanı (`MAX_PEERS`) yüzünden ikinci bir Messenger'dadır.
+    /// eşinki olsa da) ile sınırlıdır; yeni gönderim hiçbir durumda reddedilmez. Toplam tavana çağrı
+    /// sözleşmesine uyan motorda erişilemez (tek Messenger ≤ `MAX_PEERS` eş): (b) onu sözleşme DIŞI
+    /// bir kullanımla — motor iki Messenger'la — yalnız BELLEK sınırı olarak sınar; yeniden sunum
+    /// sınanmaz.
     ///
     /// `ea0d3909`'da UYARLANAMAZ: yeniden sunum kaydı yoktu.
     #[test]
@@ -757,7 +804,8 @@ mod tests {
         assert_eq!(signaling.stats().records_evicted, 1);
         assert_eq!(signaling.stats().blobs_sent, per_peer + 1);
 
-        // (b) Toplam tavan: `MAX_PEERS` eş × eş başına tavan, sonra yeni bir eş.
+        // (b) Toplam tavan (sözleşme dışı kullanım; yalnız bellek sınırı): `MAX_PEERS` eş × eş başına
+        // tavan, sonra ikinci bir Messenger'daki yeni bir eş.
         let mut full = messenger_with((0..MAX_PEERS).map(peer));
         let extra = peer(MAX_PEERS);
         let mut other = messenger_with([extra]);
@@ -794,51 +842,146 @@ mod tests {
         }
     }
 
-    /// Yeniden sunumu KALICI reddedilen kayıt düşer ve bir daha sunulmaz; GEÇİCİ ret kaydı tutar ve
-    /// sonraki denetimde kabul edilir. Oturum değişimi senkron `connect` ile (olay yok).
+    /// Eş başına tavan eşin KENDİ en eski kaydını düşürür, tablonun en eskisini (başka bir eşinki)
+    /// değil: `q` ilk kaydı (genelin en eskisi) yazar, sonra `p` tavan + 1 kayıt yazar — `p`'nin ilk
+    /// kaydı düşer, `q`'nunki kalır.
+    ///
+    /// `ea0d3909`'da UYARLANAMAZ: yeniden sunum kaydı yoktu.
+    #[test]
+    fn a_full_peer_evicts_its_own_oldest_record_not_another_peers() {
+        let (p, q) = (peer(0), peer(1));
+        let mut messenger = messenger_with([p, q]);
+        let mut signaling = Signaling::new(clock());
+        let oldest = signaling.send(&mut messenger, q, b"q").expect("gönderilir");
+        let mut sent_to_p = Vec::new();
+        for _ in 0..=SIGNALING_RESEND_PER_PEER {
+            let id = signaling
+                .send(&mut messenger, p, b"p")
+                .expect("tavan gönderimi durdurmaz");
+            sent_to_p.push(id.get());
+        }
+        assert_eq!(
+            ids_of(&signaling, q),
+            vec![oldest.get()],
+            "başka eşin kaydı (genelin en eskisi) kaldı"
+        );
+        assert_eq!(
+            ids_of(&signaling, p),
+            sent_to_p[1..].to_vec(),
+            "p'nin kendi en eskisi düştü"
+        );
+        assert_eq!(signaling.stats().records_evicted, 1);
+    }
+
+    /// Ret sınıflaması, `TransportError`'ın BÜTÜN türleriyle: yeniden sunum GEÇİCİ bir türle
+    /// (`Backpressure`, `SessionSuperseded`, `UnknownSession`, `NotConnected`) reddedilirse kayıt
+    /// KALIR (`resend_refused`) ve sonraki denetimde TAM BİR KEZ kabul edilir; KALICI bir türle
+    /// (`UnitTooLarge`, `DeadlineExpired`, `EarlyUnitConflict`) reddedilirse kayıt düşer
+    /// (`records_failed`), boş eş girdisi tutulmaz ve sonraki oturuma bir daha sunulmaz. Beklenen
+    /// sınıf testte bağımsız, joker kolsuz bir `match` ile yazılıdır: yeni bir tür eklenirse test
+    /// derlenmez. Oturum değişimi senkron `connect` ile (olay yok).
     ///
     /// `ea0d3909`'da UYARLANAMAZ: yeniden sunum yoktu.
     #[test]
-    fn a_permanently_refused_resend_drops_the_record() {
-        let p = peer(0);
-        let mut messenger = messenger_with([p]);
+    fn transient_refusals_keep_the_record_and_permanent_ones_drop_it() {
+        const ALL: [TransportError; 7] = [
+            TransportError::UnknownSession,
+            TransportError::SessionSuperseded,
+            TransportError::EarlyUnitConflict,
+            TransportError::UnitTooLarge,
+            TransportError::Backpressure,
+            TransportError::DeadlineExpired,
+            TransportError::NotConnected,
+        ];
+        let expected_transient = |error: TransportError| match error {
+            TransportError::Backpressure
+            | TransportError::SessionSuperseded
+            | TransportError::UnknownSession
+            | TransportError::NotConnected => true,
+            TransportError::UnitTooLarge
+            | TransportError::DeadlineExpired
+            | TransportError::EarlyUnitConflict => false,
+        };
+        for error in ALL {
+            let p = peer(0);
+            let mut messenger = messenger_with([p]);
+            let mut signaling = Signaling::new(clock());
+            signaling.send(&mut messenger, p, b"b").expect("gönderilir");
+            let first = messenger.session_of(p).expect("oturum");
+            let second = reconnect(&mut messenger, p);
+            messenger.transport_mut().refuse.push_back(error);
+            signaling.pump(&mut messenger);
+            let stats = signaling.stats();
+            if expected_transient(error) {
+                assert_eq!(
+                    (stats.resend_refused, stats.records_failed),
+                    (1, 0),
+                    "{error:?}"
+                );
+                assert_eq!(signaling.pending_count(p), 1, "{error:?}: kayıt kaldı");
+                signaling.pump(&mut messenger);
+                signaling.pump(&mut messenger);
+                assert_eq!(
+                    messenger.transport().sent_on,
+                    vec![first, second],
+                    "{error:?}: sonraki denetimde tam bir kabul"
+                );
+                assert_eq!(signaling.stats().resent_on_new_session, 1, "{error:?}");
+            } else {
+                assert_eq!(
+                    (stats.resend_refused, stats.records_failed),
+                    (0, 1),
+                    "{error:?}"
+                );
+                assert_eq!(signaling.pending_count(p), 0, "{error:?}");
+                assert!(
+                    signaling.records.is_empty(),
+                    "{error:?}: boş eş girdisi tutulmaz"
+                );
+                reconnect(&mut messenger, p);
+                signaling.pump(&mut messenger);
+                assert_eq!(
+                    messenger.transport().sent_on,
+                    vec![first],
+                    "{error:?}: düşen kayıt bir daha sunulmadı"
+                );
+            }
+        }
+    }
+
+    /// `pump` BÜTÜN eşleri denetler: iki eşin oturumu değişir; birinci eşin yeniden sunumu GEÇİCİ
+    /// reddedilirken (tek atımlık ret) ikinci eşin kaydı AYNI turda sunulur, birinci eşinki sonraki
+    /// turda. Yalnız ilk eşi işleyen ya da ilk retle bütün turu kesen bir `pump` bunu karşılamaz.
+    ///
+    /// `ea0d3909`'da UYARLANAMAZ: yeniden sunum yoktu.
+    #[test]
+    fn pump_offers_every_peer_even_when_one_is_refused() {
+        let (p, q) = (peer(0), peer(1));
+        let mut messenger = messenger_with([p, q]);
         let mut signaling = Signaling::new(clock());
-        signaling.send(&mut messenger, p, b"b").expect("gönderilir");
-        let first = messenger.session_of(p).expect("oturum");
-
-        // Geçici ret: kayıt kalır, sonraki `pump` kabul ettirir.
-        let Ok(ConnectResult::Ready(second)) = messenger.connect(p) else {
-            panic!("yeni hazır oturum bekleniyordu");
-        };
-        messenger.transport_mut().refuse = Some(TransportError::Backpressure);
+        signaling.send(&mut messenger, p, b"p").expect("gönderilir");
+        signaling.send(&mut messenger, q, b"q").expect("gönderilir");
+        let p_new = reconnect(&mut messenger, p);
+        let q_new = reconnect(&mut messenger, q);
+        let before = messenger.transport().sent_on.len();
+        messenger
+            .transport_mut()
+            .refuse
+            .push_back(TransportError::Backpressure);
         signaling.pump(&mut messenger);
+        // Eşler `PeerRef` sırasıyla denetlenir: `p` (eş 0) önce denenir ve reddedilir.
+        assert_eq!(
+            messenger.transport().sent_on[before..].to_vec(),
+            vec![q_new],
+            "aynı turda ikinci eş sunuldu"
+        );
         assert_eq!(signaling.stats().resend_refused, 1);
-        assert_eq!(signaling.pending_count(p), 1);
-        messenger.transport_mut().refuse = None;
-        signaling.pump(&mut messenger);
-        signaling.pump(&mut messenger);
-        assert_eq!(messenger.transport().sent_on, vec![first, second]);
-        assert_eq!(signaling.stats().resent_on_new_session, 1);
-
-        // Kalıcı ret: kayıt düşer.
-        let Ok(ConnectResult::Ready(_third)) = messenger.connect(p) else {
-            panic!("yeni hazır oturum bekleniyordu");
-        };
-        messenger.transport_mut().refuse = Some(TransportError::UnitTooLarge);
-        signaling.pump(&mut messenger);
-        assert_eq!(signaling.stats().records_failed, 1);
-        assert_eq!(signaling.pending_count(p), 0);
-        assert!(signaling.records.is_empty(), "boş eş girdisi tutulmaz");
-        messenger.transport_mut().refuse = None;
-        let Ok(ConnectResult::Ready(_fourth)) = messenger.connect(p) else {
-            panic!("yeni hazır oturum bekleniyordu");
-        };
         signaling.pump(&mut messenger);
         assert_eq!(
-            messenger.transport().sent_on,
-            vec![first, second],
-            "düşen kayıt bir daha sunulmadı"
+            messenger.transport().sent_on[before..].to_vec(),
+            vec![q_new, p_new]
         );
+        assert_eq!(signaling.stats().resent_on_new_session, 2);
     }
 
     /// `SIGNALING_BLOB` olmayan her olay aynen geçer: oturum olayları (kaydı olmayan eşin `Ready`'si
@@ -885,26 +1028,45 @@ mod tests {
         assert!(messenger.transport().sent_on.is_empty());
     }
 
+    /// `Debug` blob'u hiçbir biçimde basmaz: ne bayt listesi, ne metin, ne hex (küçük / büyük harf);
+    /// tek satırlık ve çok satırlık (`{:#?}`) biçimde; doğrudan olayda da geçirilen `Messenger` olayında
+    /// da. Yalnız uzunluk (`bytes_len`) yazılır.
+    ///
     /// `ea0d3909`'da UYARLANAMAZ: `SignalingEvent` yoktu (`AppMessage::SignalingBlob`'un `Debug`'ı
     /// zaten uzunluk yazıyordu — o kısım AYNI DAVRANIŞ).
     #[test]
     fn debug_redacts_the_blob() {
-        let blob = b"gizli-sinyal".to_vec();
+        let text = "gizli-sinyal";
+        let blob: Vec<u8> = text.bytes().collect();
+        let hex: String = blob.iter().map(|byte| format!("{byte:02x}")).collect();
         let event = SignalingEvent::SignalingReceived {
             peer: peer(0),
             bytes: blob.clone(),
         };
-        let shown = format!("{event:?}");
-        assert!(
-            !shown.contains(&format!("{blob:?}")),
-            "Debug blob'u sızdırdı: {shown}"
-        );
-        assert!(shown.contains("bytes_len"), "{shown}");
         let passed = SignalingEvent::Messenger(MessengerEvent::Other {
             peer: peer(0),
             message: AppMessage::SignalingBlob { blob: blob.clone() },
         });
-        let shown = format!("{passed:?}");
-        assert!(!shown.contains(&format!("{blob:?}")), "{shown}");
+        let shown_event = format!("{event:?}");
+        assert!(shown_event.contains("bytes_len"), "{shown_event}");
+        let forbidden = [
+            text.to_owned(),
+            hex.clone(),
+            hex.to_uppercase(),
+            format!("{blob:?}"),
+        ];
+        for shown in [
+            shown_event,
+            format!("{event:#?}"),
+            format!("{passed:?}"),
+            format!("{passed:#?}"),
+        ] {
+            for secret in &forbidden {
+                assert!(
+                    !shown.contains(secret.as_str()),
+                    "Debug blob'u sızdırdı: {shown}"
+                );
+            }
+        }
     }
 }
