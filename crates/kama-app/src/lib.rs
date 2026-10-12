@@ -17,6 +17,9 @@
 //! Enjekte edilen monoton saat (`MonotonicClock` + `SystemClock`; PTT-R4 ve kapanmış akış kaydı,
 //! K4G-09 zamanlayıcıları): [`clock`] (K4G-08).
 //!
+//! Sinyalleşme (`SIGNALING_BLOB` 0x09: opak blob gönder/al, oturum değişiminde yeniden sunum, dedup
+//! yok): [`signaling`] (K4G-14a).
+//!
 //! # Katman kuralı (INV-NEIGHBOR-1)
 //!
 //! Application yalnız `KamaTransport`'u çağırır. Crypto'ya ve Plane 1'e (hub-RPC) erişimi YOKTUR;
@@ -32,4 +35,5 @@ pub mod codec;
 pub mod file_transfer;
 pub mod messaging;
 pub mod ptt;
+pub mod signaling;
 pub mod store;
