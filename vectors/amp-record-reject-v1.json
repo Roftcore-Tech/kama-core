@@ -1,14 +1,14 @@
 {
   "schema_version": 2,
   "suite": "amp-record-reject-v1",
-  "spec_version": "application-message-protocol@v1+2026-10-04-K1",
+  "spec_version": "application-message-protocol@v1+2026-10-12-K4G-09",
   "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile s\u0131f\u0131r payla\u015f\u0131m)",
-  "description": "AMP \u00a72/\u00a75/\u00a76 negatif corpus: reserved type/flag, i\u00e7 alan/body_len uyumsuzlu\u011fu (TEXT, SIGNALING_BLOB, MEDIA_BUNDLE; sabit \u00f6ne\u011fin s\u0131\u011fmamas\u0131 dahil), s\u0131k\u0131\u015ft\u0131rma bomb korumalar\u0131 (uncompressed_len a\u015f\u0131m\u0131, expansion oran\u0131; expansion oran\u0131 s\u0131k\u0131\u015ft\u0131r\u0131lm\u0131\u015f MEDIA_BUNDLE ta\u015f\u0131y\u0131c\u0131yla da), ger\u00e7ek zstd ile kesilmi\u015f/ge\u00e7ersiz frame, bilinmeyen compression_id/msg_version; [S8] kay\u0131t uzunlu\u011fu uyumsuzlu\u011fu, kay\u0131ts\u0131z msg_type, ge\u00e7ersiz UTF-8, tan\u0131ms\u0131z enum de\u011feri, a\u00e7\u0131lan uzunluk \u2260 uncompressed_len.",
+  "description": "AMP \u00a72/\u00a75/\u00a76 negatif corpus: reserved type/flag, i\u00e7 alan/body_len uyumsuzlu\u011fu (TEXT, SIGNALING_BLOB, MEDIA_BUNDLE; sabit \u00f6ne\u011fin s\u0131\u011fmamas\u0131 dahil), s\u0131k\u0131\u015ft\u0131rma bomb korumalar\u0131 (uncompressed_len a\u015f\u0131m\u0131, expansion oran\u0131; expansion oran\u0131 s\u0131k\u0131\u015ft\u0131r\u0131lm\u0131\u015f MEDIA_BUNDLE ta\u015f\u0131y\u0131c\u0131yla da), ger\u00e7ek zstd ile kesilmi\u015f/ge\u00e7ersiz frame, bilinmeyen compression_id/msg_version; [S8] kay\u0131t uzunlu\u011fu uyumsuzlu\u011fu, kay\u0131ts\u0131z msg_type, ge\u00e7ersiz UTF-8, tan\u0131ms\u0131z enum de\u011feri, a\u00e7\u0131lan uzunluk \u2260 uncompressed_len; [K4G-09] FILE_RECEIPT: tan\u0131ms\u0131z status, k\u0131sa g\u00f6vde, uzun g\u00f6vde.",
   "notes": {
     "compressed": "flags.bit0=1 g\u00f6vde (\u00a75).",
     "compression-length-only": "Decoder yaln\u0131z beyan edilen uzunluk alanlar\u0131na bakarak reddeder; zstd decompress'e H\u0130\u00c7 ba\u015flanmaz \u2014 ger\u00e7ek bir zstd frame'i olmas\u0131 gerekmez."
   },
-  "case_count": 20,
+  "case_count": 23,
   "cases": [
     {
       "id": "amp-record-reject-v1.decode.reserved-msg-type",
@@ -210,9 +210,9 @@
     {
       "id": "amp-record-reject-v1.decode.unknown-msg-type",
       "kind": "decode",
-      "note": "msg_type=0x0B kay\u0131tl\u0131 de\u011fil ve reserved de\u011fil \u2014 \u00a76 ileri uyum: DROP, REJECT de\u011fil (S8).",
-      "spec_ref": "application-message-protocol.md \u00a76 (S8 2026-10-08)",
-      "input_hex": "010b000000",
+      "note": "msg_type=0x0C kay\u0131tl\u0131 de\u011fil (registry 0x01\u20130x0B) ve reserved de\u011fil \u2014 \u00a76 ileri uyum: DROP, REJECT de\u011fil (S8). [K4G-09 2026-10-12] Vaka 0x0B'den ta\u015f\u0131nd\u0131: 0x0B art\u0131k FILE_RECEIPT; kimlik ayn\u0131.",
+      "spec_ref": "application-message-protocol.md \u00a76 (S8 2026-10-08; K4G-09 2026-10-12)",
+      "input_hex": "010c000000",
       "expected": {
         "result": "drop",
         "reason": "unknown-msg-type"
@@ -252,6 +252,39 @@
       "expected": {
         "result": "drop",
         "reason": "decompressed-len-mismatch"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.file-receipt-unknown-status",
+      "kind": "decode",
+      "note": "FILE_RECEIPT.status=0x05: registry'nin (0x00\u20130x04) son kodundan bir sonraki, tan\u0131ms\u0131z \u2014 \u00a73 'bilinmeyen \u2192 DROP'; token RECEIPT.kind vakas\u0131yla ayn\u0131 (S8).",
+      "spec_ref": "application-message-protocol.md \u00a73 0x0B FILE_RECEIPT (K4G-09 2026-10-12)",
+      "input_hex": "010b000009000000000000002a05",
+      "expected": {
+        "result": "drop",
+        "reason": "unknown-enum-value"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.file-receipt-short-body",
+      "kind": "decode",
+      "note": "FILE_RECEIPT body_len=8: transfer_id (8 B) s\u0131\u011f\u0131yor, status (1 B) s\u0131\u011fm\u0131yor \u2014 A1: sabit alanlar\u0131n toplam\u0131 body_len'i a\u015f\u0131yor, DROP (MEDIA_BUNDLE/SIGNALING_BLOB k\u0131sa \u00f6nek vakalar\u0131yla ayn\u0131 token).",
+      "spec_ref": "application-message-protocol.md \u00a72 (A1), \u00a74 (K4G-09 2026-10-12)",
+      "input_hex": "010b000008000000000000002a",
+      "expected": {
+        "result": "drop",
+        "reason": "inner-field-exceeds-body-len"
+      }
+    },
+    {
+      "id": "amp-record-reject-v1.decode.file-receipt-long-body",
+      "kind": "decode",
+      "note": "FILE_RECEIPT body_len=10: ge\u00e7erli 9 B g\u00f6vdeden (status ok) sonra 1 art\u0131k bayt \u2014 g\u00f6vde sabit 9 B, tek kanonik bi\u00e7im: DROP. Token B2.1 codec'inin mevcut DropReason::TrailingBodyBytes'\u0131; bu dosyada ilk kez bir vakayla s\u0131nan\u0131yor, yeni token icat edilmedi.",
+      "spec_ref": "application-message-protocol.md \u00a74 (K4G-09 2026-10-12)",
+      "input_hex": "010b00000a000000000000002a0000",
+      "expected": {
+        "result": "drop",
+        "reason": "trailing-body-bytes"
       }
     }
   ]

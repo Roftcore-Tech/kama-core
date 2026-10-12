@@ -1,13 +1,13 @@
 {
   "schema_version": 2,
   "suite": "amp-record-v1",
-  "spec_version": "application-message-protocol@v1+2026-10-04-K1",
+  "spec_version": "application-message-protocol@v1+2026-10-12-K4G-09",
   "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile s\u0131f\u0131r payla\u015f\u0131m)",
-  "description": "AMP \u00a72/\u00a73/\u00a75 AppMessageRecord kodlamas\u0131 \u2014 0x01\u20130x0A tiplerinin her biri i\u00e7in 1 pozitif vekt\u00f6r + bir s\u0131k\u0131\u015ft\u0131r\u0131lm\u0131\u015f TEXT \u00f6rne\u011fi (0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE F0.5 2026-10-06'da eklendi). B1.2 (WS-B/Hayri); t\u00fcketici B2.1'deki ger\u00e7ek Rust codec'i.",
+  "description": "AMP \u00a72/\u00a73/\u00a75 AppMessageRecord kodlamas\u0131 \u2014 0x01\u20130x0A tiplerinin her biri i\u00e7in 1 pozitif vekt\u00f6r + bir s\u0131k\u0131\u015ft\u0131r\u0131lm\u0131\u015f TEXT \u00f6rne\u011fi (0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE F0.5 2026-10-06'da eklendi) + [K4G-09 2026-10-12] 0x0B FILE_RECEIPT'in her status'u i\u00e7in 1 vekt\u00f6r ve FILE_ABORT reason 0x05 superseded. B1.2 (WS-B/Hayri); t\u00fcketici B2.1'deki ger\u00e7ek Rust codec'i.",
   "notes": {
     "compressed": "flags.bit0=1; body = compression_id(1)|uncompressed_len(4be)|zstd payload (\u00a75). zstd payload baytlar\u0131 \u00fcreten kitapl\u0131\u011f\u0131n s\u00fcr\u00fcm\u00fcne ba\u011fl\u0131 olabilir (zstd s\u00fcr\u00fcmler aras\u0131 bayt-\u00f6zde\u015f \u00e7\u0131kt\u0131 garanti etmez); bu vakadaki expected_hex \u00fcretildi\u011fi ortam\u0131n \u00e7\u0131kt\u0131s\u0131d\u0131r."
   },
-  "case_count": 11,
+  "case_count": 17,
   "cases": [
     {
       "id": "amp-record-v1.encode.text",
@@ -136,6 +136,72 @@
         "stream_id": 7
       },
       "expected_hex": "010a0000180000000701140010dededededededededededededededede"
+    },
+    {
+      "id": "amp-record-v1.encode.file-receipt-ok",
+      "kind": "encode",
+      "note": "FILE_RECEIPT (0x0B; K4G-09): transfer_id u64 (FILE_BEGIN ile ayn\u0131 geni\u015flik/kodlama), status u8 = 0x00 (ok). G\u00f6vde sabit 9 B; yaln\u0131z al\u0131c\u0131 g\u00f6nderir.",
+      "spec_ref": "application-message-protocol.md \u00a73 0x0B FILE_RECEIPT",
+      "input": {
+        "status": 0,
+        "transfer_id": 42
+      },
+      "expected_hex": "010b000009000000000000002a00"
+    },
+    {
+      "id": "amp-record-v1.encode.file-receipt-aborted-by-receiver",
+      "kind": "encode",
+      "note": "FILE_RECEIPT (0x0B; K4G-09): transfer_id u64 (FILE_BEGIN ile ayn\u0131 geni\u015flik/kodlama), status u8 = 0x01 (aborted_by_receiver). G\u00f6vde sabit 9 B; yaln\u0131z al\u0131c\u0131 g\u00f6nderir.",
+      "spec_ref": "application-message-protocol.md \u00a73 0x0B FILE_RECEIPT",
+      "input": {
+        "status": 1,
+        "transfer_id": 42
+      },
+      "expected_hex": "010b000009000000000000002a01"
+    },
+    {
+      "id": "amp-record-v1.encode.file-receipt-hash-mismatch",
+      "kind": "encode",
+      "note": "FILE_RECEIPT (0x0B; K4G-09): transfer_id u64 (FILE_BEGIN ile ayn\u0131 geni\u015flik/kodlama), status u8 = 0x02 (hash_mismatch). G\u00f6vde sabit 9 B; yaln\u0131z al\u0131c\u0131 g\u00f6nderir.",
+      "spec_ref": "application-message-protocol.md \u00a73 0x0B FILE_RECEIPT",
+      "input": {
+        "status": 2,
+        "transfer_id": 42
+      },
+      "expected_hex": "010b000009000000000000002a02"
+    },
+    {
+      "id": "amp-record-v1.encode.file-receipt-timeout",
+      "kind": "encode",
+      "note": "FILE_RECEIPT (0x0B; K4G-09): transfer_id u64 (FILE_BEGIN ile ayn\u0131 geni\u015flik/kodlama), status u8 = 0x03 (timeout). G\u00f6vde sabit 9 B; yaln\u0131z al\u0131c\u0131 g\u00f6nderir.",
+      "spec_ref": "application-message-protocol.md \u00a73 0x0B FILE_RECEIPT",
+      "input": {
+        "status": 3,
+        "transfer_id": 42
+      },
+      "expected_hex": "010b000009000000000000002a03"
+    },
+    {
+      "id": "amp-record-v1.encode.file-receipt-rejected",
+      "kind": "encode",
+      "note": "FILE_RECEIPT (0x0B; K4G-09): transfer_id u64 (FILE_BEGIN ile ayn\u0131 geni\u015flik/kodlama), status u8 = 0x04 (rejected). G\u00f6vde sabit 9 B; yaln\u0131z al\u0131c\u0131 g\u00f6nderir.",
+      "spec_ref": "application-message-protocol.md \u00a73 0x0B FILE_RECEIPT",
+      "input": {
+        "status": 4,
+        "transfer_id": 42
+      },
+      "expected_hex": "010b000009000000000000002a04"
+    },
+    {
+      "id": "amp-record-v1.encode.file-abort-superseded",
+      "kind": "encode",
+      "note": "FILE_ABORT (0x05): transfer_id, reason 0x05 = superseded (K4G-09: FILE_ABORT yaln\u0131z g\u00f6nderenindir; oturum de\u011fi\u015fiminde yar\u0131m aktar\u0131m\u0131 yeni oturumdan kapat\u0131r). D\u00fczen de\u011fi\u015fmedi (g\u00f6vde 9 B).",
+      "spec_ref": "application-message-protocol.md \u00a73 0x05 FILE_ABORT",
+      "input": {
+        "reason": 5,
+        "transfer_id": 42
+      },
+      "expected_hex": "0105000009000000000000002a05"
     }
   ]
 }
