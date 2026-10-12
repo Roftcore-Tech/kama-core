@@ -104,24 +104,34 @@
 //!   düşürmeyi yasaklar). Eski akış kendi `PTT_CLOSE`'uyla, PTT-R4 ile ya da oturum sonuyla biter.
 //! * Kapanmış akış kaydı (PTT-R1): supersession'da akışın asıl `PTT_OPEN`'ı eski oturumun yalnız-alım
 //!   drain'inde kalabilir (S1 K7, KS-GRACE-1: `N_g = 64` / `T_g = 30 s`); akışın yeni oturumdaki
-//!   yeniden `PTT_OPEN`'ı, demetleri ve `PTT_CLOSE`'u ondan ÖNCE işlenebilir. Geç gelen o `PTT_OPEN`
-//!   kapanmış akışı yeniden başlatsaydı aynı basışa ikinci `PttStarted` ve `PTT_CLOSE`'u hiç
-//!   gelmeyecek, PTT-R4'e dek bir PTT-R5 yuvası tutan hayalet bir akış doğardı. Bu yüzden YALNIZ
-//!   `PTT_CLOSE` ile kapanan akışların kimliği eş başına tutulur: en çok [`PTT_MAX_ACTIVE_STREAMS`]
-//!   kimlik (en eski kapanış düşer), ömür [`PTT_STREAM_IDLE_TTL`] — yeni sayı yok. Türetme: drain
-//!   `T_g = 30 s` < 120 s, geç `PTT_OPEN` kaydın ömrü içinde gelir; supersession anında eş başına en
-//!   çok bir açık giden akış vardır, bir drain eşe en çok bir hayalet adayı bırakır (iki kimlik art
-//!   arda iki supersession'a pay bırakır). Kayıttaki kimliğe gelen `PTT_OPEN` `opens_after_close`'ta
-//!   sayılır; aynı akışın geç demeti yine PTT-R3'tür. PTT-R4 ya da oturum sonuyla biten akışlar
-//!   kayda GİRMEZ: gönderen o akışı hâlâ açık tutuyor olabilir ve yeni oturumdaki yeniden
-//!   `PTT_OPEN`'ı (D5) onu yeniden başlatmalıdır.
+//!   yeniden `PTT_OPEN`'ı, demetleri ve `PTT_CLOSE`'u ondan ÖNCE işlenebilir — ya da gönderende
+//!   `close`'un yeniden `PTT_OPEN`'ı reddedilmişse yeni oturuma yalnız `PTT_CLOSE` gider ve asıl
+//!   `PTT_OPEN`'ı henüz görmemiş alıcıda o `PTT_CLOSE` PTT-R2'ye düşer. Geç gelen asıl `PTT_OPEN`
+//!   akışı yeniden başlatsaydı aynı basışa ikinci `PttStarted` ve `PTT_CLOSE`'u hiç gelmeyecek,
+//!   PTT-R4'e dek bir PTT-R5 yuvası tutan hayalet bir akış doğardı. Bu yüzden `PTT_CLOSE`'u gelen
+//!   HER `stream_id` (etkin akışı bitirsin ya da PTT-R2 ile yok sayılsın) eş başına kayda girer:
+//!   `PTT_CLOSE(X)` göndericinin X'i kapattığını kanıtlar ve `stream_id` eş başına kesin arttığı için
+//!   X'e meşru yeni bir `PTT_OPEN` gelmez (D4 dışında). Kayıt eş başına en çok
+//!   [`PTT_MAX_ACTIVE_STREAMS`] kimlik tutar (en eski kapanış düşer), ömrü [`PTT_STREAM_IDLE_TTL`] —
+//!   yeni sayı yok. Türetme: drain `T_g = 30 s` < 120 s, geç `PTT_OPEN` kaydın ömrü içinde gelir;
+//!   supersession anında eş başına en çok bir açık giden akış vardır, bir drain eşe en çok bir
+//!   hayalet adayı bırakır (iki kimlik art arda iki supersession'a pay bırakır). Kayıttaki kimliğe
+//!   gelen `PTT_OPEN` `opens_after_close`'ta sayılır; aynı akışın geç demeti yine PTT-R3'tür.
+//!   PTT-R4 ya da oturum sonuyla biten akışlar (`PTT_CLOSE` gelmemiştir) kayda GİRMEZ: gönderen o
+//!   akışı hâlâ açık tutuyor olabilir ve yeni oturumdaki yeniden `PTT_OPEN`'ı (D5) onu yeniden
+//!   başlatmalıdır.
 //! * `MEDIA_BUNDLE` → `stream_id` eşin etkin akışlarından biriyse ve `codec` VE `bundle_ms` o
 //!   akışınkiyle aynıysa [`PttEvent::PttAudio`], teslim sırasıyla (PTT-R0). `stream_id` eşin etkin
 //!   akışlarından biri değilse — eşin etkin akışı hiç yoksa da (S7: `PTT_OPEN` öncesi ya da
 //!   `PTT_CLOSE` sonrası) — DROP ve `ptt_orphan_bundles` artar (PTT-R3). `codec` ya da `bundle_ms`
 //!   farklıysa DROP (S9).
 //! * `PTT_CLOSE` → eşin etkin akışıysa [`PttEvent::PttEnded`]; değilse sessizce yok sayılır
-//!   (PTT-R2).
+//!   (PTT-R2: olay yok, hata yok, `unknown_closes` sayılır). İki durumda da kimlik kapanmış akış
+//!   kaydına girer (yukarıda).
+//! * "Bilinen" asimetrisi (YORUM): PTT-R1'de bilinen = eşin etkin akışları ∪ kapanmış akış kaydı;
+//!   PTT-R2 / PTT-R3'te bilinmeyen = etkin OLMAYAN her akış (kayıttaki dahil). Gerekçe: kapanmış
+//!   akışın `PttEnded`'i verildi; geç gelen `PTT_CLOSE`'un ya da demetin bağlanacağı akış yoktur.
+//!   Kayıt yalnız geç `PTT_OPEN`'ın akışı yeniden başlatmasını önler.
 //! * Hareketsizlik (PTT-R4): bir akışa [`PTT_STREAM_IDLE_TTL`] boyunca `MEDIA_BUNDLE` gelmezse
 //!   motor akışı yerel olarak kapatır ve [`PttEvent::PttEnded`] üretir (uygulama akışın bittiğini
 //!   görür); eşe hiçbir şey gönderilmez (`PTT_CLOSE` üretilmez). Süre akışın `PTT_OPEN`'ı kabul
@@ -150,11 +160,13 @@
 //!   oturum sonuyla sınırlıdır.
 //! * Oturumlar arası sıra garanti DEĞİLDİR (S1 §4 yalnız aynı oturumu sıralar): eski oturumun
 //!   drain'inden gelen demet yeni oturumdakilerden sonra verilebilir (çerçeve sırası yükün, media
-//!   ekibinin işidir). Akışın yeni oturumdan gelen `PTT_CLOSE`'undan SONRA işlenirse akış
-//!   kapanmıştır ve demet PTT-R3 ile düşer; aynı drain'den geç gelen `PTT_OPEN` PTT-R1'dir
-//!   (kapanmış akış kaydı). Kayıt taşarsa (drain süresince eşten iki yeni `PTT_CLOSE`) geç
-//!   `PTT_OPEN` akışı yeniden başlatır; o hayalet akış PTT-R4 ile en geç [`PTT_STREAM_IDLE_TTL`]
-//!   sonra biter.
+//!   ekibinin işidir). Akışın yeni oturumdan gelen `PTT_CLOSE`'undan SONRA işlenen demet PTT-R3 ile
+//!   düşer — alıcı asıl `PTT_OPEN`'ı hiç görmediyse (gönderende `close`'un yeniden `PTT_OPEN`'ı
+//!   reddedilmişti) o drain'deki sesin tamamı; aynı drain'den geç gelen `PTT_OPEN` ise PTT-R1'dir
+//!   (kapanmış akış kaydı, `PTT_CLOSE` etkin akışı bitirmiş olsun ya da PTT-R2 ile yok sayılmış
+//!   olsun). Kalan beyanlı risk yalnız kayıt taşmasıdır: drain süresince eşten iki yeni `PTT_CLOSE`
+//!   gelirse geç `PTT_OPEN` akışı yeniden başlatır; o hayalet akış PTT-R4 ile en geç
+//!   [`PTT_STREAM_IDLE_TTL`] sonra biter.
 //! * [`PTT_STREAM_IDLE_TTL`]'den uzun bir kesintiden sonra gelen demetler, akış alıcıda kapandığı
 //!   için PTT-R3 ile düşer: gönderen aynı oturumda akışı yeniden açmaz (yeni oturumdaki yeniden
 //!   `PTT_OPEN` akışı yeniden başlatır).
@@ -392,9 +404,9 @@ pub struct PttStats {
     /// PTT-R1: eşin etkin akışlarından birinin `stream_id`'siyle yeniden gelen `PTT_OPEN`'lar
     /// (idempotent; parametreleri aynı ya da farklı).
     pub duplicate_opens: u64,
-    /// PTT-R1: eşin kapanmış akış kaydındaki (`PTT_STREAM_IDLE_TTL` içinde `PTT_CLOSE` ile kapanmış)
-    /// bir akışın `stream_id`'siyle gelen `PTT_OPEN`'lar — eski oturumun drain'inden geç teslim;
-    /// akışı yeniden başlatmaz, olay yok.
+    /// PTT-R1: eşin kapanmış akış kaydındaki (`PTT_CLOSE`'u son `PTT_STREAM_IDLE_TTL` içinde gelmiş)
+    /// bir `stream_id`'yle gelen `PTT_OPEN`'lar — eski oturumun drain'inden geç teslim; akışı
+    /// yeniden başlatmaz, olay yok.
     pub opens_after_close: u64,
     /// Güncel oturumu olmayan eşten gelen `PTT_OPEN`'lar (kapanmış oturumdan geç teslim).
     pub opens_without_session: u64,
@@ -404,7 +416,8 @@ pub struct PttStats {
     /// Gelen akış tablosu tavandayken (`MAX_PEERS × PTT_MAX_ACTIVE_STREAMS`) gelen yeni
     /// `stream_id`'li `PTT_OPEN`'lar.
     pub opens_refused: u64,
-    /// PTT-R2: eşin etkin akışlarından birine ait olmayan `PTT_CLOSE`'lar (sessizce yok sayıldı).
+    /// PTT-R2: eşin etkin akışlarından birine ait olmayan `PTT_CLOSE`'lar (sessizce yok sayıldı;
+    /// kimlik yine de kapanmış akış kaydına girer).
     pub unknown_closes: u64,
     /// PTT-R4: [`PTT_STREAM_IDLE_TTL`] boyunca demet gelmediği için yerel olarak kapatılan akışlar
     /// (olay üretir).
@@ -422,7 +435,7 @@ pub struct PttStats {
 
 /// B2.4 PTT motoru. Ayrıntı: modül belgesi.
 pub struct Ptt {
-    /// PTT-R4'ün zaman kaynağı.
+    /// PTT-R4'ün ve kapanmış akış kaydı ömrünün (PTT-R1) zaman kaynağı.
     clock: Arc<dyn MonotonicClock>,
     /// Açık giden akışlar, `stream_id` sırasıyla (≤ [`MAX_PEERS`]; eş başına en çok bir; `stream_id`
     /// açık akışlar arasında benzersiz).
@@ -430,8 +443,9 @@ pub struct Ptt {
     /// Etkin gelen akışlar, (eş, `stream_id`) sırasıyla (≤ [`MAX_INCOMING_STREAMS`]; eş başına
     /// ≤ [`PTT_MAX_ACTIVE_STREAMS`]).
     incoming: BTreeMap<(PeerRef, StreamId), Incoming>,
-    /// Kapanmış akış kaydı (PTT-R1): `PTT_CLOSE` ile kapanan gelen akışlar → kapanış anı (saatin
-    /// `now()`'ı). Eş başına ≤ [`PTT_MAX_ACTIVE_STREAMS`], toplam ≤ [`MAX_INCOMING_STREAMS`]; ömür
+    /// Kapanmış akış kaydı (PTT-R1): `PTT_CLOSE`'u gelen (eş, `stream_id`) → kayıt anı (saatin
+    /// `now()`'ı); `PTT_CLOSE` etkin akışı bitirmiş olsun ya da PTT-R2 ile yok sayılmış olsun. Eş
+    /// başına ≤ [`PTT_MAX_ACTIVE_STREAMS`], toplam ≤ [`MAX_INCOMING_STREAMS`]; ömür
     /// [`PTT_STREAM_IDLE_TTL`] (modül belgesi, "Alıcı").
     closed: BTreeMap<(PeerRef, StreamId), Duration>,
     stats: PttStats,
@@ -456,7 +470,8 @@ struct Incoming {
 }
 
 impl Ptt {
-    /// Boş motor: açık akış yok. `clock` PTT-R4'ün zaman kaynağıdır — ürün yolu
+    /// Boş motor: açık akış yok. `clock` PTT-R4'ün ve kapanmış akış kaydı ömrünün zaman kaynağıdır —
+    /// ürün yolu
     /// [`SystemClock`](crate::clock::SystemClock)'u verir (bileşim kökü), testler elle ilerletilen
     /// bir saat. `stream_id`'ler [`Messenger`]'ın deposundan ayrılır; motor sayaç tutmaz.
     #[must_use]
@@ -799,11 +814,13 @@ impl Ptt {
         }
     }
 
-    /// `PTT_CLOSE`: yalnız eşin etkin akışlarından birini bitirir ve onu kapanmış akış kaydına
-    /// yazar (PTT-R1); değilse PTT-R2.
+    /// `PTT_CLOSE`: eşin etkin akışıysa onu bitirir (`PttEnded`); değilse sessizce yok sayılır
+    /// (PTT-R2). İki durumda da kimlik kapanmış akış kaydına yazılır (PTT-R1): `PTT_CLOSE(X)`
+    /// göndericinin X'i kapattığını kanıtlar (modül belgesi, "Alıcı").
     fn on_close(&mut self, peer: PeerRef, stream_id: StreamId) -> Option<PttEvent> {
-        if self.incoming.remove(&(peer, stream_id)).is_some() {
-            self.remember_closed(peer, stream_id);
+        let ended = self.incoming.remove(&(peer, stream_id)).is_some();
+        self.remember_closed(peer, stream_id);
+        if ended {
             return Some(PttEvent::PttEnded { peer, stream_id });
         }
         self.stats.unknown_closes += 1;
@@ -816,7 +833,7 @@ impl Ptt {
             .range((peer, StreamId::MIN)..=(peer, StreamId::MAX))
     }
 
-    /// PTT-R1: (eş, `stream_id`) [`PTT_STREAM_IDLE_TTL`] içinde `PTT_CLOSE` ile kapandı mı.
+    /// PTT-R1: (eş, `stream_id`)'nin `PTT_CLOSE`'u son [`PTT_STREAM_IDLE_TTL`] içinde geldi mi.
     fn recently_closed(&self, peer: PeerRef, stream_id: StreamId) -> bool {
         let now = self.clock.now();
         self.closed
@@ -824,13 +841,17 @@ impl Ptt {
             .is_some_and(|&closed_at| now.saturating_sub(closed_at) < PTT_STREAM_IDLE_TTL)
     }
 
-    /// `PTT_CLOSE` ile kapanan akışı kapanmış akış kaydına yazar (modül belgesi, "Alıcı"). Süresi
-    /// dolan kayıtlar düşer; eşin kaydı ya da tablo doluysa en eski kapanış yer açar — sınır her
+    /// `PTT_CLOSE`'u gelen (eş, `stream_id`)'yi kapanmış akış kaydına yazar (modül belgesi,
+    /// "Alıcı"). Süresi dolan kayıtlar düşer; kimlik zaten kayıtlıysa kayıt değişmez ve başka bir
+    /// kayıt düşürülmez; eşin kaydı ya da tablo doluysa en eski kapanış yer açar — sınır her
     /// eklemeden ÖNCE.
     fn remember_closed(&mut self, peer: PeerRef, stream_id: StreamId) {
         let now = self.clock.now();
         self.closed
             .retain(|_, &mut closed_at| now.saturating_sub(closed_at) < PTT_STREAM_IDLE_TTL);
+        if self.closed.contains_key(&(peer, stream_id)) {
+            return;
+        }
         let evicted = if self.closed_of(peer).count() >= PTT_MAX_ACTIVE_STREAMS {
             earliest_closed(self.closed_of(peer))
         } else if self.closed.len() >= MAX_INCOMING_STREAMS {
@@ -878,7 +899,8 @@ impl Ptt {
 /// # Errors
 ///
 /// [`PttError::Encode`] · [`PttError::Transport`] — tutamaç işaretlenmez ve ret
-/// `opens_resend_refused`'ta sayılır; sonraki denetim kaydı yeniden sunar.
+/// `opens_resend_refused`'ta sayılır. Akış açık kaldıkça sonraki denetim kaydı yeniden sunar
+/// (yoklama ve `send_bundle` yolu); `close` yolunda akış kapanmıştır, kayıt yeniden SUNULMAZ.
 fn reopen<T: KamaTransport>(
     messenger: &mut Messenger<T>,
     stream_id: StreamId,
@@ -959,6 +981,8 @@ mod tests {
     const TEST_MAX_PLAINTEXT_UNIT_BYTES: u32 = 1024;
     /// Test talk-spurt'ünün demet süresi (ms; normatif değil).
     const TEST_BUNDLE_MS: u8 = 20;
+    /// Saatin en küçük adımı (ömür sınırı denetimi).
+    const TICK: Duration = Duration::from_nanos(1);
 
     /// Her `connect`'e yeni bir hazır oturumla yanıt veren, her gönderimi kabul edip tutamacını
     /// kaydeden, hiçbir şey teslim etmeyen Transport.
@@ -1076,12 +1100,14 @@ mod tests {
         }
     }
 
-    /// Birim testlerinin saati: zaman davranışı `tests/ptt.rs`'te elle ilerletilen saatle sınanır.
+    /// Zamana bakmayan birim testlerinin saati. Zaman davranışı elle ilerletilen saatle sınanır:
+    /// kapanmış akış kaydının ömrü burada ([`TestClock`]), PTT-R4 `tests/ptt.rs`'te.
     fn clock() -> Arc<dyn MonotonicClock> {
         Arc::new(SystemClock::new())
     }
 
-    /// Elle ilerletilen saat (kapanmış akış kaydının ömrü için); kopyalar aynı zamanı paylaşır.
+    /// Elle ilerletilen saat (kapanmış akış kaydının ömrü ve tahliye sırası için); kopyalar aynı
+    /// zamanı paylaşır.
     #[derive(Clone, Default)]
     struct TestClock(Arc<Mutex<Duration>>);
 
@@ -1161,56 +1187,92 @@ mod tests {
         );
     }
 
-    /// PTT-R1 kapanmış akış kaydı sınırlıdır: eş başına en çok [`PTT_MAX_ACTIVE_STREAMS`] kimlik (en
-    /// eski kapanış düşer), toplam en çok [`MAX_INCOMING_STREAMS`] (en eski kapanış yer açar), ömür
-    /// [`PTT_STREAM_IDLE_TTL`]. Kayıttaki kimliğe gelen `PTT_OPEN` akış başlatmaz; düşmüş ya da süresi
-    /// dolmuş kimliğe gelen başlatır.
+    /// PTT-R1 kapanmış akış kaydı: `PTT_CLOSE`'u gelen her kimlik kayda girer (PTT-R2 ile yok
+    /// sayılan dahil). Eş başına en çok [`PTT_MAX_ACTIVE_STREAMS`] kimlik (en eski kapanış düşer;
+    /// aynı kimliğin tekrar `PTT_CLOSE`'u başka bir kaydı düşürmez), toplam en çok
+    /// [`MAX_INCOMING_STREAMS`] (en eski kapanış yer açar, bir sonraki durur), ömür
+    /// [`PTT_STREAM_IDLE_TTL`] (sınırdan bir adım önce bastırır, tam sınırda bastırmaz). Kayıttaki
+    /// kimliğe gelen `PTT_OPEN` akış başlatmaz; düşmüş ya da süresi dolmuş kimliğe gelen başlatır.
     ///
-    /// `b1cce203`'te (K4G-08'in inceleme öncesi hâli) UYARLANAMAZ: kayıt yoktu, kapanmış her
-    /// kimliğe gelen `PTT_OPEN` yeni akış başlatıyordu.
+    /// `0904f723`'te UYARLANAMAZ (kayıt, `opens_after_close` ve saat yoktu; `b1cce203`'te de kayıt
+    /// yoktu).
     #[test]
     fn closed_stream_record_is_bounded_and_expires() {
+        // (a) Eş başına tavan: üç akış birer saniye arayla kapanır, son ikisi kalır.
         let clock = TestClock::default();
         let p = peer(0);
         let mut messenger = messenger_with([p]);
         let mut ptt = Ptt::new(Arc::new(clock.clone()));
-        // Üç akış birer saniye arayla kapanır: eşin kaydında son ikisi kalır.
         for stream_id in 0..3 {
             open_and_close(&mut ptt, &mut messenger, p, stream_id);
             clock.advance(Duration::from_secs(1));
         }
         assert_eq!(ptt.closed_of(p).count(), PTT_MAX_ACTIVE_STREAMS);
+        // Aynı kimliğin tekrar `PTT_CLOSE`'u (PTT-R2) başka bir kaydı düşürmez.
+        assert_eq!(ptt.on_event(&mut messenger, close_from(p, 2)), None);
         for stream_id in [1, 2] {
             assert_eq!(ptt.on_event(&mut messenger, open_from(p, stream_id)), None);
         }
         assert_eq!(ptt.stats().opens_after_close, 2);
         assert!(ptt.incoming_streams(p).is_empty());
-        // Düşen en eski kimlik ve süresi dolan kayıt artık engellemez.
-        assert!(matches!(
-            ptt.on_event(&mut messenger, open_from(p, 0)),
-            Some(PttEvent::PttStarted { .. })
-        ));
-        clock.advance(PTT_STREAM_IDLE_TTL);
-        assert!(matches!(
-            ptt.on_event(&mut messenger, open_from(p, 2)),
-            Some(PttEvent::PttStarted { .. })
-        ));
-        assert_eq!(ptt.stats().opens_after_close, 2);
+        assert!(
+            matches!(
+                ptt.on_event(&mut messenger, open_from(p, 0)),
+                Some(PttEvent::PttStarted { .. })
+            ),
+            "düşen en eski kimlik bastırmaz"
+        );
 
-        // Toplam tavan: her eş kendi tavanında; yeni kapanış en eski kaydın yerini alır.
+        // (b) PTT-R2 ile yok sayılan `PTT_CLOSE` da kayda girer; ömür sınırı tam.
+        let clock = TestClock::default();
+        let mut ptt = Ptt::new(Arc::new(clock.clone()));
+        let unseen: StreamId = 7;
+        assert_eq!(ptt.on_event(&mut messenger, close_from(p, unseen)), None);
+        assert_eq!(ptt.stats().unknown_closes, 1);
+        clock.advance(PTT_STREAM_IDLE_TTL - TICK);
+        assert_eq!(
+            ptt.on_event(&mut messenger, open_from(p, unseen)),
+            None,
+            "sınırdan bir adım önce bastırır"
+        );
+        clock.advance(TICK);
+        assert!(
+            matches!(
+                ptt.on_event(&mut messenger, open_from(p, unseen)),
+                Some(PttEvent::PttStarted { .. })
+            ),
+            "tam sınırda bastırmaz"
+        );
+        assert_eq!(ptt.stats().opens_after_close, 1);
+
+        // (c) Toplam tavan: kapanışlar birer milisaniye arayla; yeni kapanış EN ESKİ kaydı düşürür.
+        let clock = TestClock::default();
         let mut full = messenger_with((0..MAX_PEERS).map(peer));
         let extra = peer(MAX_PEERS);
         let mut other = messenger_with([extra]);
-        let mut ptt = Ptt::new(Arc::new(TestClock::default()));
+        let mut ptt = Ptt::new(Arc::new(clock.clone()));
         for n in 0..MAX_PEERS {
             for stream in 0..PTT_MAX_ACTIVE_STREAMS {
                 let stream_id = StreamId::try_from(stream).expect("küçük sayı");
                 open_and_close(&mut ptt, &mut full, peer(n), stream_id);
+                clock.advance(Duration::from_millis(1));
             }
         }
         assert_eq!(ptt.closed.len(), MAX_INCOMING_STREAMS);
         open_and_close(&mut ptt, &mut other, extra, FIRST_STREAM_ID);
         assert_eq!(ptt.closed.len(), MAX_INCOMING_STREAMS);
+        assert!(
+            matches!(
+                ptt.on_event(&mut full, open_from(peer(0), 0)),
+                Some(PttEvent::PttStarted { .. })
+            ),
+            "en eski kapanış düştü"
+        );
+        assert_eq!(
+            ptt.on_event(&mut full, open_from(peer(0), 1)),
+            None,
+            "bir sonraki duruyor"
+        );
         assert_eq!(
             ptt.on_event(&mut other, open_from(extra, FIRST_STREAM_ID)),
             None

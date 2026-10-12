@@ -28,6 +28,9 @@
 //! * **UYARLANAMAZ** — sınadığı yüzey eski kodda yok (ör. `PttError::Store`, `ptt_orphan_bundles`,
 //!   `PTT_STREAM_IDLE_TTL`);
 //! * **AYNI DAVRANIŞ** — eski kodda da geçerdi; regresyon kilidi.
+//!
+//! İnceleme turlarında eklenen testler, sınıflarının ardından bu PR'ın inceleme öncesi
+//! başlarındaki (`b1cce203`, `dad269e7`) durumu da yazar.
 
 mod common;
 
@@ -283,9 +286,9 @@ struct Endpoint {
     superseded: Vec<SessionHandle>,
     /// Bu uçtan KABUL edilen gönderimler, sırasıyla (≤ `LINK_LOG_CAP`).
     sent: Vec<Accepted>,
-    /// Tek atımlık düğme: bu uçtan sıradaki bu kadar (aksi hâlde kabul edilecek) gönderim
-    /// `Backpressure` ile reddedilir — kuyruk durumundan bağımsız; reddedilen gönderim kaydedilmez,
-    /// karşıya gitmez.
+    /// Tek atımlık düğme: bu uçtan, oturum ve boy denetimlerini geçen sıradaki bu kadar gönderim
+    /// `Backpressure` ile reddedilir — kuyruk boş olsa da (düğme kuyruk denetiminden önce gelir;
+    /// kuyruk doluysa ret yine düğmeden sayılır). Reddedilen gönderim kaydedilmez, karşıya gitmez.
     refuse_next: usize,
 }
 
@@ -1535,9 +1538,10 @@ fn refused_reopen_is_retried_until_accepted_once() {
 /// YİNE sunulur (alıcıdaki akışı bitiren odur), ret `opens_resend_refused`'ta sayılır, akış kapanır
 /// ve kapanmış akışın `PTT_OPEN`'ı bir daha sunulmaz.
 ///
-/// `0904f723`'te UYARLANAMAZ (yeniden `PTT_OPEN` yoktu). `close` yeniden `PTT_OPEN` reddini
-/// döndürseydi (`reopen(..)?`) KIRMIZI: `PTT_CLOSE` hiç gitmez, Bob'da akış PTT-R4'e dek etkin
-/// kalırdı.
+/// `0904f723`'te KIRMIZI (uyarlansa da): yeniden `PTT_OPEN` yoktu; düğme `close`'un tek gönderimini
+/// (`PTT_CLOSE`) reddeder, `close` hata döner ve h''ye hiçbir şey gitmez. `close` yeniden `PTT_OPEN`
+/// reddini döndürseydi (`reopen(..)?`) de KIRMIZI: `PTT_CLOSE` hiç gitmez, Bob'da akış PTT-R4'e dek
+/// etkin kalırdı.
 #[test]
 fn refused_reopen_in_close_still_sends_the_close() {
     let (mut duo, old) = Duo::connected();
@@ -1806,9 +1810,10 @@ fn r1_repeated_open_for_an_active_stream_is_idempotent() {
 /// ve `PTT_CLOSE` önce işlenir. Sonra gelen asıl `PTT_OPEN` kapanmış akışı yeniden BAŞLATMAZ: ikinci
 /// `PttStarted` yok, etkin akış yok (PTT-R5 yuvası boş). Aynı drain'in geç demeti PTT-R3'tür.
 ///
-/// `b1cce203`'te (K4G-08'in inceleme öncesi hâli) KIRMIZI: geç `PTT_OPEN` aynı basışa ikinci
+/// `0904f723`'te KIRMIZI (uyarlansa da): yeniden `PTT_OPEN` yoktu (`sent_on(h')` = demet + kapanış).
+/// `b1cce203`'te (K4G-08'in inceleme öncesi hâli) de KIRMIZI: geç `PTT_OPEN` aynı basışa ikinci
 /// `PttStarted` üretiyor, geç demet o hayalet akışa `PttAudio` oluyor ve akış PTT-R4'e dek etkin
-/// kalıyordu. `0904f723`'te UYARLANAMAZ (yeniden `PTT_OPEN` yoktu).
+/// kalıyordu.
 #[test]
 fn r1_late_open_from_a_retired_session_does_not_restart_a_closed_stream() {
     let (mut duo, old) = Duo::connected();
@@ -1868,11 +1873,69 @@ fn r1_late_open_from_a_retired_session_does_not_restart_a_closed_stream() {
     );
 }
 
-/// Gerileme kilidi (hayalet akış düzeltmesinin sınırı): PTT-R4 ile ya da oturum sonuyla biten akış
-/// kapanmış akış kaydına GİRMEZ — gönderen onu hâlâ açık tutuyor olabilir; yeni oturumdaki yeniden
-/// `PTT_OPEN` (D5) akışı yeniden başlatır ve demetleri yine `PttAudio` olur.
+/// PTT-R1, kapanmış akış — ikinci yol (son tur inceleme bulgusu): gönderende `close`'un yeniden
+/// `PTT_OPEN`'ı reddedilir ve yeni oturuma yalnız `PTT_CLOSE` gider (beyanlı istisna 7). Asıl
+/// `PTT_OPEN`'ı ve demeti eski oturumun drain'inde olan Bob'da bu `PTT_CLOSE` PTT-R2'ye düşer (olay
+/// yok) ama kimlik kapanmış akış kaydına girer: sonra gelen asıl `PTT_OPEN` akış BAŞLATMAZ, etkin
+/// akış kalmaz; geç demet PTT-R3'tür.
 ///
-/// `b1cce203`'te AYNI DAVRANIŞ (kayıt yoktu); kayıt bu kapanışları da tutsaydı KIRMIZI.
+/// `0904f723`'te KIRMIZI (uyarlansa da): yeniden `PTT_OPEN` yoktu; düğme `close`'un tek gönderimini
+/// (`PTT_CLOSE`) reddeder, `close` hata döner. `dad269e7`'te de KIRMIZI: PTT-R2 ile yok sayılan
+/// `PTT_CLOSE` kayda girmiyordu, geç `PTT_OPEN` hayalet bir `PttStarted` üretiyordu.
+#[test]
+fn r1_late_open_after_an_ignored_close_starts_no_ghost_stream() {
+    let (mut duo, old) = Duo::connected();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Opus, TEST_BUNDLE_MS)
+        .expect("açılır");
+    duo.alice
+        .send_bundle(stream, &frame(0))
+        .expect("gönderilir");
+    let in_flight = duo.take_inbox(Side::Bob);
+    assert_eq!(
+        in_flight.len(),
+        2,
+        "PTT_OPEN ve demet eski oturumun drain'inde"
+    );
+    let new = duo.link.borrow_mut().supersede();
+    assert_eq!(
+        duo.alice.messenger.connect(BOB),
+        Ok(ConnectResult::Ready(new))
+    );
+    duo.refuse_next_sends(Side::Alice, 1);
+    assert_eq!(duo.alice.close(stream), Ok(()));
+    assert_eq!(duo.sent_on(Side::Alice, new), vec![MsgType::PttClose]);
+    // Bob: `PTT_CLOSE` etkin olmayan bir akışındır (PTT-R2) — olay yok, kimlik kayda girer.
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            session(SessionEvent::Ready(new, ALICE)),
+            session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        ]
+    );
+    duo.deliver_late(Side::Bob, in_flight);
+    assert!(duo.bob.drain().is_empty(), "hayalet PttStarted yok");
+    assert!(duo.bob.ptt.incoming_streams(ALICE).is_empty());
+    assert_eq!(
+        duo.bob.ptt.stats(),
+        PttStats {
+            unknown_closes: 1,
+            opens_after_close: 1,
+            ptt_orphan_bundles: 1,
+            ..PttStats::default()
+        },
+        "CLOSE PTT-R2, geç PTT_OPEN PTT-R1, geç demet PTT-R3"
+    );
+}
+
+/// Gerileme kilidi (hayalet akış düzeltmesinin sınırı): PTT-R4 ile ya da oturum sonuyla biten akış
+/// (`PTT_CLOSE` gelmedi) kapanmış akış kaydına GİRMEZ — gönderen onu hâlâ açık tutuyor olabilir; yeni
+/// oturumdaki yeniden `PTT_OPEN` (D5) akışı yeniden başlatır ve demetleri yine `PttAudio` olur.
+///
+/// `0904f723`'te UYARLANAMAZ ((a): saat ve `PTT_STREAM_IDLE_TTL` yoktu); (b) uyarlansa KIRMIZI:
+/// yeniden `PTT_OPEN` yoktu, akış yeni oturumda yeniden başlamaz. `b1cce203`'te AYNI DAVRANIŞ (kayıt
+/// yoktu; gerileme kilidi): kayıt bu kapanışları da tutsaydı KIRMIZI.
 #[test]
 fn reopen_restarts_a_stream_ended_by_idle_or_session_end() {
     // (a) PTT-R4.
@@ -2243,9 +2306,9 @@ fn stream_ids_continue_after_a_restart_with_the_same_store() {
 /// Düzenek ortak yansıtıcı sahtedir: iki eşe iki oturum; gönderilen her kayıt aynı tutamaçla
 /// "eşten gelmiş" gibi geri döner ve tutamacın eşine bağlanır.
 ///
-/// `0904f723`'te UYARLANAMAZ (tek, eşten bağımsız bellek sayacı: çakışma doğmuyordu ve depo
-/// okunmuyordu). Uyarlansa olay akışı AYNI DAVRANIŞ, depodaki eş sayaçları KIRMIZI. Atlama kuralı
-/// kaldırılırsa KIRMIZI: Carol'ın akışı Bob'unkini ezer.
+/// `0904f723`'te KIRMIZI (uyarlansa da): tek, eşten bağımsız bellek sayacı vardı ve depo
+/// okunmuyordu — olay akışı aynı kalır ama depodaki eş sayaçları (`Bob` 1, `Carol` 2 beklenir) 0
+/// döner. Atlama kuralı kaldırılırsa da KIRMIZI: Carol'ın akışı Bob'unkini ezer.
 #[test]
 fn open_stream_ids_are_unique_across_peers() {
     let store = fresh_store();
