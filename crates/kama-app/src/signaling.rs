@@ -86,18 +86,19 @@
 //!   olaya güvenilmez, `pump` trafik olmasa da periyodik çağrılmalıdır.
 //! * Eşin oturumu kapanırsa (`Closed`) kayıt kalır ve eşin sıradaki oturumunda aynı kuralla sunulur.
 //!
-//! **Tutma kuralı — ÖNERİ, sahip kararı bekliyor (DUR-K4G-14a).** Plan metni kaydın NE ZAMAN
-//! bırakılacağını tanımlamaz (alındı yok). Uygulanan öneri: kayıt ilk kabulden itibaren
-//! [`SIGNALING_RESEND_TTL`] tutulur — yeniden sunum ömrü UZATMAZ, blob'un teslim çabası gönderimden
-//! itibaren süreyle sınırlıdır (signaling-seam-v0 §3 "deadline-bounded reliable") —; eş başına en çok
-//! [`SIGNALING_RESEND_PER_PEER`], toplam en çok `MAX_PEERS × SIGNALING_RESEND_PER_PEER` kayıt; eşin
-//! tavanı dolunca eşin KENDİ en eski kaydı yer açar. Yeni gönderim tavan yüzünden REDDEDİLMEZ:
-//! onaylanamayan eski kayıtlar yeni sinyalleşmeyi ömürleri boyunca durdurmamalıdır. Ömrü dolmuş ya da
-//! düşmüş blob yeniden sunulmaz; kaybını medya motorunun kendi uygulama-ACK'i karşılar
-//! (signaling-seam-v0 §3). İki sabit KALİBRASYON SEÇİMİDİR, türetilmiş değildir: değerleri mevcut iki
-//! sabitin değerlerinden SEÇİLDİ, onlara bağlı değildir (sabit belgeleri). Öneri işareti YALNIZ bu
-//! tutma kuralını (ömür, ömrün başı, tavanlar, taşma politikası) kapsar; yukarıdaki yeniden sunum
-//! mekanizması kartın "supersession'da yeniden gönderim" maddesinin K4G-08 deseniyle uygulanmasıdır.
+//! **Tutma kuralı — sahip kararı (DUR-K4G-14a CEVAP, 2026-10-12).** Plan metni kaydın NE ZAMAN
+//! bırakılacağını tanımlamıyordu (alındı yok); karar: kayıt ilk kabulden itibaren
+//! [`SIGNALING_RESEND_TTL`] (60 s) tutulur — yeniden sunum ömrü UZATMAZ, blob'un teslim çabası
+//! gönderimden itibaren süreyle sınırlıdır (signaling-seam-v0 §3 "deadline-bounded reliable") —; eş
+//! başına en çok [`SIGNALING_RESEND_PER_PEER`] (256), toplam en çok
+//! `MAX_PEERS × SIGNALING_RESEND_PER_PEER` kayıt; eşin tavanı dolunca eşin KENDİ en eski kaydı yer
+//! açar. Yeni gönderim tavan yüzünden REDDEDİLMEZ: onaylanamayan eski kayıtlar yeni sinyalleşmeyi
+//! ömürleri boyunca durdurmamalıdır. Ömrü dolmuş ya da düşmüş blob yeniden sunulmaz; kaybını medya
+//! motorunun kendi uygulama-ACK'i karşılar (signaling-seam-v0 §3). 120 s reddedildi: sinyalleşme
+//! zamana duyarlıdır, 60 s'den eski bir teklifin yeniden sunumu bayat çağrı üretir. İki sabitin
+//! değeri sahip kararıyla `FILE_RECEIPT_TTL` ve `MAX_OUTBOX_UNACKED` ile EŞİT SEÇİLDİ, onlara BAĞLI
+//! DEĞİLDİR (sabit belgeleri). Yukarıdaki yeniden sunum mekanizması kartın "supersession'da yeniden
+//! gönderim" maddesinin K4G-08 deseniyle uygulanmasıdır.
 //!
 //! Kayıt BELLEKTEDİR (plan D8: `AppStore` yalnız sayaç / dedup / outbox taşır): süreç yeniden başlarsa
 //! tutulan blob'lar yeniden sunulmaz (PoC-KAPSAM-001 K2: sahada uygulama yeniden başlatılmaz). Kartın
@@ -142,7 +143,9 @@
 //!   (PoC-KAPSAM-001 K2; D8). Kartın "outbox üzerinden" ifadesinden fark: Messenger outbox'ı kalıcıdır.
 //! * Bir motor tek bir Messenger'la kullanılır ("Çağrı sözleşmesi"); başka bir Messenger'la yeniden
 //!   sunum doğru değildir.
-//! * Tutma kuralı ve iki sabiti ÖNERİDİR (DUR-K4G-14a): sahip kararıyla değişebilir.
+//! * Ömrü (60 s) dolan blob, sonraki oturum ne zaman gelirse gelsin yeniden sunulmaz — sahip
+//!   kararı (DUR-K4G-14a CEVAP, 2026-10-12): sinyalleşme zamana duyarlıdır, bayat teklif bayat
+//!   çağrı üretir.
 //!
 //! # Gizlilik
 //!
@@ -182,24 +185,21 @@ pub const FIRST_SIGNALING_ID: SignalingId = SignalingId(0);
 
 /// Yeniden sunum kaydının ömrü — kaydın ilk KABUL anından itibaren; yeniden sunum uzatmaz.
 ///
-/// **KALİBRASYON — sahip kararı bekliyor (DUR-K4G-14a); türetilmiş DEĞİLDİR.** 60 s değeri
-/// [`FILE_RECEIPT_TTL`](crate::file_transfer::FILE_RECEIPT_TTL)'den SEÇİLDİ (plan D6): kama-app'te
-/// gönderenin onaysız kalmış bir gönderimle ilgilenmeyi bıraktığı mevcut tek süre; yeni sayı icat
-/// edilmedi. Sabit ona BAĞLI değildir: o değişirse bu değişmez. Kurulum hedefi ≤ 1 s olan bir
-/// sinyalleşme blob'u bundan eskiyse medya motorunun kendi durumu onu çoktan aşmıştır.
-///
-/// Seçilmeyen seçenek (sahibe açık): 120 s (`PTT_STREAM_IDLE_TTL` değeri) — PoC K8'in 60 s kesintisini
-/// yeniden bağlanma payıyla kapsar (60 s'de kesintiden hemen önce gönderilmiş blob kesinti sonrası
-/// oturumda sunulmaz). Eski içerikli bir blob'un — ör. IP değişiminden (K4) önceki adresleri taşıyan —
-/// sonraki oturuma yeniden sunulması İKİ değerde de mümkündür; 120 s bu pencereyi iki katına çıkarır.
+/// **Sahip kararı (DUR-K4G-14a CEVAP, 2026-10-12): 60 s**, ilk kabulden. Değer
+/// [`FILE_RECEIPT_TTL`](crate::file_transfer::FILE_RECEIPT_TTL) ile EŞİT SEÇİLDİ (plan D6:
+/// kama-app'te gönderenin onaysız kalmış bir gönderimle ilgilenmeyi bıraktığı süre), ona BAĞLI
+/// DEĞİLDİR: sabit takma ad değil, kendi değeriyle yazılır — `FILE_RECEIPT_TTL` değişirse
+/// sinyalleşme sessizce değişmemelidir. 120 s reddedildi: sinyalleşme zamana duyarlıdır, 60 s'den
+/// eski bir teklifin yeniden sunumu bayat çağrı üretir.
 pub const SIGNALING_RESEND_TTL: Duration = Duration::from_secs(60);
 
 /// Eş başına yeniden sunum kaydı tavanı; dolunca eşin KENDİ en eski kaydı yer açar.
 ///
-/// **KALİBRASYON — sahip kararı bekliyor (DUR-K4G-14a); türetilmiş DEĞİLDİR.** 256 değeri
-/// [`MAX_OUTBOX_UNACKED`](crate::messaging::MAX_OUTBOX_UNACKED)'ten SEÇİLDİ (S7): eş başına
-/// Transport'un kabul ettiği ama onayı gelmemiş kayıtların mevcut tavanı (TEXT); yeni sayı icat
-/// edilmedi. Sabit ona BAĞLI değildir. Bellek profili Messenger outbox'ıyla aynıdır (kayıt ≤
+/// **Sahip kararı (DUR-K4G-14a CEVAP, 2026-10-12): 256**; taşmada en eski düşer, yeni gönderim
+/// reddedilmez. Değer [`MAX_OUTBOX_UNACKED`](crate::messaging::MAX_OUTBOX_UNACKED) ile EŞİT SEÇİLDİ
+/// (S7: eş başına Transport'un kabul ettiği ama onayı gelmemiş kayıtların tavanı, TEXT), ona BAĞLI
+/// DEĞİLDİR: sabit takma ad değil, kendi değeriyle yazılır — `MAX_OUTBOX_UNACKED` değişirse
+/// sinyalleşme sessizce değişmemelidir. Bellek profili Messenger outbox'ıyla aynıdır (kayıt ≤
 /// `max_plaintext_unit_bytes`).
 pub const SIGNALING_RESEND_PER_PEER: usize = 256;
 

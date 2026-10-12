@@ -6,8 +6,8 @@
 //! 2026-10-12: dedup yokluğu ve oturum değişiminde yeniden sunum), AMP §4 A2 ve §5 kural 6, S1 K7
 //! (Transport `h`'de teslim edilmemiş birimi `h'`ye taşımaz) / K8 / §4 ve signaling-seam-v0 §3
 //! (at-least-once, duplicate mümkün, sıra garanti edilmez). Yeniden sunum kaydının TUTMA KURALI
-//! (ömür + eş başına tavan) ÖNERİDİR — sahip kararı bekliyor (DUR-K4G-14a); testler uygulanan öneriyi
-//! sabitler.
+//! (ilk kabulden 60 s, eş başına 256, taşmada en eski düşer) sahip kararıdır (DUR-K4G-14a CEVAP,
+//! 2026-10-12); testler bu kararı sabitler.
 //!
 //! Düzenek `tests/ptt.rs`'teki iki uçlu çiftin (`Link`) kırpılmış KOPYASIDIR: bir uçtan gönderilen
 //! birim karşı ucun teslim kuyruğuna düşer; oturum kurma, supersession, oturum sonu, yoldaki birimi
@@ -792,7 +792,7 @@ fn a_transport_refusal_is_returned_and_consumes_nothing() {
     assert_eq!(duo.bob.turn(), vec![received(ALICE, b"b1")]);
 }
 
-// ── oturum değişimi: yeniden sunum (S1 K7; tutma kuralı ÖNERİ — DUR-K4G-14a) ─────────────────────
+// ── oturum değişimi: yeniden sunum (S1 K7; tutma kuralı: sahip kararı, DUR-K4G-14a CEVAP) ──
 
 /// Olay yolu: blob eski oturumla yolda kaybolur (S1 K7: Transport onu yeni oturuma taşımaz). Kayıt
 /// yeni oturuma AYNI baytlarla, `Reliable`, TAM BİR KEZ yeniden sunulur — `Ready(h')` zincirden
@@ -1209,12 +1209,12 @@ fn a_closed_session_keeps_the_record_for_the_next_session() {
     );
 }
 
-// ── tutma kuralı: ömür ve tavan (ÖNERİ — DUR-K4G-14a, sahip kararı bekliyor) ────────────────────
+// ── tutma kuralı: ömür ve tavan (sahip kararı — DUR-K4G-14a CEVAP, 2026-10-12) ──────────
 
 /// Ömür ilk KABUL anından sayılır ve yeniden sunum UZATMAZ: blob ömrünün bir adım öncesine dek her yeni
 /// oturuma sunulur; tam sınırda (ilk kabulden `SIGNALING_RESEND_TTL` sonra) budanır ve sunulmaz — o
 /// arada yeniden sunulmuş olsa da. Oturum değişimi olmadan da `pump` ömrü dolanı budar. Değer kilidi:
-/// öneri 60 s (DUR-K4G-14a; sahip kararı gelene dek değişmez).
+/// sahip kararı 60 s (DUR-K4G-14a CEVAP, 2026-10-12).
 ///
 /// `ea0d3909`'da UYARLANAMAZ: yeniden sunum kaydı, ömrü ve `pending_count` yoktu.
 #[test]
@@ -1318,8 +1318,8 @@ fn every_expired_record_is_pruned_and_only_live_ones_are_resent() {
 /// Eş başına tavan: tavan + 1 blob gönderilir (hepsi eski oturumla yolda kaybolur); gönderim hiç
 /// reddedilmez, EN ESKİ kayıt düşer (`records_evicted` = 1). Supersession'da yalnız kalan kayıtlar,
 /// gönderim sırasıyla, her biri TAM BİR KEZ yeniden sunulur — Bob'un teslim kuyruğu tavanı yeniden
-/// sunumu geri basınçla turlara bölse de. Değer kilidi: öneri 256 (DUR-K4G-14a; sahip kararı gelene
-/// dek değişmez).
+/// sunumu geri basınçla turlara bölse de. Değer kilidi: sahip kararı 256 (DUR-K4G-14a CEVAP,
+/// 2026-10-12).
 ///
 /// `ea0d3909`'da UYARLANAMAZ: yeniden sunum kaydı ve tavanı yoktu.
 #[test]
