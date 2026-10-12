@@ -21,6 +21,12 @@
 //!   ve aktarım eşin `FILE_RECEIPT`'ini bekler: `ok` → [`FileEvent::Delivered`]; başka her son
 //!   [`FileEvent::SendFailed`]. Sıkıştırma yok (bu sprint `compression_id` = NONE; AMP §5 kural 6:
 //!   `FILE_CHUNK` → kapalı).
+//! * **Gönderen iptali** — [`FileTransfer::cancel_send`] de TEK bir son olayla biter:
+//!   [`FileEvent::SendFailed`] (`Cancelled`). `FILE_BEGIN` Transport'a henüz kabul ettirilmediyse tele
+//!   hiçbir şey çıkmaz ve olay hemen doğar (Abkarada kararı 2026-10-12); kabul ettirildiyse kalan
+//!   kayıtların yerine `FILE_ABORT(user_cancel)` sunulur ve olay o kayıt kabul edildiğinde ya da kalıcı
+//!   reddedildiğinde doğar (orkestratör tutarlılık kararı 2026-10-12: iptalin iki yolu tek sonla
+//!   kapanır).
 //!
 //! Motorun kendi olayları [`FileTransfer::poll_event`] kuyruğundadır. Bir uygulama turu — sıra
 //! önemlidir: zamanlayıcılar YALNIZ [`FileTransfer::pump`]'ta, Messenger kuyruğu boşaltıldıktan SONRA
@@ -85,10 +91,16 @@
 //! Alındılar tek kuyruktan, eşin O ANKİ güncel oturumuna `Reliable` ile sunulur. Oturum yoksa ya da
 //! Transport geçici reddederse alındı bekler (tele çıkmamıştır; yeniden iletim DEĞİL) ve sonraki
 //! sunumda yeniden denenir: alıcının kendi parçalarının kuyruğu doldurduğu iki yönlü aktarımda `ok`
-//! alındısı kaybolup gönderende yanlış başarısızlık doğurmasın. Kuyruk [`MAX_INCOMING_TRANSFERS`]
-//! alındı tutar (alındı bir gelen aktarımın son sözüdür; yeni sayı yok): taşarsa en eski düşer;
-//! [`FILE_RECEIPT_TTL`]'den eski alındı da düşer (gönderen o aktarımdan çoktan vazgeçmiştir). İkisi
-//! de `receipts_unsent`'te sayılır.
+//! alındısı kaybolup gönderende yanlış başarısızlık doğurmasın. Kuyruk tavanı bir KALİBRASYON
+//! SEÇİMİDİR, türetilmiş değildir: alındı gelen yuvası TUTMAZ (aktarım biter bitmez yuvası boşalır),
+//! dolayısıyla bekleyen alındı sayısını hiçbir mevcut tavan sınırlamaz. Değer olarak
+//! [`MAX_INCOMING_TRANSFERS`] yeniden kullanıldı (yeni sabit icat edilmedi): aynı anda o kadar gelen
+//! aktarım birleştirilir ve geçici bir geri basınç normalde bir sonraki sunumda çözülür; kalıcı
+//! birikme ancak alındılar uzun süre Transport'a verilemezken art arda biten ya da reddedilen
+//! aktarımlarla olur. Taşarsa en eski alındı düşer; [`FILE_RECEIPT_TTL`]'den eski alındı da düşer
+//! (gönderen o aktarımdan çoktan vazgeçmiştir). İkisi de `receipts_unsent`'te sayılır. Düşen alındının
+//! göndereni, dosya alıcıda olsa bile `ReceiptTimeout` görür (yanlış "başarısız"; yanlış "teslim
+//! edildi" DEĞİL — "Bilinen sınırlar").
 //!
 //! # Zamanlayıcılar ([`FILE_IDLE_TTL`], [`FILE_RECEIPT_TTL`]; AMP §3 K4G-09)
 //!
@@ -116,8 +128,13 @@
 //! sunulduğu anda yapılır, yalnız `Ready` olayına güvenilmez: yeni oturum olay okunmadan da
 //! benimsenebilir (senkron [`Messenger::connect`] → `ConnectResult::Ready`). Eşin oturumu yokken yarım
 //! aktarım bekler; sıradaki oturumda aynı kuralla kapanır. `FILE_ABORT` geçici reddedilirse bekler.
-//! `FILE_END`'i kabul edilmiş aktarım KAPATILMAZ: alındısını beklemeye devam eder (eski oturumun
-//! yalnız-alım drain'iyle tamamlanmış olabilir; olmadıysa iki zamanlayıcı bitirir).
+//! Kullanıcı iptali bekliyorsa (`FILE_ABORT(user_cancel)` henüz kabul edilmedi) o kayıt eşin yeni
+//! oturumundan gider, nedeni `user_cancel` kalır ve aktarım tek `SendFailed(Cancelled)` ile biter
+//! (supersession sayılmaz). Tersine, `FILE_ABORT(superseded)` zaten sunulmaktayken
+//! [`FileTransfer::cancel_send`] etkisizdir: aktarım `SendFailed(Superseded)` ile biter (ilk neden
+//! kalır). `FILE_END`'i kabul edilmiş aktarım
+//! KAPATILMAZ: alındısını beklemeye devam eder (eski oturumun yalnız-alım drain'iyle tamamlanmış
+//! olabilir; olmadıysa iki zamanlayıcı bitirir).
 //!
 //! Erken iptal kaydı (alıcı): supersession'da yarım aktarımın `FILE_BEGIN`'i eski oturumun yalnız-alım
 //! drain'inde kalabilir (S1 K7, KS-GRACE-1: `N_g = 64` / `T_g = 30 s`) ve yeni oturumdan gelen
@@ -190,8 +207,10 @@
 //! * Erken iptal kaydı taşarsa ([`FILE_IDLE_TTL`] içinde aynı eşten ikiden çok eşleşmeyen
 //!   `FILE_ABORT`) geç `FILE_BEGIN` hayalet aktarım başlatabilir; o aktarım en geç [`FILE_IDLE_TTL`]
 //!   sonra biter.
-//! * Alındı sınırlı bekler: kuyruk taşarsa ya da alındı [`FILE_RECEIPT_TTL`] içinde Transport'a
-//!   verilemezse düşer; gönderen o aktarımı kendi zamanlayıcısıyla başarısız sayar.
+//! * Alındı sınırlı bekler: kuyruk (tavanı kalibrasyon seçimi) taşarsa en eski alındı düşer, alındı
+//!   [`FILE_RECEIPT_TTL`] içinde Transport'a verilemezse de düşer; gönderen o aktarımı kendi
+//!   zamanlayıcısıyla başarısız sayar — dosya alıcıda olduğu hâlde `ReceiptTimeout` (yanlış
+//!   "başarısız"; yanlış "teslim edildi" DEĞİL).
 //! * K4G-09 öncesi bir eş 0x0B'yi tanımaz (AMP §6: DROP): ona giden aktarım `ReceiptTimeout` ile
 //!   biter. PoC'de iki uç aynı yapıdır.
 //! * D4 (PoC-KAPSAM-001 §5 EK-1): kalıcı durum tamamen kaybolur ve aynı kimlik yeniden kullanılırsa
@@ -265,8 +284,10 @@ pub const MAX_OUTGOING_TRANSFERS: usize = 4;
 /// olarak bir ara olay (`Sent`) üretir (modül belgesi, "Sınırlar ve olay kuyruğu").
 const MAX_PENDING_FILE_EVENTS: usize = MAX_INCOMING_TRANSFERS + 2 * MAX_OUTGOING_TRANSFERS;
 
-/// Transport'a henüz kabul ettirilememiş alındı tavanı — türetilmiş: alındı bir gelen aktarımın son
-/// sözüdür (modül belgesi, "`FILE_ABORT` ve `FILE_RECEIPT` yönü").
+/// Transport'a henüz kabul ettirilememiş alındı tavanı — yerel bellek sınırı, normatif DEĞİL
+/// `[KALİBRASYON]`; türetilmiş DEĞİLDİR (alındı gelen yuvası tutmaz). Değer olarak
+/// [`MAX_INCOMING_TRANSFERS`] yeniden kullanıldı; seçim ve taşmanın sonucu (en eski alındı düşer →
+/// gönderende yanlış "başarısız") modül belgesinde, "`FILE_ABORT` ve `FILE_RECEIPT` yönü".
 const MAX_PENDING_RECEIPTS: usize = MAX_INCOMING_TRANSFERS;
 
 /// Erken iptal kaydının toplam tavanı — türetilmiş: eş tablosu tavanı × eş başına gelen yuva tavanı
@@ -317,6 +338,10 @@ pub enum SendFailure {
     ReceiptTimeout,
     /// Yarım aktarımın oturumu değişti; aktarım `FILE_ABORT(superseded)` ile kapatıldı (plan D6).
     Superseded,
+    /// Gönderenin kullanıcısı iptal etti ([`FileTransfer::cancel_send`]). `FILE_BEGIN` Transport'a
+    /// kabul ettirilmeden önceyse tele hiçbir şey çıkmadı (Abkarada kararı 2026-10-12); sonraysa
+    /// `FILE_ABORT(user_cancel)` kabul edildi ya da kalıcı reddedildi (orkestratör tutarlılık kararı).
+    Cancelled,
     /// Transport bir kaydı kalıcı hatayla reddetti (geçici olmayan her `TransportError`); eşe sinyal
     /// gitmedi.
     Transport(TransportError),
@@ -337,8 +362,9 @@ impl SendFailure {
 
 /// [`FileTransfer::poll_event`] çıktısı. Kabul edilmiş her gelen aktarım tam bir SON olayla biter
 /// (`Received` / `Failed` / `Aborted`) — yerel iptal ([`FileTransfer::cancel_incoming`]) hariç;
-/// kuyruğa alınmış her giden aktarım `FILE_END` kabulünde bir ara olay (`Sent`) ve tam bir son olayla
-/// biter (`Delivered` / `SendFailed`) — kullanıcı iptali ([`FileTransfer::cancel_send`]) hariç.
+/// kuyruğa alınmış her giden aktarım, kullanıcı iptali dahil ([`FileTransfer::cancel_send`] →
+/// `SendFailed(Cancelled)`), tam bir son olayla biter (`Delivered` / `SendFailed`); `FILE_END`'i
+/// kabul edildiyse önce bir ara olay (`Sent`) doğar.
 #[derive(Clone, PartialEq, Eq)]
 pub enum FileEvent {
     /// Gelen dosya tamamlandı ve `whole_file_hash` tuttu; birleştirme durumu atıldı, eşe
@@ -761,17 +787,22 @@ impl FileTransfer {
         Err(FileSendError::Store(AppStoreError::Corrupt))
     }
 
-    /// Giden aktarımı iptal eder. `FILE_BEGIN` henüz kabul edilmediyse aktarım sessizce düşer (eş onu
-    /// hiç görmedi; tele bir şey çıkmaz); edildiyse kalan kayıtların yerine `FILE_ABORT(user_cancel)`
-    /// geçer ve sıradaki [`FileTransfer::pump`]'ta sunulur (kabul edilene kadar bekler — kabul
-    /// edilmemiş kayıt tele çıkmamıştır, yeniden iletim DEĞİL). Dosya baytları hemen bırakılır. Olay
-    /// yok (çağıran biliyor); aktarımın `FILE_ABORT`'u zaten sunulmaktaysa (ör. oturum değişimi)
-    /// etkisizdir.
+    /// Giden aktarımı iptal eder; aktarım TEK bir son olayla biter: [`FileEvent::SendFailed`]
+    /// (`Cancelled`; modül belgesi, "Gönderen iptali"). `FILE_BEGIN` Transport'a henüz kabul
+    /// ettirilmediyse tele hiçbir şey çıkmaz (eş aktarımı hiç görmedi), aktarım tablodan çıkar ve olay
+    /// hemen kuyruğa girer (Abkarada kararı 2026-10-12). Kabul ettirildiyse kalan kayıtların yerine
+    /// `FILE_ABORT(user_cancel)` geçer ve sıradaki [`FileTransfer::pump`]'ta sunulur (kabul edilene
+    /// kadar bekler — kabul edilmemiş kayıt tele çıkmamıştır, yeniden iletim DEĞİL); olay o kayıt
+    /// kabul edildiğinde ya da kalıcı reddedildiğinde doğar (orkestratör tutarlılık kararı). Dosya
+    /// baytları hemen bırakılır. Son olay, alınana kadar aktarımın giden yuvasını tutar. Aktarımın
+    /// `FILE_ABORT`'u zaten sunulmaktaysa (yinelenen iptal; oturum değişimi) çağrı etkisizdir ve ikinci
+    /// bir olay doğmaz: oturum değişiminin iptali `SendFailed(Superseded)` ile biter.
     ///
     /// # Errors
     ///
     /// [`FileSendError::UnknownTransfer`] — izlenen giden aktarım değil (hiç yoktu ya da bitti) ·
-    /// [`FileSendError::AlreadySent`] — son kaydı kabul edildi; alındı yine beklenir.
+    /// [`FileSendError::AlreadySent`] — son kaydı kabul edildi; alındı yine beklenir. Hata yolunda olay
+    /// doğmaz.
     pub fn cancel_send(&mut self, transfer_id: TransferId) -> Result<(), FileSendError> {
         let transfer = self
             .outgoing
@@ -779,7 +810,18 @@ impl FileTransfer {
             .ok_or(FileSendError::UnknownTransfer)?;
         match transfer.phase {
             Phase::Offering(Step::Begin) => {
+                // Eş aktarımı hiç görmedi: tele bir şey çıkmaz. Son olay, tablodan çıkan aktarımın
+                // yuvasını alır (yuva hesabı değişmez).
+                let peer = transfer.peer;
                 self.outgoing.remove(&transfer_id);
+                push_event(
+                    &mut self.events,
+                    FileEvent::SendFailed {
+                        peer,
+                        transfer_id,
+                        reason: SendFailure::Cancelled,
+                    },
+                );
             }
             Phase::Offering(Step::Chunk(_) | Step::End) => {
                 transfer.phase = Phase::Offering(Step::Abort(FileAbortReason::UserCancel));
@@ -1518,8 +1560,10 @@ fn offer<T: KamaTransport>(
     }
 }
 
-/// Gönderenin iptaliyle biten aktarımın son olayı: oturum değişimi → `SendFailed(Superseded)`;
-/// kullanıcı iptali → olay yok (çağıran biliyor).
+/// Gönderenin iptaliyle (`FILE_ABORT` kabul edildi, kalıcı reddedildi ya da eşin alındısı onu geçti)
+/// biten aktarımın son olayı: oturum değişimi → `SendFailed(Superseded)`; kullanıcı iptali →
+/// `SendFailed(Cancelled)` (orkestratör tutarlılık kararı 2026-10-12). Diğer nedenleri bu motor
+/// üretmez (`Step::Abort` yalnız bu ikisiyle kurulur).
 fn abort_event(
     peer: PeerRef,
     transfer_id: TransferId,
@@ -1531,10 +1575,14 @@ fn abort_event(
             transfer_id,
             reason: SendFailure::Superseded,
         }),
-        FileAbortReason::UserCancel
-        | FileAbortReason::HashMismatch
-        | FileAbortReason::StorageFull
-        | FileAbortReason::Timeout => None,
+        FileAbortReason::UserCancel => Some(FileEvent::SendFailed {
+            peer,
+            transfer_id,
+            reason: SendFailure::Cancelled,
+        }),
+        FileAbortReason::HashMismatch | FileAbortReason::StorageFull | FileAbortReason::Timeout => {
+            None
+        }
     }
 }
 
@@ -1763,6 +1811,9 @@ mod tests {
     const TEST_MAX_PLAINTEXT_UNIT_BYTES: u32 = 1024;
     /// Saatin en küçük adımı (ömür sınırı denetimi).
     const TICK: Duration = Duration::from_nanos(1);
+    /// Zamana bakan testlerde saatin başlangıcı (sıfır değil): bir zaman damgasının işleme anı mı
+    /// yoksa sıfır mı olduğu ayırt edilsin.
+    const CLOCK_START: Duration = Duration::from_secs(1000);
 
     /// RFC 7693 Ek B — BLAKE2s-256("abc").
     const BLAKE2S_256_ABC: [u8; WHOLE_FILE_HASH_BYTES] = [
@@ -1840,6 +1891,13 @@ mod tests {
     struct TestClock(Arc<Mutex<Duration>>);
 
     impl TestClock {
+        /// Sıfırdan başlamayan saat ([`CLOCK_START`]): kayıt anı sıfır damgasından ayırt edilir.
+        fn started() -> Self {
+            let clock = Self::default();
+            clock.advance(CLOCK_START);
+            clock
+        }
+
         fn advance(&self, by: Duration) {
             let mut now = self.0.lock().expect("kilit zehirlenmedi");
             *now = now.saturating_add(by);
@@ -2459,23 +2517,26 @@ mod tests {
         assert!(sent(&messenger).is_empty(), "hiçbir kayıt kabul edilmedi");
     }
 
-    /// Erken iptal kaydı: eş başına en çok [`MAX_INCOMING_TRANSFERS_PER_PEER`] kimlik (en eski düşer;
-    /// aynı kimliğin tekrar `FILE_ABORT`'u başka bir kaydı düşürmez), toplam en çok
-    /// [`MAX_EARLY_ABORTS`] (en eski yer açar, bir sonraki durur), ömür [`FILE_IDLE_TTL`] (sınırdan bir
-    /// adım önce reddeder, tam sınırda reddetmez). Kayıttaki kimliğin `FILE_BEGIN`'i `rejected` alır ve
-    /// kayıt silinir; düşmüş ya da süresi dolmuş kimliğinki kabul edilir.
+    /// Erken iptal kaydı: eş başına en çok [`MAX_INCOMING_TRANSFERS_PER_PEER`] kimlik (ZAMANCA en eski
+    /// düşer; aynı kimliğin tekrar `FILE_ABORT`'u başka bir kaydı düşürmez), toplam en çok
+    /// [`MAX_EARLY_ABORTS`] (zamanca en eski yer açar, bir sonraki durur), her kaydın ömrü KENDİ işlendiği
+    /// andan [`FILE_IDLE_TTL`] (sınırdan bir adım önce reddeder, tam sınırda reddetmez). Kayıtlar TERS
+    /// anahtar sırasıyla yazılır, böylece "zamanca en eski" ile "en küçük anahtar" ayrışır; saat sıfırdan
+    /// başlamaz, böylece kayıt anı sıfır damgasından ayrışır. Kayıttaki kimliğin `FILE_BEGIN`'i
+    /// `rejected` alır ve kayıt silinir; düşmüş ya da süresi dolmuş kimliğinki kabul edilir.
     ///
     /// `d3bc7407`'de UYARLANAMAZ: kayıt ve saat yoktu; eşleşmeyen `FILE_ABORT` yalnız sayılıyordu ve
     /// geç `FILE_BEGIN` aktarımı başlatırdı.
     #[test]
     fn early_abort_record_is_bounded_and_expires() {
-        // (a) Eş başına tavan: üç kimlik birer saniye arayla; son ikisi kalır.
-        let clock = TestClock::default();
+        // (a) Eş başına tavan: kimlikler 2, 1, 0 birer saniye arayla — zamanca en eski (2, en büyük
+        // anahtar) düşer.
+        let clock = TestClock::started();
         let bob = peer(1);
         let mut messenger = messenger_with(&[bob]);
         let mut files = FileTransfer::new(Arc::new(clock.clone()));
         let superseded = |id| abort(id, FileAbortReason::Superseded);
-        for id in 0..3 {
+        for id in [2, 1, 0] {
             assert_eq!(feed(&mut files, &mut messenger, bob, superseded(id)), None);
             clock.advance(Duration::from_secs(1));
         }
@@ -2483,13 +2544,13 @@ mod tests {
             files.early_aborts_of(bob).count(),
             MAX_INCOMING_TRANSFERS_PER_PEER
         );
-        assert_eq!(feed(&mut files, &mut messenger, bob, superseded(2)), None);
+        assert_eq!(feed(&mut files, &mut messenger, bob, superseded(1)), None);
         assert_eq!(
             files.early_aborts_of(bob).count(),
             MAX_INCOMING_TRANSFERS_PER_PEER,
             "tekrar FILE_ABORT başka kaydı düşürmez"
         );
-        for id in [1, 2] {
+        for id in [1, 0] {
             assert_eq!(
                 feed(&mut files, &mut messenger, bob, begin(id, 10, 1)),
                 None
@@ -2498,31 +2559,50 @@ mod tests {
         assert_eq!(files.incoming_count(), 0, "kayıttaki kimlikler reddedildi");
         assert_eq!(files.stats().begins_after_abort, 2);
         assert_eq!(files.early_aborts_of(bob).count(), 0, "kayıt silindi");
-        assert_eq!(feed(&mut files, &mut messenger, bob, begin(0, 10, 1)), None);
-        assert_eq!(files.incoming_count(), 1, "düşen en eski kimlik reddetmez");
+        assert_eq!(feed(&mut files, &mut messenger, bob, begin(2, 10, 1)), None);
+        assert_eq!(
+            files.incoming_count(),
+            1,
+            "zamanca en eski kimlik düşmüştü: reddetmez"
+        );
         assert_eq!(
             sent(&messenger),
             vec![
                 receipt(1, FileReceiptStatus::Rejected),
-                receipt(2, FileReceiptStatus::Rejected),
+                receipt(0, FileReceiptStatus::Rejected),
             ]
         );
 
-        // (b) Ömür sınırı tam.
-        let clock = TestClock::default();
+        // (b) Her kaydın ömrü kendi işlendiği andan: A sınırından bir adım önce reddeder; A'dan
+        // `FILE_IDLE_TTL − TICK` sonra yazılan B de KENDİ sınırından bir adım önce hâlâ reddeder; C tam
+        // sınırında reddetmez.
+        let clock = TestClock::started();
         let mut files = FileTransfer::new(Arc::new(clock.clone()));
         assert_eq!(feed(&mut files, &mut messenger, bob, superseded(7)), None);
         clock.advance(FILE_IDLE_TTL - TICK);
-        assert_eq!(feed(&mut files, &mut messenger, bob, begin(7, 10, 1)), None);
-        assert_eq!(files.incoming_count(), 0, "sınırdan bir adım önce reddeder");
         assert_eq!(feed(&mut files, &mut messenger, bob, superseded(8)), None);
-        clock.advance(FILE_IDLE_TTL);
+        assert_eq!(feed(&mut files, &mut messenger, bob, begin(7, 10, 1)), None);
+        assert_eq!(
+            files.incoming_count(),
+            0,
+            "A: sınırdan bir adım önce reddeder"
+        );
+        clock.advance(FILE_IDLE_TTL - TICK);
         assert_eq!(feed(&mut files, &mut messenger, bob, begin(8, 10, 1)), None);
-        assert_eq!(files.incoming_count(), 1, "tam sınırda reddetmez");
+        assert_eq!(
+            files.incoming_count(),
+            0,
+            "B: kendi sınırından bir adım önce hâlâ reddeder"
+        );
+        assert_eq!(feed(&mut files, &mut messenger, bob, superseded(9)), None);
+        clock.advance(FILE_IDLE_TTL);
+        assert_eq!(feed(&mut files, &mut messenger, bob, begin(9, 10, 1)), None);
+        assert_eq!(files.incoming_count(), 1, "C: tam sınırda reddetmez");
 
-        // (c) Toplam tavan: eş tablosu dolu motor, her eşe tavan kadar kimlik birer ms arayla; yeni
-        // kayıt EN ESKİ'yi düşürür.
-        let clock = TestClock::default();
+        // (c) Toplam tavan: eş tablosu dolu motor; eşler AZALAN, kimlikler 1, 0 sırasıyla birer ms
+        // arayla — zamanca en eski kayıt en BÜYÜK anahtardır. Yeni kayıt onu düşürür; zamanca bir
+        // sonraki ve en küçük anahtar durur.
+        let clock = TestClock::started();
         let max_peers = u8::try_from(MAX_PEERS).expect("küçük sayı");
         let peers: Vec<PeerRef> = (1..=max_peers).map(peer).collect();
         let mut full = messenger_with(&peers);
@@ -2530,8 +2610,8 @@ mod tests {
         let mut other = messenger_with(&[extra]);
         let mut files = FileTransfer::new(Arc::new(clock.clone()));
         let per_peer = TransferId::try_from(MAX_INCOMING_TRANSFERS_PER_PEER).expect("küçük sayı");
-        for &p in &peers {
-            for id in 0..per_peer {
+        for &p in peers.iter().rev() {
+            for id in (0..per_peer).rev() {
                 assert_eq!(feed(&mut files, &mut full, p, superseded(id)), None);
                 clock.advance(Duration::from_millis(1));
             }
@@ -2539,22 +2619,36 @@ mod tests {
         assert_eq!(files.aborted_early.len(), MAX_EARLY_ABORTS);
         assert_eq!(feed(&mut files, &mut other, extra, superseded(0)), None);
         assert_eq!(files.aborted_early.len(), MAX_EARLY_ABORTS);
-        assert_eq!(feed(&mut files, &mut full, peers[0], begin(0, 10, 1)), None);
-        assert_eq!(files.incoming_count(), 1, "en eski kayıt düştü");
-        assert_eq!(feed(&mut files, &mut full, peers[0], begin(1, 10, 1)), None);
-        assert_eq!(files.incoming_count(), 1, "bir sonraki duruyor");
+        let (oldest_peer, smallest_peer) = (peers[MAX_PEERS - 1], peers[0]);
+        let oldest_id = per_peer - 1;
+        assert_eq!(
+            feed(&mut files, &mut full, oldest_peer, begin(oldest_id, 10, 1)),
+            None
+        );
+        assert_eq!(files.incoming_count(), 1, "zamanca en eski kayıt düştü");
+        assert_eq!(
+            feed(&mut files, &mut full, oldest_peer, begin(0, 10, 1)),
+            None
+        );
+        assert_eq!(files.incoming_count(), 1, "zamanca bir sonraki duruyor");
+        assert_eq!(
+            feed(&mut files, &mut full, smallest_peer, begin(0, 10, 1)),
+            None
+        );
+        assert_eq!(files.incoming_count(), 1, "en küçük anahtar düşmedi");
         assert_eq!(feed(&mut files, &mut other, extra, begin(0, 10, 1)), None);
         assert_eq!(files.incoming_count(), 1, "yeni kayıt duruyor");
     }
 
     /// Alındı kuyruğu: Transport geçici reddederken alındılar bekler (tele çıkmamıştır); kuyruk en çok
     /// [`MAX_PENDING_RECEIPTS`] alındı tutar (en eski düşer); Transport açılınca kalanlar doğuş
-    /// sırasıyla gider. [`FILE_RECEIPT_TTL`]'den eski alındı düşer (sınırdan bir adım önce gider).
+    /// sırasıyla gider. [`FILE_RECEIPT_TTL`]'den eski alındı düşer (sınırdan bir adım önce gider); saat
+    /// sıfırdan başlamaz, böylece alındının doğuş anı sıfır damgasından ayrışır.
     ///
     /// `d3bc7407`'de UYARLANAMAZ: alındı yoktu; alıcının tek kaydı (`FILE_ABORT`) tek denemelikti.
     #[test]
     fn pending_receipts_wait_and_are_bounded_and_expire() {
-        let clock = TestClock::default();
+        let clock = TestClock::started();
         let bob = peer(1);
         let mut messenger = messenger_with(&[bob]);
         let mut files = FileTransfer::new(Arc::new(clock.clone()));
@@ -2652,9 +2746,19 @@ mod tests {
         }
         assert_eq!(files.outgoing_count(), 1);
         files.pump(&mut messenger);
-        assert!(sent(&messenger)
+        // Tam dizi (boş gönderim de denetlenir): yalnız ilk aktarımın üç kaydı, hepsi aynı kimlikle.
+        let records: Vec<(MsgType, TransferId)> = sent(&messenger)
             .iter()
-            .all(|message| transfer_of(message) == repeated));
+            .map(|message| (message.msg_type(), transfer_of(message)))
+            .collect();
+        assert_eq!(
+            records,
+            vec![
+                (MsgType::FileBegin, repeated),
+                (MsgType::FileChunk, repeated),
+                (MsgType::FileEnd, repeated),
+            ]
+        );
     }
 
     /// `d3bc7407`'de AYNI DAVRANIŞ.

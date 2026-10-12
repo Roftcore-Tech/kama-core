@@ -35,7 +35,8 @@ const REJECT_PATH: &str = concat!(
 const KIND_ENCODE: &str = "encode";
 const KIND_DECODE: &str = "decode";
 const POSITIVE_ID_PREFIX: &str = "amp-record-v1.encode.";
-/// [K4G-09] 0x0B `FILE_RECEIPT` pozitif vakalarının (her `status` için bir) ortak soneki.
+/// [K4G-09] 0x0B `FILE_RECEIPT` pozitif vakalarının (her `status` için bir) yerel adının ortak
+/// ÖNEKİ: kimliğin [`POSITIVE_ID_PREFIX`]'ten sonraki kısmı bununla başlar.
 const FILE_RECEIPT_CASE_PREFIX: &str = "file-receipt-";
 
 /// Vektörlerin üretildiği test parametresi — kaynak: `ref/amp/encode.py`
@@ -345,6 +346,72 @@ fn every_file_receipt_status_has_one_positive_vector() {
         .collect();
     statuses.sort_by_key(|status| status.code());
     assert_eq!(statuses, FileReceiptStatus::ALL, "her status tam bir kez");
+}
+
+/// [K4G-09] Vaka kilidi: kartın üç ret vakası (`file-receipt-{unknown-status,short-body,long-body}`)
+/// ve `file-abort-superseded` dosyalarda VAR ve beklenen hükümlerini taşır. "Her vaka koşuldu"
+/// sayımı bir vakanın silinmesini ya da hükmünün değişmesini görmezdi; bu test görür. Token'lar
+/// codec'in mevcut `DropReason` sözleşmesidir (beklenen bayt değildir).
+///
+/// `d3bc7407`'de UYARLANAMAZ: vakalar yoktu (0x0B kayıtsız tipti).
+#[test]
+fn k4g09_cases_are_present_with_their_verdicts() {
+    let reject = suite(REJECT_PATH, KIND_DECODE);
+    let limits = limits();
+    let verdicts = [
+        (
+            "amp-record-reject-v1.decode.file-receipt-unknown-status",
+            DropReason::UnknownEnumValue,
+        ),
+        (
+            "amp-record-reject-v1.decode.file-receipt-short-body",
+            DropReason::InnerFieldExceedsBodyLen,
+        ),
+        (
+            "amp-record-reject-v1.decode.file-receipt-long-body",
+            DropReason::TrailingBodyBytes,
+        ),
+    ];
+    for (id, drop) in verdicts {
+        let case = reject
+            .cases
+            .iter()
+            .find(|case| case.id == id)
+            .unwrap_or_else(|| panic!("{id}: vaka yok"));
+        let Expected::Rejected { result, reason } = &case.expected else {
+            panic!("{id}: ret vakası expected.result/reason taşımalı");
+        };
+        assert_eq!(
+            (*result, reason.as_str()),
+            (RejectResult::Drop, drop.reason()),
+            "{id}"
+        );
+        let Input::Wire(record) = &case.input else {
+            panic!("{id}: ret vakası input_hex taşımalı");
+        };
+        assert_eq!(
+            decode(record, &limits),
+            Err(DecodeError::Drop(drop)),
+            "{id}"
+        );
+    }
+    let positive = suite(POSITIVE_PATH, KIND_ENCODE);
+    let id = "amp-record-v1.encode.file-abort-superseded";
+    let case = positive
+        .cases
+        .iter()
+        .find(|case| case.id == id)
+        .unwrap_or_else(|| panic!("{id}: vaka yok"));
+    assert!(
+        matches!(
+            message_from_input(case),
+            AppMessage::FileAbort {
+                reason: FileAbortReason::Superseded,
+                ..
+            }
+        ),
+        "{id}: FILE_ABORT(superseded) bekleniyordu"
+    );
 }
 
 /// Dosyalardaki HER vaka koşuldu ve zstd bekleyenlerin hepsi tam bir kez görüldü.
