@@ -1,7 +1,8 @@
 //! Elle sürülen düğüm döngüsüyle birim testleri (`crate::test_support`): komut grubunu tur ARASINA
 //! girmeden koşan, saati elle ilerleten ve döngünün iç durumunu (tutamaç kaydı, motor tabloları,
 //! ölçü anlık görüntüsü) okuyan sınamalar. Kurulum `KamaNode::start` ile AYNI gövdedir (`build`):
-//! gerçek provisioning, kripto, depo ve UDP; zarflar test rölesiyle (DUR-K4G-11).
+//! gerçek provisioning, kripto, depo ve UDP; zarflar `KamaNode::start`'ın kullandığı süreç-içi
+//! röleyle (her test kendi kimliklerini üretir).
 
 use std::fs;
 use std::path::Path;
@@ -11,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use client_core::memory_link::MemoryHub;
 use kama_app::codec::{AppMessage, EncodeError, PttCodec};
 use kama_app::file_transfer::{
     FileFailure, FileSendError, SendFailure, TransferId, FILE_IDLE_TTL, FILE_RECEIPT_TTL,
@@ -258,11 +258,9 @@ fn cancel_of_a_closed_file_handle_never_reaches_another_peers_transfer() {
     let _serial = support::serial();
     let root = TempDir::new("closed-file-handle");
     let phones = support::provision(root.path(), &[ALICE, BOB, CAROL]);
-    let hub = MemoryHub::new();
-    let (_bob, mut bob_events) = support::threaded(&phones[BOB], &hub);
-    let (_carol, mut carol_events) = support::threaded(&phones[CAROL], &hub);
-    let (mut alice, mut alice_events) =
-        support::manual(&phones[ALICE], &hub, support::system_clock());
+    let (_bob, mut bob_events) = support::threaded(&phones[BOB]);
+    let (_carol, mut carol_events) = support::threaded(&phones[CAROL]);
+    let (mut alice, mut alice_events) = support::manual(&phones[ALICE], support::system_clock());
     let node = &mut alice.node;
     connect_from_manual(node, &mut alice_events, BOB);
     connect_from_manual(node, &mut alice_events, CAROL);
@@ -362,9 +360,9 @@ fn connect_after_cancel_in_one_batch_keeps_the_abandoned_event() {
     let _serial = support::serial();
     let root = TempDir::new("cancel-connect-batch");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
-    // Bob hiç başlamaz: INIT rölede bekler, niyet çözülmez.
-    let hub = MemoryHub::new();
-    let (mut alice, mut events) = support::manual(&phones[ALICE], &hub, support::system_clock());
+    // Bob hiç başlamaz: süreç-içi rölede kayıtlı değildir — INIT'in yolu yok ve saklanmaz; niyet
+    // bekler.
+    let (mut alice, mut events) = support::manual(&phones[ALICE], support::system_clock());
     let node = &mut alice.node;
     let bob = peer_of(node, BOB);
 
@@ -416,9 +414,8 @@ fn delivery_channel_overflow_reaches_node_metrics() {
     let _serial = support::serial();
     let root = TempDir::new("delivery-overflow");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
-    let hub = MemoryHub::new();
-    let (mut bob, mut bob_events) = support::manual(&phones[BOB], &hub, support::system_clock());
-    let (alice, mut alice_events) = support::threaded(&phones[ALICE], &hub);
+    let (mut bob, mut bob_events) = support::manual(&phones[BOB], support::system_clock());
+    let (alice, mut alice_events) = support::threaded(&phones[ALICE]);
     connect_to_manual(
         &alice,
         &mut alice_events,
@@ -466,10 +463,8 @@ fn epoch_telemetry_follows_the_responders_zero_to_one_transition() {
     let _serial = support::serial();
     let root = TempDir::new("epoch");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
-    let hub = MemoryHub::new();
-    let (mut alice, mut alice_events) =
-        support::manual(&phones[ALICE], &hub, support::system_clock());
-    let (mut bob, mut bob_events) = support::manual(&phones[BOB], &hub, support::system_clock());
+    let (mut alice, mut alice_events) = support::manual(&phones[ALICE], support::system_clock());
+    let (mut bob, mut bob_events) = support::manual(&phones[BOB], support::system_clock());
     let to_bob = peer_of(&alice.node, BOB);
     call(&mut alice.node, |reply| Command::Connect {
         peer: to_bob,
@@ -537,10 +532,9 @@ fn queued_chunks_outlive_file_idle_ttl_and_a_stalled_transfer_expires_on_a_turn(
     let _serial = support::serial();
     let root = TempDir::new("file-idle");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
-    let hub = MemoryHub::new();
     let clock = ManualClock::default();
-    let (mut bob, mut bob_events) = support::manual(&phones[BOB], &hub, Arc::new(clock.clone()));
-    let (alice, mut alice_events) = support::threaded(&phones[ALICE], &hub);
+    let (mut bob, mut bob_events) = support::manual(&phones[BOB], Arc::new(clock.clone()));
+    let (alice, mut alice_events) = support::threaded(&phones[ALICE]);
     let node = &mut bob.node;
     connect_to_manual(&alice, &mut alice_events, ALICE, node, &mut bob_events, BOB);
     let chunk_len = node.messenger.limits().max_file_chunk_bytes();
@@ -619,10 +613,9 @@ fn idle_incoming_ptt_stream_ends_on_a_turn_without_traffic() {
     let _serial = support::serial();
     let root = TempDir::new("ptt-r4");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
-    let hub = MemoryHub::new();
     let clock = ManualClock::default();
-    let (mut bob, mut bob_events) = support::manual(&phones[BOB], &hub, Arc::new(clock.clone()));
-    let (alice, mut alice_events) = support::threaded(&phones[ALICE], &hub);
+    let (mut bob, mut bob_events) = support::manual(&phones[BOB], Arc::new(clock.clone()));
+    let (alice, mut alice_events) = support::threaded(&phones[ALICE]);
     let node = &mut bob.node;
     connect_to_manual(&alice, &mut alice_events, ALICE, node, &mut bob_events, BOB);
 
@@ -686,11 +679,9 @@ fn receipt_timeout_closes_the_handle_on_a_turn_without_traffic() {
     let _serial = support::serial();
     let root = TempDir::new("receipt-ttl");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
-    let hub = MemoryHub::new();
     let clock = ManualClock::default();
-    let (mut alice, mut alice_events) =
-        support::manual(&phones[ALICE], &hub, Arc::new(clock.clone()));
-    let (mut bob, mut bob_events) = support::manual(&phones[BOB], &hub, support::system_clock());
+    let (mut alice, mut alice_events) = support::manual(&phones[ALICE], Arc::new(clock.clone()));
+    let (mut bob, mut bob_events) = support::manual(&phones[BOB], support::system_clock());
     let node = &mut alice.node;
     connect_manuals(
         node,
@@ -774,8 +765,7 @@ fn shutdown_with_room_in_the_queue_never_raises_the_stop_flag() {
     let _serial = support::serial();
     let root = TempDir::new("shutdown-room");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
-    let hub = MemoryHub::new();
-    let (node, mut events) = support::threaded(&phones[ALICE], &hub);
+    let (node, mut events) = support::threaded(&phones[ALICE]);
     let shared = Arc::clone(&node.shared);
     // Oturum yok: her komut düğümde `NoSession` olayına dönüşür.
     let files: Vec<FileHandle> = (0..QUEUED_BEFORE_SHUTDOWN)
@@ -807,7 +797,6 @@ fn full_queue_shutdown_ends_after_the_current_batch_and_drops_the_rest_without_e
     let _serial = support::serial();
     let root = TempDir::new("shutdown-full");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
-    let hub = MemoryHub::new();
     let (events_tx, mut events) = support::event_channel();
     let (entered_tx, entered) = mpsc::sync_channel(1);
     let (release, release_rx) = mpsc::sync_channel(1);
@@ -815,7 +804,7 @@ fn full_queue_shutdown_ends_after_the_current_batch_and_drops_the_rest_without_e
         events: events_tx,
         gate: Mutex::new(Some((entered_tx, release_rx))),
     };
-    let node = support::threaded_with(&phones[ALICE], &hub, Box::new(listener));
+    let node = support::threaded_with(&phones[ALICE], Box::new(listener));
     let shared = Arc::clone(&node.shared);
     let source = Path::new(UNREAD_SOURCE);
 
@@ -870,9 +859,8 @@ fn tickets_are_released_on_ready_and_after_a_reconnection() {
     let _serial = support::serial();
     let root = TempDir::new("tickets");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
-    let hub = MemoryHub::new();
-    let (_bob, _bob_events) = support::threaded(&phones[BOB], &hub);
-    let (mut alice, mut events) = support::manual(&phones[ALICE], &hub, support::system_clock());
+    let (_bob, _bob_events) = support::threaded(&phones[BOB]);
+    let (mut alice, mut events) = support::manual(&phones[ALICE], support::system_clock());
     let node = &mut alice.node;
 
     connect_from_manual(node, &mut events, BOB);
@@ -917,9 +905,8 @@ fn input_limits_are_the_engines_own_limits() {
     let _serial = support::serial();
     let root = TempDir::new("limits");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
-    let hub = MemoryHub::new();
-    let (_bob, _bob_events) = support::threaded(&phones[BOB], &hub);
-    let (mut alice, mut events) = support::manual(&phones[ALICE], &hub, support::system_clock());
+    let (_bob, _bob_events) = support::threaded(&phones[BOB]);
+    let (mut alice, mut events) = support::manual(&phones[ALICE], support::system_clock());
     let limits = alice.limits;
     let node = &mut alice.node;
     connect_from_manual(node, &mut events, BOB);
@@ -984,12 +971,9 @@ fn top_level_epoch_is_the_lowest_ready_session_epoch() {
     let _serial = support::serial();
     let root = TempDir::new("epoch-min");
     let phones = support::provision(root.path(), &[ALICE, BOB, CAROL]);
-    let hub = MemoryHub::new();
-    let (_bob, _bob_events) = support::threaded(&phones[BOB], &hub);
-    let (mut alice, mut alice_events) =
-        support::manual(&phones[ALICE], &hub, support::system_clock());
-    let (mut carol, mut carol_events) =
-        support::manual(&phones[CAROL], &hub, support::system_clock());
+    let (_bob, _bob_events) = support::threaded(&phones[BOB]);
+    let (mut alice, mut alice_events) = support::manual(&phones[ALICE], support::system_clock());
+    let (mut carol, mut carol_events) = support::manual(&phones[CAROL], support::system_clock());
 
     connect_from_manual(&mut alice.node, &mut alice_events, BOB);
     // carol başlatır; carol SÜRÜLMEZ: RESPONSE'u işlemez, veri yollayamaz.
@@ -1041,9 +1025,8 @@ fn receipt_completion_is_reported_in_chain_order_within_the_turn() {
     let _serial = support::serial();
     let root = TempDir::new("chain-order");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
-    let hub = MemoryHub::new();
-    let (bob, mut bob_events) = support::threaded(&phones[BOB], &hub);
-    let (mut alice, mut events) = support::manual(&phones[ALICE], &hub, support::system_clock());
+    let (bob, mut bob_events) = support::threaded(&phones[BOB]);
+    let (mut alice, mut events) = support::manual(&phones[ALICE], support::system_clock());
     let node = &mut alice.node;
     connect_from_manual(node, &mut events, BOB);
     let chunk_len = node.messenger.limits().max_file_chunk_bytes();

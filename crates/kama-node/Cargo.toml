@@ -28,18 +28,18 @@ kama-store = { path = "../kama-store" }
 thiserror.workspace = true
 
 [features]
-# YALNIZ test: zarf taşıyıcısını (`client_core::transport::EnvelopeLink`) dışarıdan veren kurucu
-# `KamaNode::start_with_envelope_link`. Ürün taşıyıcısı DUR-K4G-11 kararını bekler; CORE testi
-# (`tests/two_nodes_loopback.rs`) gerçek kimlik + depo + saat + entropi + UDP + motor yolunu bu
-# kurucuyla ve bellek içi test rölesiyle koşar. Ürün derlemesinde YOKTUR.
+# Bugün bu özelliğe bağlı öğe YOKTUR: DUR-K4G-11 → B ile ürün zarf taşıyıcısı süreç-içi röle oldu
+# (`src/carrier.rs`) ve testler ürün yolunu (`KamaNode::start`) koşar; test kurucusu
+# `start_with_envelope_link` kaldırıldı. Özellik ve aşağıdaki öz-bağımlılık bu PR'da kilit dosyası
+# (Cargo.lock) değişmesin diye korunur; ikisi birlikte ayrı bir değişiklikte kaldırılabilir.
 test-util = []
 
 [dev-dependencies]
-# Kendi `test-util` özelliğini entegrasyon testlerine açar (client-core'daki kalıp). Yalnız test
-# derlemesinde; ürün grafiğine girmez.
+# Kendi `test-util` özelliğini entegrasyon testlerine açar (client-core'daki kalıp; bkz. yukarıdaki
+# not). Yalnız test derlemesinde; ürün grafiğine girmez.
 kama-node = { path = ".", features = ["test-util"] }
-# Bellek içi zarf rölesi (`client_core::memory_link::MemoryHub`) — YALNIZ test; ürün bağımlılığında
-# `test-util` AÇILMAZ.
+# Birim testlerinin salt-okunur test kancası (`ClientTransport::inbox_len_for_test`) — YALNIZ test;
+# ürün bağımlılığında `test-util` AÇILMAZ.
 client-core = { path = "../client-core", features = ["test-util"] }
 
 [lints]

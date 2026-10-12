@@ -1,15 +1,15 @@
 //! K4G-11 CORE testi (plan kart NE 4) — iki `KamaNode` aynı süreçte, loopback UDP.
 //!
-//! GERÇEK yol: `kama-provision` kütüphanesiyle test içinde üretilmiş iki cihaz dosyası (elle
-//! yazılmış fikstür DEĞİL; `root.json` cihaz dizinlerine girmez), gerçek anahtarlar, gerçek saatler
-//! (Crypto + Application ayrı), OS entropisi, `kama-store::RedbStore` (aynı nesne `AppStore` +
-//! `CounterStore`), gerçek `ClientTransport` + `NoiseWireProtection` + UDP veri yolu, `kama-app`
-//! Messenger / Ptt / FileTransfer motorları ve düğüm döngüsü.
+//! ÜRÜN yolu (`KamaNode::start`): `kama-provision` kütüphanesiyle test içinde üretilmiş iki cihaz
+//! dosyası (elle yazılmış fikstür DEĞİL; `root.json` cihaz dizinlerine girmez), gerçek anahtarlar,
+//! gerçek saatler (Crypto + Application ayrı), OS entropisi, `kama-store::RedbStore` (aynı nesne
+//! `AppStore` + `CounterStore`), gerçek `ClientTransport` + `NoiseWireProtection` + UDP veri yolu,
+//! `kama-app` Messenger / Ptt / FileTransfer motorları ve düğüm döngüsü.
 //!
-//! **DUR-K4G-11 bekleniyor:** ürün zarf taşıyıcısı (INIT/RESPONSE) yoktur; zarflar test rölesiyle
-//! ([`common::RelayLink`] — `client_core::memory_link`, YALNIZ test-util) taşınır ve düğüm
-//! `KamaNode::start_with_envelope_link` (`test-util`) ile kurulur. Kurulumun geri kalanı
-//! `KamaNode::start` ile birebir aynıdır (tek gövde). Karar gelince yalnız [`start`] değişir.
+//! Zarf taşıyıcısı (sahip kararı DUR-K4G-11 → B): süreç-içi zarf rölesi (`LoopbackEnvelopeRelay`):
+//! ürün taşıyıcısı değildir — iki cihaz arası taşıyıcı = hub Plane 1 rölesi, S4, hub sprinti.
+//! Veri datagramları UDP loopback'ten, el sıkışma zarfları röleden geçer. Röle kayıtsız eşe zarf
+//! saklamaz: iki düğüm de bağlanmadan ÖNCE başlatılır.
 //!
 //! Akış: TEXT ↔ RECEIPT (iki yön) · 1 dosya (`FILE_RECEIPT(ok)` dahil; yol olayla, içerik diskte
 //! bayt-özdeş) · 1 PTT akışı (OPEN, sıralı demetler, CLOSE) + kapanmış tutamaçların tipli hatası ·
@@ -25,7 +25,6 @@ mod common;
 
 use std::fs;
 
-use client_core::memory_link::MemoryHub;
 use kama_app::codec::PttCodec;
 use kama_app::messaging::MsgId;
 use kama_app::store::AppStore;
@@ -35,7 +34,7 @@ use kama_node::{
 use kama_noise_wire::CounterStore;
 use kama_store::RedbStore;
 
-use common::{peer_ref_of, provision, Device, Events, RelayLink, TempDir};
+use common::{peer_ref_of, provision, Device, Events, TempDir};
 
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
@@ -51,13 +50,10 @@ const BUNDLES: usize = 8;
 const BUNDLE_MS: u8 = 40;
 const BUNDLE_LEN: usize = 64;
 
-/// DUR-K4G-11 bekleniyor: test rölesiyle kurulum (bkz. modül belgesi).
-fn start(device: &Device, hub: &MemoryHub) -> (KamaNode, Events) {
+/// Ürün yolu: `KamaNode::start`.
+fn start(device: &Device) -> (KamaNode, Events) {
     let (listener, events) = common::listener();
-    let node = KamaNode::start_with_envelope_link(&device.config, &device.data, listener, |me| {
-        RelayLink::boxed(hub, me)
-    })
-    .expect("düğüm kurulmalı");
+    let node = KamaNode::start(&device.config, &device.data, listener).expect("düğüm kurulmalı");
     (node, events)
 }
 
@@ -142,9 +138,8 @@ fn text_file_ptt_and_restart_persistence_over_loopback_udp() {
     let bob_device = &provisioned.devices[BOB];
 
     // ── Koşu 1 ──────────────────────────────────────────────────────────────────────────────
-    let hub = MemoryHub::new();
-    let (bob, mut bob_events) = start(bob_device, &hub);
-    let (alice, mut alice_events) = start(alice_device, &hub);
+    let (bob, mut bob_events) = start(bob_device);
+    let (alice, mut alice_events) = start(alice_device);
     connect(&alice, &mut alice_events, &mut bob_events);
     alice_events.wait("alice: ConnectProgress(bob)", |event| {
         matches!(event, NodeEvent::ConnectProgress { peer_id, .. } if peer_id == BOB).then_some(())
@@ -288,9 +283,8 @@ fn text_file_ptt_and_restart_persistence_over_loopback_udp() {
     );
 
     // ── Koşu 2: aynı cihaz dosyaları, AYNI data_dir ─────────────────────────────────────────
-    let hub = MemoryHub::new();
-    let (bob, mut bob_events) = start(bob_device, &hub);
-    let (alice, mut alice_events) = start(alice_device, &hub);
+    let (bob, mut bob_events) = start(bob_device);
+    let (alice, mut alice_events) = start(alice_device);
     // Arka plan boşaltması (PoC K6 / EK-2): oturumu ve bekleyen niyeti olmayan eşe `connect`
     // tetikler; eşin kalıcı outbox'ı yüklenir ve kayıt sıradaki oturumda AYNI `msg_id`'yle gider.
     alice.drain_background().expect("drain_background");

@@ -1,6 +1,7 @@
-//! `KamaNode` kurulum testleri: tipli yapılandırma hataları, `root.json`'un okunmaması (D9), ürün
-//! zarf taşıyıcısının tipli bekleme noktası (DUR-K4G-11), hata yolunda kaynakların bırakılması, tek
-//! açılış, dinleyiciden yeniden giriş ve taze düğümün ölçüleri.
+//! `KamaNode` kurulum testleri (ürün yolu, `KamaNode::start`): tipli yapılandırma hataları,
+//! `root.json`'un okunmaması (D9), süreç-içi zarf rölesinde kimlik başına tek canlı düğüm, hata
+//! yolunda kaynakların bırakılması, tek açılış, dinleyiciden yeniden giriş ve taze düğümün
+//! ölçüleri.
 
 mod common;
 
@@ -8,34 +9,59 @@ use std::fs;
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock, Weak};
 
-use client_core::memory_link::MemoryHub;
-use kama_node::{
-    KamaNode, LinkState, NodeError, NodeEvent, NodeListener, ENVELOPE_LINK_PENDING, STORE_FILE_NAME,
-};
+use kama_node::{KamaNode, LinkState, NodeError, NodeEvent, NodeListener, STORE_FILE_NAME};
 use kama_provision::format::{FormatError, ROOT_FILE_NAME};
 use kama_store::{RedbStore, StoreOpenError};
 
-use common::{provision, RelayLink, TempDir, WAIT};
+use common::{provision, TempDir, WAIT};
 
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
 
-/// Ürün kurucusu bugün zarf taşıyıcısında TİPLİ hatayla durur (DUR-K4G-11; `todo!` yok) ve o
-/// noktaya dek açtığını (depo) bırakır.
+/// Reddedilen ikizden sonra ilk düğümün gönderdiği metin.
+const AFTER_TWIN_TEXT: &str = "ikizden sonra";
+
+/// Süreç-içi zarf rölesi bir kimliği tek canlı düğüme bağlar: aynı cihaz dosyasıyla (başka veri
+/// dizininde) ikinci düğüm `IdentityInUse` alır ve o noktaya dek açtığını (depo) bırakır; ilk düğüm
+/// etkilenmez — eşiyle bağlanır ve metin alışverişi yapar.
 #[test]
-fn product_start_stops_at_the_envelope_carrier_with_a_typed_error() {
-    let root = TempDir::new("carrier");
+fn second_node_with_the_same_identity_is_refused_and_the_first_is_unaffected() {
+    let root = TempDir::new("identity");
     let _serial = common::serial();
     let provisioned = provision(root.path(), &[ALICE, BOB], true);
     let alice = &provisioned.devices[ALICE];
-    let (listener, _events) = common::listener();
-    let error = KamaNode::start(&alice.config, &alice.data, listener).expect_err("DUR-K4G-11");
-    assert!(
-        matches!(error, NodeError::FeatureNotImplemented(name) if name == ENVELOPE_LINK_PENDING),
-        "{error:?}"
-    );
-    // Depo taşıyıcıdan ÖNCE açılmıştı: hata yolunda kapandı (redb kilidi bırakıldı).
-    RedbStore::open(&alice.data.join(STORE_FILE_NAME)).expect("depo kilidi bırakılmalı");
+    let bob = &provisioned.devices[BOB];
+    let (listener, mut alice_events) = common::listener();
+    let first = KamaNode::start(&alice.config, &alice.data, listener).expect("ilk düğüm");
+
+    let twin_data = root.path().join("ikiz-veri");
+    let (listener, _twin_events) = common::listener();
+    let error = KamaNode::start(&alice.config, &twin_data, listener).expect_err("aynı kimlik");
+    assert!(matches!(error, NodeError::IdentityInUse), "{error:?}");
+    // Depo röle kaydından ÖNCE açılmıştı: hata yolunda kapandı (redb kilidi bırakıldı).
+    RedbStore::open(&twin_data.join(STORE_FILE_NAME)).expect("depo kilidi bırakılmalı");
+
+    // İlk düğüm etkilenmedi: kaydı duruyor; eşiyle zarf ve veri alışverişi yapar.
+    let (listener, mut bob_events) = common::listener();
+    let peer = KamaNode::start(&bob.config, &bob.data, listener).expect("eş");
+    first.connect(BOB).expect("connect");
+    alice_events.wait("alice: Connected(bob)", |event| {
+        matches!(event, NodeEvent::Connected { peer_id } if peer_id == BOB).then_some(())
+    });
+    bob_events.wait("bob: Connected(alice)", |event| {
+        matches!(event, NodeEvent::Connected { peer_id } if peer_id == ALICE).then_some(())
+    });
+    let msg_id = first.send_text(BOB, AFTER_TWIN_TEXT).expect("metin");
+    bob_events.wait("bob: TextReceived(alice)", |event| {
+        matches!(
+            event,
+            NodeEvent::TextReceived { peer_id, msg_id: got, .. }
+                if peer_id == ALICE && *got == msg_id
+        )
+        .then_some(())
+    });
+    first.shutdown().expect("kapanış");
+    peer.shutdown().expect("kapanış");
 }
 
 #[test]
@@ -82,12 +108,9 @@ fn start_never_opens_a_root_json_next_to_the_device_file() {
     let alice = &provisioned.devices[ALICE];
     let config_dir = alice.config.parent().expect("cihaz dizini");
     fs::create_dir(config_dir.join(ROOT_FILE_NAME)).expect("okunamayan root.json");
-    let hub = MemoryHub::new();
     let (listener, _events) = common::listener();
-    let node = KamaNode::start_with_envelope_link(&alice.config, &alice.data, listener, |me| {
-        RelayLink::boxed(&hub, me)
-    })
-    .expect("kurulum root.json'a bakmadan ilerlemeli");
+    let node = KamaNode::start(&alice.config, &alice.data, listener)
+        .expect("kurulum root.json'a bakmadan ilerlemeli");
     let metrics = node.metrics();
     assert_eq!(metrics.connect_state.len(), 1, "{metrics:?}");
     assert_eq!(metrics.connect_state[0].peer_id, BOB);
@@ -116,12 +139,9 @@ fn second_node_on_the_same_data_dir_is_refused_until_the_first_shuts_down() {
     let _serial = common::serial();
     let provisioned = provision(root.path(), &[ALICE, BOB], true);
     let alice = &provisioned.devices[ALICE];
-    let hub = MemoryHub::new();
     let open = || {
         let (listener, _events) = common::listener();
-        KamaNode::start_with_envelope_link(&alice.config, &alice.data, listener, |me| {
-            RelayLink::boxed(&hub, me)
-        })
+        KamaNode::start(&alice.config, &alice.data, listener)
     };
     let first = open().expect("ilk düğüm");
     let second = open().expect_err("ikinci açılış");
@@ -163,13 +183,7 @@ fn blocking_call_from_the_listener_is_a_typed_error_not_a_deadlock() {
         node: Arc::clone(&slot),
         result: result_tx,
     });
-    let hub = MemoryHub::new();
-    let node = Arc::new(
-        KamaNode::start_with_envelope_link(&alice.config, &alice.data, listener, |me| {
-            RelayLink::boxed(&hub, me)
-        })
-        .expect("düğüm"),
-    );
+    let node = Arc::new(KamaNode::start(&alice.config, &alice.data, listener).expect("düğüm"));
     assert!(slot.set(Arc::downgrade(&node)).is_ok(), "tek atama");
     // Dinleyici en geç bir `METRICS_TICK` sonra (periyodik `Metrics` olayı) çağrılır.
     let result = result_rx.recv_timeout(WAIT).expect("dinleyici çağrılmalı");

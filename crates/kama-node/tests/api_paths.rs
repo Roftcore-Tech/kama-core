@@ -3,16 +3,15 @@
 //! `Closed { Abandoned(Cancelled) }` ile bitirir, `TooLarge` sınırı tam limittedir ve `shutdown`
 //! kendinden önce kuyruğa girmiş komutları işler.
 //!
-//! Kurulum `two_nodes_loopback` ile aynıdır: `kama-provision` kütüphanesiyle üretilmiş cihaz
-//! dosyaları, gerçek kripto + depo + UDP; zarflar test rölesiyle (DUR-K4G-11 bekleniyor). Gerçek
-//! uyku yok; her bekleme bir olayın ÜST SINIRIDIR (`common::WAIT`).
+//! Kurulum `two_nodes_loopback` ile aynıdır — ürün yolu (`KamaNode::start`): `kama-provision`
+//! kütüphanesiyle üretilmiş cihaz dosyaları, gerçek kripto + depo + UDP; zarflar süreç-içi röleden.
+//! Gerçek uyku yok; her bekleme bir olayın ÜST SINIRIDIR (`common::WAIT`).
 
 mod common;
 
 use std::io::ErrorKind;
 use std::path::Path;
 
-use client_core::memory_link::MemoryHub;
 use kama_app::codec::PttCodec;
 use kama_app::file_transfer::FileSendError;
 use kama_contracts::s1::AbandonReason;
@@ -20,7 +19,7 @@ use kama_node::{
     CloseCause, FileFailReason, FileHandle, FileRef, KamaNode, NodeError, NodeEvent, StreamHandle,
 };
 
-use common::{provision, Device, Events, RelayLink, TempDir};
+use common::{provision, Device, Events, TempDir};
 
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
@@ -38,13 +37,10 @@ const BUNDLE_MS: u8 = 40;
 /// `Busy` almaz, `Shutdown` hepsinin ardına girer.
 const QUEUED_BEFORE_SHUTDOWN: usize = 8;
 
-/// DUR-K4G-11 bekleniyor: test rölesiyle kurulum.
-fn start(device: &Device, hub: &MemoryHub) -> (KamaNode, Events) {
+/// Ürün yolu: `KamaNode::start`.
+fn start(device: &Device) -> (KamaNode, Events) {
     let (listener, events) = common::listener();
-    let node = KamaNode::start_with_envelope_link(&device.config, &device.data, listener, |me| {
-        RelayLink::boxed(hub, me)
-    })
-    .expect("düğüm kurulmalı");
+    let node = KamaNode::start(&device.config, &device.data, listener).expect("düğüm kurulmalı");
     (node, events)
 }
 
@@ -81,9 +77,8 @@ fn send_file_failures_arrive_as_events_for_the_returned_handle() {
     let root = TempDir::new("send-file-errors");
     let _serial = common::serial();
     let provisioned = provision(root.path(), &[ALICE, BOB], true);
-    let hub = MemoryHub::new();
-    let (bob, mut bob_events) = start(&provisioned.devices[BOB], &hub);
-    let (alice, mut alice_events) = start(&provisioned.devices[ALICE], &hub);
+    let (bob, mut bob_events) = start(&provisioned.devices[BOB]);
+    let (alice, mut alice_events) = start(&provisioned.devices[ALICE]);
     let source = root.path().join("kaynak.bin");
     std::fs::write(&source, b"icerik").expect("kaynak dosya");
 
@@ -148,9 +143,8 @@ fn drain_background_connects_idle_peers() {
     let root = TempDir::new("drain");
     let _serial = common::serial();
     let provisioned = provision(root.path(), &[ALICE, BOB], true);
-    let hub = MemoryHub::new();
-    let (bob, mut bob_events) = start(&provisioned.devices[BOB], &hub);
-    let (alice, mut alice_events) = start(&provisioned.devices[ALICE], &hub);
+    let (bob, mut bob_events) = start(&provisioned.devices[BOB]);
+    let (alice, mut alice_events) = start(&provisioned.devices[ALICE]);
 
     alice.drain_background().expect("drain_background");
     wait_connected(&mut alice_events, BOB);
@@ -179,9 +173,9 @@ fn cancel_connect_ends_the_pending_intent_with_closed() {
     let root = TempDir::new("cancel-connect");
     let _serial = common::serial();
     let provisioned = provision(root.path(), &[ALICE, BOB], true);
-    // Bob hiç başlamaz: INIT rölede bekler, niyet çözülmez.
-    let hub = MemoryHub::new();
-    let (alice, mut events) = start(&provisioned.devices[ALICE], &hub);
+    // Bob hiç başlamaz: süreç-içi rölede kayıtlı değildir — INIT'in yolu yok ve saklanmaz; niyet
+    // bekler.
+    let (alice, mut events) = start(&provisioned.devices[ALICE]);
 
     alice.connect(BOB).expect("connect");
     assert!(
@@ -214,9 +208,8 @@ fn oversize_inputs_are_typed_errors_and_the_limit_itself_fits() {
     let root = TempDir::new("too-large");
     let _serial = common::serial();
     let provisioned = provision(root.path(), &[ALICE, BOB], true);
-    let hub = MemoryHub::new();
-    let (bob, mut bob_events) = start(&provisioned.devices[BOB], &hub);
-    let (alice, mut alice_events) = start(&provisioned.devices[ALICE], &hub);
+    let (bob, mut bob_events) = start(&provisioned.devices[BOB]);
+    let (alice, mut alice_events) = start(&provisioned.devices[ALICE]);
     alice.connect(BOB).expect("connect");
     wait_connected(&mut alice_events, BOB);
     wait_connected(&mut bob_events, ALICE);
@@ -282,8 +275,7 @@ fn shutdown_processes_the_commands_queued_before_it() {
     let root = TempDir::new("shutdown-queue");
     let _serial = common::serial();
     let provisioned = provision(root.path(), &[ALICE, BOB], true);
-    let hub = MemoryHub::new();
-    let (alice, mut events) = start(&provisioned.devices[ALICE], &hub);
+    let (alice, mut events) = start(&provisioned.devices[ALICE]);
 
     // Oturum yok: her komut düğümde `NoSession` olayına dönüşür (dosya okunmaz).
     let files: Vec<FileHandle> = (0..QUEUED_BEFORE_SHUTDOWN)

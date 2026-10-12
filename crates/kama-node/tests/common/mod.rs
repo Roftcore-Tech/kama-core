@@ -9,8 +9,9 @@
 //!   beklemeler önce onlara bakar (olay sırası iddiası gerekmez). Periyodik `Metrics` olayları
 //!   saklanmaz; kanalda ise bekleyebilirler: bir aşamanın SONRASINI gösteren ölçü için önce
 //!   [`Events::drain_now`] çağrılır (`two_nodes_loopback::expect_clean_metrics`).
-//! * Zarf taşıyıcısı (DUR-K4G-11 bekleniyor): [`RelayLink`] — `client_core::memory_link::MemoryHub`
-//!   (YALNIZ test-util) her gönderim ve yoklamada röle eder; arka plan iş parçacığı ve uyku yok.
+//! * Zarf taşıyıcısı: ÜRÜN yolu (`KamaNode::start` → süreç-içi röle). Röle süreç-geneldir ve
+//!   testler paralel koşabilir: her test kendi cihazlarını [`provision`] ile (yeni anahtarlar,
+//!   yeni kimlikler) üretir; sabit kimlik yoktur.
 
 // Bu ortak modül birden fazla test ikilisinde ayrı derlenir; her ikili yardımcıların hepsini
 // kullanmaz.
@@ -25,10 +26,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use client_core::memory_link::{MemoryHub, MemoryLink};
-use client_core::transport::{EnvelopeLink, LinkAttempt, LinkError, LinkEvent};
 use kama_contracts::handles::PeerRef;
-use kama_contracts::s3::HubHandle;
 use kama_node::{NodeEvent, NodeListener};
 use kama_noise_wire::entropy::OsEntropy;
 use kama_provision::format::{load_device_config, DeviceName, ROOT_FILE_NAME};
@@ -238,54 +236,5 @@ impl Events {
                 }
             }
         }
-    }
-}
-
-/// Test zarf rölesi (DUR-K4G-11 bekleniyor): `MemoryHub` her gönderimde ve her yoklamada röle eder
-/// — düğümün turu taşıyıcıyı her `NODE_TICK`'te yokladığından zarf en geç bir tur bekler.
-pub struct RelayLink {
-    hub: MemoryHub,
-    link: MemoryLink,
-}
-
-impl RelayLink {
-    /// `me` kimliğiyle hub'a kayıtlı taşıyıcı.
-    pub fn boxed(hub: &MemoryHub, me: PeerRef) -> Box<dyn EnvelopeLink> {
-        Box::new(Self {
-            hub: hub.clone(),
-            link: hub.link(me),
-        })
-    }
-}
-
-impl EnvelopeLink for RelayLink {
-    fn send_init(
-        &mut self,
-        peer: PeerRef,
-        envelope_type: u8,
-        bytes: Vec<u8>,
-    ) -> Result<LinkAttempt, LinkError> {
-        let attempt = self.link.send_init(peer, envelope_type, bytes);
-        self.hub.relay();
-        attempt
-    }
-
-    fn send_response(
-        &mut self,
-        peer: PeerRef,
-        hub_handle: HubHandle,
-        envelope_type: u8,
-        bytes: Vec<u8>,
-    ) -> Result<(), LinkError> {
-        let sent = self
-            .link
-            .send_response(peer, hub_handle, envelope_type, bytes);
-        self.hub.relay();
-        sent
-    }
-
-    fn poll(&mut self) -> Option<LinkEvent> {
-        self.hub.relay();
-        self.link.poll()
     }
 }

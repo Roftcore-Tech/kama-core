@@ -43,10 +43,11 @@ pub enum NodeError {
     /// Düğüm iş parçacığı başlatılamadı.
     #[error("node thread could not be started: {0}")]
     Spawn(std::io::Error),
-    /// Henüz gerçeklenmemiş ürün parçası (tipli bekleme noktası; `todo!` YOK). Bugün tek değer:
-    /// [`crate::ENVELOPE_LINK_PENDING`] — ürün zarf taşıyıcısı (DUR-K4G-11).
-    #[error("feature not implemented: {0}")]
-    FeatureNotImplemented(&'static str),
+    /// Bu süreçte aynı cihaz kimliğiyle (provisioning `dest_hash`) çalışan bir düğüm var: süreç-içi
+    /// zarf rölesi bir kimliği tek uç noktaya bağlar, sessizce devralmaz. Önceki düğüm kapanınca
+    /// (`shutdown` dönünce) aynı kimlik yeniden açılabilir.
+    #[error("a node with this device identity is already running in this process")]
+    IdentityInUse,
 
     // ── Çağrı ──
     /// Provisioning dosyasında böyle bir eş adı yok.

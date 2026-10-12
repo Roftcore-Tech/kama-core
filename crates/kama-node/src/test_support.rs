@@ -3,8 +3,9 @@
 //!
 //! İlkeler `tests/common` ile aynıdır: cihaz dosyaları gerçek provisioning yolundan (kama-provision
 //! kütüphanesi, OS entropisi; otorite dizini ayrı, telefona yalnız kendi `device-<ad>.json`'u),
-//! gerçek kripto + depo + UDP; zarflar test rölesiyle (DUR-K4G-11); her bekleme bir koşulun ÜST
-//! SINIRIDIR.
+//! gerçek kripto + depo + UDP; zarflar `KamaNode::start`'ın kullandığı süreç-içi röleyle
+//! (`src/carrier.rs` — röle süreç-geneldir, her test kendi kimliklerini provisioning'le üretir);
+//! her bekleme bir koşulun ÜST SINIRIDIR.
 //!
 //! Elle sürülen düğüm testin iki şeyi denetlemesini sağlar: (1) bir komut grubunu tur ARASINA
 //! girmeden koşmak (`NodeLoop::execute` art arda — ürün döngüsü `run` bir grubu turdan önce aynı
@@ -22,11 +23,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use client_core::memory_link::{MemoryHub, MemoryLink};
-use client_core::transport::{EnvelopeLink, LinkAttempt, LinkError, LinkEvent};
 use kama_app::clock::{MonotonicClock, SystemClock};
-use kama_contracts::handles::PeerRef;
-use kama_contracts::s3::HubHandle;
 use kama_provision::format::DeviceName;
 use kama_provision::provision::InitRequest;
 
@@ -149,53 +146,6 @@ pub(crate) fn system_clock() -> Arc<dyn MonotonicClock> {
     Arc::new(SystemClock::new())
 }
 
-/// Test zarf rölesi (DUR-K4G-11 bekleniyor): `MemoryHub` her gönderimde ve her yoklamada röle eder.
-struct RelayLink {
-    hub: MemoryHub,
-    link: MemoryLink,
-}
-
-impl RelayLink {
-    fn boxed(hub: &MemoryHub, me: PeerRef) -> Box<dyn EnvelopeLink> {
-        Box::new(Self {
-            hub: hub.clone(),
-            link: hub.link(me),
-        })
-    }
-}
-
-impl EnvelopeLink for RelayLink {
-    fn send_init(
-        &mut self,
-        peer: PeerRef,
-        envelope_type: u8,
-        bytes: Vec<u8>,
-    ) -> Result<LinkAttempt, LinkError> {
-        let attempt = self.link.send_init(peer, envelope_type, bytes);
-        self.hub.relay();
-        attempt
-    }
-
-    fn send_response(
-        &mut self,
-        peer: PeerRef,
-        hub_handle: HubHandle,
-        envelope_type: u8,
-        bytes: Vec<u8>,
-    ) -> Result<(), LinkError> {
-        let sent = self
-            .link
-            .send_response(peer, hub_handle, envelope_type, bytes);
-        self.hub.relay();
-        sent
-    }
-
-    fn poll(&mut self) -> Option<LinkEvent> {
-        self.hub.relay();
-        self.link.poll()
-    }
-}
-
 /// Olayları kanala yazan dinleyici.
 struct ChannelListener(Sender<NodeEvent>);
 
@@ -289,41 +239,24 @@ fn listener() -> (Box<dyn NodeListener>, Events) {
     (Box::new(ChannelListener(tx)), events)
 }
 
-/// Elle sürülen düğüm: `KamaNode::start` ile AYNI kurulum gövdesi (`build`), iş parçacığı yok;
-/// zarf taşıyıcısı test rölesi, Application saati `app_clock`. Döngü `Built::node`'dur.
-pub(crate) fn manual(
-    phone: &Phone,
-    hub: &MemoryHub,
-    app_clock: Arc<dyn MonotonicClock>,
-) -> (Built, Events) {
+/// Elle sürülen düğüm: `KamaNode::start` ile AYNI kurulum gövdesi (`build`; süreç-içi röle kaydı
+/// dahil), iş parçacığı yok; Application saati `app_clock`. Döngü `Built::node`'dur.
+pub(crate) fn manual(phone: &Phone, app_clock: Arc<dyn MonotonicClock>) -> (Built, Events) {
     let (listener, events) = listener();
-    let built = KamaNode::build(
-        &phone.config,
-        &phone.data,
-        listener,
-        |me, _, _| Ok(RelayLink::boxed(hub, me)),
-        app_clock,
-    )
-    .expect("düğüm kurulmalı");
+    let built =
+        KamaNode::build(&phone.config, &phone.data, listener, app_clock).expect("düğüm kurulmalı");
     (built, events)
 }
 
-/// İş parçacıklı düğüm (ürün döngüsü; zarf taşıyıcısı test rölesi).
-pub(crate) fn threaded(phone: &Phone, hub: &MemoryHub) -> (KamaNode, Events) {
+/// İş parçacıklı düğüm: ürün yolu (`KamaNode::start`).
+pub(crate) fn threaded(phone: &Phone) -> (KamaNode, Events) {
     let (listener, events) = listener();
-    (threaded_with(phone, hub, listener), events)
+    (threaded_with(phone, listener), events)
 }
 
 /// [`threaded`], testin verdiği dinleyiciyle.
-pub(crate) fn threaded_with(
-    phone: &Phone,
-    hub: &MemoryHub,
-    listener: Box<dyn NodeListener>,
-) -> KamaNode {
-    KamaNode::start_with_envelope_link(&phone.config, &phone.data, listener, |me| {
-        RelayLink::boxed(hub, me)
-    })
-    .expect("düğüm kurulmalı")
+pub(crate) fn threaded_with(phone: &Phone, listener: Box<dyn NodeListener>) -> KamaNode {
+    KamaNode::start(&phone.config, &phone.data, listener).expect("düğüm kurulmalı")
 }
 
 /// `step` bir değer verene dek tekrarlar — en çok [`WAIT`]. Adımlar arasında [`NODE_TICK`] kadar

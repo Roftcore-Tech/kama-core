@@ -16,8 +16,12 @@
 //!    alınan dosyalar.
 //! 3. Crypto: `NoiseWireProtection::with_control` gerçek anahtarlarla, OS entropisi ve Crypto'nun
 //!    saatiyle (`src/wiring.rs` — `kama_noise_wire` adının geçtiği TEK yer, layer_check C8).
-//! 4. Zarf taşıyıcısı (INIT/RESPONSE): **DUR-K4G-11** — ürün gerçeklemesi yok; tek kurucu tipli
-//!    hata döner ([`ENVELOPE_LINK_PENDING`]; `src/carrier.rs`).
+//! 4. Zarf taşıyıcısı (INIT/RESPONSE): süreç-içi zarf rölesi `LoopbackEnvelopeRelay`
+//!    (`src/carrier.rs`; sahip kararı DUR-K4G-11 → B) — ürün taşıyıcısı değildir — iki cihaz arası
+//!    taşıyıcı = hub Plane 1 rölesi, S4, hub sprinti. AYNI süreçteki düğümler zarflarını bununla
+//!    değiş tokuş eder (kimlik başına tek canlı düğüm: [`NodeError::IdentityInUse`]); iki telefon
+//!    arası oturum hub sprintiyle gelir. Kayıtsız eşe zarf gitmez ve saklanmaz: düğümler
+//!    bağlanmadan önce başlatılmış olmalıdır.
 //! 5. Transport: `client_core::transport::ClientTransport`, ürün profili
 //!    (`ClientTransportConfig::product`), veri alıcısı bu cihazın `direct_addrs` adresinde, eş
 //!    adresleri dosyadan (direct-mode; hub yok).
@@ -63,9 +67,7 @@ mod peers;
 mod test_support;
 mod wiring;
 
-use std::collections::HashMap;
 use std::fmt;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
@@ -73,7 +75,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::Duration;
 
-use client_core::transport::{ClientTransportConfig, EnvelopeLink};
+use client_core::transport::ClientTransportConfig;
 use kama_app::clock::{MonotonicClock, SystemClock};
 use kama_app::codec::limits::TEXT_PREFIX_BYTES;
 use kama_app::codec::{AmpLimits, PttCodec};
@@ -81,7 +83,6 @@ use kama_app::file_transfer::FileTransfer;
 use kama_app::messaging::{Messenger, MsgId};
 use kama_app::ptt::{max_bundle_payload_bytes, Ptt};
 use kama_app::store::AppStore;
-use kama_contracts::handles::PeerRef;
 use kama_provision::format::load_device_config;
 use kama_store::RedbStore;
 
@@ -100,10 +101,6 @@ use wiring::Transport;
 
 /// Kalıcı deponun `data_dir` altındaki dosyası (redb; şema `kama-store` v0).
 pub const STORE_FILE_NAME: &str = "kama-node.redb";
-
-/// Ürün zarf taşıyıcısının bekleme noktası (DUR-K4G-11): [`KamaNode::start`] bugün
-/// `NodeError::FeatureNotImplemented(ENVELOPE_LINK_PENDING)` döner.
-pub const ENVELOPE_LINK_PENDING: &str = "envelope_link (DUR-K4G-11)";
 
 /// Trafiksiz düğüm turunun aralığı — `[KALİBRASYON]`, normatif DEĞİL. Değer client-core veri
 /// alıcısının ACK zamanlayıcısıyla (`ACK_TICK` = 20 ms) aynı mertebededir: gelen birimin
@@ -185,78 +182,36 @@ impl KamaNode {
     /// Düğümü kurar ve başlatır (bkz. crate belgesi, "Kurulum"). `config_path` cihazın
     /// `device-<ad>.json`'udur; `data_dir` yoksa oluşturulur (Unix'te `0700`).
     ///
+    /// **Çağıran async / tokio bağlamında olmamalıdır:** client-core veri yolu kurulurken kendi
+    /// çalışma-zamanını kurar ve `block_on` kullanır (bir tokio bağlamının içinden çağrı panikler).
+    /// Async bir uygulama `start`'ı ayrı bir iş parçacığından ya da `spawn_blocking` ile çağırır
+    /// (K4G-05 testleri; K4G-15 README). UniFFI / JVM iş parçacıkları tokio bağlamı değildir.
+    ///
     /// # Errors
     /// [`NodeError::Config`] · [`NodeError::NoDirectAddress`] · [`NodeError::DataDir`] ·
-    /// [`NodeError::Store`] · [`NodeError::PeerDirectory`] · [`NodeError::FeatureNotImplemented`]
-    /// (bugün daima: ürün zarf taşıyıcısı — DUR-K4G-11) · [`NodeError::Transport`] ·
-    /// [`NodeError::Limits`] · [`NodeError::Spawn`]. Hata yolunda açılan her şey (depo, soket)
-    /// kapanır.
+    /// [`NodeError::Store`] · [`NodeError::PeerDirectory`] · [`NodeError::IdentityInUse`] (bu
+    /// süreçte aynı cihaz kimliğiyle çalışan bir düğüm var — süreç-içi zarf rölesi) ·
+    /// [`NodeError::Transport`] · [`NodeError::Limits`] · [`NodeError::Spawn`]. Hata yolunda
+    /// açılan her şey (depo, röle kaydı, soket) kapanır.
     pub fn start(
         config_path: &Path,
         data_dir: &Path,
         listener: Box<dyn NodeListener>,
     ) -> Result<Self, NodeError> {
-        Self::compose(
-            config_path,
-            data_dir,
-            listener,
-            carrier::product_envelope_link,
-        )
-    }
-
-    /// YALNIZ test (`test-util`): [`KamaNode::start`] ile AYNI kurulum, yalnız zarf taşıyıcısı
-    /// dışarıdan verilir (`link(bu cihazın PeerRef'i)`). DUR-K4G-11 çözülene dek CORE testi gerçek
-    /// kimlik + depo + saat + entropi + UDP + motor yolunu bununla koşar.
-    ///
-    /// # Errors
-    /// [`KamaNode::start`] ile aynı (taşıyıcı hatası hariç).
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn start_with_envelope_link(
-        config_path: &Path,
-        data_dir: &Path,
-        listener: Box<dyn NodeListener>,
-        link: impl FnOnce(PeerRef) -> Box<dyn EnvelopeLink>,
-    ) -> Result<Self, NodeError> {
-        Self::compose(config_path, data_dir, listener, move |me, _, _| {
-            Ok(link(me))
-        })
-    }
-
-    /// Kurulum + başlatma. Application saati üründe `kama_app::clock::SystemClock`'tur.
-    fn compose(
-        config_path: &Path,
-        data_dir: &Path,
-        listener: Box<dyn NodeListener>,
-        carrier: impl FnOnce(
-            PeerRef,
-            SocketAddr,
-            &HashMap<PeerRef, SocketAddr>,
-        ) -> Result<Box<dyn EnvelopeLink>, NodeError>,
-    ) -> Result<Self, NodeError> {
         let app_clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock::new());
-        Self::spawn(Self::build(
-            config_path,
-            data_dir,
-            listener,
-            carrier,
-            app_clock,
-        )?)
+        Self::spawn(Self::build(config_path, data_dir, listener, app_clock)?)
     }
 
-    /// Kurulumun TEK gövdesi (iş parçacığı BAŞLATILMAZ); taşıyıcı tek bir kurucu olarak girer (bkz.
-    /// `src/carrier.rs`). Sıra: provisioning → veri dizini → depo → Crypto (aynı `Arc` depo
-    /// `CounterStore` olarak) → `drop(config)` → taşıyıcı → Transport → Application motorları
-    /// (aynı `Arc` depo `AppStore` olarak; `app_clock` `Ptt` ve `FileTransfer`'ın ortak saati —
-    /// Crypto'nunkinden AYRI). Birim testleri döngüyü elle sürmek için bunu doğrudan kullanır.
+    /// Kurulumun TEK gövdesi (iş parçacığı BAŞLATILMAZ). Sıra: provisioning → veri dizini → depo →
+    /// Crypto (aynı `Arc` depo `CounterStore` olarak) → `drop(config)` → zarf taşıyıcısı (süreç-içi
+    /// röle kaydı; `src/carrier.rs`) → Transport → Application motorları (aynı `Arc` depo
+    /// `AppStore` olarak; `app_clock` `Ptt` ve `FileTransfer`'ın ortak saati — Crypto'nunkinden
+    /// AYRI; üründe `kama_app::clock::SystemClock`). Birim testleri döngüyü elle sürmek için bunu
+    /// doğrudan kullanır.
     pub(crate) fn build(
         config_path: &Path,
         data_dir: &Path,
         listener: Box<dyn NodeListener>,
-        carrier: impl FnOnce(
-            PeerRef,
-            SocketAddr,
-            &HashMap<PeerRef, SocketAddr>,
-        ) -> Result<Box<dyn EnvelopeLink>, NodeError>,
         app_clock: Arc<dyn MonotonicClock>,
     ) -> Result<Built, NodeError> {
         // (1) Provisioning — yalnız bu dosya; kimlik/anahtar/eş dizini bellekte (D8, D9).
@@ -271,10 +226,10 @@ impl KamaNode {
         let protection = wiring::protection(&config, &store).map_err(NodeError::PeerDirectory)?;
         // Gizli anahtar taşıyan dosya içeriği burada düşer (Drop'ta sıfırlanır).
         drop(config);
-        // (4) Zarf taşıyıcısı — DUR-K4G-11.
+        // (4) Zarf taşıyıcısı: süreç-içi röle kaydı (kimlik başına tek canlı düğüm).
+        let link = carrier::product_envelope_link(peers.me())?;
         let mut transport_config = ClientTransportConfig::product(data_bind);
         transport_config.peer_addrs = peers.peer_addrs();
-        let link = carrier(peers.me(), data_bind, &transport_config.peer_addrs)?;
         // (5) Transport: gerçek UDP veri yolu, ürün profili.
         let transport = Transport::new(transport_config, protection, link)?;
         // (6) Application motorları; Application'ın saati Crypto'nunkinden AYRI.
