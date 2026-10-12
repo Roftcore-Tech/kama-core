@@ -17,8 +17,9 @@ pub(crate) const BODY_LEN_OFFSET: usize = 3;
 
 /// §3 tip registry (v1). Ayırt ediciler registry kodlarıdır.
 ///
-/// `0x00` ve `0xF0..=0xFF` reserved'dır (REJECT); `0x0B..=0xEF` bilinmeyen-ama-reserved-olmayan
-/// tiplerdir (DROP, ileri uyum — §6). İkisi de bu enum'da temsil edilmez.
+/// `0x00` ve `0xF0..=0xFF` reserved'dır (REJECT); `0x0C..=0xEF` bilinmeyen-ama-reserved-olmayan
+/// tiplerdir (DROP, ileri uyum — §6; K4G-09'dan önce `0x0B..=0xEF`). İkisi de bu enum'da temsil
+/// edilmez.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum MsgType {
@@ -42,11 +43,13 @@ pub enum MsgType {
     SignalingBlob = 0x09,
     /// 0x0A `MEDIA_BUNDLE`.
     MediaBundle = 0x0A,
+    /// 0x0B `FILE_RECEIPT` (K4G-09, plan D6).
+    FileReceipt = 0x0B,
 }
 
 impl MsgType {
     /// Registry'deki bütün tipler, kod sırasıyla.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Text,
         Self::FileBegin,
         Self::FileChunk,
@@ -57,6 +60,7 @@ impl MsgType {
         Self::Receipt,
         Self::SignalingBlob,
         Self::MediaBundle,
+        Self::FileReceipt,
     ];
 
     /// Teldeki `msg_type` kodu.

@@ -47,6 +47,25 @@ Kullanım:
     çerçeve (RFC 8878 §3.1.1) — baytlar spec'ten belirlenir, libzstd sürümüne bağlı DEĞİLDİR; üretici
     `compression.zstd.decompress` ile karenin geçerliliğini doğrular.
 
+[2026-10-12 — K4G-09 (plan D6; DUR #108 çözümü; AMP K4G-09 yaması)]
+  · 0x0B FILE_RECEIPT eklendi (§3 0x0B satırı): gövde SABİT 9 B = transfer_id u64_be (FILE_BEGIN'deki
+    transfer_id ile AYNI genişlik ve kodlama) · status u8 ∈ {0x00 ok, 0x01 aborted_by_receiver,
+    0x02 hash_mismatch, 0x03 timeout, 0x04 rejected}. Pozitif dosyanın SONUNA 5 vaka (her status için
+    bir), ret dosyasının SONUNA 3 vaka: bilinmeyen status (0x05, registry'nin son kodundan bir sonraki →
+    `unknown-enum-value`), kısa gövde (8 B: status sığmıyor → `inner-field-exceeds-body-len`), uzun
+    gövde (10 B: 1 artık bayt → `trailing-body-bytes`). Üç token da B2.1 Rust codec'inin MEVCUT token
+    sözleşmesindendir (`crates/kama-app/src/codec/mod.rs` `DropReason`); `trailing-body-bytes` bu
+    dosyada ilk kez bir vakayla sınanıyor — yeni token icat edilmedi.
+  · FILE_ABORT.reason'a 0x05 superseded eklendi (FILE_ABORT artık yalnız GÖNDERENİNDİR; oturum
+    değişiminde yarım aktarımı kapatır — mevcut kodların hiçbiri bu nedeni anlatmıyordu). Pozitif
+    dosyanın SONUNA 1 vaka (`file-abort-superseded`): kartın saydığı 8 vektörün DIŞINDADIR.
+  · `decode.unknown-msg-type` vakası 0x0B'den 0x0C'ye taşındı: 0x0B artık kayıtlı (FILE_RECEIPT) ve
+    vaka "kayıtsız tip" anlamını yitirirdi. Kimlik AYNI, not güncellendi; bu vakanın baytları DEĞİŞTİ
+    (`010b000000` → `010c000000`). Diğer bütün mevcut vakaların baytları DEĞİŞMEDİ.
+  · İki dosyanın `spec_version`'ı `…@v1+2026-10-12-K4G-09` oldu: registry değişti (0x0B'nin anlamı),
+    yalnız vaka eklenmedi. Önceki eklemeler (F0.5, F07.4, S8) registry'yi değiştirmediği için bu
+    alana dokunmamıştı.
+
 SINIRLAR (bilinen; düzeltilmedi):
   · Reserved tip yalnız 0x00 ile sınanıyor (0xF0..0xFF yok); ~~"bilinmeyen ama reserved olmayan tip → DROP"
     (§6, örn. 0x0B) vakası yok; §5 kural 2 (çözülen uzunluk ≠ uncompressed_len)~~ [S8 2026-10-08: ikisi
@@ -80,6 +99,21 @@ PTT_CLOSE = 0x07
 RECEIPT = 0x08
 SIGNALING_BLOB = 0x09
 MEDIA_BUNDLE = 0x0A
+FILE_RECEIPT = 0x0B  # [K4G-09 2026-10-12]
+
+# §3 0x05 FILE_ABORT.reason — [K4G-09 2026-10-12] 0x05 superseded (gönderen-tek FILE_ABORT).
+FILE_ABORT_REASON_SUPERSEDED = 0x05
+
+# §3 0x0B FILE_RECEIPT.status [K4G-09 2026-10-12]: (spec adı, vaka kimliği soneki, kod).
+FILE_RECEIPT_STATUSES = (
+    ("ok", "ok", 0x00),
+    ("aborted_by_receiver", "aborted-by-receiver", 0x01),
+    ("hash_mismatch", "hash-mismatch", 0x02),
+    ("timeout", "timeout", 0x03),
+    ("rejected", "rejected", 0x04),
+)
+# Registry'nin son kodundan bir sonraki: tanımsız status (ret vakası).
+FILE_RECEIPT_STATUS_UNASSIGNED = max(code for _, _, code in FILE_RECEIPT_STATUSES) + 1
 
 COMPRESS_FLAG_BIT0 = 0x01
 ZSTD_COMPRESSION_ID = 0x01
@@ -155,6 +189,12 @@ def media_bundle_body(stream_id: int, codec: int, bundle_ms: int, payload: bytes
     """§3 0x0A MEDIA_BUNDLE: stream_id u32_be · codec u8 · bundle_ms u8 · payload_len u16_be ·
     payload bytes[payload_len] (8 B sabit önek; payload içi media'nın)."""
     return struct.pack(">IBBH", stream_id, codec, bundle_ms, len(payload)) + payload
+
+
+def file_receipt_body(transfer_id: int, status: int) -> bytes:
+    """§3 0x0B FILE_RECEIPT [K4G-09 2026-10-12]: transfer_id u64_be (FILE_BEGIN'deki transfer_id ile
+    AYNI genişlik ve kodlama) · status u8. Gövde sabit 9 B; değişken-uzunluklu alan yok."""
+    return struct.pack(">QB", transfer_id, status)
 
 
 # ---- §5 sıkıştırma wire sözleşmesi ------------------------------------------------------------
@@ -321,15 +361,40 @@ def build_positive() -> dict:
             input_={"stream_id": 7, "codec": 0x01, "bundle_ms": 20, "payload_hex": "de" * 16},
             expected_hex=hx(record(MEDIA_BUNDLE, media_bundle_body(7, 0x01, 20, bytes.fromhex("de" * 16)))),
         ),
+        # [K4G-09 2026-10-12] 0x0B FILE_RECEIPT — her status için bir vaka. transfer_id = 42: file-begin
+        # vakasındaki aktarımın alındısı (aynı kimlik, aynı u64_be kodlama).
+        *[
+            case(
+                f"amp-record-v1.encode.file-receipt-{slug}",
+                "encode",
+                note=f"FILE_RECEIPT (0x0B; K4G-09): transfer_id u64 (FILE_BEGIN ile aynı genişlik/kodlama), "
+                f"status u8 = {code:#04x} ({spec_name}). Gövde sabit 9 B; yalnız alıcı gönderir.",
+                spec_ref="application-message-protocol.md §3 0x0B FILE_RECEIPT",
+                input_={"transfer_id": 42, "status": code},
+                expected_hex=hx(record(FILE_RECEIPT, file_receipt_body(42, code))),
+            )
+            for spec_name, slug, code in FILE_RECEIPT_STATUSES
+        ],
+        # [K4G-09 2026-10-12] FILE_ABORT.reason 0x05 superseded — kartın 8 vektörünün DIŞINDA.
+        case(
+            "amp-record-v1.encode.file-abort-superseded",
+            "encode",
+            note="FILE_ABORT (0x05): transfer_id, reason 0x05 = superseded (K4G-09: FILE_ABORT yalnız gönderenindir; "
+            "oturum değişiminde yarım aktarımı yeni oturumdan kapatır). Düzen değişmedi (gövde 9 B).",
+            spec_ref="application-message-protocol.md §3 0x05 FILE_ABORT",
+            input_={"transfer_id": 42, "reason": FILE_ABORT_REASON_SUPERSEDED},
+            expected_hex=hx(record(FILE_ABORT, file_abort_body(42, FILE_ABORT_REASON_SUPERSEDED))),
+        ),
     ]
     return {
         "schema_version": 2,
         "suite": "amp-record-v1",
-        "spec_version": "application-message-protocol@v1+2026-10-04-K1",
+        "spec_version": "application-message-protocol@v1+2026-10-12-K4G-09",
         "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile sıfır paylaşım)",
         "description": "AMP §2/§3/§5 AppMessageRecord kodlaması — 0x01–0x0A tiplerinin her biri için 1 pozitif "
         "vektör + bir sıkıştırılmış TEXT örneği (0x09 SIGNALING_BLOB ve 0x0A MEDIA_BUNDLE F0.5 2026-10-06'da "
-        "eklendi). B1.2 (WS-B/Hayri); tüketici B2.1'deki gerçek Rust codec'i.",
+        "eklendi) + [K4G-09 2026-10-12] 0x0B FILE_RECEIPT'in her status'u için 1 vektör ve FILE_ABORT "
+        "reason 0x05 superseded. B1.2 (WS-B/Hayri); tüketici B2.1'deki gerçek Rust codec'i.",
         "notes": {
             "compressed": "flags.bit0=1; body = compression_id(1)|uncompressed_len(4be)|zstd payload (§5). "
             "zstd payload baytları üreten kitaplığın sürümüne bağlı olabilir (zstd sürümler arası bayt-özdeş "
@@ -400,8 +465,9 @@ def build_negative() -> dict:
     # Kayıt başlığı body_len = 4 (PTT_CLOSE gövdesi) ama kayıtta 5 gövde baytı var (§2: kayıt = 5 B başlık +
     # body_len bayt).
     record_len_longer = record(PTT_CLOSE, ptt_close_body(1)) + b"\x00"
-    # 0x0B: kayıtlı değil (registry 0x01..0x0A) ve reserved değil (0x00, 0xF0..0xFF) — §6 ileri uyum: DROP.
-    unknown_msg_type = record(MEDIA_BUNDLE + 1, b"")
+    # ~~0x0B: kayıtlı değil (registry 0x01..0x0A)~~ [K4G-09 2026-10-12] 0x0C: kayıtlı değil (registry
+    # 0x01..0x0B; 0x0B artık FILE_RECEIPT) ve reserved değil (0x00, 0xF0..0xFF) — §6 ileri uyum: DROP.
+    unknown_msg_type = record(FILE_RECEIPT + 1, b"")
     # TEXT.text_len = 1, metin baytı 0xFF: UTF-8'de hiçbir konumda geçerli değil.
     invalid_utf8 = record(TEXT, struct.pack(">IH", 1, 1) + b"\xff")
     # RECEIPT.kind = 0xFF: §3 enum'unda tanımsız.
@@ -411,6 +477,14 @@ def build_negative() -> dict:
     decompressed_len_mismatch = record(
         TEXT, struct.pack(">BI", ZSTD_COMPRESSION_ID, 4) + raw_frame, flags=COMPRESS_FLAG_BIT0
     )
+
+    # [K4G-09 2026-10-12] 0x0B FILE_RECEIPT — gövde sabit 9 B (transfer_id u64_be 8 + status u8 1).
+    # Bilinmeyen status: registry'nin (0x00–0x04) son kodundan bir sonraki (sınır).
+    file_receipt_unknown_status = record(FILE_RECEIPT, file_receipt_body(42, FILE_RECEIPT_STATUS_UNASSIGNED))
+    # Kısa gövde: 8 B — transfer_id sığıyor, status (1 B) sığmıyor (A1: sabit alanlar toplamı > body_len).
+    file_receipt_short_body = record(FILE_RECEIPT, struct.pack(">Q", 42))
+    # Uzun gövde: 10 B — geçerli 9 B gövde (status ok) + 1 artık bayt.
+    file_receipt_long_body = record(FILE_RECEIPT, file_receipt_body(42, 0x00) + b"\x00")
 
     cases = [
         case(
@@ -554,8 +628,9 @@ def build_negative() -> dict:
         case(
             "amp-record-reject-v1.decode.unknown-msg-type",
             "decode",
-            note="msg_type=0x0B kayıtlı değil ve reserved değil — §6 ileri uyum: DROP, REJECT değil (S8).",
-            spec_ref="application-message-protocol.md §6 (S8 2026-10-08)",
+            note="msg_type=0x0C kayıtlı değil (registry 0x01–0x0B) ve reserved değil — §6 ileri uyum: DROP, REJECT "
+            "değil (S8). [K4G-09 2026-10-12] Vaka 0x0B'den taşındı: 0x0B artık FILE_RECEIPT; kimlik aynı.",
+            spec_ref="application-message-protocol.md §6 (S8 2026-10-08; K4G-09 2026-10-12)",
             input_hex=hx(unknown_msg_type),
             expected={"result": "drop", "reason": "unknown-msg-type"},
         ),
@@ -585,17 +660,47 @@ def build_negative() -> dict:
             input_hex=hx(decompressed_len_mismatch),
             expected={"result": "drop", "reason": "decompressed-len-mismatch"},
         ),
+        # [K4G-09 2026-10-12] 0x0B FILE_RECEIPT — gövde sabit 9 B; token'lar mevcut sözleşmeden.
+        case(
+            "amp-record-reject-v1.decode.file-receipt-unknown-status",
+            "decode",
+            note=f"FILE_RECEIPT.status={FILE_RECEIPT_STATUS_UNASSIGNED:#04x}: registry'nin (0x00–0x04) son kodundan "
+            "bir sonraki, tanımsız — §3 'bilinmeyen → DROP'; token RECEIPT.kind vakasıyla aynı (S8).",
+            spec_ref="application-message-protocol.md §3 0x0B FILE_RECEIPT (K4G-09 2026-10-12)",
+            input_hex=hx(file_receipt_unknown_status),
+            expected={"result": "drop", "reason": "unknown-enum-value"},
+        ),
+        case(
+            "amp-record-reject-v1.decode.file-receipt-short-body",
+            "decode",
+            note="FILE_RECEIPT body_len=8: transfer_id (8 B) sığıyor, status (1 B) sığmıyor — A1: sabit alanların "
+            "toplamı body_len'i aşıyor, DROP (MEDIA_BUNDLE/SIGNALING_BLOB kısa önek vakalarıyla aynı token).",
+            spec_ref="application-message-protocol.md §2 (A1), §4 (K4G-09 2026-10-12)",
+            input_hex=hx(file_receipt_short_body),
+            expected={"result": "drop", "reason": "inner-field-exceeds-body-len"},
+        ),
+        case(
+            "amp-record-reject-v1.decode.file-receipt-long-body",
+            "decode",
+            note="FILE_RECEIPT body_len=10: geçerli 9 B gövdeden (status ok) sonra 1 artık bayt — gövde sabit 9 B, "
+            "tek kanonik biçim: DROP. Token B2.1 codec'inin mevcut DropReason::TrailingBodyBytes'ı; bu dosyada ilk "
+            "kez bir vakayla sınanıyor, yeni token icat edilmedi.",
+            spec_ref="application-message-protocol.md §4 (K4G-09 2026-10-12)",
+            input_hex=hx(file_receipt_long_body),
+            expected={"result": "drop", "reason": "trailing-body-bytes"},
+        ),
     ]
     return {
         "schema_version": 2,
         "suite": "amp-record-reject-v1",
-        "spec_version": "application-message-protocol@v1+2026-10-04-K1",
+        "spec_version": "application-message-protocol@v1+2026-10-12-K4G-09",
         "generator": "ref/amp/encode.py (stdlib-only, Python 3.14, production Rust ile sıfır paylaşım)",
         "description": "AMP §2/§5/§6 negatif corpus: reserved type/flag, iç alan/body_len uyumsuzluğu "
         "(TEXT, SIGNALING_BLOB, MEDIA_BUNDLE; sabit öneğin sığmaması dahil), sıkıştırma bomb korumaları "
         "(uncompressed_len aşımı, expansion oranı; expansion oranı sıkıştırılmış MEDIA_BUNDLE taşıyıcıyla da), "
         "gerçek zstd ile kesilmiş/geçersiz frame, bilinmeyen compression_id/msg_version; [S8] kayıt uzunluğu "
-        "uyumsuzluğu, kayıtsız msg_type, geçersiz UTF-8, tanımsız enum değeri, açılan uzunluk ≠ uncompressed_len.",
+        "uyumsuzluğu, kayıtsız msg_type, geçersiz UTF-8, tanımsız enum değeri, açılan uzunluk ≠ uncompressed_len; "
+        "[K4G-09] FILE_RECEIPT: tanımsız status, kısa gövde, uzun gövde.",
         "notes": {
             "compressed": "flags.bit0=1 gövde (§5).",
             "compression-length-only": "Decoder yalnız beyan edilen uzunluk alanlarına bakarak "

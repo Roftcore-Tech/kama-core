@@ -13,10 +13,11 @@
 //! ayrı gerçekler, birleştirmez. Bu modülde sözleşme ve bellek içi test deposu [`MemoryAppStore`]
 //! vardır.
 //!
-//! # Motorlara bağlama (K4G-07/08'in işi)
+//! # Motorlara bağlama (K4G-07/08/09'un işi)
 //!
-//! Messenger / Ptt / FileTransfer bu kartta depoya BAĞLANMAZ; sayaçlarını K4G-07/08'de yalnız
-//! [`AppStore::reserve_next`] üzerinden alırlar. Tipler bugünkü yapıları doğrudan eşler:
+//! Messenger / Ptt / FileTransfer bu kartta depoya BAĞLANMAZ; sayaçlarını K4G-07 (`msg_id`),
+//! K4G-08 (`stream_id`) ve K4G-09'da (`transfer_id`) yalnız [`AppStore::reserve_next`] üzerinden
+//! alırlar. Tipler bugünkü yapıları doğrudan eşler:
 //!
 //! * [`DedupWindow`] — Messenger'ın eş başına alıcı penceresi, alan alan: görülen en büyük
 //!   `msg_id` + `MSG_DEDUP_WINDOW` bitlik harita (bit konumu `msg_id % MSG_DEDUP_WINDOW`).

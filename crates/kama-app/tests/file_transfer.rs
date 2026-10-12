@@ -1,6 +1,8 @@
-//! B2.3 — dosya aktarımı (`kama_app::file_transfer`) uçtan uca.
+//! B2.3 / K4G-09 — dosya aktarımı (`kama_app::file_transfer`) uçtan uca.
 //!
-//! Beklenen davranışın kaynağı: AMP §3/§4 (`FILE_*`, `MAX_FILE_CHUNK_BYTES`), S7
+//! Beklenen davranışın kaynağı: AMP §3/§4 (`FILE_*`, `MAX_FILE_CHUNK_BYTES`; K4G-09 yaması
+//! 2026-10-12: 0x0B `FILE_RECEIPT`, `FILE_IDLE_TTL` / `FILE_RECEIPT_TTL`, gönderen-tek `FILE_ABORT`,
+//! oturum değişiminde `FILE_ABORT(superseded)`), plan D5 (`transfer_id` kalıcı) ve D6, S7
 //! (`MAX_REASSEMBLY_BYTES` = 64 MiB), S8 (vektörsüz alıcı kararı → fail-closed DROP), BL B2.3 Done
 //! (`hash(kaynak) == hash(hedef)`; Application'da retransmit yolu yok — H-APP-RETRY-0). Dosya motoru
 //! `Messenger::poll`'u okumaz: her uçta testin döngüsü motorun olaylarını `FileTransfer::handle`'a
@@ -8,32 +10,56 @@
 //!
 //! * **`Link` (iki uç):** `tests/text_receipt.rs`'teki çiftin dosya için genişletilmiş kopyası.
 //!   Transport'un içinde ilk iletimi "kaybolup" sonra kurtarılan birimler (`hold_sends` +
-//!   `recover`) ve sırasızlık (`reverse_inbox_after`) testin elindedir — bu, S1 §4'ün aynı-oturum
-//!   sıra garantisinden SERTTİR: alıcının sıra-bağımsızlığı sınanır. Uç başına Transport'un kabul
-//!   ettiği gönderim sayılır (`accepted`): Application'ın kabul edilmiş bir kaydı yeniden
-//!   vermediğinin motordan bağımsız kanıtı.
+//!   `recover`), sırasızlık (`reverse_inbox_after`), yoldaki birimi alıp sonra geç verme
+//!   (`take_inbox` + `deliver_late` — eski oturumun yalnız-alım drain'inin karşılığı), yolda bozma
+//!   (`map_inbox`), tek atımlık gönderim reddi (geçici `refuse_next_sends`, kalıcı
+//!   `fail_next_sends`) ve oturum değişimi testin
+//!   elindedir — bu, S1 §4'ün aynı-oturum sıra garantisinden SERTTİR. Uç başına Transport'un kabul
+//!   ettiği gönderimler sayılır (`accepted`) ve tipleriyle kaydedilir (`sent_types`, `sent_on`):
+//!   Application'ın kabul edilmiş bir kaydı yeniden vermediğinin ve alıcının `FILE_ABORT`
+//!   göndermediğinin motordan bağımsız kanıtı. Zaman, iki ucun paylaştığı elle ilerletilen bir
+//!   saattir (gerçek uyku yok).
 //! * **`MockTransport` (yansıtıcı, `tests/common/mock_transport.rs`):** kayıp + kurtarma anahtarıyla
 //!   (H-APP-RETRY-0) yankı eşi: BOB'a gönderilen dosya aynı motora BOB'dan gelmiş gibi döner;
-//!   giden ve gelen yarı aynı (`PeerRef`, `transfer_id`) için ayrı durumlardır.
+//!   giden ve gelen yarı aynı (`PeerRef`, `transfer_id`) için ayrı durumlardır ve alıcı yarının
+//!   `FILE_RECEIPT`'i gönderen yarıya döner.
+//!
+//! # Testlerin `d3bc7407`'deki (K4G-09 öncesi main) durumu — üç sınıf
+//!
+//! Düzenek `FileTransfer::new(saat)` ve 0x0B'yi kullandığı için dosya eski kodda DERLENMEZ. Her
+//! testin belgesi, test MANTIĞININ eski koda göre sınıfını yazar:
+//!
+//! * **KIRMIZI (uyarlansa da)** — eski API'ye uyarlanınca da bir doğrulama düşer;
+//! * **UYARLANAMAZ** — sınadığı yüzey eski kodda yok (ör. `FILE_RECEIPT`, `FILE_IDLE_TTL`,
+//!   `FileSendError::Store`);
+//! * **AYNI DAVRANIŞ** — eski kodda da geçerdi; regresyon kilidi.
 
 mod common;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use common::mock_transport::MockTransport;
-use kama_app::codec::limits::{FILE_NAME_MAX_BYTES, WHOLE_FILE_HASH_BYTES};
+use kama_app::clock::MonotonicClock;
+use kama_app::codec::limits::{
+    APP_RECORD_HEADER_BYTES, FILE_CHUNK_PREFIX_BYTES, FILE_NAME_MAX_BYTES, WHOLE_FILE_HASH_BYTES,
+};
 use kama_app::codec::{
-    decode, encode, AmpLimits, AppMessage, EncodeError, FileAbortReason, MsgType,
+    decode, encode, AmpLimits, AppMessage, EncodeError, FileAbortReason, FileReceiptStatus, MsgType,
 };
 use kama_app::file_transfer::{
-    whole_file_hash, FileEvent, FileFailure, FileSendError, FileTransfer, TransferId,
-    FIRST_TRANSFER_ID, MAX_OUTGOING_TRANSFERS, MAX_REASSEMBLY_BYTES,
+    whole_file_hash, FileEvent, FileFailure, FileSendError, FileTransfer, SendFailure, TransferId,
+    FILE_IDLE_TTL, FILE_RECEIPT_TTL, FIRST_TRANSFER_ID, MAX_OUTGOING_TRANSFERS,
+    MAX_REASSEMBLY_BYTES,
 };
-use kama_app::messaging::{Messenger, MessengerEvent};
-use kama_app::store::MemoryAppStore;
+use kama_app::messaging::{Messenger, MessengerEvent, MsgId};
+use kama_app::store::{
+    AppStore, AppStoreError, CounterKind, DedupWindow, MemoryAppStore, OutboxUnit,
+};
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     ConnectResult, ConnectTicket, Delivered, DeliveryPolicy, KamaTransport, PreparedUnit,
@@ -49,12 +75,19 @@ const LINK_MAX_UNIT_BYTES: usize = TEST_MAX_PLAINTEXT_UNIT_BYTES as usize;
 const LINK_QUEUE_CAP: usize = 64;
 /// Uç başına olay kuyruğu tavanı (sahte sınır).
 const LINK_EVENT_CAP: usize = 16;
+/// Uç başına gönderim kaydı tavanı (sahte sınır).
+const LINK_LOG_CAP: usize = 512;
 /// Bir turda okunan motor olayı tavanı.
 const DRAIN_CAP: usize = 1024;
 /// `Duo::settle` tur tavanı.
 const ROUND_CAP: usize = 256;
 /// "Zaman geçse de" tur sayısı (H-APP-RETRY-0).
 const IDLE_ROUNDS: usize = 16;
+/// Zamanlayıcı sınırının bir adım altı.
+const TTL_MARGIN: Duration = Duration::from_secs(1);
+/// Düzeneklerin saat başlangıcı (sıfır DEĞİL): zamanlayıcıların başlangıç anı (`FILE_BEGIN` /
+/// `FILE_END` kabulü) sıfır damgasından ayırt edilsin.
+const CLOCK_START: Duration = Duration::from_secs(1000);
 /// Örnek dosyanın tam parça sayısı ve son (kısa) parçasının uzunluğu (`< MAX_FILE_CHUNK_BYTES`).
 const FULL_CHUNKS: usize = 6;
 const TAIL_BYTES: usize = 123;
@@ -99,12 +132,35 @@ fn chunk(transfer_id: TransferId, offset: usize, payload: &[u8]) -> AppMessage {
     }
 }
 
+fn file_receipt(transfer_id: TransferId, status: FileReceiptStatus) -> AppMessage {
+    AppMessage::FileReceipt {
+        transfer_id,
+        status,
+    }
+}
+
 fn received(peer: PeerRef, transfer_id: TransferId, bytes: Vec<u8>) -> FileEvent {
     FileEvent::Received {
         peer,
         transfer_id,
         name: NAME.to_owned(),
         bytes,
+    }
+}
+
+fn sent(peer: PeerRef, transfer_id: TransferId) -> FileEvent {
+    FileEvent::Sent { peer, transfer_id }
+}
+
+fn delivered(peer: PeerRef, transfer_id: TransferId) -> FileEvent {
+    FileEvent::Delivered { peer, transfer_id }
+}
+
+fn send_failed(peer: PeerRef, transfer_id: TransferId, reason: SendFailure) -> FileEvent {
+    FileEvent::SendFailed {
+        peer,
+        transfer_id,
+        reason,
     }
 }
 
@@ -129,12 +185,17 @@ fn small_transfer(content: &[u8], hash: [u8; WHOLE_FILE_HASH_BYTES]) -> [AppMess
 fn is_file_record(message: &AppMessage) -> bool {
     matches!(
         message.msg_type(),
-        MsgType::FileBegin | MsgType::FileChunk | MsgType::FileEnd | MsgType::FileAbort
+        MsgType::FileBegin
+            | MsgType::FileChunk
+            | MsgType::FileEnd
+            | MsgType::FileAbort
+            | MsgType::FileReceipt
     )
 }
 
 /// Bir ucun turu: motorun bütün olaylarını dosya motoruna verir (`FILE_*` tüketilir, gerisi aynen
-/// geri döner), sonra giden kuyruğu sunar. Dosya olaylarını doğuş sırasıyla döndürür.
+/// geri döner), sonra `pump` (zamanlayıcılar + giden kuyruk). Dosya olaylarını doğuş sırasıyla
+/// döndürür.
 fn turn<T: KamaTransport>(
     messenger: &mut Messenger<T>,
     files: &mut FileTransfer,
@@ -149,6 +210,87 @@ fn turn<T: KamaTransport>(
     }
     files.pump(messenger);
     std::iter::from_fn(|| files.poll_event()).collect()
+}
+
+/// Taze bellek içi depo — kalıcı durumu olmayan bir cihaz.
+fn fresh_store() -> Arc<dyn AppStore> {
+    Arc::new(MemoryAppStore::new())
+}
+
+// ── saat ve depo ─────────────────────────────────────────────────────────────────────────────
+
+/// Elle ilerletilen saat: kopyalar AYNI zamanı paylaşır (test bir kopyayı tutar, motorlar
+/// diğerlerini); zaman yalnız ileri gider (u64 nanosaniyede doyar).
+#[derive(Clone, Default)]
+struct ManualClock {
+    nanos: Arc<AtomicU64>,
+}
+
+impl ManualClock {
+    /// [`CLOCK_START`]'tan başlayan saat.
+    fn started() -> Self {
+        let clock = Self::default();
+        clock.advance(CLOCK_START);
+        clock
+    }
+
+    fn advance(&self, by: Duration) {
+        let step = u64::try_from(by.as_nanos()).unwrap_or(u64::MAX);
+        let advanced = self
+            .nanos
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |now| {
+                Some(now.saturating_add(step))
+            });
+        assert!(advanced.is_ok(), "kapanış her zaman Some döner");
+    }
+}
+
+impl MonotonicClock for ManualClock {
+    fn now(&self) -> Duration {
+        Duration::from_nanos(self.nanos.load(Ordering::SeqCst))
+    }
+}
+
+/// Arıza enjekte edilebilen depo: anahtarlar kapalıyken her işlem bellek içi depoya gider.
+/// `fail_reserve` açıkken `reserve_next` `Persist`, `exhaust_reserve` açıkken `Exhausted` döner ve
+/// hiçbir şey ayırmaz.
+#[derive(Default)]
+struct FlakyStore {
+    inner: MemoryAppStore,
+    fail_reserve: AtomicBool,
+    exhaust_reserve: AtomicBool,
+}
+
+impl AppStore for FlakyStore {
+    fn reserve_next(&self, peer: PeerRef, kind: CounterKind) -> Result<u64, AppStoreError> {
+        if self.fail_reserve.load(Ordering::SeqCst) {
+            return Err(AppStoreError::Persist);
+        }
+        if self.exhaust_reserve.load(Ordering::SeqCst) {
+            return Err(AppStoreError::Exhausted);
+        }
+        self.inner.reserve_next(peer, kind)
+    }
+
+    fn dedup_load(&self, peer: PeerRef) -> Result<DedupWindow, AppStoreError> {
+        self.inner.dedup_load(peer)
+    }
+
+    fn dedup_save(&self, peer: PeerRef, window: &DedupWindow) -> Result<(), AppStoreError> {
+        self.inner.dedup_save(peer, window)
+    }
+
+    fn outbox_put(&self, peer: PeerRef, unit: &OutboxUnit) -> Result<(), AppStoreError> {
+        self.inner.outbox_put(peer, unit)
+    }
+
+    fn outbox_remove(&self, peer: PeerRef, msg_id: MsgId) -> Result<bool, AppStoreError> {
+        self.inner.outbox_remove(peer, msg_id)
+    }
+
+    fn outbox_list(&self, peer: PeerRef) -> Result<Vec<OutboxUnit>, AppStoreError> {
+        self.inner.outbox_list(peer)
+    }
 }
 
 // ── iki uçlu çift ────────────────────────────────────────────────────────────────────────────
@@ -185,10 +327,19 @@ struct Endpoint {
     superseded: Vec<SessionHandle>,
     /// Bu uçtan KABUL edilen gönderimler (ilk iletimi kaybolanlar dahil).
     accepted: u64,
+    /// Bu uçtan kabul edilen gönderimlerin tutamacı ve tipi, sırasıyla (≤ `LINK_LOG_CAP`).
+    sent: Vec<(SessionHandle, MsgType)>,
     /// Bu ucun motoruna teslim edilen birimler.
     delivered: u64,
     /// İlk iletimi kaybolacak gönderimlerin kabul sıraları (0'dan).
     hold: BTreeSet<u64>,
+    /// Tek atımlık düğme: bu uçtan, oturum ve boy denetimlerini geçen sıradaki bu kadar gönderim
+    /// `Backpressure` ile reddedilir — kuyruk boş olsa da. Reddedilen gönderim kaydedilmez.
+    refuse_next: usize,
+    /// Tek atımlık düğme: `refuse_next`'in KALICI karşılığı — sıradaki bu kadar gönderim
+    /// `UnitTooLarge` ile reddedilir (motor yalnız geçici/kalıcı ayrımına bakar; geçici olmayan her
+    /// hata aynı yoldan geçer). Reddedilen gönderim kaydedilmez.
+    fail_next: usize,
 }
 
 impl Endpoint {
@@ -250,6 +401,14 @@ impl Link {
             endpoint.push_event(SessionEvent::Closed(old, CloseReason::Superseded));
         }
         handle
+    }
+
+    /// `side` ucunun oturumu `reason` ile biter: yalnız o uca `Closed(h, reason)`. Karşı uç
+    /// kapanıştan habersizdir; yoldaki birimler kuyrukta kalır (kapanmış tutamaçla teslim edilir).
+    fn end(&mut self, side: Side, reason: CloseReason) {
+        let endpoint = self.endpoint(side);
+        let handle = endpoint.active.take().expect("end: aktif oturum yok");
+        endpoint.push_event(SessionEvent::Closed(handle, reason));
     }
 
     /// `side` ucunun kabul sırası `ordinals` olan gönderimlerinin ilk iletimi kaybolur.
@@ -340,9 +499,23 @@ impl KamaTransport for End {
         if unit.bytes.len() > LINK_MAX_UNIT_BYTES {
             return Err(TransportError::UnitTooLarge);
         }
+        if me.refuse_next > 0 {
+            me.refuse_next -= 1;
+            return Err(TransportError::Backpressure);
+        }
+        if me.fail_next > 0 {
+            me.fail_next -= 1;
+            return Err(TransportError::UnitTooLarge);
+        }
         if remote.inbox.len() + remote.held.len() >= LINK_QUEUE_CAP {
             return Err(TransportError::Backpressure);
         }
+        let message = decode(&unit.bytes, &limits()).expect("motor geçerli kayıt üretir");
+        assert!(
+            me.sent.len() < LINK_LOG_CAP,
+            "senaryo gönderim kaydı tavanını aştı"
+        );
+        me.sent.push((session, message.msg_type()));
         let delivered = Delivered {
             session,
             unit: unit.bytes,
@@ -391,9 +564,11 @@ impl KamaTransport for End {
     fn cancel(&mut self, _ticket: ConnectTicket) {}
 }
 
-/// İki uçlu düzenek: Alice'in ve Bob'un motorları, dosya motorları ve testin `Link` denetimi.
+/// İki uçlu düzenek: Alice'in ve Bob'un motorları, dosya motorları, ortak saat ve testin `Link`
+/// denetimi.
 struct Duo {
     link: Rc<RefCell<Link>>,
+    clock: ManualClock,
     alice: Messenger<End>,
     bob: Messenger<End>,
     alice_files: FileTransfer,
@@ -401,19 +576,23 @@ struct Duo {
 }
 
 impl Duo {
-    /// Oturum kurulmuş, iki tarafın `Ready` olayı okunmuş düzenek.
+    /// Oturum kurulmuş, iki tarafın `Ready` olayı okunmuş düzenek; iki uç da taze depolu.
     fn connected() -> Self {
+        Self::connected_with(fresh_store())
+    }
+
+    /// [`Duo::connected`]; Alice'in deposu verilir.
+    fn connected_with(alice_store: Arc<dyn AppStore>) -> Self {
         let link = Rc::new(RefCell::new(Link::default()));
+        let clock = ManualClock::started();
         let mut duo = Self {
-            alice: Messenger::with_store(
-                End::new(&link, Side::Alice),
-                Arc::new(MemoryAppStore::new()),
-            )
-            .expect("limitler geçerli"),
-            bob: Messenger::with_store(End::new(&link, Side::Bob), Arc::new(MemoryAppStore::new()))
+            alice: Messenger::with_store(End::new(&link, Side::Alice), alice_store)
                 .expect("limitler geçerli"),
-            alice_files: FileTransfer::new(),
-            bob_files: FileTransfer::new(),
+            bob: Messenger::with_store(End::new(&link, Side::Bob), fresh_store())
+                .expect("limitler geçerli"),
+            alice_files: FileTransfer::new(Arc::new(clock.clone())),
+            bob_files: FileTransfer::new(Arc::new(clock.clone())),
+            clock,
             link,
         };
         let handle = duo.link.borrow_mut().establish();
@@ -471,13 +650,90 @@ impl Duo {
             .collect()
     }
 
+    /// `side` ucunun teslim kuyruğundaki birimleri yoldan alır — motora verilmemiştir, tutamaçları
+    /// korunur: test onları sonra [`Duo::deliver_late`] ile verebilir.
+    fn take_inbox(&self, side: Side) -> Vec<Delivered> {
+        self.link
+            .borrow_mut()
+            .endpoint(side)
+            .inbox
+            .drain(..)
+            .collect()
+    }
+
+    /// Yolda tutulan birimleri `side` ucunun teslim kuyruğunun SONUNA koyar: eski oturumun yalnız-alım
+    /// drain'inden geç gelen birimlerin karşılığı (S1 K7).
+    fn deliver_late(&self, side: Side, units: Vec<Delivered>) {
+        let mut link = self.link.borrow_mut();
+        let inbox = &mut link.endpoint(side).inbox;
+        assert!(
+            inbox.len() + units.len() <= LINK_QUEUE_CAP,
+            "deliver_late: kuyruk tavanı"
+        );
+        inbox.extend(units);
+    }
+
+    /// `side` ucunun teslim kuyruğundaki her birime `f`'yi uygular (yolda bozma).
+    fn map_inbox(&self, side: Side, f: impl FnMut(&mut Delivered)) {
+        self.link
+            .borrow_mut()
+            .endpoint(side)
+            .inbox
+            .iter_mut()
+            .for_each(f);
+    }
+
+    /// `side` ucundan sıradaki `count` gönderim `Backpressure` ile reddedilir (tek atımlık).
+    fn refuse_next_sends(&self, side: Side, count: usize) {
+        self.link.borrow_mut().endpoint(side).refuse_next = count;
+    }
+
+    /// `side` ucundan sıradaki `count` gönderim KALICI hatayla (`UnitTooLarge`) reddedilir (tek
+    /// atımlık).
+    fn fail_next_sends(&self, side: Side, count: usize) {
+        self.link.borrow_mut().endpoint(side).fail_next = count;
+    }
+
     /// `side` ucundan Transport'un kabul ettiği gönderim sayısı.
     fn accepted(&self, side: Side) -> u64 {
         self.link.borrow_mut().endpoint(side).accepted
     }
+
+    /// `side` ucundan Transport'un kabul ettiği kayıtların tipleri, sırasıyla.
+    fn sent_types(&self, side: Side) -> Vec<MsgType> {
+        self.link
+            .borrow_mut()
+            .endpoint(side)
+            .sent
+            .iter()
+            .map(|&(_, msg_type)| msg_type)
+            .collect()
+    }
+
+    /// `side` ucundan `handle` tutamacına kabul edilen kayıtların tipleri, sırasıyla.
+    fn sent_on(&self, side: Side, handle: SessionHandle) -> Vec<MsgType> {
+        self.link
+            .borrow_mut()
+            .endpoint(side)
+            .sent
+            .iter()
+            .filter(|&&(session, _)| session == handle)
+            .map(|&(_, msg_type)| msg_type)
+            .collect()
+    }
 }
 
 // ── yansıtıcı sahte ──────────────────────────────────────────────────────────────────────────
+
+/// Yansıtıcı sahte üzerinde, `store` deposuyla bir uç.
+fn echo_node(
+    store: Arc<dyn AppStore>,
+    clock: &ManualClock,
+) -> (Messenger<MockTransport>, FileTransfer) {
+    let messenger =
+        Messenger::with_store(MockTransport::new(caps()), store).expect("limitler geçerli");
+    (messenger, FileTransfer::new(Arc::new(clock.clone())))
+}
 
 /// Yeni eşe `connect` → sahte el sıkışmayı tamamlar → olaylar okunur, eşin oturumu hazır.
 fn connect_mock(messenger: &mut Messenger<MockTransport>, files: &mut FileTransfer, peer: PeerRef) {
@@ -490,8 +746,13 @@ fn connect_mock(messenger: &mut Messenger<MockTransport>, files: &mut FileTransf
     assert!(messenger.session_of(peer).is_some());
 }
 
-// ── testler ──────────────────────────────────────────────────────────────────────────────────
+// ── teslim ve alındı ─────────────────────────────────────────────────────────────────────────
 
+/// Kayıp, sırasızlık ve parçalardan önce gelen `FILE_END` altında dosya birleşir; alıcı TAM BİR
+/// `FILE_RECEIPT(ok)` gönderir (parça ACK'i yok) ve gönderen `Delivered` görür.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): alıcı hiçbir şey göndermiyordu (`accepted(Bob) == 0`),
+/// gönderen `Sent`'ten sonra hiçbir sinyal almazdı (`Delivered` yok).
 #[test]
 fn file_survives_transport_loss_reordering_and_end_before_chunks() {
     let mut duo = Duo::connected();
@@ -506,13 +767,7 @@ fn file_survives_transport_loss_reordering_and_end_before_chunks() {
         .send_file(&duo.alice, BOB, NAME, source.clone())
         .expect("kuyruğa alınır");
     // `Sent` yalnız son kaydın Transport'a kabulüdür; teslim değildir (S1 K8).
-    assert_eq!(
-        duo.alice_turn(),
-        vec![FileEvent::Sent {
-            peer: BOB,
-            transfer_id: id,
-        }]
-    );
+    assert_eq!(duo.alice_turn(), vec![sent(BOB, id)]);
     // Sırasızlık: FILE_BEGIN önde kalır, kalanı tersine döner — FILE_END parçalardan ÖNCE gelir.
     duo.link.borrow_mut().reverse_inbox_after(Side::Bob, 1);
     assert!(duo.bob_turn().is_empty(), "eksik parça varken tamamlanmaz");
@@ -527,12 +782,16 @@ fn file_survives_transport_loss_reordering_and_end_before_chunks() {
     };
     assert_eq!(whole_file_hash(bytes), whole_file_hash(&source));
     assert_eq!(duo.bob_files.incoming_count(), 0);
-    // Her kayıt Transport'a tam bir kez kabul ettirildi; alıcı hiçbir şey göndermedi (ACK yok).
+    // Her kayıt Transport'a tam bir kez kabul ettirildi; alıcı yalnız TEK alındı gönderdi.
     assert_eq!(duo.accepted(Side::Alice), records);
     assert_eq!(duo.alice_files.stats().records_accepted, records);
-    assert_eq!(duo.accepted(Side::Bob), 0);
+    assert_eq!(duo.sent_types(Side::Bob), vec![MsgType::FileReceipt]);
+    // Teslim edildi: yalnız `FILE_RECEIPT(ok)` ile.
+    assert_eq!(duo.alice_turn(), vec![delivered(BOB, id)]);
+    assert_eq!(duo.alice_files.outgoing_count(), 0);
 }
 
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): gönderen olayları `[Sent]`'ti (`Delivered` yok).
 #[test]
 fn backpressure_waits_and_no_accepted_record_is_offered_twice() {
     let mut duo = Duo::connected();
@@ -550,13 +809,7 @@ fn backpressure_waits_and_no_accepted_record_is_offered_twice() {
     assert_eq!(duo.accepted(Side::Alice), queue);
     assert!(duo.alice_files.stats().offers_refused > 0);
     let (at_alice, at_bob) = duo.settle();
-    assert_eq!(
-        at_alice,
-        vec![FileEvent::Sent {
-            peer: BOB,
-            transfer_id: id,
-        }]
-    );
+    assert_eq!(at_alice, vec![sent(BOB, id), delivered(BOB, id)]);
     assert_eq!(at_bob, vec![received(ALICE, id, source)]);
     assert_eq!(duo.accepted(Side::Alice), records);
     assert_eq!(duo.alice_files.stats().records_accepted, records);
@@ -568,6 +821,7 @@ fn backpressure_waits_and_no_accepted_record_is_offered_twice() {
     assert_eq!(duo.accepted(Side::Alice), records);
 }
 
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): gönderen olayları `[Sent]`'ti, alıcı alındı göndermiyordu.
 #[test]
 fn empty_file_round_trips_without_chunks() {
     let mut duo = Duo::connected();
@@ -576,24 +830,101 @@ fn empty_file_round_trips_without_chunks() {
         .send_file(&duo.alice, BOB, NAME, Vec::new())
         .expect("kuyruğa alınır");
     let (at_alice, at_bob) = duo.settle();
-    assert_eq!(
-        at_alice,
-        vec![FileEvent::Sent {
-            peer: BOB,
-            transfer_id: id,
-        }]
-    );
+    assert_eq!(at_alice, vec![sent(BOB, id), delivered(BOB, id)]);
     assert_eq!(at_bob, vec![received(ALICE, id, Vec::new())]);
-    // FILE_BEGIN + FILE_END.
+    // FILE_BEGIN + FILE_END; karşıdan tek FILE_RECEIPT.
     assert_eq!(duo.accepted(Side::Alice), 2);
+    assert_eq!(duo.sent_types(Side::Bob), vec![MsgType::FileReceipt]);
+}
+
+/// Teslim edildi yalnız `ok`'tur, yalnız `FILE_END` kabul edildikten sonra ve tam bir kez
+/// bildirilir; her başka status aktarımı kendi nedeniyle bitirir; erken, tekrar ya da geç alındı yok
+/// sayılır.
+///
+/// `d3bc7407`'de UYARLANAMAZ: `FILE_RECEIPT` (0x0B) kayıtsız tipti (codec DROP), `Delivered` /
+/// `SendFailure` yoktu.
+#[test]
+fn delivered_only_on_receipt_ok_and_every_other_status_fails() {
+    let mut duo = Duo::connected();
+    let chunk_len = duo.alice.limits().max_file_chunk_bytes();
+    let source = sample_file(2 * LINK_QUEUE_CAP * chunk_len);
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source.clone())
+        .expect("kuyruğa alınır");
+    assert!(duo.alice_turn().is_empty(), "aktarım yarım");
+    // `ok` `FILE_END`'den önce anlamsızdır: yok sayılır, aktarım sürer.
+    let ok = record(&file_receipt(id, FileReceiptStatus::Ok));
+    duo.inject(Side::Alice, ok.clone());
+    assert!(duo.alice_turn().is_empty());
+    assert_eq!(duo.alice_files.stats().receipts_ignored, 1);
+    assert_eq!(duo.alice_files.outgoing_count(), 1);
+    let (at_alice, at_bob) = duo.settle();
+    assert_eq!(at_alice, vec![sent(BOB, id), delivered(BOB, id)]);
+    assert_eq!(at_bob, vec![received(ALICE, id, source)]);
+    // Tekrar alındı (ör. yinelenmiş bir sahte kayıt) ikinci bir `Delivered` üretmez.
+    duo.inject(Side::Alice, ok);
+    assert!(duo.alice_turn().is_empty());
+    assert_eq!(duo.alice_files.stats().receipts_ignored, 2);
+
+    let failures = [
+        (
+            FileReceiptStatus::AbortedByReceiver,
+            SendFailure::AbortedByReceiver,
+        ),
+        (FileReceiptStatus::HashMismatch, SendFailure::HashMismatch),
+        (FileReceiptStatus::Timeout, SendFailure::ReceiverTimeout),
+        (FileReceiptStatus::Rejected, SendFailure::Rejected),
+    ];
+    for (status, reason) in failures {
+        let id = duo
+            .alice_files
+            .send_file(&duo.alice, BOB, NAME, sample_file(SMALL_SIZE))
+            .expect("kuyruğa alınır");
+        assert_eq!(duo.alice_turn(), vec![sent(BOB, id)]);
+        // Kayıtlar yolda kalır; alındı testin elinden gelir.
+        assert_eq!(duo.take_inbox(Side::Bob).len(), 3);
+        duo.inject(Side::Alice, record(&file_receipt(id, status)));
+        assert_eq!(
+            duo.alice_turn(),
+            vec![send_failed(BOB, id, reason)],
+            "{status:?}"
+        );
+        assert_eq!(duo.alice_files.outgoing_count(), 0);
+    }
+}
+
+/// Alıcının kabul ettiği alındıyı Transport geçici reddederse alındı KAYBOLMAZ: bekler ve sonraki
+/// `pump`'ta sunulur (ilki tele çıkmamıştı; yeniden iletim değil). İki yönlü aktarımda alıcının kendi
+/// parçaları kuyruğu doldurduğunda gönderende yanlış başarısızlık doğmaz.
+///
+/// `d3bc7407`'de UYARLANAMAZ: alındı yoktu; alıcının tek kaydı (`FILE_ABORT`) tek denemelikti.
+#[test]
+fn a_receipt_refused_by_the_transport_waits_and_is_not_lost() {
+    let mut duo = Duo::connected();
+    let source = sample_file(SMALL_SIZE);
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source.clone())
+        .expect("kuyruğa alınır");
+    assert_eq!(duo.alice_turn(), vec![sent(BOB, id)]);
+    // Bob'un turunda alındı iki kez sunulur (`handle` ve `pump`); ikisi de reddedilir.
+    duo.refuse_next_sends(Side::Bob, 2);
+    assert_eq!(duo.bob_turn(), vec![received(ALICE, id, source)]);
+    assert_eq!(duo.accepted(Side::Bob), 0, "alındı tele çıkmadı");
+    assert_eq!(duo.bob_files.stats().offers_refused, 2);
+    assert!(duo.alice_turn().is_empty(), "henüz alındı yok");
+    assert!(duo.bob_turn().is_empty());
+    assert_eq!(duo.sent_types(Side::Bob), vec![MsgType::FileReceipt]);
+    assert_eq!(duo.bob_files.stats().receipts_sent, 1);
+    assert_eq!(duo.alice_turn(), vec![delivered(BOB, id)]);
 }
 
 #[test]
 fn echo_peer_reassembles_through_mock_loss_and_recovery() {
-    let mut messenger =
-        Messenger::with_store(MockTransport::new(caps()), Arc::new(MemoryAppStore::new()))
-            .expect("limitler geçerli");
-    let mut files = FileTransfer::new();
+    // `d3bc7407`'de KIRMIZI (uyarlansa da): ikinci tur `[Received]`'tı — alındı yoktu.
+    let clock = ManualClock::started();
+    let (mut messenger, mut files) = echo_node(fresh_store(), &clock);
     connect_mock(&mut messenger, &mut files, BOB);
     let chunk_len = messenger.limits().max_file_chunk_bytes();
     let source = sample_file(4 * chunk_len + TAIL_BYTES);
@@ -603,31 +934,35 @@ fn echo_peer_reassembles_through_mock_loss_and_recovery() {
     let id = files
         .send_file(&messenger, BOB, NAME, source.clone())
         .expect("kuyruğa alınır");
-    assert_eq!(
-        turn(&mut messenger, &mut files),
-        vec![FileEvent::Sent {
-            peer: BOB,
-            transfer_id: id,
-        }]
-    );
+    assert_eq!(turn(&mut messenger, &mut files), vec![sent(BOB, id)]);
     assert_eq!(
         files.incoming_count(),
         0,
         "kurtarılana kadar hiçbir şey gelmedi"
     );
     messenger.transport_mut().pump();
+    // Yansıyan dosya alıcı yarıda birleşir; alıcı yarının alındısı gönderen yarıya döner.
     assert_eq!(
         turn(&mut messenger, &mut files),
-        vec![received(BOB, id, source)]
+        vec![received(BOB, id, source), delivered(BOB, id)]
     );
     let stats = messenger.transport().stats();
     assert_eq!((stats.units_dropped, stats.units_recovered), (2, 2));
-    // Yedi kayıt (1 + 5 + 1), her biri bir kez; kurtarma Transport'undur.
+    // Yedi kayıt (1 + 5 + 1), her biri bir kez; kurtarma Transport'undur. Alındı ayrıca sayılır.
     assert_eq!(files.stats().records_accepted, 7);
+    assert_eq!(files.stats().receipts_sent, 1);
 }
 
+// ── zamanlayıcılar ───────────────────────────────────────────────────────────────────────────
+
+/// Kayıp parça yeniden GÖNDERİLMEZ ve kayıp tespit edilmez (H-APP-RETRY-0); yarım aktarım alıcıda
+/// `FILE_IDLE_TTL` ile biter: yuva boşalır, `FILE_RECEIPT(timeout)` gider, gönderen kendi
+/// `FILE_RECEIPT_TTL`'i dolarken kuyruğunda bekleyen bu alındıyı ÖNCE işler (`ReceiverTimeout`).
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): zamanlayıcı yoktu — yarım aktarım `abandon_incoming`'e
+/// dek tabloda kalırdı, alındı yoktu.
 #[test]
-fn lost_chunk_is_never_resent_and_the_transfer_waits() {
+fn lost_chunk_is_never_resent_and_the_receiver_times_out() {
     let mut duo = Duo::connected();
     let chunk_len = duo.alice.limits().max_file_chunk_bytes();
     let source = sample_file(FULL_CHUNKS * chunk_len + TAIL_BYTES);
@@ -639,28 +974,239 @@ fn lost_chunk_is_never_resent_and_the_transfer_waits() {
         .send_file(&duo.alice, BOB, NAME, source)
         .expect("kuyruğa alınır");
     let (at_alice, at_bob) = duo.settle();
-    assert_eq!(
-        at_alice,
-        vec![FileEvent::Sent {
-            peer: BOB,
-            transfer_id: id,
-        }]
-    );
+    assert_eq!(at_alice, vec![sent(BOB, id)]);
     assert!(at_bob.is_empty(), "eksik parçayla dosya teslim edilmez");
-    // Zaman geçse de Application yeniden göndermez ve kayıp tespit etmez (H-APP-RETRY-0).
+    // Zaman geçse de (sınırın bir adım altına dek) Application yeniden göndermez.
+    duo.clock.advance(FILE_IDLE_TTL - TTL_MARGIN);
     for _ in 0..IDLE_ROUNDS {
         assert!(duo.alice_turn().is_empty());
         assert!(duo.bob_turn().is_empty());
     }
     assert_eq!(duo.accepted(Side::Alice), records);
-    assert_eq!(duo.accepted(Side::Bob), 0);
-    // Zamanlayıcı yok: yarım aktarım yalnız yerel kararla bırakılır; eşe sinyal gitmez.
     assert_eq!(duo.bob_files.incoming_count(), 1);
-    assert!(duo.bob_files.abandon_incoming(ALICE, id));
+    // Sınır: alıcı yuvayı boşaltır ve gönderene `timeout` bildirir.
+    duo.clock.advance(TTL_MARGIN);
+    assert_eq!(
+        duo.bob_turn(),
+        vec![FileEvent::Failed {
+            peer: ALICE,
+            transfer_id: id,
+            reason: FileFailure::IdleTimeout,
+        }]
+    );
     assert_eq!(duo.bob_files.incoming_count(), 0);
-    assert!(duo.raw_inbox(Side::Alice).is_empty());
+    assert_eq!(duo.sent_types(Side::Bob), vec![MsgType::FileReceipt]);
+    // Gönderenin süresi de doldu, ama kuyruktaki alındı önce işlenir.
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::ReceiverTimeout)]
+    );
+    assert_eq!(duo.alice_files.stats().receipt_timeouts, 0);
+    assert_eq!(duo.accepted(Side::Alice), records);
 }
 
+/// AMP §3 K4G-09: `FILE_IDLE_TTL` (normatif 60 s) `FILE_BEGIN` kabul edilince başlar ve kabul edilen
+/// her YENİ parçada sıfırlanır; tekrar parça, atılan parça ve `FILE_END` sıfırlamaz. Transport
+/// kuyruğunda bekleyen parça süre denetiminden ÖNCE işlenir ve aktarımı canlı tutar. Zaman aşımından
+/// sonra gelen kayıtlar bilinmeyen aktarımdır: ikinci alındı yok.
+///
+/// `d3bc7407`'de UYARLANAMAZ (saat ve `FILE_IDLE_TTL` yoktu). Uyarlansa KIRMIZI: aktarım hiçbir
+/// zaman kendiliğinden bitmiyordu.
+#[test]
+fn receiver_idle_timeout_frees_the_slot_and_a_queued_chunk_keeps_it_alive() {
+    assert_eq!(FILE_IDLE_TTL, Duration::from_secs(60), "AMP §3 K4G-09");
+    let mut duo = Duo::connected();
+    let content = sample_file(SMALL_SIZE);
+    let [begin, first, second, end] = small_transfer(&content, whole_file_hash(&content));
+    duo.inject(Side::Bob, record(&begin));
+    duo.inject(Side::Bob, record(&first));
+    assert!(duo.bob_turn().is_empty());
+    // Tekrar parça, atılan (geometriye uymayan) parça ve eksik parçayla gelen `FILE_END` süreyi
+    // sıfırlamaz.
+    duo.clock.advance(FILE_IDLE_TTL - TTL_MARGIN);
+    duo.inject(Side::Bob, record(&first));
+    duo.inject(
+        Side::Bob,
+        record(&chunk(INJECTED_ID, 3, &content[3..SMALL_CHUNK])),
+    );
+    duo.inject(Side::Bob, record(&end));
+    assert!(duo.bob_turn().is_empty());
+    assert_eq!(duo.bob_files.incoming_count(), 1);
+    duo.clock.advance(TTL_MARGIN);
+    assert_eq!(
+        duo.bob_turn(),
+        vec![FileEvent::Failed {
+            peer: ALICE,
+            transfer_id: INJECTED_ID,
+            reason: FileFailure::IdleTimeout,
+        }]
+    );
+    assert_eq!(duo.bob_files.incoming_count(), 0);
+    assert_eq!(duo.bob_files.stats().transfers_timed_out, 1);
+    // Geç parça bilinmeyen aktarımdır: atılır, ikinci alındı yok.
+    duo.inject(Side::Bob, record(&second));
+    assert!(duo.bob_turn().is_empty());
+    assert_eq!(
+        duo.raw_inbox(Side::Alice),
+        vec![file_receipt(INJECTED_ID, FileReceiptStatus::Timeout)]
+    );
+
+    // Kuyrukta bekleyen parça aktarımı canlı tutar: süre, kuyruk işlendikten sonra denetlenir.
+    let other = INJECTED_ID + 1;
+    let mut records = small_transfer(&content, whole_file_hash(&content));
+    for message in &mut records {
+        if let AppMessage::FileBegin { transfer_id, .. }
+        | AppMessage::FileChunk { transfer_id, .. }
+        | AppMessage::FileEnd { transfer_id } = message
+        {
+            *transfer_id = other;
+        }
+    }
+    let [begin, first, second, _] = records;
+    duo.inject(Side::Bob, record(&begin));
+    duo.inject(Side::Bob, record(&first));
+    assert!(duo.bob_turn().is_empty());
+    duo.inject(Side::Bob, record(&second));
+    duo.clock.advance(FILE_IDLE_TTL * 2);
+    assert!(duo.bob_turn().is_empty(), "bekleyen parça önce işlendi");
+    assert_eq!(duo.bob_files.incoming_count(), 1);
+    duo.clock.advance(FILE_IDLE_TTL);
+    assert_eq!(
+        duo.bob_turn(),
+        vec![FileEvent::Failed {
+            peer: ALICE,
+            transfer_id: other,
+            reason: FileFailure::IdleTimeout,
+        }]
+    );
+}
+
+/// AMP §3 K4G-09: `FILE_RECEIPT_TTL` (normatif 60 s) `FILE_END` kabul edilince başlar; süre içinde
+/// alındı gelmezse aktarım `ReceiptTimeout` ile biter, eşe bir şey gitmez; sonra gelen alındı yok
+/// sayılır (gerçekte teslim edilmiş olabilir — beyanlı yanlış "başarısız"). Kuyrukta bekleyen alındı
+/// süre denetiminden ÖNCE işlenir.
+///
+/// `d3bc7407`'de UYARLANAMAZ: alındı ve saat yoktu.
+#[test]
+fn sender_receipt_timeout_fails_the_transfer_and_a_queued_receipt_wins() {
+    assert_eq!(FILE_RECEIPT_TTL, Duration::from_secs(60), "AMP §3 K4G-09");
+    let mut duo = Duo::connected();
+    let source = sample_file(SMALL_SIZE);
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source.clone())
+        .expect("kuyruğa alınır");
+    assert_eq!(duo.alice_turn(), vec![sent(BOB, id)]);
+    let in_flight = duo.take_inbox(Side::Bob);
+    duo.clock.advance(FILE_RECEIPT_TTL - TTL_MARGIN);
+    assert!(duo.alice_turn().is_empty());
+    assert_eq!(duo.alice_files.outgoing_count(), 1);
+    duo.clock.advance(TTL_MARGIN);
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::ReceiptTimeout)]
+    );
+    assert_eq!(duo.alice_files.outgoing_count(), 0);
+    assert_eq!(
+        duo.accepted(Side::Alice),
+        3,
+        "zaman aşımında tele bir şey gitmedi"
+    );
+    // Kayıtlar sonunda ulaşır; geç `ok` alındısı yok sayılır.
+    duo.deliver_late(Side::Bob, in_flight);
+    assert_eq!(duo.bob_turn(), vec![received(ALICE, id, source.clone())]);
+    assert!(duo.alice_turn().is_empty());
+    assert_eq!(duo.alice_files.stats().receipts_ignored, 1);
+
+    // Süre dolduğunda kuyrukta bekleyen alındı önce işlenir: `Delivered`, zaman aşımı değil.
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source.clone())
+        .expect("kuyruğa alınır");
+    assert_eq!(duo.alice_turn(), vec![sent(BOB, id)]);
+    assert_eq!(duo.bob_turn(), vec![received(ALICE, id, source)]);
+    duo.clock.advance(FILE_RECEIPT_TTL * 2);
+    assert_eq!(duo.alice_turn(), vec![delivered(BOB, id)]);
+    assert_eq!(duo.alice_files.stats().receipt_timeouts, 1);
+}
+
+/// AMP §3 K4G-09: alıcı zamanlayıcısı `FILE_BEGIN` KABUL EDİLDİĞİNDE başlar (saat sıfırdan
+/// başlamaz, `CLOCK_START`): parçasız bir aktarım kabulünden `FILE_IDLE_TTL − TTL_MARGIN` sonra
+/// canlıdır, tam `FILE_IDLE_TTL`'de `IdleTimeout` ile biter ve eşe `FILE_RECEIPT(timeout)` gider.
+///
+/// `d3bc7407`'de UYARLANAMAZ (saat ve `FILE_IDLE_TTL` yoktu). Uyarlansa KIRMIZI: aktarım hiç
+/// bitmiyordu.
+#[test]
+fn receiver_idle_timer_starts_at_file_begin_acceptance() {
+    let mut duo = Duo::connected();
+    let content = sample_file(SMALL_SIZE);
+    let [begin, ..] = small_transfer(&content, whole_file_hash(&content));
+    duo.inject(Side::Bob, record(&begin));
+    assert!(duo.bob_turn().is_empty());
+    assert_eq!(duo.bob_files.incoming_count(), 1);
+    duo.clock.advance(FILE_IDLE_TTL - TTL_MARGIN);
+    assert!(duo.bob_turn().is_empty());
+    assert_eq!(
+        duo.bob_files.incoming_count(),
+        1,
+        "kabulden sınırın bir adım altı: canlı"
+    );
+    duo.clock.advance(TTL_MARGIN);
+    assert_eq!(
+        duo.bob_turn(),
+        vec![FileEvent::Failed {
+            peer: ALICE,
+            transfer_id: INJECTED_ID,
+            reason: FileFailure::IdleTimeout,
+        }]
+    );
+    assert_eq!(
+        duo.raw_inbox(Side::Alice),
+        vec![file_receipt(INJECTED_ID, FileReceiptStatus::Timeout)]
+    );
+}
+
+/// AMP §3 K4G-09: gönderen zamanlayıcısı `FILE_END` KABUL EDİLDİĞİNDE başlar, `FILE_BEGIN`'de değil:
+/// geri basınç `FILE_END`'in kabulünü `FILE_BEGIN`'den `END_DELAY` geciktirir; `FILE_END`'den
+/// `FILE_RECEIPT_TTL − TTL_MARGIN` sonra (`FILE_BEGIN`'den bunun `END_DELAY` fazlası) aktarım hâlâ
+/// alındı bekler, tam `FILE_RECEIPT_TTL`'de `ReceiptTimeout` ile biter.
+///
+/// `d3bc7407`'de UYARLANAMAZ (alındı ve saat yoktu).
+#[test]
+fn sender_receipt_timer_starts_when_file_end_is_accepted() {
+    const END_DELAY: Duration = Duration::from_secs(50);
+    let mut duo = Duo::connected();
+    let chunk_len = duo.alice.limits().max_file_chunk_bytes();
+    let source = sample_file(2 * LINK_QUEUE_CAP * chunk_len);
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source)
+        .expect("kuyruğa alınır");
+    // FILE_BEGIN + ilk parçalar kabul edildi; kuyruk dolu.
+    assert!(duo.alice_turn().is_empty());
+    duo.clock.advance(END_DELAY);
+    // Bob kuyruğu boşaltır; Alice'in sonraki parçaları yolda kaybolur — alındı gelmeyecek.
+    assert!(duo.bob_turn().is_empty());
+    assert!(duo.alice_turn().is_empty());
+    assert_eq!(duo.take_inbox(Side::Bob).len(), LINK_QUEUE_CAP);
+    // `END_DELAY` sonra: kalan parça ve FILE_END kabul edildi.
+    assert_eq!(duo.alice_turn(), vec![sent(BOB, id)]);
+    duo.clock.advance(FILE_RECEIPT_TTL - TTL_MARGIN);
+    assert!(
+        duo.alice_turn().is_empty(),
+        "FILE_END'den sınırın bir adım altı: hâlâ bekler"
+    );
+    assert_eq!(duo.alice_files.outgoing_count(), 1);
+    duo.clock.advance(TTL_MARGIN);
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::ReceiptTimeout)]
+    );
+}
+
+// ── alıcı kararları ──────────────────────────────────────────────────────────────────────────
+
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): alıcı karşıya hiçbir şey göndermiyordu (alındı yok).
 #[test]
 fn duplicate_records_are_idempotent() {
     let mut duo = Duo::connected();
@@ -675,12 +1221,23 @@ fn duplicate_records_are_idempotent() {
     duo.inject(Side::Bob, record(&second));
     assert!(duo.bob_turn().is_empty());
     assert_eq!(duo.bob_files.stats().unknown_transfer_records, 1);
-    // Hiçbir tekrar karşıya sinyal üretmedi (parça ACK'i yok).
-    assert!(duo.raw_inbox(Side::Alice).is_empty());
+    // Tekrarlar karşıya sinyal üretmedi (parça ACK'i yok): tek sinyal aktarımın alındısı.
+    assert_eq!(
+        duo.raw_inbox(Side::Alice),
+        vec![file_receipt(INJECTED_ID, FileReceiptStatus::Ok)]
+    );
 }
 
+/// Özet tutmazsa alıcı `FILE_RECEIPT(hash_mismatch)` gönderir, `FILE_ABORT` GÖNDERMEZ; gönderen
+/// aktarımı `HashMismatch` ile bitirir. Parça yeniden istemi YOK. (a) elle kurulan kayıtlar;
+/// (b) uçtan uca, yolda bir parçanın bir baytı bozulur.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): alıcı `FILE_ABORT(hash_mismatch)` gönderiyordu; gönderen
+/// (b)'de HİÇBİR son olay görmezdi — aktarım `FILE_END` kabulünde tablodan çıkmıştı, alıcının
+/// `FILE_ABORT`'u izlenmeyen aktarıma düşerdi (`aborts_ignored`; DUR #108'in kendisi).
 #[test]
-fn wrong_whole_file_hash_fails_with_hash_mismatch() {
+fn hash_mismatch_is_reported_with_a_receipt_never_an_abort() {
+    // (a) Elle kurulan kayıtlar.
     let mut duo = Duo::connected();
     let content = sample_file(SMALL_SIZE);
     let mut wrong = whole_file_hash(&content);
@@ -697,16 +1254,104 @@ fn wrong_whole_file_hash_fails_with_hash_mismatch() {
         }]
     );
     assert_eq!(duo.bob_files.incoming_count(), 0);
-    // Alıcı eşe tek bir FILE_ABORT(hash_mismatch) gönderdi; parça yeniden istemi YOK.
     assert_eq!(
         duo.raw_inbox(Side::Alice),
-        vec![AppMessage::FileAbort {
-            transfer_id: INJECTED_ID,
-            reason: FileAbortReason::HashMismatch,
+        vec![file_receipt(INJECTED_ID, FileReceiptStatus::HashMismatch)]
+    );
+
+    // (b) Uçtan uca: yolda parça 0'ın ilk baytı bozulur.
+    let mut duo = Duo::connected();
+    let chunk_len = duo.alice.limits().max_file_chunk_bytes();
+    let source = sample_file(2 * chunk_len + TAIL_BYTES);
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source)
+        .expect("kuyruğa alınır");
+    assert_eq!(duo.alice_turn(), vec![sent(BOB, id)]);
+    let limits = limits();
+    duo.map_inbox(Side::Bob, |unit| {
+        if let Ok(AppMessage::FileChunk {
+            transfer_id,
+            offset: 0,
+            mut payload,
+        }) = decode(&unit.unit, &limits)
+        {
+            payload[0] ^= 0x01;
+            unit.unit = record(&AppMessage::FileChunk {
+                transfer_id,
+                offset: 0,
+                payload,
+            });
+        }
+    });
+    assert_eq!(
+        duo.bob_turn(),
+        vec![FileEvent::Failed {
+            peer: ALICE,
+            transfer_id: id,
+            reason: FileFailure::HashMismatch,
         }]
+    );
+    assert_eq!(
+        duo.sent_types(Side::Bob),
+        vec![MsgType::FileReceipt],
+        "alıcı FILE_ABORT GÖNDERMEZ"
+    );
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::HashMismatch)]
+    );
+    assert_eq!(duo.alice_files.outgoing_count(), 0);
+}
+
+/// `FILE_BEGIN`'i kabul edilmeyen aktarım (`rejected`, ilk tetik): eşten zaten
+/// `MAX_INCOMING_TRANSFERS_PER_PEER` aktarım birleştirilirken gelen yeni aktarım reddedilir; gönderen
+/// `Rejected` ile biter. Reddedilen aktarımın parçaları bilinmeyen aktarımdır. (S7 boyutu:
+/// `oversize_file_is_refused_before_any_allocation`; ikinci tetik — `FILE_ABORT`'u önce gelen
+/// aktarım: `synchronous_supersession_aborts_and_an_overtaken_file_begin_is_rejected`.)
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): ret `FILE_ABORT(storage_full)` ile bildiriliyordu ve
+/// gönderen HİÇBİR son olay görmezdi — aktarım `FILE_END` kabulünde tablodan çıkmıştı, alıcının
+/// `FILE_ABORT`'u izlenmeyen aktarıma düşerdi (`aborts_ignored`; DUR #108'in kendisi).
+#[test]
+fn a_file_begin_without_a_free_slot_is_rejected() {
+    let mut duo = Duo::connected();
+    // Bob, Alice'ten iki yarım aktarımı birleştiriyor (eş başına tavan).
+    for transfer_id in [100, 101] {
+        let begin = AppMessage::FileBegin {
+            transfer_id,
+            file_size: 10,
+            whole_file_hash: [0; WHOLE_FILE_HASH_BYTES],
+            chunk_count: 1,
+            name: NAME.to_owned(),
+        };
+        duo.inject(Side::Bob, record(&begin));
+    }
+    assert!(duo.bob_turn().is_empty());
+    let source = sample_file(2 * duo.alice.limits().max_file_chunk_bytes());
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source)
+        .expect("kuyruğa alınır");
+    assert_eq!(duo.alice_turn(), vec![sent(BOB, id)]);
+    assert!(
+        duo.bob_turn().is_empty(),
+        "reddedilen aktarımın yerel olayı yok"
+    );
+    let stats = duo.bob_files.stats();
+    assert_eq!(
+        (stats.transfers_refused, stats.unknown_transfer_records),
+        (1, 3)
+    );
+    assert_eq!(duo.sent_types(Side::Bob), vec![MsgType::FileReceipt]);
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::Rejected)]
     );
 }
 
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): ret eşe `FILE_ABORT(storage_full)` olarak gidiyordu
+/// (`aborts_sent`).
 #[test]
 fn oversize_file_is_refused_before_any_allocation() {
     let mut duo = Duo::connected();
@@ -731,19 +1376,22 @@ fn oversize_file_is_refused_before_any_allocation() {
         (
             stats.transfers_refused,
             stats.unknown_transfer_records,
-            stats.aborts_sent
+            stats.receipts_sent
         ),
         (1, 1, 1)
     );
     assert_eq!(
         duo.raw_inbox(Side::Alice),
-        vec![AppMessage::FileAbort {
-            transfer_id: INJECTED_ID,
-            reason: FileAbortReason::StorageFull,
-        }]
+        vec![file_receipt(INJECTED_ID, FileReceiptStatus::Rejected)]
     );
 }
 
+/// S8: tutarsız ya da süren aktarımla çelişen `FILE_BEGIN` ve geometriye uymayan parçalar sessizce
+/// DROP edilir — eşe alındı GİTMEZ (Abkarada kararı 2026-10-12: kart §4'ün (b) okuması reddedildi;
+/// S8 ret = drop, yansıtma yüzeyi açılmaz) — ve atılan kayıtlar süren aktarımı bozmaz.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): son satır — eskide alıcı karşıya hiçbir şey göndermiyordu
+/// (tamamlanan aktarımın alındısı yok). S8 retlerinin sessizliği AYNI DAVRANIŞ.
 #[test]
 fn inconsistent_records_are_dropped_without_poisoning_the_transfer() {
     let mut duo = Duo::connected();
@@ -807,16 +1455,74 @@ fn inconsistent_records_are_dropped_without_poisoning_the_transfer() {
         (stats.inconsistent_records, stats.unknown_transfer_records),
         (dropped, 1)
     );
+    // S8: hiçbir ret karşıya sinyal üretmedi.
+    assert!(duo.raw_inbox(Side::Alice).is_empty());
     // Atılan kayıtlar durumu bozmadı: doğru parça ve FILE_END ile aktarım tamamlanır.
     duo.inject(Side::Bob, record(&second));
     duo.inject(Side::Bob, record(&end));
     assert_eq!(duo.bob_turn(), vec![received(ALICE, INJECTED_ID, content)]);
-    // S8: hiçbir ret karşıya sinyal üretmedi.
-    assert!(duo.raw_inbox(Side::Alice).is_empty());
+    assert_eq!(
+        duo.raw_inbox(Side::Alice),
+        vec![file_receipt(INJECTED_ID, FileReceiptStatus::Ok)]
+    );
 }
 
+// ── iptal ────────────────────────────────────────────────────────────────────────────────────
+
+/// Alıcının kullanıcısı kabul edilmiş aktarımı iptal eder: eşe `FILE_RECEIPT(aborted_by_receiver)`
+/// gider (DUR #108: alıcı iptali artık bildirilir), gönderen `AbortedByReceiver` ile biter ve kalan
+/// parçaları SUNMAZ. Alıcı `FILE_ABORT` göndermez.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): `abandon_incoming` sessizdi — eşe sinyal gitmiyordu,
+/// gönderen kalan parçaları göndermeye devam ederdi.
 #[test]
-fn abort_drops_the_transfer_on_both_sides() {
+fn receiver_cancel_sends_aborted_by_receiver_and_the_sender_stops() {
+    let mut duo = Duo::connected();
+    let chunk_len = duo.alice.limits().max_file_chunk_bytes();
+    let source = sample_file(3 * LINK_QUEUE_CAP * chunk_len);
+    let queue = u64::try_from(LINK_QUEUE_CAP).expect("küçük sayı");
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source)
+        .expect("kuyruğa alınır");
+    assert!(duo.alice_turn().is_empty());
+    assert!(
+        duo.bob_turn().is_empty(),
+        "yarım aktarım: FILE_BEGIN + parçalar"
+    );
+    assert_eq!(duo.bob_files.incoming_count(), 1);
+    assert!(duo.bob_files.cancel_incoming(&mut duo.bob, ALICE, id));
+    assert_eq!(duo.bob_files.incoming_count(), 0);
+    assert_eq!(duo.sent_types(Side::Bob), vec![MsgType::FileReceipt]);
+    // Gönderen alındıyı turun başında okur: aktarım biter, `pump` başka parça sunmaz.
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::AbortedByReceiver)]
+    );
+    assert_eq!(duo.accepted(Side::Alice), queue);
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice_turn().is_empty());
+        assert!(duo.bob_turn().is_empty());
+    }
+    assert_eq!(duo.accepted(Side::Alice), queue);
+    assert!(
+        !duo.bob_files.cancel_incoming(&mut duo.bob, ALICE, id),
+        "izlenmeyen aktarım: eşe bir şey gitmez"
+    );
+    assert_eq!(duo.sent_types(Side::Bob), vec![MsgType::FileReceipt]);
+}
+
+/// Gönderen iptali (`FILE_ABORT(user_cancel)`) iki uçta da aktarımı bitirir (gönderende tek
+/// `SendFailed(Cancelled)`, `FILE_ABORT` kabul edildiğinde); alıcının reddi (`FILE_RECEIPT(rejected)`)
+/// gönderende aktarımı bitirir ve kalan kayıtlar sunulmaz; son kaydı kabul edilmiş aktarım iptal
+/// edilemez (`AlreadySent`, olay yok) ve teslim yine bildirilir.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): alıcının reddi `FILE_ABORT(storage_full)` idi
+/// (`SendAborted`); 0x0B kayıtsız tipti (DROP); `AlreadySent` yoktu (`FILE_END` kabulüyle aktarım
+/// tablodan çıkıyordu → `UnknownTransfer`); gönderen iptalinde olay yoktu (`SendFailed(Cancelled)`:
+/// orkestratör tutarlılık kararı 2026-10-12). İlk yarının tel davranışı AYNI.
+#[test]
+fn sender_cancel_and_receiver_rejection_end_the_transfer_on_both_sides() {
     let mut duo = Duo::connected();
     let chunk_len = duo.alice.limits().max_file_chunk_bytes();
     let source = sample_file(3 * LINK_QUEUE_CAP * chunk_len);
@@ -837,9 +1543,20 @@ fn abort_drops_the_transfer_on_both_sides() {
         "yarım aktarım: FILE_BEGIN + parçalar"
     );
     assert_eq!(duo.bob_files.incoming_count(), 1);
-    assert!(duo.alice_turn().is_empty());
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, cancelled, SendFailure::Cancelled)],
+        "FILE_ABORT kabul edildi: tek son olay"
+    );
     assert_eq!(duo.accepted(Side::Alice), queue + 1);
+    assert_eq!(
+        duo.sent_types(Side::Alice).last(),
+        Some(&MsgType::FileAbort)
+    );
     assert_eq!(duo.alice_files.outgoing_count(), 0);
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice_turn().is_empty(), "ikinci olay yok");
+    }
     assert_eq!(
         duo.bob_turn(),
         vec![FileEvent::Aborted {
@@ -849,6 +1566,7 @@ fn abort_drops_the_transfer_on_both_sides() {
         }]
     );
     assert_eq!(duo.bob_files.incoming_count(), 0);
+    assert!(duo.sent_types(Side::Bob).is_empty(), "iptale alındı yok");
     assert_eq!(
         duo.alice_files.cancel_send(cancelled),
         Err(FileSendError::UnknownTransfer)
@@ -861,56 +1579,719 @@ fn abort_drops_the_transfer_on_both_sides() {
         .expect("kuyruğa alınır");
     assert!(duo.alice_turn().is_empty());
     assert_eq!(duo.accepted(Side::Alice), 2 * queue + 1);
-    let abort = AppMessage::FileAbort {
-        transfer_id: refused,
-        reason: FileAbortReason::StorageFull,
-    };
-    duo.inject(Side::Alice, record(&abort));
+    duo.inject(
+        Side::Alice,
+        record(&file_receipt(refused, FileReceiptStatus::Rejected)),
+    );
     assert_eq!(
         duo.alice_turn(),
-        vec![FileEvent::SendAborted {
-            peer: BOB,
-            transfer_id: refused,
-            reason: FileAbortReason::StorageFull,
-        }]
+        vec![send_failed(BOB, refused, SendFailure::Rejected)]
     );
     assert_eq!(duo.alice_files.outgoing_count(), 0);
     for _ in 0..IDLE_ROUNDS {
         assert!(duo.alice_turn().is_empty());
     }
     assert_eq!(duo.accepted(Side::Alice), 2 * queue + 1);
+
+    // Son kaydı kabul edilmiş aktarım iptal edilemez; teslim yine bildirilir.
+    let mut duo = Duo::connected();
+    let small = sample_file(SMALL_SIZE);
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, small.clone())
+        .expect("kuyruğa alınır");
+    assert_eq!(duo.alice_turn(), vec![sent(BOB, id)]);
+    assert_eq!(
+        duo.alice_files.cancel_send(id),
+        Err(FileSendError::AlreadySent)
+    );
+    assert_eq!(duo.bob_turn(), vec![received(ALICE, id, small)]);
+    assert_eq!(duo.alice_turn(), vec![delivered(BOB, id)]);
 }
 
+/// Abkarada kararı 2026-10-12 (kabul öncesi): `FILE_BEGIN` Transport'a kabul ettirilmeden yapılan
+/// iptal tele ÇIKMAZ (eş aktarımı hiç görmedi; alındı da gelmez) ve yerelde TEK
+/// `SendFailed(Cancelled)` doğar. (a) Aktarım hiç sunulmadı. (b) `FILE_BEGIN` sunuldu ama geçici
+/// reddedildi — tele çıkmamıştır, aynı yol. İptal edilen kimlik bir daha izlenmez.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): iptal olaysızdı (aktarım tablodan sessizce düşüyordu); tel
+/// davranışı AYNI.
 #[test]
-fn session_change_mid_transfer_resends_nothing() {
+fn a_cancel_before_file_begin_is_accepted_sends_nothing_and_fails_once() {
+    // (a) Hiç sunulmamış aktarım.
+    let mut duo = Duo::connected();
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, sample_file(SMALL_SIZE))
+        .expect("kuyruğa alınır");
+    duo.alice_files.cancel_send(id).expect("izlenen aktarım");
+    assert_eq!(duo.alice_files.outgoing_count(), 0);
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::Cancelled)]
+    );
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice_turn().is_empty(), "ikinci olay yok");
+    }
+    assert_eq!(duo.accepted(Side::Alice), 0, "tele hiçbir şey çıkmadı");
+    assert!(duo.bob_turn().is_empty());
+    assert_eq!(duo.bob_files.incoming_count(), 0);
+    assert!(duo.sent_types(Side::Bob).is_empty(), "alındı yok");
+    assert_eq!(
+        duo.alice_files.cancel_send(id),
+        Err(FileSendError::UnknownTransfer)
+    );
+
+    // (b) `FILE_BEGIN` geçici reddedildi: tele çıkmadı, aynı yol.
+    let mut duo = Duo::connected();
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, sample_file(SMALL_SIZE))
+        .expect("kuyruğa alınır");
+    duo.refuse_next_sends(Side::Alice, 1);
+    assert!(duo.alice_turn().is_empty(), "FILE_BEGIN geçici reddedildi");
+    assert_eq!(duo.alice_files.stats().offers_refused, 1);
+    assert_eq!(duo.accepted(Side::Alice), 0);
+    duo.alice_files.cancel_send(id).expect("izlenen aktarım");
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::Cancelled)]
+    );
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice_turn().is_empty(), "ikinci olay yok");
+    }
+    assert_eq!(duo.accepted(Side::Alice), 0, "tele hiçbir şey çıkmadı");
+    assert!(duo.bob_turn().is_empty());
+    assert_eq!(duo.bob_files.incoming_count(), 0);
+}
+
+/// Orkestratör tutarlılık kararı 2026-10-12 (kabul sonrası): `FILE_BEGIN`'i kabul edilmiş aktarımın
+/// iptali de TEK `SendFailed(Cancelled)` ile biter. (a) `FILE_ABORT(user_cancel)` önce geçici
+/// reddedilir (bekler, olay yok), sonra kabul edilir → olay. (b) `FILE_ABORT` KALICI reddedilir → olay;
+/// tele bir şey çıkmaz, eşin yarım aktarımı kendi zamanlayıcısıyla biter ve geç `FILE_RECEIPT(timeout)`
+/// yok sayılır. (c) Eşin alındısı bekleyen `FILE_ABORT`'u geçer → olay; `FILE_ABORT` hiç sunulmaz.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): iptalin olayı yoktu; (b)'de eşe sinyal gitmiyordu ve yarım
+/// aktarım alıcıda hiç bitmiyordu (zamanlayıcı yoktu); (c) alındı yoktu (UYARLANAMAZ).
+#[test]
+fn a_cancel_after_file_begin_is_accepted_ends_with_one_cancelled_event() {
+    let queue = u64::try_from(LINK_QUEUE_CAP).expect("küçük sayı");
+
+    // (a) Geçici ret, sonra kabul.
     let mut duo = Duo::connected();
     let chunk_len = duo.alice.limits().max_file_chunk_bytes();
-    let chunks = 2 * LINK_QUEUE_CAP;
-    let source = sample_file(chunks * chunk_len);
+    let source = sample_file(2 * LINK_QUEUE_CAP * chunk_len);
     let id = duo
         .alice_files
         .send_file(&duo.alice, BOB, NAME, source.clone())
         .expect("kuyruğa alınır");
     assert!(duo.alice_turn().is_empty());
-    // Supersession: eski tutamaçla kabul edilmiş birimler karşı kuyrukta kalır (yalnız-alım
-    // drain), kalan kayıtlar yeni tutamaçtan gider. Dosya için S1 K7 yeniden gönderimi YOK.
-    duo.link.borrow_mut().supersede();
+    duo.alice_files.cancel_send(id).expect("izlenen aktarım");
+    assert!(duo.bob_turn().is_empty(), "Bob kuyruğu boşaltır");
+    duo.refuse_next_sends(Side::Alice, 1);
+    assert!(duo.alice_turn().is_empty(), "FILE_ABORT geçici reddedildi");
+    assert_eq!(duo.accepted(Side::Alice), queue);
+    assert_eq!(duo.alice_files.outgoing_count(), 1);
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::Cancelled)]
+    );
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice_turn().is_empty(), "ikinci olay yok");
+    }
+    assert_eq!(duo.accepted(Side::Alice), queue + 1);
+    assert_eq!(
+        duo.sent_types(Side::Alice).last(),
+        Some(&MsgType::FileAbort)
+    );
+    assert_eq!(
+        duo.bob_turn(),
+        vec![FileEvent::Aborted {
+            peer: ALICE,
+            transfer_id: id,
+            reason: FileAbortReason::UserCancel,
+        }]
+    );
+
+    // (b) Kalıcı ret.
+    let mut duo = Duo::connected();
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source.clone())
+        .expect("kuyruğa alınır");
+    assert!(duo.alice_turn().is_empty());
+    duo.alice_files.cancel_send(id).expect("izlenen aktarım");
+    assert!(duo.bob_turn().is_empty(), "Bob kuyruğu boşaltır");
+    duo.fail_next_sends(Side::Alice, 1);
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::Cancelled)],
+        "FILE_ABORT kalıcı reddedildi: yine tek son olay"
+    );
+    assert_eq!(duo.accepted(Side::Alice), queue, "tele bir şey çıkmadı");
+    assert_eq!(duo.alice_files.outgoing_count(), 0);
+    duo.clock.advance(FILE_IDLE_TTL);
+    assert_eq!(
+        duo.bob_turn(),
+        vec![FileEvent::Failed {
+            peer: ALICE,
+            transfer_id: id,
+            reason: FileFailure::IdleTimeout,
+        }]
+    );
+    assert!(
+        duo.alice_turn().is_empty(),
+        "geç alındı ikinci olay doğurmaz"
+    );
+    assert_eq!(duo.alice_files.stats().receipts_ignored, 1);
+
+    // (c) Eşin alındısı bekleyen FILE_ABORT'u geçer.
+    let mut duo = Duo::connected();
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source)
+        .expect("kuyruğa alınır");
+    assert!(duo.alice_turn().is_empty());
+    duo.alice_files.cancel_send(id).expect("izlenen aktarım");
+    assert!(duo.bob_turn().is_empty(), "Bob kuyruğu boşaltır");
+    assert!(duo.bob_files.cancel_incoming(&mut duo.bob, ALICE, id));
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::Cancelled)],
+        "alındı iptalin önüne geçti: iptalin kendi son olayı"
+    );
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice_turn().is_empty(), "ikinci olay yok");
+    }
+    assert_eq!(duo.accepted(Side::Alice), queue, "FILE_ABORT sunulmadı");
+    assert!(!duo.sent_types(Side::Alice).contains(&MsgType::FileAbort));
+}
+
+/// İptal zaten sunulmaktaysa `cancel_send` etkisizdir (`Ok`) ve ikinci olay doğmaz: (a) yinelenen
+/// kullanıcı iptali → tek `SendFailed(Cancelled)`; (b) bekleyen `FILE_ABORT(superseded)` → ilk neden
+/// kalır, tek `SendFailed(Superseded)` (beyanlı seçim: kullanıcı iptali oturum değişiminin iptalini
+/// geçersiz kılmaz).
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): iptalin olayı yoktu; `FILE_ABORT(superseded)` yoktu.
+#[test]
+fn a_cancel_while_an_abort_is_pending_adds_no_second_event() {
+    // (a) Yinelenen kullanıcı iptali.
+    let mut duo = Duo::connected();
+    let chunk_len = duo.alice.limits().max_file_chunk_bytes();
+    let source = sample_file(2 * LINK_QUEUE_CAP * chunk_len);
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source.clone())
+        .expect("kuyruğa alınır");
+    assert!(duo.alice_turn().is_empty());
+    duo.alice_files.cancel_send(id).expect("izlenen aktarım");
+    assert_eq!(duo.alice_files.cancel_send(id), Ok(()), "etkisiz");
+    assert!(duo.bob_turn().is_empty());
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::Cancelled)]
+    );
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice_turn().is_empty(), "ikinci olay yok");
+    }
+
+    // (b) Bekleyen supersession iptali.
+    let mut duo = Duo::connected();
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source)
+        .expect("kuyruğa alınır");
+    assert!(duo.alice_turn().is_empty());
+    assert!(duo.bob_turn().is_empty());
+    let next = duo.link.borrow_mut().supersede();
+    duo.refuse_next_sends(Side::Alice, 1);
+    assert!(
+        duo.alice_turn().is_empty(),
+        "FILE_ABORT(superseded) bekliyor"
+    );
+    assert_eq!(duo.alice_files.cancel_send(id), Ok(()), "etkisiz");
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::Superseded)]
+    );
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice_turn().is_empty(), "ikinci olay yok");
+    }
+    assert_eq!(duo.sent_on(Side::Alice, next), vec![MsgType::FileAbort]);
+    assert_eq!(duo.alice_files.stats().transfers_superseded, 1);
+    assert_eq!(
+        duo.bob_turn(),
+        vec![FileEvent::Aborted {
+            peer: ALICE,
+            transfer_id: id,
+            reason: FileAbortReason::Superseded,
+        }]
+    );
+}
+
+// ── oturum değişimi ──────────────────────────────────────────────────────────────────────────
+
+/// D6 (olay yolu): yarım aktarımın oturumu değişince gönderen kalan kayıtları GÖNDERMEZ; aktarım yeni
+/// oturumdan `FILE_ABORT(superseded)` ile kapanır (`Superseded`). Alıcı eski oturumdan gelenleri
+/// eşine bağlar, sonra `FILE_ABORT`'la aktarımı bitirir; alıcıdan alındı gitmez. Kaldığı yerden devam
+/// YOK.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): aktarım yeni oturumda sürüyordu (`Sent` + `Received`).
+#[test]
+fn supersession_closes_a_half_transfer_with_file_abort_superseded() {
+    let mut duo = Duo::connected();
+    let chunk_len = duo.alice.limits().max_file_chunk_bytes();
+    let source = sample_file(2 * LINK_QUEUE_CAP * chunk_len);
+    let queue = u64::try_from(LINK_QUEUE_CAP).expect("küçük sayı");
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source)
+        .expect("kuyruğa alınır");
+    assert!(duo.alice_turn().is_empty());
+    // Supersession: eski tutamaçla kabul edilmiş birimler karşı kuyrukta kalır (yalnız-alım drain).
+    let new = duo.link.borrow_mut().supersede();
     let (at_alice, at_bob) = duo.settle();
     assert_eq!(
         at_alice,
-        vec![FileEvent::Sent {
-            peer: BOB,
+        vec![send_failed(BOB, id, SendFailure::Superseded)]
+    );
+    assert_eq!(
+        at_bob,
+        vec![FileEvent::Aborted {
+            peer: ALICE,
             transfer_id: id,
+            reason: FileAbortReason::Superseded,
         }]
     );
-    assert_eq!(at_bob, vec![received(ALICE, id, source)]);
-    let records = u64::try_from(chunks + 2).expect("küçük sayı");
-    assert_eq!(duo.accepted(Side::Alice), records);
+    assert_eq!(duo.sent_on(Side::Alice, new), vec![MsgType::FileAbort]);
+    assert_eq!(duo.accepted(Side::Alice), queue + 1);
+    assert_eq!(duo.alice_files.stats().transfers_superseded, 1);
+    assert_eq!(duo.bob_files.incoming_count(), 0);
+    assert!(duo.sent_types(Side::Bob).is_empty());
 }
 
+/// D6 (senkron yol + oturumlar arası sırasızlık): yeni oturum `Ready` olayı okunmadan benimsenir
+/// (`Messenger::connect` → `ConnectResult::Ready`); `pump` yine `FILE_ABORT(superseded)` verir.
+/// Alıcıda yeni oturumun `FILE_ABORT`'u eski oturumun drain'inden ÖNCE işlenir: geç gelen
+/// `FILE_BEGIN` hayalet aktarım başlatmaz, `FILE_RECEIPT(rejected)` alır (ikinci `rejected` tetiği);
+/// parçaları bilinmeyen aktarımdır; iki `FILE_IDLE_TTL` sonra da sahte zaman aşımı olayı yok.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): aktarım yeni oturumda sürüyordu (h'ye parçalar);
+/// UYARLANAMAZ kısım: erken iptal kaydı yoktu — geç `FILE_BEGIN` aktarımı başlatırdı.
+#[test]
+fn synchronous_supersession_aborts_and_an_overtaken_file_begin_is_rejected() {
+    let mut duo = Duo::connected();
+    let chunk_len = duo.alice.limits().max_file_chunk_bytes();
+    let source = sample_file(2 * LINK_QUEUE_CAP * chunk_len);
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source)
+        .expect("kuyruğa alınır");
+    assert!(duo.alice_turn().is_empty());
+    let in_flight = duo.take_inbox(Side::Bob);
+    let parts = u64::try_from(in_flight.len() - 1).expect("küçük sayı");
+    let new = duo.link.borrow_mut().supersede();
+    assert_eq!(duo.alice.connect(BOB), Ok(ConnectResult::Ready(new)));
+    // Olaylar okunmadan.
+    duo.alice_files.pump(&mut duo.alice);
+    assert_eq!(duo.sent_on(Side::Alice, new), vec![MsgType::FileAbort]);
+    assert_eq!(
+        duo.alice_files.poll_event(),
+        Some(send_failed(BOB, id, SendFailure::Superseded))
+    );
+    // Olaylar sonra okunur: hiçbir şey yinelenmez.
+    assert!(duo.alice_turn().is_empty());
+    assert_eq!(duo.sent_on(Side::Alice, new), vec![MsgType::FileAbort]);
+
+    // Bob: `FILE_ABORT` (yeni oturum) drain'den ÖNCE.
+    assert!(duo.bob_turn().is_empty());
+    assert_eq!(duo.bob_files.stats().aborts_unmatched, 1);
+    duo.deliver_late(Side::Bob, in_flight);
+    assert!(duo.bob_turn().is_empty(), "hayalet aktarım yok");
+    assert_eq!(duo.bob_files.incoming_count(), 0);
+    let stats = duo.bob_files.stats();
+    assert_eq!(
+        (stats.begins_after_abort, stats.unknown_transfer_records),
+        (1, parts)
+    );
+    assert_eq!(
+        duo.sent_types(Side::Bob),
+        vec![MsgType::FileReceipt],
+        "rejected; FILE_ABORT yok"
+    );
+    duo.clock.advance(FILE_IDLE_TTL * 2);
+    assert!(duo.bob_turn().is_empty(), "sahte zaman aşımı yok");
+    // Gönderen aktarımı çoktan bitirmişti: geç `rejected` yok sayılır.
+    assert!(duo.alice_turn().is_empty());
+    assert_eq!(duo.alice_files.stats().receipts_ignored, 1);
+}
+
+/// Alıcının alındısı eşin oturumu yokken bekler (iki uçta da oturum kapandı; kapanmış tutamacın
+/// drain'inden gelen kayıtlar yine işlenir) ve eşle kurulan SONRAKİ oturumdan gider; gönderen
+/// `Delivered` görür.
+///
+/// `d3bc7407`'de UYARLANAMAZ: alındı yoktu.
+#[test]
+fn a_pending_receipt_without_a_session_goes_out_on_the_next_session() {
+    let mut duo = Duo::connected();
+    let source = sample_file(SMALL_SIZE);
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source.clone())
+        .expect("kuyruğa alınır");
+    assert_eq!(duo.alice_turn(), vec![sent(BOB, id)]);
+    duo.link
+        .borrow_mut()
+        .end(Side::Bob, CloseReason::PeerClosed);
+    duo.link
+        .borrow_mut()
+        .end(Side::Alice, CloseReason::PeerClosed);
+    assert_eq!(duo.bob_turn(), vec![received(ALICE, id, source)]);
+    assert_eq!(duo.bob.session_of(ALICE), None);
+    assert!(
+        duo.sent_types(Side::Bob).is_empty(),
+        "oturum yok: alındı bekliyor"
+    );
+    assert!(duo.bob_turn().is_empty());
+    assert!(duo.alice_turn().is_empty());
+    let next = duo.link.borrow_mut().establish();
+    assert!(duo.bob_turn().is_empty());
+    assert_eq!(duo.sent_on(Side::Bob, next), vec![MsgType::FileReceipt]);
+    assert_eq!(duo.alice_turn(), vec![delivered(BOB, id)]);
+}
+
+/// Eşin oturumu yokken (yalnız `Closed(h)` okundu, `session_of` boş) yarım aktarım BEKLER: kayıt
+/// sunulmaz, olay yok. Eşle yeni oturum kurulunca `FILE_ABORT(superseded)` YENİ tutamaçtan gider.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): yarım aktarım yeni oturumda kaldığı yerden sürüyordu (yeni
+/// tutamaca parçalar, sonunda `Sent`).
+#[test]
+fn a_half_transfer_without_a_session_waits_and_is_aborted_from_the_next_session() {
+    let mut duo = Duo::connected();
+    let chunk_len = duo.alice.limits().max_file_chunk_bytes();
+    let source = sample_file(2 * LINK_QUEUE_CAP * chunk_len);
+    let queue = u64::try_from(LINK_QUEUE_CAP).expect("küçük sayı");
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source)
+        .expect("kuyruğa alınır");
+    assert!(duo.alice_turn().is_empty());
+    duo.link
+        .borrow_mut()
+        .end(Side::Alice, CloseReason::PeerClosed);
+    duo.link
+        .borrow_mut()
+        .end(Side::Bob, CloseReason::PeerClosed);
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice_turn().is_empty());
+    }
+    assert_eq!(duo.alice.session_of(BOB), None);
+    assert_eq!(
+        duo.accepted(Side::Alice),
+        queue,
+        "oturum yok: kayıt sunulmadı"
+    );
+    assert_eq!(duo.alice_files.outgoing_count(), 1);
+    // Bob kapanmış tutamacın drain'ini işler (kuyruk boşalır; aktarım yarım).
+    assert!(duo.bob_turn().is_empty());
+    let next = duo.link.borrow_mut().establish();
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::Superseded)]
+    );
+    assert_eq!(duo.sent_on(Side::Alice, next), vec![MsgType::FileAbort]);
+    assert_eq!(duo.accepted(Side::Alice), queue + 1);
+    assert_eq!(
+        duo.bob_turn(),
+        vec![FileEvent::Aborted {
+            peer: ALICE,
+            transfer_id: id,
+            reason: FileAbortReason::Superseded,
+        }]
+    );
+    assert_eq!(duo.bob_files.incoming_count(), 0);
+}
+
+/// `FILE_END`'i kabul edilmiş aktarım supersession'da KAPATILMAZ: yeni tutamaca `FILE_ABORT` gitmez.
+/// (a) Alındı eski oturumun drain'inden geç gelir → `Delivered`. (b) Alındı hiç gelmez →
+/// `FILE_RECEIPT_TTL` sınırında `ReceiptTimeout`; yeni tutamaca yine hiçbir şey gitmez.
+///
+/// `d3bc7407`'de UYARLANAMAZ: alındı yoktu (`FILE_END` kabulüyle aktarım bitiyordu).
+#[test]
+fn a_transfer_whose_file_end_was_accepted_is_not_aborted_on_supersession() {
+    // (a) Alındı eski tutamacın drain'inden.
+    let mut duo = Duo::connected();
+    let source = sample_file(SMALL_SIZE);
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source.clone())
+        .expect("kuyruğa alınır");
+    assert_eq!(duo.alice_turn(), vec![sent(BOB, id)]);
+    assert_eq!(duo.bob_turn(), vec![received(ALICE, id, source.clone())]);
+    let receipt_in_flight = duo.take_inbox(Side::Alice);
+    assert_eq!(receipt_in_flight.len(), 1);
+    let next = duo.link.borrow_mut().supersede();
+    assert!(duo.alice_turn().is_empty());
+    assert!(
+        duo.sent_on(Side::Alice, next).is_empty(),
+        "FILE_END'i kabul edilmiş aktarıma FILE_ABORT yok"
+    );
+    duo.deliver_late(Side::Alice, receipt_in_flight);
+    assert_eq!(duo.alice_turn(), vec![delivered(BOB, id)]);
+    assert!(duo.sent_on(Side::Alice, next).is_empty());
+
+    // (b) Alındı hiç gelmez.
+    let mut duo = Duo::connected();
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source)
+        .expect("kuyruğa alınır");
+    assert_eq!(duo.alice_turn(), vec![sent(BOB, id)]);
+    assert_eq!(
+        duo.take_inbox(Side::Bob).len(),
+        3,
+        "kayıtlar yolda kayboldu"
+    );
+    let next = duo.link.borrow_mut().supersede();
+    assert!(duo.alice_turn().is_empty());
+    duo.clock.advance(FILE_RECEIPT_TTL - TTL_MARGIN);
+    assert!(duo.alice_turn().is_empty());
+    assert_eq!(duo.alice_files.outgoing_count(), 1);
+    duo.clock.advance(TTL_MARGIN);
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::ReceiptTimeout)]
+    );
+    assert!(
+        duo.sent_on(Side::Alice, next).is_empty(),
+        "yeni tutamaca hiçbir şey gitmedi"
+    );
+}
+
+/// Supersession'ın `FILE_ABORT(superseded)`'u geçici reddedilirse bekler (tele çıkmamıştır) ve sonraki
+/// turda TAM BİR kez gider; aktarım bir kez sayılır, tek `SendFailed(Superseded)` doğar.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): `FILE_ABORT(superseded)` yoktu — yarım aktarım yeni oturumda
+/// sürüyordu.
+#[test]
+fn a_refused_superseded_abort_waits_and_is_sent_exactly_once() {
+    let mut duo = Duo::connected();
+    let chunk_len = duo.alice.limits().max_file_chunk_bytes();
+    let source = sample_file(2 * LINK_QUEUE_CAP * chunk_len);
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source)
+        .expect("kuyruğa alınır");
+    assert!(duo.alice_turn().is_empty());
+    assert!(
+        duo.bob_turn().is_empty(),
+        "Bob kuyruğu boşaltır; aktarım yarım"
+    );
+    let next = duo.link.borrow_mut().supersede();
+    duo.refuse_next_sends(Side::Alice, 1);
+    assert!(duo.alice_turn().is_empty(), "FILE_ABORT geçici reddedildi");
+    assert!(duo.sent_on(Side::Alice, next).is_empty());
+    assert_eq!(duo.alice_files.stats().transfers_superseded, 1);
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::Superseded)]
+    );
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice_turn().is_empty());
+    }
+    assert_eq!(duo.sent_on(Side::Alice, next), vec![MsgType::FileAbort]);
+    assert_eq!(duo.alice_files.stats().transfers_superseded, 1);
+    assert_eq!(
+        duo.bob_turn(),
+        vec![FileEvent::Aborted {
+            peer: ALICE,
+            transfer_id: id,
+            reason: FileAbortReason::Superseded,
+        }]
+    );
+}
+
+/// Kullanıcı iptali bekliyorken (`FILE_ABORT(user_cancel)` henüz kabul edilmedi) oturum değişirse kayıt
+/// eşin YENİ oturumundan gider ve nedeni `user_cancel` kalır: gönderende tek `SendFailed(Cancelled)`
+/// (`Superseded` DEĞİL), aktarım supersession sayılmaz; alıcıda `Aborted(UserCancel)`.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): gönderende olay yoktu (`SendFailed(Cancelled)`: orkestratör
+/// tutarlılık kararı 2026-10-12). Tel davranışı AYNI (eski `cancel_send` de `FILE_ABORT(user_cancel)`'u
+/// eşin güncel oturumuna sunuyordu); `transfers_superseded` yoktu.
+#[test]
+fn a_pending_user_cancel_goes_out_on_the_new_session() {
+    let mut duo = Duo::connected();
+    let chunk_len = duo.alice.limits().max_file_chunk_bytes();
+    let source = sample_file(2 * LINK_QUEUE_CAP * chunk_len);
+    let id = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, source)
+        .expect("kuyruğa alınır");
+    assert!(duo.alice_turn().is_empty());
+    duo.alice_files.cancel_send(id).expect("izlenen aktarım");
+    assert!(duo.bob_turn().is_empty());
+    let next = duo.link.borrow_mut().supersede();
+    assert_eq!(
+        duo.alice_turn(),
+        vec![send_failed(BOB, id, SendFailure::Cancelled)],
+        "kullanıcı iptalinin tek son olayı"
+    );
+    for _ in 0..IDLE_ROUNDS {
+        assert!(duo.alice_turn().is_empty(), "ikinci olay yok");
+    }
+    assert_eq!(duo.sent_on(Side::Alice, next), vec![MsgType::FileAbort]);
+    assert_eq!(duo.alice_files.outgoing_count(), 0);
+    assert_eq!(
+        duo.alice_files.stats().transfers_superseded,
+        0,
+        "neden user_cancel kaldı"
+    );
+    assert_eq!(
+        duo.bob_turn(),
+        vec![FileEvent::Aborted {
+            peer: ALICE,
+            transfer_id: id,
+            reason: FileAbortReason::UserCancel,
+        }]
+    );
+}
+
+// ── `transfer_id` (D5) ───────────────────────────────────────────────────────────────────────
+
+/// D5 (`CounterKind::TransferId`): `transfer_id` eş başına kalıcıdır — FileTransfer ve Messenger AYNI
+/// depoyla yeniden kurulunca aynı eşe sıradaki `transfer_id` öncekilerin hepsinden büyüktür; aktarım
+/// uçtan uca yürür.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): sayaç motorun belleğindeydi; yeni motor
+/// `FIRST_TRANSFER_ID`'den başlardı (`second == first`).
+#[test]
+fn transfer_ids_continue_after_a_restart_with_the_same_store() {
+    let store = fresh_store();
+    let clock = ManualClock::started();
+    let (mut messenger, mut files) = echo_node(Arc::clone(&store), &clock);
+    connect_mock(&mut messenger, &mut files, BOB);
+    let first = files
+        .send_file(&messenger, BOB, NAME, sample_file(TAIL_BYTES))
+        .expect("kuyruğa alınır");
+    // Süreç ölür: motorlar yok olur, depo kalır.
+    drop((messenger, files));
+    let (mut messenger, mut files) = echo_node(Arc::clone(&store), &clock);
+    connect_mock(&mut messenger, &mut files, BOB);
+    let source = sample_file(TAIL_BYTES);
+    let second = files
+        .send_file(&messenger, BOB, NAME, source.clone())
+        .expect("kuyruğa alınır");
+    assert_eq!(second, first + 1);
+    assert_eq!(turn(&mut messenger, &mut files), vec![sent(BOB, second)]);
+    assert_eq!(
+        turn(&mut messenger, &mut files),
+        vec![received(BOB, second, source), delivered(BOB, second)]
+    );
+}
+
+/// K4G-09 kararı (`cancel_send(transfer_id)` ve K4G-11'in `cancel_file(transfer_id)`'si eş almaz):
+/// eş başına sayaçlar iki eşe aynı değeri önerebilir; `send_file` açık aktarımlar arasında
+/// benzersizliği korur — başka bir eşin açık aktarımının değeri atlanır (kalıcı olarak ayrılmıştı,
+/// yanar). Kayıtlar ve alındılar doğru eşe gider. Düzenek yansıtıcı sahtedir: iki eşe iki oturum.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): tek, eşten bağımsız bellek sayacı vardı ve depo okunmuyordu
+/// — kimlikler (0, 1) aynı çıkar ama depodaki eş sayaçları (`BOB` 1, `CAROL` 2 beklenir) 0 döner.
+#[test]
+fn open_transfer_ids_are_unique_across_peers() {
+    let store = fresh_store();
+    let clock = ManualClock::started();
+    let (mut messenger, mut files) = echo_node(Arc::clone(&store), &clock);
+    for peer in [BOB, CAROL] {
+        connect_mock(&mut messenger, &mut files, peer);
+    }
+    let source = sample_file(TAIL_BYTES);
+    let to_bob = files
+        .send_file(&messenger, BOB, NAME, source.clone())
+        .expect("kuyruğa alınır");
+    let to_carol = files
+        .send_file(&messenger, CAROL, NAME, source.clone())
+        .expect("kuyruğa alınır");
+    assert_eq!(to_bob, FIRST_TRANSFER_ID);
+    assert_eq!(
+        to_carol,
+        FIRST_TRANSFER_ID + 1,
+        "Bob'un açık aktarımının değeri atlandı"
+    );
+    assert_eq!(
+        turn(&mut messenger, &mut files),
+        vec![sent(BOB, to_bob), sent(CAROL, to_carol)]
+    );
+    assert_eq!(
+        turn(&mut messenger, &mut files),
+        vec![
+            received(BOB, to_bob, source.clone()),
+            received(CAROL, to_carol, source),
+            delivered(BOB, to_bob),
+            delivered(CAROL, to_carol),
+        ]
+    );
+    assert_eq!(
+        store.reserve_next(BOB, CounterKind::TransferId),
+        Ok(to_bob + 1)
+    );
+    assert_eq!(
+        store.reserve_next(CAROL, CounterKind::TransferId),
+        Ok(to_carol + 1)
+    );
+}
+
+/// Depo hatası (D5): `transfer_id` ayrılamazsa tipli hata döner, `FILE_BEGIN` Transport'a verilmez
+/// ve aktarım kuyruğa girmez — panik yok, sessiz yutma yok. Depo tükenmesi `TransferIdExhausted`'dır.
+/// Ayrılamayan değer yoktur: depo düzelince eşin ilk değeri gelir.
+///
+/// `d3bc7407`'de UYARLANAMAZ: motor depoyu okumuyordu (`FileSendError::Store` yoktu).
+#[test]
+fn store_failure_queues_nothing_and_sends_no_file_begin() {
+    let flaky = Arc::new(FlakyStore::default());
+    let mut duo = Duo::connected_with(Arc::clone(&flaky) as Arc<dyn AppStore>);
+    flaky.fail_reserve.store(true, Ordering::SeqCst);
+    assert_eq!(
+        duo.alice_files
+            .send_file(&duo.alice, BOB, NAME, sample_file(1)),
+        Err(FileSendError::Store(AppStoreError::Persist))
+    );
+    flaky.fail_reserve.store(false, Ordering::SeqCst);
+    flaky.exhaust_reserve.store(true, Ordering::SeqCst);
+    assert_eq!(
+        duo.alice_files
+            .send_file(&duo.alice, BOB, NAME, sample_file(1)),
+        Err(FileSendError::TransferIdExhausted)
+    );
+    flaky.exhaust_reserve.store(false, Ordering::SeqCst);
+    assert_eq!(duo.alice_files.outgoing_count(), 0);
+    assert!(duo.alice_turn().is_empty());
+    assert_eq!(
+        duo.accepted(Side::Alice),
+        0,
+        "FILE_BEGIN Transport'a verilmedi"
+    );
+    assert_eq!(
+        duo.alice_files
+            .send_file(&duo.alice, BOB, NAME, sample_file(1)),
+        Ok(FIRST_TRANSFER_ID)
+    );
+}
+
+/// Hiçbir hata yolu `transfer_id` ayırmaz — depo doğrudan yoklanır: `NoSession` oturumu olmayan eşin
+/// sayacına dokunmaz; `Encode`, `TooLarge` ve `QueueFull`'dan sonra sıradaki kimlik kesintisizdir
+/// (`QueueFull` sonrası yuva açılınca `ids.last() + 1`). `NoChunkRoom`:
+/// `no_chunk_room_is_typed_and_consumes_no_transfer_id`. `FILE_BEGIN`'i kabul edilmemiş aktarımın
+/// iptali tele çıkmaz, yalnız yerel tek `SendFailed(Cancelled)` doğurur (Abkarada kararı 2026-10-12)
+/// ve o olay alınana kadar yuvayı tutar.
+///
+/// `d3bc7407`'de KIRMIZI (uyarlansa da): son depo yoklaması — motor depoyu okumuyordu, BOB'un sayacı
+/// ilerlemezdi (`reserve_next(BOB)` → `FIRST_TRANSFER_ID`, beklenen `next + 1`); iptal olaysızdı ve
+/// yuvayı hemen açıyordu. Hata yolu kısmı AYNI (eski bellek sayacı da hata yollarında tüketmiyordu);
+/// CAROL yoklaması eski kodda boşa geçerdi.
 #[test]
 fn send_errors_are_typed_and_consume_no_transfer_id() {
-    let mut duo = Duo::connected();
+    let store = fresh_store();
+    let mut duo = Duo::connected_with(Arc::clone(&store));
     assert_eq!(
         duo.alice_files
             .send_file(&duo.alice, CAROL, NAME, sample_file(1)),
@@ -934,7 +2315,7 @@ fn send_errors_are_typed_and_consume_no_transfer_id() {
         })
     );
     // Giden yuva tavanı.
-    let ids: Vec<TransferId> = (0..MAX_OUTGOING_TRANSFERS)
+    let mut ids: Vec<TransferId> = (0..MAX_OUTGOING_TRANSFERS)
         .map(|_| {
             duo.alice_files
                 .send_file(&duo.alice, BOB, NAME, sample_file(1))
@@ -946,14 +2327,84 @@ fn send_errors_are_typed_and_consume_no_transfer_id() {
             .send_file(&duo.alice, BOB, NAME, sample_file(1)),
         Err(FileSendError::QueueFull)
     );
-    // Hiçbir hata transfer_id tüketmedi: ilk başarılı gönderim ilk kimliği aldı, gerisi ardışık.
+    // Hata yolları değer ayırmadı: ilk başarılı gönderim ilk kimliği aldı, gerisi ardışık.
     assert_eq!(ids[0], FIRST_TRANSFER_ID);
     assert!(ids.windows(2).all(|pair| pair[1] == pair[0] + 1));
-    // FILE_BEGIN'i henüz kabul edilmemiş aktarımın iptali sessizdir: tele hiçbir şey çıkmaz.
-    for id in ids {
+    // `QueueFull` da ayırmadı: yuva açılınca sıradaki kimlik son kimliğin bir fazlası. Yuvayı
+    // FILE_BEGIN'i kabul edilmemiş aktarımın iptali açar — son olayı alınınca.
+    duo.alice_files
+        .cancel_send(ids[0])
+        .expect("izlenen aktarım");
+    assert_eq!(
+        duo.alice_files
+            .send_file(&duo.alice, BOB, NAME, sample_file(1)),
+        Err(FileSendError::QueueFull),
+        "iptalin son olayı alınmadı: yuvayı o tutar"
+    );
+    assert_eq!(
+        duo.alice_files.poll_event(),
+        Some(send_failed(BOB, ids[0], SendFailure::Cancelled))
+    );
+    let last = *ids.last().expect("dolu liste");
+    let next = duo
+        .alice_files
+        .send_file(&duo.alice, BOB, NAME, sample_file(1))
+        .expect("yuva açıldı");
+    assert_eq!(next, last + 1);
+    ids.push(next);
+    // FILE_BEGIN'i henüz kabul edilmemiş aktarımın iptali tele çıkmaz: her biri yalnız yerel tek
+    // `SendFailed(Cancelled)`.
+    for &id in &ids[1..] {
         duo.alice_files.cancel_send(id).expect("izlenen aktarım");
     }
-    assert!(duo.alice_turn().is_empty());
+    let cancelled: Vec<FileEvent> = ids[1..]
+        .iter()
+        .map(|&id| send_failed(BOB, id, SendFailure::Cancelled))
+        .collect();
+    assert_eq!(duo.alice_turn(), cancelled);
     assert_eq!(duo.accepted(Side::Alice), 0);
     assert_eq!(duo.alice_files.outgoing_count(), 0);
+    // Depo: `NoSession` CAROL'ın sayacına dokunmadı; BOB'un sayacı yalnız başarılı gönderimlerle
+    // ilerledi.
+    assert_eq!(
+        store.reserve_next(CAROL, CounterKind::TransferId),
+        Ok(FIRST_TRANSFER_ID)
+    );
+    assert_eq!(
+        store.reserve_next(BOB, CounterKind::TransferId),
+        Ok(next + 1)
+    );
+}
+
+/// `NoChunkRoom` (Transport'un birimi parça yükü taşımıyor: `MAX_FILE_CHUNK_BYTES = 0`) tipli döner,
+/// aktarım kuyruğa girmez ve değer ayrılmaz: depo yoklaması eşin ilk değerini verir.
+///
+/// `d3bc7407`'de AYNI DAVRANIŞ (eski bellek sayacı da tüketmiyordu; depo yoklaması eski kodda boşa
+/// geçerdi).
+#[test]
+fn no_chunk_room_is_typed_and_consumes_no_transfer_id() {
+    let store = fresh_store();
+    let unit =
+        u32::try_from(APP_RECORD_HEADER_BYTES + FILE_CHUNK_PREFIX_BYTES).expect("küçük sayı");
+    let tight = TransportCapabilities {
+        max_plaintext_unit_bytes: unit,
+        preferred_plaintext_unit_bytes: unit,
+        max_early_unit_bytes: unit,
+        reliable: true,
+    };
+    let mut messenger = Messenger::with_store(MockTransport::new(tight), Arc::clone(&store))
+        .expect("limitler geçerli");
+    let mut files = FileTransfer::new(Arc::new(ManualClock::started()));
+    connect_mock(&mut messenger, &mut files, BOB);
+    assert_eq!(messenger.limits().max_file_chunk_bytes(), 0);
+    assert_eq!(
+        files.send_file(&messenger, BOB, NAME, sample_file(1)),
+        Err(FileSendError::NoChunkRoom)
+    );
+    assert_eq!(files.outgoing_count(), 0);
+    assert!(turn(&mut messenger, &mut files).is_empty());
+    assert_eq!(
+        store.reserve_next(BOB, CounterKind::TransferId),
+        Ok(FIRST_TRANSFER_ID)
+    );
 }
