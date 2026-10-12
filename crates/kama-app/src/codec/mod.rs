@@ -38,26 +38,75 @@ pub use limits::{AmpLimits, LimitsError};
 use limits::{FLAGS_NONE, FLAG_COMPRESSED, WHOLE_FILE_HASH_BYTES};
 
 /// §3 0x05 `FILE_ABORT.reason`. Bilinmeyen değer → DROP (`unknown-enum-value`).
+///
+/// K4G-09 (plan D6): `FILE_ABORT` YALNIZ GÖNDEREN tarafından kullanılır; alıcı onu, nedeni ne olursa
+/// olsun, eşin GÖNDERDİĞİ aktarıma uygular. `HashMismatch` ve `StorageFull` alıcı nedenleriydi:
+/// kayıtlı kalırlar (tel ve vektör uyumu) ama artık üretilmezler — alıcının kararları
+/// [`FileReceiptStatus`] ile bildirilir.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum FileAbortReason {
     /// 0x01 `user_cancel`.
     UserCancel = 0x01,
-    /// 0x02 `hash_mismatch`.
+    /// 0x02 `hash_mismatch` (alıcı nedeni; K4G-09'dan beri üretilmez).
     HashMismatch = 0x02,
-    /// 0x03 `storage_full`.
+    /// 0x03 `storage_full` (alıcı nedeni; K4G-09'dan beri üretilmez).
     StorageFull = 0x03,
     /// 0x04 `timeout`.
     Timeout = 0x04,
+    /// 0x05 `superseded` (K4G-09): gönderen yarım aktarımı oturum değişiminde kapattı.
+    Superseded = 0x05,
 }
 
 impl FileAbortReason {
     /// Registry'deki bütün değerler.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::UserCancel,
         Self::HashMismatch,
         Self::StorageFull,
         Self::Timeout,
+        Self::Superseded,
+    ];
+
+    /// Teldeki kod.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// Kayıtlı koddan değer; bilinmeyen → `None`.
+    #[must_use]
+    pub fn from_code(code: u8) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.code() == code)
+    }
+}
+
+/// §3 0x0B `FILE_RECEIPT.status` (K4G-09, plan D6). Bilinmeyen değer → DROP
+/// (`unknown-enum-value`). Alındıyı YALNIZ ALICI gönderir; `Ok` dışındaki her değer aktarımın
+/// gönderende başarısız bittiği anlamına gelir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum FileReceiptStatus {
+    /// 0x00 `ok` — `FILE_END` görüldü, bütün parçalar geldi ve `whole_file_hash` tuttu.
+    Ok = 0x00,
+    /// 0x01 `aborted_by_receiver` — alıcının kullanıcısı kabul edilmiş aktarımı iptal etti.
+    AbortedByReceiver = 0x01,
+    /// 0x02 `hash_mismatch` — bütün parçalar geldi, özet tutmadı.
+    HashMismatch = 0x02,
+    /// 0x03 `timeout` — alıcıda `FILE_IDLE_TTL` boyunca parça gelmedi.
+    Timeout = 0x03,
+    /// 0x04 `rejected` — alıcı `FILE_BEGIN`'i kabul etmedi.
+    Rejected = 0x04,
+}
+
+impl FileReceiptStatus {
+    /// Registry'deki bütün değerler.
+    pub const ALL: [Self; 5] = [
+        Self::Ok,
+        Self::AbortedByReceiver,
+        Self::HashMismatch,
+        Self::Timeout,
+        Self::Rejected,
     ];
 
     /// Teldeki kod.
@@ -211,6 +260,13 @@ pub enum AppMessage {
         /// Opak medya yükü (`payload_len u16`).
         payload: Vec<u8>,
     },
+    /// 0x0B `FILE_RECEIPT` (K4G-09) — gövde sabit 9 B; yalnız alıcı gönderir.
+    FileReceipt {
+        /// Alındının ait olduğu aktarım: gönderenin `FILE_BEGIN.transfer_id`'si.
+        transfer_id: u64,
+        /// Alıcının kararı.
+        status: FileReceiptStatus,
+    },
 }
 
 impl AppMessage {
@@ -228,6 +284,7 @@ impl AppMessage {
             Self::Receipt { .. } => MsgType::Receipt,
             Self::SignalingBlob { .. } => MsgType::SignalingBlob,
             Self::MediaBundle { .. } => MsgType::MediaBundle,
+            Self::FileReceipt { .. } => MsgType::FileReceipt,
         }
     }
 }
@@ -311,6 +368,14 @@ impl fmt::Debug for AppMessage {
                 .field("bundle_ms", bundle_ms)
                 .field("payload_len", &payload.len())
                 .finish_non_exhaustive(),
+            Self::FileReceipt {
+                transfer_id,
+                status,
+            } => f
+                .debug_struct("FileReceipt")
+                .field("transfer_id", transfer_id)
+                .field("status", status)
+                .finish(),
         }
     }
 }
@@ -342,7 +407,8 @@ pub enum DropReason {
     CompressionUnavailable,
     /// `TEXT.text` ya da `FILE_BEGIN.name` geçerli UTF-8 değil.
     InvalidUtf8,
-    /// `FILE_ABORT.reason`, `PTT_OPEN.codec` ya da `RECEIPT.kind` registry'de yok.
+    /// `FILE_ABORT.reason`, `PTT_OPEN.codec`, `RECEIPT.kind` ya da `FILE_RECEIPT.status`
+    /// registry'de yok.
     UnknownEnumValue,
 }
 
@@ -513,7 +579,7 @@ mod tests {
     use super::header::{BODY_LEN_OFFSET, FLAGS_OFFSET, MSG_TYPE_OFFSET};
     use super::limits::{
         APP_RECORD_HEADER_BYTES, COMPRESSION_ID_ZSTD, COMPRESSION_PREFIX_BYTES, COMPRESS_MIN_BYTES,
-        FILE_CHUNK_PREFIX_BYTES, FILE_NAME_MAX_BYTES, MAX_EXPANSION_RATIO,
+        FILE_CHUNK_PREFIX_BYTES, FILE_NAME_MAX_BYTES, FILE_RECEIPT_BODY_BYTES, MAX_EXPANSION_RATIO,
         MSG_TYPE_RESERVED_HIGH_START, MSG_VERSION_V1, TEXT_PREFIX_BYTES,
     };
     use super::*;
@@ -619,6 +685,14 @@ mod tests {
                 bundle_ms: 0,
                 payload: vec![0; 3],
             },
+            AppMessage::FileReceipt {
+                transfer_id: u64::MAX,
+                status: FileReceiptStatus::Rejected,
+            },
+            AppMessage::FileAbort {
+                transfer_id: 0,
+                reason: FileAbortReason::Superseded,
+            },
         ]
     }
 
@@ -668,6 +742,17 @@ mod tests {
         let exact_chunk = no_chunk + 1;
         let tight = AmpLimits::from_capabilities(&caps(exact_chunk)).unwrap();
         assert_eq!(tight.max_file_chunk_bytes(), 0);
+        // K4G-09 (§4 A2): sabit 9 B'lık `FILE_RECEIPT` en dar geçerli limitte de bir kayda sığar —
+        // alıcı alındıyı hiçbir geçerli birimde kodlama hatasıyla kaybetmez.
+        let receipt = AppMessage::FileReceipt {
+            transfer_id: u64::MAX,
+            status: FileReceiptStatus::Ok,
+        };
+        let unit = encode(&receipt, &tight).expect("en dar limitte de sığar");
+        assert_eq!(
+            unit.bytes.len(),
+            APP_RECORD_HEADER_BYTES + FILE_RECEIPT_BODY_BYTES
+        );
     }
 
     #[test]
@@ -768,8 +853,11 @@ mod tests {
     #[test]
     fn unregistered_msg_type_drops() {
         let mut rec = record(&AppMessage::PttClose { stream_id: 1 });
-        // Registry'nin son kodundan bir sonraki: kayıtlı değil, reserved da değil (§6).
-        rec[MSG_TYPE_OFFSET] = MsgType::MediaBundle.code() + 1;
+        // Registry'nin son kodundan bir sonraki: kayıtlı değil, reserved da değil (§6). K4G-09'dan
+        // beri 0x0C (0x0B `FILE_RECEIPT`).
+        let last = MsgType::ALL[MsgType::ALL.len() - 1];
+        assert_eq!(last, MsgType::FileReceipt, "registry'nin son tipi");
+        rec[MSG_TYPE_OFFSET] = last.code() + 1;
         assert_eq!(drop_of(&rec), DropReason::UnknownMsgType);
         rec[MSG_TYPE_OFFSET] = MSG_TYPE_RESERVED_HIGH_START - 1;
         assert_eq!(drop_of(&rec), DropReason::UnknownMsgType);
@@ -825,9 +913,13 @@ mod tests {
                 ref_msg_id: 1,
                 kind: ReceiptKind::Delivered,
             },
+            AppMessage::FileReceipt {
+                transfer_id: 1,
+                status: FileReceiptStatus::Ok,
+            },
         ];
         for message in carriers {
-            // Bu iki tipte enum alanı gövdenin SON baytıdır.
+            // Bu üç tipte enum alanı gövdenin SON baytıdır.
             let mut rec = record(&message);
             *rec.last_mut().unwrap() = u8::MAX;
             assert_eq!(drop_of(&rec), DropReason::UnknownEnumValue, "{message:?}");

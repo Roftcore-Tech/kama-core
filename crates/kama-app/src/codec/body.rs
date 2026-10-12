@@ -6,13 +6,13 @@
 
 use super::limits::{
     AmpLimits, FILE_ABORT_BODY_BYTES, FILE_BEGIN_PREFIX_BYTES, FILE_CHUNK_PREFIX_BYTES,
-    FILE_END_BODY_BYTES, FILE_NAME_MAX_BYTES, MEDIA_BUNDLE_PREFIX_BYTES, PTT_CLOSE_BODY_BYTES,
-    PTT_OPEN_BODY_BYTES, RECEIPT_BODY_BYTES, SIGNALING_BLOB_PREFIX_BYTES, TEXT_PREFIX_BYTES,
-    WHOLE_FILE_HASH_BYTES,
+    FILE_END_BODY_BYTES, FILE_NAME_MAX_BYTES, FILE_RECEIPT_BODY_BYTES, MEDIA_BUNDLE_PREFIX_BYTES,
+    PTT_CLOSE_BODY_BYTES, PTT_OPEN_BODY_BYTES, RECEIPT_BODY_BYTES, SIGNALING_BLOB_PREFIX_BYTES,
+    TEXT_PREFIX_BYTES, WHOLE_FILE_HASH_BYTES,
 };
 use super::{
-    AppMessage, DecodeError, DropReason, EncodeError, FileAbortReason, MsgType, PttCodec,
-    ReceiptKind,
+    AppMessage, DecodeError, DropReason, EncodeError, FileAbortReason, FileReceiptStatus, MsgType,
+    PttCodec, ReceiptKind,
 };
 
 /// Gövde okuyucusu: her okuma önce kalan bayt sayısını denetler.
@@ -173,6 +173,16 @@ pub(crate) fn decode_body(msg_type: MsgType, body: &[u8]) -> Result<AppMessage, 
                 payload,
             }
         }
+        // K4G-09: sabit 9 B — kısa gövde `inner-field-exceeds-body-len`, artık bayt (aşağıdaki
+        // `finish`) `trailing-body-bytes`.
+        MsgType::FileReceipt => {
+            let transfer_id = r.read_u64()?;
+            let status = FileReceiptStatus::from_code(r.read_u8()?).ok_or_else(unknown_enum)?;
+            AppMessage::FileReceipt {
+                transfer_id,
+                status,
+            }
+        }
     };
     r.finish()?;
     Ok(message)
@@ -202,6 +212,7 @@ fn plain_body_len(message: &AppMessage) -> Result<usize, EncodeError> {
         AppMessage::MediaBundle { payload, .. } => {
             variable(MEDIA_BUNDLE_PREFIX_BYTES, payload.len())
         }
+        AppMessage::FileReceipt { .. } => FILE_RECEIPT_BODY_BYTES,
     })
 }
 
@@ -300,6 +311,13 @@ pub(crate) fn encode_body(
             out.push(*bundle_ms);
             out.extend_from_slice(&len_u16(payload.len())?.to_be_bytes());
             out.extend_from_slice(payload);
+        }
+        AppMessage::FileReceipt {
+            transfer_id,
+            status,
+        } => {
+            out.extend_from_slice(&transfer_id.to_be_bytes());
+            out.push(status.code());
         }
     }
     debug_assert_eq!(

@@ -18,8 +18,8 @@
 //! vektörün `(result, reason)` çiftini AYNEN verir. zstd kararı gelince liste boşaltılır.
 
 use kama_app::codec::{
-    decode, encode, AmpLimits, AppMessage, DecodeError, DropReason, FileAbortReason, PttCodec,
-    ReceiptKind,
+    decode, encode, AmpLimits, AppMessage, DecodeError, DropReason, FileAbortReason,
+    FileReceiptStatus, PttCodec, ReceiptKind,
 };
 use kama_contracts::s1::{CompressionPolicy, TransportCapabilities};
 use kama_vectors::{Case, Expected, Input, RejectResult, VectorFile};
@@ -35,6 +35,8 @@ const REJECT_PATH: &str = concat!(
 const KIND_ENCODE: &str = "encode";
 const KIND_DECODE: &str = "decode";
 const POSITIVE_ID_PREFIX: &str = "amp-record-v1.encode.";
+/// [K4G-09] 0x0B `FILE_RECEIPT` pozitif vakalarının (her `status` için bir) ortak soneki.
+const FILE_RECEIPT_CASE_PREFIX: &str = "file-receipt-";
 
 /// Vektörlerin üretildiği test parametresi — kaynak: `ref/amp/encode.py`
 /// `TEST_MAX_PLAINTEXT_UNIT_BYTES` (MAX_BODY_BYTES = MAX_DECOMPRESSED_MESSAGE = 1019).
@@ -201,10 +203,17 @@ fn message_from_input(case: &Case) -> AppMessage {
         "file-end" => AppMessage::FileEnd {
             transfer_id: uint(case, "transfer_id"),
         },
-        "file-abort" => AppMessage::FileAbort {
+        // [K4G-09] `file-abort-superseded`: reason 0x05 superseded.
+        "file-abort" | "file-abort-superseded" => AppMessage::FileAbort {
             transfer_id: uint(case, "transfer_id"),
             reason: FileAbortReason::from_code(u8_field(case, "reason"))
                 .unwrap_or_else(|| panic!("{}: bilinmeyen FILE_ABORT.reason", case.id)),
+        },
+        // [K4G-09] 0x0B `FILE_RECEIPT`, her `status` için bir vaka.
+        receipt if receipt.starts_with(FILE_RECEIPT_CASE_PREFIX) => AppMessage::FileReceipt {
+            transfer_id: uint(case, "transfer_id"),
+            status: FileReceiptStatus::from_code(u8_field(case, "status"))
+                .unwrap_or_else(|| panic!("{}: bilinmeyen FILE_RECEIPT.status", case.id)),
         },
         "ptt-open" => AppMessage::PttOpen {
             stream_id: u32_field(case, "stream_id"),
@@ -312,6 +321,30 @@ fn positive_vectors_encode_byte_identical_and_decode_back() {
 #[test]
 fn reject_vectors_match_result_and_reason() {
     run_reject();
+}
+
+/// [K4G-09] Kart: "5 pozitif (her status)". `FILE_RECEIPT.status` registry'sinin HER değeri pozitif
+/// dosyada tam bir vakayla temsil edilir; yeni bir status vektörsüz kalamaz.
+///
+/// `d3bc7407`'de UYARLANAMAZ: `FileReceiptStatus` ve 0x0B vakaları yoktu.
+#[test]
+fn every_file_receipt_status_has_one_positive_vector() {
+    let file = suite(POSITIVE_PATH, KIND_ENCODE);
+    let mut statuses: Vec<FileReceiptStatus> = file
+        .cases
+        .iter()
+        .filter(|case| {
+            case.id
+                .strip_prefix(POSITIVE_ID_PREFIX)
+                .is_some_and(|name| name.starts_with(FILE_RECEIPT_CASE_PREFIX))
+        })
+        .map(|case| match message_from_input(case) {
+            AppMessage::FileReceipt { status, .. } => status,
+            other => panic!("{}: FILE_RECEIPT bekleniyordu, gelen {other:?}", case.id),
+        })
+        .collect();
+    statuses.sort_by_key(|status| status.code());
+    assert_eq!(statuses, FileReceiptStatus::ALL, "her status tam bir kez");
 }
 
 /// Dosyalardaki HER vaka koşuldu ve zstd bekleyenlerin hepsi tam bir kez görüldü.

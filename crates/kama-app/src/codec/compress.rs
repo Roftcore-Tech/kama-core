@@ -40,7 +40,8 @@ const fn compression_default_on(msg_type: MsgType) -> bool {
         | MsgType::FileAbort
         | MsgType::PttOpen
         | MsgType::PttClose
-        | MsgType::Receipt => false,
+        | MsgType::Receipt
+        | MsgType::FileReceipt => false,
     }
 }
 

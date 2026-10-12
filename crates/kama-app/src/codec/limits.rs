@@ -92,6 +92,10 @@ pub const SIGNALING_BLOB_PREFIX_BYTES: usize = U16_BYTES;
 /// §3 0x0A MEDIA_BUNDLE gövde öneki: `stream_id u32 · codec u8 · bundle_ms u8 · payload_len u16`.
 pub const MEDIA_BUNDLE_PREFIX_BYTES: usize = U32_BYTES + U8_BYTES + U8_BYTES + U16_BYTES;
 
+/// §3 0x0B FILE_RECEIPT gövdesi (K4G-09; §4 A2 `FILE_RECEIPT_BODY_BYTES`): `transfer_id u64`
+/// (`FILE_BEGIN.transfer_id` ile aynı genişlik ve kodlama) `· status u8` — sabit 9 B.
+pub const FILE_RECEIPT_BODY_BYTES: usize = U64_BYTES + U8_BYTES;
+
 /// A2 limitleri — `TransportCapabilities`'ten türetilmiş, salt-okunur.
 ///
 /// * `MAX_BODY_BYTES = min(65535, max_plaintext_unit_bytes − APP_RECORD_HEADER_BYTES)`
