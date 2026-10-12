@@ -14,6 +14,9 @@
 //! Dosya aktarımı (`FILE_*`; parçalama, alıcı birleştirme, bütün-dosya özeti): [`file_transfer`]
 //! (B2.3).
 //!
+//! Enjekte edilen monoton saat (`MonotonicClock` + `SystemClock`; PTT-R4 ve kapanmış akış kaydı,
+//! K4G-09 zamanlayıcıları): [`clock`] (K4G-08).
+//!
 //! # Katman kuralı (INV-NEIGHBOR-1)
 //!
 //! Application yalnız `KamaTransport`'u çağırır. Crypto'ya ve Plane 1'e (hub-RPC) erişimi YOKTUR;
@@ -24,6 +27,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod clock;
 pub mod codec;
 pub mod file_transfer;
 pub mod messaging;

@@ -379,7 +379,8 @@ impl<T: KamaTransport> Messenger<T> {
     /// Motoru kurar. AMP limitleri `transport.capabilities()`'ten bir kez türetilir (A2, S1 K5).
     ///
     /// `store` uygulamanın kalıcı durumudur (K4G-07): `msg_id`'ler YALNIZ ondan ayrılır, outbox ona
-    /// yazılır. Aynı depoyla yeniden kurulan motor sayaçlara kaldığı yerden devam eder ve bir eşin
+    /// yazılır; `Ptt` de `stream_id`'lerini bu depodan ayırır (K4G-08, `Messenger::store`
+    /// üzerinden). Aynı depoyla yeniden kurulan motor sayaçlara kaldığı yerden devam eder ve bir eşin
     /// kalıcı outbox'ını eş motorda ilk göründüğünde yükler (modül belgesi, "Kalıcı outbox"). Ürün
     /// yolu kalıcı depoyu verir (`kama-store::RedbStore`, bileşim kökü); yeni boş bir depo kalıcı
     /// durumu kaybolmuş bir cihazdır (D4 beyanlı sınırı). Kurulum depoya dokunmaz.
@@ -400,9 +401,9 @@ impl<T: KamaTransport> Messenger<T> {
         })
     }
 
-    /// YALNIZ bu crate'in birim testleri (`messaging`, `ptt`, `file_transfer`): taze bellek içi
-    /// depoyla kurar — kalıcı durumu olmayan cihaz. Kalıcılık isteyen her yol
-    /// [`Messenger::with_store`]'u kullanır; ürün kodunda kalıcı olmayan yapıcı YOKTUR.
+    /// YALNIZ bu crate'in birim testleri (`messaging`, `file_transfer`): taze bellek içi depoyla
+    /// kurar — kalıcı durumu olmayan cihaz. Kalıcılık isteyen her yol (K4G-08'den beri `ptt` birim
+    /// testleri de) [`Messenger::with_store`]'u kullanır; ürün kodunda kalıcı olmayan yapıcı YOKTUR.
     ///
     /// # Errors
     ///
@@ -429,6 +430,12 @@ impl<T: KamaTransport> Messenger<T> {
     #[must_use]
     pub fn limits(&self) -> &AmpLimits {
         &self.limits
+    }
+
+    /// Kalıcı depo — YALNIZ bu crate'in motorları için: `Ptt` `stream_id`'yi buradan ayırır
+    /// (K4G-08). Application'ın tek deposudur; bileşim kökü onu bir kez bağlar.
+    pub(crate) fn store(&self) -> &dyn AppStore {
+        &*self.store
     }
 
     /// Gözlem sayaçları.
