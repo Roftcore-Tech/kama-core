@@ -84,11 +84,6 @@ pub struct Provisioned {
 /// `names` cihazlarını kama-provision kütüphanesiyle üretir. `direct` doğruysa her cihaza
 /// 127.0.0.1'de boş bir UDP portu verilir (direct-mode).
 pub fn provision(root: &Path, names: &[&str], direct: bool) -> Provisioned {
-    let authority = root.join("authority");
-    let devices: Vec<DeviceName> = names
-        .iter()
-        .map(|name| DeviceName::new(name).expect("cihaz adı"))
-        .collect();
     let addrs: Vec<SocketAddr> = if direct {
         free_ports(names.len())
             .into_iter()
@@ -97,6 +92,17 @@ pub fn provision(root: &Path, names: &[&str], direct: bool) -> Provisioned {
     } else {
         Vec::new()
     };
+    provision_at(root, names, &addrs)
+}
+
+/// [`provision`], direct-mode adresleri çağırandan: `addrs[i]` `names[i]`'nin adresidir (eksikse
+/// o cihazın adresi yok). Adresi bir soketle TUTAN test, port yarışı olmadan kurulur.
+pub fn provision_at(root: &Path, names: &[&str], addrs: &[SocketAddr]) -> Provisioned {
+    let authority = root.join("authority");
+    let devices: Vec<DeviceName> = names
+        .iter()
+        .map(|name| DeviceName::new(name).expect("cihaz adı"))
+        .collect();
     let request = InitRequest {
         out_dir: authority.clone(),
         devices: devices.clone(),

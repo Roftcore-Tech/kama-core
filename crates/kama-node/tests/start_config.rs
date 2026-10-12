@@ -6,6 +6,7 @@
 mod common;
 
 use std::fs;
+use std::net::UdpSocket;
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock, Weak};
 
@@ -13,13 +14,15 @@ use kama_node::{KamaNode, LinkState, NodeError, NodeEvent, NodeListener, STORE_F
 use kama_provision::format::{FormatError, ROOT_FILE_NAME};
 use kama_store::{RedbStore, StoreOpenError};
 
-use common::{provision, TempDir, WAIT};
+use common::{provision, provision_at, TempDir, WAIT};
 
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
 
 /// Reddedilen ikizden sonra ilk düğümün gönderdiği metin.
 const AFTER_TWIN_TEXT: &str = "ikizden sonra";
+/// Testin kendi tuttuğu soketin adresi: 127.0.0.1, işletim sisteminin seçtiği boş port.
+const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
 
 /// Süreç-içi zarf rölesi bir kimliği tek canlı düğüme bağlar: aynı cihaz dosyasıyla (başka veri
 /// dizininde) ikinci düğüm `IdentityInUse` alır ve o noktaya dek açtığını (depo) bırakır; ilk düğüm
@@ -62,6 +65,35 @@ fn second_node_with_the_same_identity_is_refused_and_the_first_is_unaffected() {
     });
     first.shutdown().expect("kapanış");
     peer.shutdown().expect("kapanış");
+}
+
+/// Röle kaydından SONRAKİ kurulum hatası (veri adresi başka bir sokette: `Transport` kurulamaz)
+/// röle kaydını ve açılan her şeyi bırakır: adres boşalınca aynı cihaz dosyasıyla `start` başarılı
+/// olur — `IdentityInUse` ya da depo kilidi DEĞİL. Test veri adresini kurulumdan önce KENDİ
+/// soketiyle tutar (port yarışı yok).
+#[test]
+fn setup_failure_after_relay_registration_releases_the_identity_and_the_socket() {
+    let root = TempDir::new("bind-busy");
+    let _serial = common::serial();
+    let held = UdpSocket::bind(LOOPBACK_ANY_PORT).expect("veri adresini tutan soket");
+    let peer_socket = UdpSocket::bind(LOOPBACK_ANY_PORT).expect("eşin adresi için soket");
+    let addrs = [
+        held.local_addr().expect("adres"),
+        peer_socket.local_addr().expect("adres"),
+    ];
+    let provisioned = provision_at(root.path(), &[ALICE, BOB], &addrs);
+    let alice = &provisioned.devices[ALICE];
+
+    let (listener, _events) = common::listener();
+    let error = KamaNode::start(&alice.config, &alice.data, listener).expect_err("adres meşgul");
+    assert!(matches!(error, NodeError::Transport(_)), "{error:?}");
+
+    drop(held);
+    let (listener, _events) = common::listener();
+    let node = KamaNode::start(&alice.config, &alice.data, listener)
+        .expect("röle kaydı, depo ve soket bırakılmıştı");
+    node.shutdown().expect("kapanış");
+    drop(peer_socket);
 }
 
 #[test]

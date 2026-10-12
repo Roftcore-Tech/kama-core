@@ -20,8 +20,11 @@
 //!    (`src/carrier.rs`; sahip kararı DUR-K4G-11 → B) — ürün taşıyıcısı değildir — iki cihaz arası
 //!    taşıyıcı = hub Plane 1 rölesi, S4, hub sprinti. AYNI süreçteki düğümler zarflarını bununla
 //!    değiş tokuş eder (kimlik başına tek canlı düğüm: [`NodeError::IdentityInUse`]); iki telefon
-//!    arası oturum hub sprintiyle gelir. Kayıtsız eşe zarf gitmez ve saklanmaz: düğümler
-//!    bağlanmadan önce başlatılmış olmalıdır.
+//!    arası oturum hub sprintiyle gelir. Kayıtsız eşe zarf gitmez ve saklanmaz; geç başlayan eşte
+//!    glare kuralı iki niyeti de takabilir (`A.dest_hash < B.dest_hash`) ve takılma ancak erken
+//!    tarafın bekleyen INIT'i kalkınca (`cancel_connect` ya da `HALF_OPEN_TTL`) çözülür — kural ve
+//!    atıflar `src/carrier.rs`'te. Tek süreçli testler (CORE, INT-02) düğümleri bağlanmadan önce
+//!    başlatır ve el sıkışma sırasında yeniden başlatmaz.
 //! 5. Transport: `client_core::transport::ClientTransport`, ürün profili
 //!    (`ClientTransportConfig::product`), veri alıcısı bu cihazın `direct_addrs` adresinde, eş
 //!    adresleri dosyadan (direct-mode; hub yok).
