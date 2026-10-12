@@ -739,6 +739,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kama-node"
+version = "0.1.0"
+dependencies = [
+ "client-core",
+ "kama-app",
+ "kama-contracts",
+ "kama-node",
+ "kama-noise-wire",
+ "kama-provision",
+ "kama-store",
+ "thiserror",
+]
+
+[[package]]
 name = "kama-noise-wire"
 version = "0.1.0"
 dependencies = [

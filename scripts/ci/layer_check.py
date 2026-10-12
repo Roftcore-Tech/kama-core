@@ -47,10 +47,20 @@ KM-SEAM-TC-001 §6 H-SPLIT):
 
   [2026-10-11 K4G-06 — ALTYAPI sınıfı; plan D8 v1.1]
   C7  Altyapı crate'ine (`INFRA`: `kama-store`) workspace'te YALNIZ bileşim kökü (`COMPOSITION_ROOTS`)
-      bağımlı olabilir — normal, dev, build fark etmez. Bileşim kökü listesi bugün BOŞTUR (K4G-11
-      `kama-node`'u ekler). Doğrudan kenar denetlenir; `A → B → kama-store` zincirinde doğrudan bağımlı
-      `B` yakalanır. Altyapı crate'inin KENDİ bağımlılıkları (trait sahipleri `kama-app`,
+      bağımlı olabilir — normal, dev, build fark etmez. Bileşim kökü listesi: `kama-node`
+      ([2026-10-12 K4G-11]; K4G-06'da boştu). Doğrudan kenar denetlenir; `A → B → kama-store`
+      zincirinde doğrudan bağımlı `B` yakalanır. Altyapı crate'inin KENDİ bağımlılıkları (trait sahipleri `kama-app`,
       `kama-noise-wire`) bu kuralın konusu değildir; o yön diğer kurallarla sınırlıdır.
+
+  [2026-10-12 K4G-11 — BİLEŞİM KÖKÜ sınıfı; INV-NEIGHBOR-1'in TEK istisnası, plan K4G-11 NE 3]
+  C8  Bileşim kökü (`ROOT_WIRING`: `kama-node`) her katmana bağlanabilir ama YALNIZ kurar, protokol
+      mantığı taşımaz. "Basit grep kuralı": Crypto katmanının Rust adı (`\bkama_noise_wire\b`) kökün
+      ÜRÜN kaynağında (`src/**/*.rs`; yorum ve dizge/char sabiti dışı) yalnız KURMA MODÜLÜNDE
+      (`src/wiring.rs`) geçebilir — `use` bildirimi dahil. Çalışma zamanında Crypto'yu Transport
+      sürer; kök yalnız Application motorlarını sürer. Testler (`tests/`) ürün kaynağı değildir,
+      kapsam dışıdır.
+      SINIR: ad düzeyidir — kurma modülünün döndürdüğü bir değer üzerinde yöntem çağrısı (adsız)
+      görülmez; o yol inceleme işidir.
 
   GEÇİŞLİ KAPANIŞ NASIL HESAPLANIR: `cargo metadata`'nın çözümlenmiş grafiği üzerinden. Kök crate'in
   KENDİ dev-bağımlılıkları dahildir (testleri de katman kuralına tabidir); yol üzerindeki diğer
@@ -61,6 +71,8 @@ VAKUM KORUMASI: denetlenen crate'lerden biri (`kama-app`, `kama-contracts`, `kam
 ortam hatası (2) verir — "denetlenecek şey yok" sessizce "ihlal yok" sayılmaz.
 [2026-10-11 K4G-06] Altyapı crate'i (`kama-store`, C7) metadata'da yoksa da ortam hatası (2): crate
 yeniden adlandırılırsa kural sessizce boşa düşmez.
+[2026-10-12 K4G-11] Bileşim kökü (`kama-node`, C8) metadata'da yoksa, ürün kaynağı bulunamazsa ya da
+kurma modülü (`src/wiring.rs`) yoksa da ortam hatası (2).
 
 Çıkış: 0 = temiz · 1 = katman ihlali · 2 = ortam/kullanım hatası.
 """
@@ -107,9 +119,13 @@ RAW_PEER_BYTES = re.compile(r"\bas_bytes\b")      # C6 — `PeerRef::as_bytes` (
 # C6 — char sabiti: `'x'`, `'\n'`, `'\x41'`, `'\u{1F600}'`, `'\''`. Eşleşmeyen `'` ömür/etikettir (`'a`).
 CHAR_LITERAL = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
 # C7 [2026-10-11 K4G-06] — altyapı sınıfı: bu crate'lere workspace'te YALNIZ bileşim kökleri bağımlı
-# olabilir. Bileşim kökü listesi bugün BOŞTUR; K4G-11 `kama-node`'u buraya ekler.
+# olabilir. [2026-10-12 K4G-11] Bileşim kökü: `kama-node` (K4G-06'da liste boştu).
 INFRA = ("kama-store",)
-COMPOSITION_ROOTS: tuple[str, ...] = ()
+COMPOSITION_ROOTS: tuple[str, ...] = ("kama-node",)
+# C8 [2026-10-12 K4G-11] — bileşim kökü sınıfı: {kök crate: kurma modülü (crate-göreli yol)}. Crypto
+# katmanının Rust adı kökün ürün kaynağında yalnız kurma modülünde geçebilir.
+ROOT_WIRING = {"kama-node": "src/wiring.rs"}
+ROOT_CRYPTO_NAME = re.compile(r"\bkama_noise_wire\b")
 
 
 def strip_comments(src: str) -> str:
@@ -377,6 +393,52 @@ def closure(edges: dict[str, list[tuple[str, bool]]], root: str) -> dict[str, st
     return parent
 
 
+def root_findings(metadata: dict, root_sources: dict[str, dict[str, str]],
+                  wiring: dict[str, str] | None = None) -> list[str]:
+    """C8 [2026-10-12 K4G-11] — bileşim kökünün ürün kaynağında Crypto adı yalnız kurma modülünde.
+
+    `root_sources` = {kök crate: {crate-göreli yol (`src/…`): kaynak}}; `wiring` = {kök: kurma
+    modülü} (varsayılan `ROOT_WIRING`). Saf fonksiyon: `main()` onu gerçek girdiyle, öz-test sentetik
+    girdiyle çağırır. Yorumlar ve dizge/char sabitleri taranmaz (`strip_comments_and_literals`;
+    yasağı ADLANDIRMAK serbest). Vakum koruması: kök crate metadata'da yoksa, ürün kaynağı yoksa ya
+    da kurma modülü yoksa ortam hatası — kural sessizce boşa düşmez.
+    """
+    wiring = ROOT_WIRING if wiring is None else wiring
+    names = {p["name"] for p in metadata["packages"]}
+    findings: list[str] = []
+    for root, module in sorted(wiring.items()):
+        if root not in names:
+            raise EnvironmentError(f"`{root}` paketi metadata'da yok — bileşim kökü kuralı (C8) denetlenemiyor")
+        sources = root_sources.get(root) or {}
+        if not sources:
+            raise EnvironmentError(f"`{root}` için taranacak ürün kaynağı yok (C8)")
+        if module not in sources:
+            raise EnvironmentError(f"`{root}` kurma modülü `{module}` bulunamadı (C8)")
+        for path, src in sorted(sources.items()):
+            if path == module:
+                continue
+            code = strip_comments_and_literals(src)
+            for m in ROOT_CRYPTO_NAME.finditer(code):
+                line = code.count("\n", 0, m.start()) + 1
+                findings.append(f"C8 {root}/{path}: Crypto adı `kama_noise_wire` kurma modülü (`{module}`) "
+                                f"dışında (yorum/dizge-dışı, ~satır {line}) — bileşim kökü yalnız kurar")
+    return findings
+
+
+def root_inputs(md: dict) -> dict[str, dict[str, str]]:
+    """C8 girdisi: her bileşim kökünün `src/**/*.rs` dosyaları, crate-göreli yolla. Kök metadata'da
+    yoksa listeye girmez (`root_findings` ortam hatası verir)."""
+    out: dict[str, dict[str, str]] = {}
+    for root in ROOT_WIRING:
+        pkg = next((p for p in md["packages"] if p["name"] == root), None)
+        if pkg is None:
+            continue
+        crate_dir = Path(pkg["manifest_path"]).parent
+        out[root] = {f.relative_to(crate_dir).as_posix(): f.read_text(encoding="utf-8")
+                     for f in sorted((crate_dir / "src").rglob("*.rs"))}
+    return out
+
+
 def real_inputs(root: Path) -> tuple[dict, dict[str, str]]:
     if not (root / "Cargo.toml").is_file():
         raise EnvironmentError(f"kök bir Cargo çalışma ağacı değil: {root}")
@@ -557,12 +619,39 @@ def selftest() -> int:
         ok = got == sorted(want)
         bad += not ok
         print(f"  {'PASS' if ok else 'FAIL'}  {name}: beklenen {want or 'temiz'}, gelen {got or 'temiz'}")
-    # C7 istisna yolu [2026-10-11 K4G-06]: bugün bileşim kökü YOK (COMPOSITION_ROOTS boş); yol sentetik
-    # bir kökle doğrudan sınanır — aynı kenar, kök listede değilken kırmızı, listedeyken temiz.
+    # C7 istisna yolu [2026-10-11 K4G-06; 2026-10-12 K4G-11: COMPOSITION_ROOTS = (`kama-node`,)]: yol
+    # açık kök listesiyle de doğrudan sınanır — aynı kenar, kök listede değilken kırmızı, listedeyken
+    # temiz; varsayılan liste de temiz.
     root_md = _md([], {**ok_graph, "kama-node": ["kama-store", APP, NOISE]})
     for name, roots, want in (("C7 kök listede değil: kama-node → kama-store", (), ["C7"]),
-                              ("C7 DEĞİL: bileşim kökü kama-node → kama-store", ("kama-node",), [])):
+                              ("C7 DEĞİL: bileşim kökü kama-node → kama-store", ("kama-node",), []),
+                              ("C7 DEĞİL: varsayılan kök listesi (K4G-11: kama-node)", COMPOSITION_ROOTS, [])):
         got = sorted({f.split()[0] for f in infra_findings(root_md, roots)})
+        ok = got == want
+        bad += not ok
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}: beklenen {want or 'temiz'}, gelen {got or 'temiz'}")
+    # C8 [2026-10-12 K4G-11] — bileşim kökünün ürün kaynağında Crypto adı yalnız kurma modülünde.
+    wiring_src = "use kama_noise_wire::clock::SystemClock;\npub(crate) fn build() -> SystemClock { todo() }\n"
+    root_cases = [
+        ("C8 DEĞİL: Crypto adı yalnız kurma modülünde (ve yorumda)",
+         {"src/wiring.rs": wiring_src, "src/lib.rs": "mod wiring;\n// kama_noise_wire yalnız wiring.rs'te\n"}, []),
+        ("C8 use bildirimi kurma modülü dışında",
+         {"src/wiring.rs": wiring_src, "src/node.rs": "use kama_noise_wire::protector::NoiseWireProtection;\n"},
+         ["C8"]),
+        ("C8 çalışma-zamanı çağrısı kurma modülü dışında",
+         {"src/wiring.rs": wiring_src, "src/node.rs": "fn f(p: &P) -> Option<u8> { kama_noise_wire::epoch(p) }\n"},
+         ["C8"]),
+        ("C8 alt modülde de (src/a/b.rs)",
+         {"src/wiring.rs": wiring_src, "src/a/b.rs": "type C = kama_noise_wire::protector::NoiseWireProtection;\n"},
+         ["C8"]),
+        ("C8 DEĞİL: dizgede ve iç içe blok yorumda",
+         {"src/wiring.rs": wiring_src,
+          "src/event.rs": 'fn f() -> &\'static str { "kama_noise_wire" }\n/* a /* kama_noise_wire */ b */\n'}, []),
+        ("C8 DEĞİL: başka ad (kama_noise_wire_x, my_kama_noise_wire)",
+         {"src/wiring.rs": wiring_src, "src/a.rs": "fn f() { kama_noise_wire_x(); my_kama_noise_wire(); }\n"}, []),
+    ]
+    for name, srcs, want in root_cases:
+        got = sorted({f.split()[0] for f in root_findings(root_md, {"kama-node": srcs})})
         ok = got == want
         bad += not ok
         print(f"  {'PASS' if ok else 'FAIL'}  {name}: beklenen {want or 'temiz'}, gelen {got or 'temiz'}")
@@ -585,6 +674,17 @@ def selftest() -> int:
             bad += 1
         except EnvironmentError:
             print(f"  PASS  {name}: ortam hatası (yeşil DEĞİL)")
+    # C8 vakum [2026-10-12 K4G-11]: kök yok / ürün kaynağı yok / kurma modülü yok → ortam hatası.
+    root_vacuum = [("vakum: kama-node yok (C8)", without(root_md, "kama-node"), {"kama-node": {"src/wiring.rs": wiring_src}}),
+                   ("vakum: kama-node ürün kaynağı yok (C8)", root_md, {"kama-node": {}}),
+                   ("vakum: kurma modülü yok (C8)", root_md, {"kama-node": {"src/lib.rs": "fn f() {}\n"}})]
+    for name, md, srcs in root_vacuum:
+        try:
+            root_findings(md, srcs)
+            print(f"  FAIL  {name}: ortam hatası bekleniyordu, yeşil döndü")
+            bad += 1
+        except EnvironmentError:
+            print(f"  PASS  {name}: ortam hatası (yeşil DEĞİL)")
     print(f"layer_check öz-test: {'YEŞİL' if not bad else f'{bad} BAŞARISIZ'}")
     return 1 if bad else 0
 
@@ -602,6 +702,7 @@ def main(argv: list[str]) -> int:
     try:
         md, sources = real_inputs(root)
         findings = check(md, sources)
+        findings += root_findings(md, root_inputs(md))  # C8 [2026-10-12 K4G-11]
     except EnvironmentError as e:
         print(f"ORTAM HATASI: {e}", file=sys.stderr)
         return 2
@@ -611,7 +712,7 @@ def main(argv: list[str]) -> int:
     if findings:
         print(f"\nLAYER-CHECK: KIRMIZI ({len(findings)} ihlal) — INV-NEIGHBOR-1")
         return 1
-    print(f"LAYER-CHECK: YEŞİL ({APP}: {len(sources)} kaynak dosyası; L1/L2/L3 + C1–C7 temiz; kök={root})")
+    print(f"LAYER-CHECK: YEŞİL ({APP}: {len(sources)} kaynak dosyası; L1/L2/L3 + C1–C8 temiz; kök={root})")
     return 0
 
 
