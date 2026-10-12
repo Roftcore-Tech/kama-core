@@ -1299,6 +1299,31 @@ fn receiver_has_no_dedup_and_every_copy_is_delivered() {
     assert_eq!(duo.bob.signaling.stats().blobs_received, 6);
 }
 
+/// Eşin güncel oturumu kalmasa da gelen blob teslim edilir: Bob'un oturumu `Closed` ile bitti,
+/// kapanıştan habersiz Alice'in blob'u kapanmış tutamaçla gelir ve eşine bağlanır. İçerik opaktır,
+/// geçerliliğine medya motoru karar verir (beyanlı; PTT'nin `opens_without_session` gibi bir düşürme
+/// kuralı plan metninde yok).
+///
+/// `ea0d3909`'da AYNI DAVRANIŞ (uyarlanınca): Messenger emekli tutamaçtan gelen 0x09'u eşine bağlayıp
+/// `Other` olarak geçiriyordu.
+#[test]
+fn a_blob_after_the_session_ended_is_still_delivered() {
+    let (mut duo, handle) = Duo::connected();
+    duo.link
+        .borrow_mut()
+        .end(Side::Bob, CloseReason::UserClosed);
+    assert_eq!(
+        duo.bob.turn(),
+        vec![session(SessionEvent::Closed(
+            handle,
+            CloseReason::UserClosed
+        ))]
+    );
+    assert_eq!(duo.bob.messenger.session_of(ALICE), None);
+    duo.alice.send(BOB, b"late").expect("Alice'in oturumu açık");
+    assert_eq!(duo.bob.turn(), vec![received(ALICE, b"late")]);
+}
+
 /// `SignalingId` motor-tekildir (eş başına sayaç DEĞİL): iki eşe karışık gönderimde kimlikler
 /// `FIRST_SIGNALING_ID`'den kesin artar; hata yolları (`NoSession`, `TooLarge`) kimlik tüketmez;
 /// kayıtlar ömürle düştükten sonra da hiçbir kimlik yeniden verilmez. Ortak yansıtıcı sahte: her blob
