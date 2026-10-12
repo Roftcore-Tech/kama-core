@@ -3,8 +3,10 @@
 //! `scripts/ci/layer_check.py` C8: `kama-node`'un ürün kaynağında (`src/**`) `kama_noise_wire`
 //! adı YALNIZ bu dosyada geçebilir. Burada yalnız YAPICI düzeyi vardır: ürün kurulumu
 //! (`NoiseWireProtection::with_control`), onun girdileri ve tip adları. Çalışma zamanında düğüm
-//! Crypto'yu çağırmaz: Crypto'yu Transport sürer (INV-NEIGHBOR-1), düğüm yalnız Application
-//! motorlarını sürer.
+//! Crypto'nun hiçbir KOMUTUNU çağırmaz (`SessionControl` / `PacketProtection` Transport'undur;
+//! INV-NEIGHBOR-1), yalnız Application motorlarını sürer. Tek temas salt-okunurdur: her turun ölçü
+//! anlık görüntüsü eş başına oturum epoch'unu Transport üzerinden okur
+//! (`ClientTransport::session_epoch` → Crypto kilidi kısa süre alınır; durum değişmez).
 //!
 //! # Ürün kurulumu (plan K4G-11 NE 1; sahip kararı CEVAP PAKETİ 2 madde 3)
 //!
@@ -65,4 +67,16 @@ pub(crate) fn protection(
         counter_store,
         envelope: ENVELOPE,
     }))
+}
+
+/// YALNIZ birim testleri: cihaz dosyalarını gerçek provisioning yolundan (`kama-provision`
+/// kütüphanesi, OS entropisi) üretir. Entropi kaynağının adı yalnız bu modülde geçer (C8).
+#[cfg(test)]
+pub(crate) fn provision_for_test(request: &kama_provision::provision::InitRequest) {
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("sistem saati")
+        .as_secs();
+    kama_provision::provision::init(request, &mut OsEntropy::new(), created_at)
+        .expect("provisioning");
 }

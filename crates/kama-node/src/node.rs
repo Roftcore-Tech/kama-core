@@ -11,7 +11,8 @@
 //! 1. Kuyruktaki komutlar, en çok [`COMMAND_QUEUE_CAP`] tane.
 //! 2. Olay zinciri: `Ptt::poll` Messenger'ın TEK okuyucusudur → `PttEvent::Messenger` olayı
 //!    `FileTransfer::handle`'a → dosya motorunun TÜKETMEDİĞİ olay düğüm olayına (K4G-14b'de araya
-//!    Signaling girer). Turda en çok [`MAX_EVENTS_PER_TURN`] olay işlenir.
+//!    Signaling girer); dosya motorunun doğurduğu olaylar hemen ardından. Turda en çok
+//!    [`MAX_EVENTS_PER_TURN`] olay işlenir.
 //! 3. Messenger kuyruğu BOŞALDIYSA (`Ptt::poll` → `None`) `FileTransfer::pump` (K4G-09 sözleşmesi:
 //!    zamanlayıcılar `FILE_IDLE_TTL` / `FILE_RECEIPT_TTL` kuyruk boşaltıldıktan SONRA denetlenir;
 //!    bekleyen parça önce işlenir ve aktarımı canlı tutar). Ardından dosya motorunun olayları.
@@ -26,6 +27,22 @@
 //!
 //! Yanıt bekleyen komut, düğüm onu İŞLEDİĞİ anda yanıtlanır (tur bitmeden): çağıran ağ ya da
 //! zamanlayıcı beklemez, yalnız komutun düğüm turundaki işlenmesini (depo commit'i dahil) bekler.
+//!
+//! # Tutamaç kaydı motor tablosuyla AYNI ANDA kapanır (sahip şartı (1))
+//!
+//! Düğüm tutamacı (tutamaç → (eş, tel kimliği)) ancak motor o akışı/aktarımı açık tuttukça
+//! çözülebilir; aksi hâlde kapanmış bir tutamaç, aynı tel kimliğini almış BAŞKA bir eşin
+//! akışına/aktarımına ulaşırdı (tel kimlikleri eş başınadır). Kapatan yollar:
+//!
+//! * Dosya giden: motor aktarımı tablosundan HER çıkarışında (`cancel_send`'in `FILE_BEGIN` öncesi
+//!   iptali, `pump`'ın bitirdiği aktarım, `handle`'ın uyguladığı `FILE_RECEIPT`, alındı zaman
+//!   aşımı) aynı çağrıda tam bir son olay üretir (kama-app sözleşmesi: "kuyruğa alınmış her giden
+//!   aktarım … tam bir son olayla biter"). Düğüm FileTransfer'a dokunan HER çağrıdan hemen sonra
+//!   olay kuyruğunu boşaltır (`drain_file_events`); son olay kaydı kapatır. Böylece sıradaki hiçbir
+//!   komut — aynı komut grubunda olsa bile — motorun bıraktığı tel kimliğine ulaşamaz.
+//! * PTT giden: motor giden akışı YALNIZ `Ptt::close`'ta çıkarır (kendiliğinden kapatmaz); düğüm
+//!   kaydı aynı komutta, `close`'tan ÖNCE silinir.
+//! * Gelen akış ve aktarımların düğüm tutamacı yoktur: hiçbir API çağrısı gelen kimlik almaz.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -128,7 +145,8 @@ pub(crate) struct Shared {
     /// Düğüm-tekil tutamaç sayacı (`send_file` tutamacı çağıranda, `ptt_open`'unki düğümde
     /// verilir — ikisi aynı sayaçtan).
     pub(crate) handles: HandleAllocator,
-    /// Kapanış isteği: kuyruk doluyken de döngü en geç bir turda biter.
+    /// Kapanış isteği, YALNIZ kuyruk doluyken (`Shutdown` komutu sığmadı): döngü içinde bulunduğu
+    /// komut grubundan sonra biter. Kuyrukta yer varsa kapanış `Shutdown` komutuyladır.
     pub(crate) stopping: AtomicBool,
 }
 
@@ -164,7 +182,9 @@ pub(crate) struct NodeLoop {
     outgoing: Registry<(PeerRef, TransferId)>,
     /// Ters eşleme (dosya motorunun olayları `(eş, transfer_id)` taşır).
     outgoing_by_wire: BTreeMap<(PeerRef, TransferId), FileHandle>,
-    /// Düğümün açtığı bekleyen bağlantı niyetleri: bilet → eş (eş başına en çok bir).
+    /// Düğümün açtığı bağlantı niyetleri: bilet → eş. Bilet SON olayına (`Ready` ya da
+    /// `ConnectAbandoned`) dek kalır — aynı komut grubunda iptal + yeni `connect` gelse de iptalin
+    /// `Closed` olayı kaybolmaz. Boyu, son olayı henüz işlenmemiş niyetlerle sınırlıdır.
     tickets: BTreeMap<ConnectTicket, PeerRef>,
     /// Güncel oturumu olan eşler (`Connected` / `Closed` geçişleri için; ≤ eş sayısı).
     up: BTreeSet<PeerRef>,
@@ -273,8 +293,9 @@ impl NodeLoop {
     /// `ConnectProgress` / `ConnectAbandoned` olayları bilet taşır.
     fn connect(&mut self, peer: PeerRef) -> Result<(), NodeError> {
         match self.messenger.connect(peer).map_err(NodeError::Messenger)? {
+            // Biten bir niyetin bileti (ör. aynı grupta iptal edilmiş) SİLİNMEZ: onun
+            // `ConnectAbandoned` olayı henüz işlenmemiş olabilir.
             ConnectResult::Pending(ticket) => {
-                self.tickets.retain(|_, waiting| *waiting != peer);
                 self.tickets.insert(ticket, peer);
             }
             ConnectResult::Ready(_) => self.note_up(peer),
@@ -314,7 +335,8 @@ impl NodeLoop {
         }
     }
 
-    /// Dosyayı okur (düğüm iş parçacığında; çağıran beklemez) ve kuyruğa alır. Sonuç olaydır.
+    /// Dosyayı okur (düğüm iş parçacığında; çağıran beklemez) ve kuyruğa alır. Sonuç olaydır —
+    /// kuyruğa alınamazsa `FileFailed`, çağıran tutamacı almadan önce de gelebilir.
     fn send_file(&mut self, file: FileHandle, peer: PeerRef, path: &Path) {
         match self.queue_file(peer, path) {
             Ok(transfer_id) => {
@@ -327,6 +349,7 @@ impl NodeLoop {
                 reason,
             }),
         }
+        self.drain_file_events();
     }
 
     fn queue_file(&mut self, peer: PeerRef, path: &Path) -> Result<TransferId, FileFailReason> {
@@ -342,7 +365,11 @@ impl NodeLoop {
 
     fn cancel_file(&mut self, file: FileHandle) -> Result<(), NodeError> {
         let &(_, transfer_id) = self.outgoing.get(file.raw(), &self.shared.handles)?;
-        self.files.cancel_send(transfer_id).map_err(NodeError::File)
+        let cancelled = self.files.cancel_send(transfer_id).map_err(NodeError::File);
+        // `FILE_BEGIN` öncesi iptalde motor aktarımı tablosundan BU çağrıda çıkardı ve son olayı
+        // kuyruğa koydu: kayıt AYNI komutta kapanır (modül belgesi, sahip şartı (1)).
+        self.drain_file_events();
+        cancelled
     }
 
     fn ptt_open(
@@ -395,10 +422,16 @@ impl NodeLoop {
         if drained {
             self.files.pump(&mut self.messenger);
         }
+        self.drain_file_events();
+        drained
+    }
+
+    /// Dosya motorunun bekleyen olayları (≤ motorun olay kuyruğu tavanı). FileTransfer'a dokunan
+    /// HER çağrıdan sonra çağrılır: son olay tutamaç kaydını motor tablosuyla aynı anda kapatır.
+    fn drain_file_events(&mut self) {
         while let Some(event) = self.files.poll_event() {
             self.on_file_event(event);
         }
-        drained
     }
 
     fn on_ptt_event(&mut self, event: PttEvent) {
@@ -407,6 +440,9 @@ impl NodeLoop {
                 if let Some(event) = self.files.handle(&mut self.messenger, event) {
                     self.on_messenger_event(event);
                 }
+                // `handle` bir alındıyla giden aktarımı bitirmiş ya da gelen aktarımı tamamlamış
+                // olabilir: olaylar (ve kayıt kapanışı) hemen, zincirdeki sırasıyla.
+                self.drain_file_events();
             }
             PttEvent::PttStarted {
                 peer,
@@ -683,3 +719,6 @@ pub(crate) fn idle_metrics(peers: &PeerBook) -> NodeMetrics {
             .collect(),
     }
 }
+
+#[cfg(test)]
+mod tests;

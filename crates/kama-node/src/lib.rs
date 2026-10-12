@@ -59,6 +59,8 @@ mod files;
 mod handle;
 mod node;
 mod peers;
+#[cfg(test)]
+mod test_support;
 mod wiring;
 
 use std::collections::HashMap;
@@ -152,6 +154,15 @@ impl InputLimits {
     }
 }
 
+/// Kurulmuş ama başlatılmamış düğüm ([`KamaNode::build`]): döngü + API'nin paylaştığı durum.
+pub(crate) struct Built {
+    /// Düğüm döngüsü (üründe `spawn` onu kendi iş parçacığına taşır; birim testleri elle sürer).
+    pub(crate) node: NodeLoop,
+    shared: Arc<Shared>,
+    peers: Arc<PeerBook>,
+    limits: InputLimits,
+}
+
 /// Çalışan bir Kama düğümü (bkz. crate belgesi). `Send + Sync`: birden çok iş parçacığından
 /// paylaşılabilir. Düşerken düğümü kapatır ([`KamaNode::shutdown`] ile aynı; Drop panik etmez).
 pub struct KamaNode {
@@ -211,7 +222,7 @@ impl KamaNode {
         })
     }
 
-    /// Kurulumun TEK gövdesi; taşıyıcı tek bir kurucu olarak girer (bkz. `src/carrier.rs`).
+    /// Kurulum + başlatma. Application saati üründe `kama_app::clock::SystemClock`'tur.
     fn compose(
         config_path: &Path,
         data_dir: &Path,
@@ -222,6 +233,32 @@ impl KamaNode {
             &HashMap<PeerRef, SocketAddr>,
         ) -> Result<Box<dyn EnvelopeLink>, NodeError>,
     ) -> Result<Self, NodeError> {
+        let app_clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock::new());
+        Self::spawn(Self::build(
+            config_path,
+            data_dir,
+            listener,
+            carrier,
+            app_clock,
+        )?)
+    }
+
+    /// Kurulumun TEK gövdesi (iş parçacığı BAŞLATILMAZ); taşıyıcı tek bir kurucu olarak girer (bkz.
+    /// `src/carrier.rs`). Sıra: provisioning → veri dizini → depo → Crypto (aynı `Arc` depo
+    /// `CounterStore` olarak) → `drop(config)` → taşıyıcı → Transport → Application motorları
+    /// (aynı `Arc` depo `AppStore` olarak; `app_clock` `Ptt` ve `FileTransfer`'ın ortak saati —
+    /// Crypto'nunkinden AYRI). Birim testleri döngüyü elle sürmek için bunu doğrudan kullanır.
+    pub(crate) fn build(
+        config_path: &Path,
+        data_dir: &Path,
+        listener: Box<dyn NodeListener>,
+        carrier: impl FnOnce(
+            PeerRef,
+            SocketAddr,
+            &HashMap<PeerRef, SocketAddr>,
+        ) -> Result<Box<dyn EnvelopeLink>, NodeError>,
+        app_clock: Arc<dyn MonotonicClock>,
+    ) -> Result<Built, NodeError> {
         // (1) Provisioning — yalnız bu dosya; kimlik/anahtar/eş dizini bellekte (D8, D9).
         let config = load_device_config(config_path)?;
         let peers = Arc::new(PeerBook::from_config(&config));
@@ -244,12 +281,9 @@ impl KamaNode {
         let app_store: Arc<dyn AppStore> = store;
         let messenger = Messenger::with_store(transport, app_store).map_err(NodeError::Limits)?;
         let limits = InputLimits::from_amp(messenger.limits());
-        let app_clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock::new());
         let ptt = Ptt::new(Arc::clone(&app_clock));
         let files = FileTransfer::new(app_clock);
-        // (7) Düğüm iş parçacığı.
         let shared = Arc::new(Shared::new(node::idle_metrics(&peers)));
-        let (commands, inbox) = mpsc::sync_channel(COMMAND_QUEUE_CAP);
         let node = NodeLoop::new(
             messenger,
             ptt,
@@ -259,6 +293,23 @@ impl KamaNode {
             Arc::clone(&shared),
             received,
         );
+        Ok(Built {
+            node,
+            shared,
+            peers,
+            limits,
+        })
+    }
+
+    /// (7) Düğüm iş parçacığı.
+    fn spawn(built: Built) -> Result<Self, NodeError> {
+        let Built {
+            node,
+            shared,
+            peers,
+            limits,
+        } = built;
+        let (commands, inbox) = mpsc::sync_channel(COMMAND_QUEUE_CAP);
         let thread = thread::Builder::new()
             .name(NODE_THREAD_NAME.to_owned())
             .spawn(move || node.run(inbox))
@@ -321,6 +372,12 @@ impl KamaNode {
     /// Dosyayı eşe gönderir; DÜĞÜM TUTAMACINI hemen döner. Dosya düğüm iş parçacığında okunur
     /// (çağıran beklemez); kuyruğa alınamazsa `FileFailed { file: Outgoing(tutamaç) }`, gelişme
     /// `FileProgress` (`Sent`, `Delivered` = eşin `FILE_RECEIPT(ok)`'u) ile gelir.
+    ///
+    /// **Sıra:** komut düğüm iş parçacığında bu çağrı dönmeden işlenebilir — dinleyici bu tutamacın
+    /// `FileFailed` (ya da `FileProgress`) olayını, çağıran tutamacı ALMADAN önce görebilir.
+    /// Dinleyici bilmediği bir `FileHandle`'ın olayını saklamalı ve tutamaç dönünce eşlemelidir
+    /// (tutamaçlar kesin artandır ve yeniden kullanılmaz: olay ancak bu çağrının tutamacına
+    /// aittir).
     ///
     /// # Errors
     /// [`NodeError::UnknownPeer`] · [`NodeError::HandlesExhausted`] · [`NodeError::Busy`] ·
@@ -426,8 +483,16 @@ impl KamaNode {
     }
 
     /// Düğümü kapatır: döngü biter, Transport (soketler, çalışma-zamanı) ve depo (dosya kilidi)
-    /// kapanır; dönüşte aynı `data_dir` ile yeni bir düğüm açılabilir. Kuyrukta kalan komutlar
-    /// [`NodeError::Stopped`] alır.
+    /// kapanır; dönüşte aynı `data_dir` ile yeni bir düğüm açılabilir. Ağ boşaltılmaz: yolda olan
+    /// aktarımlar biter, outbox depoda kalır.
+    ///
+    /// Kuyruktaki komutların akıbeti: kapanış kuyruğun SONUNA `Shutdown` koyar; ondan önce kuyruğa
+    /// girmiş komutlar sırayla işlenir (yanıtlıları yanıt alır, `send_file`'ınki olay doğurur).
+    /// Kuyruk doluysa (`Shutdown` sığmazsa) kapanış bayrağı döngüyü içinde bulunduğu komut
+    /// grubundan sonra bitirir ve kalan komutlar işlenmeden düşer: yanıt bekleyen
+    /// [`NodeError::Stopped`] alır, yanıtsız olanlar (`send_file`, `on_platform_signal`) olay
+    /// üretmeden düşer. (`shutdown` düğümü tükettiği ve `Drop` son referansta çalıştığı için o anda
+    /// yanıt bekleyen başka çağıran olamaz.)
     ///
     /// # Errors
     /// [`NodeError::NodeThreadPanicked`].
@@ -457,15 +522,20 @@ impl KamaNode {
             })
     }
 
-    /// Kapanış (idempotent). Düğüm iş parçacığının kendisinden çağrılırsa (dinleyici son referansı
-    /// düşürdüyse) kendini beklemez: bayrak döngüyü en geç bir turda bitirir.
+    /// Kapanış (idempotent; bkz. [`KamaNode::shutdown`]). `Shutdown` kuyruğun SONUNA girer: önceki
+    /// komutlar sırayla işlenir. Kuyruk doluysa (`Shutdown` sığmadı) kapanış bayrağı döngüyü içinde
+    /// bulunduğu komut grubundan sonra bitirir. Düğüm iş parçacığının kendisinden çağrılırsa
+    /// (dinleyici son referansı düşürdüyse) kendini beklemez.
     fn stop(&mut self) -> Result<(), NodeError> {
         let Some(thread) = self.thread.take() else {
             return Ok(());
         };
-        self.shared.stopping.store(true, Ordering::Release);
-        // Uyandırma; kuyruk doluysa bayrak yeter.
-        let _ = self.commands.try_send(Command::Shutdown);
+        match self.commands.try_send(Command::Shutdown) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => self.shared.stopping.store(true, Ordering::Release),
+            // Döngü zaten bitti (ör. iş parçacığı paniği): sonucu `join` söyler.
+            Err(TrySendError::Disconnected(_)) => {}
+        }
         if thread::current().id() == self.node_thread {
             return Ok(());
         }
