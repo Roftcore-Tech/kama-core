@@ -395,6 +395,12 @@ impl KamaNode {
 
     /// Giden aktarımı iptal eder (sonuç `FileFailed { reason: Outgoing(Cancelled) }`).
     ///
+    /// **Sıra:** `FILE_BEGIN` henüz Transport'a sunulmadıysa motor aktarımı bu komutta bırakır ve
+    /// son olay (`FileFailed { file: Outgoing(tutamaç), reason: Outgoing(Cancelled) }`) dinleyiciye
+    /// bu çağrı DÖNMEDEN verilebilir (dinleyici düğüm iş parçacığında çağrılır; `send_file`
+    /// notundaki gibi eşlenmelidir). Sunulduysa yerine `FILE_ABORT(user_cancel)` sıradaki turda
+    /// sunulur ve son olay çağrıdan sonra gelir.
+    ///
     /// # Errors
     /// [`NodeError::HandleClosed`] / [`NodeError::UnknownHandle`] · [`NodeError::File`] (ör.
     /// `AlreadySent`: son kayıt kabul edildi, alındı yine beklenir) · kuyruk/iş parçacığı
@@ -486,13 +492,14 @@ impl KamaNode {
     /// kapanır; dönüşte aynı `data_dir` ile yeni bir düğüm açılabilir. Ağ boşaltılmaz: yolda olan
     /// aktarımlar biter, outbox depoda kalır.
     ///
-    /// Kuyruktaki komutların akıbeti: kapanış kuyruğun SONUNA `Shutdown` koyar; ondan önce kuyruğa
-    /// girmiş komutlar sırayla işlenir (yanıtlıları yanıt alır, `send_file`'ınki olay doğurur).
-    /// Kuyruk doluysa (`Shutdown` sığmazsa) kapanış bayrağı döngüyü içinde bulunduğu komut
-    /// grubundan sonra bitirir ve kalan komutlar işlenmeden düşer: yanıt bekleyen
-    /// [`NodeError::Stopped`] alır, yanıtsız olanlar (`send_file`, `on_platform_signal`) olay
-    /// üretmeden düşer. (`shutdown` düğümü tükettiği ve `Drop` son referansta çalıştığı için o anda
-    /// yanıt bekleyen başka çağıran olamaz.)
+    /// Kuyruktaki komutların akıbeti: kuyrukta yer varsa kapanış kuyruğun SONUNA `Shutdown` koyar
+    /// ve ondan önce kuyruğa girmiş komutların HEPSİ sırayla işlenir (yanıtlıları yanıt alır,
+    /// `send_file`'ınki olay doğurur). Kuyruk doluysa (`Shutdown` sığmazsa) kapanış bayrağı kalkar
+    /// ve döngüyü en geç SIRADAKİ komut grubunun (en çok kuyruk tavanı kadar komut) sonunda
+    /// bitirir: kuyruktaki yanıtsız komutların (`send_file`, `on_platform_signal`) bir kısmı ya da
+    /// tamamı işlenebilir, işlenmeyenler olay üretmeden düşer. (Yanıt bekleyen çağıran olsaydı
+    /// [`NodeError::Stopped`] alırdı; `shutdown` düğümü tükettiği ve `Drop` son referansta
+    /// çalıştığı için o anda yanıt bekleyen başka çağıran olamaz.)
     ///
     /// # Errors
     /// [`NodeError::NodeThreadPanicked`].
@@ -522,10 +529,11 @@ impl KamaNode {
             })
     }
 
-    /// Kapanış (idempotent; bkz. [`KamaNode::shutdown`]). `Shutdown` kuyruğun SONUNA girer: önceki
-    /// komutlar sırayla işlenir. Kuyruk doluysa (`Shutdown` sığmadı) kapanış bayrağı döngüyü içinde
-    /// bulunduğu komut grubundan sonra bitirir. Düğüm iş parçacığının kendisinden çağrılırsa
-    /// (dinleyici son referansı düşürdüyse) kendini beklemez.
+    /// Kapanış (idempotent; bkz. [`KamaNode::shutdown`]). Kuyrukta yer varsa `Shutdown` kuyruğun
+    /// SONUNA girer: önceki komutlar sırayla işlenir, kapanış bayrağı KALKMAZ. Kuyruk doluysa
+    /// (`Shutdown` sığmadı) bayrak kalkar; döngü onu komut grubu sonlarında okur ve en geç sıradaki
+    /// komut grubunun sonunda biter. Düğüm iş parçacığının kendisinden çağrılırsa (dinleyici son
+    /// referansı düşürdüyse) kendini beklemez.
     fn stop(&mut self) -> Result<(), NodeError> {
         let Some(thread) = self.thread.take() else {
             return Ok(());

@@ -133,7 +133,9 @@ pub(crate) enum Command {
     DrainBackground {
         reply: Reply<()>,
     },
-    /// Döngüyü bitirir; kuyrukta kalan komutlar düşer (yanıtı bekleyen `Stopped` alır).
+    /// Döngüyü bitirir. `KamaNode::stop` onu kuyruğun SONUNA koyar: döngü ona vardığında önündeki
+    /// komutların hepsi işlenmiştir (ardında komut olmaz — kapanıştan sonra çağıran kalmaz). Kuyruk
+    /// doluyken `stop` bunun yerine kapanış bayrağını kaldırır ([`Shared::stopping`]).
     Shutdown,
 }
 
@@ -145,8 +147,9 @@ pub(crate) struct Shared {
     /// Düğüm-tekil tutamaç sayacı (`send_file` tutamacı çağıranda, `ptt_open`'unki düğümde
     /// verilir — ikisi aynı sayaçtan).
     pub(crate) handles: HandleAllocator,
-    /// Kapanış isteği, YALNIZ kuyruk doluyken (`Shutdown` komutu sığmadı): döngü içinde bulunduğu
-    /// komut grubundan sonra biter. Kuyrukta yer varsa kapanış `Shutdown` komutuyladır.
+    /// Kapanış isteği, YALNIZ kuyruk doluyken (`Shutdown` komutu sığmadı). Döngü bayrağı komut
+    /// grubu sonlarında okur: en geç SIRADAKİ komut grubunun sonunda biter. Kuyrukta yer varsa
+    /// kapanış `Shutdown` komutuyladır ve bayrak kalkmaz.
     pub(crate) stopping: AtomicBool,
 }
 
@@ -219,9 +222,11 @@ impl NodeLoop {
         }
     }
 
-    /// Döngü (bkz. modül belgesi). `Shutdown`, kapanış bayrağı ya da API'nin düşmesiyle biter;
+    /// Döngü (bkz. modül belgesi). `Shutdown` komutuna varınca (önündeki komutlar işlenmiş
+    /// olarak), bir komut grubunun sonunda kapanış bayrağını görünce ya da API düşünce biter;
     /// dönüşte motorlar düşer (Transport: soketler ve çalışma-zamanı; depo: dosya kilidi) ve
-    /// kuyrukta kalan komutlar alıcıyla birlikte düşer — yanıt bekleyen çağıran `Stopped` alır.
+    /// kuyrukta kalan komutlar alıcıyla birlikte olay üretmeden düşer — yanıt bekleyen çağıran
+    /// `Stopped` alır.
     pub(crate) fn run(mut self, commands: Receiver<Command>) {
         let mut waiting: Option<Command> = None;
         loop {
