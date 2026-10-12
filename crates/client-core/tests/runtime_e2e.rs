@@ -2,6 +2,16 @@
 //!
 //! netem süreç-düzeyi kapısı (`scripts/netem/p1_e2e_gate.sh`) bunun iki-netns/kayıplı ikizidir;
 //! buradaki testler kayıpsız yolda TAM teslim + typed sınırlar + temiz kapanışı mühürler.
+//!
+//! Neden FEC kapalı: `arq_identity_is_the_pn_not_the_interim_seq_field` birim 2'nin DATA'sını
+//! kalıcı siler; o birim teslim de teyit de EDİLMEMELİ. `RuntimeConfig::default()` (ürün profili,
+//! FEC AÇIK) ile parite birimi ara sıra GERÇEKTEN kurtarır (teslim ve teyit) → öncül geçersizdi.
+//! Ürün profili ve testin amacı — ARQ kimliği = PN, ara çerçevenin `seq` alanı DEĞİL — değişmedi.
+//! Yakalanan kırmızı (geçici araçlama, geri alındı): `erased_delivered=true` `erased_acked=true`
+//! `fec_recovered_units=1` `ss.delivered=12`, istemci `fec_repairs_tx=3`; oran ≈ %1 (3/290). FEC
+//! kurtarımı bu dosyada sınanır: `fec_static_r_recovers_permanently_erased_units_over_udp`,
+//! `fragmenter_message_survives_a_permanently_erased_chunk_via_fec`,
+//! `partial_block_below_k_is_coded_and_recovers_model_a`.
 
 use std::time::Duration;
 
@@ -1265,6 +1275,7 @@ async fn arq_identity_is_the_pn_not_the_interim_seq_field() {
     const BURN: u32 = 5;
     let cfg = || RuntimeConfig {
         drain_cap: Duration::from_millis(300),
+        fec: None, // FEC KAPALI — gerekçe dosya başında ("Neden FEC kapalı").
         ..RuntimeConfig::default()
     };
     let mut server = ServerEndpoint::bind(
