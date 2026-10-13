@@ -12,6 +12,7 @@ adaptive-transport = { path = "../adaptive-transport" }
 # (FEC + ARQ füzyonu, tail-recovery, fuzzy, PARAM bootstrap; bkz. src/kama_product.rs).
 client-core = { path = "../client-core" }
 # best-available QUIC baseline (§4.4.1) — VERSİYON Cargo.lock ile pinli (quinn 0.11.11).
+# KVT kampanyası quinn-proto 0.11.16 ile ölçüldü; sonraki koşular 0.11.18.
 quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.13"                                      # bench-içi self-signed cert
