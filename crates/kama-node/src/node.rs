@@ -2,26 +2,34 @@
 //!
 //! # Tek sahip
 //!
-//! `Messenger` (Transport'un sahibi), `Ptt` ve `FileTransfer` yalnız bu iş parçacığında yaşar;
-//! API çağrıları onlara SINIRLI bir komut kuyruğuyla ([`Command`], [`COMMAND_QUEUE_CAP`]) ulaşır.
-//! Kilit yoktur, motorlar `Sync` olmak zorunda değildir.
+//! `Messenger` (Transport'un sahibi), `Ptt`, `FileTransfer` ve `Signaling` yalnız bu iş
+//! parçacığında yaşar; API çağrıları onlara SINIRLI bir komut kuyruğuyla ([`Command`],
+//! [`COMMAND_QUEUE_CAP`]) ulaşır. Kilit yoktur, motorlar `Sync` olmak zorunda değildir.
+//! Messenger TEKTİR ([`AppEngines`]): motorlara her çağrıda aynı Messenger verilir (kama-app çağrı
+//! sözleşmesi: bir motor tek bir Messenger'la kullanılır).
 //!
 //! # Tur (sahip kararı CEVAP PAKETİ 2 madde 2 — periyodik poll)
 //!
 //! 1. Kuyruktaki komutlar, en çok [`COMMAND_QUEUE_CAP`] tane.
 //! 2. Olay zinciri: `Ptt::poll` Messenger'ın TEK okuyucusudur → `PttEvent::Messenger` olayı
-//!    `FileTransfer::handle`'a → dosya motorunun TÜKETMEDİĞİ olay düğüm olayına (K4G-14b'de araya
-//!    Signaling girer); dosya motorunun doğurduğu olaylar hemen ardından. Turda en çok
-//!    [`MAX_EVENTS_PER_TURN`] olay işlenir.
+//!    `FileTransfer::handle`'a → dosya motorunun TÜKETMEDİĞİ olay `Signaling::handle`'a — zincirin
+//!    son halkası (K4G-14b): `SIGNALING_BLOB`'u tüketir ve `NodeEvent::SignalingReceived` olur,
+//!    diğer olayı aynen geçirir (eşin `Ready`'sini geçirmeden önce eşin yeniden sunulacak
+//!    blob'larını yeni oturuma sunar) → düğüm olayına; dosya motorunun doğurduğu olaylar hemen
+//!    ardından. Turda en çok [`MAX_EVENTS_PER_TURN`] olay işlenir.
 //! 3. Messenger kuyruğu BOŞALDIYSA (`Ptt::poll` → `None`) `FileTransfer::pump` (K4G-09 sözleşmesi:
 //!    zamanlayıcılar `FILE_IDLE_TTL` / `FILE_RECEIPT_TTL` kuyruk boşaltıldıktan SONRA denetlenir;
-//!    bekleyen parça önce işlenir ve aktarımı canlı tutar). Ardından dosya motorunun olayları.
+//!    bekleyen parça önce işlenir ve aktarımı canlı tutar) ve AYNI koşulda `Signaling::pump`
+//!    (K4G-14b): yeniden sunum kaydının ömrü (`SIGNALING_RESEND_TTL`) budanır ve olayı okunmadan
+//!    benimsenen oturuma yeniden sunum yapılır — kama-app sözleşmesi: trafik olmasa da periyodik
+//!    çağrılır. Ardından dosya motorunun olayları.
 //! 4. Ölçü anlık görüntüsü (`metrics()`), [`crate::METRICS_TICK`]'te bir `Metrics` olayı.
 //! 5. Bekleme: iş kaldıysa beklemeden yeni tur; yoksa komut gelene ya da [`crate::NODE_TICK`]
 //!    dolana dek. Trafik olmasa da her `NODE_TICK`'te bir tur döner: PTT-R4
-//!    (`PTT_STREAM_IDLE_TTL`, `Ptt::poll` içinde) ve dosya zamanlayıcıları (`pump`) motor
-//!    çağrılmadıkça denetlenmez. Transport'un zamanla ilerleyen işi (zarf olayları, yenileme
-//!    tutması, Crypto zamanlayıcıları) de her `poll`'da sürülür (`ClientTransport::drive`).
+//!    (`PTT_STREAM_IDLE_TTL`, `Ptt::poll` içinde), dosya zamanlayıcıları ve sinyalleşme kaydının
+//!    ömrü (`pump`) motor çağrılmadıkça denetlenmez. Transport'un zamanla ilerleyen işi (zarf
+//!    olayları, yenileme tutması, Crypto zamanlayıcıları) de her `poll`'da sürülür
+//!    (`ClientTransport::drive`).
 //!
 //! # Yanıt
 //!
@@ -56,6 +64,7 @@ use kama_app::codec::PttCodec;
 use kama_app::file_transfer::{FileEvent, FileSendError, FileTransfer, TransferId};
 use kama_app::messaging::{ConnectState, Messenger, MessengerEvent, MsgId};
 use kama_app::ptt::{Ptt, PttEvent, StreamId};
+use kama_app::signaling::{Signaling, SignalingEvent, SignalingId};
 use kama_contracts::handles::{CloseReason, PeerRef};
 use kama_contracts::s1::{ConnectResult, ConnectTicket, SessionEvent};
 
@@ -74,7 +83,8 @@ use crate::{NodeListener, PlatformSignal, METRICS_TICK, NODE_TICK};
 /// en çok bir komut tutar (yanıtı bekler); tavan eşzamanlı çağıran iş parçacıkları ve yanıt
 /// beklemeyen komutlar (`send_file`, `on_platform_signal`) içindir. Doluyken çağrı bloklamaz:
 /// [`NodeError::Busy`] (geri basınç). Kuyruğun bellek tavanı da budur: komut yükleri kuyruğa
-/// girmeden ÖNCE sınırlanır (metin ve PTT yükü bir AMP kaydına, dosya yalnız yoluyla).
+/// girmeden ÖNCE sınırlanır (metin, PTT yükü ve sinyalleşme blob'u bir AMP kaydına, dosya yalnız
+/// yoluyla).
 pub(crate) const COMMAND_QUEUE_CAP: usize = 64;
 
 /// Turda işlenen en çok olay — Transport'un teslim kuyruğu tavanı (`client_core::transport::
@@ -128,6 +138,12 @@ pub(crate) enum Command {
         stream: StreamHandle,
         reply: Reply<()>,
     },
+    /// Blob'un boyu kuyruktan ÖNCE sınandı (`KamaNode::send_signaling`).
+    SendSignaling {
+        peer: PeerRef,
+        bytes: Vec<u8>,
+        reply: Reply<SignalingId>,
+    },
     /// Yanıtsız.
     Signal(PlatformSignal),
     DrainBackground {
@@ -168,11 +184,21 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Application motorları: TEK Messenger ve onun yanında duran motorlar (`KamaNode::build` kurar;
+/// `Ptt`, `FileTransfer` ve `Signaling` Application'ın AYNI saatini paylaşır).
+pub(crate) struct AppEngines {
+    pub(crate) messenger: Messenger<Transport>,
+    pub(crate) ptt: Ptt,
+    pub(crate) files: FileTransfer,
+    pub(crate) signaling: Signaling,
+}
+
 /// Düğüm iş parçacığının durumu (bkz. modül belgesi).
 pub(crate) struct NodeLoop {
     messenger: Messenger<Transport>,
     ptt: Ptt,
     files: FileTransfer,
+    signaling: Signaling,
     peers: Arc<PeerBook>,
     listener: Box<dyn NodeListener>,
     shared: Arc<Shared>,
@@ -197,18 +223,23 @@ pub(crate) struct NodeLoop {
 
 impl NodeLoop {
     pub(crate) fn new(
-        messenger: Messenger<Transport>,
-        ptt: Ptt,
-        files: FileTransfer,
+        engines: AppEngines,
         peers: Arc<PeerBook>,
         listener: Box<dyn NodeListener>,
         shared: Arc<Shared>,
         received: ReceivedFiles,
     ) -> Self {
+        let AppEngines {
+            messenger,
+            ptt,
+            files,
+            signaling,
+        } = engines;
         Self {
             messenger,
             ptt,
             files,
+            signaling,
             peers,
             listener,
             shared,
@@ -287,6 +318,10 @@ impl NodeLoop {
                 reply,
             } => answer(&reply, self.ptt_push(stream, &payload)),
             Command::PttClose { stream, reply } => answer(&reply, self.ptt_close(stream)),
+            Command::SendSignaling { peer, bytes, reply } => {
+                let sent = self.signaling.send(&mut self.messenger, peer, &bytes);
+                answer(&reply, sent.map_err(NodeError::Signaling));
+            }
             Command::Signal(signal) => self.on_platform_signal(signal),
             Command::DrainBackground { reply } => answer(&reply, self.drain_background()),
             // `run` döngüyü bundan önce bitirir.
@@ -411,7 +446,8 @@ impl NodeLoop {
 
     // ── Tur ──────────────────────────────────────────────────────────────────────────────────
 
-    /// Olay zinciri + (kuyruk boşaldıysa) dosya pompası. `true` = Messenger kuyruğu boşaldı.
+    /// Olay zinciri + (kuyruk boşaldıysa) dosya ve sinyalleşme pompaları. `true` = Messenger
+    /// kuyruğu boşaldı.
     fn turn(&mut self) -> bool {
         let mut budget = MAX_EVENTS_PER_TURN;
         let drained = loop {
@@ -426,6 +462,9 @@ impl NodeLoop {
         };
         if drained {
             self.files.pump(&mut self.messenger);
+            // AYNI koşul (K4G-14b): yeniden sunum ve ömür budaması buna bağlıdır. Dosya motoruna ve
+            // tutamaç kaydına dokunmaz; tur sırası kama-app `signaling` modül belgesindeki gibidir.
+            self.signaling.pump(&mut self.messenger);
         }
         self.drain_file_events();
         drained
@@ -443,7 +482,16 @@ impl NodeLoop {
         match event {
             PttEvent::Messenger(event) => {
                 if let Some(event) = self.files.handle(&mut self.messenger, event) {
-                    self.on_messenger_event(event);
+                    // Zincirin son halkası (K4G-14b).
+                    match self.signaling.handle(&mut self.messenger, event) {
+                        SignalingEvent::SignalingReceived { peer, bytes } => {
+                            self.emit_for(peer, |peer_id| NodeEvent::SignalingReceived {
+                                peer_id,
+                                bytes,
+                            });
+                        }
+                        SignalingEvent::Messenger(event) => self.on_messenger_event(event),
+                    }
                 }
                 // `handle` bir alındıyla giden aktarımı bitirmiş ya da gelen aktarımı tamamlamış
                 // olabilir: olaylar (ve kayıt kapanışı) hemen, zincirdeki sırasıyla.
@@ -488,8 +536,8 @@ impl NodeLoop {
             MessengerEvent::Delivered { peer, msg_id } => {
                 self.emit_for(peer, |peer_id| NodeEvent::Receipt { peer_id, msg_id });
             }
-            // Zincirin sonu: dosya motorunun tüketmediği kayıtlar. `SIGNALING_BLOB` (0x09)
-            // K4G-14b'nin `KamaNode` uzantısıdır; `RECEIPT(read)` PoC dışıdır. Uygulama olayı yok.
+            // Zincirin sonu: dosya ve sinyalleşme motorlarının tüketmediği kayıtlar
+            // (`SIGNALING_BLOB` buraya ulaşmaz; `RECEIPT(read)` PoC dışıdır). Uygulama olayı yok.
             MessengerEvent::Other { .. } => {}
         }
     }
@@ -727,3 +775,6 @@ pub(crate) fn idle_metrics(peers: &PeerBook) -> NodeMetrics {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod signaling_tests;

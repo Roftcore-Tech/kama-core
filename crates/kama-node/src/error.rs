@@ -1,12 +1,13 @@
 //! [`NodeError`] — bileşim kökünün tipli hataları. Hiçbiri girdiden gizli değer taşımaz:
 //! provisioning hataları (`kama_provision::format::FormatError`) yalnız sınıf ve konum, depo ve
-//! transport hataları yalnız neden taşır; metin, dosya baytı, ses ve anahtar hiçbir varyanta
-//! girmez.
+//! transport hataları yalnız neden taşır; metin, dosya baytı, ses, sinyalleşme blob'u ve anahtar
+//! hiçbir varyanta girmez.
 
 use kama_app::codec::LimitsError;
 use kama_app::file_transfer::FileSendError;
 use kama_app::messaging::MessengerError;
 use kama_app::ptt::PttError;
+use kama_app::signaling::SignalingError;
 use kama_provision::format::FormatError;
 use kama_store::StoreOpenError;
 
@@ -67,7 +68,7 @@ pub enum NodeError {
     /// Girdi tek bir AMP kaydına sığmıyor; komut kuyruğa ALINMADI.
     #[error("{what} of {len} bytes exceeds {max} bytes")]
     TooLarge {
-        /// Girdinin türü (`"text"`, `"ptt payload"`).
+        /// Girdinin türü (`"text"`, `"ptt payload"`, `"signaling blob"`).
         what: &'static str,
         /// Verilen uzunluk.
         len: usize,
@@ -93,6 +94,10 @@ pub enum NodeError {
     /// Dosya motoru reddetti (`kama_app::file_transfer`).
     #[error("file transfer: {0}")]
     File(FileSendError),
+    /// Sinyalleşme motoru reddetti (`kama_app::signaling`; ör. `NoSession`, `Transport`). Yalnız
+    /// uzunluk ve neden taşır, blob baytı taşımaz.
+    #[error("signaling: {0}")]
+    Signaling(SignalingError),
     /// Düğüm iş parçacığı panikle bitti.
     #[error("node thread panicked")]
     NodeThreadPanicked,

@@ -28,11 +28,19 @@
 //! 5. Transport: `client_core::transport::ClientTransport`, ürün profili
 //!    (`ClientTransportConfig::product`), veri alıcısı bu cihazın `direct_addrs` adresinde, eş
 //!    adresleri dosyadan (direct-mode; hub yok).
-//! 6. Application: `Messenger::with_store` + `Ptt` + `FileTransfer`; ikisine Application'ın saati
-//!    (`kama_app::clock::SystemClock`) — Crypto'nunkinden AYRI (INV-NEIGHBOR-1; sahip kararı
-//!    CEVAP PAKETİ 2 madde 3).
+//! 6. Application: `Messenger::with_store` + `Ptt` + `FileTransfer` + `Signaling`; üçüne
+//!    Application'ın AYNI saati (`kama_app::clock::SystemClock`, tek `Arc`) — Crypto'nunkinden AYRI
+//!    (INV-NEIGHBOR-1; sahip kararı CEVAP PAKETİ 2 madde 3).
 //! 7. Düğüm iş parçacığı (`std::thread`; yeni async runtime YOK): motorların tek sahibi; periyodik
 //!    tur ve olay zinciri `src/node.rs` modül belgesinde.
+//!
+//! # API (plan K4G-11 NE 2; K4G-14 NE (2))
+//!
+//! Çağrılar: [`KamaNode::connect`] · [`KamaNode::cancel_connect`] · [`KamaNode::send_text`] ·
+//! [`KamaNode::send_file`] · [`KamaNode::cancel_file`] · [`KamaNode::ptt_open`] ·
+//! [`KamaNode::ptt_push`] · [`KamaNode::ptt_close`] · [`KamaNode::send_signaling`] (K4G-14b) ·
+//! [`KamaNode::on_platform_signal`] · [`KamaNode::drain_background`] · [`KamaNode::metrics`] ·
+//! [`KamaNode::shutdown`]. Olaylar: [`NodeEvent`] — K4G-14b ile [`NodeEvent::SignalingReceived`].
 //!
 //! # Çağrılar
 //!
@@ -50,12 +58,13 @@
 //! kullanılmaz; kapanmış tutamaç [`NodeError::HandleClosed`] alır ve asla başka eşin akışına /
 //! aktarımına gitmez (sahip kararı CEVAP PAKETİ 2 madde 1; `src/handle.rs`). `msg_id` tel
 //! kimliğidir ama yalnız döner ve olayla gelir (hiçbir çağrı almaz); `(eş, msg_id)` tekildir.
+//! [`KamaNode::send_signaling`]'in döndürdüğü `SignalingId` sinyalleşme motorunun kimliğidir; ayrı
+//! düğüm tutamacı yoktur (gerekçe çağrının belgesinde).
 //!
 //! # KAPSAM DIŞI (plan §4.5)
 //!
-//! Hub, heartbeat (D18; `last_heartbeat_age_s` daima `None`), signaling (`send_signaling` /
-//! `SignalingReceived` — K4G-14b uzantısı), `BestEffort` / `DeadlineBounded` (K4G-10 bu sprintte
-//! yok; `deadline_expired_drops` alanı yok), mesaj geçmişi, at-rest şifreleme.
+//! Hub, heartbeat (D18; `last_heartbeat_age_s` daima `None`), `BestEffort` / `DeadlineBounded`
+//! (K4G-10 bu sprintte yok; `deadline_expired_drops` alanı yok), mesaj geçmişi, at-rest şifreleme.
 
 #![forbid(unsafe_code)]
 
@@ -85,6 +94,7 @@ use kama_app::codec::{AmpLimits, PttCodec};
 use kama_app::file_transfer::FileTransfer;
 use kama_app::messaging::{Messenger, MsgId};
 use kama_app::ptt::{max_bundle_payload_bytes, Ptt};
+use kama_app::signaling::{max_blob_bytes, Signaling, SignalingId};
 use kama_app::store::AppStore;
 use kama_provision::format::load_device_config;
 use kama_store::RedbStore;
@@ -98,7 +108,7 @@ pub use files::RECEIVED_FILES_DIR;
 pub use handle::{FileHandle, StreamHandle};
 
 use files::ReceivedFiles;
-use node::{Command, NodeLoop, Reply, Shared, COMMAND_QUEUE_CAP, REPLY_CAPACITY};
+use node::{AppEngines, Command, NodeLoop, Reply, Shared, COMMAND_QUEUE_CAP, REPLY_CAPACITY};
 use peers::PeerBook;
 use wiring::Transport;
 
@@ -143,6 +153,9 @@ struct InputLimits {
     max_text_bytes: usize,
     /// `MEDIA_BUNDLE` yükü: `kama_app::ptt::max_bundle_payload_bytes`.
     max_bundle_bytes: usize,
+    /// `SIGNALING_BLOB` blob'u: `kama_app::signaling::max_blob_bytes` (`MAX_BODY_BYTES −
+    /// blob_len öneki`; AMP §3 0x09).
+    max_blob_bytes: usize,
 }
 
 impl InputLimits {
@@ -150,6 +163,7 @@ impl InputLimits {
         Self {
             max_text_bytes: limits.max_body_bytes().saturating_sub(TEXT_PREFIX_BYTES),
             max_bundle_bytes: max_bundle_payload_bytes(limits),
+            max_blob_bytes: max_blob_bytes(limits),
         }
     }
 }
@@ -208,9 +222,9 @@ impl KamaNode {
     /// Kurulumun TEK gövdesi (iş parçacığı BAŞLATILMAZ). Sıra: provisioning → veri dizini → depo →
     /// Crypto (aynı `Arc` depo `CounterStore` olarak) → `drop(config)` → zarf taşıyıcısı (süreç-içi
     /// röle kaydı; `src/carrier.rs`) → Transport → Application motorları (aynı `Arc` depo
-    /// `AppStore` olarak; `app_clock` `Ptt` ve `FileTransfer`'ın ortak saati — Crypto'nunkinden
-    /// AYRI; üründe `kama_app::clock::SystemClock`). Birim testleri döngüyü elle sürmek için bunu
-    /// doğrudan kullanır.
+    /// `AppStore` olarak; `app_clock` `Ptt`, `FileTransfer` ve `Signaling`'in ortak saati —
+    /// Crypto'nunkinden AYRI; üründe `kama_app::clock::SystemClock`). Birim testleri döngüyü elle
+    /// sürmek için bunu doğrudan kullanır.
     pub(crate) fn build(
         config_path: &Path,
         data_dir: &Path,
@@ -239,13 +253,15 @@ impl KamaNode {
         let app_store: Arc<dyn AppStore> = store;
         let messenger = Messenger::with_store(transport, app_store).map_err(NodeError::Limits)?;
         let limits = InputLimits::from_amp(messenger.limits());
-        let ptt = Ptt::new(Arc::clone(&app_clock));
-        let files = FileTransfer::new(app_clock);
+        let engines = AppEngines {
+            messenger,
+            ptt: Ptt::new(Arc::clone(&app_clock)),
+            files: FileTransfer::new(Arc::clone(&app_clock)),
+            signaling: Signaling::new(app_clock),
+        };
         let shared = Arc::new(Shared::new(node::idle_metrics(&peers)));
         let node = NodeLoop::new(
-            messenger,
-            ptt,
-            files,
+            engines,
             Arc::clone(&peers),
             listener,
             Arc::clone(&shared),
@@ -419,6 +435,43 @@ impl KamaNode {
     /// kuyruk/iş parçacığı hataları.
     pub fn ptt_close(&self, stream: StreamHandle) -> Result<(), NodeError> {
         self.request(|reply| Command::PttClose { stream, reply })
+    }
+
+    /// Sinyalleşme blob'u (K4G-14b; plan K4G-14 NE (2)): opak `SIGNALING_BLOB` (AMP §3 0x09,
+    /// `Reliable`) eşin güncel oturumuna; karşı uçta [`NodeEvent::SignalingReceived`]. Sesli /
+    /// görüntülü aramanın kurulum ve kontrol mesajlarıdır: içerik medya motorunundur, düğüm okumaz.
+    /// Eşin hazır oturumu gerekir.
+    ///
+    /// `Ok` = Transport kuyruğa aldı, teslim DEĞİL (S1 K8); 0x09 alındısız ve dedupsuz; içerik
+    /// kendi `call_id`/sıra numarasını taşımalı; oturum değişiminde ilk kabulden 60 s içindeki
+    /// bloblar yeni oturuma bir kez yeniden sunulur (AMP §3). Yeniden sunum ve ömrün budanması
+    /// düğümdedir: eşin `Ready`'sinde, o eşe her `send_signaling`'de ve kuyruğu boşalan her turda
+    /// (`Signaling::pump`); eş başına en çok 256 kayıt tutulur, en eskisi düşer (DUR-K4G-14a
+    /// CEVAP). Reddedilen blob'u düğüm yeniden denemez (S1 K8): çağıran bekler ve aynı blob'u
+    /// yeniden verir.
+    ///
+    /// Dönen `SignalingId` motorun kimliğidir; ayrı bir düğüm tutamacı GEREKMEZ: düğümün ömrü
+    /// boyunca TEK `Signaling` motoru vardır (motor-tekil = düğüm-tekil); kimlik kesin artandır ve
+    /// hiçbir zaman yeniden verilmez — eşten, oturumdan ve kaydın düşmesinden bağımsız; hiçbir
+    /// çağrı onu ALMAZ, yani [`StreamHandle`] / [`FileHandle`]'ın kapattığı use-after-close yüzeyi
+    /// (eş başına tel kimliğinin başka bir eşin akışına / aktarımına çözülmesi) burada yoktur.
+    /// Telde yoktur ve kalıcı değildir: yeniden başlatılan düğümde kimlikler baştan başlar.
+    ///
+    /// # Errors
+    /// [`NodeError::UnknownPeer`] · [`NodeError::TooLarge`] (blob bir `SIGNALING_BLOB` kaydına
+    /// sığmıyor; kuyruğa alınmadı) · [`NodeError::Signaling`] (ör. `NoSession`,
+    /// `Transport(Backpressure)`) · kuyruk/iş parçacığı hataları.
+    pub fn send_signaling(&self, peer_id: &str, bytes: Vec<u8>) -> Result<SignalingId, NodeError> {
+        let peer = self.peers.resolve(peer_id)?;
+        let max = self.limits.max_blob_bytes;
+        if bytes.len() > max {
+            return Err(NodeError::TooLarge {
+                what: "signaling blob",
+                len: bytes.len(),
+                max,
+            });
+        }
+        self.request(|reply| Command::SendSignaling { peer, bytes, reply })
     }
 
     /// Platform sinyali (bkz. [`PlatformSignal`]). Yanıt beklemez.
