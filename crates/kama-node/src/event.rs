@@ -5,7 +5,8 @@
 //! (`(peer_id, stream_id)` / `(peer_id, transfer_id)`): API'de hiçbir çağrı gelen kimlik almaz,
 //! use-after-close yüzeyi yoktur.
 //!
-//! **Gizlilik:** `Debug` çıktısı metni, ses yükünü ve dosya baytlarını değil uzunluklarını yazar.
+//! **Gizlilik:** `Debug` çıktısı metni, ses yükünü, sinyalleşme blob'unu ve dosya baytlarını değil
+//! uzunluklarını yazar.
 //! Alınan dosyanın yolu düğümün ürettiği addır (`<eş>-<transfer_id>`; eşten gelen ad değil) ve
 //! basılır.
 
@@ -120,6 +121,16 @@ pub enum NodeEvent {
         /// Eşin akış kimliği.
         stream_id: StreamId,
     },
+    /// Eşten sinyalleşme blob'u (`SIGNALING_BLOB`, AMP §3 0x09; K4G-14b) — eşin
+    /// `KamaNode::send_signaling`'i. İçerik opaktır ve medya motorunundur (düğüm okumaz). Alındısız
+    /// ve dedupsuz: aynı blob birden çok kez gelebilir (göndericinin oturum değişiminde yeniden
+    /// sunumu); sıra yalnız aynı oturum içinde gönderim sırasıdır.
+    SignalingReceived {
+        /// Gönderen eş.
+        peer_id: String,
+        /// `SIGNALING_BLOB.blob`, aynen.
+        bytes: Vec<u8>,
+    },
     /// Periyodik ölçü anlık görüntüsü ([`crate::METRICS_TICK`]).
     Metrics(NodeMetrics),
 }
@@ -225,7 +236,7 @@ pub enum LinkState {
     Connected,
 }
 
-/// Metin, ses yükü ve dosya baytları YAZILMAZ; yalnız uzunlukları.
+/// Metin, ses yükü, sinyalleşme blob'u ve dosya baytları YAZILMAZ; yalnız uzunlukları.
 impl fmt::Debug for NodeEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -317,6 +328,11 @@ impl fmt::Debug for NodeEvent {
                 .field("peer_id", peer_id)
                 .field("stream_id", stream_id)
                 .finish(),
+            Self::SignalingReceived { peer_id, bytes } => f
+                .debug_struct("SignalingReceived")
+                .field("peer_id", peer_id)
+                .field("bytes_len", &bytes.len())
+                .finish_non_exhaustive(),
             Self::Metrics(metrics) => f.debug_tuple("Metrics").field(metrics).finish(),
         }
     }
@@ -355,6 +371,26 @@ mod tests {
         );
         // Ses baytı ne ondalık ne onaltılık basılır.
         for needle in [AUDIO_BYTE.to_string(), format!("{AUDIO_BYTE:x}")] {
+            assert!(
+                !shown.contains(&needle),
+                "Debug çıktısında {needle}: {shown}"
+            );
+        }
+    }
+
+    /// K4G-14b: sinyalleşme blob'unun baytları `Debug`'a girmez; uzunluğu girer.
+    #[test]
+    fn debug_redacts_the_signaling_blob_and_keeps_its_length() {
+        const BLOB_BYTE: u8 = 0xC3;
+        const BLOB_LEN: usize = 48;
+        let blob = NodeEvent::SignalingReceived {
+            peer_id: "alice".to_owned(),
+            bytes: vec![BLOB_BYTE; BLOB_LEN],
+        };
+        let shown = format!("{blob:?}");
+        assert!(shown.contains(&format!("bytes_len: {BLOB_LEN}")), "{shown}");
+        // Blob baytı ne ondalık ne onaltılık basılır.
+        for needle in [BLOB_BYTE.to_string(), format!("{BLOB_BYTE:x}")] {
             assert!(
                 !shown.contains(&needle),
                 "Debug çıktısında {needle}: {shown}"
