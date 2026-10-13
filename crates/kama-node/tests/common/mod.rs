@@ -207,6 +207,13 @@ impl Events {
         }
     }
 
+    /// Saklananlar + kanalda ŞU ANA dek birikmiş olaylar (`Metrics` hariç), geliş sırasıyla;
+    /// saklananlar boşalır. BLOKLAMAZ.
+    pub fn drain_all(&mut self) -> Vec<NodeEvent> {
+        self.drain_now();
+        std::mem::take(&mut self.backlog)
+    }
+
     /// `pick`'in kabul ettiği ilk olayı döner: önce saklananlar (geliş sırasıyla), sonra yeniler —
     /// en çok [`WAIT`] boyunca. Süre dolarsa ya da düğüm kapanırsa görülen olaylarla panik.
     pub fn wait<T>(&mut self, what: &str, mut pick: impl FnMut(&NodeEvent) -> Option<T>) -> T {

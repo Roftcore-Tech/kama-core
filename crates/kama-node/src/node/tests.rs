@@ -30,6 +30,9 @@ use crate::handle::FileHandle;
 use crate::test_support::{self as support, Events, ManualClock, TempDir};
 use crate::{KamaNode, NodeListener};
 
+/// Eşzamanlı connect (glare) — DR-CONNECT-1 #4 / K2 (`tests/glare.rs`).
+mod glare;
+
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
 const CAROL: &str = "carol";
