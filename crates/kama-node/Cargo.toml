@@ -1,0 +1,46 @@
+[package]
+name = "kama-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# BİLEŞİM KÖKÜ (K4G-11; plan D8 v1.1, D9 v1.1, D11): ürünü ayağa kaldıran TEK crate. Provisioning
+# dosyası (kimlik, anahtarlar, eş dizini — BELLEKTE, depoya yazılmaz), kalıcı depo
+# (`kama-store::RedbStore`; `AppStore` + `CounterStore` olarak AYNI nesne), gerçek saat ve entropi,
+# gerçek UDP veri yolu (`client-core`) ve uygulama motorları (`kama-app`) burada birleşir.
+#
+# INV-NEIGHBOR-1'in TEK istisnasıdır: her katmana bağlanır ama YALNIZ kurar, protokol mantığı
+# taşımaz. Crypto (`kama-noise-wire`) adı ürün kaynağında yalnız kurma modülünde (`src/wiring.rs`)
+# geçer — `scripts/ci/layer_check.py` C8. Altyapı crate'i `kama-store`'a bağlanabilen tek crate
+# budur (C7).
+#
+# D11: yeni harici bağımlılık YOK — yalnız workspace crate'leri + `thiserror` (workspace sürümü).
+# Yeni async runtime YOK: veri yolunun tokio'su `client-core`'un içindedir (`ClientTransport`
+# kendi çalışma-zamanını taşır); düğüm döngüsü bir `std::thread`'dir.
+[dependencies]
+client-core = { path = "../client-core" }
+kama-app = { path = "../kama-app" }
+kama-contracts = { path = "../kama-contracts" }
+kama-noise-wire = { path = "../kama-noise-wire" }
+kama-provision = { path = "../kama-provision" }
+kama-store = { path = "../kama-store" }
+thiserror.workspace = true
+
+[features]
+# Bugün bu özelliğe bağlı öğe YOKTUR: DUR-K4G-11 → B ile ürün zarf taşıyıcısı süreç-içi röle oldu
+# (`src/carrier.rs`) ve testler ürün yolunu (`KamaNode::start`) koşar; test kurucusu
+# `start_with_envelope_link` kaldırıldı. Özellik ve aşağıdaki öz-bağımlılık bu PR'da kilit dosyası
+# (Cargo.lock) değişmesin diye korunur; ikisi birlikte ayrı bir değişiklikte kaldırılabilir.
+test-util = []
+
+[dev-dependencies]
+# Kendi `test-util` özelliğini entegrasyon testlerine açar (client-core'daki kalıp; bkz. yukarıdaki
+# not). Yalnız test derlemesinde; ürün grafiğine girmez.
+kama-node = { path = ".", features = ["test-util"] }
+# Birim testlerinin salt-okunur test kancası (`ClientTransport::inbox_len_for_test`) — YALNIZ test;
+# ürün bağımlılığında `test-util` AÇILMAZ.
+client-core = { path = "../client-core", features = ["test-util"] }
+
+[lints]
+workspace = true

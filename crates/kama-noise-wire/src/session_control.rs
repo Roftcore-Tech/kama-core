@@ -383,6 +383,17 @@ impl NoiseWireProtection {
             .map_or(0, |cp| cp.counter_persist_failures)
     }
 
+    /// [K4G-11] Salt-okunur telemetri: kurulu oturumun GÖNDERİM DH epoch'u (`0` / `1`;
+    /// [`DhEpochMachine::send_epoch`], noise-wire §4-B3). Bekleyen INIT ya da bilinmeyen tutamaç →
+    /// `None`. Ölçüm overlay'i ve INT-02 epoch geçişi gözlemi içindir; durumu değiştirmez.
+    #[must_use]
+    pub fn session_send_epoch(&self, h: SessionHandle) -> Option<u8> {
+        self.control
+            .as_deref()
+            .and_then(|cp| cp.sessions.get(&h))
+            .map(|m| m.machine.send_epoch())
+    }
+
     // ── Veri yolu kancaları (protector `open` çağırır) ───────────────────────────────────────
 
     /// AEAD-geçerli bir paket `h` oturumunda `epoch` ile açıldı (commit SONRASI).

@@ -93,6 +93,7 @@ use kama_contracts::s3::{
     SealError, SealedUnit, SessionCommand, SessionControl, SessionEvent as CryptoEvent,
     SessionResult,
 };
+use kama_noise_wire::protector::NoiseWireProtection;
 
 use crate::runtime::{
     ClientEndpoint, ClientHandle, CtxDispatchCounters, CtxDispatchStats, ExpectedSessions,
@@ -558,6 +559,15 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     #[must_use]
     pub fn ctx_dispatch_stats(&self) -> CtxDispatchStats {
         self.ctx_counters.snapshot()
+    }
+
+    /// [K4G-11] Salt-okunur telemetri: veri alıcısının teslim kanalı doluyken düşen teslim sayısı
+    /// (`ServerStats::delivery_dropped`; bkz. [`ServerHandle::delivery_dropped`]). Adaptör teslim
+    /// kanalını her `drive`'da boşalttığı için uygulama `recv`'i sürdükçe sıfır kalır; sıfırdan
+    /// büyükse ACK'lenmiş birim uygulamaya ulaşmadan düşmüştür (app drenaj sözleşmesi ihlali).
+    #[must_use]
+    pub fn delivery_dropped(&self) -> u64 {
+        self.server.delivery_dropped()
     }
 
     /// Bekleyen işi sürer: zarf olayları → tutulan yenileme yanıtları → Crypto olayları →
@@ -1064,6 +1074,20 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     }
 }
 
+/// [K4G-11] Ürün kriptosuna özgü salt-okunur telemetri. Genel adaptör Crypto'yu yalnız S3
+/// trait'leriyle görür ve S3 (FROZEN) epoch sorgusu taşımaz; bu blok yalnız ürün kurulumu
+/// (`NoiseWireProtection`) için vardır ve hiçbir durumu değiştirmez.
+impl ClientTransport<NoiseWireProtection> {
+    /// Oturumun gönderim DH epoch'u (noise-wire §4-B3): `0` = INIT anahtarları (per-INIT
+    /// ephemeral confidentiality), `1` = yanıtlayanın efemerali katıldıktan sonraki anahtarlar.
+    /// Crypto'nun kurulu oturum tablosundan okunur; bekleyen INIT ya da bilinmeyen tutamaç →
+    /// `None`.
+    #[must_use]
+    pub fn session_epoch(&self, session: SessionHandle) -> Option<u8> {
+        lock(&self.crypto).session_send_epoch(session)
+    }
+}
+
 impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> {
     fn capabilities(&self) -> TransportCapabilities {
         self.caps
@@ -1312,5 +1336,25 @@ mod tests {
             [1, 2, 3, 4],
             "tavan aşılınca en küçük boşluk atlanır, sıra korunur"
         );
+    }
+
+    /// [K4G-11] Salt-okunur erişimciler taze ürün adaptöründe: Crypto'nun tutmadığı tutamacın
+    /// epoch'u yok, teslim kanalı taşması yok. Kurulu oturumun epoch'u (`Some(1)`, iki uçta) ve
+    /// canlı taşma değeri uçtan uca `crates/kama-node/tests/two_nodes_loopback.rs` ile
+    /// `runtime::delivery_dropped_mirror_tests`'te sınanır.
+    #[test]
+    fn read_only_accessors_on_a_fresh_product_adapter() {
+        use kama_noise_wire::seam_mock::{fixture_directory, fixture_protection};
+        use kama_noise_wire::session_control::EnvelopeKind;
+
+        let me = PeerRef::from_dest_hash([0x4B; 32]);
+        let directory = fixture_directory([*me.as_bytes()]).expect("fikstür dizini");
+        let (crypto, _clock) = fixture_protection(*me.as_bytes(), directory, EnvelopeKind::Legacy);
+        let hub = crate::memory_link::MemoryHub::new();
+        let cfg = ClientTransportConfig::product(SocketAddr::from(([127, 0, 0, 1], 0)));
+        let transport =
+            ClientTransport::new(cfg, crypto, Box::new(hub.link(me))).expect("ürün adaptörü");
+        assert_eq!(transport.session_epoch(SessionHandle::from_raw(7)), None);
+        assert_eq!(transport.delivery_dropped(), 0);
     }
 }
