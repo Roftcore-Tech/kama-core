@@ -33,6 +33,16 @@ HÜKÜM KURALLARI (her tohum ayrı; "temiz" = aşağıdaki ortak koşulların he
 
 Yüzdelikler örnekte EN YAKIN SIRA (nearest-rank) yöntemiyle hesaplanır; burada yeniden hesaplanmaz.
 
+YENİDEN KOŞU ALANLARI (CEVAP PAKETİ 4, şema `int02-node-v2`; hüküm kuralları DEĞİŞMEDİ):
+  * `params.window_s` + `window.ended_by` — PENCERE: son gönderimden (ek-kesinti kolunda kesinti
+    bitiminden) sonra tamamlanma üst sınırı (v1 dosyalarında `params.drain_s`).
+  * GATING (2) özeti: geçen / koşulan tohum ve pencere(ler).
+  * ek-kesinti: iki ayrı satır grubu — METİN (`outage.texts_complete`: %100 metin teslimi) ile
+    `outage.same_session` (kesinti başından koşu sonuna yeni `Closed` yok, ikinci `Connected` yok,
+    epoch değişmemiş) ve ayrı PTT tablosu. "Sahip ölçütü (CEVAP PAKETİ 4)" satırı = metin %100 ∧
+    same_session (ölçüm özeti; GATING hükmü değildir).
+  * ek-dosya-ptt: `file.outcome` (durum `delivered` / `failed` / `pending`, neden, zaman damgaları).
+
 TAKILI BİRİM ÖZETİ (K4G-05 teşhis; hüküm DEĞİL): her koşu için tek satır — son sondadaki gönderen
 kurtarma görüntüsü (`nodes.*.probe.sessions[].recovery`: teyitsiz birim, en eski teyitsiz birimin
 emisyon kararı / ARQ retx düzeyi ve tavanı / motor kayıtları / kopya vadesi ve aralığı / son
@@ -277,6 +287,39 @@ def epoch_cell(rec):
                 get(node(rec, "bob"), "epoch", "epoch1_after_connected_ms"), 0)
 
 
+def window_cell(rec):
+    """Pencere süresi (s) ve nasıl bittiği (v1 dosyalarında `params.drain_s`)."""
+    seconds = get(rec, "params", "window_s")
+    if seconds is None:
+        seconds = get(rec, "params", "drain_s")
+    return f"{fmt(seconds)} · {fmt(get(rec, 'window', 'ended_by'))}"
+
+
+def mark(rec, name, which):
+    return get(rec, "outage", "session", name, which, default={}) or {}
+
+
+def transition(rec, field):
+    """Kesinti başı → koşu sonu değeri, A / B."""
+    return " / ".join(f"{fmt(mark(rec, n, 'start').get(field))}→{fmt(mark(rec, n, 'end').get(field))}"
+                      for n in ("alice", "bob"))
+
+
+def file_since_sent(rec, key):
+    o = get(rec, "file", "outcome", default={}) or {}
+    a, b = o.get("sent_ms"), o.get(key)
+    return None if a is None or b is None else b - a
+
+
+def outage_criterion(rec):
+    """CEVAP PAKETİ 4: 60 s kesinti, AYNI OTURUMDA %100 metin teslimi (PTT ayrı). Ölçüm özeti."""
+    if netem_check(rec):
+        return "GEÇERSİZ"
+    o = rec.get("outage") or {}
+    ok = o.get("texts_complete") is True and o.get("same_session") is True
+    return "KARŞILANDI" if ok else "KARŞILANMADI"
+
+
 def fmt_s(ms):
     return DASH if ms is None else f"{ms / 1000.0:.1f} s"
 
@@ -364,7 +407,7 @@ def render(runs, seeds) -> tuple[str, dict]:
         e1, fs = get(node(r, "bob"), "epoch", "first_epoch1_ms"), f.get("first_send_ms")
         gap = (e1 - fs) if (e1 is not None and fs is not None) else None
         ev = [get(probe(r, n), "session_events", "ready") for n in ("alice", "bob")]
-        rows.append([s, r.get("result"), fmt(f.get("delivered_pct")), fmt(f.get("receipt_pct")), lat(f),
+        rows.append([s, r.get("result"), window_cell(r), fmt(f.get("delivered_pct")), fmt(f.get("receipt_pct")), lat(f),
                      fmt(f.get("first_send_epoch")), fmt(gap, 0), fmt(f.get("sends_at_epoch0")),
                      pair(get(node(r, "alice"), "epoch", "last"), get(node(r, "bob"), "epoch", "last"), 0),
                      pair(ev[0], ev[1], 0),
@@ -379,8 +422,14 @@ def render(runs, seeds) -> tuple[str, dict]:
                      pair(session_diag(r, "alice", "min_rtt_ms"), session_diag(r, "bob", "min_rtt_ms"), 0),
                      fmt(get(r, "netem_check", "ping", "rtt_avg_ms"), 0)])
     if rows:
+        g2 = [verdict(rec(s, "gating2"), "gating2")[0] for s in seeds if rec(s, "gating2") is not None]
+        windows = sorted({str(get(rec(s, "gating2"), "params", "window_s")) for s in seeds
+                          if rec(s, "gating2") is not None})
+        summary["gating2"] = {"passed": sum(v == "GEÇTİ" for v in g2), "run": len(g2), "windows_s": windows}
         md += ["### GATING (2) — bob (yanıtlayan) → alice; epoch 0→1 akış içinde, tek oturum",
-               table(["tohum", "sonuç", "teslim %", "alındı %", "gecikme medyan / 95p (ms)",
+               f"**GATING (2): {summary['gating2']['passed']}/{len(g2)} tohum GEÇTİ** · pencere "
+               f"{', '.join(windows)} s (ölçüm tablosu; kapı ifadesi değildir).",
+               table(["tohum", "sonuç", "pencere (s) · sonu", "teslim %", "alındı %", "gecikme medyan / 95p (ms)",
                       "bob ilk gönderim epoch'u", "bob epoch-1 − ilk gönderim (ms)",
                       "epoch-0'da gönderim", "son epoch A / B", "Ready A / B", "canlı oturum A / B",
                       "ARQ retx A / B", "app retx A / B", "crypto retx A / B", "ctx A / B",
@@ -456,40 +505,75 @@ def render(runs, seeds) -> tuple[str, dict]:
         if r is None:
             continue
         f, fl, pt = flow(r, "alice_to_bob"), r.get("file") or {}, r.get("ptt") or {}
-        rows.append([s, r.get("result"), f"{fmt(f.get('delivered'))}/{fmt(f.get('sent'))}", lat(f),
-                     fmt(fl.get("bytes")), fmt(fl.get("send_to_received_ms"), 0),
-                     fmt(fl.get("send_to_receipt_ms"), 0), fmt(fl.get("bytes_match")),
+        oc = fl.get("outcome") or {}
+        rows.append([s, r.get("result"), window_cell(r), f"{fmt(f.get('delivered'))}/{fmt(f.get('sent'))}", lat(f),
+                     fmt(fl.get("bytes")), fmt(oc.get("status")), fmt(oc.get("reason")),
+                     fmt(file_since_sent(r, "at_ms"), 0),
+                     fmt(fl.get("send_to_received_ms"), 0),
+                     fmt(fl.get("send_to_receipt_ms"), 0), fmt(file_since_sent(r, "sender_failed_ms"), 0),
+                     fmt(oc.get("receiver_failed_reason")), fmt(fl.get("bytes_match")),
                      f"{fmt(pt.get('received'))}/{fmt(pt.get('pushed'))}", fmt(pt.get("in_order_complete")),
                      fmt(pt.get("press_to_first_audio_ms"), 0), netem_cell(r)])
+        summary.setdefault("ek_dosya_ptt", {})[str(s)] = {
+            "status": oc.get("status"), "reason": oc.get("reason"),
+            "texts_delivered": f.get("delivered"), "texts_sent": f.get("sent"),
+            "ptt_in_order_complete": pt.get("in_order_complete"), "window_ended_by": get(r, "window", "ended_by")}
     if rows:
         md += ["### NON-GATING — 100 TEXT + 1 dosya + 1 PTT klibi (aynı profil)",
-               table(["tohum", "sonuç", "TEXT teslim", "gecikme medyan / 95p (ms)", "dosya bayt",
-                      "gönderim→alındı (ms)", "gönderim→FILE_RECEIPT (ms)", "bayt-özdeş",
+               "Dosya sonucu ayrı alandadır (`file.outcome`); kol hükmü değişmedi: başarısız dosya kolu "
+               "tamamlanmamış sayar. Metin ve PTT tam pencere boyunca ölçülür.",
+               table(["tohum", "sonuç", "pencere (s) · sonu", "TEXT teslim", "gecikme medyan / 95p (ms)",
+                      "dosya bayt", "dosya durumu", "neden", "gönderim→sonuç (ms)",
+                      "gönderim→alındı (ms)", "gönderim→FILE_RECEIPT (ms)",
+                      "gönderim→gönderen başarısızlığı (ms)", "alıcı başarısızlığı", "bayt-özdeş",
                       "PTT demet alınan/verilen", "sıralı+tam", "bas→ilk ses (ms)",
                       "netem doğrulama"], rows), ""]
 
     # NON-GATING: 60 s kesinti
-    rows = []
+    rows, ptt_rows = [], []
     for s in seeds:
         r = rec(s, "ek-kesinti")
         if r is None:
             continue
         f, o, pt = flow(r, "alice_to_bob"), r.get("outage") or {}, r.get("ptt") or {}
         after = o.get("delivery_after_restore_ms") or {}
-        rows.append([s, r.get("result"), f"{fmt(f.get('delivered'))}/{fmt(f.get('sent'))}",
-                     fmt(o.get("duration_ms"), 0), fmt(o.get("texts_sent_during")),
-                     fmt(o.get("texts_delivered_of_during")),
+        rows.append([s, r.get("result"), window_cell(r), f"{fmt(f.get('delivered'))}/{fmt(f.get('sent'))}",
+                     fmt(o.get("texts_complete")), fmt(o.get("duration_ms"), 0),
+                     f"{fmt(o.get('texts_delivered_of_during'))}/{fmt(o.get('texts_sent_during'))}",
                      f"{fmt(after.get('median'), 0)} / {fmt(after.get('p95'), 0)} / {fmt(after.get('max'), 0)}",
-                     f"{fmt(pt.get('received'))}/{fmt(pt.get('pushed'))}", fmt(pt.get("in_order_complete")),
-                     pair(get(probe(r, "alice"), "session_events", "ready"),
-                          get(probe(r, "bob"), "session_events", "ready"), 0),
-                     arq_cell(r), netem_cell(r)])
+                     fmt(o.get("same_session")), fmt(o.get("same_session_outage_only")),
+                     fmt(o.get("same_session_handles")), transition(r, "epoch"),
+                     transition(r, "connected_events"), transition(r, "closed_events"),
+                     arq_cell(r), netem_cell(r), outage_criterion(r)])
+        ptt_rows.append([s, f"{fmt(pt.get('received'))}/{fmt(pt.get('pushed'))}",
+                         fmt(pt.get("in_order_complete")), fmt(pt.get("peer_opened_events")),
+                         fmt(pt.get("peer_closed_events")), fmt(pt.get("press_to_first_audio_ms"), 0),
+                         pair(get(probe(r, "alice"), "session_events", "ready"),
+                              get(probe(r, "bob"), "session_events", "ready"), 0)])
+        summary.setdefault("ek_kesinti", {})[str(s)] = {
+            "texts_complete": o.get("texts_complete"), "same_session": o.get("same_session"),
+            "same_session_outage_only": o.get("same_session_outage_only"),
+            "same_session_handles": o.get("same_session_handles"),
+            "ptt_in_order_complete": pt.get("in_order_complete"), "criterion": outage_criterion(r)}
     if rows:
+        met = sum(v["criterion"] == "KARŞILANDI" for v in summary["ek_kesinti"].values())
         md += ["### NON-GATING — akış ortasında 60 s tam kesinti (`loss 100%`)",
-               table(["tohum", "sonuç", "TEXT teslim", "kesinti (ms)", "kesintide gönderilen",
-                      "bunlardan teslim", "kesinti bitişinden teslim medyan / 95p / max (ms)",
-                      "PTT demet", "sıralı+tam", "Ready A / B", "ARQ retx A / B",
-                      "netem doğrulama"], rows), ""]
+               f"**Sahip ölçütü (CEVAP PAKETİ 4 — 60 s kesinti, aynı oturumda %100 metin teslimi): "
+               f"{met}/{len(rows)} tohum** (metin %100 ∧ same_session; PTT ayrı tabloda, ölçüte girmez; "
+               "ölçüm özeti, kapı ifadesi değildir).",
+               "#### Metin ve aynı oturum",
+               "`same_session` = kesinti başından koşu sonuna iki düğümde yeni `Closed` yok, ikinci "
+               "`Connected` yok, epoch değişmemiş; 'yalnız kesinti' = aynı ölçüt kesinti bitişine dek; "
+               "'tutamaç + S1' = oturum tutamaçları ve S1 Ready/Closed sayıları da aynı.",
+               table(["tohum", "sonuç", "pencere (s) · sonu", "metin teslim/gönderilen", "metin %100",
+                      "kesinti (ms)", "kesintide gönderilenden teslim",
+                      "kesinti bitişinden teslim medyan / 95p / max (ms)", "same_session",
+                      "yalnız kesinti", "tutamaç + S1", "epoch başı→sonu A / B",
+                      "Connected başı→sonu A / B", "Closed başı→sonu A / B", "ARQ retx A / B",
+                      "netem doğrulama", "sahip ölçütü"], rows), "",
+               "#### PTT (ayrı)",
+               table(["tohum", "demet alınan/verilen", "sıralı+tam", "PttOpened olayı",
+                      "PttClosed olayı", "bas→ilk ses (ms)", "Ready A / B"], ptt_rows), ""]
 
     # TAKILI BİRİM ÖZETİ (teşhis; hüküm değil) — koşu başına tek satır
     rows = []
@@ -575,6 +659,27 @@ def _synthetic(arm: str, seed: int, *, lossy_negative=True, broken=False) -> dic
             rec["nodes"][n]["probe"]["arq_total"].update(recovery_suppressed=50, tx_retx_bytes=0)
     if broken:
         rec["nodes"]["bob"]["probe"]["crypto_retransmit"] = 1
+    # [CEVAP PAKETİ 4] v2 alanları.
+    rec["params"]["window_s"] = 600
+    rec["window"] = {"s": 600, "anchor": "outage_end" if arm == "ek-kesinti" else "last_send",
+                     "ended_by": "complete" if rec["result"] == "complete" else "deadline"}
+    if arm == "ek-kesinti":
+        mark = {"epoch": 1, "connected_events": 1, "closed_events": 0, "s1_ready": 1, "s1_closed": 0,
+                "session_ids": ["SessionHandle(3)"]}
+        rec["outage"] = {"duration_ms": 60010.0, "texts_sent_during": 50, "texts_delivered_of_during": 50,
+                         "delivery_after_restore_ms": {"median": 9000.0, "p95": 31000.0, "max": 40000.0},
+                         "texts_sent": count, "texts_delivered": count, "texts_complete": True,
+                         "session": {n: {"start": dict(mark), "restore": dict(mark), "end": dict(mark)}
+                                     for n in ("alice", "bob")},
+                         "same_session": True, "same_session_outage_only": True, "same_session_handles": True}
+        rec["ptt"] = {"received": 50, "pushed": 50, "in_order_complete": True, "peer_opened_events": 1,
+                      "peer_closed_events": 1, "press_to_first_audio_ms": 900.0}
+    if arm == "ek-dosya-ptt":
+        rec["file"] = {"bytes": 153600, "send_to_received_ms": 21000.0, "send_to_receipt_ms": 22000.0,
+                       "bytes_match": True,
+                       "outcome": {"status": "delivered", "reason": None, "sent_ms": 11000.0,
+                                   "at_ms": 33000.0, "sender_failed_ms": None, "receiver_failed_reason": None}}
+        rec["ptt"] = {"received": 50, "pushed": 50, "in_order_complete": True, "press_to_first_audio_ms": 700.0}
     return rec
 
 
@@ -617,6 +722,37 @@ def selftest() -> int:
               and "next 17 · tutulan 31" in md)
         failed += not ok
         print(f"  {'PASS' if ok else 'FAIL'}  5 tohum × 4 kol sentetik → T4 GEÇTİ ve tablolar")
+    # [CEVAP PAKETİ 4] Yeniden koşu biçimi: 10 tohum GATING (2) pencere 600 s; ek-kesinti 5 tohum (biri
+    # oturum değiştirmiş); ek-dosya-ptt 5 tohum (biri gönderende başarısız); v1 `drain_s` uyumu.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        for seed in range(1, 11):
+            (d / f"seed-{seed}-gating2.json").write_text(json.dumps(_synthetic("gating2", seed)), encoding="utf-8")
+        for seed in range(1, 6):
+            k = _synthetic("ek-kesinti", seed)
+            if seed == 3:
+                k["outage"]["same_session"] = False
+                k["outage"]["session"]["bob"]["end"]["connected_events"] = 2
+            (d / f"seed-{seed}-ek-kesinti.json").write_text(json.dumps(k), encoding="utf-8")
+            f = _synthetic("ek-dosya-ptt", seed)
+            if seed == 2:
+                f["result"] = "incomplete"
+                f["window"]["ended_by"] = "settled"
+                f["file"]["outcome"].update(status="failed", reason="Outgoing(ReceiptTimeout)",
+                                            sender_failed_ms=91000.0, at_ms=91000.0)
+            (d / f"seed-{seed}-ek-dosya-ptt.json").write_text(json.dumps(f), encoding="utf-8")
+        md, summary = render(load(d), list(range(1, 11)))
+        old = _synthetic("gating1", 1)
+        old["params"] = {"count": 100, "drain_s": 120}
+        ok = ("**GATING (2): 10/10 tohum GEÇTİ** · pencere 600 s" in md
+              and "60 s kesinti, aynı oturumda %100 metin teslimi): 4/5 tohum**" in md
+              and "#### PTT (ayrı)" in md and "1→2" in md
+              and "| failed | Outgoing(ReceiptTimeout) |" in md
+              and summary["ek_dosya_ptt"]["2"]["status"] == "failed"
+              and summary["ek_kesinti"]["3"]["criterion"] == "KARŞILANMADI"
+              and window_cell(old).startswith("120 · "))
+        failed += not ok
+        print(f"  {'PASS' if ok else 'FAIL'}  yeniden koşu biçimi (10×GATING (2), ek-kesinti, ek-dosya-ptt, v1 uyumu)")
     print("int02_analyze öz-test:", "YEŞİL" if not failed else f"KIRMIZI ({failed})")
     return 0 if not failed else 1
 

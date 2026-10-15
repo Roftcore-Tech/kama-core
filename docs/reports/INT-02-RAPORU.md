@@ -24,6 +24,9 @@
 | T4 — sabit tohum, 5 tohum, 5/5 | … |
 | recovery OFF negatif kolu — ölçüm kaybı görüyor | … / 5 tohum |
 | NON-GATING: dosya + PTT · 60 s kesinti | … |
+| Yeniden koşu (CEVAP PAKETİ 4, §10) — GATING (2), 10 tohum × pencere 600 s | … / 10 tohum |
+| Yeniden koşu (§10) — ek-kesinti: 60 s kesinti, aynı oturumda %100 metin teslimi | … / 5 tohum |
+| Yeniden koşu (§10) — ek-dosya-ptt (D3): dosya sonucu ölçülür ve raporlanır | … |
 
 Bu tablo ölçüm özetidir; kapı ifadesi değildir (son satıra bakın).
 
@@ -85,8 +88,13 @@ paketleri de netem üretecini tüketir.
 | `ek-dosya-ptt` | `gating1` + 1 dosya (150 KiB) + 1 PTT klibi (50 demet × 40 ms, Lyra, 32 B) | NON-GATING |
 | `ek-kesinti` | PTT açık; 50 TEXT + 25 demet; **60 s `loss 100%`**; kesinti SIRASINDA 50 TEXT + 25 demet + `ptt_close`; profil geri | NON-GATING |
 
-Ortak: bağlantı üst sınırı 60 s; son gönderimden sonra tamamlanma üst sınırı 120 s (negatif kol 30 s);
-tamamlanmadan sonra Transport sakinleşmesi (iki düğümde teyitsiz birim 0) için üst sınır 10 s.
+Ortak: bağlantı üst sınırı 60 s; **pencere** (son gönderimden — ek-kesinti kolunda kesinti
+bitiminden — sonra tamamlanma üst sınırı; bütün kollar için tek parametre, örnekte `--window-s`,
+sürücüde `--window`) varsayılan 120 s; tamamlanmadan sonra Transport sakinleşmesi (iki düğümde
+teyitsiz birim 0) için üst sınır 10 s. ~~(negatif kol 30 s)~~ Negatif kol (kurtarma kapalı)
+tamamlanmaz ve pencerenin tamamını bekler; kısa pencereyle ayrı koşulur (`--window 30`).
+`--outage-wait-s` yalnız ek-kesinti kolunda `KESINTI_BITTI` işaretinin beklenme üst sınırıdır
+(kesinti uygulandıktan sonra, varsayılan 180 s) — pencere DEĞİLDİR.
 
 **recovery OFF kolunun kurulumu:** ürün builder'ı `recovery: false` yapılandırmasını reddeder
 (`ClientTransport::new` → `TransportBuildError::RecoveryOff`). Kol, ürün yolunun AYNISIYLA
@@ -127,9 +135,13 @@ kurucusu + röle zarf kaydı.
 ```
 cargo build --release -p kama-integration --example int02_node
 cargo build --release -p kama-provision
-scripts/netem/int02_run.sh --seeds "1 2 3 4 5" --arms "gating1 gating2 gating6 negatif" [--bin <hedef>/release]
+scripts/netem/int02_run.sh --seeds "1 2 3 4 5" --arms "gating1 gating2 gating6" [--bin <hedef>/release]
+scripts/netem/int02_run.sh --seeds "1 2 3 4 5" --arms negatif --window 30 [--bin <hedef>/release]
 scripts/netem/int02_run.sh --seeds "1 2 3 4 5" --arms "ek-dosya-ptt ek-kesinti" [--bin <hedef>/release]
 python3 scripts/netem/int02_analyze.py results/int02/<tarih> --md <tablolar.md> --json <özet.json>
+# yeniden koşu (CEVAP PAKETİ 4, §10):
+scripts/netem/int02_run.sh --seeds "1 2 3 4 5 6 7 8 9 10" --arms gating2 --window 600 [--bin <hedef>/release]
+scripts/netem/int02_run.sh --seeds "1 2 3 4 5" --arms "ek-kesinti ek-dosya-ptt" --window 600 [--bin <hedef>/release]
 ```
 
 ---
@@ -309,7 +321,97 @@ durumu) buraya yazılır — bu bir DUR değil, ölçümdür.
 
 ---
 
-## 10. Sonuç (koşudan sonra doldurulur)
+## 10. K4G-05b sonrası yeniden koşu (CEVAP PAKETİ 4)
+
+Sahip kararı (CEVAP PAKETİ 4, 2026-10-16), birebir: "INT-02 **yeniden**: 10 tohum × 600 s pencere,
+GATING (2) 10/10; ek-kesinti kolu 60 s kesinti 5/5 **aynı oturumda** %100 teslim; dosya kolu (D3)
+harness düzeltmesiyle (uzun pencere kesinti/dosya kollarına geçer) ölçülür ve raporlanır."
+
+| Alan | Değer |
+|---|---|
+| Ön koşul | K4G-05b (motor düzeltmesi, ayrı şerit) merge; dal main'e yeniden tabanlanır |
+| Koşu | tarih: … · commit: … · makine / çekirdek: … |
+| Şema | `int02-node-v2` (`params.window_s`, `window`, `file.outcome`, `outage.session`, `outage.same_session`) |
+| Pencere | son gönderimden (ek-kesinti kolunda kesinti bitiminden) sonra tamamlanma üst sınırı — bütün kollar için tek parametre; bu koşuda 600 s |
+| Kollar | `gating2` 10 tohum (`1 … 10`) · `ek-kesinti` 5 tohum (`1 … 5`) · `ek-dosya-ptt` 5 tohum (`1 … 5`) |
+| Ham çıktı | `results/int02/<tarih>/` |
+
+Komutlar: §1.6 "yeniden koşu" satırları. Tablolar `int02_analyze.py` çıktısından doldurulur; hüküm
+kuralları (§2–§6) değişmedi.
+
+### 10.1 GATING (2) — 10 tohum × pencere 600 s
+
+| tohum | sonuç | pencere (s) · sonu | teslim % | alındı % | gecikme medyan / 95p (ms) | bob ilk gönderim epoch'u | bob epoch-1 − ilk gönderim (ms) | son epoch A / B | Ready A / B | canlı oturum A / B | ARQ retx A / B | app retx A / B | crypto retx A / B | ctx A / B | netem doğrulama | HÜKÜM |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 2 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 3 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 4 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 5 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 6 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 7 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 8 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 9 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 10 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+
+GATING (2): … / 10 tohum GEÇTİ (ölçüm tablosu; kapı ifadesi değildir).
+
+### 10.2 ek-kesinti — 60 s kesinti, aynı oturumda %100 metin teslimi (PTT ayrı)
+
+`same_session` = kesinti başından koşu sonuna iki düğümde yeni `Closed` yok, ikinci `Connected` yok,
+eşle oturumun epoch'u değişmemiş (`outage.session.<düğüm>.{start,end}`); "yalnız kesinti" = aynı ölçüt
+kesinti bitişine dek; "tutamaç + S1" = oturum tutamaçları ve S1 `Ready` / `Closed` sayıları da aynı.
+Sahip ölçütü = metin %100 ∧ `same_session`; PTT ayrı tablodadır ve ölçüte girmez.
+
+| tohum | sonuç | pencere (s) · sonu | metin teslim/gönderilen | metin %100 | kesinti (ms) | kesintide gönderilenden teslim | kesinti bitişinden teslim medyan / 95p / max (ms) | same_session | yalnız kesinti | tutamaç + S1 | epoch başı→sonu A / B | Connected başı→sonu A / B | Closed başı→sonu A / B | ARQ retx A / B | netem doğrulama | sahip ölçütü |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 2 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 3 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 4 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 5 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+
+Sahip ölçütü: … / 5 tohum (ölçüm özeti; kapı ifadesi değildir).
+
+PTT (ayrı):
+
+| tohum | demet alınan/verilen | sıralı+tam | PttOpened olayı | PttClosed olayı | bas→ilk ses (ms) | Ready A / B |
+|---|---|---|---|---|---|---|
+| 1 | … | … | … | … | … | … |
+| 2 | … | … | … | … | … | … |
+| 3 | … | … | … | … | … | … |
+| 4 | … | … | … | … | … | … |
+| 5 | … | … | … | … | … | … |
+
+### 10.3 ek-dosya-ptt (D3) — dosya sonucu, metin ve PTT tam pencere boyunca
+
+Pencere metinler + PTT tamamlanana VE dosya kesin sonuca ulaşana dek sürer (teslim + alındı ya da
+gönderen tarafta başarısızlık). Dosya sonucu ayrı alandadır (`file.outcome`: durum `delivered` /
+`failed` / `pending`, neden, zaman damgaları). Kol hükmü değişmedi: başarısız dosya kolu tamamlanmamış
+sayar.
+
+| tohum | sonuç | pencere (s) · sonu | TEXT teslim | gecikme medyan / 95p (ms) | dosya durumu | neden | gönderim→sonuç (ms) | gönderim→alındı (ms) | gönderim→FILE_RECEIPT (ms) | alıcı başarısızlığı | bayt-özdeş | PTT demet alınan/verilen | sıralı+tam | bas→ilk ses (ms) | netem doğrulama |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 2 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 3 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 4 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+| 5 | … | … | … | … | … | … | … | … | … | … | … | … | … | … | … |
+
+### 10.4 Takılı birim özeti (teşhis; hüküm değil)
+
+`int02_analyze.py` "Takılı birim özeti" tablosu (son sondadaki gönderen kurtarma görüntüsü ve alıcı
+sıralı teslim durumu; zaman çizelgesi `timeline.samples`, 5 s aralık, tavan 256 örnek).
+
+| tohum | kol | sonuç | teyitsiz birim A / B | gönderen A | gönderen B | alıcı reorder A | alıcı reorder B | zaman çizelgesi örneği |
+|---|---|---|---|---|---|---|---|---|
+| … | … | … | … | … | … | … | … | … |
+
+Yorum (koşudan sonra): …
+
+---
+
+## 11. Sonuç (koşudan sonra doldurulur)
 
 …
 

@@ -58,14 +58,17 @@ use client_core::transport::ReorderDiag;
 use kama_app::codec::PttCodec;
 use kama_app::messaging::MessengerError;
 use kama_app::ptt::PttError;
+use kama_contracts::handles::SessionHandle;
 use kama_contracts::s1::TransportError;
 use kama_node::{
-    CloseCause, FileHandle, FileStage, KamaNode, NodeError, NodeEvent, NodeListener, NodeMetrics,
-    NodeProbe, StreamHandle,
+    CloseCause, FileHandle, FileRef, FileStage, KamaNode, NodeError, NodeEvent, NodeListener,
+    NodeMetrics, NodeProbe, StreamHandle,
 };
 
 /// Çıktı şeması.
-pub const SCHEMA: &str = "int02-node-v1";
+/// v2 (CEVAP PAKETİ 4): `params.drain_s` → `params.window_s`; `window`, `file.outcome` ve
+/// `outage.session` / `outage.same_session` alanları.
+pub const SCHEMA: &str = "int02-node-v2";
 /// Provisioning cihaz adları (`kama-provision init --devices alice,bob`).
 pub const ALICE: &str = "alice";
 /// Bkz. [`ALICE`].
@@ -82,7 +85,7 @@ pub const MARK_DONE: &str = "KESINTI_BITTI";
 const DEFAULT_COUNT: u32 = 100;
 const DEFAULT_INTERVAL_MS: u64 = 100;
 const DEFAULT_CONNECT_TIMEOUT_S: u64 = 60;
-const DEFAULT_DRAIN_S: u64 = 120;
+const DEFAULT_WINDOW_S: u64 = 120;
 const DEFAULT_SETTLE_S: u64 = 10;
 /// PoC fotoğrafı ≈150 KB (PoC-KAPSAM-001 §2).
 const DEFAULT_FILE_BYTES: usize = 150 * 1024;
@@ -118,7 +121,7 @@ const MAX_LISTED: usize = 32;
 /// [K4G-05 TEŞHİS] Takılı birim zaman çizelgesi: varsayılan örnekleme aralığı (s; 0 = kapalı) ve
 /// SINIRLI dizi tavanı — dolunca yeni örnek alınmaz, düşen örnek sayılır (`timeline.dropped`).
 const DEFAULT_TIMELINE_EVERY_S: u64 = 5;
-const TIMELINE_CAP: usize = 128;
+const TIMELINE_CAP: usize = 256;
 /// Dosya içeriği deseni: asal modül (parça sınırlarıyla hizalanmaz).
 const FILE_PATTERN: usize = 251;
 
@@ -128,15 +131,18 @@ kullanım: int02_node --arm <kol> --seed <S> --profile <ad>
                   --alice-config <device-alice.json> --bob-config <device-bob.json>
                   --alice-data <dizin> --bob-data <dizin>
                   [--count N=100] [--interval-ms MS=100] [--connect-timeout-s S=60]
-                  [--drain-s S=120] [--settle-s S=10]
+                  [--window-s S=120] [--settle-s S=10]
                   [--file-bytes B=153600] [--bundles N=50] [--bundle-ms MS=40] [--bundle-bytes B=32]
                   [--scratch-dir <dizin>] [--sync-dir <dizin>] [--outage-wait-s S=180]
                   [--timeline-every-s S=5 (0 = kapalı)]
        int02_node --help
 
 kollar: gating1 | gating2 | gating6 | negatif | ek-dosya-ptt | ek-kesinti
-çıktı : stdout'a TEK satır JSON (şema int02-node-v1); hüküm scripts/netem/int02_analyze.py'de.
+çıktı : stdout'a TEK satır JSON (şema int02-node-v2); hüküm scripts/netem/int02_analyze.py'de.
+pencere (--window-s): son gönderimden (ek-kesinti kolunda kesinti bitiminden) sonra tamamlanma üst
+        sınırı — bütün kollar için tek parametre.
 ek-kesinti: --sync-dir zorunlu; KESINTI_BASLA / KESINTI_UYGULANDI / KESINTI_BITTI işaret dosyaları.
+        --outage-wait-s yalnız KESINTI_BITTI beklemesidir (kesinti uygulandıktan sonra); pencere DEĞİLDİR.
 ";
 
 // ── Yapılandırma ─────────────────────────────────────────────────────────────────────────────
@@ -198,8 +204,10 @@ pub struct Config {
     /// Ardışık TEXT gönderimleri arası.
     pub interval: Duration,
     pub connect_timeout: Duration,
-    /// Son gönderimden (kesinti kolunda kesinti bitişinden) sonra tamamlanma için azami bekleme.
-    pub drain: Duration,
+    /// PENCERE (CEVAP PAKETİ 4): son gönderimden (ek-kesinti kolunda kesinti bitiminden) sonra
+    /// tamamlanma üst sınırı — bütün kollar için tek parametre. Geri basınçta yeniden deneme de en çok
+    /// bu kadar sürer.
+    pub window: Duration,
     /// Tamamlanmadan sonra Transport'un sakinleşmesi (teyitsiz birim 0) için azami bekleme.
     pub settle: Duration,
     pub file_bytes: usize,
@@ -210,7 +218,8 @@ pub struct Config {
     pub scratch_dir: Option<PathBuf>,
     /// Kesinti eşgüdümü dizini (yalnız `ek-kesinti`).
     pub sync_dir: Option<PathBuf>,
-    /// Kesinti uygulandıktan sonra `KESINTI_BITTI` için azami bekleme.
+    /// YALNIZ ek-kesinti: kesinti uygulandıktan sonra `KESINTI_BITTI` işaretinin beklenme üst sınırı.
+    /// Pencere DEĞİLDİR (pencere kesinti bitiminden başlar: [`Config::window`]).
     pub outage_wait: Duration,
     /// [K4G-05 TEŞHİS] Takılı birim zaman çizelgesinin örnekleme aralığı (sıfır = kapalı).
     pub timeline_every: Duration,
@@ -239,7 +248,7 @@ impl Config {
             count: DEFAULT_COUNT,
             interval: Duration::from_millis(DEFAULT_INTERVAL_MS),
             connect_timeout: Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_S),
-            drain: Duration::from_secs(DEFAULT_DRAIN_S),
+            window: Duration::from_secs(DEFAULT_WINDOW_S),
             settle: Duration::from_secs(DEFAULT_SETTLE_S),
             file_bytes: DEFAULT_FILE_BYTES,
             bundles: DEFAULT_BUNDLES,
@@ -333,8 +342,8 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, String> {
     if let Some(v) = values.get("--connect-timeout-s") {
         cfg.connect_timeout = Duration::from_secs(number("--connect-timeout-s", v)?);
     }
-    if let Some(v) = values.get("--drain-s") {
-        cfg.drain = Duration::from_secs(number("--drain-s", v)?);
+    if let Some(v) = values.get("--window-s") {
+        cfg.window = Duration::from_secs(number("--window-s", v)?);
     }
     if let Some(v) = values.get("--settle-s") {
         cfg.settle = Duration::from_secs(number("--settle-s", v)?);
@@ -378,7 +387,7 @@ const KNOWN_FLAGS: [&str; 21] = [
     "--count",
     "--interval-ms",
     "--connect-timeout-s",
-    "--drain-s",
+    "--window-s",
     "--settle-s",
     "--file-bytes",
     "--bundles",
@@ -532,6 +541,14 @@ struct FileLog {
     received_size: u64,
     bytes_match: Option<bool>,
     failures: Vec<String>,
+    /// [CEVAP PAKETİ 4] Gönderen tarafın kesin başarısızlığı (`FileFailed { file: Outgoing(..) }`):
+    /// ilk olayın anı ve nedeni (`FileFailReason`, Debug).
+    sender_failed_at: Option<Instant>,
+    sender_failed_reason: Option<String>,
+    /// Alıcı tarafın başarısızlığı (`FileFailed { file: Incoming(..) }`): ilk olayın anı ve nedeni.
+    /// Tek başına kesin sonuç DEĞİLDİR (gönderen alındıyla öğrenir; kesin sonuç gönderenindir).
+    receiver_failed_at: Option<Instant>,
+    receiver_failed_reason: Option<String>,
 }
 
 #[derive(Default)]
@@ -571,6 +588,34 @@ struct OutageLog {
     requested_at: Option<Instant>,
     applied_at: Option<Instant>,
     restored_at: Option<Instant>,
+    /// [CEVAP PAKETİ 4] "Aynı oturum" kanıtı: kesinti başı (uygulandı), kesinti bitişi (profil geri
+    /// kuruldu) ve koşu sonu (son sonda) işaretleri, düğüm başına (`Side::idx`).
+    marks_start: Option<[SessionMark; 2]>,
+    marks_restore: Option<[SessionMark; 2]>,
+    marks_end: Option<[SessionMark; 2]>,
+}
+
+/// [CEVAP PAKETİ 4] Bir düğümün eşle oturumuna dair işaret (kesinti başı / bitişi / koşu sonu).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SessionMark {
+    /// Eşle güncel oturumun gönderim epoch'u (`NodeMetrics::connect_state`).
+    epoch: Option<u8>,
+    /// O ana dek İŞLENMİŞ düğüm olayları: `Connected` ve `Closed` (+ `ConnectAbandoned`).
+    connected: u64,
+    closed: u64,
+    /// Sondanın S1 olay sayıları (`Ready`, `Closed`).
+    s1_ready: Option<u64>,
+    s1_closed: Option<u64>,
+    /// Eşle ucu açık oturumların tutamaçları (opak; yalnız eşitlik ve Debug biçimi).
+    sessions: Vec<SessionHandle>,
+}
+
+/// [CEVAP PAKETİ 4] Pencere kaydı: başladığı an (çapa), bittiği an ve nasıl bittiği.
+#[derive(Default)]
+struct WindowLog {
+    anchor_at: Option<Instant>,
+    ended_at: Option<Instant>,
+    ended_by: Option<&'static str>,
 }
 
 /// Koşu sonucu.
@@ -627,6 +672,13 @@ pub struct Report {
     pub file_ok: Option<bool>,
     pub ptt_ok: Option<bool>,
     pub quiescent: bool,
+    /// [CEVAP PAKETİ 4] Dosya kolunun kesin sonucu: `"delivered"` (alındı + FILE_RECEIPT(ok)),
+    /// `"failed"` (gönderen tarafta başarısızlık), `"pending"` (pencere sonuçsuz bitti); başka kolda
+    /// `None`.
+    pub file_status: Option<&'static str>,
+    /// [CEVAP PAKETİ 4] Kesinti kolunun "aynı oturum" türevi (bkz. `outage.same_session`); başka
+    /// kolda `None`.
+    pub outage_same_session: Option<bool>,
     /// Stdout'a basılan satır.
     pub json: String,
 }
@@ -653,6 +705,7 @@ struct Harness {
     file: FileLog,
     ptt: PttLog,
     outage: OutageLog,
+    window: WindowLog,
     next_sample: Instant,
     connect_requested_at: Option<Instant>,
     notes: Vec<String>,
@@ -680,6 +733,7 @@ impl Harness {
             file: FileLog::default(),
             ptt: PttLog::default(),
             outage: OutageLog::default(),
+            window: WindowLog::default(),
             next_sample: t0,
             connect_requested_at: None,
             notes: Vec::new(),
@@ -745,8 +799,21 @@ impl Harness {
                 self.await_outage_end()?;
             }
         }
-        let deadline = Instant::now() + self.cfg.drain;
-        Ok(self.wait_for(deadline, Self::settled_or_hopeless) && self.complete())
+        // PENCERE: son gönderimden (ek-kesinti kolunda kesinti bitiminden — `await_outage_end`
+        // döndükten) sonra tamamlanma üst sınırı; bütün kollar.
+        let anchor = Instant::now();
+        self.window.anchor_at = Some(anchor);
+        let settled = self.wait_for(anchor + self.cfg.window, Self::window_done);
+        self.window.ended_at = Some(Instant::now());
+        let complete = self.complete();
+        self.window.ended_by = Some(if complete {
+            "complete"
+        } else if settled {
+            "settled"
+        } else {
+            "deadline"
+        });
+        Ok(complete)
     }
 
     /// Bağlantı: glare kolunda iki iş parçacığından engelle eşzamanlı; diğerlerinde alice →
@@ -821,7 +888,7 @@ impl Harness {
 
     fn send_text(&mut self, side: Side, index: u32) -> Result<(), String> {
         let text = self.text_of(side, index);
-        let deadline = Instant::now() + self.cfg.drain;
+        let deadline = Instant::now() + self.cfg.window;
         loop {
             let node = self.node(side)?;
             let epoch = peer_epoch(&node.metrics(), side.peer().name());
@@ -880,7 +947,7 @@ impl Harness {
     }
 
     fn ptt_open(&mut self) -> Result<StreamHandle, String> {
-        let deadline = Instant::now() + self.cfg.drain;
+        let deadline = Instant::now() + self.cfg.window;
         let stream = loop {
             let node = self.node(Side::Alice)?;
             match node.ptt_open(BOB, PttCodec::Lyra, self.cfg.bundle_ms) {
@@ -899,7 +966,7 @@ impl Harness {
     /// Demetleri `--bundle-ms` aralıkla verir; demet yükünün ilk 4 baytı sırasıdır.
     fn push_bundles(&mut self, stream: StreamHandle, range: Range<u32>) -> Result<(), String> {
         let step = Duration::from_millis(u64::from(self.cfg.bundle_ms));
-        let deadline = Instant::now() + self.cfg.drain;
+        let deadline = Instant::now() + self.cfg.window;
         let mut next = Instant::now();
         for index in range {
             self.pump_until(next);
@@ -952,6 +1019,7 @@ impl Harness {
             ));
         }
         self.outage.applied_at = Some(Instant::now());
+        self.outage.marks_start = Some(self.session_marks());
         Ok(())
     }
 
@@ -966,7 +1034,75 @@ impl Harness {
         }
         self.outage.restored_at = Some(Instant::now());
         eprintln!("{MARK_DONE} görüldü");
+        self.outage.marks_restore = Some(self.session_marks());
         Ok(())
+    }
+
+    /// [CEVAP PAKETİ 4] İki düğümün "aynı oturum" işaretleri. Sayımlar o ana dek İŞLENMİŞ
+    /// olaylardandır: kanalda bekleyen olaylar önce işlenir.
+    fn session_marks(&mut self) -> [SessionMark; 2] {
+        while let Ok(stamped) = self.rx.try_recv() {
+            self.on_event(stamped);
+        }
+        Side::BOTH.map(|side| self.session_mark(side))
+    }
+
+    fn session_mark(&self, side: Side) -> SessionMark {
+        let log = &self.logs[side.idx()];
+        let peer = side.peer().name();
+        let Some(node) = self.nodes[side.idx()].as_ref() else {
+            return SessionMark::default();
+        };
+        let probe = node.probe_for_test().ok();
+        SessionMark {
+            epoch: peer_epoch(&node.metrics(), peer),
+            connected: log.connected,
+            closed: log.closed_session + log.abandoned,
+            s1_ready: probe.as_ref().map(|p| p.events.ready),
+            s1_closed: probe.as_ref().map(|p| p.events.closed),
+            sessions: probe
+                .map(|p| {
+                    p.sessions
+                        .iter()
+                        .filter(|s| s.peer_id.as_deref() == Some(peer))
+                        .map(|s| s.session)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    /// [CEVAP PAKETİ 4] `same_session`: kesinti başından `end` işaretine dek iki düğümde de yeni
+    /// `Closed` / `ConnectAbandoned` yok, ikinci `Connected` yok, eşle oturumun epoch'u (var ve)
+    /// değişmemiş. `end` koşu sonu ise ölçüt teslimleri de kapsar; kesinti bitişi ise yalnız kesinti
+    /// süresini.
+    fn same_session_until(&self, end: Option<&[SessionMark; 2]>) -> Option<bool> {
+        let (Some(start), Some(end)) = (self.outage.marks_start.as_ref(), end) else {
+            return None;
+        };
+        Some(start.iter().zip(end.iter()).all(|(s, e)| {
+            s.epoch.is_some()
+                && e.epoch == s.epoch
+                && e.connected == s.connected
+                && e.closed == s.closed
+        }))
+    }
+
+    /// Ek kanıt: oturum tutamaçları ve S1 `Ready` / `Closed` sayıları kesinti başından koşu sonuna
+    /// değişmedi (ve eşle açık oturum vardı).
+    fn same_session_handles(&self) -> Option<bool> {
+        let (Some(start), Some(end)) = (
+            self.outage.marks_start.as_ref(),
+            self.outage.marks_end.as_ref(),
+        ) else {
+            return None;
+        };
+        Some(start.iter().zip(end.iter()).all(|(s, e)| {
+            !s.sessions.is_empty()
+                && e.sessions == s.sessions
+                && e.s1_ready == s.s1_ready
+                && e.s1_closed == s.s1_closed
+        }))
     }
 
     // ── [K4G-05 TEŞHİS] Takılı birim zaman çizelgesi ──
@@ -1164,10 +1300,24 @@ impl Harness {
                 }
             }
             NodeEvent::FileFailed { file, reason, .. } => {
+                let note = format!("{}: {file:?} {reason:?}", side.name());
+                match file {
+                    FileRef::Outgoing(handle) if self.file.handle == Some(handle) => {
+                        if self.file.sender_failed_at.is_none() {
+                            self.file.sender_failed_at = Some(at);
+                            self.file.sender_failed_reason = Some(format!("{reason:?}"));
+                        }
+                    }
+                    FileRef::Incoming(_) => {
+                        if self.file.receiver_failed_at.is_none() {
+                            self.file.receiver_failed_at = Some(at);
+                            self.file.receiver_failed_reason = Some(format!("{reason:?}"));
+                        }
+                    }
+                    FileRef::Outgoing(_) => {}
+                }
                 if self.file.failures.len() < MAX_LISTED {
-                    self.file
-                        .failures
-                        .push(format!("{}: {file:?} {reason:?}", side.name()));
+                    self.file.failures.push(note);
                 }
             }
             NodeEvent::PttOpened { .. } => {
@@ -1218,9 +1368,34 @@ impl Harness {
         self.file.delivered_at.is_some() && self.file.received_at.is_some()
     }
 
-    /// Beklemenin sonu: tamamlandı ya da artık tamamlanamaz (dosya başarısız).
-    fn settled_or_hopeless(&self) -> bool {
-        self.complete() || (self.cfg.arm == Arm::EkDosyaPtt && !self.file.failures.is_empty())
+    /// [CEVAP PAKETİ 4] Dosya kesin sonuca ulaştı: teslim + alındı ya da gönderen tarafta başarısızlık.
+    fn file_terminal(&self) -> bool {
+        self.file_done() || self.file.sender_failed_at.is_some()
+    }
+
+    /// [CEVAP PAKETİ 4] Dosyanın kesin sonucu (bkz. `Report::file_status`).
+    fn file_status(&self) -> &'static str {
+        if self.file_done() {
+            "delivered"
+        } else if self.file.sender_failed_at.is_some() {
+            "failed"
+        } else {
+            "pending"
+        }
+    }
+
+    /// Pencerenin erken sonu. Kol tamamlandıysa biter. Dosya kolunda ayrıca: metinler + PTT
+    /// tamamlandı VE dosya kesin sonuca ulaştı (başarısızlık dahil) — metin ve PTT sonuçları
+    /// dosyanın başarısızlığından bağımsız olarak tam pencere boyunca ölçülür. Kol hükmü değişmez:
+    /// başarısız dosya kolu tamamlanmamış sayar ([`Harness::complete`]).
+    fn window_done(&self) -> bool {
+        if self.complete() {
+            return true;
+        }
+        self.cfg.arm == Arm::EkDosyaPtt
+            && self.flows[Side::Alice.idx()].done(self.cfg.count)
+            && self.ptt.done()
+            && self.file_terminal()
     }
 
     /// Transport sakinleşene (iki düğümde teyitsiz birim 0) ya da `--settle-s` dolana dek bekler.
@@ -1260,6 +1435,9 @@ impl Harness {
             self.on_event(stamped);
         }
         self.sample_epochs(Instant::now());
+        if self.cfg.arm == Arm::EkKesinti && have_nodes && self.outage.marks_start.is_some() {
+            self.outage.marks_end = Some(self.session_marks());
+        }
         let mut probes: [Option<NodeProbe>; 2] = [None, None];
         let mut metrics: [Option<NodeMetrics>; 2] = [None, None];
         self.final_probe_at = Some(Instant::now());
@@ -1296,6 +1474,12 @@ impl Harness {
             .then(|| self.file_done() && self.file.bytes_match == Some(true));
         let ptt_ok = matches!(self.cfg.arm, Arm::EkDosyaPtt | Arm::EkKesinti)
             .then(|| self.ptt.done() && self.ptt.in_order());
+        let file_status = (self.cfg.arm == Arm::EkDosyaPtt).then(|| self.file_status());
+        let outage_same_session = if self.cfg.arm == Arm::EkKesinti {
+            self.same_session_until(self.outage.marks_end.as_ref())
+        } else {
+            None
+        };
         Report {
             outcome,
             flows,
@@ -1304,6 +1488,8 @@ impl Harness {
             file_ok,
             ptt_ok,
             quiescent,
+            file_status,
+            outage_same_session,
             json,
         }
     }
@@ -1367,7 +1553,7 @@ impl Harness {
             ("count", Value::U(u64::from(cfg.count))),
             ("interval_ms", Value::F(ms(cfg.interval))),
             ("connect_timeout_s", Value::U(cfg.connect_timeout.as_secs())),
-            ("drain_s", Value::U(cfg.drain.as_secs())),
+            ("window_s", Value::U(cfg.window.as_secs())),
             ("settle_s", Value::U(cfg.settle.as_secs())),
             ("file_bytes", Value::U(cfg.file_bytes as u64)),
             ("bundles", Value::U(u64::from(cfg.bundles))),
@@ -1396,6 +1582,7 @@ impl Harness {
             ("result", Value::S(outcome.name().to_owned())),
             ("error", error),
             ("params", params),
+            ("window", self.window_json()),
             ("connect_requested_ms", self.at(self.connect_requested_at)),
             ("flows", flows),
             ("nodes", nodes),
@@ -1548,6 +1735,66 @@ impl Harness {
                 "failures",
                 Value::A(f.failures.iter().map(|s| Value::S(s.clone())).collect()),
             ),
+            ("outcome", self.file_outcome_json()),
+        ])
+    }
+
+    /// [CEVAP PAKETİ 4] Dosyanın kesin sonucu: durum, neden ve zaman damgaları (`t0`'a göre ms).
+    /// Kesin sonuç gönderenindir: teslim = alıcıda `FileReceived` + gönderende
+    /// `FileProgress::Delivered` (FILE_RECEIPT(ok)); başarısızlık = gönderende ilk `FileFailed`.
+    fn file_outcome_json(&self) -> Value {
+        let f = &self.file;
+        let status = self.file_status();
+        let (reason, at) = match status {
+            "delivered" => (Value::Null, f.received_at.max(f.delivered_at)),
+            "failed" => (
+                f.sender_failed_reason.clone().map_or(Value::Null, Value::S),
+                f.sender_failed_at,
+            ),
+            _ => (Value::Null, None),
+        };
+        obj(vec![
+            ("status", Value::S(status.to_owned())),
+            ("reason", reason),
+            ("at_ms", self.at(at)),
+            ("sent_ms", self.at(f.sent_at)),
+            ("received_ms", self.at(f.received_at)),
+            ("delivered_ms", self.at(f.delivered_at)),
+            ("sender_failed_ms", self.at(f.sender_failed_at)),
+            (
+                "receiver_failed_reason",
+                f.receiver_failed_reason
+                    .clone()
+                    .map_or(Value::Null, Value::S),
+            ),
+            ("receiver_failed_ms", self.at(f.receiver_failed_at)),
+        ])
+    }
+
+    /// [CEVAP PAKETİ 4] Pencere: süre, çapa (son gönderim / kesinti bitimi), çapa ve bitiş anı
+    /// (`t0`'a göre ms) ve nasıl bittiği (`complete` = kol tamamlandı; `settled` = dosya kolunda
+    /// metin + PTT tamam ve dosya başarısızlıkla kesin sonuçta; `deadline` = süre doldu).
+    fn window_json(&self) -> Value {
+        let w = &self.window;
+        let anchor = if self.cfg.arm == Arm::EkKesinti {
+            "outage_end"
+        } else {
+            "last_send"
+        };
+        let length = match (w.anchor_at, w.ended_at) {
+            (Some(a), Some(e)) => Value::F(ms(e.saturating_duration_since(a))),
+            _ => Value::Null,
+        };
+        obj(vec![
+            ("s", Value::U(self.cfg.window.as_secs())),
+            ("anchor", Value::S(anchor.to_owned())),
+            ("anchor_ms", self.at(w.anchor_at)),
+            ("ended_ms", self.at(w.ended_at)),
+            ("used_ms", length),
+            (
+                "ended_by",
+                w.ended_by.map_or(Value::Null, |e| Value::S(e.to_owned())),
+            ),
         ])
     }
 
@@ -1611,6 +1858,19 @@ impl Harness {
             (Some(a), Some(r)) => Value::F(ms(r.saturating_duration_since(a))),
             _ => Value::Null,
         };
+        let marks = |side: Side| {
+            let mark =
+                |m: Option<&[SessionMark; 2]>| m.map_or(Value::Null, |m| mark_json(&m[side.idx()]));
+            obj(vec![
+                ("start", mark(o.marks_start.as_ref())),
+                ("restore", mark(o.marks_restore.as_ref())),
+                ("end", mark(o.marks_end.as_ref())),
+            ])
+        };
+        let opt_bool = |b: Option<bool>| b.map_or(Value::Null, Value::Bool);
+        // Metin teslimi tam mı: gönderilen = teslim = `count` (alındılar ayrı ölçülür).
+        let texts_complete =
+            flow.sent.len() == self.cfg.count as usize && flow.delivered.len() == flow.sent.len();
         obj(vec![
             ("requested_ms", self.at(o.requested_at)),
             ("applied_ms", self.at(o.applied_at)),
@@ -1622,6 +1882,25 @@ impl Harness {
                 Value::U(delivered_during as u64),
             ),
             ("delivery_after_restore_ms", summary(after_restore)),
+            ("texts_sent", Value::U(flow.sent.len() as u64)),
+            ("texts_delivered", Value::U(flow.delivered.len() as u64)),
+            ("texts_complete", Value::Bool(texts_complete)),
+            (
+                "session",
+                obj(vec![(ALICE, marks(Side::Alice)), (BOB, marks(Side::Bob))]),
+            ),
+            (
+                "same_session",
+                opt_bool(self.same_session_until(o.marks_end.as_ref())),
+            ),
+            (
+                "same_session_outage_only",
+                opt_bool(self.same_session_until(o.marks_restore.as_ref())),
+            ),
+            (
+                "same_session_handles",
+                opt_bool(self.same_session_handles()),
+            ),
         ])
     }
 }
@@ -1864,6 +2143,26 @@ fn probe_json(p: &NodeProbe, at: Instant) -> Value {
 }
 
 // ── [K4G-05 TEŞHİS] Takılı birim alanları ────────────────────────────────────────────────────
+
+/// [CEVAP PAKETİ 4] "Aynı oturum" işareti.
+fn mark_json(m: &SessionMark) -> Value {
+    obj(vec![
+        ("epoch", opt_u8(m.epoch)),
+        ("connected_events", Value::U(m.connected)),
+        ("closed_events", Value::U(m.closed)),
+        ("s1_ready", opt_u64(m.s1_ready)),
+        ("s1_closed", opt_u64(m.s1_closed)),
+        (
+            "session_ids",
+            Value::A(
+                m.sessions
+                    .iter()
+                    .map(|h| Value::S(format!("{h:?}")))
+                    .collect(),
+            ),
+        ),
+    ])
+}
 
 fn opt_u64(v: Option<u64>) -> Value {
     v.map_or(Value::Null, Value::U)

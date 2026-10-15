@@ -11,7 +11,7 @@
 //! parçacığıyla taklit edilir (gerçek kesinti YOK) — yalnız eşgüdüm yolunun ve PTT/metin akışının
 //! uçtan uca çalıştığı sınanır.
 //!
-//! Zamanlama: her bekleme bir olayın ÜST SINIRIDIR (düzeneğin `--drain-s` / `--connect-timeout-s`
+//! Zamanlama: her bekleme bir olayın ÜST SINIRIDIR (düzeneğin `--window-s` / `--connect-timeout-s`
 //! karşılıkları); kesinti taklidindeki kısa uyku yalnız işaret dosyası yoklamasıdır.
 
 #[path = "../examples/int02_node.rs"]
@@ -127,7 +127,7 @@ fn smoke(arm: Arm, root: &Path) -> Config {
     cfg.count = COUNT;
     cfg.interval = Duration::from_millis(10);
     cfg.connect_timeout = Duration::from_secs(30);
-    cfg.drain = Duration::from_secs(60);
+    cfg.window = Duration::from_secs(60);
     cfg.settle = Duration::from_secs(10);
     cfg.file_bytes = 8 * 1024;
     cfg.bundles = 6;
@@ -150,7 +150,7 @@ fn assert_json_line(report: &Report, arm: Arm) {
     let line = &report.json;
     assert!(!line.contains('\n'), "tek satır: {line}");
     assert!(line.starts_with('{') && line.ends_with('}'), "{line}");
-    assert!(line.contains(r#""schema":"int02-node-v1""#), "{line}");
+    assert!(line.contains(r#""schema":"int02-node-v2""#), "{line}");
     assert!(
         line.contains(&format!(r#""arm":"{}""#, arm.name())),
         "{line}"
@@ -287,6 +287,16 @@ fn ek_file_and_ptt_clip_over_one_session() {
     assert_flow(&report, Side::Alice);
     assert_eq!(report.file_ok, Some(true), "{}", report.json);
     assert_eq!(report.ptt_ok, Some(true), "{}", report.json);
+    // [CEVAP PAKETİ 4] Dosyanın kesin sonucu ayrı alanda; pencere son gönderimden başlar ve kol
+    // tamamlanınca biter.
+    assert_eq!(report.file_status, Some("delivered"), "{}", report.json);
+    for field in [
+        r#""outcome":{"status":"delivered","reason":null"#,
+        r#""anchor":"last_send""#,
+        r#""ended_by":"complete""#,
+    ] {
+        assert!(report.json.contains(field), "{field}: {}", report.json);
+    }
 }
 
 /// Sürücünün işaret dosyası eşgüdümünü taklit eder: `KESINTI_BASLA` görülünce
@@ -320,6 +330,18 @@ fn ek_outage_coordination_path_runs_end_to_end() {
     assert_clean(&report, Arm::EkKesinti);
     assert_flow(&report, Side::Alice);
     assert_eq!(report.ptt_ok, Some(true), "{}", report.json);
+    // [CEVAP PAKETİ 4] "Aynı oturum" kanıtı (kesinti başı → koşu sonu) ve metin teslimi ayrı
+    // alanlarda; pencere kesinti bitiminden başlar.
+    assert_eq!(report.outage_same_session, Some(true), "{}", report.json);
+    for field in [
+        r#""texts_complete":true"#,
+        r#""same_session":true"#,
+        r#""same_session_outage_only":true"#,
+        r#""same_session_handles":true"#,
+        r#""anchor":"outage_end""#,
+    ] {
+        assert!(report.json.contains(field), "{field}: {}", report.json);
+    }
 }
 
 /// Komut satırı: zorunlu bayraklar, bilinmeyen / tekrarlı bayrak ve kesinti kolunun `--sync-dir`
@@ -353,6 +375,16 @@ fn command_line_is_parsed_without_clap() {
         }
         other => panic!("ayrıştırılmalıydı: {other:?}"),
     }
+    // [CEVAP PAKETİ 4] Tek pencere parametresi `--window-s`; eski `--drain-s` yok.
+    let mut window = base.clone();
+    window.extend(["--window-s".to_owned(), "600".to_owned()]);
+    match int02_node::parse_args(&window) {
+        Ok(int02_node::Parsed::Run(cfg)) => assert_eq!(cfg.window, Duration::from_secs(600)),
+        other => panic!("ayrıştırılmalıydı: {other:?}"),
+    }
+    let mut drain = base.clone();
+    drain.extend(["--drain-s".to_owned(), "600".to_owned()]);
+    assert!(int02_node::parse_args(&drain).is_err(), "--drain-s kalktı");
     let mut unknown = base.clone();
     unknown.extend(["--nope".to_owned(), "1".to_owned()]);
     assert!(int02_node::parse_args(&unknown).is_err());

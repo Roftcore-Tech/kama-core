@@ -15,6 +15,9 @@
 # sürücü bunu görünce `tc qdisc change … netem loss 100%` uygular, `KESINTI_UYGULANDI` yaratır, 60 s
 # bekler, profili (aynı tohumla) geri kurar ve `KESINTI_BITTI` yaratır. Anlar sürücü kaydına yazılır.
 #
+# PENCERE (`--window`, CEVAP PAKETİ 4): son gönderimden (ek-kesinti kolunda kesinti bitiminden) sonra
+# tamamlanma üst sınırı — bütün kollar için TEK parametre (örneğin `--window-s`'i).
+#
 # Bu betik derleme YAPMAZ; ikilileri önceden derleyin (bkz. --help).
 set -euo pipefail
 
@@ -31,10 +34,10 @@ PING_COUNT=20
 PING_INTERVAL=0.2
 PING_WAIT=2
 # Kol başına süre bütçesi (s; `timeout`): örneğin kendi üst sınırlarının (connect 60 + gönderim +
-# boşaltma 120 + sakinleşme 10) üstünde pay.
+# pencere 120 + sakinleşme 10) üstünde pay. `--window` / `--settle-s` / `--outage-wait-s` verilirse
+# bütçeye eklenir.
 BUDGET_DEFAULT=900
 BUDGET_OUTAGE=1200
-NEGATIVE_DRAIN_S_DEFAULT=30
 
 usage() {
   cat <<EOF
@@ -49,11 +52,13 @@ kullanım: scripts/netem/int02_run.sh [seçenekler]
   --provision YOL       kama-provision ikilisi (varsayılan: <bin>/kama-provision)
   --count N             yön başına TEXT (örneğe iletilir; varsayılan örnekte 100)
   --interval-ms MS      TEXT aralığı (örneğe iletilir; varsayılan örnekte 100)
-  --negative-drain-s S  negatif kolun boşaltma üst sınırı (varsayılan: $NEGATIVE_DRAIN_S_DEFAULT)
-  --drain-s S           son gönderimden sonra tamamlanma üst sınırı (örneğe iletilir; verilmezse
-                        örneğin varsayılanı 120; negatif kol --negative-drain-s kullanır)
-  --outage-wait-s S     kesinti uygulandıktan sonra KESINTI_BITTI için azami bekleme (örneğe
-                        iletilir; verilmezse örneğin varsayılanı 180)
+  --window S            pencere: son gönderimden (ek-kesinti kolunda kesinti bitiminden) sonra
+                        tamamlanma üst sınırı (s), bütün kollar için tek parametre (örneğin
+                        --window-s'i; verilmezse örneğin varsayılanı 120).
+                        Not: negatif kol (kurtarma kapalı) tamamlanmaz, pencerenin tamamını bekler;
+                        kısa pencereyle ayrı koşun (ör. --arms negatif --window 30).
+  --outage-wait-s S     YALNIZ ek-kesinti: kesinti uygulandıktan sonra KESINTI_BITTI işaretinin
+                        beklenme üst sınırı — pencere DEĞİLDİR (verilmezse örneğin varsayılanı 180)
   --settle-s S          tamamlanmadan sonra Transport sakinleşmesi üst sınırı (örneğe iletilir;
                         verilmezse örneğin varsayılanı 10)
   --keep-work           geçici çalışma dizinlerini silme
@@ -65,7 +70,11 @@ derleme (orkestratör):
   cargo build --release -p kama-integration --example int02_node
   cargo build --release -p kama-provision
 tek tohum : scripts/netem/int02_run.sh --seeds 1 --arms gating1
-5 tohum   : scripts/netem/int02_run.sh --seeds "1 2 3 4 5" --arms "gating1 gating2 gating6 negatif"
+5 tohum   : scripts/netem/int02_run.sh --seeds "1 2 3 4 5" --arms "gating1 gating2 gating6"
+negatif   : scripts/netem/int02_run.sh --seeds "1 2 3 4 5" --arms negatif --window 30
+yeniden koşu (CEVAP PAKETİ 4):
+  scripts/netem/int02_run.sh --seeds "1 2 3 4 5 6 7 8 9 10" --arms gating2 --window 600
+  scripts/netem/int02_run.sh --seeds "1 2 3 4 5" --arms "ek-kesinti ek-dosya-ptt" --window 600
 analiz    : python3 scripts/netem/int02_analyze.py <out>
 EOF
 }
@@ -107,18 +116,16 @@ inner() {
   if [ -n "${INT02_COUNT:-}" ]; then args+=(--count "$INT02_COUNT"); fi
   if [ -n "${INT02_INTERVAL_MS:-}" ]; then args+=(--interval-ms "$INT02_INTERVAL_MS"); fi
   if [ -n "${INT02_SETTLE_S:-}" ]; then args+=(--settle-s "$INT02_SETTLE_S"); fi
+  # PENCERE: bütün kollara aynı parametre.
+  if [ -n "${INT02_WINDOW_S:-}" ]; then args+=(--window-s "$INT02_WINDOW_S"); fi
   local budget="$BUDGET_DEFAULT"
-  case "$arm" in
-    negatif) args+=(--drain-s "$INT02_NEGATIVE_DRAIN_S") ;;
-    *) if [ -n "${INT02_DRAIN_S:-}" ]; then args+=(--drain-s "$INT02_DRAIN_S"); fi ;;
-  esac
   if [ "$arm" = "ek-kesinti" ]; then
     args+=(--sync-dir "$work/sync")
     budget="$BUDGET_OUTAGE"
     if [ -n "${INT02_OUTAGE_WAIT_S:-}" ]; then args+=(--outage-wait-s "$INT02_OUTAGE_WAIT_S"); fi
   fi
   # Uzatılmış üst sınırlar verildiyse süre bütçesi de o kadar uzar (örneğin kendi sınırları geçerli kalsın).
-  budget=$(( budget + ${INT02_DRAIN_S:-0} + ${INT02_SETTLE_S:-0} + ${INT02_OUTAGE_WAIT_S:-0} ))
+  budget=$(( budget + ${INT02_WINDOW_S:-0} + ${INT02_SETTLE_S:-0} + ${INT02_OUTAGE_WAIT_S:-0} ))
 
   local t_run; t_run="$(date +%s.%N)"
   local t_apply="" t_restore="" exit_code=0
@@ -237,7 +244,7 @@ if line:
         record = None
         driver["parse_error"] = str(e)
 if not isinstance(record, dict):
-    record = {"schema": "int02-node-v1", "arm": env["INT02_ARM"], "seed": int(env["INT02_SEED"]),
+    record = {"schema": "int02-node-v2", "arm": env["INT02_ARM"], "seed": int(env["INT02_SEED"]),
               "profile": env["INT02_PROFILE"], "result": "error",
               "error": "sürücü: örnek JSON satırı üretmedi (çıkış %s)" % env["INT02_EXIT"]}
 record["driver"] = driver
@@ -264,8 +271,7 @@ EXAMPLE=""
 PROVISION=""
 COUNT=""
 INTERVAL_MS=""
-NEGATIVE_DRAIN_S="$NEGATIVE_DRAIN_S_DEFAULT"
-DRAIN_S=""
+WINDOW_S=""
 OUTAGE_WAIT_S=""
 SETTLE_S=""
 KEEP=0
@@ -281,8 +287,7 @@ while [ $# -gt 0 ]; do
     --provision) PROVISION="${2:?--provision değer ister}"; shift 2 ;;
     --count) COUNT="${2:?--count değer ister}"; shift 2 ;;
     --interval-ms) INTERVAL_MS="${2:?--interval-ms değer ister}"; shift 2 ;;
-    --negative-drain-s) NEGATIVE_DRAIN_S="${2:?--negative-drain-s değer ister}"; shift 2 ;;
-    --drain-s) DRAIN_S="${2:?--drain-s değer ister}"; shift 2 ;;
+    --window) WINDOW_S="${2:?--window değer ister}"; shift 2 ;;
     --outage-wait-s) OUTAGE_WAIT_S="${2:?--outage-wait-s değer ister}"; shift 2 ;;
     --settle-s) SETTLE_S="${2:?--settle-s değer ister}"; shift 2 ;;
     --keep-work) KEEP=1; shift ;;
@@ -307,7 +312,7 @@ for seed in $SEEDS; do
     ''|*[!0-9]*) die "tohum negatif olmayan tamsayı olmalı: $seed" ;;
   esac
 done
-for value in "$NEGATIVE_DRAIN_S" "$DRAIN_S" "$OUTAGE_WAIT_S" "$SETTLE_S"; do
+for value in "$WINDOW_S" "$OUTAGE_WAIT_S" "$SETTLE_S"; do
   case "$value" in
     *[!0-9]*) die "süre seçenekleri negatif olmayan tamsayı (s) olmalı: $value" ;;
   esac
@@ -340,7 +345,8 @@ if [ "$DRY" = 1 ]; then
   echo "profil     : $PROFILE_NAME = netem $NETEM_ARGS seed <S> (dev lo, bir kez)"
   echo "tohumlar   : $SEEDS"
   echo "kollar     : $ARMS"
-  echo "üst sınırlar: drain=${DRAIN_S:-örnek varsayılanı} outage-wait=${OUTAGE_WAIT_S:-örnek varsayılanı} settle=${SETTLE_S:-örnek varsayılanı} negatif-drain=$NEGATIVE_DRAIN_S"
+  echo "pencere    : ${WINDOW_S:-örnek varsayılanı (120)} s — son gönderimden (ek-kesinti: kesinti bitiminden) sonra tamamlanma üst sınırı, bütün kollar"
+  echo "diğer      : outage-wait=${OUTAGE_WAIT_S:-örnek varsayılanı (180)} (yalnız KESINTI_BITTI beklemesi) settle=${SETTLE_S:-örnek varsayılanı (10)}"
   for seed in $SEEDS; do
     for arm in $ARMS; do
       echo "  [s$seed $arm] unshare -rn: ip link set lo up; kama-provision init --out <work>/authority" \
@@ -372,15 +378,29 @@ for seed in $SEEDS; do
     echo "→ s$seed $arm (çalışma: $work)"
     rc=0
     INT02_EXAMPLE="$EXAMPLE" INT02_PROVISION="$PROVISION" INT02_COUNT="$COUNT" \
-    INT02_INTERVAL_MS="$INTERVAL_MS" INT02_NEGATIVE_DRAIN_S="$NEGATIVE_DRAIN_S" \
-    INT02_DRAIN_S="$DRAIN_S" INT02_OUTAGE_WAIT_S="$OUTAGE_WAIT_S" INT02_SETTLE_S="$SETTLE_S" \
+    INT02_INTERVAL_MS="$INTERVAL_MS" INT02_WINDOW_S="$WINDOW_S" \
+    INT02_OUTAGE_WAIT_S="$OUTAGE_WAIT_S" INT02_SETTLE_S="$SETTLE_S" \
       unshare -rn bash "$SELF" __inner "$seed" "$arm" "$work" "$outfile" || rc=$?
     if [ "$rc" != 0 ]; then
       echo "  ! iç kip çıkışı $rc (kayıt: $outfile varsa ona bakın; çalışma dizini korunuyor: $work)"
       continue
     fi
     if [ "$KEEP" = 0 ]; then rm -rf "$work"; fi
-    python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("  sonuç:", r.get("result"), "| hata:", r.get("error"))' "$outfile" || true
+    python3 - "$outfile" <<'PY' || true
+import json
+import sys
+
+r = json.load(open(sys.argv[1], encoding="utf-8"))
+line = ["  sonuç:", str(r.get("result")), "| pencere:", str((r.get("window") or {}).get("ended_by"))]
+if r.get("arm") == "ek-kesinti":
+    o = r.get("outage") or {}
+    line += ["| metin tam:", str(o.get("texts_complete")), "| same_session:", str(o.get("same_session"))]
+if r.get("arm") == "ek-dosya-ptt":
+    f = ((r.get("file") or {}).get("outcome") or {})
+    line += ["| dosya:", str(f.get("status")), str(f.get("reason") or "")]
+line += ["| hata:", str(r.get("error"))]
+print(" ".join(line))
+PY
   done
 done
 echo "BİTTİ → $OUT"
