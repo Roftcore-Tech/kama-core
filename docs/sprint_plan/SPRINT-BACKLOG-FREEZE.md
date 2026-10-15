@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-15b [INT-04 ölçümü → KATMAN 6 madde 9 — Hayri]:** KATMAN 6 listesine 9. madde: kesinti SIRASINDA Transport'a verilen birim o oturumun ömrü boyunca teslim edilmiyor (INT-04 ölçümü; 10/20/60 s kesintide aynı, işe yarayan tek kurtarma eşin yeniden başlaması). Kapanışı madde 1 (DR-CONNECT-1 IMPL / heartbeat) ile birliktedir. Bir DUR değil, ölçümdür (plan K4G-05 ek 2026-10-11). Yalnız ekleme.
+
 > **YAMA KAYDI — 2026-10-15 [WS-B sahipliği Hayri'ye geri döndü — Hayri]:** 2026-10-06d'nin (F07.5) devri GERİ ALINDI: WS-B (B1.*, B2.*) sahibi yeniden **Hayri**; "icra Claude Code / karar ve inceleme Abkarada (bu sprint)" ibaresinin üstü çizildi — WS-B başlığı (§WS-B) ve KATMAN 1 application sahip etiketi. Devir dönemindeki imzalar ve DURUM satırları GEÇERLİ kalır (AMP §8 A3/A4 ve S1 §8 imzası Abkarada, 2026-10-06; geriye dönük değişmez). İlk Hayri teslimi: AMP başlık/statü v1 FROZEN + §3 alıcı kuralları birleşik indeksi (`specs/application-message-protocol.md`), SHA `d574af9e`; word_coverage YEŞİL. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-08h [L-B2d B2.5 Application tarafı + S8 vektörleri — Abkarada kararları S1 / S8]:** B2.5 kartına Application tarafı DURUM satırı (`cancel_connect`, `connect_state`, erken metin S1 K6) · B1.2 kartına S8 DURUM satırı (beş DROP token'ı için Python ret vakası; vektör değişikliği Abkarada'nın yazılı S8 yamasıyla ve YALNIZ `ref/amp/encode.py`'den). Yalnız ekleme.
@@ -542,5 +544,8 @@ G-IMPL-S1 + G-IMPL-S3 + G-D →   INT-02: uçtan uca mesaj (kama-integration)
    *Atıf:* ccr §35.4 KAPALI-SİSTEM KİPİ (YAMA 2026-10-08) · L-A5c (A5.5 `AcceptInit`) · identity-and-trust-model / revocation-model.
 8. **[2026-10-08 — Abkarada düzeltmesi] B2.1 zstd sıkıştırması:** ruzstd REDDEDİLDİ; bu sprint `compression_id` = NONE (gönderici sıkıştırmaz, alıcı sıkıştırılmış kaydı başlık denetiminden sonra tipli `zstd-decoder-unavailable` ile düşürür). Sıkıştırılmış kayıt vektörleri ve F07.4 ret vakası "pending zstd kararı".
    *Atıf:* B2.1 DURUM (2026-10-08) · YAMA KAYDI 2026-10-08 (bu belge) · `crates/kama-app/tests/amp_vectors.rs` `PENDING_ZSTD` (#98).
+
+9. **[2026-10-15 — INT-04 ÖLÇÜMÜ, Hayri] Kesintide terk edilen birim için canlılık tespiti + yeniden oturum.** Tam kesinti SIRASINDA Transport'a verilen birim, o oturumun ömrü boyunca teslim EDİLMİYOR (ölçüldü: hat düzeldikten sonra 240 s beklendi, gelmedi; 10 s / 20 s / 60 s kesintide aynı — süreye bağlı değil). Zincir: (1) Transport tam kesintide birimi terk eder; (2) Application outbox'tan yeniden gönderimi yalnız YENİ oturumda yapar (S1 K7); (3) ölü oturumu fark eden bir şey yoktur (heartbeat madde 1 ile KAPSAM DIŞI); (4) `connect()` canlı sayılan oturumda idempotenttir, yeni oturum açmaz. İşe YARAYAN tek kurtarma: eşin yeniden başlaması (gerçek supersession). Kapanış madde 1 (DR-CONNECT-1 IMPL) ile BİRLİKTE düşünülmelidir: canlılık tespiti olmadan yeniden oturum tetiklenemez. Bu bir DUR değil, ölçümdür (plan K4G-05 ek 2026-10-11).
+   *Atıf:* `crates/kama-integration/tests/int04_app.rs` modül belgesi "ÖLÇÜM 2026-10-15" · `scripts/netem/int04_netns.sh` · gecelik `int04-app` işi (`INT04_BLACKOUT_SELF_HEAL`) · KATMAN 6 madde 1 (heartbeat / `LongOutage`) · PoC-KAPSAM-001 K8.
 
 DUR kuralı: bir şerit bu kalemlerden birini gerekli görürse durur ve raporlar (iş emri §8).

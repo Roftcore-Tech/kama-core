@@ -77,6 +77,10 @@ mod node;
 mod peers;
 #[cfg(test)]
 mod test_support;
+/// Düğüm testlerinin paylaşılan kurulumu (`test-util`; ürün grafiğine girmez) — `kama-node`'un
+/// kendi `tests/common`'ı ve INT-04 (`kama-integration`) aynı kaynağı kullanır.
+#[cfg(feature = "test-util")]
+pub mod testing;
 mod wiring;
 
 use std::fmt;

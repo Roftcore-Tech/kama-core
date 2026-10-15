@@ -42,6 +42,13 @@ kama-noise-wire = { path = "../kama-noise-wire" }
 zeroize = "1"
 # S1 sözleşme süiti (tests/seam_*) sözleşme tiplerini TEK kaynaktan alır (B1; test-yerel ayna kalktı).
 kama-contracts = { path = "../kama-contracts" }
+# [INT-04] Uçtan uca uygulama testi (tests/int04_app.rs): bileşim kökü ve uygulama tipleri.
+# `test-util` paylaşılan test kurulumunu açar (`kama_node::testing`); yalnız test derlemesinde.
+# C7 (layer_check): `kama-store`'a DOĞRUDAN bağımlılık YOK — kalıcılık iddiaları kama-node'un kendi
+# testlerinde kalır, INT-04 yalnız olaylar ve `metrics()` üzerinden ölçer.
+kama-node = { path = "../kama-node", features = ["test-util"] }
+kama-app = { path = "../kama-app" }
+kama-provision = { path = "../kama-provision" }
 # [L-T1] S1 `real` hedefi: ürün adaptörü (`client_core::transport`) + bellek içi zarf hub'ı
 # (`memory_link`, test-util) ve gerçek kriptonun TEST fikstürü (`seam_mock::fixture_*`, test-util).
 # Yalnız test derlemesinde; yeni harici crate YOK (iki kenar da workspace içi).

@@ -70,6 +70,7 @@ jobs:
           scripts/ci/seam-mutation.py ref/amp/encode.py
           vectors/amp-record-v1.json vectors/amp-record-reject-v1.json
           crates/kama-app/tests/common/mock_transport.rs crates/kama-integration/tests
+          crates/kama-node scripts/netem/int04_netns.sh
 
   # ── CI-08: fuzz (6 hedef × 5 dk, TEK job, tek derleme; corpus biriktirilir) ──
   fuzz:
@@ -154,6 +155,43 @@ jobs:
       - name: encode.py --check (vectors/amp-*.json bayt-özdeş mi)
         run: python3 -B ref/amp/encode.py --check
 
+  # ── INT-04: uygulama yolunun UÇTAN UCA koşusu, netem altında ──────────────────────────────
+  # Motorlar (Messenger / FileTransfer / Ptt / Signaling) birim testleriyle, uçtan uca ise yalnız
+  # bozulmasız loopback'te ve INT-02'de TEXT ile sınanmıştı. Burada TEXT + dosya + PTT + signaling,
+  # oturum değişimi ve 60 s tam kesinti bozulmuş ağda koşar.
+  # `hostile` shard'larından AYRI ve self-hosted runner'a bağlı DEĞİL: bozulma rootless netns
+  # (`unshare -r -n`) içinde `lo` üzerine kurulur — bu yüzden iş her gece gerçekten koşar.
+  int04-app:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: preflight (unshare + tc + sch_netem)
+        run: |
+          set -e
+          command -v unshare >/dev/null || { echo "::error title=INFRA_FAILURE::unshare yok"; exit 1; }
+          command -v tc >/dev/null || { echo "::error title=INFRA_FAILURE::tc yok"; exit 1; }
+          lsmod | grep -q sch_netem || sudo modprobe sch_netem \
+            || { echo "::error title=INFRA_FAILURE::sch_netem yok"; exit 1; }
+      # Kip çıktıdan DOĞRULANIR: netem kurulamamışsa test bozulmasız `loopback` kipine düşer ve
+      # yeşil görünürdü — gecelik kapı onu KABUL ETMEZ (sessiz bozulmasız geçiş yok).
+      - name: INT-04 (netem + 60 s kesinti)
+        run: |
+          set -o pipefail
+          bash scripts/netem/int04_netns.sh 2>&1 | tee /tmp/int04.txt
+          grep -q "INT04_MODE=netem" /tmp/int04.txt \
+            || { echo "::error title=TEST_FAILURE::INT-04 netem kipinde kosmadi"; exit 1; }
+      - name: upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: int04-app
+          path: /tmp/int04.txt
+
   # ── CI-07 / ADR-18: hostile netem shard'ları ──────────────────────────────────────────────
   # Her rejim AYRI job + AYRI timeout. `NETEM_RUNNER` repo değişkeni olmadan HİÇ kuyruğa girmez
   # (24 saatlik asılı kalmanın kök nedeni buydu).
@@ -224,7 +262,7 @@ jobs:
   nightly-verdict:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, fuzz, sim-nightly, seam-mutation, amp-vectors-check, hostile]
+    needs: [changes, fuzz, sim-nightly, seam-mutation, amp-vectors-check, int04-app, hostile]
     if: always()
     steps:
       - run: |
