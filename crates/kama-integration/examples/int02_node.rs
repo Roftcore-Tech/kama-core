@@ -41,6 +41,7 @@
 // yalnız JSON satırını basar. İkili derlemede okunmayan alanlar bu yüzden ölü kod sayılmaz.
 #![allow(dead_code)]
 
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -1262,22 +1263,28 @@ impl Harness {
                         if *expected != text {
                             flow.mismatched_texts += 1;
                         }
-                        if flow.delivered.contains_key(&msg_id) {
-                            flow.duplicate_deliveries += 1;
-                        } else {
-                            flow.delivered.insert(msg_id, at);
+                        // Yalnız İLK teslimin anı saklanır; tekrar sayılır.
+                        match flow.delivered.entry(msg_id) {
+                            Entry::Vacant(slot) => {
+                                slot.insert(at);
+                            }
+                            Entry::Occupied(_) => flow.duplicate_deliveries += 1,
                         }
                     }
                 }
             }
             NodeEvent::Receipt { msg_id, .. } => {
                 let flow = &mut self.flows[side.idx()];
-                if !flow.sent.contains_key(&msg_id) {
-                    flow.unknown_receipts += 1;
-                } else if flow.receipts.contains_key(&msg_id) {
-                    flow.duplicate_receipts += 1;
+                if flow.sent.contains_key(&msg_id) {
+                    // Yalnız İLK alındının anı saklanır; tekrar sayılır.
+                    match flow.receipts.entry(msg_id) {
+                        Entry::Vacant(slot) => {
+                            slot.insert(at);
+                        }
+                        Entry::Occupied(_) => flow.duplicate_receipts += 1,
+                    }
                 } else {
-                    flow.receipts.insert(msg_id, at);
+                    flow.unknown_receipts += 1;
                 }
             }
             NodeEvent::FileProgress { file, stage, .. } => {
