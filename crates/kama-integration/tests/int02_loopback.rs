@@ -134,6 +134,13 @@ fn smoke(arm: Arm, root: &Path) -> Config {
     cfg.bundle_ms = 10;
     cfg.bundle_bytes = 16;
     cfg.scratch_dir = Some(root.to_path_buf());
+    if arm == Arm::EkKesinti {
+        // Kesinti kolu eşgüdüm dizini ister (`Config::validate`); işaret dosyalarını taklit sürücü
+        // bu dizinde yazar.
+        let sync = root.join("sync");
+        fs::create_dir(&sync).expect("eşgüdüm dizini");
+        cfg.sync_dir = Some(sync);
+    }
     cfg.validate().expect("duman yapılandırması geçerli");
     cfg
 }
@@ -305,11 +312,8 @@ fn fake_outage_driver(sync: PathBuf) -> JoinHandle<bool> {
 fn ek_outage_coordination_path_runs_end_to_end() {
     let _serial = serial();
     let root = TempDir::new("ek-k");
-    let sync = root.path().join("sync");
-    fs::create_dir(&sync).expect("eşgüdüm dizini");
-    let mut cfg = smoke(Arm::EkKesinti, root.path());
-    cfg.sync_dir = Some(sync.clone());
-    cfg.validate().expect("kesinti yapılandırması geçerli");
+    let cfg = smoke(Arm::EkKesinti, root.path());
+    let sync = cfg.sync_dir.clone().expect("kesinti kolu eşgüdüm dizini");
     let driver = fake_outage_driver(sync);
     let report = run(&cfg);
     assert!(driver.join().expect("taklit sürücü"), "{}", report.json);
