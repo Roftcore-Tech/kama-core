@@ -1,5 +1,7 @@
 # SPRINT PLANI — Sözleşmeleri testle kilitle, sonra kodu yaz
 
+> **YAMA KAYDI — 2026-10-15 [WS-B sahipliği Hayri'ye geri döndü — Hayri]:** 2026-10-06d'nin (F07.5) devri GERİ ALINDI: WS-B (B1.*, B2.*) sahibi yeniden **Hayri**; "icra Claude Code / karar ve inceleme Abkarada (bu sprint)" ibaresinin üstü çizildi — WS-B başlığı (§WS-B) ve KATMAN 1 application sahip etiketi. Devir dönemindeki imzalar ve DURUM satırları GEÇERLİ kalır (AMP §8 A3/A4 ve S1 §8 imzası Abkarada, 2026-10-06; geriye dönük değişmez). İlk Hayri teslimi: AMP başlık/statü v1 FROZEN + §3 alıcı kuralları birleşik indeksi (`specs/application-message-protocol.md`), SHA `d574af9e`; word_coverage YEŞİL. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-08h [L-B2d B2.5 Application tarafı + S8 vektörleri — Abkarada kararları S1 / S8]:** B2.5 kartına Application tarafı DURUM satırı (`cancel_connect`, `connect_state`, erken metin S1 K6) · B1.2 kartına S8 DURUM satırı (beş DROP token'ı için Python ret vakası; vektör değişikliği Abkarada'nın yazılı S8 yamasıyla ve YALNIZ `ref/amp/encode.py`'den). Yalnız ekleme.
 
 > **YAMA KAYDI — 2026-10-08g [L-T1 — S1 gerçek adaptörü; iş emri 2026-10-06b §4]:** B1.4, B1.5 ve B2.5 kartlarına DURUM satırı. S1 conformance'ın `real` hedefi KAYITLI ve KOŞUYOR (`client_core::transport::ClientTransport` + gerçek kripto + UDP loopback); 11/12 davranış satırı iki hedefte (`implemented`), H-PROGRESS real'de kimlikli BEYANLI BOŞLUK (GAP-S1-REAL-PROGRESS: `Suspended`/`LongOutage` tetikleri ve hub prob'u bu sprint KAPSAM DIŞI). `ci.yml` S1 real adımı yalnız 0 kabul eder. Yalnız ekleme.
@@ -47,7 +49,7 @@ Kama'nın mimarisi dört katman: **Application → Transport → Crypto → UDP.
 - Crypto↔Transport sınırını testlerle donduruyor.
 - Sonra gerçek kripto kodunu bu testlere karşı yazıyor.
 
-**~~Hayri~~ icra Claude Code / karar ve inceleme Abkarada (bu sprint) **[2026-10-06]** (application)**
+**~~Hayri~~ ~~icra Claude Code / karar ve inceleme Abkarada (bu sprint) **[2026-10-06]**~~ **[2026-10-15] Hayri (devir geri alındı)** (application)**
 - Mesaj formatının (metin, dosya, PTT, okundu bilgisi) son kararlarını kapatıyor.
 - Application'ın Transport'la konuştuğu API'nin tiplerini kuruyor.
 - Sahte bir Transport'a karşı Application'ı bağımsız geliştiriyor.
@@ -332,8 +334,9 @@ Gerçek kod aynı vektörleri ve aynı conformance-core'u geçiyor; sözleşme d
 
 ---
 
-## WS-B — ~~Hayri~~ icra Claude Code / karar ve inceleme Abkarada (bu sprint) **[2026-10-06]** (application) — Abdurrahman'ı BEKLEMEZ
+## WS-B — ~~Hayri~~ ~~icra Claude Code / karar ve inceleme Abkarada (bu sprint) **[2026-10-06]**~~ **[2026-10-15] sahip Hayri (devir geri alındı; SHA `d574af9e`)** (application) — Abdurrahman'ı BEKLEMEZ
 *[2026-10-06, iş emri 2026-10-06 §0] Hayri'nin bu sprintteki kalemleri (B1.*, B2.*) Abkarada'ya devredildi: **icra Claude Code / karar ve inceleme Abkarada (bu sprint)**. AMP §8 A3/A4 ve S1 §8 imzası Abkarada tarafından atıldı (2026-10-06).*
+*[2026-10-15] Devir GERİ ALINDI: B1.* ve B2.* kalemlerinin sahibi yeniden **Hayri** (icra ve karar). Devir dönemindeki imzalar ve DURUM satırları geriye dönük GEÇERLİ kalır — yeniden imzalanmaz. İlk teslim: AMP başlık/statü v1 FROZEN + §3 alıcı kuralları birleşik indeksi, SHA `d574af9e`.*
 
 ### B1.0 — Application crate'i ve Transport API tipleri
 **Neden:** Repo'da Application katmanı kodu hiç yok. Application'ın konuştuğu **tek** şey Transport API'si; önce onun tipleri derlenmeli ki hem Application kodu hem sahte Transport aynı imzaya karşı yazılsın.
