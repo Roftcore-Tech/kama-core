@@ -698,6 +698,72 @@ pub struct ServerStats {
     pub egress_refused_bytes: u64,
 }
 
+/// [K4G-05] Client ucunun CANLI salt-gözlem aynası ([`ClientHandle::live_diag`]): motorun ARQ /
+/// kurtarma sayaçları ve RTT kestiricisi, kapanışı beklemeden okunur. Görev her ana döngü turunun
+/// başında değerleri buraya yazar; hiçbir karar bu aynayı OKUMAZ, sayaç ve davranış değişmez
+/// ([`ServerHandle::delivery_dropped`] emsali). Ana döngüden sonraki kapanış boşaltmasının
+/// (drain) değerleri aynaya girmez; kesin kapanış değeri [`ClientHandle::shutdown`]'ın
+/// istatistiğidir (`ClientStats::fate.activation`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ClientLiveDiag {
+    /// Motorun `Retransmit` sınıflı emisyon kararları (ARQ + tail-probe) —
+    /// `ActivationDiag::retransmits`. Kurtarma kapalıyken karar sayılır ama tele çıkmaz
+    /// (bkz. [`Self::recovery_suppressed`]).
+    pub retransmits: u64,
+    /// Bunlardan tail-probe olanlar — `ActivationDiag::tail_probes`.
+    pub tail_probes: u64,
+    /// §11 ileri kopya kararları — `ActivationDiag::dups`.
+    pub dups: u64,
+    /// Motorun tele çıkardığı FEC parity kararları — `ActivationDiag::parity_emitted`.
+    pub parity_emitted: u64,
+    /// Kurtarma kapalıyken tele ÇIKMAYAN retransmit / kopya / FEC repair kararı —
+    /// [`ClientStats::recovery_suppressed`].
+    pub recovery_suppressed: u64,
+    /// Tele çıkan ARQ retransmit baytı — [`ClientStats::tx_retx_bytes`] (`mark_t0` sıfırlar).
+    pub tx_retx_bytes: u64,
+    /// Motorun aldığı RTT örneği sayısı (Karn: yalnız orijinal emisyonlardan).
+    pub rtt_samples: u32,
+    /// sRTT (µs); örnek yoksa 0 — `ActivationDiag::srtt_us`.
+    pub srtt_us: u64,
+    /// RTprop / en küçük RTT (µs); örnek yoksa 0 — `ActivationDiag::rtprop_us`.
+    pub rtprop_us: u64,
+    /// PreConverge'den çıkış anı (ns, ucun başlangıcından; 0 = çıkılmadı) —
+    /// `ActivationDiag::left_preconverge_ns`.
+    pub left_preconverge_ns: u64,
+}
+
+impl ClientLiveDiag {
+    /// Motorun ve tel sayaçlarının o anki anlık görüntüsü (salt okuma).
+    fn snapshot(sender: &adaptive_transport::sender::Sender, stats: &ClientStats) -> Self {
+        let activation = sender.diag_activation();
+        Self {
+            retransmits: activation.retransmits,
+            tail_probes: activation.tail_probes,
+            dups: activation.dups,
+            parity_emitted: activation.parity_emitted,
+            recovery_suppressed: stats.recovery_suppressed,
+            tx_retx_bytes: stats.tx_retx_bytes,
+            rtt_samples: sender.diag_rtt_sample_count(),
+            srtt_us: activation.srtt_us,
+            rtprop_us: activation.rtprop_us,
+            left_preconverge_ns: activation.left_preconverge_ns,
+        }
+    }
+
+    /// [K4G-05] Kapanan bir ucun SAYAÇLARINI bu toplama ekler (S1 adaptörünün kapanmış oturumlar
+    /// toplamı). RTT alanları toplanmaz, değişmez: uç başına anlamlıdır.
+    pub(crate) fn add_counters(&mut self, other: &Self) {
+        self.retransmits = self.retransmits.saturating_add(other.retransmits);
+        self.tail_probes = self.tail_probes.saturating_add(other.tail_probes);
+        self.dups = self.dups.saturating_add(other.dups);
+        self.parity_emitted = self.parity_emitted.saturating_add(other.parity_emitted);
+        self.recovery_suppressed = self
+            .recovery_suppressed
+            .saturating_add(other.recovery_suppressed);
+        self.tx_retx_bytes = self.tx_retx_bytes.saturating_add(other.tx_retx_bytes);
+    }
+}
+
 /// Teslim olayı: hangi eşten hangi birim, payload'ıyla.
 #[derive(Debug, Clone)]
 pub struct Delivery {
@@ -982,6 +1048,8 @@ pub struct ClientHandle {
     recovery_tx: watch::Sender<bool>,
     /// [K4G-01] Bağlam-önce dağıtım sayaçları (bkz. [`ClientHandle::ctx_dispatch_stats`]).
     ctx_counters: CtxDispatchCounters,
+    /// [K4G-05] Canlı salt-gözlem aynası (bkz. [`ClientHandle::live_diag`]).
+    live: Arc<Mutex<ClientLiveDiag>>,
     task: JoinHandle<ClientStats>,
 }
 
@@ -1131,6 +1199,7 @@ impl ClientEndpoint {
         let max_message_bytes = cfg.max_message_bytes.unwrap_or(cfg.max_unit_bytes);
         let (recovery_tx, recovery_rx) = watch::channel(true);
         let outstanding = Arc::new(AtomicUsize::new(0));
+        let live = Arc::new(Mutex::new(ClientLiveDiag::default()));
         let task = tokio::spawn(client_task(
             sock,
             cfg,
@@ -1145,6 +1214,7 @@ impl ClientEndpoint {
                 recovery_rx,
                 outstanding: Arc::clone(&outstanding),
                 ctx_counters: ctx_counters.clone(),
+                live: Arc::clone(&live),
             },
         ));
         Ok(ClientHandle {
@@ -1158,6 +1228,7 @@ impl ClientEndpoint {
             t0_tx,
             recovery_tx,
             ctx_counters,
+            live,
             task,
         })
     }
@@ -1237,6 +1308,16 @@ impl ClientHandle {
         self.ctx_counters.snapshot()
     }
 
+    /// [K4G-05] Salt-okunur: motorun ARQ / kurtarma sayaçları ve RTT kestiricisinin CANLI aynası
+    /// (bkz. [`ClientLiveDiag`]), kapanışı beklemeden okunur. Yayın: görev her ana döngü turunun
+    /// BAŞINDA yazar — okuyucu en çok bir tur (pacing tick'i 1 ms ya da tek bir `select!` kolunun
+    /// işi) geride kalır. Kapanış boşaltmasının değerleri aynaya girmez; kesin değer
+    /// [`ClientHandle::shutdown`]'ın istatistiğidir. Görev başlamadan önce sıfırdır.
+    #[must_use]
+    pub fn live_diag(&self) -> ClientLiveDiag {
+        *self.live.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Kontrollü kapanış: drain (pif→0 VEYA `drain_cap`) → istatistik. Görev panik ederse
     /// varsayılan istatistik döner (panik yutulmaz: ayrı gözlemlenebilir, unwrap edilmez).
     pub async fn shutdown(self) -> ClientStats {
@@ -1261,6 +1342,8 @@ struct ClientTaskLinks {
     outstanding: Arc<AtomicUsize>,
     /// [K4G-01] Bağlam-önce dağıtım sayaçları (bkz. [`ClientHandle::ctx_dispatch_stats`]).
     ctx_counters: CtxDispatchCounters,
+    /// [K4G-05] Canlı salt-gözlem aynası (bkz. [`ClientHandle::live_diag`]); görev yalnız YAZAR.
+    live: Arc<Mutex<ClientLiveDiag>>,
 }
 
 async fn client_task(
@@ -1279,6 +1362,7 @@ async fn client_task(
         recovery_rx,
         outstanding,
         ctx_counters,
+        live,
     } = links;
     // [K4G-01 / D1 (v1.1)] HubChannel dağıtıcısı: Session durumunun hiçbirini TUTMAZ (yalnız
     // sayaç).
@@ -1760,6 +1844,11 @@ async fn client_task(
 
     // ── Ana döngü ──
     loop {
+        // [K4G-05] Salt gözlem: motor ve tel sayaçlarının o anki değeri yayımlanır (önceki turun
+        // bütün kolları dahil). Burada okunur, değişmez; görev aynayı OKUMAZ (bkz.
+        // `ClientHandle::live_diag`).
+        *live.lock().unwrap_or_else(PoisonError::into_inner) =
+            ClientLiveDiag::snapshot(session.sender(), &stats);
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             // Ölçüm-t0 işareti (ClientHandle::mark_t0): wire sayaçları sıfırlanır, MOTOR DURUMU
@@ -3369,5 +3458,144 @@ mod delivery_dropped_mirror_tests {
             "erişimci ve kapanış istatistiği aynı sayaçtır: {stats:?}"
         );
         assert_eq!(stats.delivered, TINY_QUEUE as u64, "{stats:?}");
+    }
+}
+
+#[cfg(test)]
+mod live_diag_mirror_tests {
+    //! [K4G-05] [`ClientHandle::live_diag`] salt-okunur aynasının sınaması: değerler motorun ve
+    //! tel sayaçlarının değerleridir, kapanışı beklemeden okunur ve kapanış istatistiğini AŞMAZ
+    //! (sayaçlar monoton; ayna en çok bir tur geridedir). Kayıp, client'ın egress kapısıyla
+    //! belirlenimli verilir: İLK datagram kanala girmez. FEC kapalı kurulur ki kayıp ARQ ile
+    //! (parity ile değil) kurtarılsın. Bekleme süreleri yalnız beklenen olayın ÜST SINIRIDIR.
+
+    use super::*;
+    use crate::seam::IdentitySeam;
+
+    /// Beklenen değerin üst süre sınırı.
+    const WAIT: Duration = Duration::from_secs(20);
+    /// Yoklama adımı.
+    const TICK: Duration = Duration::from_millis(5);
+    /// Sunulan birim: ilki kaybolur, sonrakilerin ACK'i kaybı ve RTT örneğini getirir.
+    const UNITS: u64 = 5;
+    /// Kurtarma kapalı kolda kapanış boşaltmasının tavanı (kayıp birim hiç teyit edilmez).
+    const SHORT_DRAIN: Duration = Duration::from_millis(200);
+
+    /// İlk `n` datagramı kanala sokmaz, sonrakileri geçirir (belirlenimli ilk-emisyon kaybı).
+    struct DropFirst(usize);
+
+    impl EgressPolicy for DropFirst {
+        fn admit(&mut self, _len: usize, _now_ns: u64) -> bool {
+            if self.0 > 0 {
+                self.0 -= 1;
+                false
+            } else {
+                true
+            }
+        }
+    }
+
+    async fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while tokio::time::Instant::now() < deadline {
+            if done() {
+                return true;
+            }
+            tokio::time::sleep(TICK).await;
+        }
+        done()
+    }
+
+    fn no_fec(drain_cap: Duration) -> RuntimeConfig {
+        RuntimeConfig {
+            fec: None,
+            drain_cap,
+            ..RuntimeConfig::default()
+        }
+    }
+
+    async fn pair(cfg: &RuntimeConfig) -> (ServerHandle, ClientHandle) {
+        let server = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().expect("adres"),
+            cfg.clone(),
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("server bind");
+        let client = ClientEndpoint::connect_with_policy(
+            server.local_addr(),
+            cfg.clone(),
+            Box::new(IdentitySeam::new()),
+            Some(Box::new(DropFirst(1))),
+        )
+        .await
+        .expect("client connect");
+        (server, client)
+    }
+
+    /// Kurtarma açık: kaybolan ilk birim ARQ ile yeniden gönderilir. Ayna, kapanıştan ÖNCE
+    /// retransmit kararını, tele çıkan retransmit baytını ve RTT örneğini gösterir; kapanış
+    /// istatistiği aynanın değerlerinden küçük değildir.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_values_show_the_retransmit_before_shutdown() {
+        let cfg = no_fec(RuntimeConfig::default().drain_cap);
+        let (server, client) = pair(&cfg).await;
+        for i in 0..UNITS {
+            client
+                .send(format!("ayna-{i}").into_bytes())
+                .expect("offer");
+        }
+        assert!(
+            wait_until(|| {
+                let live = client.live_diag();
+                client.outstanding() == 0 && live.retransmits >= 1 && live.rtt_samples >= 1
+            })
+            .await,
+            "kayıp kurtarılmalı ve ayna kapanıştan önce göstermeli: {:?}",
+            client.live_diag()
+        );
+        let live = client.live_diag();
+        assert!(live.tx_retx_bytes > 0, "retransmit tele çıktı: {live:?}");
+        assert_eq!(live.recovery_suppressed, 0, "kurtarma açık: {live:?}");
+        let stats = client.shutdown().await;
+        let _ = server.shutdown().await;
+        assert!(
+            stats.fate.activation.retransmits >= live.retransmits,
+            "kapanış {} < ayna {}",
+            stats.fate.activation.retransmits,
+            live.retransmits
+        );
+        assert!(stats.tx_retx_bytes >= live.tx_retx_bytes, "{stats:?}");
+        assert!(stats.fate.rtt_samples >= live.rtt_samples, "{stats:?}");
+    }
+
+    /// Kurtarma kapalı (yalnız test yapılandırması): retransmit kararı tele çıkmaz. Ayna bastırılan
+    /// kararı kapanıştan önce gösterir, tele çıkan retransmit baytı sıfır kalır ve kaybolan birim
+    /// teyitsiz kalır.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_values_show_suppressed_recovery_before_shutdown() {
+        let cfg = no_fec(SHORT_DRAIN);
+        let (server, client) = pair(&cfg).await;
+        client.set_recovery(false);
+        for i in 0..UNITS {
+            client
+                .send(format!("ayna-{i}").into_bytes())
+                .expect("offer");
+        }
+        assert!(
+            wait_until(|| client.live_diag().recovery_suppressed >= 1).await,
+            "bastırılan kurtarma kararı aynada görünmeli: {:?}",
+            client.live_diag()
+        );
+        let live = client.live_diag();
+        assert_eq!(live.tx_retx_bytes, 0, "tele retransmit çıkmadı: {live:?}");
+        assert!(client.outstanding() >= 1, "kaybolan birim teyitsiz kalır");
+        let stats = client.shutdown().await;
+        let _ = server.shutdown().await;
+        assert!(
+            stats.recovery_suppressed >= live.recovery_suppressed,
+            "{stats:?}"
+        );
+        assert_eq!(stats.tx_retx_bytes, 0, "{stats:?}");
     }
 }

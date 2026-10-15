@@ -50,6 +50,20 @@ kama-noise-wire = { path = "../kama-noise-wire", features = ["test-util"] }
 # CLOSURE-1B (DR-CS-1b/A2): birleşik 65B-heal testi için sender-tarafı. Cold-start-yüzeyi feature-
 # forward ile açılır (üstteki [features]); flag-OFF derlemede feature-OFF → workspace-pin korunur.
 adaptive-transport = { path = "../adaptive-transport" }
+# [K4G-05] INT-02 düzeneği (`examples/int02_node.rs`, `tests/int02_loopback.rs`): bileşim kökü
+# (`KamaNode`; `test-util` = ölçüm sondası + recovery-OFF negatif kolunun kurucusu), duman testinin
+# provisioning'i (`kama-provision` kütüphanesi) ve Application tipleri (`PttCodec`, hata türleri).
+# Yalnız test/örnek derlemesinde (lib grafiği değişmez); üçü de workspace crate'i — yeni harici
+# bağımlılık YOK (D11). layer_check: kama-integration → kama-node serbest; kama-store'a doğrudan kenar
+# yok (C7).
+kama-node = { path = "../kama-node", features = ["test-util"] }
+kama-provision = { path = "../kama-provision" }
+kama-app = { path = "../kama-app" }
+
+# [K4G-05] INT-02 düğüm sürücüsü — tek süreçte iki `KamaNode`, tek satır JSON (netem sürücüsü
+# `scripts/netem/int02_run.sh`, analiz `scripts/netem/int02_analyze.py`). Özellik gerektirmez.
+[[example]]
+name = "int02_node"
 
 # CLOSURE-2 (DR-CS-1b/A2): A2-RX netem runner (gerçek ReceiverHost product-path + /proc/self/statm RSS).
 [[example]]

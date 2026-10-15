@@ -76,6 +76,8 @@ use crate::event::{
 use crate::files::{self, ReceivedFiles};
 use crate::handle::{FileHandle, HandleAllocator, Registry, StreamHandle};
 use crate::peers::PeerBook;
+#[cfg(feature = "test-util")]
+use crate::probe::{NodeProbe, SessionEventCounts, SessionProbe};
 use crate::wiring::Transport;
 use crate::{NodeListener, PlatformSignal, METRICS_TICK, NODE_TICK};
 
@@ -149,6 +151,11 @@ pub(crate) enum Command {
     DrainBackground {
         reply: Reply<()>,
     },
+    /// [K4G-05] YALNIZ test-util: ölçüm sondası (`KamaNode::probe_for_test`; salt okuma).
+    #[cfg(feature = "test-util")]
+    Probe {
+        reply: Reply<NodeProbe>,
+    },
     /// Döngüyü bitirir. `KamaNode::stop` onu kuyruğun SONUNA koyar: döngü ona vardığında önündeki
     /// komutların hepsi işlenmiştir (ardında komut olmaz — kapanıştan sonra çağıran kalmaz). Kuyruk
     /// doluyken `stop` bunun yerine kapanış bayrağını kaldırır ([`Shared::stopping`]).
@@ -219,6 +226,9 @@ pub(crate) struct NodeLoop {
     up: BTreeSet<PeerRef>,
     /// Sıradaki `Metrics` olayının zamanı.
     metrics_due: Instant,
+    /// [K4G-05] YALNIZ test-util: işlenen S1 oturum olaylarının sayımı (ölçüm sondası).
+    #[cfg(feature = "test-util")]
+    session_events: SessionEventCounts,
 }
 
 impl NodeLoop {
@@ -250,6 +260,8 @@ impl NodeLoop {
             tickets: BTreeMap::new(),
             up: BTreeSet::new(),
             metrics_due: Instant::now(),
+            #[cfg(feature = "test-util")]
+            session_events: SessionEventCounts::default(),
         }
     }
 
@@ -324,6 +336,8 @@ impl NodeLoop {
             }
             Command::Signal(signal) => self.on_platform_signal(signal),
             Command::DrainBackground { reply } => answer(&reply, self.drain_background()),
+            #[cfg(feature = "test-util")]
+            Command::Probe { reply } => answer(&reply, Ok(self.probe())),
             // `run` döngüyü bundan önce bitirir.
             Command::Shutdown => {}
         }
@@ -543,6 +557,8 @@ impl NodeLoop {
     }
 
     fn on_session_event(&mut self, event: SessionEvent) {
+        #[cfg(feature = "test-util")]
+        self.count_session_event(&event);
         match event {
             SessionEvent::Ready(_, peer) => self.note_up(peer),
             SessionEvent::Closed(_, reason) => self.note_down(reason),
@@ -742,6 +758,64 @@ impl NodeLoop {
         if let Some(name) = self.peers.name(peer) {
             self.listener.on_event(make(name.to_owned()));
         }
+    }
+
+    // ── [K4G-05] YALNIZ test-util: ölçüm sondası ve recovery-OFF kancası ───────────────────────
+
+    /// İşlenen S1 oturum olayını sayar (salt sayım; olayın işlenişi değişmez).
+    #[cfg(feature = "test-util")]
+    fn count_session_event(&mut self, event: &SessionEvent) {
+        let counts = &mut self.session_events;
+        let counter = match event {
+            SessionEvent::Ready(..) => &mut counts.ready,
+            SessionEvent::Closed(..) => &mut counts.closed,
+            SessionEvent::RenewRequired(_) => &mut counts.renew_required,
+            SessionEvent::ConnectAbandoned(..) => &mut counts.connect_abandoned,
+            SessionEvent::ConnectProgress(..) => return,
+        };
+        *counter = counter.saturating_add(1);
+    }
+
+    /// Ölçüm sondası (bkz. `crate::probe`): salt-okunur kaynakların o anki değeri. Röle zarf
+    /// sayaçları süreç-geneldir; onları `KamaNode::probe_for_test` doldurur.
+    #[cfg(feature = "test-util")]
+    fn probe(&self) -> NodeProbe {
+        let transport = self.messenger.transport();
+        let ctx = transport.ctx_dispatch_stats();
+        let sessions = transport
+            .session_live_diags()
+            .into_iter()
+            .map(|(session, diag)| SessionProbe {
+                session,
+                peer_id: transport
+                    .peer_of_for_test(session)
+                    .and_then(|peer| self.peers.name(peer))
+                    .map(str::to_owned),
+                epoch: transport.session_epoch(session),
+                diag,
+            })
+            .collect();
+        NodeProbe {
+            sessions,
+            retired: transport.retired_live_diag(),
+            not_ready_drops: ctx.not_ready_drops,
+            ctx_mismatch_drops: ctx.ctx_mismatch_drops,
+            hub_frames_dropped: ctx.hub_frames_dropped,
+            delivery_channel_drops: transport.delivery_dropped(),
+            outstanding_units: transport.outstanding_for_test(),
+            messenger: self.messenger.stats(),
+            events: self.session_events,
+            envelopes: crate::probe::EnvelopeCounts::default(),
+        }
+    }
+
+    /// Transport'un kurtarma anahtarı (`ClientTransport::set_recovery_for_test`; S1 H-APP-RETRY-0
+    /// kancası): kapalıyken ARQ retransmit, §11 kopya ve FEC repair kararları tele çıkmaz.
+    /// Sonradan açılan oturum uçlarına da uygulanır. YALNIZ recovery-OFF negatif kolu
+    /// (`KamaNode::start_recovery_off_for_test`).
+    #[cfg(feature = "test-util")]
+    pub(crate) fn set_recovery_for_test(&mut self, on: bool) {
+        self.messenger.transport_mut().set_recovery_for_test(on);
     }
 }
 

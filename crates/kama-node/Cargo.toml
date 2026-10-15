@@ -28,11 +28,14 @@ kama-store = { path = "../kama-store" }
 thiserror.workspace = true
 
 [features]
-# Bugün bu özelliğe bağlı öğe YOKTUR: DUR-K4G-11 → B ile ürün zarf taşıyıcısı süreç-içi röle oldu
-# (`src/carrier.rs`) ve testler ürün yolunu (`KamaNode::start`) koşar; test kurucusu
-# `start_with_envelope_link` kaldırıldı. Özellik ve aşağıdaki öz-bağımlılık bu PR'da kilit dosyası
-# (Cargo.lock) değişmesin diye korunur; ikisi birlikte ayrı bir değişiklikte kaldırılabilir.
-test-util = []
+# YALNIZ test / ölçüm düzeneği. K4G-11'de bu özelliğe bağlı öğe yoktu (DUR-K4G-11 → B: test kurucusu
+# `start_with_envelope_link` kaldırıldı; özellik kilit dosyası değişmesin diye korunmuştu). [K4G-05]
+# INT-02 (`kama-integration`) için: ölçüm sondası (`KamaNode::probe_for_test`, `src/probe.rs`) ve
+# recovery-OFF negatif kolunun kurucusu (`KamaNode::start_recovery_off_for_test`). Ürün yolu
+# (`KamaNode::start`) bu özellikten bağımsızdır; ürün bağımlılığında AÇILMAZ. `client-core/test-util`:
+# kurtarma anahtarı ve oturum tablosu okuyucuları (`set_recovery_for_test`, `peer_of_for_test`,
+# `outstanding_for_test`).
+test-util = ["client-core/test-util"]
 
 [dev-dependencies]
 # Kendi `test-util` özelliğini entegrasyon testlerine açar (client-core'daki kalıp; bkz. yukarıdaki

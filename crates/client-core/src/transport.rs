@@ -96,8 +96,8 @@ use kama_contracts::s3::{
 use kama_noise_wire::protector::NoiseWireProtection;
 
 use crate::runtime::{
-    ClientEndpoint, ClientHandle, CtxDispatchCounters, CtxDispatchStats, ExpectedSessions,
-    Readiness, RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
+    ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters, CtxDispatchStats,
+    ExpectedSessions, Readiness, RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
 };
 #[cfg(any(test, feature = "test-util"))]
 use crate::wire::decode_data;
@@ -436,6 +436,10 @@ pub struct ClientTransport<C: PacketProtection + SessionControl> {
     expected: ExpectedSessions,
     /// [K4G-01] Düğüm geneli bağlam-önce dağıtım sayaçları (veri alıcısı + bütün oturum uçları).
     ctx_counters: CtxDispatchCounters,
+    /// [K4G-05] Salt gözlem: ucu bırakılan (kapanan) oturumların ARQ / kurtarma sayaçlarının
+    /// toplamı — ucun bırakıldığı andaki canlı aynasından ([`Self::retired_live_diag`]). Hiçbir
+    /// karar okumaz.
+    retired_diag: ClientLiveDiag,
     /// Sıradaki `send`'lerden kaçının ilk emisyonu kaybettirilecek (yalnız test).
     #[cfg(any(test, feature = "test-util"))]
     drops: usize,
@@ -534,6 +538,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             reorder: HashMap::new(),
             expected,
             ctx_counters,
+            retired_diag: ClientLiveDiag::default(),
             #[cfg(any(test, feature = "test-util"))]
             drops: 0,
             server,
@@ -568,6 +573,25 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     #[must_use]
     pub fn delivery_dropped(&self) -> u64 {
         self.server.delivery_dropped()
+    }
+
+    /// [K4G-05] Salt-okunur telemetri: ucu açık her S1 oturumunun motor / ARQ aynası
+    /// ([`ClientHandle::live_diag`]), tutamaç sırasıyla. Ucu kurulamamış ya da bırakılmış
+    /// oturum listede yoktur (onun sayaçları [`Self::retired_live_diag`]'dadır). Durum değişmez.
+    #[must_use]
+    pub fn session_live_diags(&self) -> Vec<(SessionHandle, ClientLiveDiag)> {
+        self.sessions
+            .iter()
+            .filter_map(|(h, s)| s.endpoint.as_ref().map(|e| (*h, e.live_diag())))
+            .collect()
+    }
+
+    /// [K4G-05] Salt-okunur telemetri: ucu bırakılan (kapanan) oturumların ARQ / kurtarma
+    /// SAYAÇLARININ toplamı (RTT alanları 0). Değer ucun bırakıldığı andaki aynadır: ucun kapanış
+    /// boşaltmasında verdiği kararlar girmez (alt sınır).
+    #[must_use]
+    pub fn retired_live_diag(&self) -> ClientLiveDiag {
+        self.retired_diag
     }
 
     /// Bekleyen işi sürer: zarf olayları → tutulan yenileme yanıtları → Crypto olayları →
@@ -870,7 +894,10 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             s.phase = Phase::Closed;
         }
         let closed = s.phase == Phase::Closed;
-        s.endpoint = None;
+        // [K4G-05] Salt gözlem: uç bırakılmadan önce aynası kapanmış oturumlar toplamına eklenir.
+        if let Some(endpoint) = s.endpoint.take() {
+            self.retired_diag.add_counters(&endpoint.live_diag());
+        }
         // [K4G-01b] Teslim kabulü bitti (`drive_deliveries` `Closed`'u reddeder) → sıralama durumu
         // silinir; içinde tutulan birim artık hiçbir yoldan teslim edilemezdi. Supersede edilmiş
         // oturum `Closed` okunana dek teslim kabul eder (yalnız-alım drain) — onunki okunurken
@@ -1259,7 +1286,10 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
             Phase::Closed => return Err(TransportError::UnknownSession),
         }
         s.phase = Phase::Closed;
-        s.endpoint = None;
+        // [K4G-05] Salt gözlem: uç bırakılmadan önce aynası kapanmış oturumlar toplamına eklenir.
+        if let Some(endpoint) = s.endpoint.take() {
+            self.retired_diag.add_counters(&endpoint.live_diag());
+        }
         self.locally_closed.insert(session);
         // [K4G-01b] `Closed` oturumun teslimi `drive_deliveries`'te düşer → sıralama durumu
         // silinir.
@@ -1356,5 +1386,8 @@ mod tests {
             ClientTransport::new(cfg, crypto, Box::new(hub.link(me))).expect("ürün adaptörü");
         assert_eq!(transport.session_epoch(SessionHandle::from_raw(7)), None);
         assert_eq!(transport.delivery_dropped(), 0);
+        // [K4G-05] Oturum yok → canlı ayna listesi boş, kapanmış oturum toplamı sıfır.
+        assert!(transport.session_live_diags().is_empty());
+        assert_eq!(transport.retired_live_diag(), ClientLiveDiag::default());
     }
 }
