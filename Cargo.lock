@@ -825,10 +825,13 @@ version = "0.1.0"
 dependencies = [
  "adaptive-transport",
  "client-core",
+ "kama-app",
  "kama-contracts",
  "kama-engine",
  "kama-fec-codec",
+ "kama-node",
  "kama-noise-wire",
+ "kama-provision",
  "kama-transport-schema",
  "thiserror",
  "zeroize",
