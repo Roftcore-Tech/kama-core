@@ -757,6 +757,62 @@ pub struct ActivationDiag {
     pub inflight_bytes: u64,
 }
 
+/// [K4G-05 / INT-02 TEŞHİS] SALT GÖZLEM — kurtarma kuyrukları ve zamanlayıcıları
+/// ([`Sender::diag_recovery_timers`]). Hiçbir karar bu yapıyı okumaz; üretmek motor durumunu
+/// değiştirmez ve motor olayı sürmez. Anlar motorun saat tabanındadır (`on_event`'e verilen ns).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveryTimersDiag {
+    pub state: SenderState,
+    /// Son ACK'in işlendiği an; hiç ACK yoksa `None`.
+    pub last_ack_ns: Option<u64>,
+    /// Uçuştaki kayıt (`inflight`), kayıp ilanı sonrası retransmit bekleyen (`pending_lost`), vadeli
+    /// kopya (`dup_queue`), geç-ACK için saklanan (`tombstones`) ve gönderilmemiş yeni birim
+    /// (`tx_queue`) sayıları.
+    pub inflight_len: u32,
+    pub pending_lost_len: u32,
+    pub dup_queue_len: u32,
+    pub tombstones_len: u32,
+    pub tx_queue_len: u32,
+    /// ARQ yeniden gönderim tavanı: `retx_count ≥ tavan` olan kayıp birim ARQ'dan kopya kuyruğuna
+    /// devredilir (§9.1 `HandToForward`).
+    pub arq_retx_cap: u8,
+    /// Son füzyon kararının ARQ saldırganlığı (‰); 0 iken ARQ planı boştur (§9).
+    pub arq_aggressiveness_permille: u32,
+    /// Tail-recovery (PTO probe): açık mı, idle penceresi başlangıcı, bu penceredeki probe turu ve
+    /// tavanı, geri çekilmiş güncel PTO ve taban PTO (ns).
+    pub tail_enabled: bool,
+    pub tail_armed_at_ns: Option<u64>,
+    pub tail_probe_index: u32,
+    pub tail_max_probes: u32,
+    pub tail_pto_ns: u64,
+    pub base_pto_ns: u64,
+}
+
+/// [K4G-05 / INT-02 TEŞHİS] SALT GÖZLEM — tek bir kaynak birimin motordaki kayıtları
+/// ([`Sender::diag_unit_recovery`]). FEC parity kayıtları (birim kimliği yerine ESI taşır) sayılmaz.
+/// Kayıp ilanında düşen kopya kaydı (tombstone'suz) ve süresi dolan tombstone'lar GÖRÜNMEZ: alanlar
+/// yalnız motorun o an tuttuğu kayıtlardır.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct UnitRecoveryDiag {
+    /// Uçuştaki kayıt sayısı (orijinal, retransmit, kopya, tail-probe kopyası).
+    pub inflight_records: u32,
+    /// Kayıp ilanı sonrası geç-ACK için saklanan kayıt sayısı.
+    pub tombstone_records: u32,
+    /// Uçuştaki ve saklanan kayıtların en yenisi: seq, gönderim anı, kökeni.
+    pub latest_seq: Option<u64>,
+    pub latest_send_ns: Option<u64>,
+    pub latest_kind: Option<TransmitKind>,
+    /// Kayıtların (`pending_lost` dahil) en eskisinin gönderim anı.
+    pub earliest_record_send_ns: Option<u64>,
+    /// Kayıtlardaki en büyük ARQ `retx_count` (kopyalar 0 taşır).
+    pub max_retx_count: u8,
+    /// `pending_lost`'taysa (kayıp ilan edildi, ARQ retransmit bekliyor) kaydın `retx_count`'u.
+    pub pending_lost_retx: Option<u8>,
+    /// Kopya kuyruğundaysa: vade (ns) ve geometrik aralık (ns; 0 = tek atış, >0 = her atışta ×2).
+    pub dup_due_ns: Option<u64>,
+    pub dup_interval_ns: Option<u64>,
+}
+
 /// Commit-G: latch-baskılama nedenleri (named; kalibrasyon-dışı-hücre-işaretleri).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FecSuppressionReason {
@@ -4622,6 +4678,82 @@ impl Sender {
             pacer_tokens: self.pacer.tokens(),
             inflight_bytes: self.inflight_bytes,
         }
+    }
+
+    /// [K4G-05 / INT-02 TEŞHİS] Kurtarma kuyrukları ve zamanlayıcıları (bkz.
+    /// [`RecoveryTimersDiag`]). SALT OKUMA: `&self`; motor olayı sürülmez, durum değişmez.
+    #[must_use]
+    pub fn diag_recovery_timers(&self) -> RecoveryTimersDiag {
+        let len32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let srtt_ns = self.rtt.srtt().map(dur_ns);
+        let rttvar_ns = dur_ns(self.rtt.rttvar());
+        let tail = self.tail_recovery.config();
+        RecoveryTimersDiag {
+            state: self.state,
+            last_ack_ns: self.last_ack_ns,
+            inflight_len: len32(self.inflight.len()),
+            pending_lost_len: len32(self.pending_lost.len()),
+            dup_queue_len: len32(self.dup_queue.len()),
+            tombstones_len: len32(self.tombstones.len()),
+            tx_queue_len: len32(self.tx_queue.len()),
+            arq_retx_cap: self.arq.config().arq_retx_cap,
+            arq_aggressiveness_permille: self.last_decision.arq_aggressiveness_permille,
+            tail_enabled: tail.enabled,
+            tail_armed_at_ns: self.tail_recovery.armed_at_ns(),
+            tail_probe_index: self.tail_recovery.probe_index(),
+            tail_max_probes: tail.max_tail_probes,
+            tail_pto_ns: self.tail_recovery.current_pto_ns(srtt_ns, rttvar_ns),
+            base_pto_ns: self.tail_recovery.base_pto_ns(srtt_ns, rttvar_ns),
+        }
+    }
+
+    /// [K4G-05 / INT-02 TEŞHİS] `unit_id` kaynak biriminin motordaki kayıtları (bkz.
+    /// [`UnitRecoveryDiag`]). SALT OKUMA: `&self`; uçuştaki, saklanan (tombstone), kayıp-ilanlı ve
+    /// kopya kuyruklarını tarar (sınırlı yapılar), hiçbirini değiştirmez.
+    #[must_use]
+    pub fn diag_unit_recovery(&self, unit_id: u64) -> UnitRecoveryDiag {
+        let mut d = UnitRecoveryDiag::default();
+        let mut latest: Option<(u64, u64, TransmitKind)> = None;
+        let mut note = |d: &mut UnitRecoveryDiag, seq: u64, send_ns: u64, retx: u8, kind| {
+            d.max_retx_count = d.max_retx_count.max(retx);
+            d.earliest_record_send_ns = Some(
+                d.earliest_record_send_ns
+                    .map_or(send_ns, |e| e.min(send_ns)),
+            );
+            if latest.is_none_or(|(t, _, _)| send_ns >= t) {
+                latest = Some((send_ns, seq, kind));
+            }
+        };
+        for (&seq, p) in &self.inflight {
+            if p.unit.id == unit_id && p.origin != TransmitKind::FecParity {
+                d.inflight_records = d.inflight_records.saturating_add(1);
+                note(&mut d, seq, p.send_ns, p.retx_count, p.origin);
+            }
+        }
+        for (&seq, t) in &self.tombstones {
+            if t.unit.id == unit_id && t.origin != TransmitKind::FecParity {
+                d.tombstone_records = d.tombstone_records.saturating_add(1);
+                note(&mut d, seq, t.send_ns, t.retx_count, t.origin);
+            }
+        }
+        if let Some(r) = self.pending_lost.iter().find(|r| r.unit.id == unit_id) {
+            d.pending_lost_retx = Some(r.retx_count);
+            d.max_retx_count = d.max_retx_count.max(r.retx_count);
+            d.earliest_record_send_ns = Some(
+                d.earliest_record_send_ns
+                    .map_or(r.send_ns, |e| e.min(r.send_ns)),
+            );
+        }
+        if let Some(dup) = self.dup_queue.iter().find(|q| q.unit.id == unit_id) {
+            d.dup_due_ns = Some(dup.due_ns);
+            d.dup_interval_ns = Some(dup.interval_ns);
+        }
+        if let Some((send_ns, seq, kind)) = latest {
+            d.latest_send_ns = Some(send_ns);
+            d.latest_seq = Some(seq);
+            d.latest_kind = Some(kind);
+        }
+        d
     }
 
     /// [FAZ-2 KALEM-2] §8.5 bant-türevli bütçe clamp'inin parity oranını KÜÇÜLTTÜĞÜ karar sayısı.

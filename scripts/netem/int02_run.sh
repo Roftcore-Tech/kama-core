@@ -50,6 +50,12 @@ kullanım: scripts/netem/int02_run.sh [seçenekler]
   --count N             yön başına TEXT (örneğe iletilir; varsayılan örnekte 100)
   --interval-ms MS      TEXT aralığı (örneğe iletilir; varsayılan örnekte 100)
   --negative-drain-s S  negatif kolun boşaltma üst sınırı (varsayılan: $NEGATIVE_DRAIN_S_DEFAULT)
+  --drain-s S           son gönderimden sonra tamamlanma üst sınırı (örneğe iletilir; verilmezse
+                        örneğin varsayılanı 120; negatif kol --negative-drain-s kullanır)
+  --outage-wait-s S     kesinti uygulandıktan sonra KESINTI_BITTI için azami bekleme (örneğe
+                        iletilir; verilmezse örneğin varsayılanı 180)
+  --settle-s S          tamamlanmadan sonra Transport sakinleşmesi üst sınırı (örneğe iletilir;
+                        verilmezse örneğin varsayılanı 10)
   --keep-work           geçici çalışma dizinlerini silme
   --dry-run             yalnız planı ve komutları yaz, hiçbir şey koşma
   --check               önkoşulları denetle (ikililer, komutlar, sch_netem, unprivileged userns)
@@ -100,11 +106,19 @@ inner() {
   )
   if [ -n "${INT02_COUNT:-}" ]; then args+=(--count "$INT02_COUNT"); fi
   if [ -n "${INT02_INTERVAL_MS:-}" ]; then args+=(--interval-ms "$INT02_INTERVAL_MS"); fi
+  if [ -n "${INT02_SETTLE_S:-}" ]; then args+=(--settle-s "$INT02_SETTLE_S"); fi
   local budget="$BUDGET_DEFAULT"
   case "$arm" in
     negatif) args+=(--drain-s "$INT02_NEGATIVE_DRAIN_S") ;;
-    ek-kesinti) args+=(--sync-dir "$work/sync"); budget="$BUDGET_OUTAGE" ;;
+    *) if [ -n "${INT02_DRAIN_S:-}" ]; then args+=(--drain-s "$INT02_DRAIN_S"); fi ;;
   esac
+  if [ "$arm" = "ek-kesinti" ]; then
+    args+=(--sync-dir "$work/sync")
+    budget="$BUDGET_OUTAGE"
+    if [ -n "${INT02_OUTAGE_WAIT_S:-}" ]; then args+=(--outage-wait-s "$INT02_OUTAGE_WAIT_S"); fi
+  fi
+  # Uzatılmış üst sınırlar verildiyse süre bütçesi de o kadar uzar (örneğin kendi sınırları geçerli kalsın).
+  budget=$(( budget + ${INT02_DRAIN_S:-0} + ${INT02_SETTLE_S:-0} + ${INT02_OUTAGE_WAIT_S:-0} ))
 
   local t_run; t_run="$(date +%s.%N)"
   local t_apply="" t_restore="" exit_code=0
@@ -251,6 +265,9 @@ PROVISION=""
 COUNT=""
 INTERVAL_MS=""
 NEGATIVE_DRAIN_S="$NEGATIVE_DRAIN_S_DEFAULT"
+DRAIN_S=""
+OUTAGE_WAIT_S=""
+SETTLE_S=""
 KEEP=0
 DRY=0
 CHECK=0
@@ -265,6 +282,9 @@ while [ $# -gt 0 ]; do
     --count) COUNT="${2:?--count değer ister}"; shift 2 ;;
     --interval-ms) INTERVAL_MS="${2:?--interval-ms değer ister}"; shift 2 ;;
     --negative-drain-s) NEGATIVE_DRAIN_S="${2:?--negative-drain-s değer ister}"; shift 2 ;;
+    --drain-s) DRAIN_S="${2:?--drain-s değer ister}"; shift 2 ;;
+    --outage-wait-s) OUTAGE_WAIT_S="${2:?--outage-wait-s değer ister}"; shift 2 ;;
+    --settle-s) SETTLE_S="${2:?--settle-s değer ister}"; shift 2 ;;
     --keep-work) KEEP=1; shift ;;
     --dry-run) DRY=1; shift ;;
     --check) CHECK=1; shift ;;
@@ -285,6 +305,11 @@ done
 for seed in $SEEDS; do
   case "$seed" in
     ''|*[!0-9]*) die "tohum negatif olmayan tamsayı olmalı: $seed" ;;
+  esac
+done
+for value in "$NEGATIVE_DRAIN_S" "$DRAIN_S" "$OUTAGE_WAIT_S" "$SETTLE_S"; do
+  case "$value" in
+    *[!0-9]*) die "süre seçenekleri negatif olmayan tamsayı (s) olmalı: $value" ;;
   esac
 done
 
@@ -315,6 +340,7 @@ if [ "$DRY" = 1 ]; then
   echo "profil     : $PROFILE_NAME = netem $NETEM_ARGS seed <S> (dev lo, bir kez)"
   echo "tohumlar   : $SEEDS"
   echo "kollar     : $ARMS"
+  echo "üst sınırlar: drain=${DRAIN_S:-örnek varsayılanı} outage-wait=${OUTAGE_WAIT_S:-örnek varsayılanı} settle=${SETTLE_S:-örnek varsayılanı} negatif-drain=$NEGATIVE_DRAIN_S"
   for seed in $SEEDS; do
     for arm in $ARMS; do
       echo "  [s$seed $arm] unshare -rn: ip link set lo up; kama-provision init --out <work>/authority" \
@@ -347,6 +373,7 @@ for seed in $SEEDS; do
     rc=0
     INT02_EXAMPLE="$EXAMPLE" INT02_PROVISION="$PROVISION" INT02_COUNT="$COUNT" \
     INT02_INTERVAL_MS="$INTERVAL_MS" INT02_NEGATIVE_DRAIN_S="$NEGATIVE_DRAIN_S" \
+    INT02_DRAIN_S="$DRAIN_S" INT02_OUTAGE_WAIT_S="$OUTAGE_WAIT_S" INT02_SETTLE_S="$SETTLE_S" \
       unshare -rn bash "$SELF" __inner "$seed" "$arm" "$work" "$outfile" || rc=$?
     if [ "$rc" != 0 ]; then
       echo "  ! iç kip çıkışı $rc (kayıt: $outfile varsa ona bakın; çalışma dizini korunuyor: $work)"

@@ -10,7 +10,9 @@
 //!
 //! * Transport ARQ / RTT: `ClientTransport::session_live_diags` (canlı oturum uçları) ve
 //!   `ClientTransport::retired_live_diag` (ucu bırakılan oturumların sayaç toplamı) —
-//!   `client_core::runtime::ClientLiveDiag`.
+//!   `client_core::runtime::ClientLiveDiag`; gönderen kurtarma görüntüsü (takılı birim zaman
+//!   çizelgesi) `ClientLiveDiag::recovery` içindedir.
+//! * Alıcı sıralı teslim (takılı birim): `ClientTransport::reorder_diags` (`ReorderDiag`).
 //! * Bağlam-önce dağıtım: `ClientTransport::ctx_dispatch_stats` (`not_ready_drops` dahil) ve
 //!   `ClientTransport::delivery_dropped`.
 //! * Application: `Messenger::stats` (`resent_on_new_session`, `resend_refused`, …).
@@ -20,6 +22,7 @@
 use std::collections::VecDeque;
 
 use client_core::runtime::ClientLiveDiag;
+use client_core::transport::ReorderDiag;
 use kama_app::messaging::MessengerStats;
 use kama_contracts::handles::SessionHandle;
 
@@ -37,6 +40,9 @@ pub struct NodeProbe {
     /// Ucu bırakılan (kapanan) oturumların ARQ / kurtarma sayaçlarının toplamı (RTT alanları 0;
     /// ucun kapanış boşaltmasındaki kararlar girmez — alt sınır).
     pub retired: ClientLiveDiag,
+    /// [K4G-05 TEŞHİS] Sıralı teslim durumu tutulan ama ucu açık bir oturuma eşlenemeyen oturumlar
+    /// (ör. supersede edilip `Closed`'u okunmamış oturum).
+    pub reorder_other: Vec<ReorderDiag>,
     /// INV-ACK-DELIVER-1: beklenen ama henüz `Ready` olmayan oturumun ACK'siz düşen datagramı.
     pub not_ready_drops: u64,
     /// K4G-01: beklenen tutamaçla eşleşmeyen `Session(_)` datagramı.
@@ -64,8 +70,11 @@ pub struct SessionProbe {
     pub peer_id: Option<String>,
     /// Oturumun gönderim DH epoch'u.
     pub epoch: Option<u8>,
-    /// Oturum ucunun motor / ARQ aynası.
+    /// Oturum ucunun motor / ARQ aynası (gönderen kurtarma görüntüsü dahil).
     pub diag: ClientLiveDiag,
+    /// [K4G-05 TEŞHİS] Bu oturumda alıcı tarafın sıralı teslim durumu (karşı ucun gönderdiği
+    /// birimler); durum tutulmuyorsa `None`.
+    pub reorder: Option<ReorderDiag>,
 }
 
 /// Düğümün işlediği S1 oturum olaylarının sayısı.

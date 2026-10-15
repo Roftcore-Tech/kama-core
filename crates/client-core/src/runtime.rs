@@ -730,10 +730,108 @@ pub struct ClientLiveDiag {
     /// PreConverge'den çıkış anı (ns, ucun başlangıcından; 0 = çıkılmadı) —
     /// `ActivationDiag::left_preconverge_ns`.
     pub left_preconverge_ns: u64,
+    /// [K4G-05 / INT-02 TEŞHİS] Gönderen kurtarma anlık görüntüsü (takılı birim zaman çizelgesi);
+    /// görev ana döngüde en çok [`RECOVERY_DIAG_PERIOD`]'da bir yeniler. İlk yenilemeden önce ve
+    /// kapanmış oturumlar toplamında (`ClientTransport::retired_live_diag`) `None`.
+    pub recovery: Option<SenderRecoveryDiag>,
+}
+
+/// [K4G-05 / INT-02 TEŞHİS] [`SenderRecoveryDiag`]'ın yenilenme aralığı — gözlem çözünürlüğü,
+/// normatif DEĞİL `[KALİBRASYON]`. Görüntü sınırlı yapıları (teyitsiz birim deposu, motorun uçuş /
+/// kayıp / kopya kuyrukları, PN çeviri penceresi) tarar; her döngü turunda değil, bu aralıkla alınır.
+pub const RECOVERY_DIAG_PERIOD: Duration = Duration::from_millis(200);
+
+/// [K4G-05 / INT-02 TEŞHİS] Gönderen ucun kurtarma anlık görüntüsü ([`ClientLiveDiag::recovery`]):
+/// teyitsiz birim sayısı, en eski teyitsiz birimin emisyon geçmişi ve motorun kurtarma
+/// zamanlayıcıları. SALT OKUMA: görev yalnız mevcut durumu okur (`Sender::diag_recovery_timers`,
+/// `Sender::diag_unit_recovery`); hiçbir karar bu yapıyı okumaz, motor olayı sürülmez. Süreler
+/// görüntünün alındığı ana (`taken_at`) göredir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SenderRecoveryDiag {
+    /// Görüntünün alındığı an (süreç monotonik saati).
+    pub taken_at: Instant,
+    /// Kabul edilmiş ama teyidi (ACK / FEC-RECOVERED) gelmemiş birim sayısı.
+    pub unacked_units: u32,
+    /// En eski (en küçük kimlikli) teyitsiz birim; teyitsiz birim yoksa `None`.
+    pub oldest_unacked: Option<StuckUnitDiag>,
+    /// Son ACK'in işlenmesinden beri (ns); hiç ACK yoksa `None`.
+    pub since_last_ack_ns: Option<u64>,
+    /// Tail-recovery idle penceresinin başından beri (ns); pencere kurulu değilse `None`.
+    pub tail_armed_for_ns: Option<u64>,
+    /// Motorun kurtarma kuyrukları ve zamanlayıcıları.
+    pub timers: adaptive_transport::sender::RecoveryTimersDiag,
+}
+
+/// [K4G-05 / INT-02 TEŞHİS] En eski teyitsiz birim ([`SenderRecoveryDiag::oldest_unacked`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StuckUnitDiag {
+    /// Birim kimliği (alıcının sıralı teslimindeki `unit_id`).
+    pub unit_id: u64,
+    /// Motorun bu birim için verdiği emisyon kararı sayısı: orijinal + ARQ retransmit + kopya +
+    /// tail-probe (kurtarma kapalıyken bastırılanlar dahil).
+    pub emission_decisions: u32,
+    /// Son emisyon kararının motor seq'i ve — tele çıktıysa ve PN çeviri penceresindeyse — tel PN'i.
+    pub last_seq: Option<u64>,
+    pub last_pn: Option<u64>,
+    /// Motorun bu birim için o an tuttuğu kayıtlar.
+    pub engine: adaptive_transport::sender::UnitRecoveryDiag,
+    /// Motor kayıtlarının en yenisinin / en eskisinin gönderiminden beri (ns). Kayıp ilanında düşen
+    /// kopya ve süresi dolan tombstone kayıtları görünmez.
+    pub since_latest_send_ns: Option<u64>,
+    pub since_earliest_record_ns: Option<u64>,
+    /// Kopya kuyruğundaki vadeye kalan süre (ns; negatif = vade geçti, jeton bekliyor).
+    pub dup_due_in_ns: Option<i64>,
+}
+
+/// [K4G-05 / INT-02 TEŞHİS] Gönderen kurtarma görüntüsü (bkz. [`SenderRecoveryDiag`]). SALT OKUMA:
+/// yalnız `&` referanslar; `now_ns` motorun saat tabanındadır (`elapsed_ns(start)`).
+fn capture_recovery(
+    sender: &adaptive_transport::sender::Sender,
+    store: &HashMap<u64, Vec<u8>>,
+    unit_seqs: &HashMap<u64, Vec<u64>>,
+    pn_seq: &VecDeque<(u64, u64)>,
+    now_ns: u64,
+) -> SenderRecoveryDiag {
+    let since = |t: u64| now_ns.saturating_sub(t);
+    let timers = sender.diag_recovery_timers();
+    let oldest_unacked = store.keys().min().map(|&unit_id| {
+        let seqs = unit_seqs.get(&unit_id);
+        let last_seq = seqs.and_then(|s| s.last().copied());
+        let last_pn = last_seq.and_then(|seq| {
+            pn_seq
+                .iter()
+                .rev()
+                .find(|&&(_, s)| s == seq)
+                .map(|&(pn, _)| pn)
+        });
+        let engine = sender.diag_unit_recovery(unit_id);
+        StuckUnitDiag {
+            unit_id,
+            emission_decisions: seqs.map_or(0, |s| u32::try_from(s.len()).unwrap_or(u32::MAX)),
+            last_seq,
+            last_pn,
+            engine,
+            since_latest_send_ns: engine.latest_send_ns.map(since),
+            since_earliest_record_ns: engine.earliest_record_send_ns.map(since),
+            dup_due_in_ns: engine.dup_due_ns.map(|due| {
+                let delta = i128::from(due) - i128::from(now_ns);
+                i64::try_from(delta).unwrap_or(if delta < 0 { i64::MIN } else { i64::MAX })
+            }),
+        }
+    });
+    SenderRecoveryDiag {
+        taken_at: Instant::now(),
+        unacked_units: u32::try_from(store.len()).unwrap_or(u32::MAX),
+        oldest_unacked,
+        since_last_ack_ns: timers.last_ack_ns.map(since),
+        tail_armed_for_ns: timers.tail_armed_at_ns.map(since),
+        timers,
+    }
 }
 
 impl ClientLiveDiag {
-    /// Motorun ve tel sayaçlarının o anki anlık görüntüsü (salt okuma).
+    /// Motorun ve tel sayaçlarının o anki anlık görüntüsü (salt okuma). Kurtarma görüntüsü
+    /// ([`Self::recovery`]) ayrı ve oranlı alınır.
     fn snapshot(sender: &adaptive_transport::sender::Sender, stats: &ClientStats) -> Self {
         let activation = sender.diag_activation();
         Self {
@@ -747,6 +845,7 @@ impl ClientLiveDiag {
             srtt_us: activation.srtt_us,
             rtprop_us: activation.rtprop_us,
             left_preconverge_ns: activation.left_preconverge_ns,
+            recovery: None,
         }
     }
 
@@ -1842,13 +1941,31 @@ async fn client_task(
         };
     }
 
+    // [K4G-05 / INT-02 TEŞHİS] Gönderen kurtarma görüntüsü ve sonraki yenileme anı (oranlı; bkz.
+    // `RECOVERY_DIAG_PERIOD`). Yalnız aynaya yazılır, görev okumaz.
+    let recovery_period_ns = u64::try_from(RECOVERY_DIAG_PERIOD.as_nanos()).unwrap_or(u64::MAX);
+    let mut recovery_next_ns: u64 = 0;
+    let mut recovery: Option<SenderRecoveryDiag> = None;
+
     // ── Ana döngü ──
     loop {
         // [K4G-05] Salt gözlem: motor ve tel sayaçlarının o anki değeri yayımlanır (önceki turun
         // bütün kolları dahil). Burada okunur, değişmez; görev aynayı OKUMAZ (bkz.
         // `ClientHandle::live_diag`).
-        *live.lock().unwrap_or_else(PoisonError::into_inner) =
-            ClientLiveDiag::snapshot(session.sender(), &stats);
+        let mut mirror = ClientLiveDiag::snapshot(session.sender(), &stats);
+        let mirror_now_ns = elapsed_ns(start);
+        if mirror_now_ns >= recovery_next_ns {
+            recovery_next_ns = mirror_now_ns.saturating_add(recovery_period_ns);
+            recovery = Some(capture_recovery(
+                session.sender(),
+                &store,
+                &unit_seqs,
+                &pn_seq,
+                mirror_now_ns,
+            ));
+        }
+        mirror.recovery = recovery;
+        *live.lock().unwrap_or_else(PoisonError::into_inner) = mirror;
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             // Ölçüm-t0 işareti (ClientHandle::mark_t0): wire sayaçları sıfırlanır, MOTOR DURUMU
@@ -3557,6 +3674,16 @@ mod live_diag_mirror_tests {
         let live = client.live_diag();
         assert!(live.tx_retx_bytes > 0, "retransmit tele çıktı: {live:?}");
         assert_eq!(live.recovery_suppressed, 0, "kurtarma açık: {live:?}");
+        // [K4G-05 TEŞHİS] Kurtarma görüntüsü oranlı yenilenir: teyitsiz birim kalmadığını gösterir.
+        assert!(
+            wait_until(|| client
+                .live_diag()
+                .recovery
+                .is_some_and(|r| r.unacked_units == 0 && r.oldest_unacked.is_none()))
+            .await,
+            "kurtarma görüntüsü teyitsiz birim kalmadığını göstermeli: {:?}",
+            client.live_diag()
+        );
         let stats = client.shutdown().await;
         let _ = server.shutdown().await;
         assert!(
@@ -3590,6 +3717,18 @@ mod live_diag_mirror_tests {
         let live = client.live_diag();
         assert_eq!(live.tx_retx_bytes, 0, "tele retransmit çıkmadı: {live:?}");
         assert!(client.outstanding() >= 1, "kaybolan birim teyitsiz kalır");
+        // [K4G-05 TEŞHİS] Takılı birim görüntüsü: en eski teyitsiz birim kaybolan ilk birimdir (0) ve
+        // orijinalinden sonra en az bir (bastırılan) kurtarma kararı almıştır.
+        assert!(
+            wait_until(|| client
+                .live_diag()
+                .recovery
+                .and_then(|r| r.oldest_unacked)
+                .is_some_and(|u| u.unit_id == 0 && u.emission_decisions >= 2))
+            .await,
+            "takılı birim görüntüsü: {:?}",
+            client.live_diag()
+        );
         let stats = client.shutdown().await;
         let _ = server.shutdown().await;
         assert!(

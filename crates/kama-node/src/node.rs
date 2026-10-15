@@ -782,7 +782,8 @@ impl NodeLoop {
     fn probe(&self) -> NodeProbe {
         let transport = self.messenger.transport();
         let ctx = transport.ctx_dispatch_stats();
-        let sessions = transport
+        let mut reorder = transport.reorder_diags();
+        let sessions: Vec<SessionProbe> = transport
             .session_live_diags()
             .into_iter()
             .map(|(session, diag)| SessionProbe {
@@ -793,11 +794,17 @@ impl NodeLoop {
                     .map(str::to_owned),
                 epoch: transport.session_epoch(session),
                 diag,
+                reorder: reorder
+                    .iter()
+                    .find(|(handle, _)| *handle == session)
+                    .map(|&(_, diag)| diag),
             })
             .collect();
+        reorder.retain(|(handle, _)| !sessions.iter().any(|s| s.session == *handle));
         NodeProbe {
             sessions,
             retired: transport.retired_live_diag(),
+            reorder_other: reorder.into_iter().map(|(_, diag)| diag).collect(),
             not_ready_drops: ctx.not_ready_drops,
             ctx_mismatch_drops: ctx.ctx_mismatch_drops,
             hub_frames_dropped: ctx.hub_frames_dropped,

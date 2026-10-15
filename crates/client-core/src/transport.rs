@@ -368,6 +368,17 @@ struct Reorder {
     held: BTreeMap<u64, (SessionHandle, Vec<u8>)>,
 }
 
+/// [K4G-05 / INT-02 TEŞHİS] Bir oturumun sıralı teslim durumu ([`ClientTransport::reorder_diags`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReorderDiag {
+    /// Teslim beklenen sıradaki birim kimliği (bundan küçükler teslim edildi).
+    pub next_unit: u64,
+    /// `next_unit` gelmediği için tutulan (sırası gelmemiş) birim sayısı.
+    pub held_units: u32,
+    /// Tutulan en küçük birim kimliği; tutulan yoksa `None`.
+    pub first_held_unit: Option<u64>,
+}
+
 impl Reorder {
     /// Birimi koyar; sırası gelen birimler `out`'a akar. Tutulan birim `cap`'i aşarsa en küçük
     /// boşluk atlanır (motorun gönderim penceresi bunu meşru trafikte imkânsız kılar).
@@ -592,6 +603,30 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     #[must_use]
     pub fn retired_live_diag(&self) -> ClientLiveDiag {
         self.retired_diag
+    }
+
+    /// [K4G-05 / INT-02 TEŞHİS] Salt-okunur: alıcı tarafta oturum başına sıralı teslimin (`Reorder`,
+    /// S1 §4) durumu, tutamaç sırasıyla — teslim beklenen sıradaki birim (boşluk oradadır), onun
+    /// arkasında tutulan birim sayısı ve tutulan en küçük birim. Durum değişmez; teslim yolu bu
+    /// değerleri okumaz.
+    #[must_use]
+    pub fn reorder_diags(&self) -> Vec<(SessionHandle, ReorderDiag)> {
+        let mut out: Vec<(SessionHandle, ReorderDiag)> = self
+            .reorder
+            .iter()
+            .map(|(h, r)| {
+                (
+                    *h,
+                    ReorderDiag {
+                        next_unit: r.next,
+                        held_units: u32::try_from(r.held.len()).unwrap_or(u32::MAX),
+                        first_held_unit: r.held.keys().next().copied(),
+                    },
+                )
+            })
+            .collect();
+        out.sort_by_key(|(h, _)| *h);
+        out
     }
 
     /// Bekleyen işi sürer: zarf olayları → tutulan yenileme yanıtları → Crypto olayları →
@@ -1389,5 +1424,6 @@ mod tests {
         // [K4G-05] Oturum yok → canlı ayna listesi boş, kapanmış oturum toplamı sıfır.
         assert!(transport.session_live_diags().is_empty());
         assert_eq!(transport.retired_live_diag(), ClientLiveDiag::default());
+        assert!(transport.reorder_diags().is_empty());
     }
 }

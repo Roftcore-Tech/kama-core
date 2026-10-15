@@ -32,6 +32,12 @@ HÜKÜM KURALLARI (her tohum ayrı; "temiz" = aşağıdaki ortak koşulların he
   T4: her GATING kolu için tohum sayısı ≥ 5 ve her tohum GEÇTİ.
 
 Yüzdelikler örnekte EN YAKIN SIRA (nearest-rank) yöntemiyle hesaplanır; burada yeniden hesaplanmaz.
+
+TAKILI BİRİM ÖZETİ (K4G-05 teşhis; hüküm DEĞİL): her koşu için tek satır — son sondadaki gönderen
+kurtarma görüntüsü (`nodes.*.probe.sessions[].recovery`: teyitsiz birim, en eski teyitsiz birimin
+emisyon kararı / ARQ retx düzeyi ve tavanı / motor kayıtları / kopya vadesi ve aralığı / son
+gönderimden ve son ACK'ten beri, tail-probe turu ve PTO, motor durumu) ve alıcı sıralı teslim durumu
+(`reorder`: beklenen birim, arkasında tutulan). Zaman çizelgesi örnek sayısı `timeline.samples`.
 """
 
 from __future__ import annotations
@@ -271,6 +277,44 @@ def epoch_cell(rec):
                 get(node(rec, "bob"), "epoch", "epoch1_after_connected_ms"), 0)
 
 
+def fmt_s(ms):
+    return DASH if ms is None else f"{ms / 1000.0:.1f} s"
+
+
+def first_session(rec, name):
+    sessions = probe(rec, name).get("sessions") or []
+    return sessions[0] if sessions else {}
+
+
+def stuck_cell(rec, name):
+    """Bir düğümün gönderen kurtarma görüntüsü (son sonda) — tek hücre."""
+    r = first_session(rec, name).get("recovery") or {}
+    if not r:
+        return "görüntü yok"
+    t, u = r.get("timers") or {}, r.get("oldest_unacked")
+    parts = [f"teyitsiz {fmt(r.get('unacked_units'))}"]
+    if u:
+        parts.append(f"en eski u{u.get('unit_id')}: {fmt(u.get('emission_decisions'))} karar, "
+                     f"retx {fmt(u.get('max_retx_count'))}/{fmt(t.get('arq_retx_cap'))}, "
+                     f"inf {fmt(u.get('inflight_records'))} tomb {fmt(u.get('tombstone_records'))} "
+                     f"pl {fmt(u.get('pending_lost_retx'))}, son gönd. {fmt_s(u.get('since_latest_send_ms'))}")
+        if u.get("dup_interval_ms") is not None:
+            parts.append(f"kopya vade {fmt_s(u.get('dup_due_in_ms'))} aralık {fmt_s(u.get('dup_interval_ms'))}")
+    parts.append(f"son ACK {fmt_s(r.get('since_last_ack_ms'))}")
+    parts.append(f"tail {fmt(t.get('tail_probe_index'))}/{fmt(t.get('tail_max_probes'))} "
+                 f"PTO {fmt_s(t.get('tail_pto_ms'))}")
+    parts.append(f"arq‰ {fmt(t.get('arq_aggressiveness_permille'))}")
+    parts.append(str(t.get("state", DASH)))
+    return " · ".join(parts)
+
+
+def reorder_cell(rec, name):
+    ro = first_session(rec, name).get("reorder") or {}
+    if not ro:
+        return DASH
+    return f"next {fmt(ro.get('next_unit'))} · tutulan {fmt(ro.get('held_units'))}"
+
+
 def session_diag(rec, name, field):
     sessions = probe(rec, name).get("sessions") or []
     if len(sessions) != 1:
@@ -447,6 +491,32 @@ def render(runs, seeds) -> tuple[str, dict]:
                       "PTT demet", "sıralı+tam", "Ready A / B", "ARQ retx A / B",
                       "netem doğrulama"], rows), ""]
 
+    # TAKILI BİRİM ÖZETİ (teşhis; hüküm değil) — koşu başına tek satır
+    rows = []
+    for arm in ALL_ARMS:
+        for s in seeds:
+            r = rec(s, arm)
+            if r is None:
+                continue
+            samples = get(r, "timeline", "samples", default=[]) or []
+            rows.append([s, arm, r.get("result"),
+                         pair(probe(r, "alice").get("outstanding_units"), probe(r, "bob").get("outstanding_units"), 0),
+                         stuck_cell(r, "alice"), stuck_cell(r, "bob"),
+                         reorder_cell(r, "alice"), reorder_cell(r, "bob"),
+                         f"{len(samples)} (düşen {fmt(get(r, 'timeline', 'dropped'))})"])
+            summary.setdefault("stuck", []).append({
+                "seed": s, "arm": arm, "result": r.get("result"),
+                "alice": first_session(r, "alice").get("recovery"),
+                "bob": first_session(r, "bob").get("recovery"),
+                "reorder": {"alice": first_session(r, "alice").get("reorder"),
+                            "bob": first_session(r, "bob").get("reorder")}})
+    if rows:
+        md += ["### Takılı birim özeti (K4G-05 teşhis; hüküm değil — son sonda)",
+               "A = alice, B = bob. Gönderen hücresi o düğümün GÖNDERDİĞİ yöndür; `reorder` o düğümün "
+               "ALDIĞI yönde sıralı teslimin beklediği birim ve arkasında tutulanlardır.",
+               table(["tohum", "kol", "sonuç", "teyitsiz birim A / B", "gönderen A", "gönderen B",
+                      "alıcı reorder A", "alıcı reorder B", "zaman çizelgesi örneği"], rows), ""]
+
     # gerekçeler
     reasons = []
     for arm, per_seed in summary["arms"].items():
@@ -469,8 +539,19 @@ def _synthetic(arm: str, seed: int, *, lossy_negative=True, broken=False) -> dic
               "arq_total": {"retransmits": 40, "tail_probes": 3, "recovery_suppressed": 0,
                             "tx_retx_bytes": 4000},
               "crypto": {"inits_sent": 1, "responses_sent": 0},
+              "outstanding_units": 0,
               "sessions": [{"diag": {"rtt_samples": 90, "srtt_ms": 410.0, "min_rtt_ms": 20.0,
-                                     "left_preconverge_ms": 800.0}}]}
+                                     "left_preconverge_ms": 800.0},
+                            "recovery": {"unacked_units": 1, "since_last_ack_ms": 400.0,
+                                         "timers": {"state": "RecoverFwd", "arq_retx_cap": 3,
+                                                    "tail_probe_index": 3, "tail_max_probes": 3,
+                                                    "tail_pto_ms": 30000.0, "arq_aggressiveness_permille": 500},
+                                         "oldest_unacked": {"unit_id": 17, "emission_decisions": 7,
+                                                            "max_retx_count": 3, "inflight_records": 0,
+                                                            "tombstone_records": 2, "pending_lost_retx": None,
+                                                            "since_latest_send_ms": 12000.0,
+                                                            "dup_due_in_ms": 41000.0, "dup_interval_ms": 51200.0}},
+                            "reorder": {"next_unit": 17, "held_units": 31, "first_held_unit": 18}}]}
     full = {"sent": count, "delivered": count, "receipts": count, "duplicate_deliveries": 0,
             "mismatched_texts": 0, "unknown_deliveries": 0, "delivered_pct": 100.0, "receipt_pct": 100.0,
             "first_send_epoch": 0, "first_send_ms": 50.0,
@@ -531,7 +612,9 @@ def selftest() -> int:
             for arm in ("gating1", "gating2", "gating6", "negatif"):
                 (d / f"seed-{seed}-{arm}.json").write_text(json.dumps(_synthetic(arm, seed)), encoding="utf-8")
         md, summary = render(load(d), list(range(1, 6)))
-        ok = summary["t4"]["pass"] and "### T4" in md and "DUR-K4G-01 (iii)" in md
+        ok = (summary["t4"]["pass"] and "### T4" in md and "DUR-K4G-01 (iii)" in md
+              and "### Takılı birim özeti" in md and "en eski u17: 7 karar, retx 3/3" in md
+              and "next 17 · tutulan 31" in md)
         failed += not ok
         print(f"  {'PASS' if ok else 'FAIL'}  5 tohum × 4 kol sentetik → T4 GEÇTİ ve tablolar")
     print("int02_analyze öz-test:", "YEŞİL" if not failed else f"KIRMIZI ({failed})")
