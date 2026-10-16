@@ -62,6 +62,18 @@ KM-SEAM-TC-001 §6 H-SPLIT):
       SINIR: ad düzeyidir — kurma modülünün döndürdüğü bir değer üzerinde yöntem çağrısı (adsız)
       görülmez; o yol inceleme işidir.
 
+  [2026-10-16 K4G-15 — FFI SARMALAYICI sınıfı; plan D10]
+  C9  FFI sarmalayıcısı (`FFI_WRAPPER`: `kama-mobile`, UniFFI yüzeyi) bileşim kökünün API'sini
+      birebir sarar, protokol mantığı taşımaz: workspace içi DOĞRUDAN bağımlılıkları YALNIZ
+      `FFI_ALLOWED`'dakiler ve YALNIZ izinli türde — `kama-node` (sarılan API), `kama-app` ve
+      `kama-contracts` (yalnız `KamaNode` imzalarındaki tip adları için; normal), `kama-provision`
+      (yalnız dev: smoke testi cihaz dosyalarını CLI ile üretir). Transport, Crypto ve altyapı
+      crate'leri (client-core, kama-noise-wire, kama-store …) hiçbir türde olamaz; build-bağımlılığı
+      olamaz. Workspace içi bağımlılık = manifest'te kaynağı (`source`) olmayan, yol bağımlılığı.
+      Harici crate'ler (`uniffi`, `thiserror`) bu kuralın konusu değildir (D11: cargo deny + inceleme).
+      SINIR: doğrudan kenar denetlenir; `kama-node` her katmana bağlandığı için geçişli kapanış
+      (bileşim kökünün kapanışı) kuralın konusu değildir.
+
   GEÇİŞLİ KAPANIŞ NASIL HESAPLANIR: `cargo metadata`'nın çözümlenmiş grafiği üzerinden. Kök crate'in
   KENDİ dev-bağımlılıkları dahildir (testleri de katman kuralına tabidir); yol üzerindeki diğer
   crate'lerin dev-bağımlılıkları dahil DEĞİLDİR (onlar kökün derleme grafiğine girmez).
@@ -73,6 +85,7 @@ ortam hatası (2) verir — "denetlenecek şey yok" sessizce "ihlal yok" sayılm
 yeniden adlandırılırsa kural sessizce boşa düşmez.
 [2026-10-12 K4G-11] Bileşim kökü (`kama-node`, C8) metadata'da yoksa, ürün kaynağı bulunamazsa ya da
 kurma modülü (`src/wiring.rs`) yoksa da ortam hatası (2).
+[2026-10-16 K4G-15] FFI sarmalayıcısı (`kama-mobile`, C9) metadata'da yoksa da ortam hatası (2).
 
 Çıkış: 0 = temiz · 1 = katman ihlali · 2 = ortam/kullanım hatası.
 """
@@ -127,6 +140,14 @@ INFRA = ("kama-store",)
 ROOT_WIRING = {"kama-node": "src/wiring.rs"}
 COMPOSITION_ROOTS: tuple[str, ...] = tuple(sorted(ROOT_WIRING))
 ROOT_CRYPTO_NAME = re.compile(r"\bkama_noise_wire\b")
+# C9 [2026-10-16 K4G-15] — FFI sarmalayıcı sınıfı: {workspace crate'i: izinli bağımlılık türleri}.
+FFI_WRAPPER = "kama-mobile"
+FFI_ALLOWED: dict[str, frozenset[str]] = {
+    "kama-node": frozenset({"normal"}),       # sarılan API (`KamaNode`)
+    "kama-app": frozenset({"normal"}),        # `KamaNode` imzalarındaki tip adları
+    "kama-contracts": frozenset({"normal"}),  # `KamaNode` olaylarındaki tip adları
+    "kama-provision": frozenset({"dev"}),     # smoke testi: cihaz dosyaları CLI ile
+}
 
 
 def strip_comments(src: str) -> str:
@@ -426,6 +447,30 @@ def root_findings(metadata: dict, root_sources: dict[str, dict[str, str]],
     return findings
 
 
+def ffi_findings(metadata: dict) -> list[str]:
+    """C9 [2026-10-16 K4G-15] — FFI sarmalayıcısının workspace içi doğrudan bağımlılıkları.
+
+    Saf fonksiyon: `main()` onu gerçek metadata ile, öz-test sentetik metadata ile çağırır.
+    Workspace içi bağımlılık = manifest bağımlılığında `source` yok (yol bağımlılığı); harici
+    crate'ler kuralın konusu değildir. Vakum koruması: FFI crate'i metadata'da yoksa ortam hatası.
+    """
+    pkg = next((p for p in metadata["packages"] if p["name"] == FFI_WRAPPER), None)
+    if pkg is None:
+        raise EnvironmentError(f"`{FFI_WRAPPER}` paketi metadata'da yok — FFI kuralı (C9) denetlenemiyor")
+    findings: list[str] = []
+    for dep in pkg["dependencies"]:
+        if dep.get("source") is not None:
+            continue
+        kind = dep.get("kind") or "normal"
+        allowed = FFI_ALLOWED.get(dep["name"], frozenset())
+        if kind in allowed:
+            continue
+        rule = f"yalnız {'/'.join(sorted(allowed))} türünde" if allowed else "hiçbir türde"
+        findings.append(f"C9 {FFI_WRAPPER} → {dep['name']} ({kind} bağımlılık): FFI sarmalayıcısı bu crate'e "
+                        f"{rule} bağlanabilir (izinli: {', '.join(sorted(FFI_ALLOWED))})")
+    return findings
+
+
 def root_inputs(md: dict) -> dict[str, dict[str, str]]:
     """C8 girdisi: her bileşim kökünün `src/**/*.rs` dosyaları, crate-göreli yolla. Kök metadata'da
     yoksa listeye girmez (`root_findings` ortam hatası verir)."""
@@ -697,6 +742,34 @@ def selftest() -> int:
             bad += 1
         except EnvironmentError:
             print(f"  PASS  {name}: ortam hatası (yeşil DEĞİL)")
+    # C9 [2026-10-16 K4G-15] — FFI sarmalayıcısının workspace içi doğrudan bağımlılıkları.
+    def ffi_md(deps):
+        """Sentetik metadata: yalnız FFI crate'i; `deps` = [(ad, tür, workspace_mı)]."""
+        registry = "registry+https://github.com/rust-lang/crates.io-index"
+        manifest = [{"name": n, "kind": k, "source": None if ws else registry} for n, k, ws in deps]
+        return {"packages": [{"name": FFI_WRAPPER, "id": f"id:{FFI_WRAPPER}", "dependencies": manifest}],
+                "resolve": {"nodes": []}}
+    ffi_ok = [("kama-node", None, True), ("kama-app", None, True), ("kama-contracts", None, True),
+              ("kama-provision", "dev", True), ("uniffi", None, False), ("thiserror", None, False)]
+    ffi_cases = [
+        ("C9 DEĞİL: kama-node + tip crate'leri (normal), kama-provision (dev), harici crate'ler", ffi_ok, []),
+        ("C9 kama-mobile → client-core (normal)", ffi_ok + [("client-core", None, True)], ["C9"]),
+        ("C9 kama-mobile → kama-noise-wire (dev)", ffi_ok + [("kama-noise-wire", "dev", True)], ["C9"]),
+        ("C9 kama-mobile → kama-store (normal)", ffi_ok + [("kama-store", None, True)], ["C9"]),
+        ("C9 kama-provision normal bağımlılık olamaz (yalnız dev)", [("kama-provision", None, True)], ["C9"]),
+        ("C9 kama-node build-bağımlılığı olamaz", [("kama-node", "build", True)], ["C9"]),
+    ]
+    for name, deps, want in ffi_cases:
+        got = sorted({f.split()[0] for f in ffi_findings(ffi_md(deps))})
+        ok = got == want
+        bad += not ok
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}: beklenen {want or 'temiz'}, gelen {got or 'temiz'}")
+    try:
+        ffi_findings({"packages": [], "resolve": {"nodes": []}})
+        print("  FAIL  vakum: kama-mobile yok (C9): ortam hatası bekleniyordu, yeşil döndü")
+        bad += 1
+    except EnvironmentError:
+        print("  PASS  vakum: kama-mobile yok (C9): ortam hatası (yeşil DEĞİL)")
     print(f"layer_check öz-test: {'YEŞİL' if not bad else f'{bad} BAŞARISIZ'}")
     return 1 if bad else 0
 
@@ -715,6 +788,7 @@ def main(argv: list[str]) -> int:
         md, sources = real_inputs(root)
         findings = check(md, sources)
         findings += root_findings(md, root_inputs(md))  # C8 [2026-10-12 K4G-11]
+        findings += ffi_findings(md)  # C9 [2026-10-16 K4G-15]
     except EnvironmentError as e:
         print(f"ORTAM HATASI: {e}", file=sys.stderr)
         return 2
@@ -724,7 +798,7 @@ def main(argv: list[str]) -> int:
     if findings:
         print(f"\nLAYER-CHECK: KIRMIZI ({len(findings)} ihlal) — INV-NEIGHBOR-1")
         return 1
-    print(f"LAYER-CHECK: YEŞİL ({APP}: {len(sources)} kaynak dosyası; L1/L2/L3 + C1–C8 temiz; kök={root})")
+    print(f"LAYER-CHECK: YEŞİL ({APP}: {len(sources)} kaynak dosyası; L1/L2/L3 + C1–C9 temiz; kök={root})")
     return 0
 
 
