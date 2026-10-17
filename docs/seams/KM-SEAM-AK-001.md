@@ -35,9 +35,9 @@ kama-app (UI) ── ui-api v0.3 ──▶ RealKamaEngine (Kotlin facade, Hasan)
   Akış ve durum yüzeyi (`StateFlow`, "conflated + replay=1") facade'ın inşasıdır (ui-api §2).
 * `onEvent` düğümün kendi iş parçacığında çağrılır (hızlı dönmeli). İçinden aynı düğümün yanıt bekleyen çağrısı
   `NodeException.ReentrantCall` alır, `shutdown` asenkrondur ve kapanışı her durumda ister (§1). Koruma yalnız aynı düğüm
-  için; dinleyiciden başka düğüme engelleyici çağrı yapma (başka düğümün `shutdown`'ı da senkrondur). Kotlin'in attığı
-  `kotlin.Exception` Rust'ta yutulur, düğüm etkilenmez; `kotlin.Error`'u UniFFI yakalamaz (JNA loglar) — README-HASAN:
-  `onEvent` gövdesi `Throwable` yakalar.
+  için; dinleyiciden başka düğüme engelleyici çağrı yapma (başka düğümün `shutdown`'ı da engelleyicidir: yuvası serbestse
+  join eder). Kotlin'in attığı `kotlin.Exception` Rust'ta yutulur, düğüm etkilenmez; `kotlin.Error`'u UniFFI yakalamaz
+  (JNA loglar) — README-HASAN: `onEvent` gövdesi `Throwable` yakalar.
 * FFI geçişi çağrı ve olay başınadır (metin, dosya, PTT demeti, sinyalleşme blob'u); ağ datagramları FFI'ı geçmez
   (ADR-15: paket başına geçiş yok).
 * Bu sürümde iki telefon arası oturum yoktur: el sıkışma zarfı taşıyıcısı süreç-içi röledir (DUR-K4G-11 → B); iki
@@ -60,7 +60,7 @@ kama-app (UI) ── ui-api v0.3 ──▶ RealKamaEngine (Kotlin facade, Hasan)
 | `onPlatformSignal(signal)` | `on_platform_signal` | Yalnız `PlatformSignal.LINK_CHANGED` (D15: protokol davranışı yok). Yuva kilidini ve düğüm turunu beklemez |
 | `drainBackground()` | `drain_background` | Outbox + yeniden gönderim pompası, oturumsuz eşe `connect` (EK-2) |
 | `metrics(): NodeMetrics` | `metrics` | Yuva kilidini ve düğüm turunu beklemez; yalnız ölçü anlık görüntüsünün kısa Mutex'ini alır. FFI farkı: kapanış başlayınca `NodeException.Stopped` |
-| `shutdown()` | `shutdown` | İdempotent. JVM iş parçacığından TAM DURUŞU bekler: dönüşte depo kilidi, UDP soketi ve süreç-içi röle kaydı bırakılmıştır, aynı `dataDir` ile yeniden `start` edilebilir; eşzamanlı ikinci çağrı da ilkinin bitişini bekler ve onun sonucunu döner. Dinleyicinin içinden ASENKRON ve kapanışı HER DURUMDA ister: yuva serbestse düğümü alır; yuva başka bir çağrıda tutuluyorsa (ör. süren `sendText`) kapanış kısa ömürlü bir iş parçacığına devredilir; kapanış zaten istendiyse ya da sürüyorsa onun durumu döner. Tek hata `NodeException.Spawn` (o iş parçacığı açılamadı; kapanış istenmedi) — yutulmamalı. Başka düğümün `shutdown`'ı dinleyiciden senkrondur (join). Kapanış başlayınca her çağrı `Stopped` |
+| `shutdown()` | `shutdown` | İdempotent. JVM iş parçacığından TAM DURUŞU bekler: dönüşte depo kilidi, UDP soketi ve süreç-içi röle kaydı bırakılmıştır, aynı `dataDir` ile yeniden `start` edilebilir; eşzamanlı ikinci çağrı da ilkinin bitişini bekler ve onun sonucunu döner. Dinleyicinin içinden ASENKRON ve kapanışı HER DURUMDA ister: yuva serbestse düğümü alır; yuva başka bir çağrıda tutuluyorsa (ör. süren `sendText`) kapanış kısa ömürlü bir iş parçacığına devredilir; kapanış zaten istendiyse ya da sürüyorsa onun durumu döner. Tek hata `NodeException.Spawn` (o iş parçacığı açılamadı; kapanış istenmedi) — yutulmamalı. Başka düğümün `shutdown`'ı dinleyiciden senkrondur: o düğümün yuvası serbestse join eder (meşgulse devredilir, beklemeden döner). Kapanış başlayınca her çağrı `Stopped` |
 | `EngineListener.onEvent(ev)` | `NodeListener::on_event` | Olaylar: §2 |
 
 Tutamaçlar (`StreamHandle`, `FileHandle`: `raw: ULong`) düğüm-tekildir, yeniden kullanılmaz; kapanmış tutamaç
@@ -373,10 +373,11 @@ python3 scripts/seams/seam_ak_coverage.py --ui-api <ui-api-v0.md v0.3 yolu>
   kurulumda her telefon yalnız kendi dosyasını alır (Sprint 2 provisioning v1 + Deploy TDD §8).
 * **Kapanış:** JVM iş parçacığından `shutdown` tam duruşu bekler (eşzamanlı ikinci çağrı dahil); dinleyicinin
   içinden asenkrondur ve kapanışı her durumda ister (yuva meşgulse kısa ömürlü bir iş parçacığıyla; tek hata
-  `NodeException.Spawn`, yutulmamalı). Başka düğümün `shutdown`'ı dinleyiciden senkrondur (join); dinleyiciden başka
-  düğüme engelleyici çağrı korunmaz (iki düğümün dinleyicileri birbirini beklerse ikisi de kilitlenir). Dinleyiciden
-  başlatılan kapanışın tamamlanma sinyali kama-node `NodeLoop`'unun alan sırasına dayanır; belge + test ile kabul
-  (DUR-K4G-15-E CEVAP (a), CEVAP PAKETİ 6), kama-node'un açık kapanış kancası KATMAN 6'da.
+  `NodeException.Spawn`, yutulmamalı). Başka düğümün `shutdown`'ı dinleyiciden senkrondur (yuvası serbestse join;
+  meşgulse devredilir); dinleyiciden başka düğüme engelleyici çağrı korunmaz (iki düğümün dinleyicileri birbirini
+  beklerse ikisi de kilitlenir). Dinleyiciden başlatılan kapanışın tamamlanma sinyali kama-node `NodeLoop`'unun alan
+  sırasına dayanır; belge + test ile kabul (DUR-K4G-15-E CEVAP (a), CEVAP PAKETİ 6), kama-node'un açık kapanış kancası
+  KATMAN 6'da.
 * **`metrics()` FFI'da hata dönebilir:** `KamaNode::metrics` hatasızdır (düğüm `shutdown` ile tükenir); FFI nesnesi
   paylaşıldığı için kapanış başlayınca çağrı `NodeException.Stopped` alır. `metrics`, `sendFile`, `onPlatformSignal`
   hiçbir iş parçacığında yuva kilidini ve düğüm turunu beklemez; `metrics` yalnız ölçü anlık görüntüsünün kısa

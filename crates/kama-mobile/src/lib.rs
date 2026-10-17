@@ -44,7 +44,8 @@
 //!   [`NodeError::Spawn`] (kapanış istenmedi). Tam duruşu JVM iş parçacığından yapılan bir
 //!   `shutdown` bekleyerek öğrenir.
 //! * Dinleyicinin içinden BAŞKA bir düğümün `shutdown`'ı SENKRONDUR: o düğümün yuvası serbestse
-//!   iş parçacığını join eder (dinleyici o süre bekler).
+//!   iş parçacığını join eder (dinleyici o süre bekler); yuvası meşgulse kapanış yukarıdaki gibi
+//!   devredilir ve beklemeden döner.
 //! * Kapanış başladıktan (düğüm yuvadan alındıktan) sonra her çağrı [`NodeError::Stopped`] alır;
 //!   `shutdown` idempotenttir.
 //!
@@ -100,7 +101,8 @@ pub trait EngineListener: Send + Sync {
     /// Bir düğüm olayı. DÜĞÜM İŞ PARÇACIĞINDA çağrılır: hızlı dön (olayı bir kanala ya da
     /// `StateFlow`'a koy). İçinden aynı `KamaMobile`'ın yanıt bekleyen çağrısı `ReentrantCall`
     /// alır, `shutdown` asenkrondur. Koruma yalnız aynı düğüm için; dinleyiciden başka düğüme
-    /// engelleyici çağrı yapma (başka düğümün `shutdown`'ı da senkrondur).
+    /// engelleyici çağrı yapma (başka düğümün `shutdown`'ı da engelleyicidir: yuvası serbestse
+    /// join eder).
     ///
     /// # Errors
     /// Kotlin uygulaması hata DÖNDÜRMEZ; attığı `kotlin.Exception` UniFFI'de
@@ -298,7 +300,8 @@ impl KamaMobile {
     ///   sonucunu döner.
     /// * Dinleyicinin içinden ASENKRONDUR ve kapanışı her durumda ister (yuva meşgulse kısa ömürlü
     ///   bir iş parçacığıyla); beklemeden döner, düğüm dinleyici döndükten sonra durur. Başka bir
-    ///   düğümün `shutdown`'ı dinleyiciden senkrondur (join).
+    ///   düğümün `shutdown`'ı dinleyiciden senkrondur: yuvası serbestse join eder (meşgulse
+    ///   devredilir, beklemeden döner).
     ///
     /// # Errors
     /// [`NodeError::NodeThreadPanicked`] · [`NodeError::Spawn`] (dinleyicinin içinden, yuva
