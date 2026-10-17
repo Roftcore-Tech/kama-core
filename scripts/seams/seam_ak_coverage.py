@@ -196,6 +196,7 @@ class Row:
     first: str
     names: list[str]
     mapping: str
+    cells: int
 
 
 def split_cells(line: str) -> list[str]:
@@ -217,7 +218,7 @@ def section_rows(seam: str, number: int, header: str) -> list[Row]:
         if len(cells) < 2 or cells[0] == header:
             continue
         rows.append(Row(section=str(number), line=index, first=cells[0],
-                        names=CODE_SPAN.findall(cells[0]), mapping=cells[1]))
+                        names=CODE_SPAN.findall(cells[0]), mapping=cells[1], cells=len(cells)))
     return rows
 
 
@@ -290,8 +291,11 @@ def check(doc: str, seam: str, surface: dict[str, set[str]], *, non_items: dict[
             dotted = f"{owner}.{name}"
             if not (dotted in in_rows or any(owner in row.first for row in in_rows.get(name, []))):
                 findings.append(f"KİMLİK: `{name}` ({owner}) — §4'te adı ve sahibi ilk sütunda birlikte geçen satır yok")
-    # (i) uydurma ad, (ii) eşleme biçimi
+    # (i) uydurma ad, (ii) eşleme biçimi, (v) hücre sayısı: GFM tablosunda kod aralığındaki kaçışsız `|` de
+    # hücreyi böler (`\|` ile kaçışlanmalı)
     for row in rows + k6:
+        if row.cells != 3:
+            findings.append(f"HÜCRE: seam satır {row.line} {row.cells} hücre (beklenen 3; kaçışsız `|`?)")
         if row.section == "4":
             for name in row.names:
                 if name not in candidates:
@@ -432,6 +436,12 @@ def selftest() -> int:
         ("düzyazı adayı sınıfsız kalırsa öğe olur (satırı yoksa EKSİK)",
          run_case(doc=SELF_DOC + "Yeni AT_SERVER değeri.\n"), ["EKSİK"]),
         ("K6 anahtarı yok", run_case(keys=("Ready", "CallsApi")), ["K6"]),
+        ("kod aralığında kaçışsız | (GFM hücreyi böler)",
+         run_case(seam=SELF_SEAM.replace("| `VOICE` | Kotlin tarafı (Hasan) | x |", "| `VOICE` | Kotlin tarafı (Hasan) | `A | B` |")),
+         ["HÜCRE"]),
+        ("DEĞİL: kaçışlanmış \\| hücreyi bölmez",
+         run_case(seam=SELF_SEAM.replace("| `VOICE` | Kotlin tarafı (Hasan) | x |", "| `VOICE` | Kotlin tarafı (Hasan) | `A \\| B` |")),
+         []),
     ]
     bad = 0
     for name, result, want in cases:
