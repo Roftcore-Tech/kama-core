@@ -62,17 +62,39 @@ KM-SEAM-TC-001 §6 H-SPLIT):
       SINIR: ad düzeyidir — kurma modülünün döndürdüğü bir değer üzerinde yöntem çağrısı (adsız)
       görülmez; o yol inceleme işidir.
 
-  [2026-10-16 K4G-15 — FFI SARMALAYICI sınıfı; plan D10]
+  [2026-10-16 K4G-15 — FFI SARMALAYICI sınıfı; plan D10. `kama-app` / `kama-contracts` kenarları:
+   DUR-K4G-15-A CEVAP (CEVAP PAKETİ 5, Abkarada 2026-10-16): "kalsın … koşul: C9 katman kuralı bu
+   bağımlılığı yalnız tip dönüşümüne sınırlar (davranış çağrısı yok …), layer_check'te denetlenir"]
   C9  FFI sarmalayıcısı (`FFI_WRAPPER`: `kama-mobile`, UniFFI yüzeyi) bileşim kökünün API'sini
-      birebir sarar, protokol mantığı taşımaz: workspace içi DOĞRUDAN bağımlılıkları YALNIZ
-      `FFI_ALLOWED`'dakiler ve YALNIZ izinli türde — `kama-node` (sarılan API), `kama-app` ve
-      `kama-contracts` (yalnız `KamaNode` imzalarındaki tip adları için; normal), `kama-provision`
-      (yalnız dev: smoke testi cihaz dosyalarını CLI ile üretir). Transport, Crypto ve altyapı
-      crate'leri (client-core, kama-noise-wire, kama-store …) hiçbir türde olamaz; build-bağımlılığı
-      olamaz. Workspace içi bağımlılık = manifest'te kaynağı (`source`) olmayan, yol bağımlılığı.
-      Harici crate'ler (`uniffi`, `thiserror`) bu kuralın konusu değildir (D11: cargo deny + inceleme).
+      birebir sarar, protokol mantığı taşımaz. Üç denetim:
+      (a) Workspace içi DOĞRUDAN bağımlılıkları YALNIZ `FFI_ALLOWED`'dakiler ve YALNIZ izinli türde —
+          `kama-node` (sarılan API; normal), `kama-app` ve `kama-contracts` (YALNIZ tip dönüşümü:
+          `KamaNode` imzalarındaki tiplerin FFI aynasına eşlenmesi; normal), `kama-provision` (yalnız
+          dev: smoke testi cihaz dosyalarını CLI ile üretir). Transport, Crypto ve altyapı crate'leri
+          (client-core, kama-noise-wire, kama-store …) hiçbir türde olamaz; build-bağımlılığı olamaz.
+          Workspace içi bağımlılık = manifest'te kaynağı (`source`) olmayan, yol bağımlılığı.
+          Harici crate'ler (`uniffi`, `thiserror`) bu denetimin konusu değildir (D11: cargo deny +
+          inceleme).
+      (b) Normal ve build bağımlılıkları (workspace ya da harici) `test-util` özelliğini AÇAMAZ: ne
+          bağımlılık satırında, ne `test-util`'i dolaylı açan bir özellik ya da varsayılan özellik
+          üzerinden, ne de crate'in kendi `[features]` tablosundan iletilerek
+          (`x = ["kama-app/test-util"]`, zayıf biçim `kama-app?/test-util`, yeniden adlandırılmış
+          bağımlılığın yerel adıyla). Dev bağımlılıkları serbesttir (ürün `.so`'suna girmez).
+      (c) Kaynakta (`crates/kama-mobile/**/*.rs`; yorum ve dizge/char sabiti DIŞI) `kama_app::` /
+          `kama_contracts::` yolları YALNIZ TİP adı taşır: kökten sonra modül segmentleri, sonra
+          YALNIZ CamelCase tip/varyant adları (`kama_app::ptt::PttError::Transport`). Tip adı
+          olmayan yol (fonksiyon, sabit, makro, modül: `kama_app::ptt::max_bundle_payload_bytes`),
+          tip üzerinde küçük harfli ya da BÜYÜK_HARFLİ segment (ilişkili fonksiyon/sabit:
+          `PttCodec::from_byte`), turbofish arkasındaki aynısı ve nitelikli yol kuyruğu
+          (`<kama_app::X as T>::f`) YASAK. `use` içinde de yalnız tip: crate/modül içe aktarımı
+          (`use kama_app as app;`, `use kama_app::codec;`), glob (`::*`), `self` ve tip olmayan ad
+          YASAK; `extern crate` YASAK. `use … as Takma` ile içe aktarılan tipin takma adı da aynı
+          kurala tabidir (`Takma::from_byte` YASAK, `Takma::Varyant` serbest) — takma ad dosya
+          kapsamında izlenir.
       SINIR: doğrudan kenar denetlenir; `kama-node` her katmana bağlandığı için geçişli kapanış
-      (bileşim kökünün kapanışı) kuralın konusu değildir.
+      (bileşim kökünün kapanışı) kuralın konusu değildir. (c) ad düzeyidir: değer üzerinde yöntem
+      çağrısı (`id.get()`, `x.to_string()`), `Self::` üzerinden yabancı tipin ilişkili öğesi ve trait
+      uygulamaları görülmez — o yol inceleme işidir.
 
   GEÇİŞLİ KAPANIŞ NASIL HESAPLANIR: `cargo metadata`'nın çözümlenmiş grafiği üzerinden. Kök crate'in
   KENDİ dev-bağımlılıkları dahildir (testleri de katman kuralına tabidir); yol üzerindeki diğer
@@ -85,7 +107,8 @@ ortam hatası (2) verir — "denetlenecek şey yok" sessizce "ihlal yok" sayılm
 yeniden adlandırılırsa kural sessizce boşa düşmez.
 [2026-10-12 K4G-11] Bileşim kökü (`kama-node`, C8) metadata'da yoksa, ürün kaynağı bulunamazsa ya da
 kurma modülü (`src/wiring.rs`) yoksa da ortam hatası (2).
-[2026-10-16 K4G-15] FFI sarmalayıcısı (`kama-mobile`, C9) metadata'da yoksa da ortam hatası (2).
+[2026-10-16 K4G-15] FFI sarmalayıcısı (`kama-mobile`, C9) metadata'da yoksa ya da taranacak kaynağı
+yoksa da ortam hatası (2).
 
 Çıkış: 0 = temiz · 1 = katman ihlali · 2 = ortam/kullanım hatası.
 """
@@ -141,13 +164,25 @@ ROOT_WIRING = {"kama-node": "src/wiring.rs"}
 COMPOSITION_ROOTS: tuple[str, ...] = tuple(sorted(ROOT_WIRING))
 ROOT_CRYPTO_NAME = re.compile(r"\bkama_noise_wire\b")
 # C9 [2026-10-16 K4G-15] — FFI sarmalayıcı sınıfı: {workspace crate'i: izinli bağımlılık türleri}.
+# `kama-app` / `kama-contracts`: DUR-K4G-15-A CEVAP (CEVAP PAKETİ 5) — YALNIZ tip dönüşümü (C9 (c)).
 FFI_WRAPPER = "kama-mobile"
 FFI_ALLOWED: dict[str, frozenset[str]] = {
     "kama-node": frozenset({"normal"}),       # sarılan API (`KamaNode`)
-    "kama-app": frozenset({"normal"}),        # `KamaNode` imzalarındaki tip adları
-    "kama-contracts": frozenset({"normal"}),  # `KamaNode` olaylarındaki tip adları
+    "kama-app": frozenset({"normal"}),        # YALNIZ tip dönüşümü (`KamaNode` imzalarındaki tipler)
+    "kama-contracts": frozenset({"normal"}),  # YALNIZ tip dönüşümü (`KamaNode` olaylarındaki tipler)
     "kama-provision": frozenset({"dev"}),     # smoke testi: cihaz dosyaları CLI ile
 }
+# C9 (c) — kaynakta yolları YALNIZ tip/varyant adı taşıyabilen crate'ler (Rust adlarıyla).
+FFI_TYPE_ONLY = ("kama_app", "kama_contracts")
+TYPE_NAME = re.compile(r"[A-Z][A-Za-z0-9]*")          # + en az bir küçük harf (`is_type_name`)
+RUST_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+USE_DECL = re.compile(r"(?<![A-Za-z0-9_])use\s+([^;]*);")
+USE_TOKEN = re.compile(r"::|[{},*]|[A-Za-z_][A-Za-z0-9_]*")
+EXTERN_CRATE = re.compile(r"(?<![A-Za-z0-9_])extern\s+crate\s+([A-Za-z_][A-Za-z0-9_]*)")
+EXTERN_CRATE_DECL = re.compile(r"(?<![A-Za-z0-9_])extern\s+crate\s+[^;]*;")
+FFI_ROOT = re.compile(rf"(?<![A-Za-z0-9_])({'|'.join(FFI_TYPE_ONLY)})(?![A-Za-z0-9_])")
+# Nitelikli yol kuyruğu: yolun hemen ardından `>::öğe` ya da ` as Trait>::öğe` (`<T as Trait>::f`).
+QUALIFIED_TAIL = re.compile(r"(?:\s+as\s+[^;{}()]*?)?\s*>\s*::\s*([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def strip_comments(src: str) -> str:
@@ -447,17 +482,23 @@ def root_findings(metadata: dict, root_sources: dict[str, dict[str, str]],
     return findings
 
 
-def ffi_findings(metadata: dict) -> list[str]:
-    """C9 [2026-10-16 K4G-15] — FFI sarmalayıcısının workspace içi doğrudan bağımlılıkları.
+def ffi_findings(metadata: dict, sources: dict[str, str]) -> list[str]:
+    """C9 [2026-10-16 K4G-15; CEVAP PAKETİ 5] — FFI sarmalayıcısı: (a) workspace içi doğrudan
+    bağımlılıklar, (b) normal/build bağımlılıklarında `test-util`, (c) kaynakta `kama_app` /
+    `kama_contracts` yolları yalnız tip adı.
 
-    Saf fonksiyon: `main()` onu gerçek metadata ile, öz-test sentetik metadata ile çağırır.
-    Workspace içi bağımlılık = manifest bağımlılığında `source` yok (yol bağımlılığı); harici
-    crate'ler kuralın konusu değildir. Vakum koruması: FFI crate'i metadata'da yoksa ortam hatası.
+    Saf fonksiyon: `main()` onu gerçek metadata ve kaynakla (`ffi_inputs`), öz-test sentetik girdiyle
+    çağırır; `sources` = {crate-göreli yol: kaynak}. Workspace içi bağımlılık = manifest
+    bağımlılığında `source` yok (yol bağımlılığı). Vakum koruması: FFI crate'i metadata'da yoksa ya da
+    taranacak kaynağı yoksa ortam hatası.
     """
     pkg = next((p for p in metadata["packages"] if p["name"] == FFI_WRAPPER), None)
     if pkg is None:
         raise EnvironmentError(f"`{FFI_WRAPPER}` paketi metadata'da yok — FFI kuralı (C9) denetlenemiyor")
+    if not sources:
+        raise EnvironmentError(f"`{FFI_WRAPPER}` için taranacak kaynak yok (C9)")
     findings: list[str] = []
+    # (a) workspace içi doğrudan bağımlılıklar: yalnız izinli crate, yalnız izinli tür
     for dep in pkg["dependencies"]:
         if dep.get("source") is not None:
             continue
@@ -465,10 +506,238 @@ def ffi_findings(metadata: dict) -> list[str]:
         allowed = FFI_ALLOWED.get(dep["name"], frozenset())
         if kind in allowed:
             continue
-        rule = f"yalnız {'/'.join(sorted(allowed))} türünde" if allowed else "hiçbir türde"
+        rule = (f"yalnız {'/'.join(sorted(allowed))} türünde bağlanabilir" if allowed
+                else "hiçbir türde bağlanamaz")
         findings.append(f"C9 {FFI_WRAPPER} → {dep['name']} ({kind} bağımlılık): FFI sarmalayıcısı bu crate'e "
-                        f"{rule} bağlanabilir (izinli: {', '.join(sorted(FFI_ALLOWED))})")
+                        f"{rule} (izinli: {', '.join(sorted(FFI_ALLOWED))})")
+    # (b) normal/build bağımlılıkları `test-util` açamaz
+    findings += ffi_feature_findings(pkg, metadata["packages"])
+    # (c) kaynak: `kama_app` / `kama_contracts` yolları yalnız tip adı
+    for path, src in sorted(sources.items()):
+        findings += ffi_source_findings(f"{FFI_WRAPPER}/{path}", src)
     return findings
+
+
+def feature_opens(package: dict | None) -> set[str]:
+    """`package`'ın `test-util`'i açan özellikleri (kendisi dahil): `mocks = ["test-util"]` gibi takma
+    adlar ve `default = ["test-util"]` da sayılır (C5 ile aynı kapanış). Paket metadata'da yoksa yalnız
+    `test-util`."""
+    opens = {TEST_UTIL}
+    features = (package or {}).get("features") or {}
+    grew = True
+    while grew:
+        grew = False
+        for feature, enables in features.items():
+            if feature not in opens and opens & set(enables):
+                opens.add(feature)
+                grew = True
+    return opens
+
+
+def ffi_feature_findings(pkg: dict, packages: list[dict]) -> list[str]:
+    """C9 (b) — FFI crate'inin normal/build bağımlılıkları `test-util` açamaz: bağımlılık satırında,
+    dolaylı açan bir özellikle, varsayılan özellikle ya da crate'in kendi `[features]` tablosundan
+    (bağımlılığın manifest'teki yerel adıyla, zayıf `dep?/feat` biçimi dahil). Dev bağımlılıkları
+    serbesttir."""
+    by_name = {p["name"]: p for p in packages}
+    findings: list[str] = []
+    local: dict[str, str] = {}  # normal/build bağımlılığın yerel adı → paket adı
+    for dep in pkg["dependencies"]:
+        kind = dep.get("kind") or "normal"
+        if kind == "dev":
+            continue
+        name = dep["name"]
+        local[dep.get("rename") or name] = name
+        enabled = set(dep.get("features") or [])
+        if dep.get("uses_default_features", True):
+            enabled.add("default")
+        for feature in sorted(enabled & feature_opens(by_name.get(name))):
+            via = "" if feature == TEST_UTIL else f" (`{feature}` üzerinden)"
+            findings.append(f"C9 {FFI_WRAPPER} → {name} ({kind} bağımlılık) `{TEST_UTIL}` özelliğini açıyor{via}: "
+                            f"FFI sarmalayıcısının normal/build bağımlılıkları test erişimlerini açamaz")
+    for feature, enables in sorted((pkg.get("features") or {}).items()):
+        for item in enables:
+            m = re.fullmatch(r"([^/?]+)\??/(.+)", item)
+            if m is None or m.group(1) not in local:
+                continue
+            if m.group(2) in feature_opens(by_name.get(local[m.group(1)])):
+                findings.append(f"C9 {FFI_WRAPPER} [features] `{feature}` → `{item}`: FFI sarmalayıcısı "
+                                f"`{TEST_UTIL}`'i kendi özellik tablosundan da açamaz")
+    return findings
+
+
+def is_type_name(segment: str) -> bool:
+    """C9 (c) — CamelCase tip/varyant adı: büyük harfle başlar, alt çizgi taşımaz, en az bir küçük harf
+    içerir. `snake_case` (fonksiyon, modül, makro) ve `BÜYÜK_HARF` (sabit) tip adı DEĞİLDİR."""
+    return TYPE_NAME.fullmatch(segment) is not None and any(ch.islower() for ch in segment)
+
+
+def path_problem(segments: list[str], *, after_type: bool) -> str | None:
+    """C9 (c) — yol kökünden (ya da `after_type`: içe aktarılmış bir tipin adından) sonraki
+    segmentlerin sorunu; yoksa None. Kökten sonra önce modüller (küçük harf), sonra YALNIZ
+    tip/varyant adları gelir; tip adı olmayan yol da sorundur."""
+    first = 0 if after_type else next((i for i, s in enumerate(segments) if is_type_name(s)), None)
+    if first is None:
+        return "tip adı yok (fonksiyon, sabit, makro ya da modül)"
+    bad = next((s for s in segments[first:] if not is_type_name(s)), None)
+    if bad is not None:
+        return f"tip üzerinde ilişkili öğe `{bad}` (fonksiyon/sabit)"
+    return None
+
+
+def use_leaves(tree: str) -> list[tuple[list[str], str | None]]:
+    """`use` ağacını yapraklarına açar: [(yol segmentleri, `as` adı ya da None)]. Gruplar (`{…}`) açılır;
+    glob `*` ve `self` yaprağın son segmenti olarak kalır; baştaki `::` atılır."""
+    tokens = USE_TOKEN.findall(tree)
+    leaves: list[tuple[list[str], str | None]] = []
+    pos = 0
+
+    def subtree(prefix: list[str]) -> None:
+        nonlocal pos
+        path = list(prefix)
+        while pos < len(tokens):
+            tok = tokens[pos]
+            if tok == "::":
+                pos += 1
+            elif tok == "{":
+                pos += 1
+                while pos < len(tokens) and tokens[pos] != "}":
+                    if tokens[pos] == ",":
+                        pos += 1
+                    else:
+                        subtree(path)
+                pos += 1
+                return
+            elif tok in (",", "}"):
+                return
+            else:
+                path.append(tok)
+                pos += 1
+                if tok == "*":
+                    break
+                if pos < len(tokens) and tokens[pos] == "as":
+                    alias = tokens[pos + 1] if pos + 1 < len(tokens) else None
+                    pos += 2
+                    leaves.append((path, alias))
+                    return
+                if pos < len(tokens) and tokens[pos] == "::":
+                    continue
+                break
+        leaves.append((path, None))
+
+    subtree([])
+    return leaves
+
+
+def skip_space(code: str, i: int) -> int:
+    while i < len(code) and code[i].isspace():
+        i += 1
+    return i
+
+
+def skip_generics(code: str, i: int) -> int:
+    """`code[i] == "<"`: dengeli `<…>`'in sonrasına (`->` içindeki `>` sayılmaz)."""
+    depth = 0
+    while i < len(code):
+        ch = code[i]
+        if ch == "<":
+            depth += 1
+        elif ch == ">" and code[i - 1] != "-":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return i
+
+
+def path_segments(code: str, i: int) -> tuple[list[str], int]:
+    """`code[i:]`'deki `::seg::seg…` kuyruğu → (segmentler, kuyruğun sonu). Boşluk ve satır sonu ile
+    turbofish (`::<…>`) atlanır: arkasındaki segment de sayılır."""
+    segments: list[str] = []
+    while True:
+        j = skip_space(code, i)
+        if not code.startswith("::", j):
+            return segments, i
+        j = skip_space(code, j + 2)
+        if code.startswith("<", j):
+            i = skip_generics(code, j)
+            continue
+        m = RUST_IDENT.match(code, j)
+        if m is None:
+            return segments, i
+        segments.append(m.group(0))
+        i = m.end()
+
+
+def qualified_problem(code: str, end: int) -> str | None:
+    """Yolun hemen ardından nitelikli yol kuyruğu (`<T>::f`, `<T as Trait>::f`) tip olmayan bir öğeye
+    iniyorsa sorunu; yoksa None."""
+    m = QUALIFIED_TAIL.match(code, end)
+    if m is not None and not is_type_name(m.group(1)):
+        return f"nitelikli yol üzerinden ilişkili öğe `{m.group(1)}`"
+    return None
+
+
+def blank_matches(code: str, pattern: re.Pattern[str]) -> str:
+    """`pattern` eşleşmelerini boşlukla karartır (satır sonları korunur: bulgu satırı kaymaz)."""
+    return pattern.sub(lambda m: "".join(ch if ch == "\n" else " " for ch in m.group(0)), code)
+
+
+def ffi_source_findings(path: str, src: str) -> list[str]:
+    """C9 (c) — bir kaynak dosyasında `kama_app` / `kama_contracts` yolları, `use` ve `extern crate`
+    bildirimleri ve içe aktarılmış tiplerin takma adları (dosya kapsamında). Yorumlar ve dizge/char
+    sabitleri taranmaz (`strip_comments_and_literals`)."""
+    code = strip_comments_and_literals(src)
+    findings: list[str] = []
+    aliases: dict[str, str] = {}  # içe aktarılan tipin yerel adı → tam yolu
+
+    def report(pos: int, shown: str, problem: str) -> None:
+        line = code.count("\n", 0, pos) + 1
+        findings.append(f"C9 {path}: `{shown}` (yorum/dizge-dışı, ~satır {line}) — {problem}; "
+                        f"kama-app/kama-contracts YALNIZ tip dönüşümü için anılır (DUR-K4G-15-A)")
+
+    for m in EXTERN_CRATE.finditer(code):
+        if m.group(1) in FFI_TYPE_ONLY:
+            report(m.start(), f"extern crate {m.group(1)}", "`extern crate` YASAK")
+    for m in USE_DECL.finditer(code):
+        for segments, alias in use_leaves(m.group(1)):
+            if not segments or segments[0] not in FFI_TYPE_ONLY:
+                continue
+            rest = segments[1:]
+            if not rest:
+                problem = "crate içe aktarımı"
+            elif rest[-1] == "*":
+                problem = "glob içe aktarımı"
+            elif rest[-1] == "self":
+                problem = "modül içe aktarımı (`self`)"
+            else:
+                problem = path_problem(rest, after_type=False)
+            if problem is not None:
+                shown = "use " + "::".join(segments) + (f" as {alias}" if alias else "")
+                report(m.start(), shown, f"`use` içinde yalnız tip — {problem}")
+            elif alias != "_":
+                aliases[alias or rest[-1]] = "::".join(segments)
+    # `use` ve `extern crate` bildirimleri yukarıda denetlendi; yol taramasına girmez.
+    body = blank_matches(blank_matches(code, USE_DECL), EXTERN_CRATE_DECL)
+    for m in FFI_ROOT.finditer(body):
+        segments, end = path_segments(body, m.end())
+        problem = path_problem(segments, after_type=False) or qualified_problem(body, end)
+        if problem is not None:
+            report(m.start(), "::".join([m.group(1), *segments]), problem)
+    for alias, target in sorted(aliases.items()):
+        for m in re.finditer(rf"(?<![A-Za-z0-9_:.]){re.escape(alias)}(?![A-Za-z0-9_])", body):
+            segments, end = path_segments(body, m.end())
+            problem = path_problem(segments, after_type=True) or qualified_problem(body, end)
+            if problem is not None:
+                report(m.start(), "::".join([alias, *segments]), f"{problem} (`{alias}` = `{target}`)")
+    return findings
+
+
+def all_findings(md: dict, app_sources: dict[str, str], root_sources: dict[str, dict[str, str]],
+                 ffi_sources: dict[str, str]) -> list[str]:
+    """Bütün kurallar: L1–L3 + C1–C7 (`check`), C8 (`root_findings`), C9 (`ffi_findings`). `main()` ve
+    öz-testin uçtan uca vakaları AYNI yolu çağırır: bir kuralın çağrısı düşerse öz-test kırmızıdır."""
+    return check(md, app_sources) + root_findings(md, root_sources) + ffi_findings(md, ffi_sources)
 
 
 def root_inputs(md: dict) -> dict[str, dict[str, str]]:
@@ -482,6 +751,22 @@ def root_inputs(md: dict) -> dict[str, dict[str, str]]:
         crate_dir = Path(pkg["manifest_path"]).parent
         out[root] = {f.relative_to(crate_dir).as_posix(): f.read_text(encoding="utf-8")
                      for f in sorted((crate_dir / "src").rglob("*.rs"))}
+    return out
+
+
+def ffi_inputs(md: dict) -> dict[str, str]:
+    """C9 (c) girdisi: FFI crate'inin BÜTÜN `.rs` dosyaları (`src/`, `tests/` …; `target/` hariç),
+    crate-göreli yolla. Crate metadata'da yoksa boş (`ffi_findings` ortam hatası verir)."""
+    pkg = next((p for p in md["packages"] if p["name"] == FFI_WRAPPER), None)
+    if pkg is None:
+        return {}
+    crate_dir = Path(pkg["manifest_path"]).parent
+    out: dict[str, str] = {}
+    for f in sorted(crate_dir.rglob("*.rs")):
+        rel = f.relative_to(crate_dir)
+        if "target" in rel.parts:
+            continue
+        out[rel.as_posix()] = f.read_text(encoding="utf-8")
     return out
 
 
@@ -742,34 +1027,156 @@ def selftest() -> int:
             bad += 1
         except EnvironmentError:
             print(f"  PASS  {name}: ortam hatası (yeşil DEĞİL)")
-    # C9 [2026-10-16 K4G-15] — FFI sarmalayıcısının workspace içi doğrudan bağımlılıkları.
-    def ffi_md(deps):
-        """Sentetik metadata: yalnız FFI crate'i; `deps` = [(ad, tür, workspace_mı)]."""
+    # C9 [2026-10-16 K4G-15; CEVAP PAKETİ 5] — FFI sarmalayıcısı: (a) bağımlılık kenarları, (b) test-util,
+    # (c) kaynakta kama_app / kama_contracts yalnız tip adı.
+    def ffi_md(deps, *, features=None, packages=None):
+        """Sentetik metadata: FFI crate'i + `packages` ({ad: özellik tablosu}). `deps` öğesi
+        (ad, tür, workspace_mı) ya da sözlük (`name`, `kind`, `ws`, `features`, `defaults`, `rename`)."""
         registry = "registry+https://github.com/rust-lang/crates.io-index"
-        manifest = [{"name": n, "kind": k, "source": None if ws else registry} for n, k, ws in deps]
-        return {"packages": [{"name": FFI_WRAPPER, "id": f"id:{FFI_WRAPPER}", "dependencies": manifest}],
-                "resolve": {"nodes": []}}
+        manifest = []
+        for dep in deps:
+            if isinstance(dep, tuple):
+                dep = {"name": dep[0], "kind": dep[1], "ws": dep[2]}
+            manifest.append({"name": dep["name"], "kind": dep.get("kind"),
+                             "source": None if dep.get("ws", True) else registry,
+                             "features": list(dep.get("features", ())), "rename": dep.get("rename"),
+                             "uses_default_features": dep.get("defaults", True)})
+        pkgs = [{"name": FFI_WRAPPER, "id": f"id:{FFI_WRAPPER}", "dependencies": manifest,
+                 "features": features or {}}]
+        pkgs += [{"name": n, "id": f"id:{n}", "dependencies": [], "features": f} for n, f in (packages or {}).items()]
+        return {"packages": pkgs, "resolve": {"nodes": []}}
+    clean_ffi = {"src/lib.rs": "pub fn f() {}\n"}
     ffi_ok = [("kama-node", None, True), ("kama-app", None, True), ("kama-contracts", None, True),
               ("kama-provision", "dev", True), ("uniffi", None, False), ("thiserror", None, False)]
+    contracts_mocks = {"kama-contracts": {"test-util": [], "mocks": ["test-util"]}}
+    node_default = {"kama-node": {"test-util": [], "default": ["test-util"]}}
     ffi_cases = [
-        ("C9 DEĞİL: kama-node + tip crate'leri (normal), kama-provision (dev), harici crate'ler", ffi_ok, []),
-        ("C9 kama-mobile → client-core (normal)", ffi_ok + [("client-core", None, True)], ["C9"]),
-        ("C9 kama-mobile → kama-noise-wire (dev)", ffi_ok + [("kama-noise-wire", "dev", True)], ["C9"]),
-        ("C9 kama-mobile → kama-store (normal)", ffi_ok + [("kama-store", None, True)], ["C9"]),
-        ("C9 kama-provision normal bağımlılık olamaz (yalnız dev)", [("kama-provision", None, True)], ["C9"]),
-        ("C9 kama-node build-bağımlılığı olamaz", [("kama-node", "build", True)], ["C9"]),
+        # (a) bağımlılık kenarları
+        ("C9 DEĞİL: kama-node + tip crate'leri (normal), kama-provision (dev), harici crate'ler", ffi_md(ffi_ok), []),
+        ("C9 kama-mobile → client-core (normal)", ffi_md(ffi_ok + [("client-core", None, True)]), ["C9"]),
+        ("C9 kama-mobile → kama-noise-wire (dev)", ffi_md(ffi_ok + [("kama-noise-wire", "dev", True)]), ["C9"]),
+        ("C9 kama-mobile → kama-store (normal)", ffi_md(ffi_ok + [("kama-store", None, True)]), ["C9"]),
+        ("C9 kama-provision normal bağımlılık olamaz (yalnız dev)", ffi_md([("kama-provision", None, True)]), ["C9"]),
+        ("C9 kama-node build-bağımlılığı olamaz", ffi_md([("kama-node", "build", True)]), ["C9"]),
+        # izinli ama YALNIZ normal crate'lerin dev türü
+        ("C9 kama-node dev-bağımlılığı olamaz (yalnız normal)", ffi_md([("kama-node", "dev", True)]), ["C9"]),
+        ("C9 kama-app dev-bağımlılığı olamaz (yalnız normal)", ffi_md([("kama-app", "dev", True)]), ["C9"]),
+        ("C9 kama-contracts dev-bağımlılığı olamaz (yalnız normal)", ffi_md([("kama-contracts", "dev", True)]),
+         ["C9"]),
+        # (b) normal/build bağımlılıkları test-util açamaz
+        ("C9 kama-app test-util açıyor (normal)",
+         ffi_md(ffi_ok + [{"name": "kama-app", "features": ["test-util"]}]), ["C9"]),
+        ("C9 build bağımlılığı test-util açıyor",
+         ffi_md(ffi_ok + [{"name": "uniffi", "kind": "build", "ws": False, "features": ["test-util"]}]), ["C9"]),
+        ("C9 kama-contracts test-util'i açan özelliği açıyor (mocks → test-util)",
+         ffi_md(ffi_ok + [{"name": "kama-contracts", "features": ["mocks"]}], packages=contracts_mocks), ["C9"]),
+        ("C9 kama-node'un varsayılan özelliği test-util'i açıyor", ffi_md(ffi_ok, packages=node_default), ["C9"]),
+        ("C9 DEĞİL: varsayılan test-util'i açıyor ama default-features = false",
+         ffi_md([{"name": "kama-node", "defaults": False}], packages=node_default), []),
+        ("C9 harici normal bağımlılık test-util açıyor",
+         ffi_md(ffi_ok + [{"name": "uniffi", "ws": False, "features": ["test-util"]}]), ["C9"]),
+        ("C9 DEĞİL: dev bağımlılığı test-util açıyor (ürün .so'suna girmez)",
+         ffi_md(ffi_ok + [{"name": "kama-provision", "kind": "dev", "features": ["test-util"]}]), []),
+        ("C9 kendi [features] tablosundan iletiyor (kama-app/test-util)",
+         ffi_md(ffi_ok, features={"x": ["kama-app/test-util"]}), ["C9"]),
+        ("C9 zayıf biçimle iletiyor (kama-contracts?/test-util)",
+         ffi_md(ffi_ok, features={"x": ["kama-contracts?/test-util"]}), ["C9"]),
+        ("C9 yeniden adlandırılmış bağımlılığın yerel adıyla iletiyor (app/test-util)",
+         ffi_md([{"name": "kama-app", "rename": "app"}], features={"x": ["app/test-util"]}), ["C9"]),
+        ("C9 test-util'i açan özelliği iletiyor (kama-contracts/mocks)",
+         ffi_md(ffi_ok, features={"x": ["kama-contracts/mocks"]}, packages=contracts_mocks), ["C9"]),
+        ("C9 DEĞİL: özellik tablosu başka şeyler iletiyor",
+         ffi_md(ffi_ok, features={"bindgen": ["uniffi/bindgen"], "x": ["kama-app/std", "baska/test-util"]}), []),
     ]
-    for name, deps, want in ffi_cases:
-        got = sorted({f.split()[0] for f in ffi_findings(ffi_md(deps))})
+    for name, md, want in ffi_cases:
+        got = sorted({f.split()[0] for f in ffi_findings(md, clean_ffi)})
         ok = got == want
         bad += not ok
         print(f"  {'PASS' if ok else 'FAIL'}  {name}: beklenen {want or 'temiz'}, gelen {got or 'temiz'}")
-    try:
-        ffi_findings({"packages": [], "resolve": {"nodes": []}})
-        print("  FAIL  vakum: kama-mobile yok (C9): ortam hatası bekleniyordu, yeşil döndü")
-        bad += 1
-    except EnvironmentError:
-        print("  PASS  vakum: kama-mobile yok (C9): ortam hatası (yeşil DEĞİL)")
+    # (c) kaynak: kama_app / kama_contracts yolları yalnız tip adı (yorum/dizge dışı)
+    mirror = ("impl From<kama_app::codec::PttCodec> for PttCodec {\n"
+              "    fn from(codec: kama_app::codec::PttCodec) -> Self {\n"
+              "        use kama_app::codec::PttCodec as Source;\n"
+              "        match codec {\n            Source::Opus => Self::Opus,\n            Source::Lyra => Self::Lyra,\n"
+              "        }\n    }\n}\n")
+    source_cases = [
+        ("C9 DEĞİL: ayna dönüşümü (tam yol + işlev içi tip takma adı)", mirror, []),
+        ("C9 DEĞİL: tuple varyant deseni ve varyant değeri",
+         "fn f(e: kama_app::ptt::PttError) -> bool {\n    matches!(e, kama_app::ptt::PttError::Transport(\n"
+         "        kama_contracts::s1::TransportError::Backpressure))\n}\n", []),
+        ("C9 DEĞİL: yorum, doc ve dizgede yasak yollar",
+         "// kama_app::ptt::max_bundle_payload_bytes(l)\n/// use kama_app as app;\n"
+         "fn f() -> &'static str { \"kama_app::ptt::max_bundle_payload_bytes()\" }\n", []),
+        ("C9 DEĞİL: gruplu tip içe aktarımı ve takma adın düz kullanımı",
+         "use kama_app::codec::{FileAbortReason, PttCodec as Codec};\n"
+         "fn f(c: Codec) -> Option<FileAbortReason> { let _ = c; None }\n", []),
+        ("C9 DEĞİL: varyant içe aktarımı",
+         "use kama_contracts::s1::ConnectPhase::{Measuring, Suspended};\n", []),
+        ("C9 DEĞİL: nitelikli yolun kuyruğu tip adı (ilişkili tip)",
+         "type T = <kama_app::codec::PttCodec as Tr>::Output;\n", []),
+        ("C9 DEĞİL: başka crate'ler ve benzer adlar (kama_node, my_kama_app, kama_app_x)",
+         "fn f() { kama_node::KamaNode::start(a); my_kama_app::helper(); kama_app_x::helper(); }\n", []),
+        ("C9 use: crate yeniden adlandırma (use kama_app as app;)", "use kama_app as app;\n", ["C9"]),
+        ("C9 use: modül içe aktarımı (use kama_contracts::s1;)", "use kama_contracts::s1;\n", ["C9"]),
+        ("C9 use: glob (use kama_app::codec::*;)", "use kama_app::codec::*;\n", ["C9"]),
+        ("C9 use: self (use kama_app::codec::{self, PttCodec};)", "use kama_app::codec::{self, PttCodec};\n", ["C9"]),
+        ("C9 use: fonksiyon içe aktarımı", "use kama_app::ptt::max_bundle_payload_bytes;\n", ["C9"]),
+        ("C9 use: sabit içe aktarımı", "use kama_app::codec::MAX_BODY_BYTES;\n", ["C9"]),
+        ("C9 use: iç içe grupta fonksiyon",
+         "use kama_app::{codec::PttCodec, ptt::max_bundle_payload_bytes};\n", ["C9"]),
+        ("C9 extern crate", "extern crate kama_app;\n", ["C9"]),
+        ("C9 serbest fonksiyon çağrısı",
+         "fn f(l: &L) -> usize { kama_app::ptt::max_bundle_payload_bytes(l) }\n", ["C9"]),
+        ("C9 ilişkili fonksiyon çağrısı", "fn f() -> P { kama_app::codec::PttCodec::from_byte(1) }\n", ["C9"]),
+        ("C9 ilişkili sabit (BÜYÜK_HARF)", "fn f() -> usize { kama_app::codec::Limits::MAX }\n", ["C9"]),
+        ("C9 modül sabiti", "const M: usize = kama_contracts::s1::MAX_UNIT_BYTES;\n", ["C9"]),
+        ("C9 makro", "fn f() { kama_app::trace!(\"x\"); }\n", ["C9"]),
+        ("C9 takma ad üzerinden ilişkili fonksiyon",
+         "fn f() { use kama_app::codec::PttCodec as Source; let _ = Source::from_byte(1); }\n", ["C9"]),
+        ("C9 gruplu takma ad üzerinden ilişkili fonksiyon",
+         "use kama_app::codec::{PttCodec as Codec};\nfn f() -> Codec { Codec::from_byte(1) }\n", ["C9"]),
+        ("C9 turbofish arkasında ilişkili fonksiyon",
+         "fn f() { let _ = kama_app::codec::Table::<u8>::new(); }\n", ["C9"]),
+        ("C9 nitelikli yol kuyruğunda fonksiyon",
+         "fn f(c: C) -> u8 { <kama_app::codec::PttCodec as Into<u8>>::into(c) }\n", ["C9"]),
+        ("C9 satırlara bölünmüş yol",
+         "fn f(l: &L) -> usize {\n    kama_app::ptt\n        ::max_bundle_payload_bytes(l)\n}\n", ["C9"]),
+    ]
+    for name, src, want in source_cases:
+        got = sorted({f.split()[0] for f in ffi_findings(ffi_md(ffi_ok), {"src/x.rs": src})})
+        ok = got == want
+        bad += not ok
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}: beklenen {want or 'temiz'}, gelen {got or 'temiz'}")
+    # `use` bulgusu nedenini adlandırır (crate / glob / `self` ayrı ayrı; yalnız "tip adı yok" değil).
+    for src, needle in (("use kama_app as app;\n", "crate içe aktarımı"), ("use kama_app::codec::*;\n", "glob"),
+                        ("use kama_app::codec::{self, PttCodec};\n", "`self`")):
+        found = ffi_findings(ffi_md(ffi_ok), {"src/x.rs": src})
+        ok = len(found) == 1 and needle in found[0]
+        bad += not ok
+        print(f"  {'PASS' if ok else 'FAIL'}  C9 use bulgusu nedeni `{needle}`: {src.strip()}")
+    # Vakum: dolu sentetik metadata'dan yalnız FFI crate'i çıkarılır; kaynak yoksa da ortam hatası.
+    for name, md, srcs in (("vakum: kama-mobile yok (C9)", without(ffi_md(ffi_ok, packages=node_default), FFI_WRAPPER),
+                            clean_ffi),
+                           ("vakum: kama-mobile kaynağı yok (C9)", ffi_md(ffi_ok), {})):
+        try:
+            ffi_findings(md, srcs)
+            print(f"  FAIL  {name}: ortam hatası bekleniyordu, yeşil döndü")
+            bad += 1
+        except EnvironmentError:
+            print(f"  PASS  {name}: ortam hatası (yeşil DEĞİL)")
+    # Uçtan uca [2026-10-16 K4G-15]: `main()`'in yolu (`all_findings`) — C8 ve C9 çağrıları düşerse kırmızı.
+    e2e_md = _md([], {**ok_graph, "kama-node": ["kama-store", APP, NOISE], FFI_WRAPPER: ["kama-node"]})
+    e2e_root = {"kama-node": {"src/wiring.rs": wiring_src, "src/lib.rs": "mod wiring;\n"}}
+    e2e_bad_root = {"kama-node": {"src/wiring.rs": wiring_src,
+                                  "src/node.rs": "use kama_noise_wire::protector::NoiseWireProtection;\n"}}
+    e2e_bad_ffi = {"src/lib.rs": "fn f(l: &L) -> usize { kama_app::ptt::max_bundle_payload_bytes(l) }\n"}
+    for name, roots, ffi_srcs, want in (("uçtan uca DEĞİL: bütün kurallar temiz", e2e_root, clean_ffi, []),
+                                        ("uçtan uca C8 (main'in yolu)", e2e_bad_root, clean_ffi, ["C8"]),
+                                        ("uçtan uca C9 (main'in yolu)", e2e_root, e2e_bad_ffi, ["C9"])):
+        got = sorted({f.split()[0] for f in all_findings(e2e_md, clean_src, roots, ffi_srcs)})
+        ok = got == want
+        bad += not ok
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}: beklenen {want or 'temiz'}, gelen {got or 'temiz'}")
     print(f"layer_check öz-test: {'YEŞİL' if not bad else f'{bad} BAŞARISIZ'}")
     return 1 if bad else 0
 
@@ -786,9 +1193,9 @@ def main(argv: list[str]) -> int:
         root = Path(argv[i + 1]).resolve()
     try:
         md, sources = real_inputs(root)
-        findings = check(md, sources)
-        findings += root_findings(md, root_inputs(md))  # C8 [2026-10-12 K4G-11]
-        findings += ffi_findings(md)  # C9 [2026-10-16 K4G-15]
+        ffi_sources = ffi_inputs(md)  # C9 (c) [2026-10-16 K4G-15]
+        # C8 [2026-10-12 K4G-11] ve C9 [2026-10-16 K4G-15] dahil — öz-testin uçtan uca vakalarıyla aynı yol.
+        findings = all_findings(md, sources, root_inputs(md), ffi_sources)
     except EnvironmentError as e:
         print(f"ORTAM HATASI: {e}", file=sys.stderr)
         return 2
@@ -798,7 +1205,8 @@ def main(argv: list[str]) -> int:
     if findings:
         print(f"\nLAYER-CHECK: KIRMIZI ({len(findings)} ihlal) — INV-NEIGHBOR-1")
         return 1
-    print(f"LAYER-CHECK: YEŞİL ({APP}: {len(sources)} kaynak dosyası; L1/L2/L3 + C1–C9 temiz; kök={root})")
+    print(f"LAYER-CHECK: YEŞİL ({APP}: {len(sources)} kaynak dosyası; {FFI_WRAPPER}: {len(ffi_sources)} kaynak "
+          f"dosyası; L1/L2/L3 + C1–C9 temiz; kök={root})")
     return 0
 
 
