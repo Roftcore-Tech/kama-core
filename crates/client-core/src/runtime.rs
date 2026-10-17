@@ -703,7 +703,8 @@ pub struct ServerStats {
 /// başında değerleri buraya yazar; hiçbir karar bu aynayı OKUMAZ, sayaç ve davranış değişmez
 /// ([`ServerHandle::delivery_dropped`] emsali). Ana döngüden sonraki kapanış boşaltmasının
 /// (drain) değerleri aynaya girmez; kesin kapanış değeri [`ClientHandle::shutdown`]'ın
-/// istatistiğidir (`ClientStats::fate.activation`).
+/// istatistiğidir (`ClientStats::fate.activation`). İstisna: ACK çerçevesi kaydı
+/// ([`Self::acks`], [`Self::ack`]) çerçeve işlendiği anda yazılır, boşaltmadakiler dahil.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ClientLiveDiag {
     /// Motorun `Retransmit` sınıflı emisyon kararları (ARQ + tail-probe) —
@@ -734,6 +735,25 @@ pub struct ClientLiveDiag {
     /// görev ana döngüde en çok [`RECOVERY_DIAG_PERIOD`]'da bir yeniler. İlk yenilemeden önce ve
     /// kapanmış oturumlar toplamında (`ClientTransport::retired_live_diag`) `None`.
     pub recovery: Option<SenderRecoveryDiag>,
+    // ── [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] M1 (bayat zamanlayıcı SACK'leri) / M2 (hız tabanı) ──
+    /// Ucun saat tabanının sıfırı: `*_ns` anları bu ana göredir (motorun `on_event`'e verilen
+    /// saat). Görev başlamadan ve kapanmış oturumlar toplamında `None`.
+    pub clock_origin: Option<Instant>,
+    /// Aynanın son yazıldığı an (ns; ucun saat tabanında).
+    pub at_ns: u64,
+    /// Gönderen motorun denetim durumu: faz, hız kestiricileri, acil durum, dönüş yolu.
+    pub control: SenderControlDiag,
+    /// Tele yazılan / telden okunan datagram ve tele yazılan bayt — [`ClientStats::tx_datagrams`],
+    /// [`ClientStats::rx_datagrams`], [`ClientStats::tx_bytes`] (`mark_t0` sıfırlar).
+    pub tx_datagrams: u64,
+    pub rx_datagrams: u64,
+    pub tx_bytes: u64,
+    /// ACK çerçevesi sayaçları (çerçeve işlendiği anda yazılır).
+    pub ack: AckFrameCounts,
+    /// Son [`ACK_LOG_LEN`] ACK çerçevesinin kaydı (çerçeve işlendiği anda yazılır).
+    pub acks: DiagRing<AckFrameDiag, ACK_LOG_LEN>,
+    /// Son [`STATE_LOG_LEN`] motor durum değişikliği (ana döngü turu çözünürlüğünde).
+    pub states: DiagRing<StateChangeDiag, STATE_LOG_LEN>,
 }
 
 /// [K4G-05 / INT-02 TEŞHİS] [`SenderRecoveryDiag`]'ın yenilenme aralığı — gözlem çözünürlüğü,
@@ -829,28 +849,278 @@ fn capture_recovery(
     }
 }
 
-impl ClientLiveDiag {
-    /// Motorun ve tel sayaçlarının o anki anlık görüntüsü (salt okuma). Kurtarma görüntüsü
-    /// ([`Self::recovery`]) ayrı ve oranlı alınır.
-    fn snapshot(sender: &adaptive_transport::sender::Sender, stats: &ClientStats) -> Self {
-        let activation = sender.diag_activation();
+/// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Canlı aynada tutulan son ACK çerçevesi kaydı sayısı
+/// ([`ClientLiveDiag::acks`]) — gözlem çözünürlüğü, normatif DEĞİL `[KALİBRASYON]`. Halka sabit
+/// boyutludur (SR-AUDIT-001); iki okuma arasında bundan fazla çerçeve işlenirse eskileri halkadan
+/// düşer ve okuyucu bunu kayıt sıra numarasındaki ([`AckFrameDiag::index`]) boşluktan görür.
+pub const ACK_LOG_LEN: usize = 32;
+
+/// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Canlı aynada tutulan son durum değişikliği kaydı sayısı
+/// ([`ClientLiveDiag::states`]); bkz. [`ACK_LOG_LEN`].
+pub const STATE_LOG_LEN: usize = 32;
+
+/// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Sabit boyutlu son-kayıt halkası: en yeni `N` kayıt ve şimdiye
+/// dek eklenen kayıt sayısı. Ekleme ayırma yapmaz; salt gözlem yapısıdır.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiagRing<T, const N: usize> {
+    total: u64,
+    next: usize,
+    held: usize,
+    slots: [T; N],
+}
+
+impl<T: Copy + Default, const N: usize> Default for DiagRing<T, N> {
+    fn default() -> Self {
         Self {
-            retransmits: activation.retransmits,
-            tail_probes: activation.tail_probes,
-            dups: activation.dups,
-            parity_emitted: activation.parity_emitted,
-            recovery_suppressed: stats.recovery_suppressed,
-            tx_retx_bytes: stats.tx_retx_bytes,
-            rtt_samples: sender.diag_rtt_sample_count(),
-            srtt_us: activation.srtt_us,
-            rtprop_us: activation.rtprop_us,
-            left_preconverge_ns: activation.left_preconverge_ns,
-            recovery: None,
+            total: 0,
+            next: 0,
+            held: 0,
+            slots: [T::default(); N],
         }
+    }
+}
+
+impl<T: Copy, const N: usize> DiagRing<T, N> {
+    /// Şimdiye dek eklenen kayıt sayısı (halkadan düşenler dahil).
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// Halkadaki kayıtlar, eskiden yeniye (en çok `N`).
+    pub fn recent(&self) -> impl Iterator<Item = &T> + '_ {
+        let start = (self.next + N - self.held) % N.max(1);
+        (0..self.held).map(move |k| &self.slots[(start + k) % N])
+    }
+
+    fn push(&mut self, item: T) {
+        self.total = self.total.saturating_add(1);
+        if N == 0 {
+            return;
+        }
+        self.slots[self.next] = item;
+        self.next = (self.next + 1) % N;
+        self.held = (self.held + 1).min(N);
+    }
+}
+
+/// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Motorun bir ACK çerçevesini işlemeden hemen önceki ya da olayı
+/// işledikten hemen sonraki görünümü ([`AckFrameDiag::before`] / [`AckFrameDiag::after`]):
+/// `Sender::diag_recovery_timers` ve `Sender::diag_activation` okuması. Motor olayı TEK çağrıda
+/// işler ve planlar: "sonra" görünümü aynı olayda planlanan emisyonları da içerir.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MotorAckView {
+    pub state: Option<adaptive_transport::sender::SenderState>,
+    /// Motorun uçuştaki, retransmit bekleyen, saklanan (tombstone) ve vadeli kopya kayıtları.
+    pub inflight_len: u32,
+    pub pending_lost_len: u32,
+    pub tombstones_len: u32,
+    pub dup_queue_len: u32,
+    /// Motorun tele çıkardığı tail-probe sayısı (`ActivationDiag::tail_probes`).
+    pub tail_probes: u64,
+    /// Tail-recovery idle penceresinin başlangıcı ve bu penceredeki probe turu.
+    pub tail_armed_at_ns: Option<u64>,
+    pub tail_probe_index: u32,
+    /// Motorun son ACK'i işlediği an; hiç ACK yoksa `None`.
+    pub last_ack_ns: Option<u64>,
+}
+
+impl MotorAckView {
+    fn of(sender: &adaptive_transport::sender::Sender) -> Self {
+        let t = sender.diag_recovery_timers();
+        Self {
+            state: Some(t.state),
+            inflight_len: t.inflight_len,
+            pending_lost_len: t.pending_lost_len,
+            tombstones_len: t.tombstones_len,
+            dup_queue_len: t.dup_queue_len,
+            tail_probes: sender.diag_activation().tail_probes,
+            tail_armed_at_ns: t.tail_armed_at_ns,
+            tail_probe_index: t.tail_probe_index,
+            last_ack_ns: t.last_ack_ns,
+        }
+    }
+}
+
+/// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Gönderen ucun çözdüğü bir ACK çerçevesi (M1: bayat zamanlayıcı
+/// SACK'leri). SALT GÖZLEM: alanlar çerçeve motora verilirken okunur; hiçbir karar bu kaydı okumaz.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AckFrameDiag {
+    /// Ucun çözülen ACK çerçevesi sırası (1'den; [`AckFrameCounts::frames`] ile aynı sayaç).
+    pub index: u64,
+    /// İşlendiği an (ns; ucun saat tabanında — bkz. [`ClientLiveDiag::clock_origin`]).
+    pub at_ns: u64,
+    /// V2 (0x14) çerçeve mi; değilse [`Self::seen_count`] 0'dır.
+    pub v2: bool,
+    /// Alıcının o ana dek gördüğü datagram sayısı (V2 `seen_count`; kümülatif, tekrarlar dahil).
+    pub seen_count: u32,
+    /// Çerçevenin teyit ettiği en büyük tel PN'i (aralıklar açıldıktan sonra); yoksa `None`.
+    pub largest_pn: Option<u64>,
+    /// `ack_delay` alanının tel değeri (V2'de 256 µs birim; `u16::MAX` alıcıdaki tavandır) ve
+    /// çözülmüş değeri (µs): alıcıda en büyük PN'in varışından bu ACK'in üretimine geçen süre.
+    pub ack_delay_raw: u16,
+    pub ack_delay_us: u64,
+    /// Çerçevenin teyit ettiği PN sayısı.
+    pub acked_pns: u32,
+    /// Bunlardan motor seq'ine çevrilenler (motora giden liste). 0 iken motor çerçeveyi işlemez:
+    /// boş listede erken döner, son-ACK anını tazelemez.
+    pub mapped_seqs: u32,
+    /// Bu çerçeveyle İLK kez teyit edilen birim (teyitsiz birim deposundan düşen). 0 = çerçeve yeni
+    /// hiçbir birimi onaylamadı.
+    pub new_units: u32,
+    /// Motorun bu olayda planlayıp mühürlettiği datagram (`ClientStats::tx_datagrams` farkı).
+    pub tx_datagrams_during: u32,
+    /// Motor görünümü: çerçeve motora verilmeden hemen önce ve olay işlendikten hemen sonra.
+    pub before: MotorAckView,
+    pub after: MotorAckView,
+}
+
+/// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] ACK çerçevesi sayaçları ([`ClientLiveDiag::ack`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AckFrameCounts {
+    /// Çözülen ACK çerçevesi (V1 + V2).
+    pub frames: u64,
+    /// En az bir PN'i motor seq'ine çevrilen çerçeve (motor çerçeveyi işledi).
+    pub mapped: u64,
+    /// En az bir birimi İLK kez teyit eden çerçeve (birim düzeyinde ilerleme).
+    pub new_units: u64,
+    /// Olaydan sonra motorun uçuştaki kayıt sayısı olaydan öncekinden küçük olan çerçeve. Kayıp
+    /// ilanıyla ve tail-probe'un yerini aldığı orijinalle uçuştan çıkan kayıt da küçültür; aynı
+    /// olayda planlanan emisyonlar küçülmeyi örtebilir ([`AckFrameDiag::tx_datagrams_during`]).
+    pub inflight_shrunk: u64,
+}
+
+impl AckFrameCounts {
+    fn add(&mut self, other: &Self) {
+        self.frames = self.frames.saturating_add(other.frames);
+        self.mapped = self.mapped.saturating_add(other.mapped);
+        self.new_units = self.new_units.saturating_add(other.new_units);
+        self.inflight_shrunk = self.inflight_shrunk.saturating_add(other.inflight_shrunk);
+    }
+}
+
+/// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Gönderen motorun durum değişikliği. Görev her ana döngü turunun
+/// başında motor durumunu okur ve öncekinden farklıysa kaydeder (çözünürlük: bir tur, yani bir
+/// olay). Bir tur içinde birden çok geçiş yaşandıysa ara durumlar kayıtta yoktur;
+/// [`Self::motor_transitions`] farkı bunu gösterir.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StateChangeDiag {
+    /// Kayıt sırası (1'den).
+    pub index: u64,
+    /// Görüldüğü an (ns; ucun saat tabanında).
+    pub at_ns: u64,
+    /// Önceki ve yeni durum (`from` ilk kayıtta `None`).
+    pub from: Option<adaptive_transport::sender::SenderState>,
+    pub to: Option<adaptive_transport::sender::SenderState>,
+    /// Motorun o ana dek saydığı durum geçişi (`ActivationDiag::state_transitions`).
+    pub motor_transitions: u64,
+    /// O andaki acil durum seviyesi, son füzyon kararının acil ileri-kurtarma kipi ve füzyonun son
+    /// gördüğü ack_confidence (‰). Motor RecoverFwd'e iki yoldan girer: seviye `Arq`'ın üstünde ya
+    /// da füzyon kipi acil.
+    pub emergency: Option<adaptive_transport::emergency::EmergencyLevel>,
+    pub fusion_emergency_mode: bool,
+    pub ack_confidence_permille: Option<u64>,
+    /// Motorun son ACK'i işlediği an; hiç ACK yoksa `None`.
+    pub last_ack_ns: Option<u64>,
+}
+
+/// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Gönderen motorun denetim durumu (M2: hız tabanı): faz, hız
+/// kestiricileri, acil durum ve dönüş yolu. Kaynaklar mevcut salt-okunur erişimcilerdir
+/// (`Sender::state`, `diag_activation`, `diag_pacer`, `emergency_level`, `last_decision`,
+/// `diag_fusion_input_snapshot`, `diag_return_path`); motor olayı sürülmez.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SenderControlDiag {
+    pub state: Option<adaptive_transport::sender::SenderState>,
+    /// Motorun saydığı durum geçişi ve RecoverArq / RecoverFwd / ProbeUp girişleri.
+    pub state_transitions: u64,
+    pub recover_arq_entries: u64,
+    pub recover_fwd_entries: u64,
+    pub probe_up_entries: u64,
+    /// BtlBw kestirimi (B/s).
+    pub btlbw_bps: u64,
+    /// Pacer hızı (B/s), jetonu ve patlama tavanı (B).
+    pub pacer_rate_bps: u64,
+    pub pacer_tokens: u64,
+    pub pacer_burst_cap: u64,
+    /// Uçuştaki bayt.
+    pub inflight_bytes: u64,
+    /// Kuyruk gecikmesi kestirimi (µs).
+    pub queue_delay_us: u64,
+    /// Acil durum seviyesi (`Arq < Dup2 < Dup3`).
+    pub emergency: Option<adaptive_transport::emergency::EmergencyLevel>,
+    /// Son füzyon kararı acil ileri-kurtarma kipinde mi; kararın hız kazancı (‰).
+    pub fusion_emergency_mode: bool,
+    pub send_rate_gain_permille: u32,
+    /// Füzyonun son gördüğü girdiler (ack_confidence dahil); değerlendirme olmadıysa `None`.
+    pub fusion: Option<adaptive_transport::fusion::FusionInputSnapshot>,
+    /// Dönüş yolu gözlemi (aynanın yazıldığı anda).
+    pub return_path: adaptive_transport::return_path::ReturnPathState,
+}
+
+impl SenderControlDiag {
+    fn capture(
+        sender: &adaptive_transport::sender::Sender,
+        activation: &adaptive_transport::sender::ActivationDiag,
+        now_ns: u64,
+    ) -> Self {
+        let (_, _, pacer_burst_cap) = sender.diag_pacer();
+        let decision = sender.last_decision();
+        Self {
+            state: Some(sender.state()),
+            state_transitions: activation.state_transitions,
+            recover_arq_entries: activation.recover_arq_entries,
+            recover_fwd_entries: activation.recover_fwd_entries,
+            probe_up_entries: activation.probe_up_entries,
+            btlbw_bps: activation.btlbw_bps,
+            pacer_rate_bps: activation.pacer_rate_bps,
+            pacer_tokens: activation.pacer_tokens,
+            pacer_burst_cap,
+            inflight_bytes: activation.inflight_bytes,
+            queue_delay_us: activation.queue_delay_us,
+            emergency: Some(sender.emergency_level()),
+            fusion_emergency_mode: decision.mode
+                == adaptive_transport::fusion::Mode::EmergencyForwardRedundancy,
+            send_rate_gain_permille: decision.send_rate_gain_permille,
+            fusion: sender.diag_fusion_input_snapshot(),
+            return_path: sender.diag_return_path(now_ns),
+        }
+    }
+}
+
+impl ClientLiveDiag {
+    /// Motorun ve tel sayaçlarının o anki değerlerini aynaya yazar (salt okuma). Kurtarma görüntüsü
+    /// ([`Self::recovery`]) oranlı, halkalar olay anında ayrı yazılır.
+    fn refresh(
+        &mut self,
+        sender: &adaptive_transport::sender::Sender,
+        activation: &adaptive_transport::sender::ActivationDiag,
+        stats: &ClientStats,
+        control: SenderControlDiag,
+        origin: Instant,
+        now_ns: u64,
+    ) {
+        self.retransmits = activation.retransmits;
+        self.tail_probes = activation.tail_probes;
+        self.dups = activation.dups;
+        self.parity_emitted = activation.parity_emitted;
+        self.recovery_suppressed = stats.recovery_suppressed;
+        self.tx_retx_bytes = stats.tx_retx_bytes;
+        self.rtt_samples = sender.diag_rtt_sample_count();
+        self.srtt_us = activation.srtt_us;
+        self.rtprop_us = activation.rtprop_us;
+        self.left_preconverge_ns = activation.left_preconverge_ns;
+        self.clock_origin = Some(origin);
+        self.at_ns = now_ns;
+        self.control = control;
+        self.tx_datagrams = stats.tx_datagrams;
+        self.rx_datagrams = stats.rx_datagrams;
+        self.tx_bytes = stats.tx_bytes;
     }
 
     /// [K4G-05] Kapanan bir ucun SAYAÇLARINI bu toplama ekler (S1 adaptörünün kapanmış oturumlar
-    /// toplamı). RTT alanları toplanmaz, değişmez: uç başına anlamlıdır.
+    /// toplamı). RTT alanları toplanmaz, değişmez: uç başına anlamlıdır. [CEVAP PAKETİ 6] ACK
+    /// çerçevesi sayaçları ve tel datagram / bayt sayaçları toplanır; denetim durumu, saat tabanı
+    /// ve halkalar uç başınadır, toplanmaz.
     pub(crate) fn add_counters(&mut self, other: &Self) {
         self.retransmits = self.retransmits.saturating_add(other.retransmits);
         self.tail_probes = self.tail_probes.saturating_add(other.tail_probes);
@@ -860,6 +1130,10 @@ impl ClientLiveDiag {
             .recovery_suppressed
             .saturating_add(other.recovery_suppressed);
         self.tx_retx_bytes = self.tx_retx_bytes.saturating_add(other.tx_retx_bytes);
+        self.tx_datagrams = self.tx_datagrams.saturating_add(other.tx_datagrams);
+        self.rx_datagrams = self.rx_datagrams.saturating_add(other.rx_datagrams);
+        self.tx_bytes = self.tx_bytes.saturating_add(other.tx_bytes);
+        self.ack.add(&other.ack);
     }
 }
 
@@ -1571,6 +1845,9 @@ async fn client_task(
     // tüketir ama tabloya girmez — alıcı onları ACK'lemez, ACK'lense de çevrilmez.
     let mut pn_seq: VecDeque<(u64, u64)> = VecDeque::new();
     let mut max_sealed_pn: Option<u64> = None;
+    // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] ACK çerçevesi sayaçları (yalnız aynaya yazılır; görev
+    // okumaz).
+    let mut ack_counts = AckFrameCounts::default();
     let mut next_unit: u64 = 0;
     let mut pace = interval(PACE_TICK);
     let mut rtprop = interval(RTPROP_TICK);
@@ -1905,8 +2182,12 @@ async fn client_task(
                         );
                         // [D1a] ACK aralıkları PN uzayında → motor seq'ine çevrilir. Tabloda olmayan
                         // PN (ufuk dışı / motor kararı olmayan çerçeve) motora GİTMEZ.
-                        let acked: Vec<u64> = frame
-                            .acked_full(max_sealed_pn.map_or(0, |m| m + 1))
+                        let pns = frame.acked_full(max_sealed_pn.map_or(0, |m| m + 1));
+                        // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Salt gözlem: çerçevenin teyit ettiği PN
+                        // sayısı ve en büyüğü (motora giden liste değişmez).
+                        let acked_pns = u32::try_from(pns.len()).unwrap_or(u32::MAX);
+                        let largest_pn = pns.iter().copied().max();
+                        let acked: Vec<u64> = pns
                             .into_iter()
                             .filter_map(|pn| {
                                 pn_seq
@@ -1915,10 +2196,12 @@ async fn client_task(
                                     .map(|i| pn_seq[i].1)
                             })
                             .collect();
+                        let mut new_units: u32 = 0;
                         for s in &acked {
                             let Some(&unit) = seq_to_unit.get(s) else { continue };
                             if store.remove(&unit).is_some() {
                                 stats.acked += 1;
+                                new_units = new_units.saturating_add(1);
                                 unit_acked!(unit);
                                 // Birimin TÜM seq kayıtları budanır — haritalar store disipliniyle sınırlı kalır.
                                 for old in unit_seqs.remove(&unit).unwrap_or_default() {
@@ -1926,6 +2209,9 @@ async fn client_task(
                                 }
                             }
                         }
+                        let mapped_seqs = u32::try_from(acked.len()).unwrap_or(u32::MAX);
+                        let before = MotorAckView::of(session.sender());
+                        let tx_before = stats.tx_datagrams;
                         // Kampanya-kanıtlı sözleşme (bench birebir): acked_full çıktısı diff'siz
                         // beslenir; motor inflight.remove ile idempotent işler.
                         drive!(
@@ -1935,6 +2221,41 @@ async fn client_task(
                             }),
                             $now
                         );
+                        // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Çerçeve kaydı ve sayaçları: yalnız aynaya
+                        // yazılır; hiçbir karar okumaz.
+                        let after = MotorAckView::of(session.sender());
+                        ack_counts.frames = ack_counts.frames.saturating_add(1);
+                        ack_counts.mapped =
+                            ack_counts.mapped.saturating_add(u64::from(mapped_seqs > 0));
+                        ack_counts.new_units =
+                            ack_counts.new_units.saturating_add(u64::from(new_units > 0));
+                        ack_counts.inflight_shrunk = ack_counts
+                            .inflight_shrunk
+                            .saturating_add(u64::from(after.inflight_len < before.inflight_len));
+                        let record = AckFrameDiag {
+                            index: ack_counts.frames,
+                            at_ns: $now,
+                            v2: frame.v2,
+                            seen_count: frame.seen_count,
+                            largest_pn,
+                            ack_delay_raw: frame.ack_delay,
+                            ack_delay_us: u64::try_from(frame.ack_delay_duration().as_micros())
+                                .unwrap_or(u64::MAX),
+                            acked_pns,
+                            mapped_seqs,
+                            new_units,
+                            tx_datagrams_during: u32::try_from(
+                                stats.tx_datagrams.saturating_sub(tx_before),
+                            )
+                            .unwrap_or(u32::MAX),
+                            before,
+                            after,
+                        };
+                        {
+                            let mut mirror = live.lock().unwrap_or_else(PoisonError::into_inner);
+                            mirror.ack = ack_counts;
+                            mirror.acks.push(record);
+                        }
                     }
                 }
             }
@@ -1946,14 +2267,19 @@ async fn client_task(
     let recovery_period_ns = u64::try_from(RECOVERY_DIAG_PERIOD.as_nanos()).unwrap_or(u64::MAX);
     let mut recovery_next_ns: u64 = 0;
     let mut recovery: Option<SenderRecoveryDiag> = None;
+    // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Son görülen motor durumu ve durum değişikliği kayıt sırası
+    // (yalnız aynaya yazılır, görev okumaz).
+    let mut last_state: Option<adaptive_transport::sender::SenderState> = None;
+    let mut state_changes: u64 = 0;
 
     // ── Ana döngü ──
     loop {
         // [K4G-05] Salt gözlem: motor ve tel sayaçlarının o anki değeri yayımlanır (önceki turun
         // bütün kolları dahil). Burada okunur, değişmez; görev aynayı OKUMAZ (bkz.
         // `ClientHandle::live_diag`).
-        let mut mirror = ClientLiveDiag::snapshot(session.sender(), &stats);
         let mirror_now_ns = elapsed_ns(start);
+        let activation = session.sender().diag_activation();
+        let control = SenderControlDiag::capture(session.sender(), &activation, mirror_now_ns);
         if mirror_now_ns >= recovery_next_ns {
             recovery_next_ns = mirror_now_ns.saturating_add(recovery_period_ns);
             recovery = Some(capture_recovery(
@@ -1964,8 +2290,39 @@ async fn client_task(
                 mirror_now_ns,
             ));
         }
-        mirror.recovery = recovery;
-        *live.lock().unwrap_or_else(PoisonError::into_inner) = mirror;
+        // [CEVAP PAKETİ 6] Durum değişikliği: bir önceki turda görülenden farklıysa kaydedilir.
+        let state_change = if control.state == last_state {
+            None
+        } else {
+            state_changes = state_changes.saturating_add(1);
+            Some(StateChangeDiag {
+                index: state_changes,
+                at_ns: mirror_now_ns,
+                from: last_state,
+                to: control.state,
+                motor_transitions: control.state_transitions,
+                emergency: control.emergency,
+                fusion_emergency_mode: control.fusion_emergency_mode,
+                ack_confidence_permille: control.fusion.map(|f| f.ack_confidence_permille),
+                last_ack_ns: session.sender().diag_recovery_timers().last_ack_ns,
+            })
+        };
+        last_state = control.state;
+        {
+            let mut mirror = live.lock().unwrap_or_else(PoisonError::into_inner);
+            mirror.refresh(
+                session.sender(),
+                &activation,
+                &stats,
+                control,
+                start,
+                mirror_now_ns,
+            );
+            mirror.recovery = recovery;
+            if let Some(change) = state_change {
+                mirror.states.push(change);
+            }
+        }
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             // Ölçüm-t0 işareti (ClientHandle::mark_t0): wire sayaçları sıfırlanır, MOTOR DURUMU
@@ -3684,6 +4041,42 @@ mod live_diag_mirror_tests {
             "kurtarma görüntüsü teyitsiz birim kalmadığını göstermeli: {:?}",
             client.live_diag()
         );
+        // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] ACK çerçevesi sayaçları ve halkası: ilerleme getiren
+        // çerçeve, motorun işlediği çerçeveyi; o da çözülen çerçeveyi aşmaz. Halka toplamı çerçeve
+        // sayısıdır, kayıtlar ardışık sıralıdır; FEC kapalıyken her birim bir ACK çerçevesiyle İLK
+        // kez teyit edilir.
+        let acks = client.live_diag();
+        assert!(
+            acks.ack.frames >= 1
+                && acks.ack.new_units >= 1
+                && acks.ack.new_units <= acks.ack.mapped
+                && acks.ack.mapped <= acks.ack.frames,
+            "{:?}",
+            acks.ack
+        );
+        assert_eq!(acks.acks.total(), acks.ack.frames);
+        let records: Vec<AckFrameDiag> = acks.acks.recent().copied().collect();
+        assert!(
+            records.windows(2).all(|w| w[1].index == w[0].index + 1),
+            "{records:?}"
+        );
+        assert_eq!(records.last().map(|r| r.index), Some(acks.ack.frames));
+        assert!(records.iter().all(|r| r.mapped_seqs <= r.acked_pns));
+        if acks.acks.total() <= ACK_LOG_LEN as u64 {
+            let confirmed: u64 = records.iter().map(|r| u64::from(r.new_units)).sum();
+            assert_eq!(confirmed, UNITS, "{records:?}");
+        }
+        // Denetim durumu ve durum değişikliği kaydı: hız ve durum yazıldı; ilk kayıt öncesizdir.
+        assert!(
+            acks.clock_origin.is_some() && acks.control.state.is_some(),
+            "{:?}",
+            acks.control
+        );
+        assert!(acks.control.pacer_rate_bps > 0, "{:?}", acks.control);
+        assert!(acks.states.total() >= 1);
+        if acks.states.total() <= STATE_LOG_LEN as u64 {
+            assert_eq!(acks.states.recent().next().map(|s| s.from), Some(None));
+        }
         let stats = client.shutdown().await;
         let _ = server.shutdown().await;
         assert!(
@@ -3694,6 +4087,23 @@ mod live_diag_mirror_tests {
         );
         assert!(stats.tx_retx_bytes >= live.tx_retx_bytes, "{stats:?}");
         assert!(stats.fate.rtt_samples >= live.rtt_samples, "{stats:?}");
+    }
+
+    /// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Halka en yeni `N` kaydı eskiden yeniye verir; toplam,
+    /// halkadan düşenleri de sayar.
+    #[test]
+    fn diag_ring_keeps_the_newest_records_in_order() {
+        let mut ring: DiagRing<u64, 3> = DiagRing::default();
+        assert_eq!(ring.recent().count(), 0);
+        for v in 1..=2 {
+            ring.push(v);
+        }
+        assert_eq!(ring.recent().copied().collect::<Vec<_>>(), [1, 2]);
+        for v in 3..=7 {
+            ring.push(v);
+        }
+        assert_eq!(ring.total(), 7);
+        assert_eq!(ring.recent().copied().collect::<Vec<_>>(), [5, 6, 7]);
     }
 
     /// Kurtarma kapalı (yalnız test yapılandırması): retransmit kararı tele çıkmaz. Ayna bastırılan

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """INT-02 analizi (plan K4G-05): `int02_run.sh` çıktılarından tohum × kol tabloları ve GATING hükmü.
 
-    python3 scripts/netem/int02_analyze.py <çıktı-dizini> [--md DOSYA] [--json DOSYA]
+    python3 scripts/netem/int02_analyze.py <çıktı-dizini> [--md DOSYA] [--json DOSYA] [--criteria DOSYA]
     python3 scripts/netem/int02_analyze.py --selftest
 
 Girdi: `<dizin>/seed-<S>-<kol>.json` (örnek `int02_node`'un satırı + sürücünün `driver` ve
@@ -48,12 +48,23 @@ kurtarma görüntüsü (`nodes.*.probe.sessions[].recovery`: teyitsiz birim, en 
 emisyon kararı / ARQ retx düzeyi ve tavanı / motor kayıtları / kopya vadesi ve aralığı / son
 gönderimden ve son ACK'ten beri, tail-probe turu ve PTO, motor durumu) ve alıcı sıralı teslim durumu
 (`reorder`: beklenen birim, arkasında tutulan). Zaman çizelgesi örnek sayısı `timeline.samples`.
+
+M1 / M2 TEŞHİS (CEVAP PAKETİ 6; hüküm DEĞİL; şema `int02-node-v3`): `m_log` ACK çerçevesi ve motor durum
+değişikliği günlüklerinden bayat zamanlayıcı SACK tabloları (M1: P / S / N sınıfları, varış ve alıcı
+üretim aralıkları, ilerlemesiz diziler, RecoverFwd girişlerinin konumu, eski kayıt doğrulaması) ve
+zaman çizelgesinin `motor` alanlarından kesinti öncesi / sırası / sonrası pacer–BtlBw tabloları (M2:
+evreler, tabanda oran, toparlanma). Tanımlar docs/reports/INT-02-M1M2-BEKLENTI.md'dedir (ölçümden ÖNCE
+yazıldı); eşikler o dosyanın ÖLÇÜT bloğundan okunur (`--criteria`) ve dosyanın sha256'sı çıktı
+başlığına ve JSON özetine (`m12.criteria_sha256`) yazılır. Ölçüt dosyası okunamazsa bölüm atlanır
+(stderr). `m_log` taşımayan (v1 / v2) dosyalarda bölüm boştur.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import re
 import sys
 import tempfile
@@ -365,7 +376,450 @@ def session_diag(rec, name, field):
     return get(sessions[0], "diag", field)
 
 
-def render(runs, seeds) -> tuple[str, dict]:
+# ── M1 / M2 teşhis ölçümü (CEVAP PAKETİ 6; hüküm DEĞİL) ─────────────────────────────────────
+#
+# Tanımlar ve eşikler docs/reports/INT-02-M1M2-BEKLENTI.md'dedir (ölçümden ÖNCE yazıldı); eşikler
+# o dosyanın ÖLÇÜT bloğundan okunur, burada sabit olarak TEKRARLANMAZ.
+
+CRITERIA_FILE = Path(__file__).resolve().parents[2] / "docs" / "reports" / "INT-02-M1M2-BEKLENTI.md"
+CRIT_BEGIN, CRIT_END = "<!-- M12-OLCUT-BASLA -->", "<!-- M12-OLCUT-BITTI -->"
+CRIT_TYPES = {
+    "ACK_CADENCE_FLOOR_MS": float, "T_SPACING_MS": float, "ARRIVAL_TOL_MS": float,
+    "EMISSION_TOL_MS": float, "ACK_DELAY_SATURATED_RAW": int, "MIN_STREAK_FRAMES": int,
+    "MIN_RATE_BPS": int, "RECOVERY_FRACTION": float, "OLD_POST_WINDOW_S": float,
+    "OLD_S9_BOB_ACK_S": list, "MAX_ROWS": int,
+}
+# RecoverFwd girişinin ilerlemesiz diziye göre konumu (beklenti kaydı §2).
+WHERE = ("dizi öncesi sessizlikte", "bayat SACK'ler sürerken",
+         "son bayat SACK'ten sonra, ilerlemeden önce", "dizi dışı")
+LEVELS = ("Arq", "Dup2", "Dup3")
+
+
+def load_criteria(path: Path) -> tuple[dict, str]:
+    """Beklenti kaydının ÖLÇÜT bloğu → sözlük, ve dosyanın sha256'sı (bayt)."""
+    data = path.read_bytes()
+    text = data.decode("utf-8")
+    begin, end = text.find(CRIT_BEGIN), text.find(CRIT_END)
+    if begin < 0 or end < begin:
+        raise ValueError(f"{path}: ÖLÇÜT bloğu ({CRIT_BEGIN} … {CRIT_END}) yok")
+    crit: dict = {}
+    for raw in text[begin + len(CRIT_BEGIN):end].splitlines():
+        line = raw.strip()
+        if not line or line.startswith("```") or line.startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or key not in CRIT_TYPES or key in crit:
+            raise ValueError(f"{path}: tanınmayan ya da tekrarlı ölçüt satırı {raw!r}")
+        kind = CRIT_TYPES[key]
+        crit[key] = [float(v) for v in value.split()] if kind is list else kind(value)
+    missing = sorted(set(CRIT_TYPES) - set(crit))
+    if missing:
+        raise ValueError(f"{path}: eksik ölçüt {missing}")
+    return crit, hashlib.sha256(data).hexdigest()
+
+
+def nearest_median(values):
+    """En yakın sıra medyanı (örnekteki `summary` ile aynı yöntem)."""
+    values = sorted(v for v in values if v is not None)
+    return values[max(1, math.ceil(0.5 * len(values))) - 1] if values else None
+
+
+def m_logs(rec):
+    return get(rec, "m_log", "sessions", default=[]) or []
+
+
+def ack_classes(acks):
+    """P (ilerlemeli) / S (bayat) / N (ilerlemesiz, yeni datagramlı) — beklenti kaydı §2."""
+    classes, prev_seen = [], None
+    for a in acks:
+        seen = a.get("seen") if a.get("v2") else None
+        if (a.get("new_units") or 0) > 0:
+            cls = "P"
+        elif seen is not None and prev_seen is not None and seen == prev_seen:
+            cls = "S"
+        else:
+            cls = "N"
+        if seen is not None:
+            prev_seen = seen
+        classes.append(cls)
+    return classes
+
+
+def motor_progress(a):
+    """Motorun kendi ilerleme tanımı (tail zamanlayıcısı yeniden kuruldu) — beklenti kaydı §2."""
+    before, after = a.get("before") or {}, a.get("after") or {}
+    if not a.get("mapped"):
+        return "işlenmedi"
+    if a.get("tail_rearmed_now"):
+        if after.get("tail_probe_index") == 0 and after.get("tail_probes") == before.get("tail_probes"):
+            return "ilerleme"
+        return "belirsiz"
+    return "yok"
+
+
+def multiple_of(delta, base, tol):
+    if delta is None or base <= 0:
+        return None
+    k = round(delta / base)
+    return k if k >= 1 and abs(delta - k * base) <= tol else None
+
+
+def interval_class(delta, crit, tol):
+    """`taban×k` (ACK_CADENCE_FLOOR katı) / `kota×j` (T_SPACING katı) / `diğer`."""
+    k = multiple_of(delta, crit["ACK_CADENCE_FLOOR_MS"], tol)
+    if k:
+        return f"taban×{k}"
+    j = multiple_of(delta, crit["T_SPACING_MS"], tol)
+    return f"kota×{j}" if j else "diğer"
+
+
+def time_in_state(states, lo, hi, name):
+    """`[lo, hi]` aralığında `name` durumunda geçen süre (ms), durum günlüğünden."""
+    total = 0.0
+    for k, s in enumerate(states):
+        if s.get("to") != name:
+            continue
+        a = s["t_ms"]
+        b = states[k + 1]["t_ms"] if k + 1 < len(states) else math.inf
+        x, y = max(a, lo), min(b, hi)
+        if y > x:
+            total += y - x
+    return total
+
+
+def timeline_motor(rec, side, session=None, peer=None):
+    """Zaman çizelgesinden bir ucun örnekleri (oturum ya da eş adıyla seçilir):
+    `(t_ms, oturum, motor, kurtarma görüntüsü)`."""
+    rows = []
+    for sample in get(rec, "timeline", "samples", default=[]) or []:
+        for s in (sample.get(side) or {}).get("sessions") or []:
+            if not s.get("motor"):
+                continue
+            if (session is not None and s.get("session") == session) or (
+                    session is None and s.get("peer") == peer):
+                rows.append((sample.get("t_ms"), s.get("session"), s["motor"], s.get("recovery") or {}))
+                break
+    return [r for r in rows if r[0] is not None]
+
+
+def streak_window(st):
+    """RecoverFwd girişinin diziye atfedildiği aralık: önceki P'den diziyi kapatan P'ye (açıksa sonsuz)."""
+    lo = st["prev_P_ms"] if st["prev_P_ms"] is not None else st["start_ms"]
+    return lo, (st["end_ms"] if st["closed"] else math.inf)
+
+
+def m1_session(rec, log, crit):
+    """Bir gönderen ucunun ACK günlüğü → sınıflar, aralıklar, diziler, RecoverFwd girişleri."""
+    acks = [a for a in (log.get("acks") or []) if a.get("t_ms") is not None]
+    states = [s for s in (log.get("states") or []) if s.get("t_ms") is not None]
+    classes = ack_classes(acks)
+    sat = crit["ACK_DELAY_SATURATED_RAW"]
+    arrivals, emissions = [], []
+    for k in range(1, len(acks)):
+        a, b = acks[k - 1], acks[k]
+        if classes[k] != "S" or b.get("i") != (a.get("i") or 0) + 1:
+            continue
+        delta = b["t_ms"] - a["t_ms"]
+        arrivals.append({"t_ms": b["t_ms"], "delta_ms": delta,
+                         "class": interval_class(delta, crit, crit["ARRIVAL_TOL_MS"])})
+        if (classes[k - 1] == "S" and a.get("largest_pn") is not None
+                and a.get("largest_pn") == b.get("largest_pn")
+                and (a.get("ack_delay_raw") or 0) < sat and (b.get("ack_delay_raw") or 0) < sat):
+            d = b["ack_delay_ms"] - a["ack_delay_ms"]
+            emissions.append({"t_ms": b["t_ms"], "delta_ms": d,
+                              "class": interval_class(d, crit, crit["EMISSION_TOL_MS"])})
+    streaks, k = [], 0
+    while k < len(acks):
+        if classes[k] == "P":
+            k += 1
+            continue
+        j = k
+        while j < len(acks) and classes[j] != "P":
+            j += 1
+        if j - k >= crit["MIN_STREAK_FRAMES"]:
+            frames = range(k, j)
+            s_frames = [m for m in frames if classes[m] == "S"]
+            closing = acks[j]["t_ms"] if j < len(acks) else None
+            start = acks[k]["t_ms"]
+            end = closing if closing is not None else acks[j - 1]["t_ms"]
+            streaks.append({
+                "start_ms": start, "end_ms": end, "closed": closing is not None,
+                "duration_ms": end - start, "frames": j - k, "S": len(s_frames),
+                "N": (j - k) - len(s_frames),
+                "last_S_ms": acks[s_frames[-1]]["t_ms"] if s_frames else None,
+                "prev_P_ms": acks[k - 1]["t_ms"] if k > 0 else None,
+                "last_ack_now": sum(1 for m in frames if acks[m].get("last_ack_now")),
+                "motor_progress": sum(1 for m in frames if motor_progress(acks[m]) == "ilerleme"),
+                "recover_fwd_ms": time_in_state(states, start, end, "RecoverFwd"),
+            })
+        k = j
+    entries = []
+    for s in states:
+        if s.get("to") != "RecoverFwd" or s.get("from") == "RecoverFwd":
+            continue
+        t, where = s["t_ms"], WHERE[3]
+        for st in streaks:
+            lo, hi = streak_window(st)
+            if not lo <= t <= hi:
+                continue
+            if t < st["start_ms"]:
+                where = WHERE[0]
+            elif st["last_S_ms"] is not None and t <= st["last_S_ms"]:
+                where = WHERE[1]
+            else:
+                where = WHERE[2]
+            break
+        level = s.get("emergency")
+        path = "+".join(name for name, on in (("seviye", level not in (None, "Arq")),
+                                              ("füzyon", bool(s.get("fusion_emergency_mode")))) if on)
+        entries.append({"t_ms": t, "from": s.get("from"), "where": where, "path": path or DASH,
+                        "silence_ms": (t - s["last_ack_ms"]) if s.get("last_ack_ms") is not None else None,
+                        "ack_confidence_permille": s.get("ack_confidence_permille"), "emergency": level,
+                        "fusion_emergency_mode": s.get("fusion_emergency_mode")})
+    series = timeline_motor(rec, log.get("side"), session=log.get("session"))
+    for st in streaks:
+        lo, hi = streak_window(st)
+        st["recover_fwd_entries"] = sum(1 for e in entries if lo <= e["t_ms"] <= hi)
+        inside = [m for t, _, m, _ in series if st["start_ms"] <= t <= st["end_ms"]]
+        confs = [m.get("ack_confidence_permille") for m in inside if m.get("ack_confidence_permille") is not None]
+        levels = [m.get("emergency") for m in inside if m.get("emergency") in LEVELS]
+        st["min_ack_confidence_permille"] = min(confs) if confs else None
+        st["max_emergency"] = max(levels, key=LEVELS.index) if levels else None
+    s_frames = [acks[m] for m, c in enumerate(classes) if c == "S"]
+    logged = log.get("acks_logged") if log.get("acks_logged") is not None else len(acks)
+    return {
+        "side": log.get("side"), "peer": log.get("peer"), "session": log.get("session"),
+        "logged": logged, "missed": log.get("acks_missed"), "dropped": log.get("acks_dropped"),
+        "unread": (log.get("acks_ring_total") or 0) - logged - (log.get("acks_missed") or 0)
+        - (log.get("acks_dropped") or 0),
+        "states_missed": log.get("states_missed"),
+        "P": classes.count("P"), "S": classes.count("S"), "N": classes.count("N"),
+        "S_mapped": sum(1 for a in s_frames if a.get("mapped")),
+        "S_last_ack_now": sum(1 for a in s_frames if a.get("last_ack_now")),
+        "S_motor_progress": sum(1 for a in s_frames if motor_progress(a) == "ilerleme"),
+        "S_inflight_shrunk": sum(1 for a in s_frames if (a.get("after") or {}).get("inflight", 0)
+                                 < (a.get("before") or {}).get("inflight", 0)),
+        "arrivals": arrivals, "emissions": emissions, "streaks": streaks, "recover_fwd": entries,
+    }
+
+
+def class_hist(items):
+    hist = {"taban×1": 0, "taban×2": 0, "taban×≥3": 0, "kota": 0, "diğer": 0}
+    for it in items:
+        c = it["class"]
+        if c.startswith("taban×"):
+            n = int(c.split("×")[1])
+            hist["taban×1" if n == 1 else "taban×2" if n == 2 else "taban×≥3"] += 1
+        elif c.startswith("kota×"):
+            hist["kota"] += 1
+        else:
+            hist["diğer"] += 1
+    return hist
+
+
+def m2_run(rec, side, peer, crit):
+    """Kesinti öncesi / sırası / sonrası pacer ve BtlBw (beklenti kaydı §3)."""
+    o = rec.get("outage") or {}
+    applied, restored = o.get("applied_ms"), o.get("restored_ms")
+    rows = timeline_motor(rec, side, peer=peer)
+    out = {"side": side, "peer": peer, "samples": len(rows),
+           "sessions": sorted({r[1] for r in rows if r[1]})}
+    if applied is None or restored is None or not rows:
+        out["error"] = "kesinti anları ya da zaman çizelgesi motor örneği yok"
+        return out
+    start = rec.get("connect_requested_ms")
+    phases = {
+        "önce": [r for r in rows if (start is None or r[0] >= start) and r[0] < applied
+                 and r[2].get("state") != "PreConverge"],
+        "sırası": [r for r in rows if applied <= r[0] <= restored],
+        "sonrası": [r for r in rows if r[0] > restored],
+    }
+
+    def rate(rs, key):
+        if len(rs) < 2 or rs[-1][0] <= rs[0][0]:
+            return None
+        a, b = rs[0][2].get(key), rs[-1][2].get(key)
+        return None if a is None or b is None else (b - a) / ((rs[-1][0] - rs[0][0]) / 1000.0)
+
+    def stats(rs):
+        pacer = [r[2].get("pacer_rate_bps") for r in rs if r[2].get("pacer_rate_bps") is not None]
+        bw = [r[2].get("btlbw_bps") for r in rs if r[2].get("btlbw_bps") is not None]
+        states: dict = {}
+        for r in rs:
+            states[r[2].get("state")] = states.get(r[2].get("state"), 0) + 1
+        return {"n": len(rs),
+                "pacer": {"median": nearest_median(pacer), "min": min(pacer, default=None),
+                          "max": max(pacer, default=None)},
+                "btlbw": {"median": nearest_median(bw), "min": min(bw, default=None),
+                          "max": max(bw, default=None)},
+                "floor_fraction": (sum(1 for p in pacer if p <= crit["MIN_RATE_BPS"]) / len(pacer))
+                if pacer else None,
+                "datagrams_per_s": rate(rs, "tx_datagrams"), "bytes_per_s": rate(rs, "tx_bytes"),
+                "states": dict(sorted(states.items(), key=lambda kv: -kv[1]))}
+
+    out["phases"] = {name: stats(rs) for name, rs in phases.items()}
+    post = phases["sonrası"]
+    for key in ("pacer_rate_bps", "btlbw_bps"):
+        pre_med = nearest_median([r[2].get(key) for r in phases["önce"]])
+        res = {"pre_median": pre_med, "threshold": None, "first_s": None, "sustained_s": None}
+        if pre_med is None:
+            res["error"] = "ölçülemedi — kesinti öncesi PreConverge dışı örnek yok"
+        else:
+            thr = crit["RECOVERY_FRACTION"] * pre_med
+            res["threshold"] = thr
+            ok = [(r[2].get(key) or 0) >= thr for r in post]
+            first = next((i for i, v in enumerate(ok) if v), None)
+            sustained = next((i for i in range(len(ok)) if all(ok[i:])), None)
+            res["first_s"] = None if first is None else (post[first][0] - restored) / 1000.0
+            res["sustained_s"] = None if sustained is None else (post[sustained][0] - restored) / 1000.0
+        out["recovery_" + key] = res
+    window_ms = crit["OLD_POST_WINDOW_S"] * 1000.0
+    base = [r for r in rows if r[0] <= restored]
+    within = [r for r in post if r[0] <= restored + window_ms]
+    out["old_window"] = None
+    if base and within:
+        b, e = base[-1], within[-1]
+        dt = (e[0] - b[0]) / 1000.0
+        dgr = (e[2].get("tx_datagrams") or 0) - (b[2].get("tx_datagrams") or 0)
+        byt = (e[2].get("tx_bytes") or 0) - (b[2].get("tx_bytes") or 0)
+        out["old_window"] = {"span_s": dt, "datagrams": dgr, "bytes": byt,
+                             "bytes_per_s": byt / dt if dt > 0 else None}
+    return out
+
+
+def m12_render(runs, seeds, crit, crit_sha):
+    """M1 / M2 tabloları (Markdown satırları) ve özet; `m_log` taşıyan koşu yoksa boş."""
+    md: list[str] = []
+    summary: dict = {"criteria_sha256": crit_sha, "m1": [], "m2": []}
+    cap = crit["MAX_ROWS"]
+    m1_rows, streak_rows, entry_rows, s9_bob = [], [], [], None
+    for arm in ALL_ARMS:
+        for s in seeds:
+            rec = runs.get((s, arm))
+            if rec is None:
+                continue
+            for log in m_logs(rec):
+                m = m1_session(rec, log, crit)
+                m["seed"], m["arm"] = s, arm
+                summary["m1"].append(m)
+                if arm == "gating2" and s == 9 and m["side"] == "bob":
+                    s9_bob = m
+                end = f"{m['side']}→{m['peer']}"
+                hist = class_hist(m["arrivals"])
+                where = [sum(1 for e in m["recover_fwd"] if e["where"] == w) for w in WHERE]
+                longest = max((st["duration_ms"] for st in m["streaks"]), default=None)
+                m1_rows.append([
+                    s, arm, end,
+                    f"{fmt(m['logged'])} / {fmt(m['missed'])} / {fmt(m['dropped'])} / {fmt(m['unread'])}",
+                    f"{m['P']} / {m['S']} / {m['N']}",
+                    f"{m['S_mapped']} / {m['S_last_ack_now']} / {m['S_motor_progress']} / {m['S_inflight_shrunk']}",
+                    f"{len(m['arrivals'])} · {fmt_s(nearest_median([a['delta_ms'] for a in m['arrivals']]))}",
+                    " / ".join(str(v) for v in hist.values()),
+                    f"{len(m['emissions'])} · " + (", ".join(f"{e['delta_ms'] / 1000.0:.3f} ({e['class']})"
+                                                           for e in m["emissions"][:6]) or DASH),
+                    f"{len(m['streaks'])} · {fmt_s(longest)}",
+                    " / ".join(str(v) for v in where)])
+                for st in m["streaks"]:
+                    share = 100.0 * st["recover_fwd_ms"] / st["duration_ms"] if st["duration_ms"] > 0 else None
+                    streak_rows.append((st["duration_ms"], [
+                        s, arm, end, fmt_s(st["start_ms"]), fmt_s(st["duration_ms"]),
+                        "evet" if st["closed"] else "açık", f"{st['S']} / {st['N']}",
+                        fmt_s(None if st["last_S_ms"] is None else st["last_S_ms"] - st["start_ms"]),
+                        fmt_s(None if st["prev_P_ms"] is None else st["start_ms"] - st["prev_P_ms"]),
+                        f"{st['last_ack_now']}/{st['frames']}", str(st["motor_progress"]), fmt(share, 0),
+                        str(st["recover_fwd_entries"]), fmt(st["min_ack_confidence_permille"]),
+                        fmt(st["max_emergency"])]))
+                for e in m["recover_fwd"]:
+                    entry_rows.append([s, arm, end, fmt_s(e["t_ms"]), fmt(e["from"]), fmt_s(e["silence_ms"]),
+                                       fmt(e["ack_confidence_permille"]), fmt(e["emergency"]),
+                                       fmt(e["fusion_emergency_mode"]), e["path"], e["where"]])
+    if not m1_rows:
+        return md, summary
+    md += ["## M1 / M2 teşhis ölçümü (CEVAP PAKETİ 6 — hüküm değil)",
+           f"Ölçüt ve beklenti kaydı `docs/reports/INT-02-M1M2-BEKLENTI.md` · sha256 `{crit_sha}` · "
+           f"taban {crit['ACK_CADENCE_FLOOR_MS']:.3f} ms · kota aralığı {crit['T_SPACING_MS']:.3f} ms · "
+           f"varış toleransı {crit['ARRIVAL_TOL_MS']:.0f} ms · üretim toleransı {crit['EMISSION_TOL_MS']:.0f} ms.",
+           "",
+           "### M1 — ACK çerçeveleri (gönderen ucu)",
+           "P = ilerlemeli (yeni birim teyidi) · S = bayat (alıcı iki ACK arasında yeni datagram görmedi) · "
+           "N = ilerlemesiz, yeni datagramlı. Kaçan = iki sonda arasında halkadan düşen; okunmayan = son "
+           "sondadan sonra gelen.",
+           table(["tohum", "kol", "uç", "kayıt / kaçan / tavan / okunmayan", "P / S / N",
+                  "S: motora giden / son-ACK tazeleyen / motor ilerleme / uçuş küçülen",
+                  "S varış aralığı n · medyan", "taban×1 / ×2 / ×≥3 / kota / diğer",
+                  "alıcı üretim aralığı n · ilk değerler (s)", "dizi · en uzun",
+                  "RecoverFwd girişi: öncesi / sürerken / sonra / dışı"], m1_rows), ""]
+    streak_rows.sort(key=lambda x: -x[0])
+    md += [f"### M1 — ilerlemesiz diziler (en uzun {cap}; tam liste JSON özetinde)",
+           table(["tohum", "kol", "uç", "baş", "süre", "kapandı", "S / N", "son S (baştan)",
+                  "önceki P'den", "son-ACK tazeleyen / çerçeve", "motor ilerleme", "RecoverFwd payı %",
+                  "RecoverFwd girişi", "en düşük ack_conf ‰ (çizelge)", "en yüksek acil seviye (çizelge)"],
+                 [r for _, r in streak_rows[:cap]]), ""]
+    if entry_rows:
+        md += [f"### M1 — RecoverFwd girişleri (ilk {cap}; tam liste JSON özetinde)",
+               table(["tohum", "kol", "uç", "an", "önceki durum", "son ACK'ten", "ack_conf ‰", "seviye",
+                      "füzyon kipi", "yol", "konum"], entry_rows[:cap]), ""]
+    old = crit["OLD_S9_BOB_ACK_S"]
+    old_items = [{"delta_ms": (b - a) * 1000.0,
+                  "class": interval_class((b - a) * 1000.0, crit, crit["ARRIVAL_TOL_MS"])}
+                 for a, b in zip(old, old[1:])]
+    lines = [["eski kayıt (gating2 s9 bob)", ", ".join(f"{i['delta_ms'] / 1000.0:.1f}" for i in old_items),
+              ", ".join(i["class"] for i in old_items), DASH]]
+    if s9_bob is not None:
+        rf = sum(st["recover_fwd_ms"] for st in s9_bob["streaks"])
+        dur = sum(st["duration_ms"] for st in s9_bob["streaks"])
+        lines.append([f"bu koşu (gating2 s9 bob, ilk {cap} S aralığı)",
+                      ", ".join(f"{a['delta_ms'] / 1000.0:.1f}" for a in s9_bob["arrivals"][:cap]) or DASH,
+                      ", ".join(a["class"] for a in s9_bob["arrivals"][:cap]) or DASH,
+                      fmt(100.0 * rf / dur if dur > 0 else None, 0)])
+    summary["old_record"] = {"intervals": old_items}
+    md += ["### M1 — eski kayıt doğrulaması (gating2 s9, bob)",
+           table(["kaynak", "S varış aralıkları (s)", "sınıf", "dizilerde RecoverFwd payı %"], lines), ""]
+    m2_rows, rec_rows = [], []
+    for s in seeds:
+        rec = runs.get((s, "ek-kesinti"))
+        if rec is None:
+            continue
+        for side, peer in (("alice", "bob"), ("bob", "alice")):
+            m = m2_run(rec, side, peer, crit)
+            m["seed"] = s
+            summary["m2"].append(m)
+            if m.get("error"):
+                m2_rows.append([s, f"{side}→{peer}", m["error"]] + [DASH] * 7)
+                continue
+            for name, ph in m["phases"].items():
+                p, b = ph["pacer"], ph["btlbw"]
+                m2_rows.append([s, f"{side}→{peer}", name, ph["n"],
+                                f"{fmt(p['median'])} / {fmt(p['min'])} / {fmt(p['max'])}",
+                                f"{fmt(b['median'])} / {fmt(b['min'])} / {fmt(b['max'])}",
+                                fmt(None if ph["floor_fraction"] is None else 100.0 * ph["floor_fraction"], 0),
+                                fmt(ph["datagrams_per_s"], 2), fmt(ph["bytes_per_s"], 1),
+                                ", ".join(f"{k}:{v}" for k, v in list(ph["states"].items())[:3])])
+            rp, rb, ow = m["recovery_pacer_rate_bps"], m["recovery_btlbw_bps"], m["old_window"] or {}
+            rec_rows.append([s, f"{side}→{peer}", fmt(rp.get("pre_median")), fmt(rp.get("threshold"), 0),
+                             fmt(rp.get("first_s")), fmt(rp.get("sustained_s")),
+                             fmt(rb.get("first_s")), fmt(rb.get("sustained_s")),
+                             f"{fmt(ow.get('datagrams'))} · {fmt(ow.get('bytes'))} B · "
+                             f"{fmt(ow.get('bytes_per_s'), 1)} B/s ({fmt(ow.get('span_s'), 0)} s)",
+                             rp.get("error") or rb.get("error") or DASH])
+    if m2_rows:
+        md += ["### M2 — kesinti öncesi / sırası / sonrası pacer ve BtlBw (ek-kesinti)",
+               f"Taban = pacer ≤ {crit['MIN_RATE_BPS']} B/s. Medyan en yakın sıra; datagram/s ve bayt/s "
+               "evrenin ilk ve son örneği arasında (tel datagramı, bütün sınıflar).",
+               table(["tohum", "uç", "evre", "örnek", "pacer medyan / min / max (B/s)",
+                      "BtlBw medyan / min / max (B/s)", "tabanda %", "datagram/s", "bayt/s",
+                      "durum (ilk 3)"], m2_rows), "",
+               f"### M2 — toparlanma (eşik = {crit['RECOVERY_FRACTION']} × kesinti öncesi medyan; süre "
+               "kesinti bitiminden, s)",
+               table(["tohum", "uç", "pacer öncesi medyan (B/s)", "eşik (B/s)", "pacer ilk dönüş",
+                      "pacer kalıcı dönüş", "BtlBw ilk dönüş", "BtlBw kalıcı dönüş",
+                      f"kesinti sonrası ilk {crit['OLD_POST_WINDOW_S']:.0f} s: datagram · bayt · B/s", "not"],
+                     rec_rows), ""]
+    return md, summary
+
+
+def render(runs, seeds, crit=None, crit_sha=None) -> tuple[str, dict]:
     def rec(seed, arm):
         return runs.get((seed, arm))
 
@@ -601,6 +1055,11 @@ def render(runs, seeds) -> tuple[str, dict]:
                table(["tohum", "kol", "sonuç", "teyitsiz birim A / B", "gönderen A", "gönderen B",
                       "alıcı reorder A", "alıcı reorder B", "zaman çizelgesi örneği"], rows), ""]
 
+    # [CEVAP PAKETİ 6] M1 / M2 teşhis ölçümü (ölçüt dosyası verildiyse ve koşuda `m_log` varsa)
+    if crit is not None:
+        m12_md, summary["m12"] = m12_render(runs, seeds, crit, crit_sha)
+        md += m12_md
+
     # gerekçeler
     reasons = []
     for arm, per_seed in summary["arms"].items():
@@ -683,6 +1142,115 @@ def _synthetic(arm: str, seed: int, *, lossy_negative=True, broken=False) -> dic
     return rec
 
 
+def _m12_ack(i, t_ms, *, new_units=0, seen=12, largest=40, raw=None, mapped=3):
+    """Sentetik `m_log` ACK kaydı (V2)."""
+    view = {"state": "Steady", "inflight": 2, "pending_lost": 0, "tombstones": 1, "dup_queue": 1,
+            "tail_probes": 0, "tail_armed_ms": None, "tail_probe_index": 0, "last_ack_ms": t_ms}
+    return {"i": i, "t_ms": t_ms, "v2": True, "seen": seen, "largest_pn": largest,
+            "ack_delay_raw": 0 if raw is None else raw, "ack_delay_ms": 0.0 if raw is None else raw * 0.256,
+            "pns": 4, "mapped": mapped, "new_units": new_units, "tx_during": 0, "last_ack_now": True,
+            "tail_rearmed_now": False, "before": dict(view), "after": dict(view)}
+
+
+def _m12_state(i, t_ms, frm, to, *, emergency="Arq", fusion=False, conf=1000, last_ack=None):
+    return {"i": i, "t_ms": t_ms, "from": frm, "to": to, "motor_transitions": i, "emergency": emergency,
+            "fusion_emergency_mode": fusion, "ack_confidence_permille": conf, "last_ack_ms": last_ack}
+
+
+def _selftest_m12() -> int:
+    """[CEVAP PAKETİ 6] M1 / M2: ölçüt dosyası okunur; sentetik günlükte sınıflar, aralıklar, dizi,
+    RecoverFwd konumları, eski kayıt sınıfları ve kesinti sonrası toparlanma beklenen değerleri verir."""
+    failed = 0
+    try:
+        crit, sha = load_criteria(CRITERIA_FILE)
+        ok = (len(sha) == 64 and abs(crit["ACK_CADENCE_FLOOR_MS"] - 8387.096774) < 1e-6
+              and len(crit["OLD_S9_BOB_ACK_S"]) == 8 and crit["MIN_RATE_BPS"] == 31)
+    except (OSError, ValueError) as e:
+        print(f"  FAIL  ölçüt dosyası: {e}")
+        return 1
+    failed += not ok
+    print(f"  {'PASS' if ok else 'FAIL'}  ölçüt dosyası okundu (sha256 {sha[:12]}…)")
+    # gating2 s9: bob ucu — 2 P, 3 S (biri dönüş yolunda kayıp sonrası), 1 N, kapatan P.
+    acks = [_m12_ack(1, 1000.0, new_units=2, seen=10), _m12_ack(2, 2000.0, new_units=1),
+            _m12_ack(3, 10400.0, raw=30000), _m12_ack(4, 18790.0, raw=62802),
+            _m12_ack(5, 35570.0, raw=65535), _m12_ack(6, 43570.0, seen=13),
+            _m12_ack(7, 50000.0, new_units=1, seen=14)]
+    states = [_m12_state(1, 500.0, None, "Startup"), _m12_state(2, 1500.0, "Startup", "Steady"),
+              _m12_state(3, 30000.0, "Steady", "RecoverFwd", emergency="Dup2", conf=250, last_ack=18790.0),
+              _m12_state(4, 40000.0, "RecoverFwd", "RecoverArq"),
+              _m12_state(5, 45000.0, "RecoverArq", "RecoverFwd", fusion=True, conf=600, last_ack=43570.0),
+              _m12_state(6, 51000.0, "RecoverFwd", "Steady")]
+    g2 = _synthetic("gating2", 9)
+    g2["m_log"] = {"enabled": True, "sessions": [{
+        "side": "bob", "peer": "alice", "session": "SessionHandle(7)", "acks_ring_total": 7,
+        "acks_logged": 7, "acks_missed": 0, "acks_dropped": 0, "acks": acks,
+        "states_missed": 0, "states": states}]}
+
+    def bob_sample(t_ms, conf, level):
+        return {"t_ms": t_ms, "bob": {"sessions": [{
+            "peer": "alice", "session": "SessionHandle(7)",
+            "motor": {"ack_confidence_permille": conf, "emergency": level}}]}}
+
+    g2["timeline"] = {"samples": [bob_sample(20000.0, 500, "Arq"), bob_sample(31000.0, 250, "Dup2")]}
+    # ek-kesinti s1: alice → bob; kesinti 10–70 s; sonrası 130 s tabanda, sonra 600 B/s.
+    k = _synthetic("ek-kesinti", 1)
+    k["connect_requested_ms"] = 0.0
+    k["outage"].update(applied_ms=10000.0, restored_ms=70000.0)
+    samples = []
+    for t in range(1000, 300001, 1000):
+        if t < 3000:
+            state, pacer, bw = "PreConverge", 31, 0
+        elif t <= 70000:
+            state, pacer, bw = ("Steady" if t < 10000 else "RecoverFwd"), 1000, 900
+        elif t <= 200000:
+            state, pacer, bw = "Steady", 31, 20
+        else:
+            state, pacer, bw = "Steady", 600, 600
+        samples.append({"t_ms": float(t), "alice": {"sessions": [{
+            "peer": "bob", "session": "SessionHandle(3)",
+            "motor": {"state": state, "pacer_rate_bps": pacer, "btlbw_bps": bw,
+                      "tx_datagrams": t // 1000, "tx_bytes": 70 * (t // 1000)}}]}})
+    k["timeline"] = {"samples": samples}
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "seed-9-gating2.json").write_text(json.dumps(g2), encoding="utf-8")
+        (d / "seed-1-ek-kesinti.json").write_text(json.dumps(k), encoding="utf-8")
+        md, summary = render(load(d), [1, 9], crit, sha)
+    m1 = [m for m in summary["m12"]["m1"] if m["side"] == "bob"]
+    m = m1[0] if m1 else {}
+    st = (m.get("streaks") or [{}])[0]
+    entries = m.get("recover_fwd") or []
+    ok = (len(m1) == 1 and (m["P"], m["S"], m["N"]) == (3, 3, 1)
+          and [a["class"] for a in m["arrivals"]] == ["taban×1", "taban×1", "taban×2"]
+          and [e["class"] for e in m["emissions"]] == ["taban×1"]
+          and len(m["streaks"]) == 1 and st["duration_ms"] == 39600.0 and st["closed"]
+          and (st["S"], st["N"]) == (3, 1) and st["recover_fwd_ms"] == 15000.0
+          and st["recover_fwd_entries"] == 2 and st["min_ack_confidence_permille"] == 250
+          and st["max_emergency"] == "Dup2"
+          and [e["where"] for e in entries] == [WHERE[1], WHERE[2]]
+          and [e["path"] for e in entries] == ["seviye", "füzyon"] and entries[0]["silence_ms"] == 11210.0
+          and "### M1 — ACK çerçeveleri (gönderen ucu)" in md and f"sha256 `{sha}`" in md
+          and "taban×1, taban×2, taban×1, taban×2, taban×1, taban×1, taban×3" in md
+          and "| 3 / 3 / 1 |" in md and "| 2 / 1 / 0 / 0 / 0 |" in md)
+    failed += not ok
+    print(f"  {'PASS' if ok else 'FAIL'}  M1: P/S/N, varış ve üretim aralıkları, dizi, RecoverFwd konumu, eski kayıt")
+    m2 = [x for x in summary["m12"]["m2"] if x["side"] == "alice"]
+    x = m2[0] if m2 else {}
+    rp, rb = x.get("recovery_pacer_rate_bps") or {}, x.get("recovery_btlbw_bps") or {}
+    ow, ph = x.get("old_window") or {}, x.get("phases") or {}
+    ok = (len(m2) == 1 and ph["önce"]["n"] == 7 and ph["önce"]["pacer"]["median"] == 1000
+          and ph["sırası"]["btlbw"]["min"] == 900 and ph["sonrası"]["pacer"]["min"] == 31
+          and round(ph["sonrası"]["floor_fraction"], 3) == round(130 / 230, 3)
+          and rp["threshold"] == 500.0 and rp["first_s"] == 131.0 and rp["sustained_s"] == 131.0
+          and rb["first_s"] == 131.0 and (ow["datagrams"], ow["bytes"], ow["span_s"]) == (125, 8750, 125.0)
+          and "| 1 | alice→bob | 1000 | 500 | 131.0 | 131.0 | 131.0 | 131.0 | 125 · 8750 B · 70.0 B/s (125 s) | — |"
+          in md
+          and any(y["side"] == "bob" and y.get("error") for y in summary["m12"]["m2"]))
+    failed += not ok
+    print(f"  {'PASS' if ok else 'FAIL'}  M2: evreler, tabanda oran, toparlanma (ilk / kalıcı), eski çıkarım penceresi")
+    return failed
+
+
 def selftest() -> int:
     cases = [
         ("gating1 temiz → GEÇTİ", _synthetic("gating1", 1), "gating1", "GEÇTİ"),
@@ -753,6 +1321,7 @@ def selftest() -> int:
               and window_cell(old).startswith("120 · "))
         failed += not ok
         print(f"  {'PASS' if ok else 'FAIL'}  yeniden koşu biçimi (10×GATING (2), ek-kesinti, ek-dosya-ptt, v1 uyumu)")
+    failed += _selftest_m12()
     print("int02_analyze öz-test:", "YEŞİL" if not failed else f"KIRMIZI ({failed})")
     return 0 if not failed else 1
 
@@ -762,6 +1331,8 @@ def main() -> int:
     ap.add_argument("directory", nargs="?", type=Path)
     ap.add_argument("--md", type=Path, help="Markdown çıktısı (varsayılan: stdout)")
     ap.add_argument("--json", type=Path, help="hüküm özeti (JSON)")
+    ap.add_argument("--criteria", type=Path, default=CRITERIA_FILE,
+                    help="M1/M2 ölçüt ve beklenti kaydı (varsayılan: docs/reports/INT-02-M1M2-BEKLENTI.md)")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
@@ -773,8 +1344,14 @@ def main() -> int:
         print(f"{args.directory}: seed-<S>-<kol>.json yok", file=sys.stderr)
         return 2
     seeds = sorted({s for s, _ in runs})
-    md, summary = render(runs, seeds)
-    header = (f"<!-- int02_analyze.py · kaynak: {args.directory} · tohumlar: {' '.join(map(str, seeds))} -->\n")
+    crit, crit_sha = None, None
+    try:
+        crit, crit_sha = load_criteria(args.criteria)
+    except (OSError, ValueError) as e:
+        print(f"M1/M2 bölümü atlandı: {e}", file=sys.stderr)
+    md, summary = render(runs, seeds, crit, crit_sha)
+    header = (f"<!-- int02_analyze.py · kaynak: {args.directory} · tohumlar: {' '.join(map(str, seeds))}"
+              + (f" · M1/M2 ölçütü {args.criteria.name} sha256 {crit_sha}" if crit_sha else "") + " -->\n")
     if args.md:
         args.md.write_text(header + md + "\n", encoding="utf-8")
     else:

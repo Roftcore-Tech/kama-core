@@ -18,6 +18,9 @@
 # PENCERE (`--window`, CEVAP PAKETİ 4): son gönderimden (ek-kesinti kolunda kesinti bitiminden) sonra
 # tamamlanma üst sınırı — bütün kollar için TEK parametre (örneğin `--window-s`'i).
 #
+# ZAMAN ÇİZELGESİ (`--timeline-every-ms`, CEVAP PAKETİ 6): örneğin zaman çizelgesi aralığı (ms; motor
+# alanları + ACK çerçevesi / durum değişikliği günlüğü `m_log`). Tavanı örnek parametrelerden türetir.
+#
 # Bu betik derleme YAPMAZ; ikilileri önceden derleyin (bkz. --help).
 set -euo pipefail
 
@@ -61,6 +64,9 @@ kullanım: scripts/netem/int02_run.sh [seçenekler]
                         beklenme üst sınırı — pencere DEĞİLDİR (verilmezse örneğin varsayılanı 180)
   --settle-s S          tamamlanmadan sonra Transport sakinleşmesi üst sınırı (örneğe iletilir;
                         verilmezse örneğin varsayılanı 10)
+  --timeline-every-ms MS
+                        zaman çizelgesi aralığı (örneğe iletilir; verilmezse örneğin varsayılanı
+                        5000; 0 = kapalı, kapalıyken m_log da tutulmaz)
   --keep-work           geçici çalışma dizinlerini silme
   --dry-run             yalnız planı ve komutları yaz, hiçbir şey koşma
   --check               önkoşulları denetle (ikililer, komutlar, sch_netem, unprivileged userns)
@@ -75,6 +81,9 @@ negatif   : scripts/netem/int02_run.sh --seeds "1 2 3 4 5" --arms negatif --wind
 yeniden koşu (CEVAP PAKETİ 4):
   scripts/netem/int02_run.sh --seeds "1 2 3 4 5 6 7 8 9 10" --arms gating2 --window 600
   scripts/netem/int02_run.sh --seeds "1 2 3 4 5" --arms "ek-kesinti ek-dosya-ptt" --window 600
+M1/M2 teşhis ölçümü (CEVAP PAKETİ 6; beklenti kaydı docs/reports/INT-02-M1M2-BEKLENTI.md):
+  scripts/netem/int02_run.sh --seeds "3 9" --arms gating2 --window 600 --timeline-every-ms 1000 --out <out>
+  scripts/netem/int02_run.sh --seeds "1 3" --arms ek-kesinti --window 600 --timeline-every-ms 1000 --out <out>
 analiz    : python3 scripts/netem/int02_analyze.py <out>
 EOF
 }
@@ -118,6 +127,7 @@ inner() {
   if [ -n "${INT02_SETTLE_S:-}" ]; then args+=(--settle-s "$INT02_SETTLE_S"); fi
   # PENCERE: bütün kollara aynı parametre.
   if [ -n "${INT02_WINDOW_S:-}" ]; then args+=(--window-s "$INT02_WINDOW_S"); fi
+  if [ -n "${INT02_TIMELINE_EVERY_MS:-}" ]; then args+=(--timeline-every-ms "$INT02_TIMELINE_EVERY_MS"); fi
   local budget="$BUDGET_DEFAULT"
   if [ "$arm" = "ek-kesinti" ]; then
     args+=(--sync-dir "$work/sync")
@@ -244,7 +254,7 @@ if line:
         record = None
         driver["parse_error"] = str(e)
 if not isinstance(record, dict):
-    record = {"schema": "int02-node-v2", "arm": env["INT02_ARM"], "seed": int(env["INT02_SEED"]),
+    record = {"schema": "int02-node-v3", "arm": env["INT02_ARM"], "seed": int(env["INT02_SEED"]),
               "profile": env["INT02_PROFILE"], "result": "error",
               "error": "sürücü: örnek JSON satırı üretmedi (çıkış %s)" % env["INT02_EXIT"]}
 record["driver"] = driver
@@ -274,6 +284,7 @@ INTERVAL_MS=""
 WINDOW_S=""
 OUTAGE_WAIT_S=""
 SETTLE_S=""
+TIMELINE_EVERY_MS=""
 KEEP=0
 DRY=0
 CHECK=0
@@ -290,6 +301,7 @@ while [ $# -gt 0 ]; do
     --window) WINDOW_S="${2:?--window değer ister}"; shift 2 ;;
     --outage-wait-s) OUTAGE_WAIT_S="${2:?--outage-wait-s değer ister}"; shift 2 ;;
     --settle-s) SETTLE_S="${2:?--settle-s değer ister}"; shift 2 ;;
+    --timeline-every-ms) TIMELINE_EVERY_MS="${2:?--timeline-every-ms değer ister}"; shift 2 ;;
     --keep-work) KEEP=1; shift ;;
     --dry-run) DRY=1; shift ;;
     --check) CHECK=1; shift ;;
@@ -312,9 +324,9 @@ for seed in $SEEDS; do
     ''|*[!0-9]*) die "tohum negatif olmayan tamsayı olmalı: $seed" ;;
   esac
 done
-for value in "$WINDOW_S" "$OUTAGE_WAIT_S" "$SETTLE_S"; do
+for value in "$WINDOW_S" "$OUTAGE_WAIT_S" "$SETTLE_S" "$TIMELINE_EVERY_MS"; do
   case "$value" in
-    *[!0-9]*) die "süre seçenekleri negatif olmayan tamsayı (s) olmalı: $value" ;;
+    *[!0-9]*) die "süre seçenekleri negatif olmayan tamsayı (s; --timeline-every-ms için ms) olmalı: $value" ;;
   esac
 done
 
@@ -347,6 +359,7 @@ if [ "$DRY" = 1 ]; then
   echo "kollar     : $ARMS"
   echo "pencere    : ${WINDOW_S:-örnek varsayılanı (120)} s — son gönderimden (ek-kesinti: kesinti bitiminden) sonra tamamlanma üst sınırı, bütün kollar"
   echo "diğer      : outage-wait=${OUTAGE_WAIT_S:-örnek varsayılanı (180)} (yalnız KESINTI_BITTI beklemesi) settle=${SETTLE_S:-örnek varsayılanı (10)}"
+  echo "çizelge    : ${TIMELINE_EVERY_MS:-örnek varsayılanı (5000)} ms (0 = kapalı; açıkken m_log da tutulur)"
   for seed in $SEEDS; do
     for arm in $ARMS; do
       echo "  [s$seed $arm] unshare -rn: ip link set lo up; kama-provision init --out <work>/authority" \
@@ -380,6 +393,7 @@ for seed in $SEEDS; do
     INT02_EXAMPLE="$EXAMPLE" INT02_PROVISION="$PROVISION" INT02_COUNT="$COUNT" \
     INT02_INTERVAL_MS="$INTERVAL_MS" INT02_WINDOW_S="$WINDOW_S" \
     INT02_OUTAGE_WAIT_S="$OUTAGE_WAIT_S" INT02_SETTLE_S="$SETTLE_S" \
+    INT02_TIMELINE_EVERY_MS="$TIMELINE_EVERY_MS" \
       unshare -rn bash "$SELF" __inner "$seed" "$arm" "$work" "$outfile" || rc=$?
     if [ "$rc" != 0 ]; then
       echo "  ! iç kip çıkışı $rc (kayıt: $outfile varsa ona bakın; çalışma dizini korunuyor: $work)"

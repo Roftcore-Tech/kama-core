@@ -150,7 +150,7 @@ fn assert_json_line(report: &Report, arm: Arm) {
     let line = &report.json;
     assert!(!line.contains('\n'), "tek satır: {line}");
     assert!(line.starts_with('{') && line.ends_with('}'), "{line}");
-    assert!(line.contains(r#""schema":"int02-node-v2""#), "{line}");
+    assert!(line.contains(r#""schema":"int02-node-v3""#), "{line}");
     assert!(
         line.contains(&format!(r#""arm":"{}""#, arm.name())),
         "{line}"
@@ -223,6 +223,46 @@ fn gating1_alice_to_bob_text_and_receipt() {
     let bob = report.nodes[Side::Bob.idx()].probe.as_ref().expect("sonda");
     assert_eq!(alice.envelopes.inits_sent, 1, "{}", report.json);
     assert_eq!(bob.envelopes.responses_sent, 1, "{}", report.json);
+    // [CEVAP PAKETİ 6] M1/M2 alanları: gönderen (alice) ucu ACK çerçevelerini saydı ve ilerleme
+    // getirenleri ayırdı (ilerleme getiren ⊆ motorun işlediği ⊆ çözülen); denetim durumu (faz,
+    // pacer) dolu; ACK günlüğü ve zaman çizelgesinin motor alanları JSON'da.
+    let diag = &alice.sessions[0].diag;
+    assert!(
+        diag.ack.frames >= 1
+            && diag.ack.new_units >= 1
+            && diag.ack.new_units <= diag.ack.mapped
+            && diag.ack.mapped <= diag.ack.frames,
+        "{:?}",
+        diag.ack
+    );
+    assert_eq!(diag.acks.total(), diag.ack.frames, "{:?}", diag.ack);
+    assert!(
+        diag.control.state.is_some() && diag.control.pacer_rate_bps > 0,
+        "{:?}",
+        diag.control
+    );
+    assert!(diag.clock_origin.is_some());
+    assert!(
+        report.acks_logged[Side::Alice.idx()] >= 1,
+        "{}",
+        report.json
+    );
+    assert!(
+        report.timeline_cap > 0 && report.timeline_samples <= report.timeline_cap,
+        "{}",
+        report.json
+    );
+    for field in [
+        r#""m_log":{"enabled":true"#,
+        r#""new_units":"#,
+        r#""last_ack_now":"#,
+        r#""motor":{"#,
+        r#""pacer_rate_bps":"#,
+        r#""ack_frames_new_units":"#,
+        r#""timeline":{"every_ms":5000.000"#,
+    ] {
+        assert!(report.json.contains(field), "{field}: {}", report.json);
+    }
 }
 
 #[test]
@@ -385,6 +425,34 @@ fn command_line_is_parsed_without_clap() {
     let mut drain = base.clone();
     drain.extend(["--drain-s".to_owned(), "600".to_owned()]);
     assert!(int02_node::parse_args(&drain).is_err(), "--drain-s kalktı");
+    // [CEVAP PAKETİ 6] Zaman çizelgesi aralığı ms cinsinden (`--timeline-every-s` kalktı); 0 =
+    // kapalı (tavan 0), kapalı değilse ≥ 100 ms. Tavan parametrelerden türer: 600 s pencere ve 1 s
+    // aralıkla 600'den fazla örnek, mutlak üst sınır 4096.
+    let mut every = window.clone();
+    every.extend(["--timeline-every-ms".to_owned(), "1000".to_owned()]);
+    match int02_node::parse_args(&every) {
+        Ok(int02_node::Parsed::Run(cfg)) => {
+            assert_eq!(cfg.timeline_every, Duration::from_millis(1000));
+            let cap = cfg.timeline_cap();
+            assert!(cap > 600 && cap <= 4096, "tavan {cap}");
+        }
+        other => panic!("ayrıştırılmalıydı: {other:?}"),
+    }
+    let mut old_every = base.clone();
+    old_every.extend(["--timeline-every-s".to_owned(), "1".to_owned()]);
+    assert!(
+        int02_node::parse_args(&old_every).is_err(),
+        "--timeline-every-s kalktı"
+    );
+    let mut too_fast = base.clone();
+    too_fast.extend(["--timeline-every-ms".to_owned(), "50".to_owned()]);
+    assert!(int02_node::parse_args(&too_fast).is_err(), "en az 100 ms");
+    let mut off = base.clone();
+    off.extend(["--timeline-every-ms".to_owned(), "0".to_owned()]);
+    match int02_node::parse_args(&off) {
+        Ok(int02_node::Parsed::Run(cfg)) => assert_eq!(cfg.timeline_cap(), 0),
+        other => panic!("ayrıştırılmalıydı: {other:?}"),
+    }
     let mut unknown = base.clone();
     unknown.extend(["--nope".to_owned(), "1".to_owned()]);
     assert!(int02_node::parse_args(&unknown).is_err());

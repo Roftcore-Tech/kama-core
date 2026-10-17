@@ -54,7 +54,9 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use client_core::runtime::{ClientLiveDiag, SenderRecoveryDiag};
+use client_core::runtime::{
+    AckFrameDiag, ClientLiveDiag, MotorAckView, SenderRecoveryDiag, StateChangeDiag,
+};
 use client_core::transport::ReorderDiag;
 use kama_app::codec::PttCodec;
 use kama_app::messaging::MessengerError;
@@ -69,7 +71,11 @@ use kama_node::{
 /// Çıktı şeması.
 /// v2 (CEVAP PAKETİ 4): `params.drain_s` → `params.window_s`; `window`, `file.outcome` ve
 /// `outage.session` / `outage.same_session` alanları.
-pub const SCHEMA: &str = "int02-node-v2";
+/// v3 (CEVAP PAKETİ 6): `params.timeline_every_s` → `params.timeline_every_ms`; `timeline.every_s`
+/// → `timeline.every_ms`, `timeline.cap` parametrelerden türer; zaman çizelgesi ve son sonda oturum
+/// nesnelerinde `session` + `motor` (faz, BtlBw, pacer, acil durum, dönüş yolu, ACK çerçevesi
+/// sayaçları); kökte `m_log` (oturum başına ACK çerçevesi ve motor durum değişikliği günlükleri).
+pub const SCHEMA: &str = "int02-node-v3";
 /// Provisioning cihaz adları (`kama-provision init --devices alice,bob`).
 pub const ALICE: &str = "alice";
 /// Bkz. [`ALICE`].
@@ -119,10 +125,26 @@ const PROBE_EVERY: Duration = Duration::from_millis(100);
 const MARK_APPLY_TIMEOUT: Duration = Duration::from_secs(30);
 /// JSON'a yazılan kimlik / not listelerinin tavanı.
 const MAX_LISTED: usize = 32;
-/// [K4G-05 TEŞHİS] Takılı birim zaman çizelgesi: varsayılan örnekleme aralığı (s; 0 = kapalı) ve
-/// SINIRLI dizi tavanı — dolunca yeni örnek alınmaz, düşen örnek sayılır (`timeline.dropped`).
-const DEFAULT_TIMELINE_EVERY_S: u64 = 5;
-const TIMELINE_CAP: usize = 256;
+/// [K4G-05 TEŞHİS] Takılı birim zaman çizelgesi: varsayılan örnekleme aralığı (ms; 0 = kapalı) ve
+/// kapalı değilken en küçük aralık (düğüm iş parçacıklarına sonda yükü).
+const DEFAULT_TIMELINE_EVERY_MS: u64 = 5_000;
+const MIN_TIMELINE_EVERY_MS: u64 = 100;
+/// [CEVAP PAKETİ 6] Zaman çizelgesi SINIRLI dizidir: tavan parametrelerden türer
+/// ([`Config::timeline_cap`]); bu, tavanın mutlak üst sınırıdır (SR-AUDIT-001). Tavan dolunca yeni
+/// örnek alınmaz, düşen örnek sayılır (`timeline.dropped`).
+const TIMELINE_HARD_CAP: usize = 4_096;
+/// Tavan hesabında parametrelerle sınırlanmayan kısımlar (düğüm başlatma, sakinleşme yoklaması,
+/// kapanış) için pay.
+const TIMELINE_SLACK: Duration = Duration::from_secs(60);
+/// [CEVAP PAKETİ 6] ACK çerçevesi / motor durum değişikliği günlüğü: düğüm sondalarının okunma
+/// aralığı. Canlı aynanın halkaları (`client_core::runtime::ACK_LOG_LEN`, `STATE_LOG_LEN`) son
+/// kayıtları tutar; her okuma yeni kayıtları sıra numarasıyla günlüğe alır, okunamadan halkadan
+/// düşenler sayılır (`acks_missed`). Zaman çizelgesi kapalıyken günlük de kapalıdır.
+const LOG_EVERY: Duration = Duration::from_millis(250);
+/// Oturum başına günlük tavanları ve günlüğü tutulan oturum sayısı (SR-AUDIT-001).
+const ACK_LOG_CAP: usize = 8_192;
+const STATE_LOG_CAP: usize = 4_096;
+const MAX_SESSION_LOGS: usize = 8;
 /// Dosya içeriği deseni: asal modül (parça sınırlarıyla hizalanmaz).
 const FILE_PATTERN: usize = 251;
 
@@ -135,11 +157,14 @@ kullanım: int02_node --arm <kol> --seed <S> --profile <ad>
                   [--window-s S=120] [--settle-s S=10]
                   [--file-bytes B=153600] [--bundles N=50] [--bundle-ms MS=40] [--bundle-bytes B=32]
                   [--scratch-dir <dizin>] [--sync-dir <dizin>] [--outage-wait-s S=180]
-                  [--timeline-every-s S=5 (0 = kapalı)]
+                  [--timeline-every-ms MS=5000 (0 = kapalı; kapalı değilse ≥ 100)]
        int02_node --help
 
 kollar: gating1 | gating2 | gating6 | negatif | ek-dosya-ptt | ek-kesinti
-çıktı : stdout'a TEK satır JSON (şema int02-node-v2); hüküm scripts/netem/int02_analyze.py'de.
+çıktı : stdout'a TEK satır JSON (şema int02-node-v3); hüküm scripts/netem/int02_analyze.py'de.
+zaman çizelgesi (--timeline-every-ms): takılı birim + motor (faz, BtlBw, pacer, acil durum, ACK
+        sayaçları) örnekleri; tavan parametrelerden türer (en çok 4096). Açıkken düğüm sondaları
+        250 ms'de bir okunur; oturum başına ACK çerçevesi / durum değişikliği günlüğü (m_log).
 pencere (--window-s): son gönderimden (ek-kesinti kolunda kesinti bitiminden) sonra tamamlanma üst
         sınırı — bütün kollar için tek parametre.
 ek-kesinti: --sync-dir zorunlu; KESINTI_BASLA / KESINTI_UYGULANDI / KESINTI_BITTI işaret dosyaları.
@@ -222,7 +247,8 @@ pub struct Config {
     /// YALNIZ ek-kesinti: kesinti uygulandıktan sonra `KESINTI_BITTI` işaretinin beklenme üst sınırı.
     /// Pencere DEĞİLDİR (pencere kesinti bitiminden başlar: [`Config::window`]).
     pub outage_wait: Duration,
-    /// [K4G-05 TEŞHİS] Takılı birim zaman çizelgesinin örnekleme aralığı (sıfır = kapalı).
+    /// [K4G-05 TEŞHİS] Takılı birim zaman çizelgesinin örnekleme aralığı (sıfır = kapalı;
+    /// `--timeline-every-ms`).
     pub timeline_every: Duration,
 }
 
@@ -258,8 +284,48 @@ impl Config {
             scratch_dir: None,
             sync_dir: None,
             outage_wait: Duration::from_secs(DEFAULT_OUTAGE_WAIT_S),
-            timeline_every: Duration::from_secs(DEFAULT_TIMELINE_EVERY_S),
+            timeline_every: Duration::from_millis(DEFAULT_TIMELINE_EVERY_MS),
         }
+    }
+
+    /// [CEVAP PAKETİ 6] Zaman çizelgesi örnek tavanı: koşu süresinin parametrelerden üst sınırı
+    /// bölü örnekleme aralığı, +1; en çok [`TIMELINE_HARD_CAP`]. Zaman çizelgesi kapalıyken 0.
+    #[must_use]
+    pub fn timeline_cap(&self) -> usize {
+        let every = self.timeline_every.as_millis();
+        if every == 0 {
+            return 0;
+        }
+        let samples = self.planned_run().as_millis() / every + 1;
+        usize::try_from(samples)
+            .unwrap_or(usize::MAX)
+            .min(TIMELINE_HARD_CAP)
+    }
+
+    /// Koşu süresinin parametrelerden üst sınırı: bağlantı + gönderim planı (metinler, demetler) +
+    /// kesinti kolunda işaret beklemeleri + pencere + sakinleşme + pay. Geri basınçta yeniden deneme
+    /// bu sınırı aşabilir; tavanı aşan örnekler sayılır (`timeline.dropped`).
+    fn planned_run(&self) -> Duration {
+        let directions = if self.arm == Arm::Gating6 { 2 } else { 1 };
+        let texts = self
+            .interval
+            .saturating_mul(self.count.saturating_mul(directions));
+        let bundles = Duration::from_millis(u64::from(self.bundle_ms)).saturating_mul(self.bundles);
+        let outage = if self.arm == Arm::EkKesinti {
+            MARK_APPLY_TIMEOUT.saturating_add(self.outage_wait)
+        } else {
+            Duration::ZERO
+        };
+        [
+            texts,
+            bundles,
+            outage,
+            self.window,
+            self.settle,
+            TIMELINE_SLACK,
+        ]
+        .into_iter()
+        .fold(self.connect_timeout, Duration::saturating_add)
     }
 
     /// Tavan ve tutarlılık denetimi.
@@ -281,6 +347,13 @@ impl Config {
         }
         if self.file_bytes == 0 || self.file_bytes > MAX_FILE_BYTES {
             return Err(format!("--file-bytes 1..={MAX_FILE_BYTES} olmalı"));
+        }
+        if !self.timeline_every.is_zero()
+            && self.timeline_every < Duration::from_millis(MIN_TIMELINE_EVERY_MS)
+        {
+            return Err(format!(
+                "--timeline-every-ms 0 ya da ≥ {MIN_TIMELINE_EVERY_MS} olmalı"
+            ));
         }
         if self.arm == Arm::EkKesinti {
             if self.sync_dir.is_none() {
@@ -370,8 +443,8 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, String> {
     if let Some(v) = values.get("--outage-wait-s") {
         cfg.outage_wait = Duration::from_secs(number("--outage-wait-s", v)?);
     }
-    if let Some(v) = values.get("--timeline-every-s") {
-        cfg.timeline_every = Duration::from_secs(number("--timeline-every-s", v)?);
+    if let Some(v) = values.get("--timeline-every-ms") {
+        cfg.timeline_every = Duration::from_millis(number("--timeline-every-ms", v)?);
     }
     cfg.validate()?;
     Ok(Parsed::Run(Box::new(cfg)))
@@ -397,7 +470,7 @@ const KNOWN_FLAGS: [&str; 21] = [
     "--scratch-dir",
     "--sync-dir",
     "--outage-wait-s",
-    "--timeline-every-s",
+    "--timeline-every-ms",
     "--help",
 ];
 
@@ -619,6 +692,89 @@ struct WindowLog {
     ended_by: Option<&'static str>,
 }
 
+/// [CEVAP PAKETİ 6] Bir oturum ucunun ACK çerçevesi ve motor durum değişikliği günlüğü: canlı
+/// aynanın halkalarından okunan kayıtlar, sıra numarasıyla tekilleştirilmiş ve sınırlı
+/// ([`ACK_LOG_CAP`], [`STATE_LOG_CAP`]).
+struct SessionLog {
+    side: Side,
+    session: SessionHandle,
+    peer: Option<String>,
+    /// Ucun saat tabanı (`ClientLiveDiag::clock_origin`): kayıt anları `t0`'a bununla taşınır.
+    origin: Option<Instant>,
+    acks: RecordLog<AckFrameDiag>,
+    states: RecordLog<StateChangeDiag>,
+}
+
+/// Sıra numaralı kayıtların sınırlı günlüğü (bkz. [`SessionLog`]).
+struct RecordLog<T> {
+    records: Vec<T>,
+    cap: usize,
+    /// Halkanın son okunan toplamı (`DiagRing::total`).
+    ring_total: u64,
+    /// Günlüğe alınan ya da görülen en büyük sıra numarası.
+    last: u64,
+    /// Okunamadan halkadan düşen kayıt (sıra numarası boşluğu).
+    missed: u64,
+    /// Günlük tavanı dolduğu için alınmayan kayıt.
+    dropped: u64,
+}
+
+impl<T: Copy> RecordLog<T> {
+    fn new(cap: usize) -> Self {
+        Self {
+            records: Vec::new(),
+            cap,
+            ring_total: 0,
+            last: 0,
+            missed: 0,
+            dropped: 0,
+        }
+    }
+
+    /// Halkanın kayıtlarından yeni olanları (`index` > `last`) eskiden yeniye alır.
+    fn absorb<'a>(&mut self, ring_total: u64, recent: impl Iterator<Item = (u64, &'a T)>)
+    where
+        T: 'a,
+    {
+        self.ring_total = ring_total;
+        for (index, record) in recent {
+            if index <= self.last {
+                continue;
+            }
+            self.missed += index - self.last - 1;
+            self.last = index;
+            if self.records.len() < self.cap {
+                self.records.push(*record);
+            } else {
+                self.dropped += 1;
+            }
+        }
+    }
+}
+
+impl SessionLog {
+    fn new(side: Side, session: SessionHandle, peer: Option<String>) -> Self {
+        Self {
+            side,
+            session,
+            peer,
+            origin: None,
+            acks: RecordLog::new(ACK_LOG_CAP),
+            states: RecordLog::new(STATE_LOG_CAP),
+        }
+    }
+
+    fn absorb(&mut self, diag: &ClientLiveDiag) {
+        self.origin = self.origin.or(diag.clock_origin);
+        self.acks
+            .absorb(diag.acks.total(), diag.acks.recent().map(|r| (r.index, r)));
+        self.states.absorb(
+            diag.states.total(),
+            diag.states.recent().map(|r| (r.index, r)),
+        );
+    }
+}
+
 /// Koşu sonucu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -680,6 +836,13 @@ pub struct Report {
     /// [CEVAP PAKETİ 4] Kesinti kolunun "aynı oturum" türevi (bkz. `outage.same_session`); başka
     /// kolda `None`.
     pub outage_same_session: Option<bool>,
+    /// [CEVAP PAKETİ 6] Düğüm başına (`Side::idx`) günlüğe alınan ACK çerçevesi ve motor durum
+    /// değişikliği kaydı (`m_log`, bütün oturumlar).
+    pub acks_logged: [usize; 2],
+    pub states_logged: [usize; 2],
+    /// [CEVAP PAKETİ 6] Zaman çizelgesi örnek sayısı ve parametrelerden türeyen tavanı.
+    pub timeline_samples: usize,
+    pub timeline_cap: usize,
     /// Stdout'a basılan satır.
     pub json: String,
 }
@@ -710,10 +873,17 @@ struct Harness {
     next_sample: Instant,
     connect_requested_at: Option<Instant>,
     notes: Vec<String>,
-    /// [K4G-05 TEŞHİS] Takılı birim zaman çizelgesi (≤ `TIMELINE_CAP` örnek).
-    timeline: Vec<Value>,
+    /// [K4G-05 TEŞHİS] Takılı birim zaman çizelgesi (≤ `timeline_cap` örnek; bellekte yazılmış JSON
+    /// olarak tutulur).
+    timeline: Vec<String>,
+    timeline_cap: usize,
     timeline_dropped: u64,
     next_timeline: Instant,
+    /// [CEVAP PAKETİ 6] Oturum başına ACK çerçevesi / durum değişikliği günlükleri (≤
+    /// `MAX_SESSION_LOGS`; fazlası için okuma reddi sayılır) ve sonraki sonda okuması.
+    session_logs: Vec<SessionLog>,
+    session_logs_refused: u64,
+    next_log: Instant,
     /// Son sondanın alındığı an (süre alanları bu ana taşınır).
     final_probe_at: Option<Instant>,
 }
@@ -722,6 +892,7 @@ impl Harness {
     fn new(cfg: Config) -> Self {
         let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE_CAP);
         let t0 = Instant::now();
+        let timeline_cap = cfg.timeline_cap();
         Self {
             cfg,
             t0,
@@ -739,8 +910,12 @@ impl Harness {
             connect_requested_at: None,
             notes: Vec::new(),
             timeline: Vec::new(),
+            timeline_cap,
             timeline_dropped: 0,
             next_timeline: t0,
+            session_logs: Vec::new(),
+            session_logs_refused: 0,
+            next_log: t0,
             final_probe_at: None,
         }
     }
@@ -1108,30 +1283,76 @@ impl Harness {
 
     // ── [K4G-05 TEŞHİS] Takılı birim zaman çizelgesi ──
 
-    /// `--timeline-every-s` aralıkla iki düğümün sondasından takılı birim örneği alır (sınırlı dizi).
+    /// `--timeline-every-ms` aralıkla iki düğümün sondasından zaman çizelgesi örneği alır (sınırlı
+    /// dizi); [CEVAP PAKETİ 6] her [`LOG_EVERY`]'de de sondaları okuyup ACK çerçevesi / durum
+    /// değişikliği günlüklerini günceller.
     fn timeline_if_due(&mut self) {
         if self.cfg.timeline_every.is_zero() || self.nodes.iter().any(Option::is_none) {
             return;
         }
         let now = Instant::now();
+        if now < self.next_log && now < self.next_timeline {
+            return;
+        }
+        let probes = Side::BOTH.map(|side| {
+            self.nodes[side.idx()]
+                .as_ref()
+                .map(KamaNode::probe_for_test)
+        });
+        let at = Instant::now();
+        if now >= self.next_log {
+            self.next_log = now + LOG_EVERY;
+        }
+        for side in Side::BOTH {
+            if let Some(Ok(probe)) = &probes[side.idx()] {
+                self.harvest(side, probe);
+            }
+        }
         if now < self.next_timeline {
             return;
         }
         self.next_timeline = now + self.cfg.timeline_every;
-        if self.timeline.len() >= TIMELINE_CAP {
+        if self.timeline.len() >= self.timeline_cap {
             self.timeline_dropped += 1;
             return;
         }
-        let entry = self.timeline_entry(now);
-        self.timeline.push(entry);
+        let mut line = String::new();
+        self.timeline_entry(now, &probes, at).write(&mut line);
+        self.timeline.push(line);
     }
 
-    fn timeline_entry(&self, now: Instant) -> Value {
-        let node = |side: Side| match self.nodes[side.idx()]
-            .as_ref()
-            .map(KamaNode::probe_for_test)
-        {
-            Some(Ok(probe)) => stuck_json(&probe, Instant::now()),
+    /// [CEVAP PAKETİ 6] Bir düğüm sondasındaki oturumların halkalarından yeni kayıtları günlüğe
+    /// alır.
+    fn harvest(&mut self, side: Side, probe: &NodeProbe) {
+        for s in &probe.sessions {
+            let found = self
+                .session_logs
+                .iter()
+                .position(|log| log.side == side && log.session == s.session);
+            let index = match found {
+                Some(index) => index,
+                None if self.session_logs.len() < MAX_SESSION_LOGS => {
+                    self.session_logs
+                        .push(SessionLog::new(side, s.session, s.peer_id.clone()));
+                    self.session_logs.len() - 1
+                }
+                None => {
+                    self.session_logs_refused += 1;
+                    continue;
+                }
+            };
+            self.session_logs[index].absorb(&s.diag);
+        }
+    }
+
+    fn timeline_entry(
+        &self,
+        now: Instant,
+        probes: &[Option<Result<NodeProbe, NodeError>>; 2],
+        at: Instant,
+    ) -> Value {
+        let node = |side: Side| match &probes[side.idx()] {
+            Some(Ok(probe)) => stuck_json(probe, at),
             Some(Err(e)) => obj(vec![("error", Value::S(e.to_string()))]),
             None => Value::Null,
         };
@@ -1457,6 +1678,14 @@ impl Harness {
                 metrics[side.idx()] = Some(node.metrics());
             }
         }
+        // [CEVAP PAKETİ 6] Son sondanın halkaları da günlüğe girer (zaman çizelgesi açıksa).
+        if !self.cfg.timeline_every.is_zero() {
+            for side in Side::BOTH {
+                if let Some(probe) = &probes[side.idx()] {
+                    self.harvest(side, probe);
+                }
+            }
+        }
         self.check_file_bytes();
         for side in Side::BOTH {
             if let Some(node) = self.nodes[side.idx()].take() {
@@ -1487,6 +1716,12 @@ impl Harness {
         } else {
             None
         };
+        let mut acks_logged = [0usize; 2];
+        let mut states_logged = [0usize; 2];
+        for log in &self.session_logs {
+            acks_logged[log.side.idx()] += log.acks.records.len();
+            states_logged[log.side.idx()] += log.states.records.len();
+        }
         Report {
             outcome,
             flows,
@@ -1497,6 +1732,10 @@ impl Harness {
             quiescent,
             file_status,
             outage_same_session,
+            acks_logged,
+            states_logged,
+            timeline_samples: self.timeline.len(),
+            timeline_cap: self.timeline_cap,
             json,
         }
     }
@@ -1567,10 +1806,7 @@ impl Harness {
             ("bundle_ms", Value::U(u64::from(cfg.bundle_ms))),
             ("bundle_bytes", Value::U(cfg.bundle_bytes as u64)),
             ("outage_wait_s", Value::U(cfg.outage_wait.as_secs())),
-            (
-                "timeline_every_s",
-                Value::F(cfg.timeline_every.as_secs_f64()),
-            ),
+            ("timeline_every_ms", Value::F(ms(cfg.timeline_every))),
         ]);
         let flows = obj(vec![
             ("alice_to_bob", self.flow_json(Side::Alice)),
@@ -1605,12 +1841,16 @@ impl Harness {
             (
                 "timeline",
                 obj(vec![
-                    ("every_s", Value::F(cfg.timeline_every.as_secs_f64())),
-                    ("cap", Value::U(TIMELINE_CAP as u64)),
+                    ("every_ms", Value::F(ms(cfg.timeline_every))),
+                    ("cap", Value::U(self.timeline_cap as u64)),
                     ("dropped", Value::U(self.timeline_dropped)),
-                    ("samples", Value::A(self.timeline.clone())),
+                    (
+                        "samples",
+                        Value::A(self.timeline.iter().cloned().map(Value::Raw).collect()),
+                    ),
                 ]),
             ),
+            ("m_log", self.m_log_json()),
             ("wall_ms", Value::F(ms(wall))),
         ]);
         let mut out = String::new();
@@ -1910,6 +2150,71 @@ impl Harness {
             ),
         ])
     }
+
+    /// [CEVAP PAKETİ 6] `m_log`: oturum başına ACK çerçevesi ve motor durum değişikliği günlükleri.
+    /// Anlar `t0`'a göre ms (ucun saat tabanı `ClientLiveDiag::clock_origin` üzerinden).
+    fn m_log_json(&self) -> Value {
+        let sessions = self
+            .session_logs
+            .iter()
+            .map(|log| self.session_log_json(log))
+            .collect();
+        obj(vec![
+            ("enabled", Value::Bool(!self.cfg.timeline_every.is_zero())),
+            ("every_ms", Value::F(ms(LOG_EVERY))),
+            ("ack_cap", Value::U(ACK_LOG_CAP as u64)),
+            ("state_cap", Value::U(STATE_LOG_CAP as u64)),
+            ("session_cap", Value::U(MAX_SESSION_LOGS as u64)),
+            ("session_reads_refused", Value::U(self.session_logs_refused)),
+            ("sessions", Value::A(sessions)),
+        ])
+    }
+
+    fn session_log_json(&self, log: &SessionLog) -> Value {
+        let t = |ns: Option<u64>| self.origin_ms(log.origin, ns);
+        let acks = log
+            .acks
+            .records
+            .iter()
+            .map(|r| ack_record_json(r, &t))
+            .collect();
+        let states = log
+            .states
+            .records
+            .iter()
+            .map(|r| state_record_json(r, &t))
+            .collect();
+        obj(vec![
+            ("side", Value::S(log.side.name().to_owned())),
+            ("peer", log.peer.clone().map_or(Value::Null, Value::S)),
+            ("session", Value::S(format!("{:?}", log.session))),
+            (
+                "origin_ms",
+                log.origin
+                    .map_or(Value::Null, |o| Value::F(signed_ms(o, self.t0))),
+            ),
+            ("acks_ring_total", Value::U(log.acks.ring_total)),
+            ("acks_logged", Value::U(log.acks.records.len() as u64)),
+            ("acks_missed", Value::U(log.acks.missed)),
+            ("acks_dropped", Value::U(log.acks.dropped)),
+            ("acks", Value::A(acks)),
+            ("states_ring_total", Value::U(log.states.ring_total)),
+            ("states_logged", Value::U(log.states.records.len() as u64)),
+            ("states_missed", Value::U(log.states.missed)),
+            ("states_dropped", Value::U(log.states.dropped)),
+            ("states", Value::A(states)),
+        ])
+    }
+
+    /// Ucun saat tabanındaki `ns` anı → `t0`'a göre ms.
+    fn origin_ms(&self, origin: Option<Instant>, ns: Option<u64>) -> Value {
+        match (origin, ns) {
+            (Some(origin), Some(ns)) => origin
+                .checked_add(Duration::from_nanos(ns))
+                .map_or(Value::Null, |t| Value::F(signed_ms(t, self.t0))),
+            _ => Value::Null,
+        }
+    }
 }
 
 // ── Yardımcılar ──────────────────────────────────────────────────────────────────────────────
@@ -2086,10 +2391,12 @@ fn probe_json(p: &NodeProbe, at: Instant) -> Value {
             .map(|s| {
                 obj(vec![
                     ("peer", s.peer_id.clone().map_or(Value::Null, Value::S)),
+                    ("session", Value::S(format!("{:?}", s.session))),
                     ("epoch", opt_u8(s.epoch)),
                     ("diag", diag_json(&s.diag, true)),
                     ("recovery", recovery_json(s.diag.recovery, at)),
                     ("reorder", reorder_json(s.reorder)),
+                    ("motor", motor_json(&s.diag, at)),
                 ])
             })
             .collect(),
@@ -2193,12 +2500,14 @@ fn stuck_json(p: &NodeProbe, at: Instant) -> Value {
             };
             obj(vec![
                 ("peer", s.peer_id.clone().map_or(Value::Null, Value::S)),
+                ("session", Value::S(format!("{:?}", s.session))),
                 ("retransmits", Value::U(s.diag.retransmits)),
                 ("tail_probes", Value::U(s.diag.tail_probes)),
                 ("dups", Value::U(s.diag.dups)),
                 ("srtt_ms", srtt),
                 ("recovery", recovery_json(s.diag.recovery, at)),
                 ("reorder", reorder_json(s.reorder)),
+                ("motor", motor_json(&s.diag, at)),
             ])
         })
         .collect();
@@ -2313,6 +2622,178 @@ fn reorder_json(reorder: Option<ReorderDiag>) -> Value {
     })
 }
 
+// ── [CEVAP PAKETİ 6 TEŞHİS] M1 / M2 alanları ─────────────────────────────────────────────────
+
+/// `Debug` adı (motor durumu, acil durum seviyesi, dönüş yolu sağlığı); yoksa `null`.
+fn debug_name<T: std::fmt::Debug>(value: Option<T>) -> Value {
+    value.map_or(Value::Null, |v| Value::S(format!("{v:?}")))
+}
+
+/// Gönderen motorun denetim durumu ve ACK çerçevesi sayaçları (`ClientLiveDiag::control`, `ack`,
+/// tel sayaçları). `mirror_age_ms` = aynanın yazıldığı andan sondanın alındığı ana (`at`).
+fn motor_json(d: &ClientLiveDiag, at: Instant) -> Value {
+    let c = &d.control;
+    let written = d
+        .clock_origin
+        .and_then(|origin| origin.checked_add(Duration::from_nanos(d.at_ns)));
+    let sampled = d.rtt_samples > 0;
+    let us_to_ms = |us: u64| {
+        if sampled {
+            Value::F(us as f64 / 1000.0)
+        } else {
+            Value::Null
+        }
+    };
+    let fusion = c.fusion;
+    let rp = &c.return_path;
+    obj(vec![
+        (
+            "mirror_age_ms",
+            written.map_or(Value::Null, |w| {
+                Value::F(ms(at.saturating_duration_since(w)))
+            }),
+        ),
+        ("state", debug_name(c.state)),
+        ("state_transitions", Value::U(c.state_transitions)),
+        ("recover_arq_entries", Value::U(c.recover_arq_entries)),
+        ("recover_fwd_entries", Value::U(c.recover_fwd_entries)),
+        ("probe_up_entries", Value::U(c.probe_up_entries)),
+        ("btlbw_bps", Value::U(c.btlbw_bps)),
+        ("pacer_rate_bps", Value::U(c.pacer_rate_bps)),
+        ("pacer_tokens", Value::U(c.pacer_tokens)),
+        ("pacer_burst_cap", Value::U(c.pacer_burst_cap)),
+        ("inflight_bytes", Value::U(c.inflight_bytes)),
+        ("srtt_ms", us_to_ms(d.srtt_us)),
+        ("rtprop_ms", us_to_ms(d.rtprop_us)),
+        ("queue_delay_ms", Value::F(c.queue_delay_us as f64 / 1000.0)),
+        ("emergency", debug_name(c.emergency)),
+        (
+            "fusion_emergency_mode",
+            Value::Bool(c.fusion_emergency_mode),
+        ),
+        (
+            "send_rate_gain_permille",
+            Value::U(u64::from(c.send_rate_gain_permille)),
+        ),
+        (
+            "ack_confidence_permille",
+            fusion.map_or(Value::Null, |f| Value::U(f.ack_confidence_permille)),
+        ),
+        (
+            "fusion_bandwidth_bps",
+            fusion.map_or(Value::Null, |f| Value::U(f.bandwidth_bps)),
+        ),
+        (
+            "fusion_loss_ppm",
+            fusion.map_or(Value::Null, |f| Value::U(f.loss_windowed_ppm)),
+        ),
+        (
+            "fusion_event_index",
+            fusion.map_or(Value::Null, |f| Value::U(f.event_index)),
+        ),
+        (
+            "return_path",
+            obj(vec![
+                ("health", Value::S(format!("{:?}", rp.health))),
+                ("silence_ms", Value::F(ns_ms(rp.silence_ns))),
+                ("ack_interval_ms", Value::F(ns_ms(rp.ack_interval_ns))),
+                ("ack_samples", Value::U(rp.ack_samples)),
+                (
+                    "measured_return_bw_bps",
+                    Value::U(rp.measured_return_bw_bps),
+                ),
+                (
+                    "confidence_permille",
+                    Value::U(u64::from(rp.confidence_permille)),
+                ),
+                (
+                    "feedback_continuity_permille",
+                    Value::U(u64::from(rp.feedback_continuity_permille)),
+                ),
+                (
+                    "return_ack_loss_permille",
+                    Value::U(u64::from(rp.return_ack_loss_permille)),
+                ),
+            ]),
+        ),
+        ("tx_datagrams", Value::U(d.tx_datagrams)),
+        ("tx_bytes", Value::U(d.tx_bytes)),
+        ("rx_datagrams", Value::U(d.rx_datagrams)),
+        ("ack_frames", Value::U(d.ack.frames)),
+        ("ack_frames_mapped", Value::U(d.ack.mapped)),
+        ("ack_frames_new_units", Value::U(d.ack.new_units)),
+        (
+            "ack_frames_inflight_shrunk",
+            Value::U(d.ack.inflight_shrunk),
+        ),
+    ])
+}
+
+/// `m_log` ACK çerçevesi kaydı (`client_core::runtime::AckFrameDiag`). `last_ack_now` = motor bu
+/// çerçeveyle son-ACK anını tazeledi; `tail_rearmed_now` = tail idle penceresi bu anda yeniden
+/// kuruldu (ACK ilerlemesi ya da aynı olayda tail-probe; ayrım `before/after.tail_probes` ve
+/// `tail_probe_index` ile). Anlar `t0`'a göre ms.
+fn ack_record_json(r: &AckFrameDiag, t: &impl Fn(Option<u64>) -> Value) -> Value {
+    obj(vec![
+        ("i", Value::U(r.index)),
+        ("t_ms", t(Some(r.at_ns))),
+        ("v2", Value::Bool(r.v2)),
+        ("seen", Value::U(u64::from(r.seen_count))),
+        ("largest_pn", opt_u64(r.largest_pn)),
+        ("ack_delay_raw", Value::U(u64::from(r.ack_delay_raw))),
+        ("ack_delay_ms", Value::F(r.ack_delay_us as f64 / 1000.0)),
+        ("pns", Value::U(u64::from(r.acked_pns))),
+        ("mapped", Value::U(u64::from(r.mapped_seqs))),
+        ("new_units", Value::U(u64::from(r.new_units))),
+        ("tx_during", Value::U(u64::from(r.tx_datagrams_during))),
+        (
+            "last_ack_now",
+            Value::Bool(r.after.last_ack_ns == Some(r.at_ns)),
+        ),
+        (
+            "tail_rearmed_now",
+            Value::Bool(r.after.tail_armed_at_ns == Some(r.at_ns)),
+        ),
+        ("before", view_json(&r.before, t)),
+        ("after", view_json(&r.after, t)),
+    ])
+}
+
+fn view_json(v: &MotorAckView, t: &impl Fn(Option<u64>) -> Value) -> Value {
+    obj(vec![
+        ("state", debug_name(v.state)),
+        ("inflight", Value::U(u64::from(v.inflight_len))),
+        ("pending_lost", Value::U(u64::from(v.pending_lost_len))),
+        ("tombstones", Value::U(u64::from(v.tombstones_len))),
+        ("dup_queue", Value::U(u64::from(v.dup_queue_len))),
+        ("tail_probes", Value::U(v.tail_probes)),
+        ("tail_armed_ms", t(v.tail_armed_at_ns)),
+        ("tail_probe_index", Value::U(u64::from(v.tail_probe_index))),
+        ("last_ack_ms", t(v.last_ack_ns)),
+    ])
+}
+
+/// `m_log` motor durum değişikliği kaydı (`client_core::runtime::StateChangeDiag`).
+fn state_record_json(r: &StateChangeDiag, t: &impl Fn(Option<u64>) -> Value) -> Value {
+    obj(vec![
+        ("i", Value::U(r.index)),
+        ("t_ms", t(Some(r.at_ns))),
+        ("from", debug_name(r.from)),
+        ("to", debug_name(r.to)),
+        ("motor_transitions", Value::U(r.motor_transitions)),
+        ("emergency", debug_name(r.emergency)),
+        (
+            "fusion_emergency_mode",
+            Value::Bool(r.fusion_emergency_mode),
+        ),
+        (
+            "ack_confidence_permille",
+            opt_u64(r.ack_confidence_permille),
+        ),
+        ("last_ack_ms", t(r.last_ack_ns)),
+    ])
+}
+
 // ── En küçük JSON yazıcısı (yeni bağımlılık YOK, D11) ────────────────────────────────────────
 
 /// JSON değeri.
@@ -2325,6 +2806,9 @@ enum Value {
     S(String),
     A(Vec<Value>),
     O(Vec<(String, Value)>),
+    /// Bu yazıcının önceden yazdığı JSON metni, olduğu gibi (zaman çizelgesi örnekleri bellekte
+    /// ağaç yerine metin olarak tutulur).
+    Raw(String),
 }
 
 fn obj(fields: Vec<(&str, Value)>) -> Value {
@@ -2352,6 +2836,7 @@ impl Value {
                 }
             }
             Self::S(s) => escape(s, out),
+            Self::Raw(json) => out.push_str(json),
             Self::A(items) => {
                 out.push('[');
                 for (i, item) in items.iter().enumerate() {

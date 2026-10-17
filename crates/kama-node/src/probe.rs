@@ -11,7 +11,9 @@
 //! * Transport ARQ / RTT: `ClientTransport::session_live_diags` (canlı oturum uçları) ve
 //!   `ClientTransport::retired_live_diag` (ucu bırakılan oturumların sayaç toplamı) —
 //!   `client_core::runtime::ClientLiveDiag`; gönderen kurtarma görüntüsü (takılı birim zaman
-//!   çizelgesi) `ClientLiveDiag::recovery` içindedir.
+//!   çizelgesi) `ClientLiveDiag::recovery` içindedir. [CEVAP PAKETİ 6] Gönderen motorun denetim
+//!   durumu (faz, BtlBw, pacer, acil durum, dönüş yolu: `control`), ACK çerçevesi sayaçları ve son
+//!   çerçeve / durum değişikliği kayıtları (`ack`, `acks`, `states`) da aynadadır.
 //! * Alıcı sıralı teslim (takılı birim): `ClientTransport::reorder_diags` (`ReorderDiag`).
 //! * Bağlam-önce dağıtım: `ClientTransport::ctx_dispatch_stats` (`not_ready_drops` dahil) ve
 //!   `ClientTransport::delivery_dropped`.
