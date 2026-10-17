@@ -2,14 +2,14 @@
 
 | Alan | Değer |
 |---|---|
-| Belge | `docs/seams/KM-SEAM-AK-001.md` v0.2 · 2026-10-17 (v0.1 · 2026-10-16) |
+| Belge | `docs/seams/KM-SEAM-AK-001.md` v0.3 · 2026-10-18 (v0.2 · 2026-10-17; v0.1 · 2026-10-16) |
 | Durum | **PoC** |
 | Kart | K4G-15 (`KAMA-PLAN-4GUN-APP-KRIPTO` v1.1) — MOBILE-HANDOFF kapısı; icra Claude Code (L-FFI) |
 | Sahip | Abkarada (Rust yüzeyi) · Hasan (Kotlin facade ve `ui-api`) |
 | S5 kaynağı | `ui-api v0.3` — kama-engine `docs/ui-api-v0.md`, tag `ui-api-v0.3` = `5de9be16`, sha256 `7d409bdb15cc279612d5ac3ef09c7857569a4474a47745673701c01e8b1c2d14` |
 | Sürüm beyanı | `ui-api-v0.4` ve `ui-api-v0.5` etiketleri mevcut; bu belge plan gereği **v0.3**'ü kapsar (S5 = v0.3, PoC-KAPSAM-001 §2). Fark (adlandırılır, kapsanmaz): **v0.4** = v0.3 + E-12 çağrı yüzeyi (`calls`, `CallsApi`, `runtime`, `SystemMessage` üretimi) — K6'daki `CallsApi` bu yüzeydir, Rust karşılığı §3; **v0.5** = v0.4 − push yüzeyi (`push`, `PushApi`, `PushEndpoint`) — §4.8'deki push satırları v0.5'te yoktur. Sapma Abkarada'nın kararıdır. |
 | Rust yüzeyi | `crates/kama-mobile` (UniFFI 0.32.2, proc-macro) → `kama_node::KamaNode` (K4G-11). Kotlin bağlayıcısı: `uniffi.kama_mobile` paketi, `kama_mobile.kt` |
-| Dayanak | Plan K4G-15, D9, D10, D11 · PoC-KAPSAM-001 §2 "Sözleşmeler", K6, EK-2, EK-3 · DUR-K4G-11 → B · DUR-K4G-11b → (b) · CEVAP PAKETİ 5 (DUR-K4G-15-A, DUR-K4G-15-B) |
+| Dayanak | Plan K4G-15, D9, D10, D11 · PoC-KAPSAM-001 §2 "Sözleşmeler", K6, EK-2, EK-3 · DUR-K4G-11 → B · DUR-K4G-11b → (b) · CEVAP PAKETİ 5 (DUR-K4G-15-A, DUR-K4G-15-B) · CEVAP PAKETİ 6 (DUR-K4G-15-C, -D, -E) |
 
 S5'in kendisi `ui-api v0.3`'tür (Hasan; PoC-KAPSAM-001 §2 "Sözleşmeler": FROZEN sayılır, değişmez). Bu belge onu
 **değiştirmez**; her çağrı ve alanın gerçek motordaki karşılığını tek satırda yazar (K6: "facade değişmez, dar
@@ -34,9 +34,10 @@ kama-app (UI) ── ui-api v0.3 ──▶ RealKamaEngine (Kotlin facade, Hasan)
 * UniFFI `Flow`/`StateFlow` vermez; olaylar callback interface `EngineListener.onEvent(ev: EngineEvent)` ile gelir.
   Akış ve durum yüzeyi (`StateFlow`, "conflated + replay=1") facade'ın inşasıdır (ui-api §2).
 * `onEvent` düğümün kendi iş parçacığında çağrılır (hızlı dönmeli). İçinden aynı düğümün yanıt bekleyen çağrısı
-  `NodeException.ReentrantCall` alır, `shutdown` asenkrondur (§1). Koruma yalnız aynı düğüm için; dinleyiciden başka
-  düğüme engelleyici çağrı yapma. Kotlin'in attığı `kotlin.Exception` Rust'ta yutulur, düğüm etkilenmez;
-  `kotlin.Error`'u UniFFI yakalamaz (JNA loglar) — README-HASAN: `onEvent` gövdesi `Throwable` yakalar.
+  `NodeException.ReentrantCall` alır, `shutdown` asenkrondur ve kapanışı her durumda ister (§1). Koruma yalnız aynı düğüm
+  için; dinleyiciden başka düğüme engelleyici çağrı yapma (başka düğümün `shutdown`'ı da senkrondur). Kotlin'in attığı
+  `kotlin.Exception` Rust'ta yutulur, düğüm etkilenmez; `kotlin.Error`'u UniFFI yakalamaz (JNA loglar) — README-HASAN:
+  `onEvent` gövdesi `Throwable` yakalar.
 * FFI geçişi çağrı ve olay başınadır (metin, dosya, PTT demeti, sinyalleşme blob'u); ağ datagramları FFI'ı geçmez
   (ADR-15: paket başına geçiş yok).
 * Bu sürümde iki telefon arası oturum yoktur: el sıkışma zarfı taşıyıcısı süreç-içi röledir (DUR-K4G-11 → B); iki
@@ -50,16 +51,16 @@ kama-app (UI) ── ui-api v0.3 ──▶ RealKamaEngine (Kotlin facade, Hasan)
 | `connect(peerId)` | `connect` | Kalıcı niyet, idempotent; sonuç `ConnectProgress` / `Connected` / `Closed` |
 | `cancelConnect(peerId): Boolean` | `cancel_connect` | `true` = niyet vardı |
 | `sendText(peerId, text): UInt` | `send_text` | `msgId` (eş başına kalıcı); teslim `EngineEvent.Receipt`; oturumsuz → `NodeException.Messenger(NoSession)` |
-| `sendFile(peerId, path): FileHandle` | `send_file` | Yerel dosya yolu; tutamaç hemen döner; `FileProgress` / `FileFailed`. Oturumsuz çağrı hata değil olaydır: `FileFailed(Outgoing(h), NotQueued(NoSession))`. Kilit beklemez |
+| `sendFile(peerId, path): FileHandle` | `send_file` | Yerel dosya yolu; tutamaç hemen döner; `FileProgress` / `FileFailed`. Oturumsuz çağrı hata değil olaydır: `FileFailed(Outgoing(h), NotQueued(NoSession))`. Yuva kilidini ve düğüm turunu beklemez |
 | `cancelFile(file)` | `cancel_file` | Sonuç `FileFailed(Outgoing(Cancelled))` |
 | `pttOpen(peerId, codec, bundleMs): StreamHandle` | `ptt_open` | `codec`/`bundleMs` çağıranın değeri |
 | `pttPush(stream, payload)` | `ptt_push` | Reliable; reddedilen demeti çağıran yeniden verir |
 | `pttClose(stream)` | `ptt_close` | Tutamaç her durumda kapanır |
 | `sendSignaling(peerId, bytes): ULong` | `send_signaling` | Alındısız, dedupsuz; dönen değer motorun yerel kimliği |
-| `onPlatformSignal(signal)` | `on_platform_signal` | Yalnız `PlatformSignal.LINK_CHANGED` (D15: protokol davranışı yok). Kilit beklemez |
+| `onPlatformSignal(signal)` | `on_platform_signal` | Yalnız `PlatformSignal.LINK_CHANGED` (D15: protokol davranışı yok). Yuva kilidini ve düğüm turunu beklemez |
 | `drainBackground()` | `drain_background` | Outbox + yeniden gönderim pompası, oturumsuz eşe `connect` (EK-2) |
-| `metrics(): NodeMetrics` | `metrics` | Bloklamaz: hiçbir iş parçacığında kilit beklemez. FFI farkı: kapanış başlayınca `NodeException.Stopped` |
-| `shutdown()` | `shutdown` | İdempotent. JVM iş parçacığından TAM DURUŞU bekler: dönüşte depo kilidi, UDP soketi ve süreç-içi röle kaydı bırakılmıştır, aynı `dataDir` ile yeniden `start` edilebilir; eşzamanlı ikinci çağrı da ilkinin bitişini bekler ve onun sonucunu döner. Dinleyicinin içinden ASENKRON: kapanışı ister, beklemeden döner (düğüm dinleyici döndükten sonra durur). Kapanış başlayınca her çağrı `Stopped` |
+| `metrics(): NodeMetrics` | `metrics` | Yuva kilidini ve düğüm turunu beklemez; yalnız ölçü anlık görüntüsünün kısa Mutex'ini alır. FFI farkı: kapanış başlayınca `NodeException.Stopped` |
+| `shutdown()` | `shutdown` | İdempotent. JVM iş parçacığından TAM DURUŞU bekler: dönüşte depo kilidi, UDP soketi ve süreç-içi röle kaydı bırakılmıştır, aynı `dataDir` ile yeniden `start` edilebilir; eşzamanlı ikinci çağrı da ilkinin bitişini bekler ve onun sonucunu döner. Dinleyicinin içinden ASENKRON ve kapanışı HER DURUMDA ister: yuva serbestse düğümü alır; yuva başka bir çağrıda tutuluyorsa (ör. süren `sendText`) kapanış kısa ömürlü bir iş parçacığına devredilir; kapanış zaten istendiyse ya da sürüyorsa onun durumu döner. Tek hata `NodeException.Spawn` (o iş parçacığı açılamadı; kapanış istenmedi) — yutulmamalı. Başka düğümün `shutdown`'ı dinleyiciden senkrondur (join). Kapanış başlayınca her çağrı `Stopped` |
 | `EngineListener.onEvent(ev)` | `NodeListener::on_event` | Olaylar: §2 |
 
 Tutamaçlar (`StreamHandle`, `FileHandle`: `raw: ULong`) düğüm-tekildir, yeniden kullanılmaz; kapanmış tutamaç
@@ -164,14 +165,14 @@ Kapsama yöntemi §5.
 |---|---|---|
 | `ConnectionApi` | Kotlin tarafı (Hasan) | Bileşik durum facade'da |
 | `ConnectionState` | Kotlin tarafı (Hasan) | Bileşik (bağlantı ∧ boş kuyruk, K-4); girdiler `EngineEvent.Connected`/`Closed`/`ConnectProgress`, facade'ın `PENDING` mesajları (§4.4), `NodeMetrics.connectState` |
-| `Ok` · `ConnectionState.Ok` | Kotlin tarafı (Hasan) | `Connected` ve `PENDING` mesaj yok (INV-10) |
+| `Ok` · `ConnectionState.Ok` | Kotlin tarafı (Hasan) | `Connected` ve `PENDING` mesaj (metin ya da ek) yok (INV-10) |
 | `Disconnected` | Kotlin tarafı (Hasan) | Hazır oturum yok (`Closed` ya da `connectState` ≠ `Connected`) |
-| `Recovering` | Kotlin tarafı (Hasan) | Bağlı ve `PENDING` mesaj var (P-39); bant kuralı UI'da (P-41) |
+| `Recovering` | Kotlin tarafı (Hasan) | Bağlı ve `PENDING` mesaj (metin ya da ek) var (P-39); bant kuralı UI'da (P-41). Yeniden gönderimle düzelmeyen ek kalıcı `PENDING` kalır ve bağlıyken durumu `Recovering`'de tutar (§6, DUR-K4G-15-D (a)) |
 | `TrustFailure` · `ConnectionState.TrustFailure` | PoC'de etkisiz gövde (K6) | K6 "TrustFailure çıkışı etkisiz"; zincir/iptal doğrulaması yok; üretilmez |
 | `connection.retryAfterTrustFailure` · `retryAfterTrustFailure` | PoC'de etkisiz gövde (K6) | Plan K6 listesi |
 | `ConnectionApi.diagnostics` · `diagnostics` · `Diagnostics` | Kotlin tarafı (Hasan) | E-11; girdiler olaylar ve `KamaMobile.metrics` |
 | `lastConnectedAtEpochMs` | Kotlin tarafı (Hasan) | Son `Connected` olayının anı (olaylar zaman damgası taşımaz) |
-| `pendingMessageCount` | Kotlin tarafı (Hasan) | `PENDING` mesaj sayısı (§4.4): facade kuyruğunda `Connected` bekleyenler + `KamaMobile.sendText` kabul edip `Receipt`'i gelmeyenler (E-11, INV-6) |
+| `pendingMessageCount` | Kotlin tarafı (Hasan) | `PENDING` mesaj sayısı, metin ve ek (§4.4, §4.5): facade kuyruğunda `Connected` bekleyenler + Rust'a verilip teslimi gelmeyenler (`Receipt` / `FileProgress(DELIVERED)`) (E-11, INV-6) |
 | `diagnosticCode` · `Diagnostics.diagnosticCode` | Kotlin tarafı (Hasan) | Kod kümesi facade'ın |
 
 ### 4.4 Mesajlaşma ve konuşmalar
@@ -181,10 +182,10 @@ Kapsama yöntemi §5.
 | `MessagingApi` | Kotlin tarafı (Hasan) | Gönderim `KamaMobile.sendText` |
 | `sendText` | Rust: `KamaMobile.sendText` | v0.3 `sendText` ANINDA `MessageId` döner ve başarısız olamaz (INV-5); Rust çağrısı oturum ister (DUR-K4G-11b: oturumsuz → `NodeException.Messenger(NoSession)`). Facade metni kendi kuyruğunda `PENDING` tutar, `Connected` sonrası (ve her yeniden bağlanmada) `KamaMobile.sendText` ile verir. Kabul edilen metin kalıcı outbox + ARQ ile, yeniden başlatmada da aynı `msgId`'yle gider. Metin sınırı 1002 UTF-8 bayt (D14): giriş alanında uygulanır, aşan metin hiç gönderilmez (§6) |
 | `MessageId` | Kotlin tarafı (Hasan) | Facade'ın yerel kimliği, `sendText` anında döner; `KamaMobile.sendText` `Ok(msgId)` dönünce `(peerId, msgId)` ile eşlenir, `EngineEvent.Receipt` eşlemesi buradan |
-| `MessageStatus` | Kotlin tarafı (Hasan) | PoC'de iki değer üretilir: `PENDING` → `DELIVERED` |
-| `PENDING` | Kotlin tarafı (Hasan) | `sendText` anından teslime dek: facade kuyruğunda (`Connected` bekliyor) ya da Rust outbox'ında (`KamaMobile.sendText` kabul etti, `Receipt` gelmedi) |
+| `MessageStatus` | Kotlin tarafı (Hasan) | PoC'de iki değer üretilir: `PENDING` → `DELIVERED` (metin ve ek) |
+| `PENDING` | Kotlin tarafı (Hasan) | Metin: `sendText` anından teslime dek — facade kuyruğunda (`Connected` bekliyor) ya da Rust outbox'ında (`KamaMobile.sendText` kabul etti, `Receipt` gelmedi). Ek: `Accepted` anından `FileProgress(DELIVERED)`'a dek (§4.5); yeniden gönderimle düzelmeyen ek kalıcı `PENDING` (§6) |
 | `AT_SERVER` | PoC'de etkisiz gövde (K6) | Üretilmez (PoC-KAPSAM-001 §2 Mesaj) |
-| `DELIVERED` | Rust: `EngineEvent.Receipt` | `(peerId, msgId)` başına tam bir kez |
+| `DELIVERED` | Rust: `EngineEvent.Receipt` | Metin: `(peerId, msgId)` başına tam bir kez. Ek: `EngineEvent.FileProgress(DELIVERED)` (§4.5) |
 | `messages` | Kotlin tarafı (Hasan) | Geçmiş bellek içi (D8, EK-1); girdiler `sendText` ve `EngineEvent.TextReceived` |
 | `Message` | Kotlin tarafı (Hasan) | Zaman çizelgesi tipi |
 | `UserMessage` | Kotlin tarafı (Hasan) | Gelen: `EngineEvent.TextReceived(peerId, msgId, text)` |
@@ -207,7 +208,7 @@ Kapsama yöntemi §5.
 | `ui-api v0.3` öğesi | Eşleme | Not |
 |---|---|---|
 | `AttachmentsApi` | Kotlin tarafı (Hasan) | Gönderim `KamaMobile.sendFile` |
-| `send` | Rust: `KamaMobile.sendFile` | URI içeriği önce uygulamaya özel bir dosyaya kopyalanır (v0.3: "kaynak `send()` içinde kopyalanır"); Rust yalnız yerel yol okur. Görsel yeniden kodlama Kotlin'de (PoC-KAPSAM-001 §2 Fotoğraf). v0.3'te ek mesajla aynı rozet akışını izler ve gönderim başarısız olamaz (INV-5): facade `Accepted`'ı anında verir, eki `Connected`'a dek kendi kuyruğunda tutar ve sonra `sendFile` çağırır. Oturumsuz `sendFile` hata değil olaydır: `EngineEvent.FileFailed(Outgoing(h), NotQueued(NoSession))`. Giden başarısızlık olayları (`Outgoing(..)`, `NotQueued(..)`, `SourceUnreadable`, `SourceName`) v0.3'te görünmez: ek `PENDING` kalır; facade bağlantı/oturum kaynaklı olanları (`Outgoing(Superseded | ReceiverTimeout | ReceiptTimeout)`, `NotQueued(NoSession | QueueFull)`) `Connected` sonrası yeni bir `sendFile` ile kendisi yeniden gönderir (yeni `transfer_id`, plan D6), UI düğmesi yoktur; kalanlar §6 |
+| `send` | Rust: `KamaMobile.sendFile` | URI içeriği önce uygulamaya özel bir dosyaya kopyalanır (v0.3: "kaynak `send()` içinde kopyalanır"); Rust yalnız yerel yol okur. Görsel yeniden kodlama Kotlin'de (PoC-KAPSAM-001 §2 Fotoğraf). v0.3'te ek mesajla aynı rozet akışını izler ve gönderim başarısız olamaz (INV-5): facade `Accepted`'ı anında verir, eki `Connected`'a dek kendi kuyruğunda tutar ve sonra `sendFile` çağırır. Oturumsuz `sendFile` hata değil olaydır: `EngineEvent.FileFailed(Outgoing(h), NotQueued(NoSession))`. **KARAR: DUR-K4G-15-D (a), CEVAP PAKETİ 6 (2026-10-18)** — giden başarısızlık olayları v0.3'te görünmez, ek `PENDING` kalır; facade bağlantı kaynaklı olanları kendisi yeniden gönderir, UI düğmesi yoktur: `Outgoing(Superseded)` → hemen yeni `sendFile` (yeni oturum zaten var; supersession yeni `Connected` üretmez); `Outgoing(ReceiverTimeout)` → bağlıyken yeni `sendFile`; `NotQueued(NoSession)` → `Connected` sonrası; `NotQueued(QueueFull)` geri basınçtır → bir giden aktarım bitince (`FileProgress(DELIVERED)` ya da `FileFailed(Outgoing(..))`) AYNI dosyayla yeniden `sendFile`. Her yeniden gönderim yeni `transfer_id`'dir (plan D6). `Outgoing(ReceiptTimeout)` otomatik yeniden gönderilmez: teslim belirsizdir, dosya alıcıda olabilir ve yeniden gönderim alıcıda ikinci ek oluşturur. Düzelmeyenler §6 |
 | `AttachmentSource.File` | Kotlin tarafı (Hasan) | URI → kopya dosya → `sendFile` |
 | `AttachmentSource.File.uri` · `uri` (AttachmentSource.File · AttachmentSource.Voice) | Kotlin tarafı (Hasan) | `content://` Rust'a geçmez |
 | `AttachmentSource.Voice` | Kotlin tarafı (Hasan) | Kayıt dosyası → `sendFile` |
@@ -269,7 +270,7 @@ Kapsama yöntemi §5.
 | `setAutoDownloadMedia` · `autoDownloadMedia` | PoC'de etkisiz gövde (K6) | Gelen dosya her zaman bütün alınır ve diske yazılır (D8) |
 | `DevicesApi` | Kotlin tarafı (Hasan) | K6: tek satır — bu cihaz |
 | `isCurrent` | Kotlin tarafı (Hasan) | Tek satır, `true` |
-| `refresh` | PoC'de etkisiz gövde (K6) | Cihaz yenileme yok; ağa çıkmaz, liste değişmez |
+| `refresh` | PoC'de etkisiz gövde (K6) | Cihaz yenileme yok; ağa çıkmaz, liste değişmez. Sabit sonuç: başarılı dönüş (v0.3 dönüş tipini adlandırmaz; `Unavailable` üretilmez) |
 | `Unavailable` (DevicesApi.refresh) | PoC'de etkisiz gövde (K6) | Üretilmez (`refresh` iş yapmaz) |
 | `DeviceInfo.renewal` | Kotlin tarafı (Hasan) | PoC sabiti `Ok`: yenileme yok (PKI yok) |
 | `Ok` (DeviceRenewalState) | Kotlin tarafı (Hasan) | `DeviceInfo.renewal`'ın PoC sabiti |
@@ -355,12 +356,14 @@ python3 scripts/seams/seam_ak_coverage.py --ui-api <ui-api-v0.md v0.3 yolu>
    "Rust:" eşlemesi `KamaMobile.<çağrı>` ya da `EngineEvent.<olay>` ile başlar; (iii) belgedeki her
    `KamaMobile.<çağrı>` / `EngineEvent.<olay>` / `NodeException.<hata>` atfı Rust yüzeyinde vardır
    (`crates/kama-mobile/src/lib.rs`, `event.rs`, `error.rs`; Kotlin adlarıyla); (iv) §3'te 12 satır, K6 anahtar
-   adları ilk sütunlarda.
-5. **Son koşu (v0.2):** 400 aday, 210 öğe, 27 kimlik — 0 eksik, 0 yabancı ad, 0 geçersiz eşleme, 0 kırık atıf;
-   §4'te 169 satır, §3'te 12 satır. Aynı denetleyici v0.1 belgesinde 23 KIRMIZI verir (`VOICE` eksik, 19 sahip
-   satırı — `DeviceRenewalState.Ok` dahil —, `username` (PeerIdentity) eşleme biçimi, iki şablon atfı).
-   Denetleyicinin kendi bozmaları (satır silme, sahip satırı silme, geçersiz eşleme, uydurma ad, yok olan Rust
-   çağrısı, öğe-dışı adın satıra girmesi, düzyazı adayının düşmesi) öz-testte KIRMIZI verir.
+   adları ilk sütunlarda; (v) her tablo satırı tam 3 hücredir (GFM'de kod aralığındaki kaçışsız `|` de hücreyi böler:
+   `\|` ile yazılır).
+5. **Son koşu (v0.3):** 400 aday, 210 öğe, 27 kimlik — 0 eksik, 0 yabancı ad, 0 geçersiz eşleme, 0 kırık atıf,
+   0 bölünmüş hücre; §4'te 169 satır, §3'te 12 satır. Aynı denetleyici v0.1 belgesinde 23 KIRMIZI verir (`VOICE`
+   eksik, 19 sahip satırı — `DeviceRenewalState.Ok` dahil —, `username` (PeerIdentity) eşleme biçimi, iki şablon
+   atfı), v0.2 belgesinde 1 (§4.5 `send` satırında kaçışsız `|`). Denetleyicinin kendi bozmaları (satır silme, sahip
+   satırı silme, geçersiz eşleme, uydurma ad, yok olan Rust çağrısı, öğe-dışı adın satıra girmesi, düzyazı adayının
+   düşmesi, kaçışsız `|`) öz-testte KIRMIZI verir.
 
 ## 6. Beyanlı sınırlar ve farklar
 
@@ -369,24 +372,32 @@ python3 scripts/seams/seam_ak_coverage.py --ui-api <ui-api-v0.md v0.3 yolu>
   `device-bob.json`'dur (DUR-K4G-15-B CEVAP): iki dosya aynı pakette yalnız süreç-içi loopback testi içindir; gerçek
   kurulumda her telefon yalnız kendi dosyasını alır (Sprint 2 provisioning v1 + Deploy TDD §8).
 * **Kapanış:** JVM iş parçacığından `shutdown` tam duruşu bekler (eşzamanlı ikinci çağrı dahil); dinleyicinin
-  içinden asenkrondur — kapanışı ister, beklemeden döner. Dinleyiciden başka düğüme engelleyici çağrı korunmaz
-  (iki düğümün dinleyicileri birbirini beklerse ikisi de kilitlenir).
+  içinden asenkrondur ve kapanışı her durumda ister (yuva meşgulse kısa ömürlü bir iş parçacığıyla; tek hata
+  `NodeException.Spawn`, yutulmamalı). Başka düğümün `shutdown`'ı dinleyiciden senkrondur (join); dinleyiciden başka
+  düğüme engelleyici çağrı korunmaz (iki düğümün dinleyicileri birbirini beklerse ikisi de kilitlenir). Dinleyiciden
+  başlatılan kapanışın tamamlanma sinyali kama-node `NodeLoop`'unun alan sırasına dayanır; belge + test ile kabul
+  (DUR-K4G-15-E CEVAP (a), CEVAP PAKETİ 6), kama-node'un açık kapanış kancası KATMAN 6'da.
 * **`metrics()` FFI'da hata dönebilir:** `KamaNode::metrics` hatasızdır (düğüm `shutdown` ile tükenir); FFI nesnesi
   paylaşıldığı için kapanış başlayınca çağrı `NodeException.Stopped` alır. `metrics`, `sendFile`, `onPlatformSignal`
-  hiçbir iş parçacığında kilit beklemez.
+  hiçbir iş parçacığında yuva kilidini ve düğüm turunu beklemez; `metrics` yalnız ölçü anlık görüntüsünün kısa
+  Mutex'ini alır.
 * **Dinleyicinin Rust imzası `Result` döner** (`ListenerError`): Kotlin'in attığı `kotlin.Exception` Rust'ta panik
   yerine hataya çevrilip yutulur; `kotlin.Error`'u UniFFI yakalamaz. Kotlin arayüzü yine `fun onEvent(ev: EngineEvent)`.
-* **Gönderim ↔ INV-5.** v0.3 gönderimi başarısız olamaz ve retry metodu yoktur (INV-5); Rust gönderimi oturum
-  ister (DUR-K4G-11b) ve dosya başarısızlığını olayla bildirir. Köprü facade'dadır: mesaj/ek `PENDING`'de tutulur,
-  yeniden gönderilebilenleri facade `Connected` sonrası kendisi verir (§4.4, §4.5). **Açık fark:** plan D6
-  "UI 'yeniden gönder' sunar" der, v0.3 INV-5 UI düğmesini ve hata durumunu yasaklar; ayrıca yeniden
-  gönderimle düzelmeyen giden dosya başarısızlıklarının (`Outgoing(Rejected | HashMismatch | AbortedByReceiver |
-  Transport(..))`, `SourceUnreadable`, `SourceName`, `NotQueued(TooLarge | NoChunkRoom | Encode | Store |
-  TransferIdExhausted)`) v0.3'te durumu yoktur — ek `PENDING`'de kalır. Sahip kararı gerekir.
+* **Gönderim ↔ INV-5 — KARAR: DUR-K4G-15-D (a), CEVAP PAKETİ 6 (2026-10-18).** v0.3 gönderimi başarısız olamaz ve
+  retry metodu yoktur (INV-5); Rust gönderimi oturum ister (DUR-K4G-11b) ve dosya başarısızlığını olayla bildirir.
+  PoC'de facade bağlantı kaynaklı başarısızlıkları kendisi yeniden gönderir (§4.4, §4.5); düzelmeyenler `PENDING`'de
+  kalır: `Outgoing(Rejected)`, `Outgoing(HashMismatch)`, `Outgoing(AbortedByReceiver)`, `Outgoing(Transport(..))`,
+  `Outgoing(ReceiptTimeout)` (teslim belirsiz: otomatik yeniden gönderim alıcıda ikinci ek oluşturur), `SourceUnreadable`,
+  `SourceName`, `NotQueued(TooLarge)`, `NotQueued(NoChunkRoom)`, `NotQueued(Encode(..))`, `NotQueued(Store(..))`,
+  `NotQueued(TransferIdExhausted)`. Kalıcı `PENDING` ek bağlıyken `ConnectionState`'i `Recovering`'de tutar (K-4) ve
+  `pendingMessageCount`'a girer. **Beyanlı açık (KATMAN 6 kalemi):** plan D6 ile ui-api INV-5 çelişkisi — UI "yeniden
+  gönder" sunmaz; Beta'da karar.
 * **Metin sınırı:** tek TEXT ≤ 1002 UTF-8 bayt (D14). INV-5 gereği `sendText` reddetmez; sınır giriş alanında
   uygulanır, aşan metin Rust'a hiç gitmez (gitseydi `NodeException.TooLarge`).
-* **PoC sabitleri (etkisiz gövdeler):** `syncState` = `SYNCED`, `lookupUsername` = `Unavailable`, `DeviceInfo.renewal`
-  = `Ok`, `isCurrent` = `true`, `deviceApprovedUnseen` = `false`, `Verified` (provisioning eşi).
+* **PoC sabitleri:** facade'ın sabit değerleri (Kotlin tarafı, §4): `syncState` = `SYNCED`, `DeviceInfo.renewal` =
+  `Ok`, `isCurrent` = `true`, `Verified` (provisioning eşi). Etkisiz gövdelerin sabit sonuçları (PoC'de etkisiz gövde,
+  §4): `lookupUsername` → `Unavailable`, `refresh` → başarılı dönüş (`Unavailable` üretilmez), `deviceApprovedUnseen`
+  hep `false`.
 * **`onPlatformSignal`**: yalnız `LINK_CHANGED` Rust'a geçer; `Foreground` / `Background` için Rust değeri yok (D18).
 * **Olaylar zaman damgası taşımaz**; zaman alanları facade'da yazılır.
 * **`rttMs` / `lossPct` / `bitrateKbps` bu sürümde `null`**: salt-okunur kaynak hub sprintinde (KATMAN 6).
