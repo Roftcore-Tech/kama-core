@@ -1,17 +1,16 @@
 //! [`NodeError`] — `kama_node::NodeError`'ın UniFFI aynası (Kotlin'de `NodeException`) — ve motor
 //! hatalarının aynaları. Çeviri tam eşleşmedir (`match`, `_` kolu yok): kaynak tip bir varyant
-//! eklerse bu crate DERLENMEZ.
+//! eklerse bu crate DERLENMEZ. `kama-app` / `kama-contracts` tipleri yalnız tam yolla ya da
+//! fonksiyon içinde tip takma adıyla (`Source`) anılır (C9).
 //!
 //! Gizlilik: hiçbir varyant metin, dosya baytı, ses, sinyalleşme blob'u ya da anahtar taşımaz.
 //! Kurulum hatalarının `reason` alanı kaynak hatanın `Display` metnidir; o metinler `kama-node`'un
 //! kuralıyla yalnız sınıf, konum ve neden taşır (`kama_node::NodeError` belgesi).
 //!
-//! [`ListenerError`] dinleyici yönündedir: Kotlin'in `onEvent` içinde attığı istisna UniFFI'de
-//! panik yerine bu hataya çevrilir (`From<UnexpectedUniFFICallbackError>`); düğüm iş parçacığı
-//! etkilenmez.
+//! [`ListenerError`] dinleyici yönündedir: Kotlin'in `onEvent` içinde attığı `kotlin.Exception`
+//! UniFFI'de panik yerine bu hataya çevrilir (`From<UnexpectedUniFFICallbackError>`); düğüm iş
+//! parçacığı etkilenmez.
 
-use kama_app as app;
-use kama_contracts as contracts;
 use kama_node as node;
 
 /// `KamaMobile` çağrılarının hatası — `kama_node::NodeError`'ın aynası. Kotlin'de `NodeException`.
@@ -193,7 +192,8 @@ fn wide(value: usize) -> u64 {
 }
 
 /// Dinleyici hatası (Kotlin'de `ListenerException`). Kotlin uygulaması bunu ATMAK ZORUNDA DEĞİLDİR:
-/// `onEvent`'in attığı HER istisna UniFFI'de bu değere çevrilir; neden metni taşınmaz.
+/// `onEvent`'in attığı `kotlin.Exception` alt sınıfları UniFFI'de bu değere çevrilir; neden metni
+/// taşınmaz. `kotlin.Error` alt sınıflarını UniFFI yakalamaz (bkz. crate belgesi, "Olaylar").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, uniffi::Error)]
 pub enum ListenerError {
     /// Dinleyici istisna attı; olay bu dinleyici için kayboldu, düğüm turu sürer.
@@ -230,16 +230,17 @@ pub enum TransportError {
     NotConnected,
 }
 
-impl From<contracts::s1::TransportError> for TransportError {
-    fn from(error: contracts::s1::TransportError) -> Self {
+impl From<kama_contracts::s1::TransportError> for TransportError {
+    fn from(error: kama_contracts::s1::TransportError) -> Self {
+        use kama_contracts::s1::TransportError as Source;
         match error {
-            contracts::s1::TransportError::UnknownSession => Self::UnknownSession,
-            contracts::s1::TransportError::SessionSuperseded => Self::SessionSuperseded,
-            contracts::s1::TransportError::EarlyUnitConflict => Self::EarlyUnitConflict,
-            contracts::s1::TransportError::UnitTooLarge => Self::UnitTooLarge,
-            contracts::s1::TransportError::Backpressure => Self::Backpressure,
-            contracts::s1::TransportError::DeadlineExpired => Self::DeadlineExpired,
-            contracts::s1::TransportError::NotConnected => Self::NotConnected,
+            Source::UnknownSession => Self::UnknownSession,
+            Source::SessionSuperseded => Self::SessionSuperseded,
+            Source::EarlyUnitConflict => Self::EarlyUnitConflict,
+            Source::UnitTooLarge => Self::UnitTooLarge,
+            Source::Backpressure => Self::Backpressure,
+            Source::DeadlineExpired => Self::DeadlineExpired,
+            Source::NotConnected => Self::NotConnected,
         }
     }
 }
@@ -261,17 +262,18 @@ pub enum EncodeError {
     },
 }
 
-impl From<app::codec::EncodeError> for EncodeError {
-    fn from(error: app::codec::EncodeError) -> Self {
+impl From<kama_app::codec::EncodeError> for EncodeError {
+    fn from(error: kama_app::codec::EncodeError) -> Self {
+        use kama_app::codec::EncodeError as Source;
         match error {
-            app::codec::EncodeError::BodyTooLarge {
+            Source::BodyTooLarge {
                 body_len,
                 max_body_bytes,
             } => Self::BodyTooLarge {
                 body_len: wide(body_len),
                 max_body_bytes: wide(max_body_bytes),
             },
-            app::codec::EncodeError::NameTooLong { name_len } => Self::NameTooLong {
+            Source::NameTooLong { name_len } => Self::NameTooLong {
                 name_len: wide(name_len),
             },
         }
@@ -296,16 +298,15 @@ pub enum AppStoreError {
     },
 }
 
-impl From<app::store::AppStoreError> for AppStoreError {
-    fn from(error: app::store::AppStoreError) -> Self {
+impl From<kama_app::store::AppStoreError> for AppStoreError {
+    fn from(error: kama_app::store::AppStoreError) -> Self {
+        use kama_app::store::AppStoreError as Source;
         match error {
-            app::store::AppStoreError::Exhausted => Self::Exhausted,
-            app::store::AppStoreError::Persist => Self::Persist,
-            app::store::AppStoreError::Corrupt => Self::Corrupt,
-            app::store::AppStoreError::OutboxFull => Self::OutboxFull,
-            app::store::AppStoreError::RecordTooLarge { len } => {
-                Self::RecordTooLarge { len: wide(len) }
-            }
+            Source::Exhausted => Self::Exhausted,
+            Source::Persist => Self::Persist,
+            Source::Corrupt => Self::Corrupt,
+            Source::OutboxFull => Self::OutboxFull,
+            Source::RecordTooLarge { len } => Self::RecordTooLarge { len: wide(len) },
         }
     }
 }
@@ -344,23 +345,22 @@ pub enum MessengerError {
     },
 }
 
-impl From<app::messaging::MessengerError> for MessengerError {
-    fn from(error: app::messaging::MessengerError) -> Self {
+impl From<kama_app::messaging::MessengerError> for MessengerError {
+    fn from(error: kama_app::messaging::MessengerError) -> Self {
+        use kama_app::messaging::MessengerError as Source;
         match error {
-            app::messaging::MessengerError::NoSession => Self::NoSession,
-            app::messaging::MessengerError::PeerTableFull => Self::PeerTableFull,
-            app::messaging::MessengerError::OutboxFull => Self::OutboxFull,
-            app::messaging::MessengerError::UnackedSpanFull { oldest } => {
-                Self::UnackedSpanFull { oldest }
-            }
-            app::messaging::MessengerError::MsgIdExhausted => Self::MsgIdExhausted,
-            app::messaging::MessengerError::Encode(reason) => Self::Encode {
+            Source::NoSession => Self::NoSession,
+            Source::PeerTableFull => Self::PeerTableFull,
+            Source::OutboxFull => Self::OutboxFull,
+            Source::UnackedSpanFull { oldest } => Self::UnackedSpanFull { oldest },
+            Source::MsgIdExhausted => Self::MsgIdExhausted,
+            Source::Encode(reason) => Self::Encode {
                 reason: reason.into(),
             },
-            app::messaging::MessengerError::Transport(reason) => Self::Transport {
+            Source::Transport(reason) => Self::Transport {
                 reason: reason.into(),
             },
-            app::messaging::MessengerError::Store(reason) => Self::Store {
+            Source::Store(reason) => Self::Store {
                 reason: reason.into(),
             },
         }
@@ -407,28 +407,29 @@ pub enum PttError {
     },
 }
 
-impl From<app::ptt::PttError> for PttError {
-    fn from(error: app::ptt::PttError) -> Self {
+impl From<kama_app::ptt::PttError> for PttError {
+    fn from(error: kama_app::ptt::PttError) -> Self {
+        use kama_app::ptt::PttError as Source;
         match error {
-            app::ptt::PttError::NoSession => Self::NoSession,
-            app::ptt::PttError::StreamActive { stream_id } => Self::StreamActive { stream_id },
-            app::ptt::PttError::UnknownStream => Self::UnknownStream,
-            app::ptt::PttError::StreamTableFull => Self::StreamTableFull,
-            app::ptt::PttError::StreamIdExhausted => Self::StreamIdExhausted,
-            app::ptt::PttError::PayloadTooLarge {
+            Source::NoSession => Self::NoSession,
+            Source::StreamActive { stream_id } => Self::StreamActive { stream_id },
+            Source::UnknownStream => Self::UnknownStream,
+            Source::StreamTableFull => Self::StreamTableFull,
+            Source::StreamIdExhausted => Self::StreamIdExhausted,
+            Source::PayloadTooLarge {
                 payload_len,
                 max_payload_len,
             } => Self::PayloadTooLarge {
                 payload_len: wide(payload_len),
                 max_payload_len: wide(max_payload_len),
             },
-            app::ptt::PttError::Encode(reason) => Self::Encode {
+            Source::Encode(reason) => Self::Encode {
                 reason: reason.into(),
             },
-            app::ptt::PttError::Transport(reason) => Self::Transport {
+            Source::Transport(reason) => Self::Transport {
                 reason: reason.into(),
             },
-            app::ptt::PttError::Store(reason) => Self::Store {
+            Source::Store(reason) => Self::Store {
                 reason: reason.into(),
             },
         }
@@ -468,24 +469,23 @@ pub enum FileSendError {
     AlreadySent,
 }
 
-impl From<app::file_transfer::FileSendError> for FileSendError {
-    fn from(error: app::file_transfer::FileSendError) -> Self {
+impl From<kama_app::file_transfer::FileSendError> for FileSendError {
+    fn from(error: kama_app::file_transfer::FileSendError) -> Self {
+        use kama_app::file_transfer::FileSendError as Source;
         match error {
-            app::file_transfer::FileSendError::NoSession => Self::NoSession,
-            app::file_transfer::FileSendError::QueueFull => Self::QueueFull,
-            app::file_transfer::FileSendError::TransferIdExhausted => Self::TransferIdExhausted,
-            app::file_transfer::FileSendError::TooLarge { file_size } => {
-                Self::TooLarge { file_size }
-            }
-            app::file_transfer::FileSendError::NoChunkRoom => Self::NoChunkRoom,
-            app::file_transfer::FileSendError::Encode(reason) => Self::Encode {
+            Source::NoSession => Self::NoSession,
+            Source::QueueFull => Self::QueueFull,
+            Source::TransferIdExhausted => Self::TransferIdExhausted,
+            Source::TooLarge { file_size } => Self::TooLarge { file_size },
+            Source::NoChunkRoom => Self::NoChunkRoom,
+            Source::Encode(reason) => Self::Encode {
                 reason: reason.into(),
             },
-            app::file_transfer::FileSendError::Store(reason) => Self::Store {
+            Source::Store(reason) => Self::Store {
                 reason: reason.into(),
             },
-            app::file_transfer::FileSendError::UnknownTransfer => Self::UnknownTransfer,
-            app::file_transfer::FileSendError::AlreadySent => Self::AlreadySent,
+            Source::UnknownTransfer => Self::UnknownTransfer,
+            Source::AlreadySent => Self::AlreadySent,
         }
     }
 }
@@ -517,22 +517,23 @@ pub enum SignalingError {
     },
 }
 
-impl From<app::signaling::SignalingError> for SignalingError {
-    fn from(error: app::signaling::SignalingError) -> Self {
+impl From<kama_app::signaling::SignalingError> for SignalingError {
+    fn from(error: kama_app::signaling::SignalingError) -> Self {
+        use kama_app::signaling::SignalingError as Source;
         match error {
-            app::signaling::SignalingError::TooLarge {
+            Source::TooLarge {
                 blob_len,
                 max_blob_len,
             } => Self::TooLarge {
                 blob_len: wide(blob_len),
                 max_blob_len: wide(max_blob_len),
             },
-            app::signaling::SignalingError::NoSession => Self::NoSession,
-            app::signaling::SignalingError::IdExhausted => Self::IdExhausted,
-            app::signaling::SignalingError::Encode(reason) => Self::Encode {
+            Source::NoSession => Self::NoSession,
+            Source::IdExhausted => Self::IdExhausted,
+            Source::Encode(reason) => Self::Encode {
                 reason: reason.into(),
             },
-            app::signaling::SignalingError::Transport(reason) => Self::Transport {
+            Source::Transport(reason) => Self::Transport {
                 reason: reason.into(),
             },
         }
@@ -545,14 +546,15 @@ mod tests {
 
     #[test]
     fn engine_errors_keep_their_typed_cause() {
-        let no_session = node::NodeError::Messenger(app::messaging::MessengerError::NoSession);
+        let no_session = kama_app::messaging::MessengerError::NoSession;
         assert_eq!(
-            NodeError::from(no_session),
+            NodeError::from(node::NodeError::Messenger(no_session)),
             NodeError::Messenger {
                 reason: MessengerError::NoSession
             }
         );
-        let rejected = app::ptt::PttError::Transport(contracts::s1::TransportError::Backpressure);
+        let backpressure = kama_contracts::s1::TransportError::Backpressure;
+        let rejected = kama_app::ptt::PttError::Transport(backpressure);
         assert_eq!(
             NodeError::from(node::NodeError::Ptt(rejected)),
             NodeError::Ptt {

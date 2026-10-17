@@ -1,18 +1,19 @@
 //! [`EngineEvent`] ve yüzeyin değer tipleri — `kama_node`'un olay, ölçü ve tutamaç tiplerinin
 //! UniFFI aynası (plan K4G-11 §2 listesi). Her çeviri tam eşleşmedir (`match` / yapı açımı, `..`
 //! yok): `kama-node`, `kama-app` ya da `kama-contracts` bir varyant ya da alan eklerse bu crate
-//! DERLENMEZ ve ayna aynı değişiklikte güncellenir.
+//! DERLENMEZ ve ayna aynı değişiklikte güncellenir. `kama-app` / `kama-contracts` tipleri yalnız
+//! tam yolla ya da fonksiyon içinde tip takma adıyla (`Source`, `Target`) anılır (C9).
 //!
 //! **Gizlilik:** [`EngineEvent`]'in `Debug` çıktısı metni, ses yükünü ve sinyalleşme blob'unu değil
-//! uzunluklarını yazar (`kama_node::NodeEvent` ile aynı kural). Kotlin'in ürettiği `toString()` bu
-//! kurala tabi DEĞİLDİR (alanların hepsini yazar) — olay loglanmaz (README-HASAN).
+//! uzunluklarını yazar (`kama_node::NodeEvent` ile aynı kural). Kotlin'in `toString()`'i bu
+//! `Debug`'a bağlıdır (`#[uniffi::export(Debug)]`: UniFFI her varyantın veri sınıfında
+//! `toString()`'i Rust `Debug`'ını çağıracak biçimde üretir); Kotlin'de alanlara doğrudan erişim
+//! (`ev.text`, `ev.payload`) yine içeriğin kendisidir — onu loglamak çağıranın kararıdır.
 
 use std::fmt;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
-use kama_app as app;
-use kama_contracts as contracts;
 use kama_node as node;
 
 use crate::error::{FileSendError, TransportError};
@@ -20,7 +21,10 @@ use crate::error::{FileSendError, TransportError};
 /// [`crate::EngineListener::on_event`] çıktısı — `kama_node::NodeEvent`'in aynası. Eşler
 /// provisioning adıyla anılır (`peer_id`); giden akış ve aktarımlar düğüm tutamacıyla
 /// ([`StreamHandle`], [`FileHandle`]), gelenler eşin tel kimliğiyle (`stream_id`, `transfer_id`).
+///
+/// Kotlin `toString()` Rust `Debug`'ıdır: metin, ses yükü ve blob yerine uzunlukları yazar.
 #[derive(Clone, PartialEq, uniffi::Enum)]
+#[uniffi::export(Debug)]
 pub enum EngineEvent {
     /// Eşe bekleyen bağlantı niyetinin fazı (hub yolunun durumudur, eşin canlılığını BİLDİRMEZ).
     /// Direct-mode'da yalnız `Measuring` üretilir.
@@ -324,8 +328,9 @@ fn path_text(path: PathBuf) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// `std::io::ErrorKind`'ın adı (`Debug` biçimi, ör. `NotFound`): Kotlin'e kararlı bir sınıf adı
-/// verir; ayrıntı (OS mesajı, yol) taşımaz.
+/// `std::io::ErrorKind`'ın `Debug` biçimi (ör. `NotFound`, `StorageFull`) — TANILAMA METNİDİR:
+/// std `Debug` biçimini kararlı saymaz, programatik eşleme için değildir. Ayrıntı (OS mesajı, yol)
+/// taşımaz.
 fn io_kind_name(kind: ErrorKind) -> String {
     format!("{kind:?}")
 }
@@ -335,7 +340,7 @@ fn io_kind_name(kind: ErrorKind) -> String {
 /// Giden PTT akışının düğüm tutamacı (`ptt_open` döner; `ptt_push` / `ptt_close` alır) — tel
 /// `stream_id`'si DEĞİLDİR. Düğüm-tekil, kesin artan, yeniden kullanılmaz; kapanmış tutamaç
 /// [`crate::NodeError::HandleClosed`], hiç verilmemiş değer [`crate::NodeError::UnknownHandle`]
-/// alır.
+/// alır. Kotlin'de değiştirilemez kayıttır (`val raw`; `uniffi-bindgen.toml`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct StreamHandle {
     /// Ham değer (`kama_node::StreamHandle::raw`).
@@ -407,19 +412,21 @@ pub enum PttCodec {
 
 impl PttCodec {
     /// Uygulama katmanı değeri.
-    pub(crate) const fn to_app(self) -> app::codec::PttCodec {
+    pub(crate) const fn to_app(self) -> kama_app::codec::PttCodec {
+        use kama_app::codec::PttCodec as Target;
         match self {
-            Self::Opus => app::codec::PttCodec::Opus,
-            Self::Lyra => app::codec::PttCodec::Lyra,
+            Self::Opus => Target::Opus,
+            Self::Lyra => Target::Lyra,
         }
     }
 }
 
-impl From<app::codec::PttCodec> for PttCodec {
-    fn from(codec: app::codec::PttCodec) -> Self {
+impl From<kama_app::codec::PttCodec> for PttCodec {
+    fn from(codec: kama_app::codec::PttCodec) -> Self {
+        use kama_app::codec::PttCodec as Source;
         match codec {
-            app::codec::PttCodec::Opus => Self::Opus,
-            app::codec::PttCodec::Lyra => Self::Lyra,
+            Source::Opus => Self::Opus,
+            Source::Lyra => Self::Lyra,
         }
     }
 }
@@ -437,12 +444,13 @@ pub enum ConnectPhase {
     LongOutage,
 }
 
-impl From<contracts::s1::ConnectPhase> for ConnectPhase {
-    fn from(phase: contracts::s1::ConnectPhase) -> Self {
+impl From<kama_contracts::s1::ConnectPhase> for ConnectPhase {
+    fn from(phase: kama_contracts::s1::ConnectPhase) -> Self {
+        use kama_contracts::s1::ConnectPhase as Source;
         match phase {
-            contracts::s1::ConnectPhase::Measuring => Self::Measuring,
-            contracts::s1::ConnectPhase::Suspended => Self::Suspended,
-            contracts::s1::ConnectPhase::LongOutage => Self::LongOutage,
+            Source::Measuring => Self::Measuring,
+            Source::Suspended => Self::Suspended,
+            Source::LongOutage => Self::LongOutage,
         }
     }
 }
@@ -488,13 +496,14 @@ pub enum CloseReason {
     KeyHygiene,
 }
 
-impl From<contracts::handles::CloseReason> for CloseReason {
-    fn from(reason: contracts::handles::CloseReason) -> Self {
+impl From<kama_contracts::handles::CloseReason> for CloseReason {
+    fn from(reason: kama_contracts::handles::CloseReason) -> Self {
+        use kama_contracts::handles::CloseReason as Source;
         match reason {
-            contracts::handles::CloseReason::Superseded => Self::Superseded,
-            contracts::handles::CloseReason::UserClosed => Self::UserClosed,
-            contracts::handles::CloseReason::PeerClosed => Self::PeerClosed,
-            contracts::handles::CloseReason::KeyHygiene => Self::KeyHygiene,
+            Source::Superseded => Self::Superseded,
+            Source::UserClosed => Self::UserClosed,
+            Source::PeerClosed => Self::PeerClosed,
+            Source::KeyHygiene => Self::KeyHygiene,
         }
     }
 }
@@ -512,13 +521,14 @@ pub enum AbandonReason {
     LocalPermanent,
 }
 
-impl From<contracts::s1::AbandonReason> for AbandonReason {
-    fn from(reason: contracts::s1::AbandonReason) -> Self {
+impl From<kama_contracts::s1::AbandonReason> for AbandonReason {
+    fn from(reason: kama_contracts::s1::AbandonReason) -> Self {
+        use kama_contracts::s1::AbandonReason as Source;
         match reason {
-            contracts::s1::AbandonReason::Cancelled => Self::Cancelled,
-            contracts::s1::AbandonReason::PeerClosed => Self::PeerClosed,
-            contracts::s1::AbandonReason::KeyHygiene => Self::KeyHygiene,
-            contracts::s1::AbandonReason::LocalPermanent => Self::LocalPermanent,
+            Source::Cancelled => Self::Cancelled,
+            Source::PeerClosed => Self::PeerClosed,
+            Source::KeyHygiene => Self::KeyHygiene,
+            Source::LocalPermanent => Self::LocalPermanent,
         }
     }
 }
@@ -584,7 +594,8 @@ pub enum FileFailReason {
     },
     /// Gelen: dosya doğrulandı ama diske yazılamadı (yerel hata, eşe bildirilmez).
     Storage {
-        /// `std::io::ErrorKind` adı (ör. `StorageFull`).
+        /// `std::io::ErrorKind`'ın `Debug` biçimi (ör. `StorageFull`) — tanılama metni,
+        /// programatik eşleme için değil.
         io_kind: String,
     },
     /// Giden: aktarım teslim edilmeden bitti.
@@ -592,7 +603,8 @@ pub enum FileFailReason {
         /// Neden.
         failure: SendFailure,
     },
-    /// Giden: dosya kuyruğa ALINMADI; eşe hiçbir şey gitmedi.
+    /// Giden: dosya kuyruğa ALINMADI; eşe hiçbir şey gitmedi (ör. `NoSession`: oturumsuz
+    /// `send_file`).
     NotQueued {
         /// Motorun reddi.
         reason: FileSendError,
@@ -600,7 +612,8 @@ pub enum FileFailReason {
     /// Giden: kaynak dosya okunamadı (`InvalidInput` = düzenli dosya değil); eşe hiçbir şey
     /// gitmedi.
     SourceUnreadable {
-        /// `std::io::ErrorKind` adı (ör. `NotFound`).
+        /// `std::io::ErrorKind`'ın `Debug` biçimi (ör. `NotFound`) — tanılama metni, programatik
+        /// eşleme için değil.
         io_kind: String,
     },
     /// Giden: kaynak dosyanın adı UTF-8 değil; eşe hiçbir şey gitmedi.
@@ -642,11 +655,12 @@ pub enum FileFailure {
     IdleTimeout,
 }
 
-impl From<app::file_transfer::FileFailure> for FileFailure {
-    fn from(failure: app::file_transfer::FileFailure) -> Self {
+impl From<kama_app::file_transfer::FileFailure> for FileFailure {
+    fn from(failure: kama_app::file_transfer::FileFailure) -> Self {
+        use kama_app::file_transfer::FileFailure as Source;
         match failure {
-            app::file_transfer::FileFailure::HashMismatch => Self::HashMismatch,
-            app::file_transfer::FileFailure::IdleTimeout => Self::IdleTimeout,
+            Source::HashMismatch => Self::HashMismatch,
+            Source::IdleTimeout => Self::IdleTimeout,
         }
     }
 }
@@ -666,14 +680,15 @@ pub enum FileAbortReason {
     Superseded,
 }
 
-impl From<app::codec::FileAbortReason> for FileAbortReason {
-    fn from(reason: app::codec::FileAbortReason) -> Self {
+impl From<kama_app::codec::FileAbortReason> for FileAbortReason {
+    fn from(reason: kama_app::codec::FileAbortReason) -> Self {
+        use kama_app::codec::FileAbortReason as Source;
         match reason {
-            app::codec::FileAbortReason::UserCancel => Self::UserCancel,
-            app::codec::FileAbortReason::HashMismatch => Self::HashMismatch,
-            app::codec::FileAbortReason::StorageFull => Self::StorageFull,
-            app::codec::FileAbortReason::Timeout => Self::Timeout,
-            app::codec::FileAbortReason::Superseded => Self::Superseded,
+            Source::UserCancel => Self::UserCancel,
+            Source::HashMismatch => Self::HashMismatch,
+            Source::StorageFull => Self::StorageFull,
+            Source::Timeout => Self::Timeout,
+            Source::Superseded => Self::Superseded,
         }
     }
 }
@@ -691,7 +706,8 @@ pub enum SendFailure {
     Rejected,
     /// `FILE_END` sonrası `FILE_RECEIPT_TTL` içinde alındı gelmedi.
     ReceiptTimeout,
-    /// Yarım aktarımın oturumu değişti (`FILE_ABORT(superseded)`); UI "yeniden gönder" sunar.
+    /// Yarım aktarımın oturumu değişti (`FILE_ABORT(superseded)`). Yeniden gönderim yeni bir
+    /// `send_file`'dır (yeni `transfer_id`; plan D6); `ui-api v0.3` karşılığı KM-SEAM-AK-001 §4.5.
     Superseded,
     /// Gönderenin kullanıcısı iptal etti (`cancel_file`).
     Cancelled,
@@ -702,17 +718,18 @@ pub enum SendFailure {
     },
 }
 
-impl From<app::file_transfer::SendFailure> for SendFailure {
-    fn from(failure: app::file_transfer::SendFailure) -> Self {
+impl From<kama_app::file_transfer::SendFailure> for SendFailure {
+    fn from(failure: kama_app::file_transfer::SendFailure) -> Self {
+        use kama_app::file_transfer::SendFailure as Source;
         match failure {
-            app::file_transfer::SendFailure::AbortedByReceiver => Self::AbortedByReceiver,
-            app::file_transfer::SendFailure::HashMismatch => Self::HashMismatch,
-            app::file_transfer::SendFailure::ReceiverTimeout => Self::ReceiverTimeout,
-            app::file_transfer::SendFailure::Rejected => Self::Rejected,
-            app::file_transfer::SendFailure::ReceiptTimeout => Self::ReceiptTimeout,
-            app::file_transfer::SendFailure::Superseded => Self::Superseded,
-            app::file_transfer::SendFailure::Cancelled => Self::Cancelled,
-            app::file_transfer::SendFailure::Transport(reason) => Self::Transport {
+            Source::AbortedByReceiver => Self::AbortedByReceiver,
+            Source::HashMismatch => Self::HashMismatch,
+            Source::ReceiverTimeout => Self::ReceiverTimeout,
+            Source::Rejected => Self::Rejected,
+            Source::ReceiptTimeout => Self::ReceiptTimeout,
+            Source::Superseded => Self::Superseded,
+            Source::Cancelled => Self::Cancelled,
+            Source::Transport(reason) => Self::Transport {
                 reason: reason.into(),
             },
         }
@@ -895,6 +912,7 @@ mod tests {
 
     #[test]
     fn metrics_mirror_keeps_every_field() {
+        let measuring = kama_contracts::s1::ConnectPhase::Measuring;
         let metrics = node::NodeMetrics {
             rtt_ms: None,
             loss_pct: None,
@@ -906,7 +924,7 @@ mod tests {
             delivery_channel_drops: 4,
             connect_state: vec![node::PeerConnectState {
                 peer_id: "bob".to_owned(),
-                state: node::LinkState::Connecting(contracts::s1::ConnectPhase::Measuring),
+                state: node::LinkState::Connecting(measuring),
                 epoch: None,
             }],
         };
