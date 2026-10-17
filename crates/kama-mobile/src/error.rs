@@ -56,8 +56,10 @@ pub enum NodeError {
         /// Neden.
         reason: String,
     },
-    /// Düğüm iş parçacığı başlatılamadı.
-    #[error("node thread could not be started: {reason}")]
+    /// Bir iş parçacığı başlatılamadı: düğüm iş parçacığı (`KamaMobile.start`) ya da dinleyicinin
+    /// içinden, yuva meşgulken istenen kapanışı devralacak iş parçacığı (`shutdown`; kapanış
+    /// istenmedi).
+    #[error("thread could not be started: {reason}")]
     Spawn {
         /// G/Ç nedeni.
         reason: String,
@@ -96,9 +98,9 @@ pub enum NodeError {
     /// Düğüm durdu: `shutdown` çağrıldı (ya da kapanış sürüyor) veya iş parçacığı bitti.
     #[error("node is stopped")]
     Stopped,
-    /// Yanıt bekleyen çağrı dinleyicinin içinden (düğüm iş parçacığı) yapıldı ya da dinleyicinin
-    /// içinden yapılan `shutdown` başka bir çağrıyı beklemek zorunda kalırdı — kilitlenme yerine
-    /// tipli hata.
+    /// Yanıt bekleyen çağrı dinleyicinin içinden (düğüm iş parçacığı) yapıldı — düğüm kendini
+    /// bekleyemez; kilitlenme yerine tipli hata. (`shutdown` bu hatayı DÖNMEZ: dinleyicinin
+    /// içinden kapanışı her durumda ister.)
     #[error("blocking node call from the listener would deadlock")]
     ReentrantCall,
     /// Metin motoru reddetti (ör. `NoSession`: arayüz "Bağlandı" olayını bekler — DUR-K4G-11b).
@@ -149,8 +151,10 @@ impl From<node::NodeError> for NodeError {
             node::NodeError::Transport(source) => Self::Transport {
                 reason: source.to_string(),
             },
+            // `LimitsError`'ın `Display`'i tip dönüşümüdür (DUR-K4G-15-C CEVAP (a); C9 izin
+            // listesi).
             node::NodeError::Limits(source) => Self::Limits {
-                reason: source.to_string(),
+                reason: kama_app::codec::LimitsError::to_string(&source),
             },
             node::NodeError::Spawn(source) => Self::Spawn {
                 reason: source.to_string(),
