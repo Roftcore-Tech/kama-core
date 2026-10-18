@@ -53,11 +53,16 @@ tam harness-gözlemlidir (metodoloji §10).
 ## LIM-006 — §11 acil-durum yolu saha-doğrulanmamış; §8.5 sayaçları emergency'yi görmez
 
 **İfade:** §11 MinimalParity kablolu ve birim-testli (`tv_emergency`), ama T0–T7'nin 330 Kama
-koşusunun hiçbirinde `RecoverFwd` girişi yok (`recover_fwd_entries = 0`); T6'da health Dead
+~~koşusunun hiçbirinde `RecoverFwd` girişi yok (`recover_fwd_entries = 0`)~~
+**[ERRATUM-2 (2026-10-18)]** koşusunun 15'inde `RecoverFwd` girişi var (T1a 2, T1b 7, T6 6;
+`c.err` `recover_fwd` > 0), §11 MinimalParity emisyonu ayrı sayaçla ölçülmedi; saha-doğrulanmamış
+nitelemesi değişmez; T6'da health Dead
 iken `ack_confidence = 1000‰` raporlandı. Ayrıca emergency dalı `budget::parity_final`'i baypas
 eder → `would_zero`/`clamped` sayaçları emergency parity'yi SAYMAZ; emergency duplication (Tiny)
 hiçbir bütçe kısıtından geçmez.
 **Kanıt:** ADR-minimal-parity-exception §Evidence; Faz-5 manifest taraması.
+**[ERRATUM-2 (2026-10-18)]** `recover_fwd_entries` manifestte YOK (0/330); sayım ham `c.err`'den:
+`reports/transport-v1/phase5/ERRATUM-2-recover-fwd-count.md`.
 **Gelecek:** EVOLUTION §9.6 (ack_confidence'ın o köşede neden LOW'a düşmediğinin ölçümü).
 
 ## LIM-007 — Gecelik CI kapısı hedef runner'da koşmadı

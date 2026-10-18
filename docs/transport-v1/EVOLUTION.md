@@ -57,8 +57,8 @@ adı KORUNAMAZ. Salt-dokümantasyon, salt-gözlem tanı, test ve CI değişiklik
 
 | | |
 |---|---|
-| v1 durumu | kablolu, birim-testli, T0–T7'de hiç ateşlemedi (`recover_fwd_entries = 0`); T6'da health Dead iken `ack_confidence = 1000‰` |
-| neden donduruldu | Kama T6'yı ateşlemeden kazandı; yolu "zorla ateşletmek" yeni araştırma |
+| v1 durumu | kablolu, birim-testli, ~~T0–T7'de hiç ateşlemedi (`recover_fwd_entries = 0`)~~ **[ERRATUM-2 (2026-10-18)]** T0–T7'de 15/330 koşuda `RecoverFwd` girişi var (T1a 2, T1b 7, T6 6), §11 MinimalParity emisyonu ayrı sayaçla ölçülmedi; T6'da health Dead iken `ack_confidence = 1000‰` |
+| neden donduruldu | ~~Kama T6'yı ateşlemeden kazandı~~ **[ERRATUM-2 (2026-10-18)]** Kama T6'yı kazandı; T6'nın 6/30 koşusunda `RecoverFwd` girişi var, kazancın bu yola atfı ölçülmedi; yolu "zorla ateşletmek" yeni araştırma |
 | tetik | çift-yön ≥ %80 kayıp ∧ sub-kbps rejimi ürün hedefi olursa |
 | gereken kanıt | önce ölçüm: ack_confidence o köşede neden LOW'a inmiyor (PreConverge/idle'da 1000‰ zorlaması mı, tahminci mi); sonra T1b/T3b eşdeğeri N≥30 |
 | YAPMA | hysteresis eşiklerini (300/700‰) ayarlamak; §11 istisnasını §8.5'e bağlamak/çözmek |

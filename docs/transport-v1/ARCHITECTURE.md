@@ -91,7 +91,9 @@ sonra doğal kuyruk yaratır; **sayıdan patoloji çıkarılmaz**, tel maliyetin
   (INV-006).
 * **§11 MinimalParity istisnası:** fuzzy emergency ∧ hysteresis ≥ Dup2 ∧ SegmentBlock → sabit
   100/200‰, profil r-cap, §8.5 bütçesine tabi değil, normal oranın YERİNE (ADR-minimal-parity-
-  exception). T0–T7'de hiç ateşlemedi (LIM-006).
+  exception). ~~T0–T7'de hiç ateşlemedi~~ **[ERRATUM-2 (2026-10-18)]** T0–T7'de 15/330 koşuda
+  `RecoverFwd` girişi var (T1a 2, T1b 7, T6 6); MinimalParity emisyonu ayrı sayaçla ölçülmedi
+  (LIM-006).
 * **Repair ≠ DATA:** kaybolan repair ARQ'ya girmez (INV-005).
 * **Ürün kimliği:** `fec = Some{0x05, None}`; değiştirmek profil kimliğini değiştirir.
 

@@ -849,8 +849,11 @@ duplication/parity yine available_redundancy_budget ile clamp (§8.5).   [AMENDM
 > sıfırlama-reddi (yukarıdaki AMENDMENT-3 satırı) ise NORMAL yolun ayrı bir kuralıdır; iki mekanizma
 > aynı köşede farklı kapılarla çalışır ve birbirini tetiklemez. Sınırlar: (a) §8.5 sıfırlama-reddi ve
 > §11 istisnası birbirinden BAĞIMSIZDIR — "§8.5 sıfırlayınca §11 devreye girer" DEĞİLDİR; (b) Faz-5
-> T0–T7 kampanyasında (990 koşu) RECOVER_FWD/§11 yolu HİÇ ateşlemedi (`recover_fwd_entries = 0`,
-> 330/330 Kama koşusu) — istisna tel-doğrulanmıştır (tv_emergency), saha-doğrulanmamıştır.
+> T0–T7 kampanyasında (990 koşu) ~~RECOVER_FWD/§11 yolu HİÇ ateşlemedi (`recover_fwd_entries = 0`,
+> 330/330 Kama koşusu)~~ **[ERRATUM-2 (2026-10-18)]** 330 Kama koşusunun 15'inde RECOVER_FWD'e
+> giriş var (`recover_fwd` > 0: T1a 2, T1b 7, T6 6; ham veri ve koşu listesi
+> `reports/transport-v1/phase5/ERRATUM-2-recover-fwd-count.md`); §11 MinimalParity emisyonu ayrı
+> sayaçla ölçülmedi — istisna tel-doğrulanmıştır (tv_emergency), saha-doğrulanmamıştır.
 
 ---
 

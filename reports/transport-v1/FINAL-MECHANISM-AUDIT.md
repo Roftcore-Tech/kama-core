@@ -22,7 +22,7 @@ kalmamıştır; her default-OFF mekanizmanın ADR/sınır kararı vardır.**
 | §8.5 bütçe kısıtı (sıfırlama-reddi) | **SHIP** `[CAL]` | ON | evet | clamp 4 300–13 000/hücre, `would_zero=0` | **ADR-minimal-parity-exception** |
 | KURULUŞ-GUARD (PreConverge'de parity 0) | **SHIP** | ON | evet | `preconv_parity_blocked` | audit B-7 |
 | Repair kaybı ARQ'ya girmez | **SHIP** | ON | evet | Faz-2 `repair_not_arqed`; T7 | INV-005 |
-| §11 Emergency MinimalParity / duplication + hysteresis | **SHIP (wired, birim-testli)** | ON | evet — **T0–T7'de ateşlemedi** | `recover_fwd_entries=0` (330/330); `tv_emergency` | ADR-minimal-parity-exception; LIM-006 |
+| §11 Emergency MinimalParity / duplication + hysteresis | **SHIP (wired, birim-testli)** | ON | evet — ~~**T0–T7'de ateşlemedi**~~ **[ERRATUM-2 (2026-10-18)]** T0–T7'de 15/330 koşuda `RecoverFwd` girişi var; MinimalParity emisyonu ayrı sayaçla ölçülmedi | ~~`recover_fwd_entries=0` (330/330)~~ `recover_fwd` > 0: T1a 2, T1b 7, T6 6 (ERRATUM-2); `tv_emergency` | ADR-minimal-parity-exception; LIM-006 |
 | Aktivasyon telemetrisi `ActivationDiag` + `rounded_to_zero_count` (Faz-6) | **SHIP** (salt gözlem) | ON | evet | 990 manifest; `sender_diag_contract` | INV-007/015 |
 | Pacer `TokenBucket` (BtlBw + queue_delay, burst 2 400 B) | **SHIP** | ON | evet | T3a btlbw 651 B/s; `tv_pace`, `tv_bw` | INV-RATE-1 |
 | Kimlik sabitleri `TRANSPORT_V1_PROFILE_ID` / `_ARCHITECTURE` (Faz-6) | **SHIP** | — | — | `transport_v1_freeze.rs`; bench sabitten okur | INV-008 |
