@@ -1,0 +1,10 @@
+# K4G-15 — Kotlin bağlayıcı üreticisinin (`src/bin/uniffi-bindgen.rs`) yapılandırması: UniFFI 0.32
+# global yapılandırma biçimi (`GenerateOptions::config_override`; `[defaults]` / `[crates.<ad>]`).
+# Bağlayıcılar kütüphane kipinde ve `cargo-metadata` özelliği kapalı üretildiği için crate'in kendi
+# `uniffi.toml`'u hiç aranmaz; yapılandırma yalnız bu dosyadan gelir.
+
+[crates.kama_mobile.bindings.kotlin]
+# Kayıtlar (`StreamHandle`, `FileHandle`, `NodeMetrics`, `PeerConnectState`) Kotlin'de `val` alanlı
+# üretilir: tutamaç harita anahtarı olarak güvenle kullanılır ve yerinde başka bir değere
+# çevrilemez. Paketleme betiği üretilen `.kt`'de `var raw` olmadığını denetler.
+generate_immutable_records = true

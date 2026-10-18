@@ -1,0 +1,49 @@
+[package]
+name = "kama-mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# K4G-15 — UniFFI yüzeyi (MOBILE-HANDOFF; plan D10, D11). Bileşim kökü `kama-node`'un (K4G-11)
+# `KamaNode` API'sinin BİREBİR FFI sarmalayıcısı: tip çevirir ve çağrıyı iletir, protokol mantığı
+# TAŞIMAZ (`scripts/ci/layer_check.py` C9). Kotlin tüketicisi Hasan'ın `RealKamaEngine`'idir; eşleme
+# `docs/seams/KM-SEAM-AK-001.md`.
+#
+# Proc-macro yüzeyi (UDL yok): ek arayüz dosyası, build betiği ve `uniffi_build` gerekmez; Kotlin
+# bağlayıcıları kütüphane kipinde derlenmiş `.so`'nun meta-veri sembollerinden üretilir ve bu yol
+# `cargo metadata` istemez (UDL kipinde UDL dosyasının yeri `cargo metadata` ile bulunurdu).
+[lib]
+# `cdylib`: Android'e giden `libkama_mobile.so`. `lib`: Rust smoke testi (`tests/smoke.rs`) yüzeyi
+# bir dış tüketici gibi crate dışından çağırır; `cdylib` tek başına Rust testine bağlanamaz.
+crate-type = ["cdylib", "lib"]
+
+# Kotlin bağlayıcı üreticisi (`src/bin/uniffi-bindgen.rs`). `uniffi`'nin kendi CLI'ı (`cli` özelliği)
+# clap çeker (D11'de onaysız); bu ikili yalnız `uniffi_bindgen` kütüphane API'sini kullanır ve
+# yalnız `bindgen` özelliğiyle derlenir — `.so` derlemesine girmez.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+# `uniffi/bindgen` → `uniffi_bindgen` (varsayılan özellikleri kapalı: `cargo_metadata` YOK).
+bindgen = ["uniffi/bindgen"]
+
+[dependencies]
+# Sarılan API (`KamaNode`).
+kama-node = { path = "../kama-node" }
+# Yalnız TİP ADLARI: `KamaNode` imzaları ve olayları bu crate'lerin tiplerini taşır (`PttCodec`,
+# motor hataları, `ConnectPhase`, `CloseReason` …); FFI aynalarına eşlemek için adlandırılır.
+kama-app = { path = "../kama-app" }
+kama-contracts = { path = "../kama-contracts" }
+thiserror.workspace = true
+# D11: sabit sürüm, codegen dahil. Varsayılan özellik (`cargo-metadata`) kapalı.
+uniffi = { version = "=0.32.2", default-features = false }
+
+[dev-dependencies]
+# Smoke testi cihaz dosyalarını `kama-provision init` CLI yoluyla üretir (test fikstürü DEĞİL).
+kama-provision = { path = "../kama-provision" }
+
+[lints]
+workspace = true
