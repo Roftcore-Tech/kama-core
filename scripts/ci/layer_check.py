@@ -82,20 +82,26 @@ KM-SEAM-TC-001 §6 H-SPLIT):
           bağımlılığın yerel adıyla). Dev bağımlılıkları serbesttir (ürün `.so`'suna girmez).
       (c) Kaynakta (`crates/kama-mobile/**/*.rs`, crate kökündeki `target/` hariç; yorum ve dizge/char
           sabiti DIŞI) `kama-app` / `kama-contracts` yolları YALNIZ TİP adı taşır. Kökler `cargo
-          metadata`'dan türer: varsayılan adlar (`kama_app`, `kama_contracts`) + manifest'te yeniden
-          adlandırılmış bağımlılığın yerel adı (`app = { package = "kama-app" }` → `app::…`); ham
-          tanımlayıcı (`r#kama_app`) da kök sayılır. Kökten sonra modül segmentleri, sonra YALNIZ
-          CamelCase tip/varyant adları (`kama_app::ptt::PttError::Transport`). Tip adı olmayan yol
-          (fonksiyon, sabit, makro, modül: `kama_app::ptt::max_bundle_payload_bytes`), tip üzerinde
-          küçük harfli ya da BÜYÜK_HARFLİ segment (ilişkili fonksiyon/sabit: `PttCodec::from_byte`),
-          turbofish arkasındaki aynısı ve nitelikli yol kuyruğu — jenerik argümanlı tip dahil
-          (`<kama_app::X as T>::f`, `<kama_app::messaging::Messenger<T>>::with_store`) — YASAK. `use`
-          içinde de yalnız tip: crate/modül içe aktarımı (`use kama_app as app;`, `use kama_app::codec;`),
-          glob (`::*`), `self` ve tip olmayan ad YASAK; `extern crate` YASAK. Tipin takma adı da aynı
-          kurala tabidir (`Takma::from_byte` YASAK, `Takma::Varyant` serbest): `use … as Takma`, `type
-          Takma = kama_app::…;`, başka dosyadan yeniden ihraç (`pub(crate) use …` → `use crate::Takma`
-          ya da `crate::Takma::…`) ve `self::` / `super::` / `crate::` önekli kullanım izlenir; takma
-          adlar crate genelinde toplanır.
+          metadata`'dan türer: varsayılan adlar (`kama_app`, `kama_contracts`) + kütüphane hedefinin adı
+          (`[lib] name` geçersiz kılınırsa o ad) + manifest'te yeniden adlandırılmış bağımlılığın yerel adı
+          (`app = { package = "kama-app" }` → `app::…`); ham tanımlayıcı (`r#kama_app`) da kök sayılır.
+          `..` ardındaki yol da yoldur (aralık sınırı, struct güncelleme tabanı: `0..kama_app::X::MAX`,
+          `..kama_app::f()`). Kökten sonra modül segmentleri, sonra YALNIZ CamelCase tip/varyant adları
+          (`kama_app::ptt::PttError::Transport`). Tip adı olmayan yol (fonksiyon, sabit, makro, modül:
+          `kama_app::ptt::max_bundle_payload_bytes`), tip üzerinde küçük harfli ya da BÜYÜK_HARFLİ segment
+          (ilişkili fonksiyon/sabit: `PttCodec::from_byte`), turbofish arkasındaki aynısı ve nitelikli yol
+          kuyruğu — jenerik argümanlı tip dahil (`<kama_app::X as T>::f`,
+          `<kama_app::messaging::Messenger<T>>::with_store`) — YASAK. Nitelikli yolun tipi yalnız `<` ile
+          açılan yoldur: turbofish ya da jenerik argüman listesindeki TİP ARGÜMANI
+          (`Vec::<kama_app::messaging::Messenger<T>>::new()`, `Vec<kama_app::X>`) kuyruğun sahibi değildir
+          (kuyruk dıştaki tipindir). `use` içinde de yalnız tip: crate/modül içe aktarımı (`use kama_app as
+          app;`, `use kama_app::codec;`), glob (`::*`), `self` ve tip olmayan ad YASAK; `extern crate`
+          YASAK. Tipin takma adı da aynı kurala tabidir (`Takma::from_byte` YASAK,
+          `Takma::Varyant` serbest): `use … as Takma`, `type Takma = kama_app::…;`, başka dosyadan yeniden
+          ihraç ve zinciri — crate kökünden (`use crate::Takma [as Yeni]`, `crate::Takma::…`) ya da modül
+          yoluyla (`use crate::error::Takma as Yeni`, `crate::error::Takma::…`, `error::Takma::…`; modül
+          adları crate'in `mod` bildirimlerinden) — ve `self::` / `super::` / `crate::` önekli kullanım
+          izlenir; takma adlar crate genelinde toplanır.
           İZİNLİ DEĞER DÖNÜŞÜMLERİ (`FFI_ALLOWED_CONVERSIONS`; DUR-K4G-15-C CEVAP (a), CEVAP PAKETİ 6,
           Abkarada 2026-10-18: "SignalingId::get ve LimitsError için Display tip dönüşümüdür, motor
           çağrısı değil; C9 listesine açıkça yazılır"): `kama_app::signaling::SignalingId::get` ve
@@ -110,6 +116,11 @@ KM-SEAM-TC-001 §6 H-SPLIT):
       trait uygulamaları, trait sınırı üzerinden çağrı (`T::f()`, `T: kama_app::…`), makro
       gövdelerinde üretilen yollar, `#[path]` ile crate dışından eklenen modüller ve başka bir crate'in
       yeniden ihracı (`kama_node::…` üzerinden gelen bir kama-app adı) — o yollar inceleme işidir.
+      Takma ad tablosu KAPSAMSIZDIR: adlar crate genelinde toplanır, ilk tanım kazanır; modül, blok ve
+      gölgeleme ayırt edilmez (aynı adlı yerel bir tipin ilişkili öğesi yanlış kırmızı verebilir, ikinci
+      bir tanım görülmeyebilir; 2026-10-18 gerçek kaynakta yanlış kırmızı yok). Nitelikli yolun açıcısı
+      sözdizimiyle ayırt edilir: yalnız turbofish'in (`::<`) içindeki yol tip argümanı sayılır;
+      turbofish'siz jenerik argümanın ardından derlenen Rust'ta `>::öğe` gelmez.
 
   GEÇİŞLİ KAPANIŞ NASIL HESAPLANIR: `cargo metadata`'nın çözümlenmiş grafiği üzerinden. Kök crate'in
   KENDİ dev-bağımlılıkları dahildir (testleri de katman kuralına tabidir); yol üzerindeki diğer
@@ -212,6 +223,10 @@ RAW_IDENT = re.compile(r"(?<![A-Za-z0-9_])r#(?=[A-Za-z_])")
 PATH_PREFIXES = ("crate", "self", "super")
 # Nitelikli yol kuyruğu: yolun hemen ardından `>::öğe` ya da ` as Trait>::öğe` (`<T as Trait>::f`).
 QUALIFIED_TAIL = re.compile(r"(?:\s+as\s+[^;{}()]*?)?\s*>\s*::\s*([A-Za-z_][A-Za-z0-9_]*)")
+# Crate'in modül adları (`mod ad`): takma adın modül yoluyla kullanımı (`crate::error::Takma::f`).
+MOD_DECL = re.compile(r"(?<![A-Za-z0-9_])mod\s+([A-Za-z_][A-Za-z0-9_]*)")
+# Rust'tan bağlanabilen kütüphane hedefi türleri: kökün adı bu hedefin adıdır (`[lib] name`).
+LIB_KINDS = frozenset({"lib", "rlib", "dylib", "proc-macro"})
 
 
 def strip_comments(src: str) -> str:
@@ -542,11 +557,12 @@ def ffi_findings(metadata: dict, sources: dict[str, str], hits: Counter | None =
     # (b) normal/build bağımlılıkları `test-util` açamaz
     findings += ffi_feature_findings(pkg, metadata["packages"])
     # (c) kaynak: yalnız-tip paketlerinin yolları yalnız tip adı; takma adlar crate genelinde
-    roots = ffi_type_roots(pkg)
+    roots = ffi_type_roots(pkg, metadata["packages"])
     codes = {path: rust_code(src) for path, src in sorted(sources.items())}
-    aliases = collect_aliases(codes, roots)
+    modules = local_modules(codes)
+    aliases = collect_aliases(codes, roots, modules)
     for path, code in codes.items():
-        findings += ffi_source_findings(f"{FFI_WRAPPER}/{path}", code, roots, aliases, hits)
+        findings += ffi_source_findings(f"{FFI_WRAPPER}/{path}", code, roots, aliases, hits, modules)
     return findings
 
 
@@ -621,15 +637,34 @@ def classify_path(package: str, segments: list[str]) -> tuple[str | None, str | 
     return None, None
 
 
-def ffi_type_roots(pkg: dict) -> dict[str, str]:
+def lib_name(package: dict | None, name: str) -> str:
+    """Paketin kütüphane hedefinin Rust adı (`[lib] name`; metadata'daki hedef adı, `-` → `_`). Paket ya da
+    kütüphane hedefi metadata'da yoksa paket adı (`kama-app` → `kama_app`)."""
+    for target in (package or {}).get("targets") or []:
+        if LIB_KINDS & set(target.get("kind") or ()):
+            return target["name"].replace("-", "_")
+    return name.replace("-", "_")
+
+
+def ffi_type_roots(pkg: dict, packages: list[dict]) -> dict[str, str]:
     """C9 (c) — yalnız-tip paketlerinin kaynaktaki Rust kökleri: {kök: paket}. Varsayılan adlar
-    (`kama_app`, `kama_contracts`) + manifest'te yeniden adlandırılmış bağımlılığın yerel adı
-    (`app = { package = "kama-app" }` → `app`)."""
+    (`kama_app`, `kama_contracts`) + her doğrudan bağımlılığın yerel adı: yeniden adlandırılmışsa o ad
+    (`app = { package = "kama-app" }` → `app`), değilse kütüphane hedefinin adı (`[lib] name` geçersiz
+    kılınırsa o ad)."""
+    by_name = {p["name"]: p for p in packages}
     roots = {name.replace("-", "_"): name for name in FFI_TYPE_ONLY_PACKAGES}
     for dep in pkg["dependencies"]:
         if dep["name"] in FFI_TYPE_ONLY_PACKAGES:
-            roots[(dep.get("rename") or dep["name"]).replace("-", "_")] = dep["name"]
+            local = dep.get("rename") or lib_name(by_name.get(dep["name"]), dep["name"])
+            roots[local.replace("-", "_")] = dep["name"]
     return roots
+
+
+def local_modules(codes: dict[str, str]) -> frozenset[str]:
+    """C9 (c) — crate'in modül adları (`mod ad` bildirimleri; `rust_code` ile hazırlanmış kaynaklardan):
+    takma adın modül yoluyla kullanımı ve yeniden ihracı için (`crate::error::Takma::f`, `error::Takma::f`,
+    `use crate::error::Takma as Yeni`)."""
+    return frozenset(m.group(1) for code in codes.values() for m in MOD_DECL.finditer(code))
 
 
 def rust_code(src: str) -> str:
@@ -650,18 +685,20 @@ def path_at(text: str) -> list[str]:
     return [m.group(0), *segments]
 
 
-def collect_aliases(codes: dict[str, str], roots: dict[str, str]) -> dict[str, tuple[str, tuple[str, ...]]]:
+def collect_aliases(codes: dict[str, str], roots: dict[str, str],
+                    modules: frozenset[str] = frozenset()) -> dict[str, tuple[str, tuple[str, ...]]]:
     """C9 (c) — yalnız-tip paketlerinden gelen TİPLERİN crate genelindeki yerel adları:
     {ad: (paket, tipin paket-içi yolu)}. Kaynaklar: `use kök::…::Tip [as Ad]`, `type Ad = kök::…::Tip;`
-    ve bunların yeniden ihracı ya da zinciri (`use crate::Ad [as Yeni]`, `type Yeni = super::Ad;`;
-    `crate::` / `self::` / `super::` önekleri atlanır) — sabit noktaya dek, ilk tanım kazanır. Tip olmayan
-    içe aktarım takma ad üretmez (o, `ffi_source_findings`'te bulgudur)."""
+    ve bunların yeniden ihracı ya da zinciri (`use crate::Ad [as Yeni]`, `use crate::error::Ad as Yeni`,
+    `type Yeni = super::Ad;`; `crate::` / `self::` / `super::` önekleri ve crate'in modül adları — `modules` —
+    atlanır) — sabit noktaya dek, ilk tanım kazanır (kapsam yok sayılır: SINIR). Tip olmayan içe aktarım
+    takma ad üretmez (o, `ffi_source_findings`'te bulgudur)."""
     aliases: dict[str, tuple[str, tuple[str, ...]]] = {}
     leaves = [leaf for code in codes.values() for m in USE_DECL.finditer(code) for leaf in use_leaves(m.group(1))]
     types = [(m.group(1), path_at(m.group(2))) for code in codes.values() for m in TYPE_ALIAS.finditer(code)]
 
     def resolve(path: list[str]) -> tuple[str, tuple[str, ...]] | None:
-        while path and path[0] in PATH_PREFIXES:
+        while path and (path[0] in PATH_PREFIXES or path[0] in modules):
             path = path[1:]
         if not path:
             return None
@@ -791,10 +828,32 @@ def path_segments(code: str, i: int) -> tuple[list[str], int]:
         i = m.end()
 
 
+def opens_qualified(code: str, start: int) -> bool:
+    """[2026-10-18 4. tur] `code[start]`'ta başlayan yol bir nitelikli yolun TİPİ mi (`<kama_app::X>::f`,
+    `<kama_app::X as T>::f`, `return <kama_app::X>::f()`)? Yoldan (ve baştaki `::`'dan) önce `<` gelmeli ve o
+    `<` turbofish (`::<`) olmamalı: `Vec::<kama_app::X>::new()`'da yol bir TİP ARGÜMANIDIR — ardından gelen
+    `>::öğe` dıştaki tipindir, bu yolun değil. Turbofish'siz jenerik argüman (`Vec<kama_app::X>`,
+    `<T as Into<kama_app::X>>::into`) ayrıca ayırt edilmez: onun ardından gelen `>` bir `>` daha ya da `as`
+    izler, `QUALIFIED_TAIL` eşleşmez (derlenen Rust'ta `Tip<…>::öğe` biçimi yoktur)."""
+    i = start
+    while i > 0 and code[i - 1].isspace():
+        i -= 1
+    if code[max(0, i - 2):i] == "::":
+        i -= 2
+        while i > 0 and code[i - 1].isspace():
+            i -= 1
+    if i == 0 or code[i - 1] != "<":
+        return False
+    j = i - 1
+    while j > 0 and code[j - 1].isspace():
+        j -= 1
+    return code[max(0, j - 2):j] != "::"
+
+
 def qualified_problem(code: str, end: int, package: str, type_path: list[str]) -> tuple[str | None, str | None]:
     """Tipte biten yolun ardından — tipin jenerik argümanları atlanarak — nitelikli yol kuyruğu (`<T>::f`,
     `<T as Trait>::f`, `<T<U>>::f`): tip olmayan öğeye iniyorsa (sorun, None); izinli dönüşümse
-    (None, adı); kuyruk yoksa (None, None)."""
+    (None, adı); kuyruk yoksa (None, None). YALNIZ `opens_qualified` doğruysa çağrılır."""
     i, j = end, skip_space(code, end)
     if code.startswith("<", j):
         i = skip_generics(code, j)
@@ -813,10 +872,12 @@ def blank_matches(code: str, pattern: re.Pattern[str]) -> str:
 
 
 def ffi_source_findings(path: str, code: str, roots: dict[str, str],
-                        aliases: dict[str, tuple[str, tuple[str, ...]]], hits: Counter | None = None) -> list[str]:
+                        aliases: dict[str, tuple[str, tuple[str, ...]]], hits: Counter | None = None,
+                        modules: frozenset[str] = frozenset()) -> list[str]:
     """C9 (c) — bir kaynak dosyası (`rust_code` ile hazırlanmış): yalnız-tip paketlerinin yolları, `use` ve
     `extern crate` bildirimleri ve crate genelindeki takma adların kullanımı (`self::` / `super::` /
-    `crate::` önekiyle de). İzinli dönüşümlerin kullanımları `hits`'te sayılır."""
+    `crate::` önekiyle ve crate'in modül yoluyla da: `crate::error::Takma::f`, `error::Takma::f`). İzinli
+    dönüşümlerin kullanımları `hits`'te sayılır."""
     findings: list[str] = []
 
     def report(pos: int, shown: str, problem: str) -> None:
@@ -852,25 +913,27 @@ def ffi_source_findings(path: str, code: str, roots: dict[str, str],
     # `use` ve `extern crate` bildirimleri yukarıda denetlendi; yol taramasına girmez.
     body = blank_matches(blank_matches(code, USE_DECL), EXTERN_CRATE_DECL)
     root_names = "|".join(re.escape(name) for name in sorted(roots))
-    for m in re.finditer(rf"(?<![A-Za-z0-9_.])({root_names})(?![A-Za-z0-9_])", body):
+    # Önde yalnız tanımlayıcı karakteri yolu başlatmaz: `..` (aralık sınırı, struct güncelleme tabanı) başlatır.
+    for m in re.finditer(rf"(?<![A-Za-z0-9_])({root_names})(?![A-Za-z0-9_])", body):
         segments, end = path_segments(body, m.end())
         if not segments or is_subpath(body, m.start()):
             continue  # yol değil (çıplak ad) ya da başka bir yolun iç segmenti
         package = roots[m.group(1)]
         problem, hit = classify_path(package, segments)
-        if problem is None and hit is None and is_type_name(segments[-1]):
+        if problem is None and hit is None and is_type_name(segments[-1]) and opens_qualified(body, m.start()):
             problem, hit = qualified_problem(body, end, package, segments)
         if problem is not None:
             report(m.start(), "::".join([m.group(1), *segments]), problem)
         count(hit)
-    prefixes = "|".join(PATH_PREFIXES)
+    # Önekler: `crate` / `self` / `super` ve crate'in modül adları (takma adın modül yoluyla kullanımı).
+    prefixes = "|".join(re.escape(name) for name in (*PATH_PREFIXES, *sorted(modules)))
     for alias, (package, prefix) in sorted(aliases.items()):
-        pattern = rf"(?<![A-Za-z0-9_:.])(?:(?:{prefixes})\s*::\s*)*{re.escape(alias)}(?![A-Za-z0-9_])"
+        pattern = rf"(?<![A-Za-z0-9_:])(?:(?:{prefixes})\s*::\s*)*{re.escape(alias)}(?![A-Za-z0-9_])"
         for m in re.finditer(pattern, body):
             segments, end = path_segments(body, m.end())
             full = [*prefix, *segments]
             problem, hit = classify_path(package, full)
-            if problem is None and hit is None and is_type_name(full[-1]):
+            if problem is None and hit is None and is_type_name(full[-1]) and opens_qualified(body, m.start()):
                 problem, hit = qualified_problem(body, end, package, full)
             if problem is not None:
                 target = "::".join([package.replace("-", "_"), *prefix])
@@ -1177,9 +1240,10 @@ def selftest() -> int:
             print(f"  PASS  {name}: ortam hatası (yeşil DEĞİL)")
     # C9 [2026-10-16 K4G-15; CEVAP PAKETİ 5] — FFI sarmalayıcısı: (a) bağımlılık kenarları, (b) test-util,
     # (c) kaynakta kama_app / kama_contracts yalnız tip adı.
-    def ffi_md(deps, *, features=None, packages=None):
-        """Sentetik metadata: FFI crate'i + `packages` ({ad: özellik tablosu}). `deps` öğesi
-        (ad, tür, workspace_mı) ya da sözlük (`name`, `kind`, `ws`, `features`, `defaults`, `rename`)."""
+    def ffi_md(deps, *, features=None, packages=None, lib_names=None):
+        """Sentetik metadata: FFI crate'i + `packages` ({ad: özellik tablosu}) + `lib_names` ({paket: kütüphane
+        hedefinin adı}, `[lib] name`). `deps` öğesi (ad, tür, workspace_mı) ya da sözlük (`name`, `kind`, `ws`,
+        `features`, `defaults`, `rename`)."""
         registry = "registry+https://github.com/rust-lang/crates.io-index"
         manifest = []
         for dep in deps:
@@ -1192,6 +1256,12 @@ def selftest() -> int:
         pkgs = [{"name": FFI_WRAPPER, "id": f"id:{FFI_WRAPPER}", "dependencies": manifest,
                  "features": features or {}}]
         pkgs += [{"name": n, "id": f"id:{n}", "dependencies": [], "features": f} for n, f in (packages or {}).items()]
+        for n, lib in (lib_names or {}).items():
+            entry = next((p for p in pkgs if p["name"] == n), None)
+            if entry is None:
+                entry = {"name": n, "id": f"id:{n}", "dependencies": [], "features": {}}
+                pkgs.append(entry)
+            entry["targets"] = [{"kind": ["lib"], "name": lib}]
         return {"packages": pkgs, "resolve": {"nodes": []}}
     clean_ffi = {"src/lib.rs": "pub fn f() {}\n"}
     ffi_ok = [("kama-node", None, True), ("kama-app", None, True), ("kama-contracts", None, True),
@@ -1305,8 +1375,13 @@ def selftest() -> int:
          "fn f(e: &E) -> String { kama_app::codec::LimitsError::to_string(e) }\n", []),
         ("C9 izinli DEĞİL: SignalingId'nin başka öğesi", "fn f() { kama_app::signaling::SignalingId::new(); }\n",
          ["C9"]),
-        ("C9 izinli DEĞİL: izin tipe bağlı (başka tipte get)", "fn f(x: X) -> u64 { kama_contracts::s1::X::get(x) }\n",
-         ["C9"]),
+        # [2026-10-18 4. tur] izin anahtarının üç parçası ayrı ayrı: tip, tipin modül yolu, paket.
+        ("C9 izinli DEĞİL: izin tipe bağlı (aynı paket ve modül, başka tip)",
+         "fn f(x: X) -> u64 { kama_app::signaling::OtherId::get(x) }\n", ["C9"]),
+        ("C9 izinli DEĞİL: izin tipin modül yoluna bağlı (aynı paket, aynı tip adı, başka modül)",
+         "fn f(x: X) -> u64 { kama_app::codec::SignalingId::get(x) }\n", ["C9"]),
+        ("C9 izinli DEĞİL: izin pakete bağlı (aynı tip yolu, başka paket)",
+         "fn f(x: X) -> u64 { kama_contracts::signaling::SignalingId::get(x) }\n", ["C9"]),
         ("C9 izinli DEĞİL: izin yolun SON segmentinde (get::x yok)",
          "fn f() { kama_app::signaling::SignalingId::get::Inner; }\n", ["C9"]),
         ("C9 jenerik argümanlı nitelikli yol (motor kurucusu)",
@@ -1346,6 +1421,41 @@ def selftest() -> int:
         ("C9 baştaki :: ile kök (::kama_app::…)", "fn f(l: &L) -> usize { ::kama_app::ptt::max_bundle_payload_bytes(l) }\n",
          ["C9"]),
     ]
+    # [2026-10-18 4. tur] `..` ardındaki yol, modül yoluyla takma ad, tip argümanı ≠ nitelikli yol, `[lib] name`.
+    error_alias = "pub(crate) use kama_app::codec::PttCodec as AppCodec;\n"
+    libnamed = ffi_md(ffi_ok, lib_names={"kama-app": "app_core"})
+    source_cases += [
+        ("C9 aralık sınırında sabit (0..kama_app::…)",
+         "fn f() -> core::ops::Range<usize> { 0..kama_app::codec::MAX_BODY_BYTES }\n", ["C9"]),
+        ("C9 struct güncelleme tabanında fonksiyon (..kama_app::…)",
+         "fn f() -> S { S { a: 1, ..kama_app::config::default_limits() } }\n", ["C9"]),
+        ("C9 struct güncelleme tabanında takma adın ilişkili fonksiyonu (..Takma::…)",
+         "use kama_app::codec::Limits as L;\nfn f() -> S { S { a: 1, ..L::defaults() } }\n", ["C9"]),
+        ("C9 modül yoluyla takma ad (crate::error::Takma::f)",
+         {"src/lib.rs": "mod error;\nfn f() { crate::error::AppCodec::from_byte(1); }\n", "src/error.rs": error_alias},
+         ["C9"]),
+        ("C9 modül yoluyla takma ad (error::Takma::f)",
+         {"src/lib.rs": "mod error;\nfn f() { error::AppCodec::from_byte(1); }\n", "src/error.rs": error_alias}, ["C9"]),
+        ("C9 modül yoluyla zincir (use crate::error::Takma as Yeni)",
+         {"src/lib.rs": "mod error;\nmod event;\n", "src/error.rs": error_alias,
+          "src/event.rs": "use crate::error::AppCodec as Codec;\nfn f() { Codec::from_byte(1); }\n"}, ["C9"]),
+        ("C9 DEĞİL: modül yoluyla takma adın tip/varyant kullanımı; başka crate'in aynı adlı modülü",
+         {"src/lib.rs": "mod error;\nfn f(c: error::AppCodec) -> bool { matches!(c, crate::error::AppCodec::Opus) }\n"
+                        "fn g() { std::error::AppCodec::from_byte(1); }\n", "src/error.rs": error_alias}, []),
+        ("C9 DEĞİL: turbofish tip argümanı jenerik tip (kuyruk dıştaki tipin)",
+         "fn f() { let _ = Vec::<kama_app::messaging::Messenger<T>>::new(); }\n", []),
+        ("C9 DEĞİL: turbofish tip argümanı, jeneriksiz ve ikinci argüman",
+         "fn f() { let _ = Vec::<kama_app::codec::PttCodec>::new();\n"
+         "    let _ = HashMap::<u8, kama_app::codec::PttCodec>::new(); }\n", []),
+        ("C9 DEĞİL: takma adın turbofish tip argümanı",
+         "use kama_app::codec::PttCodec as Codec;\nfn f() { let _ = Vec::<Codec>::new(); }\n", []),
+        ("C9 anahtar sözcükten sonra nitelikli yol (return <…>::f)",
+         "fn f(c: C) -> u8 { return <kama_app::codec::PttCodec as Into<u8>>::into(c); }\n", ["C9"]),
+        ("C9 takma adla nitelikli yol (<Takma>::f)",
+         "use kama_app::codec::PttCodec as Codec;\nfn f() { let _ = <Codec>::from_byte(1); }\n", ["C9"]),
+        ("C9 [lib] name kökü (app_core::…)",
+         ("fn f(l: &L) -> usize { app_core::ptt::max_bundle_payload_bytes(l) }\n", libnamed), ["C9"]),
+    ]
     for name, src, want in source_cases:
         md = ffi_md(ffi_ok)
         if isinstance(src, tuple):
@@ -1355,12 +1465,15 @@ def selftest() -> int:
         ok = got == want
         bad += not ok
         print(f"  {'PASS' if ok else 'FAIL'}  {name}: beklenen {want or 'temiz'}, gelen {got or 'temiz'}")
-    # İzinli dönüşümler adıyla tanınır ve sayılır (yeşil çıktıda raporlanır).
+    # İzinli dönüşümler adıyla tanınır ve HER kullanımda sayılır (yol, nitelikli yol, takma ad; yeşil çıktıda
+    # raporlanır); izinli olmayan aynı adlı öğe sayılmaz.
     hits: Counter = Counter()
-    ffi_findings(ffi_md(ffi_ok), {"src/lib.rs": "fn f(r: R) -> R2 { r.map(kama_app::signaling::SignalingId::get) }\n",
-                                  "src/error.rs": "fn g(e: &E) -> String { kama_app::codec::LimitsError::to_string(e) }\n"},
-                 hits)
-    want_hits = {"kama_app::signaling::SignalingId::get": 1, "kama_app::codec::LimitsError::to_string": 1}
+    ffi_findings(ffi_md(ffi_ok), {
+        "src/lib.rs": ("fn f(r: R) -> R2 { r.map(kama_app::signaling::SignalingId::get) }\n"
+                       "fn g(i: I) -> u64 { <kama_app::signaling::SignalingId>::get(i) }\n"),
+        "src/error.rs": ("use kama_app::codec::LimitsError as Le;\nfn h(e: &E) -> String { Le::to_string(e) }\n"
+                         "fn k(x: X) -> u64 { kama_contracts::signaling::SignalingId::get(x) }\n")}, hits)
+    want_hits = {"kama_app::signaling::SignalingId::get": 2, "kama_app::codec::LimitsError::to_string": 1}
     ok = dict(hits) == want_hits
     bad += not ok
     print(f"  {'PASS' if ok else 'FAIL'}  C9 izinli dönüşümler sayılır: beklenen {want_hits}, gelen {dict(hits)}")
