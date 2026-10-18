@@ -981,7 +981,10 @@ mod tests {
         // (devir olmasaydı bu bekleme süre sınırında kırmızı biterdi).
         drop(reader);
         let stop = |mobile: &KamaMobile| mobile.life.wait_stopped();
-        assert_eq!(on_jvm_thread(&node.mobile, "kama-stop kapanışı", stop), Ok(()));
+        assert_eq!(
+            on_jvm_thread(&node.mobile, "kama-stop kapanışı", stop),
+            Ok(())
+        );
         // Kaynaklar bırakıldı: aynı cihaz dosyası, veri dizini ve UDP portuyla yeniden açılır.
         let again = Node::start(&phone);
         assert_eq!(jvm_shutdown(&again.mobile), Ok(()));
