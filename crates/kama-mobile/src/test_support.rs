@@ -9,6 +9,7 @@ use std::fs;
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use kama_provision::format::ROOT_FILE_NAME;
@@ -20,6 +21,14 @@ pub(crate) const BOB: &str = "bob";
 /// Beklenen bir olayın ÜST SÜRE SINIRI (aşılırsa kırmızı); yavaş CI koşucusu içindir (smoke
 /// testiyle aynı). Düğüm her saniye `Metrics` olayı verir.
 pub(crate) const WAIT: Duration = Duration::from_secs(60);
+
+/// Gerçek düğüm başlatan (port ayıran) testleri bu test ikilisi içinde sıraya sokar: `provision`'ın
+/// bıraktığı boş port, düğüm onu bağlayana — yeniden açılış testlerinde yeniden bağlayana — dek
+/// kardeş bir testin port aramasına düşemez. Test boyunca tutulur (kama-node `serial` deseni).
+pub(crate) fn serial() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// `std::env::temp_dir()` altında bu teste özgü dizin; Drop'ta silinir (panik etmez).
 pub(crate) struct TempDir(PathBuf);

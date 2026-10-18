@@ -11,7 +11,8 @@
 //!
 //! Olaylar UniFFI callback interface'i [`EngineListener`] ile gelir; düğüm onu KENDİ iş
 //! parçacığında çağırır (`kama_node::NodeListener` sözleşmesi): dinleyici hızlı dönmelidir.
-//! Dinleyicinin içinden yapılan çağrı hiçbir kilidi beklemez; yanıt bekleyen çağrı
+//! Dinleyicinin içinden yapılan çağrı yuva kilidini beklemez (yalnız kısa Mutex'ler alınır: kapanış
+//! aşaması, ölçü anlık görüntüsü); yanıt bekleyen çağrı
 //! [`NodeError::ReentrantCall`] alır (düğüm kendini bekleyemez). Koruma yalnız aynı düğüm içindir;
 //! dinleyiciden başka düğüme engelleyici çağrı yapma — iki düğümün dinleyicileri birbirini
 //! beklerse ikisi de kilitlenir.
@@ -30,32 +31,35 @@
 //! `KamaNode::shutdown` düğümü TÜKETİR; FFI nesnesi ise paylaşılır (`Arc`). Bu yüzden düğüm bir
 //! `RwLock<Option<_>>` yuvasında durur: çağrılar okuma kilidiyle (birbirini beklemez), `shutdown`
 //! yazma kilidiyle düğümü yuvadan alır, kilidi BIRAKIR ve sonra kapatır. Kapanış serileştirilir
-//! (`Lifecycle`: çalışıyor → [istendi] → kapanıyor → durdu):
+//! (`Lifecycle`: çalışıyor → istendi (yalnız dinleyiciden, yuva meşgulken) → kapanıyor → durdu):
 //!
 //! * JVM iş parçacığından `shutdown` TAM DURUŞU bekler: döndüğünde düğüm döngüsü bitmiş, depo
 //!   kilidi, UDP soketi ve süreç-içi röle kaydı bırakılmıştır — aynı `data_dir` ile yeni `start`
 //!   yapılabilir. Eşzamanlı ya da sonraki her `shutdown` da ilk kapanışın bitişini bekler ve onun
 //!   sonucunu döner.
-//! * Dinleyicinin içinden `shutdown` ASENKRONDUR, hiçbir kilidi beklemez ve kapanışı HER DURUMDA
-//!   ister: yuva serbestse düğümü alır (düğüm iş parçacığı kendini beklemez; dinleyici döndükten
-//!   sonra kuyruktaki komutları işleyip durur); yuva o an başka bir çağrıda tutuluyorsa (ör. JVM'de
-//!   yanıt bekleyen `send_text`) JVM yolu kısa ömürlü bir iş parçacığına devredilir; kapanış zaten
-//!   istendiyse ya da sürüyorsa onun durumu döner. Tek hata: o iş parçacığı başlatılamazsa
-//!   [`NodeError::Spawn`] (kapanış istenmedi). Tam duruşu JVM iş parçacığından yapılan bir
-//!   `shutdown` bekleyerek öğrenir.
+//! * Dinleyicinin içinden `shutdown` ASENKRONDUR, yuva kilidini beklemez (yalnız aşama Mutex'ini
+//!   kısa süre alır) ve kapanışı HER DURUMDA ister: yuva serbestse düğümü alır (düğüm iş parçacığı
+//!   kendini beklemez; dinleyici döndükten sonra kuyruktaki komutları işleyip durur); yuva o an
+//!   başka bir çağrıda ya da bir JVM kapanışında tutuluyorsa (ör. JVM'de yanıt bekleyen
+//!   `send_text`) JVM yolu kısa ömürlü `kama-stop` iş parçacığına devredilir; kapanış zaten
+//!   istendiyse ya da sürüyorsa (`kama-stop`'ta süren dahil) onun durumu döner. Tek hata: o iş
+//!   parçacığı başlatılamazsa [`NodeError::Spawn`] (kapanış istenmedi). Tam duruşu JVM iş
+//!   parçacığından yapılan bir `shutdown` bekleyerek öğrenir.
 //! * Dinleyicinin içinden BAŞKA bir düğümün `shutdown`'ı SENKRONDUR: o düğümün yuvası serbestse
 //!   iş parçacığını join eder (dinleyici o süre bekler); yuvası meşgulse kapanış yukarıdaki gibi
 //!   devredilir ve beklemeden döner.
 //! * Kapanış başladıktan (düğüm yuvadan alındıktan) sonra her çağrı [`NodeError::Stopped`] alır;
 //!   `shutdown` idempotenttir.
 //!
-//! Kilit bekleme: yanıt bekleyen çağrılar JVM iş parçacığında süren bir kapanışın düğümü yuvadan
-//! almasını bekleyebilir (en çok süren çağrıların bitişi kadar; sonra `Stopped`). Bloklamayan
-//! çağrılar (`metrics`, `send_file`, `on_platform_signal`) HİÇBİR iş parçacığında yuva kilidini ve
-//! düğüm turunu beklemez (`try_read`; kapanış sürüyorsa `Stopped`); `metrics` yalnız ölçü anlık
-//! görüntüsünün kısa Mutex'ini alır. Dinleyicinin içinden bütün çağrılar `try_*` kullanır: kilit
-//! bir kapanış yüzünden alınamıyorsa çağrı `Stopped` alır — aksi hâlde kapanışın beklediği bir
-//! çağrı düğüm iş parçacığını beklerken düğüm iş parçacığı kapanışı bekler, kilitlenme olurdu.
+//! Kilit bekleme: yuvanın tek yazarı kapanıştır (JVM `shutdown` ya da `kama-stop`). Yazar yuvayı
+//! tutarken — ve Linux/Android'deki std `RwLock`'ta (futex) bekleyen yazar yeni okuyuculardan önce
+//! geldiği için yazar BEKLERKEN de — yeni çağrılar `Stopped` alır: bloklamayanlar ve dinleyicinin
+//! içindekiler hemen (`try_read`), JVM'deki yanıt bekleyen çağrılar yazar düğümü yuvadan aldıktan
+//! sonra (en çok süren çağrıların bitişi kadar beklerler). Bloklamayan çağrılar (`metrics`,
+//! `send_file`, `on_platform_signal`) HİÇBİR iş parçacığında yuva kilidini ve düğüm turunu
+//! beklemez; `metrics` yalnız ölçü anlık görüntüsünün kısa Mutex'ini alır. Dinleyicinin içinden
+//! bütün çağrılar yuvayı `try_*` ile alır — aksi hâlde kapanışın beklediği bir çağrı düğüm iş
+//! parçacığını beklerken düğüm iş parçacığı kapanışı bekler, kilitlenme olurdu.
 //! Panik FFI sınırını geçmez: bu crate panik etmez (zehirli kilit içindeki değerle sürer) ve UniFFI
 //! her çağrıyı ayrıca `catch_unwind` ile sarar.
 //!
@@ -310,7 +314,8 @@ impl KamaMobile {
         if !in_listener() {
             return stop_and_wait(&self.node, &self.life);
         }
-        // Dinleyicinin içinden hiçbir kilit beklenmez: düğüm iş parçacığı kendini bekleyemez.
+        // Dinleyicinin içinden yuva kilidi beklenmez (aşama Mutex'i yalnız kısa süre alınır): düğüm
+        // iş parçacığı kendini bekleyemez.
         let mut slot = match self.node.try_write() {
             Ok(slot) => slot,
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -351,8 +356,8 @@ impl KamaMobile {
         call_node(slot.as_ref(), call)
     }
 
-    /// Okuma kilidi, BEKLEMEDEN: yazar (kapanış — tek yazar odur) kilidi tutuyor ya da bekliyorsa
-    /// [`NodeError::Stopped`].
+    /// Okuma kilidi, BEKLEMEDEN: yazar (kapanış: JVM `shutdown` ya da `kama-stop` — tek yazarlar
+    /// onlardır) kilidi tutuyor ya da bekliyorsa [`NodeError::Stopped`].
     fn try_read_slot(&self) -> Result<RwLockReadGuard<'_, Option<KamaNode>>, NodeError> {
         match self.node.try_read() {
             Ok(slot) => Ok(slot),
@@ -362,10 +367,10 @@ impl KamaMobile {
     }
 
     /// Dinleyicinin içinden, yuva başka bir çağrıda (okuyucu) ya da bir JVM kapanışında (yazar)
-    /// tutulurken. Kapanış zaten istendiyse ya da sürüyorsa onun durumu döner; istenmediyse JVM
-    /// yolu (`stop_and_wait`) kısa ömürlü bir iş parçacığına devredilir: kapanış BEKLEMEDEN
-    /// istenir, yuva serbest kalınca o iş parçacığı düğümü alır ve kapatır; sonucu sonraki bir
-    /// `shutdown` döner.
+    /// tutulurken. Kapanış zaten istendiyse ya da sürüyorsa (`kama-stop`'ta süren dahil) onun
+    /// durumu döner; istenmediyse JVM yolu (`stop_and_wait`) kısa ömürlü `kama-stop` iş
+    /// parçacığına devredilir: kapanış BEKLEMEDEN istenir, yuva serbest kalınca o iş parçacığı
+    /// düğümü alır ve kapatır; sonucu sonraki bir `shutdown` döner.
     fn request_stop(&self) -> Result<(), NodeError> {
         if !self.life.request() {
             return self.life.current();
@@ -377,7 +382,13 @@ impl KamaMobile {
                 let _ = stop_and_wait(&slot, &life);
             });
         match spawned {
-            Ok(_detached) => Ok(()),
+            Ok(_detached) => {
+                #[cfg(test)]
+                {
+                    self.life.state().stop_threads += 1;
+                }
+                Ok(())
+            }
             Err(error) => {
                 self.life.withdraw();
                 Err(NodeError::Spawn {
@@ -432,8 +443,9 @@ fn finish_stop(node: KamaNode, life: &Lifecycle) -> Result<(), NodeError> {
 enum Phase {
     /// Düğüm yuvada.
     Running,
-    /// Dinleyicinin içinden kapanış istendi; yardımcı iş parçacığı yuvayı bekliyor (düğüm hâlâ
-    /// yuvada, çağrılar sürer).
+    /// Dinleyicinin içinden, yuva meşgulken kapanış istendi; `kama-stop` yuvanın yazma kilidini
+    /// bekliyor. Düğüm hâlâ yuvada: süren çağrılar biter; yazar beklemeye başlayınca yeni çağrılar
+    /// `Stopped` alır (bkz. crate belgesi, "Kilit bekleme").
     Requested,
     /// Bir `shutdown` düğümü yuvadan aldı; `KamaNode::shutdown` sürüyor.
     Stopping,
@@ -450,6 +462,13 @@ struct LifeState {
     phase: Phase,
     /// Düğüm döngüsü bitti (`ListenerBridge` düştü).
     loop_ended: bool,
+    /// Yalnız testte: açılan `kama-stop` iş parçacıkları ("yalnız ilk istek açar" sözü).
+    #[cfg(test)]
+    stop_threads: usize,
+    /// Yalnız testte: `wait_stopped`'ın Condvar beklemesine girişleri (sayaç aşama Mutex'i altında,
+    /// `wait` Mutex'i atomik bırakmadan hemen önce artar).
+    #[cfg(test)]
+    waits: usize,
 }
 
 /// Kapanışın serileştirilmesi: JVM iş parçacığından gelen `shutdown` çağıranları `Stopped`
@@ -465,6 +484,10 @@ impl Lifecycle {
             state: Mutex::new(LifeState {
                 phase: Phase::Running,
                 loop_ended: false,
+                #[cfg(test)]
+                stop_threads: 0,
+                #[cfg(test)]
+                waits: 0,
             }),
             changed: Condvar::new(),
         }
@@ -536,6 +559,10 @@ impl Lifecycle {
         loop {
             if let Phase::Stopped(result) = &state.phase {
                 return result.clone();
+            }
+            #[cfg(test)]
+            {
+                state.waits += 1;
             }
             let waited = self.changed.wait(state);
             state = waited.unwrap_or_else(PoisonError::into_inner);
@@ -622,7 +649,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::sync::{OnceLock, Weak};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::*;
     use crate::test_support::{self, Phone, TempDir, BOB, WAIT};
@@ -630,6 +657,18 @@ mod tests {
     /// Beklenen bir dönüşün OLMADIĞINI göstermek için verilen süre: düğüm iş parçacığı tutulurken
     /// ya da döngü bitmeden bu sürede dönen kapanış erken dönmüştür.
     const HOLD: Duration = Duration::from_millis(300);
+
+    /// `wait_until`'in yoklama aralığı.
+    const POLL: Duration = Duration::from_millis(5);
+
+    /// `ready` doğru olana dek yoklar, en çok `WAIT`: süre aşılırsa test açık hatayla düşer.
+    fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + WAIT;
+        while !ready() {
+            assert!(Instant::now() < deadline, "{what}: {WAIT:?} içinde olmadı");
+            thread::sleep(POLL);
+        }
+    }
 
     /// Her olayda hata döndüren (Kotlin'in istisna attığı) dinleyici; çağrıları ve bayrağı
     /// kaydeder.
@@ -722,8 +761,12 @@ mod tests {
         let handle = thread::spawn(move || {
             let _ = tx.send(waiter.wait_stopped());
         });
-        // Döngü bitmeden bekleyen dönemez (aşama Detached; dönüş yalnız Stopped'da).
-        assert!(rx.recv_timeout(HOLD).is_err(), "döngü bitmeden döndü");
+        // Bekleyen Condvar'a girdi (belirlenimci): sayaç aşama Mutex'i altında artar ve `wait`
+        // Mutex'i atomik bırakır; sayacı gören bu iş parçacığı Mutex'i ancak bekleyen kuyruğa
+        // girince alır.
+        wait_until("bekleyen Condvar'a girmedi", || life.state().waits >= 1);
+        // Döngü bitmeden bekleyen dönmedi (aşama Detached; dönüş yalnız Stopped'da).
+        assert!(rx.try_recv().is_err(), "döngü bitmeden döndü");
         // Döngü bitti: koşul değişkeni bekleyeni uyandırır.
         life.loop_ended(false);
         let result = rx.recv_timeout(WAIT).expect("bekleyen uyanmadı");
@@ -834,6 +877,7 @@ mod tests {
 
     #[test]
     fn listener_calls_never_wait_for_the_slot_lock() {
+        let _serial = test_support::serial();
         let dir = TempDir::new("lock");
         let node = Node::start(&test_support::provision(dir.path()));
         let lock = &node.mobile.node;
@@ -860,6 +904,7 @@ mod tests {
 
     #[test]
     fn jvm_non_blocking_calls_never_wait_for_the_slot_lock() {
+        let _serial = test_support::serial();
         let dir = TempDir::new("jvm-non-blocking");
         let node = Node::start(&test_support::provision(dir.path()));
         let file = dir.path().join("gonderilmez.bin");
@@ -885,6 +930,7 @@ mod tests {
 
     #[test]
     fn listener_shutdown_is_async_and_a_jvm_shutdown_waits_for_the_stop() {
+        let _serial = test_support::serial();
         let dir = TempDir::new("listener-shutdown");
         let phone = test_support::provision(dir.path());
         let node = Node::start(&phone);
@@ -908,13 +954,13 @@ mod tests {
 
     #[test]
     fn a_listener_shutdown_on_a_busy_slot_is_handed_to_a_stop_thread() {
+        let _serial = test_support::serial();
         let dir = TempDir::new("listener-shutdown-busy");
         let phone = test_support::provision(dir.path());
         let node = Node::start(&phone);
 
         // Süren bir JVM çağrısı yuvanın okuma kilidini tutuyor: dinleyicinin içinden `shutdown`
-        // yine kapanışı ister (yardımcı iş parçacığına devreder); ikinci istek yeni iş parçacığı
-        // açmaz.
+        // yine kapanışı ister (`kama-stop`'a devreder); ikinci istek iş parçacığı açmaz.
         let lock = &node.mobile.node;
         let reader = lock.read().unwrap_or_else(PoisonError::into_inner);
         let (first, second) = node.run_in_listener(|mobile| {
@@ -923,19 +969,30 @@ mod tests {
         });
         assert_eq!(first, Ok(()), "kapanış istendi");
         assert_eq!(second, Ok(()), "istenmiş kapanış beklemeden Ok");
-        let requested = matches!(node.mobile.life.state().phase, Phase::Requested);
-        // Yardımcı iş parçacığı yuvayı bekliyor: düğüm henüz alınmadı.
+        let (requested, threads) = {
+            let state = node.mobile.life.state();
+            (matches!(state.phase, Phase::Requested), state.stop_threads)
+        };
+        // `kama-stop` yuvayı bekliyor: düğüm henüz alınmadı.
         assert!(requested, "düğüm henüz alınmadı");
+        assert_eq!(threads, 1, "yalnız ilk istek iş parçacığı açar");
 
-        // Yuva serbest kalınca kapanış tamamlanır; dönüşte aynı dosya ve dizinle yeniden açılır.
+        // Yuva serbest: başka bir `shutdown` ÇAĞRILMADAN kapanışı yalnız `kama-stop` tamamlayabilir
+        // (devir olmasaydı bu bekleme süre sınırında kırmızı biterdi).
         drop(reader);
-        assert_eq!(jvm_shutdown(&node.mobile), Ok(()));
+        let stop = |mobile: &KamaMobile| mobile.life.wait_stopped();
+        assert_eq!(on_jvm_thread(&node.mobile, "kama-stop kapanışı", stop), Ok(()));
+        // Kaynaklar bırakıldı: aynı cihaz dosyası, veri dizini ve UDP portuyla yeniden açılır.
         let again = Node::start(&phone);
         assert_eq!(jvm_shutdown(&again.mobile), Ok(()));
+        // İdempotent: ilk kapanışın sonucu; yeni iş parçacığı açılmadı.
+        assert_eq!(jvm_shutdown(&node.mobile), Ok(()));
+        assert_eq!(node.mobile.life.state().stop_threads, 1);
     }
 
     #[test]
     fn concurrent_shutdowns_both_wait_for_the_full_stop() {
+        let _serial = test_support::serial();
         let dir = TempDir::new("concurrent-shutdown");
         let phone = test_support::provision(dir.path());
         let node = Node::start(&phone);
