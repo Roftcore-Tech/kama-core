@@ -489,6 +489,15 @@ fn f2b_di1a_overdue_pto_fires_same_batch() {
 /// kalır — aşağıdaki "kuyruk-önü u3" notu); assertion ve eşikler AYNEN.
 /// 2×2: eski kod + eski fikstür YEŞİL · yeni kod + eski fikstür KIRMIZI · yeni kod + yeni fikstür
 /// YEŞİL · eski kod + yeni fikstür YEŞİL (kırmızıysa DUR).
+///
+/// [K4G-05b DUR-34 — B.3 #2 düzeltmesi, FİKSTÜR] Yukarıdaki B.3 #2 fikstürü iki kodda da kırmızı
+/// [çıkarım]: ACK artık u1'in 1.5 s'deki kuruluş kopyasını (seq 2) kapsamadığından o kayıt
+/// largest_acked'in altında uçuşta kalır; 60 s ileri zamanda t1 batch'i on_event_core'u iki kez koşar
+/// (AppData + vadesi geçmiş BootstrapPto) ve 60 s ACK sessizliği acil durum seviyesini iki kademe
+/// yükseltir (Arq → Dup2 → Dup3). b2'deki tek indirme Dup2 bırakır → RECOVER_FWD bekleyen u1 kaybını
+/// ileri kopyaya çevirir, ikinci Retransmit çıkmaz. Fire-sonrası ileri zaman 2 s'ye (u4 bekleme
+/// adımı 1 s'ye) indirildi: 60 s / 40 s 31 B/s tabanındaki token birikimi içindi. Assertion ve
+/// eşikler AYNEN. 2×2: E/E YEŞİL · Y/E KIRMIZI · Y/Y YEŞİL · E/Y YEŞİL [çıkarım].
 #[test]
 fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
     let mut s = Sender::new();
@@ -526,9 +535,11 @@ fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
         .collect();
     assert_eq!(rtx1.len(), 1, "ilk-retransmit");
     let rtx1_seq = rtx1[0].seq;
-    let mut t1 = ft1 + 60 * SEC; // fire-sonrası ileri-zaman (simüle)
-                                 // Retransmit'in-ACK'i-de-düşer. SONRAKİ trafik: u4 enqueue + token-refill-bekleyerek emit
-                                 // (kuyruk-önü u3-olabilir; 31 B/s-refill ~38.7s/birim) → seq'i-çıktıdan-izle.
+    // [K4G-05b DUR-34] Fire-sonrası ileri zaman 2 s (eski 60 s): ACK sessizliği acil durum eşiğinin
+    // altında kalır. Retransmit'in ACK'i de düşer. SONRAKİ trafik: u4 enqueue + token beklenerek
+    // emit (kuyruk-önü u3 olabilir; PRE_CONVERGE çıkışından sonra hız kB/s mertebesinde) →
+    // seq'i çıktıdan izle.
+    let mut t1 = ft1 + 2 * SEC;
     let mut out_all = s.on_event_batch(t1, vec![Event::AppData(OpaqueUnit { id: 4, size: 1200 })]);
     let mut s4_opt = None;
     for _ in 0..20 {
@@ -539,7 +550,7 @@ fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
             s4_opt = Some(d.seq);
             break;
         }
-        t1 += 40 * SEC;
+        t1 += SEC; // [DUR-34] token bekleme adımı (eski 40 s)
         out_all = s.on_event_batch(t1, vec![Event::TimerFired(Timer::Pto)]);
     }
     let s4 = s4_opt.expect("u4-emit (token-refill-sonrası)");
