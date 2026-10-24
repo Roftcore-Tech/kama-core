@@ -940,7 +940,7 @@ async fn parity_ack_keeps_payload_and_copies_of_esi_namesake() {
         WAIT,
         |x| {
             x.net
-                .with(|s| s.parity_pns.len() as u64 >= r && s.acks_with_all_parity >= 1)
+                .with(|s| (s.parity_pns.len() as u64) >= r && s.acks_with_all_parity >= 1)
         },
     )
     .await;
@@ -1025,7 +1025,7 @@ async fn store_miss_guard_loss_and_reorder() {
     })
     .await;
     rig.wait("bütün birimler teslim edilmeli", WAIT, |r| {
-        r.delivered.len() as u64 == GUARD_UNITS
+        (r.delivered.len() as u64) == GUARD_UNITS
     })
     .await;
     assert!(
@@ -1065,7 +1065,7 @@ async fn store_miss_guard_fec_recovered() {
     )
     .await;
     rig.wait("bütün birimler teslim edilmeli", WAIT, |r| {
-        r.delivered.len() as u64 == k
+        (r.delivered.len() as u64) == k
     })
     .await;
     assert!(
