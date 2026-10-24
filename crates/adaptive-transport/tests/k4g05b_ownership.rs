@@ -1325,6 +1325,10 @@ struct D2Run {
     r0: u32,
     /// Kesinti başındaki srtt (kesinti boyunca örnek yok → kopya tabanı b).
     srtt_at_out: Option<u64>,
+    /// [K4G-05b madde 3/5] Kesinti boyunca izlenen birimin her kopya emisyonunun adımı sonunda
+    /// birimin geometrik kaydının bir sonraki kopyaya planlı aralığı (vade − emisyon anı):
+    /// `(an, birim, aralık)`.
+    copy_intervals: Vec<(u64, u64, u64)>,
     fixture: Vec<String>,
 }
 
@@ -1370,7 +1374,9 @@ fn d2_run(outage: u64, trickle: bool, horizon_after: u64) -> D2Run {
     let mut srtt_at_a: Option<u64> = None;
     let mut u0_interval_after_a: Option<u64> = None;
     let mut t_h: Option<u64> = None;
+    let mut copy_intervals: Vec<(u64, u64, u64)> = Vec::new();
     while sim.now < end {
+        let log_from = sim.log.len();
         sim.advance();
         let first_trickle = D2_T_OUT + D2_TRICKLE_OFFSET;
         if trickle
@@ -1382,6 +1388,22 @@ fn d2_run(outage: u64, trickle: bool, horizon_after: u64) -> D2Run {
             next_id += 1;
         }
         sim.timers();
+        if (D2_T_OUT..t_r).contains(&sim.now) {
+            let copied: Vec<u64> = sim.log[log_from..]
+                .iter()
+                .filter(|e| {
+                    e.d.kind == TransmitKind::Duplicate && sim.w.units.contains(&e.d.unit_id)
+                })
+                .map(|e| e.d.unit_id)
+                .collect();
+            for u in copied {
+                let r = sim.s.diag_unit_recovery(u);
+                // Geometrik kayıt (aralık > 0); tek seferlik kayıt (0) aralık taşımaz.
+                if let (Some(due), Some(_)) = (r.dup_due_ns, r.dup_interval_ns.filter(|&i| i > 0)) {
+                    copy_intervals.push((sim.now, u, due.saturating_sub(sim.now)));
+                }
+            }
+        }
         if t_a.is_none() {
             let first = sim
                 .w
@@ -1420,6 +1442,7 @@ fn d2_run(outage: u64, trickle: bool, horizon_after: u64) -> D2Run {
         t_h,
         r0,
         srtt_at_out,
+        copy_intervals,
         fixture,
     }
 }
@@ -1546,11 +1569,14 @@ fn k4g05b_d2_outage_60s_with_trickle() {
 ///
 /// AMAÇ: her olayda kopya işi ≤ D_max × birim; kesinti boyunca
 /// her kurbanın kopya zinciri emisyonu ≤ m + ⌊Δ/RTO_MAX⌋ + 2 (m = ⌈log2(RTO_MAX/b)⌉, b = devirdeki
-/// srtt; +2 = ilk kopya ve pencere kenarı); owned her olayda. [CEVAP 11 DUR-30] Birim başına canlı
-/// kayıt ≤ K_MAP iddiası 05c'de budamayla birlikte sınanır; burada yalnız raporlanır.
+/// srtt; +2 = ilk kopya ve pencere kenarı); kesinti boyunca ARDIŞIK KOPYA ARALIĞI ≤ RTO_MAX (madde
+/// 3/5: her kopya emisyonunda birimin bir sonraki kopya vadesi − emisyon anı; fikstür ön koşulu:
+/// zincir RTO_MAX'a ulaştı — yoksa iddia boş geçerdi; emisyon aralığı = bu + token beklemesi,
+/// raporlanır); owned her olayda. [CEVAP 11 DUR-30] Birim başına canlı kayıt ≤ K_MAP iddiası
+/// 05c'ye taşındı (05c'de K_MAP budamasıyla aktif); burada yalnız raporlanır.
 ///
-/// TABANDA: KIRMIZI beklenir [aritmetik: v1 zinciri 600 s'de 10 kopya (×2 tavansız); D1
-/// sahipsizliği].
+/// TABANDA: KIRMIZI beklenir [v1 zinciri ×2 tavansız: kesintide planlı kopya aralığı 51.2 / 102.4 /
+/// 204.8 s > RTO_MAX = 30 s; D1 sahipsizliği].
 #[test]
 fn k4g05b_d2_outage_600s_bounds() {
     const TEST: &str = "k4g05b_d2_outage_600s_bounds";
@@ -1558,6 +1584,20 @@ fn k4g05b_d2_outage_600s_bounds() {
     let run = d2_run(outage, false, 10 * SEC);
     let mut fixture = run.fixture.clone();
     fixture.retain(|f| !f.contains("T_a") && !f.contains("sıfırlama"));
+    let max_copy_interval = run
+        .copy_intervals
+        .iter()
+        .map(|&(_, _, g)| g)
+        .max()
+        .unwrap_or(0);
+    if max_copy_interval < rto_max_ns() {
+        fixture.push(format!(
+            "kesinti boyunca kopya zinciri RTO_MAX'a ulaşmadı (azami planlı aralık={} ms, gözlem={}) \
+             — aralık iddiası boş geçerdi",
+            max_copy_interval / MS,
+            run.copy_intervals.len()
+        ));
+    }
     assert_fixture(TEST, &fixture);
     let w = &run.sim.w;
     let srtt = run.srtt_at_out.unwrap_or(SEC).max(1);
@@ -1565,21 +1605,38 @@ fn k4g05b_d2_outage_600s_bounds() {
     let m = u64::from(u64::BITS - ratio.saturating_sub(1).leading_zeros());
     let bound = m + outage / rto_max_ns() + 2;
     let mut worst = 0u64;
+    let mut max_emit_gap = 0u64;
     for v in 4..4 + D2_N {
-        let n = run
+        let times: Vec<u64> = run
             .sim
             .unit_tx(v)
             .iter()
             .filter(|e| e.d.kind == TransmitKind::Duplicate && (D2_T_OUT..run.t_r).contains(&e.t))
-            .count() as u64;
-        worst = worst.max(n);
+            .map(|e| e.t)
+            .collect();
+        worst = worst.max(times.len() as u64);
+        for pair in times.windows(2) {
+            max_emit_gap = max_emit_gap.max(pair[1] - pair[0]);
+        }
     }
+    let interval_over: Vec<(u64, u64, u64)> = run
+        .copy_intervals
+        .iter()
+        .filter(|&&(_, _, g)| g > rto_max_ns())
+        .map(|&(t, u, g)| (t / MS, u, g / MS))
+        .collect();
     println!(
         "[D2-kol3] srtt={} ms m={m} sınır={bound}; birim başına azami kopya emisyonu={worst}; \
-         K_MAP aşımı={} kopya işi aşımı={}",
+         K_MAP aşımı={} kopya işi aşımı={}; azami planlı kopya aralığı={} ms (RTO_MAX={} ms, \
+         gözlem={}, aşım={}); azami ardışık kopya emisyonu aralığı={} ms (rapor)",
         srtt / MS,
         w.kmap_over.len(),
-        w.copy_work_over.len()
+        w.copy_work_over.len(),
+        max_copy_interval / MS,
+        rto_max_ns() / MS,
+        run.copy_intervals.len(),
+        interval_over.len(),
+        max_emit_gap / MS
     );
     assert!(
         w.copy_work_over.is_empty(),
@@ -1589,6 +1646,11 @@ fn k4g05b_d2_outage_600s_bounds() {
     assert!(
         worst <= bound,
         "{TEST}: kopya zinciri emisyonu {worst} > m + ⌊Δ/RTO_MAX⌋ + 2 = {bound}"
+    );
+    assert!(
+        interval_over.is_empty(),
+        "{TEST}: ardışık kopya aralığı RTO_MAX'ı aştı (an ms, birim, aralık ms): {:?}",
+        interval_over.iter().take(6).collect::<Vec<_>>()
     );
     assert!(
         worst >= 1,
