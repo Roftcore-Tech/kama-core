@@ -5,4 +5,24 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# Y1 — Kama Hub. Sözleşme `KM-SEAM-TH-001` (S4 v1.3.1), tasarım ve testler `KM-HUB-TDD-001` v0.6.1. Tek
+# ikili, tek iş parçacığı, async runtime YOK. Kütüphane hedefi IO'suz çekirdektir (`Hub::on_datagram`);
+# ikili (`src/main.rs`) soket döngüsünü ve `probe` alt komutunu taşır.
+#
+# BAĞIMLILIK (S4 KR-12): kama-contracts + kama-noise-wire + ed25519-dalek + blake2 + sha2 + serde/
+# serde_json; hepsi Cargo.lock'ta, yeni paket YOK. `kama-contracts` bağlı DEĞİL: `s4` modülü (A2.2)
+# henüz yok, S4 codec'i geçici olarak `src/wire.rs`'te. `sha2` doğrudan gerekmedi (`cert_ref`
+# `kama_noise_wire::handshake::cert_ref_of` ile).
+
 [dependencies]
+# `ed25519_strict::verify_strict`, `entropy::{EntropySource, OsEntropy}`, `handshake::cert_ref_of`.
+kama-noise-wire = { path = "../kama-noise-wire" }
+# Hub'ın bind yanıtını imzalaması (kama-noise-wire imza ÜRETMEZ) ve probe'un kanıtı.
+ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
+# Cookie (S4 §2.4(a)), handle adayı (§2.6), tahsis anahtarındaki zarf özeti (§2.4(c)): BLAKE2s-256.
+blake2.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true
