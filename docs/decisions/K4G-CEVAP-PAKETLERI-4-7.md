@@ -1,6 +1,6 @@
-# K4G sprinti — sahip karar paketleri CEVAP 4–7 (kayıt) · güncel kapsam CEVAP ~~4–9~~ 4–10 ve üç onay (dosya adı değişmez)
+# K4G sprinti — sahip karar paketleri CEVAP 4–7 (kayıt) · güncel kapsam CEVAP ~~4–9~~ ~~4–10 ve üç onay~~ 4–13 (+ 11-EK) ve üç onay (dosya adı değişmez)
 
-> Bu dosya K4G-05b tasarım notunun (`docs/design/K4G-05b-RETX-FIX.md`) ve K4G-15/K4G-05 PR'larının atıf verdiği **sahip kararlarının** depodaki kaydıdır (CEVAP PAKETİ 7 — EK B7). Metinler değiştirilmeden aktarılmıştır; her bölümün başında kaynağı ve metnin sha256'sı yazılıdır. Karar mercii Abkarada'dır; bu dosya karar üretmez. Kapı ifadeleri yalnız sahibin mesajında geçerlidir; burada geçmeleri gerçekleşmiş kapı anlamına gelmez. CEVAP PAKETİ 8 (2026-10-19) ve CEVAP PAKETİ 9 (2026-10-24) bölümleri 2026-10-24'te K4G-05b rev4 ile eklendi; dosya adı mevcut atıflar için korunur. CEVAP PAKETİ 10 (2026-10-24) ve aynı gün verilen üç onay metni (K4G-05b, K4G-05c, K4G-05d) 2026-10-24'te K4G-05b onayıyla eklendi; ikisinin kaynağı orkestratör transkripsiyonudur (bölüm başında).
+> Bu dosya K4G-05b tasarım notunun (`docs/design/K4G-05b-RETX-FIX.md`) ve K4G-15/K4G-05 PR'larının atıf verdiği **sahip kararlarının** depodaki kaydıdır (CEVAP PAKETİ 7 — EK B7). Metinler değiştirilmeden aktarılmıştır; her bölümün başında kaynağı ve metnin sha256'sı yazılıdır. Karar mercii Abkarada'dır; bu dosya karar üretmez. Kapı ifadeleri yalnız sahibin mesajında geçerlidir; burada geçmeleri gerçekleşmiş kapı anlamına gelmez. CEVAP PAKETİ 8 (2026-10-19) ve CEVAP PAKETİ 9 (2026-10-24) bölümleri 2026-10-24'te K4G-05b rev4 ile eklendi; dosya adı mevcut atıflar için korunur. CEVAP PAKETİ 10 (2026-10-24) ve aynı gün verilen üç onay metni (K4G-05b, K4G-05c, K4G-05d) 2026-10-24'te K4G-05b onayıyla eklendi; ikisinin kaynağı orkestratör transkripsiyonudur (bölüm başında). CEVAP PAKETİ 11, 11-EK, 12 ve 13 (2026-10-24) bölümleri 2026-10-24'te K4G-05b rev5 ile eklendi; çelişkide öncelik 13 > 12 > 11-EK > 11 > 10 (CEVAP 13). CEVAP 11 üç onay mesajını geri aldı; CEVAP 12 §1'e göre K4G-05b onayı rev5 kapsamıyla geçerlidir — onay bölümü kayıt olarak yerinde kalır.
 
 ---
 
@@ -443,4 +443,184 @@ K4G-05c ONAYLANDI — `docs/design/K4G-05c-ALICI-KABUL.md` rev2 @ 18e6de95e36119
 ---
 
 K4G-05d ONAYLANDI — `docs/design/K4G-05d-RECEIPT.md` rev2 @ b9d83396b2a9004c2a92e1f84408bdc3847caf6a (dal `k4g/05d-receipt`), Ek A sha256 `f3f62563f21f8eee…` (tam değer PR gövdesinde). DUR-05d-1 en eski düşer + sayaç, -2 kabul, -3 kabul, -4 düşür. Kod şimdi başlayabilir (05b/05c'den bağımsız); P0 R3 testleri bu PR'da yeşile döner; "tek deneme" açıklaması ve testleri beyanlı. "INT-02 GEÇTİ" ayrı.
+````
+
+---
+
+## CEVAP PAKETİ 11 — 2026-10-24
+
+*Kaynak:* dosya `~/kama-k4g-work/decisions/C11.md` (orkestratörün ilettiği karar paketi, 2026-10-24), bayt-özdeş; sha256 `301ae7223bb8a359b97b2df7d483ce215253a582c623586f41ef41f71954379e`
+
+````markdown
+# CEVAP PAKETİ 11 — Abkarada → K4G orkestratörü (2026-10-24, akşam) — CEVAP 10'un düzeltilmesi; üç onay geri alındı / verilmedi
+
+**Girdi:** bağımsız incelemecinin rev4/05c/05d notlarına ve CEVAP 10 + onay metinlerine verdiği iki cevap (ekte, veri olarak; karar bu mesaj). İncelemeci haklı: CEVAP 10 üç yerde kusuru kapatmak yerine başka koşula taşıyan kararlar verdi ve onay metinleri kararlarla tutarsızdı (eski SHA'ya onay + davranışı değiştiren paket). **Bu mesaj CEVAP 10'un aşağıda sayılan maddelerini geçersiz kılar; sayılmayan her şey CEVAP 10'daki gibi kalır.** `ONAY-3-MESAJ` yapıştırıldıysa üçü de **GERİ ALINDI**; yapıştırılmadıysa verilmemiş sayılır. Onaylar rev5 SHA'larına, tam hash'le, tek seferde.
+
+Önce **durum satırı** (tek mesaj, uzun rapor değil): hangi değişiklik yalnız yerelde, hangisi commit, PR açıldı mı, merge var mı. Bağımlılık PR'ı, #136, #135 ve P0 dalı **devam eder**; hiçbir dal silinmez.
+
+---
+
+## 1. Geçersiz kılınan kararlar → yeni karar
+
+| CEVAP 10'daki | Yeni karar | Ayırt edici test |
+|---|---|---|
+| **DUR-30** — K_MAP budaması motorda (05b), runtime uyarlaması 05c'de; arada "beyanlı ara durum" | **Ara durum yok.** 05b'de `K_MAP` sabiti ve `take_confirmed_units()` **tanımlanır, budama KAPALI** (davranış yok). Budama, runtime'ın ACK-tabanlı payload silmesinin kaldırılması, `take_confirmed_units()` tüketimi ve birim başına O(1) kayıt **aynı merge edilebilir değişiklikte** — 05c'de — açılır. Teyidin otoritesi motor, payload saklama sorumluluğu runtime; tek karar yolu. rev4 B.2.2/B.2.6'daki "05b aşamasında kırmızı beklenen gerçek-runtime testi" kaldırılır; o test 05c'de **yeşil** şarttır. | `late_ack_after_prune_keeps_payload` (gerçek runtime): K_MAP aşıldıktan sonra budanmış seq'e geç ACK → birim teyit edilmez, payload yerinde, yeniden gönderim payload'la çıkar. 05c'de yeşil; 05b'de budama kapalı olduğu için uygulanmaz. |
+| **DUR-28 / A.7** — "geç-ACK ufku = K_MAP × RTO_MAX = 240 s" | **K_MAP = 8 bir ADET sınırıdır; süre garantisi değildir.** "240 s" ve "ufuk = K_MAP × RTO_MAX" ifadeleri kaldırılır (ilk kopyalar 0.4 → 25.6 s aralıklarla çıkar; ARQ ve problar da kayıt tüketir). Garanti şöyle yazılır: "Geç ACK, seq'i birimin son K_MAP iletimi arasındaysa tanınır; tanınmayan geç ACK veri kaybı değil, fazladan bir yeniden gönderimdir — payload sahipliği (05c) buna dayanır." Gerçek gönderim dizilerinde tutulan kayıt yaşı **ölçülür** ve INT-02 raporunda yazılır. | D2 kol 3'e: 600 s kesintide birim başına kayıt ≤ 8 ve tanınmayan geç ACK sonrası yeniden gönderim payload'la. |
+| **DUR-31** — "kopya ≤ K_ARQ_SHARE turda gönderilir" | Fiziksel olarak sağlanamaz (1064 B/s'de 1050 B için ≈ 1 s token birikimi gerekir). **İki ayrı ölçüt:** (i) **Seçilme:** gönderilmeye uygun kopya başı en geç K_ARQ_SHARE `schedule_transmit` çağrısında hizmet hakkı kazanır. (ii) **Gönderilme:** hak kazandıktan sonra, rezervasyon **bütün sınıflara** (DATA, ARQ, prob) karşı geçerliyken ≤ boy / pace_rate + bir tur içinde çıkar; rezerv ≤ bir kayıt boyu, aynı anda tek rezerv, gönderimde temizlenir; token üretilmez. ARQ/prob rezervi tüketemez (açık). | (a) 37 B DATA + 1050 B kopya, 1064 B/s: seçilme ≤ K_ARQ_SHARE çağrı, gönderilme ≤ 1050/1064 s + 1 tur. (b) Aynı düzen + eşzamanlı ARQ ve prob trafiği: kopya yine sınır içinde; rezerv gönderim sonrası 0. (c) Soğuk başlangıç ve token kıtlığı (DUR-24 koşulu). |
+| **DUR-24** ifadesi | **"PRE_CONVERGE hariç bütün durumlarda"** (PRE_CONVERGE'de §3.3-B sırası ve takvimi değişmez — zaten A.4'te). Önceki kapsam daraltılmadı; netleştirildi. | DUR-31 (c). |
+| **DUR-25** — ürün kipi paritesi "yalnız raporlanır" | **Zorunlu test:** Controller kipinde, PreConverge sonrası kayıplı kanalda paritenin **gerçekten üretildiği** gösterilir (parite sayacı > 0 fikstür ön koşulu; 0 ise test geçersiz, yeşil sayılmaz) ve ESI düzeltmesi bu kolda doğrulanır. Statik-r kolu kusur kanıtı olarak kalır. | `esi_controller_mode_parity_does_not_confirm_source`. |
+| **DUR-05c-12** — parçalı mesaj: "ACK + düşür" | **Geri çekildi.** Geçersiz girdi (bozuk FINAL, çelişen parça sayısı — koşullar tek tek listelenir) → **ACK YOK**, parçalı mesaj açık hata olayıyla iptal (`FragmentInvalid{peer, msg_id, neden}` → uygulama görür), sayaç. Geçerli ama yerel limiti aşan mesaj: PoC'de iki uç aynı derlemedir, limit uyumsuzluğu **ihlaldir**; yine ACK yok + açık hata; sessiz düşürme hiçbir dalda yok. | Her geçersizlik koşulu için ayrı test: ACK'lenmedi + hata olayı üretildi + payload düşürülmedi (tombstone'a). |
+| **DUR-05c-13** ifadesi | 05c tabanında yeşil çıkan sızıntı bekçisi "yanlışlandı" DEĞİL, **"05b (`confirmed_units`) ile giderildi"** diye yazılır; kanıt 3439fccd + kanca kırmızısı. | — |
+| **DUR-05d-1** — taşmada en eski düşer | **Geri çekildi: canlı RECEIPT taşma nedeniyle SİLİNMEZ** (değişmez). Mekanizma (05d rev3): (1) bekleyen-receipt kuyruğu eş başına 256, tekilleştirilmiş, **düşürme yok**; (2) kuyruk doluyken `Messenger` o eşin **oturum gelen-kutusunu** (05c'nin oturum başına kutusu) tüketmeyi durdurur → kutu dolar → 05c kabulü o oturumun yeni DATA'sını ACK'lemez → karşı taraf yeniden gönderir; transport ACK/heartbeat etkilenmez; aynı eşin PTT/sinyalleşmesi geçici olarak bekler (beyanlı, sınırlı). Diğer eşler etkilenmez. (3) **Boşluk payı:** `FileTransfer` uçuştaki parça sayısını transport sınırının altında tutar: ≤ sınır − H; **DUR-32:** H = 512 (256 TEXT + 256 RECEIPT; mevcut sabitlerden) — gerçek sınır sabitiyle doğrula, farklıysa türetimle DUR. Böylece RECEIPT'in Backpressure görmesi olağan yolda imkânsız, taşma yalnız ihlalde. | (a) `flush_resends` ve dosya sürekli kapasite tüketirken 300 TEXT → her RECEIPT aynı oturumda kabul edildi, kuyruk ≤ 256, düşen 0. (b) Eş 257+ RECEIPT yükümlülüğü yaratırsa: kutu tüketimi durdu, yeni DATA ACK'lenmedi, kuyruk boşalınca sürdü, kayıp 0. (c) Kontrol yolu: durma sırasında heartbeat/ACK çalıştı. |
+| **DUR-05d-4** — oturum değişiminde kuyruk düşer | Kalır, **kanıt şartıyla:** adopt/retire/yeniden-connect sıralamalarının en az üç farklı dizilişinde (RECEIPT kuyrukta iken oturum kapanır; `adopt` ile `retire` ters sırada; iki ardışık değişim) yeni oturumda TEXT yeniden gelir ve RECEIPT yeniden üretilir, hiçbir TEXT "teslim edildi"siz kalmaz. Kanıt gelmezse kuyruk `(peer, msg_id)` ile yeni tutamaca **taşınır**. | `receipt_queue_survives_session_change_{a,b,c}`. |
+| **DUR-27** ifadeleri | tokio 1.52.3 → 1.53.3 **minor** sürüm geçişidir; "yalnız yama sürümleri" yanlış. `Cargo.lock` farkı "yalnız bu üç güncellemenin gerektirdiği değişiklikler (sürüm, checksum, zorunlu bağımlılıklar); ilgisiz güncelleme yok". Tam kapı **merge edilecek gerçek adayda** (bağımlılık PR'ı main üstüne, #136 onun üstüne, #135 onun üstüne) koşar; eski SHA'daki 24/25 sayılmaz; `cargo deny` istisnayla **affedilmez**, yeşil olmalı. Karar (evet) değişmedi. | Her merge için o adayın `summary.txt` PR gövdesinde. |
+| **ONAY-3-MESAJ** | Geri alındı / verilmedi. Kararlar notlara işlenir → rev5 SHA'ları + **tam** Ek A hash'leri → tek onay turu (üç ayrı mesaj, aynı gün). | — |
+
+## 2. Eklenen testler (05c)
+
+- **FEC dolu kanalda:** tüketici sonlu süre durur; kaynak iletimleri kaybolur, yeterli onarım sembolü ulaşır, kurtarılan birim kabul edilemez (yer yok) → tüketici açılınca teslim **tamamlanır** (ARQ yoluyla ya da sınırlı saklamayla; hangisi, notta). Tamamlanmıyorsa DUR.
+- **Oturum geçişinde rezerv:** eski ve yeni oturum birlikte varken (adopt öncesi/sonrası) rezerv hesabı (R = min(max_peers, C − 1)) aşılmaz; sıra başı garantisi korunur.
+- `seen_count` spec yaması (DUR-05c-1 a′) **aynı PR'da** (değişmedi).
+
+## 3. Süreç — bundan sonra DUR açılmayacaklar
+
+Rev5 onaylarından sonra **uygulama tercihleri için DUR açılmaz** (ad, dosya düzeni, test fikstürü ayrıntısı, yardımcı fonksiyon). DUR yalnız: değişmez/sözleşme metni, yeni sayı, tel/vektör, FROZEN dosya, beyanlı sınır eklenmesi, bir testin amacının/eşiğinin değişmesi. Gerisini yap, PR gövdesinde yaz.
+
+## 4. İstenen çıktı (tek mesaj, bu sırayla)
+
+1. Durum satırı (yerel / commit / PR / merge).
+2. **Tek tablo:** eski karar → düzeltilmiş karar → etkilenen dosya/PR → ayırt edici test (bu mesajın §1–§2'si notlara işlenmiş hâliyle).
+3. rev5 SHA'ları (05b, 05c, 05d) + **tam** Ek A sha256'ları + 05d için tam hash.
+4. Yeni süre tahmini (05d artık 0,5 gün değil; 05c'ye iki test eklendi).
+
+Takvim: yol v2'deki 9–10 Kasım / 18–20 Kasım **planlama tahminidir**, taahhüt değil; rev5 ve ilk PR'dan sonra yeniden yazılır. Bağımlılık PR'ı → #136 → #135 bu mesajı beklemez.
+````
+
+---
+
+## CEVAP PAKETİ 11 — EK — 2026-10-24
+
+*Kaynak:* dosya `~/kama-k4g-work/decisions/C11-EK.md` (orkestratörün ilettiği karar paketi, 2026-10-24), bayt-özdeş; sha256 `da21ced9e818868d9e06df8ba19814800c7fa67d4fb9c7500c4a3b18cf6387ee`
+
+````markdown
+# CEVAP PAKETİ 11 — EK (2026-10-24) — CEVAP 11 ile birlikte verilir; çelişkide EK geçerli
+
+İncelemecinin CEVAP 11'e üçüncü cevabı işlendi. Beş düzeltme; CEVAP 11'in geri kalanı aynen.
+
+## 1. RECEIPT (05d rev3) — mekanizma değil, değişmez + test hedefi onaylanıyor
+
+CEVAP 11'deki "gelen-kutusunu durdur + H = 512" **emir değil, aday**. Gerekçe: iki eş aynı anda kuyruk-dolu duruma girerse ikisi de kutuyu tüketmez, kutudaki RECEIPT'ler işlenmez, 05c kabulü iki yönde de ACK'i keser → karşılıklı bekleme. Transport ACK'lerinin çalışması uygulama RECEIPT'inin ilerlemesini garanti etmez.
+
+**Değişmez (onaylı):** (i) canlı RECEIPT hiçbir koşulda silinmez; (ii) RECEIPT için kapasite **bütün üreticilere** (dosya parçası, TEXT yeniden sunumu, PTT demeti, sinyalleşme) karşı korunur; (iii) iki yön aynı anda dolduğunda ilerleme sürer — karşılıklı bekleme yok; (iv) DATA kabulü duraklarken gerekli kontrol mesajları işlenir.
+
+**Mekanizma orkestratörün tasarımıdır** (notta, kanıtla). Öneri, emir değil: rezerv `client-core`'a AMP bilgisi sızdırmadan, `kama-node`'da tek "uygulama gönderim bütçesi" ile — RECEIPT dışı üreticiler eş başına bekleyen bütçenin ≤ (sınır − H)'sini kullanır, H yalnız RECEIPT'e; birim türleri (mesaj / transport birimi / kuyruk girdisi) tek birimde eşlenir. **H = 512 aday**, doğrulanır; türetim notta.
+
+**Zorunlu testler:** (a) iki yön aynı anda: her iki uçta dosya + TEXT yeniden sunumu + PTT sürerken 256 TEXT karşılıklı → bütün RECEIPT'ler aynı oturumda kabul, kayıp 0, kilit yok, kontrol yolu (ACK, S1 oturum olayları — PoC'de transport heartbeat **yok**, heartbeat şart koşulmaz) çalıştı; (b) tek yön doygunluk (CEVAP 11 (a)), ama gönderenin 256 outbox sınırı **aşılmadan** — 300 TEXT zaman içinde kabul edilir; 256'yı aşan sunum ayrı bir **protokol ihlali** testidir; (c) rezerv ihlali denemesi: dosya motoru H'yi tüketemez.
+
+## 2. Geçersiz parçalı mesaj (DUR-05c-12) — iki uçta terminal durum
+
+CEVAP 11'deki "ACK YOK" düzeltiliyor: ACK'siz geçersiz birim gönderende sonsuz yeniden gönderim ve sıralı akışta baş-blokajı yaratır. Yeni kural: transport **ACK'ler** (bayt eksiksiz ulaştı, uygulama katmanına teslim edildi); uygulama katmanı mesajı **açık hatayla reddeder** (`FragmentInvalid{peer, msg_id, neden}` olayı + sayaç), payload **sınırlı temizlikle** düşer (tombstone saklama yok). Değişmezin okuması: "ACK'lenmiş birim uygulama katmanına teslim edilir; uygulama geçersiz mesajı açık hatayla reddedebilir — sessiz düşürme yok." Geçerli-ama-limit-üstü sınıfı PoC'de yoktur (aynı derleme); gerçekleşirse ihlal sayılır ve aynı yolu izler.
+
+**Gönderen tarafı terminal durumu notta tanımlanır (tel değişmez):** dosya → mevcut 60 s zaman aşımıyla `Failed`; TEXT/sinyalleşme → RECEIPT gelmez, mevcut oturum-yenileme kuralıyla yeniden sunulur; aynı mesaj ikinci kez de reddedilirse gönderen tarafında kalıcı `Failed` (mevcut sayaçlarla; yeni AMP mesajı yok). Mevcut oturum kapatma/hata mekanizmasının bunu karşılayıp karşılamadığı notta incelenir; karşılamıyorsa DUR, yeni tel değil.
+
+## 3. 05b/05c geçişi — bütün kayıt-unutma yolları
+
+Kabul şartı genişledi: motorun kaydı unutabildiği **her** yol — K_MAP budaması, tombstone süre dolumu, kapasite tahliyesi, başka varsa — için geç ACK, motor ile runtime arasında payload sahipliği ayrışması yaratmaz. **P0-ek (yarım gün):** bu yolların envanteri, satır atıflı. Envanterde v1'de **bugün** var olan bir yol çıkarsa (tombstone TTL büyük olasılıkla), ayrışma main'de zaten var demektir → runtime uyarlaması (payload yalnız `take_confirmed_units()` ile silinir) **05b'ye alınır**; "budama 05b'de kapalı" bunu değiştirmez. Test her yol için ayrı.
+
+## 4. K_MAP ve rezervasyon sözleşmeleri — ifade düzeltmeleri (notlara aynen)
+
+| Eski | Yeni |
+|---|---|
+| "Son K_MAP iletimindeyse geç ACK tanınır" | "…tanınır — o kayıt TTL/tahliyeyle daha önce silinmemişse; tanıma garantisi bütün silme yollarıyla birlikte tanımlıdır (§3)" |
+| "Tanınmayan geç ACK fazladan bir yeniden gönderimdir" | "…ek yeniden gönderimlere yol açabilir; payload sahipliği korunur" |
+| "Gönderilme ≤ boy / pace_rate + bir tur" | "sabit pace_rate, çalışan zamanlayıcı ve yeterli BURST kapasitesi koşuluyla; değişken hızda biriken token üzerinden hesaplanır (test iki kipte)" |
+| "Rezerv gönderimde temizlenir" | "…gönderimde, birim teyit edilince, hedef geçersizleşince ve oturum kapanınca temizlenir; artık rezerv testle sınanır" |
+
+Bütün sınıflara karşı rezervasyonun bedeli (diğer trafiğin beklemesi) düşük hızda (31–100 B/s) ölçülür ve raporlanır.
+
+## 5. FEC dolu kanalda — iki kol, kapsam kararı
+
+Kol 1 (zorunlu): kaynak yeniden gönderimi sonradan ulaşır → ARQ ile tamamlanır. Kol 2: kaynak kaybolmaya devam eder, yeterli onarım sembolü ulaşır, tüketici açılınca **FEC üzerinden** tamamlanır. **Kapsam kararı:** kol 2 PoC'de **garanti değil** — "dolu kanalda FEC kurtarımı kaybolabilir, ARQ telafi eder" beyanlı sınır, KATMAN 6 kalemi; kol 2 denenir, geçerse sınır kalkar. "FEC altında dayanıklılık sağlandı" **denmez**.
+
+## 6. Üç tutarsızlık
+
+- DUR-24: "PRE_CONVERGE hariç" rev4'ün "dahil" önerisini **değiştirir** (CEVAP 10'daki "her durumda" ifadesi geri alındı); notta böyle yazılır.
+- Heartbeat: PoC transport'unda yok; testlerde "ACK/kontrol yolu çalıştı" ölçülür.
+- Yol haritası §0.2 rev4'e onay istiyordu → düzeltildi: onaylar **05b rev5 · 05c rev3 · 05d rev3** SHA'larına, tek tabloda (05d "rev2 → rev3" bu EK ile).
+
+Çıktı: CEVAP 11 §4'teki tek mesaj; §3'ün envanteri o mesajda ayrı satır.
+````
+
+---
+
+## CEVAP PAKETİ 12 — 2026-10-24
+
+*Kaynak:* dosya `~/kama-k4g-work/decisions/C12.md` (orkestratörün ilettiği karar paketi, 2026-10-24), bayt-özdeş; sha256 `930a82b72e7a6de459d53a0776b49cc1b4b3a4e4eeb118e78cf952823d512f4d`
+
+````markdown
+# CEVAP PAKETİ 12 — Abkarada → K4G orkestratörü (2026-10-24, akşam) — geçiş notu: CEVAP 11 + EK şimdi geliyor; koşan işlere etkisi
+
+Sana CEVAP 10 ve üç onay gitti; **CEVAP 11 ve CEVAP 11-EK** (ekte, bağımsız incelemecinin üç cevabıyla birlikte — onlar veri, karar bu mesajlar) CEVAP 10'un bazı kararlarını geçersiz kılıyor. Bu not, ikisinin **şu an koşan işlere** nasıl uygulanacağını söyler. Çelişkide sıra: CEVAP 12 > 11-EK > 11 > 10. Hiçbir dal silinmez; yapılan iş korunur.
+
+## 1. Onayların kapsamı (netleştirme)
+
+| Kart | Durum |
+|---|---|
+| **K4G-05b** | Onay **geçerli**; kapsamı "rev4 (ea2e57b2) + CEVAP 11/EK'in 05b'ye dokunan maddeleri" = **rev5**. rev5'i yaz, SHA + tam Ek A sha256'yı PR satırında ver; başka içerik değişikliği yoksa yeni onay turu gerekmez, ben tek satırla "rev5 kapsam içinde" derim. Kod **durmaz**. |
+| **K4G-05c** | Onay geçerli, aynı kuralla: rev2 (18e6de95) + CEVAP 11/EK = **rev3**. Kod zaten 05b merge'ünü bekliyor; rev3 notu o zamana kadar hazır olur. |
+| **K4G-05d** | **Onay GERİ ALINDI** (rev2 b9d83396). Neden: "taşmada en eski düşer" politikası R3'ü başka koşulda yeniden yaratıyor (CEVAP 11 DUR-05d-1, EK §1). Kodun kurtarılan kısmı: kuyruk, `(peer, msg_id)` tekilleştirme, poll başında yeniden sunum, ilk Backpressure'da durma, sayaçlar, T5 ve iki yeni birim testi. **Çıkan kısım:** `receipts_evicted` düşürme yolu ve onu sabitleyen test. Şerit kodlamayı durdurur, **rev3 notunu** yazar (EK §1: değişmez + iki yönlü doygunluk testi; mekanizma senin tasarımın, kanıtla; H = 512 aday). rev3 gelince yeni onay. |
+| **K4G-05e** | Değişmedi. |
+
+## 2. Koşan işlere etkisi
+
+| İş | Yap |
+|---|---|
+| **#137 merge (2a0e2133), #136 ve #135 kapıları** | Devam. Kilit dosyası tercihin (tokio'da yalnız sürüm + checksum, `--locked` kabul) **uygun**; PR gövdesinde CEVAP 11 DUR-27 ifadesiyle: "yalnız bu güncellemelerin gerektirdiği değişiklikler; ilgisiz güncelleme yok; tokio minor geçiş". |
+| **05b spec şeridi (46b6cadf), Ek A `ab425e57…`** | DUR-24 değişikliği **uygun**; nota ve A.4'e açıkça yaz: "PRE_CONVERGE hariç" rev4'ün "dahil" önerisini **değiştirir** (CEVAP 10'daki "her durumda" geri alındı; EK §6). rev5'e girecek diğer Ek A değişiklikleri: K_MAP ufuk cümleleri (EK §4), DUR-31 iki ölçüt, DUR-05c-12 yeniden yazımı 05c'de. |
+| **05b kod şeridi — sekiz adım** | Önce **bildir**: hangi adım K_MAP budamasını açıyor, hangi adım runtime'a dokunuyor? Kural (CEVAP 11 DUR-30): budama 05b'de **kapalı** (sabit + `take_confirmed_units()` tanımlı, davranış yok). **EK §3 envanteri hemen** (yarım gün, şeride paralel): motorun kaydı unutabildiği her yol (tombstone TTL, tahliye, başka). v1'de bugün var olan bir yol çıkarsa runtime payload-silme uyarlaması **05b'ye alınır**; çıkmazsa 05c'de budamayla birlikte. |
+| **DUR-31 okuması** (şeride ilettiğin) | Düzelt: "arada DATA gönderilmez" değil — **DATA rezervin altına inemez**, rezervin üstündeki token'ı kullanabilir; ARQ ve prob da rezervi tüketemez; rezerv ≤ bir kayıt, tek rezerv, temizlenme: gönderim / teyit / hedef geçersiz / oturum kapanışı (EK §4). Test iki ölçütlü: seçilme ≤ K_ARQ_SHARE çağrı; gönderilme ≤ boy / pace_rate + bir tur (sabit hız, çalışan zamanlayıcı, yeterli BURST; değişken hızda biriken token). |
+| **DUR-24, DUR-26 okumaları** | Uygun. |
+| **9 kırmızı** | Sınıflandırman doğru; kural sabit: **gerileme → kod düzelir; test değişmez.** Mevcut testlerde (dr_cs1 ikilisi dahil) değişiklik yalnız DUR-8 biçimiyle (paragraf + 2×2 çıktı + mutasyon) ve yalnız v1.1'in **kasıtlı** davranış değişikliği kanıtlanınca; "zamanlama kaydı" tek başına gerekçe değil. Yeni testlerin fikstür/beklenti hataları (two_units_handover, saturated_ack_delay durum beklentisi) senin kararın — PR gövdesinde yaz, DUR açma. `h_anchor_stale_ack_vs_progress`'teki "ilerleme ile bayat ACK aynı anda" → ilerleme **öncelikli** (sessizlik sayacı ilerlemeyle sıfırlanır); notta tek cümle. |
+| **`#[ignore]` testi 05c'ye** | Uygun. |
+| **05d kod şeridi** | §1'deki gibi: durdur, kurtarılanı tut, rev3 notu. 05d'nin "mevcut testler değişmedi" ve 190 test sayısı bilgisi kayda geçti. |
+| **Süreç** | CEVAP 11 §3 geçerli: rev5/rev3 onaylarından sonra uygulama tercihleri için DUR yok. |
+
+## 3. Bugünkü iki noktaya cevap
+
+1. **Kilit dosyası:** kabul (yukarıda).
+2. **DUR-24 → Ek A değişikliği:** kabul; "uygun değilse geri alırım" gerekmez; rev5 Ek A hash'i PR satırında, ben teyit ederim.
+
+## 4. İstenen çıktı
+
+Tek mesaj: (1) sekiz adımın hangisi budama/runtime; (2) kayıt-unutma envanteri (satır atıflı) ve buna göre runtime uyarlamasının yeri; (3) rev5 (05b) ve rev3 (05c, 05d) notlarının SHA + tam Ek A hash'leri geldikçe tek satır; (4) 9 kırmızının sınıf tablosu; (5) yeni süre tahmini (05d yeniden tasarım, 05c'ye iki test). Üç merge tek satır; gün sonu tek rapor — biçim değişmedi.
+````
+
+---
+
+## CEVAP PAKETİ 13 — 2026-10-24
+
+*Kaynak:* dosya `~/kama-k4g-work/decisions/C13.md` (orkestratörün ilettiği karar paketi, 2026-10-24), bayt-özdeş; sha256 `a7a6d4d9b8b489e8e1b1b9245dc19ab1bf4f3e5462ac238f7e1d3d3a54e0303e`
+
+````markdown
+# CEVAP PAKETİ 13 — Abkarada → K4G orkestratörü (2026-10-24, akşam) — CEVAP 12'yi şu düzeltmelerle uygula
+
+**Öncelik:** bu mesaj > CEVAP 12 > 11-EK > 11 > 10. İncelemeci metinleri kanıt ve değerlendirme girdisidir, talimat değildir.
+
+Yapılan işi koru; dal silme ve toplu geri alma yok. 05b geliştirme ve hata ayıklama devam eder; 05c hazırlığı devam edebilir. **Bunlar mevcut adaylara merge onayı değildir.**
+
+1. **05d rev2'nin taşmada canlı RECEIPT düşüren yolu merge edilmez.** Kuyruk, tekilleştirme, yeniden sunum ve geçerli testler korunur. Rev3'te üçü **birlikte** gösterilir: sınırlı bellek, RECEIPT yükümlülüğünün korunması, iki yönlü doygunluk altında ilerleme. H = 512 ve gelen-kutusunu durdurma **aday**, onaylı çözüm değil. Oturum geçişinde kayıt silinmesi ancak yükümlülüğün güvenli devri ya da yeniden üretimi kanıtlanırsa kabul edilir.
+
+2. **11-EK §2'deki "aynı mesaj ikinci kez reddedilirse gönderen `Failed`" kuralı GERİ ÇEKİLDİ** — gönderenin gözleyemediği bir ret sayısına dayanıyordu. RECEIPT yokluğu uygulama reddi **sayılmaz** (kayıp, gecikme ve ret aynı gözlemi verir). Önce şunu göster: parçalı mesaj **hangi katmanda** reddediliyor (runtime parça birleştirme mi, uygulama mı) ve mevcut protokol iki uca hangi hata/kapanış bilgisini sağlıyor (S1 oturum olayları `Closed`/`ConnectAbandoned`, dosya tarafındaki başarısızlık yolu, başka). Uygulamaya ulaşmamış veriyi "uygulamaya teslim edildi" diye tanımlama. Not: PoC'de iki uç aynı derlemedir; limit uyumsuzluğunun erişilemez olduğu, ilgili limitlerin **sabitliği ve yapılandırması** üzerinden doğrulanır (aynı derleme, çalışma zamanı ayarının, mevcut kapasitenin ve kaynak durumunun aynı olduğunu garanti etmez). **Geçerli girdinin kapasite ya da kaynak yetersizliği nedeniyle reddedilmesi bozuk girdi sayılmaz** — o R2'nin konusudur ve 05c kabul kuralıyla (ACK yok, yeniden gönderim) ele alınır. Mevcut mekanizma yeterliyse onu kullan; yeterli değilse **yalnız bu madde** için somut seçenekleri ve etkilerini getir (tel değişikliği de bir seçenek olarak yazılır, kararı benim); bağımsız işler devam eder.
+
+3. **Kayıt-unutma envanteri:** her yol için aynı geç ACK'in motorda ve runtime'da verdiği sonucu **karşılaştır**; silme yolunun varlığı tek başına kusur kanıtı değildir. Ayrışma gösterilen her yol için runtime payload-silme uyarlaması **05b'ye alınır**. **05b merge koşulu:** adayın etkin bütün yollarında payload sahipliği tutarlı; yeniden gönderimde store-miss yok (test). K_MAP budaması ancak runtime ile uyumlu değişiklikte açılır.
+
+4. **P0 motor 7/7** "bu senaryolar geçti" diye kaydedilir; "motor tamamlandı" denmez. Dokuz kırmızı için tablo: test adı · taban/aday SHA · kök neden · kod mu test mi değişecek · korunan davranış. Fikstür hatası düzeltilebilir; testin hedeflediği davranış ya da kabul eşiği sessizce değişmez. `ResolvedByDataAck → TimedOut`, kasıtlı sözleşme değişikliği gösterilmedikçe **gerileme şüphesidir**.
+
+5. **`#[ignore]` yok.** Test 05c'ye taşınıyorsa test ettiği davranışın neden 05c'de olduğunu yaz; test o PR'ın kapısında **aktif** olsun. Testi taşıyarak 05b'de etkin bir kusuru kapsam dışına çıkarma.
+
+6. **#137 sırf kilit dosyası elle düzenlendiği için geri alınmaz.** Desteklenen hedeflerde doğrulama tamamlanır: `--locked` kabulünün yanına çözümleme/derleme kanıtı — `x86_64-unknown-linux-gnu` (kapı) ve **`aarch64-linux-android`** (`kama-mobile`, K4G-15 derleme betiğiyle, `--locked`); eksikse tamamla, PR gövdesine ek satır. Gerçek bir gerileme bulunursa düzeltme ya da gerekçeli geri alma değerlendirilir (bana tek satır). #136 ve #135, merge edilecek **gerçek adaylarında** tam kapı yeşilse mevcut yetkiyle ilerler.
+
+7. **FEC ikinci kolu** PoC garantisi dışında kalır; raporda açıkça. Tek başarılı koşu genel sınırı kaldırmaz. Birinci kolun ARQ ile toparlanması zorunlu.
+
+**Sonraki çıktı (tek mesaj):** güncel dal/PR/merge durumu · dokuz kırmızının tablosu · kayıt-unutma karşılaştırma sonuçları ve runtime uyarlamasının yeri · parçalı mesaj ret katmanı analizi · 05d rev3 önerisi · yeni süre tahmini. Rutin uygulama tercihleri için onay isteme; kalan sözleşme sorunları yalnız ilgili işi durdursun.
 ````
