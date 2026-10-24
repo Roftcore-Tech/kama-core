@@ -1320,11 +1320,15 @@ fn t4_a_non_backpressure_end_leaves_the_receipt_to_the_repeat_text() {
 /// Senaryo: P0 düzeneği (Bob→Alice dolu); Alice X1 ve X2'yi yollar, Bob'un turu ikisini de teslim
 /// eder (RECEIPT'ler bekler). Sonra Bob'a önce X1'in tekrarı, ardından yeni Y gelir ve Bob'un
 /// Messenger'ı TEK `poll` çağrısıyla ikisini de işler (tekrar olay üretmez, aynı çağrıda atlanır).
-/// Beklenen: o çağrıda Bob'un `Backpressure` alan denemesi ≤ 1.
+/// Beklenen: o çağrıda Bob'un `Backpressure` alan denemesi ≤ 1 VE o tek sunum dolu kuyruğun başı
+/// X1'indir — dolu kuyruk poll BAŞINDA sunulur: X1 o çağrıda tam bir kez sunulur ve
+/// `Backpressure` alır.
 ///
 /// Tabanda neden kırmızı: her TEXT kendi RECEIPT'ini hemen sunar — X1'in tekrarı ve Y için iki
-/// `Backpressure` (2 > 1). Mutantlar (Ek B.2): kuyruk doluyken de hemen sunan (poll başı X1 + Y)
-/// ve `Backpressure`'da sunumu sürdüren (poll başı X1 + X2) kuyruk da 2 ret yapar.
+/// `Backpressure` (2 > 1; ilk denetim düşer). Mutantlar (Ek B.2): kuyruk doluyken de hemen sunan
+/// (poll başı X1 + Y) ve `Backpressure`'da sunumu sürdüren (poll başı X1 + X2) kuyruk da 2 ret
+/// yapar (ilk denetim). Poll başı sunumu kaldıran ya da poll'un sonuna (boşta, `None` dönüşüne)
+/// taşıyan kuyruk bu çağrıda X1'i hiç sunmaz — 0 ret ilk denetimi geçer, X1 denetimi düşer.
 #[test]
 fn t5_at_most_one_backpressure_per_poll_while_receipts_wait() {
     let mut rig = Rig::with_full_bob_to_alice_queue();
@@ -1364,6 +1368,7 @@ fn t5_at_most_one_backpressure_per_poll_while_receipts_wait() {
         .send_text(BOB, TEXT)
         .expect("Alice→Bob yönünde yer var");
     let since = rig.link.borrow().send_count(Side::Bob);
+    let first_offered_before = rig.link.borrow().receipt_attempts(Side::Bob, first).len();
     let duplicates_before = rig.bob.messenger.stats().duplicate_texts;
     assert_eq!(
         rig.bob.messenger.poll(),
@@ -1381,5 +1386,14 @@ fn t5_at_most_one_backpressure_per_poll_while_receipts_wait() {
         "T5 (tabanda beklenen kırmızı): Backpressure sürerken tek poll çağrısında Bob {refused} \
          reddedilen sunum yaptı; eş başına en çok 1 olmalı (dolu kuyruk yalnız poll başı ve ilk \
          Backpressure'a dek sunulur, yeni RECEIPT sona eklenir, tekrar birleşir)"
+    );
+    let first_offered_in_poll =
+        rig.link.borrow().receipt_attempts(Side::Bob, first)[first_offered_before..].to_vec();
+    assert_eq!(
+        first_offered_in_poll,
+        vec![(session, Err(TransportError::Backpressure))],
+        "dolu kuyruk poll BAŞINDA sunulur: bu poll'da kuyruğun başı RECEIPT({first}) tam bir kez \
+         sunulmalı ve Backpressure almalı (poll başı sunumu kaldıran ya da poll sonuna taşıyan \
+         kuyruk onu hiç sunmaz)"
     );
 }
