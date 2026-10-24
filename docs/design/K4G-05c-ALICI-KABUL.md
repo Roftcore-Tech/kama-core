@@ -94,7 +94,7 @@ Refuse'da datagram `Receiver`'a, `BlockAsm`'e ve kanala girmez (`NotReady` desen
 
 ## Ek A — yama metinleri
 
-Biçim: üstü çiz, silme (`~~eski~~` + yeni) + tarihli YAMA KAYDI; `scripts/ci/word_coverage.py` kapısı yeşil olmalı (bu revizyonda koşulmadı). `<ONAY-TARİHİ>` = "K4G-05c ONAYLANDI" tarihi; `<DUR-05c-5 CEVAP TARİHİ>` = DUR-05c-5 kararının tarihi. A.2'deki 2026-10-24 sahibin DUR-18 tarihidir.
+Biçim: üstü çiz, silme (`~~eski~~` + yeni) + tarihli YAMA KAYDI; `scripts/ci/word_coverage.py` kapısı yeşil olmalı (bu revizyonda koşulmadı). `<ONAY-TARİHİ>` = rev3'ün uygulandığı PR'ın tarihi. A.2/A.3'teki 2026-10-24 sahip karar tarihidir (DUR-18; DUR-05c-5 (a), CEVAP 10). A.3–A.5 CEVAP 10 kararlarıyla kesinleşti.
 
 ### A.1 — `docs/seams/KM-SEAM-AT-001.md`
 
@@ -126,7 +126,7 @@ Yeni satır:
 | DUR-K4G-01 (#114/#116 üç beyanlı sınır) | KATMAN 6 kartı + INT-02 beyanı; ~~(i) için `delivery_channel_drops` sayacı K4G-11 `metrics()`'e, INT-02'de 0 olmalı;~~ (i) **2026-10-24: beyanlı sınır kaldırıldı → K4G-05c** [YAMA KAYDI 2026-10-24 — K4G-05c — DUR-18 CEVAP (sahip)] (`delivery_channel_drops` `metrics()`'te kalır; INT-02'de 0 şartı yapısal sağlanır); (iii) epoch geçişinde ölçülür | K4G-16, K4G-05, K4G-05c |
 ```
 
-### A.3 — `docs/plans/KAMA-PLAN-4GUN-APP-KRIPTO.md:392` (yalnız DUR-05c-5 (a) ile)
+### A.3 — `docs/plans/KAMA-PLAN-4GUN-APP-KRIPTO.md:392` (DUR-05c-5 (a), CEVAP 10)
 
 Satır içindeki parça:
 
@@ -137,14 +137,14 @@ Satır içindeki parça:
 yerine:
 
 ```
-~~(i) teslim kanalı taşması (`runtime.rs` ~:2321 `try_send`; INV-ACK-DELIVER-1'i ihlal edebilir → sayaç `delivery_channel_drops` K4G-11 `metrics()`'te, INT-02'de 0 olmalı)~~ (i) [YAMA KAYDI <DUR-05c-5 CEVAP TARİHİ> — K4G-05c — DUR-18 + DUR-05c-5 (a) CEVAP: beyanlı sınır (i) kaldırıldı]
+~~(i) teslim kanalı taşması (`runtime.rs` ~:2321 `try_send`; INV-ACK-DELIVER-1'i ihlal edebilir → sayaç `delivery_channel_drops` K4G-11 `metrics()`'te, INT-02'de 0 olmalı)~~ (i) [YAMA KAYDI 2026-10-24 — K4G-05c — DUR-18 + DUR-05c-5 (a) CEVAP (sahip): beyanlı sınır (i) kaldırıldı]
 ```
 
-### A.4 — `docs/transport-v1/TRANSPORT-CRYPTO-HANDOFF.md` (yalnız DUR-05c-9 (a) ile)
+### A.4 — `docs/transport-v1/TRANSPORT-CRYPTO-HANDOFF.md` (DUR-05c-9 (a), CEVAP 10)
 
 (i) Satır 8-9'daki "Kaynak: …" paragrafının ardına:
 
-> **YAMA KAYDI — <ONAY-TARİHİ> [K4G-05c — DUR-05c-9 (a) CEVAP]:** §10.1 "kuyruklar" satırı: dolu teslim kuyruğunda birim artık düşmez, ACK'siz reddedilir; offer kuyruğu ayrıca birim-kimliği mesafesiyle durur. Üstü çizili metin silinmedi.
+> **YAMA KAYDI — <ONAY-TARİHİ> [K4G-05c — Abkarada kararı CEVAP PAKETİ 10, 2026-10-24, DUR-05c-9 (a) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** §10.1 "kuyruklar" satırı: dolu teslim kuyruğunda birim artık düşmez, ACK'siz reddedilir; offer kuyruğu ayrıca birim-kimliği mesafesiyle durur. Üstü çizili metin silinmedi.
 
 (ii) Satır 20, eski:
 
@@ -156,6 +156,19 @@ yeni:
 
 ```
 | kuyruklar | bounded: `offer_queue 1024` (dolu → `QueueFull`; **[<ONAY-TARİHİ> — K4G-05c]** en yeni ile en eski teyitsiz birim arasındaki kimlik mesafesi `max_inflight_units`'e ulaşınca offer alınmaz, kuyruk dolar), `delivery_queue 1024` ~~(taşan teslim SAYILIR, sessiz düşmez)~~ **[<ONAY-TARİHİ> — K4G-05c]** (dolu → birim kanala girmez ve ACK'lenmez, `full_refusals` sayılır; teslim düşmez, `delivery_dropped` yapısal 0) |
+```
+
+### A.5 — `specs/adaptive-transport-engine-spec.md` (DUR-05c-1 (a′), CEVAP 10)
+
+(i) Dosya başındaki YAMA KAYDI bloğunun en üstüne (en yeni kayıt en üstte; 05b'nin 2026-10-24 kayıtlarının önüne):
+
+> **YAMA KAYDI — <ONAY-TARİHİ> [v1.1 · K4G-05c — `seen_count` anlamı; sahip kararı CEVAP PAKETİ 10, 2026-10-24, DUR-05c-1 (a′) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** §2.2 ACK_FRAME_V2 `seen_count` satırına not eklendi: `seen_count` = alıcı motorunun **kabul ettiği** DATA; kabul kararı istemci runtime'ındadır (v1.1 · K4G-05c). Kabul edilmeyen datagram (oturumu hazır değil, gelen kutusunda yer yok, kimlik penceresi dışında) sayılmaz. Alan genişliği, kodlama ve çerçeve DEĞİŞMEDİ. Üstü çizili metin yok.
+
+(ii) §2.2 V2 ölçüm ekinde, `seen_count` satırını izleyen yorum satırının (`#   seen≪sent = forward-loss; …`; main :217, 05b sonrası :221) ardına, aynı kod bloğu içinde:
+
+```
+                           #   [v1.1 · K4G-05c] seen_count = alıcı motorunun KABUL ETTİĞİ DATA; kabul kararı
+                           #   istemci runtime'ındadır (kabul edilmeyen datagram sayılmaz).
 ```
 
 ---
