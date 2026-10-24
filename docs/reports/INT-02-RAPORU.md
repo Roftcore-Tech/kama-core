@@ -36,12 +36,16 @@ Bu tablo ölçüm özetidir; kapı ifadesi değildir (son satıra bakın).
 
 ### 1.1 Düğümler, anahtarlar, süreç
 
-* **Tek süreç**, iki ürün düğümü: `kama_node::KamaNode::start` (bileşim kökü, K4G-11) — gerçek
+* **Tek süreç**, iki ürün düğümü: `kama_node::KamaNode::start_live_diag_for_test` (`test-util`) —
+  ürün yolunun AYNISI (`KamaNode::build`, bileşim kökü, K4G-11) + Transport canlı teşhis aynası açık
+  (`RuntimeConfig::live_diag`, DUR-19; §1.5) — gerçek
   `ClientTransport` (ürün profili `ClientTransportConfig::product`, `KamaV1Profile`), gerçek
   `NoiseWireProtection::with_control` (22 B legacy SESSION_DATA zarfı), `kama-app` Messenger / Ptt /
   FileTransfer / Signaling motorları, `kama-store::RedbStore` (aynı nesne `AppStore` + `CounterStore`),
   OS entropisi, gerçek saatler (Crypto ve Application ayrı). Negatif kolda aynı kurulum
-  `KamaNode::start_recovery_off_for_test` ile (§1.4).
+  `KamaNode::start_recovery_off_for_test` ile (§1.4; canlı ayna orada da açık). Bayrak açık/kapalı
+  karşılaştırma koşusunun kapalı kolu (`int02_node --live-diag off`) ürün yolunun kendisini
+  (`KamaNode::start`) kullanır.
 * **Anahtar kaynağı: `kama-provision` çıktısı.** Her (tohum, kol) koşusu için ağ ad alanının içinde
   `kama-provision init --out <geçici>/authority --devices alice,bob --direct
   alice=127.0.0.1:40001,bob=127.0.0.1:40002`; her "telefon"a yalnız kendi `device-<ad>.json`'u
@@ -101,8 +105,10 @@ tamamlanmaz ve pencerenin tamamını bekler; kısa pencereyle ayrı koşulur (`-
 (`KamaNode::build`, ürün profili, ürün builder'ı) kurulur; düğüm iş parçacığı başlamadan önce
 Transport'un test kancası `ClientTransport::set_recovery_for_test(false)` çağrılır (S1 H-APP-RETRY-0
 kancası; yalnız `test-util`): ARQ retransmit, §11 kopya ve FEC repair kararları tele çıkmaz, çalışma
-zamanı onları `recovery_suppressed`'te sayar. Ürün yolu (`KamaNode::start`) ve ürün davranışı
-değişmedi; `TransportCapabilities::reliable` beyanı bu kolda da `true` kalır.
+zamanı onları `recovery_suppressed`'te sayar. Kol bastırılan kararı canlı aynadan okuduğu için
+Transport canlı teşhis aynası da açılır (`ClientTransport::set_live_diag_for_test(true)`, DUR-19;
+§1.5). Ürün yolu (`KamaNode::start`) ve ürün davranışı değişmedi; `TransportCapabilities::reliable`
+beyanı bu kolda da `true` kalır.
 
 ### 1.5 Ölçülenler ve kaynakları
 
@@ -124,11 +130,24 @@ değişmedi; `TransportCapabilities::reliable` beyanı bu kolda da `true` kalır
 | Transport sakinliği | `ClientTransport::outstanding_for_test` = 0 (iki düğüm) | sonda |
 | netem doğrulama | `ping`, `tc -s qdisc` | sürücü |
 
-Ürün kodu değişikliği YOKTUR. Eklenenler: client-core'a **salt-okunur** canlı ayna
-(`ClientLiveDiag`, `ClientHandle::live_diag`, `ClientTransport::session_live_diags` /
-`retired_live_diag`; görev her ana döngü turunun başında yazar, hiçbir karar okumaz —
-`ServerHandle::delivery_dropped` emsali) ve kama-node'a `test-util` arkasında sonda + recovery-OFF
-kurucusu + röle zarf kaydı.
+Ürün koduna salt-okunur canlı ayna ve teşhis yazıcısı eklendi; motor kararları değişmedi; maliyeti
+ölçülmedi. Eklenenler: client-core'a **salt-okunur** canlı ayna (`ClientLiveDiag`,
+`ClientHandle::live_diag` / `live_diag_enabled`, `ClientTransport::session_live_diags` /
+`retired_live_diag` / `reorder_diags`) ve onun teşhis yazıcısı — görev her ana döngü turunun başında
+motor denetim durumunu ve tel sayaçlarını yazar, gönderen kurtarma görüntüsünü `RECOVERY_DIAG_PERIOD`
+(200 ms) aralıkla alır, her ACK çerçevesini halkaya kaydeder, kapanan oturumun sayaçlarını toplama
+ekler; hiçbir karar aynayı okumaz (`ServerHandle::delivery_dropped` emsali); adaptive-transport'a
+salt-okuma erişimcileri (`&self`: `Sender::diag_recovery_timers`, `Sender::diag_unit_recovery`,
+`DeadlineArqScheduler::config`); kama-node'a `test-util` arkasında sonda + canlı ayna açık kurucu +
+recovery-OFF kurucusu + röle zarf kaydı. **[DUR-19]** Yazıcı ve ayna bir ÇALIŞMA-ZAMANI
+bayrağının arkasındadır: `RuntimeConfig::live_diag`, varsayılan **KAPALI** (`RuntimeConfig::default`
+= `KamaV1Profile`, `ClientTransportConfig::product`, `KamaNode::start`); tek derleme, Cargo feature
+DEĞİL — INT-02 ve ürün aynı ikiliyi koşar. Bayrak kapalıyken yazıcı çalışmaz, ayna kurulmaz (Mutex
+yok), kapanış kopyası alınmaz; erişimciler varsayılan (sıfır) görüntü döner. "Davranış değişikliği
+yok" iddiası bayrak kapalıyken geçerlidir. INT-02 düzeneği bayrağı açar
+(`KamaNode::start_live_diag_for_test`, `KamaNode::start_recovery_off_for_test`; `int02_node
+--live-diag on` varsayılan). Maliyet: birleşik adayda bayrak açık/kapalı karşılaştırma koşusu
+(gating2, 2 tohum) bu raporda verilecek.
 
 ### 1.6 Koşu komutları
 
@@ -142,6 +161,9 @@ python3 scripts/netem/int02_analyze.py results/int02/<tarih> --md <tablolar.md> 
 # yeniden koşu (CEVAP PAKETİ 4, §10):
 scripts/netem/int02_run.sh --seeds "1 2 3 4 5 6 7 8 9 10" --arms gating2 --window 600 [--bin <hedef>/release]
 scripts/netem/int02_run.sh --seeds "1 2 3 4 5" --arms "ek-kesinti ek-dosya-ptt" --window 600 [--bin <hedef>/release]
+# canlı ayna açık/kapalı karşılaştırması (DUR-19 iii; birleşik adayda, gating2, 2 tohum, ayrı çıktı dizini):
+scripts/netem/int02_run.sh --seeds "<S1> <S2>" --arms gating2 --window 600 --live-diag on --out <out-on> [--bin <hedef>/release]
+scripts/netem/int02_run.sh --seeds "<S1> <S2>" --arms gating2 --window 600 --live-diag off --out <out-off> [--bin <hedef>/release]
 ```
 
 ---

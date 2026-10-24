@@ -13,7 +13,10 @@
 //!   `client_core::runtime::ClientLiveDiag`; gönderen kurtarma görüntüsü (takılı birim zaman
 //!   çizelgesi) `ClientLiveDiag::recovery` içindedir. [CEVAP PAKETİ 6] Gönderen motorun denetim
 //!   durumu (faz, BtlBw, pacer, acil durum, dönüş yolu: `control`), ACK çerçevesi sayaçları ve son
-//!   çerçeve / durum değişikliği kayıtları (`ack`, `acks`, `states`) da aynadadır.
+//!   çerçeve / durum değişikliği kayıtları (`ack`, `acks`, `states`) da aynadadır. [DUR-19]
+//!   Ayna yalnız `RuntimeConfig::live_diag` açık kurulan düğümde dolar
+//!   (`KamaNode::start_live_diag_for_test`, `KamaNode::start_recovery_off_for_test`); bayrak
+//!   kapalıyken (ürün yolu `KamaNode::start`) bu alanlar `ClientLiveDiag::default()`'tur.
 //! * Alıcı sıralı teslim (takılı birim): `ClientTransport::reorder_diags` (`ReorderDiag`).
 //! * Bağlam-önce dağıtım: `ClientTransport::ctx_dispatch_stats` (`not_ready_drops` dahil) ve
 //!   `ClientTransport::delivery_dropped`.

@@ -1,11 +1,13 @@
 //! INT-02 düzeneğinin netem'SİZ kısa duman testi (plan K4G-05 DÜZENEK 1; CI'da koşabilir).
 //!
 //! `examples/int02_node.rs` ile AYNI kod (modül olarak dahil edilir): iki ürün düğümü
-//! (`KamaNode::start`; negatif kolda `start_recovery_off_for_test`) tek süreçte, loopback UDP;
-//! anahtarlar `kama-provision` KÜTÜPHANESİYLE test içinde üretilir (elle yazılmış fikstür DEĞİL;
-//! `root.json` cihaz dizinlerine girmez). Her kol az mesajla, KAYIPSIZ koşar: düzeneğin uçtan uca
-//! çalıştığını ve ölçüm sondasının sayaçları okuduğunu sınar. Kayıp altındaki ölçüm (GATING) netem
-//! sürücüsünün işidir (`scripts/netem/int02_run.sh`); burada hiçbir GATING hükmü verilmez.
+//! (`KamaNode::start_live_diag_for_test` — canlı teşhis aynası açık, DUR-19; `--live-diag off`
+//! kolunda `KamaNode::start`; negatif kolda `start_recovery_off_for_test`) tek süreçte, loopback
+//! UDP; anahtarlar `kama-provision` KÜTÜPHANESİYLE test içinde üretilir (elle yazılmış fikstür
+//! DEĞİL; `root.json` cihaz dizinlerine girmez). Her kol az mesajla, KAYIPSIZ koşar: düzeneğin
+//! uçtan uca çalıştığını ve ölçüm sondasının sayaçları okuduğunu sınar. Kayıp altındaki ölçüm
+//! (GATING) netem sürücüsünün işidir (`scripts/netem/int02_run.sh`); burada hiçbir GATING hükmü
+//! verilmez.
 //!
 //! Kesinti kolu (`ek-kesinti`) netem'siz koşar: sürücünün işaret dosyası eşgüdümü bir yardımcı iş
 //! parçacığıyla taklit edilir (gerçek kesinti YOK) — yalnız eşgüdüm yolunun ve PTT/metin akışının
@@ -25,6 +27,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use client_core::runtime::ClientLiveDiag;
 use kama_noise_wire::entropy::OsEntropy;
 use kama_provision::format::{DeviceName, ROOT_FILE_NAME};
 use kama_provision::provision::{init, InitRequest};
@@ -150,7 +153,7 @@ fn assert_json_line(report: &Report, arm: Arm) {
     let line = &report.json;
     assert!(!line.contains('\n'), "tek satır: {line}");
     assert!(line.starts_with('{') && line.ends_with('}'), "{line}");
-    assert!(line.contains(r#""schema":"int02-node-v3""#), "{line}");
+    assert!(line.contains(r#""schema":"int02-node-v4""#), "{line}");
     assert!(
         line.contains(&format!(r#""arm":"{}""#, arm.name())),
         "{line}"
@@ -260,8 +263,50 @@ fn gating1_alice_to_bob_text_and_receipt() {
         r#""pacer_rate_bps":"#,
         r#""ack_frames_new_units":"#,
         r#""timeline":{"every_ms":5000.000"#,
+        r#""live_diag":true"#,
     ] {
         assert!(report.json.contains(field), "{field}: {}", report.json);
+    }
+}
+
+/// [DUR-19] Canlı ayna KAPALI (`--live-diag off`): düğümler ürün yolunun kendisiyle
+/// (`KamaNode::start`) kurulur; akış aynı sonuçla tamamlanır, ama Transport aynası yazılmaz —
+/// sondadaki oturum aynası ve kapanmış oturum toplamı varsayılan (sıfır) kalır. Aynı kolun açık
+/// karşılığı `gating1_alice_to_bob_text_and_receipt`'tir (ayna dolu).
+#[test]
+fn gating1_with_live_diag_off_runs_on_the_product_path() {
+    let _serial = serial();
+    let root = TempDir::new("g1-off");
+    let mut cfg = smoke(Arm::Gating1, root.path());
+    cfg.live_diag = false;
+    let report = run(&cfg);
+    assert_clean(&report, Arm::Gating1);
+    assert_flow(&report, Side::Alice);
+    assert_single_session(&report);
+    assert!(report.quiescent, "teyitsiz birim kalmadı: {}", report.json);
+    assert!(
+        report.json.contains(r#""live_diag":false"#),
+        "bayrak kaydı: {}",
+        report.json
+    );
+    for side in [Side::Alice, Side::Bob] {
+        let probe = report.nodes[side.idx()].probe.as_ref().expect("sonda");
+        assert_eq!(
+            probe.retired,
+            ClientLiveDiag::default(),
+            "{}: {}",
+            side.name(),
+            report.json
+        );
+        for session in &probe.sessions {
+            assert_eq!(
+                session.diag,
+                ClientLiveDiag::default(),
+                "{}: {}",
+                side.name(),
+                report.json
+            );
+        }
     }
 }
 
@@ -412,9 +457,34 @@ fn command_line_is_parsed_without_clap() {
             assert_eq!(cfg.arm, Arm::Gating1);
             assert_eq!(cfg.seed, 7);
             assert_eq!(cfg.count, 100, "varsayılan");
+            assert!(cfg.live_diag, "varsayılan: canlı ayna açık (DUR-19)");
         }
         other => panic!("ayrıştırılmalıydı: {other:?}"),
     }
+    // [DUR-19] `--live-diag on|off`; başka değer ve negatif kolda `off` reddedilir.
+    let mut diag_off = base.clone();
+    diag_off.extend(["--live-diag".to_owned(), "off".to_owned()]);
+    match int02_node::parse_args(&diag_off) {
+        Ok(int02_node::Parsed::Run(cfg)) => assert!(!cfg.live_diag),
+        other => panic!("ayrıştırılmalıydı: {other:?}"),
+    }
+    let mut diag_bad = base.clone();
+    diag_bad.extend(["--live-diag".to_owned(), "1".to_owned()]);
+    assert!(int02_node::parse_args(&diag_bad).is_err(), "on|off dışı");
+    let negative_off: Vec<String> = diag_off
+        .iter()
+        .map(|s| {
+            if s == "gating1" {
+                "negatif".to_owned()
+            } else {
+                s.clone()
+            }
+        })
+        .collect();
+    assert!(
+        int02_node::parse_args(&negative_off).is_err(),
+        "negatif kol --live-diag on ister"
+    );
     // [CEVAP PAKETİ 4] Tek pencere parametresi `--window-s`; eski `--drain-s` yok.
     let mut window = base.clone();
     window.extend(["--window-s".to_owned(), "600".to_owned()]);

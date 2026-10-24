@@ -174,6 +174,16 @@ pub struct RuntimeConfig {
     /// bileşeni; r-sweep: 500‰/r4 15–20 % kayıpta israflı). `None` = motor `fec_med` (500). Yalnız
     /// `fec: Some(..)` iken etkili.
     pub structure_gate_level_permille: Option<u32>,
+    /// [K4G-05 / DUR-19] Client ucunun CANLI teşhis aynası ve yazıcısı ([`ClientLiveDiag`],
+    /// [`ClientHandle::live_diag`]). **Ürün varsayılanı KAPALI** (`false`). Çalışma-zamanı
+    /// bayrağıdır, Cargo feature'ı DEĞİL: ürün ve INT-02 düzeneği AYNI ikiliyi koşar, düzenek
+    /// bayrağı açar. Kapalıyken görev ayna kurmaz ve yazmaz — ana döngü turu başındaki motor / tel
+    /// okuması, durum değişikliği kaydı, oranlı kurtarma görüntüsü ([`RECOVERY_DIAG_PERIOD`]), ACK
+    /// çerçevesi kaydı ve bunların kilidi ÇALIŞMAZ; erişimciler kilit almadan
+    /// [`ClientLiveDiag::default`] döner. Açıkken görev aynayı yazar; hiçbir karar aynayı OKUMAZ
+    /// (salt gözlem: motor kararları bayraktan bağımsızdır). Açık kolun maliyeti ölçülmedi. Yalnız
+    /// client ucu okur; server ucu bu alanı yok sayar.
+    pub live_diag: bool,
 }
 
 /// [HANDOFF ENSTRÜMANI] Zaman-serisi örnek tavanı (50 ms periyotta ≈ 205 s).
@@ -208,7 +218,8 @@ pub struct FecRuntimeConfig {
 /// **Kapalı (bilinçli):** DR-CS-3 bootstrap-RTT merdiveni (`bootstrap_rtt`, kalibre edilmemiş) ·
 /// kalibre füzyon politikası (`fusion_policy`, opt-in ölçüm kapısı) · `BurstFusion` yapı-gate dalı
 /// (kalibre edilmemiş) · fragmenter (`max_message_bytes`, açık opt-in — wire formatı görünür değişir) ·
-/// kanal-türevli confirm ufku (ölçüm kolu).
+/// kanal-türevli confirm ufku (ölçüm kolu) · canlı teşhis aynası (`live_diag`, salt gözlem; INT-02
+/// düzeneği açar — DUR-19).
 pub struct KamaV1Profile;
 
 /// [FAZ-6 DONDURMA] Transport v1 ÜRÜN-PROFİL kimliği — benchmark manifestlerindeki `arm` değeri.
@@ -277,6 +288,9 @@ impl KamaV1Profile {
             fec_loss_risk: FecLossRiskConfig::bounded_v1(),
             ts_sample_period_ns: None,
             structure_gate_level_permille: Some(Self::STRUCTURE_GATE_LEVEL_PERMILLE),
+            // [K4G-05 / DUR-19] Canlı teşhis aynası ürün yolunda KAPALI: yazıcı çalışmaz, ayna
+            // kurulmaz. INT-02 düzeneği açar (`kama-node` `test-util` kurucuları).
+            live_diag: false,
         }
     }
 }
@@ -705,6 +719,11 @@ pub struct ServerStats {
 /// (drain) değerleri aynaya girmez; kesin kapanış değeri [`ClientHandle::shutdown`]'ın
 /// istatistiğidir (`ClientStats::fate.activation`). İstisna: ACK çerçevesi kaydı
 /// ([`Self::acks`], [`Self::ack`]) çerçeve işlendiği anda yazılır, boşaltmadakiler dahil.
+///
+/// [DUR-19] Ayna ve yazıcısı YALNIZ [`RuntimeConfig::live_diag`] açıkken vardır (ürün varsayılanı
+/// KAPALI). Kapalıyken görev hiçbir alanı yazmaz ve okuyucular [`ClientLiveDiag::default`] görür:
+/// bütün sayaçlar ve RTT alanları 0, `recovery` / `clock_origin` / `control.state` `None`, halkalar
+/// boş (`total() == 0`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ClientLiveDiag {
     /// Motorun `Retransmit` sınıflı emisyon kararları (ARQ + tail-probe) —
@@ -732,8 +751,9 @@ pub struct ClientLiveDiag {
     /// `ActivationDiag::left_preconverge_ns`.
     pub left_preconverge_ns: u64,
     /// [K4G-05 / INT-02 TEŞHİS] Gönderen kurtarma anlık görüntüsü (takılı birim zaman çizelgesi);
-    /// görev ana döngüde en çok [`RECOVERY_DIAG_PERIOD`]'da bir yeniler. İlk yenilemeden önce ve
-    /// kapanmış oturumlar toplamında (`ClientTransport::retired_live_diag`) `None`.
+    /// görev ana döngüde en çok [`RECOVERY_DIAG_PERIOD`]'da bir yeniler. İlk yenilemeden önce,
+    /// kapanmış oturumlar toplamında (`ClientTransport::retired_live_diag`) ve canlı ayna
+    /// kapalıyken ([`RuntimeConfig::live_diag`]) `None`.
     pub recovery: Option<SenderRecoveryDiag>,
     // ── [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] M1 (bayat zamanlayıcı SACK'leri) / M2 (hız tabanı) ──
     /// Ucun saat tabanının sıfırı: `*_ns` anları bu ana göredir (motorun `on_event`'e verilen
@@ -759,6 +779,7 @@ pub struct ClientLiveDiag {
 /// [K4G-05 / INT-02 TEŞHİS] [`SenderRecoveryDiag`]'ın yenilenme aralığı — gözlem çözünürlüğü,
 /// normatif DEĞİL `[KALİBRASYON]`. Görüntü sınırlı yapıları (teyitsiz birim deposu, motorun uçuş /
 /// kayıp / kopya kuyrukları, PN çeviri penceresi) tarar; her döngü turunda değil, bu aralıkla alınır.
+/// [DUR-19] Yalnız [`RuntimeConfig::live_diag`] açıkken alınır.
 pub const RECOVERY_DIAG_PERIOD: Duration = Duration::from_millis(200);
 
 /// [K4G-05 / INT-02 TEŞHİS] Gönderen ucun kurtarma anlık görüntüsü ([`ClientLiveDiag::recovery`]):
@@ -975,6 +996,23 @@ pub struct AckFrameDiag {
     pub after: MotorAckView,
 }
 
+/// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Bir ACK çerçevesinin motora verilmeden ÖNCE okunan teşhis
+/// alanları ([`AckFrameDiag`]'ın motor öncesi yarısı). [DUR-19] Yalnız canlı ayna açıkken
+/// ([`RuntimeConfig::live_diag`]) kurulur; görev okumaz, yalnız kayda aktarır.
+#[derive(Debug, Clone, Copy)]
+struct AckFramePre {
+    acked_pns: u32,
+    largest_pn: Option<u64>,
+    mapped_seqs: u32,
+    before: MotorAckView,
+    tx_before: u64,
+}
+
+/// Süre → µs, `u64`'e doymalı (teşhis kaydı alanları için).
+fn saturating_us(d: Duration) -> u64 {
+    u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
+}
+
 /// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] ACK çerçevesi sayaçları ([`ClientLiveDiag::ack`]).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AckFrameCounts {
@@ -991,6 +1029,14 @@ pub struct AckFrameCounts {
 }
 
 impl AckFrameCounts {
+    /// Çözülen bir çerçeveyi sayar (salt gözlem; yalnız canlı ayna açıkken çağrılır).
+    fn count(&mut self, mapped: bool, new_units: bool, inflight_shrunk: bool) {
+        self.frames = self.frames.saturating_add(1);
+        self.mapped = self.mapped.saturating_add(u64::from(mapped));
+        self.new_units = self.new_units.saturating_add(u64::from(new_units));
+        self.inflight_shrunk = self.inflight_shrunk.saturating_add(u64::from(inflight_shrunk));
+    }
+
     fn add(&mut self, other: &Self) {
         self.frames = self.frames.saturating_add(other.frames);
         self.mapped = self.mapped.saturating_add(other.mapped);
@@ -1421,8 +1467,9 @@ pub struct ClientHandle {
     recovery_tx: watch::Sender<bool>,
     /// [K4G-01] Bağlam-önce dağıtım sayaçları (bkz. [`ClientHandle::ctx_dispatch_stats`]).
     ctx_counters: CtxDispatchCounters,
-    /// [K4G-05] Canlı salt-gözlem aynası (bkz. [`ClientHandle::live_diag`]).
-    live: Arc<Mutex<ClientLiveDiag>>,
+    /// [K4G-05] Canlı salt-gözlem aynası (bkz. [`ClientHandle::live_diag`]). [DUR-19] Yalnız
+    /// [`RuntimeConfig::live_diag`] açıkken kurulur; kapalıyken `None` (Mutex yok).
+    live: Option<Arc<Mutex<ClientLiveDiag>>>,
     task: JoinHandle<ClientStats>,
 }
 
@@ -1572,7 +1619,10 @@ impl ClientEndpoint {
         let max_message_bytes = cfg.max_message_bytes.unwrap_or(cfg.max_unit_bytes);
         let (recovery_tx, recovery_rx) = watch::channel(true);
         let outstanding = Arc::new(AtomicUsize::new(0));
-        let live = Arc::new(Mutex::new(ClientLiveDiag::default()));
+        // [K4G-05 / DUR-19] Canlı ayna yalnız bayrak açıkken kurulur (kapalıyken Mutex yok).
+        let live = cfg
+            .live_diag
+            .then(|| Arc::new(Mutex::new(ClientLiveDiag::default())));
         let task = tokio::spawn(client_task(
             sock,
             cfg,
@@ -1587,7 +1637,7 @@ impl ClientEndpoint {
                 recovery_rx,
                 outstanding: Arc::clone(&outstanding),
                 ctx_counters: ctx_counters.clone(),
-                live: Arc::clone(&live),
+                live: live.clone(),
             },
         ));
         Ok(ClientHandle {
@@ -1686,9 +1736,25 @@ impl ClientHandle {
     /// BAŞINDA yazar — okuyucu en çok bir tur (pacing tick'i 1 ms ya da tek bir `select!` kolunun
     /// işi) geride kalır. Kapanış boşaltmasının değerleri aynaya girmez; kesin değer
     /// [`ClientHandle::shutdown`]'ın istatistiğidir. Görev başlamadan önce sıfırdır.
+    ///
+    /// [DUR-19] Ayna YALNIZ [`RuntimeConfig::live_diag`] açıkken vardır. Kapalıyken (ürün
+    /// varsayılanı) görev yazmaz ve bu çağrı kilit almadan HER ZAMAN [`ClientLiveDiag::default`]
+    /// döner — bütün sayaçlar ve RTT alanları 0, `recovery` / `clock_origin` / `control.state`
+    /// `None`, halkalar boş; değer "trafik yok" ANLAMINA GELMEZ. Ayırt etmek için
+    /// [`Self::live_diag_enabled`].
     #[must_use]
     pub fn live_diag(&self) -> ClientLiveDiag {
-        *self.live.lock().unwrap_or_else(PoisonError::into_inner)
+        match &self.live {
+            Some(live) => *live.lock().unwrap_or_else(PoisonError::into_inner),
+            None => ClientLiveDiag::default(),
+        }
+    }
+
+    /// [K4G-05 / DUR-19] Bu ucun canlı aynası var mı: uç kurulurken [`RuntimeConfig::live_diag`]
+    /// açıktı. `false` iken [`Self::live_diag`] daima [`ClientLiveDiag::default`] döner.
+    #[must_use]
+    pub fn live_diag_enabled(&self) -> bool {
+        self.live.is_some()
     }
 
     /// Kontrollü kapanış: drain (pif→0 VEYA `drain_cap`) → istatistik. Görev panik ederse
@@ -1716,7 +1782,8 @@ struct ClientTaskLinks {
     /// [K4G-01] Bağlam-önce dağıtım sayaçları (bkz. [`ClientHandle::ctx_dispatch_stats`]).
     ctx_counters: CtxDispatchCounters,
     /// [K4G-05] Canlı salt-gözlem aynası (bkz. [`ClientHandle::live_diag`]); görev yalnız YAZAR.
-    live: Arc<Mutex<ClientLiveDiag>>,
+    /// [DUR-19] `None` = [`RuntimeConfig::live_diag`] kapalı: görev hiçbir teşhis yazımı yapmaz.
+    live: Option<Arc<Mutex<ClientLiveDiag>>>,
 }
 
 async fn client_task(
@@ -2184,9 +2251,16 @@ async fn client_task(
                         // PN (ufuk dışı / motor kararı olmayan çerçeve) motora GİTMEZ.
                         let pns = frame.acked_full(max_sealed_pn.map_or(0, |m| m + 1));
                         // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Salt gözlem: çerçevenin teyit ettiği PN
-                        // sayısı ve en büyüğü (motora giden liste değişmez).
-                        let acked_pns = u32::try_from(pns.len()).unwrap_or(u32::MAX);
-                        let largest_pn = pns.iter().copied().max();
+                        // sayısı ve en büyüğü (motora giden liste değişmez). [DUR-19] Yalnız canlı
+                        // ayna açıkken hesaplanır.
+                        let pn_view = if live.is_some() {
+                            Some((
+                                u32::try_from(pns.len()).unwrap_or(u32::MAX),
+                                pns.iter().copied().max(),
+                            ))
+                        } else {
+                            None
+                        };
                         let acked: Vec<u64> = pns
                             .into_iter()
                             .filter_map(|pn| {
@@ -2209,9 +2283,15 @@ async fn client_task(
                                 }
                             }
                         }
-                        let mapped_seqs = u32::try_from(acked.len()).unwrap_or(u32::MAX);
-                        let before = MotorAckView::of(session.sender());
-                        let tx_before = stats.tx_datagrams;
+                        // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Çerçeve kaydının motordan ÖNCEKİ yarısı.
+                        // [DUR-19] Yalnız canlı ayna açıkken okunur.
+                        let pre = pn_view.map(|(acked_pns, largest_pn)| AckFramePre {
+                            acked_pns,
+                            largest_pn,
+                            mapped_seqs: u32::try_from(acked.len()).unwrap_or(u32::MAX),
+                            before: MotorAckView::of(session.sender()),
+                            tx_before: stats.tx_datagrams,
+                        });
                         // Kampanya-kanıtlı sözleşme (bench birebir): acked_full çıktısı diff'siz
                         // beslenir; motor inflight.remove ile idempotent işler.
                         drive!(
@@ -2222,37 +2302,35 @@ async fn client_task(
                             $now
                         );
                         // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Çerçeve kaydı ve sayaçları: yalnız aynaya
-                        // yazılır; hiçbir karar okumaz.
-                        let after = MotorAckView::of(session.sender());
-                        ack_counts.frames = ack_counts.frames.saturating_add(1);
-                        ack_counts.mapped =
-                            ack_counts.mapped.saturating_add(u64::from(mapped_seqs > 0));
-                        ack_counts.new_units =
-                            ack_counts.new_units.saturating_add(u64::from(new_units > 0));
-                        ack_counts.inflight_shrunk = ack_counts
-                            .inflight_shrunk
-                            .saturating_add(u64::from(after.inflight_len < before.inflight_len));
-                        let record = AckFrameDiag {
-                            index: ack_counts.frames,
-                            at_ns: $now,
-                            v2: frame.v2,
-                            seen_count: frame.seen_count,
-                            largest_pn,
-                            ack_delay_raw: frame.ack_delay,
-                            ack_delay_us: u64::try_from(frame.ack_delay_duration().as_micros())
-                                .unwrap_or(u64::MAX),
-                            acked_pns,
-                            mapped_seqs,
-                            new_units,
-                            tx_datagrams_during: u32::try_from(
-                                stats.tx_datagrams.saturating_sub(tx_before),
-                            )
-                            .unwrap_or(u32::MAX),
-                            before,
-                            after,
-                        };
-                        {
-                            let mut mirror = live.lock().unwrap_or_else(PoisonError::into_inner);
+                        // yazılır; hiçbir karar okumaz. [DUR-19] Canlı ayna kapalıyken bu blok hiç
+                        // çalışmaz: motor görünümü okunmaz, kayıt kurulmaz, kilit alınmaz.
+                        if let (Some(live_mirror), Some(pre)) = (live.as_ref(), pre) {
+                            let after = MotorAckView::of(session.sender());
+                            ack_counts.count(
+                                pre.mapped_seqs > 0,
+                                new_units > 0,
+                                after.inflight_len < pre.before.inflight_len,
+                            );
+                            let record = AckFrameDiag {
+                                index: ack_counts.frames,
+                                at_ns: $now,
+                                v2: frame.v2,
+                                seen_count: frame.seen_count,
+                                largest_pn: pre.largest_pn,
+                                ack_delay_raw: frame.ack_delay,
+                                ack_delay_us: saturating_us(frame.ack_delay_duration()),
+                                acked_pns: pre.acked_pns,
+                                mapped_seqs: pre.mapped_seqs,
+                                new_units,
+                                tx_datagrams_during: u32::try_from(
+                                    stats.tx_datagrams.saturating_sub(pre.tx_before),
+                                )
+                                .unwrap_or(u32::MAX),
+                                before: pre.before,
+                                after,
+                            };
+                            let mut mirror =
+                                live_mirror.lock().unwrap_or_else(PoisonError::into_inner);
                             mirror.ack = ack_counts;
                             mirror.acks.push(record);
                         }
@@ -2276,40 +2354,42 @@ async fn client_task(
     loop {
         // [K4G-05] Salt gözlem: motor ve tel sayaçlarının o anki değeri yayımlanır (önceki turun
         // bütün kolları dahil). Burada okunur, değişmez; görev aynayı OKUMAZ (bkz.
-        // `ClientHandle::live_diag`).
-        let mirror_now_ns = elapsed_ns(start);
-        let activation = session.sender().diag_activation();
-        let control = SenderControlDiag::capture(session.sender(), &activation, mirror_now_ns);
-        if mirror_now_ns >= recovery_next_ns {
-            recovery_next_ns = mirror_now_ns.saturating_add(recovery_period_ns);
-            recovery = Some(capture_recovery(
-                session.sender(),
-                &store,
-                &unit_seqs,
-                &pn_seq,
-                mirror_now_ns,
-            ));
-        }
-        // [CEVAP PAKETİ 6] Durum değişikliği: bir önceki turda görülenden farklıysa kaydedilir.
-        let state_change = if control.state == last_state {
-            None
-        } else {
-            state_changes = state_changes.saturating_add(1);
-            Some(StateChangeDiag {
-                index: state_changes,
-                at_ns: mirror_now_ns,
-                from: last_state,
-                to: control.state,
-                motor_transitions: control.state_transitions,
-                emergency: control.emergency,
-                fusion_emergency_mode: control.fusion_emergency_mode,
-                ack_confidence_permille: control.fusion.map(|f| f.ack_confidence_permille),
-                last_ack_ns: session.sender().diag_recovery_timers().last_ack_ns,
-            })
-        };
-        last_state = control.state;
-        {
-            let mut mirror = live.lock().unwrap_or_else(PoisonError::into_inner);
+        // `ClientHandle::live_diag`). [DUR-19] YALNIZ canlı ayna açıkken
+        // (`RuntimeConfig::live_diag`); kapalıyken bu blok hiç çalışmaz — saat, motor okuması,
+        // durum karşılaştırması, kurtarma görüntüsü ve kilit YOK; tur, aynasız ana döngüdür.
+        if let Some(live_mirror) = live.as_ref() {
+            let mirror_now_ns = elapsed_ns(start);
+            let activation = session.sender().diag_activation();
+            let control = SenderControlDiag::capture(session.sender(), &activation, mirror_now_ns);
+            if mirror_now_ns >= recovery_next_ns {
+                recovery_next_ns = mirror_now_ns.saturating_add(recovery_period_ns);
+                recovery = Some(capture_recovery(
+                    session.sender(),
+                    &store,
+                    &unit_seqs,
+                    &pn_seq,
+                    mirror_now_ns,
+                ));
+            }
+            // [CEVAP PAKETİ 6] Durum değişikliği: bir önceki turda görülenden farklıysa kaydedilir.
+            let state_change = if control.state == last_state {
+                None
+            } else {
+                state_changes = state_changes.saturating_add(1);
+                Some(StateChangeDiag {
+                    index: state_changes,
+                    at_ns: mirror_now_ns,
+                    from: last_state,
+                    to: control.state,
+                    motor_transitions: control.state_transitions,
+                    emergency: control.emergency,
+                    fusion_emergency_mode: control.fusion_emergency_mode,
+                    ack_confidence_permille: control.fusion.map(|f| f.ack_confidence_permille),
+                    last_ack_ns: session.sender().diag_recovery_timers().last_ack_ns,
+                })
+            };
+            last_state = control.state;
+            let mut mirror = live_mirror.lock().unwrap_or_else(PoisonError::into_inner);
             mirror.refresh(
                 session.sender(),
                 &activation,
@@ -3942,6 +4022,10 @@ mod live_diag_mirror_tests {
     //! (sayaçlar monoton; ayna en çok bir tur geridedir). Kayıp, client'ın egress kapısıyla
     //! belirlenimli verilir: İLK datagram kanala girmez. FEC kapalı kurulur ki kayıp ARQ ile
     //! (parity ile değil) kurtarılsın. Bekleme süreleri yalnız beklenen olayın ÜST SINIRIDIR.
+    //!
+    //! [DUR-19] Ayna yalnız `RuntimeConfig::live_diag` açıkken vardır: buradaki kollar bayrağı
+    //! açar (`no_fec`); `mirror_stays_default_when_the_flag_is_off` aynı trafikte bayrak kapalıyken
+    //! aynanın varsayılan kaldığını ve açıkken güncellendiğini sınar.
 
     use super::*;
     use crate::seam::IdentitySeam;
@@ -3980,10 +4064,13 @@ mod live_diag_mirror_tests {
         done()
     }
 
+    /// FEC kapalı, canlı ayna AÇIK (DUR-19: ürün varsayılanı kapalıdır; aynayı sınayan kollar
+    /// açar).
     fn no_fec(drain_cap: Duration) -> RuntimeConfig {
         RuntimeConfig {
             fec: None,
             drain_cap,
+            live_diag: true,
             ..RuntimeConfig::default()
         }
     }
@@ -4146,5 +4233,59 @@ mod live_diag_mirror_tests {
             "{stats:?}"
         );
         assert_eq!(stats.tx_retx_bytes, 0, "{stats:?}");
+    }
+
+    /// [DUR-19] Canlı ayna bayrağı (`RuntimeConfig::live_diag`), ürün varsayılanı KAPALI. Aynı
+    /// kayıplı trafik (ilk emisyon düşer, ARQ kurtarır) iki kolda da koşar ve tamamlanır: motorun
+    /// kurtarma kararı bayraktan bağımsızdır (kapanış istatistiği). Kapalı kolda ayna kurulmaz ve
+    /// yazılmaz — erişimci trafik BOYUNCA ve sonunda varsayılan görüntüyü döner; açık kolda ayna
+    /// güncellenir.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mirror_stays_default_when_the_flag_is_off() {
+        assert!(!RuntimeConfig::default().live_diag, "ürün kapalı");
+        for on in [false, true] {
+            let cfg = RuntimeConfig {
+                live_diag: on,
+                ..no_fec(RuntimeConfig::default().drain_cap)
+            };
+            let (server, client) = pair(&cfg).await;
+            assert_eq!(client.live_diag_enabled(), on);
+            for i in 0..UNITS {
+                client
+                    .send(format!("ayna-{i}").into_bytes())
+                    .expect("offer");
+            }
+            // Her yoklamada aynaya bakılır: kapalı kolda hiçbir an yazılmış olmamalı.
+            let mut written = false;
+            let settled = wait_until(|| {
+                let live = client.live_diag();
+                written |= live != ClientLiveDiag::default();
+                client.outstanding() == 0 && (!on || live.ack.frames >= 1)
+            })
+            .await;
+            assert!(
+                settled,
+                "bayrak {on}: kayıp kurtarılmalı: {:?}",
+                client.live_diag()
+            );
+            let live = client.live_diag();
+            let stats = client.shutdown().await;
+            let _ = server.shutdown().await;
+            assert_eq!(stats.acked, UNITS, "bayrak {on}: {stats:?}");
+            assert!(
+                stats.fate.activation.retransmits >= 1 && stats.tx_retx_bytes > 0,
+                "bayrak {on}: ARQ kurtarması bayraktan bağımsız: {stats:?}"
+            );
+            if on {
+                assert!(written, "açık: ayna yazıldı");
+                assert!(
+                    live.clock_origin.is_some() && live.ack.frames >= 1,
+                    "{live:?}"
+                );
+            } else {
+                assert!(!written, "kapalı: ayna trafik boyunca varsayılan kaldı");
+                assert_eq!(live, ClientLiveDiag::default());
+            }
+        }
     }
 }

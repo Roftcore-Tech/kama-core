@@ -1,13 +1,20 @@
 //! INT-02 düğüm sürücüsü (plan K4G-05; CORE-CLOSE kritik yolu).
 //!
-//! TEK süreçte iki ÜRÜN düğümü (`kama_node::KamaNode::start`; negatif kolda
-//! `KamaNode::start_recovery_off_for_test`): gerçek `ClientTransport` + gerçek
-//! `NoiseWireProtection` + `kama-app` motorları; anahtarlar `kama-provision` çıktısından (cihaz
-//! dosyaları `--alice-config` / `--bob-config`). Veri datagramları loopback UDP'den geçer (netem
-//! `lo` üzerinde; sürücü `scripts/netem/int02_run.sh`); el sıkışma zarfları süreç-içi röleden netem
-//! DIŞINDA geçer (DUR-K4G-11 → B; beyanlı boşluk). İki düğüm de connect ÖNCESİ başlatılır; glare
-//! kolu hariç bağlantıyı alice başlatır. `KamaNode::start` tokio bağlamından çağrılmaz: bu süreç
-//! düz iş parçacıklarıdır.
+//! TEK süreçte iki ÜRÜN düğümü (`kama_node::KamaNode::start_live_diag_for_test` — ürün yolunun
+//! AYNISI + Transport canlı teşhis aynası açık, DUR-19; `--live-diag off` iken ürün yolunun kendisi
+//! `KamaNode::start`; negatif kolda `KamaNode::start_recovery_off_for_test`): gerçek
+//! `ClientTransport` + gerçek `NoiseWireProtection` + `kama-app` motorları; anahtarlar
+//! `kama-provision` çıktısından (cihaz dosyaları `--alice-config` / `--bob-config`). Veri
+//! datagramları loopback UDP'den geçer (netem `lo` üzerinde; sürücü
+//! `scripts/netem/int02_run.sh`); el sıkışma zarfları süreç-içi röleden netem DIŞINDA geçer
+//! (DUR-K4G-11 → B; beyanlı boşluk). İki düğüm de connect ÖNCESİ başlatılır; glare kolu hariç
+//! bağlantıyı alice başlatır. Düğümler tokio bağlamından başlatılmaz: bu süreç düz iş
+//! parçacıklarıdır.
+//!
+//! CANLI AYNA (`--live-diag on|off`, varsayılan `on`; DUR-19): Transport'un salt-gözlem teşhis
+//! yazıcısı bir ÇALIŞMA-ZAMANI bayrağıdır (`RuntimeConfig::live_diag`, ürün varsayılanı kapalı) —
+//! ürün ve bu düzenek aynı ikiliyi koşar. `off` bayrak açık/kapalı karşılaştırma koşusu içindir
+//! (maliyet ölçümü); negatif kol bastırılan kararı aynadan okuduğu için `on` ister.
 //!
 //! ÇIKTI: stdout'a TEK satır JSON (şema [`SCHEMA`]) — yalnız GÖZLEM (ham sayılar, ham anlar). GATING
 //! hükmü burada VERİLMEZ: `scripts/netem/int02_analyze.py`. Tanılama ve eşgüdüm işaretleri stderr'e.
@@ -75,7 +82,10 @@ use kama_node::{
 /// → `timeline.every_ms`, `timeline.cap` parametrelerden türer; zaman çizelgesi ve son sonda oturum
 /// nesnelerinde `session` + `motor` (faz, BtlBw, pacer, acil durum, dönüş yolu, ACK çerçevesi
 /// sayaçları); kökte `m_log` (oturum başına ACK çerçevesi ve motor durum değişikliği günlükleri).
-pub const SCHEMA: &str = "int02-node-v3";
+/// v4 (DUR-19): `params.live_diag` — Transport canlı teşhis aynası bayrağı (`--live-diag`). `false`
+/// iken sondadaki ve zaman çizelgesindeki ayna alanları (`diag`, `recovery`, `motor`, `retired`) ve
+/// `m_log` varsayılan (sıfır / boş) değerdedir: ölçü DEĞİL, aynasızlıktır.
+pub const SCHEMA: &str = "int02-node-v4";
 /// Provisioning cihaz adları (`kama-provision init --devices alice,bob`).
 pub const ALICE: &str = "alice";
 /// Bkz. [`ALICE`].
@@ -100,6 +110,12 @@ const DEFAULT_BUNDLES: u32 = 50;
 const DEFAULT_BUNDLE_MS: u8 = 40;
 const DEFAULT_BUNDLE_BYTES: usize = 32;
 const DEFAULT_OUTAGE_WAIT_S: u64 = 180;
+/// [DUR-19] Düzenek Transport canlı teşhis aynasını varsayılan olarak AÇAR (ürün varsayılanı
+/// kapalı).
+const DEFAULT_LIVE_DIAG: bool = true;
+/// `--live-diag` değerleri.
+const LIVE_DIAG_ON: &str = "on";
+const LIVE_DIAG_OFF: &str = "off";
 
 /// Girdi tavanları (SR-AUDIT-001: kayıtlar bellekte tutulur).
 const MAX_COUNT: u32 = 10_000;
@@ -158,10 +174,14 @@ kullanım: int02_node --arm <kol> --seed <S> --profile <ad>
                   [--file-bytes B=153600] [--bundles N=50] [--bundle-ms MS=40] [--bundle-bytes B=32]
                   [--scratch-dir <dizin>] [--sync-dir <dizin>] [--outage-wait-s S=180]
                   [--timeline-every-ms MS=5000 (0 = kapalı; kapalı değilse ≥ 100)]
+                  [--live-diag on|off (varsayılan on)]
        int02_node --help
 
 kollar: gating1 | gating2 | gating6 | negatif | ek-dosya-ptt | ek-kesinti
-çıktı : stdout'a TEK satır JSON (şema int02-node-v3); hüküm scripts/netem/int02_analyze.py'de.
+çıktı : stdout'a TEK satır JSON (şema int02-node-v4); hüküm scripts/netem/int02_analyze.py'de.
+canlı ayna (--live-diag, DUR-19): Transport teşhis yazıcısının ÇALIŞMA-ZAMANI bayrağı (ürün
+        varsayılanı kapalı; aynı ikili). off = ürün yolu (KamaNode::start), ayna alanları sıfır /
+        boş — bayrak açık/kapalı karşılaştırma koşusu için. negatif kol on ister.
 zaman çizelgesi (--timeline-every-ms): takılı birim + motor (faz, BtlBw, pacer, acil durum, ACK
         sayaçları) örnekleri; tavan parametrelerden türer (en çok 4096). Açıkken düğüm sondaları
         250 ms'de bir okunur; oturum başına ACK çerçevesi / durum değişikliği günlüğü (m_log).
@@ -250,6 +270,10 @@ pub struct Config {
     /// [K4G-05 TEŞHİS] Takılı birim zaman çizelgesinin örnekleme aralığı (sıfır = kapalı;
     /// `--timeline-every-ms`).
     pub timeline_every: Duration,
+    /// [DUR-19] Transport canlı teşhis aynası (`RuntimeConfig::live_diag`; `--live-diag`).
+    /// Varsayılan AÇIK (ölçüm düzeneği); `false` = ürün yolu (`KamaNode::start`), ayna alanları
+    /// varsayılan değerdedir. Negatif kolda zorunlu açık ([`Config::validate`]).
+    pub live_diag: bool,
 }
 
 impl Config {
@@ -285,6 +309,7 @@ impl Config {
             sync_dir: None,
             outage_wait: Duration::from_secs(DEFAULT_OUTAGE_WAIT_S),
             timeline_every: Duration::from_millis(DEFAULT_TIMELINE_EVERY_MS),
+            live_diag: DEFAULT_LIVE_DIAG,
         }
     }
 
@@ -362,6 +387,11 @@ impl Config {
             if self.count < 2 || self.bundles < 2 {
                 return Err("ek-kesinti kolu --count ≥ 2 ve --bundles ≥ 2 ister".to_owned());
             }
+        }
+        // [DUR-19] Negatif kol bastırılan kurtarma kararını (`recovery_suppressed`) ve tele çıkan
+        // retransmit baytını canlı aynadan okur.
+        if self.arm == Arm::Negative && !self.live_diag {
+            return Err("negatif kol --live-diag on ister".to_owned());
         }
         Ok(())
     }
@@ -446,11 +476,23 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, String> {
     if let Some(v) = values.get("--timeline-every-ms") {
         cfg.timeline_every = Duration::from_millis(number("--timeline-every-ms", v)?);
     }
+    if let Some(v) = values.get("--live-diag") {
+        cfg.live_diag = live_diag_flag(v)?;
+    }
     cfg.validate()?;
     Ok(Parsed::Run(Box::new(cfg)))
 }
 
-const KNOWN_FLAGS: [&str; 21] = [
+/// [DUR-19] `--live-diag` değeri: `on` | `off`.
+fn live_diag_flag(value: &str) -> Result<bool, String> {
+    match value {
+        LIVE_DIAG_ON => Ok(true),
+        LIVE_DIAG_OFF => Ok(false),
+        other => Err(format!("--live-diag on|off olmalı: {other:?}")),
+    }
+}
+
+const KNOWN_FLAGS: [&str; 22] = [
     "--arm",
     "--seed",
     "--profile",
@@ -471,6 +513,7 @@ const KNOWN_FLAGS: [&str; 21] = [
     "--sync-dir",
     "--outage-wait-s",
     "--timeline-every-ms",
+    "--live-diag",
     "--help",
 ];
 
@@ -936,8 +979,12 @@ impl Harness {
             Side::Alice => (&self.cfg.alice_config, &self.cfg.alice_data),
             Side::Bob => (&self.cfg.bob_config, &self.cfg.bob_data),
         };
+        // [DUR-19] Negatif kol canlı aynayı da açar (`validate`: `--live-diag on` şart); diğer
+        // kollarda bayrak açıkken ürün yolunun aynısı + canlı ayna, kapalıyken ürün yolu.
         let started = if self.cfg.arm == Arm::Negative {
             KamaNode::start_recovery_off_for_test(config, data, tap)
+        } else if self.cfg.live_diag {
+            KamaNode::start_live_diag_for_test(config, data, tap)
         } else {
             KamaNode::start(config, data, tap)
         };
@@ -1807,6 +1854,7 @@ impl Harness {
             ("bundle_bytes", Value::U(cfg.bundle_bytes as u64)),
             ("outage_wait_s", Value::U(cfg.outage_wait.as_secs())),
             ("timeline_every_ms", Value::F(ms(cfg.timeline_every))),
+            ("live_diag", Value::Bool(cfg.live_diag)),
         ]);
         let flows = obj(vec![
             ("alice_to_bob", self.flow_json(Side::Alice)),

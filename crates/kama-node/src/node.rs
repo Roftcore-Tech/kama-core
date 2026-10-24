@@ -824,6 +824,15 @@ impl NodeLoop {
     pub(crate) fn set_recovery_for_test(&mut self, on: bool) {
         self.messenger.transport_mut().set_recovery_for_test(on);
     }
+
+    /// [DUR-19] Transport'un canlı teşhis aynası bayrağı (`ClientTransport::set_live_diag_for_test`
+    /// → `RuntimeConfig::live_diag`): sonradan açılan oturum uçlarına uygulanır. YALNIZ INT-02
+    /// ölçüm kurucuları (`KamaNode::start_live_diag_for_test`, `start_recovery_off_for_test`);
+    /// düğüm iş parçacığı başlamadan, yani oturum ucu açılmadan çağrılır.
+    #[cfg(feature = "test-util")]
+    pub(crate) fn set_live_diag_for_test(&mut self, on: bool) {
+        self.messenger.transport_mut().set_live_diag_for_test(on);
+    }
 }
 
 /// Yanıt kanalına tek yanıt. Kanal kapasitesi bir ve tek gönderim olduğundan bloklamaz; çağıran

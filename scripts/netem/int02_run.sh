@@ -21,6 +21,11 @@
 # ZAMAN ÇİZELGESİ (`--timeline-every-ms`, CEVAP PAKETİ 6): örneğin zaman çizelgesi aralığı (ms; motor
 # alanları + ACK çerçevesi / durum değişikliği günlüğü `m_log`). Tavanı örnek parametrelerden türetir.
 #
+# CANLI AYNA (`--live-diag on|off`, DUR-19): örneğin Transport canlı teşhis aynası bayrağı (çalışma-
+# zamanı bayrağı; ürün varsayılanı kapalı, örnek varsayılanı açık). `off` = ürün yolu, ayna alanları
+# sıfır / boş — yalnız bayrak açık/kapalı karşılaştırma koşusu için (ayrı `--out` dizini). Negatif kol
+# `on` ister.
+#
 # Bu betik derleme YAPMAZ; ikilileri önceden derleyin (bkz. --help).
 set -euo pipefail
 
@@ -67,6 +72,9 @@ kullanım: scripts/netem/int02_run.sh [seçenekler]
   --timeline-every-ms MS
                         zaman çizelgesi aralığı (örneğe iletilir; verilmezse örneğin varsayılanı
                         5000; 0 = kapalı, kapalıyken m_log da tutulmaz)
+  --live-diag on|off    Transport canlı teşhis aynası (örneğe iletilir; verilmezse örneğin
+                        varsayılanı on). off = ürün yolu, ayna alanları sıfır — yalnız bayrak
+                        açık/kapalı karşılaştırması için (DUR-19); negatif kol on ister
   --keep-work           geçici çalışma dizinlerini silme
   --dry-run             yalnız planı ve komutları yaz, hiçbir şey koşma
   --check               önkoşulları denetle (ikililer, komutlar, sch_netem, unprivileged userns)
@@ -84,6 +92,9 @@ yeniden koşu (CEVAP PAKETİ 4):
 M1/M2 teşhis ölçümü (CEVAP PAKETİ 6; beklenti kaydı docs/reports/INT-02-M1M2-BEKLENTI.md):
   scripts/netem/int02_run.sh --seeds "3 9" --arms gating2 --window 600 --timeline-every-ms 1000 --out <out>
   scripts/netem/int02_run.sh --seeds "1 3" --arms ek-kesinti --window 600 --timeline-every-ms 1000 --out <out>
+canlı ayna açık/kapalı karşılaştırması (DUR-19 iii; aynı tohumlar, ayrı çıktı dizinleri):
+  scripts/netem/int02_run.sh --seeds "<S1> <S2>" --arms gating2 --window 600 --live-diag on --out <out-on>
+  scripts/netem/int02_run.sh --seeds "<S1> <S2>" --arms gating2 --window 600 --live-diag off --out <out-off>
 analiz    : python3 scripts/netem/int02_analyze.py <out>
 EOF
 }
@@ -128,6 +139,8 @@ inner() {
   # PENCERE: bütün kollara aynı parametre.
   if [ -n "${INT02_WINDOW_S:-}" ]; then args+=(--window-s "$INT02_WINDOW_S"); fi
   if [ -n "${INT02_TIMELINE_EVERY_MS:-}" ]; then args+=(--timeline-every-ms "$INT02_TIMELINE_EVERY_MS"); fi
+  # CANLI AYNA (DUR-19): verilmezse örneğin varsayılanı (on).
+  if [ -n "${INT02_LIVE_DIAG:-}" ]; then args+=(--live-diag "$INT02_LIVE_DIAG"); fi
   local budget="$BUDGET_DEFAULT"
   if [ "$arm" = "ek-kesinti" ]; then
     args+=(--sync-dir "$work/sync")
@@ -254,7 +267,7 @@ if line:
         record = None
         driver["parse_error"] = str(e)
 if not isinstance(record, dict):
-    record = {"schema": "int02-node-v3", "arm": env["INT02_ARM"], "seed": int(env["INT02_SEED"]),
+    record = {"schema": "int02-node-v4", "arm": env["INT02_ARM"], "seed": int(env["INT02_SEED"]),
               "profile": env["INT02_PROFILE"], "result": "error",
               "error": "sürücü: örnek JSON satırı üretmedi (çıkış %s)" % env["INT02_EXIT"]}
 record["driver"] = driver
@@ -285,6 +298,7 @@ WINDOW_S=""
 OUTAGE_WAIT_S=""
 SETTLE_S=""
 TIMELINE_EVERY_MS=""
+LIVE_DIAG=""
 KEEP=0
 DRY=0
 CHECK=0
@@ -302,6 +316,7 @@ while [ $# -gt 0 ]; do
     --outage-wait-s) OUTAGE_WAIT_S="${2:?--outage-wait-s değer ister}"; shift 2 ;;
     --settle-s) SETTLE_S="${2:?--settle-s değer ister}"; shift 2 ;;
     --timeline-every-ms) TIMELINE_EVERY_MS="${2:?--timeline-every-ms değer ister}"; shift 2 ;;
+    --live-diag) LIVE_DIAG="${2:?--live-diag değer ister}"; shift 2 ;;
     --keep-work) KEEP=1; shift ;;
     --dry-run) DRY=1; shift ;;
     --check) CHECK=1; shift ;;
@@ -329,6 +344,16 @@ for value in "$WINDOW_S" "$OUTAGE_WAIT_S" "$SETTLE_S" "$TIMELINE_EVERY_MS"; do
     *[!0-9]*) die "süre seçenekleri negatif olmayan tamsayı (s; --timeline-every-ms için ms) olmalı: $value" ;;
   esac
 done
+case "$LIVE_DIAG" in
+  ""|on|off) ;;
+  *) die "--live-diag on ya da off olmalı: $LIVE_DIAG" ;;
+esac
+# Negatif kol bastırılan kararı canlı aynadan okur (örnek de reddeder; burada erken durulur).
+if [ "$LIVE_DIAG" = off ]; then
+  for arm in $ARMS; do
+    if [ "$arm" = negatif ]; then die "negatif kol --live-diag on ister"; fi
+  done
+fi
 
 check() {
   local ok=1
@@ -360,6 +385,7 @@ if [ "$DRY" = 1 ]; then
   echo "pencere    : ${WINDOW_S:-örnek varsayılanı (120)} s — son gönderimden (ek-kesinti: kesinti bitiminden) sonra tamamlanma üst sınırı, bütün kollar"
   echo "diğer      : outage-wait=${OUTAGE_WAIT_S:-örnek varsayılanı (180)} (yalnız KESINTI_BITTI beklemesi) settle=${SETTLE_S:-örnek varsayılanı (10)}"
   echo "çizelge    : ${TIMELINE_EVERY_MS:-örnek varsayılanı (5000)} ms (0 = kapalı; açıkken m_log da tutulur)"
+  echo "canlı ayna : ${LIVE_DIAG:-örnek varsayılanı (on)} (off = ürün yolu, ayna alanları sıfır; DUR-19)"
   for seed in $SEEDS; do
     for arm in $ARMS; do
       echo "  [s$seed $arm] unshare -rn: ip link set lo up; kama-provision init --out <work>/authority" \
@@ -393,7 +419,7 @@ for seed in $SEEDS; do
     INT02_EXAMPLE="$EXAMPLE" INT02_PROVISION="$PROVISION" INT02_COUNT="$COUNT" \
     INT02_INTERVAL_MS="$INTERVAL_MS" INT02_WINDOW_S="$WINDOW_S" \
     INT02_OUTAGE_WAIT_S="$OUTAGE_WAIT_S" INT02_SETTLE_S="$SETTLE_S" \
-    INT02_TIMELINE_EVERY_MS="$TIMELINE_EVERY_MS" \
+    INT02_TIMELINE_EVERY_MS="$TIMELINE_EVERY_MS" INT02_LIVE_DIAG="$LIVE_DIAG" \
       unshare -rn bash "$SELF" __inner "$seed" "$arm" "$work" "$outfile" || rc=$?
     if [ "$rc" != 0 ]; then
       echo "  ! iç kip çıkışı $rc (kayıt: $outfile varsa ona bakın; çalışma dizini korunuyor: $work)"

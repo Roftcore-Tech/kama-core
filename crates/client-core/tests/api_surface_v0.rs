@@ -102,6 +102,9 @@ async fn transport_api_v0_surface_is_frozen() {
         ts_sample_period_ns: _,
         // v0.12 (R-SWEEP): gate seviyesi override'ı; default None = sevk.
         structure_gate_level_permille: _,
+        // v0.14 (K4G-05 / DUR-19): minor-EKLEME, kasıtlı pin-güncellemesi. Canlı teşhis aynası;
+        // default false (ürün), salt gözlem — motor kararlarını değiştirmez.
+        live_diag: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,

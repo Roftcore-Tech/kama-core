@@ -200,7 +200,8 @@ pub struct ClientTransportConfig {
 
 impl ClientTransportConfig {
     /// Ürün profiliyle yapılandırma: kurtarma açık, yenileme boşaltma tavanı veri yolunun
-    /// kapanış boşaltma tavanıyla aynı.
+    /// kapanış boşaltma tavanıyla aynı. [DUR-19] Canlı teşhis aynası KAPALI
+    /// (`RuntimeConfig::live_diag = false`, ürün profilinden).
     #[must_use]
     pub fn product(data_bind: SocketAddr) -> Self {
         let runtime = RuntimeConfig::default();
@@ -449,7 +450,7 @@ pub struct ClientTransport<C: PacketProtection + SessionControl> {
     ctx_counters: CtxDispatchCounters,
     /// [K4G-05] Salt gözlem: ucu bırakılan (kapanan) oturumların ARQ / kurtarma sayaçlarının
     /// toplamı — ucun bırakıldığı andaki canlı aynasından ([`Self::retired_live_diag`]). Hiçbir
-    /// karar okumaz.
+    /// karar okumaz. [DUR-19] Yalnız aynası olan uç eklenir (`RuntimeConfig::live_diag`).
     retired_diag: ClientLiveDiag,
     /// Sıradaki `send`'lerden kaçının ilk emisyonu kaybettirilecek (yalnız test).
     #[cfg(any(test, feature = "test-util"))]
@@ -589,6 +590,10 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     /// [K4G-05] Salt-okunur telemetri: ucu açık her S1 oturumunun motor / ARQ aynası
     /// ([`ClientHandle::live_diag`]), tutamaç sırasıyla. Ucu kurulamamış ya da bırakılmış
     /// oturum listede yoktur (onun sayaçları [`Self::retired_live_diag`]'dadır). Durum değişmez.
+    ///
+    /// [DUR-19] Canlı ayna `RuntimeConfig::live_diag` açıkken vardır (ürün varsayılanı KAPALI;
+    /// [`ClientTransportConfig::product`]). Kapalıyken liste yine ucu açık her oturumu içerir ama
+    /// her değer [`ClientLiveDiag::default`]'tur (sıfır sayaçlar; "trafik yok" ANLAMINA GELMEZ).
     #[must_use]
     pub fn session_live_diags(&self) -> Vec<(SessionHandle, ClientLiveDiag)> {
         self.sessions
@@ -599,7 +604,9 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
 
     /// [K4G-05] Salt-okunur telemetri: ucu bırakılan (kapanan) oturumların ARQ / kurtarma
     /// SAYAÇLARININ toplamı (RTT alanları 0). Değer ucun bırakıldığı andaki aynadır: ucun kapanış
-    /// boşaltmasında verdiği kararlar girmez (alt sınır).
+    /// boşaltmasında verdiği kararlar girmez (alt sınır). [DUR-19] Yalnız aynası olan uçlar
+    /// eklenir; canlı ayna kapalıyken (ürün varsayılanı) kapanışta kopya alınmaz ve değer HER ZAMAN
+    /// [`ClientLiveDiag::default`]'tur.
     #[must_use]
     pub fn retired_live_diag(&self) -> ClientLiveDiag {
         self.retired_diag
@@ -930,8 +937,12 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         }
         let closed = s.phase == Phase::Closed;
         // [K4G-05] Salt gözlem: uç bırakılmadan önce aynası kapanmış oturumlar toplamına eklenir.
+        // [DUR-19] Yalnız aynası olan uçta; canlı ayna kapalıyken kopya alınmaz (kilit yok). Uç her
+        // durumda burada bırakılır.
         if let Some(endpoint) = s.endpoint.take() {
-            self.retired_diag.add_counters(&endpoint.live_diag());
+            if endpoint.live_diag_enabled() {
+                self.retired_diag.add_counters(&endpoint.live_diag());
+            }
         }
         // [K4G-01b] Teslim kabulü bitti (`drive_deliveries` `Closed`'u reddeder) → sıralama durumu
         // silinir; içinde tutulan birim artık hiçbir yoldan teslim edilemezdi. Supersede edilmiş
@@ -1081,6 +1092,15 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 e.set_recovery(on);
             }
         }
+    }
+
+    /// [K4G-05 / DUR-19] Canlı teşhis aynası (`RuntimeConfig::live_diag`) — YALNIZ ölçüm düzeneği
+    /// (INT-02; `kama-node` `test-util` kurucuları). Sonradan açılan uçlara uygulanır; açık uçlar
+    /// değişmez (ayna uç kurulurken kurulur ya da kurulmaz). Ürün yolu bu kancayı çağırmaz:
+    /// [`ClientTransportConfig::product`] kapalı kurar.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_live_diag_for_test(&mut self, on: bool) {
+        self.runtime_cfg.live_diag = on;
     }
 
     /// Sonraki `n` `send`'in İLK emisyonu kaybettirilir (tel baytı bozulur; S1 kancası). Sıra
@@ -1322,8 +1342,12 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         }
         s.phase = Phase::Closed;
         // [K4G-05] Salt gözlem: uç bırakılmadan önce aynası kapanmış oturumlar toplamına eklenir.
+        // [DUR-19] Yalnız aynası olan uçta; canlı ayna kapalıyken kopya alınmaz (kilit yok). Uç her
+        // durumda burada bırakılır.
         if let Some(endpoint) = s.endpoint.take() {
-            self.retired_diag.add_counters(&endpoint.live_diag());
+            if endpoint.live_diag_enabled() {
+                self.retired_diag.add_counters(&endpoint.live_diag());
+            }
         }
         self.locally_closed.insert(session);
         // [K4G-01b] `Closed` oturumun teslimi `drive_deliveries`'te düşer → sıralama durumu
@@ -1417,6 +1441,8 @@ mod tests {
         let (crypto, _clock) = fixture_protection(*me.as_bytes(), directory, EnvelopeKind::Legacy);
         let hub = crate::memory_link::MemoryHub::new();
         let cfg = ClientTransportConfig::product(SocketAddr::from(([127, 0, 0, 1], 0)));
+        // [DUR-19] Ürün yapılandırmasında canlı teşhis aynası KAPALI.
+        assert!(!cfg.runtime.live_diag, "ürün: canlı ayna kapalı");
         let transport =
             ClientTransport::new(cfg, crypto, Box::new(hub.link(me))).expect("ürün adaptörü");
         assert_eq!(transport.session_epoch(SessionHandle::from_raw(7)), None);

@@ -30,11 +30,12 @@ thiserror.workspace = true
 [features]
 # YALNIZ test / ölçüm düzeneği. K4G-11'de bu özelliğe bağlı öğe yoktu (DUR-K4G-11 → B: test kurucusu
 # `start_with_envelope_link` kaldırıldı; özellik kilit dosyası değişmesin diye korunmuştu). [K4G-05]
-# INT-02 (`kama-integration`) için: ölçüm sondası (`KamaNode::probe_for_test`, `src/probe.rs`) ve
-# recovery-OFF negatif kolunun kurucusu (`KamaNode::start_recovery_off_for_test`). Ürün yolu
-# (`KamaNode::start`) bu özellikten bağımsızdır; ürün bağımlılığında AÇILMAZ. `client-core/test-util`:
-# kurtarma anahtarı ve oturum tablosu okuyucuları (`set_recovery_for_test`, `peer_of_for_test`,
-# `outstanding_for_test`).
+# INT-02 (`kama-integration`) için: ölçüm sondası (`KamaNode::probe_for_test`, `src/probe.rs`),
+# canlı teşhis aynası açık kurucu (`KamaNode::start_live_diag_for_test`; DUR-19) ve recovery-OFF
+# negatif kolunun kurucusu (`KamaNode::start_recovery_off_for_test`). Ürün yolu (`KamaNode::start`)
+# bu özellikten bağımsızdır; ürün bağımlılığında AÇILMAZ. `client-core/test-util`: kurtarma ve canlı
+# ayna anahtarları, oturum tablosu okuyucuları (`set_recovery_for_test`, `set_live_diag_for_test`,
+# `peer_of_for_test`, `outstanding_for_test`).
 test-util = ["client-core/test-util"]
 
 [dev-dependencies]
